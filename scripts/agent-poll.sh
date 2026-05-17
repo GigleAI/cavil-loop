@@ -75,4 +75,45 @@ if [ -n "$pending_prs" ]; then
     done <<< "$pending_prs"
 fi
 
+# ── 3. 自动 cleanup merged PRs ──
+# 配 AUTO_CLEANUP_ON_MERGE=false 可关闭整段
+if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
+    # Bootstrap：state.json 第一次出现这字段 = 把当前所有 merged PR 标已清，
+    # 避免历史 PR 被乱清
+    if [ "$(jq -r '.cleaned_prs // "MISSING"' "$STATE_FILE")" = "MISSING" ]; then
+        initial=$(gh pr list --repo "$REPO" --state merged --limit 200 \
+            --json number --jq '[.[].number]' 2>/dev/null || echo '[]')
+        [ -z "$initial" ] && initial='[]'
+        tmp=$(mktemp)
+        jq ".cleaned_prs = $initial" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+        log "auto-cleanup bootstrap: 标记 $(echo "$initial" | jq length) 个历史 merged PR 为已清"
+    fi
+
+    recent_merged=$(gh pr list --repo "$REPO" --state merged --limit 30 \
+        --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
+
+    if [ -n "$recent_merged" ]; then
+        while IFS=$'\t' read -r prnum branch; do
+            if jq -e ".cleaned_prs | index($prnum)" "$STATE_FILE" >/dev/null 2>&1; then
+                continue
+            fi
+            issue_n=$(branch_to_issue_num "$branch")
+            if [ -z "$issue_n" ]; then
+                log "auto-cleanup: PR #$prnum branch '$branch' 不符合 BRANCH_PREFIX，标记为已清不再扫"
+                tmp=$(mktemp)
+                jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+                continue
+            fi
+            log "auto-cleanup PR #$prnum (issue #$issue_n) → cleanup-issue.sh"
+            if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issue_n" --delete-branch 2>&1; then
+                tmp=$(mktemp)
+                jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+                log "  auto-cleanup PR #$prnum done"
+            else
+                log "  auto-cleanup PR #$prnum 失败（busy/dirty/hook 报错），下轮重试"
+            fi
+        done <<< "$recent_merged"
+    fi
+fi
+
 log "===== poll done ====="

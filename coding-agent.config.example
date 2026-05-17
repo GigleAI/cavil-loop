@@ -57,6 +57,12 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 # 而不是回退到 ~/.config/gh/ 默认账号（多账号场景常见坑）。
 WORKER_PASS_ENV="GH_TOKEN"
 
+# ── PR merge 后自动 cleanup ──
+# true = daemon 检测到新 merge 的 PR 后自动跑 cleanup-issue.sh（含 CLEANUP_HOOK）
+# false = 全手动；merge 完自己跑 cleanup-issue.sh
+# 自动 cleanup 安全策略：worker session 仍 busy 时拒绝清（下轮重试）
+AUTO_CLEANUP_ON_MERGE="true"
+
 # ── 验收完成后的项目级 cleanup hook ──
 # 当你跑 `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>` 验收清理时，本 hook 在
 # 通用清理（杀 session、删 worktree）之前先跑。可用来：
