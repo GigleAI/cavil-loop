@@ -24,9 +24,10 @@ fi
 
 log "===== poll start ====="
 
-# 计活的 worker（只匹配 ${TMUX_PREFIX}-${SESSION_NAME_PREFIX}<N>，不包括同前缀的别的 session）
-active_workers=$(tmux ls 2>/dev/null | grep -cE "^${TMUX_PREFIX}-${SESSION_NAME_PREFIX}[0-9]+:" || true)
-log "active workers: $active_workers (max=${MAX_CONCURRENT_WORKERS})"
+# 计活的 worker：只算 Claude 真正在 processing 的 session
+# （tmux footer 含 "esc to interrupt" = busy；idle/已完成/dead = 不算）
+active_workers=$(count_active_workers)
+log "active workers (busy): $active_workers (max=${MAX_CONCURRENT_WORKERS})"
 
 # ── 1. 新 issue 派工 ──
 new_issues=$(gh issue list --repo "$REPO" --state open --label "$LABEL_PENDING_AGENT" \
