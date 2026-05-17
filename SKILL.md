@@ -27,9 +27,9 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 2. 检查依赖：`git`、`gh`（已 `gh auth login`）、`tmux`、`jq`、`flock`、`systemctl`，以及 worker CLI（默认是 `claude`）都能 `command -v` 到
 3. 跑：
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/coding-agent-workflow}/setup.sh" <host-project-path>
+   bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/coding-agent-workflow}/setup.sh" <host-project-path>
    ```
-   `$CLAUDE_PLUGIN_ROOT` 是 Claude Code runtime 注入的 skill 根目录变量；其他 agent runtime 没有时回退到 `~/.claude/skills/coding-agent-workflow`（或你 fork 后实际 symlink 的位置）。
+   `$CLAUDE_PLUGIN_ROOT` 是 Claude Code runtime 注入的 skill 根目录变量；没有时回退到规范的 `~/.agents/skills/coding-agent-workflow`。
 4. setup.sh 跑完后会打印下一步指南，原文转给用户
 
 ### status

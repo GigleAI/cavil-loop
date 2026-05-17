@@ -12,8 +12,10 @@ Type=oneshot
 #   CODING_AGENT_CONFIG=...
 #   PATH=...
 EnvironmentFile=%h/.config/coding-agent-workflow/%i.conf
-WorkingDirectory=%h/.claude/skills/coding-agent-workflow
-ExecStart=/usr/bin/env bash %h/.claude/skills/coding-agent-workflow/scripts/agent-poll.sh
+# Skill 规范位置：~/.agents/skills/<name>/。各 agent runtime（如 Claude Code 的 ~/.claude/skills/）
+# 都建议 symlink 过来，单源真相在这里。
+WorkingDirectory=%h/.agents/skills/coding-agent-workflow
+ExecStart=/usr/bin/env bash %h/.agents/skills/coding-agent-workflow/scripts/agent-poll.sh
 
 [Install]
 WantedBy=default.target
