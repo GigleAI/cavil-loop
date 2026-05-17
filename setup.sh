@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 把 coding-agent-workflow daemon 接入一个 host project。
 #
-# 关键设计：本 skill **不复制脚本到 host project**。脚本永远住在
-# ~/.claude/skills/coding-agent-workflow/scripts/，host project 里只多两样东西：
+# 关键设计：本 skill **不复制脚本到 host project**。脚本永远住在 skill 目录
+# （`~/.claude/skills/coding-agent-workflow/`，推荐做成指向 `~/github/coding-agent-work-loop/`
+# 的 symlink）。host project 里只多两样东西：
 #   1. coding-agent.config       —— 本项目专属配置（gitignored）
 #   2. .gitignore 加一行排除上述 config
 #
