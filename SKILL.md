@@ -1,33 +1,35 @@
 ---
 name: coding-agent-workflow
-description: 用 GitHub label 驱动本机 Claude Code agent 处理 issue/PR，daemon 自动监听并派工。包含 setup（一次部署到某个项目）、status（查 daemon 状态）、disable（关闭某项目的 daemon）等命令
+description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动监听并派工。包含 setup（一次部署到某个项目）、status（查 daemon 状态）、disable（关闭某项目的 daemon）等命令
 ---
 
 # coding-agent-workflow
 
-把 GitHub issue / PR 评论变成你本机 Claude Code agent 的输入输出。一个 systemd timer + 几个 shell 脚本 + 两个 GitHub label，让你通过 GitHub 网页（或 iOS gh app）直接跟 agent 沟通。
+把 GitHub issue / PR 评论变成你本机 agent 的输入输出。一个 systemd timer + 几个 shell 脚本 + 两个 GitHub label，让你通过 GitHub 网页（或 iOS gh app）直接跟 agent 沟通。
+
+> 本 skill 设计上 agent-agnostic：daemon + dispatch 脚本是纯 shell + `gh` CLI，**任何能在 tmux 里被启动且接受 stdin prompt 的 agent CLI 都能当 worker**。当前 default worker 是 `claude` CLI（Claude Code），配置 `CLAUDE_EXTRA_FLAGS` 一行可换。
 
 ## 触发方式
 
-用户在 Claude Code 里输入 `/coding-agent-workflow <command>` 或自然语言要求时调用本 skill。常见请求：
+用户在调用本 skill 的 agent runtime 里输入 `/coding-agent-workflow <command>` 或自然语言要求时调用。常见请求：
 
 - 「帮我把这个 daemon 装到 X 项目」→ 调 `setup` 流程
 - 「coding agent 现在状态如何」→ 调 `status` 流程
 - 「关掉 X 项目的 coding agent」→ 调 `disable` 流程
 
-## 你（Claude）调用本 skill 时该做什么
+## 你（agent）调用本 skill 时该做什么
 
 ### setup（部署到一个 host project）
 
 用户给你一个 host project 路径（如 `~/github/myproject`）。你的步骤：
 
 1. 验证路径存在且是 git 仓库（`.git` 在）
-2. 检查依赖：`git`、`gh`（已 `gh auth login`）、`tmux`、`jq`、`flock`、`claude`、`systemctl` 都能 `command -v` 到
+2. 检查依赖：`git`、`gh`（已 `gh auth login`）、`tmux`、`jq`、`flock`、`systemctl`，以及 worker CLI（默认是 `claude`）都能 `command -v` 到
 3. 跑：
    ```bash
-   bash "$CLAUDE_PLUGIN_ROOT/setup.sh" <host-project-path>
+   bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/coding-agent-workflow}/setup.sh" <host-project-path>
    ```
-   `$CLAUDE_PLUGIN_ROOT` 是当前 skill 的目录（Claude Code 自动注入）。如果没有，回退到 `~/.claude/skills/coding-agent-workflow`。
+   `$CLAUDE_PLUGIN_ROOT` 是 Claude Code runtime 注入的 skill 根目录变量；其他 agent runtime 没有时回退到 `~/.claude/skills/coding-agent-workflow`（或你 fork 后实际 symlink 的位置）。
 4. setup.sh 跑完后会打印下一步指南，原文转给用户
 
 ### status
