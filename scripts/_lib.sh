@@ -97,6 +97,8 @@ count_active_workers() {
 # 构造 tmux new-session 的 -e 参数，把 WORKER_PASS_ENV 列的 env 透传给 worker。
 # tmux 默认不继承父 shell 的 env，必须显式 -e VAR=VALUE。
 # 默认透传 GH_TOKEN（让 worker 里的 gh CLI 用正确的 PAT，而不是 fallback 到 gh auth 默认账号）。
+# 列在 WORKER_PASS_ENV 但 env 里没设的变量，会 log warn（典型：手动跑 daemon 但
+# 没 export GH_TOKEN —— 否则 worker 静默走 gh 默认 token，导致多账号下 403）。
 tmux_env_args() {
     local vars="${WORKER_PASS_ENV:-GH_TOKEN}"
     for var in $vars; do
@@ -104,6 +106,10 @@ tmux_env_args() {
         eval "val=\${$var:-}"
         if [ -n "$val" ]; then
             printf -- '-e\0%s=%s\0' "$var" "$val"
+        else
+            # 写 stderr，agent-poll.sh 的 log 会捕获到
+            echo "[coding-agent] WARN: WORKER_PASS_ENV 含 '$var' 但当前 env 没设；worker 不会拿到它。" >&2
+            echo "[coding-agent]       手动跑 daemon 请先 export $var=...（systemd 路径自动从 EnvironmentFile 注入）" >&2
         fi
     done
 }
