@@ -59,7 +59,7 @@ SESSION_LOG_DIR="${SESSION_LOG_DIR-$STATE_DIR/sessions}"
 SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 log() {
-    echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE" >&2
+    echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
 }
 
 branch_to_issue_num() {
