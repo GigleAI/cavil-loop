@@ -40,6 +40,7 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${ISSUE_N}|$ISSUE_N|g" \
         -e "s|\${LABEL_PENDING_AGENT}|$LABEL_PENDING_AGENT|g" \
         -e "s|\${LABEL_PENDING_HUMAN}|$LABEL_PENDING_HUMAN|g" \
+        -e "s|\${LABEL_AGENT_DOING}|$LABEL_AGENT_DOING|g" \
         "$TEMPLATE" > "$PROMPT_FILE"
 else
     cat > "$PROMPT_FILE" <<EOF
@@ -63,8 +64,9 @@ inject_to_session() {
 }
 
 flip_label() {
+    # daemon dispatch 翻到 agent/doing；worker 完工时它自己翻成 pending/human
     gh pr edit "$PR" --repo "$REPO" \
-        --add-label "$LABEL_PENDING_HUMAN" \
+        --add-label "$LABEL_AGENT_DOING" \
         --remove-label "$LABEL_PENDING_AGENT" 2>/dev/null || true
 }
 

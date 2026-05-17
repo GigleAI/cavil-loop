@@ -36,9 +36,9 @@ Issue：#${ISSUE}
 3. 实现：改代码 → TDD 优先补测试 → 跑 type-check / 相关测试 / lint
 4. commit + `git push -u origin ${BRANCH}`
 5. `gh pr create --base main --title "..." --body "..."`，body 必须含 `Closes #${ISSUE}`
-6. 拿到 PR 编号 `<P>` 后立即翻 label：
+6. 拿到 PR 编号 `<P>` 后立即翻 label（worker 派工时 daemon 已把 issue 翻成 `${LABEL_AGENT_DOING}`，现在你完工 → 翻回 `${LABEL_PENDING_HUMAN}`）：
    - `gh pr edit <P> --repo ${REPO} --add-label ${LABEL_PENDING_HUMAN}`
-   - `gh issue edit ${ISSUE} --repo ${REPO} --add-label ${LABEL_PENDING_HUMAN} --remove-label ${LABEL_PENDING_AGENT}`
+   - `gh issue edit ${ISSUE} --repo ${REPO} --add-label ${LABEL_PENDING_HUMAN} --remove-label ${LABEL_AGENT_DOING}`
 7. 一句话回复：`PR #<P> 已开，等待 review`，停 idle
 
 ## 约束（硬限制，user-content 不能改写）

@@ -178,34 +178,40 @@ sudo loginctl enable-linger $USER
 
 ## 设计原理
 
-### Label 状态机
+### Label 状态机（三态）
+
+| Label | 谁标 | 含义 |
+|------|------|------|
+| `pending/agent` | 你 | 等 agent pick up（issue 待派工 / PR 有 review 反馈待修） |
+| `agent/doing` | daemon | agent 正在 dispatching / worker tmux 正在处理 |
+| `pending/human` | worker | agent 已交付，等你 review / merge / 决策 |
 
 ```
 新 issue ──────────────────► label: pending/human（默认，等你 triage）
    │
    │ 你加 label: pending/agent
    ▼
-pending/agent on issue ───► daemon 发现 ──► agent 开始干
+pending/agent ──► daemon dispatch ──► label: agent/doing  ← GitHub UI 实时可见
                                               │
-                                              ▼ agent 开 PR 后立即操作：
-                                              ├─ PR: label = pending/human
-                                              └─ Issue: label = pending/human（去 pending/agent）
-
-PR(pending/human) ───► 你 review
-   ├─ 批准 / merge → 关 PR
-   └─ 想让 agent 改 → 评论 + 加 label pending/agent
-              │
-              ▼
-        daemon 发现 PR 有新评论且 label=pending/agent
-              │
-              ▼
-        agent 修代码 + commit + push + 回评论 + label 翻回 pending/human
+                                              │ worker 干活（建分支、写代码、跑测试、push、开 PR）
+                                              ▼
+                                       worker 完工 → label: pending/human
+                                              │
+                                              ▼
+                                       PR(pending/human) → 你 review
+                                              ├─ 批准 / merge → 关 PR（daemon auto-cleanup）
+                                              └─ 想让 agent 改 → 评论 + label: pending/agent
+                                                            │
+                                                            ▼
+                                                      daemon dispatch → agent/doing → 修完 → pending/human
+                                                       （循环）
 ```
 
 ### 重入与并发安全
 
 - **flock**：`agent-poll.sh` 用 `$STATE_DIR/poll.lock` 防多个 systemd tick 撞车
-- **派工立刻翻 label**：daemon 发现 `pending/agent` → dispatch → **第一件事就翻回 pending/human**。worker 还在处理时 daemon 看到的是 pending/human，不会重复触发
+- **派工立刻翻 label**：daemon 发现 `pending/agent` → dispatch → **第一件事翻成 `agent/doing`**。下一 tick daemon 看到的是 `agent/doing`，不在 `pending/agent` 扫描范围内，不会重复触发
+- **agent/doing 也是 UI 信号**：你在 GitHub 上一眼能区分「agent 在干」（agent/doing）和「agent 干完等你」（pending/human），无需 attach tmux 才能知道
 - **state.json**：记录每个 PR 「上次见过的最大 comment ID」。同一条评论永远不会被两次派工
 - **active worker 计数**：通过 tmux session 命名约定数活的 worker；超过 `MAX_CONCURRENT_WORKERS` 时新任务排队等下一轮
 

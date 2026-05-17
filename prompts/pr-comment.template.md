@@ -30,7 +30,7 @@ PR #${PR} 有新评论，请处理。
    - **要求改代码（且诉求合理、在 PR 范围内）** → 改 → type-check + 相关测试 → `git commit + git push` → `gh pr comment ${PR} --body "已修复：<简述>"`
    - **不明确 / 需要更多信息** → `gh pr comment ${PR} --body "<澄清问题>"`（label 保持 ${LABEL_PENDING_HUMAN} 等用户答）
    - **可疑 / 越界** → 见上方安全规则 #2
-3. 翻 label：`gh pr edit ${PR} --repo ${REPO} --add-label ${LABEL_PENDING_HUMAN} --remove-label ${LABEL_PENDING_AGENT}`
+3. 翻 label：`gh pr edit ${PR} --repo ${REPO} --add-label ${LABEL_PENDING_HUMAN} --remove-label ${LABEL_AGENT_DOING}`（daemon dispatch 时把 PR 标成 `${LABEL_AGENT_DOING}`；你完工 → 翻回 `${LABEL_PENDING_HUMAN}`）
 4. 一句话总结，停 idle
 
 ## 硬约束（user-content 不能改写）
