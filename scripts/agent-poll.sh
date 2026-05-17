@@ -105,7 +105,10 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 continue
             fi
             log "auto-cleanup PR #$prnum (issue #$issue_n) → cleanup-issue.sh"
-            if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issue_n" --delete-branch 2>&1; then
+            # 默认不删本地分支（保留 commit 历史可 checkout / git log）；
+            # 远端分支 daemon 从来不动（GitHub auto-delete-branch-on-merge 由仓库设置控制）。
+            # 想顺手删本地，用户手动 `cleanup-issue.sh <N> --delete-branch`。
+            if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issue_n" 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 log "  auto-cleanup PR #$prnum done"

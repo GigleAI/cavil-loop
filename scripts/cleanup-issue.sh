@@ -11,6 +11,9 @@
 #   3. 杀 worker tmux session
 #   4. 删 worktree（除非 --keep-worktree）
 #   5. 可选删本地分支（REMOVE_BRANCH=1 或 --delete-branch）
+#
+# 注意：**绝不删除远端分支**。远端 feature/issue-<N> 保留供 git log / 复盘 / 重 checkout。
+# GitHub 的 auto-delete-branch-on-merge 由仓库 settings 控制，不归 daemon 管。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
