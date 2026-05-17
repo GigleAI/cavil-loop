@@ -11,7 +11,19 @@ BRANCH="${2:?need branch}"
 LATEST_COMMENT_ID="${3:-0}"
 
 ISSUE_N="$(branch_to_issue_num "$BRANCH")"
-[ -z "$ISSUE_N" ] && ISSUE_N="pr$PR"
+
+# Branch 不符合约定时（如旧仓库里 feature/getuser-to-getsession 这种非数字命名）
+# 无法 derive 出唯一 issue_n / 也无法另开 worktree（原 branch 通常已在别处被 checkout）。
+# 优雅退场：翻 label 回 pending/human + 0 退出，让 daemon 把 state 推进、不再重试。
+if [ -z "$ISSUE_N" ]; then
+    log "PR #$PR: branch '$BRANCH' 不符合 BRANCH_PREFIX '$BRANCH_PREFIX'，daemon 无法自动派工"
+    log "  → 翻 label 回 $LABEL_PENDING_HUMAN 防反复重试；手动处理或 rename 分支为 ${BRANCH_PREFIX}<N> 后再 label"
+    gh pr edit "$PR" --repo "$REPO" \
+        --add-label "$LABEL_PENDING_HUMAN" \
+        --remove-label "$LABEL_PENDING_AGENT" 2>/dev/null || \
+        log "  ⚠️ label 翻转失败（可能 token 权限不够）"
+    exit 0
+fi
 
 WORKTREE="$(worktree_path "$ISSUE_N")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE_N")"
