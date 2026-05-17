@@ -16,6 +16,11 @@ WORKTREE_BASE="$HOME/github/worktree/myproject"
 # daemon state 目录（state.json + 日志 + 锁）
 STATE_DIR="$HOME/.local/state/coding-agent-poll"
 
+# tmux pane 日志目录（每个 worker session 一份 append-only 日志，session 退出后仍可回看）
+# 默认：$STATE_DIR/sessions。显式置空 (SESSION_LOG_DIR="") 关闭该功能。
+# 查日志：scripts/session-log.sh <issue-N>  / -f 跟随  / -c cat
+# SESSION_LOG_DIR="$STATE_DIR/sessions"
+
 # ── 命名规范 ──
 # tmux session 命名前缀：tmux session = ${TMUX_PREFIX}-issue<N>
 # 例 myproject → tmux session "myproject-issue42"

@@ -50,6 +50,11 @@ source "$CONFIG_FILE"
 mkdir -p "$STATE_DIR"
 LOG_FILE="$STATE_DIR/poll.log"
 
+# Pane log 目录：tmux pipe-pane 把 worker session 的输出旁路到文件，
+# 这样 tmux session 退出后还能 cat / less 回看历史。
+# 默认 $STATE_DIR/sessions。在 coding-agent.config 里显式置空 (SESSION_LOG_DIR="") 即可关闭。
+SESSION_LOG_DIR="${SESSION_LOG_DIR-$STATE_DIR/sessions}"
+
 # Skill 目录（scripts/ 的父目录）。Claude Code 注入 $CLAUDE_PLUGIN_ROOT 时优先它。
 SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
@@ -96,6 +101,31 @@ worktree_path() {
 
 branch_name() {
     echo "${BRANCH_PREFIX}$1"
+}
+
+# 给一个 tmux session 名拼出对应的 pane log 路径。
+# SESSION_LOG_DIR 为空 → 返回空字符串，调用方据此跳过日志。
+session_log_path() {
+    local sess="$1"
+    [ -z "${SESSION_LOG_DIR:-}" ] && { echo ""; return; }
+    echo "$SESSION_LOG_DIR/${sess}.log"
+}
+
+# 在指定 tmux session 上开 pipe-pane，把 pane 输出 append 到日志文件。
+# 使用 `pipe-pane -o`：已有 pipe 时不动，幂等；session 退出时 cat 见 EOF 自然结束。
+# 调用方在 `tmux new-session -d` 之后（或重新注入之前）调用。
+start_session_logging() {
+    local sess="$1"
+    local log_path
+    log_path="$(session_log_path "$sess")"
+    [ -z "$log_path" ] && return 0
+    mkdir -p "$(dirname "$log_path")"
+    {
+        printf '\n===== %s session=%s opened =====\n' \
+            "$(date -Iseconds)" "$sess"
+    } >> "$log_path"
+    tmux pipe-pane -o -t "$sess" "cat >> '$log_path'" 2>/dev/null || \
+        log "  ⚠️ pipe-pane 失败：$sess → $log_path"
 }
 
 # Prompt 模板查找：先 host project 覆盖，再 skill 默认

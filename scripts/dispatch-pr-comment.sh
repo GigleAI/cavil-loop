@@ -59,6 +59,7 @@ flip_label() {
 # Case A: 现有 worker session
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     log "PR #$PR -> 注入 $TMUX_SESSION"
+    start_session_logging "$TMUX_SESSION"
     inject_to_session "$TMUX_SESSION"
     flip_label
     exit 0
@@ -70,6 +71,7 @@ if [ -d "$WORKTREE" ]; then
     mapfile -d '' -t tmux_env < <(tmux_env_args)
     tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
         "claude -n $CLAUDE_SESSION ${CLAUDE_EXTRA_FLAGS:-} \"\$(cat $PROMPT_FILE)\""
+    start_session_logging "$TMUX_SESSION"
     flip_label
     exit 0
 fi
@@ -95,6 +97,7 @@ done
 mapfile -d '' -t tmux_env < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
     "claude -n $CLAUDE_SESSION ${CLAUDE_EXTRA_FLAGS:-} \"\$(cat $PROMPT_FILE)\""
+start_session_logging "$TMUX_SESSION"
 
 flip_label
 log "dispatch-pr-comment done: PR #$PR fresh worktree + session"

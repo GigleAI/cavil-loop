@@ -50,6 +50,9 @@ mapfile -d '' -t tmux_env < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
     "claude -n $CLAUDE_SESSION ${CLAUDE_EXTRA_FLAGS:-} \"\$(cat $PROMPT_FILE)\""
 
+# 4.5 pane 输出旁路到日志文件，session 退出后仍可回看
+start_session_logging "$TMUX_SESSION"
+
 # 5. 立即翻 label
 gh issue edit "$ISSUE" --repo "$REPO" \
     --add-label "$LABEL_PENDING_HUMAN" \
