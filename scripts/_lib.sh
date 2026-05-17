@@ -160,15 +160,22 @@ start_session_logging() {
         log "  ⚠️ pipe-pane 失败：$sess → $log_path"
 }
 
-# Prompt 模板查找：先 host project 覆盖，再 skill 默认
+# Prompt 模板查找顺序：
+#   1. <project>/.agents/skills/coding-agent-workflow/prompts/<name>.template.md   ← 新规范（推荐）
+#   2. <project>/.coding-agent/prompts/<name>.template.md                          ← 旧路径（兼容）
+#   3. <skill-dir>/prompts/<name>.template.md                                      ← skill 默认
 find_prompt_template() {
     local name="$1"   # e.g. "new-issue" / "pr-comment"
-    local override="$PROJECT_ROOT/.coding-agent/prompts/${name}.template.md"
-    if [ -f "$override" ]; then
-        echo "$override"
-    elif [ -f "$SKILL_DIR/prompts/${name}.template.md" ]; then
-        echo "$SKILL_DIR/prompts/${name}.template.md"
-    else
-        echo ""
-    fi
+    local candidates=(
+        "$PROJECT_ROOT/.agents/skills/coding-agent-workflow/prompts/${name}.template.md"
+        "$PROJECT_ROOT/.coding-agent/prompts/${name}.template.md"
+        "$SKILL_DIR/prompts/${name}.template.md"
+    )
+    for c in "${candidates[@]}"; do
+        if [ -f "$c" ]; then
+            echo "$c"
+            return
+        fi
+    done
+    echo ""
 }

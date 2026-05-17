@@ -77,7 +77,8 @@ AUTO_CLEANUP_ON_MERGE="true"
 #
 # 相对路径会被解释为相对 PROJECT_ROOT。留空跳过。
 # Hook 拿到的 env: ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT
-# 例：CLEANUP_HOOK=".coding-agent/cleanup-hook.sh"
+# 推荐路径：CLEANUP_HOOK=".agents/skills/coding-agent-workflow/cleanup-hook.sh"
+#         （配合 Agent Skill 项目级目录约定；prompts 覆盖也放同目录下 prompts/）
 CLEANUP_HOOK=""
 
 # ── 并发上限 ──
