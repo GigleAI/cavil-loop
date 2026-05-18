@@ -178,14 +178,15 @@ sudo loginctl enable-linger $USER
 
 ## 设计原理
 
-### Label 状态机（四态）
+### Label 状态机（五态）
 
 | Label | 谁标 | 含义 |
 |------|------|------|
 | `pending/agent` | 你 | 等 agent pick up（issue 待派工 / PR 有 review 反馈待修） |
 | `agent/doing` | daemon | agent 正在 dispatching / worker tmux 正在处理 |
 | `pending/human` | worker | issue/PR 等你 review / merge / 决策 |
-| `pending/PR` | worker（开 PR 时） | issue 工作已转 PR 跟踪；不用再看 issue，去看 PR |
+| `pending/PR` | worker（开 PR 时） | issue 工作已转 PR 跟踪；去看 PR |
+| `Done` | daemon（auto-cleanup） | PR merged + cleanup 完成；issue/PR 真彻底结案 |
 
 ```
 新 issue ──────────────────► label: pending/human（默认，等你 triage）

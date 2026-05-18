@@ -49,6 +49,7 @@ source "$CONFIG_FILE"
 # 兼容老配置：未设时给默认值
 LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-agent/doing}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
+LABEL_DONE="${LABEL_DONE:-Done}"
 
 mkdir -p "$STATE_DIR"
 LOG_FILE="$STATE_DIR/poll.log"

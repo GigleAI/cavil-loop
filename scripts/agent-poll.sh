@@ -135,6 +135,20 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 tmp=$(mktemp)
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 log "  auto-cleanup PR #$prnum done"
+
+                # 给 PR + 关联 issue 加 Done label（表明真彻底结束），同时去掉残留的 pending/* 标签
+                gh pr edit "$prnum" --repo "$REPO" \
+                    --add-label "$LABEL_DONE" \
+                    --remove-label "$LABEL_PENDING_HUMAN" \
+                    --remove-label "$LABEL_PENDING_AGENT" \
+                    --remove-label "$LABEL_AGENT_DOING" 2>/dev/null || true
+                gh issue edit "$issue_n" --repo "$REPO" \
+                    --add-label "$LABEL_DONE" \
+                    --remove-label "$LABEL_PENDING_PR" \
+                    --remove-label "$LABEL_PENDING_HUMAN" \
+                    --remove-label "$LABEL_PENDING_AGENT" \
+                    --remove-label "$LABEL_AGENT_DOING" 2>/dev/null || true
+                log "  Done label 加到 PR #$prnum + issue #$issue_n"
             else
                 log "  auto-cleanup PR #$prnum 失败（busy/dirty/hook 报错），下轮重试"
             fi
