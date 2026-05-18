@@ -30,6 +30,7 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${LABEL_PENDING_HUMAN}|$LABEL_PENDING_HUMAN|g" \
         -e "s|\${LABEL_AGENT_DOING}|$LABEL_AGENT_DOING|g" \
         -e "s|\${LABEL_PENDING_PR}|$LABEL_PENDING_PR|g" \
+        -e "s|\${OUTPUT_LANGUAGE}|$OUTPUT_LANGUAGE|g" \
         "$TEMPLATE" > "$PROMPT_FILE"
 else
     cat > "$PROMPT_FILE" <<EOF

@@ -1,40 +1,72 @@
 # coding-agent workflow configuration
+# Copy to coding-agent.config and tweak. All scripts + systemd units source this file.
+# Required fields use ${VAR:?} in scripts for fail-fast (never silently skipped).
+#
 # 复制为 coding-agent.config 并按需修改。所有脚本 + systemd 单元都会 source 这个文件。
 # 必填项已用 ${VAR:?} 在脚本里 fail-fast，不会被 silently 跳过。
 
-# ── GitHub 仓库 ──
+# ── GitHub repo / GitHub 仓库 ──
+
+# Required. Format: owner/repo
 # 必填。格式：owner/repo
 REPO="myorg/myrepo"
 
-# ── 路径 ──
+# ── Paths / 路径 ──
+
+# Required. Host project worktree root (git repo root).
 # 必填。host project 工作树根（git 仓库根目录）
 PROJECT_ROOT="$HOME/github/myproject"
 
+# Worktree storage base (one subdir per issue).
 # worktree 存放基础目录（每个 issue 一个子目录）
 WORKTREE_BASE="$HOME/github/worktree/myproject"
 
+# Daemon state dir (state.json + logs + lock).
 # daemon state 目录（state.json + 日志 + 锁）
 STATE_DIR="$HOME/.local/state/coding-agent-poll"
 
+# Tmux pane log dir (one append-only log per worker session, survives session exit).
+# Default: $STATE_DIR/sessions. Set empty (SESSION_LOG_DIR="") to disable.
+# View: scripts/session-log.sh <issue-N>  / -f follow  / -c cat
+#
 # tmux pane 日志目录（每个 worker session 一份 append-only 日志，session 退出后仍可回看）
 # 默认：$STATE_DIR/sessions。显式置空 (SESSION_LOG_DIR="") 关闭该功能。
 # 查日志：scripts/session-log.sh <issue-N>  / -f 跟随  / -c cat
 # SESSION_LOG_DIR="$STATE_DIR/sessions"
 
-# ── 命名规范 ──
+# ── Naming / 命名规范 ──
+
+# Tmux session name prefix: tmux session = ${TMUX_PREFIX}-issue<N>
+# E.g. myproject → tmux session "myproject-issue42"
+#
 # tmux session 命名前缀：tmux session = ${TMUX_PREFIX}-issue<N>
 # 例 myproject → tmux session "myproject-issue42"
 TMUX_PREFIX="myproject"
 
+# Branch naming: ${BRANCH_PREFIX}<N>
+# E.g. "feature/issue-" → "feature/issue-42"
+#
 # Branch 命名：${BRANCH_PREFIX}<N>
 # 例 "feature/issue-" → "feature/issue-42"
 BRANCH_PREFIX="feature/issue-"
 
+# Claude Code session name (CLI -n flag): ${SESSION_NAME_PREFIX}<N>
+# E.g. "issue" → Claude session shown as "issue42"
+#
 # Claude Code session 名（CLI -n flag）：${SESSION_NAME_PREFIX}<N>
 # 例 "issue" → claude session shown as "issue42"
 SESSION_NAME_PREFIX="issue"
 
-# ── GitHub label ──
+# ── GitHub labels / GitHub label ──
+
+# Five states:
+#   pending/agent → set by you; agent will pick it up
+#   agent/doing   → set by daemon; dispatching / worker running
+#   pending/human → set by worker; awaits your review / decision
+#   pending/PR    → set by worker on issue when opening a PR; work moved to PR
+#   Done          → set by daemon's auto-cleanup; merge done = truly closed
+# Make sure the labels exist before changing names (setup.sh creates them).
+#
 # 五态：
 #   pending/agent → 用户标，等 agent pick up
 #   agent/doing   → daemon 标，正在 dispatching / worker 跑着
@@ -48,7 +80,26 @@ LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
 
-# ── Worker setup ──
+# ── Output language / 输出语言 ──
+
+# Language for everything the worker writes BACK TO GitHub: issue / PR comments,
+# design proposals, PR body. ISO 639-1 code (e.g. "en", "zh", "ja"). Default "en".
+# Code, commit messages, branch names stay in repo / English conventions either way.
+#
+# worker 写回 GitHub 的内容（issue / PR 评论、设计提案、PR body）用什么语言。
+# ISO 639-1 代码（如 "en"、"zh"、"ja"）。默认 "en"。
+# 代码、commit message、分支名仍按仓库 / 英文惯例，不受这个选项影响。
+OUTPUT_LANGUAGE="en"
+
+# ── Worker setup / Worker 安装 ──
+
+# Install / init command run after creating the worktree (one line; chain with &&).
+# Examples:
+#   Node:   "npm ci || npm install"
+#   uv:     "uv sync"
+#   Cargo:  "cargo fetch"
+#   none:   ":"
+#
 # worktree 创建后跑的安装/初始化命令（一行；可用 && 串接）
 # 例:
 #   Node:   "npm ci || npm install"
@@ -57,11 +108,22 @@ LABEL_DONE="Done"
 #   none:   ":"
 WORKTREE_SETUP_CMD="npm ci || npm install"
 
+# Gitignored files to copy into the worktree (space-separated relative paths).
+# Typical: .env / any locally-only config not in git.
+#
 # 在 worktree 里要 cp 进去的「gitignored」文件（空格分隔的相对路径）
 # 典型场景：.env / 任何 commit 不到 git 的本地配置文件
 COPY_TO_WORKTREE=".env"
 
-# ── Worker 身份（commit author / pusher 显示成谁）──
+# ── Worker identity / Worker 身份 (commit author / pusher 显示成谁) ──
+
+# Empty (default) = worktree uses your global ~/.gitconfig user.name/email (you).
+# To make worker commits/push appear as a separate bot account, set bot identity here:
+#   WORKTREE_GIT_USER_NAME="my-bot"
+#   WORKTREE_GIT_USER_EMAIL="<numeric-id>+my-bot@users.noreply.github.com"
+# Note: this only controls commit author. Push attribution depends on GH_TOKEN
+# (EnvironmentFile) + ~/.git-credentials routing — keep them consistent.
+#
 # 默认空 = worktree 用你 global ~/.gitconfig 的 user.name/email（也就是你自己）
 # 想让 worker 的 commit / push 显示为单独的 bot 账号，在这里写 bot 的身份：
 #   WORKTREE_GIT_USER_NAME="my-bot"
@@ -71,17 +133,41 @@ COPY_TO_WORKTREE=".env"
 WORKTREE_GIT_USER_NAME=""
 WORKTREE_GIT_USER_EMAIL=""
 
-# ── Claude Code 启动 ──
+# ── Claude Code launch / Claude Code 启动 ──
+
+# Extra flags when launching claude. --dangerously-skip-permissions strongly
+# recommended; otherwise the session blocks on permission prompts.
+#
 # 启动 claude 时的额外 flag。--dangerously-skip-permissions 强烈推荐，否则会卡权限弹窗。
 CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 
-# ── 传给 worker 的 env ──
+# ── Env passed to worker / 传给 worker 的 env ──
+
+# tmux doesn't inherit parent shell env by default; vars to pass must be listed
+# here (space-separated). GH_TOKEN strongly recommended so the worker's gh CLI
+# uses the PAT from systemd EnvironmentFile rather than falling back to
+# ~/.config/gh/'s default account (common multi-account pitfall).
+#
 # tmux 默认不继承父 shell 的 env，要透传必须列在这里（空格分隔）。
 # GH_TOKEN 强烈推荐：让 worker 里的 gh CLI 用 systemd EnvironmentFile 里的 PAT，
 # 而不是回退到 ~/.config/gh/ 默认账号（多账号场景常见坑）。
 WORKER_PASS_ENV="GH_TOKEN"
 
-# ── PR merge 后自动 cleanup ──
+# ── Auto-cleanup after PR merge / PR merge 后自动 cleanup ──
+
+# true  = daemon auto-runs cleanup-issue.sh on newly-merged PRs (incl. CLEANUP_HOOK)
+# false = fully manual; run cleanup-issue.sh yourself after merge
+# Safety: refuses to clean a busy worker session (retried next tick).
+#
+# Boundaries (important):
+#   Cleaned     → $WORKTREE_BASE/issue-N/, tmux session, CLEANUP_HOOK
+#                 (ports / tunnel / notifications)
+#   NOT cleaned → git branch, ~/.claude/projects/<encoded-cwd>/*.jsonl (Claude
+#                 conversation history), $STATE_DIR/sessions/*.log (tmux pane
+#                 log), $STATE_DIR/state.json, GitHub issue/PR/comments
+# So even with auto-cleanup on, you can look things up months later and resume
+# the conversation via the SOPs. Details: docs/persistence.md.
+#
 # true = daemon 检测到新 merge 的 PR 后自动跑 cleanup-issue.sh（含 CLEANUP_HOOK）
 # false = 全手动；merge 完自己跑 cleanup-issue.sh
 # 自动 cleanup 安全策略：worker session 仍 busy 时拒绝清（下轮重试）
@@ -95,7 +181,20 @@ WORKER_PASS_ENV="GH_TOKEN"
 # 详见 docs/persistence.md。
 AUTO_CLEANUP_ON_MERGE="true"
 
-# ── 验收完成后的项目级 cleanup hook ──
+# ── Post-acceptance project cleanup hook / 验收完成后的项目级 cleanup hook ──
+
+# When you run `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>`, this hook runs
+# BEFORE the generic cleanup (kill session, remove worktree). Use it to:
+#   - Close local ports / dev server occupied by this issue
+#   - Tear down tailscale serve / cloudflare tunnel routes
+#   - Push end-state metric / notify chat group
+#
+# Relative paths are interpreted relative to PROJECT_ROOT. Empty = skip.
+# Env available to the hook: ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT.
+# Recommended path: CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
+#                   (matches the Agent Skill project-level layout; prompt overrides
+#                    go under prompts/ in the same dir)
+#
 # 当你跑 `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>` 验收清理时，本 hook 在
 # 通用清理（杀 session、删 worktree）之前先跑。可用来：
 #   - 关该 issue 占用的本地端口 / dev server
@@ -108,10 +207,14 @@ AUTO_CLEANUP_ON_MERGE="true"
 #         （配合 Agent Skill 项目级目录约定；prompts 覆盖也放同目录下 prompts/）
 CLEANUP_HOOK=""
 
-# ── 并发上限 ──
+# ── Max concurrency / 并发上限 ──
+
+# Max live worker sessions at any time. 1 (serial) is the safest default.
 # 同一时刻最多多少个 worker session 同时存活。建议 1（串行最稳）。
 MAX_CONCURRENT_WORKERS=1
 
-# ── 轮询间隔 ──
+# ── Poll interval / 轮询间隔 ──
+
+# Daemon poll cycle (seconds). Used by the systemd timer.
 # Daemon 轮询周期（秒）。systemd timer 用这个值。
 POLL_INTERVAL_SECS=60

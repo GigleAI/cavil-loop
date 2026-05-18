@@ -84,6 +84,7 @@ Available placeholders (`sed`-rendered):
 | `${BRANCH}` | full branch name |
 | `${ISSUE_N}` | issue number derived from branch (pr-comment only) |
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label names |
+| `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `coding-agent.config`, default `en`) |
 
 ## File layout
 

@@ -50,6 +50,9 @@ source "$CONFIG_FILE"
 LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-agent/doing}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
+# Worker 写回 GitHub 的内容（issue / PR 评论、设计提案、PR body）用的语言。
+# ISO 639-1 code. Default "en"。代码 / commit / 分支名仍按仓库惯例，不受影响。
+OUTPUT_LANGUAGE="${OUTPUT_LANGUAGE:-en}"
 
 mkdir -p "$STATE_DIR"
 LOG_FILE="$STATE_DIR/poll.log"
