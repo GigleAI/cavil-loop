@@ -95,15 +95,22 @@ list_worker_sessions() {
     tmux ls 2>/dev/null | awk -F: -v p="^${TMUX_PREFIX}-${SESSION_NAME_PREFIX}[0-9]+\$" '$1 ~ p {print $1}'
 }
 
-# 数活的 worker：只算 Claude 真正在 processing 的 session，
-# 不算 idle（已完成 / 等用户反馈）的，也不算 dead 的。
+# 数活的 worker：用 GitHub 上 `agent/doing` 标签作真值——
+# daemon dispatch 时立刻贴上、worker 完工时翻成 pending/human，
+# 期间 label 没改 = 工作还在进行中。
+#
+# 老方案用 tmux capture-pane 找 "esc to interrupt" 字串判 busy，
+# 但该字串只在 Claude 正在 streaming token 那一瞬间出现——
+# worker 在等 permission 弹窗 / 读文件 / tool 调用间隙时都没了，
+# 导致 daemon 误以为 idle 又派下一个，破坏 MAX_CONCURRENT_WORKERS。
+# label 是 workflow 层意图的表达，远比 pane 内省可靠。
 count_active_workers() {
-    local n=0 sess
-    while IFS= read -r sess; do
-        [ -z "$sess" ] && continue
-        is_session_busy "$sess" && n=$((n + 1))
-    done < <(list_worker_sessions)
-    echo "$n"
+    local issues prs
+    issues=$(gh issue list --repo "$REPO" --state open --label "$LABEL_AGENT_DOING" \
+        --json number --jq 'length' 2>/dev/null || echo 0)
+    prs=$(gh pr list --repo "$REPO" --label "$LABEL_AGENT_DOING" \
+        --json number --jq 'length' 2>/dev/null || echo 0)
+    echo $((issues + prs))
 }
 
 # 构造 tmux new-session 的 -e 参数，把 WORKER_PASS_ENV 列的 env 透传给 worker。
