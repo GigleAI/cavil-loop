@@ -2,6 +2,8 @@
 
 > **English** · [中文](README.zh.md)
 
+**Async coding agents driven by GitHub labels — your AI works in parallel while you sleep.**
+
 > Turn "babysitting an AI step-by-step" into "wake up, review the PRs."
 
 ## What it solves
@@ -51,13 +53,23 @@ Full list of where each artifact lives, retention policy, and SOPs for finding t
 ### 1. Install (once)
 
 ```bash
+npx skills add luosky/coding-agent-work-loop
+```
+
+Powered by [skills.sh](https://www.skills.sh/docs/faq) — fetches this skill and registers it with your AI agent (Claude Code et al.). Run the same command again to upgrade.
+
+<details>
+<summary>Manual install (without npx)</summary>
+
+```bash
 git clone https://github.com/luosky/coding-agent-work-loop.git ~/github/coding-agent-work-loop
 mkdir -p ~/.agents/skills ~/.claude/skills
 ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
 ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop
 ```
 
-Code lives in `~/github/`; two symlinks let Claude Code find it. Future `git pull` is the upgrade path.
+Code lives in `~/github/`; two symlinks let Claude Code find it. Future upgrade: `cd ~/github/coding-agent-work-loop && git pull`.
+</details>
 
 ### 2. Connect a project
 

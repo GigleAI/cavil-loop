@@ -2,6 +2,8 @@
 
 > [English](README.md) · **中文**
 
+**用 GitHub 标签驱动的异步 coding agent——你睡觉时它在并行写代码。**
+
 > 把「陪 AI 一步步写代码」变成「睡一觉起来批 PR」的工具。
 
 ## 它解决什么
@@ -51,13 +53,23 @@
 ### 1. 安装（一次性）
 
 ```bash
+npx skills add luosky/coding-agent-work-loop
+```
+
+走 [skills.sh](https://www.skills.sh/docs/faq) ——自动拉取 skill 并注册到你的 AI agent（Claude Code 等）里。再跑同一条命令就是升级。
+
+<details>
+<summary>手动安装（不想用 npx 的话）</summary>
+
+```bash
 git clone https://github.com/luosky/coding-agent-work-loop.git ~/github/coding-agent-work-loop
 mkdir -p ~/.agents/skills ~/.claude/skills
 ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
 ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop
 ```
 
-把代码放 `~/github/`，再做两个软链让 Claude Code 能找到它。以后 `git pull` 就是升级。
+把代码放 `~/github/`，再做两个软链让 Claude Code 能找到它。以后升级：`cd ~/github/coding-agent-work-loop && git pull`。
+</details>
 
 ### 2. 接入一个项目
 
