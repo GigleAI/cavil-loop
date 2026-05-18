@@ -140,7 +140,7 @@ done
 echo
 echo "── 5. GitHub labels ──"
 repo=$(grep -E "^REPO=" "$config" | head -1 | sed 's/.*=//' | tr -d '"' | tr -d "'")
-for ld in "pending/agent|5539d3|等待 agent 处理" "agent/doing|0e8a16|agent 正在处理" "pending/human|4bc81f|等待人类处理"; do
+for ld in "pending/agent|5539d3|等待 agent 处理" "agent/doing|0e8a16|agent 正在处理" "pending/human|4bc81f|等待人类处理" "pending/PR|bfd4f2|工作已转 PR 跟踪"; do
     IFS='|' read -r name color desc <<< "$ld"
     if gh label create "$name" --color "$color" --description "$desc" --repo "$repo" 2>/dev/null; then
         echo "  ✓ 建 label: $name"

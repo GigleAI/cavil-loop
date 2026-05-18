@@ -35,14 +35,16 @@ BRANCH_PREFIX="feature/issue-"
 SESSION_NAME_PREFIX="issue"
 
 # ── GitHub label ──
-# 三态：
+# 四态：
 #   pending/agent → 用户标，等 agent pick up
 #   agent/doing   → daemon 标，正在 dispatching / worker 跑着
-#   pending/human → worker 标，做完等你 review
+#   pending/human → worker 标，issue/PR 等你 review 决策
+#   pending/PR    → worker 标 issue（开 PR 时），表示「工作转 PR 跟踪」
 # 改下面值前确保仓库已建对应 label（setup.sh 会自动建）
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_AGENT_DOING="agent/doing"
 LABEL_PENDING_HUMAN="pending/human"
+LABEL_PENDING_PR="pending/PR"
 
 # ── Worker setup ──
 # worktree 创建后跑的安装/初始化命令（一行；可用 && 串接）
