@@ -1,44 +1,39 @@
 # coding-agent-work-loop
 
-> **Agent Skill** — 把 GitHub issue / PR 评论变成你本机 Claude Code agent 的输入输出。
+> 一个 Agent Skill，把「陪 AI 一步步写」变成「睡一觉起来批 PR」。
 
-一个 systemd timer + 几个 shell 脚本 + 几个 GitHub label，让你直接通过 GitHub 网页（或手机 app）跟 agent 沟通：agent 自动建 worktree、写代码、commit/push、回评论。
+## 它解决什么
 
-**TL;DR**：在 GitHub PR 评论 → 60 秒内本机 Claude Code 自动读到、改代码、push、回复你。所有沟通在 PR 评论里留痕，吃 Pro/Max 月费套餐而非 API 计价。
+平时跟 AI 写代码是**串行**的：发 prompt → 等回复 → 看 → 反馈 → 等 → 看……一步都不能走开，一晚上做不完几个需求。
 
----
-
-## 它能做什么
+这个 skill 把循环挪到 GitHub，让你**并行**：
 
 ```
-你在 GitHub 网页 / iOS gh app 评论 PR
-   ↓ + 加 label "pending/agent"
-GitHub
-   ↓ (poll 每 60s)
-你本机 systemd timer
-   ↓
-agent-poll.sh
-   ↓ 发现 pending/agent + 有新评论
-本机 Claude Code（已开 worktree 的 tmux session）
-   ↓ 读评论 → 改代码 → 测试 → commit + push → 回复
-GitHub PR 评论流
-   ↑（label 翻回 "pending/human"）
-你
+睡前：批量开 10 个 issue，每个打 pending/agent label，关电脑去睡。
+睡醒：GitHub 上躺着 10 个 PR / 设计提案，你像 reviewer 一样挨个看，
+     OK 就 merge，想改就在 PR 评论里写反馈 + 重新打 label，
+     AI 自己再下一轮（你这边不用动）。
 ```
+
+你的角色从「陪 AI 对话的人」变成「批阅 AI 提的 PR 的人」。N 个需求并行跑，互不阻塞，进度通过 GitHub label 一眼看清。手机上的 gh app 一样能 review + 评论 + 打 label，通勤路上也能推进。
+
+## 工作机制
+
+本机一个 systemd timer 每 60 秒扫 GitHub，发现哪个 issue / PR 被你打了 `pending/agent`，就在本地 Claude Code 里建 worktree、起 tmux + claude session、读 issue / PR 评论、写代码、测试、commit + push、回评论，最后把 label 翻回 `pending/human` 等你。所有沟通在 GitHub 评论里留痕。
 
 两种触发场景：
 
 | 场景 | 触发 | Agent 做的事 |
 |------|------|---------|
-| 新需求 | 给 issue 加 `pending/agent` | 建 worktree + 分支，让 Claude Code 实现并开 PR |
+| 新需求 | 给 issue 加 `pending/agent` | 先发设计提案 comment（A/B/C 闭环选择）→ 你确认 → 建分支 → 实现 → 开 PR |
 | Review 反馈 | 给 PR 加 `pending/agent`（带评论） | 找到该 PR 的 worker session，注入「读最新评论后处理」prompt |
 
-完成判据：worker 处理完后把 label 翻回 `pending/human` → daemon 不会再触发。
+**便宜**：worker 走本机 `claude` CLI，吃你 Pro/Max 月费套餐，不烧 API token；空闲的 60s 轮询不调模型。
 
 ## 它**不**做什么
 
-- ❌ **不是云端 Action**：跑在你本机/NAS。用你的本地环境 + Claude Code Max 计划；但机器关机就停
-- ❌ **不替代代码 review**：agent 会改代码 + 自动 push。Review 仍是你的事。建议主分支保护 + required reviewer
+- ❌ **不是云端 Action**：跑在你本机 / NAS，用本地环境 + Claude Code Max 计划；机器关机就停
+- ❌ **不替代代码 review**：agent 会改代码 + 自动 push，review 仍是你的事。建议主分支保护 + required reviewer
 - ❌ **不自动 merge**：merge / 关 PR 永远是你手动操作
 
 ---
