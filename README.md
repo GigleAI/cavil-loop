@@ -188,7 +188,15 @@ sudo loginctl enable-linger $USER
 | `pending/PR` | worker（开 PR 时） | issue 工作已转 PR 跟踪；去看 PR |
 | `Done` | daemon（auto-cleanup） | **只标 PR**（PR merged = 真闭环）；**不标 issue**（issue 是长期 tracker，关闭权交给你） |
 
-**约定：worker 开 PR 时 body 用 `Refs #N` 而不是 `Closes #N`**——避免 PR merge 时 GitHub 自动关 issue。issue 是问题的长期 tracker；何时关由你判断（这次 PR 是否真闭环了那个问题？还是只是一次部分尝试？）。
+**关于 PR↔Issue 闭环关系：worker 在设计阶段就决定**
+
+| 场景 | PR body 用 | merge 时 issue 状态 | daemon auto-cleanup |
+|------|-------|------|------|
+| **A. 完整闭环**：一个 PR 全解决 issue | `Closes #N` | GitHub 自动关 | issue 加 Done（与 PR 同状态） |
+| **B. 部分实现**：多 PR 才完成 issue | `Refs #N` | 保持 open | issue 翻 `pending/human` 等你 triage |
+| **C. issue 太大**：建议拆 sub-issue | 不直接派工 | — | 你拆完每个 sub-issue 再单独 label |
+
+worker 在「设计提案」comment 里就会列出选 A/B/C 的判断，跟你讨论确认后才开干。所以 `Closes` 还是 `Refs` 是**设计阶段共识**，不是 worker 默认行为。
 
 ```
 新 issue ──────────────────► label: pending/human（默认，等你 triage）

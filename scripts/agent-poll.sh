@@ -143,14 +143,26 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                     --remove-label "$LABEL_PENDING_AGENT" \
                     --remove-label "$LABEL_AGENT_DOING" 2>/dev/null || true
 
-                # Issue：**不**加 Done（issue 是长期 tracker，是否真完结由你决定）。
-                # 仅把「正在转 PR 跟踪」改成「等你 triage 看 PR 是不是真把这事彻底搞定了」。
-                gh issue edit "$issue_n" --repo "$REPO" \
-                    --add-label "$LABEL_PENDING_HUMAN" \
-                    --remove-label "$LABEL_PENDING_PR" \
-                    --remove-label "$LABEL_PENDING_AGENT" \
-                    --remove-label "$LABEL_AGENT_DOING" 2>/dev/null || true
-                log "  PR #$prnum → Done；issue #$issue_n → pending/human（等你看 PR 是否真闭环）"
+                # Issue：看实际状态决定怎么标
+                # - CLOSED（PR body 是 Closes #N，GitHub auto-close）→ 加 Done（与 PR 同闭环）
+                # - OPEN（PR body 是 Refs #N，长期 tracker 模式）→ 翻 pending/human（等你 triage 是否真完结）
+                issue_state=$(gh issue view "$issue_n" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "OPEN")
+                if [ "$issue_state" = "CLOSED" ]; then
+                    gh issue edit "$issue_n" --repo "$REPO" \
+                        --add-label "$LABEL_DONE" \
+                        --remove-label "$LABEL_PENDING_PR" \
+                        --remove-label "$LABEL_PENDING_HUMAN" \
+                        --remove-label "$LABEL_PENDING_AGENT" \
+                        --remove-label "$LABEL_AGENT_DOING" 2>/dev/null || true
+                    log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
+                else
+                    gh issue edit "$issue_n" --repo "$REPO" \
+                        --add-label "$LABEL_PENDING_HUMAN" \
+                        --remove-label "$LABEL_PENDING_PR" \
+                        --remove-label "$LABEL_PENDING_AGENT" \
+                        --remove-label "$LABEL_AGENT_DOING" 2>/dev/null || true
+                    log "  PR #$prnum → Done；issue #$issue_n OPEN (Refs #N) → pending/human"
+                fi
             else
                 log "  auto-cleanup PR #$prnum 失败（busy/dirty/hook 报错），下轮重试"
             fi
