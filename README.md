@@ -2,7 +2,7 @@
 
 > **English** · [中文](README.zh.md)
 
-> Work with AI through GitHub issues and PRs — open issues and review PRs like you would with a real teammate.
+> Open issues in bulk, async-review the PRs — like working with a real teammate.
 >
 > Turn "babysitting AI step-by-step" into "wake up, review the PRs."
 

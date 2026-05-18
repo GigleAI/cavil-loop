@@ -2,7 +2,7 @@
 
 > [English](README.md) · **中文**
 
-> 用 GitHub issue 和 PR 跟 AI 协作——像对真人同事一样提需求、review PR。
+> 对 AI 批量提需求，异步 review PR，就像和真人同事一起工作一样。
 >
 > 把「陪 AI 一步步写代码」变成「睡一觉起来批 PR」。
 
