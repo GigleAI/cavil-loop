@@ -1,6 +1,6 @@
 ---
 name: coding-agent-work-loop
-description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动监听并派工。包含 setup（一次部署到某个项目）、status（查 daemon 状态）、disable（关闭某项目的 daemon）等命令
+description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动监听并派工。每个 issue 的设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史都按 issue 号归档，凭号码就能事后查阅、断点续写。包含 setup（一次部署到某个项目）、status（查 daemon 状态）、disable（关闭某项目的 daemon）等命令
 ---
 
 # coding-agent-work-loop

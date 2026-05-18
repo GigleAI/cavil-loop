@@ -266,7 +266,7 @@ bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -f     # 
 
 日志是 append-only，同一 issue 重起 session 会续写到同一份；每次启动会插一行 `===== <iso-date> session=... opened =====` 当分隔符。
 
-想让 Claude 本身续上对话（而不只是看历史），直接进到 worktree 里 `claude --resume`。
+想让 Claude 本身续上对话（而不只是看历史），或 worktree 已被 auto-cleanup 删掉想找回会话，见 [persistence.md → 断点续写 SOP](persistence.md#断点续写-sop)（列了 `--resume <id>` / `--from-pr <P>` / 重建 cwd / 直接读 jsonl 四条路径）。
 
 ### 紧急停所有 worker
 

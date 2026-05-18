@@ -30,6 +30,12 @@
 
 **便宜**：AI 是本机 `claude` 命令行，吃你 Pro/Max 月费套餐，不烧 API token；空闲的轮询只调 GitHub API，不调模型。
 
+## 按 issue 归类：事后随时找得到，断点随时能续上
+
+每个 issue 的产物——设计方案、代码、Claude 的完整对话（含思考过程和工具调用）、tmux 历史——都用 **issue 号**绑在一起。以后想接着续 #42 的活：进对应 worktree 跑 `claude --resume` 选会话，立刻接上当时的对话。不像跟 AI 单聊那样要在几百个无名 session 里翻名字。
+
+各类产物存哪、保留多久、断点恢复全 SOP，见 [docs/persistence.md](docs/persistence.md)。
+
 ## 它**不**做什么
 
 - ❌ **不是云端服务**：跑在你自己的电脑 / NAS。机器关机就停
@@ -111,6 +117,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 | 文档 | 内容 |
 |------|------|
 | [docs/architecture.md](docs/architecture.md) | 标签状态机的五种状态、PR↔Issue 闭环关系（A/B/C）、为什么这么设计 |
+| [docs/persistence.md](docs/persistence.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
 | [docs/operations.md](docs/operations.md) | 配置全字段、prompt 模板、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |
 
