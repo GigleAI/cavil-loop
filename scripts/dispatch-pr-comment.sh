@@ -80,12 +80,17 @@ if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     exit 0
 fi
 
-# Case B: worktree 还在，session 没了
+# Case B: worktree 还在，session 没了 → 重起（有历史就 resume）
 if [ -d "$WORKTREE" ]; then
-    log "PR #$PR -> 从 worktree 重起 session $TMUX_SESSION"
+    CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
+    if has_claude_session "$WORKTREE"; then
+        log "PR #$PR -> 在 $TMUX_SESSION 里 claude --continue 之前的会话"
+    else
+        log "PR #$PR -> 从 worktree 起全新 claude session $TMUX_SESSION（cwd 无历史）"
+    fi
     mapfile -d '' -t tmux_env < <(tmux_env_args)
     tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
-        "claude -n $CLAUDE_SESSION ${CLAUDE_EXTRA_FLAGS:-} \"\$(cat $PROMPT_FILE)\""
+        "$CLAUDE_INVOKE \"\$(cat $PROMPT_FILE)\""
     start_session_logging "$TMUX_SESSION"
     flip_label
     exit 0
@@ -109,9 +114,13 @@ done
 [ -n "${WORKTREE_SETUP_CMD:-}" ] && [ "${WORKTREE_SETUP_CMD}" != ":" ] && \
     (cd "$WORKTREE" && eval "$WORKTREE_SETUP_CMD") || true
 
+CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
+if has_claude_session "$WORKTREE"; then
+    log "PR #$PR -> 重建 worktree，但 ~/.claude 里还有该 cwd 的历史，claude --continue"
+fi
 mapfile -d '' -t tmux_env < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
-    "claude -n $CLAUDE_SESSION ${CLAUDE_EXTRA_FLAGS:-} \"\$(cat $PROMPT_FILE)\""
+    "$CLAUDE_INVOKE \"\$(cat $PROMPT_FILE)\""
 start_session_logging "$TMUX_SESSION"
 
 flip_label

@@ -66,12 +66,17 @@ if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     exit 0
 fi
 
-# Case B: worktree 还在，session 死了 → 重起 session
+# Case B: worktree 还在，session 死了 → 重起 session（有历史就 resume）
 if [ -d "$WORKTREE" ]; then
-    log "issue #$ISSUE -> 从 worktree 重起 session $TMUX_SESSION"
+    CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
+    if has_claude_session "$WORKTREE"; then
+        log "issue #$ISSUE -> 在 $TMUX_SESSION 里 claude --continue 之前的会话"
+    else
+        log "issue #$ISSUE -> 从 worktree 起全新 claude session $TMUX_SESSION（cwd 无历史）"
+    fi
     mapfile -d '' -t tmux_env < <(tmux_env_args)
     tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
-        "claude -n $CLAUDE_SESSION ${CLAUDE_EXTRA_FLAGS:-} \"\$(cat $PROMPT_FILE)\""
+        "$CLAUDE_INVOKE \"\$(cat $PROMPT_FILE)\""
     start_session_logging "$TMUX_SESSION" 2>/dev/null || true
     flip_label
     exit 0

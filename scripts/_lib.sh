@@ -164,6 +164,30 @@ start_session_logging() {
         log "  ⚠️ pipe-pane 失败：$sess → $log_path"
 }
 
+# 判断一个 cwd（一般是 worktree 路径）下有没有 Claude Code 历史会话。
+# Claude 把每个 project 的 session 存在 ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
+# 其中 encoded-cwd = 把绝对路径里的 '/' 全替换成 '-'。
+# 有历史就用 `claude --continue` resume；没历史就 `claude -n NAME` 全新起。
+has_claude_session() {
+    local cwd="$1"
+    local encoded
+    encoded="$(printf %s "$cwd" | tr / -)"
+    local dir="$HOME/.claude/projects/$encoded"
+    [ -d "$dir" ] && compgen -G "$dir/*.jsonl" > /dev/null 2>&1
+}
+
+# 构造 claude 启动命令：cwd 有历史 → `claude --continue`、没历史 → `claude -n NAME`。
+# 用法：CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
+claude_invoke() {
+    local cwd="$1"
+    local name="$2"
+    if has_claude_session "$cwd"; then
+        echo "claude --continue ${CLAUDE_EXTRA_FLAGS:-}"
+    else
+        echo "claude -n $name ${CLAUDE_EXTRA_FLAGS:-}"
+    fi
+}
+
 # Prompt 模板查找顺序：
 #   1. <project>/.agents/skills/coding-agent-work-loop/prompts/<name>.template.md   ← 新规范（推荐）
 #   2. <project>/.agents/skills/coding-agent-workflow/prompts/<name>.template.md    ← 旧目录名（兼容；老 worktree/分支）
