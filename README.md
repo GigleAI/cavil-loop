@@ -131,6 +131,7 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 | Doc | About |
 |-----|-------|
 | [docs/architecture.md](docs/architecture.md) | Five-state label machine, PR↔Issue closure relationship (A/B/C), why the design works this way |
+| [docs/collaboration.md](docs/collaboration.md) | Multi-human + multi-agent workflows: PM → Dev → QA handoff via label suffixes (`pending/agent/PM`, `pending/human/Alex`, …) |
 | [docs/persistence.md](docs/persistence.md) | Where design proposals / discussions / code / Claude conversations / tmux history live, how to look them up later, how to resume from a break point |
 | [docs/security.md](docs/security.md) | **Public-repo users must read.** Anonymous comments can contain prompt injection; how the defenses work |
 | [docs/operations.md](docs/operations.md) | Full config, prompt templates, multi-project, upgrades, macOS launchd, webhook trigger, swapping AI worker, troubleshooting |

@@ -131,6 +131,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 | 文档 | 内容 |
 |------|------|
 | [docs/architecture.md](docs/architecture.zh.md) | 标签状态机的五种状态、PR↔Issue 闭环关系（A/B/C）、为什么这么设计 |
+| [docs/collaboration.md](docs/collaboration.zh.md) | 多人 + 多 agent 协作：用 label 后缀（`pending/agent/PM`、`pending/human/Alex` …）走 PM → Dev → QA 接力 |
 | [docs/persistence.md](docs/persistence.zh.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.zh.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
 | [docs/operations.md](docs/operations.zh.md) | 配置全字段、prompt 模板、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |

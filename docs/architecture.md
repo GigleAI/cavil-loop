@@ -51,6 +51,8 @@ pending/agent ──► daemon dispatch ──► label: agent/doing   ← visib
                                           - Still partial → comment + label pending/agent for a fresh design / dev cycle
 ```
 
+> For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).
+
 ## Re-entry and concurrency safety
 
 - **flock**: `agent-poll.sh` uses `$STATE_DIR/poll.lock` to prevent simultaneous systemd ticks from colliding

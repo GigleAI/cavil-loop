@@ -40,6 +40,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   └── coding-agent-poll@.timer
 └── docs/
     ├── architecture.md / .zh.md   ← Five-state label machine + session model + design FAQ
+    ├── collaboration.md / .zh.md  ← Multi-human + multi-agent workflows via label suffixes
     ├── persistence.md / .zh.md    ← Where every artifact lives + retention + resume SOPs
     ├── security.md / .zh.md       ← Security model + label discipline
     └── operations.md / .zh.md     ← Config / file layout / schedulers / troubleshooting / uninstall

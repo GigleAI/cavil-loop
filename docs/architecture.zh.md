@@ -51,6 +51,8 @@ pending/agent ──► daemon dispatch ──► label: agent/doing  ← GitHub
                                           - 还差点 → 评论 + 标 pending/agent，进新一轮设计或开发
 ```
 
+> 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。
+
 ## 重入与并发安全
 
 - **flock**：`agent-poll.sh` 用 `$STATE_DIR/poll.lock` 防多个 systemd tick 撞车
