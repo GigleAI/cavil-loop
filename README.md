@@ -30,6 +30,22 @@
 
 **便宜**：AI 是本机 `claude` 命令行，吃你 Pro/Max 月费套餐，不烧 API token；空闲的轮询只调 GitHub API，不调模型。
 
+## 不丢档：事后都能翻，断点都能续
+
+每一次跑产出的东西分散在 **GitHub + git + 本机磁盘**，**没有一处会被工具自动抹掉**：
+
+| 想找什么 | 在哪 |
+|---------|-----|
+| 当时的设计方案、讨论、最终结论 | GitHub issue + PR comment thread |
+| 中间 commit、最终 diff | git branch `feature/issue-N` + reflog |
+| Claude 怎么一步步推导的（终端版） | `bash scripts/session-log.sh <N> -c` |
+| Claude 怎么一步步推导的（对话版） | `~/.claude/projects/<encoded-cwd>/*.jsonl` |
+| 想接着续上对话 | 进 worktree `claude --resume`，或 `claude --from-pr <P>` |
+
+PR merge 后默认会 `auto-cleanup` 清掉 worktree + tmux session，但 **git branch、Claude 对话历史、tmux pane log 都不动**——半年后回头看「当时为什么这样做」、想从那个会话接着续，都能。
+
+边界、各 SOP 详见 [docs/persistence.md](docs/persistence.md)。
+
 ## 它**不**做什么
 
 - ❌ **不是云端服务**：跑在你自己的电脑 / NAS。机器关机就停
@@ -111,6 +127,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 | 文档 | 内容 |
 |------|------|
 | [docs/architecture.md](docs/architecture.md) | 标签状态机的五种状态、PR↔Issue 闭环关系（A/B/C）、为什么这么设计 |
+| [docs/persistence.md](docs/persistence.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
 | [docs/operations.md](docs/operations.md) | 配置全字段、prompt 模板、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |
 

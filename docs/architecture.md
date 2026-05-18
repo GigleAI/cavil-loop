@@ -65,6 +65,8 @@ pending/agent ──► daemon dispatch ──► label: agent/doing  ← GitHub
 - Session 没了（worktree 被清掉）→ 自动从 PR head branch 重建 worktree + spawn 新 session
 - **Pane 日志持久化**：每个 worker session 起来后，dispatch 脚本立刻挂 `tmux pipe-pane` 把输出 append 到 `$SESSION_LOG_DIR/<tmux-session>.log`（默认 `$STATE_DIR/sessions/`）。tmux session 退出后该文件仍在，可以 `cat` / `less` 回看
 
+> 全资产存哪 / 怎么事后查阅 / 怎么断点续写，见 [persistence.md](persistence.md)。
+
 ## 设计选择 FAQ
 
 ### 为什么用 git worktree

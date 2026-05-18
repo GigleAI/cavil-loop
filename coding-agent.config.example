@@ -85,6 +85,14 @@ WORKER_PASS_ENV="GH_TOKEN"
 # true = daemon 检测到新 merge 的 PR 后自动跑 cleanup-issue.sh（含 CLEANUP_HOOK）
 # false = 全手动；merge 完自己跑 cleanup-issue.sh
 # 自动 cleanup 安全策略：worker session 仍 busy 时拒绝清（下轮重试）
+#
+# 边界（重要）：
+#   会清 → $WORKTREE_BASE/issue-N/、tmux session、CLEANUP_HOOK 钩子（端口/tunnel/通知）
+#   不清 → git branch、~/.claude/projects/<encoded-cwd>/*.jsonl（Claude 对话历史）、
+#          $STATE_DIR/sessions/*.log（tmux pane log）、$STATE_DIR/state.json、
+#          GitHub issue/PR/comment
+# 所以即使开着自动 cleanup，半年后仍能事后查阅、按 SOP 续上对话。
+# 详见 docs/persistence.md。
 AUTO_CLEANUP_ON_MERGE="true"
 
 # ── 验收完成后的项目级 cleanup hook ──
