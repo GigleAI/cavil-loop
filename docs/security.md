@@ -47,7 +47,7 @@ body → 内嵌的 `[SYSTEM]` 段尝试劫持 Claude。Claude 通常能识破（
 ## 什么**不会**触发 daemon（哪怕 label 没翻、有匿名评论）
 
 容易担心：PR merge 完忘记把 `pending/agent` 翻成 `pending/human`，attacker 跑去
-那个已 merge 的 PR 下塞个评论——会触发 worker 吗？**不会**，daemon 默认就过滤了：
+那个已 merged 的 PR 下塞个评论——会触发 worker 吗？**不会**，daemon 默认就过滤了：
 
 | daemon 哪条查询 | gh 查询 | 状态过滤 | 影响 |
 |-----------------|---------|----------|------|
@@ -55,8 +55,8 @@ body → 内嵌的 `[SYSTEM]` 段尝试劫持 Claude。Claude 通常能识破（
 | PR 评论派工 | `gh pr list --label ...` | 默认 open | merged/closed PR 永远不入扫描 |
 | Auto-cleanup | `gh pr list --state merged` | 显式 merged | 只为 cleanup，**不读 user content** |
 
-`cleanup-issue.sh` 的执行路径里**没有任何 `gh ... view --comments` / LLM 调用**——
-只做：busy 检查 → `CLEANUP_HOOK`（你写的脚本，比如解 tailscale）→ 杀 tmux →
+`cleanup.py` 的执行路径里**没有任何 `gh ... view --comments` / LLM 调用**——
+只做：busy 检查 → `CLEANUP_HOOK`（你写的脚本，比如解 tailscale）→ 停 worker session →
 删 worktree → 可选删本地分支。匿名评论塞在那的 prompt injection 进不了任何
 推理上下文。
 

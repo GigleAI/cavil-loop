@@ -6,17 +6,17 @@
 
 ## 适合提的 PR
 
-- **Bug 修复**：脚本逻辑错、文档错字、配置示例过时
-- **新调度器支持**：cron / launchd 之外的（如 nix systemd / runit）
+- **Bug 修复**：模块逻辑错、文档错字、配置示例过时
+- **新 Worker 适配**：实现 `WorkerBase` 子类对接新的 AI coding 工具（参考 `coding_agent/worker/claude.py` 和 `coding_agent/worker/opencode.py`）
 - **Prompt 改进**：让 worker 在某场景更稳 / 更省 token
-- **跨平台兼容**：BSD coreutils 适配、macOS 路径处理
+- **跨平台兼容**：Windows 路径处理、非 POSIX 环境适配
 - **新 GitHub event 监听**：例如订阅 review request、check failure
 - **文档补充 + 译文**：尤其欢迎补「我踩过的坑」类经验
 
 ## 不太适合的 PR
 
 - 不写动机的大重构（先开 issue 讨论方案再动手）
-- 引入新运行时依赖但没说明为什么必须（每多一个依赖就多一份装机成本）
+- 引入第三方 pip 依赖（本项目坚持零依赖、纯 stdlib；如确实需要请先在 issue 论证）
 - 破坏现有 `prompts/*.template.md` 占位兼容性（已有部署的 host project 会断）
 - 加复杂抽象层但只支持一个用例（待 N≥3 再抽象）
 
@@ -28,16 +28,16 @@
 3. **PR Title**：用 conventional commits 风格
    ```
    feat(poll): 加 review request 监听
-   fix(dispatch): worktree 路径含空格时引号丢失
+   fix(dispatch): worktree 路径含空格时路径拼接错误
    docs(security): 补 fine-grained PAT 限制说明
    ```
 4. **PR Body** 至少含：
    - **动机**：解决什么 / 修什么。链上相关 issue 用 `Closes #N` / `Refs #N`
    - **改动**：1-2 段或 bullet 列表，不要让 reviewer 自己读 diff 找
-   - **验证**：你自己怎么试过的（跑了哪条命令 / 在哪个项目接入跑过 / 改了哪个 prompt 后用什么场景验证）
-   - **影响面**：如果改了 `coding-agent.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口
-5. **保持小**：一个 PR 一个焦点。改 daemon + 顺手重命名 + 加新功能塞一个 PR 里基本会被要求拆
-6. **Style**：跟现有代码风格走（shell `set -euo pipefail` + `log()` helper + 用 `_lib.sh` 里的函数；markdown 用现有中文/英文混排习惯）
+   - **验证**：你自己怎么试过的（`uv run pytest` / `uv run ruff check` / `uv run coding-agent poll` 跑过 / 在哪个项目接入跑过 / 改了哪个 prompt 后用什么场景验证）
+   - **影响面**：如果改了 `coding-agent.config.example` / `prompts/*.template.md` / `state.json` schema，明说——这些是有兼容性约束的接口
+5. **保持小**：一个 PR 一个焦点。改 poll 逻辑 + 顺手重命名 + 加新功能塞一个 PR 里基本会被要求拆
+6. **Style**：跟现有代码风格走——Python 用 type hints + `dataclass` / `ABC` + `from __future__ import annotations`；日志走 `log_util.setup_logger()`；配置走 `Config` 类；新 Worker 继承 `WorkerBase` 并用 `@register_worker` 注册；lint 用 `ruff`；markdown 用现有中文/英文混排习惯
 
 ## Review 时记得点 Submit
 

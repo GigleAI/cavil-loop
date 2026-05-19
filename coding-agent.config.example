@@ -1,6 +1,6 @@
 # coding-agent workflow configuration
-# 复制为 coding-agent.config 并按需修改。所有脚本 + systemd 单元都会 source 这个文件。
-# 必填项已用 ${VAR:?} 在脚本里 fail-fast，不会被 silently 跳过。
+# 复制为 coding-agent.config 并按需修改。Python daemon 和 CLI 会读取这个文件。
+# 必填项在 config.py 里 fail-fast，不会被 silently 跳过。
 
 # ── GitHub 仓库 ──
 # 必填。格式：owner/repo
@@ -16,21 +16,21 @@ WORKTREE_BASE="$HOME/github/worktree/myproject"
 # daemon state 目录（state.json + 日志 + 锁）
 STATE_DIR="$HOME/.local/state/coding-agent-poll"
 
-# tmux pane 日志目录（每个 worker session 一份 append-only 日志，session 退出后仍可回看）
+# worker session 日志目录（每份 append-only 日志，session 退出后仍可回看）
 # 默认：$STATE_DIR/sessions。显式置空 (SESSION_LOG_DIR="") 关闭该功能。
-# 查日志：scripts/session-log.sh <issue-N>  / -f 跟随  / -c cat
+# 查日志：coding-agent logs <issue-N>  / -f 跟随
 # SESSION_LOG_DIR="$STATE_DIR/sessions"
 
 # ── 命名规范 ──
-# tmux session 命名前缀：tmux session = ${TMUX_PREFIX}-issue<N>
-# 例 myproject → tmux session "myproject-issue42"
+# 项目前缀（用于日志和兼容命名）
+# 例 myproject → 日志前缀 [myproject]
 TMUX_PREFIX="myproject"
 
 # Branch 命名：${BRANCH_PREFIX}<N>
 # 例 "feature/issue-" → "feature/issue-42"
 BRANCH_PREFIX="feature/issue-"
 
-# Claude Code session 名（CLI -n flag）：${SESSION_NAME_PREFIX}<N>
+# Worker session 名：${SESSION_NAME_PREFIX}<N>
 # 例 "issue" → claude session shown as "issue42"
 SESSION_NAME_PREFIX="issue"
 
@@ -41,12 +41,23 @@ SESSION_NAME_PREFIX="issue"
 #   pending/human → worker 标，issue/PR 等你 review 决策
 #   pending/PR    → worker 标 issue（开 PR 时），表示「工作转 PR 跟踪」
 #   Done          → daemon auto-cleanup 标，merge 完成 = 真彻底结束
-# 改下面值前确保仓库已建对应 label（setup.sh 会自动建）
+# 改下面值前确保仓库已建对应 label（coding-agent setup 会自动建）
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_AGENT_DOING="agent/doing"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
+
+# ── Git 平台 ──
+# 可选：github | gitlab
+# 不填则自动检测（看 git remote URL 含 github.com 还是 gitlab）
+# 企业内部 GitLab 无法自动检测时必须手动配置
+PLATFORM="github"
+
+# ── Worker 选择 ──
+# 可选：claude | opencode | 其他已注册的 worker
+# 优先级：--worker CLI 参数 > 本配置 > 默认 claude
+WORKER="claude"
 
 # ── Worker setup ──
 # worktree 创建后跑的安装/初始化命令（一行；可用 && 串接）
@@ -66,7 +77,7 @@ COPY_TO_WORKTREE=".env"
 # 想让 worker 的 commit / push 显示为单独的 bot 账号，在这里写 bot 的身份：
 #   WORKTREE_GIT_USER_NAME="my-bot"
 #   WORKTREE_GIT_USER_EMAIL="<numeric-id>+my-bot@users.noreply.github.com"
-# 注意：这只控制 commit author。push 用谁的 token 还看 GH_TOKEN (EnvironmentFile) +
+# 注意：这只控制 commit author。push 用谁的 token 还看 GH_TOKEN +
 # ~/.git-credentials 的路径路由，要一致设置才能 attribution 干净。
 WORKTREE_GIT_USER_NAME=""
 WORKTREE_GIT_USER_EMAIL=""
@@ -75,21 +86,28 @@ WORKTREE_GIT_USER_EMAIL=""
 # 启动 claude 时的额外 flag。--dangerously-skip-permissions 强烈推荐，否则会卡权限弹窗。
 CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 
+# ── OpenCode 启动 ──
+# 启动 opencode 时的额外 flag。
+OPENCODE_EXTRA_FLAGS=""
+
+# OpenCode serve 服务地址（opencode worker 通过 HTTP API 交互）
+OPENCODE_SERVER_URL="http://127.0.0.1:4096"
+
 # ── 传给 worker 的 env ──
-# tmux 默认不继承父 shell 的 env，要透传必须列在这里（空格分隔）。
-# GH_TOKEN 强烈推荐：让 worker 里的 gh CLI 用 systemd EnvironmentFile 里的 PAT，
+# 列出要透传给 worker 进程的环境变量名（空格分隔）。
+# GH_TOKEN 强烈推荐：让 worker 里的 gh CLI 用正确的 PAT，
 # 而不是回退到 ~/.config/gh/ 默认账号（多账号场景常见坑）。
 WORKER_PASS_ENV="GH_TOKEN"
 
 # ── PR merge 后自动 cleanup ──
-# true = daemon 检测到新 merge 的 PR 后自动跑 cleanup-issue.sh（含 CLEANUP_HOOK）
-# false = 全手动；merge 完自己跑 cleanup-issue.sh
+# true = daemon 检测到新 merge 的 PR 后自动跑 cleanup（含 CLEANUP_HOOK）
+# false = 全手动；merge 完自己跑 coding-agent cleanup <N>
 # 自动 cleanup 安全策略：worker session 仍 busy 时拒绝清（下轮重试）
 AUTO_CLEANUP_ON_MERGE="true"
 
 # ── 验收完成后的项目级 cleanup hook ──
-# 当你跑 `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>` 验收清理时，本 hook 在
-# 通用清理（杀 session、删 worktree）之前先跑。可用来：
+# 当你跑 `coding-agent cleanup <N>` 验收清理时，本 hook 在
+# 通用清理（停 session、删 worktree）之前先跑。可用来：
 #   - 关该 issue 占用的本地端口 / dev server
 #   - 撤销 tailscale serve / cloudflare tunnel 路由
 #   - 推送结束态 metric / 通知群组
@@ -105,5 +123,5 @@ CLEANUP_HOOK=""
 MAX_CONCURRENT_WORKERS=1
 
 # ── 轮询间隔 ──
-# Daemon 轮询周期（秒）。systemd timer 用这个值。
+# Daemon 轮询周期（秒）。
 POLL_INTERVAL_SECS=60

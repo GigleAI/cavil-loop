@@ -11,12 +11,12 @@ REPO="myorg/myrepo"
 # 路径
 PROJECT_ROOT="$HOME/github/myproject"
 WORKTREE_BASE="$HOME/github/worktree/myproject"
-STATE_DIR="$HOME/.local/state/coding-agent-poll/myproject"
+STATE_DIR="$HOME/.local/state/coding-agent-poll"
 
 # 命名规范
-TMUX_PREFIX="myproject"          # tmux session: myproject-issue42
+TMUX_PREFIX="myproject"          # 日志前缀 + 兼容命名（不再创建 tmux session）
 BRANCH_PREFIX="feature/issue-"   # branch: feature/issue-42
-SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
+SESSION_NAME_PREFIX="issue"      # worker session name: issue42
 
 # Label
 LABEL_PENDING_AGENT="pending/agent"
@@ -24,6 +24,9 @@ LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="agent/doing"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
+
+# Worker 选择
+WORKER="claude"                  # 可选：claude | opencode
 
 # 安装命令（worktree 创建后跑）
 WORKTREE_SETUP_CMD="npm ci || npm install"
@@ -44,10 +47,16 @@ WORKTREE_GIT_USER_EMAIL=""
 # Claude Code 启动 flag
 CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 
-# 传给 worker 的 env（tmux 默认不继承）
+# OpenCode 启动 flag
+OPENCODE_EXTRA_FLAGS=""
+
+# OpenCode serve 服务地址
+OPENCODE_SERVER_URL="http://127.0.0.1:4096"
+
+# 传给 worker 的 env
 WORKER_PASS_ENV="GH_TOKEN"
 
-# Merge 后 daemon 自动 cleanup（worktree + tmux）
+# Merge 后 daemon 自动 cleanup（worktree + session）
 AUTO_CLEANUP_ON_MERGE="true"
 
 # 项目级 cleanup hook（解端口、撤 tunnel、推 metric）
@@ -70,7 +79,7 @@ POLL_INTERVAL_SECS=60
 
 例如某项目要求 worker 跑 `npm run test:e2e`、某项目要 `cargo test`，各放一份覆盖。
 
-可用占位（`sed` 渲染）：
+可用占位（`prompt.py:render_template()` 用 `str.replace` 渲染）：
 
 | 占位 | 含义 |
 |------|------|
@@ -85,21 +94,44 @@ POLL_INTERVAL_SECS=60
 
 ## 文件结构
 
-### Skill 目录（推荐 symlink 链路）
+### Python 包结构
 
 ```
-~/github/coding-agent-work-loop/        # 实际项目仓库
-├── SKILL.md
+coding-agent-work-loop/                 # 实际项目仓库
 ├── README.md
-├── docs/                               # 详细文档
-├── setup.sh
-├── coding-agent.config.example
-├── scripts/
+├── AGENTS.md
+├── SKILL.md
+├── CONTRIBUTING.md
+├── LICENSE
+├── pyproject.toml                      # 包元数据 + ruff/pytest 配置
+├── coding-agent.config.example         # 配置模板
+├── coding_agent/                       ← Python 3.11+ 包
+│   ├── __init__.py                     ← 版本号
+│   ├── __main__.py                     ← python -m coding_agent 入口
+│   ├── cli.py                          ← argparse CLI
+│   ├── config.py                       ← Config 类
+│   ├── state.py                        ← State 类 + 文件锁
+│   ├── log_util.py                     ← Logger
+│   ├── poll.py                         ← 主轮询逻辑 + daemon 循环
+│   ├── dispatch.py                     ← 派工逻辑
+│   ├── gh_utils.py                     ← gh CLI 封装
+│   ├── git_ops.py                      ← git 操作
+│   ├── prompt.py                       ← 模板查找 + 渲染
+│   ├── cleanup.py                      ← merge 后清理
+│   ├── seed.py                         ← 首装时 seed state.json
+│   ├── setup_cmd.py                    ← setup 子命令
+│   └── worker/                         ← Worker 抽象层
+│       ├── __init__.py                 ← WorkerBase ABC + 注册表
+│       ├── claude.py                   ← ClaudeWorker
+│       └── opencode.py                 ← OpencodeWorker
 ├── prompts/
-└── systemd/
-
-~/.agents/skills/coding-agent-work-loop  -> ~/github/coding-agent-work-loop
-~/.claude/skills/coding-agent-work-loop  -> ~/.agents/skills/coding-agent-work-loop
+│   ├── new-issue.template.md
+│   ├── issue-comment.template.md
+│   └── pr-comment.template.md
+└── docs/
+    ├── architecture.md
+    ├── security.md
+    └── operations.md                   ← 本文件
 ```
 
 ### Host project（接入后）
@@ -117,88 +149,63 @@ your-project/
 ### 用户级状态文件
 
 ```
-~/.config/coding-agent-work-loop/
-└── <project-key>.conf                  # systemd EnvironmentFile
-
-~/.config/systemd/user/
-├── coding-agent-poll@.service          # symlink → skill 目录的模板
-└── coding-agent-poll@.timer            # symlink → skill 目录的模板
-
 ~/.local/state/coding-agent-poll/<project>/
-├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
-├── poll.log                            # 滚动日志
-├── poll.lock                           # flock
-└── sessions/                           # 每个 worker tmux session 的 pane 日志
-    └── <project>-issue<N>.log
+├── state.json                          # { "seen_comments": ..., "cleaned_prs": ..., "sessions": ... }
+├── poll.log                            # 滚动日志（log_util append）
+├── poll.lock                           # 文件锁（state.py:acquire_lock）
+└── sessions/                           # 每个 worker session 的持久化日志
+    └── <session-name>.log
 ```
 
 ## 多 project 共存
 
-skill 装一次，systemd 模板 symlink 一次。每个 project 跑：
+一个 Python 包装一次，每个 project 配一个 `coding-agent.config`。可以开多个 daemon 实例：
 
 ```bash
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectA
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectB
+cd ~/github/projectA && coding-agent daemon &
+cd ~/github/projectB && coding-agent daemon &
 ```
 
-得到：
+各 project 的 `STATE_DIR` 不同，互不干扰、独立日志、独立 state。
 
-```
-~/.config/coding-agent-work-loop/
-├── projectA.conf
-└── projectB.conf
+## 升级
 
-systemctl --user list-timers
-  coding-agent-poll@projectA.timer
-  coding-agent-poll@projectB.timer
-```
-
-互不干扰、独立日志、独立 state。
-
-## Skill 升级
-
-推荐流程（项目 clone 在 `~/github/coding-agent-work-loop`，symlink 进 skill 目录）：
+推荐流程（项目 clone 在 `~/github/coding-agent-work-loop`）：
 
 ```bash
 cd ~/github/coding-agent-work-loop
 git pull
+uv pip install -e .                     # 或 uv tool install . --force
 ```
 
-systemd unit 是 symlink 指模板，下一次 timer tick 自动用新版逻辑——**不需要重跑 setup.sh**。
+正在跑的 daemon 下次 poll cycle 自动用新代码——**不需要重跑 setup**。
 
-## 其他调度器
+## 调度方式
 
-systemd 不是硬要求；脚本无状态、可被任何调度器调起。
+`coding-agent daemon` 内置了 `while True + sleep` 循环，不需要外部调度器。持久化方式可选：
 
-**cron**（macOS / 不想用 systemd）：
-
-```cron
-* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh >> /tmp/coding-agent-cron.log 2>&1
+**nohup**（最简单）：
+```bash
+nohup coding-agent daemon >> /tmp/coding-agent.log 2>&1 &
 ```
 
-**macOS launchd**：
-
-```xml
-<!-- ~/Library/LaunchAgents/com.example.coding-agent-poll.plist -->
-<plist version="1.0">
-  <dict>
-    <key>Label</key><string>com.example.coding-agent-poll</string>
-    <key>ProgramArguments</key>
-    <array>
-      <string>/bin/bash</string>
-      <string>/Users/you/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-      <key>CODING_AGENT_CONFIG</key>
-      <string>/Users/you/myproject/coding-agent.config</string>
-    </dict>
-    <key>StartInterval</key><integer>60</integer>
-  </dict>
-</plist>
+**tmux**（方便 attach 回去看）：
+```bash
+tmux new -s coding-agent -d "coding-agent daemon"
 ```
 
-**Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
+**shell profile**（登录自启）：
+```bash
+# ~/.bashrc / ~/.zshrc 末尾
+(coding-agent daemon &)
+```
+
+**单次 poll**（调试 / cron 兜底）：
+```bash
+coding-agent poll                       # 跑一轮就退出
+```
+
+cron 或其他外部调度器可以周期调 `coding-agent poll`，但推荐直接用 daemon 模式——它自带文件锁，不会撞车。
 
 ## 升级到 webhook（即时触发）
 
@@ -206,28 +213,37 @@ systemd 不是硬要求；脚本无状态、可被任何调度器调起。
 
 1. tailscale funnel / cloudflare tunnel 把本机 `<port>` 开公网
 2. 跑 [`webhook`](https://github.com/adnanh/webhook) 这种小 listener 订阅 GitHub `issue_comment` + `labeled` 事件
-3. listener 收到 → 直接跑 `agent-poll.sh`（poll 本身按 label 过滤 + state.json 去重，safe to retrigger）
-4. 保留 systemd timer 当兜底
+3. listener 收到 → 直接跑 `coding-agent poll`（poll 本身按 label 过滤 + state.json 去重，safe to retrigger）
+4. 保留 daemon 当兜底
 
-## 自定义 worker（不是 Claude Code）
+## 自定义 worker（不是 Claude Code / Opencode）
 
-dispatch-*.sh 的关键是「在 tmux 里起一个能接受 stdin prompt 的交互式 agent」。换成 Aider、Cursor CLI、自家 agent 都行：把 `claude -n ... "$prompt"` 那行换成你的 CLI 即可。建议 fork 后改 dispatch-*.sh，而不是 patch 原 skill。
+加新 worker 后端的步骤：
+
+1. 在 `coding_agent/worker/` 下新建文件（如 `aider.py`），继承 `WorkerBase`
+2. 实现所有 `@abstractmethod`：`start` / `resume` / `get_status` / `list_sessions` / `stop` / `get_logs` / `has_history` / `attach`
+3. 用 `@register_worker` 装饰器注册
+4. 在 `coding_agent/worker/__init__.py` 的 `_lazy_import_workers()` 里加 import
+5. 在 `cli.py` 的 `--worker` choices 里加选项
+6. 在 `coding-agent.config` 里设 `WORKER="aider"`（或 CLI `--worker aider`）
+
+核心思路：`WorkerBase` 把「在某个环境里起一个能接受 prompt 的交互式 agent」抽象成统一接口。换成 Aider、Cursor CLI、自家 agent 只需实现 `start` / `resume` 等，不需要改 dispatch 或 poll 逻辑。
+
+验证：`coding-agent status --worker aider`
 
 ## 故障排查
 
-### Timer 起来了但 daemon 不跑
+### Daemon 不跑 / 报错退出
 
 ```bash
-systemctl --user status coding-agent-poll@<key>.timer
-systemctl --user status coding-agent-poll@<key>.service
-journalctl --user -u coding-agent-poll@<key>.service --since "10 min ago"
+coding-agent poll                       # 单次 poll 看输出
+tail -50 ~/.local/state/coding-agent-poll/<project>/poll.log
 ```
 
 常见原因：
-- `~/.config/coding-agent-work-loop/<key>.conf` 路径不对 → 编辑 conf
-- `coding-agent.config` 缺字段 → 看 `poll.log`
+- `coding-agent.config` 缺字段 → 看 stderr 报错
 - `gh auth` 没登录 → `gh auth status`
-- `claude` 不在 systemd `PATH` 里 → `~/.config/coding-agent-work-loop/<key>.conf` 里 `PATH=` 加上 `which claude` 的目录
+- `claude` / `opencode` 不在 `PATH` 里 → 配置里 `WORKER_PASS_ENV` 不影响 PATH，需在 shell profile 确保可找到
 
 ### Worker session 卡在权限弹窗
 
@@ -245,42 +261,44 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ### 调试一次 poll
 
 ```bash
-CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
-    bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh
+CODING_AGENT_CONFIG=~/myproject/coding-agent.config coding-agent poll
 tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
 ```
 
-### 回看已退出 session 的历史
-
-tmux session 一旦 exit，原 pane 的 scrollback 就消失了。本项目用 `tmux pipe-pane` 把每个 worker session 的输出旁路到磁盘：
+### 查看 session 状态
 
 ```bash
-# 路径（默认值；可通过 SESSION_LOG_DIR 改）
-$STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log
+coding-agent status                     # 列出所有 session + 状态
+```
 
-# 快捷查日志
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42        # 打印路径
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -c     # cat
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -f     # tail -F 跟随
+### 查看 session 日志
+
+```bash
+coding-agent logs 42                    # 打印 issue #42 的 worker session 日志
+coding-agent logs 42 -f                 # tail -F 跟随（实时）
 ```
 
 日志是 append-only，同一 issue 重起 session 会续写到同一份；每次启动会插一行 `===== <iso-date> session=... opened =====` 当分隔符。
 
-想让 Claude 本身续上对话（而不只是看历史），直接进到 worktree 里 `claude --resume`。
+想让 worker 本身续上对话（而不只是看历史），直接 `coding-agent attach 42`。
 
 ### 紧急停所有 worker
 
 ```bash
-systemctl --user stop coding-agent-poll@<key>.timer
-tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -r -n1 tmux kill-session -t
+# 停 daemon（Ctrl-C 或 kill daemon 进程）
+# 停单个 session：
+coding-agent cleanup 42 --force
+# 查所有活跃 session：
+coding-agent status
 ```
 
 ### 卸载某个 project
 
 ```bash
-KEY=<key>
-systemctl --user disable --now coding-agent-poll@$KEY.timer
-rm ~/.config/coding-agent-work-loop/$KEY.conf
+# 停 daemon 进程（Ctrl-C 或 kill）
+# 可选：uv tool uninstall coding-agent-work-loop
 # 可选：rm <host>/coding-agent.config（也可保留供下次接入）
 # 可选：rm -r ~/.local/state/coding-agent-poll/<project>
 ```
+
+没有 systemd unit / cron job / launchd plist 需要清理——daemon 就是个普通 Python 进程，停了就行。
