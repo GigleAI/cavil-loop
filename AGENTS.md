@@ -70,7 +70,7 @@ The five states default to these in `coding-agent.config.example` (overridable):
 | Default | Meaning |
 |---------|---------|
 | `pending/agent` | Wait for daemon to dispatch |
-| `agent/doing`   | Daemon is dispatching / worker is running |
+| `doing/agent`   | Daemon is dispatching / worker is running |
 | `pending/human` | Wait for human review / decision |
 | `pending/PR`    | Issue work has moved to the PR for tracking |
 | `Done`          | Truly closed after merge (only labels PRs; whether to label the issue is your call) |

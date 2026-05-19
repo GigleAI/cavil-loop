@@ -61,7 +61,7 @@ SESSION_NAME_PREFIX="issue"
 
 # Five states:
 #   pending/agent → set by you; agent will pick it up
-#   agent/doing   → set by daemon; dispatching / worker running
+#   doing/agent   → set by daemon; dispatching / worker running
 #   pending/human → set by worker; awaits your review / decision
 #   pending/PR    → set by worker on issue when opening a PR; work moved to PR
 #   Done          → set by daemon's auto-cleanup; merge done = truly closed
@@ -69,13 +69,13 @@ SESSION_NAME_PREFIX="issue"
 #
 # 五态：
 #   pending/agent → 用户标，等 agent pick up
-#   agent/doing   → daemon 标，正在 dispatching / worker 跑着
+#   doing/agent   → daemon 标，正在 dispatching / worker 跑着
 #   pending/human → worker 标，issue/PR 等你 review 决策
 #   pending/PR    → worker 标 issue（开 PR 时），表示「工作转 PR 跟踪」
 #   Done          → daemon auto-cleanup 标，merge 完成 = 真彻底结束
 # 改下面值前确保仓库已建对应 label（setup.sh 会自动建）
 LABEL_PENDING_AGENT="pending/agent"
-LABEL_AGENT_DOING="agent/doing"
+LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"

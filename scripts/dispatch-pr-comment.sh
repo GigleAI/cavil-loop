@@ -66,8 +66,8 @@ inject_to_session() {
 }
 
 flip_label() {
-    # daemon dispatch 翻到 agent/doing；worker 完工时它自己翻成 pending/human
-    run_gh "label 翻转 (PR #$PR pending/agent → agent/doing)" \
+    # daemon dispatch 翻到 doing/agent；worker 完工时它自己翻成 pending/human
+    run_gh "label 翻转 (PR #$PR pending/agent → doing/agent)" \
         gh pr edit "$PR" --repo "$REPO" \
         --add-label "$LABEL_AGENT_DOING" \
         --remove-label "$LABEL_PENDING_AGENT" || true

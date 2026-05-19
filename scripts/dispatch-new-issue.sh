@@ -56,8 +56,8 @@ tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
 # 4.5 pane 输出旁路到日志文件，session 退出后仍可回看
 start_session_logging "$TMUX_SESSION"
 
-# 5. 立即翻 label 到 agent/doing（worker 完工时它会自己翻成 pending/human）
-run_gh "label 翻转 (issue #$ISSUE pending/agent → agent/doing)" \
+# 5. 立即翻 label 到 doing/agent（worker 完工时它会自己翻成 pending/human）
+run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
     gh issue edit "$ISSUE" --repo "$REPO" \
     --add-label "$LABEL_AGENT_DOING" \
     --remove-label "$LABEL_PENDING_AGENT" || true

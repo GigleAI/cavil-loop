@@ -54,7 +54,7 @@ inject_to_session() {
 }
 
 flip_label() {
-    run_gh "label 翻转 (issue #$ISSUE pending/agent → agent/doing)" \
+    run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
         gh issue edit "$ISSUE" --repo "$REPO" \
         --add-label "$LABEL_AGENT_DOING" \
         --remove-label "$LABEL_PENDING_AGENT" || true

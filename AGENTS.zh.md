@@ -68,7 +68,7 @@
 | 默认 | 用途 |
 |------|------|
 | `pending/agent` | 等 daemon 派工 |
-| `agent/doing` | daemon 正在派 / worker 正在跑 |
+| `doing/agent` | daemon 正在派 / worker 正在跑 |
 | `pending/human` | 等人类 review / 决策 |
 | `pending/PR` | issue 工作已转 PR 跟踪 |
 | `Done` | merge 后真闭环（只标 PR，issue 是否标看用户决定） |

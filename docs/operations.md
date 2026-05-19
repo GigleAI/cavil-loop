@@ -23,7 +23,7 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 # Labels
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
-LABEL_AGENT_DOING="agent/doing"
+LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
 

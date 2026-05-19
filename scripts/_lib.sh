@@ -47,7 +47,7 @@ source "$CONFIG_FILE"
 : "${LABEL_PENDING_AGENT:?LABEL_PENDING_AGENT 未设}"
 : "${LABEL_PENDING_HUMAN:?LABEL_PENDING_HUMAN 未设}"
 # 兼容老配置：未设时给默认值
-LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-agent/doing}"
+LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-doing/agent}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
 # Worker 写回 GitHub 的内容（issue / PR 评论、设计提案、PR body）用的语言。

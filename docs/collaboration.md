@@ -44,7 +44,7 @@ TMUX_PREFIX="pm"
 SESSION_NAME_PREFIX="pm-issue"
 
 LABEL_PENDING_AGENT="pending/agent/PM"
-LABEL_AGENT_DOING="agent/doing/PM"
+LABEL_AGENT_DOING="doing/agent/PM"
 LABEL_PENDING_HUMAN="pending/human"     # or pending/human/<owner> if you want
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
@@ -60,7 +60,7 @@ TMUX_PREFIX="qa"
 SESSION_NAME_PREFIX="qa-issue"
 
 LABEL_PENDING_AGENT="pending/agent/QA"
-LABEL_AGENT_DOING="agent/doing/QA"
+LABEL_AGENT_DOING="doing/agent/QA"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"

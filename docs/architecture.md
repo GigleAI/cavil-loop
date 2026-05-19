@@ -7,7 +7,7 @@
 | Label | Set by | Meaning |
 |-------|--------|---------|
 | `pending/agent` | You | Wait for the agent to pick it up (issue waiting for dispatch / PR has review feedback to address) |
-| `agent/doing`   | Daemon | Daemon is dispatching / worker tmux is running |
+| `doing/agent`   | Daemon | Daemon is dispatching / worker tmux is running |
 | `pending/human` | Worker / daemon | Wait for you to review / merge / decide |
 | `pending/PR`    | Worker (when opening a PR) | Issue work moved to the PR for tracking; go look at the PR |
 | `Done`          | Daemon (auto-cleanup) | **Only on the PR** (PR merged = truly closed); **not on the issue** (the issue is a long-term tracker; closing it is your call) |
@@ -29,7 +29,7 @@ New issue ──────────────────► label: pendi
    │
    │ You add label: pending/agent
    ▼
-pending/agent ──► daemon dispatch ──► label: agent/doing   ← visible in GitHub UI live
+pending/agent ──► daemon dispatch ──► label: doing/agent   ← visible in GitHub UI live
                                               │
                                               │ worker does work (branch / write code / run tests / push / open PR with `Refs #N`)
                                               ▼
@@ -56,8 +56,8 @@ pending/agent ──► daemon dispatch ──► label: agent/doing   ← visib
 ## Re-entry and concurrency safety
 
 - **flock**: `agent-poll.sh` uses `$STATE_DIR/poll.lock` to prevent simultaneous systemd ticks from colliding
-- **Label flip is immediate on dispatch**: daemon sees `pending/agent` → dispatches → **first thing it does is flip to `agent/doing`**. Next tick the daemon sees `agent/doing`, which isn't in the `pending/agent` scan set, so no re-dispatch
-- **`agent/doing` is also a UI signal**: at a glance on GitHub you can tell "agent is working" (agent/doing) from "agent finished, waiting on you" (pending/human) — no need to attach tmux to know
+- **Label flip is immediate on dispatch**: daemon sees `pending/agent` → dispatches → **first thing it does is flip to `doing/agent`**. Next tick the daemon sees `doing/agent`, which isn't in the `pending/agent` scan set, so no re-dispatch
+- **`doing/agent` is also a UI signal**: at a glance on GitHub you can tell "agent is working" (doing/agent) from "agent finished, waiting on you" (pending/human) — no need to attach tmux to know
 - **state.json**: records the highest comment ID seen per PR, so the same comment is never dispatched twice
 - **Active worker counting**: counts live workers via the tmux session naming convention; new tasks queue up when `MAX_CONCURRENT_WORKERS` is reached
 
