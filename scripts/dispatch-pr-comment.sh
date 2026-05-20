@@ -10,14 +10,14 @@ PR="${1:?need PR number}"
 BRANCH="${2:?need branch}"
 LATEST_COMMENT_ID="${3:-0}"
 
-ISSUE_N="$(branch_to_issue_num "$BRANCH")"
+ISSUE_N="$(pr_to_issue_num "$PR" "$BRANCH")"
 
-# Branch 不符合约定时（如旧仓库里 feature/getuser-to-getsession 这种非数字命名）
-# 无法 derive 出唯一 issue_n / 也无法另开 worktree（原 branch 通常已在别处被 checkout）。
-# 优雅退场：翻 label 回 pending/human + 0 退出，让 daemon 把 state 推进、不再重试。
+# 防御性兜底：pr_to_issue_num 的第 3 层 fallback 是 PR 编号本身，理论上永远非空。
+# 走到这条说明 gh API 完全挂了（连 PR 编号都拿不回来）—— 那时整个 daemon 都没法工作，
+# 留 log 提示但仍软退场，避免 state 永远不推进卡死整个 loop。
 if [ -z "$ISSUE_N" ]; then
-    log "PR #$PR: branch '$BRANCH' 不符合 BRANCH_PREFIX '$BRANCH_PREFIX'，daemon 无法自动派工"
-    log "  → 翻 label 回 $LABEL_PENDING_HUMAN 防反复重试；手动处理或 rename 分支为 ${BRANCH_PREFIX}<N> 后再 label"
+    log "PR #$PR: pr_to_issue_num 返回空（异常状态——预期 fallback 到 PR 编号永远非空，可能 gh API 故障）"
+    log "  → 翻 label 回 $LABEL_PENDING_HUMAN 防反复重试，手动检查后再 label"
     run_gh "label 翻转 (PR #$PR 兜底 pending/agent → pending/human)" \
         gh pr edit "$PR" --repo "$REPO" \
         --add-label "$LABEL_PENDING_HUMAN" \

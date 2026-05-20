@@ -80,6 +80,34 @@ branch_to_issue_num() {
     fi
 }
 
+# 找一个 PR 对应的「工作编号 N」，用作 worktree / tmux / branch 命名标识。
+# fallback 链（任何一步成功就返回）：
+#   1. 分支名匹配 BRANCH_PREFIX → 拿数字（覆盖 daemon 自己派工出来的 PR）
+#   2. PR body 找 Closes/Fixes/Resolves/Refs #N → 拿数字（外部贡献者 / 手开 PR 但绑 issue）
+#   3. fallback 到 PR 编号本身（catch-all：unrelated meta PR / doc fix / external PR）
+#
+# 设计前提：GitHub 上 issue/PR 共用编号 namespace，第 3 步 fallback 不会跟某个 issue 撞 id。
+# 跨平台（GitLab MR、Bitbucket 等）独立 namespace 的情况未来用 adapter 层隔离。
+pr_to_issue_num() {
+    local pr="$1"
+    local branch="$2"
+    local n
+
+    # 1. 分支名
+    n="$(branch_to_issue_num "$branch")"
+    [ -n "$n" ] && { echo "$n"; return; }
+
+    # 2. PR body 关键词
+    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null \
+        | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
+        | head -1 \
+        | grep -oE '[0-9]+' || true)
+    [ -n "$n" ] && { echo "$n"; return; }
+
+    # 3. fallback：PR 编号本身
+    echo "$pr"
+}
+
 # 判断一个 tmux session 里的 Claude 是不是正在「工作」（thinking / tool use 中）。
 # Claude Code 处理时 footer 会出现 "esc to interrupt" 字样；idle 时（等用户输入）这行没了。
 # 用这个区分「占用并发名额的活 worker」和「已经做完等用户反馈的 idle worker」。

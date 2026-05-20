@@ -93,7 +93,7 @@ When adding a field: `agent-poll.sh` has a migration loop at the top that iterat
 
 ### Session / worktree / branch naming
 
-Driven by three prefixes in `coding-agent.config` (formula for issue N):
+Driven by three prefixes in `coding-agent.config` (formula for "work number N"):
 
 ```
 worktree:  $WORKTREE_BASE/$SESSION_NAME_PREFIX-N    e.g. ~/github/worktree/workloop/issue-5
@@ -103,6 +103,14 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
 ```
 
 `_lib.sh` implements these as `worktree_path() / branch_name() / tmux_session_name() / claude_session_name()`. **Don't** hand-roll string concatenation in new scripts — call the helpers.
+
+**Where N comes from for PR dispatch** — `_lib.sh:pr_to_issue_num(pr, branch)` runs a three-step fallback:
+
+1. branch name matches `$BRANCH_PREFIX` → take that number (the typical daemon-spawned PR)
+2. PR body contains `Closes/Fixes/Resolves/Refs #N` → take that number (external contributor PR or hand-opened PR with an issue link)
+3. fallback to the PR number itself (catch-all: meta PR, doc fix, unrelated external PR)
+
+This means the worktree/tmux/branch "N" **isn't necessarily** the same as `feature/issue-N`'s number — it can be the PR number too. Safe on GitHub because issue/PR share one numeric namespace; not portable to GitLab (issues + MRs use separate iids) — for cross-platform support see the platform adapter discussion in issue tracker.
 
 ## Common task flows
 
