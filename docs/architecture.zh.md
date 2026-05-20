@@ -65,6 +65,7 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
 
 - 每个 issue → 一个 git worktree → 一个 tmux session → 一个 `claude -n issue<N> --dangerously-skip-permissions` 进程
 - 命名：tmux session = `<TMUX_PREFIX>-issue<N>`、worktree = `<WORKTREE_BASE>/issue-<N>`、branch = `<BRANCH_PREFIX><N>`
+- **PR 派工时 N 怎么定**：`pr_to_issue_num` 走三层 fallback——分支名匹配 `<BRANCH_PREFIX>N` → 拿数字；否则 PR body 找 `Closes/Fixes/Resolves/Refs #N` → 拿数字；否则 fallback 到 PR 编号本身。这样外部 contributor 提的 PR、手开的 meta PR（既没有 `feature/issue-N` 分支也没绑 issue）也能稳定派工。GitHub-only 假设（issue/PR 共用编号 namespace）；跨平台见 [AGENTS.md](../AGENTS.zh.md)
 - PR 评论触发：找对应 session 用 `tmux load-buffer + paste-buffer -p`（bracketed paste）把 prompt 多行注入，再 `send-keys Enter` 提交
 - **自动 resume**：worker session 死了（`/quit` / 重启 / crash）后又被触发，调度脚本会查 `~/.claude/projects/<encoded-worktree>/` 有没有历史 jsonl——有就 `claude --continue` 续上原对话（保留所有上下文 + 工具调用历史），没有就 `claude -n issue<N>` 全新起。这意味着用户中途 `/quit` 不丢进度。
 - Session 没了（worktree 也被清掉）→ 自动从 PR head branch 重建 worktree + spawn 新 session（同样按上面规则尝试 resume）
