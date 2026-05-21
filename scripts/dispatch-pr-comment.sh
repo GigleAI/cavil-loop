@@ -10,24 +10,24 @@ PR="${1:?need PR number}"
 BRANCH="${2:?need branch}"
 LATEST_COMMENT_ID="${3:-0}"
 
-ISSUE_N="$(branch_to_issue_num "$BRANCH")"
+ISSUE_N="$(pr_to_issue_num "$PR" "$BRANCH")"
 
-# Branch 不符合约定时（如旧仓库里 feature/getuser-to-getsession 这种非数字命名）
-# 无法 derive 出唯一 issue_n / 也无法另开 worktree（原 branch 通常已在别处被 checkout）。
-# 优雅退场：翻 label 回 pending/human + 0 退出，让 daemon 把 state 推进、不再重试。
+# 防御性兜底：pr_to_issue_num 的第 3 层 fallback 是 PR 编号本身，理论上永远非空。
+# 走到这条说明 gh API 完全挂了（连 PR 编号都拿不回来）—— 那时整个 daemon 都没法工作，
+# 留 log 提示但仍软退场，避免 state 永远不推进卡死整个 loop。
 if [ -z "$ISSUE_N" ]; then
-    log "PR #$PR: branch '$BRANCH' 不符合 BRANCH_PREFIX '$BRANCH_PREFIX'，daemon 无法自动派工"
-    log "  → 翻 label 回 $LABEL_PENDING_HUMAN 防反复重试；手动处理或 rename 分支为 ${BRANCH_PREFIX}<N> 后再 label"
+    log "PR #$PR: pr_to_issue_num 返回空（异常状态——预期 fallback 到 PR 编号永远非空，可能 gh API 故障）"
+    log "  → 翻 label 回 $LABEL_PENDING_HUMAN 防反复重试，手动检查后再 label"
     run_gh "label 翻转 (PR #$PR 兜底 pending/agent → pending/human)" \
-        gh pr edit "$PR" --repo "$REPO" \
-        --add-label "$LABEL_PENDING_HUMAN" \
-        --remove-label "$LABEL_PENDING_AGENT" || true
+        gh_label_flip "$PR" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "$LABEL_PENDING_AGENT" || true
     exit 0
 fi
 
 WORKTREE="$(worktree_path "$ISSUE_N")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE_N")"
-CLAUDE_SESSION="$(claude_session_name "$ISSUE_N")"
+WORKER_SESSION="$(worker_session_name "$ISSUE_N")"
 
 # Prompt 模板
 TEMPLATE="$(find_prompt_template "pr-comment")"
@@ -50,49 +50,40 @@ PR #$PR 有新评论。读 \`gh pr view $PR --repo $REPO --comments\`，按内�
 - 讨论 → gh pr comment 回答
 - 改代码 → 改 + 测试 + commit + push + 评论
 - 不明 → 反问
-完成后 gh pr edit $PR --add-label $LABEL_PENDING_HUMAN --remove-label $LABEL_PENDING_AGENT
+完成后翻 label（REST，绕 read:org）：
+  gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$LABEL_PENDING_HUMAN"
+  gh api -X DELETE "repos/$REPO/issues/$PR/labels/\$(printf '%s' "$LABEL_PENDING_AGENT" | jq -sRr @uri)" || true
 EOF
 fi
 
-inject_to_session() {
-    local sess="$1"
-    local buf
-    buf=$(mktemp)
-    cat "$PROMPT_FILE" > "$buf"
-    tmux load-buffer -t "$sess" "$buf"
-    rm "$buf"
-    tmux paste-buffer -t "$sess" -p
-    tmux send-keys -t "$sess" Enter
-}
-
 flip_label() {
-    # daemon dispatch 翻到 agent/doing；worker 完工时它自己翻成 pending/human
-    run_gh "label 翻转 (PR #$PR pending/agent → agent/doing)" \
-        gh pr edit "$PR" --repo "$REPO" \
-        --add-label "$LABEL_AGENT_DOING" \
-        --remove-label "$LABEL_PENDING_AGENT" || true
+    # daemon dispatch 翻到 doing/agent；worker 完工时它自己翻成 pending/human
+    run_gh "label 翻转 (PR #$PR pending/agent → $LABEL_AGENT_DOING)" \
+        gh_label_flip "$PR" \
+        --add "$LABEL_AGENT_DOING" \
+        --remove "$LABEL_PENDING_AGENT" || true
 }
 
 # Case A: 现有 worker session
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    log "PR #$PR -> 注入 $TMUX_SESSION"
+    log "PR #$PR -> 注入 $TMUX_SESSION (agent=$WORKER_AGENT)"
     start_session_logging "$TMUX_SESSION"
-    inject_to_session "$TMUX_SESSION"
+    agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"
     flip_label
     exit 0
 fi
 
 # Case B: worktree 还在，session 没了 → 重起（有历史就 resume）
 if [ -d "$WORKTREE" ]; then
-    CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
-    if has_claude_session "$WORKTREE"; then
-        log "PR #$PR -> 在 $TMUX_SESSION 里 claude --continue 之前的会话"
+    if agent_has_history "$WORKTREE"; then
+        log "PR #$PR -> 在 $TMUX_SESSION 里 resume agent=$WORKER_AGENT 之前的会话"
+        CMD="$(agent_command_resume "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
     else
-        log "PR #$PR -> 从 worktree 起全新 claude session $TMUX_SESSION（cwd 无历史）"
+        log "PR #$PR -> 从 worktree 起全新 $WORKER_AGENT session $TMUX_SESSION（cwd 无历史）"
+        CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
     fi
     mapfile -d '' -t tmux_env < <(tmux_env_args)
-    tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
-        "$CLAUDE_INVOKE \"\$(cat $PROMPT_FILE)\""
+    tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
     start_session_logging "$TMUX_SESSION"
     flip_label
     exit 0
@@ -116,14 +107,15 @@ done
 [ -n "${WORKTREE_SETUP_CMD:-}" ] && [ "${WORKTREE_SETUP_CMD}" != ":" ] && \
     (cd "$WORKTREE" && eval "$WORKTREE_SETUP_CMD") || true
 
-CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
-if has_claude_session "$WORKTREE"; then
-    log "PR #$PR -> 重建 worktree，但 ~/.claude 里还有该 cwd 的历史，claude --continue"
+if agent_has_history "$WORKTREE"; then
+    log "PR #$PR -> 重建 worktree，但本机仍有该 cwd 的 $WORKER_AGENT 历史 → resume"
+    CMD="$(agent_command_resume "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+else
+    CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
 fi
 mapfile -d '' -t tmux_env < <(tmux_env_args)
-tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
-    "$CLAUDE_INVOKE \"\$(cat $PROMPT_FILE)\""
+tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
 start_session_logging "$TMUX_SESSION"
 
 flip_label
-log "dispatch-pr-comment done: PR #$PR fresh worktree + session"
+log "dispatch-pr-comment done: PR #$PR fresh worktree + session (agent=$WORKER_AGENT)"

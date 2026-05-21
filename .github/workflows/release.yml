@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'release/v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag format
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if [[ ! "$tag" =~ ^release/v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "::error::tag $tag doesn't match release/vYYYY.MM.DD.N"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_ENV"
+
+      - name: Verify tag commit is on main
+        run: |
+          git fetch origin main --quiet
+          tag_commit="$(git rev-parse "$tag")"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "::error::tag $tag points at $tag_commit which is not on main"
+            exit 1
+          fi
+
+      - name: Generate release notes
+        run: |
+          prev="$(git describe --tags --abbrev=0 --match 'release/v*' "${tag}^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then
+            range="${prev}..${tag}"
+            header="Changes since \`${prev}\`"
+          else
+            range="${tag}"
+            header="Initial release"
+          fi
+          {
+            echo "## ${header}"
+            echo ""
+            git log "${range}" --no-merges --pretty='- %s (%h)'
+            echo ""
+            echo "## Install"
+            echo ""
+            echo '```bash'
+            echo "npx skills add ${GITHUB_REPOSITORY} -g"
+            echo '```'
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --notes-file release-notes.md

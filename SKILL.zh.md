@@ -9,7 +9,7 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 
 把 GitHub issue / PR 评论变成你本机 agent 的输入输出。一个 systemd timer + 几个 shell 脚本 + 两个 GitHub label，让你通过 GitHub 网页（或 iOS gh app）直接跟 agent 沟通。
 
-> 本 skill 设计上 agent-agnostic：daemon + dispatch 脚本是纯 shell + `gh` CLI，**任何能在 tmux 里被启动且接受 stdin prompt 的 agent CLI 都能当 worker**。当前 default worker 是 `claude` CLI（Claude Code），配置 `CLAUDE_EXTRA_FLAGS` 一行可换。
+> 本 skill 设计上 agent-agnostic。Worker CLI 由 `coding-agent.config` 里的 `WORKER_AGENT=<name>` 选；daemon / dispatch 通过一层薄的 **driver 抽象**对接各家 agent CLI。内置 driver：`claude`（默认，Claude Code）、`opencode`（sst/opencode）、`codex`（OpenAI Codex CLI）。加自家 driver 见 [docs/drivers.zh.md](docs/drivers.zh.md)。
 
 ## 触发方式
 
@@ -26,7 +26,7 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 用户给你一个 host project 路径（如 `~/github/myproject`）。你的步骤：
 
 1. 验证路径存在且是 git 仓库（`.git` 在）
-2. 检查依赖：`git`、`gh`（已 `gh auth login`）、`tmux`、`jq`、`flock`、`systemctl`，以及 worker CLI（默认是 `claude`）都能 `command -v` 到
+2. 检查依赖：`git`、`gh`（已 `gh auth login`）、`tmux`、`jq`、`flock`、`systemctl`，以及 `WORKER_AGENT` 选定的 worker CLI（默认 `claude`；其他内置：`opencode`、`codex`）都能 `command -v` 到
 3. 跑：
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/coding-agent-work-loop}/setup.sh" <host-project-path>

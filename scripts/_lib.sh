@@ -47,12 +47,16 @@ source "$CONFIG_FILE"
 : "${LABEL_PENDING_AGENT:?LABEL_PENDING_AGENT 未设}"
 : "${LABEL_PENDING_HUMAN:?LABEL_PENDING_HUMAN 未设}"
 # 兼容老配置：未设时给默认值
-LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-agent/doing}"
+LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-doing/agent}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
 # Worker 写回 GitHub 的内容（issue / PR 评论、设计提案、PR body）用的语言。
 # ISO 639-1 code. Default "en"。代码 / commit / 分支名仍按仓库惯例，不受影响。
 OUTPUT_LANGUAGE="${OUTPUT_LANGUAGE:-en}"
+
+# Worker agent CLI（claude / opencode / codex / 你自家 driver）。
+# 默认 claude → 行为完全等同未引入 driver 抽象前。
+WORKER_AGENT="${WORKER_AGENT:-claude}"
 
 mkdir -p "$STATE_DIR"
 LOG_FILE="$STATE_DIR/poll.log"
@@ -80,13 +84,32 @@ branch_to_issue_num() {
     fi
 }
 
-# 判断一个 tmux session 里的 Claude 是不是正在「工作」（thinking / tool use 中）。
-# Claude Code 处理时 footer 会出现 "esc to interrupt" 字样；idle 时（等用户输入）这行没了。
-# 用这个区分「占用并发名额的活 worker」和「已经做完等用户反馈的 idle worker」。
-is_session_busy() {
-    local sess="$1"
-    tmux has-session -t "$sess" 2>/dev/null || return 1
-    tmux capture-pane -t "$sess" -p 2>/dev/null | grep -q "esc to interrupt"
+# 找一个 PR 对应的「工作编号 N」，用作 worktree / tmux / branch 命名标识。
+# fallback 链（任何一步成功就返回）：
+#   1. 分支名匹配 BRANCH_PREFIX → 拿数字（覆盖 daemon 自己派工出来的 PR）
+#   2. PR body 找 Closes/Fixes/Resolves/Refs #N → 拿数字（外部贡献者 / 手开 PR 但绑 issue）
+#   3. fallback 到 PR 编号本身（catch-all：unrelated meta PR / doc fix / external PR）
+#
+# 设计前提：GitHub 上 issue/PR 共用编号 namespace，第 3 步 fallback 不会跟某个 issue 撞 id。
+# 跨平台（GitLab MR、Bitbucket 等）独立 namespace 的情况未来用 adapter 层隔离。
+pr_to_issue_num() {
+    local pr="$1"
+    local branch="$2"
+    local n
+
+    # 1. 分支名
+    n="$(branch_to_issue_num "$branch")"
+    [ -n "$n" ] && { echo "$n"; return; }
+
+    # 2. PR body 关键词
+    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null \
+        | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
+        | head -1 \
+        | grep -oE '[0-9]+' || true)
+    [ -n "$n" ] && { echo "$n"; return; }
+
+    # 3. fallback：PR 编号本身
+    echo "$pr"
 }
 
 # 列出本项目的所有 worker session 名字（不含 dev server 或别的同前缀 session）。
@@ -95,15 +118,22 @@ list_worker_sessions() {
     tmux ls 2>/dev/null | awk -F: -v p="^${TMUX_PREFIX}-${SESSION_NAME_PREFIX}[0-9]+\$" '$1 ~ p {print $1}'
 }
 
-# 数活的 worker：只算 Claude 真正在 processing 的 session，
-# 不算 idle（已完成 / 等用户反馈）的，也不算 dead 的。
+# 数活的 worker：用 GitHub 上 `doing/agent` 标签作真值——
+# daemon dispatch 时立刻贴上、worker 完工时翻成 pending/human，
+# 期间 label 没改 = 工作还在进行中。
+#
+# 老方案用 tmux capture-pane 找 "esc to interrupt" 字串判 busy，
+# 但该字串只在 agent 正在 streaming token 那一瞬间出现——
+# worker 在等 permission 弹窗 / 读文件 / tool 调用间隙时都没了，
+# 导致 daemon 误以为 idle 又派下一个，破坏 MAX_CONCURRENT_WORKERS。
+# label 是 workflow 层意图的表达，远比 pane 内省可靠。
 count_active_workers() {
-    local n=0 sess
-    while IFS= read -r sess; do
-        [ -z "$sess" ] && continue
-        is_session_busy "$sess" && n=$((n + 1))
-    done < <(list_worker_sessions)
-    echo "$n"
+    local issues prs
+    issues=$(gh issue list --repo "$REPO" --state open --label "$LABEL_AGENT_DOING" \
+        --json number --jq 'length' 2>/dev/null || echo 0)
+    prs=$(gh pr list --repo "$REPO" --label "$LABEL_AGENT_DOING" \
+        --json number --jq 'length' 2>/dev/null || echo 0)
+    echo $((issues + prs))
 }
 
 # 构造 tmux new-session 的 -e 参数，把 WORKER_PASS_ENV 列的 env 透传给 worker。
@@ -130,7 +160,8 @@ tmux_session_name() {
     echo "${TMUX_PREFIX}-${SESSION_NAME_PREFIX}$1"
 }
 
-claude_session_name() {
+# Agent 侧 session 名（claude -n 用、其他 agent 兼容保留传入 driver）
+worker_session_name() {
     echo "${SESSION_NAME_PREFIX}$1"
 }
 
@@ -170,7 +201,7 @@ start_session_logging() {
 # 跑一条 gh / 任意命令；非 0 时把它的 stderr 拼到 log 里（不退出脚本）。
 # 历史上脚本到处 `gh ... 2>/dev/null || log "失败"`，把真正报错全吞了，
 # 出问题（如 PAT scope 不够）时只能复现一遍才看到原因——非常痛。
-# 用法：run_gh "label 翻转" gh issue edit "$ISSUE" --add-label foo --remove-label bar
+# 用法：run_gh "label 翻转" gh_label_flip "$ISSUE" --add foo --remove bar
 run_gh() {
     local desc="$1"; shift
     local out
@@ -181,28 +212,45 @@ run_gh() {
     return 0
 }
 
-# 判断一个 cwd（一般是 worktree 路径）下有没有 Claude Code 历史会话。
-# Claude 把每个 project 的 session 存在 ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
-# 其中 encoded-cwd = 把绝对路径里的 '/' 全替换成 '-'。
-# 有历史就用 `claude --continue` resume；没历史就 `claude -n NAME` 全新起。
-has_claude_session() {
-    local cwd="$1"
-    local encoded
-    encoded="$(printf %s "$cwd" | tr / -)"
-    local dir="$HOME/.claude/projects/$encoded"
-    [ -d "$dir" ] && compgen -G "$dir/*.jsonl" > /dev/null 2>&1
-}
+# Label 翻转 helper：走 REST API 的 /issues/N/labels endpoint，绕过 `gh pr edit
+# --add-label` 内部 GraphQL `updatePullRequest` mutation（它要 read:org scope
+# 去查 login 字段——bot PAT 一般没这个 scope，调用直接 fail）。REST 路径只要
+# repo scope 就能改 label，PR / issue 都通用（GitHub API 里 PR 是 issue 的子集）。
+# 用法：gh_label_flip <pr_or_issue_number> [--add label1 [label2 ...]] [--remove label1 ...]
+gh_label_flip() {
+    local num="$1"; shift
+    local mode=""
+    local adds=() removes=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --add) mode=add; shift;;
+            --remove) mode=remove; shift;;
+            *)
+                if [ "$mode" = add ]; then adds+=("$1")
+                elif [ "$mode" = remove ]; then removes+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
 
-# 构造 claude 启动命令：cwd 有历史 → `claude --continue`、没历史 → `claude -n NAME`。
-# 用法：CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
-claude_invoke() {
-    local cwd="$1"
-    local name="$2"
-    if has_claude_session "$cwd"; then
-        echo "claude --continue ${CLAUDE_EXTRA_FLAGS:-}"
-    else
-        echo "claude -n $name ${CLAUDE_EXTRA_FLAGS:-}"
+    # remove first（防短暂同时有新旧 label 的窗口）
+    local L encoded
+    for L in "${removes[@]}"; do
+        encoded=$(printf '%s' "$L" | jq -sRr @uri)
+        # 404 表示 label 已经不在了——视为成功（idempotent）
+        gh api -X DELETE "repos/$REPO/issues/$num/labels/$encoded" >/dev/null 2>&1 || true
+    done
+
+    # add
+    if [ ${#adds[@]} -gt 0 ]; then
+        local args=()
+        for L in "${adds[@]}"; do
+            args+=(-f "labels[]=$L")
+        done
+        gh api -X POST "repos/$REPO/issues/$num/labels" "${args[@]}" >/dev/null 2>&1 || return 1
     fi
+    return 0
 }
 
 # Prompt 模板查找顺序：
@@ -226,3 +274,11 @@ find_prompt_template() {
     done
     echo ""
 }
+
+# ── 加载 driver（按 WORKER_AGENT）──
+# 放在文件末尾，确保 _lib.sh 自己的函数都已定义；driver 注入的函数
+# (agent_is_busy / agent_has_history / agent_command_new/resume) 之后被 dispatch
+# 脚本 + cleanup-issue.sh 在执行时取到。
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/drivers/_common.sh"
+source_driver "$WORKER_AGENT" || exit 2

@@ -23,7 +23,7 @@
 ├── coding-agent.config.example ← 配置模板（每字段都有注释）
 ├── scripts/
 │   ├── _lib.sh                ← 公共库：config 加载、log、has_claude_session、run_gh
-│   ├── agent-poll.sh          ← 主轮询（systemd timer 调起）
+│   ├── agent-poll.sh          ← 主轮询（Linux 由 systemd timer 调起 / macOS 由 launchd LaunchAgent 调起）
 │   ├── dispatch-new-issue.sh  ← 新 issue 派工
 │   ├── dispatch-issue-comment.sh ← issue 新评论派工
 │   ├── dispatch-pr-comment.sh ← PR 新评论派工
@@ -70,7 +70,7 @@
 | 默认 | 用途 |
 |------|------|
 | `pending/agent` | 等 daemon 派工 |
-| `agent/doing` | daemon 正在派 / worker 正在跑 |
+| `doing/agent` | daemon 正在派 / worker 正在跑 |
 | `pending/human` | 等人类 review / 决策 |
 | `pending/PR` | issue 工作已转 PR 跟踪 |
 | `Done` | merge 后真闭环（只标 PR，issue 是否标看用户决定） |

@@ -23,7 +23,7 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 # Label
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
-LABEL_AGENT_DOING="agent/doing"
+LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
 
@@ -241,7 +241,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 
 ## 自定义 worker（不是 Claude Code）
 
-dispatch-*.sh 的关键是「在 tmux 里起一个能接受 stdin prompt 的交互式 agent」。换成 Aider、Cursor CLI、自家 agent 都行：把 `claude -n ... "$prompt"` 那行换成你的 CLI 即可。建议 fork 后改 dispatch-*.sh，而不是 patch 原 skill。
+Worker 切换走一层薄的 **driver 抽象**，不需要 fork。在 `coding-agent.config` 里设 `WORKER_AGENT=<name>` 即可。内置：`claude`（默认）、`opencode`、`codex`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
 

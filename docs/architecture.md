@@ -7,7 +7,7 @@
 | Label | Set by | Meaning |
 |-------|--------|---------|
 | `pending/agent` | You | Wait for the agent to pick it up (issue waiting for dispatch / PR has review feedback to address) |
-| `agent/doing`   | Daemon | Daemon is dispatching / worker tmux is running |
+| `doing/agent`   | Daemon | Daemon is dispatching / worker tmux is running |
 | `pending/human` | Worker / daemon | Wait for you to review / merge / decide |
 | `pending/PR`    | Worker (when opening a PR) | Issue work moved to the PR for tracking; go look at the PR |
 | `Done`          | Daemon (auto-cleanup) | **Only on the PR** (PR merged = truly closed); **not on the issue** (the issue is a long-term tracker; closing it is your call) |
@@ -29,7 +29,7 @@ New issue ──────────────────► label: pendi
    │
    │ You add label: pending/agent
    ▼
-pending/agent ──► daemon dispatch ──► label: agent/doing   ← visible in GitHub UI live
+pending/agent ──► daemon dispatch ──► label: doing/agent   ← visible in GitHub UI live
                                               │
                                               │ worker does work (branch / write code / run tests / push / open PR with `Refs #N`)
                                               ▼
@@ -56,8 +56,8 @@ pending/agent ──► daemon dispatch ──► label: agent/doing   ← visib
 ## Re-entry and concurrency safety
 
 - **flock**: `agent-poll.sh` uses `$STATE_DIR/poll.lock` to prevent simultaneous systemd ticks from colliding
-- **Label flip is immediate on dispatch**: daemon sees `pending/agent` → dispatches → **first thing it does is flip to `agent/doing`**. Next tick the daemon sees `agent/doing`, which isn't in the `pending/agent` scan set, so no re-dispatch
-- **`agent/doing` is also a UI signal**: at a glance on GitHub you can tell "agent is working" (agent/doing) from "agent finished, waiting on you" (pending/human) — no need to attach tmux to know
+- **Label flip is immediate on dispatch**: daemon sees `pending/agent` → dispatches → **first thing it does is flip to `doing/agent`**. Next tick the daemon sees `doing/agent`, which isn't in the `pending/agent` scan set, so no re-dispatch
+- **`doing/agent` is also a UI signal**: at a glance on GitHub you can tell "agent is working" (doing/agent) from "agent finished, waiting on you" (pending/human) — no need to attach tmux to know
 - **state.json**: records the highest comment ID seen per PR, so the same comment is never dispatched twice
 - **Active worker counting**: counts live workers via the tmux session naming convention; new tasks queue up when `MAX_CONCURRENT_WORKERS` is reached
 
@@ -65,6 +65,7 @@ pending/agent ──► daemon dispatch ──► label: agent/doing   ← visib
 
 - Each issue → one git worktree → one tmux session → one `claude -n issue<N> --dangerously-skip-permissions` process
 - Naming: tmux session = `<TMUX_PREFIX>-issue<N>`, worktree = `<WORKTREE_BASE>/issue-<N>`, branch = `<BRANCH_PREFIX><N>`
+- **Where N comes from for PR dispatch**: `pr_to_issue_num` runs a fallback chain — branch matches `<BRANCH_PREFIX>N` → use it; else PR body has `Closes/Fixes/Resolves/Refs #N` → use it; else fallback to the PR number itself. So an external PR or hand-opened meta PR (no `feature/issue-N` branch, no linked issue) still gets a stable N to drive worktree/session naming. GitHub-only assumption (issue/PR share namespace); see [AGENTS.md](../AGENTS.md#session--worktree--branch-naming) for cross-platform notes
 - PR comment trigger: find the corresponding session, use `tmux load-buffer + paste-buffer -p` (bracketed paste) to inject the multi-line prompt, then `send-keys Enter` to submit
 - **Auto-resume**: if the worker session dies (`/quit` / restart / crash) and another trigger comes in, the dispatch script checks `~/.claude/projects/<encoded-worktree>/` for existing jsonl files — if found, runs `claude --continue` to resume the original conversation (all context + tool history preserved); otherwise `claude -n issue<N>` for a fresh start. User-initiated `/quit` in the middle of work doesn't lose progress.
 - Session gone (and worktree also cleaned up) → automatically rebuilds the worktree from PR head branch + spawns a new session (applies the same resume logic above)

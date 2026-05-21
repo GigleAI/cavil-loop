@@ -61,7 +61,7 @@ SESSION_NAME_PREFIX="issue"
 
 # Five states:
 #   pending/agent → set by you; agent will pick it up
-#   agent/doing   → set by daemon; dispatching / worker running
+#   doing/agent   → set by daemon; dispatching / worker running
 #   pending/human → set by worker; awaits your review / decision
 #   pending/PR    → set by worker on issue when opening a PR; work moved to PR
 #   Done          → set by daemon's auto-cleanup; merge done = truly closed
@@ -69,13 +69,13 @@ SESSION_NAME_PREFIX="issue"
 #
 # 五态：
 #   pending/agent → 用户标，等 agent pick up
-#   agent/doing   → daemon 标，正在 dispatching / worker 跑着
+#   doing/agent   → daemon 标，正在 dispatching / worker 跑着
 #   pending/human → worker 标，issue/PR 等你 review 决策
 #   pending/PR    → worker 标 issue（开 PR 时），表示「工作转 PR 跟踪」
 #   Done          → daemon auto-cleanup 标，merge 完成 = 真彻底结束
 # 改下面值前确保仓库已建对应 label（setup.sh 会自动建）
 LABEL_PENDING_AGENT="pending/agent"
-LABEL_AGENT_DOING="agent/doing"
+LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
@@ -133,13 +133,36 @@ COPY_TO_WORKTREE=".env"
 WORKTREE_GIT_USER_NAME=""
 WORKTREE_GIT_USER_EMAIL=""
 
+# ── Worker agent / Worker agent CLI ──
+
+# Which agent CLI runs as the worker. Built-in drivers (see docs/drivers.md):
+#   claude    — Claude Code           (default; behavior identical to pre-driver era)
+#   opencode  — OpenCode (sst/opencode)
+#   codex     — Codex CLI (OpenAI)
+# Custom: drop scripts/drivers/<name>.sh into the skill, or project-level into
+#   <host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh
+#
+# 哪个 agent CLI 当 worker。内置 driver（详见 docs/drivers.zh.md）：
+#   claude    — Claude Code             （默认；行为完全等同未引入 driver 抽象前）
+#   opencode  — OpenCode (sst/opencode)
+#   codex     — Codex CLI (OpenAI)
+# 自定义：往 skill 的 scripts/drivers/<name>.sh 加，或放在项目级
+#   <host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh
+WORKER_AGENT="claude"
+
 # ── Claude Code launch / Claude Code 启动 ──
 
 # Extra flags when launching claude. --dangerously-skip-permissions strongly
 # recommended; otherwise the session blocks on permission prompts.
+# (Only used when WORKER_AGENT=claude. Other drivers read their own *_EXTRA_FLAGS.)
 #
 # 启动 claude 时的额外 flag。--dangerously-skip-permissions 强烈推荐，否则会卡权限弹窗。
+# （只有 WORKER_AGENT=claude 时生效；其他 driver 读各自的 *_EXTRA_FLAGS。）
 CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
+
+# OpenCode / Codex 启动 flag（按需打开）：
+# OPENCODE_EXTRA_FLAGS=""
+# CODEX_EXTRA_FLAGS=""
 
 # ── Env passed to worker / 传给 worker 的 env ──
 

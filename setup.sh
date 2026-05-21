@@ -72,14 +72,29 @@ echo "  instance key: $KEY"
 echo "  scheduler:    $SCHEDULER ($OS)"
 echo
 
+# ── Worker agent 选择 ──
+# 优先级：WORKER_AGENT env > 默认 claude
+# （首次 setup 时项目还没 coding-agent.config，所以以 env 覆盖为唯一入口；
+#  二次 setup 时该字段已写进 config，下面那段会 skip 重写。）
+WORKER_AGENT_PICK="${WORKER_AGENT:-claude}"
+
+# 加载 driver 以拿到 worker 二进制名
+# shellcheck source=scripts/drivers/_common.sh
+source "$SKILL_DIR/scripts/drivers/_common.sh"
+PROJECT_ROOT="$HOST" source_driver "$WORKER_AGENT_PICK" || {
+    echo "❌ 找不到 driver '$WORKER_AGENT_PICK'。内置：claude / opencode / codex。"
+    exit 1
+}
+WORKER_BIN="$(agent_bin)"
+echo "  worker agent: $WORKER_AGENT_PICK  (binary: $WORKER_BIN)"
+
 # ── 依赖检查 ──
-# 通用依赖；macOS 上 flock 默认不自带，需要 `brew install flock`
-common_cmds=(git gh tmux jq flock claude)
+# 通用依赖；调度器二进制按 OS 走下面的分支。macOS 上 flock 默认不自带，需要 `brew install flock`
+common_cmds=(git gh tmux jq flock "$WORKER_BIN")
 missing=()
 for cmd in "${common_cmds[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
-# OS-specific
 case "$SCHEDULER" in
     systemd) command -v systemctl >/dev/null 2>&1 || missing+=("systemctl") ;;
     launchd) command -v launchctl >/dev/null 2>&1 || missing+=("launchctl") ;;
@@ -127,7 +142,8 @@ else
         "s|\$HOME/github/myproject|$HOST|" \
         "s|\$HOME/github/worktree/myproject|$HOME/github/worktree/$project_name|" \
         "s|\$HOME/.local/state/coding-agent-poll|$HOME/.local/state/coding-agent-poll/$project_name|" \
-        "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|"
+        "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|" \
+        "s|^WORKER_AGENT=\"claude\"|WORKER_AGENT=\"$WORKER_AGENT_PICK\"|"
     echo "  ✓ $config"
 fi
 
@@ -151,12 +167,16 @@ conf_dir="$HOME/.config/coding-agent-work-loop"
 mkdir -p "$conf_dir"
 env_file="$conf_dir/$KEY.conf"
 
-# 文件是 KEY=VALUE 列表，无引号无 shell 展开。launchd 端用 `set -a; . FILE; set +a` 把它转成 env。
-claude_path="$(dirname "$(command -v claude)")"
+# 文件是 KEY=VALUE 列表，无引号无 shell 展开。
+#   - systemd: 直接当 EnvironmentFile=...
+#   - launchd: 生成的 plist 通过 `set -a; . FILE; set +a` 内联加载（无 EnvironmentFile 等价物）
+# 都需要 PATH——systemd user service / launchd LaunchAgent 默认 PATH 都很瘦，
+# 把 worker CLI 所在目录拼进去。
+worker_path="$(dirname "$(command -v "$WORKER_BIN")")"
 cat > "$env_file" <<EOF
 PROJECT_ROOT=$HOST
 CODING_AGENT_CONFIG=$config
-PATH=$claude_path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+PATH=$worker_path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 EOF
 echo "  ✓ $env_file"
 
@@ -229,7 +249,7 @@ esac
 echo
 echo "── 5. GitHub labels ──"
 repo=$(grep -E "^REPO=" "$config" | head -1 | sed 's/.*=//' | tr -d '"' | tr -d "'")
-for ld in "pending/agent|5539d3|等待 agent 处理" "agent/doing|0e8a16|agent 正在处理" "pending/human|4bc81f|等待人类处理" "pending/PR|bfd4f2|工作已转 PR 跟踪" "Done|586069|已结案"; do
+for ld in "pending/agent|5539d3|等待 agent 处理" "doing/agent|0e8a16|agent 正在处理" "pending/human|4bc81f|等待人类处理" "pending/PR|bfd4f2|工作已转 PR 跟踪" "Done|586069|已结案"; do
     IFS='|' read -r name color desc <<< "$ld"
     if gh label create "$name" --color "$color" --description "$desc" --repo "$repo" 2>/dev/null; then
         echo "  ✓ 建 label: $name"

@@ -31,8 +31,8 @@ fi
 
 log "===== poll start ====="
 
-# 计活的 worker：只算 Claude 真正在 processing 的 session
-# （tmux footer 含 "esc to interrupt" = busy；idle/已完成/dead = 不算）
+# 计活的 worker：只算 agent 真正在 processing 的 session
+# busy 语义由当前加载的 driver agent_is_busy 提供（claude / opencode / codex 各有自己的 footer 关键字）
 active_workers=$(count_active_workers)
 log "active workers (busy): $active_workers (max=${MAX_CONCURRENT_WORKERS})"
 
@@ -136,9 +136,10 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if jq -e ".cleaned_prs | index($prnum)" "$STATE_FILE" >/dev/null 2>&1; then
                 continue
             fi
-            issue_n=$(branch_to_issue_num "$branch")
+            issue_n=$(pr_to_issue_num "$prnum" "$branch")
+            # pr_to_issue_num fallback 链兜底到 PR 编号本身，理论上永不空
             if [ -z "$issue_n" ]; then
-                log "auto-cleanup: PR #$prnum branch '$branch' 不符合 BRANCH_PREFIX，标记为已清不再扫"
+                log "auto-cleanup: PR #$prnum 无法 derive 工作编号（异常），标记为已清不再扫"
                 tmp=$(mktemp)
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 continue
