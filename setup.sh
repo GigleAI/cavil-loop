@@ -171,14 +171,22 @@ env_file="$conf_dir/$KEY.conf"
 #   - systemd: 直接当 EnvironmentFile=...
 #   - launchd: 生成的 plist 通过 `set -a; . FILE; set +a` 内联加载（无 EnvironmentFile 等价物）
 # 都需要 PATH——systemd user service / launchd LaunchAgent 默认 PATH 都很瘦，
-# 把 worker CLI 所在目录拼进去。
+# 把 worker CLI 所在目录拼进去；macOS Homebrew（Apple Silicon）默认在 /opt/homebrew/bin。
 worker_path="$(dirname "$(command -v "$WORKER_BIN")")"
-cat > "$env_file" <<EOF
+daemon_path="$worker_path:$HOME/.local/bin"
+if [ "$OS" = "Darwin" ] && [ -d /opt/homebrew/bin ]; then
+    daemon_path="/opt/homebrew/bin:$daemon_path"
+fi
+if [ -f "$env_file" ]; then
+    echo "  ⚠️  已存在，跳过（手动检查 PATH 是否需要更新）"
+else
+    cat > "$env_file" <<EOF
 PROJECT_ROOT=$HOST
 CODING_AGENT_CONFIG=$config
-PATH=$worker_path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+PATH=$daemon_path:/usr/local/bin:/usr/bin:/bin
 EOF
-echo "  ✓ $env_file"
+    echo "  ✓ $env_file"
+fi
 
 # ── 4. 安装调度器 unit（按 OS 分支）──
 echo
@@ -288,7 +296,7 @@ enable_launchd() {
     local label="dev.luosky.coding-agent-work-loop.$KEY"
     local plist="$HOME/Library/LaunchAgents/$label.plist"
     local log_dir="$HOME/Library/Logs/coding-agent-work-loop"
-    read -rp "现在 bootstrap & start $label？[y/N] " yn
+    read -rp "现在 bootstrap & start ${label}？[y/N] " yn
     case "$yn" in
         y|Y|yes)
             # 已加载的话先 bootout 再 bootstrap，达到幂等 reload
