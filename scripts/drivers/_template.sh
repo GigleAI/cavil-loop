@@ -29,6 +29,9 @@ agent_command_new() {
     local cwd="$1"
     local name="$2"
     local prompt_file="$3"
+    # 注：worker_session_name 用 `<owner>/<repo>#<N>` 格式，含 / # —— 如果你的 agent
+    # 支持 session display name flag（claude -n / opencode --name 等），用 `%q`
+    # printf format 做 shell-quote。下面示例假设 agent 没这个 flag：
     printf 'your-agent-cli %s "$(cat %s)"' \
         "${YOUR_AGENT_EXTRA_FLAGS:-}" \
         "$prompt_file"

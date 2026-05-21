@@ -27,7 +27,8 @@ agent_command_new() {
     local cwd="$1"   # 未直接用：tmux 已 -c "$cwd"，claude 自动 cwd
     local name="$2"
     local prompt_file="$3"
-    printf 'claude -n %s %s "$(cat %s)"' \
+    # name 含 / # 等需要 shell-quote（worker_session_name 现在用 GigleAI/repo#42 风格）
+    printf 'claude -n %q %s "$(cat %s)"' \
         "$name" \
         "${CLAUDE_EXTRA_FLAGS:-}" \
         "$prompt_file"

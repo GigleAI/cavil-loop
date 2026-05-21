@@ -205,9 +205,15 @@ tmux_session_name() {
     echo "${TMUX_PREFIX}-${SESSION_NAME_PREFIX}$1"
 }
 
-# Agent 侧 session 名（claude -n 用、其他 agent 兼容保留传入 driver）
+# Agent 侧 session display name（claude -n / opencode / codex 都用作 conversation
+# 的 cosmetic 标签——出现在 /resume picker / 终端标题）。用 `<owner>/<repo>#<N>`
+# 这个 GitHub idiomatic 短引用：在 worker pane 标题里一眼能定位 issue/PR，在
+# GitHub 上引用 `#N` 自动 link。
+#
+# 注：display name 不参与历史定位（agent_has_history 走 cwd），改 name 不破坏
+# 既有 conversation——老 worker --continue 仍能 resume，只是显示的 name 变了。
 worker_session_name() {
-    echo "${SESSION_NAME_PREFIX}$1"
+    echo "${REPO}#$1"
 }
 
 worktree_path() {
