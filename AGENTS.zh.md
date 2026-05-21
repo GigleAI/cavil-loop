@@ -23,7 +23,7 @@
 ├── coding-agent.config.example ← 配置模板（每字段都有注释）
 ├── scripts/
 │   ├── _lib.sh                ← 公共库：config 加载、log、has_claude_session、run_gh
-│   ├── agent-poll.sh          ← 主轮询（systemd timer 调起）
+│   ├── agent-poll.sh          ← 主轮询（Linux 由 systemd timer 调起 / macOS 由 launchd LaunchAgent 调起）
 │   ├── dispatch-new-issue.sh  ← 新 issue 派工
 │   ├── dispatch-issue-comment.sh ← issue 新评论派工
 │   ├── dispatch-pr-comment.sh ← PR 新评论派工
@@ -35,9 +35,11 @@
 │   ├── new-issue.template.md  ← 新 issue 派工时的 prompt
 │   ├── issue-comment.template.md ← issue 新评论时的 prompt
 │   └── pr-comment.template.md ← PR 新评论时的 prompt
-├── systemd/
+├── systemd/                  ← Linux 调度器
 │   ├── coding-agent-poll@.service ← user-scoped 模板服务
 │   └── coding-agent-poll@.timer
+├── launchd/                  ← macOS 调度器
+│   └── dev.luosky.coding-agent-work-loop.plist.template  ← setup.sh 给每个 project 生成一份
 └── docs/
     ├── architecture.md        ← 五态 label 状态机 + 会话模型 + 选型 FAQ
     ├── security.md            ← 安全模型 + label 纪律
@@ -114,7 +116,7 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
    CODING_AGENT_CONFIG=~/path/to/host/coding-agent.config bash scripts/agent-poll.sh
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
-3. Commit + push。已部署的 systemd timer 下一 tick 自动用新代码（symlink 链路 → skill 源码 → 你 push 的版本）
+3. Commit + push。已部署的 Linux systemd timer 下一 tick 自动用新代码（symlink 链路 → skill 源码 → 你 push 的版本）；macOS LaunchAgent 也一样，plist 每 tick 重新 exec `agent-poll.sh` —— 只有 plist 模板本身变了才要重跑 `setup.sh`
 4. PR 走 `feature/issue-N` 分支（带 `Closes #N` 或 `Refs #N`，见 PR 闭环 A/B/C）
 
 ### 改 prompt 模板

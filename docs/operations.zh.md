@@ -119,13 +119,22 @@ your-project/
 
 ### 用户级状态文件
 
+`<project-key>.conf` 是两个 OS 共享的环境变量单源真相——格式一样，只是不同调度器加载方式不一样。
+
 ```
 ~/.config/coding-agent-work-loop/
-└── <project-key>.conf                  # systemd EnvironmentFile
+└── <project-key>.conf                  # KEY=VALUE env 文件；systemd 当 EnvironmentFile 读，launchd 用 `source` 内联加载
 
+# 仅 Linux
 ~/.config/systemd/user/
 ├── coding-agent-poll@.service          # symlink → skill 目录的模板
 └── coding-agent-poll@.timer            # symlink → skill 目录的模板
+
+# 仅 macOS
+~/Library/LaunchAgents/
+└── dev.luosky.coding-agent-work-loop.<key>.plist   # 每个 project 生成一份（不是 symlink）
+~/Library/Logs/coding-agent-work-loop/
+└── <key>.out.log, <key>.err.log        # launchd 截获 daemon 的 stdout/stderr
 
 ~/.local/state/coding-agent-poll/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
@@ -135,9 +144,30 @@ your-project/
     └── <project>-issue<N>.log
 ```
 
+## 按 OS 选调度器
+
+`setup.sh` 用 `uname -s` 检测 OS，自动选对应调度器：
+
+| OS | 调度器 | Unit / Plist | `setup.sh` 自动装？ |
+|----|--------|--------------|---------------------|
+| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}`（symlink 到 skill 模板）| ✅ |
+| macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist`（生成，非 symlink）| ✅ |
+| 其他 | — | — | ❌ `exit 1`；见下方 [手动 cron 兜底](#手动-cron-兜底) |
+
+两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`，都跑同一个 `agent-poll.sh`。唯一差别是 symlink-vs-生成 的 trade-off：Linux 端 `git pull` skill 自动生效；macOS 端因 launchd 没有 template 模式，plist 是 per-project 生成的，模板有改动要重跑 `setup.sh`。
+
+### macOS 专属
+
+- **Label**：`dev.luosky.coding-agent-work-loop.<key>`（必须和 plist 文件名一致）
+- **加载方式**：`launchctl bootstrap gui/$UID <plist>`（modern 语法，macOS 10.10+）。`setup.sh` 会先 `bootout` 再 bootstrap，重跑幂等。
+- **运行频率**：`StartInterval=60`（每 60 秒一次，等价 systemd `OnUnitActiveSec=60s`）。
+- **日志**：stdout/stderr → `~/Library/Logs/coding-agent-work-loop/<key>.{out,err}.log`。更深的 poll 日志仍在 `$STATE_DIR/poll.log`。
+- **flock**：macOS 不自带，先 `brew install flock` 再跑 `setup.sh`。
+- **登出 / 合盖**：user LaunchAgent 登录后常驻（即使锁屏也跑）；想"无登录、开机即跑"要装到 `/Library/LaunchDaemons/` —— `setup.sh` 故意不进这里（要 `sudo`，且和 Linux `--user` systemd 对称）。
+
 ## 多 project 共存
 
-skill 装一次，systemd 模板 symlink 一次。每个 project 跑：
+skill 装一次，调度器模板装一次。每个 project 跑：
 
 ```bash
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectA
@@ -151,9 +181,15 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectB
 ├── projectA.conf
 └── projectB.conf
 
+# Linux
 systemctl --user list-timers
   coding-agent-poll@projectA.timer
   coding-agent-poll@projectB.timer
+
+# macOS
+launchctl list | grep dev.luosky.coding-agent-work-loop
+  dev.luosky.coding-agent-work-loop.projectA
+  dev.luosky.coding-agent-work-loop.projectB
 ```
 
 互不干扰、独立日志、独立 state。
@@ -167,38 +203,29 @@ cd ~/github/coding-agent-work-loop
 git pull
 ```
 
-systemd unit 是 symlink 指模板，下一次 timer tick 自动用新版逻辑——**不需要重跑 setup.sh**。
+**Linux**：systemd unit 是 symlink 指模板，下一次 timer tick 自动用新版逻辑——**不需要重跑 setup.sh**。
 
-## 其他调度器
+**macOS**：LaunchAgent plist 是 per-project、由 `setup.sh` 生成（launchd 无 template 模式）。如果上游 plist 模板有改动，要重跑 `setup.sh` 重新生成：
 
-systemd 不是硬要求；脚本无状态、可被任何调度器调起。
+```bash
+launchctl bootout gui/$UID/dev.luosky.coding-agent-work-loop.<key> || true
+rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist
+bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+```
 
-**cron**（macOS / 不想用 systemd）：
+日常 skill 升级如果只动 `scripts/*` 两边都不用重跑 setup —— 两种调度器每 tick 都重新 exec `agent-poll.sh`。
+
+## 手动 cron 兜底
+
+上面两种调度器不是硬要求；`agent-poll.sh` 无状态，任何调度器都能驱动。适用：
+
+- 你在 `setup.sh` 不自动配的系统（BSD、不带 systemd 的 WSL、容器、……）
+- 就不想 systemd / launchd
+
+**cron**（任何 Unix）：
 
 ```cron
 * * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh >> /tmp/coding-agent-cron.log 2>&1
-```
-
-**macOS launchd**：
-
-```xml
-<!-- ~/Library/LaunchAgents/com.example.coding-agent-poll.plist -->
-<plist version="1.0">
-  <dict>
-    <key>Label</key><string>com.example.coding-agent-poll</string>
-    <key>ProgramArguments</key>
-    <array>
-      <string>/bin/bash</string>
-      <string>/Users/you/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-      <key>CODING_AGENT_CONFIG</key>
-      <string>/Users/you/myproject/coding-agent.config</string>
-    </dict>
-    <key>StartInterval</key><integer>60</integer>
-  </dict>
-</plist>
 ```
 
 **Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
@@ -210,7 +237,7 @@ systemd 不是硬要求；脚本无状态、可被任何调度器调起。
 1. tailscale funnel / cloudflare tunnel 把本机 `<port>` 开公网
 2. 跑 [`webhook`](https://github.com/adnanh/webhook) 这种小 listener 订阅 GitHub `issue_comment` + `labeled` 事件
 3. listener 收到 → 直接跑 `agent-poll.sh`（poll 本身按 label 过滤 + state.json 去重，safe to retrigger）
-4. 保留 systemd timer 当兜底
+4. 保留 systemd timer / launchd LaunchAgent 当兜底
 
 ## 自定义 worker（不是 Claude Code）
 
@@ -218,7 +245,9 @@ Worker 切换走一层薄的 **driver 抽象**，不需要 fork。在 `coding-ag
 
 ## 故障排查
 
-### Timer 起来了但 daemon 不跑
+### Timer / agent 起来了但 daemon 不跑
+
+**Linux（systemd）**：
 
 ```bash
 systemctl --user status coding-agent-poll@<key>.timer
@@ -226,11 +255,23 @@ systemctl --user status coding-agent-poll@<key>.service
 journalctl --user -u coding-agent-poll@<key>.service --since "10 min ago"
 ```
 
-常见原因：
+**macOS（launchd）**：
+
+```bash
+launchctl print "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"
+tail -50 ~/Library/Logs/coding-agent-work-loop/<key>.err.log
+tail -50 ~/Library/Logs/coding-agent-work-loop/<key>.out.log
+```
+
+通用原因：
 - `~/.config/coding-agent-work-loop/<key>.conf` 路径不对 → 编辑 conf
 - `coding-agent.config` 缺字段 → 看 `poll.log`
 - `gh auth` 没登录 → `gh auth status`
-- `claude` 不在 systemd `PATH` 里 → `~/.config/coding-agent-work-loop/<key>.conf` 里 `PATH=` 加上 `which claude` 的目录
+- `claude` 不在调度器 `PATH` 里 → `~/.config/coding-agent-work-loop/<key>.conf` 里 `PATH=` 加上 `which claude` 的目录
+
+macOS 专属：
+- "Bootstrap failed: 5: Input/output error" → 之前的 load 还在。`launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"` 后重跑 setup。
+- `<key>.err.log` 报 `flock: command not found` → `brew install flock`。
 
 ### Worker session 卡在权限弹窗
 
@@ -273,12 +314,23 @@ bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -f     # 
 
 ### 紧急停所有 worker
 
+**Linux**：
+
 ```bash
 systemctl --user stop coding-agent-poll@<key>.timer
 tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -r -n1 tmux kill-session -t
 ```
 
+**macOS**：
+
+```bash
+launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"
+tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-session -t
+```
+
 ### 卸载某个 project
+
+**Linux**：
 
 ```bash
 KEY=<key>
@@ -286,4 +338,16 @@ systemctl --user disable --now coding-agent-poll@$KEY.timer
 rm ~/.config/coding-agent-work-loop/$KEY.conf
 # 可选：rm <host>/coding-agent.config（也可保留供下次接入）
 # 可选：rm -r ~/.local/state/coding-agent-poll/<project>
+```
+
+**macOS**：
+
+```bash
+KEY=<key>
+launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.$KEY"
+rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.$KEY.plist
+rm ~/.config/coding-agent-work-loop/$KEY.conf
+# 可选：rm <host>/coding-agent.config
+# 可选：rm -r ~/.local/state/coding-agent-poll/<project>
+# 可选：rm ~/Library/Logs/coding-agent-work-loop/$KEY.*.log
 ```

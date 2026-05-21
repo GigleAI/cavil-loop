@@ -23,7 +23,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 ├── coding-agent.config.example    ← Config template (every field commented)
 ├── scripts/
 │   ├── _lib.sh                    ← Common library: config load, log, has_claude_session, run_gh
-│   ├── agent-poll.sh              ← Main poller (called by systemd timer)
+│   ├── agent-poll.sh              ← Main poller (called by systemd timer on Linux / launchd LaunchAgent on macOS)
 │   ├── dispatch-new-issue.sh      ← Dispatch a fresh issue
 │   ├── dispatch-issue-comment.sh  ← Dispatch on new issue comment
 │   ├── dispatch-pr-comment.sh     ← Dispatch on new PR comment
@@ -35,9 +35,11 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   ├── new-issue.template.md      ← Prompt for new-issue dispatch
 │   ├── issue-comment.template.md  ← Prompt for new issue comment
 │   └── pr-comment.template.md     ← Prompt for new PR comment
-├── systemd/
+├── systemd/                      ← Linux scheduler
 │   ├── coding-agent-poll@.service ← User-scoped template service
 │   └── coding-agent-poll@.timer
+├── launchd/                      ← macOS scheduler
+│   └── dev.luosky.coding-agent-work-loop.plist.template  ← Generated per project by setup.sh
 └── docs/
     ├── architecture.md / .zh.md   ← Five-state label machine + session model + design FAQ
     ├── collaboration.md / .zh.md  ← Multi-human + multi-agent workflows via label suffixes
@@ -124,7 +126,7 @@ This means the worktree/tmux/branch "N" **isn't necessarily** the same as `featu
    CODING_AGENT_CONFIG=~/path/to/host/coding-agent.config bash scripts/agent-poll.sh
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
-3. Commit + push. Deployed systemd timers pick up the new code on their next tick (the symlink chain → skill source → your pushed version)
+3. Commit + push. Deployed Linux systemd timers pick up the new code on their next tick (the symlink chain → skill source → your pushed version). macOS LaunchAgents do too, because the plist re-execs `agent-poll.sh` each tick — only changes to the plist template itself require re-running `setup.sh`
 4. PRs use `feature/issue-N` branches (with `Closes #N` or `Refs #N` — see PR closure A/B/C)
 
 ### Edit a prompt template
