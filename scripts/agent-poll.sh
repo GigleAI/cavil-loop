@@ -155,11 +155,9 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
 
                 # PR：merge 完，PR 这件事真结束 → Done
                 run_gh "auto-cleanup label PR #$prnum → Done" \
-                    gh pr edit "$prnum" --repo "$REPO" \
-                    --add-label "$LABEL_DONE" \
-                    --remove-label "$LABEL_PENDING_HUMAN" \
-                    --remove-label "$LABEL_PENDING_AGENT" \
-                    --remove-label "$LABEL_AGENT_DOING" || true
+                    gh_label_flip "$prnum" \
+                    --add "$LABEL_DONE" \
+                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT" "$LABEL_AGENT_DOING" || true
 
                 # Issue：看实际状态决定怎么标
                 # - CLOSED（PR body 是 Closes #N，GitHub auto-close）→ 加 Done（与 PR 同闭环）
@@ -167,20 +165,15 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 issue_state=$(gh issue view "$issue_n" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "OPEN")
                 if [ "$issue_state" = "CLOSED" ]; then
                     run_gh "auto-cleanup label issue #$issue_n → Done" \
-                        gh issue edit "$issue_n" --repo "$REPO" \
-                        --add-label "$LABEL_DONE" \
-                        --remove-label "$LABEL_PENDING_PR" \
-                        --remove-label "$LABEL_PENDING_HUMAN" \
-                        --remove-label "$LABEL_PENDING_AGENT" \
-                        --remove-label "$LABEL_AGENT_DOING" || true
+                        gh_label_flip "$issue_n" \
+                        --add "$LABEL_DONE" \
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
                 else
                     run_gh "auto-cleanup label issue #$issue_n → pending/human" \
-                        gh issue edit "$issue_n" --repo "$REPO" \
-                        --add-label "$LABEL_PENDING_HUMAN" \
-                        --remove-label "$LABEL_PENDING_PR" \
-                        --remove-label "$LABEL_PENDING_AGENT" \
-                        --remove-label "$LABEL_AGENT_DOING" || true
+                        gh_label_flip "$issue_n" \
+                        --add "$LABEL_PENDING_HUMAN" \
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n OPEN (Refs #N) → pending/human"
                 fi
             else
