@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  coding-agent-work-loop launchd template (macOS user agent).
+  setup.sh substitutes {{KEY}} / {{HOME}} / {{SKILL_DIR}} / {{ENV_FILE}} / {{LOG_DIR}}
+  and writes the result to ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist.
+
+  systemd-equivalence cheat sheet:
+    OnUnitActiveSec=60s     -> StartInterval=60
+    EnvironmentFile=...     -> ProgramArguments sources {{ENV_FILE}} before exec
+                               (launchd has no native EnvironmentFile)
+    WorkingDirectory=...    -> WorkingDirectory
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.luosky.coding-agent-work-loop.{{KEY}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; . "{{ENV_FILE}}"; set +a; exec /bin/bash "{{SKILL_DIR}}/scripts/agent-poll.sh"</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{SKILL_DIR}}</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/{{KEY}}.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/{{KEY}}.err.log</string>
+</dict>
+</plist>

@@ -91,7 +91,7 @@ Linux stops user services on logout by default; this keeps the poller alive when
 
 ## Dependencies
 
-`git`, `gh` (run `gh auth login` first), `tmux`, `jq`, `flock`, `claude` (Pro/Max plan). Linux uses the built-in `systemd` to schedule the poller; macOS uses `launchd` (see [docs/operations.md](docs/operations.md#alternative-schedulers)). Tested on Ubuntu 22.04 / 24.04.
+`git`, `gh` (run `gh auth login` first), `tmux`, `jq`, `flock`, `claude` (Pro/Max plan). `setup.sh` auto-detects the OS: Linux uses the built-in `systemd` user timer; macOS uses a `launchd` LaunchAgent (see [docs/operations.md → Scheduler by OS](docs/operations.md#scheduler-by-os)). Tested on Ubuntu 22.04 / 24.04; macOS supported, community testing welcome.
 
 ---
 

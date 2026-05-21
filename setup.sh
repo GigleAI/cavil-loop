@@ -7,11 +7,16 @@
 #   1. coding-agent.config       —— 本项目专属配置（gitignored）
 #   2. .gitignore 加一行排除上述 config
 #
+# OS 自动判断：
+#   - Linux  → systemd user timer（symlink 模板，git pull 自动生效）
+#   - Darwin → launchd LaunchAgent（每个 project 生成独立 plist）
+#   - 其他   → exit 1，引导到 docs/operations.md 手动 cron fallback
+#
 # 用法：
 #   bash setup.sh <host-project-path> [instance-key]
 # 例：
 #   bash setup.sh ~/github/myproject
-#   bash setup.sh ~/github/myproject acme       # 自定义 systemd instance key
+#   bash setup.sh ~/github/myproject acme       # 自定义 instance key
 set -euo pipefail
 
 HOST="${1:-}"
@@ -22,7 +27,7 @@ if [ -z "$HOST" ]; then
 用法：$0 <host-project-path> [instance-key]
 
   host-project-path: 目标 git 仓库工作树根
-  instance-key:      systemd 实例名（default = basename of host），可让多项目共存
+  instance-key:      调度器实例名（default = basename of host），可让多项目共存
 
 例：
   $0 ~/github/myproject
@@ -40,25 +45,53 @@ HOST="$(cd "$HOST" && pwd)"
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -z "$KEY" ] && KEY="$(basename "$HOST")"
 
-# instance key 必须是 systemd 安全的字符（字母数字 _ - .）
+# instance key 跨 systemd / launchd label 都要安全的字符（字母数字 _ - .）
 if ! [[ "$KEY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     echo "❌ instance key 只能含 [A-Za-z0-9_.-]：$KEY"
     exit 1
 fi
 
+# ── OS 判定 ──
+OS="$(uname -s)"
+case "$OS" in
+    Linux)  SCHEDULER="systemd" ;;
+    Darwin) SCHEDULER="launchd" ;;
+    *)
+        echo "❌ 不支持的 OS：$OS"
+        echo "   本脚本只自动配 Linux (systemd) / macOS (launchd)。"
+        echo "   想用 cron 等其他调度器手动接 daemon → 见"
+        echo "   https://github.com/luosky/coding-agent-work-loop/blob/main/docs/operations.md#manual-cron-fallback"
+        exit 1
+        ;;
+esac
+
 echo "── coding-agent-work-loop setup ──"
 echo "  host project: $HOST"
 echo "  skill dir:    $SKILL_DIR"
 echo "  instance key: $KEY"
+echo "  scheduler:    $SCHEDULER ($OS)"
 echo
 
 # ── 依赖检查 ──
+# 通用依赖；macOS 上 flock 默认不自带，需要 `brew install flock`
+common_cmds=(git gh tmux jq flock claude)
 missing=()
-for cmd in git gh tmux jq flock systemctl claude; do
+for cmd in "${common_cmds[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
+# OS-specific
+case "$SCHEDULER" in
+    systemd) command -v systemctl >/dev/null 2>&1 || missing+=("systemctl") ;;
+    launchd) command -v launchctl >/dev/null 2>&1 || missing+=("launchctl") ;;
+esac
+
 if [ ${#missing[@]} -gt 0 ]; then
     echo "❌ 缺少依赖：${missing[*]}"
+    if [ "$SCHEDULER" = "launchd" ]; then
+        for m in "${missing[@]}"; do
+            [ "$m" = "flock" ] && echo "   提示：macOS 上 flock 不是自带，可 \`brew install flock\`"
+        done
+    fi
     exit 1
 fi
 echo "✓ 依赖齐全"
@@ -70,6 +103,16 @@ fi
 echo "✓ gh 已登录"
 echo
 
+# ── 可移植 sed in-place（绕开 GNU vs BSD `sed -i` 差异）──
+subst_inplace() {
+    # 用法：subst_inplace FILE EXPR [EXPR ...]
+    local file=$1; shift
+    local tmp; tmp=$(mktemp)
+    local args=() e
+    for e in "$@"; do args+=(-e "$e"); done
+    sed "${args[@]}" "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 # ── 1. 生成 host/coding-agent.config ──
 echo "── 1. 生成 $HOST/coding-agent.config ──"
 config="$HOST/coding-agent.config"
@@ -79,13 +122,12 @@ else
     default_repo="$(cd "$HOST" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "owner/repo")"
     project_name="$(basename "$HOST")"
     cp "$SKILL_DIR/coding-agent.config.example" "$config"
-    sed -i \
-        -e "s|myorg/myrepo|$default_repo|" \
-        -e "s|\$HOME/github/myproject|$HOST|" \
-        -e "s|\$HOME/github/worktree/myproject|$HOME/github/worktree/$project_name|" \
-        -e "s|\$HOME/.local/state/coding-agent-poll|$HOME/.local/state/coding-agent-poll/$project_name|" \
-        -e "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|" \
-        "$config"
+    subst_inplace "$config" \
+        "s|myorg/myrepo|$default_repo|" \
+        "s|\$HOME/github/myproject|$HOST|" \
+        "s|\$HOME/github/worktree/myproject|$HOME/github/worktree/$project_name|" \
+        "s|\$HOME/.local/state/coding-agent-poll|$HOME/.local/state/coding-agent-poll/$project_name|" \
+        "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|"
     echo "  ✓ $config"
 fi
 
@@ -102,14 +144,14 @@ else
 fi
 
 # ── 3. 创建 ~/.config/coding-agent-work-loop/<key>.conf ──
+# systemd 用它作 EnvironmentFile；launchd 由生成的 plist 通过 `source` 加载。
 echo
-echo "── 3. 注册 systemd EnvironmentFile ──"
+echo "── 3. 注册 daemon 环境文件 ──"
 conf_dir="$HOME/.config/coding-agent-work-loop"
 mkdir -p "$conf_dir"
 env_file="$conf_dir/$KEY.conf"
 
-# systemd EnvironmentFile 是 KEY=VALUE 列表，不能引号包，不展开 shell。
-# 需要 PATH，因为 systemd user service 默认 PATH 很瘦
+# 文件是 KEY=VALUE 列表，无引号无 shell 展开。launchd 端用 `set -a; . FILE; set +a` 把它转成 env。
 claude_path="$(dirname "$(command -v claude)")"
 cat > "$env_file" <<EOF
 PROJECT_ROOT=$HOST
@@ -118,23 +160,70 @@ PATH=$claude_path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 EOF
 echo "  ✓ $env_file"
 
-# ── 4. 安装 systemd unit 模板（用 symlink，方便后续 skill 更新自动生效）──
+# ── 4. 安装调度器 unit（按 OS 分支）──
 echo
-echo "── 4. 安装 systemd unit 模板 ──"
-sys_dir="$HOME/.config/systemd/user"
-mkdir -p "$sys_dir"
-for f in coding-agent-poll@.service coding-agent-poll@.timer; do
-    src="$SKILL_DIR/systemd/$f"
-    dst="$sys_dir/$f"
-    if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
-        echo "  · $f 已 symlink"
-    elif [ -e "$dst" ]; then
-        echo "  ⚠️  $f 已存在（非 symlink），跳过——手动检查"
-    else
-        ln -s "$src" "$dst"
-        echo "  ✓ symlink $dst -> $src"
+echo "── 4. 安装 $SCHEDULER unit ──"
+
+install_systemd() {
+    # 用 symlink，方便后续 skill 升级（git pull）自动生效，不需要重跑 setup.sh
+    local sys_dir="$HOME/.config/systemd/user"
+    mkdir -p "$sys_dir"
+    local f src dst
+    for f in coding-agent-poll@.service coding-agent-poll@.timer; do
+        src="$SKILL_DIR/systemd/$f"
+        dst="$sys_dir/$f"
+        if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+            echo "  · $f 已 symlink"
+        elif [ -e "$dst" ]; then
+            echo "  ⚠️  $f 已存在（非 symlink），跳过——手动检查"
+        else
+            ln -s "$src" "$dst"
+            echo "  ✓ symlink $dst -> $src"
+        fi
+    done
+}
+
+install_launchd() {
+    # launchd 没有 systemd template 模式，每 instance 必须一份独立 plist。
+    # 因此 plist 是「生成」而非 symlink：skill 升级想换 plist 模板要重跑 setup.sh。
+    local plist_dir="$HOME/Library/LaunchAgents"
+    local log_dir="$HOME/Library/Logs/coding-agent-work-loop"
+    local label="dev.luosky.coding-agent-work-loop.$KEY"
+    local plist="$plist_dir/$label.plist"
+    local template="$SKILL_DIR/launchd/dev.luosky.coding-agent-work-loop.plist.template"
+
+    mkdir -p "$plist_dir" "$log_dir"
+
+    if [ ! -f "$template" ]; then
+        echo "❌ launchd 模板不见了：$template"
+        exit 1
     fi
-done
+
+    if [ -e "$plist" ]; then
+        echo "  ⚠️  $plist 已存在，跳过——想重写请先 \`launchctl bootout gui/\$UID/$label\` 再 rm 它"
+    else
+        # 写到 tempfile 再 mv，避免半成品 plist 留在 LaunchAgents/
+        local tmp; tmp=$(mktemp)
+        sed \
+            -e "s|{{KEY}}|$KEY|g" \
+            -e "s|{{HOME}}|$HOME|g" \
+            -e "s|{{SKILL_DIR}}|$SKILL_DIR|g" \
+            -e "s|{{ENV_FILE}}|$env_file|g" \
+            -e "s|{{LOG_DIR}}|$log_dir|g" \
+            "$template" > "$tmp"
+        mv "$tmp" "$plist"
+        # plutil 校验
+        if command -v plutil >/dev/null 2>&1; then
+            plutil -lint "$plist" >/dev/null || { echo "❌ 生成的 plist 不合法"; exit 1; }
+        fi
+        echo "  ✓ 生成 $plist"
+    fi
+}
+
+case "$SCHEDULER" in
+    systemd) install_systemd ;;
+    launchd) install_launchd ;;
+esac
 
 # ── 5. GitHub labels（幂等）──
 echo
@@ -154,22 +243,53 @@ echo
 echo "── 6. seed state.json ──"
 CODING_AGENT_CONFIG="$config" bash "$SKILL_DIR/scripts/seed-state.sh"
 
-# ── 7. enable timer ──
+# ── 7. 启动 daemon（按 OS 分支）──
 echo
-echo "── 7. 启动 timer ──"
-read -rp "现在 enable & start coding-agent-poll@$KEY.timer？[y/N] " yn
-case "$yn" in
-    y|Y|yes)
-        systemctl --user daemon-reload
-        systemctl --user enable --now "coding-agent-poll@$KEY.timer"
-        echo "  ✓ enabled & running"
-        echo
-        echo "    状态：systemctl --user status coding-agent-poll@$KEY.timer"
-        echo "    日志：tail -f \$(grep ^STATE_DIR $config | sed 's/.*=//' | tr -d '\"')/poll.log"
-        ;;
-    *)
-        echo "  跳过；以后：systemctl --user enable --now coding-agent-poll@$KEY.timer"
-        ;;
+echo "── 7. 启动 daemon ──"
+
+enable_systemd() {
+    read -rp "现在 enable & start coding-agent-poll@$KEY.timer？[y/N] " yn
+    case "$yn" in
+        y|Y|yes)
+            systemctl --user daemon-reload
+            systemctl --user enable --now "coding-agent-poll@$KEY.timer"
+            echo "  ✓ enabled & running"
+            echo
+            echo "    状态：systemctl --user status coding-agent-poll@$KEY.timer"
+            echo "    日志：tail -f \$(grep ^STATE_DIR $config | sed 's/.*=//' | tr -d '\"')/poll.log"
+            ;;
+        *)
+            echo "  跳过；以后：systemctl --user enable --now coding-agent-poll@$KEY.timer"
+            ;;
+    esac
+}
+
+enable_launchd() {
+    local label="dev.luosky.coding-agent-work-loop.$KEY"
+    local plist="$HOME/Library/LaunchAgents/$label.plist"
+    local log_dir="$HOME/Library/Logs/coding-agent-work-loop"
+    read -rp "现在 bootstrap & start $label？[y/N] " yn
+    case "$yn" in
+        y|Y|yes)
+            # 已加载的话先 bootout 再 bootstrap，达到幂等 reload
+            launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+            launchctl bootstrap "gui/$UID" "$plist"
+            launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1 || true
+            echo "  ✓ bootstrapped & kicked"
+            echo
+            echo "    状态：launchctl print gui/\$UID/$label"
+            echo "    日志（daemon）：tail -f $log_dir/$KEY.out.log"
+            echo "    日志（poll 内部）：tail -f \$(grep ^STATE_DIR $config | sed 's/.*=//' | tr -d '\"')/poll.log"
+            ;;
+        *)
+            echo "  跳过；以后：launchctl bootstrap gui/\$UID $plist"
+            ;;
+    esac
+}
+
+case "$SCHEDULER" in
+    systemd) enable_systemd ;;
+    launchd) enable_launchd ;;
 esac
 
 echo
@@ -179,4 +299,9 @@ echo "下一步："
 echo "  1. \$EDITOR $config 检查配置（特别是 WORKTREE_SETUP_CMD 适配你的包管理器）"
 echo "  2. 想自定义 worker prompt 风格：把 prompts/*.template.md 复制到 $HOST/.coding-agent/prompts/ 改"
 echo "  3. 试跑：gh issue edit <N> --add-label pending/agent  → 60s 内 daemon 会接管"
-echo "  4. 用户不在线也要跑：sudo loginctl enable-linger \$USER"
+if [ "$SCHEDULER" = "systemd" ]; then
+    echo "  4. 用户不在线也要跑：sudo loginctl enable-linger \$USER"
+else
+    echo "  4. 想登出 / 关屏也跑：launchd LaunchAgent 默认登录后常驻；如要开机即跑（无需登录）"
+    echo "     需 /Library/LaunchDaemons（root，本脚本不覆盖）"
+fi
