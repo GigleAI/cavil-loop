@@ -214,7 +214,7 @@ Polling has up to 1 minute of latency. For instant:
 
 ## Custom worker (not Claude Code)
 
-The key trick in `dispatch-*.sh` is "spawn an interactive agent inside tmux that accepts a stdin prompt." Swap to Aider, Cursor CLI, your own agent — just replace the `claude -n ... "$prompt"` line with your own CLI. Recommended: fork and edit `dispatch-*.sh`, don't patch the upstream skill.
+Worker selection now goes through a thin **driver layer** — no fork needed. Set `WORKER_AGENT=<name>` in `coding-agent.config`. Built-ins: `claude` (default), `opencode`, `codex`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
 

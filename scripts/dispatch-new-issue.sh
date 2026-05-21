@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 新 issue 派工：建 worktree、起 claude session、立刻把 label 翻回 pending/human。
+# 新 issue 派工：建 worktree、起 worker agent session、立刻把 label 翻回 agent/doing。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +10,7 @@ ISSUE="${1:?need issue number}"
 
 WORKTREE="$(worktree_path "$ISSUE")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE")"
-CLAUDE_SESSION="$(claude_session_name "$ISSUE")"
+WORKER_SESSION="$(worker_session_name "$ISSUE")"
 BRANCH="$(branch_name "$ISSUE")"
 PROMPT_FILE="/tmp/coding-agent-issue-$ISSUE-prompt.md"
 
@@ -49,11 +49,12 @@ else
 EOF
 fi
 
-# 4. 起 tmux + claude（用 -e 显式传 GH_TOKEN 等 env，因为 tmux 默认不继承）
-log "spawn $TMUX_SESSION in $WORKTREE"
+# 4. 起 tmux + worker agent（用 -e 显式传 GH_TOKEN 等 env，因为 tmux 默认不继承）
+#    新 issue 一律走 agent_command_new（worktree 刚建，无历史）。
+log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT)"
+CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
 mapfile -d '' -t tmux_env < <(tmux_env_args)
-tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
-    "claude -n $CLAUDE_SESSION ${CLAUDE_EXTRA_FLAGS:-} \"\$(cat $PROMPT_FILE)\""
+tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
 
 # 4.5 pane 输出旁路到日志文件，session 退出后仍可回看
 start_session_logging "$TMUX_SESSION"

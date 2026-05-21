@@ -52,9 +52,25 @@ echo "  skill dir:    $SKILL_DIR"
 echo "  instance key: $KEY"
 echo
 
+# ── Worker agent 选择 ──
+# 优先级：WORKER_AGENT env > 默认 claude
+# （首次 setup 时项目还没 coding-agent.config，所以以 env 覆盖为唯一入口；
+#  二次 setup 时该字段已写进 config，下面那段会 skip 重写。）
+WORKER_AGENT_PICK="${WORKER_AGENT:-claude}"
+
+# 加载 driver 以拿到 worker 二进制名
+# shellcheck source=scripts/drivers/_common.sh
+source "$SKILL_DIR/scripts/drivers/_common.sh"
+PROJECT_ROOT="$HOST" source_driver "$WORKER_AGENT_PICK" || {
+    echo "❌ 找不到 driver '$WORKER_AGENT_PICK'。内置：claude / opencode / codex。"
+    exit 1
+}
+WORKER_BIN="$(agent_bin)"
+echo "  worker agent: $WORKER_AGENT_PICK  (binary: $WORKER_BIN)"
+
 # ── 依赖检查 ──
 missing=()
-for cmd in git gh tmux jq flock systemctl claude; do
+for cmd in git gh tmux jq flock systemctl "$WORKER_BIN"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if [ ${#missing[@]} -gt 0 ]; then
@@ -85,6 +101,7 @@ else
         -e "s|\$HOME/github/worktree/myproject|$HOME/github/worktree/$project_name|" \
         -e "s|\$HOME/.local/state/coding-agent-poll|$HOME/.local/state/coding-agent-poll/$project_name|" \
         -e "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|" \
+        -e "s|^WORKER_AGENT=\"claude\"|WORKER_AGENT=\"$WORKER_AGENT_PICK\"|" \
         "$config"
     echo "  ✓ $config"
 fi
@@ -109,12 +126,12 @@ mkdir -p "$conf_dir"
 env_file="$conf_dir/$KEY.conf"
 
 # systemd EnvironmentFile 是 KEY=VALUE 列表，不能引号包，不展开 shell。
-# 需要 PATH，因为 systemd user service 默认 PATH 很瘦
-claude_path="$(dirname "$(command -v claude)")"
+# 需要 PATH，因为 systemd user service 默认 PATH 很瘦；把 worker CLI 所在目录拼进去。
+worker_path="$(dirname "$(command -v "$WORKER_BIN")")"
 cat > "$env_file" <<EOF
 PROJECT_ROOT=$HOST
 CODING_AGENT_CONFIG=$config
-PATH=$claude_path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+PATH=$worker_path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 EOF
 echo "  ✓ $env_file"
 

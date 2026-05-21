@@ -14,7 +14,7 @@ LATEST_COMMENT_ID="${2:-0}"
 
 WORKTREE="$(worktree_path "$ISSUE")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE")"
-CLAUDE_SESSION="$(claude_session_name "$ISSUE")"
+WORKER_SESSION="$(worker_session_name "$ISSUE")"
 BRANCH="$(branch_name "$ISSUE")"
 
 # 渲染 issue-comment prompt
@@ -44,17 +44,6 @@ Issue #$ISSUE 有新评论。读 \`gh issue view $ISSUE --repo $REPO --comments\
 EOF
 fi
 
-inject_to_session() {
-    local sess="$1"
-    local buf
-    buf=$(mktemp)
-    cat "$PROMPT_FILE" > "$buf"
-    tmux load-buffer -t "$sess" "$buf"
-    rm "$buf"
-    tmux paste-buffer -t "$sess" -p
-    tmux send-keys -t "$sess" Enter
-}
-
 flip_label() {
     run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
         gh issue edit "$ISSUE" --repo "$REPO" \
@@ -64,23 +53,23 @@ flip_label() {
 
 # Case A: session 还活着 → 注入 prompt
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    log "issue #$ISSUE -> 注入现有 session $TMUX_SESSION"
-    inject_to_session "$TMUX_SESSION"
+    log "issue #$ISSUE -> 注入现有 session $TMUX_SESSION (agent=$WORKER_AGENT)"
+    agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"
     flip_label
     exit 0
 fi
 
 # Case B: worktree 还在，session 死了 → 重起 session（有历史就 resume）
 if [ -d "$WORKTREE" ]; then
-    CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
-    if has_claude_session "$WORKTREE"; then
-        log "issue #$ISSUE -> 在 $TMUX_SESSION 里 claude --continue 之前的会话"
+    if agent_has_history "$WORKTREE"; then
+        log "issue #$ISSUE -> 在 $TMUX_SESSION 里 resume agent=$WORKER_AGENT 之前的会话"
+        CMD="$(agent_command_resume "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
     else
-        log "issue #$ISSUE -> 从 worktree 起全新 claude session $TMUX_SESSION（cwd 无历史）"
+        log "issue #$ISSUE -> 从 worktree 起全新 $WORKER_AGENT session $TMUX_SESSION（cwd 无历史）"
+        CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
     fi
     mapfile -d '' -t tmux_env < <(tmux_env_args)
-    tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" \
-        "$CLAUDE_INVOKE \"\$(cat $PROMPT_FILE)\""
+    tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
     start_session_logging "$TMUX_SESSION" 2>/dev/null || true
     flip_label
     exit 0

@@ -54,6 +54,10 @@ LABEL_DONE="${LABEL_DONE:-Done}"
 # ISO 639-1 code. Default "en"。代码 / commit / 分支名仍按仓库惯例，不受影响。
 OUTPUT_LANGUAGE="${OUTPUT_LANGUAGE:-en}"
 
+# Worker agent CLI（claude / opencode / codex / 你自家 driver）。
+# 默认 claude → 行为完全等同未引入 driver 抽象前。
+WORKER_AGENT="${WORKER_AGENT:-claude}"
+
 mkdir -p "$STATE_DIR"
 LOG_FILE="$STATE_DIR/poll.log"
 
@@ -108,27 +112,18 @@ pr_to_issue_num() {
     echo "$pr"
 }
 
-# 判断一个 tmux session 里的 Claude 是不是正在「工作」（thinking / tool use 中）。
-# Claude Code 处理时 footer 会出现 "esc to interrupt" 字样；idle 时（等用户输入）这行没了。
-# 用这个区分「占用并发名额的活 worker」和「已经做完等用户反馈的 idle worker」。
-is_session_busy() {
-    local sess="$1"
-    tmux has-session -t "$sess" 2>/dev/null || return 1
-    tmux capture-pane -t "$sess" -p 2>/dev/null | grep -q "esc to interrupt"
-}
-
 # 列出本项目的所有 worker session 名字（不含 dev server 或别的同前缀 session）。
 # tmux ls 格式 "name: 1 windows ..."，awk -F: 取 field 1 后用 ^...$ 严格匹配。
 list_worker_sessions() {
     tmux ls 2>/dev/null | awk -F: -v p="^${TMUX_PREFIX}-${SESSION_NAME_PREFIX}[0-9]+\$" '$1 ~ p {print $1}'
 }
 
-# 数活的 worker：用 GitHub 上 `agent/doing` 标签作真值——
+# 数活的 worker：用 GitHub 上 `doing/agent` 标签作真值——
 # daemon dispatch 时立刻贴上、worker 完工时翻成 pending/human，
 # 期间 label 没改 = 工作还在进行中。
 #
 # 老方案用 tmux capture-pane 找 "esc to interrupt" 字串判 busy，
-# 但该字串只在 Claude 正在 streaming token 那一瞬间出现——
+# 但该字串只在 agent 正在 streaming token 那一瞬间出现——
 # worker 在等 permission 弹窗 / 读文件 / tool 调用间隙时都没了，
 # 导致 daemon 误以为 idle 又派下一个，破坏 MAX_CONCURRENT_WORKERS。
 # label 是 workflow 层意图的表达，远比 pane 内省可靠。
@@ -165,7 +160,8 @@ tmux_session_name() {
     echo "${TMUX_PREFIX}-${SESSION_NAME_PREFIX}$1"
 }
 
-claude_session_name() {
+# Agent 侧 session 名（claude -n 用、其他 agent 兼容保留传入 driver）
+worker_session_name() {
     echo "${SESSION_NAME_PREFIX}$1"
 }
 
@@ -257,30 +253,6 @@ gh_label_flip() {
     return 0
 }
 
-# 判断一个 cwd（一般是 worktree 路径）下有没有 Claude Code 历史会话。
-# Claude 把每个 project 的 session 存在 ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
-# 其中 encoded-cwd = 把绝对路径里的 '/' 全替换成 '-'。
-# 有历史就用 `claude --continue` resume；没历史就 `claude -n NAME` 全新起。
-has_claude_session() {
-    local cwd="$1"
-    local encoded
-    encoded="$(printf %s "$cwd" | tr / -)"
-    local dir="$HOME/.claude/projects/$encoded"
-    [ -d "$dir" ] && compgen -G "$dir/*.jsonl" > /dev/null 2>&1
-}
-
-# 构造 claude 启动命令：cwd 有历史 → `claude --continue`、没历史 → `claude -n NAME`。
-# 用法：CLAUDE_INVOKE="$(claude_invoke "$WORKTREE" "$CLAUDE_SESSION")"
-claude_invoke() {
-    local cwd="$1"
-    local name="$2"
-    if has_claude_session "$cwd"; then
-        echo "claude --continue ${CLAUDE_EXTRA_FLAGS:-}"
-    else
-        echo "claude -n $name ${CLAUDE_EXTRA_FLAGS:-}"
-    fi
-}
-
 # Prompt 模板查找顺序：
 #   1. <project>/.agents/skills/coding-agent-work-loop/prompts/<name>.template.md   ← 新规范（推荐）
 #   2. <project>/.agents/skills/coding-agent-workflow/prompts/<name>.template.md    ← 旧目录名（兼容；老 worktree/分支）
@@ -302,3 +274,11 @@ find_prompt_template() {
     done
     echo ""
 }
+
+# ── 加载 driver（按 WORKER_AGENT）──
+# 放在文件末尾，确保 _lib.sh 自己的函数都已定义；driver 注入的函数
+# (agent_is_busy / agent_has_history / agent_command_new/resume) 之后被 dispatch
+# 脚本 + cleanup-issue.sh 在执行时取到。
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/drivers/_common.sh"
+source_driver "$WORKER_AGENT" || exit 2

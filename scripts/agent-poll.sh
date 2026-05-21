@@ -31,8 +31,8 @@ fi
 
 log "===== poll start ====="
 
-# 计活的 worker：只算 Claude 真正在 processing 的 session
-# （tmux footer 含 "esc to interrupt" = busy；idle/已完成/dead = 不算）
+# 计活的 worker：只算 agent 真正在 processing 的 session
+# busy 语义由当前加载的 driver agent_is_busy 提供（claude / opencode / codex 各有自己的 footer 关键字）
 active_workers=$(count_active_workers)
 log "active workers (busy): $active_workers (max=${MAX_CONCURRENT_WORKERS})"
 
