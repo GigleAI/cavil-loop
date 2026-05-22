@@ -47,13 +47,24 @@ Every artifact from an issue's run is filed under its **issue number**:
 | tmux pane history | `$STATE_DIR/sessions/<project>-issue<N>.log` |
 | Review report | PR comment |
 
-Six months later debugging some hairy code, wondering *why* it was written that way? `cd <worktree>/issue-42 && claude --resume` drops you back into the exact conversation — every alternative considered, every trade-off, the reasoning chain that led to the final design, all preserved. **Not** scrubbing through nameless AI chat sessions and reconstructing intent from a one-line commit message.
+Six months later debugging some hairy code, wondering *why* it was written that way? Two levels of lookup, from light to heavy:
 
-Useful when:
-- Debugging old code: "why didn't they handle case X here?" → resume that issue's session, read the discussion
-- Onboarding teammates: hand them the issue # — design rationale, alternatives weighed, AI's reasoning are all there
-- Post-mortem on regressions: trace back to the decision point, see what was missed
-- **Future AI agents pick up related work**: when a *new* issue touches code from issue #42, the agent runs `gh issue view 42 --comments` itself and grabs the full prior context — no one has to spoon-feed it "here's the background, X was tried, Y didn't work because…" every single time
+1. **GitHub issue/PR comments first** — design proposal, the discussion thread, Hermes review report all live here. `gh issue view 42 --comments` or browser, 5 seconds. 95% of "why is this code shaped this way" answers come from this level
+2. **Resume the AI session if you need to dig deeper** — `cd <worktree>/issue-42 && claude --resume` drops you back into the AI's full conversation: every alternative considered, every dead-end explored, the reasoning chain not fully written out in the final PR comment
+
+Either way: **not** scrubbing through nameless AI chat sessions or reconstructing intent from a one-line commit message.
+
+#### Compounding effect: the longer you use this, the smarter your agent gets
+
+This is the part that compounds over time — **decision history is readable by both humans and AI agents**.
+
+When a *new* issue touches code that was last changed in issue #42, the AI worker runs `gh issue view 42 --comments` itself, pulls the full prior context (design rationale, alternatives weighed, trade-offs accepted), and proceeds informed. **No one has to spoon-feed it "here's the background, X was tried, Y didn't work because…" every single time.**
+
+The more issues your project accumulates this way, the richer the searchable context becomes. AI agents working on month-6 issues land with an understanding of decisions made in month-1 — automatic onboarding without anyone writing onboarding docs.
+
+Useful for:
+- **Humans** debugging old code, onboarding teammates, post-mortem on regressions — read the issue thread first, resume session if needed
+- **AI agents** picking up related work — they self-serve context via `gh issue view <N> --comments`, no human-in-the-loop briefing needed
 
 Full retention policy + lookup / resume SOPs: [docs/persistence.md](docs/persistence.md).
 

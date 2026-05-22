@@ -47,13 +47,24 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 | tmux 历史 | `$STATE_DIR/sessions/<project>-issue<N>.log` |
 | Review 报告 | PR 评论 |
 
-半年后某段代码出问题、想搞清楚当时**为啥**那么写？`cd <worktree>/issue-42 && claude --resume` 直接接回原对话——考虑过的替代方案、被舍弃的方向、最终决策的推理链全在。**不是**靠一行 commit message 反推意图，也不是在无名 AI 聊天 session 里翻"那个之前的"。
+半年后某段代码出问题、想搞清楚当时**为啥**那么写？两层查询，从轻到重：
 
-典型场景：
-- Debug 老代码："这里为啥没处理 X 情况？" → 接回那个 issue 的 session、读当时的讨论
-- 接手 / onboarding：扔给同事一个 issue 号——设计依据、替代方案、AI 的推理过程都在里面
-- Regression 复盘：回到决策点，看当时漏了什么
-- **未来的 AI agent 接手相关活**：新 issue 涉及之前 #42 改过的代码时，agent 自己跑 `gh issue view 42 --comments` 拉出完整上下文——不用每次人工给它从 0 讲"这块当时考虑过 A 没选、用 B 是因为 C..."
+1. **先看 GitHub issue/PR 评论**——设计提案、讨论过程、Hermes review 报告都在这。`gh issue view 42 --comments` 或浏览器，5 秒搞定，**95% 的"这块代码为啥这样"问题都在这一层解决**
+2. **不够再拉本机 AI 对话**——`cd <worktree>/issue-42 && claude --resume` 接回 AI 的完整 conversation：考虑过的所有替代方案、跑偏过的 dead-end、最后 PR 评论里没完整写出的推理链
+
+两种都不是"靠一行 commit message 反推意图"或"在无名 AI 聊天 session 里翻找"。
+
+#### 复利效应：用得越久，你的 agent 越懂你的项目
+
+这是真正长期复利的部分——**决策历史人 + AI agent 都能读**。
+
+新 issue 涉及之前 #42 改过的代码时，AI worker 自己跑 `gh issue view 42 --comments` 拉到完整上下文（设计依据、替代方案、被接受的取舍），然后带着这些信息开干。**不需要**每次人工给它从 0 讲"这块当时考虑过 A 没选、用 B 是因为 C..."。
+
+项目用这套 workflow 积累的 issue 越多，可检索的上下文越丰富。第 6 个月的 issue 派工时，AI agent 自动带着第 1 个月的决策上下文进来——**等于零成本的项目 onboarding**，没人需要单独写 onboarding 文档。
+
+典型受益方：
+- **人**：debug 老代码、接手 / onboarding、regression 复盘——先看 issue 评论，需要细节再 resume session
+- **AI agent**：接手相关活时自助 `gh issue view <N> --comments` 拉上下文，不再需要人介入讲背景
 
 完整保留期 + 查找 / 断点续上 SOP：[docs/persistence.md](docs/persistence.zh.md)。
 
