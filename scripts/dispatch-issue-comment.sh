@@ -68,7 +68,10 @@ if [ -d "$WORKTREE" ]; then
         log "issue #$ISSUE -> 从 worktree 起全新 $WORKER_AGENT session $TMUX_SESSION（cwd 无历史）"
         CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
     fi
-    mapfile -d '' -t tmux_env < <(tmux_env_args)
+    tmux_env=()
+    while IFS= read -r -d '' _tmux_e; do
+        tmux_env+=("$_tmux_e")
+    done < <(tmux_env_args)
     tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
     start_session_logging "$TMUX_SESSION" 2>/dev/null || true
     flip_label

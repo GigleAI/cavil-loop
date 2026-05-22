@@ -135,11 +135,11 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 | [docs/persistence.md](docs/persistence.zh.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.zh.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
 | [docs/operations.md](docs/operations.zh.md) | 配置全字段、prompt 模板、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |
-| [docs/drivers.md](docs/drivers.zh.md) | Worker agent driver —— 内置 `claude` / `opencode` / `codex`、加自家 driver 教程 |
+| [docs/drivers.md](docs/drivers.zh.md) | Worker agent driver —— 内置 `claude` / `opencode` / `codex` / `cursor`、加自家 driver 教程 |
 
 ## 备注
 
-本项目是个 **Agent Skill**——给 Claude Code 这类 AI 编程工具加载的功能包。但你不用 Claude Code 也能跑：后台脚本是纯 shell + `gh` 命令，cron / systemd / launchd 都能调度。Worker 选哪个 agent CLI 由 `WORKER_AGENT=<name>` 控制；内置 `claude` / `opencode` / `codex` 三个 driver，加自家 driver 见 [docs/drivers.zh.md](docs/drivers.zh.md)。
+本项目是个 **Agent Skill**——给 Claude Code 这类 AI 编程工具加载的功能包。但你不用 Claude Code 也能跑：后台脚本是纯 shell + `gh` 命令，cron / systemd / launchd 都能调度。Worker 选哪个 agent CLI 由 `WORKER_AGENT=<name>` 控制；内置 `claude` / `opencode` / `codex` / `cursor` 四个 driver，加自家 driver 见 [docs/drivers.zh.md](docs/drivers.zh.md)。
 
 ## License
 

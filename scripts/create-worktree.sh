@@ -33,7 +33,7 @@ fi
 
 # 2. worktree
 if [ -d "$WORKTREE_DIR" ]; then
-    log "  worktree 目录已存在：$WORKTREE_DIR（跳过创建）"
+    log "  worktree 目录已存在：${WORKTREE_DIR}（跳过创建）"
 else
     mkdir -p "$WORKTREE_BASE"
     git worktree add "$WORKTREE_DIR" "$BRANCH"

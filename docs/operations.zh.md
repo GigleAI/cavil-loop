@@ -241,7 +241,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 
 ## 自定义 worker（不是 Claude Code）
 
-Worker 切换走一层薄的 **driver 抽象**，不需要 fork。在 `coding-agent.config` 里设 `WORKER_AGENT=<name>` 即可。内置：`claude`（默认）、`opencode`、`codex`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
+Worker 切换走一层薄的 **driver 抽象**，不需要 fork。在 `coding-agent.config` 里设 `WORKER_AGENT=<name>` 即可。内置：`claude`（默认）、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
 

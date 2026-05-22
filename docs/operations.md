@@ -241,7 +241,7 @@ Polling has up to 1 minute of latency. For instant:
 
 ## Custom worker (not Claude Code)
 
-Worker selection now goes through a thin **driver layer** — no fork needed. Set `WORKER_AGENT=<name>` in `coding-agent.config`. Built-ins: `claude` (default), `opencode`, `codex`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
+Worker selection now goes through a thin **driver layer** — no fork needed. Set `WORKER_AGENT=<name>` in `coding-agent.config`. Built-ins: `claude` (default), `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
 
