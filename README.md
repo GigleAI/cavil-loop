@@ -37,7 +37,12 @@ Every artifact from an issue's run is filed under its **issue number**:
 | tmux pane history | `$STATE_DIR/sessions/<project>-issue<N>.log` |
 | Review report | PR comment |
 
-Want to resume #42 three weeks later? `cd <worktree>/issue-42 && claude --resume` drops you straight back into that exact conversation. **Not** scrubbing through hundreds of nameless AI chat sessions hoping to find "the one from before."
+Six months later debugging some hairy code, wondering *why* it was written that way? `cd <worktree>/issue-42 && claude --resume` drops you back into the exact conversation — every alternative considered, every trade-off, the reasoning chain that led to the final design, all preserved. **Not** scrubbing through nameless AI chat sessions and reconstructing intent from a one-line commit message.
+
+Useful when:
+- Debugging old code: "why didn't they handle case X here?" → resume that issue's session, read the discussion
+- Onboarding teammates: hand them the issue # — design rationale, alternatives weighed, AI's reasoning are all there
+- Post-mortem on regressions: trace back to the decision point, see what was missed
 
 Full retention policy + lookup / resume SOPs: [docs/persistence.md](docs/persistence.md).
 

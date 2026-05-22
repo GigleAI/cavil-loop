@@ -37,7 +37,12 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 | tmux 历史 | `$STATE_DIR/sessions/<project>-issue<N>.log` |
 | Review 报告 | PR 评论 |
 
-3 周以后想接着干 #42？`cd <worktree>/issue-42 && claude --resume` 直接接回原对话——**不是**在几百个无名 AI 聊天 session 里翻"那个之前的"。
+半年后某段代码出问题、想搞清楚当时**为啥**那么写？`cd <worktree>/issue-42 && claude --resume` 直接接回原对话——考虑过的替代方案、被舍弃的方向、最终决策的推理链全在。**不是**靠一行 commit message 反推意图，也不是在无名 AI 聊天 session 里翻"那个之前的"。
+
+典型场景：
+- Debug 老代码："这里为啥没处理 X 情况？" → 接回那个 issue 的 session、读当时的讨论
+- 接手 / onboarding：扔给同事一个 issue 号——设计依据、替代方案、AI 的推理过程都在里面
+- Regression 复盘：回到决策点，看当时漏了什么
 
 完整保留期 + 查找 / 断点续上 SOP：[docs/persistence.md](docs/persistence.zh.md)。
 
