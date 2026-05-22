@@ -11,17 +11,33 @@
 | `claude`   | `claude`   | `~/.claude/projects/<encoded-cwd>/*.jsonl` | `esc to interrupt` | ✅ 默认、稳定 |
 | `opencode` | `opencode` | `~/.local/share/opencode/...` (按版本) | `thinking` / `working` / `esc to interrupt` / `stop` | ⚠️ 首版适配，请按你装的版本核对 |
 | `codex`    | `codex`    | `~/.codex/sessions/` 或 `~/.codex/history/` | `thinking` / `running` / `esc to interrupt` | ⚠️ 首版适配，请按你装的版本核对 |
+| `cursor`   | `agent`    | _(不按 cwd 探测；始终 new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ macOS 验收通过（headless `-p --trust --force`） |
 
-切换：
+切换（Cursor 示例）：
 
 ```bash
-# 1. 装好对应 CLI（这里以 codex 为例）
-npm i -g @openai/codex   # 或对应安装命令
+# 1. 确保 Cursor Agent CLI 在 PATH 上（`agent --help`）
+#    macOS：通常随 Cursor IDE 安装
+
+# 2. 在 coding-agent.config 里改
+WORKER_AGENT="cursor"
+
+# 3. 重跑 setup.sh 让 daemon EnvironmentFile 的 PATH 包含 `agent`
+WORKER_AGENT=cursor bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+```
+
+> launchd/systemd 下请确保 EnvironmentFile 含 `GH_TOKEN`，worker 里的 `gh` 才会用预期 PAT（见 `coding-agent.config` 的 `WORKER_PASS_ENV`）。
+
+切换（Codex 示例）：
+
+```bash
+# 1. 装好对应 CLI
+npm i -g @openai/codex
 
 # 2. 在 coding-agent.config 里改
 WORKER_AGENT="codex"
 
-# 3. 重跑 setup.sh 让 systemd EnvironmentFile 的 PATH 指向新 CLI
+# 3. 重跑 setup.sh 让 daemon EnvironmentFile 的 PATH 指向新 CLI
 WORKER_AGENT=codex bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
 ```
 

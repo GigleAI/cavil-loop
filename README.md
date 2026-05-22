@@ -184,11 +184,11 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 | [docs/persistence.md](docs/persistence.md) | Where design proposals / discussions / code / Claude conversations / tmux history live, how to look them up later, how to resume from a break point |
 | [docs/security.md](docs/security.md) | **Public-repo users must read.** Anonymous comments can contain prompt injection; how the defenses work |
 | [docs/operations.md](docs/operations.md) | Full config, prompt templates, multi-project, upgrades, macOS launchd, webhook trigger, swapping AI worker, troubleshooting |
-| [docs/drivers.md](docs/drivers.md) | Worker agent drivers — built-in `claude` / `opencode` / `codex`, plus how to add your own |
+| [docs/drivers.md](docs/drivers.md) | Worker agent drivers — built-in `claude` / `opencode` / `codex` / `cursor`, plus how to add your own |
 
 ## Note
 
-This is an **Agent Skill** — a feature package loaded by AI coding tools like Claude Code. But you don't need Claude Code to run it: the background scripts are plain shell + `gh` CLI, scheduled by cron / systemd / launchd. Worker CLI is selected via `WORKER_AGENT=<name>`; built-in `claude` / `opencode` / `codex` drivers ship; add your own — see [docs/drivers.md](docs/drivers.md).
+This is an **Agent Skill** — a feature package loaded by AI coding tools like Claude Code. But you don't need Claude Code to run it: the background scripts are plain shell + `gh` CLI, scheduled by cron / systemd / launchd. Worker CLI is selected via `WORKER_AGENT=<name>`; built-in `claude` / `opencode` / `codex` / `cursor` drivers ship; add your own — see [docs/drivers.md](docs/drivers.md).
 
 ## License
 

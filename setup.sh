@@ -82,7 +82,7 @@ WORKER_AGENT_PICK="${WORKER_AGENT:-claude}"
 # shellcheck source=scripts/drivers/_common.sh
 source "$SKILL_DIR/scripts/drivers/_common.sh"
 PROJECT_ROOT="$HOST" source_driver "$WORKER_AGENT_PICK" || {
-    echo "❌ 找不到 driver '$WORKER_AGENT_PICK'。内置：claude / opencode / codex。"
+    echo "❌ 找不到 driver '$WORKER_AGENT_PICK'。内置：claude / opencode / codex / cursor。"
     exit 1
 }
 WORKER_BIN="$(agent_bin)"

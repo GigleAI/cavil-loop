@@ -11,17 +11,33 @@ The daemon / dispatch scripts and "which CLI runs in tmux" are separated by a **
 | `claude`   | `claude`   | `~/.claude/projects/<encoded-cwd>/*.jsonl` | `esc to interrupt` | ✅ default, stable |
 | `opencode` | `opencode` | `~/.local/share/opencode/...` (version-dependent) | `thinking` / `working` / `esc to interrupt` / `stop` | ⚠️ first-pass; verify against your installed version |
 | `codex`    | `codex`    | `~/.codex/sessions/` or `~/.codex/history/` | `thinking` / `running` / `esc to interrupt` | ⚠️ first-pass; verify against your installed version |
+| `cursor`   | `agent`    | _(not cwd-probed; always new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ stable on macOS (headless `-p --trust --force`) |
 
-Switching:
+Switching (Cursor example):
 
 ```bash
-# 1. Install the CLI (codex shown here)
+# 1. Ensure Cursor Agent CLI is on PATH (`agent --help`)
+#    macOS: usually bundled with Cursor IDE
+
+# 2. In coding-agent.config:
+WORKER_AGENT="cursor"
+
+# 3. Re-run setup.sh so the daemon EnvironmentFile PATH includes `agent`
+WORKER_AGENT=cursor bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+```
+
+> Under launchd/systemd, ensure `GH_TOKEN` is in the daemon EnvironmentFile so the worker's `gh` CLI uses the intended PAT (see `WORKER_PASS_ENV` in `coding-agent.config`).
+
+Switching (Codex example):
+
+```bash
+# 1. Install the CLI
 npm i -g @openai/codex
 
 # 2. In coding-agent.config:
 WORKER_AGENT="codex"
 
-# 3. Re-run setup.sh so the systemd EnvironmentFile PATH points to the new CLI
+# 3. Re-run setup.sh so the daemon EnvironmentFile PATH points to the new CLI
 WORKER_AGENT=codex bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
 ```
 

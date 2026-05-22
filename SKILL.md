@@ -9,7 +9,7 @@ description: GitHub label-driven workflow that lets a local AI handle issues / P
 
 Turn GitHub issue / PR comments into the input and output of your local AI. A systemd timer + a few shell scripts + two GitHub labels let you talk to the AI directly through the GitHub web UI (or the iOS gh app).
 
-> This skill is agent-agnostic by design. Worker CLI is selected by `WORKER_AGENT=<name>` in `coding-agent.config`; the daemon / dispatch scripts go through a thin **driver layer** that plugs in different agent CLIs. Built-in drivers: `claude` (default, Claude Code), `opencode` (sst/opencode), `codex` (OpenAI Codex CLI). Add your own via `scripts/drivers/<name>.sh` — see [docs/drivers.md](docs/drivers.md).
+> This skill is agent-agnostic by design. Worker CLI is selected by `WORKER_AGENT=<name>` in `coding-agent.config`; the daemon / dispatch scripts go through a thin **driver layer** that plugs in different agent CLIs. Built-in drivers: `claude` (default, Claude Code), `opencode` (sst/opencode), `codex` (OpenAI Codex CLI), `cursor` (Cursor Agent CLI). Add your own via `scripts/drivers/<name>.sh` — see [docs/drivers.md](docs/drivers.md).
 
 ## When to invoke
 
@@ -26,7 +26,7 @@ The user calls this skill from the host agent runtime via `/coding-agent-work-lo
 The user gives you a host project path (e.g. `~/github/myproject`). Steps:
 
 1. Verify the path exists and is a git repo (has `.git`)
-2. Check deps: `git`, `gh` (must be logged in via `gh auth login`), `tmux`, `jq`, `flock`, `systemctl`, plus the worker CLI selected by `WORKER_AGENT` (default `claude`; other built-ins: `opencode`, `codex`). Each must resolve via `command -v`.
+2. Check deps: `git`, `gh` (must be logged in via `gh auth login`), `tmux`, `jq`, `flock`, `systemctl`, plus the worker CLI selected by `WORKER_AGENT` (default `claude`; other built-ins: `opencode`, `codex`, `cursor`). Each must resolve via `command -v`.
 3. Run:
    ```bash
    bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/coding-agent-work-loop}/setup.sh" <host-project-path>

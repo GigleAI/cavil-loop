@@ -53,7 +53,10 @@ fi
 #    新 issue 一律走 agent_command_new（worktree 刚建，无历史）。
 log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT)"
 CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-mapfile -d '' -t tmux_env < <(tmux_env_args)
+tmux_env=()
+while IFS= read -r -d '' _tmux_e; do
+    tmux_env+=("$_tmux_e")
+done < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
 
 # 4.5 pane 输出旁路到日志文件，session 退出后仍可回看

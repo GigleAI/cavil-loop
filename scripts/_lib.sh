@@ -54,7 +54,7 @@ LABEL_DONE="${LABEL_DONE:-Done}"
 # ISO 639-1 code. Default "en"。代码 / commit / 分支名仍按仓库惯例，不受影响。
 OUTPUT_LANGUAGE="${OUTPUT_LANGUAGE:-en}"
 
-# Worker agent CLI（claude / opencode / codex / 你自家 driver）。
+# Worker agent CLI（claude / opencode / codex / cursor / 你自家 driver）。
 # 默认 claude → 行为完全等同未引入 driver 抽象前。
 WORKER_AGENT="${WORKER_AGENT:-claude}"
 
