@@ -8,7 +8,9 @@
 
 ## What it is
 
-A GitHub-label-driven workflow for **AI coding agents** (Claude Code / OpenCode / Codex / your own). Installed as an [Agent Skill](https://www.skills.sh/) on your machine — runs a 60-second background poller that watches your repos for label triggers, dispatches a local AI worker in an isolated git worktree to do design / coding / review work, and posts everything back as GitHub comments + PR commits.
+![create issues and review PRs from AI agent in github](./docs/github_project.png)
+
+A GitHub-label-driven workflow for **AI coding agents** (Claude Code / OpenCode / Codex / your own). Installed as an [Agent Skill](https://agentskills.io/home) on your machine — runs a 60-second background poller that watches your repos for label triggers, dispatches a local AI worker in an isolated git worktree to do design / coding / review work, and posts everything back as GitHub comments + PR commits.
 
 Three things you should know up front:
 
@@ -18,7 +20,7 @@ Three things you should know up front:
 
 ## Why use it
 
-Working with AI on code is normally **serial**: prompt → wait → read → respond → wait → read… You can't walk away, the AI's history is locked in some chat UI, and every keystroke is billed.
+Working with AI on code is normally **serial**: prompt → wait → read → respond → wait → read… You can't walk away, the AI's history is locked in some chat UI.
 
 This tool fixes three things at once:
 
@@ -33,7 +35,7 @@ Morning:    10 PRs / design proposals sit on GitHub. Review them like a reviewer
             AI does another round on its own (you stay hands-off).
 ```
 
-N requests run **truly in parallel** — each issue gets its own worker / worktree / git branch, no cross-blocking. Progress is visible at a glance via GitHub labels. The [official GitHub mobile app](https://github.com/mobile) handles review + comment + label, so you can keep things moving during the commute.
+Multiple requests run **truly in parallel** — each issue gets its own worker / worktree / git branch, no cross-blocking. Progress is visible at a glance via GitHub labels. The [official GitHub mobile app](https://github.com/mobile) handles review + comment + label, so you can keep things moving during the commute.
 
 ### 2. All process + artifacts traceable by issue number
 
@@ -49,7 +51,7 @@ Every artifact from an issue's run is filed under its **issue number**:
 
 Six months later debugging some hairy code, wondering *why* it was written that way? Two levels of lookup, from light to heavy:
 
-1. **GitHub issue/PR comments first** — design proposal, the discussion thread, Hermes review report all live here. `gh issue view 42 --comments` or browser, 5 seconds. 95% of "why is this code shaped this way" answers come from this level
+1. **GitHub issue/PR comments first** — design proposal, the discussion thread, review report all live here. `gh issue view 42 --comments` or browser, 5 seconds. 95% of "why is this code shaped this way" answers come from this level
 2. **Resume the AI session if you need to dig deeper** — `cd <worktree>/issue-42 && claude --resume` drops you back into the AI's full conversation: every alternative considered, every dead-end explored, the reasoning chain not fully written out in the final PR comment
 
 Either way: **not** scrubbing through nameless AI chat sessions or reconstructing intent from a one-line commit message.
@@ -84,10 +86,10 @@ A **background poller** on your machine looks at GitHub every 60 seconds. When i
 
 Two trigger scenarios:
 
-| Scenario | Trigger | What the AI does |
-|----------|---------|------------------|
-| New request | Add `pending/agent` to an issue | Posts a **design proposal** comment first (asking how to approach it, whether to split PRs), then on your confirmation: branch → implement → open PR |
-| Review feedback | Add `pending/agent` to a PR (with a comment) | Finds the AI session for this PR, reads the latest comment, and acts |
+| Scenario        | Trigger                                      | What the AI does                                                                                                                                     |
+| -----------------| ----------------------------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------|
+| New request     | Add `pending/agent` to an issue              | Posts a **design proposal** comment first (asking how to approach it, whether to split PRs), then on your confirmation: branch → implement → open PR |
+| Review feedback | Add `pending/agent` to a PR (with a comment) | Finds the AI session for this PR, reads the latest comment, and acts                                                                                 |
 
 ## What it **doesn't** do
 
@@ -104,8 +106,6 @@ Two trigger scenarios:
 ```bash
 npx skills add luosky/coding-agent-work-loop -g
 ```
-
-Powered by [skills.sh](https://www.skills.sh/docs/faq) — fetches this skill, lands at `~/.agents/skills/coding-agent-work-loop/`, auto-detects every AI CLI you have installed (Claude Code, Cursor, Cline, Codex, …) and symlinks the skill into each. Run the same command again to upgrade. (Drop `-g` to install into the current project only.)
 
 <details>
 <summary>Manual install (without npx)</summary>
