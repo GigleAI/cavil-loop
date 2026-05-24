@@ -71,7 +71,17 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
        - **C. issue 太大该拆**：本 issue 应拆成 N 个 sub-issue（列出建议拆法）→ 不直接派工，等你拆完再 label
        - 默认建议 A（一刀切的部分实现会导致 issue tracker 失控）；只在确实多 PR 才选 B
      - **验收标准**：你完工时怎么自我验证、用户怎么验收
-     - **待澄清问题**：列你不确定要怎么做的点，请提出者拍板
+     - **待澄清问题（Open Questions）**：不写开放式问答，**每题给 2-4 个候选答案让提出者勾选**。例：
+       ```markdown
+       **Q1: 要不要拆成 2 个 PR？**（默认 A）
+       - [ ] **A. 单 PR**：一次性完成
+       - [ ] **B. 拆 2 个**：先发后端 schema、再发前端
+
+       **Q2: 用 react-query 还是直接 fetch？**（默认 react-query）
+       - [ ] **react-query**：有缓存 + dedupe
+       - [ ] **直接 fetch**：简单，但要自己处理 in-flight
+       ```
+       约定：勾 1 项 = 拍板；都不勾 = 走默认（题尾标的）；多勾 = 想再讨论（worker 下轮看到反问）。**省去提出者复制问题再打字的摩擦**——评论里点一下就能拍板
    - 评论结尾 `@<author> 请确认上述方案，或提出修改建议。确认后请重新标 \`${LABEL_PENDING_AGENT}\` 我继续开干。`
    - 用 `gh issue comment ${ISSUE} --repo ${REPO} --body "..."` 发
 
