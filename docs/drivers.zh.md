@@ -11,7 +11,7 @@
 | `claude`   | `claude`   | `~/.claude/projects/<encoded-cwd>/*.jsonl` | `esc to interrupt` | ✅ 默认、稳定 |
 | `opencode` | `opencode` | `~/.local/share/opencode/...` (按版本) | `thinking` / `working` / `esc to interrupt` / `stop` | ⚠️ 首版适配，请按你装的版本核对 |
 | `codex`    | `codex`    | `~/.codex/sessions/` 或 `~/.codex/history/` | `thinking` / `running` / `esc to interrupt` | ⚠️ 首版适配，请按你装的版本核对 |
-| `cursor`   | `agent`    | _(不按 cwd 探测；始终 new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ macOS 验收通过（headless `-p --trust --force`） |
+| `cursor`   | `agent`    | _(不按 cwd 探测；始终 new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ macOS 验收通过（headless `-p --trust --force`）；不支持 mid-session stdin 注入，新 comment 会重起 session |
 
 切换（Cursor 示例）：
 
@@ -27,6 +27,8 @@ WORKER_AGENT=cursor bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path
 ```
 
 > launchd/systemd 下请确保 EnvironmentFile 含 `GH_TOKEN`，worker 里的 `gh` 才会用预期 PAT（见 `coding-agent.config` 的 `WORKER_PASS_ENV`）。
+
+> **Cursor 注意：** `-p` 是 non-interactive print 模式，mid-task 的 issue/PR comment 无法通过 stdin 注入。driver 会 kill 当前 session 并用新 prompt 重起（Case B），不会 silent drop。
 
 切换（Codex 示例）：
 
