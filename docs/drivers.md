@@ -11,7 +11,7 @@ The daemon / dispatch scripts and "which CLI runs in tmux" are separated by a **
 | `claude`   | `claude`   | `~/.claude/projects/<encoded-cwd>/*.jsonl` | `esc to interrupt` | ✅ default, stable |
 | `opencode` | `opencode` | `~/.local/share/opencode/...` (version-dependent) | `thinking` / `working` / `esc to interrupt` / `stop` | ⚠️ first-pass; verify against your installed version |
 | `codex`    | `codex`    | `~/.codex/sessions/` or `~/.codex/history/` | `thinking` / `running` / `esc to interrupt` | ⚠️ first-pass; verify against your installed version |
-| `cursor`   | `agent`    | _(not cwd-probed; always new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ stable on macOS (headless `-p --trust --force`) |
+| `cursor`   | `agent`    | _(not cwd-probed; always new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ stable on macOS (headless `-p --trust --force`); no mid-session stdin inject — new comments respawn session |
 
 Switching (Cursor example):
 
@@ -27,6 +27,8 @@ WORKER_AGENT=cursor bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path
 ```
 
 > Under launchd/systemd, ensure `GH_TOKEN` is in the daemon EnvironmentFile so the worker's `gh` CLI uses the intended PAT (see `WORKER_PASS_ENV` in `coding-agent.config`).
+
+> **Cursor caveat:** `-p` is non-interactive print mode — mid-task issue/PR comments cannot be injected via stdin. The driver kills the live session and respawns with the new prompt (Case B) instead of silently dropping it.
 
 Switching (Codex example):
 

@@ -54,9 +54,11 @@ flip_label() {
 # Case A: session 还活着 → 注入 prompt
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     log "issue #$ISSUE -> 注入现有 session $TMUX_SESSION (agent=$WORKER_AGENT)"
-    agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"
-    flip_label
-    exit 0
+    if agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"; then
+        flip_label
+        exit 0
+    fi
+    log "issue #$ISSUE -> 注入失败，fallback 重起 session (agent=$WORKER_AGENT)"
 fi
 
 # Case B: worktree 还在，session 死了 → 重起 session（有历史就 resume）
