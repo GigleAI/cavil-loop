@@ -52,22 +52,23 @@ if [ -n "$new_issues" ]; then
         sess="$(tmux_session_name "$num")"
         wt="$(worktree_path "$num")"
 
-        # 已有 session → 这是设计阶段已经在跑，用户 comment 后再标 pending/agent；
-        # 走 issue-comment 派工：注入「读最新 comment 决定开干 / 改方案 / 反问」prompt
+        # 已有 session → 用户确认方案后标 pending/agent，走 issue-comment 派工。
+        # pending/agent 是用户明确意图信号（包括勾选 checkbox、编辑 comment 等不产生新 comment ID 的操作），
+        # 所以不依赖 comment ID 变化，只要 agent 不在忙就派工。
         if tmux has-session -t "$sess" 2>/dev/null || [ -d "$wt" ]; then
             latest_id=$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-            last_seen=$(jq -r ".seen_issue_comments[\"$num\"] // 0" "$STATE_FILE")
-            log "issue #$num 已有 worktree/session：latest_id=$latest_id last_seen=$last_seen"
-            if [ "$latest_id" -gt "$last_seen" ]; then
-                log "dispatch issue-comment for #$num"
-                if bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
-                    tmp=$(mktemp)
-                    jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-                else
-                    log "issue-comment 派工 #$num 失败（state 不更新，下轮重试）"
-                fi
+            log "issue #$num 已有 worktree/session (latest_id=$latest_id)"
+            # agent 在忙就不打断（除非 pending/agent 是用户手动翻回来的）
+            if tmux has-session -t "$sess" 2>/dev/null && agent_is_busy "$sess"; then
+                log "issue #$num: agent 正在忙，跳过本轮"
+                continue
+            fi
+            log "dispatch issue-comment for #$num"
+            if bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
+                tmp=$(mktemp)
+                jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
             else
-                log "issue #$num: pending/agent 但 issue 无新 comment，跳过（用户需 comment 才能让 agent 再动）"
+                log "issue-comment 派工 #$num 失败（state 不更新，下轮重试）"
             fi
             continue
         fi
