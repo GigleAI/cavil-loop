@@ -233,6 +233,25 @@ AUTO_CLEANUP_ON_MERGE="true"
 #         （配合 Agent Skill 项目级目录约定；prompts 覆盖也放同目录下 prompts/）
 CLEANUP_HOOK=""
 
+# ── Post-PR-creation hook / PR 创建后的 hook ──
+
+# When the agent creates a PR (via `gh pr create`), this hook runs immediately
+# after label flipping. Use it to:
+#   - Deploy a preview/beta version and post QR code on the PR
+#   - Trigger CI/CD pipelines
+#   - Notify team channels
+#
+# agent 创建 PR（`gh pr create`）并翻完 label 后，立刻跑这个 hook。
+# 可用来：
+#   - 发布体验版并把二维码贴到 PR 评论
+#   - 触发 CI/CD 流水线
+#   - 通知团队
+#
+# 相对路径会被解释为相对 PROJECT_ROOT。留空跳过。
+# Hook 拿到的 env: PR, ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT
+# 推荐路径：PR_CREATED_HOOK=".agents/skills/coding-agent-work-loop/pr-created-hook.sh"
+PR_CREATED_HOOK=""
+
 # ── Max concurrency / 并发上限 ──
 
 # Max live worker sessions at any time. 1 (serial) is the safest default.

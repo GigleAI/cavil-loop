@@ -77,7 +77,14 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 4. 拿到 PR 编号 `<P>` 后翻 label（PR 等你 review，issue 转 PR 跟踪）：
    - `flip_label <P> --add ${LABEL_PENDING_HUMAN}`
    - `flip_label ${ISSUE} --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}`
-5. 一句话回复 `PR #<P> 已开，issue 转 ${LABEL_PENDING_PR} 跟踪`，停 idle
+5. 如果 `PR_CREATED_HOOK` 非空，立刻执行：
+   ```bash
+   if [ -n "${PR_CREATED_HOOK}" ]; then
+       PR=<P> ISSUE=${ISSUE} WORKTREE="${WORKTREE}" BRANCH="${BRANCH}" REPO="${REPO}" PROJECT_ROOT="$(pwd)" \
+           bash "${PR_CREATED_HOOK}"
+   fi
+   ```
+6. 一句话回复 `PR #<P> 已开，issue 转 ${LABEL_PENDING_PR} 跟踪`，停 idle
 
 ### § B. 方案迭代
 
