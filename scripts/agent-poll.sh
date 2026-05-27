@@ -155,11 +155,12 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 continue
             fi
-            log "auto-cleanup PR #$prnum (issue #$issue_n) → cleanup-issue.sh"
+            log "auto-cleanup PR #$prnum (issue #$issue_n) → cleanup-issue.sh --force"
+            # PR 已合并，worktree 残留文件（构建产物、QR 码等）不需要保留，--force 强删。
             # 默认不删本地分支（保留 commit 历史可 checkout / git log）；
             # 远端分支 daemon 从来不动（GitHub auto-delete-branch-on-merge 由仓库设置控制）。
             # 想顺手删本地，用户手动 `cleanup-issue.sh <N> --delete-branch`。
-            if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issue_n" 2>&1; then
+            if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issue_n" --force 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 log "  auto-cleanup PR #$prnum done"
@@ -216,8 +217,8 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if jq -e ".cleaned_issues | index($issnum)" "$STATE_FILE" >/dev/null 2>&1; then
                 continue
             fi
-            log "auto-cleanup closed issue #$issnum → cleanup-issue.sh"
-            if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" 2>&1; then
+            log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"
+            if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" --force 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_issues += [$issnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 log "  auto-cleanup closed issue #$issnum done"
