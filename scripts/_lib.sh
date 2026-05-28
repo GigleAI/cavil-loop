@@ -162,15 +162,17 @@ list_active_workers() {
     local -a items=()
     local n pr branch
 
-    # 先处理 PR：算 issue_n（用 pr_to_issue_num fallback 链）并合并显示
+    # 先处理 PR：算 issue_n（用 pr_to_issue_num fallback 链）并合并显示。
+    # 末尾附 GitHub URL 让终端自动识别成可点击链接（多数现代终端支持）。
+    # URL 指向 worker 当前主战场——PR 阶段就指 PR、纯 issue 阶段就指 issue。
     if [ -n "$pr_data" ]; then
         while IFS=$'\t' read -r pr branch; do
             n=$(pr_to_issue_num "$pr" "$branch")
             if [ "$n" = "$pr" ]; then
                 # standalone：fallback 到 PR 编号本身（无关联 issue / 外部 PR）
-                items+=("PR #$pr")
+                items+=("PR #$pr  https://github.com/${REPO}/pull/${pr}")
             else
-                items+=("issue #$n (PR #$pr)")
+                items+=("issue #$n (PR #$pr)  https://github.com/${REPO}/pull/${pr}")
                 handled_issue[$n]=1
             fi
         done <<< "$pr_data"
@@ -181,7 +183,7 @@ list_active_workers() {
         while read -r n; do
             [ -z "$n" ] && continue
             if [ -z "${handled_issue[$n]:-}" ]; then
-                items+=("issue #$n")
+                items+=("issue #$n  https://github.com/${REPO}/issues/${n}")
             fi
         done <<< "$issue_nums"
     fi
