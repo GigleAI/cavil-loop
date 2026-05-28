@@ -27,10 +27,11 @@ jq -sr --argjson start "$START_EPOCH" '
          | select((.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $start)
          | .message.usage]
     | reduce .[] as $u (
-        {in:0, out:0, cache:0};
+        {in:0, out:0, cache_r:0, cache_w:0};
         .in += ($u.input_tokens // 0)
         | .out += ($u.output_tokens // 0)
-        | .cache += (($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0))
+        | .cache_r += ($u.cache_read_input_tokens // 0)
+        | .cache_w += ($u.cache_creation_input_tokens // 0)
       )
-    | "in \(.in | k) · cache \(.cache | k) · out \(.out | k)"
+    | "in \(.in | k) · cache_r \(.cache_r | k) · cache_w \(.cache_w | k) · out \(.out | k)"
 ' "$TRANSCRIPT" 2>/dev/null
