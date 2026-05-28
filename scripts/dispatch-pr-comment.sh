@@ -75,6 +75,8 @@ if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         exit 0
     fi
     log "PR #$PR -> 注入失败，fallback 重起 session (agent=$WORKER_AGENT)"
+    # 注入失败 = session 不响应/僵尸，要 kill 才能 new-session 同名（否则 duplicate name 报错）
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 fi
 
 # Case B: worktree 还在，session 没了 → 重起（有历史就 resume）

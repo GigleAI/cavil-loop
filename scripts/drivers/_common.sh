@@ -60,12 +60,18 @@ default_inject_prompt() {
     local prompt_file="$2"
     local buf
 
-    # 1. dismiss 可能拦着的 modal —— 但仅当 claude 不在 busy 时（busy 时 Escape 会中断 thinking）
+    # 1. dismiss 可能拦着的 modal + 清输入框 —— 但仅当 claude 不在 busy 时
+    #    （busy 时 Escape 会中断 thinking、C-u 也可能干扰，所以 busy 跳过这步）
     if ! tmux capture-pane -t "$sess" -p 2>/dev/null | tail -5 | grep -q "esc to interrupt"; then
         tmux send-keys -t "$sess" Escape
         sleep 0.2
         tmux send-keys -t "$sess" Escape   # 第二下兜底 nested modal
-        sleep 0.3
+        sleep 0.2
+        # C-u 清空输入框：防 placeholder（claude idle 时偶尔留 advisory 字串如
+        # "<suggestion skipped: awaiting ...>" 显示在输入框、撑住后续 Enter 不 submit）
+        # 或上次注入残留 paste 没成功的内容
+        tmux send-keys -t "$sess" C-u
+        sleep 0.2
     fi
 
     # 2. paste prompt（bracketed paste 让 claude 当一段而不是逐行）
