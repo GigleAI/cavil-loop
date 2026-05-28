@@ -22,16 +22,18 @@ TRANSCRIPT=$(ls -t ~/.claude/projects/${ENC}/*.jsonl 2>/dev/null | head -1)
 [ -z "$TRANSCRIPT" ] && exit 0
 
 jq -sr --argjson start "$START_EPOCH" '
-    def k: if . >= 1000 then "\(. / 1000 | floor)k" else "\(.)" end;
+    def k:
+        if . >= 1000000 then ((. / 1000000) * 10 | floor / 10 | tostring) + "M"
+        elif . >= 1000 then (. / 1000 | floor | tostring) + "k"
+        else tostring end;
     [.[] | select(.type == "assistant" and (.message.usage // empty))
          | select((.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $start)
          | .message.usage]
     | reduce .[] as $u (
-        {in:0, out:0, cache_r:0, cache_w:0};
-        .in += ($u.input_tokens // 0)
+        {in:0, out:0, cache_r:0};
+        .in += (($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0))
         | .out += ($u.output_tokens // 0)
         | .cache_r += ($u.cache_read_input_tokens // 0)
-        | .cache_w += ($u.cache_creation_input_tokens // 0)
       )
-    | "in \(.in | k) · cache_r \(.cache_r | k) · cache_w \(.cache_w | k) · out \(.out | k)"
+    | "in \(.in | k) (cache hit \(if .in > 0 then (.cache_r * 100 / .in | floor) else 0 end)%) · out \(.out | k)"
 ' "$TRANSCRIPT" 2>/dev/null
