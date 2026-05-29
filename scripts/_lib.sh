@@ -10,6 +10,22 @@
 #   3. 找不到 → fail
 set -euo pipefail
 
+# ── daemon PATH 强化 ──
+# systemd user timer 跑 daemon 时 PATH 通常 = minimal "/usr/local/sbin:/usr/local/bin:
+# /usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"，**不含** user
+# 自装 binary 目录如 ~/.hermes/node/bin（claude code 默认装位置）、~/.local/bin、
+# ~/.cargo/bin 等。daemon 进程自己 `which claude` 都 fail → dispatch script 跑的
+# 命令字符串里 "claude" 解析不到 → worker session 起来 exec claude `command not found`
+# 立即 exit 127 死。
+#
+# 即便 tmux_env_args -e PATH=$PATH 透传给 worker session，daemon PATH 本身就坏 →
+# 透传一份坏 PATH 出去仍找不到 claude。
+#
+# 修：daemon 进程 PATH 头部 prepend 常见 user binary 目录。conf 文件 `PATH=...` 仍
+# 可 override（source CONFIG_FILE 在本段之后）。
+PATH="$HOME/.hermes/node/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export PATH
+
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
         echo "$CODING_AGENT_CONFIG"
