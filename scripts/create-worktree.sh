@@ -27,8 +27,17 @@ elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
     log "  origin/$BRANCH 已存在，签出"
     git fetch origin "$BRANCH"
 else
-    log "  新建分支 $BRANCH ← $BASE_BRANCH"
-    git branch "$BRANCH" "$BASE_BRANCH"
+    # 新分支从【最新的 upstream base】切，而不是可能过时的本地 $BASE_BRANCH：
+    # 先 fetch，基于 origin/$BASE_BRANCH 建分支。不碰主项目工作区（主 checkout
+    # 常有未提交 WIP，绝不能 pull/reset/改 HEAD）——只更新 remote-tracking ref。
+    if git fetch origin "$BASE_BRANCH" --quiet 2>/dev/null \
+       && git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+        log "  新建分支 $BRANCH ← origin/$BASE_BRANCH（已 fetch 取最新）"
+        git branch "$BRANCH" "origin/$BASE_BRANCH"
+    else
+        log "  ⚠️ 取不到 origin/$BASE_BRANCH，回退本地 $BASE_BRANCH"
+        git branch "$BRANCH" "$BASE_BRANCH"
+    fi
 fi
 
 # 2. worktree
