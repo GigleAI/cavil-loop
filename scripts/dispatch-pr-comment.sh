@@ -50,9 +50,13 @@ if [ -n "$TEMPLATE" ]; then
         "$TEMPLATE" > "$PROMPT_FILE"
 else
     cat > "$PROMPT_FILE" <<EOF
-PR #$PR 有新评论。读 \`gh pr view $PR --repo $REPO --comments\`，按内容处理：
+PR #$PR 有新评论。三类反馈来源都要读（inline 行评论 \`gh pr view\` 看不到，必须单独拉，最易漏）：
+- 对话评论：\`gh pr view $PR --repo $REPO --comments\`
+- inline 代码行评论：\`gh api repos/$REPO/pulls/$PR/comments --paginate --jq '.[] | "[\(.user.login)] \(.path):\(.line) id=\(.id)\n  \(.body)"'\`
+- review 总结：\`gh api repos/$REPO/pulls/$PR/reviews --paginate --jq '.[] | select(.body!="") | "[\(.user.login)] \(.state): \(.body)"'\`
+按内容处理：
 - 讨论 → gh pr comment 回答
-- 改代码 → 改 + 测试 + commit + push + 评论
+- 改代码 → 改 + 测试 + commit + push + 对每条 inline 评论在其 thread 回复（\`gh api -X POST repos/$REPO/pulls/$PR/comments/<id>/replies -f body=...\`）
 - 不明 → 反问
 完成后翻 label（REST，绕 read:org）：
   gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$LABEL_PENDING_HUMAN"
