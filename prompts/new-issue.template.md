@@ -65,11 +65,11 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
      - **数据模型 / API 设计**（如适用）
      - **UI / 交互**（如适用）
      - **影响面**：会改哪些文件 / 模块
-     - **🔗 issue 闭环关系**（重要！决定 PR body 用哪个关键词）：
-       - **A. 完整闭环**：这一个 PR 就完整解决 issue → PR body 用 `Closes #${ISSUE}` → merge 时 GitHub 自动关 issue
-       - **B. 部分实现**：这次 PR 只做一部分（后续可能还有更多 PR）→ PR body 用 `Refs #${ISSUE}` → issue 保持 open 作 tracker
-       - **C. issue 太大该拆**：本 issue 应拆成 N 个 sub-issue（列出建议拆法）→ 不直接派工，等你拆完再 label
-       - 默认建议 A（一刀切的部分实现会导致 issue tracker 失控）；只在确实多 PR 才选 B
+     - **🔗 issue 闭环关系**（重要！决定 PR body 用哪个关键词）——发到 issue 时用 checkbox，**A 默认预勾**：
+       - [x] **A. 完整闭环**：这一个 PR 就完整解决 issue → PR body 用 `Closes #${ISSUE}` → merge 时 GitHub 自动关 issue（**默认已勾**）
+       - [ ] **B. 部分实现**：这次 PR 只做一部分（后续可能还有更多 PR）→ PR body 用 `Refs #${ISSUE}` → issue 保持 open 作 tracker
+       - [ ] **C. issue 太大该拆**：本 issue 应拆成 N 个 sub-issue（列出建议拆法）→ 不直接派工，等你拆完再 label
+       - 默认已勾 A（一个 PR 解决 issue）——认可就不用动；要改先取消 A 再勾 B/C。一刀切的部分实现会导致 issue tracker 失控，只在确实多 PR 才选 B。
      - **验收标准**：你完工时怎么自我验证、用户怎么验收
      - **待澄清问题（Open Questions）**：不写开放式问答，**每题给 2-4 个候选答案让提出者勾选**。例：
        ```markdown
