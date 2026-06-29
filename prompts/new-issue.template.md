@@ -99,6 +99,7 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
 
 - **不要用 AskUserQuestion / ExitPlanMode / SlashCommand 等本地交互工具**——你跑在 detached tmux 里没人在终端前答，调了会卡死。**任何**澄清 / 选择 / 等用户拍板都走 `gh issue comment ${ISSUE} --body "..."` + 翻 label 到 `${LABEL_PENDING_HUMAN}` 等用户回评论
 - **凡是发到 issue / PR 让用户拍板的问题，用候选选项格式**（不写开放式问答）。每题给 2-4 个候选答案 + 标默认项，用户勾 checkbox 拍板——评论里点一下就行，不用复制问题再打字。完整格式见上方"待澄清问题（Open Questions）"段
+- **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：① 宽 **~1280px、单倍像素**（playwright `deviceScaleFactor: 1`）——别用 2x / 2560px 大图，GitHub 把图缩进评论列宽 + camo 代理首次异步抓取，超大图易"显示不完整 / 只出上半截"；② 单张高度尽量 **≤ ~1400px**，过长就拆多张；③ 文件名带**唯一戳**（纳秒 / commit SHA），**每轮换新 URL**——camo 按源 URL 缓存约一年，复用同名会顶死旧图；④ 用**公网可达** URL（funnel 的 `review-assets/` 路径），纯 tailnet `serve` URL camo 抓不到 → 图裂。发图前 `curl -skI` 核对公网 URL `HTTP 200` + `content-length` 跟源文件一致
 - 不改 repo settings / secrets / actions / webhooks
 - 不读 issue 主题外的本机敏感文件
 - 不发数据到非 github.com / 项目约定 endpoint 外的 URL
