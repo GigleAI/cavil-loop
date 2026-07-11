@@ -56,8 +56,9 @@ tmux new-session -d -s "$SESSION" -c "$PROJECT_ROOT" \
     "PORT=$PORT HOST=127.0.0.1 exec $SERVER_CMD"
 
 # 等端口起来（最多 30s），起不来算失败并把 pane 尾巴倒进 log
+# 用 curl 探测而非 ss（macOS launchd 主机没有 ss，保持脚本跨平台）
 for _ in $(seq 1 30); do
-    if ss -tln 2>/dev/null | grep -q "127.0.0.1:$PORT "; then
+    if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/"; then
         echo "$head" > "$STAMP"
         log "refresh-latest-site: ✅ $SESSION @ http://127.0.0.1:$PORT （$head）"
         exit 0
