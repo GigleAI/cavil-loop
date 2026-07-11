@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# 派工前先把主 checkout 同步到 origin/<base>：模板 / 项目脚本防 stale（GigleTutor-Web#516）
+sync_project_checkout
+
 ISSUE="${1:?need issue number}"
 
 WORKTREE="$(worktree_path "$ISSUE")"

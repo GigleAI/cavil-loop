@@ -232,6 +232,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if jq -e ".cleaned_prs | index($prnum)" "$STATE_FILE" >/dev/null 2>&1; then
                 continue
             fi
+            NEW_MERGE_SEEN=1
             issue_n=$(pr_to_issue_num "$prnum" "$branch")
             # pr_to_issue_num fallback 链兜底到 PR 编号本身，理论上永不空
             if [ -z "$issue_n" ]; then
@@ -277,6 +278,14 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 log "  auto-cleanup PR #$prnum 失败（busy/dirty/hook 报错），下轮重试"
             fi
         done <<< "$recent_merged"
+    fi
+
+    # ── 3b. merge 钩子：新 merge → 刷新常驻「最新站」（GigleTutor-Web#516，Q1=A）──
+    # 项目 config 里 LATEST_SITE_REFRESH=true 才启用；脚本自身幂等（HEAD 没变且
+    # session 活着直接跳过），后台跑不阻塞轮询；build 失败保留旧 session。
+    if [ -n "${NEW_MERGE_SEEN:-}" ] && [ "${LATEST_SITE_REFRESH:-false}" = "true" ]; then
+        log "merge 钩子：检测到新 merged PR → 后台刷新最新站（log → $STATE_DIR/latest-site.log）"
+        nohup bash "$SCRIPT_DIR/refresh-latest-site.sh" >> "$STATE_DIR/latest-site.log" 2>&1 &
     fi
 
     # ── 4. 自动 cleanup 直接 close 的 issue（无关联 merged PR）──

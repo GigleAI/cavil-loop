@@ -386,13 +386,55 @@ gh_label_flip() {
     return 0
 }
 
+# ── 派工前同步主 checkout（GigleTutor-Web#516）──
+# 主 checkout 是 prompt 模板 / 项目脚本的读取源；它落后 origin 时 daemon 会拿旧模板
+# 渲染派工 prompt（#516 根因：主 checkout 落后 74 commit，#506 的 stale-e2e 分流段
+# 从未进过 prompt）。本函数只在「当前在 base 分支 + 工作区干净」时 ff-only 前进；
+# 有 WIP / 在别的分支绝不碰工作区（find_prompt_template 会走 origin/<base> 直读兜底）。
+# 任何失败都只 log 不报错——离线时派工不能被 fetch 卡死。
+sync_project_checkout() {
+    local base="${BASE_BRANCH:-main}"
+    if ! git -C "$PROJECT_ROOT" fetch origin "$base" --quiet 2>/dev/null; then
+        log "sync_project_checkout: fetch origin/$base 失败（离线?），跳过"
+        return 0
+    fi
+    local cur
+    cur=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [ "$cur" != "$base" ]; then
+        log "sync_project_checkout: 主 checkout 在 '$cur' ≠ '$base'，不动工作区"
+        return 0
+    fi
+    if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null)" ]; then
+        log "sync_project_checkout: 主 checkout 有未提交改动，不动工作区"
+        return 0
+    fi
+    if git -C "$PROJECT_ROOT" merge --ff-only "origin/$base" --quiet 2>/dev/null; then
+        log "sync_project_checkout: 主 checkout → $(git -C "$PROJECT_ROOT" log -1 --format='%h %s' 2>/dev/null | head -c 80)"
+    else
+        log "sync_project_checkout: ff-only 失败（本地分叉?），跳过"
+    fi
+    return 0
+}
+
 # Prompt 模板查找顺序：
+#   0. origin/<base> 上的最新版（git show 直读远端 ref，落临时文件）——主 checkout
+#      stale / 有 WIP 时也永远拿到最新模板（GigleTutor-Web#516 的结构性修复）。
+#      依赖最近一次 fetch 刷新 remote-tracking ref（dispatch 前 sync_project_checkout 会 fetch）。
 #   1. <project>/.agents/skills/coding-agent-work-loop/prompts/<name>.template.md   ← 新规范（推荐）
 #   2. <project>/.agents/skills/coding-agent-workflow/prompts/<name>.template.md    ← 旧目录名（兼容；老 worktree/分支）
 #   3. <project>/.coding-agent/prompts/<name>.template.md                           ← 更老路径（兼容）
 #   4. <skill-dir>/prompts/<name>.template.md                                       ← skill 默认
 find_prompt_template() {
     local name="$1"   # e.g. "new-issue" / "pr-comment"
+    local base="${BASE_BRANCH:-main}"
+    local rel=".agents/skills/coding-agent-work-loop/prompts/${name}.template.md"
+    local remote_copy="$STATE_DIR/prompt-remote-${name}.template.md"
+    if git -C "$PROJECT_ROOT" show "origin/${base}:${rel}" > "$remote_copy" 2>/dev/null \
+       && [ -s "$remote_copy" ]; then
+        echo "$remote_copy"
+        return
+    fi
+    rm -f "$remote_copy"
     local candidates=(
         "$PROJECT_ROOT/.agents/skills/coding-agent-work-loop/prompts/${name}.template.md"
         "$PROJECT_ROOT/.agents/skills/coding-agent-workflow/prompts/${name}.template.md"

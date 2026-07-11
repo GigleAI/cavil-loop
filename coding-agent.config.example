@@ -263,3 +263,22 @@ MAX_CONCURRENT_WORKERS=1
 # Daemon poll cycle (seconds). Used by the systemd timer.
 # Daemon 轮询周期（秒）。systemd timer 用这个值。
 POLL_INTERVAL_SECS=60
+
+# ── Latest-site refresh on merge / merge 钩子刷新常驻「最新站」 ──
+
+# When the poller detects a newly-merged PR (§ 3 auto-cleanup scan), it can
+# fast-forward the main checkout and rebuild + restart a resident production
+# server (dist + /api in one process) so a fixed URL always serves latest base.
+# The refresh script is idempotent (skips when HEAD is already built and the
+# session is alive) and runs in the background — it never blocks polling.
+# First bring-up / force rebuild: `FORCE=1 bash scripts/refresh-latest-site.sh`.
+#
+# poller 在 § 3 扫到新 merge 的 PR 时，可顺手把主 checkout ff-only 拉到最新并
+# rebuild + 重启一个常驻正式 server（dist 前端 + /api 同源单进程），让固定 URL
+# 永远指向最新 base 版本。刷新脚本幂等（HEAD 已构建且 session 活着直接跳过）、
+# 后台执行不阻塞轮询。首次拉起 / 强制重建：`FORCE=1 bash scripts/refresh-latest-site.sh`。
+LATEST_SITE_REFRESH=false
+# LATEST_SITE_PORT=3000                        # server 监听 127.0.0.1:<PORT>
+# LATEST_SITE_SESSION="${TMUX_PREFIX}-latest"  # 常驻 tmux session 名
+# LATEST_SITE_BUILD_CMD="npm run build"
+# LATEST_SITE_SERVER_CMD="node server/index.mjs"
