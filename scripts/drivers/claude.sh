@@ -19,7 +19,7 @@ agent_has_history() {
 
 agent_is_busy() {
     local sess="$1"
-    tmux has-session -t "$sess" 2>/dev/null || return 1
+    session_alive "$sess" || return 1
     # 只看 pane 最后 5 行（footer + 最近 status），避免 scrollback 历史误判：
     # claude 之前 busy 期间打印的 "esc to interrupt" 字串保留在可视 pane 里，
     # grep 整个 pane 会把历史也当 busy。

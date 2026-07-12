@@ -42,7 +42,7 @@ BRANCH="$(branch_name "$ISSUE")"
 log "cleanup-issue #$ISSUE: session=$TMUX_SESSION worktree=$WORKTREE branch=$BRANCH"
 
 # ── 1. busy 检查 ──
-if tmux has-session -t "$TMUX_SESSION" 2>/dev/null && agent_is_busy "$TMUX_SESSION"; then
+if session_alive "$TMUX_SESSION" && agent_is_busy "$TMUX_SESSION"; then
     if [ "$FORCE" -ne 1 ]; then
         echo "❌ session $TMUX_SESSION 还在 busy（$WORKER_AGENT 在 processing）。" >&2
         echo "   强制清理：bash $0 $ISSUE --force" >&2

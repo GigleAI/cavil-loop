@@ -20,7 +20,7 @@ agent_has_history() {
 
 agent_is_busy() {
     local sess="$1"
-    tmux has-session -t "$sess" 2>/dev/null || return 1
+    session_alive "$sess" || return 1
     # 例：tmux capture-pane -t "$sess" -p | grep -q "your busy keyword"
     return 1
 }

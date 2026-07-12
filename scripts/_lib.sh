@@ -97,6 +97,27 @@ log() {
     echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
 }
 
+# worker session 判活：必须 EXACT 匹配。tmux `has-session -t NAME` 默认按前缀/fnmatch
+# 匹配，会把 worker session `tutor-issueN` 误配到并存的 preview `tutor-issueN-server`
+# 上（session 早死了却报"存在"），导致 self-heal / 派工判活全假阳性。加 `=` 前缀关掉
+# 模糊匹配，只认同名 session。所有针对 worker session 的存活判断都走这个。
+session_alive() {
+    tmux has-session -t "=$1" 2>/dev/null
+}
+
+# self-heal 连续失败计数（防损坏会话被无限自动重派烧 API）。key = issue_n。
+# 每次探到 session 死就 bump，探到活就 reset；累计超 SELFHEAL_MAX_RETRIES 转人工。
+SELFHEAL_DIR="$STATE_DIR/selfheal"
+selfheal_bump() {
+    mkdir -p "$SELFHEAL_DIR"
+    local f="$SELFHEAL_DIR/$1" c=0
+    [ -f "$f" ] && c=$(cat "$f" 2>/dev/null || echo 0)
+    c=$((c + 1)); echo "$c" > "$f"; echo "$c"
+}
+selfheal_reset() {
+    rm -f "$SELFHEAL_DIR/$1" 2>/dev/null || true
+}
+
 branch_to_issue_num() {
     local branch="$1"
     local prefix_escaped
@@ -314,8 +335,8 @@ verify_fresh_session() {
     local wait_s="${2:-2}"
     sleep "$wait_s"
     local dead
-    dead="$(tmux list-panes -t "$sess" -F '#{pane_dead}' 2>/dev/null | head -1)"
-    if [ "$dead" = "1" ] || ! tmux has-session -t "$sess" 2>/dev/null; then
+    dead="$(tmux list-panes -t "=$sess" -F '#{pane_dead}' 2>/dev/null | head -1)"
+    if [ "$dead" = "1" ] || ! session_alive "$sess"; then
         log "  ❌ $sess 启动后 ${wait_s}s 内秒退，capture pane 死因："
         local log_path
         log_path="$(session_log_path "$sess")"

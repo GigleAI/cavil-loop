@@ -20,7 +20,7 @@ agent_has_history() {
 
 agent_is_busy() {
     local sess="$1"
-    tmux has-session -t "$sess" 2>/dev/null || return 1
+    session_alive "$sess" || return 1
     # 只看最后 5 行（footer 区），避免 scrollback 历史误判
     tmux capture-pane -t "$sess" -p 2>/dev/null | tail -5 | \
         grep -qiE 'thinking|running|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|esc to interrupt'

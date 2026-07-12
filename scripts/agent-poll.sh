@@ -49,14 +49,28 @@ self_heal_one() {
     local issue_n="$3"   # 用来推 session name（PR 走 pr_to_issue_num 链；issue 自己）
     local sess
     sess="$(tmux_session_name "$issue_n")"
-    if tmux has-session -t "$sess" 2>/dev/null; then
-        return 0   # session 真活着，不是 zombie
+    if session_alive "$sess"; then
+        selfheal_reset "$issue_n"   # 活着 → 清连续失败计数
+        return 0                    # session 真活着，不是 zombie
     fi
-    log "⚠️ self-heal: $kind #$n session=$sess 不存在 → 翻 $LABEL_AGENT_DOING 回 $LABEL_PENDING_HUMAN"
-    run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/human)" \
-        gh_label_flip "$n" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "$LABEL_AGENT_DOING" || true
+    # session 死了：优先自动重新派工（翻回 pending/agent，下面的派工路径会 resume/fresh），
+    # 只有连续自愈 SELFHEAL_MAX_RETRIES 次仍立刻死（多半是损坏会话）才转人工，避免无限重启烧 API。
+    local tries cap=${SELFHEAL_MAX_RETRIES:-3}
+    tries=$(selfheal_bump "$issue_n")
+    if [ "$tries" -le "$cap" ]; then
+        log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，翻 $LABEL_AGENT_DOING → $LABEL_PENDING_AGENT）"
+        run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/agent)" \
+            gh_label_flip "$n" \
+            --add "$LABEL_PENDING_AGENT" \
+            --remove "$LABEL_AGENT_DOING" || true
+    else
+        log "⚠️ self-heal: $kind #$n 自动恢复 $((tries - 1)) 次仍死（疑似会话损坏）→ 转人工 $LABEL_PENDING_HUMAN"
+        run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/human)" \
+            gh_label_flip "$n" \
+            --add "$LABEL_PENDING_HUMAN" \
+            --remove "$LABEL_AGENT_DOING" || true
+        selfheal_reset "$issue_n"   # 重置，人工重标 pending/agent 后重新计数
+    fi
 }
 
 if [ -n "$zombie_pr_data" ]; then
@@ -122,11 +136,11 @@ if [ -n "$new_issues" ]; then
         # 已有 session → 用户确认方案后标 pending/agent，走 issue-comment 派工。
         # pending/agent 是用户明确意图信号（包括勾选 checkbox、编辑 comment 等不产生新 comment ID 的操作），
         # 所以不依赖 comment ID 变化，只要 agent 不在忙就派工。
-        if tmux has-session -t "$sess" 2>/dev/null || [ -d "$wt" ]; then
+        if session_alive "$sess" || [ -d "$wt" ]; then
             latest_id=$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
             log "issue #$num 已有 worktree/session (latest_id=$latest_id)"
             # agent 在忙就不打断（除非 pending/agent 是用户手动翻回来的）
-            if tmux has-session -t "$sess" 2>/dev/null && agent_is_busy "$sess"; then
+            if session_alive "$sess" && agent_is_busy "$sess"; then
                 log "issue #$num: agent 正在忙，跳过本轮"
                 continue
             fi
@@ -183,7 +197,7 @@ if [ -n "$pending_prs" ]; then
         log "PR #$prnum: conv=$latest_conv/$seen_conv inline=$latest_inline/$seen_inline review=$latest_review/$seen_review"
 
         # busy 时不打断（保护正在干活的 worker；新评论 / 重标 都等下一轮 idle）
-        if tmux has-session -t "$sess" 2>/dev/null && agent_is_busy "$sess"; then
+        if session_alive "$sess" && agent_is_busy "$sess"; then
             log "PR #$prnum: agent 正在忙，跳过本轮"
             continue
         fi

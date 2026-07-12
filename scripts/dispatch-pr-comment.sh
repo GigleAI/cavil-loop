@@ -76,7 +76,7 @@ flip_label() {
 }
 
 # Case A: 现有 worker session
-if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+if session_alive "$TMUX_SESSION"; then
     log "PR #$PR -> 注入 $TMUX_SESSION (agent=$WORKER_AGENT)"
     start_session_logging "$TMUX_SESSION"
     if agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"; then
@@ -106,7 +106,7 @@ if [ -d "$WORKTREE" ]; then
         sleep 2
     fi
 
-    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    if ! session_alive "$TMUX_SESSION"; then
         if [ "$used_resume" = 1 ]; then
             log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级 fresh $WORKER_AGENT session（丢 conversation history、prompt 含 PR context 仍可工作）"
         else
