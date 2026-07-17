@@ -55,14 +55,38 @@ encoded_cwd() {
 # 兜底：注入后等 + tail pane 看是否进 busy 状态（footer 出现 "esc to interrupt"
 # 表明 claude 在 streaming token = prompt 真 submit）；没进 busy 就补 Enter，最多
 # 重试 N 次。
+#
+# 5. ⚠️ 自动 compaction / stop hook：worker 跑完超长 turn 后 context 顶满，
+#    此刻恰是派工高峰。compaction 是分钟级阻塞操作——期间 footer 没有
+#    "esc to interrupt"、Enter 只能排队、Escape 还会把 compaction 取消掉。
+#    所以引入第三种 pane 状态 wait：检测到就"干等"（不发 Escape 不补 Enter），
+#    等它消化完再走正常流程；只有真 idle 才快速失败。
 default_inject_prompt() {
     local sess="$1"
     local prompt_file="$2"
     local buf
 
-    # 1. dismiss 可能拦着的 modal + 清输入框 —— 但仅当 claude 不在 busy 时
-    #    （busy 时 Escape 会中断 thinking、C-u 也可能干扰，所以 busy 跳过这步）
-    if ! tmux capture-pane -t "$sess" -p 2>/dev/null | tail -5 | grep -q "esc to interrupt"; then
+    # pane 三态：busy = turn 在跑（成功判据）；wait = compaction / stop hook 等
+    # 分钟级中间态（别打扰）；idle = 真闲着（可以 Escape/Enter）。
+    _inject_pane_state() {
+        local t
+        t=$(tmux capture-pane -t "=$sess" -p 2>/dev/null | tail -5)
+        if grep -q "esc to interrupt" <<<"$t"; then echo busy
+        elif grep -qiE "compacting|running stop hook" <<<"$t"; then echo wait
+        else echo idle; fi
+    }
+
+    # 0. 若正处 compaction/stop-hook 中间态，先等它结束（默认最多 180s，可配）
+    local max_wait="${INJECT_STATE_WAIT_SECS:-180}" waited=0 state
+    while [ "$(_inject_pane_state)" = wait ] && [ "$waited" -lt "$max_wait" ]; do
+        sleep 5; waited=$((waited + 5))
+    done
+    [ "$waited" -gt 0 ] && \
+        echo "[default_inject_prompt] $sess 处于 compaction/stop-hook，等了 ${waited}s" >&2
+
+    # 1. dismiss 可能拦着的 modal + 清输入框 —— 仅当真 idle 时
+    #    （busy 时 Escape 会中断 thinking；wait 时 Escape 会取消 compaction）
+    if [ "$(_inject_pane_state)" = idle ]; then
         tmux send-keys -t "$sess" Escape
         sleep 0.2
         tmux send-keys -t "$sess" Escape   # 第二下兜底 nested modal
@@ -84,19 +108,32 @@ default_inject_prompt() {
 
     tmux send-keys -t "$sess" Enter
 
-    # 3. verify-and-retry：等 claude 进 busy 才算 submit 成功
+    # 3. verify：busy = 成功；wait = submit 触发了 pre-turn compaction，干等
+    #    （消化完排队的 prompt 会自动开跑）；idle = 没 submit 上，补 Enter 最多 5 次
     local retries=0
-    while [ $retries -lt 5 ]; do
+    waited=0
+    while :; do
         sleep 2
-        if tmux capture-pane -t "$sess" -p 2>/dev/null | tail -5 | grep -q "esc to interrupt"; then
-            return 0
-        fi
-        # 没进 busy → prompt 还卡输入框 / Enter 被某个 modal 吃了 → 补 Enter
-        tmux send-keys -t "$sess" Enter
-        retries=$((retries + 1))
+        state="$(_inject_pane_state)"
+        case "$state" in
+            busy) return 0 ;;
+            wait)
+                waited=$((waited + 2))
+                if [ "$waited" -ge "$max_wait" ]; then
+                    echo "[default_inject_prompt] WARN: $sess compaction 等待超 ${max_wait}s 未结束" >&2
+                    break
+                fi
+                ;;
+            idle)
+                retries=$((retries + 1))
+                [ "$retries" -ge 5 ] && break
+                # 没进 busy → prompt 还卡输入框 / Enter 被某个 modal 吃了 → 补 Enter
+                tmux send-keys -t "$sess" Enter
+                ;;
+        esac
     done
 
-    echo "[default_inject_prompt] WARN: 5 次 retry 后 $sess 仍未进 busy；prompt 可能仍卡输入框" >&2
+    echo "[default_inject_prompt] WARN: $sess 仍未进 busy（idle 重试 $retries 次）；prompt 可能仍卡输入框" >&2
     echo "[default_inject_prompt]       手动检查：tmux capture-pane -t $sess -p | tail -20" >&2
     return 1
 }
