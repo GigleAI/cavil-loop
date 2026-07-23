@@ -294,6 +294,18 @@ CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
 tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
 ```
 
+### 浏览存活的 worker session
+
+先按 `Ctrl+b`，再按 `s`。列表保留 tmux 原生 `choose-tree` 布局，并在每个
+worker session 行末追加 GitHub issue 标题：
+
+```text
+myproject-issue42: 1 windows | 优化首页加载性能
+```
+
+标题存放在 session-scoped tmux option `@desc` 中；issue/PR worker session
+每次创建或复用时都会刷新。没有 `@desc` 的非 worker session 保持 tmux 原始显示。
+
 ### 回看已退出 session 的历史
 
 tmux session 一旦 exit，原 pane 的 scrollback 就消失了。本项目用 `tmux pipe-pane` 把每个 worker session 的输出旁路到磁盘：

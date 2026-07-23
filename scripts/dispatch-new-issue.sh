@@ -21,7 +21,7 @@ PROMPT_FILE="/tmp/coding-agent-issue-$ISSUE-prompt.md"
 bash "$SCRIPT_DIR/create-worktree.sh" "$ISSUE" main
 
 # 2. 拉 issue 信息
-issue_title=$(gh issue view "$ISSUE" --repo "$REPO" --json title --jq .title)
+issue_title="$(github_issue_title "$ISSUE")"
 
 # 3. 写 prompt（用模板 + 占位）
 TEMPLATE="$(find_prompt_template "new-issue")"
@@ -68,6 +68,9 @@ done < <(tmux_env_args)
 # verify_fresh_session 才 capture 得到死因。隔语句再设会被亚毫秒级秒退抢跑（race）。
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD" \
     \; set-option -w -t "$TMUX_SESSION" remain-on-exit on
+
+# 4.4 给 tmux session 写入 GitHub issue 标题，并让 prefix+s 列表显示它
+configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
 
 # 4.5 pane 输出旁路到日志文件，session 退出后仍可回看
 start_session_logging "$TMUX_SESSION"

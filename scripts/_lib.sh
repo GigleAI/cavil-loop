@@ -291,6 +291,36 @@ branch_name() {
     echo "${BRANCH_PREFIX}$1"
 }
 
+# 取 work number 对应的 GitHub issue 标题。GitHub 的 /issues/N REST endpoint
+# 对普通 issue 和 PR 都有效，所以 pr_to_issue_num fallback 到 PR number 时也能显示标题。
+github_issue_title() {
+    local issue="$1"
+    run_gh_capture "读取 issue #$issue 标题" \
+        gh api "repos/$REPO/issues/$issue" --jq .title
+}
+
+# 给 worker session 加可读标题，并让 tmux 默认的 prefix+s choose-tree 在 session 行显示。
+# `#{E:tree_mode_format}` 保留 tmux 自带的 pane/window/session 格式；只在 session 行追加
+# session-scoped @desc。每次建/复用 worker session 都重设，tmux server 重启后也能自愈。
+configure_tmux_session_display() {
+    local sess="$1"
+    local desc="${2:-}"
+    local tree_format
+    tree_format='#{E:tree_mode_format}#{?#{||:#{pane_format},#{window_format}},,#{?@desc, | #{@desc},}}'
+
+    session_alive "$sess" || return 0
+
+    if [ -n "$desc" ] && ! tmux set-option -t "$sess" @desc "$desc" 2>&1 | \
+        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        log "  ⚠️ 设置 tmux session $sess 的 @desc 失败（worker 继续运行）"
+    fi
+
+    if ! tmux bind-key -T prefix s choose-tree -Zs -F "$tree_format" 2>&1 | \
+        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        log "  ⚠️ 配置 tmux prefix+s session 列表失败（worker 继续运行）"
+    fi
+}
+
 # 给一个 tmux session 名拼出对应的 pane log 路径。
 # SESSION_LOG_DIR 为空 → 返回空字符串，调用方据此跳过日志。
 session_log_path() {
@@ -364,6 +394,18 @@ run_gh() {
         return 1
     fi
     return 0
+}
+
+# 需要使用命令 stdout 的 GitHub 调用版本。失败时与 run_gh 一样保留完整 stderr，
+# 成功时只把 stdout 交给 caller（通常用于 command substitution）。
+run_gh_capture() {
+    local desc="$1"; shift
+    local out
+    if ! out=$("$@" 2>&1); then
+        log "  ⚠️ ${desc}失败: $out"
+        return 1
+    fi
+    printf '%s\n' "$out"
 }
 
 # Label 翻转 helper：走 REST API 的 /issues/N/labels endpoint，绕过 `gh pr edit

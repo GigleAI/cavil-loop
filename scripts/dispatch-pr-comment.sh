@@ -31,6 +31,7 @@ fi
 WORKTREE="$(worktree_path "$ISSUE_N")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE_N")"
 WORKER_SESSION="$(worker_session_name "$ISSUE_N")"
+issue_title="$(github_issue_title "$ISSUE_N" || true)"
 
 # Prompt 模板
 TEMPLATE="$(find_prompt_template "pr-comment")"
@@ -78,6 +79,7 @@ flip_label() {
 # Case A: 现有 worker session
 if session_alive "$TMUX_SESSION"; then
     log "PR #$PR -> 注入 $TMUX_SESSION (agent=$WORKER_AGENT)"
+    configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
     if agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"; then
         flip_label
@@ -116,6 +118,7 @@ if [ -d "$WORKTREE" ]; then
         tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
     fi
 
+    configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
     flip_label
     exit 0
@@ -155,6 +158,7 @@ while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
 done < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
 start_session_logging "$TMUX_SESSION"
 
 flip_label

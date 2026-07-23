@@ -294,6 +294,19 @@ CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
 tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
 ```
 
+### Browse live worker sessions
+
+Press `Ctrl+b`, then `s`. The workflow keeps tmux's normal `choose-tree` layout
+and appends the GitHub issue title to each worker session row:
+
+```text
+myproject-issue42: 1 windows | Optimize homepage load performance
+```
+
+The title is stored as the session-scoped tmux option `@desc`. It is refreshed
+whenever an issue/PR worker session is created or reused. Non-worker sessions
+without `@desc` keep the normal tmux display.
+
 ### Review history of an exited session
 
 Once a tmux session exits, the pane's scrollback is gone. This project uses `tmux pipe-pane` to mirror each worker session's output to disk:

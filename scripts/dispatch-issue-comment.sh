@@ -19,6 +19,7 @@ WORKTREE="$(worktree_path "$ISSUE")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE")"
 WORKER_SESSION="$(worker_session_name "$ISSUE")"
 BRANCH="$(branch_name "$ISSUE")"
+issue_title="$(github_issue_title "$ISSUE" || true)"
 
 # 渲染 issue-comment prompt
 TEMPLATE="$(find_prompt_template "issue-comment")"
@@ -62,6 +63,7 @@ flip_label() {
 # Case A: session 还活着 → 注入 prompt
 if session_alive "$TMUX_SESSION"; then
     log "issue #$ISSUE -> 注入现有 session $TMUX_SESSION (agent=$WORKER_AGENT)"
+    configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     if agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"; then
         flip_label
         exit 0
@@ -101,6 +103,7 @@ if [ -d "$WORKTREE" ]; then
         tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
     fi
 
+    configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION" 2>/dev/null || true
     flip_label
     exit 0
