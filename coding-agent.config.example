@@ -162,9 +162,16 @@ WORKER_AGENT="claude"
 # （只有 WORKER_AGENT=claude 时生效；其他 driver 读各自的 *_EXTRA_FLAGS。）
 CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 
-# OpenCode / Codex / Cursor 启动 flag（按需打开）：
+# Codex defaults to bypassing approvals and its internal sandbox so unattended
+# workers do not block. Only use this in an externally isolated environment.
+# Set an explicit empty string to use Codex's normal approval and sandbox policy.
+#
+# Codex 默认跳过确认并关闭内部 sandbox，避免无人值守 worker 卡住。
+# 只应用于已有外部隔离的环境；显式设为空字符串可恢复 Codex 的常规策略。
+CODEX_EXTRA_FLAGS="--dangerously-bypass-approvals-and-sandbox"
+
+# OpenCode / Cursor 启动 flag（按需打开）：
 # OPENCODE_EXTRA_FLAGS=""
-# CODEX_EXTRA_FLAGS=""
 # CURSOR_AGENT_EXTRA_FLAGS=""
 
 # ── Env passed to worker / 传给 worker 的 env ──

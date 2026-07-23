@@ -9,7 +9,10 @@
 # 续接：codex resume                  (新版会列已有 session 选 latest)
 #       codex --continue              (老版别名)
 #
-# 配置开关：CODEX_EXTRA_FLAGS
+# 配置开关：CODEX_EXTRA_FLAGS。未设置时默认跳过确认并关闭 Codex sandbox；
+# 显式设为空字符串可关闭该默认值。
+
+CODEX_EXTRA_FLAGS="${CODEX_EXTRA_FLAGS---dangerously-bypass-approvals-and-sandbox}"
 
 agent_bin() { echo "codex"; }
 
