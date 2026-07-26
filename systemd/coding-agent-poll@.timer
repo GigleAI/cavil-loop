@@ -4,6 +4,16 @@ Description=Trigger coding-agent-poll periodically (instance: %i)
 [Timer]
 Unit=coding-agent-poll@%i.service
 OnBootSec=30s
+# OnActiveSec 相对 **timer 自身激活**，缺它会死锁（2026-07-26 实测停摆 3 小时）：
+#   - OnBootSec 相对开机。长期不重启的机器（当时已开机 382 天）上，user manager 一旦重启
+#     （OOM 被 systemd-oomd 杀、手动 restart、开机 30s 内没起来），这个时间点早就过去了，
+#     systemd 直接丢弃，不会补触发。
+#   - OnUnitActiveSec 相对 service **上一次激活**。全新的 manager 进程眼里 service 从没激活过
+#     → 没有基准点 → NextElapseUSecMonotonic=infinity。
+#   两个条件同时失效 = timer 显示 active 但永远不触发，且日志里一行错都没有，极难发现。
+#   OnActiveSec 与开机时长无关，每次 manager 起来都能自己种下基准点，把链条重新拉转。
+#   （Persistent=true 救不了：它只对 OnCalendar= 生效，对 monotonic timer 是 no-op。）
+OnActiveSec=30s
 # 注：这里不能用变量，systemd timer 不展开 EnvironmentFile。如果要改 interval，
 # 编辑此模板或用 systemctl --user edit coding-agent-poll@%i.timer 做 drop-in。
 OnUnitActiveSec=60s
