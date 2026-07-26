@@ -88,7 +88,8 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
   "seen_reviews":          { "<PR>": <id>, ... },     // /pulls/N/reviews       PR review submissions
   "seen_issue_comments":   { "<ISSUE>": <id>, ... },  // /issues/N/comments     non-PR issue comments
   "worker_models":         { "<WORK>": "<model>", ... }, // model preserved across self-heal
-  "cleaned_prs":           [ <PR>, ... ]              // PRs already auto-cleanup'd; not rescanned
+  "cleaned_prs":           [ <PR>, ... ],             // PRs already auto-cleanup'd; not rescanned
+  "unmerged_prs_handled":  [ <PR>, ... ]              // closed-unmerged PRs already judged by § 3c
 }
 ```
 

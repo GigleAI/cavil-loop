@@ -371,6 +371,82 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
         nohup bash "$SCRIPT_DIR/refresh-latest-site.sh" >> "$STATE_DIR/latest-site.log" 2>&1 &
     fi
 
+    # ── 3c. PR closed 但没 merge → 摘掉 issue 上残留的 pending/PR ──
+    # § 3 只走 merged 那条路。PR 被**关闭而非合并**（方案被推翻 / 拆成新 PR 重开 /
+    # 作者放弃）时没有任何地方翻 label，issue 就一直挂着 pending/PR——列表上显示
+    # 「工作已转 PR 跟踪」，而那个 PR 早就没了（GigleTutor-Web #64 / #274 / #336 即此）。
+    #
+    # 只动 label，不碰 worktree / 分支：PR 关掉不等于那些 commit 该删，很可能还要在
+    # 新 PR 里捡回来。真正的清理仍归 § 4（issue 被 close 时）或用户手动 cleanup-issue.sh。
+    #
+    # 用 --search 而不是 --state closed：后者把 merged 也算作 closed，且按**创建**时间
+    # 倒序——未合并的 PR 往往创建得早、关得晚，本机实测 5 个全排在第 141~180 名，
+    # `--limit 30` 的窗口一个都扫不到，规则等于白写。is:unmerged + sort:updated-desc 才对。
+    unmerged_prs=$(gh pr list --repo "$REPO" --search "is:closed is:unmerged sort:updated-desc" \
+        --limit 30 --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
+
+    if [ -n "$unmerged_prs" ]; then
+        # 还开着的 PR 各自对应的工作编号。懒加载：只有真有待处理项才多花这一次 API。
+        open_worknums=""
+        while IFS=$'\t' read -r prnum branch; do
+            [ -z "$prnum" ] && continue
+            if jq -e --argjson n "$prnum" '(.unmerged_prs_handled // []) | index($n)' "$STATE_FILE" >/dev/null 2>&1; then
+                continue
+            fi
+
+            if [ -z "$open_worknums" ]; then
+                while IFS=$'\t' read -r opr obr; do
+                    [ -z "$opr" ] && continue
+                    open_worknums="$open_worknums $(pr_to_issue_num "$opr" "$obr") "
+                done < <(gh pr list --repo "$REPO" --state open --limit 100 \
+                    --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
+                # 一个 open PR 都没有时也要置成非空，否则每轮循环都重新拉一次
+                open_worknums="${open_worknums:- }"
+            fi
+
+            issue_n=$(pr_to_issue_num "$prnum" "$branch")
+            # 走 /issues/N 而不是 gh issue view：这个 endpoint 同时覆盖 issue 和 PR，
+            # standalone PR（pr_to_issue_num 兜底成 PR 编号自己）也查得到，不会 not found。
+            issue_json=$(gh api "repos/$REPO/issues/$issue_n" --jq '{s: .state, l: [.labels[].name]}' 2>/dev/null || true)
+            if [ -z "$issue_json" ]; then
+                log "PR #$prnum (closed 未合并): 读 #$issue_n 失败，下轮重试"
+                continue
+            fi
+
+            if printf '%s' "$issue_json" | jq -e --arg L "$LABEL_PENDING_PR" '.l | index($L)' >/dev/null 2>&1; then
+                # 同一个 issue 完全可能「旧 PR 关了、新 PR 开着」，这时 pending/PR 属于
+                # 新那个，摘了就把还在 review 的工作从看板上抹掉了。此处不标记已处理，
+                # 等新 PR 有结果后的某一轮再重新判定。
+                case "$open_worknums" in
+                    *" $issue_n "*)
+                        log "PR #$prnum closed 未合并，但 #$issue_n 还有别的 PR 开着 → 保留 $LABEL_PENDING_PR"
+                        continue
+                        ;;
+                esac
+
+                issue_state=$(printf '%s' "$issue_json" | jq -r '.s' | tr '[:upper:]' '[:lower:]')
+                if [ "$issue_state" = "open" ]; then
+                    # PR 没落地、issue 还开着 → 这事回到人手上决策
+                    run_gh "PR #$prnum closed 未合并 → issue #$issue_n $LABEL_PENDING_PR → $LABEL_PENDING_HUMAN" \
+                        gh_label_flip "$issue_n" \
+                        --add "$LABEL_PENDING_HUMAN" \
+                        --remove "$LABEL_PENDING_PR" || true
+                    log "PR #$prnum closed 未合并 → issue #$issue_n OPEN，$LABEL_PENDING_PR → $LABEL_PENDING_HUMAN"
+                else
+                    # issue 早已 close，人已经处理完 → 只摘残留标签，不加任何 pending 态
+                    run_gh "PR #$prnum closed 未合并 → issue #$issue_n 摘 $LABEL_PENDING_PR" \
+                        gh_label_flip "$issue_n" \
+                        --remove "$LABEL_PENDING_PR" || true
+                    log "PR #$prnum closed 未合并 → issue #$issue_n 已 CLOSED，摘掉残留 $LABEL_PENDING_PR"
+                fi
+            fi
+
+            tmp=$(mktemp)
+            jq --argjson n "$prnum" '.unmerged_prs_handled = ((.unmerged_prs_handled // []) + [$n])' \
+                "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+        done <<< "$unmerged_prs"
+    fi
+
     # ── 4. 自动 cleanup 直接 close 的 issue（无关联 merged PR）──
     # § 3 通过 PR 反推 issue 清理；但有的 issue 不经 PR 直接被 close（duplicate / won't
     # fix / 决定不做了）—— § 3 看不到。这里扫最近 closed issue 兜底。

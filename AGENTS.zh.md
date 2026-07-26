@@ -86,7 +86,8 @@
   "seen_reviews":          { "<PR>": <id>, ... },  // /pulls/N/reviews       PR review 提交
   "seen_issue_comments":   { "<ISSUE>": <id>, ... }, // /issues/N/comments   非 PR issue 评论
   "worker_models":         { "<WORK>": "<model>", ... }, // self-heal 时保留模型
-  "cleaned_prs":           [ <PR>, ... ]            // 已 auto-cleanup 的 PR 不再扫
+  "cleaned_prs":           [ <PR>, ... ],           // 已 auto-cleanup 的 PR 不再扫
+  "unmerged_prs_handled":  [ <PR>, ... ]            // § 3c 已判定过的 closed 未合并 PR
 }
 ```
 
