@@ -85,11 +85,12 @@
   "seen_review_comments":  { "<PR>": <id>, ... },  // /pulls/N/comments      PR inline 评论
   "seen_reviews":          { "<PR>": <id>, ... },  // /pulls/N/reviews       PR review 提交
   "seen_issue_comments":   { "<ISSUE>": <id>, ... }, // /issues/N/comments   非 PR issue 评论
+  "worker_models":         { "<WORK>": "<model>", ... }, // self-heal 时保留模型
   "cleaned_prs":           [ <PR>, ... ]            // 已 auto-cleanup 的 PR 不再扫
 }
 ```
 
-加字段时：`agent-poll.sh` 开头有 migration 逻辑——遍历 `seen_issue_comments seen_review_comments seen_reviews` 检查 `has`，缺就初始化 `{}`。加新 endpoint 时把字段名加进那个循环。
+加字段时：`agent-poll.sh` 开头有 migration 逻辑——遍历 `seen_issue_comments seen_review_comments seen_reviews worker_models` 检查 `has`，缺就初始化 `{}`。加新 endpoint 时把字段名加进那个循环。
 
 ### Session / Worktree / Branch 命名
 

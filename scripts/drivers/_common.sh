@@ -42,6 +42,13 @@ encoded_cwd() {
     printf %s "$1" | tr / -
 }
 
+# 单次 dispatch 可通过 WORKER_MODEL 指定模型。返回 shell-quoted CLI 片段，
+# 供支持 `--model` 的 driver 拼进 new / resume 命令；空值表示沿用 agent 默认模型。
+worker_model_arg() {
+    [ -n "${WORKER_MODEL:-}" ] || return 0
+    printf -- '--model %q' "$WORKER_MODEL"
+}
+
 # ── 默认 prompt 注入 ──
 # 三阶段：dismiss 残留 modal → paste prompt + Enter → verify-and-retry
 # 避免之前常踩的"prompt 进了输入框但没 submit、worker 卡 doing/agent 假在跑"。

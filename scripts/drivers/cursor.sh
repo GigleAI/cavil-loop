@@ -38,8 +38,11 @@ agent_command_new() {
     local cwd="$1"
     local name="$2"
     local prompt_file="$3"
-    printf 'agent -p --trust --force --output-format text %s "$(cat %s)"' \
+    local model_arg
+    model_arg="$(worker_model_arg)"
+    printf 'agent -p --trust --force --output-format text %s %s "$(cat %s)"' \
         "${CURSOR_AGENT_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }
 

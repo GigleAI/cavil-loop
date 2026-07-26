@@ -81,16 +81,16 @@ start_session_logging "$TMUX_SESSION"
 if ! verify_fresh_session "$TMUX_SESSION"; then
     log "dispatch-new-issue: #$ISSUE worker 秒退 → 翻 $LABEL_PENDING_AGENT 回 $LABEL_PENDING_HUMAN（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
     run_gh "label 翻转 (issue #$ISSUE 秒退 pending/agent → pending/human)" \
-        gh issue edit "$ISSUE" --repo "$REPO" \
-        --add-label "$LABEL_PENDING_HUMAN" \
-        --remove-label "$LABEL_PENDING_AGENT" || true
+        gh_label_flip "$ISSUE" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
     exit 1
 fi
 
 # 5. 立即翻 label 到 doing/agent（worker 完工时它会自己翻成 pending/human）
 run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
-    gh issue edit "$ISSUE" --repo "$REPO" \
-    --add-label "$LABEL_AGENT_DOING" \
-    --remove-label "$LABEL_PENDING_AGENT" || true
+    gh_label_flip "$ISSUE" \
+    --add "$LABEL_AGENT_DOING" \
+    --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" || true
 
 log "dispatch-new-issue done: #$ISSUE -> $TMUX_SESSION"

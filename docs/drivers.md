@@ -78,11 +78,18 @@ Typical: `tmux capture-pane -t $sess -p | grep -q "<stable keyword>"`.
 #### `agent_command_new` / `agent_command_resume`
 Echo a **single shell command string**. The string is evaluated by `tmux new-session -d -c <cwd> "<cmd>"` in a subshell, so deferred expansions like `"$(cat $prompt_file)"` work.
 
+For model-selecting labels, built-in drivers append the result of
+`worker_model_arg` (`--model <WORKER_MODEL>`) to both commands. Custom drivers
+should do the same if their CLI supports per-invocation model selection.
+
 Typical:
 ```bash
 agent_command_new() {
     local cwd="$1" name="$2" prompt_file="$3"
-    printf 'your-cli %s "$(cat %s)"' "${YOUR_AGENT_EXTRA_FLAGS:-}" "$prompt_file"
+    local model_arg
+    model_arg="$(worker_model_arg)"
+    printf 'your-cli %s %s "$(cat %s)"' \
+        "${YOUR_AGENT_EXTRA_FLAGS:-}" "$model_arg" "$prompt_file"
 }
 ```
 

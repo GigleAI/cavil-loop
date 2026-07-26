@@ -29,11 +29,14 @@ agent_command_new() {
     local cwd="$1"
     local name="$2"
     local prompt_file="$3"
+    local model_arg
+    model_arg="$(worker_model_arg)"
     # 注：worker_session_name 用 `<owner>/<repo>#<N>` 格式，含 / # —— 如果你的 agent
     # 支持 session display name flag（claude -n / opencode --name 等），用 `%q`
     # printf format 做 shell-quote。下面示例假设 agent 没这个 flag：
-    printf 'your-agent-cli %s "$(cat %s)"' \
+    printf 'your-agent-cli %s %s "$(cat %s)"' \
         "${YOUR_AGENT_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }
 
@@ -41,10 +44,13 @@ agent_command_resume() {
     local cwd="$1"
     local name="$2"
     local prompt_file="$3"
+    local model_arg
+    model_arg="$(worker_model_arg)"
     # 没 resume 概念就直接 fallback 到 new：
     # agent_command_new "$@"; return
-    printf 'your-agent-cli --resume %s "$(cat %s)"' \
+    printf 'your-agent-cli --resume %s %s "$(cat %s)"' \
         "${YOUR_AGENT_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }
 

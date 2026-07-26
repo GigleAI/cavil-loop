@@ -78,11 +78,18 @@ stdout 写 CLI 可执行名。setup.sh 用它 `command -v` 检查依赖、并把
 #### `agent_command_new` / `agent_command_resume`
 stdout 写**一行 shell 命令字符串**。该字符串会被 `tmux new-session -d -c <cwd> "<cmd>"` 在子 shell 里求值，所以可以用 `"$(cat $prompt_file)"` 之类延迟展开。
 
+对于按模型派工的标签，内置 driver 会把 `worker_model_arg` 的结果
+（`--model <WORKER_MODEL>`）同时拼入 new / resume 命令。自定义 driver 的 CLI
+如果支持单次指定模型，也应接入该 helper。
+
 典型实现：
 ```bash
 agent_command_new() {
     local cwd="$1" name="$2" prompt_file="$3"
-    printf 'your-cli %s "$(cat %s)"' "${YOUR_AGENT_EXTRA_FLAGS:-}" "$prompt_file"
+    local model_arg
+    model_arg="$(worker_model_arg)"
+    printf 'your-cli %s %s "$(cat %s)"' \
+        "${YOUR_AGENT_EXTRA_FLAGS:-}" "$model_arg" "$prompt_file"
 }
 ```
 

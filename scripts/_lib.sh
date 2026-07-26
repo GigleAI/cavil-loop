@@ -63,6 +63,13 @@ source "$CONFIG_FILE"
 : "${LABEL_PENDING_AGENT:?LABEL_PENDING_AGENT 未设}"
 : "${LABEL_PENDING_HUMAN:?LABEL_PENDING_HUMAN 未设}"
 # 兼容老配置：未设时给默认值
+LABEL_PENDING_AGENT_DEFAULT="$LABEL_PENDING_AGENT"
+LABEL_PENDING_AGENT_FABLE5="${LABEL_PENDING_AGENT_FABLE5:-pending/agent/fable5}"
+FABLE5_MODEL="${FABLE5_MODEL:-claude-fable-5}"
+FABLE5_WORKER_AGENT="${FABLE5_WORKER_AGENT:-claude}"
+# agent-poll 给 child dispatch 传这个变量，令同一套 prompt / label flip 逻辑
+# 针对实际触发标签工作；daemon 自己不传时仍使用普通 pending/agent。
+LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAULT}"
 LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-doing/agent}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
@@ -76,7 +83,10 @@ OUTPUT_LANGUAGE="${OUTPUT_LANGUAGE:-en}"
 
 # Worker agent CLI（claude / opencode / codex / cursor / 你自家 driver）。
 # 默认 claude → 行为完全等同未引入 driver 抽象前。
-WORKER_AGENT="${WORKER_AGENT:-claude}"
+WORKER_AGENT_DEFAULT="${WORKER_AGENT:-claude}"
+WORKER_AGENT="${DISPATCH_WORKER_AGENT:-$WORKER_AGENT_DEFAULT}"
+# 单次 dispatch 指定的模型；空 = agent 自己的默认模型。
+WORKER_MODEL="${WORKER_MODEL:-}"
 
 # Outbound GitHub 评论里附时间+token 元数据 footer（on / off）。默认 on。
 # 项目级 prompt 模板可读 ${COMMENT_FOOTER}，自行决定本项目是否加 footer。
@@ -299,9 +309,11 @@ github_issue_title() {
         gh api "repos/$REPO/issues/$issue" --jq .title
 }
 
-# 给 worker session 加可读标题，并让 tmux 默认的 prefix+s choose-tree 在 session 行显示。
+# 给 worker session 加可读标题、记录实际 worker / 模型，并让 tmux 默认的 prefix+s
+# choose-tree 在 session 行显示标题。
 # `#{E:tree_mode_format}` 保留 tmux 自带的 pane/window/session 格式；只在 session 行追加
-# session-scoped @desc。每次建/复用 worker session 都重设，tmux server 重启后也能自愈。
+# session-scoped @desc。@worker_agent / @worker_model 用来判断复用时是否需要重启。
+# 每次建/复用 worker session 都重设，tmux server 重启后也能自愈。
 configure_tmux_session_display() {
     local sess="$1"
     local desc="${2:-}"
@@ -315,10 +327,31 @@ configure_tmux_session_display() {
         log "  ⚠️ 设置 tmux session $sess 的 @desc 失败（worker 继续运行）"
     fi
 
+    if ! tmux set-option -t "$sess" @worker_model "$WORKER_MODEL" 2>&1 | \
+        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        log "  ⚠️ 设置 tmux session $sess 的 @worker_model 失败（worker 继续运行）"
+    fi
+
+    if ! tmux set-option -t "$sess" @worker_agent "$WORKER_AGENT" 2>&1 | \
+        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        log "  ⚠️ 设置 tmux session $sess 的 @worker_agent 失败（worker 继续运行）"
+    fi
+
     if ! tmux bind-key -T prefix s choose-tree -Zs -F "$tree_format" 2>&1 | \
         sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 配置 tmux prefix+s session 列表失败（worker 继续运行）"
     fi
+}
+
+# 返回 0 表示现有 session 已使用本次 dispatch 要求的 worker 和模型。老 session
+# 没有元数据时按项目默认 worker + 默认模型处理，所以普通 pending/agent 不会无故重启。
+tmux_session_matches_worker() {
+    local sess="$1"
+    local actual_agent actual_model
+    actual_agent="$(tmux show-options -qv -t "$sess" @worker_agent 2>/dev/null || true)"
+    actual_model="$(tmux show-options -qv -t "$sess" @worker_model 2>/dev/null || true)"
+    [ -n "$actual_agent" ] || actual_agent="$WORKER_AGENT_DEFAULT"
+    [ "$actual_agent" = "$WORKER_AGENT" ] && [ "$actual_model" = "$WORKER_MODEL" ]
 }
 
 # 给一个 tmux session 名拼出对应的 pane log 路径。

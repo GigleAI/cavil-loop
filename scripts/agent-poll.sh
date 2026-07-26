@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 主轮询：systemd user timer / cron 定时调起。one-shot 风格。
 # 行为：
-#   1. 看 GitHub 上有没有 label=pending/agent 的 issue → 派工
-#   2. 看 label=pending/agent 的 PR → 检查新 comment ID → 派工
-#   3. 派工时立刻把 label 翻回 pending/human，防止 daemon 自己 re-dispatch
+#   1. 看 GitHub 上有没有普通或模型专用 pending label 的 issue → 派工
+#   2. 看这些 label 的 PR → 检查新 comment ID → 派工
+#   3. 派工时立刻把触发 label 翻成 doing/agent，防止 daemon 自己 re-dispatch
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,9 +13,9 @@ source "$SCRIPT_DIR/_lib.sh"
 STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/poll.lock"
 
-[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{}}' > "$STATE_FILE"
+[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{}}' > "$STATE_FILE"
 # 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
-for field in seen_issue_comments seen_review_comments seen_reviews; do
+for field in seen_issue_comments seen_review_comments seen_reviews worker_models; do
     if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
         tmp=$(mktemp)
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -31,13 +31,34 @@ fi
 
 log "===== poll start ====="
 
+pending_label_for_model() {
+    case "$1" in
+        "$FABLE5_MODEL"|fable5) echo "$LABEL_PENDING_AGENT_FABLE5" ;;
+        *) echo "$LABEL_PENDING_AGENT_DEFAULT" ;;
+    esac
+}
+
+remember_worker_model() {
+    local issue_n="$1"
+    local model="$2"
+    local tmp
+    tmp=$(mktemp)
+    if [ -n "$model" ]; then
+        jq --arg key "$issue_n" --arg model "$model" \
+            '.worker_models[$key] = $model' "$STATE_FILE" > "$tmp"
+    else
+        jq --arg key "$issue_n" \
+            'del(.worker_models[$key])' "$STATE_FILE" > "$tmp"
+    fi
+    mv "$tmp" "$STATE_FILE"
+}
+
 # ── 0. Zombie label self-heal ──
 # label=doing/agent 但对应 tmux session 不存在 = 假阳性 active：worker 进程死掉时
-# 没机会自己翻 label 回 pending/human（claude crash / tmux server 重启 / 手动 kill
+# 没机会自己翻 label 回 pending/human（worker crash / tmux server 重启 / 手动 kill
 # 等），daemon 后续看 label 仍当 active worker、撑满 max_concurrent。
 # 这里在算 active 之前先扫一遍 doing/agent label 项，把 session 不存在的翻回
-# pending/human + log 警告，让 user 看到"worker 死了，需要看一眼"。下一轮 user
-# 重标 pending/agent 即可触发 fallback resume。
+# 原触发模型的 pending label 并记录警告，让下一轮自动 fallback resume。
 zombie_pr_data=$(gh pr list --repo "$REPO" --label "$LABEL_AGENT_DOING" \
     --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
 zombie_issue_nums=$(gh issue list --repo "$REPO" --state open --label "$LABEL_AGENT_DOING" \
@@ -56,12 +77,15 @@ self_heal_one() {
     # session 死了：优先自动重新派工（翻回 pending/agent，下面的派工路径会 resume/fresh），
     # 只有连续自愈 SELFHEAL_MAX_RETRIES 次仍立刻死（多半是损坏会话）才转人工，避免无限重启烧 API。
     local tries cap=${SELFHEAL_MAX_RETRIES:-3}
+    local model pending_label
+    model=$(jq -r --arg key "$issue_n" '.worker_models[$key] // ""' "$STATE_FILE")
+    pending_label="$(pending_label_for_model "$model")"
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
-        log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，翻 $LABEL_AGENT_DOING → $LABEL_PENDING_AGENT）"
+        log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → $pending_label）"
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/agent)" \
             gh_label_flip "$n" \
-            --add "$LABEL_PENDING_AGENT" \
+            --add "$pending_label" \
             --remove "$LABEL_AGENT_DOING" || true
     else
         log "⚠️ self-heal: $kind #$n 自动恢复 $((tries - 1)) 次仍死（疑似会话损坏）→ 转人工 $LABEL_PENDING_HUMAN"
@@ -125,11 +149,28 @@ else
 fi
 
 # ── 1. 新 issue 派工 ──
-new_issues=$(gh issue list --repo "$REPO" --state open --label "$LABEL_PENDING_AGENT" \
-    --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null || true)
+# 特定模型标签先扫；若同一 issue 同时有普通 + fable5 标签，普通 pass 跳过，
+# 防止 fable5 因 busy / 并发上限排队时被默认模型抢先派工。
+declare -A fable_issue_keys=()
 
-if [ -n "$new_issues" ]; then
+dispatch_pending_issues() {
+    local trigger_label="$1"
+    local model="$2"
+    local worker_agent="$3"
+    local new_issues
+    new_issues=$(gh issue list --repo "$REPO" --state open --label "$trigger_label" \
+        --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null || true)
+
+    [ -n "$new_issues" ] || return 0
+
     while IFS=$'\t' read -r num title; do
+        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE5" ]; then
+            fable_issue_keys[$num]=1
+        elif [ -n "${fable_issue_keys[$num]:-}" ]; then
+            continue
+        fi
+
+        local sess wt latest_id tmp
         sess="$(tmux_session_name "$num")"
         wt="$(worktree_path "$num")"
 
@@ -138,8 +179,7 @@ if [ -n "$new_issues" ]; then
         # 所以不依赖 comment ID 变化，只要 agent 不在忙就派工。
         if session_alive "$sess" || [ -d "$wt" ]; then
             latest_id=$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-            log "issue #$num 已有 worktree/session (latest_id=$latest_id)"
-            # agent 在忙就不打断（除非 pending/agent 是用户手动翻回来的）
+            log "issue #$num 已有 worktree/session (latest_id=$latest_id, agent=${worker_agent:-default}, model=${model:-default})"
             if session_alive "$sess" && agent_is_busy "$sess"; then
                 log "issue #$num: agent 正在忙，跳过本轮"
                 continue
@@ -148,12 +188,14 @@ if [ -n "$new_issues" ]; then
                 log "issue #$num: 已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，重派工排队等下一轮"
                 continue
             fi
-            log "dispatch issue-comment for #$num"
-            if bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
+            log "dispatch issue-comment for #$num (agent=${worker_agent:-default}, model=${model:-default})"
+            remember_worker_model "$num" "$model"
+            if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" \
+                bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
                 tmp=$(mktemp)
                 jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
             else
-                log "issue-comment 派工 #$num 失败（state 不更新，下轮重试）"
+                log "issue-comment 派工 #$num 失败（comment cursor 不更新，下轮重试）"
             fi
             continue
         fi
@@ -163,12 +205,17 @@ if [ -n "$new_issues" ]; then
             log "已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，issue #$num 排队等下一轮"
             continue
         fi
-        log "dispatch new issue #$num: $title"
-        if ! bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
+        log "dispatch new issue #$num: $title (agent=${worker_agent:-default}, model=${model:-default})"
+        remember_worker_model "$num" "$model"
+        if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" \
+            bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
             log "派工 issue #$num 失败"
         fi
     done <<< "$new_issues"
-fi
+}
+
+dispatch_pending_issues "$LABEL_PENDING_AGENT_FABLE5" "$FABLE5_MODEL" "$FABLE5_WORKER_AGENT"
+dispatch_pending_issues "$LABEL_PENDING_AGENT_DEFAULT" "" ""
 
 # ── 2. PR 评论派工 ──
 # PR 上的「评论」其实有三种，存三个不同 endpoint，ID 序列也是独立的：
@@ -176,12 +223,28 @@ fi
 #   - /pulls/N/comments   ← Files Changed 上 inline 的 review comments
 #   - /pulls/N/reviews    ← 整次 review 提交（Approve/Request changes/Comment 的整体 body）
 # 任意一个有新增就派工；state.json 里分三个字段各存最新 ID。
-pending_prs=$(gh pr list --repo "$REPO" --label "$LABEL_PENDING_AGENT" \
-    --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
+declare -A fable_pr_keys=()
 
-if [ -n "$pending_prs" ]; then
+dispatch_pending_prs() {
+    local trigger_label="$1"
+    local model="$2"
+    local worker_agent="$3"
+    local pending_prs
+    pending_prs=$(gh pr list --repo "$REPO" --label "$trigger_label" \
+        --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
+
+    [ -n "$pending_prs" ] || return 0
+
     while IFS=$'\t' read -r prnum branch; do
+        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE5" ]; then
+            fable_pr_keys[$prnum]=1
+        elif [ -n "${fable_pr_keys[$prnum]:-}" ]; then
+            continue
+        fi
+
         # 算 session/worktree（PR 走 issue_n 链；standalone fallback PR 编号自己）
+        local issue_n sess latest_conv latest_inline latest_review
+        local seen_conv seen_inline seen_review kick_id tmp
         issue_n=$(pr_to_issue_num "$prnum" "$branch")
         sess="$(tmux_session_name "$issue_n")"
 
@@ -194,7 +257,7 @@ if [ -n "$pending_prs" ]; then
         seen_conv=$(jq -r ".seen_comments[\"$prnum\"] // 0" "$STATE_FILE")
         seen_inline=$(jq -r ".seen_review_comments[\"$prnum\"] // 0" "$STATE_FILE")
         seen_review=$(jq -r ".seen_reviews[\"$prnum\"] // 0" "$STATE_FILE")
-        log "PR #$prnum: conv=$latest_conv/$seen_conv inline=$latest_inline/$seen_inline review=$latest_review/$seen_review"
+        log "PR #$prnum: conv=$latest_conv/$seen_conv inline=$latest_inline/$seen_inline review=$latest_review/$seen_review agent=${worker_agent:-default} model=${model:-default}"
 
         # busy 时不打断（保护正在干活的 worker；新评论 / 重标 都等下一轮 idle）
         if session_alive "$sess" && agent_is_busy "$sess"; then
@@ -211,18 +274,23 @@ if [ -n "$pending_prs" ]; then
         # 信号（可能是新评论 + 重标、可能是没新评论纯重派工恢复死掉的 worker）。
         # dispatch 后 daemon 在 § Case A/B 翻 label 到 doing/agent，下轮 daemon 不会
         # 再 trigger 同 PR（label 不是 pending/agent 了），不会死循环。
-        log "dispatch PR #$prnum comment"
+        log "dispatch PR #$prnum comment (agent=${worker_agent:-default}, model=${model:-default})"
         # 透传最大的 ID 给 dispatch（仅用于 prompt 文件命名去重，不参与语义）
         kick_id=$(printf '%s\n%s\n%s\n' "$latest_conv" "$latest_inline" "$latest_review" | sort -rn | head -1)
-        if bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
+        remember_worker_model "$issue_n" "$model"
+        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" \
+            bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
             tmp=$(mktemp)
             jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
                 "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
         else
-            log "PR #$prnum 派工失败（state 不更新，下轮重试）"
+            log "PR #$prnum 派工失败（comment cursors 不更新，下轮重试）"
         fi
     done <<< "$pending_prs"
-fi
+}
+
+dispatch_pending_prs "$LABEL_PENDING_AGENT_FABLE5" "$FABLE5_MODEL" "$FABLE5_WORKER_AGENT"
+dispatch_pending_prs "$LABEL_PENDING_AGENT_DEFAULT" "" ""
 
 # ── 3. 自动 cleanup merged PRs ──
 # 配 AUTO_CLEANUP_ON_MERGE=false 可关闭整段
@@ -263,13 +331,14 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issue_n" --force 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+                remember_worker_model "$issue_n" ""
                 log "  auto-cleanup PR #$prnum done"
 
                 # PR：merge 完，PR 这件事真结束 → Done
                 run_gh "auto-cleanup label PR #$prnum → Done" \
                     gh_label_flip "$prnum" \
                     --add "$LABEL_DONE" \
-                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT" "$LABEL_AGENT_DOING" || true
+                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
 
                 # Issue：看实际状态决定怎么标
                 # - CLOSED（PR body 是 Closes #N，GitHub auto-close）→ 加 Done（与 PR 同闭环）
@@ -279,13 +348,13 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                     run_gh "auto-cleanup label issue #$issue_n → Done" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_DONE" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT" "$LABEL_AGENT_DOING" || true
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
                 else
                     run_gh "auto-cleanup label issue #$issue_n → pending/human" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_PENDING_HUMAN" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT" "$LABEL_AGENT_DOING" || true
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n OPEN (Refs #N) → pending/human"
                 fi
             else
@@ -329,6 +398,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" --force 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_issues += [$issnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+                remember_worker_model "$issnum" ""
                 log "  auto-cleanup closed issue #$issnum done"
             else
                 log "  auto-cleanup closed issue #$issnum 失败（busy/dirty），下轮重试"

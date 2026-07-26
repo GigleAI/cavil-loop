@@ -24,7 +24,7 @@ if [ -z "$ISSUE_N" ]; then
     run_gh "label 翻转 (PR #$PR 兜底 pending/agent → pending/human)" \
         gh_label_flip "$PR" \
         --add "$LABEL_PENDING_HUMAN" \
-        --remove "$LABEL_PENDING_AGENT" || true
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" || true
     exit 0
 fi
 
@@ -73,8 +73,15 @@ flip_label() {
     run_gh "label 翻转 (PR #$PR pending/agent → $LABEL_AGENT_DOING)" \
         gh_label_flip "$PR" \
         --add "$LABEL_AGENT_DOING" \
-        --remove "$LABEL_PENDING_AGENT" || true
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" || true
 }
+
+# 标签要求的 worker/model 与现有 session 不一致时，不能走 stdin 注入；重启后由
+# Case B/C 的 new/resume 命令带上选择，conversation/worktree 仍按原 work number 续接。
+if session_alive "$TMUX_SESSION" && ! tmux_session_matches_worker "$TMUX_SESSION"; then
+    log "PR #$PR -> session worker/model 与请求不一致，重启切换为 $WORKER_AGENT/${WORKER_MODEL:-default}"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+fi
 
 # Case A: 现有 worker session
 if session_alive "$TMUX_SESSION"; then

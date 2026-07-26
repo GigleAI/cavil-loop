@@ -87,11 +87,12 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
   "seen_review_comments":  { "<PR>": <id>, ... },     // /pulls/N/comments      PR inline review comments
   "seen_reviews":          { "<PR>": <id>, ... },     // /pulls/N/reviews       PR review submissions
   "seen_issue_comments":   { "<ISSUE>": <id>, ... },  // /issues/N/comments     non-PR issue comments
+  "worker_models":         { "<WORK>": "<model>", ... }, // model preserved across self-heal
   "cleaned_prs":           [ <PR>, ... ]              // PRs already auto-cleanup'd; not rescanned
 }
 ```
 
-When adding a field: `agent-poll.sh` has a migration loop at the top that iterates `seen_issue_comments seen_review_comments seen_reviews` and inits missing ones to `{}`. Add your new field name to that loop.
+When adding a field: `agent-poll.sh` has a migration loop at the top that iterates `seen_issue_comments seen_review_comments seen_reviews worker_models` and inits missing ones to `{}`. Add your new field name to that loop.
 
 ### Session / worktree / branch naming
 

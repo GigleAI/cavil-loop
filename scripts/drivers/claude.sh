@@ -4,8 +4,8 @@
 # 文档：https://docs.claude.com/en/docs/claude-code
 # 历史存放：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
 # Busy 探测：tmux pane footer 出现 "esc to interrupt" 时为 thinking / tool use 中
-# 新起：claude -n <name> [extra-flags] "<prompt>"
-# 续接：claude --continue [extra-flags] "<prompt>"
+# 新起：claude -n <name> [extra-flags] [--model <model>] "<prompt>"
+# 续接：claude --continue [extra-flags] [--model <model>] "<prompt>"
 #
 # 配置开关：CLAUDE_EXTRA_FLAGS（推荐 "--dangerously-skip-permissions"，否则卡权限弹窗）
 
@@ -30,10 +30,13 @@ agent_command_new() {
     local cwd="$1"   # 未直接用：tmux 已 -c "$cwd"，claude 自动 cwd
     local name="$2"
     local prompt_file="$3"
+    local model_arg
+    model_arg="$(worker_model_arg)"
     # name 含 / # 等需要 shell-quote（worker_session_name 现在用 GigleAI/repo#42 风格）
-    printf 'claude -n %q %s "$(cat %s)"' \
+    printf 'claude -n %q %s %s "$(cat %s)"' \
         "$name" \
         "${CLAUDE_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }
 
@@ -41,7 +44,10 @@ agent_command_resume() {
     local cwd="$1"   # 同上
     local name="$2"  # 未用：claude --continue 自动用 cwd 最近会话
     local prompt_file="$3"
-    printf 'claude --continue %s "$(cat %s)"' \
+    local model_arg
+    model_arg="$(worker_model_arg)"
+    printf 'claude --continue %s %s "$(cat %s)"' \
         "${CLAUDE_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }

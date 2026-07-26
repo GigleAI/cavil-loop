@@ -22,6 +22,9 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 
 # Labels
 LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_AGENT_FABLE5="pending/agent/fable5"
+FABLE5_WORKER_AGENT="claude"
+FABLE5_MODEL="claude-fable-5"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
@@ -61,6 +64,22 @@ POLL_INTERVAL_SECS=60
 ```
 
 Full field list: [`coding-agent.config.example`](../coding-agent.config.example).
+
+## Model-selecting trigger labels
+
+Use `pending/agent` for the worker CLI's default model. Use
+`pending/agent/fable5` to dispatch the same workflow through Claude Code with
+`--model claude-fable-5`. This per-dispatch override does not change the
+project's default worker. It works for issues and PRs, including fresh sessions
+and resumed sessions.
+
+The daemon stores the selected worker and model in tmux (`@worker_agent` and
+`@worker_model`) and keeps the model in `state.json`. If an existing idle
+session uses a different worker or model, it is restarted and resumed with the
+requested selection. Self-heal also restores the same model-specific pending
+label after a worker crash.
+
+If both pending labels are present, `pending/agent/fable5` takes precedence.
 
 ## Prompt templates
 

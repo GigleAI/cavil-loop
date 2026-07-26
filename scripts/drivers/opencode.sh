@@ -52,8 +52,11 @@ agent_command_new() {
     local cwd="$1"
     local name="$2"  # opencode 暂无类似 claude -n 的 session 命名 flag；预留参数兼容接口
     local prompt_file="$3"
-    printf 'opencode %s "$(cat %s)"' \
+    local model_arg
+    model_arg="$(worker_model_arg)"
+    printf 'opencode %s %s "$(cat %s)"' \
         "${OPENCODE_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }
 
@@ -61,9 +64,12 @@ agent_command_resume() {
     local cwd="$1"
     local name="$2"
     local prompt_file="$3"
+    local model_arg
+    model_arg="$(worker_model_arg)"
     # 部分 opencode 版本支持 --continue；不支持时该 flag 会被忽略或报错，
     # 走 inject_prompt 路径反而更稳。如本机版本不支持，把下面改成 agent_command_new。
-    printf 'opencode --continue %s "$(cat %s)"' \
+    printf 'opencode --continue %s %s "$(cat %s)"' \
         "${OPENCODE_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }

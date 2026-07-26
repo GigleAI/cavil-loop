@@ -38,6 +38,6 @@ jq -n \
     --argjson i "$seen_inline" \
     --argjson r "$seen_review" \
     --argjson is "$seen_issue" \
-    '{seen_comments: $c, seen_review_comments: $i, seen_reviews: $r, seen_issue_comments: $is}' \
+    '{seen_comments: $c, seen_review_comments: $i, seen_reviews: $r, seen_issue_comments: $is, worker_models: {}}' \
     > "$STATE_FILE"
 echo "Seeded $STATE_FILE"
