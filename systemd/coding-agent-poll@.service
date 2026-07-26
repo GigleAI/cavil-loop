@@ -1,6 +1,6 @@
 [Unit]
 Description=coding-agent-work-loop poll (instance: %i)
-Documentation=https://github.com/luosky/coding-agent-work-loop
+Documentation=https://github.com/GigleAI/cavil-loop
 After=network-online.target
 Wants=network-online.target
 

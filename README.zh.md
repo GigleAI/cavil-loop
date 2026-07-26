@@ -104,14 +104,14 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 ### 1. 安装（一次性）
 
 ```bash
-npx skills add luosky/coding-agent-work-loop -g
+npx skills add GigleAI/cavil-loop -g
 ```
 
 <details>
 <summary>手动安装（不想用 npx 的话）</summary>
 
 ```bash
-git clone https://github.com/luosky/coding-agent-work-loop.git ~/github/coding-agent-work-loop
+git clone https://github.com/GigleAI/cavil-loop.git ~/github/coding-agent-work-loop
 mkdir -p ~/.agents/skills ~/.claude/skills
 ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
 ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop

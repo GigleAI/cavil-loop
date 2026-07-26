@@ -26,7 +26,7 @@
 
 1. **Fork → 本地改 → 推到你 fork 的分支**
    - 分支名按 `feature/<topic>` / `fix/<topic>` / `docs/<topic>` 风格
-2. **开 PR 到 `luosky/coding-agent-work-loop` 的 `main`**
+2. **开 PR 到 `GigleAI/cavil-loop` 的 `main`**
 3. **PR Title**：用 conventional commits 风格
    ```
    feat(poll): 加 review request 监听

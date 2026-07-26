@@ -61,7 +61,7 @@ case "$OS" in
         echo "❌ 不支持的 OS：$OS"
         echo "   本脚本只自动配 Linux (systemd) / macOS (launchd)。"
         echo "   想用 cron 等其他调度器手动接 daemon → 见"
-        echo "   https://github.com/luosky/coding-agent-work-loop/blob/main/docs/operations.md#manual-cron-fallback"
+        echo "   https://github.com/GigleAI/cavil-loop/blob/main/docs/operations.md#manual-cron-fallback"
         exit 1
         ;;
 esac

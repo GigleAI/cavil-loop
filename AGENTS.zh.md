@@ -6,7 +6,7 @@
 
 ## 项目是什么
 
-`luosky/coding-agent-work-loop` 是一个 **Agent Skill**——给 Claude Code 等 AI 编程工具加载的功能包。它让 GitHub issue / PR 评论变成本机 AI 的输入输出：本机一个 60 秒轮询的后台进程，发现哪个 issue / PR 被打了 `pending/agent` label，就在你电脑上起 Claude Code 干活、push、回评论、翻 label。详细背景见 [README.md](README.zh.md)。
+`GigleAI/cavil-loop` 是一个 **Agent Skill**——给 Claude Code 等 AI 编程工具加载的功能包。它让 GitHub issue / PR 评论变成本机 AI 的输入输出：本机一个 60 秒轮询的后台进程，发现哪个 issue / PR 被打了 `pending/agent` label，就在你电脑上起 Claude Code 干活、push、回评论、翻 label。详细背景见 [README.md](README.zh.md)。
 
 **Meta 性质**：这个项目自己开发自己（dogfooding）。本仓库的 issue / PR 也走自己定义的工作流。改动一个脚本之后，下一次自己派工时就用新版逻辑。
 

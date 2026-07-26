@@ -104,14 +104,14 @@ Two trigger scenarios:
 ### 1. Install (once)
 
 ```bash
-npx skills add luosky/coding-agent-work-loop -g
+npx skills add GigleAI/cavil-loop -g
 ```
 
 <details>
 <summary>Manual install (without npx)</summary>
 
 ```bash
-git clone https://github.com/luosky/coding-agent-work-loop.git ~/github/coding-agent-work-loop
+git clone https://github.com/GigleAI/cavil-loop.git ~/github/coding-agent-work-loop
 mkdir -p ~/.agents/skills ~/.claude/skills
 ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
 ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop

@@ -26,7 +26,7 @@ Welcome. This is a small tool with no CLA, no agreement to sign — it's MIT lic
 
 1. **Fork → edit locally → push to your fork's branch**
    - Branch name: `feature/<topic>` / `fix/<topic>` / `docs/<topic>` style
-2. **Open a PR against `luosky/coding-agent-work-loop`'s `main`**
+2. **Open a PR against `GigleAI/cavil-loop`'s `main`**
 3. **PR title**: conventional-commits style
    ```
    feat(poll): add review-request event listener

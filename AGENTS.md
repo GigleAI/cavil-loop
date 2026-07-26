@@ -6,7 +6,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 
 ## What this project is
 
-`luosky/coding-agent-work-loop` is an **Agent Skill** — a feature package loaded by AI coding tools like Claude Code. It makes GitHub issue / PR comments the I/O of a local AI: a 60-second background poller on your machine finds whatever issue / PR is labeled `pending/agent`, spins up Claude Code locally, lets it work, push, reply, flip the label. Background in [README.md](README.md).
+`GigleAI/cavil-loop` is an **Agent Skill** — a feature package loaded by AI coding tools like Claude Code. It makes GitHub issue / PR comments the I/O of a local AI: a 60-second background poller on your machine finds whatever issue / PR is labeled `pending/agent`, spins up Claude Code locally, lets it work, push, reply, flip the label. Background in [README.md](README.md).
 
 **Meta nature**: this project develops itself (dogfooding). The issues / PRs of this repo run through its own workflow. Edit a script — the next dispatch of itself uses the new version.
 
