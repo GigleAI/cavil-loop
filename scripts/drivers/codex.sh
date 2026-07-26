@@ -5,9 +5,8 @@
 #
 # 历史存放：默认 ~/.codex/sessions/ 或 ~/.codex/history/ (随版本)
 # Busy 探测：codex 在 thinking / running tool 时 footer 出现 "thinking" / "running"
-# 新起：codex "<prompt>"
-# 续接：codex resume                  (新版会列已有 session 选 latest)
-#       codex --continue              (老版别名)
+# 新起：codex [--model <model>] "<prompt>"
+# 续接：codex resume --last [--model <model>] "<prompt>"
 #
 # 配置开关：CODEX_EXTRA_FLAGS。未设置时默认跳过确认并关闭 Codex sandbox；
 # 显式设为空字符串可关闭该默认值。
@@ -47,8 +46,11 @@ agent_command_new() {
     local cwd="$1"
     local name="$2"   # codex 没有 session 命名 flag；保留接口
     local prompt_file="$3"
-    printf 'codex %s "$(cat %s)"' \
+    local model_arg
+    model_arg="$(worker_model_arg)"
+    printf 'codex %s %s "$(cat %s)"' \
         "${CODEX_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }
 
@@ -56,10 +58,11 @@ agent_command_resume() {
     local cwd="$1"
     local name="$2"
     local prompt_file="$3"
-    # codex 新版用 `codex resume`（无 prompt 参数，进入选 session 的 TUI）；
-    # 老版用 `codex --continue "<prompt>"`。这里走老版语义；若装的是新版，
-    # 改成调用 agent_command_new（不 resume，每次起新 session）更稳。
-    printf 'codex --continue %s "$(cat %s)"' \
+    local model_arg
+    model_arg="$(worker_model_arg)"
+    # tmux 已在目标 worktree cwd 中启动；--last 会按 cwd 续接最近会话并直接注入 prompt。
+    printf 'codex resume --last %s %s "$(cat %s)"' \
         "${CODEX_EXTRA_FLAGS:-}" \
+        "$model_arg" \
         "$prompt_file"
 }
