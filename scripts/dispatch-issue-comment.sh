@@ -57,10 +57,10 @@ flip_label() {
     run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
         gh_label_flip "$ISSUE" \
         --add "$LABEL_AGENT_DOING" \
-        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" || true
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" || true
 }
 
-# fable5 标签作用于本次实际 worker 进程；已有 session 的 worker/model 不同就不能
+# fable 标签作用于本次实际 worker 进程；已有 session 的 worker/model 不同就不能
 # 直接注入，需进入 Case B 用同一 cwd resume/fresh，并由 Claude driver 带上新模型。
 if session_alive "$TMUX_SESSION" && ! tmux_session_matches_worker "$TMUX_SESSION"; then
     log "issue #$ISSUE -> session worker/model 与请求不一致，重启切换为 $WORKER_AGENT/${WORKER_MODEL:-default}"

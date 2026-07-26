@@ -64,9 +64,9 @@ source "$CONFIG_FILE"
 : "${LABEL_PENDING_HUMAN:?LABEL_PENDING_HUMAN 未设}"
 # 兼容老配置：未设时给默认值
 LABEL_PENDING_AGENT_DEFAULT="$LABEL_PENDING_AGENT"
-LABEL_PENDING_AGENT_FABLE5="${LABEL_PENDING_AGENT_FABLE5:-pending/agent/fable5}"
-FABLE5_MODEL="${FABLE5_MODEL:-claude-fable-5}"
-FABLE5_WORKER_AGENT="${FABLE5_WORKER_AGENT:-claude}"
+LABEL_PENDING_AGENT_FABLE="${LABEL_PENDING_AGENT_FABLE:-pending/agent/fable}"
+FABLE_MODEL="${FABLE_MODEL:-claude-fable-5}"
+FABLE_WORKER_AGENT="${FABLE_WORKER_AGENT:-claude}"
 # agent-poll 给 child dispatch 传这个变量，令同一套 prompt / label flip 逻辑
 # 针对实际触发标签工作；daemon 自己不传时仍使用普通 pending/agent。
 LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAULT}"

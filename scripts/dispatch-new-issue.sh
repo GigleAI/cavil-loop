@@ -83,7 +83,7 @@ if ! verify_fresh_session "$TMUX_SESSION"; then
     run_gh "label 翻转 (issue #$ISSUE 秒退 pending/agent → pending/human)" \
         gh_label_flip "$ISSUE" \
         --add "$LABEL_PENDING_HUMAN" \
-        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
     exit 1
 fi
 
@@ -91,6 +91,6 @@ fi
 run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
     gh_label_flip "$ISSUE" \
     --add "$LABEL_AGENT_DOING" \
-    --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" || true
+    --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" || true
 
 log "dispatch-new-issue done: #$ISSUE -> $TMUX_SESSION"

@@ -22,9 +22,9 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 
 # Label
 LABEL_PENDING_AGENT="pending/agent"
-LABEL_PENDING_AGENT_FABLE5="pending/agent/fable5"
-FABLE5_WORKER_AGENT="claude"
-FABLE5_MODEL="claude-fable-5"
+LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
+FABLE_WORKER_AGENT="claude"
+FABLE_MODEL="claude-fable-5"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
@@ -68,7 +68,7 @@ POLL_INTERVAL_SECS=60
 ## 按模型派工的标签
 
 使用 `pending/agent` 时沿用 worker CLI 的默认模型；使用
-`pending/agent/fable5` 时，本次派工会切到 Claude Code，并追加
+`pending/agent/fable` 时，本次派工会切到 Claude Code，并追加
 `--model claude-fable-5`。这个覆盖只作用于本次派工，不会修改项目默认 worker。
 issue、PR、全新 session 和 resume session 都支持。
 
@@ -77,7 +77,7 @@ daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 或模型不同，会重启并以指定组合 resume；worker crash 后 self-heal 也会恢复到
 同一个模型专用 pending 标签。
 
-若两个 pending 标签同时存在，`pending/agent/fable5` 优先。
+若两个 pending 标签同时存在，`pending/agent/fable` 优先。
 
 ## Prompt 模板
 

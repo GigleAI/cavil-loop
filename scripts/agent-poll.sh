@@ -33,7 +33,7 @@ log "===== poll start ====="
 
 pending_label_for_model() {
     case "$1" in
-        "$FABLE5_MODEL"|fable5) echo "$LABEL_PENDING_AGENT_FABLE5" ;;
+        "$FABLE_MODEL"|fable) echo "$LABEL_PENDING_AGENT_FABLE" ;;
         *) echo "$LABEL_PENDING_AGENT_DEFAULT" ;;
     esac
 }
@@ -149,8 +149,8 @@ else
 fi
 
 # ── 1. 新 issue 派工 ──
-# 特定模型标签先扫；若同一 issue 同时有普通 + fable5 标签，普通 pass 跳过，
-# 防止 fable5 因 busy / 并发上限排队时被默认模型抢先派工。
+# 特定模型标签先扫；若同一 issue 同时有普通 + fable 标签，普通 pass 跳过，
+# 防止 fable 因 busy / 并发上限排队时被默认模型抢先派工。
 declare -A fable_issue_keys=()
 
 dispatch_pending_issues() {
@@ -164,7 +164,7 @@ dispatch_pending_issues() {
     [ -n "$new_issues" ] || return 0
 
     while IFS=$'\t' read -r num title; do
-        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE5" ]; then
+        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE" ]; then
             fable_issue_keys[$num]=1
         elif [ -n "${fable_issue_keys[$num]:-}" ]; then
             continue
@@ -214,7 +214,7 @@ dispatch_pending_issues() {
     done <<< "$new_issues"
 }
 
-dispatch_pending_issues "$LABEL_PENDING_AGENT_FABLE5" "$FABLE5_MODEL" "$FABLE5_WORKER_AGENT"
+dispatch_pending_issues "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT"
 dispatch_pending_issues "$LABEL_PENDING_AGENT_DEFAULT" "" ""
 
 # ── 2. PR 评论派工 ──
@@ -236,7 +236,7 @@ dispatch_pending_prs() {
     [ -n "$pending_prs" ] || return 0
 
     while IFS=$'\t' read -r prnum branch; do
-        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE5" ]; then
+        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE" ]; then
             fable_pr_keys[$prnum]=1
         elif [ -n "${fable_pr_keys[$prnum]:-}" ]; then
             continue
@@ -289,7 +289,7 @@ dispatch_pending_prs() {
     done <<< "$pending_prs"
 }
 
-dispatch_pending_prs "$LABEL_PENDING_AGENT_FABLE5" "$FABLE5_MODEL" "$FABLE5_WORKER_AGENT"
+dispatch_pending_prs "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT"
 dispatch_pending_prs "$LABEL_PENDING_AGENT_DEFAULT" "" ""
 
 # ── 3. 自动 cleanup merged PRs ──
@@ -338,7 +338,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 run_gh "auto-cleanup label PR #$prnum → Done" \
                     gh_label_flip "$prnum" \
                     --add "$LABEL_DONE" \
-                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
+                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
 
                 # Issue：看实际状态决定怎么标
                 # - CLOSED（PR body 是 Closes #N，GitHub auto-close）→ 加 Done（与 PR 同闭环）
@@ -348,13 +348,13 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                     run_gh "auto-cleanup label issue #$issue_n → Done" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_DONE" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
                 else
                     run_gh "auto-cleanup label issue #$issue_n → pending/human" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_PENDING_HUMAN" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE5" "$LABEL_AGENT_DOING" || true
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n OPEN (Refs #N) → pending/human"
                 fi
             else
