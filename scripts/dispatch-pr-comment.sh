@@ -88,7 +88,7 @@ if session_alive "$TMUX_SESSION"; then
     log "PR #$PR -> 注入 $TMUX_SESSION (agent=$WORKER_AGENT)"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
-    if agent_inject_prompt "$TMUX_SESSION" "$PROMPT_FILE"; then
+    if inject_prompt_logged "$TMUX_SESSION" "$PROMPT_FILE"; then
         flip_label
         exit 0
     fi

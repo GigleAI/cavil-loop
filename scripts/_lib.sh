@@ -107,6 +107,31 @@ log() {
     echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
 }
 
+# agent_inject_prompt 的带日志包装。**注入相关的排障一律走这个，别直接调 driver。**
+#
+# 为什么要有它：default_inject_prompt 把「卡在 modal」「idle 重试 5 次」这类关键诊断
+# 写在 stderr 上，而 dispatch 脚本是被 agent-poll.sh 直接 `bash ...` 调起的、stderr
+# 没有接进 $LOG_FILE —— 于是 poll.log 里**一条都没有**（全仓 grep 命中 0），信息全
+# 漏进了 systemd journal。2026-07-29 排「注入失败率 98%」时就因为这个盲飞了半个月，
+# 最后是靠 journalctl 才捞出「10 次全是同一分支」这个决定性线索。
+#
+# 用临时文件而不是 `2> >(...)` 进程替换：后者的输出可能在函数返回之后才落盘，跟
+# 后续 log 行交错，排障时时序看着是乱的。
+inject_prompt_logged() {
+    local sess="$1" prompt_file="$2"
+    local err rc line
+    err="$(mktemp)"
+    agent_inject_prompt "$sess" "$prompt_file" 2>"$err"
+    rc=$?
+    if [ -s "$err" ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] && log "  [inject] $line"
+        done < "$err"
+    fi
+    rm -f "$err"
+    return "$rc"
+}
+
 # worker session 判活：必须 EXACT 匹配。tmux `has-session -t NAME` 默认按前缀/fnmatch
 # 匹配，会把 worker session `tutor-issueN` 误配到并存的 preview `tutor-issueN-server`
 # 上（session 早死了却报"存在"），导致 self-heal / 派工判活全假阳性。加 `=` 前缀关掉
