@@ -103,6 +103,44 @@ daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label 名 |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `coding-agent.config` 读，默认 `en`） |
 
+## Cleanup hook（`CLEANUP_HOOK`）
+
+`cleanup-issue.sh` 在「杀 worker session、删 worktree」**之前**调起项目级 hook，注入
+`ISSUE` / `WORKTREE` / `BRANCH` / `REPO` / `PROJECT_ROOT` 五个 env。典型用途：回收预览
+端口、解隧道路由、推指标。hook 非零退出不会中断 cleanup（只记一条警告）。
+
+### 按 worktree 兜底，别按名字和端口号猜
+
+写 hook 最容易犯的错，是假设 worker 只会开你约定的那一个 session、只会占你算得出的
+那一个端口。实测反例（tutor，2026-07-29）：约定是 `<prefix>-issue<N>-server` +
+端口 `4000+N`，而 worker 跑 e2e 时按需开了
+
+```
+<prefix>-issue695-e2e-be      PORT=5695
+<prefix>-issue695-e2e-noauth  PORT=5696     ← 注意是 5000+696，连号段公式都对不上
+```
+
+两个后端鉴权配置不同，本来就没法复用同一个预览 server。结果 cleanup 一个都没清掉：
+worktree 删了、进程还活着，变成 cwd 显示 `(deleted)` 的孤儿，最久的挂了 2 天 17 小时，
+端口和内存一直被占着。
+
+**名字约定总会有人不遵守，cwd 不会骗人。** 建议的兜底顺序：
+
+1. 杀所有 `<prefix>-issue<N>-*` 前缀的辅助 session（末尾那个 `-` 不能省，否则
+   `N=69` 会误伤 `<prefix>-issue695-server`），而不是只杀写死的那一个名字
+2. 杀所有 cwd 落在 `$WORKTREE` 下的残留进程（`readlink /proc/<pid>/cwd`；worktree 已删时
+   路径会带 ` (deleted)` 后缀，要一并认）
+3. 端口从上一步那些进程**实际监听**的端口收集，而不是用公式算
+
+按 cwd 批量杀进程有事故风险，三道闸建议照抄：
+
+- **校验 `$WORKTREE` 形状**（例如必须匹配 `.../worktree/<project>/issue-<N>` 且编号与
+  `$ISSUE` 一致），不符就只做按名字的清理。防 `$WORKTREE` 为空或为 `/` 时扫掉整机进程
+- **排除自己 + 整条祖先链**，否则 hook 会把自己和 `cleanup-issue.sh` 一起杀了
+- **别碰裸 session `<prefix>-issue<N>`**，那个归 `cleanup-issue.sh`，保持分工
+
+参考实现见 tutor 项目的 `.agents/skills/coding-agent-work-loop/cleanup-hook.sh`。
+
 ## 文件结构
 
 ### Skill 目录（推荐 symlink 链路）

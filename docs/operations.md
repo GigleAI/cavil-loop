@@ -105,6 +105,50 @@ Available placeholders (`sed`-rendered):
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label names |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `coding-agent.config`, default `en`) |
 
+## Cleanup hook (`CLEANUP_HOOK`)
+
+`cleanup-issue.sh` runs the project-level hook **before** killing the worker session and
+removing the worktree, injecting `ISSUE` / `WORKTREE` / `BRANCH` / `REPO` / `PROJECT_ROOT`.
+Typical uses: release preview ports, tear down tunnel routes, push metrics. A non-zero exit
+does not abort the cleanup (it only logs a warning).
+
+### Resolve by worktree, not by guessed names and port numbers
+
+The classic mistake is assuming the worker only ever opens the one session you agreed on and
+only ever binds the one port you can compute. Counter-example measured in tutor on
+2026-07-29 — the convention was `<prefix>-issue<N>-server` on port `4000+N`, but the worker
+spun up its own e2e rig:
+
+```
+<prefix>-issue695-e2e-be      PORT=5695
+<prefix>-issue695-e2e-noauth  PORT=5696     ← 5000+696; not even the same offset formula
+```
+
+Those two backends run different auth configs, so reusing a single preview server was never
+an option. Cleanup caught none of them: the worktree was removed, the processes stayed alive
+as orphans whose cwd reads `(deleted)`, the longest for 2 days 17 hours, holding ports and
+memory the whole time.
+
+**Naming conventions get broken; cwd does not lie.** Recommended fallback order:
+
+1. Kill every session prefixed `<prefix>-issue<N>-` (keep the trailing `-`, or `N=69` will
+   take out `<prefix>-issue695-server`) instead of one hardcoded name
+2. Kill every process whose cwd is under `$WORKTREE` (`readlink /proc/<pid>/cwd`; once the
+   worktree is gone the path carries a ` (deleted)` suffix — match that too)
+3. Collect ports from what those processes are **actually listening on**, not from a formula
+
+Killing processes by cwd is risky enough to deserve three guards, worth copying verbatim:
+
+- **Validate the shape of `$WORKTREE`** (e.g. require `.../worktree/<project>/issue-<N>` with
+  the number matching `$ISSUE`); fall back to name-based cleanup only if it does not match.
+  This is what stops an empty or `/` value from sweeping the whole machine
+- **Exclude yourself and your entire ancestor chain**, or the hook kills itself along with
+  `cleanup-issue.sh`
+- **Leave the bare `<prefix>-issue<N>` session alone** — that one belongs to
+  `cleanup-issue.sh`; keep the division of labour
+
+Reference implementation: `.agents/skills/coding-agent-work-loop/cleanup-hook.sh` in tutor.
+
 ## File layout
 
 ### Skill directory (recommended symlink chain)
