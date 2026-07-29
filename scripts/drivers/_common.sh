@@ -64,6 +64,10 @@ AGENT_BUSY_RE="${AGENT_BUSY_RE:-esc to interrupt|…[[:space:]]*\([0-9]+[hms]}"
 # 关键字越通用的 driver 越该保持小窗口，spinner 离底远的 driver 自行放大。
 AGENT_BUSY_TAIL="${AGENT_BUSY_TAIL:-5}"
 
+# pane 上出现「模态框」的特征。踩过的坑见 default_inject_prompt 第 1 步：
+# 在 modal 里 paste 会灌进它的筛选框、Enter 的语义是「确认执行」而不是「提交 prompt」。
+AGENT_MODAL_RE="${AGENT_MODAL_RE:-Esc to cancel|Enter to continue}"
+
 agent_pane_tail() {
     tmux capture-pane -t "$1" -p 2>/dev/null | tail -"${AGENT_BUSY_TAIL}"
 }
@@ -97,14 +101,17 @@ default_inject_prompt() {
     local prompt_file="$2"
     local buf
 
-    # pane 三态：busy = turn 在跑（成功判据）；wait = compaction / stop hook 等
-    # 分钟级中间态（别打扰）；idle = 真闲着（可以 Escape/Enter）。
+    # pane 四态：modal = 有模态框挡着（**绝不能 paste / Enter**）；busy = turn 在跑
+    # （成功判据）；wait = compaction / stop hook 等分钟级中间态（别打扰）；
+    # idle = 真闲着，可以清输入框然后灌 prompt。
     _inject_pane_state() {
         local t
         t=$(agent_pane_tail "$sess")
+        # modal 判在最前：它比其余三种都更危险，误判成 idle 就会往弹窗里敲 Enter。
+        if grep -qiE "$AGENT_MODAL_RE" <<<"$t"; then echo modal
         # wait 先于 busy 判：compaction 期间 spinner 同样在转，若先判 busy 会把
         # 「还在压缩、prompt 只是排队」误当成注入成功（c84e235 要修的正是这个）。
-        if grep -qiE "compacting|running stop hook" <<<"$t"; then echo wait
+        elif grep -qiE "compacting|running stop hook" <<<"$t"; then echo wait
         elif grep -qiE "$AGENT_BUSY_RE" <<<"$t"; then echo busy
         else echo idle; fi
     }
@@ -117,17 +124,32 @@ default_inject_prompt() {
     [ "$waited" -gt 0 ] && \
         echo "[default_inject_prompt] $sess 处于 compaction/stop-hook，等了 ${waited}s" >&2
 
-    # 1. dismiss 可能拦着的 modal + 清输入框 —— 仅当真 idle 时
-    #    （busy 时 Escape 会中断 thinking；wait 时 Escape 会取消 compaction）
-    if [ "$(_inject_pane_state)" = idle ]; then
+    # 1. 退出挡路的 modal —— Escape 是安全的（实测对 idle pane 是 no-op）
+    local mtries=0
+    while [ "$(_inject_pane_state)" = modal ] && [ "$mtries" -lt 3 ]; do
         tmux send-keys -t "$sess" Escape
+        sleep 0.5
+        mtries=$((mtries + 1))
+    done
+    if [ "$(_inject_pane_state)" = modal ]; then
+        echo "[default_inject_prompt] $sess 卡在 modal，Escape ${mtries} 次退不出 → 放弃注入，交给 fallback resume" >&2
+        return 1
+    fi
+
+    # 1b. 清输入框 —— 仅当真 idle 时（busy 时按键会打断 thinking；wait 时会搅乱 compaction）
+    #
+    # ⚠️⚠️ 千万别用 C-u。历史上这里是 `send-keys C-u`，注释写着"清空输入框"——那是旧版
+    # claude 的键位。**claude 2.1.220 把 Ctrl+U 绑成了 rewind / checkpoint 选择器**，
+    # 按下去直接弹出「Enter to continue · Esc to cancel」的模态框。后果是整条注入链报废：
+    # paste 灌进弹窗的筛选框、pane 永远等不到 spinner（状态机没判错，是我们把它推进去的）、
+    # 5 次补 Enter 全喂给弹窗——而那里 Enter 的语义是「确认执行回滚」。tutor 上实测
+    # 修好 busy 探测后失败率仍有 91%（10/11），根因就是这一个键。
+    # 2026-07-29 在真 pane 上逐个试过：Escape 清不掉内容；C-w 只删一个词；
+    # **C-a + C-k**（回行首 + 删到行尾）能清干净、空框重复按也安全、不弹任何窗。
+    if [ "$(_inject_pane_state)" = idle ]; then
+        tmux send-keys -t "$sess" C-a
         sleep 0.2
-        tmux send-keys -t "$sess" Escape   # 第二下兜底 nested modal
-        sleep 0.2
-        # C-u 清空输入框：防 placeholder（claude idle 时偶尔留 advisory 字串如
-        # "<suggestion skipped: awaiting ...>" 显示在输入框、撑住后续 Enter 不 submit）
-        # 或上次注入残留 paste 没成功的内容
-        tmux send-keys -t "$sess" C-u
+        tmux send-keys -t "$sess" C-k
         sleep 0.2
     fi
 
@@ -138,6 +160,14 @@ default_inject_prompt() {
     rm -f "$buf"
     tmux paste-buffer -t "$sess" -p
     sleep 0.5   # 给 claude UI 处理 paste 的时间，防 Enter 抢跑
+
+    # paste 本身也可能把 UI 带进 modal（内容被当成命令 / 筛选词）。发 Enter 前必须再确认一次：
+    # 在 rewind 选择器里 Enter 是「确认回滚」，敲下去可能把 worker 已经做完的工作抹掉。
+    if [ "$(_inject_pane_state)" = modal ]; then
+        echo "[default_inject_prompt] $sess paste 后进入 modal，拒绝发 Enter（避免误触 rewind）→ 交给 fallback resume" >&2
+        tmux send-keys -t "$sess" Escape
+        return 1
+    fi
 
     tmux send-keys -t "$sess" Enter
 
@@ -157,7 +187,28 @@ default_inject_prompt() {
                     break
                 fi
                 ;;
+            modal)
+                # 补 Enter 的过程中弹窗跳出来了：立刻停手退出，绝不能继续敲。
+                echo "[default_inject_prompt] WARN: $sess 补 Enter 期间出现 modal → 停止重试并 Escape 退出" >&2
+                tmux send-keys -t "$sess" Escape
+                break
+                ;;
             idle)
+                # 短 turn 的假阴性：prompt 提交出去了、claude 秒答完，等我们 2s 后第一次
+                # 采样时 spinner 早没了 → 一路重试到放弃 → daemon 杀掉刚干完活的会话。
+                # 判据：输入框空了 = prompt 已经离开输入框被 submit 掉（没提交上去的话
+                # 内容还躺在 ❯ 那一行）。2026-07-29 实测，"请只回复 OK" 这种 4s 就跑完的
+                # turn 正是这样被误判成失败的。
+                # 两个坑都踩过，别改回去：
+                #   1. 取**最后**一个 ❯。提交出去的消息在 pane 上同样以 ❯ 回显，
+                #      grep -m1 会抓到那条回显（内容非空）而不是真正的输入框。
+                #   2. 空输入框的占位是 **U+00A0 不换行空格**（字节 c2 a0），不是普通空格。
+                #      C locale 下 [[:space:]] 不认它，不显式清掉就永远判「非空」。
+                local _box
+                _box=$(agent_pane_tail "$sess" | grep '❯' | tail -1 | sed 's/.*❯//; s/\xc2\xa0//g' | tr -d '[:space:]')
+                if [ -z "$_box" ]; then
+                    return 0
+                fi
                 retries=$((retries + 1))
                 [ "$retries" -ge 5 ] && break
                 # 没进 busy → prompt 还卡输入框 / Enter 被某个 modal 吃了 → 补 Enter
