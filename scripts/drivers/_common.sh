@@ -49,6 +49,31 @@ worker_model_arg() {
     printf -- '--model %q' "$WORKER_MODEL"
 }
 
+# ── busy 判据：单一来源 ──
+# 以前 agent_is_busy（每个 driver 一份）和 default_inject_prompt 的状态机各写各的
+# capture-pane，结果是 inject 那份写死了 claude 的关键字、对别的 driver 一律失效，
+# 而且两边窗口大小能各自漂移。统一到这里，driver 只覆盖两个变量。
+#
+# ⚠️ capture-pane 收的是 **target-pane**，跟 target-session / target-window 语法不同：
+# 它 **不支持** "=" 精确匹配前缀。写成 -t "=$sess" 在 tmux 3.4 上直接
+# `can't find pane: =xxx` 恒失败 → 读到空串 → 状态机短路成恒 idle，
+# 于是「注入后验证是否进 busy」永远不成立、每次派工都误判失败并杀掉活着的会话。
+# 这里只能用裸 "$sess"。
+AGENT_BUSY_RE="${AGENT_BUSY_RE:-esc to interrupt|…[[:space:]]*\([0-9]+[hms]}"
+# 看 pane 末尾多少行。默认 5（footer 区，防 scrollback 历史误判）；
+# 关键字越通用的 driver 越该保持小窗口，spinner 离底远的 driver 自行放大。
+AGENT_BUSY_TAIL="${AGENT_BUSY_TAIL:-5}"
+
+agent_pane_tail() {
+    tmux capture-pane -t "$1" -p 2>/dev/null | tail -"${AGENT_BUSY_TAIL}"
+}
+
+# 返回 0 = pane 呈现 busy 形态。不查 session 是否存在（调用方各自兜底）。
+agent_pane_is_busy() {
+    # -i：codex/opencode/cursor 原本就是 grep -qiE，保持不变；对 claude 那条无害
+    agent_pane_tail "$1" | grep -qiE "$AGENT_BUSY_RE"
+}
+
 # ── 默认 prompt 注入 ──
 # 三阶段：dismiss 残留 modal → paste prompt + Enter → verify-and-retry
 # 避免之前常踩的"prompt 进了输入框但没 submit、worker 卡 doing/agent 假在跑"。
@@ -59,9 +84,8 @@ worker_model_arg() {
 #   3. claude 刚启动还没 ready，paste 进了但 Enter 时机不对
 #   4. paste 还在处理（bracketed-paste 进度），Enter 抢跑
 #
-# 兜底：注入后等 + tail pane 看是否进 busy 状态（footer 出现 "esc to interrupt"
-# 表明 claude 在 streaming token = prompt 真 submit）；没进 busy 就补 Enter，最多
-# 重试 N 次。
+# 兜底：注入后等 + tail pane 看是否进 busy 状态（spinner 行在转 = prompt 真 submit，
+# 判据见上方 AGENT_BUSY_RE）；没进 busy 就补 Enter，最多重试 N 次。
 #
 # 5. ⚠️ 自动 compaction / stop hook：worker 跑完超长 turn 后 context 顶满，
 #    此刻恰是派工高峰。compaction 是分钟级阻塞操作——期间 footer 没有
@@ -77,9 +101,11 @@ default_inject_prompt() {
     # 分钟级中间态（别打扰）；idle = 真闲着（可以 Escape/Enter）。
     _inject_pane_state() {
         local t
-        t=$(tmux capture-pane -t "=$sess" -p 2>/dev/null | tail -5)
-        if grep -q "esc to interrupt" <<<"$t"; then echo busy
-        elif grep -qiE "compacting|running stop hook" <<<"$t"; then echo wait
+        t=$(agent_pane_tail "$sess")
+        # wait 先于 busy 判：compaction 期间 spinner 同样在转，若先判 busy 会把
+        # 「还在压缩、prompt 只是排队」误当成注入成功（c84e235 要修的正是这个）。
+        if grep -qiE "compacting|running stop hook" <<<"$t"; then echo wait
+        elif grep -qiE "$AGENT_BUSY_RE" <<<"$t"; then echo busy
         else echo idle; fi
     }
 

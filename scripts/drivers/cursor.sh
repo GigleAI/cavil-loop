@@ -18,12 +18,14 @@ agent_has_history() {
     return 1
 }
 
+# busy 判据：关键字 + braille spinner 各帧。关键字通用，
+# AGENT_BUSY_TAIL 保持默认 5 行的小窗口，别放宽。
+AGENT_BUSY_RE='thinking|running|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|esc to interrupt'
+
 agent_is_busy() {
     local sess="$1"
     session_alive "$sess" || return 1
-    # 只看最后 5 行（footer 区），避免 scrollback 历史误判
-    tmux capture-pane -t "$sess" -p 2>/dev/null | tail -5 | \
-        grep -qiE 'thinking|running|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|esc to interrupt'
+    agent_pane_is_busy "$sess"
 }
 
 agent_inject_prompt() {
