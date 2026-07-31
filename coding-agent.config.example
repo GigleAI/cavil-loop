@@ -81,6 +81,21 @@ LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
 # This label overrides only the current dispatch; the project's default worker stays unchanged.
 FABLE_WORKER_AGENT="claude"
 FABLE_MODEL="claude-fable-5"
+# ── Optional cross-review gate / 交叉 review 关卡（默认关闭）──
+# Set LABEL_PENDING_REVIEW to enable: instead of flipping straight to pending/human,
+# the worker flips here after producing code; the daemon then dispatches a *different*
+# agent (codex by default) with the `review` prompt template. Pass → pending/human.
+# Fail → bounced back to pending/agent with concrete feedback, capped at REVIEW_MAX_ROUNDS.
+# Leave empty to keep the previous behaviour exactly.
+#
+# 设了才启用：worker 产出代码后翻到这个 label（而不是直接 pending/human），daemon 用
+# **另一个** agent（默认 codex）+ review 专用模板起独立 session 把关。通过才 pending/human；
+# 不通过带具体意见打回 pending/agent，最多 REVIEW_MAX_ROUNDS 轮，超了转人工。留空 = 关闭。
+# 需要自备 prompts/review.template.md，并在仓库建好该 label。
+LABEL_PENDING_REVIEW=""
+REVIEW_WORKER_AGENT="codex"
+REVIEW_MODEL=""
+REVIEW_MAX_ROUNDS=3
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_PR="pending/PR"

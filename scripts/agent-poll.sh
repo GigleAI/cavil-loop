@@ -13,9 +13,9 @@ source "$SCRIPT_DIR/_lib.sh"
 STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/poll.lock"
 
-[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{}}' > "$STATE_FILE"
+[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{}}' > "$STATE_FILE"
 # 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
-for field in seen_issue_comments seen_review_comments seen_reviews worker_models; do
+for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels; do
     if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
         tmp=$(mktemp)
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -53,6 +53,20 @@ remember_worker_model() {
     mv "$tmp" "$STATE_FILE"
 }
 
+# 记住这次派工是被**哪个** pending label 触发的。self-heal 要靠它把死掉的 worker
+# 送回原来那条队列——只按 model 反推是不够的：review 关卡用的是另一个 agent 而不是
+# 另一个 model，光看 model 会把 review 阶段的活错误地打回 pending/agent 让 claude 重做。
+remember_trigger_label() {
+    local issue_n="$1" label="$2" tmp
+    tmp=$(mktemp)
+    if [ -n "$label" ]; then
+        jq --arg k "$issue_n" --arg v "$label" '.worker_trigger_labels[$k] = $v' "$STATE_FILE" > "$tmp"
+    else
+        jq --arg k "$issue_n" 'del(.worker_trigger_labels[$k])' "$STATE_FILE" > "$tmp"
+    fi
+    mv "$tmp" "$STATE_FILE"
+}
+
 # ── 0. Zombie label self-heal ──
 # label=doing/agent 但对应 tmux session 不存在 = 假阳性 active：worker 进程死掉时
 # 没机会自己翻 label 回 pending/human（worker crash / tmux server 重启 / 手动 kill
@@ -79,7 +93,10 @@ self_heal_one() {
     local tries cap=${SELFHEAL_MAX_RETRIES:-3}
     local model pending_label
     model=$(jq -r --arg key "$issue_n" '.worker_models[$key] // ""' "$STATE_FILE")
-    pending_label="$(pending_label_for_model "$model")"
+    # 优先用派工时记下的触发 label（review 关卡靠它才能送回 review 队列而不是打回 claude）；
+    # 老条目没有这个字段时回落到按 model 反推。
+    pending_label=$(jq -r --arg key "$issue_n" '.worker_trigger_labels[$key] // ""' "$STATE_FILE")
+    [ -n "$pending_label" ] || pending_label="$(pending_label_for_model "$model")"
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
         log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → $pending_label）"
@@ -157,6 +174,7 @@ dispatch_pending_issues() {
     local trigger_label="$1"
     local model="$2"
     local worker_agent="$3"
+    local prompt_kind="${4:-}"   # 空 = 用各 dispatch 脚本的默认模板
     local new_issues
     new_issues=$(gh issue list --repo "$REPO" --state open --label "$trigger_label" \
         --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null || true)
@@ -190,7 +208,8 @@ dispatch_pending_issues() {
             fi
             log "dispatch issue-comment for #$num (agent=${worker_agent:-default}, model=${model:-default})"
             remember_worker_model "$num" "$model"
-            if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" \
+            remember_trigger_label "$num" "$trigger_label"
+            if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
                 bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
                 tmp=$(mktemp)
                 jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -207,7 +226,8 @@ dispatch_pending_issues() {
         fi
         log "dispatch new issue #$num: $title (agent=${worker_agent:-default}, model=${model:-default})"
         remember_worker_model "$num" "$model"
-        if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" \
+        remember_trigger_label "$num" "$trigger_label"
+        if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
             log "派工 issue #$num 失败"
         fi
@@ -216,6 +236,12 @@ dispatch_pending_issues() {
 
 dispatch_pending_issues "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT"
 dispatch_pending_issues "$LABEL_PENDING_AGENT_DEFAULT" "" ""
+# 交叉 review 关卡：用另一个 agent（默认 codex）+ review 专用模板。留空则整段跳过。
+# 注意用 if 而不是 `[ -n ... ] && cmd`：set -e 下条件为假会让整条语句返回 1，
+# 直接把整个 poll 脚本带退出（没配 review 关卡的项目每轮都会静默夭折）。
+if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
+    dispatch_pending_issues "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+fi
 
 # ── 2. PR 评论派工 ──
 # PR 上的「评论」其实有三种，存三个不同 endpoint，ID 序列也是独立的：
@@ -229,6 +255,7 @@ dispatch_pending_prs() {
     local trigger_label="$1"
     local model="$2"
     local worker_agent="$3"
+    local prompt_kind="${4:-}"
     local pending_prs
     pending_prs=$(gh pr list --repo "$REPO" --label "$trigger_label" \
         --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
@@ -278,7 +305,8 @@ dispatch_pending_prs() {
         # 透传最大的 ID 给 dispatch（仅用于 prompt 文件命名去重，不参与语义）
         kick_id=$(printf '%s\n%s\n%s\n' "$latest_conv" "$latest_inline" "$latest_review" | sort -rn | head -1)
         remember_worker_model "$issue_n" "$model"
-        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" \
+        remember_trigger_label "$issue_n" "$trigger_label"
+        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
             tmp=$(mktemp)
             jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
@@ -291,6 +319,11 @@ dispatch_pending_prs() {
 
 dispatch_pending_prs "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT"
 dispatch_pending_prs "$LABEL_PENDING_AGENT_DEFAULT" "" ""
+# 注意用 if 而不是 `[ -n ... ] && cmd`：set -e 下条件为假会让整条语句返回 1，
+# 直接把整个 poll 脚本带退出（没配 review 关卡的项目每轮都会静默夭折）。
+if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
+    dispatch_pending_prs "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+fi
 
 # ── 3. 自动 cleanup merged PRs ──
 # 配 AUTO_CLEANUP_ON_MERGE=false 可关闭整段
@@ -332,13 +365,14 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 tmp=$(mktemp)
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 remember_worker_model "$issue_n" ""
+                remember_trigger_label "$issue_n" ""
                 log "  auto-cleanup PR #$prnum done"
 
                 # PR：merge 完，PR 这件事真结束 → Done
                 run_gh "auto-cleanup label PR #$prnum → Done" \
                     gh_label_flip "$prnum" \
                     --add "$LABEL_DONE" \
-                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
+                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
 
                 # Issue：看实际状态决定怎么标
                 # - CLOSED（PR body 是 Closes #N，GitHub auto-close）→ 加 Done（与 PR 同闭环）
@@ -348,13 +382,13 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                     run_gh "auto-cleanup label issue #$issue_n → Done" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_DONE" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
                 else
                     run_gh "auto-cleanup label issue #$issue_n → pending/human" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_PENDING_HUMAN" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
+                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n OPEN (Refs #N) → pending/human"
                 fi
             else
@@ -475,6 +509,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 tmp=$(mktemp)
                 jq ".cleaned_issues += [$issnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 remember_worker_model "$issnum" ""
+                remember_trigger_label "$issnum" ""
                 log "  auto-cleanup closed issue #$issnum done"
             else
                 log "  auto-cleanup closed issue #$issnum 失败（busy/dirty），下轮重试"

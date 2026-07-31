@@ -81,6 +81,41 @@ label after a worker crash.
 
 If both pending labels are present, `pending/agent/fable` takes precedence.
 
+## Optional cross-review gate
+
+Set `LABEL_PENDING_REVIEW` and workers stop flipping straight to `pending/human` **when they
+produced code** — they flip here instead, and the daemon dispatches `REVIEW_WORKER_AGENT`
+(`codex` by default) with `prompts/review.template.md` in its own session. Pass →
+`pending/human`. Fail → bounced back to `pending/agent` with concrete feedback.
+
+```
+pending/agent ──claude──> produced code? ──no──> pending/human  (questions, design
+                              │yes                               proposals, blocked runs)
+                              ▼
+                        pending/review ──codex──> pass ──> pending/human
+                              ▲                    │fail
+                              └────────────────────┘  (back to pending/agent)
+```
+
+Design notes:
+
+- The reviewer starts from a **fresh context** and reviews the artifact, not the
+  implementer's narrative — that is the whole point of a second pair of eyes
+- **Only code-producing exits are gated.** Text-only outcomes (asking a question, posting a
+  design proposal, stopping on a red test) go straight to `pending/human`; gating those
+  would burn a review on "I have a question for you" and slow down your answer
+- `REVIEW_MAX_ROUNDS` (default 3) stops two agents from bouncing work forever. Rounds are
+  counted from `<!-- codex-review-round -->` markers on the issue/PR rather than
+  `state.json`: visible on the board, survives state loss, resets naturally once a human steps in
+- **Bounce-backs must target the default `pending/agent`**, not the review label itself —
+  templates get it via the `${LABEL_PENDING_AGENT_DEFAULT}` placeholder. Getting this wrong
+  is an infinite loop
+- Self-heal routes a dead session back to **the queue that dispatched it** via
+  `worker_trigger_labels` in `state.json`; inferring from the model cannot do this (the
+  review gate swaps the agent, not the model)
+
+Leave it empty to keep the previous behaviour exactly.
+
 ## Prompt templates
 
 Template lookup order (high → low priority):

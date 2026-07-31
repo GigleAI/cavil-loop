@@ -67,6 +67,19 @@ LABEL_PENDING_AGENT_DEFAULT="$LABEL_PENDING_AGENT"
 LABEL_PENDING_AGENT_FABLE="${LABEL_PENDING_AGENT_FABLE:-pending/agent/fable}"
 FABLE_MODEL="${FABLE_MODEL:-claude-fable-5}"
 FABLE_WORKER_AGENT="${FABLE_WORKER_AGENT:-claude}"
+
+# ── 交叉 review 关卡（可选）──
+# 设了 LABEL_PENDING_REVIEW 才启用：worker 产出代码后不直接翻 pending/human，
+# 而是翻到这个 label；daemon 看到它用**另一个 agent**（默认 codex）起独立 session
+# 做 review，通过才翻 pending/human，不通过打回 pending/agent 重修。
+# 留空 = 关闭，行为与从前完全一致（其它项目不受影响）。
+LABEL_PENDING_REVIEW="${LABEL_PENDING_REVIEW:-}"
+REVIEW_WORKER_AGENT="${REVIEW_WORKER_AGENT:-codex}"
+REVIEW_MODEL="${REVIEW_MODEL:-}"
+# 打回重修的轮次上限，超了就转人工（防两个 agent 互相拉扯烧 API）。
+# 轮次不存 state.json，而是数 issue/PR 上的 <!-- codex-review-round --> 标记：
+# 看板上看得见、state 丢了也不会重置、人工介入后天然清零。
+REVIEW_MAX_ROUNDS="${REVIEW_MAX_ROUNDS:-3}"
 # agent-poll 给 child dispatch 传这个变量，令同一套 prompt / label flip 逻辑
 # 针对实际触发标签工作；daemon 自己不传时仍使用普通 pending/agent。
 LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAULT}"
@@ -491,6 +504,9 @@ gh_label_flip() {
     # remove first（防短暂同时有新旧 label 的窗口）
     local L encoded
     for L in "${removes[@]}"; do
+        # 跳过空串：调用方的 label 列表里可能含未配置的可选 label（如没启用 review
+        # 关卡时的 $LABEL_PENDING_REVIEW），拿空串去 DELETE 只会白打一次 404。
+        [ -n "$L" ] || continue
         encoded=$(printf '%s' "$L" | jq -sRr @uri)
         # 404 表示 label 已经不在了——视为成功（idempotent）
         gh api -X DELETE "repos/$REPO/issues/$num/labels/$encoded" >/dev/null 2>&1 || true

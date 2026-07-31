@@ -79,6 +79,36 @@ daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 
 若两个 pending 标签同时存在，`pending/agent/fable` 优先。
 
+## 交叉 review 关卡（可选）
+
+设 `LABEL_PENDING_REVIEW` 后，worker **产出代码**时不再直接翻 `pending/human`，而是翻到该
+label；daemon 用 `REVIEW_WORKER_AGENT`（默认 `codex`）+ `prompts/review.template.md` 起一个
+独立 session 把关。通过 → `pending/human`；不通过 → 带具体意见打回 `pending/agent`。
+
+```
+pending/agent ──claude──> 有代码产出? ──否──> pending/human（提问 / 设计方案 / 受阻，不绕路）
+                              │是
+                              ▼
+                        pending/review ──codex──> 通过 ──> pending/human
+                              ▲                    │不通过
+                              └────────────────────┘（打回 pending/agent，claude 改完再来）
+```
+
+几个设计要点：
+
+- **reviewer 拿的是全新上下文**，看产出而不是看实现者的自述——这才是第二双眼睛的价值
+- **只拦有代码产出的出口**。纯文字产出（提问、设计方案待拍板、测试红了停下）直达
+  `pending/human`，否则「我有个问题想问你」也要白烧一次 review、还拖慢你被问到的速度
+- **轮次上限**（`REVIEW_MAX_ROUNDS`，默认 3）防两个 agent 互相打回烧 API。轮次不存
+  state.json，而是数 issue/PR 上的 `<!-- codex-review-round -->` 标记：看板上看得见、
+  state 丢了不会重置、人工介入后天然清零
+- **打回必须用默认的 `pending/agent`**，不是 review label 自己——模板里用
+  `${LABEL_PENDING_AGENT_DEFAULT}` 占位符拿这个值。用错就是死循环
+- self-heal 靠 `state.json` 的 `worker_trigger_labels` 把死掉的 session 送回**原来那条队列**；
+  只按 model 反推做不到这点（review 关卡换的是 agent 不是 model）
+
+留空 = 完全关闭，行为与从前一致。
+
 ## Prompt 模板
 
 模板查找顺序（高 → 低）：

@@ -24,7 +24,9 @@ bash "$SCRIPT_DIR/create-worktree.sh" "$ISSUE" main
 issue_title="$(github_issue_title "$ISSUE")"
 
 # 3. 写 prompt（用模板 + 占位）
-TEMPLATE="$(find_prompt_template "new-issue")"
+# DISPATCH_PROMPT_KIND 由 agent-poll 按触发 label 指定（如 review 关卡用 "review"）；
+# 不设就是本路径的默认模板。
+TEMPLATE="$(find_prompt_template "${DISPATCH_PROMPT_KIND:-new-issue}")"
 if [ -n "$TEMPLATE" ]; then
     sed \
         -e "s|\${ISSUE}|$ISSUE|g" \
@@ -34,6 +36,9 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${BRANCH}|$BRANCH|g" \
         -e "s|\${LABEL_PENDING_AGENT}|$LABEL_PENDING_AGENT|g" \
         -e "s|\${LABEL_PENDING_HUMAN}|$LABEL_PENDING_HUMAN|g" \
+        -e "s|\${LABEL_PENDING_AGENT_DEFAULT}|$LABEL_PENDING_AGENT_DEFAULT|g" \
+        -e "s|\${LABEL_PENDING_REVIEW}|$LABEL_PENDING_REVIEW|g" \
+        -e "s|\${REVIEW_MAX_ROUNDS}|$REVIEW_MAX_ROUNDS|g" \
         -e "s|\${LABEL_AGENT_DOING}|$LABEL_AGENT_DOING|g" \
         -e "s|\${LABEL_PENDING_PR}|$LABEL_PENDING_PR|g" \
         -e "s|\${OUTPUT_LANGUAGE}|$OUTPUT_LANGUAGE|g" \
@@ -83,7 +88,7 @@ if ! verify_fresh_session "$TMUX_SESSION"; then
     run_gh "label 翻转 (issue #$ISSUE 秒退 pending/agent → pending/human)" \
         gh_label_flip "$ISSUE" \
         --add "$LABEL_PENDING_HUMAN" \
-        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_AGENT_DOING" || true
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
     exit 1
 fi
 
@@ -91,6 +96,6 @@ fi
 run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
     gh_label_flip "$ISSUE" \
     --add "$LABEL_AGENT_DOING" \
-    --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" || true
+    --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" || true
 
 log "dispatch-new-issue done: #$ISSUE -> $TMUX_SESSION"

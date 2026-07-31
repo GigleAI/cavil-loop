@@ -24,7 +24,7 @@ if [ -z "$ISSUE_N" ]; then
     run_gh "label 翻转 (PR #$PR 兜底 pending/agent → pending/human)" \
         gh_label_flip "$PR" \
         --add "$LABEL_PENDING_HUMAN" \
-        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" || true
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" || true
     exit 0
 fi
 
@@ -34,7 +34,9 @@ WORKER_SESSION="$(worker_session_name "$ISSUE_N")"
 issue_title="$(github_issue_title "$ISSUE_N" || true)"
 
 # Prompt 模板
-TEMPLATE="$(find_prompt_template "pr-comment")"
+# DISPATCH_PROMPT_KIND 由 agent-poll 按触发 label 指定（如 review 关卡用 "review"）；
+# 不设就是本路径的默认模板。
+TEMPLATE="$(find_prompt_template "${DISPATCH_PROMPT_KIND:-pr-comment}")"
 PROMPT_FILE="/tmp/coding-agent-pr-$PR-prompt.md"
 if [ -n "$TEMPLATE" ]; then
     sed \
@@ -44,6 +46,9 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${ISSUE_N}|$ISSUE_N|g" \
         -e "s|\${LABEL_PENDING_AGENT}|$LABEL_PENDING_AGENT|g" \
         -e "s|\${LABEL_PENDING_HUMAN}|$LABEL_PENDING_HUMAN|g" \
+        -e "s|\${LABEL_PENDING_AGENT_DEFAULT}|$LABEL_PENDING_AGENT_DEFAULT|g" \
+        -e "s|\${LABEL_PENDING_REVIEW}|$LABEL_PENDING_REVIEW|g" \
+        -e "s|\${REVIEW_MAX_ROUNDS}|$REVIEW_MAX_ROUNDS|g" \
         -e "s|\${LABEL_AGENT_DOING}|$LABEL_AGENT_DOING|g" \
         -e "s|\${LABEL_PENDING_PR}|$LABEL_PENDING_PR|g" \
         -e "s|\${OUTPUT_LANGUAGE}|$OUTPUT_LANGUAGE|g" \
@@ -73,7 +78,7 @@ flip_label() {
     run_gh "label 翻转 (PR #$PR pending/agent → $LABEL_AGENT_DOING)" \
         gh_label_flip "$PR" \
         --add "$LABEL_AGENT_DOING" \
-        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" || true
+        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" || true
 }
 
 # 标签要求的 worker/model 与现有 session 不一致时，不能走 stdin 注入；重启后由
