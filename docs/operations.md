@@ -89,8 +89,8 @@ produced code** — they flip here instead, and the daemon dispatches `REVIEW_WO
 `pending/human`. Fail → bounced back to `pending/agent` with concrete feedback.
 
 ```
-pending/agent ──claude──> produced code? ──no──> pending/human  (questions, design
-                              │yes                               proposals, blocked runs)
+pending/agent ──claude──> code or design doc? ──no──> pending/human  (questions,
+                              │yes                                    blocked runs)
                               ▼
                         pending/review ──codex──> pass ──> pending/human
                               ▲                    │fail
@@ -101,9 +101,14 @@ Design notes:
 
 - The reviewer starts from a **fresh context** and reviews the artifact, not the
   implementer's narrative — that is the whole point of a second pair of eyes
-- **Only code-producing exits are gated.** Text-only outcomes (asking a question, posting a
-  design proposal, stopping on a red test) go straight to `pending/human`; gating those
-  would burn a review on "I have a question for you" and slow down your answer
+- **Two kinds of output are gated — code and design proposals — each with its own checklist.**
+  Reviewing a design means checking whether the stated root cause holds, whether the design
+  actually addresses it, and whether the acceptance criteria are verifiable; having no code
+  yet is normal and must not be treated as a failure (observed in practice: codex applied the
+  code checklist to a design-only issue and could only report "no implementation to review")
+- Other text-only exits (questions, clarifications, blocked runs, security stops) still go
+  straight to `pending/human`; gating those would burn a review on "I have a question for
+  you" and slow down your answer
 - `REVIEW_MAX_ROUNDS` (default 3) stops two agents from bouncing work forever. Rounds are
   counted from `<!-- codex-review-round -->` markers on the issue/PR rather than
   `state.json`: visible on the board, survives state loss, resets naturally once a human steps in

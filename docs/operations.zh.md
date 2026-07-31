@@ -86,7 +86,7 @@ label；daemon 用 `REVIEW_WORKER_AGENT`（默认 `codex`）+ `prompts/review.te
 独立 session 把关。通过 → `pending/human`；不通过 → 带具体意见打回 `pending/agent`。
 
 ```
-pending/agent ──claude──> 有代码产出? ──否──> pending/human（提问 / 设计方案 / 受阻，不绕路）
+pending/agent ──claude──> 代码产出 or 设计方案? ──否──> pending/human（提问 / 受阻 / 安全停机）
                               │是
                               ▼
                         pending/review ──codex──> 通过 ──> pending/human
@@ -97,8 +97,11 @@ pending/agent ──claude──> 有代码产出? ──否──> pending/huma
 几个设计要点：
 
 - **reviewer 拿的是全新上下文**，看产出而不是看实现者的自述——这才是第二双眼睛的价值
-- **只拦有代码产出的出口**。纯文字产出（提问、设计方案待拍板、测试红了停下）直达
-  `pending/human`，否则「我有个问题想问你」也要白烧一次 review、还拖慢你被问到的速度
+- **拦「代码产出」和「设计方案」两类**，各用各的清单。设计方案审的是根因是否成立、
+  Design 能否解决它、验收标准是否可验证——此时没有代码是正常的，reviewer 不该因此判不通过
+  （实测踩过：codex 拿审代码的尺子去量一份只有方案的 issue，只能报「没有可 review 的实现」）
+- 其余纯文字出口（提问、反问、受阻停机、安全停机）仍直达 `pending/human`，
+  否则「我有个问题想问你」也要白烧一次 review、还拖慢你被问到的速度
 - **轮次上限**（`REVIEW_MAX_ROUNDS`，默认 3）防两个 agent 互相打回烧 API。轮次不存
   state.json，而是数 issue/PR 上的 `<!-- codex-review-round -->` 标记：看板上看得见、
   state 丢了不会重置、人工介入后天然清零
