@@ -80,6 +80,14 @@ REVIEW_MODEL="${REVIEW_MODEL:-}"
 # 轮次不存 state.json，而是数 issue/PR 上的 <!-- codex-review-round --> 标记：
 # 看板上看得见、state 丢了也不会重置、人工介入后天然清零。
 REVIEW_MAX_ROUNDS="${REVIEW_MAX_ROUNDS:-3}"
+# 「worker 产出可评审的东西之后该翻到哪个 label」——模板一律用这个占位符，**不要**直接写
+# ${LABEL_PENDING_REVIEW}。启用 review 关卡时它是 pending/review，没启用时自动退化成
+# pending/human，于是同一份模板在开/关两种配置下都对，review 环节变成纯配置开关。
+#
+# 直接写 ${LABEL_PENDING_REVIEW} 的后果：项目没配这个 label 时渲染成空串 → worker 执行
+# `flip_label N --add "" --remove doing/agent` → 活丢了 doing/agent 又没拿到任何 pending
+# 标签，从看板上彻底消失；self-heal 只扫 doing/agent，也捞不回来。
+LABEL_REVIEW_OR_HUMAN="${LABEL_PENDING_REVIEW:-$LABEL_PENDING_HUMAN}"
 # agent-poll 给 child dispatch 传这个变量，令同一套 prompt / label flip 逻辑
 # 针对实际触发标签工作；daemon 自己不传时仍使用普通 pending/agent。
 LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAULT}"

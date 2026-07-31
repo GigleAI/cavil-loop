@@ -81,9 +81,11 @@ label after a worker crash.
 
 If both pending labels are present, `pending/agent/fable` takes precedence.
 
-## Optional cross-review gate
+## Optional cross-review gate (**off by default**)
 
-Set `LABEL_PENDING_REVIEW` and workers stop flipping straight to `pending/human` **when they
+Leave `LABEL_PENDING_REVIEW` unset and the stage does not exist — the skill's own prompt
+templates never mention review, so existing projects upgrade with zero behaviour change.
+Set it and workers stop flipping straight to `pending/human` **when they
 produced code** — they flip here instead, and the daemon dispatches `REVIEW_WORKER_AGENT`
 (`codex` by default) with `prompts/review.template.md` in its own session. Pass →
 `pending/human`. Fail → bounced back to `pending/agent` with concrete feedback.
@@ -143,6 +145,8 @@ Available placeholders (`sed`-rendered):
 | `${BRANCH}` | full branch name |
 | `${ISSUE_N}` | issue number derived from branch (pr-comment only) |
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label names |
+| `${LABEL_REVIEW_OR_HUMAN}` | **where output goes next**: `pending/review` when the gate is on, automatically degrading to `pending/human` when it is off. Always use this in templates rather than `${LABEL_PENDING_REVIEW}` — the latter renders empty when unconfigured, so the work loses `doing/agent` without gaining any pending label and vanishes from the board |
+| `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review gate it would bounce work back to the reviewer itself: an infinite loop |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `coding-agent.config`, default `en`) |
 
 ## Cleanup hook (`CLEANUP_HOOK`)

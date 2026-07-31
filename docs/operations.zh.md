@@ -79,9 +79,10 @@ daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 
 若两个 pending 标签同时存在，`pending/agent/fable` 优先。
 
-## 交叉 review 关卡（可选）
+## 交叉 review 关卡（可选，**默认关闭**）
 
-设 `LABEL_PENDING_REVIEW` 后，worker **产出代码**时不再直接翻 `pending/human`，而是翻到该
+不配 `LABEL_PENDING_REVIEW` 就完全不存在这一环——skill 自带的默认 prompt 模板里
+一个字都没提 review，已有项目升级上来行为分毫不变。配了才启用：worker **产出代码**时不再直接翻 `pending/human`，而是翻到该
 label；daemon 用 `REVIEW_WORKER_AGENT`（默认 `codex`）+ `prompts/review.template.md` 起一个
 独立 session 把关。通过 → `pending/human`；不通过 → 带具体意见打回 `pending/agent`。
 
@@ -134,6 +135,8 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 | `${BRANCH}` | branch 全名 |
 | `${ISSUE_N}` | 从 branch 反推的 issue 编号（仅 pr-comment） |
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label 名 |
+| `${LABEL_REVIEW_OR_HUMAN}` | **产出后该翻到哪**：启用 review 关卡时 = `pending/review`，未启用时自动退化成 `pending/human`。模板一律用它，别直接写 `${LABEL_PENDING_REVIEW}`——没配置时那个渲染成空串，活会丢掉 `doing/agent` 又拿不到任何 pending 标签，从看板上彻底消失 |
+| `${LABEL_PENDING_AGENT_DEFAULT}` | 默认的 `pending/agent`。review 模板打回时必须用它——`${LABEL_PENDING_AGENT}` 是**触发**标签，在 review 关卡里拿它打回等于打回自己，死循环 |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `coding-agent.config` 读，默认 `en`） |
 
 ## Cleanup hook（`CLEANUP_HOOK`）
