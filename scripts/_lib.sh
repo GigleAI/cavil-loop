@@ -76,9 +76,12 @@ FABLE_WORKER_AGENT="${FABLE_WORKER_AGENT:-claude}"
 LABEL_PENDING_REVIEW="${LABEL_PENDING_REVIEW:-}"
 REVIEW_WORKER_AGENT="${REVIEW_WORKER_AGENT:-codex}"
 REVIEW_MODEL="${REVIEW_MODEL:-}"
-# 打回重修的轮次上限，超了就转人工（防两个 agent 互相拉扯烧 API）。
-# 轮次不存 state.json，而是数 issue/PR 上的 <!-- codex-review-round --> 标记：
-# 看板上看得见、state 丢了也不会重置、人工介入后天然清零。
+# 打回重修的轮次上限，超了就转人工。**它唯一的作用是防两个 agent 互相打回烧 API**，
+# 所以人显式要的 review 不受它约束（review 模板负责实现这条）：
+#   - 人手动挂 review 标签 → 无视上限，照常审
+#   - 人留了评论 → 计数从那条评论之后重新算，自然归零
+# 轮次不存 state.json，而是数 issue/PR 上「最近一次人工动作之后」的
+# <!-- codex-review-round --> 标记：看板上看得见、state 丢了也不会重置。
 REVIEW_MAX_ROUNDS="${REVIEW_MAX_ROUNDS:-3}"
 # 「worker 产出可评审的东西之后该翻到哪个 label」——模板一律用这个占位符，**不要**直接写
 # ${LABEL_PENDING_REVIEW}。启用 review 关卡时它是 pending/review，没启用时自动退化成

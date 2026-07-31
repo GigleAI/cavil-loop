@@ -103,9 +103,11 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
   （实测踩过：codex 拿审代码的尺子去量一份只有方案的 issue，只能报「没有可 review 的实现」）
 - 其余纯文字出口（提问、反问、受阻停机、安全停机）仍直达 `pending/human`，
   否则「我有个问题想问你」也要白烧一次 review、还拖慢你被问到的速度
-- **轮次上限**（`REVIEW_MAX_ROUNDS`，默认 3）防两个 agent 互相打回烧 API。轮次不存
-  state.json，而是数 issue/PR 上的 `<!-- codex-review-round -->` 标记：看板上看得见、
-  state 丢了不会重置、人工介入后天然清零
+- **轮次上限**（`REVIEW_MAX_ROUNDS`，默认 3）唯一的作用是防两个 agent 互相打回烧 API，
+  所以**人显式要的 review 不受它约束**：人手动挂 review 标签 → 无视上限；人留了评论 →
+  计数从那条评论之后重算、自然归零。判定靠比对 actor 与 `gh api user` 的账号，
+  不需要揣摩评论文字的意图。轮次不存 state.json，数的是 issue/PR 上「最近一次人工动作
+  之后」的 `<!-- codex-review-round -->` 标记：看板上看得见、state 丢了不会重置
 - **打回必须用默认的 `pending/agent`**，不是 review label 自己——模板里用
   `${LABEL_PENDING_AGENT_DEFAULT}` 占位符拿这个值。用错就是死循环
 - self-heal 靠 `state.json` 的 `worker_trigger_labels` 把死掉的 session 送回**原来那条队列**；

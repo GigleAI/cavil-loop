@@ -111,9 +111,12 @@ Design notes:
 - Other text-only exits (questions, clarifications, blocked runs, security stops) still go
   straight to `pending/human`; gating those would burn a review on "I have a question for
   you" and slow down your answer
-- `REVIEW_MAX_ROUNDS` (default 3) stops two agents from bouncing work forever. Rounds are
-  counted from `<!-- codex-review-round -->` markers on the issue/PR rather than
-  `state.json`: visible on the board, survives state loss, resets naturally once a human steps in
+- `REVIEW_MAX_ROUNDS` (default 3) exists solely to stop two agents from bouncing work
+  forever, so **a review a human explicitly asked for is exempt**: a human applying the review
+  label bypasses the cap outright, and a human comment restarts the count from that comment.
+  Detection compares the actor against `gh api user`, so no guessing at comment intent. Rounds
+  are counted from `<!-- codex-review-round -->` markers posted *after the last human action*
+  rather than `state.json`: visible on the board, survives state loss
 - **Bounce-backs must target the default `pending/agent`**, not the review label itself —
   templates get it via the `${LABEL_PENDING_AGENT_DEFAULT}` placeholder. Getting this wrong
   is an infinite loop
