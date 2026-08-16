@@ -6,6 +6,21 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# 必须是 process，不能用默认的 control-group。
+#
+# 2026-08-16：systemd-oomd 把整个 user-1003 cgroup 打掉后，tmux server 一起没了。
+# 此后每一轮 poll 里的 `tmux new-session` 都会「顺手把 server 也拉起来」——而这个新
+# server 就落在 coding-agent-poll@<i>.service 自己的 cgroup 里。oneshot 跑完退出时，
+# KillMode=control-group 会连带 SIGTERM 掉 cgroup 里的残留进程，于是刚建的 tmux server
+# 和它带的 worker session 在几秒内一起消失。
+#
+# 后果不只是「起不来」，而是 self-heal 永远治不好：下一轮 poll 看到 session 不存在 →
+# 重新派工 → 新 server 又被杀 → 3 轮烧完 → 判定「会话损坏」把 issue 甩去 pending/human。
+# 那天 9 个 issue/PR 就是这么被误判的。平时看不出来，是因为 tmux server 通常由某次
+# 交互登录起在别的 cgroup 里，poll 只是 attach 上去，什么都不留在自己 cgroup。
+#
+# process = 只管 ExecStart 那个主进程，spawn 出去的 tmux server 不受牵连。
+KillMode=process
 # instance name (%i) 是 setup.sh 选定的 project key
 # EnvironmentFile 在 ~/.config/coding-agent-work-loop/<key>.conf 注入：
 #   PROJECT_ROOT=...
