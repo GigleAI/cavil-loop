@@ -387,6 +387,85 @@ macOS-specific:
 
 Make sure `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"` is set in `coding-agent.config`. Strongly recommended in trusted local environments.
 
+### Every dispatch dies within seconds, self-heal never recovers
+
+Symptom in `poll.log` — a loop that always ends in a false "session corrupted" verdict:
+
+```
+dispatch PR #N comment ...
+🔄 self-heal: PR #N session=<prefix>-issue<M> 不存在 → 自动重新派工（第 1/3 次 …）
+… (3 rounds) …
+⚠️ self-heal: PR #N 自动恢复 3 次仍死（疑似会话损坏）→ 转人工 pending/human
+```
+
+Check whether the tmux server is alive at all:
+
+```bash
+tmux ls   # "no server running on /tmp/tmux-<uid>/default" → this is your case
+```
+
+Normally the tmux server is long-lived and lives in *some other* cgroup (started by an
+interactive login), so `tmux new-session` just attaches and leaves nothing behind in the
+poll unit's cgroup. Once the server dies — typically because systemd-oomd killed the whole
+`user@<uid>.service` cgroup — the next `tmux new-session` **starts the server itself**, and
+it lands inside `coding-agent-poll@<i>.service`. With `Type=oneshot`, systemd's default
+`KillMode=control-group` then SIGTERMs everything left in that cgroup the moment the poll
+script exits, taking the brand-new server and its worker session with it.
+
+So self-heal can't ever succeed: it re-dispatches, the session dies again, three rounds burn
+out, and the issue gets dumped to `pending/human` under a bogus "session corrupted" reason.
+
+The unit ships with `KillMode=process` to prevent this. Verify it survived your local edits:
+
+```bash
+systemctl --user show coding-agent-poll@<instance>.service -p KillMode   # want: process
+```
+
+Reproduce the failure (and confirm the fix) without touching the daemon:
+
+```bash
+systemd-run --user --unit=probe --service-type=oneshot \
+  /usr/bin/tmux new-session -d -s probe 'sleep 300'
+sleep 3 && tmux ls   # session gone → control-group; session listed → process
+```
+
+Recovering after an episode: items sent to `pending/human` by the give-up path need their
+original trigger label back. The daemon records it in `state.json` under
+`worker_trigger_labels`, and each retry line in `poll.log` names it (`翻 doing/agent → X`).
+Fix the `KillMode` first — anything you re-label before that just dies again.
+
+### Every poll prints "上一轮还没跑完，跳过" and nothing ever runs
+
+The `poll.lock` flock is stuck. flock lives on the *open file description*, so the lock is
+held as long as **any** process still has that fd open — and `agent-poll.sh` opens it as fd 9,
+which children inherit. If a long-lived process (the tmux server, a worker) ends up in the
+poll's process tree, it keeps fd 9 open for hours and the lock is never released. The daemon
+then goes completely silent: no errors, no dispatches, just "skip" forever.
+
+Find the holder:
+
+```bash
+# any process still holding the lock
+for p in /proc/[0-9]*; do
+  for fd in $p/fd/*; do
+    [ "$(readlink -f "$fd" 2>/dev/null)" = "$STATE_DIR/poll.lock" ] &&
+      echo "$(basename "$p") $(tr -d '\0' < "$p/cmdline" | cut -c1-60)"
+  done
+done 2>/dev/null | sort -u
+```
+
+Short-lived `bash` / `gh` processes are the poll currently running — that's normal. A `tmux`
+or worker process is the bug. `_lib.sh` closes fd 9 on source (all dispatch scripts source it
+before spawning anything long-lived); if you see a worker holding it, that guard is missing.
+
+To unstick without killing the running worker, just delete the lock file — flock is bound to
+the inode, so the next poll opens a fresh one while the old process keeps a lock on the
+now-unlinked inode:
+
+```bash
+rm -f "$STATE_DIR/poll.lock"
+```
+
 ### Daemon keeps re-dispatching the same PR
 
 Likely the worker didn't flip the label. Check that the prompt template tells the worker to flip. Or manually:

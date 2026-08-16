@@ -10,6 +10,24 @@
 #   3. 找不到 → fail
 set -euo pipefail
 
+# ── 关掉从父进程继承来的 poll.lock fd ──
+# agent-poll.sh 用 `exec 9>"$LOCK_FILE"` + flock 防两轮 poll 撞车。fd 9 会一路继承给
+# 它 fork 出来的 dispatch 脚本，再继承给 `tmux new-session` 拉起的 tmux server 和它下面
+# 的 worker —— 这些都是要活几小时的常驻进程。
+#
+# flock 是随「打开文件描述」走的：只要还有任何一个进程持有那个 fd，锁就不释放。所以
+# 一旦 tmux server 落在 poll 自己的进程树下，poll 退出后锁仍被 worker 攥着，之后每一轮
+# 都只能打印「上一轮还没跑完，跳过」——daemon 彻底停摆，且没有任何报错。
+#
+# 以前 systemd 的 KillMode=control-group 顺手杀光残留进程，掩盖了这个问题；改成
+# process 让 tmux server 得以存活之后（见 systemd/coding-agent-poll@.service），
+# 这条继承链就必须显式切断。
+#
+# 放在这里是因为：agent-poll.sh 是**先 source 本文件、后 exec 9>** 的，所以对 poll
+# 自己是 no-op；而所有 dispatch / cleanup 子脚本都在顶部 source，正好在它们 spawn
+# 常驻进程之前把 fd 关掉。关一个没打开的 fd 在 bash 里是安全的。
+exec 9>&- 2>/dev/null || true
+
 # ── daemon PATH 强化 ──
 # systemd user timer 跑 daemon 时 PATH 通常 = minimal "/usr/local/sbin:/usr/local/bin:
 # /usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"，**不含** user
