@@ -81,6 +81,33 @@ label after a worker crash.
 
 If both pending labels are present, `pending/agent/fable` takes precedence.
 
+## Queue order when the pool is full
+
+When more items carry a pending label than there are free slots, the daemon merges
+the issue queue and the PR queue into **one pool** and compares three sort keys in
+order (configured by `PRIORITY_LABELS`, default
+`priority/p0,priority/p1,priority/p2`):
+
+| Key | Rule | Why |
+|---|---|---|
+| 1. priority label | Earlier in the list wins; **unlabelled items rank as the last entry** | You never label routine work — only tag the urgent one with `priority/p0` to jump the queue |
+| 2. stage | review bounce-back < resumed work < brand-new issue | In-flight work already burned tokens and still has warm context, so finishing it frees a slot sooner; a brand-new issue has no sunk cost |
+| 3. waiting time | oldest `updatedAt` first | Breaks ties within the same priority and stage |
+
+Leave `PRIORITY_LABELS` empty to disable key 1; ordering falls back to keys 2 and 3.
+
+Sorting changes **order only**, never eligibility: busy sessions are still not
+interrupted, the concurrency cap still applies, and label semantics are unchanged.
+Each cycle logs the resulting order to `poll.log`, so it is obvious who jumped whom:
+
+```
+派工队列 4 项，按「优先级/阶段/等待」排：issue#755(p0,全新) PR#747(p2,review打回) issue#712(p2,全新)
+```
+
+When one item carries several trigger labels, the first match still wins in the
+order `pending/agent/fable` → `pending/agent` → `pending/review`, independent of
+the sort.
+
 ## Optional cross-review gate (**off by default**)
 
 Leave `LABEL_PENDING_REVIEW` unset and the stage does not exist — the skill's own prompt

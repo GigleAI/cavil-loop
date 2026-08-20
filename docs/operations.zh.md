@@ -79,6 +79,30 @@ daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 
 若两个 pending 标签同时存在，`pending/agent/fable` 优先。
 
+## 并发满时的取工顺序
+
+待派工的条目多于空闲 slot 时，daemon 把 issue 队列和 PR 队列**合成一个池**，按三个
+键依次比较，再从头依次取工（`PRIORITY_LABELS` 配置，默认
+`priority/p0,priority/p1,priority/p2`）：
+
+| 键 | 规则 | 说明 |
+|---|---|---|
+| ① 优先级 label | 列表里越靠前越优先；**没打标签的等同最后一档** | 平时什么都不用打，只在真着急时挂一个 `priority/p0` 插队 |
+| ② 阶段 | review 打回 < 续作 < 全新 issue | 在飞的活上下文还热，先收尾更快腾出 slot；全新 issue 还没开始，晚一轮没有沉没成本 |
+| ③ 等待时长 | `updatedAt` 早的先派 | 同优先级同阶段时，久等的先走 |
+
+`PRIORITY_LABELS` 留空 = 关掉 ①，只按 ②③ 排。
+
+排序只决定**顺序**，不改变取工条件：busy 的 session 照样不打断，并发上限照样卡，
+label 语义完全不变。每轮排完的结果会整行写进 `poll.log`，并发满时谁插了谁的队一眼可见：
+
+```
+派工队列 4 项，按「优先级/阶段/等待」排：issue#755(p0,全新) PR#747(p2,review打回) issue#712(p2,全新)
+```
+
+一条目同时挂多个触发 label 时，仍按 `pending/agent/fable` → `pending/agent` →
+`pending/review` 取第一个，与排序无关。
+
 ## 交叉 review 关卡（可选，**默认关闭**）
 
 不配 `LABEL_PENDING_REVIEW` 就完全不存在这一环——skill 自带的默认 prompt 模板里

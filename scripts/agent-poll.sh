@@ -165,164 +165,219 @@ else
     log "active workers (doing/agent): 0 (max=${MAX_CONCURRENT_WORKERS:-1})"
 fi
 
-# ── 1. 新 issue 派工 ──
-# 特定模型标签先扫；若同一 issue 同时有普通 + fable 标签，普通 pass 跳过，
-# 防止 fable 因 busy / 并发上限排队时被默认模型抢先派工。
-declare -A fable_issue_keys=()
+# ── 1 & 2. 派工队列（issue + PR 合成一个池，排序后统一取工）──
+# 待派工的条目常多于 MAX_CONCURRENT_WORKERS。以前是「按 label 分六趟扫，每趟内按
+# GitHub 列表默认序（创建时间倒序）」——谁先被扫到谁抢到 slot，实际效果是**新建的活
+# 优先**，那是列表顺序的副产品，不是设计。现在先把所有队列合成一个候选池，按三个键
+# 排完再依次取工：
+#
+#   ① 优先级 label：PRIORITY_LABELS 里越靠前越优先；没打标签的等同**最后一档**
+#      （所以平时什么都不用打，只在真着急时挂一个 priority/p0 插队）
+#   ② 阶段：review 打回(0) < 续作(1) < 全新 issue(2)
+#      在飞的活已经烧过 token、上下文还热，先收尾能更快腾出 slot；全新 issue 还没
+#      开始，晚一轮没有沉没成本
+#   ③ 等待时长：updatedAt 早的先派（久等的先）
+#
+# 只改**取工顺序**，不改取工条件：busy 不打断、并发上限、label 语义全部照旧。
+# 同一条目同时挂多个触发 label 时按 fable > 默认 > review 取第一个（与改版前一致）。
 
-dispatch_pending_issues() {
-    local trigger_label="$1"
-    local model="$2"
-    local worker_agent="$3"
-    local prompt_kind="${4:-}"   # 空 = 用各 dispatch 脚本的默认模板
-    local new_issues
-    new_issues=$(gh issue list --repo "$REPO" --state open --label "$trigger_label" \
-        --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null || true)
+# 候选行用 \x1f(US) 分隔而不是 TAB：TAB 属于 IFS whitespace，`read` 会把连续两个
+# 折成一个，model / prompt_kind 这类**允许为空**的字段会整体错位。
+US=$'\x1f'
+QUEUE_ROWS=""
+declare -A queued_keys=()
 
-    [ -n "$new_issues" ] || return 0
-
-    while IFS=$'\t' read -r num title; do
-        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE" ]; then
-            fable_issue_keys[$num]=1
-        elif [ -n "${fable_issue_keys[$num]:-}" ]; then
-            continue
-        fi
-
-        local sess wt latest_id tmp
-        sess="$(tmux_session_name "$num")"
-        wt="$(worktree_path "$num")"
-
-        # 已有 session → 用户确认方案后标 pending/agent，走 issue-comment 派工。
-        # pending/agent 是用户明确意图信号（包括勾选 checkbox、编辑 comment 等不产生新 comment ID 的操作），
-        # 所以不依赖 comment ID 变化，只要 agent 不在忙就派工。
-        if session_alive "$sess" || [ -d "$wt" ]; then
-            latest_id=$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-            log "issue #$num 已有 worktree/session (latest_id=$latest_id, agent=${worker_agent:-default}, model=${model:-default})"
-            if session_alive "$sess" && agent_is_busy "$sess"; then
-                log "issue #$num: agent 正在忙，跳过本轮"
-                continue
-            fi
-            if ! reserve_slot "$num"; then
-                log "issue #$num: 已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，重派工排队等下一轮"
-                continue
-            fi
-            log "dispatch issue-comment for #$num (agent=${worker_agent:-default}, model=${model:-default})"
-            remember_worker_model "$num" "$model"
-            remember_trigger_label "$num" "$trigger_label"
-            if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
-                bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
-                tmp=$(mktemp)
-                jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-            else
-                log "issue-comment 派工 #$num 失败（comment cursor 不更新，下轮重试）"
-            fi
-            continue
-        fi
-
-        # 没 worktree / session → 全新 issue 第一次派工（走设计分析阶段）
-        if ! reserve_slot "$num"; then
-            log "已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，issue #$num 排队等下一轮"
-            continue
-        fi
-        log "dispatch new issue #$num: $title (agent=${worker_agent:-default}, model=${model:-default})"
-        remember_worker_model "$num" "$model"
-        remember_trigger_label "$num" "$trigger_label"
-        if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
-            bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
-            log "派工 issue #$num 失败"
-        fi
-    done <<< "$new_issues"
-}
-
-dispatch_pending_issues "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT"
-dispatch_pending_issues "$LABEL_PENDING_AGENT_DEFAULT" "" ""
-# 交叉 review 关卡：用另一个 agent（默认 codex）+ review 专用模板。留空则整段跳过。
-# 注意用 if 而不是 `[ -n ... ] && cmd`：set -e 下条件为假会让整条语句返回 1，
-# 直接把整个 poll 脚本带退出（没配 review 关卡的项目每轮都会静默夭折）。
-if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
-    dispatch_pending_issues "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+IFS=',' read -r -a _prio_labels <<< "${PRIORITY_LABELS:-}"
+# 没打优先级标签的排在最后一档；列表只配了 1 个标签时，没打的排在它之后
+if [ "${#_prio_labels[@]}" -gt 1 ]; then
+    _prio_rank_default=$(( ${#_prio_labels[@]} - 1 ))
+else
+    _prio_rank_default=${#_prio_labels[@]}
 fi
 
-# ── 2. PR 评论派工 ──
+priority_rank() {
+    local labels_csv=",$1," i l
+    for (( i = 0; i < ${#_prio_labels[@]}; i++ )); do
+        l="${_prio_labels[$i]}"
+        [ -n "$l" ] || continue
+        case "$labels_csv" in
+            *",$l,"*) echo "$i"; return ;;
+        esac
+    done
+    echo "$_prio_rank_default"
+}
+
+stage_rank() {
+    local kind="$1" trigger_label="$2" num="$3" sess wt
+    if [ -n "${LABEL_PENDING_REVIEW:-}" ] && [ "$trigger_label" = "$LABEL_PENDING_REVIEW" ]; then
+        echo 0; return   # review 打回：离完工最近
+    fi
+    if [ "$kind" = "pr" ]; then
+        echo 1; return   # PR 一定有分支/worktree，天然是续作
+    fi
+    sess="$(tmux_session_name "$num")"
+    wt="$(worktree_path "$num")"
+    if session_alive "$sess" || [ -d "$wt" ]; then echo 1; else echo 2; fi
+}
+
+# 结果直接追加到全局 QUEUE_ROWS（不走 $(...)——命令替换会开子 shell，queued_keys 去重表就丢了）
+collect_queue_rows() {
+    local kind="$1" trigger_label="$2" model="$3" worker_agent="$4" prompt_kind="$5"
+    [ -n "$trigger_label" ] || return 0
+    local raw num branch updated labels_csv title prio stage key
+    if [ "$kind" = "issue" ]; then
+        raw=$(gh issue list --repo "$REPO" --state open --label "$trigger_label" \
+            --json number,title,labels,updatedAt \
+            --jq '.[] | [(.number|tostring), "-", .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
+    else
+        raw=$(gh pr list --repo "$REPO" --label "$trigger_label" \
+            --json number,title,labels,updatedAt,headRefName \
+            --jq '.[] | [(.number|tostring), .headRefName, .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
+    fi
+    [ -n "$raw" ] || return 0
+    while IFS=$'\t' read -r num branch updated labels_csv title; do
+        [ -n "$num" ] || continue
+        key="$kind:$num"
+        [ -z "${queued_keys[$key]:-}" ] || continue
+        queued_keys[$key]=1
+        prio=$(priority_rank "$labels_csv")
+        stage=$(stage_rank "$kind" "$trigger_label" "$num")
+        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${trigger_label}${US}${model}${US}${worker_agent}${US}${prompt_kind}${US}${title}"$'\n'
+    done <<< "$raw"
+}
+
+dispatch_one_issue() {
+    local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
+    local sess wt latest_id tmp
+    sess="$(tmux_session_name "$num")"
+    wt="$(worktree_path "$num")"
+
+    # 已有 session → 用户确认方案后标 pending/agent，走 issue-comment 派工。
+    # pending/agent 是用户明确意图信号（包括勾选 checkbox、编辑 comment 等不产生新 comment ID 的操作），
+    # 所以不依赖 comment ID 变化，只要 agent 不在忙就派工。
+    if session_alive "$sess" || [ -d "$wt" ]; then
+        latest_id=$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
+        log "issue #$num 已有 worktree/session (latest_id=$latest_id, agent=${worker_agent:-default}, model=${model:-default})"
+        if session_alive "$sess" && agent_is_busy "$sess"; then
+            log "issue #$num: agent 正在忙，跳过本轮"
+            return 0
+        fi
+        if ! reserve_slot "$num"; then
+            log "issue #$num: 已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，重派工排队等下一轮"
+            return 0
+        fi
+        log "dispatch issue-comment for #$num (agent=${worker_agent:-default}, model=${model:-default})"
+        remember_worker_model "$num" "$model"
+        remember_trigger_label "$num" "$trigger_label"
+        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
+            bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
+            tmp=$(mktemp)
+            jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+        else
+            log "issue-comment 派工 #$num 失败（comment cursor 不更新，下轮重试）"
+        fi
+        return 0
+    fi
+
+    # 没 worktree / session → 全新 issue 第一次派工（走设计分析阶段）
+    if ! reserve_slot "$num"; then
+        log "已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，issue #$num 排队等下一轮"
+        return 0
+    fi
+    log "dispatch new issue #$num: $title (agent=${worker_agent:-default}, model=${model:-default})"
+    remember_worker_model "$num" "$model"
+    remember_trigger_label "$num" "$trigger_label"
+    if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
+        bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
+        log "派工 issue #$num 失败"
+    fi
+}
+
 # PR 上的「评论」其实有三种，存三个不同 endpoint，ID 序列也是独立的：
 #   - /issues/N/comments  ← Conversation tab 的对话评论
 #   - /pulls/N/comments   ← Files Changed 上 inline 的 review comments
 #   - /pulls/N/reviews    ← 整次 review 提交（Approve/Request changes/Comment 的整体 body）
-# 任意一个有新增就派工；state.json 里分三个字段各存最新 ID。
-declare -A fable_pr_keys=()
+# state.json 里分三个字段各存最新 ID。
+dispatch_one_pr() {
+    local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
+    local issue_n sess latest_conv latest_inline latest_review
+    local seen_conv seen_inline seen_review kick_id tmp
+    issue_n=$(pr_to_issue_num "$prnum" "$branch")
+    sess="$(tmux_session_name "$issue_n")"
 
-dispatch_pending_prs() {
-    local trigger_label="$1"
-    local model="$2"
-    local worker_agent="$3"
-    local prompt_kind="${4:-}"
-    local pending_prs
-    pending_prs=$(gh pr list --repo "$REPO" --label "$trigger_label" \
-        --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
+    # --paginate：gh api 默认只返第一页（per_page=30）。PR 评论 / inline review
+    # 多到 30+ 时 .[-1] 就拿不到真正最新的，少 paginate daemon 看不见后面 7 条。
+    # 实测 PR #105 撞过：37 条评论，第 31-37 漏掉 → seen 永远 == 老 latest。
+    latest_conv=$(gh api --paginate "repos/$REPO/issues/$prnum/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
+    latest_inline=$(gh api --paginate "repos/$REPO/pulls/$prnum/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
+    latest_review=$(gh api --paginate "repos/$REPO/pulls/$prnum/reviews" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
+    seen_conv=$(jq -r ".seen_comments[\"$prnum\"] // 0" "$STATE_FILE")
+    seen_inline=$(jq -r ".seen_review_comments[\"$prnum\"] // 0" "$STATE_FILE")
+    seen_review=$(jq -r ".seen_reviews[\"$prnum\"] // 0" "$STATE_FILE")
+    log "PR #$prnum: conv=$latest_conv/$seen_conv inline=$latest_inline/$seen_inline review=$latest_review/$seen_review agent=${worker_agent:-default} model=${model:-default}"
 
-    [ -n "$pending_prs" ] || return 0
+    # busy 时不打断（保护正在干活的 worker；新评论 / 重标 都等下一轮 idle）
+    if session_alive "$sess" && agent_is_busy "$sess"; then
+        log "PR #$prnum: agent 正在忙，跳过本轮"
+        return 0
+    fi
+    if ! reserve_slot "$issue_n"; then
+        log "PR #$prnum: 已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，排队等下一轮"
+        return 0
+    fi
 
-    while IFS=$'\t' read -r prnum branch; do
-        if [ "$trigger_label" = "$LABEL_PENDING_AGENT_FABLE" ]; then
-            fable_pr_keys[$prnum]=1
-        elif [ -n "${fable_pr_keys[$prnum]:-}" ]; then
-            continue
-        fi
-
-        # 算 session/worktree（PR 走 issue_n 链；standalone fallback PR 编号自己）
-        local issue_n sess latest_conv latest_inline latest_review
-        local seen_conv seen_inline seen_review kick_id tmp
-        issue_n=$(pr_to_issue_num "$prnum" "$branch")
-        sess="$(tmux_session_name "$issue_n")"
-
-        # --paginate：gh api 默认只返第一页（per_page=30）。PR 评论 / inline review
-        # 多到 30+ 时 .[-1] 就拿不到真正最新的，少 paginate daemon 看不见后面 7 条。
-        # 实测 PR #105 撞过：37 条评论，第 31-37 漏掉 → seen 永远 == 老 latest。
-        latest_conv=$(gh api --paginate "repos/$REPO/issues/$prnum/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-        latest_inline=$(gh api --paginate "repos/$REPO/pulls/$prnum/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-        latest_review=$(gh api --paginate "repos/$REPO/pulls/$prnum/reviews" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-        seen_conv=$(jq -r ".seen_comments[\"$prnum\"] // 0" "$STATE_FILE")
-        seen_inline=$(jq -r ".seen_review_comments[\"$prnum\"] // 0" "$STATE_FILE")
-        seen_review=$(jq -r ".seen_reviews[\"$prnum\"] // 0" "$STATE_FILE")
-        log "PR #$prnum: conv=$latest_conv/$seen_conv inline=$latest_inline/$seen_inline review=$latest_review/$seen_review agent=${worker_agent:-default} model=${model:-default}"
-
-        # busy 时不打断（保护正在干活的 worker；新评论 / 重标 都等下一轮 idle）
-        if session_alive "$sess" && agent_is_busy "$sess"; then
-            log "PR #$prnum: agent 正在忙，跳过本轮"
-            continue
-        fi
-        if ! reserve_slot "$issue_n"; then
-            log "PR #$prnum: 已达并发上限 max=${MAX_CONCURRENT_WORKERS:-1}，排队等下一轮"
-            continue
-        fi
-
-        # Dispatch 触发条件（跟 §1 issue 派工一致）：label=pending/agent（已过滤）+ 不忙。
-        # **不**依赖 comment id 变化——label 翻 pending/agent 本身就是 user 明确意图
-        # 信号（可能是新评论 + 重标、可能是没新评论纯重派工恢复死掉的 worker）。
-        # dispatch 后 daemon 在 § Case A/B 翻 label 到 doing/agent，下轮 daemon 不会
-        # 再 trigger 同 PR（label 不是 pending/agent 了），不会死循环。
-        log "dispatch PR #$prnum comment (agent=${worker_agent:-default}, model=${model:-default})"
-        # 透传最大的 ID 给 dispatch（仅用于 prompt 文件命名去重，不参与语义）
-        kick_id=$(printf '%s\n%s\n%s\n' "$latest_conv" "$latest_inline" "$latest_review" | sort -rn | head -1)
-        remember_worker_model "$issue_n" "$model"
-        remember_trigger_label "$issue_n" "$trigger_label"
-        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
-            bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
-            tmp=$(mktemp)
-            jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
-                "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-        else
-            log "PR #$prnum 派工失败（comment cursors 不更新，下轮重试）"
-        fi
-    done <<< "$pending_prs"
+    # Dispatch 触发条件：label=pending/agent（已过滤）+ 不忙。
+    # **不**依赖 comment id 变化——label 翻 pending/agent 本身就是 user 明确意图
+    # 信号（可能是新评论 + 重标、可能是没新评论纯重派工恢复死掉的 worker）。
+    # dispatch 后 daemon 在 § Case A/B 翻 label 到 doing/agent，下轮 daemon 不会
+    # 再 trigger 同 PR（label 不是 pending/agent 了），不会死循环。
+    log "dispatch PR #$prnum comment (agent=${worker_agent:-default}, model=${model:-default})"
+    # 透传最大的 ID 给 dispatch（仅用于 prompt 文件命名去重，不参与语义）
+    kick_id=$(printf '%s\n%s\n%s\n' "$latest_conv" "$latest_inline" "$latest_review" | sort -rn | head -1)
+    remember_worker_model "$issue_n" "$model"
+    remember_trigger_label "$issue_n" "$trigger_label"
+    if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
+        bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
+        tmp=$(mktemp)
+        jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
+            "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    else
+        log "PR #$prnum 派工失败（comment cursors 不更新，下轮重试）"
+    fi
 }
 
-dispatch_pending_prs "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT"
-dispatch_pending_prs "$LABEL_PENDING_AGENT_DEFAULT" "" ""
-# 注意用 if 而不是 `[ -n ... ] && cmd`：set -e 下条件为假会让整条语句返回 1，
-# 直接把整个 poll 脚本带退出（没配 review 关卡的项目每轮都会静默夭折）。
+# 收集顺序 = 同条目挂多个触发 label 时的取舍顺序（fable > 默认 > review），
+# 与排序无关：排序只认上面那三个键。
+collect_queue_rows issue "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
+collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
+collect_queue_rows pr "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
+collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
+# 交叉 review 关卡：用另一个 agent（默认 codex）+ review 专用模板。留空则整段跳过。
 if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
-    dispatch_pending_prs "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+    collect_queue_rows issue "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+    collect_queue_rows pr "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+fi
+
+QUEUE_SORTED=""
+if [ -n "$QUEUE_ROWS" ]; then
+    QUEUE_SORTED=$(printf '%s' "$QUEUE_ROWS" | sort -t"$US" -k1,1n -k2,2n -k3,3)
+fi
+
+if [ -n "$QUEUE_SORTED" ]; then
+    # 队列顺序整行打出来：并发满时到底谁插了谁的队，只看这一行就够
+    queue_summary=$(printf '%s\n' "$QUEUE_SORTED" | awk -v FS="$US" '
+        { stage = ($2 == 0 ? "review打回" : ($2 == 1 ? "续作" : "全新"));
+          printf "%s%s#%s(p%s,%s)", (NR > 1 ? " " : ""), ($4 == "pr" ? "PR" : "issue"), $5, $1, stage }')
+    log "派工队列 $(printf '%s\n' "$QUEUE_SORTED" | wc -l) 项，按「优先级/阶段/等待」排：$queue_summary"
+
+    while IFS="$US" read -r q_prio q_stage q_updated q_kind q_num q_branch q_label q_model q_agent q_kind_prompt q_title; do
+        [ -n "${q_num:-}" ] || continue
+        if [ "$q_kind" = "issue" ]; then
+            dispatch_one_issue "$q_num" "$q_title" "$q_label" "$q_model" "$q_agent" "$q_kind_prompt"
+        else
+            dispatch_one_pr "$q_num" "$q_branch" "$q_label" "$q_model" "$q_agent" "$q_kind_prompt"
+        fi
+    done < <(printf '%s\n' "$QUEUE_SORTED")
 fi
 
 # ── 3. 自动 cleanup merged PRs ──

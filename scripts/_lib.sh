@@ -115,6 +115,11 @@ LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAUL
 LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-doing/agent}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
+# 并发满时的取工顺序 —— 第一排序键：优先级 label，列表里越靠前越优先，
+# **没打优先级标签的条目等同最后一档**（所以平时什么都不用打，只在真着急时挂一个
+# priority/p0 插队）。留空 = 关掉这一层，只按「阶段 → 等待时长」排。
+# 排序细节见 agent-poll.sh 的 § 1&2。
+PRIORITY_LABELS="${PRIORITY_LABELS:-priority/p0,priority/p1,priority/p2}"
 # PR 创建后调用的 hook（agent 在 tmux 里执行）。
 # 相对路径解释为相对 PROJECT_ROOT。留空跳过。
 # Hook env: PR, ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT
