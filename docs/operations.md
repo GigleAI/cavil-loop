@@ -123,8 +123,23 @@ pending/agent ──claude──> code or design doc? ──no──> pending/hu
                               ▼
                         pending/review ──codex──> pass ──> pending/human
                               ▲                    │fail
-                              └────────────────────┘  (back to pending/agent)
+                              ├────────────────────┘  (back to pending/agent)
+                              │
+                              └── rounds exhausted ──> pending/review + pending/human
 ```
+
+**"Waiting for a human" has two states, told apart by the label combination:**
+
+| Labels | Meaning | What the human does |
+|---|---|---|
+| `pending/human` alone | Reviewed and ready | Accept / merge |
+| `pending/review` + `pending/human` | Round cap hit; the two agents never converged | Read the summary comment and decide |
+
+In the second state the daemon **never dispatches the item**, wherever it sits in the
+queue (`poll.log` records why it was skipped). Removing `pending/human` by hand is how you
+say "keep reviewing, my way": that `unlabeled` event pushes the reviewer's "last human
+action" timestamp forward, the round counter resets to zero, and the next cycle reviews
+normally.
 
 Design notes:
 

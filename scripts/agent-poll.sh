@@ -185,6 +185,7 @@ fi
 # 折成一个，model / prompt_kind 这类**允许为空**的字段会整体错位。
 US=$'\x1f'
 QUEUE_ROWS=""
+REVIEW_CAPPED=""
 declare -A queued_keys=()
 
 IFS=',' read -r -a _prio_labels <<< "${PRIORITY_LABELS:-}"
@@ -240,6 +241,18 @@ collect_queue_rows() {
         key="$kind:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
         queued_keys[$key]=1
+        # review 轮次烧光的条目会**同时**挂着 pending/review + pending/human：留着
+        # pending/review 是为了在看板上区分「审过了等人拍板」（只有 pending/human）和
+        # 「轮次用尽等人介入」（两个都在）。后者不该再被派工——两个 agent 已经互相
+        # 打回到上限了，daemon 再送进去就是继续烧 API。人手动摘掉 pending/human
+        # （= 明确说「继续」）才重新入队。
+        if [ "$trigger_label" = "${LABEL_PENDING_REVIEW:-}" ]; then
+            case ",$labels_csv," in
+                *",$LABEL_PENDING_HUMAN,"*)
+                    REVIEW_CAPPED+=" ${kind}#${num}"
+                    continue ;;
+            esac
+        fi
         prio=$(priority_rank "$labels_csv")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
         QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${trigger_label}${US}${model}${US}${worker_agent}${US}${prompt_kind}${US}${title}"$'\n'
@@ -356,6 +369,10 @@ collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
 if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
     collect_queue_rows issue "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
     collect_queue_rows pr "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+fi
+
+if [ -n "$REVIEW_CAPPED" ]; then
+    log "review 轮次已用尽、挂着 $LABEL_PENDING_HUMAN 等人工（本轮不派工，摘掉该标签才恢复）:$REVIEW_CAPPED"
 fi
 
 QUEUE_SORTED=""

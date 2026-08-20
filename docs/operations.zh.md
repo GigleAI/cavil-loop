@@ -116,8 +116,21 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
                               ▼
                         pending/review ──codex──> 通过 ──> pending/human
                               ▲                    │不通过
-                              └────────────────────┘（打回 pending/agent，claude 改完再来）
+                              ├────────────────────┘（打回 pending/agent，claude 改完再来）
+                              │
+                              └── 轮次用尽 ──> pending/review + pending/human（daemon 停手，等人）
 ```
+
+**「等人」有两种状态，靠标签组合区分：**
+
+| 标签 | 含义 | 人该做什么 |
+|---|---|---|
+| 只有 `pending/human` | 审过了，产出可以验收 | 验收 / 合并 |
+| `pending/review` + `pending/human` | 轮次烧光，两个 agent 没谈拢 | 看汇总评论，自己拍板 |
+
+第二种状态下 **daemon 完全不派工**（不管它在队列里排第几，`poll.log` 会写明跳过原因）。
+人手动摘掉 `pending/human` 就是说「按我说的接着审」：那次 `unlabeled` 事件会把 reviewer
+的「最近一次人工动作」时间戳推到最新、轮次计数归零，下一轮恢复正常 review。
 
 几个设计要点：
 
