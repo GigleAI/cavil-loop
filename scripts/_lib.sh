@@ -315,6 +315,129 @@ list_active_workers() {
     return 0
 }
 
+# ── 完工 worker 回收（issue #745 现场诊断）──
+# `list_active_workers` 那套是「label 在不在」的**工作流视角**；本函数补的是反方向的
+# **本机视角**：session 还在、但 label 已经不是 doing/agent 了 —— 也就是活干完了、
+# 进程没人收。两者合起来才是完整的 self-heal：
+#
+#   label 在 + session 没了  → self_heal_one（重新派工）
+#   label 没了 + session 还在 → 本函数（回收）        ← 以前没人管
+#
+# 不回收的后果不是「多占一个 slot」——并发闸门数的是 label，看不见这些进程，所以它
+# **照样派新工**，泄漏进程单调累积。2026-08-22 现场实测：MAX_CONCURRENT_WORKERS=3，
+# 实际常驻 13 个 worker session / 11 个 claude 主进程（各 250–540 MB），15 GiB 内存
+# 见底、swap 吃满，vmstat 的 b（卡在 uninterruptible IO）20–31 而 r 只有 12–18 ——
+# load 28 里几乎没有一份是算出来的，全是等 IO 等出来的。回收 10 个完工 session 后
+# load 15.25 → 8.77、已用内存 7356 → 5032 MB、b 归零。
+#
+# 同一个病根 2026-08-21 21:16 还以另一种形式发作过：systemd-oomd 在 user@1003.service
+# 上跳闸，连 systemd --user 一起打死，5 个 timer 全消失、daemon 静默停摆 12 小时。
+# 那次的对策是 systemd/app-coding\x2dagent\x2dpoll.slice 的 MemoryHigh/MemoryMax
+# （**炸的时候别炸到 manager**），本函数是另一半（**先别堆到要炸**）。两者互补，都要。
+#
+# ⚠️ 只回收 worker session：`list_worker_sessions` 的正则是 `^prefix-issueN$`，
+# 结尾锚点让 `-server` / `-api` 这些 dev server session 天然落在外面。**这是有意的**
+# ——dev server 是人在用的预览服，不归 daemon 生命周期管，别顺手一起收了。
+reap_finished_workers() {
+    if [ "${REAP_FINISHED_WORKERS:-1}" != "1" ]; then
+        return 0
+    fi
+    # active_keys 由调用方（agent-poll.sh）算好后用 nameref 传进来，复用同一份 label
+    # 真值：既保证跟并发闸门口径完全一致，也不额外多打两次 gh API。
+    local -n _active="$1"
+    local grace="${REAP_GRACE_SECS:-300}"
+    local now sess n last_act idle reaped=0
+    now=$(date +%s)
+
+    # session→最后活动时间，一次读完。
+    # ⚠️ 必须走 `list-sessions -F`（或 `display-message -t '=name:'`——**末尾那个冒号
+    # 不能省**）。写成 `display-message -p -t "=name"` 在 tmux 3.4 下 `#{session_activity}`
+    # 返回**空字符串**而不是报错，空值算进减法就成了「闲置 17 亿秒」，宽限期直接失效、
+    # 每个刚翻完 label 的 worker 都会被当场打断收尾。守卫自己 fail-open 是最难查的那种。
+    local -A _last_act=()
+    local _s _a
+    while read -r _s _a; do
+        # 用 if 而不是 `[ -n "$_s" ] && _last_act[...]=`：循环体最后一条命令返回 1 会让
+        # 整个 while 返回非 0，set -e 下把调用方一起带走（同 list_active_workers 末尾那条）。
+        if [ -n "$_s" ]; then
+            _last_act[$_s]="$_a"
+        fi
+    done < <(tmux list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null || true)
+
+    for sess in $(list_worker_sessions); do
+        n="${sess#"${TMUX_PREFIX}-${SESSION_NAME_PREFIX}"}"
+        # 还在 doing/agent → 正在干活，不碰
+        if [ -n "${_active[$n]:-}" ]; then
+            continue
+        fi
+        # 宽限期：worker 是**先翻 label 再收尾**的（推 commit、发 review 评论、贴总结）。
+        # label 一翻就杀会把收尾截断，所以要求 pane 已经安静够久。session_activity 在
+        # pane 有输出时才更新，claude 空闲挂着不输出，正好是我们要的「真闲了多久」。
+        last_act="${_last_act[$sess]:-}"
+        # 拿不到活动时间就**不回收**（fail closed）：查不出来不等于「闲着」，
+        # 宁可多留一轮，也不要在 worker 收尾时把它打断。
+        if ! [[ "$last_act" =~ ^[0-9]+$ ]]; then
+            log "⏳ 回收暂缓: $sess（issue #$n 已完工，但读不到 session_activity —— 保守跳过）"
+            continue
+        fi
+        idle=$(( now - last_act ))
+        if [ "$idle" -lt "$grace" ]; then
+            log "⏳ 回收暂缓: $sess（issue #$n 已完工，但 pane ${idle}s 前还有输出 < ${grace}s 宽限，可能在收尾）"
+            continue
+        fi
+        log "🧹 回收完工 worker: $sess（issue #$n 无 $LABEL_AGENT_DOING，闲置 ${idle}s）"
+        kill_session_procs "$sess"
+        tmux kill-session -t "=$sess" 2>/dev/null || true
+        reaped=$((reaped + 1))
+    done
+
+    if [ "$reaped" -gt 0 ]; then
+        log "🧹 本轮回收 $reaped 个完工 worker session"
+    fi
+    return 0
+}
+
+# 杀掉一个 session 下的进程，**再** kill-session。
+#
+# ⚠️ 顺序不能反、也不能只 kill-session：实测 `tmux kill-session` 只给 pane 发 SIGHUP，
+# claude 不吃这一套 —— session 没了，claude 进程被 reparent 到 tmux server 底下继续
+# 活着（PPID = tmux server pid），照样占着 250–540 MB。2026-08-22 现场就是这样：
+# kill 掉 10 个 session 后内存只掉了 170 MB，进程一个没少。codex 倒是响应 SIGHUP
+# 正常退出，所以光看 codex 会误判成「kill-session 够用了」。
+#
+# 杀的是**进程组**（claude/codex 的 PGID = 自己的 PID），这样它 fork 出来的 node /
+# esbuild / vite 子进程能一起带走，不会留下新的孤儿。
+kill_session_procs() {
+    local sess="$1"
+    local grace="${REAP_KILL_GRACE_SECS:-10}"
+    local pids p waited alive
+    pids=$(tmux list-panes -t "=$sess" -F '#{pane_pid}' 2>/dev/null || true)
+    if [ -z "$pids" ]; then
+        return 0
+    fi
+    for p in $pids; do
+        kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+    done
+    # 给优雅退出的时间：claude 收到 SIGTERM 后要落盘会话记录，实测几秒到几十秒不等。
+    waited=0
+    while [ "$waited" -lt "$grace" ]; do
+        alive=0
+        for p in $pids; do
+            if kill -0 "$p" 2>/dev/null; then alive=1; fi
+        done
+        if [ "$alive" -eq 0 ]; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    # 赖着不走 → SIGKILL。会话记录可能不完整，但留一个 500 MB 的僵尸更糟。
+    for p in $pids; do
+        kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true
+    done
+    return 0
+}
+
 # 构造 tmux new-session 的 -e 参数，把 WORKER_PASS_ENV 列的 env 透传给 worker。
 # tmux 默认不继承父 shell 的 env，必须显式 -e VAR=VALUE。
 # 默认透传 GH_TOKEN（让 worker 里的 gh CLI 用正确的 PAT，而不是 fallback 到 gh auth 默认账号）。

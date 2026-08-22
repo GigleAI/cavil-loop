@@ -165,6 +165,12 @@ else
     log "active workers (doing/agent): 0 (max=${MAX_CONCURRENT_WORKERS:-1})"
 fi
 
+# ── 0b. 完工 worker 回收 ──
+# 上面 §0 管「label 在但 session 没了」；这里管反方向的「session 还在但 label 没了」。
+# 放在 active_keys 算完之后，直接复用同一份 label 真值——口径跟并发闸门一致，也不多
+# 打 gh API。被回收的 session 本来就不在 active_keys 里，所以不影响本轮并发计数。
+reap_finished_workers active_keys
+
 # ── 1 & 2. 派工队列（issue + PR 合成一个池，排序后统一取工）──
 # 待派工的条目常多于 MAX_CONCURRENT_WORKERS。以前是「按 label 分六趟扫，每趟内按
 # GitHub 列表默认序（创建时间倒序）」——谁先被扫到谁抢到 slot，实际效果是**新建的活
