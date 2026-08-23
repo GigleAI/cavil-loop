@@ -9,6 +9,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# 敏感 env（GH_TOKEN 等）不走 `-e VAR=值`——那会把值写进 tmux 的 argv，而
+# /proc/<pid>/cmdline 全局可读。改成 0600 文件 + worker shell 内 $(cat) 读回。
+# 校验放在**脚本顶部**而不是某条派工分支里：这个脚本有多条 spawn 路径
+# （resume / fresh / 各种 worktree 状态），放分支里必然漏掉一条。
+# 缺了就当场拒绝派工，而不是让 worker 起来之后撞 403 被 self-heal 反复重派。
+require_secret_env || exit 1
+
+
 # 派工前先把主 checkout 同步到 origin/<base>：模板 / 项目脚本防 stale（GigleTutor-Web#516）
 sync_project_checkout
 
@@ -97,7 +105,7 @@ if [ -d "$WORKTREE" ]; then
     used_resume=0
     if agent_has_history "$WORKTREE"; then
         log "issue #$ISSUE -> 在 ${TMUX_SESSION} 里 resume agent=$WORKER_AGENT 之前的会话"
-        CMD="$(agent_command_resume "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+        CMD="$(secret_env_prefix)$(agent_command_resume "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
         tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
         used_resume=1
         # claude --continue 可能 resume 到异常 state（之前 worker 留下的 Rewind UI 等）
@@ -112,7 +120,7 @@ if [ -d "$WORKTREE" ]; then
         else
             log "issue #$ISSUE -> 从 worktree 起全新 $WORKER_AGENT session ${TMUX_SESSION}（cwd 无历史）"
         fi
-        CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+        CMD="$(secret_env_prefix)$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
         tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
     fi
 

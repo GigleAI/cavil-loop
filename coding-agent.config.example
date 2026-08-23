@@ -207,6 +207,23 @@ CODEX_EXTRA_FLAGS="--dangerously-bypass-approvals-and-sandbox"
 # 而不是回退到 ~/.config/gh/ 默认账号（多账号场景常见坑）。
 WORKER_PASS_ENV="GH_TOKEN"
 
+# Of the vars above, which are SECRETS. These are never passed as `-e VAR=value`
+# (that value lands in tmux's argv, and /proc/<pid>/cmdline is world-readable —
+# any local user can `ps aux` and read the PAT; a long-lived tmux server keeps it
+# visible for as long as it runs). Instead the daemon writes each one to a 0600
+# file under $STATE_DIR/secrets/ and passes only `-e VAR_FILE=<path>`; the worker
+# command re-reads it in its own shell. Missing secret => dispatch is refused
+# outright (a worker that starts without a token just 403s and gets re-dispatched
+# forever by self-heal).
+#
+# 上面那些变量里，哪些属于**机密**。机密不走 `-e VAR=值`——值会落进 tmux 的 argv，
+# 而 /proc/<pid>/cmdline 是全局可读的，同机任何用户 `ps aux` 就能抄走 PAT；tmux
+# server 又是长驻进程，它 argv 里那份会一直挂到 server 退出（实测挂过 11 小时）。
+# 改成：daemon 把值写到 $STATE_DIR/secrets/ 下的 0600 文件，argv 里只出现
+# `-e VAR_FILE=<路径>`，worker 在自己的 shell 里读回来。缺机密 = 直接拒绝派工
+# （没 token 的 worker 只会 403，然后被 self-heal 无限重派，烧 API 还查不出根因）。
+WORKER_SECRET_ENV="GH_TOKEN"
+
 # ── Auto-cleanup after PR merge / PR merge 后自动 cleanup ──
 
 # true  = daemon auto-runs cleanup-issue.sh on newly-merged PRs (incl. CLEANUP_HOOK)

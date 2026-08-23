@@ -443,6 +443,92 @@ kill_session_procs() {
 # 默认透传 GH_TOKEN（让 worker 里的 gh CLI 用正确的 PAT，而不是 fallback 到 gh auth 默认账号）。
 # 列在 WORKER_PASS_ENV 但 env 里没设的变量，会 log warn（典型：手动跑 daemon 但
 # 没 export GH_TOKEN —— 否则 worker 静默走 gh 默认 token，导致多账号下 403）。
+# ── 敏感 env 的传递：值不进命令行（issue #745 现场发现）──
+# `-e VAR=值` 会把值写进 `tmux new-session` 的 argv，而 `/proc/<pid>/cmdline` 是
+# **全局可读**的（0444，且本机 /proc 没挂 hidepid）——同机任何用户一个 `ps aux`
+# 就能抄走 PAT。tmux server 还是长驻进程，它的 argv 一直挂到 server 退出为止：
+# 2026-08-22 现场实测，一个 40 字符 classic PAT 在 tmux server 命令行里挂了 11 小时，
+# 而那台机器上确实有第二个真实用户。
+#
+# 反直觉的地方是 `/proc/<pid>/environ` 恰恰是安全的（0400，仅属主），但 tmux 不从
+# environ 取值——它只认 `-e`，所以「塞进环境变量」并不能解决问题。
+#
+# 解法是传**路径**而不是值：`-e GH_TOKEN_FILE=/path`，再让 worker 命令前缀里的
+# `export GH_TOKEN=$(cat "$GH_TOKEN_FILE")` 在 **worker 自己的 shell** 里展开。
+# 命令替换不产生新的 argv，值全程不出现在任何进程的命令行里；路径本身不敏感。
+WORKER_SECRET_ENV="${WORKER_SECRET_ENV:-GH_TOKEN}"
+
+# 既要透传、又属于敏感的那些变量（= WORKER_PASS_ENV ∩ WORKER_SECRET_ENV）。
+# 取交集而不是直接用 WORKER_SECRET_ENV：某个项目如果压根不透传 GH_TOKEN，
+# 就不该为它生成文件、也不该因为它没设而拒绝派工。
+_secret_vars() {
+    local pass="${WORKER_PASS_ENV:-GH_TOKEN}" v s
+    for v in $pass; do
+        for s in $WORKER_SECRET_ENV; do
+            if [ "$v" = "$s" ]; then
+                echo "$v"
+            fi
+        done
+    done
+}
+
+# 把敏感 env 落到 0600 文件，echo 出路径。内容没变就不重写——poll 每分钟跑一次，
+# 无谓的写盘既是 IO 也是把值反复暴露给 inotify 的机会。
+# 值只在 bash 内部流转（cat 的 argv 里只有文件名），不会进任何 argv。
+secret_env_file() {
+    local var="$1" dir f val
+    dir="$STATE_DIR/secrets"
+    f="$dir/$var"
+    eval "val=\${$var:-}"
+    if [ -z "$val" ]; then
+        return 1
+    fi
+    mkdir -p "$dir"
+    chmod 700 "$dir" 2>/dev/null || true
+    if [ ! -f "$f" ] || [ "$(cat "$f" 2>/dev/null)" != "$val" ]; then
+        ( umask 077; printf '%s' "$val" > "$f" )
+    fi
+    chmod 600 "$f" 2>/dev/null || true
+    printf '%s' "$f"
+    return 0
+}
+
+# 派工前置校验：敏感变量缺失就**当场拒绝派工**，别让 worker 起来之后才撞 403。
+# 403 的表现是 worker 秒退或原地打转，self-heal 会把它当「会话损坏」反复重派，
+# 烧 API 还查不出根因——fail fast 在这里比 fail soft 便宜得多。
+require_secret_env() {
+    local var missing=0
+    while read -r var; do
+        if [ -z "$var" ]; then
+            continue
+        fi
+        if ! secret_env_file "$var" >/dev/null; then
+            echo "[coding-agent] ERROR: $var 在 WORKER_SECRET_ENV 里但当前 env 没设 —— 拒绝派工。" >&2
+            echo "[coding-agent]        systemd 路径检查 EnvironmentFile；手动跑请先 export $var=..." >&2
+            missing=1
+        fi
+    done < <(_secret_vars)
+    if [ "$missing" -ne 0 ]; then
+        return 1
+    fi
+    return 0
+}
+
+# worker 命令前缀：在 worker 自己的 shell 里把值读回来。
+# 这段字符串会原样进 `tmux new-session` 的最后一个参数（由 sh -c 执行），所以
+# `$(cat ...)` 和 `$VAR_FILE` 必须保持字面、留到那时候才展开——**这里绝不能提前求值**，
+# 提前求值就等于把值写回 argv，整个改动就白做了。
+secret_env_prefix() {
+    local var out=""
+    while read -r var; do
+        if [ -z "$var" ]; then
+            continue
+        fi
+        out="${out}export ${var}=\$(cat \"\$${var}_FILE\"); "
+    done < <(_secret_vars)
+    printf '%s' "$out"
+}
+
 tmux_env_args() {
     # PATH 硬透传：worker 跑 claude / git / node 等 binary 全靠 PATH 找。tmux new-session
     # 启的 child shell **继承的是 tmux server 启动时的 PATH**，**不继承** dispatch script
@@ -452,12 +538,28 @@ tmux_env_args() {
     # 给的、含 claude；显式 -e PATH=$PATH 把这份 PATH 传给 worker session 才稳。
     # conf 不用列 PATH（即便列也 dedupe 不重复透传）。
     local vars="PATH ${WORKER_PASS_ENV:-GH_TOKEN}"
-    local seen=""
+    local seen="" secrets
+    # 前后各留一个空格，下面用 `*" $var "*` 做整词匹配（否则 GH_TOKEN 会被
+    # GH_TOKEN_EXTRA 之类的名字前缀命中）
+    secrets=" $(_secret_vars | tr '\n' ' ') "
     for var in $vars; do
         case " $seen " in *" $var "*) continue ;; esac
         seen="$seen $var"
         local val
         eval "val=\${$var:-}"
+        # 敏感变量：只把**路径**写进 argv，值留在 0600 文件里，由 secret_env_prefix
+        # 生成的前缀在 worker shell 里读回来。见本文件上方 WORKER_SECRET_ENV 那段。
+        case "$secrets" in
+            *" $var "*)
+                local _sf
+                if _sf=$(secret_env_file "$var"); then
+                    printf -- '-e\0%s_FILE=%s\0' "$var" "$_sf"
+                else
+                    echo "[coding-agent] WARN: WORKER_SECRET_ENV 含 '$var' 但当前 env 没设；worker 不会拿到它。" >&2
+                fi
+                continue
+                ;;
+        esac
         if [ -n "$val" ]; then
             printf -- '-e\0%s=%s\0' "$var" "$val"
         elif [ "$var" != "PATH" ]; then

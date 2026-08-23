@@ -6,6 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# 敏感 env（GH_TOKEN 等）不走 `-e VAR=值`——那会把值写进 tmux 的 argv，而
+# /proc/<pid>/cmdline 全局可读。改成 0600 文件 + worker shell 内 $(cat) 读回。
+# 校验放在**脚本顶部**而不是某条派工分支里：这个脚本有多条 spawn 路径
+# （resume / fresh / 各种 worktree 状态），放分支里必然漏掉一条。
+# 缺了就当场拒绝派工，而不是让 worker 起来之后撞 403 被 self-heal 反复重派。
+require_secret_env || exit 1
+
+
 # 派工前先把主 checkout 同步到 origin/<base>：模板 / 项目脚本防 stale（GigleTutor-Web#516）
 sync_project_checkout
 
@@ -65,7 +73,7 @@ fi
 # 4. 起 tmux + worker agent（用 -e 显式传 GH_TOKEN 等 env，因为 tmux 默认不继承）
 #    新 issue 一律走 agent_command_new（worktree 刚建，无历史）。
 log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT)"
-CMD="$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+CMD="$(secret_env_prefix)$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
