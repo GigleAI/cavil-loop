@@ -208,7 +208,9 @@ install_systemd() {
     local sys_dir="$HOME/.config/systemd/user"
     mkdir -p "$sys_dir"
     local f src dst
-    for f in coding-agent-poll@.service coding-agent-poll@.timer; do
+    # slice 名里的 \x2d 是必须的转义（`-` 在 slice 单元名里是层级分隔符），别"顺手改成"
+    # app-coding-agent-poll.slice——那是另一个单元，配上去等于没配。
+    for f in coding-agent-poll@.service coding-agent-poll@.timer 'app-coding\x2dagent\x2dpoll.slice'; do
         src="$SKILL_DIR/systemd/$f"
         dst="$sys_dir/$f"
         if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then

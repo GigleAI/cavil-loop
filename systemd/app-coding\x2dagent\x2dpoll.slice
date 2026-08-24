@@ -1,0 +1,41 @@
+[Unit]
+Description=coding-agent-work-loop worker fleet (tmux-spawn scopes)
+Documentation=https://github.com/GigleAI/cavil-loop
+
+[Slice]
+# 2026-08-21 21:16：systemd-oomd 在 user@1003.service 上跳闸（ManagedOOMMemoryPressureLimit=50%），
+# 先打掉两个 tmux-spawn scope 和 coding-agent-poll@tutor.service，systemd --user 自己也跟着吃了
+# SIGKILL → user@1003.service 进 failed。linger 不会把 failed 的 manager 拉回来，5 个 timer 一起
+# 消失，整套 daemon 静默停摆 12 小时才被发现（poll.log 停在 21:16，四个项目同一分钟）。
+#
+# ── 为什么限在这个 slice，而不是 coding-agent-poll@.service ──
+# worker 根本不在 service 的 cgroup 里。tmux 起 server 时会通过 systemd D-Bus 建一个 transient
+# scope（tmux-spawn-<uuid>.scope），systemd 按调用者单元名的**模板前缀**（而非 %i）派生出
+# app-coding\x2dagent\x2dpoll.slice 把它挂进去。实测：
+#   coding-agent-poll@tutor.service → .../app.slice/app-coding\x2dagent\x2dpoll.slice/tmux-spawn-*.scope
+# 所以：
+#   · 限 service = 只限住 poll 脚本自己那点 gh/jq 开销，对 OOM 毫无作用；
+#   · 限这个 slice = 一把罩住**所有项目的所有 worker**，正好是吃内存的那部分。
+# 注意文件名里的 \x2d 不能省：slice 单元名里 `-` 是层级分隔符，写成 app-coding-agent-poll.slice
+# 会被理解成 app→coding→agent→poll 四层，systemd 根本不会把它跟这个 slice 对上，文件是死的。
+#
+# 这个 slice 原先是隐式创建的（无 unit 文件，memory.high/memory.max 都是 max = 完全不设防）。
+# 放一个同名 unit 文件进 ~/.config/systemd/user/，systemd 就会拿它去配置那个隐式 slice。
+#
+# ── 数字（本机 MemTotal 15.5 GiB / swap 4 GiB）──
+# 最坏并发 = tutor 3 + sudoku 3 + gotomarket 1 + workloop 1 = 8 个 worker，单个 claude worker
+# 最坏 ~3 GiB → 24 GiB，本来就是超卖的。日常实测 8 个 scope 加起来才 ~2 GiB，所以下面这两条
+# 平时根本不咬，只在 worker 集体发胖时才生效。改并发上限时记得回来对一眼。
+MemoryAccounting=yes
+
+# 软上限：超了内核开始激进回收 + throttle 分配。worker 变慢，但不死——这就是「自己先减速」。
+# 注意它不会让 oomd 更不容易跳闸：throttle 本身会推高本 slice 的 PSI，而 oomd 挑的正是压力
+# 最大的那个后代。所以 MemoryHigh 买到的是「炸的是 worker 而不是 manager」，不是「不炸」。
+MemoryHigh=8G
+
+# 硬上限：真正防止整机被拖到全局 OOM、进而让 systemd --user 当陪葬的那条线。
+# 超了内核只在**本 slice 内部**挑进程 OOM-kill，炸的是单个 worker，self-heal 下一轮重新派工
+# 就能接上（依赖 coding-agent-poll@.service 里的 KillMode=process，否则新 tmux server 会被连坐）。
+# 留 ~5.5 GiB 给系统 + 桌面 + 你自己的交互 claude 会话——后者在 session-*.scope 里，
+# 不属于本 slice，不受这里约束。
+MemoryMax=10G

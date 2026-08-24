@@ -32,5 +32,9 @@ EnvironmentFile=%h/.config/coding-agent-work-loop/%i.conf
 WorkingDirectory=%h/.agents/skills/coding-agent-work-loop
 ExecStart=/usr/bin/env bash %h/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh
 
+# 想给 daemon 加内存限额的，别加在这里：这个 cgroup 里只有 poll 脚本自己（bash/gh/jq），
+# claude worker 全在 tmux 自建的 tmux-spawn-<uuid>.scope 里，归 app-coding\x2dagent\x2dpoll.slice
+# 管。限额和推导都在 systemd/app-coding\x2dagent\x2dpoll.slice。
+
 [Install]
 WantedBy=default.target
