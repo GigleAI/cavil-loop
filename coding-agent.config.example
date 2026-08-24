@@ -278,6 +278,62 @@ AUTO_CLEANUP_ON_MERGE="true"
 #         （配合 Agent Skill 项目级目录约定；prompts 覆盖也放同目录下 prompts/）
 CLEANUP_HOOK=""
 
+# ── On-demand preview server / 按需预览服务（socket 激活，默认关闭）──
+
+# Reviewers need a clickable preview URL per issue, but a preview server that
+# stays resident for every open issue is pure idle RSS — measured on one host:
+# 10 open `pending/PR` issues × ~85 MiB, several idle for over a week.
+#
+# Set PREVIEW_EXEC to switch previews to systemd socket activation:
+#   coding-agent-preview@<port>.socket      always listening, ~0 memory
+#     └ first connection starts →
+#   coding-agent-preview@<port>.service     systemd-socket-proxyd, exits when idle
+#     └ requires →
+#   coding-agent-preview-app@<port>.service your server; stops with the proxy
+# The URL never breaks; the process comes back on the next hit (~1s cold start,
+# no rebuild — the worktree's build output is already on disk).
+#
+# 每个 issue 都要给审阅者一条可点的预览 URL，但为每个 open issue 常驻一个 server 就是
+# 纯粹的空转内存。实测某台机器：10 个 pending/PR 的 issue × ~85 MiB，其中几个空转一周以上。
+#
+# 配了 PREVIEW_EXEC 就切到 systemd socket 激活：
+#   coding-agent-preview@<端口>.socket        常驻监听，几乎不占内存
+#     └ 首次连接触发 →
+#   coding-agent-preview@<端口>.service       systemd-socket-proxyd，闲置自己退出
+#     └ Requires →
+#   coding-agent-preview-app@<端口>.service   你的 server，跟着 proxy 一起停
+# URL 永远有效；进程在下次访问时自动回来（冷启 ~1s，不重新 build——worktree 里
+# 的构建产物还在）。
+#
+# 起法由 preview-serve.sh 注册、systemd 拉起：
+#   bash scripts/preview-serve.sh <issue>          注册 + 起监听，打印 URL
+#   bash scripts/preview-serve.sh --list           看本项目所有 preview 及其死活
+#   bash scripts/preview-unserve.sh --issue <N>    注销（cleanup hook 里调）
+#
+# 进程必须从 $PORT / $HOST 读监听参数（不能写死端口）——它拿到的是**后端**端口，
+# 公开端口被 .socket 占着。留空 = 不启用，preview 怎么起完全由 worker prompt 决定。
+PREVIEW_EXEC=""
+
+# 公开端口 = PREVIEW_PORT_BASE + issue 编号。撞 Chromium unsafe ports 的话换一个 base。
+PREVIEW_PORT_BASE=4000
+
+# 后端端口 = 公开端口 + 这个偏移。只要不跟别的服务撞就行。
+PREVIEW_BACKEND_OFFSET=10000
+
+# 闲置多久后 app 退出（systemd 时间格式：30min / 2h / 90s）。
+# 调大 = 验收时更少冷启；调小 = 回收更快。冷启才 ~1s，不必调得太保守。
+PREVIEW_IDLE="30min"
+
+# app 从 exec 到能 accept 连接的等待上限（秒）。超时 = 本次启动判失败。
+PREVIEW_READY_TIMEOUT=90
+
+# preview-serve.sh 是否顺手 `tailscale serve --bg --https=<端口>` 把预览挂上 tailnet。
+# 需要 sudo -n 跑 tailscale 的权限；失败只告警，本地 127.0.0.1 仍可用。
+PREVIEW_TAILSCALE_SERVE=false
+
+# 打印 URL 时用的主机名（一般是 tailnet MagicDNS 名）。留空则打印 http://127.0.0.1:<端口>/。
+PREVIEW_URL_HOST=""
+
 # ── Post-PR-creation hook / PR 创建后的 hook ──
 
 # When the agent creates a PR (via `gh pr create`), this hook runs immediately

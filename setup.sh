@@ -210,7 +210,12 @@ install_systemd() {
     local f src dst
     # slice 名里的 \x2d 是必须的转义（`-` 在 slice 单元名里是层级分隔符），别"顺手改成"
     # app-coding-agent-poll.slice——那是另一个单元，配上去等于没配。
-    for f in coding-agent-poll@.service coding-agent-poll@.timer 'app-coding\x2dagent\x2dpoll.slice'; do
+    # coding-agent-preview*@ 三件套是按需 preview 的 socket 激活链路（socket → proxy →
+    # app）。跟 poll 无依赖关系，装着不用不产生任何开销——没跑过 preview-serve.sh 就
+    # 没有任何 instance 存在。项目没配 PREVIEW_EXEC 时 preview-serve.sh 自己会拒绝。
+    for f in coding-agent-poll@.service coding-agent-poll@.timer 'app-coding\x2dagent\x2dpoll.slice' \
+             'coding-agent-preview@.socket' 'coding-agent-preview@.service' \
+             'coding-agent-preview-app@.service'; do
         src="$SKILL_DIR/systemd/$f"
         dst="$sys_dir/$f"
         if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then

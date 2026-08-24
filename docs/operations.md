@@ -238,6 +238,79 @@ Killing processes by cwd is risky enough to deserve three guards, worth copying 
 
 Reference implementation: `.agents/skills/coding-agent-work-loop/cleanup-hook.sh` in tutor.
 
+## On-demand preview (socket activation)
+
+Every issue awaiting acceptance needs a clickable preview URL for the reviewer. The
+obvious way is to have the worker start a resident `tmux` session running a web server —
+but that keeps **one server resident per open issue**. Measured on one host: 10 issues in
+`pending/PR`, 10 `node server/index.mjs` processes, ~930 MiB total, with `#745` idling for
+11 days. These are not leaks (the issues really are open, and the cleanup path works
+fine) — they are simply **alive while nobody is looking at them**.
+
+Setting `PREVIEW_EXEC` switches previews to systemd socket activation, which separates
+"the URL is always up" from "the process is always resident":
+
+```
+tailscale serve :4791 (or hit 127.0.0.1:4791 directly)
+        │
+coding-agent-preview@4791.socket        always listening, ~0 memory
+        │ first connection triggers
+coding-agent-preview@4791.service       systemd-socket-proxyd, exits on --exit-idle-time
+        │ Requires
+coding-agent-preview-app@4791.service   your server; StopWhenUnneeded takes it down too
+```
+
+Measured: ~0.4s cold start (plus your app's own startup), 0.01s warm, all memory returned
+once idle, and the next hit brings it back. **No rebuild** — the worktree's build output
+is still on disk.
+
+```bash
+bash scripts/preview-serve.sh 791          # register + listen, print the URL
+bash scripts/preview-serve.sh 791 --warm   # also warm it up now (skip the 1s before a review)
+bash scripts/preview-serve.sh --list       # every preview in this project and whether it is up
+bash scripts/preview-unserve.sh --issue 791  # deregister (call this from your cleanup hook)
+```
+
+### Three things you must know
+
+**① The app gets the backend port, not the public one.** The public port belongs to the
+`.socket`; the app binding it again would get `EADDRINUSE`. `preview-run.sh` injects
+`$PORT` = public port + `PREVIEW_BACKEND_OFFSET`. So whatever `PREVIEW_EXEC` starts
+**must read its listen address from `$PORT` / `$HOST`** — an app with a hardcoded port
+cannot be wired in.
+
+**② Quote every value in the conf file.** `~/.config/coding-agent-work-loop/preview/<port>.conf`
+has two readers: systemd's `EnvironmentFile=` (everything right of `=` is the value, quotes
+optional) and the bash `source` in `preview-run.sh` (without quotes,
+`PREVIEW_EXEC=node server/index.mjs` parses as "run `server/index.mjs` with a temporary
+environment variable" and exits 127). `preview-serve.sh` gets this right; watch out if you
+hand-edit a conf.
+
+**③ Do not drop the readiness gate.** `Type=exec` only guarantees that execve succeeded,
+not that the app has `bind`ed. Without the `ExecStartPost=preview-wait.sh` line in
+`coding-agent-preview-app@.service`, the proxy forwards before node is listening and the
+**first request reliably 502s** — an app that takes 300ms to start is enough to trigger it,
+and manual local testing often misses it.
+
+### When the app fails to start
+
+The socket re-triggers repeatedly, hits `TriggerLimitBurst`, and the whole socket goes
+`failed` and **stops accepting activation** — the URL dies silently, and `systemctl start`
+is a no-op, so the unit state does not make the problem obvious. To diagnose and recover:
+
+```bash
+journalctl --user -u 'coding-agent-preview-app@4791.service' -n 50
+bash scripts/preview-serve.sh 791     # includes reset-failed; re-run after fixing the config
+```
+
+### Relationship to cleanup
+
+`preview-serve.sh` uses `systemctl start`, not `enable`: a preview lives and dies with its
+issue and should not come back after a reboot (by then `cleanup-issue.sh` has usually
+removed the worktree). Deregistration on issue close belongs in your project's
+`CLEANUP_HOOK`, which should call `preview-unserve.sh --issue <N>` — you have to add that
+line yourself, since `cleanup-issue.sh` has no way to know whether you enabled previews.
+
 ## File layout
 
 ### Skill directory (recommended symlink chain)

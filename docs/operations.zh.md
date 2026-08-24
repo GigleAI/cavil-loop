@@ -216,6 +216,71 @@ worktree 删了、进程还活着，变成 cwd 显示 `(deleted)` 的孤儿，�
 
 参考实现见 tutor 项目的 `.agents/skills/coding-agent-work-loop/cleanup-hook.sh`。
 
+## 按需 preview（socket 激活）
+
+每个待验收的 issue 都要给审阅者一条可点的预览 URL。最直接的做法是 worker 起一个常驻
+`tmux` session 跑 web server——但那意味着**每个 open 的 issue 都常驻一份内存**。实测某台
+机器：10 个 `pending/PR` 的 issue，10 个 `node server/index.mjs`，共 ~930 MiB，其中
+`#745` 空转了 11 天。这些进程不是泄漏（issue 确实还开着，清理链路也正常），它们只是
+**在没人看的时候也活着**。
+
+配了 `PREVIEW_EXEC` 就切成 systemd socket 激活，把「URL 常在」和「进程常驻」拆开：
+
+```
+tailscale serve :4791（或直接访问 127.0.0.1:4791）
+        │
+coding-agent-preview@4791.socket        常驻监听，几乎不占内存
+        │ 首次连接触发
+coding-agent-preview@4791.service       systemd-socket-proxyd，--exit-idle-time 到点自杀
+        │ Requires
+coding-agent-preview-app@4791.service   你的 server，StopWhenUnneeded 跟着一起停
+```
+
+实测：冷启动 ~0.4s（外加 app 自身启动时间），热访问 0.01s，闲置到点后内存全部归还，
+再访问自动拉回来。**不重新 build**——worktree 里的构建产物一直在。
+
+```bash
+bash scripts/preview-serve.sh 791          # 注册 + 起监听，打印 URL
+bash scripts/preview-serve.sh 791 --warm   # 顺便立刻预热（验收前想省那 1 秒）
+bash scripts/preview-serve.sh --list       # 本项目所有 preview 及其死活
+bash scripts/preview-unserve.sh --issue 791  # 注销（cleanup hook 里调）
+```
+
+### 三个必须知道的坑
+
+**① app 拿到的是后端端口，不是公开端口。** 公开端口被 `.socket` 占着，app 再 bind 会
+`EADDRINUSE`。`preview-run.sh` 注入的 `$PORT` = 公开端口 + `PREVIEW_BACKEND_OFFSET`。
+所以 `PREVIEW_EXEC` 指向的进程**必须从 `$PORT` / `$HOST` 读监听参数**，端口写死的 app
+接不进来。
+
+**② conf 文件的值一律带双引号。** `~/.config/coding-agent-work-loop/preview/<port>.conf`
+有两个读者：systemd 的 `EnvironmentFile=`（整行右侧都算 value，不加引号也对）和
+`preview-run.sh` 的 bash `source`（不加引号，`PREVIEW_EXEC=node server/index.mjs` 会被
+解析成「带临时环境变量执行 `server/index.mjs`」，exit 127）。`preview-serve.sh` 已经
+处理好了，手改 conf 的时候别踩。
+
+**③ 就绪门不能省。** `Type=exec` 只保证 execve 成功，不保证已经 `bind`。少了
+`coding-agent-preview-app@.service` 里那行 `ExecStartPost=preview-wait.sh`，proxy 会在
+node 还没听上时就转发，**首次访问稳定 502**——而且 app 慢启动 300ms 就能踩到，本地手测
+经常撞不上。
+
+### app 起不来的时候
+
+socket 会反复重触发，撞上 `TriggerLimitBurst` 后整个 socket 进 `failed` 且**不再接受
+激活**——URL 静默变死，而 `systemctl start` 是 no-op，看状态看不出问题。诊断和恢复：
+
+```bash
+journalctl --user -u 'coding-agent-preview-app@4791.service' -n 50
+bash scripts/preview-serve.sh 791     # 内含 reset-failed，改完配置重跑就能恢复
+```
+
+### 跟 cleanup 的关系
+
+`preview-serve.sh` 用的是 `systemctl start` 而不是 `enable`：preview 是随 issue 生灭的
+临时物，不该在重启后自动复活（那时 worktree 多半已经被 `cleanup-issue.sh` 删了）。
+issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --issue <N>` 完成
+——这一条要自己加进 hook，`cleanup-issue.sh` 不知道你有没有启用 preview。
+
 ## 文件结构
 
 ### Skill 目录（推荐 symlink 链路）

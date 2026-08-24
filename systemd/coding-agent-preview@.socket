@@ -1,0 +1,19 @@
+[Unit]
+Description=coding-agent preview listener (port %i)
+Documentation=https://github.com/GigleAI/cavil-loop
+
+[Socket]
+# instance name (%i) **就是公开端口号**。
+#
+# 为什么不用 issue 编号作 instance：`ListenStream=` 不做算术，端口必须字面写出来；
+# 而端口 = PREVIEW_PORT_BASE + issue 只有注册脚本算得出。把端口塞进 instance name，
+# unit 文件就能纯靠 %i 拿到它，其余参数（worktree / 启动命令 / 闲置时长）走
+# EnvironmentFile。代价是 systemctl 里看到的是 @4791 而不是 @issue791——
+# `preview-serve.sh --list` 负责把这层映射翻译回人话。
+ListenStream=127.0.0.1:%i
+
+# 只绑 loopback：外部访问一律经 tailscale serve 反代到这里，跟原来 tmux 起 server 时
+# 的 HOST=127.0.0.1 保持一致，别因为换了启动方式就把预览暴露到 LAN。
+
+[Install]
+WantedBy=sockets.target

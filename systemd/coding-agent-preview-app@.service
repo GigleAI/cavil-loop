@@ -1,0 +1,28 @@
+[Unit]
+Description=coding-agent preview app (port %i)
+Documentation=https://github.com/GigleAI/cavil-loop
+
+# 没人要就停。proxy（coding-agent-preview@%i.service）是唯一 Requires 本单元的人，
+# 它 --exit-idle-time 到点退出后，本单元就成了「不被需要」→ 自动 stop → 内存归还。
+# 这是整套方案里「闲置自动回收」的落点，别删。
+StopWhenUnneeded=yes
+
+[Service]
+Type=exec
+EnvironmentFile=%h/.config/coding-agent-work-loop/preview/%i.conf
+
+# WorkingDirectory= **不做 ${VAR} 展开**，所以 cd 到 worktree 的活只能在 wrapper 里干。
+# preview-run.sh 同时负责按 PREVIEW_EXEC 起真正的 server 并 exec 掉自己（保持单进程）。
+ExecStart=/usr/bin/env bash %h/.agents/skills/coding-agent-work-loop/scripts/preview-run.sh %i
+
+# 就绪门：轮询后端端口直到 accept 才算启动完成。
+# Type=exec 只保证「execve 成功」，不保证「已经 bind」；node 起 express 有几百毫秒空窗。
+# ExecStartPost 未返回前本单元的 start job 不算完成，After= 的 proxy 也就不会提前起来。
+ExecStartPost=/usr/bin/env bash %h/.agents/skills/coding-agent-work-loop/scripts/preview-wait.sh %i
+
+# 起不来就别赖着：留一个 active 但没 listen 的空壳，proxy 会一直 502 而且没人报错。
+# 失败直接 fail，下次访问重新触发一整轮，日志在 journalctl --user -u 里看得到。
+Restart=no
+TimeoutStartSec=120
+
+Slice=app-coding\x2dagent\x2dpoll.slice

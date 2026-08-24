@@ -1,0 +1,33 @@
+[Unit]
+Description=coding-agent preview proxy (port %i)
+Documentation=https://github.com/GigleAI/cavil-loop
+
+# socket 激活的三段式：
+#   coding-agent-preview@<port>.socket      常驻监听，几乎不占内存
+#   coding-agent-preview@<port>.service     本文件 —— systemd-socket-proxyd，闲置自杀
+#   coding-agent-preview-app@<port>.service 真正的 web server，跟着 proxy 生死
+#
+# 为什么要中间这层 proxy，不让 socket 直接激活 app：node server 不认 LISTEN_FDS，
+# 拿不到 systemd 递过来的 fd，只会自己 bind——而公开端口已经被 .socket 占着了。
+# systemd-socket-proxyd 是官方的适配层：它认 fd，把流量转发给 app 自己 bind 的
+# 后端端口（PREVIEW_BACKEND_PORT = 公开端口 + PREVIEW_BACKEND_OFFSET）。
+# 顺带白送一个 `--exit-idle-time`，这正是「闲置自动退出」的实现处。
+Requires=coding-agent-preview@%i.socket
+After=coding-agent-preview@%i.socket
+
+# Requires + After 一起：proxy 起来之前 app 必须已经 **listen 就绪**。
+# 「就绪」不等于「进程已 spawn」——app 那边靠 ExecStartPost 的 preview-wait.sh 把关，
+# 少了它 proxy 会在 node 还没 bind 完时就转发，首次访问稳定吃 502。
+#
+# 反向也成立：Requires 让 app 停止时 proxy 跟着停，不会留一个转发到空气的 proxy。
+Requires=coding-agent-preview-app@%i.service
+After=coding-agent-preview-app@%i.service
+
+[Service]
+EnvironmentFile=%h/.config/coding-agent-work-loop/preview/%i.conf
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=${PREVIEW_IDLE} 127.0.0.1:${PREVIEW_BACKEND_PORT}
+
+# 跟 worker 共用一个 slice，让「本机上这套 daemon 一共吃多少内存」还是一个数。
+# preview 现在是按需起、闲置退，常驻份额接近 0，不会挤占 worker 的额度。
+# 文件名里的 \x2d 不能省，理由见 app-coding\x2dagent\x2dpoll.slice 顶部注释。
+Slice=app-coding\x2dagent\x2dpoll.slice
