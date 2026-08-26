@@ -23,9 +23,10 @@ Documentation=https://github.com/GigleAI/cavil-loop
 # 放一个同名 unit 文件进 ~/.config/systemd/user/，systemd 就会拿它去配置那个隐式 slice。
 #
 # ── 数字（本机 MemTotal 15.5 GiB / swap 4 GiB）──
-# 最坏并发 = tutor 3 + sudoku 3 + gotomarket 1 + workloop 1 = 8 个 worker，单个 claude worker
-# 最坏 ~3 GiB → 24 GiB，本来就是超卖的。日常实测 8 个 scope 加起来才 ~2 GiB，所以下面这两条
-# 平时根本不咬，只在 worker 集体发胖时才生效。改并发上限时记得回来对一眼。
+# 最坏并发 = tutor 4 + sudoku 3 + gotomarket 1 + workloop 1 = 9 个 worker（2026-08-26 tutor
+# 3→4，见该项目 coding-agent.config 的注释），单个 claude worker 最坏 ~3 GiB → 27 GiB，
+# 本来就是超卖的。日常实测 8 个 scope 加起来才 ~2 GiB（2026-08-26 实测 MemoryCurrent 4.5 GiB），
+# 所以下面这两条平时根本不咬，只在 worker 集体发胖时才生效。改并发上限时记得回来对一眼。
 MemoryAccounting=yes
 
 # 软上限：超了内核开始激进回收 + throttle 分配。worker 变慢，但不死——这就是「自己先减速」。
