@@ -1142,26 +1142,43 @@ sync_project_checkout() {
 #   0. origin/<base> 上的最新版（git show 直读远端 ref，落临时文件）——主 checkout
 #      stale / 有 WIP 时也永远拿到最新版（GigleTutor-Web#516 的结构性修复）。
 #      依赖最近一次 fetch 刷新 remote-tracking ref（dispatch 前 sync_project_checkout 会 fetch）。
-#   1. <project>/.agents/skills/coding-agent-work-loop/prompts/<file>   ← 新规范（推荐）
+#   1. 远端不可读时才看本地：<project>/.agents/skills/coding-agent-work-loop/prompts/<file>
 #   2. <project>/.agents/skills/coding-agent-workflow/prompts/<file>    ← 旧目录名（兼容；老 worktree/分支）
 #   3. <project>/.coding-agent/prompts/<file>                           ← 更老路径（兼容）
 # 找不到返回空串（不含 skill 默认——那是 base 专属的兜底，见 find_prompt_template）。
 find_project_prompt_file() {
     local file="$1" tag="$2"   # tag 只用于临时文件命名，避免 base / overlay 互相覆盖
     local base="${BASE_BRANCH:-main}"
-    local rel=".agents/skills/coding-agent-work-loop/prompts/${file}"
     local remote_copy="$STATE_DIR/prompt-remote-${tag}-${file}"
-    if git -C "$PROJECT_ROOT" show "origin/${base}:${rel}" > "$remote_copy" 2>/dev/null \
-       && [ -s "$remote_copy" ]; then
-        echo "$remote_copy"
+    local rels=(
+        ".agents/skills/coding-agent-work-loop/prompts/${file}"
+        ".agents/skills/coding-agent-workflow/prompts/${file}"
+        ".coding-agent/prompts/${file}"
+    )
+    local rel c
+
+    # origin/<base> 能解析 → **它就是唯一真值**，不再看本地工作区。
+    # 为什么必须这么绝对：主 checkout 常年停在别的分支上（daemon 见它 ≠ main 就不动
+    # 工作区，这是有意的）。只在「远端有这个文件」时才用远端、否则回落本地，会踩到
+    # 一个很隐蔽的坑——文件在 main 上**已经删了**，本地那条老分支还留着，于是 daemon
+    # 捡起早就废弃的那份当 base。实测：tutor 把 .template.md 迁成 .extra.md 之后，
+    # base 捡到本地分支上的旧覆写，跟新增量拼在一起，合成 558 行（应为 382）且内容重复。
+    if git -C "$PROJECT_ROOT" rev-parse --verify -q "origin/${base}" >/dev/null 2>&1; then
+        for rel in "${rels[@]}"; do
+            if git -C "$PROJECT_ROOT" show "origin/${base}:${rel}" > "$remote_copy" 2>/dev/null \
+               && [ -s "$remote_copy" ]; then
+                echo "$remote_copy"
+                return
+            fi
+        done
+        rm -f "$remote_copy"
+        echo ""      # 远端可读但没有这个文件 = 它确实不存在，别去本地捡尸
         return
     fi
-    rm -f "$remote_copy"
-    local c
-    for c in \
-        "$PROJECT_ROOT/.agents/skills/coding-agent-work-loop/prompts/${file}" \
-        "$PROJECT_ROOT/.agents/skills/coding-agent-workflow/prompts/${file}" \
-        "$PROJECT_ROOT/.coding-agent/prompts/${file}"; do
+
+    # 没有 origin/<base>（非 git / 无 remote / 首次 clone 前）→ 看本地工作区
+    for rel in "${rels[@]}"; do
+        c="$PROJECT_ROOT/$rel"
         if [ -f "$c" ]; then
             echo "$c"
             return

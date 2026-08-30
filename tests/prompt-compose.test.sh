@@ -78,6 +78,31 @@ chk "用项目模板当 base"     "$(grep -c '^PROJ-完全覆写$' "$out")" "1"
 chk "增量也接上了"          "$(grep -c '^EXTRA-补充$' "$out")" "1"
 chk "不含 skill base"       "$(grep -c '^BASE-通用工作流$' "$out")" "0"
 
+echo "── origin/<base> 可读时它是唯一真值，不看本地工作区 ──"
+# 为什么要测这个：主 checkout 常年停在别的分支上（daemon 见它 ≠ main 故意不动工作区）。
+# 若「远端没有就回落本地」，一个在 main 上**已删除**的模板会从老分支上被捡回来当 base，
+# 跟新的增量拼在一起 —— 实测过一次，合成 558 行（应为 382）且整段重复，日志毫无异样。
+reset
+git -C "$TMP/project" init -q 2>/dev/null
+printf 'REMOTE-main 上的版本\n' > "$PROMPTS/new-issue.template.md"
+git -C "$TMP/project" add -A >/dev/null 2>&1
+git -C "$TMP/project" -c user.email=t@t -c user.name=t commit -qm x >/dev/null 2>&1
+git -C "$TMP/project" update-ref refs/remotes/origin/main HEAD
+printf 'LOCAL-老分支上的残留\n' > "$PROMPTS/new-issue.template.md"   # 工作区被改脏
+out=$(compose_prompt_template new-issue)
+chk "用 origin/main 的那份"     "$(grep -c '^REMOTE-main 上的版本$' "$out")" "1"
+chk "不捡本地工作区的"          "$(grep -c '^LOCAL-老分支上的残留$' "$out")" "0"
+
+# main 上删掉、本地老分支还留着 —— 必须当"它不存在"，而不是捡尸
+git -C "$TMP/project" rm -q --cached "${PROMPTS#$TMP/project/}/new-issue.template.md" >/dev/null 2>&1
+git -C "$TMP/project" -c user.email=t@t -c user.name=t commit -qm rm >/dev/null 2>&1
+git -C "$TMP/project" update-ref refs/remotes/origin/main HEAD
+printf 'BASE-通用工作流\n' > "$SKILL_DIR/prompts/new-issue.template.md"
+out=$(compose_prompt_template new-issue)
+chk "main 上删了 → 回落 skill base" "$(grep -c '^BASE-通用工作流$' "$out")" "1"
+chk "本地残留没被捡回来"            "$(grep -c '^LOCAL-老分支上的残留$' "$out")" "0"
+rm -rf "$TMP/project/.git"
+
 echo "── base 都没有 → 返回空串（调用方回落到内联 minimal prompt）──"
 reset
 rm -f "$SKILL_DIR/prompts/new-issue.template.md"
