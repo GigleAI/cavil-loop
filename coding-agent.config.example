@@ -444,9 +444,28 @@ PRIORITY_LABELS="priority/p0,priority/p1,priority/p2"
 # 就停下派工。
 PRIORITY_SOURCE="label"
 
-# Which project. Empty = the first project linked to this repo.
-# 用哪个 Project。留空 = 自动取本仓库关联的第一个。
+# Which project, and whose. Two different lookups:
+#   PROJECT_NUMBER set   → looked up directly by <owner, number>; the project does
+#                          NOT have to be linked to this repo. The number is the last
+#                          path segment of the board URL:
+#                          github.com/orgs/<org>/projects/N  or  /users/<you>/projects/N
+#   PROJECT_NUMBER empty → the lowest-numbered project LINKED to this repo
+#                          (explicit orderBy, not the API's unpromised default order)
+# PROJECT_OWNER only matters for the first case, and defaults to this repo's owner.
+# Set it when the board lives under a different owner than the repo — a personal board
+# holding cards from org repos is the common case.
+#
+# 用哪个 Project、在谁名下。两条路，行为不一样：
+#   PROJECT_NUMBER 有值 → 按 <owner, 编号> **直取**，Project 不需要跟本仓库有关联。
+#                         编号就是看板 URL 的最后一段：
+#                         github.com/orgs/<组织>/projects/N 或 /users/<你>/projects/N
+#   PROJECT_NUMBER 留空 → 取**本仓库关联的** Project 里编号最小的那个
+#                         （查询里写死 orderBy，不靠 API 没承诺的默认顺序）
+# PROJECT_OWNER 只在第一种情况下起作用，默认取本仓库的 owner。
+# 看板挂在跟仓库不同的 owner 名下时必须配 —— 个人看板装着组织仓库的卡片是常见配置。
+# 每轮日志会写明实际用了哪个看板：`Project 优先级：读到 N 条（看板 7 board7，...）`
 PROJECT_NUMBER=""
+PROJECT_OWNER=""
 
 # Name of the single-select field (GitHub's built-in template calls it Priority).
 # 那个单选字段叫什么（GitHub 自带模板就叫 Priority）。

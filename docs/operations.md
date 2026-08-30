@@ -122,6 +122,21 @@ the sort.
 defined in on the project, so reordering there is the only edit. `PROJECT_NUMBER`
 picks the project; empty means the first one linked to this repo.
 
+**How the board is chosen:**
+
+| `PROJECT_NUMBER` | Lookup | Must the board be linked to the repo? |
+|---|---|---|
+| set | direct by `<PROJECT_OWNER, number>` (tries organization, then user) | no |
+| empty | the lowest-numbered project **linked to this repo** | yes |
+
+The number is the last path segment of the board URL (`github.com/users/<you>/projects/7`
+→ `7`). `PROJECT_OWNER` defaults to the repo owner and **must be set when the board lives
+under a different owner** — a personal board holding cards from org repos is the common
+case. The auto path pins `orderBy=NUMBER ASC` rather than trusting the API's unpromised
+default order (with two boards linked, that default would silently reshuffle priorities
+between polls). Every poll logs which board it actually used:
+`Project 优先级：读到 12 条（看板 7 board7，字段 Priority，source=both）`.
+
 ⚠️ **Reading a project needs extra permissions — this is the step that trips people up.**
 Projects v2 is GraphQL-only.
 

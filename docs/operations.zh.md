@@ -116,6 +116,19 @@ label 语义完全不变。每轮排完的结果会整行写进 `poll.log`，并
 **档位顺序不用在配置里再抄一遍**——直接取该字段在 Project 里定义的选项顺序，
 在看板上拖一下就改了。用哪个 Project 由 `PROJECT_NUMBER` 指定，留空 = 本仓库关联的第一个。
 
+**用哪个看板是这么定的**：
+
+| `PROJECT_NUMBER` | 怎么找 | 要求看板跟仓库关联吗 |
+|---|---|---|
+| 有值 | 按 `<PROJECT_OWNER, 编号>` 直取（先按组织找，找不到再按个人找） | 不要求 |
+| 留空 | 取**本仓库关联的** Project 里编号最小的那个 | 要求 |
+
+编号就是看板 URL 的最后一段（`github.com/users/<你>/projects/7` → `7`）。
+`PROJECT_OWNER` 默认取仓库 owner，**看板挂在别的 owner 名下时必须配**——个人看板装着
+组织仓库的卡片是最常见的那种。自动挑那条路显式写了 `orderBy=NUMBER ASC`，不依赖 API
+没有承诺的默认顺序（仓库挂两个看板时，靠默认顺序会变成「今天排这个明天排那个」且毫无迹象）。
+每轮日志都会写明实际用的是哪个：`Project 优先级：读到 12 条（看板 7 board7，字段 Priority，source=both）`。
+
 ⚠️ **读 Project 需要额外权限，这是最容易卡住的一步**：Projects v2 只有 GraphQL 接口。
 
 - classic PAT 必须勾 **`read:project`**（在 <https://github.com/settings/tokens> 上给现有 token 补勾即可，不用换 token）

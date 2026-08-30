@@ -241,29 +241,64 @@ project_gh_graphql() {
 
 # stdout 写 "<issue/PR 编号>\t<档位下标>"，一行一条；失败返回非 0（调用方回落到 label）。
 # 只输出**本仓库**的条目：一个 Project 常常挂着好几个仓库的卡片，编号会撞车。
-project_priority_pairs() {
-    local owner="${PROJECT_OWNER:-${REPO%%/*}}" name="${REPO##*/}"
-    local field="${PROJECT_PRIORITY_FIELD:-Priority}"
-    local resp pid after page
-
-    resp=$(project_gh_graphql -f owner="$owner" -f name="$name" -f query='
-        query($owner:String!,$name:String!){
-          repository(owner:$owner,name:$name){
-            projectsV2(first:20){ nodes{ id number title } }
-          }
-        }' 2>&1) || { printf '%s' "$resp" >&2; return 1; }
-
-    if [ -n "${PROJECT_NUMBER:-}" ]; then
-        pid=$(printf '%s' "$resp" | jq -r --argjson n "$PROJECT_NUMBER" \
-            '.data.repository.projectsV2.nodes[]? | select(.!=null) | select(.number==$n) | .id' 2>/dev/null | head -1)
-    else
-        pid=$(printf '%s' "$resp" | jq -r \
-            '[.data.repository.projectsV2.nodes[]? | select(.!=null)][0].id // empty' 2>/dev/null)
-    fi
-    if [ -z "$pid" ]; then
-        echo "找不到可读的 Project（owner=$owner repo=$name number=${PROJECT_NUMBER:-auto}）" >&2
+# 定位「用哪个 Project」。两条路，行为差别很大，别混：
+#
+#   ① PROJECT_NUMBER 有值 → 按 <owner, number> 直接取，**不要求 Project 跟仓库有关联**。
+#      owner 取 PROJECT_OWNER，没配才回落到仓库 owner —— 个人看板挂着组织仓库的卡片
+#      是常见配置（看板在 github.com/users/<你>/projects/N，仓库在组织下），这时两个
+#      owner 根本不是一个人，必须分开配。先试 organization 再试 user：两种 owner 的
+#      GraphQL 入口不同名，猜错那次会报 NOT_FOUND，忽略掉换另一个即可。
+#   ② PROJECT_NUMBER 留空 → 自动取**本仓库关联的** Project 里编号最小的那个。
+#      显式写 orderBy=NUMBER ASC，不靠 API 的默认顺序 —— 默认顺序没有承诺，
+#      仓库挂了两个看板时会变成「今天排这个明天排那个」，而且完全没有迹象。
+#
+# 成功时 stdout 写 "<project id>\t<number> <title>"。
+project_resolve() {
+    local n="${PROJECT_NUMBER:-}" owner kind resp id num title last=""
+    if [ -n "$n" ]; then
+        owner="${PROJECT_OWNER:-${REPO%%/*}}"
+        for kind in organization user; do
+            resp=$(project_gh_graphql -f owner="$owner" -F n="$n" -f query="
+                query(\$owner:String!,\$n:Int!){ $kind(login:\$owner){ projectV2(number:\$n){ id number title } } }" 2>&1) || last="$resp"
+            id=$(printf '%s' "$resp" | jq -r ".data.$kind.projectV2.id // empty" 2>/dev/null)
+            if [ -n "$id" ]; then
+                num=$(printf '%s' "$resp" | jq -r ".data.$kind.projectV2.number // empty" 2>/dev/null)
+                title=$(printf '%s' "$resp" | jq -r ".data.$kind.projectV2.title // empty" 2>/dev/null)
+                printf '%s\t%s %s' "$id" "$num" "$title"
+                return 0
+            fi
+        done
+        printf '按编号找不到 Project（owner=%s number=%s，organization / user 两种入口都试过）%s\n' \
+            "$owner" "$n" "${last:+：$(printf '%s' "$last" | head -1 | cut -c1-160)}" >&2
         return 1
     fi
+
+    resp=$(project_gh_graphql -f owner="${REPO%%/*}" -f name="${REPO##*/}" -f query='
+        query($owner:String!,$name:String!){
+          repository(owner:$owner,name:$name){
+            projectsV2(first:20, orderBy:{field:NUMBER,direction:ASC}){ nodes{ id number title } }
+          }
+        }' 2>&1) || { printf '%s' "$resp" >&2; return 1; }
+    id=$(printf '%s' "$resp" | jq -r '[.data.repository.projectsV2.nodes[]? | select(.!=null)][0] | .id // empty' 2>/dev/null)
+    if [ -z "$id" ]; then
+        echo "本仓库（$REPO）没有关联任何可读的 Project；要用别处的看板请配 PROJECT_NUMBER（+ PROJECT_OWNER）" >&2
+        return 1
+    fi
+    num=$(printf '%s' "$resp" | jq -r '[.data.repository.projectsV2.nodes[]? | select(.!=null)][0].number // empty' 2>/dev/null)
+    title=$(printf '%s' "$resp" | jq -r '[.data.repository.projectsV2.nodes[]? | select(.!=null)][0].title // empty' 2>/dev/null)
+    printf '%s\t%s %s' "$id" "$num" "$title"
+}
+
+# stdout 写 "<issue/PR 编号>\t<档位下标>"，一行一条；失败返回非 0（调用方回落到 label）。
+# 另外吐两行元信息给调用方记日志：#project（用了哪个看板）和 #options（选项数）。
+# 只输出**本仓库**的条目：一个 Project 常常挂着好几个仓库的卡片，编号会撞车。
+project_priority_pairs() {
+    local field="${PROJECT_PRIORITY_FIELD:-Priority}"
+    local resolved pid after page
+
+    resolved=$(project_resolve) || return 1
+    pid="${resolved%%$'\t'*}"
+    printf '#project\t%s\n' "${resolved#*$'\t'}"
 
     # 分页拉 items。档位 = 该选项在 Project 字段里定义的下标。
     after=""

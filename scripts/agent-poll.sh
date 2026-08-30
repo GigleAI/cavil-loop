@@ -203,15 +203,16 @@ declare -A queued_keys=()
 if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
     _pp_out=$(mktemp); _pp_err=$(mktemp)
     if project_priority_pairs > "$_pp_out" 2> "$_pp_err"; then
+        _proj_desc=""
         while IFS=$'\t' read -r _pn _pr; do
             [ -n "${_pn:-}" ] || continue
-            if [ "$_pn" = "#options" ]; then
-                [ "$_pr" -gt 1 ] 2>/dev/null && _proj_rank_default=$(( _pr - 1 )) || _proj_rank_default="$_pr"
-            else
-                PROJECT_PRIO[$_pn]=$_pr
-            fi
+            case "$_pn" in
+                '#project') _proj_desc="$_pr" ;;   # 用了哪个看板，记进日志好排查
+                '#options') [ "$_pr" -gt 1 ] 2>/dev/null && _proj_rank_default=$(( _pr - 1 )) || _proj_rank_default="$_pr" ;;
+                *) PROJECT_PRIO[$_pn]=$_pr ;;
+            esac
         done < "$_pp_out"
-        log "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=$PRIORITY_SOURCE）"
+        log "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（看板 ${_proj_desc:-?}，字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=$PRIORITY_SOURCE）"
     else
         # 只取第一行错误：GraphQL 的 scope 报错会把同一句话重复三遍
         log "⚠️ Project 优先级读取失败，本轮回落到 label 排序：$(head -1 "$_pp_err" | cut -c1-160)"

@@ -97,6 +97,35 @@ rm -f "$TMP/resp.1"
 project_priority_pairs >/dev/null 2>&1
 chk "GraphQL 报错 → 非 0"     "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
 
+echo "── 定位看板：自动挑 = 关联 Project 里编号最小的，且要报出挑了谁 ──"
+echo 0 > "$CALL_N"
+# API 即使乱序返回，也不能靠它的默认顺序 —— 查询里写死 orderBy=NUMBER ASC，
+# 这里的 fixture 故意把 9 号放前面，断言取的是服务端给的第一个（= 编号最小的那个）
+echo '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_7","number":7,"title":"board7"},{"id":"PVT_9","number":9,"title":"board9"}]}}}}' > "$TMP/resp.1"
+page false "" "$(item 301 acme/widget P1)" > "$TMP/resp.2"
+out=$(project_priority_pairs 2>/dev/null)
+chk "报出用了哪个看板" "$(grep -c '^#project	7 board7$' <<<"$out")" "1"
+chk "照常吐条目"       "$(grep -c '^301	1$' <<<"$out")"            "1"
+
+echo "── 定位看板：给了编号就按 <owner,number> 直取，org 找不到要换 user 再试 ──"
+echo 0 > "$CALL_N"
+PROJECT_NUMBER=4
+PROJECT_OWNER=someone            # 个人看板 + 组织仓库：两个 owner 本来就不是一个人
+# 第 1 次按 organization 查 → NOT_FOUND（个人 owner 走这个入口必然失败，要能忽略）
+echo '{"data":{"organization":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to an Organization"}]}' > "$TMP/resp.1"
+# 第 2 次按 user 查 → 命中
+echo '{"data":{"user":{"projectV2":{"id":"PVT_U4","number":4,"title":"my board"}}}}' > "$TMP/resp.2"
+page false "" "$(item 401 acme/widget P0)" > "$TMP/resp.3"
+out=$(project_priority_pairs 2>/dev/null)
+chk "org 入口失败后回落到 user" "$(grep -c '^#project	4 my board$' <<<"$out")" "1"
+chk "直取路径照常吐条目"        "$(grep -c '^401	0$' <<<"$out")"                "1"
+echo 0 > "$CALL_N"
+echo '{"data":{"organization":null},"errors":[{"type":"NOT_FOUND"}]}' > "$TMP/resp.1"
+echo '{"data":{"user":null},"errors":[{"type":"NOT_FOUND"}]}' > "$TMP/resp.2"
+project_priority_pairs >/dev/null 2>&1
+chk "两个入口都没有 → 非 0"     "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
+PROJECT_NUMBER=""; PROJECT_OWNER=""
+
 echo "── 取舍：priority_rank 在三种 source 下 ──"
 PROJECT_PRIO=([101]=0 [102]=2)
 _proj_rank_default=2          # 3 个选项 → 没设值的落最后一档
