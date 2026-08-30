@@ -90,7 +90,7 @@ order (configured by `PRIORITY_LABELS`, default
 
 | Key | Rule | Why |
 |---|---|---|
-| 1. priority label | Earlier in the list wins; **unlabelled items rank as the last entry** | You never label routine work — only tag the urgent one with `priority/p0` to jump the queue |
+| 1. priority label | Earlier in the list wins; **items marked nowhere sort last**, behind every marked one | You never label routine work — only tag the urgent one with `priority/p0` to jump the queue |
 | 2. stage | review bounce-back < resumed work < brand-new issue | In-flight work already burned tokens and still has warm context, so finishing it frees a slot sooner; a brand-new issue has no sunk cost |
 | 3. waiting time | oldest `updatedAt` first | Breaks ties within the same priority and stage |
 
@@ -114,9 +114,9 @@ the sort.
 
 | Value | Key ① comes from | Items with no value |
 |---|---|---|
-| `label` (default) | the labels in `PRIORITY_LABELS` | rank as the last tier |
-| `project` | a single-select field on the linked Project v2 (default name `Priority`) | last tier, **labels ignored** |
-| `both` | the project value where set, label as fallback | neither set → last tier |
+| `label` (default) | the labels in `PRIORITY_LABELS` | sort last, behind every marked item |
+| `project` | the native issue field, else a Project v2 single-select (default name `Priority`) | sort last, **labels ignored** |
+| `both` | the priority field value where set, label as fallback | neither set → sorts last |
 
 **Tier order is not restated in config** — it follows the order the options are
 defined in on the project, so reordering there is the only edit. `PROJECT_NUMBER`
