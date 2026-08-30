@@ -30,6 +30,8 @@ flip_label() {
 flip_label ${ISSUE} --add <NEW> --remove <OLD>   # 示例
 ```
 
+Bash tool 跨调用不共享 function 定义——每次翻 label 时把定义 + 调用一起放在 Bash heredoc 里跑。
+
 ---
 
 ## 输出语言 / Output language
