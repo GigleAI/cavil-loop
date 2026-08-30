@@ -120,6 +120,59 @@ LABEL_DONE="${LABEL_DONE:-Done}"
 # priority/p0 插队）。留空 = 关掉这一层，只按「阶段 → 等待时长」排。
 # 排序细节见 agent-poll.sh 的 § 1&2。
 PRIORITY_LABELS="${PRIORITY_LABELS:-priority/p0,priority/p1,priority/p2}"
+
+# ── 派工模式 ──
+# label（默认）：只有挂着触发 label（pending/agent[/fable]、pending/review）的条目才派工。
+#   什么都不标 = 什么都不做，是最安全的默认值。
+# greedy：不看触发 label，**开着的 issue / PR 只要没被下面「挡工 label」挡住就一律入队**，
+#   照样按「优先级 → 阶段 → 等待时长」排。适合「仓库里的活就是要全干完」的自动化仓；
+#   代价是任何人新开一个 issue（公开仓里包括匿名外部用户）都会立刻触发一个 worker 烧 token。
+#   两种模式不是二选一：greedy 下 label 那几趟照样先跑，所以 fable / review 这些
+#   **带模型和 agent 选择的 label 仍然生效**，greedy 只是最后兜底把剩下的收进来。
+DISPATCH_MODE="${DISPATCH_MODE:-label}"
+case "$DISPATCH_MODE" in
+    label|greedy) ;;
+    # 不静默回落到 label：拼错一个字母就等于悄悄关掉 greedy，人会以为配了却没生效。
+    *) echo "❌ DISPATCH_MODE 只能是 label 或 greedy，实得：$DISPATCH_MODE" >&2; exit 1 ;;
+esac
+
+# greedy 模式的挡工 label。挂了其中任何一个就不派工——每一条都有非它不可的理由：
+#   pending/human  用户明确要人接手（这是用户唯一需要记住的那个「停」）
+#   doing/agent    已经有 worker 在跑，再派一次就是同一条活开两个 session
+#   Done           已结案
+#   pending/PR     issue 的活已经转到 PR 上跟踪，再从 issue 派一次会重复开工
+#   pending/review 有自己的 agent / 模型 / 模板，由上面 review 那趟收，不该被兜底趟抢走
+# GREEDY_SKIP_LABELS 是项目自定义的**追加**项（逗号分隔），比如 "blocked,discussion"。
+greedy_skip_label_list() {
+    printf '%s\n' \
+        "$LABEL_PENDING_HUMAN" \
+        "$LABEL_AGENT_DOING" \
+        "$LABEL_DONE" \
+        "$LABEL_PENDING_PR" \
+        "${LABEL_PENDING_REVIEW:-}"
+    if [ -n "${GREEDY_SKIP_LABELS:-}" ]; then
+        printf '%s\n' "${GREEDY_SKIP_LABELS}" | tr ',' '\n'
+    fi
+    return 0
+}
+
+# 纯函数：labels_csv（逗号分隔的 label 名）挡不挡工。
+# 挡 → stdout 写挡住它的那个 label 名 + return 0；不挡 → return 1。
+# 用 case 逐个精确匹配而不是 grep：label 名里可能有空格（"good first issue"）和
+# 正则元字符（"C++"），一 grep 就误伤。
+greedy_skip_reason() {
+    local labels_csv=",${1}," l
+    while IFS= read -r l; do
+        [ -n "$l" ] || continue
+        case "$labels_csv" in
+            *",$l,"*) printf '%s' "$l"; return 0 ;;
+        esac
+    done < <(greedy_skip_label_list)
+    return 1
+}
+
+# greedy 每轮扫多少条（gh 默认只给 30）。仓库积压多时调大。
+GREEDY_SCAN_LIMIT="${GREEDY_SCAN_LIMIT:-100}"
 # PR 创建后调用的 hook（agent 在 tmux 里执行）。
 # 相对路径解释为相对 PROJECT_ROOT。留空跳过。
 # Hook env: PR, ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT

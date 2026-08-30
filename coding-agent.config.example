@@ -359,6 +359,44 @@ PR_CREATED_HOOK=""
 # 同一时刻最多多少个 worker session 同时存活。建议 1（串行最稳）。
 MAX_CONCURRENT_WORKERS=1
 
+# ── Dispatch mode / 派工模式 ──
+
+# What makes the daemon pick an item up.
+#   label  (default) — only items carrying a trigger label (pending/agent[/fable],
+#                      pending/review) are dispatched. Label nothing, and nothing
+#                      happens: the safest default.
+#   greedy           — every OPEN issue / PR is dispatched unless a blocking label
+#                      stops it. Built-in blockers: pending/human, doing/agent,
+#                      Done, pending/PR, pending/review (that one has its own pass).
+#                      Extend with GREEDY_SKIP_LABELS below.
+# The two are not either/or: in greedy mode the label passes still run FIRST, so
+# fable / review labels keep choosing their own model and agent — greedy only
+# sweeps up whatever is left, with the default agent and model.
+# ⚠️ In greedy mode anyone opening an issue (anonymous outside users on a public
+# repo included) immediately spends a worker's tokens. Use it on repos where
+# "everything filed here is work to do" is actually true.
+#
+# 什么条件下 daemon 会把一个条目捞起来干。
+#   label（默认）—— 只有挂着触发 label（pending/agent[/fable]、pending/review）的才派工。
+#                   什么都不标 = 什么都不做，最安全的默认值。
+#   greedy      —— **所有开着的** issue / PR，只要没被挡工 label 挡住就一律派工。
+#                   内置挡工 label：pending/human、doing/agent、Done、pending/PR、
+#                   pending/review（它有自己那一趟）。要加自己的见下面 GREEDY_SKIP_LABELS。
+# 两种不是二选一：greedy 模式下 label 那几趟**照样先跑**，所以 fable / review 这些带
+# 模型和 agent 选择的 label 仍然生效；greedy 只是最后兜底把剩下的用默认 agent/模型收进来。
+# ⚠️ greedy 下任何人新开一个 issue（公开仓里包括匿名外部用户）都会立刻烧一个 worker 的
+# token。只在「这个仓库里躺着的就是要干的活」确实成立时用。
+DISPATCH_MODE="label"
+
+# Extra blocking labels for greedy mode (comma-separated, ADDED to the built-ins).
+# greedy 模式的额外挡工 label（逗号分隔，**追加**在内置那几个之后）。
+# 例：GREEDY_SKIP_LABELS="blocked,discussion,wontfix"
+GREEDY_SKIP_LABELS=""
+
+# How many open items greedy scans per poll (gh defaults to 30).
+# greedy 每轮扫多少条开着的条目（gh 默认只给 30）。积压多时调大。
+GREEDY_SCAN_LIMIT=100
+
 # ── Queue order when full / 并发满时的取工顺序 ──
 
 # When more items carry a pending label than there are free slots, the daemon

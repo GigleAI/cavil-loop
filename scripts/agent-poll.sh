@@ -192,6 +192,7 @@ reap_finished_workers active_keys
 US=$'\x1f'
 QUEUE_ROWS=""
 REVIEW_CAPPED=""
+GREEDY_SKIPPED=""
 declare -A queued_keys=()
 
 IFS=',' read -r -a _prio_labels <<< "${PRIORITY_LABELS:-}"
@@ -365,6 +366,41 @@ dispatch_one_pr() {
     fi
 }
 
+# ── greedy 模式的兜底趟 ──
+# 不按触发 label 查，直接把**所有开着的** issue / PR 拉下来，逐条问 greedy_skip_reason
+# 该不该派。放在 label 那几趟**之后**跑：queued_keys 已经把带 label 的条目占住了，
+# 所以 fable / review 的模型和 agent 选择不会被这一趟用默认值盖掉。
+# 入队时 trigger_label / model / worker_agent / prompt_kind 全留空 —— 下游
+# `${DISPATCH_PENDING_AGENT_LABEL:-...}` 会各自回落到默认值（空 = 用普通 pending/agent
+# 那套 label 和模板），self-heal 也会因此把死掉的 worker 送回 pending/agent 队列。
+collect_queue_rows_greedy() {
+    local kind="$1"
+    local raw num branch updated labels_csv title prio stage key blocked
+    if [ "$kind" = "issue" ]; then
+        raw=$(gh issue list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
+            --json number,title,labels,updatedAt \
+            --jq '.[] | [(.number|tostring), "-", .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
+    else
+        raw=$(gh pr list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
+            --json number,title,labels,updatedAt,headRefName \
+            --jq '.[] | [(.number|tostring), .headRefName, .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
+    fi
+    [ -n "$raw" ] || return 0
+    while IFS=$'\t' read -r num branch updated labels_csv title; do
+        [ -n "$num" ] || continue
+        key="$kind:$num"
+        [ -z "${queued_keys[$key]:-}" ] || continue
+        if blocked=$(greedy_skip_reason "$labels_csv"); then
+            GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
+            continue
+        fi
+        queued_keys[$key]=1
+        prio=$(priority_rank "$labels_csv")
+        stage=$(stage_rank "$kind" "" "$num")
+        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${US}${US}${title}"$'\n'
+    done <<< "$raw"
+}
+
 # 收集顺序 = 同条目挂多个触发 label 时的取舍顺序（fable > 默认 > review），
 # 与排序无关：排序只认上面那三个键。
 collect_queue_rows issue "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
@@ -375,6 +411,15 @@ collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
 if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
     collect_queue_rows issue "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
     collect_queue_rows pr "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
+fi
+
+# greedy：label 那几趟跑完之后兜底收剩下的（模式校验在 _lib.sh，这里只认最终值）
+if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
+    collect_queue_rows_greedy issue
+    collect_queue_rows_greedy pr
+    if [ -n "${GREEDY_SKIPPED:-}" ]; then
+        log "greedy 跳过（括号里是挡住它的 label）:$GREEDY_SKIPPED"
+    fi
 fi
 
 if [ -n "$REVIEW_CAPPED" ]; then
@@ -391,7 +436,7 @@ if [ -n "$QUEUE_SORTED" ]; then
     queue_summary=$(printf '%s\n' "$QUEUE_SORTED" | awk -v FS="$US" '
         { stage = ($2 == 0 ? "review打回" : ($2 == 1 ? "续作" : "全新"));
           printf "%s%s#%s(p%s,%s)", (NR > 1 ? " " : ""), ($4 == "pr" ? "PR" : "issue"), $5, $1, stage }')
-    log "派工队列 $(printf '%s\n' "$QUEUE_SORTED" | wc -l) 项，按「优先级/阶段/等待」排：$queue_summary"
+    log "派工队列 $(printf '%s\n' "$QUEUE_SORTED" | wc -l) 项（mode=${DISPATCH_MODE:-label}），按「优先级/阶段/等待」排：$queue_summary"
 
     while IFS="$US" read -r q_prio q_stage q_updated q_kind q_num q_branch q_label q_model q_agent q_kind_prompt q_title; do
         [ -n "${q_num:-}" ] || continue

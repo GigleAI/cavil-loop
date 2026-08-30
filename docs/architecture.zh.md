@@ -53,6 +53,29 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
 
 > 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。
 
+## 派工模式：label / greedy
+
+daemon 有两种「什么算待办」的口径，用 `DISPATCH_MODE` 切换：
+
+| | `label`（默认） | `greedy` |
+|---|---|---|
+| 入队条件 | 挂着触发 label（`pending/agent[/fable]` / `pending/review`） | 所有 **open** 的 issue / PR，除非被挡工 label 挡住 |
+| 挡工 label | —— | `pending/human`、`doing/agent`、`Done`、`pending/PR`、`pending/review`，外加 `GREEDY_SKIP_LABELS` |
+| 什么都不标时 | 什么都不发生 | 立刻开工 |
+| 适合 | 人挑活派给 agent | 「这个仓库里躺着的就是要干的活」 |
+
+两种模式**不是二选一**：greedy 下 label 那几趟照样先跑（收集顺序 fable → 默认 → review →
+greedy 兜底），先入队的先占位，所以 `pending/agent/fable` 和 `pending/review` 这些带**模型 /
+agent / 模板选择**的 label 仍然生效；greedy 只是把剩下的用默认 agent + 默认模型收进来。
+排序键（优先级 label → 阶段 → 等待时长）两种模式完全一样。
+
+greedy 下的闭环靠 worker 自己收口：派工时翻 `doing/agent`（被挡），完工翻 `pending/human`
+（被挡）——所以同一条活不会被反复重开。worker 崩了没来得及翻 label 时，§ self-heal 会把它
+送回 `pending/agent` 队列。
+
+> ⚠️ greedy 模式下**任何人新开一个 issue 都会立刻烧一个 worker 的 token**——公开仓里包括
+> 匿名外部用户。开之前先想清楚这个仓库的 issue 是不是真的「开了就是要干」。
+
 ## 重入与并发安全
 
 - **flock**：`agent-poll.sh` 用 `$STATE_DIR/poll.lock` 防多个 systemd tick 撞车

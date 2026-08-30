@@ -53,6 +53,32 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
 
 > For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).
 
+## Dispatch modes: label / greedy
+
+`DISPATCH_MODE` switches what the daemon considers actionable:
+
+| | `label` (default) | `greedy` |
+|---|---|---|
+| Enters the queue | items carrying a trigger label (`pending/agent[/fable]`, `pending/review`) | every **open** issue / PR, unless a blocking label stops it |
+| Blocking labels | — | `pending/human`, `doing/agent`, `Done`, `pending/PR`, `pending/review`, plus `GREEDY_SKIP_LABELS` |
+| With nothing labelled | nothing happens | work starts immediately |
+| Fits | a human picks what the agent works on | "anything filed here is work to do" |
+
+The two are **not either/or**: in greedy mode the label passes still run first
+(collection order: fable → default → review → greedy sweep), and whoever enqueues an
+item first keeps it. So `pending/agent/fable` and `pending/review` still select their
+own model / agent / template; greedy only sweeps up the rest with the default agent
+and model. Sort keys (priority label → stage → waiting time) are identical in both.
+
+In greedy mode the loop closes itself through the worker: dispatch flips
+`doing/agent` (blocked), finishing flips `pending/human` (blocked) — so the same item
+is never re-opened in a loop. If a worker dies before flipping, self-heal returns it
+to the `pending/agent` queue.
+
+> ⚠️ Under greedy, **anyone opening an issue immediately spends a worker's tokens** —
+> anonymous outside users included on a public repo. Only enable it where "filed here
+> means do it" is actually true.
+
 ## Re-entry and concurrency safety
 
 - **flock**: `agent-poll.sh` uses `$STATE_DIR/poll.lock` to prevent simultaneous systemd ticks from colliding
