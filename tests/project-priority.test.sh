@@ -126,6 +126,18 @@ project_priority_pairs >/dev/null 2>&1
 chk "两个入口都没有 → 非 0"     "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
 PROJECT_NUMBER=""; PROJECT_OWNER=""
 
+echo "── 字段没有选项时必须算失败（否则全体并列第一档，静默排错序）──"
+echo 0 > "$CALL_N"
+echo '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_1","number":7,"title":"board"}]}}}}' > "$TMP/resp.1"
+# 字段在、但一个选项都没配 —— GitHub 自带模板的 Priority 出厂就是这样
+printf '{"data":{"node":{"field":{"options":[]},"items":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}' > "$TMP/resp.2"
+project_priority_pairs >/dev/null 2>&1
+chk "空选项 → 非 0（调用方好回落）" "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
+echo 0 > "$CALL_N"
+printf '{"data":{"node":{"field":null,"items":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}' > "$TMP/resp.2"
+project_priority_pairs >/dev/null 2>&1
+chk "字段名写错（field=null）→ 非 0" "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
+
 echo "── 取舍：priority_rank 在三种 source 下 ──"
 PROJECT_PRIO=([101]=0 [102]=2)
 _proj_rank_default=2          # 3 个选项 → 没设值的落最后一档

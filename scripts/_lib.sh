@@ -323,6 +323,17 @@ project_priority_pairs() {
                 || { printf '%s' "$page" >&2; return 1; }
         fi
 
+        # 字段没有选项 = 这一趟拿不到任何可用档位。必须当**失败**处理让调用方回落到
+        # label，不能当"读到了、只是大家都没设值"——后者在 PRIORITY_SOURCE=project 下会
+        # 把所有条目算成同一档（下面 _proj_rank_default 会变成 0，即全体最高优先级），
+        # 排序静默失效且毫无迹象。现实里两种情况都会撞上：字段名写错，或者字段建了
+        # 但选项还没配（GitHub 自带模板的 Priority 就是空的，要自己加 P0/P1/P2）。
+        _opt_n=$(printf '%s' "$page" | jq -r '[.data.node.field.options[]?.name] | length' 2>/dev/null || echo 0)
+        if [ "${_opt_n:-0}" -eq 0 ]; then
+            echo "Project 字段「$field」没有可用选项（字段不存在 / 不是单选 / 选项还没配）——去看板上给它加档位（选项顺序 = 优先级顺序）" >&2
+            return 1
+        fi
+
         # 先吐一行 "#options<TAB>N"：调用方拿它当「没设优先级」的档位（= 最后一档），
         # 跟 label 那套「没打标签的等同最后一档」保持同一个语义。
         printf '%s' "$page" | jq -r --arg repo "$REPO" '
