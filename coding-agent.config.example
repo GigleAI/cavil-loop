@@ -416,6 +416,48 @@ GREEDY_SCAN_LIMIT=100
 # 留空 = 关掉 ① 这一层，只按 ②③ 排。setup.sh 会把这三个标签建到仓库里。
 PRIORITY_LABELS="priority/p0,priority/p1,priority/p2"
 
+# ── Priority source / 优先级来源 ──
+
+# Where sort key #1 comes from.
+#   label   (default) — the PRIORITY_LABELS above
+#   project           — a single-select field on the linked GitHub Project (v2);
+#                       tiers follow the ORDER THE OPTIONS ARE DEFINED IN on the
+#                       project, so reordering there is the only place you edit.
+#                       Items with no value fall to the last tier.
+#   both              — project value wins where set, label as the fallback.
+#                       Keep the two scales aligned (P0 ↔ priority/p0).
+# Reading a project needs GraphQL: a classic PAT must have `read:project`, and a
+# USER-owned project also requires that account to be a project collaborator.
+# If the read fails for any reason the daemon logs one warning and falls back to
+# label ordering for that poll — dispatch never stops over a board it can't read.
+#
+# 第一排序键从哪儿来。
+#   label（默认）—— 用上面的 PRIORITY_LABELS
+#   project     —— 用关联的 GitHub Project (v2) 上那个单选字段；**档位顺序直接取该
+#                  字段在 Project 里定义的选项顺序**，要改顺序只在 Project 里拖一次，
+#                  这儿不用抄。没设值的条目落最后一档。
+#   both        —— Project 上设了就用 Project 的，没设的回落到 label。
+#                  ⚠️ 两套档位各自独立编号，混用时请让它们对齐（P0 ↔ priority/p0）。
+# 读 Project 只能走 GraphQL：classic PAT 必须勾 read:project；**个人名下**的 Project
+# （不是组织的）还要求这个账号是该 Project 的协作者。
+# 任何一环读不到，daemon 只记一条警告并在本轮回落到 label 排序——不会因为看板读不到
+# 就停下派工。
+PRIORITY_SOURCE="label"
+
+# Which project. Empty = the first project linked to this repo.
+# 用哪个 Project。留空 = 自动取本仓库关联的第一个。
+PROJECT_NUMBER=""
+
+# Name of the single-select field (GitHub's built-in template calls it Priority).
+# 那个单选字段叫什么（GitHub 自带模板就叫 Priority）。
+PROJECT_PRIORITY_FIELD="Priority"
+
+# Token used ONLY for the project read. Empty = reuse the daemon's GH_TOKEN.
+# Handy when the bot account can't see the board but you have another token that can.
+# 只用于读 Project 的 token。留空 = 复用 daemon 自己的 GH_TOKEN。
+# bot 账号看不到看板、但你手上另有一个能看的 token 时，塞这里最省事。
+PROJECT_GH_TOKEN=""
+
 # ── Poll interval / 轮询间隔 ──
 
 # Daemon poll cycle (seconds). Used by the systemd timer.

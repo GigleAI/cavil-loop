@@ -195,25 +195,30 @@ REVIEW_CAPPED=""
 GREEDY_SKIPPED=""
 declare -A queued_keys=()
 
-IFS=',' read -r -a _prio_labels <<< "${PRIORITY_LABELS:-}"
-# 没打优先级标签的排在最后一档；列表只配了 1 个标签时，没打的排在它之后
-if [ "${#_prio_labels[@]}" -gt 1 ]; then
-    _prio_rank_default=$(( ${#_prio_labels[@]} - 1 ))
-else
-    _prio_rank_default=${#_prio_labels[@]}
+# ── Project 优先级：每轮拉一次，失败就回落到 label ──
+# 为什么要能回落而不是报错退出：Projects v2 只有 GraphQL，token 缺 read:project、
+# Project 换了名字、字段被删——任何一样都会让这一趟拿不到数据。派工是主线，
+# 优先级只是取工顺序，不该因为读不到看板就整轮停摆。所以这里只警告 + 降级。
+# PROJECT_PRIO / _proj_rank_default 在 _lib.sh 里声明（priority_rank 跟它们同住）。
+if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
+    _pp_out=$(mktemp); _pp_err=$(mktemp)
+    if project_priority_pairs > "$_pp_out" 2> "$_pp_err"; then
+        while IFS=$'\t' read -r _pn _pr; do
+            [ -n "${_pn:-}" ] || continue
+            if [ "$_pn" = "#options" ]; then
+                [ "$_pr" -gt 1 ] 2>/dev/null && _proj_rank_default=$(( _pr - 1 )) || _proj_rank_default="$_pr"
+            else
+                PROJECT_PRIO[$_pn]=$_pr
+            fi
+        done < "$_pp_out"
+        log "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=$PRIORITY_SOURCE）"
+    else
+        # 只取第一行错误：GraphQL 的 scope 报错会把同一句话重复三遍
+        log "⚠️ Project 优先级读取失败，本轮回落到 label 排序：$(head -1 "$_pp_err" | cut -c1-160)"
+    fi
+    rm -f "$_pp_out" "$_pp_err"
 fi
-
-priority_rank() {
-    local labels_csv=",$1," i l
-    for (( i = 0; i < ${#_prio_labels[@]}; i++ )); do
-        l="${_prio_labels[$i]}"
-        [ -n "$l" ] || continue
-        case "$labels_csv" in
-            *",$l,"*) echo "$i"; return ;;
-        esac
-    done
-    echo "$_prio_rank_default"
-}
+[ -n "$_proj_rank_default" ] || _proj_rank_default="$_prio_rank_default"
 
 stage_rank() {
     local kind="$1" trigger_label="$2" num="$3" sess wt
@@ -260,7 +265,7 @@ collect_queue_rows() {
                     continue ;;
             esac
         fi
-        prio=$(priority_rank "$labels_csv")
+        prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
         QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${trigger_label}${US}${model}${US}${worker_agent}${US}${prompt_kind}${US}${title}"$'\n'
     done <<< "$raw"
@@ -395,7 +400,7 @@ collect_queue_rows_greedy() {
             continue
         fi
         queued_keys[$key]=1
-        prio=$(priority_rank "$labels_csv")
+        prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "" "$num")
         QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${US}${US}${title}"$'\n'
     done <<< "$raw"

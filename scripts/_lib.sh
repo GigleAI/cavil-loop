@@ -121,6 +121,39 @@ LABEL_DONE="${LABEL_DONE:-Done}"
 # 排序细节见 agent-poll.sh 的 § 1&2。
 PRIORITY_LABELS="${PRIORITY_LABELS:-priority/p0,priority/p1,priority/p2}"
 
+IFS=',' read -r -a _prio_labels <<< "${PRIORITY_LABELS:-}"
+# 没打优先级标签的排在最后一档；列表只配了 1 个标签时，没打的排在它之后
+if [ "${#_prio_labels[@]}" -gt 1 ]; then
+    _prio_rank_default=$(( ${#_prio_labels[@]} - 1 ))
+else
+    _prio_rank_default=${#_prio_labels[@]}
+fi
+# Project 那一路的档位表由 agent-poll 每轮装载（读不到就留空 = 全体回落到 label）。
+declare -A PROJECT_PRIO=()
+_proj_rank_default=""
+
+# 第一排序键。两个来源的档位都是「越小越优先」的下标。
+priority_rank() {
+    local labels_csv=",$1," num="${2:-}" i l
+    # Project 上真的设了值 → 直接用它（project / both 两种模式一致）
+    if [ "${PRIORITY_SOURCE:-label}" != "label" ] && [ -n "$num" ] && [ -n "${PROJECT_PRIO[$num]:-}" ]; then
+        echo "${PROJECT_PRIO[$num]}"; return
+    fi
+    # project 模式：Project 上没设 = 最后一档，**不看 label**（口径单一，免得两套标准打架）
+    if [ "${PRIORITY_SOURCE:-label}" = "project" ]; then
+        echo "$_proj_rank_default"; return
+    fi
+    for (( i = 0; i < ${#_prio_labels[@]}; i++ )); do
+        l="${_prio_labels[$i]}"
+        [ -n "$l" ] || continue
+        case "$labels_csv" in
+            *",$l,"*) echo "$i"; return ;;
+        esac
+    done
+    echo "$_prio_rank_default"
+}
+
+
 # ── 派工模式 ──
 # label（默认）：只有挂着触发 label（pending/agent[/fable]、pending/review）的条目才派工。
 #   什么都不标 = 什么都不做，是最安全的默认值。
@@ -173,6 +206,106 @@ greedy_skip_reason() {
 
 # greedy 每轮扫多少条（gh 默认只给 30）。仓库积压多时调大。
 GREEDY_SCAN_LIMIT="${GREEDY_SCAN_LIMIT:-100}"
+
+# ── 优先级来源：label / GitHub Project 字段 ──
+# label （默认）：只看 PRIORITY_LABELS 里的标签。
+# project      ：只看 GitHub Project (v2) 上那个单选字段（默认叫 Priority）的取值，
+#                档位顺序**直接用该字段在 Project 里定义的选项顺序**——不用在这儿
+#                再抄一遍，Project 里拖一下顺序就改了。没设值的条目落最后一档。
+# both         ：Project 上设了就用 Project 的，没设的回落到 label。
+#                ⚠️ 两套档位是各自独立的下标，混用时请让它们对齐（P0 ↔ priority/p0），
+#                否则「Project 的第 2 档」和「label 的第 2 档」会被当成同一档。
+PRIORITY_SOURCE="${PRIORITY_SOURCE:-label}"
+case "$PRIORITY_SOURCE" in
+    label|project|both) ;;
+    *) echo "❌ PRIORITY_SOURCE 只能是 label / project / both，实得：$PRIORITY_SOURCE" >&2; exit 1 ;;
+esac
+
+# Project 上那个单选字段叫什么（GitHub 自带模板就叫 Priority）
+PROJECT_PRIORITY_FIELD="${PROJECT_PRIORITY_FIELD:-Priority}"
+# 用哪个 Project。留空 = 自动取本仓库关联的第一个 Project。
+PROJECT_NUMBER="${PROJECT_NUMBER:-}"
+# 读 Project 用的 token。留空 = 用 daemon 自己的 GH_TOKEN。
+# 为什么要单独留这个口子：Projects v2 只有 GraphQL，classic PAT 必须勾 read:project；
+# 而且**个人名下**的 Project（不是组织的）还要求该账号被加进 Project 的协作者。
+# bot 账号两样都不满足时，与其去改 bot 的权限，不如在这里塞一个只读 Project 的 token。
+PROJECT_GH_TOKEN="${PROJECT_GH_TOKEN:-}"
+
+project_gh_graphql() {
+    if [ -n "${PROJECT_GH_TOKEN:-}" ]; then
+        GH_TOKEN="$PROJECT_GH_TOKEN" gh api graphql "$@"
+    else
+        gh api graphql "$@"
+    fi
+}
+
+# stdout 写 "<issue/PR 编号>\t<档位下标>"，一行一条；失败返回非 0（调用方回落到 label）。
+# 只输出**本仓库**的条目：一个 Project 常常挂着好几个仓库的卡片，编号会撞车。
+project_priority_pairs() {
+    local owner="${PROJECT_OWNER:-${REPO%%/*}}" name="${REPO##*/}"
+    local field="${PROJECT_PRIORITY_FIELD:-Priority}"
+    local resp pid after page
+
+    resp=$(project_gh_graphql -f owner="$owner" -f name="$name" -f query='
+        query($owner:String!,$name:String!){
+          repository(owner:$owner,name:$name){
+            projectsV2(first:20){ nodes{ id number title } }
+          }
+        }' 2>&1) || { printf '%s' "$resp" >&2; return 1; }
+
+    if [ -n "${PROJECT_NUMBER:-}" ]; then
+        pid=$(printf '%s' "$resp" | jq -r --argjson n "$PROJECT_NUMBER" \
+            '.data.repository.projectsV2.nodes[]? | select(.!=null) | select(.number==$n) | .id' 2>/dev/null | head -1)
+    else
+        pid=$(printf '%s' "$resp" | jq -r \
+            '[.data.repository.projectsV2.nodes[]? | select(.!=null)][0].id // empty' 2>/dev/null)
+    fi
+    if [ -z "$pid" ]; then
+        echo "找不到可读的 Project（owner=$owner repo=$name number=${PROJECT_NUMBER:-auto}）" >&2
+        return 1
+    fi
+
+    # 分页拉 items。档位 = 该选项在 Project 字段里定义的下标。
+    after=""
+    while :; do
+        if [ -n "$after" ]; then
+            page=$(project_gh_graphql -f pid="$pid" -f field="$field" -f after="$after" -f query='
+                query($pid:ID!,$field:String!,$after:String){ node(id:$pid){ ... on ProjectV2 {
+                  field(name:$field){ ... on ProjectV2SingleSelectField { options { name } } }
+                  items(first:100, after:$after){ pageInfo{ hasNextPage endCursor }
+                    nodes{ content{ ... on Issue { number repository{ nameWithOwner } }
+                                    ... on PullRequest { number repository{ nameWithOwner } } }
+                           fieldValueByName(name:$field){ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }' 2>&1) \
+                || { printf '%s' "$page" >&2; return 1; }
+        else
+            page=$(project_gh_graphql -f pid="$pid" -f field="$field" -f query='
+                query($pid:ID!,$field:String!){ node(id:$pid){ ... on ProjectV2 {
+                  field(name:$field){ ... on ProjectV2SingleSelectField { options { name } } }
+                  items(first:100){ pageInfo{ hasNextPage endCursor }
+                    nodes{ content{ ... on Issue { number repository{ nameWithOwner } }
+                                    ... on PullRequest { number repository{ nameWithOwner } } }
+                           fieldValueByName(name:$field){ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }' 2>&1) \
+                || { printf '%s' "$page" >&2; return 1; }
+        fi
+
+        # 先吐一行 "#options<TAB>N"：调用方拿它当「没设优先级」的档位（= 最后一档），
+        # 跟 label 那套「没打标签的等同最后一档」保持同一个语义。
+        printf '%s' "$page" | jq -r --arg repo "$REPO" '
+            .data.node as $p
+            | ([$p.field.options[]?.name] | to_entries | map({key:.value, value:.key}) | from_entries) as $rank
+            | ("#options\t" + (($rank | length) | tostring)),
+              ( $p.items.nodes[]?
+            | select(.content.repository.nameWithOwner == $repo)
+            | select(.fieldValueByName.name != null)
+            | select($rank[.fieldValueByName.name] != null)
+            | "\(.content.number)\t\($rank[.fieldValueByName.name])" )' 2>/dev/null || true
+
+        [ "$(printf '%s' "$page" | jq -r '.data.node.items.pageInfo.hasNextPage // false' 2>/dev/null)" = "true" ] || break
+        after=$(printf '%s' "$page" | jq -r '.data.node.items.pageInfo.endCursor // empty' 2>/dev/null)
+        [ -n "$after" ] || break
+    done
+    return 0
+}
 # PR 创建后调用的 hook（agent 在 tmux 里执行）。
 # 相对路径解释为相对 PROJECT_ROOT。留空跳过。
 # Hook env: PR, ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT

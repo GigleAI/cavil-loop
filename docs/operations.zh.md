@@ -103,6 +103,35 @@ label 语义完全不变。每轮排完的结果会整行写进 `poll.log`，并
 一条目同时挂多个触发 label 时，仍按 `pending/agent/fable` → `pending/agent` →
 `pending/review` 取第一个，与排序无关。
 
+### 第一排序键换成 GitHub Project 的优先级字段
+
+`PRIORITY_SOURCE` 决定键 ① 从哪儿读：
+
+| 值 | 键 ① 来自 | 没有值的条目 |
+|---|---|---|
+| `label`（默认） | `PRIORITY_LABELS` 里的标签 | 等同最后一档 |
+| `project` | 关联 Project (v2) 上的单选字段（默认叫 `Priority`） | 落最后一档，**不看 label** |
+| `both` | Project 上设了就用它，没设的回落到 label | 两边都没有 → 最后一档 |
+
+**档位顺序不用在配置里再抄一遍**——直接取该字段在 Project 里定义的选项顺序，
+在看板上拖一下就改了。用哪个 Project 由 `PROJECT_NUMBER` 指定，留空 = 本仓库关联的第一个。
+
+⚠️ **读 Project 需要额外权限，这是最容易卡住的一步**：Projects v2 只有 GraphQL 接口。
+
+- classic PAT 必须勾 **`read:project`**（在 <https://github.com/settings/tokens> 上给现有 token 补勾即可，不用换 token）
+- **个人名下**的 Project（`github.com/users/<你>/projects/N`，不是组织的）还要求这个账号
+  是该 Project 的协作者——bot 账号默认不是
+- 不想动 bot 的权限，就用 `PROJECT_GH_TOKEN` 单独塞一个只读看板的 token
+
+任何一环读不到，daemon **只记一条警告并在本轮回落到 label 排序**，不会停下派工：
+
+```
+⚠️ Project 优先级读取失败，本轮回落到 label 排序：{"errors":[{"type":"INSUFFICIENT_SCOPES",...
+```
+
+看到这条就去补 scope；补好后下一轮日志会变成
+`Project 优先级：读到 N 条（字段 Priority，source=both）`。
+
 ## 交叉 review 关卡（可选，**默认关闭**）
 
 不配 `LABEL_PENDING_REVIEW` 就完全不存在这一环——skill 自带的默认 prompt 模板里

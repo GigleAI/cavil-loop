@@ -108,6 +108,39 @@ When one item carries several trigger labels, the first match still wins in the
 order `pending/agent/fable` → `pending/agent` → `pending/review`, independent of
 the sort.
 
+### Sourcing sort key #1 from a GitHub Project field
+
+`PRIORITY_SOURCE` decides where key ① is read from:
+
+| Value | Key ① comes from | Items with no value |
+|---|---|---|
+| `label` (default) | the labels in `PRIORITY_LABELS` | rank as the last tier |
+| `project` | a single-select field on the linked Project v2 (default name `Priority`) | last tier, **labels ignored** |
+| `both` | the project value where set, label as fallback | neither set → last tier |
+
+**Tier order is not restated in config** — it follows the order the options are
+defined in on the project, so reordering there is the only edit. `PROJECT_NUMBER`
+picks the project; empty means the first one linked to this repo.
+
+⚠️ **Reading a project needs extra permissions — this is the step that trips people up.**
+Projects v2 is GraphQL-only.
+
+- a classic PAT must carry **`read:project`** (tick it on the existing token at
+  <https://github.com/settings/tokens>; no need to mint a new one)
+- a **user-owned** project (`github.com/users/<you>/projects/N`, not an org one) also
+  requires that account to be a collaborator on the project — a bot account is not one by default
+- to avoid touching the bot's permissions, put a board-reading token in `PROJECT_GH_TOKEN` instead
+
+If any of that fails the daemon **logs one warning and falls back to label ordering
+for that poll** — dispatch never stops over a board it cannot read:
+
+```
+⚠️ Project 优先级读取失败，本轮回落到 label 排序：{"errors":[{"type":"INSUFFICIENT_SCOPES",...
+```
+
+Once the scope is granted the next poll logs
+`Project 优先级：读到 N 条（字段 Priority，source=both）` instead.
+
 ## Optional cross-review gate (**off by default**)
 
 Leave `LABEL_PENDING_REVIEW` unset and the stage does not exist — the skill's own prompt
