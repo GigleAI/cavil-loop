@@ -186,18 +186,28 @@ chk "字段名写错（field=null）→ 非 0" "$([ $? -ne 0 ] && echo yes || ec
 
 echo "── 取舍：priority_rank 在三种 source 下 ──"
 PROJECT_PRIO=([101]=0 [102]=2)
-_proj_rank_default=2          # 3 个选项 → 没设值的落最后一档
+# 原生字段 4 档（Urgent/High/Medium/Low → 0..3），label 3 档（p0/p1/p2 → 0..2）。
+# 「哪儿都没标」取两边档位数的最大值 = 4，比任何一边的任何一档都大。
+_prio_rank_unset=4
 PRIORITY_SOURCE=label
 chk "label 模式无视 Project 表"        "$(priority_rank "priority/p1" 101)" "1"
-chk "label 模式没打标签 = 最后一档"    "$(priority_rank "" 101)"            "2"
 PRIORITY_SOURCE=project
 chk "project 模式用 Project 的档位"    "$(priority_rank "priority/p1" 101)" "0"
 chk "project 模式无视 label"           "$(priority_rank "priority/p0" 102)" "2"
-chk "project 模式没设值 = 最后一档"    "$(priority_rank "priority/p0" 999)" "2"
 PRIORITY_SOURCE=both
 chk "both：Project 设了就用 Project"   "$(priority_rank "priority/p2" 101)" "0"
 chk "both：Project 没设回落 label"     "$(priority_rank "priority/p0" 999)" "0"
-chk "both：两边都没有 = 最后一档"      "$(priority_rank "" 999)"            "2"
+
+# ↓ 这组是「没标的必须垫底」——踩过的坑：两套档位下标各自独立，"哪儿都没标"沿用
+#   label 的最后一档(2) 时，会排到明确标了 Low(3) 的**前面**。
+chk "哪儿都没标 → 比 label 最低档还靠后" "$(priority_rank "" 999)"          "4"
+chk "  比 priority/p2（=2）靠后"         "$([ "$(priority_rank "" 999)" -gt "$(priority_rank "priority/p2" 999)" ] && echo yes)" "yes"
+chk "  比原生 Low（=3）靠后"             "$([ "$(priority_rank "" 999)" -gt 3 ] && echo yes)" "yes"
+PRIORITY_SOURCE=project
+chk "project 模式没设值也垫底"           "$(priority_rank "priority/p0" 999)" "4"
+PRIORITY_SOURCE=label
+chk "只用 label 时没打标签也垫底"        "$(priority_rank "" 999)"            "4"
+chk "  且 priority/p2 排在它前面"        "$(priority_rank "priority/p2" 999)" "2"
 
 echo "── PRIORITY_SOURCE 校验 ──"
 PRIORITY_SOURCE=projekt bash -c "source '$REPO_DIR/scripts/_lib.sh'" >/dev/null 2>&1

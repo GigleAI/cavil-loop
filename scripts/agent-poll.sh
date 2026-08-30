@@ -199,7 +199,7 @@ declare -A queued_keys=()
 # 为什么要能回落而不是报错退出：Projects v2 只有 GraphQL，token 缺 read:project、
 # Project 换了名字、字段被删——任何一样都会让这一趟拿不到数据。派工是主线，
 # 优先级只是取工顺序，不该因为读不到看板就整轮停摆。所以这里只警告 + 降级。
-# PROJECT_PRIO / _proj_rank_default 在 _lib.sh 里声明（priority_rank 跟它们同住）。
+# PROJECT_PRIO / _prio_rank_unset 在 _lib.sh 里声明（priority_rank 跟它们同住）。
 if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
     _pp_out=$(mktemp); _pp_err=$(mktemp)
     if priority_pairs > "$_pp_out" 2> "$_pp_err"; then
@@ -208,7 +208,9 @@ if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
             [ -n "${_pn:-}" ] || continue
             case "$_pn" in
                 '#project') _proj_desc="$_pr" ;;   # 用了哪个看板，记进日志好排查
-                '#options') [ "$_pr" -gt 1 ] 2>/dev/null && _proj_rank_default=$(( _pr - 1 )) || _proj_rank_default="$_pr" ;;
+                # 档位数 N → 下标 0..N-1；「没标」要排在它们之后，所以取 N。
+                # 跟 label 侧的档位数比大小取最大：两边混用时才不会出现「没标的插到 Low 前面」。
+                '#options') [ "${_pr:-0}" -gt "$_prio_rank_unset" ] 2>/dev/null && _prio_rank_unset="$_pr" ;;
                 *) PROJECT_PRIO[$_pn]=$_pr ;;
             esac
         done < "$_pp_out"
@@ -219,7 +221,6 @@ if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
     fi
     rm -f "$_pp_out" "$_pp_err"
 fi
-[ -n "$_proj_rank_default" ] || _proj_rank_default="$_prio_rank_default"
 
 stage_rank() {
     local kind="$1" trigger_label="$2" num="$3" sess wt

@@ -122,26 +122,26 @@ LABEL_DONE="${LABEL_DONE:-Done}"
 PRIORITY_LABELS="${PRIORITY_LABELS:-priority/p0,priority/p1,priority/p2}"
 
 IFS=',' read -r -a _prio_labels <<< "${PRIORITY_LABELS:-}"
-# 没打优先级标签的排在最后一档；列表只配了 1 个标签时，没打的排在它之后
-if [ "${#_prio_labels[@]}" -gt 1 ]; then
-    _prio_rank_default=$(( ${#_prio_labels[@]} - 1 ))
-else
-    _prio_rank_default=${#_prio_labels[@]}
-fi
-# Project 那一路的档位表由 agent-poll 每轮装载（读不到就留空 = 全体回落到 label）。
+# 「哪儿都没标」的档位。规则只有一条：**它必须排在所有标过的后面**。
+#
+# 为什么不能沿用「等同最后一档」：两套档位（label 3 档 / 原生字段 4 档）下标各自独立，
+# 混用时「没标」= label 的 2，而原生的 Low = 3 —— 什么都没标的条目就排到了明确标了
+# Low 的前面。所以取两边档位数的**最大值**当下标：它比任何一边的任何一档都大。
+# 单用 label 时这也顺带修了老行为：以前没打标签的跟 priority/p2 并列，现在排在它之后。
+_prio_rank_unset=${#_prio_labels[@]}
+# Project / 原生字段那一路的档位表由 agent-poll 每轮装载（读不到就留空 = 全体回落到 label）。
 declare -A PROJECT_PRIO=()
-_proj_rank_default=""
 
-# 第一排序键。两个来源的档位都是「越小越优先」的下标。
+# 第一排序键。所有来源的档位都是「越小越优先」的下标；哪儿都没标的一律 $_prio_rank_unset。
 priority_rank() {
     local labels_csv=",$1," num="${2:-}" i l
-    # Project 上真的设了值 → 直接用它（project / both 两种模式一致）
+    # Project / 原生字段上真的设了值 → 直接用它（project / both 两种模式一致）
     if [ "${PRIORITY_SOURCE:-label}" != "label" ] && [ -n "$num" ] && [ -n "${PROJECT_PRIO[$num]:-}" ]; then
         echo "${PROJECT_PRIO[$num]}"; return
     fi
-    # project 模式：Project 上没设 = 最后一档，**不看 label**（口径单一，免得两套标准打架）
+    # project 模式：没设值就是没标，**不看 label**（口径单一，免得两套标准打架）
     if [ "${PRIORITY_SOURCE:-label}" = "project" ]; then
-        echo "$_proj_rank_default"; return
+        echo "$_prio_rank_unset"; return
     fi
     for (( i = 0; i < ${#_prio_labels[@]}; i++ )); do
         l="${_prio_labels[$i]}"
@@ -150,7 +150,7 @@ priority_rank() {
             *",$l,"*) echo "$i"; return ;;
         esac
     done
-    echo "$_prio_rank_default"
+    echo "$_prio_rank_unset"
 }
 
 
@@ -414,7 +414,7 @@ project_priority_pairs() {
 
         # 字段没有选项 = 这一趟拿不到任何可用档位。必须当**失败**处理让调用方回落到
         # label，不能当"读到了、只是大家都没设值"——后者在 PRIORITY_SOURCE=project 下会
-        # 把所有条目算成同一档（下面 _proj_rank_default 会变成 0，即全体最高优先级），
+        # 把所有条目算成同一档（档位数为 0 时下标全落空，等于优先级键整体失效），
         # 排序静默失效且毫无迹象。现实里两种情况都会撞上：字段名写错，或者字段建了
         # 但选项还没配（GitHub 自带模板的 Priority 就是空的，要自己加 P0/P1/P2）。
         _opt_n=$(printf '%s' "$page" | jq -r '[.data.node.field.options[]?.name] | length' 2>/dev/null || echo 0)

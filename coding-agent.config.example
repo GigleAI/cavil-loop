@@ -401,15 +401,15 @@ GREEDY_SCAN_LIMIT=100
 
 # When more items carry a pending label than there are free slots, the daemon
 # picks by three sort keys, in order:
-#   1. priority label — earlier in this list wins; UNLABELLED ITEMS RANK AS THE
-#      LAST ENTRY, so you only ever label the urgent ones
+#   1. priority label — earlier in this list wins; ITEMS MARKED NOWHERE SORT LAST,
+#      behind every marked one, so you only ever label the urgent ones
 #   2. stage — review bounce-back < resumed work < brand-new issue
 #   3. waiting time — oldest updatedAt first
 # Empty = disable key 1; ordering then falls back to stage + waiting time.
 #
 # 待派工的条目多于空闲 slot 时，daemon 按三个键依次比较决定先派谁：
-#   ① 优先级 label —— 本列表里越靠前越优先；**没打标签的等同最后一档**，
-#      所以平时什么都不用打，只在真着急时挂一个 priority/p0 插队
+#   ① 优先级 label —— 本列表里越靠前越优先；**哪儿都没标的垫底**（排在所有标过的
+#      之后，也排在原生字段最低档之后），所以平时什么都不用打，急了才挂 priority/p0
 #   ② 阶段 —— review 打回 < 续作 < 全新 issue
 #      （在飞的活上下文还热，先收尾更快腾出 slot；全新 issue 晚一轮没有沉没成本）
 #   ③ 等待时长 —— updatedAt 早的先派
