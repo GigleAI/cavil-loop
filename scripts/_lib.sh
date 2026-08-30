@@ -1137,38 +1137,80 @@ sync_project_checkout() {
     return 0
 }
 
-# Prompt 模板查找顺序：
+# 在项目里找一个 prompt 文件（<file> 形如 "new-issue.template.md" / "new-issue.extra.md"）。
+# 顺序：
 #   0. origin/<base> 上的最新版（git show 直读远端 ref，落临时文件）——主 checkout
-#      stale / 有 WIP 时也永远拿到最新模板（GigleTutor-Web#516 的结构性修复）。
+#      stale / 有 WIP 时也永远拿到最新版（GigleTutor-Web#516 的结构性修复）。
 #      依赖最近一次 fetch 刷新 remote-tracking ref（dispatch 前 sync_project_checkout 会 fetch）。
-#   1. <project>/.agents/skills/coding-agent-work-loop/prompts/<name>.template.md   ← 新规范（推荐）
-#   2. <project>/.agents/skills/coding-agent-workflow/prompts/<name>.template.md    ← 旧目录名（兼容；老 worktree/分支）
-#   3. <project>/.coding-agent/prompts/<name>.template.md                           ← 更老路径（兼容）
-#   4. <skill-dir>/prompts/<name>.template.md                                       ← skill 默认
-find_prompt_template() {
-    local name="$1"   # e.g. "new-issue" / "pr-comment"
+#   1. <project>/.agents/skills/coding-agent-work-loop/prompts/<file>   ← 新规范（推荐）
+#   2. <project>/.agents/skills/coding-agent-workflow/prompts/<file>    ← 旧目录名（兼容；老 worktree/分支）
+#   3. <project>/.coding-agent/prompts/<file>                           ← 更老路径（兼容）
+# 找不到返回空串（不含 skill 默认——那是 base 专属的兜底，见 find_prompt_template）。
+find_project_prompt_file() {
+    local file="$1" tag="$2"   # tag 只用于临时文件命名，避免 base / overlay 互相覆盖
     local base="${BASE_BRANCH:-main}"
-    local rel=".agents/skills/coding-agent-work-loop/prompts/${name}.template.md"
-    local remote_copy="$STATE_DIR/prompt-remote-${name}.template.md"
+    local rel=".agents/skills/coding-agent-work-loop/prompts/${file}"
+    local remote_copy="$STATE_DIR/prompt-remote-${tag}-${file}"
     if git -C "$PROJECT_ROOT" show "origin/${base}:${rel}" > "$remote_copy" 2>/dev/null \
        && [ -s "$remote_copy" ]; then
         echo "$remote_copy"
         return
     fi
     rm -f "$remote_copy"
-    local candidates=(
-        "$PROJECT_ROOT/.agents/skills/coding-agent-work-loop/prompts/${name}.template.md"
-        "$PROJECT_ROOT/.agents/skills/coding-agent-workflow/prompts/${name}.template.md"
-        "$PROJECT_ROOT/.coding-agent/prompts/${name}.template.md"
-        "$SKILL_DIR/prompts/${name}.template.md"
-    )
-    for c in "${candidates[@]}"; do
+    local c
+    for c in \
+        "$PROJECT_ROOT/.agents/skills/coding-agent-work-loop/prompts/${file}" \
+        "$PROJECT_ROOT/.agents/skills/coding-agent-workflow/prompts/${file}" \
+        "$PROJECT_ROOT/.coding-agent/prompts/${file}"; do
         if [ -f "$c" ]; then
             echo "$c"
             return
         fi
     done
     echo ""
+}
+
+# base 模板：项目有同名 .template.md 就用项目的（完全覆写，老行为不变），
+# 否则用 skill 自带的那份。
+find_prompt_template() {
+    local name="$1"   # e.g. "new-issue" / "pr-comment"
+    local found
+    found="$(find_project_prompt_file "${name}.template.md" base)"
+    if [ -n "$found" ]; then
+        echo "$found"
+        return
+    fi
+    [ -f "$SKILL_DIR/prompts/${name}.template.md" ] && echo "$SKILL_DIR/prompts/${name}.template.md" || echo ""
+}
+
+# ── base + 项目增量 ──
+# 完全覆写一份模板的代价是**它从此拿不到 base 的任何更新**：实测 tutor 的三份覆写
+# 里，跟 base 相同的行只剩一半，base 后来加的规范（比如「拍板问题要讲清上下文」）
+# 一条都没进去，而且没有任何迹象提示它落后了。
+#
+# 所以推荐的做法是只写增量：项目放一个 <name>.extra.md，daemon 把它追加在 base 之后。
+# 追加而不是插入：后文在 prompt 里天然覆盖前文，项目要推翻 base 的某条约定，
+# 在自己的文件里写清"本项目改成 X"即可。
+#
+# 两者可以并存（项目自己的 .template.md 当 base + .extra.md 追加），但既然都覆写了
+# 通常不需要。stdout 写最终要用的文件路径；没有增量时就是 base 本身。
+compose_prompt_template() {
+    local name="$1" base_tpl overlay out
+    base_tpl="$(find_prompt_template "$name")"
+    [ -n "$base_tpl" ] || { echo ""; return; }
+    overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
+    [ -n "$overlay" ] || { echo "$base_tpl"; return; }
+
+    out="$STATE_DIR/prompt-composed-${name}.md"
+    {
+        cat "$base_tpl"
+        printf '\n\n---\n\n'
+        printf '# 本项目的附加要求（覆盖上面与之冲突的部分）\n\n'
+        printf '> 上面是通用工作流，这一段是 %s 特有的。两者冲突时**以这一段为准**。\n\n' "${REPO:-本仓库}"
+        cat "$overlay"
+    } > "$out"
+    log "prompt: base=$(basename "$base_tpl") + 增量=$(basename "$overlay")（合成 $(wc -l < "$out") 行）" 2>/dev/null || true
+    echo "$out"
 }
 
 # ── 加载 driver（按 WORKER_AGENT）──

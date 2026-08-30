@@ -234,13 +234,36 @@ Leave it empty to keep the previous behaviour exactly.
 
 ## Prompt templates
 
-Template lookup order (high → low priority):
+A prompt is **base + project delta**. The two files are looked up independently, and
+both support reading straight from `origin/<base>` (so a stale main checkout still
+yields the newest version):
 
-1. `<host>/.agents/skills/coding-agent-work-loop/prompts/<name>.template.md` — project-level override (recommended)
-2. `<host>/.coding-agent/prompts/<name>.template.md` — old path (kept for compat)
-3. `<skill>/prompts/<name>.template.md` — skill default
+| | Filename | If absent |
+|---|---|---|
+| **base** (generic workflow) | `<name>.template.md` | falls back to `<skill>/prompts/<name>.template.md` |
+| **delta** (project-specific) | `<name>.extra.md` | base is used alone |
 
-E.g. one project might require `npm run test:e2e`, another `cargo test` — drop a project-specific override.
+Both live under the project's `.agents/skills/coding-agent-work-loop/prompts/` (the old
+`.coding-agent/prompts/` path still works). Composition **appends the delta after the
+base**, with a line saying the delta wins on conflict — later text naturally overrides
+earlier text in a prompt, so to overturn one base rule you just write "this project does
+X instead" in your own file rather than forking the whole template.
+
+**Prefer a delta over a full override.** A full override silently stops receiving base
+updates: measured on this repo's own consumer, only half the base lines survived in the
+forked copies, and a spec added to the base later (how to write decisions the human must
+make) never reached them. Fork the whole template only when the project's workflow
+differs *structurally* — different stages, different label semantics.
+
+```
+project/.agents/skills/coding-agent-work-loop/prompts/
+├── new-issue.extra.md      ← preferred: only what's specific (test chain, layout, acceptance)
+└── pr-comment.template.md  ← full override, only for structural differences
+```
+
+Having both is fine: the project's `.template.md` becomes the base and `.extra.md` is
+still appended. Each dispatch logs how it composed:
+`prompt: base=new-issue.template.md + 增量=new-issue.extra.md（合成 214 行）`.
 
 Available placeholders (`sed`-rendered):
 

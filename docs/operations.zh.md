@@ -210,13 +210,33 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 ## Prompt 模板
 
-模板查找顺序（高 → 低）：
+一份 prompt = **base + 项目增量**。两个文件各自独立查找，都支持 `origin/<base>` 直读
+（主 checkout stale 也拿得到最新版）：
 
-1. `<host>/.agents/skills/coding-agent-work-loop/prompts/<name>.template.md` — 项目自定义（推荐）
-2. `<host>/.coding-agent/prompts/<name>.template.md` — 老路径（兼容）
-3. `<skill>/prompts/<name>.template.md` — skill 默认
+| | 文件名 | 找不到时 |
+|---|---|---|
+| **base**（通用工作流） | `<name>.template.md` | 回落到 `<skill>/prompts/<name>.template.md` |
+| **增量**（项目特有） | `<name>.extra.md` | 没有就只用 base |
 
-例如某项目要求 worker 跑 `npm run test:e2e`、某项目要 `cargo test`，各放一份覆盖。
+两者都在项目的 `.agents/skills/coding-agent-work-loop/prompts/` 下（老路径
+`.coding-agent/prompts/` 仍兼容）。合成方式是**把增量追加在 base 之后**，中间插一句
+「两者冲突时以这一段为准」——prompt 里后文天然覆盖前文，所以项目要推翻 base 的某条
+约定，在自己文件里写清「本项目改成 X」就行，不用把整份抄过来改。
+
+**优先写增量，别整份覆写。** 覆写的代价是**它从此拿不到 base 的任何更新，且没有任何
+迹象**：实测 tutor 那三份覆写里，跟 base 相同的行只剩一半，base 后来加的规范（例如
+「拍板问题要讲清上下文」）一条都没进去。只有当项目的工作流跟通用流程**结构上就不同**
+（不同的阶段划分、不同的 label 语义）时才值得整份覆写。
+
+```
+project/.agents/skills/coding-agent-work-loop/prompts/
+├── new-issue.extra.md      ← 推荐：只写本项目特有的（测试链、目录约定、验收口径…）
+└── pr-comment.template.md  ← 仅在结构上就不同时才整份覆写
+```
+
+两个都放也行：项目的 `.template.md` 当 base，`.extra.md` 仍追加在后。
+每次 dispatch 的日志会写明这轮是怎么拼的：
+`prompt: base=new-issue.template.md + 增量=new-issue.extra.md（合成 214 行）`。
 
 可用占位（`sed` 渲染）：
 
