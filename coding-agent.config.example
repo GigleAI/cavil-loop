@@ -467,8 +467,24 @@ PRIORITY_SOURCE="label"
 PROJECT_NUMBER=""
 PROJECT_OWNER=""
 
-# Name of the single-select field (GitHub's built-in template calls it Priority).
-# 那个单选字段叫什么（GitHub 自带模板就叫 Priority）。
+# Field name to read. GitHub has TWO different things that both show up as a
+# "Priority" column on a board, and the daemon tries them in this order:
+#   1. the native ISSUE field (newer GitHub Issues) — the value lives on the issue
+#      itself, independent of any board. Tier order = that field's option order.
+#   2. the board's own single-select field (Projects v2 custom field)
+# A board can have both at once (an empty custom field shadowing real native values
+# is exactly what we hit on GigleAI/projects/4), which is why order matters.
+# PRs have no native issue fields, so PRs always fall back to labels.
+#
+# 要读的字段名。GitHub 上有**两个**不同的东西在看板上都显示成 Priority 这一列，
+# daemon 按下面顺序依次尝试：
+#   ① issue **原生字段**（新版 Issues 自带）—— 值存在 issue 自己身上，跟看板无关，
+#      换个看板也跟着走。档位顺序 = 该字段的选项顺序（如 Urgent > High > Medium > Low）
+#   ② 看板自己的**单选字段**（Projects v2 自定义字段）—— 值存在看板条目上
+# 一块看板上两者可以并存（实测 GigleAI/projects/4 就是：一个空壳自定义 Priority
+# 盖在一批真实的原生值上面），所以顺序很重要。
+# PR 没有原生 issue 字段，所以 PR 一律回落到 label 排序。
+# 每轮日志会写明这次用的是哪一种。
 PROJECT_PRIORITY_FIELD="Priority"
 
 # Token used ONLY for the project read. Empty = reuse the daemon's GH_TOKEN.

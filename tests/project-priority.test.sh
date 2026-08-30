@@ -97,6 +97,52 @@ rm -f "$TMP/resp.1"
 project_priority_pairs >/dev/null 2>&1
 chk "GraphQL 报错 → 非 0"     "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
 
+# ── ① issue 原生字段（新版 GitHub Issues 自带；值在 issue 上，不在看板条目上）──
+ifv() {  # <编号> <优先级名或 -> ；每条记录都重复带着整份选项定义，真实 API 就长这样
+    local vals=""
+    [ "$2" != "-" ] && vals="{\"name\":\"$2\",\"field\":{\"name\":\"Priority\",\"options\":[{\"name\":\"Urgent\"},{\"name\":\"High\"},{\"name\":\"Medium\"},{\"name\":\"Low\"}]}}"
+    printf '{"number":%s,"issueFieldValues":{"nodes":[%s]}}' "$1" "$vals"
+}
+ifpage() {  # <hasNextPage> <cursor> <记录...>
+    local has="$1" cur="$2"; shift 2
+    local j; j=$(printf '%s,' "$@"); j="${j%,}"
+    printf '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":%s,"endCursor":"%s"},"nodes":[%s]}}}}' "$has" "$cur" "$j"
+}
+
+echo "── issue 原生字段：档位取选项顺序，选项数只能算一份 ──"
+echo 0 > "$CALL_N"
+ifpage false "" "$(ifv 826 High)" "$(ifv 814 Urgent)" "$(ifv 807 Low)" "$(ifv 999 -)" > "$TMP/resp.1"
+out=$(issue_field_priority_pairs 2>/dev/null)
+chk "Urgent → 0（选项里排第一）"     "$(grep -c '^814	0$' <<<"$out")"   "1"
+chk "High → 1"                       "$(grep -c '^826	1$' <<<"$out")"   "1"
+chk "Low → 3（最后一档）"            "$(grep -c '^807	3$' <<<"$out")"   "1"
+chk "没设值的不进表"                 "$(grep -c '^999' <<<"$out")"       "0"
+# 这条是真踩过的：每条记录都重复带一份选项定义，全收会变成 4×N，档位数直接算错
+chk "选项数 = 4，不是 4×记录数"      "$(grep -c '^#options	4$' <<<"$out")" "1"
+chk "报出用的是原生字段"             "$(grep -c '^#project	issue 原生字段 Priority' <<<"$out")" "1"
+
+echo "── issue 原生字段：分页 + 只认指定字段名 ──"
+echo 0 > "$CALL_N"
+ifpage true "C1" "$(ifv 101 Urgent)" > "$TMP/resp.1"
+ifpage false ""  "$(ifv 102 Medium)" > "$TMP/resp.2"
+out=$(issue_field_priority_pairs 2>/dev/null)
+chk "第一页在" "$(grep -c '^101	0$' <<<"$out")" "1"
+chk "第二页在" "$(grep -c '^102	2$' <<<"$out")" "1"
+echo 0 > "$CALL_N"
+printf '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"number":201,"issueFieldValues":{"nodes":[{"name":"Hot","field":{"name":"Severity","options":[{"name":"Hot"},{"name":"Cold"}]}}]}}]}}}}' > "$TMP/resp.1"
+issue_field_priority_pairs >/dev/null 2>&1
+chk "同名以外的单选字段不算数 → 非 0" "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
+
+echo "── 两条路的取舍：原生没有就回落到看板单选字段 ──"
+echo 0 > "$CALL_N"
+ifpage false "" "$(ifv 301 -)" > "$TMP/resp.1"        # ① 一条值都没有 → 失败
+echo '{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT_1","number":7,"title":"board"}]}}}}' > "$TMP/resp.2"
+page false "" "$(item 302 acme/widget P1)" > "$TMP/resp.3"   # ② 看板这条有
+out=$(priority_pairs 2>/dev/null)
+chk "回落到看板字段并拿到值" "$(grep -c '^302	1$' <<<"$out")" "1"
+chk "报出用的是看板"         "$(grep -c '^#project	7 board$' <<<"$out")" "1"
+chk "不混进 ① 的半截输出"    "$(grep -c '原生字段' <<<"$out")" "0"
+
 echo "── 定位看板：自动挑 = 关联 Project 里编号最小的，且要报出挑了谁 ──"
 echo 0 > "$CALL_N"
 # API 即使乱序返回，也不能靠它的默认顺序 —— 查询里写死 orderBy=NUMBER ASC，

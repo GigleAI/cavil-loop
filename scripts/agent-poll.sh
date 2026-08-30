@@ -202,7 +202,7 @@ declare -A queued_keys=()
 # PROJECT_PRIO / _proj_rank_default 在 _lib.sh 里声明（priority_rank 跟它们同住）。
 if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
     _pp_out=$(mktemp); _pp_err=$(mktemp)
-    if project_priority_pairs > "$_pp_out" 2> "$_pp_err"; then
+    if priority_pairs > "$_pp_out" 2> "$_pp_err"; then
         _proj_desc=""
         while IFS=$'\t' read -r _pn _pr; do
             [ -n "${_pn:-}" ] || continue

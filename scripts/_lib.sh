@@ -241,6 +241,95 @@ project_gh_graphql() {
 
 # stdout 写 "<issue/PR 编号>\t<档位下标>"，一行一条；失败返回非 0（调用方回落到 label）。
 # 只输出**本仓库**的条目：一个 Project 常常挂着好几个仓库的卡片，编号会撞车。
+# ── 优先级的两种存法 ──
+# GitHub 上「优先级」现在有两个完全不同的东西，看板上都显示成一列，名字都能叫 Priority：
+#
+#   ① issue 原生字段（新版 Issues 自带）—— 值存在 **issue 自己**身上，跟看板无关，
+#      一条 issue 在哪个看板上都带着它。GraphQL 里是 issue.issueFieldValues。
+#   ② 看板的单选字段（Projects v2 自定义字段）—— 值存在**看板条目**上，换个看板就没了。
+#      GraphQL 里是 projectV2 的 fieldValueByName。
+#
+# 实测踩过的坑（GigleAI/projects/4）：看板上**同时**存在一个叫 Priority 的空壳单选字段，
+# 和一批设在 ① 上的真实值。只读 ② 的话，看到的是「字段存在但零选项、零条目有值」，
+# 而用户在界面上明明看得见 High/Low —— 两边说的根本不是同一个字段。
+#
+# 所以顺序是：先试 ①（新版默认、且不依赖看板），拿不到再试 ②。日志里会写明用了哪个。
+priority_pairs() {
+    local out err rc
+    out=$(mktemp); err=$(mktemp)
+    if issue_field_priority_pairs > "$out" 2> "$err"; then
+        cat "$out"; rm -f "$out" "$err"; return 0
+    fi
+    # ① 没有 → 再试 ②。只有两条都失败才把错误抛出去（否则 ① 的「没有值」会盖掉真错误）
+    if project_priority_pairs > "$out" 2>> "$err"; then
+        cat "$out"; rm -f "$out" "$err"; return 0
+    fi
+    cat "$err" >&2; rm -f "$out" "$err"; return 1
+}
+
+# ① issue 原生字段。一次查 100 条 open issue，档位取该字段的选项顺序
+# （Urgent > High > Medium > Low 这种，谁在前谁优先）。
+# 只覆盖 issue：PR 没有原生 issue 字段，PR 那部分自然回落到 label。
+issue_field_priority_pairs() {
+    local field="${PROJECT_PRIORITY_FIELD:-Priority}"
+    local owner="${REPO%%/*}" name="${REPO##*/}"
+    local after="" page opts="" n_opts=0 pairs pairs_all=""
+
+    while :; do
+        if [ -n "$after" ]; then
+            page=$(project_gh_graphql -f o="$owner" -f r="$name" -f a="$after" -f query='
+                query($o:String!,$r:String!,$a:String!){ repository(owner:$o,name:$r){
+                  issues(first:100, states:OPEN, after:$a){ pageInfo{hasNextPage endCursor}
+                    nodes{ number issueFieldValues(first:10){ nodes{
+                      ... on IssueFieldSingleSelectValue{ name
+                        field{ ... on IssueFieldCommon{ name } ... on IssueFieldSingleSelect{ options{ name } } } } } } } } } }' 2>&1) \
+                || { printf '%s' "$page" >&2; return 1; }
+        else
+            page=$(project_gh_graphql -f o="$owner" -f r="$name" -f query='
+                query($o:String!,$r:String!){ repository(owner:$o,name:$r){
+                  issues(first:100, states:OPEN){ pageInfo{hasNextPage endCursor}
+                    nodes{ number issueFieldValues(first:10){ nodes{
+                      ... on IssueFieldSingleSelectValue{ name
+                        field{ ... on IssueFieldCommon{ name } ... on IssueFieldSingleSelect{ options{ name } } } } } } } } } }' 2>&1) \
+                || { printf '%s' "$page" >&2; return 1; }
+        fi
+
+        # 选项顺序：从任意一条带值的记录上取（字段定义本身在 repository.issueFields 里
+        # 查不到 —— 内置字段不在那个列表中，实测 totalCount=0）
+        if [ "$n_opts" -eq 0 ]; then
+            # 取**第一条**带值记录上的选项数组就够 —— 每条记录都重复带着同一份定义，
+            # 全收会得到 N 份拼在一起（实测 9 条 × 4 个 = 36），档位数直接算错。
+            opts=$(printf '%s' "$page" | jq -r --arg f "$field" '
+                [.data.repository.issues.nodes[]?.issueFieldValues.nodes[]?
+                 | select(.field.name == $f) | .field.options] | first // []
+                | map(.name) | join("\t")' 2>/dev/null || true)
+            if [ -n "$opts" ]; then
+                n_opts=$(printf '%s' "$opts" | awk -F'\t' '{print NF}')
+            fi
+        fi
+
+        pairs=$(printf '%s' "$page" | jq -r --arg f "$field" '
+            .data.repository.issues.nodes[]? as $i
+            | ($i.issueFieldValues.nodes[]? | select(.field.name == $f)) as $v
+            | ([$v.field.options[]?.name] | to_entries | map({key:.value, value:.key}) | from_entries) as $rank
+            | select($rank[$v.name] != null)
+            | "\($i.number)\t\($rank[$v.name])"' 2>/dev/null || true)
+        [ -n "$pairs" ] && pairs_all="${pairs_all}${pairs}"$'\n'
+
+        [ "$(printf '%s' "$page" | jq -r '.data.repository.issues.pageInfo.hasNextPage // false' 2>/dev/null)" = "true" ] || break
+        after=$(printf '%s' "$page" | jq -r '.data.repository.issues.pageInfo.endCursor // empty' 2>/dev/null)
+        [ -n "$after" ] || break
+    done
+
+    if [ "${n_opts:-0}" -eq 0 ] || [ -z "$pairs_all" ]; then
+        echo "issue 原生字段「$field」上没有任何取值（该仓库可能没启用它）" >&2
+        return 1
+    fi
+    printf '#project\tissue 原生字段 %s（%s）\n' "$field" "$(printf '%s' "$opts" | tr '\t' '>')"
+    printf '#options\t%s\n' "$n_opts"
+    printf '%s' "$pairs_all"
+}
+
 # 定位「用哪个 Project」。两条路，行为差别很大，别混：
 #
 #   ① PROJECT_NUMBER 有值 → 按 <owner, number> 直接取，**不要求 Project 跟仓库有关联**。

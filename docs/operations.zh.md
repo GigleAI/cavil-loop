@@ -116,6 +116,20 @@ label 语义完全不变。每轮排完的结果会整行写进 `poll.log`，并
 **档位顺序不用在配置里再抄一遍**——直接取该字段在 Project 里定义的选项顺序，
 在看板上拖一下就改了。用哪个 Project 由 `PROJECT_NUMBER` 指定，留空 = 本仓库关联的第一个。
 
+**「优先级」在 GitHub 上有两个东西，都显示成看板上的 Priority 列**，daemon 按顺序试：
+
+| | 值存在哪 | GraphQL | 档位顺序取自 |
+|---|---|---|---|
+| ① issue 原生字段（新版 Issues 自带） | **issue 自己身上**，跟看板无关 | `issue.issueFieldValues` | 该字段的选项顺序 |
+| ② 看板单选字段（Projects v2 自定义） | 看板条目上，换看板就没了 | `projectV2 ... fieldValueByName` | 选项在看板里的定义顺序 |
+
+先试 ①，拿不到再试 ②。**两者可以并存且同名**——实测 `GigleAI/projects/4` 上就有一个
+零选项的自定义 `Priority` 空壳，盖在一批设在 ① 上的真实值（`Urgent > High > Medium > Low`）
+上面；只读 ② 会得到「字段在、但零选项零取值」，跟界面上明明看得见的 High/Low 对不上。
+PR 没有原生 issue 字段，所以 PR 一律回落到 label 排序。
+
+日志会写明这轮用的是哪一种：`读到 9 条（看板 issue 原生字段 Priority（Urgent>High>Medium>Low），…）`。
+
 **用哪个看板是这么定的**：
 
 | `PROJECT_NUMBER` | 怎么找 | 要求看板跟仓库关联吗 |
