@@ -467,23 +467,25 @@ PRIORITY_SOURCE="label"
 PROJECT_NUMBER=""
 PROJECT_OWNER=""
 
-# Field name to read. GitHub has TWO different things that both show up as a
-# "Priority" column on a board, and the daemon tries them in this order:
-#   1. the native ISSUE field (newer GitHub Issues) — the value lives on the issue
-#      itself, independent of any board. Tier order = that field's option order.
-#   2. the board's own single-select field (Projects v2 custom field)
-# A board can have both at once (an empty custom field shadowing real native values
-# is exactly what we hit on GigleAI/projects/4), which is why order matters.
-# PRs have no native issue fields, so PRs always fall back to labels.
+# Field name to read. GitHub's newer Priority is an ISSUE-level field that is
+# projected onto the board as a column (and is clickable in the project's field
+# settings), which makes it look like a project custom field — it is not. Read
+# through the Projects API it reports ZERO options and its item values come back as
+# ProjectV2ItemIssueFieldValue, so that path cannot see it at all. It is only
+# readable via issue.issueFieldValues. The daemon therefore tries, in order:
+#   1. the native ISSUE field (values live on the issue, board-independent)
+#   2. a genuine board single-select custom field (like Status)
+# Only #2 can be set on PRs — PRs have no native issue fields — so with #1 in use,
+# PRs always fall back to labels.
 #
-# 要读的字段名。GitHub 上有**两个**不同的东西在看板上都显示成 Priority 这一列，
-# daemon 按下面顺序依次尝试：
-#   ① issue **原生字段**（新版 Issues 自带）—— 值存在 issue 自己身上，跟看板无关，
-#      换个看板也跟着走。档位顺序 = 该字段的选项顺序（如 Urgent > High > Medium > Low）
-#   ② 看板自己的**单选字段**（Projects v2 自定义字段）—— 值存在看板条目上
-# 一块看板上两者可以并存（实测 GigleAI/projects/4 就是：一个空壳自定义 Priority
-# 盖在一批真实的原生值上面），所以顺序很重要。
-# PR 没有原生 issue 字段，所以 PR 一律回落到 label 排序。
+# 要读的字段名。GitHub 新版的 Priority 是 **issue 级字段**，但会投影到看板上显示成
+# 一列、在看板的字段设置里也点得进去，所以看着像看板自定义字段 —— 它不是。
+# 从 Projects API 读它会得到「options 为空」，条目值的类型也是 ProjectV2ItemIssueFieldValue
+# 而非单选值，**那条路根本读不到**；只有 issue.issueFieldValues 读得到。
+# 所以 daemon 按这个顺序试：
+#   ① issue 原生字段（值在 issue 上，跟看板无关）
+#   ② 真·看板自定义单选字段（像 Status 那样的）
+# 只有 ② 能标到 PR 上（PR 没有 issue 原生字段），所以用着 ① 时 PR 一律回落到 label。
 # 每轮日志会写明这次用的是哪一种。
 PROJECT_PRIORITY_FIELD="Priority"
 

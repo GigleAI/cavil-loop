@@ -241,19 +241,23 @@ project_gh_graphql() {
 
 # stdout 写 "<issue/PR 编号>\t<档位下标>"，一行一条；失败返回非 0（调用方回落到 label）。
 # 只输出**本仓库**的条目：一个 Project 常常挂着好几个仓库的卡片，编号会撞车。
-# ── 优先级的两种存法 ──
-# GitHub 上「优先级」现在有两个完全不同的东西，看板上都显示成一列，名字都能叫 Priority：
+# ── 优先级字段：为什么必须从 issue 那条路读 ──
+# GitHub 新版的 Priority 是**issue 级字段**，但它会**投影到看板上**显示成一列，
+# 在看板设置里也点得进去（.../projects/N/settings/fields/<databaseId>）。看着像看板
+# 自定义字段，其实不是 —— 从 Projects API 那条路读它会得到两个反直觉的结果：
 #
-#   ① issue 原生字段（新版 Issues 自带）—— 值存在 **issue 自己**身上，跟看板无关，
-#      一条 issue 在哪个看板上都带着它。GraphQL 里是 issue.issueFieldValues。
-#   ② 看板的单选字段（Projects v2 自定义字段）—— 值存在**看板条目**上，换个看板就没了。
-#      GraphQL 里是 projectV2 的 fieldValueByName。
+#   · field(name:"Priority") 返回 ProjectV2SingleSelectField，但 **options 是空的**
+#     （实测 databaseId=350358622，跟设置页 URL 同一个字段，界面上明明有
+#      Urgent/High/Medium/Low）；
+#   · 条目上的值类型是 **ProjectV2ItemIssueFieldValue**，不是单选值类型，
+#     fieldValueByName 那套取不到 name。
 #
-# 实测踩过的坑（GigleAI/projects/4）：看板上**同时**存在一个叫 Priority 的空壳单选字段，
-# 和一批设在 ① 上的真实值。只读 ② 的话，看到的是「字段存在但零选项、零条目有值」，
-# 而用户在界面上明明看得见 High/Low —— 两边说的根本不是同一个字段。
+# 也就是说：**看板这条路读不到它**，必须走 issue 那条（issue.issueFieldValues），
+# 选项顺序也只有在那儿才拿得到。对照组：Status 是真·看板自定义字段
+# （databaseId=348734829），options 正常返回 Backlog/Preparing/...。
 #
-# 所以顺序是：先试 ①（新版默认、且不依赖看板），拿不到再试 ②。日志里会写明用了哪个。
+# 所以顺序是：先试 issue 原生字段，拿不到再试看板的真自定义单选字段（有些项目
+# 确实用后者，而且**只有后者能标到 PR 上** —— PR 没有 issue 原生字段）。
 priority_pairs() {
     local out err rc
     out=$(mktemp); err=$(mktemp)

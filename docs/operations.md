@@ -122,6 +122,22 @@ the sort.
 defined in on the project, so reordering there is the only edit. `PROJECT_NUMBER`
 picks the project; empty means the first one linked to this repo.
 
+**GitHub's newer Priority is an ISSUE-level field, not a board field** — even though it
+shows as a board column and is clickable under the project's field settings
+(`/projects/N/settings/fields/<id>`). Measured behaviour:
+
+| Read path | What you get |
+|---|---|
+| Projects API `field(name:"Priority")` | a `ProjectV2SingleSelectField` whose **options are empty** (same databaseId as the settings URL, while the UI shows Urgent/High/Medium/Low) |
+| Projects API item values | typed `ProjectV2ItemIssueFieldValue`, not a single-select value → `fieldValueByName` reads nothing |
+| Issue API `issue.issueFieldValues` | ✅ both the value and the option order |
+| Control: `Status` (a real board custom field) | options come back normally (`Backlog/Preparing/…`) |
+
+So the daemon tries the native issue field first, then a genuine board single-select.
+Only the latter can be set on PRs — PRs have no native issue fields — so while the
+native field is in use, PRs always fall back to label ordering. Each poll logs which
+one it used.
+
 **How the board is chosen:**
 
 | `PROJECT_NUMBER` | Lookup | Must the board be linked to the repo? |
