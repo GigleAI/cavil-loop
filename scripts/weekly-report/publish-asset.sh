@@ -19,7 +19,13 @@ CONF="$HOME/.config/coding-agent-work-loop/${PROJECT}.conf"
 set -a; . "$CONF"; set +a
 
 ROOT_DIR="${WEEKLY_REPORT_ASSET_ROOT:-$HOME/.local/state/coding-agent-poll/review-shots}"
-ROOT_URL="${WEEKLY_REPORT_ASSET_ROOT_URL:-https://futurelab05.mercat-delta.ts.net:8443/review-assets}"
+# 公网 URL 前缀没有默认值：主机名属于部署环境，不进这个公开仓库。在项目配置里设。
+ROOT_URL="${WEEKLY_REPORT_ASSET_ROOT_URL:-}"
+[ -n "$ROOT_URL" ] || {
+    echo "缺 WEEKLY_REPORT_ASSET_ROOT_URL —— 附件要能被下载，必须是公网可达的 URL 前缀。" >&2
+    echo "在 $CONF 里设，例如：WEEKLY_REPORT_ASSET_ROOT_URL=\"https://<你的公网主机>/review-assets\"" >&2
+    exit 1
+}
 
 BASE="$(basename "$FILE")"
 EXT="${BASE##*.}"
@@ -34,7 +40,7 @@ URL="$ROOT_URL/$SUBDIR/$NAME"
 code=$(curl -sk -o /dev/null -w '%{http_code}' "$URL")
 if [ "$code" != "200" ]; then
     echo "公网不可达（HTTP $code）：$URL" >&2
-    echo "  tailscale funnel 没开或路径没挂，检查: sudo tailscale serve status" >&2
+    echo "  公网入口没开或路径没挂（tailscale funnel 用户可查: sudo tailscale serve status）" >&2
     exit 1
 fi
 echo "已发布 → HTTP 200（$(du -h "$FILE" | cut -f1)）" >&2

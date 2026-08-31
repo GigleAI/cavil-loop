@@ -11,10 +11,10 @@
 | 文件 | 干什么 |
 |---|---|
 | `collect.py` | 采数 + 聚合。只跑 3 次列表型 `gh api --paginate`，**不做 per-issue 循环**——请求数不随 issue 数膨胀 |
-| `render.py` | 把数据渲染成两张趋势图的 HTML（交付面 / 投入面），Gigle 极简配色 + Libre Baskerville |
+| `render.py` | 把数据渲染成两张趋势图的 HTML（交付面 / 投入面），极简配色 + Libre Baskerville |
 | `shot.mjs` | HTML → 1280px 单倍像素 PNG（GitHub 评论配图标准） |
 | `report.py` | 出周报 markdown（数据部分）：上周对比表、逐 issue 明细、逐周趋势表、口径说明 |
-| `topdf.mjs` | 周报 markdown → A4 PDF（Gigle 极简版式、中文字体、页码）。自带 md 子集渲染器，不引第三方 md 库 |
+| `topdf.mjs` | 周报 markdown → A4 PDF（极简版式、中文字体、页码）。自带 md 子集渲染器，不引第三方 md 库 |
 | `publish-asset.sh` | 把 PDF / 附件发到 funnel 公网目录，自动加 `rev` 并校验 HTTP 200，打印 URL |
 | `run.sh` | 串起来：采数 → 出图 → 传图（校验公网 200）→ 开 issue → 打 `pending/agent` |
 
@@ -22,13 +22,13 @@
 
 ```bash
 # 手动跑（不发 issue，产物落 ~/weekly-report-dryrun.md）
-bash run.sh tutor --dry-run
+bash run.sh <project> --dry-run
 
 # 补跑某一周
-bash run.sh tutor --week-of 2026-08-24
+bash run.sh <project> --week-of 2026-08-24
 
 # 真发
-bash run.sh tutor
+bash run.sh <project>
 ```
 
 定时触发：`systemd/coding-agent-weekly-report@.{service,timer}`，`OnCalendar=Mon *-*-* 09:00`。
@@ -46,7 +46,9 @@ systemctl --user enable --now coding-agent-weekly-report@<project>.timer
 |---|---|---|
 | `WEEKLY_REPORT_REPO` | 从 `PROJECT_ROOT` 的 git remote 推 | `owner/name` |
 | `WEEKLY_REPORT_ASSET_DIR` | `~/.local/state/coding-agent-poll/review-shots/weekly-report` | 配图落盘目录 |
-| `WEEKLY_REPORT_ASSET_URL` | funnel 的 `/review-assets/weekly-report` | 配图公网 URL 前缀 |
+| `WEEKLY_REPORT_ASSET_URL` | **必填，无默认** | 配图公网 URL 前缀。GitHub 要能抓到，必须公网可达；主机名属于部署环境，不写在本仓库里 |
+| `WEEKLY_REPORT_ASSET_ROOT_URL` | **必填，无默认** | `publish-asset.sh` 用的公网 URL 根（配图前缀去掉末段） |
+| `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/coding-agent-poll/review-shots` | `publish-asset.sh` 的落盘根目录 |
 | `WEEKLY_REPORT_FONTS_DIR` | `$PROJECT_ROOT/public/fonts` | 自托管 woff2；目录不在就回落系统字体 |
 | `WEEKLY_REPORT_LABEL` | `pending/agent` | 开出的 issue 打什么 label。设成 `pending/human` 就只出数据、不叫 agent 写解读 |
 
@@ -94,6 +96,6 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
    `collect.py` 的入选条件是三选一：**issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭**。
    另外**没有关联 issue 的 PR**（chore、工具链）不挂在任何 issue 下，用 `loose_prs` 单列一组，
    否则这部分工作在清单里凭空消失。
-   > 实测教训：2026-08-24 那周初版漏了 6 条，其中一条是当周**耗时第二、成本第一**的单项
-   > （107 条评论全在 PR 上，issue 页零活动）。汇总数字当时是对的（本来就按 issue+PR 全量算），
-   > **错的只是明细清单**——所以这类 bug 从总量上看不出来，只能靠逐条对。
+   > 实测教训：一周的明细里漏掉过 6 条，其中一条是当周耗时最高的单项——它的讨论全在 PR 上，
+   > issue 页整周零评论。汇总数字当时是对的（本来就按 issue+PR 全量算），**错的只是明细清单**，
+   > 所以这类 bug 从总量上看不出来，只能靠逐条对。

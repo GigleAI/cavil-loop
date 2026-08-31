@@ -32,7 +32,13 @@ REPO="${WEEKLY_REPORT_REPO:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/de
 [ -n "$REPO" ] || { echo "推不出 REPO，请在 $CONF 里设 WEEKLY_REPORT_REPO" >&2; exit 1; }
 
 ASSET_DIR="${WEEKLY_REPORT_ASSET_DIR:-$HOME/.local/state/coding-agent-poll/review-shots/weekly-report}"
-ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-https://futurelab05.mercat-delta.ts.net:8443/review-assets/weekly-report}"
+# 公网 URL 前缀没有默认值：主机名属于部署环境，不进这个公开仓库。在项目配置里设。
+ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-}"
+[ -n "$ASSET_URL" ] || {
+    echo "缺 WEEKLY_REPORT_ASSET_URL —— 配图要能被 GitHub 抓到，必须是公网可达的 URL 前缀。" >&2
+    echo "在 $CONF 里设，例如：WEEKLY_REPORT_ASSET_URL=\"https://<你的公网主机>/review-assets/weekly-report\"" >&2
+    exit 1
+}
 FONTS_DIR="${WEEKLY_REPORT_FONTS_DIR:-$PROJECT_ROOT/public/fonts}"
 LABEL="${WEEKLY_REPORT_LABEL:-pending/agent}"
 

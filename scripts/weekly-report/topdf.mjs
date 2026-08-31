@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 把周报 markdown 渲染成 A4 PDF（Gigle 极简版式，中文字体，页码）。
+// 把周报 markdown 渲染成 A4 PDF（极简版式，中文字体，页码）。
 //
 // 用法: topdf.mjs <node-project-dir> <in.md> <out.pdf> [--title T] [--subtitle S]
 //

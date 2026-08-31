@@ -9,8 +9,7 @@
 # 错的只有「这周到底在做哪些事」那份清单，而清单少一条根本看不出来。
 #
 #   · 只按「issue 自己有评论」筛 → 定完方案后讨论全搬到 PR 上的 issue 整条消失。
-#     2026-08-24 那周实测漏了 6 条，其中一条是当周耗时第二、成本第一的单项
-#     （107 条评论全在 PR 上，issue 页零活动）。
+#     实测漏过一整周里耗时最高的那个单项：它的讨论全在 PR 上，issue 页整周零评论。
 #   · 没有关联 issue 的 PR（chore / 工具链）不挂在任何 issue 下 → 只看 issue 清单完全看不见。
 set -uo pipefail
 
@@ -23,9 +22,9 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 chk() { if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); else echo "  ❌ $1 (期望 '$3'，实得 '$2')"; fail=$((fail+1)); fi; }
 
-# 目标周：2026-08-24（周一） ~ 08-30（周日），北京时间
-W_IN="2026-08-26T02:00:00Z"    # 窗口内
-W_OUT="2026-08-18T02:00:00Z"   # 窗口前一周
+# 目标周：2025-01-06（周一） ~ 01-12（周日），北京时间
+W_IN="2025-01-08T02:00:00Z"    # 窗口内
+W_OUT="2024-12-31T02:00:00Z"   # 窗口前一周
 
 cat > "$TMP/issues.json" <<JSON
 [
@@ -99,7 +98,7 @@ export PATH="$TMP/bin:$PATH"
 
 # git 统计跑在空目录上会拿不到 origin/main，collect.py 容忍（行数记 0），不影响本测试
 cd "$TMP"
-python3 "$COLLECT" --repo acme/widget --out "$TMP/data.json" --weeks 2 --week-of 2026-08-24 \
+python3 "$COLLECT" --repo acme/widget --out "$TMP/data.json" --weeks 2 --week-of 2025-01-06 \
     >/dev/null 2>"$TMP/err.log" || { echo "collect.py 跑挂了："; cat "$TMP/err.log"; exit 1; }
 
 # 断言失败时（比如某条 issue 根本没进明细）打印空串而不是抛 traceback，
