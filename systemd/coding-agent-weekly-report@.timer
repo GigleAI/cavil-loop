@@ -1,0 +1,13 @@
+[Unit]
+Description=每周一上午 09:00 触发周报生成（instance: %i）
+
+[Timer]
+Unit=coding-agent-weekly-report@%i.service
+OnCalendar=Mon *-*-* 09:00:00
+# 机器当时关着 / user manager 没起来时，开机后补跑一次。
+# 与 coding-agent-poll@ 的 monotonic timer 不同，OnCalendar 下 Persistent 是真生效的。
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

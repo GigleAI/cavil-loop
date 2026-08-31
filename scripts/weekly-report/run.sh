@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# 周报流水线：采数 → 出图 → 传图 → 开 issue。
+#
+# 每周一由 systemd timer coding-agent-weekly-report@<project>.timer 触发。
+# 手动跑：bash run.sh <project-key> [--dry-run] [--week-of YYYY-MM-DD]
+#
+# 产物落在 issue 里（数据 + 两张趋势图）。issue 默认打 pending/agent，
+# 由 daemon 派 worker 把数据写成大白话解读——数字机器出，人话 agent 写。
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT="${1:?用法: run.sh <project-key> [--dry-run] [--week-of YYYY-MM-DD]}"; shift || true
+
+DRY=0; WEEK_OF=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY=1; shift ;;
+        --week-of) WEEK_OF="$2"; shift 2 ;;
+        *) echo "未知参数: $1" >&2; exit 2 ;;
+    esac
+done
+
+CONF="$HOME/.config/coding-agent-work-loop/${PROJECT}.conf"
+[ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
+# shellcheck disable=SC1090
+set -a; . "$CONF"; set +a
+: "${PROJECT_ROOT:?项目配置里缺 PROJECT_ROOT}"
+
+# REPO 从项目配置读；没有就从 PROJECT_ROOT 的 git remote 推
+REPO="${WEEKLY_REPORT_REPO:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null \
+      | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')}"
+[ -n "$REPO" ] || { echo "推不出 REPO，请在 $CONF 里设 WEEKLY_REPORT_REPO" >&2; exit 1; }
+
+ASSET_DIR="${WEEKLY_REPORT_ASSET_DIR:-$HOME/.local/state/coding-agent-poll/review-shots/weekly-report}"
+ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-https://futurelab05.mercat-delta.ts.net:8443/review-assets/weekly-report}"
+FONTS_DIR="${WEEKLY_REPORT_FONTS_DIR:-$PROJECT_ROOT/public/fonts}"
+LABEL="${WEEKLY_REPORT_LABEL:-pending/agent}"
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+# camo 按源 URL 缓存约一年，每轮必须换新 URL，否则顶死旧图
+REV="wk-$(date +%Y%m%d)-$(date +%s%N | tail -c 7)"
+
+echo "== 1/4 采数（repo=$REPO）"
+git -C "$PROJECT_ROOT" fetch origin --quiet || true
+( cd "$PROJECT_ROOT" && python3 "$HERE/collect.py" --repo "$REPO" --out "$WORK/data.json" \
+    ${WEEK_OF:+--week-of "$WEEK_OF"} )
+
+echo "== 2/4 出图"
+python3 "$HERE/render.py" --data "$WORK/data.json" --out-dir "$WORK" \
+    --asset-url-base "$ASSET_URL" --rev "$REV" --fonts-dir "$FONTS_DIR"
+for n in delivery effort; do
+    node "$HERE/shot.mjs" "$PROJECT_ROOT" "$WORK/$n.html" "$WORK/$n-$REV.png"
+done
+
+echo "== 3/4 传图"
+mkdir -p "$ASSET_DIR"
+cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
+for n in delivery effort; do
+    code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$n-$REV.png")
+    [ "$code" = "200" ] || { echo "配图公网不可达（$n → HTTP $code），中止" >&2; exit 1; }
+    echo "   $ASSET_URL/$n-$REV.png → 200"
+done
+
+echo "== 4/4 出报告"
+python3 "$HERE/report.py" --data "$WORK/data.json" --out "$WORK/report.md" \
+    --asset-url-base "$ASSET_URL" --rev "$REV"
+
+WEEK_START=$(python3 -c "import json;print(json.load(open('$WORK/data.json'))['target_week']['start'])")
+WEEK_END=$(python3 -c "import json;print(json.load(open('$WORK/data.json'))['target_week']['end'])")
+TITLE="📊 周报 ${WEEK_START} ~ ${WEEK_END}"
+
+BODY="$WORK/body.md"
+{
+    cat <<'HDR'
+> 本 issue 由每周一的定时任务自动生成：**数字是机器算的，解读要 agent 来写。**
+>
+> **@agent 你的任务**：把下面的数据写成一份「普通用户看得懂」的周报，作为本 issue 的一条评论发出来，
+> 然后把 label 翻成 `pending/human`。要求：
+> 1. 开头一句话总览；每个 issue 用大白话讲清楚「解决了什么、对用户意味着什么」，不要只甩标题
+> 2. 分组：已上线 / 不用写代码就闭环 / 有推进没完成（按「等谁」分：等验收合并、等拍板）/ 新提未开工
+> 3. 末尾给 3~5 条「值得注意的现象」，要有解释而不只是罗列数字
+> 4. 不要显示代码文件数；不要开 PR
+> 5. 趋势图直接引用下面那两张，不用重新出图
+
+---
+
+HDR
+    cat "$WORK/report.md"
+} > "$BODY"
+
+if [ "$DRY" = "1" ]; then
+    echo "== dry-run：不发 issue，报告在 $HOME/weekly-report-dryrun.md"
+    cp "$BODY" "$HOME/weekly-report-dryrun.md"
+    cp "$WORK/data.json" "$HOME/weekly-report-dryrun.json"
+    exit 0
+fi
+
+URL=$(gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY")
+echo "已开 issue: $URL"
+NUM="${URL##*/}"
+# 打 label 走 REST：gh issue edit --add-label 走 GraphQL，bot PAT 缺 read:org 会挂
+gh api -X POST "repos/$REPO/issues/$NUM/labels" -f "labels[]=$LABEL" >/dev/null
+echo "已打 label: $LABEL"

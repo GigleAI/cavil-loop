@@ -1,0 +1,20 @@
+[Unit]
+Description=每周一自动出周报（上周明细 + 最近 10 周趋势曲线），instance: %i
+Documentation=https://github.com/GigleAI/cavil-loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 与 coding-agent-poll@ 同理：脚本会 spawn chromium（playwright 截图），
+# 默认的 control-group KillMode 会在 oneshot 退出时连带清掉残留子进程。
+# 这里 ExecStart 结束时截图早已完成，用 process 只是保持一致、避免误杀。
+KillMode=process
+# 复用 daemon 的项目配置：PROJECT_ROOT / PATH / GH_TOKEN 都从这里来。
+# systemd 的 PATH 是极简的，不含 ~/.hermes/node/bin（node 在那儿），必须靠这个注入。
+EnvironmentFile=%h/.config/coding-agent-work-loop/%i.conf
+WorkingDirectory=%h/.agents/skills/coding-agent-work-loop
+ExecStart=/usr/bin/env bash %h/.agents/skills/coding-agent-work-loop/scripts/weekly-report/run.sh %i
+
+[Install]
+WantedBy=default.target
