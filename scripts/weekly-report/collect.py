@@ -192,22 +192,52 @@ def main():
 
     tw = target.isoformat()
     tend = target + datetime.timedelta(days=6)
-    # 上周明细：当周关闭的 issue + 当周有讨论的 issue
-    detail = []
-    for n, p in per_issue.items():
+
+    def issue_of(pn):
+        """PR 关联到的真 issue 号；关联不到（或指向另一个 PR）返回 None。"""
+        iss = link.get(pn)
+        if iss is None:
+            return None
+        m = meta.get(iss)
+        return iss if (m and not m["is_pr"]) else None
+
+    def in_target_week(ts):
+        return bool(ts) and monday(loc(ts).date()).isoformat() == tw
+
+    # 上周明细的入选条件（三选一）。第 ② 条是必须的：很多 issue 定完方案就没人再回
+    # issue 页了，整周的讨论全发生在它的 PR 上——只看 issue 侧活跃度会把整条工作漏掉。
+    #   ① issue 自己当周有讨论
+    #   ② 它的关联 PR 当周有讨论
+    #   ③ issue 当周关闭（哪怕一条评论都没有）
+    seed = set()
+    for n in per_issue:
         m = meta.get(n)
-        if not m or m["is_pr"]:
+        if not m:
             continue
-        detail.append({**m, **{k: p[k] for k in ("rounds", "human", "secs", "cost")}})
+        if m["is_pr"]:
+            iss = issue_of(n)
+            if iss is not None:
+                seed.add(iss)
+        else:
+            seed.add(n)
     for n, m in meta.items():
-        if m["is_pr"] or n in per_issue:
-            continue
-        if m["closed_at"] and monday(loc(m["closed_at"]).date()).isoformat() == tw:
-            detail.append({**m, "rounds": 0, "human": 0, "secs": 0, "cost": 0})
+        if not m["is_pr"] and in_target_week(m["closed_at"]):
+            seed.add(n)
+
+    detail = []
+    for n in seed:
+        m = meta[n]
+        p = per_issue.get(n)
+        detail.append({**m, "rounds": p["rounds"] if p else 0,
+                       "human": p["human"] if p else 0,
+                       "secs": p["secs"] if p else 0,
+                       "cost": p["cost"] if p else 0})
     # 把每个 issue 的关联 PR 挂上（PR 侧的讨论/耗时并进 issue）
     rev = collections.defaultdict(list)
-    for pn, iss in link.items():
-        rev[iss].append(pn)
+    for pn in link:
+        iss = issue_of(pn)
+        if iss is not None:
+            rev[iss].append(pn)
     for d in detail:
         d["prs"] = []
         for pn in rev.get(d["num"], []):
@@ -222,11 +252,28 @@ def main():
                 d["secs"] += pp["secs"];     d["cost"] += pp["cost"]
     detail.sort(key=lambda d: -d["secs"])
 
+    # 没有关联 issue 的 PR（多为 chore / 工具链改动）。它们不挂在任何 issue 下，
+    # 只看 issue 清单就完全看不见——单列一组，否则这部分工作凭空消失。
+    loose = []
+    for n, m in meta.items():
+        if not m["is_pr"] or issue_of(n) is not None:
+            continue
+        p = per_issue.get(n)
+        if not p and not in_target_week(m["merged_at"]):
+            continue
+        loose.append({**m, "rounds": p["rounds"] if p else 0,
+                      "human": p["human"] if p else 0,
+                      "secs": p["secs"] if p else 0,
+                      "cost": p["cost"] if p else 0})
+    loose.sort(key=lambda d: -d["secs"])
+
     json.dump({"repo": R, "generated_at": datetime.datetime.now(TZ).isoformat(),
                "target_week": {"start": tw, "end": tend.isoformat()},
-               "weeks": weeks, "weekly": weekly, "detail": detail},
+               "weeks": weeks, "weekly": weekly, "detail": detail,
+               "loose_prs": loose},
               open(a.out, "w"), ensure_ascii=False, indent=1)
-    print(f"[ok] {a.out}: 目标周 {tw}~{tend}，{len(weeks)} 周趋势，{len(detail)} 条 issue 明细")
+    print(f"[ok] {a.out}: 目标周 {tw}~{tend}，{len(weeks)} 周趋势，"
+          f"{len(detail)} 条 issue 明细，{len(loose)} 条无 issue 的 PR")
 
 if __name__ == "__main__":
     main()

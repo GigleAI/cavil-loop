@@ -14,6 +14,8 @@
 | `render.py` | 把数据渲染成两张趋势图的 HTML（交付面 / 投入面），Gigle 极简配色 + Libre Baskerville |
 | `shot.mjs` | HTML → 1280px 单倍像素 PNG（GitHub 评论配图标准） |
 | `report.py` | 出周报 markdown（数据部分）：上周对比表、逐 issue 明细、逐周趋势表、口径说明 |
+| `topdf.mjs` | 周报 markdown → A4 PDF（Gigle 极简版式、中文字体、页码）。自带 md 子集渲染器，不引第三方 md 库 |
+| `publish-asset.sh` | 把 PDF / 附件发到 funnel 公网目录，自动加 `rev` 并校验 HTTP 200，打印 URL |
 | `run.sh` | 串起来：采数 → 出图 → 传图（校验公网 200）→ 开 issue → 打 `pending/agent` |
 
 ## 用法
@@ -48,6 +50,32 @@ systemctl --user enable --now coding-agent-weekly-report@<project>.timer
 | `WEEKLY_REPORT_FONTS_DIR` | `$PROJECT_ROOT/public/fonts` | 自托管 woff2；目录不在就回落系统字体 |
 | `WEEKLY_REPORT_LABEL` | `pending/agent` | 开出的 issue 打什么 label。设成 `pending/human` 就只出数据、不叫 agent 写解读 |
 
+## 周报文档规范
+
+数字由脚本出，**解读和 PDF 由 agent 写**。派工要求写在 `run.sh` 的 issue 模板里，
+改规范就改那一段（它是唯一真值，README 这里只是转述）。
+
+**PDF 结构固定四段，顺序不要改**：
+
+1. **本周总体数据表格** —— 开篇第一屏就是数字，含环比
+2. **总体结论与注意事项** —— **精简**，3~5 条，每条一句话结论 + 一句话解释
+3. **详细展开** —— 按「已上线 / 不用写代码就闭环 / 有推进没完成（等验收合并、等拍板）/ 新提未开工」分组
+4. 数据口径附在末尾
+
+⚠️ **PDF 里不写周报工具自身的元信息**（口径修正、数据遗漏、复核过程）。
+那些留在 issue 评论里说；PDF 是给人看「这周干了什么」的。
+
+出 PDF 与发布：
+
+```bash
+node topdf.mjs <项目目录> report.md report.pdf --title "标题" --subtitle "副标题"
+URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev + 校验公网 200
+```
+
+`topdf.mjs` 从 `<项目目录>/node_modules` 解析 playwright（同 `shot.mjs`）。
+markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 / 图片 / 行内强调 / `<sub>` 等原样 HTML。
+表格里**整列都是数字**的会自动右对齐 + 等宽数字。
+
 ## 口径上的几个坑（改之前先读）
 
 1. **`⏱️ 耗时` footer 不能直接求和**。会话跨夜时它记的是墙上时间（含等人回话），
@@ -61,3 +89,11 @@ systemctl --user enable --now coding-agent-weekly-report@<project>.timer
 4. **周切片按北京时间**（`TZ = UTC+8`），GitHub 返回的是 UTC，直接按 UTC 切会和人的直觉差 8 小时。
 5. **机器人账号判定**走 `-bot` / `[bot]` 后缀。新增别的机器人账号要同步改 `is_bot()`，
    否则它发的评论会被算进「人发的」。
+6. **明细不能只看 issue 侧的活跃度**。很多 issue 定完方案就没人再回 issue 页了，
+   整周的讨论全发生在它的 PR 上——只按「issue 有评论」筛，会把整条工作漏掉。
+   `collect.py` 的入选条件是三选一：**issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭**。
+   另外**没有关联 issue 的 PR**（chore、工具链）不挂在任何 issue 下，用 `loose_prs` 单列一组，
+   否则这部分工作在清单里凭空消失。
+   > 实测教训：2026-08-24 那周初版漏了 6 条，其中一条是当周**耗时第二、成本第一**的单项
+   > （107 条评论全在 PR 上，issue 页零活动）。汇总数字当时是对的（本来就按 issue+PR 全量算），
+   > **错的只是明细清单**——所以这类 bug 从总量上看不出来，只能靠逐条对。

@@ -37,8 +37,11 @@ def main():
     row("成本（API 标价折算）", cur["cost"], prev["cost"], lambda v: f"${v:,.0f}")
     L.append(f"| 周末未关闭 issue 存量 | {cur['backlog']:,.0f} | {prev['backlog']:,.0f} | — |\n")
 
-    closed=[d for d in D["detail"] if d["closed_at"] and d["closed_at"][:10]>=tw["start"]]
-    active=[d for d in D["detail"] if d not in closed and d["rounds"]>0]
+    czn={d["num"] for d in D["detail"]
+         if d["closed_at"] and d["closed_at"][:10]>=tw["start"]}
+    closed=[d for d in D["detail"] if d["num"] in czn]
+    active=[d for d in D["detail"] if d["num"] not in czn and d["rounds"]>0]
+    loose=[d for d in D.get("loose_prs",[]) if d["rounds"]>0 or d["merged_at"]]
     L.append(f"### 上周收口的 issue（{len(closed)} 个）\n")
     L.append("| # | 标题 | 轮数（你参与） | AI 耗时 | PR |")
     L.append("|---|---|---|---|---|")
@@ -50,6 +53,17 @@ def main():
     L.append("|---|---|---|---|---|")
     for d in active:
         L.append(f"| #{d['num']} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） | {hm(d['secs'])} | {', '.join(d['labels']) or '—'} |")
+
+    if loose:
+        L.append(f"\n### 上周没有对应 issue 的 PR（{len(loose)} 个）\n")
+        L.append("> 多为 chore / 工具链改动。它们不挂在任何 issue 下，单列在这里，"
+                 "否则只看 issue 清单会完全看不见这部分工作。\n")
+        L.append("| PR | 标题 | 轮数（你参与） | AI 耗时 | 状态 |")
+        L.append("|---|---|---|---|---|")
+        for d in loose:
+            stt="已合并" if d["merged_at"] else ("已关闭" if d["closed_at"] else "开着")
+            L.append(f"| #{d['num']} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） "
+                     f"| {hm(d['secs'])} | {stt} |")
 
     L.append(f"\n---\n\n## 📈 最近 {len(W)} 周趋势\n")
     L.append(f"![交付趋势]({a.asset_url_base}/delivery-{a.rev}.png)\n")
@@ -74,6 +88,7 @@ def main():
 - **讨论条数**：GitHub 上 issue + PR 的全部评论；「你发的」= 非 `*-bot` 账号发的条数。
 - **AI 工作时长**：来自每条 agent 评论末尾的「⏱️ 耗时」footer，**只算真正在干活的时间**，不含等人回话的空档。单条超过 4 小时的一律剔除（那是会话跨夜把等待也算进去了）——本次趋势区间共剔除 {t('outliers'):.0f} 条。
 - **成本**：footer 里按 API 标价折算的金额，**不是订阅制下的真实账单**，只用于周与周之间的相对比较。本次区间有 {t('footers')-t('cost_footers'):.0f} 条 footer 缺金额，未计入，总额偏低。
+- **明细的入选口径**：issue 自己当周有讨论 **或** 它的关联 PR 当周有讨论 **或** 当周关闭。很多 issue 定完方案后讨论全发生在 PR 上，只看 issue 侧活跃度会把整条工作漏掉。没有关联 issue 的 PR（chore / 工具链）单列一组。
 - **代码行数**：`origin/main` 上当周提交的「新增 − 删除」，含自动生成文件与依赖锁文件，是工作量的粗略代理。
 - **提交数不适合看趋势**（因此未入图）：合并方式改成 squash 后，一个 PR 只留一个提交，提交数会断崖式下降，那是记账方式变了而非产出变了。
 - **数据生成时间**：{D['generated_at'][:19].replace('T',' ')}，由 `scripts/weekly-report/` 自动产出。
