@@ -60,6 +60,12 @@ done
 
 echo "== 3/4 传图"
 mkdir -p "$ASSET_DIR"
+# 资产目录挡住目录列表：静态文件服务器（tailscale serve 的 path handler 等）
+# 见到目录就会吐出可点击的文件清单，等于把历来所有截图的索引公开。放一个
+# index.html，服务器就改吐它而不是清单；直链不受影响。
+for d in "$ASSET_DIR" "$ASSET_DIR/.."; do
+    [ -e "$d/index.html" ] || printf '<!doctype html><title>404</title>Not found.\n' > "$d/index.html"
+done
 cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
 for n in delivery effort; do
     code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$n-$REV.png")
