@@ -61,6 +61,20 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 # Pace
 MAX_CONCURRENT_WORKERS=1
 POLL_INTERVAL_SECS=60
+
+# What counts as actionable: label = only pending/agent items; greedy = every open item
+# unless a blocking label stops it
+DISPATCH_MODE="label"
+GREEDY_SKIP_LABELS=""            # extra blocking labels for greedy (comma-separated)
+GREEDY_SCAN_LIMIT=100
+
+# Where sort key #1 comes from: label = priority/p* labels; project = GitHub's Priority
+# field; both = the field where set, labels as fallback
+PRIORITY_SOURCE="label"
+PROJECT_PRIORITY_FIELD="Priority"
+PROJECT_NUMBER=""                # empty = first board linked to this repo
+PROJECT_OWNER=""                 # only when the board's owner differs from the repo's
+PROJECT_GH_TOKEN=""              # token used only for the board read; empty = reuse GH_TOKEN
 ```
 
 Full field list: [`coding-agent.config.example`](../coding-agent.config.example).

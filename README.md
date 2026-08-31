@@ -91,6 +91,15 @@ Two trigger scenarios:
 | New request     | Add `pending/agent` to an issue              | Posts a **design proposal** comment first (asking how to approach it, whether to split PRs), then on your confirmation: branch → implement → open PR |
 | Review feedback | Add `pending/agent` to a PR (with a comment) | Finds the AI session for this PR, reads the latest comment, and acts                                                                                 |
 
+### Knobs (defaults work as-is; reach for these when you need them)
+
+| To change | How | Details |
+|---|---|---|
+| **What counts as actionable** | `DISPATCH_MODE=greedy` — stop labelling items one by one; every open issue / PR is worked unless a blocking label (`pending/human` and friends) stops it | [architecture](docs/architecture.md) |
+| **Who goes first** | When slots are full, the queue sorts by priority → stage → waiting time. Priority can come from `priority/p*` labels or straight from **GitHub's own Priority field** (`PRIORITY_SOURCE=project`) — reorder the options on the board and the tiers follow | [operations](docs/operations.md) |
+| **The prompt the AI reads** | The generic workflow ships with the skill; a project only writes its own delta (`<name>.extra.md`), appended after it. No need to fork the whole template — forking means never receiving upstream updates again | [operations](docs/operations.md) |
+| **Which AI CLI runs** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`, or write your own driver | [drivers](docs/drivers.md) |
+
 ## What it **doesn't** do
 
 - ❌ **Not a cloud service**: runs on your laptop / NAS. Machine off = it stops
@@ -183,7 +192,7 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 | [docs/collaboration.md](docs/collaboration.md) | Multi-human + multi-agent workflows: PM → Dev → QA handoff via label suffixes (`pending/agent/PM`, `pending/human/Alex`, …) |
 | [docs/persistence.md](docs/persistence.md) | Where design proposals / discussions / code / Claude conversations / tmux history live, how to look them up later, how to resume from a break point |
 | [docs/security.md](docs/security.md) | **Public-repo users must read.** Anonymous comments can contain prompt injection; how the defenses work |
-| [docs/operations.md](docs/operations.md) | Full config, prompt templates, multi-project, upgrades, macOS launchd, webhook trigger, swapping AI worker, troubleshooting |
+| [docs/operations.md](docs/operations.md) | Full config, dispatch modes and queue order, prompt templates (base + project delta), multi-project, upgrades, macOS launchd, webhook trigger, swapping AI worker, troubleshooting |
 | [docs/drivers.md](docs/drivers.md) | Worker agent drivers — built-in `claude` / `opencode` / `codex` / `cursor`, plus how to add your own |
 
 ## Note

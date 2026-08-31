@@ -61,6 +61,18 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 # 节奏
 MAX_CONCURRENT_WORKERS=1
 POLL_INTERVAL_SECS=60
+
+# 派工口径：label = 只捡打了 pending/agent 的；greedy = 开着的都干，除非被挡工 label 挡住
+DISPATCH_MODE="label"
+GREEDY_SKIP_LABELS=""            # greedy 下额外的挡工 label（逗号分隔，追加在内置五个之后）
+GREEDY_SCAN_LIMIT=100
+
+# 第一排序键从哪儿来：label = priority/p* 标签；project = GitHub 的 Priority 字段；both = 前者优先、缺了回落标签
+PRIORITY_SOURCE="label"
+PROJECT_PRIORITY_FIELD="Priority"
+PROJECT_NUMBER=""                # 留空 = 本仓库关联的第一个看板；看板在别处就填编号
+PROJECT_OWNER=""                 # 看板 owner 跟仓库 owner 不同时才填
+PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用 GH_TOKEN
 ```
 
 完整字段见 [`coding-agent.config.example`](../coding-agent.config.example)。

@@ -91,6 +91,15 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 | 新需求 | 给 issue 加 `pending/agent` | 先写一份**设计提案**当评论跟你确认（怎么做、要不要拆 PR），确认后建分支 → 实现 → 开 PR |
 | Review 反馈 | 给 PR 加 `pending/agent`（带评论） | 找到正在干这个 PR 的 AI 会话，读最新评论后改代码 / 答疑 |
 
+### 可以调的地方（默认值都能直接用，下面这些是按需改）
+
+| 想改什么 | 怎么改 | 细节 |
+|---|---|---|
+| **什么算待办** | `DISPATCH_MODE=greedy` —— 不用逐条打 `pending/agent`，开着的 issue / PR 一律干，除非挂了 `pending/human` 等挡工标签 | [architecture](docs/architecture.zh.md) |
+| **谁先干** | 并发满时按「优先级 → 阶段 → 等待时长」排队。优先级可以读 `priority/p*` 标签，也可以直接读 **GitHub 上的 Priority 字段**（`PRIORITY_SOURCE=project`），看板上拖一下就改档位 | [operations](docs/operations.zh.md) |
+| **AI 读到的 prompt** | 通用工作流由 skill 提供，项目只写自己的增量（`<name>.extra.md`），追加在通用部分之后。不用整份抄一遍——抄了就再也拿不到上游更新 | [operations](docs/operations.zh.md) |
+| **用哪个 AI CLI** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`，也可以写自己的 driver | [drivers](docs/drivers.zh.md) |
+
 ## 它**不**做什么
 
 - ❌ **不是云端服务**：跑在你自己的电脑 / NAS。机器关机就停
@@ -196,7 +205,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 | [docs/collaboration.md](docs/collaboration.zh.md) | 多人 + 多 agent 协作：用 label 后缀（`pending/agent/PM`、`pending/human/Alex` …）走 PM → Dev → QA 接力 |
 | [docs/persistence.md](docs/persistence.zh.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.zh.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
-| [docs/operations.md](docs/operations.zh.md) | 配置全字段、prompt 模板、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |
+| [docs/operations.md](docs/operations.zh.md) | 配置全字段、派工口径与取工顺序、prompt 模板（base + 项目增量）、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |
 | [docs/drivers.md](docs/drivers.zh.md) | Worker agent driver —— 内置 `claude` / `opencode` / `codex` / `cursor`、加自家 driver 教程 |
 
 ## 备注
