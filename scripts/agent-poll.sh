@@ -404,7 +404,13 @@ collect_queue_rows_greedy() {
         queued_keys[$key]=1
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "" "$num")
-        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${US}${US}${title}"$'\n'
+        # ⚠️ 字段数必须跟 label 那趟**一模一样**（11 个）。这里少写一个 ${US} 的后果不是
+        # 报错，而是整行往前错一位：title 落进 prompt_kind → dispatch 拿它去找
+        # "知识地图里，有空白的知识点.template.md" → 找不到 → 悄悄回落到 8 行的内联兜底
+        # prompt（"读 issue → 实现 → 开 PR → 翻 pending/human"），于是 worker 跳过设计
+        # 阶段、跳过交叉 review、不贴测试输出，看日志却一切正常。2026-09-02 issue #833
+        # 就是这么翻车的。改这行前先数一遍 US 的个数。
+        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${US}${US}${US}${title}"$'\n'
     done <<< "$raw"
 }
 

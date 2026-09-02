@@ -79,6 +79,16 @@ chk "not-Done 不是 Done"                  "$(verdict "not-Done")"           "-
 chk "doing/agent-lite 不是 doing/agent"   "$(verdict "doing/agent-lite")"   "-"
 chk "带空格的 label 不被拆开"             "$(verdict "good first issue")"   "-"
 
+echo "── 队列行的字段数：greedy 那趟必须跟 label 那趟一样宽 ──"
+# 少一个分隔符不会报错，只会让整行往前错一位：title 落进 prompt_kind，dispatch 拿它去找
+# 一个不存在的模板 → 悄悄回落到 8 行内联 prompt（跳过设计阶段、跳过交叉 review、不贴
+# 测试输出），而日志上一切正常。2026-09-02 issue #833 就是这么翻车的。
+POLL="$REPO_DIR/scripts/agent-poll.sh"
+widths=$(grep -o 'QUEUE_ROWS+="[^"]*"' "$POLL" | awk -F'\\$\\{US\\}' '{print NF}' | sort -u | tr '\n' ' ')
+reader_n=$(grep -o 'while IFS="\$US" read -r [^;]*' "$POLL" | head -1 | awk '{print NF-4}')
+chk "两趟的字段数一致"       "$(echo $widths | wc -w)" "1"
+chk "字段数 = reader 变量个数" "$(echo $widths | tr -d ' ')" "$reader_n"
+
 echo "── DISPATCH_MODE 校验 ──"
 chk "默认是 label"  "$DISPATCH_MODE" "label"
 # 拼错必须 fail-fast：静默回落到 label 等于「配了 greedy 却没生效」，最难查

@@ -1214,7 +1214,13 @@ find_prompt_template() {
 compose_prompt_template() {
     local name="$1" base_tpl overlay out
     base_tpl="$(find_prompt_template "$name")"
-    [ -n "$base_tpl" ] || { echo ""; return; }
+    if [ -z "$base_tpl" ]; then
+        # 找不到模板 = 调用方会回落到内联的极简 prompt。那份 prompt 只说「实现 → 开 PR →
+        # 翻 pending/human」，跳过设计阶段、跳过交叉 review、不贴测试输出 —— 产出看着
+        # 像正常完工，实际绕过了所有关卡。这种降级必须留痕，否则只能靠肉眼看 PR 才发现。
+        log "⚠️ 找不到 prompt 模板 '$name'（既不在项目里也不在 skill 里）→ 调用方将回落到内联极简 prompt，设计阶段 / review 关卡都会被跳过" 2>/dev/null || true
+        echo ""; return
+    fi
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     [ -n "$overlay" ] || { echo "$base_tpl"; return; }
 
