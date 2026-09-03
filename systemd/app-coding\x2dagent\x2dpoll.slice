@@ -23,9 +23,9 @@ Documentation=https://github.com/GigleAI/cavil-loop
 # 放一个同名 unit 文件进 ~/.config/systemd/user/，systemd 就会拿它去配置那个隐式 slice。
 #
 # ── 数字（本机 MemTotal 15.5 GiB / swap 4 GiB）──
-# 最坏并发 = tutor 6 + sudoku 3 + gotomarket 1 + workloop 1 = 11 个 worker（tutor 2026-08-26
-# 3→4、2026-09-03 4→6，理由见该项目 coding-agent.config 的注释），单个 claude worker
-# 最坏 ~3 GiB → 33 GiB，
+# 最坏并发 = tutor 5 + sudoku 3 + gotomarket 1 + workloop 1 = 10 个 worker（tutor 2026-08-26
+# 3→4、2026-09-03 4→5，理由见该项目 coding-agent.config 的注释），单个 claude worker
+# 最坏 ~3 GiB → 30 GiB，
 # 本来就是超卖的 —— 挡住它的是下面两条，不是这个账。实测 MemoryCurrent：4.5 GiB
 # (2026-08-26) → 5.6 GiB (2026-09-03，4 并发满载)，离软限 8G 还有余量，
 # 所以下面这两条平时根本不咬，只在 worker 集体发胖时才生效。改并发上限时记得回来对一眼。
