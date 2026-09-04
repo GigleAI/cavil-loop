@@ -86,6 +86,40 @@ LABEL_PENDING_AGENT_FABLE="${LABEL_PENDING_AGENT_FABLE:-pending/agent/fable}"
 FABLE_MODEL="${FABLE_MODEL:-claude-fable-5}"
 FABLE_WORKER_AGENT="${FABLE_WORKER_AGENT:-claude}"
 
+# ── 追加触发 label（逗号分隔，默认空）──
+# 语义跟 LABEL_PENDING_AGENT 一模一样：同一套 prompt、同一个 worker、同一个模型，
+# 只是多认几个名字。**不是**用来做模型选择的（那是 fable 那条路）。
+#
+# 存在的理由：多机分工。两台机器盯同一个仓库时，各自把自己的主机标签配进来，
+# 谁的标签谁接，互不抢活：
+#   05 上：LABEL_PENDING_AGENT="pending/agent"    LABEL_PENDING_AGENT_EXTRA="pending/agent/05"
+#   01 上：LABEL_PENDING_AGENT="pending/agent/01" LABEL_PENDING_AGENT_EXTRA=""
+# 注意另一半必须同时配：greedy 模式下兜底趟不看触发 label，会把别人家的
+# pending/agent/01 也收进来 —— 所以对方的标签要进 GREEDY_SKIP_LABELS。
+LABEL_PENDING_AGENT_EXTRA="${LABEL_PENDING_AGENT_EXTRA:-}"
+
+# 所有「会触发派工」的 label。派工时必须把它们**一并**摘掉：只摘触发的那一个，
+# 剩下的下一轮又会把同一条活重新捡起来，worker 无限重开。
+# 以前这里是三个变量硬写在五处 --remove 后面，加一个触发 label 就得记得改五个地方；
+# 收进一个函数是为了新增 label 时不会漏。
+trigger_labels_all() {
+    printf '%s\n' \
+        "$LABEL_PENDING_AGENT_DEFAULT" \
+        "$LABEL_PENDING_AGENT_FABLE" \
+        "${LABEL_PENDING_REVIEW:-}" \
+        "${LABEL_PENDING_AGENT:-}"
+    if [ -n "${LABEL_PENDING_AGENT_EXTRA:-}" ]; then
+        printf '%s\n' "${LABEL_PENDING_AGENT_EXTRA}" | tr ',' '\n'
+    fi
+    return 0
+}
+
+# 上面那个列表去空 + 去重后的数组形式，直接展开给 `gh_label_flip --remove`。
+# 空串必须滤掉：gh_label_flip 拿到空 label 会去 DELETE 一个空路径。
+trigger_labels_array() {
+    mapfile -t TRIGGER_LABELS_ALL < <(trigger_labels_all | awk 'NF && !seen[$0]++')
+}
+
 # ── 交叉 review 关卡（可选）──
 # 设了 LABEL_PENDING_REVIEW 才启用：worker 产出代码后不直接翻 pending/human，
 # 而是翻到这个 label；daemon 看到它用**另一个 agent**（默认 codex）起独立 session

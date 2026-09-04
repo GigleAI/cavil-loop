@@ -414,12 +414,25 @@ collect_queue_rows_greedy() {
     done <<< "$raw"
 }
 
-# 收集顺序 = 同条目挂多个触发 label 时的取舍顺序（fable > 默认 > review），
+# 收集顺序 = 同条目挂多个触发 label 时的取舍顺序（fable > 默认 > 追加 > review），
 # 与排序无关：排序只认上面那三个键。
 collect_queue_rows issue "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
 collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
 collect_queue_rows pr "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
 collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
+# 追加触发 label（LABEL_PENDING_AGENT_EXTRA，多机分工用）：参数跟 DEFAULT 那趟完全一致，
+# 只是标签名不同 —— 同一套模板、同一个 worker、同一个模型。
+#
+# 必须排在 greedy 兜底趟**之前**：greedy 入队时 trigger_label 留空，下游会回落成
+# LABEL_PENDING_AGENT_DEFAULT，于是派工后摘掉的是 pending/agent 而不是 pending/agent/05，
+# 那个 /05 标签就永远留在条目上，下一轮又被捡起来。走这一趟才会带对触发 label。
+if [ -n "${LABEL_PENDING_AGENT_EXTRA:-}" ]; then
+    while IFS= read -r _extra_label; do
+        [ -n "$_extra_label" ] || continue
+        collect_queue_rows issue "$_extra_label" "" "" ""
+        collect_queue_rows pr    "$_extra_label" "" "" ""
+    done < <(printf '%s\n' "$LABEL_PENDING_AGENT_EXTRA" | tr ',' '\n')
+fi
 # 交叉 review 关卡：用另一个 agent（默认 codex）+ review 专用模板。留空则整段跳过。
 if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
     collect_queue_rows issue "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"

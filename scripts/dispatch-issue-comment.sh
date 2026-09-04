@@ -9,6 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# 派工时要一并摘掉的全部触发 label（含 LABEL_PENDING_AGENT_EXTRA 里的多机标签）。
+# 装配一次，下面五处 --remove 共用；漏掉任何一个都会让同一条活被反复重开。
+trigger_labels_array
+
 # 敏感 env（GH_TOKEN 等）不走 `-e VAR=值`——那会把值写进 tmux 的 argv，而
 # /proc/<pid>/cmdline 全局可读。改成 0600 文件 + worker shell 内 $(cat) 读回。
 # 校验放在**脚本顶部**而不是某条派工分支里：这个脚本有多条 spawn 路径
@@ -71,7 +75,7 @@ flip_label() {
     run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
         gh_label_flip "$ISSUE" \
         --add "$LABEL_AGENT_DOING" \
-        --remove "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" || true
+        --remove "${TRIGGER_LABELS_ALL[@]}" || true
 }
 
 # fable 标签作用于本次实际 worker 进程；已有 session 的 worker/model 不同就不能

@@ -81,6 +81,32 @@ LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
 # This label overrides only the current dispatch; the project's default worker stays unchanged.
 FABLE_WORKER_AGENT="claude"
 FABLE_MODEL="claude-fable-5"
+
+# Extra trigger labels (comma-separated, default empty). Identical semantics to
+# LABEL_PENDING_AGENT — same prompt, same worker, same model — they are just extra
+# names that also trigger a dispatch. NOT a model selector (that is the fable label).
+#
+# The reason it exists: splitting work across machines that watch the SAME repo.
+# Give each host its own label so neither steals the other's items:
+#   on host 05:  LABEL_PENDING_AGENT="pending/agent"     LABEL_PENDING_AGENT_EXTRA="pending/agent/05"
+#   on host 01:  LABEL_PENDING_AGENT="pending/agent/01"  LABEL_PENDING_AGENT_EXTRA=""
+# In greedy mode you MUST also list the other host's label in GREEDY_SKIP_LABELS —
+# the greedy sweep ignores trigger labels and would otherwise pick up their work.
+# Everything downstream follows the label you set: the reject path of the review
+# gate, self-heal, and the "re-label X and I'll start" line in the templates all
+# use this project's own labels, so an item routed to a host stays on that host.
+#
+# 追加触发 label（逗号分隔，默认空）。语义与 LABEL_PENDING_AGENT 完全相同 —— 同一套
+# prompt、同一个 worker、同一个模型 —— 只是多认几个名字，**不是**模型选择（那是 fable）。
+#
+# 存在的理由：两台机器盯同一个仓库时分工。各自配自己的主机标签，谁的标签谁接：
+#   05 上：LABEL_PENDING_AGENT="pending/agent"     LABEL_PENDING_AGENT_EXTRA="pending/agent/05"
+#   01 上：LABEL_PENDING_AGENT="pending/agent/01"  LABEL_PENDING_AGENT_EXTRA=""
+# greedy 模式下**必须**同时把对方的标签写进 GREEDY_SKIP_LABELS：兜底趟不看触发 label，
+# 否则照样把别人家的活收走。
+# 下游是自洽的：review 关卡的打回、self-heal 回填、模板里那句「重新标 X 我开干」
+# 用的都是本项目自己的 label，所以派到哪台机器就一直留在哪台。
+LABEL_PENDING_AGENT_EXTRA=""
 # ── Optional cross-review gate / 交叉 review 关卡（默认关闭）──
 # Set LABEL_PENDING_REVIEW to enable: instead of flipping straight to pending/human,
 # the worker flips here after producing code; the daemon then dispatches a *different*
