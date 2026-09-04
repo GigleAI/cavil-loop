@@ -8,6 +8,27 @@ Documentation=https://github.com/GigleAI/cavil-loop
 # SIGKILL → user@1003.service 进 failed。linger 不会把 failed 的 manager 拉回来，5 个 timer 一起
 # 消失，整套 daemon 静默停摆 12 小时才被发现（poll.log 停在 21:16，四个项目同一分钟）。
 #
+# ⚠️ 2026-09-04 补一条最关键的：**这个 slice 的内存闸门挡不住 oomd**，别再指望它。
+# 那天 10:16:55 又被打掉一次（停摆 2.5 小时），判决原文：
+#   systemd-oomd: Killed .../user@1003.service/init.scope due to memory pressure
+#     for .../user@1003.service being 63.73% > 50.00% for > 20s with reclaim activity
+#   systemd[1]: user@1003.service: Main process exited, code=killed, status=9/KILL
+# 它杀的是 init.scope —— 里面只有 systemd --user 自己，3.3 MiB，跟本 slice 一点关系没有。
+# oomd 按 pgscan 速率给后代 cgroup 排序，那轮所有候选 delta 都是 0（dump 里
+# Pgscan == Last Pgscan == 253），排序等于没排，就取了最前面的 init.scope。
+# **oomd 不按内存大小挑受害者**，所以下面 MemoryHigh/MemoryMax 无论怎么调都改不了它挑谁。
+# 真正堵上这条路径的是机器上的两个 root 单元（不在本仓库，装了才生效）：
+#   · /etc/systemd/system/user@1003.service.d/no-oomd.conf
+#       [Service] ManagedOOMMemoryPressure=auto —— 覆盖 Ubuntu 默认给所有 user@ 挂的
+#       /usr/lib/systemd/system/user@.service.d/10-oomd-user-service-defaults.conf。
+#       只改 1003 实例，别的 uid 不动。
+#   · user-manager-watchdog.timer（每 2 分钟 `is-active || start user@1003.service`）
+#       —— Linger=yes 只保证「登出后 manager 继续跑」，不负责把 failed 的 manager 拉回来。
+#       09-04 那次是等到 12:46 有人 SSH 登录、logind 顺手起回来的，中间一行告警都没有。
+# 排查口令：worker 集体消失 → 先看**各项目 poll.log 是不是同一分钟一起断**（不是单个卡住），
+# 是的话去 **system** journal（`--user` 里看不到 oomd）：
+#   sudo journalctl --since <时刻> | grep -iE 'oomd|user@1003' 
+#
 # ── 为什么限在这个 slice，而不是 coding-agent-poll@.service ──
 # worker 根本不在 service 的 cgroup 里。tmux 起 server 时会通过 systemd D-Bus 建一个 transient
 # scope（tmux-spawn-<uuid>.scope），systemd 按调用者单元名的**模板前缀**（而非 %i）派生出
@@ -23,22 +44,28 @@ Documentation=https://github.com/GigleAI/cavil-loop
 # 放一个同名 unit 文件进 ~/.config/systemd/user/，systemd 就会拿它去配置那个隐式 slice。
 #
 # ── 数字（本机 MemTotal 15.5 GiB / swap 4 GiB）──
-# 最坏并发 = tutor 5 + sudoku 3 + gotomarket 1 + workloop 1 = 10 个 worker（tutor 2026-08-26
-# 3→4、2026-09-03 4→5，理由见该项目 coding-agent.config 的注释），单个 claude worker
-# 最坏 ~3 GiB → 30 GiB，
-# 本来就是超卖的 —— 挡住它的是下面两条，不是这个账。实测 MemoryCurrent：4.5 GiB
-# (2026-08-26) → 5.6 GiB (2026-09-03，4 并发满载)，离软限 8G 还有余量，
-# 所以下面这两条平时根本不咬，只在 worker 集体发胖时才生效。改并发上限时记得回来对一眼。
+# 最坏并发 = tutor 4 + sudoku 3 + gotomarket 1 + workloop 1 = 9 个 worker（tutor 2026-08-26
+# 3→4、2026-09-03 4→5、2026-09-04 回到 4，理由见该项目 coding-agent.config 的注释），
+# 单个 claude worker 最坏 ~3 GiB → 27 GiB，本来就是超卖的 —— 挡住它的是下面两条，不是这个账。
+# 实测 MemoryCurrent：4.5 GiB (2026-08-26) → 5.6 GiB (2026-09-03，4 并发满载)
+# → **7.3 GiB / peak 7.9 GiB (2026-09-04，5 并发满载)**，已经贴着软限 8G 了 —— 这就是
+# 09-04 回调到 4 的直接原因。改并发上限时记得回来对一眼。
 MemoryAccounting=yes
 
 # 软上限：超了内核开始激进回收 + throttle 分配。worker 变慢，但不死——这就是「自己先减速」。
-# 注意它不会让 oomd 更不容易跳闸：throttle 本身会推高本 slice 的 PSI，而 oomd 挑的正是压力
-# 最大的那个后代。所以 MemoryHigh 买到的是「炸的是 worker 而不是 manager」，不是「不炸」。
+# 它买到的**只有减速**，不含任何「保住 manager」的效果：
+#   · oomd 挑受害者看 pgscan 速率、不看内存大小（见开头 2026-09-04 那段），MemoryHigh 改不了它挑谁；
+#   · 更糟的是 throttle 本身就在制造 reclaim activity，而 oomd 的触发条件正是
+#     「压力 > 阈值 **且** with reclaim activity」—— 在 oomd 还开着的机器上，这条软限
+#     是在帮忙凑触发条件，等于把跳闸提前。
+# 现在 1003 实例上的 oomd 已经关掉（no-oomd.conf），这条才退回成纯粹的自我减速，可以留着。
+# 如果哪天把 oomd 又打开了，回来重新掂量这一行。
 MemoryHigh=8G
 
-# 硬上限：真正防止整机被拖到全局 OOM、进而让 systemd --user 当陪葬的那条线。
-# 超了内核只在**本 slice 内部**挑进程 OOM-kill，炸的是单个 worker，self-heal 下一轮重新派工
-# 就能接上（依赖 coding-agent-poll@.service 里的 KillMode=process，否则新 tmux server 会被连坐）。
+# 硬上限：oomd 关掉之后，**这条是唯一的兜底**，也是整套设计里唯一「炸的是 worker 不是 manager」
+# 真正成立的地方 —— 因为它走的是内核 cgroup OOM，只在**本 slice 内部**挑进程杀，
+# 目标必然落在 worker 身上，self-heal 下一轮重新派工就能接上（依赖 coding-agent-poll@.service
+# 里的 KillMode=process，否则新 tmux server 会被连坐）。
 # 留 ~5.5 GiB 给系统 + 桌面 + 你自己的交互 claude 会话——后者在 session-*.scope 里，
 # 不属于本 slice，不受这里约束。
 MemoryMax=10G

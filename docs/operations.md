@@ -603,6 +603,73 @@ macOS-specific:
 
 Make sure `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"` is set in `coding-agent.config`. Strongly recommended in trusted local environments.
 
+### Every project's poll.log stops at the same minute
+
+Not one stuck worker — the whole `systemd --user` manager is gone, and with it every timer,
+every tmux session, and every worker of *every* project.
+
+Confirm the fingerprint first (cheap, no root):
+
+```bash
+for k in <key1> <key2> …; do
+  echo "--- $k"; tail -1 ~/.local/state/coding-agent-poll/$k/poll.log
+done
+systemctl show user@$(id -u).service -p ActiveEnterTimestamp   # a recent timestamp on a
+                                                              # long-uptime box = it restarted
+```
+
+All keys stopping inside the same minute means the manager was killed, not that a worker hung.
+
+Then get the verdict from the **system** journal — `journalctl --user` never shows oomd:
+
+```bash
+sudo journalctl --since "<that minute>" | grep -iE 'oomd|user@<uid>'
+```
+
+What it looks like (real capture, 2026-09-04):
+
+```
+systemd-oomd: Killed /user.slice/user-1003.slice/user@1003.service/init.scope
+  due to memory pressure for /user.slice/user-1003.slice/user@1003.service
+  being 63.73% > 50.00% for > 20s with reclaim activity
+systemd[1]: user@1003.service: Main process exited, code=killed, status=9/KILL
+```
+
+Two things about this that are easy to get wrong:
+
+- **oomd picked `init.scope`** — the cgroup holding `systemd --user` itself, all of 3.3 MiB.
+  It ranks descendant cgroups by pgscan rate, not by size; when every candidate's delta is 0
+  (the dump showed `Pgscan == Last Pgscan`) it takes the first one, which is the manager.
+  So `MemoryHigh=` / `MemoryMax=` on the worker slice cannot influence who gets killed.
+  Worse, `MemoryHigh=` throttling *creates* the reclaim activity the trigger condition asks
+  for, which brings the kill forward.
+- **Nothing brings the manager back.** `Linger=yes` only keeps a *running* manager alive
+  after logout; it does not restart a failed one. The 2026-09-04 episode ended 2.5 h later
+  only because someone opened an SSH session and logind started the unit as a side effect.
+  Not one warning was emitted in between.
+
+Fixes are both root-side, outside this repo:
+
+```ini
+# /etc/systemd/system/user@<uid>.service.d/no-oomd.conf
+# overrides /usr/lib/systemd/system/user@.service.d/10-oomd-user-service-defaults.conf
+# for this uid only
+[Service]
+ManagedOOMMemoryPressure=auto
+```
+
+```ini
+# /etc/systemd/system/user-manager-watchdog.service  (+ a 2-minute .timer)
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'systemctl is-active --quiet user@<uid>.service || systemctl start user@<uid>.service'
+```
+
+With oomd disarmed, the backstop is the worker slice's own `MemoryMax=`: exceeding it is a
+kernel cgroup OOM that can only pick a process *inside* that slice, so the victim is always
+a worker and self-heal re-dispatches it on the next poll. See the comments in
+`systemd/app-coding\x2dagent\x2dpoll.slice` for the memory arithmetic.
+
 ### Every dispatch dies within seconds, self-heal never recovers
 
 Symptom in `poll.log` — a loop that always ends in a false "session corrupted" verdict:
