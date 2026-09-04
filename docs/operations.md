@@ -292,6 +292,8 @@ Available placeholders (`sed`-rendered):
 | `${ISSUE_N}` | issue number derived from branch (pr-comment only) |
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label names |
 | `${LABEL_REVIEW_OR_HUMAN}` | **where output goes next**: `pending/review` when the gate is on, automatically degrading to `pending/human` when it is off. Always use this in templates rather than `${LABEL_PENDING_REVIEW}` — the latter renders empty when unconfigured, so the work loses `doing/agent` without gaining any pending label and vanishes from the board |
+| `${PREVIEW_URL_HOST}` | the host serving this machine's PR previews. Use it instead of hard-coding a hostname — the same template runs on every machine that polls the repo, and a baked-in host sends reviewers to a box that has none of the files |
+| `${REVIEW_ASSET_BASE_URL}` | public base URL for review screenshots (funnel path), from `WEEKLY_REPORT_ASSET_ROOT_URL`. Same reasoning: shots are written to the machine that took them, so the URL has to name that machine |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review gate it would bounce work back to the reviewer itself: an infinite loop |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `coding-agent.config`, default `en`) |
 

@@ -66,6 +66,8 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${LABEL_PENDING_PR}|$LABEL_PENDING_PR|g" \
         -e "s|\${OUTPUT_LANGUAGE}|$OUTPUT_LANGUAGE|g" \
         -e "s|\${TMUX_SESSION}|$TMUX_SESSION|g" \
+        -e "s|\${PREVIEW_URL_HOST}|${PREVIEW_URL_HOST:-}|g" \
+        -e "s|\${REVIEW_ASSET_BASE_URL}|${WEEKLY_REPORT_ASSET_ROOT_URL:-}|g" \
         -e "s|\${TASK_START_TS}|$(date '+%Y-%m-%d %H:%M:%S')|g" \
         -e "s|\${COMMENT_FOOTER}|$COMMENT_FOOTER|g" \
         -e "s|\${AGENT_TOKEN_USAGE_SCRIPT}|$AGENT_TOKEN_USAGE_SCRIPT|g" \
