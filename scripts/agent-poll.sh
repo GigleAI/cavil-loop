@@ -13,9 +13,9 @@ source "$SCRIPT_DIR/_lib.sh"
 STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/poll.lock"
 
-[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{}}' > "$STATE_FILE"
+[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{}}' > "$STATE_FILE"
 # 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
-for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels; do
+for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts; do
     if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
         tmp=$(mktemp)
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -56,6 +56,17 @@ remember_worker_model() {
 # 记住这次派工是被**哪个** pending label 触发的。self-heal 要靠它把死掉的 worker
 # 送回原来那条队列——只按 model 反推是不够的：review 关卡用的是另一个 agent 而不是
 # 另一个 model，光看 model 会把 review 阶段的活错误地打回 pending/agent 让 claude 重做。
+# 记住这次派工是**哪台机器**做的。多机盯同一个仓库时 self-heal 全靠它区分
+# 「我的 worker 死了」和「别人家的 worker 正跑着」—— 这两种情况在 GitHub 上长得
+# 一模一样（都是 doing/agent），而 tmux session 名两边同名，本机查不到就误判成僵尸。
+# 无条件写：只有写全了，SELFHEAL_ONLY_OWN_WORKERS 打开时「没记录 = 不是我的」才成立。
+remember_worker_host() {
+    local issue_n="$1" tmp
+    tmp=$(mktemp)
+    jq --arg k "$issue_n" --arg v "$SELFHEAL_HOST_ID" '.worker_hosts[$k] = $v' "$STATE_FILE" > "$tmp"
+    mv "$tmp" "$STATE_FILE"
+}
+
 remember_trigger_label() {
     local issue_n="$1" label="$2" tmp
     tmp=$(mktemp)
@@ -88,6 +99,15 @@ self_heal_one() {
         selfheal_reset "$issue_n"   # 活着 → 清连续失败计数
         return 0                    # session 真活着，不是 zombie
     fi
+    # 多机分工：session 不存在**不等于**worker 死了 —— 也可能是另一台机器正在跑它。
+    # 两边 session 命名规则相同，本机 has-session 查不到是必然的，不能据此判僵尸。
+    # 只认 state.json 里记着归属本机的那些；没记录 = 不是我派的 = 不碰。
+    if ! worker_is_ours "$issue_n"; then
+        local owner
+        owner=$(jq -r --arg key "$issue_n" '.worker_hosts[$key] // ""' "$STATE_FILE" 2>/dev/null || echo "")
+        SELFHEAL_FOREIGN+=" ${kind}#${n}(${owner:-无记录})"
+        return 0
+    fi
     # session 死了：优先自动重新派工（翻回 pending/agent，下面的派工路径会 resume/fresh），
     # 只有连续自愈 SELFHEAL_MAX_RETRIES 次仍立刻死（多半是损坏会话）才转人工，避免无限重启烧 API。
     local tries cap=${SELFHEAL_MAX_RETRIES:-3}
@@ -114,6 +134,10 @@ self_heal_one() {
     fi
 }
 
+# 本轮因「不是本机的活」而跳过的条目，攒起来最后一行汇总 —— 每条每轮各打一行的话，
+# 对面满载时这里每 30 秒就刷 4-5 行噪音，把真正的 self-heal 淹掉。
+SELFHEAL_FOREIGN=""
+
 if [ -n "$zombie_pr_data" ]; then
     while IFS=$'\t' read -r pr branch; do
         n=$(pr_to_issue_num "$pr" "$branch")
@@ -128,6 +152,9 @@ if [ -n "$zombie_issue_nums" ]; then
         # 不存在但 label 已翻、issue 没在 zombie_issue_nums 里出现，这里只处理纯 issue 的
         self_heal_one "issue" "$issue_n" "$issue_n"
     done <<< "$zombie_issue_nums"
+fi
+if [ -n "$SELFHEAL_FOREIGN" ]; then
+    log "self-heal 跳过（不是本机 $SELFHEAL_HOST_ID 派的，括号里是记录的归属）:$SELFHEAL_FOREIGN"
 fi
 
 # 计活的 worker：用 GitHub 上 doing/agent label 作真值（label 由 daemon dispatch 时贴、
@@ -296,6 +323,7 @@ dispatch_one_issue() {
         log "dispatch issue-comment for #$num (agent=${worker_agent:-default}, model=${model:-default})"
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
+        remember_worker_host "$num"
         if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
             tmp=$(mktemp)
@@ -314,6 +342,7 @@ dispatch_one_issue() {
     log "dispatch new issue #$num: $title (agent=${worker_agent:-default}, model=${model:-default})"
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
+    remember_worker_host "$num"
     if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
         log "派工 issue #$num 失败"
@@ -363,6 +392,7 @@ dispatch_one_pr() {
     kick_id=$(printf '%s\n%s\n%s\n' "$latest_conv" "$latest_inline" "$latest_review" | sort -rn | head -1)
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
+    remember_worker_host "$issue_n"
     if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
         tmp=$(mktemp)

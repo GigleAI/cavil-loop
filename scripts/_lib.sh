@@ -98,6 +98,25 @@ FABLE_WORKER_AGENT="${FABLE_WORKER_AGENT:-claude}"
 # pending/agent/01 也收进来 —— 所以对方的标签要进 GREEDY_SKIP_LABELS。
 LABEL_PENDING_AGENT_EXTRA="${LABEL_PENDING_AGENT_EXTRA:-}"
 
+# ── 多机分工：self-heal 的归属判定 ──
+# 本机在多机分工里的标识，记进 state.json 的 worker_hosts，self-heal 靠它认领。
+# 默认取短主机名；两台机器重名时在项目配置里显式写死。
+SELFHEAL_HOST_ID="${SELFHEAL_HOST_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)}"
+
+# 只自愈**本机派出去**的 worker。两台机器盯同一个仓库时**必须开**。
+#
+# 为什么不开就一定出事：self-heal 的判据是「GitHub 上挂着 doing/agent，但本机没有
+# 同名 tmux session」。两台机器的 session 命名规则一模一样（都是 <prefix>-issue<N>），
+# 所以 A 机看 B 机正在跑的活，看到的就是「doing/agent + 本地无 session」= 僵尸，
+# 于是翻成自己的 pending label 抢过来。2026-09-04 实测：futurelab-01 第一次起 poll，
+# 25 秒内把 FutureLab05 上四个正在跑的 worker 全判成僵尸并接管（PR #839/#838/#728、
+# issue #842），其中一个已经开始重建 worktree 跑 npm ci。
+#
+# 代价：state.json 丢失后，存量 doing/agent 条目本机不再认领（worker_hosts 里没有
+# 记录 = 不是我的）。恢复办法是人工把它们重标一次触发 label。单机场景不用开，
+# 保持 false 就是原来的行为。
+SELFHEAL_ONLY_OWN_WORKERS="${SELFHEAL_ONLY_OWN_WORKERS:-false}"
+
 # 所有「会触发派工」的 label。派工时必须把它们**一并**摘掉：只摘触发的那一个，
 # 剩下的下一轮又会把同一条活重新捡起来，worker 无限重开。
 # 以前这里是三个变量硬写在五处 --remove 后面，加一个触发 label 就得记得改五个地方；
@@ -629,6 +648,20 @@ count_active_workers() {
 #   issue #42              ← 只 issue doing/agent（设计阶段 / 实现阶段还没开 PR）
 #   issue #51 (PR #56)     ← PR doing/agent 且通过 pr_to_issue_num 找得到关联 issue
 #   PR #43                 ← PR doing/agent 但找不到关联 issue（standalone 元 PR / external PR）
+# 这条活是不是**本机**派出去的（多机分工用）。
+# SELFHEAL_ONLY_OWN_WORKERS 关着时恒为真 —— 单机场景一切行为不变。
+# state.json 还没建起来时也恒为真：宁可多算，也别在冷启动时把并发算成 0 乱派工。
+worker_is_ours() {
+    local issue_n="$1" owner
+    [ "${SELFHEAL_ONLY_OWN_WORKERS:-false}" = "true" ] || return 0
+    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 0
+    owner=$(jq -r --arg key "$issue_n" '.worker_hosts[$key] // ""' "$STATE_FILE" 2>/dev/null || echo "")
+    [ "$owner" = "$SELFHEAL_HOST_ID" ]
+}
+
+# ⚠️ 多机分工下这里**只列本机的** worker。它同时是并发计数的来源：
+# 不过滤的话，A 机会把 B 机那几个 doing/agent 也算进自己的 max，slot 永远是满的，
+# 于是 A 机一条活都派不出去，日志上还显示得一切正常。
 list_active_workers() {
     local issue_nums pr_data
     issue_nums=$(gh issue list --repo "$REPO" --state open --label "$LABEL_AGENT_DOING" \
@@ -646,6 +679,7 @@ list_active_workers() {
     if [ -n "$pr_data" ]; then
         while IFS=$'\t' read -r pr branch; do
             n=$(pr_to_issue_num "$pr" "$branch")
+            worker_is_ours "$n" || continue
             if [ "$n" = "$pr" ]; then
                 # standalone：fallback 到 PR 编号本身（无关联 issue / 外部 PR）
                 items+=("PR #$pr  https://github.com/${REPO}/pull/${pr}")
@@ -660,6 +694,7 @@ list_active_workers() {
     if [ -n "$issue_nums" ]; then
         while read -r n; do
             [ -z "$n" ] && continue
+            worker_is_ours "$n" || continue
             if [ -z "${handled_issue[$n]:-}" ]; then
                 items+=("issue #$n  https://github.com/${REPO}/issues/${n}")
             fi

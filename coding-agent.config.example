@@ -90,6 +90,39 @@ FABLE_MODEL="claude-fable-5"
 # Give each host its own label so neither steals the other's items:
 #   on host 05:  LABEL_PENDING_AGENT="pending/agent"     LABEL_PENDING_AGENT_EXTRA="pending/agent/05"
 #   on host 01:  LABEL_PENDING_AGENT="pending/agent/01"  LABEL_PENDING_AGENT_EXTRA=""
+
+# Multi-host self-heal ownership. Turn BOTH of these on whenever two machines poll
+# the same repo — the labels above are not enough on their own.
+#
+# Why: self-heal decides "this worker is dead" from "the item is labelled
+# doing/agent but this machine has no tmux session by that name". Both machines
+# name sessions identically, so machine A looking at machine B's running worker
+# sees exactly that, and takes the item over. The same blindness also inflates the
+# concurrency count: A counts B's doing/agent items against its own max and then
+# never dispatches anything, while the log looks perfectly healthy.
+# Measured 2026-09-04: a freshly configured second host hijacked four live workers
+# within 25 seconds of its first poll, one of them already rebuilding a worktree.
+#
+# Cost: after losing state.json a machine no longer claims pre-existing doing/agent
+# items (no worker_hosts record = not mine). Re-label them by hand to recover.
+# Single-host setups should leave this false — that is the original behaviour.
+#
+# 多机分工的 self-heal 归属判定。两台机器盯同一个仓库时，**上面的 label 分工不够**，
+# 这两个也必须一起开。
+#
+# 原因：self-heal 判「worker 死了」的依据是「挂着 doing/agent，但本机没有同名 tmux
+# session」。两台机器的 session 命名规则一模一样，所以 A 机看 B 机正在跑的活，看到的
+# 就是这个形状，于是接管过去。同一个盲区还会撑爆并发计数：A 把 B 的 doing/agent 算进
+# 自己的 max，slot 永远满，一条活都派不出去，日志上却一切正常。
+# 2026-09-04 实测：新配的第二台机器第一次 poll，25 秒内接管了四个正在跑的 worker，
+# 其中一个已经开始重建 worktree。
+#
+# 代价：state.json 丢了之后，存量 doing/agent 条目本机不再认领（worker_hosts 没记录
+# = 不是我的），人工重标一次即可恢复。单机场景保持 false，就是原来的行为。
+SELFHEAL_ONLY_OWN_WORKERS="false"
+# Defaults to the short hostname; set explicitly only if two machines share one.
+# 默认取短主机名；两台机器重名时才需要显式写死。
+# SELFHEAL_HOST_ID="futurelab-01"
 # In greedy mode you MUST also list the other host's label in GREEDY_SKIP_LABELS —
 # the greedy sweep ignores trigger labels and would otherwise pick up their work.
 # Everything downstream follows the label you set: the reject path of the review
