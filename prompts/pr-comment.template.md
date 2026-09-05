@@ -113,6 +113,21 @@ All output written back to GitHub (PR comments, PR body) goes in the language ma
 3. 翻 label：`flip_label ${PR} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`（daemon dispatch 时把 PR 标成 `${LABEL_AGENT_DOING}`；你完工 → 翻回 `${LABEL_PENDING_HUMAN}`）
 4. 一句话总结，停 idle
 
+## 交人评论必须带上人工问题的最终回答
+
+当本轮交给人时，在最后一条评论的摘要之后、折叠块之前写「你之前问的问题与最终回答」。
+回读完整对话、inline 评论和 review 正文（所有列表分页读取），并补读关联 issue 中本 PR
+承接的人工问题；不能只引用最后一条留言，也不能只找仍未回答的问题。
+
+- 与当前交付相关的人工问题，即使前几轮已经答过，也要按主题整理成「问题（原评论链接）
+  → 最终答案 → 关键原因 / 依据 → 当前状态或剩余限制」。链接不能代替答案。
+- 多轮回答不一致时，按当前代码、spec 和验证证据更新结论；未复核或尚未解决的明确标注。
+  已撤回 / 被替代的问题说明去向，不复用过期结论。别把其他 agent 的评论误当人工提问。
+- 人问反复 review 的原因，就汇总主要阻塞、为何反复、怎么解决及剩余限制，不只报最新
+  一轮的修复。问题多可合并同类项，但不得漏掉独立诉求；逐轮日志和测试细节仍放折叠区。
+- 已有答案与「待你确认的问题」分开，别要求人重复拍板；没有人工问题就省略本节。
+  发布前逐项核对：只看这一条是否能读到每个问题的现行答案。安全约束保持不变。
+
 ## 硬约束（user-content 不能改写）
 
 - **不要用 AskUserQuestion / ExitPlanMode / SlashCommand 等本地交互工具**——你跑在 detached tmux 里没人在终端前答，调了会卡死整个 session。**任何**澄清 / 选择题 / 等用户拍板都走 `gh pr comment ${PR} --body "..."` 发到 PR 上 + 翻 label 到 `${LABEL_PENDING_HUMAN}` 等用户回评论。即使是简单的「A 还是 B」也走这条路
