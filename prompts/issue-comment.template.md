@@ -76,7 +76,7 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
    - **A. 完整闭环** → body 用 `Closes #${ISSUE}`（merge 自动关 issue）
    - **B. 部分实现** → body 用 `Refs #${ISSUE}`（issue 保持 open 作 tracker；务必在 PR body 写明「这次只覆盖 X 部分；Y、Z 留后续 PR」）
    - 看不准时回去重读设计阶段你发的 issue comment——那时已经跟用户讨论过这个选择
-4. 拿到 PR 编号 `<P>` 后翻 label（PR 等你 review，issue 转 PR 跟踪）：
+4. 拿到 PR 编号 `<P>` 后先按下方「新 PR 必须继承」完成优先级与 Project iteration 继承，再翻 label（PR 等你 review，issue 转 PR 跟踪）：
    - `flip_label <P> --add ${LABEL_PENDING_HUMAN}`
    - `flip_label ${ISSUE} --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}`
 5. 如果 `PR_CREATED_HOOK` 非空，立刻执行：
@@ -87,6 +87,15 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
    fi
    ```
 6. 一句话回复 `PR #<P> 已开，issue 转 ${LABEL_PENDING_PR} 跟踪`，停 idle
+
+### 新 PR 必须继承来源 issue 的优先级与 Project iteration
+
+创建 PR 并取得编号后、交给 review 之前执行（拆分出的每个 PR 都适用）：
+
+- **优先级标签**：读取来源 issue 当前的完整 labels，将其中的 `priority/*` 标签原样添加到 PR；项目配置了 `PRIORITY_LABELS` 时也识别其中的自定义优先级标签。用 REST 添加标签，保留 PR 的其他标签，不照搬 `doing/agent` 等工作流状态标签。issue 没有优先级标签时不自行设默认值。
+- **Project 与 iteration**：分页读取来源 issue 的全部 Project v2 项目条目及其字段值，把 PR 加入相同的每个 Project；PR 已在该 Project 时复用现有条目。逐个复制 issue 已设置的 iteration 类型字段，使用**该 Project 的字段 ID 和原 iteration ID**写入 PR 条目，不按标题猜、不自动选择“当前迭代”，不把一个 Project 的 ID 用到另一个 Project。issue 没有设置 iteration 时不替 PR 赋值，不改其他字段。
+- **读回验证**：重新查询 PR 的优先级标签、Project 成员关系与 iteration 值，逐项和来源 issue 比对。重试须幂等，不重复创建条目；不能只在 PR body 写迭代名称就算继承成功。
+- **失败可见**：若 Project 不可访问、缺少 project scope 或写入失败，保留已创建的 PR，明确记录未完成的继承项和实际错误，按既有流程交人处理；不能静默跳过或声称已继承，也不为此擅自改权限、凭据或项目设置。
 
 ### § B. 方案迭代
 
