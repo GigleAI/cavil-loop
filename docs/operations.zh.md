@@ -15,6 +15,9 @@ PROJECT_ROOT="$HOME/github/myproject"
 WORKTREE_BASE="$HOME/github/worktree/myproject"
 STATE_DIR="$HOME/.local/state/coding-agent-poll/myproject"
 
+# 日志：默认 info；debug 额外记录优先级读取、greedy 跳过及 review 轮次用尽明细。
+LOG_LEVEL="info"
+
 # 命名规范
 TMUX_PREFIX="myproject"          # tmux session: myproject-issue42
 BRANCH_PREFIX="feature/issue-"   # branch: feature/issue-42

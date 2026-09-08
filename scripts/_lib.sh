@@ -532,6 +532,15 @@ log() {
     echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
 }
 
+# 默认仅输出常规日志；LOG_LEVEL=debug 额外显示排查用的例行明细。
+LOG_LEVEL="${LOG_LEVEL:-info}"
+log_debug() {
+    if [ "$LOG_LEVEL" = "debug" ]; then
+        log "[DEBUG] $*"
+    fi
+    return 0
+}
+
 # agent_inject_prompt 的带日志包装。**注入相关的排障一律走这个，别直接调 driver。**
 #
 # 为什么要有它：default_inject_prompt 把「卡在 modal」「idle 重试 5 次」这类关键诊断

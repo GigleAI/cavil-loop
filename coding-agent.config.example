@@ -25,6 +25,10 @@ WORKTREE_BASE="$HOME/github/worktree/myproject"
 # daemon state 目录（state.json + 日志 + 锁）
 STATE_DIR="$HOME/.local/state/coding-agent-poll"
 
+# 日志级别：info（默认）；debug 额外显示优先级读取、greedy 跳过与 review 轮次用尽明细。
+# Log level: info (default), or debug for routine priority and skipped-work details.
+LOG_LEVEL="info"
+
 # Tmux pane log dir (one append-only log per worker session, survives session exit).
 # Default: $STATE_DIR/sessions. Set empty (SESSION_LOG_DIR="") to disable.
 # View: scripts/session-log.sh <issue-N>  / -f follow  / -c cat

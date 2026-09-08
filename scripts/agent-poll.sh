@@ -218,6 +218,8 @@ reap_finished_workers active_keys
 # 折成一个，model / prompt_kind 这类**允许为空**的字段会整体错位。
 US=$'\x1f'
 QUEUE_ROWS=""
+REVIEW_CAPPED=""
+GREEDY_SKIPPED=""
 declare -A queued_keys=()
 
 # ── Project 优先级：每轮拉一次，失败就回落到 label ──
@@ -228,16 +230,18 @@ declare -A queued_keys=()
 if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
     _pp_out=$(mktemp); _pp_err=$(mktemp)
     if priority_pairs > "$_pp_out" 2> "$_pp_err"; then
+        _proj_desc=""
         while IFS=$'\t' read -r _pn _pr; do
             [ -n "${_pn:-}" ] || continue
             case "$_pn" in
-                '#project') ;;   # 来源元数据，不参与优先级排序
+                '#project') _proj_desc="$_pr" ;;   # 用了哪个看板，记进日志好排查
                 # 档位数 N → 下标 0..N-1；「没标」要排在它们之后，所以取 N。
                 # 跟 label 侧的档位数比大小取最大：两边混用时才不会出现「没标的插到 Low 前面」。
                 '#options') [ "${_pr:-0}" -gt "$_prio_rank_unset" ] 2>/dev/null && _prio_rank_unset="$_pr" ;;
                 *) PROJECT_PRIO[$_pn]=$_pr ;;
             esac
         done < "$_pp_out"
+        log_debug "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（看板 ${_proj_desc:-?}，字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=$PRIORITY_SOURCE）"
     else
         # 只取第一行错误：GraphQL 的 scope 报错会把同一句话重复三遍
         log "⚠️ Project 优先级读取失败，本轮回落到 label 排序：$(head -1 "$_pp_err" | cut -c1-160)"
@@ -286,6 +290,7 @@ collect_queue_rows() {
         if [ "$trigger_label" = "${LABEL_PENDING_REVIEW:-}" ]; then
             case ",$labels_csv," in
                 *",$LABEL_PENDING_HUMAN,"*)
+                    REVIEW_CAPPED+=" ${kind}#${num}"
                     continue ;;
             esac
         fi
@@ -407,7 +412,7 @@ dispatch_one_pr() {
 # 那套 label 和模板），self-heal 也会因此把死掉的 worker 送回 pending/agent 队列。
 collect_queue_rows_greedy() {
     local kind="$1"
-    local raw num branch updated labels_csv title prio stage key
+    local raw num branch updated labels_csv title prio stage key blocked
     if [ "$kind" = "issue" ]; then
         raw=$(gh issue list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
             --json number,title,labels,updatedAt \
@@ -422,7 +427,8 @@ collect_queue_rows_greedy() {
         [ -n "$num" ] || continue
         key="$kind:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
-        if greedy_skip_reason "$labels_csv" >/dev/null; then
+        if blocked=$(greedy_skip_reason "$labels_csv"); then
+            GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
             continue
         fi
         queued_keys[$key]=1
@@ -467,6 +473,13 @@ fi
 if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
     collect_queue_rows_greedy issue
     collect_queue_rows_greedy pr
+    if [ -n "${GREEDY_SKIPPED:-}" ]; then
+        log_debug "greedy 跳过（括号里是挡住它的 label）:$GREEDY_SKIPPED"
+    fi
+fi
+
+if [ -n "$REVIEW_CAPPED" ]; then
+    log_debug "review 轮次已用尽、挂着 $LABEL_PENDING_HUMAN 等人工（本轮不派工，摘掉该标签才恢复）:$REVIEW_CAPPED"
 fi
 
 QUEUE_SORTED=""

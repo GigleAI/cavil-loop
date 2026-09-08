@@ -15,6 +15,9 @@ PROJECT_ROOT="$HOME/github/myproject"
 WORKTREE_BASE="$HOME/github/worktree/myproject"
 STATE_DIR="$HOME/.local/state/coding-agent-poll/myproject"
 
+# Logging: info by default; debug adds priority reads, greedy skips and review-cap details.
+LOG_LEVEL="info"
+
 # Naming
 TMUX_PREFIX="myproject"          # tmux session: myproject-issue42
 BRANCH_PREFIX="feature/issue-"   # branch: feature/issue-42
