@@ -3,7 +3,7 @@
 **解决的问题**：项目跑起来之后，「上周到底交付了什么、花了多少、积压在涨还是在降」
 这些问题每次都要现查现算。人工算一遍要几十分钟，而且口径每次都不一样，周与周之间没法比。
 
-这套脚本每周一 09:00 自动跑一遍：算好上周明细 + 最近 10 周趋势曲线，开成一个 issue，
+这套脚本每周一 07:00 自动跑一遍：算好上周明细 + 最近 10 周趋势曲线，开成一个 issue，
 再交给 agent 把数字写成人话。**数字是机器算的（口径恒定、可比），解读是 agent 写的（读得懂）。**
 
 ## 组成
@@ -11,7 +11,7 @@
 | 文件 | 干什么 |
 |---|---|
 | `collect.py` | 采数 + 聚合。只跑 3 次列表型 `gh api --paginate`，**不做 per-issue 循环**——请求数不随 issue 数膨胀 |
-| `render.py` | 把数据渲染成两张趋势图的 HTML（交付面 / 投入面），极简配色 + Libre Baskerville |
+| `render.py` | 把数据渲染成两张趋势图的 HTML：**交付面** 2 块面板（PR 数 vs 净增行 / 待办存量）、**投入面** 3 块面板（讨论轮数 / AI 投入时间 / 花销）。极简配色 + Libre Baskerville |
 | `shot.mjs` | HTML → 1280px 单倍像素 PNG（GitHub 评论配图标准） |
 | `report.py` | 出周报 markdown（数据部分）：上周对比表、逐 issue 明细、逐周趋势表、口径说明 |
 | `topdf.mjs` | 周报 markdown → A4 PDF（极简版式、中文字体、页码）。自带 md 子集渲染器，不引第三方 md 库 |
@@ -31,7 +31,7 @@ bash run.sh <project> --week-of 2026-08-24
 bash run.sh <project>
 ```
 
-定时触发：`systemd/coding-agent-weekly-report@.{service,timer}`，`OnCalendar=Mon *-*-* 09:00`。
+定时触发：`systemd/coding-agent-weekly-report@.{service,timer}`，`OnCalendar=Mon *-*-* 07:00`。
 
 ```bash
 systemctl --user enable --now coding-agent-weekly-report@<project>.timer
@@ -88,10 +88,17 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
 3. **配图每轮必须换新 URL**。GitHub camo 按源 URL 缓存约一年，复用同名会把旧图钉死。
    文件名里的 `REV` 带纳秒就是为这个。传完必须 `curl` 核对公网 `HTTP 200`——
    纯 tailnet URL camo 抓不到，会图裂。
-4. **周切片按北京时间**（`TZ = UTC+8`），GitHub 返回的是 UTC，直接按 UTC 切会和人的直觉差 8 小时。
-5. **机器人账号判定**走 `-bot` / `[bot]` 后缀。新增别的机器人账号要同步改 `is_bot()`，
+4. **柱顶数字的格式是 per-series 的，别改成全局**。`render.py` 的 series 可以带一个 `fmt`
+   字段覆盖数值格式——只有「AI 投入时间」用（`fmt_h`，不足 10 小时给一位小数 `3.7h`，
+   否则取整 `102h`）。**其余 series 必须保持全局 `fmt()`**（成本是 `7.2k` 这种），
+   一旦格式器泄漏出去，「成本 7.2k」会变成 `7.2kh`。另外零值柱子本来就不打柱顶标签
+   （`if v`），所以零工时那周顶上是空的，`0h` 只出现在左轴刻度上；「行 / 小时」折线的
+   分母为零时取 `None`，在那一周**断开**而不是画到 0——画到 0 会被读成「那周产出为 0」。
+   这几条都由 `tests/weekly-report-render.test.sh` 钉住。
+5. **周切片按北京时间**（`TZ = UTC+8`），GitHub 返回的是 UTC，直接按 UTC 切会和人的直觉差 8 小时。
+6. **机器人账号判定**走 `-bot` / `[bot]` 后缀。新增别的机器人账号要同步改 `is_bot()`，
    否则它发的评论会被算进「人发的」。
-6. **明细不能只看 issue 侧的活跃度**。很多 issue 定完方案就没人再回 issue 页了，
+7. **明细不能只看 issue 侧的活跃度**。很多 issue 定完方案就没人再回 issue 页了，
    整周的讨论全发生在它的 PR 上——只按「issue 有评论」筛，会把整条工作漏掉。
    `collect.py` 的入选条件是三选一：**issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭**。
    另外**没有关联 issue 的 PR**（chore、工具链）不挂在任何 issue 下，用 `loose_prs` 单列一组，
