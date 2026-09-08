@@ -218,8 +218,6 @@ reap_finished_workers active_keys
 # 折成一个，model / prompt_kind 这类**允许为空**的字段会整体错位。
 US=$'\x1f'
 QUEUE_ROWS=""
-REVIEW_CAPPED=""
-GREEDY_SKIPPED=""
 declare -A queued_keys=()
 
 # ── Project 优先级：每轮拉一次，失败就回落到 label ──
@@ -288,7 +286,6 @@ collect_queue_rows() {
         if [ "$trigger_label" = "${LABEL_PENDING_REVIEW:-}" ]; then
             case ",$labels_csv," in
                 *",$LABEL_PENDING_HUMAN,"*)
-                    REVIEW_CAPPED+=" ${kind}#${num}"
                     continue ;;
             esac
         fi
@@ -410,7 +407,7 @@ dispatch_one_pr() {
 # 那套 label 和模板），self-heal 也会因此把死掉的 worker 送回 pending/agent 队列。
 collect_queue_rows_greedy() {
     local kind="$1"
-    local raw num branch updated labels_csv title prio stage key blocked
+    local raw num branch updated labels_csv title prio stage key
     if [ "$kind" = "issue" ]; then
         raw=$(gh issue list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
             --json number,title,labels,updatedAt \
@@ -425,8 +422,7 @@ collect_queue_rows_greedy() {
         [ -n "$num" ] || continue
         key="$kind:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
-        if blocked=$(greedy_skip_reason "$labels_csv"); then
-            GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
+        if greedy_skip_reason "$labels_csv" >/dev/null; then
             continue
         fi
         queued_keys[$key]=1
@@ -471,13 +467,6 @@ fi
 if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
     collect_queue_rows_greedy issue
     collect_queue_rows_greedy pr
-    if [ -n "${GREEDY_SKIPPED:-}" ]; then
-        log "greedy 跳过（括号里是挡住它的 label）:$GREEDY_SKIPPED"
-    fi
-fi
-
-if [ -n "$REVIEW_CAPPED" ]; then
-    log "review 轮次已用尽、挂着 $LABEL_PENDING_HUMAN 等人工（本轮不派工，摘掉该标签才恢复）:$REVIEW_CAPPED"
 fi
 
 QUEUE_SORTED=""
