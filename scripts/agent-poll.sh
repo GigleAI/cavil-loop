@@ -230,18 +230,16 @@ declare -A queued_keys=()
 if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
     _pp_out=$(mktemp); _pp_err=$(mktemp)
     if priority_pairs > "$_pp_out" 2> "$_pp_err"; then
-        _proj_desc=""
         while IFS=$'\t' read -r _pn _pr; do
             [ -n "${_pn:-}" ] || continue
             case "$_pn" in
-                '#project') _proj_desc="$_pr" ;;   # 用了哪个看板，记进日志好排查
+                '#project') ;;   # 来源元数据，不参与优先级排序
                 # 档位数 N → 下标 0..N-1；「没标」要排在它们之后，所以取 N。
                 # 跟 label 侧的档位数比大小取最大：两边混用时才不会出现「没标的插到 Low 前面」。
                 '#options') [ "${_pr:-0}" -gt "$_prio_rank_unset" ] 2>/dev/null && _prio_rank_unset="$_pr" ;;
                 *) PROJECT_PRIO[$_pn]=$_pr ;;
             esac
         done < "$_pp_out"
-        log "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（看板 ${_proj_desc:-?}，字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=$PRIORITY_SOURCE）"
     else
         # 只取第一行错误：GraphQL 的 scope 报错会把同一句话重复三遍
         log "⚠️ Project 优先级读取失败，本轮回落到 label 排序：$(head -1 "$_pp_err" | cut -c1-160)"
