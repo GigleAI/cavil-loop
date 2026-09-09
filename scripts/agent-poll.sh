@@ -160,7 +160,10 @@ fi
 # 计活的 worker：用 GitHub 上 doing/agent label 作真值（label 由 daemon dispatch 时贴、
 # worker 完工时翻 pending/human；期间在 label 上就算 active）。busy 时把具体 issue/PR
 # 编号也带在 log 里，方便看 max=1 撑住的是谁。
-active_list=$(list_active_workers)
+if ! active_list=$(list_active_workers); then
+    log "⚠️ 无法确认活跃 worker：本轮停止回收和派工，保留现有 session"
+    exit 0
+fi
 # 真·全局并发上限：active_keys 收所有在跑 worker 的 issue_n（每行第一个数字就是 key——
 # "PR #123 ..."→123、"issue #45 (PR #46) ..."→45、"issue #45 ..."→45）。下面所有派工路径
 # 都过 reserve_slot：同一 worker（key 已在集合）复用 slot 防自死锁；新 worker 满了排队。

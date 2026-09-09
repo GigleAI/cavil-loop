@@ -56,6 +56,23 @@ chk() {
 }
 alive() { tmux has-session -t "=$1" 2>/dev/null && echo yes || echo no; }
 
+# Real list/reaper logic, deterministic GitHub pages (no live API calls).
+mkdir -p "$SANDBOX/state"
+ISSUE_PAGES='[[]]'
+PR_PAGES='[[]]'
+GH_FAIL=''
+gh() {
+    if [ -n "$GH_FAIL" ] && [[ "$*" == *"repos/$REPO/$GH_FAIL"* ]]; then
+        echo 'simulated GitHub outage' >&2
+        return 1
+    fi
+    case "$*" in
+        *"repos/$REPO/issues"*) printf '%s\n' "$ISSUE_PAGES" ;;
+        *"repos/$REPO/pulls"*) printf '%s\n' "$PR_PAGES" ;;
+        *) return 1 ;;
+    esac
+}
+
 tmux new-session -d -s reaptest-issue901 'sleep 3000'
 tmux new-session -d -s reaptest-issue902 'sleep 3000'
 tmux new-session -d -s reaptest-issue903-server 'sleep 3000'
@@ -105,6 +122,39 @@ tmux() { if [ "$1" = "list-sessions" ]; then echo "reaptest-issue907 "; else "$_
 REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
 unset -f tmux
 chk "907 保留（活动时间读不到就不动）" "$(alive reaptest-issue907)" "yes"
+
+echo "【7】查询失败不能变成空名单，也不能回收 session"
+for endpoint in issues pulls; do
+    GH_FAIL="$endpoint"
+    list_active_workers >/dev/null 2>&1
+    chk "$endpoint 查询失败向上传递" "$?" "1"
+    REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+    chk "$endpoint 查询失败保留 907" "$(alive reaptest-issue907)" "yes"
+done
+GH_FAIL=''
+
+echo "【8】缺少归属记录仍保护 PR 对应的本机 session；第二页不能漏"
+SELFHEAL_ONLY_OWN_WORKERS=true
+SELFHEAL_HOST_ID=testhost
+STATE_FILE="$SANDBOX/state/state.json"
+printf '{"worker_hosts":{}}' > "$STATE_FILE"
+PR_PAGES='[[],[{"number":999,"head":{"ref":"feature/issue-907"},"body":"","labels":[{"name":"doing/agent"}]}]]'
+chk "并发名单仍按归属过滤" "$(list_active_workers)" ""
+REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+chk "907 的 PR 仍 doing，保留" "$(alive reaptest-issue907)" "yes"
+PR_PAGES='[[{"number":999,"head":{"ref":"external"},"body":"Refs #907","labels":[{"name":"doing/agent"}]}]]'
+REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+chk "PR body 关联也保护 907" "$(alive reaptest-issue907)" "yes"
+PR_PAGES='[[]]'
+ISSUE_PAGES='[[],[{"number":907}]]'
+REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+chk "issue 仍 doing，保留" "$(alive reaptest-issue907)" "yes"
+ISSUE_PAGES='invalid json'
+REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+chk "损坏响应不能授权回收" "$(alive reaptest-issue907)" "yes"
+ISSUE_PAGES='[[]]'
+REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+chk "确认 issue/PR 都已不 doing 后可回收" "$(alive reaptest-issue907)" "no"
 
 echo
 echo "通过 $pass / 失败 $fail"

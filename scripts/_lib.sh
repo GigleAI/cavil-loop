@@ -672,23 +672,35 @@ worker_is_ours() {
 # 不过滤的话，A 机会把 B 机那几个 doing/agent 也算进自己的 max，slot 永远是满的，
 # 于是 A 机一条活都派不出去，日志上还显示得一切正常。
 list_active_workers() {
-    local issue_nums pr_data
-    issue_nums=$(gh issue list --repo "$REPO" --state open --label "$LABEL_AGENT_DOING" \
-        --json number --jq '.[] | .number' 2>/dev/null || true)
-    pr_data=$(gh pr list --repo "$REPO" --label "$LABEL_AGENT_DOING" \
-        --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
+    # REST list endpoints avoid search-index lag; pagination must complete before
+    # any result is used for capacity decisions or destructive cleanup.
+    local scope="${1:-ours}" issue_pages pr_pages issue_nums pr_data
+    issue_pages=$(run_gh_capture "读取 doing issue" gh api --method GET --paginate --slurp \
+        "repos/$REPO/issues" -f state=open -f labels="$LABEL_AGENT_DOING" -f per_page=100) || return 1
+    pr_pages=$(run_gh_capture "读取 open PR" gh api --method GET --paginate --slurp \
+        "repos/$REPO/pulls" -f state=open -f per_page=100) || return 1
+    issue_nums=$(printf '%s' "$issue_pages" | jq -er '
+        if type != "array" or any(.[]; type != "array") then error("invalid issue pages")
+        else [ .[][] | select(.pull_request == null) | .number ] | map(tostring) | join("\n") end') || return 1
+    # Include the body fallback in this successful snapshot instead of silently
+    # falling back to the PR number when a separate gh pr view request fails.
+    pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
+        if type != "array" or any(.[]; type != "array") then error("invalid PR pages")
+        else [ .[][] | select(any(.labels[]; .name == $label)) |
+            [.number, .head.ref, ((.body // "" | try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)").n catch "") // "")] | @tsv ] | join("\n") end') || return 1
 
     local -A handled_issue=()
     local -a items=()
-    local n pr branch
+    local n pr branch body_n
 
     # 先处理 PR：算 issue_n（用 pr_to_issue_num fallback 链）并合并显示。
     # 末尾附 GitHub URL 让终端自动识别成可点击链接（多数现代终端支持）。
     # URL 指向 worker 当前主战场——PR 阶段就指 PR、纯 issue 阶段就指 issue。
     if [ -n "$pr_data" ]; then
-        while IFS=$'\t' read -r pr branch; do
-            n=$(pr_to_issue_num "$pr" "$branch")
-            worker_is_ours "$n" || continue
+        while IFS=$'\t' read -r pr branch body_n; do
+            n=$(branch_to_issue_num "$branch")
+            n="${n:-${body_n:-$pr}}"
+            if [ "$scope" != "all" ]; then worker_is_ours "$n" || continue; fi
             if [ "$n" = "$pr" ]; then
                 # standalone：fallback 到 PR 编号本身（无关联 issue / 外部 PR）
                 items+=("PR #$pr  https://github.com/${REPO}/pull/${pr}")
@@ -703,7 +715,7 @@ list_active_workers() {
     if [ -n "$issue_nums" ]; then
         while read -r n; do
             [ -z "$n" ] && continue
-            worker_is_ours "$n" || continue
+            if [ "$scope" != "all" ]; then worker_is_ours "$n" || continue; fi
             if [ -z "${handled_issue[$n]:-}" ]; then
                 items+=("issue #$n  https://github.com/${REPO}/issues/${n}")
             fi
@@ -745,11 +757,11 @@ reap_finished_workers() {
     if [ "${REAP_FINISHED_WORKERS:-1}" != "1" ]; then
         return 0
     fi
-    # active_keys 由调用方（agent-poll.sh）算好后用 nameref 传进来，复用同一份 label
-    # 真值：既保证跟并发闸门口径完全一致，也不额外多打两次 gh API。
+    # Capacity is ownership-filtered; it is only a fast skip, never proof of completion.
     local -n _active="$1"
     local grace="${REAP_GRACE_SECS:-300}"
-    local now sess n last_act idle reaped=0
+    local now sess n last_act idle reaped=0 confirmed_list="" confirmed_loaded=0 line key
+    local -A protected_keys=()
     now=$(date +%s)
 
     # session→最后活动时间，一次读完。
@@ -774,18 +786,35 @@ reap_finished_workers() {
             continue
         fi
         # 宽限期：worker 是**先翻 label 再收尾**的（推 commit、发 review 评论、贴总结）。
-        # label 一翻就杀会把收尾截断，所以要求 pane 已经安静够久。session_activity 在
-        # pane 有输出时才更新，claude 空闲挂着不输出，正好是我们要的「真闲了多久」。
+        # session_activity 仅作额外宽限；不能据此判定测试或 worker 已停止。
         last_act="${_last_act[$sess]:-}"
         # 拿不到活动时间就**不回收**（fail closed）：查不出来不等于「闲着」，
         # 宁可多留一轮，也不要在 worker 收尾时把它打断。
         if ! [[ "$last_act" =~ ^[0-9]+$ ]]; then
-            log "⏳ 回收暂缓: $sess（issue #$n 已完工，但读不到 session_activity —— 保守跳过）"
+            log "⏳ 回收暂缓: $sess（issue #$n 读不到 session_activity —— 保守跳过）"
             continue
         fi
         idle=$(( now - last_act ))
         if [ "$idle" -lt "$grace" ]; then
-            log "⏳ 回收暂缓: $sess（issue #$n 已完工，但 pane ${idle}s 前还有输出 < ${grace}s 宽限，可能在收尾）"
+            log "⏳ 回收暂缓: $sess（issue #$n session ${idle}s 前有活动 < ${grace}s 宽限，可能在收尾）"
+            continue
+        fi
+        # Re-read before cleanup, including workers with missing/foreign ownership.
+        # A failed or partial read must never authorize killing any session.
+        if [ "$confirmed_loaded" -eq 0 ]; then
+            if ! confirmed_list=$(list_active_workers all); then
+                log "⚠️ 回收暂缓：无法确认 GitHub worker 状态，保留所有 session"
+                return 0
+            fi
+            while IFS= read -r line; do
+                if [[ "$line" =~ ^(issue|PR)\ #([0-9]+) ]]; then
+                    key="${BASH_REMATCH[2]}"
+                    protected_keys[$key]=1
+                fi
+            done <<< "$confirmed_list"
+            confirmed_loaded=1
+        fi
+        if [ -n "${protected_keys[$n]:-}" ]; then
             continue
         fi
         log "🧹 回收完工 worker: $sess（issue #$n 无 $LABEL_AGENT_DOING，闲置 ${idle}s）"
