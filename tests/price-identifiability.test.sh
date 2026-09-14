@@ -145,6 +145,42 @@ import price_solve as ps
 ps.REFERENCE['claude-opus-5'] = dict(ps.REFERENCE['claude-opus-5']); ps.REFERENCE['claude-opus-5']['input'] = 0
 print(ps.build('A')['models']['claude-opus-5']['input']['status'])")" "uncorroborated"
 
+echo "── 7. 可信度必须能跟着金额走（不能只活在求解器里）──"
+# price_calls 是「求解器 → 周报」的唯一接口。它只返回金额的话，报告就再也分不出
+# 这笔钱用的是已核对的价、还是用参照兜底的存疑价（#934 交叉 review 第 1 轮）。
+py_trust() { PYTHONPATH="$REPO_DIR/scripts/weekly-report" python3 -c "$1" 2>&1; }
+TBL='{"models":{"m1":{"input":{"price":10,"status":"corroborated"},
+                      "output":{"price":20,"status":"disputed"},
+                      "cache_read":{"price":1,"status":"uncorroborated"},
+                      "cache_write_5m":{"price":5,"status":"unstable"},
+                      "cache_write_1h":{"price":None,"status":"unstable"}}},
+       "fast":{"m2":{"input":7}}}'
+CALL='{"model":"m1","speed":"standard","priced":{"input":1000000,"output":1000000,
+        "cache_read":1000000,"cache_write_5m":1000000,"cache_write_1h":1000000}}'
+chk "金额按可信度分桶，桶的合计 == 总金额" \
+  "$(py_trust "
+import attribute as a
+usd, unk, st, bs = a.price_calls([$CALL], $TBL)
+print(f'{round(usd,2)}/{round(sum(bs.values()),2)}/{unk}/{st}')")" "36.0/36.0/1000000/partial"
+chk "四态逐个进对桶（存疑 \$20 / 已核对 \$10 / 未核对 \$1 / 兜底 \$5）" \
+  "$(py_trust "
+import attribute as a
+_,_,_,bs = a.price_calls([$CALL], $TBL)
+print('/'.join(f'{k}={round(v,2)}' for k,v in sorted(bs.items())))")" \
+  "corroborated=10.0/disputed=20.0/uncorroborated=1.0/unstable=5.0"
+chk "加速档单独标出来（那是直接取参照价，没反解过）" \
+  "$(py_trust "
+import attribute as a
+c = dict($CALL); c['model']='m2'; c['speed']='fast'
+c['priced']={'input':1000000}
+_,_,_,bs = a.price_calls([c], $TBL)
+print(bs)")" "{'reference_only': 7.0}"
+chk "合成条目不进任何桶（它不是真实调用）" \
+  "$(py_trust "
+import attribute as a
+c = dict($CALL); c['model']='<synthetic>'
+print(a.price_calls([c], $TBL)[3])")" "{}"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

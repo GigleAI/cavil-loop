@@ -262,15 +262,18 @@ def main():
             chk = attribute.log_check(rec.get("tokens"), own[w["key"]]["tok"],
                                       foreign[w["key"]]["tok"], has_log, meta["parsed"])
             if chk in ("no_shortfall_detected", "true_zero"):
-                usd, unk, state = attribute.price_calls(mine, price_table)
+                usd, unk, state, bystat = attribute.price_calls(mine, price_table)
                 recompute[w["key"]] = {"cost_source": "recomputed", "cost": usd,
                                        "log_check": chk, "cost_state": state,
-                                       "unknown_tokens": unk}
+                                       "unknown_tokens": unk,
+                                       "price_source": "solved", "price_status": bystat}
             else:
                 recompute[w["key"]] = {"cost_source": "original", "cost": rec["cost"],
                                        "log_check": chk,
                                        "cost_state": rec.get("cost_state") or "none",
-                                       "unknown_tokens": rec.get("cost_unknown_tokens", 0)}
+                                       "unknown_tokens": rec.get("cost_unknown_tokens", 0),
+                                       "price_source": rec.get("price_source"),
+                                       "price_status": rec.get("price_status") or {}}
     # ③ 合计取舍：孤立派工不论取哪种值都进；重叠组内**全部重算**才整组进；含回退则整组
     #    单列。**不能相加**——两条重叠派工一条回退一条重算时，共用的调用会被算两遍。
     sources = {k: v["cost_source"] for k, v in recompute.items()}
@@ -313,6 +316,19 @@ def main():
             s["records_not_summable"] += 1
         s[f"src_{cost_source}"] += 1
         s[f"state_{cost_state}"] += 1
+        # 单价可信度：金额分到哪个桶里（GitHub#934 交叉 review 第 1 轮）。
+        # ⚠️ 只有进得了「去重合计」的那部分才拆桶——单列的那部分本来就不能相加，
+        #    把它的钱也摊进可信度桶里，桶的合计就对不上表头的金额了。
+        pstat = info.get("price_status") or rec.get("price_status") or {}
+        psrc = info.get("price_source") or rec.get("price_source")
+        if in_total:
+            for st_name, amt in pstat.items():
+                s[f"price_usd_{st_name}"] = s.get(f"price_usd_{st_name}", 0.0) + amt
+            # 有金额、却说不出这金额用的是什么可信度的单价（历史评论 / codex 侧人工配价）
+            if rec.get("has_cost") and not pstat:
+                s["price_usd_unrated"] = s.get("price_usd_unrated", 0.0) + cost
+        if psrc:
+            s[f"price_src_{psrc}"] = s.get(f"price_src_{psrc}", 0) + 1
         lc = info.get("log_check")
         if lc:
             s[f"log_{lc}"] += 1
@@ -421,7 +437,13 @@ def main():
               "state_full", "state_partial", "state_none",
               "log_no_shortfall_detected", "log_shortfall_detected",
               "log_unknown", "log_true_zero",
-              "cost_not_summable", "records_not_summable"]
+              "cost_not_summable", "records_not_summable",
+              # 单价**可信度**（与 state_* 的「有没有价」是两回事）：金额按桶拆开，
+              # 报告据此把「存疑」「未核对」「用参照兜底」分别报出来，不再混成一个数
+              "price_usd_corroborated", "price_usd_uncorroborated",
+              "price_usd_disputed", "price_usd_unstable",
+              "price_usd_reference_only", "price_usd_unrated",
+              "price_src_solved", "price_src_configured"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 
     tw = target.isoformat()
@@ -507,6 +529,8 @@ def main():
     long_windows.sort(key=lambda x: -x["wall"])
     misattributed.sort(key=lambda x: -(x["work"] / max(x["wall"], 1)))
     json.dump({"repo": R, "generated_at": datetime.datetime.now(TZ).isoformat(),
+               "price_reference": {"source": price_table.get("reference_source"),
+                                  "policy": price_table.get("policy")},
                "switch_week": switch_week(st),
                "long_windows": long_windows, "misattributed": misattributed,
                "target_week": {"start": tw, "end": tend.isoformat()},

@@ -46,7 +46,12 @@
 # 输出里因此多了三个字段：
 #   cost_state           full / partial / none —— **价格**覆盖（模型有没有单价）
 #   cost_unknown_tokens  没算进金额的 token 数
-#   price_models         本次用到的模型 → 各项单价状态
+#   price_source         solved（本机反解）—— codex 那一侧写 configured（人工配置）
+#   price_status         金额按单价可信度拆开，如 corroborated:41.20,disputed:2.16
+#
+# ⚠️ price_status 必须真的发出去。它原来算了却没进输出，结果「用参照兜底的存疑金额」
+#   和「已与参照核对过的金额」在周报里长得一模一样，设计承诺的报红形同虚设
+#   （#934 交叉 review 第 1 轮打回）。
 #
 # 漏算：worker 调本脚本的 Bash 调用本身 + 之后到 gh comment 完成那一小段，
 # transcript 还没 flush 进去，会漏 < 1%（整任务比例）。可忽略。
@@ -118,24 +123,28 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
           | (if $c.speed == "fast" then ($prices.fast[$c.model] // null) else null end) as $fast
           | ($prices.models[$c.model] // null) as $tbl
           | ($c.model == "<synthetic>") as $syn
+          # 每一项：取到的价 + 这个价的可信度（corroborated / uncorroborated /
+          # disputed / unstable / reference_only）。可信度要跟着金额一路带到周报，
+          # 否则用参照兜底的存疑金额和已核对的金额在报告上长得一样。
+          | ([$c.tok | to_entries[]
+              | . as $e
+              | (if $syn then null
+                 elif $fast then {p: ($fast[$e.key] // null), st: "reference_only"}
+                 elif $tbl then {p: ($tbl[$e.key].price // null),
+                                 st: ($tbl[$e.key].status // "unstable")}
+                 else null end) as $pr
+              | {v: $e.value,
+                 p: (if $pr then $pr.p else null end),
+                 st: (if $pr then $pr.st else null end)}]) as $items
           | {tok: $c.tok, model: $c.model, syn: $syn,
-             priced: ([$c.tok | to_entries[]
-                       | . as $e
-                       | (if $fast then ($fast[$e.key] // null)
-                          elif $tbl then ($tbl[$e.key].price // null) else null end) as $pr
-                       | if $syn or $pr == null then 0 else $e.value * $pr / 1000000 end] | add),
-             unknown: ([$c.tok | to_entries[]
-                       | . as $e
-                       | (if $fast then ($fast[$e.key] // null)
-                          elif $tbl then ($tbl[$e.key].price // null) else null end) as $pr
-                       | if $syn or $pr != null then 0 else $e.value end] | add),
-             known_any: ([$c.tok | to_entries[]
-                       | . as $e
-                       | (if $fast then ($fast[$e.key] // null)
-                          elif $tbl then ($tbl[$e.key].price // null) else null end) as $pr
-                       | if $syn or $pr == null then 0 else 1 end] | add)})
+             priced: ([$items[] | if .p == null then 0 else .v * .p / 1000000 end] | add),
+             unknown: ([$items[] | if ($syn or .p != null) then 0 else .v end] | add),
+             known_any: ([$items[] | if ($syn or .p == null) then 0 else 1 end] | add),
+             bystat: (reduce $items[] as $i ({};
+                        if $i.p == null then .
+                        else .[$i.st] = ((.[$i.st] // 0) + $i.v * $i.p / 1000000) end))})
     | reduce .[] as $c (
-        {in:0, out:0, cr:0, cw_5m:0, cw_1h:0, usd:0, unk:0, known:0, models:{}};
+        {in:0, out:0, cr:0, cw_5m:0, cw_1h:0, usd:0, unk:0, known:0, models:{}, bystat:{}};
           .in     += $c.tok.input
         | .out    += $c.tok.output
         | .cr     += $c.tok.cache_read
@@ -145,21 +154,28 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
         | .unk    += $c.unknown
         | .known  += $c.known_any
         | .models[$c.model] = true
+        | .bystat = (reduce ($c.bystat | to_entries[]) as $e (.bystat;
+                       .[$e.key] = ((.[$e.key] // 0) + $e.value)))
       )
     | (.cw_5m + .cw_1h) as $cw
     | (if .unk == 0 and .known > 0 then "full"
        elif .known > 0 then "partial"
        else "none" end) as $state
-    | ([.models | keys[]
-        | . as $m | {(($m)): (($prices.models[$m] // {})
-                              | with_entries({key: .key, value: .value.status}))}] | add // {}) as $pstat
+    # 金额按单价可信度拆开，形如 corroborated:41.20,disputed:2.16（无空格，进标记不破格式）
+    | ([.bystat | to_entries[] | select(.value > 0)
+        | "\(.key):\(.value | usd2)"] | join(",")) as $pstat
+    | (.bystat.disputed // 0) as $dsp
     | if $mode == "--kv"
       then "in=\(.in) out=\(.out) cache_r=\(.cr) cache_w=\($cw)"
            + (if $state == "none" then "" else " cost_usd=\(.usd | usd2)" end)
            + " cost_state=\($state) cost_unknown_tokens=\(.unk)"
+           # 单价出处：这一侧是本机反解的（codex 那侧是人工配置，写 configured）
+           + " price_source=solved"
+           + (if $pstat == "" then "" else " price_status=\($pstat)" end)
       else "\(.in | fmt) input, \(.out | fmt) output, \(.cr | fmt) cache read, \($cw | fmt) cache write"
            + (if $state == "none" then "（单价未知，金额未计）"
               elif $state == "partial" then " ($\(.usd | usd2)，部分模型单价未知，金额偏低)"
               else " ($\(.usd | usd2))" end)
+           + (if $dsp > 0 then "；其中 $\($dsp | usd2) 所用单价与外部参照冲突（存疑）" else "" end)
       end
 ' "${FILES[@]}" 2>/dev/null

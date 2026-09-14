@@ -175,6 +175,38 @@ def _iso(t):
         return None
 
 
+def norm_usage(u):
+    """一次调用的 5 个求和项，**逐字段零回退**（GigleTutor-Web#935）。
+
+    极少数 usage 记录的**顶层**计数被写成 0，真值只落在 `usage.iterations[]` 里。
+    每一项各走一次「顶层 > 0 用顶层，否则用明细里同名项的合计」，两者**永不相加**。
+
+    ⚠️ 这里必须与 drivers/token-usage/claude.sh 里的 `zf` **同口径**。两边不一致的
+    后果不是「金额差一点」，而是**本可重算的记录被整条退回原值**：加载器把完整日志
+    读成 0，再拿它和（正确的）footer 比，就得到 `shortfall_detected`；这条派工若还
+    和别人窗口重叠，整组都会被踢出去重合计（#934 交叉 review 第 1 轮打回）。
+    """
+    it = u.get("iterations") or []
+
+    def zf(top, get):
+        top = top or 0
+        return top if top > 0 else sum(get(x) or 0 for x in it)
+
+    def cc(obj, key):
+        return ((obj.get("cache_creation") or {}).get(key)) or 0
+
+    return {
+        "input": zf(u.get("input_tokens"), lambda x: x.get("input_tokens")),
+        "output": zf(u.get("output_tokens"), lambda x: x.get("output_tokens")),
+        "cache_read": zf(u.get("cache_read_input_tokens"),
+                         lambda x: x.get("cache_read_input_tokens")),
+        "cache_write_5m": zf(cc(u, "ephemeral_5m_input_tokens"),
+                             lambda x: cc(x, "ephemeral_5m_input_tokens")),
+        "cache_write_1h": zf(cc(u, "ephemeral_1h_input_tokens"),
+                             lambda x: cc(x, "ephemeral_1h_input_tokens")),
+    }
+
+
 def load_claude_calls(worktree, tz=None):
     """该 worktree 的全部会话文件 → 调用列表（按 requestId 归组，规范时刻取组内最早）。"""
     base = os.environ.get("CLAUDE_PROJECTS_DIR") or os.path.expanduser("~/.claude/projects")
@@ -204,17 +236,11 @@ def load_claude_calls(worktree, tz=None):
                 parsed += 1
                 rid = r.get("requestId") or f"__norid_{f}:{r.get('uuid')}"
                 t = _iso(r.get("timestamp") or "")
-                cc = u.get("cache_creation") or {}
-                tok = {"in": u.get("input_tokens") or 0,
-                       "out": u.get("output_tokens") or 0,
-                       "cache_r": u.get("cache_read_input_tokens") or 0,
-                       "cache_w": (cc.get("ephemeral_5m_input_tokens") or 0)
-                                  + (cc.get("ephemeral_1h_input_tokens") or 0)}
                 # 计价要分到档：cache 写入的 5m 与 1h 单价不同（1.25× vs 2×）
-                priced = {"input": tok["in"], "output": tok["out"],
-                          "cache_read": tok["cache_r"],
-                          "cache_write_5m": cc.get("ephemeral_5m_input_tokens") or 0,
-                          "cache_write_1h": cc.get("ephemeral_1h_input_tokens") or 0}
+                priced = norm_usage(u)
+                tok = {"in": priced["input"], "out": priced["output"],
+                       "cache_r": priced["cache_read"],
+                       "cache_w": priced["cache_write_5m"] + priced["cache_write_1h"]}
                 model = ((r.get("message") or {}).get("model") or "unknown").split("[")[0]
                 speed = u.get("speed") or "standard"
                 g = groups.get(rid)
@@ -231,16 +257,28 @@ def load_claude_calls(worktree, tz=None):
 
 
 def price_calls(calls, table):
-    """把一批调用按**各自的模型与档位**计价。返回 (金额, 没算进金额的 token 数, 状态)。
+    """把一批调用按**各自的模型与档位**计价。
 
-    状态与 driver 那一侧同口径：full 全有单价 / partial 有一部分没有（金额必定偏低）/
-    none 一条都算不出。<synthetic> 不是真实调用，不参与计价、也不计缺价。
+    返回 `(金额, 没算进金额的 token 数, 覆盖状态, 按单价可信度分的金额)`。
+
+    · 覆盖状态与 driver 那一侧同口径：full 全有单价 / partial 有一部分没有（金额必定
+      偏低）/ none 一条都算不出。`<synthetic>` 不是真实调用，不计价也不计缺价。
+    · 第四项是**单价可信度**，与覆盖状态是两件事：覆盖状态说「有没有价」，可信度说
+      「这个价站不站得住」。不把它带到报告里，用参照兜底的 disputed 金额和已核对过的
+      金额在报告上长得一模一样，设计里承诺的报红就不存在（#934 交叉 review 第 1 轮）。
+      桶名取自 price_solve.classify()：
+        corroborated  稳定且与参照一致
+        uncorroborated 稳定但无参照可比（候选估算）
+        disputed      稳定但与参照冲突 —— **报红**，两边都没被判为对
+        unstable      不可解，policy=A 时用参照兜底出的金额
+        reference_only 加速档：本机没有可反解的样本，直接用参照价
     """
     models = (table or {}).get("models") or {}
     fast = (table or {}).get("fast") or {}
     usd = 0.0
     unknown = 0
     known = 0
+    by_status = {}
     for c in calls:
         if c.get("model") == "<synthetic>":
             continue
@@ -250,13 +288,16 @@ def price_calls(calls, table):
             if not tok:
                 continue
             if tbl is not None:
-                price = tbl.get(item)
+                price, status = tbl.get(item), "reference_only"
             else:
-                price = (entry.get(item) or {}).get("price")
+                cell = entry.get(item) or {}
+                price, status = cell.get("price"), cell.get("status") or "unstable"
             if price is None:
                 unknown += tok
             else:
-                usd += tok * price / 1e6
+                amount = tok * price / 1e6
+                usd += amount
                 known += 1
+                by_status[status] = by_status.get(status, 0.0) + amount
     state = "full" if (known and not unknown) else ("partial" if known else "none")
-    return usd, unknown, state
+    return usd, unknown, state, by_status

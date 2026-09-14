@@ -143,7 +143,7 @@ def main():
                              "cache_write_5m": (c["u"].get("cache_creation") or {}).get("ephemeral_5m_input_tokens") or 0,
                              "cache_write_1h": (c["u"].get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0}}
                  for c in r["calls"]]
-        v2, _unk, _st = attribute.price_calls(calls, table)
+        v2, _unk, _st, _bs = attribute.price_calls(calls, table)
         if v2:
             m2.append(v2 / r["cost"]); s2 += v2
     tot = sum(r["total_calls"] for r in rows) or 1

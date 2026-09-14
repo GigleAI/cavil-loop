@@ -27,8 +27,21 @@
 #   「缺金额」——并且明说「占比算不出来，**不是 0%**」。
 #
 #   单价**按模型分别配**（GigleTutor-Web#934 的 Q4=A）：同一次派工里混用不同模型时，
-#   一个价钱套所有模型会算错。模型名从会话记录的 `turn_context.model` 读（本机是
-#   gpt-6-astra）。配置走 `CODEX_PRICES`，JSON，单位美元 / 百万 token：
+#   一个价钱套所有模型会算错。
+#
+#   ⚠️ 模型必须**逐条调用**地认，不能「整段取一个模型」（#934 交叉 review 第 1 轮）：
+#     · `turn_context` 每轮开头写一条，`model` 是**那一轮之后**的调用所用的模型；
+#       同一份 rollout 文件里换模型就会有多条，取 last 会把前面几轮也按最后那个算。
+#     · 一次派工常横跨**多份** rollout 文件（会话被 resume / 分叉），把所有文件
+#       `jq -s` 合成一个数组后取 last，等于用某一份文件的模型给全部文件定价。
+#     实测：A 文件 100 万 input 走 $1/M、B 文件 100 万走 $10/M，正确是 $11，
+#     旧写法按合并后 last 命中谁就出 $2 或 $20；只配其中一个模型的价时旧写法还会
+#     整体落 none/unknown=200 万，而正确答案是 $10 + partial + 缺价 100 万。
+#     所以下面**按文件逐行扫**，用「本行之前最近一条 turn_context」给每条用量盖模型章，
+#     再按模型分段计价、最后合计。
+#
+#   模型名从会话记录的 `turn_context.model` 读（本机是 gpt-6-astra）。
+#   配置走 `CODEX_PRICES`，JSON，单位美元 / 百万 token：
 #
 #     CODEX_PRICES='{"gpt-6-astra":{"in":1.25,"cached_in":0.125,"out":10}}'
 #
@@ -74,8 +87,33 @@ if [ -n "$PI" ] && [ -n "$PC" ] && [ -n "$PO" ]; then
         '. + {"*": $d}' 2>/dev/null || printf '{"*":{"in":%s,"cached_in":%s,"out":%s}}' "$PI" "$PC" "$PO")
 fi
 
-# shellcheck disable=SC2086
-jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRICES" '
+# ── ① 逐文件扫描：给每条用量记录盖上「它所属那一轮的模型」 ──────────────────
+# 必须一份文件一份文件地走：jq -s 把多份文件合成一个数组后，文件边界就没了，
+# 也就无从知道某条记录属于哪份文件的哪一轮。
+STAMPED=$(
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        jq -c --argjson start "$START_EPOCH" '
+            def isots: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+            # 文件里第一条 turn_context 的模型，给**排在它之前**的用量记录兜底：
+            # 真实 rollout 里 turn_context 在每轮开头（本机实测在第 8 行、早于所有
+            # 用量记录），但被截断的文件头部可能先出现用量记录，那时最近的证据就是
+            # 这份文件的首个 turn_context，而不是「unknown」。
+            ([.[] | select(.type == "turn_context") | .payload.model // empty] | first // "unknown") as $first
+            | reduce .[] as $r ({m: $first, out: []};
+                if $r.type == "turn_context" and (($r.payload.model // "") != "")
+                then .m = $r.payload.model
+                elif $r.type == "token_usage_record" and ($r.payload.usage != null)
+                     and (($r.timestamp | isots) >= $start)
+                then .out += [{model: .m, u: $r.payload.usage}]
+                else . end)
+            | .out[]' -s "$f" 2>/dev/null
+    done <<< "$MINE"
+)
+[ -z "$STAMPED" ] && exit 0
+
+# ── ② 按模型分段计价，再合计 ─────────────────────────────────────────────
+printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" '
     def fmt:
         if . >= 1000000 then ((. / 100000 | floor) / 10 | tostring) + "m"
         elif . >= 1000 then ((. / 100 | floor) / 10 | tostring) + "k"
@@ -86,30 +124,40 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
         ($c - $d * 100) as $r |
         "\($d).\(if $r < 10 then "0\($r)" else "\($r)" end)";
 
-    # 一个 rollout 文件对应一个 turn_context.model；同一次派工可能横跨多个文件 / 多个模型
-    ([.[] | select(.type == "turn_context") | .payload.model // empty] | last // "unknown") as $model
-    | [.[] | select(.type == "token_usage_record"
-              and (.payload.usage // empty)
-              and ((.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $start))
-           | .payload.usage]
-    | reduce .[] as $u (
-        {in:0, cin:0, cw:0, out:0};
-        .in  += (($u.input_tokens // 0) - ($u.cached_input_tokens // 0))
-        | .cin += ($u.cached_input_tokens // 0)
-        | .cw  += ($u.cache_write_input_tokens // 0)
-        | .out += ($u.output_tokens // 0)      # reasoning 已在 output 里，别再加一次
-      )
-    | . as $t
-    | ($prices[$model] // $prices["*"] // null) as $p
-    | (if $p then (($t.in * $p.in + $t.cin * $p.cached_in + $t.out * $p.out) / 1000000)
-       else null end) as $usd
-    | (if $p then "full" else "none" end) as $state
-    | (if $p then 0 else ($t.in + $t.cin + $t.cw + $t.out) end) as $unk
+    # cached / reasoning 都是子项，不能另计（见文件头实测）
+    map({model: .model,
+         in:  ((.u.input_tokens // 0) - (.u.cached_input_tokens // 0)),
+         cin: (.u.cached_input_tokens // 0),
+         cw:  (.u.cache_write_input_tokens // 0),
+         out: (.u.output_tokens // 0)})
+    | (reduce .[] as $c ({in:0, cin:0, cw:0, out:0};
+          .in += $c.in | .cin += $c.cin | .cw += $c.cw | .out += $c.out)) as $t
+    # 分模型小计 → 各自套自己的价 → 加起来
+    | (group_by(.model)
+       | map({model: .[0].model,
+              s: (reduce .[] as $c ({in:0, cin:0, cw:0, out:0};
+                    .in += $c.in | .cin += $c.cin | .cw += $c.cw | .out += $c.out))})) as $bym
+    | (reduce $bym[] as $g ({usd:0, unk:0, known:0};
+          ($prices[$g.model] // $prices["*"] // null) as $p
+          | if $p
+            then .usd += (($g.s.in * $p.in + $g.s.cin * $p.cached_in + $g.s.out * $p.out) / 1000000)
+                 | .known += 1
+            # ⚠️ cache_write 这一侧没有公开单价，配置里也没有这个键：模型有价时
+            #    它就是**没计进金额**的那部分（下方 cost_unknown_tokens 只统计
+            #    整个模型都没价的情形，这一项另计会让每次派工都落 partial）。
+            else .unk += ($g.s.in + $g.s.cin + $g.s.cw + $g.s.out) end)) as $agg
+    | (if $agg.unk == 0 and $agg.known > 0 then "full"
+       elif $agg.known > 0 then "partial"
+       else "none" end) as $state
     | if $mode == "--kv"
       then "in=\($t.in) out=\($t.out) cache_r=\($t.cin) cache_w=\($t.cw)"
-           + (if $usd == null then "" else " cost_usd=\($usd | usd2)" end)
-           + " cost_state=\($state) cost_unknown_tokens=\($unk)"
+           + (if $state == "none" then "" else " cost_usd=\($agg.usd | usd2)" end)
+           + " cost_state=\($state) cost_unknown_tokens=\($agg.unk)"
+           # 这一侧的单价是**人工配置**的，不是反解出来的，所以没有四态可言
+           + " price_source=configured"
       else "\($t.in | fmt) input, \($t.out | fmt) output, \($t.cin | fmt) cache read, \($t.cw | fmt) cache write"
-           + (if $usd == null then "（该模型未配单价，金额未计）" else " ($\($usd | usd2))" end)
+           + (if $state == "none" then "（该模型未配单价，金额未计）"
+              elif $state == "partial" then " ($\($agg.usd | usd2)，部分模型未配单价，金额偏低)"
+              else " ($\($agg.usd | usd2))" end)
       end
-' $(echo "$MINE") 2>/dev/null
+' 2>/dev/null

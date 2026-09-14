@@ -57,7 +57,10 @@ rec() {
 printf '{"type":"turn_token_usage","timestamp":"%s","payload":{"usage":{"input_tokens":8888888,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":8888888,"reasoning_output_tokens":0,"total_tokens":17777776}}}\n' \
     "$(ts 25)" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
 
-# 补一条 turn_context：模型名就写在这里（本机真实会话里是 gpt-6-astra）
+# 补一条 turn_context：模型名就写在这里（本机真实会话里是 gpt-6-astra）。
+# ⚠️ 这份 fixture 刻意把它写在**所有用量记录之后**：真实 rollout 里 turn_context 在每轮
+#   开头（本机实测第 8 行），但文件头被截断时用量记录会排在它前面。driver 对这种记录
+#   用「本文件首个 turn_context 的模型」兜底，而不是落 unknown —— 这条钉住那个兜底。
 printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"gpt-test"}}\n' \
     "$(ts 1)" "$MINE" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
 
@@ -68,7 +71,7 @@ run() { ( cd "$MINE" && HOME="$TMP" env "$@" bash "$DRIVER" "$START" ${MODE:-} )
 #       out = 300000 + 700000 = 1000000（**不含** reasoning 420000）
 MODE=--kv  out_kv=$(run CODEX_PRICE_IN_PER_M= CODEX_PRICE_CACHED_IN_PER_M= CODEX_PRICE_OUT_PER_M=)
 chk "--kv：output 只算一次，reasoning 不再加一遍" \
-    "$out_kv" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_state=none cost_unknown_tokens=4050000"
+    "$out_kv" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_state=none cost_unknown_tokens=4050000 price_source=configured"
 
 MODE=""    out_hm=$(run CODEX_PRICE_IN_PER_M= CODEX_PRICE_CACHED_IN_PER_M= CODEX_PRICE_OUT_PER_M=)
 chk "人读输出：未配单价时只出 token、如实说明没算金额" \
@@ -78,7 +81,7 @@ chk "人读输出：未配单价时只出 token、如实说明没算金额" \
 #        旧实现 out=1420000 → 159.40
 MODE=--kv  out_kvp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
 chk "--kv + 单价：金额按真实 output 算（不是把 reasoning 也计费）" \
-    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.40 cost_state=full cost_unknown_tokens=0"
+    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.40 cost_state=full cost_unknown_tokens=0 price_source=configured"
 
 MODE=""    out_hmp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
 chk "人读输出 + 单价：同上" \
@@ -87,11 +90,11 @@ chk "人读输出 + 单价：同上" \
 # ── 认领与窗口边界 ──
 MODE=--kv  out_other=$( ( cd "$OTHER" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
 chk "只认领 cwd 等于当前目录的会话（别的 worktree 各算各的）" \
-    "$out_other" "in=5000000 out=5000000 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=10000000"
+    "$out_other" "in=5000000 out=5000000 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=10000000 price_source=configured"
 
 MODE=--kv  out_late=$( ( cd "$MINE" && HOME="$TMP" bash "$DRIVER" "$(( START + 15 ))" --kv ) )
 chk "窗口起点之后的记录才计入（第一条被排除）" \
-    "$out_late" "in=1000000 out=700000 cache_r=1000000 cache_w=0 cost_state=none cost_unknown_tokens=2700000"
+    "$out_late" "in=1000000 out=700000 cache_r=1000000 cache_w=0 cost_state=none cost_unknown_tokens=2700000 price_source=configured"
 
 MODE=--kv  out_none=$( ( cd "$TMP" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
 chk "没有任何会话认领当前目录 → 不输出（周报落「未知」兜底）" "$out_none" ""
@@ -107,6 +110,46 @@ chk "只配了别的模型 → 不套价，如实落 none 并报出缺价 token"
     "cost_state=none cost_unknown_tokens=4050000"
 chk "没配任何单价 → 同样是 none（原有行为不变）" \
     "$(MODE=--kv run CODEX_PRICES='{}' | grep -o 'cost_state=[a-z]*')" "cost_state=none"
+
+# ── 逐调用按模型计价（GitHub#934 交叉 review 第 1 轮）──────────────────────
+# 旧写法把所有文件 jq -s 合成一个数组、取**最后一条** turn_context.model 给全部调用
+# 定价。两种真实情形都会错：一次派工横跨多份 rollout 文件（会话 resume / 分叉）、
+# 以及同一份文件里中途换模型。下面用独立的日志目录重造这两种情形。
+MIX="$TMP/mix"; mkdir -p "$MIX/wt" "$MIX/.codex/sessions/2026/09/14"
+mrec() {  # $1 相对秒  $2 input token
+    printf '{"type":"token_usage_record","timestamp":"%s","payload":{"usage":{"input_tokens":%s,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":%s}}}\n' \
+        "$(ts "$1")" "$2" "$2"
+}
+mctx() {  # $1 相对秒  $2 模型名（真实 rollout 里排在该轮调用之前）
+    printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"%s"}}\n' \
+        "$(ts "$1")" "$MIX/wt" "$2"
+}
+mmeta() { printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$(ts -200)" "$MIX/wt"; }
+{ mmeta; mctx -190 mA; mrec 10 1000000; } > "$MIX/.codex/sessions/2026/09/14/rollout-A.jsonl"
+{ mmeta; mctx -190 mB; mrec 20 1000000; } > "$MIX/.codex/sessions/2026/09/14/rollout-B.jsonl"
+mrun() { ( cd "$MIX/wt" && HOME="$MIX" env "$@" bash "$DRIVER" "$START" --kv ); }
+BOTH='{"mA":{"in":1,"cached_in":0,"out":0},"mB":{"in":10,"cached_in":0,"out":0}}'
+
+# mA 100 万 × $1/M + mB 100 万 × $10/M = $11.00（旧写法按合并后 last 命中谁，出 $2 或 $20）
+chk "跨文件混用模型：各按各的价（旧写法会整体套同一个价）" \
+    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11.00"
+
+# 只配 mB：应当只算 mB 那 100 万，mA 那 100 万落缺价 → partial
+chk "跨文件混用、只配其中一个模型的价 → 金额只含有价的那部分" \
+    "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' \
+       | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=10.00 cost_state=partial cost_unknown_tokens=1000000"
+
+# 同一份文件里中途换模型：前半段 mA、后半段 mB
+rm -f "$MIX/.codex/sessions/2026/09/14/rollout-A.jsonl" "$MIX/.codex/sessions/2026/09/14/rollout-B.jsonl"
+{ mmeta; mctx -190 mA; mrec 30 1000000; mctx 35 mB; mrec 40 1000000; } \
+    > "$MIX/.codex/sessions/2026/09/14/rollout-C.jsonl"
+chk "单文件内换模型：按各条调用当时的 turn_context 分段计价" \
+    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11.00"
+
+# 单价来源要如实标出来：这一侧是**人工配置**的，不是像 claude 那侧反解出来的
+chk "输出标明单价来源为人工配置（报告据此区分两侧口径）" \
+    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'price_source=[a-z]*')" "price_source=configured"
 
 echo
 echo "通过 $pass / 失败 $fail"

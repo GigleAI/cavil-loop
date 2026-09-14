@@ -119,6 +119,10 @@ def extract(body, login, comment_id=None, default_wt=None):
       tokens_exact  历史记录的 token 是 driver 的 fmt **floor 截断**过的（53.5k ⇒ ≥53500），
                这里拿到的是**下界**不是精确值，比对时要按下界判。
       cost_state   价格覆盖三态：full / partial（有模型没单价，金额必定偏低）/ none
+      price_source 单价出处：solved（本机反解，claude 侧）/ configured（人工配置，codex 侧）
+      price_status 金额按**单价可信度**拆开，{corroborated/uncorroborated/disputed/
+               unstable/reference_only: 美元}。与 cost_state 是两回事：cost_state 说
+               「有没有价」，这个说「这个价站不站得住」
       has_cost 这条记录**有没有写金额**。`cost=0` 有两种来源：驱动没配单价所以根本没写，
                和配了单价但估算不足半美分、如实写成 `0.00`。两者必须分开，否则报告会把
                后者说成「该侧未配单价」
@@ -197,7 +201,9 @@ def extract(body, login, comment_id=None, default_wt=None):
                 "wt": norm_wt(kv.get("wt")) or norm_wt(default_wt), "start": st, "end": en,
                 "wall": wall, "cost": cost, "has_cost": has_cost, "out": out,
                 "tokens": tokens, "tokens_exact": True, "cost_state": cost_state,
-                "cost_unknown_tokens": _int("cost_unknown_tokens")}
+                "cost_unknown_tokens": _int("cost_unknown_tokens"),
+                "price_source": kv.get("price_source"),
+                "price_status": _price_status(kv.get("price_status"))}
 
     # ② 历史评论（无机器记录）：连同上面那条作者判定一共四步，任何一步不满足
     #    就不作为记账来源
@@ -219,7 +225,25 @@ def extract(body, login, comment_id=None, default_wt=None):
             "cost": sum(costs), "has_cost": bool(costs),
             "out": _out_of(nxt),
             "tokens": attribute.parse_token_line(nxt), "tokens_exact": False,
-            "cost_state": ("full" if costs else "none"), "cost_unknown_tokens": 0}
+            "cost_state": ("full" if costs else "none"), "cost_unknown_tokens": 0,
+            # 历史评论是老驱动那张**过期价目表**算出来的（实测高 193%），既没有可信度
+            # 也没有出处可言 —— 留空，报告里按「来源不明」披露，不硬塞进四态里充数
+            "price_source": None, "price_status": {}}
+
+
+def _price_status(raw):
+    """`corroborated:41.20,disputed:2.16` → {状态: 美元}。解析不了的整条丢弃，不瞎猜。"""
+    out = {}
+    for part in (raw or "").split(","):
+        st, _, amt = part.partition(":")
+        st = st.strip()
+        if not st or not amt:
+            continue
+        try:
+            out[st] = out.get(st, 0.0) + float(amt)
+        except ValueError:
+            continue
+    return out
 
 
 def dispatch_key(rec):

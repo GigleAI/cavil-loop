@@ -161,6 +161,64 @@ ws=[W('A','claude','wt1',0,10), W('B','claude','wt1',5,15), W('C','claude','wt1'
 ok,g=a.summable(ws,{'A':'recomputed','B':'recomputed','C':'original'})
 print(f\"{len(set(g.values()))}/{ok['A']}\")")" "1/False"
 
+echo "── 5. 加载器与驱动同口径：逐字段零回退（GitHub#935 / #934 交叉 review 第 1 轮）──"
+# 同一份 transcript 同时喂给**真实 driver**（claude.sh）和**真实加载器**
+# （attribute.load_claude_calls），断言五个求和项完全一致。
+#
+# 为什么用「两边对拍」而不是逐个断言数值：这个 bug 的本质是**两套代码各读各的**——
+# driver 有 zf 零回退、加载器只读顶层。任何一边以后再改读法，对拍立刻红；而逐条写死
+# 期望值只能覆盖当时想到的那几种记录。
+#
+# 五项各有一个「顶层写成 0、真值在 iterations[] 里」的镜像样本；cache 的 5m / 1h
+# 必须分开验（它俩单价不同，混成一项就测不出档位错配）。
+XT=$(mktemp -d); trap 'rm -rf "$XT"' EXIT
+XWT="$XT/wt/issue-7"; mkdir -p "$XWT"
+XENC=$(printf '%s' "$XWT" | tr / -)
+mkdir -p "$XT/projects/$XENC"
+NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+# $1 reqid  $2..$6 顶层 in/out/cache_r/5m/1h  $7..$11 iterations 里同名项
+xrec() {
+    printf '{"type":"assistant","requestId":"%s","uuid":"%s","timestamp":"%s","message":{"model":"claude-opus-5","usage":{"input_tokens":%s,"output_tokens":%s,"cache_read_input_tokens":%s,"cache_creation":{"ephemeral_5m_input_tokens":%s,"ephemeral_1h_input_tokens":%s},"iterations":[{"input_tokens":%s,"output_tokens":%s,"cache_read_input_tokens":%s,"cache_creation":{"ephemeral_5m_input_tokens":%s,"ephemeral_1h_input_tokens":%s}}]}}}\n' \
+        "$1" "$1" "$NOW" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}"
+}
+{
+    xrec zf_in   0 0 0 0 0    1111 0 0 0 0          # 只有 input 被清零
+    xrec zf_out  0 0 0 0 0    0 2222 0 0 0          # 只有 output 被清零
+    xrec zf_cr   0 0 0 0 0    0 0 3333 0 0          # 只有 cache_read 被清零
+    xrec zf_5m   0 0 0 0 0    0 0 0 4444 0          # 只有 cache_write 5m 被清零
+    xrec zf_1h   0 0 0 0 0    0 0 0 0 5555          # 只有 cache_write 1h 被清零
+    xrec top_win 10 20 30 40 50   999 999 999 999 999   # 顶层非 0 → 明细完全不看
+} > "$XT/projects/$XENC/s.jsonl"
+
+DRV=$(cd "$XWT" && CLAUDE_PROJECTS_DIR="$XT/projects" \
+      bash "$REPO_DIR/scripts/drivers/token-usage/claude.sh" 0 --kv \
+      | grep -o 'in=[0-9]* out=[0-9]* cache_r=[0-9]* cache_w=[0-9]*')
+LOADER=$(CLAUDE_PROJECTS_DIR="$XT/projects" py "
+import attribute as a
+calls,_ = a.load_claude_calls('$XWT')
+t={'in':0,'out':0,'cache_r':0,'cache_w':0}
+for c in calls:
+    for k in t: t[k]+=c['tok'][k]
+print('in=%(in)d out=%(out)d cache_r=%(cache_r)d cache_w=%(cache_w)d' % t)")
+# 期望：in 1111+10 / out 2222+20 / cache_r 3333+30 / cache_w 4444+5555+40+50
+chk "加载器读出的五项 == 驱动读出的五项（改前加载器全读成 0）" "$LOADER" "$DRV"
+chk "两边一致的那个值本身也对（不是「一起错成 0」）" \
+    "$DRV" "in=1121 out=2242 cache_r=3363 cache_w=10089"
+chk "顶层非 0 的那条：明细不参与（否则会变成 999 那一串）" \
+    "$(CLAUDE_PROJECTS_DIR="$XT/projects" py "
+import attribute as a
+calls,_ = a.load_claude_calls('$XWT')
+c=[x for x in calls if x['tok']['in']==10][0]
+print(c['tok'])")" \
+    "{'in': 10, 'out': 20, 'cache_r': 30, 'cache_w': 90}"
+chk "计价用的 5m / 1h 分开保留（单价不同，不能合成一项）" \
+    "$(CLAUDE_PROJECTS_DIR="$XT/projects" py "
+import attribute as a
+calls,_ = a.load_claude_calls('$XWT')
+p5=sum(c['priced']['cache_write_5m'] for c in calls)
+p1=sum(c['priced']['cache_write_1h'] for c in calls)
+print(f'{p5}/{p1}')")" "4484/5605"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -32,9 +32,12 @@ export CLAUDE_PROJECTS_DIR="$TMP/projects"
 export XDG_CACHE_HOME="$TMP/cache"
 
 # 一条派工的机器记录。$1 wt  $2 起 hh  $3 止 hh  $4 out token  $5 cost_usd
-marker() {
-    printf '干完了。\n\n<!-- agent-metrics agent=claude wt=%s start=%sT%s:00+08:00 end=%sT%s:00+08:00 wall_secs=600 in=0 out=%s cache_r=0 cache_w=0 cost_usd=%s cost_state=full cost_unknown_tokens=0 -->' \
+marker() {   # $6 可选：price_status（如 disputed:10.00），$7 可选：price_source
+    printf '干完了。\n\n<!-- agent-metrics agent=claude wt=%s start=%sT%s:00+08:00 end=%sT%s:00+08:00 wall_secs=600 in=0 out=%s cache_r=0 cache_w=0 cost_usd=%s cost_state=full cost_unknown_tokens=0' \
         "$1" "$W" "$2" "$W" "$3" "$4" "$5"
+    [ -n "${7:-}" ] && printf ' price_source=%s' "$7"
+    [ -n "${6:-}" ] && printf ' price_status=%s' "$6"
+    printf ' -->'
 }
 # 往某 worktree 的 claude 日志里写一次调用。$1 wt  $2 时刻 HH:MM  $3 out token  $4 reqid
 call() {
@@ -130,6 +133,64 @@ run "$(marker 10 '10:00' '10:20' 1000000 '0.00')" "$(marker 10 '10:10' '10:15' 6
 chk "两条都用重算值"                  "$(q src_recomputed)"        "2"
 chk "整组都进合计"                    "$(q records_not_summable)"  "0"
 chk "合计 = 全部调用各计一次（1e6 out → \$25）" "$(q cost)"        "25"
+
+echo "── 6. 单价可信度一路走到最终 markdown（GitHub#934 交叉 review 第 1 轮）──"
+# 四态只活在求解器里、没进报告的话，「用参照兜底的存疑金额」和「已与参照核对的金额」
+# 在报告上长得一模一样，设计承诺的报红就是空的。下面三种都断言到**最终 markdown**。
+
+# ⑴ 存疑：驱动记下这笔钱用的单价与外部参照冲突 → 报告必须报红、必须点名金额
+rm -rf "$CLAUDE_PROJECTS_DIR"        # 没日志 → 走沿用原值那条路，可信度来自记录本身
+run "$(marker 10 '10:00' '10:10' 1000000 '30.00' 'corroborated:20.00,disputed:10.00' solved)"
+chk "存疑金额单独入桶（\$10）"        "$(q price_usd_disputed)"        "10"
+chk "已核对金额单独入桶（\$20）"      "$(q price_usd_corroborated)"    "20"
+chk "报告里出现「与参照冲突（存疑）」并报红" \
+    "$(grep -qF '与参照冲突（存疑）' "$TMP/r.md" && grep -qF '⚠️' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报红那句带得出具体金额，不是笼统一句「有存疑」" \
+    "$(grep -qF '$10（' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+# ⑵ 有单价但未核对：解得稳、但没有可比的参照 → 报告要说这是候选估算
+run "$(marker 10 '10:00' '10:10' 1000000 '7.00' 'uncorroborated:7.00' solved)"
+chk "未核对金额入桶（\$7）"           "$(q price_usd_uncorroborated)"  "7"
+chk "报告写明「反解稳定但无参照可比」" \
+    "$(grep -qF '反解稳定但无参照可比' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+# ⑶ 不可解、用参照兜底：走**重算**那条路——本测试的日志目录里没有 CLI 记账记录，
+#    求解器解不出任何单价，policy=A 于是取参照价。这一整条是真实链路，不是造出来的桶。
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:05" 1000000 r1
+run "$(marker 10 '10:00' '10:10' 1000000 '999.00')"
+chk "确实走的是重算那条路"            "$(q src_recomputed)"            "1"
+chk "兜底金额入 unstable 桶（\$25）"  "$(q price_usd_unstable)"        "25"
+chk "报告写明「反解不出、用外部参照兜底」" \
+    "$(grep -qF '反解不出、用外部参照兜底' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+# ⑷ 参照本身的出处与局限必须写出来，不能包装成「已核验的官方价目」
+chk "报告点名参照出处（本机缓存的那份）" \
+    "$(grep -qF 'cached 2026-06-24' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报告明说本次没有联网核验参照" \
+    "$(grep -qF '没有联网核验' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "全仓不得再出现「已与官方价目交叉核对」这类说法" \
+    "$(grep -rlF '与官方公开价目**交叉核对**' "$REPO_DIR/scripts" 2>/dev/null | wc -l)" "0"
+
+# ⑸ 两侧不是同一把尺子：本 worker 反解 / 交叉 review 人工配置，必须分别说明
+chk "报告分别说明两侧单价出处" \
+    "$(grep -qF '本机反解' "$TMP/r.md" && grep -qF '人工配置' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+# ⑹ 历史评论：旧驱动那张过期表算出来的金额，不许冒充任何一态
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(marker 10 '10:00' '10:10' 1000000 '12.00')"
+chk "没带可信度的金额落「说不出可信度」桶（\$12）" "$(q price_usd_unrated)" "12"
+chk "报告写明这部分说不出可信度"      \
+    "$(grep -qF '说不出可信度' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+echo "── 7. 「删日志后重跑数值会变」必须在报告里披露 ──"
+# 第 1、2 组已经是这条的回归本身：同一条记录，有日志时算出 $25、日志删掉后变回 $999。
+# 这里补的是**披露**——数值会变是 Q5=B 的既定代价，报告必须自己说出来，
+# 否则读者会把历史周的数字当成不会变的定值。
+chk "报告写明历史周数值会随本机日志被清理而改变" \
+    "$(grep -qF '同一个历史周的数值会随本机日志被清理而改变' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报告带生成时间（数值会变，就必须能看出是哪一次跑出来的）" \
+    "$(grep -qF '数据生成时间' "$TMP/r.md" && echo yes || echo no)" "yes"
 
 echo
 echo "结果：$pass passed, $fail failed"
