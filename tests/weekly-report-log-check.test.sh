@@ -319,6 +319,37 @@ chk "覆盖计数仍然归零"                "$(q cost_records)"          "0"
 chk "报告仍要报缺金额"                \
     "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "yes"
 
+echo "── 11. 交叉 review 侧：未计价的项一路走到最终报告（第 5 轮打回）──"
+# 这一组不自己拼 footer —— 先造一份**原始 rollout**、跑**真实的 codex driver** 拿到
+# 它输出的那行，再把它当成记账行喂进 record 解析 → collect → report。
+# 中间任何一环把「未计价的 cache write」吞掉，最终报告就会说这条金额是完整的。
+CXHOME="$TMP/cx"; mkdir -p "$CXHOME/wt" "$CXHOME/.codex/sessions/2026/09/14"
+CXTS=$(date -u -d "$W 10:05 +0800" '+%Y-%m-%dT%H:%M:%S.000Z')
+{ printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$CXTS" "$CXHOME/wt"
+  printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"mA"}}\n' "$CXTS" "$CXHOME/wt"
+  printf '{"type":"token_usage_record","timestamp":"%s","payload":{"usage":{"input_tokens":1000000,"cached_input_tokens":0,"cache_write_input_tokens":50000,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":1000000}}}\n' "$CXTS"
+} > "$CXHOME/.codex/sessions/2026/09/14/rollout-A.jsonl"
+CXKV=$( cd "$CXHOME/wt" && HOME="$CXHOME" \
+        CODEX_PRICES='{"mA":{"in":10,"cached_in":1,"out":100}}' \
+        bash "$REPO_DIR/scripts/drivers/token-usage/codex.sh" \
+             "$(date -d "$W 10:00 +0800" +%s)" --kv )
+chk "driver 自己就报出了未计价的部分" \
+    "$(printf '%s' "$CXKV" | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_state=partial cost_unknown_tokens=50000"
+
+CXBODY=$(printf '交叉 review 完了。\n\n<!-- agent-metrics agent=codex wt=10 start=%sT10:00:00+08:00 end=%sT10:10:00+08:00 wall_secs=600 %s -->' \
+         "$W" "$W" "$CXKV")
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$CXBODY"
+chk "记账金额采到了（\$10）"          "$(q cost)"                  "10"
+chk "算「有金额」（partial 也是有金额）" "$(q cost_records)"        "1"
+chk "覆盖三态如实记 partial"          "$(q state_partial)"         "1"
+chk "不是 full"                       "$(q state_full)"            "0"
+chk "报告写明有一条只算了一部分用量"  \
+    "$(grep -qF '1 条**只算了一部分用量**' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报告不再把 partial 说成「只算了一部分模型」（同一模型里某项没价也会 partial）" \
+    "$(grep -qF '只算了一部分模型' "$TMP/r.md" && echo yes || echo no)" "no"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

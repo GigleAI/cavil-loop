@@ -222,7 +222,7 @@ chk "C16 未知模型不套价，落 partial 并如实报出缺价 token" \
     "in=2000000 out=0 cache_r=0 cache_w=0 cost_usd=5.00 cost_state=partial cost_unknown_tokens=1000000 price_source=solved price_status=unstable:5.00"
 chk "C16 人读输出写明金额偏低" \
     "$(run unknownmodel)" \
-    "2m input, 0 output, 0 cache read, 0 cache write (\$5.00，部分模型单价未知，金额偏低)"
+    "2m input, 0 output, 0 cache read, 0 cache write (\$5.00，部分用量未计价，金额偏低)"
 
 echo
 echo "通过 $pass / 失败 $fail"

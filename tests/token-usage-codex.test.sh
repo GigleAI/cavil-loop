@@ -78,12 +78,15 @@ chk "人读输出：未配单价时只出 token、如实说明没算金额" \
 # 配单价：(1600000*10 + 1400000*1 + 1000000*100) / 1e6 = 117.40
 #        旧实现 out=1420000 → 159.40
 MODE=--kv  out_kvp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
-chk "--kv + 单价：金额按真实 output 算（不是把 reasoning 也计费）" \
-    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.40 cost_state=full cost_unknown_tokens=0 price_source=configured"
+# ⚠️ 这份 fixture 有 50,000 cache write，而 CODEX_PRICES 里没有 cache_write 这一项 ——
+#   它没被计进金额，就必须如实落 partial + 缺价 50000。原来写的是 full / 0，
+#   等于把「这部分钱没算」悄悄抹掉（#934 交叉 review 第 5 轮打回）。
+chk "--kv + 单价：output 只算一次；未计价的 cache write 如实报缺价（原来写成 full/0）" \
+    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.40 cost_state=partial cost_unknown_tokens=50000 price_source=configured"
 
 MODE=""    out_hmp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
-chk "人读输出 + 单价：同上" \
-    "$out_hmp" "1.6m input, 1m output, 1.4m cache read, 50k cache write (\$117.40)"
+chk "人读输出 + 单价：同上，且写明金额偏低" \
+    "$out_hmp" "1.6m input, 1m output, 1.4m cache read, 50k cache write (\$117.40，部分用量未计价，金额偏低)"
 
 # ── 认领与窗口边界 ──
 MODE=--kv  out_other=$( ( cd "$OTHER" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
@@ -162,6 +165,52 @@ chk "首个 turn_context 之前的调用落缺价，不按后面的模型计价"
 chk "token 计数不受影响（算不出价 ≠ 不算用量）" \
     "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' | grep -o '^in=[0-9]*')" \
     "in=2000000"
+
+# ── 未计价的项必须如实报缺价（GitHub#934 交叉 review 第 5 轮）────────────────
+# 覆盖三态的语义是「有没有算不出价的 token」。模型配了价、但**某一项没有单价**时，
+# 那一项的 token 同样是「没计进金额」的部分 —— 旧写法只在「整个模型都没价」时才报，
+# 于是有 cache write 的派工输出 full / 缺价 0，把「这部分钱没算」悄悄抹掉。
+CWD_DIR="$TMP/cw"; mkdir -p "$CWD_DIR/wt" "$CWD_DIR/.codex/sessions/2026/09/14"
+cwrec() {  # $1 相对秒  $2 input  $3 cache_write  $4 output
+    printf '{"type":"token_usage_record","timestamp":"%s","payload":{"usage":{"input_tokens":%s,"cached_input_tokens":0,"cache_write_input_tokens":%s,"output_tokens":%s,"reasoning_output_tokens":0,"total_tokens":%s}}}\n' \
+        "$(ts "$1")" "$2" "$3" "$4" "$(( $2 + $4 ))"
+}
+cwfix() {  # $1 input  $2 cache_write  $3 output
+    { printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$(ts -200)" "$CWD_DIR/wt"
+      printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"mA"}}\n' "$(ts -190)" "$CWD_DIR/wt"
+      cwrec 10 "$1" "$2" "$3"; } > "$CWD_DIR/.codex/sessions/2026/09/14/rollout-A.jsonl"
+}
+cwrun() { ( cd "$CWD_DIR/wt" && HOME="$CWD_DIR" env "$@" bash "$DRIVER" "$START" --kv ); }
+P3='{"mA":{"in":10,"cached_in":1,"out":100}}'
+
+# ⑴ 已配模型 + 非零且未计价的 cache write → 金额只含已计价的部分，如实报缺价
+cwfix 1000000 50000 0
+chk "已配模型但 cache write 没有单价 → partial + 缺价 5 万（原来是 full / 0）" \
+    "$(cwrun CODEX_PRICES="$P3" | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=10.00 cost_state=partial cost_unknown_tokens=50000"
+chk "人读输出也要写明金额偏低，不能只在机器字段里说" \
+    "$( ( cd "$CWD_DIR/wt" && HOME="$CWD_DIR" env CODEX_PRICES="$P3" bash "$DRIVER" "$START" ) )" \
+    "1m input, 0 output, 0 cache read, 50k cache write (\$10.00，部分用量未计价，金额偏低)"
+
+# ⑵ cache write = 0 → 没有待计价的 token，仍然是 full（别把这条一起改坏）
+cwfix 1000000 0 0
+chk "cache write 为 0 时仍是 full / 缺价 0" \
+    "$(cwrun CODEX_PRICES="$P3" | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_state=full cost_unknown_tokens=0"
+
+# ⑶ 配上可选的 cache_write 单价 → 它就被计进金额，回到 full
+cwfix 1000000 50000 0
+chk "配了可选的 cache_write 单价 → 计进金额并回到 full（10.00 + 50000×2/1e6 = 10.10）" \
+    "$(cwrun CODEX_PRICES='{"mA":{"in":10,"cached_in":1,"out":100,"cache_write":2}}' \
+       | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=10.10 cost_state=full cost_unknown_tokens=0"
+
+# ⑷ 全部待计价 token 都没价（模型不在表里）→ 仍然是 none，四项全进缺价
+cwfix 1000000 50000 200000
+chk "模型完全没配价 → none，四项全进缺价（1000000+50000+200000）" \
+    "$(cwrun CODEX_PRICES='{"other":{"in":1,"cached_in":1,"out":1}}' \
+       | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_state=none cost_unknown_tokens=1250000"
 
 echo
 echo "通过 $pass / 失败 $fail"

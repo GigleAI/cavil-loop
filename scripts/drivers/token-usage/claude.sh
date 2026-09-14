@@ -176,7 +176,7 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
            + (if $pstat == "" then "" else " price_status=\($pstat)" end)
       else "\(.in | fmt) input, \(.out | fmt) output, \(.cr | fmt) cache read, \($cw | fmt) cache write"
            + (if $state == "none" then "（单价未知，金额未计）"
-              elif $state == "partial" then " ($\(.usd | usd2)，部分模型单价未知，金额偏低)"
+              elif $state == "partial" then " ($\(.usd | usd2)，部分用量未计价，金额偏低)"
               else " ($\(.usd | usd2))" end)
            + (if $dsp > 0 then "；其中 $\($dsp | usd2) 所用单价与外部参照冲突（存疑）" else "" end)
       end

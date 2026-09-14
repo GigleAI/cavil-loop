@@ -45,6 +45,11 @@
 #
 #     CODEX_PRICES='{"gpt-6-astra":{"in":1.25,"cached_in":0.125,"out":10}}'
 #
+#   三个键 `in` / `cached_in` / `out` 是常规项；`cache_write` 是**可选键**——这一侧
+#   没有公开的缓存写入单价，不配就把那部分 token 如实计进 `cost_unknown_tokens`、
+#   该次派工落 `partial`，**不编一个默认价**。本机实测 cache_write 恒为 0，所以不配
+#   也不会让派工无端变成 partial。
+#
 #   没在表里的模型**不套价**：它的 token 计进 cost_unknown_tokens，该次派工落
 #   cost_state=partial（有别的模型算出了金额）或 none（一个都没算出来）。
 #   旧的三个环境变量仍然认，作为「所有模型同一个价」的兼容写法：
@@ -137,15 +142,26 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
        | map({model: .[0].model,
               s: (reduce .[] as $c ({in:0, cin:0, cw:0, out:0};
                     .in += $c.in | .cin += $c.cin | .cw += $c.cw | .out += $c.out))})) as $bym
+    # 逐项取价：**有这一项的单价就算钱，没有就把它的 token 记进缺价**。
+    # ⚠️ 不能只在「整个模型都没配价」时才报缺价（#934 交叉 review 第 5 轮打回）：
+    #   cache_write 这一侧没有公开单价、配置里也没有这个键，旧写法却在模型有价时
+    #   既不给它计价、也不把它计入 cost_unknown_tokens，直接输出 full / 缺价 0 ——
+    #   等于把「这部分钱没算」悄悄抹掉。本文件原来的注释还写着「另计会让每次派工都
+    #   落 partial」当理由，那个前提是错的：本机 14,081 条真实用量记录里
+    #   cache_write **非零的有 0 条**，所以这一改在真实数据上一条都不会变成 partial，
+    #   只有它真的非零时才报——那时本来就该报。
+    # `cache_write` 是 CODEX_PRICES 里的**可选键**：配了就按它算，不配就如实记缺价。
+    #   不给它编一个默认价（这一侧的单价属于部署环境，没有可信默认值）。
     | (reduce $bym[] as $g ({usd:0, unk:0, known:0};
           ($prices[$g.model] // $prices["*"] // null) as $p
-          | if $p
-            then .usd += (($g.s.in * $p.in + $g.s.cin * $p.cached_in + $g.s.out * $p.out) / 1000000)
-                 | .known += 1
-            # ⚠️ cache_write 这一侧没有公开单价，配置里也没有这个键：模型有价时
-            #    它就是**没计进金额**的那部分（下方 cost_unknown_tokens 只统计
-            #    整个模型都没价的情形，这一项另计会让每次派工都落 partial）。
-            else .unk += ($g.s.in + $g.s.cin + $g.s.cw + $g.s.out) end)) as $agg
+          | [{v: $g.s.in,  p: (if $p then $p.in          else null end)},
+             {v: $g.s.cin, p: (if $p then $p.cached_in   else null end)},
+             {v: $g.s.out, p: (if $p then $p.out         else null end)},
+             {v: $g.s.cw,  p: (if $p then $p.cache_write else null end)}] as $items
+          | reduce $items[] as $i (.;
+              if $i.p != null
+              then .usd += ($i.v * $i.p / 1000000) | .known += 1
+              else .unk += $i.v end))) as $agg
     # 同 claude 侧：有算不出价的 token 才是 none / partial；一个待计价 token 都没有
     # 的 $0 是**已知的零**（#934 第 4 轮）
     | (if $agg.unk == 0 then "full"
@@ -159,7 +175,7 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
            + " price_source=configured"
       else "\($t.in | fmt) input, \($t.out | fmt) output, \($t.cin | fmt) cache read, \($t.cw | fmt) cache write"
            + (if $state == "none" then "（该模型未配单价，金额未计）"
-              elif $state == "partial" then " ($\($agg.usd | usd2)，部分模型未配单价，金额偏低)"
+              elif $state == "partial" then " ($\($agg.usd | usd2)，部分用量未计价，金额偏低)"
               else " ($\($agg.usd | usd2))" end)
       end
 ' 2>/dev/null
