@@ -9,7 +9,11 @@ issue 数线性膨胀。输出一份 JSON，供 render.py 出图 / 出 markdown�
 
 --week-of 指定「目标周」内的任意一天（默认：今天所在周的上一周，即最近一个完整周）。
 """
-import argparse, collections, datetime, json, re, subprocess, sys
+import argparse, collections, datetime, json, os, re, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import record      # noqa: E402  记账记录提取 + 派工去重
+import worktime    # noqa: E402  「模型 + 工具」时长（排除等待）
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))  # 报告按北京时间切周
 
@@ -39,16 +43,15 @@ def loc(s):
 def monday(d):
     return d - datetime.timedelta(days=d.weekday())
 
-# footer 解析：daemon 给每条 agent 评论追加的 ⏱️ 元数据
-RE_FOOTER = re.compile(r'⏱️ 开始')
-RE_DUR    = re.compile(r'耗时\s*(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?')
+# 记账记录的提取与去重全部交给 record.py —— 不再拿正则扫整条评论正文。
+# 为什么（GigleTutor-Web#931）：正文里「某测试耗时 5054ms」会被读成 5054 分钟
+# = 84 小时；`200ms` / `83ms` 换算后低于当时那个 4 小时剔除阈值，直接混进统计；
+# 金额正则还会命中正文 SQL 的 `($1)`。同一次派工发多条评论时还会重复累加。
+# 那个 4 小时**剔除**逻辑已经删掉：同一个数值改作「长窗口披露」用途，
+# 只决定要不要在报告里列出来，不影响任何统计数字（见 record.LONG_WINDOW_SECS）。
 RE_OUT    = re.compile(r'token .*?([\d.]+)([km]?)\s*output')
-RE_COST   = re.compile(r'\(\$([\d.]+)\)')
 RE_CODEX  = re.compile(r'codex review')
 MUL = {"": 1, "k": 1e3, "m": 1e6}
-# 单条会话超过这个时长的，一律当「跨夜会话把等人回话的时间也算了进去」剔除。
-# 实测最离谱的一条 footer 写着 5.6 万小时（START_EPOCH 坏了）。
-OUTLIER_SECS = 4 * 3600
 
 # PR ↔ issue 关联：标题尾巴的 （#123） / (#123)，以及 body 里的 Closes/Refs/Fixes #123
 RE_LINK_TITLE = re.compile(r'[（(]#(\d+)[）)]')
@@ -61,6 +64,11 @@ def main():
     ap.add_argument("--weeks", type=int, default=10)
     ap.add_argument("--week-of", default=None,
                     help="目标周内任意一天 YYYY-MM-DD；默认取最近一个完整周")
+    # 「模型 + 工具」时长要按派工窗口去本机 agent 日志里取，需要知道 worktree 路径。
+    # 路径属于部署环境，不写死在本仓库里；调用方（run.sh）从项目配置传进来。
+    # 两个都不给就跳过这个指标，其余照常出。
+    ap.add_argument("--worktree-base", default=None, help="worktree 存放基础目录")
+    ap.add_argument("--session-prefix", default=None, help="worktree 子目录名前缀")
     a = ap.parse_args()
 
     today = datetime.datetime.now(TZ).date()
@@ -78,13 +86,32 @@ def main():
     comments = gh(f"repos/{R}/issues/comments?since={start}T00:00:00Z&per_page=100")
     prs = gh(f"repos/{R}/pulls?state=all&per_page=100&sort=updated&direction=desc")
 
+    # PR → 关联 issue。评论循环里要用它把一条 PR 评论定位回它的 worktree。
+    link = {}
+    for p in prs:
+        n = p["number"]
+        cands = RE_LINK_TITLE.findall(p.get("title") or "") + \
+                RE_LINK_BODY.findall(p.get("body") or "")
+        cands = [int(x) for x in cands if int(x) != n]
+        if cands:
+            link[n] = cands[0]
+
     st = {w: collections.defaultdict(float) for w in weeks}
     per_issue = collections.defaultdict(lambda: collections.defaultdict(float))
     durs = {w: [] for w in weeks}
     seen = set()
+    dispatch_seen = set()      # 派工身份 (wt, 开始, 完工)：同一身份只入账一次
+    long_windows = []          # 墙上 ≥ 4 小时的记录，报告里逐条点名（不改数字）
+    misattributed = []         # 「模型+工具」明显超过自身墙上时长的，点名（不改数字）
 
     def wk(dt):
         return monday(dt.date()).isoformat()
+
+    def worktree_of(num):
+        """评论所在的 issue / PR 号 → 它的 worktree 路径。拿不到返回 None。"""
+        if not (a.worktree_base and a.session_prefix):
+            return None
+        return f"{a.worktree_base}/{a.session_prefix}-{link.get(num, num)}"
 
     for c in comments:
         if c["id"] in seen:
@@ -99,41 +126,65 @@ def main():
         s = st[w]
         s["comments"] += 1
         s["bot" if is_bot(user) else "human"] += 1
-        if RE_FOOTER.search(body):
-            s["footers"] += 1
-        if RE_COST.search(body):
-            s["cost_footers"] += 1
         if RE_CODEX.search(body):
             s["codex"] += 1
-        secs = 0
-        for m in RE_DUR.finditer(body):
-            h, mn, ss = m.groups()
-            if not any([h, mn, ss]):
-                continue
-            v = int(h or 0) * 3600 + int(mn or 0) * 60 + int(ss or 0)
-            if v > OUTLIER_SECS:
-                s["outliers"] += 1
-                continue
-            secs += v
-            durs[w].append(v)
-        cost = sum(float(m.group(1)) for m in RE_COST.finditer(body))
-        out = sum(float(m.group(1)) * MUL[m.group(2)] for m in RE_OUT.finditer(body))
-        s["secs"] += secs; s["cost"] += cost; s["out"] += out
+        # 轮数 / 你发的条数按**全部**评论算（人发的、交叉 review 的都算一轮），
+        # 必须在下面那些 continue 之前累加，否则「讨论轮数」会只剩记账评论。
         if w == target.isoformat():
             p = per_issue[num]
             p["rounds"] += 1
             p["human"] += 0 if is_bot(user) else 1
-            p["secs"] += secs; p["cost"] += cost
 
-    # PR → 关联 issue
-    link = {}
-    for p in prs:
-        n = p["number"]
-        cands = RE_LINK_TITLE.findall(p.get("title") or "") + \
-                RE_LINK_BODY.findall(p.get("body") or "")
-        cands = [int(x) for x in cands if int(x) != n]
-        if cands:
-            link[n] = cands[0]
+        rec = record.extract(body, user, c["id"], default_wt=link.get(num, num))
+        if rec is None:
+            continue                      # 这条评论不是记账来源
+        s["footers"] += 1
+        if rec["cost"]:
+            s["cost_footers"] += 1
+
+        key = record.dispatch_key(rec)
+        if key in dispatch_seen:
+            s["dupes"] += 1               # 同一次派工的另一条评论，已入账过
+            continue
+        dispatch_seen.add(key)
+
+        wall = rec["wall"]
+        cost = rec["cost"]
+        out = sum(float(m.group(1)) * MUL[m.group(2)] for m in RE_OUT.finditer(body))
+        # 历史记录（无机器标记）没写 agent。实测交叉 review 那一侧在改造前几乎不写
+        # 记账行（上周 589 条里只有 2 条，且已被「交叉 review 评论不作记账来源」挡掉），
+        # 所以历史记录一律归到主 worker 那一侧；改造后的记录由标记显式带 agent。
+        agent = rec.get("agent") or "claude"
+        s["wall"] += wall; s["cost"] += cost; s["out"] += out
+        s["records"] += 1
+        s[f"wall_{agent}"] += wall
+        s[f"cost_{agent}"] += cost
+        s[f"records_{agent}"] += 1
+        durs[w].append(wall)
+        if wall >= record.LONG_WINDOW_SECS:
+            s["long_windows"] += 1
+            long_windows.append({"num": num, "week": w, "wall": wall,
+                                 "start": str(rec["start"]), "end": str(rec["end"])})
+
+        # 「模型 + 工具」时长：出报告时才算得出（累计快照是派工结束后才落盘的）
+        work = worktime.window_work(rec.get("agent") or "claude",
+                                    worktree_of(num), rec["start"], rec["end"])
+        if work is None:
+            s["work_missing"] += 1
+        else:
+            s["work"] += work
+            s["work_records"] += 1
+            s[f"work_{agent}"] += work
+            if worktime.misattributed(work, wall):
+                s["misattributed"] += 1
+                misattributed.append({"num": num, "week": w, "wall": wall,
+                                      "work": round(work)})
+
+        if w == target.isoformat():
+            p = per_issue[num]
+            p["wall"] += wall; p["cost"] += cost
+            if work is not None:
+                p["work"] += work
 
     meta = {}
     for it in items:
@@ -186,8 +237,14 @@ def main():
             and (not it.get("closed_at") or loc(it["closed_at"]) >= end))
 
     FIELDS = ["iss_open", "iss_closed", "pr_open", "pr_merged", "comments", "human",
-              "bot", "secs", "cost", "out", "commits", "add", "del", "footers",
-              "cost_footers", "outliers", "codex", "sess_med", "backlog"]
+              "bot", "wall", "work", "cost", "out", "commits", "add", "del",
+              "records", "dupes", "footers", "cost_footers", "long_windows",
+              "misattributed", "work_records", "work_missing",
+              "codex", "sess_med", "backlog",
+              # 按 agent 拆分：切换周之后同时纳入交叉 review 那一侧，覆盖面会变大，
+              # 所以要能分别给出「仅主 worker」与「两侧合计」，不能混成同口径趋势。
+              "wall_claude", "wall_codex", "cost_claude", "cost_codex",
+              "work_claude", "work_codex", "records_claude", "records_codex"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 
     tw = target.isoformat()
@@ -230,7 +287,8 @@ def main():
         p = per_issue.get(n)
         detail.append({**m, "rounds": p["rounds"] if p else 0,
                        "human": p["human"] if p else 0,
-                       "secs": p["secs"] if p else 0,
+                       "wall": p["wall"] if p else 0,
+                       "work": p["work"] if p else 0,
                        "cost": p["cost"] if p else 0})
     # 把每个 issue 的关联 PR 挂上（PR 侧的讨论/耗时并进 issue）
     rev = collections.defaultdict(list)
@@ -249,8 +307,9 @@ def main():
             pp = per_issue.get(pn)
             if pp:
                 d["rounds"] += pp["rounds"]; d["human"] += pp["human"]
-                d["secs"] += pp["secs"];     d["cost"] += pp["cost"]
-    detail.sort(key=lambda d: -d["secs"])
+                d["wall"] += pp["wall"];     d["cost"] += pp["cost"]
+                d["work"] += pp["work"]
+    detail.sort(key=lambda d: -d["wall"])
 
     # 没有关联 issue 的 PR（多为 chore / 工具链改动）。它们不挂在任何 issue 下，
     # 只看 issue 清单就完全看不见——单列一组，否则这部分工作凭空消失。
@@ -263,11 +322,15 @@ def main():
             continue
         loose.append({**m, "rounds": p["rounds"] if p else 0,
                       "human": p["human"] if p else 0,
-                      "secs": p["secs"] if p else 0,
+                      "wall": p["wall"] if p else 0,
+                      "work": p["work"] if p else 0,
                       "cost": p["cost"] if p else 0})
-    loose.sort(key=lambda d: -d["secs"])
+    loose.sort(key=lambda d: -d["wall"])
 
+    long_windows.sort(key=lambda x: -x["wall"])
+    misattributed.sort(key=lambda x: -(x["work"] / max(x["wall"], 1)))
     json.dump({"repo": R, "generated_at": datetime.datetime.now(TZ).isoformat(),
+               "long_windows": long_windows, "misattributed": misattributed,
                "target_week": {"start": tw, "end": tend.isoformat()},
                "weeks": weeks, "weekly": weekly, "detail": detail,
                "loose_prs": loose},

@@ -23,7 +23,7 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 chk() { if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); else echo "  ❌ $1 (期望 '$3'，实得 '$2')"; fail=$((fail+1)); fi; }
 
-# fixture：5 周，secs 刻意取在格式化的边界上
+# fixture：5 周，wall（墙上时长）刻意取在格式化的边界上
 #   13320 = 3h42m → 3.7h（不足 10 小时给一位小数）
 #   35640 = 9h54m → 9.9h（10 小时以下的上边界）
 #   36000 = 10h 整 → 10h（正好 10 小时走整数分支）
@@ -32,16 +32,16 @@ chk() { if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); else echo " 
 python3 - "$TMP/data.json" <<'PY'
 import json, sys
 weeks = ["2025-01-06", "2025-01-13", "2025-01-20", "2025-01-27", "2025-02-03"]
-secs  = [13320, 35640, 36000, 367200, 0]
+wall  = [13320, 35640, 36000, 367200, 0]
 cost  = [7243, 6705, 4657, 9707, 642]
 add   = [17000, 18000, 10000, 34000, 5000]
-dele  = [693, 436, 736, 627, 5000]          # 末周净增 0，配合 secs=0 一起验缺口
+dele  = [693, 436, 736, 627, 5000]          # 末周净增 0，配合 wall=0 一起验缺口
 weekly = {}
 for i, k in enumerate(weeks):
     weekly[k] = {"iss_open": 10 + i, "iss_closed": 8 + i, "pr_merged": 5 + i,
                  "add": add[i], "del": dele[i], "commits": 3, "pr_open": 4,
                  "comments": 100 + i, "human": 10 + i, "bot": 90 + i, "codex": 1,
-                 "cost": cost[i], "secs": secs[i], "backlog": 40 + i,
+                 "cost": cost[i], "wall": wall[i], "backlog": 40 + i,
                  "footers": 9, "cost_footers": 9, "outliers": 0, "out": 1000, "sess_med": 60}
 json.dump({"weeks": weeks, "weekly": weekly,
            "target_week": {"start": weeks[-1], "end": "2025-02-09"},

@@ -61,6 +61,8 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${TASK_START_TS}|$(date '+%Y-%m-%d %H:%M:%S')|g" \
         -e "s|\${COMMENT_FOOTER}|$COMMENT_FOOTER|g" \
         -e "s|\${AGENT_TOKEN_USAGE_SCRIPT}|$AGENT_TOKEN_USAGE_SCRIPT|g" \
+        -e "s|\${WORKER_AGENT}|$WORKER_AGENT|g" \
+        -e "s|\${WORK_NUM}|$ISSUE|g" \
         "$TEMPLATE" > "$PROMPT_FILE"
 else
     # 兜底：内联 minimal prompt

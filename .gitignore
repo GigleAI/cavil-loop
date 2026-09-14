@@ -5,3 +5,7 @@ coding-agent.config
 
 # logs
 *.log
+
+# Python 字节码缓存（weekly-report 下的模块会产生）
+__pycache__/
+*.pyc

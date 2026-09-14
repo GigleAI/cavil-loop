@@ -11,6 +11,9 @@
 #   · 只按「issue 自己有评论」筛 → 定完方案后讨论全搬到 PR 上的 issue 整条消失。
 #     实测漏过一整周里耗时最高的那个单项：它的讨论全在 PR 上，issue 页整周零评论。
 #   · 没有关联 issue 的 PR（chore / 工具链）不挂在任何 issue 下 → 只看 issue 清单完全看不见。
+#   · 记账行的格式是**硬要求**（GigleTutor-Web#931）：必须是「开始 … · 完工 … · 耗时 …」
+#     整行，且紧随其后第一个非空行是 `token` 行。fixture 用真实格式，别图省事写简写——
+#     写简写会让这个测试测不到真正的解析路径。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,19 +53,23 @@ cat > "$TMP/comments.json" <<JSON
 [
  {"id":1,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
   "html_url":"https://github.com/acme/widget/pull/11#issuecomment-1",
-  "user":{"login":"acme-bot"},"created_at":"$W_IN","body":"干活\n⏱️ 开始 x · 耗时 1h 0m 0s (\$10.00)"},
+  "user":{"login":"acme-bot"},"created_at":"$W_IN",
+  "body":"干活\n\n---\n⏱️ 开始 2025-01-08 10:00:00 · 完工 11:00:00 · 耗时 1h 0m 0s\ntoken 1 input (\$10.00)"},
  {"id":2,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
   "html_url":"https://github.com/acme/widget/pull/11#issuecomment-2",
   "user":{"login":"luosky"},"created_at":"$W_IN","body":"人话回一句"},
  {"id":3,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
   "html_url":"https://github.com/acme/widget/pull/11#issuecomment-3",
-  "user":{"login":"acme-bot"},"created_at":"$W_IN","body":"再干\n⏱️ 开始 x · 耗时 30m 0s (\$5.00)"},
+  "user":{"login":"acme-bot"},"created_at":"$W_IN",
+  "body":"再干\n\n---\n⏱️ 开始 2025-01-08 11:10:00 · 完工 11:40:00 · 耗时 30m 0s\ntoken 1 input (\$5.00)"},
  {"id":4,"issue_url":"https://api.github.com/repos/acme/widget/issues/20",
   "html_url":"https://github.com/acme/widget/issues/20#issuecomment-4",
-  "user":{"login":"acme-bot"},"created_at":"$W_IN","body":"干活\n⏱️ 开始 x · 耗时 15m 0s (\$1.00)"},
+  "user":{"login":"acme-bot"},"created_at":"$W_IN",
+  "body":"干活\n\n---\n⏱️ 开始 2025-01-08 12:00:00 · 完工 12:15:00 · 耗时 15m 0s\ntoken 1 input (\$1.00)"},
  {"id":5,"issue_url":"https://api.github.com/repos/acme/widget/issues/40",
   "html_url":"https://github.com/acme/widget/pull/40#issuecomment-5",
-  "user":{"login":"acme-bot"},"created_at":"$W_IN","body":"干活\n⏱️ 开始 x · 耗时 20m 0s (\$2.00)"},
+  "user":{"login":"acme-bot"},"created_at":"$W_IN",
+  "body":"干活\n\n---\n⏱️ 开始 2025-01-08 13:00:00 · 完工 13:20:00 · 耗时 20m 0s\ntoken 1 input (\$2.00)"},
  {"id":6,"issue_url":"https://api.github.com/repos/acme/widget/issues/40",
   "html_url":"https://github.com/acme/widget/pull/40#issuecomment-6",
   "user":{"login":"acme-bot"},"created_at":"$W_IN","body":"再干"},
@@ -127,8 +134,8 @@ chk "#10 的轮数并进了 PR #11 的 3 条" "$r10" "3"
 h10=$(q "print(int(one('detail',10)['human']))")
 chk "#10 的「你参与」只算非 bot 的那 1 条" "$h10" "1"
 
-s10=$(q "print(int(one('detail',10)['secs']))")
-chk "#10 的耗时并进 PR 侧 1h + 30m" "$s10" "5400"
+s10=$(q "print(int(one('detail',10)['wall']))")
+chk "#10 的墙上时长并进 PR 侧 1h + 30m" "$s10" "5400"
 
 p10=$(q "print(','.join(str(p['num']) for p in one('detail',10).get('prs',[])))")
 chk "#10 挂上了关联 PR #11" "$p10" "11"
@@ -136,8 +143,8 @@ chk "#10 挂上了关联 PR #11" "$p10" "11"
 npr=$(q "print(sum(1 for d in D['detail'] if d['is_pr']))")
 chk "明细里不混进 PR 本身" "$npr" "0"
 
-s40=$(q "print(int(one('loose_prs',40)['secs']))")
-chk "无 issue 的 PR #40 也带耗时" "$s40" "1200"
+s40=$(q "print(int(one('loose_prs',40)['wall']))")
+chk "无 issue 的 PR #40 也带墙上时长" "$s40" "1200"
 
 echo
 echo "通过 $pass / 失败 $fail"

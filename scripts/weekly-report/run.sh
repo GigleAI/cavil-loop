@@ -48,8 +48,21 @@ REV="wk-$(date +%Y%m%d)-$(date +%s%N | tail -c 7)"
 
 echo "== 1/4 采数（repo=$REPO）"
 git -C "$PROJECT_ROOT" fetch origin --quiet || true
+# 「模型 + 工具」时长要按派工窗口去本机 agent 日志里取，需要知道 worktree 路径。
+# 那两个值在 daemon 的配置里（$PROJECT_ROOT/coding-agent.config），不在本脚本读的
+# 项目配置里。用子 shell 只取这两个值，避免把 daemon 那份配置整个灌进来覆盖 REPO 等。
+# 路径属于部署环境，不写死在本仓库；取不到就跳过这个指标，其余照常出。
+DAEMON_CONF="$PROJECT_ROOT/coding-agent.config"
+WT_BASE=""; WT_PREFIX=""
+if [ -f "$DAEMON_CONF" ]; then
+    WT_BASE=$(set -a; . "$DAEMON_CONF" >/dev/null 2>&1; printf '%s' "${WORKTREE_BASE:-}")
+    WT_PREFIX=$(set -a; . "$DAEMON_CONF" >/dev/null 2>&1; printf '%s' "${SESSION_NAME_PREFIX:-}")
+fi
+
 ( cd "$PROJECT_ROOT" && python3 "$HERE/collect.py" --repo "$REPO" --out "$WORK/data.json" \
-    ${WEEK_OF:+--week-of "$WEEK_OF"} )
+    ${WEEK_OF:+--week-of "$WEEK_OF"} \
+    ${WT_BASE:+--worktree-base "$WT_BASE"} \
+    ${WT_PREFIX:+--session-prefix "$WT_PREFIX"} )
 
 echo "== 2/4 出图"
 python3 "$HERE/render.py" --data "$WORK/data.json" --out-dir "$WORK" \

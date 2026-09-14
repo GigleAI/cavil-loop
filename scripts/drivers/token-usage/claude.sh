@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 # Token usage driver: Claude
 #
-# 用法: bash claude.sh <start_epoch>
+# 用法: bash claude.sh <start_epoch> [--kv]
 #
-# 读 claude 本地 transcript jsonl 累加 timestamp >= start_epoch 之后的所有
-# assistant message usage 字段，输出格式跟 claude CLI 的 /usage 命令接近：
+# 读 claude 本地 transcript jsonl，累加 timestamp >= start_epoch 之后的 assistant
+# message usage。默认输出跟 claude CLI 的 /usage 命令接近的一行人话：
 #
 #   2.4k input, 153.5k output, 42.8m cache read, 1.1m cache write ($32.24)
+#
+# 加 --kv 则输出机器可读的一行（给评论末尾的 agent-metrics 标记用）：
+#
+#   in=2400 out=153500 cache_r=42800000 cache_w=1100000 cost_usd=32.24
+#
+# ⚠️ 按 requestId 去重（2026-09 修，见 GigleTutor-Web#931）
+#   一次 API 调用会写下**多条** assistant 条目（正文一条、思考一条、每次工具调用各一条），
+#   它们携带**同一份** usage。逐条累加 = 同一次调用的 token 被重复计好几遍。
+#   实测 53 个会话：逐条累加是按 requestId 去重后的 1.68 倍（中位数，范围 1.39–2.46）；
+#   去重后与 CLI 自己记的 modelUsage 基本吻合（中位数 1.00，范围 0.95–1.02）。
+#   没有 requestId 的条目无法归组，各自单独计入。
 #
 # 各字段：
 #   input       = sum(input_tokens) — 非 cache 的 fresh input
@@ -14,6 +25,11 @@
 #   cache read  = sum(cache_read_input_tokens) — cache 命中（便宜 0.1× input）
 #   cache write = sum(cache_creation_input_tokens) — 新写入 cache（5m 1.25×、1h 2×）
 #   $X.XX       = 估算 USD（按 model 从 anthropic pricing 推算）
+#
+# ⚠️ 金额只是**按标价的估算**，计价偏差尚未核实（GigleTutor-Web#931 另行追踪）：
+#   本脚本取窗口内**第一条**消息的 model 定一个单价，套用到该窗口全部用量；
+#   实测去重之后按本表算出的金额仍明显高于 CLI 自记的 totalCostUSD。
+#   周报里这个数标注为「按调用去重后的标价估算，计价偏差尚未核实」，不是实际账单。
 #
 # Pricing 数据点（per million input tokens, USD），按 model family 区分：
 #   Opus  4.x : input $15, output $75, cache_w_5m $18.75, cache_w_1h $30, cache_r $1.5
@@ -29,9 +45,14 @@
 #
 # 漏算：worker 调本脚本的 Bash 调用本身 + 之后到 gh comment 完成那段，
 # transcript 还没 flush 进去，会漏 < 1%（整任务比例）。可忽略。
+#
+# 不在这里算「排除等待的工时」：cost-state 快照是**派工结束之后**才落盘的
+# （实测 13/13 个派工窗口内部一条都没有），本脚本跑在发评论之前，拿不到。
+# 那个指标由周报采集器在出报告时从本地日志算（见 scripts/weekly-report/collect.py）。
 set -uo pipefail
 
 START_EPOCH="${1:?need start epoch}"
+MODE="${2:-human}"
 
 ENC=$(pwd | tr / -)
 TRANSCRIPT=$(ls -t ~/.claude/projects/${ENC}/*.jsonl 2>/dev/null | head -1)
@@ -52,7 +73,7 @@ case "$MODEL" in
     *)        PRICE_IN=15 ;;   # fallback Opus（最贵；估算偏高安全）
 esac
 
-jq -sr --argjson start "$START_EPOCH" --argjson pi "$PRICE_IN" '
+jq -sr --argjson start "$START_EPOCH" --argjson pi "$PRICE_IN" --arg mode "$MODE" '
     # X.Xk / X.Xm 格式（< 1k 时显示整数）
     def fmt:
         if . >= 1000000 then ((. / 100000 | floor) / 10 | tostring) + "m"
@@ -68,8 +89,11 @@ jq -sr --argjson start "$START_EPOCH" --argjson pi "$PRICE_IN" '
 
     [.[] | select(.type == "assistant"
               and (.message.usage // empty)
-              and (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $start)
-         | .message.usage]
+              and (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $start)]
+    # 同一次 API 调用（requestId）只取一条；没有 requestId 的无法归组，各自保留
+    | ( (map(select(.requestId != null)) | group_by(.requestId) | map(.[0]))
+        + map(select(.requestId == null)) )
+    | map(.message.usage)
     | reduce .[] as $u (
         {in:0, out:0, cr:0, cw_5m:0, cw_1h:0};
         .in += ($u.input_tokens // 0)
@@ -80,5 +104,8 @@ jq -sr --argjson start "$START_EPOCH" --argjson pi "$PRICE_IN" '
       )
     | (.cw_5m + .cw_1h) as $cw
     | ((.in + .cr * 0.1 + .cw_5m * 1.25 + .cw_1h * 2 + .out * 5) * $pi / 1000000) as $usd
-    | "\(.in | fmt) input, \(.out | fmt) output, \(.cr | fmt) cache read, \($cw | fmt) cache write ($\($usd | usd2))"
+    | if $mode == "--kv"
+      then "in=\(.in) out=\(.out) cache_r=\(.cr) cache_w=\($cw) cost_usd=\($usd | usd2)"
+      else "\(.in | fmt) input, \(.out | fmt) output, \(.cr | fmt) cache read, \($cw | fmt) cache write ($\($usd | usd2))"
+      end
 ' "$TRANSCRIPT" 2>/dev/null

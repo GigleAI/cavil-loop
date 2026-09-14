@@ -177,12 +177,12 @@ def main():
     hp=(tot("human")/tot("comments")*100) if tot("comments") else 0
     t2=(f'<h1>最近 {len(W)} 周趋势 · 投入面（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
         f'<div class="lede">{len(W)} 周合计：来回讨论 <b>{tot("comments"):.0f}</b> 条（其中你发了 <b>{tot("human"):.0f}</b> 条，占 {hp:.0f}%），'
-        f'AI 累计工作 <b>{tot("secs")/3600:.0f} 小时</b>，成本折合 <b>${tot("cost"):,.0f}</b>。</div>')
+        f'AI 累计工作（墙上） <b>{tot("wall")/3600:.0f} 小时</b>，成本折合 <b>${tot("cost"):,.0f}</b>。</div>')
     p3=ch.panel(0,0,1212,320,"讨论轮数：AI 自己来回的次数 vs 你开口的次数",
         "堆叠柱＝当周 issue / PR 上的全部评论条数。",
         [{"type":"bar","data":g("bot"),"color":BLUE,"label":"AI 之间的来回","axis":"l","stack":True},
          {"type":"bar","data":g("human"),"color":GOLD,"label":"你发的","axis":"l","stack":True}])
-    hrs=[wk[k]["secs"]/3600 for k in W]
+    hrs=[wk[k]["wall"]/3600 for k in W]
     # 零工时的周分母为 0 → None，折线在那里断开。画成 0 会被读成「那周没产出」，是两回事。
     lph=[(net[i]/hrs[i] if hrs[i] else None) for i in range(len(W))]
     p_time=ch.panel(0,340,1212,320,"AI 投入时间：每周实际干活的小时数",
