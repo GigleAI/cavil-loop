@@ -157,34 +157,54 @@ def main():
             return None
         return f"{a.worktree_base}/{a.session_prefix}-{link.get(num, num)}"
 
+    def rec_week(rec, fallback):
+        """这条记账记录算在**哪一周** —— 按派工的**开始时刻**，不按写评论的时刻。
+
+        为什么（GitHub#932 交叉 review）：一次派工完全可能跨周（周日 23:50 开工、
+        周一 00:05 才发最终那条累计评论，模板允许）。原来用「最终那条评论所在的周」
+        入账，于是同一份固定数据，报告目标周往后滚一格，上一周已记的账就整条**搬走**、
+        旧周被清零——实测周日 300 秒/$5 在下一周的报告里变成 0，900 秒/$15 跑到新周。
+        按 `start` 归账则与展示窗口无关：这次派工从哪一周开工，就一直算在哪一周。
+
+        身份缺失兜底的那种记录（start 是 ('noid', 评论 id)）没有真实起点，
+        退回用它那条评论的周。
+        """
+        st_ = rec.get("start")
+        if isinstance(st_, datetime.datetime):
+            return wk(st_.astimezone(TZ))
+        return fallback
+
+    dupes_by_key = collections.Counter()
+
     for c in comments:
         if c["id"] in seen:
             continue
         seen.add(c["id"])
         w = wk(loc(c["created_at"]))
-        if w not in wset:
-            continue
         body = c.get("body") or ""
         user = c["user"]["login"]
         num = int(c["issue_url"].rsplit("/", 1)[-1])
-        s = st[w]
-        s["comments"] += 1
-        s["bot" if is_bot(user) else "human"] += 1
-        if RE_CODEX.search(body):
-            s["codex"] += 1
-        # 轮数 / 你发的条数按**全部**评论算（人发的、交叉 review 的都算一轮），
-        # 必须在下面那些 continue 之前累加，否则「讨论轮数」会只剩记账评论。
-        if w == target.isoformat():
-            p = per_issue[num]
-            p["rounds"] += 1
-            p["human"] += 0 if is_bot(user) else 1
+        # 「讨论条数」这类**按评论算**的指标只看窗口内的评论。
+        if w in wset:
+            s = st[w]
+            s["comments"] += 1
+            s["bot" if is_bot(user) else "human"] += 1
+            if RE_CODEX.search(body):
+                s["codex"] += 1
+            # 轮数 / 你发的条数按**全部**评论算（人发的、交叉 review 的都算一轮），
+            # 必须在下面那些 continue 之前累加，否则「讨论轮数」会只剩记账评论。
+            if w == target.isoformat():
+                p = per_issue[num]
+                p["rounds"] += 1
+                p["human"] += 0 if is_bot(user) else 1
 
         rec = record.extract(body, user, c["id"], default_wt=link.get(num, num))
         if rec is None:
             continue                      # 这条评论不是记账来源
-        s["footers"] += 1
-        if rec.get("has_cost"):
-            s["cost_footers"] += 1
+        # ⚠️ 认领**不按评论所在的周过滤**：跨周派工的最终累计快照就发在下一周，
+        # 把它挡掉会让上一周只拿到中途那个较小的快照（同一份数据、换个窗口就变数）。
+        # 真正决定入不入账的是下面 `rec_week()` 算出来的**开工周**在不在窗口里。
+        #
         # 先只认领，不入账。记账行里的时长 / 金额 / token 都是**从派工开始起的累计值**，
         # 同一次派工发多条评论时每条都是一个更大的累计快照——必须留 end 最晚的那条，
         # 逐条求和会把前半段重复算（见 record.dispatch_key 的说明）。
@@ -192,15 +212,22 @@ def main():
         prev = claimed.get(key)
         kept = record.pick_latest(prev[0] if prev else None, rec)
         if prev is not None:
-            s["dupes"] += 1
+            dupes_by_key[key] += 1
         if prev is None or kept is rec:
             # 只留提取好的记录，**不留正文** —— 汇总阶段拿不到正文，也就没法再回头
             # 扫它（正文里的示例曾经被当成真实用量累加）。
             claimed[key] = (rec, w, num)
 
-    # ── 第二段：每次派工只按它最终那条累计记录入账 ──
-    for rec, w, num in claimed.values():
+    # ── 第二段：每次派工只按它最终那条累计记录入账，算在**开工那一周** ──
+    for key, (rec, cw, num) in claimed.items():
+        w = rec_week(rec, cw)
+        if w not in wset:
+            continue                      # 开工周不在展示窗口里（比如窗口之前开的工）
         s = st[w]
+        s["footers"] += 1 + dupes_by_key[key]
+        if rec.get("has_cost"):
+            s["cost_footers"] += 1
+        s["dupes"] += dupes_by_key[key]
         wall = rec["wall"]
         cost = rec["cost"]
         out = rec["out"]

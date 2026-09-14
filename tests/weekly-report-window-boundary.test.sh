@@ -27,19 +27,28 @@ chk() { if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); else echo " 
 # 目标周：2025-01-06（北京时间周一）。三条评论，都带机器记录 600 秒 / $10：
 #   A 周一 01:00 +08:00 = 2025-01-05T17:00:00Z —— 旧实现漏掉的就是这一条
 #   B 周一 00:00:00 +08:00 = 2025-01-05T16:00:00Z —— 正好压在边界上
-#   C 上周日 23:59 +08:00 = 2025-01-05T15:59:00Z —— 不属于目标周，永远不该计入
+#   C 上周日 23:59 +08:00 = 2025-01-05T15:59:00Z —— 开工就在上一周，不属于目标周
+# 三条是**三次不同的派工**（wt 各不相同），机器记录里的 start 与发布时刻一致。
 python3 - "$TMP/all.json" <<'PY'
 import json, sys
-def row(cid, utc, hh):
-    body = ("干完了。\n\n<!-- agent-metrics agent=claude wt=10 "
-            "start=2025-01-06T%s:00:00+08:00 end=2025-01-06T%s:10:00+08:00 "
-            "wall_secs=600 in=1 out=1 cache_r=0 cache_w=0 cost_usd=10.00 -->" % (hh, hh))
+def row(cid, utc, start, end, wt):
+    # 每条评论的机器记录里 `start` 与它的发布时刻一致 —— 记账按**开工时刻**归周，
+    # fixture 也必须自洽，不能让周日发的评论声称自己是周一开的工。
+    body = ("干完了。\n\n<!-- agent-metrics agent=claude wt=%d "
+            "start=%s end=%s "
+            "wall_secs=600 in=1 out=1 cache_r=0 cache_w=0 cost_usd=10.00 -->" % (wt, start, end))
     return {"id": cid, "issue_url": "https://api.github.com/repos/acme/widget/issues/10",
             "user": {"login": "acme-bot"},
             "created_at": utc, "updated_at": utc, "body": body}
-json.dump([row(1, "2025-01-05T17:00:00Z", "01"),     # A
-           row(2, "2025-01-05T16:00:00Z", "02"),     # B（边界）
-           row(3, "2025-01-05T15:59:00Z", "03")],    # C（上一周）
+json.dump([  # A：周一 01:00 +08:00 —— 旧实现漏掉的就是这一条
+           row(1, "2025-01-05T17:00:00Z",
+               "2025-01-06T01:00:00+08:00", "2025-01-06T01:10:00+08:00", 10),
+             # B：正好压在周一 00:00:00 +08:00 这个边界上
+           row(2, "2025-01-05T16:00:00Z",
+               "2025-01-06T00:00:00+08:00", "2025-01-06T00:10:00+08:00", 11),
+             # C：上周日 23:59 +08:00 开的工 —— 不属于目标周
+           row(3, "2025-01-05T15:59:00Z",
+               "2025-01-05T23:59:00+08:00", "2025-01-06T00:09:00+08:00", 12)],
           open(sys.argv[1], "w"))
 PY
 
