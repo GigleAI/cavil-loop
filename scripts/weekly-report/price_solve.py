@@ -269,13 +269,62 @@ def build(policy="A", projects_dir=None):
             "models": table}
 
 
+def cache_path():
+    d = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(d, "cavil-loop", "price-table.json")
+
+
+def _signature(projects_dir=None):
+    """目录指纹：文件数 + 最新 mtime + 总字节数。日志一变就重算，不靠固定 TTL 猜。
+
+    带上总字节数是因为 mtime 只精确到秒：同一秒内换掉一批同样数量的文件时，
+    只看「文件数 + mtime」会撞上同一个指纹、返回过期的表（写测试时踩到过）。"""
+    base = projects_dir or os.environ.get("CLAUDE_PROJECTS_DIR") \
+        or os.path.expanduser("~/.claude/projects")
+    n, newest, size = 0, 0.0, 0
+    for f in glob.glob(os.path.join(base, "*", "*.jsonl")):
+        try:
+            st = os.stat(f)
+            n += 1
+            newest = max(newest, st.st_mtime)
+            size += st.st_size
+        except OSError:
+            pass
+    return f"{n}:{newest:.0f}:{size}"
+
+
+def build_cached(policy="A", projects_dir=None):
+    """带缓存的 build()。反解要扫全部 transcript（本机约 3 秒），而 driver 每发一条评论
+    都会调一次，所以按目录指纹缓存；指纹变了就重算。缓存坏掉一律当没有，不让它挡路。"""
+    sig = _signature(projects_dir)
+    path = cache_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            c = json.load(f)
+        if c.get("signature") == sig and c.get("table", {}).get("policy") == policy:
+            return c["table"]
+    except Exception:
+        pass
+    table = build(policy, projects_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"signature": sig, "table": table}, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return table
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--table", action="store_true", help="输出 JSON 价目表（给 driver）")
     ap.add_argument("--report", action="store_true", help="人读的逐项状态")
+    ap.add_argument("--no-cache", action="store_true", help="跳过缓存，强制重算")
     ap.add_argument("--policy", default=os.environ.get("PRICE_POLICY", "A"), choices=["A", "B"])
     a = ap.parse_args()
-    t = build(a.policy)
+    t = build(a.policy) if a.no_cache else build_cached(a.policy)
     if a.report or not a.table:
         print(f"参照来源：{t['reference_source']}")
         print(f"阈值：{t['thresholds']}  ·  取值策略 {t['policy']}\n")

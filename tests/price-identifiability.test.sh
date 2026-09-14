@@ -18,6 +18,8 @@
 #   稳定 vs 准确 / 两个稳定性判据缺一不可 / cache 两档能不能分开 /
 #   四态各自的取值 / Q7 的 A 与 B 两个分支 / 偏差阈值的三个边界 / 样本不足与无流量
 #
+# 一律走 --no-cache：反解结果有按目录指纹的缓存，测试里同一秒换 fixture 会撞指纹。
+#
 # ⚠️ 造数注意：各列必须**独立变化**。若每列都与同一个序号成比例，设计矩阵秩为 1，
 #    解出来的东西没有意义（写这个测试时先踩过一次）。
 set -uo pipefail
@@ -66,7 +68,7 @@ for k in range(n):
 PY
 }
 
-run()   { CLAUDE_PROJECTS_DIR="$TMP/projects" python3 "$MOD" --table --policy "${1:-A}" 2>/dev/null; }
+run()   { CLAUDE_PROJECTS_DIR="$TMP/projects" python3 "$MOD" --table --no-cache --policy "${1:-A}" 2>/dev/null; }
 field() { python3 -c "import json,sys; print(json.load(sys.stdin)['models']['$1']['$2']['$3'])"; }
 fnum()  { python3 -c "import json,sys; v=json.load(sys.stdin)['models']['$1']['$2']['$3']; print('none' if v is None else round(float(v),3))"; }
 metric(){ python3 -c "import json,sys; print(round(json.load(sys.stdin)['models']['$1']['$2']['metrics']['$3'],4))"; }
