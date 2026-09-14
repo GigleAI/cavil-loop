@@ -46,11 +46,39 @@ a3=$(emit_footer "$A_START" "2025-01-08 10:20:00" 1200 20 10)
 B_START="2025-01-08 14:00:00"
 b1=$(emit_footer "$B_START" "2025-01-08 14:07:00"  420  7 10)
 
+# 派工 C：**混合来源**。同一次派工里三条评论的身份来源各不相同——
+#   ① 机器标记但省了 wt（走采集器传进来的 default_wt，那是**整数** issue 编号）
+#   ② 机器标记带显式 wt（从文本解析出来，是**字符串**）
+#   ③ 只有历史可见记账行、没有机器标记（同样走 default_wt）
+# 身份类型不归一就成了 ('10', start) != (10, start)，三条各记一次、前面两段被重复累加。
+C_START="2025-01-08 16:00:00"
+# ① 省掉 wt 的机器标记（footer 正文照写，只是标记里不带 wt）
+emit_footer_nowt() {
+    local start_ts="$1" end_ts="$2" wall="$3" cost="$4"
+    printf '\n\n---\n⏱️ 开始 %s · 完工 %s · 耗时 %sm %ss\ntoken %s\n' \
+        "$start_ts" "${end_ts:11:8}" "$((wall / 60))" "$((wall % 60))" "1 input, 1 output (\$$cost)"
+    printf '<!-- agent-metrics agent=claude start=%s end=%s wall_secs=%s %s -->\n' \
+        "$(date -d "$start_ts" --iso-8601=seconds)" "$(date -d "$end_ts" --iso-8601=seconds)" \
+        "$wall" "in=1 out=1 cache_r=0 cache_w=0 cost_usd=$cost"
+}
+# ③ 只有可见记账行、没有机器标记（历史形态）
+emit_footer_legacy() {
+    local start_ts="$1" end_ts="$2" wall="$3" cost="$4"
+    printf '\n\n---\n⏱️ 开始 %s · 完工 %s · 耗时 %sm %ss\ntoken %s\n' \
+        "$start_ts" "${end_ts:11:8}" "$((wall / 60))" "$((wall % 60))" "1 input, 1 output (\$$cost)"
+}
+c1=$(emit_footer_nowt   "$C_START" "2025-01-08 16:04:00"  240  4)
+c2=$(emit_footer_legacy "$C_START" "2025-01-08 16:09:00"  540  9)
+c3=$(emit_footer        "$C_START" "2025-01-08 16:15:00"  900 15 10)
+
 py_json() { python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))"; }
 A1=$(printf '在 issue 上回一条%s' "$a1" | py_json)
 A2=$(printf '在 PR 上回一条%s'    "$a2" | py_json)
 A3=$(printf '收尾再回一条%s'      "$a3" | py_json)
 B1=$(printf '第二次派工%s'        "$b1" | py_json)
+C1=$(printf '混合：标记省了 wt%s'  "$c1" | py_json)
+C2=$(printf '混合：只有可见记账行%s' "$c2" | py_json)
+C3=$(printf '混合：标记带显式 wt%s' "$c3" | py_json)
 
 W_OUT="2024-12-31T02:00:00Z"
 cat > "$TMP/issues.json" <<JSON
@@ -70,7 +98,13 @@ cat > "$TMP/comments.json" <<JSON
  {"id":3,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
   "user":{"login":"acme-bot"},"created_at":"2025-01-08T02:20:00Z","body":$A3},
  {"id":4,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
-  "user":{"login":"acme-bot"},"created_at":"2025-01-08T06:07:00Z","body":$B1}
+  "user":{"login":"acme-bot"},"created_at":"2025-01-08T06:07:00Z","body":$B1},
+ {"id":5,"issue_url":"https://api.github.com/repos/acme/widget/issues/10",
+  "user":{"login":"acme-bot"},"created_at":"2025-01-08T08:04:00Z","body":$C1},
+ {"id":6,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
+  "user":{"login":"acme-bot"},"created_at":"2025-01-08T08:09:00Z","body":$C2},
+ {"id":7,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
+  "user":{"login":"acme-bot"},"created_at":"2025-01-08T08:15:00Z","body":$C3}
 ]
 JSON
 cat > "$TMP/pulls.json" <<'JSON'
@@ -108,12 +142,12 @@ except Exception as e:
     print('')
 "; }
 
-chk "两次派工 → 只入账 2 条记账记录（不是 4 条）"        "$(q "print(int(w['records']))")" "2"
-chk "被折叠的累计快照记 2 条"                            "$(q "print(int(w['dupes']))")"   "2"
-chk "墙上时长 = 派工A 最终 1200 + 派工B 420，不是逐条求和" "$(q "print(int(w['wall']))")"    "1620"
-chk "成本 = 20 + 7，不是 5+12+20+7"                      "$(q "print(round(w['cost']))")"  "27"
-chk "轮数仍按全部评论算（4 条）"                          "$(q "print(int(one(10)['rounds']))")" "4"
-chk "issue #10 的墙上时长同样只算最终累计"                "$(q "print(int(one(10)['wall']))")"   "1620"
+chk "三次派工 → 只入账 3 条记账记录（不是 7 条）"        "$(q "print(int(w['records']))")" "3"
+chk "被折叠的累计快照记 4 条"                            "$(q "print(int(w['dupes']))")"   "4"
+chk "墙上时长 = A 1200 + B 420 + C 900，不是逐条求和"     "$(q "print(int(w['wall']))")"    "2520"
+chk "成本 = 20 + 7 + 15，不是把每条快照都加上"            "$(q "print(round(w['cost']))")"  "42"
+chk "轮数仍按全部评论算（7 条）"                          "$(q "print(int(one(10)['rounds']))")" "7"
+chk "issue #10 的墙上时长同样只算各次派工的最终累计"      "$(q "print(int(one(10)['wall']))")"   "2520"
 
 echo
 echo "通过 $pass / 失败 $fail"

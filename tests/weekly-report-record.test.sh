@@ -112,6 +112,28 @@ chk("同身份保留 end 更晚那条（累计值更完整，不能留最早的�
 chk("pick_latest 与传参顺序无关",
     (record.pick_latest(e2, e1)["wall"], record.pick_latest(None, e1)["wall"]), (1200, 600))
 
+# ── 身份类型必须归一：标记里的 wt 是字符串，回落用的 default_wt 是整数 ──────
+# 不归一就成了 ('931', start) != (931, start)，同一次派工的两条评论各记一次。
+M_NOWT = ("<!-- agent-metrics agent=claude start=2026-09-14T11:00:00+08:00 "
+          "end=2026-09-14T11:10:00+08:00 wall_secs=600 cost_usd=10 -->")
+FOOT_SAME = ("---\n⏱️ 开始 2026-09-14 11:00:00 · 完工 11:10:00 · 耗时 10m 0s\n"
+             "token 1 input ($10.00)")
+g1 = record.extract("标记里省了 wt，走回落\n\n" + M_NOWT, BOT, 19, default_wt=931)
+g2 = record.extract("标记里带显式 wt\n\n" + CUM2, BOT, 20, default_wt=931)
+g3 = record.extract("历史可见记账行，也走回落\n\n" + FOOT_SAME, BOT, 21, default_wt=931)
+chk("wt 一律归一成字符串", (g1["wt"], g2["wt"], g3["wt"]), ("931", "931", "931"))
+chk("缺 wt 的标记 与 显式 wt 的标记 → 同一派工",
+    record.dispatch_key(g1) == record.dispatch_key(g2), True)
+chk("历史可见记账行 与 新机器标记 → 同一派工",
+    record.dispatch_key(g3) == record.dispatch_key(g2), True)
+mix = {}
+for r in (g1, g2, g3):
+    k = record.dispatch_key(r)
+    mix[k] = record.pick_latest(mix.get(k), r)
+chk("三条混合来源只入账一次，取最终累计值",
+    (len(mix), sum(r["wall"] for r in mix.values()), sum(r["cost"] for r in mix.values())),
+    (1, 1200, 20.0))
+
 NOID = "<!-- agent-metrics agent=claude wt=931 wall_secs=600 cost_usd=1.00 -->"
 d = record.extract("---\n⏱️ 开始 2026-09-14 11:00:00 · 完工 11:10:00 · 耗时 10m 0s\ntoken 1 input ($1.00)\n\n" + NOID, BOT, 14)
 chk("机器记录缺起止 → 回落到同评论里的可见记账行取身份", d["ident"], "marker+footer")

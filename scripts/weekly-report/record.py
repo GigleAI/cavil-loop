@@ -43,6 +43,21 @@ RE_COST = re.compile(r'\(\$([\d.]+)\)')
 LONG_WINDOW_SECS = 4 * 3600
 
 
+def norm_wt(v):
+    """把 worktree 编号归一成同一种类型（字符串），再进派工身份。
+
+    为什么必须归一（GitHub#932 review 第 2 轮）：机器标记里的 `wt` 是从文本解析出来的
+    **字符串**，而缺 `wt` 时回落用的 `default_wt` 是采集器传进来的**整数** issue 编号。
+    两者直接进 key 就成了 `('931', start)` != `(931, start)`——同一次派工的两条评论
+    （一条带显式 wt、一条走回落，或历史可见记账行与新机器记录混在一起）会各记一次，
+    前半段被重复累加。实测这种混合场景会得出 1800 秒 / $30 而不是 1200 秒 / $20。
+    """
+    if v is None:
+        return None
+    v = str(v).strip()
+    return v or None
+
+
 def is_bot(login):
     """机器人账号：约定后缀 `-bot`（worker）或 GitHub App 的 `[bot]`。"""
     return login.endswith("-bot") or login.endswith("[bot]")
@@ -124,7 +139,7 @@ def extract(body, login, comment_id=None, default_wt=None):
         except ValueError:
             cost = 0.0
         return {"src": "marker", "ident": ident, "agent": kv.get("agent"),
-                "wt": kv.get("wt") or default_wt, "start": st, "end": en,
+                "wt": norm_wt(kv.get("wt")) or norm_wt(default_wt), "start": st, "end": en,
                 "wall": wall, "cost": cost}
 
     # ② 历史评论（无机器记录）：四步判定，任何一步不满足就不作为记账来源
@@ -138,7 +153,7 @@ def extract(body, login, comment_id=None, default_wt=None):
     if not RE_TOKEN_LINE.match(nxt):
         return None                      # 记账行之后必须紧跟 token 行
     return {"src": "footer", "ident": "footer", "agent": None,
-            "wt": default_wt, "start": a, "end": b,
+            "wt": norm_wt(default_wt), "start": a, "end": b,
             "wall": int((b - a).total_seconds()),
             "cost": sum(float(x.group(1)) for x in RE_COST.finditer(nxt))}
 
@@ -157,7 +172,7 @@ def dispatch_key(rec):
     所以身份只取 (worktree, 开始时刻)，同一身份**取 end 最大的那条**——它才是这次
     派工的最终累计值。**不能保留最早那条**，那会漏掉后半段。见 `pick_latest`。
     """
-    return (rec.get("wt"), rec["start"])
+    return (norm_wt(rec.get("wt")), rec["start"])
 
 
 def pick_latest(cur, new):
