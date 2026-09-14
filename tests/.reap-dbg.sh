@@ -88,7 +88,7 @@ REAP_GRACE_SECS=9999 reap_finished_workers active_keys >/dev/null 2>&1
 chk "901 被宽限期挡住" "$(alive reaptest-issue901)" "yes"
 
 echo "【3】过了宽限期 → 只收完工的"
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 sleep 1
 chk "901 已回收"                  "$(alive reaptest-issue901)" "no"
 chk "902 已回收"                  "$(alive reaptest-issue902)" "no"
@@ -97,7 +97,7 @@ chk "903-server 保留（dev server 不归 daemon 管）" "$(alive reaptest-issu
 
 echo "【4】REAP_FINISHED_WORKERS=0 时完全不动手"
 tmux new-session -d -s reaptest-issue905 'sleep 3000'; sleep 1
-REAP_FINISHED_WORKERS=0 REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_FINISHED_WORKERS=0 REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 chk "905 仍在" "$(alive reaptest-issue905)" "yes"
 
 echo "【5】pane 进程真的死了——不是只掉了 session"
@@ -109,20 +109,13 @@ echo "【5】pane 进程真的死了——不是只掉了 session"
 # 守卫自己是假阴性的。claude 属于不吃 SIGHUP 的那类，这里用 `trap "" HUP` 复现它。
 tmux new-session -d -s reaptest-issue906 'trap "" HUP; while :; do sleep 1; done'; sleep 1
 ppid=$(tmux list-panes -t '=reaptest-issue906' -F '#{pane_pid}')
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
-# ⚠️ 判「死没死」不能用 `kill -0`：**僵尸进程它也返回成功**。进程已经退出、只是还没被
-# tmux server 收尸，本机负载高时这段能拖好几秒——于是这条就偶发红（实测把 CPU 打满，
-# 5 次里红 3 次，报「期望 dead，实得 alive」，而 reaper 的日志明明写着已经回收）。
-# 这条断言要证明的是 issue #745 那个现场：进程不再占着几百 MB 内存——僵尸恰恰不占，
-# 所以状态 Z 一律算死。再配一个盯着**这个具体 pid** 的轮询（最多 15 秒）顶掉信号送达
-# 与退出之间的时间差，空闲时几十毫秒就返回，真没死透照样会红。
-proc_alive() {
-    local st
-    st=$(sed -e 's/.*) //' -e 's/ .*//' "/proc/$1/stat" 2>/dev/null) || return 1
-    [ -n "$st" ] && [ "$st" != "Z" ]
-}
-for _ in $(seq 1 150); do proc_alive "$ppid" || break; sleep 0.1; done
-chk "pane 进程 $ppid 已退出" "$(proc_alive "$ppid" && echo alive || echo dead)" "dead"
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
+# 别用固定 `sleep 1` 等它死：信号送到、进程退出、父进程收尸这一串在本机负载高时
+# （比如同时在跑别的测试链）会超过 1 秒，这条就会偶发红——实测 6 次里红 1 次，
+# 报的是「期望 dead，实得 alive」。改成盯着**这个具体 pid** 轮询，最多等 15 秒：
+# 空闲时几十毫秒就返回，负载高时也不会假红；真没死透照样会红。
+for _ in $(seq 1 150); do kill -0 "$ppid" 2>/dev/null || break; sleep 0.1; done
+chk "pane 进程 $ppid 已退出" "$(kill -0 "$ppid" 2>/dev/null && echo alive || echo dead)" "dead"
 
 echo "【6】读不到 session_activity 时 fail closed（不回收）"
 # `display-message -p -t '=name'`（缺末尾冒号）在 tmux 3.4 返回空串而非报错，
@@ -130,7 +123,7 @@ echo "【6】读不到 session_activity 时 fail closed（不回收）"
 tmux new-session -d -s reaptest-issue907 'sleep 3000'; sleep 1
 _orig_tmux=$(command -v tmux)
 tmux() { if [ "$1" = "list-sessions" ]; then echo "reaptest-issue907 "; else "$_orig_tmux" "$@"; fi; }
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 unset -f tmux
 chk "907 保留（活动时间读不到就不动）" "$(alive reaptest-issue907)" "yes"
 
@@ -139,7 +132,7 @@ for endpoint in issues pulls; do
     GH_FAIL="$endpoint"
     list_active_workers >/dev/null 2>&1
     chk "$endpoint 查询失败向上传递" "$?" "1"
-    REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+    REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
     chk "$endpoint 查询失败保留 907" "$(alive reaptest-issue907)" "yes"
 done
 GH_FAIL=''
@@ -151,20 +144,20 @@ STATE_FILE="$SANDBOX/state/state.json"
 printf '{"worker_hosts":{}}' > "$STATE_FILE"
 PR_PAGES='[[],[{"number":999,"head":{"ref":"feature/issue-907"},"body":"","labels":[{"name":"doing/agent"}]}]]'
 chk "并发名单仍按归属过滤" "$(list_active_workers)" ""
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 chk "907 的 PR 仍 doing，保留" "$(alive reaptest-issue907)" "yes"
 PR_PAGES='[[{"number":999,"head":{"ref":"external"},"body":"Refs #907","labels":[{"name":"doing/agent"}]}]]'
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 chk "PR body 关联也保护 907" "$(alive reaptest-issue907)" "yes"
 PR_PAGES='[[]]'
 ISSUE_PAGES='[[],[{"number":907}]]'
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 chk "issue 仍 doing，保留" "$(alive reaptest-issue907)" "yes"
 ISSUE_PAGES='invalid json'
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 chk "损坏响应不能授权回收" "$(alive reaptest-issue907)" "yes"
 ISSUE_PAGES='[[]]'
-REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
+REAP_GRACE_SECS=0 reap_finished_workers active_keys 2>&1 | grep -i "906" >&2 || true
 chk "确认 issue/PR 都已不 doing 后可回收" "$(alive reaptest-issue907)" "no"
 
 echo
