@@ -124,5 +124,71 @@ run 2025-01-20 1
 chk "窗口只有 2025-01-20 → 该派工不入账" "$(q 2025-01-20 records)" "0"
 
 echo
+echo "— 只在下周发唯一那条完工评论：明细里不能整条消失 —"
+# 跨周派工按开工周入账，可那一周它一条评论都没有 → rounds=0。
+# 报告的明细过滤原来只看 rounds>0，于是这条工作已经进了当周总时长 / 成本，
+# 却从「上周有推进但没关的 issue」里整条不见（GitHub#932 交叉 review）。
+# 这里**必须真的跑 report.py 看最终 markdown**——只断言 collect 的 JSON 会正好绕过这个缺口。
+
+REPORT="$REPO_DIR/scripts/weekly-report/report.py"
+
+# 三个承载对象：#10 纯 issue、#11 关联 #10 的 PR、#12 没有关联 issue 的 PR
+cat > "$TMP/issues.json" <<'JSON'
+[ {"number":10,"title":"跨周开工的 issue","state":"open","labels":[],
+   "created_at":"2024-11-01T02:00:00Z","closed_at":null},
+  {"number":11,"title":"fix: 收尾（#10）","state":"open","labels":[],
+   "created_at":"2024-11-01T02:00:00Z","closed_at":null,"pull_request":{"merged_at":null}},
+  {"number":12,"title":"chore: 工具链改动","state":"open","labels":[],
+   "created_at":"2024-11-01T02:00:00Z","closed_at":null,"pull_request":{"merged_at":null}} ]
+JSON
+cat > "$TMP/pulls.json" <<'JSON'
+[ {"number":11,"title":"fix: 收尾（#10）","body":"Closes #10"},
+  {"number":12,"title":"chore: 工具链改动","body":""} ]
+JSON
+
+# 只有一条评论：周一 00:05 发的**唯一**完工快照（没有周日那条中途评论 → 当周 rounds=0）
+only_final() {   # issue_number
+    python3 - "$TMP/all.json" "$1" <<'PY'
+import json, sys
+body = ("干完了。\n\n<!-- agent-metrics agent=claude wt=10 "
+        "start=2025-01-12T23:50:00+08:00 end=2025-01-13T00:05:00+08:00 "
+        "wall_secs=900 in=1 out=1 cache_r=0 cache_w=0 cost_usd=15.00 -->")
+json.dump([{"id": 1,
+            "issue_url": "https://api.github.com/repos/acme/widget/issues/%s" % sys.argv[2],
+            "user": {"login": "acme-bot"},
+            "created_at": "2025-01-12T16:05:00Z", "updated_at": "2025-01-12T16:05:00Z",
+            "body": body}], open(sys.argv[1], "w"))
+PY
+}
+gen_report() {
+    run 2025-01-06 1
+    python3 "$REPORT" --data "$TMP/d.json" --out "$TMP/r.md" \
+        --asset-url-base x --rev y >/dev/null 2>&1 \
+        || { echo "report.py 跑挂了"; exit 1; }
+}
+has() { grep -qF "$1" "$TMP/r.md" && echo yes || echo no; }
+
+echo "  · 评论发在 issue #10 上"
+only_final 10; gen_report
+chk "当周总时长仍是 900 秒"                "$(q 2025-01-06 wall)" "900"
+chk "当周讨论条数照实是 0"                 "$(q 2025-01-06 comments)" "0"
+chk "明细里有 #10 这一行"                  "$(has '| #10 | 跨周开工的 issue |')" "yes"
+chk "「有推进但没关的 issue」计 1 个"      "$(has '上周有推进但没关的 issue（1 个）')" "yes"
+chk "轮数照实显示 0，不伪造"               "$(has '| 0（你 0） | 15m |')" "yes"
+
+echo "  · 评论发在关联 PR #11 上（工作并进 issue #10）"
+only_final 11; gen_report
+chk "当周总时长仍是 900 秒"                "$(q 2025-01-06 wall)" "900"
+chk "明细里仍是 #10 这一行"                "$(has '| #10 | 跨周开工的 issue |')" "yes"
+chk "「有推进但没关的 issue」计 1 个"      "$(has '上周有推进但没关的 issue（1 个）')" "yes"
+
+echo "  · 评论发在没有关联 issue 的 PR #12 上"
+only_final 12; gen_report
+chk "当周总时长仍是 900 秒"                "$(q 2025-01-06 wall)" "900"
+chk "单列在「没有对应 issue 的 PR」里"     "$(has '上周没有对应 issue 的 PR（1 个）')" "yes"
+chk "那一行确实是 #12"                     "$(has '| #12 | chore: 工具链改动 |')" "yes"
+chk "不会同时混进 issue 明细"              "$(has '上周有推进但没关的 issue（0 个）')" "yes"
+
+echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" -eq 0 ]

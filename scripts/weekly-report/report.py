@@ -135,9 +135,21 @@ def main():
 
     czn={d["num"] for d in D["detail"]
          if d["closed_at"] and d["closed_at"][:10]>=tw["start"]}
+
+    def worked(d):
+        """这一周在它身上**确实记到账了** —— 不是只看「当周有没有讨论」。
+
+        跨周派工（周日开工、周一才发唯一那条完工评论）按开工周入账，可是那一周
+        它一条评论都没有，`rounds` 就是 0。只按 `rounds > 0` 过滤的话，这条工作
+        已经进了当周的总时长和成本，却从明细里整条消失（GitHub#932 交叉 review）。
+        所以入选条件再加一条「当周记到了时长或金额」。
+        **轮数照实写 0**，不为了留住明细去伪造它。
+        """
+        return d["rounds"] > 0 or d["wall"] > 0 or d["cost"] > 0
+
     closed=[d for d in D["detail"] if d["num"] in czn]
-    active=[d for d in D["detail"] if d["num"] not in czn and d["rounds"]>0]
-    loose=[d for d in D.get("loose_prs",[]) if d["rounds"]>0 or d["merged_at"]]
+    active=[d for d in D["detail"] if d["num"] not in czn and worked(d)]
+    loose=[d for d in D.get("loose_prs",[]) if worked(d) or d["merged_at"]]
     L.append(f"### 上周收口的 issue（{len(closed)} 个）\n")
     L.append("| # | 标题 | 轮数（你参与） | AI 耗时（墙上） | PR |")
     L.append("|---|---|---|---|---|")
@@ -217,7 +229,7 @@ def main():
 - **模型 + 工具**：agent 自己记录的模型调用 + 工具执行时间，**不含等待**；出报告时按派工窗口从本机 agent 日志取。本次区间 {t('work_records'):.0f} 条算得出、{t('work_missing'):.0f} 条拿不到（日志已不在或窗口配不上），拿不到的不计入该项。**这是估算，不是精确工时**：窗口归属靠快照前后配对，逐条可能错位。
 - **口径切换周**：{'配置为 ' + first_codex + '（那周起用量按 API 调用去重、纳入交叉 review 那一侧；它前后的时长 / 成本不是同一把尺子量的）。' if first_codex else ('**未配置**——所以本报告不标切换周、不画切换竖线、也不出过渡期并列块，环比照常给。本次区间里交叉 review 那一侧**已经有记账**，说明新口径已经上线，请把 `WEEKLY_REPORT_SWITCH_WEEK` 设成它上线那一周内的任意一天。' if t('records_codex') else '未配置，且本次区间里交叉 review 那一侧还没有记账 —— 新口径尚未上线，暂时无需配置。')}
 - **成本**：按调用去重后的**标价估算**，**计价偏差尚未核实**——不是实际账单。本次区间 {t('records'):.0f} 条记账里 {t('cost_records'):.0f} 条带金额、{t('records')-t('cost_records'):.0f} 条没有{f"（其中交叉 review 那一侧 {t('records_codex')-t('cost_records_codex'):.0f} 条）" if t('records_codex')-t('cost_records_codex') else ""}；没金额的**不计入**，所以总额偏低。**缺金额 ≠ 没花钱**：某一侧没配单价时驱动是有意不出金额的，报告里也因此不会给出它的成本占比。
-- **明细的入选口径**：issue 自己当周有讨论 **或** 它的关联 PR 当周有讨论 **或** 当周关闭。很多 issue 定完方案后讨论全发生在 PR 上，只看 issue 侧活跃度会把整条工作漏掉。没有关联 issue 的 PR（chore / 工具链）单列一组。
+- **明细的入选口径**：issue 自己当周有讨论 **或** 它的关联 PR 当周有讨论 **或** 当周关闭 **或** 当周在它身上记到了时长 / 金额（跨周派工——周日开工、周一才发完工评论——按开工周入账，那一周它的讨论条数确实是 0，但工作已经计进当周总数；轮数照实显示 0，不为留住明细伪造）。很多 issue 定完方案后讨论全发生在 PR 上，只看 issue 侧活跃度会把整条工作漏掉。没有关联 issue 的 PR（chore / 工具链）单列一组。
 - **代码行数**：`origin/main` 上当周提交的「新增 − 删除」，含自动生成文件与依赖锁文件，是工作量的粗略代理。
 - **提交数不适合看趋势**（因此未入图）：合并方式改成 squash 后，一个 PR 只留一个提交，提交数会断崖式下降，那是记账方式变了而非产出变了。
 - **数据生成时间**：{D['generated_at'][:19].replace('T',' ')}，由 `scripts/weekly-report/` 自动产出。
