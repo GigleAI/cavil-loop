@@ -24,6 +24,9 @@
 # 本测试要区分开的实现差异（每条都有专门的用例，缺一条就测不出来）：
 #   顶层优先 vs 明细优先 / 逐字段回退 vs 整条回退 / 明细多条求和 vs 只取第一条 /
 #   两档 TTL 各自回退（样本 A 管 5m、样本 B 管 1h）/ 两档各按各的倍率计价 vs 合并后统一计价
+# ⚠️ 机器字段（--kv）里**不足一分**的金额保留到百万分之一（`0.002573` 这种），
+#   两位小数只给人读的那一行用。提前舍入等于把可信状态**销毁在源头**：下游沿用
+#   footer 时再也恢复不了（#934 交叉 review 第 8 轮）。恰好是 0 的仍写 `0.00`。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,7 +98,7 @@ mk_case conflict <<EOF
 $(rec 10 req_conflict claude-opus-5 "$(u 7 100 13 5 5 0 "[$(it1 70 555 130 50 50 0)]")")
 EOF
 chk "C3 顶层非 0 且与明细不等时以顶层为准（明细优先会得 out=555）" \
-    "$(run conflict --kv)" "in=7 out=100 cache_r=13 cache_w=5 cost_usd=0.00 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.00"
+    "$(run conflict --kv)" "in=7 out=100 cache_r=13 cache_w=5 cost_usd=0.002573 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.002573"
 
 # ── C4 只有 output 顶层为 0 → 只回退这一项（区分「逐字段回退」和「整条回退」）──
 mk_case partial <<EOF
@@ -110,14 +113,14 @@ mk_case multi_zero <<EOF
 $(rec 10 req_multi0 claude-opus-5 "$(u 0 0 0 0 0 0 "$TWO")")
 EOF
 chk "C5 明细多条时求和（只取第一条会得 in=1 out=10 cache_r=100 cache_w=7）" \
-    "$(run multi_zero --kv)" "in=3 out=30 cache_r=300 cache_w=18 cost_usd=0.00 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.00"
+    "$(run multi_zero --kv)" "in=3 out=30 cache_r=300 cache_w=18 cost_usd=0.001065 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.001065"
 
 # ── C6 iterations 两条 + 顶层非 0 → 明细完全不看 ──
 mk_case multi_top <<EOF
 $(rec 10 req_multiT claude-opus-5 "$(u 9 90 900 20 8 12 "$TWO")")
 EOF
 chk "C6 顶层非 0 时明细完全不参与" \
-    "$(run multi_top --kv)" "in=9 out=90 cache_r=900 cache_w=20 cost_usd=0.00 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.00"
+    "$(run multi_top --kv)" "in=9 out=90 cache_r=900 cache_w=20 cost_usd=0.002915 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.002915"
 
 # ── C7 样本 A：5m 顶层被清零、1h 顶层非 0 → 验证 **5m** 那档的回退 ──
 #    顶层 cache_creation_input_tokens 故意写成假合计 99999999，它必须从不参与求和。
@@ -167,7 +170,7 @@ $(rec -100 req_old claude-opus-5 "$(u 9999999 9999999 9999999 9999999 9999999 0 
 $(rec 10 req_new claude-opus-5 "$(u 5 50 500 60 0 60 "[$(it1 5 50 500 60 0 60)]")")
 EOF
 chk "C11 窗口起点之前的记录被排除" \
-    "$(run window --kv)" "in=5 out=50 cache_r=500 cache_w=60 cost_usd=0.00 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.00"
+    "$(run window --kv)" "in=5 out=50 cache_r=500 cache_w=60 cost_usd=0.002125 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.002125"
 
 # ── C12 当前目录没有对应 transcript → 不输出（周报落「未知」兜底）──
 mkdir -p "$TMP/wt/no_transcript"

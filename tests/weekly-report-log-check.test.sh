@@ -379,6 +379,67 @@ chk "不是 partial"                    "$(q state_partial)"         "0"
 chk "报告如实报缺金额"                \
     "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "yes"
 
+echo "── 13. 不足一分的可信状态要能穿过整条链（第 8 轮打回）──"
+# 链路：原始 transcript → **真实 claude driver** → footer → **把日志删掉** →
+#      record 解析 → collect 沿用原值 → 最终 markdown。
+# driver 若把桶提前舍成 0.00，信息就销毁在源头了 —— 报告层再怎么改也恢复不回来。
+# ⚠️ 这一组刻意**不预填桶**：footer 里的数字全部由真实 driver 产生。
+cdrv() {  # $1 输出目录名  $2 out token  $3 model —— 造 transcript 并跑真实 driver 拿 --kv
+    local d="$TMP/drv/$1"; mkdir -p "$d"
+    local enc; enc=$(printf '%s' "$d" | tr / -)
+    mkdir -p "$TMP/drvproj/$enc"
+    printf '{"type":"assistant","requestId":"r1","uuid":"u1","timestamp":"%sT02:05:00Z","message":{"model":"%s","usage":{"input_tokens":0,"output_tokens":%s,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
+        "$W" "${3:-claude-opus-5}" "$2" > "$TMP/drvproj/$enc/s.jsonl"
+    ( cd "$d" && CLAUDE_PROJECTS_DIR="$TMP/drvproj" \
+      bash "$REPO_DIR/scripts/drivers/token-usage/claude.sh" 0 --kv )
+}
+mk_marker_from_kv() {  # $1 kv 原文 → 一条 wt=10 的完整记账评论
+    printf '干完了。\n\n<!-- agent-metrics agent=claude wt=10 start=%sT10:00:00+08:00 end=%sT10:10:00+08:00 wall_secs=600 %s -->' \
+        "$W" "$W" "$1"
+}
+
+# ⑴ 不足一分的 unstable：100 output × 参照 $25/M = $0.0025
+KV_TINY=$(cdrv tiny 100)
+chk "driver 没把不足一分的桶舍成 0.00" \
+    "$(printf '%s' "$KV_TINY" | grep -qF 'price_status=unstable:0.0025' && echo yes || echo no)" "yes"
+rm -rf "$CLAUDE_PROJECTS_DIR"          # 删日志 → 走沿用 footer 那条路
+run "$(mk_marker_from_kv "$KV_TINY")"
+chk "确实是沿用原值那条路"            "$(q src_original)"          "1"
+chk "算「有金额」"                    "$(q cost_records)"          "1"
+chk "unstable 桶活着（非零）"         \
+    "$(python3 -c "
+import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
+print('yes' if w.get('price_usd_unstable',0) > 0 else 'no')")" "yes"
+chk "报告写明用了外部参照兜底"        \
+    "$(grep -qF '反解不出、用外部参照兜底' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "不许再说「没有算出金额」"        \
+    "$(grep -qF '没有算出金额' "$TMP/r.md" && echo yes || echo no)" "no"
+chk "小额按分显示（< \$0.01）"        \
+    "$(grep -qF '< $0.01' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+# ⑵ 小额与大额混在一起：小的那桶不能被大的盖掉
+KV_BIG=$(cdrv big 100000000)           # 1 亿 output × $25/M = $2,500
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(mk_marker_from_kv "$KV_TINY")" "$(printf '干完了。\n\n<!-- agent-metrics agent=claude wt=11 start=%sT12:00:00+08:00 end=%sT12:10:00+08:00 wall_secs=600 %s -->' "$W" "$W" "$KV_BIG")"
+chk "两条都沿用原值"                  "$(q src_original)"          "2"
+chk "合计含大额 + 那笔不足一分的（2500.0025 → 2500.0）" "$(q cost)"   "2500.0"
+chk "两笔都落在同一个桶里、合计比大额还多一点点" \
+    "$(python3 -c "
+import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
+print('yes' if w.get('price_usd_unstable',0) > 2500 else 'no')")" "yes"
+
+# ⑶ 反向：真的零调用 —— 不许把真零包装成一个正的小额
+rm -rf "$CLAUDE_PROJECTS_DIR"
+KV_ZERO=$(cdrv zero 0)
+chk "零用量时 driver 仍写 \$0.00（不编一个小额出来）" \
+    "$(printf '%s' "$KV_ZERO" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=0.00"
+chk "零用量时没有任何可信度桶"        \
+    "$(printf '%s' "$KV_ZERO" | grep -c 'price_status=')" "0"
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(mk_marker_from_kv "$KV_ZERO")"
+chk "报告里不出现凭空的小额提示"      \
+    "$(grep -qF '< $0.01' "$TMP/r.md" && echo yes || echo no)" "no"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

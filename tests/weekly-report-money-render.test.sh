@@ -25,13 +25,13 @@ chk() { if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); else echo " 
 
 # 造 data.json。$1 目标周一；$2.. 是「模型项:token数:单价:可信度」，
 # 这些**交给真实 price_calls 去算**，不手填桶。
-mkdata() { python3 - "$TMP/d.json" "$@" <<'PY'
+mkdata() { python3 - "$REPO_DIR/scripts/weekly-report" "$TMP/d.json" "$@" <<'PY'
 import json, sys, datetime
-sys.path.insert(0, "/home/sky/github/cavil-loop/scripts/weekly-report")
+sys.path.insert(0, sys.argv[1])   # 由调用方传入，别硬编码本机路径
 import attribute
 
-out, tw = sys.argv[1], sys.argv[2]
-specs = sys.argv[3:]
+out, tw = sys.argv[2], sys.argv[3]
+specs = sys.argv[4:]
 priced, table = {}, {}
 for sp in specs:
     item, tok, price, status = sp.split(":")
@@ -97,7 +97,6 @@ json.dump({"repo": "acme/widget", "generated_at": datetime.datetime.now().isofor
            "weeks": [tw], "weekly": {tw: dict(ZERO)}, "detail": [], "loose_prs": []}, open(out, "w"))
 PY
 }
-sed -i "s|/home/sky/github/cavil-loop|$REPO_DIR|" "$0" 2>/dev/null || true
 
 run_report() { python3 "$REPORT" --data "$TMP/d.json" --out "$TMP/r.md" \
                  --asset-url-base x --rev y >/dev/null 2>"$TMP/err.log" \
