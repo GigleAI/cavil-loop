@@ -37,15 +37,20 @@ _claude_cache = {}
 
 
 def _claude_snapshots(worktree_path):
-    """{会话文件: [(锚定时刻, 累计值), ...]}。累计值只在**同一个文件内**单调，
-    所以必须按文件分组配对，不能把多个会话混在一起排序。
-    快照本身不带 timestamp，用它前面最近一条带 timestamp 的记录作锚定时刻。"""
+    """{会话文件: {"first": 会话首条记录时刻, "last": 末条记录时刻, "seq": [(锚定时刻, 累计值), ...]}}
+
+    累计值只在**同一个文件内**单调，所以必须按文件分组配对，不能把多个会话混在一起排序。
+    快照本身不带 timestamp，用它前面最近一条带 timestamp 的记录作锚定时刻。
+
+    `first` / `last` 记的是**会话自己的时间范围**（任何带 timestamp 的记录，不限于快照）。
+    判断会话跟派工窗口有没有交集必须用它，不能用第一份快照的时刻——见 `_claude_work`。
+    """
     if worktree_path in _claude_cache:
         return _claude_cache[worktree_path]
     enc = worktree_path.replace("/", "-")
     per = {}
     for f in glob.glob(os.path.expanduser(f"~/.claude/projects/{enc}/*.jsonl")):
-        seq, last = [], None
+        seq, last, first = [], None, None
         try:
             fh = open(f, encoding="utf-8", errors="replace")
         except OSError:
@@ -67,16 +72,26 @@ def _claude_snapshots(worktree_path):
                     d = _parse_iso(o["timestamp"])
                     if d:
                         last = d
+                        if first is None:
+                            first = d
         if seq:
-            per[f] = seq
+            per[f] = {"first": first or seq[0][0], "last": last or seq[-1][0], "seq": seq}
     _claude_cache[worktree_path] = per
     return per
 
 
 def _claude_work(worktree_path, start, end):
     best = None
-    for _f, seq in _claude_snapshots(worktree_path).items():
-        if seq[0][0] > end or seq[-1][0] < start:
+    for _f, s in _claude_snapshots(worktree_path).items():
+        seq = s["seq"]
+        # ⚠️ 判「这个会话跟本窗口有没有交集」要用**会话自己的时间范围**，
+        # 不能用第一份累计快照的时刻（GitHub#932 交叉 review）。
+        # 快照是**派工结束之后**才落盘的：一个**新会话的第一次派工**——10:00 开工、
+        # 10:10 发完工评论、10:10:30 才落下第一份 cost-state——`seq[0][0] > end` 就成立，
+        # 整个会话被跳过。日志在、累计值也在，却被记成 `work_missing`，合计系统性漏算。
+        # 用 first / last 之后，这种情况照常走下面的「零基线 + 收尾快照」估算规则；
+        # 而**真正晚于窗口才开始**的会话仍然被 `s["first"] > end` 挡住，不会被认领进来。
+        if s["first"] > end or s["last"] < start:
             continue                       # 这个会话文件的时间范围不覆盖本窗口
         base = None
         for d, p in seq:
