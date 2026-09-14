@@ -109,11 +109,21 @@ class Chart:
             out.append(f'<text x="{mx+6:.1f}" y="{iy+8}" class="note" fill="{RED}">{esc(txt)}</text>')
         lx=x0+W-PR; ly=y0+16
         for s in reversed(series):
-            t=esc(s["label"]); lx-=len(t)*7.4+22
+            t=esc(s["label"]); lx-=legw(t)+22
             if s["type"]=="bar": out.append(f'<rect x="{lx}" y="{ly-8}" width="11" height="11" fill="{s["color"]}" rx="2"/>')
             else: out.append(f'<line x1="{lx}" y1="{ly-3}" x2="{lx+12}" y2="{ly-3}" stroke="{s["color"]}" stroke-width="2.6"/>')
             out.append(f'<text x="{lx+16}" y="{ly+2}" class="leg">{t}</text>'); lx-=6
         return "".join(out)
+
+def legw(t):
+    """图例文字的像素宽度（`class="leg"` 是 11.5px）。
+
+    别用 `len(t)*常数`：中文一个字约 11.5px、拉丁字符约 6.3px，按拉丁宽度算会严重低估，
+    图例条目多、标签长的时候就会叠在一起糊成一团（实测投入面那张图加到 3 条图例后
+    「墙上时长（含等待）」「其中模型 + 工具（估算）」「行 / 墙上小时」直接压在一起）。
+    """
+    return sum(11.5 if ord(c) > 0x2E80 else 6.3 for c in t)
+
 
 def page(title_html, panels, H, fonts):
     ff=""

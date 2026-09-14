@@ -61,6 +61,22 @@ TMP = sys.argv[1]; expr = sys.argv[2]
 def read(name):
     return open(f"{TMP}/{name}.html").read()
 
+def _legoverlap(s):
+    """图例是否有叠字：同一面板（按 y 分组）内按 x 排序，相邻两条的间距必须放得下
+    前一条的文字。宽度用独立的保守估计（中文 11px / 其他 6px），不复用 render.py
+    自己的算法——否则测的是「自己等于自己」。"""
+    rows = {}
+    for x, y, t in re.findall(
+            r'<text x="([\d.]+)" y="([\d.-]+)" class="leg">([^<]*)<', s):
+        rows.setdefault(y, []).append((float(x), t))
+    bad = 0
+    for row in rows.values():
+        row.sort()
+        for (x1, t1), (x2, _t2) in zip(row, row[1:]):
+            if x2 - x1 < sum(11 if ord(c) > 0x2E80 else 6 for c in t1):
+                bad += 1
+    return bad
+
 def panels(name):
     """按面板标题切片，返回 [(标题, 该面板的 SVG 片段), ...]"""
     s = read(name)
@@ -79,6 +95,8 @@ def axis(s):           return re.findall(r'class="ax" text-anchor="end">([^<]*)<
 def dots(s):           return len(re.findall(r'<circle ', s))
 def legends(s):        return re.findall(r'class="leg">([^<]*)<', s)
 def height(name):      return re.search(r'<svg width="\d+" height="(\d+)"', read(name)).group(1)
+def legoverlap(name):
+    return _legoverlap(read(name))
 
 print(eval(expr))
 PY
@@ -115,6 +133,8 @@ chk "副标题不再说「不含等人回话的空档」" \
 chk "柱子的图例写明含等待"            "$(q '"墙上时长（含等待）" in legends(seg("effort",1))')" "True"
 chk "没有 work 数据时不画模型+工具折线" \
     "$(q 'any("模型 + 工具" in t for t in legends(seg("effort",1)))')" "False"
+chk "图例不叠字（中文按中文宽度排版，不是按拉丁宽度）" \
+    "$(q 'legoverlap("effort")')" "0"
 
 echo
 echo "— 默认格式器不受影响：其他 series 一个字符都不许变"
@@ -158,6 +178,22 @@ python3 "$RENDER" --data "$TMP/sw.json" --out-dir "$TMP/sw" \
     --asset-url-base "https://example.invalid/a" --rev "test" >/dev/null 2>"$TMP/err2.txt" \
     || { echo "render.py 跑挂了："; cat "$TMP/err2.txt"; exit 1; }
 
+swleg() { python3 - "$TMP/sw/effort.html" <<'INNER4'
+import re, sys
+rows = {}
+for x, y, t in re.findall(r'<text x="([\d.]+)" y="([\d.-]+)" class="leg">([^<]*)<',
+                          open(sys.argv[1]).read()):
+    rows.setdefault(y, []).append((float(x), t))
+bad = 0
+for row in rows.values():
+    row.sort()
+    for (x1, t1), (x2, _t2) in zip(row, row[1:]):
+        if x2 - x1 < sum(11 if ord(c) > 0x2E80 else 6 for c in t1):
+            bad += 1
+print(bad)
+INNER4
+}
+
 sw() { python3 - "$TMP/sw/$1.html" "$2" <<'INNER2'
 import re, sys
 s = open(sys.argv[1]).read()
@@ -192,6 +228,7 @@ chk "画出模型 + 工具折线（不含等待的那条）" \
     "$(sw effort 'any("模型 + 工具" in t for t in re.findall(r"class=.leg.>([^<]*)<", s))')" "True"
 chk "副标题点明那条不含等待" \
     "$(sw effort '"不含等待" in s')" "True"
+chk "三条图例并排时仍不叠字" "$(swleg)" "0"
 
 echo
 echo "通过 $pass / 失败 $fail"
