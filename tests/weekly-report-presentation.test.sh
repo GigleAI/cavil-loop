@@ -50,8 +50,10 @@ for i, (k, sp) in enumerate(zip(weeks, spec)):
         "cost_records": rcl + cr_cd,          # claude 侧一律有金额
         "cost_records_claude": rcl, "cost_records_codex": cr_cd,
     }
-# switch_week 由采集侧给（见 collect.py 的 switch_week()）：窗口里真能看见那条边界时才有值。
-# 报告只管用它，不自己在窗口里找——那会随窗口滚动漂移。
+# switch_week 由采集侧给（见 collect.py 的 switch_week()）——**只来自部署配置**，
+# 采集器不从数据里猜。这里的 fixture 直接把「部署方配置的那一周」写死成第一个有 codex
+# 记账的周；场景 E / F 用 SWITCH_WEEK 覆盖成「配的是更早的周」和「没配」。
+# 报告只管用这个字段，绝不自己在窗口里找——那会随窗口滚动漂移。
 sw = next((k for i, k in enumerate(weeks) if weekly[k]["records_codex"] and i > 0), None)
 if "SWITCH_WEEK" in __import__("os").environ:
     sw = __import__("os").environ["SWITCH_WEEK"] or None

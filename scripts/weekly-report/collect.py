@@ -102,20 +102,31 @@ def main():
             link[n] = cands[0]
 
     def switch_week(st_):
-        """口径切换那一周 —— **不能由展示窗口决定**（GitHub#932 review 第 6 轮）。
+        """口径切换那一周 —— **只认配置，猜不出来就说不知道**。
 
-        配置里给了就用配置（部署事实，窗口怎么滚都不变）。没给就只在**窗口里真能看见
-        那条边界**时才认：即「第一个有交叉 review 记账的周」前面还存在一个**没有**该侧
-        记账的周。窗口整段都在切换之后时（真实边界已经滚出去了），这里返回 None——
-        宁可不标，也不能把窗口里第一条记录当成新的切换点：那会让历史上的切换日期每周
-        往后漂一次（实测同一份数据、窗口前滚一周，标记就从 1/6 变成 1/13）。
+        它是一个部署事实（那一周起派工模板开始写机器记录、交叉 review 那一侧开始记账），
+        只有部署方知道；报告与趋势图都据它判断哪些数字跨口径、不可比。
+
+        为什么不从数据里推（GitHub#932 review 连着打回两次）：
+          · 第一版在当前 10 周窗口里现找「第一个有 codex 记账的周」。窗口每周前滚一格，
+            真实切换周滚出去之后，窗口里第一个有记录的周就成了新的切换点——同一份数据、
+            窗口挪一周，标记就从 2/17 变成 2/24，每出一次报告往后漂一次。
+          · 第二版加了「它前面还得有一个没有该侧记账的周」。仍然不成立：**切换之后某一周
+            没有交叉 review，是再正常不过的事**，空周证明不了部署时间。实测把切换后
+            2025-02-17 那周的 codex 记录删掉（只留 claude），真实边界 2025-02-10 滚出窗口后，
+            它照样把 2025-02-24 标成了新的切换周。
+
+        所以：没配置就返回 None —— **不知道就是不知道**，报告不标切换周、不画竖线、
+        不出过渡期并列块，环比照常给。窗口里确实有交叉 review 记账却没配置时，
+        下面会打一条 warn 提醒去配，报告的口径说明里也会写明这一点。
         """
         if a.switch_week:
             return monday(datetime.date.fromisoformat(a.switch_week)).isoformat()
-        first = next((w for w in weeks if st_[w].get("records_codex")), None)
-        if first is None or weeks.index(first) == 0:
-            return None
-        return first
+        if any(st_[w].get("records_codex") for w in weeks):
+            print("[warn] 窗口里有交叉 review 记账，但没配 WEEKLY_REPORT_SWITCH_WEEK —— "
+                  "无法判断口径边界在哪一周，过渡期并列块与切换标记都不会出现。"
+                  "请把它设成「新派工模板上线」那一周内的任意一天。", file=sys.stderr)
+        return None
 
     st = {w: collections.defaultdict(float) for w in weeks}
     per_issue = collections.defaultdict(lambda: collections.defaultdict(float))
