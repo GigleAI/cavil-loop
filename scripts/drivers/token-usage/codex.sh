@@ -158,9 +158,17 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
              {v: $g.s.cin, p: (if $p then $p.cached_in   else null end)},
              {v: $g.s.out, p: (if $p then $p.out         else null end)},
              {v: $g.s.cw,  p: (if $p then $p.cache_write else null end)}] as $items
+          # ⚠️ 「算出过价」只能由**真的有用量、又真的取到价**的项来支撑（#934 第 6 轮）：
+          #   `.known += 1` 不看 token 数的话，一个 token 为 0 的有价项就足以把
+          #   「实际用量一条都没算出价」抬成 partial。实测：只配 `in` 的价、用量全在
+          #   cache read（未缓存 input = 0）→ 应为 none / 缺价 100 万，旧写法给
+          #   `cost_usd=0.00 / partial`，采集侧再据此把这条派工算作「有金额」。
+          #   ⚠️ 判据是**用量非零**，不是**金额非零**：单价合法为 0、或金额不足半美分
+          #   四舍五入成 0.00 的，都仍然是「算出来了」。
           | reduce $items[] as $i (.;
               if $i.p != null
-              then .usd += ($i.v * $i.p / 1000000) | .known += 1
+              then .usd += ($i.v * $i.p / 1000000)
+                   | (if $i.v > 0 then .known += 1 else . end)
               else .unk += $i.v end))) as $agg
     # 同 claude 侧：有算不出价的 token 才是 none / partial；一个待计价 token 都没有
     # 的 $0 是**已知的零**（#934 第 4 轮）

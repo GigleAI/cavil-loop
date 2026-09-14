@@ -212,6 +212,44 @@ chk "模型完全没配价 → none，四项全进缺价（1000000+50000+200000�
        | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
     "cost_state=none cost_unknown_tokens=1250000"
 
+# ── 「算出过价」要由真有用量的项支撑（GitHub#934 交叉 review 第 6 轮）──────────
+# 上一轮改成逐项取价后留了个口子：`.known += 1` 不看 token 数，于是一个 **token 为 0
+# 的有价项**就能把「实际用量一条都没算出价」抬成 partial，采集侧再据此把这条派工
+# 算成「有金额」。判据必须是**用量非零 且 取到价**。
+cwfix2() {  # $1 input  $2 cached  $3 cache_write  $4 output
+    { printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$(ts -200)" "$CWD_DIR/wt"
+      printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"mA"}}\n' "$(ts -190)" "$CWD_DIR/wt"
+      printf '{"type":"token_usage_record","timestamp":"%s","payload":{"usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":%s,"output_tokens":%s,"reasoning_output_tokens":0,"total_tokens":%s}}}\n' \
+        "$(ts 10)" "$1" "$2" "$3" "$4" "$(( $1 + $4 ))"; } > "$CWD_DIR/.codex/sessions/2026/09/14/rollout-A.jsonl"
+}
+
+# ⑴ 有价的那项用量为 0，真正的用量（cache read）没配价 → 一条都算不出
+cwfix2 1000000 1000000 0 0
+chk "有价项用量为 0、实际用量全缺价 → none（旧写法给 \$0.00 / partial）" \
+    "$(cwrun CODEX_PRICES='{"mA":{"in":10}}' | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_state=none cost_unknown_tokens=1000000"
+chk "none 时不输出金额（别拿 \$0.00 冒充算出来了）" \
+    "$(cwrun CODEX_PRICES='{"mA":{"in":10}}' | grep -c 'cost_usd=')" "0"
+
+# ⑵ 确实算出了一部分 → 仍然是 partial（别把上面那条改过头）
+cwfix2 1000000 400000 0 0
+chk "未缓存 input 有价有量、cache read 没价 → partial + 缺价 40 万" \
+    "$(cwrun CODEX_PRICES='{"mA":{"in":10}}' | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=6.00 cost_state=partial cost_unknown_tokens=400000"
+
+# ⑶ 四项用量全为 0 → 没有待计价的 token，是**已知的零**（第 4 轮那条不能被改坏）
+cwfix2 0 0 0 0
+chk "用量全为 0 → full / 缺价 0（已知的零）" \
+    "$(cwrun CODEX_PRICES='{"mA":{"in":10}}' | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=0.00 cost_state=full cost_unknown_tokens=0"
+
+# ⑷ 有用量、单价合法地配成 0 → 算出来了，就是 0；判据是**用量非零**不是**金额非零**
+cwfix2 1000000 0 0 0
+chk "单价配成 0 且有用量 → full（按金额非零判会误伤这条）" \
+    "$(cwrun CODEX_PRICES='{"mA":{"in":0,"cached_in":0,"out":0,"cache_write":0}}' \
+       | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=0.00 cost_state=full cost_unknown_tokens=0"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" -eq 0 ]

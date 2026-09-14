@@ -175,6 +175,39 @@ c = dict($CALL); c['model']='m2'; c['speed']='fast'
 c['priced']={'input':1000000}
 _,_,_,bs = a.price_calls([c], $TBL)
 print(bs)")" "{'reference_only': 7.0}"
+# 采集侧那份实现（price_calls）本来就跳过 token 为 0 的项，所以没踩到 driver 那个坑 ——
+# 但规则必须被钉住，三份实现（price_calls + 两个 driver）不能再各走各的（#934 第 6 轮）。
+chk "有价项用量为 0、实际用量全缺价 → none（不是 partial）" \
+  "$(py_trust "
+import attribute as a
+c = {'model':'m1','speed':'standard','priced':{'input':0,'output':0,'cache_read':0,
+     'cache_write_5m':1000000,'cache_write_1h':0}}
+tbl = {'models':{'m1':{'input':{'price':10,'status':'corroborated'},
+                      'output':{'price':20,'status':'corroborated'},
+                      'cache_read':{'price':1,'status':'corroborated'},
+                      'cache_write_5m':{'price':None,'status':'unstable'},
+                      'cache_write_1h':{'price':None,'status':'unstable'}}},'fast':{}}
+usd, unk, st, bs = a.price_calls([c], tbl)
+print(f'{round(usd,2)}/{unk}/{st}/{bs}')")" \
+  "0.0/1000000/none/{}"
+chk "确实算出了一部分 → partial" \
+  "$(py_trust "
+import attribute as a
+c = {'model':'m1','speed':'standard','priced':{'input':1000000,'output':0,'cache_read':0,
+     'cache_write_5m':1000000,'cache_write_1h':0}}
+tbl = {'models':{'m1':{'input':{'price':10,'status':'corroborated'},
+                      'cache_write_5m':{'price':None,'status':'unstable'}}},'fast':{}}
+usd, unk, st, _ = a.price_calls([c], tbl)
+print(f'{round(usd,2)}/{unk}/{st}')")" \
+  "10.0/1000000/partial"
+chk "有用量、单价合法为 0 → full（按金额非零判会误伤这条）" \
+  "$(py_trust "
+import attribute as a
+c = {'model':'m1','speed':'standard','priced':{'input':1000000}}
+tbl = {'models':{'m1':{'input':{'price':0,'status':'corroborated'}}},'fast':{}}
+usd, unk, st, _ = a.price_calls([c], tbl)
+print(f'{round(usd,2)}/{unk}/{st}')")" \
+  "0.0/0/full"
 chk "合成条目不进任何桶（它不是真实调用）" \
   "$(py_trust "
 import attribute as a

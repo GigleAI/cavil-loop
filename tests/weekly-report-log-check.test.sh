@@ -350,6 +350,35 @@ chk "报告写明有一条只算了一部分用量"  \
 chk "报告不再把 partial 说成「只算了一部分模型」（同一模型里某项没价也会 partial）" \
     "$(grep -qF '只算了一部分模型' "$TMP/r.md" && echo yes || echo no)" "no"
 
+echo "── 12. 全部实际用量缺价，一路到最终报告都必须是「算不出」（第 6 轮打回）──"
+# 同第 11 组的走法：造原始 rollout → 跑真实 codex driver → 记录解析 → collect → markdown。
+# 这一组盯的是反向：driver 若把「有价项用量为 0」误当成算出过价，整条链会把一条
+# **一分钱都没算出来**的派工计成「有金额」。
+CX2="$TMP/cx2"; mkdir -p "$CX2/wt" "$CX2/.codex/sessions/2026/09/14"
+CX2TS=$(date -u -d "$W 10:05 +0800" '+%Y-%m-%dT%H:%M:%S.000Z')
+{ printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$CX2TS" "$CX2/wt"
+  printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"mA"}}\n' "$CX2TS" "$CX2/wt"
+  printf '{"type":"token_usage_record","timestamp":"%s","payload":{"usage":{"input_tokens":1000000,"cached_input_tokens":1000000,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":1000000}}}\n' "$CX2TS"
+} > "$CX2/.codex/sessions/2026/09/14/rollout-A.jsonl"
+CX2KV=$( cd "$CX2/wt" && HOME="$CX2" CODEX_PRICES='{"mA":{"in":10}}' \
+         bash "$REPO_DIR/scripts/drivers/token-usage/codex.sh" \
+              "$(date -d "$W 10:00 +0800" +%s)" --kv )
+chk "driver 判为一条都算不出"        \
+    "$(printf '%s' "$CX2KV" | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_state=none cost_unknown_tokens=1000000"
+chk "driver 不写金额"                "$(printf '%s' "$CX2KV" | grep -c 'cost_usd=')" "0"
+
+CX2BODY=$(printf '交叉 review 完了。\n\n<!-- agent-metrics agent=codex wt=10 start=%sT10:00:00+08:00 end=%sT10:10:00+08:00 wall_secs=600 %s -->' \
+          "$W" "$W" "$CX2KV")
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$CX2BODY"
+chk "采到的金额是 0"                  "$(q cost)"                  "0"
+chk "金额覆盖计数为 0（不能算作有金额）" "$(q cost_records)"        "0"
+chk "覆盖三态记 none"                 "$(q state_none)"            "1"
+chk "不是 partial"                    "$(q state_partial)"         "0"
+chk "报告如实报缺金额"                \
+    "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "yes"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

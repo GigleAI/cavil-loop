@@ -139,7 +139,10 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
           | {tok: $c.tok, model: $c.model, syn: $syn,
              priced: ([$items[] | if .p == null then 0 else .v * .p / 1000000 end] | add),
              unknown: ([$items[] | if ($syn or .p != null) then 0 else .v end] | add),
-             known_any: ([$items[] | if ($syn or .p == null) then 0 else 1 end] | add),
+             # 同 codex 侧（#934 第 6 轮）：token 为 0 的有价项不能充当「算出过价」的证据。
+             # 当前参照表里每个模型的五项要么全有价、要么全没有，所以这一条在
+             # policy=A 下暂时触发不到；但 policy=B 允许逐项无价，规则必须一致。
+             known_any: ([$items[] | if ($syn or .p == null or .v <= 0) then 0 else 1 end] | add),
              bystat: (reduce $items[] as $i ({};
                         if $i.p == null then .
                         else .[$i.st] = ((.[$i.st] // 0) + $i.v * $i.p / 1000000) end))})
