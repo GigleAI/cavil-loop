@@ -12,7 +12,9 @@ issue 数线性膨胀。输出一份 JSON，供 render.py 出图 / 出 markdown�
 import argparse, collections, datetime, json, os, re, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import record      # noqa: E402  记账记录提取 + 派工去重
+import record
+import attribute
+import price_solve      # noqa: E402  记账记录提取 + 派工去重
 import worktime    # noqa: E402  「模型 + 工具」时长（排除等待）
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))  # 报告按北京时间切周
@@ -218,6 +220,64 @@ def main():
             # 扫它（正文里的示例曾经被当成真实用量累加）。
             claimed[key] = (rec, w, num)
 
+    # ── 第一段半：从本机日志重算金额，并决定哪些能进「去重合计」（GitHub#934）──
+    #
+    # 三步顺序固定、互不成环：① 调用唯一认领 → ② 逐派工定取值 → ③ 最后按重叠组取舍。
+    # ② 不看组的状态，③ 才用 ② 的结果；写成「组能进合计才重算」会成环。
+    #
+    # 重算门槛是「**本机有这次派工的日志**且通过检验」，**不按周划线**（issue #934 的
+    # Q5=B）。代价是同一个历史周的数值会随本机日志被清理而改变——报告里如实写明本周
+    # 重算了几条、沿用原值几条，并带上生成时间；**不做任何固定倍数补齐**。
+    windows, by_pair = [], {}
+    for key, (rec, cw, num) in claimed.items():
+        if not isinstance(rec.get("start"), datetime.datetime) \
+           or not isinstance(rec.get("end"), datetime.datetime):
+            continue                      # 身份缺失兜底的那种记录没有真实窗口，不参与重算
+        agent = rec.get("agent") or "claude"     # 历史记录缺 agent 时的既定默认
+        wt = rec.get("wt")
+        w = {"key": key, "agent": agent, "wt": wt,
+             "start": rec["start"].astimezone(TZ), "end": rec["end"].astimezone(TZ)}
+        windows.append(w)
+        by_pair.setdefault((wt, agent), []).append(w)
+
+    price_table = price_solve.build_cached("A")
+    recompute = {}
+    for (wt, agent), ws in by_pair.items():
+        if agent != "claude" or wt is None:
+            continue                      # codex 的会话记录不带金额，这一侧只能沿用原值
+        if not (a.worktree_base and a.session_prefix):
+            continue                      # 没配 worktree 路径就拿不到日志，一律沿用原值
+        wt_path = f"{a.worktree_base}/{a.session_prefix}-{wt}"
+        calls, meta = attribute.load_claude_calls(wt_path, TZ)
+        for c in calls:                   # 认领按 (wt, agent) 配对，这里统一成窗口那一侧的口径
+            c["wt"], c["agent"] = wt, agent
+        has_log = meta["files"] > 0
+        own, foreign, unattr = attribute.claim(calls, ws)
+        for w in ws:
+            rec = claimed[w["key"]][0]
+            mine = [c for c in calls
+                    if w["start"] <= c["t"] < w["end"]
+                    and max((x for x in ws if x["start"] <= c["t"] < x["end"]),
+                            key=lambda y: y["start"])["key"] == w["key"]]
+            chk = attribute.log_check(rec.get("tokens"), own[w["key"]]["tok"],
+                                      foreign[w["key"]]["tok"], has_log, meta["parsed"])
+            if chk in ("no_shortfall_detected", "true_zero"):
+                usd, unk, state = attribute.price_calls(mine, price_table)
+                recompute[w["key"]] = {"cost_source": "recomputed", "cost": usd,
+                                       "log_check": chk, "cost_state": state,
+                                       "unknown_tokens": unk}
+            else:
+                recompute[w["key"]] = {"cost_source": "original", "cost": rec["cost"],
+                                       "log_check": chk,
+                                       "cost_state": rec.get("cost_state") or "none",
+                                       "unknown_tokens": rec.get("cost_unknown_tokens", 0)}
+    # ③ 合计取舍：孤立派工不论取哪种值都进；重叠组内**全部重算**才整组进；含回退则整组
+    #    单列。**不能相加**——两条重叠派工一条回退一条重算时，共用的调用会被算两遍。
+    sources = {k: v["cost_source"] for k, v in recompute.items()}
+    for w in windows:
+        sources.setdefault(w["key"], "original")
+    summable, _gid = attribute.summable(windows, sources)
+
     # ── 第二段：每次派工只按它最终那条累计记录入账，算在**开工那一周** ──
     for key, (rec, cw, num) in claimed.items():
         w = rec_week(rec, cw)
@@ -229,17 +289,33 @@ def main():
             s["cost_footers"] += 1
         s["dupes"] += dupes_by_key[key]
         wall = rec["wall"]
-        cost = rec["cost"]
+        info = recompute.get(key, {})
+        cost_source = info.get("cost_source", "original")
+        cost = info.get("cost", rec["cost"])
+        cost_state = info.get("cost_state") or rec.get("cost_state") or (
+            "full" if rec.get("has_cost") else "none")
+        in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
         out = rec["out"]
         # 历史记录（无机器标记）没写 agent。实测交叉 review 那一侧在改造前几乎不写
         # 记账行（上周 589 条里只有 2 条，且已被「交叉 review 评论不作记账来源」挡掉），
         # 所以历史记录一律归到主 worker 那一侧；改造后的记录由标记显式带 agent。
         agent = rec.get("agent") or "claude"
-        s["wall"] += wall; s["cost"] += cost; s["out"] += out
+        s["wall"] += wall; s["out"] += out
         s["records"] += 1
         s[f"wall_{agent}"] += wall
-        s[f"cost_{agent}"] += cost
         s[f"records_{agent}"] += 1
+        # 能进「去重合计」的才计入金额；不能的单列披露，**不与上面的合计相加**
+        if in_total:
+            s["cost"] += cost
+            s[f"cost_{agent}"] += cost
+        else:
+            s["cost_not_summable"] += cost
+            s["records_not_summable"] += 1
+        s[f"src_{cost_source}"] += 1
+        s[f"state_{cost_state}"] += 1
+        lc = info.get("log_check")
+        if lc:
+            s[f"log_{lc}"] += 1
         # 金额覆盖率：驱动没配单价时**有意**不出金额（见 drivers/token-usage/codex.sh），
         # 采集后就是 0。报告必须能区分「这一侧真的没花钱」和「这一侧的金额没采到」，
         # 否则 0 会被当成事实写成「占成本 0%」（GitHub#932 交叉 review 第 5 轮）。
@@ -335,7 +411,17 @@ def main():
               "wall_claude", "wall_codex", "cost_claude", "cost_codex",
               "work_claude", "work_codex", "records_claude", "records_codex",
               # 有金额的记账条数（分 agent）：报告据此判断占比能不能算
-              "cost_records", "cost_records_claude", "cost_records_codex"]
+              "cost_records", "cost_records_claude", "cost_records_codex",
+              # 金额来源与可信状态（GitHub#934）：
+              #   src_*   重算 / 沿用原记录各几条
+              #   state_* 价格覆盖三态（full / partial / none）
+              #   log_*   日志检验结果（未检出缺失 / 检出缺失 / 覆盖未知 / 真实零调用）
+              #   *_not_summable 重叠且证据不足、**不可与上面的合计相加**的那部分
+              "src_recomputed", "src_original",
+              "state_full", "state_partial", "state_none",
+              "log_no_shortfall_detected", "log_shortfall_detected",
+              "log_unknown", "log_true_zero",
+              "cost_not_summable", "records_not_summable"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 
     tw = target.isoformat()

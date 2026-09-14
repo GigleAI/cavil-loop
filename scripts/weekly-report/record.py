@@ -22,6 +22,8 @@
 """
 import re, datetime
 
+import attribute
+
 TZ = datetime.timezone(datetime.timedelta(hours=8))
 
 # 机器可读记录：必须是整条评论的**最后一个非空行**
@@ -171,13 +173,24 @@ def extract(body, login, comment_id=None, default_wt=None):
                 has_cost = True
             except ValueError:
                 pass                     # 写了但读不出来 → 当作没有，别猜
-        try:
-            out = int(float(kv.get("out", 0)))
-        except ValueError:
-            out = 0
+        def _int(key):
+            try:
+                return int(float(kv.get(key, 0)))
+            except ValueError:
+                return 0
+        out = _int("out")
+        # 四项 token 都带出去：采集侧要拿它们跟从日志重算的结果逐项比（GitHub#934）。
+        # 只带 out 的话，「只丢了 input」「只丢了 cache 写入」这两类缺失检验不出来。
+        tokens = {"in": _int("in"), "out": out,
+                  "cache_r": _int("cache_r"), "cache_w": _int("cache_w")}
+        # 价格覆盖三态：full 全有单价 / partial 有一部分模型没单价（金额必定偏低）/
+        # none 一条都算不出。老格式没有这个字段，按 has_cost 推。
+        cost_state = kv.get("cost_state") or ("full" if has_cost else "none")
         return {"src": "marker", "ident": ident, "agent": kv.get("agent"),
                 "wt": norm_wt(kv.get("wt")) or norm_wt(default_wt), "start": st, "end": en,
-                "wall": wall, "cost": cost, "has_cost": has_cost, "out": out}
+                "wall": wall, "cost": cost, "has_cost": has_cost, "out": out,
+                "tokens": tokens, "tokens_exact": True, "cost_state": cost_state,
+                "cost_unknown_tokens": _int("cost_unknown_tokens")}
 
     # ② 历史评论（无机器记录）：连同上面那条作者判定一共四步，任何一步不满足
     #    就不作为记账来源
@@ -190,11 +203,16 @@ def extract(body, login, comment_id=None, default_wt=None):
         return None                      # 记账行之后必须紧跟 token 行
     # 历史记账行同理：`token … ($0.00)` 是「记了，是 0」，整行没有 `($…)` 才是「没记」。
     costs = [float(x.group(1)) for x in RE_COST.finditer(nxt)]
+    # 历史 token 行是 driver 的 fmt **floor 截断**过的（53.5k ⇒ x ≥ 53500），
+    # 所以这里拿到的是**截断下界**，不是精确值；采集侧比对时要按下界判，
+    # 按四舍五入假设（53450）会放过真实缺失。tokens_exact=False 标明这一点。
     return {"src": "footer", "ident": "footer", "agent": None,
             "wt": norm_wt(default_wt), "start": a, "end": b,
             "wall": int((b - a).total_seconds()),
             "cost": sum(costs), "has_cost": bool(costs),
-            "out": _out_of(nxt)}
+            "out": _out_of(nxt),
+            "tokens": attribute.parse_token_line(nxt), "tokens_exact": False,
+            "cost_state": ("full" if costs else "none"), "cost_unknown_tokens": 0}
 
 
 def dispatch_key(rec):

@@ -210,9 +210,17 @@ def load_claude_calls(worktree, tz=None):
                        "cache_r": u.get("cache_read_input_tokens") or 0,
                        "cache_w": (cc.get("ephemeral_5m_input_tokens") or 0)
                                   + (cc.get("ephemeral_1h_input_tokens") or 0)}
+                # 计价要分到档：cache 写入的 5m 与 1h 单价不同（1.25× vs 2×）
+                priced = {"input": tok["in"], "output": tok["out"],
+                          "cache_read": tok["cache_r"],
+                          "cache_write_5m": cc.get("ephemeral_5m_input_tokens") or 0,
+                          "cache_write_1h": cc.get("ephemeral_1h_input_tokens") or 0}
+                model = ((r.get("message") or {}).get("model") or "unknown").split("[")[0]
+                speed = u.get("speed") or "standard"
                 g = groups.get(rid)
                 if g is None:
-                    groups[rid] = {"t": t, "tok": tok, "agent": "claude", "wt": worktree}
+                    groups[rid] = {"t": t, "tok": tok, "priced": priced, "model": model,
+                                   "speed": speed, "agent": "claude", "wt": worktree}
                 elif t and (g["t"] is None or t < g["t"]):
                     g["t"] = t
     calls = [g for g in groups.values() if g["t"] is not None]
@@ -220,3 +228,35 @@ def load_claude_calls(worktree, tz=None):
         for c in calls:
             c["t"] = c["t"].astimezone(tz)
     return calls, {"files": len(files), "parsed": parsed, "bad_lines": bad}
+
+
+def price_calls(calls, table):
+    """把一批调用按**各自的模型与档位**计价。返回 (金额, 没算进金额的 token 数, 状态)。
+
+    状态与 driver 那一侧同口径：full 全有单价 / partial 有一部分没有（金额必定偏低）/
+    none 一条都算不出。<synthetic> 不是真实调用，不参与计价、也不计缺价。
+    """
+    models = (table or {}).get("models") or {}
+    fast = (table or {}).get("fast") or {}
+    usd = 0.0
+    unknown = 0
+    known = 0
+    for c in calls:
+        if c.get("model") == "<synthetic>":
+            continue
+        tbl = fast.get(c["model"]) if c.get("speed") == "fast" else None
+        entry = models.get(c["model"]) or {}
+        for item, tok in (c.get("priced") or {}).items():
+            if not tok:
+                continue
+            if tbl is not None:
+                price = tbl.get(item)
+            else:
+                price = (entry.get(item) or {}).get("price")
+            if price is None:
+                unknown += tok
+            else:
+                usd += tok * price / 1e6
+                known += 1
+    state = "full" if (known and not unknown) else ("partial" if known else "none")
+    return usd, unknown, state
