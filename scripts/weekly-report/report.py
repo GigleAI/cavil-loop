@@ -67,42 +67,63 @@ def main():
         L.append(f"> 本周 {cur['records']:.0f} 条记账里有 **{miss:.0f} 条没有金额**{extra}，"
                  f"成本一栏**只含已知金额的那 {cur.get('cost_records',0):.0f} 条**，真实开销更高。\n")
 
-    # 切换周之后的过渡期：两组口径并列，避免把「覆盖面变大」读成「产出变多」
-    if first_codex and cur.get("records_codex"):
-        # 过渡期按**真实切换日期**算周数差，不按它在窗口里的下标——切换周可能已经滚出窗口。
+    # ── 交叉 review 那一侧占成本多少：**常驻**，不随四周过渡期结束而消失 ──
+    # #931 Q3 已拍板「合并一个总数 + 括注 codex 占比」，那条没有截止时间；四周过渡期
+    # 管的只是「两组口径并列的那张表」。原来把这两件事绑在同一个 if 里，过渡期一结束
+    # 占比就整个不见了（GitHub#932 交叉 review 复现：switch_week=2024-12-30、目标周
+    # 2025-01-27、两侧金额齐全，全文找不到应有的 33%）。
+    def money(v, have, total):
+        txt=f"${v:,.0f}"
+        if total and have < total:
+            txt += f"（仅 {have:.0f}/{total:.0f} 条有金额）"
+        return txt
+
+    rc_cl, cc_cl = cur.get('records_claude', 0), cur.get('cost_records_claude', 0)
+    rc_cd, cc_cd = cur.get('records_codex', 0), cur.get('cost_records_codex', 0)
+    # 新口径是否已经生效：配了切换周、或者本周确实有交叉 review 记账。都没有就还没上线，
+    # 这段整个不出（现在真实数据就是这种状态）。
+    codex_live = bool(first_codex) or bool(rc_cd)
+    if codex_live:
+        if rc_cd == 0:
+            L.append("> 本周交叉 review 那一侧**没有记账记录**（那一侧本周没产出，或它的记账还没覆盖到），"
+                     "所以上面的成本里不含它。\n")
+        elif cc_cd == 0:
+            # 金额缺失时**不能**输出「占成本 X%」：驱动没配单价时是有意不出金额，
+            # 采集后的 0 是「没采到」而不是「没花钱」。
+            L.append(f"> 交叉 review 那一侧本周 {rc_cd:.0f} 条记账**一条都没带金额**"
+                     "（该侧未配单价，驱动如实不出金额），因此**它占成本多少算不出来——不是 0%**。"
+                     "上面的成本只含已知金额的记录。\n")
+        elif cc_cd < rc_cd or cc_cl < rc_cl:
+            sh=cur['cost_codex']/cur['cost']*100 if cur['cost'] else 0
+            L.append(f"> **按已知金额**算，交叉 review 那一侧占 {sh:.0f}%——"
+                     f"分母只含带金额的记账（该侧 {cc_cd:.0f}/{rc_cd:.0f} 条、"
+                     f"主 worker {cc_cl:.0f}/{rc_cl:.0f} 条），其余未计，"
+                     "**不是完整的两侧占比**。\n")
+        elif cur['cost']:
+            L.append(f"> 其中交叉 review 那一侧占成本 {cur['cost_codex']/cur['cost']*100:.0f}%"
+                     f"（两侧 {cur['records']:.0f} 条记账金额齐全）。\n")
+
+    # ── 切换后连续四周：两组口径并列，避免把「覆盖面变大」读成「产出变多」 ──
+    # 出不出这张表**只由配置的切换日期 + 周数差决定**。原来还要求「本周得有 codex 记账」，
+    # 于是过渡期里某一周没人做 review（正常情形）就整张表消失（GitHub#932 交叉 review
+    # 复现：switch_week=2025-01-13、目标周 2025-01-20 只有 claude，表和「第 2 / 4 周」全没了）。
+    # 那一周两行数值相同，照样要出——它本身就是「这周该侧没有产出」这个事实。
+    if first_codex:
+        # 过渡期按**配置的切换日期**算周数差，不按它在窗口里的下标——切换周可能已经滚出窗口。
         since=(datetime.date.fromisoformat(tw["start"])
                - datetime.date.fromisoformat(first_codex)).days // 7
         if 0 <= since < a.parallel_weeks:
-            L.append(f"> **口径切换过渡期（第 {since+1} / {a.parallel_weeks} 周）**：本周起统计同时发生两处变化"
+            L.append(f"> **口径切换过渡期（第 {since+1} / {a.parallel_weeks} 周）**：{first_codex} 那周起统计同时发生两处变化"
                      f"——用量按 API 调用去重、纳入交叉 review 那一侧。两者叠加，**与切换前的周不可直接比**。\n")
-            def money(v, have, total):
-                txt=f"${v:,.0f}"
-                if total and have < total:
-                    txt += f"（仅 {have:.0f}/{total:.0f} 条有金额）"
-                return txt
-            rc_cl, cc_cl = cur['records_claude'], cur.get('cost_records_claude', 0)
-            rc_cd, cc_cd = cur['records_codex'], cur.get('cost_records_codex', 0)
             L.append("| 口径 | AI 工作时长（墙上） | 模型 + 工具 | 成本 | 记账条数 |")
             L.append("|---|---|---|---|---|")
             L.append(f"| 仅主 worker·新口径 | {hm(cur['wall_claude'])} | {hm(cur['work_claude'])} | "
                      f"{money(cur['cost_claude'], cc_cl, rc_cl)} | {rc_cl:.0f} |")
             L.append(f"| 两侧合计·新口径 | {hm(cur['wall'])} | {hm(cur['work'])} | "
                      f"{money(cur['cost'], cur.get('cost_records', 0), cur['records'])} | {cur['records']:.0f} |")
-            # 金额缺失时**不能**输出「占成本 X%」：驱动没配单价时是有意不出金额，
-            # 采集后的 0 是「没采到」而不是「没花钱」。
-            if cc_cd == 0 and rc_cd:
-                L.append(f"\n交叉 review 那一侧本周 {rc_cd:.0f} 条记账**一条都没带金额**"
-                         "（该侧未配单价，驱动如实不出金额），因此**它占成本多少算不出来——不是 0%**。"
-                         "上表「两侧合计」的成本只含已知金额的记录。\n")
-            elif cc_cd < rc_cd or cc_cl < rc_cl:
-                sh=cur['cost_codex']/cur['cost']*100 if cur['cost'] else 0
-                L.append(f"\n**按已知金额**算，交叉 review 那一侧占 {sh:.0f}%——"
-                         f"分母只含带金额的记账（该侧 {cc_cd:.0f}/{rc_cd:.0f} 条、"
-                         f"主 worker {cc_cl:.0f}/{rc_cl:.0f} 条），其余未计，"
-                         "**不是完整的两侧占比**。\n")
-            elif cur['cost']:
-                L.append(f"\n其中交叉 review 那一侧占成本 {cur['cost_codex']/cur['cost']*100:.0f}%"
-                         f"（两侧 {cur['records']:.0f} 条记账金额齐全）。\n")
+            if rc_cd == 0:
+                L.append("\n本周交叉 review 那一侧**没有记账记录**，所以两行数值相同——"
+                         "这不代表口径回退了，只是那一侧本周没有产出。\n")
 
     czn={d["num"] for d in D["detail"]
          if d["closed_at"] and d["closed_at"][:10]>=tw["start"]}
