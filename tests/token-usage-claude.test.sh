@@ -158,8 +158,8 @@ $(rec 10 - "<synthetic>" "$(u 0 0 0 0 0 0)")
 {"type":"assistant","timestamp":"$(ts 11)","message":{"model":"claude-opus-5"}}
 {"type":"user","timestamp":"$(ts 12)","message":{"role":"user"}}
 EOF
-chk "C10 合成条目与无 usage 条目仍然计 0" \
-    "$(run synthetic --kv)" "in=0 out=0 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=0 price_source=solved"
+chk "C10 合成条目与无 usage 条目仍然计 0，且是**已知的零**（full，不是算不出）" \
+    "$(run synthetic --kv)" "in=0 out=0 cache_r=0 cache_w=0 cost_usd=0.00 cost_state=full cost_unknown_tokens=0 price_source=solved"
 
 # ── C11 窗口起点：起点之前的记录不计入 ──
 mk_case window <<EOF
@@ -182,9 +182,9 @@ mk_case straddle <<EOF
 $(rec -5 req_straddle claude-opus-5 "$(u 100 200 300 400 0 400 "[$(it1 100 200 300 400 0 400)]")")
 $(rec 5 req_straddle claude-opus-5 "$(u 100 200 300 400 0 400 "[$(it1 100 200 300 400 0 400)]")")
 EOF
-chk "C13 跨边界的同一调用不落进后一个窗口（旧顺序会把它算进来）" \
+chk "C13 跨边界的同一调用不落进后一个窗口（旧顺序会把它算进来）；空窗口是已知的零" \
     "$(run straddle --kv "$START")" \
-    "in=0 out=0 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=0 price_source=solved"
+    "in=0 out=0 cache_r=0 cache_w=0 cost_usd=0.00 cost_state=full cost_unknown_tokens=0 price_source=solved"
 chk "C13 把窗口起点挪到该调用之前，它只被计一次（不是两次）" \
     "$(run straddle --kv "$(( START - 10 ))")" \
     "in=100 out=200 cache_r=300 cache_w=400 cost_usd=0.01 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.01"

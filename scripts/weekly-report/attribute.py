@@ -299,5 +299,14 @@ def price_calls(calls, table):
                 usd += amount
                 known += 1
                 by_status[status] = by_status.get(status, 0.0) + amount
-    state = "full" if (known and not unknown) else ("partial" if known else "none")
+    # 覆盖三态：判据是**有没有算不出价的 token**，不是「有没有算出过价」。
+    # ⚠️ 没有待计价 token 的那种 $0 是**已知的零**，不是「算不出」（#934 交叉 review
+    # 第 4 轮）：重叠组里调用全被另一条派工认领走、或日志检验判了 true_zero 时，
+    # 这里拿到的就是空列表。旧写法要求 known > 0 才给 full，于是这种确定的零被判成
+    # 缺价，报告凭空说「N 条没有金额、真实开销更高」。
+    # 有非零的未知 token 时仍然照旧：一点没算出来是 none，算出一部分是 partial。
+    if unknown:
+        state = "partial" if known else "none"
+    else:
+        state = "full"
     return usd, unknown, state, by_status

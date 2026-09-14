@@ -146,7 +146,9 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
             #    它就是**没计进金额**的那部分（下方 cost_unknown_tokens 只统计
             #    整个模型都没价的情形，这一项另计会让每次派工都落 partial）。
             else .unk += ($g.s.in + $g.s.cin + $g.s.cw + $g.s.out) end)) as $agg
-    | (if $agg.unk == 0 and $agg.known > 0 then "full"
+    # 同 claude 侧：有算不出价的 token 才是 none / partial；一个待计价 token 都没有
+    # 的 $0 是**已知的零**（#934 第 4 轮）
+    | (if $agg.unk == 0 then "full"
        elif $agg.known > 0 then "partial"
        else "none" end) as $state
     | if $mode == "--kv"

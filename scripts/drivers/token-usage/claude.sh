@@ -158,7 +158,9 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
                        .[$e.key] = ((.[$e.key] // 0) + $e.value)))
       )
     | (.cw_5m + .cw_1h) as $cw
-    | (if .unk == 0 and .known > 0 then "full"
+    # 判据是**有没有算不出价的 token**，不是「有没有算出过价」：窗口里没有真实调用
+    # （或只有 <synthetic>）时金额就是**已知的零**，不是「算不出」（#934 第 4 轮）。
+    | (if .unk == 0 then "full"
        elif .known > 0 then "partial"
        else "none" end) as $state
     # 金额按单价可信度拆开，形如 corroborated:41.20,disputed:2.16（无空格，进标记不破格式）

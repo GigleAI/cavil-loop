@@ -277,6 +277,48 @@ run "$(marker 10 '10:00' '10:10' 1000000 '999.00')"
 chk "沿用原值"                        "$(q src_original)"          "1"
 chk "覆盖计数跟着沿用的那份（1 条）"  "$(q cost_records)"          "1"
 
+echo "── 10. 「已知的零」不是「算不出」（第 4 轮打回）──"
+# 覆盖判据改成跟着最终金额走之后，冒出一个边界：`price_calls` 原来要求「至少算出过
+# 一个价」才给 full，于是**空认领**（调用全被另一条派工认领走）和**真实零调用**
+# 这两种确定的 $0 被判成缺价，报告凭空说「N 条没有金额、真实开销更高」。
+# ⚠️ 这两条不能用 footer 写 `cost_usd=0.00` 来代测 —— 那条路根本不走重算，
+#   绕开了出错的那个状态（第 9 组⑶ 测的就是那条，两者互不替代）。
+
+# ⑴ 空认领：A=[10:00,10:20) 与 B=[10:10,10:15)，唯一调用在 10:12 只归 B。
+#    A 的缺口全部由「B 认领走了」解释，两条都通过检验、都重算，A 就是确定的 $0。
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:12" 1000000 r1
+run "$(marker 10 '10:00' '10:20' 1000000 '25.00')" "$(marker 10 '10:10' '10:15' 1000000 '25.00')"
+chk "两条都走重算"                    "$(q src_recomputed)"        "2"
+chk "合计只算一次调用（\$25）"        "$(q cost)"                  "25"
+chk "两条都算「有金额」（A 是已知的 \$0）" "$(q cost_records)"      "2"
+chk "没有一条被判成「算不出」"        "$(q state_none)"            "0"
+chk "两条都记 full"                   "$(q state_full)"            "2"
+chk "报告不再凭空说「真实开销更高」"  \
+    "$(grep -qF '真实开销更高' "$TMP/r.md" && echo yes || echo no)" "no"
+
+# ⑵ 真实零调用：日志在、但窗口里一次 API 调用都没有 → 日志检验判 true_zero
+rm -rf "$CLAUDE_PROJECTS_DIR"
+ZENC=$(printf '%s' "$WTBASE/$PREFIX-10" | tr / -)
+mkdir -p "$CLAUDE_PROJECTS_DIR/$ZENC"
+printf '{"type":"user","timestamp":"%sT02:00:00Z"}\n' "$W" > "$CLAUDE_PROJECTS_DIR/$ZENC/s.jsonl"
+run "$(marker 10 '10:00' '10:10' 0 '0.00')"
+chk "日志检验判真实零调用"            "$(q log_true_zero)"         "1"
+chk "金额是确定的 \$0"                "$(q cost)"                  "0"
+chk "算「有金额」（已知的零）"        "$(q cost_records)"          "1"
+chk "记 full，不是 none"              "$(q state_full)/$(q state_none)" "1/0"
+chk "报告不说「没有金额」"            \
+    "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "no"
+
+# ⑶ 反向守住：有**非零**的未知 token 时仍旧是 none —— 这条别被上面的放宽带歪
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:05" 1000000 r1 some-model-not-in-any-price-table
+run "$(marker 10 '10:00' '10:10' 1000000 '25.00')"
+chk "有 token 但没单价 → 仍然是「一条都算不出」" "$(q state_none)"  "1"
+chk "覆盖计数仍然归零"                "$(q cost_records)"          "0"
+chk "报告仍要报缺金额"                \
+    "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "yes"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
