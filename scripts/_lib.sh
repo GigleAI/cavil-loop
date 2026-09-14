@@ -1214,15 +1214,106 @@ gh_label_flip() {
     return 0
 }
 
+# ── 主 checkout 长期落后的告警 ──
+# sync_project_checkout 的三条保护（不在 base / 有 WIP / 分叉）都是有意的：daemon
+# 绝不碰人的工作区。代价是它们只写 poll.log —— 而没人会去翻 poll.log。实测过一次：
+# 主 checkout 因 8 个未提交文件卡在原地 9 天、1523 次派工全被挡，期间零外部信号。
+# 这里补上信号：本地 base 落后 origin/base 超过阈值就开一个 issue，跟上后自动关。
+#
+# 为什么比较 refs/heads/<base> 而不是 HEAD：主 checkout 常年停在别的分支上（那是
+# 有意的设计），在 feature 分支上「落后 origin/main」是常态、不是故障。真正要盯的
+# 是**本地 base 分支**离远端有多远 —— 人在主 checkout 上看到的、以及 §1 兜底读不到
+# 远端时回落的，都是它。
+#
+# 阈值设 0 = 关掉告警。开出来的 issue **不带任何 pending label**，daemon 不会捡去
+# 派工（collect_queue_rows 只认触发 label），不会出现 daemon 给自己派活的回环。
+CHECKOUT_STALE_ALERT_COMMITS="${CHECKOUT_STALE_ALERT_COMMITS:-20}"
+CHECKOUT_STALE_ALERT_TITLE="${CHECKOUT_STALE_ALERT_TITLE:-[daemon] 主 checkout 长期落后 origin}"
+
+# 已开告警的 issue 号记在这里：每个 poll 周期都去 GitHub 查一次「有没有开过」既费
+# 配额又慢，本地标记足够（丢了最多重开一个，不会漏报）。
+checkout_stale_marker() { printf '%s\n' "$STATE_DIR/checkout-stale-alert"; }
+
+checkout_stale_alert_open() {
+    local base="$1" behind="$2" reason="$3"
+    local marker num body
+    marker=$(checkout_stale_marker)
+    if [ -s "$marker" ]; then
+        log_debug "checkout_stale_alert: 已有告警 issue #$(cat "$marker")，不重开"
+        return 0
+    fi
+
+    body="主 checkout 的本地 \`$base\` 已落后 \`origin/$base\` **${behind} 个 commit**，daemon 每轮派工前都试着 ff-only 同步，但一直没能动手。
+
+**这轮没同步的原因**：${reason}
+
+**daemon 看到的现场**
+
+| 项 | 值 |
+| --- | --- |
+| 主 checkout | \`${PROJECT_ROOT}\` |
+| 本地 \`$base\` | \`$(git -C "$PROJECT_ROOT" log -1 --format='%h %s' "refs/heads/$base" 2>/dev/null | head -c 100)\` |
+| \`origin/$base\` | \`$(git -C "$PROJECT_ROOT" log -1 --format='%h %s' "origin/$base" 2>/dev/null | head -c 100)\` |
+| 落后 | ${behind} commit |
+
+**影响范围**：派工 prompt 本身**不受影响** —— find_project_prompt_file 把 \`origin/$base\` 当唯一真值直读远端，主 checkout 再旧也拿得到最新模板（GigleTutor-Web#516 的结构性修复）。真正受影响的是：你在主 checkout 上手工看到的代码是旧的，以及任何直接读工作区文件的流程（如常驻「最新站」刷新）。
+
+**怎么解掉**：到主 checkout 里按现场选一种 —— 有 WIP 就 commit 掉或 \`git stash -u\`；停在别的分支就切回 \`$base\`；本地分叉就 rebase。之后 daemon 下一轮会自己 ff 上来。
+
+---
+这个 issue 由 daemon 自动开，主 checkout 跟上后会自动关闭，不用手动处理。"
+
+    num=$(run_gh_capture "开主 checkout 落后告警 issue" \
+        gh api -X POST "repos/$REPO/issues" \
+        -f "title=$CHECKOUT_STALE_ALERT_TITLE（落后 ${behind} commit）" \
+        -f "body=$body" --jq '.number') || return 0
+    case "$num" in ''|*[!0-9]*) return 0 ;; esac
+    printf '%s\n' "$num" > "$marker"
+    log "checkout_stale_alert: 本地 $base 落后 ${behind} commit（${reason}），已开 issue #$num"
+    return 0
+}
+
+checkout_stale_alert_resolve() {
+    local marker num
+    marker=$(checkout_stale_marker)
+    [ -s "$marker" ] || return 0
+    num=$(cat "$marker")
+    # 关不掉（已被人手动关掉 / 删了）也照样清标记：留着只会让下次真出问题时不告警。
+    run_gh "关闭主 checkout 落后告警 #$num" \
+        gh api -X PATCH "repos/$REPO/issues/$num" -f state=closed || true
+    rm -f "$marker"
+    log "checkout_stale_alert: 主 checkout 已跟上，关闭告警 issue #$num"
+    return 0
+}
+
+# 落后超阈值 → 告警；已跟上 → 关掉旧告警。任何异常都只 return 0，派工不受影响。
+check_checkout_staleness() {
+    local base="$1" reason="$2"
+    local threshold="${CHECKOUT_STALE_ALERT_COMMITS:-20}" behind
+    case "$threshold" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$threshold" -gt 0 ] || return 0
+    behind=$(git -C "$PROJECT_ROOT" rev-list --count "refs/heads/$base..origin/$base" 2>/dev/null || echo "")
+    case "$behind" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$behind" -ge "$threshold" ]; then
+        checkout_stale_alert_open "$base" "$behind" "$reason"
+    else
+        checkout_stale_alert_resolve
+    fi
+    return 0
+}
+
 # ── 派工前同步主 checkout（GigleTutor-Web#516）──
 # 主 checkout 是 prompt 模板 / 项目脚本的读取源；它落后 origin 时 daemon 会拿旧模板
 # 渲染派工 prompt（#516 根因：主 checkout 落后 74 commit，#506 的 stale-e2e 分流段
 # 从未进过 prompt）。本函数只在「当前在 base 分支 + 工作区干净」时 ff-only 前进；
 # 有 WIP / 在别的分支绝不碰工作区（find_prompt_template 会走 origin/<base> 直读兜底）。
 # 任何失败都只 log 不报错——离线时派工不能被 fetch 卡死。
+# 三条「不动工作区」的路径都会过 check_checkout_staleness：不动是对的，但长期不动
+# 得让人知道。
 sync_project_checkout() {
     local base="${BASE_BRANCH:-main}"
     if ! git -C "$PROJECT_ROOT" fetch origin "$base" --quiet 2>/dev/null; then
+        # 离线时 origin/<base> 是旧的，落后数不可信，这轮不判断 staleness。
         log "sync_project_checkout: fetch origin/$base 失败（离线?），跳过"
         return 0
     fi
@@ -1230,16 +1321,20 @@ sync_project_checkout() {
     cur=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     if [ "$cur" != "$base" ]; then
         log "sync_project_checkout: 主 checkout 在 '$cur' ≠ '$base'，不动工作区"
+        check_checkout_staleness "$base" "主 checkout 停在分支 \`$cur\`，不在 \`$base\` 上"
         return 0
     fi
     if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null)" ]; then
         log "sync_project_checkout: 主 checkout 有未提交改动，不动工作区"
+        check_checkout_staleness "$base" "主 checkout 有未提交改动（daemon 不碰你的工作区）"
         return 0
     fi
     if git -C "$PROJECT_ROOT" merge --ff-only "origin/$base" --quiet 2>/dev/null; then
         log "sync_project_checkout: 主 checkout → $(git -C "$PROJECT_ROOT" log -1 --format='%h %s' 2>/dev/null | head -c 80)"
+        check_checkout_staleness "$base" ""
     else
         log "sync_project_checkout: ff-only 失败（本地分叉?），跳过"
+        check_checkout_staleness "$base" "ff-only 失败：本地 \`$base\` 与 \`origin/$base\` 已分叉"
     fi
     return 0
 }

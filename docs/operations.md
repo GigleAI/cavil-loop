@@ -65,6 +65,10 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 MAX_CONCURRENT_WORKERS=1
 POLL_INTERVAL_SECS=60
 
+# Open an issue when the local base falls this many commits behind origin
+# (auto-closed once it catches up); 0 disables it
+CHECKOUT_STALE_ALERT_COMMITS=20
+
 # What counts as actionable: label = only pending/agent items; greedy = every open item
 # unless a blocking label stops it
 DISPATCH_MODE="label"
