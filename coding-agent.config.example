@@ -315,12 +315,13 @@ WORKER_SECRET_ENV="GH_TOKEN"
 # 详见 docs/persistence.md。
 AUTO_CLEANUP_ON_MERGE="true"
 
-# After each new merge, archive an evidence-linked retrospective in cavil-loop.
-# Independent of cleanup. First run starts at now (no historical backfill).
-# Requires Claude CLI and permission to push origin/main of this skill repo.
-# One background retrospective at a time across local projects; errors retry hourly.
-# Reports: docs/retrospectives/<owner>/<repo>/pr-N.md; shared prompt: prompts/lessons.md.
-# Git author/committer follow the skill repository's git config.
+# After each new merge, archive the review in the SOURCE PROJECT repository.
+# Requires Claude CLI and permission to push the project's origin/$BASE_BRANCH.
+# First run starts at now; one background review at a time, hourly retries.
+# Project reports: docs/retrospectives/pr-N.md
+# Project lessons: .agents/skills/coding-agent-work-loop/prompts/lessons.md
+# Never publishes project evidence or generated text to the public skill repo.
+# Public workflow improvements require a separate de-identification review.
 POST_MERGE_RETROSPECTIVE="true"
 RETROSPECTIVE_MODEL="sonnet"
 

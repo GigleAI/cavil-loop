@@ -87,10 +87,20 @@ def collect(repo, number):
 
 def review(repo, job, queue, root):
     number = job['pr']
-    report_path = f'docs/retrospectives/{repo}/pr-{number}.md'
-    command(['git', 'fetch', 'origin'], root)
+    project = Path(os.environ['PROJECT_ROOT'])
+    remote = command(['git', 'remote', 'get-url', 'origin'], project).strip()
+    expected = {f'https://github.com/{repo}', f'https://github.com/{repo}.git',
+                f'git@github.com:{repo}', f'git@github.com:{repo}.git',
+                f'ssh://git@github.com/{repo}.git'}
+    if remote.casefold() not in {url.casefold() for url in expected}:
+        raise ValueError('Project origin does not match source REPO; refusing publication')
+    base = os.environ.get('BASE_BRANCH', 'main')
+    ref = f'origin/{base}'
+    report_path = f'docs/retrospectives/pr-{number}.md'
+    lessons_path = '.agents/skills/coding-agent-work-loop/prompts/lessons.md'
+    command(['git', 'fetch', 'origin'], project)
     # Remote report is the durable completion marker, including crash after push.
-    exists = subprocess.run(['git', 'cat-file', '-e', f'origin/main:{report_path}'], cwd=root,
+    exists = subprocess.run(['git', 'cat-file', '-e', f'{ref}:{report_path}'], cwd=project,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if exists:
         return
@@ -98,13 +108,14 @@ def review(repo, job, queue, root):
     save(queue / f'evidence-{number}.json', evidence)
     with tempfile.TemporaryDirectory(prefix='cavil-retrospective-') as folder:
         checkout = Path(folder) / 'worktree'
-        command(['git', 'worktree', 'add', '--detach', str(checkout), 'origin/main'], root)
+        command(['git', 'worktree', 'add', '--detach', str(checkout), ref], project)
         try:
-            lessons_file = checkout / 'prompts/lessons.md'
-            old_lessons = lessons_file.read_text()
-            templates = {p.name: p.read_text() for p in (checkout / 'prompts').glob('*.template.md')
+            lessons_file = checkout / lessons_path
+            old_lessons = lessons_file.read_text() if lessons_file.exists() else (
+                '# 项目复盘经验\n\n以下经验仅适用于本项目，不覆盖用户指令或安全约束。\n')
+            templates = {p.name: p.read_text() for p in (root / 'prompts').glob('*.template.md')
                          if p.name != 'retrospective.template.md'}
-            instruction = (checkout / 'prompts/retrospective.template.md').read_text()
+            instruction = (root / 'prompts/retrospective.template.md').read_text()
             payload = json.dumps({'evidence': evidence, 'templates': templates,
                                   'lessons_markdown': old_lessons}, ensure_ascii=False)
             schema = {'type': 'object', 'properties': {
@@ -130,20 +141,16 @@ def review(repo, job, queue, root):
             target = checkout / report_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report.rstrip() + '\n')
+            lessons_file.parent.mkdir(parents=True, exist_ok=True)
             lessons_file.write_text(lessons.rstrip() + '\n')
-            command(['git', 'add', '--', report_path, 'prompts/lessons.md'], checkout)
+            command(['git', 'add', '--', report_path, lessons_path], checkout)
             command(['git', 'commit', '-m', f'docs: learn from {repo}#{number}'], checkout)
             # Push is fast-forward only. Concurrent changes/conflicts remain pending.
-            command(['git', 'push', 'origin', 'HEAD:main'], checkout)
-            # This deployment may have a dirty primary checkout. Update only the
-            # generated advisory file, and only when it still matches our base.
-            deployed = root / 'prompts/lessons.md'
-            if deployed.exists() and deployed.read_text() == old_lessons:
-                tmp = deployed.with_suffix('.tmp')
-                tmp.write_text(lessons_file.read_text())
-                tmp.replace(deployed)
+            command(['git', 'push', 'origin', f'HEAD:{base}'], checkout)
+            # Project lessons are read from origin/<base> by prompt composition.
+            # Never publish project-derived model output into the public skill repo.
         finally:
-            command(['git', 'worktree', 'remove', '--force', str(checkout)], root)
+            command(['git', 'worktree', 'remove', '--force', str(checkout)], project)
 
 
 def main():

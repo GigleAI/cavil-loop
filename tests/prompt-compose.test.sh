@@ -114,6 +114,17 @@ out=$(compose_prompt_template new-issue)
 chk "项目覆写也包含经验" "$(grep -c '^LESSONS-' "$out")" "1"
 chk "项目要求排在经验之后" "$([ "$(grep -n '^EXTRA-' "$out" | cut -d: -f1)" -gt "$(grep -n '^LESSONS-' "$out" | cut -d: -f1)" ] && echo yes || echo no)" "yes"
 
+echo "── 项目经验只进入来源项目 ──"
+printf 'PROJECT-LESSON-内部经验\n' > "$PROMPTS/lessons.md"
+out=$(compose_prompt_template new-issue)
+chk "来源项目读到自己的经验" "$(grep -c '^PROJECT-LESSON-' "$out")" "1"
+previous_project="$PROJECT_ROOT"
+PROJECT_ROOT="$TMP/other-project"
+mkdir -p "$PROJECT_ROOT"
+out=$(compose_prompt_template new-issue)
+chk "其他项目不会读到内部经验" "$(grep -c '^PROJECT-LESSON-' "$out")" "0"
+PROJECT_ROOT="$previous_project"
+
 echo "── base 都没有 → 返回空串（调用方回落到内联 minimal prompt）──"
 reset
 rm -f "$SKILL_DIR/prompts/new-issue.template.md"

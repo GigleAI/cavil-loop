@@ -654,10 +654,10 @@ rm ~/.config/coding-agent-work-loop/$KEY.conf
 
 ## 合并后的对话复盘
 
-`POST_MERGE_RETROSPECTIVE=true`（默认）每轮 poll 后启动独立后台队列。第一次运行记录启用时间，不批量补跑历史 PR；后续分页扫描上次成功扫描以来更新的 closed issue/PR，将启用后新合并的 PR 入队。关闭但未合并的 PR 不复盘，关闭自动 cleanup 也不影响本功能。
+`POST_MERGE_RETROSPECTIVE=true` 启用独立后台队列。首次运行记录启用时间，后续分页扫描更新过的 closed PR，只处理新合并项，不补跑历史、不处理未合并关闭项，也不依赖自动 cleanup。
 
-采集关联 issue、issue/PR 普通评论、正式 review 和行内评论的全部分页。Claude（`RETROSPECTIVE_MODEL=sonnet`）只接收证据和现有模板，没有工具和 MCP 访问能力。固定发布程序校验结果，只提交 `docs/retrospectives/<owner>/<repo>/pr-N.md` 和有长度上限的 `prompts/lessons.md` 到 skill 仓库的 `origin/main`，提交身份沿用该仓库 Git 配置。项目特有结论留在复盘记录；通用经验进入每种 dispatch/review 的合成 prompt，排在项目增量之前，不覆盖用户指令及安全约束。涉及基础模板或脚本的更大修改记录为建议。
+分页采集关联 issue、普通评论、review、行内评论。Claude（`RETROSPECTIVE_MODEL=sonnet`）没有工具或 MCP 权限。固定发布程序只提交 `docs/retrospectives/pr-N.md` 和 `.agents/skills/coding-agent-work-loop/prompts/lessons.md` 到**来源项目自己的仓库** `origin/$BASE_BRANCH`（默认 main），使用隔离 worktree、仅 fast-forward 推送。项目经验从该项目远端读取，只加载进该项目的 prompt，位于项目增量要求之前。
 
-使用隔离 worktree，推送仅允许 fast-forward，不 reset 或 force-push，不修改旧评论。并发提交冲突保留待重试。只有本机经验文件仍与发布时的基线一致才自动刷新；本地改动会被保留，必要时手动合并。本机所有项目至多同时运行一个复盘，模型超时 30 分钟，失败一小时后重试。远端报告是完成标记，推送后崩溃不会重复生成。
+公开 cavil 仓库的 `prompts/lessons.md` 只保留经过独立审查、脱离项目也成立的公开流程原则。自动发布程序不会向 cavil 写入生成的项目内容、标识、链接或复盘。通用改进候选先保存在项目报告中，另行去项目化审查后才能公开。证据保存在来源项目和本机状态目录。
 
-查看 `$STATE_DIR/retrospective.log` 和 `$STATE_DIR/retrospectives/`：包含扫描游标、每个 PR 的状态、采集证据、错误和重试时间。不改变业务 worker 标签。设为 `POST_MERGE_RETROSPECTIVE=false` 可关闭，保留队列。需要 Python 3、支持 `--safe-mode` 和结构化输出的 Claude CLI，以及 skill 仓库推送权限。对话证据会交给配置的 Claude 服务复盘，结论提交到 skill 仓库；应只为适合在该仓库沉淀经验的项目启用。
+本机所有项目最多同时一个复盘，模型超时 30 分钟，失败一小时后重试。项目远端报告作为完成标记。状态、证据、重试信息位于 `$STATE_DIR/retrospective.log` 和 `$STATE_DIR/retrospectives/`。设为 `POST_MERGE_RETROSPECTIVE=false` 暂停并保留队列。需要 Python 3、支持 safe mode/结构化输出的 Claude CLI 和来源项目推送权限。不修改旧评论或业务 worker 标签。

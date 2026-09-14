@@ -1319,7 +1319,7 @@ find_prompt_template() {
 # 两者可以并存（项目自己的 .template.md 当 base + .extra.md 追加），但既然都覆写了
 # 通常不需要。stdout 写最终要用的文件路径；没有增量时就是 base 本身。
 compose_prompt_template() {
-    local name="$1" base_tpl overlay out lessons
+    local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
     if [ -z "$base_tpl" ]; then
         # 找不到模板 = 调用方会回落到内联的极简 prompt。那份 prompt 只说「实现 → 开 PR →
@@ -1330,7 +1330,8 @@ compose_prompt_template() {
     fi
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ]; then echo "$base_tpl"; return; fi
+    project_lessons="$(find_project_prompt_file lessons.md lessons)"
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ]; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -1338,6 +1339,10 @@ compose_prompt_template() {
         if [ -s "$lessons" ]; then
             printf '\n\n---\n\n'
             cat "$lessons"
+        fi
+        if [ -n "$project_lessons" ]; then
+            printf '\n\n---\n\n'
+            cat "$project_lessons"
         fi
         if [ -n "$overlay" ]; then
         printf '\n\n---\n\n'
