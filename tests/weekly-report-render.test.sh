@@ -120,6 +120,42 @@ echo
 echo "— 版面"
 chk "投入面页高 1020（三块面板 × 340）" "$(q 'height("effort")')" "1020"
 
+
+echo
+echo "— 口径切换竖线（GigleTutor-Web#932 review 第 5 轮）"
+# 切换周左右两侧的时长 / 成本不是同一把尺子量的，折线连过去会被读成趋势变化，
+# 所以要在图上标一条竖线。没有切换周时**一条都不能画**。
+chk "没有 codex 记账的周 → 投入面不画竖线" \
+    "$(q 'read("effort").count("口径切换")')" "0"
+
+# 同一份 fixture，改成第 3 周起有 codex 记账
+python3 - "$TMP/data.json" "$TMP/sw.json" <<'INNER'
+import json, sys
+D = json.load(open(sys.argv[1]))
+for i, k in enumerate(D["weeks"]):
+    D["weekly"][k]["records_codex"] = 2 if i >= 2 else 0
+json.dump(D, open(sys.argv[2], "w"))
+INNER
+
+mkdir -p "$TMP/sw"
+python3 "$RENDER" --data "$TMP/sw.json" --out-dir "$TMP/sw" \
+    --asset-url-base "https://example.invalid/a" --rev "test" >/dev/null 2>"$TMP/err2.txt" \
+    || { echo "render.py 跑挂了："; cat "$TMP/err2.txt"; exit 1; }
+
+sw() { python3 - "$TMP/sw/$1.html" "$2" <<'INNER2'
+import re, sys
+s = open(sys.argv[1]).read()
+print(eval(sys.argv[2]))
+INNER2
+}
+
+chk "有切换周 → 投入面画 2 条（工时面板 + 花销面板）" \
+    "$(sw effort 's.count("口径切换")')" "2"
+chk "交付面不画（issue / PR / 代码行不受口径影响）" \
+    "$(sw delivery 's.count("口径切换")')" "0"
+chk "竖线画成红色虚线" \
+    "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "2"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" -eq 0 ]
