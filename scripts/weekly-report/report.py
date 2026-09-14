@@ -86,8 +86,13 @@ def main():
         lambda v: f"${v:,.0f}", cross=True)
     # 实付：某周 = Σ（该周每一天所属月份的月费 ÷ 该月天数）。按天摊，跨月的周自然拆开。
     # 月费只认配置，**没配就显示「未配置」**，不猜。
-    paid = _subscription_week(datetime.date.fromisoformat(tw["start"]))
-    L.append(f"| 实付（订阅月费按天摊到本周） | {paid} | {paid} | — |")
+    # ⚠️ 两列各按**各自那一周的起点**摊（#934 交叉 review 第 7 轮）：只算一次再填两格，
+    # 跨月的周会把本周数值复制到前周。实测月费 300、目标周 2026-03-02：本周 7 天全在
+    # 3 月（31 天）= $68，前周 2026-02-23 是 6 天 2 月 + 1 天 3 月 = $74，旧写法两格都是 $68。
+    _cur_monday = datetime.date.fromisoformat(tw["start"])
+    _prev_monday = _cur_monday - datetime.timedelta(days=7)
+    L.append(f"| 实付（订阅月费按天摊到本周） | {_subscription_week(_cur_monday)} | "
+             f"{_subscription_week(_prev_monday)} | — |")
     if cur.get("records_not_summable"):
         L.append(f"| 另有：重叠且证据不足，**无法去重合计** | "
                  f"${cur.get('cost_not_summable', 0):,.0f} · {cur['records_not_summable']:.0f} 条 | — | — |")
@@ -258,15 +263,28 @@ def main():
     # 不带到这里的后果：用参照兜底的存疑金额，和已与参照核对过的金额，在报告上长得
     # 一模一样，设计里承诺的「报红」就不存在。
     _TRUST = [
-        ("disputed",       "⚠️ **与参照冲突（存疑）**", "反解值与外部参照对不上，**两边都没有被判为对**，这部分金额只能当线索看"),
+        ("disputed",       "⚠️ 与参照冲突（存疑）", "反解值与外部参照对不上，**两边都没有被判为对**，这部分金额只能当线索看"),
         ("unstable",       "反解不出、用外部参照兜底",   "本机样本不足以解出这个单价，取的是参照价，**没有本机证据支持**"),
         ("uncorroborated", "反解稳定但无参照可比",       "解得稳，但没有可比的外部参照，属候选估算"),
         ("reference_only", "直接取参照价",               "加速档没有可反解的样本，直接用参照价"),
         ("corroborated",   "反解稳定且与参照一致",       "两个独立来源对上了 —— 只说明**和那份参照一致**，不等于已证明为真值"),
         ("unrated",        "说不出可信度",               "历史评论是旧驱动那张**过期价目表**算的（实测高 193%），交叉 review 那一侧则是人工配置的单价，两者都没有可信度可言"),
     ]
-    _parts = [f"**{lbl}** ${t('price_usd_' + k):,.0f}（{why}）"
-              for k, lbl, why in _TRUST if round(t("price_usd_" + k)) != 0]
+    # ⚠️ 「有没有这一桶」由**金额本身**决定，不由显示取整决定（#934 交叉 review 第 7 轮）。
+    # 原来按 `round(...) != 0` 筛，$0.10 的存疑金额直接消失，还反过来输出「本次区间没有
+    # 算出金额，无从谈可信度」—— 把「显示成零」说成了「没算出来」，报红也跟着没了。
+    # 小额改用能看见的写法：≥ $1 取整、不足 $1 显示到分、不足 1 分写「< $0.01」。
+    def _usd_small(v):
+        if v == 0:
+            return "$0"
+        if abs(v) < 0.01:
+            return "< $0.01"
+        if abs(v) < 1:
+            return f"${v:,.2f}"
+        return f"${v:,.0f}"
+
+    _parts = [f"**{lbl}** {_usd_small(t('price_usd_' + k))}（{why}）"
+              for k, lbl, why in _TRUST if t("price_usd_" + k) != 0]
     _ref = (D.get("price_reference") or {}).get("source") or "未记录"
     price_trust = ("；".join(_parts) + "。" if _parts else "本次区间没有算出金额，无从谈可信度。") + \
         f"参照出处：`{_ref}` —— 是**本机缓存的一份公开价目**，本次**没有联网核验**；参照若已过期，反解值与它会一起错，这套机制发现不了。" + \
