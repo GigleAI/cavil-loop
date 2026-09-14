@@ -1225,13 +1225,18 @@ gh_label_flip() {
 # 是**本地 base 分支**离远端有多远 —— 人在主 checkout 上看到的、以及 §1 兜底读不到
 # 远端时回落的，都是它。
 #
-# 阈值设 0 = 关掉告警。开出来的 issue 挂 $LABEL_PENDING_HUMAN：
+# **默认关闭（0）**，要的项目在自己 config 里设个数字才开。为什么不默认开：会被卡住
+# 的只有「人经常上手动的」那个主 checkout —— 纯自动跑的项目根本不会有人在上面留
+# WIP 或切走分支，给它们默认开一个永不触发的检查只是噪音，何况告警要往仓库里开
+# issue，不该是装上框架就自动获得的行为。
+#
+# 开出来的 issue 挂 $LABEL_PENDING_HUMAN：
 #   · label 模式下它不是触发 label，本来就不会被派工；
 #   · greedy 模式下**所有开着的 issue 都会被派**，只有挡工 label 拦得住它（见
 #     greedy_skip_label_list）。不挂就会被 worker 捡去「修」—— 而这条 issue 讲的是
 #     本机 checkout 状态，agent 在 worktree 里根本改不动，纯属白烧一轮。
 # 语义上也正是 pending/human：commit 掉 WIP / 切回分支 / rebase 只能人来做。
-CHECKOUT_STALE_ALERT_COMMITS="${CHECKOUT_STALE_ALERT_COMMITS:-20}"
+CHECKOUT_STALE_ALERT_COMMITS="${CHECKOUT_STALE_ALERT_COMMITS:-0}"
 CHECKOUT_STALE_ALERT_TITLE="${CHECKOUT_STALE_ALERT_TITLE:-[daemon] 主 checkout 长期落后 origin}"
 
 # 已开告警的 issue 号记在这里：每个 poll 周期都去 GitHub 查一次「有没有开过」既费
@@ -1294,7 +1299,7 @@ checkout_stale_alert_resolve() {
 # 落后超阈值 → 告警；已跟上 → 关掉旧告警。任何异常都只 return 0，派工不受影响。
 check_checkout_staleness() {
     local base="$1" reason="$2"
-    local threshold="${CHECKOUT_STALE_ALERT_COMMITS:-20}" behind
+    local threshold="${CHECKOUT_STALE_ALERT_COMMITS:-0}" behind
     case "$threshold" in ''|*[!0-9]*) return 0 ;; esac
     [ "$threshold" -gt 0 ] || return 0
     behind=$(git -C "$PROJECT_ROOT" rev-list --count "refs/heads/$base..origin/$base" 2>/dev/null || echo "")

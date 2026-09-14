@@ -65,8 +65,9 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 MAX_CONCURRENT_WORKERS=1
 POLL_INTERVAL_SECS=60
 
-# 本地 base 落后 origin 这么多 commit 就自动开 issue 提醒（跟上后自动关）；0 = 关掉
-CHECKOUT_STALE_ALERT_COMMITS=20
+# 本地 base 落后 origin 这么多 commit 就开 issue 提醒（跟上后自动关）；默认 0 = 关
+# 只有人真的上手干活的那个 checkout 才会卡住，所以是 opt-in；要开推荐设 20
+CHECKOUT_STALE_ALERT_COMMITS=0
 
 # 派工口径：label = 只捡打了 pending/agent 的；greedy = 开着的都干，除非被挡工 label 挡住
 DISPATCH_MODE="label"

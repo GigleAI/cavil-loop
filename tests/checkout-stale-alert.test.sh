@@ -111,6 +111,13 @@ setup_repo 25
 CHECKOUT_STALE_ALERT_COMMITS=0 check_checkout_staleness main "有未提交改动" >/dev/null 2>&1
 chk "阈值 0 = 关掉告警" "$(grep -c -- '-X POST' "$GH_CALLS")" "0"
 
+# 默认必须是关的：这个功能会往别人仓库里开 issue，不该装上框架就自动获得。
+# 盯死它，免得哪天默认值被顺手改回一个非 0 值，四个项目一起开始开 issue。
+default_val=$(env -u CHECKOUT_STALE_ALERT_COMMITS CODING_AGENT_CONFIG="$TMP_CONF" \
+    bash -c 'source "$0" >/dev/null 2>&1; printf "%s" "$CHECKOUT_STALE_ALERT_COMMITS"' \
+    "$REPO_DIR/scripts/_lib.sh")
+chk "没配 → 默认关闭" "$default_val" "0"
+
 setup_repo 25
 CHECKOUT_STALE_ALERT_COMMITS=abc check_checkout_staleness main "有未提交改动" >/dev/null 2>&1
 chk "阈值非数字 → 静默跳过，不报错" "$(grep -c -- '-X POST' "$GH_CALLS")" "0"
@@ -156,6 +163,9 @@ chk "greedy 兜底趟会挡住它" "$?/$blocked" "0/pending/human"
 
 echo "▶ sync_project_checkout 的三条「不动工作区」路径都会检查"
 
+# 告警默认关闭，这一组显式打开——测的是「开了之后三条路径都会走到检查」。
+export CHECKOUT_STALE_ALERT_COMMITS=20
+
 # (1) 工作区有未提交改动
 setup_repo 25
 echo dirty > "$TMP/project/wip"
@@ -186,6 +196,9 @@ chk "干净工作区 → ff 到最新" "$(git -C "$TMP/project" rev-list --count
 chk "ff 成功 → 不告警" "$(grep -c -- '-X POST' "$GH_CALLS")" "0"
 
 echo "▶ 离线：fetch 失败时不判断（落后数不可信）"
+
+# 仍然开着阈值：要证明的是「fetch 失败所以不判断」，不是「没开所以不报」。
+export CHECKOUT_STALE_ALERT_COMMITS=20
 
 setup_repo 25
 echo dirty > "$TMP/project/wip"

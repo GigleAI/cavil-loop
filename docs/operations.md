@@ -66,8 +66,9 @@ MAX_CONCURRENT_WORKERS=1
 POLL_INTERVAL_SECS=60
 
 # Open an issue when the local base falls this many commits behind origin
-# (auto-closed once it catches up); 0 disables it
-CHECKOUT_STALE_ALERT_COMMITS=20
+# (auto-closed once it catches up). Off by default — only a checkout people
+# actually work in gets stuck this way. 20 is a good value when you want it.
+CHECKOUT_STALE_ALERT_COMMITS=0
 
 # What counts as actionable: label = only pending/agent items; greedy = every open item
 # unless a blocking label stops it
