@@ -651,3 +651,13 @@ rm ~/.config/coding-agent-work-loop/$KEY.conf
 # 可选：rm -r ~/.local/state/coding-agent-poll/<project>
 # 可选：rm ~/Library/Logs/coding-agent-work-loop/$KEY.*.log
 ```
+
+## 合并后的对话复盘
+
+`POST_MERGE_RETROSPECTIVE=true`（默认）每轮 poll 后启动独立后台队列。第一次运行记录启用时间，不批量补跑历史 PR；后续分页扫描上次成功扫描以来更新的 closed issue/PR，将启用后新合并的 PR 入队。关闭但未合并的 PR 不复盘，关闭自动 cleanup 也不影响本功能。
+
+采集关联 issue、issue/PR 普通评论、正式 review 和行内评论的全部分页。Claude（`RETROSPECTIVE_MODEL=sonnet`）只接收证据和现有模板，没有工具和 MCP 访问能力。固定发布程序校验结果，只提交 `docs/retrospectives/<owner>/<repo>/pr-N.md` 和有长度上限的 `prompts/lessons.md` 到 skill 仓库的 `origin/main`，提交身份沿用该仓库 Git 配置。项目特有结论留在复盘记录；通用经验进入每种 dispatch/review 的合成 prompt，排在项目增量之前，不覆盖用户指令及安全约束。涉及基础模板或脚本的更大修改记录为建议。
+
+使用隔离 worktree，推送仅允许 fast-forward，不 reset 或 force-push，不修改旧评论。并发提交冲突保留待重试。只有本机经验文件仍与发布时的基线一致才自动刷新；本地改动会被保留，必要时手动合并。本机所有项目至多同时运行一个复盘，模型超时 30 分钟，失败一小时后重试。远端报告是完成标记，推送后崩溃不会重复生成。
+
+查看 `$STATE_DIR/retrospective.log` 和 `$STATE_DIR/retrospectives/`：包含扫描游标、每个 PR 的状态、采集证据、错误和重试时间。不改变业务 worker 标签。设为 `POST_MERGE_RETROSPECTIVE=false` 可关闭，保留队列。需要 Python 3、支持 `--safe-mode` 和结构化输出的 Claude CLI，以及 skill 仓库推送权限。对话证据会交给配置的 Claude 服务复盘，结论提交到 skill 仓库；应只为适合在该仓库沉淀经验的项目启用。

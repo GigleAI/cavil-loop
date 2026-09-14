@@ -1319,7 +1319,7 @@ find_prompt_template() {
 # 两者可以并存（项目自己的 .template.md 当 base + .extra.md 追加），但既然都覆写了
 # 通常不需要。stdout 写最终要用的文件路径；没有增量时就是 base 本身。
 compose_prompt_template() {
-    local name="$1" base_tpl overlay out
+    local name="$1" base_tpl overlay out lessons
     base_tpl="$(find_prompt_template "$name")"
     if [ -z "$base_tpl" ]; then
         # 找不到模板 = 调用方会回落到内联的极简 prompt。那份 prompt 只说「实现 → 开 PR →
@@ -1329,15 +1329,22 @@ compose_prompt_template() {
         echo ""; return
     fi
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
-    [ -n "$overlay" ] || { echo "$base_tpl"; return; }
+    lessons="$SKILL_DIR/prompts/lessons.md"
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ]; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
         cat "$base_tpl"
+        if [ -s "$lessons" ]; then
+            printf '\n\n---\n\n'
+            cat "$lessons"
+        fi
+        if [ -n "$overlay" ]; then
         printf '\n\n---\n\n'
         printf '# 本项目的附加要求（覆盖上面与之冲突的部分）\n\n'
         printf '> 上面是通用工作流，这一段是 %s 特有的。两者冲突时**以这一段为准**。\n\n' "${REPO:-本仓库}"
         cat "$overlay"
+        fi
     } > "$out"
     log "prompt: base=$(basename "$base_tpl") + 增量=$(basename "$overlay")（合成 $(wc -l < "$out") 行）" 2>/dev/null || true
     echo "$out"

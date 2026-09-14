@@ -841,3 +841,13 @@ rm ~/.config/coding-agent-work-loop/$KEY.conf
 # optional: rm -r ~/.local/state/coding-agent-poll/<project>
 # optional: rm ~/Library/Logs/coding-agent-work-loop/$KEY.*.log
 ```
+
+## Post-merge retrospectives
+
+`POST_MERGE_RETROSPECTIVE=true` (default) starts an independent background queue after each poll. First use records an activation timestamp; subsequent scans paginate closed issues/PRs updated since the last successful scan and enqueue newly merged PRs. Closed-unmerged PRs are excluded. This also runs when automatic cleanup is disabled.
+
+The collector reads the linked issues, issue/PR conversation comments, submitted reviews and inline comments with pagination. Claude (`RETROSPECTIVE_MODEL=sonnet`) receives the evidence and current templates without tools or MCP access. A fixed publisher validates the result and commits only `docs/retrospectives/<owner>/<repo>/pr-N.md` and the bounded advisory file `prompts/lessons.md` to the skill repo's `origin/main`, using its configured Git identity. Project-specific conclusions stay in reports; common lessons enter all composed dispatch/review prompts before project extras and never override user instructions or safety constraints. Base-template/script changes are recorded as recommendations.
+
+The main checkout may be dirty: publishing uses an isolated worktree and fast-forward-only push. Concurrent pushes/conflicts retry; no reset, force-push or changes to existing comments occur. The shared lessons file is refreshed locally only if it still matches the publisher's base version. A local edit is preserved and may require manual reconciliation. One retrospective runs across local projects at a time; each job has a 30-minute model timeout, and failures retry after one hour. The remote report is the completion marker, preventing duplicate reviews after a crash following a successful push.
+
+Inspect `$STATE_DIR/retrospective.log` and `$STATE_DIR/retrospectives/` for the scan cursor, per-PR status, full collected evidence, failure and retry time. No background worker labels are changed. Disable with `POST_MERGE_RETROSPECTIVE=false`; queued jobs are retained. Requires Python 3, Claude CLI supporting `--safe-mode`/structured output, and push access to this skill repository. Evidence is sent to the configured Claude service for the requested review; reports are committed to the skill repository, so configure this only for projects whose conversation evidence can be summarized there.

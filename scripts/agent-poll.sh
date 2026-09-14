@@ -700,4 +700,9 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
     fi
 fi
 
+# Durable merge review queue is independent of cleanup success and worker labels.
+if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then
+    nohup bash "$SCRIPT_DIR/post-merge-retrospective.sh" >> "$STATE_DIR/retrospective.log" 2>&1 &
+fi
+
 log "===== poll done ====="

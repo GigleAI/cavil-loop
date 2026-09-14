@@ -315,6 +315,15 @@ WORKER_SECRET_ENV="GH_TOKEN"
 # 详见 docs/persistence.md。
 AUTO_CLEANUP_ON_MERGE="true"
 
+# After each new merge, archive an evidence-linked retrospective in cavil-loop.
+# Independent of cleanup. First run starts at now (no historical backfill).
+# Requires Claude CLI and permission to push origin/main of this skill repo.
+# One background retrospective at a time across local projects; errors retry hourly.
+# Reports: docs/retrospectives/<owner>/<repo>/pr-N.md; shared prompt: prompts/lessons.md.
+# Git author/committer follow the skill repository's git config.
+POST_MERGE_RETROSPECTIVE="true"
+RETROSPECTIVE_MODEL="sonnet"
+
 # ── Post-acceptance project cleanup hook / 验收完成后的项目级 cleanup hook ──
 
 # When you run `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>`, this hook runs

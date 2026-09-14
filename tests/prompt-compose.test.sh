@@ -103,6 +103,17 @@ chk "main 上删了 → 回落 skill base" "$(grep -c '^BASE-通用工作流$' "
 chk "本地残留没被捡回来"            "$(grep -c '^LOCAL-老分支上的残留$' "$out")" "0"
 rm -rf "$TMP/project/.git"
 
+echo "── 合并复盘经验进入通用模板和项目覆写，项目增量保持最后 ──"
+reset
+printf 'LESSONS-通用经验\n' > "$SKILL_DIR/prompts/lessons.md"
+out=$(compose_prompt_template new-issue)
+chk "无 overlay 也包含经验" "$(grep -c '^LESSONS-' "$out")" "1"
+printf 'PROJ-完全覆写\n' > "$PROMPTS/new-issue.template.md"
+printf 'EXTRA-项目要求\n' > "$PROMPTS/new-issue.extra.md"
+out=$(compose_prompt_template new-issue)
+chk "项目覆写也包含经验" "$(grep -c '^LESSONS-' "$out")" "1"
+chk "项目要求排在经验之后" "$([ "$(grep -n '^EXTRA-' "$out" | cut -d: -f1)" -gt "$(grep -n '^LESSONS-' "$out" | cut -d: -f1)" ] && echo yes || echo no)" "yes"
+
 echo "── base 都没有 → 返回空串（调用方回落到内联 minimal prompt）──"
 reset
 rm -f "$SKILL_DIR/prompts/new-issue.template.md"
