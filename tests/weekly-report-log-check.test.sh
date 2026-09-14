@@ -39,6 +39,12 @@ marker() {   # $6 可选：price_status（如 disputed:10.00），$7 可选：pr
     [ -n "${6:-}" ] && printf ' price_status=%s' "$6"
     printf ' -->'
 }
+# 同上，但金额那几个字段整段由调用方给（用来造「整条 footer 没写金额」这种记录）。
+# $1 wt  $2 起 hh  $3 止 hh  $4 out token  $5 金额字段原文
+marker_raw() {
+    printf '干完了。\n\n<!-- agent-metrics agent=claude wt=%s start=%sT%s:00+08:00 end=%sT%s:00+08:00 wall_secs=600 in=0 out=%s cache_r=0 cache_w=0 %s -->' \
+        "$1" "$W" "$2" "$W" "$3" "$4" "$5"
+}
 # 往某 worktree 的 claude 日志里写一次调用。$1 wt  $2 时刻 HH:MM  $3 out token  $4 reqid
 #                                        $5 模型（可选，默认 claude-opus-5）
 call() {
@@ -227,6 +233,49 @@ chk "所有可信度桶全空"                \
     "$(python3 -c "
 import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
 print(round(sum(v for k,v in w.items() if k.startswith('price_usd_')),2))")" "0"
+
+echo "── 9. 金额覆盖计数必须跟着最终采用的金额走（第 3 轮打回）──"
+# 金额本身已经改成按日志重算，但「这条有没有金额」原来还在看**旧 footer** 写没写。
+# 两者一分家，报告就会自相矛盾。下面两个方向都走到最终 markdown。
+
+# ⑴ 旧 footer 没金额（那时还没配单价），但本机日志现在重算得出 $25
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:05" 1000000 r1
+run "$(marker_raw 10 '10:00' '10:10' 1000000 'cost_state=none cost_unknown_tokens=0')"
+chk "金额来自重算（\$25）"            "$(q cost)"                  "25"
+chk "覆盖计数跟着重算走（1 条有金额）" "$(q cost_records)"          "1"
+chk "旧 footer 的原始证据仍单独留着（0 条）" "$(q cost_footers)"     "0"
+chk "报告不再自相矛盾地说「没有金额」" \
+    "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "no"
+
+# ⑵ 旧 footer 有 $25，但本轮重算时这个模型压根没有单价
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:05" 1000000 r1 some-model-not-in-any-price-table
+run "$(marker 10 '10:00' '10:10' 1000000 '25.00')"
+chk "一分钱都算不出（\$0）"           "$(q cost)"                  "0"
+chk "覆盖计数也归零（0 条有金额）"    "$(q cost_records)"          "0"
+chk "旧 footer 的原始证据仍单独留着（1 条）" "$(q cost_footers)"     "1"
+chk "顶部缺金额告警必须出现（改前整个消失）" \
+    "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+# ⑶ 语义不能被顺带改坏：配了单价、金额如实是 0.00 —— 那是「记了，是 0」，不是「没采到」
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(marker_raw 10 '10:00' '10:10' 1000 'cost_usd=0.00 cost_state=full cost_unknown_tokens=0')"
+chk "真实零金额算「有金额」（按非零判会误报没采到）" "$(q cost_records)" "1"
+chk "顶部不出缺金额告警"              \
+    "$(grep -qF '条没有金额' "$TMP/r.md" && echo yes || echo no)" "no"
+
+# ⑷ 部分缺价：算出了一部分 → 仍算「有金额」，但报告要说金额偏低
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(marker_raw 10 '10:00' '10:10' 1000000 'cost_usd=12.00 cost_state=partial cost_unknown_tokens=500000')"
+chk "部分缺价算「有金额」"            "$(q cost_records)"          "1"
+chk "但覆盖三态如实记成 partial"      "$(q state_partial)"         "1"
+
+# ⑸ 沿用原值：日志没了 → 用旧 footer 的金额，覆盖计数也跟着旧 footer（此时它就是最终值）
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(marker 10 '10:00' '10:10' 1000000 '999.00')"
+chk "沿用原值"                        "$(q src_original)"          "1"
+chk "覆盖计数跟着沿用的那份（1 条）"  "$(q cost_records)"          "1"
 
 echo
 echo "结果：$pass passed, $fail failed"
