@@ -182,17 +182,21 @@ def main():
         "堆叠柱＝当周 issue / PR 上的全部评论条数。",
         [{"type":"bar","data":g("bot"),"color":BLUE,"label":"AI 之间的来回","axis":"l","stack":True},
          {"type":"bar","data":g("human"),"color":GOLD,"label":"你发的","axis":"l","stack":True}])
+    # 口径切换那一周画一条竖线：它左右两侧的时长 / 成本不是同一把尺子量的
+    # （用量按 API 调用去重 + 纳入交叉 review 那一侧），连成一条折线会被读成趋势变化。
+    fc=next((i for i,k in enumerate(W) if wk[k].get("records_codex")), None)
+    sw=(fc,"口径切换") if fc is not None else None
     hrs=[wk[k]["wall"]/3600 for k in W]
     # 零工时的周分母为 0 → None，折线在那里断开。画成 0 会被读成「那周没产出」，是两回事。
     lph=[(net[i]/hrs[i] if hrs[i] else None) for i in range(len(W))]
     p_time=ch.panel(0,340,1212,320,"AI 投入时间：每周实际干活的小时数",
         "柱＝当周 AI 真正在干活的累计小时（不含等人回话的空档，来自每条评论的耗时 footer，左轴）；折线＝平均每小时写出多少行净增代码（右轴）。",
         [{"type":"bar","data":hrs,"color":AQUA,"label":"AI 工作小时","axis":"l","fmt":fmt_h},
-         {"type":"line","data":lph,"color":ORANGE,"label":"行 / 小时","axis":"r"}])
+         {"type":"line","data":lph,"color":ORANGE,"label":"行 / 小时","axis":"r"}],note=sw)
     p4=ch.panel(0,680,1212,320,"花销：每周总成本 vs 每千行代码的单位成本",
         "柱＝当周总成本（按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少钱（右轴）。",
         [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本 $","axis":"l"},
-         {"type":"line","data":kloc,"color":VIO,"label":"$ / 千行代码","axis":"r"}])
+         {"type":"line","data":kloc,"color":VIO,"label":"$ / 千行代码","axis":"r"}],note=sw)
     open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4],1020,a.fonts_dir))
     print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html")
 

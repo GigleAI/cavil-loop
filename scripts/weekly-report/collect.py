@@ -169,6 +169,12 @@ def main():
         s[f"wall_{agent}"] += wall
         s[f"cost_{agent}"] += cost
         s[f"records_{agent}"] += 1
+        # 金额覆盖率：驱动没配单价时**有意**不出金额（见 drivers/token-usage/codex.sh），
+        # 采集后就是 0。报告必须能区分「这一侧真的没花钱」和「这一侧的金额没采到」，
+        # 否则 0 会被当成事实写成「占成本 0%」（GitHub#932 交叉 review 第 5 轮）。
+        if cost:
+            s["cost_records"] += 1
+            s[f"cost_records_{agent}"] += 1
         durs[w].append(wall)
         if wall >= record.LONG_WINDOW_SECS:
             s["long_windows"] += 1
@@ -253,7 +259,9 @@ def main():
               # 按 agent 拆分：切换周之后同时纳入交叉 review 那一侧，覆盖面会变大，
               # 所以要能分别给出「仅主 worker」与「两侧合计」，不能混成同口径趋势。
               "wall_claude", "wall_codex", "cost_claude", "cost_codex",
-              "work_claude", "work_codex", "records_claude", "records_codex"]
+              "work_claude", "work_codex", "records_claude", "records_codex",
+              # 有金额的记账条数（分 agent）：报告据此判断占比能不能算
+              "cost_records", "cost_records_claude", "cost_records_codex"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 
     tw = target.isoformat()
