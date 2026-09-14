@@ -171,6 +171,9 @@ def main():
                 job = json.loads(path.read_text())
                 if job['status'] == 'done' or job.get('retry_after', 0) > time.time():
                     continue
+                job.update(status='running', started_at=utcnow())
+                save(path, job)
+                print(f'{utcnow()} [{repo}] retrospective PR #{job["pr"]} started', flush=True)
                 try:
                     review(repo, job, queue, root)
                     job.update(status='done', completed_at=utcnow())
