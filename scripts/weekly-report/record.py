@@ -111,7 +111,14 @@ def extract(body, login, comment_id=None, default_wt=None):
       wt       worktree 编号（拿不到则 default_wt）
       start,end  派工窗口
       wall     墙上时长（秒）= 完工 − 开始
-      cost     金额（美元）—— 按调用去重后的**标价估算**，计价偏差尚未核实
+      cost     金额（美元）—— 按调用去重后、**逐条按自己模型的单价**折算出来的参考价值。
+               单价来自本机 CLI 记账反解 + 官方公开价目交叉核对（见 price_solve.py），
+               **不是账单**：本机是包月订阅，没有按 token 出的账单可对。
+      tokens   四项 token（in / out / cache_r / cache_w）。采集侧拿它跟从日志重算的结果
+               逐项比，只带 out 的话「只丢了 input」这类缺失检验不出来。
+      tokens_exact  历史记录的 token 是 driver 的 fmt **floor 截断**过的（53.5k ⇒ ≥53500），
+               这里拿到的是**下界**不是精确值，比对时要按下界判。
+      cost_state   价格覆盖三态：full / partial（有模型没单价，金额必定偏低）/ none
       has_cost 这条记录**有没有写金额**。`cost=0` 有两种来源：驱动没配单价所以根本没写，
                和配了单价但估算不足半美分、如实写成 `0.00`。两者必须分开，否则报告会把
                后者说成「该侧未配单价」

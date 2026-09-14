@@ -23,8 +23,18 @@
 #   所以下面用 `input − cached` 取未命中缓存的那部分，与 claude 那一侧口径对齐。
 #
 # ⚠️ 金额：本 driver **不自带价目表**。codex 侧的单价属于部署环境，没有可信默认值，
-#   硬编一个只会把「估算」伪装成「账单」。要出金额就在项目配置里设这三个（单位：
-#   美元 / 百万 token），没设就只出 token、不出金额，周报会如实记「缺金额」：
+#   硬编一个只会把「估算」伪装成「账单」。没配就只出 token、不出金额，周报会如实记
+#   「缺金额」——并且明说「占比算不出来，**不是 0%**」。
+#
+#   单价**按模型分别配**（GigleTutor-Web#934 的 Q4=A）：同一次派工里混用不同模型时，
+#   一个价钱套所有模型会算错。模型名从会话记录的 `turn_context.model` 读（本机是
+#   gpt-6-astra）。配置走 `CODEX_PRICES`，JSON，单位美元 / 百万 token：
+#
+#     CODEX_PRICES='{"gpt-6-astra":{"in":1.25,"cached_in":0.125,"out":10}}'
+#
+#   没在表里的模型**不套价**：它的 token 计进 cost_unknown_tokens，该次派工落
+#   cost_state=partial（有别的模型算出了金额）或 none（一个都没算出来）。
+#   旧的三个环境变量仍然认，作为「所有模型同一个价」的兼容写法：
 #     CODEX_PRICE_IN_PER_M / CODEX_PRICE_CACHED_IN_PER_M / CODEX_PRICE_OUT_PER_M
 #
 # 不在这里算「排除等待的工时」：同 claude driver，那个指标由周报采集器出报告时
@@ -57,10 +67,15 @@ done <<< "$FILES"
 PI="${CODEX_PRICE_IN_PER_M:-}"
 PC="${CODEX_PRICE_CACHED_IN_PER_M:-}"
 PO="${CODEX_PRICE_OUT_PER_M:-}"
+PRICES="${CODEX_PRICES:-{\}}"
+# 旧的三个变量 → 当成「所有模型同价」的兜底表，用 * 作通配键
+if [ -n "$PI" ] && [ -n "$PC" ] && [ -n "$PO" ]; then
+    PRICES=$(printf '%s' "$PRICES" | jq -c --argjson d "{\"in\":$PI,\"cached_in\":$PC,\"out\":$PO}" \
+        '. + {"*": $d}' 2>/dev/null || printf '{"*":{"in":%s,"cached_in":%s,"out":%s}}' "$PI" "$PC" "$PO")
+fi
 
 # shellcheck disable=SC2086
-jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" \
-       --arg pi "$PI" --arg pc "$PC" --arg po "$PO" '
+jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRICES" '
     def fmt:
         if . >= 1000000 then ((. / 100000 | floor) / 10 | tostring) + "m"
         elif . >= 1000 then ((. / 100 | floor) / 10 | tostring) + "k"
@@ -71,10 +86,12 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" \
         ($c - $d * 100) as $r |
         "\($d).\(if $r < 10 then "0\($r)" else "\($r)" end)";
 
-    [.[] | select(.type == "token_usage_record"
+    # 一个 rollout 文件对应一个 turn_context.model；同一次派工可能横跨多个文件 / 多个模型
+    ([.[] | select(.type == "turn_context") | .payload.model // empty] | last // "unknown") as $model
+    | [.[] | select(.type == "token_usage_record"
               and (.payload.usage // empty)
               and ((.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $start))
-         | .payload.usage]
+           | .payload.usage]
     | reduce .[] as $u (
         {in:0, cin:0, cw:0, out:0};
         .in  += (($u.input_tokens // 0) - ($u.cached_input_tokens // 0))
@@ -83,14 +100,16 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" \
         | .out += ($u.output_tokens // 0)      # reasoning 已在 output 里，别再加一次
       )
     | . as $t
-    | (if ($pi != "" and $pc != "" and $po != "")
-       then (($t.in * ($pi | tonumber) + $t.cin * ($pc | tonumber)
-              + $t.out * ($po | tonumber)) / 1000000)
+    | ($prices[$model] // $prices["*"] // null) as $p
+    | (if $p then (($t.in * $p.in + $t.cin * $p.cached_in + $t.out * $p.out) / 1000000)
        else null end) as $usd
+    | (if $p then "full" else "none" end) as $state
+    | (if $p then 0 else ($t.in + $t.cin + $t.cw + $t.out) end) as $unk
     | if $mode == "--kv"
       then "in=\($t.in) out=\($t.out) cache_r=\($t.cin) cache_w=\($t.cw)"
            + (if $usd == null then "" else " cost_usd=\($usd | usd2)" end)
+           + " cost_state=\($state) cost_unknown_tokens=\($unk)"
       else "\($t.in | fmt) input, \($t.out | fmt) output, \($t.cin | fmt) cache read, \($t.cw | fmt) cache write"
-           + (if $usd == null then "（未配单价，金额未计）" else " ($\($usd | usd2))" end)
+           + (if $usd == null then "（该模型未配单价，金额未计）" else " ($\($usd | usd2))" end)
       end
 ' $(echo "$MINE") 2>/dev/null

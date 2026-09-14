@@ -11,6 +11,9 @@
 # 没有一条 `reasoning > output`。原来把两者相加 = 思考部分算两遍，多计 7.7% 的输出
 # token；配了单价还会照这个虚数计费。这类错只会让数字悄悄变大，不会报错，所以要钉住。
 #
+# ⚠️ 单价已改成**按模型配置**（GigleTutor-Web#934 的 Q4=A，走 CODEX_PRICES）；旧的三个
+# 环境变量仍作为「所有模型同价」的兼容写法。输出多了 cost_state / cost_unknown_tokens。
+#
 # 本测试的日志刻意让 **reasoning 非零**且 `total = input + output`，覆盖 driver 的
 # 三条输出路径：人读输出 / `--kv` / 配置单价后的金额。
 set -uo pipefail
@@ -54,6 +57,10 @@ rec() {
 printf '{"type":"turn_token_usage","timestamp":"%s","payload":{"usage":{"input_tokens":8888888,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":8888888,"reasoning_output_tokens":0,"total_tokens":17777776}}}\n' \
     "$(ts 25)" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
 
+# 补一条 turn_context：模型名就写在这里（本机真实会话里是 gpt-6-astra）
+printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"gpt-test"}}\n' \
+    "$(ts 1)" "$MINE" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
+
 run() { ( cd "$MINE" && HOME="$TMP" env "$@" bash "$DRIVER" "$START" ${MODE:-} ); }
 
 # 期望：in = (1000000-400000) + (2000000-1000000) = 1600000
@@ -61,17 +68,17 @@ run() { ( cd "$MINE" && HOME="$TMP" env "$@" bash "$DRIVER" "$START" ${MODE:-} )
 #       out = 300000 + 700000 = 1000000（**不含** reasoning 420000）
 MODE=--kv  out_kv=$(run CODEX_PRICE_IN_PER_M= CODEX_PRICE_CACHED_IN_PER_M= CODEX_PRICE_OUT_PER_M=)
 chk "--kv：output 只算一次，reasoning 不再加一遍" \
-    "$out_kv" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000"
+    "$out_kv" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_state=none cost_unknown_tokens=4050000"
 
 MODE=""    out_hm=$(run CODEX_PRICE_IN_PER_M= CODEX_PRICE_CACHED_IN_PER_M= CODEX_PRICE_OUT_PER_M=)
 chk "人读输出：未配单价时只出 token、如实说明没算金额" \
-    "$out_hm" "1.6m input, 1m output, 1.4m cache read, 50k cache write（未配单价，金额未计）"
+    "$out_hm" "1.6m input, 1m output, 1.4m cache read, 50k cache write（该模型未配单价，金额未计）"
 
 # 配单价：(1600000*10 + 1400000*1 + 1000000*100) / 1e6 = 117.40
 #        旧实现 out=1420000 → 159.40
 MODE=--kv  out_kvp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
 chk "--kv + 单价：金额按真实 output 算（不是把 reasoning 也计费）" \
-    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.40"
+    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.40 cost_state=full cost_unknown_tokens=0"
 
 MODE=""    out_hmp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
 chk "人读输出 + 单价：同上" \
@@ -80,14 +87,26 @@ chk "人读输出 + 单价：同上" \
 # ── 认领与窗口边界 ──
 MODE=--kv  out_other=$( ( cd "$OTHER" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
 chk "只认领 cwd 等于当前目录的会话（别的 worktree 各算各的）" \
-    "$out_other" "in=5000000 out=5000000 cache_r=0 cache_w=0"
+    "$out_other" "in=5000000 out=5000000 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=10000000"
 
 MODE=--kv  out_late=$( ( cd "$MINE" && HOME="$TMP" bash "$DRIVER" "$(( START + 15 ))" --kv ) )
 chk "窗口起点之后的记录才计入（第一条被排除）" \
-    "$out_late" "in=1000000 out=700000 cache_r=1000000 cache_w=0"
+    "$out_late" "in=1000000 out=700000 cache_r=1000000 cache_w=0 cost_state=none cost_unknown_tokens=2700000"
 
 MODE=--kv  out_none=$( ( cd "$TMP" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
 chk "没有任何会话认领当前目录 → 不输出（周报落「未知」兜底）" "$out_none" ""
+
+# ── 按模型分别配单价（GigleTutor-Web#934 Q4=A）────────────────────────────
+# 同一次派工里混用不同模型时，一个价钱套所有模型会算错。模型名从 turn_context.model 读。
+MODE=--kv m_hit=$(run CODEX_PRICES='{"gpt-test":{"in":10,"cached_in":1,"out":100}}')
+MODE=--kv m_old=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
+chk "按模型配价与「所有模型同价」的兼容写法结果一致" "$m_hit" "$m_old"
+MODE=--kv m_miss=$(run CODEX_PRICES='{"some-other-model":{"in":10,"cached_in":1,"out":100}}')
+chk "只配了别的模型 → 不套价，如实落 none 并报出缺价 token" \
+    "$(printf '%s' "$m_miss" | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_state=none cost_unknown_tokens=4050000"
+chk "没配任何单价 → 同样是 none（原有行为不变）" \
+    "$(MODE=--kv run CODEX_PRICES='{}' | grep -o 'cost_state=[a-z]*')" "cost_state=none"
 
 echo
 echo "通过 $pass / 失败 $fail"
