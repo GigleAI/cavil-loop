@@ -59,10 +59,17 @@ if [ -f "$DAEMON_CONF" ]; then
     WT_PREFIX=$(set -a; . "$DAEMON_CONF" >/dev/null 2>&1; printf '%s' "${SESSION_NAME_PREFIX:-}")
 fi
 
+# 口径切换那一周（那周起用量按 API 调用去重 + 纳入交叉 review 那一侧）。属于部署事实，
+# 不写死在本仓库；设了就以它为准，报告与趋势图都据此判断哪些数字跨口径、不可比。
+# 不设也能跑：采集器只在窗口里真能看见那条边界时才标，看不见就什么都不标
+# （绝不拿窗口里第一条记录顶上——那会让切换日期每出一次报告就往后漂一周）。
+SWITCH_WEEK="${WEEKLY_REPORT_SWITCH_WEEK:-}"
+
 ( cd "$PROJECT_ROOT" && python3 "$HERE/collect.py" --repo "$REPO" --out "$WORK/data.json" \
     ${WEEK_OF:+--week-of "$WEEK_OF"} \
     ${WT_BASE:+--worktree-base "$WT_BASE"} \
-    ${WT_PREFIX:+--session-prefix "$WT_PREFIX"} )
+    ${WT_PREFIX:+--session-prefix "$WT_PREFIX"} \
+    ${SWITCH_WEEK:+--switch-week "$SWITCH_WEEK"} )
 
 echo "== 2/4 出图"
 python3 "$HERE/render.py" --data "$WORK/data.json" --out-dir "$WORK" \

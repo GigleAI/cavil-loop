@@ -30,8 +30,10 @@ def main():
     # 的时长 / 成本类指标**不是同一把尺子量出来的**，算出来的百分比会把「量得更全了」
     # 读成「干得更多了」。所以在这条边界上，相关指标的变化列给「口径变化」而不是数字；
     # issue / PR / 讨论条数这些真正同口径的指标照常给环比。
-    # 只有目标周正好是第一个出现交叉 review 记账的周，才跨这条边界。
-    first_codex=next((k for k in W if wk[k].get("records_codex")), None)
+    # 切换周是**采集侧给的一份事实**（`switch_week`），不是「窗口里第一个有 codex 记账的周」——
+    # 后者会随 10 周窗口每周往后滚一格，把历史上的切换日期越推越晚（GitHub#932 review 第 6 轮）。
+    # 报告与趋势图读同一个字段，保证两边说的是同一周。拿不到就什么都不标。
+    first_codex=D.get("switch_week")
     at_switch=(first_codex is not None and tw["start"]==first_codex)
 
     def delta(a_, b_):
@@ -67,8 +69,10 @@ def main():
 
     # 切换周之后的过渡期：两组口径并列，避免把「覆盖面变大」读成「产出变多」
     if first_codex and cur.get("records_codex"):
-        since=W.index(tw["start"])-W.index(first_codex)
-        if since < a.parallel_weeks:
+        # 过渡期按**真实切换日期**算周数差，不按它在窗口里的下标——切换周可能已经滚出窗口。
+        since=(datetime.date.fromisoformat(tw["start"])
+               - datetime.date.fromisoformat(first_codex)).days // 7
+        if 0 <= since < a.parallel_weeks:
             L.append(f"> **口径切换过渡期（第 {since+1} / {a.parallel_weeks} 周）**：本周起统计同时发生两处变化"
                      f"——用量按 API 调用去重、纳入交叉 review 那一侧。两者叠加，**与切换前的周不可直接比**。\n")
             def money(v, have, total):
@@ -142,7 +146,7 @@ def main():
         L.append(f"| {mark}{d0.month}/{d0.day}–{d1.month}/{d1.day}{mark}{flag} | {v['iss_open']:.0f} | {v['iss_closed']:.0f} | "
                  f"{v['pr_merged']:.0f} | {v['add']-v['del']:,} | {v['comments']:.0f} | {v['human']:.0f} | "
                  f"{hm(v['wall'])} | {hm(v['work']) if v.get('work_records') else '—'} | ${v['cost']:,.0f} |")
-    if first_codex:
+    if first_codex in W:
         fd=datetime.date.fromisoformat(first_codex)
         L.append(f"\n† {fd.month}/{fd.day} 那周起口径改了（用量按 API 调用去重 + 纳入交叉 review 那一侧）。"
                  "**它前后的「AI 时长 / 模型+工具 / 成本」三列不是同一把尺子量的**，别连成一条趋势读；"

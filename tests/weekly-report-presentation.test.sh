@@ -50,7 +50,12 @@ for i, (k, sp) in enumerate(zip(weeks, spec)):
         "cost_records": rcl + cr_cd,          # claude 侧一律有金额
         "cost_records_claude": rcl, "cost_records_codex": cr_cd,
     }
-json.dump({"weeks": weeks, "weekly": weekly,
+# switch_week 由采集侧给（见 collect.py 的 switch_week()）：窗口里真能看见那条边界时才有值。
+# 报告只管用它，不自己在窗口里找——那会随窗口滚动漂移。
+sw = next((k for i, k in enumerate(weeks) if weekly[k]["records_codex"] and i > 0), None)
+if "SWITCH_WEEK" in __import__("os").environ:
+    sw = __import__("os").environ["SWITCH_WEEK"] or None
+json.dump({"weeks": weeks, "weekly": weekly, "switch_week": sw,
            "target_week": {"start": weeks[-1], "end": "2025-02-02"},
            "detail": [], "loose_prs": [], "long_windows": [], "misattributed": [],
            "generated_at": "2025-02-03T09:00:00"}, open(out, "w"))
@@ -100,6 +105,22 @@ mkfix "1:10:0:0:0" "1:10:1:5:1" "1:10:1:5:1" "2:20:2:10:2"
 chk "墙上时长恢复百分比（2h → 4h）"                "$(chg 'AI 工作时长（墙上）')" "+100%"
 chk "成本恢复百分比（\$15 → \$30）"                "$(chg '成本（按调用去重后的标价估算）')" "+100%"
 chk "切换周记号仍标在第一个含 codex 的周"          "$(has '† 1/13 那周起口径改了')" "yes"
+
+echo
+echo "── 场景 E：切换周已滚出展示窗口（switch_week 落在窗口之前） ──"
+# 真实切换在 2024-12-30，窗口 2025-01-06 起——窗口里每一周都有 codex 记账。
+# 这时**不能**把窗口里第一周当成新的切换点，否则历史切换日期每周往后漂一次。
+SWITCH_WEEK="2024-12-30" mkfix "1:10:1:5:1" "1:10:1:5:1" "1:10:1:5:1" "2:20:2:10:2"
+chk "不把窗口里第一周标成切换周"                   "$(has '那周起口径改了')" "no"
+chk "环比恢复正常（不误判成跨口径）"               "$(chg 'AI 工作时长（墙上）')" "+100%"
+chk "过渡期已过（切换后第 4 周以上）→ 不出并列块"  "$(has '口径切换过渡期')" "no"
+
+echo
+echo "── 场景 F：采集侧判不出边界（switch_week 为空） ──"
+SWITCH_WEEK="" mkfix "1:10:1:5:1" "1:10:1:5:1"
+chk "什么都不标"                                   "$(has '那周起口径改了')" "no"
+chk "环比照常给百分比"                             "$(chg 'AI 工作时长（墙上）')" "+0%"
+chk "不出口径切换过渡期块"                         "$(has '口径切换过渡期')" "no"
 
 echo
 echo "通过 $pass / 失败 $fail"

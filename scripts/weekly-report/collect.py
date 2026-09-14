@@ -69,6 +69,11 @@ def main():
     # 两个都不给就跳过这个指标，其余照常出。
     ap.add_argument("--worktree-base", default=None, help="worktree 存放基础目录")
     ap.add_argument("--session-prefix", default=None, help="worktree 子目录名前缀")
+    # 口径切换那一周（那周起用量按 API 调用去重 + 纳入交叉 review 那一侧）。
+    # 它是**部署事实**，不是展示窗口的函数：报告与趋势图都据此判断哪些数字不可比。
+    # 给任意一天即可，内部归到那周的周一。不给就按下面 switch_week() 的保守规则推。
+    ap.add_argument("--switch-week", default=None,
+                    help="口径切换那一周内的任意一天 YYYY-MM-DD")
     a = ap.parse_args()
 
     today = datetime.datetime.now(TZ).date()
@@ -95,6 +100,22 @@ def main():
         cands = [int(x) for x in cands if int(x) != n]
         if cands:
             link[n] = cands[0]
+
+    def switch_week(st_):
+        """口径切换那一周 —— **不能由展示窗口决定**（GitHub#932 review 第 6 轮）。
+
+        配置里给了就用配置（部署事实，窗口怎么滚都不变）。没给就只在**窗口里真能看见
+        那条边界**时才认：即「第一个有交叉 review 记账的周」前面还存在一个**没有**该侧
+        记账的周。窗口整段都在切换之后时（真实边界已经滚出去了），这里返回 None——
+        宁可不标，也不能把窗口里第一条记录当成新的切换点：那会让历史上的切换日期每周
+        往后漂一次（实测同一份数据、窗口前滚一周，标记就从 1/6 变成 1/13）。
+        """
+        if a.switch_week:
+            return monday(datetime.date.fromisoformat(a.switch_week)).isoformat()
+        first = next((w for w in weeks if st_[w].get("records_codex")), None)
+        if first is None or weeks.index(first) == 0:
+            return None
+        return first
 
     st = {w: collections.defaultdict(float) for w in weeks}
     per_issue = collections.defaultdict(lambda: collections.defaultdict(float))
@@ -347,6 +368,7 @@ def main():
     long_windows.sort(key=lambda x: -x["wall"])
     misattributed.sort(key=lambda x: -(x["work"] / max(x["wall"], 1)))
     json.dump({"repo": R, "generated_at": datetime.datetime.now(TZ).isoformat(),
+               "switch_week": switch_week(st),
                "long_windows": long_windows, "misattributed": misattributed,
                "target_week": {"start": tw, "end": tend.isoformat()},
                "weeks": weeks, "weekly": weekly, "detail": detail,

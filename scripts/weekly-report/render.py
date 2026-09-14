@@ -184,15 +184,32 @@ def main():
          {"type":"bar","data":g("human"),"color":GOLD,"label":"你发的","axis":"l","stack":True}])
     # 口径切换那一周画一条竖线：它左右两侧的时长 / 成本不是同一把尺子量的
     # （用量按 API 调用去重 + 纳入交叉 review 那一侧），连成一条折线会被读成趋势变化。
-    fc=next((i for i,k in enumerate(W) if wk[k].get("records_codex")), None)
+    # 切换周取**采集侧给的那份事实**（`switch_week`），跟报告读同一个字段；不能在窗口里
+    # 现找「第一个有 codex 记账的周」——那会随窗口每周往后滚一格（#932 review 第 6 轮）。
+    swk=D.get("switch_week")
+    fc=W.index(swk) if swk in W else None
     sw=(fc,"口径切换") if fc is not None else None
     hrs=[wk[k]["wall"]/3600 for k in W]
+    # 「模型 + 工具」是估算，且不是每周都算得出（日志已不在 / 窗口配不上）。
+    # 算不出的周给 None → 折线断开，不画成 0（那会被读成「那周没在跑模型」）。
+    # 整段都没有就整条不画，别在图上留一条空系列。
+    whrs=[(wk[k]["work"]/3600 if wk[k].get("work_records") else None) for k in W]
+    has_work=any(v is not None for v in whrs)
     # 零工时的周分母为 0 → None，折线在那里断开。画成 0 会被读成「那周没产出」，是两回事。
     lph=[(net[i]/hrs[i] if hrs[i] else None) for i in range(len(W))]
-    p_time=ch.panel(0,340,1212,320,"AI 投入时间：每周实际干活的小时数",
-        "柱＝当周 AI 真正在干活的累计小时（不含等人回话的空档，来自每条评论的耗时 footer，左轴）；折线＝平均每小时写出多少行净增代码（右轴）。",
-        [{"type":"bar","data":hrs,"color":AQUA,"label":"AI 工作小时","axis":"l","fmt":fmt_h},
-         {"type":"line","data":lph,"color":ORANGE,"label":"行 / 小时","axis":"r"}],note=sw)
+    # ⚠️ 柱子画的是**墙上时长**，它**包含**派工里的等待。标题 / 副标题 / 图例都必须这么说：
+    # 这张图会被直接贴进周报，图上写「不含等人回话的空档」而正文写「包含等待」，
+    # 读图的人只会记住图（#932 review 第 6 轮）。「不含等待」的是那条模型 + 工具折线。
+    time_series=[{"type":"bar","data":hrs,"color":AQUA,"label":"墙上时长（含等待）","axis":"l","fmt":fmt_h}]
+    if has_work:
+        time_series.append({"type":"line","data":whrs,"color":VIO,
+                            "label":"其中模型 + 工具（估算）","axis":"l"})
+    time_series.append({"type":"line","data":lph,"color":ORANGE,"label":"行 / 墙上小时","axis":"r"})
+    p_time=ch.panel(0,340,1212,320,"AI 投入时间：每周墙上时长（含等待）",
+        "柱＝当周每条记账里「完工 − 开始」的累计小时，包含那段派工里的等待（左轴）；"
+        + ("同轴折线＝其中「模型 + 工具」的估算小时（不含等待，算不出的周断开）；" if has_work else "")
+        + "右轴折线＝平均每个墙上小时写出多少行净增代码。",
+        time_series,note=sw)
     p4=ch.panel(0,680,1212,320,"花销：每周总成本 vs 每千行代码的单位成本",
         "柱＝当周总成本（按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少钱（右轴）。",
         [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本 $","axis":"l"},

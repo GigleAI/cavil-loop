@@ -16,7 +16,7 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-RENDER="$REPO_DIR/scripts/weekly-report/render.py"
+export RENDER="$REPO_DIR/scripts/weekly-report/render.py"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -101,8 +101,20 @@ chk "5 周只有 4 个柱顶标签（零工时不打标签）" "$(q 'len(bartops
 chk "左轴最低刻度带单位，是 0h"               "$(q 'axis(seg("effort",1))[0]')" "0h"
 chk "「行/小时」折线在零工时那周断开（4 个点不是 5 个）" \
     "$(q 'dots(seg("effort",1))')" "4"
-chk "工时面板有「行 / 小时」这条辅助折线（Q1=C）" \
-    "$(q '"行 / 小时" in legends(seg("effort",1))')" "True"
+chk "工时面板有「行 / 墙上小时」这条辅助折线（Q1=C）" \
+    "$(q '"行 / 墙上小时" in legends(seg("effort",1))')" "True"
+
+echo
+echo "— 图上的口径措辞必须跟柱子画的东西一致（#932 review 第 6 轮）"
+# 柱子画的是墙上时长，它**包含**等待。图上写「不含等人回话的空档」而正文写「包含等待」，
+# 读图的人只会记住图——这张图是直接贴进周报的。
+chk "工时面板标题点明「含等待」"      "$(q '"含等待" in titles("effort")[1]')" "True"
+chk "标题不再自称「实际干活的小时数」" "$(q '"实际干活" in titles("effort")[1]')" "False"
+chk "副标题不再说「不含等人回话的空档」" \
+    "$(q '"不含等人回话的空档" in read("effort")')" "False"
+chk "柱子的图例写明含等待"            "$(q '"墙上时长（含等待）" in legends(seg("effort",1))')" "True"
+chk "没有 work 数据时不画模型+工具折线" \
+    "$(q 'any("模型 + 工具" in t for t in legends(seg("effort",1)))')" "False"
 
 echo
 echo "— 默认格式器不受影响：其他 series 一个字符都不许变"
@@ -134,6 +146,10 @@ import json, sys
 D = json.load(open(sys.argv[1]))
 for i, k in enumerate(D["weeks"]):
     D["weekly"][k]["records_codex"] = 2 if i >= 2 else 0
+    D["weekly"][k]["work"] = D["weekly"][k]["wall"] * 0.8
+    D["weekly"][k]["work_records"] = 3
+# 切换周由采集侧给（collect.py 的 switch_week）；图不自己在窗口里找，否则会随窗口漂移
+D["switch_week"] = D["weeks"][2]
 json.dump(D, open(sys.argv[2], "w"))
 INNER
 
@@ -155,6 +171,27 @@ chk "交付面不画（issue / PR / 代码行不受口径影响）" \
     "$(sw delivery 's.count("口径切换")')" "0"
 chk "竖线画成红色虚线" \
     "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "2"
+chk "switch_week 不在窗口里 → 一条都不画（不拿窗口里第一条 codex 记录顶上）" \
+    "$(python3 - "$TMP" <<'INNER3'
+import json, subprocess, sys, os, re
+TMP = sys.argv[1]
+D = json.load(open(f"{TMP}/sw.json"))
+D["switch_week"] = "2024-12-30"          # 真实切换在窗口之前
+json.dump(D, open(f"{TMP}/sw2.json", "w"))
+os.makedirs(f"{TMP}/sw2", exist_ok=True)
+subprocess.run([sys.executable, os.environ["RENDER"], "--data", f"{TMP}/sw2.json",
+                "--out-dir", f"{TMP}/sw2", "--asset-url-base", "x", "--rev", "t"],
+               check=True, stdout=subprocess.DEVNULL)
+print(open(f"{TMP}/sw2/effort.html").read().count("口径切换"))
+INNER3
+)" "0"
+
+echo
+echo "— 有 work 数据时并列画出「模型 + 工具」"
+chk "画出模型 + 工具折线（不含等待的那条）" \
+    "$(sw effort 'any("模型 + 工具" in t for t in re.findall(r"class=.leg.>([^<]*)<", s))')" "True"
+chk "副标题点明那条不含等待" \
+    "$(sw effort '"不含等待" in s')" "True"
 
 echo
 echo "通过 $pass / 失败 $fail"
