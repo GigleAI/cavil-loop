@@ -1225,8 +1225,12 @@ gh_label_flip() {
 # 是**本地 base 分支**离远端有多远 —— 人在主 checkout 上看到的、以及 §1 兜底读不到
 # 远端时回落的，都是它。
 #
-# 阈值设 0 = 关掉告警。开出来的 issue **不带任何 pending label**，daemon 不会捡去
-# 派工（collect_queue_rows 只认触发 label），不会出现 daemon 给自己派活的回环。
+# 阈值设 0 = 关掉告警。开出来的 issue 挂 $LABEL_PENDING_HUMAN：
+#   · label 模式下它不是触发 label，本来就不会被派工；
+#   · greedy 模式下**所有开着的 issue 都会被派**，只有挡工 label 拦得住它（见
+#     greedy_skip_label_list）。不挂就会被 worker 捡去「修」—— 而这条 issue 讲的是
+#     本机 checkout 状态，agent 在 worktree 里根本改不动，纯属白烧一轮。
+# 语义上也正是 pending/human：commit 掉 WIP / 切回分支 / rebase 只能人来做。
 CHECKOUT_STALE_ALERT_COMMITS="${CHECKOUT_STALE_ALERT_COMMITS:-20}"
 CHECKOUT_STALE_ALERT_TITLE="${CHECKOUT_STALE_ALERT_TITLE:-[daemon] 主 checkout 长期落后 origin}"
 
@@ -1266,7 +1270,8 @@ checkout_stale_alert_open() {
     num=$(run_gh_capture "开主 checkout 落后告警 issue" \
         gh api -X POST "repos/$REPO/issues" \
         -f "title=$CHECKOUT_STALE_ALERT_TITLE（落后 ${behind} commit）" \
-        -f "body=$body" --jq '.number') || return 0
+        -f "body=$body" \
+        -f "labels[]=${LABEL_PENDING_HUMAN:-pending/human}" --jq '.number') || return 0
     case "$num" in ''|*[!0-9]*) return 0 ;; esac
     printf '%s\n' "$num" > "$marker"
     log "checkout_stale_alert: 本地 $base 落后 ${behind} commit（${reason}），已开 issue #$num"

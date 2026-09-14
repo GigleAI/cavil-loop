@@ -142,9 +142,17 @@ chk "已跟上时不重复 PATCH" "$(grep -c -- '-X PATCH' "$GH_CALLS")" "1"
 
 echo "▶ 安全边界：告警 issue 不能被 daemon 捡去派工"
 
+# greedy 模式下**所有开着的 issue 都会被派工**，只有挡工 label 拦得住。告警 issue
+# 讲的是本机 checkout 状态，worker 在 worktree 里根本改不动 —— 捡去就是白烧一轮，
+# 还会在 issue 下留一串「我看不出要改什么」的评论。
 setup_repo 25
 CHECKOUT_STALE_ALERT_COMMITS=20 check_checkout_staleness main "有未提交改动" >/dev/null 2>&1
-chk "开 issue 时不带任何 label" "$(grep -c 'labels' "$GH_CALLS")" "0"
+chk "开 issue 时挂 pending/human" "$(grep -c 'labels\[\]=pending/human' "$GH_CALLS")" "1"
+chk "不挂任何触发 label" "$(grep -c 'labels\[\]=pending/agent' "$GH_CALLS")" "0"
+
+# 直接问 greedy 的挡工判定本人，而不是假设那五个内置 label 没被改过。
+blocked=$(greedy_skip_reason "pending/human")
+chk "greedy 兜底趟会挡住它" "$?/$blocked" "0/pending/human"
 
 echo "▶ sync_project_checkout 的三条「不动工作区」路径都会检查"
 

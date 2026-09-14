@@ -580,15 +580,17 @@ POLL_INTERVAL_SECS=60
 # touches a dirty tree, a non-base branch, or a diverged local base — by design.
 # Those skips only reach poll.log, which nobody reads: a checkout once sat 9 days
 # and 1523 skipped dispatches behind with no outward signal. When the local base
-# falls this many commits behind origin, the daemon opens a plain issue (no
-# pending label, so it is never dispatched) and closes it once the checkout
-# catches up. Set 0 to disable.
+# falls this many commits behind origin, the daemon opens an issue labelled
+# pending/human (only a human can commit the WIP or switch the branch back, and
+# in greedy mode that label is what keeps a worker from picking it up) and closes
+# it once the checkout catches up. Set 0 to disable.
 #
 # daemon 每次派工前会 ff-only 同步主 checkout，但工作区脏 / 不在 base 分支 / 本地
 # base 分叉时一律不碰 —— 这是有意的。代价是这些跳过只写进 poll.log，而没人翻它：
 # 实测有过主 checkout 卡住 9 天、1523 次派工全被挡却毫无外部信号。本地 base 落后
-# origin 超过这个数就自动开一个 issue（不带 pending label，不会被派工），跟上后
-# 自动关闭。设 0 关掉。
+# origin 超过这个数就自动开一个 issue，跟上后自动关闭。issue 挂 pending/human：
+# 这事只能人解（commit 掉 WIP / 切回分支 / rebase），且 greedy 模式下全靠这个
+# label 才不会被 worker 捡去白干一轮。设 0 关掉。
 CHECKOUT_STALE_ALERT_COMMITS=20
 # CHECKOUT_STALE_ALERT_TITLE="[daemon] 主 checkout 长期落后 origin"
 
