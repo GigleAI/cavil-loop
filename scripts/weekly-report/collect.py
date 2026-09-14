@@ -84,11 +84,23 @@ def main():
     weeks = [(target - datetime.timedelta(days=7 * i)).isoformat()
              for i in range(a.weeks - 1, -1, -1)]
     wset = set(weeks)
-    start = weeks[0]
+    # GitHub 的 `since` 按 **UTC** 比较，而这里的「周一」是**北京时间**的周一（见 TZ）。
+    # 直接拼 `<周一>T00:00:00Z` 等于从北京时间周一 **08:00** 才开始取：那天 00:00–08:00
+    # 之间发出、之后又没被编辑过的评论整段拿不到。后果不是少一点点，而是**同一个历史周的
+    # 数字会随展示窗口左移而变小**——那一周还在窗口内部时取得到（因为 since 更早），
+    # 一旦滚到最左端就少掉这 8 小时（GitHub#932 交叉 review 实测：同一条 01:00 发的记录，
+    # `--weeks 1` 时 records=0，`--weeks 2` 时 records=1）。这会直接砸掉「逐周核对旧周数值」。
+    #
+    # 再减 1 秒：`since` 的语义是「**晚于**这个时刻」，正好落在周一 00:00:00 的评论会被排除。
+    # 多取进来的那 1 秒属于上一周，下面按 `created_at` 归周时本来就会被 `wset` 过滤掉。
+    start = (datetime.datetime.combine(
+                 datetime.date.fromisoformat(weeks[0]), datetime.time(0, 0), TZ)
+             - datetime.timedelta(seconds=1)
+             ).astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     R = a.repo
     items = gh(f"repos/{R}/issues?state=all&per_page=100")
-    comments = gh(f"repos/{R}/issues/comments?since={start}T00:00:00Z&per_page=100")
+    comments = gh(f"repos/{R}/issues/comments?since={start}&per_page=100")
     prs = gh(f"repos/{R}/pulls?state=all&per_page=100&sort=updated&direction=desc")
 
     # PR → 关联 issue。评论循环里要用它把一条 PR 评论定位回它的 worktree。
