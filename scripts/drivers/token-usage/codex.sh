@@ -13,6 +13,15 @@
 #     （同级还有 turn_token_usage / thread_token_usage，那两个是**累计值**，
 #      不能求和，求和会重复计——这正是 claude 那一侧踩过的坑）
 #
+# ⚠️ `reasoning_output_tokens` 是 `output_tokens` 的**子项，不是另一份输出**，
+#   两者相加就是把思考部分算两遍（GigleTutor-Web#932 交叉 review 第 4 轮）。
+#   本机 223 个会话、3,119 条 `token_usage_record` 实测：
+#     · `total_tokens == input_tokens + output_tokens`  3119 / 3119 条成立
+#     · `reasoning_output_tokens > output_tokens`       0 条
+#   相加会多计 82,139 / 1,061,192 ≈ 7.7% 的输出 token，配了单价还会照这个虚数计费。
+#   同理 `cached_input_tokens` 是 `input_tokens` 的子项（实测 0 条超出），
+#   所以下面用 `input − cached` 取未命中缓存的那部分，与 claude 那一侧口径对齐。
+#
 # ⚠️ 金额：本 driver **不自带价目表**。codex 侧的单价属于部署环境，没有可信默认值，
 #   硬编一个只会把「估算」伪装成「账单」。要出金额就在项目配置里设这三个（单位：
 #   美元 / 百万 token），没设就只出 token、不出金额，周报会如实记「缺金额」：
@@ -71,7 +80,7 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" \
         .in  += (($u.input_tokens // 0) - ($u.cached_input_tokens // 0))
         | .cin += ($u.cached_input_tokens // 0)
         | .cw  += ($u.cache_write_input_tokens // 0)
-        | .out += (($u.output_tokens // 0) + ($u.reasoning_output_tokens // 0))
+        | .out += ($u.output_tokens // 0)      # reasoning 已在 output 里，别再加一次
       )
     | . as $t
     | (if ($pi != "" and $pc != "" and $po != "")
