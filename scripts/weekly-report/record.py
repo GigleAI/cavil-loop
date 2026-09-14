@@ -110,6 +110,9 @@ def extract(body, login, comment_id=None, default_wt=None):
       start,end  派工窗口
       wall     墙上时长（秒）= 完工 − 开始
       cost     金额（美元）—— 按调用去重后的**标价估算**，计价偏差尚未核实
+      has_cost 这条记录**有没有写金额**。`cost=0` 有两种来源：驱动没配单价所以根本没写，
+               和配了单价但估算不足半美分、如实写成 `0.00`。两者必须分开，否则报告会把
+               后者说成「该侧未配单价」
       out      输出 token 数 —— 只从本条记录自己那一行读，不扫正文
       agent    'claude' / 'codex' / None
     """
@@ -155,17 +158,26 @@ def extract(body, login, comment_id=None, default_wt=None):
             wall = 0
         if not wall and isinstance(st, datetime.datetime):
             wall = int((en - st).total_seconds())
-        try:
-            cost = float(kv.get("cost_usd", 0))
-        except ValueError:
-            cost = 0.0
+        # 「有没有金额」和「金额是不是 0」是两回事（GitHub#932 交叉 review）：
+        # 驱动没配单价时**根本不写** `cost_usd`；配了单价、但这段估算不足半美分时，
+        # 会如实写出 `cost_usd=0.00`。只看数值非零，后者会被当成「没采到金额」，
+        # 报告于是白纸黑字写「该侧未配单价」——事实相反。所以把「有没有」单独带出去。
+        raw_cost = kv.get("cost_usd")
+        has_cost = False
+        cost = 0.0
+        if raw_cost is not None:
+            try:
+                cost = float(raw_cost)
+                has_cost = True
+            except ValueError:
+                pass                     # 写了但读不出来 → 当作没有，别猜
         try:
             out = int(float(kv.get("out", 0)))
         except ValueError:
             out = 0
         return {"src": "marker", "ident": ident, "agent": kv.get("agent"),
                 "wt": norm_wt(kv.get("wt")) or norm_wt(default_wt), "start": st, "end": en,
-                "wall": wall, "cost": cost, "out": out}
+                "wall": wall, "cost": cost, "has_cost": has_cost, "out": out}
 
     # ② 历史评论（无机器记录）：连同上面那条作者判定一共四步，任何一步不满足
     #    就不作为记账来源
@@ -176,10 +188,12 @@ def extract(body, login, comment_id=None, default_wt=None):
         return None
     if not RE_TOKEN_LINE.match(nxt):
         return None                      # 记账行之后必须紧跟 token 行
+    # 历史记账行同理：`token … ($0.00)` 是「记了，是 0」，整行没有 `($…)` 才是「没记」。
+    costs = [float(x.group(1)) for x in RE_COST.finditer(nxt)]
     return {"src": "footer", "ident": "footer", "agent": None,
             "wt": norm_wt(default_wt), "start": a, "end": b,
             "wall": int((b - a).total_seconds()),
-            "cost": sum(float(x.group(1)) for x in RE_COST.finditer(nxt)),
+            "cost": sum(costs), "has_cost": bool(costs),
             "out": _out_of(nxt)}
 
 

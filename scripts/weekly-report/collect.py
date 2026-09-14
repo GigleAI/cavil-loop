@@ -171,7 +171,7 @@ def main():
         if rec is None:
             continue                      # 这条评论不是记账来源
         s["footers"] += 1
-        if rec["cost"]:
+        if rec.get("has_cost"):
             s["cost_footers"] += 1
         # 先只认领，不入账。记账行里的时长 / 金额 / token 都是**从派工开始起的累计值**，
         # 同一次派工发多条评论时每条都是一个更大的累计快照——必须留 end 最晚的那条，
@@ -204,7 +204,10 @@ def main():
         # 金额覆盖率：驱动没配单价时**有意**不出金额（见 drivers/token-usage/codex.sh），
         # 采集后就是 0。报告必须能区分「这一侧真的没花钱」和「这一侧的金额没采到」，
         # 否则 0 会被当成事实写成「占成本 0%」（GitHub#932 交叉 review 第 5 轮）。
-        if cost:
+        # ⚠️ 判据是**记录里有没有写金额**（`has_cost`），不是**金额是不是非零**：
+        # 配了单价、但这段估算不足半美分时，驱动会如实写出 `cost_usd=0.00`；
+        # 按非零判断会把它算成「没采到」，报告反过来说「该侧未配单价」（第 3 轮打回）。
+        if rec.get("has_cost"):
             s["cost_records"] += 1
             s[f"cost_records_{agent}"] += 1
         durs[w].append(wall)
