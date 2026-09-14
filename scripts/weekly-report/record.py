@@ -36,6 +36,16 @@ RE_FOOT = re.compile(r'^(?:⏱️\s*)?开始\s+' + _TS + r'\s*·\s*完工\s+' + 
 RE_HEAD = re.compile(r'^(?:⏱️\s*)?开始\s+' + _TS + r'\s*·\s*完工\s+' + _TS)
 RE_TOKEN_LINE = re.compile(r'^token\s')
 RE_COST = re.compile(r'\(\$([\d.]+)\)')
+# 历史记账行的 token 数只从**紧随其后那一行**里读（`token 44 input, 1k output ($16.64)`），
+# 绝不扫正文：正文里随手写的 `token … output` 示例会被原样累加进统计（实测正文一句
+# 「示例：token 1 input, 999k output」就把这条记录的输出从 1.2k 抬到 100 万）。
+RE_OUT = re.compile(r'token .*?([\d.]+)([km]?)\s*output')
+_MUL = {"": 1, "k": 1e3, "m": 1e6}
+
+
+def _out_of(token_line):
+    """从一行 token 行里取输出 token 数。拿不到返回 0。"""
+    return int(sum(float(m.group(1)) * _MUL[m.group(2)] for m in RE_OUT.finditer(token_line)))
 
 # 只用于**披露**的界限：墙上时长 ≥ 这个值的记录在报告里逐条列出。
 # 它只决定列不列，**不影响任何统计数字**，也不判断这条记录是不是「卡住了」。
@@ -100,11 +110,22 @@ def extract(body, login, comment_id=None, default_wt=None):
       start,end  派工窗口
       wall     墙上时长（秒）= 完工 − 开始
       cost     金额（美元）—— 按调用去重后的**标价估算**，计价偏差尚未核实
+      out      输出 token 数 —— 只从本条记录自己那一行读，不扫正文
       agent    'claude' / 'codex' / None
     """
     lines = body.splitlines()
     ne = [l.strip() for l in lines if l.strip()]
     if not ne:
+        return None
+
+    # ⓪ 来源资格：只有机器人写的评论才可能是记账来源。**两种格式都要过这一关**。
+    # 原来这一条只挡历史格式，机器记录那一支在检查作者之前就返回了（GitHub#932
+    # review 第 3 轮）：维护者在讨论里复制一行机器记录当例子、又恰好是评论的最后一个
+    # 非空行时，就凭空多出一次派工；它的 `end` 还可能比真记录晚，于是在同一身份下
+    # 把真实那条**顶掉**（见 pick_latest）。
+    # 注意：交叉 review 评论的排除只能留在历史格式那一支，不能提到这里 —— 改造后
+    # review 模板会正常写机器记录，那一侧的开销要照常入账。
+    if not is_bot(login):
         return None
 
     # ① 机器记录：必须是最后一个非空行。正文里任何位置出现的同形内容一律忽略。
@@ -138,13 +159,16 @@ def extract(body, login, comment_id=None, default_wt=None):
             cost = float(kv.get("cost_usd", 0))
         except ValueError:
             cost = 0.0
+        try:
+            out = int(float(kv.get("out", 0)))
+        except ValueError:
+            out = 0
         return {"src": "marker", "ident": ident, "agent": kv.get("agent"),
                 "wt": norm_wt(kv.get("wt")) or norm_wt(default_wt), "start": st, "end": en,
-                "wall": wall, "cost": cost}
+                "wall": wall, "cost": cost, "out": out}
 
-    # ② 历史评论（无机器记录）：四步判定，任何一步不满足就不作为记账来源
-    if not is_bot(login):
-        return None                      # 人发的评论里出现的记账行只会是引用
+    # ② 历史评论（无机器记录）：连同上面那条作者判定一共四步，任何一步不满足
+    #    就不作为记账来源
     if body.lstrip().startswith("<!-- codex-review-round"):
         return None                      # 该阶段交叉 review 不写记账行
     a, b, nxt = _footer_window(lines)
@@ -155,7 +179,8 @@ def extract(body, login, comment_id=None, default_wt=None):
     return {"src": "footer", "ident": "footer", "agent": None,
             "wt": norm_wt(default_wt), "start": a, "end": b,
             "wall": int((b - a).total_seconds()),
-            "cost": sum(float(x.group(1)) for x in RE_COST.finditer(nxt))}
+            "cost": sum(float(x.group(1)) for x in RE_COST.finditer(nxt)),
+            "out": _out_of(nxt)}
 
 
 def dispatch_key(rec):

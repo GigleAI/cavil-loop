@@ -143,6 +143,40 @@ chk("起止与记账行都没有 → 各自以评论 id 为身份", (e["ident"],
 chk("身份缺失的两条**不能**被并成一组",
     record.dispatch_key(e) == record.dispatch_key(f), False)
 
+# ── 来源资格对**机器记录**同样生效（GitHub#932 review 第 3 轮） ─────────────
+# 维护者在讨论里复制一行机器记录当例子、又恰好是评论最后一个非空行时，原来会凭空
+# 多出一次派工；它的 end 还可能比真记录晚，于是在同一身份下顶掉真实那条。
+HUMAN_MARK = ("我们的格式是这样：\n"
+              "<!-- agent-metrics agent=claude wt=931 start=2026-09-14T10:00:00+08:00 "
+              "end=2026-09-14T10:14:10+08:00 wall_secs=850 in=1 out=1234 cache_r=0 cache_w=0 cost_usd=16.64 -->")
+chk("人发的评论末尾贴机器记录 → 不作为记账来源", record.extract(HUMAN_MARK, "luosky", 20, 931), None)
+
+bot_mark = record.extract("收尾。\n" + HUMAN_MARK.split("\n", 1)[1], BOT, 21, 931)
+chk("机器人发的同一条机器记录 → 照常入账",
+    (bot_mark["src"], bot_mark["wall"], bot_mark["cost"]), ("marker", 850, 16.64))
+
+cx_mark = record.extract("<!-- codex-review-round:3 -->\n## codex review 通过\n\n"
+                         + HUMAN_MARK.split("\n", 1)[1], BOT, 22, 931)
+chk("交叉 review 评论带机器记录 → 照常入账（改造后它也写记账）",
+    (cx_mark["src"], cx_mark["wall"], cx_mark["cost"]), ("marker", 850, 16.64))
+chk("交叉 review 评论只有历史记账行 → 仍不作为记账来源（那时它不写记账）",
+    record.extract("<!-- codex-review-round:1 -->\n引用一下：\n\n" + REAL, BOT, 23), None)
+
+# ── 输出 token 只从选中的那条记录自己读，不扫正文 ───────────────────────────
+# 原来是拿正则扫整条评论正文累加 `token … output`：正文里一句示例就能把统计抬高几个
+# 数量级，而机器记录里明明写着精确值。
+BODY_EX = "示例：token 1 input, 999k output ($500)\n\n"
+mk = ("<!-- agent-metrics agent=claude wt=931 start=2026-09-14T10:00:00+08:00 "
+      "end=2026-09-14T10:14:10+08:00 wall_secs=850 in=1 out=1234 cache_r=0 cache_w=0 cost_usd=16.64 -->")
+chk("机器记录 → 取 out= 的精确值（不是记账行里舍入过的 1k）",
+    record.extract("干完了。\n\n" + mk, BOT, 24)["out"], 1234)
+chk("机器记录 + 正文示例 → 正文不参与",
+    record.extract(BODY_EX + mk, BOT, 25)["out"], 1234)
+chk("机器记录没写 out= → 记 0，不回头扫正文",
+    record.extract(BODY_EX + mk.replace("out=1234 ", ""), BOT, 26)["out"], 0)
+chk("历史记账行 → 只读紧随其后那一行（1k），正文示例不参与",
+    record.extract(BODY_EX + REAL, BOT, 27)["out"], 1000)
+
 # ── 长窗口披露（只决定列不列，不改任何数字） ─────────────────────────────
 def listed(sec):
     return sec >= record.LONG_WINDOW_SECS

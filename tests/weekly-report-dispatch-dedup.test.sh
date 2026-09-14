@@ -27,14 +27,17 @@ chk() { if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); else echo " 
 
 # 派工模板里生成 footer 的那两行 printf，**原样照搬**。模板改了这里要同步。
 emit_footer() {
-    local start_ts="$1" end_ts="$2" wall="$3" cost="$4" wt="$5" agent="${6:-claude}"
+    local start_ts="$1" end_ts="$2" wall="$3" cost="$4" wt="$5" agent="${6:-claude}" out="${7:-1}"
     local hms="$((wall / 60))m $((wall % 60))s"
+    # 可见记账行里的 token 是**给人看的舍入值**（1234 → 1.2k）；机器标记里才是精确值。
+    local shown="$out"; [ "$out" -ge 1000 ] && shown="$(( out / 100 ))"; \
+        [ "$out" -ge 1000 ] && shown="${shown:0:$(( ${#shown} - 1 ))}.${shown: -1}k"
     printf '\n\n---\n⏱️ 开始 %s · 完工 %s · 耗时 %s\ntoken %s\n' \
-        "$start_ts" "${end_ts:11:8}" "$hms" "1 input, 1 output (\$$cost)"
+        "$start_ts" "${end_ts:11:8}" "$hms" "1 input, $shown output (\$$cost)"
     printf '<!-- agent-metrics agent=%s wt=%s start=%s end=%s wall_secs=%s %s -->\n' \
         "$agent" "$wt" "$(date -d "$start_ts" --iso-8601=seconds)" \
         "$(date -d "$end_ts" --iso-8601=seconds)" "$wall" \
-        "in=1 out=1 cache_r=0 cache_w=0 cost_usd=$cost"
+        "in=1 out=$out cache_r=0 cache_w=0 cost_usd=$cost"
 }
 
 # 派工 A：start 10:00，三条累计快照（跨 issue #10 与 PR #11），最终 1200 秒 / $20
@@ -71,6 +74,14 @@ c1=$(emit_footer_nowt   "$C_START" "2025-01-08 16:04:00"  240  4)
 c2=$(emit_footer_legacy "$C_START" "2025-01-08 16:09:00"  540  9)
 c3=$(emit_footer        "$C_START" "2025-01-08 16:15:00"  900 15 10)
 
+# 派工 D：**来源资格 + token 来源**（GitHub#932 review 第 3 轮）。
+#   ① 机器人真实记录：wall 600 / $10 / out 1234，正文里还顺手贴了一句 token 示例
+#   ② 人（非机器人）把同一行机器记录复制进讨论当例子，wt / start 与 ① 相同、
+#      end 更晚、数字更大 —— 它既不能自己入账，也不能因为 end 晚就顶掉 ①
+D_START="2025-01-08 18:00:00"
+d1=$(emit_footer "$D_START" "2025-01-08 18:10:00"  600 10 10 claude 1234)
+d2=$(emit_footer "$D_START" "2025-01-08 18:30:00" 9999 999 10 claude 888888)
+
 py_json() { python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))"; }
 A1=$(printf '在 issue 上回一条%s' "$a1" | py_json)
 A2=$(printf '在 PR 上回一条%s'    "$a2" | py_json)
@@ -79,6 +90,8 @@ B1=$(printf '第二次派工%s'        "$b1" | py_json)
 C1=$(printf '混合：标记省了 wt%s'  "$c1" | py_json)
 C2=$(printf '混合：只有可见记账行%s' "$c2" | py_json)
 C3=$(printf '混合：标记带显式 wt%s' "$c3" | py_json)
+D1=$(printf '干完了。顺手贴个示例：token 1 input, 999k output ($500)%s' "$d1" | py_json)
+D2=$(printf '我们的记账格式长这样，供参考：%s' "$d2" | py_json)
 
 W_OUT="2024-12-31T02:00:00Z"
 cat > "$TMP/issues.json" <<JSON
@@ -104,7 +117,11 @@ cat > "$TMP/comments.json" <<JSON
  {"id":6,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
   "user":{"login":"acme-bot"},"created_at":"2025-01-08T08:09:00Z","body":$C2},
  {"id":7,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
-  "user":{"login":"acme-bot"},"created_at":"2025-01-08T08:15:00Z","body":$C3}
+  "user":{"login":"acme-bot"},"created_at":"2025-01-08T08:15:00Z","body":$C3},
+ {"id":8,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
+  "user":{"login":"acme-bot"},"created_at":"2025-01-08T10:10:00Z","body":$D1},
+ {"id":9,"issue_url":"https://api.github.com/repos/acme/widget/issues/11",
+  "user":{"login":"acme-user"},"created_at":"2025-01-08T10:30:00Z","body":$D2}
 ]
 JSON
 cat > "$TMP/pulls.json" <<'JSON'
@@ -142,12 +159,17 @@ except Exception as e:
     print('')
 "; }
 
-chk "三次派工 → 只入账 3 条记账记录（不是 7 条）"        "$(q "print(int(w['records']))")" "3"
+chk "四次派工 → 只入账 4 条记账记录（不是 9 条）"        "$(q "print(int(w['records']))")" "4"
 chk "被折叠的累计快照记 4 条"                            "$(q "print(int(w['dupes']))")"   "4"
-chk "墙上时长 = A 1200 + B 420 + C 900，不是逐条求和"     "$(q "print(int(w['wall']))")"    "2520"
-chk "成本 = 20 + 7 + 15，不是把每条快照都加上"            "$(q "print(round(w['cost']))")"  "42"
-chk "轮数仍按全部评论算（7 条）"                          "$(q "print(int(one(10)['rounds']))")" "7"
-chk "issue #10 的墙上时长同样只算各次派工的最终累计"      "$(q "print(int(one(10)['wall']))")"   "2520"
+chk "墙上时长 = A 1200 + B 420 + C 900 + D 600"          "$(q "print(int(w['wall']))")"    "3120"
+chk "成本 = 20 + 7 + 15 + 10，不是把每条快照都加上"       "$(q "print(round(w['cost']))")"  "52"
+chk "人发的示例不作为记账来源（记账来源 8 条，不是 9 条）" "$(q "print(int(w['footers']))")" "8"
+chk "人发的示例 end 更晚也顶不掉真实记录（D 仍是 600 秒 / \$10）" \
+    "$(q "print(int(w['wall'])-2520, round(w['cost'])-42)")" "600 10"
+chk "输出 token = 1+1+1+1234，正文示例与人发的示例都不算" "$(q "print(int(w['out']))")"     "1237"
+chk "轮数仍按全部评论算（9 条）"                          "$(q "print(int(one(10)['rounds']))")" "9"
+chk "人发的那条计入「人发的评论」（1 条）"                "$(q "print(int(one(10)['human']))")"  "1"
+chk "issue #10 的墙上时长同样只算各次派工的最终累计"      "$(q "print(int(one(10)['wall']))")"   "3120"
 
 echo
 echo "通过 $pass / 失败 $fail"

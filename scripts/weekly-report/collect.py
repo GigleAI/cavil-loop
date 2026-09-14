@@ -49,9 +49,9 @@ def monday(d):
 # 金额正则还会命中正文 SQL 的 `($1)`。同一次派工发多条评论时还会重复累加。
 # 那个 4 小时**剔除**逻辑已经删掉：同一个数值改作「长窗口披露」用途，
 # 只决定要不要在报告里列出来，不影响任何统计数字（见 record.LONG_WINDOW_SECS）。
-RE_OUT    = re.compile(r'token .*?([\d.]+)([km]?)\s*output')
+# token 也一样：从 record 选中的那条记录自己读（机器记录读 `out=`，历史记录读记账行
+# 紧随其后那一行），**不再扫正文**。扫正文会把讨论里写的示例累加进统计。
 RE_CODEX  = re.compile(r'codex review')
-MUL = {"": 1, "k": 1e3, "m": 1e6}
 
 # PR ↔ issue 关联：标题尾巴的 （#123） / (#123)，以及 body 里的 Closes/Refs/Fixes #123
 RE_LINK_TITLE = re.compile(r'[（(]#(\d+)[）)]')
@@ -150,14 +150,16 @@ def main():
         if prev is not None:
             s["dupes"] += 1
         if prev is None or kept is rec:
-            claimed[key] = (rec, w, num, body)
+            # 只留提取好的记录，**不留正文** —— 汇总阶段拿不到正文，也就没法再回头
+            # 扫它（正文里的示例曾经被当成真实用量累加）。
+            claimed[key] = (rec, w, num)
 
     # ── 第二段：每次派工只按它最终那条累计记录入账 ──
-    for rec, w, num, body in claimed.values():
+    for rec, w, num in claimed.values():
         s = st[w]
         wall = rec["wall"]
         cost = rec["cost"]
-        out = sum(float(m.group(1)) * MUL[m.group(2)] for m in RE_OUT.finditer(body))
+        out = rec["out"]
         # 历史记录（无机器标记）没写 agent。实测交叉 review 那一侧在改造前几乎不写
         # 记账行（上周 589 条里只有 2 条，且已被「交叉 review 评论不作记账来源」挡掉），
         # 所以历史记录一律归到主 worker 那一侧；改造后的记录由标记显式带 agent。
