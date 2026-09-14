@@ -19,11 +19,30 @@
 #   去重后与 CLI 自己记的 modelUsage 基本吻合（中位数 1.00，范围 0.95–1.02）。
 #   没有 requestId 的条目无法归组，各自单独计入。
 #
+# ⚠️ 顶层计数为 0 时回退到 usage.iterations[]（2026-09 修，见 GigleTutor-Web#935）
+#   极少数记录的**顶层**计数被写成 0，真值只落在 `usage.iterations[]` 明细里；只读顶层
+#   就把整次调用的 input / output / cache read 算成 0。本机 161 份 transcript、88,400 条
+#   带 usage 的记录实测：87,649 条带 `iterations[]`（长度恒为 1），其中 87,647 条顶层与
+#   明细**逐字段相等**；只有 2 条（同一个 requestId = 1 次调用，0.0018%）是这种形态，
+#   漏掉 in 2 / out 288 / cache read 964,830（cache write 没丢——被清零的只有那四个顶层
+#   整数计数，`cache_creation` 子对象仍是真值）。
+#   规则：**5 个求和项各走一次「顶层 > 0 用顶层，否则用明细同名项的合计」**，
+#   顶层和明细**永远不相加**，所以不存在重复累加。明细多条时求和（当前长度恒为 1，
+#   求和是为了长度变了也对）。
+#   为什么不用「有明细就一律信明细」：万一以后 `iterations[]` 变成只记某一步、而顶层才是
+#   全量，那条规则会让**所有**记录一起少算；逐字段回退在已扫描样本里只改动那 2 条。
+#   两档 TTL 的回退目前**没有观测证据**（顶层 ephemeral_5m / 1h 与明细零差异），属防御性扩展。
+#
 # 各字段：
 #   input       = sum(input_tokens) — 非 cache 的 fresh input
 #   output      = sum(output_tokens) — 模型生成的
 #   cache read  = sum(cache_read_input_tokens) — cache 命中（便宜 0.1× input）
-#   cache write = sum(cache_creation_input_tokens) — 新写入 cache（5m 1.25×、1h 2×）
+#   cache write = sum(cache_creation.ephemeral_5m) + sum(cache_creation.ephemeral_1h)
+#                 — 新写入 cache，按 TTL 分档计价（5m 1.25×、1h 2×），所以必须分开累加。
+#                 顶层的 `cache_creation_input_tokens` 是这两档的**合计**，不是求和项——
+#                 加进来等于 cache write 计两遍。实测 87,649 条带明细的记录里
+#                 `cache_creation_input_tokens == ephemeral_5m + ephemeral_1h` 成立 87,647 条，
+#                 另外 2 条就是下面那种顶层被清零的形态。
 #   $X.XX       = 估算 USD（按 model 从 anthropic pricing 推算）
 #
 # ⚠️ 金额只是**按标价的估算**，计价偏差尚未核实（GigleTutor-Web#931 另行追踪）：
@@ -80,6 +99,10 @@ jq -sr --argjson start "$START_EPOCH" --argjson pi "$PRICE_IN" --arg mode "$MODE
         elif . >= 1000 then ((. / 100 | floor) / 10 | tostring) + "k"
         else (. | floor | tostring) end;
 
+    # 逐字段零回退：顶层 > 0 用顶层，否则用 iterations[] 里同名项的合计。两者永不相加。
+    def zf($top; $items; f):
+        if $top > 0 then $top else ($items | map(f) | add // 0) end;
+
     # USD 强制 2 位小数
     def usd2:
         (. * 100 + 0.5 | floor) as $c |
@@ -96,11 +119,14 @@ jq -sr --argjson start "$START_EPOCH" --argjson pi "$PRICE_IN" --arg mode "$MODE
     | map(.message.usage)
     | reduce .[] as $u (
         {in:0, out:0, cr:0, cw_5m:0, cw_1h:0};
-        .in += ($u.input_tokens // 0)
-        | .out += ($u.output_tokens // 0)
-        | .cr += ($u.cache_read_input_tokens // 0)
-        | .cw_5m += ($u.cache_creation.ephemeral_5m_input_tokens // 0)
-        | .cw_1h += ($u.cache_creation.ephemeral_1h_input_tokens // 0)
+        ($u.iterations // []) as $it
+        | .in += zf($u.input_tokens // 0; $it; .input_tokens // 0)
+        | .out += zf($u.output_tokens // 0; $it; .output_tokens // 0)
+        | .cr += zf($u.cache_read_input_tokens // 0; $it; .cache_read_input_tokens // 0)
+        | .cw_5m += zf($u.cache_creation.ephemeral_5m_input_tokens // 0;
+                       $it; .cache_creation.ephemeral_5m_input_tokens // 0)
+        | .cw_1h += zf($u.cache_creation.ephemeral_1h_input_tokens // 0;
+                       $it; .cache_creation.ephemeral_1h_input_tokens // 0)
       )
     | (.cw_5m + .cw_1h) as $cw
     | ((.in + .cr * 0.1 + .cw_5m * 1.25 + .cw_1h * 2 + .out * 5) * $pi / 1000000) as $usd

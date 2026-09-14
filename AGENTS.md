@@ -167,13 +167,29 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 ## Tests
 
-**No automated test suite** — the scripts are shell glue + GitHub API calls. Minimum bar:
+`tests/` holds a set of **self-contained shell tests** — run one file, get a verdict
+(`bash tests/<name>.test.sh`, exit code 0 = all passed). They build fixed fake logs / a fake `gh`,
+point `HOME` at a temp dir, and **run the real scripts** — no network, no reading your real sessions.
+There is **no unified runner and no CI**: run the ones that cover what you touched.
+
+Changes in these areas must run the matching tests:
+
+- Accounting / weekly report → `tests/weekly-report-*.test.sh`
+- Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
+- Dispatch / reaping / preview → `tests/greedy-dispatch.test.sh`, `tests/reap-finished-workers.test.sh`,
+  `tests/preview-socket-activation.test.sh`, …
+
+Changes with no matching test (daemon glue, prompt templates) still meet the minimum bar:
 
 - `bash -n` passes on every edited script
 - A full local poll cycle (step 2 of "Edit daemon logic" above) runs without error
 - After editing a prompt, manually read the rendered output to confirm placeholders substituted and the safety section is intact
 
-Adding a real test suite (bats / shellspec / live worker spin-up) is worth it long-term — but open an issue to discuss the approach first; it's a sizable investment to balance against current priorities.
+**When adding logic that silently changes numbers** (accounting, dedup, pricing, which field a value
+is read from), add the test alongside it — this class of bug never errors out, it just makes the
+numbers quietly bigger or smaller. Model it on `tests/token-usage-*.test.sh`: the fixtures must
+**tell candidate implementations apart**; asserting "correct input → correct output" alone will not
+catch a missing branch.
 
 ## We develop this tool with this tool
 

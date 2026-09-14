@@ -157,13 +157,26 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 ## 测试
 
-**没有自动化测试套件**——脚本都是 shell glue + GitHub API。最低保证：
+`tests/` 下有一批**自包含的 shell 测试**，每个文件一跑就出结论（`bash tests/<name>.test.sh`，
+退出码 0 = 全过）。它们造固定的假日志 / 假 `gh`、把 `HOME` 指到临时目录，**直接跑真实脚本**，
+不碰网络、不读本机真实会话。**没有统一 runner，也没有 CI**——改到哪块就手动跑哪几个。
+
+改动落在下面这些地方时，对应的测试必须跑：
+
+- 记账 / 周报口径 → `tests/weekly-report-*.test.sh`
+- 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
+- 派工 / 回收 / 预览 → `tests/greedy-dispatch.test.sh`、`tests/reap-finished-workers.test.sh`、
+  `tests/preview-socket-activation.test.sh` 等
+
+没有对应测试的改动（daemon glue、prompt 模板）仍按最低保证走：
 
 - `bash -n` 通过所有改过的脚本
 - 本地试跑一次完整 poll 周期（前述「改 daemon 逻辑」第 2 步）
 - 改 prompt 后人工读一遍渲染结果，确认占位都替换、安全段还在
 
-要加正经测试套件（bats / shellspec / 真起 worker 验证），先开个 issue 讨论方案——投入大、长期收益高，但跟现有人力 / 优先级要 balance。
+**新增会悄悄改变数字的逻辑（记账、去重、计价、取值口径）时，要连测试一起加**——这类错
+不会报错，只会让数字悄悄变大或变小。写法照着 `tests/token-usage-*.test.sh`：
+样本要能**区分开候选实现**，光验证「正确输入得到正确输出」挡不住漏写某条分支。
 
 ## 我们自己用本工具开发本工具
 
