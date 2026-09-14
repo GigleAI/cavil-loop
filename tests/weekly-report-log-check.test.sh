@@ -40,11 +40,12 @@ marker() {   # $6 可选：price_status（如 disputed:10.00），$7 可选：pr
     printf ' -->'
 }
 # 往某 worktree 的 claude 日志里写一次调用。$1 wt  $2 时刻 HH:MM  $3 out token  $4 reqid
+#                                        $5 模型（可选，默认 claude-opus-5）
 call() {
     local enc; enc=$(printf '%s' "$WTBASE/$PREFIX-$1" | tr / -)
     mkdir -p "$CLAUDE_PROJECTS_DIR/$enc"
-    printf '{"type":"assistant","timestamp":"%sT%s:00Z","requestId":"%s","message":{"model":"claude-opus-5","usage":{"input_tokens":0,"output_tokens":%s,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
-        "$W" "$(date -u -d "$W $2 +0800" +%H:%M)" "$4" "$3" >> "$CLAUDE_PROJECTS_DIR/$enc/s.jsonl"
+    printf '{"type":"assistant","timestamp":"%sT%s:00Z","requestId":"%s","message":{"model":"%s","usage":{"input_tokens":0,"output_tokens":%s,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
+        "$W" "$(date -u -d "$W $2 +0800" +%H:%M)" "$4" "${5:-claude-opus-5}" "$3" >> "$CLAUDE_PROJECTS_DIR/$enc/s.jsonl"
 }
 
 cat > "$TMP/issues.json" <<'JSON'
@@ -191,6 +192,41 @@ chk "报告写明历史周数值会随本机日志被清理而改变" \
     "$(grep -qF '同一个历史周的数值会随本机日志被清理而改变' "$TMP/r.md" && echo yes || echo no)" "yes"
 chk "报告带生成时间（数值会变，就必须能看出是哪一次跑出来的）" \
     "$(grep -qF '数据生成时间' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+echo "── 8. 重算结论必须整套取用：空可信度桶不许回退到旧 footer（第 2 轮打回）──"
+# A=[10:00,10:20) 与 B=[10:10,10:15) 重叠，唯一一次调用落在 10:12 → 只归 B（start 最晚）。
+# 两条都有日志、都通过检验、都重算：A 该是 $0 + **空桶**，B 是 $25 + unstable。
+# 改前 collect 用 `info.get(...) or rec.get(...)` 逐字段回退，把 A 那个合法的空桶
+# 当成「没算」，于是旧 footer 的 disputed:25 复活 —— 合计 $25，桶却是
+# disputed $25 + unstable $25，最终报告报出一笔根本不存在的存疑金额。
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:12" 1000000 r1
+run "$(marker 10 '10:00' '10:20' 1000000 '25.00' 'disputed:25.00' solved)" \
+    "$(marker 10 '10:10' '10:15' 1000000 '25.00' 'disputed:25.00' solved)"
+chk "两条都走重算"                    "$(q src_recomputed)/$(q src_original)"  "2/0"
+chk "合计只算一次调用（\$25）"        "$(q cost)"                  "25"
+chk "旧 footer 的 disputed 不复活"    "$(q price_usd_disputed)"    "0"
+chk "桶里只有重算得到的那一份（unstable \$25）" "$(q price_usd_unstable)" "25"
+chk "桶的合计 == 表头金额（改前是 50 vs 25）" \
+    "$(python3 -c "
+import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
+b=sum(v for k,v in w.items() if k.startswith('price_usd_'))
+print(f\"{round(b,2)}/{round(w['cost'],2)}\")")" "25.0/25.0"
+chk "最终 markdown 里不出现那笔存疑金额" \
+    "$(grep -qF '与参照冲突（存疑）' "$TMP/r.md" && echo yes || echo no)" "no"
+
+# 重算后**全部缺价**（这个模型压根不在价目表里）→ 旧记录的可信度同样不许带回来
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:05" 1000000 r1 some-model-not-in-any-price-table
+run "$(marker 10 '10:00' '10:10' 1000000 '25.00' 'corroborated:25.00' solved)"
+chk "重算走通"                        "$(q src_recomputed)"        "1"
+chk "一分钱都算不出（不是沿用记录里的 25）" "$(q cost)"             "0"
+chk "价格覆盖落 none"                 "$(q state_none)"            "1"
+chk "旧记录的 corroborated 不许带回来" "$(q price_usd_corroborated)" "0"
+chk "所有可信度桶全空"                \
+    "$(python3 -c "
+import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
+print(round(sum(v for k,v in w.items() if k.startswith('price_usd_')),2))")" "0"
 
 echo
 echo "结果：$pass passed, $fail failed"

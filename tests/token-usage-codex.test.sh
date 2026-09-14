@@ -40,8 +40,13 @@ rec() {
 }
 
 # ── 会话 A：属于本 worktree，两条窗口内记录 + 一条窗口前的记录（必须被排除） ──
+# ⚠️ turn_context 写在**所有用量记录之前**，和真实 rollout 的事件顺序一致
+#   （本机实测在第 8 行、早于任何 token_usage_record）。之前这份 fixture 把它放在
+#   文件末尾，逼得 driver 要用「文件里第一条 turn_context」去追认排在它之前的调用——
+#   那是没有依据的归属规则（#934 交叉 review 第 2 轮）。
 {
     printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$(ts -200)" "$MINE"
+    printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"gpt-test"}}\n' "$(ts -199)" "$MINE"
     rec -100 9999999 0 0 9999999 9999999      # 窗口之前：不能计入
     rec   10 1000000 400000 50000 300000 120000
     rec   20 2000000 1000000 0   700000 300000
@@ -56,13 +61,6 @@ rec() {
 # ── 累计口径的字段必须被忽略（求和它们就是重复计） ──
 printf '{"type":"turn_token_usage","timestamp":"%s","payload":{"usage":{"input_tokens":8888888,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":8888888,"reasoning_output_tokens":0,"total_tokens":17777776}}}\n' \
     "$(ts 25)" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
-
-# 补一条 turn_context：模型名就写在这里（本机真实会话里是 gpt-6-astra）。
-# ⚠️ 这份 fixture 刻意把它写在**所有用量记录之后**：真实 rollout 里 turn_context 在每轮
-#   开头（本机实测第 8 行），但文件头被截断时用量记录会排在它前面。driver 对这种记录
-#   用「本文件首个 turn_context 的模型」兜底，而不是落 unknown —— 这条钉住那个兜底。
-printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"gpt-test"}}\n' \
-    "$(ts 1)" "$MINE" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
 
 run() { ( cd "$MINE" && HOME="$TMP" env "$@" bash "$DRIVER" "$START" ${MODE:-} ); }
 
@@ -150,6 +148,20 @@ chk "单文件内换模型：按各条调用当时的 turn_context 分段计价"
 # 单价来源要如实标出来：这一侧是**人工配置**的，不是像 claude 那侧反解出来的
 chk "输出标明单价来源为人工配置（报告据此区分两侧口径）" \
     "$(mrun CODEX_PRICES="$BOTH" | grep -o 'price_source=[a-z]*')" "price_source=configured"
+
+# ── 缺先行上下文的调用：如实算不出，不许拿后面的模型追认（第 2 轮打回）──
+# 文件头被截断时，早期调用可能属于切换前的模型 A，而首个可见 turn_context 已是切换后
+# 的 B。拿 B 去追认 = 把「不知道」伪装成「知道」，而且是悄悄让金额变大的那种错。
+rm -f "$MIX/.codex/sessions/2026/09/14/rollout-C.jsonl"
+{ mmeta; mrec 10 1000000; mctx 20 mB; mrec 30 1000000; } \
+    > "$MIX/.codex/sessions/2026/09/14/rollout-D.jsonl"
+chk "首个 turn_context 之前的调用落缺价，不按后面的模型计价" \
+    "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' \
+       | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=10.00 cost_state=partial cost_unknown_tokens=1000000"
+chk "token 计数不受影响（算不出价 ≠ 不算用量）" \
+    "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' | grep -o '^in=[0-9]*')" \
+    "in=2000000"
 
 echo
 echo "通过 $pass / 失败 $fail"

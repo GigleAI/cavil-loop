@@ -95,12 +95,12 @@ STAMPED=$(
         [ -n "$f" ] || continue
         jq -c --argjson start "$START_EPOCH" '
             def isots: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
-            # 文件里第一条 turn_context 的模型，给**排在它之前**的用量记录兜底：
-            # 真实 rollout 里 turn_context 在每轮开头（本机实测在第 8 行、早于所有
-            # 用量记录），但被截断的文件头部可能先出现用量记录，那时最近的证据就是
-            # 这份文件的首个 turn_context，而不是「unknown」。
-            ([.[] | select(.type == "turn_context") | .payload.model // empty] | first // "unknown") as $first
-            | reduce .[] as $r ({m: $first, out: []};
+            # 起手是 unknown，只有**读到在它之前的** turn_context 才给调用盖模型章。
+            # ⚠️ 不许拿「文件里第一条 turn_context」去追认排在它之前的调用：文件头被
+            #   截断时，早期调用可能属于切换前的模型 A，而首个可见上下文已经是切换后的
+            #   B —— 「最近的证据」证明不了前一条调用也是 B（#934 交叉 review 第 2 轮）。
+            #   认不出模型就如实落 cost_unknown_tokens，宁可报「算不出」也不猜。
+            reduce .[] as $r ({m: "unknown", out: []};
                 if $r.type == "turn_context" and (($r.payload.model // "") != "")
                 then .m = $r.payload.model
                 elif $r.type == "token_usage_record" and ($r.payload.usage != null)

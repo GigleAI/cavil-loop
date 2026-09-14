@@ -292,11 +292,25 @@ def main():
             s["cost_footers"] += 1
         s["dupes"] += dupes_by_key[key]
         wall = rec["wall"]
-        info = recompute.get(key, {})
-        cost_source = info.get("cost_source", "original")
-        cost = info.get("cost", rec["cost"])
-        cost_state = info.get("cost_state") or rec.get("cost_state") or (
-            "full" if rec.get("has_cost") else "none")
+        # ⚠️ 有没有重算结论，决定**整套**金额字段取哪一份；不能逐个字段用 `or` 回退。
+        # 重算出来的空可信度桶 `{}` 是**合法结果**（这次派工一分钱都没认领到），
+        # 用 `or` 会把它当成「没算」而回退到旧 footer 的桶，于是旧金额的可信度复活：
+        # 实测两条重叠派工都重算、合计 $25，桶却成了 disputed $25 + unstable $25，
+        # 最终报告报出一笔根本不存在的存疑金额（#934 交叉 review 第 2 轮）。
+        info = recompute.get(key)
+        if info is not None:
+            cost_source = info["cost_source"]
+            cost = info["cost"]
+            cost_state = info["cost_state"]
+            pstat = info["price_status"]
+            psrc = info["price_source"]
+        else:
+            cost_source = "original"
+            cost = rec["cost"]
+            cost_state = rec.get("cost_state") or (
+                "full" if rec.get("has_cost") else "none")
+            pstat = rec.get("price_status") or {}
+            psrc = rec.get("price_source")
         in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
         out = rec["out"]
         # 历史记录（无机器标记）没写 agent。实测交叉 review 那一侧在改造前几乎不写
@@ -319,17 +333,17 @@ def main():
         # 单价可信度：金额分到哪个桶里（GitHub#934 交叉 review 第 1 轮）。
         # ⚠️ 只有进得了「去重合计」的那部分才拆桶——单列的那部分本来就不能相加，
         #    把它的钱也摊进可信度桶里，桶的合计就对不上表头的金额了。
-        pstat = info.get("price_status") or rec.get("price_status") or {}
-        psrc = info.get("price_source") or rec.get("price_source")
         if in_total:
             for st_name, amt in pstat.items():
                 s[f"price_usd_{st_name}"] = s.get(f"price_usd_{st_name}", 0.0) + amt
-            # 有金额、却说不出这金额用的是什么可信度的单价（历史评论 / codex 侧人工配价）
-            if rec.get("has_cost") and not pstat:
+            # 有金额、却说不出这金额用的是什么可信度的单价（历史评论 / codex 侧人工配价）。
+            # 判据是**本条最终采用的金额**有没有桶，不是旧记录有没有写过金额——
+            # 重算出 0 元的派工桶是空的，拿旧记录的 has_cost 判会把它算进这里。
+            if cost and not pstat:
                 s["price_usd_unrated"] = s.get("price_usd_unrated", 0.0) + cost
         if psrc:
             s[f"price_src_{psrc}"] = s.get(f"price_src_{psrc}", 0) + 1
-        lc = info.get("log_check")
+        lc = info.get("log_check") if info else None
         if lc:
             s[f"log_{lc}"] += 1
         # 金额覆盖率：驱动没配单价时**有意**不出金额（见 drivers/token-usage/codex.sh），
