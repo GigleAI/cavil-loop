@@ -144,5 +144,31 @@ def extract(body, login, comment_id=None, default_wt=None):
 
 
 def dispatch_key(rec):
-    """一次派工的身份。同一身份只入账一次（保留最早的那条评论）。"""
-    return (rec.get("wt"), rec["start"], rec["end"])
+    """一次派工的身份 —— **不含 end**。
+
+    为什么不能把 end 放进身份里：记账行里的 `wall_secs` / 金额 / token 都是
+    **从这次派工开始时刻起的累计值**，而 `end` 是「写这条评论的时刻」。同一次派工
+    发多条评论时（先在 issue 回一条、稍后在关联 PR 再回一条，或先发验证再发收尾），
+    start 相同、end 各不相同，若 end 进了身份就成了不同的派工，前半段会被再加一遍。
+
+    实测：同一派工两条评论 `wall_secs=600/cost=10` 与 `wall_secs=1200/cost=20`，
+    带 end 的身份会得出 1800 秒 / $30，而正确答案是 1200 秒 / $20。
+
+    所以身份只取 (worktree, 开始时刻)，同一身份**取 end 最大的那条**——它才是这次
+    派工的最终累计值。**不能保留最早那条**，那会漏掉后半段。见 `pick_latest`。
+    """
+    return (rec.get("wt"), rec["start"])
+
+
+def pick_latest(cur, new):
+    """同一派工身份下选该留哪条：end 更晚的那条（累计值更完整）。
+
+    end 可能是「身份缺失」时兜底的 ('noid', 评论 id) 元组，那种身份本来就唯一、
+    不会撞键；两边不是同类时保守保留已有的那条，不做跨类型比较。
+    """
+    if cur is None:
+        return new
+    a, b = cur.get("end"), new.get("end")
+    if isinstance(a, datetime.datetime) and isinstance(b, datetime.datetime):
+        return new if b > a else cur
+    return cur

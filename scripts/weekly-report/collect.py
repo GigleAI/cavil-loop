@@ -100,7 +100,7 @@ def main():
     per_issue = collections.defaultdict(lambda: collections.defaultdict(float))
     durs = {w: [] for w in weeks}
     seen = set()
-    dispatch_seen = set()      # 派工身份 (wt, 开始, 完工)：同一身份只入账一次
+    claimed = {}               # 派工身份 (wt, 开始) → 该次派工最终那条累计记录
     long_windows = []          # 墙上 ≥ 4 小时的记录，报告里逐条点名（不改数字）
     misattributed = []         # 「模型+工具」明显超过自身墙上时长的，点名（不改数字）
 
@@ -141,13 +141,20 @@ def main():
         s["footers"] += 1
         if rec["cost"]:
             s["cost_footers"] += 1
-
+        # 先只认领，不入账。记账行里的时长 / 金额 / token 都是**从派工开始起的累计值**，
+        # 同一次派工发多条评论时每条都是一个更大的累计快照——必须留 end 最晚的那条，
+        # 逐条求和会把前半段重复算（见 record.dispatch_key 的说明）。
         key = record.dispatch_key(rec)
-        if key in dispatch_seen:
-            s["dupes"] += 1               # 同一次派工的另一条评论，已入账过
-            continue
-        dispatch_seen.add(key)
+        prev = claimed.get(key)
+        kept = record.pick_latest(prev[0] if prev else None, rec)
+        if prev is not None:
+            s["dupes"] += 1
+        if prev is None or kept is rec:
+            claimed[key] = (rec, w, num, body)
 
+    # ── 第二段：每次派工只按它最终那条累计记录入账 ──
+    for rec, w, num, body in claimed.values():
+        s = st[w]
         wall = rec["wall"]
         cost = rec["cost"]
         out = sum(float(m.group(1)) * MUL[m.group(2)] for m in RE_OUT.finditer(body))

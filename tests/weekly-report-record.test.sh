@@ -94,6 +94,24 @@ c = record.extract("第二次派工\n\n" + M2, BOT, 13)
 chk("两次不同派工即使时长金额完全相同 → 身份不同，各自计入",
     record.dispatch_key(a) == record.dispatch_key(c), False)
 
+# ── 同一派工、不同 end 的累计快照：**最容易重复计的那种** ──────────────────
+# 记账行里的时长 / 金额是「从派工开始起的累计」，end 是写这条评论的时刻。
+# 同一次派工先在 issue 回一条、稍后在 PR 再回一条，两条 end 不同但 start 相同；
+# 身份里若带 end 就成了两次派工，前半段被再加一遍（1800 秒 / $30 而不是 1200 / $20）。
+CUM1 = ("<!-- agent-metrics agent=claude wt=931 start=2026-09-14T11:00:00+08:00 "
+        "end=2026-09-14T11:10:00+08:00 wall_secs=600 cost_usd=10 -->")
+CUM2 = ("<!-- agent-metrics agent=claude wt=931 start=2026-09-14T11:00:00+08:00 "
+        "end=2026-09-14T11:20:00+08:00 wall_secs=1200 cost_usd=20 -->")
+e1 = record.extract("同派工第 1 条（10 分钟时的累计）\n\n" + CUM1, BOT, 17)
+e2 = record.extract("同派工第 2 条（20 分钟时的累计）\n\n" + CUM2, BOT, 18)
+chk("同一派工、不同 end 的两条累计快照 → 身份仍相同",
+    record.dispatch_key(e1) == record.dispatch_key(e2), True)
+keep = record.pick_latest(e1, e2)
+chk("同身份保留 end 更晚那条（累计值更完整，不能留最早的）",
+    (keep["wall"], keep["cost"]), (1200, 20.0))
+chk("pick_latest 与传参顺序无关",
+    (record.pick_latest(e2, e1)["wall"], record.pick_latest(None, e1)["wall"]), (1200, 600))
+
 NOID = "<!-- agent-metrics agent=claude wt=931 wall_secs=600 cost_usd=1.00 -->"
 d = record.extract("---\n⏱️ 开始 2026-09-14 11:00:00 · 完工 11:10:00 · 耗时 10m 0s\ntoken 1 input ($1.00)\n\n" + NOID, BOT, 14)
 chk("机器记录缺起止 → 回落到同评论里的可见记账行取身份", d["ident"], "marker+footer")
