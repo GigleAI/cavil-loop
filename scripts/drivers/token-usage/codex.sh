@@ -129,20 +129,14 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
         ($c - $d * 100) as $r |
         "\($d).\(if $r < 10 then "0\($r)" else "\($r)" end)";
 
-    # 机器字段专用：**不足一分但确实非零**的金额保留到百万分之一，其余仍走 usd2。
-    # ⚠️ 两位小数是给人看的；标记里的数字是给采集器读的，提前舍入等于把信息**销毁**
-    #   在源头——下游再怎么改也恢复不了（#934 交叉 review 第 8 轮）。实例：
-    #   100 output × 参照 $25/M = $0.0025，旧写法序列化成 `unstable:0.00`，
-    #   删日志后沿用 footer 那条路径就把「这笔钱用的是兜底单价」整个丢了，报告反而
-    #   说「本次区间没有算出金额」。
-    # ⚠️ **恰好是 0 的仍旧写 `0.00`**——不把真零包装成一个正的小额。
-    def usd6:
-        (. * 1000000 + 0.5 | floor) as $u |
-        ($u / 1000000 | floor) as $d |
-        ($u - $d * 1000000) as $r |
-        "\($d)." + (("000000" + ($r | tostring)) | .[-6:]);
-    def usdp:
-        if . > 0 and (. * 100 + 0.5 | floor) == 0 then usd6 else usd2 end;
+    # ⚠️ 机器字段（--kv）**一概不舍入**，直接发原值（#934 交叉 review 第 9 轮）。
+    #   两位小数是给人读的那一行用的。把同一个格式套到标记上，等于在**序列化边界**
+    #   把信息销毁：下游再怎么改都恢复不了。我前两轮的错法是一路挪阈值——先两位、
+    #   再六位——那只是把边界推远，没有去掉边界：参照里 claude-haiku-4-5 的 cache read
+    #   是 $0.1/M，1 个 token = $0.0000001，六位小数照样写成 `unstable:0.000000`，
+    #   删日志后沿用 footer 那条路径仍旧丢掉可信状态，报告反而说「没有算出金额」。
+    #   jq 对极小值会输出 `1E-7` 这类写法，采集侧走的是 float()，能原样吃下（已实测）。
+    # ⚠️ 恰好是 0 的仍旧是 0：桶那一侧本来就 `select(.value > 0)`，真零不会出现。
 
     # cached / reasoning 都是子项，不能另计（见文件头实测）
     map({model: .model,
@@ -192,7 +186,7 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
        else "none" end) as $state
     | if $mode == "--kv"
       then "in=\($t.in) out=\($t.out) cache_r=\($t.cin) cache_w=\($t.cw)"
-           + (if $state == "none" then "" else " cost_usd=\($agg.usd | usdp)" end)
+           + (if $state == "none" then "" else " cost_usd=\($agg.usd)" end)
            + " cost_state=\($state) cost_unknown_tokens=\($agg.unk)"
            # 这一侧的单价是**人工配置**的，不是反解出来的，所以没有四态可言
            + " price_source=configured"

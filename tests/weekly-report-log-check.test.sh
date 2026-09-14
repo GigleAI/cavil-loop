@@ -431,14 +431,67 @@ print('yes' if w.get('price_usd_unstable',0) > 2500 else 'no')")" "yes"
 # ⑶ 反向：真的零调用 —— 不许把真零包装成一个正的小额
 rm -rf "$CLAUDE_PROJECTS_DIR"
 KV_ZERO=$(cdrv zero 0)
-chk "零用量时 driver 仍写 \$0.00（不编一个小额出来）" \
-    "$(printf '%s' "$KV_ZERO" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=0.00"
+chk "零用量时 driver 写的就是 0（不编一个小额出来）" \
+    "$(printf '%s' "$KV_ZERO" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=0"
 chk "零用量时没有任何可信度桶"        \
     "$(printf '%s' "$KV_ZERO" | grep -c 'price_status=')" "0"
 rm -rf "$CLAUDE_PROJECTS_DIR"
 run "$(mk_marker_from_kv "$KV_ZERO")"
 chk "报告里不出现凭空的小额提示"      \
     "$(grep -qF '< $0.01' "$TMP/r.md" && echo yes || echo no)" "no"
+
+echo "── 14. 低于百万分之一、以及 disputed 的独立回退样本（第 9 轮打回）──"
+# 第 13 组只覆盖了 unstable + 同桶大额 + 真零。这一组补两个缺口：
+#   ⑴ 比百万分之一还小的金额（先两位、再六位地挪阈值，在这里必然失效）
+#   ⑵ **disputed** 单独走一遍回退路径 —— 报红那一态不能只靠 unstable 的用例代测
+
+# ⑴ claude-haiku-4-5 的 cache read 是 $0.1/M，1 个 token = $0.0000001
+DH="$TMP/drv/haiku"; mkdir -p "$DH"
+DHENC=$(printf '%s' "$DH" | tr / -); mkdir -p "$TMP/drvproj/$DHENC"
+printf '{"type":"assistant","requestId":"r1","uuid":"u1","timestamp":"%sT02:05:00Z","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
+    "$W" > "$TMP/drvproj/$DHENC/s.jsonl"
+KV_SUB=$( cd "$DH" && CLAUDE_PROJECTS_DIR="$TMP/drvproj" \
+          bash "$REPO_DIR/scripts/drivers/token-usage/claude.sh" 0 --kv )
+SUB_VAL=$(printf '%s' "$KV_SUB" | sed -n 's/.*price_status=[a-z_]*:\([^ ]*\).*/\1/p')
+chk "百万分之一以下的桶没有被写成 0（挪阈值那套在这里必然失效）" \
+    "$(python3 -c "print('yes' if float('${SUB_VAL:-0}') > 0 else 'no')")" "yes"
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(mk_marker_from_kv "$KV_SUB")"
+chk "沿用 footer 后可信状态还在" \
+    "$(python3 -c "
+import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
+print('yes' if w.get('price_usd_unstable',0) > 0 else 'no')")" "yes"
+chk "报告不再说「没有算出金额」" \
+    "$(grep -qF '没有算出金额' "$TMP/r.md" && echo yes || echo no)" "no"
+
+# ⑵ disputed 独立走一遍。要让**真实求解器**判 disputed，得给它一批「解得稳、但与参照
+#    冲突」的样本：把观测里的 output 记成真值的一半，解出的单价就偏 100%。
+#    这是 price-identifiability 第 2 组那个核心反例的同款造法。
+mkdir -p "$TMP/solveproj"
+python3 "$TEST_DIR/fixtures/mk-disputed-samples.py" "$TMP/solveproj"
+chk "求解器确实把 output 判成 disputed（先确认样本造对了）" \
+    "$(CLAUDE_PROJECTS_DIR="$TMP/solveproj" XDG_CACHE_HOME="$TMP/sc1" \
+       python3 "$REPO_DIR/scripts/weekly-report/price_solve.py" --table --no-cache \
+       | python3 -c "import json,sys; print(json.load(sys.stdin)['models']['claude-opus-5']['output']['status'])")" \
+    "disputed"
+DD="$TMP/drv/disp"; mkdir -p "$DD"
+DDENC=$(printf '%s' "$DD" | tr / -); mkdir -p "$TMP/solveproj/$DDENC"
+printf '{"type":"assistant","requestId":"rd","uuid":"ud","timestamp":"%sT02:05:00Z","message":{"model":"claude-opus-5","usage":{"input_tokens":0,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
+    "$W" > "$TMP/solveproj/$DDENC/s.jsonl"
+KV_DISP=$( cd "$DD" && CLAUDE_PROJECTS_DIR="$TMP/solveproj" XDG_CACHE_HOME="$TMP/sc2" \
+           bash "$REPO_DIR/scripts/drivers/token-usage/claude.sh" 0 --kv )
+chk "driver 的 footer 里带出了 disputed 桶" \
+    "$(printf '%s' "$KV_DISP" | grep -qF 'disputed:' && echo yes || echo no)" "yes"
+rm -rf "$CLAUDE_PROJECTS_DIR"
+run "$(mk_marker_from_kv "$KV_DISP")"
+chk "沿用 footer 后 disputed 桶还在" \
+    "$(python3 -c "
+import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
+print('yes' if w.get('price_usd_disputed',0) > 0 else 'no')")" "yes"
+chk "最终报告报红（存疑那句在）" \
+    "$(grep -qF '与参照冲突（存疑）' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报红带 ⚠️" \
+    "$(grep -qF '⚠️' "$TMP/r.md" && echo yes || echo no)" "yes"
 
 echo
 echo "结果：$pass passed, $fail failed"

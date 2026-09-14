@@ -82,7 +82,7 @@ MODE=--kv  out_kvp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 C
 #   它没被计进金额，就必须如实落 partial + 缺价 50000。原来写的是 full / 0，
 #   等于把「这部分钱没算」悄悄抹掉（#934 交叉 review 第 5 轮打回）。
 chk "--kv + 单价：output 只算一次；未计价的 cache write 如实报缺价（原来写成 full/0）" \
-    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.40 cost_state=partial cost_unknown_tokens=50000 price_source=configured"
+    "$out_kvp" "in=1600000 out=1000000 cache_r=1400000 cache_w=50000 cost_usd=117.4 cost_state=partial cost_unknown_tokens=50000 price_source=configured"
 
 MODE=""    out_hmp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
 chk "人读输出 + 单价：同上，且写明金额偏低" \
@@ -133,20 +133,20 @@ BOTH='{"mA":{"in":1,"cached_in":0,"out":0},"mB":{"in":10,"cached_in":0,"out":0}}
 
 # mA 100 万 × $1/M + mB 100 万 × $10/M = $11.00（旧写法按合并后 last 命中谁，出 $2 或 $20）
 chk "跨文件混用模型：各按各的价（旧写法会整体套同一个价）" \
-    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11.00"
+    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11"
 
 # 只配 mB：应当只算 mB 那 100 万，mA 那 100 万落缺价 → partial
 chk "跨文件混用、只配其中一个模型的价 → 金额只含有价的那部分" \
     "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' \
        | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_usd=10.00 cost_state=partial cost_unknown_tokens=1000000"
+    "cost_usd=10 cost_state=partial cost_unknown_tokens=1000000"
 
 # 同一份文件里中途换模型：前半段 mA、后半段 mB
 rm -f "$MIX/.codex/sessions/2026/09/14/rollout-A.jsonl" "$MIX/.codex/sessions/2026/09/14/rollout-B.jsonl"
 { mmeta; mctx -190 mA; mrec 30 1000000; mctx 35 mB; mrec 40 1000000; } \
     > "$MIX/.codex/sessions/2026/09/14/rollout-C.jsonl"
 chk "单文件内换模型：按各条调用当时的 turn_context 分段计价" \
-    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11.00"
+    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11"
 
 # 单价来源要如实标出来：这一侧是**人工配置**的，不是像 claude 那侧反解出来的
 chk "输出标明单价来源为人工配置（报告据此区分两侧口径）" \
@@ -161,7 +161,7 @@ rm -f "$MIX/.codex/sessions/2026/09/14/rollout-C.jsonl"
 chk "首个 turn_context 之前的调用落缺价，不按后面的模型计价" \
     "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' \
        | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_usd=10.00 cost_state=partial cost_unknown_tokens=1000000"
+    "cost_usd=10 cost_state=partial cost_unknown_tokens=1000000"
 chk "token 计数不受影响（算不出价 ≠ 不算用量）" \
     "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' | grep -o '^in=[0-9]*')" \
     "in=2000000"
@@ -187,7 +187,7 @@ P3='{"mA":{"in":10,"cached_in":1,"out":100}}'
 cwfix 1000000 50000 0
 chk "已配模型但 cache write 没有单价 → partial + 缺价 5 万（原来是 full / 0）" \
     "$(cwrun CODEX_PRICES="$P3" | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_usd=10.00 cost_state=partial cost_unknown_tokens=50000"
+    "cost_usd=10 cost_state=partial cost_unknown_tokens=50000"
 chk "人读输出也要写明金额偏低，不能只在机器字段里说" \
     "$( ( cd "$CWD_DIR/wt" && HOME="$CWD_DIR" env CODEX_PRICES="$P3" bash "$DRIVER" "$START" ) )" \
     "1m input, 0 output, 0 cache read, 50k cache write (\$10.00，部分用量未计价，金额偏低)"
@@ -203,7 +203,7 @@ cwfix 1000000 50000 0
 chk "配了可选的 cache_write 单价 → 计进金额并回到 full（10.00 + 50000×2/1e6 = 10.10）" \
     "$(cwrun CODEX_PRICES='{"mA":{"in":10,"cached_in":1,"out":100,"cache_write":2}}' \
        | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_usd=10.10 cost_state=full cost_unknown_tokens=0"
+    "cost_usd=10.1 cost_state=full cost_unknown_tokens=0"
 
 # ⑷ 全部待计价 token 都没价（模型不在表里）→ 仍然是 none，四项全进缺价
 cwfix 1000000 50000 200000
@@ -235,20 +235,20 @@ chk "none 时不输出金额（别拿 \$0.00 冒充算出来了）" \
 cwfix2 1000000 400000 0 0
 chk "未缓存 input 有价有量、cache read 没价 → partial + 缺价 40 万" \
     "$(cwrun CODEX_PRICES='{"mA":{"in":10}}' | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_usd=6.00 cost_state=partial cost_unknown_tokens=400000"
+    "cost_usd=6 cost_state=partial cost_unknown_tokens=400000"
 
 # ⑶ 四项用量全为 0 → 没有待计价的 token，是**已知的零**（第 4 轮那条不能被改坏）
 cwfix2 0 0 0 0
 chk "用量全为 0 → full / 缺价 0（已知的零）" \
     "$(cwrun CODEX_PRICES='{"mA":{"in":10}}' | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_usd=0.00 cost_state=full cost_unknown_tokens=0"
+    "cost_usd=0 cost_state=full cost_unknown_tokens=0"
 
 # ⑷ 有用量、单价合法地配成 0 → 算出来了，就是 0；判据是**用量非零**不是**金额非零**
 cwfix2 1000000 0 0 0
 chk "单价配成 0 且有用量 → full（按金额非零判会误伤这条）" \
     "$(cwrun CODEX_PRICES='{"mA":{"in":0,"cached_in":0,"out":0,"cache_write":0}}' \
        | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_usd=0.00 cost_state=full cost_unknown_tokens=0"
+    "cost_usd=0 cost_state=full cost_unknown_tokens=0"
 
 echo
 echo "通过 $pass / 失败 $fail"
