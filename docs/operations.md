@@ -107,8 +107,8 @@ Set `CODEX_PRICES` to a JSON map keyed by exact model ID to replace the full
 table. A copy-ready map is in [the config example](../coding-agent.config.example);
 set `CODEX_PRICES='{}'` to turn estimates off. Unlisted models and token
 components without a rate remain unpriced. The three legacy
-`CODEX_PRICE_*_PER_M` variables still apply a common rate to every model and
-override the table.
+`CODEX_PRICE_*_PER_M` variables provide a common-rate fallback for models
+without an exact `CODEX_PRICES` entry; an exact model entry takes precedence.
 For a host config override, use `export CODEX_PRICES='...'` and include
 `CODEX_PRICES` in `WORKER_PASS_ENV`; tmux workers do not inherit plain config
 shell variables automatically.

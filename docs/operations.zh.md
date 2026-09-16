@@ -102,7 +102,8 @@ PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用
 部署者可按完整模型 ID 设置 `CODEX_PRICES` JSON，整表替换内置表；
 [配置模板](../coding-agent.config.example)有可直接复制的版本。设
 `CODEX_PRICES='{}'` 可关闭估算。未知模型或缺少单价的 token 项仍报缺价。
-旧的三个 `CODEX_PRICE_*_PER_M` 变量仍能以同一个价覆盖全部模型。
+旧的三个 `CODEX_PRICE_*_PER_M` 变量仍可为没有精确 `CODEX_PRICES`
+条目的模型提供统一单价兜底；有精确模型条目时，精确条目优先。
 若要从宿主配置覆盖，使用 `export CODEX_PRICES='...'`，并把
 `CODEX_PRICES` 加入 `WORKER_PASS_ENV`；tmux 内的 worker 不会自动继承
 未导出的配置变量。

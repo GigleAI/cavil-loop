@@ -154,7 +154,7 @@ LABEL_PENDING_AGENT_EXTRA=""
 # 设了才启用：worker 产出代码后翻到这个 label（而不是直接 pending/human），daemon 用
 # **另一个** agent（默认 codex）+ review 专用模板起独立 session 把关。通过才 pending/human；
 # 不通过带具体意见打回 pending/agent，最多 REVIEW_MAX_ROUNDS 轮，超了转人工。留空 = 关闭。
-# 需要自备 prompts/review.template.md，并在仓库建好该 label。
+# 内置 prompts/review.template.md 可直接用；仍需在仓库建好该 label。
 LABEL_PENDING_REVIEW=""
 REVIEW_WORKER_AGENT="codex"
 REVIEW_MODEL=""

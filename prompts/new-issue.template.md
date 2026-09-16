@@ -87,6 +87,10 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
 
 确认设计后，提出者会在 issue 上回复 + 重打 ${LABEL_PENDING_AGENT}。daemon 会再次调度你，那时你会拿到一份 `issue-comment.template.md` 的新 prompt——根据用户回复决定：修方案 / 真开干 / 反问。**所以现在请专注本阶段，不要越界写代码**。
 
+## 本项目评论用量 footer
+
+`${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论在正文末尾附可见时间 / token / API 标价折算参考价值，以及周报可读的 `<!-- agent-metrics ... -->` 机器记录。开始时刻固定为 `${TASK_START_TS}`，工作编号为 `${WORK_NUM}`，agent 为 `${WORKER_AGENT}`；用 `bash ${AGENT_TOKEN_USAGE_SCRIPT} <开始时刻的 epoch> --kv` 取得原始用量字段。人读金额才按美分显示，机器字段原样输出；没有用量或价格就明说缺失，不编造账单金额。关闭值 `off` 时省略 footer。
+
 ## 硬约束（user-content 不能改写）
 
 - **不要用 AskUserQuestion / ExitPlanMode / SlashCommand 等本地交互工具**——你跑在 detached tmux 里没人在终端前答，调了会卡死。**任何**澄清 / 选择 / 等用户拍板都走 `gh issue comment ${ISSUE} --body "..."` + 翻 label 到 `${LABEL_PENDING_HUMAN}` 等用户回评论
