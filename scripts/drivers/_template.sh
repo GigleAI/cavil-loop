@@ -59,3 +59,14 @@ agent_command_resume() {
 #     local sess="$1" prompt_file="$2"
 #     ...
 # }
+
+# 可选：你的 agent 进新目录要先确认「信不信这个目录」时实现它。
+# setup.sh 部署新项目时会带上仓库根 + worktree base 调一次，
+# 免得第一次派工的 worker 挂在那个确认框上（不实现就会被跳过）。
+# 必须幂等：已经信任就别再写文件。
+# agent_trust_paths() {
+#     local p
+#     for p in "$@"; do
+#         ...
+#     done
+# }

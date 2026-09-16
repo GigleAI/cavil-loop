@@ -102,6 +102,14 @@ agent_command_resume() { agent_command_new "$@"; }
 
 Default: `tmux load-buffer + paste-buffer -p + Enter`. Works for most chat-REPL CLIs. Override if your agent needs to enter a `/slash-mode` first or has a different stdin contract.
 
+### Optional hook: `agent_trust_paths <path>...`
+
+Some agents refuse to work in a directory they have never seen until a human confirms a folder-trust dialog — and for Claude Code `--dangerously-skip-permissions` does **not** skip it. The dialog doesn't kill the session, so the dispatcher's crash check lets it through and the issue still flips to `doing/agent`: the worker looks alive and does nothing. Nothing in the logs says otherwise; you only see it by attaching.
+
+`setup.sh` calls this hook once per deploy with the host project root and the worktree base. Leave it unimplemented if your agent has no notion of directory trust — callers detect that and move on. It must be idempotent: when the paths are already trusted, don't rewrite the file — a live agent process is usually holding it.
+
+The built-in `claude` driver sets `projects["<abs path>"].hasTrustDialogAccepted` in `~/.claude.json` (point `CLAUDE_JSON_PATH` elsewhere in tests). Subdirectories inherit trust from ancestors, which is why those two entries cover every per-issue worktree.
+
 ## Validating your driver
 
 ```bash

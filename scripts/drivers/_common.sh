@@ -35,6 +35,12 @@
 #     向已运行的 session 注入新一段 prompt（用户在 issue/PR comment 后 daemon 调起）。
 #     默认实现 `default_inject_prompt`：tmux load-buffer + paste-buffer -p + Enter。
 #     对大多数 chat-REPL CLI 通用；个别 agent 需 slash-command 切模式可在 driver 里重写。
+#
+#   agent_trust_paths <path>...
+#     让 agent 预先把这些目录记成「可信」，免得 worker 第一次在新目录起会话时
+#     卡在 folder-trust 确认框上。setup.sh 在部署新项目时用仓库根 + worktree base
+#     调一次。没有目录信任这个概念的 agent 不实现即可——调用方会跳过。
+#     必须幂等：已经信任就不要改文件（那个文件通常正被活着的 agent 进程用着）。
 
 # ── 通用工具：encoded cwd ──
 # Claude / OpenCode 都把 cwd 绝对路径里的 '/' 换成 '-' 作为本地历史目录名。

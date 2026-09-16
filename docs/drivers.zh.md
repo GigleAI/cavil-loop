@@ -103,6 +103,14 @@ agent_command_resume() { agent_command_new "$@"; }
 
 默认实现是 `tmux load-buffer + paste-buffer -p + Enter`，对大多数 chat-REPL CLI 通用。需要先 `/<slash-mode>` 切模式的 agent 可在 driver 里重写覆盖。
 
+### 可选 hook：`agent_trust_paths <path>...`
+
+有些 agent 进到没见过的目录会先要人确认「信不信这个目录」，claude 就是——而且 `--dangerously-skip-permissions` **不绕过它**。这个弹窗不会让 session 死掉，于是 dispatch 的秒退探测放行、issue 照常翻成 `doing/agent`：worker 看着活着，其实一动不动。日志里没有任何异常，只有 attach 进去才看得见。
+
+`setup.sh` 每次部署调一次这个 hook，参数是仓库根 + worktree base。agent 没有「目录信任」这个概念的，不实现就行——调用方认得出来并跳过。**必须幂等**：已经信任了就别重写那个文件，它通常正被活着的 agent 进程占着。
+
+内置 `claude` driver 写的是 `~/.claude.json` 里的 `projects["<绝对路径>"].hasTrustDialogAccepted`（测试时用 `CLAUDE_JSON_PATH` 改到别处）。子目录从祖先继承信任，所以这两条就覆盖了以后每个 issue 的 worktree。
+
 ## 验证你的 driver
 
 ```bash

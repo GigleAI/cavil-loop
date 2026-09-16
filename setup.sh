@@ -139,6 +139,13 @@ subst_inplace() {
     sed "${args[@]}" "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
+# ── 读 host config 里某个字段的值 ──
+# 在 subshell 里 source，比 grep 稳：config 里写成 "$HOME/..." 的值能正常展开，
+# 也不会把注释里的同名字样当成赋值。调用方只读，污染不到当前 shell。
+config_value() {
+    ( set -a; . "$config" >/dev/null 2>&1 || true; eval "printf '%s' \"\${$1:-}\"" )
+}
+
 # ── 1. 生成 host/coding-agent.config ──
 echo "── 1. 生成 $HOST/coding-agent.config ──"
 config="$HOST/coding-agent.config"
@@ -157,6 +164,39 @@ else
         "s|^WORKER_AGENT=\"claude\"|WORKER_AGENT=\"$WORKER_AGENT_PICK\"|"
     echo "  ✓ $config"
 fi
+
+# ── 1b. worker agent 目录信任 ──
+# 新项目第一次派工最容易栽的地方：claude 这类 agent 对没见过的目录会弹
+# folder-trust 确认框，而 `--dangerously-skip-permissions` **不绕过它**。
+# 弹窗不让 session 秒退，于是 dispatch 的秒退探测放行、issue 照常翻成
+# doing/agent，worker 却挂在弹窗上一动不动——日志里一切正常，不 attach 进去
+# 根本看不出来。driver 实现了 agent_trust_paths 的，这里先把信任记录写好。
+echo
+echo "── 1b. worker agent 目录信任 ──"
+trust_paths=("$HOST")
+trust_wt="$(config_value WORKTREE_BASE)"
+[ -n "$trust_wt" ] && trust_paths+=("$trust_wt")
+# 三个 agent 都可能真的起会话：常规派工、fable 标签、交叉 review。
+# 现在没开的以后开也不用回来重跑 setup，所以一律先信任。
+trust_seen=""
+for trust_agent in "$WORKER_AGENT_PICK" "$(config_value FABLE_WORKER_AGENT)" \
+                   "$(config_value REVIEW_WORKER_AGENT)"; do
+    [ -n "$trust_agent" ] || continue
+    case " $trust_seen " in *" $trust_agent "*) continue ;; esac
+    trust_seen="$trust_seen $trust_agent"
+    trust_rc=0
+    (
+        PROJECT_ROOT="$HOST" source_driver "$trust_agent" >/dev/null 2>&1 || exit 2
+        declare -f agent_trust_paths >/dev/null || exit 3
+        agent_trust_paths "${trust_paths[@]}"
+    ) || trust_rc=$?
+    case "$trust_rc" in
+        0) echo "  ✓ $trust_agent 已信任：${trust_paths[*]}" ;;
+        3) echo "  · $trust_agent 没有目录信任的概念，跳过" ;;
+        2) echo "  ⚠️  找不到 driver '$trust_agent'，跳过" ;;
+        *) echo "  ⚠️  $trust_agent 写信任记录失败——首次派工可能卡在 trust 弹窗" ;;
+    esac
+done
 
 # ── 2. .gitignore ──
 echo

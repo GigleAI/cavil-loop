@@ -61,3 +61,48 @@ agent_command_resume() {
         "$model_arg" \
         "$prompt_file"
 }
+
+# ── 可选 hook：预先信任目录 ──
+# worker 第一次在一个 claude 没见过的目录里起会话时，会弹：
+#   "Quick safety check: Is this a project you created or one you trust?"
+# **`--dangerously-skip-permissions` 不绕过它**（2.1.273 实测）。后果比秒退更难查：
+# session 活着、dispatch 的秒退探测放行、issue 照常翻成 doing/agent，
+# 但 worker 就挂在弹窗上一动不动——看日志一切正常，非 attach 进去不可能发现。
+#
+# 信任记录在 ~/.claude.json 的 projects["<绝对路径>"].hasTrustDialogAccepted。
+# 子目录从祖先继承，所以只写「仓库根 + worktree base」两条就够，每个 issue 的
+# worktree 不用单独加（2026-09-16 在 luosky/ai-hub 上实测：issue-1 的 worktree
+# 自己没有条目，照样跑起来了）。
+agent_trust_paths() {
+    local cfg="${CLAUDE_JSON_PATH:-$HOME/.claude.json}"
+    [ "$#" -gt 0 ] || return 0
+
+    # 已经全信任就一个字节都不写。这个文件是活着的 claude 进程在用的，
+    # 每多改写一次就多一次跟它抢写、把它刚写的东西盖掉的机会。
+    local p need=0
+    for p in "$@"; do
+        jq -e --arg p "$p" '.projects[$p].hasTrustDialogAccepted == true' \
+            "$cfg" >/dev/null 2>&1 || need=1
+    done
+    [ "$need" = 1 ] || return 0
+
+    [ -f "$cfg" ] || echo '{}' > "$cfg"
+
+    local paths_json tmp
+    paths_json="$(printf '%s\n' "$@" | jq -Rn '[inputs]')" || return 1
+    # tmp 跟 cfg 同目录：mv 才是同文件系统内的原子替换，不会半截文件落地
+    tmp="$(mktemp "${cfg}.XXXXXX")" || return 1
+    if jq --argjson paths "$paths_json" '
+            reduce $paths[] as $p (.;
+                .projects[$p].hasTrustDialogAccepted = true
+              | .projects[$p].allowedTools = (.projects[$p].allowedTools // [])
+            )' "$cfg" > "$tmp" \
+       && jq -e 'has("projects")' "$tmp" >/dev/null 2>&1; then
+        mv "$tmp" "$cfg"
+        return 0
+    fi
+    # 读不动 / 不是合法 JSON：原文件一个字节都不动，宁可让人去点那个弹窗
+    rm -f "$tmp"
+    echo "[claude driver] WARN: 写不了 $cfg，worker 首次进新目录可能卡 trust 弹窗" >&2
+    return 1
+}
