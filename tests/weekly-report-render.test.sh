@@ -104,7 +104,7 @@ PY
 
 echo "— 面板顺序（Q2=A：工时夹在讨论轮数和花销之间）"
 chk "投入面三块面板，顺序为 讨论轮数 → AI 投入时间 → 花销" \
-    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间|花销"
+    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间|花销（美元）"
 
 echo
 echo "— 秒 → 小时的换算与格式（只作用于工时那条 series）"

@@ -50,6 +50,7 @@ systemctl --user enable --now coding-agent-weekly-report@<project>.timer
 | `WEEKLY_REPORT_ASSET_ROOT_URL` | **必填，无默认** | `publish-asset.sh` 用的公网 URL 根（配图前缀去掉末段） |
 | `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/coding-agent-poll/review-shots` | `publish-asset.sh` 的落盘根目录 |
 | `WEEKLY_REPORT_FONTS_DIR` | `$PROJECT_ROOT/public/fonts` | 自托管 woff2；目录不在就回落系统字体 |
+| `WEEKLY_REPORT_SUBSCRIPTION_MONTHLY` | 没配就显示「未配置」 | 订阅月费，**必须以美元填**（一个数，或多份订阅相加的 JSON 列表）。报告按天摊到每一周。填人民币不会报错，会被原样当成美元印出去 |
 | `WEEKLY_REPORT_LABEL` | `pending/agent` | 开出的 issue 打什么 label。设成 `pending/human` 就只出数据、不叫 agent 写解读 |
 
 ## 周报文档规范
@@ -276,3 +277,13 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
    > 实测教训：一周的明细里漏掉过 6 条，其中一条是当周耗时最高的单项——它的讨论全在 PR 上，
    > issue 页整周零评论。汇总数字当时是对的（本来就按 issue+PR 全量算），**错的只是明细清单**，
    > 所以这类 bug 从总量上看不出来，只能靠逐条对。
+
+17. **金额一律是美元，而且要在报告里写出来**。单价来源就是按**美元 / 百万 token** 计的公开标价
+   （本 worker 侧从本机 CLI 记账反解、交叉 review 侧人工配置），这套工具**不做汇率换算**。
+   光写 `$` 不够：周报是给中文读者看的，正文解读里还可能引用某个 issue 自己算出的人民币
+   金额（形如 `¥0.63`），同一份文档里两种货币并存，`$` 就成了要靠猜的东西。
+   所以**主表的两行金额、逐周表的成本列、趋势图的花销面板（标题 + 副标题 + 两条图例）
+   都要显式写「美元」**，口径段再单列一条说清楚。
+   ⚠️ `WEEKLY_REPORT_SUBSCRIPTION_MONTHLY` 是这里唯一的雷：它读的是个**裸数字**、渲染时
+   无条件加 `$`，按人民币月费填进来会被当成美元印出去且**不会有任何报错**。
+   > 来源：维护者读完周报后问「AI 成本的单位是人民币，还是美元？」（GigleTutor-Web#931）。

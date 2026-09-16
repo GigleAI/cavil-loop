@@ -102,7 +102,7 @@ run_report() { python3 "$REPORT" --data "$TMP/d.json" --out "$TMP/r.md" \
                  --asset-url-base x --rev y >/dev/null 2>"$TMP/err.log" \
                || { echo "report.py 跑挂了："; cat "$TMP/err.log"; exit 1; }; }
 trust_line() { grep -o '单价可信度.*' "$TMP/r.md" | head -1; }
-paid_row()  { grep -o '| 实付（订阅月费按天摊到本周） |[^|]*|[^|]*|' "$TMP/r.md" | head -1; }
+paid_row()  { grep -o '| 实付（美元，订阅月费按天摊到本周） |[^|]*|[^|]*|' "$TMP/r.md" | head -1; }
 
 echo "── 1. 小额金额不许被显示取整抹掉 ──"
 # 10,000 input × $10/M = $0.10，状态 disputed。真实 price_calls 算出来的桶。
@@ -156,7 +156,7 @@ mkdata 2026-03-02 "input:100000000:10:corroborated" 2>/dev/null
 chk "跨月的前一周不再复制本周的数" \
     "$(WEEKLY_REPORT_SUBSCRIPTION_MONTHLY=300 python3 "$REPORT" --data "$TMP/d.json" \
         --out "$TMP/r.md" --asset-url-base x --rev y >/dev/null 2>&1; paid_row)" \
-    "| 实付（订阅月费按天摊到本周） | \$68 | \$74 |"
+    "| 实付（美元，订阅月费按天摊到本周） | \$68 | \$74 |"
 
 echo "── 7. 实付：不同月天数各算各的 ──"
 # 目标周 2026-02-02（2 月 28 天）：7×300/28 ≈ 75 → \$75
@@ -165,21 +165,21 @@ mkdata 2026-02-02 "input:100000000:10:corroborated" 2>/dev/null
 chk "2 月那一周按 28 天摊、1 月按 31 天" \
     "$(WEEKLY_REPORT_SUBSCRIPTION_MONTHLY=300 python3 "$REPORT" --data "$TMP/d.json" \
         --out "$TMP/r.md" --asset-url-base x --rev y >/dev/null 2>&1; paid_row)" \
-    "| 实付（订阅月费按天摊到本周） | \$75 | \$69 |"
+    "| 实付（美元，订阅月费按天摊到本周） | \$75 | \$69 |"
 
 echo "── 8. 实付：没配月费 → 两列都「未配置」，不猜 ──"
 mkdata 2026-03-02 "input:100000000:10:corroborated" 2>/dev/null
 chk "两列都是未配置" \
     "$(env -u WEEKLY_REPORT_SUBSCRIPTION_MONTHLY python3 "$REPORT" --data "$TMP/d.json" \
         --out "$TMP/r.md" --asset-url-base x --rev y >/dev/null 2>&1; paid_row)" \
-    "| 实付（订阅月费按天摊到本周） | 未配置 | 未配置 |"
+    "| 实付（美元，订阅月费按天摊到本周） | 未配置 | 未配置 |"
 
 echo "── 9. 实付：只有目标周一份数据也要算得出前一周（日历事实，不依赖有没有数据）──"
 mkdata1 2026-03-02
 chk "单周输入不跑挂，两格都给得出" \
     "$(WEEKLY_REPORT_SUBSCRIPTION_MONTHLY=300 python3 "$REPORT" --data "$TMP/d.json" \
         --out "$TMP/r.md" --asset-url-base x --rev y >/dev/null 2>&1; paid_row)" \
-    "| 实付（订阅月费按天摊到本周） | \$68 | \$74 |"
+    "| 实付（美元，订阅月费按天摊到本周） | \$68 | \$74 |"
 
 echo
 echo "结果：$pass passed, $fail failed"

@@ -14,6 +14,10 @@ def _subscription_week(monday):
 
     月费只从 WEEKLY_REPORT_SUBSCRIPTION_MONTHLY 读（可以是一个数，也可以是多份订阅
     相加的 JSON 列表）。**没配就返回「未配置」**——不猜、也不拿别处的数字凑。
+
+    ⚠️ **这个值必须以美元填**：这里读的是个裸数字，渲染时无条件加 `$`，报告其余金额
+    也全是美元。按人民币月费填进来会被原样当成美元印出去，而且不会有任何报错
+    （GigleTutor-Web#931：维护者问「成本单位是人民币还是美元」）。
     """
     raw = os.environ.get("WEEKLY_REPORT_SUBSCRIPTION_MONTHLY", "").strip()
     if not raw:
@@ -82,7 +86,7 @@ def main():
     # 「折算价值」不是「成本」：本机两侧都是包月订阅，没有按 token 出的账单（见
     # docs/architecture.md）。这一栏回答的是「这些活按公开标价买要花多少钱」，
     # 实付是另一行的固定订阅费。两者**口径不同、不相除**（GitHub#934 的 Q1=A）。
-    row("折算价值（按公开标价）", cur["cost"], prev["cost"],
+    row("折算价值（美元，按公开标价）", cur["cost"], prev["cost"],
         lambda v: f"${v:,.0f}", cross=True)
     # 实付：某周 = Σ（该周每一天所属月份的月费 ÷ 该月天数）。按天摊，跨月的周自然拆开。
     # 月费只认配置，**没配就显示「未配置」**，不猜。
@@ -91,7 +95,7 @@ def main():
     # 3 月（31 天）= $68，前周 2026-02-23 是 6 天 2 月 + 1 天 3 月 = $74，旧写法两格都是 $68。
     _cur_monday = datetime.date.fromisoformat(tw["start"])
     _prev_monday = _cur_monday - datetime.timedelta(days=7)
-    L.append(f"| 实付（订阅月费按天摊到本周） | {_subscription_week(_cur_monday)} | "
+    L.append(f"| 实付（美元，订阅月费按天摊到本周） | {_subscription_week(_cur_monday)} | "
              f"{_subscription_week(_prev_monday)} | — |")
     if cur.get("records_not_summable"):
         L.append(f"| 另有：重叠且证据不足，**无法去重合计** | "
@@ -217,7 +221,7 @@ def main():
     L.append(f"![交付趋势]({a.asset_url_base}/delivery-{a.rev}.png)\n")
     L.append(f"![投入趋势]({a.asset_url_base}/effort-{a.rev}.png)\n")
     L.append("### 逐周数据\n")
-    L.append("| 周 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | 讨论条数 | 你发的 | AI 时长（墙上） | 模型+工具 | 成本 |")
+    L.append("| 周 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | 讨论条数 | 你发的 | AI 时长（墙上） | 模型+工具 | 成本（美元） |")
     L.append("|---|---|---|---|---|---|---|---|---|---|")
     for k in W:
         v=wk[k]; d0=datetime.date.fromisoformat(k); d1=d0+datetime.timedelta(days=6)
@@ -292,6 +296,7 @@ def main():
 
     L.append("<details>\n<summary><b>📐 数据口径 & 已知误差</b></summary>\n")
     L.append(f"""
+- **金额单位：一律是美元（USD），不是人民币。** 上面所有 `$` 数字、逐周表的成本列、趋势图里的花销面板都是美元。单价来源是按**美元 / 百万 token** 计的公开标价（本 worker 那一侧从本机 CLI 记账反解、交叉 review 那一侧人工配置），本工具**不做任何汇率换算**。注意：正文解读里若引用了某个 issue 自己算出的人民币金额（形如 `¥…`），那是那条 issue 的口径，与本表无关。
 - **时间切片**：周一 00:00 ~ 周日 24:00（北京时间）。
 - **讨论条数**：GitHub 上 issue + PR 的全部评论；「你发的」= 非 `*-bot` 账号发的条数。
 - **记账来源**：只认评论**末尾**那条机器写的记录；历史评论（还没有机器记录的）只认「记账行 + 紧随其后的 token 行」，且必须是机器人发的、不是交叉 review 评论。**不再拿正则扫整条评论正文**——正文里描述别的东西（如某测试耗时多少毫秒、SQL 片段里的 `($1)`）曾被当成记账混进统计。

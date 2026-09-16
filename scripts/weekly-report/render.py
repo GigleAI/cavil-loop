@@ -187,7 +187,7 @@ def main():
     hp=(tot("human")/tot("comments")*100) if tot("comments") else 0
     t2=(f'<h1>最近 {len(W)} 周趋势 · 投入面（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
         f'<div class="lede">{len(W)} 周合计：来回讨论 <b>{tot("comments"):.0f}</b> 条（其中你发了 <b>{tot("human"):.0f}</b> 条，占 {hp:.0f}%），'
-        f'AI 累计工作（墙上） <b>{tot("wall")/3600:.0f} 小时</b>，成本折合 <b>${tot("cost"):,.0f}</b>。</div>')
+        f'AI 累计工作（墙上） <b>{tot("wall")/3600:.0f} 小时</b>，成本折合 <b>{tot("cost"):,.0f} 美元</b>。</div>')
     p3=ch.panel(0,0,1212,320,"讨论轮数：AI 自己来回的次数 vs 你开口的次数",
         "堆叠柱＝当周 issue / PR 上的全部评论条数。",
         [{"type":"bar","data":g("bot"),"color":BLUE,"label":"AI 之间的来回","axis":"l","stack":True},
@@ -220,10 +220,12 @@ def main():
         + ("同轴折线＝其中「模型 + 工具」的估算小时（不含等待，算不出的周断开）；" if has_work else "")
         + "右轴折线＝平均每个墙上小时写出多少行净增代码。",
         time_series,note=sw)
-    p4=ch.panel(0,680,1212,320,"花销：每周总成本 vs 每千行代码的单位成本",
-        "柱＝当周总成本（按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少钱（右轴）。",
-        [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本 $","axis":"l"},
-         {"type":"line","data":kloc,"color":VIO,"label":"$ / 千行代码","axis":"r"}],note=sw)
+    # 金额一律美元：标题 / 副标题 / 两条图例都写出来。图会被单独贴进周报、脱离正文，
+    # 只写 `$` 读图的人分不清是美元还是人民币（GigleTutor-Web#931）。
+    p4=ch.panel(0,680,1212,320,"花销（美元）：每周总成本 vs 每千行代码的单位成本",
+        "柱＝当周总成本（美元，按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少美元（右轴）。",
+        [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本（美元）","axis":"l"},
+         {"type":"line","data":kloc,"color":VIO,"label":"美元 / 千行代码","axis":"r"}],note=sw)
     open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4],1020,a.fonts_dir))
     print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html")
 
