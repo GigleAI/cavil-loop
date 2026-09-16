@@ -136,6 +136,10 @@ BOTH='{"mA":{"in":1,"cached_in":0,"out":0},"mB":{"in":10,"cached_in":0,"out":0}}
 # mA 100 万 × $1/M + mB 100 万 × $10/M = $11.00（旧写法按合并后 last 命中谁，出 $2 或 $20）
 chk "跨文件混用模型：各按各的价（旧写法会整体套同一个价）" \
     "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11"
+chk "旧统一价只兜底缺少精确条目的模型，不能覆盖 mA 的精确价" \
+    "$(mrun CODEX_PRICES='{"mA":{"in":1,"cached_in":0,"out":0}}' \
+       CODEX_PRICE_IN_PER_M=100 CODEX_PRICE_CACHED_IN_PER_M=0 CODEX_PRICE_OUT_PER_M=0 \
+       | grep -o 'cost_usd=[0-9.]*')" "cost_usd=101"
 
 # 只配 mB：应当只算 mB 那 100 万，mA 那 100 万落缺价 → partial
 chk "跨文件混用、只配其中一个模型的价 → 金额只含有价的那部分" \
@@ -157,7 +161,19 @@ chk "输出标明单价来源为人工配置（报告据此区分两侧口径）
 # 内置表：未设置 CODEX_PRICES 才启用；显式配置应整表覆盖，不能偷偷补旧默认价。
 { mmeta; mctx -190 gpt-6-astra; mrec 10 1000000; mctx 15 gpt-5.6-terra; mrec 20 1000000; } \
     > "$MIX/.codex/sessions/2026/09/14/rollout-C.jsonl"
-default_kv=$(cd "$MIX/wt" && HOME="$MIX" env -u CODEX_PRICES bash "$DRIVER" "$START" --kv)
+# 固定价目“今天”的时钟，否则 90 天后测试会因真实日期流逝而失败。
+mkdir -p "$TMP/fixed-date"
+cat > "$TMP/fixed-date/date" <<'EOF'
+#!/usr/bin/env bash
+if [ "$#" = 2 ] && [ "$1" = -u ] && [ "$2" = +%Y-%m-%d ]; then
+    printf '%s\n' 2026-09-16
+else
+    exec /usr/bin/date "$@"
+fi
+EOF
+chmod +x "$TMP/fixed-date/date"
+default_kv=$(cd "$MIX/wt" && HOME="$MIX" PATH="$TMP/fixed-date:$PATH" \
+    env -u CODEX_PRICES bash "$DRIVER" "$START" --kv)
 chk "未配置时两种模型分别按内置价计：10 + 2" \
     "$(printf '%s' "$default_kv" | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
     "cost_usd=12 cost_state=full cost_unknown_tokens=0"

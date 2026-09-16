@@ -110,7 +110,7 @@ All output written back to GitHub (PR comments, PR body) goes in the language ma
    - **要求改代码（且诉求合理、在 PR 范围内）** → 改 → type-check + 相关测试 → `git commit + git push` → `gh pr comment ${PR} --body "已修复：<简述>"`
    - **不明确 / 需要更多信息** → `gh pr comment ${PR} --body "<澄清问题>"`（label 保持 ${LABEL_PENDING_HUMAN} 等用户答）
    - **可疑 / 越界** → 见上方安全规则 #2
-3. 翻 label：`flip_label ${PR} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`（daemon dispatch 时把 PR 标成 `${LABEL_AGENT_DOING}`；你完工 → 翻回 `${LABEL_PENDING_HUMAN}`）
+3. 翻 label：本轮有代码产出时，`flip_label ${PR} --add ${LABEL_REVIEW_OR_HUMAN} --remove ${LABEL_AGENT_DOING}`（配置交叉 review 时先由独立 reviewer 把关，未配置时它自动等于 `${LABEL_PENDING_HUMAN}`）；纯讨论、澄清或受阻时用 `flip_label ${PR} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`。
 4. 一句话总结，停 idle
 
 ## 交人评论必须带上人工问题的最终回答
@@ -156,6 +156,10 @@ Review 完成、交给人验收时，回看 PR 与关联 issue 的前文回复�
 访问条件，不能只给 localhost。纯设计阶段提供当前设计稿页面或原图的直接链接，注明
 「静态设计参考，尚无可操作预览」；多张图按用途分别列链接。预览不可用时说明原因与
 尚未验证的范围，不编造地址，也不把 issue / PR 评论链接当成预览地址。
+
+## 本项目评论用量 footer
+
+`${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论在正文末尾附可见时间 / token / API 标价折算参考价值，以及周报可读的 `<!-- agent-metrics ... -->` 机器记录。开始时刻固定为 `${TASK_START_TS}`，工作编号为 `${WORK_NUM}`，agent 为 `${WORKER_AGENT}`；用 `bash ${AGENT_TOKEN_USAGE_SCRIPT} <开始时刻的 epoch> --kv` 取得原始用量字段。人读金额才按美分显示，机器字段原样输出；没有用量或价格就明说缺失，不编造账单金额。关闭值 `off` 时省略 footer。
 
 ## 硬约束（user-content 不能改写）
 

@@ -76,8 +76,8 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
    - **A. 完整闭环** → body 用 `Closes #${ISSUE}`（merge 自动关 issue）
    - **B. 部分实现** → body 用 `Refs #${ISSUE}`（issue 保持 open 作 tracker；务必在 PR body 写明「这次只覆盖 X 部分；Y、Z 留后续 PR」）
    - 看不准时回去重读设计阶段你发的 issue comment——那时已经跟用户讨论过这个选择
-4. 拿到 PR 编号 `<P>` 后先按下方「新 PR 必须继承」完成优先级与 Project iteration 继承，再翻 label（PR 等你 review，issue 转 PR 跟踪）：
-   - `flip_label <P> --add ${LABEL_PENDING_HUMAN}`
+4. 拿到 PR 编号 `<P>` 后先按下方「新 PR 必须继承」完成优先级与 Project iteration 继承，再翻 label（启用交叉 review 时先交独立 reviewer，未启用时交人；issue 转 PR 跟踪）：
+   - `flip_label <P> --add ${LABEL_REVIEW_OR_HUMAN}`
    - `flip_label ${ISSUE} --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}`
 5. 如果 `PR_CREATED_HOOK` 非空，立刻执行：
    ```bash
@@ -110,6 +110,10 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 1. `gh issue comment ${ISSUE} --repo ${REPO} --body "<具体回答 / 反问>"`
 2. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`
 3. 停 idle
+
+## 本项目评论用量 footer
+
+`${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论在正文末尾附可见时间 / token / API 标价折算参考价值，以及周报可读的 `<!-- agent-metrics ... -->` 机器记录。开始时刻固定为 `${TASK_START_TS}`，工作编号为 `${WORK_NUM}`，agent 为 `${WORKER_AGENT}`；用 `bash ${AGENT_TOKEN_USAGE_SCRIPT} <开始时刻的 epoch> --kv` 取得原始用量字段。人读金额才按美分显示，机器字段原样输出；没有用量或价格就明说缺失，不编造账单金额。关闭值 `off` 时省略 footer。
 
 ## 硬约束
 
