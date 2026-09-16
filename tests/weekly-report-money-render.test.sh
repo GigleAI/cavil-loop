@@ -181,6 +181,24 @@ chk "单周输入不跑挂，两格都给得出" \
         --out "$TMP/r.md" --asset-url-base x --rev y >/dev/null 2>&1; paid_row)" \
     "| 实付（订阅月费按天摊到本周） | \$68 | \$74 |"
 
+echo "── 10. Codex 内置价来源与过期提示进入周报 ──"
+mkdata1 2026-03-02
+python3 - "$TMP/d.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+w = d["weekly"]["2026-03-02"]
+w["price_src_default"] = 2
+w["price_src_configured"] = 1
+w["price_stale_records"] = 1
+json.dump(d, open(p, "w"))
+PY
+run_report
+chk "来源分别披露，过期内置表也提示复核" \
+    "$(grep -qF '内置 API 参考价**（2 条）' "$TMP/r.md" && \
+       grep -qF '人工配置**（1 条）' "$TMP/r.md" && \
+       grep -qF '1 条使用内置价时已超过 90 天未复核' "$TMP/r.md" && echo yes || echo no)" "yes"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -21,6 +21,8 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 DRIVER="$REPO_DIR/scripts/drivers/token-usage/codex.sh"
+# 旧 fixture 专门验证无价路径；显式空表仍应保留该行为。
+export CODEX_PRICES='{}'
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
@@ -151,6 +153,39 @@ chk "单文件内换模型：按各条调用当时的 turn_context 分段计价"
 # 单价来源要如实标出来：这一侧是**人工配置**的，不是像 claude 那侧反解出来的
 chk "输出标明单价来源为人工配置（报告据此区分两侧口径）" \
     "$(mrun CODEX_PRICES="$BOTH" | grep -o 'price_source=[a-z]*')" "price_source=configured"
+
+# 内置表：未设置 CODEX_PRICES 才启用；显式配置应整表覆盖，不能偷偷补旧默认价。
+{ mmeta; mctx -190 gpt-6-astra; mrec 10 1000000; mctx 15 gpt-5.6-terra; mrec 20 1000000; } \
+    > "$MIX/.codex/sessions/2026/09/14/rollout-C.jsonl"
+default_kv=$(cd "$MIX/wt" && HOME="$MIX" env -u CODEX_PRICES bash "$DRIVER" "$START" --kv)
+chk "未配置时两种模型分别按内置价计：10 + 2" \
+    "$(printf '%s' "$default_kv" | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=12 cost_state=full cost_unknown_tokens=0"
+chk "内置价带来源日期和过期状态供后续报告披露" \
+    "$(printf '%s' "$default_kv" | grep -o 'price_source=[a-z]* price_checked=[0-9-]* price_stale=[a-z]*')" \
+    "price_source=default price_checked=2026-09-16 price_stale=no"
+mkdir -p "$TMP/old-driver"
+cp "$DRIVER" "$TMP/old-driver/codex.sh"
+jq '.checked_at = "2025-01-01"' "$REPO_DIR/scripts/drivers/token-usage/codex-prices.json" \
+    > "$TMP/old-driver/codex-prices.json"
+old_kv=$(cd "$MIX/wt" && HOME="$MIX" env -u CODEX_PRICES bash "$TMP/old-driver/codex.sh" "$START" --kv)
+chk "超过 90 天的内置价进入机器过期标记" \
+    "$(printf '%s' "$old_kv" | grep -o 'price_stale=[a-z]*')" "price_stale=yes"
+chk "人读用量也明确提示复核，过期不悄悄继续" \
+    "$(cd "$MIX/wt" && HOME="$MIX" env -u CODEX_PRICES \
+       bash "$TMP/old-driver/codex.sh" "$START" | grep -qF '超过 90 天，请复核' && echo yes || echo no)" "yes"
+chk "显式配置整表覆盖默认：未配置的另一模型进入缺价" \
+    "$(mrun CODEX_PRICES='{"gpt-6-astra":{"in":3,"cached_in":0,"out":0}}' \
+       | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=3 cost_state=partial cost_unknown_tokens=1000000"
+chk "显式空表关闭内置估价" \
+    "$(mrun CODEX_PRICES='{}' | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_state=none cost_unknown_tokens=2000000"
+chk "旧通配单价显式设置时也覆盖内置模型价" \
+    "$(cd "$MIX/wt" && HOME="$MIX" env -u CODEX_PRICES \
+       CODEX_PRICE_IN_PER_M=7 CODEX_PRICE_CACHED_IN_PER_M=0 CODEX_PRICE_OUT_PER_M=0 \
+       bash "$DRIVER" "$START" --kv | grep -o 'cost_usd=[0-9.]*')" "cost_usd=14"
+rm -f "$MIX/.codex/sessions/2026/09/14/rollout-C.jsonl"
 
 # ── 缺先行上下文的调用：如实算不出，不许拿后面的模型追认（第 2 轮打回）──
 # 文件头被截断时，早期调用可能属于切换前的模型 A，而首个可见 turn_context 已是切换后

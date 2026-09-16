@@ -87,6 +87,40 @@ PROJECT_GH_TOKEN=""              # token used only for the board read; empty = r
 
 Full field list: [`coding-agent.config.example`](../coding-agent.config.example).
 
+## Codex token value estimates
+
+When `CODEX_PRICES` is unset, the Codex usage driver uses the
+[built-in price table](../scripts/drivers/token-usage/codex-prices.json), checked
+on 2026-09-16 against the official API model pages:
+[`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra),
+[`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
+[`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra),
+[`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
+[`gpt-5.3-codex`](https://developers.openai.com/api/docs/models/gpt-5.3-codex),
+[`gpt-5.2-codex`](https://developers.openai.com/api/docs/models/gpt-5.2-codex),
+[`gpt-5-codex`](https://developers.openai.com/api/docs/models/gpt-5-codex),
+and [`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest).
+The table contains their Standard text input, cached-input, and output rates;
+only Astra has a listed cache-write rate in this table.
+
+Set `CODEX_PRICES` to a JSON map keyed by exact model ID to replace the full
+table. A copy-ready map is in [the config example](../coding-agent.config.example);
+set `CODEX_PRICES='{}'` to turn estimates off. Unlisted models and token
+components without a rate remain unpriced. The three legacy
+`CODEX_PRICE_*_PER_M` variables still apply a common rate to every model and
+override the table.
+For a host config override, use `export CODEX_PRICES='...'` and include
+`CODEX_PRICES` in `WORKER_PASS_ENV`; tmux workers do not inherit plain config
+shell variables automatically.
+
+The USD amount is a **converted reference value at published API list price**,
+not a subscription bill or verified spend. Long-context and Fast/Batch/Flex
+rate changes are not identified by this driver, so these estimates use Standard
+rates. The built-in table is static: after 90 days its human-readable output
+asks for a price review; it never fetches prices at runtime. The weekly report
+distinguishes built-in API reference rates from operator-configured rates, and
+neither Codex source is independently cross-checked against an invoice.
+
 ## Model-selecting trigger labels
 
 Use `pending/agent` for the worker CLI's default model. Use

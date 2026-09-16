@@ -343,6 +343,8 @@ def main():
                 s["price_usd_unrated"] = s.get("price_usd_unrated", 0.0) + cost
         if psrc:
             s[f"price_src_{psrc}"] = s.get(f"price_src_{psrc}", 0) + 1
+        if psrc == "default" and rec.get("price_stale"):
+            s["price_stale_records"] = s.get("price_stale_records", 0) + 1
         lc = info.get("log_check") if info else None
         if lc:
             s[f"log_{lc}"] += 1
@@ -469,7 +471,8 @@ def main():
               "price_usd_corroborated", "price_usd_uncorroborated",
               "price_usd_disputed", "price_usd_unstable",
               "price_usd_reference_only", "price_usd_unrated",
-              "price_src_solved", "price_src_configured"]
+              "price_src_solved", "price_src_configured", "price_src_default",
+              "price_stale_records"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 
     tw = target.isoformat()

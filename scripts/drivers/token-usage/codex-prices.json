@@ -1,0 +1,13 @@
+{
+  "checked_at": "2026-09-16",
+  "models": {
+    "gpt-6-astra": {"in": 10, "cached_in": 1, "out": 50, "cache_write": 12.5},
+    "gpt-5.6-sol": {"in": 4, "cached_in": 0.4, "out": 20},
+    "gpt-5.6-terra": {"in": 2, "cached_in": 0.2, "out": 12},
+    "gpt-5.6-luna": {"in": 0.2, "cached_in": 0.02, "out": 1.2},
+    "gpt-5.3-codex": {"in": 1.75, "cached_in": 0.175, "out": 14},
+    "gpt-5.2-codex": {"in": 1.75, "cached_in": 0.175, "out": 14},
+    "gpt-5-codex": {"in": 1.25, "cached_in": 0.125, "out": 10},
+    "codex-mini-latest": {"in": 1.5, "cached_in": 0.375, "out": 6}
+  }
+}

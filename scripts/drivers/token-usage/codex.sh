@@ -22,9 +22,9 @@
 #   同理 `cached_input_tokens` 是 `input_tokens` 的子项（实测 0 条超出），
 #   所以下面用 `input − cached` 取未命中缓存的那部分，与 claude 那一侧口径对齐。
 #
-# ⚠️ 金额：本 driver **不自带价目表**。codex 侧的单价属于部署环境，没有可信默认值，
-#   硬编一个只会把「估算」伪装成「账单」。没配就只出 token、不出金额，周报会如实记
-#   「缺金额」——并且明说「占比算不出来，**不是 0%**」。
+# 金额是按 API 标准文本标价换算的参考价值，不是订阅账单。未设置 CODEX_PRICES
+# 时使用同目录 codex-prices.json 的内置表；显式设置时完整替换内置表，可设 {}
+# 禁用估价。内置表有核对日期，超过 90 天的人读输出会提示复核。
 #
 #   单价**按模型分别配**（GigleTutor-Web#934 的 Q4=A）：同一次派工里混用不同模型时，
 #   一个价钱套所有模型会算错。
@@ -43,10 +43,10 @@
 #   模型名从会话记录的 `turn_context.model` 读（本机是 gpt-6-astra）。
 #   配置走 `CODEX_PRICES`，JSON，单位美元 / 百万 token：
 #
-#     CODEX_PRICES='{"gpt-6-astra":{"in":1.25,"cached_in":0.125,"out":10}}'
+#     CODEX_PRICES='{"gpt-6-astra":{"in":10,"cached_in":1,"out":50,"cache_write":12.5}}'
 #
 #   三个键 `in` / `cached_in` / `out` 是常规项；`cache_write` 是**可选键**——这一侧
-#   没有公开的缓存写入单价，不配就把那部分 token 如实计进 `cost_unknown_tokens`、
+#   没有确认过缓存写入单价时，不配就把那部分 token 如实计进 `cost_unknown_tokens`、
 #   该次派工落 `partial`，**不编一个默认价**。本机实测 cache_write 恒为 0，所以不配
 #   也不会让派工无端变成 partial。
 #
@@ -85,11 +85,31 @@ done <<< "$FILES"
 PI="${CODEX_PRICE_IN_PER_M:-}"
 PC="${CODEX_PRICE_CACHED_IN_PER_M:-}"
 PO="${CODEX_PRICE_OUT_PER_M:-}"
-PRICES="${CODEX_PRICES:-{\}}"
+PRICE_SOURCE=configured
+PRICE_DATE=""
+if [ "${CODEX_PRICES+x}" ]; then
+    PRICES="$CODEX_PRICES"
+else
+    PRICE_SOURCE=default
+    PRICE_FILE="$(dirname "${BASH_SOURCE[0]}")/codex-prices.json"
+    PRICES=$(jq -c '.models' "$PRICE_FILE") || exit 1
+    PRICE_DATE=$(jq -r '.checked_at' "$PRICE_FILE") || exit 1
+fi
+if [ -n "$PI" ] && [ -n "$PC" ] && [ -n "$PO" ]; then
+    [ "${CODEX_PRICES+x}" ] || PRICES='{}'
+    PRICE_SOURCE=configured
+fi
 # 旧的三个变量 → 当成「所有模型同价」的兜底表，用 * 作通配键
 if [ -n "$PI" ] && [ -n "$PC" ] && [ -n "$PO" ]; then
     PRICES=$(printf '%s' "$PRICES" | jq -c --argjson d "{\"in\":$PI,\"cached_in\":$PC,\"out\":$PO}" \
         '. + {"*": $d}' 2>/dev/null || printf '{"*":{"in":%s,"cached_in":%s,"out":%s}}' "$PI" "$PC" "$PO")
+fi
+PRICE_STALE=no
+if [ "$PRICE_SOURCE" = default ]; then
+    PRICE_STALE=$(jq -nr --arg checked "$PRICE_DATE" --arg today "$(date -u +%Y-%m-%d)" '
+        (($today + "T00:00:00Z" | fromdateiso8601) -
+         ($checked + "T00:00:00Z" | fromdateiso8601)) > (90 * 86400)
+        | if . then "yes" else "no" end')
 fi
 
 # ── ① 逐文件扫描：给每条用量记录盖上「它所属那一轮的模型」 ──────────────────
@@ -118,7 +138,8 @@ STAMPED=$(
 [ -z "$STAMPED" ] && exit 0
 
 # ── ② 按模型分段计价，再合计 ─────────────────────────────────────────────
-printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" '
+printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" \
+    --arg price_source "$PRICE_SOURCE" --arg price_date "$PRICE_DATE" --arg price_stale "$PRICE_STALE" '
     def fmt:
         if . >= 1000000 then ((. / 100000 | floor) / 10 | tostring) + "m"
         elif . >= 1000 then ((. / 100 | floor) / 10 | tostring) + "k"
@@ -160,7 +181,7 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
     #   cache_write **非零的有 0 条**，所以这一改在真实数据上一条都不会变成 partial，
     #   只有它真的非零时才报——那时本来就该报。
     # `cache_write` 是 CODEX_PRICES 里的**可选键**：配了就按它算，不配就如实记缺价。
-    #   不给它编一个默认价（这一侧的单价属于部署环境，没有可信默认值）。
+    #   不给未列价的模型或项编造单价。
     | (reduce $bym[] as $g ({usd:0, unk:0, known:0};
           ($prices[$g.model] // $prices["*"] // null) as $p
           | [{v: $g.s.in,  p: (if $p then $p.in          else null end)},
@@ -188,11 +209,17 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
       then "in=\($t.in) out=\($t.out) cache_r=\($t.cin) cache_w=\($t.cw)"
            + (if $state == "none" then "" else " cost_usd=\($agg.usd)" end)
            + " cost_state=\($state) cost_unknown_tokens=\($agg.unk)"
-           # 这一侧的单价是**人工配置**的，不是反解出来的，所以没有四态可言
-           + " price_source=configured"
+           # 这一侧取内置或部署者配置的 API 参考价，不是本机反解值
+           + " price_source=\($price_source)"
+           + (if $price_source == "default"
+              then " price_checked=\($price_date) price_stale=\($price_stale)"
+              else "" end)
       else "\($t.in | fmt) input, \($t.out | fmt) output, \($t.cin | fmt) cache read, \($t.cw | fmt) cache write"
            + (if $state == "none" then "（该模型未配单价，金额未计）"
               elif $state == "partial" then " ($\($agg.usd | usd2)，部分用量未计价，金额偏低)"
               else " ($\($agg.usd | usd2))" end)
+           + (if $price_source == "default" and $price_stale == "yes"
+              then "（内置 API 参考价已超过 90 天，请复核）"
+              else "" end)
       end
 ' 2>/dev/null
