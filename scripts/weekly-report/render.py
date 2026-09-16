@@ -120,7 +120,7 @@ def legw(t):
 
     别用 `len(t)*常数`：中文一个字约 11.5px、拉丁字符约 6.3px，按拉丁宽度算会严重低估，
     图例条目多、标签长的时候就会叠在一起糊成一团（实测投入面那张图加到 3 条图例后
-    「墙上时长（含等待）」「其中模型 + 工具（估算）」「行 / 墙上小时」直接压在一起）。
+    「总耗时（含等待）」「其中模型 + 工具（估算）」「行 / 小时（总耗时）」直接压在一起）。
     """
     return sum(11.5 if ord(c) > 0x2E80 else 6.3 for c in t)
 
@@ -187,7 +187,7 @@ def main():
     hp=(tot("human")/tot("comments")*100) if tot("comments") else 0
     t2=(f'<h1>最近 {len(W)} 周趋势 · 投入面（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
         f'<div class="lede">{len(W)} 周合计：来回讨论 <b>{tot("comments"):.0f}</b> 条（其中你发了 <b>{tot("human"):.0f}</b> 条，占 {hp:.0f}%），'
-        f'AI 累计工作（墙上） <b>{tot("wall")/3600:.0f} 小时</b>，成本折合 <b>{tot("cost"):,.0f} 美元</b>。</div>')
+        f'AI 累计总耗时（含等待） <b>{tot("wall")/3600:.0f} 小时</b>，成本折合 <b>{tot("cost"):,.0f} 美元</b>。</div>')
     p3=ch.panel(0,0,1212,320,"讨论轮数：AI 自己来回的次数 vs 你开口的次数",
         "堆叠柱＝当周 issue / PR 上的全部评论条数。",
         [{"type":"bar","data":g("bot"),"color":BLUE,"label":"AI 之间的来回","axis":"l","stack":True},
@@ -207,18 +207,18 @@ def main():
     has_work=any(v is not None for v in whrs)
     # 零工时的周分母为 0 → None，折线在那里断开。画成 0 会被读成「那周没产出」，是两回事。
     lph=[(net[i]/hrs[i] if hrs[i] else None) for i in range(len(W))]
-    # ⚠️ 柱子画的是**墙上时长**，它**包含**派工里的等待。标题 / 副标题 / 图例都必须这么说：
+    # ⚠️ 柱子画的是**总耗时**，它**包含**派工里的等待。标题 / 副标题 / 图例都必须这么说：
     # 这张图会被直接贴进周报，图上写「不含等人回话的空档」而正文写「包含等待」，
     # 读图的人只会记住图（#932 review 第 6 轮）。「不含等待」的是那条模型 + 工具折线。
-    time_series=[{"type":"bar","data":hrs,"color":AQUA,"label":"墙上时长（含等待）","axis":"l","fmt":fmt_h}]
+    time_series=[{"type":"bar","data":hrs,"color":AQUA,"label":"总耗时（含等待）","axis":"l","fmt":fmt_h}]
     if has_work:
         time_series.append({"type":"line","data":whrs,"color":VIO,
                             "label":"其中模型 + 工具（估算）","axis":"l"})
-    time_series.append({"type":"line","data":lph,"color":ORANGE,"label":"行 / 墙上小时","axis":"r"})
-    p_time=ch.panel(0,340,1212,320,"AI 投入时间：每周墙上时长（含等待）",
-        "柱＝当周每条记账里「完工 − 开始」的累计小时，包含那段派工里的等待（左轴）；"
+    time_series.append({"type":"line","data":lph,"color":ORANGE,"label":"行 / 小时（总耗时）","axis":"r"})
+    p_time=ch.panel(0,340,1212,320,"AI 投入时间：每周总耗时（含等待）",
+        "柱＝当周每次派工从开工到完工走过的钟点数累计，中间干等的时间也算在内（左轴）；"
         + ("同轴折线＝其中「模型 + 工具」的估算小时（不含等待，算不出的周断开）；" if has_work else "")
-        + "右轴折线＝平均每个墙上小时写出多少行净增代码。",
+        + "右轴折线＝平均每小时（按总耗时算）写出多少行净增代码。",
         time_series,note=sw)
     # 金额一律美元：标题 / 副标题 / 两条图例都写出来。图会被单独贴进周报、脱离正文，
     # 只写 `$` 读图的人分不清是美元还是人民币（GigleTutor-Web#931）。

@@ -80,9 +80,9 @@ def main():
                     ("你发的条数", "human")):
         row(name, cur[f], prev[f])
     row("主干净增代码行", net, prev["add"] - prev["del"])
-    row("AI 工作时长（墙上）", cur["wall"], prev["wall"], hm, cross=True)
+    row("AI 总耗时（含等待）", cur["wall"], prev["wall"], hm, cross=True)
     if cur.get("work_records") or prev.get("work_records"):
-        row("其中模型 + 工具", cur["work"], prev["work"], hm, cross=True)
+        row("其中模型 + 工具（不含等待）", cur["work"], prev["work"], hm, cross=True)
     # 「折算价值」不是「成本」：本机两侧都是包月订阅，没有按 token 出的账单（见
     # docs/architecture.md）。这一栏回答的是「这些活按公开标价买要花多少钱」，
     # 实付是另一行的固定订阅费。两者**口径不同、不相除**（GitHub#934 的 Q1=A）。
@@ -167,7 +167,7 @@ def main():
         if 0 <= since < a.parallel_weeks:
             L.append(f"> **口径切换过渡期（第 {since+1} / {a.parallel_weeks} 周）**：{first_codex} 那周起统计同时发生两处变化"
                      f"——用量按 API 调用去重、纳入交叉 review 那一侧。两者叠加，**与切换前的周不可直接比**。\n")
-            L.append("| 口径 | AI 工作时长（墙上） | 模型 + 工具 | 成本 | 记账条数 |")
+            L.append("| 口径 | AI 总耗时（含等待） | 模型 + 工具 | 成本 | 记账条数 |")
             L.append("|---|---|---|---|---|")
             L.append(f"| 仅主 worker·新口径 | {hm(cur['wall_claude'])} | {hm(cur['work_claude'])} | "
                      f"{money(cur['cost_claude'], cc_cl, rc_cl)} | {rc_cl:.0f} |")
@@ -195,13 +195,13 @@ def main():
     active=[d for d in D["detail"] if d["num"] not in czn and worked(d)]
     loose=[d for d in D.get("loose_prs",[]) if worked(d) or d["merged_at"]]
     L.append(f"### 上周收口的 issue（{len(closed)} 个）\n")
-    L.append("| # | 标题 | 轮数（你参与） | AI 耗时（墙上） | PR |")
+    L.append("| # | 标题 | 轮数（你参与） | AI 总耗时 | PR |")
     L.append("|---|---|---|---|---|")
     for d in closed:
         pr=" ".join(f"#{p['num']}{'（已合并）' if p['merged_at'] else ''}" for p in d["prs"]) or "—"
         L.append(f"| #{d['num']} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） | {hm(d['wall'])} | {pr} |")
     L.append(f"\n### 上周有推进但没关的 issue（{len(active)} 个）\n")
-    L.append("| # | 标题 | 轮数（你参与） | AI 耗时（墙上） | 当前 label |")
+    L.append("| # | 标题 | 轮数（你参与） | AI 总耗时 | 当前 label |")
     L.append("|---|---|---|---|---|")
     for d in active:
         L.append(f"| #{d['num']} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） | {hm(d['wall'])} | {', '.join(d['labels']) or '—'} |")
@@ -210,7 +210,7 @@ def main():
         L.append(f"\n### 上周没有对应 issue 的 PR（{len(loose)} 个）\n")
         L.append("> 多为 chore / 工具链改动。它们不挂在任何 issue 下，单列在这里，"
                  "否则只看 issue 清单会完全看不见这部分工作。\n")
-        L.append("| PR | 标题 | 轮数（你参与） | AI 耗时（墙上） | 状态 |")
+        L.append("| PR | 标题 | 轮数（你参与） | AI 总耗时 | 状态 |")
         L.append("|---|---|---|---|---|")
         for d in loose:
             stt="已合并" if d["merged_at"] else ("已关闭" if d["closed_at"] else "开着")
@@ -221,7 +221,7 @@ def main():
     L.append(f"![交付趋势]({a.asset_url_base}/delivery-{a.rev}.png)\n")
     L.append(f"![投入趋势]({a.asset_url_base}/effort-{a.rev}.png)\n")
     L.append("### 逐周数据\n")
-    L.append("| 周 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | 讨论条数 | 你发的 | AI 时长（墙上） | 模型+工具 | 成本（美元） |")
+    L.append("| 周 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | 讨论条数 | 你发的 | AI 总耗时 | 模型+工具 | 成本（美元） |")
     L.append("|---|---|---|---|---|---|---|---|---|---|")
     for k in W:
         v=wk[k]; d0=datetime.date.fromisoformat(k); d1=d0+datetime.timedelta(days=6)
@@ -240,24 +240,24 @@ def main():
     L.append(f"\n**{len(W)} 周合计**：新提 issue {t('iss_open'):.0f} / 关闭 {t('iss_closed'):.0f}，"
              f"合并 PR {t('pr_merged'):.0f} 个，净增 {tn:,} 行，讨论 {t('comments'):.0f} 条"
              f"（你 {t('human'):.0f} 条，{t('human')/t('comments')*100 if t('comments') else 0:.0f}%），"
-             f"AI 墙上 {t('wall')/3600:.0f} 小时，成本 ${t('cost'):,.0f}。\n")
+             f"AI 总耗时 {t('wall')/3600:.0f} 小时，成本 ${t('cost'):,.0f} 美元。\n")
     lw=[x for x in D.get("long_windows",[]) if x["week"]==tw["start"]]
     ms=[x for x in D.get("misattributed",[]) if x["week"]==tw["start"]]
     if lw or ms:
         L.append("<details>\n<summary><b>🔎 需要人看一眼的记录（只列出，不影响上面任何数字）</b></summary>\n")
         if lw:
-            L.append(f"\n**墙上时长 ≥ 4 小时的派工（{len(lw)} 条）**。只是列出来，"
+            L.append(f"\n**总耗时 ≥ 4 小时的派工（{len(lw)} 条）**。只是列出来，"
                      "**不判断**它是卡住了还是真的跑了很久：\n")
-            L.append("| # | 开始 | 完工 | 墙上时长 |")
+            L.append("| # | 开始 | 完工 | 总耗时 |")
             L.append("|---|---|---|---|")
             for x in lw:
                 L.append(f"| #{x['num']} | {x['start'][:19]} | {x['end'][:19]} | {hm(x['wall'])} |")
         if ms:
-            L.append(f"\n**「模型 + 工具」明显超过自身墙上时长的派工（{len(ms)} 条）**。"
+            L.append(f"\n**「模型 + 工具」明显超过自身总耗时的派工（{len(ms)} 条）**。"
                      "成因是它紧跟在一段长工作之后发了条短评论，差分把前面那段算到了它头上——"
                      "**位置挪错，不是凭空多出来的工作**。按原样计入（错位在合计上基本守恒，"
                      "封顶反而会抹掉真实工时），看单个 issue 耗时时请对照本清单：\n")
-            L.append("| # | 墙上时长 | 模型 + 工具 | 倍数 |")
+            L.append("| # | 总耗时 | 模型 + 工具 | 倍数 |")
             L.append("|---|---|---|---|")
             for x in ms:
                 L.append(f"| #{x['num']} | {hm(x['wall'])} | {hm(x['work'])} | {x['work']/max(x['wall'],1):.1f}× |")
@@ -301,8 +301,8 @@ def main():
 - **讨论条数**：GitHub 上 issue + PR 的全部评论；「你发的」= 非 `*-bot` 账号发的条数。
 - **记账来源**：只认评论**末尾**那条机器写的记录；历史评论（还没有机器记录的）只认「记账行 + 紧随其后的 token 行」，且必须是机器人发的、不是交叉 review 评论。**不再拿正则扫整条评论正文**——正文里描述别的东西（如某测试耗时多少毫秒、SQL 片段里的 `($1)`）曾被当成记账混进统计。
 - **按派工去重**：一次派工的身份是 **(worktree, 开始时刻)** 两项，**不含完工时刻**——记账行里的时长 / 金额 / token 都是从开始起的**累计值**，而「完工」只是写那条评论的时刻，同一次派工发多条评论就是多个越来越大的累计快照。所以同一身份只入账一次，并取**完工最晚**的那条（累计值最完整）。本次区间折叠了 {t('dupes'):.0f} 条这样的快照。
-- **AI 工作时长（墙上）**：记账行里「完工 − 开始」。它**包含**那段派工里的等待——会话卡住时照算。
-- **模型 + 工具**：agent 自己记录的模型调用 + 工具执行时间，**不含等待**；出报告时按派工窗口从本机 agent 日志取。本次区间 {t('work_records'):.0f} 条算得出、{t('work_missing'):.0f} 条拿不到（日志已不在或窗口配不上），拿不到的不计入该项。**这是估算，不是精确工时**：窗口归属靠快照前后配对，逐条可能错位。
+- **AI 总耗时（含等待）**：一次派工从「开工」到「完工」之间**走过的钟点时间**，也就是记账行里的「完工 − 开始」。它**把中间的干等也算进去**——会话卡住不动的那几个钟头照样计入，所以它回答的是「这件事占了多长时间」，**不是「AI 真干了多少活」**。
+- **模型 + 工具**：AI 自己记录的模型调用 + 工具执行时间，**不含等待**，这条才接近「真干了多少活」；出报告时按派工窗口从本机 agent 日志取。本次区间 {t('work_records'):.0f} 条算得出、{t('work_missing'):.0f} 条拿不到（日志已不在或窗口配不上），拿不到的不计入该项。**这是估算，不是精确工时**：窗口归属靠快照前后配对，逐条可能错位。
 - **口径切换周**：{'配置为 ' + first_codex + '（那周起用量按 API 调用去重、纳入交叉 review 那一侧；它前后的时长 / 成本不是同一把尺子量的）。' if first_codex else ('**未配置**——所以本报告不标切换周、不画切换竖线、也不出过渡期并列块，环比照常给。本次区间里交叉 review 那一侧**已经有记账**，说明新口径已经上线，请把 `WEEKLY_REPORT_SWITCH_WEEK` 设成它上线那一周内的任意一天。' if t('records_codex') else '未配置，且本次区间里交叉 review 那一侧还没有记账 —— 新口径尚未上线，暂时无需配置。')}
 - **金额来源**：本次区间 {t('src_recomputed'):.0f} 条按本机日志**重算**、{t('src_original'):.0f} 条**沿用记录里的原值**。重算只在「本机有这次派工的日志且通过检验」时才做，**不按周划线**——所以**同一个历史周的数值会随本机日志被清理而改变**，重跑可能不一样（报告生成时间见文末）。日志检验只能**证伪**（比记录里少就是确证缺失），**证明不了日志完整**：记录本身可能就没看全，后来新增的调用也可能把被删调用的 token 补上。{f"其中 {t('log_shortfall_detected'):.0f} 条检出缺失、{t('log_unknown'):.0f} 条覆盖未知，这些一律沿用原值、不拿残缺的重算值顶替。" if (t('log_shortfall_detected') or t('log_unknown')) else ""}
 - **不可去重合计的部分**：{f"本次区间另有 **{t('records_not_summable'):.0f} 条**派工的窗口互相重叠、且组内有沿用原值的，合计 ${t('cost_not_summable'):,.0f}——原值是驱动按自己窗口、自己那套价目算的累计值，和重算值**不是同一个口径**，两者直接相加会把共用的调用算两遍。所以这部分**单列，不可与上面的成本相加**。" if t('records_not_summable') else "本周没有「重叠且证据不足」的派工，成本栏就是全部。"}

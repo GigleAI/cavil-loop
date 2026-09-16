@@ -119,8 +119,8 @@ chk "5 周只有 4 个柱顶标签（零工时不打标签）" "$(q 'len(bartops
 chk "左轴最低刻度带单位，是 0h"               "$(q 'axis(seg("effort",1))[0]')" "0h"
 chk "「行/小时」折线在零工时那周断开（4 个点不是 5 个）" \
     "$(q 'dots(seg("effort",1))')" "4"
-chk "工时面板有「行 / 墙上小时」这条辅助折线（Q1=C）" \
-    "$(q '"行 / 墙上小时" in legends(seg("effort",1))')" "True"
+chk "工时面板有「行 / 小时（总耗时）」这条辅助折线（Q1=C）" \
+    "$(q '"行 / 小时（总耗时）" in legends(seg("effort",1))')" "True"
 
 echo
 echo "— 图上的口径措辞必须跟柱子画的东西一致（#932 review 第 6 轮）"
@@ -130,7 +130,7 @@ chk "工时面板标题点明「含等待」"      "$(q '"含等待" in titles("
 chk "标题不再自称「实际干活的小时数」" "$(q '"实际干活" in titles("effort")[1]')" "False"
 chk "副标题不再说「不含等人回话的空档」" \
     "$(q '"不含等人回话的空档" in read("effort")')" "False"
-chk "柱子的图例写明含等待"            "$(q '"墙上时长（含等待）" in legends(seg("effort",1))')" "True"
+chk "柱子的图例写明含等待"            "$(q '"总耗时（含等待）" in legends(seg("effort",1))')" "True"
 chk "没有 work 数据时不画模型+工具折线" \
     "$(q 'any("模型 + 工具" in t for t in legends(seg("effort",1)))')" "False"
 chk "图例不叠字（中文按中文宽度排版，不是按拉丁宽度）" \
