@@ -272,7 +272,7 @@ def main():
         ("uncorroborated", "反解稳定但无参照可比",       "解得稳，但没有可比的外部参照，属候选估算"),
         ("reference_only", "直接取参照价",               "加速档没有可反解的样本，直接用参照价"),
         ("corroborated",   "反解稳定且与参照一致",       "两个独立来源对上了 —— 只说明**和那份参照一致**，不等于已证明为真值"),
-        ("unrated",        "说不出可信度",               "历史评论是旧驱动那张**过期价目表**算的（实测高 193%），交叉 review 那一侧则是人工配置的单价，两者都没有可信度可言"),
+        ("unrated",        "说不出可信度",               "历史评论可能沿用旧驱动的过期价目表；交叉 review 那一侧采用内置或人工配置的 API 参考价，均未与账单独立核验"),
     ]
     # ⚠️ 「有没有这一桶」由**金额本身**决定，不由显示取整决定（#934 交叉 review 第 7 轮）。
     # 原来按 `round(...) != 0` 筛，$0.10 的存疑金额直接消失，还反过来输出「本次区间没有
@@ -292,7 +292,8 @@ def main():
     _ref = (D.get("price_reference") or {}).get("source") or "未记录"
     price_trust = ("；".join(_parts) + "。" if _parts else "本次区间没有算出金额，无从谈可信度。") + \
         f"参照出处：`{_ref}` —— 是**本机缓存的一份公开价目**，本次**没有联网核验**；参照若已过期，反解值与它会一起错，这套机制发现不了。" + \
-        f"另：本 worker 那一侧的单价是**本机反解**的（{t('price_src_solved'):.0f} 条），交叉 review 那一侧是**人工配置**的（{t('price_src_configured'):.0f} 条）—— 后者没经过任何交叉核对，两侧不是同一把尺子。"
+        f"另：本 worker 那一侧的单价是**本机反解**的（{t('price_src_solved'):.0f} 条）；交叉 review 那一侧取**内置 API 参考价**（{t('price_src_default'):.0f} 条）或**人工配置**（{t('price_src_configured'):.0f} 条），都未与账单独立核验，两侧不是同一把尺子。" + \
+        (f"其中 {t('price_stale_records'):.0f} 条使用内置价时已超过 90 天未复核。" if t("price_stale_records") else "")
 
     L.append("<details>\n<summary><b>📐 数据口径 & 已知误差</b></summary>\n")
     L.append(f"""

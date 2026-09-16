@@ -119,7 +119,8 @@ def extract(body, login, comment_id=None, default_wt=None):
       tokens_exact  历史记录的 token 是 driver 的 fmt **floor 截断**过的（53.5k ⇒ ≥53500），
                这里拿到的是**下界**不是精确值，比对时要按下界判。
       cost_state   价格覆盖三态：full / partial（有模型没单价，金额必定偏低）/ none
-      price_source 单价出处：solved（本机反解，claude 侧）/ configured（人工配置，codex 侧）
+      price_source 单价出处：solved（本机反解）/ default（内置 API 参考价）/
+                   configured（部署者人工配置）
       price_status 金额按**单价可信度**拆开，{corroborated/uncorroborated/disputed/
                unstable/reference_only: 美元}。与 cost_state 是两回事：cost_state 说
                「有没有价」，这个说「这个价站不站得住」
@@ -203,6 +204,7 @@ def extract(body, login, comment_id=None, default_wt=None):
                 "tokens": tokens, "tokens_exact": True, "cost_state": cost_state,
                 "cost_unknown_tokens": _int("cost_unknown_tokens"),
                 "price_source": kv.get("price_source"),
+                "price_stale": kv.get("price_stale") == "yes",
                 "price_status": _price_status(kv.get("price_status"))}
 
     # ② 历史评论（无机器记录）：连同上面那条作者判定一共四步，任何一步不满足
