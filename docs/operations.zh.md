@@ -84,6 +84,34 @@ PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用
 
 完整字段见 [`coding-agent.config.example`](../coding-agent.config.example)。
 
+## Codex token 折算参考价值
+
+未设置 `CODEX_PRICES` 时，Codex 用量驱动使用
+[内置价格表](../scripts/drivers/token-usage/codex-prices.json)。该表在
+2026-09-16 对照官方模型页核过标准文本输入、缓存输入和输出标价，覆盖
+[`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)、
+[`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol)、
+[`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra)、
+[`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna)、
+[`gpt-5.3-codex`](https://developers.openai.com/api/docs/models/gpt-5.3-codex)、
+[`gpt-5.2-codex`](https://developers.openai.com/api/docs/models/gpt-5.2-codex)、
+[`gpt-5-codex`](https://developers.openai.com/api/docs/models/gpt-5-codex) 和
+[`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest)。
+表中只有 Astra 配有官方列出的缓存写入单价。
+
+部署者可按完整模型 ID 设置 `CODEX_PRICES` JSON，整表替换内置表；
+[配置模板](../coding-agent.config.example)有可直接复制的版本。设
+`CODEX_PRICES='{}'` 可关闭估算。未知模型或缺少单价的 token 项仍报缺价。
+旧的三个 `CODEX_PRICE_*_PER_M` 变量仍能以同一个价覆盖全部模型。
+若要从宿主配置覆盖，使用 `export CODEX_PRICES='...'`，并把
+`CODEX_PRICES` 加入 `WORKER_PASS_ENV`；tmux 内的 worker 不会自动继承
+未导出的配置变量。
+
+美元金额是**按 API 公开标价折算的参考价值**，不是订阅账单或已核验的实际支出。
+驱动无法识别长上下文与 Fast/Batch/Flex 档位，估算只取 Standard 标价。
+内置表是静态的；超过 90 天，人读用量会提示复核，不会在运行时联网抓价。
+周报分别披露内置公开参考价和部署者自填价；两者都未与账单独立交叉核验。
+
 ## 按模型派工的标签
 
 使用 `pending/agent` 时沿用 worker CLI 的默认模型；使用

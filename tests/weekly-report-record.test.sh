@@ -41,6 +41,15 @@ ex_mark = ("说明格式：\n\n````text\n"
 r = record.extract(ex_mark, BOT, 1)
 chk("正文有机器记录示例 + 末尾真记录 → 取末尾那条", (r["src"], r["wall"], r["cost"]), ("marker", 850, 16.64))
 
+default_mark = ("<!-- agent-metrics agent=codex wt=22 "
+                "start=2026-09-14T10:00:00+08:00 end=2026-09-14T10:14:10+08:00 "
+                "wall_secs=850 in=1000000 out=0 cache_r=0 cache_w=0 cost_usd=10 "
+                "cost_state=full cost_unknown_tokens=0 price_source=default "
+                "price_checked=2026-09-16 price_stale=yes -->")
+r = record.extract(default_mark, BOT, 40)
+chk("内置价来源与过期状态从机器标记进入周报记录",
+    (r["price_source"], r["price_stale"]), ("default", True))
+
 ex_foot = ("历史排版长这样：\n\n````text\n"
            "⏱️ 开始 2020-01-01 00:00:00 · 完工 09:00:00 · 耗时 540m\ntoken 1 input ($999.00)\n````\n\n"
            "> 引用别人的：\n> ⏱️ 开始 2021-02-02 00:00:00 · 完工 08:00:00 · 耗时 480m\n\n" + REAL)

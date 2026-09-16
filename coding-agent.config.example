@@ -254,6 +254,21 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 # 只应用于已有外部隔离的环境；显式设为空字符串可恢复 Codex 的常规策略。
 CODEX_EXTRA_FLAGS="--dangerously-bypass-approvals-and-sandbox"
 
+# Codex token values use the built-in standard API text-price table when this
+# variable is UNSET. Checked 2026-09-16; see scripts/drivers/token-usage/codex-prices.json.
+# Setting CODEX_PRICES replaces the whole table; {} disables estimates.
+# Values are USD / million tokens, a converted reference value, never a bill.
+# Cached writes without a configured rate remain unpriced.
+#
+# Codex token 折算在未设置此变量时用内置标准 API 文本价目（核对于 2026-09-16）。
+# 显式设置会整表替换；{} 关闭估算。金额只是折算参考价值，不是账单。
+# 没有单价的缓存写入仍如实报缺价。
+# Worker scripts run inside tmux; to use a custom table, uncomment this export
+# AND add CODEX_PRICES to WORKER_PASS_ENV below.
+# worker 在 tmux 内运行；启用自填表时须取消下面的注释，并把 CODEX_PRICES
+# 加进下方 WORKER_PASS_ENV。
+# export CODEX_PRICES='{"gpt-6-astra":{"in":10,"cached_in":1,"out":50,"cache_write":12.5},"gpt-5.6-sol":{"in":4,"cached_in":0.4,"out":20},"gpt-5.6-terra":{"in":2,"cached_in":0.2,"out":12},"gpt-5.6-luna":{"in":0.2,"cached_in":0.02,"out":1.2},"gpt-5.3-codex":{"in":1.75,"cached_in":0.175,"out":14},"gpt-5.2-codex":{"in":1.75,"cached_in":0.175,"out":14},"gpt-5-codex":{"in":1.25,"cached_in":0.125,"out":10},"codex-mini-latest":{"in":1.5,"cached_in":0.375,"out":6}}'
+
 # OpenCode / Cursor 启动 flag（按需打开）：
 # OPENCODE_EXTRA_FLAGS=""
 # CURSOR_AGENT_EXTRA_FLAGS=""
