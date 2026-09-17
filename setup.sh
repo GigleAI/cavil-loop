@@ -106,7 +106,10 @@ for cmd in "${common_cmds[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 case "$SCHEDULER" in
-    systemd) command -v systemctl >/dev/null 2>&1 || missing+=("systemctl") ;;
+    systemd)
+        command -v systemctl >/dev/null 2>&1 || missing+=("systemctl")
+        command -v timeout >/dev/null 2>&1 || missing+=("timeout")
+        ;;
     launchd) command -v launchctl >/dev/null 2>&1 || missing+=("launchctl") ;;
 esac
 

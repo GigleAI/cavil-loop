@@ -26,11 +26,13 @@ MIRROR_REMOTE="$(git -C "$DEPLOY_ROOT/mirror.git" remote get-url origin 2>/dev/n
 REPO_URL="${CAVIL_DEPLOY_REPO:-${SOURCE_REMOTE:-${MIRROR_REMOTE:-https://github.com/GigleAI/cavil-loop.git}}}"
 BASE_BRANCH="${CAVIL_DEPLOY_BRANCH:-main}"
 FETCH_INTERVAL="${CAVIL_DEPLOY_FETCH_INTERVAL:-300}"
+FETCH_TIMEOUT="${CAVIL_DEPLOY_FETCH_TIMEOUT:-30}"
 ALERT_AFTER="${CAVIL_DEPLOY_ALERT_AFTER:-1800}"
 ALERT_REPO="${CAVIL_DEPLOY_ALERT_REPO:-GigleAI/cavil-loop}"
 MIRROR="$DEPLOY_ROOT/mirror.git"
 RELEASES="$DEPLOY_ROOT/releases"
 LOCK="$DEPLOY_ROOT/.deploy.lock"
+FETCH_LOCK="$DEPLOY_ROOT/.fetch.lock"
 LAST_FETCH="$DEPLOY_ROOT/.last-fetch"
 STATE="$DEPLOY_ROOT/deploy-state.json"
 
@@ -39,11 +41,7 @@ trap 'rc=$?; log_deploy "unexpected failure (exit $rc); keeping the current rele
 
 mkdir -p "$DEPLOY_ROOT" "$RELEASES" "$(dirname "$STABLE_LINK")"
 : > "$LOCK"
-exec {DEPLOY_FD}<>"$LOCK"
-if ! flock -n "$DEPLOY_FD"; then
-    log_deploy "another instance is deploying; skip"
-    exit 0
-fi
+: > "$FETCH_LOCK"
 
 current=""
 if [ -L "$STABLE_LINK" ]; then current="$(readlink -f "$STABLE_LINK" 2>/dev/null || true)"; fi
@@ -62,6 +60,11 @@ case "$current" in
 esac
 
 now=$(date +%s)
+exec {FETCH_FD}<>"$FETCH_LOCK"
+if ! flock -n "$FETCH_FD"; then
+    log_deploy "another instance is fetching; skip"
+    exit 0
+fi
 if [ "$FORCE" -ne 1 ] && [ -f "$LAST_FETCH" ]; then
     last=$(stat -c %Y "$LAST_FETCH" 2>/dev/null || echo 0)
     if [ $((now - last)) -lt "$FETCH_INTERVAL" ]; then
@@ -77,12 +80,41 @@ if [ ! -d "$MIRROR" ]; then
 fi
 if [ -z "$deploy_error" ]; then
     git -C "$MIRROR" remote set-url origin "$REPO_URL" >/dev/null 2>&1 || true
-    if ! git -C "$MIRROR" fetch --quiet --prune origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH"; then
+    # Network work never holds the consumer/deploy lock. Bound it explicitly so
+    # ExecStartPre also returns to the existing release in finite time.
+    if ! timeout --foreground "$FETCH_TIMEOUT" git -C "$MIRROR" fetch --quiet --prune origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH"; then
         deploy_error="fetch origin/$BASE_BRANCH failed"
-    else
-        touch "$LAST_FETCH"
     fi
 fi
+# A failed attempt is throttled too; otherwise every project instance retries a
+# slow/offline remote on every poll.
+touch "$LAST_FETCH"
+flock -u "$FETCH_FD"
+eval "exec ${FETCH_FD}>&-"
+
+exec {DEPLOY_FD}<>"$LOCK"
+if ! flock -n "$DEPLOY_FD"; then
+    log_deploy "a consumer or another publisher is active; keep current release"
+    exit 0
+fi
+
+# Re-read after fetch: the stable link may have changed while no deploy lock was
+# held. All publication and cleanup decisions below use this locked snapshot.
+current=""
+if [ -L "$STABLE_LINK" ]; then current="$(readlink -f "$STABLE_LINK" 2>/dev/null || true)"; fi
+if [ -d "$STABLE_LINK" ] && [ ! -L "$STABLE_LINK" ]; then
+    current="$(cd "$STABLE_LINK" && pwd -P)"
+fi
+case "$current" in
+    "$RELEASES"/*) ;;
+    "") ;;
+    *)
+        if [ "$BOOTSTRAP" -ne 1 ]; then
+            log_deploy "development mode ($STABLE_LINK -> $current); not taking over"
+            exit 0
+        fi
+        ;;
+esac
 
 state_value() { jq -r --arg k "$1" '.[$k] // empty' "$STATE" 2>/dev/null || true; }
 state_number() { local value; value="$(state_value "$1")"; printf '%s' "${value:-0}"; }
@@ -97,11 +129,20 @@ write_state() {
 }
 
 open_alert() {
-    local kind="$1" reason="$2" since="$3" issue body
+    local kind="$1" reason="$2" since="$3" issue body ending
     issue="$(state_value alert_issue)"
+    if [ "$kind" = scheduler ] && [ "$(state_value alert_kind)" = scheduler ] \
+       && alert_is_closed "$issue"; then
+        issue=""
+    fi
     [ -z "$issue" ] || { printf '%s' "$issue"; return 0; }
-    body=$(printf '当前 release：`%s`\n远端 SHA：`%s`\n开始落后：`%s`\n最近成功：`%s`\n原因：%s\n\n请按运维文档处理；部署器会在恢复后自动关闭本 issue。' \
-        "${current_sha:-无}" "${remote_sha:-未知}" "$since" "$(state_number last_success_at)" "$reason")
+    if [ "$kind" = scheduler ]; then
+        ending='请按运维文档完成操作并关闭本 issue；部署器看到人工确认后才会清除待处理状态。'
+    else
+        ending='请按运维文档处理；部署器会在恢复后自动关闭本 issue。'
+    fi
+    body=$(printf '当前 release：`%s`\n远端 SHA：`%s`\n开始落后：`%s`\n最近成功：`%s`\n原因：%s\n\n%s' \
+        "${current_sha:-无}" "${remote_sha:-未知}" "$since" "$(state_number last_success_at)" "$reason" "$ending")
     issue=$(gh api -X POST "repos/$ALERT_REPO/issues" \
         -f title="coding-agent skill 部署需要处理" -f body="$body" \
         -f 'labels[]=pending/human' --jq .number 2>/dev/null || true)
@@ -118,6 +159,13 @@ close_alert() {
         log_deploy "failed to close recovered deployment alert #$issue"
         return 1
     fi
+}
+
+alert_is_closed() {
+    local issue="$1" state
+    [ -n "$issue" ] || return 1
+    state="$(gh api "repos/$ALERT_REPO/issues/$issue" --jq .state 2>/dev/null || true)"
+    [ "$state" = closed ]
 }
 
 record_lag_failure() {
@@ -162,6 +210,23 @@ if [ ! -d "$target" ]; then
     fi
 fi
 
+install_entrypoints() {
+    local root="$DEPLOY_ROOT/entrypoints" src="$target/scripts/release-entry.sh" tmp driver
+    [ -f "$src" ] || { log_deploy "release is missing scripts/release-entry.sh"; return 1; }
+    mkdir -p "$root/drivers/token-usage" "$root/weekly-report"
+    tmp=$(mktemp "$root/.release-entry.XXXXXX")
+    cp "$src" "$tmp"
+    chmod +x "$tmp"
+    mv "$tmp" "$root/release-entry.sh"
+    ln -sfn release-entry.sh "$root/poll-entry.sh"
+    for driver in "$target"/scripts/drivers/token-usage/*.sh; do
+        [ -f "$driver" ] || continue
+        ln -sfn ../../release-entry.sh "$root/drivers/token-usage/$(basename "$driver")"
+    done
+    ln -sfn ../release-entry.sh "$root/weekly-report/run.sh"
+}
+install_entrypoints || { record_lag_failure "installing durable entrypoints failed"; exit 0; }
+
 scheduler_reload=0
 manual_scheduler=0
 case "$current" in
@@ -197,13 +262,28 @@ if [ "$scheduler_reload" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload && log_deploy "systemd daemon-reload complete" || { log_deploy "systemd daemon-reload failed; manual action required"; manual_scheduler=1; }
 fi
 previous_alert="$(state_value alert_issue)"
+previous_kind="$(state_value alert_kind)"
 if [ "$manual_scheduler" -eq 1 ]; then
     log_deploy ".socket/.slice or launchd template changed; apply it manually (rerun setup on macOS)"
     alert_issue="$(open_alert scheduler "调度配置含不能安全自动应用的变更；Linux 请检查 .socket/.slice，macOS 请重跑 setup.sh。" "$now")"
     write_state "$current_sha" "$remote_sha" 0 "$now" "$alert_issue" "manual scheduler action required" "scheduler"
 else
-    if close_alert "$previous_alert"; then previous_alert=""; fi
-    write_state "$current_sha" "$remote_sha" 0 "$now" "$previous_alert" "" ""
+    if [ "$previous_kind" = scheduler ]; then
+        # A successful no-change deploy cannot prove that the operator applied a
+        # socket/slice/plist change or repaired daemon-reload. Human closure is
+        # the acknowledgement that makes this state clearable.
+        if alert_is_closed "$previous_alert"; then
+            previous_alert=""; previous_kind=""
+        fi
+    else
+        if close_alert "$previous_alert"; then previous_alert=""; fi
+        previous_kind=""
+    fi
+    if [ "$previous_kind" = scheduler ]; then
+        write_state "$current_sha" "$remote_sha" 0 "$now" "$previous_alert" "manual scheduler action still pending" "$previous_kind"
+    else
+        write_state "$current_sha" "$remote_sha" 0 "$now" "" "" ""
+    fi
 fi
 
 # Safe because every candidate is a direct child of the validated releases root;

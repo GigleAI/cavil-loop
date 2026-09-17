@@ -417,13 +417,15 @@ issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --is
 ~/.agents/releases/cavil-loop/
 ├── mirror.git/                         # 只做 fetch 的镜像
 ├── releases/<sha>/                     # 带 .inuse 租约的不可变文件树
-├── .deploy.lock                        # 所有项目实例共享
+├── entrypoints/                        # 不随 release 清理的持久启动器
+├── .fetch.lock                         # 只串行化网络 fetch
+├── .deploy.lock                        # 短暂的发布 / 选版 / 清理锁
 ├── .last-fetch                         # 共享 fetch 节流
 └── deploy-state.json                   # 落后、成功与告警状态
 ~/.claude/skills/coding-agent-work-loop  -> ~/.agents/skills/coding-agent-work-loop
 ```
 
-poll 入口、token 用量 driver 和周报入口会先钉住物理 release，再读取兄弟文件，并持有 `.inuse` 共享租约直到退出。清理只有取得独占租约才删除旧 release；不会使用“超过 N 小时”或“保留最近 N 个”的猜测规则。可选共享覆盖放在 `~/.config/coding-agent-work-loop/deploy.conf`，字段见 `coding-agent-deploy.conf.example`。
+poll、token 用量 driver 和周报都从 `entrypoints/` 里的持久启动器进入。启动器不会随旧 release 被清理：它先取得共享部署锁、解析稳定软链并拿到目标 release 的 `.inuse` 租约，之后才打开版本内脚本。清理只有取得独占租约才删除旧 release；不会使用“超过 N 小时”或“保留最近 N 个”的猜测规则。可选共享覆盖放在 `~/.config/coding-agent-work-loop/deploy.conf`，字段见 `coding-agent-deploy.conf.example`。
 
 ### Host project（接入后）
 
@@ -474,7 +476,7 @@ your-project/
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist`（生成，非 symlink）| ✅ |
 | 其他 | — | — | ❌ `exit 1`；见下方 [手动 cron 兜底](#手动-cron-兜底) |
 
-两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`。Linux 在钉版本的 poll 入口前执行 `skill-deploy.sh`，所有实例共享非阻塞部署锁与 fetch 节流；macOS 运行钉版本入口但不自动部署，plist 模板有改动要重跑 `setup.sh`。
+两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`。Linux 在持久 poll 入口前执行 `skill-deploy.sh`；网络 fetch 使用单独的非阻塞锁和超时，只有发布与清理才短暂持有部署锁，所以慢 fetch 不会挡住当前 release 的消费者，失败尝试也会进入共享节流。macOS 运行钉版本入口但不自动部署，plist 模板有改动要重跑 `setup.sh`。
 
 ### macOS 专属
 
@@ -516,7 +518,7 @@ launchctl list | grep dev.luosky.coding-agent-work-loop
 
 ## 升级、迁移、回退与开发模式
 
-受管 **Linux** 每轮 poll fetch 配置的 base 分支，完整解包不可变文件树后再原子替换稳定软链；断网、锁竞争或 fetch 失败都保留当前 release，不阻断 poll。旧式 checkout 安装只通过显式动作迁移：
+受管 **Linux** 每轮 poll 在明确的网络超时内 fetch 配置的 base 分支，完整解包不可变文件树后再原子替换稳定软链；断网、锁竞争或 fetch 失败都保留当前 release，fetch 进行时消费者仍可从当前 release 启动。旧式 checkout 安装只通过显式动作迁移：
 
 ```bash
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
@@ -533,7 +535,7 @@ bash scripts/skill-deploy.sh --bootstrap --force
 | systemd `.socket` / `.slice` | 不自动应用；开一条带人工步骤的告警 |
 | launchd plist 模板 | 不自动应用；要求重跑 `setup.sh` |
 
-远端被确认持续领先超过配置阈值后，部署器在指定仓库最多开一条告警，恢复后自动关闭。
+远端被确认持续领先超过配置阈值后，部署器在指定仓库最多开一条告警，追平后自动关闭这类落后告警。需要人工处理的调度告警（`.socket`、`.slice`、launchd 或 `daemon-reload` 失败）不会被下一次无变更部署误关；维护者处理完并关闭告警 issue 后，部署器才清除该状态。
 
 **macOS** 仍手动升级。LaunchAgent plist 是 per-project、由 `setup.sh` 生成；模板变化后重跑：
 

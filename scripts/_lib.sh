@@ -1475,3 +1475,5 @@ source_driver "$WORKER_AGENT" || exit 2
 # 落"未知"兜底）。新增 driver 时按需在 token-usage/ 加 <agent>.sh 即可。
 AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/${WORKER_AGENT}.sh"
 [ -f "$AGENT_TOKEN_USAGE_SCRIPT" ] || AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/_default.sh"
+_MANAGED_TOKEN_USAGE="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/drivers/token-usage/$(basename "$AGENT_TOKEN_USAGE_SCRIPT")"
+[ ! -f "$_MANAGED_TOKEN_USAGE" ] || AGENT_TOKEN_USAGE_SCRIPT="$_MANAGED_TOKEN_USAGE"

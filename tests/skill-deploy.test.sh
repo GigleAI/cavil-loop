@@ -16,15 +16,28 @@ git -C "$SRC" config user.email test@example.invalid
 git -C "$SRC" config user.name test
 git -C "$SRC" remote add origin "$REMOTE"
 
-mkdir -p "$SRC/scripts"
+mkdir -p "$SRC/scripts/drivers/token-usage" "$SRC/scripts/weekly-report"
 mkdir -p "$SRC/systemd" "$SRC/launchd"
 cp "$REPO_DIR/scripts/skill-deploy.sh" "$SRC/scripts/skill-deploy.sh"
 cp "$REPO_DIR/scripts/poll-entry.sh" "$SRC/scripts/poll-entry.sh"
+cp "$REPO_DIR/scripts/release-entry.sh" "$SRC/scripts/release-entry.sh"
 cat > "$SRC/scripts/agent-poll.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 touch "$TEST_STARTED"
 while [ ! -f "$TEST_CONTINUE" ]; do sleep 0.01; done
+cat "$CODING_AGENT_RELEASE_ROOT/data"
+SH
+for driver in claude codex; do
+    cat > "$SRC/scripts/drivers/token-usage/$driver.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cat "$CODING_AGENT_RELEASE_ROOT/data"
+SH
+done
+cat > "$SRC/scripts/weekly-report/run.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
 cat "$CODING_AGENT_RELEASE_ROOT/data"
 SH
 printf 'v1\n' > "$SRC/data"
@@ -49,11 +62,12 @@ deploy --bootstrap >/dev/null
 V1=$(git -C "$SRC" rev-parse HEAD)
 [ "$(readlink -f "$CAVIL_SKILL_LINK")" = "$CAVIL_DEPLOY_ROOT/releases/$V1" ] || fail bootstrap
 [ -f "$CAVIL_DEPLOY_ROOT/releases/$V1/.inuse" ] || fail lease-file
+[ -f "$CAVIL_DEPLOY_ROOT/entrypoints/poll-entry.sh" ] || fail durable-entrypoint
 pass bootstrap
 
 echo '▶ a running consumer stays on v1 while the stable link moves to v2'
 TEST_STARTED="$TMP/started" TEST_CONTINUE="$TMP/continue" \
-    bash "$CAVIL_SKILL_LINK/scripts/poll-entry.sh" > "$TMP/output" &
+    bash "$CAVIL_DEPLOY_ROOT/entrypoints/poll-entry.sh" > "$TMP/output" &
 consumer=$!
 for _ in $(seq 1 200); do [ -f "$TMP/started" ] && break; sleep 0.01; done
 [ -f "$TMP/started" ] || fail consumer-start
@@ -71,6 +85,62 @@ wait "$consumer"
 deploy >/dev/null
 [ ! -e "$CAVIL_DEPLOY_ROOT/releases/$V1" ] || fail released-version-not-cleaned
 pass version-pin-and-lease
+
+echo '▶ the first new poll can seed entrypoints after an old deployer switches it'
+rm -rf "$CAVIL_DEPLOY_ROOT/entrypoints"
+TEST_STARTED="$TMP/bridge-started" TEST_CONTINUE="$TMP/continue" \
+    bash "$CAVIL_SKILL_LINK/scripts/poll-entry.sh" > "$TMP/bridge.out"
+[ -f "$CAVIL_DEPLOY_ROOT/entrypoints/poll-entry.sh" ] || fail rollout-bridge-did-not-seed
+[ "$(cat "$TMP/bridge.out")" = v2 ] || fail rollout-bridge-wrong-release
+pass rollout-bridge
+
+echo '▶ durable entrypoints survive cleanup before their first lock'
+DEPLOY_CONF="$TMP/deploy.conf"
+export CAVIL_DEPLOY_CONF="$DEPLOY_CONF" TEST_PAUSE_ROOT="$TMP/entry-pauses"
+mkdir -p "$TEST_PAUSE_ROOT"
+cat > "$DEPLOY_CONF" <<'SH'
+if [ -n "${CAVIL_ENTRY_TEST_PAUSE:-}" ]; then
+    touch "$TEST_PAUSE_ROOT/$CAVIL_ENTRY_TEST_PAUSE.started"
+    while [ ! -f "$TEST_PAUSE_ROOT/$CAVIL_ENTRY_TEST_PAUSE.continue" ]; do sleep 0.01; done
+fi
+SH
+touch "$TMP/continue"
+export TEST_STARTED="$TMP/durable-poll-started" TEST_CONTINUE="$TMP/continue"
+entries=(
+    poll-entry.sh
+    drivers/token-usage/claude.sh
+    drivers/token-usage/codex.sh
+    weekly-report/run.sh
+)
+pids=()
+for entry in "${entries[@]}"; do
+    name="${entry//\//-}"
+    CAVIL_ENTRY_TEST_PAUSE="$name" \
+        bash "$CAVIL_DEPLOY_ROOT/entrypoints/$entry" > "$TEST_PAUSE_ROOT/$name.out" &
+    pids+=("$!")
+done
+for entry in "${entries[@]}"; do
+    name="${entry//\//-}"
+    for _ in $(seq 1 200); do [ -f "$TEST_PAUSE_ROOT/$name.started" ] && break; sleep 0.01; done
+    [ -f "$TEST_PAUSE_ROOT/$name.started" ] || fail "$name-did-not-pause"
+done
+printf 'v3\n' > "$SRC/data"
+git -C "$SRC" add data
+git -C "$SRC" commit -m v3 >/dev/null
+git -C "$SRC" push >/dev/null
+deploy >/dev/null
+[ ! -e "$CAVIL_DEPLOY_ROOT/releases/$V2" ] || fail pre-lock-old-release-not-cleaned
+for entry in "${entries[@]}"; do
+    name="${entry//\//-}"
+    touch "$TEST_PAUSE_ROOT/$name.continue"
+done
+for pid in "${pids[@]}"; do wait "$pid" || fail durable-entry-exited; done
+for entry in "${entries[@]}"; do
+    name="${entry//\//-}"
+    [ "$(cat "$TEST_PAUSE_ROOT/$name.out")" = v3 ] || fail "$name-used-deleted-release"
+done
+unset CAVIL_DEPLOY_CONF
+pass durable-pre-lock-entrypoints
 
 echo '▶ lease age does not make an active release deletable'
 OLD="$CAVIL_DEPLOY_ROOT/releases/old-active"
@@ -95,6 +165,11 @@ cat > "$TMP/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_GH_LOG"
 case " $* " in *' -X POST '*) printf '77\n' ;; esac
+case " $* " in
+    *' repos/GigleAI/cavil-loop/issues/77 --jq .state '*)
+        [ "${TEST_ALERT_CLOSED:-0}" = 1 ] && printf 'closed\n'
+        ;;
+esac
 SH
 chmod +x "$TMP/fakebin/systemctl" "$TMP/fakebin/gh"
 export TEST_SYSTEMCTL_LOG="$TMP/systemctl.log" TEST_GH_LOG="$TMP/gh.log"
@@ -113,7 +188,11 @@ git -C "$SRC" push >/dev/null
 PATH="$TMP/fakebin:$PATH" deploy >/dev/null
 grep -q -- '-X POST repos/GigleAI/cavil-loop/issues' "$TEST_GH_LOG" || fail manual-change-not-alerted
 [ "$(jq -r .alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail alert-not-recorded
-rm "$CAVIL_DEPLOY_ROOT/deploy-state.json"
+PATH="$TMP/fakebin:$PATH" deploy >/dev/null
+! grep -q -- '-X PATCH repos/GigleAI/cavil-loop/issues/77' "$TEST_GH_LOG" || fail manual-alert-auto-closed
+[ "$(jq -r .alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail manual-alert-forgotten
+TEST_ALERT_CLOSED=1 PATH="$TMP/fakebin:$PATH" deploy >/dev/null
+[ "$(jq -r '.alert_issue // ""' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = "" ] || fail acknowledged-alert-not-cleared
 pass scheduler-boundaries
 
 echo '▶ a failed stable-link switch is visible and keeps the old release'
@@ -125,9 +204,9 @@ SH
 chmod +x "$TMP/fakebin/mv"
 : > "$TEST_GH_LOG"
 before=$(readlink -f "$CAVIL_SKILL_LINK")
-printf 'v3\n' > "$SRC/data"
+printf 'v4\n' > "$SRC/data"
 git -C "$SRC" add data
-git -C "$SRC" commit -m v3 >/dev/null
+git -C "$SRC" commit -m v4 >/dev/null
 git -C "$SRC" push >/dev/null
 PATH="$TMP/fakebin:$PATH" CAVIL_DEPLOY_ALERT_AFTER=0 deploy >/dev/null
 [ "$(readlink -f "$CAVIL_SKILL_LINK")" = "$before" ] || fail failed-switch-changed-link
@@ -158,5 +237,33 @@ before=$(readlink -f "$CAVIL_SKILL_LINK")
 CAVIL_DEPLOY_REPO="$TMP/does-not-exist.git" deploy >/dev/null
 [ "$(readlink -f "$CAVIL_SKILL_LINK")" = "$before" ] || fail offline-switched-release
 pass offline-fallback
+
+echo '▶ slow fetch does not hold the consumer lock and failed attempts throttle'
+cat > "$TMP/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+    *' fetch '*)
+        touch "$TEST_SLOW_FETCH_STARTED"
+        sleep 3
+        exit 1
+        ;;
+esac
+exec /usr/bin/git "$@"
+SH
+chmod +x "$TMP/fakebin/git"
+export TEST_SLOW_FETCH_STARTED="$TMP/slow-fetch-started"
+PATH="$TMP/fakebin:$PATH" CAVIL_DEPLOY_FETCH_TIMEOUT=2 deploy > "$TMP/slow-deploy.log" 2>&1 &
+slow_deploy=$!
+for _ in $(seq 1 200); do [ -f "$TEST_SLOW_FETCH_STARTED" ] && break; sleep 0.01; done
+[ -f "$TEST_SLOW_FETCH_STARTED" ] || fail slow-fetch-did-not-start
+TEST_STARTED="$TMP/slow-consumer-started" TEST_CONTINUE="$TMP/continue" \
+    timeout 1 bash "$CAVIL_DEPLOY_ROOT/entrypoints/poll-entry.sh" > "$TMP/slow-consumer.out" \
+    || fail slow-fetch-blocked-consumer
+wait "$slow_deploy"
+mtime_before=$(stat -c %Y "$CAVIL_DEPLOY_ROOT/.last-fetch")
+PATH="$TMP/fakebin:$PATH" bash "$REPO_DIR/scripts/skill-deploy.sh" >/dev/null
+mtime_after=$(stat -c %Y "$CAVIL_DEPLOY_ROOT/.last-fetch")
+[ "$mtime_before" = "$mtime_after" ] || fail failed-fetch-was-not-throttled
+pass slow-fetch-isolated
 
 echo 'All skill deploy tests passed.'

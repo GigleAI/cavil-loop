@@ -14,6 +14,25 @@ CODING_AGENT_RELEASE_ROOT="$(dirname "$SELF_DIR")"
 if [ "$(basename "$(dirname "$CODING_AGENT_RELEASE_ROOT")")" = releases ] && [ -f "$CODING_AGENT_RELEASE_ROOT/.inuse" ]; then
     exec {LEASE_FD}<>"$CODING_AGENT_RELEASE_ROOT/.inuse"; flock -s "$LEASE_FD"
     export CODING_AGENT_RELEASE_LEASE_FD="$LEASE_FD"
+
+    # Rollout bridge: the deployer from the preceding release cannot know how
+    # to install this release's new durable launchers. The first new poll runs
+    # while holding the shared deploy lock and seeds them before dispatching a
+    # worker, so that worker's later token-usage call is safe as well.
+    ENTRY_ROOT="$DEPLOY_ROOT/entrypoints"
+    if [ ! -f "$ENTRY_ROOT/poll-entry.sh" ] && [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/release-entry.sh" ]; then
+        mkdir -p "$ENTRY_ROOT/drivers/token-usage" "$ENTRY_ROOT/weekly-report"
+        ENTRY_TMP=$(mktemp "$ENTRY_ROOT/.release-entry.XXXXXX")
+        cp "$CODING_AGENT_RELEASE_ROOT/scripts/release-entry.sh" "$ENTRY_TMP"
+        chmod +x "$ENTRY_TMP"
+        mv "$ENTRY_TMP" "$ENTRY_ROOT/release-entry.sh"
+        ln -sfn release-entry.sh "$ENTRY_ROOT/poll-entry.sh"
+        for driver in "$CODING_AGENT_RELEASE_ROOT"/scripts/drivers/token-usage/*.sh; do
+            [ -f "$driver" ] || continue
+            ln -sfn ../../release-entry.sh "$ENTRY_ROOT/drivers/token-usage/$(basename "$driver")"
+        done
+        ln -sfn ../release-entry.sh "$ENTRY_ROOT/weekly-report/run.sh"
+    fi
 fi
 [ -z "${GLOBAL_FD:-}" ] || { flock -u "$GLOBAL_FD"; eval "exec ${GLOBAL_FD}>&-"; }
 export CODING_AGENT_RELEASE_ROOT

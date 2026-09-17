@@ -8,6 +8,9 @@ CAVIL_DEPLOY_BRANCH="main"
 
 # At most one network fetch per this many seconds across all instances.
 CAVIL_DEPLOY_FETCH_INTERVAL="300"
+# Bound one fetch attempt. Fetching uses its own lock and never holds the
+# release-selection lock, so existing consumers can start while the network is slow.
+CAVIL_DEPLOY_FETCH_TIMEOUT="30"
 
 # Open one deployment-lag issue after the remote has stayed ahead this long.
 CAVIL_DEPLOY_ALERT_AFTER="1800"
