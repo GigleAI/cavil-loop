@@ -327,7 +327,7 @@ dispatch_one_issue() {
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
-        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
+        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
             tmp=$(mktemp)
             jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -346,7 +346,7 @@ dispatch_one_issue() {
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
-    if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
+    if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
         log "派工 issue #$num 失败"
     fi
@@ -396,7 +396,7 @@ dispatch_one_pr() {
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
-    if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
+    if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
         tmp=$(mktemp)
         jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
