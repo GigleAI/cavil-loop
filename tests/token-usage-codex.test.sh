@@ -77,7 +77,7 @@ chk "--kv：output 只算一次，reasoning 不再加一遍" \
 
 MODE=""    out_hm=$(run CODEX_PRICE_IN_PER_M= CODEX_PRICE_CACHED_IN_PER_M= CODEX_PRICE_OUT_PER_M=)
 chk "人读输出：未配单价时只出 token、如实说明没算金额" \
-    "$out_hm" "1.6m input, 1m output, 1.4m cache read, 50k cache write（该模型未配单价，金额未计）"
+    "$out_hm" "1.6m input, 1m output, 1.4m cache read, 50k cache write（该模型未配单价，金额未计）（模型：gpt-test）"
 
 # 配单价：(1600000*10 + 1400000*1 + 1000000*100) / 1e6 = 117.40
 #        旧实现 out=1420000 → 159.40
@@ -90,7 +90,7 @@ chk "--kv + 单价：output 只算一次；未计价的 cache write 如实报缺
 
 MODE=""    out_hmp=$(run CODEX_PRICE_IN_PER_M=10 CODEX_PRICE_CACHED_IN_PER_M=1 CODEX_PRICE_OUT_PER_M=100)
 chk "人读输出 + 单价：同上，且写明金额偏低" \
-    "$out_hmp" "1.6m input, 1m output, 1.4m cache read, 50k cache write (\$117.40，部分用量未计价，金额偏低)"
+    "$out_hmp" "1.6m input, 1m output, 1.4m cache read, 50k cache write (\$117.40，部分用量未计价，金额偏低)（模型：gpt-test）"
 
 # ── 认领与窗口边界 ──
 MODE=--kv  out_other=$( ( cd "$OTHER" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
@@ -250,7 +250,7 @@ chk "已配模型但 cache write 没有单价 → partial + 缺价 5 万（原�
     "cost_usd=10 cost_state=partial cost_unknown_tokens=50000"
 chk "人读输出也要写明金额偏低，不能只在机器字段里说" \
     "$( ( cd "$CWD_DIR/wt" && HOME="$CWD_DIR" env CODEX_PRICES="$P3" bash "$DRIVER" "$START" ) )" \
-    "1m input, 0 output, 0 cache read, 50k cache write (\$10.00，部分用量未计价，金额偏低)"
+    "1m input, 0 output, 0 cache read, 50k cache write (\$10.00，部分用量未计价，金额偏低)（模型：mA）"
 
 # ⑵ cache write = 0 → 没有待计价的 token，仍然是 full（别把这条一起改坏）
 cwfix 1000000 0 0
@@ -309,6 +309,51 @@ chk "单价配成 0 且有用量 → full（按金额非零判会误伤这条）
     "$(cwrun CODEX_PRICES='{"mA":{"in":0,"cached_in":0,"out":0,"cache_write":0}}' \
        | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
     "cost_usd=0 cost_state=full cost_unknown_tokens=0"
+
+# ── 人读输出必须带上实际模型名（GitHub#29）────────────────────────────────
+# 模型名原来只进 `--kv` 的 agent-metrics 注释，人读的 `token ...` 行里没有，于是
+# GitHub 评论上（尤其手机端）看不到本轮用的是哪个模型。footer 那一行是「整行原样
+# 用脚本输出」，所以只能由 driver 自己补，不能指望 worker 手写。
+# 用独立的日志目录，让每条期望值只由本用例的 fixture 决定。
+MD="$TMP/models"; mkdir -p "$MD/wt" "$MD/.codex/sessions/2026/09/14"
+dmeta() { printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$(ts -200)" "$MD/wt"; }
+dctx() {  # $1 相对秒  $2 模型名
+    printf '{"type":"turn_context","timestamp":"%s","payload":{"cwd":"%s","model":"%s"}}\n' \
+        "$(ts "$1")" "$MD/wt" "$2"
+}
+drec() {  # $1 相对秒  $2 input token
+    printf '{"type":"token_usage_record","timestamp":"%s","payload":{"usage":{"input_tokens":%s,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":%s}}}\n' \
+        "$(ts "$1")" "$2" "$2"
+}
+dreset() { rm -f "$MD/.codex/sessions/2026/09/14/"rollout-*.jsonl; }
+drun() { ( cd "$MD/wt" && HOME="$MD" env "$@" bash "$DRIVER" "$START" ); }
+PAB='{"mA":{"in":10,"cached_in":0,"out":0,"cache_write":0},"mB":{"in":10,"cached_in":0,"out":0,"cache_write":0}}'
+
+dreset; { dmeta; dctx -190 mA; drec 10 1000000; } > "$MD/.codex/sessions/2026/09/14/rollout-a.jsonl"
+chk "人读：单模型时行末写明模型" \
+    "$(drun CODEX_PRICES="$PAB")" \
+    "1m input, 0 output, 0 cache read, 0 cache write (\$10.00)（模型：mA）"
+
+dreset
+{ dmeta; dctx -190 mA; drec 10 1000000; } > "$MD/.codex/sessions/2026/09/14/rollout-a.jsonl"
+{ dmeta; dctx -190 mB; drec 20 1000000; } > "$MD/.codex/sessions/2026/09/14/rollout-b.jsonl"
+chk "人读：多模型全部列出，去重并稳定排序（与 --kv 的 models 同一份来源）" \
+    "$(drun CODEX_PRICES="$PAB")" \
+    "2m input, 0 output, 0 cache read, 0 cache write (\$20.00)（模型：mA、mB）"
+
+dreset; { dmeta; drec 10 1000000; } > "$MD/.codex/sessions/2026/09/14/rollout-a.jsonl"
+chk "人读：没有 turn_context 可归属时写「模型未知」，不编模型名" \
+    "$(drun CODEX_PRICES="$PAB")" \
+    "1m input, 0 output, 0 cache read, 0 cache write（该模型未配单价，金额未计）（模型未知）"
+
+dreset; { dmeta; drec 10 1000000; dctx 20 mB; drec 30 1000000; } > "$MD/.codex/sessions/2026/09/14/rollout-a.jsonl"
+chk "人读：已知模型 + 无法归属的用量并存时两件事都说" \
+    "$(drun CODEX_PRICES='{"mB":{"in":10}}')" \
+    "2m input, 0 output, 0 cache read, 0 cache write (\$10.00，部分用量未计价，金额偏低)（模型：mB；另有模型无法确认）"
+chk "人读新增的模型说明不改动机器字段" \
+    "$( ( cd "$MD/wt" && HOME="$MD" env CODEX_PRICES='{"mB":{"in":10}}' bash "$DRIVER" "$START" --kv ) \
+       | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
+    "models=mB model_unknown=yes"
 
 echo
 echo "通过 $pass / 失败 $fail"
