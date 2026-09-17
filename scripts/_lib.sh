@@ -511,7 +511,15 @@ OUTPUT_LANGUAGE="${OUTPUT_LANGUAGE:-en}"
 WORKER_AGENT_DEFAULT="${WORKER_AGENT:-claude}"
 WORKER_AGENT="${DISPATCH_WORKER_AGENT:-$WORKER_AGENT_DEFAULT}"
 # 单次 dispatch 指定的模型；空 = agent 自己的默认模型。
-WORKER_MODEL="${WORKER_MODEL:-}"
+#
+# dispatch 子进程会把本次选择放进 DISPATCH_WORKER_MODEL。不能直接用
+# WORKER_MODEL 传递：source 配置文件时会重新赋值同名变量，把 review 的模型
+# 覆盖成普通 worker 的配置（甚至把明确的空覆盖误判成没有覆盖）。
+if [ "${DISPATCH_WORKER_MODEL_SET:-0}" = 1 ]; then
+    WORKER_MODEL="${DISPATCH_WORKER_MODEL:-}"
+else
+    WORKER_MODEL="${WORKER_MODEL:-}"
+fi
 
 # Outbound GitHub 评论里附时间+token 元数据 footer（on / off）。默认 on。
 # 项目级 prompt 模板可读 ${COMMENT_FOOTER}，自行决定本项目是否加 footer。

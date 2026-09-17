@@ -60,6 +60,23 @@ chk "review model 独立" "$review_model" "review-model"
 chk "普通 agent 未被 review 改写" "$WORKER_AGENT" "claude"
 chk "普通 model 未被 review 改写" "$WORKER_MODEL" "ordinary-model"
 
+echo "── dispatch 子进程加载配置后仍隔离 model ──"
+dispatch_command() {
+    local agent="$1" model_set="$2" model="$3"
+    env \
+        CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
+        DISPATCH_WORKER_AGENT="$agent" \
+        DISPATCH_WORKER_MODEL="$model" \
+        DISPATCH_WORKER_MODEL_SET="$model_set" \
+        bash -c 'source "$1/scripts/_lib.sh"; agent_command_new /tmp issue-test /tmp/prompt' _ "$REPO_DIR"
+}
+review_cmd="$(dispatch_command codex 1 review-model)"
+empty_cmd="$(dispatch_command codex 1 '')"
+ordinary_cmd="$(dispatch_command claude 0 ignored)"
+chk "review 子进程使用 review model" "$review_cmd" 'codex --dangerously-bypass-approvals-and-sandbox --model review-model "$(cat /tmp/prompt)"'
+chk "明确空 review model 不继承普通 model" "$empty_cmd" 'codex --dangerously-bypass-approvals-and-sandbox  "$(cat /tmp/prompt)"'
+chk "未指定 dispatch override 使用普通 model" "$ordinary_cmd" 'claude -n issue-test  --model ordinary-model "$(cat /tmp/prompt)"'
+
 echo "── poll 队列必须把普通 model 传给 dispatch ──"
 POLL="$REPO_DIR/scripts/agent-poll.sh"
 normal_lines=$(grep -F 'collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" "$WORKER_MODEL"' "$POLL" | wc -l)
