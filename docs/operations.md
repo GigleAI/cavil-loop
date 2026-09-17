@@ -575,7 +575,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-This avoids mistaking a maintainer's development link for production. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. Rollback is the inverse atomic link switch while holding `.deploy.lock` exclusively.
+This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. Rollback is the inverse atomic link switch while holding `.deploy.lock` exclusively.
 
 | Changed files | Deployment behavior |
 |---|---|

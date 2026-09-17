@@ -42,6 +42,7 @@ cat "$CODING_AGENT_RELEASE_ROOT/data"
 SH
 printf 'v1\n' > "$SRC/data"
 printf 'service-v1\n' > "$SRC/systemd/poll.service"
+printf 'managed-service-v1\n' > "$SRC/systemd/coding-agent-poll@.service"
 printf 'socket-v1\n' > "$SRC/systemd/preview.socket"
 printf 'plist-v1\n' > "$SRC/launchd/poll.plist.template"
 git -C "$SRC" add .
@@ -164,7 +165,10 @@ SH
 cat > "$TMP/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_GH_LOG"
-case " $* " in *' -X POST '*) printf '77\n' ;; esac
+case " $* " in
+    *' -X POST '*'switching stable link failed'*) printf '78\n'; exit 0 ;;
+    *' -X POST '*) printf '77\n' ;;
+esac
 case " $* " in
     *' repos/GigleAI/cavil-loop/issues/77 --jq .state '*)
         [ "${TEST_ALERT_CLOSED:-0}" = 1 ] && printf 'closed\n'
@@ -187,12 +191,32 @@ git -C "$SRC" commit -m socket-v2 >/dev/null
 git -C "$SRC" push >/dev/null
 PATH="$TMP/fakebin:$PATH" deploy >/dev/null
 grep -q -- '-X POST repos/GigleAI/cavil-loop/issues' "$TEST_GH_LOG" || fail manual-change-not-alerted
-[ "$(jq -r .alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail alert-not-recorded
+[ "$(jq -r .scheduler_alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail alert-not-recorded
 PATH="$TMP/fakebin:$PATH" deploy >/dev/null
 ! grep -q -- '-X PATCH repos/GigleAI/cavil-loop/issues/77' "$TEST_GH_LOG" || fail manual-alert-auto-closed
-[ "$(jq -r .alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail manual-alert-forgotten
+[ "$(jq -r .scheduler_alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail manual-alert-forgotten
+
+echo '▶ deployment failure and recovery preserve a pending scheduler alert'
+cat > "$TMP/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -Tf ]; then exit 1; fi
+exec /usr/bin/mv "$@"
+SH
+chmod +x "$TMP/fakebin/mv"
+printf 'data-after-scheduler-alert\n' > "$SRC/data"
+git -C "$SRC" add data
+git -C "$SRC" commit -m data-after-scheduler-alert >/dev/null
+git -C "$SRC" push >/dev/null
+PATH="$TMP/fakebin:$PATH" CAVIL_DEPLOY_ALERT_AFTER=0 deploy >/dev/null
+[ "$(jq -r .scheduler_alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail failure-overwrote-scheduler-alert
+[ -n "$(jq -r '.lag_alert_issue // empty' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" ] || fail failure-did-not-record-lag-alert
+rm "$TMP/fakebin/mv"
+PATH="$TMP/fakebin:$PATH" deploy >/dev/null
+! grep -q -- '-X PATCH repos/GigleAI/cavil-loop/issues/77' "$TEST_GH_LOG" || fail recovery-closed-scheduler-alert
+[ "$(jq -r .scheduler_alert_issue "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail recovery-forgot-scheduler-alert
+
 TEST_ALERT_CLOSED=1 PATH="$TMP/fakebin:$PATH" deploy >/dev/null
-[ "$(jq -r '.alert_issue // ""' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = "" ] || fail acknowledged-alert-not-cleared
+[ "$(jq -r '.scheduler_alert_issue // ""' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = "" ] || fail acknowledged-alert-not-cleared
 pass scheduler-boundaries
 
 echo '▶ a failed stable-link switch is visible and keeps the old release'
@@ -218,13 +242,23 @@ pass failed-switch
 
 echo '▶ development links are never taken over without bootstrap'
 DEV="$TMP/dev"; mkdir -p "$DEV"
+mkdir -p "$DEV/systemd" "$TMP/systemd-user"
+printf 'legacy-service\n' > "$DEV/systemd/coding-agent-poll@.service"
+ln -s "$DEV/systemd/coding-agent-poll@.service" "$TMP/systemd-user/coding-agent-poll@.service"
 ln -sfn "$DEV" "$CAVIL_SKILL_LINK.tmp"; mv -Tf "$CAVIL_SKILL_LINK.tmp" "$CAVIL_SKILL_LINK"
 deploy >/dev/null
 [ "$(readlink -f "$CAVIL_SKILL_LINK")" = "$DEV" ] || fail development-takeover
 pass development-mode
 
+echo '▶ bootstrap migrates old systemd symlinks and reloads the user manager'
+rm -f "$TMP/fakebin/mv"
+: > "$TEST_SYSTEMCTL_LOG"
+CAVIL_SYSTEMD_USER_DIR="$TMP/systemd-user" PATH="$TMP/fakebin:$PATH" deploy --bootstrap >/dev/null
+[ "$(readlink "$TMP/systemd-user/coding-agent-poll@.service")" = "$CAVIL_SKILL_LINK/systemd/coding-agent-poll@.service" ] || fail bootstrap-did-not-migrate-systemd-link
+grep -qx -- '--user daemon-reload' "$TEST_SYSTEMCTL_LOG" || fail bootstrap-did-not-reload-systemd
+pass bootstrap-systemd-migration
+
 echo '▶ atomic link replacement has no resolution gap'
-deploy --bootstrap >/dev/null
 (
     for _ in $(seq 1 200); do readlink -f "$CAVIL_SKILL_LINK" >/dev/null || exit 1; done
 ) & resolver=$!

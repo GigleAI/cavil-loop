@@ -35,6 +35,7 @@ LOCK="$DEPLOY_ROOT/.deploy.lock"
 FETCH_LOCK="$DEPLOY_ROOT/.fetch.lock"
 LAST_FETCH="$DEPLOY_ROOT/.last-fetch"
 STATE="$DEPLOY_ROOT/deploy-state.json"
+SYSTEMD_USER_DIR="${CAVIL_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 
 log_deploy() { printf '[skill-deploy] %s\n' "$*" >&2; }
 trap 'rc=$?; log_deploy "unexpected failure (exit $rc); keeping the current release"; exit 0' ERR
@@ -123,16 +124,27 @@ write_state() {
     tmp=$(mktemp "$DEPLOY_ROOT/.state.XXXXXX")
     jq -n --arg current_sha "$1" --arg remote_sha "$2" \
         --argjson behind_since "$3" --argjson last_success_at "$4" \
-        --arg alert_issue "$5" --arg last_error "$6" --arg alert_kind "${7:-}" \
-        '{current_sha:$current_sha,remote_sha:$remote_sha,behind_since:$behind_since,last_success_at:$last_success_at,alert_issue:$alert_issue,alert_kind:$alert_kind,last_error:$last_error}' > "$tmp"
+        --arg lag_alert_issue "$5" --arg scheduler_alert_issue "$6" \
+        --arg last_error "$7" \
+        '{current_sha:$current_sha,remote_sha:$remote_sha,behind_since:$behind_since,last_success_at:$last_success_at,lag_alert_issue:$lag_alert_issue,scheduler_alert_issue:$scheduler_alert_issue,last_error:$last_error}' > "$tmp"
     mv "$tmp" "$STATE"
+}
+
+state_alert_issue() {
+    local kind="$1" issue
+    issue="$(state_value "${kind}_alert_issue")"
+    if [ -z "$issue" ] && [ "$(state_value alert_kind)" = "$kind" ]; then
+        # Read the pre-split schema once during rolling upgrades. The next state
+        # write persists this issue in its kind-specific field.
+        issue="$(state_value alert_issue)"
+    fi
+    printf '%s' "$issue"
 }
 
 open_alert() {
     local kind="$1" reason="$2" since="$3" issue body ending
-    issue="$(state_value alert_issue)"
-    if [ "$kind" = scheduler ] && [ "$(state_value alert_kind)" = scheduler ] \
-       && alert_is_closed "$issue"; then
+    issue="$(state_alert_issue "$kind")"
+    if alert_is_closed "$issue"; then
         issue=""
     fi
     [ -z "$issue" ] || { printf '%s' "$issue"; return 0; }
@@ -169,11 +181,13 @@ alert_is_closed() {
 }
 
 record_lag_failure() {
-    local reason="$1" behind_since alert_issue
+    local reason="$1" behind_since lag_alert_issue scheduler_alert_issue
     behind_since="$(state_number behind_since)"; [ "$behind_since" -gt 0 ] || behind_since="$now"
-    alert_issue="$(state_value alert_issue)"
-    if [ $((now - behind_since)) -ge "$ALERT_AFTER" ]; then alert_issue="$(open_alert lag "$reason" "$behind_since")"; fi
-    write_state "$current_sha" "$remote_sha" "$behind_since" "$(state_number last_success_at)" "$alert_issue" "$reason" "lag"
+    lag_alert_issue="$(state_alert_issue lag)"
+    scheduler_alert_issue="$(state_alert_issue scheduler)"
+    if [ $((now - behind_since)) -ge "$ALERT_AFTER" ]; then lag_alert_issue="$(open_alert lag "$reason" "$behind_since")"; fi
+    write_state "$current_sha" "$remote_sha" "$behind_since" "$(state_number last_success_at)" \
+        "$lag_alert_issue" "$scheduler_alert_issue" "$reason"
     log_deploy "$reason; keeping current release"
 }
 
@@ -185,11 +199,12 @@ if [ -n "$deploy_error" ] || [ -z "$remote_sha" ]; then
     # A failed fetch cannot prove that remote is ahead. Preserve an already
     # observed lag, but never invent one from an offline check alone.
     behind_since="$(state_number behind_since)"
-    alert_issue="$(state_value alert_issue)"
+    lag_alert_issue="$(state_alert_issue lag)"
     if [ "$behind_since" -gt 0 ] && [ $((now - behind_since)) -ge "$ALERT_AFTER" ]; then
-        alert_issue="$(open_alert lag "${deploy_error:-remote SHA unavailable}" "$behind_since")"
+        lag_alert_issue="$(open_alert lag "${deploy_error:-remote SHA unavailable}" "$behind_since")"
     fi
-    write_state "$current_sha" "${remote_sha:-$(state_value remote_sha)}" "$behind_since" "$(state_number last_success_at)" "$alert_issue" "${deploy_error:-remote SHA unavailable}" "$(state_value alert_kind)"
+    write_state "$current_sha" "${remote_sha:-$(state_value remote_sha)}" "$behind_since" "$(state_number last_success_at)" \
+        "$lag_alert_issue" "$(state_alert_issue scheduler)" "${deploy_error:-remote SHA unavailable}"
     log_deploy "${deploy_error:-remote SHA unavailable}; keeping current release"
     exit 0
 fi
@@ -258,33 +273,51 @@ if ! mv -Tf "$link_tmp" "$STABLE_LINK"; then rm -f -- "$link_tmp"; record_lag_fa
 current_sha="$remote_sha"
 log_deploy "activated $remote_sha"
 
-if [ "$scheduler_reload" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
-    systemctl --user daemon-reload && log_deploy "systemd daemon-reload complete" || { log_deploy "systemd daemon-reload failed; manual action required"; manual_scheduler=1; }
+if [ "$BOOTSTRAP" -eq 1 ] && [ "$(uname -s)" = Linux ] && [ -d "$target/systemd" ]; then
+    # Old setup versions linked installed templates to a checkout. An explicit
+    # bootstrap is the migration boundary: repoint existing template symlinks
+    # to the stable managed skill, but do not install units that were absent.
+    mkdir -p "$SYSTEMD_USER_DIR"
+    for unit_src in "$target"/systemd/*; do
+        [ -f "$unit_src" ] || continue
+        unit_dst="$SYSTEMD_USER_DIR/$(basename "$unit_src")"
+        [ -L "$unit_dst" ] || continue
+        managed_unit="$STABLE_LINK/systemd/$(basename "$unit_src")"
+        if [ "$(readlink "$unit_dst")" != "$managed_unit" ]; then
+            ln -sfn "$managed_unit" "$unit_dst"
+            scheduler_reload=1
+            log_deploy "migrated systemd template $(basename "$unit_src") to the managed skill"
+        fi
+    done
 fi
-previous_alert="$(state_value alert_issue)"
-previous_kind="$(state_value alert_kind)"
+
+if [ "$scheduler_reload" -eq 1 ]; then
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload; then
+        log_deploy "systemd daemon-reload complete"
+    else
+        log_deploy "systemd daemon-reload failed; manual action required"
+        manual_scheduler=1
+    fi
+fi
+previous_lag_alert="$(state_alert_issue lag)"
+previous_scheduler_alert="$(state_alert_issue scheduler)"
 if [ "$manual_scheduler" -eq 1 ]; then
     log_deploy ".socket/.slice or launchd template changed; apply it manually (rerun setup on macOS)"
-    alert_issue="$(open_alert scheduler "调度配置含不能安全自动应用的变更；Linux 请检查 .socket/.slice，macOS 请重跑 setup.sh。" "$now")"
-    write_state "$current_sha" "$remote_sha" 0 "$now" "$alert_issue" "manual scheduler action required" "scheduler"
+    scheduler_alert_issue="$(open_alert scheduler "调度配置含不能安全自动应用的变更；Linux 请检查 .socket/.slice，macOS 请重跑 setup.sh。" "$now")"
 else
-    if [ "$previous_kind" = scheduler ]; then
-        # A successful no-change deploy cannot prove that the operator applied a
-        # socket/slice/plist change or repaired daemon-reload. Human closure is
-        # the acknowledgement that makes this state clearable.
-        if alert_is_closed "$previous_alert"; then
-            previous_alert=""; previous_kind=""
-        fi
-    else
-        if close_alert "$previous_alert"; then previous_alert=""; fi
-        previous_kind=""
-    fi
-    if [ "$previous_kind" = scheduler ]; then
-        write_state "$current_sha" "$remote_sha" 0 "$now" "$previous_alert" "manual scheduler action still pending" "$previous_kind"
-    else
-        write_state "$current_sha" "$remote_sha" 0 "$now" "" "" ""
-    fi
+    scheduler_alert_issue="$previous_scheduler_alert"
+    # A successful no-change deploy cannot prove that the operator applied a
+    # socket/slice/plist change or repaired daemon-reload. Human closure is the
+    # acknowledgement that makes this state clearable.
+    if alert_is_closed "$scheduler_alert_issue"; then scheduler_alert_issue=""; fi
 fi
+if close_alert "$previous_lag_alert"; then previous_lag_alert=""; fi
+if [ -n "$scheduler_alert_issue" ]; then
+    last_error="manual scheduler action still pending"
+else
+    last_error=""
+fi
+write_state "$current_sha" "$remote_sha" 0 "$now" "$previous_lag_alert" "$scheduler_alert_issue" "$last_error"
 
 # Safe because every candidate is a direct child of the validated releases root;
 # an exclusive .inuse lock proves no managed consumer still uses it.
