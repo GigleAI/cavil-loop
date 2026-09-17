@@ -50,6 +50,16 @@ r = record.extract(default_mark, BOT, 40)
 chk("内置价来源与过期状态从机器标记进入周报记录",
     (r["price_source"], r["price_stale"]), ("default", True))
 
+model_mark = ("<!-- agent-metrics agent=codex wt=25 "
+              "start=2026-09-14T10:00:00+08:00 end=2026-09-14T10:14:10+08:00 "
+              "wall_secs=850 models=gpt-z,gpt-a,gpt-z model_unknown=yes -->")
+r = record.extract(model_mark, BOT, 41)
+chk("模型集合进入周报记录并去重排序",
+    (r["models"], r["model_unknown"]), (["gpt-a", "gpt-z"], True))
+chk("旧机器记录缺模型字段时兼容为空集合",
+    (record.extract(default_mark, BOT, 42)["models"],
+     record.extract(default_mark, BOT, 42)["model_unknown"]), ([], False))
+
 ex_foot = ("历史排版长这样：\n\n````text\n"
            "⏱️ 开始 2020-01-01 00:00:00 · 完工 09:00:00 · 耗时 540m\ntoken 1 input ($999.00)\n````\n\n"
            "> 引用别人的：\n> ⏱️ 开始 2021-02-02 00:00:00 · 完工 08:00:00 · 耗时 480m\n\n" + REAL)
@@ -185,6 +195,9 @@ chk("机器记录没写 out= → 记 0，不回头扫正文",
     record.extract(BODY_EX + mk.replace("out=1234 ", ""), BOT, 26)["out"], 0)
 chk("历史记账行 → 只读紧随其后那一行（1k），正文示例不参与",
     record.extract(BODY_EX + REAL, BOT, 27)["out"], 1000)
+chk("历史记账行没有模型证据 → 兼容为空集合",
+    (record.extract(REAL, BOT, 28)["models"], record.extract(REAL, BOT, 28)["model_unknown"]),
+    ([], False))
 
 # ── 长窗口披露（只决定列不列，不改任何数字） ─────────────────────────────
 def listed(sec):

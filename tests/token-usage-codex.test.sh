@@ -64,7 +64,9 @@ rec() {
 printf '{"type":"turn_token_usage","timestamp":"%s","payload":{"usage":{"input_tokens":8888888,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":8888888,"reasoning_output_tokens":0,"total_tokens":17777776}}}\n' \
     "$(ts 25)" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
 
-run() { ( cd "$MINE" && HOME="$TMP" env "$@" bash "$DRIVER" "$START" ${MODE:-} ); }
+run_raw() { ( cd "$MINE" && HOME="$TMP" env "$@" bash "$DRIVER" "$START" ${MODE:-} ); }
+# 既有断言聚焦 token / 金额；新增字段由下面的专门断言覆盖。
+run() { run_raw "$@" | sed -E 's/ models=[^ ]* model_unknown=(yes|no)//'; }
 
 # 期望：in = (1000000-400000) + (2000000-1000000) = 1600000
 #       cache_r = 400000 + 1000000 = 1400000 ; cache_w = 50000
@@ -93,11 +95,11 @@ chk "人读输出 + 单价：同上，且写明金额偏低" \
 # ── 认领与窗口边界 ──
 MODE=--kv  out_other=$( ( cd "$OTHER" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
 chk "只认领 cwd 等于当前目录的会话（别的 worktree 各算各的）" \
-    "$out_other" "in=5000000 out=5000000 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=10000000 price_source=configured"
+    "$out_other" "in=5000000 out=5000000 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=10000000 price_source=configured models= model_unknown=yes"
 
 MODE=--kv  out_late=$( ( cd "$MINE" && HOME="$TMP" bash "$DRIVER" "$(( START + 15 ))" --kv ) )
 chk "窗口起点之后的记录才计入（第一条被排除）" \
-    "$out_late" "in=1000000 out=700000 cache_r=1000000 cache_w=0 cost_state=none cost_unknown_tokens=2700000 price_source=configured"
+    "$out_late" "in=1000000 out=700000 cache_r=1000000 cache_w=0 cost_state=none cost_unknown_tokens=2700000 price_source=configured models=gpt-test model_unknown=no"
 
 MODE=--kv  out_none=$( ( cd "$TMP" && HOME="$TMP" bash "$DRIVER" "$START" --kv ) )
 chk "没有任何会话认领当前目录 → 不输出（周报落「未知」兜底）" "$out_none" ""
@@ -136,6 +138,9 @@ BOTH='{"mA":{"in":1,"cached_in":0,"out":0},"mB":{"in":10,"cached_in":0,"out":0}}
 # mA 100 万 × $1/M + mB 100 万 × $10/M = $11.00（旧写法按合并后 last 命中谁，出 $2 或 $20）
 chk "跨文件混用模型：各按各的价（旧写法会整体套同一个价）" \
     "$(mrun CODEX_PRICES="$BOTH" | grep -o 'cost_usd=[0-9.]*')" "cost_usd=11"
+chk "跨文件混用模型：模型集合去重并稳定排序" \
+    "$(mrun CODEX_PRICES="$BOTH" | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
+    "models=mA,mB model_unknown=no"
 chk "旧统一价只兜底缺少精确条目的模型，不能覆盖 mA 的精确价" \
     "$(mrun CODEX_PRICES='{"mA":{"in":1,"cached_in":0,"out":0}}' \
        CODEX_PRICE_IN_PER_M=100 CODEX_PRICE_CACHED_IN_PER_M=0 CODEX_PRICE_OUT_PER_M=0 \
@@ -213,6 +218,10 @@ chk "首个 turn_context 之前的调用落缺价，不按后面的模型计价"
     "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' \
        | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
     "cost_usd=10 cost_state=partial cost_unknown_tokens=1000000"
+chk "已知模型与未知归属并存时分别保留" \
+    "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' \
+       | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
+    "models=mB model_unknown=yes"
 chk "token 计数不受影响（算不出价 ≠ 不算用量）" \
     "$(mrun CODEX_PRICES='{"mB":{"in":10,"cached_in":0,"out":0}}' | grep -o '^in=[0-9]*')" \
     "in=2000000"
