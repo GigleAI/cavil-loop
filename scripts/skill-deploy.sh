@@ -120,13 +120,19 @@ esac
 state_value() { jq -r --arg k "$1" '.[$k] // empty' "$STATE" 2>/dev/null || true; }
 state_number() { local value; value="$(state_value "$1")"; printf '%s' "${value:-0}"; }
 write_state() {
-    local tmp
+    local tmp scheduler_pending scheduler_reason scheduler_pending_since
+    if [ "$#" -ge 8 ]; then scheduler_pending="$8"; else scheduler_pending="$(state_value scheduler_pending)"; fi
+    if [ "$#" -ge 9 ]; then scheduler_reason="$9"; else scheduler_reason="$(state_value scheduler_reason)"; fi
+    if [ "$#" -ge 10 ]; then scheduler_pending_since="${10}"; else scheduler_pending_since="$(state_value scheduler_pending_since)"; fi
+    [ -n "$scheduler_pending" ] || scheduler_pending=0
+    [ -n "$scheduler_pending_since" ] || scheduler_pending_since=0
     tmp=$(mktemp "$DEPLOY_ROOT/.state.XXXXXX")
     jq -n --arg current_sha "$1" --arg remote_sha "$2" \
         --argjson behind_since "$3" --argjson last_success_at "$4" \
         --arg lag_alert_issue "$5" --arg scheduler_alert_issue "$6" \
-        --arg last_error "$7" \
-        '{current_sha:$current_sha,remote_sha:$remote_sha,behind_since:$behind_since,last_success_at:$last_success_at,lag_alert_issue:$lag_alert_issue,scheduler_alert_issue:$scheduler_alert_issue,last_error:$last_error}' > "$tmp"
+        --arg last_error "$7" --argjson scheduler_pending "$scheduler_pending" \
+        --arg scheduler_reason "$scheduler_reason" --argjson scheduler_pending_since "$scheduler_pending_since" \
+        '{current_sha:$current_sha,remote_sha:$remote_sha,behind_since:$behind_since,last_success_at:$last_success_at,lag_alert_issue:$lag_alert_issue,scheduler_alert_issue:$scheduler_alert_issue,scheduler_pending:$scheduler_pending,scheduler_reason:$scheduler_reason,scheduler_pending_since:$scheduler_pending_since,last_error:$last_error}' > "$tmp"
     mv "$tmp" "$STATE"
 }
 
@@ -282,6 +288,10 @@ if [ "$BOOTSTRAP" -eq 1 ] && [ "$(uname -s)" = Linux ] && [ -d "$target/systemd"
         [ -f "$unit_src" ] || continue
         unit_dst="$SYSTEMD_USER_DIR/$(basename "$unit_src")"
         [ -L "$unit_dst" ] || continue
+        # Bootstrap can replace an entity at the same stable path. The unit
+        # link text then stays unchanged, but its target content changed and
+        # the user manager still needs to reload the template.
+        scheduler_reload=1
         managed_unit="$STABLE_LINK/systemd/$(basename "$unit_src")"
         if [ "$(readlink "$unit_dst")" != "$managed_unit" ]; then
             ln -sfn "$managed_unit" "$unit_dst"
@@ -301,23 +311,47 @@ if [ "$scheduler_reload" -eq 1 ]; then
 fi
 previous_lag_alert="$(state_alert_issue lag)"
 previous_scheduler_alert="$(state_alert_issue scheduler)"
+previous_scheduler_pending="$(state_value scheduler_pending)"
+previous_scheduler_reason="$(state_value scheduler_reason)"
+previous_scheduler_pending_since="$(state_value scheduler_pending_since)"
+[ -n "$previous_scheduler_pending" ] || [ -z "$previous_scheduler_alert" ] || previous_scheduler_pending=1
+if [ "$previous_scheduler_pending" = 1 ] && [ -z "$previous_scheduler_pending_since" ]; then
+    previous_scheduler_pending_since="$(state_number last_success_at)"
+fi
+if [ "$previous_scheduler_pending" = 1 ] && [ -z "$previous_scheduler_reason" ]; then
+    previous_scheduler_reason="调度配置仍待人工处理。"
+fi
 if [ "$manual_scheduler" -eq 1 ]; then
     log_deploy ".socket/.slice or launchd template changed; apply it manually (rerun setup on macOS)"
-    scheduler_alert_issue="$(open_alert scheduler "调度配置含不能安全自动应用的变更；Linux 请检查 .socket/.slice，macOS 请重跑 setup.sh。" "$now")"
+    previous_scheduler_pending=1
+    previous_scheduler_reason="调度配置含不能安全自动应用的变更；Linux 请检查 .socket/.slice，macOS 请重跑 setup.sh。"
+    previous_scheduler_pending_since="${previous_scheduler_pending_since:-$now}"
+    scheduler_alert_issue="$(open_alert scheduler "$previous_scheduler_reason" "$previous_scheduler_pending_since")"
 else
     scheduler_alert_issue="$previous_scheduler_alert"
-    # A successful no-change deploy cannot prove that the operator applied a
-    # socket/slice/plist change or repaired daemon-reload. Human closure is the
-    # acknowledgement that makes this state clearable.
-    if alert_is_closed "$scheduler_alert_issue"; then scheduler_alert_issue=""; fi
+    if [ "$previous_scheduler_pending" = 1 ]; then
+        # A successful no-change deploy cannot prove that the operator applied
+        # a socket/slice/plist change or repaired daemon-reload. Retry a failed
+        # notification, and use human closure—not deployment success—as the
+        # acknowledgement that clears the pending fact.
+        if [ -n "$scheduler_alert_issue" ] && alert_is_closed "$scheduler_alert_issue"; then
+            scheduler_alert_issue=""
+            previous_scheduler_pending=0
+            previous_scheduler_reason=""
+            previous_scheduler_pending_since=0
+        elif [ -z "$scheduler_alert_issue" ]; then
+            scheduler_alert_issue="$(open_alert scheduler "$previous_scheduler_reason" "$previous_scheduler_pending_since")"
+        fi
+    fi
 fi
 if close_alert "$previous_lag_alert"; then previous_lag_alert=""; fi
-if [ -n "$scheduler_alert_issue" ]; then
+if [ "$previous_scheduler_pending" = 1 ]; then
     last_error="manual scheduler action still pending"
 else
     last_error=""
 fi
-write_state "$current_sha" "$remote_sha" 0 "$now" "$previous_lag_alert" "$scheduler_alert_issue" "$last_error"
+write_state "$current_sha" "$remote_sha" 0 "$now" "$previous_lag_alert" "$scheduler_alert_issue" "$last_error" \
+    "$previous_scheduler_pending" "$previous_scheduler_reason" "$previous_scheduler_pending_since"
 
 # Safe because every candidate is a direct child of the validated releases root;
 # an exclusive .inuse lock proves no managed consumer still uses it.

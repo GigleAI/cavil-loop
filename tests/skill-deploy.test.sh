@@ -166,6 +166,11 @@ cat > "$TMP/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_GH_LOG"
 case " $* " in
+    *' -X POST '* )
+        if [ "${TEST_ALERT_FAIL:-0}" = 1 ]; then exit 1; fi
+        ;;
+esac
+case " $* " in
     *' -X POST '*'switching stable link failed'*) printf '78\n'; exit 0 ;;
     *' -X POST '*) printf '77\n' ;;
 esac
@@ -217,6 +222,21 @@ PATH="$TMP/fakebin:$PATH" deploy >/dev/null
 
 TEST_ALERT_CLOSED=1 PATH="$TMP/fakebin:$PATH" deploy >/dev/null
 [ "$(jq -r '.scheduler_alert_issue // ""' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = "" ] || fail acknowledged-alert-not-cleared
+
+echo '▶ failed scheduler alert creation is retried on a no-change deploy'
+printf 'socket-v3\n' > "$SRC/systemd/preview.socket"
+git -C "$SRC" add systemd/preview.socket
+git -C "$SRC" commit -m socket-v3 >/dev/null
+git -C "$SRC" push >/dev/null
+: > "$TEST_GH_LOG"
+TEST_ALERT_FAIL=1 PATH="$TMP/fakebin:$PATH" deploy >/dev/null
+[ "$(jq -r '.scheduler_pending' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 1 ] || fail failed-alert-pending-not-recorded
+[ "$(jq -r '.scheduler_alert_issue' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = "" ] || fail failed-alert-issue-should-be-empty
+: > "$TEST_GH_LOG"
+PATH="$TMP/fakebin:$PATH" deploy >/dev/null
+grep -q -- '-X POST repos/GigleAI/cavil-loop/issues' "$TEST_GH_LOG" || fail failed-alert-not-retried
+[ "$(jq -r '.scheduler_alert_issue' "$CAVIL_DEPLOY_ROOT/deploy-state.json")" = 77 ] || fail retried-alert-not-recorded
+pass scheduler-alert-retry
 pass scheduler-boundaries
 
 echo '▶ a failed stable-link switch is visible and keeps the old release'
@@ -257,6 +277,16 @@ CAVIL_SYSTEMD_USER_DIR="$TMP/systemd-user" PATH="$TMP/fakebin:$PATH" deploy --bo
 [ "$(readlink "$TMP/systemd-user/coding-agent-poll@.service")" = "$CAVIL_SKILL_LINK/systemd/coding-agent-poll@.service" ] || fail bootstrap-did-not-migrate-systemd-link
 grep -qx -- '--user daemon-reload' "$TEST_SYSTEMCTL_LOG" || fail bootstrap-did-not-reload-systemd
 pass bootstrap-systemd-migration
+
+echo '▶ bootstrap reloads an entity at the existing stable systemd path'
+ENTITY_SOURCE=$(readlink -f "$CAVIL_SKILL_LINK")
+rm -f "$CAVIL_SKILL_LINK"
+mkdir -p "$CAVIL_SKILL_LINK"
+cp -a "$ENTITY_SOURCE/." "$CAVIL_SKILL_LINK/"
+: > "$TEST_SYSTEMCTL_LOG"
+CAVIL_SYSTEMD_USER_DIR="$TMP/systemd-user" PATH="$TMP/fakebin:$PATH" deploy --bootstrap >/dev/null
+grep -qx -- '--user daemon-reload' "$TEST_SYSTEMCTL_LOG" || fail bootstrap-entity-did-not-reload-systemd
+pass bootstrap-entity-systemd-migration
 
 echo '▶ atomic link replacement has no resolution gap'
 (
