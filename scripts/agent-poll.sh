@@ -443,16 +443,16 @@ collect_queue_rows_greedy() {
         # prompt（"读 issue → 实现 → 开 PR → 翻 pending/human"），于是 worker 跳过设计
         # 阶段、跳过交叉 review、不贴测试输出，看日志却一切正常。2026-09-02 issue #833
         # 就是这么翻车的。改这行前先数一遍 US 的个数。
-        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${US}${US}${US}${title}"$'\n'
+        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${WORKER_MODEL}${US}${US}${US}${title}"$'\n'
     done <<< "$raw"
 }
 
 # 收集顺序 = 同条目挂多个触发 label 时的取舍顺序（fable > 默认 > 追加 > review），
 # 与排序无关：排序只认上面那三个键。
 collect_queue_rows issue "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
-collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
+collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" "$WORKER_MODEL" "" ""
 collect_queue_rows pr "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
-collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
+collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "$WORKER_MODEL" "" ""
 # 追加触发 label（LABEL_PENDING_AGENT_EXTRA，多机分工用）：参数跟 DEFAULT 那趟完全一致，
 # 只是标签名不同 —— 同一套模板、同一个 worker、同一个模型。
 #
@@ -462,8 +462,8 @@ collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
 if [ -n "${LABEL_PENDING_AGENT_EXTRA:-}" ]; then
     while IFS= read -r _extra_label; do
         [ -n "$_extra_label" ] || continue
-        collect_queue_rows issue "$_extra_label" "" "" ""
-        collect_queue_rows pr    "$_extra_label" "" "" ""
+        collect_queue_rows issue "$_extra_label" "$WORKER_MODEL" "" ""
+        collect_queue_rows pr    "$_extra_label" "$WORKER_MODEL" "" ""
     done < <(printf '%s\n' "$LABEL_PENDING_AGENT_EXTRA" | tr ',' '\n')
 fi
 # 交叉 review 关卡：用另一个 agent（默认 codex）+ review 专用模板。留空则整段跳过。

@@ -235,6 +235,9 @@ WORKTREE_GIT_USER_EMAIL=""
 # 自定义：往 skill 的 scripts/drivers/<name>.sh 加，或放在项目级
 #   <host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh
 WORKER_AGENT="claude"
+# Optional model passed only to ordinary issue / PR workers. Empty means the
+# selected driver's own current default model.
+WORKER_MODEL=""
 
 # ── Claude Code launch / Claude Code 启动 ──
 
