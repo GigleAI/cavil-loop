@@ -126,7 +126,7 @@ ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
 ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop
 ```
 
-Code lives in `~/github/`; two symlinks let Claude Code find it. Future upgrade: `cd ~/github/coding-agent-work-loop && git pull`.
+`setup.sh` migrates Linux installations to immutable managed releases. The checkout remains available for development, but the running daemon follows the configured remote base branch instead of mutating that checkout.
 </details>
 
 ### 2. Connect a project

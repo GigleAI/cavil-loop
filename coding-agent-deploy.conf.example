@@ -1,0 +1,18 @@
+# Shared immutable-release deployment configuration.
+# Copy to ~/.config/coding-agent-work-loop/deploy.conf only when overriding defaults.
+# This file is user-level and shared by every project instance.
+
+# Git remote and branch published into immutable releases.
+CAVIL_DEPLOY_REPO="https://github.com/GigleAI/cavil-loop.git"
+CAVIL_DEPLOY_BRANCH="main"
+
+# At most one network fetch per this many seconds across all instances.
+CAVIL_DEPLOY_FETCH_INTERVAL="300"
+
+# Open one deployment-lag issue after the remote has stayed ahead this long.
+CAVIL_DEPLOY_ALERT_AFTER="1800"
+CAVIL_DEPLOY_ALERT_REPO="GigleAI/cavil-loop"
+
+# Paths normally need no override.
+# CAVIL_DEPLOY_ROOT="$HOME/.agents/releases/cavil-loop"
+# CAVIL_SKILL_LINK="$HOME/.agents/skills/coding-agent-work-loop"

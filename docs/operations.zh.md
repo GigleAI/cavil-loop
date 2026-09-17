@@ -409,22 +409,21 @@ issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --is
 
 ## 文件结构
 
-### Skill 目录（推荐 symlink 链路）
+### Skill 目录（Linux 受管布局）
 
 ```
-~/github/coding-agent-work-loop/        # 实际项目仓库
-├── SKILL.md
-├── README.md
-├── docs/                               # 详细文档
-├── setup.sh
-├── coding-agent.config.example
-├── scripts/
-├── prompts/
-└── systemd/
-
-~/.agents/skills/coding-agent-work-loop  -> ~/github/coding-agent-work-loop
+~/github/coding-agent-work-loop/        # 可选开发 checkout；部署器绝不修改
+~/.agents/skills/coding-agent-work-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
+~/.agents/releases/cavil-loop/
+├── mirror.git/                         # 只做 fetch 的镜像
+├── releases/<sha>/                     # 带 .inuse 租约的不可变文件树
+├── .deploy.lock                        # 所有项目实例共享
+├── .last-fetch                         # 共享 fetch 节流
+└── deploy-state.json                   # 落后、成功与告警状态
 ~/.claude/skills/coding-agent-work-loop  -> ~/.agents/skills/coding-agent-work-loop
 ```
+
+poll 入口、token 用量 driver 和周报入口会先钉住物理 release，再读取兄弟文件，并持有 `.inuse` 共享租约直到退出。清理只有取得独占租约才删除旧 release；不会使用“超过 N 小时”或“保留最近 N 个”的猜测规则。可选共享覆盖放在 `~/.config/coding-agent-work-loop/deploy.conf`，字段见 `coding-agent-deploy.conf.example`。
 
 ### Host project（接入后）
 
@@ -475,7 +474,7 @@ your-project/
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist`（生成，非 symlink）| ✅ |
 | 其他 | — | — | ❌ `exit 1`；见下方 [手动 cron 兜底](#手动-cron-兜底) |
 
-两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`，都跑同一个 `agent-poll.sh`。唯一差别是 symlink-vs-生成 的 trade-off：Linux 端 `git pull` skill 自动生效；macOS 端因 launchd 没有 template 模式，plist 是 per-project 生成的，模板有改动要重跑 `setup.sh`。
+两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`。Linux 在钉版本的 poll 入口前执行 `skill-deploy.sh`，所有实例共享非阻塞部署锁与 fetch 节流；macOS 运行钉版本入口但不自动部署，plist 模板有改动要重跑 `setup.sh`。
 
 ### macOS 专属
 
@@ -515,18 +514,28 @@ launchctl list | grep dev.luosky.coding-agent-work-loop
 
 互不干扰、独立日志、独立 state。
 
-## Skill 升级
+## 升级、迁移、回退与开发模式
 
-推荐流程（项目 clone 在 `~/github/coding-agent-work-loop`，symlink 进 skill 目录）：
+受管 **Linux** 每轮 poll fetch 配置的 base 分支，完整解包不可变文件树后再原子替换稳定软链；断网、锁竞争或 fetch 失败都保留当前 release，不阻断 poll。旧式 checkout 安装只通过显式动作迁移：
 
 ```bash
-cd ~/github/coding-agent-work-loop
-git pull
+bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+# 或在旧 checkout 中：
+bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-**Linux**：systemd unit 是 symlink 指模板，下一次 timer tick 自动用新版逻辑——**不需要重跑 setup.sh**。
+这样不会误接管维护者的开发软链；稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。回退则在独占持有 `.deploy.lock` 时把软链原子指回仍保留的 release。
 
-**macOS**：LaunchAgent plist 是 per-project、由 `setup.sh` 生成（launchd 无 template 模式）。如果上游 plist 模板有改动，要重跑 `setup.sh` 重新生成：
+| 变更 | 部署行为 |
+|---|---|
+| scripts、数据、prompt | 随稳定软链切换生效 |
+| systemd `.service` / `.timer` | 自动执行 `systemctl --user daemon-reload` |
+| systemd `.socket` / `.slice` | 不自动应用；开一条带人工步骤的告警 |
+| launchd plist 模板 | 不自动应用；要求重跑 `setup.sh` |
+
+远端被确认持续领先超过配置阈值后，部署器在指定仓库最多开一条告警，恢复后自动关闭。
+
+**macOS** 仍手动升级。LaunchAgent plist 是 per-project、由 `setup.sh` 生成；模板变化后重跑：
 
 ```bash
 launchctl bootout gui/$UID/dev.luosky.coding-agent-work-loop.<key> || true
@@ -534,7 +543,7 @@ rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 ```
 
-日常 skill 升级如果只动 `scripts/*` 两边都不用重跑 setup —— 两种调度器每 tick 都重新 exec `agent-poll.sh`。
+只有受管 Linux 会自动取得纯脚本更新。
 
 ## 手动 cron 兜底
 
@@ -546,10 +555,10 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 **cron**（任何 Unix）：
 
 ```cron
-* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh >> /tmp/coding-agent-cron.log 2>&1
+* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh >> /tmp/coding-agent-cron.log 2>&1
 ```
 
-**Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
+**Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
 
 ## 升级到 webhook（即时触发）
 
@@ -611,7 +620,7 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 
 ```bash
 CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
-    bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh
+    bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh
 tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
 ```
 
