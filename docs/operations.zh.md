@@ -33,6 +33,12 @@ LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
 
+# Worker 选择
+WORKER_AGENT="claude"           # 普通任务；默认值
+WORKER_MODEL=""                 # 可选，只覆盖普通任务的模型
+REVIEW_WORKER_AGENT="codex"     # 独立 review；仅启用 review 关卡时使用
+REVIEW_MODEL=""                 # 可选，只覆盖 review 的模型
+
 # 安装命令（worktree 创建后跑）
 WORKTREE_SETUP_CMD="npm ci || npm install"
 # 例子：
@@ -562,7 +568,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 
 ## 自定义 worker（不是 Claude Code）
 
-Worker 切换走一层薄的 **driver 抽象**，不需要 fork。在 `coding-agent.config` 里设 `WORKER_AGENT=<name>` 即可。内置：`claude`（默认）、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
+Worker 切换走一层薄的 **driver 抽象**，不需要 fork。普通任务默认使用 `WORKER_AGENT=claude`；`WORKER_MODEL` 只覆盖普通任务的模型。启用可选 review 关卡后，review 独立使用 `REVIEW_WORKER_AGENT=codex` 和 `REVIEW_MODEL`；模型留空时由对应 driver 使用自己的当前默认值。内置：`claude`、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
 

@@ -33,6 +33,12 @@ LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
 
+# Worker selection
+WORKER_AGENT="claude"           # ordinary work; default
+WORKER_MODEL=""                 # optional ordinary-worker model override
+REVIEW_WORKER_AGENT="codex"     # cross-review; only used when review is enabled
+REVIEW_MODEL=""                 # optional review-worker model override
+
 # Install command (run after creating worktree)
 WORKTREE_SETUP_CMD="npm ci || npm install"
 # Examples:
@@ -611,7 +617,7 @@ Polling has up to 1 minute of latency. For instant:
 
 ## Custom worker (not Claude Code)
 
-Worker selection now goes through a thin **driver layer** — no fork needed. Set `WORKER_AGENT=<name>` in `coding-agent.config`. Built-ins: `claude` (default), `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
+Worker selection now goes through a thin **driver layer** — no fork needed. Ordinary work uses `WORKER_AGENT=claude` by default; `WORKER_MODEL` is an optional model override for that path. When the optional review gate is enabled, review uses `REVIEW_WORKER_AGENT=codex` and `REVIEW_MODEL` independently. An empty model leaves selection to the driver's current default. Built-ins: `claude`, `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
 
