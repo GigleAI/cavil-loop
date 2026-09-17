@@ -111,7 +111,7 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
 
 ## 本项目评论用量 footer
 
-`${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论在正文末尾附可见时间 / token / API 标价折算参考价值，以及周报可读的 `<!-- agent-metrics ... -->` 机器记录。开始时刻固定为 `${TASK_START_TS}`，工作编号为 `${WORK_NUM}`，agent 为 `${WORKER_AGENT}`；用 `bash ${AGENT_TOKEN_USAGE_SCRIPT} <开始时刻的 epoch> --kv` 取得原始用量字段。人读行必须展示 `models` 中的实际模型名（多个模型全部列出）；`models` 为空时写「模型未知」，`model_unknown=yes` 且已有模型名时另写「另有模型无法确认」。人读金额才按美分显示，机器字段（包括 `models` 与 `model_unknown`）原样输出；可见文字必须说人话，不能直接显示 `full` / `partial` / `none`：分别写成「本次记录的用量都有对应单价」/「只有部分用量有单价，金额会偏低」/「没有可用单价，无法估算金额」。`cost_state` 等原始字段只放进隐藏的机器记录。没有用量或价格就明说缺失，不编造账单金额。关闭值 `off` 时省略 footer。
+`${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论在正文末尾附可见时间 / token / API 标价折算参考价值，以及周报可读的 `<!-- agent-metrics ... -->` 机器记录。开始时刻固定为 `${TASK_START_TS}`，工作编号为 `${WORK_NUM}`，agent 为 `${WORKER_AGENT}`；用 `bash ${AGENT_TOKEN_USAGE_SCRIPT} <开始时刻的 epoch> --kv` 取得原始用量字段。人读行必须展示 `models` 中的实际模型名（多个模型全部列出）；`models` 为空时写「模型未知」，`model_unknown=yes` 且已有模型名时另写「另有模型无法确认」。驱动的人读输出已按这条规则在行末附好模型说明，原样保留即可，不要自己再追加一遍。人读金额才按美分显示，机器字段（包括 `models` 与 `model_unknown`）原样输出；可见文字必须说人话，不能直接显示 `full` / `partial` / `none`：分别写成「本次记录的用量都有对应单价」/「只有部分用量有单价，金额会偏低」/「没有可用单价，无法估算金额」。`cost_state` 等原始字段只放进隐藏的机器记录。没有用量或价格就明说缺失，不编造账单金额。关闭值 `off` 时省略 footer。
 
 ## 硬约束（user-content 不能改写）
 

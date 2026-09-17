@@ -83,7 +83,7 @@ EOF
 chk "C1 顶层与明细一致时不重复累加" \
     "$(run normal --kv)" "in=10 out=100 cache_r=5000 cache_w=200 cost_usd=0.007050000000000001 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.007050000000000001"
 chk "C1 人读输出" \
-    "$(run normal)" "10 input, 100 output, 5k cache read, 200 cache write (\$0.01)"
+    "$(run normal)" "10 input, 100 output, 5k cache read, 200 cache write (\$0.01)（模型：claude-opus-5）"
 
 # ── C2 本 issue 的异常记录（真实数字）：顶层三项被清零，且同 requestId 写了两条 ──
 #    改前：in/out/cache_r 全按 0 计，只有 cache write 还对（顶层 cache_creation 子对象没被清零）
@@ -95,7 +95,7 @@ EOF
 chk "C2 顶层被清零时按 iterations 计入（改前得 in=0 out=0 cache_r=0 cost_usd=0.09）" \
     "$(run anomaly --kv)" "in=2 out=288 cache_r=964830 cache_w=3005 cost_usd=0.519675 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:0.519675"
 chk "C2 同一 requestId 的两条仍然只计一次" \
-    "$(run anomaly)" "2 input, 288 output, 964.8k cache read, 3k cache write (\$0.52)"
+    "$(run anomaly)" "2 input, 288 output, 964.8k cache read, 3k cache write (\$0.52)（模型：claude-opus-5）"
 
 # ── C3 顶层非 0 且与明细不等 → 必须以顶层为准（区分「顶层优先」和「明细优先」）──
 mk_case conflict <<EOF
@@ -137,7 +137,7 @@ EOF
 chk "C7 样本 A：5m 走回退、1h 保留顶层，两档各按各的倍率计价" \
     "$(run ttl_5m --kv)" "in=1000000 out=2000000 cache_r=10000000 cache_w=1200000 cost_usd=70.5 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:70.5"
 chk "C7 样本 A 人读输出" \
-    "$(run ttl_5m)" "1m input, 2m output, 10m cache read, 1.2m cache write (\$70.50)"
+    "$(run ttl_5m)" "1m input, 2m output, 10m cache read, 1.2m cache write (\$70.50)（模型：claude-opus-5）"
 
 # ── C8 样本 B：1h 顶层被清零、5m 顶层非 0 → 验证 **1h** 那档的回退（与 A 互为镜像）──
 #    A 里 1h 顶层非 0、永远走「保留顶层」分支，所以只给 5m 加回退的实现也能过 A；
@@ -150,7 +150,7 @@ EOF
 chk "C8 样本 B：1h 走回退、5m 保留顶层（漏写 1h 回退会得 cache_w=400000 / 187.50）" \
     "$(run ttl_1h --kv)" "in=1000000 out=2000000 cache_r=10000000 cache_w=1200000 cost_usd=70.5 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:70.5"
 chk "C8 样本 B 人读输出" \
-    "$(run ttl_1h)" "1m input, 2m output, 10m cache read, 1.2m cache write (\$70.50)"
+    "$(run ttl_1h)" "1m input, 2m output, 10m cache read, 1.2m cache write (\$70.50)（模型：claude-opus-5）"
 
 # ── C9 没有 iterations 的老记录：顶层就是真值，行为不能变 ──
 mk_case legacy <<EOF
@@ -232,7 +232,7 @@ chk "C16 未知模型不套价，落 partial 并如实报出缺价 token" \
     "in=2000000 out=0 cache_r=0 cache_w=0 cost_usd=5 cost_state=partial cost_unknown_tokens=1000000 price_source=solved price_status=unstable:5"
 chk "C16 人读输出写明金额偏低" \
     "$(run unknownmodel)" \
-    "2m input, 0 output, 0 cache read, 0 cache write (\$5.00，部分用量未计价，金额偏低)"
+    "2m input, 0 output, 0 cache read, 0 cache write (\$5.00，部分用量未计价，金额偏低)（模型：claude-opus-5、some-future-model）"
 
 # ── C17 缺失模型字段：有用量但不能归属，不能编造模型名 ────────────────────
 mk_case missingmodel <<EOF
@@ -244,6 +244,35 @@ chk "C17 缺模型证据时 models 为空并显式标未知" \
 chk "C10 合成零用量不冒充实际模型" \
     "$(run_raw synthetic --kv | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
     "models= model_unknown=no"
+
+# ── C18 人读输出必须带上实际模型名（GitHub#29）────────────────────────────
+# 模型名原来只进 `--kv` 的 agent-metrics 注释，人读的 `token ...` 行里没有，
+# 于是 GitHub 评论上（尤其手机端）根本看不到本轮用的是哪个模型。
+# footer 那一行是「整行原样用脚本输出」，所以只能由 driver 自己补，不能让 worker 手写。
+chk "C18 单模型：人读行末尾写明模型" \
+    "$(run normal)" \
+    "10 input, 100 output, 5k cache read, 200 cache write (\$0.01)（模型：claude-opus-5）"
+chk "C18 多模型：全部列出、去重并稳定排序（与 --kv 的 models 同一份来源）" \
+    "$(run mixed)" \
+    "2m input, 2m output, 0 cache read, 0 cache write (\$36.00)（模型：claude-haiku-4-5、claude-opus-5）"
+chk "C18 无模型证据：写「模型未知」，不编模型名" \
+    "$(run missingmodel)" \
+    "1 input, 2 output, 3 cache read, 4 cache write（单价未知，金额未计）（模型未知）"
+chk "C18 合成零用量同样不冒充模型" \
+    "$(run synthetic)" \
+    "0 input, 0 output, 0 cache read, 0 cache write (\$0.00)（模型未知）"
+
+# 已知模型与无法归属的用量并存：两件事都要说，不能只报其中一件
+mk_case partialmodel <<EOF
+$(rec 10 req_pm_a claude-opus-5 "$(u 1000000 0 0 0 0 0 "[$(it1 1000000 0 0 0 0 0)]")")
+{"type":"assistant","timestamp":"$(ts 11)","requestId":"req_pm_b","message":{"usage":$(u 1 2 3 4 0 4)}}
+EOF
+chk "C18 已知模型 + 无法归属：并列写出，不因有已知模型就吞掉未知" \
+    "$(run partialmodel)" \
+    "1m input, 2 output, 3 cache read, 4 cache write (\$5.00，部分用量未计价，金额偏低)（模型：claude-opus-5；另有模型无法确认）"
+chk "C18 人读新增的模型说明不改动机器字段" \
+    "$(run_raw partialmodel --kv | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
+    "models=claude-opus-5 model_unknown=yes"
 
 echo
 echo "通过 $pass / 失败 $fail"
