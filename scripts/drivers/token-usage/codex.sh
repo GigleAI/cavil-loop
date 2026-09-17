@@ -55,6 +55,9 @@
 #   旧的三个环境变量仍然认，作为「所有模型同一个价」的兼容写法：
 #     CODEX_PRICE_IN_PER_M / CODEX_PRICE_CACHED_IN_PER_M / CODEX_PRICE_OUT_PER_M
 #
+# `--kv` 另输出 `models=`（实际产生非零用量的模型 ID，稳定排序）和
+# `model_unknown=yes|no`。unknown 是归属状态，不塞进模型 ID 列表。
+#
 # 不在这里算「排除等待的工时」：同 claude driver，那个指标由周报采集器出报告时
 # 从本机日志算（scripts/weekly-report/worktime.py）。
 set -uo pipefail
@@ -205,6 +208,13 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
     | (if $agg.unk == 0 then "full"
        elif $agg.known > 0 then "partial"
        else "none" end) as $state
+    | ([$bym[]
+        | select(.model != "unknown" and ((.s.in + .s.cin + .s.cw + .s.out) > 0))
+        | .model] | sort | unique | join(",")) as $models
+    | (if ([$bym[]
+             | select(.model == "unknown" and ((.s.in + .s.cin + .s.cw + .s.out) > 0))]
+            | length) > 0
+       then "yes" else "no" end) as $model_unknown
     | if $mode == "--kv"
       then "in=\($t.in) out=\($t.out) cache_r=\($t.cin) cache_w=\($t.cw)"
            + (if $state == "none" then "" else " cost_usd=\($agg.usd)" end)
@@ -214,6 +224,7 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
            + (if $price_source == "default"
               then " price_checked=\($price_date) price_stale=\($price_stale)"
               else "" end)
+           + " models=\($models) model_unknown=\($model_unknown)"
       else "\($t.in | fmt) input, \($t.out | fmt) output, \($t.cin | fmt) cache read, \($t.cw | fmt) cache write"
            + (if $state == "none" then "（该模型未配单价，金额未计）"
               elif $state == "partial" then " ($\($agg.usd | usd2)，部分用量未计价，金额偏低)"

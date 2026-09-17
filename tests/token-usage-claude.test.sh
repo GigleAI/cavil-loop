@@ -70,9 +70,11 @@ mk_case() {   # $1 = 用例名；jsonl 从 stdin 读
     mkdir -p "$TMP/.claude/projects/$enc"
     cat > "$TMP/.claude/projects/$enc/s.jsonl"
 }
-run() {   # $1 = 用例名；$2 = 模式（--kv 或空）；$3 = 起点（默认 $START）
+run_raw() {   # $1 = 用例名；$2 = 模式（--kv 或空）；$3 = 起点（默认 $START）
     ( cd "$TMP/wt/$1" && HOME="$TMP" bash "$DRIVER" "${3:-$START}" ${2:-} )
 }
+# 既有断言聚焦 token / 金额；新增字段由下面的专门断言覆盖。
+run() { run_raw "$@" | sed -E 's/ models=[^ ]* model_unknown=(yes|no)//'; }
 
 # ── C1 正常记录：顶层与明细一致，不能把两份相加 ────────────────────────────
 mk_case normal <<EOF
@@ -216,6 +218,9 @@ EOF
 chk "C15 混合模型分段计价（整段套 Opus 会得 60.00）" \
     "$(run mixed --kv)" \
     "in=2000000 out=2000000 cache_r=0 cache_w=0 cost_usd=36 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=unstable:36"
+chk "C15 模型集合去重并稳定排序" \
+    "$(run_raw mixed --kv | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
+    "models=claude-haiku-4-5,claude-opus-5 model_unknown=no"
 
 # ── C16 认不出的模型：不套价、计入缺价，金额如实偏低 ────────────────────────
 mk_case unknownmodel <<EOF
@@ -228,6 +233,17 @@ chk "C16 未知模型不套价，落 partial 并如实报出缺价 token" \
 chk "C16 人读输出写明金额偏低" \
     "$(run unknownmodel)" \
     "2m input, 0 output, 0 cache read, 0 cache write (\$5.00，部分用量未计价，金额偏低)"
+
+# ── C17 缺失模型字段：有用量但不能归属，不能编造模型名 ────────────────────
+mk_case missingmodel <<EOF
+{"type":"assistant","timestamp":"$(ts 10)","requestId":"req_missing","message":{"usage":$(u 1 2 3 4 0 4)}}
+EOF
+chk "C17 缺模型证据时 models 为空并显式标未知" \
+    "$(run_raw missingmodel --kv | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
+    "models= model_unknown=yes"
+chk "C10 合成零用量不冒充实际模型" \
+    "$(run_raw synthetic --kv | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
+    "models= model_unknown=no"
 
 echo
 echo "通过 $pass / 失败 $fail"
