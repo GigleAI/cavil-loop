@@ -122,6 +122,34 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
 
 When adding a field: `agent-poll.sh` has a migration loop at the top that iterates `seen_issue_comments seen_review_comments seen_reviews worker_models` and inits missing ones to `{}`. Add your new field name to that loop.
 
+### Session registry (`$STATE_DIR/agent-sessions/`)
+
+One file per `(work number, agent, role)`, holding the agent-side session id:
+
+```
+$STATE_DIR/agent-sessions/42.claude.worker   ->  4d9e5509-1591-493b-80b9-7d93e3f5344a
+$STATE_DIR/agent-sessions/42.claude.review   ->  f3db1457-c545-4b83-9969-0af1285ba460
+```
+
+Deliberately **not** in `state.json`: that file is a compatibility-bound
+interface (CONTRIBUTING makes you declare changes to it), whereas this is a
+local cache that can be rebuilt from scratch — and `dispatch-*.sh` runs as a
+child of `agent-poll.sh`, so keeping both out of the same jq-rewrite avoids a
+pointless write race. `cleanup-issue.sh` drops a work number's files when it
+removes the worktree.
+
+`role` is `worker` or `review`, derived from `DISPATCH_PROMPT_KIND`. It exists
+so that a review gate running the *same* agent as the worker gets its own model
+conversation instead of inheriting the worker's — see
+[docs/architecture.md](docs/architecture.md#session-isolation).
+
+**Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`
+in `_lib.sh`. Two functions, not one, on purpose: `plan` sets globals
+(`AGENT_LAUNCH_KIND`, `WORKER_SESSION_ID`) and therefore must run in the caller's
+own shell, while the command string has to be produced inside `"$( )"`. Merging
+them means the globals die in the command-substitution subshell and every
+dispatch script trips `unbound variable` under `set -u`.
+
 ### Session / worktree / branch naming
 
 Driven by three prefixes in `coding-agent.config` (formula for "work number N"):

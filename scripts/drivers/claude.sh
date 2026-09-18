@@ -4,17 +4,70 @@
 # 文档：https://docs.claude.com/en/docs/claude-code
 # 历史存放：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
 # Busy 探测：见下方 AGENT_BUSY_RE（认 spinner 行的形状，不认具体措辞）
-# 新起：claude -n <name> [extra-flags] [--model <model>] "<prompt>"
-# 续接：claude --continue [extra-flags] [--model <model>] "<prompt>"
+# 新起：claude -n <name> [--session-id <uuid>] [extra-flags] [--model <model>] "<prompt>"
+# 续接：claude --resume <uuid> | --continue [extra-flags] [--model <model>] "<prompt>"
 #
 # 配置开关：CLAUDE_EXTRA_FLAGS（推荐 "--dangerously-skip-permissions"，否则卡权限弹窗）
 
+# 支持按 session id 隔离 worker / review 两个角色的会话（见 _common.sh 的契约）。
+AGENT_SESSION_ISOLATION=1
+
 agent_bin() { echo "claude"; }
+
+# claude 的历史目录名 = cwd 绝对路径里**每一个非字母数字字符**都换成 '-'。
+# 2026-09-18 在 claude 2.1.276 上实测：
+#   /tmp/tmp.dkIFgXhOk6/wt/issue-7            -> -tmp-tmp-dkIFgXhOk6-wt-issue-7
+#   /tmp/.../enc.test_dir.v1/sub dir          -> -tmp-...-enc-test-dir-v1-sub-dir
+# 共享的 encoded_cwd 只换 '/'，对带 '.' '_' 空格的 worktree 路径会指到一个根本
+# 不存在的目录 —— 于是「这个 cwd 有没有历史」永远答否，每次派工都新起一条会话，
+# 上下文一声不响地丢掉。
+claude_encoded_cwd() {
+    printf %s "$1" | tr -c 'A-Za-z0-9' '-'
+}
+
+claude_session_dir() {
+    echo "$HOME/.claude/projects/$(claude_encoded_cwd "$1")"
+}
 
 agent_has_history() {
     local cwd="$1"
-    local dir="$HOME/.claude/projects/$(encoded_cwd "$cwd")"
+    local dir
+    dir="$(claude_session_dir "$cwd")"
     [ -d "$dir" ] && compgen -G "$dir/*.jsonl" > /dev/null 2>&1
+}
+
+# ── 会话隔离 ──
+# claude 2.1.274 实测：
+#   --session-id <uuid>  按指定 id 新建；**id 已存在会直接报错退出**，所以这里永远
+#                        发随机 id，登记表才是权威，不去猜一个「算得出来」的 id。
+#   --resume <uuid>      续那条；id 不存在报 No conversation found。
+#   -n <name>            只是显示名，跟会话归属无关。
+agent_session_new_id() {
+    if command -v uuidgen > /dev/null 2>&1; then
+        uuidgen | tr 'A-Z' 'a-z'
+    elif [ -r /proc/sys/kernel/random/uuid ]; then
+        cat /proc/sys/kernel/random/uuid
+    else
+        python3 -c 'import uuid; print(uuid.uuid4())'
+    fi
+}
+
+agent_session_exists() {
+    local cwd="$1" id="$2"
+    [ -n "$id" ] && [ -f "$(claude_session_dir "$cwd")/${id}.jsonl" ]
+}
+
+# 历史文件名就是 session id；按 mtime 新→旧。
+# （同目录下还有 memory/ 之类的子目录，所以只认 *.jsonl）
+agent_session_list() {
+    local cwd="$1" dir f
+    dir="$(claude_session_dir "$cwd")"
+    [ -d "$dir" ] || return 0
+    compgen -G "$dir/*.jsonl" > /dev/null 2>&1 || return 0
+    for f in $(ls -t "$dir"/*.jsonl 2>/dev/null); do
+        basename "$f" .jsonl
+    done
+    return 0
 }
 
 # busy 判据。2026-07-29 实测 claude 2.1.220：
@@ -40,22 +93,40 @@ agent_command_new() {
     local cwd="$1"   # 未直接用：tmux 已 -c "$cwd"，claude 自动 cwd
     local name="$2"
     local prompt_file="$3"
-    local model_arg
+    local model_arg flags
     model_arg="$(worker_model_arg)"
+    flags="${CLAUDE_EXTRA_FLAGS:-}"
+    # WORKER_SESSION_ID 由 agent_launch_command 设：钉住这条会话的 id，
+    # 之后同角色再派工才认得回来（不钉的话只能靠「最近一条」猜，就会串角色）。
+    # 拼进 flags 而不是单开一个 %s 槽位：没有 id 时命令行要跟改版前逐字节一致，
+    # 免得下游按字符串比对的测试 / 日志因为多一个空格就对不上。
+    if [ -n "${WORKER_SESSION_ID:-}" ]; then
+        flags="$(printf -- '--session-id %q' "$WORKER_SESSION_ID") $flags"
+    fi
     # name 含 / # 等需要 shell-quote（worker_session_name 现在用 GigleAI/repo#42 风格）
     printf 'claude -n %q %s %s "$(cat %s)"' \
         "$name" \
-        "${CLAUDE_EXTRA_FLAGS:-}" \
+        "$flags" \
         "$model_arg" \
         "$prompt_file"
 }
 
 agent_command_resume() {
     local cwd="$1"   # 同上
-    local name="$2"  # 未用：claude --continue 自动用 cwd 最近会话
+    local name="$2"  # 未用：会话由 id / cwd 定位，不靠显示名
     local prompt_file="$3"
     local model_arg
     model_arg="$(worker_model_arg)"
+    # 有 id 就续那一条。没有 id 只会出现在「本功能上线前留下的会话」这一种情况，
+    # 那时才回落到 --continue（cwd 里最近的一条）。
+    if [ -n "${WORKER_SESSION_ID:-}" ]; then
+        printf 'claude --resume %q %s %s "$(cat %s)"' \
+            "$WORKER_SESSION_ID" \
+            "${CLAUDE_EXTRA_FLAGS:-}" \
+            "$model_arg" \
+            "$prompt_file"
+        return 0
+    fi
     printf 'claude --continue %s %s "$(cat %s)"' \
         "${CLAUDE_EXTRA_FLAGS:-}" \
         "$model_arg" \

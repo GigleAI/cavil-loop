@@ -79,9 +79,12 @@ EOF
 fi
 
 # 4. 起 tmux + worker agent（用 -e 显式传 GH_TOKEN 等 env，因为 tmux 默认不继承）
-#    新 issue 一律走 agent_command_new（worktree 刚建，无历史）。
-log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT)"
-CMD="$(secret_env_prefix)$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+#    新 issue 一律起全新会话（worktree 刚建）；仍走这条路径是为了让本次
+#    会话的 id 登记到注册表里，后面同角色再派工才认得回来。
+#    agent_session_plan 要在当前 shell 里调（它设的全局在 $( ) 子 shell 里会丢）。
+agent_session_plan "$ISSUE" "$WORKTREE" 1
+log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT, 角色=$WORKER_SESSION_ROLE, $AGENT_LAUNCH_KIND)"
+CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
@@ -108,6 +111,9 @@ if ! verify_fresh_session "$TMUX_SESSION"; then
         --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
     exit 1
 fi
+
+# 4.7 启动侧钉不了 session id 的 driver（codex），到这里把它实际用上的 id 捞回来登记
+agent_session_register_launched "$ISSUE" "$WORKTREE"
 
 # 5. 立即翻 label 到 doing/agent（worker 完工时它会自己翻成 pending/human）
 run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \

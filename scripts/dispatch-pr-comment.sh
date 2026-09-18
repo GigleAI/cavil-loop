@@ -126,27 +126,25 @@ if [ -d "$WORKTREE" ]; then
         tmux_env+=("$_tmux_e")
     done < <(tmux_env_args)
 
-    used_resume=0
-    if agent_has_history "$WORKTREE"; then
-        log "PR #$PR -> 在 $TMUX_SESSION 里 resume agent=$WORKER_AGENT 之前的会话"
-        CMD="$(secret_env_prefix)$(agent_command_resume "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-        tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
-        used_resume=1
-        # claude --continue 可能 resume 到异常 state（之前 worker 留下的 Rewind UI 等）
-        # 然后立即异常退出 → tmux session 立即关。等 2s 看是否还在
+    # 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
+    agent_session_plan "$ISSUE_N" "$WORKTREE"
+    CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+    log "PR #$PR -> 在 $TMUX_SESSION 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（$AGENT_LAUNCH_KIND）"
+    tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+
+    # resume 可能续到异常 state（之前 worker 留下的 Rewind UI 等）然后立即退出
+    # → tmux session 立即关。等 2s 看是否还在，死了就降级成全新会话。
+    if [ "$AGENT_LAUNCH_KIND" != "new" ]; then
         sleep 2
-    fi
-
-    if ! session_alive "$TMUX_SESSION"; then
-        if [ "$used_resume" = 1 ]; then
-            log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级 fresh $WORKER_AGENT session（丢 conversation history、prompt 含 PR context 仍可工作）"
-        else
-            log "PR #$PR -> 从 worktree 起全新 $WORKER_AGENT session ${TMUX_SESSION}（cwd 无历史）"
+        if ! session_alive "$TMUX_SESSION"; then
+            log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 PR context 仍可工作）"
+            agent_session_plan "$ISSUE_N" "$WORKTREE" 1
+            CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+            tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
         fi
-        CMD="$(secret_env_prefix)$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-        tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
     fi
 
+    agent_session_register_launched "$ISSUE_N" "$WORKTREE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
     flip_label
@@ -176,17 +174,15 @@ done
 [ -n "${WORKTREE_SETUP_CMD:-}" ] && [ "${WORKTREE_SETUP_CMD}" != ":" ] && \
     (cd "$WORKTREE" && eval "$WORKTREE_SETUP_CMD") || true
 
-if agent_has_history "$WORKTREE"; then
-    log "PR #$PR -> 重建 worktree，但本机仍有该 cwd 的 $WORKER_AGENT 历史 → resume"
-    CMD="$(secret_env_prefix)$(agent_command_resume "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-else
-    CMD="$(secret_env_prefix)$(agent_command_new "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-fi
+agent_session_plan "$ISSUE_N" "$WORKTREE"
+CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+log "PR #$PR -> 重建 worktree 后起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（$AGENT_LAUNCH_KIND）"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
 done < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+agent_session_register_launched "$ISSUE_N" "$WORKTREE"
 configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
 start_session_logging "$TMUX_SESSION"
 

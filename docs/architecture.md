@@ -93,7 +93,27 @@ to the `pending/agent` queue.
 - Naming: tmux session = `<TMUX_PREFIX>-issue<N>`, worktree = `<WORKTREE_BASE>/issue-<N>`, branch = `<BRANCH_PREFIX><N>`
 - **Where N comes from for PR dispatch**: `pr_to_issue_num` runs a fallback chain — branch matches `<BRANCH_PREFIX>N` → use it; else PR body has `Closes/Fixes/Resolves/Refs #N` → use it; else fallback to the PR number itself. So an external PR or hand-opened meta PR (no `feature/issue-N` branch, no linked issue) still gets a stable N to drive worktree/session naming. GitHub-only assumption (issue/PR share namespace); see [AGENTS.md](../AGENTS.md#session--worktree--branch-naming) for cross-platform notes
 - PR comment trigger: find the corresponding session, use `tmux load-buffer + paste-buffer -p` (bracketed paste) to inject the multi-line prompt, then `send-keys Enter` to submit
-- **Auto-resume**: if the worker session dies (`/quit` / restart / crash) and another trigger comes in, the dispatch script checks `~/.claude/projects/<encoded-worktree>/` for existing jsonl files — if found, runs `claude --continue` to resume the original conversation (all context + tool history preserved); otherwise `claude -n issue<N>` for a fresh start. User-initiated `/quit` in the middle of work doesn't lose progress.
+- **Two roles per work item**: every dispatch is either the `worker` role or the `review` role (derived from the prompt template kind). One tmux session still serves both, but the *model* conversations are kept apart — see "Session isolation" below.
+- **Auto-resume**: if the worker session dies (`/quit` / restart / crash) and another trigger comes in, the dispatch script looks up the session id recorded for this `(work number, agent, role)` and resumes exactly that conversation (all context + tool history preserved); if there is none it starts fresh. User-initiated `/quit` in the middle of work doesn't lose progress.
+
+### Session isolation
+
+`REVIEW_WORKER_AGENT` may name the same CLI as `WORKER_AGENT`. Both roles then
+share one worktree, and every built-in agent resolves "resume" as *the most
+recent conversation in this directory* — so the review would inherit the
+worker's context and stop being an independent review, while the worker's next
+dispatch would inherit the review's. Both directions are blocked:
+
+| Mechanism | What it stops |
+|---|---|
+| `@worker_role` on the tmux session, compared in `tmux_session_matches_worker` | A review dispatch being *injected* into the worker's live session (injection never goes through the launch commands, so this is the only place that can catch it) |
+| One session id per `(work number, agent, role)` in `$STATE_DIR/agent-sessions/` | Either role resuming the other's conversation |
+| The `review` role never adopts an unregistered conversation | A first review picking up the worker's pre-existing session |
+
+Review rounds 2..N reuse the review's own session, so the reviewer can check
+whether its earlier findings were addressed. Drivers opt in by implementing
+three functions ([docs/drivers.md](drivers.md#optional-hooks-session-isolation));
+a driver that doesn't only gets the "review always starts fresh" half.
 - Session gone (and worktree also cleaned up) → automatically rebuilds the worktree from PR head branch + spawns a new session (applies the same resume logic above)
 - **Pane log persistence**: each worker session opens with a `tmux pipe-pane` that appends pane output to `$SESSION_LOG_DIR/<tmux-session>.log` (default `$STATE_DIR/sessions/`). The file lives on after the tmux session exits — `cat` / `less` to review
 

@@ -521,6 +521,27 @@ else
     WORKER_MODEL="${WORKER_MODEL:-}"
 fi
 
+# 本次派工的**会话角色**：worker（写代码的）/ review（交叉复审的）。
+#
+# 为什么需要它：review 关卡跟普通 worker 完全可以是同一个 agent
+# （REVIEW_WORKER_AGENT 配成 claude 就是）。同一个 agent + 同一个 worktree，
+# agent 自带的「续接这个目录最近的一条会话」会让 review 直接读到 worker 的上下文
+# —— 复审就不独立了，它会连着 worker 为自己辩解的那些话一起继承。
+# 反方向同样成立：review 起完自己的会话后，worker 下一轮再续接「最近一条」，
+# 续到的是 review 那条，反而丢掉自己的实现上下文。
+# 所以每次派工都带一个角色，会话按 (work number, agent, 角色) 各归各。
+#
+# 角色从 prompt 模板类型推（review 模板 = 交叉复审关卡），agent-poll 已经把
+# DISPATCH_PROMPT_KIND 传给 dispatch 子进程了，不用再加一条传递链路。
+DISPATCH_SESSION_ROLE="${DISPATCH_SESSION_ROLE:-}"
+if [ -z "$DISPATCH_SESSION_ROLE" ]; then
+    case "${DISPATCH_PROMPT_KIND:-}" in
+        review) DISPATCH_SESSION_ROLE="review" ;;
+        *)      DISPATCH_SESSION_ROLE="worker" ;;
+    esac
+fi
+WORKER_SESSION_ROLE="$DISPATCH_SESSION_ROLE"
+
 # Outbound GitHub 评论里附时间+token 元数据 footer（on / off）。默认 on。
 # 项目级 prompt 模板可读 ${COMMENT_FOOTER}，自行决定本项目是否加 footer。
 COMMENT_FOOTER="${COMMENT_FOOTER:-on}"
@@ -1074,21 +1095,36 @@ configure_tmux_session_display() {
         log "  ⚠️ 设置 tmux session $sess 的 @worker_agent 失败（worker 继续运行）"
     fi
 
+    if ! tmux set-option -t "$sess" @worker_role "$WORKER_SESSION_ROLE" 2>&1 | \
+        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        log "  ⚠️ 设置 tmux session $sess 的 @worker_role 失败（worker 继续运行）"
+    fi
+
     if ! tmux bind-key -T prefix s choose-tree -Zs -F "$tree_format" 2>&1 | \
         sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 配置 tmux prefix+s session 列表失败（worker 继续运行）"
     fi
 }
 
-# 返回 0 表示现有 session 已使用本次 dispatch 要求的 worker 和模型。老 session
-# 没有元数据时按项目默认 worker + 默认模型处理，所以普通 pending/agent 不会无故重启。
+# 返回 0 表示现有 session 已使用本次 dispatch 要求的 worker、模型和角色。老 session
+# 没有元数据时按项目默认 worker + 默认模型 + worker 角色处理，所以普通 pending/agent
+# 不会无故重启。
+#
+# 角色必须参与比对：不比的话，review 关卡会被当成「同一个 worker」而把 prompt 直接
+# 注入 worker 那条活着的会话里，复审就继承了 worker 的全部上下文（本函数是唯一挡得住
+# 这条路径的地方——注入不经过 agent_command_new/resume）。
+# 本功能上线前起的 session 没有 @worker_role，按 worker 处理；于是升级后第一次派
+# review 会重启一次 session 切到 review 角色，属预期内的一次性重启。
 tmux_session_matches_worker() {
     local sess="$1"
-    local actual_agent actual_model
+    local actual_agent actual_model actual_role
     actual_agent="$(tmux show-options -qv -t "$sess" @worker_agent 2>/dev/null || true)"
     actual_model="$(tmux show-options -qv -t "$sess" @worker_model 2>/dev/null || true)"
+    actual_role="$(tmux show-options -qv -t "$sess" @worker_role 2>/dev/null || true)"
     [ -n "$actual_agent" ] || actual_agent="$WORKER_AGENT_DEFAULT"
-    [ "$actual_agent" = "$WORKER_AGENT" ] && [ "$actual_model" = "$WORKER_MODEL" ]
+    [ -n "$actual_role" ] || actual_role="worker"
+    [ "$actual_agent" = "$WORKER_AGENT" ] && [ "$actual_model" = "$WORKER_MODEL" ] && \
+        [ "$actual_role" = "$WORKER_SESSION_ROLE" ]
 }
 
 # 给一个 tmux session 名拼出对应的 pane log 路径。
@@ -1482,3 +1518,193 @@ source_driver "$WORKER_AGENT" || exit 2
 # 落"未知"兜底）。新增 driver 时按需在 token-usage/ 加 <agent>.sh 即可。
 AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/${WORKER_AGENT}.sh"
 [ -f "$AGENT_TOKEN_USAGE_SCRIPT" ] || AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/_default.sh"
+
+# ── 会话注册表：(work number, agent, 角色) → agent 侧的 session id ──
+#
+# 为什么不放 state.json：那是有兼容约束的接口（CONTRIBUTING 明写改了要申报），
+# 而这里存的是纯本机、丢了能自己重建的缓存；而且 dispatch 是 agent-poll 的子进程，
+# 两边同时 jq 改写同一个 state.json 属于没必要的写竞争。一角色一文件，最笨最稳。
+AGENT_SESSION_DIR="${AGENT_SESSION_DIR:-$STATE_DIR/agent-sessions}"
+
+# 「这个 driver 没法按 id 定位会话」的标记：走上线前的老路（--continue / resume --last）。
+AGENT_SESSION_LEGACY="__legacy__"
+
+agent_session_file() {   # <num> <agent> <role>
+    echo "$AGENT_SESSION_DIR/$1.$2.$3"
+}
+
+agent_session_id_get() {   # <num> <agent> <role>
+    local f
+    f="$(agent_session_file "$1" "$2" "$3")"
+    [ -f "$f" ] || return 0
+    tr -d '[:space:]' < "$f"
+}
+
+agent_session_id_set() {   # <num> <agent> <role> <id>
+    local f
+    f="$(agent_session_file "$1" "$2" "$3")"
+    mkdir -p "$AGENT_SESSION_DIR"
+    printf '%s\n' "$4" > "$f"
+}
+
+agent_session_id_forget() {   # <num> <agent> <role>
+    rm -f "$(agent_session_file "$1" "$2" "$3")"
+}
+
+# 本 work number 下**所有** agent / 所有角色已登记的 id。收养旧会话时拿它当排除集：
+# 少了这一步，worker 就会把 review 刚建的那条会话当成「本目录最新的一条」收养走。
+agent_session_ids_registered() {   # <num>
+    local f
+    for f in "$AGENT_SESSION_DIR/$1".*; do
+        [ -f "$f" ] || continue
+        tr -d '[:space:]' < "$f"
+        echo
+    done
+}
+
+# 找一条可以被 worker 角色收养的旧会话。
+# 返回：会话 id / $AGENT_SESSION_LEGACY（driver 不支持按 id 定位，走老路）/ 空（起全新）。
+agent_session_adoptable() {   # <num> <cwd>
+    local num="$1" cwd="$2"
+    local registered line
+
+    if [ "${AGENT_SESSION_ISOLATION:-0}" != 1 ]; then
+        # driver 没实现会话枚举 → 保持上线前的行为，有历史就按它自己的方式续接
+        if agent_has_history "$cwd"; then
+            echo "$AGENT_SESSION_LEGACY"
+        fi
+        return 0
+    fi
+
+    registered="$(agent_session_ids_registered "$num")"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        printf '%s\n' "$registered" | grep -Fxq "$line" && continue
+        echo "$line"
+        return 0
+    done < <(agent_session_list "$cwd")
+    # 能枚举、但一条没被登记的都没有（例如目录里只剩 review 那条）→ 起全新，
+    # **绝不**回落到 --continue：那正好会续到 review 那条上。
+    #
+    # 必须显式 return 0：调用方是 `x="$(agent_session_adoptable ...)"`，而 dispatch
+    # 脚本开着 set -e —— 函数返回非 0 会让整条派工当场中断，而「没有可收养的会话」
+    # 明明是最常见的正常情况（全新 worktree 每次都走这里）。
+    return 0
+}
+
+# 决定本次派工该起哪条会话。**只做决策，不产出命令。**
+# 设置三个全局：AGENT_LAUNCH_KIND（new|resume|adopt|legacy-resume）、WORKER_SESSION_ID
+# （driver 的 agent_command_new / agent_command_resume 读它决定钉哪个 / 续哪条 id）、
+# AGENT_SESSION_PRELAUNCH_IDS（给回捞用的开工前快照）。
+#
+# ⚠️ 必须在**当前 shell** 里直接调，不能写成 `X="$(agent_session_plan ...)"`：
+# 命令替换开的是子 shell，上面三个全局会连同子 shell 一起消失，调用方只会读到空值
+# （dispatch 脚本开着 set -u，读空值直接就是 unbound variable 崩在派工路上）。
+# 「决策」和「产命令」分成两个函数，正是为了让产命令那步可以安全地放进 $( )。
+#
+# 收在一个函数里是因为三个 dispatch 脚本原来各写一份「有历史就 resume」，
+# 角色隔离要在每份里重写一遍必然会漏掉一条路径。
+agent_session_plan() {   # <num> <cwd> [force_new]
+    local num="$1" cwd="$2" force_new="${3:-0}"
+    local role="$WORKER_SESSION_ROLE"
+    local id="" adopted=""
+
+    AGENT_LAUNCH_KIND=""
+    WORKER_SESSION_ID=""
+    AGENT_SESSION_PRELAUNCH_IDS=""
+
+    if [ "$force_new" != 1 ]; then
+        id="$(agent_session_id_get "$num" "$WORKER_AGENT" "$role")"
+        if [ -n "$id" ]; then
+            if agent_session_exists "$cwd" "$id"; then
+                WORKER_SESSION_ID="$id"
+                AGENT_LAUNCH_KIND="resume"
+                return 0
+            fi
+            # 登记过但会话没了（history 被清、worktree 重建过…）→ 忘掉，往下起全新
+            agent_session_id_forget "$num" "$WORKER_AGENT" "$role"
+        fi
+
+        # 普通 worker 的向后兼容：本功能上线前的会话一条都没登记过，
+        # 不能因为「注册表里查不到」就把正在做的活的上下文丢掉。
+        # review 角色不收养——它宁可从零开始，也不能捡到 worker 那条。
+        if [ "$role" = "worker" ]; then
+            adopted="$(agent_session_adoptable "$num" "$cwd" || true)"
+            if [ "$adopted" = "$AGENT_SESSION_LEGACY" ]; then
+                AGENT_LAUNCH_KIND="legacy-resume"
+                return 0
+            fi
+            if [ -n "$adopted" ]; then
+                agent_session_id_set "$num" "$WORKER_AGENT" "$role" "$adopted"
+                WORKER_SESSION_ID="$adopted"
+                AGENT_LAUNCH_KIND="adopt"
+                return 0
+            fi
+        fi
+    else
+        agent_session_id_forget "$num" "$WORKER_AGENT" "$role"
+    fi
+
+    # 全新会话。driver 能在启动时钉 id（claude 的 --session-id）就当场登记；
+    # 钉不了的（codex 启动侧没有这种 flag）先记下开工前已有的 id，
+    # 等 tmux 起完再由 agent_session_register_launched 回捞。
+    id="$(agent_session_new_id "$cwd" "$role")"
+    if [ -n "$id" ]; then
+        agent_session_id_set "$num" "$WORKER_AGENT" "$role" "$id"
+        WORKER_SESSION_ID="$id"
+    elif [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ]; then
+        AGENT_SESSION_PRELAUNCH_IDS="$(agent_session_list "$cwd" || true)"
+    fi
+    AGENT_LAUNCH_KIND="new"
+}
+
+# 按 agent_session_plan 定好的方案产出启动命令（写 stdout）。
+# 这个可以放进 $( )：它不设任何调用方要读的全局。
+agent_launch_command() {   # <cwd> <session_name> <prompt_file>
+    case "${AGENT_LAUNCH_KIND:-new}" in
+        new) agent_command_new "$1" "$2" "$3" ;;
+        *)   agent_command_resume "$1" "$2" "$3" ;;
+    esac
+}
+
+# 起完一条全新会话之后调用：给「启动时钉不了 id」的 driver（codex）把本次真正用上的
+# session id 回捞并登记。其余情况是空操作。
+# 捞不到就只记一条 warning：后果是下一轮 review 会从零起一条新的（多花 token，
+# 但绝不会串到 worker 的上下文里去），不该为此让派工失败。
+agent_session_register_launched() {   # <num> <cwd>
+    local num="$1" cwd="$2"
+    local role="$WORKER_SESSION_ROLE"
+    local waited=0 step=0.5 line found=""
+
+    [ "${AGENT_LAUNCH_KIND:-}" = "new" ] || return 0
+    [ -z "${WORKER_SESSION_ID:-}" ] || return 0
+    [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ] || return 0
+
+    local max="${AGENT_SESSION_CAPTURE_SECS:-15}"
+    while :; do
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            printf '%s\n' "$AGENT_SESSION_PRELAUNCH_IDS" | grep -Fxq "$line" && continue
+            found="$line"
+            break
+        done < <(agent_session_list "$cwd")
+        [ -n "$found" ] && break
+        # bc 不一定有；用整数的半秒计数
+        waited=$((waited + 1))
+        [ "$((waited / 2))" -ge "$max" ] && break
+        sleep "$step"
+    done
+
+    if [ -n "$found" ]; then
+        agent_session_id_set "$num" "$WORKER_AGENT" "$role" "$found"
+        WORKER_SESSION_ID="$found"
+        log_debug "会话登记：#$num $WORKER_AGENT/$role -> $found"
+    else
+        log "  ⚠️ ${max}s 内没捞到 $WORKER_AGENT 新建的 session id（#$num 角色 $role）；下一轮该角色会从零起一条新会话"
+    fi
+}
+
+# 清掉某个 work number 下所有角色的会话登记（cleanup-issue 删 worktree 时调用）。
+agent_session_forget_all() {   # <num>
+    rm -f "$AGENT_SESSION_DIR/$1".* 2>/dev/null || true
+}

@@ -36,6 +36,25 @@
 #     默认实现 `default_inject_prompt`：tmux load-buffer + paste-buffer -p + Enter。
 #     对大多数 chat-REPL CLI 通用；个别 agent 需 slash-command 切模式可在 driver 里重写。
 #
+#   ── 会话隔离（可选，三个一起实现才生效）──
+#   同一个 agent 既当 worker 又当 review 时，两边共用一个 worktree，agent 自带的
+#   「续接本目录最近一条会话」会让复审直接继承 worker 的上下文（反过来也一样）。
+#   driver 实现下面三个函数并把 AGENT_SESSION_ISOLATION 置 1，daemon 就按
+#   (work number, agent, 角色) 把会话分开记、分开续。
+#   不实现也能跑：daemon 退化成「review 角色一律起全新会话」，worker 角色保持原样。
+#
+#   agent_session_new_id <cwd> <role>
+#     stdout 写一个本次要**钉**的 session id（如 claude 的 --session-id）。
+#     CLI 不支持启动时指定 id 就写空串——daemon 会改用启动后回捞（见 agent_session_list）。
+#
+#   agent_session_exists <cwd> <session_id>
+#     返回 0 = 这条会话还在、可以 resume。
+#
+#   agent_session_list <cwd>
+#     按「最近的在前」逐行写出这个 cwd 的会话 id。daemon 用它做两件事：
+#     收养上线前的旧会话，以及给钉不了 id 的 CLI 回捞新会话的 id。
+#     调用方可能只读前几行就关掉管道，实现要能容忍 SIGPIPE。
+#
 #   agent_trust_paths <path>...
 #     让 agent 预先把这些目录记成「可信」，免得 worker 第一次在新目录起会话时
 #     卡在 folder-trust 确认框上。setup.sh 在部署新项目时用仓库根 + worktree base
@@ -43,7 +62,13 @@
 #     必须幂等：已经信任就不要改文件（那个文件通常正被活着的 agent 进程用着）。
 
 # ── 通用工具：encoded cwd ──
-# Claude / OpenCode 都把 cwd 绝对路径里的 '/' 换成 '-' 作为本地历史目录名。
+# 把 cwd 绝对路径里的 '/' 换成 '-'，作为本地历史目录名。
+#
+# ⚠️ 这只是**最小公约数**，不是哪家 CLI 的权威规则。claude 实测（2.1.276）连
+# '.' '_' 空格等所有非字母数字字符都换成 '-'，光换 '/' 会在带点的路径上指到一个
+# 不存在的目录——后果不是报错，是「查不到历史 → 每次派工都新起会话」，上下文
+# 静默丢光。claude driver 因此自己实现了 claude_encoded_cwd。
+# 加 driver 时请拿自己的 CLI 实测一遍，别默认这个够用。
 encoded_cwd() {
     printf %s "$1" | tr / -
 }
@@ -242,6 +267,8 @@ source_driver() {
         "${self_dir}/${name}.sh"
     )
     local d
+    # 能力标志复位：同一进程里换 driver 时不能留着上一个 driver 的声明
+    AGENT_SESSION_ISOLATION=0
     for d in "${candidates[@]}"; do
         if [ -f "$d" ]; then
             # shellcheck disable=SC1090
@@ -250,6 +277,11 @@ source_driver() {
             if ! declare -f agent_inject_prompt > /dev/null; then
                 agent_inject_prompt() { default_inject_prompt "$@"; }
             fi
+            # 会话隔离的默认实现：什么都不知道。AGENT_SESSION_ISOLATION 保持 0，
+            # daemon 于是只保证「review 角色起全新会话」，不做按 id 的续接。
+            declare -f agent_session_new_id > /dev/null || agent_session_new_id() { echo ""; }
+            declare -f agent_session_exists > /dev/null || agent_session_exists() { return 1; }
+            declare -f agent_session_list   > /dev/null || agent_session_list() { return 0; }
             # 强制校验必填函数都在
             local fn
             for fn in agent_bin agent_has_history agent_is_busy \
