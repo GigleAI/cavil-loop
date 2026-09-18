@@ -415,22 +415,23 @@ issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --is
 
 ## 文件结构
 
-### Skill 目录（推荐 symlink 链路）
+### Skill 目录（Linux 受管布局）
 
 ```
-~/github/coding-agent-work-loop/        # 实际项目仓库
-├── SKILL.md
-├── README.md
-├── docs/                               # 详细文档
-├── setup.sh
-├── coding-agent.config.example
-├── scripts/
-├── prompts/
-└── systemd/
-
-~/.agents/skills/coding-agent-work-loop  -> ~/github/coding-agent-work-loop
+~/github/coding-agent-work-loop/        # 可选开发 checkout；部署器绝不修改
+~/.agents/skills/coding-agent-work-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
+~/.agents/releases/cavil-loop/
+├── mirror.git/                         # 只做 fetch 的镜像
+├── releases/<sha>/                     # 带 .inuse 租约的不可变文件树
+├── entrypoints/                        # 不随 release 清理的持久启动器
+├── .fetch.lock                         # 只串行化网络 fetch
+├── .deploy.lock                        # 短暂的发布 / 选版 / 清理锁
+├── .last-fetch                         # 共享 fetch 节流
+└── deploy-state.json                   # 落后、成功与告警状态
 ~/.claude/skills/coding-agent-work-loop  -> ~/.agents/skills/coding-agent-work-loop
 ```
+
+poll、token 用量 driver 和周报都从 `entrypoints/` 里的持久启动器进入。启动器不会随旧 release 被清理：它先取得共享部署锁、解析稳定软链并拿到目标 release 的 `.inuse` 租约，之后才打开版本内脚本。清理只有取得独占租约才删除旧 release；不会使用“超过 N 小时”或“保留最近 N 个”的猜测规则。可选共享覆盖放在 `~/.config/coding-agent-work-loop/deploy.conf`，字段见 `coding-agent-deploy.conf.example`。
 
 ### Host project（接入后）
 
@@ -481,7 +482,7 @@ your-project/
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist`（生成，非 symlink）| ✅ |
 | 其他 | — | — | ❌ `exit 1`；见下方 [手动 cron 兜底](#手动-cron-兜底) |
 
-两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`，都跑同一个 `agent-poll.sh`。唯一差别是 symlink-vs-生成 的 trade-off：Linux 端 `git pull` skill 自动生效；macOS 端因 launchd 没有 template 模式，plist 是 per-project 生成的，模板有改动要重跑 `setup.sh`。
+两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`。Linux 在持久 poll 入口前执行 `skill-deploy.sh`；网络 fetch 使用单独的非阻塞锁和超时，只有发布与清理才短暂持有部署锁，所以慢 fetch 不会挡住当前 release 的消费者，失败尝试也会进入共享节流。macOS 运行钉版本入口但不自动部署，plist 模板有改动要重跑 `setup.sh`。
 
 ### macOS 专属
 
@@ -521,18 +522,28 @@ launchctl list | grep dev.luosky.coding-agent-work-loop
 
 互不干扰、独立日志、独立 state。
 
-## Skill 升级
+## 升级、迁移、回退与开发模式
 
-推荐流程（项目 clone 在 `~/github/coding-agent-work-loop`，symlink 进 skill 目录）：
+受管 **Linux** 每轮 poll 在明确的网络超时内 fetch 配置的 base 分支，完整解包不可变文件树后再原子替换稳定软链；断网、锁竞争或 fetch 失败都保留当前 release，fetch 进行时消费者仍可从当前 release 启动。升级是**自动**的，不需要也无法指定目标版本：跟的是 `CAVIL_DEPLOY_BRANCH`（默认 `main`）的最新 commit，与 GitHub Release / tag 无关，release 只是该 commit 的不可变快照 `releases/<sha>/`。全机共用 `CAVIL_DEPLOY_FETCH_INTERVAL`（默认 300 秒）的 fetch 节流，因此合入 base 分支后最迟约一个节流周期加一次 tick 生效。切换只影响之后启动的进程：已在运行的消费者持 `.inuse` 共享租约，继续跑自己那个 SHA。旧式 checkout 安装只通过显式动作迁移：
 
 ```bash
-cd ~/github/coding-agent-work-loop
-git pull
+bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+# 或在旧 checkout 中：
+bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-**Linux**：systemd unit 是 symlink 指模板，下一次 timer tick 自动用新版逻辑——**不需要重跑 setup.sh**。
+这样不会误接管维护者的开发软链。Linux 上单独执行 bootstrap 也会把已安装的 systemd 模板软链改指稳定受管 skill，并 reload user manager；它不会安装原本不存在的 unit，新装调度器仍应使用 `setup.sh`。稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。**回退目前没有持久做法**：部署成功后会立即清理所有没有活跃租约的旧 release，通常不留可回退的目标；即使某个旧 release 因仍有租约而暂时保留，手工把软链指回去也只维持到下一轮部署——部署器不比较新旧，只把软链对齐 base 分支 tip，因而会再次切到最新 commit。需要持续停在某个版本时，用开发模式脱管，或把 `CAVIL_DEPLOY_BRANCH` 指向一个停在该 commit 的分支。
 
-**macOS**：LaunchAgent plist 是 per-project、由 `setup.sh` 生成（launchd 无 template 模式）。如果上游 plist 模板有改动，要重跑 `setup.sh` 重新生成：
+| 变更 | 部署行为 |
+|---|---|
+| scripts、数据、prompt | 随稳定软链切换生效 |
+| systemd `.service` / `.timer` | 自动执行 `systemctl --user daemon-reload` |
+| systemd `.socket` / `.slice` | 不自动应用；开一条带人工步骤的告警 |
+| launchd plist 模板 | 不自动应用；要求重跑 `setup.sh` |
+
+远端被确认持续领先超过配置阈值后，部署器在指定仓库最多开一条告警，追平后自动关闭这类落后告警。需要人工处理的调度告警（`.socket`、`.slice`、launchd 或 `daemon-reload` 失败）不会被下一次无变更部署误关；维护者处理完并关闭告警 issue 后，部署器才清除该状态。
+
+**macOS** 仍手动升级。LaunchAgent plist 是 per-project、由 `setup.sh` 生成；模板变化后重跑：
 
 ```bash
 launchctl bootout gui/$UID/dev.luosky.coding-agent-work-loop.<key> || true
@@ -540,7 +551,7 @@ rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 ```
 
-日常 skill 升级如果只动 `scripts/*` 两边都不用重跑 setup —— 两种调度器每 tick 都重新 exec `agent-poll.sh`。
+只有受管 Linux 会自动取得纯脚本更新。
 
 ## 手动 cron 兜底
 
@@ -552,10 +563,10 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 **cron**（任何 Unix）：
 
 ```cron
-* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh >> /tmp/coding-agent-cron.log 2>&1
+* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh >> /tmp/coding-agent-cron.log 2>&1
 ```
 
-**Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
+**Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
 
 ## 升级到 webhook（即时触发）
 
@@ -617,7 +628,7 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 
 ```bash
 CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
-    bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh
+    bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh
 tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
 ```
 

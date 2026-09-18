@@ -8,7 +8,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 
 `GigleAI/cavil-loop` is an **Agent Skill** — a feature package loaded by AI coding tools like Claude Code. It makes GitHub issue / PR comments the I/O of a local AI: a 60-second background poller on your machine finds whatever issue / PR is labeled `pending/agent`, spins up Claude Code locally, lets it work, push, reply, flip the label. Background in [README.md](README.md).
 
-**Meta nature**: this project develops itself (dogfooding). The issues / PRs of this repo run through its own workflow. Edit a script — the next dispatch of itself uses the new version.
+**Meta nature**: this project develops itself (dogfooding). The issues / PRs of this repo run through its own workflow. On managed Linux installations, merged `main` revisions are published as immutable releases and activated by an atomic symlink switch on a later poll; a local checkout edit is used only after explicitly entering development mode.
 
 ## Directory layout
 
@@ -155,7 +155,7 @@ This means the worktree/tmux/branch "N" **isn't necessarily** the same as `featu
    CODING_AGENT_CONFIG=~/path/to/host/coding-agent.config bash scripts/agent-poll.sh
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
-3. Commit + push. Deployed Linux systemd timers pick up the new code on their next tick (the symlink chain → skill source → your pushed version). macOS LaunchAgents do too, because the plist re-execs `agent-poll.sh` each tick — only changes to the plist template itself require re-running `setup.sh`
+3. Commit + push. After merge to the configured base branch, managed Linux timers fetch and atomically activate the new release (normally within 10 minutes). macOS remains manual/development mode; rerun `setup.sh` for plist changes.
 4. PRs use `feature/issue-N` branches (with `Closes #N` or `Refs #N` — see PR closure A/B/C)
 
 ### Edit a prompt template

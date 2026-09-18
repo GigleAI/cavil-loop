@@ -14,7 +14,7 @@ KillMode=process
 # systemd 的 PATH 是极简的，不含 ~/.hermes/node/bin（node 在那儿），必须靠这个注入。
 EnvironmentFile=%h/.config/coding-agent-work-loop/%i.conf
 WorkingDirectory=%h/.agents/skills/coding-agent-work-loop
-ExecStart=/usr/bin/env bash %h/.agents/skills/coding-agent-work-loop/scripts/weekly-report/run.sh %i
+ExecStart=/usr/bin/env bash %h/.agents/releases/cavil-loop/entrypoints/weekly-report/run.sh %i
 
 [Install]
 WantedBy=default.target

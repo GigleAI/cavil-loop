@@ -464,22 +464,23 @@ line yourself, since `cleanup-issue.sh` has no way to know whether you enabled p
 
 ## File layout
 
-### Skill directory (recommended symlink chain)
+### Skill directory (managed Linux layout)
 
 ```
-~/github/coding-agent-work-loop/        # the actual project repo
-├── SKILL.md
-├── README.md
-├── docs/                               # extended docs
-├── setup.sh
-├── coding-agent.config.example
-├── scripts/
-├── prompts/
-└── systemd/
-
-~/.agents/skills/coding-agent-work-loop  -> ~/github/coding-agent-work-loop
+~/github/coding-agent-work-loop/        # optional development checkout; deployment never mutates it
+~/.agents/skills/coding-agent-work-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
+~/.agents/releases/cavil-loop/
+├── mirror.git/                         # fetch-only mirror
+├── releases/<sha>/                     # immutable trees with .inuse leases
+├── entrypoints/                        # durable launchers; never removed with a release
+├── .fetch.lock                         # network-fetch serialization only
+├── .deploy.lock                        # short publish/select/cleanup lock
+├── .last-fetch                         # shared fetch throttle
+└── deploy-state.json                   # lag, success, and alert state
 ~/.claude/skills/coding-agent-work-loop  -> ~/.agents/skills/coding-agent-work-loop
 ```
+
+Poll, token-usage, and weekly-report start through launchers in `entrypoints/`. Those launchers cannot be removed by release cleanup: they take the shared deploy lock, resolve the stable link, and acquire the selected release's `.inuse` lease before opening any versioned script. Cleanup removes an old release only after taking that lease exclusively; age and “keep N versions” are deliberately not used. Optional shared overrides live in `~/.config/coding-agent-work-loop/deploy.conf`; see `coding-agent-deploy.conf.example`.
 
 ### Host project (after connecting)
 
@@ -530,7 +531,7 @@ your-project/
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist` (generated) | ✅ |
 | Other | — | — | ❌ `exit 1`; see [manual cron fallback](#manual-cron-fallback) below |
 
-Both paths read the same `~/.config/coding-agent-work-loop/<key>.conf` env file and invoke the same `agent-poll.sh`. The only difference is the symlink-vs-generate trade-off: on Linux, `git pull`-ing the skill auto-updates the unit; on macOS the plist is per-project (launchd has no template mode), so a template change requires re-running `setup.sh`.
+Both paths read the same `~/.config/coding-agent-work-loop/<key>.conf` env file. Linux runs `skill-deploy.sh` before the durable poll entry. Network work has a separate non-blocking lock and timeout; only publication and cleanup take the short deploy lock, so a slow fetch cannot hold up consumers of the current release. Failed fetch attempts also enter the shared throttle. macOS runs the pinned entry but does not auto-deploy, and a plist template change requires re-running `setup.sh`.
 
 ### macOS specifics
 
@@ -570,18 +571,28 @@ launchctl list | grep dev.luosky.coding-agent-work-loop
 
 Independent logs, independent state, no interference.
 
-## Upgrading the skill
+## Upgrading, migration, rollback, and development mode
 
-Recommended workflow (project cloned at `~/github/coding-agent-work-loop`, symlinked into the skill dir):
+Managed **Linux** polls fetch the configured base branch with a bounded network timeout, unpack a complete immutable tree, then atomically replace the stable link. Offline, lock, and fetch failures retain the current release; consumers can continue starting from it while fetch is in progress. Upgrades are **automatic**, and no target version can be pinned: the deployer follows the tip commit of `CAVIL_DEPLOY_BRANCH` (default `main`), unrelated to GitHub Releases or tags — a release is just an immutable snapshot of that commit at `releases/<sha>/`. A host-wide `CAVIL_DEPLOY_FETCH_INTERVAL` (default 300s) throttles fetches, so a merge to the base branch takes effect within roughly one throttle window plus a tick. Switching affects only later starts: consumers already running hold a shared `.inuse` lease and stay on their own SHA. Migrate a checkout-style installation only through an explicit action:
 
 ```bash
-cd ~/github/coding-agent-work-loop
-git pull
+bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+# or, from the old checkout:
+bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-On **Linux** the systemd unit is a symlink pointing at the template, so the next timer tick uses the new logic — **no need to re-run `setup.sh`**.
+This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. **There is currently no durable rollback.** A successful deployment immediately reclaims every old release without an active lease, so usually no rollback target survives; and even when a lease keeps one alive, pointing the stable link back at it only holds until the next deployment — the deployer does not compare versions, it aligns the stable link with the base-branch tip, so it switches forward again. To stay on a specific version, use development mode to opt out of management, or point `CAVIL_DEPLOY_BRANCH` at a branch parked on that commit.
 
-On **macOS** the LaunchAgent plist is per-project and generated by `setup.sh` (launchd has no template mode). If the upstream plist template changes meaningfully, re-run `setup.sh` to regenerate the plist:
+| Changed files | Deployment behavior |
+|---|---|
+| scripts, data, prompts | Active with the stable-link switch |
+| systemd `.service` / `.timer` | Runs `systemctl --user daemon-reload` |
+| systemd `.socket` / `.slice` | Not applied automatically; opens one actionable alert |
+| launchd plist template | Not applied automatically; asks for `setup.sh` |
+
+After the remote is observed ahead for the configured threshold, deployment opens at most one issue in the configured alert repository and closes that lag alert after recovery. Alerts for manual scheduler work (`.socket`, `.slice`, launchd, or a failed `daemon-reload`) persist across no-change deployments and clear only after a maintainer closes the alert issue to acknowledge completion.
+
+On **macOS**, upgrades remain manual. The per-project LaunchAgent plist is generated by `setup.sh`; regenerate it after a template change:
 
 ```bash
 launchctl bootout gui/$UID/dev.luosky.coding-agent-work-loop.<key> || true
@@ -589,7 +600,7 @@ rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 ```
 
-Day-to-day skill upgrades that touch only `scripts/*` don't need re-setup on either OS — both schedulers re-exec `agent-poll.sh` every tick.
+Only managed Linux installations fetch script-only updates automatically.
 
 ## Manual cron fallback
 
@@ -601,10 +612,10 @@ The schedulers above aren't required; `agent-poll.sh` is stateless and any sched
 **cron** (any Unix):
 
 ```cron
-* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh >> /tmp/coding-agent-cron.log 2>&1
+* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh >> /tmp/coding-agent-cron.log 2>&1
 ```
 
-**Claude Code `/loop` skill**: open a long-running session that calls `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh`. Upside: the scheduling logic can be context-aware. Downside: expensive + the session dying stops everything.
+**Claude Code `/loop` skill**: open a long-running session that calls `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh`. Upside: the scheduling logic can be context-aware. Downside: expensive + the session dying stops everything.
 
 ## Upgrading to webhooks (instant trigger)
 
@@ -812,7 +823,7 @@ If the worker finishes without leaving any comment, state.json's comment ID does
 
 ```bash
 CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
-    bash ~/.agents/skills/coding-agent-work-loop/scripts/agent-poll.sh
+    bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh
 tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
 ```
 

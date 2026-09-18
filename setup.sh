@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # 把 coding-agent-work-loop daemon 接入一个 host project。
 #
-# 关键设计：本 skill **不复制脚本到 host project**。脚本永远住在 skill 目录
-# （`~/.claude/skills/coding-agent-work-loop/`，推荐做成指向 `~/github/coding-agent-work-loop/`
-# 的 symlink）。host project 里只多两样东西：
+# 关键设计：本 skill **不复制脚本到 host project**。Linux 上 setup 会把当前 main
+# 发布到不可变 release，并让稳定 skill 软链指向它；host project 里只多两样东西：
 #   1. coding-agent.config       —— 本项目专属配置（gitignored）
 #   2. .gitignore 加一行排除上述 config
 #
@@ -107,7 +106,10 @@ for cmd in "${common_cmds[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 case "$SCHEDULER" in
-    systemd) command -v systemctl >/dev/null 2>&1 || missing+=("systemctl") ;;
+    systemd)
+        command -v systemctl >/dev/null 2>&1 || missing+=("systemctl")
+        command -v timeout >/dev/null 2>&1 || missing+=("timeout")
+        ;;
     launchd) command -v launchctl >/dev/null 2>&1 || missing+=("launchctl") ;;
 esac
 
@@ -128,6 +130,25 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 echo "✓ gh 已登录"
 echo
+
+# ── Linux 受管 release bootstrap ──
+# 重跑 setup 是旧式 checkout 软链迁移到受管布局的显式动作；部署器不会在日常 poll
+# 中猜测并接管 releases/ 外的路径。macOS 暂时保留开发/手动更新模式，因为其系统
+# 工具没有 GNU mv -T 与 stat -c；plist 变更仍由 setup 明确重装。
+if [ "$OS" = Linux ]; then
+    echo "── 0. 发布受管 skill release ──"
+    SOURCE_SKILL_DIR="$SKILL_DIR"
+    CAVIL_DEPLOY_SOURCE_DIR="$SOURCE_SKILL_DIR" \
+        bash "$SOURCE_SKILL_DIR/scripts/skill-deploy.sh" --bootstrap --force
+    SKILL_DIR="$HOME/.agents/skills/coding-agent-work-loop"
+    runtime_skill="$(readlink -f "$SKILL_DIR" 2>/dev/null || true)"
+    case "$runtime_skill" in
+        "$HOME/.agents/releases/cavil-loop/releases/"*) ;;
+        *) echo "❌ bootstrap 未建立受管 release：${runtime_skill:-稳定入口不存在}"; exit 1 ;;
+    esac
+    echo "  ✓ runtime skill: $runtime_skill"
+    echo
+fi
 
 # ── 可移植 sed in-place（绕开 GNU vs BSD `sed -i` 差异）──
 subst_inplace() {
@@ -244,7 +265,7 @@ echo
 echo "── 4. 安装 $SCHEDULER unit ──"
 
 install_systemd() {
-    # 用 symlink，方便后续 skill 升级（git pull）自动生效，不需要重跑 setup.sh
+    # unit 指稳定 skill 入口；部署器每轮从 main 发布并原子切换 release。
     local sys_dir="$HOME/.config/systemd/user"
     mkdir -p "$sys_dir"
     local f src dst
@@ -258,8 +279,13 @@ install_systemd() {
              'coding-agent-preview-app@.service'; do
         src="$SKILL_DIR/systemd/$f"
         dst="$sys_dir/$f"
-        if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
-            echo "  · $f 已 symlink"
+        if [ -L "$dst" ]; then
+            if [ "$(readlink "$dst")" = "$src" ]; then
+                echo "  · $f 已 symlink"
+            else
+                ln -sfn "$src" "$dst"
+                echo "  ✓ 更新 symlink $dst -> $src"
+            fi
         elif [ -e "$dst" ]; then
             echo "  ⚠️  $f 已存在（非 symlink），跳过——手动检查"
         else

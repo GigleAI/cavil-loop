@@ -534,7 +534,7 @@ LOG_FILE="$STATE_DIR/poll.log"
 SESSION_LOG_DIR="${SESSION_LOG_DIR-$STATE_DIR/sessions}"
 
 # Skill 目录（scripts/ 的父目录）。Claude Code 注入 $CLAUDE_PLUGIN_ROOT 时优先它。
-SKILL_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SKILL_DIR="${CODING_AGENT_RELEASE_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 
 log() {
     echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
@@ -1472,7 +1472,8 @@ compose_prompt_template() {
 # 放在文件末尾，确保 _lib.sh 自己的函数都已定义；driver 注入的函数
 # (agent_is_busy / agent_has_history / agent_command_new/resume) 之后被 dispatch
 # 脚本 + cleanup-issue.sh 在执行时取到。
-_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_LIB_DIR="${CODING_AGENT_RELEASE_ROOT:+$CODING_AGENT_RELEASE_ROOT/scripts}"
+_LIB_DIR="${_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # shellcheck disable=SC1091
 source "$_LIB_DIR/drivers/_common.sh"
 source_driver "$WORKER_AGENT" || exit 2
@@ -1482,3 +1483,5 @@ source_driver "$WORKER_AGENT" || exit 2
 # 落"未知"兜底）。新增 driver 时按需在 token-usage/ 加 <agent>.sh 即可。
 AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/${WORKER_AGENT}.sh"
 [ -f "$AGENT_TOKEN_USAGE_SCRIPT" ] || AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/_default.sh"
+_MANAGED_TOKEN_USAGE="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/drivers/token-usage/$(basename "$AGENT_TOKEN_USAGE_SCRIPT")"
+[ ! -f "$_MANAGED_TOKEN_USAGE" ] || AGENT_TOKEN_USAGE_SCRIPT="$_MANAGED_TOKEN_USAGE"
