@@ -518,7 +518,7 @@ launchctl list | grep dev.luosky.coding-agent-work-loop
 
 ## 升级、迁移、回退与开发模式
 
-受管 **Linux** 每轮 poll 在明确的网络超时内 fetch 配置的 base 分支，完整解包不可变文件树后再原子替换稳定软链；断网、锁竞争或 fetch 失败都保留当前 release，fetch 进行时消费者仍可从当前 release 启动。旧式 checkout 安装只通过显式动作迁移：
+受管 **Linux** 每轮 poll 在明确的网络超时内 fetch 配置的 base 分支，完整解包不可变文件树后再原子替换稳定软链；断网、锁竞争或 fetch 失败都保留当前 release，fetch 进行时消费者仍可从当前 release 启动。升级是**自动**的，不需要也无法指定目标版本：跟的是 `CAVIL_DEPLOY_BRANCH`（默认 `main`）的最新 commit，与 GitHub Release / tag 无关，release 只是该 commit 的不可变快照 `releases/<sha>/`。全机共用 `CAVIL_DEPLOY_FETCH_INTERVAL`（默认 300 秒）的 fetch 节流，因此合入 base 分支后最迟约一个节流周期加一次 tick 生效。切换只影响之后启动的进程：已在运行的消费者持 `.inuse` 共享租约，继续跑自己那个 SHA。旧式 checkout 安装只通过显式动作迁移：
 
 ```bash
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
@@ -526,7 +526,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-这样不会误接管维护者的开发软链。Linux 上单独执行 bootstrap 也会把已安装的 systemd 模板软链改指稳定受管 skill，并 reload user manager；它不会安装原本不存在的 unit，新装调度器仍应使用 `setup.sh`。稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。回退则在独占持有 `.deploy.lock` 时把软链原子指回仍保留的 release。
+这样不会误接管维护者的开发软链。Linux 上单独执行 bootstrap 也会把已安装的 systemd 模板软链改指稳定受管 skill，并 reload user manager；它不会安装原本不存在的 unit，新装调度器仍应使用 `setup.sh`。稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。**回退目前没有持久做法**：部署成功后会立即清理所有没有活跃租约的旧 release，通常不留可回退的目标；即使某个旧 release 因仍有租约而暂时保留，手工把软链指回去也只维持到下一轮部署——部署器不比较新旧，只把软链对齐 base 分支 tip，因而会再次切到最新 commit。需要持续停在某个版本时，用开发模式脱管，或把 `CAVIL_DEPLOY_BRANCH` 指向一个停在该 commit 的分支。
 
 | 变更 | 部署行为 |
 |---|---|

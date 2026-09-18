@@ -567,7 +567,7 @@ Independent logs, independent state, no interference.
 
 ## Upgrading, migration, rollback, and development mode
 
-Managed **Linux** polls fetch the configured base branch with a bounded network timeout, unpack a complete immutable tree, then atomically replace the stable link. Offline, lock, and fetch failures retain the current release; consumers can continue starting from it while fetch is in progress. Migrate a checkout-style installation only through an explicit action:
+Managed **Linux** polls fetch the configured base branch with a bounded network timeout, unpack a complete immutable tree, then atomically replace the stable link. Offline, lock, and fetch failures retain the current release; consumers can continue starting from it while fetch is in progress. Upgrades are **automatic**, and no target version can be pinned: the deployer follows the tip commit of `CAVIL_DEPLOY_BRANCH` (default `main`), unrelated to GitHub Releases or tags — a release is just an immutable snapshot of that commit at `releases/<sha>/`. A host-wide `CAVIL_DEPLOY_FETCH_INTERVAL` (default 300s) throttles fetches, so a merge to the base branch takes effect within roughly one throttle window plus a tick. Switching affects only later starts: consumers already running hold a shared `.inuse` lease and stay on their own SHA. Migrate a checkout-style installation only through an explicit action:
 
 ```bash
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
@@ -575,7 +575,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. Rollback is the inverse atomic link switch while holding `.deploy.lock` exclusively.
+This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. **There is currently no durable rollback.** A successful deployment immediately reclaims every old release without an active lease, so usually no rollback target survives; and even when a lease keeps one alive, pointing the stable link back at it only holds until the next deployment — the deployer does not compare versions, it aligns the stable link with the base-branch tip, so it switches forward again. To stay on a specific version, use development mode to opt out of management, or point `CAVIL_DEPLOY_BRANCH` at a branch parked on that commit.
 
 | Changed files | Deployment behavior |
 |---|---|
