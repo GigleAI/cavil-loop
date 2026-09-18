@@ -102,6 +102,30 @@
 
 加字段时：`agent-poll.sh` 开头有 migration 逻辑——遍历 `seen_issue_comments seen_review_comments seen_reviews worker_models` 检查 `has`，缺就初始化 `{}`。加新 endpoint 时把字段名加进那个循环。
 
+### 会话注册表（`$STATE_DIR/agent-sessions/`）
+
+按 `(work number, agent, 角色)` 一条一文件，存 agent 侧的 session id：
+
+```
+$STATE_DIR/agent-sessions/42.claude.worker   ->  4d9e5509-1591-493b-80b9-7d93e3f5344a
+$STATE_DIR/agent-sessions/42.claude.review   ->  f3db1457-c545-4b83-9969-0af1285ba460
+```
+
+**故意不放 state.json**：那是有兼容约束的接口（CONTRIBUTING 明写改了要申报），
+而这里是丢了能重建的本机缓存；而且 `dispatch-*.sh` 是 `agent-poll.sh` 的子进程，
+两边不去抢同一个 jq 改写更省事。`cleanup-issue.sh` 删 worktree 时会一并清掉该
+编号的登记。
+
+角色只有 `worker` 和 `review` 两个，从 `DISPATCH_PROMPT_KIND` 推。它存在的唯一
+理由：复审关卡用的是**同一个** agent 时，得让它有自己的模型对话，而不是继承
+worker 的——见 [docs/architecture.zh.md](docs/architecture.zh.md#会话隔离)。
+
+**决定起哪条会话**是 `_lib.sh` 里的 `agent_session_plan` + `agent_launch_command`。
+拆成两个函数是刻意的：`plan` 设的是全局变量（`AGENT_LAUNCH_KIND`、
+`WORKER_SESSION_ID`），必须在调用方自己的 shell 里跑；而命令字符串又只能在
+`"$( )"` 里产出。合成一个的话全局变量会随命令替换的子 shell 一起消失，
+每个 dispatch 脚本都会在 `set -u` 下撞 unbound variable。
+
 ### Session / Worktree / Branch 命名
 
 由 `coding-agent.config` 三个 prefix 控制，公式（issue N）：
