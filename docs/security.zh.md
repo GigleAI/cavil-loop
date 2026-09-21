@@ -53,9 +53,13 @@ body → 内嵌的 `[SYSTEM]` 段尝试劫持 Claude。Claude 通常能识破（
 
 | daemon 哪条查询 | gh 查询 | 状态过滤 | 影响 |
 |-----------------|---------|----------|------|
-| 新 issue 派工 | `gh issue list --state open` | 显式 open | closed issue 永远不入扫描 |
-| PR 评论派工 | `gh pr list --label ...` | 默认 open | merged/closed PR 永远不入扫描 |
+| 新 issue 派工 | `gh api repos/<repo>/issues -f state=open` | 显式 open | closed issue 永远不入扫描 |
+| PR 评论派工 | `gh api repos/<repo>/pulls -f state=open` | 显式 open | merged/closed PR 永远不入扫描 |
 | Auto-cleanup | `gh pr list --state merged` | 显式 merged | 只为 cleanup，**不读 user content** |
+
+派工和 self-heal 共用**同一份**每轮快照（`_lib.sh` 的 `open_snapshot`），只拉这两个
+endpoint，label 筛选在本地做。状态过滤写在取数那一步，所以对所有下游同时生效——
+不存在「换个 label 查一下就够到 closed issue / merged PR」的路径。
 
 `cleanup-issue.sh` 的执行路径里**没有任何 `gh ... view --comments` / LLM 调用**——
 只做：busy 检查 → `CLEANUP_HOOK`（你写的脚本，比如解 tailscale）→ 杀 tmux →

@@ -676,20 +676,90 @@ worker_is_ours() {
     [ "$owner" = "$SELFHEAL_HOST_ID" ]
 }
 
+# ── 本轮 open 快照 ──
+# 一轮 poll 里，self-heal、并发计数、各 label 取工、greedy 兜底问的其实是同一批数据：
+# 仓库里所有 open 的 issue / PR 和它们的 label。以前每个用途各发一次
+# `gh issue list --label X` / `gh pr list --label X`——tutor 一轮实测 22 次调用里，
+# 14 次是这么来的，而且内容高度重叠。现在一轮只拉两次 REST，其余全在本地 jq 过滤。
+# 改完实测：tutor 22 → 8，另外四个项目各 11~15 → 5。
+#
+# 为什么坚持 REST 而不是 `gh issue list`：后者走 search / GraphQL，有索引延迟。这份
+# 数据同时喂给并发闸门和**回收（kill session）**，读到过期结果会误杀正在干活的 worker。
+# list_active_workers 当初就是为此选的 REST，现在整轮共用同一个来源，顺带把「取工看到
+# 的世界」和「回收看到的世界」统一了——以前两者来自不同 endpoint，本身就可能打架。
+#
+# ⚠️ 缓存必须落文件，不能用 shell 变量：list_active_workers 是被
+# `x=$(list_active_workers)` 调的，命令替换开子 shell，变量传不回来。
+TICK_DIR="${TICK_DIR:-$STATE_DIR/.tick}"
+
+# kind: issues（含 PR 条目，调用方自己 select(.pull_request == null)）| pulls
+# fresh 非空 = 绕过缓存重新拉一次，并刷新缓存。
+#
+# ⚠️ 什么时候必须 fresh：**动手之前**。回收 worker 会 kill session，它在下手前那次
+# 重读的全部意义就是「拿此刻的真值，别拿这一轮开头的」——本轮开头到回收之间隔着整个
+# 取工流程，worker 完全可能在这中间翻了 label。让那次重读吃缓存 = 把这道保险拆了。
+# 取工 / 并发计数这类只读判断才用缓存。
+# stdout 给出 `--slurp` 的原始分页结果（[[...],[...]]）。失败返回非 0 且不落缓存。
+open_snapshot() {
+    local kind="$1" fresh="${2:-}"
+    local f="$TICK_DIR/$kind.json" tmp
+    if [ -z "$fresh" ] && [ -s "$f" ]; then cat "$f"; return 0; fi
+    mkdir -p "$TICK_DIR"
+    tmp=$(mktemp "$TICK_DIR/.$kind.XXXXXX")
+    if ! run_gh_capture "读取 open $kind" gh api --method GET --paginate --slurp \
+        "repos/$REPO/$kind" -f state=open -f per_page=100 > "$tmp"; then
+        rm -f "$tmp"; return 1
+    fi
+    # 形状先验一遍再落盘：半截 / 非数组的结果绝不能进缓存——本轮后面每一个用途都拿它
+    # 做判断，包括回收。宁可本轮整轮不动，也不要拿残缺快照去 kill session。
+    if ! jq -e 'type == "array" and all(.[]; type == "array")' "$tmp" >/dev/null 2>&1; then
+        log "  ⚠️ open $kind 快照结构异常，本轮不缓存也不使用"
+        rm -f "$tmp"; return 1
+    fi
+    mv "$tmp" "$f"
+    cat "$f"
+}
+
+# 从本轮快照按 label 取行，输出与原来 `gh issue/pr list --json ... --jq ...` 逐字段
+# 一致的 5 列 TSV：编号 / 分支（issue 恒为 "-"）/ updatedAt / label 逗号串 / 标题。
+# label 传空 = 不过滤（greedy 兜底那趟用）。
+snapshot_rows() {
+    local kind="$1" label="${2:-}" pages
+    if [ "$kind" = "issue" ]; then
+        pages=$(open_snapshot issues) || return 1
+        printf '%s' "$pages" | jq -r --arg label "$label" '
+            [ .[][] | select(.pull_request == null) ]
+            | map(select($label == "" or any(.labels[]?; .name == $label)))
+            | .[] | [ (.number|tostring), "-", .updated_at,
+                      ([.labels[]?.name] | join(",")),
+                      (.title | gsub("[\t\n]"; " ")) ] | @tsv'
+    else
+        pages=$(open_snapshot pulls) || return 1
+        printf '%s' "$pages" | jq -r --arg label "$label" '
+            [ .[][] ]
+            | map(select($label == "" or any(.labels[]?; .name == $label)))
+            | .[] | [ (.number|tostring), .head.ref, .updated_at,
+                      ([.labels[]?.name] | join(",")),
+                      (.title | gsub("[\t\n]"; " ")) ] | @tsv'
+    fi
+}
+
 # ⚠️ 多机分工下这里**只列本机的** worker。它同时是并发计数的来源：
 # 不过滤的话，A 机会把 B 机那几个 doing/agent 也算进自己的 max，slot 永远是满的，
 # 于是 A 机一条活都派不出去，日志上还显示得一切正常。
 list_active_workers() {
     # REST list endpoints avoid search-index lag; pagination must complete before
     # any result is used for capacity decisions or destructive cleanup.
-    local scope="${1:-ours}" issue_pages pr_pages issue_nums pr_data
-    issue_pages=$(run_gh_capture "读取 doing issue" gh api --method GET --paginate --slurp \
-        "repos/$REPO/issues" -f state=open -f labels="$LABEL_AGENT_DOING" -f per_page=100) || return 1
-    pr_pages=$(run_gh_capture "读取 open PR" gh api --method GET --paginate --slurp \
-        "repos/$REPO/pulls" -f state=open -f per_page=100) || return 1
-    issue_nums=$(printf '%s' "$issue_pages" | jq -er '
+    # fresh 非空 → 绕过本轮快照重新读一次。回收路径必须传它（见 open_snapshot 注释）。
+    local scope="${1:-ours}" fresh="${2:-}" issue_pages pr_pages issue_nums pr_data
+    # 数据来自本轮快照（open_snapshot），一轮只拉一次；doing/agent 的筛选从服务端挪到
+    # 本地——语义不变，省掉的是同一轮里第二次、第三次问 GitHub 同样的问题。
+    issue_pages=$(open_snapshot issues "$fresh") || return 1
+    pr_pages=$(open_snapshot pulls "$fresh") || return 1
+    issue_nums=$(printf '%s' "$issue_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
         if type != "array" or any(.[]; type != "array") then error("invalid issue pages")
-        else [ .[][] | select(.pull_request == null) | .number ] | map(tostring) | join("\n") end') || return 1
+        else [ .[][] | select(.pull_request == null)
+               | select(any(.labels[]?; .name == $label)) | .number ] | map(tostring) | join("\n") end') || return 1
     # Include the body fallback in this successful snapshot instead of silently
     # falling back to the PR number when a separate gh pr view request fails.
     pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
@@ -810,7 +880,7 @@ reap_finished_workers() {
         # Re-read before cleanup, including workers with missing/foreign ownership.
         # A failed or partial read must never authorize killing any session.
         if [ "$confirmed_loaded" -eq 0 ]; then
-            if ! confirmed_list=$(list_active_workers all); then
+            if ! confirmed_list=$(list_active_workers all fresh); then
                 log "⚠️ 回收暂缓：无法确认 GitHub worker 状态，保留所有 session"
                 return 0
             fi

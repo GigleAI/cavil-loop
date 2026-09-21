@@ -47,9 +47,11 @@ Easy to worry about: you merge a PR, forget to flip `pending/agent` back to `pen
 
 | Daemon query | gh call | State filter | Implication |
 |--------------|---------|--------------|-------------|
-| New issue dispatch | `gh issue list --state open` | Explicitly open | Closed issues never enter the scan |
-| PR comment dispatch | `gh pr list --label ...` | Default open | Merged / closed PRs never enter the scan |
+| New issue dispatch | `gh api repos/<repo>/issues -f state=open` | Explicitly open | Closed issues never enter the scan |
+| PR comment dispatch | `gh api repos/<repo>/pulls -f state=open` | Explicitly open | Merged / closed PRs never enter the scan |
 | Auto-cleanup | `gh pr list --state merged` | Explicitly merged | Only for cleanup, **never reads user content** |
+
+Dispatch and self-heal share **one** per-poll snapshot of those two endpoints (`open_snapshot` in `_lib.sh`); label selection happens locally afterwards. The state filter lives in the fetch, so it applies to every consumer at once — there is no code path that reaches a closed issue or a merged PR by asking for a different label.
 
 The `cleanup-issue.sh` execution path has **no `gh ... view --comments` / LLM calls** — only: busy check → `CLEANUP_HOOK` (your script, e.g. tearing down tailscale) → kill tmux → remove worktree → optional local-branch removal. Prompt-injection comments parked there never reach any inference context.
 

@@ -29,6 +29,10 @@ if ! flock -n 9; then
     exit 0
 fi
 
+# 本轮 open 快照目录：开头清一次，保证绝不会拿上一轮的数据做判断。
+# 放在 flock 之后——锁保证同一时刻只有一轮在跑，这里删目录不会踩到别人。
+rm -rf "$TICK_DIR"
+
 log "===== poll start ====="
 
 pending_label_for_model() {
@@ -84,10 +88,10 @@ remember_trigger_label() {
 # 等），daemon 后续看 label 仍当 active worker、撑满 max_concurrent。
 # 这里在算 active 之前先扫一遍 doing/agent label 项，把 session 不存在的翻回
 # 原触发模型的 pending label 并记录警告，让下一轮自动 fallback resume。
-zombie_pr_data=$(gh pr list --repo "$REPO" --label "$LABEL_AGENT_DOING" \
-    --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
-zombie_issue_nums=$(gh issue list --repo "$REPO" --state open --label "$LABEL_AGENT_DOING" \
-    --json number --jq '.[] | .number' 2>/dev/null || true)
+# 两趟都从本轮快照里筛，不再各发一次 gh list（快照还没拉过的话这里触发第一次拉取）。
+# 失败仍然降级成空串：读不到就本轮不 self-heal，和原来一样，绝不瞎翻 label。
+zombie_pr_data=$(snapshot_rows pr "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1,2 || true)
+zombie_issue_nums=$(snapshot_rows issue "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1 || true)
 
 self_heal_one() {
     local kind="$1"   # "PR" / "issue"
@@ -270,15 +274,7 @@ collect_queue_rows() {
     local kind="$1" trigger_label="$2" model="$3" worker_agent="$4" prompt_kind="$5"
     [ -n "$trigger_label" ] || return 0
     local raw num branch updated labels_csv title prio stage key
-    if [ "$kind" = "issue" ]; then
-        raw=$(gh issue list --repo "$REPO" --state open --label "$trigger_label" \
-            --json number,title,labels,updatedAt \
-            --jq '.[] | [(.number|tostring), "-", .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    else
-        raw=$(gh pr list --repo "$REPO" --label "$trigger_label" \
-            --json number,title,labels,updatedAt,headRefName \
-            --jq '.[] | [(.number|tostring), .headRefName, .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    fi
+    raw=$(snapshot_rows "$kind" "$trigger_label" 2>/dev/null || true)
     [ -n "$raw" ] || return 0
     while IFS=$'\t' read -r num branch updated labels_csv title; do
         [ -n "$num" ] || continue
@@ -416,15 +412,9 @@ dispatch_one_pr() {
 collect_queue_rows_greedy() {
     local kind="$1"
     local raw num branch updated labels_csv title prio stage key blocked
-    if [ "$kind" = "issue" ]; then
-        raw=$(gh issue list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
-            --json number,title,labels,updatedAt \
-            --jq '.[] | [(.number|tostring), "-", .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    else
-        raw=$(gh pr list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
-            --json number,title,labels,updatedAt,headRefName \
-            --jq '.[] | [(.number|tostring), .headRefName, .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    fi
+    # 快照已经是全量 open（分页拉完），这里只保留 GREEDY_SCAN_LIMIT 的语义：
+    # 仍然只看前 N 条，配置含义不变。
+    raw=$(snapshot_rows "$kind" "" 2>/dev/null | head -n "${GREEDY_SCAN_LIMIT:-100}" || true)
     [ -n "$raw" ] || return 0
     while IFS=$'\t' read -r num branch updated labels_csv title; do
         [ -n "$num" ] || continue
