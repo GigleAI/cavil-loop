@@ -190,6 +190,28 @@ chk "③ last_poll 超 64 位 → 立刻跑"     "$(gate 1000000)" "run"
 write_pace 1000300 1000000 1000000 0 fp
 chk "④ 正常值没到点 → 仍然跳过"          "$(gate 1000000)" "skip"
 
+bad_state() {   # 直接写字面量：字符串字段没法用 jq --argjson 造
+    printf '%s\n' "$1" > "$PACE"; gate 1000000
+}
+
+echo "【4f】字段各自合法、但彼此关系不可能同时成立 —— 同样算损坏"
+# 复审第 5 次在同一类里找到的变体。这轮不再补第 6 个特例，改成一条封闭规则：
+# **这份状态必须是正常写入路径可能写出来的**（pace_state_sane）。写入方恒满足
+# last_active ≤ last_poll ≤ next_due ≤ last_poll + 硬上限，任何一条不成立就是损坏。
+chk "① last_active 晚于 last_poll（写入路径写不出来）→ 立刻跑" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":1001801,"fail_streak":0,"fingerprint":"x"}')" "run"
+chk "② next_due 早于 last_poll → 立刻跑" \
+    "$(bad_state '{"next_due":999000,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}')" "run"
+chk "③ next_due - last_poll 超硬上限 → 立刻跑" \
+    "$(bad_state '{"next_due":1003601,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}')" "run"
+# 三条对照：合法且没到点的必须照常跳过，否则「把 gate 改成无脑 return 0」也能全绿。
+chk "④ 恰好等于硬上限（合法边界）且没到点 → 仍然跳过" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}')" "skip"
+chk "⑤ last_active 等于 last_poll（合法边界）→ 仍然跳过" \
+    "$(bad_state '{"next_due":1001000,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}')" "skip"
+chk "⑥ 不退避档 next_due == last_poll（合法）→ 到点就跑" \
+    "$(bad_state '{"next_due":1000000,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}')" "run"
+
 echo "【4e】时间基准本身也得是纯数字 —— 它是所有比较的分母"
 # 把「进判定的输入」枚举了一遍之后补的最后一个口子：now 要是空串，bash 算术会静默
 # 当 0 用，于是每条比较都得出「该跑」——方向对，但那是巧合。显式验，坏了返回 0。
@@ -204,9 +226,6 @@ echo "【4d】状态里**任何一个**数值字段坏了都要立刻跑，不�
 # 「没到点 → 跳过」才去静默兜底 last_active，于是本轮仍然等到 next_due。上限虽然被心跳
 # 兜住（≤30 分钟），但「状态坏了下一个 tick 就跑」这条写在文档和注释里的承诺被打了折。
 # 【4】【4b】只覆盖 next_due / last_poll，分辨不了这个错误实现——所以要单独一组。
-bad_state() {   # 直接写字面量：字符串字段没法用 jq --argjson 造
-    printf '%s\n' "$1" > "$PACE"; gate 1000000
-}
 chk "① last_active 非数字 → 立刻跑" \
     "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":"broken","fail_streak":0,"fingerprint":"x"}')" "run"
 chk "② last_active 位数超标 → 立刻跑" \
@@ -228,15 +247,19 @@ POLL_BACKOFF_LADDER="99999999999999999999:1800,86400:300"
 chk "安静 2.3 天仍取 5 分钟档（超长那档被跳过）" "$(pace_interval_for_quiet 200000 2>/dev/null)" "300"
 POLL_BACKOFF_LADDER="$_save_ladder"
 
-echo "【5】心跳：距上次真跑满 30 分钟就无条件跑（哪怕 next_due 还早）"
-# next_due 故意放在「还没到点、但也没远到触发夹紧」的那条缝里 —— 只有心跳能救它。
+echo "【5】「最长多久必须跑一次」这条保证 —— 现在由写入侧不变式兑现"
+# 历史：这条原先构造一个 next_due = last_poll + 3000 的状态来单独打心跳那个分支。
+# 【4f】把不变式收紧成 next_due - last_poll ≤ 心跳值之后，那个状态**本身就被判成损坏**、
+# 更早也更严地命中了，于是心跳分支对**合法**状态已经走不到。
 #
-# ⚠️ 这个状态在正常运行下写不出来（默认阶梯最慢一档就等于心跳值），而这正是心跳存在的
-# 意义：它兜的是**本地状态已经不对、却又没不对到被夹紧发现**的那一类。测试必须构造这
-# 条缝，否则断言会被普通的「到点了」判断顺手放行 —— 那样摘掉心跳测试照样全绿（实测）。
+# 这不构成把检查放松回去的理由——那是倒着做事。改成断言**这条保证本身**：合法状态下
+# 两次真轮询的间隔不可能超过心跳值，因为写得进去的 next_due 就不可能比它远。
+chk "阶梯最慢一档不超过心跳值"       "$(pace_interval_for_quiet $((30 * DAY)))" "$POLL_FORCE_SYNC_SECS"
 write_pace $((1000000 + 3000)) 1000000 1000000 0 fp
-chk "等了 1500 秒（不到心跳，也没到 next_due）→ 跳过" "$(gate 1001500)" "skip"
-chk "等满 1800 秒（心跳到点，next_due 还早 1200 秒）→ 跑" "$(gate 1001800)" "run"
+chk "next_due 比心跳还远 = 写不出来的状态 → 立刻跑" "$(gate 1001500)" "run"
+write_pace $((1000000 + POLL_FORCE_SYNC_SECS)) 1000000 1000000 0 fp
+chk "恰好等于心跳值（合法）且没到点 → 跳过"        "$(gate 1001500)" "skip"
+chk "等满心跳值 → 跑（到点与心跳在此重合）"        "$(gate $((1000000 + POLL_FORCE_SYNC_SECS)))" "run"
 
 echo "【5b】心跳不覆盖「读不到 GitHub」那套退避（否则故障退避形同虚设）"
 _save_fail_max="$POLL_FAIL_BACKOFF_MAX_SECS"
@@ -381,6 +404,7 @@ echo "通过 $pass / 失败 $fail"
 #   · pace_num 去掉位数上限（只留「是不是全数字」）                    → 【4b】①②③ 变红
 #   · 只在 skip 判定前验 next_due/last_poll（last_active、fail_streak 留到后面兜底）
 #                                                                      → 【4d】①～⑤ 变红
+#   · 删掉 pace_state_sane 调用（只验字段、不验字段间关系）              → 【4f】①②③ 变红
 #   · pace_record_fail 里把 last_active 改成无条件 =now（故障当空闲）  → 【9】变红
 #   · 删掉 pace_should_poll 里的心跳那段 if                            → 【5】第二条变红
 #   · 心跳去掉 `fail_streak -eq 0` 这个前提（心跳压过故障退避）        → 【5b】第一条变红
