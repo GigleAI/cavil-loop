@@ -73,13 +73,34 @@ source "$REPO_DIR/scripts/_lib.sh"
 exec 2>&8 8>&-
 set +e
 
-cleanup() { rm -rf "$SANDBOX"; }
+# ⚠️ 自己建的 tmux session **起手和收尾都要清**。
+# 【10c】会建一个 pacetest-issue42；它只要活着，agent-poll.sh 的「本机还有 worker
+# session」这条信号就恒为真，于是**整个【7】的分档全部退化成每 tick 都跑（60）**。
+# 上一次跑被 timeout / Ctrl-C 打断时那个 session 会留下来，下一次跑就莫名其妙全红，
+# 而报错信息里完全看不出跟 tmux 有关。reap-finished-workers.test.sh 早就是这么写的。
+kill_stray_sessions() {
+    local s
+    for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^pacetest-' || true); do
+        tmux kill-session -t "=$s" 2>/dev/null || true
+    done
+}
+cleanup() { kill_stray_sessions; rm -rf "$SANDBOX"; }
 trap cleanup EXIT
+kill_stray_sessions
 
 pass=0; fail=0
 chk() {
     if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1))
     else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
+}
+# 端到端断言专用：挂了就把现场一起打出来。这类断言失败时光看「期望 2 实得 60」
+# 是查不出原因的 —— 得知道当时的节奏状态和有没有残留 session。
+chk_e2e() {
+    if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); return; fi
+    echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1))
+    echo "     ├ poll-pace.json: $(cat "$PACE" 2>/dev/null | tr -d '\n ' || echo '(不存在)')"
+    echo "     ├ 残留 pacetest session: $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^pacetest-' | tr '\n' ' ' || echo '(无)')"
+    echo "     └ poll.log 末 3 行: $(tail -3 "$SANDBOX/state/poll.log" 2>/dev/null | tr '\n' '|')"
 }
 
 DAY=86400
@@ -196,25 +217,29 @@ reset_e2e() {
 T0=1700000000
 
 echo "【7】端到端：仓库一直不变时，安静到哪一档就按哪一档跑"
+# 先把「有没有残留 session」断言成一条**显式**的检查项：有残留时下面四条会全部变成 60，
+# 而那个数字本身完全不提示原因。宁可在这里红一条说人话的，也别让人去猜。
+chk "端到端开跑前没有残留 pacetest session" \
+    "$(tmux ls -F '#{session_name}' 2>/dev/null | grep -cE '^pacetest-issue[0-9]+$' || true)" "0"
 reset_e2e
 # 先把时间推过 1 天，让安静计时真的累积起来（这段本身还是每 tick 跑，因为不到第一档）
-chk "头 1 小时（刚开始，不退避）→ 每 tick 都跑" "$(run_ticks $T0 $((T0 + 3540)))" "60"
+chk_e2e "头 1 小时（刚开始，不退避）→ 每 tick 都跑" "$(run_ticks $T0 $((T0 + 3540)))" "60"
 # 跳到「安静满 1 天」之后的一小时：5 分钟一轮 → 3600/300 = 12 轮
 S1=$((T0 + DAY + 3600))
-chk "安静满 1 天后的一小时 → 12 轮（5 分钟档）" "$(run_ticks $S1 $((S1 + 3540)))" "12"
+chk_e2e "安静满 1 天后的一小时 → 12 轮（5 分钟档）" "$(run_ticks $S1 $((S1 + 3540)))" "12"
 S3=$((T0 + 3 * DAY + 3600))
-chk "安静满 3 天后的一小时 → 6 轮（10 分钟档）"  "$(run_ticks $S3 $((S3 + 3540)))" "6"
+chk_e2e "安静满 3 天后的一小时 → 6 轮（10 分钟档）"  "$(run_ticks $S3 $((S3 + 3540)))" "6"
 S7=$((T0 + 7 * DAY + 3600))
-chk "安静满 7 天后的一小时 → 2 轮（30 分钟档）"  "$(run_ticks $S7 $((S7 + 3540)))" "2"
+chk_e2e "安静满 7 天后的一小时 → 2 轮（30 分钟档）"  "$(run_ticks $S7 $((S7 + 3540)))" "2"
 
 echo "【8】端到端：一有动静立刻回到不退避，不用等一个完整周期"
 # 承接上面：此时已退到 30 分钟档。改一条 updated_at = 仓库有变化。
 S8=$((S7 + 7200))
 printf '%s\n' '[[{"number":7,"updated_at":"2026-02-02T00:00:00Z","title":"poked","labels":[{"name":"pending/human"}]}]]' > "$SNAP_ISSUES"
-chk "变化后的第一个 tick 就跑"   "$(run_ticks $S8 $S8)" "1"
+chk_e2e "变化后的第一个 tick 就跑"   "$(run_ticks $S8 $S8)" "1"
 chk "安静计时已归零"             "$(jq -r --argjson n "$S8" '.last_active == $n' "$PACE")" "true"
 chk "下一轮回到不退避（next_due 就是现在）"  "$(jq -r --argjson n "$S8" '.next_due - $n' "$PACE")" "0"
-chk "紧接着的一小时 → 每 tick 都跑" "$(run_ticks $((S8 + 60)) $((S8 + 3600)))" "60"
+chk_e2e "紧接着的一小时 → 每 tick 都跑" "$(run_ticks $((S8 + 60)) $((S8 + 3600)))" "60"
 
 echo "【9】读不到 GitHub 不算「安静」—— 安静计时必须冻结，而不是继续累加"
 reset_e2e
@@ -234,7 +259,7 @@ reset_e2e
 printf '%s\n' '[[{"number":9,"updated_at":"2026-03-03T00:00:00Z","title":"busy","labels":[{"name":"doing/agent"}]}]]' > "$SNAP_ISSUES"
 run_ticks $T0 $T0 >/dev/null
 B1=$((T0 + 10 * DAY))    # 快照十天不变，但一直挂着 doing/agent
-chk "十天没变化但有 doing/agent → 仍每 tick 跑" "$(run_ticks $B1 $((B1 + 3540)))" "60"
+chk_e2e "十天没变化但有 doing/agent → 仍每 tick 跑" "$(run_ticks $B1 $((B1 + 3540)))" "60"
 # 注：这一条同时被 self-heal 的 pace_mark_acted 和 active_keys 两条路径保证（本例里
 # session 不存在，self-heal 会先命中）。所以它验的是**行为**，不能用来隔离某一行代码——
 # 10b / 10c 才是那两条信号各自的靶子。
@@ -248,7 +273,7 @@ printf '%s\n' '[[{"number":8,"updated_at":"2026-03-03T00:00:00Z","title":"queued
 export MAX_CONCURRENT_WORKERS=0
 run_ticks $T0 $T0 >/dev/null
 B2=$((T0 + 10 * DAY))
-chk "十天没变化但队列里一直有活 → 仍每 tick 跑" "$(run_ticks $B2 $((B2 + 3540)))" "60"
+chk_e2e "十天没变化但队列里一直有活 → 仍每 tick 跑" "$(run_ticks $B2 $((B2 + 3540)))" "60"
 unset MAX_CONCURRENT_WORKERS
 
 echo "【10c】本机还有 worker session 活着（标签已经翻走了）也不算安静"
@@ -261,8 +286,8 @@ if command -v tmux >/dev/null 2>&1; then
     tmux new-session -d -s pacetest-issue42 'sleep 3000' 2>/dev/null
     run_ticks $T0 $T0 >/dev/null
     B3=$((T0 + 10 * DAY))
-    chk "十天没变化但本机 session 还活着 → 仍每 tick 跑" "$(run_ticks $B3 $((B3 + 3540)))" "60"
-    tmux kill-session -t '=pacetest-issue42' 2>/dev/null
+    chk_e2e "十天没变化但本机 session 还活着 → 仍每 tick 跑" "$(run_ticks $B3 $((B3 + 3540)))" "60"
+    kill_stray_sessions
 else
     echo "  ⏭  跳过（本机没有 tmux）"
 fi
@@ -277,7 +302,7 @@ run_ticks $T0 $((T0 + 3540)) >/dev/null
 OFF_CALLS=$(wc -l < "$GH_COUNT" | tr -d ' ')
 OFF_POLLS=$(grep -c 'poll start' "$SANDBOX/state/poll.log")
 unset POLL_BACKOFF_LADDER
-chk "关掉后 60 个 tick 全都真跑"       "$OFF_POLLS" "60"
+chk_e2e "关掉后 60 个 tick 全都真跑"       "$OFF_POLLS" "60"
 chk "关掉后不留下节奏状态文件"          "$([ -e "$PACE" ] && echo yes || echo no)" "no"
 reset_e2e
 # 同一段时间、同样的输入，但阶梯开着且已经安静 8 天 → 调用必须显著更少
