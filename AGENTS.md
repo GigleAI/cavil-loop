@@ -197,6 +197,8 @@ Changes in these areas must run the matching tests:
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, …
+- Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.
+  Any **new daemon-side write** must go through `gh_write`, not bare `gh` — a bare `gh` still succeeds, it just signs with the polling identity
 
 Changes with no matching test (daemon glue, prompt templates) still meet the minimum bar:
 

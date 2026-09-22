@@ -41,6 +41,55 @@ You skim it, see a reasonable request, slap on `pending/agent`. Daemon dispatche
 | **PR-only flow** | Worker only pushes to feature branches + opens PRs, never directly modifies main | Your review + merge is a required step |
 | **Local daemon** | Worker runs on your own machine / NAS in a trusted environment, not in a cloud-Action multi-tenant environment | Credentials stay on-device |
 
+## Splitting the polling identity from the writing identity
+
+One token doing everything is the default, and it couples two very different
+risk profiles: polling is high-frequency, high-volume traffic that is the most
+likely thing to trip platform rate-limiting or abuse detection — and it sits on
+the same account that carries your commit authorship and every write permission.
+When that account goes down, you lose the writes too.
+
+Set `WRITE_GH_TOKEN` (in `coding-agent.config`, or in the scheduler's
+EnvironmentFile) to split them:
+
+| | `GH_TOKEN` | `WRITE_GH_TOKEN` |
+|---|---|---|
+| Used for | polling, every read | every write |
+| Concretely | the open-issue/PR snapshot, comment-id polling, `git fetch` | label flips, the daemon's own alert issue, the post-merge retrospective push, and the token handed to the worker for its commits and comments |
+| Fine-grained PAT | Metadata R, Contents R, Issues R, Pull requests R | Metadata R, Contents RW, Issues RW, Pull requests RW |
+| If it leaks | read-only on that repo | full write on that repo |
+
+Empty (the default) falls back to `GH_TOKEN`, so single-account setups are
+unaffected.
+
+The split is drawn along **read vs write**, not daemon vs worker, and that is
+deliberate: the daemon does not only flip labels. It also opens and closes its
+own alert issue, and the post-merge retrospective runs `git push` to the base
+branch. Splitting per process would force `Contents: Write` onto the polling
+token — exactly the permission this is meant to take away from it.
+
+**What this does and does not buy you**
+
+- The worker only ever receives the write token, under the usual name
+  `GH_TOKEN`. The polling token is never placed in its environment, so an
+  injected worker that runs `gh` has only the write identity in hand.
+- It is **not** a local sandbox. The daemon and the worker run as the same UNIX
+  user, so either can read the other's files. What stops the worker is the hard
+  constraint in the prompt templates ("don't read off-topic local files"), not
+  file permissions. If you put both tokens in `coding-agent.config`, note that
+  `AGENTS.md` routinely points the worker at that file for local dry-runs —
+  keeping `GH_TOKEN` in the EnvironmentFile avoids handing it over. Under the
+  cron fallback there is no EnvironmentFile, so both have to live in the config.
+- The daemon process holds both tokens: it has to read the write token to hand
+  it to the worker. "A leaked polling token is harmless" is true of the token,
+  not of the machine.
+
+**Any file holding a token must be 0600.** `setup.sh` enforces this on both
+`coding-agent.config` and the EnvironmentFile (including on existing installs),
+and the daemon logs a warning each round if a config that holds a token is
+group- or world-readable. This matters: the common `umask 0002` produces `0664`,
+which every local user can read.
+
 ## What **doesn't** trigger the daemon (even with stale labels + anonymous comments)
 
 Easy to worry about: you merge a PR, forget to flip `pending/agent` back to `pending/human`, an attacker drops a comment on that merged PR — will the worker fire? **No**, the daemon filters this out by default:

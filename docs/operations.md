@@ -61,6 +61,12 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 # Env to pass into the worker (tmux doesn't inherit by default)
 WORKER_PASS_ENV="GH_TOKEN"
 
+# Second GitHub identity: GH_TOKEN polls/reads, this one does every write
+# (label flips, the daemon's alert issue, the retrospective push, and the token
+# handed to the worker). Empty = reuse GH_TOKEN, i.e. today's single-account
+# behaviour. Keep this file 0600 when it holds a token.
+# WRITE_GH_TOKEN=""
+
 # Auto-cleanup after merge (worktree + tmux)
 AUTO_CLEANUP_ON_MERGE="true"
 
@@ -100,6 +106,7 @@ PROJECT_PRIORITY_FIELD="Priority"
 PROJECT_NUMBER=""                # empty = first board linked to this repo
 PROJECT_OWNER=""                 # only when the board's owner differs from the repo's
 PROJECT_GH_TOKEN=""              # token used only for the board read; empty = reuse GH_TOKEN
+# WRITE_GH_TOKEN=""              # token used for every WRITE; empty = reuse GH_TOKEN
 ```
 
 Full field list: [`coding-agent.config.example`](../coding-agent.config.example).

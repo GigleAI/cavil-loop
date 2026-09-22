@@ -124,6 +124,53 @@ echo "【6】项目透传的变量里没有敏感变量时，不因 GH_TOKEN 缺
 ( WORKER_PASS_ENV="SOME_OTHER_VAR"; unset GH_TOKEN; require_secret_env >/dev/null 2>&1 )
 chk "WORKER_PASS_ENV 不含敏感变量 → 放行" "$?" "0"
 
+echo "【7】双 token：worker 只拿到写 token，轮询那把进不去"
+# 判别力所在：secret_env_file 里那层「GH_TOKEN 的值取 gh_write_token」的指向如果
+# 没有（= 旧实现），交接文件里会是轮询 token，下面第一条当场红。
+WRITE_TOKEN="ghp_WRITEWRITEWRITEWRITEWRITEWRITE1111"
+# 故意**不** export：_lib.sh 也不 export 它，这里顺带验证不 export 照样能工作。
+WRITE_GH_TOKEN="$WRITE_TOKEN"
+rm -f "$sf"
+args7=$(tmux_env_args | tr '\0' '\n')
+chk "交接文件里是写 token"        "$(cat "$sf" 2>/dev/null)" "$WRITE_TOKEN"
+chk "交接文件里没有轮询 token"    "$(grep -c "$FAKE_TOKEN" "$sf" 2>/dev/null || true)" "0"
+chk "argv 不含写 token 的值"      "$(echo "$args7" | grep -c "$WRITE_TOKEN")" "0"
+chk "argv 不含轮询 token 的值"    "$(echo "$args7" | grep -c "$FAKE_TOKEN")" "0"
+chk "argv 仍然只给路径"           "$(echo "$args7" | grep -c '^GH_TOKEN_FILE=')" "1"
+chk "argv 里没有 WRITE_GH_TOKEN"  "$(echo "$args7" | grep -c '^WRITE_GH_TOKEN')" "0"
+
+# 端到端：把 worker 的**整份环境**倒出来搜，而不是只看 GH_TOKEN 一个变量——
+# 「worker 拿到了对的那把」和「轮询那把没跟着溜进去」是两件事，后者才是这个
+# issue 的硬约束，只断言前者的测试分不出「两把都传了」的实现。
+probe7="$SANDBOX/probe7.out"
+CMD7="$(secret_env_prefix)env > $probe7; sleep 30"
+tmux_env7=()
+while IFS= read -r -d '' e; do tmux_env7+=("$e"); done < <(tmux_env_args)
+tmux new-session -d -s secrettest-issue902 "${tmux_env7[@]}" -c "$SANDBOX" "$CMD7"
+waited=0
+while [ ! -s "$probe7" ] && [ "$waited" -lt 150 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+done
+chk "worker 的 GH_TOKEN = 写 token"        "$(grep '^GH_TOKEN=' "$probe7" 2>/dev/null | head -1)" "GH_TOKEN=$WRITE_TOKEN"
+chk "worker 整份环境搜不到轮询 token"      "$(grep -c "$FAKE_TOKEN" "$probe7" 2>/dev/null || true)" "0"
+chk "worker 环境里没有 WRITE_GH_TOKEN 这个名字" "$(grep -c '^WRITE_GH_TOKEN=' "$probe7" 2>/dev/null || true)" "0"
+
+echo "【8】只配了写 token（轮询那把缺席）仍然放行派工"
+# require_secret_env 的判据是「worker 会不会拿到一把 token」，不是「GH_TOKEN 这个
+# 名字有没有值」。
+( unset GH_TOKEN; require_secret_env >/dev/null 2>&1 )
+chk "GH_TOKEN 缺席但有 WRITE_GH_TOKEN → 返回 0" "$?" "0"
+
+echo "【9】撤掉写 token → 回落，行为与单 token 时一致"
+# 这条守的是「默认行为不能变」：公开 skill 不能强迫所有人去开两个账号。
+unset WRITE_GH_TOKEN
+rm -f "$sf"
+secret_env_file GH_TOKEN >/dev/null
+chk "交接文件回落成 GH_TOKEN 的值" "$(cat "$sf" 2>/dev/null)" "$FAKE_TOKEN"
+( unset GH_TOKEN; unset WRITE_GH_TOKEN; require_secret_env >/dev/null 2>&1 )
+chk "两把都缺席 → 拒绝派工"       "$?" "1"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" -eq 0 ]

@@ -46,6 +46,45 @@ body → 内嵌的 `[SYSTEM]` 段尝试劫持 Claude。Claude 通常能识破（
 | **PR-only 流程** | worker 只 push 到 feature branch + 开 PR，不直接动 main | 你 review + merge 是必经关 |
 | **本地 daemon** | worker 跑在你本机 / NAS 受信环境，不暴露到云端 Action 多租户环境 | 凭据不离机 |
 
+## 把轮询身份和写身份分开
+
+默认是一把 token 干所有事，而这把它捆在一起的是两种完全不同的风险：轮询是高频、
+大流量、最容易撞平台限流和风控的那部分行为，而它跟「承载 commit 署名和全部写权限」
+的身份是同一个账号。账号一出事，写能力跟着一起没。
+
+设 `WRITE_GH_TOKEN`（写在 `coding-agent.config` 里，或调度器的 EnvironmentFile 里）
+就把两者分开：
+
+| | `GH_TOKEN` | `WRITE_GH_TOKEN` |
+|---|---|---|
+| 干什么 | 轮询、所有读 | 所有写 |
+| 具体是 | open issue / PR 快照、评论 id 轮询、`git fetch` | 翻 label、daemon 自己的告警 issue、合并后复盘的 push，以及交给 worker 去 commit / 发评论的那一把 |
+| 细粒度 PAT | Metadata 读、Contents 读、Issues 读、Pull requests 读 | Metadata 读、Contents 读写、Issues 读写、Pull requests 读写 |
+| 万一泄漏 | 对该仓库只读 | 对该仓库有完整写权限 |
+
+留空（默认）= 回落 `GH_TOKEN`，单账号部署完全不受影响。
+
+分割线画在**读 / 写**上，不是 daemon / worker，这是有意的：daemon 并不只翻 label。
+它还会开 / 关自己那个告警 issue，合并后的复盘更会 `git push` 到 base 分支。按进程切
+的话，轮询那把就必须拿 `Contents: Write` —— 那恰好是这套机制想从它身上拿掉的权限。
+
+**它买到了什么、没买到什么**
+
+- worker 永远只拿到写 token，且仍然叫 `GH_TOKEN` 这个名字。轮询那把不会出现在它的
+  环境里，所以一个被注入的 worker 顺手跑 `gh`，手上只有写身份。
+- 它**不是**本机沙箱。daemon 和 worker 跑在同一个 UNIX 用户下，谁都读得到对方的
+  文件。挡住 worker 的是 prompt 模板里那条硬约束（不读主题外的本机敏感文件），不是
+  文件权限。如果两把 token 都写进 `coding-agent.config`，注意 `AGENTS.md` 里的本地
+  干跑流程会**正常地**指使 worker 去读这个文件 —— 把 `GH_TOKEN` 留在 EnvironmentFile
+  里就不用把它递过去。cron 兜底那条路没有 EnvironmentFile，只能两把都放 config。
+- daemon 进程同时持有两把：它必须读到写 token 才能交接给 worker。所以「轮询 token
+  泄漏也无害」这句话对那把 token 成立，对那台机器不成立。
+
+**任何装着 token 的文件都必须是 0600。** `setup.sh` 会对 `coding-agent.config` 和
+EnvironmentFile 两者强制收紧（老安装再跑一次也会补上），daemon 每轮还会检查：config
+里装着 token 却是同组 / 其他人可读时写一条告警。这条有实际意义 —— 常见的 `umask 0002`
+产出的是 `0664`，同机任何用户都读得到。
+
 ## 什么**不会**触发 daemon（哪怕 label 没翻、有匿名评论）
 
 容易担心：PR merge 完忘记把 `pending/agent` 翻成 `pending/human`，attacker 跑去

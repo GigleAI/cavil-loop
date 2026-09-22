@@ -549,6 +549,90 @@ log_debug() {
     return 0
 }
 
+# ── 两把 token：轮询 / 读用 GH_TOKEN，所有写用 WRITE_GH_TOKEN ──
+# 留空 = 回落 GH_TOKEN。单账号部署不设它，行为与引入本机制之前完全一致。
+# 形状对齐既有的 PROJECT_GH_TOKEN（`<用途>_GH_TOKEN`，空则回落），不引入第三种风格。
+#
+# 为什么要分：轮询是高频、大流量、最容易撞平台风控的那部分行为，而 commit 署名和
+# 全部写权限压在同一把 token 上。2026-09-18 bot 账号被封那次，代价是轮询量把账号
+# 烧掉、连带失去所有写能力和 commit 身份，三个项目全停。分开之后 poller 被封换一把
+# 继续轮即可，commit 历史和写路径不受影响。
+#
+# 分割线画在「读 / 写」上，不是「daemon / worker」：daemon 侧除了翻 label，还会开 / 关
+# 告警 issue（checkout_stale_alert_*），以及在复盘里 `git push` 到 base 分支
+# （scripts/post-merge-retrospective.py）。按进程切的话 poller 就得拿 Contents: Write ——
+# 那正好是要从它身上拿掉的东西。
+WRITE_GH_TOKEN="${WRITE_GH_TOKEN:-}"
+
+# 有效的写 token（值）。给「需要值本身」的地方用：交接给 worker 的那把、复盘子进程。
+gh_write_token() {
+    printf '%s' "${WRITE_GH_TOKEN:-${GH_TOKEN:-}}"
+}
+
+# 写 GitHub 的 gh 调用一律走它。**daemon 侧任何新增的写调用都用 gh_write，别用 gh。**
+# 用命令前的变量赋值而不是 `-e` / argv：赋值进的是子进程的 environ
+# （/proc/<pid>/environ 是 0400 仅属主），argv 则是全局可读的。
+# 没配 WRITE_GH_TOKEN 时**原样调 gh**，不写成 GH_TOKEN="" —— 空值和未设对 gh 不是
+# 同一回事，那会让单 token 部署的行为悄悄变掉。
+gh_write() {
+    if [ -n "${WRITE_GH_TOKEN:-}" ]; then
+        GH_TOKEN="$WRITE_GH_TOKEN" gh "$@"
+    else
+        gh "$@"
+    fi
+}
+
+# config 里写 `GH_TOKEN=xxx`（不加 export）时，gh / git 这些**子进程看不见它**。
+# 这个坑在已有安装上测不出来：systemd / launchd 早把 GH_TOKEN 注进环境了，config 里
+# 再来一次裸赋值会继承已有的 export 属性、照常工作。它只在全新安装、或 cron 部署
+# （docs/operations.md 那条兜底路径根本没有 EnvironmentFile）上发作 —— gh 静默回落到
+# ~/.config/gh/ 的默认账号，用错账号去写或者 403，日志里一个字都看不出来。
+# 这里显式 export 一次，让裸赋值和 export 两种写法都对，用户不需要知道这个区别。
+# WRITE_GH_TOKEN **不** export：它只在本进程内被读（gh_write / gh_write_token），
+# 没有任何子进程需要它常驻在环境里。
+if [ -n "${GH_TOKEN:-}" ]; then
+    export GH_TOKEN
+fi
+
+# config 文件里是不是真的装着 token。两个条件都要：文本里确实有这个赋值 + 取到的值
+# 非空。只看值分不清「config 和环境给了同一个值」，只看文本又会被 `WRITE_GH_TOKEN=""`
+# 这种空赋值骗到。
+config_holds_token() {
+    [ -n "${GH_TOKEN:-}${WRITE_GH_TOKEN:-}" ] || return 1
+    grep -qE '^[[:space:]]*(export[[:space:]]+)?(GH_TOKEN|WRITE_GH_TOKEN)=' "$CONFIG_FILE" 2>/dev/null
+}
+
+# 装着凭据却同组 / 其他人可读 = 同机任何用户一个 cat 就抄走。setup.sh 建文件时会
+# chmod 600，但用户手工建、手工改之后没人管，只能在运行时再兜一道。
+# 取不到权限位（stat 两种方言都不认）就闭嘴，不拿猜测去吵。
+file_mode_octal() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo ""
+}
+
+warn_if_config_world_readable() {
+    local mode go
+    config_holds_token || return 0
+    mode=$(file_mode_octal "$CONFIG_FILE")
+    case "$mode" in
+        ''|*[!0-7]*) return 0 ;;
+    esac
+    [ ${#mode} -ge 2 ] || return 0
+    go="${mode: -2}"
+    if [ $(( ${go:0:1} & 4 )) -ne 0 ] || [ $(( ${go:1:1} & 4 )) -ne 0 ]; then
+        log "⚠️ $CONFIG_FILE 里写着 GitHub token，但权限是 $mode —— 同机其他用户可读，请 chmod 600"
+    fi
+    return 0
+}
+warn_if_config_world_readable
+
+# 变量名打错 → 静默回落单 token，一切照常工作、不报错。这行是唯一能看出来的信号。
+# 放 log_debug 不放 log：正常情况下它每轮都会打，不该给 poll.log 加噪音。
+if [ -n "${WRITE_GH_TOKEN:-}" ]; then
+    log_debug "token: 读 / 轮询走 GH_TOKEN，写走 WRITE_GH_TOKEN（双账号）"
+else
+    log_debug "token: 读写共用 GH_TOKEN（单账号；设 WRITE_GH_TOKEN 可分离）"
+fi
+
 # agent_inject_prompt 的带日志包装。**注入相关的排障一律走这个，别直接调 driver。**
 #
 # 为什么要有它：default_inject_prompt 把「卡在 modal」「idle 重试 5 次」这类关键诊断
@@ -1044,7 +1128,17 @@ secret_env_file() {
     local var="$1" dir f val
     dir="$STATE_DIR/secrets"
     f="$dir/$var"
-    eval "val=\${$var:-}"
+    # 交给 worker 的 GH_TOKEN，值取写 token（双账号下 = pusher 那把，单账号下就是
+    # GH_TOKEN 自己）。**只换值，不换名**：文件名、argv 里的 `-e GH_TOKEN_FILE=`、
+    # worker shell 里的 export 前缀全部不变，gh CLI 和 git push 都不需要知道这件事。
+    # 指向放在这一个函数里，是因为它是 require_secret_env 和 tmux_env_args 共同的
+    # 唯一取值点 —— 散在各 dispatch 调用点上漏掉一个，后果是 worker **静默**拿到
+    # 轮询那把 token：不报错、不失败，直到某次 push 署错名才看得出来。
+    if [ "$var" = GH_TOKEN ]; then
+        val="$(gh_write_token)"
+    else
+        eval "val=\${$var:-}"
+    fi
     if [ -z "$val" ]; then
         return 1
     fi
@@ -1360,7 +1454,7 @@ gh_label_flip() {
         [ -n "$L" ] || continue
         encoded=$(printf '%s' "$L" | jq -sRr @uri)
         # 404 表示 label 已经不在了——视为成功（idempotent）
-        gh api -X DELETE "repos/$REPO/issues/$num/labels/$encoded" >/dev/null 2>&1 || true
+        gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$encoded" >/dev/null 2>&1 || true
     done
 
     # add
@@ -1369,7 +1463,7 @@ gh_label_flip() {
         for L in "${adds[@]}"; do
             args+=(-f "labels[]=$L")
         done
-        gh api -X POST "repos/$REPO/issues/$num/labels" "${args[@]}" >/dev/null 2>&1 || return 1
+        gh_write api -X POST "repos/$REPO/issues/$num/labels" "${args[@]}" >/dev/null 2>&1 || return 1
     fi
     return 0
 }
@@ -1433,7 +1527,7 @@ checkout_stale_alert_open() {
 这个 issue 由 daemon 自动开，主 checkout 跟上后会自动关闭，不用手动处理。"
 
     num=$(run_gh_capture "开主 checkout 落后告警 issue" \
-        gh api -X POST "repos/$REPO/issues" \
+        gh_write api -X POST "repos/$REPO/issues" \
         -f "title=$CHECKOUT_STALE_ALERT_TITLE（落后 ${behind} commit）" \
         -f "body=$body" \
         -f "labels[]=${LABEL_PENDING_HUMAN:-pending/human}" --jq '.number') || return 0
@@ -1450,7 +1544,7 @@ checkout_stale_alert_resolve() {
     num=$(cat "$marker")
     # 关不掉（已被人手动关掉 / 删了）也照样清标记：留着只会让下次真出问题时不告警。
     run_gh "关闭主 checkout 落后告警 #$num" \
-        gh api -X PATCH "repos/$REPO/issues/$num" -f state=closed || true
+        gh_write api -X PATCH "repos/$REPO/issues/$num" -f state=closed || true
     rm -f "$marker"
     log "checkout_stale_alert: 主 checkout 已跟上，关闭告警 issue #$num"
     return 0
