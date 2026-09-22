@@ -488,6 +488,48 @@ GREEDY_SKIP_LABELS=""
 # greedy 每轮扫多少条开着的条目（gh 默认只给 30）。积压多时调大。
 GREEDY_SCAN_LIMIT=100
 
+# ── Retry limits / 重试上限 ──
+
+# How many consecutive dispatch failures one item may rack up before the daemon
+# strips its trigger labels and hands it to pending/human.
+#
+# Why this exists: a dispatch that fails changes nothing — the label is not
+# flipped, the comment cursors do not advance — so the very next poll picks the
+# same item up again. With no cap that is an unbounded hot loop. Measured
+# 2026-09-18: one PR whose branch was checked out by an unrelated worktree was
+# re-dispatched 270 times over 2h24m, ~32s apart, and only stopped when GitHub
+# suspended the bot account.
+#
+# Why not 1: transient failures (network blips, GitHub 5xx) deserve a retry.
+# Only a *consecutive* run of failures means something is actually wrong.
+# The counter is reset on the first success and again when the item is escalated,
+# so re-labelling by hand gives it a fresh set of attempts.
+# Counters live in $STATE_DIR/dispatch-fail/. There is deliberately no "off"
+# value — turning it off just puts the hot loop back.
+#
+# 一条活连续派工失败多少次之后，daemon 摘掉它的触发 label 转 pending/human。
+#
+# 为什么需要它：派工失败时什么状态都没变——label 没翻、comment cursor 没动——于是
+# 下一轮 poll 又把同一条活捡起来。没有上限就是一个无限热循环。2026-09-18 实测：一条
+# PR 因为目标分支被一个无关的 worktree 签出，2 小时 24 分钟里每 32 秒重派一次、共
+# 270 次，直到 GitHub 把 bot 账号封停才停下。
+#
+# 为什么不设成 1：瞬时失败（网络抖动、GitHub 5xx）该允许重试，只有**连续**失败才
+# 说明真出了问题。计数在第一次成功时清零，升级转人工时也清零——所以人工重标一次
+# 就重新获得完整的重试次数。计数文件在 $STATE_DIR/dispatch-fail/。
+# 刻意不提供「关掉」的取值：关掉就等于把那个热循环放回去。
+DISPATCH_MAX_RETRIES=3
+
+# How many times self-heal may auto-redispatch a worker whose tmux session died
+# before it gives up and hands the item to pending/human instead. Same shape as
+# DISPATCH_MAX_RETRIES but a different failure: the dispatch succeeded, the
+# worker just died right after. Counters live in $STATE_DIR/selfheal/.
+#
+# self-heal 在放弃、转 pending/human 之前，最多自动重派多少次 tmux session 已经
+# 死掉的 worker。形状跟 DISPATCH_MAX_RETRIES 一样，但针对的是另一种失败：派工本身
+# 成功了，worker 起来之后立刻死。计数文件在 $STATE_DIR/selfheal/。
+SELFHEAL_MAX_RETRIES=3
+
 # ── Queue order when full / 并发满时的取工顺序 ──
 
 # When more items carry a pending label than there are free slots, the daemon

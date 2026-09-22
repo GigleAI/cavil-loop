@@ -57,6 +57,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 - Entry scripts `source` `scripts/_lib.sh` to get helpers: `log()`, `run_gh()`, `has_claude_session()`, `claude_invoke()`, `tmux_env_args()`, and all variables from `coding-agent.config` already loaded
 - `log()` auto-prefixes `[<TMUX_PREFIX>]`, writes to stderr and tees to `$STATE_DIR/poll.log`. **Don't** raw `echo` — the prefix is what lets multiple projects share the journal without confusion
 - Failure handling: don't write `gh ... 2>/dev/null || log "failed"` — that eats stderr. Use the `run_gh "description" gh ...` helper; stderr automatically lands in the log
+- Same rule for git: use `run_git "description" git ...`. Never `git ... 2>&1 | tail -N` — truncating hides the one line that matters, and `_lib.sh`'s top-level `exec 9>&- 2>/dev/null` is a **permanent** redirect, so every script that sources it (the poller included) has fd 2 pointing at `/dev/null`. A `fatal:` on stderr reaches neither `poll.log` nor the journal; `run_git` captures `2>&1` and pushes it through `log()`, which is the only channel out
 
 ### Prompt templates
 
@@ -194,7 +195,7 @@ Changes in these areas must run the matching tests:
 
 - Accounting / weekly report → `tests/weekly-report-*.test.sh`
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
-- Dispatch / reaping / preview → `tests/greedy-dispatch.test.sh`, `tests/reap-finished-workers.test.sh`,
+- Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, …
 
 Changes with no matching test (daemon glue, prompt templates) still meet the minimum bar:

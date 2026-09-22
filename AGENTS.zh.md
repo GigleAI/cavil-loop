@@ -55,6 +55,7 @@
 - 入口脚本 `source` 进 `scripts/_lib.sh`，拿到：`log()`、`run_gh()`、`has_claude_session()`、`claude_invoke()`、`tmux_env_args()` 等 helper + `coding-agent.config` 已加载好的所有变量
 - `log()` 自动加 `[<TMUX_PREFIX>]` 前缀，输出到 stderr + tee 到 `$STATE_DIR/poll.log`，**不要**直接 `echo`，方便多项目共用 journal 也能区分
 - 失败处理：调 `gh` 不要写 `gh ... 2>/dev/null || log "失败"`——会吞 stderr；用 `run_gh "描述" gh ...` helper，stderr 自动拼到 log
+- git 同理：用 `run_git "描述" git ...`。**不要**写 `git ... 2>&1 | tail -N` —— 截断会把唯一有用的那行盖掉；而且 `_lib.sh` 顶部的 `exec 9>&- 2>/dev/null` 是**永久**重定向，凡是 source 过它的脚本（含 poller 本身）fd 2 就是 `/dev/null`，git 写在 stderr 上的 `fatal:` 既不进 `poll.log` 也不进 journal。`run_git` 显式收 `2>&1` 再经 `log()` 写出去，那是唯一的通道
 
 ### Prompt 模板
 
@@ -165,7 +166,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - 记账 / 周报口径 → `tests/weekly-report-*.test.sh`
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
-- 派工 / 回收 / 预览 → `tests/greedy-dispatch.test.sh`、`tests/reap-finished-workers.test.sh`、
+- 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh` 等
 
 没有对应测试的改动（daemon glue、prompt 模板）仍按最低保证走：

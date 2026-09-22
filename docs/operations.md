@@ -71,6 +71,17 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 MAX_CONCURRENT_WORKERS=1
 POLL_INTERVAL_SECS=60
 
+# Give up on an item after this many consecutive dispatch failures: the daemon
+# strips its trigger labels and hands it to pending/human. A failed dispatch
+# changes nothing on its own, so without a cap the next poll simply tries again
+# forever (measured 2026-09-18: 270 re-dispatches in 2h24m until GitHub
+# suspended the bot account). Counters live in $STATE_DIR/dispatch-fail/ and
+# reset on success and on escalation.
+DISPATCH_MAX_RETRIES=3
+# Same idea for self-heal: how many times a worker whose tmux session died may
+# be auto-redispatched before the item goes to pending/human instead.
+SELFHEAL_MAX_RETRIES=3
+
 # Open an issue when the local base falls this many commits behind origin
 # (auto-closed once it catches up). Off by default — only a checkout people
 # actually work in gets stuck this way. 20 is a good value when you want it.
@@ -815,6 +826,40 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
 
 If the worker finishes without leaving any comment, state.json's comment ID doesn't advance and the same comment gets treated as new next time. Prompts should require the worker to leave at least one reply.
+
+### Dispatch fails every round for the same item
+
+A dispatch that fails changes nothing — the label is not flipped and the comment
+cursors do not advance — so the next poll picks the same item up again. That used
+to be an unbounded loop; it is now capped by `DISPATCH_MAX_RETRIES` (default 3),
+after which the daemon strips the trigger labels and hands the item to
+`pending/human`. Grep the log for the reason:
+
+```bash
+grep -E '派工失败|连续 .* 次派工失败' "$STATE_DIR/poll.log" | tail
+```
+
+The failure reason is written into `poll.log` itself — you should not need
+`journalctl`. If a line looks truncated or empty, that is a bug: every `git` call
+on a dispatch path is supposed to go through the `run_git` helper, which logs the
+command's full output on failure.
+
+One cause worth knowing, because `git` refuses it unconditionally: **the target
+branch is already checked out by another worktree.** `git fetch` into such a
+branch always fails, even when there is nothing to update, and
+`git worktree add --force` would happily create a *second* worktree on that same
+branch — two workers committing to one branch. Dispatch therefore refuses up
+front and sends the item straight to `pending/human`, naming the holder:
+
+```bash
+git worktree list                 # find the holder
+git worktree remove <holder-dir>  # free the branch, then re-label pending/agent
+```
+
+The counters live in `$STATE_DIR/dispatch-fail/` and are cleared on the first
+success and again when an item is escalated, so re-labelling by hand always gives
+it a fresh set of attempts. To clear one by hand:
+`rm -f "$STATE_DIR/dispatch-fail/pr-959"`.
 
 ### Debug a single poll
 

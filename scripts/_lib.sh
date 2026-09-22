@@ -595,6 +595,61 @@ selfheal_reset() {
     rm -f "$SELFHEAL_DIR/$1" 2>/dev/null || true
 }
 
+# ── dispatch 连续失败计数（防失败条目变成每轮重试的热循环）──
+# 派工失败时旧逻辑**什么状态都不改**：label 没翻、cursor 没动，于是下一轮看到的还是
+# 「一条没在跑的 pending/agent」，原样再派一次，没有任何上限。2026-09-18 实测：一条
+# PR 因为目标分支被别的 worktree 占住，2.4 小时里被重复派工 270 次，直到 GitHub 把
+# bot 账号封停才停下。
+#
+# key 用 "<kind>-<num>"（如 issue-34 / pr-959），跟 selfheal 的 "<issue_n>"
+# **分开命名空间**：GitHub 上 issue 和 PR 共用一套编号，而 selfheal 记的是 issue_n
+# （PR 走 pr_to_issue_num 时可能 fallback 成 PR 编号本身），两套计数落进同一个目录
+# 会互相清零——一边自愈成功把另一边的失败计数抹掉，退避就静默失效了。
+DISPATCH_FAIL_DIR="$STATE_DIR/dispatch-fail"
+dispatch_fail_bump() {
+    mkdir -p "$DISPATCH_FAIL_DIR"
+    local f="$DISPATCH_FAIL_DIR/$1" c=0
+    [ -f "$f" ] && c=$(cat "$f" 2>/dev/null || echo 0)
+    c=$((c + 1)); echo "$c" > "$f"; echo "$c"
+}
+dispatch_fail_reset() {
+    rm -f "$DISPATCH_FAIL_DIR/$1" 2>/dev/null || true
+}
+
+# 目标分支是不是已经被**另一个** worktree 签出。命中 → 打印占用它的 worktree 路径并
+# return 0；没占用 → return 1。调用方必须已经 cd 进仓库（主 checkout）。
+#
+# 为什么非查不可（两条都是本机实测，不是推理）：
+#   1. 分支被别的 worktree 签出时，`git fetch` 会**无条件**拒绝写它
+#      （`fatal: refusing to fetch into branch ... checked out at ...`，exit 128）——
+#      哪怕要写的内容跟当前一模一样也照样拒绝。所以这类失败在占用者还在期间是确定的。
+#   2. 紧随其后的 `git worktree add --force` 反而会**成功**，建出第二个签出同一分支的
+#      worktree。也就是说：光把 fetch 修好并不安全，那只会把「派工失败」换成「两个
+#      worker 往同一个分支上提交、互相覆盖」。
+#
+# 匹配必须是**全等**，不能是子串/前缀：`feature/issue-3` 绝不能匹配上
+# `feature/issue-34`。这跟 greedy 挡工判据里防的 `pending/human` vs `pending/humanoid`
+# 是同一类坑——错了不会报错，只会悄悄挡住或悄悄放过一条活。
+branch_checked_out_elsewhere() {
+    local branch="$1" self="${2:-}"
+    local wt="" line
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*) wt="${line#worktree }" ;;
+        esac
+        # 用字符串全等而不是 case 的 glob：分支名虽然不允许 * ? [，但这里不值得赌。
+        if [ "$line" = "branch refs/heads/$branch" ]; then
+            # 自己那份不算占用（重复派工时 worktree 可能已经在了）
+            if [ -n "$self" ] && [ "$wt" = "$self" ]; then
+                continue
+            fi
+            printf '%s' "$wt"
+            return 0
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null || true)
+    return 1
+}
+
 branch_to_issue_num() {
     local branch="$1"
     local prefix_escaped
@@ -1231,6 +1286,33 @@ run_gh() {
     local out
     if ! out=$("$@" 2>&1); then
         log "  ⚠️ ${desc}失败: $out"
+        return 1
+    fi
+    return 0
+}
+
+# run_gh 的孪生，给 git 用。**dispatch 脚本里的 git 一律走它**，别写
+# `git ... 2>&1 | tail -N`，也别 `2>/dev/null || log "失败"`。
+#
+# 为什么非它不可（实测）：_lib.sh 顶部那句 `exec 9>&- 2>/dev/null` 是**永久**重定向
+# （exec 不带命令时所有重定向都是永久的），所以每个 source 过本文件的脚本——包括
+# agent-poll.sh 自己和全部 dispatch 脚本——fd 2 从此就是 /dev/null。git 写在 stderr
+# 上的 `fatal:` 直接蒸发，既不进 poll.log 也不进 journal。
+# 2026-09-18 那次排查之所以要翻 journal 才找到原因，唯一的原因是当时那行写了
+# `2>&1`，把 stderr 转成了 stdout；把 `2>&1` 删掉，原因会彻底消失。
+# 这里显式把 `2>&1` 收进变量，再经 log() 的 tee 写进 poll.log——那是唯一能穿过
+# 那个 /dev/null 的通道。
+#
+# 只在失败时打，且**逐行**打、不截断：成功时一个字都不输出（日常噪音不变），失败时
+# 真正有用的那行不保证落在最后两行里（`| tail -2` 正是上次「看不见原因」的来源）。
+run_git() {
+    local desc="$1"; shift
+    local out line
+    if ! out=$("$@" 2>&1); then
+        log "  ⚠️ ${desc}失败:"
+        while IFS= read -r line; do
+            [ -n "$line" ] && log "    $line"
+        done <<< "$out"
         return 1
     fi
     return 0
