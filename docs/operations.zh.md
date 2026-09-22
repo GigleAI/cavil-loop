@@ -61,6 +61,11 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 # 传给 worker 的 env（tmux 默认不继承）
 WORKER_PASS_ENV="GH_TOKEN"
 
+# 第二把 GitHub 身份：GH_TOKEN 只管轮询 / 读，这一把管所有写（翻 label、daemon
+# 的告警 issue、合并后复盘的 push，以及交给 worker 的那把）。留空 = 复用
+# GH_TOKEN，也就是现在的单账号行为。本文件装着 token 时保持 0600。
+# WRITE_GH_TOKEN=""
+
 # Merge 后 daemon 自动 cleanup（worktree + tmux）
 AUTO_CLEANUP_ON_MERGE="true"
 
@@ -94,6 +99,7 @@ PROJECT_PRIORITY_FIELD="Priority"
 PROJECT_NUMBER=""                # 留空 = 本仓库关联的第一个看板；看板在别处就填编号
 PROJECT_OWNER=""                 # 看板 owner 跟仓库 owner 不同时才填
 PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用 GH_TOKEN
+# WRITE_GH_TOKEN=""              # 所有**写**用的 token；留空 = 复用 GH_TOKEN
 ```
 
 完整字段见 [`coding-agent.config.example`](../coding-agent.config.example)。

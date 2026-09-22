@@ -305,6 +305,59 @@ WORKER_PASS_ENV="GH_TOKEN"
 # （没 token 的 worker 只会 403，然后被 self-heal 无限重派，烧 API 还查不出根因）。
 WORKER_SECRET_ENV="GH_TOKEN"
 
+# ── Two GitHub identities / 两把 GitHub 身份 ──
+
+# By default one token does everything: it polls GitHub every 30-60s AND pushes
+# commits, posts comments, flips labels. That coupling gets expensive when the
+# account is rate-limited or suspended -- the polling volume burns the account,
+# and what you lose with it is every write path plus your commit authorship.
+#
+# Set WRITE_GH_TOKEN to split them:
+#   GH_TOKEN       -> polling and all reads. Can be a strictly read-only token.
+#   WRITE_GH_TOKEN -> every write: label flips, the daemon's own alert issue, the
+#                     post-merge retrospective push, and the token handed to the
+#                     worker for its commits / comments.
+# Empty (the default) falls back to GH_TOKEN, so single-account setups are
+# completely unaffected.
+#
+# Fine-grained PAT permissions on the repo:
+#   poll  token: Metadata R, Contents R, Issues R, Pull requests R
+#   write token: Metadata R, Contents RW, Issues RW, Pull requests RW
+#
+# WHERE THE VALUE GOES: here is fine -- this file is gitignored and setup.sh
+# chmods it 600 -- and under the cron fallback it is the ONLY place, because that
+# path has no EnvironmentFile at all. If GH_TOKEN stays in the systemd / launchd
+# EnvironmentFile, putting only WRITE_GH_TOKEN here is the tidier split: the
+# worker is routinely pointed at this config file for local dry-runs, and the
+# write token is one it already holds anyway.
+# Both `WRITE_GH_TOKEN=...` and `export WRITE_GH_TOKEN=...` work.
+# KEEP THIS FILE 0600 whenever it holds a token -- the daemon warns if it isn't.
+#
+# 默认一把 token 干所有事：每 30~60 秒轮询 GitHub，同时还要 push、发评论、翻 label。
+# 这个耦合在账号被限流 / 封号时代价很具体 —— 轮询量把账号烧掉，连带失去的是所有写
+# 能力和 commit 署名身份。
+#
+# 设 WRITE_GH_TOKEN 就把两者分开：
+#   GH_TOKEN       -> 轮询和所有读。可以是一把严格只读的 token。
+#   WRITE_GH_TOKEN -> 所有写：翻 label、daemon 自己的告警 issue、合并后复盘的 push，
+#                     以及交给 worker 去 commit / 发评论的那一把。
+# 留空（默认）= 回落 GH_TOKEN，单账号部署零改动。
+#
+# 细粒度 PAT 在本仓库需要的权限：
+#   轮询 token：Metadata 读、Contents 读、Issues 读、Pull requests 读
+#   写   token：Metadata 读、Contents 读写、Issues 读写、Pull requests 读写
+#
+# 值放哪：放这里就行 —— 本文件已 gitignore，setup.sh 会 chmod 600；cron 兜底那条路
+# 更是**只能**放这里，它根本没有 EnvironmentFile。如果 GH_TOKEN 留在 systemd /
+# launchd 的 EnvironmentFile 里，这里只写 WRITE_GH_TOKEN 是更干净的分法：worker 会被
+# 正常指使读这个 config 做本地干跑，而写 token 本来就在它手上。
+# 写 `WRITE_GH_TOKEN=...` 或 `export WRITE_GH_TOKEN=...` 都可以。
+# 只要本文件装着 token 就保持 0600 —— 不是的话 daemon 每轮都会告警。
+#
+# 注意这里**故意保持注释状态**：本文件是在环境变量之后 source 的，写一行
+# `WRITE_GH_TOKEN=""` 会把 EnvironmentFile 里同名的值清掉。要用就填上真值。
+# WRITE_GH_TOKEN=""
+
 # ── Auto-cleanup after PR merge / PR merge 后自动 cleanup ──
 
 # true  = daemon auto-runs cleanup-issue.sh on newly-merged PRs (incl. CLEANUP_HOOK)

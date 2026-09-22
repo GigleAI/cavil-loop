@@ -149,8 +149,17 @@ config_value() {
 # ── 1. 生成 host/coding-agent.config ──
 echo "── 1. 生成 $HOST/coding-agent.config ──"
 config="$HOST/coding-agent.config"
+# 这个文件可以装 GitHub token（GH_TOKEN / WRITE_GH_TOKEN），所以必须 0600。
+# 以前完全不管权限：`cp` / `cat >` 出来的权限随 umask 走，而常见的 umask 0002
+# 给出的是 0664 —— 同机任何用户一个 cat 就把 PAT 抄走了。
+harden_perms() {
+    chmod 600 "$1" 2>/dev/null || echo "  ⚠️  chmod 600 $1 失败，请手动收紧权限"
+}
 if [ -f "$config" ]; then
-    echo "  ⚠️  已存在，跳过（手动检查是否需更新）"
+    echo "  ⚠️  已存在，内容跳过（手动检查是否需更新）"
+    # 内容不覆盖，但权限照样收紧：老安装建出来的就是全局可读的。
+    harden_perms "$config"
+    echo "  ✓ 权限已确保为 600（这个文件可能装着 token）"
 else
     default_repo="$(cd "$HOST" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "owner/repo")"
     project_name="$(basename "$HOST")"
@@ -162,7 +171,8 @@ else
         "s|\$HOME/.local/state/coding-agent-poll|$HOME/.local/state/coding-agent-poll/$project_name|" \
         "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|" \
         "s|^WORKER_AGENT=\"claude\"|WORKER_AGENT=\"$WORKER_AGENT_PICK\"|"
-    echo "  ✓ $config"
+    harden_perms "$config"
+    echo "  ✓ $config（权限 600）"
 fi
 
 # ── 1b. worker agent 目录信任 ──
@@ -228,15 +238,20 @@ daemon_path="$worker_path:$HOME/.local/bin"
 if [ "$OS" = "Darwin" ] && [ -d /opt/homebrew/bin ]; then
     daemon_path="/opt/homebrew/bin:$daemon_path"
 fi
+# 同样可能装着 GH_TOKEN（systemd / launchd 部署的惯常放法），一视同仁 0600。
 if [ -f "$env_file" ]; then
-    echo "  ⚠️  已存在，跳过（手动检查 PATH 是否需要更新）"
+    echo "  ⚠️  已存在，内容跳过（手动检查 PATH 是否需要更新）"
+    harden_perms "$env_file"
+    echo "  ✓ 权限已确保为 600"
 else
-    cat > "$env_file" <<EOF
+    ( umask 077; cat > "$env_file" <<EOF
 PROJECT_ROOT=$HOST
 CODING_AGENT_CONFIG=$config
 PATH=$daemon_path:/usr/local/bin:/usr/bin:/bin
 EOF
-    echo "  ✓ $env_file"
+    )
+    harden_perms "$env_file"
+    echo "  ✓ $env_file（权限 600）"
 fi
 
 # ── 4. 安装调度器 unit（按 OS 分支）──
