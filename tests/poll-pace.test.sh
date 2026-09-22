@@ -169,6 +169,33 @@ write_pace 1000300 1000000 1000000 0 fp
 chk "④ 时钟往回拨一小时"          "$(gate 996400)"  "run"
 # 负对照的靶子：没有「夹紧」那几行时，①④ 会变成 skip
 
+echo "【4b】位数超标的纯数字状态 —— bash 算术会把它**回绕**成一个像模像样的时间戳"
+# 复审第 2 轮实测出来的真 bug：`next_due=18446744073710551916` 每一位都是数字，旧的
+# `case $v in *[!0-9]*)` 放行，接着 $(( )) 把它回绕成 1000300（≈「5 分钟后」）——
+# 于是「比上限还远就当损坏」那道闸根本不触发，项目按一个凭空来的间隔静默跳过 tick。
+# 【4】那条「一年后」分辨不了这个错误实现：它走的是夹紧那条路，回绕值根本到不了那儿。
+BIG=18446744073710551916      # = 2^64 + 1000300
+BIG2=18446744073709551916     # 回绕成另一个等待期，证明不是只有一个魔数会中招
+printf '{"next_due":%s,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}\n' "$BIG" > "$PACE"
+# ⚠️ 先确认这个值**原样**穿过了读取路径。要是哪天 jq 把它转成 1.84e+19，
+# pace_num 会因为「含小数点」而拒掉它 —— 测试照样绿，但绿得毫无意义。
+chk "超大值原样穿过读取路径（否则下面全是假阳性）" \
+    "$(jq -r '[(.next_due // "")] | @tsv' "$PACE")" "$BIG"
+chk "① next_due 超 64 位 → 立刻跑"      "$(gate 1000000)" "run"
+printf '{"next_due":%s,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}\n' "$BIG2" > "$PACE"
+chk "② 换一个超大值也一样"              "$(gate 1000000)" "run"
+printf '{"next_due":1000300,"last_poll":%s,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}\n' "$BIG" > "$PACE"
+chk "③ last_poll 超 64 位 → 立刻跑"     "$(gate 1000000)" "run"
+# 对照：同样的形状但值是正常的，必须还能正常跳过（别为了挡溢出把 gate 挡死）
+write_pace 1000300 1000000 1000000 0 fp
+chk "④ 正常值没到点 → 仍然跳过"          "$(gate 1000000)" "skip"
+
+echo "【4c】阶梯里写了超长门槛：跳过那一档，不能回绕成一个能命中的门槛"
+_save_ladder="$POLL_BACKOFF_LADDER"
+POLL_BACKOFF_LADDER="99999999999999999999:1800,86400:300"
+chk "安静 2.3 天仍取 5 分钟档（超长那档被跳过）" "$(pace_interval_for_quiet 200000 2>/dev/null)" "300"
+POLL_BACKOFF_LADDER="$_save_ladder"
+
 echo "【5】心跳：距上次真跑满 30 分钟就无条件跑（哪怕 next_due 还早）"
 # next_due 故意放在「还没到点、但也没远到触发夹紧」的那条缝里 —— 只有心跳能救它。
 #
@@ -319,6 +346,7 @@ echo "通过 $pass / 失败 $fail"
 # ── 负对照怎么跑 ──
 #   · 删掉 agent-poll.sh 里 `if ! pace_should_poll; then ... fi` 整段  → 【7】【11】变红
 #   · 删掉 _lib.sh:pace_should_poll 里「夹紧 / 时钟往回跳」两行 if     → 【4】①④ 变红
+#   · pace_num 去掉位数上限（只留「是不是全数字」）                    → 【4b】①②③ 变红
 #   · pace_record_fail 里把 last_active 改成无条件 =now（故障当空闲）  → 【9】变红
 #   · 删掉 pace_should_poll 里的心跳那段 if                            → 【5】第二条变红
 #   · 心跳去掉 `fail_streak -eq 0` 这个前提（心跳压过故障退避）        → 【5b】第一条变红

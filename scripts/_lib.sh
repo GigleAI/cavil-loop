@@ -726,16 +726,36 @@ POLL_FORCE_SYNC_SECS="${POLL_FORCE_SYNC_SECS:-1800}"
 POLL_FAIL_BACKOFF_MAX_SECS="${POLL_FAIL_BACKOFF_MAX_SECS:-1800}"
 POLL_DUE_SLACK_SECS="${POLL_DUE_SLACK_SECS:-10}"
 
-# 这几个值全都要进 `[ x -gt y ]`，写成 "30m" / "" / 带引号的空格都会让**算术比较本身**
-# 报错，而不是得出一个保守结果——在 set -e 下那就是整轮 poll 直接死。所以在这里一次性
-# 校验成纯数字，非法值退回默认并留一行日志。
+# ── 数值闸：进任何算术之前先验一遍 ──
+#
+# 「全是数字」**不等于** bash 算得对。bash 的算术是 64 位有符号的，一个位数超标但每位
+# 都是数字的值会有两种截然不同的坏法，两种都很难看出来（本机实测，不是推理）：
+#
+#   $(( 18446744073710551916 ))          → 1000300      ← **静默回绕**成一个像模像样的时间戳
+#   [ 18446744073710551916 -gt 1800 ]    → integer expression expected（报错，条件当假）
+#
+# 回绕那条最要命：一个损坏的 next_due 会变成「5 分钟后」这种完全合法的未来时间，于是
+# 「比上限还远就当损坏」那道闸根本不触发，项目安安静静按回绕出来的间隔跳过 tick ——
+# 正好绕过这套东西承诺的 fail-open。所以下面所有进算术的字段，先过这个闸限位数。
+#
+# 11 位 epoch ≈ 公元 5138 年；时长类（间隔 / 门槛）用 9 位 ≈ 31 年。都远超任何真实取值，
+# 超了就只能是坏数据。
+PACE_MAX_DIGITS=11
+pace_num() {
+    local v="$1" max="${2:-$PACE_MAX_DIGITS}"
+    case "$v" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#v}" -le "$max" ] || return 1
+    printf '%s' "$v"
+}
+
+# 这几个配置值全都要进 `[ x -gt y ]`，写成 "30m" / "" / 超长数字都会让**算术本身**出问题
+# （报错或回绕），而不是得出一个保守结果。这里一次性校验，非法值退回默认并留一行日志。
 for _pv in POLL_INTERVAL_SECS:60 POLL_FORCE_SYNC_SECS:1800 POLL_FAIL_BACKOFF_MAX_SECS:1800 POLL_DUE_SLACK_SECS:10; do
     _pk="${_pv%%:*}"; _pd="${_pv##*:}"
-    case "${!_pk}" in
-        ''|*[!0-9]*)
-            echo "[coding-agent] ⚠️ $_pk='${!_pk}' 不是非负整数，回退到默认 $_pd" >&2
-            printf -v "$_pk" '%s' "$_pd" ;;
-    esac
+    if ! pace_num "${!_pk}" 9 >/dev/null; then
+        echo "[coding-agent] ⚠️ $_pk='${!_pk}' 不是合理的非负整数秒数，回退到默认 $_pd" >&2
+        printf -v "$_pk" '%s' "$_pd"
+    fi
 done
 unset _pv _pk _pd
 
@@ -746,7 +766,11 @@ PACE_SKIP_MSG=""
 # 时间来源统一走这里，测试可以用 POLL_FAKE_NOW 把时钟拨到任意时刻。
 # 生产路径上它永远没被设过，等价于 `date +%s`。
 pace_now() {
-    if [ -n "${POLL_FAKE_NOW:-}" ]; then printf '%s' "$POLL_FAKE_NOW"; else date +%s; fi
+    if [ -n "${POLL_FAKE_NOW:-}" ] && pace_num "$POLL_FAKE_NOW" >/dev/null; then
+        printf '%s' "$POLL_FAKE_NOW"
+    else
+        date +%s
+    fi
 }
 
 # macOS 没有 sha256sum（只有 shasum）。指纹只要求「同输入同输出」，用哪个实现都行，
@@ -781,8 +805,8 @@ pace_interval_for_quiet() {
             [ -n "$entry" ] || continue
             th="${entry%%:*}"; val="${entry##*:}"
             # 一个档位写歪了只跳过这一档，不要让一个 typo 把整条阶梯废掉
-            case "$th" in ''|*[!0-9]*) log "⚠️ POLL_BACKOFF_LADDER 档位非法（门槛）：'$entry'，已跳过"; continue ;; esac
-            case "$val" in ''|*[!0-9]*) log "⚠️ POLL_BACKOFF_LADDER 档位非法（间隔）：'$entry'，已跳过"; continue ;; esac
+            pace_num "$th" 9 >/dev/null  || { log "⚠️ POLL_BACKOFF_LADDER 档位非法（门槛）：'$entry'，已跳过"; continue; }
+            pace_num "$val" 9 >/dev/null || { log "⚠️ POLL_BACKOFF_LADDER 档位非法（间隔）：'$entry'，已跳过"; continue; }
             if [ "$quiet" -ge "$th" ] && [ "$th" -gt "$best" ]; then best="$th"; iv="$val"; fi
         done < <(printf '%s\n' "$POLL_BACKOFF_LADDER" | tr ',' '\n')
     fi
@@ -903,8 +927,9 @@ pace_should_poll() {
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
 
-    case "$next_due" in ''|*[!0-9]*) return 0 ;; esac
-    case "$last_poll" in ''|*[!0-9]*) return 0 ;; esac
+    # 读不懂、或位数超标（会回绕成一个看着正常的时间戳）→ 一律当作损坏 = 现在就该跑
+    next_due=$(pace_num "$next_due")   || return 0
+    last_poll=$(pace_num "$last_poll") || return 0
 
     # 用 if/fi 而不是 `[ ] && return`：set -e 下 cond 为假会把 status 1 漏给调用方，
     # 而调用方正是 `if ! pace_should_poll` —— 漏出去就等于把「该跑」读成「跳过」。
@@ -915,7 +940,7 @@ pace_should_poll() {
     # 心跳不覆盖「读不到 GitHub」那套退避：读不到的时候强行再读一次正是它要避免的事，
     # 而且那个状态是自证的（上一次尝试真的失败了），没有推断错的空间。
     waited=$((now - last_poll))
-    case "$fail_streak" in ''|*[!0-9]*) fail_streak=0 ;; esac
+    fail_streak=$(pace_num "$fail_streak" 6) || fail_streak=0
     if [ "$fail_streak" -eq 0 ] && [ "$waited" -ge "$POLL_FORCE_SYNC_SECS" ]; then
         return 0
     fi
@@ -923,7 +948,7 @@ pace_should_poll() {
     if [ $((now + POLL_DUE_SLACK_SECS)) -ge "$next_due" ]; then return 0; fi
 
     remain=$((next_due - now))
-    case "$last_active" in ''|*[!0-9]*) last_active="$now" ;; esac
+    last_active=$(pace_num "$last_active") || last_active="$now"
     if [ "$fail_streak" -gt 0 ]; then
         PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
     else
@@ -941,7 +966,7 @@ pace_record_ok() {
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak prev_fp < <(pace_read) || true
 
-    case "$last_active" in ''|*[!0-9]*) last_active="$now" ;; esac
+    last_active=$(pace_num "$last_active") || last_active="$now"
     # 时钟往回跳过 → last_active 落在未来 → 当场校正，否则 quiet 会算成负数
     if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
 
@@ -970,10 +995,10 @@ pace_record_fail() {
     local now next_due last_poll last_active fail_streak fp iv
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak fp < <(pace_read) || true
-    case "$fail_streak" in ''|*[!0-9]*) fail_streak=0 ;; esac
+    fail_streak=$(pace_num "$fail_streak" 6) || fail_streak=0
     if [ "$fail_streak" -gt 64 ]; then fail_streak=64; fi   # 状态被写坏时别让翻倍循环失控
     fail_streak=$((fail_streak + 1))
-    case "$last_active" in ''|*[!0-9]*) last_active="$now" ;; esac
+    last_active=$(pace_num "$last_active") || last_active="$now"
     if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
     iv=$(pace_fail_interval "$fail_streak")
     PACE_TIER_SECS="$iv"
