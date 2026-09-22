@@ -190,6 +190,15 @@ chk "③ last_poll 超 64 位 → 立刻跑"     "$(gate 1000000)" "run"
 write_pace 1000300 1000000 1000000 0 fp
 chk "④ 正常值没到点 → 仍然跳过"          "$(gate 1000000)" "skip"
 
+echo "【4e】时间基准本身也得是纯数字 —— 它是所有比较的分母"
+# 把「进判定的输入」枚举了一遍之后补的最后一个口子：now 要是空串，bash 算术会静默
+# 当 0 用，于是每条比较都得出「该跑」——方向对，但那是巧合。显式验，坏了返回 0。
+chk "坏的 POLL_FAKE_NOW 不会让 now 变成空串" \
+    "$(POLL_FAKE_NOW=notanumber pace_now | grep -cE '^[0-9]+$')" "1"
+chk "位数超标的 POLL_FAKE_NOW 同样挡住" \
+    "$(POLL_FAKE_NOW=18446744073710551916 pace_now | grep -cE '^[0-9]+$')" "1"
+chk "正常的 POLL_FAKE_NOW 原样透传" "$(POLL_FAKE_NOW=1234567890 pace_now)" "1234567890"
+
 echo "【4d】状态里**任何一个**数值字段坏了都要立刻跑，不只是 next_due / last_poll"
 # 复审第 3 轮实测出来的：`last_active="broken"` 其余字段合法且没到点时，旧实现走到
 # 「没到点 → 跳过」才去静默兜底 last_active，于是本轮仍然等到 next_due。上限虽然被心跳
