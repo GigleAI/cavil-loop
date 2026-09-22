@@ -28,7 +28,7 @@ fi
 #   · 必须在 flock **之后** —— 节奏状态是读-改-写，锁保证同一时刻只有一轮在动它；
 #   · 必须在下面任何一句「干活」**之前** —— 跳过的这一轮不该碰 state.json、不该清
 #     快照目录、不该留下除了那一行日志以外的任何痕迹。
-if ! pace_should_poll; then
+if pace_gate_says_skip; then
     log "$PACE_SKIP_MSG"
     exit 0
 fi

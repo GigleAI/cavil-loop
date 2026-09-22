@@ -168,7 +168,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - 记账 / 周报口径 → `tests/weekly-report-*.test.sh`
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
-- 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`
+- 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`（约 40 秒：端到端那几组要真的把 `agent-poll.sh` 起几百次，别用 30 秒的命令窗口跑它，半截被掐看起来就像失败）
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh` 等
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 轮询节奏（退避闸门）的守卫 —— issue #35。
 #
-# 跑法：bash tests/poll-pace.test.sh
+# 跑法：bash tests/poll-pace.test.sh   （本机实测约 1 分钟——端到端那几组要真的把
+#       agent-poll.sh 起几百次，别用 30 秒的命令窗口跑它，半截被掐会看不出是没跑完）
 # 依赖：jq。不碰网络、不碰真 tmux session（TMUX_PREFIX 用独有前缀）、HOME 指向 temp。
 #
 # 为什么必须有这个文件：这层闸门决定「这一轮跑不跑」，**错了的两个方向都不报错**：
@@ -194,6 +195,38 @@ bad_state() {   # 直接写字面量：字符串字段没法用 jq --argjson 造
     printf '%s\n' "$1" > "$PACE"; gate 1000000
 }
 
+echo "【4g】前导零的全数字串 —— bash 算术会按八进制解释，而且那是致命错误"
+# 复审实测出来的：`001000008` 通过了「全数字 + 位数」两关，随后进 $(( )) 就是
+# 「value too great for base」。这不是返回非 0，是**致命**错误——直接调会把 shell 打死。
+# jq 写出来的 JSON 数字永远没有前导零，所以这种写法本来就不是写入路径产生得了的。
+chk "① pace_num 拒绝带前导零的值"  "$(pace_num 001000008 >/dev/null 2>&1; echo $?)" "1"
+chk "② \"0\" 本身仍然合法"        "$(pace_num 0 2>/dev/null)" "0"
+chk "③ 正常值不受影响"              "$(pace_num 1000008 2>/dev/null)" "1000008"
+chk "④ 前导零状态 → 立刻跑（不是死在算术里）" \
+    "$(bad_state '{"next_due":"001000308","last_poll":"001000008","last_active":"001000008","fail_streak":0,"fingerprint":"x"}')" "run"
+chk "⑤ 前导零出现在 last_active 上也一样" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":"0999999","fail_streak":0,"fingerprint":"x"}')" "run"
+
+echo "【4h】闸门自己出错时必须**跑**，不能变成静默停摆"
+# 这一条盯的不是某个具体 bug，而是**整类**「闸门内部炸了会怎样」。
+#
+# 背景（实测）：`if ! f` 里遇到致命算术错误时，bash 会**两个分支都不执行**、直接往下走
+# ——恰好也是 fail-open，但那是 bash 的冷僻行为，不是设计。把调用写成
+# `f || { ...; exit 0; }` 就会翻面变成硬停摆。所以入口改成 pace_gate_says_skip：
+# 判定跑在子 shell 里，**只有明确得出「跳过」才返回 0**，其余一切（含子 shell 被打死）
+# 都是「跑」。这里直接把 pace_should_poll 换成会炸的桩来验这个性质。
+_real_pace_should_poll=$(declare -f pace_should_poll)
+pace_should_poll() { local a=001000308 b=1; echo $((a - b)); }   # 必炸
+if pace_gate_says_skip; then _gate=skip; else _gate=run; fi
+chk "闸门内部致命错误 → 跑" "$_gate" "run"
+pace_should_poll() { PACE_SKIP_MSG="stub-msg"; return 1; }       # 明确说跳过
+if pace_gate_says_skip; then _gate="skip:$PACE_SKIP_MSG"; else _gate=run; fi
+chk "闸门明确说跳过 → 跳过，且消息带得出来" "$_gate" "skip:stub-msg"
+pace_should_poll() { return 0; }                                  # 明确说跑
+if pace_gate_says_skip; then _gate=skip; else _gate=run; fi
+chk "闸门明确说跑 → 跑" "$_gate" "run"
+eval "$_real_pace_should_poll"    # 还原真实实现，后面的用例还要用
+
 echo "【4f】字段各自合法、但彼此关系不可能同时成立 —— 同样算损坏"
 # 复审第 5 次在同一类里找到的变体。这轮不再补第 6 个特例，改成一条封闭规则：
 # **这份状态必须是正常写入路径可能写出来的**（pace_state_sane）。写入方恒满足
@@ -305,14 +338,14 @@ chk "端到端开跑前没有残留 pacetest session" \
     "$(tmux ls -F '#{session_name}' 2>/dev/null | grep -cE '^pacetest-issue[0-9]+$' || true)" "0"
 reset_e2e
 # 先把时间推过 1 天，让安静计时真的累积起来（这段本身还是每 tick 跑，因为不到第一档）
-chk_e2e "头 1 小时（刚开始，不退避）→ 每 tick 都跑" "$(run_ticks $T0 $((T0 + 3540)))" "60"
+chk_e2e "头 30 分钟（刚开始，不退避）→ 每 tick 都跑" "$(run_ticks $T0 $((T0 + 1740)))" "30"
 # 跳到「安静满 1 天」之后的一小时：5 分钟一轮 → 3600/300 = 12 轮
 S1=$((T0 + DAY + 3600))
-chk_e2e "安静满 1 天后的一小时 → 12 轮（5 分钟档）" "$(run_ticks $S1 $((S1 + 3540)))" "12"
+chk_e2e "安静满 1 天后的半小时 → 6 轮（5 分钟档）" "$(run_ticks $S1 $((S1 + 1740)))" "6"
 S3=$((T0 + 3 * DAY + 3600))
-chk_e2e "安静满 3 天后的一小时 → 6 轮（10 分钟档）"  "$(run_ticks $S3 $((S3 + 3540)))" "6"
+chk_e2e "安静满 3 天后的半小时 → 3 轮（10 分钟档）"  "$(run_ticks $S3 $((S3 + 1740)))" "3"
 S7=$((T0 + 7 * DAY + 3600))
-chk_e2e "安静满 7 天后的一小时 → 2 轮（30 分钟档）"  "$(run_ticks $S7 $((S7 + 3540)))" "2"
+chk_e2e "安静满 7 天后的半小时 → 1 轮（30 分钟档）"  "$(run_ticks $S7 $((S7 + 1740)))" "1"
 
 echo "【8】端到端：一有动静立刻回到不退避，不用等一个完整周期"
 # 承接上面：此时已退到 30 分钟档。改一条 updated_at = 仓库有变化。
@@ -321,7 +354,7 @@ printf '%s\n' '[[{"number":7,"updated_at":"2026-02-02T00:00:00Z","title":"poked"
 chk_e2e "变化后的第一个 tick 就跑"   "$(run_ticks $S8 $S8)" "1"
 chk "安静计时已归零"             "$(jq -r --argjson n "$S8" '.last_active == $n' "$PACE")" "true"
 chk "下一轮回到不退避（next_due 就是现在）"  "$(jq -r --argjson n "$S8" '.next_due - $n' "$PACE")" "0"
-chk_e2e "紧接着的一小时 → 每 tick 都跑" "$(run_ticks $((S8 + 60)) $((S8 + 3600)))" "60"
+chk_e2e "紧接着的半小时 → 每 tick 都跑" "$(run_ticks $((S8 + 60)) $((S8 + 1800)))" "30"
 
 echo "【9】读不到 GitHub 不算「安静」—— 安静计时必须冻结，而不是继续累加"
 reset_e2e
@@ -341,7 +374,7 @@ reset_e2e
 printf '%s\n' '[[{"number":9,"updated_at":"2026-03-03T00:00:00Z","title":"busy","labels":[{"name":"doing/agent"}]}]]' > "$SNAP_ISSUES"
 run_ticks $T0 $T0 >/dev/null
 B1=$((T0 + 10 * DAY))    # 快照十天不变，但一直挂着 doing/agent
-chk_e2e "十天没变化但有 doing/agent → 仍每 tick 跑" "$(run_ticks $B1 $((B1 + 3540)))" "60"
+chk_e2e "十天没变化但有 doing/agent → 仍每 tick 跑" "$(run_ticks $B1 $((B1 + 1740)))" "30"
 # 注：这一条同时被 self-heal 的 pace_mark_acted 和 active_keys 两条路径保证（本例里
 # session 不存在，self-heal 会先命中）。所以它验的是**行为**，不能用来隔离某一行代码——
 # 10b / 10c 才是那两条信号各自的靶子。
@@ -355,7 +388,7 @@ printf '%s\n' '[[{"number":8,"updated_at":"2026-03-03T00:00:00Z","title":"queued
 export MAX_CONCURRENT_WORKERS=0
 run_ticks $T0 $T0 >/dev/null
 B2=$((T0 + 10 * DAY))
-chk_e2e "十天没变化但队列里一直有活 → 仍每 tick 跑" "$(run_ticks $B2 $((B2 + 3540)))" "60"
+chk_e2e "十天没变化但队列里一直有活 → 仍每 tick 跑" "$(run_ticks $B2 $((B2 + 1740)))" "30"
 unset MAX_CONCURRENT_WORKERS
 
 echo "【10c】本机还有 worker session 活着（标签已经翻走了）也不算安静"
@@ -368,7 +401,7 @@ if command -v tmux >/dev/null 2>&1; then
     tmux new-session -d -s pacetest-issue42 'sleep 3000' 2>/dev/null
     run_ticks $T0 $T0 >/dev/null
     B3=$((T0 + 10 * DAY))
-    chk_e2e "十天没变化但本机 session 还活着 → 仍每 tick 跑" "$(run_ticks $B3 $((B3 + 3540)))" "60"
+    chk_e2e "十天没变化但本机 session 还活着 → 仍每 tick 跑" "$(run_ticks $B3 $((B3 + 1740)))" "30"
     kill_stray_sessions
 else
     echo "  ⏭  跳过（本机没有 tmux）"
@@ -380,18 +413,18 @@ reset_e2e
 # 函数前缀赋值靠不住（本文件 2026-09-22 初版就是这么写的，结果「关掉开关」那一组其实
 # 测的还是开着的行为）。
 export POLL_BACKOFF_LADDER=""
-run_ticks $T0 $((T0 + 3540)) >/dev/null
+run_ticks $T0 $((T0 + 1740)) >/dev/null
 OFF_CALLS=$(wc -l < "$GH_COUNT" | tr -d ' ')
 OFF_POLLS=$(grep -c 'poll start' "$SANDBOX/state/poll.log")
 unset POLL_BACKOFF_LADDER
-chk_e2e "关掉后 60 个 tick 全都真跑"       "$OFF_POLLS" "60"
+chk_e2e "关掉后 30 个 tick 全都真跑"       "$OFF_POLLS" "30"
 chk "关掉后不留下节奏状态文件"          "$([ -e "$PACE" ] && echo yes || echo no)" "no"
 reset_e2e
 # 同一段时间、同样的输入，但阶梯开着且已经安静 8 天 → 调用必须显著更少
 C0=$((T0 + 8 * DAY))
 run_ticks $T0 $T0 >/dev/null
 : > "$GH_COUNT"
-run_ticks $C0 $((C0 + 3540)) >/dev/null
+run_ticks $C0 $((C0 + 1740)) >/dev/null
 ON_CALLS=$(wc -l < "$GH_COUNT" | tr -d ' ')
 chk "开着（安静 8 天）调用数降到 1/10 以下" \
     "$([ "$ON_CALLS" -le $((OFF_CALLS / 10)) ] && echo yes || echo no)" "yes"
@@ -404,7 +437,9 @@ echo "通过 $pass / 失败 $fail"
 #   · pace_num 去掉位数上限（只留「是不是全数字」）                    → 【4b】①②③ 变红
 #   · 只在 skip 判定前验 next_due/last_poll（last_active、fail_streak 留到后面兜底）
 #                                                                      → 【4d】①～⑤ 变红
-#   · 删掉 pace_state_sane 调用（只验字段、不验字段间关系）              → 【4f】①②③ 变红
+#   · 删掉 pace_state_sane 调用（只验字段、不验字段间关系）              → 【4f】①③ 变红
+#   · pace_num 去掉「规范十进制」那条 case                              → 【4g】①④⑤ 变红
+#   · pace_gate_says_skip 的极性写反（子 shell 失败当跳过）             → 【4h】第一条变红
 #   · pace_record_fail 里把 last_active 改成无条件 =now（故障当空闲）  → 【9】变红
 #   · 删掉 pace_should_poll 里的心跳那段 if                            → 【5】第二条变红
 #   · 心跳去掉 `fail_streak -eq 0` 这个前提（心跳压过故障退避）        → 【5b】第一条变红

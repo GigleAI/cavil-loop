@@ -197,7 +197,7 @@ Changes in these areas must run the matching tests:
 
 - Accounting / weekly report → `tests/weekly-report-*.test.sh`
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
-- Poll pace / idle + failure backoff → `tests/poll-pace.test.sh`
+- Poll pace / idle + failure backoff → `tests/poll-pace.test.sh` (~40s: the end-to-end groups really do spawn `agent-poll.sh` a few hundred times — do not run it under a 30-second command timeout, a half-finished run looks like a failure)
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, …
 - Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.
