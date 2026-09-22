@@ -299,9 +299,49 @@ collect_queue_rows() {
     done <<< "$raw"
 }
 
+# ── 派工失败的退避与升级 ──
+# 旧逻辑：失败 → 只 log 一句 → 什么状态都不改 → 下一轮原样再来，无上限。
+# 现在：连续失败计数，没到上限照常重试（网络抖动这类瞬时失败该允许重试），
+# 到上限就摘掉**全部**触发 label、转人工，停止重试。
+#
+# 摘全部触发 label 而不是只摘 LABEL_PENDING_AGENT：多机分工的 pending/agent/05、
+# fable 标签、review 关卡标签各有自己的名字，漏掉任何一个，下一轮还会被重新捡起来。
+# greedy 模式下条目本来就没有触发 label（靠「open 且没被挡住」被捡），贴上
+# LABEL_PENDING_HUMAN 就够——它在 greedy_skip_label_list 的默认挡工清单里。
+trigger_labels_array
+
+# dispatch 子进程漏在 stdout 上的输出，压成一行跟着失败一起进 poll.log。
+# 只能捕 stdout：_lib.sh 顶部的永久 `2>/dev/null` 让子进程的 fd 2 就是 /dev/null，
+# 捕它永远是空的（实测）。子进程自己 log() 出来的行已经由 tee 写进同一个 poll.log，
+# 所以这里兜的是那些没走 log()、漏在 stdout 上的输出。
+dispatch_fail_excerpt() {
+    local t
+    t=$(printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -3 | tr '\n' ' ' | sed 's/[[:space:]]*$//') || true
+    [ -n "$t" ] || t="原因见上方 dispatch 日志"
+    printf '%s' "$t"
+}
+
+dispatch_failed() {
+    local kind="$1" num="$2" reason="$3"
+    local key="${kind}-${num}" tries cap="${DISPATCH_MAX_RETRIES:-3}"
+    tries=$(dispatch_fail_bump "$key")
+    if [ "$tries" -lt "$cap" ]; then
+        log "${kind} #${num} 派工失败（第 $tries/$cap 次，下轮重试）：$reason"
+        return 0
+    fi
+    log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 $LABEL_PENDING_HUMAN（停止重试）：$reason"
+    run_gh "label 翻转 (${kind} #${num} 连续派工失败 → $LABEL_PENDING_HUMAN)" \
+        gh_label_flip "$num" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
+    # 清零：人工重标 pending/agent 后重新计数，而不是第一次失败就立刻又升级。
+    dispatch_fail_reset "$key"
+}
+
 dispatch_one_issue() {
     local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local sess wt latest_id tmp
+    local d_rc d_out
     sess="$(tmux_session_name "$num")"
     wt="$(worktree_path "$num")"
 
@@ -323,12 +363,16 @@ dispatch_one_issue() {
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
-        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
-            bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
+        d_rc=0
+        d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+            bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
+        [ -n "$d_out" ] && printf '%s\n' "$d_out"
+        if [ "$d_rc" = 0 ]; then
+            dispatch_fail_reset "issue-$num"
             tmp=$(mktemp)
             jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
         else
-            log "issue-comment 派工 #$num 失败（comment cursor 不更新，下轮重试）"
+            dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
         fi
         return 0
     fi
@@ -342,9 +386,14 @@ dispatch_one_issue() {
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
-    if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
-        bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
-        log "派工 issue #$num 失败"
+    d_rc=0
+    d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
+    [ -n "$d_out" ] && printf '%s\n' "$d_out"
+    if [ "$d_rc" = 0 ]; then
+        dispatch_fail_reset "issue-$num"
+    else
+        dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
     fi
 }
 
@@ -357,6 +406,7 @@ dispatch_one_pr() {
     local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local issue_n sess latest_conv latest_inline latest_review
     local seen_conv seen_inline seen_review kick_id tmp
+    local d_rc d_out
     issue_n=$(pr_to_issue_num "$prnum" "$branch")
     sess="$(tmux_session_name "$issue_n")"
 
@@ -392,13 +442,17 @@ dispatch_one_pr() {
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
-    if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
-        bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
+    d_rc=0
+    d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
+    [ -n "$d_out" ] && printf '%s\n' "$d_out"
+    if [ "$d_rc" = 0 ]; then
+        dispatch_fail_reset "pr-$prnum"
         tmp=$(mktemp)
         jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
             "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     else
-        log "PR #$prnum 派工失败（comment cursors 不更新，下轮重试）"
+        dispatch_failed pr "$prnum" "$(dispatch_fail_excerpt "$d_out")"
     fi
 }
 

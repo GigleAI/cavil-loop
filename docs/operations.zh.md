@@ -71,6 +71,14 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 MAX_CONCURRENT_WORKERS=1
 POLL_INTERVAL_SECS=60
 
+# 一条活连续派工失败这么多次就放弃：摘掉触发 label、转 pending/human。
+# 派工失败本身什么都不改，所以没有上限的话下一轮会原样再来、直到天荒地老
+# （2026-09-18 实测：2 小时 24 分重派 270 次，直到 GitHub 把 bot 账号封停）。
+# 计数在 $STATE_DIR/dispatch-fail/，成功和升级转人工时都会清零。
+DISPATCH_MAX_RETRIES=3
+# self-heal 那边同理：tmux session 死掉的 worker 最多自动重派几次，超了转 pending/human。
+SELFHEAL_MAX_RETRIES=3
+
 # 本地 base 落后 origin 这么多 commit 就开 issue 提醒（跟上后自动关）；默认 0 = 关
 # 只有人真的上手干活的那个 checkout 才会卡住，所以是 opt-in；要开推荐设 20
 CHECKOUT_STALE_ALERT_COMMITS=0
@@ -618,6 +626,35 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
 
 如果 worker 没回任何 comment 就完事，state.json 的 comment ID 不会推进，下次又会被当新评论。Prompt 应强制 worker 至少回一句评论。
+
+### 同一条活每轮派工都失败
+
+派工失败本身什么状态都不改 —— label 没翻、comment cursor 没动 —— 于是下一轮 poll 又把
+它捡起来。这以前是个没有上限的循环，现在由 `DISPATCH_MAX_RETRIES`（默认 3）封顶，到
+上限就摘掉触发 label、把这条活转 `pending/human`。原因直接在日志里 grep：
+
+```bash
+grep -E '派工失败|连续 .* 次派工失败' "$STATE_DIR/poll.log" | tail
+```
+
+失败原因写在 `poll.log` 里，**不需要**再去翻 `journalctl`。如果某行看着是空的或被截断，
+那是 bug：派工路径上的每一个 `git` 调用都应该走 `run_git` helper，它会在失败时把命令的
+完整输出逐行写进日志。
+
+有一个成因值得单独记住，因为 git 对它是**无条件**拒绝的：**目标分支已经被另一个
+worktree 签出。** 这时 `git fetch` 必然失败（哪怕根本没东西要更新），而紧随其后的
+`git worktree add --force` 反倒会成功、建出**第二个**签出同一分支的 worktree —— 两个
+worker 往同一个分支上提交。所以派工会在动手之前就拒绝，并把占用者路径写进日志、直接
+转 `pending/human`：
+
+```bash
+git worktree list                 # 找出占用者
+git worktree remove <占用者目录>   # 腾出分支，然后重新标 pending/agent
+```
+
+计数文件在 `$STATE_DIR/dispatch-fail/`，第一次成功时清零、升级转人工时也清零 —— 所以
+人工重标一次总能拿到完整的重试次数。要手工清某一条：
+`rm -f "$STATE_DIR/dispatch-fail/pr-959"`。
 
 ### 调试一次 poll
 

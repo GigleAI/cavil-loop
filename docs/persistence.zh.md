@@ -19,6 +19,7 @@
 | Tmux 历史输出 | `$STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log`（append-only） | 没人；同一 issue 重起 session 续写同一份 | 文件即备份 |
 | Claude 对话历史（含 thinking + tool_use 全程） | `~/.claude/projects/<encoded-cwd>/*.jsonl` | **没人**；`AUTO_CLEANUP_ON_MERGE` 不动这里 | 文件即备份 |
 | 派工去重 / 进度 | `$STATE_DIR/state.json` | 没人；daemon 重启不丢 | 偶尔 cp 一份 |
+| 重试计数（连续派工失败 / self-heal 次数） | `$STATE_DIR/dispatch-fail/<kind>-<N>`、`$STATE_DIR/selfheal/<N>` | 第一次成功时清零；升级转 `pending/human` 时也清零 | 不值得备份 —— 丢了只是重新获得一整套重试次数 |
 
 > `<encoded-cwd>` 是把绝对路径的 `/` 全替换成 `-`。例如 `/home/sky/github/worktree/myproject/issue-42` → `-home-sky-github-worktree-myproject-issue-42`。
 
