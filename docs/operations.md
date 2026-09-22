@@ -276,6 +276,14 @@ Design notes:
   actually addresses it, and whether the acceptance criteria are verifiable; having no code
   yet is normal and must not be treated as a failure (observed in practice: codex applied the
   code checklist to a design-only issue and could only report "no implementation to review")
+- **A failed design review means "revise the design", not "go implement it".** The bounce
+  lands on the same `pending/agent` queue as a human saying "design looks good, go build it",
+  so the reviewer has to spell out which one it is — otherwise the next worker implements a
+  proposal no human ever approved
+- **Unticked checkboxes are not a defect.** The convention is one tick = decided, none =
+  the stated default applies, several = let's discuss — so "the human hasn't ticked" already
+  *is* a decision. A reviewer that reads it as "missing human confirmation" bounces work that
+  was ready; what it should review instead is whether the default is the right one
 - Other text-only exits (questions, clarifications, blocked runs, security stops) still go
   straight to `pending/human`; gating those would burn a review on "I have a question for
   you" and slow down your answer
