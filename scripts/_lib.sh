@@ -661,6 +661,12 @@ pace_num() {
     local v="$1" max="${2:-$PACE_MAX_DIGITS}"
     case "$v" in ''|*[!0-9]*) return 1 ;; esac
     [ "${#v}" -le "$max" ] || return 1
+    # ⚠️ 还要求是**规范十进制写法**：要么就是 "0"，要么首位不是 0。
+    # 带前导零的全数字串会被 bash 算术按**八进制**解释，里面只要有 8 或 9 就是
+    # 「value too great for base」——那是个**致命**错误，不是返回非 0：实测直接调用
+    # 会把整个 shell 打死。jq 写出来的 JSON 数字永远没有前导零，所以这种写法本来就
+    # 不可能是 pace_write 产生的，归到「不是写入路径写得出来的状态」里一起拒掉。
+    case "$v" in 0) ;; 0*) return 1 ;; esac
     printf '%s' "$v"
 }
 
@@ -862,7 +868,29 @@ pace_state_sane() {
     return 0
 }
 
+# 闸门的**对外入口**：返回 0 = 本轮跳过（PACE_SKIP_MSG 已填好）；非 0 = 照常轮询。
+#
+# ⚠️ 极性是刻意反过来的：**只有明确得出「跳过」才返回 0**。判定整个跑在命令替换的子
+# shell 里，万一它自己出错被打死（某个算术表达式炸了、某个 helper 被改坏了），子 shell
+# 给不出 "skip"，这里就返回非 0 = 跑。反过来写（子 shell 失败当跳过）会把闸门自己的
+# bug 变成整个项目静默停摆，而 _lib.sh 顶部那个永久 stderr 重定向让这种死法在
+# poll.log 里一个字都看不见。
+#
+# 为什么不直接 `if ! pace_should_poll`：实测 bash 在 `if ! f` 里遇到致命算术错误时
+# **两个分支都不执行**、直接往下走——恰好也是 fail-open，但那是 bash 的冷僻行为，
+# 不是这里的设计。把调用方式换成 `pace_should_poll || { ...; exit 0; }` 就会翻面变成
+# 硬停摆。安全不能建立在「碰巧」上，所以显式写成这样。
+pace_gate_says_skip() {
+    local out
+    out=$(pace_should_poll >/dev/null 2>&1 && printf 'run' || printf 'skip\t%s' "$PACE_SKIP_MSG") || out=""
+    case "$out" in
+        skip*) PACE_SKIP_MSG="${out#skip$'\t'}"; return 0 ;;
+        *)     PACE_SKIP_MSG=""; return 1 ;;
+    esac
+}
+
 # 本轮该不该真跑。返回 0 = 跑；1 = 跳过（此时 PACE_SKIP_MSG 是要打进日志的那行）。
+# **调用方一律走 pace_gate_says_skip，别直接调这个**——见上面那段。
 #
 # 五道闸，前四道全是「坏了就跑」的保险，只有最后一道才是真正的退避判断：
 #   0. 阶梯留空          → 特性关闭，行为与改动前逐字节一致
