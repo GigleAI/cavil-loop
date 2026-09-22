@@ -190,6 +190,29 @@ chk "③ last_poll 超 64 位 → 立刻跑"     "$(gate 1000000)" "run"
 write_pace 1000300 1000000 1000000 0 fp
 chk "④ 正常值没到点 → 仍然跳过"          "$(gate 1000000)" "skip"
 
+echo "【4d】状态里**任何一个**数值字段坏了都要立刻跑，不只是 next_due / last_poll"
+# 复审第 3 轮实测出来的：`last_active="broken"` 其余字段合法且没到点时，旧实现走到
+# 「没到点 → 跳过」才去静默兜底 last_active，于是本轮仍然等到 next_due。上限虽然被心跳
+# 兜住（≤30 分钟），但「状态坏了下一个 tick 就跑」这条写在文档和注释里的承诺被打了折。
+# 【4】【4b】只覆盖 next_due / last_poll，分辨不了这个错误实现——所以要单独一组。
+bad_state() {   # 直接写字面量：字符串字段没法用 jq --argjson 造
+    printf '%s\n' "$1" > "$PACE"; gate 1000000
+}
+chk "① last_active 非数字 → 立刻跑" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":"broken","fail_streak":0,"fingerprint":"x"}')" "run"
+chk "② last_active 位数超标 → 立刻跑" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":18446744073710551916,"fail_streak":0,"fingerprint":"x"}')" "run"
+chk "③ last_active 字段整个缺失 → 立刻跑" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"fail_streak":0,"fingerprint":"x"}')" "run"
+chk "④ fail_streak 非数字 → 立刻跑" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":1000000,"fail_streak":"oops","fingerprint":"x"}')" "run"
+chk "⑤ fail_streak 位数超标 → 立刻跑" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":1000000,"fail_streak":18446744073710551916,"fingerprint":"x"}')" "run"
+# 对照：同一个形状、同一个时间点，四个字段都正常时必须照常跳过。
+# 没有这条的话，「把 gate 改成无脑 return 0」也能让上面五条全绿。
+chk "⑥ 四个字段都正常且没到点 → 仍然跳过" \
+    "$(bad_state '{"next_due":1001800,"last_poll":1000000,"last_active":1000000,"fail_streak":0,"fingerprint":"x"}')" "skip"
+
 echo "【4c】阶梯里写了超长门槛：跳过那一档，不能回绕成一个能命中的门槛"
 _save_ladder="$POLL_BACKOFF_LADDER"
 POLL_BACKOFF_LADDER="99999999999999999999:1800,86400:300"
@@ -347,6 +370,8 @@ echo "通过 $pass / 失败 $fail"
 #   · 删掉 agent-poll.sh 里 `if ! pace_should_poll; then ... fi` 整段  → 【7】【11】变红
 #   · 删掉 _lib.sh:pace_should_poll 里「夹紧 / 时钟往回跳」两行 if     → 【4】①④ 变红
 #   · pace_num 去掉位数上限（只留「是不是全数字」）                    → 【4b】①②③ 变红
+#   · 只在 skip 判定前验 next_due/last_poll（last_active、fail_streak 留到后面兜底）
+#                                                                      → 【4d】①～⑤ 变红
 #   · pace_record_fail 里把 last_active 改成无条件 =now（故障当空闲）  → 【9】变红
 #   · 删掉 pace_should_poll 里的心跳那段 if                            → 【5】第二条变红
 #   · 心跳去掉 `fail_streak -eq 0` 这个前提（心跳压过故障退避）        → 【5b】第一条变红

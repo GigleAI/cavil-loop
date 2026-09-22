@@ -843,9 +843,23 @@ pace_should_poll() {
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
 
-    # 读不懂、或位数超标（会回绕成一个看着正常的时间戳）→ 一律当作损坏 = 现在就该跑
-    next_due=$(pace_num "$next_due")   || return 0
-    last_poll=$(pace_num "$last_poll") || return 0
+    # ── 一处验完，再谈跳不跳 ──
+    # 状态里**每一个会被读到的数值字段**读不懂、缺失、或位数超标（会回绕成一个看着正常
+    # 的时间戳）→ 一律当作损坏 = 现在就该跑。
+    #
+    # ⚠️ 必须**一次性验完、且在任何一条 skip 路径之前**。只验 next_due / last_poll 是不够的：
+    # 一个坏掉的 last_active（或 fail_streak）会一路走到「没到点 → 跳过」，于是本轮仍然
+    # 等到 next_due 才跑 —— 上限虽然被心跳兜住（最多 30 分钟），但「状态坏了下一个 tick
+    # 就跑」这条明写在文档和注释里的承诺就被打了折。复审第 3 轮用 `last_active="broken"`
+    # 实测到 skip，属实。
+    #
+    # 跟 pace_record_* 里那几处 `|| last_active="$now"` 的区别：那是**跑完之后的修复**
+    # （必须给出一个能写回文件的值），这里是**跑不跑的判定**（存疑就跑）。两者方向相反，
+    # 别互相抄。
+    next_due=$(pace_num "$next_due")          || return 0
+    last_poll=$(pace_num "$last_poll")        || return 0
+    last_active=$(pace_num "$last_active")    || return 0
+    fail_streak=$(pace_num "$fail_streak" 6)  || return 0
 
     # 用 if/fi 而不是 `[ ] && return`：set -e 下 cond 为假会把 status 1 漏给调用方，
     # 而调用方正是 `if ! pace_should_poll` —— 漏出去就等于把「该跑」读成「跳过」。
@@ -856,7 +870,6 @@ pace_should_poll() {
     # 心跳不覆盖「读不到 GitHub」那套退避：读不到的时候强行再读一次正是它要避免的事，
     # 而且那个状态是自证的（上一次尝试真的失败了），没有推断错的空间。
     waited=$((now - last_poll))
-    fail_streak=$(pace_num "$fail_streak" 6) || fail_streak=0
     if [ "$fail_streak" -eq 0 ] && [ "$waited" -ge "$POLL_FORCE_SYNC_SECS" ]; then
         return 0
     fi
@@ -864,7 +877,6 @@ pace_should_poll() {
     if [ $((now + POLL_DUE_SLACK_SECS)) -ge "$next_due" ]; then return 0; fi
 
     remain=$((next_due - now))
-    last_active=$(pace_num "$last_active") || last_active="$now"
     if [ "$fail_streak" -gt 0 ]; then
         PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
     else
