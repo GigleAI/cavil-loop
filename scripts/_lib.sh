@@ -682,11 +682,16 @@ PACE_SKIP_MSG=""
 # 时间来源统一走这里，测试可以用 POLL_FAKE_NOW 把时钟拨到任意时刻。
 # 生产路径上它永远没被设过，等价于 `date +%s`。
 pace_now() {
-    if [ -n "${POLL_FAKE_NOW:-}" ] && pace_num "$POLL_FAKE_NOW" >/dev/null; then
-        printf '%s' "$POLL_FAKE_NOW"
-    else
-        date +%s
+    local n
+    if [ -n "${POLL_FAKE_NOW:-}" ] && n=$(pace_num "$POLL_FAKE_NOW"); then
+        printf '%s' "$n"; return 0
     fi
+    n=$(date +%s 2>/dev/null) || n=""
+    # `date` 基本不会失败，但这个值是**所有**比较的基准，拿不到就没有任何判断可信。
+    # 空串在 bash 算术里会被静默当成 0——那样每条比较都得出「该跑」，方向虽然对，
+    # 但那是巧合不是设计。显式验一遍：坏了就返回 0（＝1970 年），效果同样是立刻跑，
+    # 而且是写明的。
+    pace_num "$n" || printf '0'
 }
 
 # macOS 没有 sha256sum（只有 shasum）。指纹只要求「同输入同输出」，用哪个实现都行，
