@@ -13,6 +13,32 @@ source "$SCRIPT_DIR/_lib.sh"
 STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/poll.lock"
 
+# flock 防多个 tick 撞车（万一某次跑慢了 > POLL_INTERVAL_SECS）
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log "上一轮还没跑完，跳过"
+    exit 0
+fi
+
+# ── 轮询节奏闸门（issue #35）──
+# 长期没动静的项目渐进退避：闹钟照旧每分钟把这个脚本叫醒，这里决定被叫醒之后要不要
+# 真的去打 GitHub。判定和状态都在 _lib.sh 的 pace_* 那一段。
+#
+# 位置有两个硬要求：
+#   · 必须在 flock **之后** —— 节奏状态是读-改-写，锁保证同一时刻只有一轮在动它；
+#   · 必须在下面任何一句「干活」**之前** —— 跳过的这一轮不该碰 state.json、不该清
+#     快照目录、不该留下除了那一行日志以外的任何痕迹。
+if ! pace_should_poll; then
+    log "$PACE_SKIP_MSG"
+    exit 0
+fi
+
+# 本轮做没做事。指纹只能看出「GitHub 那边变没变」，看不出「daemon 自己动没动手」——
+# 派工失败、self-heal 翻标签、回收 session 这些都得显式标一下，否则刚干完活的下一轮
+# 会被判成安静。
+PACE_ACTED=0
+pace_mark_acted() { PACE_ACTED=1; }
+
 [ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{}}' > "$STATE_FILE"
 # 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
 for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts; do
@@ -21,13 +47,6 @@ for field in seen_issue_comments seen_review_comments seen_reviews worker_models
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     fi
 done
-
-# flock 防多个 tick 撞车（万一某次跑慢了 > POLL_INTERVAL_SECS）
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    log "上一轮还没跑完，跳过"
-    exit 0
-fi
 
 # 本轮 open 快照目录：开头清一次，保证绝不会拿上一轮的数据做判断。
 # 放在 flock 之后——锁保证同一时刻只有一轮在跑，这里删目录不会踩到别人。
@@ -124,12 +143,14 @@ self_heal_one() {
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
         log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → $pending_label）"
+        pace_mark_acted
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/agent)" \
             gh_label_flip "$n" \
             --add "$pending_label" \
             --remove "$LABEL_AGENT_DOING" || true
     else
         log "⚠️ self-heal: $kind #$n 自动恢复 $((tries - 1)) 次仍死（疑似会话损坏）→ 转人工 $LABEL_PENDING_HUMAN"
+        pace_mark_acted
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/human)" \
             gh_label_flip "$n" \
             --add "$LABEL_PENDING_HUMAN" \
@@ -166,6 +187,9 @@ fi
 # 编号也带在 log 里，方便看 max=1 撑住的是谁。
 if ! active_list=$(list_active_workers); then
     log "⚠️ 无法确认活跃 worker：本轮停止回收和派工，保留现有 session"
+    # 故障单独一套节奏，且**不碰安静计时**：读不到 GitHub 不等于「没活干」。
+    # 把它算成空闲会越错越慢，恢复也越拖越久（issue #35 §4）。
+    pace_record_fail
     exit 0
 fi
 # 真·全局并发上限：active_keys 收所有在跑 worker 的 issue_n（每行第一个数字就是 key——
@@ -574,6 +598,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 continue
             fi
             NEW_MERGE_SEEN=1
+            pace_mark_acted
             issue_n=$(pr_to_issue_num "$prnum" "$branch")
             # pr_to_issue_num fallback 链兜底到 PR 编号本身，理论上永不空
             if [ -z "$issue_n" ]; then
@@ -687,6 +712,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 issue_state=$(printf '%s' "$issue_json" | jq -r '.s' | tr '[:upper:]' '[:lower:]')
                 if [ "$issue_state" = "open" ]; then
                     # PR 没落地、issue 还开着 → 这事回到人手上决策
+                    pace_mark_acted
                     run_gh "PR #$prnum closed 未合并 → issue #$issue_n $LABEL_PENDING_PR → $LABEL_PENDING_HUMAN" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_PENDING_HUMAN" \
@@ -694,6 +720,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                     log "PR #$prnum closed 未合并 → issue #$issue_n OPEN，$LABEL_PENDING_PR → $LABEL_PENDING_HUMAN"
                 else
                     # issue 早已 close，人已经处理完 → 只摘残留标签，不加任何 pending 态
+                    pace_mark_acted
                     run_gh "PR #$prnum closed 未合并 → issue #$issue_n 摘 $LABEL_PENDING_PR" \
                         gh_label_flip "$issue_n" \
                         --remove "$LABEL_PENDING_PR" || true
@@ -730,6 +757,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if jq -e ".cleaned_issues | index($issnum)" "$STATE_FILE" >/dev/null 2>&1; then
                 continue
             fi
+            pace_mark_acted
             log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" --force 2>&1; then
                 tmp=$(mktemp)
@@ -747,6 +775,32 @@ fi
 # Durable merge review queue is independent of cleanup success and worker labels.
 if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then
     nohup bash "$SCRIPT_DIR/post-merge-retrospective.sh" >> "$STATE_DIR/retrospective.log" 2>&1 &
+fi
+
+# ── 5. 记录本轮节奏（issue #35）──
+# 必须放在最后：上面任何一段做了事都已经把 PACE_ACTED 标上了。
+#
+# 「有动静」= 下面任意一条成立，成立就立刻回到不退避、安静计时归零：
+#   · daemon 自己动了手（PACE_ACTED）
+#   · GitHub 上还挂着 doing/agent（active_keys）或本机还有 worker session 活着
+#     —— 有人在干活时回收和 self-heal 的响应速度不能被退避拖慢
+#   · 队列里有待派工的活（哪怕这轮因为并发满没派出去）
+#   · 仓库变了（指纹，在 pace_record_ok 里比）
+pace_active=0
+if [ "$PACE_ACTED" = 1 ]; then pace_active=1; fi
+if [ "${#active_keys[@]}" -gt 0 ]; then pace_active=1; fi
+if [ -n "${QUEUE_SORTED:-}" ]; then pace_active=1; fi
+if [ -n "$(list_worker_sessions)" ]; then pace_active=1; fi
+# 算不出指纹就传空串：pace_record_ok 会保守当作「有动静」，并保留上一轮的指纹不覆盖。
+# 绝不能把「算不出来」写成空指纹存下去——下一轮会把它读成「所有条目都消失了」。
+if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
+    pace_fp=$(pace_fingerprint 2>/dev/null) || pace_fp=""
+    pace_record_ok "$pace_active" "$pace_fp"
+    if [ "${PACE_TIER_SECS:-0}" -eq 0 ]; then
+        log_debug "本轮节奏：不退避（已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}")），下个 tick 照跑"
+    else
+        log "本轮节奏：已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}") → 下一轮 $(pace_human_secs "${PACE_TIER_SECS:-0}") 后"
+    fi
 fi
 
 log "===== poll done ====="

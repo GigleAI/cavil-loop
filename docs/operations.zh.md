@@ -69,7 +69,22 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 
 # 节奏
 MAX_CONCURRENT_WORKERS=1
+
+# 闹钟多久把 poller 叫醒一次。setup.sh 会把它写进 systemd timer drop-in / launchd
+# plist，所以改完要重跑一次 setup.sh 才生效。
 POLL_INTERVAL_SECS=60
+
+# 空闲退避阶梯：`<安静了多少秒>:<用多大间隔轮询>`，逗号分隔。按**安静了多久**分档。
+# 留空 = 整个特性关闭（空闲退避和故障退避一起关）。
+POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
+# 心跳：距上次成功读到 GitHub 超过这么久就无条件跑一次完整轮询，不管退到哪一档。
+POLL_FORCE_SYNC_SECS=1800
+# 读不到 GitHub 时单独一套阶梯（从 POLL_INTERVAL_SECS 起步、每多失败一次翻倍、封顶在
+# 这个值），且**不推进安静
+# 计时**：「读不到」不等于「没活干」。
+POLL_FAIL_BACKOFF_MAX_SECS=1800
+# 给 timer 抖动留的余量，免得 60 秒那档被抖成 120 秒。
+POLL_DUE_SLACK_SECS=10
 
 # 一条活连续派工失败这么多次就放弃：摘掉触发 label、转 pending/human。
 # 派工失败本身什么都不改，所以没有上限的话下一轮会原样再来、直到天荒地老
@@ -479,6 +494,7 @@ your-project/
 
 ~/.local/state/coding-agent-poll/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
+├── poll-pace.json                      # 空闲/故障退避状态；`rm` 掉 = 立刻回最快档
 ├── poll.log                            # 滚动日志
 ├── poll.lock                           # flock
 └── sessions/                           # 每个 worker tmux session 的 pane 日志
@@ -491,17 +507,25 @@ your-project/
 
 | OS | 调度器 | Unit / Plist | `setup.sh` 自动装？ |
 |----|--------|--------------|---------------------|
-| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}`（symlink 到 skill 模板）| ✅ |
+| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}`（symlink 到 skill 模板）+ `coding-agent-poll@<key>.timer.d/interval.conf`（按 `POLL_INTERVAL_SECS` 生成）| ✅ |
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist`（生成，非 symlink）| ✅ |
 | 其他 | — | — | ❌ `exit 1`；见下方 [手动 cron 兜底](#手动-cron-兜底) |
 
 两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`，都跑同一个 `agent-poll.sh`。唯一差别是 symlink-vs-生成 的 trade-off：Linux 端 `git pull` skill 自动生效；macOS 端因 launchd 没有 template 模式，plist 是 per-project 生成的，模板有改动要重跑 `setup.sh`。
 
+tick 频率只是「最多多久打一次 GitHub」的上限：一整天没人碰的项目会在 `agent-poll.sh`
+内部决定跳过大部分 tick（见[空闲与故障退避](architecture.zh.md#轮询节奏空闲退避与故障退避)）。
+起一个进程只要几十毫秒，调用才是稀缺资源，所以 tick 本身保持便宜且频繁。
+
+两个系统上驱动 timer 的都是 `POLL_INTERVAL_SECS`；Linux 端 `setup.sh` 把它写成本实例的
+drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会被覆盖 —— `setup.sh` 会提示
+一句然后放着不动。
+
 ### macOS 专属
 
 - **Label**：`dev.luosky.coding-agent-work-loop.<key>`（必须和 plist 文件名一致）
 - **加载方式**：`launchctl bootstrap gui/$UID <plist>`（modern 语法，macOS 10.10+）。`setup.sh` 会先 `bootout` 再 bootstrap，重跑幂等。
-- **运行频率**：`StartInterval=60`（每 60 秒一次，等价 systemd `OnUnitActiveSec=60s`）。
+- **运行频率**：`StartInterval` 取自 `POLL_INTERVAL_SECS`（等价 systemd `OnUnitActiveSec`）。plist 是生成的不是 symlink，改了要重跑 `setup.sh`。
 - **日志**：stdout/stderr → `~/Library/Logs/coding-agent-work-loop/<key>.{out,err}.log`。更深的 poll 日志仍在 `$STATE_DIR/poll.log`。
 - **flock**：macOS 不自带，先 `brew install flock` 再跑 `setup.sh`。
 - **登出 / 合盖**：user LaunchAgent 登录后常驻（即使锁屏也跑）；想"无登录、开机即跑"要装到 `/Library/LaunchDaemons/` —— `setup.sh` 故意不进这里（要 `sudo`，且和 Linux `--user` systemd 对称）。
@@ -585,6 +609,31 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 Worker 切换走一层薄的 **driver 抽象**，不需要 fork。普通任务默认使用 `WORKER_AGENT=claude`；`WORKER_MODEL` 只覆盖普通任务的模型。启用可选 review 关卡后，review 独立使用 `REVIEW_WORKER_AGENT=codex` 和 `REVIEW_MODEL`；模型留空时由对应 driver 使用自己的当前默认值。内置：`claude`、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
+
+### poll.log 变稀疏了，daemon 是不是死了
+
+多半没死：一整天没人碰的项目会**故意**少轮询（`POLL_BACKOFF_LADDER`）。退避中的每个
+tick 仍然写一行，写明现在在哪一档、还要等多久 —— 所以「安静」和「退避」在日志上是分
+得开的：
+
+```
+[...] [myproj] 本轮跳过（已安静 3d4h，当前档位 10m0s，还差 7m12s）
+```
+
+按顺序查：
+
+```bash
+cat ~/.local/state/coding-agent-poll/<key>/poll-pace.json    # 现在哪一档、从什么时候开始安静
+grep -c 'poll start' ~/.local/state/coding-agent-poll/<key>/poll.log   # 到目前为止真跑了几轮
+rm ~/.local/state/coding-agent-poll/<key>/poll-pace.json     # 立刻回最快档
+```
+
+删这个文件永远是安全的：它只存节奏，不存「哪些评论看过了」那些游标（那些在
+`state.json` 里）。而且不管它里面是什么，两条保证都成立：最长
+`POLL_FORCE_SYNC_SECS` 一定会跑一次完整轮询；任何解析不出来、或者超出合法范围的状态
+一律按「现在就该跑」处理，而不是「再等等」。想整个关掉就把 `POLL_BACKOFF_LADDER` 置空。
+
+如果日志是**真**的一行都没有（连跳过那行也没有），那才是 daemon 真的停了，往下看。
 
 ### Timer / agent 起来了但 daemon 不跑
 

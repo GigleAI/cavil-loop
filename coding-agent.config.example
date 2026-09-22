@@ -628,11 +628,69 @@ PROJECT_PRIORITY_FIELD="Priority"
 # bot 账号看不到看板、但你手上另有一个能看的 token 时，塞这里最省事。
 PROJECT_GH_TOKEN=""
 
-# ── Poll interval / 轮询间隔 ──
+# ── Poll interval + idle backoff / 轮询间隔与空闲退避 ──
 
-# Daemon poll cycle (seconds). Used by the systemd timer.
-# Daemon 轮询周期（秒）。systemd timer 用这个值。
+# How often the scheduler wakes the poller (seconds). setup.sh writes this value
+# into the per-instance systemd timer drop-in (Linux) or the generated launchd
+# plist (macOS), so changing it takes effect after a re-run of setup.sh — it is
+# no longer the dead config it used to be.
+#
+# 闹钟多久把 poller 叫醒一次（秒）。setup.sh 会把这个值写进本实例的 systemd timer
+# drop-in（Linux）/ 生成的 launchd plist（macOS），所以改完要重跑一次 setup.sh 才
+# 生效 —— 它不再是从前那个没人读的死配置了。
+#
+# 注意它**不是**「脚本最快多久干一次活」的下限：没退避的时候每个 tick 都真跑，哪怕
+# timer 实际比这个值更快（比如手写 drop-in 把某个实例调到 30 秒）。它只在两个地方被
+# 当成数值用：驱动 timer，以及作为「读不到 GitHub」那套失败阶梯的起步值。
 POLL_INTERVAL_SECS=60
+
+# Idle backoff ladder: `<quiet seconds>:<poll interval seconds>`, comma separated.
+# A project that has seen no activity for that long polls at that interval.
+# Default: quiet for 1 day -> every 5 min, 3 days -> 10 min, 7 days -> 30 min.
+# **Empty string turns the whole feature off** (idle backoff AND failure backoff),
+# restoring the pre-#35 behaviour byte for byte.
+#
+# 空闲退避阶梯：`<安静了多少秒>:<用多大间隔轮询>`，逗号分隔。按**安静了多久**分档，
+# 不是按空闲了几轮。默认 = 安静 1 天 → 5 分钟，3 天 → 10 分钟，7 天 → 30 分钟。
+#
+# 什么算「有动静」（任意一条成立就立刻回到不退避、安静计时归零）：daemon 自己派了工 /
+# 自愈翻了标签 / 回收了 session / 清理动了东西；GitHub 上还挂着 doing/agent 或本机还有
+# worker session 活着；队列里有待派工的活；仓库里相关条目的最后更新时间或标签变了。
+#
+# 代价只有一个，写在这里免得以后找：项目安静越久，你打上 pending/agent 之后要等的越久，
+# 最坏就是最后那一档（默认 30 分钟）。活跃项目完全不受影响——第一档要安静满一整天。
+#
+# **留空 = 整个特性关闭**（空闲退避和故障退避一起关），行为逐字节回到改动前。
+POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
+
+# Heartbeat: force a full poll if this long has passed since the last successful
+# GitHub read, whatever the ladder or the local state says. This is the backstop
+# that makes "the local pace state can never wedge a project" true.
+#
+# 心跳：距上一次成功读到 GitHub 超过这么久，就无条件跑一次完整轮询——不管退到哪一档、
+# 不管指纹说什么、也不管这套逻辑本身有没有 bug。它是「本地状态坏了也不会把项目卡死」
+# 这条保证的兜底。阶梯里比它还慢的档位会被夹到这个值（并打一行警告）。
+POLL_FORCE_SYNC_SECS=1800
+
+# Failure backoff cap. Reading GitHub is not the same as having nothing to do,
+# so failures get their own ladder — it starts at POLL_INTERVAL_SECS, doubles on
+# each further failure, and is capped here — and it never advances the quiet
+# timer, so an outage cannot silently slow a busy project down.
+# Measured 2026-09-18..22: five projects burned 30040 polls over 88 hours, every
+# one of them a 403 "account suspended". Same window with this: 905.
+#
+# 读不到 GitHub 时的退避上限。「读不到」不等于「没活干」，所以它单独一套阶梯：从
+# POLL_INTERVAL_SECS 起步、每多失败一次翻倍、封顶在这个值；而且**不推进安静计时**，
+# 故障恢复后从故障前那一档继续，一次网络抖动不会把活跃项目打慢。
+# 实测依据：2026-09-18~22 那 88 小时，5 个项目跑了 30040 轮全是 403「账号已封」；
+# 同一窗口加上这套之后只剩 905 轮。
+POLL_FAIL_BACKOFF_MAX_SECS=1800
+
+# Slack for timer jitter. systemd's AccuracySec lets a 60s timer fire at 60-65s;
+# without slack a 60s tier would be stretched into 120s.
+# 给 timer 抖动留的余量。systemd 的 AccuracySec 会让 60 秒的 timer 落在 60~65 秒之间，
+# 不留余量的话 60 秒那一档会被抖成 120 秒。
+POLL_DUE_SLACK_SECS=10
 
 # ── Main-checkout staleness alert / 主 checkout 落后告警 ──
 
