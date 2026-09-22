@@ -831,6 +831,37 @@ pace_human_secs() {
     else printf '%dd%dh' "$((s / 86400))" "$(((s % 86400) / 3600))"; fi
 }
 
+# 这份状态是不是**正常写入路径可能写出来的**？不是 → 损坏 → 现在就跑。
+#
+# 为什么要有这么一条、而不是继续逐个字段加校验：光验「每个字段自己合不合法」是个
+# 永远补不完的清单——字段都合法、但**彼此关系**不可能同时成立的状态照样存在，而且
+# 组合是无穷的。与其等下一个变体被发现，不如把判据反过来写：正常写入恒满足下面这几条
+# 不变式，任何一条不成立就说明这份文件不是本程序写的。
+#
+# 写入方（pace_record_ok / pace_record_fail）恒满足：
+#   · last_active <= last_poll
+#     record_ok 把 last_active 夹到 ≤ now，而 last_poll 就是同一个 now；
+#     record_fail 沿用旧的 last_active，旧值 ≤ 旧 last_poll ≤ 现在的 now。
+#   · last_poll <= next_due
+#     next_due = last_poll + 间隔，两套阶梯的间隔都 ≥ 0（不退避档就是 0）。
+#   · next_due - last_poll <= 硬上限
+#     空闲档被夹在心跳值以内，故障档被夹在故障上限以内，取两者更大的那个。
+#     注意这一条是按**写入时刻**算的，不看 now —— 比「next_due 离 now 多远」更严，
+#     也不会因为时钟漂移产生假阳性。
+#
+# 配置被人改小之后，旧状态可能一次性判成越界 → 多跑一轮并重写 → 自愈，方向安全。
+pace_state_sane() {
+    local next_due="$1" last_poll="$2" last_active="$3" fail_streak="$4" cap
+    if [ "$last_active" -gt "$last_poll" ]; then return 1; fi
+    if [ "$next_due" -lt "$last_poll" ]; then return 1; fi
+    # 上限按**当时走的是哪套阶梯**取，而不是笼统取两者最大值：fail_streak=0 说明上一轮
+    # 是正常读到了 GitHub、走的空闲阶梯，那一套被夹在心跳值以内，拿故障上限去放宽它
+    # 等于凭空多认一批本程序写不出来的状态。
+    if [ "$fail_streak" -gt 0 ]; then cap="$POLL_FAIL_BACKOFF_MAX_SECS"; else cap="$POLL_FORCE_SYNC_SECS"; fi
+    if [ $((next_due - last_poll)) -gt "$cap" ]; then return 1; fi
+    return 0
+}
+
 # 本轮该不该真跑。返回 0 = 跑；1 = 跳过（此时 PACE_SKIP_MSG 是要打进日志的那行）。
 #
 # 五道闸，前四道全是「坏了就跑」的保险，只有最后一道才是真正的退避判断：
@@ -844,7 +875,7 @@ pace_should_poll() {
     PACE_SKIP_MSG=""
     [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 0
 
-    local now next_due last_poll last_active fail_streak fingerprint cap waited remain
+    local now next_due last_poll last_active fail_streak fingerprint waited remain
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
 
@@ -866,14 +897,20 @@ pace_should_poll() {
     last_active=$(pace_num "$last_active")    || return 0
     fail_streak=$(pace_num "$fail_streak" 6)  || return 0
 
+    # 字段各自合法之后，再看它们**彼此的关系**是否可能同时成立（见 pace_state_sane）。
     # 用 if/fi 而不是 `[ ] && return`：set -e 下 cond 为假会把 status 1 漏给调用方，
     # 而调用方正是 `if ! pace_should_poll` —— 漏出去就等于把「该跑」读成「跳过」。
-    cap=$(pace_hard_cap)
-    if [ $((next_due - now)) -gt "$cap" ]; then return 0; fi
+    if ! pace_state_sane "$next_due" "$last_poll" "$last_active" "$fail_streak"; then return 0; fi
     if [ "$now" -lt "$last_poll" ]; then return 0; fi
 
     # 心跳不覆盖「读不到 GitHub」那套退避：读不到的时候强行再读一次正是它要避免的事，
     # 而且那个状态是自证的（上一次尝试真的失败了），没有推断错的空间。
+    #
+    # ⚠️ 诚实说明：自从 pace_state_sane 按写入侧不变式把 next_due - last_poll 夹在
+    # 心跳值以内之后，**对合法状态而言这个 return 0 已经走不到了** —— waited ≥ 心跳值
+    # 必然意味着已经到点，下面那条判断会先命中。留着它是第二道保险：万一哪天
+    # pace_state_sane 本身被改出 bug，「最长多久必须跑一次」这条承诺还有人兜。
+    # 它的**条件**仍然是活的：fail_streak > 0 时不触发，这一条由【5b】盯着。
     waited=$((now - last_poll))
     if [ "$fail_streak" -eq 0 ] && [ "$waited" -ge "$POLL_FORCE_SYNC_SECS" ]; then
         return 0
