@@ -20,6 +20,7 @@ Machine reboot, accidental tmux kill, auto-cleanup after PR merge — all are re
 | Claude conversation (incl. thinking + tool_use) | `~/.claude/projects/<encoded-cwd>/*.jsonl` | **No one**; `AUTO_CLEANUP_ON_MERGE` does NOT touch this | The file itself is the backup |
 | Dispatch dedup / progress | `$STATE_DIR/state.json` | No one; daemon restart doesn't lose it | Occasional `cp` to backup |
 | Retry counters (consecutive dispatch failures / self-heal attempts) | `$STATE_DIR/dispatch-fail/<kind>-<N>`, `$STATE_DIR/selfheal/<N>` | Cleared on the first success and again when the item is escalated to `pending/human` | Not worth backing up — losing them only grants a fresh set of attempts |
+| Poll pace (idle + failure backoff) | `$STATE_DIR/poll-pace.json` | No one; safe to delete by hand at any time | Not worth backing up — deleting it just means the project polls at full speed again |
 
 > `<encoded-cwd>` = the absolute path with `/` replaced by `-`. E.g. `/home/sky/github/worktree/myproject/issue-42` → `-home-sky-github-worktree-myproject-issue-42`.
 

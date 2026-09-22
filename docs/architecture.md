@@ -87,6 +87,72 @@ to the `pending/agent` queue.
 - **state.json**: records the highest comment ID seen per PR, so the same comment is never dispatched twice
 - **Active worker counting**: counts live workers via the tmux session naming convention; new tasks queue up when `MAX_CONCURRENT_WORKERS` is reached
 
+## Poll pace: idle and failure backoff
+
+The scheduler wakes `agent-poll.sh` every `POLL_INTERVAL_SECS` and always will —
+the script cannot change when its own alarm next rings, so the thing being saved
+here is **API calls, not processes** (a process costs tens of milliseconds plus
+one flock; calls are the scarce resource). What the backoff changes is the first
+thing the script does after waking: decide whether to talk to GitHub at all.
+
+**The hard boundary**: this state decides *whether this tick runs*, never *what
+it does when it runs*. Who gets dispatched, whether the concurrency cap is full,
+which session to reap — all of that is still read fresh from GitHub labels every
+real poll. A corrupted pace file can only produce the wrong cadence; it cannot
+produce a wrong dispatch or kill a live worker.
+
+**The ladder is keyed on how long the project has been quiet**, not on how many
+idle polls have gone by (`POLL_BACKOFF_LADDER`, `<quiet secs>:<interval secs>`):
+
+| Quiet for | Poll every | vs. a 60s tick |
+|---|---|---|
+| under 1 day | no backoff, every tick | 1x |
+| 1–3 days | 5 min | 1/5 |
+| 3–7 days | 10 min | 1/10 |
+| 7 days or more | 30 min | 1/30 |
+
+The top tier is "no gate at all", not "at most once per `POLL_INTERVAL_SECS`" —
+an instance whose timer drop-in ticks faster than that keeps its cadence. Making
+it a floor instead is a silent slowdown with no error anywhere, which is exactly
+the failure mode this whole area exists to avoid.
+
+Any of these resets the quiet timer to zero on the spot: the daemon did
+something (dispatch, self-heal, reap, cleanup); a worker is still running
+(`doing/agent` on GitHub, or a live worker tmux session here); the queue has work
+waiting even if the concurrency cap blocked it; or the repo changed. "Changed" is
+a fingerprint over the rows this poll actually considered — number, updated_at
+and labels for items carrying a label the daemon reacts to, plus bare membership
+for every other open item so that a merge or a close still registers. It is
+computed from the snapshot this tick already fetched, so it costs no extra call.
+
+That fingerprint is also how multi-host setups stay independent: in label mode
+another machine's churn on labels this machine does not watch will not wake it.
+**Greedy mode cannot isolate** — a greedy candidate set is by definition every
+open item in the repo, so everything is in scope. That is greedy's semantics, not
+a bug.
+
+**Failing to read GitHub is not the same as having nothing to do.** Failures run
+their own ladder — starting at `POLL_INTERVAL_SECS`, doubling on each further
+failure, capped at `POLL_FAIL_BACKOFF_MAX_SECS` — and
+deliberately **freeze** the quiet timer, so an outage never slows a busy project
+down and recovery resumes at the pre-outage tier. Measured 2026-09-18..22: five
+projects burned 30040 polls across 88 hours, every single one a 403 "account
+suspended"; the same window under this ladder is 905.
+
+**Three defences keep a bad local file from wedging a project**, all failing
+*open* (broken state means poll, never means wait):
+
+| Defence | What it covers |
+|---|---|
+| Heartbeat (`POLL_FORCE_SYNC_SECS`) | More than this since the last successful GitHub read → poll unconditionally, whatever the ladder, the fingerprint, or a bug in this logic says. It does **not** override the failure ladder: re-reading GitHub is precisely what that ladder exists to avoid, and a failure state is self-evident rather than inferred. |
+| Clamping | A `next_due` that will not parse, or that is further out than any legal interval, is treated as already due and the file is rewritten clean. |
+| Two timestamps | Bash has no monotonic clock (`date +%s` is wall time), so both "next due" and "last polled" are stored. Clock jumps forward → poll; jumps backward → state is untrustworthy → poll; file cannot be written (full/read-only disk) → every tick polls, i.e. the pre-#35 behaviour. |
+
+State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
+`rm`-ing it returns the project to full speed without losing the "which comments
+have I seen" cursors. A backed-off tick still writes one line to `poll.log`
+saying which tier it is on and how long it will wait.
+
 ## Worker session model
 
 - Each issue → one git worktree → one tmux session → one `claude -n issue<N> --dangerously-skip-permissions` process

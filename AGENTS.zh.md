@@ -103,6 +103,8 @@
 
 加字段时：`agent-poll.sh` 开头有 migration 逻辑——遍历 `seen_issue_comments seen_review_comments seen_reviews worker_models` 检查 `has`，缺就初始化 `{}`。加新 endpoint 时把字段名加进那个循环。
 
+**轮询节奏的状态是故意放在另一个文件里的。** `$STATE_DIR/poll-pace.json` 存空闲/故障退避状态（`next_due` / `last_poll` / `last_active` / `fail_streak` / `fingerprint`），刻意**不**并进 `state.json`：上面那个 migration 循环是把缺失字段初始化成 `{}`，而这里要的是数字和字符串；更重要的是运维上的理由——`rm poll-pace.json` 必须等于「立刻回最快档」，而不能顺手把「哪些评论看过了」那些游标一起清掉。helper 在 `_lib.sh` 的 `pace_*` 那一段，闸门本身紧跟在 `agent-poll.sh` 的 flock 后面。改它的时候记两条：**它只能决定「这一轮跑不跑」，绝不能决定「跑的时候怎么做」**；**每一处判定都要 fail-open**——读不懂、超范围的状态一律当作「该跑」，绝不是「再等等」（这里 fail-closed 的后果是整个项目静默停摆，而且哪里都不报错）。
+
 ### Session / Worktree / Branch 命名
 
 由 `coding-agent.config` 三个 prefix 控制，公式（issue N）：
@@ -166,6 +168,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - 记账 / 周报口径 → `tests/weekly-report-*.test.sh`
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
+- 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh` 等
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。

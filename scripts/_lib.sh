@@ -700,6 +700,288 @@ dispatch_fail_reset() {
     rm -f "$DISPATCH_FAIL_DIR/$1" 2>/dev/null || true
 }
 
+# ── 轮询节奏：长期没动静的项目渐进退避（issue #35）──
+#
+# 闹钟（systemd timer / launchd）照旧每 POLL_INTERVAL_SECS 秒把 agent-poll.sh 叫醒一次；
+# 这套东西决定的是**被叫醒之后要不要真的去打 GitHub**。脚本改不了自己下次被叫醒的
+# 时间（闹钟不归它管），所以这里省的是**调用**而不是进程——进程每分钟起一次只要几十
+# 毫秒加一次 flock，而调用才是稀缺资源。
+#
+# ⚠️ 最重要的边界：这套状态只决定「这一轮跑不跑」，**绝不决定「跑的时候怎么做」**。
+# 派工给谁、并发满没满、哪个 session 该回收，真值仍然 100% 来自每轮现拉的 GitHub
+# 标签。所以本地状态坏掉的后果只有「节奏不对」，不可能变成「派错工」或「误杀 worker」。
+#
+# 所有判定一律 **fail-open**：读不懂、算不出、超出合法范围的状态统统当作「该跑」。
+# 反过来（坏了就不跑）会让一个项目静默停摆，而且日志上看不出异常——那正是这套东西
+# 最危险的失败方向。
+#
+# 阶梯按**安静了多久**分档，不是按空闲了几轮：`<安静秒数>:<轮询间隔秒数>`，逗号分隔。
+# 默认 = 安静 1 天 → 5 分钟，3 天 → 10 分钟，7 天 → 30 分钟。
+#
+# ⚠️ 这里用 `${VAR-default}` 而不是 `${VAR:-default}`：显式写成空串是「关掉整个特性」
+# 的开关，`:-` 会把它当成「没设」又塞回默认阶梯，开关就废了。
+POLL_INTERVAL_SECS="${POLL_INTERVAL_SECS:-60}"
+POLL_BACKOFF_LADDER="${POLL_BACKOFF_LADDER-86400:300,259200:600,604800:1800}"
+POLL_FORCE_SYNC_SECS="${POLL_FORCE_SYNC_SECS:-1800}"
+POLL_FAIL_BACKOFF_MAX_SECS="${POLL_FAIL_BACKOFF_MAX_SECS:-1800}"
+POLL_DUE_SLACK_SECS="${POLL_DUE_SLACK_SECS:-10}"
+
+# 这几个值全都要进 `[ x -gt y ]`，写成 "30m" / "" / 带引号的空格都会让**算术比较本身**
+# 报错，而不是得出一个保守结果——在 set -e 下那就是整轮 poll 直接死。所以在这里一次性
+# 校验成纯数字，非法值退回默认并留一行日志。
+for _pv in POLL_INTERVAL_SECS:60 POLL_FORCE_SYNC_SECS:1800 POLL_FAIL_BACKOFF_MAX_SECS:1800 POLL_DUE_SLACK_SECS:10; do
+    _pk="${_pv%%:*}"; _pd="${_pv##*:}"
+    case "${!_pk}" in
+        ''|*[!0-9]*)
+            echo "[coding-agent] ⚠️ $_pk='${!_pk}' 不是非负整数，回退到默认 $_pd" >&2
+            printf -v "$_pk" '%s' "$_pd" ;;
+    esac
+done
+unset _pv _pk _pd
+
+PACE_FILE="${PACE_FILE:-$STATE_DIR/poll-pace.json}"
+# 跳过本轮时留给调用方打进 poll.log 的那行；真跑时为空。
+PACE_SKIP_MSG=""
+
+# 时间来源统一走这里，测试可以用 POLL_FAKE_NOW 把时钟拨到任意时刻。
+# 生产路径上它永远没被设过，等价于 `date +%s`。
+pace_now() {
+    if [ -n "${POLL_FAKE_NOW:-}" ]; then printf '%s' "$POLL_FAKE_NOW"; else date +%s; fi
+}
+
+# macOS 没有 sha256sum（只有 shasum）。指纹只要求「同输入同输出」，用哪个实现都行，
+# 但**必须**在同一台机器上稳定——所以按可用性挑一次，不做跨机比较。
+_pace_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256
+    else cksum; fi
+}
+
+# 退避上限：任何比这还远的 next_due 都不可能是本程序写出来的 → 判定状态损坏。
+pace_hard_cap() {
+    local cap="$POLL_FORCE_SYNC_SECS"
+    if [ "$POLL_FAIL_BACKOFF_MAX_SECS" -gt "$cap" ]; then cap="$POLL_FAIL_BACKOFF_MAX_SECS"; fi
+    printf '%s' "$cap"
+}
+
+# 阶梯查表：安静了 quiet 秒 → 该用多大间隔。
+#
+# 取「所有已跨过的门槛里**门槛最大**的那一档」，而不是「最后一个跨过的」——后者依赖
+# 配置项按升序书写，用户把两档写反就会静默取到错的那档（不报错，只是节奏不对）。
+#
+# ⚠️ 一档都没跨过时返回 **0 = 完全不设闸**，而不是 POLL_INTERVAL_SECS。差别很要命：
+# 返回 60 等于给脚本加了一条「最快 60 秒干一次活」的下限，于是 timer drop-in 跑 30 秒的
+# 实例（tutor 就是）会被悄悄拉回 60 秒——不报错、只是变慢，正是这套东西最该避免的失败
+# 方式。tests/dispatch-backoff.test.sh 的端到端那组当场就红了（连着四轮只派出去一次）。
+# 不退避档的定义就是「每个 tick 都跑」，所以这里必须是 0。
+pace_interval_for_quiet() {
+    local quiet="$1" iv=0 best=-1 entry th val
+    if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
+        while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            th="${entry%%:*}"; val="${entry##*:}"
+            # 一个档位写歪了只跳过这一档，不要让一个 typo 把整条阶梯废掉
+            case "$th" in ''|*[!0-9]*) log "⚠️ POLL_BACKOFF_LADDER 档位非法（门槛）：'$entry'，已跳过"; continue ;; esac
+            case "$val" in ''|*[!0-9]*) log "⚠️ POLL_BACKOFF_LADDER 档位非法（间隔）：'$entry'，已跳过"; continue ;; esac
+            if [ "$quiet" -ge "$th" ] && [ "$th" -gt "$best" ]; then best="$th"; iv="$val"; fi
+        done < <(printf '%s\n' "$POLL_BACKOFF_LADDER" | tr ',' '\n')
+    fi
+    # 心跳是硬上界：配得比心跳还慢的档位没有意义（心跳到点照样会跑），夹回去并说明。
+    if [ "$iv" -gt "$POLL_FORCE_SYNC_SECS" ]; then
+        log "⚠️ 阶梯档位 ${iv}s 超过心跳 ${POLL_FORCE_SYNC_SECS}s，按心跳夹紧"
+        iv="$POLL_FORCE_SYNC_SECS"
+    fi
+    printf '%s' "$iv"
+}
+
+# 读不到 GitHub 时的节奏：POLL_INTERVAL_SECS 起步，每多失败一次翻倍，封顶
+# POLL_FAIL_BACKOFF_MAX_SECS。跟「安静退避」完全分开：故障不是空闲，把它算成空闲会
+# 越错越慢、故障恢复越拖越久（实测：2026-09-18~22 那 88 小时，5 个项目跑了 30040 轮
+# 全是 403「账号已封」）。
+pace_fail_interval() {
+    local streak="$1" iv="$POLL_INTERVAL_SECS" i=1
+    [ "$streak" -ge 1 ] || { printf '0'; return 0; }
+    while [ "$i" -lt "$streak" ]; do
+        iv=$((iv * 2))
+        if [ "$iv" -ge "$POLL_FAIL_BACKOFF_MAX_SECS" ]; then iv="$POLL_FAIL_BACKOFF_MAX_SECS"; break; fi
+        i=$((i + 1))
+    done
+    if [ "$iv" -gt "$POLL_FAIL_BACKOFF_MAX_SECS" ]; then iv="$POLL_FAIL_BACKOFF_MAX_SECS"; fi
+    printf '%s' "$iv"
+}
+
+# 节奏状态读：输出 5 个 TAB 分隔字段 next_due / last_poll / last_active / fail_streak /
+# fingerprint，读不出来的给**空串**。
+#
+# ⚠️ 缺字段绝不能 fallback 成 0：0 对 last_active 的含义是「1970 年就一直安静着」，
+# 会把一个刚部署的项目直接打到最慢那一档。「没有值」和「值是 0」必须分得开。
+pace_read() {
+    jq -r '[(.next_due // ""), (.last_poll // ""), (.last_active // ""),
+            (.fail_streak // ""), (.fingerprint // "")] | @tsv' "$PACE_FILE" 2>/dev/null || printf '\t\t\t\t'
+}
+
+# 节奏状态写。写失败**不算致命**：文件里留着的是上一轮那个很快就会过期的 next_due，
+# 下一轮照样会跑（盘满 / 只读时行为退化成改动前的「每个 tick 都跑」）。
+pace_write() {
+    local next_due="$1" last_poll="$2" last_active="$3" fail_streak="$4" fingerprint="$5" tmp
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    tmp=$(mktemp "$STATE_DIR/.poll-pace.XXXXXX" 2>/dev/null) || return 1
+    if jq -n --argjson nd "$next_due" --argjson lp "$last_poll" --argjson la "$last_active" \
+            --argjson fs "$fail_streak" --arg fp "$fingerprint" \
+            '{next_due:$nd, last_poll:$lp, last_active:$la, fail_streak:$fs, fingerprint:$fp}' \
+            > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$PACE_FILE" && return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# 本轮「判断范围」的指纹：从**已经拉下来的本轮快照**里算，不多花一次调用。
+#
+# 取两层信息：
+#   · daemon 会对之做判断的条目（挂着任一触发 label 或 doing/agent；greedy 模式下是
+#     全部 open 条目）→ 记 编号 + 最后更新时间 + 标签，任何一项变了都算有动静；
+#   · 其余所有 open 条目 → 只记**编号**。这样一条 PR 被合并 / issue 被关掉（从 open
+#     集合里消失）照样能被发现，§3/§3c/§4 那几段清理不会被退避拖住；而对面机器在
+#     一条跟本机无关的条目上翻标签，不会把本机从退避里叫醒。
+#
+# 这就是多机分工那条「别因为对方在干活就误判自己有活动」的落点。**greedy 模式下做不到
+# 隔离**——greedy 的候选集按定义就是整个仓库的 open 条目，对面动了什么本来就在本机的
+# 判断范围内。这是 greedy 的语义，不是 bug。
+#
+# 快照读不到时返回非 0 且不输出：调用方必须把它当成「这一轮没算出指纹」，而不是
+# 「指纹是空的」——后者会被读成「所有条目都消失了」。
+pace_fingerprint() {
+    local kind rows="" num updated labels_csv want L
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    for kind in issue pr; do
+        snapshot_rows "$kind" "" >/dev/null 2>&1 || return 1
+        while IFS=$'\t' read -r num _ updated labels_csv _; do
+            [ -n "$num" ] || continue
+            want=0
+            if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
+                want=1
+            else
+                for L in "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING"; do
+                    [ -n "$L" ] || continue
+                    case ",$labels_csv," in *",$L,"*) want=1; break ;; esac
+                done
+            fi
+            if [ "$want" = 1 ]; then
+                rows+="${kind}#${num}|${updated}|${labels_csv}"$'\n'
+            else
+                rows+="${kind}#${num}"$'\n'
+            fi
+        done < <(snapshot_rows "$kind" "" 2>/dev/null)
+    done
+    printf '%s' "$rows" | LC_ALL=C sort | _pace_hash | cut -c1-16
+}
+
+# 秒数 → 人读时长，只给日志用。
+pace_human_secs() {
+    local s="$1"
+    if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+    elif [ "$s" -lt 3600 ]; then printf '%dm%ds' "$((s / 60))" "$((s % 60))"
+    elif [ "$s" -lt 86400 ]; then printf '%dh%dm' "$((s / 3600))" "$(((s % 3600) / 60))"
+    else printf '%dd%dh' "$((s / 86400))" "$(((s % 86400) / 3600))"; fi
+}
+
+# 本轮该不该真跑。返回 0 = 跑；1 = 跳过（此时 PACE_SKIP_MSG 是要打进日志的那行）。
+#
+# 五道闸，前四道全是「坏了就跑」的保险，只有最后一道才是真正的退避判断：
+#   0. 阶梯留空          → 特性关闭，行为与改动前逐字节一致
+#   1. 状态读不出/不是数字 → 防线 1：损坏即到期
+#   2. next_due 比上限还远 → 防线 1：这个值不可能是本程序写的（时钟跳变 / 文件被改坏）
+#   3. now < last_poll     → 防线 2：时钟往回跳了，状态不可信
+#   4. 距上次真跑 ≥ 心跳   → 防线 3：保底跟 GitHub 对一次，独立于上面所有判断
+#   5. 没到点              → 跳过
+pace_should_poll() {
+    PACE_SKIP_MSG=""
+    [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 0
+
+    local now next_due last_poll last_active fail_streak fingerprint cap waited remain
+    now=$(pace_now)
+    IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
+
+    case "$next_due" in ''|*[!0-9]*) return 0 ;; esac
+    case "$last_poll" in ''|*[!0-9]*) return 0 ;; esac
+
+    # 用 if/fi 而不是 `[ ] && return`：set -e 下 cond 为假会把 status 1 漏给调用方，
+    # 而调用方正是 `if ! pace_should_poll` —— 漏出去就等于把「该跑」读成「跳过」。
+    cap=$(pace_hard_cap)
+    if [ $((next_due - now)) -gt "$cap" ]; then return 0; fi
+    if [ "$now" -lt "$last_poll" ]; then return 0; fi
+
+    # 心跳不覆盖「读不到 GitHub」那套退避：读不到的时候强行再读一次正是它要避免的事，
+    # 而且那个状态是自证的（上一次尝试真的失败了），没有推断错的空间。
+    waited=$((now - last_poll))
+    case "$fail_streak" in ''|*[!0-9]*) fail_streak=0 ;; esac
+    if [ "$fail_streak" -eq 0 ] && [ "$waited" -ge "$POLL_FORCE_SYNC_SECS" ]; then
+        return 0
+    fi
+
+    if [ $((now + POLL_DUE_SLACK_SECS)) -ge "$next_due" ]; then return 0; fi
+
+    remain=$((next_due - now))
+    case "$last_active" in ''|*[!0-9]*) last_active="$now" ;; esac
+    if [ "$fail_streak" -gt 0 ]; then
+        PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
+    else
+        PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")）"
+    fi
+    return 1
+}
+
+# 一轮真跑完、且这一轮**读到了** GitHub 时调用。
+#   acted=1  daemon 这轮确实做了事（派工 / 自愈 / 回收 / 清理 / 队列里有活 / 有 worker 在跑）
+#   fp       本轮指纹；空串 = 没算出来 → 保守当作「有动静」，并保留上一轮的指纹不覆盖
+pace_record_ok() {
+    local acted="$1" fp="$2"
+    local now next_due last_poll last_active fail_streak prev_fp active quiet iv
+    now=$(pace_now)
+    IFS=$'\t' read -r next_due last_poll last_active fail_streak prev_fp < <(pace_read) || true
+
+    case "$last_active" in ''|*[!0-9]*) last_active="$now" ;; esac
+    # 时钟往回跳过 → last_active 落在未来 → 当场校正，否则 quiet 会算成负数
+    if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
+
+    active=0
+    if [ "$acted" = 1 ]; then active=1; fi
+    if [ -z "$fp" ]; then
+        active=1          # 指纹没算出来：保守当有动静，且不覆盖上一轮的值
+        fp="$prev_fp"
+    elif [ "$fp" != "$prev_fp" ]; then
+        active=1
+    fi
+    if [ "$active" = 1 ]; then last_active="$now"; fi
+
+    quiet=$((now - last_active))
+    iv=$(pace_interval_for_quiet "$quiet")
+    PACE_TIER_SECS="$iv"; PACE_QUIET_SECS="$quiet"
+    pace_write "$((now + iv))" "$now" "$last_active" 0 "$fp" \
+        || log "⚠️ 节奏状态写入失败（不影响本轮；下一轮会照常跑）"
+    return 0
+}
+
+# 一轮真跑、但**整轮读不到** GitHub 时调用。
+# 安静计时在这里**冻结**（既不清零也不推进）：故障不是空闲，恢复之后要从故障前那一档
+# 继续，而不是被一次网络抖动打回慢档、也不是被当成「没活干」越退越慢。
+pace_record_fail() {
+    local now next_due last_poll last_active fail_streak fp iv
+    now=$(pace_now)
+    IFS=$'\t' read -r next_due last_poll last_active fail_streak fp < <(pace_read) || true
+    case "$fail_streak" in ''|*[!0-9]*) fail_streak=0 ;; esac
+    if [ "$fail_streak" -gt 64 ]; then fail_streak=64; fi   # 状态被写坏时别让翻倍循环失控
+    fail_streak=$((fail_streak + 1))
+    case "$last_active" in ''|*[!0-9]*) last_active="$now" ;; esac
+    if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
+    iv=$(pace_fail_interval "$fail_streak")
+    PACE_TIER_SECS="$iv"
+    pace_write "$((now + iv))" "$now" "$last_active" "$fail_streak" "$fp" || true
+    log "GitHub 读取连续失败 ${fail_streak} 次 → 下一轮 $(pace_human_secs "$iv") 后重试"
+    return 0
+}
+
 # 目标分支是不是已经被**另一个** worktree 签出。命中 → 打印占用它的 worktree 路径并
 # return 0；没占用 → return 1。调用方必须已经 cd 进仓库（主 checkout）。
 #

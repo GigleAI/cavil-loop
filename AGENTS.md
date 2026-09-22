@@ -123,6 +123,8 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
 
 When adding a field: `agent-poll.sh` has a migration loop at the top that iterates `seen_issue_comments seen_review_comments seen_reviews worker_models` and inits missing ones to `{}`. Add your new field name to that loop.
 
+**Poll pace state lives elsewhere, on purpose.** `$STATE_DIR/poll-pace.json` holds the idle/failure backoff state (`next_due` / `last_poll` / `last_active` / `fail_streak` / `fingerprint`) and is deliberately *not* part of `state.json`: the migration loop above inits missing fields to `{}` while these are numbers and strings, and — the operational reason — `rm poll-pace.json` has to mean "back to full speed now" without also wiping the seen-comment cursors. Helpers are the `pace_*` block in `_lib.sh`; the gate itself sits right after the flock in `agent-poll.sh`. Two rules when touching it: **it may only decide whether a tick runs, never what the tick does**, and **every judgement fails open** — unparseable or out-of-range state means poll, never means wait longer (fail-closed here is a silent project-wide stall with no error anywhere).
+
 ### Session / worktree / branch naming
 
 Driven by three prefixes in `coding-agent.config` (formula for "work number N"):
@@ -195,6 +197,7 @@ Changes in these areas must run the matching tests:
 
 - Accounting / weekly report → `tests/weekly-report-*.test.sh`
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
+- Poll pace / idle + failure backoff → `tests/poll-pace.test.sh`
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, …
 - Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.

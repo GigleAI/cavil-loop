@@ -75,7 +75,24 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 
 # Pace
 MAX_CONCURRENT_WORKERS=1
+
+# How often the scheduler wakes the poller. setup.sh writes it into the systemd
+# timer drop-in / launchd plist, so it takes effect after re-running setup.sh.
 POLL_INTERVAL_SECS=60
+
+# Idle backoff: `<quiet seconds>:<poll interval seconds>`, comma separated. A
+# project nobody has touched for that long polls at that interval. Empty string
+# turns the whole feature off (idle AND failure backoff).
+POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
+# Force a full poll if this long has passed since the last successful GitHub
+# read, whatever the ladder or the local state says.
+POLL_FORCE_SYNC_SECS=1800
+# Failure gets its own ladder (starts at POLL_INTERVAL_SECS, doubles each time,
+# capped here) and never
+# advances the quiet timer: "cannot read GitHub" is not "nothing to do".
+POLL_FAIL_BACKOFF_MAX_SECS=1800
+# Slack for timer jitter, so a 60s tier is not stretched into 120s.
+POLL_DUE_SLACK_SECS=10
 
 # Give up on an item after this many consecutive dispatch failures: the daemon
 # strips its trigger labels and hands it to pending/human. A failed dispatch
@@ -540,6 +557,7 @@ your-project/
 
 ~/.local/state/coding-agent-poll/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
+├── poll-pace.json                      # idle/failure backoff state; `rm` it = back to full speed
 ├── poll.log                            # rolling log
 ├── poll.lock                           # flock
 └── sessions/                           # tmux pane logs per worker
@@ -552,17 +570,28 @@ your-project/
 
 | OS | Scheduler | Unit / Plist | Set up by `setup.sh`? |
 |----|-----------|--------------|-----------------------|
-| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}` (symlink to skill template) | ✅ |
+| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}` (symlink to skill template) + `coding-agent-poll@<key>.timer.d/interval.conf` (generated from `POLL_INTERVAL_SECS`) | ✅ |
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist` (generated) | ✅ |
 | Other | — | — | ❌ `exit 1`; see [manual cron fallback](#manual-cron-fallback) below |
 
 Both paths read the same `~/.config/coding-agent-work-loop/<key>.conf` env file and invoke the same `agent-poll.sh`. The only difference is the symlink-vs-generate trade-off: on Linux, `git pull`-ing the skill auto-updates the unit; on macOS the plist is per-project (launchd has no template mode), so a template change requires re-running `setup.sh`.
 
+The tick cadence is only an upper bound on how often GitHub gets called: a
+project nobody has touched for a day or more decides, inside `agent-poll.sh`,
+to skip most of its ticks (see [idle and failure backoff](architecture.md#poll-pace-idle-and-failure-backoff)).
+Waking a process costs tens of milliseconds; API calls are the scarce resource,
+so the tick itself stays cheap and frequent.
+
+`POLL_INTERVAL_SECS` is what drives the timer on both OSes, and on Linux
+`setup.sh` writes it as a per-instance drop-in rather than editing the shared
+template. A hand-written `interval.conf` is never overwritten — `setup.sh` says
+so and leaves it alone.
+
 ### macOS specifics
 
 - **Label**: `dev.luosky.coding-agent-work-loop.<key>` (must match the filename)
 - **Loaded via**: `launchctl bootstrap gui/$UID <plist>` (modern syntax, macOS 10.10+). `setup.sh` runs `bootout` first if a previous load exists, so re-runs are idempotent.
-- **Run cadence**: `StartInterval=60` (every 60s, equivalent to systemd `OnUnitActiveSec=60s`).
+- **Run cadence**: `StartInterval` comes from `POLL_INTERVAL_SECS` (equivalent to systemd `OnUnitActiveSec`). Changing it means re-running `setup.sh`, since the plist is generated, not symlinked.
 - **Logs**: stdout/stderr → `~/Library/Logs/coding-agent-work-loop/<key>.{out,err}.log`. The deeper poll log still lives at `$STATE_DIR/poll.log`.
 - **flock**: not bundled with macOS. `brew install flock` once before running `setup.sh`.
 - **Logout / lid-close**: a user LaunchAgent runs when you're logged in (even with screen locked). For "run even when no user is logged in," you'd need a `/Library/LaunchDaemons/` install — `setup.sh` deliberately doesn't go there (requires `sudo`, breaks symmetry with Linux's `--user` systemd).
@@ -646,6 +675,35 @@ Polling has up to 1 minute of latency. For instant:
 Worker selection now goes through a thin **driver layer** — no fork needed. Ordinary work uses `WORKER_AGENT=claude` by default; `WORKER_MODEL` is an optional model override for that path. When the optional review gate is enabled, review uses `REVIEW_WORKER_AGENT=codex` and `REVIEW_MODEL` independently. An empty model leaves selection to the driver's current default. Built-ins: `claude`, `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
+
+### poll.log went sparse — did the daemon die?
+
+Probably not: a project nobody has touched for a day or more polls less often on
+purpose (`POLL_BACKOFF_LADDER`). A backed-off tick still writes one line saying
+which tier it is on and how much longer it will wait, so silence is silence and
+backoff is visible:
+
+```
+[...] [myproj] 本轮跳过（已安静 3d4h，当前档位 10m0s，还差 7m12s）
+```
+
+Checks, in order:
+
+```bash
+cat ~/.local/state/coding-agent-poll/<key>/poll-pace.json    # which tier, since when
+grep -c 'poll start' ~/.local/state/coding-agent-poll/<key>/poll.log   # real polls so far
+rm ~/.local/state/coding-agent-poll/<key>/poll-pace.json     # back to full speed, right now
+```
+
+Deleting that file is always safe — it only holds pacing, never the "which
+comments have I seen" cursors (those live in `state.json`). Two guarantees hold
+regardless of what is in it: a full poll happens at least every
+`POLL_FORCE_SYNC_SECS`, and any unparseable / out-of-range state is treated as
+"due now" rather than "wait longer". To turn the whole thing off, set
+`POLL_BACKOFF_LADDER=""`.
+
+If the log is genuinely silent — no skip lines either — the daemon really is
+down; carry on below.
 
 ### Timer / agent is on but daemon isn't running
 
