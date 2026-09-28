@@ -132,8 +132,10 @@ Full field list: [`coding-agent.config.example`](../coding-agent.config.example)
 
 When `CODEX_PRICES` is unset, the Codex usage driver uses the
 [built-in price table](../scripts/drivers/token-usage/codex-prices.json), checked
-on 2026-09-16 against the official API model pages:
+on 2026-09-28 against the official API model pages:
 [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra),
+[`gpt-6-sol`](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[`gpt-6-luna`](https://developers.openai.com/api/docs/models/gpt-6-luna),
 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
 [`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra),
 [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
@@ -141,8 +143,13 @@ on 2026-09-16 against the official API model pages:
 [`gpt-5.2-codex`](https://developers.openai.com/api/docs/models/gpt-5.2-codex),
 [`gpt-5-codex`](https://developers.openai.com/api/docs/models/gpt-5-codex),
 and [`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest).
-The table contains their Standard text input, cached-input, and output rates;
-only Astra has a listed cache-write rate in this table.
+The table contains their Standard text input, cached-input, and output rates.
+The three GPT-6 and three GPT-5.6 models also carry their listed cache-write
+rates; the Codex-named models have no listed cache-write rate, so cache writes
+on them stay unpriced.
+`gpt-5.6-sol` is on promotional pricing that OpenAI only guarantees through
+2026-11-21. Re-check that model before then instead of waiting for the 90-day
+stale warning, which fires later.
 
 Set `CODEX_PRICES` to a JSON map keyed by exact model ID to replace the full
 table. A copy-ready map is in [the config example](../coding-agent.config.example);
