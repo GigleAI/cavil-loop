@@ -123,8 +123,10 @@ PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用
 
 未设置 `CODEX_PRICES` 时，Codex 用量驱动使用
 [内置价格表](../scripts/drivers/token-usage/codex-prices.json)。该表在
-2026-09-16 对照官方模型页核过标准文本输入、缓存输入和输出标价，覆盖
+2026-09-28 对照官方模型页核过标准文本输入、缓存输入和输出标价，覆盖
 [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)、
+[`gpt-6-sol`](https://developers.openai.com/api/docs/models/gpt-6-sol)、
+[`gpt-6-luna`](https://developers.openai.com/api/docs/models/gpt-6-luna)、
 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol)、
 [`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra)、
 [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna)、
@@ -132,7 +134,10 @@ PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用
 [`gpt-5.2-codex`](https://developers.openai.com/api/docs/models/gpt-5.2-codex)、
 [`gpt-5-codex`](https://developers.openai.com/api/docs/models/gpt-5-codex) 和
 [`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest)。
-表中只有 Astra 配有官方列出的缓存写入单价。
+GPT-6 与 GPT-5.6 各三个型号另配有官方列出的缓存写入单价；名字带 codex 的型号
+官方未列缓存写入价，其缓存写入仍报缺价。
+`gpt-5.6-sol` 目前是促销价，官方只保证至 2026-11-21；请在此之前复核该型号，
+不要等 90 天过期提示（它来得更晚）。
 
 部署者可按完整模型 ID 设置 `CODEX_PRICES` JSON，整表替换内置表；
 [配置模板](../coding-agent.config.example)有可直接复制的版本。设
