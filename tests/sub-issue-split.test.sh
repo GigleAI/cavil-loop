@@ -145,6 +145,8 @@ rollup_setup() {  # 父 #50 open，子项 51/52 的状态由参数给
     set_json "$R/issues/51/parent" "$(issue_json 50 luosky 'p')"
     set_json "$R/issues/52/parent" "$(issue_json 50 luosky 'p')"
     set_parent 50 "${3:-open}" 2
+    set_json "$R/issues/51" "$(issue_json 51 bot 'c' closed)"
+    set_json "$R/issues/52" "$(issue_json 52 bot 'c' closed)"
     set_json "$R/issues/50/sub_issues" "[{\"number\":51,\"state\":\"$1\"},{\"number\":52,\"state\":\"$2\"}]"
 }
 comments() { grep -c '^COMMENT 50 ' "$CALLS"; }
@@ -171,6 +173,7 @@ chk "第二次调用不再翻 label" "$(flipped)" "1"
 
 echo "【4】父 issue 后来又挂了新子项 → 全关时再汇总一次"
 set_json "$R/issues/53/parent" "$(issue_json 50 luosky 'p')"
+set_json "$R/issues/53" "$(issue_json 53 bot 'c' closed)"
 set_json "$R/issues/50/sub_issues" '[{"number":51,"state":"closed"},{"number":52,"state":"closed"},{"number":53,"state":"closed"}]'
 set_parent 50 open 3
 sub_issue_rollup 53 >/dev/null 2>&1
@@ -224,6 +227,17 @@ rollup_setup closed closed
 set_parent 50 open ""
 chk "父 issue 没给子项总数（核不了）→ 返回 1，不放行" "$(rc_of 51)" "1"
 chk "… 不评论、不翻 label" "$(comments)$(flipped)" "00"
+
+echo "【5a-2】子项自己的状态由汇总亲自读（merge 钩子读失败会兜底成 OPEN）"
+rollup_setup closed closed
+set_err "$R/issues/51" 'gh: Server Error (HTTP 502)'
+chk "子项状态读取 502 → 返回 1（留队）" "$(rc_of 51)" "1"
+chk "… 不动" "$(comments)$(flipped)" "00"
+set_json "$R/issues/51" "$(issue_json 51 bot 'c' closed)"
+chk "下轮恢复为 CLOSED → 汇总一次" "$(rc_of 51; comments; flipped)" "$(printf '0\n1\n1')"
+rollup_setup closed closed
+set_json "$R/issues/51" "$(issue_json 51 bot 'c' open)"
+chk "有父但子项还开着 → 返回 1，不汇总" "$(rc_of 51; comments)" "$(printf '1\n0')"
 
 echo "【5b】写失败：评论和翻 label 分开记进度，重试不重复评论"
 rollup_setup closed closed
@@ -303,8 +317,10 @@ chk "没有父 issue → 没有任何写操作" "$(wc -l < "$CALLS" | tr -d ' ')
 chk "… state 不新增字段" "$(jq -c . "$STATE_DIR/state.json")" "{}"
 
 echo "【7】接线：merge 钩子与派工脚本真的调用了它们"
-chk "agent-poll.sh 在 CLOSED 分支入队" \
-    "$(awk '/issue_state" = "CLOSED"/,/else/' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'sub_issue_rollup_enqueue "\$issue_n"')" "1"
+chk "agent-poll.sh 入队不依赖 issue 状态读取结果（在读状态之前、无条件）" \
+    "$(awk '/sub_issue_rollup_enqueue "\$issue_n"/{e=NR} /issue_state=\$\(gh issue view/{r=NR} END{print (e && r && e<r) ? "ok" : "bad"}' "$REPO_DIR/scripts/agent-poll.sh")" "ok"
+chk "… 且 CLOSED 分支里不再有另一次入队" \
+    "$(grep -c 'sub_issue_rollup_enqueue "\$issue_n"' "$REPO_DIR/scripts/agent-poll.sh")" "1"
 chk "agent-poll.sh 在 merged 循环之外每轮清队" \
     "$(awk '/done <<< "\$recent_merged"/{f=1} f' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'sub_issue_rollup_drain "\$STATE_FILE"')" "1"
 chk "state 迁移循环含三个新字段" \
