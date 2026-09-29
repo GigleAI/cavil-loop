@@ -49,16 +49,21 @@ chk() {
 # ── 假 gh ──
 # FIX/<路径 / 换成 _>.json = 该 GET 端点的响应体；FIX/<...>.err = 以该内容报错（stderr + rc=1）。
 # 所有写操作（-X POST/DELETE、issue comment）记到 $CALLS，不回放。
+# FAIL_WRITE=<正则>：匹配的写操作记为 FAILED 并返回 1（模拟写接口 5xx）。
 FIX="$SANDBOX/fix"; CALLS="$SANDBOX/calls"; mkdir -p "$FIX"; : > "$CALLS"
 fx_key() { printf '%s' "$1" | sed 's|?.*||; s|/|_|g'; }
 set_json() { printf '%s' "$2" > "$FIX/$(fx_key "$1").json"; rm -f "$FIX/$(fx_key "$1").err"; }
 set_err()  { printf '%s' "$2" > "$FIX/$(fx_key "$1").err"; rm -f "$FIX/$(fx_key "$1").json"; }
-reset_fx() { rm -f "$FIX"/*; : > "$CALLS"; echo '{}' > "$STATE_DIR/state.json"; _WRITE_LOGIN_CACHE=""; }
+reset_fx() { rm -f "$FIX"/*; : > "$CALLS"; echo '{}' > "$STATE_DIR/state.json"; _WRITE_LOGIN_CACHE=""; FAIL_WRITE=""; }
+FAIL_WRITE=""
 
 gh() {
     if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
         local n="$3" bf="" a
         for a in "$@"; do [ "${prev:-}" = "--body-file" ] && bf="$a"; prev="$a"; done
+        if [ -n "$FAIL_WRITE" ] && [[ "COMMENT $n" =~ $FAIL_WRITE ]]; then
+            echo "FAILED COMMENT $n" >> "$CALLS"; echo 'gh: Server Error (HTTP 502)' >&2; return 1
+        fi
         printf 'COMMENT %s %s\n' "$n" "$(tr '\n' ' ' < "$bf")" >> "$CALLS"
         return 0
     fi
@@ -75,6 +80,10 @@ gh() {
         esac
     done
     if [ "$method" != GET ]; then
+        if [ -n "$FAIL_WRITE" ] && [[ "$method $path ${args[*]:-}" =~ $FAIL_WRITE ]]; then
+            printf 'FAILED %s %s %s\n' "$method" "$path" "${args[*]:-}" >> "$CALLS"
+            echo 'gh: Server Error (HTTP 502)' >&2; return 1
+        fi
         printf '%s %s %s\n' "$method" "$path" "${args[*]:-}" >> "$CALLS"
         return 0
     fi
@@ -161,30 +170,85 @@ sub_issue_rollup 53 >/dev/null 2>&1
 chk "子项数 2→3 → 再汇总" "$(comments)" "2"
 chk "state 更新为 3" "$(jq -r '.split_rollups["50"]' "$STATE_DIR/state.json")" "3"
 
-echo "【5】查不到 ≠ 全完成：任何一步出错都不动"
+echo "【5】查不到 ≠ 全完成：任何一步出错都不动，并返回「下轮再试」"
+rc_of() { sub_issue_rollup "$1" >/dev/null 2>&1; echo $?; }
 rollup_setup closed closed
 set_err "$R/issues/51/parent" 'gh: Server Error (HTTP 502)'
-sub_issue_rollup 51 >/dev/null 2>&1
-chk "父 issue 接口 502 → 不动" "$(comments)$(flipped)" "00"
+chk "父 issue 接口 502 → 返回 1（重试）" "$(rc_of 51)" "1"
+chk "… 不动" "$(comments)$(flipped)" "00"
 
 rollup_setup closed closed
 set_err "$R/issues/50/sub_issues" 'gh: Server Error (HTTP 502)'
-sub_issue_rollup 51 >/dev/null 2>&1
-chk "子项列表 502 → 不动" "$(comments)$(flipped)" "00"
+chk "子项列表 502 → 返回 1" "$(rc_of 51)" "1"
+chk "… 不动" "$(comments)$(flipped)" "00"
 
 rollup_setup closed closed
 set_json "$R/issues/50/sub_issues" '[]'
-sub_issue_rollup 51 >/dev/null 2>&1
-chk "子项列表为空 → 不动（不能把 0/0 当全完成）" "$(comments)$(flipped)" "00"
+chk "子项列表为空（接口未刷新）→ 返回 1，不能把 0/0 当全完成" "$(rc_of 51)" "1"
+chk "… 不动" "$(comments)$(flipped)" "00"
 
 rollup_setup closed closed
 set_err "$R/issues/50" 'gh: Server Error (HTTP 502)'
-sub_issue_rollup 51 >/dev/null 2>&1
-chk "父 issue 状态读不到 → 不动" "$(comments)$(flipped)" "00"
+chk "父 issue 状态读不到 → 返回 1" "$(rc_of 51)" "1"
+chk "… 不动" "$(comments)$(flipped)" "00"
 
 rollup_setup closed closed closed
-sub_issue_rollup 51 >/dev/null 2>&1
-chk "父 issue 已关闭 → 不动" "$(comments)$(flipped)" "00"
+chk "父 issue 已关闭 → 返回 0（定论，出队）" "$(rc_of 51)" "0"
+chk "… 不动" "$(comments)$(flipped)" "00"
+
+rollup_setup closed open
+chk "兄弟还开着 → 返回 0（定论：等下一个子 PR 合并时再看）" "$(rc_of 51)" "0"
+
+echo "【5b】写失败：评论和翻 label 分开记进度，重试不重复评论"
+rollup_setup closed closed
+FAIL_WRITE="^POST $R/issues/50/labels"
+chk "评论成功、翻 label 失败 → 返回 1" "$(rc_of 51)" "1"
+chk "… 评论已发 1 次" "$(comments)" "1"
+chk "… 没记成「已完成」" "$(jq -r '.split_rollups["50"] // "none"' "$STATE_DIR/state.json")" "none"
+chk "… 记下「评论已发」" "$(jq -r '.split_rollup_commented["50"]' "$STATE_DIR/state.json")" "2"
+FAIL_WRITE=""
+chk "接口恢复后重试 → 返回 0" "$(rc_of 51)" "0"
+chk "… 补翻了 label" "$(flipped)" "1"
+chk "… 没有重复评论" "$(comments)" "1"
+chk "… 记成已完成" "$(jq -r '.split_rollups["50"]' "$STATE_DIR/state.json")" "2"
+
+rollup_setup closed closed
+FAIL_WRITE="^COMMENT 50"
+chk "评论失败 → 返回 1" "$(rc_of 51)" "1"
+chk "… 没翻 label（先有评论说明，再翻 label）" "$(flipped)" "0"
+chk "… 没记「评论已发」" "$(jq -r '.split_rollup_commented["50"] // "none"' "$STATE_DIR/state.json")" "none"
+FAIL_WRITE=""
+chk "恢复后重试 → 评论 + 翻 label 各一次" "$(rc_of 51; comments; flipped)" "$(printf '0\n1\n1')"
+
+echo "【5c】重试队列：merge 钩子只入队，每轮清队"
+q() { jq -r --arg s "$1" '.split_rollup_queue[$s] // "gone"' "$STATE_DIR/state.json"; }
+rollup_setup closed closed
+set_err "$R/issues/50/sub_issues" 'gh: Server Error (HTTP 502)'
+sub_issue_rollup_enqueue 51 "$STATE_DIR/state.json"
+chk "入队后次数为 0" "$(q 51)" "0"
+sub_issue_rollup_drain "$STATE_DIR/state.json" >/dev/null 2>&1
+chk "第一轮 502 → 仍在队里，次数 1" "$(q 51)" "1"
+chk "… 没评论" "$(comments)" "0"
+set_json "$R/issues/50/sub_issues" '[{"number":51,"state":"closed"},{"number":52,"state":"closed"}]'
+sub_issue_rollup_drain "$STATE_DIR/state.json" >/dev/null 2>&1
+chk "下一轮恢复 → 出队" "$(q 51)" "gone"
+chk "… 汇总完成（评论 + 翻 label）" "$(comments)$(flipped)" "11"
+sub_issue_rollup_enqueue 51 "$STATE_DIR/state.json"
+sub_issue_rollup_enqueue 52 "$STATE_DIR/state.json"
+sub_issue_rollup_drain "$STATE_DIR/state.json" >/dev/null 2>&1
+chk "同一父 issue 的两个子项同轮入队 → 都出队、不重复汇总" "$(q 51)$(q 52)$(comments)$(flipped)" "gonegone11"
+
+rollup_setup closed closed
+set_err "$R/issues/51/parent" 'gh: Forbidden (HTTP 403)'
+sub_issue_rollup_enqueue 51 "$STATE_DIR/state.json"
+for _ in 1 2 3; do SUB_ISSUE_ROLLUP_MAX_TRIES=3 sub_issue_rollup_drain "$STATE_DIR/state.json" >/dev/null 2>&1; done
+chk "持续报错到上限（3）→ 放弃出队，不无限重试" "$(q 51)" "gone"
+
+reset_fx
+set_err "$R/issues/60/parent" "$NOPARENT"
+sub_issue_rollup_enqueue 60 "$STATE_DIR/state.json"
+sub_issue_rollup_drain "$STATE_DIR/state.json" >/dev/null 2>&1
+chk "没有父的普通 issue → 一轮就出队、没有任何写" "$(q 60)$(wc -l < "$CALLS" | tr -d ' ')" "gone0"
 
 echo "【6】负对照：普通 issue（没有父）行为不变"
 reset_fx
@@ -194,10 +258,12 @@ chk "没有父 issue → 没有任何写操作" "$(wc -l < "$CALLS" | tr -d ' ')
 chk "… state 不新增字段" "$(jq -c . "$STATE_DIR/state.json")" "{}"
 
 echo "【7】接线：merge 钩子与派工脚本真的调用了它们"
-chk "agent-poll.sh 在 CLOSED 分支调用 sub_issue_rollup" \
-    "$(awk '/issue_state" = "CLOSED"/,/else/' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'sub_issue_rollup "\$issue_n"')" "1"
-chk "state 迁移循环含 split_rollups" \
-    "$(grep -c '^for field in .* split_rollups; do' "$REPO_DIR/scripts/agent-poll.sh")" "1"
+chk "agent-poll.sh 在 CLOSED 分支入队" \
+    "$(awk '/issue_state" = "CLOSED"/,/else/' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'sub_issue_rollup_enqueue "\$issue_n"')" "1"
+chk "agent-poll.sh 在 merged 循环之外每轮清队" \
+    "$(awk '/done <<< "\$recent_merged"/{f=1} f' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'sub_issue_rollup_drain "\$STATE_FILE"')" "1"
+chk "state 迁移循环含三个新字段" \
+    "$(grep -c '^for field in .* split_rollups split_rollup_commented split_rollup_queue; do' "$REPO_DIR/scripts/agent-poll.sh")" "1"
 chk "dispatch-new-issue.sh 调用 split_parent_of" \
     "$(grep -c 'split_parent_of "\$ISSUE"' "$REPO_DIR/scripts/dispatch-new-issue.sh")" "1"
 

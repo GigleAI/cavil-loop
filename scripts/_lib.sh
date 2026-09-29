@@ -1715,29 +1715,37 @@ split_parent_of() {
 
 # 子 issue 关闭后的父 issue 汇总：父下 sub-issue **全部**已关 → 父 issue 翻 pending/human
 # 并留一条汇总评论。**不关父 issue**——关闭权留给人。
-# 幂等：state.json 的 split_rollups[<父号>] 记下已汇总时的子项数；同样的子项数不再发第二次
-# （同一轮里两个子 PR 同时合并时两次调用都会看到「全完成」）。父 issue 后来又挂了新子项，
-# 子项数变了，全部完成时会再汇总一次。
-# 任何一步出错 → 不翻、不发、只记日志：查不到不等于「全完成」。
+#
+# 返回码是给重试队列（sub_issue_rollup_drain）看的：
+#   0 = 已有定论，出队：汇总完成 / 没有父 issue / 兄弟子项还开着 / 父 issue 已关 / 早就汇总过
+#   1 = 这次没做成，留在队里下轮再试：任何一步读或写失败
+# 「查不到」绝不等于「全完成」，也绝不等于「不用做」——两边都会让父 issue 永远卡住。
+#
+# 幂等，而且评论和翻 label 分开记进度（state.json），重试时不会重复发评论：
+#   split_rollup_commented[<父号>] = 已发汇总评论时的子项数
+#   split_rollups[<父号>]          = 评论 + 翻 label 都成功时的子项数（= 完成）
+# 同一轮里两个子 PR 同时合并，两次调用都会看到「全完成」，第二次读到 split_rollups 就停。
+# 父 issue 后来又挂了新子项，子项数变了，全部完成时会再汇总一次。
 sub_issue_rollup() {
     local sub="$1" state_file="${2:-${STATE_FILE:-$STATE_DIR/state.json}}"
-    local parent subs total open_left parent_state done_total tmp body
-    parent=$(issue_parent_num "$sub") || return 0
+    local parent subs total open_left parent_state done_total commented tmp body
+    parent=$(issue_parent_num "$sub") || return 1
     [ -n "$parent" ] || return 0
 
     parent_state=$(run_gh_capture "读取父 issue #$parent 状态" \
-        gh api "repos/$REPO/issues/$parent" --jq .state) || return 0
+        gh api "repos/$REPO/issues/$parent" --jq .state) || return 1
     [ "$parent_state" = "open" ] || { log "  父 issue #$parent 已关闭，不汇总"; return 0; }
 
     subs=$(run_gh_capture "列出父 issue #$parent 的 sub-issue" \
         gh api --paginate "repos/$REPO/issues/$parent/sub_issues?per_page=100" \
-        --jq '.[] | "\(.number)\t\(.state)"') || return 0
+        --jq '.[] | "\(.number)\t\(.state)"') || return 1
     # 刚合并的这个子 issue 调用方已确认 CLOSED；列表若还没刷新，按已关算。
     total=$(printf '%s\n' "$subs" | awk 'NF' | wc -l | tr -d ' ')
     open_left=$(printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" 'NF && $1 != s && $2 != "closed"' | wc -l | tr -d ' ')
     if [ "$total" = 0 ]; then
-        log "  父 issue #$parent 的 sub-issue 列表为空（接口未刷新？），不汇总"
-        return 0
+        # 本子项就挂在它下面，列表却是空的 = 接口还没刷新，不是「没有子项」
+        log "  父 issue #$parent 的 sub-issue 列表为空（接口未刷新？），下轮再试"
+        return 1
     fi
     if [ "$open_left" != 0 ]; then
         log "  父 issue #$parent 还有 $open_left/$total 个子项未完成，不动"
@@ -1750,24 +1758,68 @@ sub_issue_rollup() {
         return 0
     fi
 
-    body=$(mktemp)
-    {
-        printf '## 子项全部完成（%s/%s）\n\n' "$total" "$total"
-        printf '本 issue 拆出的 sub-issue 都已关闭，请决定是否关闭本 issue（daemon 不会替你关）：\n\n'
-        printf '%s\n' "$subs" | awk -F'\t' 'NF {print "- #" $1}'
-    } > "$body"
-    if ! run_gh "父 issue #$parent 汇总评论" gh_write issue comment "$parent" --repo "$REPO" --body-file "$body"; then
-        rm -f "$body"; return 0
+    commented=$(jq -r --arg p "$parent" '.split_rollup_commented[$p] // empty' "$state_file" 2>/dev/null || true)
+    if [ "$commented" != "$total" ]; then
+        body=$(mktemp)
+        {
+            printf '## 子项全部完成（%s/%s）\n\n' "$total" "$total"
+            printf '本 issue 拆出的 sub-issue 都已关闭，请决定是否关闭本 issue（daemon 不会替你关）：\n\n'
+            printf '%s\n' "$subs" | awk -F'\t' 'NF {print "- #" $1}'
+        } > "$body"
+        if ! run_gh "父 issue #$parent 汇总评论" gh_write issue comment "$parent" --repo "$REPO" --body-file "$body"; then
+            rm -f "$body"; return 1
+        fi
+        rm -f "$body"
+        tmp=$(mktemp)
+        jq --arg p "$parent" --argjson n "$total" '.split_rollup_commented = ((.split_rollup_commented // {}) + {($p): $n})' \
+            "$state_file" > "$tmp" && mv "$tmp" "$state_file"
     fi
-    rm -f "$body"
-    run_gh "父 issue #$parent → $LABEL_PENDING_HUMAN" \
+
+    if ! run_gh "父 issue #$parent → $LABEL_PENDING_HUMAN" \
         gh_label_flip "$parent" \
         --add "$LABEL_PENDING_HUMAN" \
-        --remove "$LABEL_PENDING_PR" "$LABEL_AGENT_DOING" || true
+        --remove "$LABEL_PENDING_PR" "$LABEL_AGENT_DOING"; then
+        return 1
+    fi
     tmp=$(mktemp)
     jq --arg p "$parent" --argjson n "$total" '.split_rollups = ((.split_rollups // {}) + {($p): $n})' \
         "$state_file" > "$tmp" && mv "$tmp" "$state_file"
     log "  父 issue #$parent 子项全部完成（$total 个）→ $LABEL_PENDING_HUMAN"
+    return 0
+}
+
+# 汇总重试队列。merge 钩子只负责「入队」，每轮 poll 再「清队」：
+# 汇总所需的读写发生在 PR 已记入 cleaned_prs **之后**，那个 PR 下一轮不会再被扫到；
+# 要是汇总当场失败就算了，而这恰好是最后一个子项，父 issue 就永远等不到汇总。
+# 队列 = state.json 的 split_rollup_queue[<子号>] = 已试次数。
+# 上限 SUB_ISSUE_ROLLUP_MAX_TRIES（默认 30 轮，约半小时）：接口持续报错（比如权限被收）时
+# 不能每分钟打一遍 GitHub 打到天荒地老——放弃时记日志，人从父 issue 页面的进度条也看得到。
+sub_issue_rollup_enqueue() {
+    local sub="$1" state_file="$2" tmp
+    tmp=$(mktemp)
+    jq --arg s "$sub" '.split_rollup_queue = ((.split_rollup_queue // {}) + {($s): ((.split_rollup_queue // {})[$s] // 0)})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
+sub_issue_rollup_drain() {
+    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" sub tries tmp
+    for sub in $(jq -r '(.split_rollup_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
+        [[ "$sub" =~ ^[0-9]+$ ]] || continue
+        if sub_issue_rollup "$sub" "$state_file"; then
+            tmp=$(mktemp)
+            jq --arg s "$sub" 'del(.split_rollup_queue[$s])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+            continue
+        fi
+        tries=$(jq -r --arg s "$sub" '(.split_rollup_queue[$s] // 0) + 1' "$state_file")
+        tmp=$(mktemp)
+        if [ "$tries" -ge "$cap" ]; then
+            log "⚠️ 子 issue #$sub 的父 issue 汇总连续 $tries 次失败 → 放弃（请到父 issue 手动确认子项是否全部完成）"
+            jq --arg s "$sub" 'del(.split_rollup_queue[$s])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        else
+            log "  子 issue #$sub 的父 issue 汇总未完成（第 $tries/$cap 次），下轮重试"
+            jq --arg s "$sub" --argjson n "$tries" '.split_rollup_queue[$s] = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        fi
+    done
 }
 
 # 给 worker session 加可读标题、记录实际 worker / 模型，并让 tmux 默认的 prefix+s

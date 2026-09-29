@@ -39,9 +39,9 @@ fi
 PACE_ACTED=0
 pace_mark_acted() { PACE_ACTED=1; }
 
-[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{},"split_rollups":{}}' > "$STATE_FILE"
+[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{},"split_rollups":{},"split_rollup_commented":{},"split_rollup_queue":{}}' > "$STATE_FILE"
 # 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
-for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts split_rollups; do
+for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts split_rollups split_rollup_commented split_rollup_queue; do
     if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
         tmp=$(mktemp)
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -635,8 +635,10 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                         --add "$LABEL_DONE" \
                         --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
-                    # 它若是拆出来的 sub-issue：父下子项全关 → 父 issue 翻 pending/human 汇总（#43）
-                    sub_issue_rollup "$issue_n" "$STATE_FILE" || true
+                    # 它若是拆出来的 sub-issue：父下子项全关 → 父 issue 翻 pending/human 汇总（#43）。
+                    # 只入队，下面统一清队：这个 PR 已记入 cleaned_prs、下轮不会再扫到，
+                    # 汇总要是当场失败又没有队列兜着，父 issue 就永远等不到汇总。
+                    sub_issue_rollup_enqueue "$issue_n" "$STATE_FILE"
                 else
                     run_gh "auto-cleanup label issue #$issue_n → pending/human" \
                         gh_label_flip "$issue_n" \
@@ -649,6 +651,9 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             fi
         done <<< "$recent_merged"
     fi
+
+    # 父 issue 汇总队列：本轮新入队的 + 之前没做成的（#43）
+    sub_issue_rollup_drain "$STATE_FILE" || true
 
     # ── 3b. merge 钩子：新 merge → 刷新常驻「最新站」（GigleTutor-Web#516，Q1=A）──
     # 项目 config 里 LATEST_SITE_REFRESH=true 才启用；脚本自身幂等（HEAD 没变且
