@@ -309,6 +309,47 @@ sub_issue_rollup_enqueue 60 "$STATE_DIR/state.json"
 sub_issue_rollup_drain "$STATE_DIR/state.json" >/dev/null 2>&1
 chk "没有父的普通 issue → 一轮就出队、没有任何写" "$(q 60)$(wc -l < "$CALLS" | tr -d ' ')" "gone0"
 
+echo "【5d】合并后子 issue 自己的标签：读不到状态就不写，下轮再判（与父 issue 汇总同轮协作）"
+SF="$STATE_DIR/state.json"
+lq() { jq -r --arg s "$1" '.merged_label_queue[$s].tries // "gone"' "$SF"; }
+done51()  { grep -c "^POST $R/issues/51/labels labels\[\]=Done" "$CALLS"; }
+human51() { grep -c "^POST $R/issues/51/labels labels\[\]=pending/human" "$CALLS"; }
+merge_tick() {  # 模拟 merge 钩子里对「子 issue #51 的 PR #61 刚合并」做的事 + 本轮清队
+    if ! merged_issue_label 51 61 >/dev/null 2>&1; then merged_label_enqueue 51 61 "$SF" >/dev/null 2>&1; fi
+    sub_issue_rollup_enqueue 51 "$SF"
+    merged_label_drain "$SF" >/dev/null 2>&1; sub_issue_rollup_drain "$SF" >/dev/null 2>&1
+}
+next_tick() { merged_label_drain "$SF" >/dev/null 2>&1; sub_issue_rollup_drain "$SF" >/dev/null 2>&1; }
+
+rollup_setup closed closed
+set_err "$R/issues/51" 'gh: Server Error (HTTP 502)'
+merge_tick
+chk "第 1 轮读子 issue 状态 502 → 不打 Done 也不打 pending/human" "$(done51)$(human51)" "00"
+chk "… 进标签重试队列" "$(lq 51)" "1"
+chk "… 父 issue 也没汇总" "$(comments)" "0"
+set_json "$R/issues/51" "$(issue_json 51 bot 'c' closed)"
+next_tick
+chk "第 2 轮恢复为 CLOSED → 子 issue 打 Done" "$(done51)$(human51)" "10"
+chk "… 出标签队列" "$(lq 51)" "gone"
+chk "… 父 issue 汇总且只一次" "$(comments)$(flipped)" "11"
+next_tick
+chk "第 3 轮什么都不再发生" "$(done51)$(comments)" "11"
+
+rollup_setup closed closed
+set_json "$R/issues/51" "$(issue_json 51 bot 'c' open)"
+chk "状态确认 OPEN（Refs PR）→ 返回 0，打 pending/human，不打 Done" "$(merged_issue_label 51 61 >/dev/null 2>&1; echo $?; done51; human51)" "$(printf '0\n0\n1')"
+
+rollup_setup closed closed
+FAIL_WRITE="^POST $R/issues/51/labels"
+chk "加 Done 失败 → 返回 1（留队）" "$(merged_issue_label 51 61 >/dev/null 2>&1; echo $?)" "1"
+FAIL_WRITE=""
+
+rollup_setup closed closed
+set_err "$R/issues/51" 'gh: Forbidden (HTTP 403)'
+merged_label_enqueue 51 61 "$SF" >/dev/null 2>&1
+for _ in 1 2 3; do SUB_ISSUE_ROLLUP_MAX_TRIES=3 merged_label_drain "$SF" >/dev/null 2>&1; done
+chk "标签队列持续失败到上限 → 放弃出队" "$(lq 51)" "gone"
+
 echo "【6】负对照：普通 issue（没有父）行为不变"
 reset_fx
 set_err "$R/issues/60/parent" "$NOPARENT"
@@ -317,14 +358,20 @@ chk "没有父 issue → 没有任何写操作" "$(wc -l < "$CALLS" | tr -d ' ')
 chk "… state 不新增字段" "$(jq -c . "$STATE_DIR/state.json")" "{}"
 
 echo "【7】接线：merge 钩子与派工脚本真的调用了它们"
-chk "agent-poll.sh 入队不依赖 issue 状态读取结果（在读状态之前、无条件）" \
-    "$(awk '/sub_issue_rollup_enqueue "\$issue_n"/{e=NR} /issue_state=\$\(gh issue view/{r=NR} END{print (e && r && e<r) ? "ok" : "bad"}' "$REPO_DIR/scripts/agent-poll.sh")" "ok"
+chk "agent-poll.sh 汇总入队是无条件的（与 if 同级缩进，不在任何状态分支里）" \
+    "$(grep -E '^ {16}sub_issue_rollup_enqueue "\$issue_n"' "$REPO_DIR/scripts/agent-poll.sh" | wc -l | tr -d ' ')" "1"
+chk "merge 钩子不再把「读不到状态」兜底成 OPEN" \
+    "$(grep -c 'echo "OPEN"' "$REPO_DIR/scripts/agent-poll.sh")" "0"
+chk "merge 钩子用 merged_issue_label，失败即入标签队列" \
+    "$(grep -A1 'if ! merged_issue_label "\$issue_n"' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'merged_label_enqueue')" "1"
+chk "每轮先清标签队列、再清汇总队列" \
+    "$(awk '/merged_label_drain "\$STATE_FILE"/{a=NR} /sub_issue_rollup_drain "\$STATE_FILE"/{b=NR} END{print (a && b && a<b) ? "ok" : "bad"}' "$REPO_DIR/scripts/agent-poll.sh")" "ok"
 chk "… 且 CLOSED 分支里不再有另一次入队" \
     "$(grep -c 'sub_issue_rollup_enqueue "\$issue_n"' "$REPO_DIR/scripts/agent-poll.sh")" "1"
 chk "agent-poll.sh 在 merged 循环之外每轮清队" \
     "$(awk '/done <<< "\$recent_merged"/{f=1} f' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'sub_issue_rollup_drain "\$STATE_FILE"')" "1"
-chk "state 迁移循环含三个新字段" \
-    "$(grep -c '^for field in .* split_rollups split_rollup_commented split_rollup_queue; do' "$REPO_DIR/scripts/agent-poll.sh")" "1"
+chk "state 迁移循环含四个新字段" \
+    "$(grep -c '^for field in .* split_rollups split_rollup_commented split_rollup_queue merged_label_queue; do' "$REPO_DIR/scripts/agent-poll.sh")" "1"
 chk "dispatch-new-issue.sh 调用 split_parent_of" \
     "$(grep -c 'split_parent_of "\$ISSUE"' "$REPO_DIR/scripts/dispatch-new-issue.sh")" "1"
 
