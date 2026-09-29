@@ -27,7 +27,7 @@ worker 在「设计提案」comment 里选 A 或 B（选 B 时附拆分计划：
 
 1. 你确认 B 后，worker（`issue-comment.template.md` § A-split）逐个建子 issue、用 sub-issue 接口挂到父 issue 下、从父 issue 继承优先级 / Project iteration。没有前置的子项直接打 `pending/agent`；有前置的打 `pending/human`，前置合并后由你打 `pending/agent`
 2. 子项跳过设计轮：`dispatch-new-issue.sh` 渲染开发阶段 prompt（`issue-comment` + `sub-issue.template.md`）而不是设计 prompt，**前提是三条同时成立**——GitHub 上它确实有本仓库的父 issue、正文带指向该父 issue 的 `<!-- agent-split-from: #父号 -->`、由写身份（bot）创建。任一不成立（或查询出错）就照常走设计轮
-3. merge 钩子给已关闭的 issue 标 Done 后调 `sub_issue_rollup`；靠 `state.json` 的 `split_rollups` 保证只汇总一次
+3. merge 钩子只把已关闭的 issue **入队**（`state.json` 的 `split_rollup_queue`），每轮 poll 统一清队、逐个调 `sub_issue_rollup`。要队列是因为这个 PR 已记入 `cleaned_prs`、下轮不会再扫到——最后一个子项汇总时碰上一次接口抖动，父 issue 就永远等不到汇总。任何读写失败都留在队里下轮再试（上限 `SUB_ISSUE_ROLLUP_MAX_TRIES`，默认 30 轮）。评论和翻 label 分开记进度（`split_rollup_commented` / `split_rollups`），翻 label 失败后重试不会重复发评论
 
 旧「部分实现」模式遗留的 issue（已合过一个 `Refs` PR、还剩活）：下次派工时把剩余部分拆成 sub-issue。人手开的 `Refs #N` PR 照旧处理（merge 后 issue → `pending/human`）。
 

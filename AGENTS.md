@@ -117,7 +117,9 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
   "seen_reviews":          { "<PR>": <id>, ... },     // /pulls/N/reviews       PR review submissions
   "seen_issue_comments":   { "<ISSUE>": <id>, ... },  // /issues/N/comments     non-PR issue comments
   "worker_models":         { "<WORK>": "<model>", ... }, // model preserved across self-heal
-  "split_rollups":         { "<PARENT>": <n>, ... },  // parent issues already summarised when all <n> sub-issues closed
+  "split_rollups":         { "<PARENT>": <n>, ... },  // parent issues already summarised (comment + label) when all <n> sub-issues closed
+  "split_rollup_commented":{ "<PARENT>": <n>, ... },  // summary comment posted, label flip may still be pending (retry won't re-comment)
+  "split_rollup_queue":    { "<SUB>": <tries>, ... },  // closed sub-issues whose parent rollup is still to be done; drained every tick
   "cleaned_prs":           [ <PR>, ... ],             // PRs already auto-cleanup'd; not rescanned
   "unmerged_prs_handled":  [ <PR>, ... ]              // closed-unmerged PRs already judged by § 3c
 }
