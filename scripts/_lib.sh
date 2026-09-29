@@ -1732,6 +1732,18 @@ sub_issue_rollup() {
     parent=$(issue_parent_num "$sub") || return 1
     [ -n "$parent" ] || return 0
 
+    # 子项自己关了没有，由这里亲自读，不信调用方：merge 钩子读状态失败时会兜底成 OPEN，
+    # 要是只在「确认 CLOSED」时才入队，一次 502 就让最后一个子项永远漏掉汇总。
+    # 所以钩子无条件入队，是否关闭在这里判；读不到 = 下轮再试。
+    # 有父却还开着（合并的 PR 没写 Closes，或 GitHub 自动关闭有延迟）也留队重试，到上限自然放弃。
+    local sub_state
+    sub_state=$(run_gh_capture "读取子 issue #$sub 状态" \
+        gh api "repos/$REPO/issues/$sub" --jq .state) || return 1
+    if [ "$sub_state" != "closed" ]; then
+        log "  子 issue #$sub 仍是 ${sub_state:-?}，暂不汇总父 issue #$parent，下轮再看"
+        return 1
+    fi
+
     local parent_meta summary_total
     parent_meta=$(run_gh_capture "读取父 issue #$parent 状态" \
         gh api "repos/$REPO/issues/$parent" --jq '"\(.state)\t\(.sub_issues_summary.total // "")"') || return 1
@@ -1756,7 +1768,7 @@ sub_issue_rollup() {
         log "  父 issue #$parent 的 sub-issue 列表 $total 项，与父 issue 记的总数 '${summary_total}' 对不上，下轮再试"
         return 1
     fi
-    # 刚合并的这个子 issue 调用方已确认 CLOSED；列表里它的状态若还没刷新，按已关算。
+    # 这个子 issue 上面刚确认过 CLOSED；列表里它的状态若还没刷新，按已关算。
     open_left=$(printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" 'NF && $1 != s && $2 != "closed"' | wc -l | tr -d ' ')
     if [ "$open_left" != 0 ]; then
         log "  父 issue #$parent 还有 $open_left/$total 个子项未完成，不动"
