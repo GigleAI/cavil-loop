@@ -34,7 +34,8 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   └── weekly-report/             ← Monday auto weekly report (collect / render / PDF / publish)
 ├── prompts/
 │   ├── new-issue.template.md      ← Prompt for new-issue dispatch
-│   ├── issue-comment.template.md  ← Prompt for new issue comment
+│   ├── issue-comment.template.md  ← Prompt for new issue comment (also § A-split: split into sub-issues)
+│   ├── sub-issue.template.md      ← Appended for a split-out sub-issue: skip design, go straight to development
 │   └── pr-comment.template.md     ← Prompt for new PR comment
 ├── systemd/                      ← Linux scheduler
 │   ├── coding-agent-poll@.service ← User-scoped template service
@@ -116,6 +117,7 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
   "seen_reviews":          { "<PR>": <id>, ... },     // /pulls/N/reviews       PR review submissions
   "seen_issue_comments":   { "<ISSUE>": <id>, ... },  // /issues/N/comments     non-PR issue comments
   "worker_models":         { "<WORK>": "<model>", ... }, // model preserved across self-heal
+  "split_rollups":         { "<PARENT>": <n>, ... },  // parent issues already summarised when all <n> sub-issues closed
   "cleaned_prs":           [ <PR>, ... ],             // PRs already auto-cleanup'd; not rescanned
   "unmerged_prs_handled":  [ <PR>, ... ]              // closed-unmerged PRs already judged by § 3c
 }
@@ -159,7 +161,7 @@ This means the worktree/tmux/branch "N" **isn't necessarily** the same as `featu
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
 3. Commit + push. Deployed Linux systemd timers pick up the new code on their next tick (the symlink chain → skill source → your pushed version). macOS LaunchAgents do too, because the plist re-execs `agent-poll.sh` each tick — only changes to the plist template itself require re-running `setup.sh`
-4. PRs use `feature/issue-N` branches (with `Closes #N` or `Refs #N` — see PR closure A/B/C)
+4. PRs use `feature/issue-N` branches with `Closes #N`; work that needs several PRs is split into sub-issues (see PR closure A/B)
 
 ### Edit a prompt template
 
@@ -239,6 +241,6 @@ This repo's PR flow lives in [CONTRIBUTING.md](CONTRIBUTING.md). Highlights:
 
 - One PR, one focused change; conventional-commits title style (`feat:` / `fix:` / `docs:` / `chore:`)
 - PR body states **motivation** (why this change) + **verification** (how you tested)
-- Issue ↔ PR closure relationship is decided **at design time** with A/B/C (see [docs/architecture.md](docs/architecture.md#prissue-closure-decided-at-design-time)) — affects whether the PR body uses `Closes #N` or `Refs #N`
+- Issue ↔ PR closure relationship is decided **at design time** with A/B (see [docs/architecture.md](docs/architecture.md#prissue-closure-decided-at-design-time)) — A: one PR with `Closes #N`; B: split into GitHub sub-issues, each with its own PR. There is no longer a "several `Refs #N` PRs on one issue" mode
 - When you submit a review, **click "Submit review"** — don't leave it as a PENDING draft (drafts are invisible to the daemon and to other users)
 - Maintainers reserve the right to add / remove `pending/agent` labels; external contributors **cannot** apply this label to their own PRs to make the daemon auto-edit their code (see [docs/security.md](docs/security.md))

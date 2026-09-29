@@ -385,6 +385,7 @@ Available placeholders (`sed`-rendered):
 | `${PR}` | PR number (pr-comment only) |
 | `${REPO}` | owner/repo |
 | `${TITLE}` | issue title (new-issue only) |
+| `${PARENT_ISSUE}` | parent issue number (`sub-issue.template.md` only — see [architecture.md → closure](architecture.md#prissue-closure-decided-at-design-time)) |
 | `${WORKTREE}` | absolute worktree path |
 | `${BRANCH}` | full branch name |
 | `${ISSUE_N}` | issue number derived from branch (pr-comment only) |

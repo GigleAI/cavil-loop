@@ -67,11 +67,11 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
      - **数据模型 / API 设计**（如适用）
      - **UI / 交互**（如适用）
      - **影响面**：会改哪些文件 / 模块
-     - **🔗 issue 闭环关系**（重要！决定 PR body 用哪个关键词）——发到 issue 时用 checkbox，**A 默认预勾**：
-       - [x] **A. 完整闭环**：这一个 PR 就完整解决 issue → PR body 用 `Closes #${ISSUE}` → merge 时 GitHub 自动关 issue（**默认已勾**）
-       - [ ] **B. 部分实现**：这次 PR 只做一部分（后续可能还有更多 PR）→ PR body 用 `Refs #${ISSUE}` → issue 保持 open 作 tracker
-       - [ ] **C. issue 太大该拆**：本 issue 应拆成 N 个 sub-issue（列出建议拆法）→ 不直接派工，等你拆完再 label
-       - 默认已勾 A（一个 PR 解决 issue）——认可就不用动；要改先取消 A 再勾 B/C。一刀切的部分实现会导致 issue tracker 失控，只在确实多 PR 才选 B。
+     - **🔗 issue 闭环关系**（重要！决定是一个 PR 收尾，还是拆成 sub-issue）——发到 issue 时用 checkbox，**A 默认预勾**：
+       - [x] **A. 一个 PR 完整解决**：PR body 用 `Closes #${ISSUE}` → merge 时 GitHub 自动关 issue（**默认已勾**）
+       - [ ] **B. 拆成 sub-issue**：一个 PR 装不下 → 确认后由我把工作拆成 GitHub sub-issue 挂在本 issue 下，每个子项各自开分支、各自开 PR（`Closes #子号`），本 issue 只当总表；子项全部关闭后 daemon 翻本 issue 到 `${LABEL_PENDING_HUMAN}` 等你决定是否关闭
+       - 默认已勾 A——认可就不用动；要改先取消 A 再勾 B。**不再有「一个 issue 挂多个 `Refs` PR」这条路**：后续 PR 只存在于评论里的一句话，没法单独排队、打 label、看进度
+       - **你判断需要 B 时**：自己把 B 预勾上（取消 A），并在方案里加一段「**拆分计划**」，每个子项一行表格：标题 / 这一块做什么（范围）/ 前置（依赖哪个子项先合并，没有写「无」）/ 验收标准。子项要能各自独立合并、独立验收；拆得越少越好，一个 PR 能做完的别拆
      - **验收标准**：你完工时怎么自我验证、用户怎么验收
      - **待澄清问题（Open Questions）**：不写开放式问答。每题**先用普通用户读得懂的话讲清背景**（这个选择决定什么、选错会怎样），再给 2-4 个候选项、每项写明效果 + 好处 + 代价，让提出者勾 checkbox 拍板——评论里点一下就能定，不用复制问题再打字。**完整格式 + 7 条规则见下方「硬约束」里那条**，逐条照做
    - 评论结尾 `@<author> 请确认上述方案，或提出修改建议。确认后请重新标 \`${LABEL_PENDING_AGENT}\` 我继续开干。`

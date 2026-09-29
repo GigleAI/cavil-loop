@@ -16,11 +16,20 @@
 
 | 场景 | PR body 用 | merge 时 issue 状态 | daemon auto-cleanup |
 |------|-------|------|------|
-| **A. 完整闭环**：一个 PR 全解决 issue | `Closes #N` | GitHub 自动关 | issue 加 Done（与 PR 同状态） |
-| **B. 部分实现**：多 PR 才完成 issue | `Refs #N` | 保持 open | issue 翻 `pending/human` 等你 triage |
-| **C. issue 太大**：建议拆 sub-issue | 不直接派工 | — | 你拆完每个 sub-issue 再单独 label |
+| **A. 一个 PR**：一个 PR 全解决 issue | `Closes #N` | GitHub 自动关 | issue 加 Done（与 PR 同状态） |
+| **B. 拆成 sub-issue**：一个 PR 装不下 | 父 issue 不开 PR；每个子项的 PR 用 `Closes #子号` | 父 issue 保持 open 当总表（`pending/PR`） | 子项各自加 Done；子项**全部**关闭时父 issue 翻 `pending/human` 并留一条汇总评论。daemon 不会关父 issue |
 
-worker 在「设计提案」comment 里就会列出选 A/B/C 的判断，跟你讨论确认后才开干。所以 `Closes` 还是 `Refs` 是**设计阶段共识**，不是 worker 默认行为。
+worker 在「设计提案」comment 里选 A 或 B（选 B 时附拆分计划：每个子项的标题 / 范围 / 前置 / 验收），跟你确认后才开干。所以「一个 PR 还是拆」是**设计阶段共识**，不是 worker 默认行为。
+
+**为什么拆 sub-issue，而不是一个 issue 挂多个 `Refs #N` PR**（旧的「部分实现」，#43 起取消）：整个工具是「一个编号 = 一个分支 = 一个 worktree = 一个 session」。一个 issue 挂多个 PR 时，后续 PR 只存在于评论里的一句话——没法排队、打 label、看进度——还得复用 merge 钩子已经当作「完工」的分支 / worktree。sub-issue 有自己的编号，派工 / worktree / 清理 / 周报原样适用。
+
+拆分怎么跑：
+
+1. 你确认 B 后，worker（`issue-comment.template.md` § A-split）逐个建子 issue、用 sub-issue 接口挂到父 issue 下、从父 issue 继承优先级 / Project iteration。没有前置的子项直接打 `pending/agent`；有前置的打 `pending/human`，前置合并后由你打 `pending/agent`
+2. 子项跳过设计轮：`dispatch-new-issue.sh` 渲染开发阶段 prompt（`issue-comment` + `sub-issue.template.md`）而不是设计 prompt，**前提是三条同时成立**——GitHub 上它确实有本仓库的父 issue、正文带指向该父 issue 的 `<!-- agent-split-from: #父号 -->`、由写身份（bot）创建。任一不成立（或查询出错）就照常走设计轮
+3. merge 钩子给已关闭的 issue 标 Done 后调 `sub_issue_rollup`；靠 `state.json` 的 `split_rollups` 保证只汇总一次
+
+旧「部分实现」模式遗留的 issue（已合过一个 `Refs` PR、还剩活）：下次派工时把剩余部分拆成 sub-issue。人手开的 `Refs #N` PR 照旧处理（merge 后 issue → `pending/human`）。
 
 ### 状态流转图
 
@@ -31,7 +40,7 @@ worker 在「设计提案」comment 里就会列出选 A/B/C 的判断，跟你�
    ▼
 pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub UI 实时可见
                                               │
-                                              │ worker 干活（建分支、写代码、跑测试、push、开 PR with `Refs #N`）
+                                              │ worker 干活（建分支、写代码、跑测试、push、开 PR with `Closes #N`）
                                               ▼
                                        worker 完工 →
                                           - PR  : pending/human
@@ -43,12 +52,9 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
                                               ▼ (你 merge PR)
                                        daemon auto-cleanup →
                                           - PR  : Done（PR 闭环）
-                                          - Issue: pending/human（issue 仍 open，**等你 triage** 这次 PR 是否真把问题彻底搞定）
-                                              │
-                                              ▼
-                                       你决定：
-                                          - 真闭环 → 手动关 issue（可加 Done label）
-                                          - 还差点 → 评论 + 标 pending/agent，进新一轮设计或开发
+                                          - Issue: 被 `Closes #N` 关闭 → Done
+                                          - 子 issue 关闭 → 若兄弟子项也全关了，
+                                            父 issue → pending/human（由你决定是否关闭）
 ```
 
 > 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。

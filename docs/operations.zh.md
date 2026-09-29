@@ -340,6 +340,7 @@ project/.agents/skills/coding-agent-work-loop/prompts/
 | `${PR}` | PR 编号（仅 pr-comment） |
 | `${REPO}` | 仓库 owner/repo |
 | `${TITLE}` | issue 标题（仅 new-issue） |
+| `${PARENT_ISSUE}` | 父 issue 编号（仅 `sub-issue.template.md`，见 [architecture.zh.md 闭环关系](architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)） |
 | `${WORKTREE}` | worktree 绝对路径 |
 | `${BRANCH}` | branch 全名 |
 | `${ISSUE_N}` | 从 branch 反推的 issue 编号（仅 pr-comment） |

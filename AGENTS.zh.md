@@ -34,7 +34,8 @@
 │   └── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
 ├── prompts/
 │   ├── new-issue.template.md  ← 新 issue 派工时的 prompt
-│   ├── issue-comment.template.md ← issue 新评论时的 prompt
+│   ├── issue-comment.template.md ← issue 新评论时的 prompt（含 § A-split：拆 sub-issue）
+│   ├── sub-issue.template.md  ← 拆出来的子项追加这段：跳过设计轮直接开发
 │   └── pr-comment.template.md ← PR 新评论时的 prompt
 ├── systemd/                  ← Linux 调度器
 │   ├── coding-agent-poll@.service ← user-scoped 模板服务
@@ -96,6 +97,7 @@
   "seen_reviews":          { "<PR>": <id>, ... },  // /pulls/N/reviews       PR review 提交
   "seen_issue_comments":   { "<ISSUE>": <id>, ... }, // /issues/N/comments   非 PR issue 评论
   "worker_models":         { "<WORK>": "<model>", ... }, // self-heal 时保留模型
+  "split_rollups":         { "<父号>": <n>, ... },   // 子项全部关闭时已汇总过的父 issue（<n> = 当时的子项数）
   "cleaned_prs":           [ <PR>, ... ],           // 已 auto-cleanup 的 PR 不再扫
   "unmerged_prs_handled":  [ <PR>, ... ]            // § 3c 已判定过的 closed 未合并 PR
 }
@@ -131,7 +133,7 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
 3. Commit + push。已部署的 Linux systemd timer 下一 tick 自动用新代码（symlink 链路 → skill 源码 → 你 push 的版本）；macOS LaunchAgent 也一样，plist 每 tick 重新 exec `agent-poll.sh` —— 只有 plist 模板本身变了才要重跑 `setup.sh`
-4. PR 走 `feature/issue-N` 分支（带 `Closes #N` 或 `Refs #N`，见 PR 闭环 A/B/C）
+4. PR 走 `feature/issue-N` 分支，带 `Closes #N`；一个 PR 装不下的拆成 sub-issue（见 PR 闭环 A/B）
 
 ### 改 prompt 模板
 
@@ -208,6 +210,6 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - 一 PR 一聚焦改动；title 走 conventional commits 风格（`feat:` / `fix:` / `docs:` / `chore:`）
 - PR body 要说**动机**（为什么改）+ **验证方法**（怎么测过的）
-- Issue ↔ PR 闭环关系在**设计阶段**就要选 A/B/C（详见 [docs/architecture.md](docs/architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)），影响 PR body 用 `Closes #N` 还是 `Refs #N`
+- Issue ↔ PR 闭环关系在**设计阶段**就要选 A/B（详见 [docs/architecture.md](docs/architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)）——A：一个 PR，`Closes #N`；B：拆成 GitHub sub-issue，各自一个 PR。不再有「一个 issue 挂多个 `Refs #N` PR」这种模式
 - 给 PR 提交 review 时**点 "Submit review"** 不要停在 PENDING 草稿——草稿对 daemon 和其他人都不可见
 - 维护者保留 `pending/agent` label 的打 / 拆权限；external contributor **不能**给自己的 PR 打这个 label 让 daemon 自动改自己的代码（见 [docs/security.md](docs/security.zh.md)）
