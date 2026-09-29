@@ -172,8 +172,8 @@ chk "报告写明「反解不出、用外部参照兜底」" \
     "$(grep -qF '反解不出、用外部参照兜底' "$TMP/r.md" && echo yes || echo no)" "yes"
 
 # ⑷ 参照本身的出处与局限必须写出来，不能包装成「已核验的官方价目」
-chk "报告点名参照出处（本机缓存的那份）" \
-    "$(grep -qF 'cached 2026-06-24' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报告点名参照出处（官方价目页 + 核对日期）" \
+    "$(grep -qF 'checked 2026-09-29' "$TMP/r.md" && echo yes || echo no)" "yes"
 chk "报告明说本次没有联网核验参照" \
     "$(grep -qF '没有联网核验' "$TMP/r.md" && echo yes || echo no)" "yes"
 chk "全仓不得再出现「已与官方价目交叉核对」这类说法" \
