@@ -135,11 +135,16 @@ _WRITE_LOGIN_CACHE=""; set_err user 'gh: Bad credentials (HTTP 401)'
 chk "查不到写身份 → 空" "$(split_parent_of 51)" ""
 
 echo "【2】sub_issue_rollup：只有子项全关才汇总"
+set_parent() {  # <父号> <state> <父 issue 自己记的子项总数，空 = 字段缺失>
+    local j; j=$(issue_json "$1" luosky 'p' "$2")
+    [ -n "$3" ] && j=$(printf '%s' "$j" | jq -c --argjson t "$3" '. + {sub_issues_summary: {total: $t}}')
+    set_json "$R/issues/$1" "$j"
+}
 rollup_setup() {  # 父 #50 open，子项 51/52 的状态由参数给
     reset_fx
     set_json "$R/issues/51/parent" "$(issue_json 50 luosky 'p')"
     set_json "$R/issues/52/parent" "$(issue_json 50 luosky 'p')"
-    set_json "$R/issues/50" "$(issue_json 50 luosky 'p' "${3:-open}")"
+    set_parent 50 "${3:-open}" 2
     set_json "$R/issues/50/sub_issues" "[{\"number\":51,\"state\":\"$1\"},{\"number\":52,\"state\":\"$2\"}]"
 }
 comments() { grep -c '^COMMENT 50 ' "$CALLS"; }
@@ -167,6 +172,7 @@ chk "第二次调用不再翻 label" "$(flipped)" "1"
 echo "【4】父 issue 后来又挂了新子项 → 全关时再汇总一次"
 set_json "$R/issues/53/parent" "$(issue_json 50 luosky 'p')"
 set_json "$R/issues/50/sub_issues" '[{"number":51,"state":"closed"},{"number":52,"state":"closed"},{"number":53,"state":"closed"}]'
+set_parent 50 open 3
 sub_issue_rollup 53 >/dev/null 2>&1
 chk "子项数 2→3 → 再汇总" "$(comments)" "2"
 chk "state 更新为 3" "$(jq -r '.split_rollups["50"]' "$STATE_DIR/state.json")" "3"
@@ -199,6 +205,25 @@ chk "… 不动" "$(comments)$(flipped)" "00"
 
 rollup_setup closed open
 chk "兄弟还开着 → 返回 0（定论：等下一个子 PR 合并时再看）" "$(rc_of 51)" "0"
+
+echo "【5a】列表不齐：先核齐，再判「全关」"
+rollup_setup closed closed
+set_json "$R/issues/50/sub_issues" '[{"number":52,"state":"closed"}]'
+chk "列表非空但漏了当前子项 #51 → 返回 1" "$(rc_of 51)" "1"
+chk "… 不评论、不翻 label" "$(comments)$(flipped)" "00"
+set_json "$R/issues/50/sub_issues" '[{"number":51,"state":"closed"},{"number":52,"state":"closed"}]'
+chk "列表恢复后重试 → 汇总" "$(rc_of 51; comments; flipped)" "$(printf '0\n1\n1')"
+chk "再调一次不重复评论" "$(rc_of 51; comments)" "$(printf '0\n1')"
+
+rollup_setup closed closed
+set_parent 50 open 3
+chk "列表有当前子项，但漏了别的兄弟（2 项 vs 父记 3 项）→ 返回 1" "$(rc_of 51)" "1"
+chk "… 不评论、不翻 label" "$(comments)$(flipped)" "00"
+
+rollup_setup closed closed
+set_parent 50 open ""
+chk "父 issue 没给子项总数（核不了）→ 返回 1，不放行" "$(rc_of 51)" "1"
+chk "… 不评论、不翻 label" "$(comments)$(flipped)" "00"
 
 echo "【5b】写失败：评论和翻 label 分开记进度，重试不重复评论"
 rollup_setup closed closed
