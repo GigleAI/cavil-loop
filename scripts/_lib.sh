@@ -1732,21 +1732,32 @@ sub_issue_rollup() {
     parent=$(issue_parent_num "$sub") || return 1
     [ -n "$parent" ] || return 0
 
-    parent_state=$(run_gh_capture "读取父 issue #$parent 状态" \
-        gh api "repos/$REPO/issues/$parent" --jq .state) || return 1
+    local parent_meta summary_total
+    parent_meta=$(run_gh_capture "读取父 issue #$parent 状态" \
+        gh api "repos/$REPO/issues/$parent" --jq '"\(.state)\t\(.sub_issues_summary.total // "")"') || return 1
+    parent_state=${parent_meta%%$'\t'*}
+    summary_total=${parent_meta#*$'\t'}
     [ "$parent_state" = "open" ] || { log "  父 issue #$parent 已关闭，不汇总"; return 0; }
 
     subs=$(run_gh_capture "列出父 issue #$parent 的 sub-issue" \
         gh api --paginate "repos/$REPO/issues/$parent/sub_issues?per_page=100" \
         --jq '.[] | "\(.number)\t\(.state)"') || return 1
-    # 刚合并的这个子 issue 调用方已确认 CLOSED；列表若还没刷新，按已关算。
     total=$(printf '%s\n' "$subs" | awk 'NF' | wc -l | tr -d ' ')
-    open_left=$(printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" 'NF && $1 != s && $2 != "closed"' | wc -l | tr -d ' ')
-    if [ "$total" = 0 ]; then
-        # 本子项就挂在它下面，列表却是空的 = 接口还没刷新，不是「没有子项」
-        log "  父 issue #$parent 的 sub-issue 列表为空（接口未刷新？），下轮再试"
+    # 「列表齐不齐」要先确认，才谈得上「列表里的都关了没有」。列表只要漏一项，剩下的
+    # 恰好全关，就会被误判成「全部完成」。两道对拍，任一不过 = 列表还没刷新完，下轮再试：
+    #   1. 当前子项必须在列表里——/parent 刚确认过它挂在这个父 issue 下
+    #   2. 列表条数必须等于父 issue 自己记的子项总数（sub_issues_summary.total）——
+    #      防的是漏掉**别的**兄弟子项；这个字段缺失也按「核不了」处理，不放行
+    if ! printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" '$1 == s {f=1} END {exit !f}'; then
+        log "  父 issue #$parent 的 sub-issue 列表里没有 #$sub（接口未刷新？），下轮再试"
         return 1
     fi
+    if ! [[ "$summary_total" =~ ^[0-9]+$ ]] || [ "$summary_total" != "$total" ]; then
+        log "  父 issue #$parent 的 sub-issue 列表 $total 项，与父 issue 记的总数 '${summary_total}' 对不上，下轮再试"
+        return 1
+    fi
+    # 刚合并的这个子 issue 调用方已确认 CLOSED；列表里它的状态若还没刷新，按已关算。
+    open_left=$(printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" 'NF && $1 != s && $2 != "closed"' | wc -l | tr -d ' ')
     if [ "$open_left" != 0 ]; then
         log "  父 issue #$parent 还有 $open_left/$total 个子项未完成，不动"
         return 0
