@@ -100,6 +100,7 @@
   "split_rollups":         { "<父号>": <n>, ... },   // 子项全部关闭时已汇总完（评论 + 翻 label）的父 issue（<n> = 当时的子项数）
   "split_rollup_commented":{ "<父号>": <n>, ... },   // 汇总评论已发、翻 label 可能还没成（重试时不重复评论）
   "split_rollup_queue":    { "<子号>": <次数>, ... }, // 待做父 issue 汇总的已关闭子项；每轮清队
+  "merged_label_queue":    { "<issue>": {"pr": .., "tries": ..} }, // 合并后 Done / pending/human 标签还没定下来的 issue（状态读不到或写失败）
   "cleaned_prs":           [ <PR>, ... ],           // 已 auto-cleanup 的 PR 不再扫
   "unmerged_prs_handled":  [ <PR>, ... ]            // § 3c 已判定过的 closed 未合并 PR
 }

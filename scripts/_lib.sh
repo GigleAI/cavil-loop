@@ -1821,6 +1821,67 @@ sub_issue_rollup() {
     return 0
 }
 
+# 合并后给 PR 对应的 issue 打标签：CLOSED（Closes #N 自动关）→ Done；OPEN（Refs #N / 手开 PR）
+# → pending/human 等人 triage。返回 0 = 定了；1 = 状态读不到或加标签失败，一个错标签都不留、
+# 由调用方入 merged_label_queue 下轮再判。**读不到绝不能当成 OPEN**：那会给已关闭的 issue
+# 打上「待人工」，而 PR 已记入 cleaned_prs，没有第二次机会纠正。
+# 摘旧标签仍走 gh_label_flip 的 `|| true`（与此前行为一致：「本来就不在」是常态）。
+merged_issue_label() {
+    local issue="$1" prnum="${2:-?}" state
+    state=$(run_gh_capture "读取 issue #$issue 状态" \
+        gh api "repos/$REPO/issues/$issue" --jq .state) || return 1
+    case "$state" in
+        closed)
+            run_gh "auto-cleanup label issue #$issue → Done" \
+                gh_label_flip "$issue" \
+                --add "$LABEL_DONE" \
+                --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "${LABEL_PENDING_AGENT_DEFAULT:-}" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "$LABEL_AGENT_DOING" || return 1
+            log "  PR #$prnum → Done；issue #$issue CLOSED (Closes #N) → Done"
+            ;;
+        open)
+            run_gh "auto-cleanup label issue #$issue → pending/human" \
+                gh_label_flip "$issue" \
+                --add "$LABEL_PENDING_HUMAN" \
+                --remove "$LABEL_PENDING_PR" "${LABEL_PENDING_AGENT_DEFAULT:-}" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "$LABEL_AGENT_DOING" || return 1
+            log "  PR #$prnum → Done；issue #$issue OPEN (Refs #N) → pending/human"
+            ;;
+        *)
+            log "  ⚠️ issue #$issue 状态异常（'$state'），不打标签，下轮再判"
+            return 1
+            ;;
+    esac
+}
+
+# merged_label_queue[<issue>] = {pr, tries}；上限同 SUB_ISSUE_ROLLUP_MAX_TRIES。
+merged_label_enqueue() {
+    local issue="$1" prnum="$2" state_file="$3" tmp
+    tmp=$(mktemp)
+    jq --arg i "$issue" --arg p "$prnum" \
+        '.merged_label_queue = ((.merged_label_queue // {}) + {($i): {pr: $p, tries: (((.merged_label_queue // {})[$i].tries) // 0)}})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+    log "  issue #$issue 的合并后标签暂未定（状态读不到或写失败），下轮重试"
+}
+
+merged_label_drain() {
+    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" issue prnum tries tmp
+    for issue in $(jq -r '(.merged_label_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
+        [[ "$issue" =~ ^[0-9]+$ ]] || continue
+        prnum=$(jq -r --arg i "$issue" '.merged_label_queue[$i].pr // "?"' "$state_file")
+        tmp=$(mktemp)
+        if merged_issue_label "$issue" "$prnum"; then
+            jq --arg i "$issue" 'del(.merged_label_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+            continue
+        fi
+        tries=$(jq -r --arg i "$issue" '(.merged_label_queue[$i].tries // 0) + 1' "$state_file")
+        if [ "$tries" -ge "$cap" ]; then
+            log "⚠️ issue #$issue 合并后标签连续 $tries 次没定下来 → 放弃（请手动给它打 Done / pending/human）"
+            jq --arg i "$issue" 'del(.merged_label_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        else
+            jq --arg i "$issue" --argjson n "$tries" '.merged_label_queue[$i].tries = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        fi
+    done
+}
+
 # 汇总重试队列。merge 钩子只负责「入队」，每轮 poll 再「清队」：
 # 汇总所需的读写发生在 PR 已记入 cleaned_prs **之后**，那个 PR 下一轮不会再被扫到；
 # 要是汇总当场失败就算了，而这恰好是最后一个子项，父 issue 就永远等不到汇总。

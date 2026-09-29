@@ -120,6 +120,7 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
   "split_rollups":         { "<PARENT>": <n>, ... },  // parent issues already summarised (comment + label) when all <n> sub-issues closed
   "split_rollup_commented":{ "<PARENT>": <n>, ... },  // summary comment posted, label flip may still be pending (retry won't re-comment)
   "split_rollup_queue":    { "<SUB>": <tries>, ... },  // closed sub-issues whose parent rollup is still to be done; drained every tick
+  "merged_label_queue":    { "<ISSUE>": {"pr": .., "tries": ..} }, // merged PR's issue whose Done / pending/human label is not settled yet (state unreadable or write failed)
   "cleaned_prs":           [ <PR>, ... ],             // PRs already auto-cleanup'd; not rescanned
   "unmerged_prs_handled":  [ <PR>, ... ]              // closed-unmerged PRs already judged by § 3c
 }
