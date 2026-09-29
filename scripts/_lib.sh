@@ -1775,12 +1775,22 @@ sub_issue_rollup() {
             "$state_file" > "$tmp" && mv "$tmp" "$state_file"
     fi
 
-    if ! run_gh "父 issue #$parent → $LABEL_PENDING_HUMAN" \
-        gh_label_flip "$parent" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "$LABEL_PENDING_PR" "$LABEL_AGENT_DOING"; then
+    # 不用 gh_label_flip：它对每个 DELETE 都 `|| true`（翻 label 场景里「本来就没有」很常见），
+    # 这里却必须分清「标签本来不在」（404，算成功）和「删除失败」（算失败、留队重试）——
+    # 否则 pending/PR 删失败也记完成，父 issue 永远挂着两个互相矛盾的状态标签。
+    if ! run_gh "父 issue #$parent 加 $LABEL_PENDING_HUMAN" \
+        gh_write api -X POST "repos/$REPO/issues/$parent/labels" -f "labels[]=$LABEL_PENDING_HUMAN"; then
         return 1
     fi
+    local L out
+    for L in "$LABEL_PENDING_PR" "$LABEL_AGENT_DOING"; do
+        [ -n "$L" ] || continue
+        if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$parent/labels/$(printf '%s' "$L" | jq -sRr @uri)" 2>&1); then
+            if printf '%s' "$out" | grep -q 'HTTP 404'; then continue; fi
+            log "  ⚠️ 父 issue #$parent 摘 $L 失败: $out"
+            return 1
+        fi
+    done
     tmp=$(mktemp)
     jq --arg p "$parent" --argjson n "$total" '.split_rollups = ((.split_rollups // {}) + {($p): $n})' \
         "$state_file" > "$tmp" && mv "$tmp" "$state_file"

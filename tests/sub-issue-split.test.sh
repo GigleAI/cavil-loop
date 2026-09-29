@@ -49,12 +49,13 @@ chk() {
 # ── 假 gh ──
 # FIX/<路径 / 换成 _>.json = 该 GET 端点的响应体；FIX/<...>.err = 以该内容报错（stderr + rc=1）。
 # 所有写操作（-X POST/DELETE、issue comment）记到 $CALLS，不回放。
-# FAIL_WRITE=<正则>：匹配的写操作记为 FAILED 并返回 1（模拟写接口 5xx）。
+# FAIL_WRITE=<正则>：匹配的写操作记为 FAILED 并返回 1（模拟写接口失败）；
+# 报错文本取 FAIL_MSG（默认 502；设成 404 模拟「标签本来就不在」）。
 FIX="$SANDBOX/fix"; CALLS="$SANDBOX/calls"; mkdir -p "$FIX"; : > "$CALLS"
 fx_key() { printf '%s' "$1" | sed 's|?.*||; s|/|_|g'; }
 set_json() { printf '%s' "$2" > "$FIX/$(fx_key "$1").json"; rm -f "$FIX/$(fx_key "$1").err"; }
 set_err()  { printf '%s' "$2" > "$FIX/$(fx_key "$1").err"; rm -f "$FIX/$(fx_key "$1").json"; }
-reset_fx() { rm -f "$FIX"/*; : > "$CALLS"; echo '{}' > "$STATE_DIR/state.json"; _WRITE_LOGIN_CACHE=""; FAIL_WRITE=""; }
+reset_fx() { rm -f "$FIX"/*; : > "$CALLS"; echo '{}' > "$STATE_DIR/state.json"; _WRITE_LOGIN_CACHE=""; FAIL_WRITE=""; FAIL_MSG=""; }
 FAIL_WRITE=""
 
 gh() {
@@ -82,7 +83,7 @@ gh() {
     if [ "$method" != GET ]; then
         if [ -n "$FAIL_WRITE" ] && [[ "$method $path ${args[*]:-}" =~ $FAIL_WRITE ]]; then
             printf 'FAILED %s %s %s\n' "$method" "$path" "${args[*]:-}" >> "$CALLS"
-            echo 'gh: Server Error (HTTP 502)' >&2; return 1
+            echo "${FAIL_MSG:-gh: Server Error (HTTP 502)}" >&2; return 1
         fi
         printf '%s %s %s\n' "$method" "$path" "${args[*]:-}" >> "$CALLS"
         return 0
@@ -219,6 +220,25 @@ chk "… 没翻 label（先有评论说明，再翻 label）" "$(flipped)" "0"
 chk "… 没记「评论已发」" "$(jq -r '.split_rollup_commented["50"] // "none"' "$STATE_DIR/state.json")" "none"
 FAIL_WRITE=""
 chk "恢复后重试 → 评论 + 翻 label 各一次" "$(rc_of 51; comments; flipped)" "$(printf '0\n1\n1')"
+
+echo "【5b-2】摘旧标签失败：不能记完成，下轮只补摘、不重复评论"
+unpr() { grep -c "^DELETE $R/issues/50/labels/pending%2FPR" "$CALLS"; }
+rollup_setup closed closed
+FAIL_WRITE="^DELETE $R/issues/50/labels/pending%2FPR"
+chk "评论 + 加 pending/human 成功、摘 pending/PR 502 → 返回 1" "$(rc_of 51)" "1"
+chk "… 没记成「已完成」" "$(jq -r '.split_rollups["50"] // "none"' "$STATE_DIR/state.json")" "none"
+chk "… 评论已发 1 次" "$(comments)" "1"
+FAIL_WRITE=""
+chk "接口恢复后重试 → 返回 0" "$(rc_of 51)" "0"
+chk "… 补摘了 pending/PR" "$(unpr)" "1"
+chk "… 没有重复评论" "$(comments)" "1"
+chk "… 记成已完成" "$(jq -r '.split_rollups["50"]' "$STATE_DIR/state.json")" "2"
+
+rollup_setup closed closed
+FAIL_WRITE="^DELETE $R/issues/50/labels/"; FAIL_MSG='gh: Label does not exist (HTTP 404)'
+chk "要摘的标签本来就不在（404）→ 算成功，返回 0" "$(rc_of 51)" "0"
+chk "… 记成已完成" "$(jq -r '.split_rollups["50"]' "$STATE_DIR/state.json")" "2"
+FAIL_WRITE=""; FAIL_MSG=""
 
 echo "【5c】重试队列：merge 钩子只入队，每轮清队"
 q() { jq -r --arg s "$1" '.split_rollup_queue[$s] // "gone"' "$STATE_DIR/state.json"; }
