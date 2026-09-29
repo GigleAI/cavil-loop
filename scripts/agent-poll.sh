@@ -39,9 +39,9 @@ fi
 PACE_ACTED=0
 pace_mark_acted() { PACE_ACTED=1; }
 
-[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{}}' > "$STATE_FILE"
+[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{},"split_rollups":{}}' > "$STATE_FILE"
 # 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
-for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts; do
+for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts split_rollups; do
     if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
         tmp=$(mktemp)
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -627,7 +627,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
 
                 # Issue：看实际状态决定怎么标
                 # - CLOSED（PR body 是 Closes #N，GitHub auto-close）→ 加 Done（与 PR 同闭环）
-                # - OPEN（PR body 是 Refs #N，长期 tracker 模式）→ 翻 pending/human（等你 triage 是否真完结）
+                # - OPEN（PR body 是 Refs #N：外部 / 手开 PR，或 #43 之前的老「部分实现」issue）→ 翻 pending/human（等你 triage 是否真完结）
                 issue_state=$(gh issue view "$issue_n" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "OPEN")
                 if [ "$issue_state" = "CLOSED" ]; then
                     run_gh "auto-cleanup label issue #$issue_n → Done" \
@@ -635,6 +635,8 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                         --add "$LABEL_DONE" \
                         --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
                     log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
+                    # 它若是拆出来的 sub-issue：父下子项全关 → 父 issue 翻 pending/human 汇总（#43）
+                    sub_issue_rollup "$issue_n" "$STATE_FILE" || true
                 else
                     run_gh "auto-cleanup label issue #$issue_n → pending/human" \
                         gh_label_flip "$issue_n" \

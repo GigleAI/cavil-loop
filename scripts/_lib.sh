@@ -1654,6 +1654,122 @@ github_issue_title() {
         gh api "repos/$REPO/issues/$issue" --jq .title
 }
 
+# ── 拆分出来的 sub-issue（issue #43）──
+# 一个 issue 要多个 PR 时，worker 在方案确认后把它拆成 GitHub 原生 sub-issue：每个子项
+# 有自己的编号 → 自己的分支 / worktree / PR（`Closes #子号`），父 issue 只当总表。
+# 子 issue 正文带一行 SPLIT_MARKER，派工时据此跳过设计轮（方案已在父 issue 上确认过）。
+
+# 父 issue 查询：stdout 父 issue 编号；没有父 issue → 空串 + return 0；接口出错 → return 1。
+# 两种「空」必须分开：没父 = 普通 issue、照常走；出错 = 不知道，调用方不能当成「没父」
+# 之外的任何结论（尤其不能当成「父下全完成」）。
+# 父 issue 不在本仓库（sub-issue 可以跨仓库挂）→ 当没父：本仓库的 daemon 管不着它。
+issue_parent_num() {
+    local issue="$1" out rc=0 errf
+    errf=$(mktemp)
+    out=$(gh api "repos/$REPO/issues/$issue/parent" \
+        --jq 'if (.repository_url | endswith("/repos/'"$REPO"'")) then .number else "" end' 2>"$errf") || rc=$?
+    if [ "$rc" != 0 ]; then
+        if grep -q 'HTTP 404' "$errf"; then rm -f "$errf"; echo ""; return 0; fi
+        log "  ⚠️ 查询 issue #$issue 的父 issue 失败: $(tr '\n' ' ' < "$errf") $out"
+        rm -f "$errf"
+        return 1
+    fi
+    rm -f "$errf"
+    printf '%s\n' "$out"
+}
+
+# 写身份（worker 建 sub-issue 用的就是这把 token）的 login，本进程内缓存。
+_WRITE_LOGIN_CACHE=""
+write_identity_login() {
+    if [ -z "$_WRITE_LOGIN_CACHE" ]; then
+        _WRITE_LOGIN_CACHE=$(gh_write api user --jq .login 2>/dev/null) || _WRITE_LOGIN_CACHE=""
+    fi
+    printf '%s' "$_WRITE_LOGIN_CACHE"
+}
+
+# 这个 issue 是不是本工具拆出来、可以跳过设计轮的子项？是 → stdout 父 issue 编号。
+# 三个条件缺一不可（任何人都能在自己开的 issue 里写一行 HTML 注释，所以只认标记不够）：
+#   1. GitHub 上真有父子关系，且父 issue 在本仓库
+#   2. 子 issue 正文里的标记指向的正是这个父 issue
+#   3. 子 issue 由写身份（bot）创建
+# 任何一步查不到 / 出错 → 空串，调用方回落到普通「先出方案」流程（fail-safe：多问一轮，
+# 不会少一道人工确认）。
+split_parent_of() {
+    local issue="$1" parent meta author body me
+    parent=$(issue_parent_num "$issue") || { echo ""; return 0; }
+    [ -n "$parent" ] || { echo ""; return 0; }
+    meta=$(gh api "repos/$REPO/issues/$issue" --jq '[.user.login, (.body // "")] | @json' 2>/dev/null) || { echo ""; return 0; }
+    author=$(printf '%s' "$meta" | jq -r '.[0]' 2>/dev/null)
+    body=$(printf '%s' "$meta" | jq -r '.[1]' 2>/dev/null)
+    me=$(write_identity_login)
+    if [ -z "$me" ] || [ "$author" != "$me" ]; then
+        log "issue #$issue 挂在 #$parent 下，但作者是 ${author:-?}（不是写身份 ${me:-?}）→ 按普通 issue 先出方案"
+        echo ""; return 0
+    fi
+    if ! printf '%s' "$body" | grep -qE "<!-- agent-split-from: #${parent} -->"; then
+        log "issue #$issue 挂在 #$parent 下，但正文没有指向 #$parent 的拆分标记 → 按普通 issue 先出方案"
+        echo ""; return 0
+    fi
+    echo "$parent"
+}
+
+# 子 issue 关闭后的父 issue 汇总：父下 sub-issue **全部**已关 → 父 issue 翻 pending/human
+# 并留一条汇总评论。**不关父 issue**——关闭权留给人。
+# 幂等：state.json 的 split_rollups[<父号>] 记下已汇总时的子项数；同样的子项数不再发第二次
+# （同一轮里两个子 PR 同时合并时两次调用都会看到「全完成」）。父 issue 后来又挂了新子项，
+# 子项数变了，全部完成时会再汇总一次。
+# 任何一步出错 → 不翻、不发、只记日志：查不到不等于「全完成」。
+sub_issue_rollup() {
+    local sub="$1" state_file="${2:-${STATE_FILE:-$STATE_DIR/state.json}}"
+    local parent subs total open_left parent_state done_total tmp body
+    parent=$(issue_parent_num "$sub") || return 0
+    [ -n "$parent" ] || return 0
+
+    parent_state=$(run_gh_capture "读取父 issue #$parent 状态" \
+        gh api "repos/$REPO/issues/$parent" --jq .state) || return 0
+    [ "$parent_state" = "open" ] || { log "  父 issue #$parent 已关闭，不汇总"; return 0; }
+
+    subs=$(run_gh_capture "列出父 issue #$parent 的 sub-issue" \
+        gh api --paginate "repos/$REPO/issues/$parent/sub_issues?per_page=100" \
+        --jq '.[] | "\(.number)\t\(.state)"') || return 0
+    # 刚合并的这个子 issue 调用方已确认 CLOSED；列表若还没刷新，按已关算。
+    total=$(printf '%s\n' "$subs" | awk 'NF' | wc -l | tr -d ' ')
+    open_left=$(printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" 'NF && $1 != s && $2 != "closed"' | wc -l | tr -d ' ')
+    if [ "$total" = 0 ]; then
+        log "  父 issue #$parent 的 sub-issue 列表为空（接口未刷新？），不汇总"
+        return 0
+    fi
+    if [ "$open_left" != 0 ]; then
+        log "  父 issue #$parent 还有 $open_left/$total 个子项未完成，不动"
+        return 0
+    fi
+
+    done_total=$(jq -r --arg p "$parent" '.split_rollups[$p] // empty' "$state_file" 2>/dev/null || true)
+    if [ "$done_total" = "$total" ]; then
+        log "  父 issue #$parent 已汇总过（$total 个子项），跳过"
+        return 0
+    fi
+
+    body=$(mktemp)
+    {
+        printf '## 子项全部完成（%s/%s）\n\n' "$total" "$total"
+        printf '本 issue 拆出的 sub-issue 都已关闭，请决定是否关闭本 issue（daemon 不会替你关）：\n\n'
+        printf '%s\n' "$subs" | awk -F'\t' 'NF {print "- #" $1}'
+    } > "$body"
+    if ! run_gh "父 issue #$parent 汇总评论" gh_write issue comment "$parent" --repo "$REPO" --body-file "$body"; then
+        rm -f "$body"; return 0
+    fi
+    rm -f "$body"
+    run_gh "父 issue #$parent → $LABEL_PENDING_HUMAN" \
+        gh_label_flip "$parent" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "$LABEL_PENDING_PR" "$LABEL_AGENT_DOING" || true
+    tmp=$(mktemp)
+    jq --arg p "$parent" --argjson n "$total" '.split_rollups = ((.split_rollups // {}) + {($p): $n})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+    log "  父 issue #$parent 子项全部完成（$total 个）→ $LABEL_PENDING_HUMAN"
+}
+
 # 给 worker session 加可读标题、记录实际 worker / 模型，并让 tmux 默认的 prefix+s
 # choose-tree 在 session 行显示标题。
 # `#{E:tree_mode_format}` 保留 tmux 自带的 pane/window/session 格式；只在 session 行追加

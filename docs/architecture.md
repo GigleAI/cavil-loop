@@ -16,11 +16,20 @@
 
 | Scenario | PR body uses | Issue state at merge | Daemon auto-cleanup |
 |----------|--------------|----------------------|---------------------|
-| **A. Full closure**: one PR fully resolves the issue | `Closes #N` | GitHub auto-closes | Issue gets `Done` (in sync with the PR) |
-| **B. Partial implementation**: multiple PRs are needed | `Refs #N` | Stays open | Issue flipped to `pending/human` for you to triage |
-| **C. Issue too large**: suggest splitting into sub-issues | Not dispatched directly | — | You break it down, then label each sub-issue separately |
+| **A. One PR**: one PR fully resolves the issue | `Closes #N` | GitHub auto-closes | Issue gets `Done` (in sync with the PR) |
+| **B. Split into sub-issues**: more than one PR is needed | No PR on the parent; each sub-issue's PR uses `Closes #<sub>` | Parent stays open as the overview (`pending/PR`) | Each sub-issue gets `Done`; when **all** of them are closed the parent flips to `pending/human` with a summary comment. The daemon never closes the parent |
 
-In its "design proposal" comment, the worker explicitly justifies its A/B/C pick and asks you to confirm before coding. So `Closes` vs `Refs` is a **design-time consensus**, not the worker's default.
+In its "design proposal" comment, the worker picks A or B (with a split plan: per sub-issue title / scope / prerequisite / acceptance) and asks you to confirm before coding. So "one PR or several" is a **design-time consensus**, not the worker's default.
+
+**Why sub-issues and not several `Refs #N` PRs on one issue** (the old "partial implementation" mode, removed in #43): the whole tool is "one number = one branch = one worktree = one session". Several PRs on one issue meant the follow-up PR existed only as a sentence in a comment — nothing to queue, label or track — and had to reuse a branch/worktree the merge hook considered finished. A sub-issue has its own number, so dispatch / worktree / cleanup / weekly report apply unchanged.
+
+How a split runs:
+
+1. After you confirm B, the worker (`issue-comment.template.md` § A-split) creates each sub-issue, links it under the parent via the sub-issue API, and copies priority / Project iteration from the parent. Sub-issues with no prerequisite get `pending/agent` right away; ones that depend on another get `pending/human` — label them once the prerequisite merges
+2. A sub-issue skips the design round: `dispatch-new-issue.sh` renders the development prompt (`issue-comment` + `sub-issue.template.md`) instead of the design one, **only if** all three hold — GitHub says it has a parent in this repo, its body carries `<!-- agent-split-from: #<parent> -->` naming that parent, and it was created by the write identity (bot). Any check failing (or erroring) falls back to the normal design round
+3. The merge hook calls `sub_issue_rollup` after marking a closed issue `Done`; it is idempotent via `state.json`'s `split_rollups`
+
+An issue left over from the old partial mode (one `Refs` PR merged, work remaining) gets its remainder split into sub-issues on its next dispatch. `Refs #N` PRs opened by hand are still handled as before (issue → `pending/human` on merge).
 
 ### State flow
 
@@ -31,7 +40,7 @@ New issue ──────────────────► label: pendi
    ▼
 pending/agent ──► daemon dispatch ──► label: doing/agent   ← visible in GitHub UI live
                                               │
-                                              │ worker does work (branch / write code / run tests / push / open PR with `Refs #N`)
+                                              │ worker does work (branch / write code / run tests / push / open PR with `Closes #N`)
                                               ▼
                                        worker done →
                                           - PR  : pending/human
@@ -43,12 +52,9 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
                                               ▼ (you merge the PR)
                                        daemon auto-cleanup →
                                           - PR  : Done (PR closure)
-                                          - Issue: pending/human (issue still open, **you decide** whether this PR truly resolves it)
-                                              │
-                                              ▼
-                                       You decide:
-                                          - Fully resolved → manually close the issue (optionally add Done label)
-                                          - Still partial → comment + label pending/agent for a fresh design / dev cycle
+                                          - Issue: closed by `Closes #N` → Done
+                                          - Sub-issue closed → if every sibling is closed too,
+                                            parent issue → pending/human (you decide whether to close it)
 ```
 
 > For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).

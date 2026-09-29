@@ -71,11 +71,15 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 
 ### § A. 开发阶段
 
+**先看闭环关系**：回去重读设计阶段你发的方案评论里「🔗 issue 闭环关系」的勾选状态。勾的是 **B. 拆成 sub-issue** → **不在本 issue 写代码**，改走下面的 § A-split；勾 A（或都没勾 = 默认 A）→ 照下面 1–6 步。
+
+**老规矩遗留的「部分实现」issue**：本 issue 已经有合并过的 `Refs #${ISSUE}` PR、还剩一部分没做（旧版流程的「B. 部分实现」）→ 剩下的部分**不再开第二个 `Refs` PR**，按 § A-split 把剩余工作拆成 sub-issue（拆分计划写在交人评论里，列清已完成的部分 + 剩下每块的范围）。
+
 1. 实现：改代码 → TDD 优先补测试 → type-check / 相关测试 / lint 通过为止
 2. commit + `git push -u origin ${BRANCH}`
 3. `gh pr create --base main --title "..." --body "..."`，body 里**根据设计阶段确认的「issue 闭环关系」选关键词**：
    - **A. 完整闭环** → body 用 `Closes #${ISSUE}`（merge 自动关 issue）
-   - **B. 部分实现** → body 用 `Refs #${ISSUE}`（issue 保持 open 作 tracker；务必在 PR body 写明「这次只覆盖 X 部分；Y、Z 留后续 PR」）
+   - 走到这里的一律是 A（B 走 § A-split，不在本 issue 开 PR）；**不再用 `Refs #${ISSUE}` 开「部分实现」PR**
    - 看不准时回去重读设计阶段你发的 issue comment——那时已经跟用户讨论过这个选择
 4. 拿到 PR 编号 `<P>` 后先按下方「新 PR 必须继承」完成优先级与 Project iteration 继承，再翻 label（启用交叉 review 时先交独立 reviewer，未启用时交人；issue 转 PR 跟踪）：
    - `flip_label <P> --add ${LABEL_REVIEW_OR_HUMAN}`
@@ -88,6 +92,30 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
    fi
    ```
 6. 一句话回复 `PR #<P> 已开，issue 转 ${LABEL_PENDING_PR} 跟踪`，停 idle
+
+### § A-split. 拆成 sub-issue（闭环关系勾了 B）
+
+把方案里的「拆分计划」逐项落成 GitHub 原生 sub-issue。本 issue 本身不写代码、不开 PR。
+
+1. **逐个建子 issue**（按拆分计划的顺序）。正文写清：一句话说明来自哪个父 issue + 链到父 issue 上确认过的那条方案评论；这一块的范围 / 明确不做 / 验收标准；前置（`前置：#X`，没有写「前置：无」）。正文**最后一行**必须是拆分标记（daemon 靠它 + 父子关系 + 作者是 bot 三项核对，才让子项跳过设计轮直接开发；标记和父号对不上就会照常先出方案）：
+   ```bash
+   printf '%s\n\n<!-- agent-split-from: #%s -->\n' "$SUB_BODY_TEXT" "${ISSUE}" > /tmp/sub-body.md
+   SUB=$(gh api -X POST "repos/${REPO}/issues" -f title="<子项标题>" -F body=@/tmp/sub-body.md --jq .number)
+   ```
+   子项标题要能单独看懂（别只写「PR#2」）。前置若是**同一批里还没建的子项**，先建被依赖的那个，拿到编号再写。
+2. **挂到本 issue 下**。接口参数是子 issue 的**内部 id**，不是编号——传编号会 404 / 挂错：
+   ```bash
+   SUB_ID=$(gh api "repos/${REPO}/issues/$SUB" --jq .id)
+   gh api -X POST "repos/${REPO}/issues/${ISSUE}/sub_issues" -F sub_issue_id="$SUB_ID"
+   ```
+   建完读回核对：`gh api "repos/${REPO}/issues/${ISSUE}/sub_issues" --jq '.[].number'` 包含全部子号。
+3. **继承优先级与 Project iteration**：规则同下方「新 PR 必须继承来源 issue 的优先级与 Project iteration」，把「PR」换成「子 issue」、来源是本 issue #${ISSUE}。子项之后开的 PR 再从子项继承，就一路对上了。
+4. **起始 label**（已与人确认：没有前置的自动开工，有前置的等人）：
+   - 前置为「无」→ `flip_label $SUB --add ${LABEL_PENDING_AGENT}`，daemon 下一轮就会派工（子项会跳过设计轮直接开发）
+   - 有前置 → `flip_label $SUB --add ${LABEL_PENDING_HUMAN}`；前置合并后由人打 `${LABEL_PENDING_AGENT}`
+   - **「是否真的没有前置」要保守判断**：两个子项会改到同一片代码 / 同一个接口，就算逻辑上独立，也把后一个写成依赖前一个——并行开工的两个 PR 撞在同一处，后合的那个要反复 rebase
+5. **交人评论**（发在本 issue）：`##` 标题「已拆成 N 个 sub-issue」；一张表列每个子项：编号链接 / 做什么 / 前置 / 当前状态（已自动开工 or 等你点）；写明「子项全部关闭后 daemon 会把本 issue 翻回 `${LABEL_PENDING_HUMAN}`，是否关闭本 issue 由你决定」。任何一步失败（建不出来 / 挂不上 / 继承失败）如实列出实际错误与已建好的部分，**不要**删掉已建的子项重来——重试须幂等，先查已有子项再补缺的。
+6. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}`（工作已转到子项跟踪）；一句话回复 `已拆成 N 个 sub-issue，issue 转 ${LABEL_PENDING_PR} 跟踪`，停 idle
 
 ### 新 PR 必须继承来源 issue 的优先级与 Project iteration
 
