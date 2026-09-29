@@ -274,6 +274,53 @@ chk "C18 人读新增的模型说明不改动机器字段" \
     "$(run_raw partialmodel --kv | grep -o 'models=[^ ]* model_unknown=[a-z]*')" \
     "models=claude-opus-5 model_unknown=yes"
 
+# ── C19–C22 参照价目表的 2026-09-29 复核（GigleTutor-Web#982）──────────────
+# 起因：参照表里没有 claude-opus-5-5，而它的输入 / 输出单价本机又反解不稳 → 这两项
+# 落成「未知」，每条 Opus 5.5 派工的 footer 都是「部分用量未计价，金额偏低」。
+# 复核时还发现参照表把缓存读取一律写成输入价 × 0.1，而官方：
+#   Opus 5.5 = × 0.05（$0.20）、Fable 5.1 = × 0.025（$0.25）；
+#   快速档的缓存倍率叠加在快速价上，Opus 5.5 快速档读取 = 8 × 0.05 = $0.40（不是 $0.80）。
+# 来源：https://platform.claude.com/docs/en/about-claude/pricing（2026-09-29 抓取）。
+# 每条用例五项各 1M token，金额 = 五个单价之和，便于逐项对账。
+# cost_usd 是 double 原值，这里统一按 6 位小数比较，避免把浮点尾数写进期望值。
+usd6() { local v; v=$(grep -o 'cost_usd=[^ ]*' | cut -d= -f2); [ -n "$v" ] && printf '%.6f' "$v" || echo "无金额"; }
+state() { grep -o 'cost_state=[a-z]*'; }
+# 在 usage 里加 speed 字段（快速模式调用的真实形态：message.usage.speed = "fast"）
+fast_u() { u "$@" | jq -c '. + {speed: "fast"}'; }
+
+ALL1M="1000000 1000000 1000000 2000000 1000000 1000000"
+ALL1M_IT="[$(it1 $ALL1M)]"
+
+mk_case opus55 <<EOF
+$(rec 10 req_o55 claude-opus-5-5 "$(u $ALL1M "$ALL1M_IT")")
+EOF
+chk "C19 Opus 5.5 标准档：4 + 20 + 0.20 + 5 + 8 = \$37.20" \
+    "$(run opus55 --kv | usd6)" "37.200000"
+chk "C19 Opus 5.5 不再有缺价 token" \
+    "$(run opus55 --kv | state)" "cost_state=full"
+
+mk_case opus55fast <<EOF
+$(rec 10 req_o55f claude-opus-5-5 "$(fast_u $ALL1M "$ALL1M_IT")")
+EOF
+chk "C20 Opus 5.5 快速档：8 + 40 + 0.40 + 10 + 16 = \$74.40（缓存读取按 0.05× 叠加，不是 0.80）" \
+    "$(run opus55fast --kv | usd6)" "74.400000"
+chk "C20 快速档同样全部有价" \
+    "$(run opus55fast --kv | state)" "cost_state=full"
+
+mk_case fable51 <<EOF
+$(rec 10 req_f51 claude-fable-5-1 "$(u 0 0 1000000 0 0 0 "[$(it1 0 0 1000000 0 0 0)]")")
+EOF
+chk "C21 Fable 5.1 缓存读取按 \$0.25（原表误按 × 0.1 算成 \$1.00）" \
+    "$(run fable51 --kv | usd6)" "0.250000"
+
+mk_case sonnet55 <<EOF
+$(rec 10 req_s55 claude-sonnet-5-5 "$(u $ALL1M "$ALL1M_IT")")
+EOF
+chk "C22 Sonnet 5.5：2 + 10 + 0.20 + 2.50 + 4 = \$18.70" \
+    "$(run sonnet55 --kv | usd6)" "18.700000"
+chk "C22 Sonnet 5.5 全部有价" \
+    "$(run sonnet55 --kv | state)" "cost_state=full"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" -eq 0 ]
