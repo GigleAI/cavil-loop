@@ -27,6 +27,18 @@ REVIEW_MODEL="review-model"
 CONF
 mkdir -p "$TMP/project" "$TMP/wt" "$TMP/state"
 
+# 假 codex：拼出来的命令要看 `codex --help` 里有没有 --no-daemon，不能取决于本机装的版本。
+# 默认模拟新版（有 daemon、支持 --no-daemon）；FAKE_CODEX_OLD=1 模拟老版本。
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+[ "${1:-}" = --help ] || exit 0
+echo "      --remote <ADDR>"
+[ -n "${FAKE_CODEX_OLD:-}" ] || echo "      --no-daemon"
+FAKE
+chmod +x "$TMP/bin/codex"
+export PATH="$TMP/bin:$PATH"
+
 export CODING_AGENT_CONFIG="$TMP/coding-agent.config"
 exec 8>&2
 # shellcheck source=../scripts/_lib.sh
@@ -73,9 +85,17 @@ dispatch_command() {
 review_cmd="$(dispatch_command codex 1 review-model)"
 empty_cmd="$(dispatch_command codex 1 '')"
 ordinary_cmd="$(dispatch_command claude 0 ignored)"
-chk "review 子进程使用 review model" "$review_cmd" 'codex --dangerously-bypass-approvals-and-sandbox --model review-model "$(cat /tmp/prompt)"'
-chk "明确空 review model 不继承普通 model" "$empty_cmd" 'codex --dangerously-bypass-approvals-and-sandbox  "$(cat /tmp/prompt)"'
+chk "review 子进程使用 review model" "$review_cmd" 'codex --no-daemon --dangerously-bypass-approvals-and-sandbox --model review-model "$(cat /tmp/prompt)"'
+chk "明确空 review model 不继承普通 model" "$empty_cmd" 'codex --no-daemon --dangerously-bypass-approvals-and-sandbox  "$(cat /tmp/prompt)"'
 chk "未指定 dispatch override 使用普通 model" "$ordinary_cmd" 'claude -n issue-test  --model ordinary-model "$(cat /tmp/prompt)"'
+
+echo "── codex 不连共享 daemon（否则工具 shell 丢掉 worker 的 GH_TOKEN，#981）──"
+resume_cmd="$(env CODING_AGENT_CONFIG="$TMP/coding-agent.config" DISPATCH_WORKER_AGENT=codex \
+    DISPATCH_WORKER_MODEL=review-model DISPATCH_WORKER_MODEL_SET=1 \
+    bash -c 'source "$1/scripts/_lib.sh"; agent_command_resume /tmp issue-test /tmp/prompt' _ "$REPO_DIR")"
+chk "续接也带 --no-daemon" "$resume_cmd" 'codex resume --last --no-daemon --dangerously-bypass-approvals-and-sandbox --model review-model "$(cat /tmp/prompt)"'
+old_cmd="$(FAKE_CODEX_OLD=1 dispatch_command codex 1 review-model)"
+chk "老版本 codex 没有这个 flag 就不传" "$old_cmd" 'codex  --dangerously-bypass-approvals-and-sandbox --model review-model "$(cat /tmp/prompt)"'
 
 echo "── poll 队列必须把普通 model 传给 dispatch ──"
 POLL="$REPO_DIR/scripts/agent-poll.sh"

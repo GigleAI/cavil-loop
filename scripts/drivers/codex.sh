@@ -15,6 +15,16 @@ CODEX_EXTRA_FLAGS="${CODEX_EXTRA_FLAGS---dangerously-bypass-approvals-and-sandbo
 
 agent_bin() { echo "codex"; }
 
+# 新版 codex（实测 0.159）的 TUI 默认连一个全机共享的 app-server daemon，工具调用的 shell
+# 在 **daemon 的进程环境**里跑，而不是 worker 自己的。daemon 由本机第一个起来的 codex 拉起——
+# 常常是人手开的那个——于是 worker 的 GH_TOKEN / GH_TOKEN_FILE 全被丢掉，换成那个人的旧环境
+# （tutor #981：review worker 的 gh 全用了已封号 luosky-bot 的 token，403 suspended）。
+# 支持这个 flag 就一律 --no-daemon；老版本没有这个 flag 也就没有 daemon，传了反而报错。
+codex_no_daemon_flag() {
+    codex --help 2>/dev/null | grep -q -- '--no-daemon' && echo "--no-daemon"
+    return 0
+}
+
 agent_has_history() {
     local cwd="$1"
     local dirs=(
@@ -50,7 +60,8 @@ agent_command_new() {
     local prompt_file="$3"
     local model_arg
     model_arg="$(worker_model_arg)"
-    printf 'codex %s %s "$(cat %s)"' \
+    printf 'codex %s %s %s "$(cat %s)"' \
+        "$(codex_no_daemon_flag)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"
@@ -63,7 +74,8 @@ agent_command_resume() {
     local model_arg
     model_arg="$(worker_model_arg)"
     # tmux 已在目标 worktree cwd 中启动；--last 会按 cwd 续接最近会话并直接注入 prompt。
-    printf 'codex resume --last %s %s "$(cat %s)"' \
+    printf 'codex resume --last %s %s %s "$(cat %s)"' \
+        "$(codex_no_daemon_flag)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"
