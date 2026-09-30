@@ -1646,6 +1646,83 @@ branch_name() {
     echo "${BRANCH_PREFIX}$1"
 }
 
+# ── preview 端口与归属（GigleAI/GigleTutor-Web#1009）──
+# 端口 = BASE + issue；配了 PREVIEW_PORT_MODULO 就改成 BASE + issue % MODULO，
+# 让端口留在一个号段里（tutor：预览 4000–4999，不越界撞进 e2e 的 5000 段）。
+#
+# 取模的代价是「同余 issue 同端口」（#40 和 #1040 都是 4040），所以端口有了**主人**：
+# 登记文件 $PREVIEW_CONF_DIR/<port>.conf 里的「项目 + 完整 issue + worktree」三项。
+# 规则只有一句：**谁都只动登记在自己名下的端口；查不到登记就什么都不动。**
+# 读登记 → 比对 → 动手（写 conf / systemd / tailscale / 删 conf）必须在同一把端口锁里，
+# 注册和注销共用这把锁，否则两个 issue 并发注册时都会「检查时没人」、后写的赢。
+# 没登记的遗留路由不自动拆：端口可能已被别的服务复用，按公式拆就是误伤别人。
+PREVIEW_CONF_DIR="$HOME/.config/coding-agent-work-loop/preview"
+
+preview_port() {
+    local issue="$1" base="${PREVIEW_PORT_BASE:-4000}" mod="${PREVIEW_PORT_MODULO:-}"
+    if [ -n "$mod" ]; then
+        echo $(( base + issue % mod ))
+    else
+        echo $(( base + issue ))
+    fi
+}
+
+# preview_with_port_lock <port> <cmd…>：持端口锁执行 cmd（在子 shell 里，退出码原样透出）。
+# 等不到锁（默认 30s）就 exit 4，不硬闯。
+preview_with_port_lock() {
+    local port="$1"; shift
+    mkdir -p "$PREVIEW_CONF_DIR"
+    (
+        flock -w "${PREVIEW_LOCK_TIMEOUT:-30}" 7 \
+            || { echo "❌ 等 preview 端口 :$port 的锁超时（${PREVIEW_LOCK_TIMEOUT:-30}s）" >&2; exit 4; }
+        "$@"
+    ) 7>"$PREVIEW_CONF_DIR/.port-$port.lock"
+}
+
+# 登记的主人，格式「项目|issue|worktree」；没登记输出空。
+preview_owner_of() {
+    local conf="$PREVIEW_CONF_DIR/$1.conf"
+    [ -f "$conf" ] || return 0
+    # shellcheck disable=SC1090
+    ( source "$conf"; printf '%s|%s|%s\n' "${PREVIEW_PROJECT:-}" "${PREVIEW_ISSUE:-}" "${PREVIEW_WORKTREE:-}" )
+}
+
+# 把「项目|issue|worktree」说成人话，给报错用。
+preview_owner_human() {
+    local project issue worktree
+    IFS='|' read -r project issue worktree <<< "$1"
+    echo "${project} #${issue}（${worktree}）"
+}
+
+# preview_release_owned <port> <project> <issue> <worktree>：**必须在端口锁里调**。
+#   登记存在且三项全等 → 停 unit、解 tailscale 路由、删登记，返回 0
+#   没登记             → 什么都不动，返回 0（幂等：清理路径上反复调不出错）
+#   主人不是调用方     → 什么都不动，返回 3
+preview_release_owned() {
+    local port="$1" want="$2|$3|$4" owner
+    owner="$(preview_owner_of "$port")"
+    if [ -z "$owner" ]; then
+        echo "preview :$port 没有登记，不动（不按公式拆未登记的路由）"
+        return 0
+    fi
+    if [ "$owner" != "$want" ]; then
+        echo "⚠️ preview :$port 登记在 $(preview_owner_human "$owner") 名下，不是 $(preview_owner_human "$want")，不动" >&2
+        return 3
+    fi
+    # 停的顺序：socket 先停，掐掉新连接触发重启的可能；再停 proxy，
+    # app 靠 StopWhenUnneeded 自己跟着走（显式再停一次是兜底，幂等无害）。
+    systemctl --user stop "coding-agent-preview@${port}.socket"      2>/dev/null || true
+    systemctl --user stop "coding-agent-preview@${port}.service"     2>/dev/null || true
+    systemctl --user stop "coding-agent-preview-app@${port}.service" 2>/dev/null || true
+    if command -v tailscale >/dev/null 2>&1 \
+        && tailscale serve status 2>/dev/null | grep -q ":${port}\b"; then
+        sudo -n tailscale serve --https="$port" off >/dev/null 2>&1 \
+            || echo "  ⚠️ tailscale serve off :$port 失败（sudo -n / 权限？）——路由留着，需人工处理" >&2
+    fi
+    rm -f "$PREVIEW_CONF_DIR/${port}.conf"
+    echo "preview :$port 已注销（$(preview_owner_human "$want")）"
+}
+
 # 取 work number 对应的 GitHub issue 标题。GitHub 的 /issues/N REST endpoint
 # 对普通 issue 和 PR 都有效，所以 pr_to_issue_num fallback 到 PR number 时也能显示标题。
 github_issue_title() {

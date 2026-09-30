@@ -419,6 +419,24 @@ bash scripts/preview-serve.sh --list       # 本项目所有 preview 及其死�
 bash scripts/preview-unserve.sh --issue 791  # 注销（cleanup hook 里调）
 ```
 
+### 端口归属：取模之后的同端口
+
+配了 `PREVIEW_PORT_MODULO`（例：1000）时端口是 `BASE + issue % MODULO`，同余 issue 会算出
+同一个端口（#40 与 #1040 都是 4040）。所以每个端口都有**主人**：`<port>.conf` 里的
+「项目 + 完整 issue 号 + worktree」。规则只有一句——**谁都只动登记在自己名下的端口；
+查不到登记就什么都不动**：
+
+- `preview-serve.sh` 发现端口登记在别人名下（同余 issue 或别的项目）→ exit 2 并报出占用方，一个字节都不写
+- `preview-unserve.sh --issue N` / `--port P --expect-issue N` 只注销主人三项全等的登记；
+  没登记 → exit 0 不动；主人不符 → exit 3 不动。旧的裸端口调用 `preview-unserve.sh <port>`
+  只作过渡兼容：预期主人取 cleanup hook 拿到的 `ISSUE` / `WORKTREE` env，缺了就拒绝
+- 读登记 → 比对 → 写 conf / systemd / tailscale 全在同一把端口锁（`.port-<port>.lock`）里，
+  注册与注销共用，并发注册恰好一个成功
+- 没登记的遗留 tailscale 路由**不自动拆**：端口可能已被别的服务复用，按公式拆就是误伤。
+  人工处理前先核对路由当前指向谁
+
+守卫：`tests/preview-port-ownership.test.sh`。
+
 ### 三个必须知道的坑
 
 **① app 拿到的是后端端口，不是公开端口。** 公开端口被 `.socket` 占着，app 再 bind 会

@@ -473,6 +473,28 @@ bash scripts/preview-serve.sh --list       # every preview in this project and w
 bash scripts/preview-unserve.sh --issue 791  # deregister (call this from your cleanup hook)
 ```
 
+### Port ownership once ports wrap
+
+With `PREVIEW_PORT_MODULO` set (e.g. 1000) the port is `BASE + issue % MODULO`, so issues
+that are congruent share a port (#40 and #1040 both get 4040). Every port therefore has an
+**owner**: project + full issue number + worktree, as recorded in `<port>.conf`. One rule —
+**only ever touch a port registered to you; if there is no registration, touch nothing**:
+
+- `preview-serve.sh` finds the port registered to someone else (a congruent issue, or another
+  project) → exits 2 naming the owner, writes nothing
+- `preview-unserve.sh --issue N` / `--port P --expect-issue N` only deregisters when all three
+  owner fields match; no registration → exit 0, untouched; different owner → exit 3, untouched.
+  The old bare-port call `preview-unserve.sh <port>`
+  survives only as a transition shim: the expected owner comes from the `ISSUE` / `WORKTREE` env the
+  cleanup hook receives, and the call is refused without them
+- read registration → compare → write conf / systemd / tailscale all happen under one per-port
+  lock (`.port-<port>.lock`) shared by register and deregister; concurrent registration yields
+  exactly one winner
+- unregistered leftover tailscale routes are **not** removed automatically: the port may have
+  been reused by another service. Check what a route points at before removing it by hand
+
+Guarded by `tests/preview-port-ownership.test.sh`.
+
 ### Three things you must know
 
 **① The app gets the backend port, not the public one.** The public port belongs to the

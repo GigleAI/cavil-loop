@@ -461,6 +461,12 @@ PREVIEW_EXEC=""
 # 公开端口 = PREVIEW_PORT_BASE + issue 编号。撞 Chromium unsafe ports 的话换一个 base。
 PREVIEW_PORT_BASE=4000
 
+# 设了就改成 PREVIEW_PORT_BASE + issue % PREVIEW_PORT_MODULO，让端口留在一个号段里
+# （例：1000 → 4000–4999，issue 过千也不会越界撞进别的号段）。留空 = 不取模。
+# 取模后同余 issue 同端口（#40 与 #1040 都是 4040）：后注册的那个会被拒绝并报出占用方，
+# 不会覆盖；注销也只认登记在自己名下的端口。
+PREVIEW_PORT_MODULO=""
+
 # 后端端口 = 公开端口 + 这个偏移。只要不跟别的服务撞就行。
 PREVIEW_BACKEND_OFFSET=10000
 
