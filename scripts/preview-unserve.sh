@@ -5,6 +5,7 @@
 # 用法：
 #   bash scripts/preview-unserve.sh --issue <N>
 #       注销本项目 #N 的 preview：端口按公式算，预期主人 = 本项目 + #N + worktree_path N
+#       （cleanup hook 调用时**必须**再带 --expect-worktree <hook 拿到的实际 WORKTREE>）
 #   bash scripts/preview-unserve.sh --port <P> --expect-issue <N> [--expect-worktree <W>]
 #       按指定端口注销（迁移旧端口、清理孤儿登记时用）；W 缺省同样取 worktree_path N
 #   bash scripts/preview-unserve.sh <P>
@@ -29,7 +30,7 @@ source "$SCRIPT_DIR/_lib.sh"
 exec 2>&8 8>&-
 
 usage() {
-    sed -n '5,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '5,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 

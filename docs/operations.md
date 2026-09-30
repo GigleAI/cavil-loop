@@ -532,7 +532,10 @@ bash scripts/preview-serve.sh 791     # includes reset-failed; re-run after fixi
 `preview-serve.sh` uses `systemctl start`, not `enable`: a preview lives and dies with its
 issue and should not come back after a reboot (by then `cleanup-issue.sh` has usually
 removed the worktree). Deregistration on issue close belongs in your project's
-`CLEANUP_HOOK`, which should call `preview-unserve.sh --issue <N>` — you have to add that
+`CLEANUP_HOOK`, which should call `preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"`
+(**always pass the hook's actual `WORKTREE`**: with `--issue` alone the expected owner is the path derived from
+config, so a cleanup from a same-numbered but different worktree could release someone else's registration;
+if `WORKTREE` is untrustworthy, skip deregistration rather than falling back to the default path) — you have to add that
 line yourself, since `cleanup-issue.sh` has no way to know whether you enabled previews.
 
 ## File layout

@@ -452,7 +452,7 @@ CLEANUP_HOOK=""
 # 起法由 preview-serve.sh 注册、systemd 拉起：
 #   bash scripts/preview-serve.sh <issue>          注册 + 起监听，打印 URL
 #   bash scripts/preview-serve.sh --list           看本项目所有 preview 及其死活
-#   bash scripts/preview-unserve.sh --issue <N>    注销（cleanup hook 里调）
+#   bash scripts/preview-unserve.sh --issue <N> --expect-worktree <W>   注销（cleanup hook 里调，W = hook 拿到的实际 WORKTREE）
 #
 # 进程必须从 $PORT / $HOST 读监听参数（不能写死端口）——它拿到的是**后端**端口，
 # 公开端口被 .socket 占着。留空 = 不启用，preview 怎么起完全由 worker prompt 决定。

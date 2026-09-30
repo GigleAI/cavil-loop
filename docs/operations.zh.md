@@ -469,7 +469,9 @@ bash scripts/preview-serve.sh 791     # 内含 reset-failed，改完配置重跑
 
 `preview-serve.sh` 用的是 `systemctl start` 而不是 `enable`：preview 是随 issue 生灭的
 临时物，不该在重启后自动复活（那时 worktree 多半已经被 `cleanup-issue.sh` 删了）。
-issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --issue <N>` 完成
+issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"` 完成
+（**一定要带上 hook 拿到的实际 `WORKTREE`**：只传 `--issue` 时预期主人取配置推出来的路径，同号但不同路径的清理就能拆掉别人的登记；
+`WORKTREE` 不可信时整个跳过注销，别退回默认路径）
 ——这一条要自己加进 hook，`cleanup-issue.sh` 不知道你有没有启用 preview。
 
 ## 文件结构
