@@ -77,7 +77,9 @@ agent_session_exists() {
     [ -n "$id" ] || return 1
     local d
     while IFS= read -r d; do
-        if [ -n "$(find "$d" -name "rollout-*-${id}.jsonl" -type f -print -quit 2>/dev/null)" ]; then
+        # 用 `| head -1` 而不是 `-print -quit`：-quit 是 GNU find 的扩展，本机只有
+        # Linux、没法验 macOS/BSD，而 head 关管道一样能让 find 早退，还到处都有。
+        if [ -n "$(find "$d" -name "rollout-*-${id}.jsonl" -type f 2>/dev/null | head -1)" ]; then
             return 0
         fi
     done < <(codex_session_dirs)

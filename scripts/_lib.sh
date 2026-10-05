@@ -2730,13 +2730,19 @@ agent_launch_command() {   # <cwd> <session_name> <prompt_file>
 agent_session_register_launched() {   # <num> <cwd>
     local num="$1" cwd="$2"
     local role="$WORKER_SESSION_ROLE"
-    local waited=0 step=0.5 line found=""
+    local step=0.5 line found="" deadline
 
     [ "${AGENT_LAUNCH_KIND:-}" = "new" ] || return 0
     [ -z "${WORKER_SESSION_ID:-}" ] || return 0
     [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ] || return 0
 
     local max="${AGENT_SESSION_CAPTURE_SECS:-15}"
+    # 按真实流逝时间判，不按迭代数：每轮除了 sleep 还要花一次枚举（codex 扫 200 个
+    # 文件约 0.3s），数迭代会让「配 15 秒」实际等成 20 秒，而且会随会话库变大继续漂——
+    # 派工期间 agent-poll 攥着 flock，多等的时间全项目一起付。
+    # SECONDS 是 bash 内置的整秒计数，所以实际窗口有不到 1 秒的截断误差
+    # （实测：配 3 秒等了 2.4 秒），对这个用途够了。
+    deadline=$((SECONDS + max))
     while :; do
         while IFS= read -r line; do
             [ -z "$line" ] && continue
@@ -2745,9 +2751,7 @@ agent_session_register_launched() {   # <num> <cwd>
             break
         done < <(agent_session_list "$cwd")
         [ -n "$found" ] && break
-        # bc 不一定有；用整数的半秒计数
-        waited=$((waited + 1))
-        [ "$((waited / 2))" -ge "$max" ] && break
+        [ "$SECONDS" -ge "$deadline" ] && break
         sleep "$step"
     done
 
@@ -2763,7 +2767,7 @@ agent_session_register_launched() {   # <num> <cwd>
         mkdir -p "$AGENT_SESSION_DIR"
         printf '%s %s role=%s\n' "$(date -Iseconds)" "unresolved-launch" "$role" \
             >> "$(agent_session_unresolved_file "$num" "$WORKER_AGENT")"
-        log "  ⚠️ 约 ${max}s 内没捞到 $WORKER_AGENT 新建的 session id（#$num 角色 $role）；"
+        log "  ⚠️ ${max}s 内没捞到 $WORKER_AGENT 新建的 session id（#$num 角色 $role）；"
         log "     该会话成了无主会话：不会被别的角色收养（白名单挡着），但下一轮该角色会从零起一条"
     fi
 }

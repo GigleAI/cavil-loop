@@ -159,6 +159,35 @@ LABEL_PENDING_REVIEW=""
 REVIEW_WORKER_AGENT="codex"
 REVIEW_MODEL=""
 REVIEW_MAX_ROUNDS=3
+
+# When the worker and the review gate run the SAME agent, their model
+# conversations are kept apart per (work number, agent, role) — see
+# docs/architecture.md#session-isolation. Two knobs, both rarely touched:
+#
+# AGENT_SESSION_CAPTURE_SECS: how long to wait for an agent that cannot be told
+#   a session id at launch (codex) to write its session record, so the id can be
+#   read back. Timing out is safe: that conversation stays unowned and the role
+#   starts fresh next round. Default 15.
+# CODEX_SESSION_SCAN_MAX: how many of the newest codex session files to scan when
+#   listing a worktree's conversations. Only matters for adopting a conversation
+#   that predates session tracking: if the last codex session for a worktree is
+#   older than this many sessions ago (machine-wide, all projects), it is not
+#   found and the worker starts fresh instead of resuming. Default 200.
+#
+# 同一个 agent 既当 worker 又当 review 关卡时，两边的模型会话按
+# (work number, agent, 角色) 分开记——见 docs/architecture.zh.md#会话隔离。
+# 两个旋钮一般都不用动：
+#
+# AGENT_SESSION_CAPTURE_SECS：启动时没法指定 session id 的 agent（codex），等它多久
+#   把会话落盘、好把 id 回捞回来。超时是安全的：那条会话保持无主，该角色下一轮从零起。
+#   默认 15 秒。
+# CODEX_SESSION_SCAN_MAX：列一个 worktree 的会话时，最多扫最近多少个 codex 会话文件。
+#   只影响「收养早于会话跟踪的旧对话」：某个 worktree 最近一条 codex 会话如果排在
+#   全机（所有项目一起算）这么多条之外，就找不到，worker 会起全新会话而不是续上。
+#   默认 200。
+#AGENT_SESSION_CAPTURE_SECS=15
+#CODEX_SESSION_SCAN_MAX=200
+
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_PR="pending/PR"
