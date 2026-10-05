@@ -19,6 +19,16 @@ AGENT_SESSION_ISOLATION=1
 
 agent_bin() { echo "codex"; }
 
+# 新版 codex（实测 0.159）的 TUI 默认连一个全机共享的 app-server daemon，工具调用的 shell
+# 在 **daemon 的进程环境**里跑，而不是 worker 自己的。daemon 由本机第一个起来的 codex 拉起——
+# 常常是人手开的那个——于是 worker 的 GH_TOKEN / GH_TOKEN_FILE 全被丢掉，换成那个人的旧环境
+# （tutor #981：review worker 的 gh 全用了已封号 luosky-bot 的 token，403 suspended）。
+# 支持这个 flag 就一律 --no-daemon；老版本没有这个 flag 也就没有 daemon，传了反而报错。
+codex_no_daemon_flag() {
+    codex --help 2>/dev/null | grep -q -- '--no-daemon' && echo "--no-daemon"
+    return 0
+}
+
 codex_session_dirs() {
     local home="${CODEX_HOME:-$HOME/.codex}"
     local d
@@ -100,7 +110,8 @@ agent_command_new() {
     local prompt_file="$3"
     local model_arg
     model_arg="$(worker_model_arg)"
-    printf 'codex %s %s "$(cat %s)"' \
+    printf 'codex %s %s %s "$(cat %s)"' \
+        "$(codex_no_daemon_flag)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"
@@ -116,15 +127,17 @@ agent_command_resume() {
     # 没 id 只会出现在「本功能上线前留下的会话」这一种情况，那时才回落到 --last
     # ——它取的是这个 cwd 最近的一条，分不清角色。
     if [ -n "${WORKER_SESSION_ID:-}" ]; then
-        printf 'codex resume %q %s %s "$(cat %s)"' \
+        printf 'codex resume %q %s %s %s "$(cat %s)"' \
             "$WORKER_SESSION_ID" \
+            "$(codex_no_daemon_flag)" \
             "${CODEX_EXTRA_FLAGS:-}" \
             "$model_arg" \
             "$prompt_file"
         return 0
     fi
     # tmux 已在目标 worktree cwd 中启动；--last 会按 cwd 续接最近会话并直接注入 prompt。
-    printf 'codex resume --last %s %s "$(cat %s)"' \
+    printf 'codex resume --last %s %s %s "$(cat %s)"' \
+        "$(codex_no_daemon_flag)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"

@@ -39,6 +39,28 @@ issue_title="$(github_issue_title "$ISSUE")"
 # DISPATCH_PROMPT_KIND 由 agent-poll 按触发 label 指定（如 review 关卡用 "review"）；
 # 不设就是本路径的默认模板。
 TEMPLATE="$(compose_prompt_template "${DISPATCH_PROMPT_KIND:-new-issue}")"
+
+# 3a. 本工具拆出来的 sub-issue（#43）：方案已在父 issue 上确认过，跳过设计轮直接开发。
+# 用 issue-comment 模板（开发阶段 § A，连同项目自己的 issue-comment.extra.md）打底，
+# 末尾追加 sub-issue.template.md 说明「这是哪个父 issue 的哪一块、直接开干」——追加在最后，
+# 在 prompt 里覆盖前文的决策树。三项核对（真有父子关系 / 正文标记 / bot 建的）任一不过
+# → split_parent_of 返回空，照常走设计轮。review 等显式指定的 kind 不受影响。
+PARENT_ISSUE=""
+if [ -z "${DISPATCH_PROMPT_KIND:-}" ]; then
+    PARENT_ISSUE="$(split_parent_of "$ISSUE")"
+fi
+if [ -n "$PARENT_ISSUE" ]; then
+    sub_base="$(compose_prompt_template issue-comment)"
+    sub_overlay="$(find_prompt_template sub-issue)"
+    if [ -n "$sub_base" ] && [ -n "$sub_overlay" ]; then
+        TEMPLATE="$STATE_DIR/prompt-composed-sub-issue.md"
+        { cat "$sub_base"; printf '\n\n---\n\n'; cat "$sub_overlay"; } > "$TEMPLATE"
+        log "issue #$ISSUE 是 #$PARENT_ISSUE 拆出的子项 → 跳过设计轮，直接开发"
+    else
+        log "⚠️ issue #$ISSUE 是 #$PARENT_ISSUE 的子项，但缺 issue-comment / sub-issue 模板 → 照常走设计轮"
+        PARENT_ISSUE=""
+    fi
+fi
 if [ -n "$TEMPLATE" ]; then
     sed \
         -e "s|\${ISSUE}|$ISSUE|g" \
@@ -55,6 +77,8 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${LABEL_AGENT_DOING}|$LABEL_AGENT_DOING|g" \
         -e "s|\${LABEL_PENDING_PR}|$LABEL_PENDING_PR|g" \
         -e "s|\${OUTPUT_LANGUAGE}|$OUTPUT_LANGUAGE|g" \
+        -e "s|\${PR_CREATED_HOOK}|${PR_CREATED_HOOK:-}|g" \
+        -e "s|\${PARENT_ISSUE}|$PARENT_ISSUE|g" \
         -e "s|\${TMUX_SESSION}|$TMUX_SESSION|g" \
         -e "s|\${PREVIEW_URL_HOST}|${PREVIEW_URL_HOST:-}|g" \
         -e "s|\${REVIEW_ASSET_BASE_URL}|${WEEKLY_REPORT_ASSET_ROOT_URL:-}|g" \

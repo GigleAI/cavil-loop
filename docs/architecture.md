@@ -16,11 +16,20 @@
 
 | Scenario | PR body uses | Issue state at merge | Daemon auto-cleanup |
 |----------|--------------|----------------------|---------------------|
-| **A. Full closure**: one PR fully resolves the issue | `Closes #N` | GitHub auto-closes | Issue gets `Done` (in sync with the PR) |
-| **B. Partial implementation**: multiple PRs are needed | `Refs #N` | Stays open | Issue flipped to `pending/human` for you to triage |
-| **C. Issue too large**: suggest splitting into sub-issues | Not dispatched directly | — | You break it down, then label each sub-issue separately |
+| **A. One PR**: one PR fully resolves the issue | `Closes #N` | GitHub auto-closes | Issue gets `Done` (in sync with the PR) |
+| **B. Split into sub-issues**: more than one PR is needed | No PR on the parent; each sub-issue's PR uses `Closes #<sub>` | Parent stays open as the overview (`pending/PR`) | Each sub-issue gets `Done`; when **all** of them are closed the parent flips to `pending/human` with a summary comment. The daemon never closes the parent |
 
-In its "design proposal" comment, the worker explicitly justifies its A/B/C pick and asks you to confirm before coding. So `Closes` vs `Refs` is a **design-time consensus**, not the worker's default.
+In its "design proposal" comment, the worker picks A or B (with a split plan: per sub-issue title / scope / prerequisite / acceptance) and asks you to confirm before coding. So "one PR or several" is a **design-time consensus**, not the worker's default.
+
+**Why sub-issues and not several `Refs #N` PRs on one issue** (the old "partial implementation" mode, removed in #43): the whole tool is "one number = one branch = one worktree = one session". Several PRs on one issue meant the follow-up PR existed only as a sentence in a comment — nothing to queue, label or track — and had to reuse a branch/worktree the merge hook considered finished. A sub-issue has its own number, so dispatch / worktree / cleanup / weekly report apply unchanged.
+
+How a split runs:
+
+1. After you confirm B, the worker (`issue-comment.template.md` § A-split) creates each sub-issue, links it under the parent via the sub-issue API, and copies priority / Project iteration from the parent. Sub-issues with no prerequisite get `pending/agent` right away; ones that depend on another get `pending/human` — label them once the prerequisite merges
+2. A sub-issue skips the design round: `dispatch-new-issue.sh` renders the development prompt (`issue-comment` + `sub-issue.template.md`) instead of the design one, **only if** all three hold — GitHub says it has a parent in this repo, its body carries `<!-- agent-split-from: #<parent> -->` naming that parent, and it was created by the write identity (bot). Any check failing (or erroring) falls back to the normal design round
+3. The merge hook **unconditionally enqueues** the merged PR's issue — whether it is actually closed is read by the rollup itself, because the hook's own state read falls back to OPEN on error — and it (`state.json` `split_rollup_queue`); every tick drains the queue through `sub_issue_rollup`. The queue exists because the merged PR is already in `cleaned_prs` and will never be rescanned — a transient failure on the last sub-issue would otherwise leave the parent un-summarised forever. Any read or write failure keeps the entry for the next tick (up to `SUB_ISSUE_ROLLUP_MAX_TRIES`, default 30). Comment and label are tracked separately (`split_rollup_commented` / `split_rollups`), so a retry after a failed label flip does not post the comment twice. "All closed" is only concluded from a list known to be complete: it must contain the sub-issue that just closed, and its length must equal the parent's own `sub_issues_summary.total` — otherwise it is treated as not refreshed yet and retried. The merged issue's own label (`Done` if closed, `pending/human` if still open) follows the same rule: if its state cannot be read, no label is written and it goes to `merged_label_queue` — it is never guessed as OPEN
+
+An issue left over from the old partial mode (one `Refs` PR merged, work remaining) gets its remainder split into sub-issues on its next dispatch. `Refs #N` PRs opened by hand are still handled as before (issue → `pending/human` on merge).
 
 ### State flow
 
@@ -31,7 +40,7 @@ New issue ──────────────────► label: pendi
    ▼
 pending/agent ──► daemon dispatch ──► label: doing/agent   ← visible in GitHub UI live
                                               │
-                                              │ worker does work (branch / write code / run tests / push / open PR with `Refs #N`)
+                                              │ worker does work (branch / write code / run tests / push / open PR with `Closes #N`)
                                               ▼
                                        worker done →
                                           - PR  : pending/human
@@ -43,12 +52,9 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
                                               ▼ (you merge the PR)
                                        daemon auto-cleanup →
                                           - PR  : Done (PR closure)
-                                          - Issue: pending/human (issue still open, **you decide** whether this PR truly resolves it)
-                                              │
-                                              ▼
-                                       You decide:
-                                          - Fully resolved → manually close the issue (optionally add Done label)
-                                          - Still partial → comment + label pending/agent for a fresh design / dev cycle
+                                          - Issue: closed by `Closes #N` → Done
+                                          - Sub-issue closed → if every sibling is closed too,
+                                            parent issue → pending/human (you decide whether to close it)
 ```
 
 > For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).
@@ -86,6 +92,72 @@ to the `pending/agent` queue.
 - **`doing/agent` is also a UI signal**: at a glance on GitHub you can tell "agent is working" (doing/agent) from "agent finished, waiting on you" (pending/human) — no need to attach tmux to know
 - **state.json**: records the highest comment ID seen per PR, so the same comment is never dispatched twice
 - **Active worker counting**: counts live workers via the tmux session naming convention; new tasks queue up when `MAX_CONCURRENT_WORKERS` is reached
+
+## Poll pace: idle and failure backoff
+
+The scheduler wakes `agent-poll.sh` every `POLL_INTERVAL_SECS` and always will —
+the script cannot change when its own alarm next rings, so the thing being saved
+here is **API calls, not processes** (a process costs tens of milliseconds plus
+one flock; calls are the scarce resource). What the backoff changes is the first
+thing the script does after waking: decide whether to talk to GitHub at all.
+
+**The hard boundary**: this state decides *whether this tick runs*, never *what
+it does when it runs*. Who gets dispatched, whether the concurrency cap is full,
+which session to reap — all of that is still read fresh from GitHub labels every
+real poll. A corrupted pace file can only produce the wrong cadence; it cannot
+produce a wrong dispatch or kill a live worker.
+
+**The ladder is keyed on how long the project has been quiet**, not on how many
+idle polls have gone by (`POLL_BACKOFF_LADDER`, `<quiet secs>:<interval secs>`):
+
+| Quiet for | Poll every | vs. a 60s tick |
+|---|---|---|
+| under 1 day | no backoff, every tick | 1x |
+| 1–3 days | 5 min | 1/5 |
+| 3–7 days | 10 min | 1/10 |
+| 7 days or more | 30 min | 1/30 |
+
+The top tier is "no gate at all", not "at most once per `POLL_INTERVAL_SECS`" —
+an instance whose timer drop-in ticks faster than that keeps its cadence. Making
+it a floor instead is a silent slowdown with no error anywhere, which is exactly
+the failure mode this whole area exists to avoid.
+
+Any of these resets the quiet timer to zero on the spot: the daemon did
+something (dispatch, self-heal, reap, cleanup); a worker is still running
+(`doing/agent` on GitHub, or a live worker tmux session here); the queue has work
+waiting even if the concurrency cap blocked it; or the repo changed. "Changed" is
+a fingerprint over the rows this poll actually considered — number, updated_at
+and labels for items carrying a label the daemon reacts to, plus bare membership
+for every other open item so that a merge or a close still registers. It is
+computed from the snapshot this tick already fetched, so it costs no extra call.
+
+That fingerprint is also how multi-host setups stay independent: in label mode
+another machine's churn on labels this machine does not watch will not wake it.
+**Greedy mode cannot isolate** — a greedy candidate set is by definition every
+open item in the repo, so everything is in scope. That is greedy's semantics, not
+a bug.
+
+**Failing to read GitHub is not the same as having nothing to do.** Failures run
+their own ladder — starting at `POLL_INTERVAL_SECS`, doubling on each further
+failure, capped at `POLL_FAIL_BACKOFF_MAX_SECS` — and
+deliberately **freeze** the quiet timer, so an outage never slows a busy project
+down and recovery resumes at the pre-outage tier. Measured 2026-09-18..22: five
+projects burned 30040 polls across 88 hours, every single one a 403 "account
+suspended"; the same window under this ladder is 905.
+
+**Three defences keep a bad local file from wedging a project**, all failing
+*open* (broken state means poll, never means wait):
+
+| Defence | What it covers |
+|---|---|
+| Heartbeat (`POLL_FORCE_SYNC_SECS`) | More than this since the last successful GitHub read → poll unconditionally, whatever the ladder, the fingerprint, or a bug in this logic says. It does **not** override the failure ladder: re-reading GitHub is precisely what that ladder exists to avoid, and a failure state is self-evident rather than inferred. |
+| Only a state the writer could have produced | Before any decision to wait, the file must pass two tests. Each numeric field is checked for character class *and* digit width, since bash arithmetic silently wraps an oversized all-digit value into a plausible-looking timestamp. Then the fields are checked against each other: the writer always leaves `last_active <= last_poll <= next_due <= last_poll + the cap for whichever ladder it used`, so anything else cannot have come from this program and counts as corrupt. Stating it as one closed rule rather than a list of field checks is deliberate — a list only ever covers the variants someone thought of, and the combinations are unbounded. Corrupt means "due now"; the next real poll rewrites the file clean. |
+| Two timestamps | Bash has no monotonic clock (`date +%s` is wall time), so both "next due" and "last polled" are stored. Clock jumps forward → poll; jumps backward → state is untrustworthy → poll; file cannot be written (full/read-only disk) → every tick polls, i.e. the pre-#35 behaviour. |
+
+State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
+`rm`-ing it returns the project to full speed without losing the "which comments
+have I seen" cursors. A backed-off tick still writes one line to `poll.log`
+saying which tier it is on and how long it will wait.
 
 ## Worker session model
 

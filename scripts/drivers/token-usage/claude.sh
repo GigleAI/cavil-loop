@@ -6,9 +6,14 @@
 # 读 claude 本地 transcript jsonl，统计 [start_epoch, 现在) 这段里的用量与金额。
 # 默认输出跟 claude CLI 的 /usage 命令接近的一行人话：
 #
-#   2.4k input, 153.5k output, 42.8m cache read, 1.1m cache write ($32.24)
+#   2.4k input, 153.5k output, 42.8m cache read, 1.1m cache write ($32.24)（模型：claude-opus-5）
 #
 # 加 --kv 则输出机器可读的一行（给评论末尾的 agent-metrics 标记用）。
+#
+# ⚠️ 模型名要**两边都出**（GitHub#29）：评论 footer 的 `token …` 行是「整行原样用脚本
+#   输出」的，所以模型只写进 --kv 的隐藏标记时，GitHub 评论上（尤其手机端）根本看不到
+#   本轮用的是哪个模型。人读行末尾因此固定附一段模型说明，口径与 models /
+#   model_unknown 同源：`（模型：a、b）` / `（模型：a；另有模型无法确认）` / `（模型未知）`。
 #
 # ── 归属：先按调用归组，再落窗口（顺序不能颠倒）────────────────────────────
 # 一次 API 调用会写**多条** assistant 条目（正文一条、思考一条、每次工具调用各一条），
@@ -188,7 +193,8 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
     # unknown 是归属状态而非模型 ID，单独输出，避免污染 models 列表。
     | ([.models | to_entries[]
         | select(.key != "unknown" and .key != "<synthetic>" and .value > 0)
-        | .key] | sort | join(",")) as $models
+        | .key] | sort) as $modelarr
+    | ($modelarr | join(",")) as $models
     | (if ((.models.unknown // 0) > 0) then "yes" else "no" end) as $model_unknown
     | if $mode == "--kv"
       then "in=\(.in) out=\(.out) cache_r=\(.cr) cache_w=\($cw)"
@@ -203,5 +209,12 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
               elif $state == "partial" then " ($\(.usd | usd2)，部分用量未计价，金额偏低)"
               else " ($\(.usd | usd2))" end)
            + (if $dsp > 0 then "；其中 $\($dsp | usd2) 所用单价与外部参照冲突（存疑）" else "" end)
+           # 模型名必须出现在**人读**这一行（GitHub#29）：footer 的 `token …` 行是
+           # 「整行原样用脚本输出」，模型只写进 --kv 的隐藏标记，等于评论里永远看不到。
+           # 口径与机器字段同源（$modelarr / $model_unknown），不另起一套判断。
+           + (if ($modelarr | length) == 0 then "（模型未知）"
+              else "（模型：\($modelarr | join("、"))"
+                   + (if $model_unknown == "yes" then "；另有模型无法确认" else "" end)
+                   + "）" end)
       end
 ' "${FILES[@]}" 2>/dev/null

@@ -43,7 +43,7 @@
     python3 price_solve.py --table --policy B
     环境变量 CLAUDE_PROJECTS_DIR 可覆盖 transcript 目录（测试用）。
 """
-import argparse, json, glob, math, os, random, statistics, sys
+import argparse, hashlib, json, glob, math, os, random, statistics, sys
 
 # ── 阈值（可配置；标定依据写在旁边，别改成拍脑袋的数）────────────────────────
 MAX_AMPLIFY = float(os.environ.get("PRICE_MAX_AMPLIFY", "5"))
@@ -63,25 +63,35 @@ SEED = int(os.environ.get("PRICE_SEED", "7"))
 ITEMS = ("input", "output", "cache_read", "cache_write")
 
 # ── 外部参照（只作兜底 + 交叉核对，不是真值）──────────────────────────────
-# 来源：本地 claude-api 参考资料的 Current Models 表，文件自带缓存日期 2026-06-24。
-# https://www.anthropic.com/pricing 未联网核验。倍率：cache 读 0.1×、写 5m 1.25×、1h 2×。
-REFERENCE_SOURCE = "claude-api reference (Current Models), cached 2026-06-24; anthropic.com/pricing not fetched"
-def _ref(inp, out):
-    return dict(input=inp, output=out, cache_read=inp * 0.1,
+# 来源：Anthropic 官方价目页的 Model pricing / Prompt caching / Fast mode pricing 三节，
+# 2026-09-29 联网逐项核对整张表（GigleTutor-Web#982）。**运行时不联网**，官方调价后要人来改
+# 这里——信号是 footer 出现「部分用量未计价」或周报出现 disputed。
+# 倍率：cache 写 5m 1.25×、1h 2×（全部型号一致）；cache 读**因型号而异**，默认 0.1×，
+# Opus 5.5 是 0.05×、Fable 5.1 是 0.025×——原来一律按 0.1× 推，Fable 5.1 被多算了 4 倍。
+# 快速档：官方写明缓存倍率叠加在快速价之上，所以快速档与标准档用同一个读取倍率。
+REFERENCE_SOURCE = "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-29"
+def _ref(inp, out, cache_read_mult=0.1):
+    return dict(input=inp, output=out, cache_read=inp * cache_read_mult,
                 cache_write_5m=inp * 1.25, cache_write_1h=inp * 2.0)
 REFERENCE = {
+    "claude-opus-5-5":   _ref(4, 20, cache_read_mult=0.05),
     "claude-opus-5":     _ref(5, 25),
     "claude-opus-4-8":   _ref(5, 25),
     "claude-opus-4-7":   _ref(5, 25),
     "claude-opus-4-6":   _ref(5, 25),
+    "claude-sonnet-5-5": _ref(2, 10),
     "claude-sonnet-5":   _ref(2, 10),
     "claude-sonnet-4-6": _ref(3, 15),
     "claude-haiku-4-5":  _ref(1, 5),
     "claude-fable-5":    _ref(10, 50),
-    "claude-fable-5-1":  _ref(10, 50),
+    "claude-fable-5-1":  _ref(10, 50, cache_read_mult=0.025),
 }
-# 快速模式是同一模型的另一档价（Opus 5 fast $10/$50），本机 0 条流量、无法反解。
-REFERENCE_FAST = {"claude-opus-5": _ref(10, 50), "claude-opus-4-8": _ref(10, 50)}
+# 快速模式是同一模型的另一档价，本机 0 条流量、无法反解，只能用参照。
+REFERENCE_FAST = {
+    "claude-opus-5-5": _ref(8, 40, cache_read_mult=0.05),
+    "claude-opus-5":   _ref(10, 50),
+    "claude-opus-4-8": _ref(10, 50),
+}
 
 
 def norm_model(m):
@@ -275,7 +285,7 @@ def cache_path():
 
 
 def _signature(projects_dir=None):
-    """目录指纹：文件数 + 最新 mtime + 总字节数。日志一变就重算，不靠固定 TTL 猜。
+    """目录指纹：文件数 + 最新 mtime + 总字节数 + 参照表哈希。日志一变就重算，不靠固定 TTL 猜。
 
     带上总字节数是因为 mtime 只精确到秒：同一秒内换掉一批同样数量的文件时，
     只看「文件数 + mtime」会撞上同一个指纹、返回过期的表（写测试时踩到过）。"""
@@ -290,7 +300,10 @@ def _signature(projects_dir=None):
             size += st.st_size
         except OSError:
             pass
-    return f"{n}:{newest:.0f}:{size}"
+    # 参照表也进指纹：只改参照、transcript 没动时，不能继续读旧表（GigleTutor-Web#982）。
+    ref = hashlib.sha256(json.dumps([REFERENCE_SOURCE, REFERENCE, REFERENCE_FAST],
+                                    sort_keys=True).encode()).hexdigest()[:16]
+    return f"{n}:{newest:.0f}:{size}:{ref}"
 
 
 def build_cached(policy="A", projects_dir=None):

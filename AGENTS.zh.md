@@ -34,7 +34,8 @@
 │   └── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
 ├── prompts/
 │   ├── new-issue.template.md  ← 新 issue 派工时的 prompt
-│   ├── issue-comment.template.md ← issue 新评论时的 prompt
+│   ├── issue-comment.template.md ← issue 新评论时的 prompt（含 § A-split：拆 sub-issue）
+│   ├── sub-issue.template.md  ← 拆出来的子项追加这段：跳过设计轮直接开发
 │   └── pr-comment.template.md ← PR 新评论时的 prompt
 ├── systemd/                  ← Linux 调度器
 │   ├── coding-agent-poll@.service ← user-scoped 模板服务
@@ -55,6 +56,7 @@
 - 入口脚本 `source` 进 `scripts/_lib.sh`，拿到：`log()`、`run_gh()`、`has_claude_session()`、`claude_invoke()`、`tmux_env_args()` 等 helper + `coding-agent.config` 已加载好的所有变量
 - `log()` 自动加 `[<TMUX_PREFIX>]` 前缀，输出到 stderr + tee 到 `$STATE_DIR/poll.log`，**不要**直接 `echo`，方便多项目共用 journal 也能区分
 - 失败处理：调 `gh` 不要写 `gh ... 2>/dev/null || log "失败"`——会吞 stderr；用 `run_gh "描述" gh ...` helper，stderr 自动拼到 log
+- git 同理：用 `run_git "描述" git ...`。**不要**写 `git ... 2>&1 | tail -N` —— 截断会把唯一有用的那行盖掉；而且 `_lib.sh` 顶部的 `exec 9>&- 2>/dev/null` 是**永久**重定向，凡是 source 过它的脚本（含 poller 本身）fd 2 就是 `/dev/null`，git 写在 stderr 上的 `fatal:` 既不进 `poll.log` 也不进 journal。`run_git` 显式收 `2>&1` 再经 `log()` 写出去，那是唯一的通道
 
 ### Prompt 模板
 
@@ -95,12 +97,18 @@
   "seen_reviews":          { "<PR>": <id>, ... },  // /pulls/N/reviews       PR review 提交
   "seen_issue_comments":   { "<ISSUE>": <id>, ... }, // /issues/N/comments   非 PR issue 评论
   "worker_models":         { "<WORK>": "<model>", ... }, // self-heal 时保留模型
+  "split_rollups":         { "<父号>": <n>, ... },   // 子项全部关闭时已汇总完（评论 + 翻 label）的父 issue（<n> = 当时的子项数）
+  "split_rollup_commented":{ "<父号>": <n>, ... },   // 汇总评论已发、翻 label 可能还没成（重试时不重复评论）
+  "split_rollup_queue":    { "<子号>": <次数>, ... }, // 待做父 issue 汇总的已关闭子项；每轮清队
+  "merged_label_queue":    { "<issue>": {"pr": .., "tries": ..} }, // 合并后 Done / pending/human 标签还没定下来的 issue（状态读不到或写失败）
   "cleaned_prs":           [ <PR>, ... ],           // 已 auto-cleanup 的 PR 不再扫
   "unmerged_prs_handled":  [ <PR>, ... ]            // § 3c 已判定过的 closed 未合并 PR
 }
 ```
 
 加字段时：`agent-poll.sh` 开头有 migration 逻辑——遍历 `seen_issue_comments seen_review_comments seen_reviews worker_models` 检查 `has`，缺就初始化 `{}`。加新 endpoint 时把字段名加进那个循环。
+
+**轮询节奏的状态是故意放在另一个文件里的。** `$STATE_DIR/poll-pace.json` 存空闲/故障退避状态（`next_due` / `last_poll` / `last_active` / `fail_streak` / `fingerprint`），刻意**不**并进 `state.json`：上面那个 migration 循环是把缺失字段初始化成 `{}`，而这里要的是数字和字符串；更重要的是运维上的理由——`rm poll-pace.json` 必须等于「立刻回最快档」，而不能顺手把「哪些评论看过了」那些游标一起清掉。helper 在 `_lib.sh` 的 `pace_*` 那一段，闸门本身紧跟在 `agent-poll.sh` 的 flock 后面。改它的时候记两条：**它只能决定「这一轮跑不跑」，绝不能决定「跑的时候怎么做」**；**每一处判定都要 fail-open**——读不懂、超范围的状态一律当作「该跑」，绝不是「再等等」（这里 fail-closed 的后果是整个项目静默停摆，而且哪里都不报错）。
 
 ### 会话注册表（`$STATE_DIR/agent-sessions/`）
 
@@ -152,7 +160,7 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
 3. Commit + push。已部署的 Linux systemd timer 下一 tick 自动用新代码（symlink 链路 → skill 源码 → 你 push 的版本）；macOS LaunchAgent 也一样，plist 每 tick 重新 exec `agent-poll.sh` —— 只有 plist 模板本身变了才要重跑 `setup.sh`
-4. PR 走 `feature/issue-N` 分支（带 `Closes #N` 或 `Refs #N`，见 PR 闭环 A/B/C）
+4. PR 走 `feature/issue-N` 分支，带 `Closes #N`；一个 PR 装不下的拆成 sub-issue（见 PR 闭环 A/B）
 
 ### 改 prompt 模板
 
@@ -189,8 +197,11 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - 记账 / 周报口径 → `tests/weekly-report-*.test.sh`
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
-- 派工 / 回收 / 预览 → `tests/greedy-dispatch.test.sh`、`tests/reap-finished-workers.test.sh`、
-  `tests/preview-socket-activation.test.sh` 等
+- 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`（约 40 秒：端到端那几组要真的把 `agent-poll.sh` 起几百次，别用 30 秒的命令窗口跑它，半截被掐看起来就像失败）
+- 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
+  `tests/preview-socket-activation.test.sh`、`tests/preview-port-ownership.test.sh` 等
+- 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
+  daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份
 
 没有对应测试的改动（daemon glue、prompt 模板）仍按最低保证走：
 
@@ -226,6 +237,6 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - 一 PR 一聚焦改动；title 走 conventional commits 风格（`feat:` / `fix:` / `docs:` / `chore:`）
 - PR body 要说**动机**（为什么改）+ **验证方法**（怎么测过的）
-- Issue ↔ PR 闭环关系在**设计阶段**就要选 A/B/C（详见 [docs/architecture.md](docs/architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)），影响 PR body 用 `Closes #N` 还是 `Refs #N`
+- Issue ↔ PR 闭环关系在**设计阶段**就要选 A/B（详见 [docs/architecture.md](docs/architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)）——A：一个 PR，`Closes #N`；B：拆成 GitHub sub-issue，各自一个 PR。不再有「一个 issue 挂多个 `Refs #N` PR」这种模式
 - 给 PR 提交 review 时**点 "Submit review"** 不要停在 PENDING 草稿——草稿对 daemon 和其他人都不可见
 - 维护者保留 `pending/agent` label 的打 / 拆权限；external contributor **不能**给自己的 PR 打这个 label 让 daemon 自动改自己的代码（见 [docs/security.md](docs/security.zh.md)）
