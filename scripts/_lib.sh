@@ -2525,22 +2525,92 @@ agent_session_id_forget() {   # <num> <agent> <role>
     rm -f "$(agent_session_file "$1" "$2" "$3")"
 }
 
-# 本 work number 下**所有** agent / 所有角色已登记的 id。收养旧会话时拿它当排除集：
-# 少了这一步，worker 就会把 review 刚建的那条会话当成「本目录最新的一条」收养走。
-agent_session_ids_registered() {   # <num>
+# 注册表目录里除了「当前用哪条」，还有三类**附属**文件。读写两边都靠这个函数认它们，
+# 免得哪天有人新加一类、另一边忘了跳过（把 .preexisting 当成排除集读进去，
+# 向后兼容会整条失效且一声不响）。
+#   <num>.<agent>.<role>.retired  已知属于这个角色、但已被换掉的 id（只增不删）
+#   <num>.<agent>.preexisting     本功能第一次管这条活时，cwd 里已经有的 id（可收养白名单）
+#   <num>.<agent>.unresolved      回捞失败的启动记录，仅供排查
+agent_session_is_aux_file() {   # <path>
+    case "$1" in
+        *.retired|*.preexisting|*.unresolved) return 0 ;;
+    esac
+    return 1
+}
+
+agent_session_retired_file() {     # <num> <agent> <role>
+    echo "$AGENT_SESSION_DIR/$1.$2.$3.retired"
+}
+agent_session_preexisting_file() { # <num> <agent>
+    echo "$AGENT_SESSION_DIR/$1.$2.preexisting"
+}
+agent_session_unresolved_file() {  # <num> <agent>
+    echo "$AGENT_SESSION_DIR/$1.$2.unresolved"
+}
+
+# 把某个角色当前登记的 id 移进「退休」名单，再从登记里摘掉。
+#
+# 为什么不能直接删：强制起新会话（resume 秒退兜底、dispatch-new-issue）改的只是
+# 「这个角色现在用哪条」，并不改变「那条对话是谁的」。直接删会让一条 review 对话在
+# 磁盘上退化成「没人登记的旧会话」，worker 的收养就会把它捡走——第 1、2 轮复审
+# 抓到的就是这个入口。退休名单只增不删，角色归属因此是永久的。
+agent_session_retire() {   # <num> <agent> <role>
+    local cur rf
+    cur="$(agent_session_id_get "$1" "$2" "$3")"
+    if [ -n "$cur" ]; then
+        rf="$(agent_session_retired_file "$1" "$2" "$3")"
+        mkdir -p "$AGENT_SESSION_DIR"
+        printf '%s\n' "$cur" >> "$rf"
+    fi
+    agent_session_id_forget "$1" "$2" "$3"
+}
+
+# 本 work number 下所有**已知归属**的 id：各角色当前登记的 + 已退休的。
+# 收养时拿它当排除集。
+agent_session_ids_blocked() {   # <num>
     local f
     for f in "$AGENT_SESSION_DIR/$1".*; do
         [ -f "$f" ] || continue
+        if agent_session_is_aux_file "$f"; then
+            # 退休名单要读（它正是排除集的一半）；白名单和排查记录不能读进来
+            case "$f" in
+                *.retired) cat "$f" ;;
+            esac
+            continue
+        fi
         tr -d '[:space:]' < "$f"
         echo
     done
+}
+
+# 第一次为这条活做角色化派工时，把 cwd 里**已经存在**的会话 id 快照下来。
+#
+# 这些是本功能上线前留下的会话：它们没有任何角色信息，但也只有它们才可能是 worker
+# 自己的——之后每一条会话都是角色化派工建的，谁建的当场就知道（claude 启动时钉 id、
+# codex 启动后回捞）。于是「可不可以收养」有了一个**正向**判据：在这张快照里才可以。
+#
+# 原来的判据是反向的（「当前没被别人登记」），于是任何一种登记丢失都会把别的角色的
+# 对话误判成可收养：强制换会话把旧 id 删掉（第 1 轮复审）、codex 回捞超时导致新会话
+# 从未登记（第 2 轮复审）。正向判据把这两个入口和以后同类的入口一起关掉。
+#
+# 只写一次：文件已存在就不动。**绝不能**在同一次派工的兜底里重新快照——那会把刚起的
+# 那条会话也写进白名单。
+agent_session_preexisting_snapshot() {   # <num> <cwd>
+    local f tmp
+    f="$(agent_session_preexisting_file "$1" "$WORKER_AGENT")"
+    [ -f "$f" ] && return 0
+    mkdir -p "$AGENT_SESSION_DIR"
+    tmp="$f.tmp.$$"
+    agent_session_list "$2" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$f"
+    return 0
 }
 
 # 找一条可以被 worker 角色收养的旧会话。
 # 返回：会话 id / $AGENT_SESSION_LEGACY（driver 不支持按 id 定位，走老路）/ 空（起全新）。
 agent_session_adoptable() {   # <num> <cwd>
     local num="$1" cwd="$2"
-    local registered line
+    local blocked allowed line
 
     if [ "${AGENT_SESSION_ISOLATION:-0}" != 1 ]; then
         # driver 没实现会话枚举 → 保持上线前的行为，有历史就按它自己的方式续接
@@ -2550,10 +2620,14 @@ agent_session_adoptable() {   # <num> <cwd>
         return 0
     fi
 
-    registered="$(agent_session_ids_registered "$num")"
+    blocked="$(agent_session_ids_blocked "$num")"
+    allowed="$(cat "$(agent_session_preexisting_file "$num" "$WORKER_AGENT")" 2>/dev/null || true)"
     while IFS= read -r line; do
         [ -z "$line" ] && continue
-        printf '%s\n' "$registered" | grep -Fxq "$line" && continue
+        # 已知归属（当前登记 / 已退休）的一律不碰
+        printf '%s\n' "$blocked" | grep -Fxq "$line" && continue
+        # 正向判据：只收养「本功能开始管这条活之前就存在」的会话
+        printf '%s\n' "$allowed" | grep -Fxq "$line" || continue
         echo "$line"
         return 0
     done < <(agent_session_list "$cwd")
@@ -2587,6 +2661,11 @@ agent_session_plan() {   # <num> <cwd> [force_new]
     WORKER_SESSION_ID=""
     AGENT_SESSION_PRELAUNCH_IDS=""
 
+    # 白名单只在「本功能第一次管这条活」时拍一张，后面每次调用都只是存在性检查
+    if [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ]; then
+        agent_session_preexisting_snapshot "$num" "$cwd"
+    fi
+
     if [ "$force_new" != 1 ]; then
         id="$(agent_session_id_get "$num" "$WORKER_AGENT" "$role")"
         if [ -n "$id" ]; then
@@ -2595,8 +2674,10 @@ agent_session_plan() {   # <num> <cwd> [force_new]
                 AGENT_LAUNCH_KIND="resume"
                 return 0
             fi
-            # 登记过但会话没了（history 被清、worktree 重建过…）→ 忘掉，往下起全新
-            agent_session_id_forget "$num" "$WORKER_AGENT" "$role"
+            # 登记过但会话没了（history 被清、worktree 重建过…）→ 退休掉，往下起全新。
+            # 走退休不走删：万一那条对话之后又出现（备份恢复 / 挂载回来），
+            # 它的角色归属还在，不会变成一条「谁都能收养的旧会话」。
+            agent_session_retire "$num" "$WORKER_AGENT" "$role"
         fi
 
         # 普通 worker 的向后兼容：本功能上线前的会话一条都没登记过，
@@ -2616,7 +2697,8 @@ agent_session_plan() {   # <num> <cwd> [force_new]
             fi
         fi
     else
-        agent_session_id_forget "$num" "$WORKER_AGENT" "$role"
+        # 强制起新：只换「现在用哪条」，旧那条的角色归属必须留下
+        agent_session_retire "$num" "$WORKER_AGENT" "$role"
     fi
 
     # 全新会话。driver 能在启动时钉 id（claude 的 --session-id）就当场登记；
@@ -2674,11 +2756,29 @@ agent_session_register_launched() {   # <num> <cwd>
         WORKER_SESSION_ID="$found"
         log_debug "会话登记：#$num $WORKER_AGENT/$role -> $found"
     else
-        log "  ⚠️ ${max}s 内没捞到 $WORKER_AGENT 新建的 session id（#$num 角色 $role）；下一轮该角色会从零起一条新会话"
+        # 捞不到不能让派工失败，但必须留痕：这条会话确实存在、却没人知道它的 id。
+        # 收养那边靠「上线前快照」这个正向判据兜底——窗口之后新出现的会话一律不可收养，
+        # 所以这条无主会话不会被 worker 捡走（第 2 轮复审指出的入口）。
+        # 代价是该角色下一轮从零起一条新会话（丢上下文，但不串角色）。
+        mkdir -p "$AGENT_SESSION_DIR"
+        printf '%s %s role=%s\n' "$(date -Iseconds)" "unresolved-launch" "$role" \
+            >> "$(agent_session_unresolved_file "$num" "$WORKER_AGENT")"
+        log "  ⚠️ 约 ${max}s 内没捞到 $WORKER_AGENT 新建的 session id（#$num 角色 $role）；"
+        log "     该会话成了无主会话：不会被别的角色收养（白名单挡着），但下一轮该角色会从零起一条"
     fi
 }
 
-# 清掉某个 work number 下所有角色的会话登记（cleanup-issue 删 worktree 时调用）。
+# 清掉某个 work number 下所有角色「当前用哪条」的登记（cleanup-issue 删 worktree 时调用）。
+#
+# ⚠️ 附属文件（退休名单 / 上线前白名单）**不清**。worktree 可能在同一路径上重建，
+# 而 agent 的历史是按 cwd 存的，旧对话还在原地；把角色归属一并清掉，等于让那些旧的
+# review 对话重新变成「谁都能收养」。这两个文件只有几行，留着是最便宜的保险。
 agent_session_forget_all() {   # <num>
-    rm -f "$AGENT_SESSION_DIR/$1".* 2>/dev/null || true
+    local f
+    for f in "$AGENT_SESSION_DIR/$1".*; do
+        [ -f "$f" ] || continue
+        agent_session_is_aux_file "$f" && continue
+        rm -f "$f"
+    done
+    return 0
 }

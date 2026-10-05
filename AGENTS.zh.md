@@ -128,6 +128,22 @@ $STATE_DIR/agent-sessions/42.claude.review   ->  f3db1457-c545-4b83-9969-0af1285
 理由：复审关卡用的是**同一个** agent 时，得让它有自己的模型对话，而不是继承
 worker 的——见 [docs/architecture.zh.md](docs/architecture.zh.md#会话隔离)。
 
+另有三个附属文件，存的是「比『当前用哪条』活得更久」的那部分信息：
+
+```
+42.claude.review.retired   这个角色用过、以后也不会再用的 id（只增不删）
+42.claude.preexisting      角色化派工第一次管 #42 时，cwd 里已经有的 id
+42.claude.unresolved       启动后没回捞到 id 的记录（只用于排查）
+```
+
+**收养用的是正向判据，这正是关键。** worker 角色只能接管 `.preexisting` 里列出的
+对话——也就是早于角色化派工、因而角色确实无从得知的那些。反过来问（「这个 id 现在
+有没有登记给别人」）看着等价，其实不是：登记一旦以任何方式丢失，别人的对话就变成
+谁都能收养。两种丢失都真实存在——强制起新会话曾经直接删掉旧 id、codex 启动后回捞
+没拿到 id——两次都以「worker 续上了复审者的对话」收场。因此还有两条：强制起新会话
+是把旧 id **退休**而不是删掉；`cleanup-issue.sh` 只清当前登记，绝不清上面那两个文件
+（worktree 可能在同一路径重建，而 agent 的历史是按 cwd 存的，旧对话还在原地）。
+
 **决定起哪条会话**是 `_lib.sh` 里的 `agent_session_plan` + `agent_launch_command`。
 拆成两个函数是刻意的：`plan` 设的是全局变量（`AGENT_LAUNCH_KIND`、
 `WORKER_SESSION_ID`），必须在调用方自己的 shell 里跑；而命令字符串又只能在

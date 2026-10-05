@@ -132,6 +132,11 @@ agent_session_list <cwd>                 # 这个 cwd 的会话 id，最近的�
 | 能 | `agent_session_new_id` 发一个，启动命令带上 | `claude --session-id <uuid>` |
 | 不能 | `agent_session_new_id` 写空串，daemon 在启动后用 `agent_session_list` 把 id 捞回来 | `codex`（0.155.0 启动侧没有这种 flag；它的会话文件在启动后约 0.5s 落盘） |
 
+CLI 钉不了 id 的，要保证 `agent_session_list` 够便宜、且「最近的在前」：daemon 在
+启动后就靠轮询它来拿到本次的 id。回捞超时的话那条会话就保持无主——daemon 不会把它
+交给别的角色，该角色下一轮从零起。**不要**为了补偿而让收养变聪明：worker 只收养
+早于角色化派工的会话，这是故意的。
+
 不实现也能跑：daemon 那时只保证 **review 角色一律起全新会话**，worker 角色保持
 上线前「续最近一条」的行为。
 

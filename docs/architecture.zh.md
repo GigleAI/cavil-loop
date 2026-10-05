@@ -161,8 +161,14 @@ flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一
 | tmux session 上的 `@worker_role`，由 `tmux_session_matches_worker` 比对 | review 派工被**注入**进 worker 活着的会话（注入根本不经过启动命令，这是唯一能拦住它的地方） |
 | `$STATE_DIR/agent-sessions/` 下按 `(work number, agent, 角色)` 各记一个 session id | 两个角色互相续到对方那条 |
 | `review` 角色永远不收养没登记过的旧会话 | 第一轮复审捡到 worker 已有的那条 |
+| worker 只收养 `.preexisting` 快照里的会话 | 角色化派工**之后**建的会话——建的时候我们就知道它属于谁——因为登记丢失而重新变成可收养 |
+| 强制起新会话是把旧 id 退休，不是删掉 | 「resume 2s 内秒退」兜底把复审者上一轮的对话变成一条无主会话 |
 
 第 2..N 轮复审复用复审自己那条会话，这样它能核对上一轮提的问题改到位没有。
+
+driver 启动时钉不了 id（codex）而启动后的回捞又超时了，那条会话就成了无主会话：
+谁都不会收养它（它不在 `.preexisting` 里），超时记进 `.unresolved`，该角色下一轮
+从零起一条。这是用「丢上下文」换「绝不串角色」——后者正是这套机制存在的理由。
 driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#可选-hook会话隔离)）；
 没实现的 driver 只拿到「复审一律起全新会话」这一半。
 - Session 没了（worktree 也被清掉）→ 自动从 PR head branch 重建 worktree + spawn 新 session（同样按上面规则尝试 resume）

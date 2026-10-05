@@ -137,6 +137,13 @@ Two shapes are supported:
 | yes | `agent_session_new_id` mints one; the launch command passes it | `claude --session-id <uuid>` |
 | no | `agent_session_new_id` echoes `""`; the daemon reads the id back from `agent_session_list` right after launch | `codex` (no such flag as of 0.155.0; its rollout file lands ~0.5 s after start) |
 
+If your CLI cannot pin an id, make sure `agent_session_list` is cheap and
+ordered newest-first: the daemon polls it right after launch to learn the id.
+When that read-back times out the conversation simply stays unowned — the
+daemon will not hand it to another role, and the role starts fresh next time.
+Do **not** try to make adoption smarter to compensate; the worker only ever
+adopts conversations that predate role tracking, and that is deliberate.
+
 Not implementing these is fine — the daemon then only guarantees that the
 **review role always starts a fresh session**, and the worker role keeps the
 pre-existing "resume the latest conversation" behaviour.

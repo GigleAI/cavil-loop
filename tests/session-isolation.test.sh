@@ -308,6 +308,126 @@ chk "codex + 大量历史：plan 不中断（枚举管道会吃 SIGPIPE）" \
 agent_session_plan 77 '$EMPTY_WT'
 echo ok:\$AGENT_LAUNCH_KIND")" "ok:new"
 
+echo "── 17. 强制起新会话之后，worker 不许收养那条旧 review 对话 ──"
+# 复审第 1、2 轮的阻塞项。触发链：review 登记 R1 → resume 秒退 → dispatch 走
+# force_new 兜底 → 旧实现把 R1 的登记删掉 → worker 没有自己的有效登记时走收养，
+# 「最新的、没登记的」正好是 R1。
+sed -i 's/^WORKER_AGENT="codex"$/WORKER_AGENT="claude"/' "$TMP/coding-agent.config"
+F_WT="$TMP/wt/issue-55"; mkdir -p "$F_WT"
+rm -rf "$TMP/state/agent-sessions"
+F_W=aaaaaaaa-5555-4555-8555-555555555555
+F_R1=bbbbbbbb-5555-4555-8555-555555555555
+mk_claude_session "$F_WT" "$F_W"  "2026-09-18 08:00:00"
+mk_claude_session "$F_WT" "$F_R1" "2026-09-18 09:00:00"
+# 先让本功能「接管」这条活（拍下上线前快照），再登记 R1 为 review。
+# 注意这里 R1 **在**白名单里（两条文件都先于快照存在）——所以这一节考的纯粹是
+# 退休名单：白名单在这个场景下帮不上忙。
+lib_eval "agent_session_preexisting_snapshot 55 '$F_WT'; agent_session_id_set 55 claude review '$F_R1'" >/dev/null
+# review 侧走兜底：强制起新会话
+out="$(lib_eval "agent_session_plan 55 '$F_WT' 1; echo id=\$WORKER_SESSION_ID" DISPATCH_PROMPT_KIND=review)"
+F_R2="$(registry 55.claude.review)"
+mk_claude_session "$F_WT" "$F_R2" "2026-09-18 10:00:00"
+chk "强制起新后 review 换成了另一条" "$([ -n "$F_R2" ] && [ "$F_R2" != "$F_R1" ] && echo yes)" "yes"
+chk "旧的 review id 进了退休名单" \
+    "$(grep -Fxc "$F_R1" "$TMP/state/agent-sessions/55.claude.review.retired" 2>/dev/null)" "1"
+# worker 自己那条故意不登记（升级窗口内的老会话就是这样）
+out="$(lib_eval "agent_session_plan 55 '$F_WT'; echo kind=\$AGENT_LAUNCH_KIND id=\$WORKER_SESSION_ID")"
+chk_contains "worker 收养的是自己那条" "$out" "id=$F_W"
+chk_lacks "worker 没收养退休掉的 review 对话" "$out" "$F_R1"
+chk_lacks "worker 也没碰新的 review 对话" "$out" "$F_R2"
+
+echo "── 18. 回捞超时 → review 晚落盘 → worker 仍不许收养它 ──"
+# 复审第 2 轮的第 2 条。codex 启动侧钉不了 id，靠启动后回捞；回捞窗口内没等到，
+# 那条 review 会话就「存在但从未登记」——反向判据下它天然符合收养条件。
+sed -i 's/^WORKER_AGENT="claude"$/WORKER_AGENT="codex"/' "$TMP/coding-agent.config"
+C_WT="$TMP/wt/issue-66"; mkdir -p "$C_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
+C_W=aaaaaaaa-6666-4666-8666-666666666666
+C_R=bbbbbbbb-6666-4666-8666-666666666666
+mk_codex_session "$C_WT" "$C_W" "2026/09/18" "2026-09-18T08-00-00"
+# review 派工：plan（拍快照）→ 回捞窗口设 0 立刻超时
+out="$(lib_eval "agent_session_plan 66 '$C_WT' >/dev/null
+agent_session_register_launched 66 '$C_WT' 2>/dev/null
+echo registered=[\$(agent_session_id_get 66 codex review)]" DISPATCH_PROMPT_KIND=review)"
+chk_contains "回捞超时后 review 没有登记" "$out" "registered=[]"
+chk "超时留下了可追查的记录" \
+    "$(grep -c 'unresolved-launch' "$TMP/state/agent-sessions/66.codex.unresolved" 2>/dev/null)" "1"
+# 窗口之后那条 review 才落盘
+mk_codex_session "$C_WT" "$C_R" "2026/09/18" "2026-09-18T11-00-00"
+out="$(lib_eval "agent_session_plan 66 '$C_WT'; echo kind=\$AGENT_LAUNCH_KIND id=\$WORKER_SESSION_ID")"
+chk_contains "worker 收养的是自己那条" "$out" "id=$C_W"
+chk_lacks "worker 没收养那条无主的 review 会话" "$out" "$C_R"
+
+echo "── 19. 白名单不能把向后兼容堵死 ──"
+# 正向判据如果实现错（比如把 .preexisting 也当成排除集读），症状是「谁都收养不了」，
+# 每次派工都新起会话、静默丢上下文。这两条就是守这个的。
+sed -i 's/^WORKER_AGENT="codex"$/WORKER_AGENT="claude"/' "$TMP/coding-agent.config"
+L_WT="$TMP/wt/issue-77"; mkdir -p "$L_WT"
+rm -rf "$TMP/state/agent-sessions"
+L_W=aaaaaaaa-7777-4777-8777-777777777777
+mk_claude_session "$L_WT" "$L_W" "2026-09-18 08:00:00"
+out="$(lib_eval "agent_session_plan 77 '$L_WT'; echo kind=\$AGENT_LAUNCH_KIND id=\$WORKER_SESSION_ID")"
+chk_contains "上线前的 worker 会话仍然能收养" "$out" "kind=adopt"
+chk_contains "收养的就是那条" "$out" "id=$L_W"
+chk "白名单文件确实拍到了它" \
+    "$(grep -Fxc "$L_W" "$TMP/state/agent-sessions/77.claude.preexisting" 2>/dev/null)" "1"
+# 单独用一个没有任何登记的编号来问：白名单文件的内容绝不能被当成排除集读进来
+lib_eval "agent_session_preexisting_snapshot 79 '$L_WT'" >/dev/null
+chk "白名单文件不会被当成排除集" \
+    "$(lib_eval "agent_session_ids_blocked 79 | grep -Fxc '$L_W'")" "0"
+chk "（对照）同一个 id 在白名单里" \
+    "$(grep -Fxc "$L_W" "$TMP/state/agent-sessions/79.claude.preexisting" 2>/dev/null)" "1"
+
+echo "── 20. 同一次派工的兜底不许把刚起的会话写进白名单 ──"
+# plan 在一次派工里会被调两次（正常 + 秒退兜底）。第二次若重新拍快照，就会把本次
+# 刚起的那条写进「上线前就存在」里，等于自己给自己开后门。
+rm -rf "$TMP/state/agent-sessions"
+mk_claude_session "$L_WT" "$L_W" "2026-09-18 08:00:00"
+NEW_ONE=cccccccc-7777-4777-8777-777777777777
+lib_eval "agent_session_plan 77 '$L_WT' >/dev/null" DISPATCH_PROMPT_KIND=review >/dev/null
+mk_claude_session "$L_WT" "$NEW_ONE" "2026-09-18 12:00:00"   # 本次派工起的会话落盘
+lib_eval "agent_session_plan 77 '$L_WT' 1 >/dev/null" DISPATCH_PROMPT_KIND=review >/dev/null
+chk "白名单里只有上线前那条" \
+    "$(tr -d '[:space:]' < "$TMP/state/agent-sessions/77.claude.preexisting")" "$L_W"
+
+echo "── 21. 退休名单只增不删（多次强制起新都要留痕）──"
+rm -rf "$TMP/state/agent-sessions"
+R_A=dddddddd-8888-4888-8888-888888888881
+R_B=dddddddd-8888-4888-8888-888888888882
+lib_eval "agent_session_plan 88 '$L_WT' >/dev/null
+agent_session_id_set 88 claude review '$R_A'" >/dev/null
+lib_eval "agent_session_retire 88 claude review; agent_session_id_set 88 claude review '$R_B'" >/dev/null
+lib_eval "agent_session_retire 88 claude review" >/dev/null
+chk "两次退休都在名单里" \
+    "$(sort "$TMP/state/agent-sessions/88.claude.review.retired" | tr '\n' ' ')" "$R_A $R_B "
+chk "退休的 id 都算「已知归属」" \
+    "$(lib_eval "agent_session_ids_blocked 88 | grep -Fxc '$R_A'")" "1"
+
+echo "── 22. cleanup 清当前登记，但不清角色归属 ──"
+# worktree 可能在同一路径上重建，而 agent 的历史是按 cwd 存的——旧对话还在原地。
+# 把角色归属一并清掉，那些旧 review 对话就重新变成「谁都能收养」。
+lib_eval "agent_session_id_set 88 claude worker 'eeeeeeee-8888-4888-8888-888888888888'
+agent_session_forget_all 88" >/dev/null
+chk "当前登记已清" "$(ls "$TMP/state/agent-sessions"/88.claude.worker 2>/dev/null | wc -l)" "0"
+chk "退休名单保留" "$(ls "$TMP/state/agent-sessions"/88.claude.review.retired 2>/dev/null | wc -l)" "1"
+chk "白名单保留" "$(ls "$TMP/state/agent-sessions"/88.claude.preexisting 2>/dev/null | wc -l)" "1"
+
+echo "── 23. codex 的每条启动命令都要带 --no-daemon ──"
+# main 上 a1df47d 修过：新版 codex 的 TUI 默认连全机共享 daemon，工具 shell 会拿到
+# daemon 的环境而不是 worker 的（GH_TOKEN 丢失 → gh 用错账号）。按 id resume 这条
+# 新路径是合并时新加的，当时漏了这个 flag，所以这里逐条断言。
+sed -i 's/^WORKER_AGENT="claude"$/WORKER_AGENT="codex"/' "$TMP/coding-agent.config"
+if codex --help 2>/dev/null | grep -q -- '--no-daemon'; then
+    chk_contains "new 带 --no-daemon" \
+        "$(lib_eval "agent_command_new '$C_WT' n /tmp/p.md")" "--no-daemon"
+    chk_contains "按 id resume 带 --no-daemon" \
+        "$(lib_eval "WORKER_SESSION_ID='$C_W'; agent_command_resume '$C_WT' n /tmp/p.md")" "--no-daemon"
+    chk_contains "resume --last 带 --no-daemon" \
+        "$(lib_eval "agent_command_resume '$C_WT' n /tmp/p.md")" "--no-daemon"
+else
+    echo "  ⏭️  本机 codex 不支持 --no-daemon，跳过（3 项）"
+fi
+
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

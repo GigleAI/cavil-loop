@@ -181,9 +181,17 @@ dispatch would inherit the review's. Both directions are blocked:
 | `@worker_role` on the tmux session, compared in `tmux_session_matches_worker` | A review dispatch being *injected* into the worker's live session (injection never goes through the launch commands, so this is the only place that can catch it) |
 | One session id per `(work number, agent, role)` in `$STATE_DIR/agent-sessions/` | Either role resuming the other's conversation |
 | The `review` role never adopts an unregistered conversation | A first review picking up the worker's pre-existing session |
+| The worker role adopts only conversations snapshotted in `.preexisting` | Any conversation created *after* role tracking began — whoever created it, we knew its role at the time — becoming adoptable because its registration went missing |
+| A forced new session retires the old id instead of deleting it | The "resume died in 2s" fallback turning the reviewer's previous conversation into an unowned one |
 
 Review rounds 2..N reuse the review's own session, so the reviewer can check
-whether its earlier findings were addressed. Drivers opt in by implementing
+whether its earlier findings were addressed.
+
+When a driver cannot pin an id at launch (codex) and the post-launch read-back
+times out, that conversation stays unowned: nobody adopts it (it is not in
+`.preexisting`), the timeout is recorded under `.unresolved`, and the role
+starts a fresh session next round. That trades context for never crossing
+roles, which is the direction this whole mechanism exists to protect. Drivers opt in by implementing
 three functions ([docs/drivers.md](drivers.md#optional-hooks-session-isolation));
 a driver that doesn't only gets the "review always starts fresh" half.
 - Session gone (and worktree also cleaned up) → automatically rebuilds the worktree from PR head branch + spawns a new session (applies the same resume logic above)
