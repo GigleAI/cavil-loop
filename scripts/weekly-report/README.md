@@ -51,6 +51,7 @@ systemctl --user enable --now coding-agent-weekly-report@<project>.timer
 | `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/coding-agent-poll/review-shots` | `publish-asset.sh` 的落盘根目录 |
 | `WEEKLY_REPORT_FONTS_DIR` | `$PROJECT_ROOT/public/fonts` | 自托管 woff2；目录不在就回落系统字体 |
 | `WEEKLY_REPORT_SUBSCRIPTION_MONTHLY` | 没配就显示「未配置」 | 订阅月费，**必须以美元填**（一个数，或多份订阅相加的 JSON 列表）。报告按天摊到每一周。填人民币不会报错，会被原样当成美元印出去 |
+| `WEEKLY_REPORT_BOT_LOGINS` | 空 | 名字**不以** `-bot` / `[bot]` 结尾的机器人账号，逗号或空白分隔、精确匹配。漏配的后果：它发的评论算进「你发的」，它的记账行被丢弃、AI 用量显示 0 |
 | `WEEKLY_REPORT_LABEL` | `pending/agent` | 开出的 issue 打什么 label。设成 `pending/human` 就只出数据、不叫 agent 写解读 |
 
 ## 周报文档规范
@@ -268,8 +269,10 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
    这几条都由 `tests/weekly-report-render.test.sh` 钉住。
 14. **周切片按北京时间**（`TZ = UTC+8`），GitHub 返回的是 UTC，直接按 UTC 切会和人的直觉差 8 小时。
     拉数据的 `since` 也要按同一个时区换算（见上面第 4 条），两处用不同时区就会在窗口边界上漏数据。
-15. **机器人账号判定**走 `-bot` / `[bot]` 后缀。新增别的机器人账号要同步改 `is_bot()`，
-   否则它发的评论会被算进「人发的」。
+15. **机器人账号判定**走 `-bot` / `[bot]` 后缀，外加项目配置 `WEEKLY_REPORT_BOT_LOGINS`
+   显式列出的账号。名字不按约定结尾的机器人账号（换了发评论的账号、拆出专用推送账号等）
+   **必须配进去**，否则错得很安静：它发的评论算进「人发的」，它的记账行在提取第一步就被
+   当成人写的丢掉，AI 用量整周显示 0。判定只有 `record.is_bot()` 一份，`collect.py` 复用它。
 16. **明细不能只看 issue 侧的活跃度，也不能只看「当周有没有讨论」**。很多 issue 定完方案
    就没人再回 issue 页了，整周的讨论全发生在它的 PR 上——只按「issue 有评论」筛，会把整条
    工作漏掉。`collect.py` 的入选条件是三选一：**issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭**。

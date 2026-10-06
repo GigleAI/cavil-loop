@@ -34,9 +34,8 @@ def gh(path):
         print(f"[warn] gh api {path} 返回无法解析: {e}", file=sys.stderr)
         return []
 
-def is_bot(login):
-    """GitHub 机器人账号：约定后缀 `-bot`（我们的 worker）或 GitHub App 的 `[bot]`。"""
-    return login.endswith("-bot") or login.endswith("[bot]")
+# 机器人账号判定只有 record.is_bot 一份（含 WEEKLY_REPORT_BOT_LOGINS 配置），这里直接复用。
+is_bot = record.is_bot
 
 def loc(s):
     return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(
