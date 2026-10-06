@@ -207,6 +207,27 @@ chk("窗口 7 小时 → 列出", listed(7 * 3600), True)
 chk("窗口正好 4 小时 → 列出（取 ≥）", listed(4 * 3600), True)
 chk("窗口 3 小时 59 分 → 不列出", listed(4 * 3600 - 60), False)
 
+# ── 机器人账号：后缀约定之外，可用 WEEKLY_REPORT_BOT_LOGINS 显式列出 ─────────────
+# 机器人账号名不一定以 -bot 结尾（例：acme-bot-pusher）。不认出来的后果有两个且都静默：
+# 它发的评论被算成「人发的」，它的记账行被当成人写的而整条丢弃（AI 用量显示 0）。
+import os
+os.environ.pop("WEEKLY_REPORT_BOT_LOGINS", None)
+chk("未配置时，非 -bot 结尾的账号 → 不算机器人", record.is_bot("acme-bot-pusher"), False)
+os.environ["WEEKLY_REPORT_BOT_LOGINS"] = "acme-bot-pusher, other-agent"
+chk("配置列出的账号 → 算机器人", record.is_bot("acme-bot-pusher"), True)
+chk("逗号 + 空白分隔都认", record.is_bot("other-agent"), True)
+chk("精确匹配，不按前缀 / 子串放宽", record.is_bot("acme-bot-push"), False)
+chk("人类账号不受影响", record.is_bot("alice"), False)
+chk("后缀约定仍然有效", record.is_bot("acme-bot"), True)
+chk("配置列出的账号的记账行 → 入账",
+    record.extract(REAL, "acme-bot-pusher", 30, 931) is not None, True)
+os.environ.pop("WEEKLY_REPORT_BOT_LOGINS", None)
+chk("清掉配置后同一账号的记账行 → 不入账",
+    record.extract(REAL, "acme-bot-pusher", 30, 931), None)
+
+import collect
+chk("collect 与 record 用同一个判定（不各写一份）", collect.is_bot is record.is_bot, True)
+
 print(f"\n  {ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)
 PY
