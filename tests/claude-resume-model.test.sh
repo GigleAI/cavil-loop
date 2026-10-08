@@ -44,6 +44,7 @@ resume_cmd() {
     local model_set="$1" model="$2"
     env -u ANTHROPIC_MODEL -u CLAUDE_CONFIG_DIR HOME="$TMP/home" \
         CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
+        CLAUDE_EXTRA_FLAGS="${FLAGS:-}" CLAUDE_MANAGED_SETTINGS="$TMP/managed.json" \
         DISPATCH_WORKER_AGENT=claude \
         DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET="$model_set" \
         ${EXTRA_ENV:+"$EXTRA_ENV"} \
@@ -79,6 +80,45 @@ EXTRA_ENV=""
 echo '{not json' > "$TMP/cwd/.claude/settings.local.json"
 echo '{"model":{"x":1}}' > "$TMP/cwd/.claude/settings.json"
 chk "坏 JSON / 非字符串 model 跳过，往下找" "$(resume_cmd 1 '')" "$R opus $P"
+rm -rf "$TMP/cwd/.claude"
+
+echo "── CLAUDE_EXTRA_FLAGS 里更高优先级的选择不能被覆盖（复审 #57 第 1 轮）──"
+echo '{"model":"opus"}' > "$TMP/home/.claude/settings.json"
+mkdir -p "$TMP/cwd/.claude"
+echo '{"model":"opus"}' > "$TMP/cwd/.claude/settings.json"
+
+FLAGS="--model sonnet"
+chk "extra flags 已有 --model → 不再追加" "$(resume_cmd 1 '')" "claude --continue --model sonnet  $P"
+FLAGS="--dangerously-skip-permissions --model=sonnet"
+chk "extra flags 的 --model=X 形式同样不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+
+FLAGS="--settings '{\"model\":\"sonnet\"}'"
+chk "--settings JSON 的 model 盖过项目 / 用户文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
+FLAGS="--settings='{\"model\":\"sonnet\"}'"
+chk "--settings=JSON 形式" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
+echo '{"model":"haiku"}' > "$TMP/flag-settings.json"
+FLAGS="--settings $TMP/flag-settings.json"
+chk "--settings 文件路径" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model haiku $P"
+FLAGS="--settings '{\"permissions\":{}}'"
+chk "--settings 里没写 model → 往下找项目文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model opus $P"
+
+echo '{"model":"sonnet"}' > "$TMP/cwd/.claude/settings.json"
+FLAGS="--setting-sources user"
+chk "--setting-sources user → 跳过项目文件，只看用户级" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model opus $P"
+FLAGS="--setting-sources=project"
+chk "--setting-sources=project → 跳过用户级" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
+
+echo '{"model":"claude-opus-5-5"}' > "$TMP/managed.json"
+FLAGS="--settings '{\"model\":\"sonnet\"}'"
+chk "managed settings 盖过 --settings 与文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model claude-opus-5-5 $P"
+rm -f "$TMP/managed.json"
+
+FLAGS="--settings '{\"model\":\"sonnet\"}"
+chk "引号不配对、解析不了 → 不追加（不拿猜测覆盖）" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+FLAGS="--settings \$(touch $TMP/pwned)"
+resume_cmd 1 '' >/dev/null
+chk "拆词不执行 \$(...)" "$([ -e "$TMP/pwned" ] && echo executed || echo safe)" "safe"
+FLAGS=""
 rm -rf "$TMP/cwd/.claude"
 
 echo "── 指定了模型就用指定的 ──"

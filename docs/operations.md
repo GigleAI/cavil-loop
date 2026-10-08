@@ -180,9 +180,13 @@ works for issues and PRs, including fresh sessions and resumed sessions.
 With no model override, a resumed Claude session is still passed an explicit
 `--model`: `claude --continue` alone keeps the model the session was *started*
 with, so a long-running issue would never move to a newer default. The daemon
-passes the currently configured default instead — `ANTHROPIC_MODEL`, then the
-worktree's `.claude/settings.local.json` / `.claude/settings.json`, then
-`~/.claude/settings.json` `model`, falling back to `default`. A session that is
+passes the currently configured default instead, following Claude's own
+precedence: if `CLAUDE_EXTRA_FLAGS` already has `--model`, nothing is added;
+otherwise `ANTHROPIC_MODEL`, then managed settings, then a `--settings` JSON or
+file in `CLAUDE_EXTRA_FLAGS`, then the worktree's `.claude/settings.local.json` /
+`.claude/settings.json` and `~/.claude/settings.json` (restricted by
+`--setting-sources` when given), falling back to `default`. If
+`CLAUDE_EXTRA_FLAGS` cannot be parsed (unbalanced quotes), no `--model` is added. A session that is
 still alive when a new comment arrives gets the prompt injected and keeps its
 model until it is restarted.
 

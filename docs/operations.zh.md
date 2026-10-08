@@ -162,9 +162,12 @@ issue、PR、全新 session 和 resume session 都支持。
 
 没有指定模型时，续接 Claude 会话也会显式带 `--model`：只跑 `claude --continue`
 会沿用会话**当初**的模型，长期开着的 issue 就永远换不到新的默认模型。daemon
-改为传当前配置的默认值——依次看 `ANTHROPIC_MODEL`、worktree 里的
-`.claude/settings.local.json` / `.claude/settings.json`、`~/.claude/settings.json`
-的 `model`，都没有就传 `default`。新评论到达时会话仍活着的，走注入 prompt，
+改为传当前配置的默认值，优先级照 Claude 自己的规则：`CLAUDE_EXTRA_FLAGS` 里已有
+`--model` 就什么都不加；否则依次看 `ANTHROPIC_MODEL`、managed settings、
+`CLAUDE_EXTRA_FLAGS` 里 `--settings` 给的 JSON 或文件、worktree 的
+`.claude/settings.local.json` / `.claude/settings.json` 和 `~/.claude/settings.json`
+（给了 `--setting-sources` 就只看它列出的来源），都没有就传 `default`。
+`CLAUDE_EXTRA_FLAGS` 解析不了（引号不配对）时不加 `--model`。新评论到达时会话仍活着的，走注入 prompt，
 模型不变，直到这个会话重启。
 
 daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /

@@ -53,25 +53,74 @@ agent_command_new() {
 # 续接时没指定模型，要显式传「现在的默认模型」。`claude --continue` 不带 --model
 # 会沿用这个会话**当初**的模型，不看当前配置（2.1.293 实测：9 月开的会话今天
 # 新进程续接仍是 claude-opus-5，同机新会话已是 claude-opus-5-5，#56）——于是
-# 长期开着的 issue 永远停在旧模型。按 claude 自己的优先级找用户配的默认：
-# ANTHROPIC_MODEL > 项目 settings.local.json > 项目 settings.json > 用户 settings.json，
-# 都没有就传 `default`（= 账号默认，跟新会话不带 --model 时一致）。
-# 不在这里钉版本号：配的是 `opus` 别名就传 `opus`，升级由 CLI 解析。
+# 长期开着的 issue 永远停在旧模型。
+#
+# 这里要复刻 claude 自己选默认模型的优先级，少看一层就会拿低优先级的值把高优先级的
+# 盖掉（复审 #57 第 1 轮：CLAUDE_EXTRA_FLAGS 里 `--settings '{"model":"sonnet"}'`
+# 被追加的 `--model opus` 顶掉）。从高到低：
+#   1. CLAUDE_EXTRA_FLAGS 里已有 --model → 什么都不加，它本来就会带到续接命令里
+#   2. ANTHROPIC_MODEL
+#   3. managed settings（管理员策略文件）
+#   4. CLAUDE_EXTRA_FLAGS 里的 --settings（JSON 串或文件路径）
+#   5. 项目 settings.local.json > 项目 settings.json > 用户 settings.json，
+#      受 --setting-sources 限制（只读列出的 local / project / user）
+#   6. 都没有 → `default`（= 账号默认，跟新会话不带 --model 时一致）
+# 配的是 `opus` 别名就传 `opus`，不在这里钉版本号。
+#
+# 输出：要追加的模型名；输出空 = 不追加（第 1 条，或 extra flags 解析不了——
+# 猜不出用户本意时宁可维持老行为，也不拿猜测去覆盖他显式写的东西）。
+CLAUDE_MANAGED_SETTINGS="${CLAUDE_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"
+
+_claude_json_model() {   # $1 = JSON 文本；坏 JSON / 非字符串 model → 空
+    printf '%s' "$1" | jq -r 'if (.model | type) == "string" then .model else empty end' 2>/dev/null || true
+}
+
 claude_default_model() {
-    local cwd="$1" f m
+    local cwd="$1" m="" f a i
+    local -a flags=()
+    local settings_arg="" sources="user,project,local"
+
+    # 拆 CLAUDE_EXTRA_FLAGS 用 xargs：只做引号拆词，不执行 $(...)；引号不配对就失败
+    if [ -n "${CLAUDE_EXTRA_FLAGS:-}" ]; then
+        local raw
+        raw="$(printf '%s' "$CLAUDE_EXTRA_FLAGS" | xargs printf '%s\n' 2>/dev/null)" || return 0
+        mapfile -t flags <<< "$raw"
+    fi
+    for ((i = 0; i < ${#flags[@]}; i++)); do
+        a="${flags[$i]}"
+        case "$a" in
+            --model|--model=*) return 0 ;;
+            --settings) settings_arg="${flags[$((i + 1))]:-}"; i=$((i + 1)) ;;
+            --settings=*) settings_arg="${a#--settings=}" ;;
+            --setting-sources) sources="${flags[$((i + 1))]:-}"; i=$((i + 1)) ;;
+            --setting-sources=*) sources="${a#--setting-sources=}" ;;
+        esac
+    done
+
     if [ -n "${ANTHROPIC_MODEL:-}" ]; then
         printf '%s' "$ANTHROPIC_MODEL"
         return 0
     fi
-    for f in "$cwd/.claude/settings.local.json" "$cwd/.claude/settings.json" \
-             "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"; do
+    if [ -f "$CLAUDE_MANAGED_SETTINGS" ]; then
+        m="$(_claude_json_model "$(cat "$CLAUDE_MANAGED_SETTINGS" 2>/dev/null)")"
+        [ -z "$m" ] || { printf '%s' "$m"; return 0; }
+    fi
+    if [ -n "$settings_arg" ]; then
+        case "$settings_arg" in
+            \{*) m="$(_claude_json_model "$settings_arg")" ;;
+            *) [ -f "$settings_arg" ] && m="$(_claude_json_model "$(cat "$settings_arg" 2>/dev/null)")" ;;
+        esac
+        [ -z "$m" ] || { printf '%s' "$m"; return 0; }
+    fi
+    local -a files=()
+    case ",$sources," in *,local,*) files+=("$cwd/.claude/settings.local.json") ;; esac
+    case ",$sources," in *,project,*) files+=("$cwd/.claude/settings.json") ;; esac
+    case ",$sources," in *,user,*) files+=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json") ;; esac
+    for f in "${files[@]}"; do
         [ -f "$f" ] || continue
         # 坏 JSON / 非字符串一律当没配，往下找——别让一个坏文件卡住续接
-        m="$(jq -r 'if (.model | type) == "string" then .model else empty end' "$f" 2>/dev/null)" || m=""
-        if [ -n "$m" ]; then
-            printf '%s' "$m"
-            return 0
-        fi
+        m="$(_claude_json_model "$(cat "$f" 2>/dev/null)")"
+        [ -z "$m" ] || { printf '%s' "$m"; return 0; }
     done
     printf 'default'
 }
@@ -80,9 +129,12 @@ agent_command_resume() {
     local cwd="$1"
     local name="$2"  # 未用：claude --continue 自动用 cwd 最近会话
     local prompt_file="$3"
-    local model_arg
+    local model_arg default_model
     model_arg="$(worker_model_arg)"
-    [ -n "$model_arg" ] || model_arg="$(printf -- '--model %q' "$(claude_default_model "$cwd")")"
+    if [ -z "$model_arg" ]; then
+        default_model="$(claude_default_model "$cwd")"
+        [ -z "$default_model" ] || model_arg="$(printf -- '--model %q' "$default_model")"
+    fi
     printf 'claude --continue %s %s "$(cat %s)"' \
         "${CLAUDE_EXTRA_FLAGS:-}" \
         "$model_arg" \
