@@ -88,20 +88,23 @@ SHIM
 chmod +x "$TMP/bin/gh"; export PATH="$TMP/bin:$PATH"
 cd "$TMP"
 
-collect() {   # list → 「human bot wall cost」
+# 输出「周总表人发 / 周总表机器人 / 耗时 / 金额 / issue 明细人发」。collect.py 有两处按评论数人：
+# 周总表和 issue 明细，两处都要断言——只看周总表时，明细那处退回后缀规则测试照样全绿（复审实测）。
+collect() {   # list
     WEEKLY_REPORT_BOT_LOGINS="$1" python3 "$COLLECT" --repo acme/widget --out "$TMP/d.json" \
         --weeks 2 --week-of "$W" >/dev/null 2>"$TMP/err.log" \
         || { echo "collect.py 跑挂了："; cat "$TMP/err.log"; exit 1; }
     python3 -c "
 import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
-print(int(w['human']), int(w['bot']), int(w['wall']), round(w['cost'], 2))"
+D=json.load(open('$TMP/d.json')); d=[x for x in D['detail'] if x['num']==10]
+print(int(w['human']), int(w['bot']), int(w['wall']), round(w['cost'], 2), int(d[0]['human']) if d else 'no-detail')"
 }
 chk "不配名单：机器人的 2 条算成人发的、耗时 / 金额归零（负对照，即 #46 的现象）" \
-    "$(collect '')" "3 0 0 0"
-chk "配了名单：人发的只剩 1 条，30 分钟 / \$12.5 入账" \
-    "$(collect acme-bot-pusher)" "1 2 1800 12.5"
+    "$(collect '')" "3 0 0 0 3"
+chk "配了名单：周总表和明细的人发都只剩 1 条，30 分钟 / \$12.5 入账" \
+    "$(collect acme-bot-pusher)" "1 2 1800 12.5 1"
 chk "名单大小写与评论账号不同：结果同上" \
-    "$(collect ACME-Bot-Pusher)" "1 2 1800 12.5"
+    "$(collect ACME-Bot-Pusher)" "1 2 1800 12.5 1"
 
 echo
 echo "通过 $pass / 失败 $fail"
