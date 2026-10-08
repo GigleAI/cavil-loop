@@ -61,6 +61,9 @@ agent_command_new <cwd> <session_name> <prompt_file>
 agent_command_resume <cwd> <session_name> <prompt_file>
 ```
 
+另有 3 个可选函数，实现了才有按角色隔离会话的能力，见
+[可选 hook：会话隔离](#可选-hook会话隔离)。
+
 ### 接口语义
 
 #### `agent_bin`
@@ -98,6 +101,59 @@ agent_command_new() {
 ```bash
 agent_command_resume() { agent_command_new "$@"; }
 ```
+
+### 可选 hook：会话隔离
+
+同一个 agent 既当 worker 又当交叉复审关卡时（`REVIEW_WORKER_AGENT` 配成跟
+`WORKER_AGENT` 一样的 CLI），两个角色共用一个 worktree。内置 agent 的「续接」
+都是「续这个目录里最近的一条对话」，于是复审会继承 worker 的上下文——连同 worker
+为自己辩解的那些话一起继承，就不再是独立复审了。反方向一样糟：复审起完自己那条
+之后，worker 下一轮续到的是复审那条，反而丢掉自己的实现上下文。
+
+所以 daemon 给每次派工打一个**角色**（`worker` / `review`，从 prompt 模板类型推），
+按 `(work number, agent, 角色)` 把 session id 记在 `$STATE_DIR/agent-sessions/` 下。
+
+driver 想接入，实现下面三个函数并把 `AGENT_SESSION_ISOLATION` 置 1：
+
+```bash
+agent_session_new_id <cwd> <role>        # 启动时要钉的 id；CLI 不支持就写空串
+agent_session_exists <cwd> <session_id>  # 返回 0 = 这条会话还在、能续
+agent_session_list <cwd>                 # 这个 cwd 的会话 id，最近的在前
+```
+
+启动时钉不了 id 的 CLI 还要实现第四个，并把 `AGENT_SESSION_PROOF` 置 1：
+
+```bash
+agent_session_started_with <cwd> <session_id> <prompt_file>   # 返回 0 = 这条是本次启动建的
+```
+
+`agent_command_new` / `agent_command_resume` 读 `$WORKER_SESSION_ID`：起新会话时
+钉住它，续接时续的就是它。`$WORKER_SESSION_ID` 为空只会出现在「本功能上线前留下的
+会话」这一种情况，那时才回落到 CLI 自己的「续最近一条」。
+
+两种形态都支持：
+
+| CLI 能不能在启动时钉 id | driver 怎么做 | 内置例子 |
+|---|---|---|
+| 能 | `agent_session_new_id` 发一个，启动命令带上 | `claude --session-id <uuid>` |
+| 不能 | `agent_session_new_id` 写空串，daemon 在启动后用 `agent_session_list` 把 id 捞回来 | `codex`（0.155.0 启动侧没有这种 flag；它的会话文件在启动后约 0.5s 落盘） |
+
+CLI 钉不了 id 的，要保证 `agent_session_list` 够便宜、且「最近的在前」：daemon 在
+启动后就靠轮询它来拿到本次的 id。这一步需要真证据，这就是 `agent_session_started_with`
+的用处——「我启动之后才出现的会话」不是证据：前一个角色回捞失败的话，它那条会话
+可能正好落在你的窗口里。内置 codex driver 比的是会话的**启动输入**——第一条 assistant
+回复之前的所有 user 消息——跟本次启动用的 prompt 文件。三种偷懒写法实测都不行：只看
+第一条 user 消息（真实会话开头是仓库的 AGENTS 指令，派工 prompt 是**第二**条）、
+只取第一行（多行 prompt 连自己都匹配不上）、只比固定长度前缀（共享开头会匹配到错的角色）。daemon 还会给「将要走回捞」
+的那次启动在 prompt 末尾追加一行唯一标记，好让渲染结果相同的两次启动也分得开；
+用 `agent_session_prompt_tag` 读它。没实现这个 hook 时，daemon 退一步：只有「候选唯一 +
+这条活此前没有认领失败过」才敢认。
+
+回捞举证不出来时，那条会话就保持无主——daemon 不会把它交给别的角色，该角色下一轮
+从零起。**不要**为了补偿而让收养变聪明：worker 只收养早于角色化派工的会话，这是故意的。
+
+不实现也能跑：daemon 那时只保证 **review 角色一律起全新会话**，worker 角色保持
+上线前「续最近一条」的行为。
 
 ### 可选 override：`agent_inject_prompt <tmux_session> <prompt_file>`
 

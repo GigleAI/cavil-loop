@@ -87,6 +87,9 @@ if [ "$KEEP_WORKTREE" -eq 0 ] && [ -d "$WORKTREE" ]; then
         fi
     fi
     git worktree prune
+    # worktree 没了，里面那些会话也就无从续接；留着登记只会让下次派工先试一次
+    # 必然失败的 resume。--keep-worktree 时不清，因为会话还能续。
+    agent_session_forget_all "$ISSUE"
 fi
 
 # ── 5. 本地分支 ──

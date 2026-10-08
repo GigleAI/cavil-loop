@@ -146,7 +146,33 @@ flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一
 - 命名：tmux session = `<TMUX_PREFIX>-issue<N>`、worktree = `<WORKTREE_BASE>/issue-<N>`、branch = `<BRANCH_PREFIX><N>`
 - **PR 派工时 N 怎么定**：`pr_to_issue_num` 走三层 fallback——分支名匹配 `<BRANCH_PREFIX>N` → 拿数字；否则 PR body 找 `Closes/Fixes/Resolves/Refs #N` → 拿数字；否则 fallback 到 PR 编号本身。这样外部 contributor 提的 PR、手开的 meta PR（既没有 `feature/issue-N` 分支也没绑 issue）也能稳定派工。GitHub-only 假设（issue/PR 共用编号 namespace）；跨平台见 [AGENTS.md](../AGENTS.zh.md)
 - PR 评论触发：找对应 session 用 `tmux load-buffer + paste-buffer -p`（bracketed paste）把 prompt 多行注入，再 `send-keys Enter` 提交
-- **自动 resume**：worker session 死了（`/quit` / 重启 / crash）后又被触发，调度脚本会查 `~/.claude/projects/<encoded-worktree>/` 有没有历史 jsonl——有就 `claude --continue` 续上原对话（保留所有上下文 + 工具调用历史），没有就 `claude -n issue<N>` 全新起。这意味着用户中途 `/quit` 不丢进度。
+- **一条活有两个角色**：每次派工不是 `worker` 角色就是 `review` 角色（从 prompt 模板类型推）。tmux session 仍然只有一个，但**模型侧的对话**是分开的，见下方「会话隔离」。
+- **自动 resume**：worker session 死了（`/quit` / 重启 / crash）后又被触发，调度脚本按 `(work number, agent, 角色)` 查出登记的 session id，续的就是那一条（保留所有上下文 + 工具调用历史）；查不到才全新起。这意味着用户中途 `/quit` 不丢进度。
+
+### 会话隔离
+
+`REVIEW_WORKER_AGENT` 完全可以跟 `WORKER_AGENT` 配成同一个 CLI。那时两个角色共用
+一个 worktree，而内置 agent 的「续接」都是「续这个目录里最近的一条对话」——复审会
+继承 worker 的上下文，不再是独立复审；反过来 worker 下一轮又会继承复审的。两个方向
+都要堵：
+
+| 机制 | 挡住什么 |
+|---|---|
+| tmux session 上的 `@worker_role`，由 `tmux_session_matches_worker` 比对 | review 派工被**注入**进 worker 活着的会话（注入根本不经过启动命令，这是唯一能拦住它的地方） |
+| `$STATE_DIR/agent-sessions/` 下按 `(work number, agent, 角色)` 各记一个 session id | 两个角色互相续到对方那条 |
+| `review` 角色永远不收养没登记过的旧会话 | 第一轮复审捡到 worker 已有的那条 |
+| worker 只收养 `.preexisting` 快照里的会话 | 角色化派工**之后**建的会话——建的时候我们就知道它属于谁——因为登记丢失而重新变成可收养 |
+| 强制起新会话是把旧 id 退休，不是删掉 | 「resume 2s 内秒退」兜底把复审者上一轮的对话变成一条无主会话 |
+| 启动后回捞必须举证候选是用本次 prompt 起的 | 前一个角色没认领成功的会话文件落进本角色的窗口、被本角色认走 |
+
+第 2..N 轮复审复用复审自己那条会话，这样它能核对上一轮提的问题改到位没有。
+
+driver 启动时钉不了 id（codex），而启动后的回捞又举证不出哪条是自己的，那条会话
+就成了无主会话：谁都不会收养它（不在 `.preexisting` 里），后面的回捞也不会认领它
+（它不是用那次的 prompt 起的），原因记进 `.unresolved`，该角色下一轮从零起一条。
+这是用「丢上下文」换「绝不串角色」——后者正是这套机制存在的理由。
+driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#可选-hook会话隔离)）；
+没实现的 driver 只拿到「复审一律起全新会话」这一半。
 - Session 没了（worktree 也被清掉）→ 自动从 PR head branch 重建 worktree + spawn 新 session（同样按上面规则尝试 resume）
 - **Pane 日志持久化**：每个 worker session 起来后，dispatch 脚本立刻挂 `tmux pipe-pane` 把输出 append 到 `$SESSION_LOG_DIR/<tmux-session>.log`（默认 `$STATE_DIR/sessions/`）。tmux session 退出后该文件仍在，可以 `cat` / `less` 回看
 
