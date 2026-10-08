@@ -310,11 +310,11 @@ def reconcile(agent, official, community):
     return prices, None
 
 
-def lookup(table, model):
-    """返回 (值, 原因)。原因非空表示没找到或有歧义。"""
+def lookup(table, model, exact=False):
+    """返回 (值, 原因)。原因非空表示没找到或有歧义。exact=True 只认精确名，不退回基名。"""
     if table is None:
         return None, "解析不出价目表（页面可能改版）"
-    for cand in candidates(model):
+    for cand in ([model.lower()] if exact else candidates(model)):
         if cand in table:
             if table[cand] is None:
                 return None, f"{cand} 在页面上有多行（分档），有歧义"
@@ -334,7 +334,10 @@ def resolve(agent, model):
     o, why = lookup(parse(o_text), model)
     if why:
         return None, f"官方页：{why}"
-    c, why = lookup(parse_litellm(c_text, agent), model)
+    # LiteLLM 按完整模型 ID 收录（含日期快照），所以这一侧**只认精确名**：官方页只写显示名、
+    # 不得不按基名查，若 LiteLLM 也退回基名，两源核对的就都是基名的价，等于默认「日期快照
+    # 与基名同价」——那是猜（PR #55 复审第 2 轮）。查不到就如实失败，冷却后再试。
+    c, why = lookup(parse_litellm(c_text, agent), model, exact=True)
     if why:
         return None, f"LiteLLM：{why}"
     return reconcile(agent, o, c)
@@ -385,8 +388,12 @@ def main():
     changed = False
     for agent, model, path in markers:
         key = f"{agent}/{model}"
-        known = fetched.get(agent, {})
-        if model in builtin_models(agent) or any(c in known for c in candidates(model)):
+        # 「已经有价」必须和两个驱动取价用**同一个键**——它们只认精确模型名。拿去掉日期
+        # 后缀的基名来判，会出现「缓存里有基名 → 删标记，驱动却仍取不到日期名的价」，
+        # 之后每条 footer 留标记、每轮又被删，日期名永远补不上（PR #55 复审第 2 轮）。
+        # 基名只用于在**价目来源**里查找（官方页只写显示名，没有日期），查到后两源核验，
+        # 按驱动看到的实际模型名落缓存。
+        if model in builtin_models(agent) or model in fetched.get(agent, {}):
             _rm(path)                                  # 已经有价：不抓，也不再提
             continue
         last = (state.get(key) or {}).get("last_attempt") or 0

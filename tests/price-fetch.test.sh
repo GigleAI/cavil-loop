@@ -344,6 +344,41 @@ chk "10b 人读行：也注明含自动联网获取的单价" "$(grep -c '（含
 chk "10b 周报重算与驱动一致" "$(wk claude-test-9 '{"input":1000000}')" \
     'usd=3 unk=0 state=full buckets={"disputed_fetched": 3.0}'
 
+echo "── 11. 带日期后缀的模型：先补过基名，日期名照样补上（PR #55 复审第 2 轮）──"
+# 驱动只按精确模型名取价。抓价器若拿「基名已在缓存」当作日期名也有价，就会删掉标记、
+# 日期名却永远算不出钱。两种出现顺序（先基名 / 先日期名）结果必须一样。
+dated() {  # $1 用例目录 $2 agent $3 基名 $4 先补基名? → 打印驱动最终的计价结论 + 剩余标记数
+    fresh "$1"
+    if [ "$4" = yes ]; then : > "$MARK/$2--$3"; fetch >/dev/null; fi
+    local m="$3-20261008"
+    if [ "$2" = codex ]; then
+        WT="$HOME/wt/issue-9"; mkdir -p "$WT" "$HOME/.codex/sessions/2026/10/08"
+        { printf '{"type":"session_meta","timestamp":"%s","payload":{"cwd":"%s"}}\n' "$(ts 1)" "$WT"
+          printf '{"type":"turn_context","timestamp":"%s","payload":{"model":"%s"}}\n' "$(ts 2)" "$m"
+          rec 10 1000000 0; } > "$HOME/.codex/sessions/2026/10/08/rollout-d.jsonl"
+        cx --kv >/dev/null; fetch >/dev/null
+        printf '%s marks=%s\n' "$(cx --kv | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" "$(ls "$MARK" | wc -l)"
+    else
+        call "$m" '{"input_tokens":1000000,"output_tokens":0}'
+        cl --kv >/dev/null; fetch >/dev/null
+        printf '%s marks=%s\n' "$(cl --kv | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" "$(ls "$MARK" | wc -l)"
+    fi
+}
+CX_BASE_FIRST=$(dated d1 codex gpt-test-9 yes)
+CX_KEYS=$(jq -r '.codex | keys | join(",")' "$TMP/hd1/.cache/cavil-loop/fetched-prices.json")
+CX_DATED_ONLY=$(dated d2 codex gpt-test-9 no)
+chk "codex：先补基名、再出现日期名 → 日期名也补上价" "$CX_BASE_FIRST" "cost_usd=2 cost_state=full cost_unknown_tokens=0 marks=0"
+chk "codex：两种顺序结果一致" "$CX_BASE_FIRST" "$CX_DATED_ONLY"
+chk "codex：缓存里按驱动看到的日期名落键" \
+    "$CX_KEYS" "gpt-test-9,gpt-test-9-20261008"
+CL_BASE_FIRST=$(dated d3 claude claude-test-9 yes); CL_DATED_ONLY=$(dated d4 claude claude-test-9 no)
+chk "claude：先补基名、再出现日期名 → 日期名也补上价" "$CL_BASE_FIRST" "cost_usd=3 cost_state=full cost_unknown_tokens=0 marks=0"
+chk "claude：两种顺序结果一致" "$CL_BASE_FIRST" "$CL_DATED_ONLY"
+# 不猜「日期快照与基名同价」：LiteLLM 没收录这个日期快照时，不拿基名的价顶上
+fresh d5; : > "$MARK/codex--gpt-test-9-20991231"; OUT=$(fetch)
+chk "LiteLLM 没收录日期快照 → 不用基名的价顶替，标记留着、说明原因" \
+    "$(fprice codex gpt-test-9-20991231) $(has codex--gpt-test-9-20991231) $(grep -c 'LiteLLM：没有收录' <<< "$OUT")" "null yes 1"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" -eq 0 ]
