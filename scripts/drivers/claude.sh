@@ -4,17 +4,62 @@
 # 文档：https://docs.claude.com/en/docs/claude-code
 # 历史存放：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
 # Busy 探测：见下方 AGENT_BUSY_RE（认 spinner 行的形状，不认具体措辞）
-# 新起：claude -n <name> [extra-flags] [--model <model>] "<prompt>"
-# 续接：claude --continue [extra-flags] --model <model 或当前默认> "<prompt>"
+# 新起：claude -n <name> [--session-id <uuid>] [extra-flags] [--model <model>] "<prompt>"
+# 续接：claude --resume <uuid> | --continue [extra-flags] --model <model 或探测到的当前默认> "<prompt>"
 #
 # 配置开关：CLAUDE_EXTRA_FLAGS（推荐 "--dangerously-skip-permissions"，否则卡权限弹窗）
 
+# 支持按 session id 隔离 worker / review 两个角色的会话（见 _common.sh 的契约）。
+AGENT_SESSION_ISOLATION=1
+
 agent_bin() { echo "claude"; }
+
+# claude 的历史目录名 = cwd 绝对路径里**每一个非字母数字字符**都换成 '-'。
+# 2026-09-18 在 claude 2.1.276 上实测：
+#   /tmp/tmp.dkIFgXhOk6/wt/issue-7            -> -tmp-tmp-dkIFgXhOk6-wt-issue-7
+#   /tmp/.../enc.test_dir.v1/sub dir          -> -tmp-...-enc-test-dir-v1-sub-dir
+# 共享的 encoded_cwd 只换 '/'，对带 '.' '_' 空格的 worktree 路径会指到一个根本
+# 不存在的目录 —— 于是「这个 cwd 有没有历史」永远答否，每次派工都新起一条会话，
+# 上下文一声不响地丢掉。
+claude_encoded_cwd() {
+    printf %s "$1" | tr -c 'A-Za-z0-9' '-'
+}
+
+claude_session_dir() {
+    echo "$HOME/.claude/projects/$(claude_encoded_cwd "$1")"
+}
 
 agent_has_history() {
     local cwd="$1"
-    local dir="$HOME/.claude/projects/$(encoded_cwd "$cwd")"
+    local dir
+    dir="$(claude_session_dir "$cwd")"
     [ -d "$dir" ] && compgen -G "$dir/*.jsonl" > /dev/null 2>&1
+}
+
+# ── 会话隔离 ──
+# claude 2.1.274 实测：
+#   --session-id <uuid>  按指定 id 新建；**id 已存在会直接报错退出**，所以这里永远
+#                        发随机 id，登记表才是权威，不去猜一个「算得出来」的 id。
+#   --resume <uuid>      续那条；id 不存在报 No conversation found。
+#   -n <name>            只是显示名，跟会话归属无关。
+agent_session_new_id() { agent_session_new_uuid; }
+
+agent_session_exists() {
+    local cwd="$1" id="$2"
+    [ -n "$id" ] && [ -f "$(claude_session_dir "$cwd")/${id}.jsonl" ]
+}
+
+# 历史文件名就是 session id；按 mtime 新→旧。
+# （同目录下还有 memory/ 之类的子目录，所以只认 *.jsonl）
+agent_session_list() {
+    local cwd="$1" dir f
+    dir="$(claude_session_dir "$cwd")"
+    [ -d "$dir" ] || return 0
+    compgen -G "$dir/*.jsonl" > /dev/null 2>&1 || return 0
+    for f in $(ls -t "$dir"/*.jsonl 2>/dev/null); do
+        basename "$f" .jsonl
+    done
+    return 0
 }
 
 # busy 判据。2026-07-29 实测 claude 2.1.220：
@@ -40,109 +85,123 @@ agent_command_new() {
     local cwd="$1"   # 未直接用：tmux 已 -c "$cwd"，claude 自动 cwd
     local name="$2"
     local prompt_file="$3"
-    local model_arg
+    local model_arg flags
     model_arg="$(worker_model_arg)"
+    flags="${CLAUDE_EXTRA_FLAGS:-}"
+    # WORKER_SESSION_ID 由 agent_launch_command 设：钉住这条会话的 id，
+    # 之后同角色再派工才认得回来（不钉的话只能靠「最近一条」猜，就会串角色）。
+    # 拼进 flags 而不是单开一个 %s 槽位：没有 id 时命令行要跟改版前逐字节一致，
+    # 免得下游按字符串比对的测试 / 日志因为多一个空格就对不上。
+    if [ -n "${WORKER_SESSION_ID:-}" ]; then
+        flags="$(printf -- '--session-id %q' "$WORKER_SESSION_ID") $flags"
+    fi
     # name 含 / # 等需要 shell-quote（worker_session_name 现在用 GigleAI/repo#42 风格）
     printf 'claude -n %q %s %s "$(cat %s)"' \
         "$name" \
-        "${CLAUDE_EXTRA_FLAGS:-}" \
+        "$flags" \
         "$model_arg" \
         "$prompt_file"
 }
 
-# 续接时没指定模型，要显式传「现在的默认模型」。`claude --continue` 不带 --model
-# 会沿用这个会话**当初**的模型，不看当前配置（2.1.293 实测：9 月开的会话今天
-# 新进程续接仍是 claude-opus-5，同机新会话已是 claude-opus-5-5，#56）——于是
-# 长期开着的 issue 永远停在旧模型。
+# ── 续接时的默认模型 ──
+# `claude --continue` / `--resume <id>` 不带 --model 会沿用这条会话**当初**的模型，
+# 不看当前配置（2.1.293 实测：9 月开的会话今天新进程续接仍是 claude-opus-5，同机
+# 新会话已是 claude-opus-5-5，#56）——长期开着的 issue 永远停在旧模型。所以续接
+# 时要显式带上「现在新开一条会话会用的模型」。
 #
-# 这里要复刻 claude 自己选默认模型的优先级，少看一层就会拿低优先级的值把高优先级的
-# 盖掉（复审 #57 第 1 轮：CLAUDE_EXTRA_FLAGS 里 `--settings '{"model":"sonnet"}'`
-# 被追加的 `--model opus` 顶掉）。从高到低：
-#   1. CLAUDE_EXTRA_FLAGS 里已有 --model → 什么都不加，它本来就会带到续接命令里
-#   2. ANTHROPIC_MODEL
-#   3. managed settings（管理员策略文件）
-#   4. CLAUDE_EXTRA_FLAGS 里的 --settings（JSON 串或文件路径；相对路径按 worktree 解析）
-#   5. 项目 settings.local.json > 项目 settings.json > 用户 settings.json，
-#      受 --setting-sources 限制（只读列出的 local / project / user）
-#   6. 都没有 → `default`（= 账号默认，跟新会话不带 --model 时一致）
-# 配的是 `opus` 别名就传 `opus`，不在这里钉版本号。
-#
-# 输出：要追加的模型名；输出空 = 不追加（第 1 条，或 extra flags 解析不了——
-# 猜不出用户本意时宁可维持老行为，也不拿猜测去覆盖他显式写的东西）。
-CLAUDE_MANAGED_SETTINGS="${CLAUDE_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}"
+# 这个值**问 claude 自己**，不在这里复刻它的选模型规则。复刻版在 #57 复审里连续
+# 漏了三层（CLAUDE_EXTRA_FLAGS 里的 --settings / --model、相对路径、git worktree
+# 的本地配置在主 checkout 根目录），每补一层都还有下一层；CLI 自己的解析才是唯一
+# 不会漏的那份。做法：在 worker 的 cwd、用同一份 extra flags 起一个 `claude -p`，
+# 读它 stream-json 的第一行 `system/init`——里面就是解析完的模型——然后立刻杀掉。
+#   - ANTHROPIC_BASE_URL 指到本机不监听的端口：init 在请求之前就输出了，请求本身
+#     只会连不上（2.1.293 实测：init 报 claude-haiku-5-5，之后只有 api_retry）
+#   - --no-session-persistence：不落会话文件，否则下次 --continue 会续到这条探测
+#   - --strict-mcp-config：不连 MCP server
+#   - 不能用 --bare：它不读 OAuth，init 里的 model 直接是 null（实测）
+# 读不到（超时 / 没装 / 输出不对）→ 输出空，调用方不追加 --model，维持老行为。
+CLAUDE_MODEL_PROBE_TIMEOUT="${CLAUDE_MODEL_PROBE_TIMEOUT:-20}"
+CLAUDE_MODEL_PROBE_BASE_URL="${CLAUDE_MODEL_PROBE_BASE_URL:-http://127.0.0.1:9}"
 
-_claude_json_model() {   # $1 = JSON 文本；坏 JSON / 非字符串 model → 空
-    printf '%s' "$1" | jq -r 'if (.model | type) == "string" then .model else empty end' 2>/dev/null || true
+_claude_probe_log() {
+    if declare -F log >/dev/null 2>&1; then log "$@"; fi
+    return 0
 }
 
 claude_default_model() {
-    local cwd="$1" m="" f a i
+    local cwd="$1" a raw line model fifo pid _probe_fd
     local -a flags=()
-    local settings_arg="" sources="user,project,local"
 
     # 拆 CLAUDE_EXTRA_FLAGS 用 xargs：只做引号拆词，不执行 $(...)；引号不配对就失败
     if [ -n "${CLAUDE_EXTRA_FLAGS:-}" ]; then
-        local raw
-        raw="$(printf '%s' "$CLAUDE_EXTRA_FLAGS" | xargs printf '%s\n' 2>/dev/null)" || return 0
+        raw="$(printf '%s' "$CLAUDE_EXTRA_FLAGS" | xargs printf '%s\n' 2>/dev/null)" || {
+            _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS 拆不开，续接不追加 --model"
+            return 0
+        }
         mapfile -t flags <<< "$raw"
     fi
-    for ((i = 0; i < ${#flags[@]}; i++)); do
-        a="${flags[$i]}"
-        case "$a" in
-            --model|--model=*) return 0 ;;
-            --settings) settings_arg="${flags[$((i + 1))]:-}"; i=$((i + 1)) ;;
-            --settings=*) settings_arg="${a#--settings=}" ;;
-            --setting-sources) sources="${flags[$((i + 1))]:-}"; i=$((i + 1)) ;;
-            --setting-sources=*) sources="${a#--setting-sources=}" ;;
-        esac
+    # extra flags 里已经写了 --model：它本来就会带进续接命令，别再叠一份
+    for a in "${flags[@]}"; do
+        case "$a" in --model|--model=*) return 0 ;; esac
     done
 
-    if [ -n "${ANTHROPIC_MODEL:-}" ]; then
-        printf '%s' "$ANTHROPIC_MODEL"
+    fifo="$(mktemp -u "${TMPDIR:-/tmp}/claude-model-probe.XXXXXX")"
+    mkfifo "$fifo" || return 0
+    (
+        cd "$cwd" || exit 1
+        exec env ANTHROPIC_BASE_URL="$CLAUDE_MODEL_PROBE_BASE_URL" \
+            timeout "$CLAUDE_MODEL_PROBE_TIMEOUT" \
+            claude -p --no-session-persistence --strict-mcp-config \
+                --output-format stream-json --verbose "${flags[@]}" "model probe"
+    ) < /dev/null > "$fifo" 2>/dev/null &
+    pid=$!
+    # init 不一定是第一行：项目有 SessionStart hook 时前面先有 hook_started /
+    # hook_response（2.1.293 实测）。一直读到 init 或总时限用完；读到第一个
+    # 非 system 事件（真 CLI 里 init 一定在它前面）也就不用再等了。
+    model=""
+    local deadline=$((SECONDS + CLAUDE_MODEL_PROBE_TIMEOUT)) left kind
+    exec {_probe_fd}< "$fifo"
+    while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+        IFS= read -r -t "$left" -u "$_probe_fd" line || break
+        kind="$(printf '%s' "$line" | jq -r '"\(.type)/\(.subtype)"' 2>/dev/null)" || kind=""
+        case "$kind" in
+            system/init)
+                model="$(printf '%s' "$line" | jq -r '.model | select(type == "string")' 2>/dev/null)" || model=""
+                break ;;
+            system/*) ;;
+            *) break ;;
+        esac
+    done
+    exec {_probe_fd}<&-
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -f "$fifo"
+    if [ -z "$model" ]; then
+        _claude_probe_log "  ⚠️ 探测不到 claude 当前默认模型，续接不追加 --model（沿用会话原模型）"
         return 0
     fi
-    if [ -f "$CLAUDE_MANAGED_SETTINGS" ]; then
-        m="$(_claude_json_model "$(cat "$CLAUDE_MANAGED_SETTINGS" 2>/dev/null)")"
-        [ -z "$m" ] || { printf '%s' "$m"; return 0; }
-    fi
-    if [ -n "$settings_arg" ]; then
-        # 文件路径要按 worker 的启动目录解析：命令是 daemon 在自己的目录里拼的，
-        # 但 claude 是 `tmux -c "$WORKTREE"` 起在 worktree 里（复审 #57 第 2 轮）。
-        # `~/` 只有不带引号时 shell 才展开，xargs 拆词后已经看不出来，按展开处理。
-        case "$settings_arg" in
-            \{*) ;;
-            /*) ;;
-            "~/"*) settings_arg="$HOME/${settings_arg#\~/}" ;;
-            *) settings_arg="$cwd/$settings_arg" ;;
-        esac
-        case "$settings_arg" in
-            \{*) m="$(_claude_json_model "$settings_arg")" ;;
-            *) [ -f "$settings_arg" ] && m="$(_claude_json_model "$(cat "$settings_arg" 2>/dev/null)")" ;;
-        esac
-        [ -z "$m" ] || { printf '%s' "$m"; return 0; }
-    fi
-    local -a files=()
-    case ",$sources," in *,local,*) files+=("$cwd/.claude/settings.local.json") ;; esac
-    case ",$sources," in *,project,*) files+=("$cwd/.claude/settings.json") ;; esac
-    case ",$sources," in *,user,*) files+=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json") ;; esac
-    for f in "${files[@]}"; do
-        [ -f "$f" ] || continue
-        # 坏 JSON / 非字符串一律当没配，往下找——别让一个坏文件卡住续接
-        m="$(_claude_json_model "$(cat "$f" 2>/dev/null)")"
-        [ -z "$m" ] || { printf '%s' "$m"; return 0; }
-    done
-    printf 'default'
+    printf '%s' "$model"
 }
 
 agent_command_resume() {
     local cwd="$1"
-    local name="$2"  # 未用：claude --continue 自动用 cwd 最近会话
+    local name="$2"  # 未用：会话由 id / cwd 定位，不靠显示名
     local prompt_file="$3"
     local model_arg default_model
     model_arg="$(worker_model_arg)"
     if [ -z "$model_arg" ]; then
         default_model="$(claude_default_model "$cwd")"
         [ -z "$default_model" ] || model_arg="$(printf -- '--model %q' "$default_model")"
+    fi
+    # 有 id 就续那一条。没有 id 只会出现在「本功能上线前留下的会话」这一种情况，
+    # 那时才回落到 --continue（cwd 里最近的一条）。
+    if [ -n "${WORKER_SESSION_ID:-}" ]; then
+        printf 'claude --resume %q %s %s "$(cat %s)"' \
+            "$WORKER_SESSION_ID" \
+            "${CLAUDE_EXTRA_FLAGS:-}" \
+            "$model_arg" \
+            "$prompt_file"
+        return 0
     fi
     printf 'claude --continue %s %s "$(cat %s)"' \
         "${CLAUDE_EXTRA_FLAGS:-}" \

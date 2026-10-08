@@ -89,7 +89,79 @@ chk "可信度桶记在「估算」下"               "$(q "round(w['price_usd_e
 chk "token 也按 1.68 抵掉重复计：输出"     "$(q "int(w['tok_out'])")"         "595238"
 chk "缓存读取"                             "$(q "int(w['tok_cache_r'])")"     "595238"
 chk "报告口径说明写明是估算"               "$(has '按记录里的 token 数重估')" "yes"
-chk "投入面趋势图多了 token 用量面板"      "$(grep -c 'token 用量' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
+# token 用量：单独一张图（token.html）、两块面板，每块各一条纵轴（GigleTutor-Web#1023）。
+#   · 双轴 → 两条轴刻度差几十倍，读图的人拿高度一比，把「读取是写入的几十倍」读成「读取反而很少」；
+#   · 四项堆进一根柱 → 缓存读取占 95% 以上，另外三项只剩柱底一条线（维护者：「完全被缓存读取占据了」）。
+# 所以「输入 + 缓存写入 + 输出」堆一块、「缓存读取」单独一块。样本四项**互不相等**
+# （1 / 2 / 3 / 155M），双轴、四项堆叠、漏项、顺序或合计算错，都会在下面某一条上露出来。
+tok2() {   # $1 每周 tok_cache_r；$2 要检查的项
+    python3 - "$TMP/d.json" "$TMP/u.json" "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for w in d["weekly"].values():
+    w.update(tok_in=1e6, tok_cache_w=2e6, tok_out=3e6, tok_cache_r=float(sys.argv[3]))
+json.dump(d, open(sys.argv[2], "w"))
+PY
+    python3 "$RENDER" --data "$TMP/u.json" --out-dir "$TMP/u" --asset-url-base x --rev y >/dev/null 2>&1 \
+        || { echo "render 跑挂了"; return; }
+    python3 - "$TMP/u" "$2" "$1" <<'PY'
+import os, re, sys
+d, what, cr = sys.argv[1], sys.argv[2], float(sys.argv[3]) / 1e6
+if not os.path.exists(f"{d}/token.html"):
+    print("no token.html"); sys.exit()
+h = open(f"{d}/token.html").read()
+starts = [m.start() for m in re.finditer(r'<text x="\d+" y="\d+" class="ttl">', h)] + [h.index("</svg>")]
+P = []
+for i in range(len(starts) - 1):
+    seg = h[starts[i]:starts[i + 1]]
+    by = {}
+    # 柱块：不带圆角的 rect（堆叠段）或带 rx 的单柱；图例方块宽高都是 11，排除
+    for x, y, w, hh, col in re.findall(r'<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="([^"]+)"', seg):
+        if w == "11" and hh == "11":
+            continue
+        by.setdefault(col, []).append((float(y), float(hh)))
+    P.append({"ttl": re.search(r'class="ttl">([^<]*)<', seg).group(1),
+              "sub": re.search(r'class="sub">([^<]*)<', seg).group(1),
+              "by": by, "seg": seg,
+              "left": re.findall(r'class="ax" text-anchor="end">([^<]*)<', seg),
+              "right": re.findall(r'class="ax" text-anchor="start">([^<]*)<', seg),
+              "tops": re.findall(r'class="val" text-anchor="middle" fill="[^"]+">([^<]*)<', seg)})
+IN, CW, OUT, CR = "#2a78d6", "#c99332", "#eb6834", "#4a3aa7"
+num = lambda t: float(t[:-1]) * (1000 if t[-1] == "B" else 1)
+ok_total = lambda p, tot: bool(p["tops"]) and all(abs(num(t) - tot) <= 0.06 * tot for t in p["tops"]) and num(p["left"][-1]) >= tot
+if what == "split":        # 两块：A 只有三项（无缓存读取），B 只有缓存读取；每项每周一块
+    n = len(P[0]["by"].get(IN, [])) if P else 0
+    print(len(P) == 2 and n > 0
+          and set(P[0]["by"]) == {IN, CW, OUT} and all(len(P[0]["by"][c]) == n for c in (IN, CW, OUT))
+          and set(P[1]["by"]) == {CR} and len(P[1]["by"][CR]) == n)
+elif what == "ratio":      # A 的三段高度 1:2:3，从下往上依次是 输入 / 缓存写入 / 输出
+    hs = [P[0]["by"][c][0][1] for c in (IN, CW, OUT)]
+    ys = [P[0]["by"][c][0][0] for c in (IN, CW, OUT)]
+    print(all(abs(hs[k] / hs[0] - v) < 0.05 * v for k, v in enumerate([1, 2, 3])) and ys == sorted(ys, reverse=True))
+elif what == "single":     # 两块都只有一条纵轴：没有右轴刻度、没有折线
+    print(all(not p["right"] and "<polyline" not in p["seg"] and "右轴" not in p["ttl"] + p["sub"] for p in P))
+elif what == "total":      # A 柱顶 = 三项合计 6M；B 柱顶 = 缓存读取；轴上界都容得下
+    print(ok_total(P[0], 6.0) and ok_total(P[1], cr))
+elif what == "units":      # 每块图上用到的后缀都在本块副标题里有解释，且没有写死单位
+    good = True
+    for p in P:
+        used = {v[-1] for v in p["left"] + p["tops"] if v[-1] in "MB"}
+        expl = {u for u, word in (("M", "M＝百万"), ("B", "B＝十亿")) if word in p["sub"]}
+        good &= bool(used) and used <= expl and not re.search(r"单位 ?[MB]|百万 token", p["ttl"] + p["sub"])
+    print(good)
+PY
+}
+chk "token 单独成图：两块面板，三项一块、缓存读取一块" "$(tok2 155000000 split)"  "True"
+chk "三项堆叠高度 1:2:3，顺序 输入 → 缓存写入 → 输出"    "$(tok2 155000000 ratio)"  "True"
+chk "两块都只有一条纵轴：无右轴刻度、无折线"            "$(tok2 155000000 single)" "True"
+chk "柱顶：三项合计 6M、缓存读取 155M，轴上界容得下"    "$(tok2 155000000 total)"  "True"
+# 单位说明必须跟图上实际出的后缀一致（PR #54 交叉 review 第 1 轮）：fmt_m 不足 1000M 出 M、
+# 够了出 B，同一根轴上可以并存。阈值以下、跨阈值各一个样本。
+chk "缓存读取 155M（全是 M）：单位说明与图一致"         "$(tok2 155000000 units)"  "True"
+chk "缓存读取 2.0B（M / B 并存）：单位说明与图一致"     "$(tok2 2000000000 units)" "True"
+chk "缓存读取 2.0B：柱顶数字与轴上界"                   "$(tok2 2000000000 total)" "True"
+chk "投入面不再含 token 面板（已单独成图）" "$(grep -c 'token 用量' "$TMP/html/effort.html" | tr -d ' ')" "0"
+chk "真实链路也出了 token 图"             "$(grep -c 'class="ttl">缓存读取' "$TMP/html/token.html" 2>/dev/null | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 
 echo
 echo "— 历史记账行没写金额：保持「没有金额」，不凭 token 补一个出来 —"

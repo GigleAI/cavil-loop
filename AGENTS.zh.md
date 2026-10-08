@@ -110,6 +110,81 @@
 
 **轮询节奏的状态是故意放在另一个文件里的。** `$STATE_DIR/poll-pace.json` 存空闲/故障退避状态（`next_due` / `last_poll` / `last_active` / `fail_streak` / `fingerprint`），刻意**不**并进 `state.json`：上面那个 migration 循环是把缺失字段初始化成 `{}`，而这里要的是数字和字符串；更重要的是运维上的理由——`rm poll-pace.json` 必须等于「立刻回最快档」，而不能顺手把「哪些评论看过了」那些游标一起清掉。helper 在 `_lib.sh` 的 `pace_*` 那一段，闸门本身紧跟在 `agent-poll.sh` 的 flock 后面。改它的时候记两条：**它只能决定「这一轮跑不跑」，绝不能决定「跑的时候怎么做」**；**每一处判定都要 fail-open**——读不懂、超范围的状态一律当作「该跑」，绝不是「再等等」（这里 fail-closed 的后果是整个项目静默停摆，而且哪里都不报错）。
 
+### 会话注册表（`$STATE_DIR/agent-sessions/`）
+
+按 `(work number, agent, 角色)` 一条一文件，存 agent 侧的 session id：
+
+```
+$STATE_DIR/agent-sessions/42.claude.worker   ->  4d9e5509-1591-493b-80b9-7d93e3f5344a
+$STATE_DIR/agent-sessions/42.claude.review   ->  f3db1457-c545-4b83-9969-0af1285ba460
+```
+
+**故意不放 state.json**：那是有兼容约束的接口（CONTRIBUTING 明写改了要申报），
+而这里是丢了能重建的本机缓存；而且 `dispatch-*.sh` 是 `agent-poll.sh` 的子进程，
+两边不去抢同一个 jq 改写更省事。`cleanup-issue.sh` 删 worktree 时会一并清掉该
+编号的登记。
+
+角色只有 `worker` 和 `review` 两个，从 `DISPATCH_PROMPT_KIND` 推。它存在的唯一
+理由：复审关卡用的是**同一个** agent 时，得让它有自己的模型对话，而不是继承
+worker 的——见 [docs/architecture.zh.md](docs/architecture.zh.md#会话隔离)。
+
+另有三个附属文件，存的是「比『当前用哪条』活得更久」的那部分信息：
+
+```
+42.claude.review.retired   这个角色用过、以后也不会再用的 id（只增不删）
+42.claude.preexisting      角色化派工第一次管 #42 时，cwd 里已经有的 id
+42.claude.unresolved       启动后没回捞到 id 的记录（只用于排查）
+```
+
+**往这张注册表里写任何一条，都必须有「这条属于我」的正向证据——这正是关键。**
+写入口一共三个，每个都得回答「凭什么认为这条对话是我的」：
+
+| 写入口 | 证据 |
+|---|---|
+| 启动时钉的新 id（claude） | id 是我们自己发的 |
+| 收养（只有 worker 角色） | 这个 id 在 `.preexisting` 里，即早于角色化派工 |
+| 启动后回捞（codex） | 这条会话的**启动输入**里带着本次启动独有的标记；没有标记时，整条正文跟本次 prompt 完全一致 |
+
+**收养用的是正向判据。** worker 角色只能接管 `.preexisting` 里列出的
+对话——也就是早于角色化派工、因而角色确实无从得知的那些。反过来问（「这个 id 现在
+有没有登记给别人」）看着等价，其实不是：登记一旦以任何方式丢失，别人的对话就变成
+谁都能收养。两种丢失都真实存在——强制起新会话曾经直接删掉旧 id、codex 启动后回捞
+没拿到 id——两次都以「worker 续上了复审者的对话」收场。因此还有两条：强制起新会话
+是把旧 id **退休**而不是删掉；`cleanup-issue.sh` 只清当前登记，绝不清上面那两个文件
+（worktree 可能在同一路径重建，而 agent 的历史是按 cwd 存的，旧对话还在原地）。
+
+回捞那一层有同一个坑的低配版：「我启动之后才出现的会话文件」**不是**「我启动的」的
+证据。前一个角色的回捞一旦超时，它那条文件可能落在下一个角色的窗口里被认领走。
+所以回捞要求 driver 举证候选是用本次 prompt 起的（`agent_session_started_with`）；
+两条候选都自称是本次的就拒绝；完全举证不了的 driver，只有「候选唯一 + 这条活此前
+从没认领失败过」才敢认。
+
+这个举证有三处是吃过亏才定下来的。
+
+**什么算「启动输入」**：第一条 assistant 回复**之前**的所有 user 消息，不是「第一条
+user 消息」。真实 codex 会话的开头是
+`session_meta → developer×3 → user(AGENTS.md 指令，约 3 万字) → user(派工 prompt) → assistant`，
+所以第一条 user 消息是仓库自己的指令；只看它必然判否，该角色就永远找不回自己的会话。
+边界也不能放宽成「整段对话里搜一遍」：下一次派工把 prompt 注入到已有会话里，那条消息
+同样带标记，但那条会话不是本次启动建的。
+
+**比多少**：比**完整的一条消息**，不是它的第一行、也不是前若干字节。只取第一行会把所有
+多行 prompt 判成不符（这里的模板全是多行）；只比前缀则会在两个模板共享长开头时把别的
+角色的会话认成自己的。二是两次启动完全可能渲染出逐字节相同的 prompt，所以 `agent_session_plan` 会给
+「将要走回捞」的那次启动在 prompt 末尾追加一行带新 uuid 的标记——「是哪一次启动」才
+答得上来。能钉 id 的启动（claude）不加标记，prompt 一个字节都不动。认不出来永远是允许的：那条会话保持无主、该角色从零起一条，
+代价是上下文，换来的是绝不串角色。
+
+低一层也是同一条规矩：「哪些会话属于这个 worktree」靠 jq 从会话记录里解出 `cwd` 再精确
+比对，不是在原始行上 grep `"cwd":"…"`。实测两者一样快（200 个文件都是 0.4s），而 grep
+那版哪天对方多打一个空格就会静默返回空。
+
+**决定起哪条会话**是 `_lib.sh` 里的 `agent_session_plan` + `agent_launch_command`。
+拆成两个函数是刻意的：`plan` 设的是全局变量（`AGENT_LAUNCH_KIND`、
+`WORKER_SESSION_ID`），必须在调用方自己的 shell 里跑；而命令字符串又只能在
+`"$( )"` 里产出。合成一个的话全局变量会随命令替换的子 shell 一起消失，
+每个 dispatch 脚本都会在 `set -u` 下撞 unbound variable。
+
 ### Session / Worktree / Branch 命名
 
 由 `coding-agent.config` 三个 prefix 控制，公式（issue N）：

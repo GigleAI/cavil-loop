@@ -160,15 +160,23 @@ GPT-6 与 GPT-5.6 各三个型号另配有官方列出的缓存写入单价；�
 `--model fable`（即 `FABLE_MODEL`，别名会解析成最新的 Fable 版本）。这个覆盖只作用于本次派工，不会修改项目默认 worker。
 issue、PR、全新 session 和 resume session 都支持。
 
-没有指定模型时，续接 Claude 会话也会显式带 `--model`：只跑 `claude --continue`
-会沿用会话**当初**的模型，长期开着的 issue 就永远换不到新的默认模型。daemon
-改为传当前配置的默认值，优先级照 Claude 自己的规则：`CLAUDE_EXTRA_FLAGS` 里已有
-`--model` 就什么都不加；否则依次看 `ANTHROPIC_MODEL`、managed settings、
-`CLAUDE_EXTRA_FLAGS` 里 `--settings` 给的 JSON 或文件（相对路径按 worktree 解析，Claude 在那里启动）、worktree 的
-`.claude/settings.local.json` / `.claude/settings.json` 和 `~/.claude/settings.json`
-（给了 `--setting-sources` 就只看它列出的来源），都没有就传 `default`。
-`CLAUDE_EXTRA_FLAGS` 解析不了（引号不配对）时不加 `--model`。新评论到达时会话仍活着的，走注入 prompt，
-模型不变，直到这个会话重启。
+没有指定模型时，续接 Claude 会话也会显式带 `--model`：只跑 `claude --continue` /
+`--resume <id>` 会沿用会话**当初**的模型，长期开着的 issue 就永远换不到新的默认模型。
+daemon 直接问 Claude「现在新开一条会话会用哪个模型」：续接前在 worktree 里、带同一份
+`CLAUDE_EXTRA_FLAGS` 跑一次 `claude -p --no-session-persistence --strict-mcp-config
+--output-format stream-json`，从第一行 `system/init` 读出模型后立刻杀掉。探测时
+`ANTHROPIC_BASE_URL` 指到本机不监听的端口，不会有 API 请求发出去。所以配置优先级
+（环境变量、managed、`--settings`、git worktree 的本地配置、`--setting-sources`……）
+用的是 Claude 自己那套，这里不复刻。补充：
+
+- `CLAUDE_EXTRA_FLAGS` 里已有 `--model`，或拆不开（引号不配对）→ 不探测、不追加。
+- 探测失败（`CLAUDE_MODEL_PROBE_TIMEOUT` 内没读到 `init`，默认 20 秒；找不到
+  `claude`）→ 不追加，会话保持原模型，poll 日志里会记一条。
+- 每次续接多 3–4 秒，项目的 `SessionStart` hook 会多跑一次（已用 touch 文件的 hook 实测）。如果你在 settings 里
+  自己设了 `ANTHROPIC_BASE_URL`（或用 Bedrock / Vertex），探测的请求挡不住：读到
+  `init` 就会被杀，但可能已经发出一个请求。
+
+新评论到达时会话仍活着的，走注入 prompt，模型不变，直到这个会话重启。
 
 daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 `@worker_model`，并把模型写入 `state.json`。如果现有 idle session 的 worker
@@ -612,7 +620,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-这样不会误接管维护者的开发软链。Linux 上单独执行 bootstrap 也会把已安装的 systemd 模板软链改指稳定受管 skill，并 reload user manager；它不会安装原本不存在的 unit，新装调度器仍应使用 `setup.sh`。稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。**回退目前没有持久做法**：部署成功后会立即清理所有没有活跃租约的旧 release，通常不留可回退的目标；即使某个旧 release 因仍有租约而暂时保留，手工把软链指回去也只维持到下一轮部署——部署器不比较新旧，只把软链对齐 base 分支 tip，因而会再次切到最新 commit。需要持续停在某个版本时，用开发模式脱管，或把 `CAVIL_DEPLOY_BRANCH` 指向一个停在该 commit 的分支。
+这样不会误接管维护者的开发软链。Linux 上单独执行 bootstrap 也会把已安装的 systemd 模板软链改指稳定受管 skill，并 reload user manager；它不会安装原本不存在的 unit，新装调度器仍应使用 `setup.sh`。稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。开发模式仍会从该 checkout 安装持久的 `entrypoints/`，因为调度器 unit 一律经由它启动。单独的 `3114f64` 没有这一步：恰好 pull 到该 commit 的 checkout 式安装会让 poller 每轮以 127 退出（`poll-entry.sh: No such file or directory`，只出现在 `journalctl --user -u coding-agent-poll@<key>`，`poll.log` 里没有）；pull 到最新 commit 或执行 bootstrap 即可恢复。**回退目前没有持久做法**：部署成功后会立即清理所有没有活跃租约的旧 release，通常不留可回退的目标；即使某个旧 release 因仍有租约而暂时保留，手工把软链指回去也只维持到下一轮部署——部署器不比较新旧，只把软链对齐 base 分支 tip，因而会再次切到最新 commit。需要持续停在某个版本时，用开发模式脱管，或把 `CAVIL_DEPLOY_BRANCH` 指向一个停在该 commit 的分支。
 
 | 变更 | 部署行为 |
 |---|---|

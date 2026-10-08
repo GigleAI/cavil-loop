@@ -178,18 +178,30 @@ This per-dispatch override does not change the project's default worker. It
 works for issues and PRs, including fresh sessions and resumed sessions.
 
 With no model override, a resumed Claude session is still passed an explicit
-`--model`: `claude --continue` alone keeps the model the session was *started*
-with, so a long-running issue would never move to a newer default. The daemon
-passes the currently configured default instead, following Claude's own
-precedence: if `CLAUDE_EXTRA_FLAGS` already has `--model`, nothing is added;
-otherwise `ANTHROPIC_MODEL`, then managed settings, then a `--settings` JSON or
-file in `CLAUDE_EXTRA_FLAGS` (a relative path is resolved against the worktree,
-where Claude is started), then the worktree's `.claude/settings.local.json` /
-`.claude/settings.json` and `~/.claude/settings.json` (restricted by
-`--setting-sources` when given), falling back to `default`. If
-`CLAUDE_EXTRA_FLAGS` cannot be parsed (unbalanced quotes), no `--model` is added. A session that is
-still alive when a new comment arrives gets the prompt injected and keeps its
-model until it is restarted.
+`--model`: `claude --continue` / `--resume <id>` alone keeps the model the
+session was *started* with, so a long-running issue would never move to a newer
+default. The daemon asks Claude itself which model a fresh session would get:
+right before resuming it runs `claude -p --no-session-persistence
+--strict-mcp-config --output-format stream-json` in the worktree with the same
+`CLAUDE_EXTRA_FLAGS`, reads the model from the first `system/init` line, and
+kills the probe. `ANTHROPIC_BASE_URL` points at a closed local port for the
+probe, so no API request leaves the machine. Settings precedence (env,
+managed, `--settings`, git-worktree local files, `--setting-sources` …) is
+therefore Claude's own, not re-implemented here. Notes:
+
+- `CLAUDE_EXTRA_FLAGS` already containing `--model`, or unparseable (unbalanced
+  quotes) → no probe, nothing added.
+- The probe fails (no `init` within `CLAUDE_MODEL_PROBE_TIMEOUT`, default 20s;
+  `claude` missing) → nothing added, the session keeps its model, and the poll
+  log says so.
+- It costs ~3–4s per resume and runs the project's `SessionStart` hooks once
+  (verified with a hook that touches a file).
+  If your settings set `ANTHROPIC_BASE_URL` themselves (or you use
+  Bedrock/Vertex), the probe's request is not blocked: it is killed right after
+  `init`, but one request may already be in flight.
+
+A session that is still alive when a new comment arrives gets the prompt
+injected and keeps its model until it is restarted.
 
 The daemon stores the selected worker and model in tmux (`@worker_agent` and
 `@worker_model`) and keeps the model in `state.json`. If an existing idle
@@ -683,7 +695,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. **There is currently no durable rollback.** A successful deployment immediately reclaims every old release without an active lease, so usually no rollback target survives; and even when a lease keeps one alive, pointing the stable link back at it only holds until the next deployment — the deployer does not compare versions, it aligns the stable link with the base-branch tip, so it switches forward again. To stay on a specific version, use development mode to opt out of management, or point `CAVIL_DEPLOY_BRANCH` at a branch parked on that commit.
+This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. Development mode still installs the durable `entrypoints/` from that checkout, because the scheduler units always start through them. Commit `3114f64` alone did not, so a checkout-style install that pulled exactly that commit stops polling with exit 127 (`poll-entry.sh: No such file or directory`, visible only in `journalctl --user -u coding-agent-poll@<key>`, never in `poll.log`); pull to the latest commit or bootstrap to recover. **There is currently no durable rollback.** A successful deployment immediately reclaims every old release without an active lease, so usually no rollback target survives; and even when a lease keeps one alive, pointing the stable link back at it only holds until the next deployment — the deployer does not compare versions, it aligns the stable link with the base-branch tip, so it switches forward again. To stay on a specific version, use development mode to opt out of management, or point `CAVIL_DEPLOY_BRANCH` at a branch parked on that commit.
 
 | Changed files | Deployment behavior |
 |---|---|

@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # 跑法：bash tests/claude-resume-model.test.sh
-# 依赖：jq。验证 #56：claude 续接时没指定模型也要显式带上「当前默认模型」——
-# `claude --continue` 不带 --model 会沿用会话当初的模型，长期开着的 issue 永远停在旧版本。
+# 依赖：jq。无网络、不调真 claude（PATH 最前面放假 claude）。
+#
+# 验证 #56：claude 续接时没指定模型，也要显式带上「现在新开会话会用的模型」——
+# `claude --continue` / `--resume` 不带 --model 会沿用会话当初的模型，长期开着的
+# issue 永远停在旧版本。这个默认值由 driver 起一个 `claude -p` 探测出来（问 CLI 自己，
+# 不复刻它的选模型规则）；这里钉住探测的接线：在哪个目录跑、带什么参数、怎么收尾、
+# 失败时怎么退。CLI 自己的优先级（settings / worktree / --setting-sources …）不在
+# 这里重测——那是 claude 的行为，PR #57 的评论里有真 CLI 的实测记录。
+#
 # 另验证 FABLE_MODEL 改成别名后，state 里老的 claude-fable-5 记录仍回 fable 队列。
 #
 # 负对照：REPO_DIR=<旧版 checkout> bash tests/claude-resume-model.test.sh 应当变红。
@@ -25,7 +32,31 @@ LABEL_PENDING_HUMAN="pending/human"
 WORKER_AGENT="claude"
 WORKER_MODEL=""
 CONF
-mkdir -p "$TMP/project" "$TMP/wt" "$TMP/state" "$TMP/home/.claude" "$TMP/cwd" "$TMP/daemon"
+mkdir -p "$TMP/project" "$TMP/wt" "$TMP/state" "$TMP/home" "$TMP/cwd" "$TMP/daemon" "$TMP/bin"
+
+# 假 claude：把 cwd / 参数 / 关键环境变量记下来，按 FAKE_MODE 决定输出
+#   init（默认）：吐 init 行然后挂住——模拟真 CLI 在连不上 API 时的重试
+#   silent：什么都不吐、挂住；fail：直接退出；garbage：吐一行非 JSON
+#   nomodel：init 行里没有 model
+cat > "$TMP/bin/claude" <<'FAKE'
+#!/usr/bin/env bash
+{
+    echo "cwd=$PWD"
+    echo "base_url=${ANTHROPIC_BASE_URL:-}"
+    for a in "$@"; do echo "arg=$a"; done
+} > "$FAKE_LOG"
+case "${FAKE_MODE:-init}" in
+    init)    echo '{"type":"system","subtype":"init","model":"'"${FAKE_MODEL:-claude-opus-5-5}"'"}'; echo $$ > "$FAKE_LOG.pid"; sleep 30 ;;
+    silent)  echo $$ > "$FAKE_LOG.pid"; sleep 30 ;;
+    fail)    exit 1 ;;
+    garbage) echo 'not json'; sleep 30 ;;
+    nomodel) echo '{"type":"system","subtype":"init"}'; sleep 30 ;;
+    hooks)   echo '{"type":"system","subtype":"hook_started"}'; echo '{"type":"system","subtype":"hook_response"}'
+             echo '{"type":"system","subtype":"init","model":"claude-haiku-5-5"}'; sleep 30 ;;
+    noinit)  echo '{"type":"assistant"}'; echo '{"type":"system","subtype":"init","model":"late"}'; sleep 30 ;;
+esac
+FAKE
+chmod +x "$TMP/bin/claude"
 
 pass=0
 fail=0
@@ -39,109 +70,102 @@ chk() {
     fi
 }
 
-# 每次在干净子进程里拼命令：HOME 指到临时目录，不读本机真实 settings
-resume_cmd() {
-    local model_set="$1" model="$2"
-    env -u ANTHROPIC_MODEL -u CLAUDE_CONFIG_DIR HOME="$TMP/home" \
-        CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
-        CLAUDE_EXTRA_FLAGS="${FLAGS:-}" CLAUDE_MANAGED_SETTINGS="$TMP/managed.json" \
+FAKE_LOG="$TMP/fake.log"
+# 每次在干净子进程里、从「daemon 目录」拼命令；claude 实际起在 $TMP/cwd（worktree）
+resume_cmd() {   # <dispatch model_set> <model> [VAR=VAL ...]
+    local model_set="$1" model="$2"; shift 2
+    rm -f "$FAKE_LOG" "$FAKE_LOG.pid"
+    env -u ANTHROPIC_MODEL HOME="$TMP/home" PATH="$TMP/bin:$PATH" \
+        CODING_AGENT_CONFIG="$TMP/coding-agent.config" FAKE_LOG="$FAKE_LOG" \
+        CLAUDE_EXTRA_FLAGS="${FLAGS:-}" \
         DISPATCH_WORKER_AGENT=claude \
         DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET="$model_set" \
-        ${EXTRA_ENV:+"$EXTRA_ENV"} \
+        "$@" \
         bash -c 'cd "$3" && source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_resume "$2" issue-test /tmp/prompt' \
         _ "$REPO_DIR" "$TMP/cwd" "$TMP/daemon"
 }
 new_cmd() {
-    env -u ANTHROPIC_MODEL HOME="$TMP/home" CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
+    rm -f "$FAKE_LOG"
+    env -u ANTHROPIC_MODEL HOME="$TMP/home" PATH="$TMP/bin:$PATH" FAKE_LOG="$FAKE_LOG" \
+        CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
         DISPATCH_WORKER_AGENT=claude DISPATCH_WORKER_MODEL="" DISPATCH_WORKER_MODEL_SET=1 \
         bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_new "$2" issue-test /tmp/prompt' \
         _ "$REPO_DIR" "$TMP/cwd"
 }
-R='claude --continue  --model'
+probe_ran() { [ -f "$FAKE_LOG" ] && echo yes || echo no; }
+has_arg()   { grep -qxF "arg=$1" "$FAKE_LOG" 2>/dev/null && echo yes || echo no; }
 P='"$(cat /tmp/prompt)"'
 
-echo "── 续接没指定模型：带上当前默认 ──"
-chk "什么都没配 → default（账号默认）" "$(resume_cmd 1 '')" "$R default $P"
+echo "── 续接没指定模型：带上探测到的当前默认 ──"
+FLAGS=""
+chk "--continue 追加探测到的模型" "$(resume_cmd 1 '')" "claude --continue  --model claude-opus-5-5 $P"
+chk "--resume <id> 同样追加" "$(resume_cmd 1 '' WORKER_SESSION_ID=abc-123)" \
+    "claude --resume abc-123  --model claude-opus-5-5 $P"
+chk "探测到别的模型就传别的" "$(resume_cmd 1 '' FAKE_MODEL=claude-sonnet-5-5)" \
+    "claude --continue  --model claude-sonnet-5-5 $P"
 
-echo '{"model":"opus"}' > "$TMP/home/.claude/settings.json"
-chk "用户 settings.json 的别名原样传" "$(resume_cmd 1 '')" "$R opus $P"
+chk "init 前面有 SessionStart hook 事件也能读到" "$(resume_cmd 1 '' FAKE_MODE=hooks)" \
+    "claude --continue  --model claude-haiku-5-5 $P"
 
-mkdir -p "$TMP/cwd/.claude"
-echo '{"model":"sonnet"}' > "$TMP/cwd/.claude/settings.json"
-chk "项目 settings.json 盖过用户级" "$(resume_cmd 1 '')" "$R sonnet $P"
+echo "── 探测的接线：在哪跑、带什么、不留什么 ──"
+resume_cmd 1 '' >/dev/null
+chk "在 worktree 里跑（不是 daemon 的目录）" "$(grep '^cwd=' "$FAKE_LOG")" "cwd=$TMP/cwd"
+chk "API 地址指到本机，请求发不出去" "$(grep '^base_url=' "$FAKE_LOG")" "base_url=http://127.0.0.1:9"
+chk "-p 非交互" "$(has_arg -p)" "yes"
+chk "不落会话文件（否则下次 --continue 续到探测）" "$(has_arg --no-session-persistence)" "yes"
+chk "不连 MCP" "$(has_arg --strict-mcp-config)" "yes"
+chk "stream-json 输出" "$(has_arg stream-json)" "yes"
+chk "不带 --continue" "$(has_arg --continue)" "no"
+chk "不带 --resume" "$(has_arg --resume)" "no"
 
-echo '{"model":"haiku"}' > "$TMP/cwd/.claude/settings.local.json"
-chk "项目 settings.local.json 优先级最高（文件里）" "$(resume_cmd 1 '')" "$R haiku $P"
+FLAGS="--dangerously-skip-permissions --settings '{\"model\":\"sonnet\"}' --setting-sources user,project"
+resume_cmd 1 '' >/dev/null
+chk "extra flags 原样传给探测（带引号的 JSON 拆成一个参数）" "$(has_arg '{"model":"sonnet"}')" "yes"
+chk "extra flags 的其他参数也在" "$(has_arg user,project)" "yes"
 
-EXTRA_ENV="ANTHROPIC_MODEL=claude-opus-5-5"
-chk "ANTHROPIC_MODEL 盖过所有 settings" "$(resume_cmd 1 '')" "$R claude-opus-5-5 $P"
-EXTRA_ENV=""
+echo "── 收尾：读到 init 就杀掉，不等它重试 ──"
+FLAGS=""
+start=$(date +%s)
+out="$(resume_cmd 1 '')"
+elapsed=$(( $(date +%s) - start ))
+chk "读到 init 立刻返回（< 5 秒；假 claude 会挂 30 秒）" "$([ "$elapsed" -lt 5 ] && echo fast || echo "slow:${elapsed}s")" "fast"
+pid="$(cat "$FAKE_LOG.pid" 2>/dev/null)"
+sleep 0.3
+chk "探测进程已被杀掉" "$( [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo alive || echo gone)" "gone"
 
-echo '{not json' > "$TMP/cwd/.claude/settings.local.json"
-echo '{"model":{"x":1}}' > "$TMP/cwd/.claude/settings.json"
-chk "坏 JSON / 非字符串 model 跳过，往下找" "$(resume_cmd 1 '')" "$R opus $P"
-rm -rf "$TMP/cwd/.claude"
+echo "── 探测失败：不追加 --model（维持老行为，不拿猜测覆盖）──"
+chk "claude 直接退出" "$(resume_cmd 1 '' FAKE_MODE=fail)" "claude --continue   $P"
+chk "输出不是 JSON" "$(resume_cmd 1 '' FAKE_MODE=garbage)" "claude --continue   $P"
+chk "init 里没有 model" "$(resume_cmd 1 '' FAKE_MODE=nomodel)" "claude --continue   $P"
+chk "先出现非 system 事件 → 不再等后面的 init" "$(resume_cmd 1 '' FAKE_MODE=noinit)" "claude --continue   $P"
+start=$(date +%s)
+chk "一直不吐东西 → 按超时放弃" "$(resume_cmd 1 '' FAKE_MODE=silent CLAUDE_MODEL_PROBE_TIMEOUT=2)" "claude --continue   $P"
+elapsed=$(( $(date +%s) - start ))
+chk "超时确实生效（< 6 秒）" "$([ "$elapsed" -lt 6 ] && echo ok || echo "slow:${elapsed}s")" "ok"
+pid="$(cat "$FAKE_LOG.pid" 2>/dev/null)"
+sleep 0.3
+chk "超时后探测进程也被杀掉" "$( [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo alive || echo gone)" "gone"
 
-echo "── CLAUDE_EXTRA_FLAGS 里更高优先级的选择不能被覆盖（复审 #57 第 1 轮）──"
-echo '{"model":"opus"}' > "$TMP/home/.claude/settings.json"
-mkdir -p "$TMP/cwd/.claude"
-echo '{"model":"opus"}' > "$TMP/cwd/.claude/settings.json"
-
+echo "── 不该探测的时候不探测 ──"
 FLAGS="--model sonnet"
-chk "extra flags 已有 --model → 不再追加" "$(resume_cmd 1 '')" "claude --continue --model sonnet  $P"
+chk "extra flags 已有 --model → 不追加" "$(resume_cmd 1 '')" "claude --continue --model sonnet  $P"
+chk "  …也不起探测" "$(probe_ran)" "no"
 FLAGS="--dangerously-skip-permissions --model=sonnet"
-chk "extra flags 的 --model=X 形式同样不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
-
-FLAGS="--settings '{\"model\":\"sonnet\"}'"
-chk "--settings JSON 的 model 盖过项目 / 用户文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
-FLAGS="--settings='{\"model\":\"sonnet\"}'"
-chk "--settings=JSON 形式" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
-echo '{"model":"haiku"}' > "$TMP/flag-settings.json"
-FLAGS="--settings $TMP/flag-settings.json"
-chk "--settings 文件路径" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model haiku $P"
-echo "  · 相对路径：daemon 在 \$TMP/daemon 里拼命令，claude 起在 worktree（复审 #57 第 2 轮）"
-echo '{"model":"sonnet"}' > "$TMP/cwd/model.json"
-FLAGS="--settings model.json"
-chk "相对路径按 worktree 解析（daemon 目录没有这个文件）" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
-FLAGS="--settings=./model.json"
-chk "--settings=./相对路径 同样按 worktree" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
-echo '{"model":"haiku"}' > "$TMP/daemon/model.json"
-FLAGS="--settings model.json"
-chk "daemon 目录有同名不同内容的文件 → 仍读 worktree 那份" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
-rm -f "$TMP/cwd/model.json"
-chk "只有 daemon 目录有这个文件 → 不读它，往下找项目文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model opus $P"
-rm -f "$TMP/daemon/model.json"
-echo '{"model":"haiku"}' > "$TMP/home/home-model.json"
-FLAGS="--settings ~/home-model.json"
-chk "~/ 开头按 HOME 展开" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model haiku $P"
-FLAGS="--settings '{\"permissions\":{}}'"
-chk "--settings 里没写 model → 往下找项目文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model opus $P"
-
-echo '{"model":"sonnet"}' > "$TMP/cwd/.claude/settings.json"
-FLAGS="--setting-sources user"
-chk "--setting-sources user → 跳过项目文件，只看用户级" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model opus $P"
-FLAGS="--setting-sources=project"
-chk "--setting-sources=project → 跳过用户级" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
-
-echo '{"model":"claude-opus-5-5"}' > "$TMP/managed.json"
-FLAGS="--settings '{\"model\":\"sonnet\"}'"
-chk "managed settings 盖过 --settings 与文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model claude-opus-5-5 $P"
-rm -f "$TMP/managed.json"
-
+chk "--model=X 形式同样不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
 FLAGS="--settings '{\"model\":\"sonnet\"}"
-chk "引号不配对、解析不了 → 不追加（不拿猜测覆盖）" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+chk "引号不配对、拆不开 → 不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+chk "  …也不起探测" "$(probe_ran)" "no"
 FLAGS="--settings \$(touch $TMP/pwned)"
 resume_cmd 1 '' >/dev/null
 chk "拆词不执行 \$(...)" "$([ -e "$TMP/pwned" ] && echo executed || echo safe)" "safe"
 FLAGS=""
-rm -rf "$TMP/cwd/.claude"
-
-echo "── 指定了模型就用指定的 ──"
-chk "dispatch 指定 fable" "$(resume_cmd 1 fable)" "$R fable $P"
-chk "带空格的模型名照样 quote" "$(resume_cmd 1 'a b')" "$R a\\ b $P"
+chk "dispatch 指定了模型 → 用指定的" "$(resume_cmd 1 fable)" "claude --continue  --model fable $P"
+chk "  …不起探测" "$(probe_ran)" "no"
+chk "带空格的模型名照样 quote" "$(resume_cmd 1 'a b')" "claude --continue  --model a\\ b $P"
 
 echo "── 新开会话行为不变（不带 --model，由 CLI 自己读配置）──"
 chk "新会话没指定模型不传 --model" "$(new_cmd)" "claude -n issue-test   $P"
+chk "  …不起探测" "$(probe_ran)" "no"
 
 echo "── FABLE_MODEL 默认是别名，老 state 记录仍回 fable 队列 ──"
 fable_default="$(env -u FABLE_MODEL HOME="$TMP/home" CODING_AGENT_CONFIG="$TMP/coding-agent.config" \

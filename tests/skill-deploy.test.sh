@@ -265,9 +265,15 @@ DEV="$TMP/dev"; mkdir -p "$DEV"
 mkdir -p "$DEV/systemd" "$TMP/systemd-user"
 printf 'legacy-service\n' > "$DEV/systemd/coding-agent-poll@.service"
 ln -s "$DEV/systemd/coding-agent-poll@.service" "$TMP/systemd-user/coding-agent-poll@.service"
+mkdir -p "$DEV/scripts"
+cp "$REPO_DIR/scripts/release-entry.sh" "$DEV/scripts/release-entry.sh"
+printf '#!/usr/bin/env bash\necho dev-poll-ran\n' > "$DEV/scripts/poll-entry.sh"
 ln -sfn "$DEV" "$CAVIL_SKILL_LINK.tmp"; mv -Tf "$CAVIL_SKILL_LINK.tmp" "$CAVIL_SKILL_LINK"
+rm -rf "$CAVIL_DEPLOY_ROOT/entrypoints"
 deploy >/dev/null
 [ "$(readlink -f "$CAVIL_SKILL_LINK")" = "$DEV" ] || fail development-takeover
+# 调度器的 ExecStart 固定指向 entrypoints/；开发模式不装入口，poller 每轮 127 退出
+[ "$(bash "$CAVIL_DEPLOY_ROOT/entrypoints/poll-entry.sh" 2>&1)" = dev-poll-ran ] || fail development-entrypoint-missing
 pass development-mode
 
 echo '▶ bootstrap migrates old systemd symlinks and reloads the user manager'

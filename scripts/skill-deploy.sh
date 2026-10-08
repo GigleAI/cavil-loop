@@ -39,6 +39,26 @@ SYSTEMD_USER_DIR="${CAVIL_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 
 log_deploy() { printf '[skill-deploy] %s\n' "$*" >&2; }
 
+# 调度器的 ExecStart 永远指向 $DEPLOY_ROOT/entrypoints/，开发模式也不例外 ——
+# release-entry.sh 对非 releases/ 的 stable link 会直接 exec 那份 checkout。
+# 所以开发模式退出前也必须装好入口：只在发布路径上装，开发机的 poller 每轮都会
+# 「poll-entry.sh: No such file or directory」退 127，所有项目静默停摆。
+install_entrypoints() {
+    local base="$1" root="$DEPLOY_ROOT/entrypoints" src="$1/scripts/release-entry.sh" tmp driver
+    [ -f "$src" ] || { log_deploy "$base is missing scripts/release-entry.sh"; return 1; }
+    mkdir -p "$root/drivers/token-usage" "$root/weekly-report"
+    tmp=$(mktemp "$root/.release-entry.XXXXXX")
+    cp "$src" "$tmp"
+    chmod +x "$tmp"
+    mv "$tmp" "$root/release-entry.sh"
+    ln -sfn release-entry.sh "$root/poll-entry.sh"
+    for driver in "$base"/scripts/drivers/token-usage/*.sh; do
+        [ -f "$driver" ] || continue
+        ln -sfn ../../release-entry.sh "$root/drivers/token-usage/$(basename "$driver")"
+    done
+    ln -sfn ../release-entry.sh "$root/weekly-report/run.sh"
+}
+
 # 每一次写 GitHub 都走它。规则与 _lib.sh:gh_write 相同，但这里自带一份实现：部署器
 # 刻意不 source _lib.sh（它要求项目 config，而部署器是项目无关的共享组件）。
 # 用命令前的变量赋值而不是 `-e` / argv —— 赋值进的是子进程 environ
@@ -74,6 +94,7 @@ case "$current" in
     *)
         if [ "$BOOTSTRAP" -ne 1 ]; then
             log_deploy "development mode ($STABLE_LINK -> $current); not taking over"
+            install_entrypoints "$current" || log_deploy "development mode: installing entrypoints failed"
             exit 0
         fi
         ;;
@@ -131,6 +152,7 @@ case "$current" in
     *)
         if [ "$BOOTSTRAP" -ne 1 ]; then
             log_deploy "development mode ($STABLE_LINK -> $current); not taking over"
+            install_entrypoints "$current" || log_deploy "development mode: installing entrypoints failed"
             exit 0
         fi
         ;;
@@ -250,22 +272,7 @@ if [ ! -d "$target" ]; then
     fi
 fi
 
-install_entrypoints() {
-    local root="$DEPLOY_ROOT/entrypoints" src="$target/scripts/release-entry.sh" tmp driver
-    [ -f "$src" ] || { log_deploy "release is missing scripts/release-entry.sh"; return 1; }
-    mkdir -p "$root/drivers/token-usage" "$root/weekly-report"
-    tmp=$(mktemp "$root/.release-entry.XXXXXX")
-    cp "$src" "$tmp"
-    chmod +x "$tmp"
-    mv "$tmp" "$root/release-entry.sh"
-    ln -sfn release-entry.sh "$root/poll-entry.sh"
-    for driver in "$target"/scripts/drivers/token-usage/*.sh; do
-        [ -f "$driver" ] || continue
-        ln -sfn ../../release-entry.sh "$root/drivers/token-usage/$(basename "$driver")"
-    done
-    ln -sfn ../release-entry.sh "$root/weekly-report/run.sh"
-}
-install_entrypoints || { record_lag_failure "installing durable entrypoints failed"; exit 0; }
+install_entrypoints "$target" || { record_lag_failure "installing durable entrypoints failed"; exit 0; }
 
 scheduler_reload=0
 manual_scheduler=0

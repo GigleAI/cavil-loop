@@ -220,6 +220,7 @@ def main():
     L.append(f"\n---\n\n## 📈 最近 {len(W)} 周趋势\n")
     L.append(f"![交付趋势]({a.asset_url_base}/delivery-{a.rev}.png)\n")
     L.append(f"![投入趋势]({a.asset_url_base}/effort-{a.rev}.png)\n")
+    L.append(f"![token 用量趋势]({a.asset_url_base}/token-{a.rev}.png)\n")
     L.append("### 逐周数据\n")
     L.append("| 周 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | 讨论条数 | 你发的 | AI 总耗时 | 模型+工具 | 成本（美元） | token 输出 / 缓存读取 |")
     L.append("|---|---|---|---|---|---|---|---|---|---|---|")
