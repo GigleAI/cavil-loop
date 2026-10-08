@@ -106,7 +106,7 @@ fi
 #    新 issue 一律起全新会话（worktree 刚建）；仍走这条路径是为了让本次
 #    会话的 id 登记到注册表里，后面同角色再派工才认得回来。
 #    agent_session_plan 要在当前 shell 里调（它设的全局在 $( ) 子 shell 里会丢）。
-agent_session_plan "$ISSUE" "$WORKTREE" 1
+agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
 log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT, 角色=$WORKER_SESSION_ROLE, $AGENT_LAUNCH_KIND)"
 CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
 tmux_env=()

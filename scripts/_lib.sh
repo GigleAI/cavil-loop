@@ -2503,6 +2503,46 @@ AGENT_SESSION_DIR="${AGENT_SESSION_DIR:-$STATE_DIR/agent-sessions}"
 # 「这个 driver 没法按 id 定位会话」的标记：走上线前的老路（--continue / resume --last）。
 AGENT_SESSION_LEGACY="__legacy__"
 
+agent_session_new_uuid() {
+    if command -v uuidgen > /dev/null 2>&1; then
+        uuidgen | tr 'A-Z' 'a-z'
+    elif [ -r /proc/sys/kernel/random/uuid ]; then
+        cat /proc/sys/kernel/random/uuid
+    else
+        python3 -c 'import uuid; print(uuid.uuid4())'
+    fi
+}
+
+# ── 本次启动的唯一标记 ──
+# 回捞要凭证据认领会话，最硬的证据是「只有这次启动才有的标记」：往 prompt 末尾追加一行
+# markdown 注释，带一个本次独有的 uuid。会话文件里记着启动时收到的 prompt 原文，于是
+# 「这条会话的第一条消息里有我的标记」就等价于「这条会话是我起的」。
+#
+# 为什么光比 prompt 正文不够：同一个角色连派两次、或者项目覆写的两个模板共享很长的
+# 开头，正文比对都分不出来——复审第 2 轮把这两种都构造复现了。
+#
+# 只在「启动时钉不了 id、非得事后回捞」时才加。claude 那种能钉 id 的，prompt 一个字节
+# 都不动。
+AGENT_SESSION_TAG_PREFIX="coding-agent-launch:"
+
+agent_session_prompt_tag() {   # <prompt_file> → 文件里的标记（没有就输出空）
+    local f="${1:-}"
+    [ -n "$f" ] && [ -f "$f" ] || return 0
+    grep -o "$AGENT_SESSION_TAG_PREFIX [0-9a-fA-F-]\{36\}" "$f" 2>/dev/null \
+        | tail -1 | awk '{print $2}'
+    return 0
+}
+
+agent_session_tag_prompt() {   # <prompt_file> → 追加标记并输出它
+    local f="${1:-}" tag
+    [ -n "$f" ] && [ -f "$f" ] || return 0
+    tag="$(agent_session_new_uuid)"
+    [ -n "$tag" ] || return 0
+    printf '\n<!-- %s %s -->\n' "$AGENT_SESSION_TAG_PREFIX" "$tag" >> "$f"
+    echo "$tag"
+    return 0
+}
+
 agent_session_file() {   # <num> <agent> <role>
     echo "$AGENT_SESSION_DIR/$1.$2.$3"
 }
@@ -2640,7 +2680,7 @@ agent_session_adoptable() {   # <num> <cwd>
     return 0
 }
 
-# 决定本次派工该起哪条会话。**只做决策，不产出命令。**
+# 决定本次派工该起哪条会话。**只做决策（外加给 prompt 打启动标记），不产出命令。**
 # 设置三个全局：AGENT_LAUNCH_KIND（new|resume|adopt|legacy-resume）、WORKER_SESSION_ID
 # （driver 的 agent_command_new / agent_command_resume 读它决定钉哪个 / 续哪条 id）、
 # AGENT_SESSION_PRELAUNCH_IDS（给回捞用的开工前快照）。
@@ -2652,8 +2692,8 @@ agent_session_adoptable() {   # <num> <cwd>
 #
 # 收在一个函数里是因为三个 dispatch 脚本原来各写一份「有历史就 resume」，
 # 角色隔离要在每份里重写一遍必然会漏掉一条路径。
-agent_session_plan() {   # <num> <cwd> [force_new]
-    local num="$1" cwd="$2" force_new="${3:-0}"
+agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
+    local num="$1" cwd="$2" prompt_file="${3:-}" force_new="${4:-0}"
     local role="$WORKER_SESSION_ROLE"
     local id="" adopted=""
 
@@ -2710,6 +2750,8 @@ agent_session_plan() {   # <num> <cwd> [force_new]
         WORKER_SESSION_ID="$id"
     elif [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ]; then
         AGENT_SESSION_PRELAUNCH_IDS="$(agent_session_list "$cwd" || true)"
+        # 钉不了 id → 启动后得回捞 → 给 prompt 打上本次启动独有的标记，回捞靠它认领
+        agent_session_tag_prompt "$prompt_file" > /dev/null
     fi
     AGENT_LAUNCH_KIND="new"
 }

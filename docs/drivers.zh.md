@@ -141,8 +141,11 @@ agent_session_started_with <cwd> <session_id> <prompt_file>   # 返回 0 = 这�
 CLI 钉不了 id 的，要保证 `agent_session_list` 够便宜、且「最近的在前」：daemon 在
 启动后就靠轮询它来拿到本次的 id。这一步需要真证据，这就是 `agent_session_started_with`
 的用处——「我启动之后才出现的会话」不是证据：前一个角色回捞失败的话，它那条会话
-可能正好落在你的窗口里。内置 codex driver 的做法是比对会话里记下的第一条 user 消息
-和本次启动用的 prompt 文件。没实现这个 hook 时，daemon 退一步：只有「候选唯一 +
+可能正好落在你的窗口里。内置 codex driver 的做法是比对会话里记下的**完整**第一条 user
+消息和本次启动用的 prompt 文件——只取第一行、或只比固定长度的前缀，这两种实测都不行
+（多行 prompt 连自己都匹配不上；共享开头会匹配到错的角色）。daemon 还会给「将要走回捞」
+的那次启动在 prompt 末尾追加一行唯一标记，好让渲染结果相同的两次启动也分得开；
+用 `agent_session_prompt_tag` 读它。没实现这个 hook 时，daemon 退一步：只有「候选唯一 +
 这条活此前没有认领失败过」才敢认。
 
 回捞举证不出来时，那条会话就保持无主——daemon 不会把它交给别的角色，该角色下一轮

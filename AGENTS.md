@@ -167,7 +167,7 @@ the whole point.** There are exactly three writers, and each one now answers
 |---|---|
 | a freshly pinned id (claude) | we minted the id ourselves at launch |
 | adoption (worker role only) | the id is in `.preexisting`, so it predates role tracking |
-| read-back after launch (codex) | the session's transcript opens with *this launch's prompt* |
+| read-back after launch (codex) | the session's first message carries this launch's unique tag, or failing that equals this launch's prompt in full |
 
 **Adoption uses a positive criterion.** The worker role may only take over a
 conversation listed in `.preexisting` — i.e. one that predates role tracking,
@@ -189,7 +189,18 @@ get claimed by it. So the read-back asks the driver to prove the candidate was
 started with this dispatch's prompt (`agent_session_started_with`), refuses when
 two candidates both claim it, and — for a driver that cannot prove anything —
 only claims a lone candidate when no earlier launch for that work item was ever
-left unresolved. Failing to claim is always allowed: the conversation stays
+left unresolved.
+
+Two details of that proof are load-bearing, both learned the hard way. It
+compares the **complete** first message, never its first line and never a
+prefix: reading one line rejects every multi-line prompt (every template here is
+multi-line, so the role could never find its own session again), and comparing a
+prefix accepts another role's session whenever two templates share a long
+opening. And because two launches can legitimately render a byte-identical
+prompt, `agent_session_plan` appends a one-line marker carrying a fresh uuid to
+the prompt of any launch that will need a read-back — so "which launch" stays
+answerable. Launches that can pin an id (claude) get no marker; their prompt is
+untouched. Failing to claim is always allowed: the conversation stays
 unowned and the role starts fresh, which costs context and never crosses roles.
 
 **Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`

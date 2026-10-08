@@ -42,15 +42,7 @@ agent_has_history() {
 #                        发随机 id，登记表才是权威，不去猜一个「算得出来」的 id。
 #   --resume <uuid>      续那条；id 不存在报 No conversation found。
 #   -n <name>            只是显示名，跟会话归属无关。
-agent_session_new_id() {
-    if command -v uuidgen > /dev/null 2>&1; then
-        uuidgen | tr 'A-Z' 'a-z'
-    elif [ -r /proc/sys/kernel/random/uuid ]; then
-        cat /proc/sys/kernel/random/uuid
-    else
-        python3 -c 'import uuid; print(uuid.uuid4())'
-    fi
-}
+agent_session_new_id() { agent_session_new_uuid; }
 
 agent_session_exists() {
     local cwd="$1" id="$2"
