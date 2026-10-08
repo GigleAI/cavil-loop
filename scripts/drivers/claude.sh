@@ -129,43 +129,72 @@ _claude_probe_log() {
     return 0
 }
 
+# 把 CLAUDE_EXTRA_FLAGS 按 bash 的规则拆成参数，结果放 _CLAUDE_FLAGS。只认这几样：
+#   - 不加引号的 [A-Za-z0-9] 和 - _ = + . , : / @ %，空白分词
+#   - 单引号：里面全按字面
+#   - 双引号：里面不能有 $ ` \（有就拒绝——那是展开，不是字面）
+#   - 词首不加引号的 `~` 或 `~/…`：展开成 $HOME（跟 bash 一样）
+# 其他任何字符出现在引号外（\ $ ` * ? [ ] { } ( ) ; & | < > ! # 以及非词首的 ~、
+# ~user …）都返回 1，原因放 _CLAUDE_SPLIT_WHY。宁可少探测，不能探测到和实际不同的参数。
+_claude_split_flags() {
+    local s="$1" n i=0 c word="" inw=0 j q
+    _CLAUDE_FLAGS=()
+    _CLAUDE_SPLIT_WHY=""
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c="${s:$i:1}"
+        case "$c" in
+            ' '|$'\t'|$'\n')
+                if [ "$inw" = 1 ]; then _CLAUDE_FLAGS+=("$word"); word=""; inw=0; fi
+                i=$((i + 1)) ;;
+            "'")
+                j=$((i + 1))
+                while [ "$j" -lt "$n" ] && [ "${s:$j:1}" != "'" ]; do j=$((j + 1)); done
+                [ "$j" -lt "$n" ] || { _CLAUDE_SPLIT_WHY="单引号不配对"; return 1; }
+                word+="${s:$((i + 1)):$((j - i - 1))}"; inw=1; i=$((j + 1)) ;;
+            '"')
+                j=$((i + 1))
+                while [ "$j" -lt "$n" ] && [ "${s:$j:1}" != '"' ]; do
+                    case "${s:$j:1}" in
+                        '$'|'`'|'\') _CLAUDE_SPLIT_WHY="双引号里有 \$ / 反引号 / 反斜杠"; return 1 ;;
+                    esac
+                    j=$((j + 1))
+                done
+                [ "$j" -lt "$n" ] || { _CLAUDE_SPLIT_WHY="双引号不配对"; return 1; }
+                word+="${s:$((i + 1)):$((j - i - 1))}"; inw=1; i=$((j + 1)) ;;
+            '~')
+                q="${s:$((i + 1)):1}"
+                if [ "$inw" = 0 ] && { [ -z "$q" ] || [ "$q" = / ] || [ "$q" = ' ' ] || [ "$q" = $'\t' ] || [ "$q" = $'\n' ]; }; then
+                    word="$HOME"; inw=1; i=$((i + 1))
+                else
+                    _CLAUDE_SPLIT_WHY="含词首以外的 ~ 或 ~user"; return 1
+                fi ;;
+            [A-Za-z0-9]|-|_|=|+|.|,|:|/|@|%)
+                word+="$c"; inw=1; i=$((i + 1)) ;;
+            *)
+                _CLAUDE_SPLIT_WHY="引号外含 shell 特殊字符 '$c'"; return 1 ;;
+        esac
+    done
+    if [ "$inw" = 1 ]; then _CLAUDE_FLAGS+=("$word"); fi
+    return 0
+}
+
 claude_default_model() {
-    local cwd="$1" a raw line model fifo pid _probe_fd
+    local cwd="$1" a line model fifo pid _probe_fd
     local -a flags=()
 
-    # 拆 CLAUDE_EXTRA_FLAGS 用 xargs：只做引号拆词，不执行 $(...)；引号不配对就失败
-    if [ -n "${CLAUDE_EXTRA_FLAGS:-}" ]; then
-        raw="$(printf '%s' "$CLAUDE_EXTRA_FLAGS" | xargs printf '%s\n' 2>/dev/null)" || {
-            _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS 拆不开，续接不追加 --model"
-            return 0
-        }
-        mapfile -t flags <<< "$raw"
+    # 探测拿到的参数必须跟 worker 真正收到的逐个相同。worker 的命令是 tmux 用 bash
+    # 跑的；这里不 eval，自己拆，而且只接受「bash 怎么拆一眼就确定」的写法：
+    # 拿不准就放弃探测（不追加 --model）。复审 #57 连着抓到两处「自己拆的跟 bash
+    # 不一样」（xargs 不展开 `~`；展开了又把 `\~` 也展开），所以不再逐个补，改成白名单。
+    if ! _claude_split_flags "${CLAUDE_EXTRA_FLAGS:-}"; then
+        _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS ${_CLAUDE_SPLIT_WHY}，无法保证探测与实际启动的参数一致，续接不追加 --model"
+        return 0
     fi
+    flags=(${_CLAUDE_FLAGS[@]+"${_CLAUDE_FLAGS[@]}"})
     # extra flags 里已经写了 --model：它本来就会带进续接命令，别再叠一份
-    for a in "${flags[@]}"; do
+    for a in ${flags[@]+"${flags[@]}"}; do
         case "$a" in --model|--model=*) return 0 ;; esac
-    done
-    # 探测拿到的参数必须跟 worker 真正收到的一样。真命令是 tmux 用 shell 跑的，
-    # shell 会展开 ~ 和 $VAR；xargs 只拆引号、不展开（复审 #57：`--settings ~/m.json`
-    # 探测收到字面量 `~/m.json`、读不到文件，worker 却收到展开后的路径）。
-    #   - 词首 `~` / `~/…`：按 HOME 展开（bash 只展开词首，`--settings=~/x` 不展开，这里也不）
-    #   - 引号里的 `~`、`~user`、`$` / 反引号：不自己模拟 shell，也绝不 eval，
-    #     直接放弃探测（不追加 --model），日志写明原因
-    case "${CLAUDE_EXTRA_FLAGS:-}" in
-        *\$*|*\`*|*\'~*|*\"~*)
-            _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS 含 \$ / 反引号 / 引号里的 ~，探测无法保证跟实际启动一致，续接不追加 --model"
-            return 0 ;;
-    esac
-    local i
-    for i in "${!flags[@]}"; do
-        a="${flags[$i]}"
-        case "$a" in
-            "~") flags[$i]="$HOME" ;;
-            "~/"*) flags[$i]="$HOME/${a#\~/}" ;;
-            "~"*)
-                _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS 含 ~user 形式的路径，续接不追加 --model"
-                return 0 ;;
-        esac
     done
 
     fifo="$(mktemp -u "${TMPDIR:-/tmp}/claude-model-probe.XXXXXX")"
@@ -176,7 +205,7 @@ claude_default_model() {
         # read -t 管，到点由这里的 kill 收尾，只用 bash 自带的东西。
         exec env ANTHROPIC_BASE_URL="$CLAUDE_MODEL_PROBE_BASE_URL" \
             claude -p --no-session-persistence --strict-mcp-config \
-                --output-format stream-json --verbose "${flags[@]}" "model probe"
+                --output-format stream-json --verbose ${flags[@]+"${flags[@]}"} "model probe"
     ) < /dev/null > "$fifo" 2>/dev/null &
     pid=$!
     # init 不一定是第一行：项目有 SessionStart hook 时前面先有 hook_started /

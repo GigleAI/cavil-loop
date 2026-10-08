@@ -146,16 +146,46 @@ chk "--settings ~/x：按 HOME 展开后传给探测" "$(resume_cmd 1 '')" "clau
 chk "  …探测收到的是展开后的路径" "$(has_arg "$TMP/home/model.json")" "yes"
 chk "  …而不是字面量 ~/model.json" "$(has_arg '~/model.json')" "no"
 FLAGS="--settings=~/model.json"
-resume_cmd 1 '' >/dev/null
-chk "--settings=~/x：bash 不展开，探测也不展开" "$(has_arg '--settings=~/model.json')" "yes"
+chk "--settings=~/x（非词首 ~）→ 不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+chk "  …也不起探测" "$(probe_ran)" "no"
 FLAGS="--settings \$HOME/model.json"
 chk "含 \$VAR → 不模拟 shell，不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
 chk "  …也不起探测" "$(probe_ran)" "no"
-FLAGS="--settings '~/model.json'"
-chk "引号里的 ~ → 不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
 FLAGS="--settings ~root/model.json"
 chk "~user → 不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
 chk "  …也不起探测" "$(probe_ran)" "no"
+
+echo "  · 复审 #57：\\~/ 是字面量 ~ 目录，不能当 HOME。两边放不同模型的文件区分"
+mkdir -p "$TMP/cwd/~"
+echo '{"model":"claude-haiku-5-5"}' > "$TMP/cwd/~/model.json"
+FLAGS="--settings \\~/model.json"
+chk "\\~/model.json → 不探测、不追加（不拿 HOME 那份 sonnet 顶上）" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+chk "  …也不起探测" "$(probe_ran)" "no"
+FLAGS="--settings '~/model.json'"
+chk "单引号里的 ~ 是字面量 → 探测读 worktree 里 ~ 目录那份" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model claude-haiku-5-5 $P"
+FLAGS="--settings ~/model.json"
+chk "词首 ~/ 才是 HOME → sonnet" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model claude-sonnet-5-5 $P"
+rm -rf "$TMP/cwd/~"
+
+echo "  · 拆词结果必须跟 bash 自己拆的逐个相同（接受的写法），其余一律拒绝"
+split_of() {   # 我们的拆法；拒绝时输出 REJECT
+    HOME="$TMP/home" bash -c 'source "$1/scripts/drivers/_common.sh"; source "$1/scripts/drivers/claude.sh"
+        if _claude_split_flags "$2"; then printf "[%s]" ${_CLAUDE_FLAGS[@]+"${_CLAUDE_FLAGS[@]}"}; else echo REJECT; fi' _ "$REPO_DIR" "$1"
+}
+bash_of() {    # bash 真正的拆法（只对下面这些固定、无副作用的样本跑）
+    HOME="$TMP/home" bash -c 'eval "set -- $1"; printf "[%s]" "$@"' _ "$1"
+}
+for f in "--dangerously-skip-permissions" \
+         "--settings '{\"model\":\"sonnet\"}'" \
+         "--settings ~/m.json" "--settings ~" "--settings '~/m.json'" \
+         "--settings \"a b\"" "--settings=\"/p q/x.json\"" "--x ''" "--a   --b" \
+         "--settings '{\"permissions\":{\"allow\":[\"Bash(git *)\"]}}'"; do
+    chk "与 bash 一致：$f" "$(split_of "$f")" "$(bash_of "$f")"
+done
+for f in "--settings \\~/m.json" "--settings=~/m.json" "--x \$HOME" "--x \"\$HOME\"" "--x *.json" \
+         "--x {a,b}" "--x a;b" "--x \$(id)" "--x \`id\`" "--x ~root" "--x 'unterminated" "--x \"a\\\"b\"" "--x #c"; do
+    chk "拒绝：$f" "$(split_of "$f")" "REJECT"
+done
 FLAGS=""
 
 echo "── 收尾：读到 init 就杀掉，不等它重试 ──"

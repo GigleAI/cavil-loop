@@ -228,11 +228,14 @@ therefore Claude's own, not re-implemented here. Notes:
 
 - `CLAUDE_EXTRA_FLAGS` already containing `--model`, or unparseable (unbalanced
   quotes) → no probe, nothing added.
-- The probe must see the same arguments the worker gets after shell expansion. A
-  word-leading `~` / `~/…` is expanded to `$HOME` (like bash; `--settings=~/x`
-  is left alone, like bash). Anything the daemon would have to emulate the shell
-  for — `$VAR`, backticks, `~user`, a quoted `~` — means no probe and nothing
-  added (logged); the flags are never `eval`ed.
+- The probe must see exactly the arguments the worker gets from bash. The flags
+  are never `eval`ed; they are split by a whitelist tokenizer that only accepts
+  what bash splits unambiguously: plain `[A-Za-z0-9-_=+.,:/@%]`, single quotes,
+  double quotes without `$` / backtick / backslash, and a word-leading `~` / `~/…`
+  (expanded to `$HOME`). Anything else outside quotes — `\`, `$`, backtick,
+  globs, braces, `;&|<>()!#`, a non-leading `~`, `~user` — means no probe and
+  nothing added (logged). The test suite checks the accepted forms against bash's
+  own splitting.
 - The time limit uses only bash builtins (no coreutils `timeout`, which macOS
   lacks); a probe ignoring TERM is killed after 2 more seconds.
 - The probe fails (no `init` within `CLAUDE_MODEL_PROBE_TIMEOUT`, default 20s;
