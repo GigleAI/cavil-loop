@@ -283,6 +283,7 @@ def main():
         sources.setdefault(w["key"], "original")
     summable, _gid = attribute.summable(windows, sources)
 
+    codex_table = price_solve.codex_price_table()
     # ── 第二段：每次派工只按它最终那条累计记录入账，算在**开工那一周** ──
     for key, (rec, cw, num) in claimed.items():
         w = rec_week(rec, cw)
@@ -321,6 +322,19 @@ def main():
             cost = attribute.legacy_estimate(rec.get("tokens"))
             cost_source, cost_state = "estimated", "full"
             pstat, psrc = {"estimated": cost}, "estimated"
+        # 交叉 review（codex）那一侧：写评论时模型还没单价、记录里没写金额的，用**现在的**
+        # 价目（内置表 + 缺价自动补抓来的价）按记录里的 token 补算。不补的话，价目后来补上了，
+        # 历史周的金额也永远是空的（GigleTutor-Web#1023）。已经写了金额的记录不动。
+        # 「怎么得到的」（cost_source=repriced）和「用的哪种价」（price_source / 可信度桶 /
+        # 过期标记）是两件事，分开记：补算用的是抓来的价，金额就进「自动联网获取」那一桶；
+        # 用的是内置价，来源就是 default、核对日期跟着现在这张内置表走（#59 交叉 review 第 1 轮）。
+        pstale = rec.get("price_stale")
+        if (rec.get("agent") == "codex" and rec.get("src") == "marker"
+                and cost_source == "original" and cost_state == "none"):
+            rp = price_solve.codex_reprice(rec, codex_table)
+            if rp is not None:
+                cost, cost_source, cost_state = rp["cost"], "repriced", rp["cost_state"]
+                pstat, psrc, pstale = rp["price_status"], rp["price_source"], rp["price_stale"]
         in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
         # token 用量趋势：四项分开记，取数规则与金额同一套（#50 交叉 review 第 1 轮）：
         #   · 日志重算过的 → 用**认领后**的 token（重叠窗口共用的调用只算一次），不再除倍数；
@@ -370,7 +384,7 @@ def main():
                 s["price_usd_unrated"] = s.get("price_usd_unrated", 0.0) + cost
         if psrc:
             s[f"price_src_{psrc}"] = s.get(f"price_src_{psrc}", 0) + 1
-        if psrc == "default" and rec.get("price_stale"):
+        if psrc == "default" and pstale:
             s["price_stale_records"] = s.get("price_stale_records", 0) + 1
         lc = info.get("log_check") if info else None
         if lc:
@@ -488,7 +502,7 @@ def main():
               #   state_* 价格覆盖三态（full / partial / none）
               #   log_*   日志检验结果（未检出缺失 / 检出缺失 / 覆盖未知 / 真实零调用）
               #   *_not_summable 重叠且证据不足、**不可与上面的合计相加**的那部分
-              "src_recomputed", "src_original", "src_estimated",
+              "src_recomputed", "src_original", "src_estimated", "src_repriced",
               # 四项 token（历史记录已按重复计倍数抵掉，见 attribute.legacy_estimate）
               "tok_in", "tok_out", "tok_cache_r", "tok_cache_w",
               "tok_in_claude", "tok_out_claude", "tok_cache_r_claude", "tok_cache_w_claude",
