@@ -16,6 +16,16 @@ CAVIL_DEPLOY_FETCH_TIMEOUT="30"
 CAVIL_DEPLOY_ALERT_AFTER="1800"
 CAVIL_DEPLOY_ALERT_REPO="GigleAI/cavil-loop"
 
+# Identity used for the deployer's own alert issues. Reads keep the polling
+# identity; every write (opening and closing an alert) uses this token, matching
+# the WRITE_GH_TOKEN rule in coding-agent.config. Leave it unset on a
+# single-token install and the deployer calls gh unchanged.
+#
+# The deployer never reads any project's coding-agent.config — it is shared by
+# every project instance — so a split identity has to reach it either through
+# the scheduler's EnvironmentFile or through this file.
+# WRITE_GH_TOKEN=""
+
 # Paths normally need no override.
 # CAVIL_DEPLOY_ROOT="$HOME/.agents/releases/cavil-loop"
 # CAVIL_SKILL_LINK="$HOME/.agents/skills/coding-agent-work-loop"

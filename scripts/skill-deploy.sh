@@ -38,6 +38,25 @@ STATE="$DEPLOY_ROOT/deploy-state.json"
 SYSTEMD_USER_DIR="${CAVIL_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 
 log_deploy() { printf '[skill-deploy] %s\n' "$*" >&2; }
+
+# 每一次写 GitHub 都走它。规则与 _lib.sh:gh_write 相同，但这里自带一份实现：部署器
+# 刻意不 source _lib.sh（它要求项目 config，而部署器是项目无关的共享组件）。
+# 用命令前的变量赋值而不是 `-e` / argv —— 赋值进的是子进程 environ
+# （/proc/<pid>/environ 是 0400 仅属主），argv 则全局可读。
+# 没配 WRITE_GH_TOKEN 时**原样调 gh**，不写成 GH_TOKEN="" —— 空值和未设对 gh 不是
+# 同一回事，那会让单 token 安装的行为悄悄变掉。
+# 读操作继续用轮询身份，不经这里。
+#
+# 取值来源：调度器的 EnvironmentFile（poll@.service 已注入）或本部署器的 deploy.conf
+# （上面 `set -a` 过）。部署器不读任何项目的 coding-agent.config —— 那会让它绑到
+# 某一个项目上，与「告警状态和锁放在项目无关的共享目录」这条相矛盾。
+gh_write() {
+    if [ -n "${WRITE_GH_TOKEN:-}" ]; then
+        GH_TOKEN="$WRITE_GH_TOKEN" gh "$@"
+    else
+        gh "$@"
+    fi
+}
 trap 'rc=$?; log_deploy "unexpected failure (exit $rc); keeping the current release"; exit 0' ERR
 
 mkdir -p "$DEPLOY_ROOT" "$RELEASES" "$(dirname "$STABLE_LINK")"
@@ -161,7 +180,7 @@ open_alert() {
     fi
     body=$(printf '当前 release：`%s`\n远端 SHA：`%s`\n开始落后：`%s`\n最近成功：`%s`\n原因：%s\n\n%s' \
         "${current_sha:-无}" "${remote_sha:-未知}" "$since" "$(state_number last_success_at)" "$reason" "$ending")
-    issue=$(gh api -X POST "repos/$ALERT_REPO/issues" \
+    issue=$(gh_write api -X POST "repos/$ALERT_REPO/issues" \
         -f title="coding-agent skill 部署需要处理" -f body="$body" \
         -f 'labels[]=pending/human' --jq .number 2>/dev/null || true)
     [ -z "$issue" ] && log_deploy "failed to create deployment alert in $ALERT_REPO"
@@ -171,7 +190,7 @@ open_alert() {
 close_alert() {
     local issue="$1"
     [ -n "$issue" ] || return 0
-    if gh api -X PATCH "repos/$ALERT_REPO/issues/$issue" -f state=closed >/dev/null 2>&1; then
+    if gh_write api -X PATCH "repos/$ALERT_REPO/issues/$issue" -f state=closed >/dev/null 2>&1; then
         log_deploy "closed recovered deployment alert #$issue"
     else
         log_deploy "failed to close recovered deployment alert #$issue"
