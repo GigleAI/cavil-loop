@@ -119,7 +119,8 @@ agent_command_new() {
 #   - --no-session-persistence：不落会话文件，否则下次 --continue 会续到这条探测
 #   - --strict-mcp-config：不连 MCP server
 #   - 不能用 --bare：它不读 OAuth，init 里的 model 直接是 null（实测）
-# 读不到（超时 / 没装 / 输出不对）→ 输出空，调用方不追加 --model，维持老行为。
+# 读不到（超时 / 没装 / 输出不对 / extra flags 无法如实复现）→ 输出空，调用方
+# 不追加 --model，维持老行为，poll 日志记一条原因。
 CLAUDE_MODEL_PROBE_TIMEOUT="${CLAUDE_MODEL_PROBE_TIMEOUT:-20}"
 CLAUDE_MODEL_PROBE_BASE_URL="${CLAUDE_MODEL_PROBE_BASE_URL:-http://127.0.0.1:9}"
 
@@ -144,13 +145,36 @@ claude_default_model() {
     for a in "${flags[@]}"; do
         case "$a" in --model|--model=*) return 0 ;; esac
     done
+    # 探测拿到的参数必须跟 worker 真正收到的一样。真命令是 tmux 用 shell 跑的，
+    # shell 会展开 ~ 和 $VAR；xargs 只拆引号、不展开（复审 #57：`--settings ~/m.json`
+    # 探测收到字面量 `~/m.json`、读不到文件，worker 却收到展开后的路径）。
+    #   - 词首 `~` / `~/…`：按 HOME 展开（bash 只展开词首，`--settings=~/x` 不展开，这里也不）
+    #   - 引号里的 `~`、`~user`、`$` / 反引号：不自己模拟 shell，也绝不 eval，
+    #     直接放弃探测（不追加 --model），日志写明原因
+    case "${CLAUDE_EXTRA_FLAGS:-}" in
+        *\$*|*\`*|*\'~*|*\"~*)
+            _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS 含 \$ / 反引号 / 引号里的 ~，探测无法保证跟实际启动一致，续接不追加 --model"
+            return 0 ;;
+    esac
+    local i
+    for i in "${!flags[@]}"; do
+        a="${flags[$i]}"
+        case "$a" in
+            "~") flags[$i]="$HOME" ;;
+            "~/"*) flags[$i]="$HOME/${a#\~/}" ;;
+            "~"*)
+                _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS 含 ~user 形式的路径，续接不追加 --model"
+                return 0 ;;
+        esac
+    done
 
     fifo="$(mktemp -u "${TMPDIR:-/tmp}/claude-model-probe.XXXXXX")"
     mkfifo "$fifo" || return 0
     (
         cd "$cwd" || exit 1
+        # 不用 coreutils `timeout`：macOS 默认没有（复审 #57）。时限由下面的
+        # read -t 管，到点由这里的 kill 收尾，只用 bash 自带的东西。
         exec env ANTHROPIC_BASE_URL="$CLAUDE_MODEL_PROBE_BASE_URL" \
-            timeout "$CLAUDE_MODEL_PROBE_TIMEOUT" \
             claude -p --no-session-persistence --strict-mcp-config \
                 --output-format stream-json --verbose "${flags[@]}" "model probe"
     ) < /dev/null > "$fifo" 2>/dev/null &
@@ -174,6 +198,10 @@ claude_default_model() {
     done
     exec {_probe_fd}<&-
     kill "$pid" 2>/dev/null || true
+    # 不理 TERM 的话 2 秒后补 KILL，免得 wait 把续接卡住
+    local n=0
+    while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 20 ]; do sleep 0.1; n=$((n + 1)); done
+    kill -9 "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     rm -f "$fifo"
     if [ -z "$model" ]; then

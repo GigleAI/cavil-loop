@@ -45,8 +45,19 @@ cat > "$TMP/bin/claude" <<'FAKE'
     echo "base_url=${ANTHROPIC_BASE_URL:-}"
     for a in "$@"; do echo "arg=$a"; done
 } > "$FAKE_LOG"
+# 跟真 CLI 一样认 --settings <文件>：文件读得到就用它的 model。这样测试能区分
+# 「探测收到字面量 ~/x」和「收到展开后的路径」，而不是无条件返回固定模型。
+model="${FAKE_MODEL:-claude-opus-5-5}"
+prev=""
+for a in "$@"; do
+    if [ "$prev" = --settings ] && [ -f "$a" ]; then
+        m="$(jq -r '.model // empty' "$a" 2>/dev/null)"; [ -z "$m" ] || model="$m"
+    fi
+    prev="$a"
+done
 case "${FAKE_MODE:-init}" in
-    init)    echo '{"type":"system","subtype":"init","model":"'"${FAKE_MODEL:-claude-opus-5-5}"'"}'; echo $$ > "$FAKE_LOG.pid"; sleep 30 ;;
+    init)    echo '{"type":"system","subtype":"init","model":"'"$model"'"}'; echo $$ > "$FAKE_LOG.pid"; sleep 30 ;;
+    noterm)  trap '' TERM; echo '{"type":"system","subtype":"init","model":"'"$model"'"}'; echo $$ > "$FAKE_LOG.pid"; sleep 30 ;;
     silent)  echo $$ > "$FAKE_LOG.pid"; sleep 30 ;;
     fail)    exit 1 ;;
     garbage) echo 'not json'; sleep 30 ;;
@@ -123,6 +134,30 @@ resume_cmd 1 '' >/dev/null
 chk "extra flags 原样传给探测（带引号的 JSON 拆成一个参数）" "$(has_arg '{"model":"sonnet"}')" "yes"
 chk "extra flags 的其他参数也在" "$(has_arg user,project)" "yes"
 
+unset_out="$(env -u CLAUDE_EXTRA_FLAGS -u ANTHROPIC_MODEL HOME="$TMP/home" PATH="$TMP/bin:$PATH" FAKE_LOG="$FAKE_LOG" \
+    bash -c 'set -u; source "$1/scripts/drivers/_common.sh"; source "$1/scripts/drivers/claude.sh"; claude_default_model "$2"' \
+    _ "$REPO_DIR" "$TMP/cwd" 2>&1)"
+chk "CLAUDE_EXTRA_FLAGS 未定义 + set -u 不报错" "$unset_out" "claude-opus-5-5"
+
+echo "── 探测收到的参数跟 worker 实际收到的一致（shell 展开）──"
+echo '{"model":"claude-sonnet-5-5"}' > "$TMP/home/model.json"
+FLAGS="--settings ~/model.json"
+chk "--settings ~/x：按 HOME 展开后传给探测" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model claude-sonnet-5-5 $P"
+chk "  …探测收到的是展开后的路径" "$(has_arg "$TMP/home/model.json")" "yes"
+chk "  …而不是字面量 ~/model.json" "$(has_arg '~/model.json')" "no"
+FLAGS="--settings=~/model.json"
+resume_cmd 1 '' >/dev/null
+chk "--settings=~/x：bash 不展开，探测也不展开" "$(has_arg '--settings=~/model.json')" "yes"
+FLAGS="--settings \$HOME/model.json"
+chk "含 \$VAR → 不模拟 shell，不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+chk "  …也不起探测" "$(probe_ran)" "no"
+FLAGS="--settings '~/model.json'"
+chk "引号里的 ~ → 不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+FLAGS="--settings ~root/model.json"
+chk "~user → 不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+chk "  …也不起探测" "$(probe_ran)" "no"
+FLAGS=""
+
 echo "── 收尾：读到 init 就杀掉，不等它重试 ──"
 FLAGS=""
 start=$(date +%s)
@@ -132,6 +167,26 @@ chk "读到 init 立刻返回（< 5 秒；假 claude 会挂 30 秒）" "$([ "$el
 pid="$(cat "$FAKE_LOG.pid" 2>/dev/null)"
 sleep 0.3
 chk "探测进程已被杀掉" "$( [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo alive || echo gone)" "gone"
+
+start=$(date +%s)
+out="$(resume_cmd 1 '' FAKE_MODE=noterm)"
+elapsed=$(( $(date +%s) - start ))
+chk "探测不理 TERM 也能收尾（补 KILL，< 6 秒）" "$([ "$elapsed" -lt 6 ] && echo ok || echo "slow:${elapsed}s")" "ok"
+pid="$(cat "$FAKE_LOG.pid" 2>/dev/null)"
+chk "  …进程已不在" "$( [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo alive || echo gone)" "gone"
+
+echo "── 不依赖 coreutils timeout（macOS 默认没有，复审 #57）──"
+# 只放探测真正要用的工具，不放 timeout
+mkdir -p "$TMP/minbin"
+for t in bash env jq mktemp mkfifo rm xargs sleep cat date; do
+    ln -sf "$(command -v "$t")" "$TMP/minbin/$t"
+done
+ln -sf "$TMP/bin/claude" "$TMP/minbin/claude"
+min_out="$(env -i HOME="$TMP/home" PATH="$TMP/minbin" FAKE_LOG="$FAKE_LOG" \
+    "$TMP/minbin/bash" -c 'source "$1/scripts/drivers/_common.sh"; source "$1/scripts/drivers/claude.sh"; claude_default_model "$2"' \
+    _ "$REPO_DIR" "$TMP/cwd" 2>/dev/null)"
+chk "PATH 里没有 timeout 也能探测出模型" "$min_out" "claude-opus-5-5"
+chk "  …（确认这个 PATH 里确实没有 timeout）" "$(PATH="$TMP/minbin" command -v timeout || echo none)" "none"
 
 echo "── 探测失败：不追加 --model（维持老行为，不拿猜测覆盖）──"
 chk "claude 直接退出" "$(resume_cmd 1 '' FAKE_MODE=fail)" "claude --continue   $P"

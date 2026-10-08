@@ -228,6 +228,13 @@ therefore Claude's own, not re-implemented here. Notes:
 
 - `CLAUDE_EXTRA_FLAGS` already containing `--model`, or unparseable (unbalanced
   quotes) → no probe, nothing added.
+- The probe must see the same arguments the worker gets after shell expansion. A
+  word-leading `~` / `~/…` is expanded to `$HOME` (like bash; `--settings=~/x`
+  is left alone, like bash). Anything the daemon would have to emulate the shell
+  for — `$VAR`, backticks, `~user`, a quoted `~` — means no probe and nothing
+  added (logged); the flags are never `eval`ed.
+- The time limit uses only bash builtins (no coreutils `timeout`, which macOS
+  lacks); a probe ignoring TERM is killed after 2 more seconds.
 - The probe fails (no `init` within `CLAUDE_MODEL_PROBE_TIMEOUT`, default 20s;
   `claude` missing) → nothing added, the session keeps its model, and the poll
   log says so.

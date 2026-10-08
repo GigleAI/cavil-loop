@@ -198,6 +198,12 @@ daemon 直接问 Claude「现在新开一条会话会用哪个模型」：续接
 用的是 Claude 自己那套，这里不复刻。补充：
 
 - `CLAUDE_EXTRA_FLAGS` 里已有 `--model`，或拆不开（引号不配对）→ 不探测、不追加。
+- 探测收到的参数必须跟 worker 经 shell 展开后收到的一样：词首的 `~` / `~/…` 按
+  `$HOME` 展开（跟 bash 一样，`--settings=~/x` 不展开）；需要模拟 shell 才能对上的
+  ——`$VAR`、反引号、`~user`、引号里的 `~`——一律不探测、不追加（日志记一条），
+  绝不 `eval` 这串参数。
+- 时限只用 bash 自带功能（不依赖 macOS 默认没有的 coreutils `timeout`）；探测进程
+  不理 TERM 时，再等 2 秒补 KILL。
 - 探测失败（`CLAUDE_MODEL_PROBE_TIMEOUT` 内没读到 `init`，默认 20 秒；找不到
   `claude`）→ 不追加，会话保持原模型，poll 日志里会记一条。
 - 每次续接多 3–4 秒，项目的 `SessionStart` hook 会多跑一次（已用 touch 文件的 hook 实测）。如果你在 settings 里
