@@ -116,6 +116,12 @@ class Chart:
             for i,v in enumerate(s["data"]):
                 if v is None: continue
                 out.append(f'<circle cx="{ix+step*i+step/2:.1f}" cy="{yy(v):.1f}" r="3.4" fill="{BG}" stroke="{s["color"]}" stroke-width="2"/>')
+                # 走右轴、量级跟柱子差很多的折线，把数值直接标在点上：只靠两侧刻度，读图的人会拿
+                # 折线高度去跟柱子比，把「缓存读取是缓存写入的几十倍」读成「读取反而很少」（#1023）
+                # 标在点的**右侧**而不是正上方：点在柱子中线上，正上方会跟柱顶数字撞在一起
+                # （实测 8/3 那周 155M 压住了柱顶的 4.0M）。柱顶数字居中、半宽约 13px，右移 14px 就错开了。
+                if s.get("labels") and v:
+                    vals.append(f'<text x="{ix+step*i+step/2+14:.1f}" y="{yy(v)+4:.1f}" class="val" text-anchor="start" fill="{s["color"]}">{s.get("fmt",fmt)(v)}</text>')
         out.extend(vals)
         if note:
             idx,txt=note; mx=ix+step*idx
@@ -245,12 +251,13 @@ def main():
     # （见 attribute.legacy_estimate），左右两侧才放得进同一张图——仍是估算，副标题写明。
     M=lambda f:[wk[k].get(f,0)/1e6 for k in W]
     p_tok=ch.panel(0,1020,1212,320,"token 用量：每周输入 / 输出 / 缓存读取（百万 token）",
-        "堆叠柱＝输入 + 缓存写入 + 输出（左轴）；折线＝缓存读取（右轴，量级大得多）。"
+        "堆叠柱＝输入 + 缓存写入 + 输出（左轴，单位 M）；折线＝缓存读取（右轴，单位 B，通常是缓存写入的几十倍）。"
+        "两条轴刻度不同，别拿高度直接比。"
         + ("红线左侧的周按旧记录的 token 数除以 1.68 抵掉重复计，是估算。" if fc is not None else ""),
         [{"type":"bar","data":M("tok_in"),"color":BLUE,"label":"输入","axis":"l","stack":True,"fmt":fmt_m},
          {"type":"bar","data":M("tok_cache_w"),"color":GOLD,"label":"缓存写入","axis":"l","stack":True,"fmt":fmt_m},
          {"type":"bar","data":M("tok_out"),"color":ORANGE,"label":"输出","axis":"l","stack":True,"fmt":fmt_m},
-         {"type":"line","data":M("tok_cache_r"),"color":VIO,"label":"缓存读取","axis":"r","fmt":fmt_m}],note=sw)
+         {"type":"line","data":M("tok_cache_r"),"color":VIO,"label":"缓存读取（右轴）","axis":"r","fmt":fmt_m,"labels":True}],note=sw)
     open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4,p_tok],1360,a.fonts_dir))
     print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html")
 

@@ -89,6 +89,12 @@ chk "可信度桶记在「估算」下"               "$(q "round(w['price_usd_e
 chk "token 也按 1.68 抵掉重复计：输出"     "$(q "int(w['tok_out'])")"         "595238"
 chk "缓存读取"                             "$(q "int(w['tok_cache_r'])")"     "595238"
 chk "报告口径说明写明是估算"               "$(has '按记录里的 token 数重估')" "yes"
+# 两条纵轴刻度差两个数量级：只靠刻度，读图的人会拿折线高度跟柱子比，把「缓存读取是缓存写入
+# 的几十倍」读成「读取反而很少」（GigleTutor-Web#1023 维护者原话）。所以折线的点上直接标值、
+# 图例写明看哪条轴。
+chk "缓存读取折线把数值直接标在点上（0.6M，抵重后）" "$(grep -c 'class="val" text-anchor="start" fill="#4a3aa7">0.6M</text>' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
+chk "图例写明缓存读取看右轴" "$(grep -c '缓存读取（右轴）' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
+chk "副标题提醒两条轴刻度不同" "$(grep -c '别拿高度直接比' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 chk "投入面趋势图多了 token 用量面板"      "$(grep -c 'token 用量' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 
 echo
