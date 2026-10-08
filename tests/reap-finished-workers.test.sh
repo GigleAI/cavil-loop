@@ -73,6 +73,12 @@ gh() {
     esac
 }
 
+# 一轮 poll 只拉一次 open 快照（open_snapshot），缓存落在 $TICK_DIR。本测试在**同一个
+# 进程里**改 ISSUE_PAGES / PR_PAGES 来模拟「GitHub 上的世界变了」——那在现实里只会发生
+# 在两轮之间，所以每次改完 fixture 都要像 agent-poll.sh 每轮开头那样把快照清掉。
+# 不清的话读到的是上一次的世界，断言测的就不是它想测的东西了。
+new_tick() { rm -rf "$TICK_DIR"; }
+
 tmux new-session -d -s reaptest-issue901 'sleep 3000'
 tmux new-session -d -s reaptest-issue902 'sleep 3000'
 tmux new-session -d -s reaptest-issue903-server 'sleep 3000'
@@ -137,6 +143,7 @@ chk "907 保留（活动时间读不到就不动）" "$(alive reaptest-issue907)
 echo "【7】查询失败不能变成空名单，也不能回收 session"
 for endpoint in issues pulls; do
     GH_FAIL="$endpoint"
+    new_tick
     list_active_workers >/dev/null 2>&1
     chk "$endpoint 查询失败向上传递" "$?" "1"
     REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
@@ -150,6 +157,7 @@ SELFHEAL_HOST_ID=testhost
 STATE_FILE="$SANDBOX/state/state.json"
 printf '{"worker_hosts":{}}' > "$STATE_FILE"
 PR_PAGES='[[],[{"number":999,"head":{"ref":"feature/issue-907"},"body":"","labels":[{"name":"doing/agent"}]}]]'
+new_tick
 chk "并发名单仍按归属过滤" "$(list_active_workers)" ""
 REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
 chk "907 的 PR 仍 doing，保留" "$(alive reaptest-issue907)" "yes"
@@ -157,7 +165,9 @@ PR_PAGES='[[{"number":999,"head":{"ref":"external"},"body":"Refs #907","labels":
 REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
 chk "PR body 关联也保护 907" "$(alive reaptest-issue907)" "yes"
 PR_PAGES='[[]]'
-ISSUE_PAGES='[[],[{"number":907}]]'
+# 注意 labels 不能省：筛 doing/agent 从服务端 query 挪到了本地 jq，stub 以前忽略
+# `?labels=` 参数，于是「凡是返回的 issue 都算 doing」。真实 REST 响应一定带 labels 数组。
+ISSUE_PAGES='[[],[{"number":907,"labels":[{"name":"doing/agent"}]}]]'
 REAP_GRACE_SECS=0 reap_finished_workers active_keys >/dev/null 2>&1
 chk "issue 仍 doing，保留" "$(alive reaptest-issue907)" "yes"
 ISSUE_PAGES='invalid json'

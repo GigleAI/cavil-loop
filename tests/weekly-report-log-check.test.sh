@@ -172,8 +172,8 @@ chk "报告写明「反解不出、用外部参照兜底」" \
     "$(grep -qF '反解不出、用外部参照兜底' "$TMP/r.md" && echo yes || echo no)" "yes"
 
 # ⑷ 参照本身的出处与局限必须写出来，不能包装成「已核验的官方价目」
-chk "报告点名参照出处（本机缓存的那份）" \
-    "$(grep -qF 'cached 2026-06-24' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报告点名参照出处（官方价目页 + 核对日期）" \
+    "$(grep -qF 'checked 2026-09-29' "$TMP/r.md" && echo yes || echo no)" "yes"
 chk "报告明说本次没有联网核验参照" \
     "$(grep -qF '没有联网核验' "$TMP/r.md" && echo yes || echo no)" "yes"
 chk "全仓不得再出现「已与官方价目交叉核对」这类说法" \
@@ -492,6 +492,37 @@ chk "最终报告报红（存疑那句在）" \
     "$(grep -qF '与参照冲突（存疑）' "$TMP/r.md" && echo yes || echo no)" "yes"
 chk "报红带 ⚠️" \
     "$(grep -qF '⚠️' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+echo "── 15. token 合计跟着调用认领走，不读原记录（PR #50 交叉 review 第 1 轮）──"
+# 金额早已按认领去重，token 合计却一直读原记录：重叠的两条派工把共用调用算两遍，
+# 可重算的历史记录又被多除一次 1.68。三个场景分别钉住「重算 / 回退 / 历史」三条路径。
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:02" 400000 r1      # A 独占区
+call 10 "10:12" 600000 r2      # 重叠区 → 归 B
+run "$(marker 10 '10:00' '10:20' 1000000 '0.00')" "$(marker 10 '10:10' '10:15' 600000 '0.00')"
+chk "重叠两条都重算：输出 token 合计 = 日志里的 100 万（不是 160 万）" "$(q tok_out)" "1000000"
+chk "按 agent 拆分同样是 100 万"      "$(q tok_out_claude)"        "1000000"
+chk "没有单列的 token"                "$(q tok_out_not_summable)"  "0"
+
+# 场景 4 的数据：A 回退（记录 200 万）、B 重算（认领到 100 万）→ 整组单列，token 也单列
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:12" 1000000 r1
+run "$(marker 10 '10:00' '10:20' 2000000 '100.00')" "$(marker 10 '10:10' '10:15' 1000000 '50.00')"
+chk "含回退的重叠组：token 不进每周用量" "$(q tok_out)"            "0"
+chk "单列 token = A 原值 + B 认领值"   "$(q tok_out_not_summable)" "3000000"
+chk "报告写明这部分 token 不计入 token 列" \
+    "$(grep -qF '同理**不计入**逐周表的 token 列' "$TMP/r.md" && echo yes || echo no)" "yes"
+
+# 历史 footer（无机器标记）且本机日志可重算：用认领到的 token，不再除 1.68
+legacy_footer() {   # $1 起 hh  $2 止 hh  $3 token 行
+    printf '干完了。\n\n---\n⏱️ 开始 %s %s:00:00 · 完工 %s:00:00 · 耗时 10m 0s\n%s\n' "$W" "$1" "$2" "$3"
+}
+rm -rf "$CLAUDE_PROJECTS_DIR"
+call 10 "10:05" 1000000 r1
+run "$(legacy_footer 10 11 'token 0 input, 1m output, 0 cache read, 0 cache write ($75.00)')"
+chk "历史记录可重算 → 判为重算"       "$(q src_recomputed)"        "1"
+chk "金额按日志 \$25"                "$(q cost)"                  "25"
+chk "token 用认领到的 100 万（不是 ÷1.68 的 59.5 万）" "$(q tok_out)" "1000000"
 
 echo
 echo "结果：$pass passed, $fail failed"

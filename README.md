@@ -162,7 +162,7 @@ gh issue create --title "..." --body "..."     # say you get #42
 gh issue edit 42 --add-label pending/agent
 ```
 
-Within 60s the poller picks it up: builds an isolated working dir, starts Claude Code, writes code, opens a PR (with `Closes #42` or `Refs #42` in the body), flips the label to `pending/human` for your review. Watch what the AI does: `tmux attach -t <project>-issue42`.
+Within 60s the poller picks it up: builds an isolated working dir, starts Claude Code, writes code, opens a PR (with `Closes #42` in the body — work too big for one PR is split into sub-issues first), flips the label to `pending/human` for your review. Watch what the AI does: `tmux attach -t <project>-issue42`.
 
 ### Scenario 2: PR review feedback
 
@@ -188,7 +188,7 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 
 | Doc | About |
 |-----|-------|
-| [docs/architecture.md](docs/architecture.md) | Five-state label machine, PR↔Issue closure relationship (A/B/C), why the design works this way |
+| [docs/architecture.md](docs/architecture.md) | Five-state label machine, PR↔Issue closure (one PR, or split into sub-issues), why the design works this way |
 | [docs/collaboration.md](docs/collaboration.md) | Multi-human + multi-agent workflows: PM → Dev → QA handoff via label suffixes (`pending/agent/PM`, `pending/human/Alex`, …) |
 | [docs/persistence.md](docs/persistence.md) | Where design proposals / discussions / code / Claude conversations / tmux history live, how to look them up later, how to resume from a break point |
 | [docs/security.md](docs/security.md) | **Public-repo users must read.** Anonymous comments can contain prompt injection; how the defenses work |

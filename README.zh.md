@@ -175,7 +175,7 @@ gh issue create --title "..." --body "..."     # 假设拿到 #42
 gh issue edit 42 --add-label pending/agent
 ```
 
-60 秒内后台接活：建独立工作目录、起 Claude Code、写完开 PR（body 里 `Closes #42` 或 `Refs #42`），标签翻 `pending/human` 等你 review。想看 AI 在干啥：`tmux attach -t <project>-issue42`。
+60 秒内后台接活：建独立工作目录、起 Claude Code、写完开 PR（body 里 `Closes #42`；一个 PR 装不下的先拆成 sub-issue），标签翻 `pending/human` 等你 review。想看 AI 在干啥：`tmux attach -t <project>-issue42`。
 
 ### 场景 2：PR Review 反馈
 
@@ -201,7 +201,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 | 文档 | 内容 |
 |------|------|
-| [docs/architecture.md](docs/architecture.zh.md) | 标签状态机的五种状态、PR↔Issue 闭环关系（A/B/C）、为什么这么设计 |
+| [docs/architecture.md](docs/architecture.zh.md) | 标签状态机的五种状态、PR↔Issue 闭环关系（一个 PR / 拆 sub-issue）、为什么这么设计 |
 | [docs/collaboration.md](docs/collaboration.zh.md) | 多人 + 多 agent 协作：用 label 后缀（`pending/agent/PM`、`pending/human/Alex` …）走 PM → Dev → QA 接力 |
 | [docs/persistence.md](docs/persistence.zh.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.zh.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |

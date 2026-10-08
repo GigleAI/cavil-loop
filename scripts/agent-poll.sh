@@ -13,21 +13,44 @@ source "$SCRIPT_DIR/_lib.sh"
 STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/poll.lock"
 
-[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{}}' > "$STATE_FILE"
-# 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
-for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts; do
-    if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
-        tmp=$(mktemp)
-        jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-    fi
-done
-
 # flock 防多个 tick 撞车（万一某次跑慢了 > POLL_INTERVAL_SECS）
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     log "上一轮还没跑完，跳过"
     exit 0
 fi
+
+# ── 轮询节奏闸门（issue #35）──
+# 长期没动静的项目渐进退避：闹钟照旧每分钟把这个脚本叫醒，这里决定被叫醒之后要不要
+# 真的去打 GitHub。判定和状态都在 _lib.sh 的 pace_* 那一段。
+#
+# 位置有两个硬要求：
+#   · 必须在 flock **之后** —— 节奏状态是读-改-写，锁保证同一时刻只有一轮在动它；
+#   · 必须在下面任何一句「干活」**之前** —— 跳过的这一轮不该碰 state.json、不该清
+#     快照目录、不该留下除了那一行日志以外的任何痕迹。
+if pace_gate_says_skip; then
+    log "$PACE_SKIP_MSG"
+    exit 0
+fi
+
+# 本轮做没做事。指纹只能看出「GitHub 那边变没变」，看不出「daemon 自己动没动手」——
+# 派工失败、self-heal 翻标签、回收 session 这些都得显式标一下，否则刚干完活的下一轮
+# 会被判成安静。
+PACE_ACTED=0
+pace_mark_acted() { PACE_ACTED=1; }
+
+[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{},"split_rollups":{},"split_rollup_commented":{},"split_rollup_queue":{},"merged_label_queue":{}}' > "$STATE_FILE"
+# 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
+for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts split_rollups split_rollup_commented split_rollup_queue merged_label_queue; do
+    if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
+        tmp=$(mktemp)
+        jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    fi
+done
+
+# 本轮 open 快照目录：开头清一次，保证绝不会拿上一轮的数据做判断。
+# 放在 flock 之后——锁保证同一时刻只有一轮在跑，这里删目录不会踩到别人。
+rm -rf "$TICK_DIR"
 
 log "===== poll start ====="
 
@@ -84,10 +107,10 @@ remember_trigger_label() {
 # 等），daemon 后续看 label 仍当 active worker、撑满 max_concurrent。
 # 这里在算 active 之前先扫一遍 doing/agent label 项，把 session 不存在的翻回
 # 原触发模型的 pending label 并记录警告，让下一轮自动 fallback resume。
-zombie_pr_data=$(gh pr list --repo "$REPO" --label "$LABEL_AGENT_DOING" \
-    --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
-zombie_issue_nums=$(gh issue list --repo "$REPO" --state open --label "$LABEL_AGENT_DOING" \
-    --json number --jq '.[] | .number' 2>/dev/null || true)
+# 两趟都从本轮快照里筛，不再各发一次 gh list（快照还没拉过的话这里触发第一次拉取）。
+# 失败仍然降级成空串：读不到就本轮不 self-heal，和原来一样，绝不瞎翻 label。
+zombie_pr_data=$(snapshot_rows pr "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1,2 || true)
+zombie_issue_nums=$(snapshot_rows issue "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1 || true)
 
 self_heal_one() {
     local kind="$1"   # "PR" / "issue"
@@ -120,12 +143,14 @@ self_heal_one() {
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
         log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → $pending_label）"
+        pace_mark_acted
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/agent)" \
             gh_label_flip "$n" \
             --add "$pending_label" \
             --remove "$LABEL_AGENT_DOING" || true
     else
         log "⚠️ self-heal: $kind #$n 自动恢复 $((tries - 1)) 次仍死（疑似会话损坏）→ 转人工 $LABEL_PENDING_HUMAN"
+        pace_mark_acted
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/human)" \
             gh_label_flip "$n" \
             --add "$LABEL_PENDING_HUMAN" \
@@ -162,6 +187,9 @@ fi
 # 编号也带在 log 里，方便看 max=1 撑住的是谁。
 if ! active_list=$(list_active_workers); then
     log "⚠️ 无法确认活跃 worker：本轮停止回收和派工，保留现有 session"
+    # 故障单独一套节奏，且**不碰安静计时**：读不到 GitHub 不等于「没活干」。
+    # 把它算成空闲会越错越慢，恢复也越拖越久（issue #35 §4）。
+    pace_record_fail
     exit 0
 fi
 # 真·全局并发上限：active_keys 收所有在跑 worker 的 issue_n（每行第一个数字就是 key——
@@ -270,15 +298,7 @@ collect_queue_rows() {
     local kind="$1" trigger_label="$2" model="$3" worker_agent="$4" prompt_kind="$5"
     [ -n "$trigger_label" ] || return 0
     local raw num branch updated labels_csv title prio stage key
-    if [ "$kind" = "issue" ]; then
-        raw=$(gh issue list --repo "$REPO" --state open --label "$trigger_label" \
-            --json number,title,labels,updatedAt \
-            --jq '.[] | [(.number|tostring), "-", .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    else
-        raw=$(gh pr list --repo "$REPO" --label "$trigger_label" \
-            --json number,title,labels,updatedAt,headRefName \
-            --jq '.[] | [(.number|tostring), .headRefName, .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    fi
+    raw=$(snapshot_rows "$kind" "$trigger_label" 2>/dev/null || true)
     [ -n "$raw" ] || return 0
     while IFS=$'\t' read -r num branch updated labels_csv title; do
         [ -n "$num" ] || continue
@@ -303,9 +323,49 @@ collect_queue_rows() {
     done <<< "$raw"
 }
 
+# ── 派工失败的退避与升级 ──
+# 旧逻辑：失败 → 只 log 一句 → 什么状态都不改 → 下一轮原样再来，无上限。
+# 现在：连续失败计数，没到上限照常重试（网络抖动这类瞬时失败该允许重试），
+# 到上限就摘掉**全部**触发 label、转人工，停止重试。
+#
+# 摘全部触发 label 而不是只摘 LABEL_PENDING_AGENT：多机分工的 pending/agent/05、
+# fable 标签、review 关卡标签各有自己的名字，漏掉任何一个，下一轮还会被重新捡起来。
+# greedy 模式下条目本来就没有触发 label（靠「open 且没被挡住」被捡），贴上
+# LABEL_PENDING_HUMAN 就够——它在 greedy_skip_label_list 的默认挡工清单里。
+trigger_labels_array
+
+# dispatch 子进程漏在 stdout 上的输出，压成一行跟着失败一起进 poll.log。
+# 只能捕 stdout：_lib.sh 顶部的永久 `2>/dev/null` 让子进程的 fd 2 就是 /dev/null，
+# 捕它永远是空的（实测）。子进程自己 log() 出来的行已经由 tee 写进同一个 poll.log，
+# 所以这里兜的是那些没走 log()、漏在 stdout 上的输出。
+dispatch_fail_excerpt() {
+    local t
+    t=$(printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -3 | tr '\n' ' ' | sed 's/[[:space:]]*$//') || true
+    [ -n "$t" ] || t="原因见上方 dispatch 日志"
+    printf '%s' "$t"
+}
+
+dispatch_failed() {
+    local kind="$1" num="$2" reason="$3"
+    local key="${kind}-${num}" tries cap="${DISPATCH_MAX_RETRIES:-3}"
+    tries=$(dispatch_fail_bump "$key")
+    if [ "$tries" -lt "$cap" ]; then
+        log "${kind} #${num} 派工失败（第 $tries/$cap 次，下轮重试）：$reason"
+        return 0
+    fi
+    log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 $LABEL_PENDING_HUMAN（停止重试）：$reason"
+    run_gh "label 翻转 (${kind} #${num} 连续派工失败 → $LABEL_PENDING_HUMAN)" \
+        gh_label_flip "$num" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
+    # 清零：人工重标 pending/agent 后重新计数，而不是第一次失败就立刻又升级。
+    dispatch_fail_reset "$key"
+}
+
 dispatch_one_issue() {
     local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local sess wt latest_id tmp
+    local d_rc d_out
     sess="$(tmux_session_name "$num")"
     wt="$(worktree_path "$num")"
 
@@ -327,12 +387,16 @@ dispatch_one_issue() {
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
-        if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
-            bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id"; then
+        d_rc=0
+        d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+            bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
+        [ -n "$d_out" ] && printf '%s\n' "$d_out"
+        if [ "$d_rc" = 0 ]; then
+            dispatch_fail_reset "issue-$num"
             tmp=$(mktemp)
             jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
         else
-            log "issue-comment 派工 #$num 失败（comment cursor 不更新，下轮重试）"
+            dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
         fi
         return 0
     fi
@@ -346,9 +410,14 @@ dispatch_one_issue() {
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
-    if ! DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
-        bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num"; then
-        log "派工 issue #$num 失败"
+    d_rc=0
+    d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
+    [ -n "$d_out" ] && printf '%s\n' "$d_out"
+    if [ "$d_rc" = 0 ]; then
+        dispatch_fail_reset "issue-$num"
+    else
+        dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
     fi
 }
 
@@ -361,6 +430,7 @@ dispatch_one_pr() {
     local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local issue_n sess latest_conv latest_inline latest_review
     local seen_conv seen_inline seen_review kick_id tmp
+    local d_rc d_out
     issue_n=$(pr_to_issue_num "$prnum" "$branch")
     sess="$(tmux_session_name "$issue_n")"
 
@@ -396,13 +466,17 @@ dispatch_one_pr() {
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
-    if DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" WORKER_MODEL="$model" DISPATCH_PROMPT_KIND="$prompt_kind" \
-        bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id"; then
+    d_rc=0
+    d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
+    [ -n "$d_out" ] && printf '%s\n' "$d_out"
+    if [ "$d_rc" = 0 ]; then
+        dispatch_fail_reset "pr-$prnum"
         tmp=$(mktemp)
         jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
             "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     else
-        log "PR #$prnum 派工失败（comment cursors 不更新，下轮重试）"
+        dispatch_failed pr "$prnum" "$(dispatch_fail_excerpt "$d_out")"
     fi
 }
 
@@ -416,15 +490,9 @@ dispatch_one_pr() {
 collect_queue_rows_greedy() {
     local kind="$1"
     local raw num branch updated labels_csv title prio stage key blocked
-    if [ "$kind" = "issue" ]; then
-        raw=$(gh issue list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
-            --json number,title,labels,updatedAt \
-            --jq '.[] | [(.number|tostring), "-", .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    else
-        raw=$(gh pr list --repo "$REPO" --state open --limit "${GREEDY_SCAN_LIMIT:-100}" \
-            --json number,title,labels,updatedAt,headRefName \
-            --jq '.[] | [(.number|tostring), .headRefName, .updatedAt, ([.labels[].name]|join(",")), (.title|gsub("[\t\n]";" "))] | @tsv' 2>/dev/null || true)
-    fi
+    # 快照已经是全量 open（分页拉完），这里只保留 GREEDY_SCAN_LIMIT 的语义：
+    # 仍然只看前 N 条，配置含义不变。
+    raw=$(snapshot_rows "$kind" "" 2>/dev/null | head -n "${GREEDY_SCAN_LIMIT:-100}" || true)
     [ -n "$raw" ] || return 0
     while IFS=$'\t' read -r num branch updated labels_csv title; do
         [ -n "$num" ] || continue
@@ -443,16 +511,16 @@ collect_queue_rows_greedy() {
         # prompt（"读 issue → 实现 → 开 PR → 翻 pending/human"），于是 worker 跳过设计
         # 阶段、跳过交叉 review、不贴测试输出，看日志却一切正常。2026-09-02 issue #833
         # 就是这么翻车的。改这行前先数一遍 US 的个数。
-        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${US}${US}${US}${title}"$'\n'
+        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${WORKER_MODEL}${US}${US}${US}${title}"$'\n'
     done <<< "$raw"
 }
 
 # 收集顺序 = 同条目挂多个触发 label 时的取舍顺序（fable > 默认 > 追加 > review），
 # 与排序无关：排序只认上面那三个键。
 collect_queue_rows issue "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
-collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
+collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" "$WORKER_MODEL" "" ""
 collect_queue_rows pr "$LABEL_PENDING_AGENT_FABLE" "$FABLE_MODEL" "$FABLE_WORKER_AGENT" ""
-collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
+collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "$WORKER_MODEL" "" ""
 # 追加触发 label（LABEL_PENDING_AGENT_EXTRA，多机分工用）：参数跟 DEFAULT 那趟完全一致，
 # 只是标签名不同 —— 同一套模板、同一个 worker、同一个模型。
 #
@@ -462,8 +530,8 @@ collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "" "" ""
 if [ -n "${LABEL_PENDING_AGENT_EXTRA:-}" ]; then
     while IFS= read -r _extra_label; do
         [ -n "$_extra_label" ] || continue
-        collect_queue_rows issue "$_extra_label" "" "" ""
-        collect_queue_rows pr    "$_extra_label" "" "" ""
+        collect_queue_rows issue "$_extra_label" "$WORKER_MODEL" "" ""
+        collect_queue_rows pr    "$_extra_label" "$WORKER_MODEL" "" ""
     done < <(printf '%s\n' "$LABEL_PENDING_AGENT_EXTRA" | tr ',' '\n')
 fi
 # 交叉 review 关卡：用另一个 agent（默认 codex）+ review 专用模板。留空则整段跳过。
@@ -530,6 +598,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 continue
             fi
             NEW_MERGE_SEEN=1
+            pace_mark_acted
             issue_n=$(pr_to_issue_num "$prnum" "$branch")
             # pr_to_issue_num fallback 链兜底到 PR 编号本身，理论上永不空
             if [ -z "$issue_n" ]; then
@@ -556,28 +625,27 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                     --add "$LABEL_DONE" \
                     --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
 
-                # Issue：看实际状态决定怎么标
-                # - CLOSED（PR body 是 Closes #N，GitHub auto-close）→ 加 Done（与 PR 同闭环）
-                # - OPEN（PR body 是 Refs #N，长期 tracker 模式）→ 翻 pending/human（等你 triage 是否真完结）
-                issue_state=$(gh issue view "$issue_n" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "OPEN")
-                if [ "$issue_state" = "CLOSED" ]; then
-                    run_gh "auto-cleanup label issue #$issue_n → Done" \
-                        gh_label_flip "$issue_n" \
-                        --add "$LABEL_DONE" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
-                    log "  PR #$prnum → Done；issue #$issue_n CLOSED (Closes #N) → Done"
-                else
-                    run_gh "auto-cleanup label issue #$issue_n → pending/human" \
-                        gh_label_flip "$issue_n" \
-                        --add "$LABEL_PENDING_HUMAN" \
-                        --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
-                    log "  PR #$prnum → Done；issue #$issue_n OPEN (Refs #N) → pending/human"
+                # Issue：看实际状态决定怎么标（merged_issue_label：CLOSED → Done；OPEN → pending/human；
+                # 状态读不到 → 一个标签都不写，进 merged_label_queue 下轮再判，#43 review）。
+                # 以前读不到就兜底成 OPEN：已被 Closes 关掉的 issue 会被打成 pending/human，
+                # 而这个 PR 已记入 cleaned_prs，再也没人纠正。
+                if ! merged_issue_label "$issue_n" "$prnum"; then
+                    merged_label_enqueue "$issue_n" "$prnum" "$STATE_FILE"
                 fi
+                # 它若是拆出来的 sub-issue：父下子项全关 → 父 issue 翻 pending/human 汇总（#43）。
+                # **无条件**入队、下面统一清队，子项是否已关由 sub_issue_rollup 自己读——
+                # 同样是因为 PR 已记入 cleaned_prs，任何一次读失败都不能丢掉这件事。
+                # 普通 issue（没有父）清队时一次 /parent 404 就出队。
+                sub_issue_rollup_enqueue "$issue_n" "$STATE_FILE"
             else
                 log "  auto-cleanup PR #$prnum 失败（busy/dirty/hook 报错），下轮重试"
             fi
         done <<< "$recent_merged"
     fi
+
+    # 重试队列：合并后 issue 标签没定下来的 + 父 issue 汇总没做成的（#43）
+    merged_label_drain "$STATE_FILE" || true
+    sub_issue_rollup_drain "$STATE_FILE" || true
 
     # ── 3b. merge 钩子：新 merge → 刷新常驻「最新站」（GigleTutor-Web#516，Q1=A）──
     # 项目 config 里 LATEST_SITE_REFRESH=true 才启用；脚本自身幂等（HEAD 没变且
@@ -643,6 +711,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 issue_state=$(printf '%s' "$issue_json" | jq -r '.s' | tr '[:upper:]' '[:lower:]')
                 if [ "$issue_state" = "open" ]; then
                     # PR 没落地、issue 还开着 → 这事回到人手上决策
+                    pace_mark_acted
                     run_gh "PR #$prnum closed 未合并 → issue #$issue_n $LABEL_PENDING_PR → $LABEL_PENDING_HUMAN" \
                         gh_label_flip "$issue_n" \
                         --add "$LABEL_PENDING_HUMAN" \
@@ -650,6 +719,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                     log "PR #$prnum closed 未合并 → issue #$issue_n OPEN，$LABEL_PENDING_PR → $LABEL_PENDING_HUMAN"
                 else
                     # issue 早已 close，人已经处理完 → 只摘残留标签，不加任何 pending 态
+                    pace_mark_acted
                     run_gh "PR #$prnum closed 未合并 → issue #$issue_n 摘 $LABEL_PENDING_PR" \
                         gh_label_flip "$issue_n" \
                         --remove "$LABEL_PENDING_PR" || true
@@ -686,6 +756,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if jq -e ".cleaned_issues | index($issnum)" "$STATE_FILE" >/dev/null 2>&1; then
                 continue
             fi
+            pace_mark_acted
             log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" --force 2>&1; then
                 tmp=$(mktemp)
@@ -703,6 +774,32 @@ fi
 # Durable merge review queue is independent of cleanup success and worker labels.
 if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then
     nohup bash "$SCRIPT_DIR/post-merge-retrospective.sh" >> "$STATE_DIR/retrospective.log" 2>&1 &
+fi
+
+# ── 5. 记录本轮节奏（issue #35）──
+# 必须放在最后：上面任何一段做了事都已经把 PACE_ACTED 标上了。
+#
+# 「有动静」= 下面任意一条成立，成立就立刻回到不退避、安静计时归零：
+#   · daemon 自己动了手（PACE_ACTED）
+#   · GitHub 上还挂着 doing/agent（active_keys）或本机还有 worker session 活着
+#     —— 有人在干活时回收和 self-heal 的响应速度不能被退避拖慢
+#   · 队列里有待派工的活（哪怕这轮因为并发满没派出去）
+#   · 仓库变了（指纹，在 pace_record_ok 里比）
+pace_active=0
+if [ "$PACE_ACTED" = 1 ]; then pace_active=1; fi
+if [ "${#active_keys[@]}" -gt 0 ]; then pace_active=1; fi
+if [ -n "${QUEUE_SORTED:-}" ]; then pace_active=1; fi
+if [ -n "$(list_worker_sessions)" ]; then pace_active=1; fi
+# 算不出指纹就传空串：pace_record_ok 会保守当作「有动静」，并保留上一轮的指纹不覆盖。
+# 绝不能把「算不出来」写成空指纹存下去——下一轮会把它读成「所有条目都消失了」。
+if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
+    pace_fp=$(pace_fingerprint 2>/dev/null) || pace_fp=""
+    pace_record_ok "$pace_active" "$pace_fp"
+    if [ "${PACE_TIER_SECS:-0}" -eq 0 ]; then
+        log_debug "本轮节奏：不退避（已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}")），下个 tick 照跑"
+    else
+        log "本轮节奏：已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}") → 下一轮 $(pace_human_secs "${PACE_TIER_SECS:-0}") 后"
+    fi
 fi
 
 log "===== poll done ====="

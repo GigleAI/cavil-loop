@@ -34,7 +34,8 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   └── weekly-report/             ← Monday auto weekly report (collect / render / PDF / publish)
 ├── prompts/
 │   ├── new-issue.template.md      ← Prompt for new-issue dispatch
-│   ├── issue-comment.template.md  ← Prompt for new issue comment
+│   ├── issue-comment.template.md  ← Prompt for new issue comment (also § A-split: split into sub-issues)
+│   ├── sub-issue.template.md      ← Appended for a split-out sub-issue: skip design, go straight to development
 │   └── pr-comment.template.md     ← Prompt for new PR comment
 ├── systemd/                      ← Linux scheduler
 │   ├── coding-agent-poll@.service ← User-scoped template service
@@ -57,6 +58,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 - Entry scripts `source` `scripts/_lib.sh` to get helpers: `log()`, `run_gh()`, `has_claude_session()`, `claude_invoke()`, `tmux_env_args()`, and all variables from `coding-agent.config` already loaded
 - `log()` auto-prefixes `[<TMUX_PREFIX>]`, writes to stderr and tees to `$STATE_DIR/poll.log`. **Don't** raw `echo` — the prefix is what lets multiple projects share the journal without confusion
 - Failure handling: don't write `gh ... 2>/dev/null || log "failed"` — that eats stderr. Use the `run_gh "description" gh ...` helper; stderr automatically lands in the log
+- Same rule for git: use `run_git "description" git ...`. Never `git ... 2>&1 | tail -N` — truncating hides the one line that matters, and `_lib.sh`'s top-level `exec 9>&- 2>/dev/null` is a **permanent** redirect, so every script that sources it (the poller included) has fd 2 pointing at `/dev/null`. A `fatal:` on stderr reaches neither `poll.log` nor the journal; `run_git` captures `2>&1` and pushes it through `log()`, which is the only channel out
 
 ### Prompt templates
 
@@ -115,12 +117,18 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
   "seen_reviews":          { "<PR>": <id>, ... },     // /pulls/N/reviews       PR review submissions
   "seen_issue_comments":   { "<ISSUE>": <id>, ... },  // /issues/N/comments     non-PR issue comments
   "worker_models":         { "<WORK>": "<model>", ... }, // model preserved across self-heal
+  "split_rollups":         { "<PARENT>": <n>, ... },  // parent issues already summarised (comment + label) when all <n> sub-issues closed
+  "split_rollup_commented":{ "<PARENT>": <n>, ... },  // summary comment posted, label flip may still be pending (retry won't re-comment)
+  "split_rollup_queue":    { "<SUB>": <tries>, ... },  // closed sub-issues whose parent rollup is still to be done; drained every tick
+  "merged_label_queue":    { "<ISSUE>": {"pr": .., "tries": ..} }, // merged PR's issue whose Done / pending/human label is not settled yet (state unreadable or write failed)
   "cleaned_prs":           [ <PR>, ... ],             // PRs already auto-cleanup'd; not rescanned
   "unmerged_prs_handled":  [ <PR>, ... ]              // closed-unmerged PRs already judged by § 3c
 }
 ```
 
 When adding a field: `agent-poll.sh` has a migration loop at the top that iterates `seen_issue_comments seen_review_comments seen_reviews worker_models` and inits missing ones to `{}`. Add your new field name to that loop.
+
+**Poll pace state lives elsewhere, on purpose.** `$STATE_DIR/poll-pace.json` holds the idle/failure backoff state (`next_due` / `last_poll` / `last_active` / `fail_streak` / `fingerprint`) and is deliberately *not* part of `state.json`: the migration loop above inits missing fields to `{}` while these are numbers and strings, and — the operational reason — `rm poll-pace.json` has to mean "back to full speed now" without also wiping the seen-comment cursors. Helpers are the `pace_*` block in `_lib.sh`; the gate itself sits right after the flock in `agent-poll.sh`. Two rules when touching it: **it may only decide whether a tick runs, never what the tick does**, and **every judgement fails open** — unparseable or out-of-range state means poll, never means wait longer (fail-closed here is a silent project-wide stall with no error anywhere).
 
 ### Session / worktree / branch naming
 
@@ -156,7 +164,7 @@ This means the worktree/tmux/branch "N" **isn't necessarily** the same as `featu
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
 3. Commit + push. After merge to the configured base branch, managed Linux timers fetch and atomically activate the new release (normally within 10 minutes). macOS remains manual/development mode; rerun `setup.sh` for plist changes.
-4. PRs use `feature/issue-N` branches (with `Closes #N` or `Refs #N` — see PR closure A/B/C)
+4. PRs use `feature/issue-N` branches with `Closes #N`; work that needs several PRs is split into sub-issues (see PR closure A/B)
 
 ### Edit a prompt template
 
@@ -194,8 +202,11 @@ Changes in these areas must run the matching tests:
 
 - Accounting / weekly report → `tests/weekly-report-*.test.sh`
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
-- Dispatch / reaping / preview → `tests/greedy-dispatch.test.sh`, `tests/reap-finished-workers.test.sh`,
-  `tests/preview-socket-activation.test.sh`, …
+- Poll pace / idle + failure backoff → `tests/poll-pace.test.sh` (~40s: the end-to-end groups really do spawn `agent-poll.sh` a few hundred times — do not run it under a 30-second command timeout, a half-finished run looks like a failure)
+- Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
+  `tests/preview-socket-activation.test.sh`, `tests/preview-port-ownership.test.sh`, …
+- Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.
+  Any **new daemon-side write** must go through `gh_write`, not bare `gh` — a bare `gh` still succeeds, it just signs with the polling identity
 
 Changes with no matching test (daemon glue, prompt templates) still meet the minimum bar:
 
@@ -233,6 +244,6 @@ This repo's PR flow lives in [CONTRIBUTING.md](CONTRIBUTING.md). Highlights:
 
 - One PR, one focused change; conventional-commits title style (`feat:` / `fix:` / `docs:` / `chore:`)
 - PR body states **motivation** (why this change) + **verification** (how you tested)
-- Issue ↔ PR closure relationship is decided **at design time** with A/B/C (see [docs/architecture.md](docs/architecture.md#prissue-closure-decided-at-design-time)) — affects whether the PR body uses `Closes #N` or `Refs #N`
+- Issue ↔ PR closure relationship is decided **at design time** with A/B (see [docs/architecture.md](docs/architecture.md#prissue-closure-decided-at-design-time)) — A: one PR with `Closes #N`; B: split into GitHub sub-issues, each with its own PR. There is no longer a "several `Refs #N` PRs on one issue" mode
 - When you submit a review, **click "Submit review"** — don't leave it as a PENDING draft (drafts are invisible to the daemon and to other users)
 - Maintainers reserve the right to add / remove `pending/agent` labels; external contributors **cannot** apply this label to their own PRs to make the daemon auto-edit their code (see [docs/security.md](docs/security.md))

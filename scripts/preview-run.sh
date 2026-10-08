@@ -22,7 +22,7 @@ source "$CONF"
 # worktree 可能已被 cleanup 删掉（issue close 了但 socket 还没注销）。
 # 这里直接失败，比 cd 失败后在 / 下起一个乱七八糟的 server 好。
 [ -d "$PREVIEW_WORKTREE" ] || {
-    echo "worktree 不存在：$PREVIEW_WORKTREE —— 该 preview 已过期，跑 preview-unserve.sh $PORT 注销" >&2
+    echo "worktree 不存在：$PREVIEW_WORKTREE —— 该 preview 已过期，跑 preview-unserve.sh --port $PORT --expect-issue $PREVIEW_ISSUE --expect-worktree $PREVIEW_WORKTREE 注销" >&2
     exit 3
 }
 cd "$PREVIEW_WORKTREE"

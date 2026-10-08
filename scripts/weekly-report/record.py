@@ -20,7 +20,7 @@
           原记录同窗口），但消不掉「凭空贴了个不对应任何记录的示例」。这一点
           如实写进报告，不用启发式假装解决。
 """
-import re, datetime
+import os, re, datetime
 
 import attribute
 
@@ -71,8 +71,18 @@ def norm_wt(v):
 
 
 def is_bot(login):
-    """机器人账号：约定后缀 `-bot`（worker）或 GitHub App 的 `[bot]`。"""
-    return login.endswith("-bot") or login.endswith("[bot]")
+    """机器人账号：约定后缀 `-bot`（worker）或 GitHub App 的 `[bot]`，外加项目配置
+    `WEEKLY_REPORT_BOT_LOGINS` 显式列出的账号（逗号 / 空白分隔，精确匹配）。
+
+    名字不按约定结尾的机器人账号（例：`acme-bot-pusher`）认不出来时，错得很安静：
+    它的评论被算进「人发的」，它的记账行在 extract() 第 ⓪ 步被整条丢掉（AI 用量 = 0）。
+    每次调用都读环境变量而不缓存：run.sh 把项目配置 export 进来，测试也靠改环境切换。
+    collect.py 直接复用这一个函数，两处判定不会漂移。
+    """
+    if login.endswith("-bot") or login.endswith("[bot]"):
+        return True
+    extra = os.environ.get("WEEKLY_REPORT_BOT_LOGINS", "")
+    return login in {x for x in re.split(r"[\s,]+", extra) if x}
 
 
 def _parse_ts(v, date_hint=None):
@@ -124,6 +134,8 @@ def extract(body, login, comment_id=None, default_wt=None):
       price_status 金额按**单价可信度**拆开，{corroborated/uncorroborated/disputed/
                unstable/reference_only: 美元}。与 cost_state 是两回事：cost_state 说
                「有没有价」，这个说「这个价站不站得住」
+      models   本次派工实际产生非零用量的模型 ID 列表；旧记录回落为空列表
+      model_unknown 是否另有非零用量无法从会话上下文归属到模型
       has_cost 这条记录**有没有写金额**。`cost=0` 有两种来源：驱动没配单价所以根本没写，
                和配了单价但估算不足半美分、如实写成 `0.00`。两者必须分开，否则报告会把
                后者说成「该侧未配单价」
@@ -198,6 +210,7 @@ def extract(body, login, comment_id=None, default_wt=None):
         # 价格覆盖三态：full 全有单价 / partial 有一部分模型没单价（金额必定偏低）/
         # none 一条都算不出。老格式没有这个字段，按 has_cost 推。
         cost_state = kv.get("cost_state") or ("full" if has_cost else "none")
+        models = sorted(set(x for x in kv.get("models", "").split(",") if x))
         return {"src": "marker", "ident": ident, "agent": kv.get("agent"),
                 "wt": norm_wt(kv.get("wt")) or norm_wt(default_wt), "start": st, "end": en,
                 "wall": wall, "cost": cost, "has_cost": has_cost, "out": out,
@@ -205,7 +218,8 @@ def extract(body, login, comment_id=None, default_wt=None):
                 "cost_unknown_tokens": _int("cost_unknown_tokens"),
                 "price_source": kv.get("price_source"),
                 "price_stale": kv.get("price_stale") == "yes",
-                "price_status": _price_status(kv.get("price_status"))}
+                "price_status": _price_status(kv.get("price_status")),
+                "models": models, "model_unknown": kv.get("model_unknown") == "yes"}
 
     # ② 历史评论（无机器记录）：连同上面那条作者判定一共四步，任何一步不满足
     #    就不作为记账来源
@@ -228,9 +242,11 @@ def extract(body, login, comment_id=None, default_wt=None):
             "out": _out_of(nxt),
             "tokens": attribute.parse_token_line(nxt), "tokens_exact": False,
             "cost_state": ("full" if costs else "none"), "cost_unknown_tokens": 0,
-            # 历史评论是老驱动那张**过期价目表**算出来的（实测高 193%），既没有可信度
+            # 历史评论是老驱动那张**过期价目表**算出来的（实测高 193%）。金额原值不直接用：采集侧会按 token 重估（见
+            # attribute.legacy_estimate，来源记作 estimated）。原值既没有可信度
             # 也没有出处可言 —— 留空，报告里按「来源不明」披露，不硬塞进四态里充数
-            "price_source": None, "price_status": {}}
+            "price_source": None, "price_status": {},
+            "models": [], "model_unknown": False}
 
 
 def _price_status(raw):

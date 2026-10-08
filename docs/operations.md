@@ -33,6 +33,12 @@ LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
 
+# Worker selection
+WORKER_AGENT="claude"           # ordinary work; default
+WORKER_MODEL=""                 # optional ordinary-worker model override
+REVIEW_WORKER_AGENT="codex"     # cross-review; only used when review is enabled
+REVIEW_MODEL=""                 # optional review-worker model override
+
 # Install command (run after creating worktree)
 WORKTREE_SETUP_CMD="npm ci || npm install"
 # Examples:
@@ -55,6 +61,12 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 # Env to pass into the worker (tmux doesn't inherit by default)
 WORKER_PASS_ENV="GH_TOKEN"
 
+# Second GitHub identity: GH_TOKEN polls/reads, this one does every write
+# (label flips, the daemon's alert issue, the retrospective push, and the token
+# handed to the worker). Empty = reuse GH_TOKEN, i.e. today's single-account
+# behaviour. Keep this file 0600 when it holds a token.
+# WRITE_GH_TOKEN=""
+
 # Auto-cleanup after merge (worktree + tmux)
 AUTO_CLEANUP_ON_MERGE="true"
 
@@ -63,7 +75,35 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 
 # Pace
 MAX_CONCURRENT_WORKERS=1
+
+# How often the scheduler wakes the poller. setup.sh writes it into the systemd
+# timer drop-in / launchd plist, so it takes effect after re-running setup.sh.
 POLL_INTERVAL_SECS=60
+
+# Idle backoff: `<quiet seconds>:<poll interval seconds>`, comma separated. A
+# project nobody has touched for that long polls at that interval. Empty string
+# turns the whole feature off (idle AND failure backoff).
+POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
+# Force a full poll if this long has passed since the last successful GitHub
+# read, whatever the ladder or the local state says.
+POLL_FORCE_SYNC_SECS=1800
+# Failure gets its own ladder (starts at POLL_INTERVAL_SECS, doubles each time,
+# capped here) and never
+# advances the quiet timer: "cannot read GitHub" is not "nothing to do".
+POLL_FAIL_BACKOFF_MAX_SECS=1800
+# Slack for timer jitter, so a 60s tier is not stretched into 120s.
+POLL_DUE_SLACK_SECS=10
+
+# Give up on an item after this many consecutive dispatch failures: the daemon
+# strips its trigger labels and hands it to pending/human. A failed dispatch
+# changes nothing on its own, so without a cap the next poll simply tries again
+# forever (measured 2026-09-18: 270 re-dispatches in 2h24m until GitHub
+# suspended the bot account). Counters live in $STATE_DIR/dispatch-fail/ and
+# reset on success and on escalation.
+DISPATCH_MAX_RETRIES=3
+# Same idea for self-heal: how many times a worker whose tmux session died may
+# be auto-redispatched before the item goes to pending/human instead.
+SELFHEAL_MAX_RETRIES=3
 
 # Open an issue when the local base falls this many commits behind origin
 # (auto-closed once it catches up). Off by default — only a checkout people
@@ -83,6 +123,7 @@ PROJECT_PRIORITY_FIELD="Priority"
 PROJECT_NUMBER=""                # empty = first board linked to this repo
 PROJECT_OWNER=""                 # only when the board's owner differs from the repo's
 PROJECT_GH_TOKEN=""              # token used only for the board read; empty = reuse GH_TOKEN
+# WRITE_GH_TOKEN=""              # token used for every WRITE; empty = reuse GH_TOKEN
 ```
 
 Full field list: [`coding-agent.config.example`](../coding-agent.config.example).
@@ -91,8 +132,10 @@ Full field list: [`coding-agent.config.example`](../coding-agent.config.example)
 
 When `CODEX_PRICES` is unset, the Codex usage driver uses the
 [built-in price table](../scripts/drivers/token-usage/codex-prices.json), checked
-on 2026-09-16 against the official API model pages:
+on 2026-09-28 against the official API model pages:
 [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra),
+[`gpt-6-sol`](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[`gpt-6-luna`](https://developers.openai.com/api/docs/models/gpt-6-luna),
 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
 [`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra),
 [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
@@ -100,8 +143,13 @@ on 2026-09-16 against the official API model pages:
 [`gpt-5.2-codex`](https://developers.openai.com/api/docs/models/gpt-5.2-codex),
 [`gpt-5-codex`](https://developers.openai.com/api/docs/models/gpt-5-codex),
 and [`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest).
-The table contains their Standard text input, cached-input, and output rates;
-only Astra has a listed cache-write rate in this table.
+The table contains their Standard text input, cached-input, and output rates.
+The three GPT-6 and three GPT-5.6 models also carry their listed cache-write
+rates; the Codex-named models have no listed cache-write rate, so cache writes
+on them stay unpriced.
+`gpt-5.6-sol` is on promotional pricing that OpenAI only guarantees through
+2026-11-21. Re-check that model before then instead of waiting for the 90-day
+stale warning, which fires later.
 
 Set `CODEX_PRICES` to a JSON map keyed by exact model ID to replace the full
 table. A copy-ready map is in [the config example](../coding-agent.config.example);
@@ -270,6 +318,14 @@ Design notes:
   actually addresses it, and whether the acceptance criteria are verifiable; having no code
   yet is normal and must not be treated as a failure (observed in practice: codex applied the
   code checklist to a design-only issue and could only report "no implementation to review")
+- **A failed design review means "revise the design", not "go implement it".** The bounce
+  lands on the same `pending/agent` queue as a human saying "design looks good, go build it",
+  so the reviewer has to spell out which one it is — otherwise the next worker implements a
+  proposal no human ever approved
+- **Unticked checkboxes are not a defect.** The convention is one tick = decided, none =
+  the stated default applies, several = let's discuss — so "the human hasn't ticked" already
+  *is* a decision. A reviewer that reads it as "missing human confirmation" bounces work that
+  was ready; what it should review instead is whether the default is the right one
 - Other text-only exits (questions, clarifications, blocked runs, security stops) still go
   straight to `pending/human`; gating those would burn a review on "I have a question for
   you" and slow down your answer
@@ -329,6 +385,7 @@ Available placeholders (`sed`-rendered):
 | `${PR}` | PR number (pr-comment only) |
 | `${REPO}` | owner/repo |
 | `${TITLE}` | issue title (new-issue only) |
+| `${PARENT_ISSUE}` | parent issue number (`sub-issue.template.md` only — see [architecture.md → closure](architecture.md#prissue-closure-decided-at-design-time)) |
 | `${WORKTREE}` | absolute worktree path |
 | `${BRANCH}` | full branch name |
 | `${ISSUE_N}` | issue number derived from branch (pr-comment only) |
@@ -416,6 +473,28 @@ bash scripts/preview-serve.sh --list       # every preview in this project and w
 bash scripts/preview-unserve.sh --issue 791  # deregister (call this from your cleanup hook)
 ```
 
+### Port ownership once ports wrap
+
+With `PREVIEW_PORT_MODULO` set (e.g. 1000) the port is `BASE + issue % MODULO`, so issues
+that are congruent share a port (#40 and #1040 both get 4040). Every port therefore has an
+**owner**: project + full issue number + worktree, as recorded in `<port>.conf`. One rule —
+**only ever touch a port registered to you; if there is no registration, touch nothing**:
+
+- `preview-serve.sh` finds the port registered to someone else (a congruent issue, or another
+  project) → exits 2 naming the owner, writes nothing
+- `preview-unserve.sh --issue N` / `--port P --expect-issue N` only deregisters when all three
+  owner fields match; no registration → exit 0, untouched; different owner → exit 3, untouched.
+  The old bare-port call `preview-unserve.sh <port>`
+  survives only as a transition shim: the expected owner comes from the `ISSUE` / `WORKTREE` env the
+  cleanup hook receives, and the call is refused without them
+- read registration → compare → write conf / systemd / tailscale all happen under one per-port
+  lock (`.port-<port>.lock`) shared by register and deregister; concurrent registration yields
+  exactly one winner
+- unregistered leftover tailscale routes are **not** removed automatically: the port may have
+  been reused by another service. Check what a route points at before removing it by hand
+
+Guarded by `tests/preview-port-ownership.test.sh`.
+
 ### Three things you must know
 
 **① The app gets the backend port, not the public one.** The public port belongs to the
@@ -453,7 +532,10 @@ bash scripts/preview-serve.sh 791     # includes reset-failed; re-run after fixi
 `preview-serve.sh` uses `systemctl start`, not `enable`: a preview lives and dies with its
 issue and should not come back after a reboot (by then `cleanup-issue.sh` has usually
 removed the worktree). Deregistration on issue close belongs in your project's
-`CLEANUP_HOOK`, which should call `preview-unserve.sh --issue <N>` — you have to add that
+`CLEANUP_HOOK`, which should call `preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"`
+(**always pass the hook's actual `WORKTREE`**: with `--issue` alone the expected owner is the path derived from
+config, so a cleanup from a same-numbered but different worktree could release someone else's registration;
+if `WORKTREE` is untrustworthy, skip deregistration rather than falling back to the default path) — you have to add that
 line yourself, since `cleanup-issue.sh` has no way to know whether you enabled previews.
 
 ## File layout
@@ -509,6 +591,7 @@ your-project/
 
 ~/.local/state/coding-agent-poll/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
+├── poll-pace.json                      # idle/failure backoff state; `rm` it = back to full speed
 ├── poll.log                            # rolling log
 ├── poll.lock                           # flock
 └── sessions/                           # tmux pane logs per worker
@@ -521,17 +604,28 @@ your-project/
 
 | OS | Scheduler | Unit / Plist | Set up by `setup.sh`? |
 |----|-----------|--------------|-----------------------|
-| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}` (symlink to skill template) | ✅ |
+| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}` (symlink to skill template) + `coding-agent-poll@<key>.timer.d/interval.conf` (generated from `POLL_INTERVAL_SECS`) | ✅ |
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist` (generated) | ✅ |
 | Other | — | — | ❌ `exit 1`; see [manual cron fallback](#manual-cron-fallback) below |
 
 Both paths read the same `~/.config/coding-agent-work-loop/<key>.conf` env file. Linux runs `skill-deploy.sh` before the durable poll entry. Network work has a separate non-blocking lock and timeout; only publication and cleanup take the short deploy lock, so a slow fetch cannot hold up consumers of the current release. Failed fetch attempts also enter the shared throttle. macOS runs the pinned entry but does not auto-deploy, and a plist template change requires re-running `setup.sh`.
 
+The tick cadence is only an upper bound on how often GitHub gets called: a
+project nobody has touched for a day or more decides, inside `agent-poll.sh`,
+to skip most of its ticks (see [idle and failure backoff](architecture.md#poll-pace-idle-and-failure-backoff)).
+Waking a process costs tens of milliseconds; API calls are the scarce resource,
+so the tick itself stays cheap and frequent.
+
+`POLL_INTERVAL_SECS` is what drives the timer on both OSes, and on Linux
+`setup.sh` writes it as a per-instance drop-in rather than editing the shared
+template. A hand-written `interval.conf` is never overwritten — `setup.sh` says
+so and leaves it alone.
+
 ### macOS specifics
 
 - **Label**: `dev.luosky.coding-agent-work-loop.<key>` (must match the filename)
 - **Loaded via**: `launchctl bootstrap gui/$UID <plist>` (modern syntax, macOS 10.10+). `setup.sh` runs `bootout` first if a previous load exists, so re-runs are idempotent.
-- **Run cadence**: `StartInterval=60` (every 60s, equivalent to systemd `OnUnitActiveSec=60s`).
+- **Run cadence**: `StartInterval` comes from `POLL_INTERVAL_SECS` (equivalent to systemd `OnUnitActiveSec`). Changing it means re-running `setup.sh`, since the plist is generated, not symlinked.
 - **Logs**: stdout/stderr → `~/Library/Logs/coding-agent-work-loop/<key>.{out,err}.log`. The deeper poll log still lives at `$STATE_DIR/poll.log`.
 - **flock**: not bundled with macOS. `brew install flock` once before running `setup.sh`.
 - **Logout / lid-close**: a user LaunchAgent runs when you're logged in (even with screen locked). For "run even when no user is logged in," you'd need a `/Library/LaunchDaemons/` install — `setup.sh` deliberately doesn't go there (requires `sudo`, breaks symmetry with Linux's `--user` systemd).
@@ -622,9 +716,38 @@ Polling has up to 1 minute of latency. For instant:
 
 ## Custom worker (not Claude Code)
 
-Worker selection now goes through a thin **driver layer** — no fork needed. Set `WORKER_AGENT=<name>` in `coding-agent.config`. Built-ins: `claude` (default), `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
+Worker selection now goes through a thin **driver layer** — no fork needed. Ordinary work uses `WORKER_AGENT=claude` by default; `WORKER_MODEL` is an optional model override for that path. When the optional review gate is enabled, review uses `REVIEW_WORKER_AGENT=codex` and `REVIEW_MODEL` independently. An empty model leaves selection to the driver's current default. Built-ins: `claude`, `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
+
+### poll.log went sparse — did the daemon die?
+
+Probably not: a project nobody has touched for a day or more polls less often on
+purpose (`POLL_BACKOFF_LADDER`). A backed-off tick still writes one line saying
+which tier it is on and how much longer it will wait, so silence is silence and
+backoff is visible:
+
+```
+[...] [myproj] 本轮跳过（已安静 3d4h，当前档位 10m0s，还差 7m12s）
+```
+
+Checks, in order:
+
+```bash
+cat ~/.local/state/coding-agent-poll/<key>/poll-pace.json    # which tier, since when
+grep -c 'poll start' ~/.local/state/coding-agent-poll/<key>/poll.log   # real polls so far
+rm ~/.local/state/coding-agent-poll/<key>/poll-pace.json     # back to full speed, right now
+```
+
+Deleting that file is always safe — it only holds pacing, never the "which
+comments have I seen" cursors (those live in `state.json`). Two guarantees hold
+regardless of what is in it: a full poll happens at least every
+`POLL_FORCE_SYNC_SECS`, and any unparseable / out-of-range state is treated as
+"due now" rather than "wait longer". To turn the whole thing off, set
+`POLL_BACKOFF_LADDER=""`.
+
+If the log is genuinely silent — no skip lines either — the daemon really is
+down; carry on below.
 
 ### Timer / agent is on but daemon isn't running
 
@@ -812,6 +935,40 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
 
 If the worker finishes without leaving any comment, state.json's comment ID doesn't advance and the same comment gets treated as new next time. Prompts should require the worker to leave at least one reply.
+
+### Dispatch fails every round for the same item
+
+A dispatch that fails changes nothing — the label is not flipped and the comment
+cursors do not advance — so the next poll picks the same item up again. That used
+to be an unbounded loop; it is now capped by `DISPATCH_MAX_RETRIES` (default 3),
+after which the daemon strips the trigger labels and hands the item to
+`pending/human`. Grep the log for the reason:
+
+```bash
+grep -E '派工失败|连续 .* 次派工失败' "$STATE_DIR/poll.log" | tail
+```
+
+The failure reason is written into `poll.log` itself — you should not need
+`journalctl`. If a line looks truncated or empty, that is a bug: every `git` call
+on a dispatch path is supposed to go through the `run_git` helper, which logs the
+command's full output on failure.
+
+One cause worth knowing, because `git` refuses it unconditionally: **the target
+branch is already checked out by another worktree.** `git fetch` into such a
+branch always fails, even when there is nothing to update, and
+`git worktree add --force` would happily create a *second* worktree on that same
+branch — two workers committing to one branch. Dispatch therefore refuses up
+front and sends the item straight to `pending/human`, naming the holder:
+
+```bash
+git worktree list                 # find the holder
+git worktree remove <holder-dir>  # free the branch, then re-label pending/agent
+```
+
+The counters live in `$STATE_DIR/dispatch-fail/` and are cleared on the first
+success and again when an item is escalated, so re-labelling by hand always gives
+it a fresh set of attempts. To clear one by hand:
+`rm -f "$STATE_DIR/dispatch-fail/pr-959"`.
 
 ### Debug a single poll
 

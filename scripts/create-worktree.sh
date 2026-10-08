@@ -44,8 +44,18 @@ fi
 if [ -d "$WORKTREE_DIR" ]; then
     log "  worktree 目录已存在：${WORKTREE_DIR}（跳过创建）"
 else
+    # 分支被别的 worktree 签出时，`git worktree add`（不带 --force）本来就会失败，
+    # 但错误只写在 stderr 上，而 _lib.sh 顶部的永久 `2>/dev/null` 会把它整个吞掉——
+    # 于是 poll.log 里只剩一句「派工失败」。先显式判一次，把占用者路径写进日志。
+    if HOLDER=$(branch_checked_out_elsewhere "$BRANCH" "$WORKTREE_DIR"); then
+        log "  ⚠️ 分支 $BRANCH 已被另一个 worktree 签出：$HOLDER"
+        log "     两个 worktree 共用一个分支 = 两个 worker 往同一分支提交，拒绝建 worktree"
+        log "     清掉占用者（git worktree remove '$HOLDER'）后重试"
+        exit 1
+    fi
     mkdir -p "$WORKTREE_BASE"
-    git worktree add "$WORKTREE_DIR" "$BRANCH"
+    run_git "worktree add $WORKTREE_DIR ($BRANCH)" \
+        git worktree add "$WORKTREE_DIR" "$BRANCH" || exit 1
 fi
 
 # 3a. 给 worktree 设独立的 git 身份（worker commit 用 bot 而非 user）

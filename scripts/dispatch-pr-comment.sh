@@ -160,10 +160,32 @@ fi
 # 拉下来后存到本地命名分支 $BRANCH（跟 daemon-spawned PR 一致），worktree 基于它建。
 log "PR #$PR -> 全新重建 worktree on $BRANCH (via refs/pull/$PR/head)"
 cd "$PROJECT_ROOT"
-git fetch origin "+refs/pull/$PR/head:refs/heads/$BRANCH" 2>&1 | tail -2
+
+# 目标分支已经被**另一个** worktree 签出时，这条路是走不通的，而且两种走法都坏：
+# fetch 会被 git 无条件拒绝（见 _lib.sh:branch_checked_out_elsewhere 的实测说明），
+# 而下面那句 `git worktree add --force` 又会绕过保护、建出第二个签出同一分支的
+# worktree —— 两个 worker 往一个分支上提交。所以在 fetch **之前**就挡住。
+#
+# 这类失败在占用者还在期间是确定性的，重试 100% 白费（每次派工都含一次真出网的
+# sync_project_checkout），所以直接转人工，不进 agent-poll.sh 的重试计数通道。
+# 写法跟本文件上面 pr_to_issue_num 返空时那段同款：翻 label + exit 0。
+if HOLDER=$(branch_checked_out_elsewhere "$BRANCH" "$WORKTREE"); then
+    log "PR #$PR -> 分支 $BRANCH 已被另一个 worktree 签出：$HOLDER"
+    log "  → 拒绝重建 worktree（fetch 会被 git 拒绝；--force 建出来是两个 worktree 共用一个分支）"
+    log "  → 翻 label 回 $LABEL_PENDING_HUMAN，不重试。清掉占用者（git worktree remove '$HOLDER'）后重标 $LABEL_PENDING_AGENT 即可继续"
+    run_gh "label 翻转 (PR #$PR 分支被占用 → $LABEL_PENDING_HUMAN)" \
+        gh_label_flip "$PR" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "${TRIGGER_LABELS_ALL[@]}" || true
+    exit 0
+fi
+
+run_git "fetch PR #$PR head → $BRANCH" \
+    git fetch origin "+refs/pull/$PR/head:refs/heads/$BRANCH" || exit 1
 mkdir -p "$WORKTREE_BASE"
 # 用本地刚拉好的分支建 worktree；如果分支已存在（再 dispatch），fetch 已经 force-update 到 PR head
-git worktree add --force "$WORKTREE" "$BRANCH"
+run_git "worktree add $WORKTREE ($BRANCH)" \
+    git worktree add --force "$WORKTREE" "$BRANCH" || exit 1
 
 for rel in ${COPY_TO_WORKTREE:-}; do
     src="$PROJECT_ROOT/$rel"

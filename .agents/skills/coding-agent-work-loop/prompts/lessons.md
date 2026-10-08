@@ -2,20 +2,26 @@
 
 以下经验仅适用于本项目，不覆盖用户指令或安全约束。
 
-1. **面向人类的评论文本不得直接暴露内部状态码。** 首版用量 footer 直接显示英文状态词 `full`，人类审阅者看不懂含义，追问后才发现它只表示"本次记录到的用量均有对应单价"，并不代表金额已核准为真实账单。修复方式是把结论改写成中文人话（如"按 API 公开标价折算约 $X；本次记录的用量都有对应单价，仅供参考，不是账单"），机器可读状态保留在隐藏的 HTML 注释里。凡是要展示给非工程背景人员看的字段，应在写入评论前自查是否有裸露的内部术语/状态码。
-   证据：[PR #23 评论要求](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5692959754)、[对应修复](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5693000962)。
+1. **面向人类的评论文本不得暴露内部状态码，金额/成本类展示需标注为"参考估算"而非"实际账单"。** 用量 footer 曾直接显示英文状态词 `full`，已改为中文人话说明，机器状态只留在隐藏 HTML 注释里；Codex 价格按官方公开标价换算，未与真实扣费核验，需标注核对日期、显式配置可整表覆盖、`{}` 可关闭估算。发布前需自查是否有裸露的内部术语或把估算包装成确定数字。
+   证据：[PR #23 问题](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5692959754)、[修复](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5693000962)、[issue #22](https://github.com/GigleAI/cavil-loop/issues/22#issuecomment-5682099586)。
 
-2. **金额类展示必须反复标注"参考估算"而非"实际账单"。** 本 PR 全程要求：Codex 价格是按 OpenAI 官方 API 公开标价换算的参考值，不是订阅账单，也未与实际扣费交叉核验；每处展示金额的文案都需要带上这一限定语，避免使用者把静态标价当作真实成本。
-   证据：[issue #22 方案](https://github.com/GigleAI/cavil-loop/issues/22#issuecomment-5682099586)、[PR body](https://github.com/GigleAI/cavil-loop/pull/23)、[追问 full 含义的回答](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5692474081)。
+2. **人工拍板可能以编辑原评论勾选 checkbox、直接文字答复、或仅靠 relabel（不留文字）三种方式出现，且同一 PR 内可能反复出现"只 relabel 不留文字"。** 复盘/审计时须落到具体评论 URL、`created_at`/`updated_at` 和正文核对，不能只凭"最新评论是自己发的"或"label 已翻回"推定已确认；无法核实时须在报告中明确写"未见书面确认，按默认项/推断执行"。PR #39、#44 中人工都出现过只移除 `pending/human` 而无文字的情形，agent 均如实标注为推断并请求纠正。
+   证据：[issue #22](https://github.com/GigleAI/cavil-loop/issues/22#issuecomment-5682099586)、[issue #28](https://github.com/GigleAI/cavil-loop/issues/28#issuecomment-5709122169)、[PR #37 文字确认](https://github.com/GigleAI/cavil-loop/pull/37#issuecomment-5771186863)、[PR #39 relabel-only](https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5774321544)、[PR #44 推断标注](https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882562160)、[PR #44 书面确认](https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882724800)。
 
-3. **内置默认价格表须带来源日期与过期信号，并保留覆盖/关闭开关。** 未设置 `CODEX_PRICES` 时使用静态快照价目，标注核对日期（2026-09-16）与 90 天过期提示；显式配置可整表替换，`{}` 可关闭估算。这样既能开箱即用，又不会让旧价格在无人察觉时长期影响所有未显式配置的部署。目前过期提示仍停留在"文档/字段展示"层面，没有自动化定期复核任务，后续若要长期维护需明确谁、多久复核一次（此为推断，非已验证流程）。
-   证据：[PR #23 body](https://github.com/GigleAI/cavil-loop/pull/23)。
+3. **独立复审要用对应阶段的标准（方案阶段审"值不值得看"，不得以"没实现/没测试"打回代码阶段的标准）；沙盘/单元测试全绿、复审自陈"实测通过"、PR 合并动作三者互不等价于"生产环境已实际执行该改动"，须分别声明。** PR #39、#44 正文都用"实测过的/没跑过的"分栏披露验证范围（如 sub-issue 写接口未在真实仓库调用），是值得延续的诚实披露格式。
+   证据：[PR #23 复审](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5690315790)、[issue #34 复审误用标准](https://github.com/GigleAI/cavil-loop/issues/34#issuecomment-5769671286)、[PR #39 最终通过](https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5776318505)、[PR #44 通过评论](https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882824062)。
 
-4. **Open Questions 的复选框可被作者直接编辑来"拍板"，处理时必须核对 `updated_at` 与正文而非只看最新评论时间。** issue #22 的方案评论创建于 14:35:26Z，后于 00:04:12Z 被编辑，把 Q1 从默认 A 改选为 B（内置默认表）；如果只看"是否有新评论"会漏掉这次拍板。
-   证据：[issue #22 方案评论](https://github.com/GigleAI/cavil-loop/issues/22#issuecomment-5682099586)。
+4. **自指边界：修改复审/派工工具自身运行时依赖的脚本或模板时，验证结果天然存在版本滞后，需主动声明。** 技能目录软链接指向 main checkout，已在 PR #27 #31 #37 #39 #44 中反复出现"合并前复审和派工仍用旧版"，应视为固定风险点。
+   证据：[PR #27](https://github.com/GigleAI/cavil-loop/pull/27#issuecomment-5707594020)、[PR #31](https://github.com/GigleAI/cavil-loop/pull/31#issuecomment-5710284750)、[PR #37 正文](https://github.com/GigleAI/cavil-loop/pull/37)、[PR #39 正文](https://github.com/GigleAI/cavil-loop/pull/39)、[PR #44 正文](https://github.com/GigleAI/cavil-loop/pull/44)。
 
-5. **引入独立交叉复审（pending/review 关卡）能在合并前发现真实问题，但复审本身的用量/成本目前无法单独核算。** 本轮独立 `codex review`/`codex exec review` 发现并修复了 4 处问题（过期状态测试依赖真实日期、旧统一价文档与实现不符、review footer 漏传开始 epoch、PAT 派工账号可能被误判为人工动作）；但 CLI review 会话没有可用的单次 token 用量记录，不能把工作目录累计折算值当作 review 本身的成本，报告中需如实注明这一缺口，不可编造或挪用其他数字顶替。
-   证据：[PR #23 复审说明](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5690315790)。
+5. **涉及密钥的环境变量/配置文件有三类易被忽视的失效模式：一次性覆盖参数复用持久配置同名变量会被 source 覆盖；配置文件"裸赋值"能否被子进程看到取决于此前是否已被 export 过（需用全新变量名 + `env -u` 清空环境才能暴露）；安装脚本常未强制收紧密钥文件权限，需显式 `chmod 600` 并对已存在的老安装文件补做。** 跨进程边界改动需要跨边界回归测试 + 负对照。
+   证据：[PR #30 复审](https://github.com/GigleAI/cavil-loop/pull/30#issuecomment-5709274794)、[PR #30 修复](https://github.com/GigleAI/cavil-loop/pull/30#issuecomment-5709323575)、[issue #36 裸赋值实测](https://github.com/GigleAI/cavil-loop/issues/36#issuecomment-5771691189)、[PR #38 chmod 600](https://github.com/GigleAI/cavil-loop/pull/38)。
 
-6. **"本机手动验证通过"不等于"自动化关卡在生产中可用"，两者要在报告中分别声明。** 本 PR 只验证了本机手动触发 `pending/review` 复审流程和测试脚本，真实 daemon 自动派工触发的复审关卡尚未单独验活，PR 描述与评论中都明确写出这一未验证范围，没有夸大为"已上线可用"。
-   证据：[PR #23 验证段落](https://github.com/GigleAI/cavil-loop/pull/23)、[评论说明](https://github.com/GigleAI/cavil-loop/pull/23#issuecomment-5693000962)。
+6. **GitHub Project v2 看板字段写权限、仓库标签写权限、OAuth `project` scope 是三件互相独立的事**；权限不足应如实上报交人拍板，不擅自提权或静默跳过；ProjectV2 迭代字段变更不产生 timeline 事件，事后可能无法证实归因，报告中应明确写为未定论。
+   证据：[PR #31 首条报告](https://github.com/GigleAI/cavil-loop/pull/31#issuecomment-5710284750)、[PR #31 复审](https://github.com/GigleAI/cavil-loop/pull/31#issuecomment-5710415519)。
+
+7. **根因排查、方案设计与问题复核都应对"看似显然"的假设做独立实测，不能只信读代码/文字描述，包括复审报告声称的具体后果。** 已验证案例：`exec 2>/dev/null` 永久重定向丢弃子进程 stderr；`git fetch` 被拒后 `git worktree add --force` 仍可能成功；PR #39 中开发方对"需人工介入"的严重性实测后更正为"自动恢复"。
+   证据：[issue #34 方案](https://github.com/GigleAI/cavil-loop/issues/34#issuecomment-5769590395)、[PR #37 正文](https://github.com/GigleAI/cavil-loop/pull/37)、[issue #36 补充盘点](https://github.com/GigleAI/cavil-loop/issues/36#issuecomment-5771504273)、[PR #39 后果复核](https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5776234982)。
+
+8. **校验类与状态机类安全边界要系统性收口，而非逐点打补丁。** (a) "损坏时 fail-open"的数值校验须在所有"跳过/放行"判断之前统一执行，覆盖字符类、位数上限、进制三维度，闸门本身做成结构性 fail-open；(b) 轮询状态机中，"先记已处理、后做可能失败的读写"会让失败永久漏掉，且读失败不得映射成具体状态（如 `|| echo OPEN`）。同一类问题被复审连续发现 3 次以上变体时，应枚举该逻辑全部读、写、入队环节，并为每一步配"首轮失败、下轮恢复"的跨轮测试及旧实现负对照；聚合"全部完成"前须确认列表完整（含当前项、条数与来源总数一致）。PR #44 修完汇总函数后，合并收尾的入队与子项标签仍被后续轮次发现，说明枚举范围要覆盖上游。
+   证据：[PR #39 数值回绕](https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5772835326)、[PR #39 收敛](https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5776234982)、[PR #44 汇总失败](https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882325000)、[列表缺项](https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882462036)、[漏入队](https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882615439)、[子项标签](https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882756411)。

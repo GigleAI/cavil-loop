@@ -214,6 +214,38 @@ import attribute as a
 c = dict($CALL); c['model']='<synthetic>'
 print(a.price_calls([c], $TBL)[3])")" "{}"
 
+echo "── 8. 参照表变了，缓存必须跟着作废（GigleTutor-Web#982）──"
+# build_cached() 原来只按 transcript 目录指纹缓存算好的价目表。只改参照表、transcript
+# 没动时，driver 会继续读旧表——补上新模型的单价之后，旧缓存里仍是「未知」。
+mkset 30 1.0 5 full
+chk "只改参照表 → 下一次取表就用新参照" "$(XDG_CACHE_HOME="$TMP/cache" CLAUDE_PROJECTS_DIR="$TMP/projects" \
+    PYTHONPATH="$REPO_DIR/scripts/weekly-report" python3 -c "
+import price_solve as ps
+ps.build_cached('A')                                    # 先落一份缓存
+ps.REFERENCE['claude-haiku-4-5'] = dict(ps.REFERENCE['claude-haiku-4-5'], output=99)
+print(ps.build_cached('A')['models']['claude-haiku-4-5']['output']['price'])")" "99"
+chk "只改快速档参照 → 同样作废" "$(XDG_CACHE_HOME="$TMP/cache2" CLAUDE_PROJECTS_DIR="$TMP/projects" \
+    PYTHONPATH="$REPO_DIR/scripts/weekly-report" python3 -c "
+import price_solve as ps
+ps.build_cached('A')
+ps.REFERENCE_FAST['claude-opus-5'] = dict(ps.REFERENCE_FAST['claude-opus-5'], input=99)
+print(ps.build_cached('A')['fast']['claude-opus-5']['input'])")" "99"
+chk "参照没变、transcript 没变 → 仍然命中缓存（不是每次都重算）" "$(XDG_CACHE_HOME="$TMP/cache3" CLAUDE_PROJECTS_DIR="$TMP/projects" \
+    PYTHONPATH="$REPO_DIR/scripts/weekly-report" python3 -c "
+import price_solve as ps
+ps.build_cached('A')
+called = []
+orig = ps.build
+ps.build = lambda *a, **k: called.append(1) or orig(*a, **k)
+ps.build_cached('A')
+print('hit' if not called else 'rebuilt')")" "hit"
+
+echo "── 9. 参照来源如实写明（GigleTutor-Web#982）──"
+chk "来源是官方价目页 + 真实核对日期" "$(PYTHONPATH="$REPO_DIR/scripts/weekly-report" python3 -c "
+import price_solve as ps
+s = ps.REFERENCE_SOURCE
+print('ok' if 'platform.claude.com/docs/en/about-claude/pricing' in s and '2026-09-29' in s else s)")" "ok"
+
 echo
 echo "结果：$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

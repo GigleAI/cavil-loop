@@ -16,8 +16,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# _lib.sh 顶部的 `exec 9>&- 2>/dev/null` 会永久吞掉 stderr；本脚本的报错（端口被谁占了、
+# 锁超时）必须让调用方看得见，所以 source 前后存还 fd 2。
+exec 8>&2
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
+exec 2>&8 8>&-
 
 PREVIEW_PORT_BASE="${PREVIEW_PORT_BASE:-4000}"
 PREVIEW_BACKEND_OFFSET="${PREVIEW_BACKEND_OFFSET:-10000}"
@@ -27,7 +31,7 @@ PREVIEW_READY_TIMEOUT="${PREVIEW_READY_TIMEOUT:-90}"
 PREVIEW_TAILSCALE_SERVE="${PREVIEW_TAILSCALE_SERVE:-false}"
 PREVIEW_URL_HOST="${PREVIEW_URL_HOST:-}"
 
-CONF_DIR="$HOME/.config/coding-agent-work-loop/preview"
+CONF_DIR="$PREVIEW_CONF_DIR"
 UNIT_DIR="$HOME/.config/systemd/user"
 
 # ── --list ──
@@ -65,7 +69,7 @@ done
     exit 2
 }
 
-PORT=$((PREVIEW_PORT_BASE + ISSUE))
+PORT="$(preview_port "$ISSUE")"
 BACKEND_PORT=$((PORT + PREVIEW_BACKEND_OFFSET))
 WORKTREE="$(worktree_path "$ISSUE")"
 
@@ -75,20 +79,34 @@ WORKTREE="$(worktree_path "$ISSUE")"
     exit 2
 }
 
-# ── 写 per-port conf ──
-# 三个 unit 都 EnvironmentFile 这一个文件；端口算术只在这里做一次，
-# unit / run / wait 谁都不再自己算，避免 offset 改了漏改一处。
-mkdir -p "$CONF_DIR"
-CONF="$CONF_DIR/${PORT}.conf"
-umask 077
-# ⚠️ 值一律加双引号。这个文件有两个读者，容忍度不一样：
-#   · systemd EnvironmentFile —— 整行右侧都算 value，不加引号也对
-#   · preview-run.sh / preview-wait.sh 的 bash `source` —— 不加引号，
-#     `PREVIEW_EXEC=node srv.mjs` 会被解析成「带临时环境变量执行 srv.mjs」，
-#     报 `srv.mjs: command not found` 后 exit 127，socket 反复重试直到撞
-#     trigger limit 熄火。带空格的 PREVIEW_EXEC（几乎必然带空格）每次都踩。
-# systemd 侧认这对引号并会剥掉，两边都满足。
-cat > "$CONF" <<EOF
+# 从认主到 tailscale 绑定整段持端口锁：与 preview-unserve.sh 共用同一把，
+# 并发注册 / 注册与注销交错时，登记、unit、路由三者不会落在不同主人名下。
+register_locked() {
+    # ── 认主（在端口锁里）──
+    # 端口已登记在别人名下（取模后的同余 issue，或别的项目）→ 拒绝，报出占用方，一个字节都不写。
+    # 登记在自己名下 → 照常重注册（--warm / --restart 都走这里）。
+    owner="$(preview_owner_of "$PORT")"
+    want="$TMUX_PREFIX|$ISSUE|$WORKTREE"
+    if [ -n "$owner" ] && [ "$owner" != "$want" ]; then
+        echo "❌ preview 端口 :$PORT 已被 $(preview_owner_human "$owner") 占用，$TMUX_PREFIX #$ISSUE 不注册。" >&2
+        echo "   等对方注销（preview-unserve.sh --issue <它的号>），或人工处理后重跑本脚本。" >&2
+        exit 2
+    fi
+
+    # ── 写 per-port conf ──
+    # 三个 unit 都 EnvironmentFile 这一个文件；端口算术只在这里做一次，
+    # unit / run / wait 谁都不再自己算，避免 offset 改了漏改一处。
+    mkdir -p "$CONF_DIR"
+    CONF="$CONF_DIR/${PORT}.conf"
+    umask 077
+    # ⚠️ 值一律加双引号。这个文件有两个读者，容忍度不一样：
+    #   · systemd EnvironmentFile —— 整行右侧都算 value，不加引号也对
+    #   · preview-run.sh / preview-wait.sh 的 bash `source` —— 不加引号，
+    #     `PREVIEW_EXEC=node srv.mjs` 会被解析成「带临时环境变量执行 srv.mjs」，
+    #     报 `srv.mjs: command not found` 后 exit 127，socket 反复重试直到撞
+    #     trigger limit 熄火。带空格的 PREVIEW_EXEC（几乎必然带空格）每次都踩。
+    # systemd 侧认这对引号并会剥掉，两边都满足。
+    cat > "$CONF" <<EOF
 # 由 preview-serve.sh 生成，别手改（下次注册会覆盖）
 PREVIEW_PROJECT="$TMUX_PREFIX"
 PREVIEW_ISSUE="$ISSUE"
@@ -101,40 +119,42 @@ PREVIEW_READY_TIMEOUT="$PREVIEW_READY_TIMEOUT"
 PATH="$PATH"
 EOF
 
-# ── 起监听 ──
-# start 而不是 enable：preview 是随 issue 生灭的临时物，不该在重启后自动复活
-# （worktree 那时多半已经被 cleanup 删了）。重启后要用就再跑一次本脚本。
-systemctl --user daemon-reload
-# reset-failed 不能省：app 起不来时 socket 会连续重触发，撞上 TriggerLimitBurst 后
-# 整个 socket 进 failed 且**不再接受激活**——URL 从此静默变死，且 `start` 是 no-op。
-# 修完配置重跑本脚本就该能恢复，所以先清 failed 状态再 start。
-systemctl --user reset-failed \
-    "coding-agent-preview@${PORT}.socket" \
-    "coding-agent-preview@${PORT}.service" \
-    "coding-agent-preview-app@${PORT}.service" 2>/dev/null || true
-systemctl --user start "coding-agent-preview@${PORT}.socket"
+    # ── 起监听 ──
+    # start 而不是 enable：preview 是随 issue 生灭的临时物，不该在重启后自动复活
+    # （worktree 那时多半已经被 cleanup 删了）。重启后要用就再跑一次本脚本。
+    systemctl --user daemon-reload
+    # reset-failed 不能省：app 起不来时 socket 会连续重触发，撞上 TriggerLimitBurst 后
+    # 整个 socket 进 failed 且**不再接受激活**——URL 从此静默变死，且 `start` 是 no-op。
+    # 修完配置重跑本脚本就该能恢复，所以先清 failed 状态再 start。
+    systemctl --user reset-failed \
+        "coding-agent-preview@${PORT}.socket" \
+        "coding-agent-preview@${PORT}.service" \
+        "coding-agent-preview-app@${PORT}.service" 2>/dev/null || true
+    systemctl --user start "coding-agent-preview@${PORT}.socket"
 
-# 改完代码要让 preview 反映新产物：正式 server 不热更新，进程得换一个。
-# 只 stop 不 start —— socket 还在监听，下次访问自然拉起新的（要立刻生效就配 --warm）。
-# 注意先 stop app 会连带把 proxy 拽下来（proxy Requires app），这正是想要的。
-if [ "$RESTART" = 1 ]; then
-    systemctl --user stop "coding-agent-preview-app@${PORT}.service" 2>/dev/null || true
-fi
-
-if [ "$WARM" = 1 ]; then
-    systemctl --user start "coding-agent-preview-app@${PORT}.service"
-fi
-
-# ── tailscale serve 绑定（可选）──
-if [ "$PREVIEW_TAILSCALE_SERVE" = "true" ]; then
-    if command -v tailscale >/dev/null 2>&1; then
-        if ! sudo -n tailscale serve --bg --https="$PORT" "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
-            echo "  ⚠️ tailscale serve 绑定失败（sudo -n / 权限？）——本地 http://127.0.0.1:$PORT 仍可用" >&2
-        fi
-    else
-        echo "  ⚠️ 没有 tailscale 命令，跳过反代绑定" >&2
+    # 改完代码要让 preview 反映新产物：正式 server 不热更新，进程得换一个。
+    # 只 stop 不 start —— socket 还在监听，下次访问自然拉起新的（要立刻生效就配 --warm）。
+    # 注意先 stop app 会连带把 proxy 拽下来（proxy Requires app），这正是想要的。
+    if [ "$RESTART" = 1 ]; then
+        systemctl --user stop "coding-agent-preview-app@${PORT}.service" 2>/dev/null || true
     fi
-fi
+
+    if [ "$WARM" = 1 ]; then
+        systemctl --user start "coding-agent-preview-app@${PORT}.service"
+    fi
+
+    # ── tailscale serve 绑定（可选）──
+    if [ "$PREVIEW_TAILSCALE_SERVE" = "true" ]; then
+        if command -v tailscale >/dev/null 2>&1; then
+            if ! sudo -n tailscale serve --bg --https="$PORT" "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+                echo "  ⚠️ tailscale serve 绑定失败（sudo -n / 权限？）——本地 http://127.0.0.1:$PORT 仍可用" >&2
+            fi
+        else
+            echo "  ⚠️ 没有 tailscale 命令，跳过反代绑定" >&2
+        fi
+    fi
+}
+preview_with_port_lock "$PORT" register_locked || exit $?
 
 if [ -n "$PREVIEW_URL_HOST" ]; then
     echo "https://${PREVIEW_URL_HOST}:${PORT}/"

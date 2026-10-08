@@ -14,8 +14,19 @@ OnBootSec=30s
 #   OnActiveSec 与开机时长无关，每次 manager 起来都能自己种下基准点，把链条重新拉转。
 #   （Persistent=true 救不了：它只对 OnCalendar= 生效，对 monotonic timer 是 no-op。）
 OnActiveSec=30s
-# 注：这里不能用变量，systemd timer 不展开 EnvironmentFile。如果要改 interval，
-# 编辑此模板或用 systemctl --user edit coding-agent-poll@%i.timer 做 drop-in。
+# 注：这里不能用变量，systemd timer 不展开 EnvironmentFile。所以**不要改这个默认值**：
+# 每个实例的间隔由 setup.sh 按项目配置里的 POLL_INTERVAL_SECS 生成一份 drop-in
+# （~/.config/systemd/user/coding-agent-poll@<key>.timer.d/interval.conf）来覆盖，
+# 改模板会影响所有实例。改完配置重跑 setup.sh 即可。
+#
+# ⚠️ 自己手写 drop-in 时：OnBootSec / OnActiveSec / OnStartupSec / OnUnitActiveSec /
+# OnUnitInactiveSec 在 systemd 里是**同一张 list**，任意一个空赋值会把整张表清空——
+# 只写 `OnUnitActiveSec=` 加新值，上面那两行到这个实例就没了，于是 manager 重启后
+# timer 显示 active 但永远不触发。三项必须一起补回来（setup.sh 生成的那份就是这么写的）。
+#
+# 另注：这个 tick 频率现在只是**上限**。长期没动静的项目由 agent-poll.sh 自己决定
+# 本轮要不要真去打 GitHub（POLL_BACKOFF_LADDER，见 docs/architecture.md）——省的是
+# 调用不是进程，所以这里照旧每分钟起一次很便宜。
 OnUnitActiveSec=60s
 # AccuracySec 不设默认 1min，会把 60s 间隔攒批拉成 ~2min（实际间隔 ≈ OnUnitActiveSec + AccuracySec）。
 # 设 5s：保留一点攒批余地，又把实际间隔锁在 ~60-65s（即"1 分钟"）。

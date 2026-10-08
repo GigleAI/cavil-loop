@@ -50,6 +50,16 @@ r = record.extract(default_mark, BOT, 40)
 chk("内置价来源与过期状态从机器标记进入周报记录",
     (r["price_source"], r["price_stale"]), ("default", True))
 
+model_mark = ("<!-- agent-metrics agent=codex wt=25 "
+              "start=2026-09-14T10:00:00+08:00 end=2026-09-14T10:14:10+08:00 "
+              "wall_secs=850 models=gpt-z,gpt-a,gpt-z model_unknown=yes -->")
+r = record.extract(model_mark, BOT, 41)
+chk("模型集合进入周报记录并去重排序",
+    (r["models"], r["model_unknown"]), (["gpt-a", "gpt-z"], True))
+chk("旧机器记录缺模型字段时兼容为空集合",
+    (record.extract(default_mark, BOT, 42)["models"],
+     record.extract(default_mark, BOT, 42)["model_unknown"]), ([], False))
+
 ex_foot = ("历史排版长这样：\n\n````text\n"
            "⏱️ 开始 2020-01-01 00:00:00 · 完工 09:00:00 · 耗时 540m\ntoken 1 input ($999.00)\n````\n\n"
            "> 引用别人的：\n> ⏱️ 开始 2021-02-02 00:00:00 · 完工 08:00:00 · 耗时 480m\n\n" + REAL)
@@ -185,6 +195,9 @@ chk("机器记录没写 out= → 记 0，不回头扫正文",
     record.extract(BODY_EX + mk.replace("out=1234 ", ""), BOT, 26)["out"], 0)
 chk("历史记账行 → 只读紧随其后那一行（1k），正文示例不参与",
     record.extract(BODY_EX + REAL, BOT, 27)["out"], 1000)
+chk("历史记账行没有模型证据 → 兼容为空集合",
+    (record.extract(REAL, BOT, 28)["models"], record.extract(REAL, BOT, 28)["model_unknown"]),
+    ([], False))
 
 # ── 长窗口披露（只决定列不列，不改任何数字） ─────────────────────────────
 def listed(sec):
@@ -193,6 +206,27 @@ chk("窗口 30 分钟的正常长调用 → 不列出", listed(1800), False)
 chk("窗口 7 小时 → 列出", listed(7 * 3600), True)
 chk("窗口正好 4 小时 → 列出（取 ≥）", listed(4 * 3600), True)
 chk("窗口 3 小时 59 分 → 不列出", listed(4 * 3600 - 60), False)
+
+# ── 机器人账号：后缀约定之外，可用 WEEKLY_REPORT_BOT_LOGINS 显式列出 ─────────────
+# 机器人账号名不一定以 -bot 结尾（例：acme-bot-pusher）。不认出来的后果有两个且都静默：
+# 它发的评论被算成「人发的」，它的记账行被当成人写的而整条丢弃（AI 用量显示 0）。
+import os
+os.environ.pop("WEEKLY_REPORT_BOT_LOGINS", None)
+chk("未配置时，非 -bot 结尾的账号 → 不算机器人", record.is_bot("acme-bot-pusher"), False)
+os.environ["WEEKLY_REPORT_BOT_LOGINS"] = "acme-bot-pusher, other-agent"
+chk("配置列出的账号 → 算机器人", record.is_bot("acme-bot-pusher"), True)
+chk("逗号 + 空白分隔都认", record.is_bot("other-agent"), True)
+chk("精确匹配，不按前缀 / 子串放宽", record.is_bot("acme-bot-push"), False)
+chk("人类账号不受影响", record.is_bot("alice"), False)
+chk("后缀约定仍然有效", record.is_bot("acme-bot"), True)
+chk("配置列出的账号的记账行 → 入账",
+    record.extract(REAL, "acme-bot-pusher", 30, 931) is not None, True)
+os.environ.pop("WEEKLY_REPORT_BOT_LOGINS", None)
+chk("清掉配置后同一账号的记账行 → 不入账",
+    record.extract(REAL, "acme-bot-pusher", 30, 931), None)
+
+import collect
+chk("collect 与 record 用同一个判定（不各写一份）", collect.is_bot is record.is_bot, True)
 
 print(f"\n  {ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)

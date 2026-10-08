@@ -16,11 +16,20 @@
 
 | 场景 | PR body 用 | merge 时 issue 状态 | daemon auto-cleanup |
 |------|-------|------|------|
-| **A. 完整闭环**：一个 PR 全解决 issue | `Closes #N` | GitHub 自动关 | issue 加 Done（与 PR 同状态） |
-| **B. 部分实现**：多 PR 才完成 issue | `Refs #N` | 保持 open | issue 翻 `pending/human` 等你 triage |
-| **C. issue 太大**：建议拆 sub-issue | 不直接派工 | — | 你拆完每个 sub-issue 再单独 label |
+| **A. 一个 PR**：一个 PR 全解决 issue | `Closes #N` | GitHub 自动关 | issue 加 Done（与 PR 同状态） |
+| **B. 拆成 sub-issue**：一个 PR 装不下 | 父 issue 不开 PR；每个子项的 PR 用 `Closes #子号` | 父 issue 保持 open 当总表（`pending/PR`） | 子项各自加 Done；子项**全部**关闭时父 issue 翻 `pending/human` 并留一条汇总评论。daemon 不会关父 issue |
 
-worker 在「设计提案」comment 里就会列出选 A/B/C 的判断，跟你讨论确认后才开干。所以 `Closes` 还是 `Refs` 是**设计阶段共识**，不是 worker 默认行为。
+worker 在「设计提案」comment 里选 A 或 B（选 B 时附拆分计划：每个子项的标题 / 范围 / 前置 / 验收），跟你确认后才开干。所以「一个 PR 还是拆」是**设计阶段共识**，不是 worker 默认行为。
+
+**为什么拆 sub-issue，而不是一个 issue 挂多个 `Refs #N` PR**（旧的「部分实现」，#43 起取消）：整个工具是「一个编号 = 一个分支 = 一个 worktree = 一个 session」。一个 issue 挂多个 PR 时，后续 PR 只存在于评论里的一句话——没法排队、打 label、看进度——还得复用 merge 钩子已经当作「完工」的分支 / worktree。sub-issue 有自己的编号，派工 / worktree / 清理 / 周报原样适用。
+
+拆分怎么跑：
+
+1. 你确认 B 后，worker（`issue-comment.template.md` § A-split）逐个建子 issue、用 sub-issue 接口挂到父 issue 下、从父 issue 继承优先级 / Project iteration。没有前置的子项直接打 `pending/agent`；有前置的打 `pending/human`，前置合并后由你打 `pending/agent`
+2. 子项跳过设计轮：`dispatch-new-issue.sh` 渲染开发阶段 prompt（`issue-comment` + `sub-issue.template.md`）而不是设计 prompt，**前提是三条同时成立**——GitHub 上它确实有本仓库的父 issue、正文带指向该父 issue 的 `<!-- agent-split-from: #父号 -->`、由写身份（bot）创建。任一不成立（或查询出错）就照常走设计轮
+3. merge 钩子把合并 PR 对应的 issue **无条件入队**——它关没关由汇总自己去读，因为钩子自己读状态失败时会兜底成 OPEN——（`state.json` 的 `split_rollup_queue`），每轮 poll 统一清队、逐个调 `sub_issue_rollup`。要队列是因为这个 PR 已记入 `cleaned_prs`、下轮不会再扫到——最后一个子项汇总时碰上一次接口抖动，父 issue 就永远等不到汇总。任何读写失败都留在队里下轮再试（上限 `SUB_ISSUE_ROLLUP_MAX_TRIES`，默认 30 轮）。评论和翻 label 分开记进度（`split_rollup_commented` / `split_rollups`），翻 label 失败后重试不会重复发评论。「全部关闭」只从确认完整的列表得出：列表必须包含刚关闭的这个子项，且条数等于父 issue 自己记的 `sub_issues_summary.total`——否则视为接口未刷新，下轮再试。合并 PR 对应 issue 自己的标签（关了打 `Done`、还开着打 `pending/human`）同理：状态读不到就一个标签都不写，进 `merged_label_queue` 下轮再判——绝不猜成 OPEN
+
+旧「部分实现」模式遗留的 issue（已合过一个 `Refs` PR、还剩活）：下次派工时把剩余部分拆成 sub-issue。人手开的 `Refs #N` PR 照旧处理（merge 后 issue → `pending/human`）。
 
 ### 状态流转图
 
@@ -31,7 +40,7 @@ worker 在「设计提案」comment 里就会列出选 A/B/C 的判断，跟你�
    ▼
 pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub UI 实时可见
                                               │
-                                              │ worker 干活（建分支、写代码、跑测试、push、开 PR with `Refs #N`）
+                                              │ worker 干活（建分支、写代码、跑测试、push、开 PR with `Closes #N`）
                                               ▼
                                        worker 完工 →
                                           - PR  : pending/human
@@ -43,12 +52,9 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
                                               ▼ (你 merge PR)
                                        daemon auto-cleanup →
                                           - PR  : Done（PR 闭环）
-                                          - Issue: pending/human（issue 仍 open，**等你 triage** 这次 PR 是否真把问题彻底搞定）
-                                              │
-                                              ▼
-                                       你决定：
-                                          - 真闭环 → 手动关 issue（可加 Done label）
-                                          - 还差点 → 评论 + 标 pending/agent，进新一轮设计或开发
+                                          - Issue: 被 `Closes #N` 关闭 → Done
+                                          - 子 issue 关闭 → 若兄弟子项也全关了，
+                                            父 issue → pending/human（由你决定是否关闭）
 ```
 
 > 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。
@@ -83,6 +89,56 @@ greedy 下的闭环靠 worker 自己收口：派工时翻 `doing/agent`（被挡
 - **doing/agent 也是 UI 信号**：你在 GitHub 上一眼能区分「agent 在干」（doing/agent）和「agent 干完等你」（pending/human），无需 attach tmux 才能知道
 - **state.json**：记录每个 PR「上次见过的最大 comment ID」。同一条评论永远不会被两次派工
 - **active worker 计数**：通过 tmux session 命名约定数活的 worker；超过 `MAX_CONCURRENT_WORKERS` 时新任务排队等下一轮
+
+## 轮询节奏：空闲退避与故障退避
+
+闹钟每 `POLL_INTERVAL_SECS` 秒把 `agent-poll.sh` 叫醒一次，这一点不变 —— 脚本改不了
+自己下次被叫醒的时间，所以这里省的是**调用而不是进程**（起一个进程只要几十毫秒加一次
+flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一个动作：决定这一轮要不要真的去
+打 GitHub。
+
+**硬边界**：这套状态只决定「这一轮跑不跑」，**绝不决定「跑的时候怎么做」**。派工给谁、
+并发满没满、哪个 session 该回收，真值仍然 100% 来自每次真轮询现拉的 GitHub 标签。所以
+节奏状态坏掉只会让节奏不对，不可能派错工、也不可能误杀正在干活的 worker。
+
+**阶梯按「安静了多久」分档**，不是按「空闲了几轮」（`POLL_BACKOFF_LADDER`，
+`<安静秒数>:<间隔秒数>`）：
+
+| 安静了多久 | 多久轮询一次 | 相当于 60 秒 tick 的 |
+|---|---|---|
+| 不到 1 天 | 不退避，每个 tick 都跑 | 1 倍 |
+| 1 ~ 3 天 | 5 分钟 | 1/5 |
+| 3 ~ 7 天 | 10 分钟 | 1/10 |
+| 满 7 天 | 30 分钟 | 1/30 |
+
+以下任意一条成立就当场把安静计时归零：daemon 自己动了手（派工 / 自愈 / 回收 / 清理）；
+还有 worker 在跑（GitHub 上挂着 `doing/agent`，或本机还有 worker tmux session 活着）；
+队列里有活在等（哪怕这轮被并发上限挡住）；或者仓库变了。「变了」是指纹比出来的 —— 对
+**本轮真正进入判断的那批行**取「编号 + 最后更新时间 + 标签」，其余所有 open 条目只记
+编号（这样一条 PR 被合并、一个 issue 被关掉照样能看出来）。指纹从这一轮已经拉下来的快照
+里算，不多花一次调用。
+
+多机分工的独立性也靠这个指纹：label 模式下，对面机器在本机不关心的标签上折腾不会把本机
+叫醒。**greedy 模式做不到隔离** —— greedy 的候选集按定义就是整个仓库的 open 条目，什么
+都在判断范围内。这是 greedy 的语义，不是 bug。
+
+**「读不到 GitHub」不等于「没活干」。** 故障走自己那套阶梯（从 `POLL_INTERVAL_SECS` 起步、
+每多失败一次翻倍、封顶 `POLL_FAIL_BACKOFF_MAX_SECS`），并且刻意**冻结**安静计时：一次故障
+不会把活跃项目打慢，
+恢复之后从故障前那一档继续。实测：2026-09-18~22 那 88 小时，5 个项目跑了 30040 轮，每
+一轮都是 403「账号已封」；同一窗口走这套阶梯只剩 905 轮。
+
+**三道防线保证本地文件坏了也卡不死项目**，而且全部 fail-open（坏了就跑，绝不是坏了就等）：
+
+| 防线 | 挡的是什么 |
+|---|---|
+| 心跳（`POLL_FORCE_SYNC_SECS`） | 距上次成功读到 GitHub 超过这么久 → 无条件跑，不管阶梯、指纹、还是这套逻辑本身有没有 bug。它**不覆盖**故障阶梯：读不到的时候强行再读一次正是那套阶梯要避免的事，而且故障状态是自证的、不是推断出来的 |
+| 只认「写入路径可能写出来的状态」 | 在任何「等一等」的决定**之前**过两道：先逐个字段验字符类**和位数**（bash 算术会把位数超标的全数字值静默回绕成一个看着正常的时间戳），再验字段**彼此的关系**——写入方恒满足 `last_active ≤ last_poll ≤ next_due ≤ last_poll + 当时那套阶梯的上限`，不满足就说明这份文件不是本程序写的。写成一条封闭规则而不是一串字段检查是有意的：清单只能覆盖想得到的变体，而组合是无穷的。判定损坏 = 现在就该跑，下一轮真跑时把文件重写成干净值 |
+| 双时间戳 | bash 没有单调时钟（`date +%s` 是墙上时钟），所以「下次该跑」和「上次真跑」两个都存。时钟往前跳 → 跑；往回跳 → 状态不可信 → 跑；文件写不进去（盘满 / 只读）→ 每个 tick 都跑，也就是改动前的行为 |
+
+状态放在 `$STATE_DIR/poll-pace.json`，跟 `state.json` 分开：`rm` 掉它就是立刻回最快档，
+而不会连「哪些评论看过了」那些游标一起清掉。退避中的每个 tick 仍然往 `poll.log` 写一行，
+写明现在在哪一档、还要等多久。
 
 ## Worker 会话模型
 

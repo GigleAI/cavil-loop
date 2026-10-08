@@ -33,6 +33,12 @@ LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
 LABEL_DONE="Done"
 
+# Worker 选择
+WORKER_AGENT="claude"           # 普通任务；默认值
+WORKER_MODEL=""                 # 可选，只覆盖普通任务的模型
+REVIEW_WORKER_AGENT="codex"     # 独立 review；仅启用 review 关卡时使用
+REVIEW_MODEL=""                 # 可选，只覆盖 review 的模型
+
 # 安装命令（worktree 创建后跑）
 WORKTREE_SETUP_CMD="npm ci || npm install"
 # 例子：
@@ -55,6 +61,11 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 # 传给 worker 的 env（tmux 默认不继承）
 WORKER_PASS_ENV="GH_TOKEN"
 
+# 第二把 GitHub 身份：GH_TOKEN 只管轮询 / 读，这一把管所有写（翻 label、daemon
+# 的告警 issue、合并后复盘的 push，以及交给 worker 的那把）。留空 = 复用
+# GH_TOKEN，也就是现在的单账号行为。本文件装着 token 时保持 0600。
+# WRITE_GH_TOKEN=""
+
 # Merge 后 daemon 自动 cleanup（worktree + tmux）
 AUTO_CLEANUP_ON_MERGE="true"
 
@@ -63,7 +74,30 @@ CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
 
 # 节奏
 MAX_CONCURRENT_WORKERS=1
+
+# 闹钟多久把 poller 叫醒一次。setup.sh 会把它写进 systemd timer drop-in / launchd
+# plist，所以改完要重跑一次 setup.sh 才生效。
 POLL_INTERVAL_SECS=60
+
+# 空闲退避阶梯：`<安静了多少秒>:<用多大间隔轮询>`，逗号分隔。按**安静了多久**分档。
+# 留空 = 整个特性关闭（空闲退避和故障退避一起关）。
+POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
+# 心跳：距上次成功读到 GitHub 超过这么久就无条件跑一次完整轮询，不管退到哪一档。
+POLL_FORCE_SYNC_SECS=1800
+# 读不到 GitHub 时单独一套阶梯（从 POLL_INTERVAL_SECS 起步、每多失败一次翻倍、封顶在
+# 这个值），且**不推进安静
+# 计时**：「读不到」不等于「没活干」。
+POLL_FAIL_BACKOFF_MAX_SECS=1800
+# 给 timer 抖动留的余量，免得 60 秒那档被抖成 120 秒。
+POLL_DUE_SLACK_SECS=10
+
+# 一条活连续派工失败这么多次就放弃：摘掉触发 label、转 pending/human。
+# 派工失败本身什么都不改，所以没有上限的话下一轮会原样再来、直到天荒地老
+# （2026-09-18 实测：2 小时 24 分重派 270 次，直到 GitHub 把 bot 账号封停）。
+# 计数在 $STATE_DIR/dispatch-fail/，成功和升级转人工时都会清零。
+DISPATCH_MAX_RETRIES=3
+# self-heal 那边同理：tmux session 死掉的 worker 最多自动重派几次，超了转 pending/human。
+SELFHEAL_MAX_RETRIES=3
 
 # 本地 base 落后 origin 这么多 commit 就开 issue 提醒（跟上后自动关）；默认 0 = 关
 # 只有人真的上手干活的那个 checkout 才会卡住，所以是 opt-in；要开推荐设 20
@@ -80,6 +114,7 @@ PROJECT_PRIORITY_FIELD="Priority"
 PROJECT_NUMBER=""                # 留空 = 本仓库关联的第一个看板；看板在别处就填编号
 PROJECT_OWNER=""                 # 看板 owner 跟仓库 owner 不同时才填
 PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用 GH_TOKEN
+# WRITE_GH_TOKEN=""              # 所有**写**用的 token；留空 = 复用 GH_TOKEN
 ```
 
 完整字段见 [`coding-agent.config.example`](../coding-agent.config.example)。
@@ -88,8 +123,10 @@ PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用
 
 未设置 `CODEX_PRICES` 时，Codex 用量驱动使用
 [内置价格表](../scripts/drivers/token-usage/codex-prices.json)。该表在
-2026-09-16 对照官方模型页核过标准文本输入、缓存输入和输出标价，覆盖
+2026-09-28 对照官方模型页核过标准文本输入、缓存输入和输出标价，覆盖
 [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)、
+[`gpt-6-sol`](https://developers.openai.com/api/docs/models/gpt-6-sol)、
+[`gpt-6-luna`](https://developers.openai.com/api/docs/models/gpt-6-luna)、
 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol)、
 [`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra)、
 [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna)、
@@ -97,7 +134,10 @@ PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用
 [`gpt-5.2-codex`](https://developers.openai.com/api/docs/models/gpt-5.2-codex)、
 [`gpt-5-codex`](https://developers.openai.com/api/docs/models/gpt-5-codex) 和
 [`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest)。
-表中只有 Astra 配有官方列出的缓存写入单价。
+GPT-6 与 GPT-5.6 各三个型号另配有官方列出的缓存写入单价；名字带 codex 的型号
+官方未列缓存写入价，其缓存写入仍报缺价。
+`gpt-5.6-sol` 目前是促销价，官方只保证至 2026-11-21；请在此之前复核该型号，
+不要等 90 天过期提示（它来得更晚）。
 
 部署者可按完整模型 ID 设置 `CODEX_PRICES` JSON，整表替换内置表；
 [配置模板](../coding-agent.config.example)有可直接复制的版本。设
@@ -242,6 +282,12 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 - **拦「代码产出」和「设计方案」两类**，各用各的清单。设计方案审的是根因是否成立、
   Design 能否解决它、验收标准是否可验证——此时没有代码是正常的，reviewer 不该因此判不通过
   （实测踩过：codex 拿审代码的尺子去量一份只有方案的 issue，只能报「没有可 review 的实现」）
+- **方案复审不通过 = 「改方案」，不是「去实现」**。打回落到 `pending/agent`，跟人说
+  「方案 OK，开干」共用一条队列，所以 reviewer 必须在评论里写明是哪一种——否则下一轮
+  worker 会直接去实现一份人从没确认过的方案
+- **未勾选的选择题不是缺陷**。约定是勾 1 项 = 拍板、都不勾 = 走默认项、多勾 = 想再讨论，
+  所以「人还没勾」本身就是一个决定。reviewer 把它读成「缺少人工确认」，打回的是本来
+  已经可以走的活；它该审的是默认项选得对不对
 - 其余纯文字出口（提问、反问、受阻停机、安全停机）仍直达 `pending/human`，
   否则「我有个问题想问你」也要白烧一次 review、还拖慢你被问到的速度
 - **轮次上限**（`REVIEW_MAX_ROUNDS`，默认 3）唯一的作用是防两个 agent 互相打回烧 API，
@@ -294,6 +340,7 @@ project/.agents/skills/coding-agent-work-loop/prompts/
 | `${PR}` | PR 编号（仅 pr-comment） |
 | `${REPO}` | 仓库 owner/repo |
 | `${TITLE}` | issue 标题（仅 new-issue） |
+| `${PARENT_ISSUE}` | 父 issue 编号（仅 `sub-issue.template.md`，见 [architecture.zh.md 闭环关系](architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)） |
 | `${WORKTREE}` | worktree 绝对路径 |
 | `${BRANCH}` | branch 全名 |
 | `${ISSUE_N}` | 从 branch 反推的 issue 编号（仅 pr-comment） |
@@ -372,6 +419,24 @@ bash scripts/preview-serve.sh --list       # 本项目所有 preview 及其死�
 bash scripts/preview-unserve.sh --issue 791  # 注销（cleanup hook 里调）
 ```
 
+### 端口归属：取模之后的同端口
+
+配了 `PREVIEW_PORT_MODULO`（例：1000）时端口是 `BASE + issue % MODULO`，同余 issue 会算出
+同一个端口（#40 与 #1040 都是 4040）。所以每个端口都有**主人**：`<port>.conf` 里的
+「项目 + 完整 issue 号 + worktree」。规则只有一句——**谁都只动登记在自己名下的端口；
+查不到登记就什么都不动**：
+
+- `preview-serve.sh` 发现端口登记在别人名下（同余 issue 或别的项目）→ exit 2 并报出占用方，一个字节都不写
+- `preview-unserve.sh --issue N` / `--port P --expect-issue N` 只注销主人三项全等的登记；
+  没登记 → exit 0 不动；主人不符 → exit 3 不动。旧的裸端口调用 `preview-unserve.sh <port>`
+  只作过渡兼容：预期主人取 cleanup hook 拿到的 `ISSUE` / `WORKTREE` env，缺了就拒绝
+- 读登记 → 比对 → 写 conf / systemd / tailscale 全在同一把端口锁（`.port-<port>.lock`）里，
+  注册与注销共用，并发注册恰好一个成功
+- 没登记的遗留 tailscale 路由**不自动拆**：端口可能已被别的服务复用，按公式拆就是误伤。
+  人工处理前先核对路由当前指向谁
+
+守卫：`tests/preview-port-ownership.test.sh`。
+
 ### 三个必须知道的坑
 
 **① app 拿到的是后端端口，不是公开端口。** 公开端口被 `.socket` 占着，app 再 bind 会
@@ -404,7 +469,9 @@ bash scripts/preview-serve.sh 791     # 内含 reset-failed，改完配置重跑
 
 `preview-serve.sh` 用的是 `systemctl start` 而不是 `enable`：preview 是随 issue 生灭的
 临时物，不该在重启后自动复活（那时 worktree 多半已经被 `cleanup-issue.sh` 删了）。
-issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --issue <N>` 完成
+issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"` 完成
+（**一定要带上 hook 拿到的实际 `WORKTREE`**：只传 `--issue` 时预期主人取配置推出来的路径，同号但不同路径的清理就能拆掉别人的登记；
+`WORKTREE` 不可信时整个跳过注销，别退回默认路径）
 ——这一条要自己加进 hook，`cleanup-issue.sh` 不知道你有没有启用 preview。
 
 ## 文件结构
@@ -460,6 +527,7 @@ your-project/
 
 ~/.local/state/coding-agent-poll/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
+├── poll-pace.json                      # 空闲/故障退避状态；`rm` 掉 = 立刻回最快档
 ├── poll.log                            # 滚动日志
 ├── poll.lock                           # flock
 └── sessions/                           # 每个 worker tmux session 的 pane 日志
@@ -472,17 +540,25 @@ your-project/
 
 | OS | 调度器 | Unit / Plist | `setup.sh` 自动装？ |
 |----|--------|--------------|---------------------|
-| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}`（symlink 到 skill 模板）| ✅ |
+| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}`（symlink 到 skill 模板）+ `coding-agent-poll@<key>.timer.d/interval.conf`（按 `POLL_INTERVAL_SECS` 生成）| ✅ |
 | macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist`（生成，非 symlink）| ✅ |
 | 其他 | — | — | ❌ `exit 1`；见下方 [手动 cron 兜底](#手动-cron-兜底) |
 
 两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`。Linux 在持久 poll 入口前执行 `skill-deploy.sh`；网络 fetch 使用单独的非阻塞锁和超时，只有发布与清理才短暂持有部署锁，所以慢 fetch 不会挡住当前 release 的消费者，失败尝试也会进入共享节流。macOS 运行钉版本入口但不自动部署，plist 模板有改动要重跑 `setup.sh`。
 
+tick 频率只是「最多多久打一次 GitHub」的上限：一整天没人碰的项目会在 `agent-poll.sh`
+内部决定跳过大部分 tick（见[空闲与故障退避](architecture.zh.md#轮询节奏空闲退避与故障退避)）。
+起一个进程只要几十毫秒，调用才是稀缺资源，所以 tick 本身保持便宜且频繁。
+
+两个系统上驱动 timer 的都是 `POLL_INTERVAL_SECS`；Linux 端 `setup.sh` 把它写成本实例的
+drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会被覆盖 —— `setup.sh` 会提示
+一句然后放着不动。
+
 ### macOS 专属
 
 - **Label**：`dev.luosky.coding-agent-work-loop.<key>`（必须和 plist 文件名一致）
 - **加载方式**：`launchctl bootstrap gui/$UID <plist>`（modern 语法，macOS 10.10+）。`setup.sh` 会先 `bootout` 再 bootstrap，重跑幂等。
-- **运行频率**：`StartInterval=60`（每 60 秒一次，等价 systemd `OnUnitActiveSec=60s`）。
+- **运行频率**：`StartInterval` 取自 `POLL_INTERVAL_SECS`（等价 systemd `OnUnitActiveSec`）。plist 是生成的不是 symlink，改了要重跑 `setup.sh`。
 - **日志**：stdout/stderr → `~/Library/Logs/coding-agent-work-loop/<key>.{out,err}.log`。更深的 poll 日志仍在 `$STATE_DIR/poll.log`。
 - **flock**：macOS 不自带，先 `brew install flock` 再跑 `setup.sh`。
 - **登出 / 合盖**：user LaunchAgent 登录后常驻（即使锁屏也跑）；想"无登录、开机即跑"要装到 `/Library/LaunchDaemons/` —— `setup.sh` 故意不进这里（要 `sudo`，且和 Linux `--user` systemd 对称）。
@@ -573,9 +649,34 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 
 ## 自定义 worker（不是 Claude Code）
 
-Worker 切换走一层薄的 **driver 抽象**，不需要 fork。在 `coding-agent.config` 里设 `WORKER_AGENT=<name>` 即可。内置：`claude`（默认）、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
+Worker 切换走一层薄的 **driver 抽象**，不需要 fork。普通任务默认使用 `WORKER_AGENT=claude`；`WORKER_MODEL` 只覆盖普通任务的模型。启用可选 review 关卡后，review 独立使用 `REVIEW_WORKER_AGENT=codex` 和 `REVIEW_MODEL`；模型留空时由对应 driver 使用自己的当前默认值。内置：`claude`、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
+
+### poll.log 变稀疏了，daemon 是不是死了
+
+多半没死：一整天没人碰的项目会**故意**少轮询（`POLL_BACKOFF_LADDER`）。退避中的每个
+tick 仍然写一行，写明现在在哪一档、还要等多久 —— 所以「安静」和「退避」在日志上是分
+得开的：
+
+```
+[...] [myproj] 本轮跳过（已安静 3d4h，当前档位 10m0s，还差 7m12s）
+```
+
+按顺序查：
+
+```bash
+cat ~/.local/state/coding-agent-poll/<key>/poll-pace.json    # 现在哪一档、从什么时候开始安静
+grep -c 'poll start' ~/.local/state/coding-agent-poll/<key>/poll.log   # 到目前为止真跑了几轮
+rm ~/.local/state/coding-agent-poll/<key>/poll-pace.json     # 立刻回最快档
+```
+
+删这个文件永远是安全的：它只存节奏，不存「哪些评论看过了」那些游标（那些在
+`state.json` 里）。而且不管它里面是什么，两条保证都成立：最长
+`POLL_FORCE_SYNC_SECS` 一定会跑一次完整轮询；任何解析不出来、或者超出合法范围的状态
+一律按「现在就该跑」处理，而不是「再等等」。想整个关掉就把 `POLL_BACKOFF_LADDER` 置空。
+
+如果日志是**真**的一行都没有（连跳过那行也没有），那才是 daemon 真的停了，往下看。
 
 ### Timer / agent 起来了但 daemon 不跑
 
@@ -617,6 +718,35 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
 
 如果 worker 没回任何 comment 就完事，state.json 的 comment ID 不会推进，下次又会被当新评论。Prompt 应强制 worker 至少回一句评论。
+
+### 同一条活每轮派工都失败
+
+派工失败本身什么状态都不改 —— label 没翻、comment cursor 没动 —— 于是下一轮 poll 又把
+它捡起来。这以前是个没有上限的循环，现在由 `DISPATCH_MAX_RETRIES`（默认 3）封顶，到
+上限就摘掉触发 label、把这条活转 `pending/human`。原因直接在日志里 grep：
+
+```bash
+grep -E '派工失败|连续 .* 次派工失败' "$STATE_DIR/poll.log" | tail
+```
+
+失败原因写在 `poll.log` 里，**不需要**再去翻 `journalctl`。如果某行看着是空的或被截断，
+那是 bug：派工路径上的每一个 `git` 调用都应该走 `run_git` helper，它会在失败时把命令的
+完整输出逐行写进日志。
+
+有一个成因值得单独记住，因为 git 对它是**无条件**拒绝的：**目标分支已经被另一个
+worktree 签出。** 这时 `git fetch` 必然失败（哪怕根本没东西要更新），而紧随其后的
+`git worktree add --force` 反倒会成功、建出**第二个**签出同一分支的 worktree —— 两个
+worker 往同一个分支上提交。所以派工会在动手之前就拒绝，并把占用者路径写进日志、直接
+转 `pending/human`：
+
+```bash
+git worktree list                 # 找出占用者
+git worktree remove <占用者目录>   # 腾出分支，然后重新标 pending/agent
+```
+
+计数文件在 `$STATE_DIR/dispatch-fail/`，第一次成功时清零、升级转人工时也清零 —— 所以
+人工重标一次总能拿到完整的重试次数。要手工清某一条：
+`rm -f "$STATE_DIR/dispatch-fail/pr-959"`。
 
 ### 调试一次 poll
 

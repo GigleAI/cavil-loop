@@ -40,6 +40,13 @@ def nice_max(v):
             return m * mag
     return 10 * mag
 
+def fmt_m(v):
+    """百万 token：不足 10 给一位小数（4.8M），否则取整（45M）；≥1000 换成 B（1.9B）。"""
+    v=float(v)
+    if v>=1000:
+        return f"{v/1000:.1f}B"
+    return f"{v:.0f}M" if v>=10 or v==0 else f"{v:.1f}M"
+
 def lab(k):
     d=datetime.date.fromisoformat(k); return f"{d.month}/{d.day}"
 
@@ -53,10 +60,17 @@ class Chart:
         out.append(f'<text x="{x0+8}" y="{y0+36}" class="sub">{esc(sub)}</text>')
         lv=[v for s in series if s["axis"]=="l" for v in s["data"] if v is not None]
         rv=[v for s in series if s["axis"]=="r" for v in s["data"] if v is not None]
+        # 堆叠柱的高度是同一周各项之和，轴上界必须容得下这个和——只看单项最大值时，
+        # 三项各 10M 的柱子顶到 30M，轴却只到 12M，柱子直接越出面板（#50 交叉 review 第 1 轮）。
+        for ax,vals_ in (("l",lv),("r",rv)):
+            stk=[s for s in series if s["type"]=="bar" and s.get("stack") and s["axis"]==ax]
+            if stk:
+                vals_.extend(sum(s["data"][i] or 0 for s in stk) for i in range(len(WK)))
         lmax=nice_max(max(lv+[1])); rmax=nice_max(max(rv+[1])) if rv else 1
         # series 可以带自己的数值格式（工时要 h + 小数）。左轴刻度跟着左轴 series 走；
         # 没带的一律回落全局 fmt，所以给某条 series 加格式不会影响同图里的其他条。
         lfmt=next((x["fmt"] for x in series if x["axis"]=="l" and "fmt" in x), fmt)
+        rfmt=next((x["fmt"] for x in series if x["axis"]=="r" and "fmt" in x), fmt)
         n=len(WK); step=iw/n
         yl=lambda v: iy+ih-(v/lmax)*ih
         yr=lambda v: iy+ih-(v/rmax)*ih
@@ -67,7 +81,7 @@ class Chart:
         if rv:
             for i in range(5):
                 v=rmax*i/4
-                out.append(f'<text x="{ix+iw+9}" y="{yr(v)+4:.1f}" class="ax" text-anchor="start">{fmt(v)}</text>')
+                out.append(f'<text x="{ix+iw+9}" y="{yr(v)+4:.1f}" class="ax" text-anchor="start">{rfmt(v)}</text>')
         for i,k in enumerate(WK):
             cls="axx last" if i==n-1 else "axx"
             out.append(f'<text x="{ix+step*i+step/2:.1f}" y="{iy+ih+20}" class="{cls}" text-anchor="middle">{lab(k)}</text>')
@@ -226,7 +240,18 @@ def main():
         "柱＝当周总成本（美元，按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少美元（右轴）。",
         [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本（美元）","axis":"l"},
          {"type":"line","data":kloc,"color":VIO,"label":"美元 / 千行代码","axis":"r"}],note=sw)
-    open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4],1020,a.fonts_dir))
+    # token 用量：缓存读取比其余三项大两个数量级，堆在一根柱里会把另外三项压成一条线，
+    # 所以它单独走右轴折线。切换周之前的 token 是旧驱动逐条累加的，采集侧已按 1.68 抵过
+    # （见 attribute.legacy_estimate），左右两侧才放得进同一张图——仍是估算，副标题写明。
+    M=lambda f:[wk[k].get(f,0)/1e6 for k in W]
+    p_tok=ch.panel(0,1020,1212,320,"token 用量：每周输入 / 输出 / 缓存读取（百万 token）",
+        "堆叠柱＝输入 + 缓存写入 + 输出（左轴）；折线＝缓存读取（右轴，量级大得多）。"
+        + ("红线左侧的周按旧记录的 token 数除以 1.68 抵掉重复计，是估算。" if fc is not None else ""),
+        [{"type":"bar","data":M("tok_in"),"color":BLUE,"label":"输入","axis":"l","stack":True,"fmt":fmt_m},
+         {"type":"bar","data":M("tok_cache_w"),"color":GOLD,"label":"缓存写入","axis":"l","stack":True,"fmt":fmt_m},
+         {"type":"bar","data":M("tok_out"),"color":ORANGE,"label":"输出","axis":"l","stack":True,"fmt":fmt_m},
+         {"type":"line","data":M("tok_cache_r"),"color":VIO,"label":"缓存读取","axis":"r","fmt":fmt_m}],note=sw)
+    open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4,p_tok],1360,a.fonts_dir))
     print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html")
 
 if __name__=="__main__":

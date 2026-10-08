@@ -63,6 +63,7 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 
 | 用户回复类型 | 你要做 |
 |------|------|
+| 最新一条是独立 reviewer 的**方案**复审结论（带 `<!-- codex-review-round:N -->`，且本 issue 还没有 PR） | 按它的意见**改方案**，走 § B——**不要**开写代码。打回和「方案 OK，开干」共用同一条队列，但人到现在一次都还没确认过这份方案；reviewer 若要求「先实现」，那是它用错了尺子，照方案本身的问题改，并在评论里说明本轮仍是设计阶段 |
 | 「OK」/「确认」/「方案没问题，开干」/ Open Q 全勾完或走默认 | 进入**开发阶段**（见下面 § A） |
 | 「先把 X 改成 Y」/「Z 部分还要包括 ...」/给出具体修改意见 / Open Q 多勾 | 进入**方案迭代**（见下面 § B） |
 | 「为什么不用 X？」/「这里 Y 怎么处理？」/纯问题 | 进入**澄清答复**（见下面 § C） |
@@ -70,11 +71,15 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 
 ### § A. 开发阶段
 
+**先看闭环关系**：回去重读设计阶段你发的方案评论里「🔗 issue 闭环关系」的勾选状态。勾的是 **B. 拆成 sub-issue** → **不在本 issue 写代码**，改走下面的 § A-split；勾 A（或都没勾 = 默认 A）→ 照下面 1–6 步。
+
+**老规矩遗留的「部分实现」issue**：本 issue 已经有合并过的 `Refs #${ISSUE}` PR、还剩一部分没做（旧版流程的「B. 部分实现」）→ 剩下的部分**不再开第二个 `Refs` PR**，按 § A-split 把剩余工作拆成 sub-issue（拆分计划写在交人评论里，列清已完成的部分 + 剩下每块的范围）。
+
 1. 实现：改代码 → TDD 优先补测试 → type-check / 相关测试 / lint 通过为止
 2. commit + `git push -u origin ${BRANCH}`
 3. `gh pr create --base main --title "..." --body "..."`，body 里**根据设计阶段确认的「issue 闭环关系」选关键词**：
    - **A. 完整闭环** → body 用 `Closes #${ISSUE}`（merge 自动关 issue）
-   - **B. 部分实现** → body 用 `Refs #${ISSUE}`（issue 保持 open 作 tracker；务必在 PR body 写明「这次只覆盖 X 部分；Y、Z 留后续 PR」）
+   - 走到这里的一律是 A（B 走 § A-split，不在本 issue 开 PR）；**不再用 `Refs #${ISSUE}` 开「部分实现」PR**
    - 看不准时回去重读设计阶段你发的 issue comment——那时已经跟用户讨论过这个选择
 4. 拿到 PR 编号 `<P>` 后先按下方「新 PR 必须继承」完成优先级与 Project iteration 继承，再翻 label（启用交叉 review 时先交独立 reviewer，未启用时交人；issue 转 PR 跟踪）：
    - `flip_label <P> --add ${LABEL_REVIEW_OR_HUMAN}`
@@ -87,6 +92,30 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
    fi
    ```
 6. 一句话回复 `PR #<P> 已开，issue 转 ${LABEL_PENDING_PR} 跟踪`，停 idle
+
+### § A-split. 拆成 sub-issue（闭环关系勾了 B）
+
+把方案里的「拆分计划」逐项落成 GitHub 原生 sub-issue。本 issue 本身不写代码、不开 PR。
+
+1. **逐个建子 issue**（按拆分计划的顺序）。正文写清：一句话说明来自哪个父 issue + 链到父 issue 上确认过的那条方案评论；这一块的范围 / 明确不做 / 验收标准；前置（`前置：#X`，没有写「前置：无」）。正文**最后一行**必须是拆分标记（daemon 靠它 + 父子关系 + 作者是 bot 三项核对，才让子项跳过设计轮直接开发；标记和父号对不上就会照常先出方案）：
+   ```bash
+   printf '%s\n\n<!-- agent-split-from: #%s -->\n' "$SUB_BODY_TEXT" "${ISSUE}" > /tmp/sub-body.md
+   SUB=$(gh api -X POST "repos/${REPO}/issues" -f title="<子项标题>" -F body=@/tmp/sub-body.md --jq .number)
+   ```
+   子项标题要能单独看懂（别只写「PR#2」）。前置若是**同一批里还没建的子项**，先建被依赖的那个，拿到编号再写。
+2. **挂到本 issue 下**。接口参数是子 issue 的**内部 id**，不是编号——传编号会 404 / 挂错：
+   ```bash
+   SUB_ID=$(gh api "repos/${REPO}/issues/$SUB" --jq .id)
+   gh api -X POST "repos/${REPO}/issues/${ISSUE}/sub_issues" -F sub_issue_id="$SUB_ID"
+   ```
+   建完读回核对：`gh api "repos/${REPO}/issues/${ISSUE}/sub_issues" --jq '.[].number'` 包含全部子号。
+3. **继承优先级与 Project iteration**：规则同下方「新 PR 必须继承来源 issue 的优先级与 Project iteration」，把「PR」换成「子 issue」、来源是本 issue #${ISSUE}。子项之后开的 PR 再从子项继承，就一路对上了。
+4. **起始 label**（已与人确认：没有前置的自动开工，有前置的等人）：
+   - 前置为「无」→ `flip_label $SUB --add ${LABEL_PENDING_AGENT}`，daemon 下一轮就会派工（子项会跳过设计轮直接开发）
+   - 有前置 → `flip_label $SUB --add ${LABEL_PENDING_HUMAN}`；前置合并后由人打 `${LABEL_PENDING_AGENT}`
+   - **「是否真的没有前置」要保守判断**：两个子项会改到同一片代码 / 同一个接口，就算逻辑上独立，也把后一个写成依赖前一个——并行开工的两个 PR 撞在同一处，后合的那个要反复 rebase
+5. **交人评论**（发在本 issue）：`##` 标题「已拆成 N 个 sub-issue」；一张表列每个子项：编号链接 / 做什么 / 前置 / 当前状态（已自动开工 or 等你点）；写明「子项全部关闭后 daemon 会把本 issue 翻回 `${LABEL_PENDING_HUMAN}`，是否关闭本 issue 由你决定」。任何一步失败（建不出来 / 挂不上 / 继承失败）如实列出实际错误与已建好的部分，**不要**删掉已建的子项重来——重试须幂等，先查已有子项再补缺的。
+6. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}`（工作已转到子项跟踪）；一句话回复 `已拆成 N 个 sub-issue，issue 转 ${LABEL_PENDING_PR} 跟踪`，停 idle
 
 ### 新 PR 必须继承来源 issue 的优先级与 Project iteration
 
@@ -111,9 +140,31 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 2. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`
 3. 停 idle
 
+## 交人评论怎么写（给人看的，不是交差报告）
+
+这条评论的读者是一个人，而且常常是在手机上的 GitHub app 里看。写完先自问一句：
+**他扫一眼能不能知道「发生了什么」和「要不要我动手」**——答不上来就重写。
+
+1. **开头一行 `##` 标题**，一句话说清本轮是什么事：「已修复 review 指出的 3 条」
+   「方案改走 B：不再自动接管旧安装」。别让人从第一句开始猜。
+2. **结论先行**。标题之后第一段直接给判断：哪条属实、哪条是真 bug、有没有要人做的事。
+   结论埋在第五段等于没写。
+3. **一条一节**。多条问题 / 多个改动用 `###` 加序号分开，一节只讲一件事。
+   一段里塞三件事，人就只能逐字读完才敢往下翻。
+4. **对拍用表格**。前 / 后、期望 / 实得、「退回旧实现会怎样」——表格一眼能比，
+   同样的内容写成句子就得在脑子里对齐。
+5. **分清实测与推理**。每个数字标明怎么来的（实测 / 负对照 / 推算）；没跑过就写没跑过，
+   别用「已验证」盖过去。
+6. **写明「要你做什么」**。需要拍板的放主文、给 checkbox；本轮不需要人动手的，
+   就直说「本条不需要你做任何事」——这一句能省掉一次来回。
+7. **过程留痕折叠**。历史轮次、长命令输出、逐条日志放进 `<details>`，主文只留当前结论。
+
+反面样本（`GigleAI/cavil-loop#26` 的实况，别照着写）：没有标题、开头就是三条 bullet、
+每条一整段密排叙述、证据混在句子里、读到最后也不知道要不要动手。
+
 ## 本项目评论用量 footer
 
-`${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论在正文末尾附可见时间 / token / API 标价折算参考价值，以及周报可读的 `<!-- agent-metrics ... -->` 机器记录。开始时刻固定为 `${TASK_START_TS}`，工作编号为 `${WORK_NUM}`，agent 为 `${WORKER_AGENT}`；用 `bash ${AGENT_TOKEN_USAGE_SCRIPT} <开始时刻的 epoch> --kv` 取得原始用量字段。人读金额才按美分显示，机器字段原样输出；可见文字必须说人话，不能直接显示 `full` / `partial` / `none`：分别写成「本次记录的用量都有对应单价」/「只有部分用量有单价，金额会偏低」/「没有可用单价，无法估算金额」。`cost_state` 等原始字段只放进隐藏的机器记录。没有用量或价格就明说缺失，不编造账单金额。关闭值 `off` 时省略 footer。
+`${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论在正文末尾附可见时间 / token / API 标价折算参考价值，以及周报可读的 `<!-- agent-metrics ... -->` 机器记录。开始时刻固定为 `${TASK_START_TS}`，工作编号为 `${WORK_NUM}`，agent 为 `${WORKER_AGENT}`；用 `bash ${AGENT_TOKEN_USAGE_SCRIPT} <开始时刻的 epoch> --kv` 取得原始用量字段。人读行必须展示 `models` 中的实际模型名（多个模型全部列出）；`models` 为空时写「模型未知」，`model_unknown=yes` 且已有模型名时另写「另有模型无法确认」。驱动的人读输出已按这条规则在行末附好模型说明，原样保留即可，不要自己再追加一遍。人读金额才按美分显示，机器字段（包括 `models` 与 `model_unknown`）原样输出；可见文字必须说人话，不能直接显示 `full` / `partial` / `none`：分别写成「本次记录的用量都有对应单价」/「只有部分用量有单价，金额会偏低」/「没有可用单价，无法估算金额」。`cost_state` 等原始字段只放进隐藏的机器记录。没有用量或价格就明说缺失，不编造账单金额。关闭值 `off` 时省略 footer。
 
 ## 硬约束
 
@@ -134,12 +185,12 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
   ```
   规则（缺一条就重写这道题）：
   1. **先自查再问**：能靠读代码 / 跑命令 / 翻文档拿到的答案，自己去拿，不准当问题抛出来。非问不可时，先写你查了什么、为什么查不出来（例：「本机 `command -v foo` 找不到，无法确认」）
-  2. **只问会改变产出的问题**：不同答案会导致不同实现 / 不同工作量才值得问；其余自己拍板，在方案里写明「按 X 假设做」即可
+  2. **能自己定的自己定，别做成选择题**：默认由你拍板——在方案里写明「按 X 做，理由 Y」，人不同意会直接回一句，比让他做一道选择题便宜得多。只有这三类值得占用人的一次拍板：① 会改变对外可见行为或扩大权限边界（例：让 daemon 第一次往 GitHub 写内容、第一次动别人的分支）；② 产品 / 优先级 / 口径取舍，代码和文档里查不到答案；③ 不可逆或高代价（删数据、动凭据、花钱）。纯技术取舍（实现路径、数据结构、重试策略、日志格式、测试怎么写）一律自己定，**哪怕不同答案会导致不同实现**——这条不是问人的理由。**拿不准就归到「自己定」那边**：写明假设 + 一句「不同意回我一句，下轮改」
   3. **讲人话**：假设读者不了解这个模块的内部结构。禁止只甩函数名 / 参数名 / 路径当选项内容，也禁止把「你本机是什么情况」当成选项
   4. **每个选项必须有效果 + 好处 + 代价**，一项都不能省；真没有代价就写「无」并说明为什么没有
   5. **默认项 = 你的推荐**，题头给一句话理由；用户不勾就按它走，所以它必须是你敢承担后果的那个
   6. **没验证过的前提要明说**（例：「本机没装 X，以下基于官方文档推测，未实测」）——别把猜测写得像事实
-  7. 每轮**最多 5 题**，按重要性排序；题多时点明哪几题不答也能按默认安全走
+  7. 每轮**最多 5 题**，按重要性排序；题多时点明哪几题不答也能按默认安全走。**一道题都没有是常态、也是好事**——该查的查清、该拍的拍了，人只需要看结论
   勾选约定：勾 1 项 = 拍板；都不勾 = 走默认项；多勾 = 想再讨论（worker 下轮看到反问）
 - **生成新图不清理旧图**：使用唯一版本文件名直接新增图片；不得把 `rm -f "$SHOT_DIR"/*.png` 或清空截图目录当作生成前置步骤。旧图可能仍被历史评论引用。遇到此类删除确认时取消删除、保留旧文件并继续生成新图，不反复请求同一清理操作。
 - **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：① 宽 **~1280px、单倍像素**（playwright `deviceScaleFactor: 1`）——别用 2x / 2560px 大图，GitHub 把图缩进评论列宽 + camo 代理首次异步抓取，超大图易"显示不完整 / 只出上半截"；② 单张高度尽量 **≤ ~1400px**，过长就拆多张；③ 文件名带**唯一戳**（纳秒 / commit SHA），**每轮换新 URL**——camo 按源 URL 缓存约一年，复用同名会顶死旧图；④ 用**公网可达** URL（funnel 的 `review-assets/` 路径），纯 tailnet `serve` URL camo 抓不到 → 图裂。发图前 `curl -skI` 核对公网 URL `HTTP 200` + `content-length` 跟源文件一致

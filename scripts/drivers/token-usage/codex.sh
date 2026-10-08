@@ -55,6 +55,14 @@
 #   旧的三个环境变量仍然认，作为「所有模型同一个价」的兼容写法：
 #     CODEX_PRICE_IN_PER_M / CODEX_PRICE_CACHED_IN_PER_M / CODEX_PRICE_OUT_PER_M
 #
+# `--kv` 另输出 `models=`（实际产生非零用量的模型 ID，稳定排序）和
+# `model_unknown=yes|no`。unknown 是归属状态，不塞进模型 ID 列表。
+#
+# ⚠️ 同一份模型信息**人读那一行也要出**（GitHub#29）：评论 footer 的 `token …` 行是
+#   「整行原样用脚本输出」的，只写进 --kv 的隐藏标记等于评论上看不到用的是哪个模型。
+#   人读行末尾固定附 `（模型：a、b）` / `（模型：a；另有模型无法确认）` / `（模型未知）`，
+#   与 models / model_unknown 同源，不另起一套判断。
+#
 # 不在这里算「排除等待的工时」：同 claude driver，那个指标由周报采集器出报告时
 # 从本机日志算（scripts/weekly-report/worktime.py）。
 set -uo pipefail
@@ -219,6 +227,14 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
     | (if $agg.unk == 0 then "full"
        elif $agg.known > 0 then "partial"
        else "none" end) as $state
+    | ([$bym[]
+        | select(.model != "unknown" and ((.s.in + .s.cin + .s.cw + .s.out) > 0))
+        | .model] | sort | unique) as $modelarr
+    | ($modelarr | join(",")) as $models
+    | (if ([$bym[]
+             | select(.model == "unknown" and ((.s.in + .s.cin + .s.cw + .s.out) > 0))]
+            | length) > 0
+       then "yes" else "no" end) as $model_unknown
     | if $mode == "--kv"
       then "in=\($t.in) out=\($t.out) cache_r=\($t.cin) cache_w=\($t.cw)"
            + (if $state == "none" then "" else " cost_usd=\($agg.usd)" end)
@@ -228,6 +244,7 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
            + (if $price_source == "default"
               then " price_checked=\($price_date) price_stale=\($price_stale)"
               else "" end)
+           + " models=\($models) model_unknown=\($model_unknown)"
       else "\($t.in | fmt) input, \($t.out | fmt) output, \($t.cin | fmt) cache read, \($t.cw | fmt) cache write"
            + (if $state == "none" then "（该模型未配单价，金额未计）"
               elif $state == "partial" then " ($\($agg.usd | usd2)，部分用量未计价，金额偏低)"
@@ -235,5 +252,12 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
            + (if $price_source == "default" and $price_stale == "yes"
               then "（内置 API 参考价已超过 90 天，请复核）"
               else "" end)
+           # 模型名必须出现在**人读**这一行（GitHub#29）：footer 的 `token …` 行是
+           # 「整行原样用脚本输出」，模型只写进 --kv 的隐藏标记，等于评论里永远看不到。
+           # 口径与机器字段同源（$modelarr / $model_unknown），不另起一套判断。
+           + (if ($modelarr | length) == 0 then "（模型未知）"
+              else "（模型：\($modelarr | join("、"))"
+                   + (if $model_unknown == "yes" then "；另有模型无法确认" else "" end)
+                   + "）" end)
       end
 ' 2>/dev/null

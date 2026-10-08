@@ -511,7 +511,15 @@ OUTPUT_LANGUAGE="${OUTPUT_LANGUAGE:-en}"
 WORKER_AGENT_DEFAULT="${WORKER_AGENT:-claude}"
 WORKER_AGENT="${DISPATCH_WORKER_AGENT:-$WORKER_AGENT_DEFAULT}"
 # 单次 dispatch 指定的模型；空 = agent 自己的默认模型。
-WORKER_MODEL="${WORKER_MODEL:-}"
+#
+# dispatch 子进程会把本次选择放进 DISPATCH_WORKER_MODEL。不能直接用
+# WORKER_MODEL 传递：source 配置文件时会重新赋值同名变量，把 review 的模型
+# 覆盖成普通 worker 的配置（甚至把明确的空覆盖误判成没有覆盖）。
+if [ "${DISPATCH_WORKER_MODEL_SET:-0}" = 1 ]; then
+    WORKER_MODEL="${DISPATCH_WORKER_MODEL:-}"
+else
+    WORKER_MODEL="${WORKER_MODEL:-}"
+fi
 
 # Outbound GitHub 评论里附时间+token 元数据 footer（on / off）。默认 on。
 # 项目级 prompt 模板可读 ${COMMENT_FOOTER}，自行决定本项目是否加 footer。
@@ -540,6 +548,90 @@ log_debug() {
     fi
     return 0
 }
+
+# ── 两把 token：轮询 / 读用 GH_TOKEN，所有写用 WRITE_GH_TOKEN ──
+# 留空 = 回落 GH_TOKEN。单账号部署不设它，行为与引入本机制之前完全一致。
+# 形状对齐既有的 PROJECT_GH_TOKEN（`<用途>_GH_TOKEN`，空则回落），不引入第三种风格。
+#
+# 为什么要分：轮询是高频、大流量、最容易撞平台风控的那部分行为，而 commit 署名和
+# 全部写权限压在同一把 token 上。2026-09-18 bot 账号被封那次，代价是轮询量把账号
+# 烧掉、连带失去所有写能力和 commit 身份，三个项目全停。分开之后 poller 被封换一把
+# 继续轮即可，commit 历史和写路径不受影响。
+#
+# 分割线画在「读 / 写」上，不是「daemon / worker」：daemon 侧除了翻 label，还会开 / 关
+# 告警 issue（checkout_stale_alert_*），以及在复盘里 `git push` 到 base 分支
+# （scripts/post-merge-retrospective.py）。按进程切的话 poller 就得拿 Contents: Write ——
+# 那正好是要从它身上拿掉的东西。
+WRITE_GH_TOKEN="${WRITE_GH_TOKEN:-}"
+
+# 有效的写 token（值）。给「需要值本身」的地方用：交接给 worker 的那把、复盘子进程。
+gh_write_token() {
+    printf '%s' "${WRITE_GH_TOKEN:-${GH_TOKEN:-}}"
+}
+
+# 写 GitHub 的 gh 调用一律走它。**daemon 侧任何新增的写调用都用 gh_write，别用 gh。**
+# 用命令前的变量赋值而不是 `-e` / argv：赋值进的是子进程的 environ
+# （/proc/<pid>/environ 是 0400 仅属主），argv 则是全局可读的。
+# 没配 WRITE_GH_TOKEN 时**原样调 gh**，不写成 GH_TOKEN="" —— 空值和未设对 gh 不是
+# 同一回事，那会让单 token 部署的行为悄悄变掉。
+gh_write() {
+    if [ -n "${WRITE_GH_TOKEN:-}" ]; then
+        GH_TOKEN="$WRITE_GH_TOKEN" gh "$@"
+    else
+        gh "$@"
+    fi
+}
+
+# config 里写 `GH_TOKEN=xxx`（不加 export）时，gh / git 这些**子进程看不见它**。
+# 这个坑在已有安装上测不出来：systemd / launchd 早把 GH_TOKEN 注进环境了，config 里
+# 再来一次裸赋值会继承已有的 export 属性、照常工作。它只在全新安装、或 cron 部署
+# （docs/operations.md 那条兜底路径根本没有 EnvironmentFile）上发作 —— gh 静默回落到
+# ~/.config/gh/ 的默认账号，用错账号去写或者 403，日志里一个字都看不出来。
+# 这里显式 export 一次，让裸赋值和 export 两种写法都对，用户不需要知道这个区别。
+# WRITE_GH_TOKEN **不** export：它只在本进程内被读（gh_write / gh_write_token），
+# 没有任何子进程需要它常驻在环境里。
+if [ -n "${GH_TOKEN:-}" ]; then
+    export GH_TOKEN
+fi
+
+# config 文件里是不是真的装着 token。两个条件都要：文本里确实有这个赋值 + 取到的值
+# 非空。只看值分不清「config 和环境给了同一个值」，只看文本又会被 `WRITE_GH_TOKEN=""`
+# 这种空赋值骗到。
+config_holds_token() {
+    [ -n "${GH_TOKEN:-}${WRITE_GH_TOKEN:-}" ] || return 1
+    grep -qE '^[[:space:]]*(export[[:space:]]+)?(GH_TOKEN|WRITE_GH_TOKEN)=' "$CONFIG_FILE" 2>/dev/null
+}
+
+# 装着凭据却同组 / 其他人可读 = 同机任何用户一个 cat 就抄走。setup.sh 建文件时会
+# chmod 600，但用户手工建、手工改之后没人管，只能在运行时再兜一道。
+# 取不到权限位（stat 两种方言都不认）就闭嘴，不拿猜测去吵。
+file_mode_octal() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo ""
+}
+
+warn_if_config_world_readable() {
+    local mode go
+    config_holds_token || return 0
+    mode=$(file_mode_octal "$CONFIG_FILE")
+    case "$mode" in
+        ''|*[!0-7]*) return 0 ;;
+    esac
+    [ ${#mode} -ge 2 ] || return 0
+    go="${mode: -2}"
+    if [ $(( ${go:0:1} & 4 )) -ne 0 ] || [ $(( ${go:1:1} & 4 )) -ne 0 ]; then
+        log "⚠️ $CONFIG_FILE 里写着 GitHub token，但权限是 $mode —— 同机其他用户可读，请 chmod 600"
+    fi
+    return 0
+}
+warn_if_config_world_readable
+
+# 变量名打错 → 静默回落单 token，一切照常工作、不报错。这行是唯一能看出来的信号。
+# 放 log_debug 不放 log：正常情况下它每轮都会打，不该给 poll.log 加噪音。
+if [ -n "${WRITE_GH_TOKEN:-}" ]; then
+    log_debug "token: 读 / 轮询走 GH_TOKEN，写走 WRITE_GH_TOKEN（双账号）"
+else
+    log_debug "token: 读写共用 GH_TOKEN（单账号；设 WRITE_GH_TOKEN 可分离）"
+fi
 
 # agent_inject_prompt 的带日志包装。**注入相关的排障一律走这个，别直接调 driver。**
 #
@@ -585,6 +677,450 @@ selfheal_bump() {
 }
 selfheal_reset() {
     rm -f "$SELFHEAL_DIR/$1" 2>/dev/null || true
+}
+
+# ── dispatch 连续失败计数（防失败条目变成每轮重试的热循环）──
+# 派工失败时旧逻辑**什么状态都不改**：label 没翻、cursor 没动，于是下一轮看到的还是
+# 「一条没在跑的 pending/agent」，原样再派一次，没有任何上限。2026-09-18 实测：一条
+# PR 因为目标分支被别的 worktree 占住，2.4 小时里被重复派工 270 次，直到 GitHub 把
+# bot 账号封停才停下。
+#
+# key 用 "<kind>-<num>"（如 issue-34 / pr-959），跟 selfheal 的 "<issue_n>"
+# **分开命名空间**：GitHub 上 issue 和 PR 共用一套编号，而 selfheal 记的是 issue_n
+# （PR 走 pr_to_issue_num 时可能 fallback 成 PR 编号本身），两套计数落进同一个目录
+# 会互相清零——一边自愈成功把另一边的失败计数抹掉，退避就静默失效了。
+DISPATCH_FAIL_DIR="$STATE_DIR/dispatch-fail"
+dispatch_fail_bump() {
+    mkdir -p "$DISPATCH_FAIL_DIR"
+    local f="$DISPATCH_FAIL_DIR/$1" c=0
+    [ -f "$f" ] && c=$(cat "$f" 2>/dev/null || echo 0)
+    c=$((c + 1)); echo "$c" > "$f"; echo "$c"
+}
+dispatch_fail_reset() {
+    rm -f "$DISPATCH_FAIL_DIR/$1" 2>/dev/null || true
+}
+
+# ── 轮询节奏：长期没动静的项目渐进退避（issue #35）──
+#
+# 闹钟（systemd timer / launchd）照旧每 POLL_INTERVAL_SECS 秒把 agent-poll.sh 叫醒一次；
+# 这套东西决定的是**被叫醒之后要不要真的去打 GitHub**。脚本改不了自己下次被叫醒的
+# 时间（闹钟不归它管），所以这里省的是**调用**而不是进程——进程每分钟起一次只要几十
+# 毫秒加一次 flock，而调用才是稀缺资源。
+#
+# ⚠️ 最重要的边界：这套状态只决定「这一轮跑不跑」，**绝不决定「跑的时候怎么做」**。
+# 派工给谁、并发满没满、哪个 session 该回收，真值仍然 100% 来自每轮现拉的 GitHub
+# 标签。所以本地状态坏掉的后果只有「节奏不对」，不可能变成「派错工」或「误杀 worker」。
+#
+# 所有判定一律 **fail-open**：读不懂、算不出、超出合法范围的状态统统当作「该跑」。
+# 反过来（坏了就不跑）会让一个项目静默停摆，而且日志上看不出异常——那正是这套东西
+# 最危险的失败方向。
+#
+# 阶梯按**安静了多久**分档，不是按空闲了几轮：`<安静秒数>:<轮询间隔秒数>`，逗号分隔。
+# 默认 = 安静 1 天 → 5 分钟，3 天 → 10 分钟，7 天 → 30 分钟。
+#
+# ⚠️ 这里用 `${VAR-default}` 而不是 `${VAR:-default}`：显式写成空串是「关掉整个特性」
+# 的开关，`:-` 会把它当成「没设」又塞回默认阶梯，开关就废了。
+POLL_INTERVAL_SECS="${POLL_INTERVAL_SECS:-60}"
+POLL_BACKOFF_LADDER="${POLL_BACKOFF_LADDER-86400:300,259200:600,604800:1800}"
+POLL_FORCE_SYNC_SECS="${POLL_FORCE_SYNC_SECS:-1800}"
+POLL_FAIL_BACKOFF_MAX_SECS="${POLL_FAIL_BACKOFF_MAX_SECS:-1800}"
+POLL_DUE_SLACK_SECS="${POLL_DUE_SLACK_SECS:-10}"
+
+# ── 数值闸：进任何算术之前先验一遍 ──
+#
+# 「全是数字」**不等于** bash 算得对。bash 的算术是 64 位有符号的，一个位数超标但每位
+# 都是数字的值会有两种截然不同的坏法，两种都很难看出来（本机实测，不是推理）：
+#
+#   $(( 18446744073710551916 ))          → 1000300      ← **静默回绕**成一个像模像样的时间戳
+#   [ 18446744073710551916 -gt 1800 ]    → integer expression expected（报错，条件当假）
+#
+# 回绕那条最要命：一个损坏的 next_due 会变成「5 分钟后」这种完全合法的未来时间，于是
+# 「比上限还远就当损坏」那道闸根本不触发，项目安安静静按回绕出来的间隔跳过 tick ——
+# 正好绕过这套东西承诺的 fail-open。所以下面所有进算术的字段，先过这个闸限位数。
+#
+# 11 位 epoch ≈ 公元 5138 年；时长类（间隔 / 门槛）用 9 位 ≈ 31 年。都远超任何真实取值，
+# 超了就只能是坏数据。
+PACE_MAX_DIGITS=11
+pace_num() {
+    local v="$1" max="${2:-$PACE_MAX_DIGITS}"
+    case "$v" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#v}" -le "$max" ] || return 1
+    # ⚠️ 还要求是**规范十进制写法**：要么就是 "0"，要么首位不是 0。
+    # 带前导零的全数字串会被 bash 算术按**八进制**解释，里面只要有 8 或 9 就是
+    # 「value too great for base」——那是个**致命**错误，不是返回非 0：实测直接调用
+    # 会把整个 shell 打死。jq 写出来的 JSON 数字永远没有前导零，所以这种写法本来就
+    # 不可能是 pace_write 产生的，归到「不是写入路径写得出来的状态」里一起拒掉。
+    case "$v" in 0) ;; 0*) return 1 ;; esac
+    printf '%s' "$v"
+}
+
+# 这几个配置值全都要进 `[ x -gt y ]`，写成 "30m" / "" / 超长数字都会让**算术本身**出问题
+# （报错或回绕），而不是得出一个保守结果。这里一次性校验，非法值退回默认并留一行日志。
+for _pv in POLL_INTERVAL_SECS:60 POLL_FORCE_SYNC_SECS:1800 POLL_FAIL_BACKOFF_MAX_SECS:1800 POLL_DUE_SLACK_SECS:10; do
+    _pk="${_pv%%:*}"; _pd="${_pv##*:}"
+    if ! pace_num "${!_pk}" 9 >/dev/null; then
+        echo "[coding-agent] ⚠️ $_pk='${!_pk}' 不是合理的非负整数秒数，回退到默认 $_pd" >&2
+        printf -v "$_pk" '%s' "$_pd"
+    fi
+done
+unset _pv _pk _pd
+
+PACE_FILE="${PACE_FILE:-$STATE_DIR/poll-pace.json}"
+# 跳过本轮时留给调用方打进 poll.log 的那行；真跑时为空。
+PACE_SKIP_MSG=""
+
+# 时间来源统一走这里，测试可以用 POLL_FAKE_NOW 把时钟拨到任意时刻。
+# 生产路径上它永远没被设过，等价于 `date +%s`。
+pace_now() {
+    local n
+    if [ -n "${POLL_FAKE_NOW:-}" ] && n=$(pace_num "$POLL_FAKE_NOW"); then
+        printf '%s' "$n"; return 0
+    fi
+    n=$(date +%s 2>/dev/null) || n=""
+    # `date` 基本不会失败，但这个值是**所有**比较的基准，拿不到就没有任何判断可信。
+    # 空串在 bash 算术里会被静默当成 0——那样每条比较都得出「该跑」，方向虽然对，
+    # 但那是巧合不是设计。显式验一遍：坏了就返回 0（＝1970 年），效果同样是立刻跑，
+    # 而且是写明的。
+    pace_num "$n" || printf '0'
+}
+
+# macOS 没有 sha256sum（只有 shasum）。指纹只要求「同输入同输出」，用哪个实现都行，
+# 但**必须**在同一台机器上稳定——所以按可用性挑一次，不做跨机比较。
+_pace_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256
+    else cksum; fi
+}
+
+# 退避上限：任何比这还远的 next_due 都不可能是本程序写出来的 → 判定状态损坏。
+pace_hard_cap() {
+    local cap="$POLL_FORCE_SYNC_SECS"
+    if [ "$POLL_FAIL_BACKOFF_MAX_SECS" -gt "$cap" ]; then cap="$POLL_FAIL_BACKOFF_MAX_SECS"; fi
+    printf '%s' "$cap"
+}
+
+# 阶梯查表：安静了 quiet 秒 → 该用多大间隔。
+#
+# 取「所有已跨过的门槛里**门槛最大**的那一档」，而不是「最后一个跨过的」——后者依赖
+# 配置项按升序书写，用户把两档写反就会静默取到错的那档（不报错，只是节奏不对）。
+#
+# ⚠️ 一档都没跨过时返回 **0 = 完全不设闸**，而不是 POLL_INTERVAL_SECS。差别很要命：
+# 返回 60 等于给脚本加了一条「最快 60 秒干一次活」的下限，于是 timer drop-in 跑 30 秒的
+# 实例（tutor 就是）会被悄悄拉回 60 秒——不报错、只是变慢，正是这套东西最该避免的失败
+# 方式。tests/dispatch-backoff.test.sh 的端到端那组当场就红了（连着四轮只派出去一次）。
+# 不退避档的定义就是「每个 tick 都跑」，所以这里必须是 0。
+pace_interval_for_quiet() {
+    local quiet="$1" iv=0 best=-1 entry th val
+    if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
+        while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            th="${entry%%:*}"; val="${entry##*:}"
+            # 一个档位写歪了只跳过这一档，不要让一个 typo 把整条阶梯废掉
+            pace_num "$th" 9 >/dev/null  || { log "⚠️ POLL_BACKOFF_LADDER 档位非法（门槛）：'$entry'，已跳过"; continue; }
+            pace_num "$val" 9 >/dev/null || { log "⚠️ POLL_BACKOFF_LADDER 档位非法（间隔）：'$entry'，已跳过"; continue; }
+            if [ "$quiet" -ge "$th" ] && [ "$th" -gt "$best" ]; then best="$th"; iv="$val"; fi
+        done < <(printf '%s\n' "$POLL_BACKOFF_LADDER" | tr ',' '\n')
+    fi
+    # 心跳是硬上界：配得比心跳还慢的档位没有意义（心跳到点照样会跑），夹回去并说明。
+    if [ "$iv" -gt "$POLL_FORCE_SYNC_SECS" ]; then
+        log "⚠️ 阶梯档位 ${iv}s 超过心跳 ${POLL_FORCE_SYNC_SECS}s，按心跳夹紧"
+        iv="$POLL_FORCE_SYNC_SECS"
+    fi
+    printf '%s' "$iv"
+}
+
+# 读不到 GitHub 时的节奏：POLL_INTERVAL_SECS 起步，每多失败一次翻倍，封顶
+# POLL_FAIL_BACKOFF_MAX_SECS。跟「安静退避」完全分开：故障不是空闲，把它算成空闲会
+# 越错越慢、故障恢复越拖越久（实测：2026-09-18~22 那 88 小时，5 个项目跑了 30040 轮
+# 全是 403「账号已封」）。
+pace_fail_interval() {
+    local streak="$1" iv="$POLL_INTERVAL_SECS" i=1
+    [ "$streak" -ge 1 ] || { printf '0'; return 0; }
+    while [ "$i" -lt "$streak" ]; do
+        iv=$((iv * 2))
+        if [ "$iv" -ge "$POLL_FAIL_BACKOFF_MAX_SECS" ]; then iv="$POLL_FAIL_BACKOFF_MAX_SECS"; break; fi
+        i=$((i + 1))
+    done
+    if [ "$iv" -gt "$POLL_FAIL_BACKOFF_MAX_SECS" ]; then iv="$POLL_FAIL_BACKOFF_MAX_SECS"; fi
+    printf '%s' "$iv"
+}
+
+# 节奏状态读：输出 5 个 TAB 分隔字段 next_due / last_poll / last_active / fail_streak /
+# fingerprint，读不出来的给**空串**。
+#
+# ⚠️ 缺字段绝不能 fallback 成 0：0 对 last_active 的含义是「1970 年就一直安静着」，
+# 会把一个刚部署的项目直接打到最慢那一档。「没有值」和「值是 0」必须分得开。
+pace_read() {
+    jq -r '[(.next_due // ""), (.last_poll // ""), (.last_active // ""),
+            (.fail_streak // ""), (.fingerprint // "")] | @tsv' "$PACE_FILE" 2>/dev/null || printf '\t\t\t\t'
+}
+
+# 节奏状态写。写失败**不算致命**：文件里留着的是上一轮那个很快就会过期的 next_due，
+# 下一轮照样会跑（盘满 / 只读时行为退化成改动前的「每个 tick 都跑」）。
+pace_write() {
+    local next_due="$1" last_poll="$2" last_active="$3" fail_streak="$4" fingerprint="$5" tmp
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    tmp=$(mktemp "$STATE_DIR/.poll-pace.XXXXXX" 2>/dev/null) || return 1
+    if jq -n --argjson nd "$next_due" --argjson lp "$last_poll" --argjson la "$last_active" \
+            --argjson fs "$fail_streak" --arg fp "$fingerprint" \
+            '{next_due:$nd, last_poll:$lp, last_active:$la, fail_streak:$fs, fingerprint:$fp}' \
+            > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$PACE_FILE" && return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# 本轮「判断范围」的指纹：从**已经拉下来的本轮快照**里算，不多花一次调用。
+#
+# 取两层信息：
+#   · daemon 会对之做判断的条目（挂着任一触发 label 或 doing/agent；greedy 模式下是
+#     全部 open 条目）→ 记 编号 + 最后更新时间 + 标签，任何一项变了都算有动静；
+#   · 其余所有 open 条目 → 只记**编号**。这样一条 PR 被合并 / issue 被关掉（从 open
+#     集合里消失）照样能被发现，§3/§3c/§4 那几段清理不会被退避拖住；而对面机器在
+#     一条跟本机无关的条目上翻标签，不会把本机从退避里叫醒。
+#
+# 这就是多机分工那条「别因为对方在干活就误判自己有活动」的落点。**greedy 模式下做不到
+# 隔离**——greedy 的候选集按定义就是整个仓库的 open 条目，对面动了什么本来就在本机的
+# 判断范围内。这是 greedy 的语义，不是 bug。
+#
+# 快照读不到时返回非 0 且不输出：调用方必须把它当成「这一轮没算出指纹」，而不是
+# 「指纹是空的」——后者会被读成「所有条目都消失了」。
+pace_fingerprint() {
+    local kind rows="" num updated labels_csv want L
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    for kind in issue pr; do
+        snapshot_rows "$kind" "" >/dev/null 2>&1 || return 1
+        while IFS=$'\t' read -r num _ updated labels_csv _; do
+            [ -n "$num" ] || continue
+            want=0
+            if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
+                want=1
+            else
+                for L in "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING"; do
+                    [ -n "$L" ] || continue
+                    case ",$labels_csv," in *",$L,"*) want=1; break ;; esac
+                done
+            fi
+            if [ "$want" = 1 ]; then
+                rows+="${kind}#${num}|${updated}|${labels_csv}"$'\n'
+            else
+                rows+="${kind}#${num}"$'\n'
+            fi
+        done < <(snapshot_rows "$kind" "" 2>/dev/null)
+    done
+    printf '%s' "$rows" | LC_ALL=C sort | _pace_hash | cut -c1-16
+}
+
+# 秒数 → 人读时长，只给日志用。
+pace_human_secs() {
+    local s="$1"
+    if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+    elif [ "$s" -lt 3600 ]; then printf '%dm%ds' "$((s / 60))" "$((s % 60))"
+    elif [ "$s" -lt 86400 ]; then printf '%dh%dm' "$((s / 3600))" "$(((s % 3600) / 60))"
+    else printf '%dd%dh' "$((s / 86400))" "$(((s % 86400) / 3600))"; fi
+}
+
+# 这份状态是不是**正常写入路径可能写出来的**？不是 → 损坏 → 现在就跑。
+#
+# 为什么要有这么一条、而不是继续逐个字段加校验：光验「每个字段自己合不合法」是个
+# 永远补不完的清单——字段都合法、但**彼此关系**不可能同时成立的状态照样存在，而且
+# 组合是无穷的。与其等下一个变体被发现，不如把判据反过来写：正常写入恒满足下面这几条
+# 不变式，任何一条不成立就说明这份文件不是本程序写的。
+#
+# 写入方（pace_record_ok / pace_record_fail）恒满足：
+#   · last_active <= last_poll
+#     record_ok 把 last_active 夹到 ≤ now，而 last_poll 就是同一个 now；
+#     record_fail 沿用旧的 last_active，旧值 ≤ 旧 last_poll ≤ 现在的 now。
+#   · last_poll <= next_due
+#     next_due = last_poll + 间隔，两套阶梯的间隔都 ≥ 0（不退避档就是 0）。
+#   · next_due - last_poll <= 硬上限
+#     空闲档被夹在心跳值以内，故障档被夹在故障上限以内，取两者更大的那个。
+#     注意这一条是按**写入时刻**算的，不看 now —— 比「next_due 离 now 多远」更严，
+#     也不会因为时钟漂移产生假阳性。
+#
+# 配置被人改小之后，旧状态可能一次性判成越界 → 多跑一轮并重写 → 自愈，方向安全。
+pace_state_sane() {
+    local next_due="$1" last_poll="$2" last_active="$3" fail_streak="$4" cap
+    if [ "$last_active" -gt "$last_poll" ]; then return 1; fi
+    if [ "$next_due" -lt "$last_poll" ]; then return 1; fi
+    # 上限按**当时走的是哪套阶梯**取，而不是笼统取两者最大值：fail_streak=0 说明上一轮
+    # 是正常读到了 GitHub、走的空闲阶梯，那一套被夹在心跳值以内，拿故障上限去放宽它
+    # 等于凭空多认一批本程序写不出来的状态。
+    if [ "$fail_streak" -gt 0 ]; then cap="$POLL_FAIL_BACKOFF_MAX_SECS"; else cap="$POLL_FORCE_SYNC_SECS"; fi
+    if [ $((next_due - last_poll)) -gt "$cap" ]; then return 1; fi
+    return 0
+}
+
+# 闸门的**对外入口**：返回 0 = 本轮跳过（PACE_SKIP_MSG 已填好）；非 0 = 照常轮询。
+#
+# ⚠️ 极性是刻意反过来的：**只有明确得出「跳过」才返回 0**。判定整个跑在命令替换的子
+# shell 里，万一它自己出错被打死（某个算术表达式炸了、某个 helper 被改坏了），子 shell
+# 给不出 "skip"，这里就返回非 0 = 跑。反过来写（子 shell 失败当跳过）会把闸门自己的
+# bug 变成整个项目静默停摆，而 _lib.sh 顶部那个永久 stderr 重定向让这种死法在
+# poll.log 里一个字都看不见。
+#
+# 为什么不直接 `if ! pace_should_poll`：实测 bash 在 `if ! f` 里遇到致命算术错误时
+# **两个分支都不执行**、直接往下走——恰好也是 fail-open，但那是 bash 的冷僻行为，
+# 不是这里的设计。把调用方式换成 `pace_should_poll || { ...; exit 0; }` 就会翻面变成
+# 硬停摆。安全不能建立在「碰巧」上，所以显式写成这样。
+pace_gate_says_skip() {
+    local out
+    out=$(pace_should_poll >/dev/null 2>&1 && printf 'run' || printf 'skip\t%s' "$PACE_SKIP_MSG") || out=""
+    case "$out" in
+        skip*) PACE_SKIP_MSG="${out#skip$'\t'}"; return 0 ;;
+        *)     PACE_SKIP_MSG=""; return 1 ;;
+    esac
+}
+
+# 本轮该不该真跑。返回 0 = 跑；1 = 跳过（此时 PACE_SKIP_MSG 是要打进日志的那行）。
+# **调用方一律走 pace_gate_says_skip，别直接调这个**——见上面那段。
+#
+# 五道闸，前四道全是「坏了就跑」的保险，只有最后一道才是真正的退避判断：
+#   0. 阶梯留空          → 特性关闭，行为与改动前逐字节一致
+#   1. 状态读不出/不是数字 → 防线 1：损坏即到期
+#   2. next_due 比上限还远 → 防线 1：这个值不可能是本程序写的（时钟跳变 / 文件被改坏）
+#   3. now < last_poll     → 防线 2：时钟往回跳了，状态不可信
+#   4. 距上次真跑 ≥ 心跳   → 防线 3：保底跟 GitHub 对一次，独立于上面所有判断
+#   5. 没到点              → 跳过
+pace_should_poll() {
+    PACE_SKIP_MSG=""
+    [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 0
+
+    local now next_due last_poll last_active fail_streak fingerprint waited remain
+    now=$(pace_now)
+    IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
+
+    # ── 一处验完，再谈跳不跳 ──
+    # 状态里**每一个会被读到的数值字段**读不懂、缺失、或位数超标（会回绕成一个看着正常
+    # 的时间戳）→ 一律当作损坏 = 现在就该跑。
+    #
+    # ⚠️ 必须**一次性验完、且在任何一条 skip 路径之前**。只验 next_due / last_poll 是不够的：
+    # 一个坏掉的 last_active（或 fail_streak）会一路走到「没到点 → 跳过」，于是本轮仍然
+    # 等到 next_due 才跑 —— 上限虽然被心跳兜住（最多 30 分钟），但「状态坏了下一个 tick
+    # 就跑」这条明写在文档和注释里的承诺就被打了折。复审第 3 轮用 `last_active="broken"`
+    # 实测到 skip，属实。
+    #
+    # 跟 pace_record_* 里那几处 `|| last_active="$now"` 的区别：那是**跑完之后的修复**
+    # （必须给出一个能写回文件的值），这里是**跑不跑的判定**（存疑就跑）。两者方向相反，
+    # 别互相抄。
+    next_due=$(pace_num "$next_due")          || return 0
+    last_poll=$(pace_num "$last_poll")        || return 0
+    last_active=$(pace_num "$last_active")    || return 0
+    fail_streak=$(pace_num "$fail_streak" 6)  || return 0
+
+    # 字段各自合法之后，再看它们**彼此的关系**是否可能同时成立（见 pace_state_sane）。
+    # 用 if/fi 而不是 `[ ] && return`：set -e 下 cond 为假会把 status 1 漏给调用方，
+    # 而调用方正是 `if ! pace_should_poll` —— 漏出去就等于把「该跑」读成「跳过」。
+    if ! pace_state_sane "$next_due" "$last_poll" "$last_active" "$fail_streak"; then return 0; fi
+    if [ "$now" -lt "$last_poll" ]; then return 0; fi
+
+    # 心跳不覆盖「读不到 GitHub」那套退避：读不到的时候强行再读一次正是它要避免的事，
+    # 而且那个状态是自证的（上一次尝试真的失败了），没有推断错的空间。
+    #
+    # ⚠️ 诚实说明：自从 pace_state_sane 按写入侧不变式把 next_due - last_poll 夹在
+    # 心跳值以内之后，**对合法状态而言这个 return 0 已经走不到了** —— waited ≥ 心跳值
+    # 必然意味着已经到点，下面那条判断会先命中。留着它是第二道保险：万一哪天
+    # pace_state_sane 本身被改出 bug，「最长多久必须跑一次」这条承诺还有人兜。
+    # 它的**条件**仍然是活的：fail_streak > 0 时不触发，这一条由【5b】盯着。
+    waited=$((now - last_poll))
+    if [ "$fail_streak" -eq 0 ] && [ "$waited" -ge "$POLL_FORCE_SYNC_SECS" ]; then
+        return 0
+    fi
+
+    if [ $((now + POLL_DUE_SLACK_SECS)) -ge "$next_due" ]; then return 0; fi
+
+    remain=$((next_due - now))
+    if [ "$fail_streak" -gt 0 ]; then
+        PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
+    else
+        PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")）"
+    fi
+    return 1
+}
+
+# 一轮真跑完、且这一轮**读到了** GitHub 时调用。
+#   acted=1  daemon 这轮确实做了事（派工 / 自愈 / 回收 / 清理 / 队列里有活 / 有 worker 在跑）
+#   fp       本轮指纹；空串 = 没算出来 → 保守当作「有动静」，并保留上一轮的指纹不覆盖
+pace_record_ok() {
+    local acted="$1" fp="$2"
+    local now next_due last_poll last_active fail_streak prev_fp active quiet iv
+    now=$(pace_now)
+    IFS=$'\t' read -r next_due last_poll last_active fail_streak prev_fp < <(pace_read) || true
+
+    last_active=$(pace_num "$last_active") || last_active="$now"
+    # 时钟往回跳过 → last_active 落在未来 → 当场校正，否则 quiet 会算成负数
+    if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
+
+    active=0
+    if [ "$acted" = 1 ]; then active=1; fi
+    if [ -z "$fp" ]; then
+        active=1          # 指纹没算出来：保守当有动静，且不覆盖上一轮的值
+        fp="$prev_fp"
+    elif [ "$fp" != "$prev_fp" ]; then
+        active=1
+    fi
+    if [ "$active" = 1 ]; then last_active="$now"; fi
+
+    quiet=$((now - last_active))
+    iv=$(pace_interval_for_quiet "$quiet")
+    PACE_TIER_SECS="$iv"; PACE_QUIET_SECS="$quiet"
+    pace_write "$((now + iv))" "$now" "$last_active" 0 "$fp" \
+        || log "⚠️ 节奏状态写入失败（不影响本轮；下一轮会照常跑）"
+    return 0
+}
+
+# 一轮真跑、但**整轮读不到** GitHub 时调用。
+# 安静计时在这里**冻结**（既不清零也不推进）：故障不是空闲，恢复之后要从故障前那一档
+# 继续，而不是被一次网络抖动打回慢档、也不是被当成「没活干」越退越慢。
+pace_record_fail() {
+    local now next_due last_poll last_active fail_streak fp iv
+    now=$(pace_now)
+    IFS=$'\t' read -r next_due last_poll last_active fail_streak fp < <(pace_read) || true
+    fail_streak=$(pace_num "$fail_streak" 6) || fail_streak=0
+    if [ "$fail_streak" -gt 64 ]; then fail_streak=64; fi   # 状态被写坏时别让翻倍循环失控
+    fail_streak=$((fail_streak + 1))
+    last_active=$(pace_num "$last_active") || last_active="$now"
+    if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
+    iv=$(pace_fail_interval "$fail_streak")
+    PACE_TIER_SECS="$iv"
+    pace_write "$((now + iv))" "$now" "$last_active" "$fail_streak" "$fp" || true
+    log "GitHub 读取连续失败 ${fail_streak} 次 → 下一轮 $(pace_human_secs "$iv") 后重试"
+    return 0
+}
+
+# 目标分支是不是已经被**另一个** worktree 签出。命中 → 打印占用它的 worktree 路径并
+# return 0；没占用 → return 1。调用方必须已经 cd 进仓库（主 checkout）。
+#
+# 为什么非查不可（两条都是本机实测，不是推理）：
+#   1. 分支被别的 worktree 签出时，`git fetch` 会**无条件**拒绝写它
+#      （`fatal: refusing to fetch into branch ... checked out at ...`，exit 128）——
+#      哪怕要写的内容跟当前一模一样也照样拒绝。所以这类失败在占用者还在期间是确定的。
+#   2. 紧随其后的 `git worktree add --force` 反而会**成功**，建出第二个签出同一分支的
+#      worktree。也就是说：光把 fetch 修好并不安全，那只会把「派工失败」换成「两个
+#      worker 往同一个分支上提交、互相覆盖」。
+#
+# 匹配必须是**全等**，不能是子串/前缀：`feature/issue-3` 绝不能匹配上
+# `feature/issue-34`。这跟 greedy 挡工判据里防的 `pending/human` vs `pending/humanoid`
+# 是同一类坑——错了不会报错，只会悄悄挡住或悄悄放过一条活。
+branch_checked_out_elsewhere() {
+    local branch="$1" self="${2:-}"
+    local wt="" line
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*) wt="${line#worktree }" ;;
+        esac
+        # 用字符串全等而不是 case 的 glob：分支名虽然不允许 * ? [，但这里不值得赌。
+        if [ "$line" = "branch refs/heads/$branch" ]; then
+            # 自己那份不算占用（重复派工时 worktree 可能已经在了）
+            if [ -n "$self" ] && [ "$wt" = "$self" ]; then
+                continue
+            fi
+            printf '%s' "$wt"
+            return 0
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null || true)
+    return 1
 }
 
 branch_to_issue_num() {
@@ -668,20 +1204,90 @@ worker_is_ours() {
     [ "$owner" = "$SELFHEAL_HOST_ID" ]
 }
 
+# ── 本轮 open 快照 ──
+# 一轮 poll 里，self-heal、并发计数、各 label 取工、greedy 兜底问的其实是同一批数据：
+# 仓库里所有 open 的 issue / PR 和它们的 label。以前每个用途各发一次
+# `gh issue list --label X` / `gh pr list --label X`——tutor 一轮实测 22 次调用里，
+# 14 次是这么来的，而且内容高度重叠。现在一轮只拉两次 REST，其余全在本地 jq 过滤。
+# 改完实测：tutor 22 → 8，另外四个项目各 11~15 → 5。
+#
+# 为什么坚持 REST 而不是 `gh issue list`：后者走 search / GraphQL，有索引延迟。这份
+# 数据同时喂给并发闸门和**回收（kill session）**，读到过期结果会误杀正在干活的 worker。
+# list_active_workers 当初就是为此选的 REST，现在整轮共用同一个来源，顺带把「取工看到
+# 的世界」和「回收看到的世界」统一了——以前两者来自不同 endpoint，本身就可能打架。
+#
+# ⚠️ 缓存必须落文件，不能用 shell 变量：list_active_workers 是被
+# `x=$(list_active_workers)` 调的，命令替换开子 shell，变量传不回来。
+TICK_DIR="${TICK_DIR:-$STATE_DIR/.tick}"
+
+# kind: issues（含 PR 条目，调用方自己 select(.pull_request == null)）| pulls
+# fresh 非空 = 绕过缓存重新拉一次，并刷新缓存。
+#
+# ⚠️ 什么时候必须 fresh：**动手之前**。回收 worker 会 kill session，它在下手前那次
+# 重读的全部意义就是「拿此刻的真值，别拿这一轮开头的」——本轮开头到回收之间隔着整个
+# 取工流程，worker 完全可能在这中间翻了 label。让那次重读吃缓存 = 把这道保险拆了。
+# 取工 / 并发计数这类只读判断才用缓存。
+# stdout 给出 `--slurp` 的原始分页结果（[[...],[...]]）。失败返回非 0 且不落缓存。
+open_snapshot() {
+    local kind="$1" fresh="${2:-}"
+    local f="$TICK_DIR/$kind.json" tmp
+    if [ -z "$fresh" ] && [ -s "$f" ]; then cat "$f"; return 0; fi
+    mkdir -p "$TICK_DIR"
+    tmp=$(mktemp "$TICK_DIR/.$kind.XXXXXX")
+    if ! run_gh_capture "读取 open $kind" gh api --method GET --paginate --slurp \
+        "repos/$REPO/$kind" -f state=open -f per_page=100 > "$tmp"; then
+        rm -f "$tmp"; return 1
+    fi
+    # 形状先验一遍再落盘：半截 / 非数组的结果绝不能进缓存——本轮后面每一个用途都拿它
+    # 做判断，包括回收。宁可本轮整轮不动，也不要拿残缺快照去 kill session。
+    if ! jq -e 'type == "array" and all(.[]; type == "array")' "$tmp" >/dev/null 2>&1; then
+        log "  ⚠️ open $kind 快照结构异常，本轮不缓存也不使用"
+        rm -f "$tmp"; return 1
+    fi
+    mv "$tmp" "$f"
+    cat "$f"
+}
+
+# 从本轮快照按 label 取行，输出与原来 `gh issue/pr list --json ... --jq ...` 逐字段
+# 一致的 5 列 TSV：编号 / 分支（issue 恒为 "-"）/ updatedAt / label 逗号串 / 标题。
+# label 传空 = 不过滤（greedy 兜底那趟用）。
+snapshot_rows() {
+    local kind="$1" label="${2:-}" pages
+    if [ "$kind" = "issue" ]; then
+        pages=$(open_snapshot issues) || return 1
+        printf '%s' "$pages" | jq -r --arg label "$label" '
+            [ .[][] | select(.pull_request == null) ]
+            | map(select($label == "" or any(.labels[]?; .name == $label)))
+            | .[] | [ (.number|tostring), "-", .updated_at,
+                      ([.labels[]?.name] | join(",")),
+                      (.title | gsub("[\t\n]"; " ")) ] | @tsv'
+    else
+        pages=$(open_snapshot pulls) || return 1
+        printf '%s' "$pages" | jq -r --arg label "$label" '
+            [ .[][] ]
+            | map(select($label == "" or any(.labels[]?; .name == $label)))
+            | .[] | [ (.number|tostring), .head.ref, .updated_at,
+                      ([.labels[]?.name] | join(",")),
+                      (.title | gsub("[\t\n]"; " ")) ] | @tsv'
+    fi
+}
+
 # ⚠️ 多机分工下这里**只列本机的** worker。它同时是并发计数的来源：
 # 不过滤的话，A 机会把 B 机那几个 doing/agent 也算进自己的 max，slot 永远是满的，
 # 于是 A 机一条活都派不出去，日志上还显示得一切正常。
 list_active_workers() {
     # REST list endpoints avoid search-index lag; pagination must complete before
     # any result is used for capacity decisions or destructive cleanup.
-    local scope="${1:-ours}" issue_pages pr_pages issue_nums pr_data
-    issue_pages=$(run_gh_capture "读取 doing issue" gh api --method GET --paginate --slurp \
-        "repos/$REPO/issues" -f state=open -f labels="$LABEL_AGENT_DOING" -f per_page=100) || return 1
-    pr_pages=$(run_gh_capture "读取 open PR" gh api --method GET --paginate --slurp \
-        "repos/$REPO/pulls" -f state=open -f per_page=100) || return 1
-    issue_nums=$(printf '%s' "$issue_pages" | jq -er '
+    # fresh 非空 → 绕过本轮快照重新读一次。回收路径必须传它（见 open_snapshot 注释）。
+    local scope="${1:-ours}" fresh="${2:-}" issue_pages pr_pages issue_nums pr_data
+    # 数据来自本轮快照（open_snapshot），一轮只拉一次；doing/agent 的筛选从服务端挪到
+    # 本地——语义不变，省掉的是同一轮里第二次、第三次问 GitHub 同样的问题。
+    issue_pages=$(open_snapshot issues "$fresh") || return 1
+    pr_pages=$(open_snapshot pulls "$fresh") || return 1
+    issue_nums=$(printf '%s' "$issue_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
         if type != "array" or any(.[]; type != "array") then error("invalid issue pages")
-        else [ .[][] | select(.pull_request == null) | .number ] | map(tostring) | join("\n") end') || return 1
+        else [ .[][] | select(.pull_request == null)
+               | select(any(.labels[]?; .name == $label)) | .number ] | map(tostring) | join("\n") end') || return 1
     # Include the body fallback in this successful snapshot instead of silently
     # falling back to the PR number when a separate gh pr view request fails.
     pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
@@ -802,7 +1408,7 @@ reap_finished_workers() {
         # Re-read before cleanup, including workers with missing/foreign ownership.
         # A failed or partial read must never authorize killing any session.
         if [ "$confirmed_loaded" -eq 0 ]; then
-            if ! confirmed_list=$(list_active_workers all); then
+            if ! confirmed_list=$(list_active_workers all fresh); then
                 log "⚠️ 回收暂缓：无法确认 GitHub worker 状态，保留所有 session"
                 return 0
             fi
@@ -911,7 +1517,17 @@ secret_env_file() {
     local var="$1" dir f val
     dir="$STATE_DIR/secrets"
     f="$dir/$var"
-    eval "val=\${$var:-}"
+    # 交给 worker 的 GH_TOKEN，值取写 token（双账号下 = pusher 那把，单账号下就是
+    # GH_TOKEN 自己）。**只换值，不换名**：文件名、argv 里的 `-e GH_TOKEN_FILE=`、
+    # worker shell 里的 export 前缀全部不变，gh CLI 和 git push 都不需要知道这件事。
+    # 指向放在这一个函数里，是因为它是 require_secret_env 和 tmux_env_args 共同的
+    # 唯一取值点 —— 散在各 dispatch 调用点上漏掉一个，后果是 worker **静默**拿到
+    # 轮询那把 token：不报错、不失败，直到某次 push 署错名才看得出来。
+    if [ "$var" = GH_TOKEN ]; then
+        val="$(gh_write_token)"
+    else
+        eval "val=\${$var:-}"
+    fi
     if [ -z "$val" ]; then
         return 1
     fi
@@ -1030,12 +1646,351 @@ branch_name() {
     echo "${BRANCH_PREFIX}$1"
 }
 
+# ── preview 端口与归属（GigleAI/GigleTutor-Web#1009）──
+# 端口 = BASE + issue；配了 PREVIEW_PORT_MODULO 就改成 BASE + issue % MODULO，
+# 让端口留在一个号段里（tutor：预览 4000–4999，不越界撞进 e2e 的 5000 段）。
+#
+# 取模的代价是「同余 issue 同端口」（#40 和 #1040 都是 4040），所以端口有了**主人**：
+# 登记文件 $PREVIEW_CONF_DIR/<port>.conf 里的「项目 + 完整 issue + worktree」三项。
+# 规则只有一句：**谁都只动登记在自己名下的端口；查不到登记就什么都不动。**
+# 读登记 → 比对 → 动手（写 conf / systemd / tailscale / 删 conf）必须在同一把端口锁里，
+# 注册和注销共用这把锁，否则两个 issue 并发注册时都会「检查时没人」、后写的赢。
+# 没登记的遗留路由不自动拆：端口可能已被别的服务复用，按公式拆就是误伤别人。
+PREVIEW_CONF_DIR="$HOME/.config/coding-agent-work-loop/preview"
+
+preview_port() {
+    local issue="$1" base="${PREVIEW_PORT_BASE:-4000}" mod="${PREVIEW_PORT_MODULO:-}"
+    if [ -n "$mod" ]; then
+        echo $(( base + issue % mod ))
+    else
+        echo $(( base + issue ))
+    fi
+}
+
+# preview_with_port_lock <port> <cmd…>：持端口锁执行 cmd（在子 shell 里，退出码原样透出）。
+# 等不到锁（默认 30s）就 exit 4，不硬闯。
+preview_with_port_lock() {
+    local port="$1"; shift
+    mkdir -p "$PREVIEW_CONF_DIR"
+    (
+        flock -w "${PREVIEW_LOCK_TIMEOUT:-30}" 7 \
+            || { echo "❌ 等 preview 端口 :$port 的锁超时（${PREVIEW_LOCK_TIMEOUT:-30}s）" >&2; exit 4; }
+        "$@"
+    ) 7>"$PREVIEW_CONF_DIR/.port-$port.lock"
+}
+
+# 登记的主人，格式「项目|issue|worktree」；没登记输出空。
+preview_owner_of() {
+    local conf="$PREVIEW_CONF_DIR/$1.conf"
+    [ -f "$conf" ] || return 0
+    # shellcheck disable=SC1090
+    ( source "$conf"; printf '%s|%s|%s\n' "${PREVIEW_PROJECT:-}" "${PREVIEW_ISSUE:-}" "${PREVIEW_WORKTREE:-}" )
+}
+
+# 把「项目|issue|worktree」说成人话，给报错用。
+preview_owner_human() {
+    local project issue worktree
+    IFS='|' read -r project issue worktree <<< "$1"
+    echo "${project} #${issue}（${worktree}）"
+}
+
+# preview_release_owned <port> <project> <issue> <worktree>：**必须在端口锁里调**。
+#   登记存在且三项全等 → 停 unit、解 tailscale 路由、删登记，返回 0
+#   没登记             → 什么都不动，返回 0（幂等：清理路径上反复调不出错）
+#   主人不是调用方     → 什么都不动，返回 3
+preview_release_owned() {
+    local port="$1" want="$2|$3|$4" owner
+    owner="$(preview_owner_of "$port")"
+    if [ -z "$owner" ]; then
+        echo "preview :$port 没有登记，不动（不按公式拆未登记的路由）"
+        return 0
+    fi
+    if [ "$owner" != "$want" ]; then
+        echo "⚠️ preview :$port 登记在 $(preview_owner_human "$owner") 名下，不是 $(preview_owner_human "$want")，不动" >&2
+        return 3
+    fi
+    # 停的顺序：socket 先停，掐掉新连接触发重启的可能；再停 proxy，
+    # app 靠 StopWhenUnneeded 自己跟着走（显式再停一次是兜底，幂等无害）。
+    systemctl --user stop "coding-agent-preview@${port}.socket"      2>/dev/null || true
+    systemctl --user stop "coding-agent-preview@${port}.service"     2>/dev/null || true
+    systemctl --user stop "coding-agent-preview-app@${port}.service" 2>/dev/null || true
+    if command -v tailscale >/dev/null 2>&1 \
+        && tailscale serve status 2>/dev/null | grep -q ":${port}\b"; then
+        sudo -n tailscale serve --https="$port" off >/dev/null 2>&1 \
+            || echo "  ⚠️ tailscale serve off :$port 失败（sudo -n / 权限？）——路由留着，需人工处理" >&2
+    fi
+    rm -f "$PREVIEW_CONF_DIR/${port}.conf"
+    echo "preview :$port 已注销（$(preview_owner_human "$want")）"
+}
+
 # 取 work number 对应的 GitHub issue 标题。GitHub 的 /issues/N REST endpoint
 # 对普通 issue 和 PR 都有效，所以 pr_to_issue_num fallback 到 PR number 时也能显示标题。
 github_issue_title() {
     local issue="$1"
     run_gh_capture "读取 issue #$issue 标题" \
         gh api "repos/$REPO/issues/$issue" --jq .title
+}
+
+# ── 拆分出来的 sub-issue（issue #43）──
+# 一个 issue 要多个 PR 时，worker 在方案确认后把它拆成 GitHub 原生 sub-issue：每个子项
+# 有自己的编号 → 自己的分支 / worktree / PR（`Closes #子号`），父 issue 只当总表。
+# 子 issue 正文带一行 SPLIT_MARKER，派工时据此跳过设计轮（方案已在父 issue 上确认过）。
+
+# 父 issue 查询：stdout 父 issue 编号；没有父 issue → 空串 + return 0；接口出错 → return 1。
+# 两种「空」必须分开：没父 = 普通 issue、照常走；出错 = 不知道，调用方不能当成「没父」
+# 之外的任何结论（尤其不能当成「父下全完成」）。
+# 父 issue 不在本仓库（sub-issue 可以跨仓库挂）→ 当没父：本仓库的 daemon 管不着它。
+issue_parent_num() {
+    local issue="$1" out rc=0 errf
+    errf=$(mktemp)
+    out=$(gh api "repos/$REPO/issues/$issue/parent" \
+        --jq 'if (.repository_url | endswith("/repos/'"$REPO"'")) then .number else "" end' 2>"$errf") || rc=$?
+    if [ "$rc" != 0 ]; then
+        if grep -q 'HTTP 404' "$errf"; then rm -f "$errf"; echo ""; return 0; fi
+        log "  ⚠️ 查询 issue #$issue 的父 issue 失败: $(tr '\n' ' ' < "$errf") $out"
+        rm -f "$errf"
+        return 1
+    fi
+    rm -f "$errf"
+    printf '%s\n' "$out"
+}
+
+# 写身份（worker 建 sub-issue 用的就是这把 token）的 login，本进程内缓存。
+_WRITE_LOGIN_CACHE=""
+write_identity_login() {
+    if [ -z "$_WRITE_LOGIN_CACHE" ]; then
+        _WRITE_LOGIN_CACHE=$(gh_write api user --jq .login 2>/dev/null) || _WRITE_LOGIN_CACHE=""
+    fi
+    printf '%s' "$_WRITE_LOGIN_CACHE"
+}
+
+# 这个 issue 是不是本工具拆出来、可以跳过设计轮的子项？是 → stdout 父 issue 编号。
+# 三个条件缺一不可（任何人都能在自己开的 issue 里写一行 HTML 注释，所以只认标记不够）：
+#   1. GitHub 上真有父子关系，且父 issue 在本仓库
+#   2. 子 issue 正文里的标记指向的正是这个父 issue
+#   3. 子 issue 由写身份（bot）创建
+# 任何一步查不到 / 出错 → 空串，调用方回落到普通「先出方案」流程（fail-safe：多问一轮，
+# 不会少一道人工确认）。
+split_parent_of() {
+    local issue="$1" parent meta author body me
+    parent=$(issue_parent_num "$issue") || { echo ""; return 0; }
+    [ -n "$parent" ] || { echo ""; return 0; }
+    meta=$(gh api "repos/$REPO/issues/$issue" --jq '[.user.login, (.body // "")] | @json' 2>/dev/null) || { echo ""; return 0; }
+    author=$(printf '%s' "$meta" | jq -r '.[0]' 2>/dev/null)
+    body=$(printf '%s' "$meta" | jq -r '.[1]' 2>/dev/null)
+    me=$(write_identity_login)
+    if [ -z "$me" ] || [ "$author" != "$me" ]; then
+        log "issue #$issue 挂在 #$parent 下，但作者是 ${author:-?}（不是写身份 ${me:-?}）→ 按普通 issue 先出方案"
+        echo ""; return 0
+    fi
+    if ! printf '%s' "$body" | grep -qE "<!-- agent-split-from: #${parent} -->"; then
+        log "issue #$issue 挂在 #$parent 下，但正文没有指向 #$parent 的拆分标记 → 按普通 issue 先出方案"
+        echo ""; return 0
+    fi
+    echo "$parent"
+}
+
+# 子 issue 关闭后的父 issue 汇总：父下 sub-issue **全部**已关 → 父 issue 翻 pending/human
+# 并留一条汇总评论。**不关父 issue**——关闭权留给人。
+#
+# 返回码是给重试队列（sub_issue_rollup_drain）看的：
+#   0 = 已有定论，出队：汇总完成 / 没有父 issue / 兄弟子项还开着 / 父 issue 已关 / 早就汇总过
+#   1 = 这次没做成，留在队里下轮再试：任何一步读或写失败
+# 「查不到」绝不等于「全完成」，也绝不等于「不用做」——两边都会让父 issue 永远卡住。
+#
+# 幂等，而且评论和翻 label 分开记进度（state.json），重试时不会重复发评论：
+#   split_rollup_commented[<父号>] = 已发汇总评论时的子项数
+#   split_rollups[<父号>]          = 评论 + 翻 label 都成功时的子项数（= 完成）
+# 同一轮里两个子 PR 同时合并，两次调用都会看到「全完成」，第二次读到 split_rollups 就停。
+# 父 issue 后来又挂了新子项，子项数变了，全部完成时会再汇总一次。
+sub_issue_rollup() {
+    local sub="$1" state_file="${2:-${STATE_FILE:-$STATE_DIR/state.json}}"
+    local parent subs total open_left parent_state done_total commented tmp body
+    parent=$(issue_parent_num "$sub") || return 1
+    [ -n "$parent" ] || return 0
+
+    # 子项自己关了没有，由这里亲自读，不信调用方：merge 钩子读状态失败时会兜底成 OPEN，
+    # 要是只在「确认 CLOSED」时才入队，一次 502 就让最后一个子项永远漏掉汇总。
+    # 所以钩子无条件入队，是否关闭在这里判；读不到 = 下轮再试。
+    # 有父却还开着（合并的 PR 没写 Closes，或 GitHub 自动关闭有延迟）也留队重试，到上限自然放弃。
+    local sub_state
+    sub_state=$(run_gh_capture "读取子 issue #$sub 状态" \
+        gh api "repos/$REPO/issues/$sub" --jq .state) || return 1
+    if [ "$sub_state" != "closed" ]; then
+        log "  子 issue #$sub 仍是 ${sub_state:-?}，暂不汇总父 issue #$parent，下轮再看"
+        return 1
+    fi
+
+    local parent_meta summary_total
+    parent_meta=$(run_gh_capture "读取父 issue #$parent 状态" \
+        gh api "repos/$REPO/issues/$parent" --jq '"\(.state)\t\(.sub_issues_summary.total // "")"') || return 1
+    parent_state=${parent_meta%%$'\t'*}
+    summary_total=${parent_meta#*$'\t'}
+    [ "$parent_state" = "open" ] || { log "  父 issue #$parent 已关闭，不汇总"; return 0; }
+
+    subs=$(run_gh_capture "列出父 issue #$parent 的 sub-issue" \
+        gh api --paginate "repos/$REPO/issues/$parent/sub_issues?per_page=100" \
+        --jq '.[] | "\(.number)\t\(.state)"') || return 1
+    total=$(printf '%s\n' "$subs" | awk 'NF' | wc -l | tr -d ' ')
+    # 「列表齐不齐」要先确认，才谈得上「列表里的都关了没有」。列表只要漏一项，剩下的
+    # 恰好全关，就会被误判成「全部完成」。两道对拍，任一不过 = 列表还没刷新完，下轮再试：
+    #   1. 当前子项必须在列表里——/parent 刚确认过它挂在这个父 issue 下
+    #   2. 列表条数必须等于父 issue 自己记的子项总数（sub_issues_summary.total）——
+    #      防的是漏掉**别的**兄弟子项；这个字段缺失也按「核不了」处理，不放行
+    if ! printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" '$1 == s {f=1} END {exit !f}'; then
+        log "  父 issue #$parent 的 sub-issue 列表里没有 #$sub（接口未刷新？），下轮再试"
+        return 1
+    fi
+    if ! [[ "$summary_total" =~ ^[0-9]+$ ]] || [ "$summary_total" != "$total" ]; then
+        log "  父 issue #$parent 的 sub-issue 列表 $total 项，与父 issue 记的总数 '${summary_total}' 对不上，下轮再试"
+        return 1
+    fi
+    # 这个子 issue 上面刚确认过 CLOSED；列表里它的状态若还没刷新，按已关算。
+    open_left=$(printf '%s\n' "$subs" | awk -F'\t' -v s="$sub" 'NF && $1 != s && $2 != "closed"' | wc -l | tr -d ' ')
+    if [ "$open_left" != 0 ]; then
+        log "  父 issue #$parent 还有 $open_left/$total 个子项未完成，不动"
+        return 0
+    fi
+
+    done_total=$(jq -r --arg p "$parent" '.split_rollups[$p] // empty' "$state_file" 2>/dev/null || true)
+    if [ "$done_total" = "$total" ]; then
+        log "  父 issue #$parent 已汇总过（$total 个子项），跳过"
+        return 0
+    fi
+
+    commented=$(jq -r --arg p "$parent" '.split_rollup_commented[$p] // empty' "$state_file" 2>/dev/null || true)
+    if [ "$commented" != "$total" ]; then
+        body=$(mktemp)
+        {
+            printf '## 子项全部完成（%s/%s）\n\n' "$total" "$total"
+            printf '本 issue 拆出的 sub-issue 都已关闭，请决定是否关闭本 issue（daemon 不会替你关）：\n\n'
+            printf '%s\n' "$subs" | awk -F'\t' 'NF {print "- #" $1}'
+        } > "$body"
+        if ! run_gh "父 issue #$parent 汇总评论" gh_write issue comment "$parent" --repo "$REPO" --body-file "$body"; then
+            rm -f "$body"; return 1
+        fi
+        rm -f "$body"
+        tmp=$(mktemp)
+        jq --arg p "$parent" --argjson n "$total" '.split_rollup_commented = ((.split_rollup_commented // {}) + {($p): $n})' \
+            "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+    fi
+
+    # 不用 gh_label_flip：它对每个 DELETE 都 `|| true`（翻 label 场景里「本来就没有」很常见），
+    # 这里却必须分清「标签本来不在」（404，算成功）和「删除失败」（算失败、留队重试）——
+    # 否则 pending/PR 删失败也记完成，父 issue 永远挂着两个互相矛盾的状态标签。
+    if ! run_gh "父 issue #$parent 加 $LABEL_PENDING_HUMAN" \
+        gh_write api -X POST "repos/$REPO/issues/$parent/labels" -f "labels[]=$LABEL_PENDING_HUMAN"; then
+        return 1
+    fi
+    local L out
+    for L in "$LABEL_PENDING_PR" "$LABEL_AGENT_DOING"; do
+        [ -n "$L" ] || continue
+        if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$parent/labels/$(printf '%s' "$L" | jq -sRr @uri)" 2>&1); then
+            if printf '%s' "$out" | grep -q 'HTTP 404'; then continue; fi
+            log "  ⚠️ 父 issue #$parent 摘 $L 失败: $out"
+            return 1
+        fi
+    done
+    tmp=$(mktemp)
+    jq --arg p "$parent" --argjson n "$total" '.split_rollups = ((.split_rollups // {}) + {($p): $n})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+    log "  父 issue #$parent 子项全部完成（$total 个）→ $LABEL_PENDING_HUMAN"
+    return 0
+}
+
+# 合并后给 PR 对应的 issue 打标签：CLOSED（Closes #N 自动关）→ Done；OPEN（Refs #N / 手开 PR）
+# → pending/human 等人 triage。返回 0 = 定了；1 = 状态读不到或加标签失败，一个错标签都不留、
+# 由调用方入 merged_label_queue 下轮再判。**读不到绝不能当成 OPEN**：那会给已关闭的 issue
+# 打上「待人工」，而 PR 已记入 cleaned_prs，没有第二次机会纠正。
+# 摘旧标签仍走 gh_label_flip 的 `|| true`（与此前行为一致：「本来就不在」是常态）。
+merged_issue_label() {
+    local issue="$1" prnum="${2:-?}" state
+    state=$(run_gh_capture "读取 issue #$issue 状态" \
+        gh api "repos/$REPO/issues/$issue" --jq .state) || return 1
+    case "$state" in
+        closed)
+            run_gh "auto-cleanup label issue #$issue → Done" \
+                gh_label_flip "$issue" \
+                --add "$LABEL_DONE" \
+                --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "${LABEL_PENDING_AGENT_DEFAULT:-}" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "$LABEL_AGENT_DOING" || return 1
+            log "  PR #$prnum → Done；issue #$issue CLOSED (Closes #N) → Done"
+            ;;
+        open)
+            run_gh "auto-cleanup label issue #$issue → pending/human" \
+                gh_label_flip "$issue" \
+                --add "$LABEL_PENDING_HUMAN" \
+                --remove "$LABEL_PENDING_PR" "${LABEL_PENDING_AGENT_DEFAULT:-}" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "$LABEL_AGENT_DOING" || return 1
+            log "  PR #$prnum → Done；issue #$issue OPEN (Refs #N) → pending/human"
+            ;;
+        *)
+            log "  ⚠️ issue #$issue 状态异常（'$state'），不打标签，下轮再判"
+            return 1
+            ;;
+    esac
+}
+
+# merged_label_queue[<issue>] = {pr, tries}；上限同 SUB_ISSUE_ROLLUP_MAX_TRIES。
+merged_label_enqueue() {
+    local issue="$1" prnum="$2" state_file="$3" tmp
+    tmp=$(mktemp)
+    jq --arg i "$issue" --arg p "$prnum" \
+        '.merged_label_queue = ((.merged_label_queue // {}) + {($i): {pr: $p, tries: (((.merged_label_queue // {})[$i].tries) // 0)}})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+    log "  issue #$issue 的合并后标签暂未定（状态读不到或写失败），下轮重试"
+}
+
+merged_label_drain() {
+    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" issue prnum tries tmp
+    for issue in $(jq -r '(.merged_label_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
+        [[ "$issue" =~ ^[0-9]+$ ]] || continue
+        prnum=$(jq -r --arg i "$issue" '.merged_label_queue[$i].pr // "?"' "$state_file")
+        tmp=$(mktemp)
+        if merged_issue_label "$issue" "$prnum"; then
+            jq --arg i "$issue" 'del(.merged_label_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+            continue
+        fi
+        tries=$(jq -r --arg i "$issue" '(.merged_label_queue[$i].tries // 0) + 1' "$state_file")
+        if [ "$tries" -ge "$cap" ]; then
+            log "⚠️ issue #$issue 合并后标签连续 $tries 次没定下来 → 放弃（请手动给它打 Done / pending/human）"
+            jq --arg i "$issue" 'del(.merged_label_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        else
+            jq --arg i "$issue" --argjson n "$tries" '.merged_label_queue[$i].tries = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        fi
+    done
+}
+
+# 汇总重试队列。merge 钩子只负责「入队」，每轮 poll 再「清队」：
+# 汇总所需的读写发生在 PR 已记入 cleaned_prs **之后**，那个 PR 下一轮不会再被扫到；
+# 要是汇总当场失败就算了，而这恰好是最后一个子项，父 issue 就永远等不到汇总。
+# 队列 = state.json 的 split_rollup_queue[<子号>] = 已试次数。
+# 上限 SUB_ISSUE_ROLLUP_MAX_TRIES（默认 30 轮，约半小时）：接口持续报错（比如权限被收）时
+# 不能每分钟打一遍 GitHub 打到天荒地老——放弃时记日志，人从父 issue 页面的进度条也看得到。
+sub_issue_rollup_enqueue() {
+    local sub="$1" state_file="$2" tmp
+    tmp=$(mktemp)
+    jq --arg s "$sub" '.split_rollup_queue = ((.split_rollup_queue // {}) + {($s): ((.split_rollup_queue // {})[$s] // 0)})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
+sub_issue_rollup_drain() {
+    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" sub tries tmp
+    for sub in $(jq -r '(.split_rollup_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
+        [[ "$sub" =~ ^[0-9]+$ ]] || continue
+        if sub_issue_rollup "$sub" "$state_file"; then
+            tmp=$(mktemp)
+            jq --arg s "$sub" 'del(.split_rollup_queue[$s])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+            continue
+        fi
+        tries=$(jq -r --arg s "$sub" '(.split_rollup_queue[$s] // 0) + 1' "$state_file")
+        tmp=$(mktemp)
+        if [ "$tries" -ge "$cap" ]; then
+            log "⚠️ 子 issue #$sub 的父 issue 汇总连续 $tries 次失败 → 放弃（请到父 issue 手动确认子项是否全部完成）"
+            jq --arg s "$sub" 'del(.split_rollup_queue[$s])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        else
+            log "  子 issue #$sub 的父 issue 汇总未完成（第 $tries/$cap 次），下轮重试"
+            jq --arg s "$sub" --argjson n "$tries" '.split_rollup_queue[$s] = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        fi
+    done
 }
 
 # 给 worker session 加可读标题、记录实际 worker / 模型，并让 tmux 默认的 prefix+s
@@ -1158,6 +2113,33 @@ run_gh() {
     return 0
 }
 
+# run_gh 的孪生，给 git 用。**dispatch 脚本里的 git 一律走它**，别写
+# `git ... 2>&1 | tail -N`，也别 `2>/dev/null || log "失败"`。
+#
+# 为什么非它不可（实测）：_lib.sh 顶部那句 `exec 9>&- 2>/dev/null` 是**永久**重定向
+# （exec 不带命令时所有重定向都是永久的），所以每个 source 过本文件的脚本——包括
+# agent-poll.sh 自己和全部 dispatch 脚本——fd 2 从此就是 /dev/null。git 写在 stderr
+# 上的 `fatal:` 直接蒸发，既不进 poll.log 也不进 journal。
+# 2026-09-18 那次排查之所以要翻 journal 才找到原因，唯一的原因是当时那行写了
+# `2>&1`，把 stderr 转成了 stdout；把 `2>&1` 删掉，原因会彻底消失。
+# 这里显式把 `2>&1` 收进变量，再经 log() 的 tee 写进 poll.log——那是唯一能穿过
+# 那个 /dev/null 的通道。
+#
+# 只在失败时打，且**逐行**打、不截断：成功时一个字都不输出（日常噪音不变），失败时
+# 真正有用的那行不保证落在最后两行里（`| tail -2` 正是上次「看不见原因」的来源）。
+run_git() {
+    local desc="$1"; shift
+    local out line
+    if ! out=$("$@" 2>&1); then
+        log "  ⚠️ ${desc}失败:"
+        while IFS= read -r line; do
+            [ -n "$line" ] && log "    $line"
+        done <<< "$out"
+        return 1
+    fi
+    return 0
+}
+
 # 需要使用命令 stdout 的 GitHub 调用版本。失败时与 run_gh 一样保留完整 stderr，
 # 成功时只把 stdout 交给 caller（通常用于 command substitution）。
 run_gh_capture() {
@@ -1200,7 +2182,7 @@ gh_label_flip() {
         [ -n "$L" ] || continue
         encoded=$(printf '%s' "$L" | jq -sRr @uri)
         # 404 表示 label 已经不在了——视为成功（idempotent）
-        gh api -X DELETE "repos/$REPO/issues/$num/labels/$encoded" >/dev/null 2>&1 || true
+        gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$encoded" >/dev/null 2>&1 || true
     done
 
     # add
@@ -1209,7 +2191,7 @@ gh_label_flip() {
         for L in "${adds[@]}"; do
             args+=(-f "labels[]=$L")
         done
-        gh api -X POST "repos/$REPO/issues/$num/labels" "${args[@]}" >/dev/null 2>&1 || return 1
+        gh_write api -X POST "repos/$REPO/issues/$num/labels" "${args[@]}" >/dev/null 2>&1 || return 1
     fi
     return 0
 }
@@ -1273,7 +2255,7 @@ checkout_stale_alert_open() {
 这个 issue 由 daemon 自动开，主 checkout 跟上后会自动关闭，不用手动处理。"
 
     num=$(run_gh_capture "开主 checkout 落后告警 issue" \
-        gh api -X POST "repos/$REPO/issues" \
+        gh_write api -X POST "repos/$REPO/issues" \
         -f "title=$CHECKOUT_STALE_ALERT_TITLE（落后 ${behind} commit）" \
         -f "body=$body" \
         -f "labels[]=${LABEL_PENDING_HUMAN:-pending/human}" --jq '.number') || return 0
@@ -1290,7 +2272,7 @@ checkout_stale_alert_resolve() {
     num=$(cat "$marker")
     # 关不掉（已被人手动关掉 / 删了）也照样清标记：留着只会让下次真出问题时不告警。
     run_gh "关闭主 checkout 落后告警 #$num" \
-        gh api -X PATCH "repos/$REPO/issues/$num" -f state=closed || true
+        gh_write api -X PATCH "repos/$REPO/issues/$num" -f state=closed || true
     rm -f "$marker"
     log "checkout_stale_alert: 主 checkout 已跟上，关闭告警 issue #$num"
     return 0
