@@ -778,6 +778,10 @@ if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then
     nohup bash "$SCRIPT_DIR/post-merge-retrospective.sh" >> "$STATE_DIR/retrospective.log" 2>&1 &
 fi
 
+# ── 4. 缺价自动抓价（GitHub#51）──
+# 只动本机缓存、不碰 GitHub，所以不标 PACE_ACTED；没有缺价标记时就是一次 ls。
+price_fetch_tick
+
 # ── 5. 记录本轮节奏（issue #35）──
 # 必须放在最后：上面任何一段做了事都已经把 PACE_ACTED 标上了。
 #
