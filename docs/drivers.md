@@ -61,6 +61,9 @@ agent_command_new <cwd> <session_name> <prompt_file>
 agent_command_resume <cwd> <session_name> <prompt_file>
 ```
 
+Three more are optional and unlock per-role session isolation — see
+[Optional hooks: session isolation](#optional-hooks-session-isolation).
+
 ### Contract
 
 #### `agent_bin`
@@ -97,6 +100,77 @@ Agents without a resume concept:
 ```bash
 agent_command_resume() { agent_command_new "$@"; }
 ```
+
+### Optional hooks: session isolation
+
+When the same agent acts as both the worker and the cross-review gate
+(`REVIEW_WORKER_AGENT` set to the same CLI as `WORKER_AGENT`), both roles share
+one worktree. Every built-in agent resolves "resume" as *the most recent
+conversation in this directory*, so the review would inherit the worker's
+context — including the worker's own rationalisations — and would no longer be
+an independent review. The reverse is just as bad: once the review has created
+its own conversation, the worker's next dispatch resumes *that* one and loses
+its implementation context.
+
+The daemon therefore tags every dispatch with a **role** (`worker` / `review`,
+derived from the prompt template kind) and keeps one session id per
+`(work number, agent, role)` under `$STATE_DIR/agent-sessions/`.
+
+Implement all three functions below and set `AGENT_SESSION_ISOLATION=1` in your
+driver to opt in:
+
+```bash
+agent_session_new_id <cwd> <role>        # id to pin at launch, or "" if the CLI cannot
+agent_session_exists <cwd> <session_id>  # 0 = that session is still resumable
+agent_session_list <cwd>                 # session ids for this cwd, newest first
+```
+
+A CLI that cannot pin an id also needs a fourth hook, plus
+`AGENT_SESSION_PROOF=1`:
+
+```bash
+agent_session_started_with <cwd> <session_id> <prompt_file>   # 0 = this launch started it
+```
+
+`agent_command_new` / `agent_command_resume` then read `$WORKER_SESSION_ID`:
+pin it when starting fresh, resume exactly that id otherwise. An empty
+`$WORKER_SESSION_ID` only happens for conversations that predate this feature —
+fall back to your CLI's own "continue the latest" flag there.
+
+Two shapes are supported:
+
+| CLI can pin an id at launch | What the driver does | Built-in example |
+|---|---|---|
+| yes | `agent_session_new_id` mints one; the launch command passes it | `claude --session-id <uuid>` |
+| no | `agent_session_new_id` echoes `""`; the daemon reads the id back from `agent_session_list` right after launch | `codex` (no such flag as of 0.155.0; its rollout file lands ~0.5 s after start) |
+
+If your CLI cannot pin an id, make sure `agent_session_list` is cheap and
+ordered newest-first: the daemon polls it right after launch to learn the id.
+That read-back needs real evidence, which is what `agent_session_started_with`
+is for — "a session that showed up after I launched" is not evidence, because
+an earlier role whose read-back failed can have its session land inside your
+window. The built-in codex driver compares the session's **launch
+input** — every user message before the first assistant reply — against the
+prompt file the launch was given. Three shortcuts all fail in practice: only the
+first user message (a real session opens with the repo's AGENTS instructions, so
+the dispatch prompt is the *second* one), only its first line (multi-line
+prompts never match themselves), and a fixed-length prefix (shared openings
+match the wrong role). The
+daemon also appends a one-line unique marker to the prompt of any launch that
+will need a read-back, so two launches rendering the same prompt stay
+distinguishable; read it with `agent_session_prompt_tag`. Without the hook the
+daemon falls back to claiming a lone candidate only when no earlier launch for
+that work item was left unresolved.
+
+When the read-back cannot prove anything, the conversation simply stays
+unowned — the daemon will not hand it to another role, and the role starts
+fresh next time. Do **not** try to make adoption smarter to compensate; the
+worker only ever adopts conversations that predate role tracking, and that is
+deliberate.
+
+Not implementing these is fine — the daemon then only guarantees that the
+**review role always starts a fresh session**, and the worker role keeps the
+pre-existing "resume the latest conversation" behaviour.
 
 ### Optional override: `agent_inject_prompt <tmux_session> <prompt_file>`
 

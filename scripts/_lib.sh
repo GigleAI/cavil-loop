@@ -521,6 +521,27 @@ else
     WORKER_MODEL="${WORKER_MODEL:-}"
 fi
 
+# 本次派工的**会话角色**：worker（写代码的）/ review（交叉复审的）。
+#
+# 为什么需要它：review 关卡跟普通 worker 完全可以是同一个 agent
+# （REVIEW_WORKER_AGENT 配成 claude 就是）。同一个 agent + 同一个 worktree，
+# agent 自带的「续接这个目录最近的一条会话」会让 review 直接读到 worker 的上下文
+# —— 复审就不独立了，它会连着 worker 为自己辩解的那些话一起继承。
+# 反方向同样成立：review 起完自己的会话后，worker 下一轮再续接「最近一条」，
+# 续到的是 review 那条，反而丢掉自己的实现上下文。
+# 所以每次派工都带一个角色，会话按 (work number, agent, 角色) 各归各。
+#
+# 角色从 prompt 模板类型推（review 模板 = 交叉复审关卡），agent-poll 已经把
+# DISPATCH_PROMPT_KIND 传给 dispatch 子进程了，不用再加一条传递链路。
+DISPATCH_SESSION_ROLE="${DISPATCH_SESSION_ROLE:-}"
+if [ -z "$DISPATCH_SESSION_ROLE" ]; then
+    case "${DISPATCH_PROMPT_KIND:-}" in
+        review) DISPATCH_SESSION_ROLE="review" ;;
+        *)      DISPATCH_SESSION_ROLE="worker" ;;
+    esac
+fi
+WORKER_SESSION_ROLE="$DISPATCH_SESSION_ROLE"
+
 # Outbound GitHub 评论里附时间+token 元数据 footer（on / off）。默认 on。
 # 项目级 prompt 模板可读 ${COMMENT_FOOTER}，自行决定本项目是否加 footer。
 COMMENT_FOOTER="${COMMENT_FOOTER:-on}"
@@ -2021,21 +2042,36 @@ configure_tmux_session_display() {
         log "  ⚠️ 设置 tmux session $sess 的 @worker_agent 失败（worker 继续运行）"
     fi
 
+    if ! tmux set-option -t "$sess" @worker_role "$WORKER_SESSION_ROLE" 2>&1 | \
+        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        log "  ⚠️ 设置 tmux session $sess 的 @worker_role 失败（worker 继续运行）"
+    fi
+
     if ! tmux bind-key -T prefix s choose-tree -Zs -F "$tree_format" 2>&1 | \
         sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 配置 tmux prefix+s session 列表失败（worker 继续运行）"
     fi
 }
 
-# 返回 0 表示现有 session 已使用本次 dispatch 要求的 worker 和模型。老 session
-# 没有元数据时按项目默认 worker + 默认模型处理，所以普通 pending/agent 不会无故重启。
+# 返回 0 表示现有 session 已使用本次 dispatch 要求的 worker、模型和角色。老 session
+# 没有元数据时按项目默认 worker + 默认模型 + worker 角色处理，所以普通 pending/agent
+# 不会无故重启。
+#
+# 角色必须参与比对：不比的话，review 关卡会被当成「同一个 worker」而把 prompt 直接
+# 注入 worker 那条活着的会话里，复审就继承了 worker 的全部上下文（本函数是唯一挡得住
+# 这条路径的地方——注入不经过 agent_command_new/resume）。
+# 本功能上线前起的 session 没有 @worker_role，按 worker 处理；于是升级后第一次派
+# review 会重启一次 session 切到 review 角色，属预期内的一次性重启。
 tmux_session_matches_worker() {
     local sess="$1"
-    local actual_agent actual_model
+    local actual_agent actual_model actual_role
     actual_agent="$(tmux show-options -qv -t "$sess" @worker_agent 2>/dev/null || true)"
     actual_model="$(tmux show-options -qv -t "$sess" @worker_model 2>/dev/null || true)"
+    actual_role="$(tmux show-options -qv -t "$sess" @worker_role 2>/dev/null || true)"
     [ -n "$actual_agent" ] || actual_agent="$WORKER_AGENT_DEFAULT"
-    [ "$actual_agent" = "$WORKER_AGENT" ] && [ "$actual_model" = "$WORKER_MODEL" ]
+    [ -n "$actual_role" ] || actual_role="worker"
+    [ "$actual_agent" = "$WORKER_AGENT" ] && [ "$actual_model" = "$WORKER_MODEL" ] && \
+        [ "$actual_role" = "$WORKER_SESSION_ROLE" ]
 }
 
 # 给一个 tmux session 名拼出对应的 pane log 路径。
@@ -2482,5 +2518,383 @@ price_fetch_tick() {
     while IFS= read -r line; do
         [ -n "$line" ] && log "抓价：$line"
     done < <(env ${envs[@]+"${envs[@]}"} python3 "$_LIB_DIR/drivers/token-usage/price_fetch.py" 2>&1 || true)
+    return 0
+}
+
+# ── 会话注册表：(work number, agent, 角色) → agent 侧的 session id ──
+#
+# 为什么不放 state.json：那是有兼容约束的接口（CONTRIBUTING 明写改了要申报），
+# 而这里存的是纯本机、丢了能自己重建的缓存；而且 dispatch 是 agent-poll 的子进程，
+# 两边同时 jq 改写同一个 state.json 属于没必要的写竞争。一角色一文件，最笨最稳。
+AGENT_SESSION_DIR="${AGENT_SESSION_DIR:-$STATE_DIR/agent-sessions}"
+
+# 「这个 driver 没法按 id 定位会话」的标记：走上线前的老路（--continue / resume --last）。
+AGENT_SESSION_LEGACY="__legacy__"
+
+agent_session_new_uuid() {
+    if command -v uuidgen > /dev/null 2>&1; then
+        uuidgen | tr 'A-Z' 'a-z'
+    elif [ -r /proc/sys/kernel/random/uuid ]; then
+        cat /proc/sys/kernel/random/uuid
+    else
+        python3 -c 'import uuid; print(uuid.uuid4())'
+    fi
+}
+
+# ── 本次启动的唯一标记 ──
+# 回捞要凭证据认领会话，最硬的证据是「只有这次启动才有的标记」：往 prompt 末尾追加一行
+# markdown 注释，带一个本次独有的 uuid。会话文件里记着启动时收到的 prompt 原文，于是
+# 「这条会话的第一条消息里有我的标记」就等价于「这条会话是我起的」。
+#
+# 为什么光比 prompt 正文不够：同一个角色连派两次、或者项目覆写的两个模板共享很长的
+# 开头，正文比对都分不出来——复审第 2 轮把这两种都构造复现了。
+#
+# 只在「启动时钉不了 id、非得事后回捞」时才加。claude 那种能钉 id 的，prompt 一个字节
+# 都不动。
+AGENT_SESSION_TAG_PREFIX="coding-agent-launch:"
+
+agent_session_prompt_tag() {   # <prompt_file> → 文件里的标记（没有就输出空）
+    local f="${1:-}"
+    [ -n "$f" ] && [ -f "$f" ] || return 0
+    grep -o "$AGENT_SESSION_TAG_PREFIX [0-9a-fA-F-]\{36\}" "$f" 2>/dev/null \
+        | tail -1 | awk '{print $2}'
+    return 0
+}
+
+agent_session_tag_prompt() {   # <prompt_file> → 追加标记并输出它
+    local f="${1:-}" tag
+    [ -n "$f" ] && [ -f "$f" ] || return 0
+    tag="$(agent_session_new_uuid)"
+    [ -n "$tag" ] || return 0
+    printf '\n<!-- %s %s -->\n' "$AGENT_SESSION_TAG_PREFIX" "$tag" >> "$f"
+    echo "$tag"
+    return 0
+}
+
+agent_session_file() {   # <num> <agent> <role>
+    echo "$AGENT_SESSION_DIR/$1.$2.$3"
+}
+
+agent_session_id_get() {   # <num> <agent> <role>
+    local f
+    f="$(agent_session_file "$1" "$2" "$3")"
+    [ -f "$f" ] || return 0
+    tr -d '[:space:]' < "$f"
+}
+
+agent_session_id_set() {   # <num> <agent> <role> <id>
+    local f
+    f="$(agent_session_file "$1" "$2" "$3")"
+    mkdir -p "$AGENT_SESSION_DIR"
+    printf '%s\n' "$4" > "$f"
+}
+
+agent_session_id_forget() {   # <num> <agent> <role>
+    rm -f "$(agent_session_file "$1" "$2" "$3")"
+}
+
+# 注册表目录里除了「当前用哪条」，还有三类**附属**文件。读写两边都靠这个函数认它们，
+# 免得哪天有人新加一类、另一边忘了跳过（把 .preexisting 当成排除集读进去，
+# 向后兼容会整条失效且一声不响）。
+#   <num>.<agent>.<role>.retired  已知属于这个角色、但已被换掉的 id（只增不删）
+#   <num>.<agent>.preexisting     本功能第一次管这条活时，cwd 里已经有的 id（可收养白名单）
+#   <num>.<agent>.unresolved      回捞失败的启动记录，仅供排查
+agent_session_is_aux_file() {   # <path>
+    case "$1" in
+        *.retired|*.preexisting|*.unresolved) return 0 ;;
+    esac
+    return 1
+}
+
+agent_session_retired_file() {     # <num> <agent> <role>
+    echo "$AGENT_SESSION_DIR/$1.$2.$3.retired"
+}
+agent_session_preexisting_file() { # <num> <agent>
+    echo "$AGENT_SESSION_DIR/$1.$2.preexisting"
+}
+agent_session_unresolved_file() {  # <num> <agent>
+    echo "$AGENT_SESSION_DIR/$1.$2.unresolved"
+}
+
+# 把某个角色当前登记的 id 移进「退休」名单，再从登记里摘掉。
+#
+# 为什么不能直接删：强制起新会话（resume 秒退兜底、dispatch-new-issue）改的只是
+# 「这个角色现在用哪条」，并不改变「那条对话是谁的」。直接删会让一条 review 对话在
+# 磁盘上退化成「没人登记的旧会话」，worker 的收养就会把它捡走——第 1、2 轮复审
+# 抓到的就是这个入口。退休名单只增不删，角色归属因此是永久的。
+agent_session_retire() {   # <num> <agent> <role>
+    local cur rf
+    cur="$(agent_session_id_get "$1" "$2" "$3")"
+    if [ -n "$cur" ]; then
+        rf="$(agent_session_retired_file "$1" "$2" "$3")"
+        mkdir -p "$AGENT_SESSION_DIR"
+        printf '%s\n' "$cur" >> "$rf"
+    fi
+    agent_session_id_forget "$1" "$2" "$3"
+}
+
+# 本 work number 下所有**已知归属**的 id：各角色当前登记的 + 已退休的。
+# 收养时拿它当排除集。
+agent_session_ids_blocked() {   # <num>
+    local f
+    for f in "$AGENT_SESSION_DIR/$1".*; do
+        [ -f "$f" ] || continue
+        if agent_session_is_aux_file "$f"; then
+            # 退休名单要读（它正是排除集的一半）；白名单和排查记录不能读进来
+            case "$f" in
+                *.retired) cat "$f" ;;
+            esac
+            continue
+        fi
+        tr -d '[:space:]' < "$f"
+        echo
+    done
+}
+
+# 第一次为这条活做角色化派工时，把 cwd 里**已经存在**的会话 id 快照下来。
+#
+# 这些是本功能上线前留下的会话：它们没有任何角色信息，但也只有它们才可能是 worker
+# 自己的——之后每一条会话都是角色化派工建的，谁建的当场就知道（claude 启动时钉 id、
+# codex 启动后回捞）。于是「可不可以收养」有了一个**正向**判据：在这张快照里才可以。
+#
+# 原来的判据是反向的（「当前没被别人登记」），于是任何一种登记丢失都会把别的角色的
+# 对话误判成可收养：强制换会话把旧 id 删掉（第 1 轮复审）、codex 回捞超时导致新会话
+# 从未登记（第 2 轮复审）。正向判据把这两个入口和以后同类的入口一起关掉。
+#
+# 只写一次：文件已存在就不动。**绝不能**在同一次派工的兜底里重新快照——那会把刚起的
+# 那条会话也写进白名单。
+agent_session_preexisting_snapshot() {   # <num> <cwd>
+    local f tmp
+    f="$(agent_session_preexisting_file "$1" "$WORKER_AGENT")"
+    [ -f "$f" ] && return 0
+    mkdir -p "$AGENT_SESSION_DIR"
+    tmp="$f.tmp.$$"
+    agent_session_list "$2" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$f"
+    return 0
+}
+
+# 找一条可以被 worker 角色收养的旧会话。
+# 返回：会话 id / $AGENT_SESSION_LEGACY（driver 不支持按 id 定位，走老路）/ 空（起全新）。
+agent_session_adoptable() {   # <num> <cwd>
+    local num="$1" cwd="$2"
+    local blocked allowed line
+
+    if [ "${AGENT_SESSION_ISOLATION:-0}" != 1 ]; then
+        # driver 没实现会话枚举 → 保持上线前的行为，有历史就按它自己的方式续接
+        if agent_has_history "$cwd"; then
+            echo "$AGENT_SESSION_LEGACY"
+        fi
+        return 0
+    fi
+
+    blocked="$(agent_session_ids_blocked "$num")"
+    allowed="$(cat "$(agent_session_preexisting_file "$num" "$WORKER_AGENT")" 2>/dev/null || true)"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        # 已知归属（当前登记 / 已退休）的一律不碰
+        printf '%s\n' "$blocked" | grep -Fxq "$line" && continue
+        # 正向判据：只收养「本功能开始管这条活之前就存在」的会话
+        printf '%s\n' "$allowed" | grep -Fxq "$line" || continue
+        echo "$line"
+        return 0
+    done < <(agent_session_list "$cwd")
+    # 能枚举、但一条没被登记的都没有（例如目录里只剩 review 那条）→ 起全新，
+    # **绝不**回落到 --continue：那正好会续到 review 那条上。
+    #
+    # 必须显式 return 0：调用方是 `x="$(agent_session_adoptable ...)"`，而 dispatch
+    # 脚本开着 set -e —— 函数返回非 0 会让整条派工当场中断，而「没有可收养的会话」
+    # 明明是最常见的正常情况（全新 worktree 每次都走这里）。
+    return 0
+}
+
+# 决定本次派工该起哪条会话。**只做决策（外加给 prompt 打启动标记），不产出命令。**
+# 设置三个全局：AGENT_LAUNCH_KIND（new|resume|adopt|legacy-resume）、WORKER_SESSION_ID
+# （driver 的 agent_command_new / agent_command_resume 读它决定钉哪个 / 续哪条 id）、
+# AGENT_SESSION_PRELAUNCH_IDS（给回捞用的开工前快照）。
+#
+# ⚠️ 必须在**当前 shell** 里直接调，不能写成 `X="$(agent_session_plan ...)"`：
+# 命令替换开的是子 shell，上面三个全局会连同子 shell 一起消失，调用方只会读到空值
+# （dispatch 脚本开着 set -u，读空值直接就是 unbound variable 崩在派工路上）。
+# 「决策」和「产命令」分成两个函数，正是为了让产命令那步可以安全地放进 $( )。
+#
+# 收在一个函数里是因为三个 dispatch 脚本原来各写一份「有历史就 resume」，
+# 角色隔离要在每份里重写一遍必然会漏掉一条路径。
+agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
+    local num="$1" cwd="$2" prompt_file="${3:-}" force_new="${4:-0}"
+    local role="$WORKER_SESSION_ROLE"
+    local id="" adopted=""
+
+    AGENT_LAUNCH_KIND=""
+    WORKER_SESSION_ID=""
+    AGENT_SESSION_PRELAUNCH_IDS=""
+
+    # 白名单只在「本功能第一次管这条活」时拍一张，后面每次调用都只是存在性检查
+    if [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ]; then
+        agent_session_preexisting_snapshot "$num" "$cwd"
+    fi
+
+    if [ "$force_new" != 1 ]; then
+        id="$(agent_session_id_get "$num" "$WORKER_AGENT" "$role")"
+        if [ -n "$id" ]; then
+            if agent_session_exists "$cwd" "$id"; then
+                WORKER_SESSION_ID="$id"
+                AGENT_LAUNCH_KIND="resume"
+                return 0
+            fi
+            # 登记过但会话没了（history 被清、worktree 重建过…）→ 退休掉，往下起全新。
+            # 走退休不走删：万一那条对话之后又出现（备份恢复 / 挂载回来），
+            # 它的角色归属还在，不会变成一条「谁都能收养的旧会话」。
+            agent_session_retire "$num" "$WORKER_AGENT" "$role"
+        fi
+
+        # 普通 worker 的向后兼容：本功能上线前的会话一条都没登记过，
+        # 不能因为「注册表里查不到」就把正在做的活的上下文丢掉。
+        # review 角色不收养——它宁可从零开始，也不能捡到 worker 那条。
+        if [ "$role" = "worker" ]; then
+            adopted="$(agent_session_adoptable "$num" "$cwd" || true)"
+            if [ "$adopted" = "$AGENT_SESSION_LEGACY" ]; then
+                AGENT_LAUNCH_KIND="legacy-resume"
+                return 0
+            fi
+            if [ -n "$adopted" ]; then
+                agent_session_id_set "$num" "$WORKER_AGENT" "$role" "$adopted"
+                WORKER_SESSION_ID="$adopted"
+                AGENT_LAUNCH_KIND="adopt"
+                return 0
+            fi
+        fi
+    else
+        # 强制起新：只换「现在用哪条」，旧那条的角色归属必须留下
+        agent_session_retire "$num" "$WORKER_AGENT" "$role"
+    fi
+
+    # 全新会话。driver 能在启动时钉 id（claude 的 --session-id）就当场登记；
+    # 钉不了的（codex 启动侧没有这种 flag）先记下开工前已有的 id，
+    # 等 tmux 起完再由 agent_session_register_launched 回捞。
+    id="$(agent_session_new_id "$cwd" "$role")"
+    if [ -n "$id" ]; then
+        agent_session_id_set "$num" "$WORKER_AGENT" "$role" "$id"
+        WORKER_SESSION_ID="$id"
+    elif [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ]; then
+        AGENT_SESSION_PRELAUNCH_IDS="$(agent_session_list "$cwd" || true)"
+        # 钉不了 id → 启动后得回捞 → 给 prompt 打上本次启动独有的标记，回捞靠它认领
+        agent_session_tag_prompt "$prompt_file" > /dev/null
+    fi
+    AGENT_LAUNCH_KIND="new"
+}
+
+# 按 agent_session_plan 定好的方案产出启动命令（写 stdout）。
+# 这个可以放进 $( )：它不设任何调用方要读的全局。
+agent_launch_command() {   # <cwd> <session_name> <prompt_file>
+    case "${AGENT_LAUNCH_KIND:-new}" in
+        new) agent_command_new "$1" "$2" "$3" ;;
+        *)   agent_command_resume "$1" "$2" "$3" ;;
+    esac
+}
+
+# 起完一条全新会话之后调用：给「启动时钉不了 id」的 driver（codex）把本次真正用上的
+# session id 回捞并登记。其余情况是空操作。
+#
+# **登记前必须有证据证明候选属于本次启动。** 「本次启动后才出现的文件」不是证据：
+# 别的角色回捞超时过，它那条会话的文件可能比我们自己的先落盘，于是「新出现」会把
+# 别人的会话登记到我们名下，下一轮直接 resume 过去——这就绕开了收养那道正向判据。
+# 复审连抓三轮，三次都是同一个根因（用反向/弱判据代替正向证据），这是第三个入口。
+#
+# 证据来自 driver 的 agent_session_started_with（codex 比对 rollout 里记下的第一条
+# user 消息 == 本次传进去的 prompt 原文）。driver 举证不了时走保守路线：只有
+# 「候选唯一 + 此前没有未解决的启动」才敢登记。
+#
+# 拿不到证据不让派工失败：留一条 .unresolved 记录 + 日志，该角色下一轮从零起一条。
+# 丢上下文，但绝不串角色。
+agent_session_register_launched() {   # <num> <cwd> <prompt_file>
+    local num="$1" cwd="$2" prompt_file="${3:-}"
+    local role="$WORKER_SESSION_ROLE"
+    local step=0.5 line deadline found="" reason=""
+    local -a cands proven
+
+    [ "${AGENT_LAUNCH_KIND:-}" = "new" ] || return 0
+    [ -z "${WORKER_SESSION_ID:-}" ] || return 0
+    [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ] || return 0
+
+    local max="${AGENT_SESSION_CAPTURE_SECS:-15}"
+    # 按真实流逝时间判，不按迭代数：每轮除了 sleep 还要花一次枚举（codex 扫 200 个
+    # 文件约 0.3s），数迭代会让「配 15 秒」实际等成 20 秒，而且会随会话库变大继续漂——
+    # 派工期间 agent-poll 攥着 flock，多等的时间全项目一起付。
+    # SECONDS 是 bash 内置的整秒计数，所以实际窗口有不到 1 秒的截断误差
+    # （实测：配 3 秒等了 2.4 秒），对这个用途够了。
+    deadline=$((SECONDS + max))
+    while :; do
+        # 候选 = 本次启动之后才出现的会话（最近的在前）
+        cands=()
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            printf '%s\n' "$AGENT_SESSION_PRELAUNCH_IDS" | grep -Fxq "$line" && continue
+            cands+=("$line")
+        done < <(agent_session_list "$cwd")
+
+        if [ "${AGENT_SESSION_PROOF:-0}" = 1 ]; then
+            proven=()
+            for line in "${cands[@]:-}"; do
+                [ -z "$line" ] && continue
+                if agent_session_started_with "$cwd" "$line" "$prompt_file"; then
+                    proven+=("$line")
+                fi
+            done
+            if [ "${#proven[@]}" -eq 1 ]; then
+                found="${proven[0]}"
+                break
+            fi
+            if [ "${#proven[@]}" -gt 1 ]; then
+                # 两条都自称是本次启动起的：没法判，宁可不登记
+                reason="ambiguous-proof"
+                break
+            fi
+            # 一条都举证不出来：可能我们自己那条还没写完 user 消息，继续等
+        else
+            # driver 举证不了：只在「候选唯一 + 此前没有未解决的启动」时才敢认
+            if [ "${#cands[@]}" -eq 1 ] && [ ! -s "$(agent_session_unresolved_file "$num" "$WORKER_AGENT")" ]; then
+                found="${cands[0]}"
+                break
+            fi
+            if [ "${#cands[@]}" -gt 0 ]; then
+                reason="no-proof-available"
+                break
+            fi
+        fi
+
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "$step"
+    done
+
+    if [ -n "$found" ]; then
+        agent_session_id_set "$num" "$WORKER_AGENT" "$role" "$found"
+        WORKER_SESSION_ID="$found"
+        log_debug "会话登记：#$num $WORKER_AGENT/$role -> $found"
+        return 0
+    fi
+
+    [ -n "$reason" ] || reason="timeout"
+    mkdir -p "$AGENT_SESSION_DIR"
+    printf '%s unresolved-launch role=%s reason=%s candidates=%s\n' \
+        "$(date -Iseconds)" "$role" "$reason" "${#cands[@]}" \
+        >> "$(agent_session_unresolved_file "$num" "$WORKER_AGENT")"
+    log "  ⚠️ 没能确认 $WORKER_AGENT 本次启动的 session id（#$num 角色 $role，原因 $reason，候选 ${#cands[@]} 条）；"
+    log "     这条会话保持无主：别的角色既不会收养它（白名单挡着）也不会回捞到它（要举证），"
+    log "     代价是该角色下一轮从零起一条新会话"
+}
+
+# 清掉某个 work number 下所有角色「当前用哪条」的登记（cleanup-issue 删 worktree 时调用）。
+#
+# ⚠️ 附属文件（退休名单 / 上线前白名单）**不清**。worktree 可能在同一路径上重建，
+# 而 agent 的历史是按 cwd 存的，旧对话还在原地；把角色归属一并清掉，等于让那些旧的
+# review 对话重新变成「谁都能收养」。这两个文件只有几行，留着是最便宜的保险。
+agent_session_forget_all() {   # <num>
+    local f
+    for f in "$AGENT_SESSION_DIR/$1".*; do
+        [ -f "$f" ] || continue
+        agent_session_is_aux_file "$f" && continue
+        rm -f "$f"
+    done
     return 0
 }

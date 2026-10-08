@@ -131,6 +131,101 @@ When adding a field: `agent-poll.sh` has a migration loop at the top that iterat
 
 **Poll pace state lives elsewhere, on purpose.** `$STATE_DIR/poll-pace.json` holds the idle/failure backoff state (`next_due` / `last_poll` / `last_active` / `fail_streak` / `fingerprint`) and is deliberately *not* part of `state.json`: the migration loop above inits missing fields to `{}` while these are numbers and strings, and — the operational reason — `rm poll-pace.json` has to mean "back to full speed now" without also wiping the seen-comment cursors. Helpers are the `pace_*` block in `_lib.sh`; the gate itself sits right after the flock in `agent-poll.sh`. Two rules when touching it: **it may only decide whether a tick runs, never what the tick does**, and **every judgement fails open** — unparseable or out-of-range state means poll, never means wait longer (fail-closed here is a silent project-wide stall with no error anywhere).
 
+### Session registry (`$STATE_DIR/agent-sessions/`)
+
+One file per `(work number, agent, role)`, holding the agent-side session id:
+
+```
+$STATE_DIR/agent-sessions/42.claude.worker   ->  4d9e5509-1591-493b-80b9-7d93e3f5344a
+$STATE_DIR/agent-sessions/42.claude.review   ->  f3db1457-c545-4b83-9969-0af1285ba460
+```
+
+Deliberately **not** in `state.json`: that file is a compatibility-bound
+interface (CONTRIBUTING makes you declare changes to it), whereas this is a
+local cache that can be rebuilt from scratch — and `dispatch-*.sh` runs as a
+child of `agent-poll.sh`, so keeping both out of the same jq-rewrite avoids a
+pointless write race. `cleanup-issue.sh` drops a work number's files when it
+removes the worktree.
+
+`role` is `worker` or `review`, derived from `DISPATCH_PROMPT_KIND`. It exists
+so that a review gate running the *same* agent as the worker gets its own model
+conversation instead of inheriting the worker's — see
+[docs/architecture.md](docs/architecture.md#session-isolation).
+
+Three sibling files carry the parts that must outlive "which session is current":
+
+```
+42.claude.review.retired   ids this role used before and will not use again (append-only)
+42.claude.preexisting      ids that already existed when role tracking first ran for #42
+42.claude.unresolved       launches whose id could not be read back (diagnostics only)
+```
+
+**Every write to this registry needs positive evidence of ownership, and that is
+the whole point.** There are exactly three writers, and each one now answers
+"why do I believe this conversation is mine?":
+
+| writer | evidence |
+|---|---|
+| a freshly pinned id (claude) | we minted the id ourselves at launch |
+| adoption (worker role only) | the id is in `.preexisting`, so it predates role tracking |
+| read-back after launch (codex) | the session's **launch input** carries this launch's unique tag, or failing that equals this launch's prompt in full |
+
+**Adoption uses a positive criterion.** The worker role may only take over a
+conversation listed in `.preexisting` — i.e. one that predates role tracking,
+the only kind whose role genuinely cannot be known.
+Asking the opposite question ("is this id currently registered to someone
+else?") looks equivalent and is not: every way a registration can go missing
+then turns another role's conversation into a free-for-all. Two such ways are
+real — a forced new session used to delete the old id, and a codex id that the
+post-launch read-back never resolved — and both ended with the worker resuming
+the reviewer's conversation. Hence also: a forced new session **retires** the
+old id instead of deleting it, and `cleanup-issue.sh` clears only the current
+registrations, never the two files above (a worktree can be rebuilt at the same
+path while the agent's history, keyed by cwd, is still sitting there).
+
+The read-back has the same trap one level down: "a session file that appeared
+after I launched" is **not** evidence that I launched it. If an earlier role's
+read-back timed out, that role's file can land inside the next role's window and
+get claimed by it. So the read-back asks the driver to prove the candidate was
+started with this dispatch's prompt (`agent_session_started_with`), refuses when
+two candidates both claim it, and — for a driver that cannot prove anything —
+only claims a lone candidate when no earlier launch for that work item was ever
+left unresolved.
+
+Three details of that proof are load-bearing, all learned the hard way.
+
+*What counts as the launch input*: every user message **before the first
+assistant reply**, not "the first user message". A real codex rollout opens
+`session_meta → developer×3 → user(AGENTS.md, ~30k chars) → user(the dispatch
+prompt) → assistant`, so the first user message is the repo's own instructions
+and a check that stops there always says no — the role then never finds its own
+session again. The boundary must not be widened to "search the whole
+conversation" either: a later dispatch injecting a prompt into an existing
+session would carry a marker too, and that session is not the one this launch
+created.
+
+*How much of it to compare*: the **complete** message, never its first line and
+never a prefix. Reading one line rejects every multi-line prompt (every template
+here is multi-line), and comparing a prefix accepts another role's session
+whenever two templates share a long opening. And because two launches can legitimately render a byte-identical
+prompt, `agent_session_plan` appends a one-line marker carrying a fresh uuid to
+the prompt of any launch that will need a read-back — so "which launch" stays
+answerable. Launches that can pin an id (claude) get no marker; their prompt is
+untouched. Failing to claim is always allowed: the conversation stays
+unowned and the role starts fresh, which costs context and never crosses roles.
+
+Same rule one level down: which sessions belong to a worktree is decided by
+parsing `cwd` out of the session record with jq, not by grepping `"cwd":"…"` out
+of the raw line. Measured at equal cost (200 files, 0.4s either way), and the
+grep form silently returns nothing the day the writer adds a space.
+
+**Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`
+in `_lib.sh`. Two functions, not one, on purpose: `plan` sets globals
+(`AGENT_LAUNCH_KIND`, `WORKER_SESSION_ID`) and therefore must run in the caller's
+own shell, while the command string has to be produced inside `"$( )"`. Merging
+them means the globals die in the command-substitution subshell and every
+dispatch script trips `unbound variable` under `set -u`.
+
 ### Session / worktree / branch naming
 
 Driven by three prefixes in `coding-agent.config` (formula for "work number N"):
