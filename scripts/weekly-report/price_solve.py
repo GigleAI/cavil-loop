@@ -27,6 +27,10 @@
     uncorroborated  稳定 但没有可比参照（含参照为 0 / 缺失）      → 用反解值，算**候选估算**
     disputed        稳定 但与参照偏差 > MAX_DIVERGE               → 报红；取值按 policy
     unstable        过不了闸门 / 无解 / 非有限值                   → 取值按 policy
+    fetched         同 unstable，但兜底用的参照是 daemon 缺价时**联网抓来的**
+                    （内置参照里没有这个模型，GitHub#51）           → 取值按 policy
+    disputed_fetched 同 disputed，但冲突的那份参照是**联网抓来的**   → 报红；取值按 policy
+                    （单独一态：既不能丢掉冲突警示，也不能丢掉「这个价是自动抓的」）
 
 取值策略（issue #934 的 Q7，人工已确认 A）：
     A（默认）：disputed 用参照值；unstable 有参照用参照值、**没有参照就是未知**。
@@ -64,8 +68,10 @@ ITEMS = ("input", "output", "cache_read", "cache_write")
 
 # ── 外部参照（只作兜底 + 交叉核对，不是真值）──────────────────────────────
 # 来源：Anthropic 官方价目页的 Model pricing / Prompt caching / Fast mode pricing 三节，
-# 2026-09-29 联网逐项核对整张表（GigleTutor-Web#982）。**运行时不联网**，官方调价后要人来改
-# 这里——信号是 footer 出现「部分用量未计价」或周报出现 disputed。
+# 2026-09-29 联网逐项核对整张表（GigleTutor-Web#982）。这张表本身**运行时不联网**，官方调价后
+# 要人来改这里——信号是周报出现 disputed。表里**没有**的新模型由 daemon 在缺价时自动联网补
+# （GitHub#51，drivers/token-usage/price_fetch.py：官方页与 LiteLLM 一致才用），补来的价
+# 存在本机缓存、只补缺不覆盖，可信状态单独记 fetched。
 # 倍率：cache 写 5m 1.25×、1h 2×（全部型号一致）；cache 读**因型号而异**，默认 0.1×，
 # Opus 5.5 是 0.05×、Fable 5.1 是 0.025×——原来一律按 0.1× 推，Fable 5.1 被多算了 4 倍。
 # 快速档：官方写明缓存倍率叠加在快速价之上，所以快速档与标准档用同一个读取倍率。
@@ -92,6 +98,42 @@ REFERENCE_FAST = {
     "claude-opus-5":   _ref(10, 50),
     "claude-opus-4-8": _ref(10, 50),
 }
+
+
+def cache_dir():
+    d = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(d, "cavil-loop")
+
+
+def fetched_path():
+    """缺价时 daemon 联网抓来的单价（GitHub#51，见 drivers/token-usage/price_fetch.py）。"""
+    return os.path.join(cache_dir(), "fetched-prices.json")
+
+
+def load_fetched():
+    """{"claude": {model: {"prices": {...}, ...}}, "codex": {...}}；没有或坏掉 → {}。"""
+    try:
+        with open(fetched_path(), encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def fetched_reference():
+    """claude 那一侧抓来的单价，形状同 REFERENCE。**内置参照里已有的模型一律不取**——
+    抓来的价只补缺，从不覆盖人工核对过的那张表。"""
+    out = {}
+    for model, entry in (load_fetched().get("claude") or {}).items():
+        prices = (entry or {}).get("prices") if isinstance(entry, dict) else None
+        if model in REFERENCE or not isinstance(prices, dict):
+            continue
+        clean = {k: float(v) for k, v in prices.items()
+                 if isinstance(v, (int, float)) and not isinstance(v, bool)
+                 and math.isfinite(v) and v >= 0}
+        if clean:
+            out[model] = clean
+    return out
 
 
 def norm_model(m):
@@ -217,9 +259,15 @@ def gate(samples):
     return out, x0
 
 
-def classify(model, gated, ttl, policy="A"):
-    """②外部参照交叉核对 → 四态 + 最终取值。cache 写入按本机 5m/1h 构成拆成两档。"""
-    ref = REFERENCE.get(model, {})
+def classify(model, gated, ttl, policy="A", fetched=None):
+    """②外部参照交叉核对 → 四态 + 最终取值。cache 写入按本机 5m/1h 构成拆成两档。
+
+    内置参照里没有、但 daemon 联网抓到过价的模型（GitHub#51），用抓来的价当参照。
+    这时「解不出、用参照兜底」的那一档不叫 unstable 而叫 **fetched**：兜底用的不是
+    人工核对过的表，而是自动抓的公开价目，报告必须能把两者分开。"""
+    fetched = fetched_reference() if fetched is None else fetched
+    from_fetch = model not in REFERENCE and model in fetched
+    ref = REFERENCE.get(model) or fetched.get(model) or {}
     res = {}
 
     def decide(item, solved, stable, ref_price, note=""):
@@ -236,7 +284,13 @@ def classify(model, gated, ttl, policy="A"):
         elif status == "disputed":
             price = ref_price if policy == "A" else None
         else:                                # unstable：A 有参照才兜底，没有就是未知
-            price = ref_price if (policy == "A" and ref_price) else None
+            # ⚠️ 判「有没有参照」用 is not None：$0 是合法的已知单价（抓来的缓存项可以是 0），
+            #   拿真假判断会把它当成「没参照」→ 这部分 token 变成缺价（PR #55 复审第 1 轮）
+            price = ref_price if (policy == "A" and ref_price is not None) else None
+        # 兜底取的是抓来的价 → 状态要带上来源。冲突那一态单独叫 disputed_fetched：
+        # 只标 fetched 会丢掉冲突警示，只标 disputed 会丢掉「这是自动抓的价」（复审第 1 轮）
+        if from_fetch and price is not None and status in ("unstable", "disputed"):
+            status = "fetched" if status == "unstable" else "disputed_fetched"
         return {"status": status, "price": price, "solved": solved,
                 "reference": ref_price, "divergence": rel, "note": note}
 
@@ -260,15 +314,18 @@ def classify(model, gated, ttl, policy="A"):
 
 def build(policy="A", projects_dir=None):
     rows, ttl = load_samples(projects_dir)
+    fetched = fetched_reference()
     table = {}
     for model, samples in sorted(rows.items()):
         gated, _ = gate(samples)
-        table[model] = classify(model, gated, ttl.get(model, {}), policy)
-    # 本机没跑过的模型：没有反解依据，按 policy 决定是否用参照兜底
-    for model, ref in sorted(REFERENCE.items()):
+        table[model] = classify(model, gated, ttl.get(model, {}), policy, fetched)
+    # 本机没跑过的模型：没有反解依据，按 policy 决定是否用参照兜底。
+    # 抓来的价同样只在 policy=A 时兜底，状态记 fetched（见 classify）。
+    for model, ref, st in ([(m, r, "unstable") for m, r in sorted(REFERENCE.items())]
+                           + [(m, r, "fetched") for m, r in sorted(fetched.items())]):
         if model in table:
             continue
-        table[model] = {it: {"status": "unstable", "price": (ref[it] if policy == "A" else None),
+        table[model] = {it: {"status": st, "price": (ref[it] if policy == "A" else None),
                              "solved": None, "reference": ref[it], "divergence": None,
                              "note": "本机无该模型流量", "metrics": {}}
                         for it in ref}
@@ -280,8 +337,7 @@ def build(policy="A", projects_dir=None):
 
 
 def cache_path():
-    d = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(d, "cavil-loop", "price-table.json")
+    return os.path.join(cache_dir(), "price-table.json")
 
 
 def _signature(projects_dir=None):
@@ -301,7 +357,9 @@ def _signature(projects_dir=None):
         except OSError:
             pass
     # 参照表也进指纹：只改参照、transcript 没动时，不能继续读旧表（GigleTutor-Web#982）。
-    ref = hashlib.sha256(json.dumps([REFERENCE_SOURCE, REFERENCE, REFERENCE_FAST],
+    # 抓来的价同理（GitHub#51）：daemon 刚补上一个模型，下一次取表就得用上。
+    ref = hashlib.sha256(json.dumps([REFERENCE_SOURCE, REFERENCE, REFERENCE_FAST,
+                                     fetched_reference()],
                                     sort_keys=True).encode()).hexdigest()[:16]
     return f"{n}:{newest:.0f}:{size}:{ref}"
 

@@ -302,6 +302,20 @@ CODEX_EXTRA_FLAGS="--dangerously-bypass-approvals-and-sandbox"
 # 加进下方 WORKER_PASS_ENV。
 # export CODEX_PRICES='{"gpt-6-astra":{"in":10,"cached_in":1,"out":50,"cache_write":12.5},"gpt-6-sol":{"in":2,"cached_in":0.2,"out":10,"cache_write":2.5},"gpt-6-luna":{"in":0.1,"cached_in":0.01,"out":0.5,"cache_write":0.125},"gpt-5.6-sol":{"in":4,"cached_in":0.4,"out":20,"cache_write":5},"gpt-5.6-terra":{"in":2,"cached_in":0.2,"out":12,"cache_write":2.5},"gpt-5.6-luna":{"in":0.2,"cached_in":0.02,"out":1.2,"cache_write":0.25},"gpt-5.3-codex":{"in":1.75,"cached_in":0.175,"out":14},"gpt-5.2-codex":{"in":1.75,"cached_in":0.175,"out":14},"gpt-5-codex":{"in":1.25,"cached_in":0.125,"out":10},"codex-mini-latest":{"in":1.5,"cached_in":0.375,"out":6}}'
 
+# Automatic price gap fill (GitHub#51): when a model has usage but no price, the
+# daemon downloads the official pricing page + LiteLLM's price list and uses the
+# price only if both agree. Fills missing models only; never overrides built-in
+# or CODEX_PRICES rates. Set 0 to never go online for prices.
+# See docs/operations.md#automatic-price-gap-fill.
+#
+# 缺价自动补价：某模型有用量却没单价时，daemon 下载官方价目页 + LiteLLM 价目表，
+# 两边一致才用；只补缺、从不覆盖内置价或 CODEX_PRICES。设 0 则从不联网抓价。
+# PRICE_AUTO_FETCH=1
+# PRICE_FETCH_COOLDOWN_SECS=21600   # 失败后多久再试 / retry after a failure
+# PRICE_FETCH_ANTHROPIC_URL=https://platform.claude.com/docs/en/about-claude/pricing.md
+# PRICE_FETCH_OPENAI_URL=https://developers.openai.com/api/docs/pricing.md
+# PRICE_FETCH_LITELLM_URL=https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+
 # OpenCode / Cursor 启动 flag（按需打开）：
 # OPENCODE_EXTRA_FLAGS=""
 # CURSOR_AGENT_EXTRA_FLAGS=""

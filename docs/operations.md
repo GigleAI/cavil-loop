@@ -165,9 +165,46 @@ The USD amount is a **converted reference value at published API list price**,
 not a subscription bill or verified spend. Long-context and Fast/Batch/Flex
 rate changes are not identified by this driver, so these estimates use Standard
 rates. The built-in table is static: after 90 days its human-readable output
-asks for a price review; it never fetches prices at runtime. The weekly report
+asks for a price review. Existing entries are never refreshed at runtime; only
+models missing from the table are filled in automatically (next section). The weekly report
 distinguishes built-in API reference rates from operator-configured rates, and
 neither Codex source is independently cross-checked against an invoice.
+
+## Automatic price gap fill
+
+When a usage driver (Claude or Codex) sees tokens for a model that has no price,
+the footer says the amount was not computed, and the driver leaves an empty
+marker under `~/.cache/cavil-loop/unpriced/`. It does not go online — it runs
+inside the worker. On the next poll tick the daemon runs
+`scripts/drivers/token-usage/price_fetch.py`, which downloads:
+
+| Source | Default URL |
+|---|---|
+| Anthropic official pricing (markdown) | `https://platform.claude.com/docs/en/about-claude/pricing.md` |
+| OpenAI official pricing (markdown, Standard table only) | `https://developers.openai.com/api/docs/pricing.md` |
+| LiteLLM community price list (JSON on GitHub) | `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` |
+
+A model is written to `~/.cache/cavil-loop/fetched-prices.json` only when the
+official page and LiteLLM **agree** (≤ 10% apart on every item both list), each
+side passes sanity checks (positive, ≤ $1000/M, output ≥ input, cache read ≤ input),
+and the official page lists the model on exactly one row. Items only one source
+lists stay unpriced. From then on both drivers price that model, the footer adds
+「（含自动联网获取的单价）」, and the money is tracked in its own `fetched`
+trust bucket through to the weekly report.
+
+- Gap fill only: built-in prices and operator-set `CODEX_PRICES` always win; an
+  explicit `CODEX_PRICES` (including `{}`) turns gap fill off for Codex.
+- Failures (download, page layout change, sources disagree) are logged to
+  `poll.log` with the reason and retried after 6 hours
+  (`PRICE_FETCH_COOLDOWN_SECS`). Each request times out after 15 s
+  (`PRICE_FETCH_TIMEOUT`); fetch failures never block dispatch.
+- The marker of the comment that discovered the gap still says "not computed";
+  comments after the next tick carry the amount. Posted footers are not rewritten.
+- Turn it off with `PRICE_AUTO_FETCH=0`. The three URLs can be overridden with
+  `PRICE_FETCH_ANTHROPIC_URL` / `PRICE_FETCH_OPENAI_URL` / `PRICE_FETCH_LITELLM_URL`.
+- To make the daemon re-try a failed model now, delete
+  `~/.cache/cavil-loop/price-fetch-state.json`; to drop a fetched price, edit or
+  delete `fetched-prices.json`.
 
 ## Model-selecting trigger labels
 

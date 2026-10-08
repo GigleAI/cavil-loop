@@ -56,6 +56,10 @@
 #   models               本窗口实际产生非零用量的模型 ID，去重、排序、逗号分隔
 #   model_unknown        yes / no —— 是否另有非零用量无法归属到模型
 #
+# 缺价（GitHub#51）：某个认得出的模型有用量却取不到价时，留一个本机缺价标记
+#   （_price_cache.sh，不联网）；daemon 下一轮联网补价，补来的价在价目表里状态是
+#   fetched，人读行注明「含自动联网获取的单价」。
+#
 # ⚠️ price_status 必须真的发出去。它原来算了却没进输出，结果「用参照兜底的存疑金额」
 #   和「已与参照核对过的金额」在周报里长得一模一样，设计承诺的报红形同虚设
 #   （#934 交叉 review 第 1 轮打回）。
@@ -86,6 +90,8 @@ MODE="${2:-human}"
 
 HERE="$SELF_DIR"
 SOLVER="$HERE/../../weekly-report/price_solve.py"
+# shellcheck source=_price_cache.sh
+source "$HERE/_price_cache.sh"
 
 ENC=$(pwd | tr / -)
 PROJ="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}/${ENC}"
@@ -98,7 +104,7 @@ shopt -u nullglob
 PRICES=$(python3 "$SOLVER" --table 2>/dev/null)
 [ -z "$PRICES" ] && PRICES='{"models":{},"fast":{}}'
 
-jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRICES" '
+RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRICES" '
     # X.Xk / X.Xm 格式（< 1k 时显示整数）。⚠️ 是 floor 截断，不是四舍五入——
     # 采集侧按这个格式反推区间时要用截断下界（53.5k 的下界是 53500，不是 53450）。
     def fmt:
@@ -173,11 +179,21 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
              # 当前参照表里每个模型的五项要么全有价、要么全没有，所以这一条在
              # policy=A 下暂时触发不到；但 policy=B 允许逐项无价，规则必须一致。
              known_any: ([$items[] | if ($syn or .p == null or .v <= 0) then 0 else 1 end] | add),
+             # 用上了联网抓来的单价（GitHub#51）：同 known_any，只认「真有用量又真有价」的项
+             # 冲突时兜底取了抓来的价（disputed_fetched）同样算「用上了」
+             fetched_n: ([$items[] | if ($syn or .p == null or .v <= 0
+                                         or (.st != "fetched" and .st != "disputed_fetched"))
+                                     then 0 else 1 end] | add),
+             # 缺价标记：有用量、却有一项取不到价。认不出模型（unknown）的不算——那是归属
+             # 问题，抓价也补不上
+             gap: (($syn | not) and $c.model != "unknown"
+                   and ([$items[] | select(.v > 0 and .p == null)] | length) > 0),
              bystat: (reduce $items[] as $i ({};
                         if $i.p == null then .
                         else .[$i.st] = ((.[$i.st] // 0) + $i.v * $i.p / 1000000) end))})
     | reduce .[] as $c (
-        {in:0, out:0, cr:0, cw_5m:0, cw_1h:0, usd:0, unk:0, known:0, models:{}, bystat:{}};
+        {in:0, out:0, cr:0, cw_5m:0, cw_1h:0, usd:0, unk:0, known:0, fetched:0, gaps:{},
+         models:{}, bystat:{}};
           .in     += $c.tok.input
         | .out    += $c.tok.output
         | .cr     += $c.tok.cache_read
@@ -186,6 +202,8 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
         | .usd    += $c.priced
         | .unk    += $c.unknown
         | .known  += $c.known_any
+        | .fetched += $c.fetched_n
+        | (if $c.gap then .gaps[$c.model] = true else . end)
         | .models[$c.model] = ((.models[$c.model] // 0)
             + $c.tok.input + $c.tok.output + $c.tok.cache_read
             + $c.tok.cache_write_5m + $c.tok.cache_write_1h)
@@ -202,7 +220,8 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
     # 发原值而不是 usd2：舍成 0.00 的桶，可信状态就在源头没了。
     | ([.bystat | to_entries[] | select(.value > 0)
         | "\(.key):\(.value)"] | join(",")) as $pstat
-    | (.bystat.disputed // 0) as $dsp
+    # 冲突警示两态都要报：与内置参照冲突、与抓来的参照冲突
+    | ((.bystat.disputed // 0) + (.bystat.disputed_fetched // 0)) as $dsp
     # 模型集合只描述真正产生用量的调用；<synthetic> 和全零记录都不能冒充证据。
     # unknown 是归属状态而非模型 ID，单独输出，避免污染 models 列表。
     | ([.models | to_entries[]
@@ -210,7 +229,8 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
         | .key] | sort) as $modelarr
     | ($modelarr | join(",")) as $models
     | (if ((.models.unknown // 0) > 0) then "yes" else "no" end) as $model_unknown
-    | if $mode == "--kv"
+    | (.gaps | keys | join(" ")) as $gaps
+    | (if $mode == "--kv"
       then "in=\(.in) out=\(.out) cache_r=\(.cr) cache_w=\($cw)"
            + (if $state == "none" then "" else " cost_usd=\(.usd)" end)
            + " cost_state=\($state) cost_unknown_tokens=\(.unk)"
@@ -223,6 +243,8 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
               elif $state == "partial" then " ($\(.usd | usd2)，部分用量未计价，金额偏低)"
               else " ($\(.usd | usd2))" end)
            + (if $dsp > 0 then "；其中 $\($dsp | usd2) 所用单价与外部参照冲突（存疑）" else "" end)
+           # 用了 daemon 联网抓来的单价就要说（GitHub#51）：它没经人核对，不能和内置价看起来一样
+           + (if .fetched > 0 then "（含自动联网获取的单价）" else "" end)
            # 模型名必须出现在**人读**这一行（GitHub#29）：footer 的 `token …` 行是
            # 「整行原样用脚本输出」，模型只写进 --kv 的隐藏标记，等于评论里永远看不到。
            # 口径与机器字段同源（$modelarr / $model_unknown），不另起一套判断。
@@ -230,5 +252,10 @@ jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRIC
               else "（模型：\($modelarr | join("、"))"
                    + (if $model_unknown == "yes" then "；另有模型无法确认" else "" end)
                    + "）" end)
-      end
-' "${FILES[@]}" 2>/dev/null
+      end), "GAPS \($gaps)"
+' "${FILES[@]}" 2>/dev/null)
+[ -n "$RES" ] || exit 0
+# 第一行是给评论 / 标记用的结果，原样输出；第二行是缺价模型清单，只用来留标记
+printf '%s\n' "${RES%%$'\n'*}"
+GAPS="${RES##*$'\n'GAPS }"
+[ "$GAPS" = "$RES" ] || [ -z "$GAPS" ] || mark_unpriced claude $GAPS

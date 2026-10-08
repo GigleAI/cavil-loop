@@ -150,8 +150,36 @@ GPT-6 与 GPT-5.6 各三个型号另配有官方列出的缓存写入单价；�
 
 美元金额是**按 API 公开标价折算的参考价值**，不是订阅账单或已核验的实际支出。
 驱动无法识别长上下文与 Fast/Batch/Flex 档位，估算只取 Standard 标价。
-内置表是静态的；超过 90 天，人读用量会提示复核，不会在运行时联网抓价。
+内置表是静态的；超过 90 天，人读用量会提示复核。表里已有的模型不会在运行时刷新；
+只有表里**没有**的模型会被自动补价（见下一节）。
 周报分别披露内置公开参考价和部署者自填价；两者都未与账单独立交叉核验。
+
+## 缺价自动补价
+
+用量驱动（Claude / Codex 两侧）发现某个模型有用量却没有单价时，footer 照实写「金额未计」，
+同时在 `~/.cache/cavil-loop/unpriced/` 下留一个空标记。驱动跑在 worker 里，**不联网**。
+daemon 下一轮看到标记，运行 `scripts/drivers/token-usage/price_fetch.py`，下载：
+
+| 来源 | 默认地址 |
+|---|---|
+| Anthropic 官方价目页（markdown 版） | `https://platform.claude.com/docs/en/about-claude/pricing.md` |
+| OpenAI 官方价目页（markdown 版，只读 Standard 表） | `https://developers.openai.com/api/docs/pricing.md` |
+| LiteLLM 社区价目表（GitHub 上的 JSON） | `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` |
+
+只有官方页与 LiteLLM **一致**（两边都列出的每一项偏差 ≤ 10%）、各自通过合理性校验
+（正数、≤ $1000/M、output ≥ input、缓存读 ≤ input）、且官方页上该模型只有一行时，才写进
+`~/.cache/cavil-loop/fetched-prices.json`；只有一边列出的项照旧算缺价。此后两个驱动都按它计价，
+footer 人读行多一句「（含自动联网获取的单价）」，金额单独记在 `fetched` 可信度桶里，一路带到周报。
+
+- 只补缺：内置价和部署者配的 `CODEX_PRICES` 永远优先；显式设了 `CODEX_PRICES`（包括 `{}`）
+  时 Codex 侧不补。
+- 失败（下载失败、页面改版、两边对不上）连同原因写进 `poll.log`，6 小时后再试
+  （`PRICE_FETCH_COOLDOWN_SECS`）。单次请求 15 秒超时（`PRICE_FETCH_TIMEOUT`），抓价失败不影响派工。
+- 发现缺价的那一条评论仍写「金额未计」，下一轮之后的评论才带金额；已发出的 footer 不改写。
+- 关闭：`PRICE_AUTO_FETCH=0`。三个地址可用 `PRICE_FETCH_ANTHROPIC_URL` /
+  `PRICE_FETCH_OPENAI_URL` / `PRICE_FETCH_LITELLM_URL` 覆盖。
+- 想让 daemon 立刻重试失败的模型，删 `~/.cache/cavil-loop/price-fetch-state.json`；
+  想丢掉某个抓来的价，改或删 `fetched-prices.json`。
 
 ## 按模型派工的标签
 
