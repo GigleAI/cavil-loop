@@ -60,6 +60,12 @@ class Chart:
         out.append(f'<text x="{x0+8}" y="{y0+36}" class="sub">{esc(sub)}</text>')
         lv=[v for s in series if s["axis"]=="l" for v in s["data"] if v is not None]
         rv=[v for s in series if s["axis"]=="r" for v in s["data"] if v is not None]
+        # 堆叠柱的高度是同一周各项之和，轴上界必须容得下这个和——只看单项最大值时，
+        # 三项各 10M 的柱子顶到 30M，轴却只到 12M，柱子直接越出面板（#50 交叉 review 第 1 轮）。
+        for ax,vals_ in (("l",lv),("r",rv)):
+            stk=[s for s in series if s["type"]=="bar" and s.get("stack") and s["axis"]==ax]
+            if stk:
+                vals_.extend(sum(s["data"][i] or 0 for s in stk) for i in range(len(WK)))
         lmax=nice_max(max(lv+[1])); rmax=nice_max(max(rv+[1])) if rv else 1
         # series 可以带自己的数值格式（工时要 h + 小数）。左轴刻度跟着左轴 series 走；
         # 没带的一律回落全局 fmt，所以给某条 series 加格式不会影响同图里的其他条。

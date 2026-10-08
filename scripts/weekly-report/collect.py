@@ -262,7 +262,10 @@ def main():
                                       foreign[w["key"]]["tok"], has_log, meta["parsed"])
             if chk in ("no_shortfall_detected", "true_zero"):
                 usd, unk, state, bystat = attribute.price_calls(mine, price_table)
+                # token 随金额一起取**认领后**的那份：重叠窗口共用的调用只算给一个派工。
+                # 不带过去的话汇总只能读原记录的 token，重叠派工的共用调用就被算两遍。
                 recompute[w["key"]] = {"cost_source": "recomputed", "cost": usd,
+                                       "tok": dict(own[w["key"]]["tok"]),
                                        "log_check": chk, "cost_state": state,
                                        "unknown_tokens": unk,
                                        "price_source": "solved", "price_status": bystat}
@@ -318,14 +321,24 @@ def main():
             cost = attribute.legacy_estimate(rec.get("tokens"))
             cost_source, cost_state = "estimated", "full"
             pstat, psrc = {"estimated": cost}, "estimated"
-        # token 用量趋势：四项分开记。历史记录的 token 同样逐条累加过，按同一个倍数抵掉，
-        # 与切换后按调用去重的机器记录放在同一把尺子上（估算，图上写明）。
-        tok = rec.get("tokens") or {}
-        tf = 1 / attribute.LEGACY_DUP_FACTOR if legacy else 1
-        for k in ("in", "out", "cache_r", "cache_w"):
-            s[f"tok_{k}"] += (tok.get(k) or 0) * tf
-            s[f"tok_{k}_{rec.get('agent') or 'claude'}"] += (tok.get(k) or 0) * tf
         in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
+        # token 用量趋势：四项分开记，取数规则与金额同一套（#50 交叉 review 第 1 轮）：
+        #   · 日志重算过的 → 用**认领后**的 token（重叠窗口共用的调用只算一次），不再除倍数；
+        #   · 沿用原值的 → 读记录里的 token；历史记录逐条累加过，按同一个倍数抵掉（估算）；
+        #   · 进不了「去重合计」的（重叠组里有沿用原值的）→ 单列，不混进每周用量，
+        #     否则共用的调用照样算两遍。
+        if info is not None and info["cost_source"] == "recomputed":
+            tok, tf = info["tok"], 1
+        else:
+            tok = rec.get("tokens") or {}
+            tf = 1 / attribute.LEGACY_DUP_FACTOR if legacy else 1
+        for k in ("in", "out", "cache_r", "cache_w"):
+            v = (tok.get(k) or 0) * tf
+            if in_total:
+                s[f"tok_{k}"] += v
+                s[f"tok_{k}_{rec.get('agent') or 'claude'}"] += v
+            else:
+                s[f"tok_{k}_not_summable"] += v
         out = rec["out"]
         # 历史记录（无机器标记）没写 agent。实测交叉 review 那一侧在改造前几乎不写
         # 记账行（上周 589 条里只有 2 条，且已被「交叉 review 评论不作记账来源」挡掉），
@@ -480,6 +493,9 @@ def main():
               "tok_in", "tok_out", "tok_cache_r", "tok_cache_w",
               "tok_in_claude", "tok_out_claude", "tok_cache_r_claude", "tok_cache_w_claude",
               "tok_in_codex", "tok_out_codex", "tok_cache_r_codex", "tok_cache_w_codex",
+              # 重叠组里有沿用原值、进不了去重合计的那部分 token：单列，不与上面相加
+              "tok_in_not_summable", "tok_out_not_summable",
+              "tok_cache_r_not_summable", "tok_cache_w_not_summable",
               "state_full", "state_partial", "state_none",
               "log_no_shortfall_detected", "log_shortfall_detected",
               "log_unknown", "log_true_zero",
