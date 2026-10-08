@@ -8,7 +8,21 @@
 # 由 daemon 派 worker 把数据写成大白话解读——数字机器出，人话 agent 写。
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$HOME/.config/coding-agent-work-loop/deploy.conf}"
+[ ! -f "$DEPLOY_CONF" ] || { set -a; . "$DEPLOY_CONF"; set +a; }
+DEPLOY_ROOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}"
+if [ -f "$DEPLOY_ROOT/.deploy.lock" ]; then exec {GLOBAL_FD}<>"$DEPLOY_ROOT/.deploy.lock"; flock -s "$GLOBAL_FD"; fi
+SELF="$(readlink "/proc/$$/fd/255" 2>/dev/null || readlink -f "${BASH_SOURCE[0]}")"
+SELF_DIR="$(dirname "$SELF")"
+CODING_AGENT_RELEASE_ROOT="$(dirname "$(dirname "$SELF_DIR")")"
+if [ "$(basename "$(dirname "$CODING_AGENT_RELEASE_ROOT")")" = releases ] && [ -f "$CODING_AGENT_RELEASE_ROOT/.inuse" ]; then
+    exec {LEASE_FD}<>"$CODING_AGENT_RELEASE_ROOT/.inuse"; flock -s "$LEASE_FD"
+    export CODING_AGENT_RELEASE_LEASE_FD="$LEASE_FD"
+fi
+[ -z "${GLOBAL_FD:-}" ] || { flock -u "$GLOBAL_FD"; eval "exec ${GLOBAL_FD}>&-"; }
+export CODING_AGENT_RELEASE_ROOT
+
+HERE="$SELF_DIR"
 PROJECT="${1:?用法: run.sh <project-key> [--dry-run] [--week-of YYYY-MM-DD]}"; shift || true
 
 DRY=0; WEEK_OF=""
