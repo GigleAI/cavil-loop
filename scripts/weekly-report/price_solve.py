@@ -47,7 +47,7 @@
     python3 price_solve.py --table --policy B
     环境变量 CLAUDE_PROJECTS_DIR 可覆盖 transcript 目录（测试用）。
 """
-import argparse, hashlib, json, glob, math, os, random, statistics, sys
+import argparse, datetime, hashlib, json, glob, math, os, random, statistics, sys
 
 # ── 阈值（可配置；标定依据写在旁边，别改成拍脑袋的数）────────────────────────
 MAX_AMPLIFY = float(os.environ.get("PRICE_MAX_AMPLIFY", "5"))
@@ -122,13 +122,19 @@ def load_fetched():
 
 def codex_price_table():
     """codex 那一侧的单价表，取价顺序与 drivers/token-usage/codex.sh 一致：
-    · 部署者配了 CODEX_PRICES → 只用它（`{}` 表示关闭估价）；
-    · 否则内置 codex-prices.json，再用缺价自动补抓来的价补**内置表里没有的**模型；
-    · 旧的三个变量 CODEX_PRICE_{IN,CACHED_IN,OUT}_PER_M 齐全时，当成所有模型同价的兜底（键 `*`）。
-    返回 {model: {"in":…, "cached_in":…, "out":…, ["cache_write":…]}}。"""
+    · 部署者配了 CODEX_PRICES → 只用它（`{}` 表示关闭估价），来源记 configured；
+    · 否则内置 codex-prices.json，再用缺价自动补抓来的价补**内置表里没有的**模型，来源记 default；
+    · 旧的三个变量 CODEX_PRICE_{IN,CACHED_IN,OUT}_PER_M 齐全时，当成所有模型同价的兜底（键 `*`），
+      来源记 configured，且不补抓来的价。
+    返回 {"models": {model: {"in":…, "cached_in":…, "out":…, ["cache_write":…]}},
+          "fetched": 用的是抓来的价的模型集合, "source": "default" | "configured",
+          "checked": 内置表的核对日期（仅 default）, "stale": 内置表是否已超过 90 天未复核}。
+    来源、核对日期、过期标记都要跟着**补算实际采用的这张表**走，不能沿用旧记录里的——
+    旧记录写评论时根本没取到价。"""
     env = os.environ.get("CODEX_PRICES")
     legacy = [os.environ.get(k) for k in
               ("CODEX_PRICE_IN_PER_M", "CODEX_PRICE_CACHED_IN_PER_M", "CODEX_PRICE_OUT_PER_M")]
+    fetched_models, source, checked, stale = set(), "configured", None, False
     if env is not None:
         try:
             table = json.loads(env)
@@ -138,15 +144,25 @@ def codex_price_table():
     elif all(legacy):
         table = {}
     else:
+        source = "default"
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "drivers", "token-usage", "codex-prices.json")
         try:
             with open(path, encoding="utf-8") as f:
-                built = json.load(f).get("models") or {}
+                doc = json.load(f)
+            built = doc.get("models") or {}
+            checked = doc.get("checked_at")
         except Exception:
             built = {}
+        if checked:
+            try:
+                age = datetime.date.today() - datetime.date.fromisoformat(checked)
+                stale = age.days > 90
+            except ValueError:
+                stale = False
         fetched = {m: e["prices"] for m, e in (load_fetched().get("codex") or {}).items()
                    if isinstance(e, dict) and isinstance(e.get("prices"), dict)}
+        fetched_models = {m for m in fetched if m not in built}
         table = {**fetched, **built}          # 同名时内置覆盖抓来的
     if all(legacy):
         try:
@@ -154,24 +170,59 @@ def codex_price_table():
                                     "out": float(legacy[2])}}
         except ValueError:
             pass
-    return table
+    return {"models": table, "fetched": fetched_models, "source": source,
+            "checked": checked, "stale": stale}
 
 
-def codex_reprice(rec, table):
-    """没写金额的 codex 记录按记录里的 token 补算。算不出（多模型 / 没有价 / 缺项）返回 None。
-    记录里的 `in` 已是**未命中缓存**的输入（驱动写的是 input − cached），不能再减一次。"""
+def codex_reprice(rec, pt):
+    """没写金额的 codex 记录按记录里的 token 补算，规则与 drivers/token-usage/codex.sh 逐项一致。
+
+    返回 None（不补算，记录保持「没有金额」）或
+    {"cost", "cost_state", "unknown_tokens", "price_status", "price_source", "price_stale"}。
+
+    · **模型归属必须完整**：只有一个模型、且没有 `model_unknown=yes`。记录里的四项 token 是全部
+      调用的累计值；另有认不出模型的调用时，拆不出哪部分属于那个已知模型，套一个价就是把
+      未知模型的用量算到已知模型头上（#59 交叉 review 第 1 轮）。
+    · **逐项计价**：有价的项计金额，没价的项把 token 计进 unknown_tokens，状态落 partial ——
+      抓来的价只收两个来源都列出的项，缺缓存读取价是合法的，不能因此整条放弃（同上）。
+      判「算出过价」只认**有用量又有价**的项；一项都没算出来就不补算（返回 None）。
+    · **可信度桶跟着实际用的价走**：用的是抓来的价，金额记进 `fetched` 桶，与驱动的机器记录同口径；
+      内置或部署者配置的价不出桶，采集侧照旧归到「说不出可信度」。
+    · 记录里的 `in` 已是**未命中缓存**的输入（驱动写的是 input − cached），不能再减一次。"""
     models = rec.get("models") or []
-    if len(models) != 1:
-        return None                         # 一条记录多个模型时 token 拆不开
-    p = table.get(models[0]) or table.get("*")
-    if not isinstance(p, dict) or any(k not in p for k in ("in", "cached_in", "out")):
+    if len(models) != 1 or rec.get("model_unknown"):
+        return None
+    m = models[0]
+    table = pt.get("models") or {}
+    p = table.get(m)
+    from_model = isinstance(p, dict)
+    if not from_model:
+        p = table.get("*")
+    if not isinstance(p, dict):
         return None
     t = rec.get("tokens") or {}
-    if (t.get("cache_w") or 0) and "cache_write" not in p:
-        return None
-    return ((t.get("in") or 0) * p["in"] + (t.get("cache_r") or 0) * p["cached_in"]
-            + (t.get("out") or 0) * p["out"]
-            + (t.get("cache_w") or 0) * p.get("cache_write", 0)) / 1e6
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    items = [(t.get("in") or 0, num(p.get("in"))), (t.get("cache_r") or 0, num(p.get("cached_in"))),
+             (t.get("out") or 0, num(p.get("out"))), (t.get("cache_w") or 0, num(p.get("cache_write")))]
+    usd, unk, known = 0.0, 0, 0
+    for v, price in items:
+        if price is None:
+            unk += v
+        else:
+            usd += v * price / 1e6
+            if v > 0:
+                known += 1
+    if unk == 0:
+        state = "full"
+    elif known:
+        state = "partial"
+    else:
+        return None                         # 实际用量一项都算不出价：仍是「没有金额」
+    fetched = from_model and m in (pt.get("fetched") or set())
+    status = {"fetched": usd} if fetched and known and usd > 0 else {}
+    return {"cost": usd, "cost_state": state, "unknown_tokens": unk, "price_status": status,
+            "price_source": pt.get("source"),
+            "price_stale": bool(pt.get("stale")) and pt.get("source") == "default"}
 
 
 def fetched_reference():

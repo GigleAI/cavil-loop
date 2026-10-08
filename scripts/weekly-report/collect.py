@@ -325,12 +325,16 @@ def main():
         # 交叉 review（codex）那一侧：写评论时模型还没单价、记录里没写金额的，用**现在的**
         # 价目（内置表 + 缺价自动补抓来的价）按记录里的 token 补算。不补的话，价目后来补上了，
         # 历史周的金额也永远是空的（GigleTutor-Web#1023）。已经写了金额的记录不动。
+        # 「怎么得到的」（cost_source=repriced）和「用的哪种价」（price_source / 可信度桶 /
+        # 过期标记）是两件事，分开记：补算用的是抓来的价，金额就进「自动联网获取」那一桶；
+        # 用的是内置价，来源就是 default、核对日期跟着现在这张内置表走（#59 交叉 review 第 1 轮）。
+        pstale = rec.get("price_stale")
         if (rec.get("agent") == "codex" and rec.get("src") == "marker"
                 and cost_source == "original" and cost_state == "none"):
-            usd = price_solve.codex_reprice(rec, codex_table)
-            if usd is not None:
-                cost, cost_source, cost_state = usd, "repriced", "full"
-                pstat, psrc = {}, "repriced"
+            rp = price_solve.codex_reprice(rec, codex_table)
+            if rp is not None:
+                cost, cost_source, cost_state = rp["cost"], "repriced", rp["cost_state"]
+                pstat, psrc, pstale = rp["price_status"], rp["price_source"], rp["price_stale"]
         in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
         # token 用量趋势：四项分开记，取数规则与金额同一套（#50 交叉 review 第 1 轮）：
         #   · 日志重算过的 → 用**认领后**的 token（重叠窗口共用的调用只算一次），不再除倍数；
@@ -380,7 +384,7 @@ def main():
                 s["price_usd_unrated"] = s.get("price_usd_unrated", 0.0) + cost
         if psrc:
             s[f"price_src_{psrc}"] = s.get(f"price_src_{psrc}", 0) + 1
-        if psrc == "default" and rec.get("price_stale"):
+        if psrc == "default" and pstale:
             s["price_stale_records"] = s.get("price_stale_records", 0) + 1
         lc = info.get("log_check") if info else None
         if lc:
@@ -518,7 +522,7 @@ def main():
               # 缺价时 daemon 联网抓来的单价（GitHub#51），两侧都可能有
               "price_usd_fetched", "price_usd_disputed_fetched",
               "price_src_solved", "price_src_configured", "price_src_default",
-              "price_src_estimated", "price_src_repriced",
+              "price_src_estimated",
               "price_stale_records"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 
