@@ -27,7 +27,7 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
 FABLE_WORKER_AGENT="claude"
-FABLE_MODEL="claude-fable-5"
+FABLE_MODEL="fable"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
@@ -157,8 +157,15 @@ GPT-6 与 GPT-5.6 各三个型号另配有官方列出的缓存写入单价；�
 
 使用 `pending/agent` 时沿用 worker CLI 的默认模型；使用
 `pending/agent/fable` 时，本次派工会切到 Claude Code，并追加
-`--model claude-fable-5`。这个覆盖只作用于本次派工，不会修改项目默认 worker。
+`--model fable`（即 `FABLE_MODEL`，别名会解析成最新的 Fable 版本）。这个覆盖只作用于本次派工，不会修改项目默认 worker。
 issue、PR、全新 session 和 resume session 都支持。
+
+没有指定模型时，续接 Claude 会话也会显式带 `--model`：只跑 `claude --continue`
+会沿用会话**当初**的模型，长期开着的 issue 就永远换不到新的默认模型。daemon
+改为传当前配置的默认值——依次看 `ANTHROPIC_MODEL`、worktree 里的
+`.claude/settings.local.json` / `.claude/settings.json`、`~/.claude/settings.json`
+的 `model`，都没有就传 `default`。新评论到达时会话仍活着的，走注入 prompt，
+模型不变，直到这个会话重启。
 
 daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 `@worker_model`，并把模型写入 `state.json`。如果现有 idle session 的 worker

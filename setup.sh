@@ -408,7 +408,7 @@ repo=$(grep -E "^REPO=" "$config" | head -1 | sed 's/.*=//' | tr -d '"' | tr -d 
 # 只管新建：已存在的 label 不改颜色和说明，别处有意调过的配色不会被覆盖。
 label_defs=(
     "pending/agent|d4c5f9|等待 agent 处理"
-    "pending/agent/fable|8250df|等待 agent 使用 Claude Fable 模型处理（版本见 FABLE_MODEL，默认 claude-fable-5）"
+    "pending/agent/fable|8250df|等待 agent 使用 Claude Fable 模型处理（版本见 FABLE_MODEL，默认别名 fable，跟最新版）"
     "doing/agent|c2e0c6|agent 正在处理"
     "pending/human|fbca04|等待人类处理"
     "pending/PR|bbbbbb|工作已转 PR 跟踪"

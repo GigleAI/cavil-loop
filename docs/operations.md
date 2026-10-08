@@ -27,7 +27,7 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
 FABLE_WORKER_AGENT="claude"
-FABLE_MODEL="claude-fable-5"
+FABLE_MODEL="fable"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
@@ -173,9 +173,18 @@ neither Codex source is independently cross-checked against an invoice.
 
 Use `pending/agent` for the worker CLI's default model. Use
 `pending/agent/fable` to dispatch the same workflow through Claude Code with
-`--model claude-fable-5`. This per-dispatch override does not change the
-project's default worker. It works for issues and PRs, including fresh sessions
-and resumed sessions.
+`--model fable` (`FABLE_MODEL`; the alias resolves to the newest Fable release).
+This per-dispatch override does not change the project's default worker. It
+works for issues and PRs, including fresh sessions and resumed sessions.
+
+With no model override, a resumed Claude session is still passed an explicit
+`--model`: `claude --continue` alone keeps the model the session was *started*
+with, so a long-running issue would never move to a newer default. The daemon
+passes the currently configured default instead — `ANTHROPIC_MODEL`, then the
+worktree's `.claude/settings.local.json` / `.claude/settings.json`, then
+`~/.claude/settings.json` `model`, falling back to `default`. A session that is
+still alive when a new comment arrives gets the prompt injected and keeps its
+model until it is restarted.
 
 The daemon stores the selected worker and model in tmux (`@worker_agent` and
 `@worker_model`) and keeps the model in `state.json`. If an existing idle

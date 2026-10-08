@@ -56,7 +56,9 @@ log "===== poll start ====="
 
 pending_label_for_model() {
     case "$1" in
-        "$FABLE_MODEL"|fable) echo "$LABEL_PENDING_AGENT_FABLE" ;;
+        # claude-fable-*：FABLE_MODEL 默认值从 claude-fable-5 改成别名 fable 之前
+        # 记进 state 的老条目，self-heal 时仍要回 fable 队列（#56）
+        "$FABLE_MODEL"|fable|claude-fable-*) echo "$LABEL_PENDING_AGENT_FABLE" ;;
         *) echo "$LABEL_PENDING_AGENT_DEFAULT" ;;
     esac
 }

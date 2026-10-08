@@ -5,7 +5,7 @@
 # 历史存放：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
 # Busy 探测：见下方 AGENT_BUSY_RE（认 spinner 行的形状，不认具体措辞）
 # 新起：claude -n <name> [extra-flags] [--model <model>] "<prompt>"
-# 续接：claude --continue [extra-flags] [--model <model>] "<prompt>"
+# 续接：claude --continue [extra-flags] --model <model 或当前默认> "<prompt>"
 #
 # 配置开关：CLAUDE_EXTRA_FLAGS（推荐 "--dangerously-skip-permissions"，否则卡权限弹窗）
 
@@ -50,12 +50,39 @@ agent_command_new() {
         "$prompt_file"
 }
 
+# 续接时没指定模型，要显式传「现在的默认模型」。`claude --continue` 不带 --model
+# 会沿用这个会话**当初**的模型，不看当前配置（2.1.293 实测：9 月开的会话今天
+# 新进程续接仍是 claude-opus-5，同机新会话已是 claude-opus-5-5，#56）——于是
+# 长期开着的 issue 永远停在旧模型。按 claude 自己的优先级找用户配的默认：
+# ANTHROPIC_MODEL > 项目 settings.local.json > 项目 settings.json > 用户 settings.json，
+# 都没有就传 `default`（= 账号默认，跟新会话不带 --model 时一致）。
+# 不在这里钉版本号：配的是 `opus` 别名就传 `opus`，升级由 CLI 解析。
+claude_default_model() {
+    local cwd="$1" f m
+    if [ -n "${ANTHROPIC_MODEL:-}" ]; then
+        printf '%s' "$ANTHROPIC_MODEL"
+        return 0
+    fi
+    for f in "$cwd/.claude/settings.local.json" "$cwd/.claude/settings.json" \
+             "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"; do
+        [ -f "$f" ] || continue
+        # 坏 JSON / 非字符串一律当没配，往下找——别让一个坏文件卡住续接
+        m="$(jq -r 'if (.model | type) == "string" then .model else empty end' "$f" 2>/dev/null)" || m=""
+        if [ -n "$m" ]; then
+            printf '%s' "$m"
+            return 0
+        fi
+    done
+    printf 'default'
+}
+
 agent_command_resume() {
-    local cwd="$1"   # 同上
+    local cwd="$1"
     local name="$2"  # 未用：claude --continue 自动用 cwd 最近会话
     local prompt_file="$3"
     local model_arg
     model_arg="$(worker_model_arg)"
+    [ -n "$model_arg" ] || model_arg="$(printf -- '--model %q' "$(claude_default_model "$cwd")")"
     printf 'claude --continue %s %s "$(cat %s)"' \
         "${CLAUDE_EXTRA_FLAGS:-}" \
         "$model_arg" \
