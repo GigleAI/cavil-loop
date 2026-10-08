@@ -18,6 +18,13 @@ FAKE_HOME="$TMP/home"
 WT="$TMP/wt/issue-42"
 WT_OTHER="$TMP/wt/issue-99"
 mkdir -p "$FAKE_HOME" "$WT" "$WT_OTHER" "$TMP/project" "$TMP/state"
+# 续接 claude 时 driver 会起一个 `claude -p` 探测当前默认模型（#56）。测试不调真 CLI：
+# 放一个只吐 init 行的假 claude 在 PATH 最前面。
+mkdir -p "$TMP/bin"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'echo '"'"'{"type":"system","subtype":"init","model":"fake-default"}'"'" > "$TMP/bin/claude"
+chmod +x "$TMP/bin/claude"
+export PATH="$TMP/bin:$PATH"
 TMUX_TEST_SESS="sessisotest-issue42"
 
 cat > "$TMP/coding-agent.config" <<CONF

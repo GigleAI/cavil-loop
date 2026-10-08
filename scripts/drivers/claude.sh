@@ -5,7 +5,7 @@
 # 历史存放：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
 # Busy 探测：见下方 AGENT_BUSY_RE（认 spinner 行的形状，不认具体措辞）
 # 新起：claude -n <name> [--session-id <uuid>] [extra-flags] [--model <model>] "<prompt>"
-# 续接：claude --resume <uuid> | --continue [extra-flags] [--model <model>] "<prompt>"
+# 续接：claude --resume <uuid> | --continue [extra-flags] --model <model 或探测到的当前默认> "<prompt>"
 #
 # 配置开关：CLAUDE_EXTRA_FLAGS（推荐 "--dangerously-skip-permissions"，否则卡权限弹窗）
 
@@ -103,12 +103,153 @@ agent_command_new() {
         "$prompt_file"
 }
 
+# ── 续接时的默认模型 ──
+# `claude --continue` / `--resume <id>` 不带 --model 会沿用这条会话**当初**的模型，
+# 不看当前配置（2.1.293 实测：9 月开的会话今天新进程续接仍是 claude-opus-5，同机
+# 新会话已是 claude-opus-5-5，#56）——长期开着的 issue 永远停在旧模型。所以续接
+# 时要显式带上「现在新开一条会话会用的模型」。
+#
+# 这个值**问 claude 自己**，不在这里复刻它的选模型规则。复刻版在 #57 复审里连续
+# 漏了三层（CLAUDE_EXTRA_FLAGS 里的 --settings / --model、相对路径、git worktree
+# 的本地配置在主 checkout 根目录），每补一层都还有下一层；CLI 自己的解析才是唯一
+# 不会漏的那份。做法：在 worker 的 cwd、用同一份 extra flags 起一个 `claude -p`，
+# 读它 stream-json 的第一行 `system/init`——里面就是解析完的模型——然后立刻杀掉。
+#   - ANTHROPIC_BASE_URL 指到本机不监听的端口：init 在请求之前就输出了，请求本身
+#     只会连不上（2.1.293 实测：init 报 claude-haiku-5-5，之后只有 api_retry）
+#   - --no-session-persistence：不落会话文件，否则下次 --continue 会续到这条探测
+#   - --strict-mcp-config：不连 MCP server
+#   - 不能用 --bare：它不读 OAuth，init 里的 model 直接是 null（实测）
+# 读不到（超时 / 没装 / 输出不对 / extra flags 无法如实复现）→ 输出空，调用方
+# 不追加 --model，维持老行为，poll 日志记一条原因。
+CLAUDE_MODEL_PROBE_TIMEOUT="${CLAUDE_MODEL_PROBE_TIMEOUT:-20}"
+CLAUDE_MODEL_PROBE_BASE_URL="${CLAUDE_MODEL_PROBE_BASE_URL:-http://127.0.0.1:9}"
+
+_claude_probe_log() {
+    if declare -F log >/dev/null 2>&1; then log "$@"; fi
+    return 0
+}
+
+# 把 CLAUDE_EXTRA_FLAGS 按 bash 的规则拆成参数，结果放 _CLAUDE_FLAGS。只认这几样：
+#   - 不加引号的 [A-Za-z0-9] 和 - _ = + . , : / @ %，空白分词
+#   - 单引号：里面全按字面
+#   - 双引号：里面不能有 $ ` \（有就拒绝——那是展开，不是字面）
+#   - 词首不加引号的 `~` 或 `~/…`：展开成 $HOME（跟 bash 一样）
+# 其他任何字符出现在引号外（\ $ ` * ? [ ] { } ( ) ; & | < > ! # 以及非词首的 ~、
+# ~user …）都返回 1，原因放 _CLAUDE_SPLIT_WHY。宁可少探测，不能探测到和实际不同的参数。
+_claude_split_flags() {
+    local s="$1" n i=0 c word="" inw=0 j q
+    _CLAUDE_FLAGS=()
+    _CLAUDE_SPLIT_WHY=""
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c="${s:$i:1}"
+        case "$c" in
+            ' '|$'\t'|$'\n')
+                if [ "$inw" = 1 ]; then _CLAUDE_FLAGS+=("$word"); word=""; inw=0; fi
+                i=$((i + 1)) ;;
+            "'")
+                j=$((i + 1))
+                while [ "$j" -lt "$n" ] && [ "${s:$j:1}" != "'" ]; do j=$((j + 1)); done
+                [ "$j" -lt "$n" ] || { _CLAUDE_SPLIT_WHY="单引号不配对"; return 1; }
+                word+="${s:$((i + 1)):$((j - i - 1))}"; inw=1; i=$((j + 1)) ;;
+            '"')
+                j=$((i + 1))
+                while [ "$j" -lt "$n" ] && [ "${s:$j:1}" != '"' ]; do
+                    case "${s:$j:1}" in
+                        '$'|'`'|'\') _CLAUDE_SPLIT_WHY="双引号里有 \$ / 反引号 / 反斜杠"; return 1 ;;
+                    esac
+                    j=$((j + 1))
+                done
+                [ "$j" -lt "$n" ] || { _CLAUDE_SPLIT_WHY="双引号不配对"; return 1; }
+                word+="${s:$((i + 1)):$((j - i - 1))}"; inw=1; i=$((j + 1)) ;;
+            '~')
+                q="${s:$((i + 1)):1}"
+                if [ "$inw" = 0 ] && { [ -z "$q" ] || [ "$q" = / ] || [ "$q" = ' ' ] || [ "$q" = $'\t' ] || [ "$q" = $'\n' ]; }; then
+                    word="$HOME"; inw=1; i=$((i + 1))
+                else
+                    _CLAUDE_SPLIT_WHY="含词首以外的 ~ 或 ~user"; return 1
+                fi ;;
+            [A-Za-z0-9]|-|_|=|+|.|,|:|/|@|%)
+                word+="$c"; inw=1; i=$((i + 1)) ;;
+            *)
+                _CLAUDE_SPLIT_WHY="引号外含 shell 特殊字符 '$c'"; return 1 ;;
+        esac
+    done
+    if [ "$inw" = 1 ]; then _CLAUDE_FLAGS+=("$word"); fi
+    return 0
+}
+
+claude_default_model() {
+    local cwd="$1" a line model fifo pid _probe_fd
+    local -a flags=()
+
+    # 探测拿到的参数必须跟 worker 真正收到的逐个相同。worker 的命令是 tmux 用 bash
+    # 跑的；这里不 eval，自己拆，而且只接受「bash 怎么拆一眼就确定」的写法：
+    # 拿不准就放弃探测（不追加 --model）。复审 #57 连着抓到两处「自己拆的跟 bash
+    # 不一样」（xargs 不展开 `~`；展开了又把 `\~` 也展开），所以不再逐个补，改成白名单。
+    if ! _claude_split_flags "${CLAUDE_EXTRA_FLAGS:-}"; then
+        _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS ${_CLAUDE_SPLIT_WHY}，无法保证探测与实际启动的参数一致，续接不追加 --model"
+        return 0
+    fi
+    flags=(${_CLAUDE_FLAGS[@]+"${_CLAUDE_FLAGS[@]}"})
+    # extra flags 里已经写了 --model：它本来就会带进续接命令，别再叠一份
+    for a in ${flags[@]+"${flags[@]}"}; do
+        case "$a" in --model|--model=*) return 0 ;; esac
+    done
+
+    fifo="$(mktemp -u "${TMPDIR:-/tmp}/claude-model-probe.XXXXXX")"
+    mkfifo "$fifo" || return 0
+    (
+        cd "$cwd" || exit 1
+        # 不用 coreutils `timeout`：macOS 默认没有（复审 #57）。时限由下面的
+        # read -t 管，到点由这里的 kill 收尾，只用 bash 自带的东西。
+        exec env ANTHROPIC_BASE_URL="$CLAUDE_MODEL_PROBE_BASE_URL" \
+            claude -p --no-session-persistence --strict-mcp-config \
+                --output-format stream-json --verbose ${flags[@]+"${flags[@]}"} "model probe"
+    ) < /dev/null > "$fifo" 2>/dev/null &
+    pid=$!
+    # init 不一定是第一行：项目有 SessionStart hook 时前面先有 hook_started /
+    # hook_response（2.1.293 实测）。一直读到 init 或总时限用完；读到第一个
+    # 非 system 事件（真 CLI 里 init 一定在它前面）也就不用再等了。
+    model=""
+    local deadline=$((SECONDS + CLAUDE_MODEL_PROBE_TIMEOUT)) left kind
+    exec {_probe_fd}< "$fifo"
+    while left=$((deadline - SECONDS)); [ "$left" -gt 0 ]; do
+        IFS= read -r -t "$left" -u "$_probe_fd" line || break
+        kind="$(printf '%s' "$line" | jq -r '"\(.type)/\(.subtype)"' 2>/dev/null)" || kind=""
+        case "$kind" in
+            system/init)
+                model="$(printf '%s' "$line" | jq -r '.model | select(type == "string")' 2>/dev/null)" || model=""
+                break ;;
+            system/*) ;;
+            *) break ;;
+        esac
+    done
+    exec {_probe_fd}<&-
+    kill "$pid" 2>/dev/null || true
+    # 不理 TERM 的话 2 秒后补 KILL，免得 wait 把续接卡住
+    local n=0
+    while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 20 ]; do sleep 0.1; n=$((n + 1)); done
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -f "$fifo"
+    if [ -z "$model" ]; then
+        _claude_probe_log "  ⚠️ 探测不到 claude 当前默认模型，续接不追加 --model（沿用会话原模型）"
+        return 0
+    fi
+    printf '%s' "$model"
+}
+
 agent_command_resume() {
-    local cwd="$1"   # 同上
+    local cwd="$1"
     local name="$2"  # 未用：会话由 id / cwd 定位，不靠显示名
     local prompt_file="$3"
-    local model_arg
+    local model_arg default_model
     model_arg="$(worker_model_arg)"
+    if [ -z "$model_arg" ]; then
+        default_model="$(claude_default_model "$cwd")"
+        [ -z "$default_model" ] || model_arg="$(printf -- '--model %q' "$default_model")"
+    fi
     # 有 id 就续那一条。没有 id 只会出现在「本功能上线前留下的会话」这一种情况，
     # 那时才回落到 --continue（cwd 里最近的一条）。
     if [ -n "${WORKER_SESSION_ID:-}" ]; then

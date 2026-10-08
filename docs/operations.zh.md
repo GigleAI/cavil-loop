@@ -27,7 +27,7 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
 FABLE_WORKER_AGENT="claude"
-FABLE_MODEL="claude-fable-5"
+FABLE_MODEL="fable"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
@@ -185,8 +185,33 @@ footer 人读行多一句「（含自动联网获取的单价）」，金额单�
 
 使用 `pending/agent` 时沿用 worker CLI 的默认模型；使用
 `pending/agent/fable` 时，本次派工会切到 Claude Code，并追加
-`--model claude-fable-5`。这个覆盖只作用于本次派工，不会修改项目默认 worker。
+`--model fable`（即 `FABLE_MODEL`，别名会解析成最新的 Fable 版本）。这个覆盖只作用于本次派工，不会修改项目默认 worker。
 issue、PR、全新 session 和 resume session 都支持。
+
+没有指定模型时，续接 Claude 会话也会显式带 `--model`：只跑 `claude --continue` /
+`--resume <id>` 会沿用会话**当初**的模型，长期开着的 issue 就永远换不到新的默认模型。
+daemon 直接问 Claude「现在新开一条会话会用哪个模型」：续接前在 worktree 里、带同一份
+`CLAUDE_EXTRA_FLAGS` 跑一次 `claude -p --no-session-persistence --strict-mcp-config
+--output-format stream-json`，从第一行 `system/init` 读出模型后立刻杀掉。探测时
+`ANTHROPIC_BASE_URL` 指到本机不监听的端口，不会有 API 请求发出去。所以配置优先级
+（环境变量、managed、`--settings`、git worktree 的本地配置、`--setting-sources`……）
+用的是 Claude 自己那套，这里不复刻。补充：
+
+- `CLAUDE_EXTRA_FLAGS` 里已有 `--model`，或拆不开（引号不配对）→ 不探测、不追加。
+- 探测收到的参数必须跟 worker 从 bash 拿到的逐个相同。这串参数绝不 `eval`，
+  用白名单拆词：只接受 bash 拆法确定的写法——不加引号的 `[A-Za-z0-9-_=+.,:/@%]`、
+  单引号、不含 `$` / 反引号 / 反斜杠的双引号、词首的 `~` / `~/…`（展开成 `$HOME`）。
+  引号外出现其他字符——`\`、`$`、反引号、通配符、花括号、`;&|<>()!#`、非词首的 `~`、
+  `~user`——一律不探测、不追加（日志记一条）。测试里拿接受的写法跟 bash 自己的拆法逐个对比。
+- 时限只用 bash 自带功能（不依赖 macOS 默认没有的 coreutils `timeout`）；探测进程
+  不理 TERM 时，再等 2 秒补 KILL。
+- 探测失败（`CLAUDE_MODEL_PROBE_TIMEOUT` 内没读到 `init`，默认 20 秒；找不到
+  `claude`）→ 不追加，会话保持原模型，poll 日志里会记一条。
+- 每次续接多 3–4 秒，项目的 `SessionStart` hook 会多跑一次（已用 touch 文件的 hook 实测）。如果你在 settings 里
+  自己设了 `ANTHROPIC_BASE_URL`（或用 Bedrock / Vertex），探测的请求挡不住：读到
+  `init` 就会被杀，但可能已经发出一个请求。
+
+新评论到达时会话仍活着的，走注入 prompt，模型不变，直到这个会话重启。
 
 daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` /
 `@worker_model`，并把模型写入 `state.json`。如果现有 idle session 的 worker

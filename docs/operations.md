@@ -27,7 +27,7 @@ SESSION_NAME_PREFIX="issue"      # Claude session name: issue42
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
 FABLE_WORKER_AGENT="claude"
-FABLE_MODEL="claude-fable-5"
+FABLE_MODEL="fable"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_PR="pending/PR"
@@ -210,9 +210,45 @@ trust bucket through to the weekly report.
 
 Use `pending/agent` for the worker CLI's default model. Use
 `pending/agent/fable` to dispatch the same workflow through Claude Code with
-`--model claude-fable-5`. This per-dispatch override does not change the
-project's default worker. It works for issues and PRs, including fresh sessions
-and resumed sessions.
+`--model fable` (`FABLE_MODEL`; the alias resolves to the newest Fable release).
+This per-dispatch override does not change the project's default worker. It
+works for issues and PRs, including fresh sessions and resumed sessions.
+
+With no model override, a resumed Claude session is still passed an explicit
+`--model`: `claude --continue` / `--resume <id>` alone keeps the model the
+session was *started* with, so a long-running issue would never move to a newer
+default. The daemon asks Claude itself which model a fresh session would get:
+right before resuming it runs `claude -p --no-session-persistence
+--strict-mcp-config --output-format stream-json` in the worktree with the same
+`CLAUDE_EXTRA_FLAGS`, reads the model from the first `system/init` line, and
+kills the probe. `ANTHROPIC_BASE_URL` points at a closed local port for the
+probe, so no API request leaves the machine. Settings precedence (env,
+managed, `--settings`, git-worktree local files, `--setting-sources` …) is
+therefore Claude's own, not re-implemented here. Notes:
+
+- `CLAUDE_EXTRA_FLAGS` already containing `--model`, or unparseable (unbalanced
+  quotes) → no probe, nothing added.
+- The probe must see exactly the arguments the worker gets from bash. The flags
+  are never `eval`ed; they are split by a whitelist tokenizer that only accepts
+  what bash splits unambiguously: plain `[A-Za-z0-9-_=+.,:/@%]`, single quotes,
+  double quotes without `$` / backtick / backslash, and a word-leading `~` / `~/…`
+  (expanded to `$HOME`). Anything else outside quotes — `\`, `$`, backtick,
+  globs, braces, `;&|<>()!#`, a non-leading `~`, `~user` — means no probe and
+  nothing added (logged). The test suite checks the accepted forms against bash's
+  own splitting.
+- The time limit uses only bash builtins (no coreutils `timeout`, which macOS
+  lacks); a probe ignoring TERM is killed after 2 more seconds.
+- The probe fails (no `init` within `CLAUDE_MODEL_PROBE_TIMEOUT`, default 20s;
+  `claude` missing) → nothing added, the session keeps its model, and the poll
+  log says so.
+- It costs ~3–4s per resume and runs the project's `SessionStart` hooks once
+  (verified with a hook that touches a file).
+  If your settings set `ANTHROPIC_BASE_URL` themselves (or you use
+  Bedrock/Vertex), the probe's request is not blocked: it is killed right after
+  `init`, but one request may already be in flight.
+
+A session that is still alive when a new comment arrives gets the prompt
+injected and keeps its model until it is restarted.
 
 The daemon stores the selected worker and model in tmux (`@worker_agent` and
 `@worker_model`) and keeps the model in `state.json`. If an existing idle

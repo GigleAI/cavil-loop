@@ -83,7 +83,7 @@ source "$CONFIG_FILE"
 # 兼容老配置：未设时给默认值
 LABEL_PENDING_AGENT_DEFAULT="$LABEL_PENDING_AGENT"
 LABEL_PENDING_AGENT_FABLE="${LABEL_PENDING_AGENT_FABLE:-pending/agent/fable}"
-FABLE_MODEL="${FABLE_MODEL:-claude-fable-5}"
+FABLE_MODEL="${FABLE_MODEL:-fable}"
 FABLE_WORKER_AGENT="${FABLE_WORKER_AGENT:-claude}"
 
 # ── 追加触发 label（逗号分隔，默认空）──

@@ -84,7 +84,9 @@ LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_AGENT_FABLE="pending/agent/fable"
 # This label overrides only the current dispatch; the project's default worker stays unchanged.
 FABLE_WORKER_AGENT="claude"
-FABLE_MODEL="claude-fable-5"
+# Alias, so a new Fable release is picked up without editing this file. Pin a
+# full ID (e.g. claude-fable-5-1) only if you want to stay on one version.
+FABLE_MODEL="fable"
 
 # Extra trigger labels (comma-separated, default empty). Identical semantics to
 # LABEL_PENDING_AGENT — same prompt, same worker, same model — they are just extra
