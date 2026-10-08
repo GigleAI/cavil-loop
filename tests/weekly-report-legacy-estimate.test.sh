@@ -89,43 +89,66 @@ chk "可信度桶记在「估算」下"               "$(q "round(w['price_usd_e
 chk "token 也按 1.68 抵掉重复计：输出"     "$(q "int(w['tok_out'])")"         "595238"
 chk "缓存读取"                             "$(q "int(w['tok_cache_r'])")"     "595238"
 chk "报告口径说明写明是估算"               "$(has '按记录里的 token 数重估')" "yes"
-# 两条纵轴刻度差两个数量级：只靠刻度，读图的人会拿折线高度跟柱子比，把「缓存读取是缓存写入
-# 的几十倍」读成「读取反而很少」（GigleTutor-Web#1023 维护者原话）。所以折线的点上直接标值、
-# 图例写明看哪条轴。
-chk "缓存读取折线把数值直接标在点上（0.6M，抵重后）" "$(grep -c 'class="val" text-anchor="start" fill="#4a3aa7">0.6M</text>' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
-chk "图例写明缓存读取看右轴" "$(grep -c '缓存读取（右轴）' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
-chk "副标题提醒两条轴刻度不同" "$(grep -c '别拿高度直接比' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
-# 单位说明必须跟图上实际出的后缀一致（PR #54 交叉 review 第 1 轮）：fmt_m 不足 1000M 出 M、
-# 够了出 B，同一根轴上可以并存。旧副标题写死「右轴，单位 B」，缓存读取 155M 的周图上全是 M。
-# 两个样本分别落在阈值以下和跨阈值，各自检查：图上用到的每个后缀都在副标题里有解释，
-# 标题 / 副标题里也没有「单位 X」「百万 token」这种写死一个单位的说法。
-units() {   # $1 每周 tok_cache_r
+# token 面板：四项全部堆进同一根柱子、只用一条纵轴（GigleTutor-Web#1023 维护者要求）。
+# 原先缓存读取走右轴折线，两条轴刻度差几十倍，读图的人拿高度一比，把「读取是写入的几十倍」
+# 读成了「读取反而很少」。样本四项**互不相等**（1 / 2 / 3 / 155M），双轴实现、漏了某一项、
+# 或者四项顺序 / 合计算错，都会在下面某一条上露出来。
+tok4() {   # $1 每周 tok_cache_r；$2 要检查的项
     python3 - "$TMP/d.json" "$TMP/u.json" "$1" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 for w in d["weekly"].values():
-    w["tok_cache_r"] = float(sys.argv[3])
+    w.update(tok_in=1e6, tok_cache_w=2e6, tok_out=3e6, tok_cache_r=float(sys.argv[3]))
 json.dump(d, open(sys.argv[2], "w"))
 PY
     python3 "$RENDER" --data "$TMP/u.json" --out-dir "$TMP/u" --asset-url-base x --rev y >/dev/null 2>&1 \
         || { echo "render 跑挂了"; return; }
-    python3 - "$TMP/u/effort.html" <<'PY'
+    python3 - "$TMP/u/effort.html" "$2" "$1" <<'PY'
 import re, sys
-h = open(sys.argv[1]).read()
+h = open(sys.argv[1]).read(); what = sys.argv[2]; cr = float(sys.argv[3]) / 1e6
 i = h.index('class="ttl">token 用量')
 seg = h[h.rindex("<text", 0, i):]
 ttl = re.search(r'class="ttl">([^<]*)<', seg).group(1)
 sub = re.search(r'class="sub">([^<]*)<', seg).group(1)
-right = re.findall(r'class="ax" text-anchor="start">([^<]*)<', seg)          # 右轴刻度
-pts = re.findall(r'class="val" text-anchor="start" fill="#4a3aa7">([^<]*)<', seg)  # 点旁数值
-used = {v[-1] for v in right + pts if v[-1] in "MB"}
-explained = {u for u, word in (("M", "M＝百万"), ("B", "B＝十亿")) if word in sub}
-fixed = re.search(r"单位 ?[MB]|百万 token", ttl + sub)
-print("ok" if used and used <= explained and not fixed else f"bad used={used} explained={explained} fixed={bool(fixed)} sub={sub}")
+# 柱块：不带圆角的 rect（图例方块带 rx）。按颜色分项，每周一块
+rects = re.findall(r'<rect x="([^"]+)" y="([^"]+)" width="[^"]+" height="([^"]+)" fill="([^"]+)"/>', seg)
+by = {}
+for x, y, hgt, col in rects:
+    by.setdefault(col, []).append((float(x), float(y), float(hgt)))
+order = ["#2a78d6", "#c99332", "#eb6834", "#4a3aa7"]          # 输入 / 缓存写入 / 输出 / 缓存读取
+left = re.findall(r'class="ax" text-anchor="end">([^<]*)<', seg)
+right = re.findall(r'class="ax" text-anchor="start">([^<]*)<', seg)
+tops = re.findall(r'class="val" text-anchor="middle" fill="[^"]+">([^<]*)<', seg)
+def num(t):
+    return float(t[:-1]) * (1000 if t[-1] == "B" else 1)
+if what == "four":         # 四项都是柱块，每项每周一块
+    print(all(len(by.get(c, [])) == len(by[order[0]]) > 0 for c in order) and set(by) == set(order))
+elif what == "ratio":      # 柱高比例 = 1:2:3:cr（同一条轴），缓存读取在最上层
+    h0 = [by[c][0][2] for c in order]
+    ok = all(abs(h0[k] / h0[0] - v) < 0.05 * v for k, v in enumerate([1, 2, 3, cr]))
+    ys = [by[c][0][1] for c in order]                        # 越往上 y 越小
+    print(ok and ys == sorted(ys, reverse=True))
+elif what == "single":     # 只有一条纵轴：没有右轴刻度、没有折线
+    print(not right and "<polyline" not in seg and "右轴" not in ttl + sub)
+elif what == "total":      # 柱顶数字 = 四项合计，左轴上界容得下它
+    tot = 1 + 2 + 3 + cr
+    print(bool(tops) and all(abs(num(t) - tot) <= 0.06 * tot for t in tops) and num(left[-1]) >= tot)
+elif what == "units":      # 图上用到的后缀都在副标题里有解释，且没有写死单位
+    used = {v[-1] for v in left + tops if v[-1] in "MB"}
+    explained = {u for u, word in (("M", "M＝百万"), ("B", "B＝十亿")) if word in sub}
+    fixed = re.search(r"单位 ?[MB]|百万 token", ttl + sub)
+    print(bool(used) and used <= explained and not fixed)
 PY
 }
-chk "缓存读取 155M（全是 M）：单位说明与图一致" "$(units 155000000)"  "ok"
-chk "缓存读取 2.0B（M / B 并存）：单位说明与图一致" "$(units 2000000000)" "ok"
+chk "四项都画成堆叠柱块（缓存读取不再是折线）" "$(tok4 155000000 four)"   "True"
+chk "柱高比例 1:2:3:155，缓存读取在最上层"     "$(tok4 155000000 ratio)"  "True"
+chk "只有一条纵轴：无右轴刻度、无折线、文案不提右轴" "$(tok4 155000000 single)" "True"
+chk "柱顶数字 = 四项合计 161M，轴上界容得下"   "$(tok4 155000000 total)"  "True"
+# 单位说明必须跟图上实际出的后缀一致（PR #54 交叉 review 第 1 轮）：fmt_m 不足 1000M 出 M、
+# 够了出 B，同一根轴上可以并存。阈值以下、跨阈值各一个样本。
+chk "合计 161M（全是 M）：单位说明与图一致"   "$(tok4 155000000 units)"  "True"
+chk "合计 2.0B（M / B 并存）：单位说明与图一致" "$(tok4 2000000000 units)" "True"
+chk "合计 2.0B：柱顶数字与轴上界"             "$(tok4 2000000000 total)" "True"
 chk "投入面趋势图多了 token 用量面板"      "$(grep -c 'token 用量' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 
 echo
