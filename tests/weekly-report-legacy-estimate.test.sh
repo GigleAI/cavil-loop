@@ -95,6 +95,37 @@ chk "报告口径说明写明是估算"               "$(has '按记录里的 to
 chk "缓存读取折线把数值直接标在点上（0.6M，抵重后）" "$(grep -c 'class="val" text-anchor="start" fill="#4a3aa7">0.6M</text>' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 chk "图例写明缓存读取看右轴" "$(grep -c '缓存读取（右轴）' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 chk "副标题提醒两条轴刻度不同" "$(grep -c '别拿高度直接比' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
+# 单位说明必须跟图上实际出的后缀一致（PR #54 交叉 review 第 1 轮）：fmt_m 不足 1000M 出 M、
+# 够了出 B，同一根轴上可以并存。旧副标题写死「右轴，单位 B」，缓存读取 155M 的周图上全是 M。
+# 两个样本分别落在阈值以下和跨阈值，各自检查：图上用到的每个后缀都在副标题里有解释，
+# 标题 / 副标题里也没有「单位 X」「百万 token」这种写死一个单位的说法。
+units() {   # $1 每周 tok_cache_r
+    python3 - "$TMP/d.json" "$TMP/u.json" "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for w in d["weekly"].values():
+    w["tok_cache_r"] = float(sys.argv[3])
+json.dump(d, open(sys.argv[2], "w"))
+PY
+    python3 "$RENDER" --data "$TMP/u.json" --out-dir "$TMP/u" --asset-url-base x --rev y >/dev/null 2>&1 \
+        || { echo "render 跑挂了"; return; }
+    python3 - "$TMP/u/effort.html" <<'PY'
+import re, sys
+h = open(sys.argv[1]).read()
+i = h.index('class="ttl">token 用量')
+seg = h[h.rindex("<text", 0, i):]
+ttl = re.search(r'class="ttl">([^<]*)<', seg).group(1)
+sub = re.search(r'class="sub">([^<]*)<', seg).group(1)
+right = re.findall(r'class="ax" text-anchor="start">([^<]*)<', seg)          # 右轴刻度
+pts = re.findall(r'class="val" text-anchor="start" fill="#4a3aa7">([^<]*)<', seg)  # 点旁数值
+used = {v[-1] for v in right + pts if v[-1] in "MB"}
+explained = {u for u, word in (("M", "M＝百万"), ("B", "B＝十亿")) if word in sub}
+fixed = re.search(r"单位 ?[MB]|百万 token", ttl + sub)
+print("ok" if used and used <= explained and not fixed else f"bad used={used} explained={explained} fixed={bool(fixed)} sub={sub}")
+PY
+}
+chk "缓存读取 155M（全是 M）：单位说明与图一致" "$(units 155000000)"  "ok"
+chk "缓存读取 2.0B（M / B 并存）：单位说明与图一致" "$(units 2000000000)" "ok"
 chk "投入面趋势图多了 token 用量面板"      "$(grep -c 'token 用量' "$TMP/html/effort.html" | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 
 echo

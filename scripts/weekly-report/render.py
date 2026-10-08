@@ -250,9 +250,12 @@ def main():
     # 所以它单独走右轴折线。切换周之前的 token 是旧驱动逐条累加的，采集侧已按 1.68 抵过
     # （见 attribute.legacy_estimate），左右两侧才放得进同一张图——仍是估算，副标题写明。
     M=lambda f:[wk[k].get(f,0)/1e6 for k in W]
-    p_tok=ch.panel(0,1020,1212,320,"token 用量：每周输入 / 输出 / 缓存读取（百万 token）",
-        "堆叠柱＝输入 + 缓存写入 + 输出（左轴，单位 M）；折线＝缓存读取（右轴，单位 B，通常是缓存写入的几十倍）。"
-        "两条轴刻度不同，别拿高度直接比。"
+    # ⚠️ 标题 / 副标题不许写死单位：fmt_m 不足 1000M 出 M、够了才出 B，同一根轴上 M 和 B
+    # 可以并存（实测 2.0B 那周右轴刻度是 625M / 1.2B）。写死「右轴单位 B」时，缓存读取只有
+    # 155M 的那周图上全是 M，说明反倒成了误导（PR #54 交叉 review 第 1 轮）。
+    p_tok=ch.panel(0,1020,1212,320,"token 用量：每周输入 / 输出 / 缓存读取",
+        "堆叠柱＝输入 + 缓存写入 + 输出（左轴）；折线＝缓存读取（右轴）。"
+        "M＝百万、B＝十亿，以刻度和点旁数值的后缀为准；两条轴刻度不同，别拿高度直接比。"
         + ("红线左侧的周按旧记录的 token 数除以 1.68 抵掉重复计，是估算。" if fc is not None else ""),
         [{"type":"bar","data":M("tok_in"),"color":BLUE,"label":"输入","axis":"l","stack":True,"fmt":fmt_m},
          {"type":"bar","data":M("tok_cache_w"),"color":GOLD,"label":"缓存写入","axis":"l","stack":True,"fmt":fmt_m},
