@@ -231,5 +231,31 @@ chk "副标题点明那条不含等待" \
 chk "三条图例并排时仍不叠字" "$(swleg)" "0"
 
 echo
+echo "— 堆叠柱的轴上界容得下各项之和（PR #50 交叉 review 第 1 轮）"
+# 三项各 10M 堆到 30M，旧实现按单项最大值取上界（12M），柱顶越出面板落进上一块。
+# 直接调用真实 Chart.panel()，量 SVG 坐标：所有柱子都必须落在本面板的绘图区内。
+stack() { python3 - "$(dirname "$RENDER")" "$1" <<'INNER5'
+import re, sys
+sys.path.insert(0, sys.argv[1])
+import render
+ch = render.Chart(["2025-01-06", "2025-01-13"])
+y0, H = 1020, 320                                  # 与 render.py 里 token 面板同位置
+ser = [{"type": "bar", "data": [10, 2], "color": "#000", "label": n, "axis": "l",
+        "stack": True, "fmt": render.fmt_m} for n in ("输入", "缓存写入", "输出")]
+ser.append({"type": "line", "data": [1, 1], "color": "#111", "label": "读", "axis": "r"})
+svg = ch.panel(0, y0, 1212, H, "t", "s", ser)
+top, bot = y0 + 46, y0 + H - 34                    # 绘图区：PT=46、PB=34
+rects = [(float(y), float(h)) for y, h in
+         re.findall(r'<rect x="[^"]+" y="([^"]+)" width="[^"]+" height="([^"]+)" fill="[^"]+"/>', svg)]
+assert len(rects) == 6, rects                      # 2 周 × 3 项；图例方块带 rx，不在此列
+ticks = [t for t in re.findall(r'class="ax" text-anchor="end">([^<]*)<', svg)]
+print({"inside": all(top - 0.5 <= y and y + h <= bot + 0.5 for y, h in rects),
+       "axmax_ge_30": float(ticks[-1].rstrip("M")) >= 30}[sys.argv[2]])
+INNER5
+}
+chk "所有堆叠柱都在本面板绘图区内" "$(stack inside)" "True"
+chk "左轴上界 ≥ 30M（三项之和）"    "$(stack axmax_ge_30)" "True"
+
+echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" -eq 0 ]
