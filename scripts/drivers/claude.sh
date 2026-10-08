@@ -61,7 +61,7 @@ agent_command_new() {
 #   1. CLAUDE_EXTRA_FLAGS 里已有 --model → 什么都不加，它本来就会带到续接命令里
 #   2. ANTHROPIC_MODEL
 #   3. managed settings（管理员策略文件）
-#   4. CLAUDE_EXTRA_FLAGS 里的 --settings（JSON 串或文件路径）
+#   4. CLAUDE_EXTRA_FLAGS 里的 --settings（JSON 串或文件路径；相对路径按 worktree 解析）
 #   5. 项目 settings.local.json > 项目 settings.json > 用户 settings.json，
 #      受 --setting-sources 限制（只读列出的 local / project / user）
 #   6. 都没有 → `default`（= 账号默认，跟新会话不带 --model 时一致）
@@ -106,6 +106,15 @@ claude_default_model() {
         [ -z "$m" ] || { printf '%s' "$m"; return 0; }
     fi
     if [ -n "$settings_arg" ]; then
+        # 文件路径要按 worker 的启动目录解析：命令是 daemon 在自己的目录里拼的，
+        # 但 claude 是 `tmux -c "$WORKTREE"` 起在 worktree 里（复审 #57 第 2 轮）。
+        # `~/` 只有不带引号时 shell 才展开，xargs 拆词后已经看不出来，按展开处理。
+        case "$settings_arg" in
+            \{*) ;;
+            /*) ;;
+            "~/"*) settings_arg="$HOME/${settings_arg#\~/}" ;;
+            *) settings_arg="$cwd/$settings_arg" ;;
+        esac
         case "$settings_arg" in
             \{*) m="$(_claude_json_model "$settings_arg")" ;;
             *) [ -f "$settings_arg" ] && m="$(_claude_json_model "$(cat "$settings_arg" 2>/dev/null)")" ;;

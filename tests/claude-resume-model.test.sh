@@ -25,7 +25,7 @@ LABEL_PENDING_HUMAN="pending/human"
 WORKER_AGENT="claude"
 WORKER_MODEL=""
 CONF
-mkdir -p "$TMP/project" "$TMP/wt" "$TMP/state" "$TMP/home/.claude" "$TMP/cwd"
+mkdir -p "$TMP/project" "$TMP/wt" "$TMP/state" "$TMP/home/.claude" "$TMP/cwd" "$TMP/daemon"
 
 pass=0
 fail=0
@@ -48,8 +48,8 @@ resume_cmd() {
         DISPATCH_WORKER_AGENT=claude \
         DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET="$model_set" \
         ${EXTRA_ENV:+"$EXTRA_ENV"} \
-        bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_resume "$2" issue-test /tmp/prompt' \
-        _ "$REPO_DIR" "$TMP/cwd"
+        bash -c 'cd "$3" && source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_resume "$2" issue-test /tmp/prompt' \
+        _ "$REPO_DIR" "$TMP/cwd" "$TMP/daemon"
 }
 new_cmd() {
     env -u ANTHROPIC_MODEL HOME="$TMP/home" CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
@@ -99,6 +99,21 @@ chk "--settings=JSON 形式" "$(resume_cmd 1 '')" "claude --continue $FLAGS --mo
 echo '{"model":"haiku"}' > "$TMP/flag-settings.json"
 FLAGS="--settings $TMP/flag-settings.json"
 chk "--settings 文件路径" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model haiku $P"
+echo "  · 相对路径：daemon 在 \$TMP/daemon 里拼命令，claude 起在 worktree（复审 #57 第 2 轮）"
+echo '{"model":"sonnet"}' > "$TMP/cwd/model.json"
+FLAGS="--settings model.json"
+chk "相对路径按 worktree 解析（daemon 目录没有这个文件）" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
+FLAGS="--settings=./model.json"
+chk "--settings=./相对路径 同样按 worktree" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
+echo '{"model":"haiku"}' > "$TMP/daemon/model.json"
+FLAGS="--settings model.json"
+chk "daemon 目录有同名不同内容的文件 → 仍读 worktree 那份" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model sonnet $P"
+rm -f "$TMP/cwd/model.json"
+chk "只有 daemon 目录有这个文件 → 不读它，往下找项目文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model opus $P"
+rm -f "$TMP/daemon/model.json"
+echo '{"model":"haiku"}' > "$TMP/home/home-model.json"
+FLAGS="--settings ~/home-model.json"
+chk "~/ 开头按 HOME 展开" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model haiku $P"
 FLAGS="--settings '{\"permissions\":{}}'"
 chk "--settings 里没写 model → 往下找项目文件" "$(resume_cmd 1 '')" "claude --continue $FLAGS --model opus $P"
 

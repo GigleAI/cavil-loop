@@ -183,7 +183,8 @@ with, so a long-running issue would never move to a newer default. The daemon
 passes the currently configured default instead, following Claude's own
 precedence: if `CLAUDE_EXTRA_FLAGS` already has `--model`, nothing is added;
 otherwise `ANTHROPIC_MODEL`, then managed settings, then a `--settings` JSON or
-file in `CLAUDE_EXTRA_FLAGS`, then the worktree's `.claude/settings.local.json` /
+file in `CLAUDE_EXTRA_FLAGS` (a relative path is resolved against the worktree,
+where Claude is started), then the worktree's `.claude/settings.local.json` /
 `.claude/settings.json` and `~/.claude/settings.json` (restricted by
 `--setting-sources` when given), falling back to `default`. If
 `CLAUDE_EXTRA_FLAGS` cannot be parsed (unbalanced quotes), no `--model` is added. A session that is
