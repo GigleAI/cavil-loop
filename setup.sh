@@ -378,7 +378,23 @@ esac
 echo
 echo "── 5. GitHub labels ──"
 repo=$(grep -E "^REPO=" "$config" | head -1 | sed 's/.*=//' | tr -d '"' | tr -d "'")
-for ld in "pending/agent|5539d3|等待 agent 处理" "pending/agent/fable|8250df|等待 agent 使用 Claude Fable 模型处理（版本见 FABLE_MODEL，默认 claude-fable-5）" "doing/agent|0e8a16|agent 正在处理" "pending/human|4bc81f|等待人类处理" "pending/PR|bfd4f2|工作已转 PR 跟踪" "Done|586069|已结案" "priority/p0|b60205|插队：并发满时最先派工" "priority/p1|d93f0b|优先：排在没打优先级的前面" "priority/p2|fbca04|常规（= 不打标签的默认档）"; do
+# 默认配色照抄本仓库 GigleAI/cavil-loop 的 labels 页（#52）——新部署的项目看起来跟这里一样。
+# 只管新建：已存在的 label 不改颜色和说明，别处有意调过的配色不会被覆盖。
+label_defs=(
+    "pending/agent|d4c5f9|等待 agent 处理"
+    "pending/agent/fable|8250df|等待 agent 使用 Claude Fable 模型处理（版本见 FABLE_MODEL，默认 claude-fable-5）"
+    "doing/agent|c2e0c6|agent 正在处理"
+    "pending/human|fbca04|等待人类处理"
+    "pending/PR|bbbbbb|工作已转 PR 跟踪"
+    "Done|586069|已结案"
+    "priority/p0|b60205|插队：并发满时最先派工"
+    "priority/p1|f9d0c4|优先：排在没打优先级的前面"
+    "priority/p2|bfd4f2|常规（= 不打标签的默认档）"
+)
+# 交叉 review 关卡默认关闭；配置里设了 LABEL_PENDING_REVIEW 才建它，没开就不多塞一个 label。
+review_label="$(config_value LABEL_PENDING_REVIEW)"
+[ -n "$review_label" ] && label_defs+=("$review_label|1d76db|等待独立 Codex 复审")
+for ld in "${label_defs[@]}"; do
     IFS='|' read -r name color desc <<< "$ld"
     if gh label create "$name" --color "$color" --description "$desc" --repo "$repo" 2>/dev/null; then
         echo "  ✓ 建 label: $name"
