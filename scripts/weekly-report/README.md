@@ -51,6 +51,7 @@ systemctl --user enable --now coding-agent-weekly-report@<project>.timer
 | `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/coding-agent-poll/review-shots` | `publish-asset.sh` 的落盘根目录 |
 | `WEEKLY_REPORT_FONTS_DIR` | `$PROJECT_ROOT/public/fonts` | 自托管 woff2；目录不在就回落系统字体 |
 | `WEEKLY_REPORT_SUBSCRIPTION_MONTHLY` | 没配就显示「未配置」 | 订阅月费，**必须以美元填**（一个数，或多份订阅相加的 JSON 列表）。报告按天摊到每一周。填人民币不会报错，会被原样当成美元印出去 |
+| `WEEKLY_REPORT_BOT_LOGINS` | 空 | 名字**不以** `-bot` / `[bot]` 结尾的机器人账号，逗号或空白分隔、整名匹配（不按前缀放宽；和 GitHub 一样不区分大小写）。漏配的后果：它发的评论算进「你发的」，它的记账行被丢弃、AI 用量显示 0 |
 | `WEEKLY_REPORT_LABEL` | `pending/agent` | 开出的 issue 打什么 label。设成 `pending/human` 就只出数据、不叫 agent 写解读 |
 
 ## 周报文档规范
@@ -268,8 +269,11 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
    这几条都由 `tests/weekly-report-render.test.sh` 钉住。
 14. **周切片按北京时间**（`TZ = UTC+8`），GitHub 返回的是 UTC，直接按 UTC 切会和人的直觉差 8 小时。
     拉数据的 `since` 也要按同一个时区换算（见上面第 4 条），两处用不同时区就会在窗口边界上漏数据。
-15. **机器人账号判定**走 `-bot` / `[bot]` 后缀。新增别的机器人账号要同步改 `is_bot()`，
-   否则它发的评论会被算进「人发的」。
+15. **机器人账号判定**走 `-bot` / `[bot]` 后缀，外加项目配置 `WEEKLY_REPORT_BOT_LOGINS`
+   显式列出的账号。名字不按约定结尾的机器人账号（换了发评论的账号、拆出专用推送账号等）
+   **必须配进去**，否则错得很安静：它发的评论算进「人发的」，它的记账行在提取第一步就被
+   当成人写的丢掉，AI 用量整周显示 0。判定只有 `record.is_bot()` 一份，`collect.py` 复用它。
+   端到端（跑 `collect.py` 看人 / 机器人计数与入账）由 `tests/weekly-report-bot-logins.test.sh` 钉住。
 16. **明细不能只看 issue 侧的活跃度，也不能只看「当周有没有讨论」**。很多 issue 定完方案
    就没人再回 issue 页了，整周的讨论全发生在它的 PR 上——只按「issue 有评论」筛，会把整条
    工作漏掉。`collect.py` 的入选条件是三选一：**issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭**。
@@ -293,3 +297,26 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
    ⚠️ `WEEKLY_REPORT_SUBSCRIPTION_MONTHLY` 是这里唯一的雷：它读的是个**裸数字**、渲染时
    无条件加 `$`，按人民币月费填进来会被当成美元印出去且**不会有任何报错**。
    > 来源：维护者读完周报后问「AI 成本的单位是人民币，还是美元？」（GigleTutor-Web#931）。
+18. **口径切换前的历史记账，金额按记录里的 token 重估，不沿用旧驱动写死的原值**。旧驱动
+   把所有 Opus 一律按 Opus 4 的价算（输入 $15 / 输出 $75 / 缓存读 $1.5 / 缓存写 1h $30），
+   又把同一次 API 调用的多条日志逐条累加（按 requestId 去重后的 1.68 倍）。两层叠加，原值
+   直接进趋势图时，切换周前后的成本差出 3~5 倍，读起来像「突然省了一大笔钱」。本机日志
+   大多已清掉、重算不了，所以 `attribute.legacy_estimate()` 拿记录里的 token 数（截断下界）
+   按现行参照里的 Opus 价计、缓存写入按 1h 档（本机实测 5m 为 0）、再除以 1.68，来源记作
+   `estimated`，报告里单列口径、逐周表打 `≈`。规则：
+   · 只换**记过金额**的历史行；没写金额的历史行仍是「没记」，不凭 token 补一个出来；
+   · 本机日志还在、能重算的照旧重算，估算不顶掉重算值；
+   · token 趋势里历史记录的四项 token 同样除以 1.68，与切换后按调用去重的机器记录放在
+     同一把尺子上；
+   · token 合计跟金额走**同一套取数规则**：日志重算过的用**认领后**的 token（重叠窗口的
+     共用调用只算一次，也不再除 1.68）；重叠组里有沿用原值的，整组 token 单列为
+     `tok_*_not_summable`、不进每周用量（PR #50 交叉 review 第 1 轮：读原记录时两条重叠
+     派工的输出合计 160 万，日志里实际只有 100 万）。这是估算：1.68 是 53 个会话的中位数（范围 1.39~2.46），历史记录也没写
+     模型，单周偏差可达 -20% ~ +45%。
+   钉住它的是 `tests/weekly-report-legacy-estimate.test.sh`（走 collect → report → render 真实链路）。
+   > 来源：维护者读完周报后说「每周总成本看起来不太对」，在方案里选了「按 token 重估」（GigleTutor-Web#1023）。
+19. **投入面趋势图有一块「token 用量」面板**：堆叠柱是输入 + 缓存写入 + 输出（左轴），
+   缓存读取单走右轴折线——它比另外三项大两个数量级，堆进同一根柱会把其余三项压成一条线。
+   数据来自 `collect.py` 的 `tok_in / tok_out / tok_cache_r / tok_cache_w`（另有按 agent 拆分的字段）。
+   堆叠柱的轴上界按**每周各项之和**取，不按单项最大值（`Chart.panel()`；单项取上界时三项各
+   10M 的柱子顶到 30M、轴只到 12M，柱子越出面板）。

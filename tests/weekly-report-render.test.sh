@@ -103,8 +103,8 @@ PY
 }
 
 echo "— 面板顺序（Q2=A：工时夹在讨论轮数和花销之间）"
-chk "投入面三块面板，顺序为 讨论轮数 → AI 投入时间 → 花销" \
-    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间|花销（美元）"
+chk "投入面四块面板，顺序为 讨论轮数 → AI 投入时间 → 花销 → token 用量" \
+    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间|花销（美元）|token 用量"
 
 echo
 echo "— 秒 → 小时的换算与格式（只作用于工时那条 series）"
@@ -150,7 +150,7 @@ chk "交付面柱顶没有一个带 h"    "$(q 'any(v.endswith("h") for p in pan
 
 echo
 echo "— 版面"
-chk "投入面页高 1020（三块面板 × 340）" "$(q 'height("effort")')" "1020"
+chk "投入面页高 1360（四块面板 × 340）" "$(q 'height("effort")')" "1360"
 
 
 echo
@@ -201,12 +201,12 @@ print(eval(sys.argv[2]))
 INNER2
 }
 
-chk "有切换周 → 投入面画 2 条（工时面板 + 花销面板）" \
-    "$(sw effort 's.count("口径切换")')" "2"
+chk "有切换周 → 投入面画 3 条（工时 + 花销 + token 用量面板）" \
+    "$(sw effort 's.count("口径切换")')" "3"
 chk "交付面不画（issue / PR / 代码行不受口径影响）" \
     "$(sw delivery 's.count("口径切换")')" "0"
 chk "竖线画成红色虚线" \
-    "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "2"
+    "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "3"
 chk "switch_week 不在窗口里 → 一条都不画（不拿窗口里第一条 codex 记录顶上）" \
     "$(python3 - "$TMP" <<'INNER3'
 import json, subprocess, sys, os, re
@@ -229,6 +229,32 @@ chk "画出模型 + 工具折线（不含等待的那条）" \
 chk "副标题点明那条不含等待" \
     "$(sw effort '"不含等待" in s')" "True"
 chk "三条图例并排时仍不叠字" "$(swleg)" "0"
+
+echo
+echo "— 堆叠柱的轴上界容得下各项之和（PR #50 交叉 review 第 1 轮）"
+# 三项各 10M 堆到 30M，旧实现按单项最大值取上界（12M），柱顶越出面板落进上一块。
+# 直接调用真实 Chart.panel()，量 SVG 坐标：所有柱子都必须落在本面板的绘图区内。
+stack() { python3 - "$(dirname "$RENDER")" "$1" <<'INNER5'
+import re, sys
+sys.path.insert(0, sys.argv[1])
+import render
+ch = render.Chart(["2025-01-06", "2025-01-13"])
+y0, H = 1020, 320                                  # 与 render.py 里 token 面板同位置
+ser = [{"type": "bar", "data": [10, 2], "color": "#000", "label": n, "axis": "l",
+        "stack": True, "fmt": render.fmt_m} for n in ("输入", "缓存写入", "输出")]
+ser.append({"type": "line", "data": [1, 1], "color": "#111", "label": "读", "axis": "r"})
+svg = ch.panel(0, y0, 1212, H, "t", "s", ser)
+top, bot = y0 + 46, y0 + H - 34                    # 绘图区：PT=46、PB=34
+rects = [(float(y), float(h)) for y, h in
+         re.findall(r'<rect x="[^"]+" y="([^"]+)" width="[^"]+" height="([^"]+)" fill="[^"]+"/>', svg)]
+assert len(rects) == 6, rects                      # 2 周 × 3 项；图例方块带 rx，不在此列
+ticks = [t for t in re.findall(r'class="ax" text-anchor="end">([^<]*)<', svg)]
+print({"inside": all(top - 0.5 <= y and y + h <= bot + 0.5 for y, h in rects),
+       "axmax_ge_30": float(ticks[-1].rstrip("M")) >= 30}[sys.argv[2]])
+INNER5
+}
+chk "所有堆叠柱都在本面板绘图区内" "$(stack inside)" "True"
+chk "左轴上界 ≥ 30M（三项之和）"    "$(stack axmax_ge_30)" "True"
 
 echo
 echo "通过 $pass / 失败 $fail"

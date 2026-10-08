@@ -34,9 +34,8 @@ def gh(path):
         print(f"[warn] gh api {path} 返回无法解析: {e}", file=sys.stderr)
         return []
 
-def is_bot(login):
-    """GitHub 机器人账号：约定后缀 `-bot`（我们的 worker）或 GitHub App 的 `[bot]`。"""
-    return login.endswith("-bot") or login.endswith("[bot]")
+# 机器人账号判定只有 record.is_bot 一份（含 WEEKLY_REPORT_BOT_LOGINS 配置），这里直接复用。
+is_bot = record.is_bot
 
 def loc(s):
     return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(
@@ -263,7 +262,10 @@ def main():
                                       foreign[w["key"]]["tok"], has_log, meta["parsed"])
             if chk in ("no_shortfall_detected", "true_zero"):
                 usd, unk, state, bystat = attribute.price_calls(mine, price_table)
+                # token 随金额一起取**认领后**的那份：重叠窗口共用的调用只算给一个派工。
+                # 不带过去的话汇总只能读原记录的 token，重叠派工的共用调用就被算两遍。
                 recompute[w["key"]] = {"cost_source": "recomputed", "cost": usd,
+                                       "tok": dict(own[w["key"]]["tok"]),
                                        "log_check": chk, "cost_state": state,
                                        "unknown_tokens": unk,
                                        "price_source": "solved", "price_status": bystat}
@@ -311,7 +313,32 @@ def main():
                 "full" if rec.get("has_cost") else "none")
             pstat = rec.get("price_status") or {}
             psrc = rec.get("price_source")
+        # 口径切换前的历史记账行：旧驱动写死的金额按老价目算、又重复计了调用，改用记录里的
+        # token 重估（见 attribute.legacy_estimate）。只换「记过金额」的——没写金额的历史行
+        # 本来就是「没记」，不凭 token 补一个出来。日志重算得出的金额优先，不被估算顶掉。
+        legacy = rec.get("src") == "footer"
+        if legacy and cost_source == "original" and rec.get("has_cost"):
+            cost = attribute.legacy_estimate(rec.get("tokens"))
+            cost_source, cost_state = "estimated", "full"
+            pstat, psrc = {"estimated": cost}, "estimated"
         in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
+        # token 用量趋势：四项分开记，取数规则与金额同一套（#50 交叉 review 第 1 轮）：
+        #   · 日志重算过的 → 用**认领后**的 token（重叠窗口共用的调用只算一次），不再除倍数；
+        #   · 沿用原值的 → 读记录里的 token；历史记录逐条累加过，按同一个倍数抵掉（估算）；
+        #   · 进不了「去重合计」的（重叠组里有沿用原值的）→ 单列，不混进每周用量，
+        #     否则共用的调用照样算两遍。
+        if info is not None and info["cost_source"] == "recomputed":
+            tok, tf = info["tok"], 1
+        else:
+            tok = rec.get("tokens") or {}
+            tf = 1 / attribute.LEGACY_DUP_FACTOR if legacy else 1
+        for k in ("in", "out", "cache_r", "cache_w"):
+            v = (tok.get(k) or 0) * tf
+            if in_total:
+                s[f"tok_{k}"] += v
+                s[f"tok_{k}_{rec.get('agent') or 'claude'}"] += v
+            else:
+                s[f"tok_{k}_not_summable"] += v
         out = rec["out"]
         # 历史记录（无机器标记）没写 agent。实测交叉 review 那一侧在改造前几乎不写
         # 记账行（上周 589 条里只有 2 条，且已被「交叉 review 评论不作记账来源」挡掉），
@@ -461,7 +488,14 @@ def main():
               #   state_* 价格覆盖三态（full / partial / none）
               #   log_*   日志检验结果（未检出缺失 / 检出缺失 / 覆盖未知 / 真实零调用）
               #   *_not_summable 重叠且证据不足、**不可与上面的合计相加**的那部分
-              "src_recomputed", "src_original",
+              "src_recomputed", "src_original", "src_estimated",
+              # 四项 token（历史记录已按重复计倍数抵掉，见 attribute.legacy_estimate）
+              "tok_in", "tok_out", "tok_cache_r", "tok_cache_w",
+              "tok_in_claude", "tok_out_claude", "tok_cache_r_claude", "tok_cache_w_claude",
+              "tok_in_codex", "tok_out_codex", "tok_cache_r_codex", "tok_cache_w_codex",
+              # 重叠组里有沿用原值、进不了去重合计的那部分 token：单列，不与上面相加
+              "tok_in_not_summable", "tok_out_not_summable",
+              "tok_cache_r_not_summable", "tok_cache_w_not_summable",
               "state_full", "state_partial", "state_none",
               "log_no_shortfall_detected", "log_shortfall_detected",
               "log_unknown", "log_true_zero",
@@ -470,8 +504,9 @@ def main():
               # 报告据此把「存疑」「未核对」「用参照兜底」分别报出来，不再混成一个数
               "price_usd_corroborated", "price_usd_uncorroborated",
               "price_usd_disputed", "price_usd_unstable",
-              "price_usd_reference_only", "price_usd_unrated",
+              "price_usd_reference_only", "price_usd_unrated", "price_usd_estimated",
               "price_src_solved", "price_src_configured", "price_src_default",
+              "price_src_estimated",
               "price_stale_records"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 

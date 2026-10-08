@@ -20,7 +20,7 @@
           原记录同窗口），但消不掉「凭空贴了个不对应任何记录的示例」。这一点
           如实写进报告，不用启发式假装解决。
 """
-import re, datetime
+import os, re, datetime
 
 import attribute
 
@@ -71,8 +71,19 @@ def norm_wt(v):
 
 
 def is_bot(login):
-    """机器人账号：约定后缀 `-bot`（worker）或 GitHub App 的 `[bot]`。"""
-    return login.endswith("-bot") or login.endswith("[bot]")
+    """机器人账号：约定后缀 `-bot`（worker）或 GitHub App 的 `[bot]`，外加项目配置
+    `WEEKLY_REPORT_BOT_LOGINS` 显式列出的账号（逗号 / 空白分隔，整名匹配；GitHub 登录名不区分
+    大小写，所以比较时也不区分——名单写 `Acme-Bot-Pusher` 照样认 `acme-bot-pusher`）。
+
+    名字不按约定结尾的机器人账号（例：`acme-bot-pusher`）认不出来时，错得很安静：
+    它的评论被算进「人发的」，它的记账行在 extract() 第 ⓪ 步被整条丢掉（AI 用量 = 0）。
+    每次调用都读环境变量而不缓存：run.sh 把项目配置 export 进来，测试也靠改环境切换。
+    collect.py 直接复用这一个函数，两处判定不会漂移。
+    """
+    if login.endswith("-bot") or login.endswith("[bot]"):
+        return True
+    extra = os.environ.get("WEEKLY_REPORT_BOT_LOGINS", "")
+    return login.lower() in {x.lower() for x in re.split(r"[\s,]+", extra) if x}
 
 
 def _parse_ts(v, date_hint=None):
@@ -232,7 +243,8 @@ def extract(body, login, comment_id=None, default_wt=None):
             "out": _out_of(nxt),
             "tokens": attribute.parse_token_line(nxt), "tokens_exact": False,
             "cost_state": ("full" if costs else "none"), "cost_unknown_tokens": 0,
-            # 历史评论是老驱动那张**过期价目表**算出来的（实测高 193%），既没有可信度
+            # 历史评论是老驱动那张**过期价目表**算出来的（实测高 193%）。金额原值不直接用：采集侧会按 token 重估（见
+            # attribute.legacy_estimate，来源记作 estimated）。原值既没有可信度
             # 也没有出处可言 —— 留空，报告里按「来源不明」披露，不硬塞进四态里充数
             "price_source": None, "price_status": {},
             "models": [], "model_unknown": False}
