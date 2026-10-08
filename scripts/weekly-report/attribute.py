@@ -299,6 +299,7 @@ def price_calls(calls, table):
         unstable      不可解，policy=A 时用参照兜底出的金额
         reference_only 加速档：本机没有可反解的样本，直接用参照价
         fetched       内置参照没有、daemon 缺价时联网抓来的价兜底（GitHub#51）
+        disputed_fetched 稳定但与**抓来的**参照冲突 —— 报红，金额取的是抓来的价
     """
     models = (table or {}).get("models") or {}
     fast = (table or {}).get("fast") or {}

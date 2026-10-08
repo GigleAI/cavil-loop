@@ -29,6 +29,8 @@
     unstable        过不了闸门 / 无解 / 非有限值                   → 取值按 policy
     fetched         同 unstable，但兜底用的参照是 daemon 缺价时**联网抓来的**
                     （内置参照里没有这个模型，GitHub#51）           → 取值按 policy
+    disputed_fetched 同 disputed，但冲突的那份参照是**联网抓来的**   → 报红；取值按 policy
+                    （单独一态：既不能丢掉冲突警示，也不能丢掉「这个价是自动抓的」）
 
 取值策略（issue #934 的 Q7，人工已确认 A）：
     A（默认）：disputed 用参照值；unstable 有参照用参照值、**没有参照就是未知**。
@@ -282,9 +284,13 @@ def classify(model, gated, ttl, policy="A", fetched=None):
         elif status == "disputed":
             price = ref_price if policy == "A" else None
         else:                                # unstable：A 有参照才兜底，没有就是未知
-            price = ref_price if (policy == "A" and ref_price) else None
-            if from_fetch and price is not None:
-                status = "fetched"
+            # ⚠️ 判「有没有参照」用 is not None：$0 是合法的已知单价（抓来的缓存项可以是 0），
+            #   拿真假判断会把它当成「没参照」→ 这部分 token 变成缺价（PR #55 复审第 1 轮）
+            price = ref_price if (policy == "A" and ref_price is not None) else None
+        # 兜底取的是抓来的价 → 状态要带上来源。冲突那一态单独叫 disputed_fetched：
+        # 只标 fetched 会丢掉冲突警示，只标 disputed 会丢掉「这是自动抓的价」（复审第 1 轮）
+        if from_fetch and price is not None and status in ("unstable", "disputed"):
+            status = "fetched" if status == "unstable" else "disputed_fetched"
         return {"status": status, "price": price, "solved": solved,
                 "reference": ref_price, "divergence": rel, "note": note}
 

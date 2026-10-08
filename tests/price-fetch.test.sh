@@ -266,6 +266,83 @@ chk "可信度一栏点名「自动联网获取的单价」并给出金额" \
     "$(grep -qF '**自动联网获取的单价** $3' <<< "$TL" && echo yes || echo no)" "yes"
 chk "并说明它不等于与账单核对过" \
     "$(grep -qF '不等于**与账单核对过' <<< "$TL" && echo yes || echo no)" "yes"
+# 与抓来的参照冲突的那一桶：报红（⚠️）和「自动联网获取」两个信息都要在
+jq '.weekly["2026-10-05"] |= (.price_usd_fetched = 0 | .price_usd_disputed_fetched = 3)' "$TMP/d.json" > "$TMP/d2.json" \
+    && mv "$TMP/d2.json" "$TMP/d.json"
+python3 "$REPO_DIR/scripts/weekly-report/report.py" --data "$TMP/d.json" --out "$TMP/r.md" \
+    --asset-url-base x --rev y >/dev/null 2>"$TMP/err.log" || cat "$TMP/err.log"
+TL=$(grep -o '单价可信度.*' "$TMP/r.md" | head -1)
+chk "与抓来的参照冲突：报红且点名来源，金额可见" \
+    "$(grep -qF '**⚠️ 与自动联网获取的参照冲突（存疑）** $3' <<< "$TL" && echo yes || echo no)" "yes"
+chk "只有冲突那一桶时，同样说明它不等于与账单核对过" \
+    "$(grep -qF '不等于**与账单核对过' <<< "$TL" && echo yes || echo no)" "yes"
+
+echo "── 10. 本机有记账样本时（走 classify）：零价不丢、冲突时不丢来源（PR #55 复审第 1 轮）──"
+# 前面 6 / 7 两组的模型在本机没有 cost-state，走的是「本机无流量」那条路；本机一旦出现
+# 该模型的记账样本，就改走 classify()。两条路必须给出同一个价、同一个来源。
+# 每个子用例换一个干净的 HOME，样本互不干扰。驱动和周报重算各跑一遍对拍。
+fresh() { export HOME="$TMP/h$1" XDG_CACHE_HOME="$TMP/h$1/.cache"
+          CACHE="$XDG_CACHE_HOME/cavil-loop"; MARK="$CACHE/unpriced"; FETCHED="$CACHE/fetched-prices.json"
+          mkdir -p "$MARK"; CW="$TMP/h$1/wt/issue-9"; mkdir -p "$CW"
+          ENC=$(cd "$CW" && pwd | tr / -); PJ="$HOME/.claude/projects"; mkdir -p "$PJ/$ENC"; }
+call() {  # $1 模型 $2 usage JSON → 本 worktree 的一次调用
+    printf '{"type":"assistant","timestamp":"%s","requestId":"q%s","message":{"model":"%s","usage":%s}}\n' \
+        "$(cts 10)" "$RANDOM" "$1" "$2" >> "$PJ/$ENC/s.jsonl"; }
+cl() { ( cd "$CW" && bash "$TU/claude.sh" "$START" "$@" ); }
+# 周报重算那一侧：真实 price_solve 表 + 真实 attribute.price_calls，算同一批调用
+wk() { python3 - "$REPO_DIR/scripts/weekly-report" "$@" <<'PY'
+import sys, json
+sys.path.insert(0, sys.argv[1])
+import price_solve, attribute
+model, priced = sys.argv[2], json.loads(sys.argv[3])
+usd, unk, state, b = attribute.price_calls([{"model": model, "speed": "standard", "priced": priced}],
+                                           price_solve.build_cached("A"))
+print(f"usd={usd:g} unk={unk} state={state} buckets={json.dumps(b, sort_keys=True)}")
+PY
+}
+
+# 10a 零价：两源一致给缓存读 $0
+fresh za; : > "$MARK/claude--claude-zero-9"; fetch >/dev/null
+call claude-zero-9 '{"input_tokens":0,"output_tokens":100000,"cache_read_input_tokens":1000000}'
+chk "10a 无记账样本：\$0 的缓存读算「有价」，全部计价" \
+    "$(cl --kv | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=1.5 cost_state=full cost_unknown_tokens=0"
+# 追加一条该模型的记账样本（不够反解）→ 改走 classify。旧实现在这里把 0 当「没有参照」，
+# 100 万缓存读 token 变成缺价
+mkdir -p "$PJ/sess-1"
+printf '{"type":"cost-state","totalCostUSD":1.5,"modelUsage":{"claude-zero-9":{"inputTokens":0,"outputTokens":100000,"cacheReadInputTokens":1000000,"cacheCreationInputTokens":0}}}\n' > "$PJ/sess-1/s.jsonl"
+chk "10a 有一条记账样本后：仍是全部计价（\$0 不被当成没价）" \
+    "$(cl --kv | grep -o 'cost_usd=[0-9.]* cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
+    "cost_usd=1.5 cost_state=full cost_unknown_tokens=0"
+chk "10a 周报重算与驱动一致" \
+    "$(wk claude-zero-9 '{"output":100000,"cache_read":1000000}')" \
+    'usd=1.5 unk=0 state=full buckets={"fetched": 1.5}'
+
+# 10b 本机解得稳、但与抓来的参照冲突：取抓来的价（策略 A），冲突警示和来源都要留
+fresh zb; : > "$MARK/claude--claude-test-9"; fetch >/dev/null
+python3 - "$PJ" <<'PY'
+import json, os, sys
+# 四个分量各 10 条、每条只有该分量 100 万 token，账按抓来价的 2 倍出 → 解得稳、偏 100%
+real = {"inputTokens": 6, "outputTokens": 30, "cacheReadInputTokens": 0.30, "cacheCreationInputTokens": 7.5}
+k = 0
+for comp, price in real.items():
+    for j in range(10):
+        d = os.path.join(sys.argv[1], f"solve-{k}"); os.makedirs(d, exist_ok=True)
+        mu = {c: 0 for c in real}; mu[comp] = 1_000_000 + j * 1000
+        with open(os.path.join(d, "s.jsonl"), "w") as f:
+            f.write(json.dumps({"type": "cost-state", "totalCostUSD": mu[comp] * price / 1e6,
+                                "modelUsage": {"claude-test-9": mu}}) + "\n")
+        k += 1
+PY
+call claude-test-9 '{"input_tokens":1000000,"output_tokens":0}'
+KV=$(cl --kv); HM=$(cl)
+chk "10b 金额按抓来的 \$3 算（不是本机解出的 \$6）" "$(grep -o 'cost_usd=[0-9.]*' <<< "$KV")" "cost_usd=3"
+chk "10b 可信度桶：冲突 + 来自自动抓取，两件事都在" \
+    "$(grep -o 'price_status=[^ ]*' <<< "$KV")" "price_status=disputed_fetched:3"
+chk "10b 人读行：冲突警示还在" "$(grep -c '与外部参照冲突（存疑）' <<< "$HM")" "1"
+chk "10b 人读行：也注明含自动联网获取的单价" "$(grep -c '（含自动联网获取的单价）' <<< "$HM")" "1"
+chk "10b 周报重算与驱动一致" "$(wk claude-test-9 '{"input":1000000}')" \
+    'usd=3 unk=0 state=full buckets={"disputed_fetched": 3.0}'
 
 echo
 echo "通过 $pass / 失败 $fail"

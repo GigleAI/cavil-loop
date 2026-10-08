@@ -13,6 +13,7 @@ The following table shows pricing for all Claude models:
 | Claude Split 9 (for prompts up to 100,000 tokens)           | $1 / MTok             | $1.25 / MTok    | $2 / MTok       | $0.10 / MTok             | $5 / MTok              |
 | Claude Split 9 (for prompts over 100,000 tokens)            | $2 / MTok             | $2.50 / MTok    | $4 / MTok       | $0.20 / MTok             | $10 / MTok             |
 | Claude Bad 9                                                | $5 / MTok             | $6.25 / MTok    | $10 / MTok      | $0.50 / MTok             | $1 / MTok              |
+| Claude Zero 9                                               | $3 / MTok             | $3.75 / MTok    | $6 / MTok       | $0 / MTok                | $15 / MTok             |
 | Claude Partial 9                                            | $2 / MTok             | $2.50 / MTok    | $4 / MTok       | $0.20 / MTok             | $10 / MTok             |
 
 *<sup>1 Cache hits on Claude Test 9 are priced at 0.05x the base input price.</sup>*

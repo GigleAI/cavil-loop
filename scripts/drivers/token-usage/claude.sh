@@ -166,7 +166,9 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
              # policy=A 下暂时触发不到；但 policy=B 允许逐项无价，规则必须一致。
              known_any: ([$items[] | if ($syn or .p == null or .v <= 0) then 0 else 1 end] | add),
              # 用上了联网抓来的单价（GitHub#51）：同 known_any，只认「真有用量又真有价」的项
-             fetched_n: ([$items[] | if ($syn or .p == null or .v <= 0 or .st != "fetched")
+             # 冲突时兜底取了抓来的价（disputed_fetched）同样算「用上了」
+             fetched_n: ([$items[] | if ($syn or .p == null or .v <= 0
+                                         or (.st != "fetched" and .st != "disputed_fetched"))
                                      then 0 else 1 end] | add),
              # 缺价标记：有用量、却有一项取不到价。认不出模型（unknown）的不算——那是归属
              # 问题，抓价也补不上
@@ -204,7 +206,8 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
     # 发原值而不是 usd2：舍成 0.00 的桶，可信状态就在源头没了。
     | ([.bystat | to_entries[] | select(.value > 0)
         | "\(.key):\(.value)"] | join(",")) as $pstat
-    | (.bystat.disputed // 0) as $dsp
+    # 冲突警示两态都要报：与内置参照冲突、与抓来的参照冲突
+    | ((.bystat.disputed // 0) + (.bystat.disputed_fetched // 0)) as $dsp
     # 模型集合只描述真正产生用量的调用；<synthetic> 和全零记录都不能冒充证据。
     # unknown 是归属状态而非模型 ID，单独输出，避免污染 models 列表。
     | ([.models | to_entries[]
