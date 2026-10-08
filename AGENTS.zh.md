@@ -143,7 +143,7 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
 1. 编辑 `prompts/*.template.md`
 2. **不需要**改 dispatch 代码（除非加新 `${VAR}` 占位，那要同时改 dispatch-*.sh 的 sed 行）
 3. 验证：直接 cat 看渲染结果——挑一个 issue 编号，跑 dispatch 脚本但 `dry-run` 不真起 claude（目前没 dry-run flag，可手动 mock：`bash -c "set -x; source ./scripts/_lib.sh; ..."`）
-4. 部署侧不用动，下次 dispatch 自动用新版
+4. **项目级**模板（host 项目里的 `.agents/skills/coding-agent-work-loop/prompts/`，从它的 `origin/<base>` 读）不需要部署，下次 dispatch 直接生效。skill **自带的 base** 模板现在随 release 一起发布，本地 checkout 改它要等 push + 部署后才会进受管安装，或者切到开发模式
 
 ### 加新 endpoint 监听 / state 字段
 
@@ -195,7 +195,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - **正在跑的 worker tmux session 不会感知到代码改动**——它 spawn 时的 env 和加载的脚本路径都已经定型。改完代码要让运行中 worker 切到新版，得 `tmux kill-session` 再让 daemon 下一 tick 重派（注意 worker 已经做了一半的工作会被打断，pane log 还在但要靠 `claude --continue` 续）
 - **改 dispatch 脚本时**：如果当前自己在被 dispatch（meta 死循环风险），等 dispatch 完再 push；或者临时 `systemctl --user stop coding-agent-poll@workloop.timer` 后改完再 start
-- **改 prompt 模板时**：没有上面这个问题，模板每次 dispatch 时才读，本来就「永远用磁盘最新版」
+- **改 prompt 模板时**：项目级模板仍是每次 dispatch 从 host 项目的 `origin/<base>` 现读，不受上面这个问题影响。但 skill 自带的 base 模板走 `SKILL_DIR` 解析，受管安装下它就是钉住的 release——这部分和 `scripts/` 一样，要 push + 部署才生效
 
 ## 安全边界（worker prompts 必须保留）
 

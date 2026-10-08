@@ -171,7 +171,7 @@ This means the worktree/tmux/branch "N" **isn't necessarily** the same as `featu
 1. Edit `prompts/*.template.md`
 2. **No dispatch-code change needed** (unless adding a new `${VAR}` placeholder — then update the sed lines in `dispatch-*.sh`)
 3. Verify: cat the rendered result — pick an issue number, manually run the dispatch substitution (no `dry-run` flag exists yet; do it ad-hoc with `bash -c "set -x; source ./scripts/_lib.sh; ..."`)
-4. Deployment side does nothing — next dispatch uses the new version
+4. A **project-level** template (the host project's `.agents/skills/coding-agent-work-loop/prompts/`, read from its `origin/<base>`) needs no deployment — the next dispatch picks it up. The skill's **own base** template now ships inside the deployed release, so a local checkout edit reaches a managed install only after push + deployment, or in development mode
 
 ### Add a new endpoint listener / state field
 
@@ -226,7 +226,7 @@ This repo also runs `coding-agent-poll@workloop.timer`. When editing `scripts/` 
 
 - **A running worker tmux session won't see your code change** — its env and the script paths it loaded are frozen at spawn time. To bring a live worker onto a new version, `tmux kill-session` and let the next daemon tick redispatch (note: half-finished work gets interrupted; pane log persists but you'll need `claude --continue` to resume)
 - **When editing dispatch scripts**: if you're being dispatched right now (meta-loop risk), wait for that dispatch to finish before pushing. Or temporarily `systemctl --user stop coding-agent-poll@workloop.timer` until you're done
-- **When editing prompt templates**: the problem above doesn't apply — templates are read at dispatch time, so "always-latest-on-disk" is automatic
+- **When editing prompt templates**: a project-level template is still read fresh at dispatch time from the host project's `origin/<base>`, so the problem above doesn't apply to it. The skill's own base templates are resolved under `SKILL_DIR`, which on a managed install is the pinned release — those follow the same push + deploy path as `scripts/`
 
 ## Security boundaries (worker prompts must keep these)
 
