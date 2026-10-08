@@ -4,7 +4,7 @@
 # 每周一由 systemd timer coding-agent-weekly-report@<project>.timer 触发。
 # 手动跑：bash run.sh <project-key> [--dry-run] [--week-of YYYY-MM-DD]
 #
-# 产物落在 issue 里（数据 + 两张趋势图）。issue 默认打 pending/agent，
+# 产物落在 issue 里（数据 + 三张趋势图）。issue 默认打 pending/agent，
 # 由 daemon 派 worker 把数据写成大白话解读——数字机器出，人话 agent 写。
 set -euo pipefail
 
@@ -74,7 +74,7 @@ SWITCH_WEEK="${WEEKLY_REPORT_SWITCH_WEEK:-}"
 echo "== 2/4 出图"
 python3 "$HERE/render.py" --data "$WORK/data.json" --out-dir "$WORK" \
     --asset-url-base "$ASSET_URL" --rev "$REV" --fonts-dir "$FONTS_DIR"
-for n in delivery effort; do
+for n in delivery effort token; do
     node "$HERE/shot.mjs" "$PROJECT_ROOT" "$WORK/$n.html" "$WORK/$n-$REV.png"
 done
 
@@ -87,7 +87,7 @@ for d in "$ASSET_DIR" "$ASSET_DIR/.."; do
     [ -e "$d/index.html" ] || printf '<!doctype html><title>404</title>Not found.\n' > "$d/index.html"
 done
 cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
-for n in delivery effort; do
+for n in delivery effort token; do
     code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$n-$REV.png")
     [ "$code" = "200" ] || { echo "配图公网不可达（$n → HTTP $code），中止" >&2; exit 1; }
     echo "   $ASSET_URL/$n-$REV.png → 200"
@@ -114,7 +114,7 @@ BODY="$WORK/body.md"
 > 2. 分组：已上线 / 不用写代码就闭环 / 有推进没完成（按「等谁」分：等验收合并、等拍板）/ 新提未开工
 > 3. 给 3~5 条「值得注意的现象」，要有解释而不只是罗列数字
 > 4. 不要显示代码文件数；不要开 PR
-> 5. 趋势图直接引用下面那两张，不用重新出图
+> 5. 趋势图直接引用下面那三张，不用重新出图
 > 6. **用词说人话，别用直译术语**。两个时间指标一律按下面这两个名字写，
 >    正文、PDF、图注都一样，**不要写「墙上时长 / 墙上时间 / 挂钟时间」**（那是
 >    wall time 的直译，中文读者看不懂）：

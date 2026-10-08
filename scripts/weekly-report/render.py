@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""把 collect.py 的 JSON 渲染成两张趋势图（HTML→PNG）+ 周报 markdown。
+"""把 collect.py 的 JSON 渲染成三张趋势图（HTML→PNG）+ 周报 markdown。
 
 用法：
     render.py --data data.json --out-dir OUT --asset-url-base URL --rev REV
               [--fonts-dir DIR]
 
-产物：OUT/delivery-<rev>.png、OUT/effort-<rev>.png、OUT/report.md
+产物：OUT/delivery-<rev>.png、OUT/effort-<rev>.png、OUT/token-<rev>.png、OUT/report.md
 （PNG 由 shot.mjs 截；本脚本只出 HTML，截图由 weekly-report.sh 串起来。）
 """
 import argparse, datetime, json, os
@@ -240,25 +240,37 @@ def main():
         "柱＝当周总成本（美元，按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少美元（右轴）。",
         [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本（美元）","axis":"l"},
          {"type":"line","data":kloc,"color":VIO,"label":"美元 / 千行代码","axis":"r"}],note=sw)
-    # token 用量：四项全部堆进同一根柱子、只用一条纵轴（GigleTutor-Web#1023 维护者要求）。
-    # 原先缓存读取单走右轴折线，两条轴刻度差几十倍，读图的人拿高度一比，把「读取是写入的
-    # 几十倍」读成了「读取反而很少」。堆进同一根柱子后高度就是真实比例：柱子绝大部分是缓存
-    # 读取，另外三项是柱底的细条——这是要的效果。缓存读取放最上层，柱顶数字就是四项合计。
+    open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4],1020,a.fonts_dir))
+    # token 用量：单独一张图、两块面板，**每块各用一条纵轴，不用双轴**（GigleTutor-Web#1023）。
+    #   · 双轴（缓存读取走右轴折线）：两条轴刻度差几十倍，读图的人拿高度一比，把「读取是写入的
+    #     几十倍」读成了「读取反而很少」；
+    #   · 四项堆进同一根柱：缓存读取占 95% 以上，另外三项只剩柱底一条线、看不出变化（维护者：
+    #     「这样完全被缓存读取占据了」）。
+    # 所以拆成「输入 + 缓存写入 + 输出」堆叠一块、「缓存读取」单独一块。单独成图是因为投入面
+    # 已有三块面板，再加两块会远超评论配图约 1400px 的高度上限。
     # 切换周之前的 token 是旧驱动逐条累加的，采集侧已按 1.68 抵过（见 attribute.legacy_estimate），
     # 才放得进同一张图——仍是估算，副标题写明。
     # ⚠️ 标题 / 副标题不许写死单位：fmt_m 不足 1000M 出 M、够了才出 B，同一根轴上可以并存
     # （PR #54 交叉 review 第 1 轮）。
     M=lambda f:[wk[k].get(f,0)/1e6 for k in W]
-    p_tok=ch.panel(0,1020,1212,320,"token 用量：每周输入 / 缓存写入 / 输出 / 缓存读取",
-        "堆叠柱＝输入 + 缓存写入 + 输出 + 缓存读取，四项共用一条纵轴，柱高就是真实比例；柱顶数字是四项合计。"
-        "M＝百万、B＝十亿，以刻度和柱顶数字的后缀为准。"
-        + ("红线左侧的周按旧记录的 token 数除以 1.68 抵掉重复计，是估算。" if fc is not None else ""),
+    est=("红线左侧的周按旧记录的 token 数除以 1.68 抵掉重复计，是估算。" if fc is not None else "")
+    tsum=lambda f: fmt_m(sum(M(f)))
+    t3=(f'<h1>最近 {len(W)} 周趋势 · token 用量（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
+        f'<div class="lede">{len(W)} 周合计：输入 <b>{tsum("tok_in")}</b>、缓存写入 <b>{tsum("tok_cache_w")}</b>、'
+        f'输出 <b>{tsum("tok_out")}</b>、缓存读取 <b>{tsum("tok_cache_r")}</b>（M＝百万、B＝十亿）。'
+        f'缓存读取的量级大几十倍，单独画一块；两块各用各的纵轴，<b>别跨块拿柱子高度比</b>。</div>')
+    p_tok=ch.panel(0,0,1212,320,"token 用量（不含缓存读取）：每周输入 / 缓存写入 / 输出",
+        "堆叠柱＝输入 + 缓存写入 + 输出，柱顶数字是三项合计；缓存读取在下一块。"
+        "M＝百万、B＝十亿，以刻度和柱顶数字的后缀为准。" + est,
         [{"type":"bar","data":M("tok_in"),"color":BLUE,"label":"输入","axis":"l","stack":True,"fmt":fmt_m},
          {"type":"bar","data":M("tok_cache_w"),"color":GOLD,"label":"缓存写入","axis":"l","stack":True,"fmt":fmt_m},
-         {"type":"bar","data":M("tok_out"),"color":ORANGE,"label":"输出","axis":"l","stack":True,"fmt":fmt_m},
-         {"type":"bar","data":M("tok_cache_r"),"color":VIO,"label":"缓存读取","axis":"l","stack":True,"fmt":fmt_m}],note=sw)
-    open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4,p_tok],1360,a.fonts_dir))
-    print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html")
+         {"type":"bar","data":M("tok_out"),"color":ORANGE,"label":"输出","axis":"l","stack":True,"fmt":fmt_m}],note=sw)
+    p_cr=ch.panel(0,340,1212,320,"缓存读取：每周缓存读取的 token",
+        "柱＝当周缓存读取量。它比上一块的三项大几十倍，单独一条纵轴，别拿高度跟上一块比。"
+        "M＝百万、B＝十亿，以刻度和柱顶数字的后缀为准。" + est,
+        [{"type":"bar","data":M("tok_cache_r"),"color":VIO,"label":"缓存读取","axis":"l","fmt":fmt_m}],note=sw)
+    open(os.path.join(a.out_dir,"token.html"),"w").write(page(t3,[p_tok,p_cr],680,a.fonts_dir))
+    print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html, token.html")
 
 if __name__=="__main__":
     main()
