@@ -133,8 +133,10 @@ def extract(body, login, comment_id=None, default_wt=None):
       price_source 单价出处：solved（本机反解）/ default（内置 API 参考价）/
                    configured（部署者人工配置）
       price_status 金额按**单价可信度**拆开，{corroborated/uncorroborated/disputed/
-               unstable/reference_only: 美元}。与 cost_state 是两回事：cost_state 说
-               「有没有价」，这个说「这个价站不站得住」
+               unstable/reference_only/fetched/unrated: 美元}。与 cost_state 是两回事：
+               cost_state 说「有没有价」，这个说「这个价站不站得住」。fetched = 缺价时
+               daemon 联网抓来的单价（GitHub#51）；codex 那一侧只在用上抓来的价时才写
+               这个字段，此时内置价那部分记 unrated
       models   本次派工实际产生非零用量的模型 ID 列表；旧记录回落为空列表
       model_unknown 是否另有非零用量无法从会话上下文归属到模型
       has_cost 这条记录**有没有写金额**。`cost=0` 有两种来源：驱动没配单价所以根本没写，

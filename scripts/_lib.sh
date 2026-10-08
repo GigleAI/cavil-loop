@@ -2456,3 +2456,28 @@ source_driver "$WORKER_AGENT" || exit 2
 # 落"未知"兜底）。新增 driver 时按需在 token-usage/ 加 <agent>.sh 即可。
 AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/${WORKER_AGENT}.sh"
 [ -f "$AGENT_TOKEN_USAGE_SCRIPT" ] || AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/_default.sh"
+
+# ── 缺价自动抓价（GitHub#51）──
+# 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
+# 标记；daemon 每轮调这里，有标记才去跑 price_fetch.py（官方价目页 + LiteLLM 两边一致
+# 才用，写进本机缓存，只补缺不覆盖）。没有标记时只是一次 ls，不碰网络。
+#
+# 开关 PRICE_AUTO_FETCH：默认开（issue #51 Q2=A），0 / false / no / off 关。
+# 抓价永远不许拖垮派工：脚本自己吞掉所有异常、恒返回 0，单次请求有超时，失败的模型
+# 冷却 6 小时；这里再兜一层 `|| true`。输出逐行转进 log（带项目前缀进 poll.log）。
+price_fetch_tick() {
+    case "${PRICE_AUTO_FETCH:-1}" in 0|false|no|off) return 0 ;; esac
+    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop/unpriced"
+    [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] || return 0
+    # coding-agent.config 里的赋值是**不带 export 的**，子进程看不到——显式传过去，
+    # 否则部署者改的地址 / 冷却时间静默不生效。没设的不传，让脚本用自己的默认值。
+    local line v envs=()
+    for v in PRICE_FETCH_ANTHROPIC_URL PRICE_FETCH_OPENAI_URL PRICE_FETCH_LITELLM_URL \
+             PRICE_FETCH_COOLDOWN_SECS PRICE_FETCH_TIMEOUT; do
+        [ -n "${!v:-}" ] && envs+=("$v=${!v}")
+    done
+    while IFS= read -r line; do
+        [ -n "$line" ] && log "抓价：$line"
+    done < <(env ${envs[@]+"${envs[@]}"} python3 "$_LIB_DIR/drivers/token-usage/price_fetch.py" 2>&1 || true)
+    return 0
+}

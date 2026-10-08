@@ -505,6 +505,8 @@ def main():
               "price_usd_corroborated", "price_usd_uncorroborated",
               "price_usd_disputed", "price_usd_unstable",
               "price_usd_reference_only", "price_usd_unrated", "price_usd_estimated",
+              # 缺价时 daemon 联网抓来的单价（GitHub#51），两侧都可能有
+              "price_usd_fetched",
               "price_src_solved", "price_src_configured", "price_src_default",
               "price_src_estimated",
               "price_stale_records"]

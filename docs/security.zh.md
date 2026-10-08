@@ -122,6 +122,15 @@ endpoint，label 筛选在本地做。状态过滤写在取数那一步，所以
 4. **拿不准就只 label `pending/agent` 到 issue body 简短、作者已 collaborator
    的项目**。匿名长 issue / 含可疑 markdown 的暂时手动处理或追问澄清
 
+## daemon 的对外访问
+
+worker「不往 github.com 之外发数据」的约束不变。**daemon**（不是 worker）在某个模型有用量却没有
+单价时，会下载三个公开价目页（GitHub#51，见 [运维 → 缺价自动补价](operations.zh.md#缺价自动补价)）：
+`platform.claude.com`、`developers.openai.com`、`raw.githubusercontent.com`。都是不带凭据、
+不含任何项目数据的普通 GET；返回内容按不可信数据处理（两个独立来源必须一致、数值做范围校验、
+抓来的价从不覆盖内置价）。只有存在缺价标记时才会请求，失败的模型最多每 6 小时一次。
+设 `PRICE_AUTO_FETCH=0` 可整体关闭。
+
 ## 进阶选项（如果想再加一层）
 
 按需开启：

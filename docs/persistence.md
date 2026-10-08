@@ -21,6 +21,7 @@ Machine reboot, accidental tmux kill, auto-cleanup after PR merge — all are re
 | Dispatch dedup / progress | `$STATE_DIR/state.json` | No one; daemon restart doesn't lose it | Occasional `cp` to backup |
 | Retry counters (consecutive dispatch failures / self-heal attempts) | `$STATE_DIR/dispatch-fail/<kind>-<N>`, `$STATE_DIR/selfheal/<N>` | Cleared on the first success and again when the item is escalated to `pending/human` | Not worth backing up — losing them only grants a fresh set of attempts |
 | Poll pace (idle + failure backoff) | `$STATE_DIR/poll-pace.json` | No one; safe to delete by hand at any time | Not worth backing up — deleting it just means the project polls at full speed again |
+| Auto-fetched prices for models missing from the built-in tables | `~/.cache/cavil-loop/fetched-prices.json` (+ `unpriced/` markers, `price-fetch-state.json` retry state) | No one; markers are removed once a model is priced | Not worth backing up — deleting it just makes the daemon fetch again the next time a gap shows up |
 
 > `<encoded-cwd>` = the absolute path with `/` replaced by `-`. E.g. `/home/sky/github/worktree/myproject/issue-42` → `-home-sky-github-worktree-myproject-issue-42`.
 

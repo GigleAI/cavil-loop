@@ -52,6 +52,9 @@
 #
 #   没在表里的模型**不套价**：它的 token 计进 cost_unknown_tokens，该次派工落
 #   cost_state=partial（有别的模型算出了金额）或 none（一个都没算出来）。
+#   同时留一个缺价标记（_price_cache.sh）；daemon 下一轮联网补价（price_fetch.py，
+#   官方页与 LiteLLM 一致才用，GitHub#51），之后这里按补来的价算，并在人读行注明、
+#   机器记录拆出 fetched 桶。只在用内置表时这么做——显式配了 CODEX_PRICES 就不补。
 #   旧的三个环境变量仍然认，作为「所有模型同一个价」的兼容写法：
 #     CODEX_PRICE_IN_PER_M / CODEX_PRICE_CACHED_IN_PER_M / CODEX_PRICE_OUT_PER_M
 #
@@ -70,6 +73,8 @@ set -uo pipefail
 START_EPOCH="${1:?need start epoch}"
 MODE="${2:-human}"
 CWD="$(pwd)"
+# shellcheck source=_price_cache.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_price_cache.sh"
 
 SESS_DIR="$HOME/.codex/sessions"
 [ -d "$SESS_DIR" ] || exit 0
@@ -112,6 +117,18 @@ if [ -n "$PI" ] && [ -n "$PC" ] && [ -n "$PO" ]; then
     PRICES=$(printf '%s' "$PRICES" | jq -c --argjson d "{\"in\":$PI,\"cached_in\":$PC,\"out\":$PO}" \
         '. + {"*": $d}' 2>/dev/null || printf '{"*":{"in":%s,"cached_in":%s,"out":%s}}' "$PI" "$PC" "$PO")
 fi
+# ── 缺价自动补（GitHub#51）─────────────────────────────────────────────────
+# 只在用内置表时补：显式配了 CODEX_PRICES（包括 `{}` 表示关闭估价）或旧的三个变量，
+# 就是部署者说了「只用我这张表」，既不补价、也不留缺价标记。
+# 补的只是内置表里**没有**的模型（`$fetched + 内置` —— 同名时内置覆盖抓来的），
+# 用上了抓来的价，人读行会注明、机器记录会把那部分金额单独记成 fetched。
+FETCHED_MODELS='[]'
+if [ "$PRICE_SOURCE" = default ]; then
+    FETCHED=$(fetched_prices_json codex)
+    FETCHED_MODELS=$(jq -cn --argjson f "$FETCHED" --argjson b "$PRICES" \
+        '[$f | keys[] | select(. as $k | $b | has($k) | not)]' 2>/dev/null) || FETCHED_MODELS='[]'
+    PRICES=$(jq -cn --argjson f "$FETCHED" --argjson b "$PRICES" '$f + $b' 2>/dev/null) || PRICES=$(jq -c '.models' "$PRICE_FILE")
+fi
 PRICE_STALE=no
 if [ "$PRICE_SOURCE" = default ]; then
     PRICE_STALE=$(jq -nr --arg checked "$PRICE_DATE" --arg today "$(date -u +%Y-%m-%d)" '
@@ -146,7 +163,8 @@ STAMPED=$(
 [ -z "$STAMPED" ] && exit 0
 
 # ── ② 按模型分段计价，再合计 ─────────────────────────────────────────────
-printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" \
+RES=$(printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" \
+    --argjson fetched_models "$FETCHED_MODELS" \
     --arg price_source "$PRICE_SOURCE" --arg price_date "$PRICE_DATE" --arg price_stale "$PRICE_STALE" '
     def fmt:
         if . >= 1000000 then ((. / 100000 | floor) / 10 | tostring) + "m"
@@ -190,8 +208,9 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
     #   只有它真的非零时才报——那时本来就该报。
     # `cache_write` 是 CODEX_PRICES 里的**可选键**：配了就按它算，不配就如实记缺价。
     #   不给未列价的模型或项编造单价。
-    | (reduce $bym[] as $g ({usd:0, unk:0, known:0};
+    | (reduce $bym[] as $g ({usd:0, unk:0, known:0, fusd:0, busd:0, fknown:0, gaps:[]};
           ($prices[$g.model] // $prices["*"] // null) as $p
+          | ($fetched_models | index($g.model)) as $is_fetched
           | [{v: $g.s.in,  p: (if $p then $p.in          else null end)},
              {v: $g.s.cin, p: (if $p then $p.cached_in   else null end)},
              {v: $g.s.out, p: (if $p then $p.out         else null end)},
@@ -207,7 +226,16 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
               if $i.p != null
               then .usd += ($i.v * $i.p / 1000000)
                    | (if $i.v > 0 then .known += 1 else . end)
-              else .unk += $i.v end))) as $agg
+                   # 这一项的价是联网抓来的：金额单独记一份，「用上了」同样只认有用量的项
+                   | (if $is_fetched != null
+                      then .fusd += ($i.v * $i.p / 1000000)
+                           | (if $i.v > 0 then .fknown += 1 else . end)
+                      else .busd += ($i.v * $i.p / 1000000) end)
+              else .unk += $i.v end)
+          # 缺价标记：有用量却取不到价的模型。认不出模型（unknown）的不算——那是归属问题
+          | (if $g.model != "unknown"
+                and ([$items[] | select(.v > 0 and .p == null)] | length) > 0
+             then .gaps += [$g.model] else . end))) as $agg
     # 同 claude 侧：有算不出价的 token 才是 none / partial；一个待计价 token 都没有
     # 的 $0 是**已知的零**（#934 第 4 轮）
     | (if $agg.unk == 0 then "full"
@@ -221,7 +249,7 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
              | select(.model == "unknown" and ((.s.in + .s.cin + .s.cw + .s.out) > 0))]
             | length) > 0
        then "yes" else "no" end) as $model_unknown
-    | if $mode == "--kv"
+    | (if $mode == "--kv"
       then "in=\($t.in) out=\($t.out) cache_r=\($t.cin) cache_w=\($t.cw)"
            + (if $state == "none" then "" else " cost_usd=\($agg.usd)" end)
            + " cost_state=\($state) cost_unknown_tokens=\($agg.unk)"
@@ -230,11 +258,21 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
            + (if $price_source == "default"
               then " price_checked=\($price_date) price_stale=\($price_stale)"
               else "" end)
+           # 用上了抓来的价才出这个字段（没用上时输出与改动前逐字节一致）。金额按可信度
+           # 拆桶，桶的合计 = cost_usd：内置价那部分照旧「说不出可信度」（unrated），
+           # 抓来的那部分记 fetched。两桶各自累加，不用「总额 − 抓来的」去减（浮点差会
+           # 凭空造出一个 1e-17 的 unrated 桶）。不舍入，理由同上。
+           + (if $agg.fknown > 0
+              then " price_status=" + ([["unrated", $agg.busd], ["fetched", $agg.fusd]]
+                    | map(select(.[1] > 0) | "\(.[0]):\(.[1])") | join(","))
+              else "" end)
            + " models=\($models) model_unknown=\($model_unknown)"
       else "\($t.in | fmt) input, \($t.out | fmt) output, \($t.cin | fmt) cache read, \($t.cw | fmt) cache write"
            + (if $state == "none" then "（该模型未配单价，金额未计）"
               elif $state == "partial" then " ($\($agg.usd | usd2)，部分用量未计价，金额偏低)"
               else " ($\($agg.usd | usd2))" end)
+           # 用了 daemon 联网抓来的单价就要说（GitHub#51）：它没经人核对
+           + (if $agg.fknown > 0 then "（含自动联网获取的单价）" else "" end)
            + (if $price_source == "default" and $price_stale == "yes"
               then "（内置 API 参考价已超过 90 天，请复核）"
               else "" end)
@@ -245,5 +283,12 @@ printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PRICES" 
               else "（模型：\($modelarr | join("、"))"
                    + (if $model_unknown == "yes" then "；另有模型无法确认" else "" end)
                    + "）" end)
-      end
-' 2>/dev/null
+      end), "GAPS \($agg.gaps | join(" "))"
+' 2>/dev/null)
+[ -n "$RES" ] || exit 0
+# 第一行是结果，原样输出；第二行是缺价模型清单，只用来留标记（只在用内置表时留）
+printf '%s\n' "${RES%%$'\n'*}"
+GAPS="${RES##*$'\n'GAPS }"
+if [ "$PRICE_SOURCE" = default ] && [ "$GAPS" != "$RES" ] && [ -n "$GAPS" ]; then
+    mark_unpriced codex $GAPS
+fi
