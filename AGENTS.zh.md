@@ -8,7 +8,7 @@
 
 `GigleAI/cavil-loop` 是一个 **Agent Skill**——给 Claude Code 等 AI 编程工具加载的功能包。它让 GitHub issue / PR 评论变成本机 AI 的输入输出：本机一个 60 秒轮询的后台进程，发现哪个 issue / PR 被打了 `pending/agent` label，就在你电脑上起 Claude Code 干活、push、回评论、翻 label。详细背景见 [README.md](README.zh.md)。
 
-**Meta 性质**：这个项目自己开发自己（dogfooding）。本仓库的 issue / PR 也走自己定义的工作流。改动一个脚本之后，下一次自己派工时就用新版逻辑。
+**Meta 性质**：这个项目自己开发自己（dogfooding）。本仓库的 issue / PR 也走自己定义的工作流。受管 Linux 安装会在后续 poll 中把合入 `main` 的提交发布成不可变 release，并原子切换稳定软链；本地 checkout 的临时改动只有显式进入开发模式后才会使用。
 
 ## 目录结构
 
@@ -135,7 +135,7 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
    CODING_AGENT_CONFIG=~/path/to/host/coding-agent.config bash scripts/agent-poll.sh
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
-3. Commit + push。已部署的 Linux systemd timer 下一 tick 自动用新代码（symlink 链路 → skill 源码 → 你 push 的版本）；macOS LaunchAgent 也一样，plist 每 tick 重新 exec `agent-poll.sh` —— 只有 plist 模板本身变了才要重跑 `setup.sh`
+3. Commit + push。合入配置的 base 分支后，受管 Linux timer 会 fetch 并原子启用新版（通常 10 分钟内）。macOS 仍为手动/开发模式；plist 有变更时重跑 `setup.sh`。
 4. PR 走 `feature/issue-N` 分支，带 `Closes #N`；一个 PR 装不下的拆成 sub-issue（见 PR 闭环 A/B）
 
 ### 改 prompt 模板
@@ -143,7 +143,7 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
 1. 编辑 `prompts/*.template.md`
 2. **不需要**改 dispatch 代码（除非加新 `${VAR}` 占位，那要同时改 dispatch-*.sh 的 sed 行）
 3. 验证：直接 cat 看渲染结果——挑一个 issue 编号，跑 dispatch 脚本但 `dry-run` 不真起 claude（目前没 dry-run flag，可手动 mock：`bash -c "set -x; source ./scripts/_lib.sh; ..."`）
-4. 部署侧不用动，下次 dispatch 自动用新版
+4. **项目级**模板（host 项目里的 `.agents/skills/coding-agent-work-loop/prompts/`，从它的 `origin/<base>` 读）不需要部署，下次 dispatch 直接生效。skill **自带的 base** 模板现在随 release 一起发布，本地 checkout 改它要等 push + 部署后才会进受管安装，或者切到开发模式
 
 ### 加新 endpoint 监听 / state 字段
 
@@ -195,7 +195,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - **正在跑的 worker tmux session 不会感知到代码改动**——它 spawn 时的 env 和加载的脚本路径都已经定型。改完代码要让运行中 worker 切到新版，得 `tmux kill-session` 再让 daemon 下一 tick 重派（注意 worker 已经做了一半的工作会被打断，pane log 还在但要靠 `claude --continue` 续）
 - **改 dispatch 脚本时**：如果当前自己在被 dispatch（meta 死循环风险），等 dispatch 完再 push；或者临时 `systemctl --user stop coding-agent-poll@workloop.timer` 后改完再 start
-- **改 prompt 模板时**：没有上面这个问题，模板每次 dispatch 时才读，本来就「永远用磁盘最新版」
+- **改 prompt 模板时**：项目级模板仍是每次 dispatch 从 host 项目的 `origin/<base>` 现读，不受上面这个问题影响。但 skill 自带的 base 模板走 `SKILL_DIR` 解析，受管安装下它就是钉住的 release——这部分和 `scripts/` 一样，要 push + 部署才生效
 
 ## 安全边界（worker prompts 必须保留）
 

@@ -126,7 +126,7 @@ ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
 ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop
 ```
 
-把代码放 `~/github/`，再做两个软链让 Claude Code 能找到它。以后升级：`cd ~/github/coding-agent-work-loop && git pull`。
+`setup.sh` 会把 Linux 安装迁移到不可变的受管 release。checkout 仍可用于开发，但实际 daemon 跟随配置的远端 base 分支，不会再改动这份 checkout。
 </details>
 
 ### 2. 接入一个项目

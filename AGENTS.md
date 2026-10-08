@@ -8,7 +8,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 
 `GigleAI/cavil-loop` is an **Agent Skill** — a feature package loaded by AI coding tools like Claude Code. It makes GitHub issue / PR comments the I/O of a local AI: a 60-second background poller on your machine finds whatever issue / PR is labeled `pending/agent`, spins up Claude Code locally, lets it work, push, reply, flip the label. Background in [README.md](README.md).
 
-**Meta nature**: this project develops itself (dogfooding). The issues / PRs of this repo run through its own workflow. Edit a script — the next dispatch of itself uses the new version.
+**Meta nature**: this project develops itself (dogfooding). The issues / PRs of this repo run through its own workflow. On managed Linux installations, merged `main` revisions are published as immutable releases and activated by an atomic symlink switch on a later poll; a local checkout edit is used only after explicitly entering development mode.
 
 ## Directory layout
 
@@ -163,7 +163,7 @@ This means the worktree/tmux/branch "N" **isn't necessarily** the same as `featu
    CODING_AGENT_CONFIG=~/path/to/host/coding-agent.config bash scripts/agent-poll.sh
    tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
    ```
-3. Commit + push. Deployed Linux systemd timers pick up the new code on their next tick (the symlink chain → skill source → your pushed version). macOS LaunchAgents do too, because the plist re-execs `agent-poll.sh` each tick — only changes to the plist template itself require re-running `setup.sh`
+3. Commit + push. After merge to the configured base branch, managed Linux timers fetch and atomically activate the new release (normally within 10 minutes). macOS remains manual/development mode; rerun `setup.sh` for plist changes.
 4. PRs use `feature/issue-N` branches with `Closes #N`; work that needs several PRs is split into sub-issues (see PR closure A/B)
 
 ### Edit a prompt template
@@ -171,7 +171,7 @@ This means the worktree/tmux/branch "N" **isn't necessarily** the same as `featu
 1. Edit `prompts/*.template.md`
 2. **No dispatch-code change needed** (unless adding a new `${VAR}` placeholder — then update the sed lines in `dispatch-*.sh`)
 3. Verify: cat the rendered result — pick an issue number, manually run the dispatch substitution (no `dry-run` flag exists yet; do it ad-hoc with `bash -c "set -x; source ./scripts/_lib.sh; ..."`)
-4. Deployment side does nothing — next dispatch uses the new version
+4. A **project-level** template (the host project's `.agents/skills/coding-agent-work-loop/prompts/`, read from its `origin/<base>`) needs no deployment — the next dispatch picks it up. The skill's **own base** template now ships inside the deployed release, so a local checkout edit reaches a managed install only after push + deployment, or in development mode
 
 ### Add a new endpoint listener / state field
 
@@ -226,7 +226,7 @@ This repo also runs `coding-agent-poll@workloop.timer`. When editing `scripts/` 
 
 - **A running worker tmux session won't see your code change** — its env and the script paths it loaded are frozen at spawn time. To bring a live worker onto a new version, `tmux kill-session` and let the next daemon tick redispatch (note: half-finished work gets interrupted; pane log persists but you'll need `claude --continue` to resume)
 - **When editing dispatch scripts**: if you're being dispatched right now (meta-loop risk), wait for that dispatch to finish before pushing. Or temporarily `systemctl --user stop coding-agent-poll@workloop.timer` until you're done
-- **When editing prompt templates**: the problem above doesn't apply — templates are read at dispatch time, so "always-latest-on-disk" is automatic
+- **When editing prompt templates**: a project-level template is still read fresh at dispatch time from the host project's `origin/<base>`, so the problem above doesn't apply to it. The skill's own base templates are resolved under `SKILL_DIR`, which on a managed install is the pinned release — those follow the same push + deploy path as `scripts/`
 
 ## Security boundaries (worker prompts must keep these)
 
