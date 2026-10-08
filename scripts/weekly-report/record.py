@@ -242,7 +242,8 @@ def extract(body, login, comment_id=None, default_wt=None):
             "out": _out_of(nxt),
             "tokens": attribute.parse_token_line(nxt), "tokens_exact": False,
             "cost_state": ("full" if costs else "none"), "cost_unknown_tokens": 0,
-            # 历史评论是老驱动那张**过期价目表**算出来的（实测高 193%），既没有可信度
+            # 历史评论是老驱动那张**过期价目表**算出来的（实测高 193%）。金额原值不直接用：采集侧会按 token 重估（见
+            # attribute.legacy_estimate，来源记作 estimated）。原值既没有可信度
             # 也没有出处可言 —— 留空，报告里按「来源不明」披露，不硬塞进四态里充数
             "price_source": None, "price_status": {},
             "models": [], "model_unknown": False}

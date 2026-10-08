@@ -221,21 +221,35 @@ def main():
     L.append(f"![交付趋势]({a.asset_url_base}/delivery-{a.rev}.png)\n")
     L.append(f"![投入趋势]({a.asset_url_base}/effort-{a.rev}.png)\n")
     L.append("### 逐周数据\n")
-    L.append("| 周 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | 讨论条数 | 你发的 | AI 总耗时 | 模型+工具 | 成本（美元） |")
-    L.append("|---|---|---|---|---|---|---|---|---|---|")
+    L.append("| 周 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | 讨论条数 | 你发的 | AI 总耗时 | 模型+工具 | 成本（美元） | token 输出 / 缓存读取 |")
+    L.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    def _tok(v):
+        """百万 token：不足 10M 给一位小数，否则取整；≥1000M 换成 B。"""
+        m = v / 1e6
+        if m >= 1000:
+            return f"{m/1000:.1f}B"
+        return f"{m:.1f}M" if m < 10 else f"{m:.0f}M"
+    any_est = False
     for k in W:
         v=wk[k]; d0=datetime.date.fromisoformat(k); d1=d0+datetime.timedelta(days=6)
         mark="**" if k==tw["start"] else ""
         # 切换周打个记号：它左右两侧的时长 / 成本不是同一把尺子量的，不能连着读趋势
         flag=" †" if k==first_codex else ""
+        # 含按旧记录 token 重估的金额打「≈」：那是估算，不是日志重算或驱动原值
+        est="≈" if v.get("src_estimated") else ""
+        any_est = any_est or bool(est)
         L.append(f"| {mark}{d0.month}/{d0.day}–{d1.month}/{d1.day}{mark}{flag} | {v['iss_open']:.0f} | {v['iss_closed']:.0f} | "
                  f"{v['pr_merged']:.0f} | {v['add']-v['del']:,} | {v['comments']:.0f} | {v['human']:.0f} | "
-                 f"{hm(v['wall'])} | {hm(v['work']) if v.get('work_records') else '—'} | ${v['cost']:,.0f} |")
+                 f"{hm(v['wall'])} | {hm(v['work']) if v.get('work_records') else '—'} | {est}${v['cost']:,.0f} | "
+                 f"{_tok(v.get('tok_out', 0))} / {_tok(v.get('tok_cache_r', 0))} |")
     if first_codex in W:
         fd=datetime.date.fromisoformat(first_codex)
         L.append(f"\n† {fd.month}/{fd.day} 那周起口径改了（用量按 API 调用去重 + 纳入交叉 review 那一侧）。"
                  "**它前后的「AI 时长 / 模型+工具 / 成本」三列不是同一把尺子量的**，别连成一条趋势读；"
                  "issue / PR / 讨论条数这几列不受影响。")
+    if any_est:
+        L.append("\n≈ 这几周的成本含**按旧记录里的 token 数重估**的金额（现行 Opus 参照价，再除以 1.68 抵掉"
+                 "重复计），是估算；token 列同样按 1.68 抵过。")
     tn=sum(wk[k]['add']-wk[k]['del'] for k in W)
     L.append(f"\n**{len(W)} 周合计**：新提 issue {t('iss_open'):.0f} / 关闭 {t('iss_closed'):.0f}，"
              f"合并 PR {t('pr_merged'):.0f} 个，净增 {tn:,} 行，讨论 {t('comments'):.0f} 条"
@@ -272,6 +286,7 @@ def main():
         ("uncorroborated", "反解稳定但无参照可比",       "解得稳，但没有可比的外部参照，属候选估算"),
         ("reference_only", "直接取参照价",               "加速档没有可反解的样本，直接用参照价"),
         ("corroborated",   "反解稳定且与参照一致",       "两个独立来源对上了 —— 只说明**和那份参照一致**，不等于已证明为真值"),
+        ("estimated",      "按旧记录 token 重估",       "口径切换前的历史记账：旧驱动的金额按 Opus 4 老价目算、又重复计了调用，改用记录里的 token × 现行 Opus 参照价 ÷ 1.68 估算，**不是逐条核实的数**"),
         ("unrated",        "说不出可信度",               "历史评论可能沿用旧驱动的过期价目表；交叉 review 那一侧采用内置或人工配置的 API 参考价，均未与账单独立核验"),
     ]
     # ⚠️ 「有没有这一桶」由**金额本身**决定，不由显示取整决定（#934 交叉 review 第 7 轮）。
@@ -305,7 +320,7 @@ def main():
 - **AI 总耗时（含等待）**：一次派工从「开工」到「完工」之间**走过的钟点时间**，也就是记账行里的「完工 − 开始」。它**把中间的干等也算进去**——会话卡住不动的那几个钟头照样计入，所以它回答的是「这件事占了多长时间」，**不是「AI 真干了多少活」**。
 - **模型 + 工具**：AI 自己记录的模型调用 + 工具执行时间，**不含等待**，这条才接近「真干了多少活」；出报告时按派工窗口从本机 agent 日志取。本次区间 {t('work_records'):.0f} 条算得出、{t('work_missing'):.0f} 条拿不到（日志已不在或窗口配不上），拿不到的不计入该项。**这是估算，不是精确工时**：窗口归属靠快照前后配对，逐条可能错位。
 - **口径切换周**：{'配置为 ' + first_codex + '（那周起用量按 API 调用去重、纳入交叉 review 那一侧；它前后的时长 / 成本不是同一把尺子量的）。' if first_codex else ('**未配置**——所以本报告不标切换周、不画切换竖线、也不出过渡期并列块，环比照常给。本次区间里交叉 review 那一侧**已经有记账**，说明新口径已经上线，请把 `WEEKLY_REPORT_SWITCH_WEEK` 设成它上线那一周内的任意一天。' if t('records_codex') else '未配置，且本次区间里交叉 review 那一侧还没有记账 —— 新口径尚未上线，暂时无需配置。')}
-- **金额来源**：本次区间 {t('src_recomputed'):.0f} 条按本机日志**重算**、{t('src_original'):.0f} 条**沿用记录里的原值**。重算只在「本机有这次派工的日志且通过检验」时才做，**不按周划线**——所以**同一个历史周的数值会随本机日志被清理而改变**，重跑可能不一样（报告生成时间见文末）。日志检验只能**证伪**（比记录里少就是确证缺失），**证明不了日志完整**：记录本身可能就没看全，后来新增的调用也可能把被删调用的 token 补上。{f"其中 {t('log_shortfall_detected'):.0f} 条检出缺失、{t('log_unknown'):.0f} 条覆盖未知，这些一律沿用原值、不拿残缺的重算值顶替。" if (t('log_shortfall_detected') or t('log_unknown')) else ""}
+- **金额来源**：本次区间 {t('src_recomputed'):.0f} 条按本机日志**重算**、{t('src_original'):.0f} 条**沿用记录里的原值**{f"、{t('src_estimated'):.0f} 条历史记账**按记录里的 token 数重估**（旧驱动的原值按 Opus 4 老价目算、又重复计了调用，偏高数倍；改按现行 Opus 参照价计、再除以 1.68 抵掉重复计。这是估算：按 53 个会话实测的重复计范围（1.39~2.46 倍）推，估算值可能比实际高约 45% 到低约 20%，且历史记录没写模型，一律按 Opus 算）" if t('src_estimated') else ""}。重算只在「本机有这次派工的日志且通过检验」时才做，**不按周划线**——所以**同一个历史周的数值会随本机日志被清理而改变**，重跑可能不一样（报告生成时间见文末）。日志检验只能**证伪**（比记录里少就是确证缺失），**证明不了日志完整**：记录本身可能就没看全，后来新增的调用也可能把被删调用的 token 补上。{f"其中 {t('log_shortfall_detected'):.0f} 条检出缺失、{t('log_unknown'):.0f} 条覆盖未知，这些一律沿用原值、不拿残缺的重算值顶替。" if (t('log_shortfall_detected') or t('log_unknown')) else ""}
 - **不可去重合计的部分**：{f"本次区间另有 **{t('records_not_summable'):.0f} 条**派工的窗口互相重叠、且组内有沿用原值的，合计 ${t('cost_not_summable'):,.0f}——原值是驱动按自己窗口、自己那套价目算的累计值，和重算值**不是同一个口径**，两者直接相加会把共用的调用算两遍。所以这部分**单列，不可与上面的成本相加**。" if t('records_not_summable') else "本周没有「重叠且证据不足」的派工，成本栏就是全部。"}
 - **单价覆盖**：本次区间 {t('state_full'):.0f} 条金额完整、{t('state_partial'):.0f} 条**只算了一部分用量**（有的模型、或同一模型里的某一项没有单价，那部分没计进金额，所以金额必定偏低）、{t('state_none'):.0f} 条一条都算不出。
 - **单价可信度**（说的是「这个价站不站得住」，跟上一条「有没有价」是两回事）：{price_trust}

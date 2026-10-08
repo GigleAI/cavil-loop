@@ -256,6 +256,32 @@ def load_claude_calls(worktree, tz=None):
     return calls, {"files": len(files), "parsed": parsed, "bad_lines": bad}
 
 
+# ── 口径切换前的历史记账：按记录里的 token 重估金额 ──────────────────────────
+# 历史记账行的金额是旧驱动写死的：所有 Opus 一律按 Opus 4 的价（输入 $15 / 输出 $75 /
+# 缓存读 $1.5 / 缓存写 1h $30），而且同一次 API 调用的多条日志逐条累加。两层叠加，切换周
+# 前后的成本差出 3~5 倍。本机日志大多已清掉、重算不了，只能拿记录里留下的 token 数估：
+#   · 单价取现行参照里的 Opus（`LEGACY_MODEL`）。那段时间本机用的 Opus 4.6~5 参照价相同；
+#     历史记录不写模型，所以一律按 Opus 算。
+#   · 缓存写入按 1h 档：本机 agent CLI 的缓存写入实测全是 1h（5m 为 0）。历史 token 行
+#     只给 5m + 1h 的合计，拆不开。
+#   · 再除以 `LEGACY_DUP_FACTOR` 抵掉重复计：53 个会话实测，逐条累加是按 requestId
+#     去重后的 1.68 倍（中位数，范围 1.39~2.46）。这是平均数，单周会有偏差。
+# 结果是**估算**，报告与趋势图都要写明，不能和日志重算的金额当成同一种证据。
+LEGACY_MODEL = "claude-opus-5"
+LEGACY_DUP_FACTOR = 1.68
+
+
+def legacy_estimate(tokens):
+    """历史记账行的 token（截断下界）→ 按现行 Opus 参照价、抵掉重复计后的美元估算。"""
+    import price_solve
+    p = price_solve.REFERENCE[LEGACY_MODEL]
+    t = tokens or {}
+    usd = (t.get("in", 0) * p["input"] + t.get("out", 0) * p["output"]
+           + t.get("cache_r", 0) * p["cache_read"]
+           + t.get("cache_w", 0) * p["cache_write_1h"]) / 1e6
+    return usd / LEGACY_DUP_FACTOR
+
+
 def price_calls(calls, table):
     """把一批调用按**各自的模型与档位**计价。
 

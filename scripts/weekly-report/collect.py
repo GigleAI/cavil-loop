@@ -310,6 +310,21 @@ def main():
                 "full" if rec.get("has_cost") else "none")
             pstat = rec.get("price_status") or {}
             psrc = rec.get("price_source")
+        # 口径切换前的历史记账行：旧驱动写死的金额按老价目算、又重复计了调用，改用记录里的
+        # token 重估（见 attribute.legacy_estimate）。只换「记过金额」的——没写金额的历史行
+        # 本来就是「没记」，不凭 token 补一个出来。日志重算得出的金额优先，不被估算顶掉。
+        legacy = rec.get("src") == "footer"
+        if legacy and cost_source == "original" and rec.get("has_cost"):
+            cost = attribute.legacy_estimate(rec.get("tokens"))
+            cost_source, cost_state = "estimated", "full"
+            pstat, psrc = {"estimated": cost}, "estimated"
+        # token 用量趋势：四项分开记。历史记录的 token 同样逐条累加过，按同一个倍数抵掉，
+        # 与切换后按调用去重的机器记录放在同一把尺子上（估算，图上写明）。
+        tok = rec.get("tokens") or {}
+        tf = 1 / attribute.LEGACY_DUP_FACTOR if legacy else 1
+        for k in ("in", "out", "cache_r", "cache_w"):
+            s[f"tok_{k}"] += (tok.get(k) or 0) * tf
+            s[f"tok_{k}_{rec.get('agent') or 'claude'}"] += (tok.get(k) or 0) * tf
         in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
         out = rec["out"]
         # 历史记录（无机器标记）没写 agent。实测交叉 review 那一侧在改造前几乎不写
@@ -460,7 +475,11 @@ def main():
               #   state_* 价格覆盖三态（full / partial / none）
               #   log_*   日志检验结果（未检出缺失 / 检出缺失 / 覆盖未知 / 真实零调用）
               #   *_not_summable 重叠且证据不足、**不可与上面的合计相加**的那部分
-              "src_recomputed", "src_original",
+              "src_recomputed", "src_original", "src_estimated",
+              # 四项 token（历史记录已按重复计倍数抵掉，见 attribute.legacy_estimate）
+              "tok_in", "tok_out", "tok_cache_r", "tok_cache_w",
+              "tok_in_claude", "tok_out_claude", "tok_cache_r_claude", "tok_cache_w_claude",
+              "tok_in_codex", "tok_out_codex", "tok_cache_r_codex", "tok_cache_w_codex",
               "state_full", "state_partial", "state_none",
               "log_no_shortfall_detected", "log_shortfall_detected",
               "log_unknown", "log_true_zero",
@@ -469,8 +488,9 @@ def main():
               # 报告据此把「存疑」「未核对」「用参照兜底」分别报出来，不再混成一个数
               "price_usd_corroborated", "price_usd_uncorroborated",
               "price_usd_disputed", "price_usd_unstable",
-              "price_usd_reference_only", "price_usd_unrated",
+              "price_usd_reference_only", "price_usd_unrated", "price_usd_estimated",
               "price_src_solved", "price_src_configured", "price_src_default",
+              "price_src_estimated",
               "price_stale_records"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 

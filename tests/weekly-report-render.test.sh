@@ -103,8 +103,8 @@ PY
 }
 
 echo "— 面板顺序（Q2=A：工时夹在讨论轮数和花销之间）"
-chk "投入面三块面板，顺序为 讨论轮数 → AI 投入时间 → 花销" \
-    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间|花销（美元）"
+chk "投入面四块面板，顺序为 讨论轮数 → AI 投入时间 → 花销 → token 用量" \
+    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间|花销（美元）|token 用量"
 
 echo
 echo "— 秒 → 小时的换算与格式（只作用于工时那条 series）"
@@ -150,7 +150,7 @@ chk "交付面柱顶没有一个带 h"    "$(q 'any(v.endswith("h") for p in pan
 
 echo
 echo "— 版面"
-chk "投入面页高 1020（三块面板 × 340）" "$(q 'height("effort")')" "1020"
+chk "投入面页高 1360（四块面板 × 340）" "$(q 'height("effort")')" "1360"
 
 
 echo
@@ -201,12 +201,12 @@ print(eval(sys.argv[2]))
 INNER2
 }
 
-chk "有切换周 → 投入面画 2 条（工时面板 + 花销面板）" \
-    "$(sw effort 's.count("口径切换")')" "2"
+chk "有切换周 → 投入面画 3 条（工时 + 花销 + token 用量面板）" \
+    "$(sw effort 's.count("口径切换")')" "3"
 chk "交付面不画（issue / PR / 代码行不受口径影响）" \
     "$(sw delivery 's.count("口径切换")')" "0"
 chk "竖线画成红色虚线" \
-    "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "2"
+    "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "3"
 chk "switch_week 不在窗口里 → 一条都不画（不拿窗口里第一条 codex 记录顶上）" \
     "$(python3 - "$TMP" <<'INNER3'
 import json, subprocess, sys, os, re
