@@ -149,10 +149,13 @@ ordered newest-first: the daemon polls it right after launch to learn the id.
 That read-back needs real evidence, which is what `agent_session_started_with`
 is for — "a session that showed up after I launched" is not evidence, because
 an earlier role whose read-back failed can have its session land inside your
-window. The built-in codex driver compares the **complete** first user
-message recorded in the session against the prompt file the launch was given —
-first line only, or a fixed-length prefix, both fail in practice (multi-line
-prompts never match themselves; shared openings match the wrong role). The
+window. The built-in codex driver compares the session's **launch
+input** — every user message before the first assistant reply — against the
+prompt file the launch was given. Three shortcuts all fail in practice: only the
+first user message (a real session opens with the repo's AGENTS instructions, so
+the dispatch prompt is the *second* one), only its first line (multi-line
+prompts never match themselves), and a fixed-length prefix (shared openings
+match the wrong role). The
 daemon also appends a one-line unique marker to the prompt of any launch that
 will need a read-back, so two launches rendering the same prompt stay
 distinguishable; read it with `agent_session_prompt_tag`. Without the hook the

@@ -95,6 +95,35 @@ print(json.dumps({"type":"response_item","payload":{"type":"message","role":"use
 ' >> "$f"
     fi
 }
+# 照真实 rollout 的形状造会话：session_meta → developer×2 → user(仓库指令)
+# → user(任务 prompt) → assistant → [user(后续追加的消息)]
+# 0.161.0 的真实事件顺序就是这样——「第一条 user 消息」是仓库指令，不是任务。
+mk_codex_session_real() {   # <cwd> <id> <date-path> <ts> <前置消息> <任务消息> [assistant 之后的消息]
+    local d="$FAKE_HOME/.codex/sessions/$3"
+    local f="$d/rollout-$4-$2.jsonl"
+    mkdir -p "$d"
+    CWD="$1" SID="$2" TS="$4" PRE="$5" TASK="$6" POST="${7:-}" python3 - > "$f" <<'INNER'
+import json, os
+def msg(role, text, ctype="input_text"):
+    return {"type": "response_item",
+            "payload": {"type": "message", "role": role,
+                        "content": [{"type": ctype, "text": text}]}}
+out = [{"timestamp": os.environ["TS"], "type": "session_meta",
+        "payload": {"session_id": os.environ["SID"], "cwd": os.environ["CWD"]}},
+       {"type": "event_msg", "payload": {"type": "task_started"}},
+       msg("developer", "<skills_instructions>…</skills_instructions>"),
+       msg("developer", "<multi_agent_role>…</multi_agent_role>"),
+       msg("user", os.environ["PRE"]),
+       msg("user", os.environ["TASK"]),
+       msg("assistant", "好，我开始。", "output_text")]
+if os.environ.get("POST"):
+    out.append(msg("user", os.environ["POST"]))
+for o in out:
+    # 紧凑形式，跟真实 codex 写出来的一样（无空格）
+    print(json.dumps(o, ensure_ascii=False, separators=(",", ":")))
+INNER
+}
+
 # 造一份 prompt 文件，并把它的内容回显出来（给 mk_codex_session 当第 5 个参数）
 mk_prompt() {   # <路径> <正文>
     printf '%s\n' "$2" > "$1"
@@ -653,6 +682,73 @@ chk "claude（能钉 id）的 prompt 一个字节都不动" \
        CP="$TMP/p-claude.md"; printf 'claude 的 prompt\n' > "$CP"
        lib_eval "agent_session_plan 92 '$TG_WT' '$CP' >/dev/null" >/dev/null
        cat "$CP")" "claude 的 prompt"
+
+echo "── 31. 任务 prompt 前面还有仓库指令时，照样要认出自己的会话 ──"
+# 复审这一条：真实 rollout 的顺序是 developer×3 → user(AGENTS.md 指令 30k 字) →
+# user(派工 prompt) → assistant。上一版只看「第一条 user 消息」，于是永远先撞上
+# 仓库指令那条、判 false，自己的会话再也认不回来 → 每轮从零起，Q3 失效。
+# 本机在一条真实 codex 会话上确认过这个顺序（见 driver 注释）。
+sed -i 's/^WORKER_AGENT="[a-z0-9]*"$/WORKER_AGENT="codex"/' "$TMP/coding-agent.config"
+PRE_WT="$TMP/wt/issue-91"; mkdir -p "$PRE_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
+PRE_TXT="# AGENTS.md instructions for $PRE_WT
+
+<INSTRUCTIONS>
+这是仓库指令，不是派工 prompt。真实会话里它有三万多字。
+</INSTRUCTIONS>"
+PRE_FILE="$TMP/p-91.md"
+printf '仓库：example/none\nReview 目标：PR #91\n多行任务 prompt，第三行。\n' > "$PRE_FILE"
+# plan 走「全新」→ 给 prompt 打上本次标记
+lib_eval "agent_session_plan 91 '$PRE_WT' '$PRE_FILE' >/dev/null" DISPATCH_PROMPT_KIND=review >/dev/null
+PRE_TAG="$(lib_eval "agent_session_prompt_tag '$PRE_FILE'")"
+chk "本次 prompt 已带标记" "$([ -n "$PRE_TAG" ] && echo yes)" "yes"
+PRE_ID=aaaaaaaa-9191-4191-8191-919191919191
+mk_codex_session_real "$PRE_WT" "$PRE_ID" "2026/10/08" "2026-10-08T09-00-00" \
+    "$PRE_TXT" "$(cat "$PRE_FILE")"
+chk "前置仓库指令不影响举证" \
+    "$(lib_eval "agent_session_started_with '$PRE_WT' '$PRE_ID' '$PRE_FILE' && echo yes || echo no")" "yes"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 91 '$PRE_WT' '$PRE_FILE' 2>/dev/null
+echo registered=[\$(agent_session_id_get 91 codex review)]" \
+    DISPATCH_PROMPT_KIND=review AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "登记成功" "$out" "registered=[$PRE_ID]"
+out="$(lib_eval "agent_session_plan 91 '$PRE_WT' $PLAN_PROMPT; agent_launch_command '$PRE_WT' n /tmp/p.md" DISPATCH_PROMPT_KIND=review)"
+chk_contains "下一轮按 id 续接（Q3 的跨轮复用）" "$out" "codex resume $PRE_ID"
+
+echo "── 32. 标记只出现在「第一条 assistant 之后」的，不算本次启动 ──"
+# 边界不能放宽成「整段对话里搜一遍」：下一次派工会把新 prompt 注入到**已有**会话里，
+# 那条消息同样带标记，但那条会话不是这次启动建的。
+BD_WT="$TMP/wt/issue-90"; mkdir -p "$BD_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
+BD_FILE="$TMP/p-90.md"; printf '任务 prompt for #90\n' > "$BD_FILE"
+lib_eval "agent_session_plan 90 '$BD_WT' '$BD_FILE' >/dev/null" DISPATCH_PROMPT_KIND=review >/dev/null
+BD_ID=aaaaaaaa-9090-4090-8090-909090909090
+# 启动输入里是别的任务；本次 prompt（带标记）只出现在 assistant 回复之后
+mk_codex_session_real "$BD_WT" "$BD_ID" "2026/10/08" "2026-10-08T09-00-00" \
+    "仓库指令" "另一个任务，跟本次无关" "$(cat "$BD_FILE")"
+chk "只在后续消息里出现的标记不算证据" \
+    "$(lib_eval "agent_session_started_with '$BD_WT' '$BD_ID' '$BD_FILE' && echo yes || echo no")" "no"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 90 '$BD_WT' '$BD_FILE' 2>/dev/null
+echo registered=[\$(agent_session_id_get 90 codex review)]" \
+    DISPATCH_PROMPT_KIND=review AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "也不会被登记" "$out" "registered=[]"
+
+echo "── 33. cwd 过滤不依赖 JSON 的排版 ──"
+# 原来是在原始行上 grep `"cwd":"…"`，依赖 codex 写紧凑 JSON。哪天它多打一个空格，
+# 「这个 worktree 有哪些会话」就会静默返回空——收养、回捞、判存在全都跟着失效，
+# 而且不报错。实测 jq 解析跟 grep 一样快（200 个文件都是 0.4s），所以没有理由将就。
+JS_WT="$TMP/wt/issue-89"; mkdir -p "$JS_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
+JS_DIR="$FAKE_HOME/.codex/sessions/2026/10/08"; mkdir -p "$JS_DIR"
+JS_ID=aaaaaaaa-8989-4898-8898-898989898989
+# 故意写成带空格的「漂亮」形式
+printf '{"timestamp": "2026-10-08T09-00-00", "type": "session_meta", "payload": {"session_id": "%s", "cwd": "%s"}}\n' \
+    "$JS_ID" "$JS_WT" > "$JS_DIR/rollout-2026-10-08T09-00-00-$JS_ID.jsonl"
+chk "排版带空格也能列出来" \
+    "$(lib_eval "agent_session_list '$JS_WT' | tr '\n' ' '")" "$JS_ID "
+chk "别的 cwd 不会被误配（前缀相同也不行）" \
+    "$(lib_eval "agent_session_list '${JS_WT}-other' | wc -l")" "0"
 
 echo
 echo "通过 $pass，失败 $fail"

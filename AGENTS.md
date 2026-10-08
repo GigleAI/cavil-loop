@@ -167,7 +167,7 @@ the whole point.** There are exactly three writers, and each one now answers
 |---|---|
 | a freshly pinned id (claude) | we minted the id ourselves at launch |
 | adoption (worker role only) | the id is in `.preexisting`, so it predates role tracking |
-| read-back after launch (codex) | the session's first message carries this launch's unique tag, or failing that equals this launch's prompt in full |
+| read-back after launch (codex) | the session's **launch input** carries this launch's unique tag, or failing that equals this launch's prompt in full |
 
 **Adoption uses a positive criterion.** The worker role may only take over a
 conversation listed in `.preexisting` — i.e. one that predates role tracking,
@@ -191,17 +191,32 @@ two candidates both claim it, and — for a driver that cannot prove anything �
 only claims a lone candidate when no earlier launch for that work item was ever
 left unresolved.
 
-Two details of that proof are load-bearing, both learned the hard way. It
-compares the **complete** first message, never its first line and never a
-prefix: reading one line rejects every multi-line prompt (every template here is
-multi-line, so the role could never find its own session again), and comparing a
-prefix accepts another role's session whenever two templates share a long
-opening. And because two launches can legitimately render a byte-identical
+Three details of that proof are load-bearing, all learned the hard way.
+
+*What counts as the launch input*: every user message **before the first
+assistant reply**, not "the first user message". A real codex rollout opens
+`session_meta → developer×3 → user(AGENTS.md, ~30k chars) → user(the dispatch
+prompt) → assistant`, so the first user message is the repo's own instructions
+and a check that stops there always says no — the role then never finds its own
+session again. The boundary must not be widened to "search the whole
+conversation" either: a later dispatch injecting a prompt into an existing
+session would carry a marker too, and that session is not the one this launch
+created.
+
+*How much of it to compare*: the **complete** message, never its first line and
+never a prefix. Reading one line rejects every multi-line prompt (every template
+here is multi-line), and comparing a prefix accepts another role's session
+whenever two templates share a long opening. And because two launches can legitimately render a byte-identical
 prompt, `agent_session_plan` appends a one-line marker carrying a fresh uuid to
 the prompt of any launch that will need a read-back — so "which launch" stays
 answerable. Launches that can pin an id (claude) get no marker; their prompt is
 untouched. Failing to claim is always allowed: the conversation stays
 unowned and the role starts fresh, which costs context and never crosses roles.
+
+Same rule one level down: which sessions belong to a worktree is decided by
+parsing `cwd` out of the session record with jq, not by grepping `"cwd":"…"` out
+of the raw line. Measured at equal cost (200 files, 0.4s either way), and the
+grep form silently returns nothing the day the writer adds a space.
 
 **Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`
 in `_lib.sh`. Two functions, not one, on purpose: `plan` sets globals

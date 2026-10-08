@@ -51,7 +51,7 @@ codex_rollout_id() {
 # 于是任何一台跑过 codex 的机器都会被判成「本 worktree 有历史」→ 一律 resume --last，
 # 而 --last 取的是这个 cwd 最近的一条，角色是谁全看运气。
 #
-# session_meta 在文件第一行，带 cwd 和 session_id（0.155.0 实测）。
+# session_meta 在文件第一行，带 cwd 和 session_id（0.155.0 / 0.161.0 实测）。
 # 路径里嵌了 ISO 时间戳，所以反向字典序 = 从新到旧，不依赖 GNU find 的 -printf。
 # 只扫最近 CODEX_SESSION_SCAN_MAX 个：本机就有 1000+ 个 rollout，全扫一遍要读 1000 次
 # 文件头，而我们要找的会话永远在最近几条里。
@@ -63,7 +63,11 @@ agent_session_list() {
         find "$d" -name 'rollout-*.jsonl' -type f 2>/dev/null
     done < <(codex_session_dirs) | sort -r | head -n "$max" | \
     while IFS= read -r f; do
-        head -1 "$f" 2>/dev/null | grep -qF "\"cwd\":\"$cwd\"" || continue
+        # 用 jq 解出 cwd 再精确比对，而不是在原始行上 grep 字符串。实测两者耗时一样
+        # （200 个文件各 0.4s，开销全在 fork 上），但 grep 版依赖 codex 写紧凑 JSON：
+        # 哪天它多打一个空格，cwd 过滤就静默失效——这个 PR 已经被「靠形状猜」坑够多次了。
+        [ "$(head -1 "$f" 2>/dev/null | jq -r '.payload.cwd // empty' 2>/dev/null)" = "$cwd" ] \
+            || continue
         id="$(codex_rollout_id "$f")" || continue
         echo "$id"
     done
@@ -97,18 +101,26 @@ agent_session_exists() {
 # 本 driver 能举证「某条会话是不是本次启动建的」。
 AGENT_SESSION_PROOF=1
 
-# 证据：rollout 里记下的**第一条完整 user 消息**，就是启动时传进去的那份 prompt
-# （0.161.0 实测：`response_item` 事件、`payload.role=user`、`content[].text`）。
+# 证据：这条会话的**启动输入**里带着本次启动的标记（或与本次 prompt 完整一致）。
 #
-# 三件事都踩过，别再改回去：
+# 「启动输入」= 第一条 assistant 回复**之前**的所有 user 消息。0.161.0 在真实 rollout
+# 上实测的事件顺序是：
+#   session_meta → developer×3（skills / 多 agent 说明）→ user(AGENTS.md 指令, 30k 字)
+#   → user(派工 prompt) → assistant → …
+# 所以「第一条 user 消息」根本不是派工 prompt，而是仓库指令那条。
+#
+# 四件事都踩过，别再改回去：
 #   1. 「本次启动后才出现的文件」**不是**证据。别的角色回捞超时之后，它那条会话的文件
 #      可能比我们自己的先落盘，于是「新出现」就把别人的会话算成了我们的。
-#   2. 不能用 `jq … | head -1`。jq 把多行文本按行吐出来，head -1 只拿到**第一行**；
-#      仓库自带的模板全是多行，于是连自己的会话都认不出来，每轮都从零起。
-#      改成在 jq 里把整条消息拼好、用 -c 压成一行再取第一条。
-#   3. 不能只比前缀。项目覆写的两个模板共享很长的开头时，别的角色的会话会被认成自己的。
-# 有本次启动的标记就只认标记（同一份 prompt 起两次也分得开）；没有标记才回落到
-# 「完整正文一致」。
+#   2. 不能只看第一条 user 消息。前面那条仓库指令没有我们的标记，于是正确的任务消息
+#      还没被看到就先判了 false —— 自己的会话永远认不出来，每轮从零起。
+#   3. 不能用 `jq … | head -1` 取文本。jq 把多行文本按行吐出来，只会拿到第一行；
+#      这里的模板全是多行。改成在 jq 里把整条消息拼好再比。
+#   4. 不能只比前缀。项目覆写的两个模板共享很长的开头时，别的角色的会话会被认成自己的。
+#
+# 边界也不能放宽成「整段对话里搜一遍」：标记如果只出现在后续追加的消息里（比如下一次
+# 派工把 prompt 注入到同一条会话），那条会话并不是本次启动建的。只认第一条 assistant
+# 之前的输入，这个边界在真实 rollout 上验证过。
 agent_session_started_with() {   # <cwd> <session_id> <prompt_file>
     local id="$2" prompt_file="${3:-}"
     [ -n "$id" ] && [ -n "$prompt_file" ] && [ -f "$prompt_file" ] || return 1
@@ -116,13 +128,15 @@ agent_session_started_with() {   # <cwd> <session_id> <prompt_file>
     f="$(codex_rollout_path "$id")"
     [ -n "$f" ] || return 1
     tag="$(agent_session_prompt_tag "$prompt_file")"
-    verdict="$(jq -c --arg tag "$tag" --rawfile want "$prompt_file" '
-        select(.payload.role? == "user")
-        | ([.payload.content[]? | select(.type == "input_text") | .text] | join("")) as $msg
+    verdict="$(jq -s -c --arg tag "$tag" --rawfile want "$prompt_file" '
+        (map(.payload.role? == "assistant") | index(true)) as $stop
+        | (if $stop == null then . else .[0:$stop] end)
+        | map(select(.payload.role? == "user")
+              | [.payload.content[]? | select(.type == "input_text") | .text] | join(""))
         | if ($tag | length) > 0
-          then ($msg | index($tag)) != null
-          else ($msg | sub("\\s+$"; "")) == ($want | sub("\\s+$"; ""))
-          end' "$f" 2>/dev/null | head -1)"
+          then any(.[]; index($tag) != null)
+          else any(.[]; (. | sub("\\s+$"; "")) == ($want | sub("\\s+$"; "")))
+          end' "$f" 2>/dev/null)"
     [ "$verdict" = "true" ]
 }
 
