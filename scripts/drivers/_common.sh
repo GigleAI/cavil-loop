@@ -55,6 +55,13 @@
 #     收养上线前的旧会话，以及给钉不了 id 的 CLI 回捞新会话的 id。
 #     调用方可能只读前几行就关掉管道，实现要能容忍 SIGPIPE。
 #
+#   agent_session_started_with <cwd> <session_id> <prompt_file>   （置 AGENT_SESSION_PROOF=1）
+#     返回 0 = 有证据表明这条会话就是「用这份 prompt 起的那次启动」建的。
+#     钉不了 id 的 CLI 必须实现它，否则回捞只能靠「本次新出现的文件」这种弱判据——
+#     别的角色回捞超时后，它的会话文件可能比我们自己的先落盘，于是「新出现」会把
+#     别人的会话登记给我们。不实现的话 daemon 走保守路线：只有「候选唯一且此前没有
+#     未解决的启动」才敢登记，否则宁可不登记。
+#
 #   agent_trust_paths <path>...
 #     让 agent 预先把这些目录记成「可信」，免得 worker 第一次在新目录起会话时
 #     卡在 folder-trust 确认框上。setup.sh 在部署新项目时用仓库根 + worktree base
@@ -269,6 +276,7 @@ source_driver() {
     local d
     # 能力标志复位：同一进程里换 driver 时不能留着上一个 driver 的声明
     AGENT_SESSION_ISOLATION=0
+    AGENT_SESSION_PROOF=0
     for d in "${candidates[@]}"; do
         if [ -f "$d" ]; then
             # shellcheck disable=SC1090
@@ -282,6 +290,7 @@ source_driver() {
             declare -f agent_session_new_id > /dev/null || agent_session_new_id() { echo ""; }
             declare -f agent_session_exists > /dev/null || agent_session_exists() { return 1; }
             declare -f agent_session_list   > /dev/null || agent_session_list() { return 0; }
+            declare -f agent_session_started_with > /dev/null || agent_session_started_with() { return 1; }
             # 强制校验必填函数都在
             local fn
             for fn in agent_bin agent_has_history agent_is_busy \

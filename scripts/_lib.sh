@@ -2725,12 +2725,23 @@ agent_launch_command() {   # <cwd> <session_name> <prompt_file>
 
 # 起完一条全新会话之后调用：给「启动时钉不了 id」的 driver（codex）把本次真正用上的
 # session id 回捞并登记。其余情况是空操作。
-# 捞不到就只记一条 warning：后果是下一轮 review 会从零起一条新的（多花 token，
-# 但绝不会串到 worker 的上下文里去），不该为此让派工失败。
-agent_session_register_launched() {   # <num> <cwd>
-    local num="$1" cwd="$2"
+#
+# **登记前必须有证据证明候选属于本次启动。** 「本次启动后才出现的文件」不是证据：
+# 别的角色回捞超时过，它那条会话的文件可能比我们自己的先落盘，于是「新出现」会把
+# 别人的会话登记到我们名下，下一轮直接 resume 过去——这就绕开了收养那道正向判据。
+# 复审连抓三轮，三次都是同一个根因（用反向/弱判据代替正向证据），这是第三个入口。
+#
+# 证据来自 driver 的 agent_session_started_with（codex 比对 rollout 里记下的第一条
+# user 消息 == 本次传进去的 prompt 原文）。driver 举证不了时走保守路线：只有
+# 「候选唯一 + 此前没有未解决的启动」才敢登记。
+#
+# 拿不到证据不让派工失败：留一条 .unresolved 记录 + 日志，该角色下一轮从零起一条。
+# 丢上下文，但绝不串角色。
+agent_session_register_launched() {   # <num> <cwd> <prompt_file>
+    local num="$1" cwd="$2" prompt_file="${3:-}"
     local role="$WORKER_SESSION_ROLE"
-    local step=0.5 line found="" deadline
+    local step=0.5 line deadline found="" reason=""
+    local -a cands proven
 
     [ "${AGENT_LAUNCH_KIND:-}" = "new" ] || return 0
     [ -z "${WORKER_SESSION_ID:-}" ] || return 0
@@ -2744,13 +2755,44 @@ agent_session_register_launched() {   # <num> <cwd>
     # （实测：配 3 秒等了 2.4 秒），对这个用途够了。
     deadline=$((SECONDS + max))
     while :; do
+        # 候选 = 本次启动之后才出现的会话（最近的在前）
+        cands=()
         while IFS= read -r line; do
             [ -z "$line" ] && continue
             printf '%s\n' "$AGENT_SESSION_PRELAUNCH_IDS" | grep -Fxq "$line" && continue
-            found="$line"
-            break
+            cands+=("$line")
         done < <(agent_session_list "$cwd")
-        [ -n "$found" ] && break
+
+        if [ "${AGENT_SESSION_PROOF:-0}" = 1 ]; then
+            proven=()
+            for line in "${cands[@]:-}"; do
+                [ -z "$line" ] && continue
+                if agent_session_started_with "$cwd" "$line" "$prompt_file"; then
+                    proven+=("$line")
+                fi
+            done
+            if [ "${#proven[@]}" -eq 1 ]; then
+                found="${proven[0]}"
+                break
+            fi
+            if [ "${#proven[@]}" -gt 1 ]; then
+                # 两条都自称是本次启动起的：没法判，宁可不登记
+                reason="ambiguous-proof"
+                break
+            fi
+            # 一条都举证不出来：可能我们自己那条还没写完 user 消息，继续等
+        else
+            # driver 举证不了：只在「候选唯一 + 此前没有未解决的启动」时才敢认
+            if [ "${#cands[@]}" -eq 1 ] && [ ! -s "$(agent_session_unresolved_file "$num" "$WORKER_AGENT")" ]; then
+                found="${cands[0]}"
+                break
+            fi
+            if [ "${#cands[@]}" -gt 0 ]; then
+                reason="no-proof-available"
+                break
+            fi
+        fi
+
         [ "$SECONDS" -ge "$deadline" ] && break
         sleep "$step"
     done
@@ -2759,17 +2801,17 @@ agent_session_register_launched() {   # <num> <cwd>
         agent_session_id_set "$num" "$WORKER_AGENT" "$role" "$found"
         WORKER_SESSION_ID="$found"
         log_debug "会话登记：#$num $WORKER_AGENT/$role -> $found"
-    else
-        # 捞不到不能让派工失败，但必须留痕：这条会话确实存在、却没人知道它的 id。
-        # 收养那边靠「上线前快照」这个正向判据兜底——窗口之后新出现的会话一律不可收养，
-        # 所以这条无主会话不会被 worker 捡走（第 2 轮复审指出的入口）。
-        # 代价是该角色下一轮从零起一条新会话（丢上下文，但不串角色）。
-        mkdir -p "$AGENT_SESSION_DIR"
-        printf '%s %s role=%s\n' "$(date -Iseconds)" "unresolved-launch" "$role" \
-            >> "$(agent_session_unresolved_file "$num" "$WORKER_AGENT")"
-        log "  ⚠️ ${max}s 内没捞到 $WORKER_AGENT 新建的 session id（#$num 角色 $role）；"
-        log "     该会话成了无主会话：不会被别的角色收养（白名单挡着），但下一轮该角色会从零起一条"
+        return 0
     fi
+
+    [ -n "$reason" ] || reason="timeout"
+    mkdir -p "$AGENT_SESSION_DIR"
+    printf '%s unresolved-launch role=%s reason=%s candidates=%s\n' \
+        "$(date -Iseconds)" "$role" "$reason" "${#cands[@]}" \
+        >> "$(agent_session_unresolved_file "$num" "$WORKER_AGENT")"
+    log "  ⚠️ 没能确认 $WORKER_AGENT 本次启动的 session id（#$num 角色 $role，原因 $reason，候选 ${#cands[@]} 条）；"
+    log "     这条会话保持无主：别的角色既不会收养它（白名单挡着）也不会回捞到它（要举证），"
+    log "     代价是该角色下一轮从零起一条新会话"
 }
 
 # 清掉某个 work number 下所有角色「当前用哪条」的登记（cleanup-issue 删 worktree 时调用）。

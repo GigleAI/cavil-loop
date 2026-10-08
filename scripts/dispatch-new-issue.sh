@@ -137,7 +137,7 @@ if ! verify_fresh_session "$TMUX_SESSION"; then
 fi
 
 # 4.7 启动侧钉不了 session id 的 driver（codex），到这里把它实际用上的 id 捞回来登记
-agent_session_register_launched "$ISSUE" "$WORKTREE"
+agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
 
 # 5. 立即翻 label 到 doing/agent（worker 完工时它会自己翻成 pending/human）
 run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \

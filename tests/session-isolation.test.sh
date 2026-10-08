@@ -77,11 +77,28 @@ mk_claude_session() {   # <cwd> <id> <mtime>
     echo '{"type":"user"}' > "$d/$2.jsonl"
     touch -d "$3" "$d/$2.jsonl"
 }
-mk_codex_session() {   # <cwd> <id> <date-path> <ts>
+mk_codex_session() {   # <cwd> <id> <date-path> <ts> [启动时用的 prompt 原文]
     local d="$FAKE_HOME/.codex/sessions/$3"
+    local f="$d/rollout-$4-$2.jsonl"
     mkdir -p "$d"
     printf '{"timestamp":"%s","type":"session_meta","payload":{"session_id":"%s","cwd":"%s"}}\n' \
-        "$4" "$2" "$1" > "$d/rollout-$4-$2.jsonl"
+        "$4" "$2" "$1" > "$f"
+    # 第 5 个参数 = 这条会话启动时收到的 prompt。回捞要靠它举证「这条是本次启动建的」，
+    # 所以凡是要走回捞的场景都必须给，不给就等于一条「举证不出来」的会话。
+    if [ -n "${5:-}" ]; then
+        printf '%s\n' "$5" | python3 -c '
+import json,sys
+txt=sys.stdin.read()
+if txt.endswith("\n"): txt=txt[:-1]
+print(json.dumps({"type":"response_item","payload":{"type":"message","role":"user",
+      "content":[{"type":"input_text","text":txt}]}}, ensure_ascii=False))
+' >> "$f"
+    fi
+}
+# 造一份 prompt 文件，并把它的内容回显出来（给 mk_codex_session 当第 5 个参数）
+mk_prompt() {   # <路径> <正文>
+    printf '%s\n' "$2" > "$1"
+    printf '%s' "$2"
 }
 registry() { cat "$TMP/state/agent-sessions/$1" 2>/dev/null; }
 
@@ -222,12 +239,19 @@ rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
 out="$(lib_eval "agent_session_plan 42 '$WT'; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND|pre=[\$AGENT_SESSION_PRELAUNCH_IDS]\"")"
 chk_contains "没历史时起全新" "$out" "kind=new"
 chk_lacks "全新时不带 resume" "$out" "resume"
-# 模拟 codex 起来后落盘，再跑回捞
+# 模拟 codex 起来后落盘，再跑回捞。会话里要留下「用这份 prompt 起的」证据——
+# 回捞现在要凭证据认领，不再认「本次新出现的文件」。
 CAP_ID="77777777-7777-4777-8777-777777777777"
-mk_codex_session "$WT" "$CAP_ID" "2026/09/18" "2026-09-18T13-00-00"
+CAP_PROMPT_FILE="$TMP/cap-prompt.md"
+CAP_TXT="$(mk_prompt "$CAP_PROMPT_FILE" "worker 第一轮：请实现 issue #42")"
+mk_codex_session "$WT" "$CAP_ID" "2026/09/18" "2026-09-18T13-00-00" "$CAP_TXT"
 chk "回捞到新会话并登记" \
     "$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''; \
-        agent_session_register_launched 42 '$WT'; agent_session_id_get 42 codex worker")" "$CAP_ID"
+        agent_session_register_launched 42 '$WT' '$CAP_PROMPT_FILE'; agent_session_id_get 42 codex worker")" "$CAP_ID"
+chk "举证函数认得出这条是本次启动建的" \
+    "$(lib_eval "agent_session_started_with '$WT' '$CAP_ID' '$CAP_PROMPT_FILE' && echo yes || echo no")" "yes"
+chk "换一份 prompt 就举证不出来" \
+    "$(lib_eval "agent_session_started_with '$WT' '$CAP_ID' '$TMP/coding-agent.config' && echo yes || echo no")" "no"
 
 echo "── 13. 不支持会话隔离的第三方 driver：review 仍然起全新 ──"
 mkdir -p "$TMP/project/.agents/skills/coding-agent-work-loop/drivers"
@@ -427,6 +451,119 @@ if codex --help 2>/dev/null | grep -q -- '--no-daemon'; then
 else
     echo "  ⏭️  本机 codex 不支持 --no-daemon，跳过（3 项）"
 fi
+
+echo "── 24. 回捞必须举证：别的角色晚落盘的会话不许认成自己的（review 超时 → worker 新开）──"
+# 复审第 3 轮 / 再一轮的阻塞项。链条：A 角色回捞超时（它那条会话没人登记），
+# B 角色随后全新启动，A 的会话文件在「B 的启动前快照之后、B 自己的文件之前」落盘。
+# 旧实现认「本次新出现的第一条」，于是 B 把 A 的会话登记到自己名下，下一轮直接 resume 过去。
+sed -i 's/^WORKER_AGENT="codex"$/WORKER_AGENT="codex"/' "$TMP/coding-agent.config"
+X_WT="$TMP/wt/issue-99"; mkdir -p "$X_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
+X_R=aaaaaaaa-9999-4999-8999-999999999991   # review 那条（晚落盘）
+X_W=bbbbbbbb-9999-4999-8999-999999999992   # worker 自己那条
+RV_FILE="$TMP/p-review-99.md";  RV_TXT="$(mk_prompt "$RV_FILE" "review 关卡：请复审 PR #99 的改动")"
+WK_FILE="$TMP/p-worker-99.md";  WK_TXT="$(mk_prompt "$WK_FILE" "worker：请按评论修 PR #99")"
+# ① review 启动 → 回捞窗口 0，立即超时（它那条还没落盘）
+lib_eval "agent_session_plan 99 '$X_WT' >/dev/null
+agent_session_register_launched 99 '$X_WT' '$RV_FILE' 2>/dev/null" \
+    DISPATCH_PROMPT_KIND=review AGENT_SESSION_CAPTURE_SECS=0 >/dev/null
+chk "review 超时后没有登记" "$(registry 99.codex.review)" ""
+# ② worker 全新启动（此刻目录里还是空的，所以启动前快照为空）
+# ③ review 那条现在才落盘 —— 它带的是 review 的 prompt
+mk_codex_session "$X_WT" "$X_R" "2026/09/18" "2026-09-18T20-00-00" "$RV_TXT"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 99 '$X_WT' '$WK_FILE' 2>/dev/null
+echo registered=[\$(agent_session_id_get 99 codex worker)]" AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "worker 没把 review 那条认成自己的" "$out" "registered=[]"
+chk "拒绝的原因留了痕" \
+    "$(grep -c 'reason=' "$TMP/state/agent-sessions/99.codex.unresolved" 2>/dev/null)" "2"
+# ④ worker 自己那条落盘后，才认领它
+mk_codex_session "$X_WT" "$X_W" "2026/09/18" "2026-09-18T21-00-00" "$WK_TXT"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 99 '$X_WT' '$WK_FILE' 2>/dev/null
+echo registered=[\$(agent_session_id_get 99 codex worker)]" AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "worker 认领的是自己那条" "$out" "registered=[$X_W]"
+# ⑤ 下一轮续接必须指向 worker 自己那条
+out="$(lib_eval "agent_session_plan 99 '$X_WT'; agent_launch_command '$X_WT' n /tmp/p.md")"
+chk_contains "下一轮 resume 自己那条" "$out" "codex resume $X_W"
+chk_lacks "下一轮没有 resume review 那条" "$out" "$X_R"
+
+echo "── 25. 反方向：worker 超时 → review 新开 → 旧 worker 晚落盘 ──"
+Y_WT="$TMP/wt/issue-98"; mkdir -p "$Y_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
+Y_W=aaaaaaaa-9898-4898-8898-989898989891
+Y_R=bbbbbbbb-9898-4898-8898-989898989892
+YW_FILE="$TMP/p-worker-98.md"; YW_TXT="$(mk_prompt "$YW_FILE" "worker：请实现 issue #98")"
+YR_FILE="$TMP/p-review-98.md"; YR_TXT="$(mk_prompt "$YR_FILE" "review 关卡：请复审 PR #98")"
+lib_eval "agent_session_plan 98 '$Y_WT' >/dev/null
+agent_session_register_launched 98 '$Y_WT' '$YW_FILE' 2>/dev/null" \
+    AGENT_SESSION_CAPTURE_SECS=0 >/dev/null
+chk "worker 超时后没有登记" "$(registry 98.codex.worker)" ""
+mk_codex_session "$Y_WT" "$Y_W" "2026/09/18" "2026-09-18T20-00-00" "$YW_TXT"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 98 '$Y_WT' '$YR_FILE' 2>/dev/null
+echo registered=[\$(agent_session_id_get 98 codex review)]" \
+    DISPATCH_PROMPT_KIND=review AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "review 没把 worker 那条认成自己的" "$out" "registered=[]"
+mk_codex_session "$Y_WT" "$Y_R" "2026/09/18" "2026-09-18T21-00-00" "$YR_TXT"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 98 '$Y_WT' '$YR_FILE' 2>/dev/null
+echo registered=[\$(agent_session_id_get 98 codex review)]" \
+    DISPATCH_PROMPT_KIND=review AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "review 认领的是自己那条" "$out" "registered=[$Y_R]"
+
+echo "── 26. 两条候选都自称是本次启动的 → 宁可不登记 ──"
+Z_WT="$TMP/wt/issue-97"; mkdir -p "$Z_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
+Z_A=aaaaaaaa-9797-4797-8797-979797979791
+Z_B=bbbbbbbb-9797-4797-8797-979797979792
+ZP_FILE="$TMP/p-97.md"; ZP_TXT="$(mk_prompt "$ZP_FILE" "worker：请实现 issue #97")"
+mk_codex_session "$Z_WT" "$Z_A" "2026/09/18" "2026-09-18T20-00-00" "$ZP_TXT"
+mk_codex_session "$Z_WT" "$Z_B" "2026/09/18" "2026-09-18T21-00-00" "$ZP_TXT"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 97 '$Z_WT' '$ZP_FILE' 2>/dev/null
+echo registered=[\$(agent_session_id_get 97 codex worker)]" AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "分不清就不登记" "$out" "registered=[]"
+chk "原因写明是歧义" \
+    "$(grep -c 'reason=ambiguous-proof' "$TMP/state/agent-sessions/97.codex.unresolved" 2>/dev/null)" "1"
+
+echo "── 27. 举证不了的 driver：候选唯一且没有未解决启动才敢认 ──"
+# 第三方 driver 可能实现了会话枚举（ISOLATION=1）但没实现举证。那时只能退一步：
+# 「本目录只多出一条、而且此前没有认领失败过」才敢认，否则宁可不登记。
+cat > "$TMP/project/.agents/skills/coding-agent-work-loop/drivers/mini2.sh" <<'MINI2'
+AGENT_SESSION_ISOLATION=1
+agent_bin() { echo "mini2"; }
+agent_has_history() { return 1; }
+agent_is_busy() { return 1; }
+agent_command_new() { echo "mini2-new $3"; }
+agent_command_resume() { echo "mini2-resume ${WORKER_SESSION_ID:-last} $3"; }
+agent_session_new_id() { echo ""; }
+mini2_dir() { echo "$HOME/.mini2/$(encoded_cwd "$1")"; }
+agent_session_exists() { [ -n "$2" ] && [ -f "$(mini2_dir "$1")/$2" ]; }
+agent_session_list() {
+    local d; d="$(mini2_dir "$1")"
+    [ -d "$d" ] || return 0
+    ls -t "$d" 2>/dev/null
+    return 0
+}
+MINI2
+sed -i 's/^WORKER_AGENT="codex"$/WORKER_AGENT="mini2"/' "$TMP/coding-agent.config"
+M_WT="$TMP/wt/issue-96"; mkdir -p "$M_WT"
+rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.mini2"
+M_DIR="$FAKE_HOME/.mini2/$(printf %s "$M_WT" | tr / -)"; mkdir -p "$M_DIR"
+touch "$M_DIR/aaaa-0001"
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 96 '$M_WT' /tmp/p.md 2>/dev/null
+echo registered=[\$(agent_session_id_get 96 mini2 worker)]" AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "候选唯一、没有历史认领失败 → 认领" "$out" "registered=[aaaa-0001]"
+# 有过认领失败之后，同一个编号就不再敢认了
+rm -rf "$TMP/state/agent-sessions"
+lib_eval "mkdir -p '$TMP/state/agent-sessions'
+printf 'x unresolved-launch role=review reason=timeout\n' > '$TMP/state/agent-sessions/96.mini2.unresolved'" >/dev/null
+out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAUNCH_IDS=''
+agent_session_register_launched 96 '$M_WT' /tmp/p.md 2>/dev/null
+echo registered=[\$(agent_session_id_get 96 mini2 worker)]" AGENT_SESSION_CAPTURE_SECS=0)"
+chk_contains "之前有认领失败 → 不敢认" "$out" "registered=[]"
 
 echo
 echo "通过 $pass，失败 $fail"

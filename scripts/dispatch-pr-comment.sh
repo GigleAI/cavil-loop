@@ -144,7 +144,7 @@ if [ -d "$WORKTREE" ]; then
         fi
     fi
 
-    agent_session_register_launched "$ISSUE_N" "$WORKTREE"
+    agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
     flip_label
@@ -204,7 +204,7 @@ while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
 done < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
-agent_session_register_launched "$ISSUE_N" "$WORKTREE"
+agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
 configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
 start_session_logging "$TMUX_SESSION"
 

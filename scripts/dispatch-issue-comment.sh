@@ -127,7 +127,7 @@ if [ -d "$WORKTREE" ]; then
         fi
     fi
 
-    agent_session_register_launched "$ISSUE" "$WORKTREE"
+    agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION" 2>/dev/null || true
     flip_label

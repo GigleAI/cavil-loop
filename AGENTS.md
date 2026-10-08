@@ -159,9 +159,19 @@ Three sibling files carry the parts that must outlive "which session is current"
 42.claude.unresolved       launches whose id could not be read back (diagnostics only)
 ```
 
-**Adoption uses a positive criterion, and that is the whole point.** The worker
-role may only take over a conversation listed in `.preexisting` — i.e. one that
-predates role tracking, the only kind whose role genuinely cannot be known.
+**Every write to this registry needs positive evidence of ownership, and that is
+the whole point.** There are exactly three writers, and each one now answers
+"why do I believe this conversation is mine?":
+
+| writer | evidence |
+|---|---|
+| a freshly pinned id (claude) | we minted the id ourselves at launch |
+| adoption (worker role only) | the id is in `.preexisting`, so it predates role tracking |
+| read-back after launch (codex) | the session's transcript opens with *this launch's prompt* |
+
+**Adoption uses a positive criterion.** The worker role may only take over a
+conversation listed in `.preexisting` — i.e. one that predates role tracking,
+the only kind whose role genuinely cannot be known.
 Asking the opposite question ("is this id currently registered to someone
 else?") looks equivalent and is not: every way a registration can go missing
 then turns another role's conversation into a free-for-all. Two such ways are
@@ -171,6 +181,16 @@ the reviewer's conversation. Hence also: a forced new session **retires** the
 old id instead of deleting it, and `cleanup-issue.sh` clears only the current
 registrations, never the two files above (a worktree can be rebuilt at the same
 path while the agent's history, keyed by cwd, is still sitting there).
+
+The read-back has the same trap one level down: "a session file that appeared
+after I launched" is **not** evidence that I launched it. If an earlier role's
+read-back timed out, that role's file can land inside the next role's window and
+get claimed by it. So the read-back asks the driver to prove the candidate was
+started with this dispatch's prompt (`agent_session_started_with`), refuses when
+two candidates both claim it, and — for a driver that cannot prove anything —
+only claims a lone candidate when no earlier launch for that work item was ever
+left unresolved. Failing to claim is always allowed: the conversation stays
+unowned and the role starts fresh, which costs context and never crosses roles.
 
 **Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`
 in `_lib.sh`. Two functions, not one, on purpose: `plan` sets globals

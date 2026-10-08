@@ -121,6 +121,12 @@ agent_session_exists <cwd> <session_id>  # 返回 0 = 这条会话还在、能�
 agent_session_list <cwd>                 # 这个 cwd 的会话 id，最近的在前
 ```
 
+启动时钉不了 id 的 CLI 还要实现第四个，并把 `AGENT_SESSION_PROOF` 置 1：
+
+```bash
+agent_session_started_with <cwd> <session_id> <prompt_file>   # 返回 0 = 这条是本次启动建的
+```
+
 `agent_command_new` / `agent_command_resume` 读 `$WORKER_SESSION_ID`：起新会话时
 钉住它，续接时续的就是它。`$WORKER_SESSION_ID` 为空只会出现在「本功能上线前留下的
 会话」这一种情况，那时才回落到 CLI 自己的「续最近一条」。
@@ -133,9 +139,14 @@ agent_session_list <cwd>                 # 这个 cwd 的会话 id，最近的�
 | 不能 | `agent_session_new_id` 写空串，daemon 在启动后用 `agent_session_list` 把 id 捞回来 | `codex`（0.155.0 启动侧没有这种 flag；它的会话文件在启动后约 0.5s 落盘） |
 
 CLI 钉不了 id 的，要保证 `agent_session_list` 够便宜、且「最近的在前」：daemon 在
-启动后就靠轮询它来拿到本次的 id。回捞超时的话那条会话就保持无主——daemon 不会把它
-交给别的角色，该角色下一轮从零起。**不要**为了补偿而让收养变聪明：worker 只收养
-早于角色化派工的会话，这是故意的。
+启动后就靠轮询它来拿到本次的 id。这一步需要真证据，这就是 `agent_session_started_with`
+的用处——「我启动之后才出现的会话」不是证据：前一个角色回捞失败的话，它那条会话
+可能正好落在你的窗口里。内置 codex driver 的做法是比对会话里记下的第一条 user 消息
+和本次启动用的 prompt 文件。没实现这个 hook 时，daemon 退一步：只有「候选唯一 +
+这条活此前没有认领失败过」才敢认。
+
+回捞举证不出来时，那条会话就保持无主——daemon 不会把它交给别的角色，该角色下一轮
+从零起。**不要**为了补偿而让收养变聪明：worker 只收养早于角色化派工的会话，这是故意的。
 
 不实现也能跑：daemon 那时只保证 **review 角色一律起全新会话**，worker 角色保持
 上线前「续最近一条」的行为。

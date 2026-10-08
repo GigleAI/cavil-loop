@@ -125,6 +125,13 @@ agent_session_exists <cwd> <session_id>  # 0 = that session is still resumable
 agent_session_list <cwd>                 # session ids for this cwd, newest first
 ```
 
+A CLI that cannot pin an id also needs a fourth hook, plus
+`AGENT_SESSION_PROOF=1`:
+
+```bash
+agent_session_started_with <cwd> <session_id> <prompt_file>   # 0 = this launch started it
+```
+
 `agent_command_new` / `agent_command_resume` then read `$WORKER_SESSION_ID`:
 pin it when starting fresh, resume exactly that id otherwise. An empty
 `$WORKER_SESSION_ID` only happens for conversations that predate this feature —
@@ -139,10 +146,19 @@ Two shapes are supported:
 
 If your CLI cannot pin an id, make sure `agent_session_list` is cheap and
 ordered newest-first: the daemon polls it right after launch to learn the id.
-When that read-back times out the conversation simply stays unowned — the
-daemon will not hand it to another role, and the role starts fresh next time.
-Do **not** try to make adoption smarter to compensate; the worker only ever
-adopts conversations that predate role tracking, and that is deliberate.
+That read-back needs real evidence, which is what `agent_session_started_with`
+is for — "a session that showed up after I launched" is not evidence, because
+an earlier role whose read-back failed can have its session land inside your
+window. The built-in codex driver compares the first user message recorded in
+the session against the prompt file the launch was given. Without the hook the
+daemon falls back to claiming a lone candidate only when no earlier launch for
+that work item was left unresolved.
+
+When the read-back cannot prove anything, the conversation simply stays
+unowned — the daemon will not hand it to another role, and the role starts
+fresh next time. Do **not** try to make adoption smarter to compensate; the
+worker only ever adopts conversations that predate role tracking, and that is
+deliberate.
 
 Not implementing these is fine — the daemon then only guarantees that the
 **review role always starts a fresh session**, and the worker role keeps the

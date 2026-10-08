@@ -183,15 +183,18 @@ dispatch would inherit the review's. Both directions are blocked:
 | The `review` role never adopts an unregistered conversation | A first review picking up the worker's pre-existing session |
 | The worker role adopts only conversations snapshotted in `.preexisting` | Any conversation created *after* role tracking began — whoever created it, we knew its role at the time — becoming adoptable because its registration went missing |
 | A forced new session retires the old id instead of deleting it | The "resume died in 2s" fallback turning the reviewer's previous conversation into an unowned one |
+| The post-launch read-back must prove the candidate was started with this dispatch's prompt | An earlier role's unclaimed session file landing inside this role's window and being claimed by it |
 
 Review rounds 2..N reuse the review's own session, so the reviewer can check
 whether its earlier findings were addressed.
 
 When a driver cannot pin an id at launch (codex) and the post-launch read-back
-times out, that conversation stays unowned: nobody adopts it (it is not in
-`.preexisting`), the timeout is recorded under `.unresolved`, and the role
-starts a fresh session next round. That trades context for never crossing
-roles, which is the direction this whole mechanism exists to protect. Drivers opt in by implementing
+cannot prove which candidate is ours, that conversation stays unowned: nobody
+adopts it (it is not in `.preexisting`), no later read-back claims it (it was
+not started with that dispatch's prompt), the reason is recorded under
+`.unresolved`, and the role starts a fresh session next round. That trades
+context for never crossing roles, which is the direction this whole mechanism
+exists to protect. Drivers opt in by implementing
 three functions ([docs/drivers.md](drivers.md#optional-hooks-session-isolation));
 a driver that doesn't only gets the "review always starts fresh" half.
 - Session gone (and worktree also cleaned up) → automatically rebuilds the worktree from PR head branch + spawns a new session (applies the same resume logic above)

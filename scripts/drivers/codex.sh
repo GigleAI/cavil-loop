@@ -72,18 +72,53 @@ agent_session_list() {
     return 0
 }
 
-agent_session_exists() {
-    local cwd="$1" id="$2"
-    [ -n "$id" ] || return 1
-    local d
+# 给一个 session id 找到它的 rollout 文件路径（找不到就输出空）。
+codex_rollout_path() {   # <session_id>
+    local id="$1" d hit
+    [ -n "$id" ] || return 0
     while IFS= read -r d; do
         # 用 `| head -1` 而不是 `-print -quit`：-quit 是 GNU find 的扩展，本机只有
         # Linux、没法验 macOS/BSD，而 head 关管道一样能让 find 早退，还到处都有。
-        if [ -n "$(find "$d" -name "rollout-*-${id}.jsonl" -type f 2>/dev/null | head -1)" ]; then
+        hit="$(find "$d" -name "rollout-*-${id}.jsonl" -type f 2>/dev/null | head -1)"
+        if [ -n "$hit" ]; then
+            echo "$hit"
             return 0
         fi
     done < <(codex_session_dirs)
-    return 1
+    return 0
+}
+
+agent_session_exists() {
+    local cwd="$1" id="$2"
+    [ -n "$id" ] || return 1
+    [ -n "$(codex_rollout_path "$id")" ]
+}
+
+# 本 driver 能举证「某条会话是不是本次启动建的」。
+AGENT_SESSION_PROOF=1
+
+# 证据：rollout 里记下的第一条 user 消息，就是启动时传进去的那份 prompt 原文
+# （0.161.0 实测：`response_item` 事件、`payload.role=user`、`content[].text`）。
+#
+# ⚠️「本次启动后才出现的文件」**不是**证据。别的角色回捞超时之后，它那条会话的文件
+# 可能比我们自己的先落盘，于是「新出现」就把别人的会话算成了我们的——复审连着三轮
+# 抓到的是同一个根因的三个变体，这是第三个。
+agent_session_started_with() {   # <cwd> <session_id> <prompt_file>
+    local id="$2" prompt_file="$3"
+    local n="${AGENT_SESSION_PROOF_BYTES:-200}"
+    [ -n "$id" ] && [ -f "$prompt_file" ] || return 1
+    local f first
+    f="$(codex_rollout_path "$id")"
+    [ -n "$f" ] || return 1
+    first="$(jq -r 'select(.payload.role == "user")
+                    | .payload.content[]?
+                    | select(.type == "input_text")
+                    | .text' "$f" 2>/dev/null | head -1)"
+    [ -n "$first" ] || return 1
+    # 两边都先按字节截断再去掉换行：截断位置一致，所以同一份文本必然得到同一串；
+    # 去换行是为了吃掉 prompt 文件结尾那个换行（argv 里传的是 "$(cat f)"，不带它）。
+    [ "$(printf '%s' "$first" | head -c "$n" | tr -d '\r\n')" = \
+      "$(head -c "$n" "$prompt_file" 2>/dev/null | tr -d '\r\n')" ]
 }
 
 # codex 0.155.0 启动侧没有任何指定 session id / 名字的 flag（`codex --help` 全量核对过），
