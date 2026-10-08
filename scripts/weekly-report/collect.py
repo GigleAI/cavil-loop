@@ -283,6 +283,7 @@ def main():
         sources.setdefault(w["key"], "original")
     summable, _gid = attribute.summable(windows, sources)
 
+    codex_table = price_solve.codex_price_table()
     # ── 第二段：每次派工只按它最终那条累计记录入账，算在**开工那一周** ──
     for key, (rec, cw, num) in claimed.items():
         w = rec_week(rec, cw)
@@ -321,6 +322,15 @@ def main():
             cost = attribute.legacy_estimate(rec.get("tokens"))
             cost_source, cost_state = "estimated", "full"
             pstat, psrc = {"estimated": cost}, "estimated"
+        # 交叉 review（codex）那一侧：写评论时模型还没单价、记录里没写金额的，用**现在的**
+        # 价目（内置表 + 缺价自动补抓来的价）按记录里的 token 补算。不补的话，价目后来补上了，
+        # 历史周的金额也永远是空的（GigleTutor-Web#1023）。已经写了金额的记录不动。
+        if (rec.get("agent") == "codex" and rec.get("src") == "marker"
+                and cost_source == "original" and cost_state == "none"):
+            usd = price_solve.codex_reprice(rec, codex_table)
+            if usd is not None:
+                cost, cost_source, cost_state = usd, "repriced", "full"
+                pstat, psrc = {}, "repriced"
         in_total = summable.get(key, True)      # 不参与重算的（如身份缺失）照旧计入
         # token 用量趋势：四项分开记，取数规则与金额同一套（#50 交叉 review 第 1 轮）：
         #   · 日志重算过的 → 用**认领后**的 token（重叠窗口共用的调用只算一次），不再除倍数；
@@ -488,7 +498,7 @@ def main():
               #   state_* 价格覆盖三态（full / partial / none）
               #   log_*   日志检验结果（未检出缺失 / 检出缺失 / 覆盖未知 / 真实零调用）
               #   *_not_summable 重叠且证据不足、**不可与上面的合计相加**的那部分
-              "src_recomputed", "src_original", "src_estimated",
+              "src_recomputed", "src_original", "src_estimated", "src_repriced",
               # 四项 token（历史记录已按重复计倍数抵掉，见 attribute.legacy_estimate）
               "tok_in", "tok_out", "tok_cache_r", "tok_cache_w",
               "tok_in_claude", "tok_out_claude", "tok_cache_r_claude", "tok_cache_w_claude",
@@ -508,7 +518,7 @@ def main():
               # 缺价时 daemon 联网抓来的单价（GitHub#51），两侧都可能有
               "price_usd_fetched", "price_usd_disputed_fetched",
               "price_src_solved", "price_src_configured", "price_src_default",
-              "price_src_estimated",
+              "price_src_estimated", "price_src_repriced",
               "price_stale_records"]
     weekly = {w: {f: st[w].get(f, 0) for f in FIELDS} for w in weeks}
 

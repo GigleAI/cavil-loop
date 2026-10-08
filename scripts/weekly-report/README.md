@@ -328,3 +328,11 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
    数据来自 `collect.py` 的 `tok_in / tok_out / tok_cache_r / tok_cache_w`（另有按 agent 拆分的字段）。
    堆叠柱的轴上界按**每周各项之和**取，不按单项最大值（`Chart.panel()`；单项取上界时三项各
    10M 的柱子顶到 30M、轴只到 12M，柱子越出面板）。
+20. **交叉 review（codex）那一侧没写金额的记录，出报告时按记录里的 token 补算**。缺价自动补（#55）只让
+   **之后**写出的记账行带上金额；之前写进评论、当时模型还没单价的记录，原来一律「沿用原值」=
+   没有金额，价补上了历史周也不变。现在 `price_solve.codex_price_table()` 按与 `codex.sh` 相同的
+   取价顺序（`CODEX_PRICES` → 内置 `codex-prices.json` + 抓来的价补缺 → 旧三变量兜底）建表，
+   `codex_reprice()` 对 `cost_state=none` 的单模型记录补算，来源记作 `repriced`。多模型记录拆不开
+   token、哪里都没有价的、部署者显式关了估价（`CODEX_PRICES='{}'`）的，一律仍是没有金额。
+   钉住它的是 `tests/weekly-report-codex-reprice.test.sh`。
+   > 来源：维护者问「现在应该能自动更新模型价格才是？」——价确实自动补上了，但周报没用上（GigleTutor-Web#1023）。

@@ -120,6 +120,60 @@ def load_fetched():
         return {}
 
 
+def codex_price_table():
+    """codex 那一侧的单价表，取价顺序与 drivers/token-usage/codex.sh 一致：
+    · 部署者配了 CODEX_PRICES → 只用它（`{}` 表示关闭估价）；
+    · 否则内置 codex-prices.json，再用缺价自动补抓来的价补**内置表里没有的**模型；
+    · 旧的三个变量 CODEX_PRICE_{IN,CACHED_IN,OUT}_PER_M 齐全时，当成所有模型同价的兜底（键 `*`）。
+    返回 {model: {"in":…, "cached_in":…, "out":…, ["cache_write":…]}}。"""
+    env = os.environ.get("CODEX_PRICES")
+    legacy = [os.environ.get(k) for k in
+              ("CODEX_PRICE_IN_PER_M", "CODEX_PRICE_CACHED_IN_PER_M", "CODEX_PRICE_OUT_PER_M")]
+    if env is not None:
+        try:
+            table = json.loads(env)
+        except Exception:
+            table = {}
+        table = table if isinstance(table, dict) else {}
+    elif all(legacy):
+        table = {}
+    else:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "drivers", "token-usage", "codex-prices.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                built = json.load(f).get("models") or {}
+        except Exception:
+            built = {}
+        fetched = {m: e["prices"] for m, e in (load_fetched().get("codex") or {}).items()
+                   if isinstance(e, dict) and isinstance(e.get("prices"), dict)}
+        table = {**fetched, **built}          # 同名时内置覆盖抓来的
+    if all(legacy):
+        try:
+            table = {**table, "*": {"in": float(legacy[0]), "cached_in": float(legacy[1]),
+                                    "out": float(legacy[2])}}
+        except ValueError:
+            pass
+    return table
+
+
+def codex_reprice(rec, table):
+    """没写金额的 codex 记录按记录里的 token 补算。算不出（多模型 / 没有价 / 缺项）返回 None。
+    记录里的 `in` 已是**未命中缓存**的输入（驱动写的是 input − cached），不能再减一次。"""
+    models = rec.get("models") or []
+    if len(models) != 1:
+        return None                         # 一条记录多个模型时 token 拆不开
+    p = table.get(models[0]) or table.get("*")
+    if not isinstance(p, dict) or any(k not in p for k in ("in", "cached_in", "out")):
+        return None
+    t = rec.get("tokens") or {}
+    if (t.get("cache_w") or 0) and "cache_write" not in p:
+        return None
+    return ((t.get("in") or 0) * p["in"] + (t.get("cache_r") or 0) * p["cached_in"]
+            + (t.get("out") or 0) * p["out"]
+            + (t.get("cache_w") or 0) * p.get("cache_write", 0)) / 1e6
+
+
 def fetched_reference():
     """claude 那一侧抓来的单价，形状同 REFERENCE。**内置参照里已有的模型一律不取**——
     抓来的价只补缺，从不覆盖人工核对过的那张表。"""
