@@ -67,8 +67,9 @@
 # 漏算：worker 调本脚本的 Bash 调用本身 + 之后到 gh comment 完成那一小段，
 # transcript 还没 flush 进去，会漏 < 1%（整任务比例）。可忽略。
 #
-# 不在这里算「排除等待的工时」：cost-state 快照是**派工结束之后**才落盘的，
-# 本脚本跑在发评论之前拿不到。那个指标由周报采集器出报告时算（见 worktime.py）。
+# 不在这里算「处理时长」：每一轮只能算给一次派工，要在**全部**派工窗口上统一认领，
+# 本脚本只看得见自己的窗口；而且发评论时本轮还没结束。那个指标由周报采集器出报告时
+# 算（见 scripts/weekly-report/worktime.py）。
 set -uo pipefail
 
 DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$HOME/.config/coding-agent-work-loop/deploy.conf}"

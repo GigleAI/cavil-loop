@@ -80,6 +80,27 @@ def parse_token_line(line):
     return out or None
 
 
+def owner(t, agent, wt, windows):
+    """时刻 t 的一条记录（调用 / 一轮 / 一项）该归哪个派工窗口 —— **唯一认领规则只写在这里**。
+
+    token 认领（claim）与处理时长（worktime.claim）都调它，规则只有一份：
+    agent 相同、worktree 相同、start ≤ t < end（半开）；多个候选取 start 最晚的；
+    一个都没有返回 None（= 未归属，不分给任何派工）。
+    """
+    cands = candidates(t, agent, wt, windows)
+    return _latest(cands) if cands else None
+
+
+def candidates(t, agent, wt, windows):
+    """时刻 t 落在其中的全部窗口（同 agent、同 worktree、半开区间）。"""
+    return [w for w in windows
+            if w["agent"] == agent and w["wt"] == wt and w["start"] <= t < w["end"]]
+
+
+def _latest(cands):
+    return max(cands, key=lambda w: w["start"])            # start 最晚的那个
+
+
 def claim(calls, windows):
     """① 认领。calls: [{t, agent, wt, tok}]；windows: [{key, agent, wt, start, end}]。
 
@@ -92,9 +113,7 @@ def claim(calls, windows):
     foreign = {w["key"]: {"tok": {k: 0 for k in ITEMS}, "n": 0} for w in windows}
     unattr = {}
     for c in calls:
-        cands = [w for w in windows
-                 if w["agent"] == c["agent"] and w["wt"] == c["wt"]
-                 and w["start"] <= c["t"] < w["end"]]
+        cands = candidates(c["t"], c["agent"], c["wt"], windows)
         if not cands:
             d = unattr.setdefault((c["wt"], c["agent"]),
                                   {"tok": {k: 0 for k in ITEMS}, "n": 0})
@@ -102,12 +121,12 @@ def claim(calls, windows):
                 d["tok"][k] += c["tok"].get(k, 0)
             d["n"] += 1
             continue
-        owner = max(cands, key=lambda w: w["start"])       # start 最晚的那个
-        by_owner[owner["key"]]["n"] += 1
+        own = _latest(cands)
+        by_owner[own["key"]]["n"] += 1
         for k in ITEMS:
-            by_owner[owner["key"]]["tok"][k] += c["tok"].get(k, 0)
+            by_owner[own["key"]]["tok"][k] += c["tok"].get(k, 0)
         for w in cands:                                     # 被别人拿走的，记进 X
-            if w["key"] != owner["key"]:
+            if w["key"] != own["key"]:
                 foreign[w["key"]]["n"] += 1
                 for k in ITEMS:
                     foreign[w["key"]]["tok"][k] += c["tok"].get(k, 0)
