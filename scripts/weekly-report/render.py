@@ -134,7 +134,8 @@ def legw(t):
 
     别用 `len(t)*常数`：中文一个字约 11.5px、拉丁字符约 6.3px，按拉丁宽度算会严重低估，
     图例条目多、标签长的时候就会叠在一起糊成一团（实测投入面那张图加到 3 条图例后
-    「总耗时（含等待）」「其中模型 + 工具（估算）」「行 / 小时（总耗时）」直接压在一起）。
+    「总耗时（含等待）」「其中模型 + 工具（估算）」「行 / 小时（总耗时）」直接压在一起；
+    那条折线现在叫「其中处理时长（不含轮间等待）」，更长，GigleTutor-Web#933）。
     """
     return sum(11.5 if ord(c) > 0x2E80 else 6.3 for c in t)
 
@@ -214,7 +215,7 @@ def main():
     fc=W.index(swk) if swk in W else None
     sw=(fc,"口径切换") if fc is not None else None
     hrs=[wk[k]["wall"]/3600 for k in W]
-    # 「模型 + 工具」是估算，且不是每周都算得出（日志已不在 / 窗口配不上）。
+    # 处理时长不是每周都算得出（日志已不在、本地台账里也没有）。
     # 算不出的周给 None → 折线断开，不画成 0（那会被读成「那周没在跑模型」）。
     # 整段都没有就整条不画，别在图上留一条空系列。
     whrs=[(wk[k]["work"]/3600 if wk[k].get("work_records") else None) for k in W]
@@ -223,15 +224,16 @@ def main():
     lph=[(net[i]/hrs[i] if hrs[i] else None) for i in range(len(W))]
     # ⚠️ 柱子画的是**总耗时**，它**包含**派工里的等待。标题 / 副标题 / 图例都必须这么说：
     # 这张图会被直接贴进周报，图上写「不含等人回话的空档」而正文写「包含等待」，
-    # 读图的人只会记住图（#932 review 第 6 轮）。「不含等待」的是那条模型 + 工具折线。
+    # 读图的人只会记住图（#932 review 第 6 轮）。折线是处理时长：它只排除**轮与轮之间**的
+    # 等待，轮内的等待照算——所以图上不能写无条件的「不含等待」（GigleTutor-Web#933）。
     time_series=[{"type":"bar","data":hrs,"color":AQUA,"label":"总耗时（含等待）","axis":"l","fmt":fmt_h}]
     if has_work:
         time_series.append({"type":"line","data":whrs,"color":VIO,
-                            "label":"其中模型 + 工具（估算）","axis":"l"})
+                            "label":"其中处理时长（不含轮间等待）","axis":"l"})
     time_series.append({"type":"line","data":lph,"color":ORANGE,"label":"行 / 小时（总耗时）","axis":"r"})
     p_time=ch.panel(0,340,1212,320,"AI 投入时间：每周总耗时（含等待）",
         "柱＝当周每次派工从开工到完工走过的钟点数累计，中间干等的时间也算在内（左轴）；"
-        + ("同轴折线＝其中「模型 + 工具」的估算小时（不含等待，算不出的周断开）；" if has_work else "")
+        + ("同轴折线＝其中 AI 每一轮从开始到结束的处理时长（不含轮与轮之间的等待，轮内等待照算；算不出的周断开）；" if has_work else "")
         + "右轴折线＝平均每小时（按总耗时算）写出多少行净增代码。",
         time_series,note=sw)
     # 金额一律美元：标题 / 副标题 / 两条图例都写出来。图会被单独贴进周报、脱离正文，

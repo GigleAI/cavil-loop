@@ -73,6 +73,7 @@
 - **PDF 里不写周报工具自身的元信息**（口径修正、数据遗漏、复核过程）——那些留在 issue 评论里说。PDF 是给人看「这周干了什么」的
 - 出 PDF 与发布：`node topdf.mjs <项目目录> report.md report.pdf --title T --subtitle S`，然后 `URL=$(bash publish-asset.sh <project-key> report.pdf)`（自动加 `rev` + 校验公网 200）
 - **明细不能只看 issue 侧活跃度** —— 很多 issue 定完方案就没人再回 issue 页，整周讨论全在 PR 上。入选条件是三选一：issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭。没有关联 issue 的 PR 用 `loose_prs` 单列一组
+- **处理时长按「轮」算，每一轮只归一个派工**（GigleTutor-Web#933）。一轮 = 主会话里共用同一个 `promptId` 的一段记录，**不能按「非 meta 的用户记录」切**：工具结果也是 `type=user`、没有 `isMeta`，按它切会丢掉中间全部工具执行时间。轮的**开始时刻**交给 `attribute.owner()`（与 token 认领同一个函数），而且要在**全部**去重后的窗口上统一认领——逐窗口各自挑「开始落在本窗口里」的轮，窗口重叠时同一轮会算两遍。认领到的派工拿整轮、不封顶，所以处理时长可能超过总耗时，报告里那张清单是披露、不是错配告警。两个坑：`model=<synthetic>` 的 assistant 记录（「No response requested.」）是上一轮被中断后、新指令到来时 CLI 补写的，时间戳是补写时刻，拿它延长上一轮会把几分钟变成 41h / 75h / 522h，一周合计翻三倍；CLI 会删旧会话日志，所以每次采集把轮并进本地台账（`<缓存目录>/worktime-turns.jsonl`，`flock` + 原子替换，结束时刻只往后推，「已结束」只能从否变是）。**不能把这个指标写成「不含等待」**：轮内等待（权限确认、重试退避、进程挂起）照算
 
 ### Label 值
 
