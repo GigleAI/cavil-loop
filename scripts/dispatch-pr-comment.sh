@@ -33,6 +33,9 @@ ISSUE_N="$(pr_to_issue_num "$PR" "$BRANCH")"
 if [ -z "$ISSUE_N" ]; then
     log "PR #$PR: pr_to_issue_num 返回空（异常状态——预期 fallback 到 PR 编号永远非空，可能 gh API 故障）"
     log "  → 翻 label 回 $LABEL_PENDING_HUMAN 防反复重试，手动检查后再 label"
+    notify_bounced_to_human "$PR" \
+        "daemon 解析不出这个 PR 对应的工作编号（多半是 GitHub API 当时异常）。" \
+        "稍后直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；反复出现请查 daemon 机器上的 poll.log。"
     run_gh "label 翻转 (PR #$PR 兜底 pending/agent → pending/human)" \
         gh_label_flip "$PR" \
         --add "$LABEL_PENDING_HUMAN" \
@@ -171,6 +174,9 @@ if HOLDER=$(branch_checked_out_elsewhere "$BRANCH" "$WORKTREE"); then
     log "PR #$PR -> 分支 $BRANCH 已被另一个 worktree 签出：$HOLDER"
     log "  → 拒绝重建 worktree（fetch 会被 git 拒绝；--force 建出来是两个 worktree 共用一个分支）"
     log "  → 翻 label 回 $LABEL_PENDING_HUMAN，不重试。清掉占用者（git worktree remove '$HOLDER'）后重标 $LABEL_PENDING_AGENT 即可继续"
+    notify_bounced_to_human "$PR" \
+        "分支 \`$BRANCH\` 已被本机另一个 worktree 签出（\`$HOLDER\`），daemon 没法为这个 PR 建工作目录——硬建会变成两个 worktree 往同一分支提交。" \
+        "在 daemon 所在机器上确认那个 worktree 没有未提交 / 未推送的改动后执行 \`git worktree remove '$HOLDER'\`，再把标签改回 \`$LABEL_PENDING_AGENT\`。"
     run_gh "label 翻转 (PR #$PR 分支被占用 → $LABEL_PENDING_HUMAN)" \
         gh_label_flip "$PR" \
         --add "$LABEL_PENDING_HUMAN" \

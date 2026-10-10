@@ -153,6 +153,9 @@ self_heal_one() {
     else
         log "⚠️ self-heal: $kind #$n 自动恢复 $((tries - 1)) 次仍死（疑似会话损坏）→ 转人工 $LABEL_PENDING_HUMAN"
         pace_mark_acted
+        notify_bounced_to_human "$n" \
+            "worker 会话在工作中途消失，daemon 自动重新派工 $((tries - 1)) 次仍然立刻死掉，疑似会话本身已损坏。" \
+            "在 daemon 机器上用 \`session-log.sh $issue_n\` 看 pane 历史定位原因；处理后把标签改回 \`${pending_label}\` 继续。"
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/human)" \
             gh_label_flip "$n" \
             --add "$LABEL_PENDING_HUMAN" \
@@ -356,6 +359,9 @@ dispatch_failed() {
         return 0
     fi
     log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 $LABEL_PENDING_HUMAN（停止重试）：$reason"
+    notify_bounced_to_human "$num" \
+        "daemon 连续 $tries 次没能把这条活派出去，为防止空转已停止重试。最后一次的错误：\`$(printf '%s' "$reason" | tr '`' "'")\`" \
+        "按上面的错误排除问题（完整上下文在 daemon 机器的 poll.log），然后把标签改回 \`$LABEL_PENDING_AGENT\`，重试次数会重新计。"
     run_gh "label 翻转 (${kind} #${num} 连续派工失败 → $LABEL_PENDING_HUMAN)" \
         gh_label_flip "$num" \
         --add "$LABEL_PENDING_HUMAN" \

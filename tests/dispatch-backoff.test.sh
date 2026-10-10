@@ -210,6 +210,9 @@ chk_has "poll.log 写出占用者的路径"      "$logged" "$HOLDER_DIR"
 chk "没有新建 worktree（没出现双签出）"  "$after_wt" "$before_wt"
 chk "占用分支仍然只有一个 checkout"      "$(git -C "$PROJECT" worktree list --porcelain | grep -c '^branch refs/heads/feature/issue-34$')" "1"
 chk_has "翻了 pending/human 标签"        "$(cat "$GH_CALLS")" "labels[]=pending/human"
+# 只翻 label 不说话，看 PR 的人摸不着头脑（tutor PR #959）——原因和恢复办法要留在 PR 上
+chk "在 PR 上留了一条转人工说明"         "$(grep -c -- '-X POST repos/example/none/issues/34/comments' "$GH_CALLS")" "1"
+chk_has "说明里写出占用者路径"           "$(cat "$GH_CALLS")" "git worktree remove '$HOLDER_DIR'"
 # 没走 fetch：确定性失败不该再白跑一次出网
 chk "没有尝试 fetch（不做注定失败的出网）" "$(printf '%s' "$logged" | grep -c 'refusing to fetch')" "0"
 
@@ -338,6 +341,7 @@ for round in 1 2 3 4; do
     CODING_AGENT_CONFIG="$E2E_CONF" bash "$E2E_SCRIPTS/agent-poll.sh" >/dev/null 2>&1
     eval "R${round}_CALLS=\$(n_dispatch)"
     eval "R${round}_LABELS=\$(labels_now)"
+    eval "R${round}_NOTES=\$(grep -c -- '-X POST repos/example/none/issues/50/comments' \"\$E2E_GH_CALLS\")"
 done
 
 chk "第 1 轮派了 1 次"                     "$R1_CALLS" "1"
@@ -346,6 +350,10 @@ chk "第 3 轮派到上限"                       "$R3_CALLS" "3"
 chk "第 4 轮不再派工（热循环被刹住）"        "$R4_CALLS" "3"
 chk_has "第 1、2 轮标签没动，仍是 pending/agent" "$R2_LABELS" "pending/agent"
 chk_has "到上限后翻成 pending/human"        "$R3_LABELS" "pending/human"
+chk "重试期间不在 issue 上留言（瞬时失败不打扰人）" "$R2_NOTES" "0"
+chk "转人工时留了一条说明"                  "$R3_NOTES" "1"
+chk "之后不重复留言"                        "$R4_NOTES" "1"
+chk_has "说明里带最后一次的错误"            "$(cat "$E2E_GH_CALLS")" "refusing to fetch into branch"
 chk "到上限后触发 label 已被摘掉"           "$(printf '%s' "$R3_LABELS" | grep -c 'pending/agent')" "0"
 
 e2e_log=$(cat "$E2E_LOG")

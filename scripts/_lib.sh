@@ -2232,6 +2232,20 @@ gh_label_flip() {
     return 0
 }
 
+# daemon 自己把活转人工（翻 $LABEL_PENDING_HUMAN）时，先在 issue / PR 上留一条评论。
+# 只翻 label 不说话的话，看 issue 的人只看到标签变了，既不知道出了什么事也不知道该干什么
+# ——原因只写在本机 poll.log 里，而没人会去翻 poll.log（tutor PR #959：留言「解一下冲突」
+# 后一秒被翻回 pending/human，页面上零解释）。
+# 用法：notify_bounced_to_human <num> <原因（一句话，可含 markdown）> <怎么继续>
+# 评论失败只记日志、不挡后面的 label 翻转：说明丢了是体验问题，label 不翻会重新热循环。
+notify_bounced_to_human() {
+    local num="$1" reason="$2" next="$3" body
+    body="$(printf '⚠️ **自动处理已暂停，转人工（`%s`）**\n\n**原因**：%s\n\n**怎么继续**：%s\n\n<sub>coding-agent daemon @ %s 自动留言</sub>' \
+        "$LABEL_PENDING_HUMAN" "$reason" "$next" "$(hostname -s 2>/dev/null || hostname)")"
+    run_gh "转人工说明评论 (#$num)" \
+        gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" || true
+}
+
 # ── 主 checkout 长期落后的告警 ──
 # sync_project_checkout 的三条保护（不在 base / 有 WIP / 分叉）都是有意的：daemon
 # 绝不碰人的工作区。代价是它们只写 poll.log —— 而没人会去翻 poll.log。实测过一次：

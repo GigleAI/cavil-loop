@@ -129,6 +129,9 @@ start_session_logging "$TMUX_SESSION"
 #     —— 没活起来就不翻 doing/agent，留在 pending/agent 等下轮重试，避免假"进行中"。
 if ! verify_fresh_session "$TMUX_SESSION"; then
     log "dispatch-new-issue: #$ISSUE worker 秒退 → 翻 $LABEL_PENDING_AGENT 回 $LABEL_PENDING_HUMAN（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
+    notify_bounced_to_human "$ISSUE" \
+        "worker 启动后立刻退出了（常见：agent CLI 正在自动升级、新目录的信任确认弹窗）。死因已截在 daemon 机器的 poll.log 里。" \
+        "偶发的话直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；再秒退就去 poll.log 看截下来的 pane 输出。"
     run_gh "label 翻转 (issue #$ISSUE 秒退 pending/agent → pending/human)" \
         gh_label_flip "$ISSUE" \
         --add "$LABEL_PENDING_HUMAN" \
