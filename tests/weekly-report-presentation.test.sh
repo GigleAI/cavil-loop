@@ -42,7 +42,7 @@ for i, (k, sp) in enumerate(zip(weeks, spec)):
         "records": rcl + rcd, "dupes": 0,
         "footers": rcl + rcd, "cost_footers": rcl + rcd,
         "work_records": rcl + rcd, "work_missing": 0,
-        "long_windows": 0, "misattributed": 0,
+        "long_windows": 0, "long_turns": 0,
         "wall_claude": rcl * 3600, "wall_codex": rcd * 3600,
         "work_claude": rcl * 1800, "work_codex": rcd * 1800,
         "cost_claude": ccl, "cost_codex": ccd,
@@ -59,7 +59,7 @@ if "SWITCH_WEEK" in __import__("os").environ:
     sw = __import__("os").environ["SWITCH_WEEK"] or None
 json.dump({"weeks": weeks, "weekly": weekly, "switch_week": sw,
            "target_week": {"start": weeks[-1], "end": "2025-02-02"},
-           "detail": [], "loose_prs": [], "long_windows": [], "misattributed": [],
+           "detail": [], "loose_prs": [], "long_windows": [], "long_turns": [],
            "generated_at": "2025-02-03T09:00:00"}, open(out, "w"))
 PY
 python3 "$REPORT" --data "$TMP/data.json" --out "$TMP/report.md" \
@@ -79,7 +79,7 @@ chk "明说占比算不出来、不是 0%"                   "$(has '算不出�
 chk "合计成本标明只含已知金额的条数"               "$(has '$10（仅 1/2 条有金额）')" "yes"
 chk "正文点出本周有几条没金额"                     "$(has '有 **1 条没有金额**（其中交叉 review 那一侧 1 条）')" "yes"
 chk "墙上时长的环比 → 不给百分比"                  "$(chg 'AI 总耗时（含等待）')" "—（口径变化，不可比）"
-chk "模型 + 工具的环比 → 不给百分比"               "$(chg '其中模型 + 工具（不含等待）')" "—（口径变化，不可比）"
+chk "处理时长的环比 → 不给百分比"                 "$(chg '其中处理时长（不含轮间等待）')" "—（口径变化，不可比）"
 chk "折算价值的环比 → 不给百分比"                      "$(chg '折算价值（美元，按公开标价）')" "—（口径变化，不可比）"
 chk "同口径的业务指标照常给环比"                   "$(chg '新提 issue')" "+0%"
 chk "逐周表标出切换周"                             "$(has '† 1/13 那周起口径改了')" "yes"
@@ -153,6 +153,36 @@ chk "并列表照常出"                         "$(has '两侧合计·新口径
 chk "并写明是第 2 / 4 周"                  "$(has '第 2 / 4 周')" "yes"
 chk "说明本周该侧没有记账、不是口径回退"   "$(has '两行数值相同')" "yes"
 chk "占比那一段也说明本周该侧没有记录"     "$(has '没有记账记录')" "yes"
+
+echo
+echo "── 场景 J：处理时长的文案（GigleTutor-Web#933）——按实际产物核对 ──"
+# 新口径只排除**轮与轮之间**的等待，轮内等待照算。所以报告、图、写解读的提示里都不能再有
+# 无条件的「不含等待」/「真干了多少活」，超长清单也不能再说是「差分错位」。
+mkfix "1:10:0:0:0" "1:10:0:0:0"
+python3 - "$TMP/data.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); tw = d["target_week"]["start"]
+d["long_turns"] = [{"num": 7, "week": tw, "wall": 57, "work": 3200}]
+d["work_unattributed"] = [{"wt": 7, "agent": "claude", "week": tw, "turns": 2, "secs": 1800}]
+d["weekly"][tw]["work_in_progress"] = 1
+json.dump(d, open(sys.argv[1], "w"))
+PY
+python3 "$REPORT" --data "$TMP/data.json" --out "$TMP/report.md" \
+    --asset-url-base "https://example.invalid/a" --rev test >/dev/null 2>"$TMP/err.txt" \
+    || { echo "report.py 跑挂了："; cat "$TMP/err.txt"; exit 1; }
+chk "总表行名是新名字"                     "$(has '| 其中处理时长（不含轮间等待） |')" "yes"
+chk "逐周表头是新名字"                     "$(has '| AI 总耗时 | 处理时长 |')" "yes"
+chk "报告里不再有无条件的「不含等待」"     "$(grep -c '不含等待' "$TMP/report.md")" "0"
+chk "报告里不再有「真干了多少活」"         "$(grep -c '真干了多少活' "$TMP/report.md")" "0"
+chk "报告里不再有旧名「模型 + 工具」作指标名" "$(grep -c '| 模型 + 工具 |\|其中模型 + 工具' "$TMP/report.md")" "0"
+chk "口径说明写明含轮内等待"               "$(has '但**含轮内的等待**')" "yes"
+chk "超长清单说明不是错配"                 "$(has '**不代表数据错配**')" "yes"
+chk "超长清单列出那条"                     "$(has '| #7 | 0h01m | 53h20m |')$(has '| 处理时长 | 倍数 |')" "noyes"
+chk "未归属的轮单列"                       "$(has '没归给任何派工的轮（2 轮）')" "yes"
+chk "进行中的轮写进口径说明"               "$(has '另有 1 轮在出报告时还没有结束标记')" "yes"
+RUNSH="$REPO_DIR/scripts/weekly-report/run.sh"
+chk "写解读的提示：用新名字"               "$(grep -c '处理时长（不含轮间等待）' "$RUNSH")" "1"
+chk "写解读的提示：不再要求写「模型 + 工具（不含等待）」" "$(grep -c '模型 + 工具' "$RUNSH")" "0"
 
 echo
 echo "通过 $pass / 失败 $fail"

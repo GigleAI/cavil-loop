@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import record
 import attribute
 import price_solve      # noqa: E402  记账记录提取 + 派工去重
-import worktime    # noqa: E402  「模型 + 工具」时长（排除等待）
+import worktime    # noqa: E402  处理时长（按轮起止，不含轮与轮之间的等待）
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))  # 报告按北京时间切周
 
@@ -65,7 +65,7 @@ def main():
     ap.add_argument("--weeks", type=int, default=10)
     ap.add_argument("--week-of", default=None,
                     help="目标周内任意一天 YYYY-MM-DD；默认取最近一个完整周")
-    # 「模型 + 工具」时长要按派工窗口去本机 agent 日志里取，需要知道 worktree 路径。
+    # 处理时长要去本机 agent 日志里取每一轮的起止，需要知道 worktree 路径。
     # 路径属于部署环境，不写死在本仓库里；调用方（run.sh）从项目配置传进来。
     # 两个都不给就跳过这个指标，其余照常出。
     ap.add_argument("--worktree-base", default=None, help="worktree 存放基础目录")
@@ -147,16 +147,10 @@ def main():
     seen = set()
     claimed = {}               # 派工身份 (wt, 开始) → 该次派工最终那条累计记录
     long_windows = []          # 墙上 ≥ 4 小时的记录，报告里逐条点名（不改数字）
-    misattributed = []         # 「模型+工具」明显超过自身墙上时长的，点名（不改数字）
+    long_turns = []            # 处理时长明显超过自身总耗时的，点名披露（不改数字）
 
     def wk(dt):
         return monday(dt.date()).isoformat()
-
-    def worktree_of(num):
-        """评论所在的 issue / PR 号 → 它的 worktree 路径。拿不到返回 None。"""
-        if not (a.worktree_base and a.session_prefix):
-            return None
-        return f"{a.worktree_base}/{a.session_prefix}-{link.get(num, num)}"
 
     def rec_week(rec, fallback):
         """这条记账记录算在**哪一周** —— 按派工的**开始时刻**，不按写评论的时刻。
@@ -255,9 +249,7 @@ def main():
         for w in ws:
             rec = claimed[w["key"]][0]
             mine = [c for c in calls
-                    if w["start"] <= c["t"] < w["end"]
-                    and max((x for x in ws if x["start"] <= c["t"] < x["end"]),
-                            key=lambda y: y["start"])["key"] == w["key"]]
+                    if (attribute.owner(c["t"], c["agent"], c["wt"], ws) or {}).get("key") == w["key"]]
             chk = attribute.log_check(rec.get("tokens"), own[w["key"]]["tok"],
                                       foreign[w["key"]]["tok"], has_log, meta["parsed"])
             if chk in ("no_shortfall_detected", "true_zero"):
@@ -282,6 +274,14 @@ def main():
     for w in windows:
         sources.setdefault(w["key"], "original")
     summable, _gid = attribute.summable(windows, sources)
+
+    # ── 处理时长：每一轮 / 每一项按开始时刻唯一认领给一个派工（GigleTutor-Web#933）──
+    # 必须在**全部**去重后的窗口上统一认领：逐窗口各自去挑「开始落在本窗口里」的轮，
+    # 窗口重叠时同一轮会被两个派工各算一遍。规则与 token 认领同一个函数（attribute.owner）。
+    work_by_key, work_open, work_unattr = {}, {}, []
+    if a.worktree_base and a.session_prefix:
+        work_by_key, work_open, work_unattr = worktime.claim(
+            windows, lambda wt: f"{a.worktree_base}/{a.session_prefix}-{wt}" if wt is not None else None)
 
     codex_table = price_solve.codex_price_table()
     # ── 第二段：每次派工只按它最终那条累计记录入账，算在**开工那一周** ──
@@ -416,19 +416,19 @@ def main():
             long_windows.append({"num": num, "week": w, "wall": wall,
                                  "start": str(rec["start"]), "end": str(rec["end"])})
 
-        # 「模型 + 工具」时长：出报告时才算得出（累计快照是派工结束后才落盘的）
-        work = worktime.window_work(rec.get("agent") or "claude",
-                                    worktree_of(num), rec["start"], rec["end"])
+        # 处理时长：上面已对全部窗口统一认领；一轮都没认领到 = 拿不到（不是 0）
+        work = work_by_key.get(key)
         if work is None:
             s["work_missing"] += 1
         else:
             s["work"] += work
             s["work_records"] += 1
             s[f"work_{agent}"] += work
-            if worktime.misattributed(work, wall):
-                s["misattributed"] += 1
-                misattributed.append({"num": num, "week": w, "wall": wall,
-                                      "work": round(work)})
+            s["work_in_progress"] += work_open.get(key, 0)
+            if worktime.long_turn(work, wall):
+                s["long_turns"] += 1
+                long_turns.append({"num": num, "week": w, "wall": wall,
+                                   "work": round(work)})
 
         if w == target.isoformat():
             p = per_issue[num]
@@ -489,7 +489,7 @@ def main():
     FIELDS = ["iss_open", "iss_closed", "pr_open", "pr_merged", "comments", "human",
               "bot", "wall", "work", "cost", "out", "commits", "add", "del",
               "records", "dupes", "footers", "cost_footers", "long_windows",
-              "misattributed", "work_records", "work_missing",
+              "long_turns", "work_records", "work_missing", "work_in_progress",
               "codex", "sess_med", "backlog",
               # 按 agent 拆分：切换周之后同时纳入交叉 review 那一侧，覆盖面会变大，
               # 所以要能分别给出「仅主 worker」与「两侧合计」，不能混成同口径趋势。
@@ -607,12 +607,26 @@ def main():
     loose.sort(key=lambda d: -d["wall"])
 
     long_windows.sort(key=lambda x: -x["wall"])
-    misattributed.sort(key=lambda x: -(x["work"] / max(x["wall"], 1)))
+    long_turns.sort(key=lambda x: -(x["work"] / max(x["wall"], 1)))
+    # 没归给任何派工的轮：按**各自的开始周**汇总，落在展示窗口里的才列出；
+    # 不分给任何派工、不进合计
+    ua = {}
+    for u in work_unattr:
+        uw = wk(u["start"])
+        if uw not in wset:
+            continue
+        d = ua.setdefault((u["wt"], u["agent"], uw),
+                          {"wt": u["wt"], "agent": u["agent"], "week": uw, "turns": 0, "secs": 0.0})
+        d["turns"] += 1
+        d["secs"] += u["secs"]
+    unattributed = sorted(({**d, "secs": round(d["secs"])} for d in ua.values()),
+                          key=lambda u: -u["secs"])
     json.dump({"repo": R, "generated_at": datetime.datetime.now(TZ).isoformat(),
                "price_reference": {"source": price_table.get("reference_source"),
                                   "policy": price_table.get("policy")},
                "switch_week": switch_week(st),
-               "long_windows": long_windows, "misattributed": misattributed,
+               "long_windows": long_windows, "long_turns": long_turns,
+               "work_unattributed": unattributed,
                "target_week": {"start": tw, "end": tend.isoformat()},
                "weeks": weeks, "weekly": weekly, "detail": detail,
                "loose_prs": loose},

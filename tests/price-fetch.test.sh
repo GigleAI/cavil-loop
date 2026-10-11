@@ -242,7 +242,7 @@ tw, prev = "2026-10-05", "2026-09-28"
 ZERO = {k: 0 for k in (
   "iss_open","iss_closed","pr_open","pr_merged","comments","human","bot","wall","work","cost",
   "out","commits","add","del","records","dupes","footers","cost_footers","long_windows",
-  "misattributed","work_records","work_missing","codex","sess_med","backlog","wall_claude",
+  "long_turns","work_records","work_missing","codex","sess_med","backlog","wall_claude",
   "wall_codex","cost_claude","cost_codex","work_claude","work_codex","records_claude",
   "records_codex","cost_records","cost_records_claude","cost_records_codex","src_recomputed",
   "src_original","state_full","state_partial","state_none","log_no_shortfall_detected",
@@ -254,7 +254,7 @@ cur = dict(ZERO); cur.update({"cost": 3.0, "records": 1, "cost_records": 1, "sta
        "price_usd_fetched": 3.0, "price_src_default": 1, "records_codex": 1, "cost_records_codex": 1})
 json.dump({"repo": "acme/widget", "generated_at": "2026-10-08T00:00:00",
            "price_reference": {"source": "ref-x", "policy": "A"},
-           "switch_week": None, "long_windows": [], "misattributed": [],
+           "switch_week": None, "long_windows": [], "long_turns": [],
            "target_week": {"start": tw, "end": "2026-10-12"},
            "weeks": [prev, tw], "weekly": {prev: dict(ZERO), tw: cur}, "detail": [], "loose_prs": []},
           open(sys.argv[1], "w"))

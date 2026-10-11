@@ -134,8 +134,8 @@ chk "标题不再自称「实际干活的小时数」" "$(q '"实际干活" in t
 chk "副标题不再说「不含等人回话的空档」" \
     "$(q '"不含等人回话的空档" in read("effort")')" "False"
 chk "柱子的图例写明含等待"            "$(q '"总耗时（含等待）" in legends(seg("effort",1))')" "True"
-chk "没有 work 数据时不画模型+工具折线" \
-    "$(q 'any("模型 + 工具" in t for t in legends(seg("effort",1)))')" "False"
+chk "没有 work 数据时不画处理时长折线" \
+    "$(q 'any("处理时长" in t for t in legends(seg("effort",1)))')" "False"
 chk "图例不叠字（中文按中文宽度排版，不是按拉丁宽度）" \
     "$(q 'legoverlap("effort")')" "0"
 
@@ -229,11 +229,13 @@ INNER3
 )" "0"
 
 echo
-echo "— 有 work 数据时并列画出「模型 + 工具」"
-chk "画出模型 + 工具折线（不含等待的那条）" \
-    "$(sw effort 'any("模型 + 工具" in t for t in re.findall(r"class=.leg.>([^<]*)<", s))')" "True"
-chk "副标题点明那条不含等待" \
-    "$(sw effort '"不含等待" in s')" "True"
+echo "— 有 work 数据时并列画出「处理时长」（GigleTutor-Web#933）"
+chk "画出处理时长折线，图例写明只排除轮间等待" \
+    "$(sw effort 'any(t == "其中处理时长（不含轮间等待）" for t in re.findall(r"class=.leg.>([^<]*)<", s))')" "True"
+chk "副标题写明轮内等待照算" \
+    "$(sw effort '"轮内等待照算" in s')" "True"
+chk "图上不再有无条件的「不含等待」，也不再有旧名「模型 + 工具」" \
+    "$(sw effort '("不含等待" in s) or ("模型 + 工具" in s)')" "False"
 chk "三条图例并排时仍不叠字" "$(swleg)" "0"
 
 echo

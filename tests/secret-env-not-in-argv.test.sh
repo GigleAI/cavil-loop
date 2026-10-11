@@ -11,6 +11,16 @@
 # 长驻 tmux server 的命令行里挂了 11 小时。
 set -uo pipefail
 
+# 在干净环境里重跑自己。worker 会话是 daemon 起的，环境里本来就带着真的 GH_TOKEN /
+# WRITE_GH_TOKEN / GH_TOKEN_FILE；继承下来，被测函数读到的是这些真值而不是下面造的
+# 假值（PR #60 实测：main 上同样 4 条假红，失败输出里还印出了真 token）。白名单只放
+# 跑测试必需的几个变量，往后 daemon 再多注入什么也漏不进来。
+if [ -z "${SECRET_TEST_CLEAN_ENV:-}" ]; then
+    keep=(SECRET_TEST_CLEAN_ENV=1 HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" TERM="${TERM:-dumb}")
+    [ -n "${TMPDIR:-}" ] && keep+=(TMPDIR="$TMPDIR")
+    exec env -i "${keep[@]}" bash "${BASH_SOURCE[0]}" "$@"
+fi
+
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 
@@ -31,6 +41,13 @@ WORKER_PASS_ENV="GH_TOKEN"
 CONF
 mkdir -p "$SANDBOX/state" "$SANDBOX/project" "$SANDBOX/wt"
 
+# 私有 tmux server。默认 server 是本机常驻的那个，它的全局环境里有 WRITE_GH_TOKEN，
+# 新会话会继承 ——「worker 环境里没有 WRITE_GH_TOKEN」那条就会红，而且红的原因跟
+# 被测代码无关。socket 放在 SANDBOX 之外：下面 cleanup 会删 SANDBOX。
+TMUX_DIR=$(mktemp -d)
+export TMUX_TMPDIR="$TMUX_DIR"
+TMUX_SOCK="$TMUX_DIR/tmux-$(id -u)/default"
+
 export CODING_AGENT_CONFIG="$TMP_CONF"
 export GH_TOKEN="$FAKE_TOKEN"
 exec 8>&2
@@ -40,13 +57,11 @@ exec 2>&8 8>&-
 set +e
 
 cleanup() {
-    for s in $(tmux ls 2>/dev/null | awk -F: '$1 ~ /^secrettest-/ {print $1}'); do
-        tmux kill-session -t "=$s" 2>/dev/null || true
-    done
-    rm -rf "$SANDBOX"
+    # 显式 -S：就算 TMUX_TMPDIR 没生效，也绝不会去关本机的默认 server（上面跑着 worker）。
+    tmux -S "$TMUX_SOCK" kill-server 2>/dev/null || true
+    rm -rf "$SANDBOX" "$TMUX_DIR"
 }
 trap cleanup EXIT
-cleanup
 
 pass=0; fail=0
 chk() {

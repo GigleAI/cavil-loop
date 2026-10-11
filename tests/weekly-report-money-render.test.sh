@@ -46,7 +46,7 @@ if priced:
 ZERO = {k: 0 for k in (
   "iss_open","iss_closed","pr_open","pr_merged","comments","human","bot","wall","work","cost",
   "out","commits","add","del","records","dupes","footers","cost_footers","long_windows",
-  "misattributed","work_records","work_missing","codex","sess_med","backlog","wall_claude",
+  "long_turns","work_records","work_missing","codex","sess_med","backlog","wall_claude",
   "wall_codex","cost_claude","cost_codex","work_claude","work_codex","records_claude",
   "records_codex","cost_records","cost_records_claude","cost_records_codex","src_recomputed",
   "src_original","state_full","state_partial","state_none","log_no_shortfall_detected",
@@ -68,7 +68,7 @@ prev = (mon - datetime.timedelta(days=7)).isoformat()
 weekly = {prev: dict(ZERO), tw: cur}
 json.dump({"repo": "acme/widget", "generated_at": datetime.datetime.now().isoformat(),
            "price_reference": {"source": "ref-x", "policy": "A"},
-           "switch_week": None, "long_windows": [], "misattributed": [],
+           "switch_week": None, "long_windows": [], "long_turns": [],
            "target_week": {"start": tw, "end": (mon + datetime.timedelta(days=7)).isoformat()},
            "weeks": [prev, tw], "weekly": weekly, "detail": [], "loose_prs": []}, open(out, "w"))
 print(f"price_calls: usd={round(usd,4)} unk={unk} state={state} buckets={buckets}", file=sys.stderr)
@@ -81,7 +81,7 @@ out, tw = sys.argv[1], sys.argv[2]
 ZERO = {k: 0 for k in (
   "iss_open","iss_closed","pr_open","pr_merged","comments","human","bot","wall","work","cost",
   "out","commits","add","del","records","dupes","footers","cost_footers","long_windows",
-  "misattributed","work_records","work_missing","codex","sess_med","backlog","wall_claude",
+  "long_turns","work_records","work_missing","codex","sess_med","backlog","wall_claude",
   "wall_codex","cost_claude","cost_codex","work_claude","work_codex","records_claude",
   "records_codex","cost_records","cost_records_claude","cost_records_codex","src_recomputed",
   "src_original","state_full","state_partial","state_none","log_no_shortfall_detected",
@@ -92,7 +92,7 @@ ZERO = {k: 0 for k in (
 mon = datetime.date.fromisoformat(tw)
 json.dump({"repo": "acme/widget", "generated_at": datetime.datetime.now().isoformat(),
            "price_reference": {"source": "ref-x", "policy": "A"},
-           "switch_week": None, "long_windows": [], "misattributed": [],
+           "switch_week": None, "long_windows": [], "long_turns": [],
            "target_week": {"start": tw, "end": (mon + datetime.timedelta(days=7)).isoformat()},
            "weeks": [tw], "weekly": {tw: dict(ZERO)}, "detail": [], "loose_prs": []}, open(out, "w"))
 PY

@@ -66,8 +66,8 @@
 #   人读行末尾固定附 `（模型：a、b）` / `（模型：a；另有模型无法确认）` / `（模型未知）`，
 #   与 models / model_unknown 同源，不另起一套判断。
 #
-# 不在这里算「排除等待的工时」：同 claude driver，那个指标由周报采集器出报告时
-# 从本机日志算（scripts/weekly-report/worktime.py）。
+# 不在这里算「处理时长」：同 claude driver，那个指标由周报采集器出报告时
+# 从本机日志统一认领后算（scripts/weekly-report/worktime.py）。
 set -uo pipefail
 
 DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$HOME/.config/coding-agent-work-loop/deploy.conf}"
