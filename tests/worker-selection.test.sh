@@ -4,6 +4,15 @@
 # 并守住 agent-poll 到 dispatch 的模型透传链路。
 set -uo pipefail
 
+# 在干净环境里重跑自己。worker 会话是 daemon 起的，环境里带着 DISPATCH_WORKER_MODEL_SET /
+# DISPATCH_WORKER_MODEL 等派工变量；继承下来，下面的「普通任务」就被当成带了派工覆盖
+# （PR #60 实测：main 上同样假红）。白名单只放跑测试必需的几个变量。
+if [ -z "${SELECTION_TEST_CLEAN_ENV:-}" ]; then
+    keep=(SELECTION_TEST_CLEAN_ENV=1 HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" TERM="${TERM:-dumb}")
+    [ -n "${TMPDIR:-}" ] && keep+=(TMPDIR="$TMPDIR")
+    exec env -i "${keep[@]}" bash "${BASH_SOURCE[0]}" "$@"
+fi
+
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 TMP="$(mktemp -d)"
