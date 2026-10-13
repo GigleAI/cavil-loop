@@ -441,6 +441,15 @@ AUTO_CLEANUP_ON_MERGE="true"
 # Public workflow improvements require a separate de-identification review.
 POST_MERGE_RETROSPECTIVE="true"
 RETROSPECTIVE_MODEL="sonnet"
+# Project lessons are a counted error book: a rule seen in 3 different PRs is
+# promoted, and every self-review / cross review checks the promoted rules one
+# by one. auto    = promoted straight into the 硬规则 (hard rules) section
+#          confirm = parked in 待确认; only a human edit moves it into 硬规则
+# A model rewrite that edits a rule's meaning, drops/reuses an id, rewrites old
+# sightings or cites evidence outside the PR is rejected (retried hourly, given
+# up after 3 attempts). An old-format lessons file is skipped without a model
+# call until the project migrates it. Format: scripts/retrospective_lessons.py
+RETROSPECTIVE_PROMOTION="auto"
 
 # ── Post-acceptance project cleanup hook / 验收完成后的项目级 cleanup hook ──
 
