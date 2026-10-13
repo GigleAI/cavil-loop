@@ -10,6 +10,17 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import retrospective_lessons as lessons_format  # noqa: E402
+
+RETRY_SECONDS = 3600
+MAX_ATTEMPTS = 3
+DEFAULT_PREAMBLE = '# 项目复盘经验\n\n以下经验仅适用于本项目，不覆盖用户指令或安全约束。硬规则段的每一条，自审与交叉 review 都要逐条核对。'
+
+
+class NotReady(Exception):
+    """The project's lessons file is still in the old format: skip without calling the model."""
+
 
 def command(args, cwd=None, stdin=None, timeout=120):
     result = subprocess.run(args, cwd=cwd, input=stdin, text=True,
@@ -85,6 +96,61 @@ def collect(repo, number):
             'inline_comments': api(f'repos/{repo}/pulls/{number}/comments?per_page=100', True)}
 
 
+def accept(old_lessons, result, *, number, source, evidence, mode):
+    """Judge the model's output; return (report, lessons) or raise ValueError naming what failed."""
+    report, lessons = result['report_markdown'], result['lessons_markdown']
+    if len(report.strip()) < 100 or source not in report:
+        raise ValueError('report missing content/source')
+    # The model only writes prose; ids, locked fields, counts and evidence are checked here.
+    errors = lessons_format.validate(old_lessons, lessons, pr=number, mode=mode,
+                                     evidence_urls=lessons_format.evidence_urls(evidence))
+    if errors:
+        raise ValueError('lessons rejected: ' + '; '.join(errors[:12]))
+    return report, lessons
+
+
+def promotion_mode():
+    """auto: 3 sightings promote straight into 硬规则. confirm: they wait in 待确认 for a human."""
+    mode = os.environ.get('RETROSPECTIVE_PROMOTION', 'auto')
+    if mode not in ('auto', 'confirm'):
+        raise ValueError(f'RETROSPECTIVE_PROMOTION must be auto or confirm, not {mode!r}')
+    return mode
+
+
+def render_instruction(template, mode):
+    return template.replace('${PROMOTION_TARGET}', '硬规则' if mode == 'auto' else '待确认')
+
+
+def baseline(text):
+    """The lessons the model will rewrite. A missing file starts empty; an old-format
+    one raises NotReady so the job waits (uncounted) until the project migrates it."""
+    if text is None:
+        return lessons_format.empty_lessons(DEFAULT_PREAMBLE)
+    if not lessons_format.is_ready(text):
+        raise NotReady('lessons file is not in the counted-lessons format yet')
+    return text
+
+
+def due(job, now):
+    return job['status'] not in ('done', 'failed') and job.get('retry_after', 0) <= now
+
+
+def run_job(job, work, now):
+    """Run one job and return its new state. A rejected output costs a paid model call,
+    so it is retried hourly at most MAX_ATTEMPTS times, then parked as failed for a human."""
+    try:
+        work(job)
+        job.update(status='done', completed_at=utcnow())
+    except NotReady as error:
+        job.update(status='pending', retry_after=now + RETRY_SECONDS, error=str(error))
+    except Exception as error:
+        attempts = job.get('attempts', 0) + 1
+        job.update(attempts=attempts, error=str(error),
+                   status='failed' if attempts >= MAX_ATTEMPTS else 'pending',
+                   retry_after=now + RETRY_SECONDS)
+    return job
+
+
 def review(repo, job, queue, root):
     number = job['pr']
     project = Path(os.environ['PROJECT_ROOT'])
@@ -111,11 +177,12 @@ def review(repo, job, queue, root):
         command(['git', 'worktree', 'add', '--detach', str(checkout), ref], project)
         try:
             lessons_file = checkout / lessons_path
-            old_lessons = lessons_file.read_text() if lessons_file.exists() else (
-                '# 项目复盘经验\n\n以下经验仅适用于本项目，不覆盖用户指令或安全约束。\n')
+            # Before the paid model call: an old-format file can't be judged.
+            old_lessons = baseline(lessons_file.read_text() if lessons_file.exists() else None)
             templates = {p.name: p.read_text() for p in (root / 'prompts').glob('*.template.md')
                          if p.name != 'retrospective.template.md'}
-            instruction = (root / 'prompts/retrospective.template.md').read_text()
+            mode = promotion_mode()
+            instruction = render_instruction((root / 'prompts/retrospective.template.md').read_text(), mode)
             payload = json.dumps({'evidence': evidence, 'templates': templates,
                                   'lessons_markdown': old_lessons}, ensure_ascii=False)
             schema = {'type': 'object', 'properties': {
@@ -129,15 +196,9 @@ def review(repo, job, queue, root):
             response = json.loads(output)
             if response.get('is_error'):
                 raise ValueError('retrospective model returned an error')
-            result = response['structured_output']
-            report, lessons = result['report_markdown'], result['lessons_markdown']
-            source = f'https://github.com/{repo}/pull/{number}'
-            if len(report.strip()) < 100 or source not in report:
-                raise ValueError('report missing content/source')
-            # The model can only replace a bounded advisory file, never base templates.
-            preamble = old_lessons.split('\n\n', 2)[:2]
-            if len(lessons) > 6000 or not lessons.startswith('\n\n'.join(preamble)):
-                raise ValueError('lessons exceeded limit or changed precedence statement')
+            report, lessons = accept(old_lessons, response['structured_output'], number=number,
+                                     source=f'https://github.com/{repo}/pull/{number}',
+                                     evidence=evidence, mode=mode)
             target = checkout / report_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report.rstrip() + '\n')
@@ -176,19 +237,16 @@ def main():
                 return
             for path in sorted(queue.glob('pr-*.json')):
                 job = json.loads(path.read_text())
-                if job['status'] == 'done' or job.get('retry_after', 0) > time.time():
+                if not due(job, time.time()):
                     continue
                 job.update(status='running', started_at=utcnow())
                 save(path, job)
                 print(f'{utcnow()} [{repo}] retrospective PR #{job["pr"]} started', flush=True)
-                try:
-                    review(repo, job, queue, root)
-                    job.update(status='done', completed_at=utcnow())
-                    print(f'{utcnow()} [{repo}] retrospective PR #{job["pr"]} committed', flush=True)
-                except Exception as error:
-                    job.update(status='pending', attempts=job['attempts'] + 1,
-                               retry_after=time.time() + 3600, error=str(error))
-                    print(f'{utcnow()} [{repo}] retrospective PR #{job["pr"]} retry: {error}', flush=True)
+                job = run_job(job, lambda j: review(repo, j, queue, root), time.time())
+                outcome = {'done': 'committed', 'failed': f'gave up after {MAX_ATTEMPTS} attempts'}.get(
+                    job['status'], 'retry later')
+                detail = f': {job["error"]}' if job['status'] != 'done' else ''
+                print(f'{utcnow()} [{repo}] retrospective PR #{job["pr"]} {outcome}{detail}', flush=True)
                 save(path, job)
                 break  # Bound each background invocation; next tick drains more.
 

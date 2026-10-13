@@ -113,6 +113,20 @@ All output written back to GitHub (PR comments, PR body) goes in the language ma
 3. 翻 label：本轮有代码产出时，`flip_label ${PR} --add ${LABEL_REVIEW_OR_HUMAN} --remove ${LABEL_AGENT_DOING}`（配置交叉 review 时先由独立 reviewer 把关，未配置时它自动等于 `${LABEL_PENDING_HUMAN}`）；纯讨论、澄清或受阻时用 `flip_label ${PR} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`。
 4. 一句话总结，停 idle
 
+## 有代码产出时：逐条核对硬规则
+
+本 prompt 末尾的「项目复盘经验」里，`## 硬规则` 段的每一条都已在 3 个以上不同 PR 里被记录过（计次来源与限制见该文件开头说明）。本轮有代码产出、要交给 review 或人之前，在你交出去的那份文字里放一张表——首次开 PR 时放进 PR body，PR 返工时放进本轮的总结评论——**每条硬规则一行，一条不漏**：
+
+| 编号 | 适用？ | 做到了？ | 证据 |
+|---|---|---|---|
+| L7 | 是 | ✅ | 测试名 / 命令输出 / commit 链接 |
+| L12 | 否：本轮没改 SQL | — | — |
+
+- 「适用」写「否」时必须给一句理由；理由站不住，reviewer 会按违反处理。
+- 适用但没做到，**先修再交**；修不了就写明原因，按本 prompt 的「交人」规则停下。
+- `## 待确认` 段的规则列在表下方供参考，不要求做到。`## 观察中` 段不进表。
+- 项目还没有 `## 硬规则` 段（或段里为空）时，写一句「本项目暂无硬规则」即可。
+
 ## 交人评论必须带上人工问题的最终回答
 
 当本轮交给人时，在最后一条评论的摘要之后、折叠块之前写「本轮问题与回答」，主要展示
