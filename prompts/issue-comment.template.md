@@ -77,7 +77,7 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 
 1. 实现：改代码 → TDD 优先补测试 → type-check / 相关测试 / lint 通过为止
 2. commit + `git push -u origin ${BRANCH}`
-3. `gh pr create --base main --title "..." --body "..."`，body 里**根据设计阶段确认的「issue 闭环关系」选关键词**：
+3. `gh pr create --base main --title "..." --body "..."`，body 里要有下方「有代码产出时：逐条核对硬规则」那张表（子 issue 同样适用），并**根据设计阶段确认的「issue 闭环关系」选关键词**：
    - **A. 完整闭环** → body 用 `Closes #${ISSUE}`（merge 自动关 issue）
    - 走到这里的一律是 A（B 走 § A-split，不在本 issue 开 PR）；**不再用 `Refs #${ISSUE}` 开「部分实现」PR**
    - 看不准时回去重读设计阶段你发的 issue comment——那时已经跟用户讨论过这个选择
@@ -139,6 +139,20 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 1. `gh issue comment ${ISSUE} --repo ${REPO} --body "<具体回答 / 反问>"`
 2. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`
 3. 停 idle
+
+## 有代码产出时：逐条核对硬规则
+
+本 prompt 末尾的「项目复盘经验」里，`## 硬规则` 段的每一条都已在 3 个以上不同 PR 里被记录过（计次来源与限制见该文件开头说明）。本轮有代码产出、要交给 review 或人之前，在你交出去的那份文字里放一张表——首次开 PR 时放进 PR body，PR 返工时放进本轮的总结评论——**每条硬规则一行，一条不漏**：
+
+| 编号 | 适用？ | 做到了？ | 证据 |
+|---|---|---|---|
+| L7 | 是 | ✅ | 测试名 / 命令输出 / commit 链接 |
+| L12 | 否：本轮没改 SQL | — | — |
+
+- 「适用」写「否」时必须给一句理由；理由站不住，reviewer 会按违反处理。
+- 适用但没做到，**先修再交**；修不了就写明原因，按本 prompt 的「交人」规则停下。
+- `## 待确认` 段的规则列在表下方供参考，不要求做到。`## 观察中` 段不进表。
+- 项目还没有 `## 硬规则` 段（或段里为空）时，写一句「本项目暂无硬规则」即可。
 
 ## 交人评论怎么写（给人看的，不是交差报告）
 

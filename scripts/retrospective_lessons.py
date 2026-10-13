@@ -32,6 +32,10 @@ is simply the next baseline):
 * Seen is a set of PR numbers, append-only. The only number a run may add is
   the PR being reviewed (once per rule, but to as many rules as it hit), and
   every added sighting must link to a comment/review collected for that PR.
+* A new entry may not copy an existing one's 规则 + 适用 under a fresh id —
+  that would restart the count at one and dodge the promotion the existing
+  entry is owed. Only verbatim copies (any whitespace ignored) are caught; telling
+  paraphrases apart is beyond a program and is left to review.
 * Promotion is mechanical: crossing 3 sightings moves an entry out of 观察中 —
   into 硬规则 (`auto`) or 待确认 (`confirm`). Nothing else moves; in
   `confirm` mode only a human can put anything into 硬规则.
@@ -56,7 +60,7 @@ SIGHTING = re.compile(r'^#(\d+)(?: (https://\S+))?$')
 # Every check can be switched off by name (RETRO_LESSONS_DISABLE=a,b) so the
 # test wrapper can prove each test case really depends on the check it names.
 CHECKS = ('count', 'dup_pr', 'dup_id', 'preamble', 'next_id', 'keep_ids', 'locked',
-          'seen_prefix', 'seen_pr', 'seen_url', 'new_entry', 'section', 'length')
+          'seen_prefix', 'seen_pr', 'seen_url', 'new_entry', 'dup_rule', 'section', 'length')
 
 
 def _on(name):
@@ -216,14 +220,24 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode):
                     errors.append(f'[section] L{i}: reached {THRESHOLD} sightings, must move to {target}')
             elif not (before.section == WATCH and after.section == target and crossed):
                 errors.append(f'[section] L{i}: may not move {before.section} → {after.section}')
+    claimed = {_meaning(e): e.id for e in old.entries}
     for i in added:
         entry = new_ids[i]
+        if _on('dup_rule'):
+            twin = claimed.get(_meaning(entry))
+            if twin is not None:
+                errors.append(f'[dup_rule] L{i}: same 规则/适用 as L{twin}; add this PR to L{twin} instead')
+        claimed.setdefault(_meaning(entry), i)
         if _on('new_entry') and [p for p, _ in entry.seen] != [pr]:
             errors.append(f'[new_entry] L{i}: a new entry starts with exactly one sighting, this PR #{pr}')
         errors += _check_sightings(f'L{i}', entry.seen, pr, evidence_urls)
         if _on('section') and entry.section != WATCH:
             errors.append(f'[section] L{i}: a new entry starts in {WATCH}')
     return errors
+
+
+def _meaning(entry):
+    return tuple(''.join(v.split()) if v else None for v in (entry.rule, entry.applies))
 
 
 def _check_sightings(label, items, pr, urls):

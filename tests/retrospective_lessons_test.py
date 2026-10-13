@@ -5,6 +5,7 @@ the rules every later worker and reviewer is told to enforce. Each rejection rul
 below has its own case, and the shell wrapper re-runs the suite with every check
 switched off one at a time to prove each case actually depends on its check.
 """
+import json
 import os
 import sys
 import unittest
@@ -155,6 +156,32 @@ class IdentityTest(Case):
                   watch=[entry(2, '列去向', [(4, None), (5, None)]),
                          entry(3, '复制一条', [(4, None), (5, None), (9, C9)])])
         self.rejects(self.old, new, 'new_entry')
+
+    def test_原样复制已有规则换新编号被拒_否则第三次升级被绕过(self):
+        # 复审 PR #62 第 1 轮的复现：L2 已有 2 次，本 PR 本该让它满 3 次升级；
+        # 换个新编号另起一条，计数就从 1 重来、升级永远不会发生。
+        new = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (3, None)])],
+                  watch=[entry(2, '列去向', [(4, None), (5, None)]),
+                         entry(3, '列去向', [(9, C9)])])
+        self.rejects(self.old, new, 'dup_rule')
+
+    def test_复制时只差空白也算同一条被拒(self):
+        new = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (3, None)])],
+                  watch=[entry(2, '列去向', [(4, None), (5, None)]),
+                         entry(3, '列去向 ', [(9, C9)], applies='异步  回调')])
+        self.rejects(self.old, new, 'dup_rule')
+
+    def test_本次新开两条完全相同的规则被拒(self):
+        new = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (3, None)])],
+                  watch=[entry(2, '列去向', [(4, None), (5, None)]),
+                         entry(3, '先查后写', [(9, C9)]), entry(4, '先查后写', [(9, C9B)])])
+        self.rejects(self.old, new, 'dup_rule')
+
+    def test_规则相同但适用不同是另一条_可以新开(self):
+        new = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (3, None)])],
+                  watch=[entry(2, '列去向', [(4, None), (5, None)]),
+                         entry(3, '列去向', [(9, C9)], applies='汇总脚本')])
+        self.assertEqual(check(self.old, new), [])
 
     def test_删除已有编号被拒(self):
         new = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (3, None)])], next_id=3)
@@ -347,11 +374,49 @@ class InstructionTest(unittest.TestCase):
         self.assertIn('硬规则逐条核对', (prompts / 'review.template.md').read_text())
         self.assertIn('逐条核对硬规则', (prompts / 'pr-comment.template.md').read_text())
 
+    def test_所有代码交付入口都带同一份自审要求_不只是PR返工(self):
+        # 首次开发（含子 issue）走 issue-comment 的 § A 开 PR，不经过 pr-comment；
+        # 只在 pr-comment 里写自审要求，首次 PR 就能一张表都不交（复审 PR #62 第 1 轮）。
+        import re
+        prompts = Path(__file__).resolve().parent.parent / 'prompts'
+        title = '## 有代码产出时：逐条核对硬规则'
+
+        def section(text):
+            m = re.search(re.escape(title) + r'\n.*?(?=\n## )', text, re.S)
+            return m and m.group(0)
+
+        texts = {p.name: p.read_text() for p in prompts.glob('*.template.md')}
+        delivering = sorted(n for n, t in texts.items() if 'gh pr create' in t or 'git push' in t)
+        self.assertIn('issue-comment.template.md', delivering)
+        self.assertIn('pr-comment.template.md', delivering)
+        sections = {n: section(texts[n]) for n in delivering}
+        for name, body in sections.items():
+            self.assertTrue(body, f'{name} pushes code but has no self-review section')
+        self.assertEqual(len(set(sections.values())), 1, 'self-review sections drifted apart')
+        dev = texts['issue-comment.template.md'].split('### § A. 开发阶段', 1)[1].split('### § A-split', 1)[0]
+        self.assertIn('逐条核对硬规则', dev, '§ A must point at the table when opening the PR')
+        self.assertIn('直接走 § A 开发阶段', texts['sub-issue.template.md'])
+
     def test_本仓库自己的项目经验是合法格式(self):
         own = Path(__file__).resolve().parent.parent / '.agents/skills/coding-agent-work-loop/prompts/lessons.md'
         lessons = rl.parse(own.read_text())
         for e in lessons.entries:
             self.assertEqual(len(e.seen) >= rl.THRESHOLD, e.section == '硬规则', f'L{e.id}')
+
+    def test_本仓库迁移后的每次计数都在迁移表里有出处(self):
+        # 迁移时按「复盘报告写明这个 PR 出过这个错」逐条计次；每个 Seen 必须带链接，
+        # 而且这个 PR 号和链接都写在迁移表里（报告原文与行号在同一行）。
+        root = Path(__file__).resolve().parent.parent
+        lessons = rl.parse((root / '.agents/skills/coding-agent-work-loop/prompts/lessons.md').read_text())
+        table = (root / 'docs/retrospectives/lessons-migration.md').read_text()
+        rows = table.split('\n')
+        for e in lessons.entries:
+            for pr, url in e.seen:
+                self.assertTrue(url, f'L{e.id} #{pr}: migrated sighting without a link')
+                self.assertTrue(any(f'#{pr}' in row and url in row for row in rows),
+                                f'L{e.id} #{pr}: not in the migration table with {url}')
+                self.assertTrue((root / f'docs/retrospectives/pr-{pr}.md').exists(),
+                                f'L{e.id} #{pr}: counted without a retrospective report')
 
     def test_未知模式拒绝(self):
         os.environ['RETROSPECTIVE_PROMOTION'] = 'yolo'
@@ -392,6 +457,116 @@ class JobTest(unittest.TestCase):
         self.assertFalse(runner.due({'status': 'done'}, now=1000.0))
         self.assertFalse(runner.due({'status': 'failed'}, now=1000.0))
 
+
+
+class ReviewFlowTest(unittest.TestCase):
+    """review() end to end: fake evidence + fake model, real git against a local bare origin.
+
+    Only two seams are faked: collect() (GitHub API) and the `claude` / `git remote get-url`
+    calls inside command(). Fetch, worktree, the format pre-check, validation, the write,
+    commit and fast-forward push all run for real.
+    """
+    REPO = 'acme/widget'
+    LESSONS = '.agents/skills/coding-agent-work-loop/prompts/lessons.md'
+
+    def setUp(self):
+        import subprocess
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix='retro-flow-'))
+        self.origin, self.project = self.tmp / 'origin.git', self.tmp / 'project'
+        self.git = lambda *a, cwd=None: subprocess.run(
+            ['git', *a], cwd=cwd, check=True, capture_output=True, text=True).stdout
+        self.git('init', '-q', '--bare', '-b', 'main', str(self.origin))
+        self.git('clone', '-q', str(self.origin), str(self.project))
+        for k, v in (('user.name', 't'), ('user.email', 't@example.com'), ('commit.gpgsign', 'false')):
+            self.git('config', k, v, cwd=self.project)
+        self.model_calls, self.model_output = 0, None
+        self.saved = {k: os.environ.get(k) for k in ('PROJECT_ROOT', 'RETROSPECTIVE_MODEL',
+                                                      'RETROSPECTIVE_PROMOTION', 'GIT_CONFIG_GLOBAL')}
+        gitconfig = self.tmp / 'gitconfig'
+        gitconfig.write_text('[user]\n\tname = t\n\temail = t@example.com\n[commit]\n\tgpgsign = false\n')
+        os.environ.update(PROJECT_ROOT=str(self.project), RETROSPECTIVE_MODEL='fake',
+                          RETROSPECTIVE_PROMOTION='auto', GIT_CONFIG_GLOBAL=str(gitconfig))
+        self.real_command, self.real_collect = runner.command, runner.collect
+        runner.command, runner.collect = self.command, lambda repo, number: self.evidence(number)
+
+    def tearDown(self):
+        import shutil
+        runner.command, runner.collect = self.real_command, self.real_collect
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def command(self, args, cwd=None, stdin=None, timeout=120):
+        if args[:3] == ['git', 'remote', 'get-url']:
+            return f'https://github.com/{self.REPO}\n'
+        if args[0] == 'claude':
+            self.model_calls += 1
+            return json.dumps({'is_error': False, 'structured_output': self.model_output})
+        return self.real_command(args, cwd=cwd, stdin=stdin, timeout=timeout)
+
+    def evidence(self, number):
+        return {'pr': {'html_url': f'{U}/pull/{number}'}, 'issues': [],
+                'conversation': [{'html_url': C9}], 'reviews': [], 'inline_comments': []}
+
+    def publish(self, lessons):
+        path = self.project / self.LESSONS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(lessons)
+        self.git('add', '-A', cwd=self.project)
+        self.git('commit', '-qm', 'lessons', cwd=self.project)
+        self.git('push', '-q', 'origin', 'HEAD:main', cwd=self.project)
+
+    def on_origin(self, path):
+        import subprocess
+        result = subprocess.run(['git', '--git-dir', str(self.origin), 'show', f'main:{path}'],
+                                capture_output=True, text=True)
+        return result.stdout if result.returncode == 0 else None
+
+    def review(self):
+        root = Path(__file__).resolve().parent.parent
+        runner.review(self.REPO, {'pr': 9}, self.tmp, root)
+
+    old = doc(watch=[entry(1, '判存活', [(1, None), (2, None)])])
+
+    def test_合法输出_第三次升级_报告与经验一起推上去(self):
+        self.publish(self.old)
+        new = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (9, C9)])])
+        self.model_output = {'report_markdown': REPORT, 'lessons_markdown': new}
+        self.review()
+        self.assertEqual(self.model_calls, 1)
+        self.assertEqual(rl.parse(self.on_origin(self.LESSONS)).by_id()[1].section, '硬规则')
+        self.assertIn(SOURCE, self.on_origin('docs/retrospectives/pr-9.md'))
+
+    def test_校验不过什么都不推(self):
+        self.publish(self.old)
+        dup = doc(watch=[entry(1, '判存活', [(1, None), (2, None)]), entry(2, '判存活', [(9, C9)])], next_id=3)
+        self.model_output = {'report_markdown': REPORT, 'lessons_markdown': dup}
+        with self.assertRaises(ValueError) as ctx:
+            self.review()
+        self.assertIn('[dup_rule]', str(ctx.exception))
+        self.assertEqual(self.on_origin(self.LESSONS), self.old)
+        self.assertIsNone(self.on_origin('docs/retrospectives/pr-9.md'))
+
+    def test_旧格式文件不调模型就停下(self):
+        self.publish('# 项目复盘经验\n\n1. **一条大规则** (#1、#2)\n')
+        with self.assertRaises(runner.NotReady):
+            self.review()
+        self.assertEqual(self.model_calls, 0)
+
+    def test_报告已在远端就不再调模型(self):
+        self.publish(self.old)
+        report = self.project / 'docs/retrospectives/pr-9.md'
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(REPORT)
+        self.git('add', '-A', cwd=self.project)
+        self.git('commit', '-qm', 'report', cwd=self.project)
+        self.git('push', '-q', 'origin', 'HEAD:main', cwd=self.project)
+        self.review()
+        self.assertEqual(self.model_calls, 0)
 
 if __name__ == '__main__':
     unittest.main(verbosity=1 if os.environ.get('QUIET') else 2)
