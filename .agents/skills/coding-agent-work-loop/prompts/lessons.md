@@ -4,7 +4,7 @@
 
 `## 硬规则` 段的每一条都已在 3 个以上不同 PR 里出现过：worker 自审和交叉 review 必须逐条核对，适用而没做到的，review 打回。`## 观察中` 段是还没攒够次数的经验，适用时参考。编号永久不变；格式与计次规则见 `scripts/retrospective_lessons.py`。
 
-计次来源：迁移到本格式时，每个 Seen 都回到该 PR 的复盘报告（`docs/retrospectives/pr-N.md`）核对过，只计报告写明「这个 PR 里出过这个问题」的——被引用、只是提到、做对了都不算；每一次的报告原文与行号见 `docs/retrospectives/lessons-migration.md`。之后的 Seen 由复盘程序按当次 PR 的评论证据追加。计次说明问题出现过，不证明每次都由同一原因造成。
+计次来源：迁移到本格式时，每个 Seen 都回到该 PR 的复盘报告（`docs/retrospectives/pr-N.md`）核对过，只计报告写明「这个 PR 里出过这个问题」的：被引用、只是提到不算；当事人按规则自己查出来、交付前就改掉的也不算，记进「这样做是对的」；每一次的报告原文与行号见 `docs/retrospectives/lessons-migration.md`。之后的 Seen 由复盘程序按当次 PR 的评论证据追加。计次说明问题出现过，不证明每次都由同一原因造成。
 
 <!-- next-id: 29 -->
 
@@ -16,12 +16,6 @@
 - 为什么：数值合法性、失败重试、会话归属、外部配置解析都曾各自返工 5 轮以上，每轮只补上一个变体。
 - 这样做是对的：PR #39 改用写入方恒满足的不变式，取代逐字段清单；PR #57 从复刻规则改为直接问 CLI。
 - Seen 4×: #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6050467714 · #39 https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5774726460 · #44 https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882615439 · #57 https://github.com/GigleAI/cavil-loop/pull/57#issuecomment-6052366557
-
-### L2
-- 规则：根因排查、方案设计和复核复审意见时，先实测「看似显然」的前提（issue 里的现状描述、文档里的承诺、复审写的后果），再据此定方案或下结论。
-- 适用：方案、根因分析、运维文档承诺，以及回应复审指出的问题。
-- 为什么：issue 对现状的描述、文档写的「可回退」、复审写的「需人工介入」，都被实测推翻过。
-- Seen 4×: #26 https://github.com/GigleAI/cavil-loop/pull/26#issuecomment-5726029814 · #37 https://github.com/GigleAI/cavil-loop/issues/34#issuecomment-5769590395 · #38 https://github.com/GigleAI/cavil-loop/issues/36#issuecomment-5771504273 · #39 https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5776234982
 
 ### L3
 - 规则：同一条规则有多个实现或调用点（生产者与消费者、jq 与 Python、汇总与明细、新增指标与已有指标）时，复用同一个函数或同一份中间结果；做不到就用同一份输入对拍全部输出字段，并对每个调用点单独做负对照。
@@ -35,15 +29,23 @@
 - 为什么：只在测试进程内匹配源码的测试在 bug 存在时仍全绿；单行夹具绕过了多行 prompt 的缺陷；普通临时目录测不出 worktree 和 `~` 展开的差异；禁止某种源码写法的断言误报。
 - Seen 4×: #30 https://github.com/GigleAI/cavil-loop/pull/30#issuecomment-5709274794 · #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6050298312 · #48 https://github.com/GigleAI/cavil-loop/pull/48#issuecomment-6013196195 · #57 https://github.com/GigleAI/cavil-loop/pull/57#issuecomment-6051560673
 
-### L5
-- 规则：合并 base 之后，列出 base 新增的横切约定（写身份、命令行参数、路径写法等），逐一核对它们落到了本 PR 新增的代码路径上；git 没报冲突不等于没有遗漏。
-- 适用：PR 合并或 rebase 过 base 之后。
-- 为什么：合并后漏了读写身份分离（`gh_write`）、`--no-daemon` 和 `$SELF_DIR`，三次都没有冲突标记。
-- Seen 3×: #26 https://github.com/GigleAI/cavil-loop/pull/26#issuecomment-6050113829 · #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6000581168 · #55 https://github.com/GigleAI/cavil-loop/pull/55#issuecomment-6051366296
-
 ## 待确认
 
 ## 观察中
+
+### L2
+- 规则：根因排查、方案设计和复核复审意见时，先实测「看似显然」的前提（issue 里的现状描述、文档里的承诺、复审写的后果），再据此定方案或下结论。
+- 适用：方案、根因分析、运维文档承诺，以及回应复审指出的问题。
+- 为什么：文档写的「可回退」没实测就写进去，被人追问才发现不成立；复审没实测就写「需人工介入」，实际会自动恢复。
+- 这样做是对的：PR #37 设计前实测推翻了 issue 对 stderr 去向的判断；PR #38 设计前重读代码，发现 issue 漏盘点了两处写入。
+- Seen 2×: #26 https://github.com/GigleAI/cavil-loop/pull/26#issuecomment-5726029814 · #39 https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5776234982
+
+### L5
+- 规则：合并 base 之后，列出 base 新增的横切约定（写身份、命令行参数、路径写法等），逐一核对它们落到了本 PR 新增的代码路径上；git 没报冲突不等于没有遗漏。
+- 适用：PR 合并或 rebase 过 base 之后。
+- 为什么：合并后漏了读写身份分离（`gh_write`），没有冲突标记，测试也全绿，是复审才发现的。
+- 这样做是对的：PR #33 合并 main 时自查出新路径漏了 `--no-daemon`；PR #55 解冲突时自查出新增行没跟上 `$SELF_DIR` 写法。
+- Seen 1×: #26 https://github.com/GigleAI/cavil-loop/pull/26#issuecomment-6050113829
 
 ### L6
 - 规则：依赖外部工具的解析结果或落盘格式时，委托工具自己解析（无副作用探测），或先读一份真实产物再写解析；必须自己解析时用白名单，拿不准就不处理并记日志。
@@ -55,7 +57,8 @@
 
 ### L8
 - 规则：新增或修改的测试先在旧实现或错误变体上跑一遍，确认会变红；样本要能区分错误实现。
-- Seen 2×: #50 https://github.com/GigleAI/cavil-loop/pull/50#issuecomment-6049612213 · #59 https://github.com/GigleAI/cavil-loop/pull/59#issuecomment-6052642580
+- 这样做是对的：PR #59 修复时把测试跑在旧代码上，发现真实链路那条也是绿的，另加了替身日期的函数级测试。
+- Seen 1×: #50 https://github.com/GigleAI/cavil-loop/pull/50#issuecomment-6049612213
 
 ### L9
 - 规则：判定人工是否已拍板，落到具体评论 URL、`created_at` / `updated_at` 和正文核对（勾选、文字答复、只改 label 都可能是拍板），不凭「最新评论是自己发的」或「label 已翻回」推定；只有 relabel 时写「未见书面确认，按默认项执行」，查不到勾选编辑者就写「出自谁未验证」。
@@ -90,7 +93,8 @@
 
 ### L16
 - 规则：验证「某个变量子进程看不看得到」时，用环境里从未出现过的变量名并 `env -u` 清空后再测；配置文件里不带 export 的变量要显式传给子进程。
-- Seen 1×: #38 https://github.com/GigleAI/cavil-loop/issues/36#issuecomment-5771691189
+- 这样做是对的：PR #38 设计阶段发现裸赋值的「通过」是假阳性，换全新变量名 + `env -u` 重测才得到真实结论。
+- Seen 0×:
 
 ### L17
 - 规则：安装脚本对存放密钥的文件显式 `chmod 600`，新建和已存在两种情况都要处理（已存在的不覆盖内容）。
@@ -98,7 +102,8 @@
 
 ### L18
 - 规则：GitHub 写入被拒时，分别核对 OAuth scope 和账号对该具体资源（看板、仓库）的权限；权限不足如实上报交人，不擅自提权或静默跳过。
-- Seen 1×: #31 https://github.com/GigleAI/cavil-loop/pull/31#issuecomment-5710284750
+- 这样做是对的：PR #31 写入看板被拒后，先确认 PAT 已有 `project` scope、再查到账号对该看板没有写权限，如实上报并给出 A/B 选项。
+- Seen 0×:
 
 ### L19
 - 规则：会话 / 资源的归属靠正向证据（自发 id、接管前快照、与本次启动绑定的唯一标记），举证不了就拒绝并留诊断，不靠「当前没登记给别人」「启动后才出现」「首行相同」这类排除法或出现顺序。
@@ -115,7 +120,8 @@
 
 ### L22
 - 规则：与 base 同时在文件末尾追加函数并合并后，检查两边共用的结尾行（如 `return 0` / `}`）没有被合并丢失。
-- Seen 1×: #55 https://github.com/GigleAI/cavil-loop/pull/55#issuecomment-6051655505
+- 这样做是对的：PR #55 第二次解冲突时发现 git 把两个函数共用的结尾行合成了一份，手工补回。
+- Seen 0×:
 
 ### L23
 - 规则：fail-open 的状态校验放在所有可能返回「跳过」的判断之前统一执行。
@@ -139,4 +145,5 @@
 
 ### L28
 - 规则：负对照变红后确认红的原因是语义退回，而不是补丁语法错误。
-- Seen 1×: #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6051479059
+- 这样做是对的：PR #33 发现一条负对照是因补丁语法错误而全红，重做后如实说明。
+- Seen 0×:
