@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""把 collect.py 的 JSON 渲染成三张趋势图（HTML→PNG）+ 周报 markdown。
+"""把 collect.py 的 JSON 渲染成四张趋势图（HTML→PNG）：交付 / 投入 / 成本 / token。
 
 用法：
     render.py --data data.json --out-dir OUT --asset-url-base URL --rev REV
               [--fonts-dir DIR]
 
-产物：OUT/delivery-<rev>.png、OUT/effort-<rev>.png、OUT/token-<rev>.png、OUT/report.md
-（PNG 由 shot.mjs 截；本脚本只出 HTML，截图由 weekly-report.sh 串起来。）
+产物：OUT/delivery.html、effort.html、cost.html、token.html
+（PNG 由 shot.mjs 截成 <名字>-<rev>.png；本脚本只出 HTML，截图由 run.sh 串起来。
+ 周报 markdown 由 report.py 出。）
+
+PDF 里每个类别各占一页、页上是「该类的图 + 它的最近 10 周表」（GitHub#61），
+所以成本单独一张图，不再和讨论 / 时长挤在投入图里。
 """
 import argparse, datetime, json, os
 
@@ -202,7 +206,7 @@ def main():
     hp=(tot("human")/tot("comments")*100) if tot("comments") else 0
     t2=(f'<h1>最近 {len(W)} 周趋势 · 投入面（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
         f'<div class="lede">{len(W)} 周合计：来回讨论 <b>{tot("comments"):.0f}</b> 条（其中你发了 <b>{tot("human"):.0f}</b> 条，占 {hp:.0f}%），'
-        f'AI 累计总耗时（含等待） <b>{tot("wall")/3600:.0f} 小时</b>，成本折合 <b>{tot("cost"):,.0f} 美元</b>。</div>')
+        f'AI 累计总耗时（含等待） <b>{tot("wall")/3600:.0f} 小时</b>。</div>')
     p3=ch.panel(0,0,1212,320,"讨论轮数：AI 自己来回的次数 vs 你开口的次数",
         "堆叠柱＝当周 issue / PR 上的全部评论条数。",
         [{"type":"bar","data":g("bot"),"color":BLUE,"label":"AI 之间的来回","axis":"l","stack":True},
@@ -236,20 +240,24 @@ def main():
         + ("同轴折线＝其中 AI 每一轮从开始到结束的处理时长（不含轮与轮之间的等待，轮内等待照算；算不出的周断开）；" if has_work else "")
         + "右轴折线＝平均每小时（按总耗时算）写出多少行净增代码。",
         time_series,note=sw)
+    open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time],680,a.fonts_dir))
     # 金额一律美元：标题 / 副标题 / 两条图例都写出来。图会被单独贴进周报、脱离正文，
     # 只写 `$` 读图的人分不清是美元还是人民币（GigleTutor-Web#931）。
-    p4=ch.panel(0,680,1212,320,"花销（美元）：每周总成本 vs 每千行代码的单位成本",
+    t4=(f'<h1>最近 {len(W)} 周趋势 · 成本（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
+        f'<div class="lede">{len(W)} 周合计折算价值 <b>{tot("cost"):,.0f} 美元</b>'
+        f'（各类 token 用量 × 该模型公开的每百万 token 单价再相加，是参考价值，不是账单）。</div>')
+    p4=ch.panel(0,0,1212,320,"花销（美元）：每周总成本 vs 每千行代码的单位成本",
         "柱＝当周总成本（美元，按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少美元（右轴）。",
         [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本（美元）","axis":"l"},
          {"type":"line","data":kloc,"color":VIO,"label":"美元 / 千行代码","axis":"r"}],note=sw)
-    open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time,p4],1020,a.fonts_dir))
+    open(os.path.join(a.out_dir,"cost.html"),"w").write(page(t4,[p4],340,a.fonts_dir))
     # token 用量：单独一张图、两块面板，**每块各用一条纵轴，不用双轴**（GigleTutor-Web#1023）。
     #   · 双轴（缓存读取走右轴折线）：两条轴刻度差几十倍，读图的人拿高度一比，把「读取是写入的
     #     几十倍」读成了「读取反而很少」；
     #   · 四项堆进同一根柱：缓存读取占 95% 以上，另外三项只剩柱底一条线、看不出变化（维护者：
     #     「这样完全被缓存读取占据了」）。
-    # 所以拆成「输入 + 缓存写入 + 输出」堆叠一块、「缓存读取」单独一块。单独成图是因为投入面
-    # 已有三块面板，再加两块会远超评论配图约 1400px 的高度上限。
+    # 所以拆成「输入 + 缓存写入 + 输出」堆叠一块、「缓存读取」单独一块。单独成图：PDF 里
+    # token 自成一页（GitHub#61），也避免单张配图超过约 1400px 的高度上限。
     # 切换周之前的 token 是旧驱动逐条累加的，采集侧已按 1.68 抵过（见 attribute.legacy_estimate），
     # 才放得进同一张图——仍是估算，副标题写明。
     # ⚠️ 标题 / 副标题不许写死单位：fmt_m 不足 1000M 出 M、够了才出 B，同一根轴上可以并存
@@ -272,7 +280,7 @@ def main():
         "M＝百万、B＝十亿，以刻度和柱顶数字的后缀为准。" + est,
         [{"type":"bar","data":M("tok_cache_r"),"color":VIO,"label":"缓存读取","axis":"l","fmt":fmt_m}],note=sw)
     open(os.path.join(a.out_dir,"token.html"),"w").write(page(t3,[p_tok,p_cr],680,a.fonts_dir))
-    print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html, token.html")
+    print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html, cost.html, token.html")
 
 if __name__=="__main__":
     main()

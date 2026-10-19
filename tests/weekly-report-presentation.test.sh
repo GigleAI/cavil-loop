@@ -67,8 +67,23 @@ python3 "$REPORT" --data "$TMP/data.json" --out "$TMP/report.md" \
     || { echo "report.py 跑挂了："; cat "$TMP/err.txt"; exit 1; }
 }
 
-# 从报告里抓某个指标那一行的「变化」列
-chg() { grep -F "| $1 |" "$TMP/report.md" | head -1 | awk -F'|' '{gsub(/^ +| +$/,"",$5); print $5}'; }
+# 从报告里抓某个指标的环比：找表头里有这一列的那张 10 周表，取它最后那行「环比」的同一列
+# （GitHub#61 起「本周 / 前一周 / 变化」小表去掉了，环比改成每张 10 周表的末行）
+chg() { python3 - "$TMP/report.md" "$1" <<'PY2'
+import sys
+L = open(sys.argv[1]).read().split("\n"); col = sys.argv[2]
+cells = lambda l: [c.strip() for c in l.strip().strip("|").split("|")]
+for i, l in enumerate(L):
+    if l.startswith("| 周 |") and col in cells(l):
+        idx = cells(l).index(col)
+        j = i
+        while j < len(L) and L[j].startswith("|"):
+            if L[j].startswith("| 环比 |"):
+                print(cells(L[j])[idx]); sys.exit()
+            j += 1
+print("（没找到）")
+PY2
+}
 has() { grep -qF "$1" "$TMP/report.md" && echo yes || echo no; }
 
 echo "── 场景 A：切换周，codex 有记账但一条金额都没有（本次部署的真实状态） ──"
@@ -78,10 +93,12 @@ chk "不得出现「占成本 0%」"                       "$(has '占成本 0%'
 chk "明说占比算不出来、不是 0%"                   "$(has '算不出来——不是 0%')" "yes"
 chk "合计成本标明只含已知金额的条数"               "$(has '$10（仅 1/2 条有金额）')" "yes"
 chk "正文点出本周有几条没金额"                     "$(has '有 **1 条没有金额**（其中交叉 review 那一侧 1 条）')" "yes"
-chk "墙上时长的环比 → 不给百分比"                  "$(chg 'AI 总耗时（含等待）')" "—（口径变化，不可比）"
-chk "处理时长的环比 → 不给百分比"                 "$(chg '其中处理时长（不含轮间等待）')" "—（口径变化，不可比）"
-chk "折算价值的环比 → 不给百分比"                      "$(chg '折算价值（美元，按公开标价）')" "—（口径变化，不可比）"
+chk "墙上时长的环比 → 不给百分比"                  "$(chg 'AI 总耗时（含等待）')" "口径变化，不可比"
+chk "处理时长的环比 → 不给百分比"                 "$(chg '处理时长（不含轮间等待）')" "口径变化，不可比"
+chk "折算价值的环比 → 不给百分比"                      "$(chg '折算价值（美元，按公开标价）')" "口径变化，不可比"
+chk "token 输出的环比 → 不给百分比（GitHub#61 新增的 token 表同样跨口径）" "$(chg '输出')" "口径变化，不可比"
 chk "同口径的业务指标照常给环比"                   "$(chg '新提 issue')" "+0%"
+chk "讨论条数同口径，照常给环比"                   "$(chg '讨论条数')" "+0%"
 chk "逐周表标出切换周"                             "$(has '† 1/13 那周起口径改了')" "yes"
 
 echo
@@ -170,8 +187,7 @@ PY
 python3 "$REPORT" --data "$TMP/data.json" --out "$TMP/report.md" \
     --asset-url-base "https://example.invalid/a" --rev test >/dev/null 2>"$TMP/err.txt" \
     || { echo "report.py 跑挂了："; cat "$TMP/err.txt"; exit 1; }
-chk "总表行名是新名字"                     "$(has '| 其中处理时长（不含轮间等待） |')" "yes"
-chk "逐周表头是新名字"                     "$(has '| AI 总耗时 | 处理时长 |')" "yes"
+chk "投入页 10 周表的列名是新名字"         "$(has '| AI 总耗时（含等待） | 处理时长（不含轮间等待） |')" "yes"
 chk "报告里不再有无条件的「不含等待」"     "$(grep -c '不含等待' "$TMP/report.md")" "0"
 chk "报告里不再有「真干了多少活」"         "$(grep -c '真干了多少活' "$TMP/report.md")" "0"
 chk "报告里不再有旧名「模型 + 工具」作指标名" "$(grep -c '| 模型 + 工具 |\|其中模型 + 工具' "$TMP/report.md")" "0"

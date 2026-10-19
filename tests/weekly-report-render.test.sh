@@ -102,9 +102,11 @@ print(eval(expr))
 PY
 }
 
-echo "— 面板顺序（Q2=A：工时夹在讨论轮数和花销之间）"
-chk "投入面三块面板，顺序为 讨论轮数 → AI 投入时间 → 花销" \
-    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间|花销（美元）"
+echo "— 面板顺序：投入面 讨论轮数 → AI 投入时间；花销单独成图（GitHub#61：PDF 里成本自成一页）"
+chk "投入面两块面板，顺序为 讨论轮数 → AI 投入时间" \
+    "$(q '"|".join(t.split("：")[0] for t in titles("effort"))')" "讨论轮数|AI 投入时间"
+chk "成本图一块面板：花销" \
+    "$(q '"|".join(t.split("：")[0] for t in titles("cost"))')" "花销（美元）"
 # token 用量单独成图（GigleTutor-Web#1023）：三项堆叠一块、缓存读取一块，各一条纵轴
 chk "token 图两块面板：三项一块、缓存读取一块" \
     "$(q '"|".join(t.split("：")[0] for t in titles("token"))')" "token 用量（不含缓存读取）|缓存读取"
@@ -141,8 +143,8 @@ chk "图例不叠字（中文按中文宽度排版，不是按拉丁宽度）" \
 
 echo
 echo "— 默认格式器不受影响：其他 series 一个字符都不许变"
-chk "花销面板柱顶仍是全局格式 7.2k" "$(q 'bartops(seg("effort",2))[0]')" "7.2k"
-chk "花销面板柱顶没有一个带 h"      "$(q 'any(v.endswith("h") for v in bartops(seg("effort",2)))')" "False"
+chk "花销面板柱顶仍是全局格式 7.2k" "$(q 'bartops(seg("cost",0))[0]')" "7.2k"
+chk "花销面板柱顶没有一个带 h"      "$(q 'any(v.endswith("h") for v in bartops(seg("cost",0)))')" "False"
 chk "讨论轮数面板柱顶没有一个带 h"  "$(q 'any(v.endswith("h") for v in bartops(seg("effort",0)))')" "False"
 
 echo
@@ -153,7 +155,9 @@ chk "交付面柱顶没有一个带 h"    "$(q 'any(v.endswith("h") for p in pan
 
 echo
 echo "— 版面"
-chk "投入面页高 1020（三块面板 × 340）" "$(q 'height("effort")')" "1020"
+chk "投入面页高 680（两块面板 × 340）" "$(q 'height("effort")')" "680"
+chk "成本图页高 340（一块面板）"        "$(q 'height("cost")')" "340"
+chk "成本图图例不叠字"                  "$(q 'legoverlap("cost")')" "0"
 chk "token 图页高 680（两块面板 × 340）" "$(q 'height("token")')" "680"
 
 
@@ -205,14 +209,16 @@ print(eval(sys.argv[2]))
 INNER2
 }
 
-chk "有切换周 → 投入面画 2 条（工时 + 花销）" \
-    "$(sw effort 's.count("口径切换")')" "2"
+chk "有切换周 → 投入面画 1 条（工时）" \
+    "$(sw effort 's.count("口径切换")')" "1"
+chk "有切换周 → 成本图画 1 条（花销单独成图后竖线跟着走）" \
+    "$(sw cost 's.count("口径切换")')" "1"
 chk "有切换周 → token 图两块都画（切换前的 token 是估算）" \
     "$(sw token 's.count("口径切换")')" "2"
 chk "交付面不画（issue / PR / 代码行不受口径影响）" \
     "$(sw delivery 's.count("口径切换")')" "0"
 chk "竖线画成红色虚线" \
-    "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "2"
+    "$(sw effort 'len(re.findall(r"stroke-dasharray=.4 3.", s))')/$(sw cost 'len(re.findall(r"stroke-dasharray=.4 3.", s))')" "1/1"
 chk "switch_week 不在窗口里 → 一条都不画（不拿窗口里第一条 codex 记录顶上）" \
     "$(python3 - "$TMP" <<'INNER3'
 import json, subprocess, sys, os, re

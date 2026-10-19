@@ -510,8 +510,8 @@ call 10 "10:12" 1000000 r1
 run "$(marker 10 '10:00' '10:20' 2000000 '100.00')" "$(marker 10 '10:10' '10:15' 1000000 '50.00')"
 chk "含回退的重叠组：token 不进每周用量" "$(q tok_out)"            "0"
 chk "单列 token = A 原值 + B 认领值"   "$(q tok_out_not_summable)" "3000000"
-chk "报告写明这部分 token 不计入 token 列" \
-    "$(grep -qF '同理**不计入**逐周表的 token 列' "$TMP/r.md" && echo yes || echo no)" "yes"
+chk "报告写明这部分 token 不计入 token 页的 10 周表" \
+    "$(grep -qF '同理**不计入** token 页的 10 周表' "$TMP/r.md" && echo yes || echo no)" "yes"
 
 # 历史 footer（无机器标记）且本机日志可重算：用认领到的 token，不再除 1.68
 legacy_footer() {   # $1 起 hh  $2 止 hh  $3 token 行
