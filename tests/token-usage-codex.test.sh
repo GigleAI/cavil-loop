@@ -171,7 +171,7 @@ mkdir -p "$TMP/fixed-date"
 cat > "$TMP/fixed-date/date" <<'EOF'
 #!/usr/bin/env bash
 if [ "$#" = 2 ] && [ "$1" = -u ] && [ "$2" = +%Y-%m-%d ]; then
-    printf '%s\n' 2026-09-28
+    printf '%s\n' 2026-10-19
 else
     exec /usr/bin/date "$@"
 fi
@@ -184,7 +184,7 @@ chk "未配置时两种模型分别按内置价计：10 + 2" \
     "cost_usd=12 cost_state=full cost_unknown_tokens=0"
 chk "内置价带来源日期和过期状态供后续报告披露" \
     "$(printf '%s' "$default_kv" | grep -o 'price_source=[a-z]* price_checked=[0-9-]* price_stale=[a-z]*')" \
-    "price_source=default price_checked=2026-09-28 price_stale=no"
+    "price_source=default price_checked=2026-10-19 price_stale=no"
 mkdir -p "$TMP/old-driver"
 cp "$DRIVER" "$TMP/old-driver/codex.sh"
 jq '.checked_at = "2025-01-01"' "$REPO_DIR/scripts/drivers/token-usage/codex-prices.json" \
@@ -358,7 +358,7 @@ chk "人读新增的模型说明不改动机器字段" \
 # ── 内置价目表逐型号核对（GigleTutor-Web#976）──────────────────────────────
 # 交叉 review 换成 gpt-6-sol 后，内置表里没有它，每条 review 都落「未配单价」。
 # 这里对内置表的每个新增 / 补全项都走一遍**真实驱动**（不设 CODEX_PRICES），期望金额
-# 按 OpenAI 官方 Standard 价手算（2026-09-28 核对），不从价目表反推 —— 期望值和被测
+# 按 OpenAI 官方 Standard 价手算（2026-09-28 核对；gpt-6.1-sol 于 2026-10-19 补入，GitHub#66），不从价目表反推 —— 期望值和被测
 # 数据不能同源。fixture 四项都给非零用量，缓存写入价也被覆盖到：
 #   input 1,000,000（其中缓存命中 400,000）/ cache write 100,000 / output 200,000
 BT="$TMP/builtin"; mkdir -p "$BT/wt" "$BT/.codex/sessions/2026/09/28"
@@ -375,12 +375,13 @@ btrun() {  # $1 驱动路径（默认真实驱动）
 # 金额是未取整的浮点（驱动有意不在序列化边界取整），按数值比较而非字符串
 near() { jq -n --argjson a "${1:-null}" --argjson b "$2" 'if $a == null then "无金额" elif (($a - $b) | fabs) < 1e-9 then "ok" else "\($a)" end' -r; }
 # 官方价 $/M：in / cached_in / cache_write / out
+#   gpt-6.1-sol   2 / 0.1  / 2.5   / 10    → 0.6×2 + 0.4×0.1 + 0.1×2.5 + 0.2×10    = 3.49
 #   gpt-6-sol     2 / 0.2  / 2.5   / 10    → 0.6×2 + 0.4×0.2 + 0.1×2.5 + 0.2×10    = 3.53
 #   gpt-6-luna    0.1/0.01 / 0.125 / 0.5   → 0.06 + 0.004 + 0.0125 + 0.1           = 0.1765
 #   gpt-5.6-sol   4 / 0.4  / 5     / 20    → 2.4 + 0.16 + 0.5 + 4                  = 7.06
 #   gpt-5.6-terra 2 / 0.2  / 2.5   / 12    → 1.2 + 0.08 + 0.25 + 2.4               = 3.93
 #   gpt-5.6-luna  0.2/0.02 / 0.25  / 1.2   → 0.12 + 0.008 + 0.025 + 0.24           = 0.393
-for pair in gpt-6-sol:3.53 gpt-6-luna:0.1765 gpt-5.6-sol:7.06 gpt-5.6-terra:3.93 gpt-5.6-luna:0.393; do
+for pair in gpt-6.1-sol:3.49 gpt-6-sol:3.53 gpt-6-luna:0.1765 gpt-5.6-sol:7.06 gpt-5.6-terra:3.93 gpt-5.6-luna:0.393; do
     m=${pair%%:*}; want=${pair#*:}
     btfix "$m"; kv=$(btrun)
     chk "内置表：$m 四项全部计价（含缓存写入）→ full / 缺价 0" \
@@ -396,6 +397,10 @@ PRICE_JSON="$REPO_DIR/scripts/drivers/token-usage/codex-prices.json"
 jq 'del(.models["gpt-6-sol"])' "$PRICE_JSON" > "$TMP/neg-driver/codex-prices.json"
 btfix gpt-6-sol
 chk "负对照：删掉 gpt-6-sol 条目 → 退回 none（本 issue 修之前的样子）" \
+    "$(btrun "$TMP/neg-driver/codex.sh" | grep -o 'cost_state=[a-z]*')" "cost_state=none"
+jq 'del(.models["gpt-6.1-sol"])' "$PRICE_JSON" > "$TMP/neg-driver/codex-prices.json"
+btfix gpt-6.1-sol
+chk "负对照：删掉 gpt-6.1-sol 条目 → 退回 none（GitHub#66 之前只能靠联网补价）" \
     "$(btrun "$TMP/neg-driver/codex.sh" | grep -o 'cost_state=[a-z]*')" "cost_state=none"
 jq 'del(.models["gpt-5.6-sol"].cache_write)' "$PRICE_JSON" > "$TMP/neg-driver/codex-prices.json"
 btfix gpt-5.6-sol

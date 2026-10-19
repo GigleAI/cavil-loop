@@ -316,10 +316,33 @@ chk "C21 Fable 5.1 缓存读取按 \$0.25（原表误按 × 0.1 算成 \$1.00）
 mk_case sonnet55 <<EOF
 $(rec 10 req_s55 claude-sonnet-5-5 "$(u $ALL1M "$ALL1M_IT")")
 EOF
-chk "C22 Sonnet 5.5：2 + 10 + 0.20 + 2.50 + 4 = \$18.70" \
-    "$(run sonnet55 --kv | usd6)" "18.700000"
+# GitHub#66（2026-10-19 复核）：官方脚注写明 Sonnet 5.5 与 Opus 5.5 一样，缓存读取是输入价 × 0.05。
+# 9-29 那次只给 Opus 5.5 配了 0.05×，Sonnet 5.5 仍按 0.1× 算成 $0.20、金额是 $18.70。
+chk "C22 Sonnet 5.5：2 + 10 + 0.10 + 2.50 + 4 = \$18.60（缓存读取 × 0.05，旧表误算 \$18.70）" \
+    "$(run sonnet55 --kv | usd6)" "18.600000"
 chk "C22 Sonnet 5.5 全部有价" \
     "$(run sonnet55 --kv | state)" "cost_state=full"
+
+# ── C23 2026-10-19 补进参照表的型号（GitHub#66）──────────────────────────────
+# 期望值按官方价目页手算，不从参照表反推。4.5 一代用官方型号页上带日期的完整编号——
+# CLI 记账写的是它；Haiku 4.5 的短名早就在表里，带日期的编号一直落空。
+#   型号                         input / output / cache read / 5m 写 / 1h 写       合计
+#   claude-mythos-5-1            10 / 50 / 0.25 / 12.50 / 20                      92.75
+#   claude-mythos-5              10 / 50 / 1    / 12.50 / 20                      93.50
+#   claude-opus-4-5-20251101      5 / 25 / 0.50 /  6.25 / 10                      46.75
+#   claude-sonnet-4-5-20250929    3 / 15 / 0.30 /  3.75 /  6                      28.05
+#   claude-haiku-4-5-20251001     1 /  5 / 0.10 /  1.25 /  2                       9.35
+for pair in claude-mythos-5-1:92.750000 claude-mythos-5:93.500000 \
+            claude-opus-4-5-20251101:46.750000 claude-sonnet-4-5-20250929:28.050000 \
+            claude-haiku-4-5-20251001:9.350000; do
+    m=${pair%%:*}; want=${pair#*:}
+    mk_case "new-$m" <<EOF
+$(rec 10 "req_$m" "$m" "$(u $ALL1M "$ALL1M_IT")")
+EOF
+    kv=$(run "new-$m" --kv)
+    chk "C23 $m 五项全部有价 = \$${want%0000}" \
+        "$(printf '%s' "$kv" | usd6) $(printf '%s' "$kv" | state)" "$want cost_state=full"
+done
 
 echo
 echo "通过 $pass / 失败 $fail"

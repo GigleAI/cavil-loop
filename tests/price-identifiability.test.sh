@@ -244,7 +244,7 @@ echo "── 9. 参照来源如实写明（GigleTutor-Web#982）──"
 chk "来源是官方价目页 + 真实核对日期" "$(PYTHONPATH="$REPO_DIR/scripts/weekly-report" python3 -c "
 import price_solve as ps
 s = ps.REFERENCE_SOURCE
-print('ok' if 'platform.claude.com/docs/en/about-claude/pricing' in s and '2026-09-29' in s else s)")" "ok"
+print('ok' if 'platform.claude.com/docs/en/about-claude/pricing' in s and '2026-10-19' in s else s)")" "ok"
 
 echo
 echo "结果：$pass passed, $fail failed"

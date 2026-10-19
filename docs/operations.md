@@ -132,8 +132,9 @@ Full field list: [`coding-agent.config.example`](../coding-agent.config.example)
 
 When `CODEX_PRICES` is unset, the Codex usage driver uses the
 [built-in price table](../scripts/drivers/token-usage/codex-prices.json), checked
-on 2026-09-28 against the official API model pages:
+on 2026-10-19 against the official API model pages:
 [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra),
+[`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
 [`gpt-6-sol`](https://developers.openai.com/api/docs/models/gpt-6-sol),
 [`gpt-6-luna`](https://developers.openai.com/api/docs/models/gpt-6-luna),
 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol),
@@ -144,7 +145,7 @@ on 2026-09-28 against the official API model pages:
 [`gpt-5-codex`](https://developers.openai.com/api/docs/models/gpt-5-codex),
 and [`codex-mini-latest`](https://developers.openai.com/api/docs/models/codex-mini-latest).
 The table contains their Standard text input, cached-input, and output rates.
-The three GPT-6 and three GPT-5.6 models also carry their listed cache-write
+The four GPT-6 and three GPT-5.6 models also carry their listed cache-write
 rates; the Codex-named models have no listed cache-write rate, so cache writes
 on them stay unpriced.
 `gpt-5.6-sol` is on promotional pricing that OpenAI only guarantees through
