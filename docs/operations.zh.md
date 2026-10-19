@@ -532,8 +532,10 @@ issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --is
 
 ### Skill 目录（Linux 受管布局）
 
+项目名叫 cavil-loop，但装到机器上的路径（skill 软链、`~/.config/coding-agent-work-loop/`、launchd 任务名、日志目录）沿用原名 `coding-agent-work-loop`，保证已有安装不受影响。下面列的都是真实路径。
+
 ```
-~/github/coding-agent-work-loop/        # 可选开发 checkout；部署器绝不修改
+~/github/cavil-loop/                    # 可选开发 checkout；部署器绝不修改
 ~/.agents/skills/coding-agent-work-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
 ~/.agents/releases/cavil-loop/
 ├── mirror.git/                         # 只做 fetch 的镜像

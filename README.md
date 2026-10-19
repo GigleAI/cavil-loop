@@ -1,10 +1,16 @@
-# coding-agent-work-loop
+# cavil-loop
 
 > **English** · [中文](README.zh.md)
 
 > Send AI a batch of issues, async-review the PRs it ships — like working with a real teammate.
 >
 > Turn "babysitting AI step-by-step" into "sleep on it, review the PRs in the morning."
+
+### Why the name
+
+Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be human." That is the idea here: the agent does not need to pretend to be human, yet working with it feels like working with a real colleague — you hand it issues, it comes back with design proposals and PRs, and you review them.
+
+> The project was renamed from `coding-agent-work-loop`. Install paths, config directories, scheduler names and the skill command still use the original name on purpose, so existing installations keep running untouched — whenever these docs show `coding-agent-work-loop` in a path or a command, it is that real name, not a leftover.
 
 ## What it is
 
@@ -120,9 +126,9 @@ npx skills add GigleAI/cavil-loop -g
 <summary>Manual install (without npx)</summary>
 
 ```bash
-git clone https://github.com/GigleAI/cavil-loop.git ~/github/coding-agent-work-loop
+git clone https://github.com/GigleAI/cavil-loop.git ~/github/cavil-loop
 mkdir -p ~/.agents/skills ~/.claude/skills
-ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
+ln -s ~/github/cavil-loop ~/.agents/skills/coding-agent-work-loop
 ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop
 ```
 
@@ -135,7 +141,7 @@ ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work
 bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
 ```
 
-Or just say "install coding-agent-work-loop on ~/path/to/your-project" inside Claude Code — the AI will run it.
+Or just say "install cavil-loop on ~/path/to/your-project" inside Claude Code — the AI will run it.
 
 One command handles: per-project config, registering the background poller, creating `pending/agent` / `pending/human` etc. labels in the repo, starting the timer. Non-destructive, idempotent.
 

@@ -2,7 +2,7 @@
 
 > [English](drivers.md) · **中文**
 
-`coding-agent-work-loop` 的 daemon / dispatch 脚本和「在 tmux 里跑哪个 CLI」之间隔了一层 **driver 抽象**，让任何能接受 prompt 的 chat-REPL 风格 CLI 都能当 worker。配 `WORKER_AGENT=<name>` 即可切换，无需 fork。
+cavil-loop 的 daemon / dispatch 脚本和「在 tmux 里跑哪个 CLI」之间隔了一层 **driver 抽象**，让任何能接受 prompt 的 chat-REPL 风格 CLI 都能当 worker。配 `WORKER_AGENT=<name>` 即可切换，无需 fork。
 
 ## 内置 driver
 

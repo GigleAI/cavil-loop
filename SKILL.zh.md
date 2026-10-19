@@ -3,7 +3,7 @@ name: coding-agent-work-loop
 description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动监听并派工。每个 issue 的设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史都按 issue 号归档，凭号码就能事后查阅、断点续写。包含 setup（一次部署到某个项目）、status（查 daemon 状态）、disable（关闭某项目的 daemon）等命令
 ---
 
-# coding-agent-work-loop
+# cavil-loop
 
 > [English](SKILL.md) · **中文**
 
@@ -13,7 +13,7 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 
 ## 触发方式
 
-用户在调用本 skill 的 agent runtime 里输入 `/coding-agent-work-loop <command>` 或自然语言要求时调用。常见请求：
+用户在调用本 skill 的 agent runtime 里输入 `/coding-agent-work-loop <command>`（skill 沿用原来的安装名）或自然语言要求时调用。常见请求：
 
 - 「帮我把这个 daemon 装到 X 项目」→ 调 `setup` 流程
 - 「coding agent 现在状态如何」→ 调 `status` 流程

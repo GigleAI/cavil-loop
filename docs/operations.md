@@ -616,8 +616,10 @@ line yourself, since `cleanup-issue.sh` has no way to know whether you enabled p
 
 ### Skill directory (managed Linux layout)
 
+The project is called cavil-loop, but installed paths (skill link, `~/.config/coding-agent-work-loop/`, launchd labels, log directories) keep the original name `coding-agent-work-loop` so existing installations are not disturbed. The paths below are the real ones.
+
 ```
-~/github/coding-agent-work-loop/        # optional development checkout; deployment never mutates it
+~/github/cavil-loop/                    # optional development checkout; deployment never mutates it
 ~/.agents/skills/coding-agent-work-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
 ~/.agents/releases/cavil-loop/
 ├── mirror.git/                         # fetch-only mirror

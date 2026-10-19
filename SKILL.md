@@ -3,7 +3,7 @@ name: coding-agent-work-loop
 description: GitHub label-driven workflow that lets a local AI handle issues / PRs; the daemon listens for `pending/agent` and dispatches work. Every issue's design proposal / discussion / code / Claude conversation / tmux history is filed under the issue number, so you can find or resume any of it later just by knowing the issue number. Commands include setup (deploy to a project), status (check daemon state), disable (turn off a project's daemon)
 ---
 
-# coding-agent-work-loop
+# cavil-loop
 
 > **English** · [中文](SKILL.zh.md)
 
@@ -13,7 +13,7 @@ Turn GitHub issue / PR comments into the input and output of your local AI. A sy
 
 ## When to invoke
 
-The user calls this skill from the host agent runtime via `/coding-agent-work-loop <command>` or a natural-language request. Common forms:
+The user calls this skill from the host agent runtime via `/coding-agent-work-loop <command>` (the skill keeps its original install name) or a natural-language request. Common forms:
 
 - "Install this daemon on project X" → run the `setup` flow
 - "What's the state of the coding agent?" → run the `status` flow
