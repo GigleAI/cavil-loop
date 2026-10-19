@@ -68,14 +68,19 @@ ITEMS = ("input", "output", "cache_read", "cache_write")
 
 # ── 外部参照（只作兜底 + 交叉核对，不是真值）──────────────────────────────
 # 来源：Anthropic 官方价目页的 Model pricing / Prompt caching / Fast mode pricing 三节，
-# 2026-09-29 联网逐项核对整张表（GigleTutor-Web#982）。这张表本身**运行时不联网**，官方调价后
+# 2026-09-29 联网逐项核对整张表（GigleTutor-Web#982），2026-10-19 再核一遍（GitHub#66）：
+# 改 Sonnet 5.5 的缓存读取倍率，补现行单一价格的 Mythos 5.1 / Mythos 5 / Opus 4.5 / Sonnet 4.5；
+# 带日期的编号取自官方各型号页（4.5 一代的 CLI 记账用的是它，不是短名）。
+# **故意不收**：Haiku 5.5（单次请求输入超 10 万 token 整次按高档价，一个模型一套价表达不了，
+# 只放低档会把长请求悄悄算便宜）；官方标了 retired 的旧型号。这张表本身**运行时不联网**，官方调价后
 # 要人来改这里——信号是周报出现 disputed。表里**没有**的新模型由 daemon 在缺价时自动联网补
 # （GitHub#51，drivers/token-usage/price_fetch.py：官方页与 LiteLLM 一致才用），补来的价
 # 存在本机缓存、只补缺不覆盖，可信状态单独记 fetched。
 # 倍率：cache 写 5m 1.25×、1h 2×（全部型号一致）；cache 读**因型号而异**，默认 0.1×，
-# Opus 5.5 是 0.05×、Fable 5.1 是 0.025×——原来一律按 0.1× 推，Fable 5.1 被多算了 4 倍。
+# Opus 5.5 / Sonnet 5.5 是 0.05×、Fable 5.1 / Mythos 5.1 是 0.025×——原来一律按 0.1× 推，
+# Fable 5.1 被多算了 4 倍；9-29 那次补了 Opus 5.5 却漏了 Sonnet 5.5，又多算了 1 倍（GitHub#66）。
 # 快速档：官方写明缓存倍率叠加在快速价之上，所以快速档与标准档用同一个读取倍率。
-REFERENCE_SOURCE = "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-29"
+REFERENCE_SOURCE = "platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-19"
 def _ref(inp, out, cache_read_mult=0.1):
     return dict(input=inp, output=out, cache_read=inp * cache_read_mult,
                 cache_write_5m=inp * 1.25, cache_write_1h=inp * 2.0)
@@ -85,12 +90,19 @@ REFERENCE = {
     "claude-opus-4-8":   _ref(5, 25),
     "claude-opus-4-7":   _ref(5, 25),
     "claude-opus-4-6":   _ref(5, 25),
-    "claude-sonnet-5-5": _ref(2, 10),
+    "claude-opus-4-5":   _ref(5, 25),
+    "claude-opus-4-5-20251101": _ref(5, 25),
+    "claude-sonnet-5-5": _ref(2, 10, cache_read_mult=0.05),
     "claude-sonnet-5":   _ref(2, 10),
     "claude-sonnet-4-6": _ref(3, 15),
+    "claude-sonnet-4-5": _ref(3, 15),
+    "claude-sonnet-4-5-20250929": _ref(3, 15),
     "claude-haiku-4-5":  _ref(1, 5),
+    "claude-haiku-4-5-20251001": _ref(1, 5),
     "claude-fable-5":    _ref(10, 50),
     "claude-fable-5-1":  _ref(10, 50, cache_read_mult=0.025),
+    "claude-mythos-5":   _ref(10, 50),
+    "claude-mythos-5-1": _ref(10, 50, cache_read_mult=0.025),
 }
 # 快速模式是同一模型的另一档价，本机 0 条流量、无法反解，只能用参照。
 REFERENCE_FAST = {
