@@ -2149,6 +2149,19 @@ run_gh() {
     return 0
 }
 
+# 列表端点里最后一条的 id（取不到就 0），永远只输出一行。
+#
+# 别写 `gh api --paginate <ep> --jq '.[-1].id'`：--paginate 下 --jq 是**逐页**跑的，
+# 超过 100 条（一页）就每页各吐一个 id，变量成了多行。实测 GigleTutor-Web#1150
+# （105 条评论）：prompt 文件名带上换行，driver 的 `"$(cat <路径>)"` 被切成两条命令，
+# 越过 100 条之后连续四次派工 agent 拿到的都是空 prompt；同一个值写 seen_* 时 jq
+# 语法错，已读位置也推不动。这里让每页输出该页最后一条，再只留最后一页的那一行。
+gh_last_id() {   # <endpoint>
+    local id
+    id=$(gh api --paginate "$1" --jq '.[-1].id // empty' 2>/dev/null | tail -n1) || id=""
+    printf '%s\n' "${id:-0}"
+}
+
 # run_gh 的孪生，给 git 用。**dispatch 脚本里的 git 一律走它**，别写
 # `git ... 2>&1 | tail -N`，也别 `2>/dev/null || log "失败"`。
 #

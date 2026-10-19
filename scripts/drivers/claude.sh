@@ -96,7 +96,7 @@ agent_command_new() {
         flags="$(printf -- '--session-id %q' "$WORKER_SESSION_ID") $flags"
     fi
     # name 含 / # 等需要 shell-quote（worker_session_name 现在用 GigleAI/repo#42 风格）
-    printf 'claude -n %q %s %s "$(cat %s)"' \
+    printf 'claude -n %q %s %s "$(cat %q)"' \
         "$name" \
         "$flags" \
         "$model_arg" \
@@ -253,14 +253,14 @@ agent_command_resume() {
     # 有 id 就续那一条。没有 id 只会出现在「本功能上线前留下的会话」这一种情况，
     # 那时才回落到 --continue（cwd 里最近的一条）。
     if [ -n "${WORKER_SESSION_ID:-}" ]; then
-        printf 'claude --resume %q %s %s "$(cat %s)"' \
+        printf 'claude --resume %q %s %s "$(cat %q)"' \
             "$WORKER_SESSION_ID" \
             "${CLAUDE_EXTRA_FLAGS:-}" \
             "$model_arg" \
             "$prompt_file"
         return 0
     fi
-    printf 'claude --continue %s %s "$(cat %s)"' \
+    printf 'claude --continue %s %s "$(cat %q)"' \
         "${CLAUDE_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"

@@ -55,7 +55,7 @@ agent_command_new() {
     local prompt_file="$3"
     local model_arg
     model_arg="$(worker_model_arg)"
-    printf 'opencode %s %s "$(cat %s)"' \
+    printf 'opencode %s %s "$(cat %q)"' \
         "${OPENCODE_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"
@@ -69,7 +69,7 @@ agent_command_resume() {
     model_arg="$(worker_model_arg)"
     # 部分 opencode 版本支持 --continue；不支持时该 flag 会被忽略或报错，
     # 走 inject_prompt 路径反而更稳。如本机版本不支持，把下面改成 agent_command_new。
-    printf 'opencode --continue %s %s "$(cat %s)"' \
+    printf 'opencode --continue %s %s "$(cat %q)"' \
         "${OPENCODE_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"

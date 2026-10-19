@@ -161,7 +161,7 @@ agent_command_new() {
     local prompt_file="$3"
     local model_arg
     model_arg="$(worker_model_arg)"
-    printf 'codex %s %s %s "$(cat %s)"' \
+    printf 'codex %s %s %s "$(cat %q)"' \
         "$(codex_no_daemon_flag)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \
@@ -178,7 +178,7 @@ agent_command_resume() {
     # 没 id 只会出现在「本功能上线前留下的会话」这一种情况，那时才回落到 --last
     # ——它取的是这个 cwd 最近的一条，分不清角色。
     if [ -n "${WORKER_SESSION_ID:-}" ]; then
-        printf 'codex resume %q %s %s %s "$(cat %s)"' \
+        printf 'codex resume %q %s %s %s "$(cat %q)"' \
             "$WORKER_SESSION_ID" \
             "$(codex_no_daemon_flag)" \
             "${CODEX_EXTRA_FLAGS:-}" \
@@ -187,7 +187,7 @@ agent_command_resume() {
         return 0
     fi
     # tmux 已在目标 worktree cwd 中启动；--last 会按 cwd 续接最近会话并直接注入 prompt。
-    printf 'codex resume --last %s %s %s "$(cat %s)"' \
+    printf 'codex resume --last %s %s %s "$(cat %q)"' \
         "$(codex_no_daemon_flag)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \

@@ -381,7 +381,7 @@ dispatch_one_issue() {
     # pending/agent 是用户明确意图信号（包括勾选 checkbox、编辑 comment 等不产生新 comment ID 的操作），
     # 所以不依赖 comment ID 变化，只要 agent 不在忙就派工。
     if session_alive "$sess" || [ -d "$wt" ]; then
-        latest_id=$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
+        latest_id=$(gh_last_id "repos/$REPO/issues/$num/comments")
         log "issue #$num 已有 worktree/session (latest_id=$latest_id, agent=${worker_agent:-default}, model=${model:-default})"
         if session_alive "$sess" && agent_is_busy "$sess"; then
             log "issue #$num: agent 正在忙，跳过本轮"
@@ -445,9 +445,9 @@ dispatch_one_pr() {
     # --paginate：gh api 默认只返第一页（per_page=30）。PR 评论 / inline review
     # 多到 30+ 时 .[-1] 就拿不到真正最新的，少 paginate daemon 看不见后面 7 条。
     # 实测 PR #105 撞过：37 条评论，第 31-37 漏掉 → seen 永远 == 老 latest。
-    latest_conv=$(gh api --paginate "repos/$REPO/issues/$prnum/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-    latest_inline=$(gh api --paginate "repos/$REPO/pulls/$prnum/comments" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
-    latest_review=$(gh api --paginate "repos/$REPO/pulls/$prnum/reviews" --jq '.[-1].id // 0' 2>/dev/null || echo 0)
+    latest_conv=$(gh_last_id "repos/$REPO/issues/$prnum/comments")
+    latest_inline=$(gh_last_id "repos/$REPO/pulls/$prnum/comments")
+    latest_review=$(gh_last_id "repos/$REPO/pulls/$prnum/reviews")
     seen_conv=$(jq -r ".seen_comments[\"$prnum\"] // 0" "$STATE_FILE")
     seen_inline=$(jq -r ".seen_review_comments[\"$prnum\"] // 0" "$STATE_FILE")
     seen_review=$(jq -r ".seen_reviews[\"$prnum\"] // 0" "$STATE_FILE")
