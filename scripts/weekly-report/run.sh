@@ -4,7 +4,7 @@
 # 每周一由 systemd timer coding-agent-weekly-report@<project>.timer 触发。
 # 手动跑：bash run.sh <project-key> [--dry-run] [--week-of YYYY-MM-DD]
 #
-# 产物落在 issue 里（数据 + 三张趋势图）。issue 默认打 pending/agent，
+# 产物落在 issue 里（数据 + 四张趋势图：交付 / 投入 / 成本 / token）。issue 默认打 pending/agent，
 # 由 daemon 派 worker 把数据写成大白话解读——数字机器出，人话 agent 写。
 set -euo pipefail
 
@@ -88,7 +88,7 @@ SWITCH_WEEK="${WEEKLY_REPORT_SWITCH_WEEK:-}"
 echo "== 2/4 出图"
 python3 "$HERE/render.py" --data "$WORK/data.json" --out-dir "$WORK" \
     --asset-url-base "$ASSET_URL" --rev "$REV" --fonts-dir "$FONTS_DIR"
-for n in delivery effort token; do
+for n in delivery effort cost token; do
     node "$HERE/shot.mjs" "$PROJECT_ROOT" "$WORK/$n.html" "$WORK/$n-$REV.png"
 done
 
@@ -101,7 +101,7 @@ for d in "$ASSET_DIR" "$ASSET_DIR/.."; do
     [ -e "$d/index.html" ] || printf '<!doctype html><title>404</title>Not found.\n' > "$d/index.html"
 done
 cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
-for n in delivery effort token; do
+for n in delivery effort cost token; do
     code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$n-$REV.png")
     [ "$code" = "200" ] || { echo "配图公网不可达（$n → HTTP $code），中止" >&2; exit 1; }
     echo "   $ASSET_URL/$n-$REV.png → 200"
@@ -128,7 +128,7 @@ BODY="$WORK/body.md"
 > 2. 分组：已上线 / 不用写代码就闭环 / 有推进没完成（按「等谁」分：等验收合并、等拍板）/ 新提未开工
 > 3. 给 3~5 条「值得注意的现象」，要有解释而不只是罗列数字
 > 4. 不要显示代码文件数；不要开 PR
-> 5. 趋势图直接引用下面那三张，不用重新出图
+> 5. 趋势图直接引用下面那四张（交付 / 投入 / 成本 / token），不用重新出图
 > 6. **用词说人话，别用直译术语**。两个时间指标一律按下面这两个名字写，
 >    正文、PDF、图注都一样，**不要写「墙上时长 / 墙上时间 / 挂钟时间」**（那是
 >    wall time 的直译，中文读者看不懂）：
@@ -140,9 +140,13 @@ BODY="$WORK/body.md"
 >    人民币金额，要点明那是那条 issue 的口径、跟周报这套记账无关。
 >
 > **PDF 文档规范（顺序固定，不要改）**
-> 1. **本周总体数据表格** —— 开篇第一屏就是数字，含环比
-> 2. **总体结论与注意事项** —— **精简**，3~5 条，每条一句话结论 + 一句话解释，别铺开写
-> 3. **详细展开** —— 按上面的分组逐条讲
+> 下面的数据部分**已经按 PDF 页序排好**：交付 / 投入 / 成本 / token / 按模型拆分各占一页，
+> 每页是「该类的图 + 最近 10 周表」（本周行加粗、最后一行环比，†/≈ 的说明跟着各自的表）。
+> 每页开头那行 `<div style="break-before: page"></div>` 是分页标记，**不要删**。拼 PDF 时：
+> 1. **第 1 页：总体结论与注意事项** —— 写在「上周数据」标题之后、第一个分页标记之前。
+>    **精简**，3~5 条，每条一句话结论 + 一句话解释，别铺开写
+> 2. **交付 → 投入 → 成本 → token → 按模型拆分**，五页原样保留，顺序不动，图和表不拆开
+> 3. **详细展开**（新起一页）—— 按上面的分组逐条讲，「本周明细」那几张表是素材
 > 4. 末尾附数据口径
 >
 > ⚠️ PDF 是给人看**这周干了什么**的，**不要写周报工具自身的口径修正 / 数据遗漏 / 复核过程**——

@@ -16,6 +16,7 @@ import record
 import attribute
 import price_solve      # noqa: E402  记账记录提取 + 派工去重
 import worktime    # noqa: E402  处理时长（按轮起止，不含轮与轮之间的等待）
+import bymodel     # noqa: E402  目标周按模型拆分 + 自检
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))  # 报告按北京时间切周
 
@@ -258,6 +259,9 @@ def main():
                 # 不带过去的话汇总只能读原记录的 token，重叠派工的共用调用就被算两遍。
                 recompute[w["key"]] = {"cost_source": "recomputed", "cost": usd,
                                        "tok": dict(own[w["key"]]["tok"]),
+                                       # 按模型拆分用：同一批调用按各自模型分组计价（GitHub#61）
+                                       "split": bymodel.split_calls(mine, price_table,
+                                                                    attribute.price_calls),
                                        "log_check": chk, "cost_state": state,
                                        "unknown_tokens": unk,
                                        "price_source": "solved", "price_status": bystat}
@@ -284,6 +288,7 @@ def main():
             windows, lambda wt: f"{a.worktree_base}/{a.session_prefix}-{wt}" if wt is not None else None)
 
     codex_table = price_solve.codex_price_table()
+    by_model = bymodel.Acc()        # 只累加目标周、且进得了去重合计的派工
     # ── 第二段：每次派工只按它最终那条累计记录入账，算在**开工那一周** ──
     for key, (rec, cw, num) in claimed.items():
         w = rec_week(rec, cw)
@@ -346,8 +351,10 @@ def main():
         else:
             tok = rec.get("tokens") or {}
             tf = 1 / attribute.LEGACY_DUP_FACTOR if legacy else 1
+        final_tok = {}                  # 本条最终计入总数的那份，按模型拆分照它取
         for k in ("in", "out", "cache_r", "cache_w"):
             v = (tok.get(k) or 0) * tf
+            final_tok[k] = v
             if in_total:
                 s[f"tok_{k}"] += v
                 s[f"tok_{k}_{rec.get('agent') or 'claude'}"] += v
@@ -369,6 +376,7 @@ def main():
         else:
             s["cost_not_summable"] += cost
             s["records_not_summable"] += 1
+            s["wall_not_summable"] += wall
         s[f"src_{cost_source}"] += 1
         s[f"state_{cost_state}"] += 1
         # 单价可信度：金额分到哪个桶里（GitHub#934 交叉 review 第 1 轮）。
@@ -424,6 +432,9 @@ def main():
             s["work"] += work
             s["work_records"] += 1
             s[f"work_{agent}"] += work
+            if not in_total:
+                s["work_not_summable"] += work
+                s["work_records_not_summable"] += 1
             s["work_in_progress"] += work_open.get(key, 0)
             if worktime.long_turn(work, wall):
                 s["long_turns"] += 1
@@ -431,6 +442,11 @@ def main():
                                    "work": round(work)})
 
         if w == target.isoformat():
+            # 按模型拆分：口径与上面的总数完全同一套（同一份金额 / token、同一个 in_total），
+            # 只是再分一层桶。重算过的派工按调用的模型拆，其余按记录里的模型整条归属。
+            if in_total:
+                split = info.get("split") if cost_source == "recomputed" else None
+                by_model.add(agent, rec, wall, work, cost, final_tok, split)
             p = per_issue[num]
             p["wall"] += wall; p["cost"] += cost
             if work is not None:
@@ -514,6 +530,8 @@ def main():
               "log_no_shortfall_detected", "log_shortfall_detected",
               "log_unknown", "log_true_zero",
               "cost_not_summable", "records_not_summable",
+              # 同一批不可去重合计的派工的时长：按模型拆分自检时要从总数里减掉
+              "wall_not_summable", "work_not_summable", "work_records_not_summable",
               # 单价**可信度**（与 state_* 的「有没有价」是两回事）：金额按桶拆开，
               # 报告据此把「存疑」「未核对」「用参照兜底」分别报出来，不再混成一个数
               "price_usd_corroborated", "price_usd_uncorroborated",
@@ -528,6 +546,14 @@ def main():
 
     tw = target.isoformat()
     tend = target + datetime.timedelta(days=6)
+
+    # 按模型拆分的自检：各行之和必须等于上面的总数，对不上就报错退出，不静默输出
+    by_model_rows = by_model.result()
+    bad = bymodel.check(weekly[tw], by_model_rows)
+    if bad:
+        print("[error] 按模型拆分与总数对不上（GitHub#61 自检）：\n  " + "\n  ".join(bad),
+              file=sys.stderr)
+        sys.exit(1)
 
     def issue_of(pn):
         """PR 关联到的真 issue 号；关联不到（或指向另一个 PR）返回 None。"""
@@ -628,7 +654,8 @@ def main():
                "long_windows": long_windows, "long_turns": long_turns,
                "work_unattributed": unattributed,
                "target_week": {"start": tw, "end": tend.isoformat()},
-               "weeks": weeks, "weekly": weekly, "detail": detail,
+               "weeks": weeks, "weekly": weekly, "by_model": by_model_rows,
+               "detail": detail,
                "loose_prs": loose},
               open(a.out, "w"), ensure_ascii=False, indent=1)
     print(f"[ok] {a.out}: 目标周 {tw}~{tend}，{len(weeks)} 周趋势，"
