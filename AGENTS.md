@@ -306,6 +306,7 @@ Changes in these areas must run the matching tests:
 - Worker / model selection, the `--model` a driver passes → `tests/worker-selection.test.sh`, `tests/claude-resume-model.test.sh`
 - Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.
   Any **new daemon-side write** must go through `gh_write`, not bare `gh` — a bare `gh` still succeeds, it just signs with the polling identity
+- How workers / the reviewer write comments that ask a human to decide (the fixed skeleton, the no-code-names rule) → `tests/plain-language-prompts.test.sh`. The skeleton is copied verbatim into the three worker templates and the project's `review.extra.md`; the no-code-names sentence additionally sits in the worker decision-question rules and the reviewer's rejection rule (`review.template.md`, step 2Q). Edit every copy together — the test diffs the composed prompts and fails on any drift
 
 Changes with no matching test (daemon glue, prompt templates) still meet the minimum bar:
 
