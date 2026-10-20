@@ -800,6 +800,13 @@ otherwise create the new one.** When both exist the new one wins.
 - One machine can carry both skill entries (old projects use the old one, a newly set-up project
   the new one). The deployer switches both together whenever both point into `releases/`, and
   never deletes a release that one of them still points to.
+- On-demand previews follow **their own registration**, not "which units this machine has":
+  a preview an old project registered stays on the old units and the old registration
+  directory even after new units are installed. Ownership checks, `--list` and unregistering
+  look at both directories; a port taken in either one is taken. Old and new share one port
+  lock (the old directory's while the machine has old units). When starting, each unit reads
+  the registration it is bound to — the new unit passes its path, the old one reads the old
+  directory. Only a brand-new registration picks the new units.
 - Old and new workers land in different slices, so each slice carries its own memory limit while
   both kinds of installation coexist. The new slice name follows the same derivation rule as
   the old one; it has not yet been observed on a real machine.

@@ -1684,10 +1684,14 @@ branch_name() {
 # 注册和注销共用这把锁，否则两个 issue 并发注册时都会「检查时没人」、后写的赢。
 # 没登记的遗留路由不自动拆：端口可能已被别的服务复用，按公式拆就是误伤别人。
 #
-# 预览单元有新旧两套名字（cavil-loop-preview* / 改名前的 coding-agent-preview*）。本机装了
-# 哪套就用哪套，登记目录跟着走——旧单元的 EnvironmentFile 写死了旧目录。
+# 预览单元有新旧两套名字（cavil-loop-preview* / 改名前的 coding-agent-preview*），登记也就
+# 有新旧两个目录。**每个端口跟着它自己的登记走**（规则见 _names.sh）：查主人、注销、列清单
+# 两个目录都看；只有全新注册才按本机装了哪套单元挑。端口锁新旧共用一把。
+#   PREVIEW_UNIT_PREFIX / PREVIEW_CONF_DIR：全新注册用的那套单元和它的登记目录
+#   PREVIEW_LOCK_DIR：端口锁所在目录
 PREVIEW_UNIT_PREFIX="$(cavil_preview_unit_prefix)"
-PREVIEW_CONF_DIR="$(cavil_preview_conf_dir)"
+PREVIEW_CONF_DIR="$(cavil_preview_dir_of_prefix "$PREVIEW_UNIT_PREFIX")"
+PREVIEW_LOCK_DIR="$(cavil_preview_lock_dir)"
 
 preview_port() {
     local issue="$1" base="${PREVIEW_PORT_BASE:-4000}" mod="${PREVIEW_PORT_MODULO:-}"
@@ -1702,20 +1706,35 @@ preview_port() {
 # 等不到锁（默认 30s）就 exit 4，不硬闯。
 preview_with_port_lock() {
     local port="$1"; shift
-    mkdir -p "$PREVIEW_CONF_DIR"
+    mkdir -p "$PREVIEW_LOCK_DIR"
     (
         flock -w "${PREVIEW_LOCK_TIMEOUT:-30}" 7 \
             || { echo "❌ 等 preview 端口 :$port 的锁超时（${PREVIEW_LOCK_TIMEOUT:-30}s）" >&2; exit 4; }
         "$@"
-    ) 7>"$PREVIEW_CONF_DIR/.port-$port.lock"
+    ) 7>"$PREVIEW_LOCK_DIR/.port-$port.lock"
 }
 
-# 登记的主人，格式「项目|issue|worktree」；没登记输出空。
-preview_owner_of() {
-    local conf="$PREVIEW_CONF_DIR/$1.conf"
-    [ -f "$conf" ] || return 0
-    # shellcheck disable=SC1090
-    ( source "$conf"; printf '%s|%s|%s\n' "${PREVIEW_PROJECT:-}" "${PREVIEW_ISSUE:-}" "${PREVIEW_WORKTREE:-}" )
+# 某个端口的全部登记（新目录在前），每行「登记文件<TAB>项目|issue|worktree」；没登记输出空。
+# 正常只有一行；改名过渡期的旧现场可能两个目录各有一份，调用方必须逐行看，不能只看第一行。
+preview_registrations() {
+    local d conf
+    for d in "${CAVIL_PREVIEW_DIRS[@]}"; do
+        conf="$d/$1.conf"
+        [ -f "$conf" ] || continue
+        # shellcheck disable=SC1090
+        printf '%s\t%s\n' "$conf" \
+            "$( source "$conf"; printf '%s|%s|%s' "${PREVIEW_PROJECT:-}" "${PREVIEW_ISSUE:-}" "${PREVIEW_WORKTREE:-}" )"
+    done
+}
+
+# 登记在别人名下的那个主人（任一目录里有就算）；全是自己的或没登记输出空。
+# 用法：preview_foreign_owner <port> <项目|issue|worktree>
+preview_foreign_owner() {
+    local conf owner
+    while IFS=$'\t' read -r conf owner; do
+        [ -n "$conf" ] || continue
+        [ "$owner" = "$2" ] || { printf '%s\n' "$owner"; return 0; }
+    done < <(preview_registrations "$1")
 }
 
 # 把「项目|issue|worktree」说成人话，给报错用。
@@ -1730,27 +1749,32 @@ preview_owner_human() {
 #   没登记             → 什么都不动，返回 0（幂等：清理路径上反复调不出错）
 #   主人不是调用方     → 什么都不动，返回 3
 preview_release_owned() {
-    local port="$1" want="$2|$3|$4" owner
-    owner="$(preview_owner_of "$port")"
-    if [ -z "$owner" ]; then
+    local port="$1" want="$2|$3|$4" owner regs conf prefix
+    regs="$(preview_registrations "$port")"
+    if [ -z "$regs" ]; then
         echo "preview :$port 没有登记，不动（不按公式拆未登记的路由）"
         return 0
     fi
-    if [ "$owner" != "$want" ]; then
+    owner="$(preview_foreign_owner "$port" "$want")"
+    if [ -n "$owner" ]; then
         echo "⚠️ preview :$port 登记在 $(preview_owner_human "$owner") 名下，不是 $(preview_owner_human "$want")，不动" >&2
         return 3
     fi
+    # 每份登记停它自己那套单元（旧目录的登记跑在 coding-agent-preview* 上）。
     # 停的顺序：socket 先停，掐掉新连接触发重启的可能；再停 proxy，
     # app 靠 StopWhenUnneeded 自己跟着走（显式再停一次是兜底，幂等无害）。
-    systemctl --user stop "${PREVIEW_UNIT_PREFIX}-preview@${port}.socket"      2>/dev/null || true
-    systemctl --user stop "${PREVIEW_UNIT_PREFIX}-preview@${port}.service"     2>/dev/null || true
-    systemctl --user stop "${PREVIEW_UNIT_PREFIX}-preview-app@${port}.service" 2>/dev/null || true
+    while IFS=$'\t' read -r conf owner; do
+        prefix="$(cavil_preview_prefix_of_dir "$(dirname "$conf")")"
+        systemctl --user stop "${prefix}-preview@${port}.socket"      2>/dev/null || true
+        systemctl --user stop "${prefix}-preview@${port}.service"     2>/dev/null || true
+        systemctl --user stop "${prefix}-preview-app@${port}.service" 2>/dev/null || true
+    done <<< "$regs"
     if command -v tailscale >/dev/null 2>&1 \
         && tailscale serve status 2>/dev/null | grep -q ":${port}\b"; then
         sudo -n tailscale serve --https="$port" off >/dev/null 2>&1 \
             || echo "  ⚠️ tailscale serve off :$port 失败（sudo -n / 权限？）——路由留着，需人工处理" >&2
     fi
-    rm -f "$PREVIEW_CONF_DIR/${port}.conf"
+    while IFS=$'\t' read -r conf owner; do rm -f "$conf"; done <<< "$regs"
     echo "preview :$port 已注销（$(preview_owner_human "$want")）"
 }
 

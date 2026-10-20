@@ -147,8 +147,9 @@ chk "只有旧目录的自定义 driver → 找得到" "$(in_lib 'source_driver 
 drv .agents/skills/cavil-loop new-driver
 chk "两个都有 → 用新目录的"            "$(in_lib 'source_driver mini && agent_bin')" "new-driver"
 
-echo "【4b】预览：本机装了哪套单元就用哪套，登记目录跟着走（旧单元写死了旧目录）"
-preview_pick() { HOME="$1" bash -c 'source "$1"; echo "$(cavil_preview_unit_prefix)|$(cavil_preview_conf_dir)"' _ "$REPO_DIR/scripts/_names.sh"; }
+echo "【4b】预览的全新注册：本机装了哪套单元就用哪套，登记目录跟着单元走"
+echo "     （已有的旧预览跟着自己的登记走，见 tests/preview-rename-coexist.test.sh）"
+preview_pick() { HOME="$1" bash -c 'source "$1"; p=$(cavil_preview_unit_prefix); echo "$p|$(cavil_preview_dir_of_prefix "$p")"' _ "$REPO_DIR/scripts/_names.sh"; }
 PV="$TMP/pv"; mkdir -p "$PV/.config/systemd/user"
 chk "什么都没装 → 新的" "$(preview_pick "$PV")" "cavil-loop|$PV/.config/cavil-loop/preview"
 : > "$PV/.config/systemd/user/coding-agent-preview@.socket"
