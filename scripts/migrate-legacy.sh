@@ -17,7 +17,7 @@
 #   3. 新单元模板（Linux）
 #   4. 状态目录整体搬到新位置，同时改写项目配置里写死的状态目录路径
 #   5. 环境文件搬到新配置目录，旧文件改名留底
-#   6. 停掉并移除旧后台任务，按原来的开关状态启用新的（Linux），或卸掉旧 LaunchAgent（macOS）
+#   6. 按原来的开关状态先启用新后台任务、再停掉并移除旧的（Linux），或卸掉旧 LaunchAgent（macOS）
 #
 # 硬规则：
 #   · 项目有 worker 在跑（或本项目的轮询 / 周报正在跑）时一步都不做——正在跑的进程记住的是
@@ -225,7 +225,11 @@ migrate_key() {
     local old_env="$CAVIL_LEGACY_CONFIG_HOME/$KEY.conf" new_env="$CAVIL_CONFIG_HOME/$KEY.conf"
     local progress="$MIG_DIR/$KEY.inprogress"
 
-    [ -f "$old_env" ] || return 0
+    if [ ! -f "$old_env" ]; then
+        # 上次已经迁完、只差把进度文件收尾：补上，否则轮询入口会一直以为本项目还在迁
+        [ ! -f "$progress" ] || mv "$progress" "$MIG_DIR/$KEY.done" 2>/dev/null || true
+        return 0
+    fi
     if [ -e "$new_env" ] && [ ! -f "$progress" ]; then
         mlog_throttled "conflict-$KEY" "⛔ 新旧两份环境文件都在（$new_env 与 $old_env），而且不是迁移留下的半成品：可能两套后台任务同时在跑，需要人工处理，自动迁移不动它"
         return 1
@@ -256,22 +260,25 @@ migrate_key() {
     if [ -n "$old_sd" ] && [ ! -e "$old_sd" ] && [ -d "$new_sd" ]; then live_sd="$new_sd"; fi
 
     # ── 忙不忙 ──
-    local busy=""
-    if [ -n "$tprefix" ] && command -v tmux >/dev/null 2>&1; then
+    # 先拿本项目的轮询锁，**再**看有没有 worker。顺序不能反：派工只发生在轮询持锁期间，
+    # 先列会话、后拿锁的话，中间那一轮轮询可以派出 worker、放掉锁，前面「没有 worker」
+    # 的结论就过期了。拿到锁之后再看，这期间不可能冒出新 worker。
+    # 锁一直攥到整个项目迁完（中途出错返回时随子 shell / 进程退出释放）。
+    local busy="" lock_fd=""
+    if [ -d "$live_sd" ]; then
+        exec {lock_fd}>>"$live_sd/poll.lock"
+        flock -n "$lock_fd" || busy="本项目的一轮轮询正在跑"
+    fi
+    if [ -z "$busy" ] && [ -n "$tprefix" ] && command -v tmux >/dev/null 2>&1; then
         local re="^$(ere_escape "$tprefix-$sprefix")[0-9]+\$" sessions
         sessions="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "$re" | tr '\n' ' ' || true)"
         [ -z "$sessions" ] || busy="还有 worker 在跑（${sessions% }）"
     fi
+    # 周报不读状态目录（只读环境文件，新旧两份在迁移中途都在、内容一样），这里只是不在它
+    # 跑的时候换它的定时任务。
     if [ -z "$busy" ] && [ "$SCHED" = systemd ] \
        && [ "$(unit_active "$CAVIL_LEGACY_UNIT_PREFIX-weekly-report@$KEY.service")" = yes ]; then
         busy="周报正在生成"
-    fi
-    # 本项目的轮询锁：拿到就一直攥到整个项目迁完（中途出错返回时随子 shell / 进程退出释放），
-    # 期间本项目不会有新的一轮开始派工。
-    local lock_fd=""
-    if [ -z "$busy" ] && [ -d "$live_sd" ]; then
-        exec {lock_fd}>>"$live_sd/poll.lock"
-        flock -n "$lock_fd" || busy="本项目的一轮轮询正在跑"
     fi
     if [ -n "$busy" ]; then
         mlog_throttled "wait-$KEY" "暂不迁移：$busy；空闲后再迁"
@@ -280,7 +287,46 @@ migrate_key() {
     fi
     rm -f "$CAVIL_STATE_HOME/.migrate-note-wait-$KEY" 2>/dev/null
 
+    # ── 停手等人的情况，在动任何东西**之前**查完 ──
+    # 进度文件一建，本项目的轮询就会暂停到迁完为止（见 poll-entry.sh）；需要人处理的情况
+    # 必须在那之前挡下来，旧安装照常轮询，不能变成一个暂停着、又迁不完的项目。
+    local tcfg=""
+    if [ -n "$old_sd" ]; then
+        # 迁到一半时被别的进程在旧位置凭空建出来的空壳：里面没有 state.json（真的状态目录
+        # 第一轮就会写它）。只在本项目确实在迁（有进度文件）时认它，日志并进新目录后删掉。
+        if [ -f "$progress" ] && [ -d "$old_sd" ] && [ -d "$new_sd" ] && [ ! -e "$old_sd/state.json" ] \
+           && [ -z "$(find "$old_sd" -mindepth 1 -maxdepth 1 ! -name poll.log ! -name poll.lock ! -name .tick 2>/dev/null)" ]; then
+            [ ! -f "$old_sd/poll.log" ] || cat "$old_sd/poll.log" >> "$new_sd/poll.log" 2>/dev/null || true
+            rm -rf -- "$old_sd" && mlog "清掉迁移中途在旧位置冒出的空状态目录 $old_sd（只有日志，已并进新目录）"
+        fi
+        if [ -e "$old_sd" ] && [ -e "$new_sd" ]; then
+            mlog_throttled "bothsd-$KEY" "⛔ 新旧两个状态目录都在（$old_sd 与 $new_sd），不知道哪份是真的，停下等人处理"
+            return 1
+        fi
+        tcfg="$(mktemp)"
+        rewrite_paths "$cfg" "$old_sd" "$new_sd" > "$tcfg" || { rm -f "$tcfg"; mlog "❌ 改写项目配置失败"; return 1; }
+        # 先验证改写后的配置确实指向新位置，再动目录：改不对就一步都别搬。
+        local got; got="$(config_values "$tcfg" | sed -n 1p)"
+        if [ "$got" != "$new_sd" ]; then
+            rm -f "$tcfg"
+            mlog_throttled "cfg-$KEY" "⛔ 项目配置 $cfg 里的 STATE_DIR 不是能自动改写的写法（改写后得到 '$got'），停下等人处理"
+            return 1
+        fi
+        if [ -e "$old_sd" ]; then
+            mkdir -p "$CAVIL_STATE_HOME"
+            if [ "$(dev_of "$old_sd")" != "$(dev_of "$CAVIL_STATE_HOME")" ]; then
+                rm -f "$tcfg"
+                mlog_throttled "dev-$KEY" "⛔ $old_sd 和 $CAVIL_STATE_HOME 不在同一个磁盘分区，自动迁移不做跨盘拷贝，停下等人处理"
+                return 1
+            fi
+        fi
+    fi
+    # 验证用的临时文件不留着（配置里可能有 token）；第 4 步按同样的规则重新生成一份
+    [ -z "$tcfg" ] || rm -f "$tcfg"
+    rm -f "$CAVIL_STATE_HOME/.migrate-note-wait-$KEY" 2>/dev/null
+
     # ── 1. 进度文件：记下旧后台任务原来的开关状态（重跑时以第一次记的为准）──
+    # 它在 = 本项目正在迁：轮询入口看到写着本项目配置的 CFG= 行，就跳过主轮询。
     mkdir -p "$MIG_DIR" && chmod 700 "$CAVIL_CONFIG_HOME" "$MIG_DIR" || { mlog "❌ 建 $MIG_DIR 失败"; return 1; }
     local old_poll="$CAVIL_LEGACY_UNIT_PREFIX-poll@$KEY.timer" new_poll="$CAVIL_UNIT_PREFIX-poll@$KEY.timer"
     local old_week="$CAVIL_LEGACY_UNIT_PREFIX-weekly-report@$KEY.timer" new_week="$CAVIL_UNIT_PREFIX-weekly-report@$KEY.timer"
@@ -289,6 +335,7 @@ migrate_key() {
         local p; p="$(mktemp "$MIG_DIR/.progress.XXXXXX")"
         {
             echo "TS=$(date +%Y%m%d-%H%M%S)"
+            printf 'CFG=%s\n' "$cfg"
             if [ "$SCHED" = systemd ]; then
                 echo "POLL_ENABLED=$(unit_enabled "$old_poll")"
                 echo "POLL_ACTIVE=$(unit_active "$old_poll")"
@@ -298,7 +345,7 @@ migrate_key() {
                 launchctl print "gui/$(id -u)/$old_label" >/dev/null 2>&1 && echo "LAUNCHD_LOADED=yes" || echo "LAUNCHD_LOADED=no"
             fi
         } > "$p" && mv "$p" "$progress" || { rm -f "$p"; mlog "❌ 写进度文件失败"; return 1; }
-        mlog "开始迁移（旧环境文件 $old_env，项目配置 $cfg，状态目录 ${sd:-未设}）；原状态：$(grep -v '^TS=' "$progress" | tr '\n' ' ')"
+        mlog "开始迁移（旧环境文件 $old_env，项目配置 $cfg，状态目录 ${sd:-未设}）；原状态：$(grep -vE '^(TS|CFG)=' "$progress" | tr '\n' ' ')"
     fi
     TS="$(env_value "$progress" TS)"
     local bk="$MIG_DIR/$KEY-$TS"
@@ -342,28 +389,11 @@ migrate_key() {
         copy_dropin "$CAVIL_LEGACY_SLICE" "$CAVIL_SLICE" || return 1
     fi
 
-    # ── 4. 状态目录 + 项目配置里的状态目录路径 ──
+    # ── 4. 状态目录 + 项目配置里的状态目录路径（同样的改写上面已经验证过）──
     if [ -n "$old_sd" ]; then
-        if [ -e "$old_sd" ] && [ -e "$new_sd" ]; then
-            mlog "⛔ 新旧两个状态目录都在（$old_sd 与 $new_sd），不知道哪份是真的，停下等人处理"
-            return 1
-        fi
-        local tcfg; tcfg="$(mktemp)"
+        tcfg="$(mktemp)"
         rewrite_paths "$cfg" "$old_sd" "$new_sd" > "$tcfg" || { rm -f "$tcfg"; mlog "❌ 改写项目配置失败"; return 1; }
-        # 先验证改写后的配置确实指向新位置，再动目录：改不对就一步都别搬。
-        local got; got="$(config_values "$tcfg" | sed -n 1p)"
-        if [ "$got" != "$new_sd" ]; then
-            rm -f "$tcfg"
-            mlog "⛔ 项目配置 $cfg 里的 STATE_DIR 不是能自动改写的写法（改写后得到 '$got'），停下等人处理"
-            return 1
-        fi
         if [ -e "$old_sd" ]; then
-            mkdir -p "$CAVIL_STATE_HOME"
-            if [ "$(dev_of "$old_sd")" != "$(dev_of "$CAVIL_STATE_HOME")" ]; then
-                rm -f "$tcfg"
-                mlog "⛔ $old_sd 和 $CAVIL_STATE_HOME 不在同一个磁盘分区，自动迁移不做跨盘拷贝，停下等人处理"
-                return 1
-            fi
             mv "$old_sd" "$new_sd" || { rm -f "$tcfg"; mlog "❌ 搬状态目录失败"; return 1; }
             mlog "状态目录：$old_sd → $new_sd（整目录改名，内容不变）"
         fi
@@ -389,6 +419,22 @@ migrate_key() {
     if [ "$SCHED" = systemd ]; then
         copy_dropin "$old_poll" "$new_poll" || return 1
         copy_dropin "$old_week" "$new_week" || return 1
+        sc daemon-reload >/dev/null 2>&1 || { mlog "❌ systemctl --user daemon-reload 失败"; return 1; }
+        # 先把新任务开起来，**再**停旧的：反过来的话，新任务开不起来时这个项目一个定时任务
+        # 都不剩，再也不会有下一轮来接着迁。两个都开着的这一小段不会重复轮询——进度文件还在，
+        # 两边的轮询入口都只会接着迁移、跳过主轮询。
+        local pairs=("$new_poll|POLL" "$new_week|WEEKLY") pr nu tag
+        for pr in "${pairs[@]}"; do
+            nu="${pr%%|*}"; tag="${pr#*|}"
+            if [ "$(env_value "$progress" "${tag}_ENABLED")" = yes ] && [ "$(unit_enabled "$nu")" != yes ]; then
+                sc enable "$nu" >/dev/null 2>&1 || { mlog "❌ 启用 $nu 失败（旧任务还开着，下一轮再试）"; return 1; }
+                mlog "新后台任务：$nu 已启用"
+            fi
+            if [ "$(env_value "$progress" "${tag}_ACTIVE")" = yes ] && [ "$(unit_active "$nu")" != yes ]; then
+                sc start "$nu" >/dev/null 2>&1 || { mlog "❌ 启动 $nu 失败（旧任务还开着，下一轮再试）"; return 1; }
+                mlog "新后台任务：$nu 已启动"
+            fi
+        done
         # 只停 timer、不停 service：迁移常常就跑在旧 service 自己这一轮里，停 service 等于自杀。
         local u
         for u in "$old_poll" "$old_week"; do
@@ -404,18 +450,6 @@ migrate_key() {
             done
         done
         sc daemon-reload >/dev/null 2>&1 || { mlog "❌ systemctl --user daemon-reload 失败"; return 1; }
-        local pairs=("$new_poll|POLL" "$new_week|WEEKLY") pr nu tag
-        for pr in "${pairs[@]}"; do
-            nu="${pr%%|*}"; tag="${pr#*|}"
-            if [ "$(env_value "$progress" "${tag}_ENABLED")" = yes ] && [ "$(unit_enabled "$nu")" != yes ]; then
-                sc enable "$nu" >/dev/null 2>&1 || { mlog "❌ 启用 $nu 失败"; return 1; }
-                mlog "新后台任务：$nu 已启用"
-            fi
-            if [ "$(env_value "$progress" "${tag}_ACTIVE")" = yes ] && [ "$(unit_active "$nu")" != yes ]; then
-                sc start "$nu" >/dev/null 2>&1 || { mlog "❌ 启动 $nu 失败"; return 1; }
-                mlog "新后台任务：$nu 已启动"
-            fi
-        done
     else
         local plist="$HOME/Library/LaunchAgents/$old_label.plist"
         launchctl bootout "gui/$(id -u)/$old_label" >/dev/null 2>&1 || true

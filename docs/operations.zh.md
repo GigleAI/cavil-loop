@@ -727,8 +727,18 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
   后台轮询自己换不了。
 
 **只迁空闲的项目。** 空闲 = 这个项目没有 worker 的 tmux 会话（`<TMUX_PREFIX>-<SESSION_NAME_PREFIX><N>`）、
-周报没在生成、轮询锁没被占着。正在跑的 worker 记住的是旧路径，在它底下搬状态目录，它下一次
-`source _lib.sh` 就会在旧位置建出一个空目录。忙的项目每轮都会再试，等待原因一小时最多记一次。
+周报没在生成、轮询锁没被占着。**先**拿轮询锁，持锁再看 worker 和周报：派工只发生在持有这把锁
+的轮询里，所以从看完到搬目录之间不可能冒出新 worker（先看后拿锁的话，中间那一轮轮询可以派完工、
+放掉锁）。正在跑的 worker 记住的是旧路径，在它底下搬状态目录，它下一次 `source _lib.sh` 就会在
+旧位置建出一个空目录。忙的项目每轮都会再试，等待原因一小时最多记一次。周报不读状态目录，查它只是
+为了不在它跑的时候换它的定时任务。
+
+**项目迁到一半时，它的主轮询暂停。** 从第 1 步到最后，进度文件里写着这个项目的配置（`CFG=…`），
+`poll-entry.sh` 看到就直接结束这一轮、不跑 `agent-poll.sh`。不然一轮轮询正好落在「状态目录已搬、
+配置还没改」中间，就会在旧位置 mkdir 出空状态目录，用空状态把历史评论重新派一遍。下一轮（本项目
+或任何一个项目的）接着迁。所有需要人处理的情况（见下）都在第 1 步**之前**查完，所以只有确实迁得完
+的项目才会暂停。迁移中途仍在旧位置冒出的空壳（没有 `state.json`、只有 `poll.log` / `poll.lock`）
+认得出来：日志并进新目录后删掉。
 
 按顺序做这些事（每一步都能重复执行；中途断了，下一次接着做完）：
 
@@ -739,7 +749,7 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 | 3 | Linux：装新单元模板的链接；本机的 slice drop-in 复制一份给新 slice | 旧 slice 和它的 drop-in 留着——迁移前起的 tmux server 还挂在它下面 |
 | 4 | 搬状态目录（`~/.local/state/coding-agent-poll/<p>` → `~/.local/state/cavil-loop/<p>`，同盘一次改名）**并且**改写项目配置里写死的路径。改写后的配置先验证、再动目录 | 配置原文在备份里 |
 | 5 | 写 `~/.config/cavil-loop/<key>.conf`（0600） | — |
-| 6 | Linux：实例的 drop-in（轮询间隔）复制到新 timer 名下；`disable --now` 旧的轮询 / 周报 timer（不停 service：迁移经常就跑在它这一轮里）；新 timer **只在旧的原来开着 / 在跑时**才启用 / 启动。macOS：`bootout` 旧 LaunchAgent | 旧 drop-in 和实例链接进备份；旧 plist 进备份 |
+| 6 | Linux：实例的 drop-in（轮询间隔）复制到新 timer 名下；新的轮询 / 周报 timer **只在旧的原来开着 / 在跑时**才启用 / 启动；**之后**才 `disable --now` 旧的（不停 service：迁移经常就跑在它这一轮里）。先新后旧：新 timer 开不起来时旧的还在跑，下一轮它自己再试；两个都开着的那段时间，两边的轮询都只会接着迁（进度文件在）、都不跑主轮询。macOS：`bootout` 旧 LaunchAgent | 旧 drop-in 和实例链接进备份；旧 plist 进备份 |
 | 7 | 最后才把旧环境文件改名——它还在，下一次就会回来把没做完的做完 | `<key>.conf.migrated-<时间>` |
 
 本机一个旧项目都不剩时，删掉旧的 `~/.agents/skills/coding-agent-work-loop`；还经过它的单元链接
@@ -755,9 +765,12 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
   端口跟着自己的登记走）。
 - 配置在 `~/.local/state/coding-agent-poll/<p>` 以外的状态目录：原地不动。
 
-以下情况停手等人（日志里带 ⛔，每轮都会再试，但一小时只记一次）：新旧两份环境文件都在、又不是
+以下情况在动任何东西之前就停手等人（日志里带 ⛔，每轮都会再试，但一小时只记一次；期间旧安装照常轮询）：新旧两份环境文件都在、又不是
 迁移留下的半成品（有人手动装过新的——可能两个 timer 都开着）；新旧两个状态目录都在；项目配置的
 `STATE_DIR` 不是能机械改写的写法；新状态根目录在另一个磁盘分区。
+
+开始迁之后仍然每次都失败的项目（比如 `systemctl` 每次都报错）会一直暂停，每次尝试都记一行 ❌。
+macOS 上迁到一半时重跑 `setup.sh` 会接着迁完；这种状态下 setup 不会再按旧名字往下装。
 
 日志：`~/.local/state/cavil-loop/migrate.log`（也在跑它的那个轮询的 journal 里，项目自己的 `poll.log`
 里留一行）。要撤销，照备份目录手工恢复。

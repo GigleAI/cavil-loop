@@ -98,7 +98,13 @@ migrate_before_setup() {   # <migrate-legacy.sh 所在的技能目录> [--launch
            echo "  ✓ 已迁移（明细：$CAVIL_STATE_HOME/migrate.log）" ;;
         3) echo "  ⏳ 项目正忙（原因见上一行），这次不迁、继续沿用旧名字；空闲后再跑一次 setup.sh"
            [ "$OS" = Linux ] && echo "     （Linux 上不用等你：后台轮询会在项目空闲的那一轮自动迁）" ;;
-        *) echo "  ⚠️ 迁移没做完（原因见上面几行和 $CAVIL_STATE_HOME/migrate.log），这次继续沿用旧名字" ;;
+        *) if [ -f "$CAVIL_CONFIG_HOME/migration/$KEY.inprogress" ]; then
+               # 已经搬了一部分：再按旧名字装一遍会把半新半旧的东西搅乱
+               echo "  ❌ 迁移做到一半停住了（原因见上面几行和 $CAVIL_STATE_HOME/migrate.log），setup 到此为止；"
+               echo "     排除原因后再跑一次 setup.sh，会从停下的地方接着做"
+               exit 1
+           fi
+           echo "  ⚠️ 迁移没开始（原因见上面几行和 $CAVIL_STATE_HOME/migrate.log），这次继续沿用旧名字" ;;
     esac
     echo
 }

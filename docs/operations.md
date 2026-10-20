@@ -827,9 +827,23 @@ otherwise create the new one.** When both exist the new one wins.
 
 **Only an idle project is migrated.** Idle means: no worker tmux session of that project
 (`<TMUX_PREFIX>-<SESSION_NAME_PREFIX><N>`), its weekly report is not running, and its poll lock is
-free. A running worker remembers the old paths; moving the state directory under it would make
-its next `source _lib.sh` recreate an empty one at the old place. A busy project is retried on
-every tick; the reason is logged at most once an hour.
+free. The poll lock is taken **first** and the worker / weekly checks run while holding it: workers
+are only dispatched by a poll holding that lock, so no new worker can appear between the check and
+the move (checking first and locking second leaves a window in which a poll dispatches and
+releases). A running worker remembers the old paths; moving the state directory under it would
+make its next `source _lib.sh` recreate an empty one at the old place. A busy project is retried
+on every tick; the reason is logged at most once an hour. The weekly report does not read the
+state directory; it is only checked so its timer is not swapped mid-run.
+
+**While a project is mid-migration, its main poll is skipped.** From step 1 until the end, the
+progress file names the project's config (`CFG=…`); `poll-entry.sh` sees that and ends the tick
+without running `agent-poll.sh`. Otherwise a tick landing between "state directory moved" and
+"config rewritten" would `mkdir` an empty state directory at the old place and re-dispatch every
+old comment from empty state. The next tick (of this or any other project) resumes the migration.
+Everything that needs a human (below) is checked **before** step 1, so a project only pauses when
+the migration is actually able to finish. An empty stray directory that still appears at the old
+place mid-migration (no `state.json`, only `poll.log` / `poll.lock`) is recognised, its log merged
+into the new directory, and removed.
 
 What happens, in order (each step can be repeated; an interrupted run is finished by the next one):
 
@@ -840,7 +854,7 @@ What happens, in order (each step can be repeated; an interrupted run is finishe
 | 3 | Linux: link the new unit templates; copy the machine's slice drop-in to the new slice | the old slice and its drop-in stay — a tmux server started before the migration still lives in it |
 | 4 | Move the state directory (`~/.local/state/coding-agent-poll/<p>` → `~/.local/state/cavil-loop/<p>`, one same-disk rename) **and** rewrite the hard-coded path in the project config. The rewritten config is verified before anything moves | config original in the backup |
 | 5 | Write `~/.config/cavil-loop/<key>.conf` (0600) | — |
-| 6 | Linux: copy the instance drop-ins (poll interval) to the new timer names, `disable --now` the old poll / weekly timers (never the service: the migration often runs inside it), enable / start the new ones **only if the old ones were** enabled / running. macOS: `bootout` the old LaunchAgent | old drop-ins and instance links → backup; old plist → backup |
+| 6 | Linux: copy the instance drop-ins (poll interval) to the new timer names; enable / start the new poll / weekly timers **only if the old ones were** enabled / running; **then** `disable --now` the old ones (never the service: the migration often runs inside it). New first: if the new timer cannot be enabled or started, the old one is still running and retries on its next tick; while both are on, both ticks only resume the migration (progress file) and neither runs the main poll. macOS: `bootout` the old LaunchAgent | old drop-ins and instance links → backup; old plist → backup |
 | 7 | Rename the old env file last — while it exists, the next run comes back to finish | `<key>.conf.migrated-<ts>` |
 
 When no old project is left, the old `~/.agents/skills/coding-agent-work-loop` link is removed;
@@ -859,11 +873,15 @@ Not moved, on purpose:
   they run on (see above: each port follows its own registration).
 - A state directory configured outside `~/.local/state/coding-agent-poll/<p>`: left where it is.
 
-It stops and waits for a human (logged with ⛔, retried each tick but logged hourly) when the new
+It stops before touching anything and waits for a human (logged with ⛔, retried each tick but logged hourly; the old installation keeps polling meanwhile) when the new
 and old env file both exist without a migration in progress (someone installed the new one by
 hand — two timers may be running), when old and new state directories both exist, when the
 project config's `STATE_DIR` cannot be rewritten mechanically, or when the new state root is on a
 different disk.
+
+A project whose migration keeps failing *after* it started (e.g. `systemctl` errors every time)
+stays paused; every attempt logs a ❌ line. On macOS, re-running `setup.sh` after a half-done
+migration finishes it; setup refuses to continue on the old names in that state.
 
 Log: `~/.local/state/cavil-loop/migrate.log` (also in the journal of whichever poll ran it, and one
 line in the project's own `poll.log`). Undo by hand from the backup directory.

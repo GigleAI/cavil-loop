@@ -51,4 +51,18 @@ if [ "$(uname -s)" = Linux ] && compgen -G "$CAVIL_LEGACY_CONFIG_HOME/*.conf" >/
         exit 0
     fi
 fi
+# 本项目迁到一半（进度文件在、写着本项目的配置）：这一轮不跑主轮询。主轮询一加载配置就会
+# 在配置里写的状态目录位置 mkdir——状态目录已经搬走、配置还没改过来的那一刻，它会在旧位置
+# 建出一个空目录，用空状态把历史评论重新派一遍。等迁移（下一轮、任何一个项目的轮询）补完。
+# 旧环境文件已经不在的进度文件是收尾没做完的残留，不算。
+if [ -n "${CODING_AGENT_CONFIG:-}" ]; then
+    for MIG_PROGRESS in "$CAVIL_CONFIG_HOME"/migration/*.inprogress; do
+        [ -f "$MIG_PROGRESS" ] || continue
+        [ -f "$CAVIL_LEGACY_CONFIG_HOME/$(basename "$MIG_PROGRESS" .inprogress).conf" ] || continue
+        if grep -qxF "CFG=$CODING_AGENT_CONFIG" "$MIG_PROGRESS"; then
+            echo "[cavil-loop] 本项目正在迁到新名字（$MIG_PROGRESS），这一轮跳过；进度见 $CAVIL_STATE_HOME/migrate.log" >&2
+            exit 0
+        fi
+    done
+fi
 exec bash "$CODING_AGENT_RELEASE_ROOT/scripts/agent-poll.sh" "$@"

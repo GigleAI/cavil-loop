@@ -48,16 +48,23 @@ case "$cmd" in
     is-enabled) [ -e "$SCTL/enabled/${units[0]}" ] && { echo enabled; exit 0; }; echo disabled; exit 1 ;;
     is-active)  [ -e "$SCTL/active/${units[0]}" ] && { [ $quiet = 1 ] || echo active; exit 0; }; [ $quiet = 1 ] || echo inactive; exit 3 ;;
     enable)  for u in "${units[@]}"; do [ -e "$SCTL/fail-enable" ] && exit 1; : > "$SCTL/enabled/$u"; [ $now = 1 ] && : > "$SCTL/active/$u"; done ;;
-    disable) for u in "${units[@]}"; do rm -f "$SCTL/enabled/$u"; [ $now = 1 ] && rm -f "$SCTL/active/$u"; done ;;
-    start)   for u in "${units[@]}"; do : > "$SCTL/active/$u"; done ;;
+    disable) for u in "${units[@]}"; do [ -e "$SCTL/fail-disable" ] && exit 1; rm -f "$SCTL/enabled/$u"; [ $now = 1 ] && rm -f "$SCTL/active/$u"; done ;;
+    start)   for u in "${units[@]}"; do [ -e "$SCTL/fail-start" ] && exit 1; : > "$SCTL/active/$u"; done ;;
     stop)    for u in "${units[@]}"; do rm -f "$SCTL/active/$u"; done ;;
 esac
 exit 0
 SH
 cat > "$FAKEBIN/tmux" <<'SH'
 #!/usr/bin/env bash
-case "$1" in list-sessions|ls) [ -s "$TMUXF" ] || exit 1; cat "$TMUXF" ;; esac
+# 列完会话之后跑一次 $TMUXF.hook（只跑一次）：模拟「刚列完，另一轮轮询就来派工」的交错
+case "$1" in list-sessions|ls)
+    rc=0; [ -s "$TMUXF" ] && cat "$TMUXF" || rc=1
+    if [ -f "$TMUXF.hook" ]; then mv "$TMUXF.hook" "$TMUXF.hook.ran"; bash "$TMUXF.hook.ran"; fi
+    exit $rc ;;
+esac
 SH
+# 主轮询万一被放进来，也不能碰网络：gh 只记一笔就失败
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$TMP_GH_LOG"\nexit 1\n' > "$FAKEBIN/gh"
 chmod +x "$FAKEBIN"/*
 
 # ── 旧布局的假安装：技能入口指向本仓库（开发模式那种装法），四个项目 ──
@@ -111,6 +118,7 @@ printf '# 手写的：30 秒一轮\n[Timer]\nOnUnitActiveSec=\nOnBootSec=30s\nOn
 cp -p "$OLDS/alpha/state.json" "$TMP/alpha-state.orig"
 cp -p "$OLDS/beta/state.json" "$TMP/beta-state.orig"
 
+export TMP_GH_LOG="$TMP/gh.log"
 migrate() {   # [args...]：默认 --all
     env -u CAVIL_SYSTEMD_USER_DIR HOME="$H" PATH="$FAKEBIN:$PATH" SCTL="$SCTL" TMUXF="$TMUXF" \
         bash "$REPO_DIR/scripts/migrate-legacy.sh" "${@:---all}" 2>>"$TMP/stderr"
@@ -258,10 +266,10 @@ echo "【8】「哪些 tmux 会话算 worker」：迁移的判断与轮询自己
 # 两份必须对同一批会话名给出同样的答案。
 make_project eta "\"$OLDS/eta\"" yes
 names=(eta-issue5 eta-issue12 eta-issue eta-issue5-x eta-server xeta-issue5 eta-issue5a etaissue5 beta-issue5 'eta-issue5 ')
-lib_says() {   # <session>：轮询的 list_worker_sessions 认不认它
+lib_says() {   # <session> [代码根]：轮询的 list_worker_sessions 认不认它
     printf '%s\n' "$1" > "$TMUXF"
     env HOME="$H" PATH="$FAKEBIN:$PATH" TMUXF="$TMUXF" CODING_AGENT_CONFIG="$TMP/projects/eta/coding-agent.config" \
-        bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; list_worker_sessions' _ "$REPO_DIR" | grep -c .
+        bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; list_worker_sessions' _ "${2:-$REPO_DIR}" | grep -c .
 }
 mig_says() {   # <session>：迁移会不会因为它而等
     printf '%s\n' "$1" > "$TMUXF"
@@ -297,6 +305,96 @@ for n in "${names[@]}"; do
     fi
 done
 chk "轮询不认的会话（预览服、前缀相近的别的项目），迁移也不因它而等" "$diffs" ""
+: > "$TMUXF"
+
+# 轮询这一侧的负对照：把 list_worker_sessions 的结尾锚点去掉，同一批会话名上它的答案必须变——
+# 说明夹具分得出两种写法，上面「两边答案一致」那条在轮询一侧改动时也会变红。
+MUT="$TMP/mutlib"; mkdir -p "$MUT"; cp -r "$REPO_DIR/scripts" "$MUT/"
+sed -i '/^list_worker_sessions()/,/^}/s/\[0-9\]+\\\$/[0-9]+/' "$MUT/scripts/_lib.sh"
+chk "负对照改到了轮询一侧的匹配" "$(sed -n '/^list_worker_sessions()/,/^}/p' "$MUT/scripts/_lib.sh" | grep -c '\[0-9\]+\\\$')" "0"
+changed=0
+for n in "${names[@]}"; do [ "$(lib_says "$n")" = "$(lib_says "$n" "$MUT")" ] || changed=$((changed+1)); done
+chk "负对照：轮询一侧去掉结尾锚点后，夹具里有会话名的答案变了" "$([ "$changed" -ge 1 ] && echo yes)" "yes"
+: > "$TMUXF"
+
+# ─────────────────────────────────────────────────────────────────────────────
+poll_entry() {   # <key>：以 <key> 的旧环境文件（或已迁好的新环境文件）起一轮真实的轮询入口
+    local k="$1"
+    env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGENT_RELEASE_ROOT \
+        HOME="$H" PATH="$FAKEBIN:$PATH" SCTL="$SCTL" TMUXF="$TMUXF" \
+        CODING_AGENT_CONFIG="$TMP/projects/$k/coding-agent.config" PROJECT_ROOT="$TMP/projects/$k" \
+        timeout 60 bash "$REPO_DIR/scripts/poll-entry.sh" >>"$TMP/entry.out" 2>&1
+}
+main_poll_ran() { cat "$OLDS/$1/poll.log" "$NEWS/$1/poll.log" 2>/dev/null | grep -c 'poll start'; }
+
+echo "【9】经真实轮询入口：配置写回失败 → 本项目这几轮不跑主轮询 → 恢复后自动迁完，不从空状态重来"
+make_project theta "\"$OLDS/theta\"" yes
+cp -p "$OLDS/theta/state.json" "$TMP/theta-state.orig"
+chmod 555 "$TMP/projects/theta"
+poll_entry theta; rc1=$?
+poll_entry theta; rc2=$?
+chk "两轮入口都正常退出" "$rc1/$rc2" "0/0"
+chk "状态目录已搬到新位置、配置还旧（真的卡在这一步）" \
+    "$([ -d "$NEWS/theta" ] && echo moved)/$(sdline theta)" "moved/STATE_DIR=\"$OLDS/theta\""
+chk "旧位置没有被主轮询重新建出状态目录" "$([ -e "$OLDS/theta" ] && echo yes || echo no)" "no"
+chk "主轮询一次都没跑" "$(main_poll_ran theta)" "0"
+chk "入口说明了为什么跳过" "$(grep -c '本项目正在迁到新名字' "$TMP/entry.out")" "2"
+chmod 755 "$TMP/projects/theta"
+poll_entry theta; rc=$?
+chk "恢复写权限后下一轮入口迁完" "$rc|$(sdline theta)|$([ -f "$NEWC/theta.conf" ] && echo env)" "0|STATE_DIR=\"$NEWS/theta\"|env"
+chk "已读评论记录不丢" "$(cmp -s "$NEWS/theta/state.json" "$TMP/theta-state.orig" && echo same)" "same"
+chk "整个过程主轮询没跑、没碰网络" "$(main_poll_ran theta)/$(grep -c . "$TMP_GH_LOG" 2>/dev/null || echo 0)" "0/0"
+chk "迁完后入口不再跳过本项目（进度文件已收尾）" "$([ -e "$NEWC/migration/theta.inprogress" ] && echo left || echo gone)" "gone"
+# 有人在中途绕过入口、在旧位置建了空壳（只有日志）：认得出来，清掉，不卡成「两个都在」
+make_project iota "\"$OLDS/iota\"" yes
+chmod 555 "$TMP/projects/iota"; migrate --key iota >/dev/null; chmod 755 "$TMP/projects/iota"
+mkdir -p "$OLDS/iota"; echo 'stray line' > "$OLDS/iota/poll.log"; : > "$OLDS/iota/poll.lock"
+migrate --key iota >/dev/null; rc=$?
+chk "旧位置冒出的空壳被清掉，迁移接着完成" "$rc|$([ -e "$OLDS/iota" ] && echo left || echo gone)|$(grep -c 'stray line' "$NEWS/iota/poll.log")" "0|gone|1"
+
+echo "【10】交接失败：新任务开不起来时旧任务保持开着，下一轮由旧任务自己接着迁"
+for fault in fail-enable fail-start; do
+    k="k${fault#fail-}"
+    make_project "$k" "\"$OLDS/$k\"" yes
+    : > "$SCTL/$fault"
+    poll_entry "$k"
+    chk "$fault：旧轮询 timer 仍开着、仍在跑" "$(enabled coding-agent-poll@$k.timer)/$(active coding-agent-poll@$k.timer)" "yes/yes"
+    chk "$fault：没有迁完" "$([ -f "$OLDC/$k.conf" ] && echo pending)" "pending"
+    chk "$fault：期间主轮询没跑" "$(main_poll_ran "$k")" "0"
+    rm -f "$SCTL/$fault"
+    poll_entry "$k"
+    chk "$fault：故障排除后旧任务这一轮自己迁完" \
+        "$(enabled cavil-loop-poll@$k.timer)/$(active cavil-loop-poll@$k.timer)/$(enabled coding-agent-poll@$k.timer)/$([ -f "$NEWC/$k.conf" ] && echo env)" "yes/yes/no/env"
+done
+# 新任务开起来了、停旧任务失败：两个都开着，但都只会接着迁、不会各跑一遍主轮询
+make_project kdis "\"$OLDS/kdis\"" yes
+: > "$SCTL/fail-disable"
+poll_entry kdis
+chk "停旧任务失败：新旧两个 timer 都开着" "$(enabled coding-agent-poll@kdis.timer)/$(enabled cavil-loop-poll@kdis.timer)" "yes/yes"
+poll_entry kdis
+chk "停旧任务失败：这期间两边的入口都不跑主轮询" "$(main_poll_ran kdis)" "0"
+rm -f "$SCTL/fail-disable"
+poll_entry kdis
+chk "停旧任务失败：排除后迁完，只剩新任务" "$(enabled coding-agent-poll@kdis.timer)/$(enabled cavil-loop-poll@kdis.timer)/$([ -f "$NEWC/kdis.conf" ] && echo env)" "no/yes/env"
+
+echo "【11】交错：迁移看完 worker 之后、搬目录之前，另一轮轮询来派工——必须等"
+# 钩子扮演一轮轮询：拿得到本项目的轮询锁就派出 worker（与真实派工一样，持锁期间建会话）。
+for k in lam mu; do make_project "$k" "\"$OLDS/$k\"" yes; done
+cat > "$TMUXF.hook" <<HOOK
+flock -n "$OLDS/lam/poll.lock" -c 'echo lam-issue5 >> "$TMUXF"' 2>/dev/null || true
+HOOK
+out=$(migrate --key lam); rc=$?
+worker=$(grep -c '^lam-issue5$' "$TMUXF")
+chk "不会出现「已经迁走、而它的 worker 正在跑」" "$([ -n "$out" ] && [ "$worker" -ge 1 ] && echo broken || echo ok)" "ok"
+chk "钩子确实在迁移看会话时跑过（交错真的发生了）" "$([ -f "$TMUXF.hook.ran" ] && echo yes)" "yes"
+rm -f "$TMUXF.hook.ran"; : > "$TMUXF"
+# 正面：轮询正持着锁派工 → 迁移等；它放锁之后 worker 已在 → 还是等
+( exec 7>>"$OLDS/mu/poll.lock"; flock 7; echo mu-issue9 >> "$TMUXF"; sleep 2 ) &
+sleep 0.5
+migrate --key mu >/dev/null; rc1=$?
+wait
+migrate --key mu >/dev/null; rc2=$?
+chk "轮询持锁时等、它放锁后因 worker 在跑仍等" "$rc1/$rc2/$([ -d "$OLDS/mu" ] && echo stay)" "3/3/stay"
 : > "$TMUXF"
 
 echo
