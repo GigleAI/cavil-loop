@@ -505,7 +505,15 @@ done
 # ── 6. seed state ──
 echo
 echo "── 6. seed state.json ──"
-CODING_AGENT_CONFIG="$config" bash "$SKILL_DIR/scripts/seed-state.sh"
+# 只在真的还没有状态时初始化。初始化是按「GitHub 上现在打开的条目」重写整份 state.json：
+# 重跑 setup（包括刚把旧安装迁过来的那一次）时再跑一遍，已读评论记录、worker 记录等会被
+# 整份冲掉，还可能把还没处理的新评论标成已读。
+seed_state_dir="$(config_value STATE_DIR)"
+if [ -n "$seed_state_dir" ] && [ -s "$seed_state_dir/state.json" ]; then
+    echo "  · $seed_state_dir/state.json 已存在，保留原样（已读评论记录不重置）"
+else
+    CODING_AGENT_CONFIG="$config" bash "$SKILL_DIR/scripts/seed-state.sh"
+fi
 
 # ── 7. 启动 daemon（按 OS 分支）──
 echo

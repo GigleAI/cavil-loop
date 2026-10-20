@@ -792,6 +792,9 @@ otherwise create the new one.** When both exist the new one wins.
 - The old `coding-agent-*` unit files stay in `systemd/` **byte for byte**: the units installed
   on old machines are symlinks to those exact paths, and changing a `.socket` / `.slice` would
   raise a manual-action alert on every machine.
+- `setup.sh` initialises `state.json` only when the state directory has none. Re-running it — on
+  any installation, including the run that just migrated an old one — keeps the existing read
+  cursors and worker records instead of rebuilding them from the currently open items.
 - Re-running `setup.sh` on a project whose `~/.config/coding-agent-work-loop/<key>.conf` exists
   first migrates it (below) and then continues as a new installation. If the project is busy the
   migration is skipped and setup keeps the old names for this run. It never installs a second,
@@ -840,6 +843,11 @@ progress file names the project's config (`CFG=…`); `poll-entry.sh` sees that 
 without running `agent-poll.sh`. Otherwise a tick landing between "state directory moved" and
 "config rewritten" would `mkdir` an empty state directory at the old place and re-dispatch every
 old comment from empty state. The next tick (of this or any other project) resumes the migration.
+A one-off look at the progress file is not enough — a tick could look before the migration
+starts and load the old config just before the directory moves. So while this machine still has
+old installations, `poll-entry.sh` holds the **shared** side of the machine-wide migration lock
+from that check until `agent-poll.sh` has taken the project's own poll lock (then releases it, so
+nothing it spawns inherits it); a migration needs the exclusive side to start.
 Everything that needs a human (below) is checked **before** step 1, so a project only pauses when
 the migration is actually able to finish. An empty stray directory that still appears at the old
 place mid-migration (no `state.json`, only `poll.log` / `poll.lock`) is recognised, its log merged

@@ -276,6 +276,13 @@ legacy_fixture() {   # <home> <host>：改名前 setup.sh 留下的那两样—�
 
 echo "【6】对改名前装好的项目重跑 setup（项目空闲）：先迁到新名字，再按新安装走"
 H2="$TMP/h2"; HOST2="$TMP/projects2/widget"; legacy_fixture "$H2" "$HOST2"
+# 已经跑了一阵子的旧安装：有已读评论记录、worker 记录、会话登记。假 GitHub 上现在没有打开的条目，
+# 所以 setup 要是又做一遍初始化，这些就会被冲成空表。
+OLDSD2="$H2/.local/state/coding-agent-poll/widget"
+mkdir -p "$OLDSD2/agent-sessions"
+printf '%s\n' '{"seen_comments":{"12":5000},"seen_issue_comments":{"7":99},"seen_review_comments":{},"seen_reviews":{},"worker_models":{"7":"fable"},"split_rollups":{"3":2}}' > "$OLDSD2/state.json"
+printf 'uuid-7\n' > "$OLDSD2/agent-sessions/7.claude.worker"
+cp -p "$OLDSD2/state.json" "$TMP/h2-state.orig"
 run_setup "$H2" "$HOST2"; rc=$?
 chk "setup.sh 退出码" "$rc" "0"
 [ "$rc" = 0 ] || tail -20 "$H2/setup.out"
@@ -287,7 +294,13 @@ chk "项目里仍是旧名配置文件，没多出 cavil-loop.config" \
     "$([ -e "$HOST2/cavil-loop.config" ] && echo yes || echo no)/$([ -f "$HOST2/coding-agent.config" ] && echo yes)" "no/yes"
 chk "项目配置的状态目录改到新位置" \
     "$(grep -c "^STATE_DIR=\"$H2/.local/state/cavil-loop/widget\"$" "$HOST2/coding-agent.config")" "1"
-chk "状态写在新状态目录" "$([ -f "$H2/.local/state/cavil-loop/widget/state.json" ] && echo yes)" "yes"
+chk "已有状态原样搬到新状态目录、没被重新初始化（逐字节一致）" \
+    "$(cmp -s "$H2/.local/state/cavil-loop/widget/state.json" "$TMP/h2-state.orig" && echo same)" "same"
+chk "会话登记还在" "$(cat "$H2/.local/state/cavil-loop/widget/agent-sessions/7.claude.worker" 2>/dev/null)" "uuid-7"
+chk "setup 说明保留了已有状态" "$(grep -c '已存在，保留原样' "$H2/setup.out")" "1"
+run_setup "$H2" "$HOST2"; rc=$?
+chk "迁完后再跑一次 setup：退出 0，状态仍逐字节一致" \
+    "$rc|$(cmp -s "$H2/.local/state/cavil-loop/widget/state.json" "$TMP/h2-state.orig" && echo same)" "0|same"
 chk "旧状态目录不在了" "$([ -e "$H2/.local/state/coding-agent-poll/widget" ] && echo yes || echo no)" "no"
 for u in cavil-loop-poll@.service cavil-loop-poll@.timer 'app-cavil\x2dloop\x2dpoll.slice'; do
     chk "装了 $u（指向新技能入口，目标存在）" \

@@ -55,6 +55,21 @@ fi
 # 在配置里写的状态目录位置 mkdir——状态目录已经搬走、配置还没改过来的那一刻，它会在旧位置
 # 建出一个空目录，用空状态把历史评论重新派一遍。等迁移（下一轮、任何一个项目的轮询）补完。
 # 旧环境文件已经不在的进度文件是收尾没做完的残留，不算。
+#
+# 光看一眼进度文件不够：看的时候迁移还没开始，看完之后主轮询读了旧配置，迁移这时把目录
+# 搬走，主轮询照样在旧位置重建。所以「看进度文件 → 主轮询拿到本项目的轮询锁」这一整段
+# 持着全机迁移锁的**共享**一侧：迁移要拿排他一侧才能开始，这段期间开始不了；主轮询拿到
+# 自己的轮询锁后立刻放掉（agent-poll.sh），之后迁移再来，会因为轮询锁被占而等下一轮。
+# 只在本机还有旧安装 / 迁移没收尾时才有这把锁，全新装的机器不受影响。
+if compgen -G "$CAVIL_LEGACY_CONFIG_HOME/*.conf" >/dev/null || compgen -G "$CAVIL_CONFIG_HOME/migration/*.inprogress" >/dev/null; then
+    mkdir -p "$CAVIL_CONFIG_HOME"
+    exec {MIGRATE_GATE_FD}>>"$CAVIL_CONFIG_HOME/.migrate.lock"
+    if ! flock -s -w 120 "$MIGRATE_GATE_FD"; then
+        echo "[cavil-loop] 有迁移一直没结束（等了 120 秒），这一轮跳过" >&2
+        exit 0
+    fi
+    export CAVIL_MIGRATE_GATE_FD="$MIGRATE_GATE_FD"
+fi
 if [ -n "${CODING_AGENT_CONFIG:-}" ]; then
     for MIG_PROGRESS in "$CAVIL_CONFIG_HOME"/migration/*.inprogress; do
         [ -f "$MIG_PROGRESS" ] || continue

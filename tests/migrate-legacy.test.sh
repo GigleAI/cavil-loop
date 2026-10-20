@@ -64,7 +64,16 @@ case "$1" in list-sessions|ls)
 esac
 SH
 # 主轮询万一被放进来，也不能碰网络：gh 只记一笔就失败
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$TMP_GH_LOG"\nexit 1\n' > "$FAKEBIN/gh"
+# GH_PROBE_LOCK 设了时，顺便试一下能不能拿到全机迁移锁的排他一侧：gh 是主轮询的子进程，
+# 主轮询还攥着（会一路继承下去的）共享锁的话，这里就拿不到。
+cat > "$FAKEBIN/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TMP_GH_LOG"
+if [ -n "${GH_PROBE_LOCK:-}" ] && [ ! -e "$GH_PROBE_LOCK.result" ]; then
+    flock -n -x "$GH_PROBE_LOCK" true && echo free > "$GH_PROBE_LOCK.result" || echo held > "$GH_PROBE_LOCK.result"
+fi
+exit 1
+SH
 chmod +x "$FAKEBIN"/*
 
 # ── 旧布局的假安装：技能入口指向本仓库（开发模式那种装法），四个项目 ──
@@ -396,6 +405,59 @@ wait
 migrate --key mu >/dev/null; rc2=$?
 chk "轮询持锁时等、它放锁后因 worker 在跑仍等" "$rc1/$rc2/$([ -d "$OLDS/mu" ] && echo stay)" "3/3/stay"
 : > "$TMUXF"
+
+echo "【12】两个真实入口交错：别的项目正在迁本项目，本项目自己的一轮同时启动"
+# 时序（复审第 2 轮的复现）：迁移已持锁、还没写进度文件 → 本项目的轮询入口启动，读完旧配置后
+# 被调度暂停 → 迁移搬走目录、配置写回失败 → 本项目的轮询恢复。
+# 「读完旧配置后暂停」靠假 hostname 卡住：主库读完项目配置后、建状态目录之前会调一次 hostname。
+make_project nu "\"$OLDS/nu\"" yes
+cp -p "$OLDS/nu/state.json" "$TMP/nu-state.orig"
+PAUSEBIN="$TMP/pausebin"; mkdir -p "$PAUSEBIN"
+cat > "$PAUSEBIN/hostname" <<SH
+#!/usr/bin/env bash
+: > "$TMP/nu.reached"
+for _ in \$(seq 100); do [ -e "$TMP/nu.release" ] && break; sleep 0.1; done
+echo testhost
+SH
+chmod +x "$PAUSEBIN/hostname"
+# 钩子跑在迁移进程底下，会继承迁移攥着的锁；真实的另一轮轮询不是它的子进程，先把继承来的 fd 关掉
+cat > "$TMUXF.hook" <<HOOK
+for fd in \$(ls /proc/\$\$/fd); do [ "\$fd" -gt 2 ] && eval "exec \$fd>&-" 2>/dev/null; done
+( env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGENT_RELEASE_ROOT \
+      HOME="$H" PATH="$PAUSEBIN:$FAKEBIN:\$PATH" SCTL="$SCTL" TMUXF="$TMUXF" TMP_GH_LOG="$TMP_GH_LOG" \
+      CODING_AGENT_CONFIG="$TMP/projects/nu/coding-agent.config" PROJECT_ROOT="$TMP/projects/nu" \
+      timeout 60 bash "$REPO_DIR/scripts/poll-entry.sh" >"$TMP/nu-entry.out" 2>&1; echo \$? > "$TMP/nu-entry.rc" ) </dev/null >/dev/null 2>&1 &
+# 给它 3 秒走到「读完配置」；修好的入口这时还在等迁移结束，走不到这里
+for _ in \$(seq 30); do [ -e "$TMP/nu.reached" ] && break; sleep 0.1; done
+HOOK
+gh_before=$(grep -c . "$TMP_GH_LOG" 2>/dev/null || true)
+chmod 555 "$TMP/projects/nu"
+migrate --key nu >/dev/null
+: > "$TMP/nu.release"
+for _ in $(seq 100); do [ -e "$TMP/nu-entry.rc" ] && break; sleep 0.1; done
+chk "本项目的那一轮正常结束" "$(cat "$TMP/nu-entry.rc" 2>/dev/null)" "0"
+chk "交错真的发生了（钩子在迁移持锁期间起了本项目的入口）" "$([ -f "$TMUXF.hook.ran" ] && echo yes)" "yes"
+chk "迁移卡在「目录已搬、配置未改」" "$([ -d "$NEWS/nu" ] && echo moved)/$(sdline nu)" "moved/STATE_DIR=\"$OLDS/nu\""
+chk "本项目的那一轮没有在旧位置重建状态目录" "$([ -e "$OLDS/nu" ] && echo yes || echo no)" "no"
+chk "本项目的那一轮没跑主轮询、没碰 GitHub" "$(main_poll_ran nu)/$(( $(grep -c . "$TMP_GH_LOG" 2>/dev/null || true) - ${gh_before:-0} ))" "0/0"
+chk "它是等迁移结束后、看到进度文件才跳过的" "$(grep -c '本项目正在迁到新名字' "$TMP/nu-entry.out")" "1"
+rm -f "$TMUXF.hook.ran"; : > "$TMUXF"
+chmod 755 "$TMP/projects/nu"
+poll_entry nu
+chk "恢复写权限后下一轮迁完，已读评论记录不丢" \
+    "$(sdline nu)|$(cmp -s "$NEWS/nu/state.json" "$TMP/nu-state.orig" && echo same)" "STATE_DIR=\"$NEWS/nu\"|same"
+
+echo "【13】主轮询拿到自己的轮询锁后放掉迁移锁：派出去的进程不会一直攥着它、把迁移永远挡住"
+# 留一个迁不了的旧项目，让入口一直走「本机还有旧安装」那条路
+printf 'PROJECT_ROOT=/x\nCODING_AGENT_CONFIG=/nonexistent/c\n' > "$OLDC/omicron.conf"
+rm -f "$NEWC/.migrate.lock.result"
+env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGENT_RELEASE_ROOT \
+    HOME="$H" PATH="$FAKEBIN:$PATH" SCTL="$SCTL" TMUXF="$TMUXF" GH_PROBE_LOCK="$NEWC/.migrate.lock" \
+    CODING_AGENT_CONFIG="$TMP/projects/beta/coding-agent.config" PROJECT_ROOT="$TMP/projects/beta" \
+    timeout 60 bash "$REPO_DIR/scripts/poll-entry.sh" >/dev/null 2>&1
+chk "已迁好的项目照常跑主轮询" "$(grep -c 'poll start' "$NEWS/beta/poll.log")" "1"
+chk "主轮询的子进程里迁移锁已经是空闲的" "$(cat "$NEWC/.migrate.lock.result" 2>/dev/null)" "free"
+rm -f "$OLDC/omicron.conf"
 
 echo
 echo "通过 $pass，失败 $fail"

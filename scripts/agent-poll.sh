@@ -19,6 +19,12 @@ if ! flock -n 9; then
     log "上一轮还没跑完，跳过"
     exit 0
 fi
+# poll-entry.sh 为旧安装迁移持着的共享锁（见那边的注释）：本项目的轮询锁已经拿到，迁移
+# 动不了本项目了，立刻放掉——不然它会被派工继承进 tmux server，迁移永远拿不到排他锁。
+if [ -n "${CAVIL_MIGRATE_GATE_FD:-}" ]; then
+    eval "exec ${CAVIL_MIGRATE_GATE_FD}>&-" 2>/dev/null || true
+    unset CAVIL_MIGRATE_GATE_FD
+fi
 
 # ── 轮询节奏闸门（issue #35）──
 # 长期没动静的项目渐进退避：闹钟照旧每分钟把这个脚本叫醒，这里决定被叫醒之后要不要
