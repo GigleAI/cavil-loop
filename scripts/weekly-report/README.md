@@ -43,7 +43,7 @@ systemctl --user enable --now cavil-loop-weekly-report@<project>.timer
 复用 daemon 的项目配置 `~/.config/cavil-loop/<project>.conf`
 （`PROJECT_ROOT` / `PATH` / `GH_TOKEN`）。改名前装的项目在 `~/.config/coding-agent-work-loop/`，
 定时任务叫 `coding-agent-weekly-report@<project>.timer`，配图目录默认在
-`~/.local/state/coding-agent-poll/review-shots`——新名字的不存在时自动用旧的。可选覆盖项：
+`~/.local/state/coding-agent-poll/review-shots`——新名字的不存在时自动用旧的。旧安装自动迁移后环境文件和定时任务换成新名字，配图目录不搬（见 docs/operations.zh.md「旧安装自动迁移」）。可选覆盖项：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|

@@ -683,7 +683,7 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 ## 改名前的安装
 
 本项目原名 `coding-agent-work-loop`。新安装一律用 `cavil-loop`；改名前装好的机器在迁移之前
-照旧用旧名字运行，不受影响（迁移由后续单独的改动负责，这里不搬任何文件）。
+照旧用旧名字运行，迁移是自动的——见下面的[旧安装自动迁移](#旧安装自动迁移)。
 
 | 东西 | 新安装 | 改名前的安装（继续认） |
 |---|---|---|
@@ -701,8 +701,9 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 - `systemd/` 里的 `coding-agent-*` 旧单元文件**一个字节都不改**地保留：老机器上装的单元是指向
   这些确切路径的软链；改动 `.socket` / `.slice` 还会让每台机器都开一条「需要人工处理」的告警。
-- 对 `~/.config/coding-agent-work-loop/<key>.conf` 已存在的项目重跑 `setup.sh`，会沿用它的旧名字，
-  不会在旧定时任务旁边再装一套新名字的——两个轮询会抢同一批 issue。
+- 对 `~/.config/coding-agent-work-loop/<key>.conf` 已存在的项目重跑 `setup.sh`，会先把它迁到新名字
+  （见下），再按新安装往下走；项目正忙时这次不迁、继续沿用旧名字。绝不会在开着的旧定时任务旁边
+  再装一套新名字的——两个轮询会抢同一批 issue。
 - 项目里已有 `coding-agent.config` 就继续用这个文件名：项目的忽略规则写的是旧文件名，改名后的
   文件不再被忽略，可能被 worker 顺手提交进仓库。
 - 一台机器上可能同时有新旧两个技能入口（旧项目认旧入口，新装的项目认新入口）。两者都指向
@@ -713,6 +714,53 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
   那份登记——新单元把路径传进来，旧单元读旧目录。只有全新注册才用新单元。
 - 新旧 worker 落在不同的 slice 里，两类安装共存期间各有一份内存限额。新 slice 的名字按旧 slice
   同一条派生规则推出，还没在真机上看过。
+
+### 旧安装自动迁移
+
+`scripts/migrate-legacy.sh` 把一个旧项目迁到新名字。不用人去跑：
+
+- **Linux**：**任何一个**项目的每一轮轮询（`poll-entry.sh`，在主轮询读配置之前）都会顺手把本机
+  所有空闲的旧项目迁掉。所以它随部署生效——受管安装合并后约 10 分钟内。开发模式的机器（技能
+  入口指向一个 checkout）要等那个 checkout 更新到包含它的版本。迁的正好是起这一轮的旧 timer
+  所属的项目时，这一轮到此结束，迁移刚启用的新 timer 约 30 秒后跑下一轮。
+- **macOS**：重跑一次 `setup.sh <host>`。它先迁移，再生成新的 LaunchAgent——plist 是生成出来的，
+  后台轮询自己换不了。
+
+**只迁空闲的项目。** 空闲 = 这个项目没有 worker 的 tmux 会话（`<TMUX_PREFIX>-<SESSION_NAME_PREFIX><N>`）、
+周报没在生成、轮询锁没被占着。正在跑的 worker 记住的是旧路径，在它底下搬状态目录，它下一次
+`source _lib.sh` 就会在旧位置建出一个空目录。忙的项目每轮都会再试，等待原因一小时最多记一次。
+
+按顺序做这些事（每一步都能重复执行；中途断了，下一次接着做完）：
+
+| 步骤 | 做什么 | 旧的去哪了 |
+|---|---|---|
+| 1 | 记下旧 timer 原来开没开、在不在跑（`~/.config/cavil-loop/migration/<key>.inprogress`）；备份环境文件、项目配置、状态里的 `state.json` / `agent-sessions/` / `poll-pace.json` | 备份在 `~/.config/cavil-loop/migration/<key>-<时间>/`（0700） |
+| 2 | 共享部分，只有第一个项目做：建 `~/.agents/skills/cavil-loop`，指向旧入口指的地方；`~/.claude/skills/coding-agent-work-loop` 换成 `cavil-loop`（不留别名）；搬 `deploy.conf`，里面写死的旧技能入口一并改掉 | `deploy.conf.migrated-<时间>` |
+| 3 | Linux：装新单元模板的链接；本机的 slice drop-in 复制一份给新 slice | 旧 slice 和它的 drop-in 留着——迁移前起的 tmux server 还挂在它下面 |
+| 4 | 搬状态目录（`~/.local/state/coding-agent-poll/<p>` → `~/.local/state/cavil-loop/<p>`，同盘一次改名）**并且**改写项目配置里写死的路径。改写后的配置先验证、再动目录 | 配置原文在备份里 |
+| 5 | 写 `~/.config/cavil-loop/<key>.conf`（0600） | — |
+| 6 | Linux：实例的 drop-in（轮询间隔）复制到新 timer 名下；`disable --now` 旧的轮询 / 周报 timer（不停 service：迁移经常就跑在它这一轮里）；新 timer **只在旧的原来开着 / 在跑时**才启用 / 启动。macOS：`bootout` 旧 LaunchAgent | 旧 drop-in 和实例链接进备份；旧 plist 进备份 |
+| 7 | 最后才把旧环境文件改名——它还在，下一次就会回来把没做完的做完 | `<key>.conf.migrated-<时间>` |
+
+本机一个旧项目都不剩时，删掉旧的 `~/.agents/skills/coding-agent-work-loop`；还经过它的单元链接
+（旧预览模板、旧 slice）先改走新入口——旧单元文件一个字节都没改，对它们没有任何变化。
+
+故意不搬的：
+
+- 项目自己的文件：`coding-agent.config` 不改名（项目的忽略规则写的是旧文件名），只改写里面的
+  `STATE_DIR` 那一行（以及同一目录的其他写法）；备份绝不写进项目目录。仓库里已提交的覆盖目录不改名。
+- `~/.local/state/coding-agent-poll/review-shots`：评论配图从这里经公网地址提供；新目录不存在时
+  代码继续用它。
+- `~/.config/coding-agent-work-loop/preview/` 下的预览登记，和它们跑在上面的旧预览单元（见上：每个
+  端口跟着自己的登记走）。
+- 配置在 `~/.local/state/coding-agent-poll/<p>` 以外的状态目录：原地不动。
+
+以下情况停手等人（日志里带 ⛔，每轮都会再试，但一小时只记一次）：新旧两份环境文件都在、又不是
+迁移留下的半成品（有人手动装过新的——可能两个 timer 都开着）；新旧两个状态目录都在；项目配置的
+`STATE_DIR` 不是能机械改写的写法；新状态根目录在另一个磁盘分区。
+
+日志：`~/.local/state/cavil-loop/migrate.log`（也在跑它的那个轮询的 journal 里，项目自己的 `poll.log`
+里留一行）。要撤销，照备份目录手工恢复。
 
 ## 手动 cron 兜底
 

@@ -45,7 +45,7 @@ User wants the state. Steps:
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
 4. Summarize for the user
 
-Projects installed before the rename still run under the old names: `coding-agent-poll@*` timers and `~/.config/coding-agent-work-loop/*.conf`. Check both sets so an old project is not reported as missing (see [docs/operations.md](docs/operations.md#installations-from-before-the-rename)).
+Projects installed before the rename still run under the old names: `coding-agent-poll@*` timers and `~/.config/coding-agent-work-loop/*.conf`. Check both sets so an old project is not reported as missing; an idle old project is migrated automatically, and `~/.local/state/cavil-loop/migrate.log` says what moved or why it is waiting (see [docs/operations.md](docs/operations.md#installations-from-before-the-rename)).
 
 ### cleanup (after a PR is accepted / rejected)
 
