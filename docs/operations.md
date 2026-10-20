@@ -771,8 +771,8 @@ Only managed Linux installations fetch script-only updates automatically.
 ## Installations from before the rename
 
 The project used to be called `coding-agent-work-loop`. New installations use `cavil-loop`
-everywhere; installations made before the rename keep running unchanged on their old names
-until they are migrated (a separate follow-up handles the migration — nothing here moves files).
+everywhere. Installations made before the rename keep running on their old names until they are
+migrated, and the migration is automatic — see [Automatic migration](#automatic-migration-of-old-installations) below.
 
 | What | New installation | Before the rename (still honored) |
 |---|---|---|
@@ -792,9 +792,13 @@ otherwise create the new one.** When both exist the new one wins.
 - The old `coding-agent-*` unit files stay in `systemd/` **byte for byte**: the units installed
   on old machines are symlinks to those exact paths, and changing a `.socket` / `.slice` would
   raise a manual-action alert on every machine.
+- `setup.sh` initialises `state.json` only when the state directory has none. Re-running it — on
+  any installation, including the run that just migrated an old one — keeps the existing read
+  cursors and worker records instead of rebuilding them from the currently open items.
 - Re-running `setup.sh` on a project whose `~/.config/coding-agent-work-loop/<key>.conf` exists
-  keeps that project on its old names. It never installs a second, new-named timer next to the
-  old one — two pollers would race for the same issues.
+  first migrates it (below) and then continues as a new installation. If the project is busy the
+  migration is skipped and setup keeps the old names for this run. It never installs a second,
+  new-named timer next to a running old one — two pollers would race for the same issues.
 - A project that already has `coding-agent.config` keeps that file name: its ignore rule names the
   old file, and a renamed copy would no longer be ignored and could be committed by a worker.
 - One machine can carry both skill entries (old projects use the old one, a newly set-up project
@@ -810,6 +814,85 @@ otherwise create the new one.** When both exist the new one wins.
 - Old and new workers land in different slices, so each slice carries its own memory limit while
   both kinds of installation coexist. The new slice name follows the same derivation rule as
   the old one; it has not yet been observed on a real machine.
+
+### Automatic migration of old installations
+
+`scripts/migrate-legacy.sh` moves one old project to the new names. Nobody has to run it:
+
+- **Linux**: every poll tick of *any* project (`poll-entry.sh`, before the poller loads its
+  config) migrates every idle old project on the machine. So it takes effect once the release
+  containing it is deployed — within ~10 minutes of merging on managed installs. A machine in
+  development mode (skill link pointing at a checkout) picks it up when that checkout is updated.
+  When the project being migrated is the one whose old timer started this tick, the tick ends
+  right there and the new timer (enabled by the migration) runs the next one ~30 s later.
+- **macOS**: re-run `setup.sh <host>`. It migrates first and then generates the new LaunchAgent.
+  launchd plists are generated, so the background poller cannot swap them itself.
+
+**Only an idle project is migrated.** Idle means: no worker tmux session of that project
+(`<TMUX_PREFIX>-<SESSION_NAME_PREFIX><N>`), its weekly report is not running, and its poll lock is
+free. The poll lock is taken **first** and the worker / weekly checks run while holding it: workers
+are only dispatched by a poll holding that lock, so no new worker can appear between the check and
+the move (checking first and locking second leaves a window in which a poll dispatches and
+releases). A running worker remembers the old paths; moving the state directory under it would
+make its next `source _lib.sh` recreate an empty one at the old place. A busy project is retried
+on every tick; the reason is logged at most once an hour. The weekly report does not read the
+state directory; it is only checked so its timer is not swapped mid-run.
+
+**While a project is mid-migration, its main poll is skipped.** From step 1 until the end, the
+progress file names the project's config (`CFG=…`); `poll-entry.sh` sees that and ends the tick
+without running `agent-poll.sh`. Otherwise a tick landing between "state directory moved" and
+"config rewritten" would `mkdir` an empty state directory at the old place and re-dispatch every
+old comment from empty state. The next tick (of this or any other project) resumes the migration.
+A one-off look at the progress file is not enough — a tick could look before the migration
+starts and load the old config just before the directory moves. So while this machine still has
+old installations, `poll-entry.sh` holds the **shared** side of the machine-wide migration lock
+from that check until `agent-poll.sh` has taken the project's own poll lock (then releases it, so
+nothing it spawns inherits it); a migration needs the exclusive side to start.
+Everything that needs a human (below) is checked **before** step 1, so a project only pauses when
+the migration is actually able to finish. An empty stray directory that still appears at the old
+place mid-migration (no `state.json`, only `poll.log` / `poll.lock`) is recognised, its log merged
+into the new directory, and removed.
+
+What happens, in order (each step can be repeated; an interrupted run is finished by the next one):
+
+| Step | What | Old copy |
+|---|---|---|
+| 1 | Record whether the old timers were enabled / running (`~/.config/cavil-loop/migration/<key>.inprogress`); back up the env file, the project config and the state's `state.json` / `agent-sessions/` / `poll-pace.json` | backup in `~/.config/cavil-loop/migration/<key>-<ts>/` (0700) |
+| 2 | Shared, first project only: `~/.agents/skills/cavil-loop` pointing where the old link points; `~/.claude/skills/coding-agent-work-loop` → `cavil-loop` (no alias kept); `deploy.conf` moved, old skill path inside it rewritten | `deploy.conf.migrated-<ts>` |
+| 3 | Linux: link the new unit templates; copy the machine's slice drop-in to the new slice | the old slice and its drop-in stay — a tmux server started before the migration still lives in it |
+| 4 | Move the state directory (`~/.local/state/coding-agent-poll/<p>` → `~/.local/state/cavil-loop/<p>`, one same-disk rename) **and** rewrite the hard-coded path in the project config. The rewritten config is verified before anything moves | config original in the backup |
+| 5 | Write `~/.config/cavil-loop/<key>.conf` (0600) | — |
+| 6 | Linux: copy the instance drop-ins (poll interval) to the new timer names; enable / start the new poll / weekly timers **only if the old ones were** enabled / running; **then** `disable --now` the old ones (never the service: the migration often runs inside it). New first: if the new timer cannot be enabled or started, the old one is still running and retries on its next tick; while both are on, both ticks only resume the migration (progress file) and neither runs the main poll. macOS: `bootout` the old LaunchAgent | old drop-ins and instance links → backup; old plist → backup |
+| 7 | Rename the old env file last — while it exists, the next run comes back to finish | `<key>.conf.migrated-<ts>` |
+
+When no old project is left, the old `~/.agents/skills/coding-agent-work-loop` link is removed;
+unit links that still go through it (old preview templates, the old slice) are first re-pointed
+through the new link — the old unit files are kept byte for byte, so nothing changes for them.
+
+Not moved, on purpose:
+
+- The project's own files: `coding-agent.config` keeps its name (its ignore rule names the old
+  file), only its `STATE_DIR` line (and any other mention of that same directory) is rewritten;
+  backups are never written into the project directory. Committed override directories are not
+  renamed.
+- `~/.local/state/coding-agent-poll/review-shots`: comment images are served from it under a public
+  URL; the code keeps using it while no new one exists.
+- Preview registrations under `~/.config/coding-agent-work-loop/preview/` and the old preview units
+  they run on (see above: each port follows its own registration).
+- A state directory configured outside `~/.local/state/coding-agent-poll/<p>`: left where it is.
+
+It stops before touching anything and waits for a human (logged with ⛔, retried each tick but logged hourly; the old installation keeps polling meanwhile) when the new
+and old env file both exist without a migration in progress (someone installed the new one by
+hand — two timers may be running), when old and new state directories both exist, when the
+project config's `STATE_DIR` cannot be rewritten mechanically, or when the new state root is on a
+different disk.
+
+A project whose migration keeps failing *after* it started (e.g. `systemctl` errors every time)
+stays paused; every attempt logs a ❌ line. On macOS, re-running `setup.sh` after a half-done
+migration finishes it; setup refuses to continue on the old names in that state.
+
+Log: `~/.local/state/cavil-loop/migrate.log` (also in the journal of whichever poll ran it, and one
+line in the project's own `poll.log`). Undo by hand from the backup directory.
 
 ## Manual cron fallback
 

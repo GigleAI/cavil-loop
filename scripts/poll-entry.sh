@@ -38,4 +38,46 @@ if [ "$(basename "$(dirname "$CODING_AGENT_RELEASE_ROOT")")" = releases ] && [ -
 fi
 [ -z "${GLOBAL_FD:-}" ] || { flock -u "$GLOBAL_FD"; eval "exec ${GLOBAL_FD}>&-"; }
 export CODING_AGENT_RELEASE_ROOT
+
+# 改名前的旧安装（GigleAI/cavil-loop#71）：任何一个项目的这一轮都顺手把本机空闲的旧项目迁到
+# 新名字。必须在 agent-poll.sh 之前——它一 source _lib.sh 就会 mkdir 配置里的状态目录，
+# 迁到一半时会在旧位置凭空建出一个空目录。迁移自己出任何问题都不能挡住本轮轮询。
+# macOS 不在这里迁：LaunchAgent 要靠重跑 setup.sh 重新生成。
+if [ "$(uname -s)" = Linux ] && compgen -G "$CAVIL_LEGACY_CONFIG_HOME/*.conf" >/dev/null \
+   && [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/migrate-legacy.sh" ]; then
+    MIGRATED="$(bash "$CODING_AGENT_RELEASE_ROOT/scripts/migrate-legacy.sh" --all || true)"
+    # 刚迁的正是本项目：这一轮是旧后台任务起的，让位给已经接手的新任务（它 30 秒内会跑第一轮）。
+    if [ -n "${CODING_AGENT_CONFIG:-}" ] && printf '%s\n' "$MIGRATED" | cut -f3 | grep -qxF "$CODING_AGENT_CONFIG"; then
+        exit 0
+    fi
+fi
+# 本项目迁到一半（进度文件在、写着本项目的配置）：这一轮不跑主轮询。主轮询一加载配置就会
+# 在配置里写的状态目录位置 mkdir——状态目录已经搬走、配置还没改过来的那一刻，它会在旧位置
+# 建出一个空目录，用空状态把历史评论重新派一遍。等迁移（下一轮、任何一个项目的轮询）补完。
+# 旧环境文件已经不在的进度文件是收尾没做完的残留，不算。
+#
+# 光看一眼进度文件不够：看的时候迁移还没开始，看完之后主轮询读了旧配置，迁移这时把目录
+# 搬走，主轮询照样在旧位置重建。所以「看进度文件 → 主轮询拿到本项目的轮询锁」这一整段
+# 持着全机迁移锁的**共享**一侧：迁移要拿排他一侧才能开始，这段期间开始不了；主轮询拿到
+# 自己的轮询锁后立刻放掉（agent-poll.sh），之后迁移再来，会因为轮询锁被占而等下一轮。
+# 只在本机还有旧安装 / 迁移没收尾时才有这把锁，全新装的机器不受影响。
+if compgen -G "$CAVIL_LEGACY_CONFIG_HOME/*.conf" >/dev/null || compgen -G "$CAVIL_CONFIG_HOME/migration/*.inprogress" >/dev/null; then
+    mkdir -p "$CAVIL_CONFIG_HOME"
+    exec {MIGRATE_GATE_FD}>>"$CAVIL_CONFIG_HOME/.migrate.lock"
+    if ! flock -s -w 120 "$MIGRATE_GATE_FD"; then
+        echo "[cavil-loop] 有迁移一直没结束（等了 120 秒），这一轮跳过" >&2
+        exit 0
+    fi
+    export CAVIL_MIGRATE_GATE_FD="$MIGRATE_GATE_FD"
+fi
+if [ -n "${CODING_AGENT_CONFIG:-}" ]; then
+    for MIG_PROGRESS in "$CAVIL_CONFIG_HOME"/migration/*.inprogress; do
+        [ -f "$MIG_PROGRESS" ] || continue
+        [ -f "$CAVIL_LEGACY_CONFIG_HOME/$(basename "$MIG_PROGRESS" .inprogress).conf" ] || continue
+        if grep -qxF "CFG=$CODING_AGENT_CONFIG" "$MIG_PROGRESS"; then
+            echo "[cavil-loop] 本项目正在迁到新名字（$MIG_PROGRESS），这一轮跳过；进度见 $CAVIL_STATE_HOME/migrate.log" >&2
+            exit 0
+        fi
+    done
+fi
 exec bash "$CODING_AGENT_RELEASE_ROOT/scripts/agent-poll.sh" "$@"

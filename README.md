@@ -10,7 +10,7 @@
 
 Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be human." That is the idea here: the agent does not need to pretend to be human, yet working with it feels like working with a real colleague — you hand it issues, it comes back with design proposals and PRs, and you review them.
 
-> The project was renamed from `coding-agent-work-loop`. New installations use `cavil-loop` for every path, scheduler name and the skill command; installations made before the rename keep running on their old names. See [operations → installations from before the rename](docs/operations.md#installations-from-before-the-rename).
+> The project was renamed from `coding-agent-work-loop`. New installations use `cavil-loop` for every path, scheduler name and the skill command; installations made before the rename keep running on their old names and are migrated to the new ones automatically once idle. See [operations → installations from before the rename](docs/operations.md#installations-from-before-the-rename).
 
 ## What it is
 

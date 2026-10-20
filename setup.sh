@@ -19,8 +19,8 @@
 #
 # 新旧名字：新装的项目一律用 cavil-loop 命名（~/.config/cavil-loop/、cavil-loop-poll@
 # 等）。对改名前装好的项目（~/.config/coding-agent-work-loop/<key>.conf 已存在）重跑
-# 本脚本时，继续沿用它的旧名字——否则会给同一个项目再装一套新的后台任务，两套
-# 轮询抢同一批 issue。旧安装的迁移是另一件事，不在这里做。
+# 本脚本时，先把它迁到新名字（项目空闲时），再按新安装往下走；项目忙、迁不了时这次
+# 继续沿用旧名字——绝不给同一个项目再装一套新的后台任务，两套轮询会抢同一批 issue。
 set -euo pipefail
 
 HOST="${1:-}"
@@ -59,25 +59,55 @@ fi
 # ── 新装还是改名前的旧安装 ──
 # shellcheck source=scripts/_names.sh
 source "$SKILL_DIR/scripts/_names.sh"
+set_layout() {
+    LAYOUT="$1"
+    if [ "$LAYOUT" = legacy ]; then
+        conf_dir="$CAVIL_LEGACY_CONFIG_HOME"
+        UNIT_PREFIX="$CAVIL_LEGACY_UNIT_PREFIX"
+        SLICE_UNIT="$CAVIL_LEGACY_SLICE"
+        SKILL_LINK="$CAVIL_LEGACY_SKILL_HOME"
+        STATE_ROOT="$CAVIL_LEGACY_STATE_HOME"
+        LAUNCHD_LABEL="dev.luosky.coding-agent-work-loop.$KEY"
+        LAUNCHD_LOG_DIR="$HOME/Library/Logs/coding-agent-work-loop"
+    else
+        conf_dir="$CAVIL_CONFIG_HOME"
+        UNIT_PREFIX="$CAVIL_UNIT_PREFIX"
+        SLICE_UNIT="$CAVIL_SLICE"
+        SKILL_LINK="$CAVIL_SKILL_HOME"
+        STATE_ROOT="$CAVIL_STATE_HOME"
+        LAUNCHD_LABEL="dev.luosky.cavil-loop.$KEY"
+        LAUNCHD_LOG_DIR="$HOME/Library/Logs/cavil-loop"
+    fi
+}
 if [ ! -e "$CAVIL_CONFIG_HOME/$KEY.conf" ] && [ -e "$CAVIL_LEGACY_CONFIG_HOME/$KEY.conf" ]; then
-    LAYOUT="legacy"
-    conf_dir="$CAVIL_LEGACY_CONFIG_HOME"
-    UNIT_PREFIX="$CAVIL_LEGACY_UNIT_PREFIX"
-    SLICE_UNIT="$CAVIL_LEGACY_SLICE"
-    SKILL_LINK="$CAVIL_LEGACY_SKILL_HOME"
-    STATE_ROOT="$CAVIL_LEGACY_STATE_HOME"
-    LAUNCHD_LABEL="dev.luosky.coding-agent-work-loop.$KEY"
-    LAUNCHD_LOG_DIR="$HOME/Library/Logs/coding-agent-work-loop"
+    set_layout legacy
 else
-    LAYOUT="new"
-    conf_dir="$CAVIL_CONFIG_HOME"
-    UNIT_PREFIX="$CAVIL_UNIT_PREFIX"
-    SLICE_UNIT="$CAVIL_SLICE"
-    SKILL_LINK="$CAVIL_SKILL_HOME"
-    STATE_ROOT="$CAVIL_STATE_HOME"
-    LAUNCHD_LABEL="dev.luosky.cavil-loop.$KEY"
-    LAUNCHD_LOG_DIR="$HOME/Library/Logs/cavil-loop"
+    set_layout new
 fi
+
+# 改名前装好的项目：先迁到新名字（scripts/migrate-legacy.sh，与 Linux 后台每轮做的是同一件事），
+# 迁成了再按新安装往下走。项目有 worker 在跑时迁不了，这次就继续沿用旧名字——绝不在旧任务
+# 旁边再装一套新的，两个轮询会抢同一批 issue。
+migrate_before_setup() {   # <migrate-legacy.sh 所在的技能目录> [--launchd]
+    local dir="$1"; shift
+    echo "── 改名前的旧安装：迁到 cavil-loop 命名 ──"
+    local rc=0
+    bash "$dir/scripts/migrate-legacy.sh" --key "$KEY" "$@" >/dev/null || rc=$?
+    case "$rc" in
+        0) set_layout new
+           echo "  ✓ 已迁移（明细：$CAVIL_STATE_HOME/migrate.log）" ;;
+        3) echo "  ⏳ 项目正忙（原因见上一行），这次不迁、继续沿用旧名字；空闲后再跑一次 setup.sh"
+           [ "$OS" = Linux ] && echo "     （Linux 上不用等你：后台轮询会在项目空闲的那一轮自动迁）" ;;
+        *) if [ -f "$CAVIL_CONFIG_HOME/migration/$KEY.inprogress" ]; then
+               # 已经搬了一部分：再按旧名字装一遍会把半新半旧的东西搅乱
+               echo "  ❌ 迁移做到一半停住了（原因见上面几行和 $CAVIL_STATE_HOME/migrate.log），setup 到此为止；"
+               echo "     排除原因后再跑一次 setup.sh，会从停下的地方接着做"
+               exit 1
+           fi
+           echo "  ⚠️ 迁移没开始（原因见上面几行和 $CAVIL_STATE_HOME/migrate.log），这次继续沿用旧名字" ;;
+    esac
+    echo
+}
 
 # ── OS 判定 ──
 OS="$(uname -s)"
@@ -107,7 +137,7 @@ echo "  host project: $HOST"
 echo "  skill dir:    $SKILL_DIR"
 echo "  instance key: $KEY"
 if [ "$LAYOUT" = legacy ]; then
-    echo "  layout:       改名前的旧安装（$conf_dir/$KEY.conf 已存在），沿用旧名字"
+    echo "  layout:       改名前的旧安装（$conf_dir/$KEY.conf 已存在）"
 fi
 echo "  scheduler:    $SCHEDULER ($OS)"
 echo "  bash:         $BASH_BIN"
@@ -172,6 +202,9 @@ if [ "$OS" = Linux ]; then
     CAVIL_DEPLOY_SOURCE_DIR="$SOURCE_SKILL_DIR" CAVIL_SKILL_LINK="$SKILL_LINK" \
         bash "$SOURCE_SKILL_DIR/scripts/skill-deploy.sh" --bootstrap --force
     SKILL_DIR="$SKILL_LINK"
+    # 迁移用刚发布的那一版来跑；迁成了新技能入口会指向同一个 release
+    [ "$LAYOUT" = legacy ] && migrate_before_setup "$SKILL_DIR"
+    SKILL_DIR="$SKILL_LINK"
     runtime_skill="$(readlink -f "$SKILL_DIR" 2>/dev/null || true)"
     case "$runtime_skill" in
         "$HOME/.agents/releases/cavil-loop/releases/"*) ;;
@@ -179,6 +212,10 @@ if [ "$OS" = Linux ]; then
     esac
     echo "  ✓ runtime skill: $runtime_skill"
     echo
+fi
+
+if [ "$OS" = Darwin ] && [ "$LAYOUT" = legacy ]; then
+    migrate_before_setup "$SKILL_DIR" --launchd
 fi
 
 # ── 可移植 sed in-place（绕开 GNU vs BSD `sed -i` 差异）──
@@ -468,7 +505,15 @@ done
 # ── 6. seed state ──
 echo
 echo "── 6. seed state.json ──"
-CODING_AGENT_CONFIG="$config" bash "$SKILL_DIR/scripts/seed-state.sh"
+# 只在真的还没有状态时初始化。初始化是按「GitHub 上现在打开的条目」重写整份 state.json：
+# 重跑 setup（包括刚把旧安装迁过来的那一次）时再跑一遍，已读评论记录、worker 记录等会被
+# 整份冲掉，还可能把还没处理的新评论标成已读。
+seed_state_dir="$(config_value STATE_DIR)"
+if [ -n "$seed_state_dir" ] && [ -s "$seed_state_dir/state.json" ]; then
+    echo "  · $seed_state_dir/state.json 已存在，保留原样（已读评论记录不重置）"
+else
+    CODING_AGENT_CONFIG="$config" bash "$SKILL_DIR/scripts/seed-state.sh"
+fi
 
 # ── 7. 启动 daemon（按 OS 分支）──
 echo

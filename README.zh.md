@@ -10,7 +10,7 @@
 
 Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说「I don't want to be human」的赛昂人。这个项目取的就是这个意思：agent 不必扮成人，但和它协作就像和一个真人同事一起工作——你把 issue 派给它，它交回设计方案和 PR，你来 review。
 
-> 本项目由 `coding-agent-work-loop` 改名而来。新安装的路径、后台任务名和调用命令全部用 `cavil-loop`；改名前装好的机器继续用旧名字照常运行，见[运维手册 → 改名前的安装](docs/operations.zh.md#改名前的安装)。
+> 本项目由 `coding-agent-work-loop` 改名而来。新安装的路径、后台任务名和调用命令全部用 `cavil-loop`；改名前装好的机器继续用旧名字照常运行，项目空闲时自动迁到新名字，见[运维手册 → 改名前的安装](docs/operations.zh.md#改名前的安装)。
 
 ## 它是什么
 
