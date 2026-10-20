@@ -2,7 +2,7 @@
 
 > [English](drivers.md) · **中文**
 
-`coding-agent-work-loop` 的 daemon / dispatch 脚本和「在 tmux 里跑哪个 CLI」之间隔了一层 **driver 抽象**，让任何能接受 prompt 的 chat-REPL 风格 CLI 都能当 worker。配 `WORKER_AGENT=<name>` 即可切换，无需 fork。
+`cavil-loop` 的 daemon / dispatch 脚本和「在 tmux 里跑哪个 CLI」之间隔了一层 **driver 抽象**，让任何能接受 prompt 的 chat-REPL 风格 CLI 都能当 worker。配 `WORKER_AGENT=<name>` 即可切换，无需 fork。
 
 ## 内置 driver
 
@@ -19,14 +19,14 @@
 # 1. 确保 Cursor Agent CLI 在 PATH 上（`agent --help`）
 #    macOS：通常随 Cursor IDE 安装
 
-# 2. 在 coding-agent.config 里改
+# 2. 在 cavil-loop.config 里改
 WORKER_AGENT="cursor"
 
 # 3. 重跑 setup.sh 让 daemon EnvironmentFile 的 PATH 包含 `agent`
-WORKER_AGENT=cursor bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+WORKER_AGENT=cursor bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
-> launchd/systemd 下请确保 EnvironmentFile 含 `GH_TOKEN`，worker 里的 `gh` 才会用预期 PAT（见 `coding-agent.config` 的 `WORKER_PASS_ENV`）。
+> launchd/systemd 下请确保 EnvironmentFile 含 `GH_TOKEN`，worker 里的 `gh` 才会用预期 PAT（见 `cavil-loop.config` 的 `WORKER_PASS_ENV`）。
 
 > **Cursor 注意：** `-p` 是 non-interactive print 模式，mid-task 的 issue/PR comment 无法通过 stdin 注入。driver 会 kill 当前 session 并用新 prompt 重起（Case B），不会 silent drop。
 
@@ -36,11 +36,11 @@ WORKER_AGENT=cursor bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path
 # 1. 装好对应 CLI
 npm i -g @openai/codex
 
-# 2. 在 coding-agent.config 里改
+# 2. 在 cavil-loop.config 里改
 WORKER_AGENT="codex"
 
 # 3. 重跑 setup.sh 让 daemon EnvironmentFile 的 PATH 指向新 CLI
-WORKER_AGENT=codex bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+WORKER_AGENT=codex bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
 > 切换 driver 后**已有的 worktree 不变**，但新建的 worker session 会用新 CLI 启动。混用风险：同一 worktree 历史是给上一个 driver 写的，新 driver 可能找不到/认不出 → 把 worktree cleanup 后再启动。
@@ -49,7 +49,7 @@ WORKER_AGENT=codex bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/
 
 复制 `scripts/drivers/_template.sh` 为 `scripts/drivers/<your>.sh`，实现 5 个函数。
 
-也可放项目级而不动 skill：`<host>/.agents/skills/coding-agent-work-loop/drivers/<your>.sh`，自动覆盖同名内置 driver。
+也可放项目级而不动 skill：`<host>/.agents/skills/cavil-loop/drivers/<your>.sh`，自动覆盖同名内置 driver。
 
 ### 必填函数
 
@@ -171,15 +171,15 @@ CLI 钉不了 id 的，要保证 `agent_session_list` 够便宜、且「最近�
 
 ```bash
 # 1. 手动起一个 worker session 看启动是否成功
-CODING_AGENT_CONFIG=~/path/to/your-project/coding-agent.config \
-    WORKER_AGENT=<your> bash ~/.agents/skills/coding-agent-work-loop/scripts/dispatch-new-issue.sh <test-issue-N>
+CODING_AGENT_CONFIG=~/path/to/your-project/cavil-loop.config \
+    WORKER_AGENT=<your> bash ~/.agents/skills/cavil-loop/scripts/dispatch-new-issue.sh <test-issue-N>
 
 # 2. 进 tmux 看
 tmux attach -t <project>-issue<N>
 
 # 3. 让 agent 跑一会儿，然后从外面查 busy 探测是否对上
 CODING_AGENT_CONFIG=... WORKER_AGENT=<your> \
-    bash -c 'source ~/.agents/skills/coding-agent-work-loop/scripts/_lib.sh; \
+    bash -c 'source ~/.agents/skills/cavil-loop/scripts/_lib.sh; \
              agent_is_busy "<project>-issue<N>" && echo BUSY || echo IDLE'
 ```
 

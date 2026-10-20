@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# coding-agent-preview-app@<port>.service 的 ExecStartPost 就绪门。
+# cavil-loop-preview-app@<port>.service（改名前叫 coding-agent-preview-app@<port>.service） 的 ExecStartPost 就绪门。
 #
 # 轮询后端端口直到能 accept。ExecStartPost 返回前 start job 不算完成，
 # 于是 After=app 的 proxy 不会在 node 还没 bind 时就开始转发（那样首访必 502）。
 #
-# 参数：$1 = 公开端口（= systemd instance name）
+# 参数：$1 = 公开端口（= systemd instance name）；$2 = 登记文件路径（新单元传，旧单元不传）
 set -euo pipefail
 
 PORT="${1:?need public port}"
-CONF="$HOME/.config/coding-agent-work-loop/preview/${PORT}.conf"
+# 读的必须是**调用本脚本的那个单元自己绑定的**登记文件，不能按「哪个文件在」去挑：
+# 改名过渡期新旧两个目录可能各有一份同端口的登记，挑错就会拿另一个项目的命令起 server。
+# 新单元（cavil-loop-preview-app@）把路径作为 $2 传进来；改名前的旧单元不传，
+# 它的 EnvironmentFile 写死的是旧目录，所以缺省就是旧目录。只有手动调用、旧目录又
+# 没有这份登记时，才退回新目录。
+# shellcheck source=_names.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_names.sh"
+CONF="${2:-$CAVIL_LEGACY_CONFIG_HOME/preview/${PORT}.conf}"
+[ -n "${2:-}" ] || [ -f "$CONF" ] || CONF="$CAVIL_CONFIG_HOME/preview/${PORT}.conf"
 # shellcheck disable=SC1090
 source "$CONF"
 

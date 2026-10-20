@@ -61,7 +61,7 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
    - 抓提出者：`gh issue view ${ISSUE} --repo ${REPO} --json author --jq .author.login` → 后续 @ 它
 
 2. **整理设计方案**，写成 issue comment 发到 issue 上：
-   - 必含的段（项目专属模板可以加更多，参考 `.agents/skills/coding-agent-work-loop/prompts/` 覆盖）：
+   - 必含的段（项目专属模板可以加更多，参考 `.agents/skills/cavil-loop/prompts/` 覆盖）：
      - **功能范围**：做什么、明确不做什么（防 scope creep）
      - **核心思路 / 关键决策**：怎么实现、为什么这么做
      - **数据模型 / API 设计**（如适用）

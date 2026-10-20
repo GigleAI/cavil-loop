@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # 周报流水线：采数 → 出图 → 传图 → 开 issue。
 #
-# 每周一由 systemd timer coding-agent-weekly-report@<project>.timer 触发。
+# 每周一由 systemd timer cavil-loop-weekly-report@<project>.timer 触发
+# （改名前装的是 coding-agent-weekly-report@<project>.timer，同样走这里）。
 # 手动跑：bash run.sh <project-key> [--dry-run] [--week-of YYYY-MM-DD]
 #
 # 产物落在 issue 里（数据 + 四张趋势图：交付 / 投入 / 成本 / token）。issue 默认打 pending/agent，
 # 由 daemon 派 worker 把数据写成大白话解读——数字机器出，人话 agent 写。
 set -euo pipefail
 
-DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$HOME/.config/coding-agent-work-loop/deploy.conf}"
+# 新旧名字（~/.config/cavil-loop 与改名前的 coding-agent-work-loop）经 _names.sh 挑
+# shellcheck source=../_names.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../_names.sh"
+DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$(cavil_deploy_conf)}"
 [ ! -f "$DEPLOY_CONF" ] || { set -a; . "$DEPLOY_CONF"; set +a; }
 DEPLOY_ROOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}"
 if [ -f "$DEPLOY_ROOT/.deploy.lock" ]; then exec {GLOBAL_FD}<>"$DEPLOY_ROOT/.deploy.lock"; flock -s "$GLOBAL_FD"; fi
@@ -34,7 +38,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-CONF="$HOME/.config/coding-agent-work-loop/${PROJECT}.conf"
+CONF="$(cavil_project_env "$PROJECT")"
 [ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
 # shellcheck disable=SC1090
 set -a; . "$CONF"; set +a
@@ -45,7 +49,7 @@ REPO="${WEEKLY_REPORT_REPO:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/de
       | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')}"
 [ -n "$REPO" ] || { echo "推不出 REPO，请在 $CONF 里设 WEEKLY_REPORT_REPO" >&2; exit 1; }
 
-ASSET_DIR="${WEEKLY_REPORT_ASSET_DIR:-$HOME/.local/state/coding-agent-poll/review-shots/weekly-report}"
+ASSET_DIR="${WEEKLY_REPORT_ASSET_DIR:-$(cavil_review_shots)/weekly-report}"
 # 公网 URL 前缀没有默认值：主机名属于部署环境，不进这个公开仓库。在项目配置里设。
 ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-}"
 [ -n "$ASSET_URL" ] || {
@@ -63,10 +67,10 @@ REV="wk-$(date +%Y%m%d)-$(date +%s%N | tail -c 7)"
 echo "== 1/4 采数（repo=$REPO）"
 git -C "$PROJECT_ROOT" fetch origin --quiet || true
 # 处理时长要去本机 agent 日志里取每一轮的起止，需要知道 worktree 路径。
-# 那两个值在 daemon 的配置里（$PROJECT_ROOT/coding-agent.config），不在本脚本读的
+# 那两个值在 daemon 的配置里（$PROJECT_ROOT/cavil-loop.config，改名前叫 coding-agent.config），不在本脚本读的
 # 项目配置里。用子 shell 只取这两个值，避免把 daemon 那份配置整个灌进来覆盖 REPO 等。
 # 路径属于部署环境，不写死在本仓库；取不到就跳过这个指标，其余照常出。
-DAEMON_CONF="$PROJECT_ROOT/coding-agent.config"
+DAEMON_CONF="$(cavil_project_config "$PROJECT_ROOT")"
 WT_BASE=""; WT_PREFIX=""
 if [ -f "$DAEMON_CONF" ]; then
     WT_BASE=$(set -a; . "$DAEMON_CONF" >/dev/null 2>&1; printf '%s' "${WORKTREE_BASE:-}")

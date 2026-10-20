@@ -2,7 +2,7 @@
 
 > **English** · [中文](operations.zh.md)
 
-## Configuration (`coding-agent.config`)
+## Configuration (`cavil-loop.config`)
 
 Lives at the host project root, auto-added to `.gitignore`.
 
@@ -13,7 +13,7 @@ REPO="myorg/myrepo"
 # Paths
 PROJECT_ROOT="$HOME/github/myproject"
 WORKTREE_BASE="$HOME/github/worktree/myproject"
-STATE_DIR="$HOME/.local/state/coding-agent-poll/myproject"
+STATE_DIR="$HOME/.local/state/cavil-loop/myproject"
 
 # Logging: info by default; debug adds priority reads, greedy skips and review-cap details.
 LOG_LEVEL="info"
@@ -71,7 +71,7 @@ WORKER_PASS_ENV="GH_TOKEN"
 AUTO_CLEANUP_ON_MERGE="true"
 
 # Project-level cleanup hook (release ports, tear down tunnels, push metrics)
-CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
+CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"
 
 # Pace
 MAX_CONCURRENT_WORKERS=1
@@ -126,7 +126,7 @@ PROJECT_GH_TOKEN=""              # token used only for the board read; empty = r
 # WRITE_GH_TOKEN=""              # token used for every WRITE; empty = reuse GH_TOKEN
 ```
 
-Full field list: [`coding-agent.config.example`](../coding-agent.config.example).
+Full field list: [`cavil-loop.config.example`](../cavil-loop.config.example).
 
 ## Codex token value estimates
 
@@ -153,7 +153,7 @@ on them stay unpriced.
 stale warning, which fires later.
 
 Set `CODEX_PRICES` to a JSON map keyed by exact model ID to replace the full
-table. A copy-ready map is in [the config example](../coding-agent.config.example);
+table. A copy-ready map is in [the config example](../cavil-loop.config.example);
 set `CODEX_PRICES='{}'` to turn estimates off. Unlisted models and token
 components without a rate remain unpriced. The three legacy
 `CODEX_PRICE_*_PER_M` variables provide a common-rate fallback for models
@@ -429,8 +429,10 @@ yields the newest version):
 | **base** (generic workflow) | `<name>.template.md` | falls back to `<skill>/prompts/<name>.template.md` |
 | **delta** (project-specific) | `<name>.extra.md` | base is used alone |
 
-Both live under the project's `.agents/skills/coding-agent-work-loop/prompts/` (the old
-`.coding-agent/prompts/` path still works). Composition **appends the delta after the
+Both live under the project's `.agents/skills/cavil-loop/prompts/` (projects set up
+before the rename keep `.agents/skills/coding-agent-work-loop/prompts/`, and the even older
+`.agents/skills/coding-agent-workflow/prompts/` and `.coding-agent/prompts/` still work;
+the new name wins when several exist). Composition **appends the delta after the
 base**, with a line saying the delta wins on conflict — later text naturally overrides
 earlier text in a prompt, so to overturn one base rule you just write "this project does
 X instead" in your own file rather than forking the whole template.
@@ -442,7 +444,7 @@ make) never reached them. Fork the whole template only when the project's workfl
 differs *structurally* — different stages, different label semantics.
 
 ```
-project/.agents/skills/coding-agent-work-loop/prompts/
+project/.agents/skills/cavil-loop/prompts/
 ├── new-issue.extra.md      ← preferred: only what's specific (test chain, layout, acceptance)
 └── pr-comment.template.md  ← full override, only for structural differences
 ```
@@ -468,7 +470,7 @@ Available placeholders (`sed`-rendered):
 | `${PREVIEW_URL_HOST}` | the host serving this machine's PR previews. Use it instead of hard-coding a hostname — the same template runs on every machine that polls the repo, and a baked-in host sends reviewers to a box that has none of the files |
 | `${REVIEW_ASSET_BASE_URL}` | public base URL for review screenshots (funnel path), from `WEEKLY_REPORT_ASSET_ROOT_URL`. Same reasoning: shots are written to the machine that took them, so the URL has to name that machine |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review gate it would bounce work back to the reviewer itself: an infinite loop |
-| `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `coding-agent.config`, default `en`) |
+| `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `cavil-loop.config`, default `en`) |
 
 ## Cleanup hook (`CLEANUP_HOOK`)
 
@@ -512,7 +514,7 @@ Killing processes by cwd is risky enough to deserve three guards, worth copying 
 - **Leave the bare `<prefix>-issue<N>` session alone** — that one belongs to
   `cleanup-issue.sh`; keep the division of labour
 
-Reference implementation: `.agents/skills/coding-agent-work-loop/cleanup-hook.sh` in tutor.
+Reference implementation: `.agents/skills/coding-agent-work-loop/cleanup-hook.sh` in tutor (a project set up before the rename, so it still uses the old directory name).
 
 ## On-demand preview (socket activation)
 
@@ -529,11 +531,11 @@ Setting `PREVIEW_EXEC` switches previews to systemd socket activation, which sep
 ```
 tailscale serve :4791 (or hit 127.0.0.1:4791 directly)
         │
-coding-agent-preview@4791.socket        always listening, ~0 memory
+cavil-loop-preview@4791.socket        always listening, ~0 memory
         │ first connection triggers
-coding-agent-preview@4791.service       systemd-socket-proxyd, exits on --exit-idle-time
+cavil-loop-preview@4791.service       systemd-socket-proxyd, exits on --exit-idle-time
         │ Requires
-coding-agent-preview-app@4791.service   your server; StopWhenUnneeded takes it down too
+cavil-loop-preview-app@4791.service   your server; StopWhenUnneeded takes it down too
 ```
 
 Measured: ~0.4s cold start (plus your app's own startup), 0.01s warm, all memory returned
@@ -577,7 +579,7 @@ Guarded by `tests/preview-port-ownership.test.sh`.
 **must read its listen address from `$PORT` / `$HOST`** — an app with a hardcoded port
 cannot be wired in.
 
-**② Quote every value in the conf file.** `~/.config/coding-agent-work-loop/preview/<port>.conf`
+**② Quote every value in the conf file.** `~/.config/cavil-loop/preview/<port>.conf`
 has two readers: systemd's `EnvironmentFile=` (everything right of `=` is the value, quotes
 optional) and the bash `source` in `preview-run.sh` (without quotes,
 `PREVIEW_EXEC=node server/index.mjs` parses as "run `server/index.mjs` with a temporary
@@ -586,7 +588,7 @@ hand-edit a conf.
 
 **③ Do not drop the readiness gate.** `Type=exec` only guarantees that execve succeeded,
 not that the app has `bind`ed. Without the `ExecStartPost=preview-wait.sh` line in
-`coding-agent-preview-app@.service`, the proxy forwards before node is listening and the
+`cavil-loop-preview-app@.service`, the proxy forwards before node is listening and the
 **first request reliably 502s** — an app that takes 300ms to start is enough to trigger it,
 and manual local testing often misses it.
 
@@ -597,7 +599,7 @@ The socket re-triggers repeatedly, hits `TriggerLimitBurst`, and the whole socke
 is a no-op, so the unit state does not make the problem obvious. To diagnose and recover:
 
 ```bash
-journalctl --user -u 'coding-agent-preview-app@4791.service' -n 50
+journalctl --user -u 'cavil-loop-preview-app@4791.service' -n 50
 bash scripts/preview-serve.sh 791     # includes reset-failed; re-run after fixing the config
 ```
 
@@ -617,8 +619,8 @@ line yourself, since `cleanup-issue.sh` has no way to know whether you enabled p
 ### Skill directory (managed Linux layout)
 
 ```
-~/github/coding-agent-work-loop/        # optional development checkout; deployment never mutates it
-~/.agents/skills/coding-agent-work-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
+~/github/cavil-loop/        # optional development checkout; deployment never mutates it
+~/.agents/skills/cavil-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
 ~/.agents/releases/cavil-loop/
 ├── mirror.git/                         # fetch-only mirror
 ├── releases/<sha>/                     # immutable trees with .inuse leases
@@ -627,18 +629,18 @@ line yourself, since `cleanup-issue.sh` has no way to know whether you enabled p
 ├── .deploy.lock                        # short publish/select/cleanup lock
 ├── .last-fetch                         # shared fetch throttle
 └── deploy-state.json                   # lag, success, and alert state
-~/.claude/skills/coding-agent-work-loop  -> ~/.agents/skills/coding-agent-work-loop
+~/.claude/skills/cavil-loop  -> ~/.agents/skills/cavil-loop
 ```
 
-Poll, token-usage, and weekly-report start through launchers in `entrypoints/`. Those launchers cannot be removed by release cleanup: they take the shared deploy lock, resolve the stable link, and acquire the selected release's `.inuse` lease before opening any versioned script. Cleanup removes an old release only after taking that lease exclusively; age and “keep N versions” are deliberately not used. Optional shared overrides live in `~/.config/coding-agent-work-loop/deploy.conf`; see `coding-agent-deploy.conf.example`.
+Poll, token-usage, and weekly-report start through launchers in `entrypoints/`. Those launchers cannot be removed by release cleanup: they take the shared deploy lock, resolve the stable link, and acquire the selected release's `.inuse` lease before opening any versioned script. Cleanup removes an old release only after taking that lease exclusively; age and “keep N versions” are deliberately not used. Optional shared overrides live in `~/.config/cavil-loop/deploy.conf`; see `cavil-loop-deploy.conf.example`.
 
 ### Host project (after connecting)
 
 ```
 your-project/
-├── .gitignore                              # +1 line: coding-agent.config
-├── coding-agent.config                      # config (gitignored)
-├── .agents/skills/coding-agent-work-loop/   # optional: project-level prompt + cleanup-hook overrides
+├── .gitignore                              # +1 line: cavil-loop.config
+├── cavil-loop.config                      # config (gitignored)
+├── .agents/skills/cavil-loop/   # optional: project-level prompt + cleanup-hook overrides
 │   ├── prompts/
 │   └── cleanup-hook.sh
 └── ... your code ...
@@ -649,21 +651,21 @@ your-project/
 `<project-key>.conf` is the single source of truth for env vars on both OS — same format, different scheduler loads it.
 
 ```
-~/.config/coding-agent-work-loop/
+~/.config/cavil-loop/
 └── <project-key>.conf                  # KEY=VALUE env file; systemd reads as EnvironmentFile, launchd sources it inline
 
 # Linux only
 ~/.config/systemd/user/
-├── coding-agent-poll@.service          # symlink → skill dir template
-└── coding-agent-poll@.timer            # symlink → skill dir template
+├── cavil-loop-poll@.service          # symlink → skill dir template
+└── cavil-loop-poll@.timer            # symlink → skill dir template
 
 # macOS only
 ~/Library/LaunchAgents/
-└── dev.luosky.coding-agent-work-loop.<key>.plist   # generated per project (not a symlink)
-~/Library/Logs/coding-agent-work-loop/
+└── dev.luosky.cavil-loop.<key>.plist   # generated per project (not a symlink)
+~/Library/Logs/cavil-loop/
 └── <key>.out.log, <key>.err.log        # launchd captures daemon stdout/stderr
 
-~/.local/state/coding-agent-poll/<project>/
+~/.local/state/cavil-loop/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
 ├── poll-pace.json                      # idle/failure backoff state; `rm` it = back to full speed
 ├── poll.log                            # rolling log
@@ -678,11 +680,11 @@ your-project/
 
 | OS | Scheduler | Unit / Plist | Set up by `setup.sh`? |
 |----|-----------|--------------|-----------------------|
-| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}` (symlink to skill template) + `coding-agent-poll@<key>.timer.d/interval.conf` (generated from `POLL_INTERVAL_SECS`) | ✅ |
-| macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist` (generated) | ✅ |
+| Linux | `systemd --user` timer | `~/.config/systemd/user/cavil-loop-poll@<key>.{service,timer}` (symlink to skill template) + `cavil-loop-poll@<key>.timer.d/interval.conf` (generated from `POLL_INTERVAL_SECS`) | ✅ |
+| macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.cavil-loop.<key>.plist` (generated) | ✅ |
 | Other | — | — | ❌ `exit 1`; see [manual cron fallback](#manual-cron-fallback) below |
 
-Both paths read the same `~/.config/coding-agent-work-loop/<key>.conf` env file. Linux runs `skill-deploy.sh` before the durable poll entry. Network work has a separate non-blocking lock and timeout; only publication and cleanup take the short deploy lock, so a slow fetch cannot hold up consumers of the current release. Failed fetch attempts also enter the shared throttle. macOS runs the pinned entry but does not auto-deploy, and a plist template change requires re-running `setup.sh`.
+Both paths read the same `~/.config/cavil-loop/<key>.conf` env file. Linux runs `skill-deploy.sh` before the durable poll entry. Network work has a separate non-blocking lock and timeout; only publication and cleanup take the short deploy lock, so a slow fetch cannot hold up consumers of the current release. Failed fetch attempts also enter the shared throttle. macOS runs the pinned entry but does not auto-deploy, and a plist template change requires re-running `setup.sh`.
 
 The tick cadence is only an upper bound on how often GitHub gets called: a
 project nobody has touched for a day or more decides, inside `agent-poll.sh`,
@@ -697,10 +699,10 @@ so and leaves it alone.
 
 ### macOS specifics
 
-- **Label**: `dev.luosky.coding-agent-work-loop.<key>` (must match the filename)
+- **Label**: `dev.luosky.cavil-loop.<key>` (must match the filename)
 - **Loaded via**: `launchctl bootstrap gui/$UID <plist>` (modern syntax, macOS 10.10+). `setup.sh` runs `bootout` first if a previous load exists, so re-runs are idempotent.
 - **Run cadence**: `StartInterval` comes from `POLL_INTERVAL_SECS` (equivalent to systemd `OnUnitActiveSec`). Changing it means re-running `setup.sh`, since the plist is generated, not symlinked.
-- **Logs**: stdout/stderr → `~/Library/Logs/coding-agent-work-loop/<key>.{out,err}.log`. The deeper poll log still lives at `$STATE_DIR/poll.log`.
+- **Logs**: stdout/stderr → `~/Library/Logs/cavil-loop/<key>.{out,err}.log`. The deeper poll log still lives at `$STATE_DIR/poll.log`.
 - **flock**: not bundled with macOS. `brew install flock` once before running `setup.sh`.
 - **Logout / lid-close**: a user LaunchAgent runs when you're logged in (even with screen locked). For "run even when no user is logged in," you'd need a `/Library/LaunchDaemons/` install — `setup.sh` deliberately doesn't go there (requires `sudo`, breaks symmetry with Linux's `--user` systemd).
 
@@ -709,26 +711,26 @@ so and leaves it alone.
 Skill installed once, scheduler template installed once. For each project:
 
 ```bash
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectA
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectB
+bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectA
+bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectB
 ```
 
 You get:
 
 ```
-~/.config/coding-agent-work-loop/
+~/.config/cavil-loop/
 ├── projectA.conf
 └── projectB.conf
 
 # Linux
 systemctl --user list-timers
-  coding-agent-poll@projectA.timer
-  coding-agent-poll@projectB.timer
+  cavil-loop-poll@projectA.timer
+  cavil-loop-poll@projectB.timer
 
 # macOS
-launchctl list | grep dev.luosky.coding-agent-work-loop
-  dev.luosky.coding-agent-work-loop.projectA
-  dev.luosky.coding-agent-work-loop.projectB
+launchctl list | grep dev.luosky.cavil-loop
+  dev.luosky.cavil-loop.projectA
+  dev.luosky.cavil-loop.projectB
 ```
 
 Independent logs, independent state, no interference.
@@ -738,31 +740,76 @@ Independent logs, independent state, no interference.
 Managed **Linux** polls fetch the configured base branch with a bounded network timeout, unpack a complete immutable tree, then atomically replace the stable link. Offline, lock, and fetch failures retain the current release; consumers can continue starting from it while fetch is in progress. Upgrades are **automatic**, and no target version can be pinned: the deployer follows the tip commit of `CAVIL_DEPLOY_BRANCH` (default `main`), unrelated to GitHub Releases or tags — a release is just an immutable snapshot of that commit at `releases/<sha>/`. A host-wide `CAVIL_DEPLOY_FETCH_INTERVAL` (default 300s) throttles fetches, so a merge to the base branch takes effect within roughly one throttle window plus a tick. Switching affects only later starts: consumers already running hold a shared `.inuse` lease and stay on their own SHA. Migrate a checkout-style installation only through an explicit action:
 
 ```bash
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+bash ~/.agents/skills/cavil-loop/setup.sh <host>
 # or, from the old checkout:
 bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. Development mode still installs the durable `entrypoints/` from that checkout, because the scheduler units always start through them. Commit `3114f64` alone did not, so a checkout-style install that pulled exactly that commit stops polling with exit 127 (`poll-entry.sh: No such file or directory`, visible only in `journalctl --user -u coding-agent-poll@<key>`, never in `poll.log`); pull to the latest commit or bootstrap to recover. **There is currently no durable rollback.** A successful deployment immediately reclaims every old release without an active lease, so usually no rollback target survives; and even when a lease keeps one alive, pointing the stable link back at it only holds until the next deployment — the deployer does not compare versions, it aligns the stable link with the base-branch tip, so it switches forward again. To stay on a specific version, use development mode to opt out of management, or point `CAVIL_DEPLOY_BRANCH` at a branch parked on that commit.
+This avoids mistaking a maintainer's development link for production. On Linux, standalone bootstrap also repoints already-installed systemd template symlinks to the stable managed skill and reloads the user manager; missing units are not installed, so use `setup.sh` for a new scheduler installation. A real directory at the stable path is preserved as a timestamped `.pre-managed.*` backup. For development mode, atomically point the stable link outside `releases/`; routine deployment refuses to take it over until another explicit bootstrap. Development mode still installs the durable `entrypoints/` from that checkout, because the scheduler units always start through them. Commit `3114f64` alone did not, so a checkout-style install that pulled exactly that commit stops polling with exit 127 (`poll-entry.sh: No such file or directory`, visible only in `journalctl --user -u coding-agent-poll@<key>` — that install predates the rename — never in `poll.log`); pull to the latest commit or bootstrap to recover. **There is currently no durable rollback.** A successful deployment immediately reclaims every old release without an active lease, so usually no rollback target survives; and even when a lease keeps one alive, pointing the stable link back at it only holds until the next deployment — the deployer does not compare versions, it aligns the stable link with the base-branch tip, so it switches forward again. To stay on a specific version, use development mode to opt out of management, or point `CAVIL_DEPLOY_BRANCH` at a branch parked on that commit.
 
 | Changed files | Deployment behavior |
 |---|---|
 | scripts, data, prompts | Active with the stable-link switch |
 | systemd `.service` / `.timer` | Runs `systemctl --user daemon-reload` |
-| systemd `.socket` / `.slice` | Not applied automatically; opens one actionable alert |
-| launchd plist template | Not applied automatically; asks for `setup.sh` |
+| systemd `.socket` / `.slice` changed or removed | Not applied automatically; opens one actionable alert |
+| systemd unit file **added** | Nothing to do — no machine has installed it yet; no alert |
+| launchd plist template content changed | Not applied automatically; asks for `setup.sh` |
+| launchd template added / renamed / removed | Nothing to do — plists already generated do not depend on the template file; no alert |
 
 After the remote is observed ahead for the configured threshold, deployment opens at most one issue in the configured alert repository and closes that lag alert after recovery. Alerts for manual scheduler work (`.socket`, `.slice`, launchd, or a failed `daemon-reload`) persist across no-change deployments and clear only after a maintainer closes the alert issue to acknowledge completion.
 
 On **macOS**, upgrades remain manual. The per-project LaunchAgent plist is generated by `setup.sh`; regenerate it after a template change:
 
 ```bash
-launchctl bootout gui/$UID/dev.luosky.coding-agent-work-loop.<key> || true
-rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+launchctl bootout gui/$UID/dev.luosky.cavil-loop.<key> || true
+rm ~/Library/LaunchAgents/dev.luosky.cavil-loop.<key>.plist
+bash ~/.agents/skills/cavil-loop/setup.sh <host>
 ```
 
 Only managed Linux installations fetch script-only updates automatically.
+
+## Installations from before the rename
+
+The project used to be called `coding-agent-work-loop`. New installations use `cavil-loop`
+everywhere; installations made before the rename keep running unchanged on their old names
+until they are migrated (a separate follow-up handles the migration — nothing here moves files).
+
+| What | New installation | Before the rename (still honored) |
+|---|---|---|
+| Skill entry | `~/.agents/skills/cavil-loop`, `~/.claude/skills/cavil-loop` | `~/.agents/skills/coding-agent-work-loop` |
+| Skill command | `/cavil-loop` | `/coding-agent-work-loop` (no alias is kept) |
+| Per-project env file, `deploy.conf`, preview registrations | `~/.config/cavil-loop/` | `~/.config/coding-agent-work-loop/` |
+| State | `~/.local/state/cavil-loop/<project>/` | `~/.local/state/coding-agent-poll/<project>/` |
+| Linux units | `cavil-loop-poll@` / `cavil-loop-weekly-report@` / `cavil-loop-preview*@` / `app-cavil\x2dloop\x2dpoll.slice` | `coding-agent-*` / `app-coding\x2dagent\x2dpoll.slice` |
+| macOS LaunchAgent / logs | `dev.luosky.cavil-loop.<key>`, `~/Library/Logs/cavil-loop/` | `dev.luosky.coding-agent-work-loop.<key>`, `~/Library/Logs/coding-agent-work-loop/` |
+| Local config in the project root | `cavil-loop.config` | `coding-agent.config` |
+| Project override directory (committed) | `.agents/skills/cavil-loop/` | `.agents/skills/coding-agent-work-loop/`, `.agents/skills/coding-agent-workflow/`, `.coding-agent/` |
+
+How the code chooses, everywhere (`scripts/_names.sh`; `release-entry.sh` inlines the same
+rule): **if the new-name path exists use it, otherwise use the old-name path if that exists,
+otherwise create the new one.** When both exist the new one wins.
+
+- The old `coding-agent-*` unit files stay in `systemd/` **byte for byte**: the units installed
+  on old machines are symlinks to those exact paths, and changing a `.socket` / `.slice` would
+  raise a manual-action alert on every machine.
+- Re-running `setup.sh` on a project whose `~/.config/coding-agent-work-loop/<key>.conf` exists
+  keeps that project on its old names. It never installs a second, new-named timer next to the
+  old one — two pollers would race for the same issues.
+- A project that already has `coding-agent.config` keeps that file name: its ignore rule names the
+  old file, and a renamed copy would no longer be ignored and could be committed by a worker.
+- One machine can carry both skill entries (old projects use the old one, a newly set-up project
+  the new one). The deployer switches both together whenever both point into `releases/`, and
+  never deletes a release that one of them still points to.
+- On-demand previews follow **their own registration**, not "which units this machine has":
+  a preview an old project registered stays on the old units and the old registration
+  directory even after new units are installed. Ownership checks, `--list` and unregistering
+  look at both directories; a port taken in either one is taken. Old and new share one port
+  lock (the old directory's while the machine has old units). When starting, each unit reads
+  the registration it is bound to — the new unit passes its path, the old one reads the old
+  directory. Only a brand-new registration picks the new units.
+- Old and new workers land in different slices, so each slice carries its own memory limit while
+  both kinds of installation coexist. The new slice name follows the same derivation rule as
+  the old one; it has not yet been observed on a real machine.
 
 ## Manual cron fallback
 
@@ -774,10 +821,10 @@ The schedulers above aren't required; `agent-poll.sh` is stateless and any sched
 **cron** (any Unix):
 
 ```cron
-* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh >> /tmp/coding-agent-cron.log 2>&1
+* * * * * CODING_AGENT_CONFIG=$HOME/myproject/cavil-loop.config bash $HOME/.agents/skills/cavil-loop/scripts/poll-entry.sh >> /tmp/cavil-loop-cron.log 2>&1
 ```
 
-**Claude Code `/loop` skill**: open a long-running session that calls `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh`. Upside: the scheduling logic can be context-aware. Downside: expensive + the session dying stops everything.
+**Claude Code `/loop` skill**: open a long-running session that calls `/loop 60s bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh`. Upside: the scheduling logic can be context-aware. Downside: expensive + the session dying stops everything.
 
 ## Upgrading to webhooks (instant trigger)
 
@@ -790,7 +837,7 @@ Polling has up to 1 minute of latency. For instant:
 
 ## Custom worker (not Claude Code)
 
-Worker selection now goes through a thin **driver layer** — no fork needed. Ordinary work uses `WORKER_AGENT=claude` by default; `WORKER_MODEL` is an optional model override for that path. When the optional review gate is enabled, review uses `REVIEW_WORKER_AGENT=codex` and `REVIEW_MODEL` independently. An empty model leaves selection to the driver's current default. Built-ins: `claude`, `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
+Worker selection now goes through a thin **driver layer** — no fork needed. Ordinary work uses `WORKER_AGENT=claude` by default; `WORKER_MODEL` is an optional model override for that path. When the optional review gate is enabled, review uses `REVIEW_WORKER_AGENT=codex` and `REVIEW_MODEL` independently. An empty model leaves selection to the driver's current default. Built-ins: `claude`, `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/cavil-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
 
@@ -808,9 +855,9 @@ backoff is visible:
 Checks, in order:
 
 ```bash
-cat ~/.local/state/coding-agent-poll/<key>/poll-pace.json    # which tier, since when
-grep -c 'poll start' ~/.local/state/coding-agent-poll/<key>/poll.log   # real polls so far
-rm ~/.local/state/coding-agent-poll/<key>/poll-pace.json     # back to full speed, right now
+cat ~/.local/state/cavil-loop/<key>/poll-pace.json    # which tier, since when
+grep -c 'poll start' ~/.local/state/cavil-loop/<key>/poll.log   # real polls so far
+rm ~/.local/state/cavil-loop/<key>/poll-pace.json     # back to full speed, right now
 ```
 
 Deleting that file is always safe — it only holds pacing, never the "which
@@ -828,32 +875,32 @@ down; carry on below.
 **Linux (systemd)**:
 
 ```bash
-systemctl --user status coding-agent-poll@<key>.timer
-systemctl --user status coding-agent-poll@<key>.service
-journalctl --user -u coding-agent-poll@<key>.service --since "10 min ago"
+systemctl --user status cavil-loop-poll@<key>.timer
+systemctl --user status cavil-loop-poll@<key>.service
+journalctl --user -u cavil-loop-poll@<key>.service --since "10 min ago"
 ```
 
 **macOS (launchd)**:
 
 ```bash
-launchctl print "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"
-tail -50 ~/Library/Logs/coding-agent-work-loop/<key>.err.log
-tail -50 ~/Library/Logs/coding-agent-work-loop/<key>.out.log
+launchctl print "gui/$UID/dev.luosky.cavil-loop.<key>"
+tail -50 ~/Library/Logs/cavil-loop/<key>.err.log
+tail -50 ~/Library/Logs/cavil-loop/<key>.out.log
 ```
 
 Common causes (both OS):
-- `~/.config/coding-agent-work-loop/<key>.conf` has a bad path → edit the conf
-- `coding-agent.config` is missing fields → check `poll.log`
+- `~/.config/cavil-loop/<key>.conf` has a bad path → edit the conf
+- `cavil-loop.config` is missing fields → check `poll.log`
 - `gh auth` not logged in → `gh auth status`
-- `claude` isn't in the scheduler's `PATH` → in `~/.config/coding-agent-work-loop/<key>.conf` add the `which claude` dir to `PATH=`
+- `claude` isn't in the scheduler's `PATH` → in `~/.config/cavil-loop/<key>.conf` add the `which claude` dir to `PATH=`
 
 macOS-specific:
-- "Bootstrap failed: 5: Input/output error" → previous load is still around. `launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"`, then re-run setup.
+- "Bootstrap failed: 5: Input/output error" → previous load is still around. `launchctl bootout "gui/$UID/dev.luosky.cavil-loop.<key>"`, then re-run setup.
 - `flock: command not found` in `<key>.err.log` → `brew install flock`.
 
 ### Worker session stuck on permission prompt
 
-Make sure `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"` is set in `coding-agent.config`. Strongly recommended in trusted local environments.
+Make sure `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"` is set in `cavil-loop.config`. Strongly recommended in trusted local environments.
 
 ### Every project's poll.log stops at the same minute
 
@@ -864,7 +911,7 @@ Confirm the fingerprint first (cheap, no root):
 
 ```bash
 for k in <key1> <key2> …; do
-  echo "--- $k"; tail -1 ~/.local/state/coding-agent-poll/$k/poll.log
+  echo "--- $k"; tail -1 ~/.local/state/cavil-loop/$k/poll.log
 done
 systemctl show user@$(id -u).service -p ActiveEnterTimestamp   # a recent timestamp on a
                                                               # long-uptime box = it restarted
@@ -920,7 +967,7 @@ ExecStart=/bin/sh -c 'systemctl is-active --quiet user@<uid>.service || systemct
 With oomd disarmed, the backstop is the worker slice's own `MemoryMax=`: exceeding it is a
 kernel cgroup OOM that can only pick a process *inside* that slice, so the victim is always
 a worker and self-heal re-dispatches it on the next poll. See the comments in
-`systemd/app-coding\x2dagent\x2dpoll.slice` for the memory arithmetic.
+`systemd/app-cavil\x2dloop\x2dpoll.slice` for the memory arithmetic.
 
 ### Every dispatch dies within seconds, self-heal never recovers
 
@@ -943,7 +990,7 @@ Normally the tmux server is long-lived and lives in *some other* cgroup (started
 interactive login), so `tmux new-session` just attaches and leaves nothing behind in the
 poll unit's cgroup. Once the server dies — typically because systemd-oomd killed the whole
 `user@<uid>.service` cgroup — the next `tmux new-session` **starts the server itself**, and
-it lands inside `coding-agent-poll@<i>.service`. With `Type=oneshot`, systemd's default
+it lands inside `cavil-loop-poll@<i>.service`. With `Type=oneshot`, systemd's default
 `KillMode=control-group` then SIGTERMs everything left in that cgroup the moment the poll
 script exits, taking the brand-new server and its worker session with it.
 
@@ -953,7 +1000,7 @@ out, and the issue gets dumped to `pending/human` under a bogus "session corrupt
 The unit ships with `KillMode=process` to prevent this. Verify it survived your local edits:
 
 ```bash
-systemctl --user show coding-agent-poll@<instance>.service -p KillMode   # want: process
+systemctl --user show cavil-loop-poll@<instance>.service -p KillMode   # want: process
 ```
 
 Reproduce the failure (and confirm the fix) without touching the daemon:
@@ -1047,9 +1094,9 @@ it a fresh set of attempts. To clear one by hand:
 ### Debug a single poll
 
 ```bash
-CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
-    bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh
-tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
+CODING_AGENT_CONFIG=~/myproject/cavil-loop.config \
+    bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh
+tail -50 ~/.local/state/cavil-loop/myproject/poll.log
 ```
 
 ### Browse live worker sessions
@@ -1070,13 +1117,13 @@ without `@desc` keep the normal tmux display.
 Once a tmux session exits, the pane's scrollback is gone. This project uses `tmux pipe-pane` to mirror each worker session's output to disk:
 
 ```bash
-# Path (default; tunable via SESSION_LOG_DIR in coding-agent.config)
+# Path (default; tunable via SESSION_LOG_DIR in cavil-loop.config)
 $STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log
 
 # Shortcut
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42        # print path
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -c     # cat
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -f     # tail -F
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42        # print path
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -c     # cat
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -f     # tail -F
 ```
 
 Append-only; re-spawning the session for the same issue extends the same file. Each spawn writes a `===== <iso-date> session=... opened =====` separator line.
@@ -1088,14 +1135,14 @@ If you want Claude itself to resume the conversation (not just inspect history),
 **Linux**:
 
 ```bash
-systemctl --user stop coding-agent-poll@<key>.timer
+systemctl --user stop cavil-loop-poll@<key>.timer
 tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -r -n1 tmux kill-session -t
 ```
 
 **macOS**:
 
 ```bash
-launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"
+launchctl bootout "gui/$UID/dev.luosky.cavil-loop.<key>"
 tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-session -t
 ```
 
@@ -1105,29 +1152,29 @@ tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-sessi
 
 ```bash
 KEY=<key>
-systemctl --user disable --now coding-agent-poll@$KEY.timer
-rm ~/.config/coding-agent-work-loop/$KEY.conf
-# optional: rm <host>/coding-agent.config (or keep it for re-deploy later)
-# optional: rm -r ~/.local/state/coding-agent-poll/<project>
+systemctl --user disable --now cavil-loop-poll@$KEY.timer
+rm ~/.config/cavil-loop/$KEY.conf
+# optional: rm <host>/cavil-loop.config (or keep it for re-deploy later)
+# optional: rm -r ~/.local/state/cavil-loop/<project>
 ```
 
 **macOS**:
 
 ```bash
 KEY=<key>
-launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.$KEY"
-rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.$KEY.plist
-rm ~/.config/coding-agent-work-loop/$KEY.conf
-# optional: rm <host>/coding-agent.config
-# optional: rm -r ~/.local/state/coding-agent-poll/<project>
-# optional: rm ~/Library/Logs/coding-agent-work-loop/$KEY.*.log
+launchctl bootout "gui/$UID/dev.luosky.cavil-loop.$KEY"
+rm ~/Library/LaunchAgents/dev.luosky.cavil-loop.$KEY.plist
+rm ~/.config/cavil-loop/$KEY.conf
+# optional: rm <host>/cavil-loop.config
+# optional: rm -r ~/.local/state/cavil-loop/<project>
+# optional: rm ~/Library/Logs/cavil-loop/$KEY.*.log
 ```
 
 ## Post-merge retrospectives
 
 `POST_MERGE_RETROSPECTIVE=true` starts an independent background queue. First run records activation time; later scans paginate updated closed PRs and enqueue only new merges. Closed-unmerged PRs are excluded. Cleanup need not be enabled.
 
-The collector reads associated issues, conversation comments, reviews and inline comments with pagination. Claude (`RETROSPECTIVE_MODEL=sonnet`) receives evidence without tools or MCP access. A fixed publisher commits only `docs/retrospectives/pr-N.md` and `.agents/skills/coding-agent-work-loop/prompts/lessons.md` to the **source project's** `origin/$BASE_BRANCH` (`main` by default), using an isolated worktree and fast-forward-only push. Project lessons are loaded from that project's remote ref into its prompts, before project extras.
+The collector reads associated issues, conversation comments, reviews and inline comments with pagination. Claude (`RETROSPECTIVE_MODEL=sonnet`) receives evidence without tools or MCP access. A fixed publisher commits only `docs/retrospectives/pr-N.md` and `.agents/skills/cavil-loop/prompts/lessons.md` to the **source project's** `origin/$BASE_BRANCH` (`main` by default), using an isolated worktree and fast-forward-only push. Project lessons are loaded from that project's remote ref into its prompts, before project extras.
 
 The public cavil repository only holds independently reviewed, project-neutral workflow rules in `prompts/lessons.md`. The automatic publisher never writes generated project content, identifiers, links or reports there. Generalization candidates stay in the project report until separately reviewed for public suitability. Report evidence remains in the source project and local state directory.
 

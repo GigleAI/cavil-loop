@@ -72,7 +72,10 @@
 # 算（见 scripts/weekly-report/worktime.py）。
 set -uo pipefail
 
-DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$HOME/.config/coding-agent-work-loop/deploy.conf}"
+# 新旧名字（~/.config/cavil-loop 与改名前的 coding-agent-work-loop）经 _names.sh 挑
+# shellcheck source=../../_names.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../_names.sh"
+DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$(cavil_deploy_conf)}"
 [ ! -f "$DEPLOY_CONF" ] || { set -a; . "$DEPLOY_CONF"; set +a; }
 DEPLOY_ROOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}"
 if [ -f "$DEPLOY_ROOT/.deploy.lock" ]; then exec {GLOBAL_FD}<>"$DEPLOY_ROOT/.deploy.lock"; flock -s "$GLOBAL_FD"; fi

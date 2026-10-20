@@ -54,7 +54,7 @@ Two complementary trails — **tmux pane log** for raw terminal output, **Claude
 
 ```bash
 # Tmux pane log (human-readable, chronological)
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh <N> -c
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh <N> -c
 
 # Claude raw conversation jsonl (indexed by cwd)
 ls ~/.claude/projects/<encoded-cwd>/
@@ -118,7 +118,7 @@ jq . ~/.claude/projects/<encoded-cwd>/*.jsonl
 Want to turn it off (post-merge leaves everything in place, fully manual):
 
 ```bash
-# coding-agent.config
+# cavil-loop.config
 AUTO_CLEANUP_ON_MERGE="false"
 ```
 

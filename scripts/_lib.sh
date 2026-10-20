@@ -6,7 +6,8 @@
 #
 # 配置查找顺序：
 #   1. $CODING_AGENT_CONFIG 环境变量（systemd 用 EnvironmentFile 注入）
-#   2. 当前 cwd 向上找 coding-agent.config
+#   2. 当前 cwd 向上找 cavil-loop.config（改名前装的项目叫 coding-agent.config，同样认；
+#      同一层两个都在时新名优先，见 _names.sh）
 #   3. 找不到 → fail
 set -euo pipefail
 
@@ -20,7 +21,7 @@ set -euo pipefail
 # 都只能打印「上一轮还没跑完，跳过」——daemon 彻底停摆，且没有任何报错。
 #
 # 以前 systemd 的 KillMode=control-group 顺手杀光残留进程，掩盖了这个问题；改成
-# process 让 tmux server 得以存活之后（见 systemd/coding-agent-poll@.service），
+# process 让 tmux server 得以存活之后（见 systemd/cavil-loop-poll@.service），
 # 这条继承链就必须显式切断。
 #
 # 放在这里是因为：agent-poll.sh 是**先 source 本文件、后 exec 9>** 的，所以对 poll
@@ -44,15 +45,20 @@ exec 9>&- 2>/dev/null || true
 PATH="$HOME/.hermes/node/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export PATH
 
+# 新旧两套名字的对照表：下面找配置、找项目覆盖目录、找预览单元都从这里取。
+# shellcheck source=_names.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
         echo "$CODING_AGENT_CONFIG"
         return
     fi
-    local d="$PWD"
+    local d="$PWD" c
     while [ "$d" != "/" ]; do
-        if [ -f "$d/coding-agent.config" ]; then
-            echo "$d/coding-agent.config"
+        c="$(cavil_project_config "$d")"
+        if [ -f "$c" ]; then
+            echo "$c"
             return
         fi
         d="$(dirname "$d")"
@@ -62,8 +68,8 @@ find_config() {
 
 CONFIG_FILE="$(find_config)"
 if [ -z "$CONFIG_FILE" ]; then
-    echo "[coding-agent] ERROR: 找不到 coding-agent.config" >&2
-    echo "  1) 在 host project 根放一份（参考 \$CLAUDE_PLUGIN_ROOT/coding-agent.config.example）" >&2
+    echo "[cavil-loop] ERROR: 找不到 cavil-loop.config（改名前的项目叫 coding-agent.config）" >&2
+    echo "  1) 在 host project 根放一份（参考 \$CLAUDE_PLUGIN_ROOT/cavil-loop.config.example）" >&2
     echo "  2) 或 export CODING_AGENT_CONFIG=/path/to/config" >&2
     exit 2
 fi
@@ -551,7 +557,7 @@ LOG_FILE="$STATE_DIR/poll.log"
 
 # Pane log 目录：tmux pipe-pane 把 worker session 的输出旁路到文件，
 # 这样 tmux session 退出后还能 cat / less 回看历史。
-# 默认 $STATE_DIR/sessions。在 coding-agent.config 里显式置空 (SESSION_LOG_DIR="") 即可关闭。
+# 默认 $STATE_DIR/sessions。在 cavil-loop.config 里显式置空 (SESSION_LOG_DIR="") 即可关闭。
 SESSION_LOG_DIR="${SESSION_LOG_DIR-$STATE_DIR/sessions}"
 
 # Skill 目录（scripts/ 的父目录）。Claude Code 注入 $CLAUDE_PLUGIN_ROOT 时优先它。
@@ -780,7 +786,7 @@ pace_num() {
 for _pv in POLL_INTERVAL_SECS:60 POLL_FORCE_SYNC_SECS:1800 POLL_FAIL_BACKOFF_MAX_SECS:1800 POLL_DUE_SLACK_SECS:10; do
     _pk="${_pv%%:*}"; _pd="${_pv##*:}"
     if ! pace_num "${!_pk}" 9 >/dev/null; then
-        echo "[coding-agent] ⚠️ $_pk='${!_pk}' 不是合理的非负整数秒数，回退到默认 $_pd" >&2
+        echo "[cavil-loop] ⚠️ $_pk='${!_pk}' 不是合理的非负整数秒数，回退到默认 $_pd" >&2
         printf -v "$_pk" '%s' "$_pd"
     fi
 done
@@ -1572,8 +1578,8 @@ require_secret_env() {
             continue
         fi
         if ! secret_env_file "$var" >/dev/null; then
-            echo "[coding-agent] ERROR: $var 在 WORKER_SECRET_ENV 里但当前 env 没设 —— 拒绝派工。" >&2
-            echo "[coding-agent]        systemd 路径检查 EnvironmentFile；手动跑请先 export $var=..." >&2
+            echo "[cavil-loop] ERROR: $var 在 WORKER_SECRET_ENV 里但当前 env 没设 —— 拒绝派工。" >&2
+            echo "[cavil-loop]        systemd 路径检查 EnvironmentFile；手动跑请先 export $var=..." >&2
             missing=1
         fi
     done < <(_secret_vars)
@@ -1624,7 +1630,7 @@ tmux_env_args() {
                 if _sf=$(secret_env_file "$var"); then
                     printf -- '-e\0%s_FILE=%s\0' "$var" "$_sf"
                 else
-                    echo "[coding-agent] WARN: WORKER_SECRET_ENV 含 '$var' 但当前 env 没设；worker 不会拿到它。" >&2
+                    echo "[cavil-loop] WARN: WORKER_SECRET_ENV 含 '$var' 但当前 env 没设；worker 不会拿到它。" >&2
                 fi
                 continue
                 ;;
@@ -1634,8 +1640,8 @@ tmux_env_args() {
         elif [ "$var" != "PATH" ]; then
             # PATH 当前 shell 一定有，不可能空；其他 var 空就 warn
             # 写 stderr，agent-poll.sh 的 log 会捕获到
-            echo "[coding-agent] WARN: WORKER_PASS_ENV 含 '$var' 但当前 env 没设；worker 不会拿到它。" >&2
-            echo "[coding-agent]       手动跑 daemon 请先 export $var=...（systemd 路径自动从 EnvironmentFile 注入）" >&2
+            echo "[cavil-loop] WARN: WORKER_PASS_ENV 含 '$var' 但当前 env 没设；worker 不会拿到它。" >&2
+            echo "[cavil-loop]       手动跑 daemon 请先 export $var=...（systemd 路径自动从 EnvironmentFile 注入）" >&2
         fi
     done
 }
@@ -1677,7 +1683,15 @@ branch_name() {
 # 读登记 → 比对 → 动手（写 conf / systemd / tailscale / 删 conf）必须在同一把端口锁里，
 # 注册和注销共用这把锁，否则两个 issue 并发注册时都会「检查时没人」、后写的赢。
 # 没登记的遗留路由不自动拆：端口可能已被别的服务复用，按公式拆就是误伤别人。
-PREVIEW_CONF_DIR="$HOME/.config/coding-agent-work-loop/preview"
+#
+# 预览单元有新旧两套名字（cavil-loop-preview* / 改名前的 coding-agent-preview*），登记也就
+# 有新旧两个目录。**每个端口跟着它自己的登记走**（规则见 _names.sh）：查主人、注销、列清单
+# 两个目录都看；只有全新注册才按本机装了哪套单元挑。端口锁新旧共用一把。
+#   PREVIEW_UNIT_PREFIX / PREVIEW_CONF_DIR：全新注册用的那套单元和它的登记目录
+#   PREVIEW_LOCK_DIR：端口锁所在目录
+PREVIEW_UNIT_PREFIX="$(cavil_preview_unit_prefix)"
+PREVIEW_CONF_DIR="$(cavil_preview_dir_of_prefix "$PREVIEW_UNIT_PREFIX")"
+PREVIEW_LOCK_DIR="$(cavil_preview_lock_dir)"
 
 preview_port() {
     local issue="$1" base="${PREVIEW_PORT_BASE:-4000}" mod="${PREVIEW_PORT_MODULO:-}"
@@ -1692,20 +1706,35 @@ preview_port() {
 # 等不到锁（默认 30s）就 exit 4，不硬闯。
 preview_with_port_lock() {
     local port="$1"; shift
-    mkdir -p "$PREVIEW_CONF_DIR"
+    mkdir -p "$PREVIEW_LOCK_DIR"
     (
         flock -w "${PREVIEW_LOCK_TIMEOUT:-30}" 7 \
             || { echo "❌ 等 preview 端口 :$port 的锁超时（${PREVIEW_LOCK_TIMEOUT:-30}s）" >&2; exit 4; }
         "$@"
-    ) 7>"$PREVIEW_CONF_DIR/.port-$port.lock"
+    ) 7>"$PREVIEW_LOCK_DIR/.port-$port.lock"
 }
 
-# 登记的主人，格式「项目|issue|worktree」；没登记输出空。
-preview_owner_of() {
-    local conf="$PREVIEW_CONF_DIR/$1.conf"
-    [ -f "$conf" ] || return 0
-    # shellcheck disable=SC1090
-    ( source "$conf"; printf '%s|%s|%s\n' "${PREVIEW_PROJECT:-}" "${PREVIEW_ISSUE:-}" "${PREVIEW_WORKTREE:-}" )
+# 某个端口的全部登记（新目录在前），每行「登记文件<TAB>项目|issue|worktree」；没登记输出空。
+# 正常只有一行；改名过渡期的旧现场可能两个目录各有一份，调用方必须逐行看，不能只看第一行。
+preview_registrations() {
+    local d conf
+    for d in "${CAVIL_PREVIEW_DIRS[@]}"; do
+        conf="$d/$1.conf"
+        [ -f "$conf" ] || continue
+        # shellcheck disable=SC1090
+        printf '%s\t%s\n' "$conf" \
+            "$( source "$conf"; printf '%s|%s|%s' "${PREVIEW_PROJECT:-}" "${PREVIEW_ISSUE:-}" "${PREVIEW_WORKTREE:-}" )"
+    done
+}
+
+# 登记在别人名下的那个主人（任一目录里有就算）；全是自己的或没登记输出空。
+# 用法：preview_foreign_owner <port> <项目|issue|worktree>
+preview_foreign_owner() {
+    local conf owner
+    while IFS=$'\t' read -r conf owner; do
+        [ -n "$conf" ] || continue
+        [ "$owner" = "$2" ] || { printf '%s\n' "$owner"; return 0; }
+    done < <(preview_registrations "$1")
 }
 
 # 把「项目|issue|worktree」说成人话，给报错用。
@@ -1720,27 +1749,32 @@ preview_owner_human() {
 #   没登记             → 什么都不动，返回 0（幂等：清理路径上反复调不出错）
 #   主人不是调用方     → 什么都不动，返回 3
 preview_release_owned() {
-    local port="$1" want="$2|$3|$4" owner
-    owner="$(preview_owner_of "$port")"
-    if [ -z "$owner" ]; then
+    local port="$1" want="$2|$3|$4" owner regs conf prefix
+    regs="$(preview_registrations "$port")"
+    if [ -z "$regs" ]; then
         echo "preview :$port 没有登记，不动（不按公式拆未登记的路由）"
         return 0
     fi
-    if [ "$owner" != "$want" ]; then
+    owner="$(preview_foreign_owner "$port" "$want")"
+    if [ -n "$owner" ]; then
         echo "⚠️ preview :$port 登记在 $(preview_owner_human "$owner") 名下，不是 $(preview_owner_human "$want")，不动" >&2
         return 3
     fi
+    # 每份登记停它自己那套单元（旧目录的登记跑在 coding-agent-preview* 上）。
     # 停的顺序：socket 先停，掐掉新连接触发重启的可能；再停 proxy，
     # app 靠 StopWhenUnneeded 自己跟着走（显式再停一次是兜底，幂等无害）。
-    systemctl --user stop "coding-agent-preview@${port}.socket"      2>/dev/null || true
-    systemctl --user stop "coding-agent-preview@${port}.service"     2>/dev/null || true
-    systemctl --user stop "coding-agent-preview-app@${port}.service" 2>/dev/null || true
+    while IFS=$'\t' read -r conf owner; do
+        prefix="$(cavil_preview_prefix_of_dir "$(dirname "$conf")")"
+        systemctl --user stop "${prefix}-preview@${port}.socket"      2>/dev/null || true
+        systemctl --user stop "${prefix}-preview@${port}.service"     2>/dev/null || true
+        systemctl --user stop "${prefix}-preview-app@${port}.service" 2>/dev/null || true
+    done <<< "$regs"
     if command -v tailscale >/dev/null 2>&1 \
         && tailscale serve status 2>/dev/null | grep -q ":${port}\b"; then
         sudo -n tailscale serve --https="$port" off >/dev/null 2>&1 \
             || echo "  ⚠️ tailscale serve off :$port 失败（sudo -n / 权限？）——路由留着，需人工处理" >&2
     fi
-    rm -f "$PREVIEW_CONF_DIR/${port}.conf"
+    while IFS=$'\t' read -r conf owner; do rm -f "$conf"; done <<< "$regs"
     echo "preview :$port 已注销（$(preview_owner_human "$want")）"
 }
 
@@ -2253,7 +2287,7 @@ gh_label_flip() {
 # 评论失败只记日志、不挡后面的 label 翻转：说明丢了是体验问题，label 不翻会重新热循环。
 notify_bounced_to_human() {
     local num="$1" reason="$2" next="$3" body
-    body="$(printf '⚠️ **自动处理已暂停，转人工（`%s`）**\n\n**原因**：%s\n\n**怎么继续**：%s\n\n<sub>coding-agent daemon @ %s 自动留言</sub>' \
+    body="$(printf '⚠️ **自动处理已暂停，转人工（`%s`）**\n\n**原因**：%s\n\n**怎么继续**：%s\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>' \
         "$LABEL_PENDING_HUMAN" "$reason" "$next" "$(hostname -s 2>/dev/null || hostname)")"
     run_gh "转人工说明评论 (#$num)" \
         gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" || true
@@ -2399,20 +2433,19 @@ sync_project_checkout() {
 #   0. origin/<base> 上的最新版（git show 直读远端 ref，落临时文件）——主 checkout
 #      stale / 有 WIP 时也永远拿到最新版（GigleTutor-Web#516 的结构性修复）。
 #      依赖最近一次 fetch 刷新 remote-tracking ref（dispatch 前 sync_project_checkout 会 fetch）。
-#   1. 远端不可读时才看本地：<project>/.agents/skills/coding-agent-work-loop/prompts/<file>
-#   2. <project>/.agents/skills/coding-agent-workflow/prompts/<file>    ← 旧目录名（兼容；老 worktree/分支）
-#   3. <project>/.coding-agent/prompts/<file>                           ← 更老路径（兼容）
+#   1. 远端不可读时才看本地：<project>/.agents/skills/cavil-loop/prompts/<file>
+#   2. <project>/.agents/skills/coding-agent-work-loop/prompts/<file>   ← 改名前的目录名（兼容）
+#   3. <project>/.agents/skills/coding-agent-workflow/prompts/<file>    ← 更早的目录名（兼容；老 worktree/分支）
+#   4. <project>/.coding-agent/prompts/<file>                           ← 最老路径（兼容）
+# 目录顺序以 _names.sh 的 CAVIL_PROJECT_SKILL_DIRS 为准；远端和本地都按这个顺序找。
 # 找不到返回空串（不含 skill 默认——那是 base 专属的兜底，见 find_prompt_template）。
 find_project_prompt_file() {
     local file="$1" tag="$2"   # tag 只用于临时文件命名，避免 base / overlay 互相覆盖
     local base="${BASE_BRANCH:-main}"
     local remote_copy="$STATE_DIR/prompt-remote-${tag}-${file}"
-    local rels=(
-        ".agents/skills/coding-agent-work-loop/prompts/${file}"
-        ".agents/skills/coding-agent-workflow/prompts/${file}"
-        ".coding-agent/prompts/${file}"
-    )
-    local rel c
+    local rels=() rel c
+    for rel in "${CAVIL_PROJECT_SKILL_DIRS[@]}"; do rels+=("$rel/prompts/${file}"); done
+    rels+=(".coding-agent/prompts/${file}")
 
     # origin/<base> 能解析 → **它就是唯一真值**，不再看本地工作区。
     # 为什么必须这么绝对：主 checkout 常年停在别的分支上（daemon 见它 ≠ main 就不动
@@ -2535,7 +2568,7 @@ price_fetch_tick() {
     case "${PRICE_AUTO_FETCH:-1}" in 0|false|no|off) return 0 ;; esac
     local dir="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop/unpriced"
     [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] || return 0
-    # coding-agent.config 里的赋值是**不带 export 的**，子进程看不到——显式传过去，
+    # cavil-loop.config 里的赋值是**不带 export 的**，子进程看不到——显式传过去，
     # 否则部署者改的地址 / 冷却时间静默不生效。没设的不传，让脚本用自己的默认值。
     local line v envs=()
     for v in PRICE_FETCH_ANTHROPIC_URL PRICE_FETCH_OPENAI_URL PRICE_FETCH_LITELLM_URL \

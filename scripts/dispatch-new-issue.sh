@@ -27,7 +27,7 @@ WORKTREE="$(worktree_path "$ISSUE")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE")"
 WORKER_SESSION="$(worker_session_name "$ISSUE")"
 BRANCH="$(branch_name "$ISSUE")"
-PROMPT_FILE="/tmp/coding-agent-issue-$ISSUE-prompt.md"
+PROMPT_FILE="/tmp/cavil-loop-issue-$ISSUE-prompt.md"
 
 # 1. 建 worktree
 bash "$SCRIPT_DIR/create-worktree.sh" "$ISSUE" main

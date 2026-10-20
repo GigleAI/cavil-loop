@@ -2,7 +2,7 @@
 
 > [English](operations.md) · **中文**
 
-## 配置（`coding-agent.config`）
+## 配置（`cavil-loop.config`）
 
 放在 host project 根，已自动加 `.gitignore`。
 
@@ -13,7 +13,7 @@ REPO="myorg/myrepo"
 # 路径
 PROJECT_ROOT="$HOME/github/myproject"
 WORKTREE_BASE="$HOME/github/worktree/myproject"
-STATE_DIR="$HOME/.local/state/coding-agent-poll/myproject"
+STATE_DIR="$HOME/.local/state/cavil-loop/myproject"
 
 # 日志：默认 info；debug 额外记录优先级读取、greedy 跳过及 review 轮次用尽明细。
 LOG_LEVEL="info"
@@ -70,7 +70,7 @@ WORKER_PASS_ENV="GH_TOKEN"
 AUTO_CLEANUP_ON_MERGE="true"
 
 # 项目级 cleanup hook（解端口、撤 tunnel、推 metric）
-CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
+CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"
 
 # 节奏
 MAX_CONCURRENT_WORKERS=1
@@ -117,7 +117,7 @@ PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用
 # WRITE_GH_TOKEN=""              # 所有**写**用的 token；留空 = 复用 GH_TOKEN
 ```
 
-完整字段见 [`coding-agent.config.example`](../coding-agent.config.example)。
+完整字段见 [`cavil-loop.config.example`](../cavil-loop.config.example)。
 
 ## Codex token 折算参考价值
 
@@ -141,7 +141,7 @@ GPT-6 的四个型号与 GPT-5.6 的三个型号另配有官方列出的缓存�
 不要等 90 天过期提示（它来得更晚）。
 
 部署者可按完整模型 ID 设置 `CODEX_PRICES` JSON，整表替换内置表；
-[配置模板](../coding-agent.config.example)有可直接复制的版本。设
+[配置模板](../cavil-loop.config.example)有可直接复制的版本。设
 `CODEX_PRICES='{}'` 可关闭估算。未知模型或缺少单价的 token 项仍报缺价。
 旧的三个 `CODEX_PRICE_*_PER_M` 变量仍可为没有精确 `CODEX_PRICES`
 条目的模型提供统一单价兜底；有精确模型条目时，精确条目优先。
@@ -366,8 +366,9 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 | **base**（通用工作流） | `<name>.template.md` | 回落到 `<skill>/prompts/<name>.template.md` |
 | **增量**（项目特有） | `<name>.extra.md` | 没有就只用 base |
 
-两者都在项目的 `.agents/skills/coding-agent-work-loop/prompts/` 下（老路径
-`.coding-agent/prompts/` 仍兼容）。合成方式是**把增量追加在 base 之后**，中间插一句
+两者都在项目的 `.agents/skills/cavil-loop/prompts/` 下（改名前建的项目用
+`.agents/skills/coding-agent-work-loop/prompts/`，更老的 `.agents/skills/coding-agent-workflow/prompts/`
+和 `.coding-agent/prompts/` 也仍兼容；同时存在时新名优先）。合成方式是**把增量追加在 base 之后**，中间插一句
 「两者冲突时以这一段为准」——prompt 里后文天然覆盖前文，所以项目要推翻 base 的某条
 约定，在自己文件里写清「本项目改成 X」就行，不用把整份抄过来改。
 
@@ -377,7 +378,7 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 （不同的阶段划分、不同的 label 语义）时才值得整份覆写。
 
 ```
-project/.agents/skills/coding-agent-work-loop/prompts/
+project/.agents/skills/cavil-loop/prompts/
 ├── new-issue.extra.md      ← 推荐：只写本项目特有的（测试链、目录约定、验收口径…）
 └── pr-comment.template.md  ← 仅在结构上就不同时才整份覆写
 ```
@@ -403,7 +404,7 @@ project/.agents/skills/coding-agent-work-loop/prompts/
 | `${PREVIEW_URL_HOST}` | 本机对外提供 PR 预览的主机名。**别在模板里硬写主机名**——同一份模板会在所有盯这个仓库的机器上跑，写死的主机会把审阅者指到一台根本没有这些文件的机器 |
 | `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL（funnel 那个 path），取自 `WEEKLY_REPORT_ASSET_ROOT_URL`。同理：截图落在哪台机器上，URL 就得指哪台 |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | 默认的 `pending/agent`。review 模板打回时必须用它——`${LABEL_PENDING_AGENT}` 是**触发**标签，在 review 关卡里拿它打回等于打回自己，死循环 |
-| `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `coding-agent.config` 读，默认 `en`） |
+| `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `cavil-loop.config` 读，默认 `en`） |
 
 ## Cleanup hook（`CLEANUP_HOOK`）
 
@@ -441,7 +442,7 @@ worktree 删了、进程还活着，变成 cwd 显示 `(deleted)` 的孤儿，�
 - **排除自己 + 整条祖先链**，否则 hook 会把自己和 `cleanup-issue.sh` 一起杀了
 - **别碰裸 session `<prefix>-issue<N>`**，那个归 `cleanup-issue.sh`，保持分工
 
-参考实现见 tutor 项目的 `.agents/skills/coding-agent-work-loop/cleanup-hook.sh`。
+参考实现见 tutor 项目的 `.agents/skills/coding-agent-work-loop/cleanup-hook.sh`（它是改名前建的项目，目录仍是旧名）。
 
 ## 按需 preview（socket 激活）
 
@@ -456,11 +457,11 @@ worktree 删了、进程还活着，变成 cwd 显示 `(deleted)` 的孤儿，�
 ```
 tailscale serve :4791（或直接访问 127.0.0.1:4791）
         │
-coding-agent-preview@4791.socket        常驻监听，几乎不占内存
+cavil-loop-preview@4791.socket        常驻监听，几乎不占内存
         │ 首次连接触发
-coding-agent-preview@4791.service       systemd-socket-proxyd，--exit-idle-time 到点自杀
+cavil-loop-preview@4791.service       systemd-socket-proxyd，--exit-idle-time 到点自杀
         │ Requires
-coding-agent-preview-app@4791.service   你的 server，StopWhenUnneeded 跟着一起停
+cavil-loop-preview-app@4791.service   你的 server，StopWhenUnneeded 跟着一起停
 ```
 
 实测：冷启动 ~0.4s（外加 app 自身启动时间），热访问 0.01s，闲置到点后内存全部归还，
@@ -498,14 +499,14 @@ bash scripts/preview-unserve.sh --issue 791  # 注销（cleanup hook 里调）
 所以 `PREVIEW_EXEC` 指向的进程**必须从 `$PORT` / `$HOST` 读监听参数**，端口写死的 app
 接不进来。
 
-**② conf 文件的值一律带双引号。** `~/.config/coding-agent-work-loop/preview/<port>.conf`
+**② conf 文件的值一律带双引号。** `~/.config/cavil-loop/preview/<port>.conf`
 有两个读者：systemd 的 `EnvironmentFile=`（整行右侧都算 value，不加引号也对）和
 `preview-run.sh` 的 bash `source`（不加引号，`PREVIEW_EXEC=node server/index.mjs` 会被
 解析成「带临时环境变量执行 `server/index.mjs`」，exit 127）。`preview-serve.sh` 已经
 处理好了，手改 conf 的时候别踩。
 
 **③ 就绪门不能省。** `Type=exec` 只保证 execve 成功，不保证已经 `bind`。少了
-`coding-agent-preview-app@.service` 里那行 `ExecStartPost=preview-wait.sh`，proxy 会在
+`cavil-loop-preview-app@.service` 里那行 `ExecStartPost=preview-wait.sh`，proxy 会在
 node 还没听上时就转发，**首次访问稳定 502**——而且 app 慢启动 300ms 就能踩到，本地手测
 经常撞不上。
 
@@ -515,7 +516,7 @@ socket 会反复重触发，撞上 `TriggerLimitBurst` 后整个 socket 进 `fai
 激活**——URL 静默变死，而 `systemctl start` 是 no-op，看状态看不出问题。诊断和恢复：
 
 ```bash
-journalctl --user -u 'coding-agent-preview-app@4791.service' -n 50
+journalctl --user -u 'cavil-loop-preview-app@4791.service' -n 50
 bash scripts/preview-serve.sh 791     # 内含 reset-failed，改完配置重跑就能恢复
 ```
 
@@ -533,8 +534,8 @@ issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --is
 ### Skill 目录（Linux 受管布局）
 
 ```
-~/github/coding-agent-work-loop/        # 可选开发 checkout；部署器绝不修改
-~/.agents/skills/coding-agent-work-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
+~/github/cavil-loop/        # 可选开发 checkout；部署器绝不修改
+~/.agents/skills/cavil-loop -> ~/.agents/releases/cavil-loop/releases/<sha>/
 ~/.agents/releases/cavil-loop/
 ├── mirror.git/                         # 只做 fetch 的镜像
 ├── releases/<sha>/                     # 带 .inuse 租约的不可变文件树
@@ -543,18 +544,18 @@ issue close 时的注销由项目的 `CLEANUP_HOOK` 调 `preview-unserve.sh --is
 ├── .deploy.lock                        # 短暂的发布 / 选版 / 清理锁
 ├── .last-fetch                         # 共享 fetch 节流
 └── deploy-state.json                   # 落后、成功与告警状态
-~/.claude/skills/coding-agent-work-loop  -> ~/.agents/skills/coding-agent-work-loop
+~/.claude/skills/cavil-loop  -> ~/.agents/skills/cavil-loop
 ```
 
-poll、token 用量 driver 和周报都从 `entrypoints/` 里的持久启动器进入。启动器不会随旧 release 被清理：它先取得共享部署锁、解析稳定软链并拿到目标 release 的 `.inuse` 租约，之后才打开版本内脚本。清理只有取得独占租约才删除旧 release；不会使用“超过 N 小时”或“保留最近 N 个”的猜测规则。可选共享覆盖放在 `~/.config/coding-agent-work-loop/deploy.conf`，字段见 `coding-agent-deploy.conf.example`。
+poll、token 用量 driver 和周报都从 `entrypoints/` 里的持久启动器进入。启动器不会随旧 release 被清理：它先取得共享部署锁、解析稳定软链并拿到目标 release 的 `.inuse` 租约，之后才打开版本内脚本。清理只有取得独占租约才删除旧 release；不会使用“超过 N 小时”或“保留最近 N 个”的猜测规则。可选共享覆盖放在 `~/.config/cavil-loop/deploy.conf`，字段见 `cavil-loop-deploy.conf.example`。
 
 ### Host project（接入后）
 
 ```
 your-project/
-├── .gitignore                          # +1 行：coding-agent.config
-├── coding-agent.config                  # 配置（gitignored）
-├── .agents/skills/coding-agent-work-loop/  # 可选：项目自定义 prompt + cleanup-hook
+├── .gitignore                          # +1 行：cavil-loop.config
+├── cavil-loop.config                  # 配置（gitignored）
+├── .agents/skills/cavil-loop/  # 可选：项目自定义 prompt + cleanup-hook
 │   ├── prompts/
 │   └── cleanup-hook.sh
 └── ... your code ...
@@ -565,21 +566,21 @@ your-project/
 `<project-key>.conf` 是两个 OS 共享的环境变量单源真相——格式一样，只是不同调度器加载方式不一样。
 
 ```
-~/.config/coding-agent-work-loop/
+~/.config/cavil-loop/
 └── <project-key>.conf                  # KEY=VALUE env 文件；systemd 当 EnvironmentFile 读，launchd 用 `source` 内联加载
 
 # 仅 Linux
 ~/.config/systemd/user/
-├── coding-agent-poll@.service          # symlink → skill 目录的模板
-└── coding-agent-poll@.timer            # symlink → skill 目录的模板
+├── cavil-loop-poll@.service          # symlink → skill 目录的模板
+└── cavil-loop-poll@.timer            # symlink → skill 目录的模板
 
 # 仅 macOS
 ~/Library/LaunchAgents/
-└── dev.luosky.coding-agent-work-loop.<key>.plist   # 每个 project 生成一份（不是 symlink）
-~/Library/Logs/coding-agent-work-loop/
+└── dev.luosky.cavil-loop.<key>.plist   # 每个 project 生成一份（不是 symlink）
+~/Library/Logs/cavil-loop/
 └── <key>.out.log, <key>.err.log        # launchd 截获 daemon 的 stdout/stderr
 
-~/.local/state/coding-agent-poll/<project>/
+~/.local/state/cavil-loop/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
 ├── poll-pace.json                      # 空闲/故障退避状态；`rm` 掉 = 立刻回最快档
 ├── poll.log                            # 滚动日志
@@ -594,11 +595,11 @@ your-project/
 
 | OS | 调度器 | Unit / Plist | `setup.sh` 自动装？ |
 |----|--------|--------------|---------------------|
-| Linux | `systemd --user` timer | `~/.config/systemd/user/coding-agent-poll@<key>.{service,timer}`（symlink 到 skill 模板）+ `coding-agent-poll@<key>.timer.d/interval.conf`（按 `POLL_INTERVAL_SECS` 生成）| ✅ |
-| macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist`（生成，非 symlink）| ✅ |
+| Linux | `systemd --user` timer | `~/.config/systemd/user/cavil-loop-poll@<key>.{service,timer}`（symlink 到 skill 模板）+ `cavil-loop-poll@<key>.timer.d/interval.conf`（按 `POLL_INTERVAL_SECS` 生成）| ✅ |
+| macOS | `launchd` LaunchAgent | `~/Library/LaunchAgents/dev.luosky.cavil-loop.<key>.plist`（生成，非 symlink）| ✅ |
 | 其他 | — | — | ❌ `exit 1`；见下方 [手动 cron 兜底](#手动-cron-兜底) |
 
-两条路径都读同一份 `~/.config/coding-agent-work-loop/<key>.conf`。Linux 在持久 poll 入口前执行 `skill-deploy.sh`；网络 fetch 使用单独的非阻塞锁和超时，只有发布与清理才短暂持有部署锁，所以慢 fetch 不会挡住当前 release 的消费者，失败尝试也会进入共享节流。macOS 运行钉版本入口但不自动部署，plist 模板有改动要重跑 `setup.sh`。
+两条路径都读同一份 `~/.config/cavil-loop/<key>.conf`。Linux 在持久 poll 入口前执行 `skill-deploy.sh`；网络 fetch 使用单独的非阻塞锁和超时，只有发布与清理才短暂持有部署锁，所以慢 fetch 不会挡住当前 release 的消费者，失败尝试也会进入共享节流。macOS 运行钉版本入口但不自动部署，plist 模板有改动要重跑 `setup.sh`。
 
 tick 频率只是「最多多久打一次 GitHub」的上限：一整天没人碰的项目会在 `agent-poll.sh`
 内部决定跳过大部分 tick（见[空闲与故障退避](architecture.zh.md#轮询节奏空闲退避与故障退避)）。
@@ -610,10 +611,10 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 
 ### macOS 专属
 
-- **Label**：`dev.luosky.coding-agent-work-loop.<key>`（必须和 plist 文件名一致）
+- **Label**：`dev.luosky.cavil-loop.<key>`（必须和 plist 文件名一致）
 - **加载方式**：`launchctl bootstrap gui/$UID <plist>`（modern 语法，macOS 10.10+）。`setup.sh` 会先 `bootout` 再 bootstrap，重跑幂等。
 - **运行频率**：`StartInterval` 取自 `POLL_INTERVAL_SECS`（等价 systemd `OnUnitActiveSec`）。plist 是生成的不是 symlink，改了要重跑 `setup.sh`。
-- **日志**：stdout/stderr → `~/Library/Logs/coding-agent-work-loop/<key>.{out,err}.log`。更深的 poll 日志仍在 `$STATE_DIR/poll.log`。
+- **日志**：stdout/stderr → `~/Library/Logs/cavil-loop/<key>.{out,err}.log`。更深的 poll 日志仍在 `$STATE_DIR/poll.log`。
 - **flock**：macOS 不自带，先 `brew install flock` 再跑 `setup.sh`。
 - **登出 / 合盖**：user LaunchAgent 登录后常驻（即使锁屏也跑）；想"无登录、开机即跑"要装到 `/Library/LaunchDaemons/` —— `setup.sh` 故意不进这里（要 `sudo`，且和 Linux `--user` systemd 对称）。
 
@@ -622,26 +623,26 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 skill 装一次，调度器模板装一次。每个 project 跑：
 
 ```bash
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectA
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/github/projectB
+bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectA
+bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectB
 ```
 
 得到：
 
 ```
-~/.config/coding-agent-work-loop/
+~/.config/cavil-loop/
 ├── projectA.conf
 └── projectB.conf
 
 # Linux
 systemctl --user list-timers
-  coding-agent-poll@projectA.timer
-  coding-agent-poll@projectB.timer
+  cavil-loop-poll@projectA.timer
+  cavil-loop-poll@projectB.timer
 
 # macOS
-launchctl list | grep dev.luosky.coding-agent-work-loop
-  dev.luosky.coding-agent-work-loop.projectA
-  dev.luosky.coding-agent-work-loop.projectB
+launchctl list | grep dev.luosky.cavil-loop
+  dev.luosky.cavil-loop.projectA
+  dev.luosky.cavil-loop.projectB
 ```
 
 互不干扰、独立日志、独立 state。
@@ -651,31 +652,67 @@ launchctl list | grep dev.luosky.coding-agent-work-loop
 受管 **Linux** 每轮 poll 在明确的网络超时内 fetch 配置的 base 分支，完整解包不可变文件树后再原子替换稳定软链；断网、锁竞争或 fetch 失败都保留当前 release，fetch 进行时消费者仍可从当前 release 启动。升级是**自动**的，不需要也无法指定目标版本：跟的是 `CAVIL_DEPLOY_BRANCH`（默认 `main`）的最新 commit，与 GitHub Release / tag 无关，release 只是该 commit 的不可变快照 `releases/<sha>/`。全机共用 `CAVIL_DEPLOY_FETCH_INTERVAL`（默认 300 秒）的 fetch 节流，因此合入 base 分支后最迟约一个节流周期加一次 tick 生效。切换只影响之后启动的进程：已在运行的消费者持 `.inuse` 共享租约，继续跑自己那个 SHA。旧式 checkout 安装只通过显式动作迁移：
 
 ```bash
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+bash ~/.agents/skills/cavil-loop/setup.sh <host>
 # 或在旧 checkout 中：
 bash scripts/skill-deploy.sh --bootstrap --force
 ```
 
-这样不会误接管维护者的开发软链。Linux 上单独执行 bootstrap 也会把已安装的 systemd 模板软链改指稳定受管 skill，并 reload user manager；它不会安装原本不存在的 unit，新装调度器仍应使用 `setup.sh`。稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。开发模式仍会从该 checkout 安装持久的 `entrypoints/`，因为调度器 unit 一律经由它启动。单独的 `3114f64` 没有这一步：恰好 pull 到该 commit 的 checkout 式安装会让 poller 每轮以 127 退出（`poll-entry.sh: No such file or directory`，只出现在 `journalctl --user -u coding-agent-poll@<key>`，`poll.log` 里没有）；pull 到最新 commit 或执行 bootstrap 即可恢复。**回退目前没有持久做法**：部署成功后会立即清理所有没有活跃租约的旧 release，通常不留可回退的目标；即使某个旧 release 因仍有租约而暂时保留，手工把软链指回去也只维持到下一轮部署——部署器不比较新旧，只把软链对齐 base 分支 tip，因而会再次切到最新 commit。需要持续停在某个版本时，用开发模式脱管，或把 `CAVIL_DEPLOY_BRANCH` 指向一个停在该 commit 的分支。
+这样不会误接管维护者的开发软链。Linux 上单独执行 bootstrap 也会把已安装的 systemd 模板软链改指稳定受管 skill，并 reload user manager；它不会安装原本不存在的 unit，新装调度器仍应使用 `setup.sh`。稳定路径原本是实体目录时，会保留为带时间戳的 `.pre-managed.*` 备份。开发模式把稳定软链原子指向 `releases/` 外，日常部署会拒绝接管，直到再次显式 bootstrap。开发模式仍会从该 checkout 安装持久的 `entrypoints/`，因为调度器 unit 一律经由它启动。单独的 `3114f64` 没有这一步：恰好 pull 到该 commit 的 checkout 式安装会让 poller 每轮以 127 退出（`poll-entry.sh: No such file or directory`，只出现在 `journalctl --user -u coding-agent-poll@<key>`（那是改名前的安装），`poll.log` 里没有）；pull 到最新 commit 或执行 bootstrap 即可恢复。**回退目前没有持久做法**：部署成功后会立即清理所有没有活跃租约的旧 release，通常不留可回退的目标；即使某个旧 release 因仍有租约而暂时保留，手工把软链指回去也只维持到下一轮部署——部署器不比较新旧，只把软链对齐 base 分支 tip，因而会再次切到最新 commit。需要持续停在某个版本时，用开发模式脱管，或把 `CAVIL_DEPLOY_BRANCH` 指向一个停在该 commit 的分支。
 
 | 变更 | 部署行为 |
 |---|---|
 | scripts、数据、prompt | 随稳定软链切换生效 |
 | systemd `.service` / `.timer` | 自动执行 `systemctl --user daemon-reload` |
-| systemd `.socket` / `.slice` | 不自动应用；开一条带人工步骤的告警 |
-| launchd plist 模板 | 不自动应用；要求重跑 `setup.sh` |
+| systemd `.socket` / `.slice` 改了或删了 | 不自动应用；开一条带人工步骤的告警 |
+| **新增** systemd 单元文件 | 不用处理——还没有任何机器装过它；不告警 |
+| launchd plist 模板内容变了 | 不自动应用；要求重跑 `setup.sh` |
+| launchd 模板新增 / 改名 / 删除 | 不用处理——已生成的 plist 不依赖模板文件；不告警 |
 
 远端被确认持续领先超过配置阈值后，部署器在指定仓库最多开一条告警，追平后自动关闭这类落后告警。需要人工处理的调度告警（`.socket`、`.slice`、launchd 或 `daemon-reload` 失败）不会被下一次无变更部署误关；维护者处理完并关闭告警 issue 后，部署器才清除该状态。
 
 **macOS** 仍手动升级。LaunchAgent plist 是 per-project、由 `setup.sh` 生成；模板变化后重跑：
 
 ```bash
-launchctl bootout gui/$UID/dev.luosky.coding-agent-work-loop.<key> || true
-rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
+launchctl bootout gui/$UID/dev.luosky.cavil-loop.<key> || true
+rm ~/Library/LaunchAgents/dev.luosky.cavil-loop.<key>.plist
+bash ~/.agents/skills/cavil-loop/setup.sh <host>
 ```
 
 只有受管 Linux 会自动取得纯脚本更新。
+
+## 改名前的安装
+
+本项目原名 `coding-agent-work-loop`。新安装一律用 `cavil-loop`；改名前装好的机器在迁移之前
+照旧用旧名字运行，不受影响（迁移由后续单独的改动负责，这里不搬任何文件）。
+
+| 东西 | 新安装 | 改名前的安装（继续认） |
+|---|---|---|
+| 技能入口 | `~/.agents/skills/cavil-loop`、`~/.claude/skills/cavil-loop` | `~/.agents/skills/coding-agent-work-loop` |
+| 调用命令 | `/cavil-loop` | `/coding-agent-work-loop`（不保留别名） |
+| 每个项目的环境文件、`deploy.conf`、预览登记 | `~/.config/cavil-loop/` | `~/.config/coding-agent-work-loop/` |
+| 状态目录 | `~/.local/state/cavil-loop/<项目>/` | `~/.local/state/coding-agent-poll/<项目>/` |
+| Linux 后台任务 | `cavil-loop-poll@` / `cavil-loop-weekly-report@` / `cavil-loop-preview*@` / `app-cavil\x2dloop\x2dpoll.slice` | `coding-agent-*` / `app-coding\x2dagent\x2dpoll.slice` |
+| macOS 后台任务 / 日志 | `dev.luosky.cavil-loop.<key>`、`~/Library/Logs/cavil-loop/` | `dev.luosky.coding-agent-work-loop.<key>`、`~/Library/Logs/coding-agent-work-loop/` |
+| 项目根目录的本地配置 | `cavil-loop.config` | `coding-agent.config` |
+| 项目仓库里的指令覆盖目录（已提交） | `.agents/skills/cavil-loop/` | `.agents/skills/coding-agent-work-loop/`、`.agents/skills/coding-agent-workflow/`、`.coding-agent/` |
+
+代码挑路径只有一条规则（`scripts/_names.sh`；`release-entry.sh` 内联了同一条）：
+**新名字的在就用新的，否则旧名字的在就用旧的，都不在按新的建。** 两个都在时新的赢。
+
+- `systemd/` 里的 `coding-agent-*` 旧单元文件**一个字节都不改**地保留：老机器上装的单元是指向
+  这些确切路径的软链；改动 `.socket` / `.slice` 还会让每台机器都开一条「需要人工处理」的告警。
+- 对 `~/.config/coding-agent-work-loop/<key>.conf` 已存在的项目重跑 `setup.sh`，会沿用它的旧名字，
+  不会在旧定时任务旁边再装一套新名字的——两个轮询会抢同一批 issue。
+- 项目里已有 `coding-agent.config` 就继续用这个文件名：项目的忽略规则写的是旧文件名，改名后的
+  文件不再被忽略，可能被 worker 顺手提交进仓库。
+- 一台机器上可能同时有新旧两个技能入口（旧项目认旧入口，新装的项目认新入口）。两者都指向
+  `releases/` 时部署器一起切换，并且不会删除其中任何一个还指着的 release。
+- 按需预览**跟着自己的登记走**，不看「这台机器装了哪套单元」：旧项目注册的预览在装上新单元
+  之后仍然留在旧单元和旧登记目录上。认主、`--list`、注销两个目录都看，任一目录里被占的端口
+  都算被占；新旧共用一把端口锁（机器上有旧单元时用旧目录那把）。单元启动时读的是它自己绑定的
+  那份登记——新单元把路径传进来，旧单元读旧目录。只有全新注册才用新单元。
+- 新旧 worker 落在不同的 slice 里，两类安装共存期间各有一份内存限额。新 slice 的名字按旧 slice
+  同一条派生规则推出，还没在真机上看过。
 
 ## 手动 cron 兜底
 
@@ -687,10 +724,10 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 **cron**（任何 Unix）：
 
 ```cron
-* * * * * CODING_AGENT_CONFIG=$HOME/myproject/coding-agent.config bash $HOME/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh >> /tmp/coding-agent-cron.log 2>&1
+* * * * * CODING_AGENT_CONFIG=$HOME/myproject/cavil-loop.config bash $HOME/.agents/skills/cavil-loop/scripts/poll-entry.sh >> /tmp/cavil-loop-cron.log 2>&1
 ```
 
-**Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
+**Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
 
 ## 升级到 webhook（即时触发）
 
@@ -703,7 +740,7 @@ bash ~/.agents/skills/coding-agent-work-loop/setup.sh <host>
 
 ## 自定义 worker（不是 Claude Code）
 
-Worker 切换走一层薄的 **driver 抽象**，不需要 fork。普通任务默认使用 `WORKER_AGENT=claude`；`WORKER_MODEL` 只覆盖普通任务的模型。启用可选 review 关卡后，review 独立使用 `REVIEW_WORKER_AGENT=codex` 和 `REVIEW_MODEL`；模型留空时由对应 driver 使用自己的当前默认值。内置：`claude`、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
+Worker 切换走一层薄的 **driver 抽象**，不需要 fork。普通任务默认使用 `WORKER_AGENT=claude`；`WORKER_MODEL` 只覆盖普通任务的模型。启用可选 review 关卡后，review 独立使用 `REVIEW_WORKER_AGENT=codex` 和 `REVIEW_MODEL`；模型留空时由对应 driver 使用自己的当前默认值。内置：`claude`、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/cavil-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
 
@@ -720,9 +757,9 @@ tick 仍然写一行，写明现在在哪一档、还要等多久 —— 所以�
 按顺序查：
 
 ```bash
-cat ~/.local/state/coding-agent-poll/<key>/poll-pace.json    # 现在哪一档、从什么时候开始安静
-grep -c 'poll start' ~/.local/state/coding-agent-poll/<key>/poll.log   # 到目前为止真跑了几轮
-rm ~/.local/state/coding-agent-poll/<key>/poll-pace.json     # 立刻回最快档
+cat ~/.local/state/cavil-loop/<key>/poll-pace.json    # 现在哪一档、从什么时候开始安静
+grep -c 'poll start' ~/.local/state/cavil-loop/<key>/poll.log   # 到目前为止真跑了几轮
+rm ~/.local/state/cavil-loop/<key>/poll-pace.json     # 立刻回最快档
 ```
 
 删这个文件永远是安全的：它只存节奏，不存「哪些评论看过了」那些游标（那些在
@@ -737,32 +774,32 @@ rm ~/.local/state/coding-agent-poll/<key>/poll-pace.json     # 立刻回最快�
 **Linux（systemd）**：
 
 ```bash
-systemctl --user status coding-agent-poll@<key>.timer
-systemctl --user status coding-agent-poll@<key>.service
-journalctl --user -u coding-agent-poll@<key>.service --since "10 min ago"
+systemctl --user status cavil-loop-poll@<key>.timer
+systemctl --user status cavil-loop-poll@<key>.service
+journalctl --user -u cavil-loop-poll@<key>.service --since "10 min ago"
 ```
 
 **macOS（launchd）**：
 
 ```bash
-launchctl print "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"
-tail -50 ~/Library/Logs/coding-agent-work-loop/<key>.err.log
-tail -50 ~/Library/Logs/coding-agent-work-loop/<key>.out.log
+launchctl print "gui/$UID/dev.luosky.cavil-loop.<key>"
+tail -50 ~/Library/Logs/cavil-loop/<key>.err.log
+tail -50 ~/Library/Logs/cavil-loop/<key>.out.log
 ```
 
 通用原因：
-- `~/.config/coding-agent-work-loop/<key>.conf` 路径不对 → 编辑 conf
-- `coding-agent.config` 缺字段 → 看 `poll.log`
+- `~/.config/cavil-loop/<key>.conf` 路径不对 → 编辑 conf
+- `cavil-loop.config` 缺字段 → 看 `poll.log`
 - `gh auth` 没登录 → `gh auth status`
-- `claude` 不在调度器 `PATH` 里 → `~/.config/coding-agent-work-loop/<key>.conf` 里 `PATH=` 加上 `which claude` 的目录
+- `claude` 不在调度器 `PATH` 里 → `~/.config/cavil-loop/<key>.conf` 里 `PATH=` 加上 `which claude` 的目录
 
 macOS 专属：
-- "Bootstrap failed: 5: Input/output error" → 之前的 load 还在。`launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"` 后重跑 setup。
+- "Bootstrap failed: 5: Input/output error" → 之前的 load 还在。`launchctl bootout "gui/$UID/dev.luosky.cavil-loop.<key>"` 后重跑 setup。
 - `<key>.err.log` 报 `flock: command not found` → `brew install flock`。
 
 ### Worker session 卡在权限弹窗
 
-确认 `coding-agent.config` 里 `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"`。本机受信任环境下强烈推荐。
+确认 `cavil-loop.config` 里 `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"`。本机受信任环境下强烈推荐。
 
 ### Daemon 不停 re-dispatch 同一 PR
 
@@ -805,9 +842,9 @@ git worktree remove <占用者目录>   # 腾出分支，然后重新标 pending
 ### 调试一次 poll
 
 ```bash
-CODING_AGENT_CONFIG=~/myproject/coding-agent.config \
-    bash ~/.agents/skills/coding-agent-work-loop/scripts/poll-entry.sh
-tail -50 ~/.local/state/coding-agent-poll/myproject/poll.log
+CODING_AGENT_CONFIG=~/myproject/cavil-loop.config \
+    bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh
+tail -50 ~/.local/state/cavil-loop/myproject/poll.log
 ```
 
 ### 浏览存活的 worker session
@@ -831,9 +868,9 @@ tmux session 一旦 exit，原 pane 的 scrollback 就消失了。本项目用 `
 $STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log
 
 # 快捷查日志
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42        # 打印路径
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -c     # cat
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -f     # tail -F 跟随
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42        # 打印路径
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -c     # cat
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -f     # tail -F 跟随
 ```
 
 日志是 append-only，同一 issue 重起 session 会续写到同一份；每次启动会插一行 `===== <iso-date> session=... opened =====` 当分隔符。
@@ -845,14 +882,14 @@ bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh 42 -f     # 
 **Linux**：
 
 ```bash
-systemctl --user stop coding-agent-poll@<key>.timer
+systemctl --user stop cavil-loop-poll@<key>.timer
 tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -r -n1 tmux kill-session -t
 ```
 
 **macOS**：
 
 ```bash
-launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.<key>"
+launchctl bootout "gui/$UID/dev.luosky.cavil-loop.<key>"
 tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-session -t
 ```
 
@@ -862,29 +899,29 @@ tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-sessi
 
 ```bash
 KEY=<key>
-systemctl --user disable --now coding-agent-poll@$KEY.timer
-rm ~/.config/coding-agent-work-loop/$KEY.conf
-# 可选：rm <host>/coding-agent.config（也可保留供下次接入）
-# 可选：rm -r ~/.local/state/coding-agent-poll/<project>
+systemctl --user disable --now cavil-loop-poll@$KEY.timer
+rm ~/.config/cavil-loop/$KEY.conf
+# 可选：rm <host>/cavil-loop.config（也可保留供下次接入）
+# 可选：rm -r ~/.local/state/cavil-loop/<project>
 ```
 
 **macOS**：
 
 ```bash
 KEY=<key>
-launchctl bootout "gui/$UID/dev.luosky.coding-agent-work-loop.$KEY"
-rm ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.$KEY.plist
-rm ~/.config/coding-agent-work-loop/$KEY.conf
-# 可选：rm <host>/coding-agent.config
-# 可选：rm -r ~/.local/state/coding-agent-poll/<project>
-# 可选：rm ~/Library/Logs/coding-agent-work-loop/$KEY.*.log
+launchctl bootout "gui/$UID/dev.luosky.cavil-loop.$KEY"
+rm ~/Library/LaunchAgents/dev.luosky.cavil-loop.$KEY.plist
+rm ~/.config/cavil-loop/$KEY.conf
+# 可选：rm <host>/cavil-loop.config
+# 可选：rm -r ~/.local/state/cavil-loop/<project>
+# 可选：rm ~/Library/Logs/cavil-loop/$KEY.*.log
 ```
 
 ## 合并后的对话复盘
 
 `POST_MERGE_RETROSPECTIVE=true` 启用独立后台队列。首次运行记录启用时间，后续分页扫描更新过的 closed PR，只处理新合并项，不补跑历史、不处理未合并关闭项，也不依赖自动 cleanup。
 
-分页采集关联 issue、普通评论、review、行内评论。Claude（`RETROSPECTIVE_MODEL=sonnet`）没有工具或 MCP 权限。固定发布程序只提交 `docs/retrospectives/pr-N.md` 和 `.agents/skills/coding-agent-work-loop/prompts/lessons.md` 到**来源项目自己的仓库** `origin/$BASE_BRANCH`（默认 main），使用隔离 worktree、仅 fast-forward 推送。项目经验从该项目远端读取，只加载进该项目的 prompt，位于项目增量要求之前。
+分页采集关联 issue、普通评论、review、行内评论。Claude（`RETROSPECTIVE_MODEL=sonnet`）没有工具或 MCP 权限。固定发布程序只提交 `docs/retrospectives/pr-N.md` 和 `.agents/skills/cavil-loop/prompts/lessons.md` 到**来源项目自己的仓库** `origin/$BASE_BRANCH`（默认 main），使用隔离 worktree、仅 fast-forward 推送。项目经验从该项目远端读取，只加载进该项目的 prompt，位于项目增量要求之前。
 
 公开 cavil 仓库的 `prompts/lessons.md` 只保留经过独立审查、脱离项目也成立的公开流程原则。自动发布程序不会向 cavil 写入生成的项目内容、标识、链接或复盘。通用改进候选先保存在项目报告中，另行去项目化审查后才能公开。证据保存在来源项目和本机状态目录。
 

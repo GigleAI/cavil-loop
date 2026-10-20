@@ -1,0 +1,13 @@
+[Unit]
+Description=每周一上午 07:00 触发周报生成（instance: %i）
+
+[Timer]
+Unit=cavil-loop-weekly-report@%i.service
+OnCalendar=Mon *-*-* 07:00:00
+# 机器当时关着 / user manager 没起来时，开机后补跑一次。
+# 与 cavil-loop-poll@ 的 monotonic timer 不同，OnCalendar 下 Persistent 是真生效的。
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

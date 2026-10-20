@@ -41,7 +41,7 @@ LOG_PATH="$(session_log_path "$SESS")"
 
 if [ -z "$LOG_PATH" ]; then
     echo "SESSION_LOG_DIR 已显式置空，pane 日志功能未启用" >&2
-    echo "把它从 coding-agent.config 里去掉或设回 \$STATE_DIR/sessions 即可恢复" >&2
+    echo "把它从 项目配置（cavil-loop.config） 里去掉或设回 \$STATE_DIR/sessions 即可恢复" >&2
     exit 2
 fi
 

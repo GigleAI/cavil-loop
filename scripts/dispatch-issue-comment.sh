@@ -37,7 +37,7 @@ issue_title="$(github_issue_title "$ISSUE" || true)"
 # DISPATCH_PROMPT_KIND 由 agent-poll 按触发 label 指定（如 review 关卡用 "review"）；
 # 不设就是本路径的默认模板。
 TEMPLATE="$(compose_prompt_template "${DISPATCH_PROMPT_KIND:-issue-comment}")"
-PROMPT_FILE="/tmp/coding-agent-issue-$ISSUE-cmt-$LATEST_COMMENT_ID.md"
+PROMPT_FILE="/tmp/cavil-loop-issue-$ISSUE-cmt-$LATEST_COMMENT_ID.md"
 if [ -n "$TEMPLATE" ]; then
     sed \
         -e "s|\${ISSUE}|$ISSUE|g" \

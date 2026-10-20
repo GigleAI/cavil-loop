@@ -222,7 +222,7 @@ A direct `send-keys` of a multi-line string would interpret each `\n` as Enter, 
 
 ### Why systemd `@` template units
 
-A single template service supports multiple project instances, so we don't install one per project. `%i` = instance key; `EnvironmentFile=%h/.config/coding-agent-work-loop/%i.conf` lets each instance read its own env.
+A single template service supports multiple project instances, so we don't install one per project. `%i` = instance key; `EnvironmentFile=%h/.config/cavil-loop/%i.conf` lets each instance read its own env.
 
 ### Why not just use Claude Code's `--from-pr`
 

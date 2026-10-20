@@ -54,7 +54,7 @@ gh pr view <P> --comments                              # 评审讨论 + 最终�
 
 ```bash
 # Tmux pane log（人类可读，按时间顺序）
-bash ~/.agents/skills/coding-agent-work-loop/scripts/session-log.sh <N> -c
+bash ~/.agents/skills/cavil-loop/scripts/session-log.sh <N> -c
 
 # Claude 会话原始 jsonl（按 cwd 索引）
 ls ~/.claude/projects/<encoded-cwd>/
@@ -118,7 +118,7 @@ jq . ~/.claude/projects/<encoded-cwd>/*.jsonl
 想关掉自动清理（merge 后什么都不动，留全人工）：
 
 ```bash
-# coding-agent.config
+# cavil-loop.config
 AUTO_CLEANUP_ON_MERGE="false"
 ```
 

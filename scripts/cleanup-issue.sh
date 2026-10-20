@@ -6,7 +6,7 @@
 #
 # 步骤：
 #   1. 安全检查：worker session 不在「busy 处理中」（busy 时拒绝，--force 可绕过）
-#   2. 跑项目级 CLEANUP_HOOK（如果 coding-agent.config 里配了）
+#   2. 跑项目级 CLEANUP_HOOK（如果 cavil-loop.config 里配了）
 #      —— hook 拿到 env: ISSUE / WORKTREE / BRANCH / REPO / PROJECT_ROOT
 #   3. 杀 worker tmux session
 #   4. 删 worktree（除非 --keep-worktree）

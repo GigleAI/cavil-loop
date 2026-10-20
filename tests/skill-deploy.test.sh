@@ -21,6 +21,7 @@ mkdir -p "$SRC/systemd" "$SRC/launchd"
 cp "$REPO_DIR/scripts/skill-deploy.sh" "$SRC/scripts/skill-deploy.sh"
 cp "$REPO_DIR/scripts/poll-entry.sh" "$SRC/scripts/poll-entry.sh"
 cp "$REPO_DIR/scripts/release-entry.sh" "$SRC/scripts/release-entry.sh"
+cp "$REPO_DIR/scripts/_names.sh" "$SRC/scripts/_names.sh"
 cat > "$SRC/scripts/agent-poll.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -451,5 +452,109 @@ ID_WORK_OLD="$TMP/identity-bare"; mkdir -p "$ID_WORK_OLD"
 old_verdict=$(identity_scenario "$ID_OLD" "$ID_WORK_OLD")
 [ "$old_verdict" = ok ] && fail negative-control-still-passed
 pass "alert-identity (negative control caught the bare-gh version: $old_verdict)"
+
+echo '▶ rename transition (#70): both skill links follow; files only added need no human'
+# 场景：一台改名前装好的机器（只有旧技能入口 coding-agent-work-loop），又新装了一个项目
+# （多出新入口 cavil-loop，同指一个 release）。部署器**不带** CAVIL_SKILL_LINK 跑，走默认挑法。
+# $1 = 待测部署器；$2 = 独立工作目录。stdout 写判定结果，便于负对照比对。
+rename_scenario() {
+    local deployer="$1" work="$2"
+    local home="$work/home" remote="$work/remote.git" src="$work/source" bin="$work/fakebin"
+    local root="$work/home/.agents/releases/cavil-loop"
+    local old_link="$home/.agents/skills/coding-agent-work-loop" new_link="$home/.agents/skills/cavil-loop"
+    local ghlog="$work/gh.log"
+    mkdir -p "$home" "$bin"
+    git init -q --bare "$remote"
+    git init -q -b main "$src"
+    git -C "$src" config user.email test@example.invalid
+    git -C "$src" config user.name test
+    git -C "$src" remote add origin "$remote"
+    mkdir -p "$src/scripts" "$src/systemd" "$src/launchd"
+    cp "$REPO_DIR/scripts/release-entry.sh" "$REPO_DIR/scripts/_names.sh" "$src/scripts/"
+    printf 'old-poll\n'   > "$src/systemd/coding-agent-poll@.service"
+    printf 'old-socket\n' > "$src/systemd/coding-agent-preview@.socket"
+    printf 'old-slice\n'  > "$src/systemd/app-coding\x2dagent\x2dpoll.slice"
+    printf 'plist-v1\n'   > "$src/launchd/dev.luosky.coding-agent-work-loop.plist.template"
+    git -C "$src" add . >/dev/null; git -C "$src" commit -qm v1; git -C "$src" push -q -u origin main 2>/dev/null
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\ncase " $* " in *" -X POST "*) echo 91 ;; esac\n' "$ghlog" > "$bin/gh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/systemctl"
+    chmod +x "$bin/gh" "$bin/systemctl"
+    run() {   # run [VAR=value ...] [deployer flags ...]
+        local extra=()
+        while [ $# -gt 0 ] && [[ "$1" == *=* ]]; do extra+=("$1"); shift; done
+        env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT HOME="$home" PATH="$bin:$PATH" \
+            CAVIL_DEPLOY_REPO="$remote" CAVIL_DEPLOY_BRANCH=main "${extra[@]}" \
+            bash "$deployer" --force "$@" >/dev/null 2>&1
+    }
+
+    # 改名前的机器：只有旧入口
+    run CAVIL_SKILL_LINK="$old_link" --bootstrap
+    local v1; v1="$root/releases/$(git -C "$src" rev-parse HEAD)"
+    [ "$(readlink -f "$old_link")" = "$v1" ] || { echo "legacy-bootstrap"; return 0; }
+    # 新装了一个项目：新入口也指向同一个 release
+    ln -s "$v1" "$new_link"
+
+    # v2 = 改名那次发布：新增新名字的单元 / slice，launchd 模板改名
+    printf 'new-poll\n'   > "$src/systemd/cavil-loop-poll@.service"
+    printf 'new-socket\n' > "$src/systemd/cavil-loop-preview@.socket"
+    printf 'new-slice\n'  > "$src/systemd/app-cavil\x2dloop\x2dpoll.slice"
+    git -C "$src" mv launchd/dev.luosky.coding-agent-work-loop.plist.template launchd/dev.luosky.cavil-loop.plist.template
+    git -C "$src" add . >/dev/null; git -C "$src" commit -qm v2; git -C "$src" push -q origin main 2>/dev/null
+    run
+    local v2; v2="$root/releases/$(git -C "$src" rev-parse HEAD)"
+    [ "$(readlink -f "$new_link")" = "$v2" ] || { echo "new-link-not-switched"; return 0; }
+    [ "$(readlink -f "$old_link")" = "$v2" ] || { echo "old-link-left-behind"; return 0; }
+    [ ! -e "$v1" ] || { echo "old-release-not-cleaned"; return 0; }
+    grep -q -- '-X POST' "$ghlog" 2>/dev/null && { echo "alert-for-added-files"; return 0; }
+
+    # 同名模板内容真的变了：照旧要人重跑 setup（macOS）
+    printf 'plist-v2\n' > "$src/launchd/dev.luosky.cavil-loop.plist.template"
+    git -C "$src" commit -qam v3; git -C "$src" push -q origin main 2>/dev/null
+    run
+    grep -q -- '-X POST' "$ghlog" 2>/dev/null || { echo "launchd-change-not-alerted"; return 0; }
+
+    # 旧入口切换失败：它停在的 release 不能被清理掉，否则旧后台任务的启动脚本就没了
+    local v3; v3="$root/releases/$(git -C "$src" rev-parse HEAD)"
+    cat > "$bin/mv" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = -Tf ] && [ "\$3" = "$old_link" ]; then exit 1; fi
+exec /usr/bin/mv "\$@"
+SH
+    chmod +x "$bin/mv"
+    printf 'v4\n' > "$src/data"; git -C "$src" add data; git -C "$src" commit -qm v4; git -C "$src" push -q origin main 2>/dev/null
+    run
+    rm -f "$bin/mv"
+    [ "$(readlink -f "$old_link")" = "$v3" ] || { echo "stuck-alias-setup"; return 0; }
+    [ -d "$v3" ] || { echo "stuck-alias-release-deleted"; return 0; }
+    echo ok
+}
+RN_WORK="$TMP/rename-fixed"; mkdir -p "$RN_WORK"
+rn_verdict=$(rename_scenario "$REPO_DIR/scripts/skill-deploy.sh" "$RN_WORK")
+[ "$rn_verdict" = ok ] || fail "rename-transition: $rn_verdict"
+# 负对照：改名前的部署器（main 上的版本）跑同一场景必须变红
+RN_OLD="$TMP/skill-deploy-before-rename.sh"
+if git -C "$REPO_DIR" show 'd1946f2:scripts/skill-deploy.sh' > "$RN_OLD" 2>/dev/null; then
+    RN_WORK_OLD="$TMP/rename-old"; mkdir -p "$RN_WORK_OLD"
+    rn_old_verdict=$(rename_scenario "$RN_OLD" "$RN_WORK_OLD")
+    [ "$rn_old_verdict" = ok ] && fail rename-negative-control-still-passed
+    pass "rename-transition (pre-rename deployer fails it: $rn_old_verdict)"
+    # 再逐项关掉本次新加的两道判断，各自必须变红（变体旁边要有一份 _names.sh 供它 source）
+    mkdir -p "$TMP/variants"; cp "$REPO_DIR/scripts/_names.sh" "$TMP/variants/"
+    RN_V1="$TMP/variants/skill-deploy-no-added-filter.sh"
+    sed 's/scheduler_kept="$(grep -vF "Only in $target\/systemd" <<< "$scheduler_changes" || true)"/scheduler_kept="$scheduler_changes"/' \
+        "$REPO_DIR/scripts/skill-deploy.sh" > "$RN_V1"
+    ! cmp -s "$RN_V1" "$REPO_DIR/scripts/skill-deploy.sh" || fail rename-negative-control-1-not-applied
+    mkdir -p "$TMP/rename-v1"
+    [ "$(rename_scenario "$RN_V1" "$TMP/rename-v1")" = alert-for-added-files ] || fail rename-negative-control-1
+    RN_V2="$TMP/variants/skill-deploy-no-alias-guard.sh"
+    grep -v 'readlink -f "$CAVIL_SKILL_HOME" 2>/dev/null || true)" ] || continue\|readlink -f "$CAVIL_LEGACY_SKILL_HOME" 2>/dev/null || true)" ] || continue' \
+        "$REPO_DIR/scripts/skill-deploy.sh" > "$RN_V2"
+    [ "$(wc -l < "$RN_V2")" -eq $(( $(wc -l < "$REPO_DIR/scripts/skill-deploy.sh") - 2 )) ] || fail rename-negative-control-2-not-applied
+    mkdir -p "$TMP/rename-v2"
+    [ "$(rename_scenario "$RN_V2" "$TMP/rename-v2")" = stuck-alias-release-deleted ] || fail rename-negative-control-2
+    pass "rename-transition negative controls (added-file filter, stuck-alias guard)"
+else
+    pass "rename-transition (negative control skipped: base commit unavailable)"
+fi
 
 echo 'All skill deploy tests passed.'

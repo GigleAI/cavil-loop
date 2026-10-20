@@ -72,7 +72,7 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 
 ### 每个角色一份 prompt
 
-每个角色的 worker 想要不同 prompt。在 `<host>/.agents/skills/coding-agent-work-loop/prompts/` 放角色特定的覆盖即可。当前查找逻辑写死成一个 host project 一份 prompt 集；如果想按角色后缀切 prompt 集，见下面的「Roadmap」。
+每个角色的 worker 想要不同 prompt。在 `<host>/.agents/skills/cavil-loop/prompts/` 放角色特定的覆盖即可。当前查找逻辑写死成一个 host project 一份 prompt 集；如果想按角色后缀切 prompt 集，见下面的「Roadmap」。
 
 ### 每个角色一个 systemd timer
 
@@ -81,9 +81,9 @@ bash setup.sh ~/myproject pm-agent
 bash setup.sh ~/myproject qa-agent
 bash setup.sh ~/myproject dev-agent
 
-systemctl --user enable --now coding-agent-poll@pm-agent.timer
-systemctl --user enable --now coding-agent-poll@qa-agent.timer
-systemctl --user enable --now coding-agent-poll@dev-agent.timer
+systemctl --user enable --now cavil-loop-poll@pm-agent.timer
+systemctl --user enable --now cavil-loop-poll@qa-agent.timer
+systemctl --user enable --now cavil-loop-poll@dev-agent.timer
 ```
 
 每个 timer 独立 tick，各 daemon 只扫自己的子标签。
@@ -123,7 +123,7 @@ Alex review：
 
 ### 3. 按技术栈分工的 coding agent
 
-仓库是 monorepo，`frontend/`（React）+ `backend/`（Go）。两个 coding-agent 实例：
+仓库是 monorepo，`frontend/`（React）+ `backend/`（Go）。两个 cavil-loop 实例：
 
 | 角色 | label | worktree setup | prompt 重点 |
 |------|-------|----------------|-------------|

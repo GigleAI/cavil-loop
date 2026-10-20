@@ -48,9 +48,9 @@ ALL=(new-issue issue-comment pr-comment review)
 # 沙盘：skill 一份、项目一份（非 git 目录 → find_project_prompt_file 读本地增量）
 make_sandbox() {
     rm -rf "$TMP/skill" "$TMP/project"
-    mkdir -p "$TMP/skill" "$TMP/project/.agents/skills/coding-agent-work-loop"
+    mkdir -p "$TMP/skill" "$TMP/project/.agents/skills/cavil-loop"
     cp -r "$REPO_DIR/prompts" "$TMP/skill/prompts"
-    cp -r "$REPO_DIR/.agents/skills/coding-agent-work-loop/prompts" "$TMP/project/.agents/skills/coding-agent-work-loop/prompts"
+    cp -r "$REPO_DIR/.agents/skills/cavil-loop/prompts" "$TMP/project/.agents/skills/cavil-loop/prompts"
     SKILL_DIR="$TMP/skill"
 }
 
@@ -124,7 +124,7 @@ sed -i 's/最多三四行/最多五六行/' "$SKILL_DIR/prompts/issue-comment.te
 expect_red "issue-comment 骨架改了一个词" "issue-comment: 骨架和 new-issue 不一致"
 
 make_sandbox
-sed -i '/^### 评论里有要人拍板的问题时/,/^反面（读不懂的那版/d' "$TMP/project/.agents/skills/coding-agent-work-loop/prompts/review.extra.md"
+sed -i '/^### 评论里有要人拍板的问题时/,/^反面（读不懂的那版/d' "$TMP/project/.agents/skills/cavil-loop/prompts/review.extra.md"
 expect_red "review 增量没有骨架" "review: 没有拍板评论骨架"
 
 make_sandbox

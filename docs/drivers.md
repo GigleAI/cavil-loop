@@ -2,7 +2,7 @@
 
 > **English** · [中文](drivers.zh.md)
 
-The daemon / dispatch scripts and "which CLI runs in tmux" are separated by a **driver abstraction**, so any chat-REPL-style CLI that takes a prompt can act as the worker. Switch via `WORKER_AGENT=<name>` in `coding-agent.config` — no fork required.
+The daemon / dispatch scripts and "which CLI runs in tmux" are separated by a **driver abstraction**, so any chat-REPL-style CLI that takes a prompt can act as the worker. Switch via `WORKER_AGENT=<name>` in `cavil-loop.config` — no fork required.
 
 ## Built-in drivers
 
@@ -19,14 +19,14 @@ Switching (Cursor example):
 # 1. Ensure Cursor Agent CLI is on PATH (`agent --help`)
 #    macOS: usually bundled with Cursor IDE
 
-# 2. In coding-agent.config:
+# 2. In cavil-loop.config:
 WORKER_AGENT="cursor"
 
 # 3. Re-run setup.sh so the daemon EnvironmentFile PATH includes `agent`
-WORKER_AGENT=cursor bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+WORKER_AGENT=cursor bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
-> Under launchd/systemd, ensure `GH_TOKEN` is in the daemon EnvironmentFile so the worker's `gh` CLI uses the intended PAT (see `WORKER_PASS_ENV` in `coding-agent.config`).
+> Under launchd/systemd, ensure `GH_TOKEN` is in the daemon EnvironmentFile so the worker's `gh` CLI uses the intended PAT (see `WORKER_PASS_ENV` in `cavil-loop.config`).
 
 > **Cursor caveat:** `-p` is non-interactive print mode — mid-task issue/PR comments cannot be injected via stdin. The driver kills the live session and respawns with the new prompt (Case B) instead of silently dropping it.
 
@@ -36,11 +36,11 @@ Switching (Codex example):
 # 1. Install the CLI
 npm i -g @openai/codex
 
-# 2. In coding-agent.config:
+# 2. In cavil-loop.config:
 WORKER_AGENT="codex"
 
 # 3. Re-run setup.sh so the daemon EnvironmentFile PATH points to the new CLI
-WORKER_AGENT=codex bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+WORKER_AGENT=codex bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
 > Switching the driver does **not** alter existing worktrees, but new worker sessions launch the new CLI. Risk of mixing: a worktree whose history was written by the previous driver may not be recognized by the new one — cleanup the worktree before relaunching.
@@ -49,7 +49,7 @@ WORKER_AGENT=codex bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/
 
 Copy `scripts/drivers/_template.sh` to `scripts/drivers/<your>.sh` and implement five functions.
 
-Project-level (no fork): put it at `<host>/.agents/skills/coding-agent-work-loop/drivers/<your>.sh`. That path is checked before the built-in directory, so it overrides same-name built-ins.
+Project-level (no fork): put it at `<host>/.agents/skills/cavil-loop/drivers/<your>.sh`. That path is checked before the built-in directory, so it overrides same-name built-ins.
 
 ### Required functions
 
@@ -188,15 +188,15 @@ The built-in `claude` driver sets `projects["<abs path>"].hasTrustDialogAccepted
 
 ```bash
 # 1. Spawn a worker session manually
-CODING_AGENT_CONFIG=~/path/to/your-project/coding-agent.config \
-    WORKER_AGENT=<your> bash ~/.agents/skills/coding-agent-work-loop/scripts/dispatch-new-issue.sh <test-issue-N>
+CODING_AGENT_CONFIG=~/path/to/your-project/cavil-loop.config \
+    WORKER_AGENT=<your> bash ~/.agents/skills/cavil-loop/scripts/dispatch-new-issue.sh <test-issue-N>
 
 # 2. Attach to inspect
 tmux attach -t <project>-issue<N>
 
 # 3. Once it's running, check busy detection
 CODING_AGENT_CONFIG=... WORKER_AGENT=<your> \
-    bash -c 'source ~/.agents/skills/coding-agent-work-loop/scripts/_lib.sh; \
+    bash -c 'source ~/.agents/skills/cavil-loop/scripts/_lib.sh; \
              agent_is_busy "<project>-issue<N>" && echo BUSY || echo IDLE'
 ```
 
