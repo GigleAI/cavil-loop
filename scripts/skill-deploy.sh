@@ -12,10 +12,13 @@ for arg in "$@"; do
     esac
 done
 
-DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$HOME/.config/coding-agent-work-loop/deploy.conf}"
+# 新旧名字（~/.config/cavil-loop vs 改名前的 coding-agent-work-loop 等）一律经 _names.sh 挑。
+# shellcheck source=_names.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$(cavil_deploy_conf)}"
 [ ! -f "$DEPLOY_CONF" ] || { set -a; . "$DEPLOY_CONF"; set +a; }
 DEPLOY_ROOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}"
-STABLE_LINK="${CAVIL_SKILL_LINK:-$HOME/.agents/skills/coding-agent-work-loop}"
+STABLE_LINK="${CAVIL_SKILL_LINK:-$(cavil_skill_link)}"
 
 SOURCE_DIR="${CAVIL_DEPLOY_SOURCE_DIR:-}"
 SOURCE_REMOTE=""
@@ -68,7 +71,7 @@ install_entrypoints() {
 # 读操作继续用轮询身份，不经这里。
 #
 # 取值来源：调度器的 EnvironmentFile（poll@.service 已注入）或本部署器的 deploy.conf
-# （上面 `set -a` 过）。部署器不读任何项目的 coding-agent.config —— 那会让它绑到
+# （上面 `set -a` 过）。部署器不读任何项目的 cavil-loop.config —— 那会让它绑到
 # 某一个项目上，与「告警状态和锁放在项目无关的共享目录」这条相矛盾。
 gh_write() {
     if [ -n "${WRITE_GH_TOKEN:-}" ]; then
@@ -203,7 +206,7 @@ open_alert() {
     body=$(printf '当前 release：`%s`\n远端 SHA：`%s`\n开始落后：`%s`\n最近成功：`%s`\n原因：%s\n\n%s' \
         "${current_sha:-无}" "${remote_sha:-未知}" "$since" "$(state_number last_success_at)" "$reason" "$ending")
     issue=$(gh_write api -X POST "repos/$ALERT_REPO/issues" \
-        -f title="coding-agent skill 部署需要处理" -f body="$body" \
+        -f title="cavil-loop 部署需要处理" -f body="$body" \
         -f 'labels[]=pending/human' --jq .number 2>/dev/null || true)
     [ -z "$issue" ] && log_deploy "failed to create deployment alert in $ALERT_REPO"
     printf '%s' "$issue"
@@ -281,15 +284,21 @@ case "$current" in
     if [ -d "$current/systemd" ] && [ -d "$target/systemd" ]; then
         scheduler_changes="$(diff -qr "$current/systemd" "$target/systemd" 2>/dev/null || true)"
         grep -E '\.(service|timer)( |$)' <<< "$scheduler_changes" >/dev/null && scheduler_reload=1 || true
-        grep -E '\.(socket|slice)( |$)' <<< "$scheduler_changes" >/dev/null && manual_scheduler=1 || true
+        # 新版本**新增**的单元文件不需要人动手：本机还没有任何东西装过它（比如改名后新增
+        # 的 cavil-loop-* 单元，老机器在迁移前一个都没装）。只有改了或删了已有文件才要人看。
+        scheduler_kept="$(grep -vF "Only in $target/systemd" <<< "$scheduler_changes" || true)"
+        grep -E '\.(socket|slice)( |$)' <<< "$scheduler_kept" >/dev/null && manual_scheduler=1 || true
     fi
     if [ -d "$current/launchd" ] && [ -d "$target/launchd" ]; then
-        diff -qr "$current/launchd" "$target/launchd" >/dev/null 2>&1 || manual_scheduler=1
+        # plist 是 setup.sh 按模板「生成」的，跟模板文件名无关：模板改名 / 新增 / 删除都不影响
+        # 已生成的 plist。只有同名模板内容变了，才需要 macOS 上重跑 setup.sh。
+        launchd_changes="$(diff -qr "$current/launchd" "$target/launchd" 2>/dev/null || true)"
+        grep -q '^Files ' <<< "$launchd_changes" && manual_scheduler=1 || true
     fi
     ;;
 esac
 
-link_tmp="$(dirname "$STABLE_LINK")/.coding-agent-work-loop.$$.link"
+link_tmp="$(dirname "$STABLE_LINK")/.cavil-loop.$$.link"
 if ! ln -s "$target" "$link_tmp"; then record_lag_failure "creating replacement link failed"; exit 0; fi
 if [ -e "$STABLE_LINK" ] && [ ! -L "$STABLE_LINK" ]; then
     if [ "$BOOTSTRAP" -ne 1 ]; then
@@ -304,6 +313,25 @@ fi
 if ! mv -Tf "$link_tmp" "$STABLE_LINK"; then rm -f -- "$link_tmp"; record_lag_failure "switching stable link failed"; exit 0; fi
 current_sha="$remote_sha"
 log_deploy "activated $remote_sha"
+
+# 新旧两个技能入口（~/.agents/skills/cavil-loop 与改名前的 coding-agent-work-loop）在
+# 同一台机器上可能同时存在：旧项目的后台任务认旧入口，新装的项目认新入口。两者都指向
+# 本部署器管理的 release 时必须一起切——只切一个，另一个停在旧 release 上，下面的清理
+# 一删，旧任务的启动脚本就没了。指向别处的（开发模式 checkout）不碰。
+for alias_link in "$CAVIL_SKILL_HOME" "$CAVIL_LEGACY_SKILL_HOME"; do
+    [ "$alias_link" != "$STABLE_LINK" ] && [ -L "$alias_link" ] || continue
+    case "$(readlink -f "$alias_link" 2>/dev/null || true)" in
+        "$RELEASES"/*) ;;
+        *) continue ;;
+    esac
+    alias_tmp="$(dirname "$alias_link")/.cavil-loop.$$.alias.link"
+    if ln -s "$target" "$alias_tmp" && mv -Tf "$alias_tmp" "$alias_link"; then
+        log_deploy "also switched $alias_link"
+    else
+        rm -f -- "$alias_tmp"
+        log_deploy "switching $alias_link failed; it stays on its previous release"
+    fi
+done
 
 if [ "$BOOTSTRAP" -eq 1 ] && [ "$(uname -s)" = Linux ] && [ -d "$target/systemd" ]; then
     # Old setup versions linked installed templates to a checkout. An explicit
@@ -384,6 +412,9 @@ write_state "$current_sha" "$remote_sha" 0 "$now" "$previous_lag_alert" "$schedu
 for old in "$RELEASES"/*; do
     [ -d "$old" ] || continue
     [ "$old" != "$target" ] || continue
+    # 上面同步失败、还停在这里的另一个技能入口：删了它，认那个入口的后台任务就起不来了
+    [ "$old" != "$(readlink -f "$CAVIL_SKILL_HOME" 2>/dev/null || true)" ] || continue
+    [ "$old" != "$(readlink -f "$CAVIL_LEGACY_SKILL_HOME" 2>/dev/null || true)" ] || continue
     [ -f "$old/.inuse" ] || continue
     exec {OLD_FD}<>"$old/.inuse"
     if flock -n -x "$OLD_FD"; then rm -rf -- "$old"; fi

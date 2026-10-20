@@ -12,7 +12,8 @@
 # 下次有人访问那个端口时由 systemd 重新拉起（冷启 ~1s，dist 已经 build 好，不重新 build）。
 # URL 本身永远有效 —— 监听的是 .socket，不是 app 进程。
 #
-# 前置：setup.sh 装过 coding-agent-preview*@ 三个 unit。
+# 前置：setup.sh 装过 cavil-loop-preview*@ 三个 unit（改名前装的 coding-agent-preview*@ 同样认，
+# 装了哪套用哪套，见 _names.sh 的 cavil_preview_unit_prefix）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +34,7 @@ PREVIEW_URL_HOST="${PREVIEW_URL_HOST:-}"
 
 CONF_DIR="$PREVIEW_CONF_DIR"
 UNIT_DIR="$HOME/.config/systemd/user"
+UNIT="$PREVIEW_UNIT_PREFIX"   # cavil-loop，或改名前的 coding-agent
 
 # ── --list ──
 if [ "${1:-}" = "--list" ]; then
@@ -42,7 +44,7 @@ if [ "${1:-}" = "--list" ]; then
         # shellcheck disable=SC1090
         ( source "$f"
           [ "${PREVIEW_PROJECT:-}" = "$TMUX_PREFIX" ] || exit 0
-          state=$(systemctl --user is-active "coding-agent-preview-app@${PREVIEW_PORT}.service" 2>/dev/null || true)
+          state=$(systemctl --user is-active "${UNIT}-preview-app@${PREVIEW_PORT}.service" 2>/dev/null || true)
           printf 'issue #%-5s :%-6s %-10s %s\n' \
               "$PREVIEW_ISSUE" "$PREVIEW_PORT" "${state:-unknown}" "$PREVIEW_WORKTREE" )
         found=1
@@ -64,7 +66,7 @@ for arg in "$@"; do
 done
 
 [ -n "$PREVIEW_EXEC" ] || {
-    echo "❌ coding-agent.config 没配 PREVIEW_EXEC —— 不知道该怎么起这个项目的 preview server。" >&2
+    echo "❌ 项目配置（cavil-loop.config）没配 PREVIEW_EXEC —— 不知道该怎么起这个项目的 preview server。" >&2
     echo "   例：PREVIEW_EXEC=\"node server/index.mjs\"（进程需读 \$PORT / \$HOST 环境变量）" >&2
     exit 2
 }
@@ -74,8 +76,8 @@ BACKEND_PORT=$((PORT + PREVIEW_BACKEND_OFFSET))
 WORKTREE="$(worktree_path "$ISSUE")"
 
 [ -d "$WORKTREE" ] || { echo "❌ worktree 不存在：$WORKTREE" >&2; exit 2; }
-[ -f "$UNIT_DIR/coding-agent-preview@.socket" ] || {
-    echo "❌ 没装 preview unit（$UNIT_DIR/coding-agent-preview@.socket）。先跑 setup.sh。" >&2
+[ -f "$UNIT_DIR/${UNIT}-preview@.socket" ] || {
+    echo "❌ 没装 preview unit（$UNIT_DIR/${UNIT}-preview@.socket）。先跑 setup.sh。" >&2
     exit 2
 }
 
@@ -127,20 +129,20 @@ EOF
     # 整个 socket 进 failed 且**不再接受激活**——URL 从此静默变死，且 `start` 是 no-op。
     # 修完配置重跑本脚本就该能恢复，所以先清 failed 状态再 start。
     systemctl --user reset-failed \
-        "coding-agent-preview@${PORT}.socket" \
-        "coding-agent-preview@${PORT}.service" \
-        "coding-agent-preview-app@${PORT}.service" 2>/dev/null || true
-    systemctl --user start "coding-agent-preview@${PORT}.socket"
+        "${UNIT}-preview@${PORT}.socket" \
+        "${UNIT}-preview@${PORT}.service" \
+        "${UNIT}-preview-app@${PORT}.service" 2>/dev/null || true
+    systemctl --user start "${UNIT}-preview@${PORT}.socket"
 
     # 改完代码要让 preview 反映新产物：正式 server 不热更新，进程得换一个。
     # 只 stop 不 start —— socket 还在监听，下次访问自然拉起新的（要立刻生效就配 --warm）。
     # 注意先 stop app 会连带把 proxy 拽下来（proxy Requires app），这正是想要的。
     if [ "$RESTART" = 1 ]; then
-        systemctl --user stop "coding-agent-preview-app@${PORT}.service" 2>/dev/null || true
+        systemctl --user stop "${UNIT}-preview-app@${PORT}.service" 2>/dev/null || true
     fi
 
     if [ "$WARM" = 1 ]; then
-        systemctl --user start "coding-agent-preview-app@${PORT}.service"
+        systemctl --user start "${UNIT}-preview-app@${PORT}.service"
     fi
 
     # ── tailscale serve 绑定（可选）──

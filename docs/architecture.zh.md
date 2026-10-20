@@ -198,7 +198,7 @@ driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#�
 
 ### 为什么 systemd 用 `@` 模板
 
-一份模板 unit 支持多 project 实例，避免每个项目装一份。`%i` = instance key，`EnvironmentFile=%h/.config/coding-agent-work-loop/%i.conf` 让每个实例读自己的环境。
+一份模板 unit 支持多 project 实例，避免每个项目装一份。`%i` = instance key，`EnvironmentFile=%h/.config/cavil-loop/%i.conf` 让每个实例读自己的环境。
 
 ### 为什么不直接用 Claude Code 的 `--from-pr`
 

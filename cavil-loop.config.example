@@ -1,8 +1,8 @@
-# coding-agent workflow configuration
-# Copy to coding-agent.config and tweak. All scripts + systemd units source this file.
+# cavil-loop configuration
+# Copy to cavil-loop.config and tweak. All scripts + systemd units source this file.
 # Required fields use ${VAR:?} in scripts for fail-fast (never silently skipped).
 #
-# 复制为 coding-agent.config 并按需修改。所有脚本 + systemd 单元都会 source 这个文件。
+# 复制为 cavil-loop.config 并按需修改。所有脚本 + systemd 单元都会 source 这个文件。
 # 必填项已用 ${VAR:?} 在脚本里 fail-fast，不会被 silently 跳过。
 
 # ── GitHub repo / GitHub 仓库 ──
@@ -23,7 +23,7 @@ WORKTREE_BASE="$HOME/github/worktree/myproject"
 
 # Daemon state dir (state.json + logs + lock).
 # daemon state 目录（state.json + 日志 + 锁）
-STATE_DIR="$HOME/.local/state/coding-agent-poll"
+STATE_DIR="$HOME/.local/state/cavil-loop"
 
 # 日志级别：info（默认）；debug 额外显示优先级读取、greedy 跳过与 review 轮次用尽明细。
 # Log level: info (default), or debug for routine priority and skipped-work details.
@@ -257,7 +257,8 @@ WORKTREE_GIT_USER_EMAIL=""
 #   codex     — Codex CLI (OpenAI)
 #   cursor    — Cursor Agent CLI (`agent`; headless with -p --trust --force)
 # Custom: drop scripts/drivers/<name>.sh into the skill, or project-level into
-#   <host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh
+#   <host>/.agents/skills/cavil-loop/drivers/<name>.sh
+#   (projects set up before the rename keep .agents/skills/coding-agent-work-loop/; both are read, new name first)
 #
 # 哪个 agent CLI 当 worker。内置 driver（详见 docs/drivers.zh.md）：
 #   claude    — Claude Code             （默认；行为完全等同未引入 driver 抽象前）
@@ -265,7 +266,8 @@ WORKTREE_GIT_USER_EMAIL=""
 #   codex     — Codex CLI (OpenAI)
 #   cursor    — Cursor Agent CLI（`agent`；headless 用 -p --trust --force）
 # 自定义：往 skill 的 scripts/drivers/<name>.sh 加，或放在项目级
-#   <host>/.agents/skills/coding-agent-work-loop/drivers/<name>.sh
+#   <host>/.agents/skills/cavil-loop/drivers/<name>.sh
+#   （改名前建的项目用 .agents/skills/coding-agent-work-loop/，两个都认，新名优先）
 WORKER_AGENT="claude"
 # Optional model passed only to ordinary issue / PR workers. Empty means the
 # selected driver's own current default model.
@@ -436,7 +438,7 @@ AUTO_CLEANUP_ON_MERGE="true"
 # Requires Claude CLI and permission to push the project's origin/$BASE_BRANCH.
 # First run starts at now; one background review at a time, hourly retries.
 # Project reports: docs/retrospectives/pr-N.md
-# Project lessons: .agents/skills/coding-agent-work-loop/prompts/lessons.md
+# Project lessons: .agents/skills/cavil-loop/prompts/lessons.md
 # Never publishes project evidence or generated text to the public skill repo.
 # Public workflow improvements require a separate de-identification review.
 POST_MERGE_RETROSPECTIVE="true"
@@ -461,7 +463,7 @@ RETROSPECTIVE_PROMOTION="auto"
 #
 # Relative paths are interpreted relative to PROJECT_ROOT. Empty = skip.
 # Env available to the hook: ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT.
-# Recommended path: CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
+# Recommended path: CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"
 #                   (matches the Agent Skill project-level layout; prompt overrides
 #                    go under prompts/ in the same dir)
 #
@@ -473,7 +475,7 @@ RETROSPECTIVE_PROMOTION="auto"
 #
 # 相对路径会被解释为相对 PROJECT_ROOT。留空跳过。
 # Hook 拿到的 env: ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT
-# 推荐路径：CLEANUP_HOOK=".agents/skills/coding-agent-work-loop/cleanup-hook.sh"
+# 推荐路径：CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"
 #         （配合 Agent Skill 项目级目录约定；prompts 覆盖也放同目录下 prompts/）
 CLEANUP_HOOK=""
 
@@ -484,11 +486,11 @@ CLEANUP_HOOK=""
 # 10 open `pending/PR` issues × ~85 MiB, several idle for over a week.
 #
 # Set PREVIEW_EXEC to switch previews to systemd socket activation:
-#   coding-agent-preview@<port>.socket      always listening, ~0 memory
+#   cavil-loop-preview@<port>.socket      always listening, ~0 memory
 #     └ first connection starts →
-#   coding-agent-preview@<port>.service     systemd-socket-proxyd, exits when idle
+#   cavil-loop-preview@<port>.service     systemd-socket-proxyd, exits when idle
 #     └ requires →
-#   coding-agent-preview-app@<port>.service your server; stops with the proxy
+#   cavil-loop-preview-app@<port>.service your server; stops with the proxy
 # The URL never breaks; the process comes back on the next hit (~1s cold start,
 # no rebuild — the worktree's build output is already on disk).
 #
@@ -496,11 +498,11 @@ CLEANUP_HOOK=""
 # 纯粹的空转内存。实测某台机器：10 个 pending/PR 的 issue × ~85 MiB，其中几个空转一周以上。
 #
 # 配了 PREVIEW_EXEC 就切到 systemd socket 激活：
-#   coding-agent-preview@<端口>.socket        常驻监听，几乎不占内存
+#   cavil-loop-preview@<端口>.socket        常驻监听，几乎不占内存
 #     └ 首次连接触发 →
-#   coding-agent-preview@<端口>.service       systemd-socket-proxyd，闲置自己退出
+#   cavil-loop-preview@<端口>.service       systemd-socket-proxyd，闲置自己退出
 #     └ Requires →
-#   coding-agent-preview-app@<端口>.service   你的 server，跟着 proxy 一起停
+#   cavil-loop-preview-app@<端口>.service   你的 server，跟着 proxy 一起停
 # URL 永远有效；进程在下次访问时自动回来（冷启 ~1s，不重新 build——worktree 里
 # 的构建产物还在）。
 #
@@ -555,7 +557,7 @@ PREVIEW_URL_HOST=""
 #
 # 相对路径会被解释为相对 PROJECT_ROOT。留空跳过。
 # Hook 拿到的 env: PR, ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT
-# 推荐路径：PR_CREATED_HOOK=".agents/skills/coding-agent-work-loop/pr-created-hook.sh"
+# 推荐路径：PR_CREATED_HOOK=".agents/skills/cavil-loop/pr-created-hook.sh"
 PR_CREATED_HOOK=""
 
 # ── Max concurrency / 并发上限 ──

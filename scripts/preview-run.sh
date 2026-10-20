@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# coding-agent-preview-app@<port>.service 的 ExecStart wrapper。
+# cavil-loop-preview-app@<port>.service（改名前叫 coding-agent-preview-app@<port>.service） 的 ExecStart wrapper。
 #
 # 存在的唯一理由：unit 文件里 `WorkingDirectory=` 不展开 ${VAR}，而每个 preview 的
 # worktree 路径只有注册时才知道。顺手把「app 必须听后端端口而不是公开端口」这条
@@ -9,7 +9,10 @@
 set -euo pipefail
 
 PORT="${1:?need public port}"
-CONF="$HOME/.config/coding-agent-work-loop/preview/${PORT}.conf"
+# 登记文件在新目录（~/.config/cavil-loop/preview）还是改名前的旧目录，由 _names.sh 挑
+# shellcheck source=_names.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_names.sh"
+CONF="$(cavil_preview_conf "$PORT")"
 
 [ -f "$CONF" ] || { echo "preview conf 不存在：$CONF（先跑 preview-serve.sh <issue>）" >&2; exit 2; }
 # shellcheck disable=SC1090

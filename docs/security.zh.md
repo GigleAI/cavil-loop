@@ -52,7 +52,7 @@ body → 内嵌的 `[SYSTEM]` 段尝试劫持 Claude。Claude 通常能识破（
 大流量、最容易撞平台限流和风控的那部分行为，而它跟「承载 commit 署名和全部写权限」
 的身份是同一个账号。账号一出事，写能力跟着一起没。
 
-设 `WRITE_GH_TOKEN`（写在 `coding-agent.config` 里，或调度器的 EnvironmentFile 里）
+设 `WRITE_GH_TOKEN`（写在 `cavil-loop.config` 里，或调度器的 EnvironmentFile 里）
 就把两者分开：
 
 | | `GH_TOKEN` | `WRITE_GH_TOKEN` |
@@ -74,13 +74,13 @@ body → 内嵌的 `[SYSTEM]` 段尝试劫持 Claude。Claude 通常能识破（
   环境里，所以一个被注入的 worker 顺手跑 `gh`，手上只有写身份。
 - 它**不是**本机沙箱。daemon 和 worker 跑在同一个 UNIX 用户下，谁都读得到对方的
   文件。挡住 worker 的是 prompt 模板里那条硬约束（不读主题外的本机敏感文件），不是
-  文件权限。如果两把 token 都写进 `coding-agent.config`，注意 `AGENTS.md` 里的本地
+  文件权限。如果两把 token 都写进 `cavil-loop.config`，注意 `AGENTS.md` 里的本地
   干跑流程会**正常地**指使 worker 去读这个文件 —— 把 `GH_TOKEN` 留在 EnvironmentFile
   里就不用把它递过去。cron 兜底那条路没有 EnvironmentFile，只能两把都放 config。
 - daemon 进程同时持有两把：它必须读到写 token 才能交接给 worker。所以「轮询 token
   泄漏也无害」这句话对那把 token 成立，对那台机器不成立。
 
-**任何装着 token 的文件都必须是 0600。** `setup.sh` 会对 `coding-agent.config` 和
+**任何装着 token 的文件都必须是 0600。** `setup.sh` 会对 `cavil-loop.config` 和
 EnvironmentFile 两者强制收紧（老安装再跑一次也会补上），daemon 每轮还会检查：config
 里装着 token 却是同组 / 其他人可读时写一条告警。这条有实际意义 —— 常见的 `umask 0002`
 产出的是 `0664`，同机任何用户都读得到。
@@ -135,7 +135,7 @@ worker「不往 github.com 之外发数据」的约束不变。**daemon**（不�
 
 按需开启：
 
-- **作者白名单**：在 `coding-agent.config` 加 `TRUSTED_AUTHORS="user1 user2"`，
+- **作者白名单**：在 `cavil-loop.config` 加 `TRUSTED_AUTHORS="user1 user2"`，
   daemon 只在 issue 作者 / PR 最新 commenter 在白名单内时派工
   （当前未实现；要的话另外加。优先级取决于你的实际暴露面）
 - **网络沙箱**：worker 用 `bwrap` / `firejail` 跑，限制网络只到 github.com /

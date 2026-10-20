@@ -262,18 +262,22 @@ default_inject_prompt() {
 
 # ── 加载 driver ──
 # 查找顺序（高 → 低）：
-#   1. $PROJECT_ROOT/.agents/skills/coding-agent-work-loop/drivers/<name>.sh  ← 项目自定义
-#   2. <skill>/scripts/drivers/<name>.sh                                     ← 内置
+#   1. $PROJECT_ROOT/.agents/skills/cavil-loop/drivers/<name>.sh  ← 项目自定义
+#      （改名前的 .agents/skills/coding-agent-work-loop/ 等旧目录同样认，新名优先；
+#       目录顺序以 _names.sh 的 CAVIL_PROJECT_SKILL_DIRS 为准）
+#   2. <skill>/scripts/drivers/<name>.sh                          ← 内置
 # 项目级 override 让用户不 fork 整个 skill 也能加自家 driver。
 source_driver() {
     local name="$1"
     local self_dir
     self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local candidates=(
-        "${PROJECT_ROOT:-}/.agents/skills/coding-agent-work-loop/drivers/${name}.sh"
-        "${self_dir}/${name}.sh"
-    )
-    local d
+    # shellcheck source=../_names.sh
+    source "$self_dir/../_names.sh"
+    local candidates=() d
+    for d in "${CAVIL_PROJECT_SKILL_DIRS[@]}"; do
+        candidates+=("${PROJECT_ROOT:-}/$d/drivers/${name}.sh")
+    done
+    candidates+=("${self_dir}/${name}.sh")
     # 能力标志复位：同一进程里换 driver 时不能留着上一个 driver 的声明
     AGENT_SESSION_ISOLATION=0
     AGENT_SESSION_PROOF=0
@@ -296,15 +300,15 @@ source_driver() {
             for fn in agent_bin agent_has_history agent_is_busy \
                       agent_command_new agent_command_resume; do
                 if ! declare -f "$fn" > /dev/null; then
-                    echo "[coding-agent] ERROR: driver '$name' 缺少函数 $fn ($d)" >&2
+                    echo "[cavil-loop] ERROR: driver '$name' 缺少函数 $fn ($d)" >&2
                     return 1
                 fi
             done
             return 0
         fi
     done
-    echo "[coding-agent] ERROR: 找不到 driver '$name'" >&2
+    echo "[cavil-loop] ERROR: 找不到 driver '$name'" >&2
     echo "  内置 driver 在 $self_dir/" >&2
-    echo "  项目级 driver 路径：\$PROJECT_ROOT/.agents/skills/coding-agent-work-loop/drivers/<name>.sh" >&2
+    echo "  项目级 driver 路径：\$PROJECT_ROOT/.agents/skills/cavil-loop/drivers/<name>.sh" >&2
     return 1
 }

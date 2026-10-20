@@ -398,7 +398,7 @@ class InstructionTest(unittest.TestCase):
         self.assertIn('直接走 § A 开发阶段', texts['sub-issue.template.md'])
 
     def test_本仓库自己的项目经验是合法格式(self):
-        own = Path(__file__).resolve().parent.parent / '.agents/skills/coding-agent-work-loop/prompts/lessons.md'
+        own = Path(__file__).resolve().parent.parent / '.agents/skills/cavil-loop/prompts/lessons.md'
         lessons = rl.parse(own.read_text())
         for e in lessons.entries:
             self.assertEqual(len(e.seen) >= rl.THRESHOLD, e.section == '硬规则', f'L{e.id}')
@@ -407,7 +407,7 @@ class InstructionTest(unittest.TestCase):
         # 迁移时按「复盘报告写明这个 PR 出过这个错」逐条计次；每个 Seen 必须带链接，
         # 而且这个 PR 号和链接都写在迁移表里（报告原文与行号在同一行）。
         root = Path(__file__).resolve().parent.parent
-        lessons = rl.parse((root / '.agents/skills/coding-agent-work-loop/prompts/lessons.md').read_text())
+        lessons = rl.parse((root / '.agents/skills/cavil-loop/prompts/lessons.md').read_text())
         table = (root / 'docs/retrospectives/lessons-migration.md').read_text()
         rows = table.split('\n')
         for e in lessons.entries:

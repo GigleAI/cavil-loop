@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  coding-agent-work-loop launchd template (macOS user agent).
-  setup.sh substitutes {{KEY}} / {{HOME}} / {{SKILL_DIR}} / {{ENV_FILE}} / {{LOG_DIR}} /
+  cavil-loop launchd template (macOS user agent).
+  setup.sh substitutes {{LABEL}} / {{KEY}} / {{HOME}} / {{SKILL_DIR}} / {{ENV_FILE}} / {{LOG_DIR}} /
   {{BASH_BIN}} / {{POLL_INTERVAL}} (from POLL_INTERVAL_SECS in the project config)
-  and writes the result to ~/Library/LaunchAgents/dev.luosky.coding-agent-work-loop.<key>.plist.
+  and writes the result to ~/Library/LaunchAgents/dev.luosky.cavil-loop.<key>.plist.
 
   systemd-equivalence cheat sheet:
     OnUnitActiveSec=60s     -> StartInterval=60
@@ -15,7 +15,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>dev.luosky.coding-agent-work-loop.{{KEY}}</string>
+    <string>{{LABEL}}</string>
 
     <key>ProgramArguments</key>
     <array>

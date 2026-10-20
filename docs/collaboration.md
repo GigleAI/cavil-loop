@@ -72,7 +72,7 @@ CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 
 ### Project-specific prompt per role
 
-Each role wants a different worker prompt. Drop role-specific overrides at `<host>/.agents/skills/coding-agent-work-loop/prompts/` and switch by config — or split prompts/ per role and point each instance at its own override. (The lookup is hard-coded today; if you need per-role prompt selection, see "Roadmap" below.)
+Each role wants a different worker prompt. Drop role-specific overrides at `<host>/.agents/skills/cavil-loop/prompts/` and switch by config — or split prompts/ per role and point each instance at its own override. (The lookup is hard-coded today; if you need per-role prompt selection, see "Roadmap" below.)
 
 ### One systemd timer per role
 
@@ -81,9 +81,9 @@ bash setup.sh ~/myproject pm-agent
 bash setup.sh ~/myproject qa-agent
 bash setup.sh ~/myproject dev-agent
 
-systemctl --user enable --now coding-agent-poll@pm-agent.timer
-systemctl --user enable --now coding-agent-poll@qa-agent.timer
-systemctl --user enable --now coding-agent-poll@dev-agent.timer
+systemctl --user enable --now cavil-loop-poll@pm-agent.timer
+systemctl --user enable --now cavil-loop-poll@qa-agent.timer
+systemctl --user enable --now cavil-loop-poll@dev-agent.timer
 ```
 
 Each timer ticks independently; each daemon scans only its sub-label.
@@ -123,7 +123,7 @@ Alex review:
 
 ### 3. Specialized coding agents by stack
 
-Repo is monorepo with `frontend/` (React) + `backend/` (Go). Two coding-agent instances:
+Repo is monorepo with `frontend/` (React) + `backend/` (Go). Two cavil-loop instances:
 
 | Role | Label | Worktree setup | Prompt focus |
 |------|-------|----------------|--------------|
@@ -136,7 +136,7 @@ Routing rule for triage: the issue's file path / labels (`area/frontend`, `area/
 
 - **Naming convention**: keep `<state>` consistent (`pending`, `agent`, `Done`); role goes after the third `/`. Avoid mixing styles like `pending/PM` vs `pending/agent/PM` in the same repo
 - **Concurrency**: each instance has its own state.json + worktree base (set `WORKTREE_BASE` differently per role to prevent collisions), so they don't trip over each other
-- **Worker prompts per role**: easiest is one host project per role's worktree base + per-role `.agents/skills/coding-agent-work-loop/prompts/` overrides. Alternatively, a future enhancement could let one host project switch prompt sets by role suffix
+- **Worker prompts per role**: easiest is one host project per role's worktree base + per-role `.agents/skills/cavil-loop/prompts/` overrides. Alternatively, a future enhancement could let one host project switch prompt sets by role suffix
 - **Handoff in prompts**: each role's prompt should explicitly list "label to apply when done." E.g., PM-agent's prompt ends with "apply `pending/human` for spec approval, **not** any other label"
 - **State pollution**: if Alex's `pending/human/Alex` work also fits Sam's queue later, just change the label — no state to migrate
 - **GitHub assignees as alternative**: you could mirror reviewer routing onto GitHub's native "Assignees" field instead of label suffixes. Labels are simpler to filter; assignees are first-class but lack the per-state breakdown

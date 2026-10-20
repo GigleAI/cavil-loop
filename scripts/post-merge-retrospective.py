@@ -151,6 +151,26 @@ def run_job(job, work, now):
     return job
 
 
+# Project override directories, highest priority first. Must equal
+# CAVIL_PROJECT_SKILL_DIRS in scripts/_names.sh (tests/cavil-names.test.sh compares them):
+# prompt composition reads lessons.md from the first of these that has it, so the
+# writer has to pick the same file or the next dispatch reads a stale copy.
+PROJECT_SKILL_DIRS = ('.agents/skills/cavil-loop',
+                      '.agents/skills/coding-agent-work-loop',
+                      '.agents/skills/coding-agent-workflow')
+
+
+def project_lessons_path(checkout):
+    """The lessons file the next dispatch will read; a new one goes next to the project's overrides."""
+    for folder in PROJECT_SKILL_DIRS:
+        if (checkout / folder / 'prompts/lessons.md').is_file():
+            return f'{folder}/prompts/lessons.md'
+    for folder in PROJECT_SKILL_DIRS:
+        if (checkout / folder).is_dir():
+            return f'{folder}/prompts/lessons.md'
+    return f'{PROJECT_SKILL_DIRS[0]}/prompts/lessons.md'
+
+
 def review(repo, job, queue, root):
     number = job['pr']
     project = Path(os.environ['PROJECT_ROOT'])
@@ -163,7 +183,6 @@ def review(repo, job, queue, root):
     base = os.environ.get('BASE_BRANCH', 'main')
     ref = f'origin/{base}'
     report_path = f'docs/retrospectives/pr-{number}.md'
-    lessons_path = '.agents/skills/coding-agent-work-loop/prompts/lessons.md'
     command(['git', 'fetch', 'origin'], project)
     # Remote report is the durable completion marker, including crash after push.
     exists = subprocess.run(['git', 'cat-file', '-e', f'{ref}:{report_path}'], cwd=project,
@@ -176,6 +195,7 @@ def review(repo, job, queue, root):
         checkout = Path(folder) / 'worktree'
         command(['git', 'worktree', 'add', '--detach', str(checkout), ref], project)
         try:
+            lessons_path = project_lessons_path(checkout)
             lessons_file = checkout / lessons_path
             # Before the paid model call: an old-format file can't be judged.
             old_lessons = baseline(lessons_file.read_text() if lessons_file.exists() else None)

@@ -37,7 +37,7 @@ Welcome. This is a small tool with no CLA, no agreement to sign — it's MIT lic
    - **Motivation**: what's being solved / fixed. Link related issues via `Closes #N` / `Refs #N`
    - **Changes**: 1–2 paragraphs or a bullet list. Don't make the reviewer read the diff to figure it out
    - **Verification**: how you tested it (which commands you ran / which project you connected it to / which prompt scenario you verified)
-   - **Impact**: if you changed `coding-agent.config.example` / `prompts/*.template.md` / state.json schema, say so explicitly — these are compatibility-bound interfaces
+   - **Impact**: if you changed `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema, say so explicitly — these are compatibility-bound interfaces
 5. **Keep PRs small**: one focused change per PR. Mixing daemon changes + a rename + a new feature in one PR will get split
 6. **Style**: follow existing conventions (shell `set -euo pipefail` + `log()` helper + functions from `_lib.sh`; markdown follows the project's bilingual layout)
 

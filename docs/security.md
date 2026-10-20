@@ -49,7 +49,7 @@ likely thing to trip platform rate-limiting or abuse detection — and it sits o
 the same account that carries your commit authorship and every write permission.
 When that account goes down, you lose the writes too.
 
-Set `WRITE_GH_TOKEN` (in `coding-agent.config`, or in the scheduler's
+Set `WRITE_GH_TOKEN` (in `cavil-loop.config`, or in the scheduler's
 EnvironmentFile) to split them:
 
 | | `GH_TOKEN` | `WRITE_GH_TOKEN` |
@@ -76,7 +76,7 @@ token — exactly the permission this is meant to take away from it.
 - It is **not** a local sandbox. The daemon and the worker run as the same UNIX
   user, so either can read the other's files. What stops the worker is the hard
   constraint in the prompt templates ("don't read off-topic local files"), not
-  file permissions. If you put both tokens in `coding-agent.config`, note that
+  file permissions. If you put both tokens in `cavil-loop.config`, note that
   `AGENTS.md` routinely points the worker at that file for local dry-runs —
   keeping `GH_TOKEN` in the EnvironmentFile avoids handing it over. Under the
   cron fallback there is no EnvironmentFile, so both have to live in the config.
@@ -85,7 +85,7 @@ token — exactly the permission this is meant to take away from it.
   not of the machine.
 
 **Any file holding a token must be 0600.** `setup.sh` enforces this on both
-`coding-agent.config` and the EnvironmentFile (including on existing installs),
+`cavil-loop.config` and the EnvironmentFile (including on existing installs),
 and the daemon logs a warning each round if a config that holds a token is
 group- or world-readable. This matters: the common `umask 0002` produces `0664`,
 which every local user can read.
@@ -133,7 +133,7 @@ on failure. Set `PRICE_AUTO_FETCH=0` to disable it entirely.
 
 Opt in as needed:
 
-- **Author allowlist**: add `TRUSTED_AUTHORS="user1 user2"` to `coding-agent.config`; daemon only dispatches when the issue author / latest PR commenter is in the list. (Not currently implemented; happy to add — priority depends on your exposure surface.)
+- **Author allowlist**: add `TRUSTED_AUTHORS="user1 user2"` to `cavil-loop.config`; daemon only dispatches when the issue author / latest PR commenter is in the list. (Not currently implemented; happy to add — priority depends on your exposure surface.)
 - **Network sandbox**: run the worker in `bwrap` / `firejail`, restricting network to github.com / anthropic.com only. Heavyweight but effective.
 - **Approval gate**: after dispatch, the worker **writes a plan but doesn't execute**; a second label `approved/agent` is required to actually act. Adds one round-trip, but maximally safe.
 

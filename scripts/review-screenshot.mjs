@@ -13,7 +13,7 @@
  *
  * 用法：
  *   node review-screenshot.mjs \
- *     --port 4117 --out ~/.local/state/coding-agent-poll/review-shots/pr-446 \
+ *     --port 4117 --out ~/.local/state/cavil-loop/review-shots/pr-446 \
  *     --rev "$(git rev-parse --short HEAD)-$(date +%s%N)" \
  *     [--auth e2e/.auth/user.json] [--viewport 1280x900] \
  *     --pages '/wrong-book=wrong-book,/knowledge-map=knowledge-map'

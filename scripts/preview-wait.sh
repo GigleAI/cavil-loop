@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# coding-agent-preview-app@<port>.service 的 ExecStartPost 就绪门。
+# cavil-loop-preview-app@<port>.service（改名前叫 coding-agent-preview-app@<port>.service） 的 ExecStartPost 就绪门。
 #
 # 轮询后端端口直到能 accept。ExecStartPost 返回前 start job 不算完成，
 # 于是 After=app 的 proxy 不会在 node 还没 bind 时就开始转发（那样首访必 502）。
@@ -8,7 +8,10 @@
 set -euo pipefail
 
 PORT="${1:?need public port}"
-CONF="$HOME/.config/coding-agent-work-loop/preview/${PORT}.conf"
+# 登记文件在新目录（~/.config/cavil-loop/preview）还是改名前的旧目录，由 _names.sh 挑
+# shellcheck source=_names.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_names.sh"
+CONF="$(cavil_preview_conf "$PORT")"
 # shellcheck disable=SC1090
 source "$CONF"
 

@@ -26,7 +26,7 @@ done
 # 「整行原样用脚本输出」，于是模型名只留在隐藏的 agent-metrics 注释里，评论上看不到。
 # 示例必须跟 driver 的真实输出同形，否则下一个人照抄示例又会把它抄没。
 for name in new-issue issue-comment pr-comment review; do
-    file="$REPO_DIR/.agents/skills/coding-agent-work-loop/prompts/$name.extra.md"
+    file="$REPO_DIR/.agents/skills/cavil-loop/prompts/$name.extra.md"
     if grep -qE '^token .*cache write.*（模型：' "$file" \
        && grep -qF '行末的模型说明同样由脚本自己补' "$file"; then
         echo "  ✅ $name.extra footer 示例带模型说明"

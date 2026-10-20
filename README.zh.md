@@ -1,10 +1,16 @@
-# coding-agent-work-loop
+# cavil-loop
 
 > [English](README.md) · **中文**
 
 > 对 AI 批量提需求，异步 review PR，就像和真人同事一起工作一样。
 >
 > 把「陪 AI 一步步写代码」变成「睡一觉起来批 PR」。
+
+### 名字由来
+
+Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说「I don't want to be human」的赛昂人。这个项目取的就是这个意思：agent 不必扮成人，但和它协作就像和一个真人同事一起工作——你把 issue 派给它，它交回设计方案和 PR，你来 review。
+
+> 本项目由 `coding-agent-work-loop` 改名而来。新安装的路径、后台任务名和调用命令全部用 `cavil-loop`；改名前装好的机器继续用旧名字照常运行，见[运维手册 → 改名前的安装](docs/operations.zh.md#改名前的安装)。
 
 ## 它是什么
 
@@ -120,10 +126,10 @@ npx skills add GigleAI/cavil-loop -g
 <summary>手动安装（不想用 npx 的话）</summary>
 
 ```bash
-git clone https://github.com/GigleAI/cavil-loop.git ~/github/coding-agent-work-loop
+git clone https://github.com/GigleAI/cavil-loop.git ~/github/cavil-loop
 mkdir -p ~/.agents/skills ~/.claude/skills
-ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
-ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop
+ln -s ~/github/cavil-loop ~/.agents/skills/cavil-loop
+ln -s ~/.agents/skills/cavil-loop ~/.claude/skills/cavil-loop
 ```
 
 `setup.sh` 会把 Linux 安装迁移到不可变的受管 release。checkout 仍可用于开发，但实际 daemon 跟随配置的远端 base 分支，不会再改动这份 checkout。
@@ -132,10 +138,10 @@ ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work
 ### 2. 接入一个项目
 
 ```bash
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
-或者直接在 Claude Code 里说「帮我把 coding-agent-work-loop 装到 ~/path/to/your-project」，AI 会自己跑。
+或者直接在 Claude Code 里说「帮我把 cavil-loop 装到 ~/path/to/your-project」，AI 会自己跑。
 
 一条命令搞定：
 - 建项目专属配置

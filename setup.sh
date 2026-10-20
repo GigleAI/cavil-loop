@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 把 coding-agent-work-loop daemon 接入一个 host project。
+# 把 cavil-loop daemon 接入一个 host project。
 #
 # 关键设计：本 skill **不复制脚本到 host project**。Linux 上 setup 会把当前 main
 # 发布到不可变 release，并让稳定 skill 软链指向它；host project 里只多两样东西：
-#   1. coding-agent.config       —— 本项目专属配置（gitignored）
+#   1. cavil-loop.config         —— 本项目专属配置（gitignored）
 #   2. .gitignore 加一行排除上述 config
 #
 # OS 自动判断：
@@ -16,6 +16,11 @@
 # 例：
 #   bash setup.sh ~/github/myproject
 #   bash setup.sh ~/github/myproject acme       # 自定义 instance key
+#
+# 新旧名字：新装的项目一律用 cavil-loop 命名（~/.config/cavil-loop/、cavil-loop-poll@
+# 等）。对改名前装好的项目（~/.config/coding-agent-work-loop/<key>.conf 已存在）重跑
+# 本脚本时，继续沿用它的旧名字——否则会给同一个项目再装一套新的后台任务，两套
+# 轮询抢同一批 issue。旧安装的迁移是另一件事，不在这里做。
 set -euo pipefail
 
 HOST="${1:-}"
@@ -51,6 +56,29 @@ if ! [[ "$KEY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     exit 1
 fi
 
+# ── 新装还是改名前的旧安装 ──
+# shellcheck source=scripts/_names.sh
+source "$SKILL_DIR/scripts/_names.sh"
+if [ ! -e "$CAVIL_CONFIG_HOME/$KEY.conf" ] && [ -e "$CAVIL_LEGACY_CONFIG_HOME/$KEY.conf" ]; then
+    LAYOUT="legacy"
+    conf_dir="$CAVIL_LEGACY_CONFIG_HOME"
+    UNIT_PREFIX="$CAVIL_LEGACY_UNIT_PREFIX"
+    SLICE_UNIT="$CAVIL_LEGACY_SLICE"
+    SKILL_LINK="$CAVIL_LEGACY_SKILL_HOME"
+    STATE_ROOT="$CAVIL_LEGACY_STATE_HOME"
+    LAUNCHD_LABEL="dev.luosky.coding-agent-work-loop.$KEY"
+    LAUNCHD_LOG_DIR="$HOME/Library/Logs/coding-agent-work-loop"
+else
+    LAYOUT="new"
+    conf_dir="$CAVIL_CONFIG_HOME"
+    UNIT_PREFIX="$CAVIL_UNIT_PREFIX"
+    SLICE_UNIT="$CAVIL_SLICE"
+    SKILL_LINK="$CAVIL_SKILL_HOME"
+    STATE_ROOT="$CAVIL_STATE_HOME"
+    LAUNCHD_LABEL="dev.luosky.cavil-loop.$KEY"
+    LAUNCHD_LOG_DIR="$HOME/Library/Logs/cavil-loop"
+fi
+
 # ── OS 判定 ──
 OS="$(uname -s)"
 case "$OS" in
@@ -74,17 +102,20 @@ else
     BASH_BIN="/bin/bash"
 fi
 
-echo "── coding-agent-work-loop setup ──"
+echo "── cavil-loop setup ──"
 echo "  host project: $HOST"
 echo "  skill dir:    $SKILL_DIR"
 echo "  instance key: $KEY"
+if [ "$LAYOUT" = legacy ]; then
+    echo "  layout:       改名前的旧安装（$conf_dir/$KEY.conf 已存在），沿用旧名字"
+fi
 echo "  scheduler:    $SCHEDULER ($OS)"
 echo "  bash:         $BASH_BIN"
 echo
 
 # ── Worker agent 选择 ──
 # 优先级：WORKER_AGENT env > 默认 claude
-# （首次 setup 时项目还没 coding-agent.config，所以以 env 覆盖为唯一入口；
+# （首次 setup 时项目还没本地配置文件，所以以 env 覆盖为唯一入口；
 #  二次 setup 时该字段已写进 config，下面那段会 skip 重写。）
 WORKER_AGENT_PICK="${WORKER_AGENT:-claude}"
 
@@ -138,9 +169,9 @@ echo
 if [ "$OS" = Linux ]; then
     echo "── 0. 发布受管 skill release ──"
     SOURCE_SKILL_DIR="$SKILL_DIR"
-    CAVIL_DEPLOY_SOURCE_DIR="$SOURCE_SKILL_DIR" \
+    CAVIL_DEPLOY_SOURCE_DIR="$SOURCE_SKILL_DIR" CAVIL_SKILL_LINK="$SKILL_LINK" \
         bash "$SOURCE_SKILL_DIR/scripts/skill-deploy.sh" --bootstrap --force
-    SKILL_DIR="$HOME/.agents/skills/coding-agent-work-loop"
+    SKILL_DIR="$SKILL_LINK"
     runtime_skill="$(readlink -f "$SKILL_DIR" 2>/dev/null || true)"
     case "$runtime_skill" in
         "$HOME/.agents/releases/cavil-loop/releases/"*) ;;
@@ -167,9 +198,12 @@ config_value() {
     ( set -a; . "$config" >/dev/null 2>&1 || true; eval "printf '%s' \"\${$1:-}\"" )
 }
 
-# ── 1. 生成 host/coding-agent.config ──
-echo "── 1. 生成 $HOST/coding-agent.config ──"
-config="$HOST/coding-agent.config"
+# ── 1. 生成 host/cavil-loop.config ──
+# 项目里已经有改名前的 coding-agent.config 就继续用它，不另建一份：项目的忽略规则写的
+# 是旧文件名，改名后新文件不被忽略，可能被 worker 顺手提交进仓库。
+config="$(cavil_project_config "$HOST")"
+config_name="$(basename "$config")"
+echo "── 1. 生成 $config ──"
 # 这个文件可以装 GitHub token（GH_TOKEN / WRITE_GH_TOKEN），所以必须 0600。
 # 以前完全不管权限：`cp` / `cat >` 出来的权限随 umask 走，而常见的 umask 0002
 # 给出的是 0664 —— 同机任何用户一个 cat 就把 PAT 抄走了。
@@ -184,12 +218,12 @@ if [ -f "$config" ]; then
 else
     default_repo="$(cd "$HOST" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "owner/repo")"
     project_name="$(basename "$HOST")"
-    cp "$SKILL_DIR/coding-agent.config.example" "$config"
+    cp "$SKILL_DIR/cavil-loop.config.example" "$config"
     subst_inplace "$config" \
         "s|myorg/myrepo|$default_repo|" \
         "s|\$HOME/github/myproject|$HOST|" \
         "s|\$HOME/github/worktree/myproject|$HOME/github/worktree/$project_name|" \
-        "s|\$HOME/.local/state/coding-agent-poll|$HOME/.local/state/coding-agent-poll/$project_name|" \
+        "s|\$HOME/.local/state/cavil-loop\"|$STATE_ROOT/$project_name\"|" \
         "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|" \
         "s|^WORKER_AGENT=\"claude\"|WORKER_AGENT=\"$WORKER_AGENT_PICK\"|"
     harden_perms "$config"
@@ -231,21 +265,20 @@ done
 
 # ── 2. .gitignore ──
 echo
-echo "── 2. .gitignore 排除 coding-agent.config ──"
+echo "── 2. .gitignore 排除 $config_name ──"
 gitignore="$HOST/.gitignore"
-if [ -f "$gitignore" ] && grep -qE "^\s*coding-agent\.config\s*$" "$gitignore"; then
+if [ -f "$gitignore" ] && grep -qE "^\s*/?${config_name//./\\.}\s*$" "$gitignore"; then
     echo "  · 已在 .gitignore"
 else
     [ -f "$gitignore" ] || touch "$gitignore"
-    printf '\n# coding-agent-work-loop per-project config\ncoding-agent.config\n' >> "$gitignore"
+    printf '\n# cavil-loop per-project config\n%s\n' "$config_name" >> "$gitignore"
     echo "  ✓ 加进 .gitignore"
 fi
 
-# ── 3. 创建 ~/.config/coding-agent-work-loop/<key>.conf ──
+# ── 3. 创建 ~/.config/cavil-loop/<key>.conf（旧安装是 ~/.config/coding-agent-work-loop/）──
 # systemd 用它作 EnvironmentFile；launchd 由生成的 plist 通过 `source` 加载。
 echo
 echo "── 3. 注册 daemon 环境文件 ──"
-conf_dir="$HOME/.config/coding-agent-work-loop"
 mkdir -p "$conf_dir"
 env_file="$conf_dir/$KEY.conf"
 
@@ -294,13 +327,14 @@ install_systemd() {
     mkdir -p "$sys_dir"
     local f src dst
     # slice 名里的 \x2d 是必须的转义（`-` 在 slice 单元名里是层级分隔符），别"顺手改成"
-    # app-coding-agent-poll.slice——那是另一个单元，配上去等于没配。
-    # coding-agent-preview*@ 三件套是按需 preview 的 socket 激活链路（socket → proxy →
+    # app-cavil-loop-poll.slice——那是另一个单元，配上去等于没配。
+    # ${UNIT_PREFIX}-preview*@ 三件套是按需 preview 的 socket 激活链路（socket → proxy →
     # app）。跟 poll 无依赖关系，装着不用不产生任何开销——没跑过 preview-serve.sh 就
     # 没有任何 instance 存在。项目没配 PREVIEW_EXEC 时 preview-serve.sh 自己会拒绝。
-    for f in coding-agent-poll@.service coding-agent-poll@.timer 'app-coding\x2dagent\x2dpoll.slice' \
-             'coding-agent-preview@.socket' 'coding-agent-preview@.service' \
-             'coding-agent-preview-app@.service'; do
+    # 旧安装（LAYOUT=legacy）装的是仓库里原样保留的 coding-agent-* 旧单元。
+    for f in "${UNIT_PREFIX}-poll@.service" "${UNIT_PREFIX}-poll@.timer" "$SLICE_UNIT" \
+             "${UNIT_PREFIX}-preview@.socket" "${UNIT_PREFIX}-preview@.service" \
+             "${UNIT_PREFIX}-preview-app@.service"; do
         src="$SKILL_DIR/systemd/$f"
         dst="$sys_dir/$f"
         if [ -L "$dst" ]; then
@@ -330,16 +364,17 @@ install_systemd() {
     #
     # OnBootSec / OnActiveSec 固定 30s（跟模板一致，它们只负责「开机后把链条种下」），
     # 只有循环间隔 OnUnitActiveSec 跟着 POLL_INTERVAL_SECS 走。
-    local drop_dir="$sys_dir/coding-agent-poll@$KEY.timer.d"
+    local drop_dir="$sys_dir/${UNIT_PREFIX}-poll@$KEY.timer.d"
     local drop="$drop_dir/interval.conf"
-    local mark="generated by coding-agent-work-loop setup.sh"
-    if [ -e "$drop" ] && ! grep -qF "$mark" "$drop" 2>/dev/null; then
+    local mark="generated by cavil-loop setup.sh"
+    # 改名前的 setup.sh 写的标记是 coding-agent-work-loop，同样算「自动生成、可以覆盖」
+    if [ -e "$drop" ] && ! grep -qE "generated by (cavil-loop|coding-agent-work-loop) setup\.sh" "$drop" 2>/dev/null; then
         echo "  ⚠️  $drop 是手写的，不覆盖"
         echo "     想让 POLL_INTERVAL_SECS=$POLL_SECS 生效：删掉它再重跑 setup.sh"
     else
         mkdir -p "$drop_dir"
         cat > "$drop" <<DROP
-# $mark —— 手改会被下次 setup.sh 覆盖，要固定值请改 coding-agent.config 的 POLL_INTERVAL_SECS
+# $mark —— 手改会被下次 setup.sh 覆盖，要固定值请改 $config_name 的 POLL_INTERVAL_SECS
 # 本实例轮询间隔：${POLL_SECS}s
 #
 # 三项必须一起写：systemd 把 OnBootSec / OnActiveSec / OnUnitActiveSec 当同一张 list，
@@ -360,10 +395,10 @@ install_launchd() {
     # launchd 没有 systemd template 模式，每 instance 必须一份独立 plist。
     # 因此 plist 是「生成」而非 symlink：skill 升级想换 plist 模板要重跑 setup.sh。
     local plist_dir="$HOME/Library/LaunchAgents"
-    local log_dir="$HOME/Library/Logs/coding-agent-work-loop"
-    local label="dev.luosky.coding-agent-work-loop.$KEY"
+    local log_dir="$LAUNCHD_LOG_DIR"
+    local label="$LAUNCHD_LABEL"
     local plist="$plist_dir/$label.plist"
-    local template="$SKILL_DIR/launchd/dev.luosky.coding-agent-work-loop.plist.template"
+    local template="$SKILL_DIR/launchd/dev.luosky.cavil-loop.plist.template"
 
     mkdir -p "$plist_dir" "$log_dir"
 
@@ -378,6 +413,7 @@ install_launchd() {
         # 写到 tempfile 再 mv，避免半成品 plist 留在 LaunchAgents/
         local tmp; tmp=$(mktemp)
         sed \
+            -e "s|{{LABEL}}|$label|g" \
             -e "s|{{KEY}}|$KEY|g" \
             -e "s|{{HOME}}|$HOME|g" \
             -e "s|{{SKILL_DIR}}|$SKILL_DIR|g" \
@@ -439,26 +475,27 @@ echo
 echo "── 7. 启动 daemon ──"
 
 enable_systemd() {
-    read -rp "现在 enable & start coding-agent-poll@$KEY.timer？[y/N] " yn
+    local timer="${UNIT_PREFIX}-poll@$KEY.timer"
+    read -rp "现在 enable & start ${timer}？[y/N] " yn
     case "$yn" in
         y|Y|yes)
             systemctl --user daemon-reload
-            systemctl --user enable --now "coding-agent-poll@$KEY.timer"
+            systemctl --user enable --now "$timer"
             echo "  ✓ enabled & running"
             echo
-            echo "    状态：systemctl --user status coding-agent-poll@$KEY.timer"
+            echo "    状态：systemctl --user status $timer"
             echo "    日志：tail -f \$(grep ^STATE_DIR $config | sed 's/.*=//' | tr -d '\"')/poll.log"
             ;;
         *)
-            echo "  跳过；以后：systemctl --user enable --now coding-agent-poll@$KEY.timer"
+            echo "  跳过；以后：systemctl --user enable --now $timer"
             ;;
     esac
 }
 
 enable_launchd() {
-    local label="dev.luosky.coding-agent-work-loop.$KEY"
+    local label="$LAUNCHD_LABEL"
     local plist="$HOME/Library/LaunchAgents/$label.plist"
-    local log_dir="$HOME/Library/Logs/coding-agent-work-loop"
+    local log_dir="$LAUNCHD_LOG_DIR"
     read -rp "现在 bootstrap & start ${label}？[y/N] " yn
     case "$yn" in
         y|Y|yes)
@@ -488,7 +525,7 @@ echo "✅ setup 完成。"
 echo
 echo "下一步："
 echo "  1. \$EDITOR $config 检查配置（特别是 WORKTREE_SETUP_CMD 适配你的包管理器）"
-echo "  2. 想自定义 worker prompt 风格：把 prompts/*.template.md 复制到 $HOST/.coding-agent/prompts/ 改"
+echo "  2. 想自定义 worker prompt 风格：把 prompts/*.template.md 复制到 $HOST/.agents/skills/cavil-loop/prompts/ 改"
 echo "  3. 试跑：gh issue edit <N> --add-label pending/agent  → 60s 内 daemon 会接管"
 if [ "$SCHEDULER" = "systemd" ]; then
     echo "  4. 用户不在线也要跑：sudo loginctl enable-linger \$USER"

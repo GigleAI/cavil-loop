@@ -37,7 +37,7 @@
    - **动机**：解决什么 / 修什么。链上相关 issue 用 `Closes #N` / `Refs #N`
    - **改动**：1-2 段或 bullet 列表，不要让 reviewer 自己读 diff 找
    - **验证**：你自己怎么试过的（跑了哪条命令 / 在哪个项目接入跑过 / 改了哪个 prompt 后用什么场景验证）
-   - **影响面**：如果改了 `coding-agent.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口
+   - **影响面**：如果改了 `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口
 5. **保持小**：一个 PR 一个焦点。改 daemon + 顺手重命名 + 加新功能塞一个 PR 里基本会被要求拆
 6. **Style**：跟现有代码风格走（shell `set -euo pipefail` + `log()` helper + 用 `_lib.sh` 里的函数；markdown 用现有中文/英文混排习惯）
 

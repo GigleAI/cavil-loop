@@ -1,10 +1,16 @@
-# coding-agent-work-loop
+# cavil-loop
 
 > **English** · [中文](README.zh.md)
 
 > Send AI a batch of issues, async-review the PRs it ships — like working with a real teammate.
 >
 > Turn "babysitting AI step-by-step" into "sleep on it, review the PRs in the morning."
+
+### Why the name
+
+Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be human." That is the idea here: the agent does not need to pretend to be human, yet working with it feels like working with a real colleague — you hand it issues, it comes back with design proposals and PRs, and you review them.
+
+> The project was renamed from `coding-agent-work-loop`. New installations use `cavil-loop` for every path, scheduler name and the skill command; installations made before the rename keep running on their old names. See [operations → installations from before the rename](docs/operations.md#installations-from-before-the-rename).
 
 ## What it is
 
@@ -120,10 +126,10 @@ npx skills add GigleAI/cavil-loop -g
 <summary>Manual install (without npx)</summary>
 
 ```bash
-git clone https://github.com/GigleAI/cavil-loop.git ~/github/coding-agent-work-loop
+git clone https://github.com/GigleAI/cavil-loop.git ~/github/cavil-loop
 mkdir -p ~/.agents/skills ~/.claude/skills
-ln -s ~/github/coding-agent-work-loop ~/.agents/skills/coding-agent-work-loop
-ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work-loop
+ln -s ~/github/cavil-loop ~/.agents/skills/cavil-loop
+ln -s ~/.agents/skills/cavil-loop ~/.claude/skills/cavil-loop
 ```
 
 `setup.sh` migrates Linux installations to immutable managed releases. The checkout remains available for development, but the running daemon follows the configured remote base branch instead of mutating that checkout.
@@ -132,10 +138,10 @@ ln -s ~/.agents/skills/coding-agent-work-loop ~/.claude/skills/coding-agent-work
 ### 2. Connect a project
 
 ```bash
-bash ~/.agents/skills/coding-agent-work-loop/setup.sh ~/path/to/your-project
+bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
-Or just say "install coding-agent-work-loop on ~/path/to/your-project" inside Claude Code — the AI will run it.
+Or just say "install cavil-loop on ~/path/to/your-project" inside Claude Code — the AI will run it.
 
 One command handles: per-project config, registering the background poller, creating `pending/agent` / `pending/human` etc. labels in the repo, starting the timer. Non-destructive, idempotent.
 

@@ -413,7 +413,7 @@ chk "负对照：删掉 gpt-5.6-sol 的 cache_write → partial + 缺价 10 万"
 # 的型号清单与核对日期）。只改一处，其余会悄悄落后，所以逐处钉住。
 CHECKED=$(jq -r '.checked_at' "$PRICE_JSON")
 JSON_MODELS=$(jq -r '.models | keys[]' "$PRICE_JSON" | sort | tr '\n' ' ')
-EXAMPLE="$REPO_DIR/coding-agent.config.example"
+EXAMPLE="$REPO_DIR/cavil-loop.config.example"
 ex_json=$(sed -n "s/^# export CODEX_PRICES='\(.*\)'\$/\1/p" "$EXAMPLE")
 chk "配置模板的 CODEX_PRICES 示例与内置 JSON 逐项相等" \
     "$(jq -n --argjson a "${ex_json:-null}" --slurpfile b "$PRICE_JSON" '$a == $b[0].models')" "true"

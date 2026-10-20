@@ -1,5 +1,5 @@
 # Shared immutable-release deployment configuration.
-# Copy to ~/.config/coding-agent-work-loop/deploy.conf only when overriding defaults.
+# Copy to ~/.config/cavil-loop/deploy.conf only when overriding defaults.
 # This file is user-level and shared by every project instance.
 
 # Git remote and branch published into immutable releases.
@@ -18,14 +18,14 @@ CAVIL_DEPLOY_ALERT_REPO="GigleAI/cavil-loop"
 
 # Identity used for the deployer's own alert issues. Reads keep the polling
 # identity; every write (opening and closing an alert) uses this token, matching
-# the WRITE_GH_TOKEN rule in coding-agent.config. Leave it unset on a
+# the WRITE_GH_TOKEN rule in cavil-loop.config. Leave it unset on a
 # single-token install and the deployer calls gh unchanged.
 #
-# The deployer never reads any project's coding-agent.config — it is shared by
+# The deployer never reads any project's cavil-loop.config — it is shared by
 # every project instance — so a split identity has to reach it either through
 # the scheduler's EnvironmentFile or through this file.
 # WRITE_GH_TOKEN=""
 
 # Paths normally need no override.
 # CAVIL_DEPLOY_ROOT="$HOME/.agents/releases/cavil-loop"
-# CAVIL_SKILL_LINK="$HOME/.agents/skills/coding-agent-work-loop"
+# CAVIL_SKILL_LINK="$HOME/.agents/skills/cavil-loop"

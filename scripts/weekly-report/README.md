@@ -32,24 +32,26 @@ bash run.sh <project> --week-of 2026-08-24
 bash run.sh <project>
 ```
 
-定时触发：`systemd/coding-agent-weekly-report@.{service,timer}`，`OnCalendar=Mon *-*-* 07:00`。
+定时触发：`systemd/cavil-loop-weekly-report@.{service,timer}`，`OnCalendar=Mon *-*-* 07:00`。
 
 ```bash
-systemctl --user enable --now coding-agent-weekly-report@<project>.timer
+systemctl --user enable --now cavil-loop-weekly-report@<project>.timer
 ```
 
 ## 配置
 
-复用 daemon 的项目配置 `~/.config/coding-agent-work-loop/<project>.conf`
-（`PROJECT_ROOT` / `PATH` / `GH_TOKEN`）。可选覆盖项：
+复用 daemon 的项目配置 `~/.config/cavil-loop/<project>.conf`
+（`PROJECT_ROOT` / `PATH` / `GH_TOKEN`）。改名前装的项目在 `~/.config/coding-agent-work-loop/`，
+定时任务叫 `coding-agent-weekly-report@<project>.timer`，配图目录默认在
+`~/.local/state/coding-agent-poll/review-shots`——新名字的不存在时自动用旧的。可选覆盖项：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WEEKLY_REPORT_REPO` | 从 `PROJECT_ROOT` 的 git remote 推 | `owner/name` |
-| `WEEKLY_REPORT_ASSET_DIR` | `~/.local/state/coding-agent-poll/review-shots/weekly-report` | 配图落盘目录 |
+| `WEEKLY_REPORT_ASSET_DIR` | `~/.local/state/cavil-loop/review-shots/weekly-report` | 配图落盘目录 |
 | `WEEKLY_REPORT_ASSET_URL` | **必填，无默认** | 配图公网 URL 前缀。GitHub 要能抓到，必须公网可达；主机名属于部署环境，不写在本仓库里 |
 | `WEEKLY_REPORT_ASSET_ROOT_URL` | **必填，无默认** | `publish-asset.sh` 用的公网 URL 根（配图前缀去掉末段） |
-| `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/coding-agent-poll/review-shots` | `publish-asset.sh` 的落盘根目录 |
+| `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/cavil-loop/review-shots` | `publish-asset.sh` 的落盘根目录 |
 | `WEEKLY_REPORT_FONTS_DIR` | `$PROJECT_ROOT/public/fonts` | 自托管 woff2；目录不在就回落系统字体 |
 | `WEEKLY_REPORT_SUBSCRIPTION_MONTHLY` | 没配就显示「未配置」 | 订阅月费，**必须以美元填**（一个数，或多份订阅相加的 JSON 列表）。报告按天摊到每一周。填人民币不会报错，会被原样当成美元印出去 |
 | `WEEKLY_REPORT_BOT_LOGINS` | 空 | 名字**不以** `-bot` / `[bot]` 结尾的机器人账号，逗号或空白分隔、整名匹配（不按前缀放宽；和 GitHub 一样不区分大小写）。漏配的后果：它发的评论算进「你发的」，它的记账行被丢弃、AI 用量显示 0 |

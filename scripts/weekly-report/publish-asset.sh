@@ -13,12 +13,14 @@ FILE="${2:?缺文件}"
 SUBDIR="${3:-weekly-report}"
 [ -f "$FILE" ] || { echo "找不到文件 $FILE" >&2; exit 1; }
 
-CONF="$HOME/.config/coding-agent-work-loop/${PROJECT}.conf"
+# shellcheck source=../_names.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../_names.sh"
+CONF="$(cavil_project_env "$PROJECT")"
 [ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
 # shellcheck disable=SC1090
 set -a; . "$CONF"; set +a
 
-ROOT_DIR="${WEEKLY_REPORT_ASSET_ROOT:-$HOME/.local/state/coding-agent-poll/review-shots}"
+ROOT_DIR="${WEEKLY_REPORT_ASSET_ROOT:-$(cavil_review_shots)}"
 # 公网 URL 前缀没有默认值：主机名属于部署环境，不进这个公开仓库。在项目配置里设。
 ROOT_URL="${WEEKLY_REPORT_ASSET_ROOT_URL:-}"
 [ -n "$ROOT_URL" ] || {

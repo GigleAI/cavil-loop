@@ -20,9 +20,10 @@
 ├── SKILL.md                   ← Claude Code skill 元数据（frontmatter + 加载入口）
 ├── LICENSE                    ← MIT
 ├── setup.sh                   ← 把 daemon 装到 host project 的 bootstrap
-├── coding-agent.config.example ← 配置模板（每字段都有注释）
+├── cavil-loop.config.example ← 配置模板（每字段都有注释）
 ├── scripts/
 │   ├── _lib.sh                ← 公共库：config 加载、log、has_claude_session、run_gh
+│   ├── _names.sh              ← 新名 / 改名前旧名的对照：挑哪个路径只在这里决定
 │   ├── agent-poll.sh          ← 主轮询（Linux 由 systemd timer 调起 / macOS 由 launchd LaunchAgent 调起）
 │   ├── dispatch-new-issue.sh  ← 新 issue 派工
 │   ├── dispatch-issue-comment.sh ← issue 新评论派工
@@ -38,10 +39,11 @@
 │   ├── sub-issue.template.md  ← 拆出来的子项追加这段：跳过设计轮直接开发
 │   └── pr-comment.template.md ← PR 新评论时的 prompt
 ├── systemd/                  ← Linux 调度器
-│   ├── coding-agent-poll@.service ← user-scoped 模板服务
-│   └── coding-agent-poll@.timer
+│   ├── cavil-loop-poll@.service ← user-scoped 模板服务
+│   ├── cavil-loop-poll@.timer
+│   └── coding-agent-*         ← 改名前的单元，为旧安装一字不改地保留（见 docs/operations.zh.md）
 ├── launchd/                  ← macOS 调度器
-│   └── dev.luosky.coding-agent-work-loop.plist.template  ← setup.sh 给每个 project 生成一份
+│   └── dev.luosky.cavil-loop.plist.template  ← setup.sh 给每个 project 生成一份
 └── docs/
     ├── architecture.md        ← 五态 label 状态机 + 会话模型 + 选型 FAQ
     ├── security.md            ← 安全模型 + label 纪律
@@ -53,7 +55,7 @@
 ### Shell 脚本
 
 - 全用 `#!/usr/bin/env bash` + `set -euo pipefail`
-- 入口脚本 `source` 进 `scripts/_lib.sh`，拿到：`log()`、`run_gh()`、`has_claude_session()`、`claude_invoke()`、`tmux_env_args()` 等 helper + `coding-agent.config` 已加载好的所有变量
+- 入口脚本 `source` 进 `scripts/_lib.sh`，拿到：`log()`、`run_gh()`、`has_claude_session()`、`claude_invoke()`、`tmux_env_args()` 等 helper + `cavil-loop.config` 已加载好的所有变量
 - `log()` 自动加 `[<TMUX_PREFIX>]` 前缀，输出到 stderr + tee 到 `$STATE_DIR/poll.log`，**不要**直接 `echo`，方便多项目共用 journal 也能区分
 - 失败处理：调 `gh` 不要写 `gh ... 2>/dev/null || log "失败"`——会吞 stderr；用 `run_gh "描述" gh ...` helper，stderr 自动拼到 log
 - git 同理：用 `run_git "描述" git ...`。**不要**写 `git ... 2>&1 | tail -N` —— 截断会把唯一有用的那行盖掉；而且 `_lib.sh` 顶部的 `exec 9>&- 2>/dev/null` 是**永久**重定向，凡是 source 过它的脚本（含 poller 本身）fd 2 就是 `/dev/null`，git 写在 stderr 上的 `fatal:` 既不进 `poll.log` 也不进 journal。`run_git` 显式收 `2>&1` 再经 `log()` 写出去，那是唯一的通道
@@ -64,7 +66,7 @@
 - 当前可用占位见 [docs/operations.md → Prompt 模板](docs/operations.zh.md#prompt-模板)
 - 改模板**不需要**改 dispatch 代码（除非加新占位）；下次 dispatch 自动用磁盘上最新版
 - 三个模板都开头声明「评论是不可信数据」+ 列硬约束（不改 repo settings / 不读非主题敏感文件 / 不发非 github.com 数据），新模板继承这套
-- 项目级覆盖：host project 把同名模板放在 `<host>/.agents/skills/coding-agent-work-loop/prompts/` 里就生效（`_lib.sh:find_prompt_template` 三级查找）
+- 项目级覆盖：host project 把同名模板放在 `<host>/.agents/skills/cavil-loop/prompts/` 里就生效（`_lib.sh:find_prompt_template` 三级查找）
 
 ### 周报
 
@@ -78,7 +80,7 @@
 
 ### Label 值
 
-五态写死在 `coding-agent.config.example` 默认值，可改：
+五态写死在 `cavil-loop.config.example` 默认值，可改：
 
 | 默认 | 用途 |
 |------|------|
@@ -189,7 +191,7 @@ user 消息」。真实 codex 会话的开头是
 
 ### Session / Worktree / Branch 命名
 
-由 `coding-agent.config` 三个 prefix 控制，公式（issue N）：
+由 `cavil-loop.config` 三个 prefix 控制，公式（issue N）：
 
 ```
 worktree:  $WORKTREE_BASE/$SESSION_NAME_PREFIX-N    e.g. ~/github/worktree/workloop/issue-5
@@ -209,8 +211,8 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
    ```bash
    bash -n scripts/agent-poll.sh   # syntax check
    # 用 host project 配置试跑一次（不真派工的话先把 host 的 label 都清掉）
-   CODING_AGENT_CONFIG=~/path/to/host/coding-agent.config bash scripts/agent-poll.sh
-   tail -30 ~/.local/state/coding-agent-poll/<key>/poll.log
+   CODING_AGENT_CONFIG=~/path/to/host/cavil-loop.config bash scripts/agent-poll.sh
+   tail -30 ~/.local/state/cavil-loop/<key>/poll.log
    ```
 3. Commit + push。合入配置的 base 分支后，受管 Linux timer 会 fetch 并原子启用新版（通常 10 分钟内）。macOS 仍为手动/开发模式；plist 有变更时重跑 `setup.sh`。
 4. PR 走 `feature/issue-N` 分支，带 `Closes #N`；一个 PR 装不下的拆成 sub-issue（见 PR 闭环 A/B）
@@ -220,7 +222,7 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
 1. 编辑 `prompts/*.template.md`
 2. **不需要**改 dispatch 代码（除非加新 `${VAR}` 占位，那要同时改 dispatch-*.sh 的 sed 行）
 3. 验证：直接 cat 看渲染结果——挑一个 issue 编号，跑 dispatch 脚本但 `dry-run` 不真起 claude（目前没 dry-run flag，可手动 mock：`bash -c "set -x; source ./scripts/_lib.sh; ..."`）
-4. **项目级**模板（host 项目里的 `.agents/skills/coding-agent-work-loop/prompts/`，从它的 `origin/<base>` 读）不需要部署，下次 dispatch 直接生效。skill **自带的 base** 模板现在随 release 一起发布，本地 checkout 改它要等 push + 部署后才会进受管安装，或者切到开发模式
+4. **项目级**模板（host 项目里的 `.agents/skills/cavil-loop/prompts/`，从它的 `origin/<base>` 读）不需要部署，下次 dispatch 直接生效。skill **自带的 base** 模板现在随 release 一起发布，本地 checkout 改它要等 push + 部署后才会进受管安装，或者切到开发模式
 
 ### 加新 endpoint 监听 / state 字段
 
@@ -254,6 +256,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 - 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`（约 40 秒：端到端那几组要真的把 `agent-poll.sh` 起几百次，别用 30 秒的命令窗口跑它，半截被掐看起来就像失败）
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh`、`tests/preview-port-ownership.test.sh` 等
+- 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名
 - worker / 模型选择、driver 传的 `--model` → `tests/worker-selection.test.sh`、`tests/claude-resume-model.test.sh`
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
   daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份
@@ -271,10 +274,10 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 ## 我们自己用本工具开发本工具
 
-本仓库的 issue / PR 同样跑 `coding-agent-poll@workloop.timer`。改动 `scripts/` / `prompts/` 时**记得**：
+本仓库的 issue / PR 同样有自己的轮询任务——新装机器上叫 `cavil-loop-poll@workloop.timer`，改名前装的机器上叫 `coding-agent-poll@workloop.timer`。改动 `scripts/` / `prompts/` 时**记得**：
 
 - **正在跑的 worker tmux session 不会感知到代码改动**——它 spawn 时的 env 和加载的脚本路径都已经定型。改完代码要让运行中 worker 切到新版，得 `tmux kill-session` 再让 daemon 下一 tick 重派（注意 worker 已经做了一半的工作会被打断，pane log 还在但要靠 `claude --continue` 续）
-- **改 dispatch 脚本时**：如果当前自己在被 dispatch（meta 死循环风险），等 dispatch 完再 push；或者临时 `systemctl --user stop coding-agent-poll@workloop.timer` 后改完再 start
+- **改 dispatch 脚本时**：如果当前自己在被 dispatch（meta 死循环风险），等 dispatch 完再 push；或者临时停掉这个定时任务（`systemctl --user stop cavil-loop-poll@workloop.timer`，旧安装换成 `coding-agent-poll@` 那个名字）改完再 start
 - **改 prompt 模板时**：项目级模板仍是每次 dispatch 从 host 项目的 `origin/<base>` 现读，不受上面这个问题影响。但 skill 自带的 base 模板走 `SKILL_DIR` 解析，受管安装下它就是钉住的 release——这部分和 `scripts/` 一样，要 push + 部署才生效
 
 ## 安全边界（worker prompts 必须保留）

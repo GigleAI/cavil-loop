@@ -1,4 +1,5 @@
 # Local config / state
+cavil-loop.config
 coding-agent.config
 *.local
 .DS_Store
