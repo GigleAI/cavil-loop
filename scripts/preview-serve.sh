@@ -23,6 +23,8 @@ exec 8>&2
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 exec 2>&8 8>&-
+# shellcheck source=_preview_adopt.sh
+source "$SCRIPT_DIR/_preview_adopt.sh"
 
 PREVIEW_PORT_BASE="${PREVIEW_PORT_BASE:-4000}"
 PREVIEW_BACKEND_OFFSET="${PREVIEW_BACKEND_OFFSET:-10000}"
@@ -31,6 +33,7 @@ PREVIEW_EXEC="${PREVIEW_EXEC:-}"
 PREVIEW_READY_TIMEOUT="${PREVIEW_READY_TIMEOUT:-90}"
 PREVIEW_TAILSCALE_SERVE="${PREVIEW_TAILSCALE_SERVE:-false}"
 PREVIEW_URL_HOST="${PREVIEW_URL_HOST:-}"
+PREVIEW_PROBE_TIMEOUT="${PREVIEW_PROBE_TIMEOUT:-30}"
 
 # 全新注册用的那套单元和登记目录；端口已有自己名下的登记时，下面 register_locked 会改成
 # 那份登记所在的那套（旧项目的预览继续跑在旧单元上，不因为装了新单元就被切走）。
@@ -89,6 +92,20 @@ require_units() {
 }
 require_units
 
+# 失败时把单元最后 20 行日志给调用方看，省得 worker 再去翻 journal
+show_unit_log() {
+    command -v journalctl >/dev/null 2>&1 || return 0
+    echo "   ── journalctl --user -u $1 最后 20 行 ──" >&2
+    journalctl --user -u "$1" -n 20 --no-pager 2>&1 | sed 's/^/   /' >&2 || true
+}
+
+# 对公开端口发一次 GET，输出 HTTP 状态码（连不上输出空）。不跟随跳转：3xx 本身就算能打开。
+probe_http() {
+    command -v curl >/dev/null 2>&1 || { echo "  ⚠️ 没有 curl，没法做预热请求" >&2; return 0; }
+    curl -s -o /dev/null -w '%{http_code}' --max-time "$PREVIEW_PROBE_TIMEOUT" "http://127.0.0.1:$1/" 2>/dev/null \
+        | grep -E '^[1-5][0-9][0-9]$' || true
+}
+
 # 从认主到 tailscale 绑定整段持端口锁：与 preview-unserve.sh 共用同一把，
 # 并发注册 / 注册与注销交错时，登记、unit、路由三者不会落在不同主人名下。
 register_locked() {
@@ -102,6 +119,18 @@ register_locked() {
         echo "❌ preview 端口 :$PORT 已被 $(preview_owner_human "$owner") 占用，$TMUX_PREFIX #$ISSUE 不注册。" >&2
         echo "   等对方注销（preview-unserve.sh --issue <它的号>），或人工处理后重跑本脚本。" >&2
         exit 2
+    fi
+
+    # 自己名下的登记还在旧目录、本机又装了新单元 → 先搬到新单元再注册（GigleAI/cavil-loop#75）：
+    # 旧单元写死了旧技能入口下的脚本路径，迁移删掉旧入口后它就再也起不来。
+    # 搬迁与迁移脚本是同一个函数；没搬完就到此为止，不在一个起不来的单元上给地址。
+    if [ -f "$CAVIL_LEGACY_CONFIG_HOME/preview/$PORT.conf" ] && [ -e "$UNIT_DIR/$CAVIL_UNIT_PREFIX-preview@.socket" ]; then
+        local arc=0
+        preview_adopt_legacy "$PORT" "$UNIT_DIR" yes || arc=$?
+        if [ "$arc" != 0 ]; then
+            echo "❌ preview :$PORT 的旧登记没能搬到新单元（见上一行），这次不注册、不给地址；修好后重跑本脚本" >&2
+            return 1
+        fi
     fi
 
     # 自己名下已有登记 → 留在那份登记所在的那套单元上重注册
@@ -150,7 +179,12 @@ EOF
         "${UNIT}-preview@${PORT}.socket" \
         "${UNIT}-preview@${PORT}.service" \
         "${UNIT}-preview-app@${PORT}.service" 2>/dev/null || true
-    systemctl --user start "${UNIT}-preview@${PORT}.socket"
+    # socket 单元的 start 成功就是已经 bind 上在听；失败（端口被占等）返回非零
+    if ! systemctl --user start "${UNIT}-preview@${PORT}.socket"; then
+        echo "❌ preview :$PORT 的监听 ${UNIT}-preview@${PORT}.socket 没起来，不给地址" >&2
+        show_unit_log "${UNIT}-preview@${PORT}.socket"
+        return 1
+    fi
 
     # 改完代码要让 preview 反映新产物：正式 server 不热更新，进程得换一个。
     # 只 stop 不 start —— socket 还在监听，下次访问自然拉起新的（要立刻生效就配 --warm）。
@@ -160,7 +194,20 @@ EOF
     fi
 
     if [ "$WARM" = 1 ]; then
-        systemctl --user start "${UNIT}-preview-app@${PORT}.service"
+        if ! systemctl --user start "${UNIT}-preview-app@${PORT}.service"; then
+            echo "❌ preview :$PORT 的 app（${UNIT}-preview-app@${PORT}.service）起不来，不给地址" >&2
+            show_unit_log "${UNIT}-preview-app@${PORT}.service"
+            return 1
+        fi
+        # 单元起来了不等于页面能打开：经公开端口真的走一遍 socket → 代理 → app
+        local code
+        code="$(probe_http "$PORT")"
+        case "$code" in
+            2??|3??) ;;
+            *)  echo "❌ preview :$PORT 预热请求没拿到 2xx/3xx（实得 ${code:-连不上}），不给地址" >&2
+                show_unit_log "${UNIT}-preview-app@${PORT}.service"
+                return 1 ;;
+        esac
     fi
 
     # ── tailscale serve 绑定（可选）──
@@ -174,7 +221,11 @@ EOF
         fi
     fi
 }
-preview_with_port_lock "$PORT" register_locked || exit $?
+# 必须是裸调用，别写成 `… || exit $?` / `if …`：bash 里跟在 `||` 左边（或 if 条件里）执行的
+# 函数，内部的 set -e 整体失效，起不来的单元会一路被当成成功、照样打印地址
+# （GigleAI/cavil-loop#75）。裸调用时任何一步失败，子 shell 带着它的退出码退出，set -e 让本脚本
+# 跟着退出，后面打印地址的那几行走不到。
+preview_with_port_lock "$PORT" register_locked
 
 if [ -n "$PREVIEW_URL_HOST" ]; then
     echo "https://${PREVIEW_URL_HOST}:${PORT}/"
@@ -182,3 +233,8 @@ else
     echo "http://127.0.0.1:${PORT}/"
 fi
 echo "  issue #$ISSUE · 闲置 $PREVIEW_IDLE 自动停 · 再次访问自动拉起（无需重跑本脚本）" >&2
+if [ "$WARM" = 1 ]; then
+    echo "  已预热：经公开端口实际访问过一次，拿到 2xx/3xx" >&2
+else
+    echo "  只确认了监听已起来，尚未实际访问验证（要验证就加 --warm）" >&2
+fi

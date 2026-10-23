@@ -13,6 +13,7 @@
 #   · 另一个项目拿走同一个端口，新旧目录各有一个主人；
 #   · 两份同端口登记时，旧单元启动读到新登记里别的项目的命令。
 # 每条断言都拿上一版实现（205d252）跑一遍负对照，必须变红。
+# ⑤ 的期望在 #75 改过：原先是「重注册留在旧单元」，现在旧单元起不来了，改成「搬到新单元」。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,10 +36,16 @@ scenario() {
     local units="$home/.config/systemd/user"
     local old_dir="$home/.config/coding-agent-work-loop/preview" new_dir="$home/.config/cavil-loop/preview"
     mkdir -p "$units" "$bin" "$w/wt/issue-40" "$w/wt/issue-41" "$w/wt/issue-50" "$w/project"
+    # 记住哪些单元 start 过：旧预览搬到新单元时要确认新监听真的在听（#75）
     cat > "$bin/systemctl" <<SH
 #!/usr/bin/env bash
-case "\$*" in *is-active*) echo inactive; exit 3;; esac
+st="$w/active"; mkdir -p "\$st"
+case "\$*" in *is-active*) u="\${@: -1}"; [ -e "\$st/\$u" ] && { echo active; exit 0; }; echo inactive; exit 3;; esac
 echo "\$*" >> "$calls"
+[ "\$1" = --user ] && shift
+cmd="\$1"; shift
+for u in "\$@"; do case "\$cmd" in start) : > "\$st/\$u" ;; stop) rm -f "\$st/\$u" ;; esac; done
+exit 0
 SH
     chmod +x "$bin/systemctl"
     local p
@@ -76,16 +83,23 @@ CONF
     # ④ 另一个项目来抢同一个端口
     run other preview-serve.sh 40 >/dev/null; echo "steal_rc=$?"
     echo "owners_4040=$(cat "$old_dir/4040.conf" "$new_dir/4040.conf" 2>/dev/null | grep -c '^PREVIEW_PROJECT=')"
-    # ⑤ 旧项目重新注册（比如 --restart）：留在旧单元上，不被切到新目录
+    # ⑤ 旧项目重新注册（比如 --restart）：本机已装新单元 → 自己名下的旧登记整份搬到新单元
+    #    （#75：旧单元写死了旧技能入口下的路径，迁移删了入口后它起不来）。搬 = 旧登记离开旧目录
+    #    进备份、旧单元停掉；不是在新目录另写一份、让旧登记和旧单元继续挂着（那是两个主人）。
     : > "$calls"
     run widget preview-serve.sh 40 --restart >/dev/null
-    echo "reregister_stays_old=$([ -f "$old_dir/4040.conf" ] && [ ! -f "$new_dir/4040.conf" ] && echo yes || echo no)"
-    echo "reregister_old_units=$(grep -c 'start coding-agent-preview@4040.socket' "$calls")"
+    echo "reregister_adopted=$([ ! -f "$old_dir/4040.conf" ] && [ -f "$new_dir/4040.conf" ] \
+        && ls "$home/.config/cavil-loop/migration/preview-legacy/"4040.conf.adopted-* >/dev/null 2>&1 && echo yes || echo no)"
+    echo "reregister_old_stopped=$(grep -c '^--user stop coding-agent-preview@4040.socket' "$calls")"
+    echo "reregister_new_units=$(grep -c 'start cavil-loop-preview@4040.socket' "$calls")"
     # ⑥ 全新注册走新单元
     : > "$calls"
     run widget preview-serve.sh 41 >/dev/null
     echo "fresh_new=$([ -f "$new_dir/4041.conf" ] && grep -c 'start cavil-loop-preview@4041.socket' "$calls" || echo 0)"
-    # ⑦ 注销旧预览：停的是旧单元，旧登记删掉
+    # ⑦ 注销旧预览：停的是旧单元，旧登记删掉。⑤ 已经把 #40 搬走了，这里放回一份旧登记
+    #    （另一台还没装新单元的机器上注册的那种），注销仍然要认得它
+    rm -f "$new_dir/4040.conf"
+    printf 'PREVIEW_PROJECT="widget"\nPREVIEW_ISSUE="40"\nPREVIEW_PORT="4040"\nPREVIEW_WORKTREE="%s"\n' "$w/wt/issue-40" > "$old_dir/4040.conf"
     : > "$calls"
     run widget preview-unserve.sh --issue 40 >/dev/null; echo "unserve_rc=$?"
     echo "unserve_old_stops=$(grep -c '^--user stop coding-agent-preview' "$calls")"
@@ -122,8 +136,9 @@ chk "① 旧机器上注册进旧目录"                         "$(expect "$R" 
 chk "③ 装了新单元后，旧项目的列表仍看得到旧预览"     "$(expect "$R" list_sees_old)" "1"
 chk "④ 另一个项目抢同一端口被拒"                     "$(expect "$R" steal_rc)" "2"
 chk "④ 端口仍只有一个主人"                           "$(expect "$R" owners_4040)" "1"
-chk "⑤ 旧预览重注册留在旧目录"                       "$(expect "$R" reregister_stays_old)" "yes"
-chk "⑤ 重注册启动的是旧单元"                         "$(expect "$R" reregister_old_units)" "1"
+chk "⑤ 旧预览重注册：旧登记搬进新目录、原件进备份"   "$(expect "$R" reregister_adopted)" "yes"
+chk "⑤ 重注册停掉了旧监听"                           "$(expect "$R" reregister_old_stopped)" "1"
+chk "⑤ 重注册启动的是新单元"                         "$(expect "$R" reregister_new_units)" "2"
 chk "⑥ 全新注册走新目录 + 新单元"                     "$(expect "$R" fresh_new)" "1"
 chk "⑦ 注销旧预览成功"                               "$(expect "$R" unserve_rc)" "0"
 chk "⑦ 停的是旧单元三件套"                           "$(expect "$R" unserve_old_stops)" "3"
@@ -145,7 +160,7 @@ if git -C "$REPO_DIR" archive "$BUGGY_COMMIT" 2>/dev/null | tar -x -C "$OLD" 2>/
     mkdir -p "$SANDBOX/buggy"
     scenario "$OLD" "$SANDBOX/buggy" > "$SANDBOX/buggy.out"
     B="$SANDBOX/buggy.out"
-    for key_want in "list_sees_old=1" "steal_rc=2" "owners_4040=1" "reregister_stays_old=yes" \
+    for key_want in "list_sees_old=1" "steal_rc=2" "owners_4040=1" "reregister_adopted=yes" \
                     "unserve_old_stops=3" "unserve_old_gone=yes" "old_unit_run=OLD-APP" "old_unit_wait=127.0.0.1:1"; do
         key="${key_want%%=*}"; want="${key_want#*=}"
         chk "上一版在 $key 上变红（实得 $(expect "$B" "$key")）" \

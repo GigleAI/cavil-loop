@@ -32,6 +32,8 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   ├── create-worktree.sh         ← Build worktree (injects worker identity)
 │   ├── cleanup-issue.sh           ← Post-merge cleanup (worktree / tmux / project hook)
 │   ├── migrate-legacy.sh          ← Move a pre-rename install to cavil-loop names (run by poll-entry.sh / setup.sh)
+│   ├── _preview_adopt.sh          ← Move a pre-rename preview onto the new units (shared by migrate-legacy.sh / preview-serve.sh)
+│   ├── preview-resolve-conflict.sh ← Resolve a port registered in both old and new directories by different owners (by hand)
 │   ├── session-log.sh             ← View tmux pane history
 │   ├── weekly-report/             ← Monday auto weekly report (collect / render / PDF / publish)
 │   └── doc-diagrams/              ← Generator + checker for the animated SVGs in docs/images/
@@ -308,7 +310,7 @@ Changes in these areas must run the matching tests:
 - Poll pace / idle + failure backoff → `tests/poll-pace.test.sh` (~40s: the end-to-end groups really do spawn `agent-poll.sh` a few hundred times — do not run it under a 30-second command timeout, a half-finished run looks like a failure)
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, `tests/preview-port-ownership.test.sh`, …
-- New vs pre-rename names (which config / state / unit / override path is used, setup on an old install, deployer switching both skill links) → `tests/cavil-names.test.sh`, `tests/skill-deploy.test.sh`, `tests/preview-rename-coexist.test.sh` (old and new previews on one machine), `tests/migrate-legacy.test.sh` (moving an old install: idle projects only, resumable, old timer on/off state kept). Any new path goes through `scripts/_names.sh`, never a hard-coded old or new name
+- New vs pre-rename names (which config / state / unit / override path is used, setup on an old install, deployer switching both skill links) → `tests/cavil-names.test.sh`, `tests/skill-deploy.test.sh`, `tests/preview-rename-coexist.test.sh` (old and new previews on one machine), `tests/migrate-legacy.test.sh` (moving an old install: idle projects only, resumable, old timer on/off state kept), `tests/preview-legacy-adopt.test.sh` (old previews moved to the new units: resumable after a failure, old link kept until all are moved, registration prints no URL unless the preview came up). Any new path goes through `scripts/_names.sh`, never a hard-coded old or new name
 - Worker / model selection, the `--model` a driver passes → `tests/worker-selection.test.sh`, `tests/claude-resume-model.test.sh`
 - Releases (the per-iteration scheduled run, `scripts/release.sh`, `.github/workflows/release.yml`) → `tests/release-auto.test.sh` (the workflow steps are read out of the yml and actually run)
 - Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.

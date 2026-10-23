@@ -549,6 +549,14 @@ bash scripts/preview-serve.sh --list       # every preview in this project and w
 bash scripts/preview-unserve.sh --issue 791  # deregister (call this from your cleanup hook)
 ```
 
+**A URL is printed only when the preview really came up.** If any step fails (the listener does
+not start, the app does not start under `--warm`, or the warm-up request through the public port
+does not get a 2xx/3xx), `preview-serve.sh` exits non-zero, **prints no URL**, and dumps the last
+20 journal lines of that unit to stderr. Without `--warm` it only confirms the listener is up — the
+app starts on the first visit — so the output says the page has not been visited yet; pass
+`--warm` when you want to be sure before handing the link to a person. The warm-up request times
+out after `PREVIEW_PROBE_TIMEOUT` (default 30 s).
+
 ### Port ownership once ports wrap
 
 With `PREVIEW_PORT_MODULO` set (e.g. 1000) the port is `BASE + issue % MODULO`, so issues
@@ -819,11 +827,14 @@ otherwise create the new one.** When both exist the new one wins.
   never deletes a release that one of them still points to.
 - On-demand previews follow **their own registration**, not "which units this machine has":
   a preview an old project registered stays on the old units and the old registration
-  directory even after new units are installed. Ownership checks, `--list` and unregistering
-  look at both directories; a port taken in either one is taken. Old and new share one port
-  lock (the old directory's while the machine has old units). When starting, each unit reads
-  the registration it is bound to — the new unit passes its path, the old one reads the old
-  directory. Only a brand-new registration picks the new units.
+  directory even after new units are installed, until it is moved to the new units (see "Old
+  previews move to the new units" below). Ownership checks, `--list` and unregistering look at
+  both directories; a port taken in either one is taken. Old and new share one port lock (the
+  old directory's while the machine has old units or the old registration directory — which is
+  why that directory is kept even once empty). When starting, each unit reads the registration it
+  is bound to — the new unit passes its path, the old one reads the old directory. Fresh
+  registrations, and re-registering your own old registration on a machine that has the new
+  units, use the new units.
 - Old and new workers land in different slices, so each slice carries its own memory limit while
   both kinds of installation coexist. The new slice name follows the same derivation rule as
   the old one; it has not yet been observed on a real machine.
@@ -878,9 +889,89 @@ What happens, in order (each step can be repeated; an interrupted run is finishe
 | 6 | Linux: copy the instance drop-ins (poll interval) to the new timer names; enable / start the new poll / weekly timers **only if the old ones were** enabled / running; **then** `disable --now` the old ones (never the service: the migration often runs inside it). New first: if the new timer cannot be enabled or started, the old one is still running and retries on its next tick; while both are on, both ticks only resume the migration (progress file) and neither runs the main poll. macOS: `bootout` the old LaunchAgent | old drop-ins and instance links → backup; old plist → backup |
 | 7 | Rename the old env file last — while it exists, the next run comes back to finish | `<key>.conf.migrated-<ts>` |
 
-When no old project is left, the old `~/.agents/skills/coding-agent-work-loop` link is removed;
-unit links that still go through it (old preview templates, the old slice) are first re-pointed
-through the new link — the old unit files are kept byte for byte, so nothing changes for them.
+When no old project is left **and every old preview has moved to the new units**, the old
+`~/.agents/skills/coding-agent-work-loop` link is removed; unit links that still go through it
+(old preview templates, the old slice) are first re-pointed through the new link — the old unit
+files are kept byte for byte.
+
+#### Old previews move to the new units
+
+The old preview unit files hard-code `%h/.agents/skills/coding-agent-work-loop/scripts/…` in
+`ExecStart` / `ExecStartPost`. Re-pointing the unit-file symlink does not help: once the old link
+is gone, the old unit cannot find its scripts and every old preview returns 502 (#75). So before
+that link is removed, every registration under `~/.config/coding-agent-work-loop/preview/` moves
+to `cavil-loop-preview*@<port>` — same port, same URL (tailscale routes are bound by port and stay).
+
+Who moves them: once every old project is migrated, the migration step of every poll tick moves
+them (a failed one is retried next tick); `preview-serve.sh` moves its own registration first when
+the machine has the new units and that registration is still in the old directory. Both call the
+same function (`scripts/_preview_adopt.sh`), holding the port lock throughout.
+
+Per port (every step is safe to repeat; wherever it stops, the next run only finishes what is left):
+
+| Step | What | On failure |
+|---|---|---|
+| ① | The first time a port is touched, record whether its old listener was meant to be on (listening or `failed` = on; not listening = off) in `~/.config/cavil-loop/migration/preview-<port>.listen`; an existing record is never overwritten | nothing changed |
+| ② | **Copy** the old registration into the new directory (left alone if the new one already has it with the same owner) | old registration untouched |
+| ③ | Stop and `reset-failed` the old socket / proxy / app; confirm none of them is running | both registrations stay; next tick resumes |
+| ④ | If it was meant to be on, start the new socket and confirm it is listening; otherwise skip | both registrations stay; while the old link exists, the old socket is started again |
+| ⑤ | Move the old registration into `~/.config/cavil-loop/migration/preview-legacy/` (not deleted); drop the ① record | — |
+
+So a port is always in one of three states: only the new directory has it = **done**; both, same
+owner = **half moved**, resumed next tick; both, different owners = **conflict**, neither is
+touched, `migrate.log` notes it hourly and a human decides which one is real. While any port is
+half moved or in conflict, the old skill link is kept — those old units still need it.
+
+**A port whose state cannot be read is not done either.** When the user service manager is
+unreachable (`systemctl --user` only prints an error and no state), the step neither records the
+original state nor concludes the old units have stopped; the registrations and the old link stay
+as they are, the log says the state could not be read, and the next tick tries again.
+
+**Resolving a conflict (by hand).** `preview-unserve.sh` cannot do it: if either of the two
+registrations belongs to someone other than the caller, it touches nothing (exit 3) — on purpose,
+and that must stay. Use `scripts/preview-resolve-conflict.sh` instead. It does every step inside
+**one hold of the port lock**, so registration, unregistration and migration of that port wait
+meanwhile; and the copy you keep **always ends up on the new units**, so switching back after a
+wrong choice never depends on the old skill link — once every conflict is resolved, the next
+migration tick removes that link.
+
+1. **Look** (read-only, changes nothing):
+   ```bash
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050
+   ```
+   Prints each copy's owner (project, issue, worktree) and the old and new listener states.
+   Normally keep the one whose worktree still exists and whose issue is still open.
+2. **Keep one** (`old` = the copy in the old registration directory, `new` = the one in the new):
+   ```bash
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050 --keep new
+   ```
+   It backs both up to `~/.config/cavil-loop/migration/preview-conflict-<port>-<time>/` (the first
+   output line, `备份：…`, is that directory — note it) → stops the removed side's socket / proxy /
+   app and confirms they stopped → moves that registration into the backup → when keeping `old`,
+   moves it onto the new units right away → confirms the new listener is up. `✅` means done; any
+   failing step exits 1 and says where it stopped — if units would not stop, no registration was
+   moved, and re-running the same command after fixing it is safe.
+3. **Check**: open the preview URL and see the page. After the next poll tick (about a minute)
+   `migrate.log` no longer reports a conflict for this port; once every conflict is resolved and
+   every old preview has moved, the old skill link is removed — that is expected.
+4. **Wrong choice**: switch to the copy that was removed (the backup directory from step 2):
+   ```bash
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050 --swap ~/.config/cavil-loop/migration/preview-conflict-4050-<time>
+   ```
+   It first proves this backup belongs to this port's resolution: the port recorded in the backup and
+   the port inside the copy to restore must both be this port, and the current registration must be
+   byte-identical to the copy that was kept back then. Anything else is refused (exit 2) and nothing is
+   touched — a backup from another port, or a port that was re-registered after the resolution, stops
+   here. Then it **copies** the current registration into the backup, stops the new units, replaces the
+   registration in place in one atomic step (it is never missing), and starts the listener on the
+   **new units** — this works even after the old link is gone. A failure exits 1; re-run the same
+   command after fixing it and it continues where it stopped. Then check as in step 3. Files already in
+   the backup directory are never changed: `old.conf` / `new.conf` are the registrations as they were before.
+
+The poll entry therefore calls the migration not only while old project env files exist, but also
+while the old registration directory has entries, or while both the old and the new skill links
+exist (`cavil_legacy_leftovers` in `_names.sh`). With none of the three it is not called. Guard:
+`tests/preview-legacy-adopt.test.sh`.
 
 Not moved, on purpose:
 
@@ -890,8 +981,6 @@ Not moved, on purpose:
   renamed.
 - `~/.local/state/coding-agent-poll/review-shots`: comment images are served from it under a public
   URL; the code keeps using it while no new one exists.
-- Preview registrations under `~/.config/coding-agent-work-loop/preview/` and the old preview units
-  they run on (see above: each port follows its own registration).
 - A state directory configured outside `~/.local/state/coding-agent-poll/<p>`: left where it is.
 
 It stops before touching anything and waits for a human (logged with ⛔, retried each tick but logged hourly; the old installation keeps polling meanwhile) when the new

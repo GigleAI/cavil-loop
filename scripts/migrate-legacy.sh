@@ -32,6 +32,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_names.sh
 source "$SCRIPT_DIR/_names.sh"
+# shellcheck source=_preview_adopt.sh
+source "$SCRIPT_DIR/_preview_adopt.sh"
 
 MODE=""
 ONE_KEY=""
@@ -180,10 +182,35 @@ migrate_shared() {
     return 0
 }
 
-# 所有项目都迁完之后：旧技能入口不再需要，删掉前先把还经过它的单元链接改走新入口
-# （旧 coding-agent-* 单元文件在仓库里原样保留着，旧预览的端口、旧 slice 都还在用它们）。
+# 所有项目都迁完之后：改名前注册的预览逐个搬到新单元（GigleAI/cavil-loop#75）。
+# 旧单元文件里写死的是旧技能入口下的脚本路径，删入口之前不搬，旧预览就全部 502。
+# 每个端口的步骤与中断后怎么接着做见 _preview_adopt.sh；这里只负责逐个调、把没搬完的记下来。
+# 输出：还没搬完的端口数（0 = 旧登记目录已清空）。
+migrate_previews() {
+    local port rc left=0
+    for port in $(preview_legacy_pending_ports); do
+        rc=0
+        PREVIEW_ADOPT_LOG=mlog preview_adopt_legacy_locked "$port" "$SYS_DIR" || rc=$?
+        case "$rc" in
+            0) rm -f "$CAVIL_STATE_HOME/.migrate-note-preview-$port" 2>/dev/null ;;
+            3) left=$((left+1))
+               mlog_throttled "preview-$port" "⛔ 预览端口 :$port 新旧两个登记目录各有一份、主人不同（$CAVIL_LEGACY_CONFIG_HOME/preview/$port.conf 与 $CAVIL_CONFIG_HOME/preview/$port.conf），不知道哪个是真的，两份都不动，等人处理（看现状：bash $SCRIPT_DIR/preview-resolve-conflict.sh $port）；旧技能入口因此暂时保留" ;;
+            *) left=$((left+1))
+               mlog_throttled "preview-$port" "预览端口 :$port 这次没搬完（原因见上一行），下一轮接着搬；旧技能入口暂时保留" ;;
+        esac
+    done
+    printf '%s\n' "$left"
+}
+
+# 所有项目都迁完、旧预览也都搬完之后：旧技能入口不再需要，删掉前先把还经过它的单元链接改走
+# 新入口（旧 coding-agent-* 单元文件在仓库里原样保留着，旧 slice 等还在用它们）。
+# 还有旧预览没搬完（失败待重试、或冲突等人）就不删：那些端口的旧单元还要靠旧入口才起得来。
 finalize_shared() {
     [ -z "$(legacy_keys)" ] || return 0
+    if [ "$SCHED" = systemd ] && command -v systemctl >/dev/null 2>&1; then
+        local left; left="$(migrate_previews)"
+        [ "$left" = 0 ] || return 0
+    fi
     [ -L "$CAVIL_LEGACY_SKILL_HOME" ] && [ -e "$CAVIL_SKILL_HOME" ] || return 0
     local u t changed=0
     for u in "$SYS_DIR"/*; do
@@ -197,7 +224,7 @@ finalize_shared() {
     done
     [ "$changed" -eq 0 ] || { [ "$SCHED" != systemd ] || sc daemon-reload >/dev/null 2>&1 || true; }
     rm -f "$CAVIL_LEGACY_SKILL_HOME"
-    mlog "所有项目都已迁完：删除旧技能入口 $CAVIL_LEGACY_SKILL_HOME（原先经过它的单元链接已改走新入口）"
+    mlog "所有项目都已迁完、旧预览都已搬到新单元：删除旧技能入口 $CAVIL_LEGACY_SKILL_HOME（原先经过它的单元链接已改走新入口）"
 }
 
 link_unit() {   # <unit file name>：在单元目录建一个指向新技能入口的模板链接
@@ -490,4 +517,8 @@ for k in $(legacy_keys); do
     [ -e "$SYS_DIR/$CAVIL_LEGACY_UNIT_PREFIX-poll@.timer" ] || [ -e "$SYS_DIR/$CAVIL_LEGACY_UNIT_PREFIX-poll@$k.timer" ] || continue
     ( migrate_key "$k" ) || true
 done
+# 旧项目都迁完了、但旧预览还没搬完 / 旧入口还没删（上一轮失败、冲突等人，或在改名前一版的
+# 迁移里就已经删了入口）的机器：每轮都在这里接着做。migrate_key 迁完时自己也会调一次。
+KEY=""
+finalize_shared
 exit 0

@@ -32,6 +32,8 @@
 │   ├── create-worktree.sh     ← 新建 worktree（含 worker identity 注入）
 │   ├── cleanup-issue.sh       ← merge 后清理 worktree / tmux / 跑项目 hook
 │   ├── migrate-legacy.sh      ← 把改名前的旧安装迁到 cavil-loop 命名（poll-entry.sh / setup.sh 调）
+│   ├── _preview_adopt.sh      ← 把改名前注册的预览搬到新单元（migrate-legacy.sh / preview-serve.sh 共用）
+│   ├── preview-resolve-conflict.sh ← 人工处理新旧目录各有一份、主人不同的预览端口
 │   ├── session-log.sh         ← 查 tmux pane 历史日志
 │   ├── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
 │   └── doc-diagrams/          ← docs/images/ 里那几张动图的生成脚本 + 检查脚本
@@ -258,7 +260,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 - 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`（约 40 秒：端到端那几组要真的把 `agent-poll.sh` 起几百次，别用 30 秒的命令窗口跑它，半截被掐看起来就像失败）
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh`、`tests/preview-port-ownership.test.sh` 等
-- 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`、`tests/preview-rename-coexist.test.sh`（同一台机器上新旧预览并存）、`tests/migrate-legacy.test.sh`（旧安装迁移：只迁空闲项目、断了能接着做、保留旧任务原来的开关）。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名
+- 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`、`tests/preview-rename-coexist.test.sh`（同一台机器上新旧预览并存）、`tests/migrate-legacy.test.sh`（旧安装迁移：只迁空闲项目、断了能接着做、保留旧任务原来的开关）、`tests/preview-legacy-adopt.test.sh`（旧预览搬到新单元：失败后能接着搬、全部搬完才删旧入口、预览没真起来就不给地址）。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名
 - worker / 模型选择、driver 传的 `--model` → `tests/worker-selection.test.sh`、`tests/claude-resume-model.test.sh`
 - 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
