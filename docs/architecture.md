@@ -212,7 +212,7 @@ Every dispatch renders its prompt from four layers, in this order: the skill's b
 
 The prompt then reaches the agent one of three ways: pasted into the worker's live tmux session (a review dispatch never lands in the coding session), passed to a resumed conversation looked up by `(work number, agent, role)`, or passed as the launch argument of a fresh session when there is nothing to resume (or the resume dies within seconds). See [Session isolation](#session-isolation) above.
 
-Projects can additionally install their own agent hooks — for example a Claude Code `PreToolUse` hook that injects directory rules before a file edit. That lives in the host project; cavil-loop does not ship or manage it.
+Projects can additionally install their own agent hooks — for example a Claude Code `PreToolUse` hook that injects directory rules before a file edit. That lives in the host project; cavil-loop does not ship or manage it. The right-hand column of the diagram (steps 5–6) shows one such hook as an example only.
 
 ## Design choice FAQ
 

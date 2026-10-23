@@ -6,7 +6,7 @@
 #
 # 管四件事：
 #   1. docs/images/ 里的 SVG 就是生成脚本的产物——有人直接手改 SVG，中英 / 动静四份就会说法不一
-#   2. 每张动图在所有切换点把一圈切成取值不变的小段、逐段判定（不靠定时采样）：任意时刻最多一段说明、说明只在红框停在它那一步时出现、
+#   2. 每张动图在所有关键帧把一圈切成小段、逐段判定（不靠定时采样）：任意时刻最多一段说明、说明只在红框停在它那一步时出现、
 #      不含脚本 / 元素 id / 外链 / 主机名、所有动画同一周期从 0 秒开始（check.py）
 #   3. 静态版和动图的说明逐字一致
 #   4. 四份文档各自引用了对应语言的动图和静态版，且文件存在
@@ -59,7 +59,10 @@ for lang in en zh; do
 done
 
 echo "== 负对照：每种坏图都必须被检查拦下"
-# <name> <python that mutates the text of $f>  — applied to a copy of the zh lifecycle pair
+# <name> <python that mutates the text s>, applied to a copy of the zh lifecycle pair
+# (27 s cycle: 9 steps × 3 s; the red box slides 0.5 s, captions fade 0.25 s).
+# Helpers: anims(s, attr) lists the <animate> tags for attr in document order;
+# retime(s, m, kts_secs, vals) rewrites one of them (keyTimes given in seconds).
 neg() {
     local name="$1" code="$2" d="$TMP/neg-$RANDOM"
     mkdir -p "$d"
@@ -67,11 +70,30 @@ neg() {
     python3 - "$d" "$code" <<'PY' || { bad "$name：造坏图失败"; return; }
 import sys, re, os
 d, code = sys.argv[1], sys.argv[2]
+CYCLE = 27.0
+TAG = re.compile(r'<animate attributeName="(\w+)" values="([^"]*)" keyTimes="([^"]*)" keySplines="([^"]*)"')
+
+def anims(s, attr):
+    return [m for m in TAG.finditer(s) if m.group(1) == attr]
+
+def secs(m):
+    return [float(k) * CYCLE for k in m.group(3).split(';')]
+
+def vals(m):
+    return m.group(2).split(';')
+
+def retime(s, m, kts, vs):
+    tag = ('<animate attributeName="%s" values="%s" keyTimes="%s" keySplines="%s"'
+           % (m.group(1), ';'.join(str(v) for v in vs), ';'.join('%.6f' % (k / CYCLE) for k in kts),
+              ';'.join(['0.42 0 0.58 1'] * (len(kts) - 1))))
+    return s[:m.start()] + tag + s[m.end():]
+
 changed = False
 for name in ('issue-lifecycle.zh.svg', 'issue-lifecycle.zh.static.svg'):
     p = os.path.join(d, name)
     s = open(p, encoding='utf-8').read()
-    env = {'s': s, 're': re, 'static': name.endswith('.static.svg')}
+    env = {'s': s, 're': re, 'static': name.endswith('.static.svg'),
+           'anims': anims, 'secs': secs, 'vals': vals, 'retime': retime}
     exec(code, env)
     changed |= env['s'] != s
     open(p, 'w', encoding='utf-8').write(env['s'])
@@ -81,41 +103,47 @@ PY
     if python3 "$CHECK" "$d" >"$d.out" 2>&1; then
         bad "$name：检查没拦住"
     else
-        ok "$name：被拦下（$(grep -m1 FAIL "$d.out" | cut -c1-90)）"
+        ok "$name：被拦下（$(grep -m1 FAIL "$d.out" | cut -c1-100)）"
     fi
 }
-# 第 2 段说明晚 1 秒才收起 → 和第 3 段叠在一起
+# 第 2 段说明到 6.6 秒才收完，红框 6.0 秒已停到第 3 步、第 3 段已淡入
 neg "两段说明叠字" '
 if not static:
-    i = [m.start() for m in re.finditer("keyTimes=\"0;", s)][1]
-    j = s.index("\"", i + 10)
-    kts = s[i + 10:j].split(";")
-    kts[-1] = "%.6f" % (float(kts[-1]) + 1 / 31.5)
-    s = s[:i + 10] + ";".join(kts) + s[j:]'
-# 说明不留空白、红框还没到就先出现
-neg "说明先于红框出现" '
+    m = anims(s, "opacity")[1]
+    k = secs(m); k[4] = 6.6
+    s = retime(s, m, k, vals(m))'
+# 第 3 段在 5.8 秒就开始淡入，红框还在从第 2 步滑过去的路上
+neg "说明在红框到达前出现" '
 if not static:
-    i = [m.start() for m in re.finditer("keyTimes=\"0;", s)][2]
-    j = s.index(";", i + 12)
-    s = s[:i + 12] + "%.6f" % (6.5 / 31.5) + s[j:]'
-neg "红框走错位置" '
+    m = anims(s, "opacity")[2]
+    k = secs(m); k[1], k[2] = 5.8, 6.05
+    s = retime(s, m, k, vals(m))'
+# 第 2、3 步的停靠位置对调：红框先停第 3 步再停第 2 步
+neg "红框走错顺序" '
 if not static:
-    s = s.replace("values=\"24;339;654;654;339;24;24;339;654\"", "values=\"24;654;339;654;339;24;24;339;654\"", 1)'
+    m = anims(s, "x")[0]
+    v = vals(m); v[2], v[3], v[4], v[5] = v[4], v[5], v[2], v[3]
+    s = retime(s, m, secs(m), v)'
 neg "某段说明从不出现" '
 if not static:
-    s = re.sub(r"values=\"0;1;0\"", "values=\"0;0;0\"", s, count=1)'
+    m = anims(s, "opacity")[1]
+    s = retime(s, m, secs(m), ["0"] * len(vals(m)))'
 neg "周期不一致" '
 if not static:
-    s = s.replace("dur=\"31.5s\"", "dur=\"30s\"", 1)'
+    s = s.replace("dur=\"27s\"", "dur=\"26s\"", 1)'
 neg "从非 0 秒开始" '
 if not static:
-    s = s.replace("<animate ", "<animate begin=\"1s\" ", 1)'
-neg "非离散切换（会淡入淡出叠字）" '
+    s = s.replace("begin=\"0s\"", "begin=\"1s\"", 1)'
+# 缓动曲线的控制点超出 0..1 会回弹：透明度或位置冲出两端的值
+neg "回弹的缓动曲线" '
 if not static:
-    s = s.replace("calcMode=\"discrete\"", "calcMode=\"linear\"", 1)'
+    s = s.replace("keySplines=\"0.42 0 0.58 1", "keySplines=\"0.42 -0.5 0.58 1.5", 1)'
+neg "不按关键帧计时（paced）" '
+if not static:
+    s = s.replace("calcMode=\"spline\"", "calcMode=\"paced\"", 1)'
 neg "带元素 id" '
 if not static:
-    s = s.replace("<g class=\"card\">", "<g id=\"c1\" class=\"card\">", 1)'
+    s = s.replace("<g class=\"card s1\"", "<g id=\"c1\" class=\"card s1\"", 1)'
 neg "带脚本" '
 if not static:
     s = s.replace("</svg>", "<script>1</script></svg>")'
@@ -124,27 +152,26 @@ if not static:
     s = s.replace("</svg>", "<rect fill=\"url(x)\"/></svg>")'
 neg "出现主机名" '
 if not static:
-    s = s.replace("守护进程不碰", "build01.example.internal 不碰")'
+    s = s.replace("守护进程不会碰它", "build01.example.internal 不会碰它")'
 # 比旧版采样间隔（0.05 秒）还短的错误：PR #77 第 2 轮复审实测采样版会全部放过
-# 第 2 段说明在 1.01–1.02 秒额外闪现，此时第 1 段还在、红框还在第 1 步；原本 3 秒的显示保留
+# 第 2 段说明在 1.01–1.02 秒额外闪现，此时第 1 段还在、红框还在第 1 步；原本的显示保留
 neg "0.01 秒的短暂叠字" '
 if not static:
-    m = [m for m in re.finditer(r"keyTimes=\"0;([0-9.]+);([0-9.]+)\" values=\"0;1;0\"", s)][1]
-    a, b = 1.01 / 31.5, 1.02 / 31.5
-    s = s[:m.start()] + "keyTimes=\"0;%.6f;%.6f;%s;%s\" values=\"0;1;0;1;0\"" % (a, b, m.group(1), m.group(2)) + s[m.end():]'
+    m = anims(s, "opacity")[1]
+    k, v = secs(m), vals(m)
+    s = retime(s, m, [0, 1.0, 1.01, 1.02] + k[1:], ["0", "0", "1", "0"] + v[1:])'
 # 红框在 1.01–1.02 秒短暂跳到第 2 张卡片，第 1 段说明仍在显示
 neg "0.01 秒的红框错位" '
 if not static:
-    old = "attributeName=\"x\" dur=\"31.5s\" repeatCount=\"indefinite\" calcMode=\"discrete\" keyTimes=\"0.000000;"
-    i = s.index(old) + len(old) - 9
-    j = s.index("values=\"24;", i)
-    s = s[:i] + "0.000000;%.6f;%.6f;" % (1.01 / 31.5, 1.02 / 31.5) + s[i + 9:j] + "values=\"24;339;24;" + s[j + 11:]'
+    m = anims(s, "x")[0]
+    k, v = secs(m), vals(m)
+    s = retime(s, m, [0, 1.0, 1.01, 1.02] + k[1:], [v[0], v[0], v[2], v[0]] + v[1:])'
 neg "静态版说明和动图对不上" '
 if static:
-    s = s.replace("守护进程不碰", "守护进程不管")'
+    s = s.replace("守护进程不会碰它", "守护进程不会管它")'
 neg "静态版带动画" '
 if static:
-    s = s.replace("<g class=\"cap\">", "<g class=\"cap\"><animate attributeName=\"opacity\" dur=\"1s\" values=\"0\"/>", 1)'
+    s = s.replace("<g class=\"cap\"", "<g class=\"cap\"><animate attributeName=\"opacity\" dur=\"1s\" values=\"0\"/></g><g class=\"x\"", 1)'
 
 echo
 echo "通过 $PASS，失败 $FAIL"

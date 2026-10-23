@@ -4,16 +4,24 @@
 Usage: python3 scripts/doc-diagrams/check.py <dir>     exit 0 = all good
 
 It does not look at how the SVG is written; it evaluates the animation the way a
-player would. Every animation is discrete, so between two consecutive switch
-points (the union of all keyTimes) every value is constant: the cycle is cut at
-those points and each piece is judged exactly once, however short it is. Fixed-
-interval sampling was the first version and missed a 0.01 s overlap that fell
-between two samples (review on PR #77). Any authoring that breaks a promise fails:
+player would. The cycle is cut at the union of every animation's keyTimes; inside
+each piece every animation is either constant (discrete, or two equal values) or
+moves monotonically between two values (linear, or a spline whose control points
+stay within 0..1). So one look at each piece's two end values says exactly which
+captions are visible anywhere in it and whether the red box is parked or moving,
+however short the piece is. Fixed-interval sampling was the first version and
+missed a 0.01 s overlap that fell between two samples (review on PR #77).
+
+Which step the red box is on is decided by geometry: step k's elements carry
+class "card s<k>", and a parked box must enclose all of them and no other step's
+group. Any authoring that breaks a promise fails:
 
   - no script / foreignObject / external reference / element id / non-zero begin
-  - one shared cycle; every animation repeats forever and switches discretely
+  - one shared cycle; every animation repeats forever; discrete / linear / spline only
   - at every instant at most one caption is visible
-  - while a caption is visible, the red box is on that caption's card
+  - a caption is visible only while the red box is parked on its step, or while
+    the box is sliding away from it (the fade-out); never while it slides in
+  - the red box visits the steps in order, starting on step 1 at 0 s
   - every step gets its caption shown for a readable stretch
   - the static twin shows the same captions word for word, all at once
   - no host names or URLs anywhere
@@ -43,25 +51,53 @@ def classes(el):
     return (el.get('class') or '').split()
 
 
-def key_times(anim):
-    return [float(k) for k in anim.get('keyTimes').split(';')]
+TRANSLATE = re.compile(r'^translate\(\s*([-\d.]+)[\s,]+([-\d.]+)\s*\)$')
 
 
-def value_at(anim, f):
-    """Discrete SMIL at cycle fraction f: the value of the last keyTime <= f.
-    f is always one of the parsed keyTimes (or 0), so the comparison is exact."""
-    cur = None
-    for k, v in zip(key_times(anim), anim.get('values').split(';')):
-        if k <= f:
-            cur = v
-    return cur
+def floats(text):
+    return [float(v) for v in text.split(';')]
 
 
-def attr_at(el, name, f):
+def anim_of(el, name):
     for a in el:
         if tag(a) == 'animate' and a.get('attributeName') == name:
-            return value_at(a, f)
-    return el.get(name)
+            return a
+    return None
+
+
+def span(el, name, f):
+    """(value at the start, value at the end) of the piece starting at cycle fraction
+    f. f is always one of the parsed keyTimes (or 0), so the comparison is exact."""
+    a = anim_of(el, name)
+    if a is None:
+        v = float(el.get(name, 1 if name == 'opacity' else 0))
+        return v, v
+    kts, vals = floats(a.get('keyTimes')), floats(a.get('values'))
+    i = max(j for j, k in enumerate(kts) if k <= f)
+    if i == len(kts) - 1 or a.get('calcMode') == 'discrete':
+        return vals[i], vals[i]
+    return vals[i], vals[i + 1]
+
+
+def bbox(groups):
+    xs0, ys0, xs1, ys1 = [], [], [], []
+    for g in groups:
+        tx = ty = 0.0
+        if g.get('transform'):
+            m = TRANSLATE.match(g.get('transform'))
+            if not m:
+                return None
+            tx, ty = float(m.group(1)), float(m.group(2))
+        for r in g.iter(NS + 'rect'):
+            x, y = tx + float(r.get('x', 0)), ty + float(r.get('y', 0))
+            xs0.append(x); ys0.append(y)
+            xs1.append(x + float(r.get('width'))); ys1.append(y + float(r.get('height')))
+    return (min(xs0), min(ys0), max(xs1), max(ys1)) if xs0 else None
+
+
+def encloses(r, b):
+    x, y, w, h = r
+    return x <= b[0] and y <= b[1] and b[2] <= x + w and b[3] <= y + h
 
 
 def caption_texts(cap):
@@ -96,63 +132,90 @@ def check_animated(path, root):
         return None
     cycle = float(durs.pop().rstrip('s'))
     for a in anims:
+        name = a.get('attributeName')
         if tag(a) != 'animate':
             err(path, f'<{tag(a)}> is not allowed (only <animate>)')
+            return None
         if a.get('begin') not in (None, '0s', '0'):
             err(path, f'animation begins at {a.get("begin")}, not 0s')
         if a.get('repeatCount') != 'indefinite':
             err(path, 'animation does not repeat forever')
-        if a.get('calcMode') != 'discrete':
-            err(path, 'animation is not discrete (captions could cross-fade)')
-        kts = [float(k) for k in (a.get('keyTimes') or '').split(';') if k]
-        vals = (a.get('values') or '').split(';')
+        mode = a.get('calcMode', 'linear')
+        if mode not in ('discrete', 'linear', 'spline'):
+            err(path, f'calcMode {mode} on {name} is not allowed (timing would not follow keyTimes)')
+            return None
+        try:
+            kts, vals = floats(a.get('keyTimes') or ''), floats(a.get('values') or '')
+        except ValueError:
+            err(path, f'unreadable keyTimes/values on {name}')
+            return None
         if not kts or kts[0] != 0 or kts != sorted(kts) or kts[-1] > 1 or len(kts) != len(vals):
-            err(path, f'bad keyTimes/values on {a.get("attributeName")}')
+            err(path, f'bad keyTimes/values on {name}')
+            return None
+        if mode == 'spline':
+            splines = [s.split() for s in (a.get('keySplines') or '').split(';')]
+            if len(splines) != len(kts) - 1 or any(len(c) != 4 or not all(0 <= float(v) <= 1 for v in c)
+                                                   for c in splines):
+                # a control point outside 0..1 overshoots: the value leaves its two end values
+                err(path, f'keySplines on {name} missing or outside 0..1')
+                return None
+        if name == 'opacity' and not all(0 <= v <= 1 for v in vals):
+            err(path, 'opacity outside 0..1')
             return None
 
-    cards = [g for g in root.iter(NS + 'g') if 'card' in classes(g)]
     caps = [g for g in root.iter(NS + 'g') if 'cap' in classes(g)]
     focus = [r for r in root.iter(NS + 'rect') if 'focus' in classes(r)]
     if len(focus) != 1:
         err(path, f'expected one red box, found {len(focus)}')
         return None
-    if not cards or len(caps) != len(cards):
-        err(path, f'{len(cards)} cards but {len(caps)} captions')
-        return None
     focus = focus[0]
-    card_rects = [g.find(NS + 'rect') for g in cards]
+    n = len(caps)
+    steps = [bbox([g for g in root.iter(NS + 'g') if 'card' in classes(g) and f's{k + 1}' in classes(g)])
+             for k in range(n)]
+    if not n or None in steps:
+        err(path, f'{n} captions, but not every step has its "card s<k>" elements')
+        return None
 
-    shown = [0.0] * len(caps)
-    focused = set()
-    # piece [f, next) is constant; the last piece runs to the cycle end, then the cycle restarts at 0
-    cuts = sorted({0.0, *(k for a in anims for k in key_times(a))})
+    def step_of(r):
+        hit = [k for k, b in enumerate(steps) if encloses(r, b)]
+        return hit[0] if len(hit) == 1 else None
+
+    shown = [0.0] * n
+    stops = []
+    cuts = sorted({0.0, *(k for a in anims for k in floats(a.get('keyTimes')))})
     for f, nxt in zip(cuts, cuts[1:] + [1.0]):
         if nxt <= f:
             continue
         t = f * cycle
-        vis = [i for i, c in enumerate(caps) if float(attr_at(c, 'opacity', f) or 1) > 0]
-        fx, fy, fw, fh = (float(attr_at(focus, n, f)) for n in ('x', 'y', 'width', 'height'))
-        on = [i for i, r in enumerate(card_rects)
-              if fx <= float(r.get('x')) and fy <= float(r.get('y'))
-              and float(r.get('x')) + float(r.get('width')) <= fx + fw
-              and float(r.get('y')) + float(r.get('height')) <= fy + fh]
-        if len(on) != 1:
-            err(path, f't={t:.4f}s: red box surrounds {len(on)} cards')
+        box = [span(focus, a, f) for a in ('x', 'y', 'width', 'height')]
+        start, end = tuple(v[0] for v in box), tuple(v[1] for v in box)
+        here = step_of(start)
+        if here is None:
+            err(path, f't={t:.4f}s: red box does not frame exactly one step')
             return None
-        focused.add(on[0])
+        parked = start == end
+        if not parked and step_of(end) is None:
+            err(path, f't={t:.4f}s: red box slides towards something that is not a step')
+            return None
+        ops = [span(c, 'opacity', f) for c in caps]
+        vis = [i for i, o in enumerate(ops) if max(o) > 0]
         if len(vis) > 1:
             err(path, f't={t:.4f}s: captions {[v + 1 for v in vis]} visible at once')
             return None
-        if vis and vis[0] != on[0]:
-            err(path, f't={t:.4f}s: caption {vis[0] + 1} shown while the red box is on card {on[0] + 1}')
+        if vis and vis[0] != here:
+            what = 'is on' if parked else 'is leaving'
+            err(path, f't={t:.4f}s: caption {vis[0] + 1} shown while the red box {what} step {here + 1}')
             return None
-        for v in vis:
-            shown[v] += (nxt - f) * cycle
+        if parked:
+            if not stops or stops[-1] != here:
+                stops.append(here)
+            if vis and ops[vis[0]] == (1.0, 1.0):
+                shown[here] += (nxt - f) * cycle
+    if stops != list(range(n)):
+        err(path, f'red box stops at steps {[s + 1 for s in stops]}, expected 1..{n} in order')
     for i, d in enumerate(shown):
         if d < MIN_VISIBLE:
-            err(path, f'caption {i + 1} is visible only {d:.2f}s per cycle')
-    if len(focused) != len(cards):
-        err(path, f'red box never visits cards {sorted(set(range(len(cards))) - focused)}')
+            err(path, f'caption {i + 1} is fully visible only {d:.2f}s per cycle')
     return [caption_texts(c) for c in caps]
 
 

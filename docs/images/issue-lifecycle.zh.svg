@@ -1,161 +1,154 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="610" viewBox="0 0 960 610" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img">
 <title>一个 issue 在 cavil-loop 里走一圈</title>
-<style>text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", Helvetica, Arial, sans-serif} text.m{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}</style>
-<rect x="0" y="0" width="960" height="610" rx="14" fill="#ffffff"/>
-<line x1="304" y1="76.0" x2="339" y2="76.0" stroke="#818b98" stroke-width="2"/>
-<polygon points="339,76 329.0,81.0 329.0,71.0" fill="#818b98"/>
-<line x1="619" y1="76.0" x2="654" y2="76.0" stroke="#818b98" stroke-width="2"/>
-<polygon points="654,76 644.0,81.0 644.0,71.0" fill="#818b98"/>
-<line x1="795.0" y1="126" x2="795.0" y2="176" stroke="#818b98" stroke-width="2"/>
-<polygon points="795,176 790.0,166.0 800.0,166.0" fill="#818b98"/>
-<line x1="656" y1="228.0" x2="621" y2="228.0" stroke="#818b98" stroke-width="2"/>
-<polygon points="621,228 631.0,223.0 631.0,233.0" fill="#818b98"/>
-<line x1="341" y1="228.0" x2="306" y2="228.0" stroke="#818b98" stroke-width="2"/>
-<polygon points="306,228 316.0,223.0 316.0,233.0" fill="#818b98"/>
-<line x1="165.0" y1="278" x2="165.0" y2="328" stroke="#818b98" stroke-width="2"/>
-<polygon points="165,328 160.0,318.0 170.0,318.0" fill="#818b98"/>
-<line x1="304" y1="380.0" x2="339" y2="380.0" stroke="#818b98" stroke-width="2"/>
-<polygon points="339,380 329.0,385.0 329.0,375.0" fill="#818b98"/>
-<line x1="619" y1="380.0" x2="654" y2="380.0" stroke="#818b98" stroke-width="2"/>
-<polygon points="654,380 644.0,385.0 644.0,375.0" fill="#818b98"/>
-<line x1="230" y1="278" x2="230" y2="304" stroke="#818b98" stroke-width="2" stroke-dasharray="6 5"/>
-<line x1="230" y1="304" x2="415" y2="304" stroke="#818b98" stroke-width="2" stroke-dasharray="6 5"/>
-<line x1="415" y1="304" x2="415" y2="280" stroke="#818b98" stroke-width="2" stroke-dasharray="6 5"/>
-<polygon points="415,280 420.0,290.0 410.0,290.0" fill="#818b98"/>
-<text x="322.5" y="297" font-size="12" font-weight="normal" fill="#59636e" text-anchor="middle">打回（最多 3 轮）</text>
-<g class="card">
-<rect x="30" y="30" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="56" cy="58" r="14" fill="#1f2328"/>
-<text x="56" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">1</text>
-<text x="80" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">你开 issue</text>
-<rect x="48" y="84" width="59" height="26" rx="13" fill="#eaeef2"/>
-<text x="58" y="102" font-size="13" font-weight="normal" fill="#59636e" text-anchor="start">无标签</text>
+<rect width="1280" height="640" fill="#F6F2EA"/>
+<text x="40" y="70" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="32" font-weight="400" fill="#1F1D1A" text-anchor="start">一个 issue 在 cavil-loop 里走一圈</text>
+<text x="40" y="104" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="400" fill="#7A746A" text-anchor="start">全程靠 GitHub 标签接力：标签在谁手里，就轮到谁。红框走到哪一步，下面就讲哪一步。</text>
+<line x1="244" y1="202" x2="264" y2="202" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M262,208 L272,202 L262,196" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="480" y1="202" x2="500" y2="202" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M498,208 L508,202 L498,196" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="716" y1="202" x2="736" y2="202" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M734,208 L744,202 L734,196" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="952" y1="202" x2="972" y2="202" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M970,208 L980,202 L970,196" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="1084" y1="250" x2="1084" y2="316" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M1078,314 L1084,324 L1090,314" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="980" y1="372" x2="960" y2="372" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M962,366 L952,372 L962,378" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="744" y1="372" x2="724" y2="372" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M726,366 L716,372 L726,378" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="508" y1="372" x2="488" y2="372" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M490,366 L480,372 L490,378" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M1188,360 C1250,330 1250,244 1188,220" fill="none" stroke="#C2412D" stroke-width="2" stroke-dasharray="6 5"/>
+<path d="M1198,214 L1188,220 L1198,228" fill="none" stroke="#C2412D" stroke-width="2"/>
+<text x="1244" y="290" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#C2412D" text-anchor="end">打回</text>
+<g class="card s1" transform="translate(40 160)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">①</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">你开 issue</text>
+<rect x="14" y="46" width="61" height="24" rx="12" fill="#EDE8DE"/>
+<text x="24" y="63" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">还没有</text>
 </g>
-<g class="card">
-<rect x="345" y="30" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="371" cy="58" r="14" fill="#1f2328"/>
-<text x="371" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">2</text>
-<text x="395" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">你打标签</text>
-<rect x="363" y="84" width="121" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="373" y="102" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/agent</text>
+<g class="card s2" transform="translate(276 160)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">②</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">你打标签</text>
+<rect x="14" y="46" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">pending/agent</text>
 </g>
-<g class="card">
-<rect x="660" y="30" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="686" cy="58" r="14" fill="#1f2328"/>
-<text x="686" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">3</text>
-<text x="710" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">守护进程巡检</text>
-<rect x="678" y="84" width="121" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="688" y="102" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/agent</text>
+<g class="card s3" transform="translate(512 160)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">③</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">守护进程巡检</text>
+<rect x="14" y="46" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">pending/agent</text>
 </g>
-<g class="card">
-<rect x="660" y="182" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="686" cy="210" r="14" fill="#1f2328"/>
-<text x="686" y="215" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">4</text>
-<text x="710" y="216" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">起 worker</text>
-<rect x="678" y="236" width="106" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="688" y="254" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">doing/agent</text>
+<g class="card s4" transform="translate(748 160)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">④</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">起 worker</text>
+<rect x="14" y="46" width="108" height="24" rx="12" fill="#F6E7C8"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#8A5A12" text-anchor="start">doing/agent</text>
 </g>
-<g class="card">
-<rect x="345" y="182" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="371" cy="210" r="14" fill="#1f2328"/>
-<text x="371" y="215" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">5</text>
-<text x="395" y="216" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">先发设计方案</text>
-<rect x="363" y="236" width="129" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="373" y="254" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/review</text>
+<g class="card s5" transform="translate(984 160)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑤</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">先发设计方案</text>
+<rect x="14" y="46" width="131" height="24" rx="12" fill="#E7E0F2"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#5B3F8E" text-anchor="start">pending/review</text>
 </g>
-<g class="card">
-<rect x="30" y="182" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="56" cy="210" r="14" fill="#1f2328"/>
-<text x="56" y="215" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">6</text>
-<text x="80" y="216" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">独立复审</text>
-<rect x="248" y="239" width="38" height="20" rx="10" fill="#fff8c5"/>
-<text x="267.0" y="253" font-size="12" font-weight="normal" fill="#7d4e00" text-anchor="middle">可选</text>
-<rect x="48" y="236" width="121" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="58" y="254" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/human</text>
+<g class="card s6" transform="translate(984 330)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑥</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">codex 复审</text>
+<rect x="14" y="46" width="123" height="24" rx="12" fill="#DCEEDF"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#2F6A40" text-anchor="start">pending/human</text>
+<rect x="150" y="-10" width="38" height="20" rx="10" fill="#F6E7C8" stroke="#CFC7B8"/>
+<text x="169.0" y="4" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="12" font-weight="400" fill="#8A5A12" text-anchor="middle">可选</text>
 </g>
-<g class="card">
-<rect x="30" y="334" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="56" cy="362" r="14" fill="#1f2328"/>
-<text x="56" y="367" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">7</text>
-<text x="80" y="368" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">你拍板</text>
-<rect x="48" y="388" width="121" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="58" y="406" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/agent</text>
+<g class="card s7" transform="translate(748 330)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑦</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">你拍板</text>
+<rect x="14" y="46" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">pending/agent</text>
 </g>
-<g class="card">
-<rect x="345" y="334" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="371" cy="362" r="14" fill="#1f2328"/>
-<text x="371" y="367" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">8</text>
-<text x="395" y="368" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">开发并开 PR</text>
-<rect x="363" y="388" width="98" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="373" y="406" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/PR</text>
+<g class="card s8" transform="translate(512 330)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑧</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">开发并开 PR</text>
+<rect x="14" y="46" width="100" height="24" rx="12" fill="#E3E0DA"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#4A4640" text-anchor="start">pending/PR</text>
 </g>
-<g class="card">
-<rect x="660" y="334" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
-<circle cx="686" cy="362" r="14" fill="#1f2328"/>
-<text x="686" y="367" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">9</text>
-<text x="710" y="368" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">你合并</text>
-<rect x="678" y="388" width="51" height="26" rx="13" fill="#ddf4ff"/>
-<text class="m" x="688" y="406" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">Done</text>
+<g class="card s9" transform="translate(276 330)">
+<rect width="200" height="84" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑨</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">你合并</text>
+<rect x="14" y="46" width="53" height="24" rx="12" fill="#E3E0DA"/>
+<text x="24" y="63" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#4A4640" text-anchor="start">Done</text>
 </g>
-<rect x="30" y="466" width="900" height="114" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
-<text x="914" y="488" font-size="12" font-weight="normal" fill="#59636e" text-anchor="end">说明</text>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.007937;0.103175" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">1. 你开 issue</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">新 issue 默认就放着，等你决定要不要交给 AI，守护进程不碰。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">（项目开了「不打标签也干」的贪心模式时例外。）</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.119048;0.214286" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">2. 你打标签</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">给 issue 打上 pending/agent —— 这就是唯一的开关。</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.230159;0.325397" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">3. 守护进程巡检</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">本机后台默认每 60 秒（可配置）查一次 GitHub，久没动静会自动放慢。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">巡检只调 GitHub 接口，不调模型，不花 token。</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.341270;0.436508" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">4. 起 worker</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">建独立的工作目录（git worktree）+ tmux + agent 会话。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">先确认它活着才翻 doing/agent；起不来就翻 pending/human 并留言。</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.452381;0.547619" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">5. 先发设计方案</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">第一次派工不写代码：把方案和要你拍板的选项发成 issue 评论。这一步总会有。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">开了复审关卡就翻 pending/review 交复审；没开就直接翻 pending/human，跳到 ⑦。</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.563492;0.658730" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">6. 独立复审</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">另一个 agent 审方案：不通过就带意见打回（虚线），worker 重写方案。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">最多 3 轮（可配置），通过或轮数用完才交给你。</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.674603;0.769841" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">7. 你拍板</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">在评论里勾选项或回意见，再把标签改回 pending/agent。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">守护进程下一轮巡检时接着派工。</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.785714;0.880952" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">8. 开发并开 PR</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">worker 写代码、跑测试，测试绿了才开 PR；issue 转 pending/PR 跟踪。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">开了复审关卡时 PR 也先过一轮复审，再交你 review。</text>
-</g>
-<g class="cap" opacity="0">
-<animate attributeName="opacity" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.896825;0.992063" values="0;1;0"/>
-<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">9. 你合并</text>
-<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">合并后 PR 标 Done，issue 随 PR 一起关闭。</text>
-<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">守护进程自动清理工作目录、tmux 和会话记录。</text>
-</g>
-<rect class="focus" x="24" y="24" width="282" height="104" rx="14" fill="none" stroke="#cf222e" stroke-width="3.5">
-<animate attributeName="x" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.111111;0.222222;0.333333;0.444444;0.555556;0.666667;0.777778;0.888889" values="24;339;654;654;339;24;24;339;654"/>
-<animate attributeName="y" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.111111;0.222222;0.333333;0.444444;0.555556;0.666667;0.777778;0.888889" values="24;24;24;176;176;176;328;328;328"/>
-<animate attributeName="width" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.111111;0.222222;0.333333;0.444444;0.555556;0.666667;0.777778;0.888889" values="282;282;282;282;282;282;282;282;282"/>
-<animate attributeName="height" dur="31.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.111111;0.222222;0.333333;0.444444;0.555556;0.666667;0.777778;0.888889" values="104;104;104;104;104;104;104;104;104"/>
+<text x="40" y="360" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="15" font-weight="600" fill="#1F1D1A" text-anchor="start">标签 = 下一步谁动</text>
+<text x="40" y="384" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">蓝：等 agent　琥珀：agent 在干</text>
+<text x="40" y="403" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">紫：等复审　绿：等你</text>
+<rect class="focus" x="34" y="154" width="212" height="96" rx="12" fill="none" stroke="#C2412D" stroke-width="3">
+<animate attributeName="x" values="34;34;270;270;506;506;742;742;978;978;978;978;742;742;506;506;270;270;34" keyTimes="0.000000;0.092593;0.111111;0.203704;0.222222;0.314815;0.333333;0.425926;0.444444;0.537037;0.555556;0.648148;0.666667;0.759259;0.777778;0.870370;0.888889;0.981481;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="y" values="154;154;154;154;154;154;154;154;154;154;314;314;324;324;324;324;324;324;154" keyTimes="0.000000;0.092593;0.111111;0.203704;0.222222;0.314815;0.333333;0.425926;0.444444;0.537037;0.555556;0.648148;0.666667;0.759259;0.777778;0.870370;0.888889;0.981481;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="width" values="212;212;212;212;212;212;212;212;212;212;212;212;212;212;212;212;212;212;212" keyTimes="0.000000;0.092593;0.111111;0.203704;0.222222;0.314815;0.333333;0.425926;0.444444;0.537037;0.555556;0.648148;0.666667;0.759259;0.777778;0.870370;0.888889;0.981481;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="height" values="96;96;96;96;96;96;96;96;96;96;106;106;96;96;96;96;96;96;96" keyTimes="0.000000;0.092593;0.111111;0.203704;0.222222;0.314815;0.333333;0.425926;0.444444;0.537037;0.555556;0.648148;0.666667;0.759259;0.777778;0.870370;0.888889;0.981481;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
 </rect>
+<rect x="40" y="456" width="1200" height="150" rx="12" fill="#EFE9DD"/>
+<g class="cap" transform="translate(72 502)" opacity="1">
+<animate attributeName="opacity" values="1;1;0;0" keyTimes="0.000000;0.092593;0.101852;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">① 你开 issue　·　此时标签：还没有</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">在 GitHub 上新开一个 issue，写清要做什么。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">新 issue 默认等你分派，守护进程不会碰它（项目开了「不打标签也干」的贪心模式时例外）。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.111111;0.120370;0.203704;0.212963;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">② 你打标签　·　此时标签：pending/agent</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">给 issue 打上 pending/agent，意思是「交给 agent」。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">这是唯一的开关：不打这个标签，什么都不会发生。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.222222;0.231481;0.314815;0.324074;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">③ 守护进程巡检　·　此时标签：pending/agent</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">本机定时器默认每 60 秒叫醒一次巡检（可配置）；仓库久没动静会自动放慢。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">巡检只调 GitHub 接口、不调模型，所以空闲时不花模型的钱。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.333333;0.342593;0.425926;0.435185;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">④ 起 worker　·　此时标签：doing/agent</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">给这个 issue 建独立的 worktree、tmux 会话和一个 agent 会话。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">先确认它真的活着，才把标签翻成 doing/agent；起不来就翻 pending/human 交给你。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.444444;0.453704;0.537037;0.546296;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑤ 先发设计方案　·　此时标签：pending/review</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">worker 先读代码，把方案发到 issue 评论里，列出要你拍板的选项。这一步不写代码，每个项目都有。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">开了复审关卡就翻 pending/review 交给复审；没开就直接翻 pending/human，跳到 ⑦。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.555556;0.564815;0.648148;0.657407;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑥ codex 复审　·　此时标签：pending/human</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">另一个模型（默认 codex，可配置）独立审方案：不通过就打回，worker 回到 ⑤ 重写，最多 3 轮。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">通过了（或轮数用完）才翻 pending/human，方案这才到你面前。这一步可选，项目没开复审关卡就没有。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.666667;0.675926;0.759259;0.768519;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑦ 你拍板　·　此时标签：pending/agent</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">你在评论里勾选项，或者直接回一句修改意见，</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">再把标签改回 pending/agent，守护进程下一轮巡检时 worker 接着干。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.777778;0.787037;0.870370;0.879630;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑧ 开发并开 PR　·　此时标签：pending/PR</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">worker 先写测试再写代码，整条测试链跑绿后开 PR；issue 转成 pending/PR。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">开了复审关卡时，PR 同样先过一轮复审，再交给你验收。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.888889;0.898148;0.981481;0.990741;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="27s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑨ 你合并　·　此时标签：Done</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">你合并 PR 后，守护进程自动清理 worktree 和 tmux 会话。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">PR 打上 Done，issue 随 PR 关闭。</text>
+</g>
 </svg>

@@ -8,363 +8,413 @@ animated / static variants must say the same thing, and the only way to keep
 eight files in step is to render them from one table. tests/doc-diagrams.test.sh
 regenerates into a temp dir and diffs, so an edit made straight to an SVG fails.
 
+The visual design (layout, palette, a red box that slides between steps and
+resizes to frame a group, captions that fade) follows the reference diagrams the
+maintainer asked for on PR #77; captions were corrected where they disagreed
+with the code (the review gate is optional, the hook column is project-side).
+
 Constraints the output must keep (GitHub shows a README SVG as a plain <img>):
   - SMIL <animate> only: no <script>, no element ids (so no url(#...) markers —
-    arrowheads are drawn as polygons), no external fonts or references
-  - one cycle per image; every animation starts at 0s, shares that cycle, and
-    switches discretely, so the frame at 0s (or with animation off) is the full
-    diagram with the red box on step 1
-  - a caption is visible only while the red box sits on its step, with a blank
-    gap at both ends of the stay — never two captions at once
-The behavioural checks live in check.py.
+    arrowheads are drawn as paths), no external fonts or references
+  - one cycle per image; every animation starts at 0s and shares that cycle, so
+    the frame at 0s (or with animation off) is the full diagram, the red box on
+    step 1 and step 1's caption showing
+  - a caption is visible only while the red box sits on its step; it fades in
+    after the box arrives and finishes fading out while the box moves away, so
+    two captions never overlap
+The behavioural checks live in check.py; step k's framed elements carry class
+"card s<k>" so the checker can tell which step the box is on.
 """
 import os
 import sys
 from xml.sax.saxutils import escape
 
-STEP_SECS = 3.5   # stay per step; captions are two short lines
-GAP_SECS = 0.25   # caption blank at each end of a stay
+MOVE_SECS = 0.5    # red box slide between steps
+FADE_SECS = 0.25   # caption fade, inside the stay (in) and inside the slide (out)
+EASE = '0.42 0 0.58 1'
 
-FONT = ('-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", '
-        '"Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", '
-        'Helvetica, Arial, sans-serif')
-MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+SANS = "system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif"
+SERIF = "Georgia, 'Noto Serif CJK SC', 'Songti SC', serif"
+MONO = 'ui-monospace, Menlo, monospace'
 
-C = {
-    'bg': '#ffffff', 'card': '#f6f8fa', 'card_line': '#d0d7de', 'text': '#1f2328',
-    'muted': '#59636e', 'pill': '#ddf4ff', 'pill_text': '#0550ae', 'none_pill': '#eaeef2',
-    'opt': '#fff8c5', 'opt_text': '#7d4e00', 'red': '#cf222e', 'arrow': '#818b98',
-    'cap_bg': '#f6f8fa',
+INK, MUTED, PAPER, CARD, LINE, RED = '#1F1D1A', '#7A746A', '#F6F2EA', '#FFFDF8', '#CFC7B8', '#C2412D'
+PANEL = '#EFE9DD'
+# label pill colours: who moves next
+PILL = {
+    'agent':  ('#DCE6F2', '#2F5D8A'),   # waits for an agent
+    'doing':  ('#F6E7C8', '#8A5A12'),   # agent working
+    'review': ('#E7E0F2', '#5B3F8E'),   # waits for review
+    'human':  ('#DCEEDF', '#2F6A40'),   # waits for you
+    'track':  ('#E3E0DA', '#4A4640'),   # tracking / closed
+    'none':   ('#EDE8DE', '#7A746A'),   # no label yet
 }
+CIRCLED = '①②③④⑤⑥⑦⑧⑨'
 
 # ── content ────────────────────────────────────────────────────────────────
-# Each step: (title, label or None, optional?, [caption lines]). Facts were
-# checked against the code when GitHub#76 was designed; keep them in sync with
-# docs/architecture.md when the workflow changes.
+# Facts were checked against the code (dispatch scripts, prompt templates,
+# config defaults); keep them in sync with docs/architecture.md.
 
 LIFECYCLE = {
     'zh': {
-        'none': '无标签', 'optional': '可选', 'notes': '说明', 'loop': '打回（最多 3 轮）',
         'title': '一个 issue 在 cavil-loop 里走一圈',
+        'subtitle': '全程靠 GitHub 标签接力：标签在谁手里，就轮到谁。红框走到哪一步，下面就讲哪一步。',
+        'subtitle_static': '全程靠 GitHub 标签接力：标签在谁手里，就轮到谁。每一步的说明都列在下面。',
+        'now': '此时标签', 'none': '还没有', 'optional': '可选', 'bounce': '打回',
+        'legend': ['标签 = 下一步谁动', '蓝：等 agent　琥珀：agent 在干', '紫：等复审　绿：等你'],
         'steps': [
-            ('你开 issue', None, False,
-             ['新 issue 默认就放着，等你决定要不要交给 AI，守护进程不碰。',
-              '（项目开了「不打标签也干」的贪心模式时例外。）']),
-            ('你打标签', 'pending/agent', False,
-             ['给 issue 打上 pending/agent —— 这就是唯一的开关。']),
-            ('守护进程巡检', 'pending/agent', False,
-             ['本机后台默认每 60 秒（可配置）查一次 GitHub，久没动静会自动放慢。',
-              '巡检只调 GitHub 接口，不调模型，不花 token。']),
-            ('起 worker', 'doing/agent', False,
-             ['建独立的工作目录（git worktree）+ tmux + agent 会话。',
-              '先确认它活着才翻 doing/agent；起不来就翻 pending/human 并留言。']),
-            ('先发设计方案', 'pending/review', False,
-             ['第一次派工不写代码：把方案和要你拍板的选项发成 issue 评论。这一步总会有。',
-              '开了复审关卡就翻 pending/review 交复审；没开就直接翻 pending/human，跳到 ⑦。']),
-            ('独立复审', 'pending/human', True,
-             ['另一个 agent 审方案：不通过就带意见打回（虚线），worker 重写方案。',
-              '最多 3 轮（可配置），通过或轮数用完才交给你。']),
-            ('你拍板', 'pending/agent', False,
-             ['在评论里勾选项或回意见，再把标签改回 pending/agent。',
-              '守护进程下一轮巡检时接着派工。']),
-            ('开发并开 PR', 'pending/PR', False,
-             ['worker 写代码、跑测试，测试绿了才开 PR；issue 转 pending/PR 跟踪。',
-              '开了复审关卡时 PR 也先过一轮复审，再交你 review。']),
-            ('你合并', 'Done', False,
-             ['合并后 PR 标 Done，issue 随 PR 一起关闭。',
-              '守护进程自动清理工作目录、tmux 和会话记录。']),
+            ('你开 issue', None, 'none', False,
+             ['在 GitHub 上新开一个 issue，写清要做什么。',
+              '新 issue 默认等你分派，守护进程不会碰它（项目开了「不打标签也干」的贪心模式时例外）。']),
+            ('你打标签', 'pending/agent', 'agent', False,
+             ['给 issue 打上 pending/agent，意思是「交给 agent」。',
+              '这是唯一的开关：不打这个标签，什么都不会发生。']),
+            ('守护进程巡检', 'pending/agent', 'agent', False,
+             ['本机定时器默认每 60 秒叫醒一次巡检（可配置）；仓库久没动静会自动放慢。',
+              '巡检只调 GitHub 接口、不调模型，所以空闲时不花模型的钱。']),
+            ('起 worker', 'doing/agent', 'doing', False,
+             ['给这个 issue 建独立的 worktree、tmux 会话和一个 agent 会话。',
+              '先确认它真的活着，才把标签翻成 doing/agent；起不来就翻 pending/human 交给你。']),
+            ('先发设计方案', 'pending/review', 'review', False,
+             ['worker 先读代码，把方案发到 issue 评论里，列出要你拍板的选项。这一步不写代码，每个项目都有。',
+              '开了复审关卡就翻 pending/review 交给复审；没开就直接翻 pending/human，跳到 ⑦。']),
+            ('codex 复审', 'pending/human', 'human', True,
+             ['另一个模型（默认 codex，可配置）独立审方案：不通过就打回，worker 回到 ⑤ 重写，最多 3 轮。',
+              '通过了（或轮数用完）才翻 pending/human，方案这才到你面前。这一步可选，项目没开复审关卡就没有。']),
+            ('你拍板', 'pending/agent', 'agent', False,
+             ['你在评论里勾选项，或者直接回一句修改意见，',
+              '再把标签改回 pending/agent，守护进程下一轮巡检时 worker 接着干。']),
+            ('开发并开 PR', 'pending/PR', 'track', False,
+             ['worker 先写测试再写代码，整条测试链跑绿后开 PR；issue 转成 pending/PR。',
+              '开了复审关卡时，PR 同样先过一轮复审，再交给你验收。']),
+            ('你合并', 'Done', 'track', False,
+             ['你合并 PR 后，守护进程自动清理 worktree 和 tmux 会话。',
+              'PR 打上 Done，issue 随 PR 关闭。']),
         ],
     },
     'en': {
-        'none': 'no label', 'optional': 'optional', 'notes': 'Notes', 'loop': 'bounced (max 3 rounds)',
         'title': 'One issue, once around cavil-loop',
+        'subtitle': 'GitHub labels pass the baton: whoever the label points to moves next. The red box marks the step explained below.',
+        'subtitle_static': 'GitHub labels pass the baton: whoever the label points to moves next. Every step is explained below.',
+        'now': 'label now', 'none': 'none yet', 'optional': 'optional', 'bounce': 'bounce',
+        'legend': ['Label = who moves next', 'Blue: waits for agent', 'Amber: agent working',
+                   'Purple: waits for review', 'Green: waits for you'],
         'steps': [
-            ('You open an issue', None, False,
-             ['A new issue just sits there until you decide to hand it to the AI;',
-              'the daemon leaves it alone (unless the project runs greedy mode).']),
-            ('You add the label', 'pending/agent', False,
-             ['Labeling the issue pending/agent is the one and only switch.']),
-            ('Daemon polls', 'pending/agent', False,
-             ['A local background job checks GitHub every 60 s by default (configurable)',
-              'and slows down when idle. It only calls GitHub, never a model.']),
-            ('Worker starts', 'doing/agent', False,
-             ['Own git worktree + tmux + agent session. The label flips to doing/agent',
-              'only once it is confirmed alive; if it dies, pending/human + a comment.']),
-            ('Design proposal', 'pending/review', False,
-             ['Always comes first: no code, the plan and the choices for you go up as a comment.',
-              'With a review gate it goes to pending/review; without, straight to pending/human and 7.']),
-            ('Independent review', 'pending/human', True,
-             ['Another agent reviews the plan; a fail bounces it back (dashed line).',
-              'At most 3 rounds (configurable), then it reaches you either way.']),
-            ('You decide', 'pending/agent', False,
-             ['Tick the options or reply in a comment, then relabel pending/agent.',
-              'The next poll picks it up again.']),
-            ('Build + open PR', 'pending/PR', False,
-             ['The worker writes code and runs tests; the PR opens only once green.',
-              'The issue moves to pending/PR; with a review gate the PR is reviewed first.']),
-            ('You merge', 'Done', False,
-             ['The PR is labeled Done and the issue closes with it.',
-              'The daemon cleans up the worktree, tmux and session records.']),
+            ('Open an issue', None, 'none', False,
+             ['Open a new issue on GitHub and say what you want done.',
+              'A new issue waits for you to hand it over; the daemon leaves it alone (unless the project runs greedy mode).']),
+            ('You label it', 'pending/agent', 'agent', False,
+             ['Label the issue pending/agent, meaning "hand this to the agent".',
+              'It is the one and only switch: without this label nothing happens.']),
+            ('Daemon polls', 'pending/agent', 'agent', False,
+             ['A local timer wakes the poller every 60 s by default (configurable); a quiet repo slows it down.',
+              'Polling only calls the GitHub API, never a model, so idle time costs no model spend.']),
+            ('Worker starts', 'doing/agent', 'doing', False,
+             ['The issue gets its own worktree, tmux session and agent session.',
+              'Only once it is confirmed alive does the label flip to doing/agent; if it dies, pending/human.']),
+            ('Design proposal', 'pending/review', 'review', False,
+             ['The worker reads the code and posts a plan with the choices for you. No code yet; every project has this step.',
+              'With a review gate it flips to pending/review for review; without one, straight to pending/human and step 7.']),
+            ('codex review', 'pending/human', 'human', True,
+             ['Another model (codex by default, configurable) reviews the plan; a fail bounces it back to 5, at most 3 rounds.',
+              'Only a pass (or the last round) flips it to pending/human for you. Optional: no review gate, no step 6.']),
+            ('You decide', 'pending/agent', 'agent', False,
+             ['Tick the options in the comment, or reply with changes,',
+              'then relabel pending/agent; the worker carries on at the next poll.']),
+            ('Build + open PR', 'pending/PR', 'track', False,
+             ['The worker writes tests first, then code; the PR opens once the tests are green. The issue moves to pending/PR.',
+              'With a review gate the PR is reviewed first, then handed to you.']),
+            ('You merge', 'Done', 'track', False,
+             ['Once you merge, the daemon cleans up the worktree and tmux session.',
+              'The PR is labeled Done and the issue closes with it.']),
         ],
     },
 }
 
 PROMPT = {
     'zh': {
-        'notes': '说明', 'title': '一条评论怎么变成 worker 手里的指令',
-        'layers': ['通用工作流', '通用公开经验', '项目复盘经验', '项目增量（冲突时为准）'],
+        'title': '一条评论，怎么变成 worker 手里的指令',
+        'subtitle': '提示词分层拼装；会话活着就粘贴进去，退出了就按角色续上；项目侧可选：改文件前再补规矩。',
+        'layers': [('通用工作流', '决策树、标签怎么翻'), ('通用公开经验', '跨项目都成立的原则'),
+                   ('项目复盘经验', '合并后复盘攒的硬规则'), ('本项目附加要求', '冲突时以这一层为准')],
+        'compose': ['合成一份', '完整提示词'],
+        'alive': ('会话还活着', '粘贴进 tmux，再按回车'),
+        'exited': ('会话已经退出', '按「编号 + 角色」续上原对话'),
+        'hook_title': '项目侧钩子示例（非 cavil-loop 自带）',
+        'hook_edit': 'Edit / Write：src/feature/x.ts',
+        'hook_files': ['AGENTS.md（根目录）', 'src/AGENTS.md', 'src/feature/AGENTS.md'],
+        'hook_out': ['执行这次改动前塞进上下文', '同一会话塞过的不再重复'],
         'steps': [
-            ('四层拼装', None, False,
-             ['按顺序叠四层：cavil-loop 自带的通用工作流和通用公开经验，项目自己的复盘经验和增量要求。',
-              '冲突时以最后一层「项目增量」为准；项目也可以整份替换第一层。']),
-            ('合成完整提示词', '再填编号、分支、目录', False,
-             ['拼成一份完整提示词，再填上编号、分支、工作目录等。',
-              '评论原文不拼进来：worker 自己去 GitHub 读，并且只当数据看，不当指令。']),
-            ('会话还活着', '粘贴进 tmux + 回车', False,
-             ['worker 的 tmux 会话还在：把提示词粘贴进去再回车，接着原来的上下文干。',
-              '复审派工不会粘进写代码的那个会话。']),
-            ('会话已退出', '按「编号 + 角色」续上', False,
-             ['会话退出了但有记录：按「编号 + 角色」续上原来那条对话。',
-              '写代码和复审各续各的，互不串台。']),
-            ('第一次派工', '新开一条会话', False,
-             ['没有可续的对话（或续上后立刻退出）：新开一条会话，',
-              '提示词作为启动参数直接传进去。']),
+            ('① 四层拼装',
+             ['通用工作流 → 通用公开经验 → 项目复盘经验 → 本项目附加要求，按顺序首尾相接。',
+              '越往后越具体；冲突时以最后一层「本项目附加要求」为准。']),
+            ('② 合成一份完整提示词',
+             ['再填上这条 issue / PR 的编号、分支、工作目录，',
+              '就是 worker 这一轮拿到的全部指令。评论原文只当数据，不当指令。']),
+            ('③ 会话还活着：直接粘贴',
+             ['这个编号的 tmux 会话还在，就把提示词整段粘贴进去，再按一次回车提交。',
+              '模型沿用原来的对话，前面干过什么都还记得。']),
+            ('④ 会话已经退出：按角色续上',
+             ['按「编号 + 角色」找回原来那条对话续上，找不到才全新开一条。',
+              '写代码的和复审的各记各的，复审不会续到写代码那条，保证复审独立。']),
+            ('⑤ 项目侧钩子（示例，非 cavil-loop 自带）：沿路径找规矩文件',
+             ['worker 用 Edit / Write 改某个文件前，钩子从该文件所在目录一路往上找 AGENTS.md，',
+              '只挑本会话还没塞过的。用 Bash 改文件不触发；codex 复审也不走这个钩子。']),
+            ('⑥ 项目侧钩子（示例）：改动执行前就塞进上下文',
+             ['找到的规矩文件在这次改动执行之前就交给模型，不用等下一轮。',
+              '同一会话里塞过的不再重复，避免把上下文撑大。']),
         ],
     },
     'en': {
-        'notes': 'Notes', 'title': 'How a comment becomes the worker\'s instructions',
-        'layers': ['Base workflow', 'Public lessons', 'Project lessons', 'Project additions (win)'],
+        'title': 'How a comment becomes the worker\'s instructions',
+        'subtitle': 'Layers stack into one prompt; a live session gets it pasted, an exited one is resumed by role; optional, project-side: add rules before edits.',
+        'layers': [('Base workflow', 'decision tree, label flips'), ('Public lessons', 'principles that hold everywhere'),
+                   ('Project lessons', 'hard rules from retrospectives'), ('Project additions', 'this layer wins on conflict')],
+        'compose': ['One complete', 'prompt'],
+        'alive': ('Session alive', 'paste into tmux, press Enter'),
+        'exited': ('Session exited', 'resume by number + role'),
+        'hook_title': 'Project-side hook (example only)',
+        'hook_edit': 'Edit / Write: src/feature/x.ts',
+        'hook_files': ['AGENTS.md (repo root)', 'src/AGENTS.md', 'src/feature/AGENTS.md'],
+        'hook_out': ['Injected before the edit runs', 'not repeated within a session'],
         'steps': [
-            ('Four layers', None, False,
-             ['Stacked in order: the base workflow and public lessons shipped with cavil-loop,',
-              'then the project\'s own lessons and additions. The last layer wins on conflict.']),
-            ('One full prompt', '+ number, branch, dir', False,
-             ['Joined into one prompt, then filled in with issue number, branch, worktree.',
-              'Comment text is not pasted in: the worker reads it from GitHub, as data only.']),
-            ('Session alive', 'paste into tmux + Enter', False,
-             ['The worker\'s tmux session is still up: paste the prompt and press Enter,',
-              'keeping the context. A review dispatch never lands in the coding session.']),
-            ('Session exited', 'resume by number + role', False,
-             ['The session is gone but recorded: resume that conversation by',
-              'issue number + role. Coding and review each resume their own.']),
-            ('First dispatch', 'start a new session', False,
-             ['Nothing to resume (or the resume dies at once): start a new session',
-              'with the prompt passed in as its launch argument.']),
+            ('1  Four layers',
+             ['Base workflow → public lessons → project lessons → project additions, joined end to end.',
+              'Each layer is more specific than the last; on conflict the last one, project additions, wins.']),
+            ('2  One complete prompt',
+             ['Fill in this issue / PR\'s number, branch and working directory,',
+              'and that is everything the worker gets this round. Comment text is data, never instructions.']),
+            ('3  Session alive: paste',
+             ['If this number\'s tmux session is still up, the whole prompt is pasted in and Enter submits it.',
+              'The model keeps its conversation and remembers what it already did.']),
+            ('4  Session exited: resume by role',
+             ['The conversation recorded for number + role is resumed; only if there is none does a new one start.',
+              'Coding and review keep separate records, so a review never resumes the coding conversation.']),
+            ('5  Project-side hook (example, not part of cavil-loop): find rule files',
+             ['Before the worker edits a file with Edit / Write, the hook walks up from that file\'s directory for AGENTS.md,',
+              'picking only those not yet sent this session. Edits via Bash do not trigger it; nor does codex review.']),
+            ('6  Project-side hook (example): inject before the edit',
+             ['The rule files found reach the model before this edit runs, not a round later.',
+              'Files already sent in this session are not repeated, so the context does not balloon.']),
         ],
     },
 }
 
 # ── drawing helpers ────────────────────────────────────────────────────────
 
-def text(x, y, s, size=15, weight='normal', fill=None, anchor='start', mono=False):
-    cls = ' class="m"' if mono else ''
-    return (f'<text{cls} x="{x}" y="{y}" font-size="{size}" font-weight="{weight}" '
-            f'fill="{fill or C["text"]}" text-anchor="{anchor}">{escape(s)}</text>')
+def text(x, y, s, size, fill=INK, font=SANS, weight=400, anchor='start'):
+    return (f'<text x="{x}" y="{y}" font-family="{font}" font-size="{size}" font-weight="{weight}" '
+            f'fill="{fill}" text-anchor="{anchor}">{escape(s)}</text>')
 
 
-def arrow(x1, y1, x2, y2, dashed=False, head=True):
-    dash = ' stroke-dasharray="6 5"' if dashed else ''
-    out = [f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C["arrow"]}" stroke-width="2"{dash}/>']
-    if head:
-        out.append(arrowhead(x2, y2, x2 - x1, y2 - y1))
-    return '\n'.join(out)
-
-
-def arrowhead(x, y, dx, dy):
-    n = (dx * dx + dy * dy) ** 0.5 or 1
-    ux, uy = dx / n, dy / n
-    px, py = -uy, ux
-    a = (x - ux * 10 + px * 5, y - uy * 10 + py * 5)
-    b = (x - ux * 10 - px * 5, y - uy * 10 - py * 5)
-    return (f'<polygon points="{x:g},{y:g} {a[0]:.1f},{a[1]:.1f} {b[0]:.1f},{b[1]:.1f}" '
-            f'fill="{C["arrow"]}"/>')
-
-
-def text_width(s, size):
+def width(s, size):
     # rough: CJK ≈ 1em, ASCII ≈ 0.6em (monospace labels are exactly 0.6em)
     return sum(size if ord(ch) > 0x2e80 else size * 0.6 for ch in s)
 
 
-def card(i, box, title, label, optional, lang_t, extra=''):
-    x, y, w, h = box
-    out = [f'<g class="card">',
-           f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="10" fill="{C["card"]}" '
-           f'stroke="{C["card_line"]}" stroke-width="1.5"/>',
-           f'<circle cx="{x + 26}" cy="{y + 28}" r="14" fill="{C["text"]}"/>',
-           text(x + 26, y + 33, str(i + 1), size=14, weight='bold', fill='#ffffff', anchor='middle'),
-           text(x + 50, y + 34, title, size=17, weight='bold')]
-    if optional:
-        tw = text_width(lang_t['optional'], 12) + 14
-        # on the label row, right-aligned: the title row has no room for it in English
-        out.append(f'<rect x="{x + w - tw - 14:.0f}" y="{y + 57}" width="{tw:.0f}" height="20" rx="10" '
-                   f'fill="{C["opt"]}"/>')
-        out.append(text(x + w - tw / 2 - 14, y + 71, lang_t['optional'], size=12, fill=C['opt_text'],
-                        anchor='middle'))
-    if label is not None or 'none' in lang_t:
-        if label is None:
-            s, fill, tc, mono = lang_t['none'], C['none_pill'], C['muted'], False
-        elif lang_t.get('plain_sub'):   # diagram 2: a short subtitle, not a GitHub label
-            out.append(text(x + 20, y + 70, label, size=14, fill=C['muted']))
-            out.append(extra)
-            out.append('</g>')
-            return '\n'.join(o for o in out if o)
-        else:
-            s, fill, tc, mono = label, C['pill'], C['pill_text'], True
-        pw = text_width(s, 13) + 20
-        out.append(f'<rect x="{x + 18}" y="{y + 54}" width="{pw:.0f}" height="26" rx="13" fill="{fill}"/>')
-        out.append(text(x + 28, y + 72, s, size=13, fill=tc, mono=mono))
-    out.append(extra)
-    out.append('</g>')
-    return '\n'.join(o for o in out if o)
+def line_arrow(x1, y1, x2, y2):
+    """Straight arrow; the head is an open chevron path at (x2, y2)."""
+    out = [f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{INK}" stroke-width="2"/>']
+    out.append(chevron(x2, y2, x2 - x1, y2 - y1))
+    return '\n'.join(out)
 
 
-def focus_box(boxes, cycle, animated):
-    """The red box. Its x/y/width/height jump to step i at i*STEP_SECS."""
-    pad = 6
-    rects = [(x - pad, y - pad, w + 2 * pad, h + 2 * pad) for x, y, w, h in boxes]
+def chevron(x, y, dx, dy, color=INK):
+    n = (dx * dx + dy * dy) ** 0.5 or 1
+    ux, uy = dx / n, dy / n
+    px, py = -uy, ux
+    tip = (x + ux * 8, y + uy * 8)
+    a = (x - ux * 2 + px * 6, y - uy * 2 + py * 6)
+    b = (x - ux * 2 - px * 6, y - uy * 2 - py * 6)
+    return (f'<path d="M{a[0]:g},{a[1]:g} L{tip[0]:g},{tip[1]:g} L{b[0]:g},{b[1]:g}" fill="none" '
+            f'stroke="{color}" stroke-width="2"/>')
+
+
+def pill(x, y, s, kind, mono=True):
+    bg, fg = PILL[kind]
+    w = round(width(s, 13) + 22)
+    return (f'<rect x="{x}" y="{y}" width="{w}" height="24" rx="12" fill="{bg}"/>\n'
+            + text(x + 10, y + 17, s, 13, fill=fg, font=MONO if mono else SANS))
+
+
+def animate(attr, kts, vals, cycle):
+    kt = ';'.join(f'{k:.6f}' for k in kts)
+    vs = ';'.join(f'{v:g}' for v in vals)
+    sp = ';'.join([EASE] * (len(kts) - 1))
+    return (f'<animate attributeName="{attr}" values="{vs}" keyTimes="{kt}" keySplines="{sp}" '
+            f'dur="{cycle:g}s" begin="0s" repeatCount="indefinite" calcMode="spline"/>')
+
+
+def schedule(n, step_secs):
+    """Per step i: the box arrives at i*D and leaves at (i+1)*D - MOVE_SECS."""
+    cycle = n * step_secs
+    arrive = [i * step_secs / cycle for i in range(n)]
+    leave = [((i + 1) * step_secs - MOVE_SECS) / cycle for i in range(n)]
+    return cycle, arrive, leave, FADE_SECS / cycle
+
+
+def focus_box(rects, step_secs):
+    n = len(rects)
+    cycle, arrive, leave, _ = schedule(n, step_secs)
+    kts, frames = [], []
+    for i in range(n):
+        kts += [arrive[i], leave[i]]
+        frames += [rects[i], rects[i]]
+    kts.append(1.0)
+    frames.append(rects[0])
     x, y, w, h = rects[0]
-    out = [f'<rect class="focus" x="{x}" y="{y}" width="{w}" height="{h}" rx="14" fill="none" '
-           f'stroke="{C["red"]}" stroke-width="3.5">']
-    if animated:
-        kt = ';'.join(f'{i * STEP_SECS / cycle:.6f}' for i in range(len(rects)))
-        for k, attr in enumerate(('x', 'y', 'width', 'height')):
-            vals = ';'.join(str(r[k]) for r in rects)
-            out.append(f'<animate attributeName="{attr}" dur="{cycle:g}s" repeatCount="indefinite" '
-                       f'calcMode="discrete" keyTimes="{kt}" values="{vals}"/>')
+    out = [f'<rect class="focus" x="{x}" y="{y}" width="{w}" height="{h}" rx="12" fill="none" '
+           f'stroke="{RED}" stroke-width="3">']
+    for k, attr in enumerate(('x', 'y', 'width', 'height')):
+        out.append(animate(attr, kts, [f[k] for f in frames], cycle))
     out.append('</rect>')
     return '\n'.join(out)
 
 
-def caption_block(i, title, lines, x, y):
-    out = [text(x, y, f'{i + 1}. {title}', size=16, weight='bold')]
-    for j, line in enumerate(lines):
-        out.append(text(x, y + 26 + j * 24, line, size=15))
+def caption(head, lines, x, y):
+    out = [text(0, 0, head, 22, fill=RED, font=SERIF)]
+    for j, s in enumerate(lines):
+        out.append(text(0, 40 + 30 * j, s, 17))
+    return out
+
+
+def captions(caps, step_secs, x, y, animated):
+    """Animated: stacked in one panel, each fading with its step. Static: listed."""
+    n = len(caps)
+    out = []
+    if animated:
+        cycle, arrive, leave, fade = schedule(n, step_secs)
+        for i, (head, lines) in enumerate(caps):
+            if i == 0:   # showing at 0s, so a frame with animation off reads step 1
+                kts, vals = [0, leave[0], leave[0] + fade, 1], [1, 1, 0, 0]
+            else:
+                kts = [0, arrive[i], arrive[i] + fade, leave[i], leave[i] + fade, 1]
+                vals = [0, 0, 1, 1, 0, 0]
+            out.append(f'<g class="cap" transform="translate({x} {y})" opacity="{vals[0]}">')
+            out.append(animate('opacity', kts, vals, cycle))
+            out += caption(head, lines, x, y)
+            out.append('</g>')
+    else:
+        for i, (head, lines) in enumerate(caps):
+            out.append(f'<g class="cap" transform="translate({x} {y + i * STATIC_PITCH})">')
+            out += caption(head, lines, x, y)
+            out.append('</g>')
     return '\n'.join(out)
 
 
-def captions_animated(steps, cycle, x, y):
-    out = []
-    for i, (title, _l, _o, lines) in enumerate(steps):
-        on = (i * STEP_SECS + GAP_SECS) / cycle
-        off = ((i + 1) * STEP_SECS - GAP_SECS) / cycle
-        out.append(f'<g class="cap" opacity="0">')
-        out.append(f'<animate attributeName="opacity" dur="{cycle:g}s" repeatCount="indefinite" '
-                   f'calcMode="discrete" keyTimes="0;{on:.6f};{off:.6f}" values="0;1;0"/>')
-        out.append(caption_block(i, title, lines, x, y))
-        out.append('</g>')
-    return '\n'.join(out)
+STATIC_PITCH = 120   # one caption block in the static list
 
 
-def captions_static(steps, x, y):
-    out = []
-    for i, (title, _l, _o, lines) in enumerate(steps):
-        out.append(f'<g class="cap">')
-        out.append(caption_block(i, title, lines, x, y))
-        out.append('</g>')
-        y += 26 + 24 * len(lines) + 18
-    return '\n'.join(out), y
+def frame(t, body, caps, step_secs, rects, animated):
+    W = 1280
+    if animated:
+        H, panel_h = 640, 150
+    else:
+        panel_h = 46 + STATIC_PITCH * len(caps)
+        H = 456 + panel_h + 34
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img">',
+           f'<title>{escape(t["title"])}</title>',
+           f'<rect width="{W}" height="{H}" fill="{PAPER}"/>',
+           text(40, 70, t['title'], 32, font=SERIF),
+           text(40, 104, t['subtitle'] if animated else t.get('subtitle_static', t['subtitle']), 16, fill=MUTED),
+           body]
+    if animated:
+        out.append(focus_box(rects, step_secs))
+    out.append(f'<rect x="40" y="456" width="1200" height="{panel_h}" rx="12" fill="{PANEL}"/>')
+    out.append(captions(caps, step_secs, 72, 502, animated))
+    out.append('</svg>')
+    return '\n'.join(out) + '\n'
 
-
-def caption_height(steps):
-    return max(26 + 24 * len(s[3]) for s in steps) + 40
-
-
-def static_height(steps):
-    return sum(26 + 24 * len(s[3]) + 18 for s in steps) + 40
-
-
-def svg_doc(w, h, title, body):
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
-            f'role="img">\n<title>{escape(title)}</title>\n'
-            f'<style>text{{font-family:{FONT}}} text.m{{font-family:{MONO}}}</style>\n'
-            f'<rect x="0" y="0" width="{w}" height="{h}" rx="14" fill="{C["bg"]}"/>\n{body}\n</svg>\n')
-
-
-def notes_panel(lang_t, x, y, w, h):
-    return '\n'.join([
-        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="10" fill="{C["cap_bg"]}" '
-        f'stroke="{C["card_line"]}" stroke-width="1"/>',
-        text(x + w - 16, y + 22, lang_t['notes'], size=12, fill=C['muted'], anchor='end'),
-    ])
-
-# ── diagram 1: issue lifecycle (3×3 snake) ─────────────────────────────────
+# ── diagram 1: issue lifecycle ─────────────────────────────────────────────
 
 def lifecycle(lang, animated):
     t = LIFECYCLE[lang]
     steps = t['steps']
-    W, CW, CH = 960, 270, 92
-    cols, rows = [30, 345, 660], [30, 182, 334]
-    order = [(0, 0), (0, 1), (0, 2), (1, 2), (1, 1), (1, 0), (2, 0), (2, 1), (2, 2)]
-    boxes = [(cols[c], rows[r], CW, CH) for r, c in order]
+    # top row ①–⑤ left to right, bottom row ⑥–⑨ right to left
+    pos = [(40, 160), (276, 160), (512, 160), (748, 160), (984, 160),
+           (984, 330), (748, 330), (512, 330), (276, 330)]
+    CW, CH = 200, 84
     parts = []
-    mid = lambda b: (b[0] + b[2] / 2, b[1] + b[3] / 2)
-    for a, b in zip(boxes, boxes[1:]):
-        (ax, ay), (bx, by) = mid(a), mid(b)
-        if ay == by:   # same row
-            if bx > ax:
-                parts.append(arrow(a[0] + a[2] + 4, ay, b[0] - 6, by))
-            else:
-                parts.append(arrow(a[0] - 4, ay, b[0] + b[2] + 6, by))
-        else:          # down a column
-            parts.append(arrow(ax, a[1] + a[3] + 4, bx, b[1] - 6))
-    # dashed bounce ⑥ → ⑤, through the gap under row 2
-    r6, r5 = boxes[5], boxes[4]
-    gy = r6[1] + r6[3] + 30
-    x6, x5 = r6[0] + r6[2] - 70, r5[0] + 70
-    parts.append(arrow(x6, r6[1] + r6[3] + 4, x6, gy, dashed=True, head=False))
-    parts.append(arrow(x6, gy, x5, gy, dashed=True, head=False))
-    parts.append(arrow(x5, gy, x5, r5[1] + r5[3] + 6, dashed=True))
-    parts.append(text((x6 + x5) / 2, gy - 7, t['loop'], size=12, fill=C['muted'], anchor='middle'))
-    for i, (b, (title, label, opt, _)) in enumerate(zip(boxes, steps)):
-        parts.append(card(i, b, title, label, opt, t))
-    return finish(t, steps, boxes, parts, W, rows[2] + CH, animated)
-
+    for a, b in zip(pos, pos[1:]):
+        if a[1] == b[1] and b[0] > a[0]:
+            parts.append(line_arrow(a[0] + CW + 4, a[1] + 42, b[0] - 12, b[1] + 42))
+        elif a[1] == b[1]:
+            parts.append(line_arrow(a[0] - 4, a[1] + 42, b[0] + CW + 12, b[1] + 42))
+        else:
+            parts.append(line_arrow(a[0] + 100, a[1] + CH + 6, b[0] + 100, b[1] - 14))
+    # dashed bounce ⑥ → ⑤ on the right edge
+    parts.append(f'<path d="M1188,360 C1250,330 1250,244 1188,220" fill="none" stroke="{RED}" '
+                 f'stroke-width="2" stroke-dasharray="6 5"/>')
+    parts.append(f'<path d="M1198,214 L1188,220 L1198,228" fill="none" stroke="{RED}" stroke-width="2"/>')
+    parts.append(text(1244, 290, t['bounce'], 13, fill=RED, anchor='end'))
+    for i, ((x, y), (title, label, kind, optional, _)) in enumerate(zip(pos, steps)):
+        g = [f'<g class="card s{i + 1}" transform="translate({x} {y})">',
+             f'<rect width="{CW}" height="{CH}" rx="10" fill="{CARD}" stroke="{LINE}"/>',
+             text(14, 32, CIRCLED[i], 24, fill=RED, font=SERIF),
+             text(46, 31, title, 17, weight=600),
+             pill(14, 46, label or t['none'], kind, mono=label is not None)]
+        if optional:
+            ow = round(width(t['optional'], 12) + 14)
+            # a badge straddling the top edge: the label row has no room for it in English
+            g.append(f'<rect x="{CW - ow - 12}" y="-10" width="{ow}" height="20" rx="10" fill="#F6E7C8" '
+                     f'stroke="{LINE}"/>')
+            g.append(text(CW - ow / 2 - 12, 4, t['optional'], 12, fill='#8A5A12', anchor='middle'))
+        g.append('</g>')
+        parts.append('\n'.join(g))
+    for j, s in enumerate(t['legend']):
+        parts.append(text(40, 360 + (24 if j else 0) + max(j - 1, 0) * 19, s, 15 if j == 0 else 13,
+                          fill=INK if j == 0 else MUTED, weight=600 if j == 0 else 400))
+    # a step with the "optional" badge gets a taller frame so the badge sits inside it
+    rects = [(x - 6, y - 16 if st[3] else y - 6, CW + 12, CH + 22 if st[3] else CH + 12)
+             for (x, y), st in zip(pos, steps)]
+    caps = [(f'{CIRCLED[i]} {title}　·　{t["now"]}：{label or t["none"]}' if lang == 'zh'
+             else f'{i + 1}  {title}  ·  {t["now"]}: {label or t["none"]}', lines)
+            for i, (title, label, _k, _o, lines) in enumerate(steps)]
+    return frame(t, '\n'.join(parts), caps, 3.0, rects, animated)
 
 # ── diagram 2: prompt assembly ─────────────────────────────────────────────
 
 def prompt(lang, animated):
     t = PROMPT[lang]
-    steps = t['steps']
-    W = 960
-    b1 = (30, 30, 270, 312)
-    b2 = (350, 140, 250, 92)
-    right = [(650, 30 + k * 110, 280, 92) for k in range(3)]
-    boxes = [b1, b2] + right
-    parts = [arrow(b1[0] + b1[2] + 4, b2[1] + b2[3] / 2, b2[0] - 6, b2[1] + b2[3] / 2)]
-    sx, sy = b2[0] + b2[2] + 4, b2[1] + b2[3] / 2
-    for r in right:
-        parts.append(arrow(sx, sy, r[0] - 6, r[1] + r[3] / 2))
-    # layer strips inside card 1, top to bottom = order they are stacked in
-    strips = []
-    for k, name in enumerate(t['layers']):
-        ly = b1[1] + 62 + k * 56
-        last = k == len(t['layers']) - 1
-        strips.append(f'<rect x="{b1[0] + 18}" y="{ly}" width="{b1[2] - 36}" height="44" rx="8" '
-                      f'fill="{C["pill"] if last else "#ffffff"}" stroke="{C["card_line"]}" stroke-width="1"/>')
-        strips.append(text(b1[0] + 32, ly + 28, name, size=14,
-                           weight='bold' if last else 'normal', fill=C['pill_text'] if last else C['text']))
-    nolabel = dict(t, plain_sub=True)   # prompt cards carry a plain subtitle, no label pill
-    for i, (b, (title, label, opt, _)) in enumerate(zip(boxes, steps)):
-        parts.append(card(i, b, title, label, opt, nolabel, extra='\n'.join(strips) if i == 0 else ''))
-    return finish(t, steps, boxes, parts, W, b1[1] + b1[3], animated)
-
-
-def finish(t, steps, boxes, parts, W, content_bottom, animated):
-    py = content_bottom + 40
-    if animated:
-        cycle = STEP_SECS * len(steps)
-        ph = caption_height(steps)
-        parts.append(notes_panel(t, 30, py, W - 60, ph))
-        parts.append(captions_animated(steps, cycle, 54, py + 34))
-        parts.append(focus_box(boxes, cycle, True))
-        H = py + ph + 30
-    else:
-        ph = static_height(steps)
-        parts.append(notes_panel(t, 30, py, W - 60, ph))
-        body, _ = captions_static(steps, 54, py + 34)
-        parts.append(body)
-        H = py + ph + 30
-    return svg_doc(W, H, t['title'], '\n'.join(parts))
+    parts = []
+    for k, (name, sub) in enumerate(t['layers']):
+        parts.append('\n'.join([
+            f'<g class="card s1" transform="translate(40 {140 + 72 * k})">',
+            f'<rect width="280" height="62" rx="8" fill="{CARD}" stroke="{LINE}"/>',
+            text(14, 26, name, 16, weight=600), text(14, 48, sub, 13, fill=MUTED), '</g>']))
+    parts.append(line_arrow(330, 280, 376, 280))
+    parts.append('\n'.join([
+        '<g class="card s2" transform="translate(390 220)">',
+        f'<rect width="180" height="120" rx="10" fill="{INK}"/>',
+        text(90, 52, t['compose'][0], 19, fill=CARD, font=SERIF, anchor='middle'),
+        text(90, 82, t['compose'][1], 19, fill=CARD, font=SERIF, anchor='middle'), '</g>']))
+    for y in (196, 364):
+        c = 196 if y == 196 else 364
+        parts.append(f'<path d="M574,280 C610,280 610,{c} 650,{c}" fill="none" stroke="{INK}" stroke-width="2"/>')
+        parts.append(f'<path d="M640,{c - 6} L650,{c} L640,{c + 6}" fill="none" stroke="{INK}" stroke-width="2"/>')
+    for step, y, (name, sub) in ((3, 161, t['alive']), (4, 329, t['exited'])):
+        parts.append('\n'.join([
+            f'<g class="card s{step}" transform="translate(656 {y})">',
+            f'<rect width="220" height="70" rx="8" fill="{CARD}" stroke="{LINE}"/>',
+            text(14, 28, name, 16, weight=600), text(14, 52, sub, 13, fill=MUTED), '</g>']))
+        parts.append(line_arrow(882, y + 35, 922, y + 35))
+    parts.append(text(940, 150, t['hook_title'], 15, weight=600))
+    parts.append('\n'.join([
+        '<g class="card s5" transform="translate(940 162)">',
+        '<rect width="300" height="32" rx="6" fill="#EDE8DE"/>',
+        text(12, 21, t['hook_edit'], 12, font=MONO), '</g>']))
+    for k, f in enumerate(t['hook_files']):
+        parts.append('\n'.join([
+            f'<g class="card s5" transform="translate(940 {206 + 42 * k})">',
+            f'<rect width="300" height="32" rx="16" fill="{PILL["agent"][0]}"/>',
+            text(14, 21, f, 13, fill=PILL['agent'][1]), '</g>']))
+    parts.append('\n'.join([
+        '<g class="card s6" transform="translate(940 340)">',
+        f'<rect width="300" height="54" rx="8" fill="{INK}"/>',
+        text(150, 24, t['hook_out'][0], 14, fill=CARD, anchor='middle'),
+        text(150, 44, t['hook_out'][1], 12, fill=LINE, anchor='middle'), '</g>']))
+    rects = [(34, 134, 292, 290), (384, 214, 192, 132), (650, 155, 232, 82),
+             (650, 323, 232, 82), (934, 156, 312, 170), (934, 334, 312, 66)]
+    return frame(t, '\n'.join(parts), t['steps'], 4.0, rects, animated)
 
 
 def main():
