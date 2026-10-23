@@ -81,7 +81,7 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
    - **A. 完整闭环** → body 用 `Closes #${ISSUE}`（merge 自动关 issue）
    - 走到这里的一律是 A（B 走 § A-split，不在本 issue 开 PR）；**不再用 `Refs #${ISSUE}` 开「部分实现」PR**
    - 看不准时回去重读设计阶段你发的 issue comment——那时已经跟用户讨论过这个选择
-4. 拿到 PR 编号 `<P>` 后先按下方「新 PR 必须继承」完成优先级与 Project iteration 继承，再翻 label（启用交叉 review 时先交独立 reviewer，未启用时交人；issue 转 PR 跟踪）：
+4. 拿到 PR 编号 `<P>` 后先按下方「新 PR 必须继承」完成优先级与 Project iteration 继承，再做下方「交出 PR 前：先查和主干有没有冲突」（解不了时第一行改成给 PR 翻 `${LABEL_PENDING_HUMAN}`、不交复审，第二行照旧），然后翻 label（启用交叉 review 时先交独立 reviewer，未启用时交人；issue 转 PR 跟踪）：
    - `flip_label <P> --add ${LABEL_REVIEW_OR_HUMAN}`
    - `flip_label ${ISSUE} --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}`
 5. 如果 `PR_CREATED_HOOK` 非空，立刻执行：
@@ -139,6 +139,49 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 1. `gh issue comment ${ISSUE} --repo ${REPO} --body "<具体回答 / 反问>"`
 2. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`
 3. 停 idle
+
+## 交出 PR 前：先查和主干有没有冲突
+
+每次要把 PR 交出去——翻 `${LABEL_REVIEW_OR_HUMAN}`（交复审或交人），或因纯讨论、澄清、受阻翻 `${LABEL_PENDING_HUMAN}`——**之前**，先在 worktree 里查这个 PR 和它的目标分支有没有冲突，有就先解掉再交。人打开 PR 时不该再看到「This branch has conflicts」。
+
+先确认本轮的提交都已 `git push`，再 `P=<PR 编号>`，原样跑这段（只试合并，不动工作区、不产生提交）：
+
+```bash
+# --- 冲突检查 开始 ---
+# 查的是 GitHub 上 PR 的最新提交（人看到的那个），不是本地 HEAD：本地没推的提交不算数
+read -r BASE HEAD_OID < <(gh pr view "$P" --repo "${REPO}" --json baseRefName,headRefOid \
+    --jq '"\(.baseRefName) \(.headRefOid)"')
+MT=$(mktemp)
+if [ -z "$BASE" ] || [ -z "$HEAD_OID" ] || ! git fetch origin "$BASE" "pull/$P/head" \
+   || ! git rev-parse -q --verify "origin/$BASE^{commit}" >/dev/null \
+   || ! git rev-parse -q --verify "$HEAD_OID^{commit}" >/dev/null; then
+    echo "CONFLICT_CHECK=error（取不到目标分支 origin/$BASE 或 PR 提交 $HEAD_OID）"
+else
+    git merge-tree --write-tree --name-only "$HEAD_OID" "origin/$BASE" > "$MT"; rc=$?
+    # 退出码 1 也可能是参数 / 引用错误，只有首行是树对象 id 才算「有冲突」
+    if [ "$rc" -eq 0 ]; then
+        echo "CONFLICT_CHECK=clean"
+    elif [ "$rc" -eq 1 ] && head -1 "$MT" | grep -qE '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+        echo "CONFLICT_CHECK=conflict"; sed -n '2,/^$/p' "$MT"   # 冲突文件列表
+    else
+        echo "CONFLICT_CHECK=error（git merge-tree 退出码 $rc）"; cat "$MT"
+    fi
+fi
+rm -f "$MT"
+# --- 冲突检查 结束 ---
+```
+
+按输出走：
+
+- **`clean`**：照常交。只是落后主干、没有冲突时**不要**合主干——每轮都合只会给 PR 塞无意义的合并提交。
+- **`conflict`**：
+  1. `git merge --no-edit "origin/$BASE"`，逐个文件解冲突：读懂两边各自要做什么，保住双方意图；**不许**整文件选一边了事（`git checkout --ours/--theirs`、`-X ours/theirs`）
+  2. 解完列出主干这次带进来的新约定（写身份、命令行参数、路径写法、新加的 helper 等），逐条核对本 PR 新增的代码有没有跟上——git 不报冲突不等于没有遗漏
+  3. 重跑相关测试通过，`git commit --no-edit`，普通 `git push`。**不 rebase、不强推**：改写已推送的历史会让人看过的 review 定位错乱
+  4. 本轮原本是纯讨论 / 澄清，因为解冲突有了提交 → 也算有代码产出，按有代码的路径翻 `${LABEL_REVIEW_OR_HUMAN}`
+  5. 交出去的那条评论里写一句「已合入主干 `<BASE>`，解决了 N 个文件的冲突」，每个文件一句解法
+- **解不了**（两边意图相反要人判断，或 PR 来自外部 fork、推不上去）：`git merge --abort` 恢复原状，评论里列出冲突文件和卡住的原因，翻 `${LABEL_PENDING_HUMAN}`（不交复审）。
+- **`error`**：检查本身没跑成（网络、目标分支取不到、git 太旧）。重跑一次；仍失败就照常交，但在交出去的那条评论里写明「没能检查与主干的冲突」和实际错误，不要写成「无冲突」。
 
 ## 有代码产出时：逐条核对硬规则
 

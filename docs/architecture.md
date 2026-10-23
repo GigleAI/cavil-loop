@@ -57,6 +57,8 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
                                             parent issue → pending/human (you decide whether to close it)
 ```
 
+**Before a PR is handed on, it must not conflict with its base** (GitHub#82). Every time a worker is about to flip a PR to `pending/review` / `pending/human` — first PR, rework round, even a pure discussion round — it test-merges the PR's latest pushed commit against the PR's base branch (`git merge-tree`, no working-tree change, no commit). On a conflict it merges the base in (never rebase / force-push), resolves it, reruns the relevant tests, pushes, then hands on; if it cannot resolve it, it aborts the merge and hands the PR to `pending/human` with the conflicting files listed. Being merely *behind* the base is not merged. The reviewer runs the same check before posting its verdict and fails a conflicting PR back to the worker, since it never pushes. The check snippet is copied verbatim into `issue-comment.template.md`, `pr-comment.template.md` and `review.template.md`; `tests/conflict-check-prompts.test.sh` diffs the composed prompts and runs the snippet in a real git worktree. A PR that starts conflicting *after* it reached `pending/human` is not picked up again automatically.
+
 > For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).
 
 ## Dispatch modes: label / greedy
