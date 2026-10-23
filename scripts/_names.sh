@@ -110,3 +110,15 @@ cavil_preview_lock_dir() {
         printf '%s\n' "$CAVIL_CONFIG_HOME/preview"
     fi
 }
+
+# 改名迁移还有没有剩下的活（GigleAI/cavil-loop#75）：轮询入口据此决定这一轮要不要调迁移脚本。
+# 只看「旧项目的环境文件」不够——旧项目全部迁完之后，还可能剩下：
+#   · 旧登记目录里的预览（没搬完、搬失败待重试、冲突等人，或更早一版迁移已经删了旧入口）；
+#   · 旧技能入口（删它的那一步被中断）。
+# 三样都没有就返回 1，迁完的机器每轮不多花任何开销。
+cavil_legacy_leftovers() {
+    compgen -G "$CAVIL_LEGACY_CONFIG_HOME/*.conf" >/dev/null && return 0
+    compgen -G "$CAVIL_LEGACY_CONFIG_HOME/preview/*.conf" >/dev/null && return 0
+    [ -L "$CAVIL_LEGACY_SKILL_HOME" ] && [ -e "$CAVIL_SKILL_HOME" ] && return 0
+    return 1
+}
