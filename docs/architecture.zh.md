@@ -57,6 +57,8 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
                                             父 issue → pending/human（由你决定是否关闭）
 ```
 
+**PR 交出去之前，必须和目标分支不冲突**（GitHub#82）。worker 每次要把 PR 翻成 `pending/review` / `pending/human`——首次开 PR、返工、哪怕只是纯讨论轮——都先拿 PR 在 GitHub 上的最新提交和 PR 的目标分支试合并（`git merge-tree`，不动工作区、不产生提交）。有冲突就把主干合进来（不 rebase、不强推），解掉、重跑相关测试、推上去再交；解不了就放弃这次合并，列出冲突文件交 `pending/human`。只是落后主干、没有冲突时不合。复审下结论前跑同一段检查，因为它不推代码，有冲突就判不通过退回 worker。检查命令逐字抄在 `issue-comment.template.md`、`pr-comment.template.md`、`review.template.md` 三处；`tests/conflict-check-prompts.test.sh` 对拍拼好的 prompt，并在真实 git worktree 里实跑这段命令。PR 已经停在 `pending/human` 之后主干再动导致的新冲突，不会自动回头处理。
+
 > 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。
 
 ## 派工模式：label / greedy
