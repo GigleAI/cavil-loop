@@ -20,6 +20,7 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 BASE_COMMIT="d41ee75"   # 本 issue 动手之前的 main
+PREV_COMMIT="b7369b9"   # PR #79 第 1 轮复审打回的那版（查不到单元状态时照样收尾）
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -35,6 +36,13 @@ cat > "$FAKEBIN/systemctl" <<'SH'
 #!/usr/bin/env bash
 [ "$1" = --user ] && shift
 printf '%s\n' "$*" >> "$SCTL/calls"
+# 用户服务管理器连不上：所有命令只在 stderr 报错、stdout 空、退出 1（真实 systemctl 的样子）。
+# bus-down-on-stop：第一次 stop 时才断开（模拟「停旧单元的半路上连不上了」）。
+[ "$1" = stop ] && [ -e "$SCTL/bus-down-on-stop" ] && { rm -f "$SCTL/bus-down-on-stop"; : > "$SCTL/bus-down"; }
+if [ -e "$SCTL/bus-down" ]; then
+    echo "Failed to connect to user scope bus via local transport: Connection refused" >&2
+    exit 1
+fi
 cmd="$1"; shift
 quiet=0; units=()
 for a in "$@"; do case "$a" in --quiet) quiet=1 ;; -*) ;; *) units+=("$a") ;; esac; done
@@ -294,6 +302,62 @@ chk "旧入口保留"                 "$(legacy_link "$W")" "kept"
 chk "不冲突的 4051 照常搬完"     "$(has_old "$W" 4051)|$(state "$W" cavil-loop-preview@4051.socket)" "no|active"
 chk "冲突在日志里两轮只记一次"   "$(grep -c ':4050 新旧两个登记目录各有一份、主人不同' "$W/home/.local/state/cavil-loop/migrate.log")" "1"
 
+echo "【7b】冲突按运维文档的人工步骤处理（拿锁 → 备份 → 停掉去掉那侧的单元、移走登记 → 放锁）：下一轮收尾"
+# 把文档里的命令（docs/operations.md「Resolving a conflict」第 1–5 步）逐条转写进来跑，HOME / systemctl 换成假的；
+# 文档改了这里要跟着改
+doc_resolve() {   # <dir> <keep: old|new>
+    local w="$1" keep="$2"
+    HOME="$w/home" PATH="$FAKEBIN:$PATH" SCTL="$w/sctl" P=4050 KEEP="$keep" bash -c '
+        flock ~/.config/coding-agent-work-loop/preview/.port-$P.lock bash -c "
+            OLD=~/.config/coding-agent-work-loop/preview/$P.conf NEW=~/.config/cavil-loop/preview/$P.conf
+            B=~/.config/cavil-loop/migration/preview-conflict-$P-test
+            mkdir -p \"\$B\" && cp -p \"\$OLD\" \"\$B/old.conf\" && cp -p \"\$NEW\" \"\$B/new.conf\"
+            if [ $KEEP = new ]; then
+                U=\"coding-agent-preview@$P.socket coding-agent-preview@$P.service coding-agent-preview-app@$P.service\"
+                systemctl --user stop \$U; systemctl --user reset-failed \$U
+                mv \"\$OLD\" \"\$B/old.removed\"
+            else
+                U=\"cavil-loop-preview@$P.socket cavil-loop-preview@$P.service cavil-loop-preview-app@$P.service\"
+                systemctl --user stop \$U; systemctl --user reset-failed \$U
+                mv \"\$NEW\" \"\$B/new.removed\"
+            fi"'
+}
+for keep in old new; do
+    W="$TMP/s7b-$keep"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050; newreg "$W" 4050 other 50
+    setstate "$W" coding-agent-preview@4050.socket active
+    [ "$keep" = new ] && setstate "$W" cavil-loop-preview@4050.socket failed
+    migrate "$W" "$REPO_DIR"
+    doc_resolve "$W" "$keep"
+    migrate "$W" "$REPO_DIR"
+    if [ "$keep" = old ]; then
+        chk "keep=old：旧登记被搬到新单元、旧监听交给新监听、旧入口删掉" \
+            "$(has_old "$W" 4050)|$(grep -c '^PREVIEW_PROJECT=\"widget\"' "$W/home/.config/cavil-loop/preview/4050.conf")|$(state "$W" cavil-loop-preview@4050.socket)|$(legacy_link "$W")" \
+            "no|1|active|gone"
+    else
+        chk "keep=new：只剩新登记（other 的）、旧监听已停、旧入口删掉" \
+            "$(has_old "$W" 4050)|$(grep -c '^PREVIEW_PROJECT=\"other\"' "$W/home/.config/cavil-loop/preview/4050.conf")|$(state "$W" coding-agent-preview@4050.socket)|$(legacy_link "$W")" \
+            "no|1|inactive|gone"
+    fi
+    chk "keep=$keep：两份原件都在备份里" \
+        "$(ls "$W/home/.config/cavil-loop/migration/preview-conflict-4050-test/" | tr '\n' ' ')" \
+        "$([ "$keep" = old ] && echo 'new.conf new.removed old.conf ' || echo 'new.conf old.conf old.removed ')"
+done
+# 文档第 1 步的锁真挡得住迁移：用一个**能搬**的端口，人拿着锁时迁移等不到、一个字节都不动
+W="$TMP/s7d"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050
+setstate "$W" coding-agent-preview@4050.socket active
+HOME="$W/home" bash -c 'flock ~/.config/coding-agent-work-loop/preview/.port-4050.lock sleep 4' &
+sleep 0.5
+PREVIEW_LOCK_TIMEOUT=1 migrate "$W" "$REPO_DIR"
+chk "人拿着端口锁时，迁移不动这个端口、旧入口保留" \
+    "$(has_old "$W" 4050)|$(has_new "$W" 4050)|$(state "$W" coding-agent-preview@4050.socket)|$(legacy_link "$W")" "yes|no|active|kept"
+wait
+migrate "$W" "$REPO_DIR"
+chk "放锁后下一轮照常搬完" "$(has_old "$W" 4050)|$(state "$W" cavil-loop-preview@4050.socket)" "no|active"
+chk "对照：preview-unserve.sh 确实处理不了冲突（不放开跨主人删除）" \
+    "$(W="$TMP/s7c"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050; newreg "$W" 4050 other 50; mkdir -p "$W/wt/issue-50"
+       env -u CODING_AGENT_RELEASE_ROOT HOME="$W/home" PATH="$FAKEBIN:$PATH" SCTL="$W/sctl" CODING_AGENT_CONFIG="$W/widget.config" \
+           bash "$REPO_DIR/scripts/preview-unserve.sh" --issue 50 >/dev/null 2>&1; echo "$?|$(has_old "$W" 4050)|$(has_new "$W" 4050)")" "3|yes|yes"
+
 echo "【8】迁移：全部搬完 → 删旧入口；再跑一轮什么都不变；轮询入口不再需要调迁移"
 W="$TMP/s8"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050; oldreg "$W" 4051
 setstate "$W" coding-agent-preview@4050.socket active
@@ -314,6 +378,51 @@ chk "旧登记目录清空"                     "$(expect "$R" old_left)" "0"
 chk "原本该开的 4040 由新监听接手"       "$(expect "$R" sock_4040)" "active"
 chk "原本没开的 4041 保持不开"           "$(expect "$R" sock_4041)" "inactive"
 
+# 场景 S10：查不到单元状态（用户服务管理器连不上）时一步都不能当成功
+scenario_bus_down() {   # <code> <dir> <from_start|on_stop>：输出 键=值
+    local code="$1" w="$2" when="$3"
+    mkhome "$w" yes "$REPO_DIR"; oldreg "$w" 4050
+    if [ "$when" = from_start ]; then
+        setstate "$w" coding-agent-preview@4050.socket active
+        : > "$w/sctl/bus-down"
+    else
+        # 原状记成「不开」（监听没在听），但旧 app 还在跑（比如被 --warm 拉起后监听被停了）：
+        # 这时不会起新监听来暴露问题，停没停只能靠查状态判断
+        setstate "$w" coding-agent-preview-app@4050.service active
+        : > "$w/sctl/bus-down-on-stop"
+    fi
+    migrate "$w" "$code"
+    echo "r1_old=$(has_old "$w" 4050)"
+    echo "r1_link=$(legacy_link "$w")"
+    echo "r1_old_sock=$(state "$w" coding-agent-preview@4050.socket)"
+    echo "r1_old_app=$(state "$w" coding-agent-preview-app@4050.service)"
+    echo "r1_backed=$(backed "$w" 4050)"
+    rm -f "$w/sctl/bus-down"
+    migrate "$w" "$code"
+    echo "r2_old=$(has_old "$w" 4050)"
+    echo "r2_new_sock=$(state "$w" cavil-loop-preview@4050.socket)"
+    echo "r2_old_app=$(state "$w" coding-agent-preview-app@4050.service)"
+    echo "r2_link=$(legacy_link "$w")"
+}
+
+echo "【10】查不到单元状态：一开始就连不上 → 什么都不收、旧入口保留；恢复后下一轮按旧监听原本在听来搬"
+scenario_bus_down "$REPO_DIR" "$TMP/s10a" from_start > "$TMP/s10a.res"; R="$TMP/s10a.res"
+chk "第 1 轮：旧登记还在、没进备份"   "$(expect "$R" r1_old)|$(expect "$R" r1_backed)" "yes|no"
+chk "第 1 轮：旧入口保留"             "$(expect "$R" r1_link)" "kept"
+chk "第 1 轮：旧监听照常在听"         "$(expect "$R" r1_old_sock)" "active"
+chk "第 1 轮：没把「查不到」记成原本不开"     "$([ -e "$TMP/s10a/home/.config/cavil-loop/migration/preview-4050.listen" ] && cat "$TMP/s10a/home/.config/cavil-loop/migration/preview-4050.listen" || echo none)" "none"
+chk "第 1 轮：日志写明查不到状态"     "$(grep -c ':4050 查不到旧监听的状态' "$TMP/s10a/home/.local/state/cavil-loop/migrate.log")" "1"
+chk "第 2 轮：新监听接手、旧登记收走、旧入口删掉"     "$(expect "$R" r2_new_sock)|$(expect "$R" r2_old)|$(expect "$R" r2_link)" "active|no|gone"
+
+echo "【10b】查不到单元状态：停旧单元的半路上连不上（旧 app 其实还在跑）→ 不收尾；恢复后下一轮搬完"
+scenario_bus_down "$REPO_DIR" "$TMP/s10b" on_stop > "$TMP/s10b.res"; R="$TMP/s10b.res"
+chk "第 1 轮：旧登记还在、没进备份、旧入口保留" \
+    "$(expect "$R" r1_old)|$(expect "$R" r1_backed)|$(expect "$R" r1_link)" "yes|no|kept"
+chk "第 1 轮：旧 app 仍在跑（停的那一下没成）" "$(expect "$R" r1_old_app)" "active"
+chk "第 1 轮：日志写明查不到旧单元停没停" "$(grep -c ':4050 查不到旧单元 .* 停没停' "$TMP/s10b/home/.local/state/cavil-loop/migrate.log")" "1"
+chk "第 2 轮：旧 app 停掉、旧登记收走、按原状不开新监听、旧入口删掉" \
+    "$(expect "$R" r2_old_app)|$(expect "$R" r2_old)|$(expect "$R" r2_new_sock)|$(expect "$R" r2_link)" "inactive|no|inactive|gone"
+
 # ─────────────────────────────────────────────────────────────────────────────
 echo "【负对照】改动前的代码（$BASE_COMMIT）跑同一场景，必须变红"
 BASE="$TMP/code-base"; mkdir -p "$BASE"
@@ -329,6 +438,18 @@ if git -C "$REPO_DIR" archive "$BASE_COMMIT" 2>/dev/null | tar -x -C "$BASE" 2>/
     chk "已迁完的机器上旧代码不再搬旧预览" "$(expect "$TMP/b9.res" old_left)" "2"
 else
     echo "  ⚠️ 取不到 $BASE_COMMIT（浅克隆？），跳过负对照"
+fi
+
+echo "【负对照】PR #79 第 1 轮复审打回的那版（$PREV_COMMIT）：查不到状态时照样收尾，必须变红"
+PREV="$TMP/code-prev"; mkdir -p "$PREV"
+if git -C "$REPO_DIR" archive "$PREV_COMMIT" 2>/dev/null | tar -x -C "$PREV" 2>/dev/null; then
+    for when in from_start on_stop; do
+        scenario_bus_down "$PREV" "$TMP/p10-$when" "$when" > "$TMP/p10-$when.res"
+        chk "上一版（$when）第 1 轮就收走旧登记或删了旧入口（实得 $(expect "$TMP/p10-$when.res" r1_old)|$(expect "$TMP/p10-$when.res" r1_link)）" \
+            "$([ "$(expect "$TMP/p10-$when.res" r1_old)|$(expect "$TMP/p10-$when.res" r1_link)" != "yes|kept" ] && echo red || echo green)" "red"
+    done
+else
+    echo "  ⚠️ 取不到 $PREV_COMMIT（浅克隆？），跳过负对照"
 fi
 
 echo

@@ -907,9 +907,61 @@ Per port (every step is safe to repeat; wherever it stops, the next run only fin
 So a port is always in one of three states: only the new directory has it = **done**; both, same
 owner = **half moved**, resumed next tick; both, different owners = **conflict**, neither is
 touched, `migrate.log` notes it hourly and a human decides which one is real. While any port is
-half moved or in conflict, the old skill link is kept — those old units still need it. To resolve
-a conflict, unregister the wrong one with `preview-unserve.sh` (or delete that registration file);
-the next tick finishes the rest.
+half moved or in conflict, the old skill link is kept — those old units still need it.
+
+**A port whose state cannot be read is not done either.** When the user service manager is
+unreachable (`systemctl --user` only prints an error and no state), the step neither records the
+original state nor concludes the old units have stopped; the registrations and the old link stay
+as they are, the log says the state could not be read, and the next tick tries again.
+
+**Resolving a conflict (by hand).** `preview-unserve.sh` cannot do it: if either of the two
+registrations belongs to someone other than the caller, it touches nothing (exit 3) — on purpose,
+and that must stay. Instead (replace `P` with the port):
+
+1. **Take the port lock first.** Do the remaining steps inside this subshell; until you leave it,
+   registration, unregistration and migration of this port all wait (migration gives up after 30 s
+   and retries next tick; registration fails after 30 s without writing anything):
+   ```bash
+   P=4050
+   flock ~/.config/coding-agent-work-loop/preview/.port-$P.lock bash
+   ```
+2. **See who owns each copy and which listener is up**, then decide which one stays (normally the
+   one whose worktree still exists and whose issue is still open):
+   ```bash
+   OLD=~/.config/coding-agent-work-loop/preview/$P.conf NEW=~/.config/cavil-loop/preview/$P.conf
+   grep -H -E '^PREVIEW_(PROJECT|ISSUE|WORKTREE)=' "$OLD" "$NEW"
+   systemctl --user is-active coding-agent-preview@$P.socket cavil-loop-preview@$P.socket
+   ```
+   The two lines of the second command are the old and the new listener's state; note them for a rollback.
+3. **Back up both**:
+   ```bash
+   B=~/.config/cavil-loop/migration/preview-conflict-$P-$(date +%Y%m%d-%H%M%S)
+   mkdir -p "$B" && cp -p "$OLD" "$B/old.conf" && cp -p "$NEW" "$B/new.conf"
+   ```
+4. **Stop the units bound to the side you remove, then move its registration away** (into the backup, not deleted):
+   - Keep the new registration, remove the old one:
+     ```bash
+     U="coding-agent-preview@$P.socket coding-agent-preview@$P.service coding-agent-preview-app@$P.service"
+     systemctl --user stop $U; systemctl --user reset-failed $U
+     mv "$OLD" "$B/old.removed"
+     ```
+   - Keep the old registration, remove the new one: same, with the units
+     `cavil-loop-preview@$P.socket cavil-loop-preview@$P.service cavil-loop-preview-app@$P.service`
+     and `mv "$NEW" "$B/new.removed"` as the last step
+5. `exit` the subshell to release the port lock.
+6. **Check**:
+   - Kept the new one: `systemctl --user is-active cavil-loop-preview@$P.socket` should be `active`;
+     if not, re-run `preview-serve.sh <its issue>` with that project's config.
+   - Kept the old one: within the next poll tick (about a minute) it is moved to the new units like
+     any old registration. Success looks like: `~/.config/coding-agent-work-loop/preview/$P.conf` is
+     gone; if the old listener was up in step 2, `cavil-loop-preview@$P.socket` is `active`;
+     `migrate.log` stops reporting a conflict for this port.
+   - Open the preview URL and see the page. Once every conflict is resolved and every old preview
+     has moved, the next tick removes the old skill link.
+7. **Rolling back**: take the lock again as in step 1, stop both sets of units (the two groups in
+   step 4), put the backups back (`cp -p "$B/old.conf" "$OLD"; cp -p "$B/new.conf" "$NEW"`), then
+   `systemctl --user start` the socket that was up in step 2, and `exit`. You are back at the
+   conflict as it was, and the old link is still there.
 
 The poll entry therefore calls the migration not only while old project env files exist, but also
 while the old registration directory has entries, or while both the old and the new skill links

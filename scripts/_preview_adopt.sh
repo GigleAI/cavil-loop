@@ -29,12 +29,18 @@ _padopt_owner() {
     ( source "$1" >/dev/null 2>&1; printf '%s|%s|%s' "${PREVIEW_PROJECT:-}" "${PREVIEW_ISSUE:-}" "${PREVIEW_WORKTREE:-}" )
 }
 
-_padopt_state() { systemctl --user is-active "$1" 2>/dev/null | head -1; }
-
-# 在运行（或正在起 / 正在停）就算还在跑
-_padopt_running() {
-    case "$(_padopt_state "$1")" in active|activating|deactivating|reloading|refreshing) return 0 ;; esac
-    return 1
+# 单元的状态词；**查不到就输出 unknown**。is-active 的退出码不作数：正常的 inactive / failed
+# 也是非零（没装的单元是 inactive + 4），而用户服务管理器连不上时 stdout 什么都没有、只有
+# stderr 的报错。所以只认 stdout 第一行是不是一个已知的状态词。
+# unknown 不能被任何一步当成「没在跑」或「原本没开」——那会跳过起新监听、却照样收走旧登记、
+# 删掉旧入口（PR #79 第 1 轮复审）。读状态的每一处都先挡 unknown。
+_padopt_state() {
+    local s
+    s="$(systemctl --user is-active "$1" 2>/dev/null | head -1)"
+    case "$s" in
+        active|inactive|failed|activating|deactivating|reloading|refreshing|maintenance) printf '%s\n' "$s" ;;
+        *) printf 'unknown\n' ;;
+    esac
 }
 
 # preview_legacy_pending_ports：旧目录里还有登记的端口，一行一个
@@ -73,9 +79,12 @@ preview_adopt_legacy() {
     # ① 原状
     mkdir -p "$CAVIL_CONFIG_HOME/migration" && chmod 700 "$CAVIL_CONFIG_HOME/migration" || return 1
     if [ ! -f "$rec" ]; then
-        local want=no tmp
+        local want tmp
         case "$(_padopt_state "$old_u-preview@$port.socket")" in
             active|activating|failed) want=yes ;;
+            unknown) "$log" "❌ preview :$port 查不到旧监听的状态（用户服务管理器连不上？），原状没法记，这次不搬"
+                     return 1 ;;
+            *) want=no ;;
         esac
         tmp="$(mktemp "$CAVIL_CONFIG_HOME/migration/.preview-$port.XXXXXX")" || return 1
         printf '%s\n' "$want" > "$tmp" && mv -f "$tmp" "$rec" || { rm -f "$tmp"; return 1; }
@@ -96,11 +105,16 @@ preview_adopt_legacy() {
     local old_units=("$old_u-preview@$port.socket" "$old_u-preview@$port.service" "$old_u-preview-app@$port.service") u
     systemctl --user stop "${old_units[@]}" >/dev/null 2>&1 || true
     systemctl --user reset-failed "${old_units[@]}" >/dev/null 2>&1 || true
+    local st
     for u in "${old_units[@]}"; do
-        if _padopt_running "$u"; then
-            "$log" "❌ preview :$port 旧单元 $u 停不下来（$(_padopt_state "$u")），下次再搬"
-            return 1
-        fi
+        st="$(_padopt_state "$u")"
+        case "$st" in
+            inactive|failed) ;;
+            unknown) "$log" "❌ preview :$port 查不到旧单元 $u 停没停（用户服务管理器连不上？），下次再搬"
+                     return 1 ;;
+            *) "$log" "❌ preview :$port 旧单元 $u 停不下来（$st），下次再搬"
+               return 1 ;;
+        esac
     done
 
     # ④ 起新监听
