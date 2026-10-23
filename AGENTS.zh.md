@@ -33,6 +33,7 @@
 │   ├── cleanup-issue.sh       ← merge 后清理 worktree / tmux / 跑项目 hook
 │   ├── migrate-legacy.sh      ← 把改名前的旧安装迁到 cavil-loop 命名（poll-entry.sh / setup.sh 调）
 │   ├── _preview_adopt.sh      ← 把改名前注册的预览搬到新单元（migrate-legacy.sh / preview-serve.sh 共用）
+│   ├── preview-resolve-conflict.sh ← 人工处理新旧目录各有一份、主人不同的预览端口
 │   ├── session-log.sh         ← 查 tmux pane 历史日志
 │   └── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
 ├── prompts/

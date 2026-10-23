@@ -796,46 +796,31 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 状态），这一步既不记原状、也不认定旧单元已停，登记和旧入口都原样留着，日志写明查不到，下一轮再来。
 
 **处理冲突（人工）。** `preview-unserve.sh` 帮不上忙：两份登记里只要有一份不在调用方名下，它就整个
-不动（退出 3）——这是有意的，不能放开。按下面做（`P` 换成端口号）：
+不动（退出 3）——这是有意的，不能放开。用 `scripts/preview-resolve-conflict.sh`。它在**同一把端口锁里**做完全部步骤，处理期间注册、注销、迁移碰这个端口
+都会等；留下的那份**最后总是跑在新单元上**，所以选错了换回来也不依赖旧技能入口——全部冲突处理完后，
+下一轮迁移就会删掉旧入口。
 
-1. **拿住端口锁再动手。** 后面几步都在这个子 shell 里做；退出之前，注册、注销、迁移碰这个端口都会
-   等（迁移等 30 秒放弃、下一轮再来；注册等 30 秒后报错退出，不会写任何东西）：
+1. **看现状**（只读，不改任何东西）：
    ```bash
-   P=4050
-   flock ~/.config/coding-agent-work-loop/preview/.port-$P.lock bash
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050
    ```
-2. **看两份各归谁、现在谁在听**，决定留哪份（通常是 worktree 还在、issue 还开着的那个）：
+   输出两份登记各自的主人（项目、issue 号、worktree）和新旧监听的状态。通常留 worktree 还在、issue 还开着的那份。
+2. **留下一份**（`old` = 旧登记目录里那份，`new` = 新登记目录里那份）：
    ```bash
-   OLD=~/.config/coding-agent-work-loop/preview/$P.conf NEW=~/.config/cavil-loop/preview/$P.conf
-   grep -H -E '^PREVIEW_(PROJECT|ISSUE|WORKTREE)=' "$OLD" "$NEW"
-   systemctl --user is-active coding-agent-preview@$P.socket cavil-loop-preview@$P.socket
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050 --keep new
    ```
-   第二条命令的两行依次是旧、新监听的状态，记下来，退回时要用。
-3. **两份都备份**：
+   它会：两份都备份到 `~/.config/cavil-loop/migration/preview-conflict-<端口>-<时间>/`（第一行输出
+   「备份：…」就是这个目录，记下来）→ 停掉去掉那一侧的 socket / 代理 / app，确认都停了 → 把那份登记移进
+   备份 → 留旧的话当场搬到新单元 → 确认新监听在听。看到 `✅` 算成功；任何一步失败都以 1 退出并说明
+   卡在哪，停不下来时一个登记都不移走，修好后重跑同一条命令即可。
+3. **检查**：打开这个预览地址，能看到页面。下一轮轮询（约 1 分钟）后，`migrate.log` 不再出现这个端口的冲突；
+   所有冲突都处理完、旧预览都搬完的话，旧技能入口会被删掉——这是正常的。
+4. **选错了**：换成上次移走的那一份（第 2 步打印的备份目录）：
    ```bash
-   B=~/.config/cavil-loop/migration/preview-conflict-$P-$(date +%Y%m%d-%H%M%S)
-   mkdir -p "$B" && cp -p "$OLD" "$B/old.conf" && cp -p "$NEW" "$B/new.conf"
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050 --swap ~/.config/cavil-loop/migration/preview-conflict-4050-<时间>
    ```
-4. **停掉要去掉的那一侧绑定的单元，再把它的登记移走**（移进备份，不删）：
-   - 留新登记、去掉旧的：
-     ```bash
-     U="coding-agent-preview@$P.socket coding-agent-preview@$P.service coding-agent-preview-app@$P.service"
-     systemctl --user stop $U; systemctl --user reset-failed $U
-     mv "$OLD" "$B/old.removed"
-     ```
-   - 留旧登记、去掉新的：同上，单元换成 `cavil-loop-preview@$P.socket cavil-loop-preview@$P.service cavil-loop-preview-app@$P.service`，
-     最后一步换成 `mv "$NEW" "$B/new.removed"`
-5. `exit` 退出子 shell，放掉端口锁。
-6. **检查**：
-   - 留的是新登记：`systemctl --user is-active cavil-loop-preview@$P.socket` 应该是 `active`；不是的话，用那个
-     项目的配置重跑一次 `preview-serve.sh <它的 issue 号>`。
-   - 留的是旧登记：等下一轮轮询（约 1 分钟），它会被当成普通旧登记搬到新单元。成功的样子：
-     `ls ~/.config/coding-agent-work-loop/preview/$P.conf` 已不存在；第 2 步里旧监听原本在听的话，
-     `cavil-loop-preview@$P.socket` 是 `active`；`migrate.log` 不再出现这个端口的冲突。
-   - 打开这个预览地址，能看到页面。所有冲突都处理完、旧预览都搬完后，下一轮会删掉旧技能入口。
-7. **出错了怎么退回**：再按第 1 步拿锁，停掉新旧两套单元（第 4 步的两组），把备份放回原处
-   （`cp -p "$B/old.conf" "$OLD"; cp -p "$B/new.conf" "$NEW"`），再 `systemctl --user start` 第 2 步里原来在听的
-   那一个 socket，`exit`。这时回到处理前的冲突状态，旧入口仍保留。
+   它停掉新单元、把当前登记移进同一个备份目录、换上另一份，再在**新单元**上起监听——旧入口已经删了也照样
+   能用。然后同第 3 步检查。备份目录里的文件一个都不删：`old.conf` / `new.conf` 是处理前的原样。
 
 轮询入口调迁移的条件因此不止「还有旧项目的环境文件」：旧登记目录里还有登记、或者旧入口还在而新入口
 也在，同样会调（`_names.sh` 的 `cavil_legacy_leftovers`）。三样都没有就不调。守卫：

@@ -143,14 +143,20 @@ preview_adopt_legacy() {
     return 0
 }
 
-# preview_adopt_legacy_locked <port> [unit_dir]：自己拿端口锁再搬（迁移脚本用）。
-# 锁和 preview-serve / preview-unserve 是同一把（cavil_preview_lock_dir）。等不到锁返回 1，下次再来。
-preview_adopt_legacy_locked() {
-    local port="$1" unit_dir="${2:-$HOME/.config/systemd/user}" lock_dir
+# preview_adopt_with_lock <port> <unit_dir> <cmd…>：拿端口锁执行 cmd（子 shell 里，退出码原样透出）。
+# 锁和 preview-serve / preview-unserve 是同一把（cavil_preview_lock_dir）。等不到锁返回 1。
+preview_adopt_with_lock() {
+    local port="$1" unit_dir="$2" lock_dir; shift 2
     lock_dir="$(cavil_preview_lock_dir "$unit_dir")"
     mkdir -p "$lock_dir" || return 1
     (
-        flock -w "${PREVIEW_LOCK_TIMEOUT:-30}" 7 || exit 1
-        preview_adopt_legacy "$port" "$unit_dir"
+        flock -w "${PREVIEW_LOCK_TIMEOUT:-30}" 7 || { "${PREVIEW_ADOPT_LOG:-_padopt_log}" "❌ 等 preview 端口 :$port 的锁超时"; exit 1; }
+        "$@"
     ) 7>"$lock_dir/.port-$port.lock"
+}
+
+# preview_adopt_legacy_locked <port> [unit_dir]：自己拿端口锁再搬（迁移脚本用）。等不到锁返回 1，下次再来。
+preview_adopt_legacy_locked() {
+    local port="$1" unit_dir="${2:-$HOME/.config/systemd/user}"
+    preview_adopt_with_lock "$port" "$unit_dir" preview_adopt_legacy "$port" "$unit_dir"
 }

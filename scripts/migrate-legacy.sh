@@ -194,7 +194,7 @@ migrate_previews() {
         case "$rc" in
             0) rm -f "$CAVIL_STATE_HOME/.migrate-note-preview-$port" 2>/dev/null ;;
             3) left=$((left+1))
-               mlog_throttled "preview-$port" "⛔ 预览端口 :$port 新旧两个登记目录各有一份、主人不同（$CAVIL_LEGACY_CONFIG_HOME/preview/$port.conf 与 $CAVIL_CONFIG_HOME/preview/$port.conf），不知道哪个是真的，两份都不动，等人处理；旧技能入口因此暂时保留" ;;
+               mlog_throttled "preview-$port" "⛔ 预览端口 :$port 新旧两个登记目录各有一份、主人不同（$CAVIL_LEGACY_CONFIG_HOME/preview/$port.conf 与 $CAVIL_CONFIG_HOME/preview/$port.conf），不知道哪个是真的，两份都不动，等人处理（看现状：bash $SCRIPT_DIR/preview-resolve-conflict.sh $port）；旧技能入口因此暂时保留" ;;
             *) left=$((left+1))
                mlog_throttled "preview-$port" "预览端口 :$port 这次没搬完（原因见上一行），下一轮接着搬；旧技能入口暂时保留" ;;
         esac

@@ -33,6 +33,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   ├── cleanup-issue.sh           ← Post-merge cleanup (worktree / tmux / project hook)
 │   ├── migrate-legacy.sh          ← Move a pre-rename install to cavil-loop names (run by poll-entry.sh / setup.sh)
 │   ├── _preview_adopt.sh          ← Move a pre-rename preview onto the new units (shared by migrate-legacy.sh / preview-serve.sh)
+│   ├── preview-resolve-conflict.sh ← Resolve a port registered in both old and new directories by different owners (by hand)
 │   ├── session-log.sh             ← View tmux pane history
 │   └── weekly-report/             ← Monday auto weekly report (collect / render / PDF / publish)
 ├── prompts/

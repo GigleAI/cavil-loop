@@ -302,47 +302,50 @@ chk "旧入口保留"                 "$(legacy_link "$W")" "kept"
 chk "不冲突的 4051 照常搬完"     "$(has_old "$W" 4051)|$(state "$W" cavil-loop-preview@4051.socket)" "no|active"
 chk "冲突在日志里两轮只记一次"   "$(grep -c ':4050 新旧两个登记目录各有一份、主人不同' "$W/home/.local/state/cavil-loop/migrate.log")" "1"
 
-echo "【7b】冲突按运维文档的人工步骤处理（拿锁 → 备份 → 停掉去掉那侧的单元、移走登记 → 放锁）：下一轮收尾"
-# 把文档里的命令（docs/operations.md「Resolving a conflict」第 1–5 步）逐条转写进来跑，HOME / systemctl 换成假的；
-# 文档改了这里要跟着改
-doc_resolve() {   # <dir> <keep: old|new>
-    local w="$1" keep="$2"
-    HOME="$w/home" PATH="$FAKEBIN:$PATH" SCTL="$w/sctl" P=4050 KEEP="$keep" bash -c '
-        flock ~/.config/coding-agent-work-loop/preview/.port-$P.lock bash -c "
-            OLD=~/.config/coding-agent-work-loop/preview/$P.conf NEW=~/.config/cavil-loop/preview/$P.conf
-            B=~/.config/cavil-loop/migration/preview-conflict-$P-test
-            mkdir -p \"\$B\" && cp -p \"\$OLD\" \"\$B/old.conf\" && cp -p \"\$NEW\" \"\$B/new.conf\"
-            if [ $KEEP = new ]; then
-                U=\"coding-agent-preview@$P.socket coding-agent-preview@$P.service coding-agent-preview-app@$P.service\"
-                systemctl --user stop \$U; systemctl --user reset-failed \$U
-                mv \"\$OLD\" \"\$B/old.removed\"
-            else
-                U=\"cavil-loop-preview@$P.socket cavil-loop-preview@$P.service cavil-loop-preview-app@$P.service\"
-                systemctl --user stop \$U; systemctl --user reset-failed \$U
-                mv \"\$NEW\" \"\$B/new.removed\"
-            fi"'
+echo "【7b】冲突处理脚本：留哪份都在新单元上收尾；最后一个冲突处理完、旧入口被删之后，选错了照样能换回来"
+# 跑真实的 scripts/preview-resolve-conflict.sh，路径和运维文档里写的一样（经新技能入口），
+# env -i 起一个干净环境、不预先导出任何变量——文档里的命令就是这一条进程，没有跨 shell 的东西
+resolve() {   # <dir> <args…>：输出写进 <dir>/resolve.out，打印退出码
+    local w="$1"; shift
+    env -i HOME="$w/home" PATH="$FAKEBIN:/usr/bin:/bin" SCTL="$w/sctl" \
+        bash "$w/home/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh" "$@" >"$w/resolve.out" 2>&1
+    echo $?
 }
+backup_of() { sed -n 's/^备份：//p' "$1/resolve.out" | head -1; }
 for keep in old new; do
     W="$TMP/s7b-$keep"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050; newreg "$W" 4050 other 50
     setstate "$W" coding-agent-preview@4050.socket active
     [ "$keep" = new ] && setstate "$W" cavil-loop-preview@4050.socket failed
     migrate "$W" "$REPO_DIR"
-    doc_resolve "$W" "$keep"
+    chk "keep=$keep：只看不动（两份登记、旧入口都在）" \
+        "$(resolve "$W" 4050)|$(grep -c '这是冲突' "$W/resolve.out")|$(has_old "$W" 4050)|$(has_new "$W" 4050)" "0|1|yes|yes"
+    chk "keep=$keep：处理成功" "$(resolve "$W" 4050 --keep "$keep")" "0"
+    B="$(backup_of "$W")"
+    want_owner="$([ "$keep" = old ] && echo widget || echo other)"
+    chk "keep=$keep：只剩留下那份、跑在新单元上、旧监听已停" \
+        "$(has_old "$W" 4050)|$(grep -c "^PREVIEW_PROJECT=\"$want_owner\"" "$W/home/.config/cavil-loop/preview/4050.conf")|$(state "$W" cavil-loop-preview@4050.socket)|$(state "$W" coding-agent-preview@4050.socket)" \
+        "no|1|active|inactive"
+    chk "keep=$keep：两份原件都在备份里" "$(cd "$B" 2>/dev/null && ls old.conf new.conf | wc -l)" "2"
+    # 最后一个冲突处理完 → 下一轮迁移收尾、删掉旧入口
     migrate "$W" "$REPO_DIR"
-    if [ "$keep" = old ]; then
-        chk "keep=old：旧登记被搬到新单元、旧监听交给新监听、旧入口删掉" \
-            "$(has_old "$W" 4050)|$(grep -c '^PREVIEW_PROJECT=\"widget\"' "$W/home/.config/cavil-loop/preview/4050.conf")|$(state "$W" cavil-loop-preview@4050.socket)|$(legacy_link "$W")" \
-            "no|1|active|gone"
-    else
-        chk "keep=new：只剩新登记（other 的）、旧监听已停、旧入口删掉" \
-            "$(has_old "$W" 4050)|$(grep -c '^PREVIEW_PROJECT=\"other\"' "$W/home/.config/cavil-loop/preview/4050.conf")|$(state "$W" coding-agent-preview@4050.socket)|$(legacy_link "$W")" \
-            "no|1|inactive|gone"
-    fi
-    chk "keep=$keep：两份原件都在备份里" \
-        "$(ls "$W/home/.config/cavil-loop/migration/preview-conflict-4050-test/" | tr '\n' ' ')" \
-        "$([ "$keep" = old ] && echo 'new.conf new.removed old.conf ' || echo 'new.conf old.conf old.removed ')"
+    chk "keep=$keep：下一轮迁移收尾，旧入口删掉" "$(legacy_link "$W")" "gone"
+    # 人打开页面发现选错了 → 换成另一份。旧入口已经不在，换完照样在新单元上跑得起来
+    other_owner="$([ "$keep" = old ] && echo other || echo widget)"
+    chk "keep=$keep：选错了换回来成功" "$(resolve "$W" 4050 --swap "$B")" "0"
+    chk "keep=$keep：换回后是另一份的登记、新监听在听、新 app 起得来" \
+        "$(grep -c "^PREVIEW_PROJECT=\"$other_owner\"" "$W/home/.config/cavil-loop/preview/4050.conf")|$(state "$W" cavil-loop-preview@4050.socket)|$(SCTL="$W/sctl" HOME="$W/home" PATH="$FAKEBIN:$PATH" systemctl --user start cavil-loop-preview-app@4050.service; echo $?)" \
+        "1|active|0"
+    chk "keep=$keep：换回后没有再冒出冲突，旧登记目录仍空" "$(has_old "$W" 4050)" "no"
 done
-# 文档第 1 步的锁真挡得住迁移：用一个**能搬**的端口，人拿着锁时迁移等不到、一个字节都不动
+W="$TMP/s7e"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050
+chk "不是冲突时 --keep 一个字节都不动" "$(resolve "$W" 4050 --keep new)|$(has_old "$W" 4050)|$(has_new "$W" 4050)" "2|yes|no"
+W="$TMP/s7f"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050; newreg "$W" 4050 other 50
+setstate "$W" coding-agent-preview@4050.socket active
+: > "$W/sctl/fail-stop/coding-agent-preview@4050.socket"
+chk "要去掉那侧的单元停不下来 → 失败、哪份登记都没移走" \
+    "$(resolve "$W" 4050 --keep new)|$(has_old "$W" 4050)|$(has_new "$W" 4050)" "1|yes|yes"
+
+# 冲突处理脚本拿的那把端口锁真挡得住迁移：用一个**能搬**的端口，人拿着锁时迁移等不到、一个字节都不动
 W="$TMP/s7d"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050
 setstate "$W" coding-agent-preview@4050.socket active
 HOME="$W/home" bash -c 'flock ~/.config/coding-agent-work-loop/preview/.port-4050.lock sleep 4' &

@@ -916,52 +916,39 @@ as they are, the log says the state could not be read, and the next tick tries a
 
 **Resolving a conflict (by hand).** `preview-unserve.sh` cannot do it: if either of the two
 registrations belongs to someone other than the caller, it touches nothing (exit 3) — on purpose,
-and that must stay. Instead (replace `P` with the port):
+and that must stay. Use `scripts/preview-resolve-conflict.sh` instead. It does every step inside
+**one hold of the port lock**, so registration, unregistration and migration of that port wait
+meanwhile; and the copy you keep **always ends up on the new units**, so switching back after a
+wrong choice never depends on the old skill link — once every conflict is resolved, the next
+migration tick removes that link.
 
-1. **Take the port lock first.** Do the remaining steps inside this subshell; until you leave it,
-   registration, unregistration and migration of this port all wait (migration gives up after 30 s
-   and retries next tick; registration fails after 30 s without writing anything):
+1. **Look** (read-only, changes nothing):
    ```bash
-   P=4050
-   flock ~/.config/coding-agent-work-loop/preview/.port-$P.lock bash
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050
    ```
-2. **See who owns each copy and which listener is up**, then decide which one stays (normally the
-   one whose worktree still exists and whose issue is still open):
+   Prints each copy's owner (project, issue, worktree) and the old and new listener states.
+   Normally keep the one whose worktree still exists and whose issue is still open.
+2. **Keep one** (`old` = the copy in the old registration directory, `new` = the one in the new):
    ```bash
-   OLD=~/.config/coding-agent-work-loop/preview/$P.conf NEW=~/.config/cavil-loop/preview/$P.conf
-   grep -H -E '^PREVIEW_(PROJECT|ISSUE|WORKTREE)=' "$OLD" "$NEW"
-   systemctl --user is-active coding-agent-preview@$P.socket cavil-loop-preview@$P.socket
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050 --keep new
    ```
-   The two lines of the second command are the old and the new listener's state; note them for a rollback.
-3. **Back up both**:
+   It backs both up to `~/.config/cavil-loop/migration/preview-conflict-<port>-<time>/` (the first
+   output line, `备份：…`, is that directory — note it) → stops the removed side's socket / proxy /
+   app and confirms they stopped → moves that registration into the backup → when keeping `old`,
+   moves it onto the new units right away → confirms the new listener is up. `✅` means done; any
+   failing step exits 1 and says where it stopped — if units would not stop, no registration was
+   moved, and re-running the same command after fixing it is safe.
+3. **Check**: open the preview URL and see the page. After the next poll tick (about a minute)
+   `migrate.log` no longer reports a conflict for this port; once every conflict is resolved and
+   every old preview has moved, the old skill link is removed — that is expected.
+4. **Wrong choice**: switch to the copy that was removed (the backup directory from step 2):
    ```bash
-   B=~/.config/cavil-loop/migration/preview-conflict-$P-$(date +%Y%m%d-%H%M%S)
-   mkdir -p "$B" && cp -p "$OLD" "$B/old.conf" && cp -p "$NEW" "$B/new.conf"
+   bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050 --swap ~/.config/cavil-loop/migration/preview-conflict-4050-<time>
    ```
-4. **Stop the units bound to the side you remove, then move its registration away** (into the backup, not deleted):
-   - Keep the new registration, remove the old one:
-     ```bash
-     U="coding-agent-preview@$P.socket coding-agent-preview@$P.service coding-agent-preview-app@$P.service"
-     systemctl --user stop $U; systemctl --user reset-failed $U
-     mv "$OLD" "$B/old.removed"
-     ```
-   - Keep the old registration, remove the new one: same, with the units
-     `cavil-loop-preview@$P.socket cavil-loop-preview@$P.service cavil-loop-preview-app@$P.service`
-     and `mv "$NEW" "$B/new.removed"` as the last step
-5. `exit` the subshell to release the port lock.
-6. **Check**:
-   - Kept the new one: `systemctl --user is-active cavil-loop-preview@$P.socket` should be `active`;
-     if not, re-run `preview-serve.sh <its issue>` with that project's config.
-   - Kept the old one: within the next poll tick (about a minute) it is moved to the new units like
-     any old registration. Success looks like: `~/.config/coding-agent-work-loop/preview/$P.conf` is
-     gone; if the old listener was up in step 2, `cavil-loop-preview@$P.socket` is `active`;
-     `migrate.log` stops reporting a conflict for this port.
-   - Open the preview URL and see the page. Once every conflict is resolved and every old preview
-     has moved, the next tick removes the old skill link.
-7. **Rolling back**: take the lock again as in step 1, stop both sets of units (the two groups in
-   step 4), put the backups back (`cp -p "$B/old.conf" "$OLD"; cp -p "$B/new.conf" "$NEW"`), then
-   `systemctl --user start` the socket that was up in step 2, and `exit`. You are back at the
-   conflict as it was, and the old link is still there.
+   It stops the new units, moves the current registration into the same backup directory, puts the
+   other copy in place and starts the listener on the **new units** — this works even after the old
+   link is gone. Then check as in step 3. Nothing in the backup directory is ever deleted:
+   `old.conf` / `new.conf` are the registrations as they were before.
 
 The poll entry therefore calls the migration not only while old project env files exist, but also
 while the old registration directory has entries, or while both the old and the new skill links
