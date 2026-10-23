@@ -680,6 +680,18 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 只有受管 Linux 会自动取得纯脚本更新。
 
+## 发版节奏
+
+每轮迭代结束发一个版本（GitHub#80）。迭代按 cavil project 看板的 Iteration 字段：每轮 7 天、周一开始，和自然周对齐，所以不读看板，直接按日历触发：
+
+- **何时**：`.github/workflows/release.yml` 的定时触发，每周一 00:10 北京时间（周日 16:10 UTC）。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
+- **发什么**：main 最新提交，tag 用 `scripts/release.sh --auto` 算出的 `release/vYYYY.MM.DD.N`（UTC 日期，周日那天打的就是迭代最后一天）。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。
+- **没新提交不发**：main 最新提交已经有 `release/v*` tag 时，运行照常成功，日志写「本轮无新提交」，不生成 Release。
+- **手动发版**：Actions 页面 → Release → Run workflow（选 main），效果与定时触发相同；或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——它不判断是否已发过）。
+- **同一次运行里完成**：流程用内置令牌推的 tag 不会再触发流程，所以定时 / 手动运行在同一个 job 里接着生成 Release；人手推的 tag 仍由 tag 触发走后半段。不需要额外 secret。
+
+Release 只是 changelog 和 `npx skills add` 的落点，**和受管安装的升级无关**：受管 Linux 跟的是 base 分支最新提交（见上一节）。
+
 ## 改名前的安装
 
 本项目原名 `coding-agent-work-loop`。新安装一律用 `cavil-loop`；改名前装好的机器在迁移之前

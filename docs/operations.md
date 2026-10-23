@@ -768,6 +768,18 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 Only managed Linux installations fetch script-only updates automatically.
 
+## Release cadence
+
+One release per iteration (GitHub#80). Iterations follow the cavil project board's Iteration field: 7 days, starting Monday, aligned to calendar weeks — so the board is not read, the schedule is a calendar one:
+
+- **When**: the scheduled trigger in `.github/workflows/release.yml`, every Monday 00:10 Beijing time (Sunday 16:10 UTC). GitHub may start scheduled runs minutes to tens of minutes late under load.
+- **What**: the tip of main, tagged `release/vYYYY.MM.DD.N` as computed by `scripts/release.sh --auto` (UTC date, so a Sunday run is dated the iteration's last day). The Release title carries the Monday–Sunday week the tag's date falls in, e.g. `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`.
+- **Nothing new, nothing released**: when main's tip already carries a `release/v*` tag, the run succeeds, logs "本轮无新提交" (no new commits this round), and creates no Release.
+- **Manual release**: Actions → Release → Run workflow (on main) behaves like the scheduled run; or run `bash scripts/release.sh` on a local main (interactive, unchanged — it does not check whether HEAD is already released).
+- **Within the same run**: a tag pushed with the built-in token does not trigger another workflow run, so scheduled / manual runs create the Release in the same job; tags pushed by a person still trigger the tag path. No extra secret is needed.
+
+A Release is a changelog and an `npx skills add` landing point; it **has nothing to do with how managed installs upgrade** — managed Linux follows the base branch tip (previous section).
+
 ## Installations from before the rename
 
 The project used to be called `coding-agent-work-loop`. New installations use `cavil-loop`

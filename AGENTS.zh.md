@@ -259,6 +259,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   `tests/preview-socket-activation.test.sh`、`tests/preview-port-ownership.test.sh` 等
 - 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`、`tests/preview-rename-coexist.test.sh`（同一台机器上新旧预览并存）、`tests/migrate-legacy.test.sh`（旧安装迁移：只迁空闲项目、断了能接着做、保留旧任务原来的开关）。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名
 - worker / 模型选择、driver 传的 `--model` → `tests/worker-selection.test.sh`、`tests/claude-resume-model.test.sh`
+- 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
   daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份
 - worker / 复审写「要人拍板」评论的规矩（固定骨架、不许出现代码里的名字）→ `tests/plain-language-prompts.test.sh`。骨架逐字抄在三份 worker 模板和本项目的 `review.extra.md` 里；「不许出现代码里的名字」那句另外还在 worker 的拍板问题规则和复审的打回依据（`review.template.md` 第 2Q 步）里。「交人评论自包含、链接只当出处」（GitHub#74）是同样四处「交人评论怎么写」的第 8 条，另在 `review.template.md` 交人那一步放一份，让没有 `review.extra.md` 的项目的复审也带上。要改就每处一起改——测试会对拍拼好的 prompt，任何一处走样都会红
