@@ -90,6 +90,10 @@ Especially good fit for 24/7 "AI auto-reviews + auto-fixes" patterns where webho
 
 A **background poller** on your machine looks at GitHub every 60 seconds. When it sees an issue or PR labeled `pending/agent`, it spins up Claude Code locally in an **isolated working directory** to do the work — read comments, write code, run tests, commit, push, reply — then flips the label back to `pending/human` for your review. Everything stays as a paper trail in GitHub comments.
 
+![One issue, once around cavil-loop: the red box walks through the nine steps, the notes underneath explain the current one](docs/images/issue-lifecycle.en.svg)
+
+<sub>No animation in your viewer? See the [static version](docs/images/issue-lifecycle.en.static.svg) with every step's notes. Steps 5–6 only happen when the project turns on the review gate.</sub>
+
 Two trigger scenarios:
 
 | Scenario        | Trigger                                      | What the AI does                                                                                                                                     |

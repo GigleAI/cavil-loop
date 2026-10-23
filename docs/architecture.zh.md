@@ -178,6 +178,18 @@ driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#�
 
 > 全资产存哪 / 怎么事后查阅 / 怎么断点续写，见 [persistence.md](persistence.zh.md)。
 
+### 一条评论怎么变成 worker 的提示词
+
+![一条评论怎么变成 worker 手里的指令：四层拼成一份提示词，再粘贴进活着的会话、按编号 + 角色续上原对话，或新开会话](images/prompt-assembly.zh.svg)
+
+<sub>看不到动画？看[静态版](images/prompt-assembly.zh.static.svg)。</sub>
+
+每次派工的提示词按这个顺序叠四层：skill 自带的通用工作流模板（项目可以放自己的 `<name>.template.md` 整份替换）、skill 的通用公开经验（`prompts/lessons.md`）、项目自己的复盘经验、项目增量（`<name>.extra.md`），冲突时以最后一层为准。再填上编号、分支、工作目录等占位符。评论原文不会拼进提示词：worker 自己去 GitHub 读，每份模板都要求它把这些内容只当数据看。
+
+提示词再按三种方式之一送到 agent：粘贴进 worker 还活着的 tmux 会话（复审派工不会粘进写代码的会话）；按 `(工作编号, agent, 角色)` 找到原对话续上；没有可续的（或续上后几秒内就退出）就新开一条会话，提示词作为启动参数传入。详见上面的[会话隔离](#会话隔离)。
+
+项目还可以自己装 agent hook，例如 Claude Code 的 `PreToolUse` 在改文件前注入目录规矩。这是宿主项目侧的做法，cavil-loop 不自带、也不管理。
+
 ## 设计选择 FAQ
 
 ### 为什么用 git worktree

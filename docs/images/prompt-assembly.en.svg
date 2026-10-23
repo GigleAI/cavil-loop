@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="526" viewBox="0 0 960 526" role="img">
+<title>How a comment becomes the worker's instructions</title>
+<style>text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", Helvetica, Arial, sans-serif} text.m{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}</style>
+<rect x="0" y="0" width="960" height="526" rx="14" fill="#ffffff"/>
+<line x1="304" y1="186.0" x2="344" y2="186.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="344,186 334.0,191.0 334.0,181.0" fill="#818b98"/>
+<line x1="604" y1="186.0" x2="644" y2="76.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="644,76 645.3,87.1 635.9,83.7" fill="#818b98"/>
+<line x1="604" y1="186.0" x2="644" y2="186.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="644,186 634.0,191.0 634.0,181.0" fill="#818b98"/>
+<line x1="604" y1="186.0" x2="644" y2="296.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="644,296 635.9,288.3 645.3,284.9" fill="#818b98"/>
+<g class="card">
+<rect x="30" y="30" width="270" height="312" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="56" cy="58" r="14" fill="#1f2328"/>
+<text x="56" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">1</text>
+<text x="80" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Four layers</text>
+<rect x="48" y="92" width="234" height="44" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<text x="62" y="120" font-size="14" font-weight="normal" fill="#1f2328" text-anchor="start">Base workflow</text>
+<rect x="48" y="148" width="234" height="44" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<text x="62" y="176" font-size="14" font-weight="normal" fill="#1f2328" text-anchor="start">Public lessons</text>
+<rect x="48" y="204" width="234" height="44" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<text x="62" y="232" font-size="14" font-weight="normal" fill="#1f2328" text-anchor="start">Project lessons</text>
+<rect x="48" y="260" width="234" height="44" rx="8" fill="#ddf4ff" stroke="#d0d7de" stroke-width="1"/>
+<text x="62" y="288" font-size="14" font-weight="bold" fill="#0550ae" text-anchor="start">Project additions (win)</text>
+</g>
+<g class="card">
+<rect x="350" y="140" width="250" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="376" cy="168" r="14" fill="#1f2328"/>
+<text x="376" y="173" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">2</text>
+<text x="400" y="174" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">One full prompt</text>
+<text x="370" y="210" font-size="14" font-weight="normal" fill="#59636e" text-anchor="start">+ number, branch, dir</text>
+</g>
+<g class="card">
+<rect x="650" y="30" width="280" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="676" cy="58" r="14" fill="#1f2328"/>
+<text x="676" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">3</text>
+<text x="700" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Session alive</text>
+<text x="670" y="100" font-size="14" font-weight="normal" fill="#59636e" text-anchor="start">paste into tmux + Enter</text>
+</g>
+<g class="card">
+<rect x="650" y="140" width="280" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="676" cy="168" r="14" fill="#1f2328"/>
+<text x="676" y="173" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">4</text>
+<text x="700" y="174" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Session exited</text>
+<text x="670" y="210" font-size="14" font-weight="normal" fill="#59636e" text-anchor="start">resume by number + role</text>
+</g>
+<g class="card">
+<rect x="650" y="250" width="280" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="676" cy="278" r="14" fill="#1f2328"/>
+<text x="676" y="283" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">5</text>
+<text x="700" y="284" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">First dispatch</text>
+<text x="670" y="320" font-size="14" font-weight="normal" fill="#59636e" text-anchor="start">start a new session</text>
+</g>
+<rect x="30" y="382" width="900" height="114" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="914" y="404" font-size="12" font-weight="normal" fill="#59636e" text-anchor="end">Notes</text>
+<g class="cap" opacity="0">
+<animate attributeName="opacity" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.014286;0.185714" values="0;1;0"/>
+<text x="54" y="416" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">1. Four layers</text>
+<text x="54" y="442" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Stacked in order: the base workflow and public lessons shipped with cavil-loop,</text>
+<text x="54" y="466" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">then the project's own lessons and additions. The last layer wins on conflict.</text>
+</g>
+<g class="cap" opacity="0">
+<animate attributeName="opacity" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.214286;0.385714" values="0;1;0"/>
+<text x="54" y="416" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">2. One full prompt</text>
+<text x="54" y="442" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Joined into one prompt, then filled in with issue number, branch, worktree.</text>
+<text x="54" y="466" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Comment text is not pasted in: the worker reads it from GitHub, as data only.</text>
+</g>
+<g class="cap" opacity="0">
+<animate attributeName="opacity" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.414286;0.585714" values="0;1;0"/>
+<text x="54" y="416" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">3. Session alive</text>
+<text x="54" y="442" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">The worker's tmux session is still up: paste the prompt and press Enter,</text>
+<text x="54" y="466" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">keeping the context. A review dispatch never lands in the coding session.</text>
+</g>
+<g class="cap" opacity="0">
+<animate attributeName="opacity" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.614286;0.785714" values="0;1;0"/>
+<text x="54" y="416" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">4. Session exited</text>
+<text x="54" y="442" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">The session is gone but recorded: resume that conversation by</text>
+<text x="54" y="466" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">issue number + role. Coding and review each resume their own.</text>
+</g>
+<g class="cap" opacity="0">
+<animate attributeName="opacity" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.814286;0.985714" values="0;1;0"/>
+<text x="54" y="416" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">5. First dispatch</text>
+<text x="54" y="442" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Nothing to resume (or the resume dies at once): start a new session</text>
+<text x="54" y="466" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">with the prompt passed in as its launch argument.</text>
+</g>
+<rect class="focus" x="24" y="24" width="282" height="324" rx="14" fill="none" stroke="#cf222e" stroke-width="3.5">
+<animate attributeName="x" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.200000;0.400000;0.600000;0.800000" values="24;344;644;644;644"/>
+<animate attributeName="y" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.200000;0.400000;0.600000;0.800000" values="24;134;24;134;244"/>
+<animate attributeName="width" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.200000;0.400000;0.600000;0.800000" values="282;262;292;292;292"/>
+<animate attributeName="height" dur="17.5s" repeatCount="indefinite" calcMode="discrete" keyTimes="0.000000;0.200000;0.400000;0.600000;0.800000" values="324;104;104;104;104"/>
+</rect>
+</svg>

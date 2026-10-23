@@ -33,7 +33,8 @@
 │   ├── cleanup-issue.sh       ← merge 后清理 worktree / tmux / 跑项目 hook
 │   ├── migrate-legacy.sh      ← 把改名前的旧安装迁到 cavil-loop 命名（poll-entry.sh / setup.sh 调）
 │   ├── session-log.sh         ← 查 tmux pane 历史日志
-│   └── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
+│   ├── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
+│   └── doc-diagrams/          ← docs/images/ 里那几张动图的生成脚本 + 检查脚本
 ├── prompts/
 │   ├── new-issue.template.md  ← 新 issue 派工时的 prompt
 │   ├── issue-comment.template.md ← issue 新评论时的 prompt（含 § A-split：拆 sub-issue）
@@ -262,6 +263,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
   daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份
 - worker / 复审写「要人拍板」评论的规矩（固定骨架、不许出现代码里的名字）→ `tests/plain-language-prompts.test.sh`。骨架逐字抄在三份 worker 模板和本项目的 `review.extra.md` 里；「不许出现代码里的名字」那句另外还在 worker 的拍板问题规则和复审的打回依据（`review.template.md` 第 2Q 步）里。要改就每处一起改——测试会对拍拼好的 prompt，任何一处走样都会红
+- `docs/images/` 里的讲解动图 → `tests/doc-diagrams.test.sh`。不要手改这些 SVG：改 `scripts/doc-diagrams/gen.py` 里的表，重跑 `python3 scripts/doc-diagrams/gen.py`，把产物一起提交。测试会重新生成并对比，再把每张动图整圈采样（任意时刻最多一段说明、说明只在红框停在它那一步时出现、不含脚本 / id / 外链）。图里画的流程变了，就在同一个 PR 里改说明
 
 没有对应测试的改动（daemon glue、prompt 模板）仍按最低保证走：
 

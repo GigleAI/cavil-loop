@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1340" viewBox="0 0 960 1340" role="img">
+<title>One issue, once around cavil-loop</title>
+<style>text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", Helvetica, Arial, sans-serif} text.m{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}</style>
+<rect x="0" y="0" width="960" height="1340" rx="14" fill="#ffffff"/>
+<line x1="304" y1="76.0" x2="339" y2="76.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="339,76 329.0,81.0 329.0,71.0" fill="#818b98"/>
+<line x1="619" y1="76.0" x2="654" y2="76.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="654,76 644.0,81.0 644.0,71.0" fill="#818b98"/>
+<line x1="795.0" y1="126" x2="795.0" y2="176" stroke="#818b98" stroke-width="2"/>
+<polygon points="795,176 790.0,166.0 800.0,166.0" fill="#818b98"/>
+<line x1="656" y1="228.0" x2="621" y2="228.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="621,228 631.0,223.0 631.0,233.0" fill="#818b98"/>
+<line x1="341" y1="228.0" x2="306" y2="228.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="306,228 316.0,223.0 316.0,233.0" fill="#818b98"/>
+<line x1="165.0" y1="278" x2="165.0" y2="328" stroke="#818b98" stroke-width="2"/>
+<polygon points="165,328 160.0,318.0 170.0,318.0" fill="#818b98"/>
+<line x1="304" y1="380.0" x2="339" y2="380.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="339,380 329.0,385.0 329.0,375.0" fill="#818b98"/>
+<line x1="619" y1="380.0" x2="654" y2="380.0" stroke="#818b98" stroke-width="2"/>
+<polygon points="654,380 644.0,385.0 644.0,375.0" fill="#818b98"/>
+<line x1="230" y1="278" x2="230" y2="304" stroke="#818b98" stroke-width="2" stroke-dasharray="6 5"/>
+<line x1="230" y1="304" x2="415" y2="304" stroke="#818b98" stroke-width="2" stroke-dasharray="6 5"/>
+<line x1="415" y1="304" x2="415" y2="280" stroke="#818b98" stroke-width="2" stroke-dasharray="6 5"/>
+<polygon points="415,280 420.0,290.0 410.0,290.0" fill="#818b98"/>
+<text x="322.5" y="297" font-size="12" font-weight="normal" fill="#59636e" text-anchor="middle">bounced (max 3 rounds)</text>
+<g class="card">
+<rect x="30" y="30" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="56" cy="58" r="14" fill="#1f2328"/>
+<text x="56" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">1</text>
+<text x="80" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">You open an issue</text>
+<rect x="48" y="84" width="82" height="26" rx="13" fill="#eaeef2"/>
+<text x="58" y="102" font-size="13" font-weight="normal" fill="#59636e" text-anchor="start">no label</text>
+</g>
+<g class="card">
+<rect x="345" y="30" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="371" cy="58" r="14" fill="#1f2328"/>
+<text x="371" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">2</text>
+<text x="395" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">You add the label</text>
+<rect x="363" y="84" width="121" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="373" y="102" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/agent</text>
+</g>
+<g class="card">
+<rect x="660" y="30" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="686" cy="58" r="14" fill="#1f2328"/>
+<text x="686" y="63" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">3</text>
+<text x="710" y="64" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Daemon polls</text>
+<rect x="678" y="84" width="121" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="688" y="102" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/agent</text>
+</g>
+<g class="card">
+<rect x="660" y="182" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="686" cy="210" r="14" fill="#1f2328"/>
+<text x="686" y="215" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">4</text>
+<text x="710" y="216" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Worker starts</text>
+<rect x="678" y="236" width="106" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="688" y="254" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">doing/agent</text>
+</g>
+<g class="card">
+<rect x="345" y="182" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="371" cy="210" r="14" fill="#1f2328"/>
+<text x="371" y="215" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">5</text>
+<text x="395" y="216" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Design proposal</text>
+<rect x="529" y="239" width="72" height="20" rx="10" fill="#fff8c5"/>
+<text x="565.2" y="253" font-size="12" font-weight="normal" fill="#7d4e00" text-anchor="middle">optional</text>
+<rect x="363" y="236" width="129" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="373" y="254" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/review</text>
+</g>
+<g class="card">
+<rect x="30" y="182" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="56" cy="210" r="14" fill="#1f2328"/>
+<text x="56" y="215" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">6</text>
+<text x="80" y="216" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Independent review</text>
+<rect x="214" y="239" width="72" height="20" rx="10" fill="#fff8c5"/>
+<text x="250.2" y="253" font-size="12" font-weight="normal" fill="#7d4e00" text-anchor="middle">optional</text>
+<rect x="48" y="236" width="121" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="58" y="254" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/human</text>
+</g>
+<g class="card">
+<rect x="30" y="334" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="56" cy="362" r="14" fill="#1f2328"/>
+<text x="56" y="367" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">7</text>
+<text x="80" y="368" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">You decide</text>
+<rect x="48" y="388" width="121" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="58" y="406" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/agent</text>
+</g>
+<g class="card">
+<rect x="345" y="334" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="371" cy="362" r="14" fill="#1f2328"/>
+<text x="371" y="367" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">8</text>
+<text x="395" y="368" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">Build + open PR</text>
+<rect x="363" y="388" width="98" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="373" y="406" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/PR</text>
+</g>
+<g class="card">
+<rect x="660" y="334" width="270" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<circle cx="686" cy="362" r="14" fill="#1f2328"/>
+<text x="686" y="367" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">9</text>
+<text x="710" y="368" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">You merge</text>
+<rect x="678" y="388" width="51" height="26" rx="13" fill="#ddf4ff"/>
+<text class="m" x="688" y="406" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">Done</text>
+</g>
+<rect x="30" y="466" width="900" height="844" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="914" y="488" font-size="12" font-weight="normal" fill="#59636e" text-anchor="end">Notes</text>
+<g class="cap">
+<text x="54" y="500" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">1. You open an issue</text>
+<text x="54" y="526" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">A new issue just sits there until you decide to hand it to the AI;</text>
+<text x="54" y="550" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">the daemon leaves it alone (unless the project runs greedy mode).</text>
+</g>
+<g class="cap">
+<text x="54" y="592" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">2. You add the label</text>
+<text x="54" y="618" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Labeling the issue pending/agent is the one and only switch.</text>
+</g>
+<g class="cap">
+<text x="54" y="660" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">3. Daemon polls</text>
+<text x="54" y="686" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">A local background job checks GitHub every 60 s by default (configurable)</text>
+<text x="54" y="710" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">and slows down when idle. It only calls GitHub, never a model.</text>
+</g>
+<g class="cap">
+<text x="54" y="752" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">4. Worker starts</text>
+<text x="54" y="778" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Own git worktree + tmux + agent session. The label flips to doing/agent</text>
+<text x="54" y="802" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">only once it is confirmed alive; if it dies, pending/human + a comment.</text>
+</g>
+<g class="cap">
+<text x="54" y="844" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">5. Design proposal</text>
+<text x="54" y="870" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">No code on the first dispatch: the plan and the choices for you go up</text>
+<text x="54" y="894" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">as an issue comment. No review gate? Then pending/human, straight to 7.</text>
+</g>
+<g class="cap">
+<text x="54" y="936" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">6. Independent review</text>
+<text x="54" y="962" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Another agent reviews the plan; a fail bounces it back (dashed line).</text>
+<text x="54" y="986" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">At most 3 rounds (configurable), then it reaches you either way.</text>
+</g>
+<g class="cap">
+<text x="54" y="1028" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">7. You decide</text>
+<text x="54" y="1054" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">Tick the options or reply in a comment, then relabel pending/agent.</text>
+<text x="54" y="1078" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">The next poll picks it up again.</text>
+</g>
+<g class="cap">
+<text x="54" y="1120" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">8. Build + open PR</text>
+<text x="54" y="1146" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">The worker writes code and runs tests; the PR opens only once green.</text>
+<text x="54" y="1170" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">The issue moves to pending/PR; the PR gets reviewed, then goes to you.</text>
+</g>
+<g class="cap">
+<text x="54" y="1212" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">9. You merge</text>
+<text x="54" y="1238" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">The PR is labeled Done and the issue closes with it.</text>
+<text x="54" y="1262" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">The daemon cleans up the worktree, tmux and session records.</text>
+</g>
+</svg>
