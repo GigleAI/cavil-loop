@@ -92,7 +92,7 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 
 ![一个 issue 在 cavil-loop 里走一圈：红框按步骤移动，下方说明区讲当前这一步](docs/images/issue-lifecycle.zh.svg)
 
-<sub>看不到动画？看[静态版](docs/images/issue-lifecycle.zh.static.svg)，所有步骤的说明一次列全。⑤⑥ 两步只在项目开了复审关卡时才有。</sub>
+<sub>看不到动画？看[静态版](docs/images/issue-lifecycle.zh.static.svg)，所有步骤的说明一次列全。⑤ 先发设计方案每个项目都有；⑥ 独立复审只在项目开了复审关卡时才有，没开时方案直接交给你。</sub>
 
 两种触发场景：
 

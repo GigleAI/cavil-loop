@@ -92,7 +92,7 @@ A **background poller** on your machine looks at GitHub every 60 seconds. When i
 
 ![One issue, once around cavil-loop: the red box walks through the nine steps, the notes underneath explain the current one](docs/images/issue-lifecycle.en.svg)
 
-<sub>No animation in your viewer? See the [static version](docs/images/issue-lifecycle.en.static.svg) with every step's notes. Steps 5–6 only happen when the project turns on the review gate.</sub>
+<sub>No animation in your viewer? See the [static version](docs/images/issue-lifecycle.en.static.svg) with every step's notes. Step 5 (design proposal) always happens; step 6 (independent review) only when the project turns on the review gate — without it the proposal comes straight to you.</sub>
 
 Two trigger scenarios:
 

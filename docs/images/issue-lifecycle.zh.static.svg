@@ -60,8 +60,6 @@
 <circle cx="371" cy="210" r="14" fill="#1f2328"/>
 <text x="371" y="215" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">5</text>
 <text x="395" y="216" font-size="17" font-weight="bold" fill="#1f2328" text-anchor="start">先发设计方案</text>
-<rect x="563" y="239" width="38" height="20" rx="10" fill="#fff8c5"/>
-<text x="582.0" y="253" font-size="12" font-weight="normal" fill="#7d4e00" text-anchor="middle">可选</text>
 <rect x="363" y="236" width="129" height="26" rx="13" fill="#ddf4ff"/>
 <text class="m" x="373" y="254" font-size="13" font-weight="normal" fill="#0550ae" text-anchor="start">pending/review</text>
 </g>
@@ -122,8 +120,8 @@
 </g>
 <g class="cap">
 <text x="54" y="844" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">5. 先发设计方案</text>
-<text x="54" y="870" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">第一次派工不写代码：把方案和要你拍板的选项发成 issue 评论。</text>
-<text x="54" y="894" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">没开复审关卡的项目，这一步直接翻 pending/human，跳到 ⑦。</text>
+<text x="54" y="870" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">第一次派工不写代码：把方案和要你拍板的选项发成 issue 评论。这一步总会有。</text>
+<text x="54" y="894" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">开了复审关卡就翻 pending/review 交复审；没开就直接翻 pending/human，跳到 ⑦。</text>
 </g>
 <g class="cap">
 <text x="54" y="936" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">6. 独立复审</text>
@@ -138,7 +136,7 @@
 <g class="cap">
 <text x="54" y="1120" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">8. 开发并开 PR</text>
 <text x="54" y="1146" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">worker 写代码、跑测试，测试绿了才开 PR；issue 转 pending/PR 跟踪。</text>
-<text x="54" y="1170" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">PR 同样先过一轮复审，再交你 review。</text>
+<text x="54" y="1170" font-size="15" font-weight="normal" fill="#1f2328" text-anchor="start">开了复审关卡时 PR 也先过一轮复审，再交你 review。</text>
 </g>
 <g class="cap">
 <text x="54" y="1212" font-size="16" font-weight="bold" fill="#1f2328" text-anchor="start">9. 你合并</text>
