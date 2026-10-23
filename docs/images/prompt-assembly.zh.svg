@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img">
+<title>一条评论，怎么变成 worker 手里的指令</title>
+<rect width="1280" height="640" fill="#F6F2EA"/>
+<text x="40" y="70" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="32" font-weight="400" fill="#1F1D1A" text-anchor="start">一条评论，怎么变成 worker 手里的指令</text>
+<text x="40" y="104" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="400" fill="#7A746A" text-anchor="start">提示词分层拼装；会话活着就粘贴进去，退出了就按角色续上；项目侧可选：改文件前再补规矩。</text>
+<g class="card s1" transform="translate(40 140)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">通用工作流</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">决策树、标签怎么翻</text>
+</g>
+<g class="card s1" transform="translate(40 212)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">通用公开经验</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">跨项目都成立的原则</text>
+</g>
+<g class="card s1" transform="translate(40 284)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">项目复盘经验</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">合并后复盘攒的硬规则</text>
+</g>
+<g class="card s1" transform="translate(40 356)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">本项目附加要求</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">冲突时以这一层为准</text>
+</g>
+<line x1="330" y1="280" x2="376" y2="280" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M374,286 L384,280 L374,274" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<g class="card s2" transform="translate(390 220)">
+<rect width="180" height="120" rx="10" fill="#1F1D1A"/>
+<text x="90" y="52" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="19" font-weight="400" fill="#FFFDF8" text-anchor="middle">合成一份</text>
+<text x="90" y="82" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="19" font-weight="400" fill="#FFFDF8" text-anchor="middle">完整提示词</text>
+</g>
+<path d="M574,280 C610,280 610,196 650,196" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M640,190 L650,196 L640,202" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M574,280 C610,280 610,364 650,364" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M640,358 L650,364 L640,370" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<g class="card s3" transform="translate(656 161)">
+<rect width="220" height="70" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="28" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">会话还活着</text>
+<text x="14" y="52" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">粘贴进 tmux，再按回车</text>
+</g>
+<line x1="882" y1="196" x2="922" y2="196" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M920,202 L930,196 L920,190" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<g class="card s4" transform="translate(656 329)">
+<rect width="220" height="70" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="28" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">会话已经退出</text>
+<text x="14" y="52" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">按「编号 + 角色」续上原对话</text>
+</g>
+<line x1="882" y1="364" x2="922" y2="364" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M920,370 L930,364 L920,358" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<text x="940" y="150" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="15" font-weight="600" fill="#1F1D1A" text-anchor="start">项目侧钩子示例（非 cavil-loop 自带）</text>
+<g class="card s5" transform="translate(940 162)">
+<rect width="300" height="32" rx="6" fill="#EDE8DE"/>
+<text x="12" y="21" font-family="ui-monospace, Menlo, monospace" font-size="12" font-weight="400" fill="#1F1D1A" text-anchor="start">Edit / Write：src/feature/x.ts</text>
+</g>
+<g class="card s5" transform="translate(940 206)">
+<rect width="300" height="32" rx="16" fill="#DCE6F2"/>
+<text x="14" y="21" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">AGENTS.md（根目录）</text>
+</g>
+<g class="card s5" transform="translate(940 248)">
+<rect width="300" height="32" rx="16" fill="#DCE6F2"/>
+<text x="14" y="21" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">src/AGENTS.md</text>
+</g>
+<g class="card s5" transform="translate(940 290)">
+<rect width="300" height="32" rx="16" fill="#DCE6F2"/>
+<text x="14" y="21" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">src/feature/AGENTS.md</text>
+</g>
+<g class="card s6" transform="translate(940 340)">
+<rect width="300" height="54" rx="8" fill="#1F1D1A"/>
+<text x="150" y="24" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="14" font-weight="400" fill="#FFFDF8" text-anchor="middle">执行这次改动前塞进上下文</text>
+<text x="150" y="44" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="12" font-weight="400" fill="#CFC7B8" text-anchor="middle">同一会话塞过的不再重复</text>
+</g>
+<rect class="focus" x="34" y="134" width="292" height="290" rx="12" fill="none" stroke="#C2412D" stroke-width="3">
+<animate attributeName="x" values="34;34;384;384;650;650;650;650;934;934;934;934;34" keyTimes="0.000000;0.145833;0.166667;0.312500;0.333333;0.479167;0.500000;0.645833;0.666667;0.812500;0.833333;0.979167;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="y" values="134;134;214;214;155;155;323;323;156;156;334;334;134" keyTimes="0.000000;0.145833;0.166667;0.312500;0.333333;0.479167;0.500000;0.645833;0.666667;0.812500;0.833333;0.979167;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="width" values="292;292;192;192;232;232;232;232;312;312;312;312;292" keyTimes="0.000000;0.145833;0.166667;0.312500;0.333333;0.479167;0.500000;0.645833;0.666667;0.812500;0.833333;0.979167;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="height" values="290;290;132;132;82;82;82;82;170;170;66;66;290" keyTimes="0.000000;0.145833;0.166667;0.312500;0.333333;0.479167;0.500000;0.645833;0.666667;0.812500;0.833333;0.979167;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+</rect>
+<rect x="40" y="456" width="1200" height="150" rx="12" fill="#EFE9DD"/>
+<g class="cap" transform="translate(72 502)" opacity="1">
+<animate attributeName="opacity" values="1;1;0;0" keyTimes="0.000000;0.145833;0.156250;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">① 四层拼装</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">通用工作流 → 通用公开经验 → 项目复盘经验 → 本项目附加要求，按顺序首尾相接。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">越往后越具体；冲突时以最后一层「本项目附加要求」为准。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.166667;0.177083;0.312500;0.322917;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">② 合成一份完整提示词</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">再填上这条 issue / PR 的编号、分支、工作目录，</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">就是 worker 这一轮拿到的全部指令。评论原文只当数据，不当指令。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.333333;0.343750;0.479167;0.489583;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">③ 会话还活着：直接粘贴</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">这个编号的 tmux 会话还在，就把提示词整段粘贴进去，再按一次回车提交。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">模型沿用原来的对话，前面干过什么都还记得。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.500000;0.510417;0.645833;0.656250;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">④ 会话已经退出：按角色续上</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">按「编号 + 角色」找回原来那条对话续上，找不到才全新开一条。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">写代码的和复审的各记各的，复审不会续到写代码那条，保证复审独立。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.666667;0.677083;0.812500;0.822917;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑤ 项目侧钩子（示例，非 cavil-loop 自带）：沿路径找规矩文件</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">worker 用 Edit / Write 改某个文件前，钩子从该文件所在目录一路往上找 AGENTS.md，</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">只挑本会话还没塞过的。用 Bash 改文件不触发；codex 复审也不走这个钩子。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.833333;0.843750;0.979167;0.989583;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="24s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑥ 项目侧钩子（示例）：改动执行前就塞进上下文</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">找到的规矩文件在这次改动执行之前就交给模型，不用等下一轮。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">同一会话里塞过的不再重复，避免把上下文撑大。</text>
+</g>
+</svg>

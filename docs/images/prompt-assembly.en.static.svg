@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1256" width="1280" height="1256" role="img">
+<title>How a comment becomes the worker's instructions</title>
+<rect width="1280" height="1256" fill="#F6F2EA"/>
+<text x="40" y="70" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="32" font-weight="400" fill="#1F1D1A" text-anchor="start">How a comment becomes the worker's instructions</text>
+<text x="40" y="104" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="400" fill="#7A746A" text-anchor="start">Layers stack into one prompt; a live session gets it pasted, an exited one is resumed by role; optional, project-side: add rules before edits.</text>
+<g class="card s1" transform="translate(40 140)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">Base workflow</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">decision tree, label flips</text>
+</g>
+<g class="card s1" transform="translate(40 212)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">Public lessons</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">principles that hold everywhere</text>
+</g>
+<g class="card s1" transform="translate(40 284)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">Project lessons</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">hard rules from retrospectives</text>
+</g>
+<g class="card s1" transform="translate(40 356)">
+<rect width="280" height="62" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="26" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">Project additions</text>
+<text x="14" y="48" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">this layer wins on conflict</text>
+</g>
+<line x1="330" y1="280" x2="376" y2="280" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M374,286 L384,280 L374,274" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<g class="card s2" transform="translate(390 220)">
+<rect width="180" height="120" rx="10" fill="#1F1D1A"/>
+<text x="90" y="52" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="19" font-weight="400" fill="#FFFDF8" text-anchor="middle">One complete</text>
+<text x="90" y="82" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="19" font-weight="400" fill="#FFFDF8" text-anchor="middle">prompt</text>
+</g>
+<path d="M574,280 C610,280 610,196 650,196" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M640,190 L650,196 L640,202" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M574,280 C610,280 610,364 650,364" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M640,358 L650,364 L640,370" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<g class="card s3" transform="translate(656 161)">
+<rect width="220" height="70" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="28" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">Session alive</text>
+<text x="14" y="52" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">paste into tmux, press Enter</text>
+</g>
+<line x1="882" y1="196" x2="922" y2="196" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M920,202 L930,196 L920,190" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<g class="card s4" transform="translate(656 329)">
+<rect width="220" height="70" rx="8" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="28" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600" fill="#1F1D1A" text-anchor="start">Session exited</text>
+<text x="14" y="52" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">resume by number + role</text>
+</g>
+<line x1="882" y1="364" x2="922" y2="364" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M920,370 L930,364 L920,358" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<text x="940" y="150" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="15" font-weight="600" fill="#1F1D1A" text-anchor="start">Project-side hook (example only)</text>
+<g class="card s5" transform="translate(940 162)">
+<rect width="300" height="32" rx="6" fill="#EDE8DE"/>
+<text x="12" y="21" font-family="ui-monospace, Menlo, monospace" font-size="12" font-weight="400" fill="#1F1D1A" text-anchor="start">Edit / Write: src/feature/x.ts</text>
+</g>
+<g class="card s5" transform="translate(940 206)">
+<rect width="300" height="32" rx="16" fill="#DCE6F2"/>
+<text x="14" y="21" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">AGENTS.md (repo root)</text>
+</g>
+<g class="card s5" transform="translate(940 248)">
+<rect width="300" height="32" rx="16" fill="#DCE6F2"/>
+<text x="14" y="21" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">src/AGENTS.md</text>
+</g>
+<g class="card s5" transform="translate(940 290)">
+<rect width="300" height="32" rx="16" fill="#DCE6F2"/>
+<text x="14" y="21" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">src/feature/AGENTS.md</text>
+</g>
+<g class="card s6" transform="translate(940 340)">
+<rect width="300" height="54" rx="8" fill="#1F1D1A"/>
+<text x="150" y="24" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="14" font-weight="400" fill="#FFFDF8" text-anchor="middle">Injected before the edit runs</text>
+<text x="150" y="44" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="12" font-weight="400" fill="#CFC7B8" text-anchor="middle">not repeated within a session</text>
+</g>
+<rect x="40" y="456" width="1200" height="766" rx="12" fill="#EFE9DD"/>
+<g class="cap" transform="translate(72 502)">
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">1  Four layers</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Base workflow → public lessons → project lessons → project additions, joined end to end.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Each layer is more specific than the last; on conflict the last one, project additions, wins.</text>
+</g>
+<g class="cap" transform="translate(72 622)">
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">2  One complete prompt</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Fill in this issue / PR's number, branch and working directory,</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">and that is everything the worker gets this round. Comment text is data, never instructions.</text>
+</g>
+<g class="cap" transform="translate(72 742)">
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">3  Session alive: paste</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">If this number's tmux session is still up, the whole prompt is pasted in and Enter submits it.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">The model keeps its conversation and remembers what it already did.</text>
+</g>
+<g class="cap" transform="translate(72 862)">
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">4  Session exited: resume by role</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">The conversation recorded for number + role is resumed; only if there is none does a new one start.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Coding and review keep separate records, so a review never resumes the coding conversation.</text>
+</g>
+<g class="cap" transform="translate(72 982)">
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">5  Project-side hook (example, not part of cavil-loop): find rule files</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Before the worker edits a file with Edit / Write, the hook walks up from that file's directory for AGENTS.md,</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">picking only those not yet sent this session. Edits via Bash do not trigger it; nor does codex review.</text>
+</g>
+<g class="cap" transform="translate(72 1102)">
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">6  Project-side hook (example): inject before the edit</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">The rule files found reach the model before this edit runs, not a round later.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Files already sent in this session are not repeated, so the context does not balloon.</text>
+</g>
+</svg>

@@ -33,7 +33,8 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   ├── cleanup-issue.sh           ← Post-merge cleanup (worktree / tmux / project hook)
 │   ├── migrate-legacy.sh          ← Move a pre-rename install to cavil-loop names (run by poll-entry.sh / setup.sh)
 │   ├── session-log.sh             ← View tmux pane history
-│   └── weekly-report/             ← Monday auto weekly report (collect / render / PDF / publish)
+│   ├── weekly-report/             ← Monday auto weekly report (collect / render / PDF / publish)
+│   └── doc-diagrams/              ← Generator + checker for the animated SVGs in docs/images/
 ├── prompts/
 │   ├── new-issue.template.md      ← Prompt for new-issue dispatch
 │   ├── issue-comment.template.md  ← Prompt for new issue comment (also § A-split: split into sub-issues)
@@ -312,6 +313,7 @@ Changes in these areas must run the matching tests:
 - Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.
   Any **new daemon-side write** must go through `gh_write`, not bare `gh` — a bare `gh` still succeeds, it just signs with the polling identity
 - How workers / the reviewer write comments that ask a human to decide (the fixed skeleton, the no-code-names rule) → `tests/plain-language-prompts.test.sh`. The skeleton is copied verbatim into the three worker templates and the project's `review.extra.md`; the no-code-names sentence additionally sits in the worker decision-question rules and the reviewer's rejection rule (`review.template.md`, step 2Q). The "self-contained hand-off comment, links only as sources" rule (GitHub#74) is item 8 of the hand-off section in the same four places, plus the hand-off step of `review.template.md` so reviewers of projects without a `review.extra.md` get it too. Edit every copy together — the test diffs the composed prompts and fails on any drift
+- The animated explainer diagrams in `docs/images/` → `tests/doc-diagrams.test.sh`. Never hand-edit those SVGs: change the table in `scripts/doc-diagrams/gen.py`, rerun `python3 scripts/doc-diagrams/gen.py`, commit the output. The test regenerates and diffs, then cuts each cycle at every keyframe and judges every piece from its two end values — no fixed-interval sampling, which misses short glitches (at most one caption at any instant; a caption only while the red box is parked on its step or sliding away from it; the box visits the steps in order; no script / id / external reference). When the workflow a diagram shows changes, update its captions in the same PR
 
 Changes with no matching test (daemon glue, prompt templates) still meet the minimum bar:
 
