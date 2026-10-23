@@ -686,7 +686,8 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 - **何时**：`.github/workflows/release.yml` 的定时触发，每周一 00:10 北京时间（周日 16:10 UTC）。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
 - **发什么**：main 最新提交，tag 用 `scripts/release.sh --auto` 算出的 `release/vYYYY.MM.DD.N`（UTC 日期，周日那天打的就是迭代最后一天）。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。
-- **没新提交不发**：main 最新提交已经有 `release/v*` tag 时，运行照常成功，日志写「本轮无新提交」，不生成 Release。
+- **没新提交不发**：main 最新提交已经有 `release/v*` tag **且该 tag 已有 Release 页面**时，运行照常成功，日志写「本轮无新提交」，不生成 Release。
+- **上次只推了 tag 也能补**：tag 已推但 Release 页面创建失败时，下一次运行（重跑或下周定时）沿用这个 tag 补建页面，不打新 tag。生成说明的起点是最近一个**有 Release 页面**的 tag，一直没补上页面的 tag 会被跳过，它的改动算进下一个 Release。查不到 Release 列表时整次运行失败，不猜。
 - **手动发版**：Actions 页面 → Release → Run workflow（选 main），效果与定时触发相同；或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——它不判断是否已发过）。
 - **同一次运行里完成**：流程用内置令牌推的 tag 不会再触发流程，所以定时 / 手动运行在同一个 job 里接着生成 Release；人手推的 tag 仍由 tag 触发走后半段。不需要额外 secret。
 

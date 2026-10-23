@@ -10,7 +10,8 @@
 #   bash scripts/release.sh --dry-run  # print the tag that would be created, do nothing
 #   bash scripts/release.sh --auto     # non-interactive (the weekly workflow run):
 #                                      # stdout = the pushed tag only, messages on stderr;
-#                                      # exit 3 = HEAD already released, nothing to do
+#                                      # exit 3 = HEAD already tagged, stdout = that tag
+#                                      # (its Release page may still be missing)
 #   bash scripts/release.sh --title <tag>
 #                                      # print the Release title: the tag plus the
 #                                      # Monday–Sunday iteration its date falls in
@@ -72,9 +73,13 @@ if [ "$local_sha" != "$remote_sha" ]; then
     exit 1
 fi
 
-released="$(git tag --points-at HEAD -l 'release/v*' | head -n1)"
+# A tag is not a published release: the Release page may have failed after the
+# push. So --auto only reports the existing tag; the caller decides whether the
+# page still has to be created.
+released="$(git tag --points-at HEAD -l 'release/v*' --sort=-v:refname | head -n1)"
 if [ -n "$released" ] && $AUTO; then
-    echo "nothing new since $released (HEAD $local_sha) — skipping"
+    echo "HEAD $local_sha is already tagged $released — no new tag"
+    echo "$released" >&3
     exit 3
 fi
 

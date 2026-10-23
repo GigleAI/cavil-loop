@@ -29,18 +29,28 @@ jobs:
       # Scheduled / manual runs cut the tag themselves. A tag pushed with
       # GITHUB_TOKEN does not trigger another workflow run, so the rest of
       # this job (not a second run) turns it into a Release.
+      # "Already tagged" is not "already released": if the Release step of an
+      # earlier run failed after the push, this run creates the missing page.
+      # A failed lookup fails the run rather than guessing either way.
       - name: Cut tag (scheduled / manual)
         if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
           tag="$(bash scripts/release.sh --auto)"
           rc=$?
           set -e
           if [ "$rc" -eq 3 ]; then
-            echo "本轮无新提交，不发版"
-            exit 0
+            released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
+            if grep -qxF -- "$tag" <<<"$released"; then
+              echo "本轮无新提交，不发版（$tag 已发布）"
+              exit 0
+            fi
+            echo "$tag 已有 tag 但还没有 Release 页面，补建"
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
           fi
-          [ "$rc" -eq 0 ] || exit "$rc"
           echo "tag=$tag" >> "$GITHUB_ENV"
 
       - name: Read tag from ref
@@ -65,10 +75,22 @@ jobs:
             exit 1
           fi
 
+      # The notes start at the nearest earlier tag that has a Release page. A
+      # tag whose page was never created is skipped, so its changes land here
+      # instead of in no Release at all.
       - name: Generate release notes
         if: env.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          prev="$(git describe --tags --abbrev=0 --match 'release/v*' "${tag}^" 2>/dev/null || true)"
+          released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
+          skip=()
+          while :; do
+            prev="$(git describe --tags --abbrev=0 --match 'release/v*' "${skip[@]}" "${tag}^" 2>/dev/null || true)"
+            [ -n "$prev" ] && ! grep -qxF -- "$prev" <<<"$released" || break
+            echo "skipping $prev as the start of the notes: it has no Release page"
+            skip+=(--exclude "$prev")
+          done
           if [ -n "$prev" ]; then
             range="${prev}..${tag}"
             header="Changes since \`${prev}\`"

@@ -774,7 +774,8 @@ One release per iteration (GitHub#80). Iterations follow the cavil project board
 
 - **When**: the scheduled trigger in `.github/workflows/release.yml`, every Monday 00:10 Beijing time (Sunday 16:10 UTC). GitHub may start scheduled runs minutes to tens of minutes late under load.
 - **What**: the tip of main, tagged `release/vYYYY.MM.DD.N` as computed by `scripts/release.sh --auto` (UTC date, so a Sunday run is dated the iteration's last day). The Release title carries the Monday–Sunday week the tag's date falls in, e.g. `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`.
-- **Nothing new, nothing released**: when main's tip already carries a `release/v*` tag, the run succeeds, logs "本轮无新提交" (no new commits this round), and creates no Release.
+- **Nothing new, nothing released**: when main's tip already carries a `release/v*` tag **and that tag has a Release page**, the run succeeds, logs "本轮无新提交" (no new commits this round), and creates no Release.
+- **A tag without its page gets one later**: if the tag was pushed but creating the Release failed, the next run (a re-run or next week's schedule) reuses that tag and creates the missing page instead of cutting a new tag. The notes start at the nearest earlier tag that **has a Release page**; a tag that never got one is skipped, so its changes go into the next Release. If the list of Releases cannot be read, the run fails rather than guessing.
 - **Manual release**: Actions → Release → Run workflow (on main) behaves like the scheduled run; or run `bash scripts/release.sh` on a local main (interactive, unchanged — it does not check whether HEAD is already released).
 - **Within the same run**: a tag pushed with the built-in token does not trigger another workflow run, so scheduled / manual runs create the Release in the same job; tags pushed by a person still trigger the tag path. No extra secret is needed.
 
