@@ -945,10 +945,15 @@ migration tick removes that link.
    ```bash
    bash ~/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh 4050 --swap ~/.config/cavil-loop/migration/preview-conflict-4050-<time>
    ```
-   It stops the new units, moves the current registration into the same backup directory, puts the
-   other copy in place and starts the listener on the **new units** — this works even after the old
-   link is gone. Then check as in step 3. Nothing in the backup directory is ever deleted:
-   `old.conf` / `new.conf` are the registrations as they were before.
+   It first proves this backup belongs to this port's resolution: the port recorded in the backup and
+   the port inside the copy to restore must both be this port, and the current registration must be
+   byte-identical to the copy that was kept back then. Anything else is refused (exit 2) and nothing is
+   touched — a backup from another port, or a port that was re-registered after the resolution, stops
+   here. Then it **copies** the current registration into the backup, stops the new units, replaces the
+   registration in place in one atomic step (it is never missing), and starts the listener on the
+   **new units** — this works even after the old link is gone. A failure exits 1; re-run the same
+   command after fixing it and it continues where it stopped. Then check as in step 3. Files already in
+   the backup directory are never changed: `old.conf` / `new.conf` are the registrations as they were before.
 
 The poll entry therefore calls the migration not only while old project env files exist, but also
 while the old registration directory has entries, or while both the old and the new skill links

@@ -21,6 +21,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 BASE_COMMIT="d41ee75"   # 本 issue 动手之前的 main
 PREV_COMMIT="b7369b9"   # PR #79 第 1 轮复审打回的那版（查不到单元状态时照样收尾）
+PREV3_COMMIT="7e5d382"  # PR #79 第 3 轮复审打回的那版（换回时不认备份归属、半路失败留下空登记）
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -361,6 +362,71 @@ chk "对照：preview-unserve.sh 确实处理不了冲突（不放开跨主人�
        env -u CODING_AGENT_RELEASE_ROOT HOME="$W/home" PATH="$FAKEBIN:$PATH" SCTL="$W/sctl" CODING_AGENT_CONFIG="$W/widget.config" \
            bash "$REPO_DIR/scripts/preview-unserve.sh" --issue 50 >/dev/null 2>&1; echo "$?|$(has_old "$W" 4050)|$(has_new "$W" 4050)")" "3|yes|yes"
 
+# 场景 S7G：--swap 的边界。在 <code> 的那份恢复脚本上跑，输出 键=值
+scenario_swap_edges() {   # <code> <dir 前缀>
+    local code="$1" w0="$2" W B
+    # ① 拿 4050 的备份去换 4051（4051 是第三个项目、好好跑着的预览）→ 必须拒绝，一个字节都不动
+    W="$w0-wrongport"; mkhome "$W" yes "$code"; oldreg "$W" 4050; newreg "$W" 4050 other 50
+    setstate "$W" coding-agent-preview@4050.socket active
+    resolve "$W" 4050 --keep new >/dev/null; B="$(backup_of "$W")"
+    newreg "$W" 4051 third 51; setstate "$W" cavil-loop-preview@4051.socket active
+    local before_conf before_bak
+    before_conf="$(sha256sum < "$W/home/.config/cavil-loop/preview/4051.conf")"
+    before_bak="$(cd "$B" && find . -type f | sort | xargs sha256sum)"
+    : > "$W/sctl/calls"
+    echo "wrong_rc=$(resolve "$W" 4051 --swap "$B")"
+    echo "wrong_conf_same=$([ "$(sha256sum < "$W/home/.config/cavil-loop/preview/4051.conf")" = "$before_conf" ] && echo yes || echo no)"
+    echo "wrong_bak_same=$([ "$(cd "$B" && find . -type f | sort | xargs sha256sum)" = "$before_bak" ] && echo yes || echo no)"
+    echo "wrong_stops=$(grep -c '^stop .*4051' "$W/sctl/calls")"
+    echo "wrong_sock=$(state "$W" cavil-loop-preview@4051.socket)"
+    # ② 处理完冲突之后，留下的那个项目又重新注册过（登记内容变了）→ 拿旧备份换，必须拒绝
+    W="$w0-stale"; mkhome "$W" yes "$code"; oldreg "$W" 4050; newreg "$W" 4050 other 50
+    setstate "$W" coding-agent-preview@4050.socket active
+    resolve "$W" 4050 --keep new >/dev/null; B="$(backup_of "$W")"
+    printf 'PREVIEW_IDLE="5min"\n' >> "$W/home/.config/cavil-loop/preview/4050.conf"
+    before_conf="$(sha256sum < "$W/home/.config/cavil-loop/preview/4050.conf")"
+    echo "stale_rc=$(resolve "$W" 4050 --swap "$B")"
+    echo "stale_conf_same=$([ "$(sha256sum < "$W/home/.config/cavil-loop/preview/4050.conf")" = "$before_conf" ] && echo yes || echo no)"
+    # ③ 换登记那一下 rename 失败（同复审的注入方式：只让 .swap-* 那次 mv 失败一次）→ 登记不能消失；撤掉故障重跑能完成
+    W="$w0-mvfail"; mkhome "$W" yes "$code"; oldreg "$W" 4050; newreg "$W" 4050 other 50
+    setstate "$W" coding-agent-preview@4050.socket active
+    resolve "$W" 4050 --keep new >/dev/null; B="$(backup_of "$W")"
+    mkdir -p "$W/mvbin"
+    cat > "$W/mvbin/mv" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in */.swap-*) [ -e "$MVFAIL" ] && { rm -f "$MVFAIL"; exit 1; } ;; esac; done
+exec /bin/mv "$@"
+SH
+    chmod +x "$W/mvbin/mv"; : > "$W/mvfail"
+    echo "mvfail_rc=$(env -i HOME="$W/home" PATH="$W/mvbin:$FAKEBIN:/usr/bin:/bin" SCTL="$W/sctl" MVFAIL="$W/mvfail" \
+        bash "$W/home/.agents/skills/cavil-loop/scripts/preview-resolve-conflict.sh" 4050 --swap "$B" >"$W/resolve.out" 2>&1; echo $?)"
+    echo "mvfail_reg=$(has_new "$W" 4050)"
+    echo "mvfail_retry_rc=$(resolve "$W" 4050 --swap "$B")"
+    echo "mvfail_after=$(grep -c '^PREVIEW_PROJECT="widget"' "$W/home/.config/cavil-loop/preview/4050.conf" 2>/dev/null)|$(state "$W" cavil-loop-preview@4050.socket)"
+    # ④ 登记换好了、起监听失败 → 下次重跑从起监听接着做；⑤ 做完再跑一次：不变
+    W="$w0-startfail"; mkhome "$W" yes "$code"; oldreg "$W" 4050; newreg "$W" 4050 other 50
+    setstate "$W" coding-agent-preview@4050.socket active
+    resolve "$W" 4050 --keep new >/dev/null; B="$(backup_of "$W")"
+    : > "$W/sctl/fail-start/cavil-loop-preview@4050.socket"
+    echo "startfail_rc=$(resolve "$W" 4050 --swap "$B")"
+    echo "startfail_reg=$(grep -c '^PREVIEW_PROJECT="widget"' "$W/home/.config/cavil-loop/preview/4050.conf" 2>/dev/null)"
+    rm -f "$W/sctl/fail-start/cavil-loop-preview@4050.socket"
+    echo "resume_rc=$(resolve "$W" 4050 --swap "$B")|$(state "$W" cavil-loop-preview@4050.socket)"
+    before_conf="$(sha256sum < "$W/home/.config/cavil-loop/preview/4050.conf")"
+    echo "again_rc=$(resolve "$W" 4050 --swap "$B")|$([ "$(sha256sum < "$W/home/.config/cavil-loop/preview/4050.conf")" = "$before_conf" ] && echo same || echo changed)"
+}
+echo "【7g】冲突处理脚本换回时的边界：错端口 / 过期备份不动；替换半路失败不丢登记、重跑能接着做"
+scenario_swap_edges "$REPO_DIR" "$TMP/s7g" > "$TMP/s7g.res"; R="$TMP/s7g.res"
+chk "拿 4050 的备份换 4051：拒绝"                         "$(expect "$R" wrong_rc)" "2"
+chk "  4051 的登记逐字节不变、备份目录逐字节不变"         "$(expect "$R" wrong_conf_same)|$(expect "$R" wrong_bak_same)" "yes|yes"
+chk "  4051 的单元一个都没停、监听照常在听"               "$(expect "$R" wrong_stops)|$(expect "$R" wrong_sock)" "0|active"
+chk "冲突处理后又重新注册过：拿旧备份换会拒绝、登记不变" "$(expect "$R" stale_rc)|$(expect "$R" stale_conf_same)" "2|yes"
+chk "替换那一下失败：非零退出，但登记仍在"                "$(expect "$R" mvfail_rc)|$(expect "$R" mvfail_reg)" "1|yes"
+chk "  撤掉故障重跑：换成功、新监听在听"                  "$(expect "$R" mvfail_retry_rc)|$(expect "$R" mvfail_after)" "0|1|active"
+chk "登记换好后起监听失败：非零退出，登记已是换上的那份" "$(expect "$R" startfail_rc)|$(expect "$R" startfail_reg)" "1|1"
+chk "  修好后重跑：接着起监听、成功"                      "$(expect "$R" resume_rc)" "0|active"
+chk "  做完再跑一次：成功、登记不变"                      "$(expect "$R" again_rc)" "0|same"
+
 echo "【8】迁移：全部搬完 → 删旧入口；再跑一轮什么都不变；轮询入口不再需要调迁移"
 W="$TMP/s8"; mkhome "$W" yes "$REPO_DIR"; oldreg "$W" 4050; oldreg "$W" 4051
 setstate "$W" coding-agent-preview@4050.socket active
@@ -453,6 +519,18 @@ if git -C "$REPO_DIR" archive "$PREV_COMMIT" 2>/dev/null | tar -x -C "$PREV" 2>/
     done
 else
     echo "  ⚠️ 取不到 $PREV_COMMIT（浅克隆？），跳过负对照"
+fi
+
+echo "【负对照】PR #79 第 3 轮复审打回的那版（$PREV3_COMMIT）：换回时的两个缺陷必须复现"
+PREV3="$TMP/code-prev3"; mkdir -p "$PREV3"
+if git -C "$REPO_DIR" archive "$PREV3_COMMIT" 2>/dev/null | tar -x -C "$PREV3" 2>/dev/null; then
+    scenario_swap_edges "$PREV3" "$TMP/p7g" > "$TMP/p7g.res"; R="$TMP/p7g.res"
+    chk "上一版拿 4050 的备份换 4051 照样成功、改掉了 4051（实得 $(expect "$R" wrong_rc)|$(expect "$R" wrong_conf_same)）" \
+        "$(expect "$R" wrong_rc)|$(expect "$R" wrong_conf_same)" "0|no"
+    chk "上一版替换失败后登记没了、重跑也救不回（实得 $(expect "$R" mvfail_reg)|$(expect "$R" mvfail_retry_rc)）" \
+        "$(expect "$R" mvfail_reg)|$(expect "$R" mvfail_retry_rc)" "no|1"
+else
+    echo "  ⚠️ 取不到 $PREV3_COMMIT（浅克隆？），跳过负对照"
 fi
 
 echo
