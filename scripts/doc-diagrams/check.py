@@ -4,8 +4,11 @@
 Usage: python3 scripts/doc-diagrams/check.py <dir>     exit 0 = all good
 
 It does not look at how the SVG is written; it evaluates the animation the way a
-player would — samples the whole cycle and reads every caption's opacity and the
-red box's position at each instant — so any authoring that breaks a promise fails:
+player would. Every animation is discrete, so between two consecutive switch
+points (the union of all keyTimes) every value is constant: the cycle is cut at
+those points and each piece is judged exactly once, however short it is. Fixed-
+interval sampling was the first version and missed a 0.01 s overlap that fell
+between two samples (review on PR #77). Any authoring that breaks a promise fails:
 
   - no script / foreignObject / external reference / element id / non-zero begin
   - one shared cycle; every animation repeats forever and switches discretely
@@ -21,7 +24,6 @@ import sys
 import xml.etree.ElementTree as ET
 
 NS = '{http://www.w3.org/2000/svg}'
-SAMPLE = 0.05
 MIN_VISIBLE = 2.0   # seconds a caption must stay up per cycle
 FORBIDDEN_TAGS = {'script', 'foreignObject', 'image', 'use', 'a', 'iframe', 'link'}
 DOMAIN = re.compile(r'\b[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|net|org|io|dev|app|local|lan|internal|cn)\b', re.I)
@@ -41,22 +43,24 @@ def classes(el):
     return (el.get('class') or '').split()
 
 
-def value_at(anim, t, cycle):
-    """Discrete SMIL: the value of the last keyTime <= t (within the cycle)."""
-    f = (t % cycle) / cycle
-    kts = [float(k) for k in anim.get('keyTimes').split(';')]
-    vals = anim.get('values').split(';')
-    cur = vals[0]
-    for k, v in zip(kts, vals):
-        if k <= f + 1e-9:
+def key_times(anim):
+    return [float(k) for k in anim.get('keyTimes').split(';')]
+
+
+def value_at(anim, f):
+    """Discrete SMIL at cycle fraction f: the value of the last keyTime <= f.
+    f is always one of the parsed keyTimes (or 0), so the comparison is exact."""
+    cur = None
+    for k, v in zip(key_times(anim), anim.get('values').split(';')):
+        if k <= f:
             cur = v
     return cur
 
 
-def attr_at(el, name, t, cycle):
+def attr_at(el, name, f):
     for a in el:
         if tag(a) == 'animate' and a.get('attributeName') == name:
-            return value_at(a, t, cycle)
+            return value_at(a, f)
     return el.get(name)
 
 
@@ -120,27 +124,30 @@ def check_animated(path, root):
 
     shown = [0.0] * len(caps)
     focused = set()
-    steps = int(round(cycle / SAMPLE))
-    for s in range(steps):
-        t = s * SAMPLE + SAMPLE / 2   # mid-sample, never exactly on a switch
-        vis = [i for i, c in enumerate(caps) if float(attr_at(c, 'opacity', t, cycle) or 1) > 0]
-        fx, fy, fw, fh = (float(attr_at(focus, n, t, cycle)) for n in ('x', 'y', 'width', 'height'))
+    # piece [f, next) is constant; the last piece runs to the cycle end, then the cycle restarts at 0
+    cuts = sorted({0.0, *(k for a in anims for k in key_times(a))})
+    for f, nxt in zip(cuts, cuts[1:] + [1.0]):
+        if nxt <= f:
+            continue
+        t = f * cycle
+        vis = [i for i, c in enumerate(caps) if float(attr_at(c, 'opacity', f) or 1) > 0]
+        fx, fy, fw, fh = (float(attr_at(focus, n, f)) for n in ('x', 'y', 'width', 'height'))
         on = [i for i, r in enumerate(card_rects)
               if fx <= float(r.get('x')) and fy <= float(r.get('y'))
               and float(r.get('x')) + float(r.get('width')) <= fx + fw
               and float(r.get('y')) + float(r.get('height')) <= fy + fh]
         if len(on) != 1:
-            err(path, f't={t:.2f}s: red box surrounds {len(on)} cards')
+            err(path, f't={t:.4f}s: red box surrounds {len(on)} cards')
             return None
         focused.add(on[0])
         if len(vis) > 1:
-            err(path, f't={t:.2f}s: captions {[v + 1 for v in vis]} visible at once')
+            err(path, f't={t:.4f}s: captions {[v + 1 for v in vis]} visible at once')
             return None
         if vis and vis[0] != on[0]:
-            err(path, f't={t:.2f}s: caption {vis[0] + 1} shown while the red box is on card {on[0] + 1}')
+            err(path, f't={t:.4f}s: caption {vis[0] + 1} shown while the red box is on card {on[0] + 1}')
             return None
         for v in vis:
-            shown[v] += SAMPLE
+            shown[v] += (nxt - f) * cycle
     for i, d in enumerate(shown):
         if d < MIN_VISIBLE:
             err(path, f'caption {i + 1} is visible only {d:.2f}s per cycle')
