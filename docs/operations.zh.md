@@ -349,6 +349,8 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
   计数从那条评论之后重算、自然归零。判定靠比对 actor 与 `gh api user` 的账号，
   不需要揣摩评论文字的意图。轮次不存 state.json，数的是 issue/PR 上「最近一次人工动作
   之后」的 `<!-- codex-review-round -->` 标记：看板上看得见、state 丢了不会重置
+- **复审结论评论的标题第一个字就是结论**：通过写 `## ✅ …`，其余（退回、轮次用尽交人、
+  与主干冲突、检查没跑成交人）一律 `## ❌ …`，手机通知列表里扫一眼就知道（GitHub#84）
 - **打回必须用默认的 `pending/agent`**，不是 review label 自己——模板里用
   `${LABEL_PENDING_AGENT_DEFAULT}` 占位符拿这个值。用错就是死循环
 - self-heal 靠 `state.json` 的 `worker_trigger_labels` 把死掉的 session 送回**原来那条队列**；

@@ -267,6 +267,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份
 - worker / 复审写「要人拍板」评论的规矩（固定骨架、不许出现代码里的名字）→ `tests/plain-language-prompts.test.sh`。骨架逐字抄在三份 worker 模板和本项目的 `review.extra.md` 里；「不许出现代码里的名字」那句另外还在 worker 的拍板问题规则和复审的打回依据（`review.template.md` 第 2Q 步）里。「交人评论自包含、链接只当出处」（GitHub#74）是同样四处「交人评论怎么写」的第 8 条，另在 `review.template.md` 交人那一步放一份，让没有 `review.extra.md` 的项目的复审也带上。要改就每处一起改——测试会对拍拼好的 prompt，任何一处走样都会红
 - PR 交出前查与主干的冲突（GitHub#82）→ `tests/conflict-check-prompts.test.sh`。检查命令（`# --- 冲突检查 开始 ---` 到 `# --- 冲突检查 结束 ---`）逐字抄在 `issue-comment.template.md`（§ A）、`pr-comment.template.md`、`review.template.md`（第 2C 步）三处；worker 那段处理规则在两份 worker 模板里逐字一致。测试对拍拼好的 prompt，检查它排在翻 label / 下结论之前，并用假 `gh` 在真实 git worktree 里实跑这段命令
+- 复审结论评论标题以 ✅（通过）/ ❌（其余一律）开头（GitHub#84）→ `tests/review-verdict-emoji.test.sh`。规矩只写在 `review.template.md` 第 3 步，没有 `review.extra.md` 的项目也带上；测试对拍带 / 不带增量的复审成品、✅/❌ 对应关系与示例，并确认没漏进 worker 模板
 - `docs/images/` 里的讲解动图 → `tests/doc-diagrams.test.sh`。不要手改这些 SVG：改 `scripts/doc-diagrams/gen.py` 里的表，重跑 `python3 scripts/doc-diagrams/gen.py`，把产物一起提交。测试会重新生成并对比，再在每张动图的所有关键帧把一圈切成小段、按每段两端的值逐段判定，不靠定时采样（任意时刻最多一段说明；说明只在红框停在它那一步、或正从那一步滑走时出现；红框按顺序走完每一步；不含脚本 / id / 外链）。图里画的流程变了，就在同一个 PR 里改说明
 
 没有对应测试的改动（daemon glue、prompt 模板）仍按最低保证走：

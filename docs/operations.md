@@ -409,6 +409,9 @@ Design notes:
   Detection compares the actor against `gh api user`, so no guessing at comment intent. Rounds
   are counted from `<!-- codex-review-round -->` markers posted *after the last human action*
   rather than `state.json`: visible on the board, survives state loss
+- **A review verdict comment's heading starts with the verdict**: `## ✅ …` when it passes,
+  `## ❌ …` for everything else (bounced back, rounds exhausted, conflicts with the base
+  branch, check could not run) — readable at a glance in a phone's notification list (GitHub#84)
 - **Bounce-backs must target the default `pending/agent`**, not the review label itself —
   templates get it via the `${LABEL_PENDING_AGENT_DEFAULT}` placeholder. Getting this wrong
   is an infinite loop
