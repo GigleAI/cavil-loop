@@ -261,7 +261,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 - 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`（约 40 秒：端到端那几组要真的把 `agent-poll.sh` 起几百次，别用 30 秒的命令窗口跑它，半截被掐看起来就像失败）
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh`、`tests/preview-port-ownership.test.sh` 等
-- 等人审（`pending/human`）的 PR 重查与目标分支的冲突（GitHub#86）→ `tests/pending-human-conflict.test.sh`（约 1 分钟：会在 5 份故意改坏的脚本副本上把全部场景再跑一遍，有一份没被拦下就失败，并拿同一批 PR 对拍 daemon 的判定和 worker 交 PR 前那段冲突检查命令）。它逐次数 GitHub 调用——这个设计的全部要点就是目标分支不动时一次都不多问。改 worker 那段检查命令的判定规则时，`_lib.sh` 的 `pr_conflict_verdict` 要同步改
+- 等人审（`pending/human`）的 PR 重查与目标分支的冲突（GitHub#86）→ `tests/pending-human-conflict.test.sh`（约 1.5 分钟：会在 7 份故意改坏的脚本副本上把全部场景再跑一遍，有一份没被拦下就失败，并拿同一批 PR 对拍 daemon 的判定和 worker 交 PR 前那段冲突检查命令）。它逐次数 GitHub 调用——这个设计的全部要点就是目标分支不动时一次都不多问。改 worker 那段检查命令的判定规则时，`_lib.sh` 的 `pr_conflict_verdict` 要同步改
 - 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`、`tests/preview-rename-coexist.test.sh`（同一台机器上新旧预览并存）、`tests/migrate-legacy.test.sh`（旧安装迁移：只迁空闲项目、断了能接着做、保留旧任务原来的开关）、`tests/preview-legacy-adopt.test.sh`（旧预览搬到新单元：失败后能接着搬、全部搬完才删旧入口、预览没真起来就不给地址）。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名
 - worker / 模型选择、driver 传的 `--model` → `tests/worker-selection.test.sh`、`tests/claude-resume-model.test.sh`
 - 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）

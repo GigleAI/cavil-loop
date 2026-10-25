@@ -2242,14 +2242,27 @@ pending_human_conflict_tick() {
             *) pr_conflict_bump_tries "$state_file" "$num" "$cap" "判不出能否与 $base 合并"; continue ;;
         esac
 
-        # 要往 GitHub 写了：现读一次这个 PR。快照是本轮开头的，人可能刚改过标签，
-        # 或者刚推了新提交（那这次判的就不是人现在看到的那一版）。读不到 → 下轮再来。
+        # 要往 GitHub 写了：现读一次这个 PR。快照是本轮开头的，从那以后它可能已经被关掉 /
+        # 合并、改投了别的目标分支、被推了新提交、被人改了标签。下面要用到的每一项身份
+        # （开着、目标分支、PR 提交、是不是外部仓库）都拿现读的值和这次判定用的那份逐项核对，
+        # 缺字段也算对不上：对不上就本轮跳过、不记为已处理，下轮按新情况重新判。
+        # 标签挡不住「已关闭」：关掉的 PR 照样留着 pending/human。
         if ! pr_json=$(gh api "repos/$REPO/pulls/$num" 2>/dev/null) || [ -z "$pr_json" ]; then
             log "  ⚠️ 读取 PR #$num 失败，本轮不处理它的冲突"
             pr_conflict_bump_tries "$state_file" "$num" "$cap" "读不到 PR"
             continue
         fi
-        [ "$(printf '%s' "$pr_json" | jq -r '.head.sha // ""' 2>/dev/null)" = "$head" ] || continue
+        if ! printf '%s' "$pr_json" | jq -e --arg h "$head" --arg b "$base" --arg f "$fork" --arg R "$REPO" '
+            .state == "open" and (.merged // false) == false
+            and .head.sha == $h and .base.ref == $b
+            and ((if ((.head.repo.full_name // "") | ascii_downcase) == ($R | ascii_downcase) then "same" else "fork" end) == $f)' \
+            >/dev/null 2>&1; then
+            log "PR #$num: 判定之后它已关闭 / 改了目标分支 / 有新提交，本轮不处理，下轮按现状重新判"
+            # 计一次：正常情况下轮快照就变了（换了一对提交，计数归零）；万一 GitHub
+            # 一直返回对不上的东西，也不会每轮都多拉一次、问一次
+            pr_conflict_bump_tries "$state_file" "$num" "$cap" "现读的 PR 与判定时对不上"
+            continue
+        fi
         labels_csv=$(printf '%s' "$pr_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null) || labels_csv=""
         case ",$labels_csv," in
             *",$LABEL_PENDING_HUMAN,"*) ;;

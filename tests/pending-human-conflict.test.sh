@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 等人审的 PR 与目标分支冲突的守卫 —— GitHub#86。
 #
-# 跑法：bash tests/pending-human-conflict.test.sh   （本机约 1 分钟：末尾的负对照会把
-#       整套场景在 5 份改坏的脚本副本上各重跑一遍）
+# 跑法：bash tests/pending-human-conflict.test.sh   （本机约 1.5 分钟：末尾的负对照会把
+#       整套场景在 7 份改坏的脚本副本上各重跑一遍）
 # 依赖：git（≥ 2.38，merge-tree --write-tree）、jq、tmux。不碰网络（假 gh + 本地 bare
 # 仓库当 origin，PR 提交按 GitHub 的形状挂在 refs/pull/N/head）、HOME 指向 temp。
 #
@@ -16,7 +16,7 @@
 #   · 每轮都问 → 调用量随轮数线性涨（bot 号被封过一次，这是最怕的那种）；
 #   · 拿本机过期的目标分支去判 → 主干新进的冲突看不见；
 #   · 两种评论共用标记 → 只提醒的 PR 在状态丢失后被静默升级成自动改代码。
-# 末尾的负对照把这五种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下；
+# 末尾的负对照把这七种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下；
 # 「对拍」一节拿同一批 PR 让 worker 交 PR 前那段冲突检查命令和 daemon 各判一遍，结论必须一致。
 set -uo pipefail
 
@@ -153,7 +153,7 @@ CONF
     "$REAL_GIT" init -q --bare "$W/origin.git"
     "$REAL_GIT" init -q -b main "$SEED"
     local n
-    for n in $(seq 10 25); do echo base > "$SEED/p$n.txt"; done
+    for n in $(seq 10 29); do echo base > "$SEED/p$n.txt"; done
     g add . && g commit -qm base && g push -q "$W/origin.git" main 2>/dev/null
     local T0; T0=$(g rev-parse HEAD)
     "$REAL_GIT" clone -q "$W/origin.git" "$W/project" 2>/dev/null
@@ -185,9 +185,16 @@ CONF
             '{number:$n, head:{sha:$h, ref:("feature/issue-"+($n|tostring)), repo:{full_name:$r}}, base:{ref:$b},
               labels:($l | split(",") | map(select(. != "")) | map({name:.})), updated_at:"2026-01-01T00:00:00Z", title:"t", body:""}'
     }
-    prj() {   # num head updated_iso labels_csv —— 冲突时 daemon 现读的那份 PR
-        jq -cn --argjson n "$1" --arg h "$2" --arg u "$3" --arg l "$4" \
-            '{number:$n, head:{sha:$h, ref:("feature/issue-"+($n|tostring))}, base:{ref:"main"},
+    prj() {   # num head updated_iso labels_csv [base] [state] [fork] —— 冲突时 daemon 现读的那份 PR
+        # 字段照真实 GET /pulls/N 的形状给全（state / merged / base.ref / head.repo）：
+        # 缺字段的夹具会让「缺字段当成有效」的实现蒙混过关
+        local repo="example/cf"; [ "${7:-}" = fork ] && repo="someone/cf"
+        local st="${6:-open}" merged=false
+        [ "$st" = merged ] && { st=closed; merged=true; }
+        jq -cn --argjson n "$1" --arg h "$2" --arg u "$3" --arg l "$4" --arg b "${5:-main}" \
+               --arg st "$st" --argjson m "$merged" --arg r "$repo" \
+            '{number:$n, state:$st, merged:$m,
+              head:{sha:$h, ref:("feature/issue-"+($n|tostring)), repo:{full_name:$r}}, base:{ref:$b},
               updated_at:$u, labels:($l | split(",") | map({name:.}))}' > "$GD/pr-$1.json"
     }
     set_pulls() { printf '%s\n' "$@" | jq -cs '[.]' > "$GD/pulls.json"; }
@@ -216,7 +223,7 @@ CONF
         "$(snap 16 "$H16" main "$PH")"
     prj 10 "$H10" "$(iso_ago $DAY)" "$PH"
     prj 11 "$H11" "$(iso_ago $((5 * DAY)))" "$PH"
-    prj 14 "$H14" "$(iso_ago 600)" "$PH"
+    prj 14 "$H14" "$(iso_ago 600)" "$PH" main open fork
     prj 15 "$H15" "$(iso_ago 600)" "$PH"
     prj 16 "$H16" "$(iso_ago 600)" "$PH"
     tick
@@ -350,6 +357,28 @@ CONF
     chk "关掉：不取目标分支提交" "$(n_calls '^git .*ls-remote')" 0
     chk "关掉：不拉 PR" "$(judged 25)" 0
 
+    [ "$QUIET" = 1 ] || echo "【14】判定之后、写之前 PR 变了：改投别的分支 / 已关闭合并 / 现读缺状态字段 → 不写，下轮按现状判"
+    sed -i '/^PENDING_HUMAN_CONFLICT_CHECK=false$/d; /^PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=0$/d' "$CONF"
+    g push -q "$W/origin.git" "$T0:refs/heads/release" 2>/dev/null     # release = 没被主干改过的 T0
+    local H27 H28 H29; H27=$(mkpr 27); H28=$(mkpr 28); H29=$(mkpr 29); main_touch 27 28 29
+    set_pulls "$(snap 27 "$H27" main "$PH")" "$(snap 28 "$H28" main "$PH")" "$(snap 29 "$H29" main "$PH")"
+    prj 27 "$H27" "$(iso_ago 60)" "$PH" release              # 快照之后改投 release
+    prj 28 "$H28" "$(iso_ago 60)" "$PH" main merged          # 快照之后已合并关闭，标签还留着
+    prj 29 "$H29" "$(iso_ago 60)" "$PH"; jq 'del(.state, .merged)' "$GD/pr-29.json" > "$GD/x" && mv "$GD/x" "$GD/pr-29.json"
+    tick
+    chk "#27 改投后不按旧 main 发评论" "$(posted 27)" 0
+    chk "#27 不交回 worker" "$(flipped 27 pending/agent)" 0
+    chk "#27 不记为已处理" "$(st 27 acted_head)" ""
+    chk "#28 已合并的不发评论" "$(posted 28)" 0
+    chk "#28 不交回 worker" "$(flipped 28 pending/agent)" 0
+    chk "#29 现读缺状态字段 → 不写" "$(( $(posted 29) + $(flipped 29 pending/agent) ))" 0
+    # 下一轮快照也看到了新目标分支：按 release 重判 → 干净，全程不写
+    set_pulls "$(snap 27 "$H27" release "$PH")"
+    tick
+    chk "#27 按新目标 release 重判" "$(judged 27)" 1
+    chk "#27 与 release 干净" "$(st 27 done)" clean
+    chk "#27 全程没评论" "$(posted 27)" 0
+
     [ "$QUIET" = 1 ] || echo "【13】主 checkout 不受影响：工作区、分支、引用都没动"
     chk "工作区干净" "$("$REAL_GIT" -C "$W/project" status --porcelain | wc -l)" 0
     chk "没写任何 PR 引用" "$("$REAL_GIT" -C "$W/project" for-each-ref | grep -c pull || true)" 0
@@ -436,6 +465,14 @@ negative "每轮都判（不看目标分支提交有没有变）" \
 negative "拿本机过期的目标分支判（不用远端最新提交）" \
     'merge-tree --write-tree --name-only "$head" "$tip"' \
     'merge-tree --write-tree --name-only "$head" "origin/$base"'
+negative "写之前不核对 PR 是否还开着" \
+    '            .state == "open" and (.merged // false) == false
+            and' \
+    '            true
+            and'
+negative "写之前不核对目标分支有没有改" \
+    '.head.sha == $h and .base.ref == $b' \
+    '.head.sha == $h'
 negative "两种评论共用一个标记" \
     '        marker_remind="<!-- cavil-loop:pending-human-conflict head=$head mode=remind -->"' \
     '        marker_remind="<!-- cavil-loop:pending-human-conflict head=$head mode=worker -->"'
