@@ -45,9 +45,9 @@ fi
 PACE_ACTED=0
 pace_mark_acted() { PACE_ACTED=1; }
 
-[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{},"split_rollups":{},"split_rollup_commented":{},"split_rollup_queue":{},"merged_label_queue":{}}' > "$STATE_FILE"
+[ -f "$STATE_FILE" ] || echo '{"seen_comments":{},"seen_issue_comments":{},"seen_review_comments":{},"seen_reviews":{},"worker_models":{},"worker_trigger_labels":{},"worker_hosts":{},"split_rollups":{},"split_rollup_commented":{},"split_rollup_queue":{},"merged_label_queue":{},"pr_conflict":{}}' > "$STATE_FILE"
 # 老 state.json 缺新字段时补上（无破坏迁移；缺字段初始化为 {}）
-for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts split_rollups split_rollup_commented split_rollup_queue merged_label_queue; do
+for field in seen_issue_comments seen_review_comments seen_reviews worker_models worker_trigger_labels worker_hosts split_rollups split_rollup_commented split_rollup_queue merged_label_queue pr_conflict; do
     if [ "$(jq -r "has(\"$field\")" "$STATE_FILE")" != "true" ]; then
         tmp=$(mktemp)
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -784,6 +784,13 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
         done <<< "$recent_closed"
     fi
 fi
+
+# ── 3d. 等人审的 PR 与目标分支冲突（GitHub#86）──
+# 放在合并清理之后：这一轮刚合进去的提交，这一轮就能查到。逻辑和「为什么只在目标分支
+# 动了时才问」都在 _lib.sh 的 pending_human_conflict_tick 上面。
+# 配 PENDING_HUMAN_CONFLICT_CHECK=false 关掉整段。
+pending_human_conflict_tick "$STATE_FILE" || true
+if [ "${PR_CONFLICT_ACTED:-0}" = 1 ]; then pace_mark_acted; fi
 
 # Durable merge review queue is independent of cleanup success and worker labels.
 if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then

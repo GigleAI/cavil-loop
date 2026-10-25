@@ -434,6 +434,24 @@ WORKER_SECRET_ENV="GH_TOKEN"
 # 详见 docs/persistence.md。
 AUTO_CLEANUP_ON_MERGE="true"
 
+# PRs waiting at pending/human that start conflicting with their base branch
+# (GitHub#86). Each tick compares the base branch's latest commit (git ls-remote,
+# no API quota) and the PR's head with the pair last judged; only when that
+# changed does it test-merge that one PR locally (git merge-tree in the main
+# checkout's object store; no ref or working-tree change). Clean PRs cost no API
+# call. A conflict is handled once per PR head commit:
+#   updated within PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS days, same repo
+#       → one comment + pending/human → pending/agent; the worker merges the base
+#         in, resolves, pushes and hands back as usual
+#   older, or from a fork → one reminder comment, label unchanged
+# AUTOFIX_DAYS=0 = remind only, never hand back automatically.
+# CHECK=false turns the whole check off.
+PENDING_HUMAN_CONFLICT_CHECK="true"
+PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=2
+# How many ticks to retry when the check itself fails (fetch error, PR ref not
+# there yet) before giving up on that base/head pair.
+PENDING_HUMAN_CONFLICT_MAX_TRIES=10
+
 # After each new merge, archive the review in the SOURCE PROJECT repository.
 # Requires Claude CLI and permission to push the project's origin/$BASE_BRANCH.
 # First run starts at now; one background review at a time, hourly retries.

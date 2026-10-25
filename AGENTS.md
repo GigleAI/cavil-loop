@@ -130,6 +130,7 @@ Full state machine: [docs/architecture.md](docs/architecture.md).
   "split_rollup_commented":{ "<PARENT>": <n>, ... },  // summary comment posted, label flip may still be pending (retry won't re-comment)
   "split_rollup_queue":    { "<SUB>": <tries>, ... },  // closed sub-issues whose parent rollup is still to be done; drained every tick
   "merged_label_queue":    { "<ISSUE>": {"pr": .., "tries": ..} }, // merged PR's issue whose Done / pending/human label is not settled yet (state unreadable or write failed)
+  "pr_conflict":           { "<PR>": {"key": "<base sha> <head sha>", "tries": .., "done": "clean|conflict|gaveup|", "acted_head": .., "flip_pending": ..} }, // pending/human PR conflict check (GitHub#86); entries for closed PRs are pruned
   "cleaned_prs":           [ <PR>, ... ],             // PRs already auto-cleanup'd; not rescanned
   "unmerged_prs_handled":  [ <PR>, ... ]              // closed-unmerged PRs already judged by § 3c
 }
@@ -310,6 +311,7 @@ Changes in these areas must run the matching tests:
 - Poll pace / idle + failure backoff → `tests/poll-pace.test.sh` (~40s: the end-to-end groups really do spawn `agent-poll.sh` a few hundred times — do not run it under a 30-second command timeout, a half-finished run looks like a failure)
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, `tests/preview-port-ownership.test.sh`, …
+- Re-checking `pending/human` PRs for conflicts with their base (GitHub#86) → `tests/pending-human-conflict.test.sh` (~1 min: it reruns every scenario on five deliberately broken copies of the scripts and fails if any of them slips through). It counts every GitHub call — the whole point of the design is that an unchanged base costs zero extra calls
 - New vs pre-rename names (which config / state / unit / override path is used, setup on an old install, deployer switching both skill links) → `tests/cavil-names.test.sh`, `tests/skill-deploy.test.sh`, `tests/preview-rename-coexist.test.sh` (old and new previews on one machine), `tests/migrate-legacy.test.sh` (moving an old install: idle projects only, resumable, old timer on/off state kept), `tests/preview-legacy-adopt.test.sh` (old previews moved to the new units: resumable after a failure, old link kept until all are moved, registration prints no URL unless the preview came up). Any new path goes through `scripts/_names.sh`, never a hard-coded old or new name
 - Worker / model selection, the `--model` a driver passes → `tests/worker-selection.test.sh`, `tests/claude-resume-model.test.sh`
 - Releases (the per-iteration scheduled run, `scripts/release.sh`, `.github/workflows/release.yml`) → `tests/release-auto.test.sh` (the workflow steps are read out of the yml and actually run)

@@ -388,7 +388,13 @@ CONF
     chk "新代码这一轮正常结束"                       "$(cat "$TMP/round-new/rc")" "0"
     chk "对照确实打了 GitHub（不是空跑）" "$([ -s "$TMP/round-old/gh.sorted" ] && echo yes)" "yes"
     chk "打 GitHub 的调用一模一样" "$(diff "$TMP/round-old/gh.sorted" "$TMP/round-new/gh.sorted" >/dev/null && echo same || diff "$TMP/round-old/gh.sorted" "$TMP/round-new/gh.sorted" | head -5)" "same"
-    chk "已读记录（state.json）一模一样" "$(diff "$TMP/round-old/state.json" "$TMP/round-new/state.json" >/dev/null && echo same || echo differ)" "same"
+    # 改名之后才加的字段（如 #86 的 pr_conflict）旧代码不会写：只比旧代码认识的字段，
+    # 多出来的字段必须是空的初始值 {}——有内容就说明这一轮新代码多做了事，照样算不一致。
+    chk "已读记录（state.json）一模一样" "$(jq -rS --slurpfile o "$TMP/round-old/state.json" \
+        '. as $n | ($o[0] | keys) as $k
+         | if (with_entries(select(.key as $x | $k | index($x))) == $o[0])
+              and ([with_entries(select(.key as $x | $k | index($x) | not))[]] | all(. == {}))
+           then "same" else "differ" end' "$TMP/round-new/state.json" 2>/dev/null || echo differ)" "same"
     chk "在 HOME 下落盘的文件一模一样（没多建新名字目录）" \
         "$(diff "$TMP/round-old/files.txt" "$TMP/round-new/files.txt" >/dev/null && echo same || diff "$TMP/round-old/files.txt" "$TMP/round-new/files.txt" | head -5)" "same"
     chk "状态仍写在旧状态目录" "$(grep -c '^./.local/state/coding-agent-poll/legacy/state.json$' "$TMP/round-new/files.txt")" "1"
