@@ -69,6 +69,12 @@ WORKER_PASS_ENV="GH_TOKEN"
 # Merge 后 daemon 自动 cleanup（worktree + tmux）
 AUTO_CLEANUP_ON_MERGE="true"
 
+# 等你审（pending/human）的 PR 和目标分支冲突了（GitHub#86）。只在目标分支或 PR
+# 自己有新提交时才查。N 天内有更新 → 发一条评论 + 改回 pending/agent 让 worker 解；
+# 更久没动 / 外部仓库 → 只发一条提醒，标签不动。设 0 = 只提醒、从不自动解。
+PENDING_HUMAN_CONFLICT_CHECK="true"
+PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=2
+
 # 项目级 cleanup hook（解端口、撤 tunnel、推 metric）
 CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"
 

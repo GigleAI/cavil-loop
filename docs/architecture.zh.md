@@ -57,7 +57,16 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
                                             父 issue → pending/human（由你决定是否关闭）
 ```
 
-**PR 交出去之前，必须和目标分支不冲突**（GitHub#82）。worker 每次要把 PR 翻成 `pending/review` / `pending/human`——首次开 PR、返工、哪怕只是纯讨论轮——都先拿 PR 在 GitHub 上的最新提交和 PR 的目标分支试合并（`git merge-tree`，不动工作区、不产生提交）。有冲突就把主干合进来（不 rebase、不强推），解掉、重跑相关测试、推上去再交；解不了就放弃这次合并，列出冲突文件交 `pending/human`。只是落后主干、没有冲突时不合。复审下结论前跑同一段检查，因为它不推代码，有冲突就判不通过退回 worker。检查命令逐字抄在 `issue-comment.template.md`、`pr-comment.template.md`、`review.template.md` 三处；`tests/conflict-check-prompts.test.sh` 对拍拼好的 prompt，并在真实 git worktree 里实跑这段命令。PR 已经停在 `pending/human` 之后主干再动导致的新冲突，不会自动回头处理。
+**PR 交出去之前，必须和目标分支不冲突**（GitHub#82）。worker 每次要把 PR 翻成 `pending/review` / `pending/human`——首次开 PR、返工、哪怕只是纯讨论轮——都先拿 PR 在 GitHub 上的最新提交和 PR 的目标分支试合并（`git merge-tree`，不动工作区、不产生提交）。有冲突就把主干合进来（不 rebase、不强推），解掉、重跑相关测试、推上去再交；解不了就放弃这次合并，列出冲突文件交 `pending/human`。只是落后主干、没有冲突时不合。复审下结论前跑同一段检查，因为它不推代码，有冲突就判不通过退回 worker。检查命令逐字抄在 `issue-comment.template.md`、`pr-comment.template.md`、`review.template.md` 三处；`tests/conflict-check-prompts.test.sh` 对拍拼好的 prompt，并在真实 git worktree 里实跑这段命令。PR 已经停在 `pending/human` 之后主干再动导致的新冲突，由 daemon 发现——见下一段。
+
+**等你审的 PR，目标分支一动就重查一次**（GitHub#86）。PR 挂着 `pending/human`（且没有 `doing/agent` / 任何触发 label——复审轮次用尽、等你拍板的不碰）期间，每轮比较它目标分支的最新提交（`git ls-remote`，不占 GitHub 接口额度）和 PR 自己的最新提交，跟上次判定时那一对比。只有这一对变了才判这一个 PR，在本机判：把目标分支和 `refs/pull/N/head` 拉进主 checkout 的对象库（`--no-write-fetch-head --refmap=`，任何引用都不动——连 `origin/<分支>` 也不动——工作区也不碰），跑跟 worker 交出 PR 前同一种 `git merge-tree --write-tree` 试合并。干净的 PR 一次 GitHub 接口都不调；冲突的在 daemon 写之前现读一次 `GET /pulls/N`（拿最新标签和更新时间）。大约是「每个 PR × 目标分支每动一次」一次，绝不是每轮一次。同一个 PR 提交上的冲突只处理一次：
+
+| PR | daemon 怎么做 |
+|---|---|
+| `PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS`（默认 2）天内有更新、同仓库 | 发一条评论，然后把 `pending/human` 改成 `pending/agent`（这条活上次是用 fable / 追加触发 label 派出去的就沿用那个）；worker 合入目标分支、解冲突，照常交回 |
+| 更久没动，或来自外部仓库 | 只发一条提醒评论，标签不动；要它解就自己改标 `pending/agent` |
+
+故意**不用** GitHub 自己的 `mergeable` 字段：它是懒算的、会过期。实测 GigleTutor-Web PR #571：`mergeable: true / clean` 是拿三版之前的 `main` 试合并出来的（父提交 `e98338a`，当时 `main` 已到 `1207fdc`），隔 80 秒再问 4 次都不重算；别的 PR 则一直是 `null / unknown`。用它只能二选一：信过期结论，或永远不知道。「判不了」绝不算「没冲突」：拉取失败、对象不在、`merge-tree` 报错都下轮再判，同一对最多判 `PENDING_HUMAN_CONFLICT_MAX_TRIES`（默认 10）次。取不到目标分支提交的那一轮什么都不查。真要写之前，daemon 现读一次这个 PR，要求判定时用到的每一项身份都还成立——仍开着且没合并、目标分支没换、PR 提交没变、同仓库 / 外部仓库没变、仍挂 `pending/human` 且没有忙碌标签；缺字段也算对不上（关掉的 PR 照样留着标签，标签代替不了「开着」）。对不上就什么都不写、不记为已处理，下轮按现状重新判。每条评论带一个隐藏标记，写着 PR 提交和评论种类（`mode=worker` / `mode=remind`）；PR 上已有这个提交的标记 = 已处理过（本机状态丢了，或另一台机器先处理了），既不重复，也不会从「只提醒」升级成自动解——提醒评论本身会刷新 PR 的更新时间，所以两种必须分开标。每个 PR 的进度记在 `state.json` 的 `pr_conflict`；`PENDING_HUMAN_CONFLICT_CHECK=false` 关掉整段。`tests/pending-human-conflict.test.sh` 用假 GitHub + 真 git 仓库跑真实轮询脚本，逐次数调用，并对上面每一种错误实现各做一个负对照。
 
 > 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。
 

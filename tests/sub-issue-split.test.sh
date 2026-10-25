@@ -371,7 +371,7 @@ chk "… 且 CLOSED 分支里不再有另一次入队" \
 chk "agent-poll.sh 在 merged 循环之外每轮清队" \
     "$(awk '/done <<< "\$recent_merged"/{f=1} f' "$REPO_DIR/scripts/agent-poll.sh" | grep -c 'sub_issue_rollup_drain "\$STATE_FILE"')" "1"
 chk "state 迁移循环含四个新字段" \
-    "$(grep -c '^for field in .* split_rollups split_rollup_commented split_rollup_queue merged_label_queue; do' "$REPO_DIR/scripts/agent-poll.sh")" "1"
+    "$(grep -cE '^for field in .* split_rollups split_rollup_commented split_rollup_queue merged_label_queue( [a-z_]+)*; do' "$REPO_DIR/scripts/agent-poll.sh")" "1"
 chk "dispatch-new-issue.sh 调用 split_parent_of" \
     "$(grep -c 'split_parent_of "\$ISSUE"' "$REPO_DIR/scripts/dispatch-new-issue.sh")" "1"
 

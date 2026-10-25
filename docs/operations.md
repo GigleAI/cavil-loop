@@ -70,6 +70,13 @@ WORKER_PASS_ENV="GH_TOKEN"
 # Auto-cleanup after merge (worktree + tmux)
 AUTO_CLEANUP_ON_MERGE="true"
 
+# PRs waiting at pending/human that start conflicting with their base (GitHub#86).
+# Checked only when the base or the PR head moved. Updated within N days → one
+# comment + back to pending/agent for the worker to resolve; older / forks →
+# one reminder comment, label unchanged. 0 = remind only, never auto-fix.
+PENDING_HUMAN_CONFLICT_CHECK="true"
+PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=2
+
 # Project-level cleanup hook (release ports, tear down tunnels, push metrics)
 CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"
 

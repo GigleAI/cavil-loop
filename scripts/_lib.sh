@@ -2048,6 +2048,304 @@ sub_issue_rollup_drain() {
     done
 }
 
+# ── 等人审的 PR 与目标分支冲突（GitHub#86，Q1=B + 「只对 2 天内有更新的自动解」）──
+# PR 挂着 pending/human 等人审期间，别的 PR 合进目标分支，它就可能变成冲突，人打开时
+# 合并按钮已经灰了。这里在每轮轮询里发现它：最近有更新的交回 worker 去解（翻回
+# pending/agent），久没人碰的只留一条提醒，标签不动。
+#
+# 调用量是这一段设计的全部约束：只在「目标分支最新提交 或 PR 自己的提交」变了的那一轮
+# 才判，其余轮次一次都不多。
+#   · 目标分支最新提交用 `git ls-remote` 取，走 git 协议，不占 REST 额度；
+#   · state.json 的 pr_conflict[<PR>] 记着「上次是在哪对 目标分支提交/PR 提交 上判定的」，
+#     同一对已有结论就不再判；
+#   · 已经处理过（发过提醒 / 交回 worker）的那个 PR 提交，之后无论目标分支再动多少次
+#     都不再判，直到 PR 被推了新提交。
+#
+# 判定在本机用 git 试合并，**不用** GitHub 的 mergeable 字段。设计时本打算用它，实测
+# 推翻了：tutor PR #571 的 mergeable=true / clean 是拿三版之前的 main 算的（试合并
+# 提交的父提交是 e98338a，当时 main 已到 1207fdc），连问 4 次、隔 80 秒都不重算。
+# 用它就只能二选一：采信过期结论（冲突被盖掉），或永远「还不知道」（冲突永远发现不了）。
+# 判法与 worker 交出 PR 前那段冲突检查（GitHub#82，三份指令模板里的同一段命令）一致：
+# `git merge-tree --write-tree`，退出码 0 = 干净；1 且首行是树对象 id = 冲突；其余 = 检查失败。
+# 只把对象拉进主 checkout 的对象库（--no-write-fetch-head、不写任何引用、不动工作区）。
+#
+# 「查不到」绝不等于「没冲突」：拉取失败、对象不在、merge-tree 报错一律算「还不知道」，
+# 下轮再判，同一对最多判 PENDING_HUMAN_CONFLICT_MAX_TRIES 次。
+
+# 输出 clean / conflict / unknown。$1 = PR 编号，$2 = 目标分支名，$3 = 目标分支当前提交，
+# $4 = 快照里看到的 PR 提交。
+pr_conflict_verdict() {
+    local num="$1" base="$2" tip="$3" head="$4" out rc=0 line
+    # --refmap= 关掉 git 的「顺手更新 origin/<分支>」：不加的话 `fetch origin refs/heads/main`
+    # 会悄悄挪动主 checkout 的 origin/main（负对照实测出来的）。
+    if ! out=$(git -C "$PROJECT_ROOT" fetch -q --no-write-fetch-head --refmap= origin \
+            "refs/heads/$base" "refs/pull/$num/head" 2>&1); then
+        log "  ⚠️ PR #$num: 拉取 $base 与 PR 提交失败，本轮判不了冲突:"
+        while IFS= read -r line; do [ -n "$line" ] && log "    $line"; done <<< "$out"
+        echo unknown; return 0
+    fi
+    # 快照之后 PR 被强推、旧提交已不可达 → 下轮按新提交重来
+    if ! git -C "$PROJECT_ROOT" cat-file -e "$tip^{commit}" 2>/dev/null \
+       || ! git -C "$PROJECT_ROOT" cat-file -e "$head^{commit}" 2>/dev/null; then
+        echo unknown; return 0
+    fi
+    out=$(git -C "$PROJECT_ROOT" merge-tree --write-tree --name-only "$head" "$tip" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo clean
+    elif [ "$rc" -eq 1 ] && head -1 <<< "$out" | grep -qE '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+        echo conflict
+    else
+        log "  ⚠️ PR #$num: git merge-tree 退出码 $rc，本轮判不了冲突:"
+        while IFS= read -r line; do [ -n "$line" ] && log "    $line"; done <<< "$out"
+        echo unknown
+    fi
+}
+
+# 目标分支名 → 最新提交，每行 "<分支>\t<提交>"。只认 refs/heads/<分支> 的**整名**
+# （ls-remote 的模式是按尾部匹配的，refs/heads/x/main 也会被 main 匹配上）。
+# 失败返回非 0，什么都不输出——调用方必须把它当「本轮不查」，不能当「没变」。
+pr_conflict_base_tips() {
+    local out rc=0 b sha ref line
+    [ $# -gt 0 ] || return 0
+    local -a pats=()
+    for b in "$@"; do pats+=("refs/heads/$b"); done
+    out=$(git -C "$PROJECT_ROOT" ls-remote origin "${pats[@]}" 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log "  ⚠️ 取目标分支最新提交失败（git ls-remote 退出码 $rc），本轮不查等人 PR 的冲突:"
+        while IFS= read -r line; do [ -n "$line" ] && log "    $line"; done <<< "$out"
+        return 1
+    fi
+    while IFS=$'\t' read -r sha ref; do
+        for b in "$@"; do
+            [ "$ref" = "refs/heads/$b" ] && [[ "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] && printf '%s\t%s\n' "$b" "$sha"
+        done
+    done <<< "$out"
+    return 0
+}
+
+# 交回 worker 时打哪个触发 label：这条活上次是被普通 / fable / 追加 label 派出去的就
+# 沿用它（别把 fable 的活交给默认模型）；上次是复审（pending/review）或没记录 → 默认。
+pr_conflict_return_label() {
+    local issue_n="$1" state_file="$2" L t
+    L=$(jq -r --arg k "$issue_n" '.worker_trigger_labels[$k] // ""' "$state_file" 2>/dev/null) || L=""
+    if [ -n "$L" ] && [ "$L" != "${LABEL_PENDING_REVIEW:-}" ]; then
+        [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+        for t in "${TRIGGER_LABELS_ALL[@]}"; do
+            [ "$t" = "$L" ] && { printf '%s\n' "$L"; return 0; }
+        done
+    fi
+    printf '%s\n' "$LABEL_PENDING_AGENT_DEFAULT"
+}
+
+# 一条 label 逗号串里有没有「别人正在处理」的标记：doing/agent 或任何触发 label
+# （含 pending/review —— 复审轮次烧光的条目同时挂着 pending/review + pending/human，
+# 那是在等人拍板复审分歧，不该被这里塞回 worker）。
+pr_conflict_labels_busy() {
+    local csv=",$1," t
+    case "$csv" in *",$LABEL_AGENT_DOING,"*) return 0 ;; esac
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    for t in "${TRIGGER_LABELS_ALL[@]}"; do
+        case "$csv" in *",$t,"*) return 0 ;; esac
+    done
+    return 1
+}
+
+pr_conflict_state_set() {   # <state_file> <pr> <jq 表达式，作用于该条目 .>
+    local tmp
+    tmp=$(mktemp)
+    jq --arg p "$2" ".pr_conflict[\$p] = ((.pr_conflict[\$p] // {}) | $3)" "$1" > "$tmp" && mv "$tmp" "$1"
+}
+
+# 同一对提交上又一次没判成：计数，到上限就放弃这一对（目标分支或 PR 再动才重来），
+# 免得一个一直拉不下来的 PR 让每一轮都多一次拉取 / 调用。
+pr_conflict_bump_tries() {   # <state_file> <pr> <cap> <原因>
+    local tries
+    tries=$(( $(jq -r --arg p "$2" '.pr_conflict[$p].tries // 0' "$1") + 1 ))
+    if [ "$tries" -ge "$3" ]; then
+        pr_conflict_state_set "$1" "$2" ".tries = $tries | .done = \"gaveup\""
+        log "PR #$2: 连续 $tries 轮${4}，这一版先不查了"
+    else
+        pr_conflict_state_set "$1" "$2" ".tries = $tries"
+    fi
+}
+
+# 每轮调一次。返回 0；真动了 GitHub（发评论 / 翻标签）时把 PR_CONFLICT_ACTED 置 1。
+pending_human_conflict_tick() {
+    local state_file="$1" pages rows bases tips
+    local num head base fork tip key st_key st_done st_acted pr_json verdict
+    local labels_csv updated recent days cap ret_label marker body host st_flip existing next_step
+    PR_CONFLICT_ACTED=0
+    [ "${PENDING_HUMAN_CONFLICT_CHECK:-true}" = "true" ] || return 0
+    days="${PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS:-2}"
+    [[ "$days" =~ ^[0-9]+$ ]] || days=2
+    cap="${PENDING_HUMAN_CONFLICT_MAX_TRIES:-10}"
+    [[ "$cap" =~ ^[0-9]+$ ]] && [ "$cap" -gt 0 ] || cap=10
+
+    pages=$(open_snapshot pulls) || return 0
+    # 已关闭 / 已合并的 PR 不再需要记录
+    # 只把编号传进去：整份快照当 --argjson 参数会撞「参数列表过长」
+    local tmp open_nums
+    if open_nums=$(printf '%s' "$pages" | jq -c '[ .[][] | .number | tostring ]' 2>/dev/null); then
+        tmp=$(mktemp)
+        if jq --argjson open "$open_nums" '
+            .pr_conflict = ((.pr_conflict // {}) | with_entries(select(.key as $k | $open | index($k))))' \
+            "$state_file" > "$tmp" 2>/dev/null; then mv "$tmp" "$state_file"; else rm -f "$tmp"; fi
+    fi
+
+    rows=$(printf '%s' "$pages" | jq -r --arg H "$LABEL_PENDING_HUMAN" --arg R "$REPO" '
+        .[][] | select(any(.labels[]?; .name == $H))
+        | [ (.number|tostring), (.head.sha // ""), (.base.ref // ""),
+            (if ((.head.repo.full_name // "") | ascii_downcase) == ($R | ascii_downcase) then "same" else "fork" end),
+            ([.labels[]?.name] | join(",")) ] | @tsv') || return 0
+    [ -n "$rows" ] || return 0
+
+    # 先在本地把「这轮根本不用问」的筛掉，剩下的才去取目标分支提交 —— 全部已处理时连
+    # ls-remote 都不发。
+    local -a todo=()
+    while IFS=$'\t' read -r num head base fork labels_csv; do
+        [ -n "$num" ] && [ -n "$head" ] && [ -n "$base" ] || continue
+        pr_conflict_labels_busy "$labels_csv" && continue
+        st_acted=$(jq -r --arg p "$num" '.pr_conflict[$p].acted_head // ""' "$state_file")
+        [ "$st_acted" = "$head" ] && continue
+        todo+=("$num"$'\t'"$head"$'\t'"$base"$'\t'"$fork")
+    done <<< "$rows"
+    [ ${#todo[@]} -gt 0 ] || return 0
+
+    bases=$(printf '%s\n' "${todo[@]}" | cut -f3 | awk 'NF && !seen[$0]++')
+    # shellcheck disable=SC2086
+    tips=$(pr_conflict_base_tips $bases) || return 0
+
+    local row
+    for row in "${todo[@]}"; do
+        IFS=$'\t' read -r num head base fork <<< "$row"
+        ret_label=""
+        tip=$(printf '%s\n' "$tips" | awk -F'\t' -v b="$base" '$1 == b { print $2; exit }')
+        if [ -z "$tip" ]; then
+            log_debug "PR #$num: 目标分支 $base 在远端找不到，跳过冲突检查"
+            continue
+        fi
+        key="$tip $head"
+        st_key=$(jq -r --arg p "$num" '.pr_conflict[$p].key // ""' "$state_file")
+        st_done=$(jq -r --arg p "$num" '.pr_conflict[$p].done // ""' "$state_file")
+        [ "$st_key" = "$key" ] && [ -n "$st_done" ] && continue
+        if [ "$st_key" != "$key" ]; then
+            pr_conflict_state_set "$state_file" "$num" ".key = \"$key\" | .tries = 0 | .done = \"\""
+        fi
+
+        verdict=$(pr_conflict_verdict "$num" "$base" "$tip" "$head")
+        case "$verdict" in
+            clean)
+                pr_conflict_state_set "$state_file" "$num" '.done = "clean"'
+                log_debug "PR #$num: 与 $base 无冲突（${tip:0:7} + ${head:0:7}）"
+                continue ;;
+            conflict) ;;
+            *) pr_conflict_bump_tries "$state_file" "$num" "$cap" "判不出能否与 $base 合并"; continue ;;
+        esac
+
+        # 要往 GitHub 写了：现读一次这个 PR。快照是本轮开头的，从那以后它可能已经被关掉 /
+        # 合并、改投了别的目标分支、被推了新提交、被人改了标签。下面要用到的每一项身份
+        # （开着、目标分支、PR 提交、是不是外部仓库）都拿现读的值和这次判定用的那份逐项核对，
+        # 缺字段也算对不上：对不上就本轮跳过、不记为已处理，下轮按新情况重新判。
+        # 标签挡不住「已关闭」：关掉的 PR 照样留着 pending/human。
+        if ! pr_json=$(gh api "repos/$REPO/pulls/$num" 2>/dev/null) || [ -z "$pr_json" ]; then
+            log "  ⚠️ 读取 PR #$num 失败，本轮不处理它的冲突"
+            pr_conflict_bump_tries "$state_file" "$num" "$cap" "读不到 PR"
+            continue
+        fi
+        if ! printf '%s' "$pr_json" | jq -e --arg h "$head" --arg b "$base" --arg f "$fork" --arg R "$REPO" '
+            .state == "open" and (.merged // false) == false
+            and .head.sha == $h and .base.ref == $b
+            and ((if ((.head.repo.full_name // "") | ascii_downcase) == ($R | ascii_downcase) then "same" else "fork" end) == $f)' \
+            >/dev/null 2>&1; then
+            log "PR #$num: 判定之后它已关闭 / 改了目标分支 / 有新提交，本轮不处理，下轮按现状重新判"
+            # 计一次：正常情况下轮快照就变了（换了一对提交，计数归零）；万一 GitHub
+            # 一直返回对不上的东西，也不会每轮都多拉一次、问一次
+            pr_conflict_bump_tries "$state_file" "$num" "$cap" "现读的 PR 与判定时对不上"
+            continue
+        fi
+        labels_csv=$(printf '%s' "$pr_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null) || labels_csv=""
+        case ",$labels_csv," in
+            *",$LABEL_PENDING_HUMAN,"*) ;;
+            *) continue ;;
+        esac
+        pr_conflict_labels_busy "$labels_csv" && continue
+
+        # ── 冲突 ──
+        updated=$(printf '%s' "$pr_json" | jq -r '.updated_at // ""')
+        recent=0
+        if [ "$days" -gt 0 ] && [ "$fork" = same ] && [ -n "$updated" ] \
+           && printf '%s' "$updated" | jq -Re --argjson d "$days" 'fromdateiso8601 >= (now - $d * 86400)' >/dev/null 2>&1; then
+            recent=1
+        fi
+        # 两种评论各带各的标记。分开是因为「只提醒」那条评论本身会刷新 PR 的更新时间：
+        # 状态文件丢了的话，下一轮这个 PR 就成了「最近有更新」，若共用一个标记，会被
+        # 当成「交回 worker 的评论已发、只差翻标签」，静默升级成自动改代码。
+        marker_worker="<!-- cavil-loop:pending-human-conflict head=$head mode=worker -->"
+        marker_remind="<!-- cavil-loop:pending-human-conflict head=$head mode=remind -->"
+        host="$(hostname -s 2>/dev/null || hostname)"
+        # 同一个 PR 提交只说一次：评论里已有标记（上一轮发了评论但翻标签失败，
+        # 或者另一台机器先处理了）就不再发。读不到评论 → 本轮不动，下轮再来。
+        if ! existing=$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[].body' 2>/dev/null); then
+            log "  ⚠️ 读取 PR #$num 的评论失败，本轮不处理它的冲突"
+            continue
+        fi
+        st_flip=$(jq -r --arg p "$num" '.pr_conflict[$p].flip_pending // ""' "$state_file")
+        if [ "$st_flip" = "$head" ] && printf '%s' "$existing" | grep -qF "$marker_worker"; then
+            # 本机上一轮发了「交回 worker」的评论但翻标签失败：只补翻标签
+            recent=1
+        elif printf '%s' "$existing" | grep -qF "$marker_worker" \
+             || printf '%s' "$existing" | grep -qF "$marker_remind"; then
+            # 这个提交已经被处理过（本机状态丢了，或另一台机器先处理了）。交回过 worker
+            # 而它又回到 pending/human、提交没变 = worker 自己没解开、已经交人，
+            # 再交一次就是两台机器轮流把它塞回去的死循环。
+            pr_conflict_state_set "$state_file" "$num" ".done = \"conflict\" | .acted_head = \"$head\""
+            log "PR #$num: 这个提交的冲突已经处理过（评论里有标记），不再重复"
+            continue
+        else
+            if [ "$recent" = 1 ]; then
+                marker="$marker_worker"
+                ret_label=$(pr_conflict_return_label "$(pr_to_issue_num "$num" "$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')")" "$state_file")
+                body="$(printf '⚠️ **与 `%s` 有冲突，已交回 worker 去解决**\n\n这个 PR 在等人审（`%s`）期间，`%s` 进了新提交，GitHub 显示它现在与 `%s` 冲突、不能直接合并。它最近 %s 天内有更新，所以已把标签改成 `%s`：worker 会把 `%s` 合进本分支、解决冲突、跑测试并推送，完成后照常交回。\n\n不想让 worker 动它：在下一轮派工（约 1 分钟）之前把 `%s` 换回 `%s`。\n\n**给 worker**：把 `%s` 合进本分支并解决冲突（按指令里「交出 PR 前：先查和主干有没有冲突」那一节处理），本轮不做别的改动。\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>\n%s' \
+                    "$base" "$LABEL_PENDING_HUMAN" "$base" "$base" "$days" "$ret_label" "$base" \
+                    "$ret_label" "$LABEL_PENDING_HUMAN" "$base" "$host" "$marker")"
+            else
+                marker="$marker_remind"
+                if [ "$fork" = same ]; then
+                    next_step="要让 worker 把 \`$base\` 合进来并解决冲突：把标签改成 \`$LABEL_PENDING_AGENT_DEFAULT\`。"
+                    [ "$days" -gt 0 ] && body="它超过 ${days} 天没有更新" || body="本项目关闭了自动解冲突"
+                else
+                    next_step="需要 PR 作者在自己的仓库里把 \`$base\` 合进来并解决冲突。"
+                    body="它来自外部仓库，worker 推不上去"
+                fi
+                body="$(printf '⚠️ **与 `%s` 有冲突**\n\n这个 PR 在等人审（`%s`）期间，`%s` 进了新提交，GitHub 显示它现在与 `%s` 冲突、不能直接合并。%s，daemon 不自动处理，标签保持不变。\n\n%s\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>\n%s' \
+                    "$base" "$LABEL_PENDING_HUMAN" "$base" "$base" "$body" "$next_step" "$host" "$marker")"
+            fi
+            if ! run_gh "冲突提醒评论 (PR #$num)" \
+                gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body"; then
+                continue    # 下轮重来；评论没发出去之前不翻标签
+            fi
+            PR_CONFLICT_ACTED=1
+            if [ "$recent" = 1 ]; then
+                pr_conflict_state_set "$state_file" "$num" ".flip_pending = \"$head\""
+            fi
+        fi
+        if [ "$recent" = 1 ]; then
+            [ -n "${ret_label:-}" ] || ret_label=$(pr_conflict_return_label "$(pr_to_issue_num "$num" "$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')")" "$state_file")
+            if ! run_gh "label 翻转 (PR #$num 与 $base 冲突 → $ret_label)" \
+                gh_label_flip "$num" --add "$ret_label" --remove "$LABEL_PENDING_HUMAN"; then
+                continue    # 下轮重来：评论已有标记不会重发，只补翻标签
+            fi
+            PR_CONFLICT_ACTED=1
+            log "PR #$num 与 $base 冲突（最近 ${days} 天内有更新）→ 交回 worker：$LABEL_PENDING_HUMAN → $ret_label"
+        else
+            log "PR #$num 与 $base 冲突（$( [ "$fork" = same ] && echo "超过 ${days} 天没更新" || echo "外部仓库" )）→ 只留提醒，标签不动"
+        fi
+        pr_conflict_state_set "$state_file" "$num" ".done = \"conflict\" | .acted_head = \"$head\" | del(.flip_pending)"
+        ret_label=""
+    done
+    return 0
+}
+
 # 给 worker session 加可读标题、记录实际 worker / 模型，并让 tmux 默认的 prefix+s
 # choose-tree 在 session 行显示标题。
 # `#{E:tree_mode_format}` 保留 tmux 自带的 pane/window/session 格式；只在 session 行追加
