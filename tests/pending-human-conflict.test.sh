@@ -16,7 +16,8 @@
 #   · 每轮都问 → 调用量随轮数线性涨（bot 号被封过一次，这是最怕的那种）；
 #   · 拿本机过期的目标分支去判 → 主干新进的冲突看不见；
 #   · 两种评论共用标记 → 只提醒的 PR 在状态丢失后被静默升级成自动改代码。
-# 末尾的负对照把这五种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下。
+# 末尾的负对照把这五种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下；
+# 「对拍」一节拿同一批 PR 让 worker 交 PR 前那段冲突检查命令和 daemon 各判一遍，结论必须一致。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,6 +63,9 @@ emit() {   # json → stdout（有 --jq 就过 jq）
     if [ -n "$jqexpr" ]; then printf '%s' "$1" | jq -r "$jqexpr"; else printf '%s\n' "$1"; fi
 }
 R="repos/example/cf"
+case "$1 ${2:-}" in
+    "pr view") emit "$(cat "$D/prview-$3.json")"; exit 0 ;;   # worker 那段冲突检查命令用它
+esac
 case "$1" in
     pr|issue) echo '[]'; exit 0 ;;
 esac
@@ -354,6 +358,42 @@ CONF
 
 echo "═══ 正式版 ═══"
 run_scenarios "$REPO_DIR/scripts"
+
+# ─────────────────────────────────────────────────────────────────────────
+# 对拍：同一条「有没有冲突」的规则有两份实现 —— worker 交出 PR 前跑的那段命令
+# （prompts/*.template.md 里「冲突检查 开始/结束」之间，GitHub#82）和 daemon 这里的
+# pr_conflict_verdict。拿上面场景跑完后的同一个 origin（有冲突的、干净的、拉不到的
+# PR 都有），两边逐个 PR 判一遍，结论必须一致。
+# ─────────────────────────────────────────────────────────────────────────
+echo "【对拍】worker 的冲突检查命令 vs daemon 的判定，同一批 PR 结论一致"
+W="$SANDBOX/run"
+"$REAL_GIT" -C "$W/seed" checkout -q --detach "$("$REAL_GIT" -C "$W/seed" rev-parse main)"
+echo new > "$W/seed/p26.txt"; "$REAL_GIT" -C "$W/seed" add p26.txt
+"$REAL_GIT" -C "$W/seed" -c user.email=t@x -c user.name=t commit -qm "pr 26 (clean)"
+"$REAL_GIT" -C "$W/seed" push -q "$W/origin.git" "HEAD:refs/pull/26/head" 2>/dev/null
+TIP=$("$REAL_GIT" --git-dir="$W/origin.git" rev-parse main)
+"$REAL_GIT" clone -q "$W/origin.git" "$W/worker-wt" 2>/dev/null
+sed -n '/^# --- 冲突检查 开始 ---$/,/^# --- 冲突检查 结束 ---$/p' "$REPO_DIR/prompts/pr-comment.template.md" \
+    | sed 's|\${REPO}|example/cf|g' > "$SANDBOX/snippet.sh"
+agree=0; disagree=""; seen_kinds=""
+for n in 10 11 15 17 23 26; do
+    # PR 现在的提交：远端有 refs/pull/N/head 就用它；#23 从没推上去，用 daemon 看到的那个
+    head=$("$REAL_GIT" --git-dir="$W/origin.git" rev-parse -q --verify "refs/pull/$n/head" 2>/dev/null) \
+        || head=$(jq -r .head.sha "$W/gh/pr-$n.json")
+    jq -cn --arg h "$head" '{baseRefName:"main", headRefOid:$h}' > "$W/gh/prview-$n.json"
+    w=$(cd "$W/worker-wt" && PATH="$SANDBOX/bin:$PATH" FAKE_GH_DIR="$W/gh" P=$n bash "$SANDBOX/snippet.sh" 2>/dev/null \
+        | sed -n 's/^CONFLICT_CHECK=\([a-z]*\).*/\1/p')
+    case "$w" in error) w=unknown ;; esac
+    d=$(cd "$REPO_DIR" && FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c '
+        exec 8>&2; source scripts/_lib.sh; exec 2>&8 8>&-; set +e
+        pr_conflict_verdict "$1" main "$2" "$3"' _ "$n" "$TIP" "$head" 2>/dev/null)
+    seen_kinds+=" $d"
+    if [ -n "$w" ] && [ "$w" = "$d" ]; then agree=$((agree+1)); else disagree+=" #$n(worker=$w daemon=$d)"; fi
+done
+chk "6 个 PR 两边结论一致" "$agree${disagree}" 6
+chk "这批里干净 / 冲突 / 判不了三种都有（否则对拍说明不了什么）" \
+    "$(for k in clean conflict unknown; do case "$seen_kinds" in *" $k"*) printf '%s ' "$k" ;; esac; done)" "clean conflict unknown "
+
 real_pass=$pass real_fail=$fail
 
 # ─────────────────────────────────────────────────────────────────────────
