@@ -198,10 +198,10 @@ def main():
         [{"type":"bar","data":g("pr_merged"),"color":BLUE,"label":"合并 PR 数","axis":"l"},
          {"type":"line","data":net,"color":ORANGE,"label":"净增代码行数","axis":"r"}])
     p2=ch.panel(0,340,1212,320,"待办存量：新提出 vs 关掉 vs 手里还压着多少",
-        "柱＝当周新提 issue（不含 PR）；折线＝当周关闭数与周末仍未关闭的 issue 总数。",
-        [{"type":"bar","data":g("iss_open"),"color":GOLD,"label":"新提 issue","axis":"l"},
-         {"type":"line","data":g("iss_closed"),"color":AQUA,"label":"关闭 issue","axis":"l"},
-         {"type":"line","data":g("backlog"),"color":VIO,"label":"周末未关闭存量","axis":"l"}])
+        "柱＝周末仍未关闭的 issue 总数（不含 PR）；折线＝当周新提数与关闭数。",
+        [{"type":"bar","data":g("backlog"),"color":VIO,"label":"周末未关闭存量","axis":"l"},
+         {"type":"line","data":g("iss_open"),"color":GOLD,"label":"新提 issue","axis":"l"},
+         {"type":"line","data":g("iss_closed"),"color":AQUA,"label":"关闭 issue","axis":"l"}])
     open(os.path.join(a.out_dir,"delivery.html"),"w").write(page(t1,[p1,p2],680,a.fonts_dir))
     hp=(tot("human")/tot("comments")*100) if tot("comments") else 0
     t2=(f'<h1>最近 {len(W)} 周趋势 · 投入面（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'

@@ -154,6 +154,15 @@ chk "交付面页高仍是 680"        "$(q 'height("delivery")')" "680"
 chk "交付面柱顶没有一个带 h"    "$(q 'any(v.endswith("h") for p in panels("delivery") for v in bartops(p[1]))')" "False"
 
 echo
+echo "— 待办存量面板：柱＝周末未关闭存量，折线＝新提与关闭（GigleTutor-Web#1273）"
+# 存量是这块面板要人一眼看到的主数，所以画成柱；新提 / 关闭是它的进出两侧，画成折线
+chk "柱顶数字就是每周的周末未关闭存量" "$(q '",".join(bartops(seg("delivery",1)))')" "40,41,42,43,44"
+# 图例从右往左排版，SVG 里的书写顺序与屏幕上从左到右的顺序相反，这里倒回来比
+chk "图例从左到右依次是 存量（柱）、新提、关闭" \
+    "$(q '"|".join(reversed(legends(seg("delivery",1))))')" "周末未关闭存量|新提 issue|关闭 issue"
+chk "副标题写明柱是存量" "$(q '"柱＝周末仍未关闭的 issue" in seg("delivery",1)')" "True"
+
+echo
 echo "— 版面"
 chk "投入面页高 680（两块面板 × 340）" "$(q 'height("effort")')" "680"
 chk "成本图页高 340（一块面板）"        "$(q 'height("cost")')" "340"
