@@ -439,8 +439,11 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
   (tests running in the background while the AI works) it is 0 and the details say so.
 - **The test part only exists when `COMMENT_FOOTER_EXTRA_CMD` is set.** With it set, the
   summary always says which case it is: `测试 4m 51s` (more than 0 s), `未跑测试` (the command
-  answered 0 — no tests this round), or `测试未知` (the command failed, timed out or printed
-  a bad first line; the reason goes into the details).
+  answered 0, meaning it is sure no tests ran this round), or `测试未知` (the command answered
+  `test_secs=unknown` because tests ran but their time is unknown — e.g. only background or
+  unfinished runs — or it failed, timed out or printed a bad first line; for those the reason
+  goes into the details). A command that cannot tell whether anything ran must answer
+  `unknown`, never 0.
 - **AI time is an estimate** (the summary says `AI 约 …`). Per model request it counts from the
   request being sent to the last reply chunk written into the session log, and a second
   covered by several requests counts once. It includes network round-trips and queueing

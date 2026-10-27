@@ -211,6 +211,15 @@ read -r tot t a o <<< "$(segs "$out")"
 say zero_test_sum "$t $(( a + o ))" "- $tot"
 say zero_test_secs_kept "$(printf '%s\n' "$out" | tail -1 | grep -c ' test_secs=0 ')" "1"
 
+# 项目命令回答「跑过但耗时未知」（test_secs=unknown，例如只有后台 / 未完成的运行）：总览写「测试未知」
+# 而不是「未跑测试」；项目给的细节和机器字段照常保留，机器记录里不写非数字的 test_secs
+setcfg "printf 'test_secs=unknown\n- 测试 1 次（后台运行，未计时）\nkv runs_seen=1\n'"
+out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
+say unknown_test_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
+say unknown_test_detail_kept "$(printf '%s\n' "$out" | grep -c '^- 测试 1 次（后台运行，未计时）$')" "1"
+say unknown_test_marker "$(printf '%s\n' "$out" | tail -1 | grep -c 'test_secs=') $(printf '%s\n' "$out" | tail -1 | grep -c ' runs_seen=1 ')" "0 1"
+say unknown_test_no_fail_note "$(printf '%s\n' "$out" | grep -c '测试统计没取到')" "0"
+
 setcfg "printf 'test_secs=10\nkv wall_secs=1 models=evil test_secs=9 cost_usd=0 runs=3 bad=a--b\n'"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 m=$(printf '%s\n' "$out" | tail -1)
@@ -505,6 +514,13 @@ neg "没配命令的项目也写测试段" drivers/token-usage/comment_footer.py
 neg "AI 估算长说明又放回每条评论" drivers/token-usage/comment_footer.py \
     '    if ai is None:' '    details.append("- AI 时间是估算：偏差来源……") if ai is not None else None
     if ai is None:' ai_note_gone
+
+neg "项目回答 unknown 时当成 0 秒（写成「未跑测试」）" drivers/token-usage/comment_footer.py \
+    'if test_text == TEST_UNKNOWN:
+                test_seg = "测试未知"
+            else:' 'if test_text == TEST_UNKNOWN:
+                test_text = "0"
+            if True:' unknown_test_overview
 
 # 模板：每份单独去掉 footer 段里调脚本那一行，只有那一份变红
 for name in new-issue issue-comment pr-comment review; do

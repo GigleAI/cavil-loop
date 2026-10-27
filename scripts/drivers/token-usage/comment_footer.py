@@ -25,7 +25,7 @@
     总览只按机器字段给一个短说法。
   · 项目命令（配置项 COMMENT_FOOTER_EXTRA_CMD）：没配就完全不提测试；配了时总览一定有测试
     那段，分得清三种情况——大于 0 秒写「测试 4m 51s」，命令确认这轮没跑（0 秒）写「未跑测试」，
-    失败 / 超时 / 首行不对写「测试未知」并在细节里写原因。不管哪种 footer 都照常出；项目字段与
+    命令回答 unknown（跑过但说不出耗时）或失败 / 超时 / 首行不对写「测试未知」，后者在细节里写原因。不管哪种 footer 都照常出；项目字段与
     已有字段同名的丢掉，不覆盖核心字段。
 """
 import argparse
@@ -43,6 +43,7 @@ import time
 EXTRA_TIMEOUT = int(os.environ.get("CAVIL_FOOTER_EXTRA_TIMEOUT") or 30)
 RE_KEY = re.compile(r'^[a-z][a-z0-9_]*$')
 RE_SECS = re.compile(r'^\d+(?:\.\d+)?$')
+TEST_UNKNOWN = "unknown"    # 项目命令的回答「跑过测试、耗时说不出」
 
 
 def fmt_dur(secs):
@@ -133,14 +134,16 @@ def parse_extra(out):
 
     秒数保留原文（已校验是数字）：机器记录照原文写，只有总览按整秒显示。转成浮点再格式化
     就是在序列化边界舍入（`:g` 只留六位有效数字，123.456789 → 123.457）。
-    约定：第一个非空行 `test_secs=<秒>`；以 `kv ` 开头的行是机器字段；其余非空行原样进细节。
+    约定：第一个非空行 `test_secs=<秒>`，或 `test_secs=unknown`（项目确认跑过测试、但说不出耗时，
+    例如只有后台 / 未完成的运行）；以 `kv ` 开头的行是机器字段；其余非空行原样进细节。
+    0 秒的意思是「确认这轮没跑测试」——拿不准有没有跑的项目要回答 unknown，不能回答 0。
     """
     lines = [l.rstrip() for l in out.splitlines()]
     body = [l for l in lines if l.strip()]
     if not body:
         return None
     k, eq, v = body[0].strip().partition("=")
-    if k != "test_secs" or not eq or not RE_SECS.match(v):
+    if k != "test_secs" or not eq or not (v == TEST_UNKNOWN or RE_SECS.match(v)):
         return None
     details, kv = [], []
     for l in body[1:]:
@@ -197,9 +200,12 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
             notes.append(f"- 测试统计没取到：项目命令{extra}")
         else:
             test_text, extra_details, extra_kv = extra
-            test_f = float(test_text)
-            test = min(int(round(test_f)), wall) if test_f > 0 else None
-            test_seg = f"测试 {fmt_dur(test)}" if test is not None else "未跑测试"
+            if test_text == TEST_UNKNOWN:
+                test_seg = "测试未知"
+            else:
+                test_f = float(test_text)
+                test = min(int(round(test_f)), wall) if test_f > 0 else None
+                test_seg = f"测试 {fmt_dur(test)}" if test is not None else "未跑测试"
 
     ai = None
     try:
@@ -245,7 +251,8 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     if kv_line.strip():
         marker.append(kv_line.strip())
     if extra is not None and not isinstance(extra, str):
-        marker.append(f"test_secs={extra[0]}")
+        if extra[0] != TEST_UNKNOWN:    # 机器记录只写数字；说不出耗时就不写这个字段
+            marker.append(f"test_secs={extra[0]}")
         for k, v in extra_kv:
             if RE_KEY.match(k) and safe_value(v) and k not in reserved:
                 reserved.add(k)

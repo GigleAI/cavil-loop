@@ -223,7 +223,10 @@ COMMENT_FOOTER="on"
 # in the worktree (30 s timeout) with CAVIL_FOOTER_START / CAVIL_FOOTER_START_EPOCH /
 # CAVIL_FOOTER_WORK_NUM / CAVIL_FOOTER_WORKTREE / CAVIL_FOOTER_AGENT set. Output:
 #   line 1           test_secs=<seconds>          → "测试 …" in the summary line
-#                                                    (0 = this round ran no tests → "未跑测试")
+#                                                    (0 = confirmed no tests this round → "未跑测试")
+#                    test_secs=unknown            → "测试未知": tests did run but their time is
+#                                                    unknown (e.g. only background / unfinished runs).
+#                                                    Not sure whether anything ran? Answer unknown, not 0.
 #   lines "kv k=v …"  extra machine fields         → appended to the agent-metrics record
 #                                                    (a name that already exists is dropped)
 #   any other line    shown as-is in the details block
@@ -234,7 +237,9 @@ COMMENT_FOOTER="on"
 # 可选：报告本项目测试耗时的命令。在 worktree 里跑（30 秒超时），环境变量带上
 # CAVIL_FOOTER_START / CAVIL_FOOTER_START_EPOCH / CAVIL_FOOTER_WORK_NUM /
 # CAVIL_FOOTER_WORKTREE / CAVIL_FOOTER_AGENT。输出约定：
-#   第一行            test_secs=<秒>        → 总览里的「测试 …」（0 = 这轮没跑测试 →「未跑测试」）
+#   第一行            test_secs=<秒>        → 总览里的「测试 …」（0 = 确认这轮没跑测试 →「未跑测试」）
+#                    test_secs=unknown     → 「测试未知」：跑过测试但说不出耗时（例如只有后台 / 未完成的运行）。
+#                                            拿不准有没有跑，就答 unknown，别答 0。
 #   以 "kv " 开头的行  追加的机器字段 k=v    → 接在 agent-metrics 记录后面（与已有字段同名的丢掉）
 #   其余行            原样放进折叠细节
 # 留空 → 总览完全不提测试。失败、超时、第一行不对 → footer 照常发，总览写「测试未知」，
