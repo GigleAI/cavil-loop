@@ -413,6 +413,7 @@ project/.agents/skills/cavil-loop/prompts/
 | `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL（funnel 那个 path），取自 `WEEKLY_REPORT_ASSET_ROOT_URL`。同理：截图落在哪台机器上，URL 就得指哪台 |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | 默认的 `pending/agent`。review 模板打回时必须用它——`${LABEL_PENDING_AGENT}` 是**触发**标签，在 review 关卡里拿它打回等于打回自己，死循环 |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `cavil-loop.config` 读，默认 `en`） |
+| `${COMMENT_FOOTER_CMD}` | 生成评论用量 footer 的完整命令（已带 agent、用量驱动、项目配置），模板只需再补 `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`。输出整段 footer，原样接在评论末尾；项目测试耗时的接口见配置样例的 `COMMENT_FOOTER_EXTRA_CMD` |
 
 ## Cleanup hook（`CLEANUP_HOOK`）
 

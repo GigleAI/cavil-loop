@@ -33,10 +33,20 @@ RE_MARK = re.compile(r'^<!--\s*agent-metrics\s+(.*?)-->$')
 #   ① ⏱️ 开始 <日期 时刻> · 完工 <时刻> · 耗时 …
 #   ② 折叠块 + 代码块里以「开始」打头（⏱️ 在 <summary> 行上）
 #   ③ 完工带完整日期（跨零点场景）
+# 以及 GitHub#88 起的「一行总览 + 折叠细节」排版（见下面 RE_NEW_*）。
 _TS = r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}|\d{2}:\d{2}:\d{2})'
 RE_FOOT = re.compile(r'^(?:⏱️\s*)?开始\s+' + _TS + r'\s*·\s*完工\s+' + _TS + r'\s*·\s*耗时\s*\S')
 RE_HEAD = re.compile(r'^(?:⏱️\s*)?开始\s+' + _TS + r'\s*·\s*完工\s+' + _TS)
 RE_TOKEN_LINE = re.compile(r'^token\s')
+# 一行总览 + 折叠细节的新排版（GitHub#88）。机器记录在时这些都不用；只有记录缺了才回落到这里：
+#   ⏱️ 耗时：8m 0s（…）｜…              ← 总览
+#   <details><summary>细节</summary>   ← 紧跟总览
+#   - 开始 <日期 时刻> · 完工 <时刻>       ← 细节第一条
+#   - token 明细：<驱动的人读行>          ← 细节里，</details> 之前
+RE_NEW_SUM = re.compile(r'^⏱️\s*耗时：')
+RE_NEW_DETAILS = re.compile(r'^<details>\s*<summary>细节</summary>$')
+RE_NEW_HEAD = re.compile(r'^-\s*开始\s+' + _TS + r'\s*·\s*完工\s+' + _TS + r'$')
+RE_NEW_TOKEN = re.compile(r'^-\s*token 明细：(.*)$')
 RE_COST = re.compile(r'\(\$([\d.]+)\)')
 # 历史记账行的 token 数只从**紧随其后那一行**里读（`token 44 input, 1k output ($16.64)`），
 # 绝不扫正文：正文里随手写的 `token … output` 示例会被原样累加进统计（实测正文一句
@@ -93,23 +103,70 @@ def _parse_ts(v, date_hint=None):
     return datetime.datetime.strptime(f"{date_hint} {v}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
 
 
-def _footer_window(lines):
-    """从可见记账行取 (开始, 完工, 紧随其后的第一个非空行)。取不到返回 (None, None, '')。"""
+def _window(head_match):
+    """记账行里的「开始 / 完工」两段 → (开始, 完工)；解析不了返回 (None, None)。"""
+    try:
+        a = _parse_ts(head_match.group(1))
+        b = _parse_ts(head_match.group(2), a.strftime("%Y-%m-%d"))
+    except Exception:
+        return None, None
+    if b < a:                          # 完工 < 开始 ⇒ 跨零点
+        b += datetime.timedelta(days=1)
+    return a, b
+
+
+def _legacy_footer(lines):
+    """旧排版：(记账行下标, 开始, 完工, 紧随其后的第一个非空行)。没有返回 None。"""
     hits = [i for i, l in enumerate(lines) if RE_FOOT.match(l.strip())]
     if not hits:
-        return None, None, ""
+        return None
     # 取**最后一处**：实测 10 周内 0 条评论存在两处真记账行，所以这不会丢数据；
     # 而正文里的示例总在真记录之前。
     idx = hits[-1]
     nxt = next((lines[j].strip() for j in range(idx + 1, len(lines)) if lines[j].strip()), "")
-    h = RE_HEAD.match(lines[idx].strip())
-    try:
-        a = _parse_ts(h.group(1))
-        b = _parse_ts(h.group(2), a.strftime("%Y-%m-%d"))
-        if b < a:                      # 完工 < 开始 ⇒ 跨零点
-            b += datetime.timedelta(days=1)
-    except Exception:
+    a, b = _window(RE_HEAD.match(lines[idx].strip()))
+    return None if a is None else (idx, a, b, nxt)
+
+
+def _new_footer(lines):
+    """新排版：(总览行下标, 开始, 完工, `token <驱动人读行>`)。形状不全返回 None。
+
+    每一步都按位置核对（总览 → 紧跟的折叠头 → 细节第一条是开始 / 完工 → 折叠结束前有 token
+    明细），正文里零散提到「耗时：」「token 明细：」的句子凑不出这个形状。token 行补回
+    `token ` 前缀，下游与旧排版走同一套取数（RE_TOKEN_LINE / RE_COST / parse_token_line）。
+    """
+    for idx in reversed([i for i, l in enumerate(lines) if RE_NEW_SUM.match(l.strip())]):
+        rest = [l.strip() for l in lines[idx + 1:] if l.strip()]
+        if len(rest) < 2 or not RE_NEW_DETAILS.match(rest[0]):
+            continue
+        head = RE_NEW_HEAD.match(rest[1])
+        if not head:
+            continue
+        tok = None
+        for l in rest[2:]:
+            if l == "</details>":
+                break
+            m = RE_NEW_TOKEN.match(l)
+            if m:
+                tok = "token " + m.group(1).strip()
+        a, b = _window(head)
+        if a is None or tok is None:
+            continue
+        return idx, a, b, tok
+    return None
+
+
+def _footer_window(lines):
+    """从可见记账行取 (开始, 完工, 记账行之后的 token 行候选)。取不到返回 (None, None, '')。
+
+    新旧两种排版都认（GitHub#88），同一条评论里两种都有时取**靠后**的那处——
+    正文里的示例总在真记录之前。旧排版返回的第三项是「紧随其后的第一个非空行」，
+    由调用方核对它是不是 token 行；新排版的 token 行在折叠细节里，按位置取出。
+    """
+    found = [f for f in (_legacy_footer(lines), _new_footer(lines)) if f]
+    if not found:
         return None, None, ""
+    _, a, b, nxt = max(found, key=lambda f: f[0])
     return a, b, nxt
 
 

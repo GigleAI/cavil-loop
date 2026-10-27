@@ -55,6 +55,8 @@
 #   price_status         金额按单价可信度拆开，如 corroborated:41.20,disputed:2.16
 #   models               本窗口实际产生非零用量的模型 ID，去重、排序、逗号分隔
 #   model_unknown        yes / no —— 是否另有非零用量无法归属到模型
+#   ai_secs / ai_requests  AI 时间估算（秒，毫秒精度）与参与估算的请求数（ai_time.py，
+#                        GitHub#88）；一个请求都认不出时这两个字段不出现
 #
 # 缺价（GitHub#51）：某个认得出的模型有用量却取不到价时，留一个本机缺价标记
 #   （_price_cache.sh，不联网）；daemon 下一轮联网补价，补来的价在价目表里状态是
@@ -260,6 +262,12 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
 ' "${FILES[@]}" 2>/dev/null)
 [ -n "$RES" ] || exit 0
 # 第一行是给评论 / 标记用的结果，原样输出；第二行是缺价模型清单，只用来留标记
-printf '%s\n' "${RES%%$'\n'*}"
+LINE="${RES%%$'\n'*}"
+# --kv 另附 AI 时间估算（GitHub#88）：同一批会话文件、同一个窗口，算不出来就不附
+if [ "$MODE" = "--kv" ]; then
+    AI=$(python3 "$HERE/ai_time.py" claude "$START_EPOCH" now "${FILES[@]}" 2>/dev/null)
+    [ -z "$AI" ] || LINE="$LINE $AI"
+fi
+printf '%s\n' "$LINE"
 GAPS="${RES##*$'\n'GAPS }"
 [ "$GAPS" = "$RES" ] || [ -z "$GAPS" ] || mark_unpriced claude $GAPS

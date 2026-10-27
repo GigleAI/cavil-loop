@@ -207,6 +207,37 @@ LABEL_DONE="Done"
 # 代码、commit message、分支名仍按仓库 / 英文惯例，不受这个选项影响。
 OUTPUT_LANGUAGE="en"
 
+# ── Comment usage footer / 评论用量 footer ──
+
+# The last hand-off comment of each dispatch ends with a generated footer: one summary
+# line (total time split into tests / AI / other, model, tokens, reference price), a
+# collapsed "细节" block, and the hidden agent-metrics record the weekly report reads.
+# "off" leaves it out.
+#
+# 每轮最后一条交人评论末尾附一段脚本生成的 footer：一行总览（总耗时拆成测试 / AI / 其他、
+# 模型、token、参考金额）+ 折叠的「细节」+ 周报读的隐藏机器记录。"off" 不附。
+COMMENT_FOOTER="on"
+
+# Optional: a command that reports this project's own test time for the footer. It runs
+# in the worktree (30 s timeout) with CAVIL_FOOTER_START / CAVIL_FOOTER_START_EPOCH /
+# CAVIL_FOOTER_WORK_NUM / CAVIL_FOOTER_WORKTREE / CAVIL_FOOTER_AGENT set. Output:
+#   line 1           test_secs=<seconds>          → "测试 …" in the summary line (0 = not shown)
+#   lines "kv k=v …"  extra machine fields         → appended to the agent-metrics record
+#                                                    (a name that already exists is dropped)
+#   any other line    shown as-is in the details block
+# Empty, failing, timing out or a bad first line → the footer is posted without the test part.
+# Kept in this local config on purpose: a script in the repo could be changed by any PR.
+#
+# 可选：报告本项目测试耗时的命令。在 worktree 里跑（30 秒超时），环境变量带上
+# CAVIL_FOOTER_START / CAVIL_FOOTER_START_EPOCH / CAVIL_FOOTER_WORK_NUM /
+# CAVIL_FOOTER_WORKTREE / CAVIL_FOOTER_AGENT。输出约定：
+#   第一行            test_secs=<秒>        → 总览里的「测试 …」（0 = 不显示）
+#   以 "kv " 开头的行  追加的机器字段 k=v    → 接在 agent-metrics 记录后面（与已有字段同名的丢掉）
+#   其余行            原样放进折叠细节
+# 留空、失败、超时、第一行不对 → footer 照常发，只是没有「测试」那段。
+# 故意放在本机配置而不是仓库里：仓库里的脚本任何 PR 都能改。
+COMMENT_FOOTER_EXTRA_CMD=""
+
 # ── Worker setup / Worker 安装 ──
 
 # Install / init command run after creating the worktree (one line; chain with &&).

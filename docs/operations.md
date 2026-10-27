@@ -481,6 +481,7 @@ Available placeholders (`sed`-rendered):
 | `${REVIEW_ASSET_BASE_URL}` | public base URL for review screenshots (funnel path), from `WEEKLY_REPORT_ASSET_ROOT_URL`. Same reasoning: shots are written to the machine that took them, so the URL has to name that machine |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review gate it would bounce work back to the reviewer itself: an infinite loop |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `cavil-loop.config`, default `en`) |
+| `${COMMENT_FOOTER_CMD}` | full command that generates the comment usage footer (agent, usage driver and project config already filled in); templates only add `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`. It prints the whole footer, appended to the comment as-is; for the project test-time hook see `COMMENT_FOOTER_EXTRA_CMD` in the config example |
 
 ## Cleanup hook (`CLEANUP_HOOK`)
 
