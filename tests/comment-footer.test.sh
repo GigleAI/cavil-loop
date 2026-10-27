@@ -179,6 +179,15 @@ out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 say cmd_badline_no_test "$(segs "$out" | cut -d' ' -f2)" "-"
 say cmd_badline_noted "$(printf '%s\n' "$out" | grep -c '第一行不是')" "1"
 
+# 机器记录里的测试秒数照项目命令的原文写，不在写出时舍入；总览照样按整秒显示
+setcfg "printf 'test_secs=123.456789\n'"
+out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
+say test_secs_exact "$(printf '%s\n' "$out" | tail -1 | grep -o 'test_secs=[^ ]*')" "test_secs=123.456789"
+say test_secs_overview_rounded "$(segs "$out" | cut -d' ' -f2)" "123"
+setcfg "printf 'test_secs=1234567\n'"
+out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
+say test_secs_exact_large "$(printf '%s\n' "$out" | tail -1 | grep -o 'test_secs=[^ ]*')" "test_secs=1234567"
+
 setcfg "printf 'test_secs=10\nkv wall_secs=1 models=evil test_secs=9 cost_usd=0 runs=3 bad=a--b\n'"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 m=$(printf '%s\n' "$out" | tail -1)
@@ -431,6 +440,8 @@ neg "「其他」不封底为 0" drivers/token-usage/comment_footer.py \
     'segs.append(f"其他 {fmt_dur(max(0, other))}")' 'segs.append(f"其他 {other}s")' overlap_other_zero
 neg "AI 秒数不按显示值相减" drivers/token-usage/comment_footer.py \
     'other = wall - (test or 0) - ai' 'other = wall - (test or 0) - float(kv["ai_secs"])' sum_equals_total
+neg "机器记录里的测试秒数按 :g 格式化（只留六位有效数字）" drivers/token-usage/comment_footer.py \
+    'marker.append(f"test_secs={extra[0]}")' 'marker.append(f"test_secs={float(extra[0]):g}")' test_secs_exact
 neg "项目字段可以覆盖核心字段" drivers/token-usage/comment_footer.py \
     'and k not in reserved' '' kv_collision_kept_core
 neg "超时不杀子进程组" drivers/token-usage/comment_footer.py \

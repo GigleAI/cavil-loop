@@ -125,8 +125,10 @@ def run_extra(cmd, env_add):
 
 
 def parse_extra(out):
-    """项目命令输出 → (测试秒数, 细节行, 机器字段) | None。
+    """项目命令输出 → (测试秒数的原文, 细节行, 机器字段) | None。
 
+    秒数保留原文（已校验是数字）：机器记录照原文写，只有总览按整秒显示。转成浮点再格式化
+    就是在序列化边界舍入（`:g` 只留六位有效数字，123.456789 → 123.457）。
     约定：第一个非空行 `test_secs=<秒>`；以 `kv ` 开头的行是机器字段；其余非空行原样进细节。
     """
     lines = [l.rstrip() for l in out.splitlines()]
@@ -142,7 +144,7 @@ def parse_extra(out):
             kv.extend(parse_kv(l[3:]))
         else:
             details.append(l)
-    return float(v), details, kv
+    return v, details, kv
 
 
 def safe_value(v):
@@ -188,7 +190,8 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
         if isinstance(extra, str):
             notes.append(f"- 测试统计没取到：项目命令{extra}，总览里省掉了「测试」这一段")
         else:
-            test_f, extra_details, extra_kv = extra
+            test_text, extra_details, extra_kv = extra
+            test_f = float(test_text)
             test = min(int(round(test_f)), wall) if test_f > 0 else None
 
     ai = None
@@ -241,7 +244,7 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     if kv_line.strip():
         marker.append(kv_line.strip())
     if extra is not None and not isinstance(extra, str):
-        marker.append(f"test_secs={extra[0]:g}")
+        marker.append(f"test_secs={extra[0]}")
         for k, v in extra_kv:
             if RE_KEY.match(k) and safe_value(v) and k not in reserved:
                 reserved.add(k)
