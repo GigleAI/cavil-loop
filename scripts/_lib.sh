@@ -2854,6 +2854,16 @@ AGENT_TOKEN_USAGE_SCRIPT="$_LIB_DIR/drivers/token-usage/${WORKER_AGENT}.sh"
 _MANAGED_TOKEN_USAGE="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/drivers/token-usage/$(basename "$AGENT_TOKEN_USAGE_SCRIPT")"
 [ ! -f "$_MANAGED_TOKEN_USAGE" ] || AGENT_TOKEN_USAGE_SCRIPT="$_MANAGED_TOKEN_USAGE"
 
+# ── 评论用量 footer（模板通过 ${COMMENT_FOOTER_CMD} 占位调用，GitHub#88）──
+# 整段 footer 由脚本生成，worker 原样贴。用量驱动直接传上面选好的那一个，两处不各选各的；
+# 项目配置路径传过去，脚本只从里面读 COMMENT_FOOTER_EXTRA_CMD（项目自己的测试统计命令）。
+# 放在本机配置而不是仓库里：仓库里的脚本任何能改仓库的 PR 都能改，等于让 PR 决定 worker
+# 发评论前跑什么。托管安装走长期入口，发版切换时路径不失效（同用量驱动）。
+COMMENT_FOOTER_SCRIPT="$_LIB_DIR/drivers/token-usage/comment-footer.sh"
+_MANAGED_FOOTER="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/drivers/token-usage/comment-footer.sh"
+[ ! -f "$_MANAGED_FOOTER" ] || COMMENT_FOOTER_SCRIPT="$_MANAGED_FOOTER"
+COMMENT_FOOTER_CMD="bash '$COMMENT_FOOTER_SCRIPT' --agent '$WORKER_AGENT' --driver '$AGENT_TOKEN_USAGE_SCRIPT' --config '$CONFIG_FILE'"
+
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
 # 标记；daemon 每轮调这里，有标记才去跑 price_fetch.py（官方价目页 + LiteLLM 两边一致

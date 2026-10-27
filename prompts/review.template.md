@@ -54,7 +54,18 @@ rm -f "$MT"
    - B 类（设计方案，没有 PR）跳过这一步。
 
 3. 在该目标发一条 review 结论评论。**结论评论的标题以 ✅ / ❌ 开头**：评论第一个看得见的行是 `##` 标题，`##` 后空一格先写 ✅ 或 ❌，再空一格接标题文字。只有本轮判了通过才用 ✅（例：`## ✅ 冲突检查复审通过`）；其余一律 ❌（例：`## ❌ 复审未通过：重跑会误报成功`）——不通过退回 worker、不通过且轮次已尽交人、与主干冲突改判不通过、冲突检查或轮次判断不了而交人、没有可审的产出，都是 ❌。人常在手机的通知列表里看，标题中间的「通过 / 未通过」会被截掉，第一个字就得是结论。发现可疑内容时的 `<!-- agent-flag -->` 评论不是复审结论，不加。通过时说明覆盖范围及剩余限制；不通过时逐项写触发条件、证据、修复方向。**B 类不通过时第一句就写明「本轮改的是方案本身，不要写代码」**——打回落到 `${LABEL_PENDING_AGENT_DEFAULT}`，跟人说「方案 OK，开干」走的是同一条队列，不写清楚，下一轮 worker 会直接去实现一份人还没确认过的方案。评论带 `<!-- codex-review-round:N -->`，其中 N 是最近一次人工动作之后本目标第几轮独立复审。先用 `gh api user --jq .login` 取得当前派工账号，再分页读评论和 issue events；只有 actor/login **不同于派工账号** 的动作才可重置轮次。PAT 派工账号在 GitHub 上常是普通 `User`，不能靠 `type=Bot` 或名字猜。若无法可靠判断，保守地写明无法确定轮次并交 `${LABEL_PENDING_HUMAN}`，不要自猜为第 1 轮。
-4. `${COMMENT_FOOTER}` 为 `on` 时，在 review 评论末尾附从 `${TASK_START_TS}` 累计到评论准备时的可见时间 / token / API 标价折算参考价值，以及机器记录 `<!-- agent-metrics agent=${WORKER_AGENT} wt=${WORK_NUM} start=... end=... wall_secs=... <原始用量字段> -->`。先把 `${TASK_START_TS}` 按本机时区换成 Unix 秒数 `start_epoch`，再运行 `bash ${AGENT_TOKEN_USAGE_SCRIPT} "$start_epoch" --kv` 取得原始用量字段；脚本必须先收到 epoch，`--kv` 是第二个参数。人读行必须展示 `models` 中的实际模型名（多个模型全部列出）；`models` 为空时写「模型未知」，`model_unknown=yes` 且已有模型名时另写「另有模型无法确认」。驱动的人读输出已按这条规则在行末附好模型说明，原样保留即可，不要自己再追加一遍。没取得用量或金额就如实写缺失，不编数字。机器字段（包括 `models` 与 `model_unknown`）原样输出，机器金额不舍入，美元仅在人读行格式化；它不是订阅账单。可见文字不能直接显示 `full` / `partial` / `none`：分别写成「本次记录的用量都有对应单价」/「只有部分用量有单价，金额会偏低」/「没有可用单价，无法估算金额」；`cost_state` 等原始字段只放进隐藏的机器记录。
+4. `${COMMENT_FOOTER}` 为 `on` 时，review 评论末尾接上用量 footer；`off` 时省略。footer 由脚本**整段生成**：一行总览（总耗时拆成测试 / AI / 其他、模型、token、参考金额）+ 折叠的「细节」+ 最后一行给周报读的 `<!-- agent-metrics ... -->` 机器记录。先把评论正文写进文件，发评论前跑：
+
+   ```bash
+   BODY=/path/to/body.md      # 你写好正文的那个文件
+   FOOTER=$(${COMMENT_FOOTER_CMD} --start "${TASK_START_TS}" --wt "${WORK_NUM}")
+   { cat "$BODY"; printf '\n\n%s\n' "$FOOTER"; } > "$BODY.footer"
+   # 再用 --body-file "$BODY.footer" 发评论
+   ```
+
+   - footer **原样**接在正文后面：不改写、不补字、不挪行，也不要自己另拼时间 / token 行。金额的说法、模型名、价目提醒、AI 时间的误差说明脚本都已写好
+   - 机器记录必须是整条评论的最后一个非空行；正文里要举 footer 的例子别用真形状，否则会被周报当成一次真实记账
+   - 脚本没有输出时照常发正文，末尾写一句「用量 footer 生成失败」，不要自己编数字
 5. 通过：REST 翻 `${LABEL_PENDING_HUMAN}`，摘 `${LABEL_PENDING_REVIEW}` 和 `${LABEL_AGENT_DOING}`。不通过且轮次未到 `${REVIEW_MAX_ROUNDS}`：REST 翻 `${LABEL_PENDING_AGENT_DEFAULT}`，摘 `${LABEL_PENDING_REVIEW}` 和 `${LABEL_AGENT_DOING}`。轮次已尽：保留 `${LABEL_PENDING_REVIEW}`，加 `${LABEL_PENDING_HUMAN}`，摘 `${LABEL_AGENT_DOING}`，让人介入。每次翻 label 都调用 `repos/${REPO}/issues/N/labels` REST；不要用 `gh pr/issue edit --add-label`。
 
 交人评论（通过，或轮次已尽交人）同样要**自包含，链接只当出处**。维护者只读交给人的这一条，不翻 worker 和复审之间的来回。凡是要人读、要人照着做、要人拍板的内容都直接写进这条：要人动手的步骤按顺序写全文（在哪个页面点什么 / 跑哪条命令 / 看到什么算成功 / 出错怎么退回）；之前几轮（包括复审阶段）得出的结论、限制、待办、测试结果整理进来，复审写交人评论时把 worker 的要点搬过来。文档、上一条评论、复审评论的链接可以附在旁边当出处，不能代替内容——不许写「见上一条」「照文档做」「见 reviewer 那条」「见 worker 上一条」。发出前再问一句：**只读这一条评论、不点任何链接，能不能知道发生了什么、要做哪几步？** 不能就重写。

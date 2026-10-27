@@ -65,8 +65,10 @@ printf '{"type":"turn_token_usage","timestamp":"%s","payload":{"usage":{"input_t
     "$(ts 25)" >> "$TMP/.codex/sessions/2026/09/14/rollout-A.jsonl"
 
 run_raw() { ( cd "$MINE" && HOME="$TMP" env "$@" bash "$DRIVER" "$START" ${MODE:-} ); }
-# 既有断言聚焦 token / 金额；新增字段由下面的专门断言覆盖。
-run() { run_raw "$@" | sed -E 's/ models=[^ ]* model_unknown=(yes|no)//'; }
+# 既有断言聚焦 token / 金额；新增字段由下面的专门断言覆盖
+# （模型字段在本文件，AI 时间字段在 tests/comment-footer.test.sh）。
+no_ai() { sed -E 's/ ai_secs=[^ ]* ai_requests=[0-9]+$//'; }
+run() { run_raw "$@" | no_ai | sed -E 's/ models=[^ ]* model_unknown=(yes|no)//'; }
 
 # 期望：in = (1000000-400000) + (2000000-1000000) = 1600000
 #       cache_r = 400000 + 1000000 = 1400000 ; cache_w = 50000
@@ -97,7 +99,7 @@ MODE=--kv  out_other=$( ( cd "$OTHER" && HOME="$TMP" bash "$DRIVER" "$START" --k
 chk "只认领 cwd 等于当前目录的会话（别的 worktree 各算各的）" \
     "$out_other" "in=5000000 out=5000000 cache_r=0 cache_w=0 cost_state=none cost_unknown_tokens=10000000 price_source=configured models= model_unknown=yes"
 
-MODE=--kv  out_late=$( ( cd "$MINE" && HOME="$TMP" bash "$DRIVER" "$(( START + 15 ))" --kv ) )
+MODE=--kv  out_late=$( ( cd "$MINE" && HOME="$TMP" bash "$DRIVER" "$(( START + 15 ))" --kv ) | no_ai )
 chk "窗口起点之后的记录才计入（第一条被排除）" \
     "$out_late" "in=1000000 out=700000 cache_r=1000000 cache_w=0 cost_state=none cost_unknown_tokens=2700000 price_source=configured models=gpt-test model_unknown=no"
 

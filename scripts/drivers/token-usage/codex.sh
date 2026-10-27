@@ -60,6 +60,7 @@
 #
 # `--kv` 另输出 `models=`（实际产生非零用量的模型 ID，稳定排序）和
 # `model_unknown=yes|no`。unknown 是归属状态，不塞进模型 ID 列表。
+# 还另附 `ai_secs=` / `ai_requests=`：AI 时间估算（ai_time.py，GitHub#88），认不出请求就不附。
 #
 # ⚠️ 同一份模型信息**人读那一行也要出**（GitHub#29）：评论 footer 的 `token …` 行是
 #   「整行原样用脚本输出」的，只写进 --kv 的隐藏标记等于评论上看不到用的是哪个模型。
@@ -304,7 +305,14 @@ RES=$(printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PR
 ' 2>/dev/null)
 [ -n "$RES" ] || exit 0
 # 第一行是结果，原样输出；第二行是缺价模型清单，只用来留标记（只在用内置表时留）
-printf '%s\n' "${RES%%$'\n'*}"
+LINE="${RES%%$'\n'*}"
+# --kv 另附 AI 时间估算（GitHub#88）：同一批 rollout、同一个窗口，算不出来就不附
+if [ "$MODE" = "--kv" ]; then
+    mapfile -t MINE_FILES < <(printf '%s' "$MINE")
+    AI=$(python3 "$SELF_DIR/ai_time.py" codex "$START_EPOCH" now "${MINE_FILES[@]}" 2>/dev/null)
+    [ -z "$AI" ] || LINE="$LINE $AI"
+fi
+printf '%s\n' "$LINE"
 GAPS="${RES##*$'\n'GAPS }"
 if [ "$PRICE_SOURCE" = default ] && [ "$GAPS" != "$RES" ] && [ -n "$GAPS" ]; then
     mark_unpriced codex $GAPS

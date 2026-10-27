@@ -257,6 +257,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - 记账 / 周报口径 → `tests/weekly-report-*.test.sh`
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
+- 评论用量 footer（GitHub#88：`comment-footer.sh` / `comment_footer.py`、`ai_time.py` 的 AI 时间估算、四份模板的 footer 步骤、`${COMMENT_FOOTER_CMD}` 占位、周报认新的可见排版）→ `tests/comment-footer.test.sh`（约 1.5 分钟：会起真的派工脚本，并对每条规矩跑一份故意改坏的副本，必须变红）。footer 由脚本整段生成——模板里别再让 agent 手拼时间 / token 行；agent-metrics 机器记录仍是最后一个非空行
 - 缺价自动抓价（缺价标记 / `price_fetch.py` / `fetched` 可信度桶）→ `tests/price-fetch.test.sh`
 - 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`（约 40 秒：端到端那几组要真的把 `agent-poll.sh` 起几百次，别用 30 秒的命令窗口跑它，半截被掐看起来就像失败）
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
