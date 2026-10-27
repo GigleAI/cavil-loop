@@ -9,7 +9,8 @@
 #        子代理、<synthetic>、窗口外的请求、老版本 CLI 没有「发请求」记录的情况
 #   【2】两个用量驱动的 --kv 真的带出 AI 时间（同一批文件、同一个窗口）
 #   【3】footer 生成器（comment-footer.sh）：总览各段相加 = 总耗时；测试与 AI 重叠时「其他」
-#        为 0 并说明；项目命令没配 / 失败 / 超时 / 首行不对 / 字段撞名；AI 算不出来；没有用量
+#        为 0 并说明；项目命令没配（不提测试）/ 确认没跑（「未跑测试」）/ 失败 / 超时 / 首行不对
+#        （「测试未知」）/ 字段撞名；AI 算不出来；没有用量；AI 估算长说明不再出现
 #   【4】周报读法：footer 末行是机器记录；去掉机器记录后从可见部分读出的时长 / token / 金额
 #        与机器记录一致；旧格式评论照旧能读
 #   【5】四份模板拼装后的 footer 段：走生产拼装函数，把成品里的命令原样跑一遍
@@ -147,6 +148,8 @@ say sum_parts "$t $a" "291 150"
 say overview_model_cost "$(ov "$out" | grep -c '｜模型：claude-opus-5-5 · 8.5m token · 约 \$2.48$')" "1"
 say details_project_lines "$(printf '%s\n' "$out" | grep -c '^  - 单跑 3 次 约 11s$')" "1"
 say details_token_verbatim "$(printf '%s\n' "$out" | grep -cF -- "- token 明细：$HUMAN_FULL")" "1"
+# AI 时间的估算口径写在运维文档里，不再每条评论重复一大段（总览的「AI 约」已表明是估算）
+say ai_note_gone "$(printf '%s\n' "$out" | grep -c '是估算\|偏差来源')" "0"
 # 总览就是折叠标题（GitHub#90）：收起时只剩一行；标题后空一行，细节里的列表才按 markdown 渲染
 say overview_is_summary "$(printf '%s\n' "$out" | sed -n 2p | grep -c '^<details><summary>⏱️ 耗时：.*</summary>$')" "1"
 say no_separate_details_head "$(printf '%s\n' "$out" | grep -c '细节</summary>')" "0"
@@ -167,11 +170,15 @@ read -r tot t a o <<< "$(segs "$out")"
 say no_cmd_no_test "$t" "-"
 say no_cmd_sum "$(( a + o ))" "$tot"
 say no_cmd_no_test_secs "$(printf '%s\n' "$out" | tail -1 | grep -c test_secs)" "0"
+# 没配项目命令的项目：总览照旧不提测试（「未跑测试」「测试未知」都只给配了命令的项目）
+say no_cmd_overview_no_test "$(ov "$out" | grep -c '测试')" "0"
 
 setcfg "echo test_secs=5; exit 3"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 say cmd_fail_no_test "$(segs "$out" | cut -d' ' -f2)" "-"
 say cmd_fail_noted "$(printf '%s\n' "$out" | grep -c '项目命令退出码 3')" "1"
+# 配了命令却没取到数：总览写「测试未知」，不和「没跑测试」「没配命令」混成一样
+say cmd_fail_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
 
 setcfg "sleep 30 & sleep 30"
 t0=$(date +%s)
@@ -179,11 +186,13 @@ out=$(foot 300 CAVIL_FOOTER_EXTRA_TIMEOUT=2 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMA
 say cmd_timeout_noted "$(printf '%s\n' "$out" | grep -c '超过 2 秒没结束')" "1"
 say cmd_timeout_not_hung "$(( $(date +%s) - t0 < 15 ))" "1"
 say cmd_timeout_marker "$(printf '%s\n' "$out" | grep -v '^$' | tail -1 | grep -c '^<!-- agent-metrics')" "1"
+say cmd_timeout_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
 
 setcfg "echo 测试跑了 5 分钟"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 say cmd_badline_no_test "$(segs "$out" | cut -d' ' -f2)" "-"
 say cmd_badline_noted "$(printf '%s\n' "$out" | grep -c '第一行不是')" "1"
+say cmd_badline_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
 
 # 机器记录里的测试秒数照项目命令的原文写，不在写出时舍入；总览照样按整秒显示
 setcfg "printf 'test_secs=123.456789\n'"
@@ -193,6 +202,23 @@ say test_secs_overview_rounded "$(segs "$out" | cut -d' ' -f2)" "123"
 setcfg "printf 'test_secs=1234567\n'"
 out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 say test_secs_exact_large "$(printf '%s\n' "$out" | tail -1 | grep -o 'test_secs=[^ ]*')" "test_secs=1234567"
+
+# 项目命令确认这轮一条测试都没跑：总览写「未跑测试」，各段相加仍等于总耗时，机器记录照写 0
+setcfg "printf 'test_secs=0\n- 本轮未跑测试\n'"
+out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
+say zero_test_overview "$(ov "$out" | grep -c '（未跑测试 · AI 约 ')" "1"
+read -r tot t a o <<< "$(segs "$out")"
+say zero_test_sum "$t $(( a + o ))" "- $tot"
+say zero_test_secs_kept "$(printf '%s\n' "$out" | tail -1 | grep -c ' test_secs=0 ')" "1"
+
+# 项目命令回答「跑过但耗时未知」（test_secs=unknown，例如只有后台 / 未完成的运行）：总览写「测试未知」
+# 而不是「未跑测试」；项目给的细节和机器字段照常保留，机器记录里不写非数字的 test_secs
+setcfg "printf 'test_secs=unknown\n- 测试 1 次（后台运行，未计时）\nkv runs_seen=1\n'"
+out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
+say unknown_test_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
+say unknown_test_detail_kept "$(printf '%s\n' "$out" | grep -c '^- 测试 1 次（后台运行，未计时）$')" "1"
+say unknown_test_marker "$(printf '%s\n' "$out" | tail -1 | grep -c 'test_secs=') $(printf '%s\n' "$out" | tail -1 | grep -c ' runs_seen=1 ')" "0 1"
+say unknown_test_no_fail_note "$(printf '%s\n' "$out" | grep -c '测试统计没取到')" "0"
 
 setcfg "printf 'test_secs=10\nkv wall_secs=1 models=evil test_secs=9 cost_usd=0 runs=3 bad=a--b\n'"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
@@ -478,6 +504,23 @@ neg "总览不转义就进 <summary>" drivers/token-usage/comment_footer.py \
     'html.escape(head, quote=False)' 'head' summary_escaped
 neg "总览不做折叠标题（退回 #88 的两行）" drivers/token-usage/comment_footer.py \
     'f"<details><summary>{html.escape(head, quote=False)}</summary>"' 'head, "<details><summary>细节</summary>"' overview_is_summary
+
+neg "统计失败时总览不写「测试未知」" drivers/token-usage/comment_footer.py \
+    'test_seg = "测试未知"' 'test_seg = None' cmd_fail_overview
+neg "命令确认没跑测试时总览不写「未跑测试」" drivers/token-usage/comment_footer.py \
+    'if test is not None else "未跑测试"' 'if test is not None else None' zero_test_overview
+neg "没配命令的项目也写测试段" drivers/token-usage/comment_footer.py \
+    'segs = [test_seg] if test_seg else []' 'segs = [test_seg or "测试未知"]' no_cmd_overview_no_test
+neg "AI 估算长说明又放回每条评论" drivers/token-usage/comment_footer.py \
+    '    if ai is None:' '    details.append("- AI 时间是估算：偏差来源……") if ai is not None else None
+    if ai is None:' ai_note_gone
+
+neg "项目回答 unknown 时当成 0 秒（写成「未跑测试」）" drivers/token-usage/comment_footer.py \
+    'if test_text == TEST_UNKNOWN:
+                test_seg = "测试未知"
+            else:' 'if test_text == TEST_UNKNOWN:
+                test_text = "0"
+            if True:' unknown_test_overview
 
 # 模板：每份单独去掉 footer 段里调脚本那一行，只有那一份变红
 for name in new-issue issue-comment pr-comment review; do
