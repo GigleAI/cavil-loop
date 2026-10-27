@@ -63,7 +63,7 @@ rm -f "$MT"
    # 再用 --body-file "$BODY.footer" 发评论
    ```
 
-   - footer **原样**接在正文后面：不改写、不补字、不挪行，也不要自己另拼时间 / token 行。金额的说法、模型名、价目提醒、AI 时间的误差说明脚本都已写好
+   - footer **原样**接在正文后面：不改写、不补字、不挪行，也不要自己另拼时间 / token 行。金额的说法、模型名、价目提醒脚本都已写好
    - 机器记录必须是整条评论的最后一个非空行；正文里要举 footer 的例子别用真形状，否则会被周报当成一次真实记账
    - 脚本没有输出时照常发正文，末尾写一句「用量 footer 生成失败」，不要自己编数字
 5. 通过：REST 翻 `${LABEL_PENDING_HUMAN}`，摘 `${LABEL_PENDING_REVIEW}` 和 `${LABEL_AGENT_DOING}`。不通过且轮次未到 `${REVIEW_MAX_ROUNDS}`：REST 翻 `${LABEL_PENDING_AGENT_DEFAULT}`，摘 `${LABEL_PENDING_REVIEW}` 和 `${LABEL_AGENT_DOING}`。轮次已尽：保留 `${LABEL_PENDING_REVIEW}`，加 `${LABEL_PENDING_HUMAN}`，摘 `${LABEL_AGENT_DOING}`，让人介入。每次翻 label 都调用 `repos/${REPO}/issues/N/labels` REST；不要用 `gh pr/issue edit --add-label`。

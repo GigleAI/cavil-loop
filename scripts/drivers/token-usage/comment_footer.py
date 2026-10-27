@@ -9,7 +9,6 @@
     - 开始 2026-10-27 08:48:16 · 完工 08:56:16
     - <项目命令给的分条文字，原样>
     - token 明细：<用量驱动的人读行，原样>
-    - AI 时间是估算：……
 
     </details>
     <!-- agent-metrics agent=… wt=… start=… end=… wall_secs=… <驱动 --kv 原样> test_secs=… <项目字段> -->
@@ -20,11 +19,14 @@
     转义后放进 <summary>，某个模型名带了尖括号也弄不坏折叠块。
   · 总览里的三段按**显示出来的整秒**相减：「其他」= 总 − 测试 − AI，最小 0。三段不重叠时
     相加恰好等于总耗时；测试和 AI 有重叠（AI 在想、测试在后台跑）时「其他」记 0，细节里说明。
-  · AI 时间算不出来就写「AI 时间未知」，不写 0、也不算「其他」。
+  · AI 时间算不出来就写「AI 时间未知」，不写 0、也不算「其他」。AI 时间的估算口径写在
+    docs/operations.md，不在每条评论里重复一大段说明。
   · token 明细整行用驱动的人读输出，金额措辞、价目提醒、模型说明都在里面，这里不重写；
     总览只按机器字段给一个短说法。
-  · 项目命令（配置项 COMMENT_FOOTER_EXTRA_CMD）出任何问题——没配、失败、超时、首行不对——
-    footer 照常出，只是没有「测试」那段；项目字段与已有字段同名的丢掉，不覆盖核心字段。
+  · 项目命令（配置项 COMMENT_FOOTER_EXTRA_CMD）：没配就完全不提测试；配了时总览一定有测试
+    那段，分得清三种情况——大于 0 秒写「测试 4m 51s」，命令确认这轮没跑（0 秒）写「未跑测试」，
+    失败 / 超时 / 首行不对写「测试未知」并在细节里写原因。不管哪种 footer 都照常出；项目字段与
+    已有字段同名的丢掉，不覆盖核心字段。
 """
 import argparse
 import datetime
@@ -187,14 +189,17 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     notes = []
 
     test = None
+    test_seg = None     # 配了项目命令时总览里测试那一段；没配命令的项目不提测试
     extra_details, extra_kv = [], []
     if extra is not None:
         if isinstance(extra, str):
-            notes.append(f"- 测试统计没取到：项目命令{extra}，总览里省掉了「测试」这一段")
+            test_seg = "测试未知"
+            notes.append(f"- 测试统计没取到：项目命令{extra}")
         else:
             test_text, extra_details, extra_kv = extra
             test_f = float(test_text)
             test = min(int(round(test_f)), wall) if test_f > 0 else None
+            test_seg = f"测试 {fmt_dur(test)}" if test is not None else "未跑测试"
 
     ai = None
     try:
@@ -202,9 +207,7 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     except (KeyError, ValueError):
         pass
 
-    segs = []
-    if test is not None:
-        segs.append(f"测试 {fmt_dur(test)}")
+    segs = [test_seg] if test_seg else []
     if ai is not None:
         other = wall - (test or 0) - ai
         segs.append(f"AI 约 {fmt_dur(ai)}")
@@ -229,12 +232,8 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     details = [f"- 开始 {start_ts} · 完工 {end_dt.strftime('%H:%M:%S')}"]
     details += extra_details
     details.append(f"- token 明细：{human}" if human else "- token 明细：未知（没找到本次的会话记录）")
-    if ai is not None:
-        details.append(
-            f"- AI 时间是估算：{kv.get('ai_requests', '?')} 次模型请求，每次从发出请求算到最后一段回复"
-            "写进会话记录，同一秒只算一次。偏差来源：含网络往返和排队等首字的时间；会话记录是写盘"
-            "时刻，与真实收发差几毫秒到几秒；AI 在想的时候后台命令可能也在跑")
-    else:
+    # AI 时间怎么估写在运维文档里，不每条评论重复（总览的「AI 约」已表明是估算）；算不出来才说明原因
+    if ai is None:
         details.append("- AI 时间没算出来：没找到本次的会话记录，或记录里认不出模型请求")
     details += notes
 
