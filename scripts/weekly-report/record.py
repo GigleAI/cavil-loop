@@ -33,16 +33,19 @@ RE_MARK = re.compile(r'^<!--\s*agent-metrics\s+(.*?)-->$')
 #   ① ⏱️ 开始 <日期 时刻> · 完工 <时刻> · 耗时 …
 #   ② 折叠块 + 代码块里以「开始」打头（⏱️ 在 <summary> 行上）
 #   ③ 完工带完整日期（跨零点场景）
-# 以及 GitHub#88 起的「一行总览 + 折叠细节」排版（见下面 RE_NEW_*）。
+# 以及 GitHub#88 起的「一行总览 + 折叠细节」排版（见下面 RE_NEW_*；GitHub#90 把总览挪进了折叠标题）。
 _TS = r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}|\d{2}:\d{2}:\d{2})'
 RE_FOOT = re.compile(r'^(?:⏱️\s*)?开始\s+' + _TS + r'\s*·\s*完工\s+' + _TS + r'\s*·\s*耗时\s*\S')
 RE_HEAD = re.compile(r'^(?:⏱️\s*)?开始\s+' + _TS + r'\s*·\s*完工\s+' + _TS)
 RE_TOKEN_LINE = re.compile(r'^token\s')
-# 一行总览 + 折叠细节的新排版（GitHub#88）。机器记录在时这些都不用；只有记录缺了才回落到这里：
-#   ⏱️ 耗时：8m 0s（…）｜…              ← 总览
-#   <details><summary>细节</summary>   ← 紧跟总览
+# 一行总览 + 折叠细节的新排版。机器记录在时这些都不用；只有记录缺了才回落到这里。两种都认：
+#   GitHub#90 起（总览就是折叠标题）：      GitHub#88 那一版（已发出的评论还在）：
+#   <details><summary>⏱️ 耗时：…</summary>   ⏱️ 耗时：8m 0s（…）｜…
+#                                         <details><summary>细节</summary>
+#   之后两版相同：
 #   - 开始 <日期 时刻> · 完工 <时刻>       ← 细节第一条
 #   - token 明细：<驱动的人读行>          ← 细节里，</details> 之前
+RE_NEW_FOLD = re.compile(r'^<details>\s*<summary>⏱️\s*耗时：.*</summary>$')
 RE_NEW_SUM = re.compile(r'^⏱️\s*耗时：')
 RE_NEW_DETAILS = re.compile(r'^<details>\s*<summary>细节</summary>$')
 RE_NEW_HEAD = re.compile(r'^-\s*开始\s+' + _TS + r'\s*·\s*完工\s+' + _TS + r'$')
@@ -131,19 +134,23 @@ def _legacy_footer(lines):
 def _new_footer(lines):
     """新排版：(总览行下标, 开始, 完工, `token <驱动人读行>`)。形状不全返回 None。
 
-    每一步都按位置核对（总览 → 紧跟的折叠头 → 细节第一条是开始 / 完工 → 折叠结束前有 token
-    明细），正文里零散提到「耗时：」「token 明细：」的句子凑不出这个形状。token 行补回
-    `token ` 前缀，下游与旧排版走同一套取数（RE_TOKEN_LINE / RE_COST / parse_token_line）。
+    每一步都按位置核对（总览 → 折叠头 → 细节第一条是开始 / 完工 → 折叠结束前有 token
+    明细），正文里零散提到「耗时：」「token 明细：」的句子凑不出这个形状。总览在折叠标题里
+    （GitHub#90）时折叠头就是总览那行；GitHub#88 那一版要求总览后紧跟 `细节` 折叠头。
+    token 行补回 `token ` 前缀，下游与旧排版走同一套取数（RE_TOKEN_LINE / RE_COST / parse_token_line）。
     """
-    for idx in reversed([i for i, l in enumerate(lines) if RE_NEW_SUM.match(l.strip())]):
+    cands = [i for i, l in enumerate(lines) if RE_NEW_FOLD.match(l.strip()) or RE_NEW_SUM.match(l.strip())]
+    for idx in reversed(cands):
         rest = [l.strip() for l in lines[idx + 1:] if l.strip()]
-        if len(rest) < 2 or not RE_NEW_DETAILS.match(rest[0]):
-            continue
-        head = RE_NEW_HEAD.match(rest[1])
+        if not RE_NEW_FOLD.match(lines[idx].strip()):
+            if not rest or not RE_NEW_DETAILS.match(rest[0]):
+                continue
+            rest = rest[1:]
+        head = RE_NEW_HEAD.match(rest[0]) if rest else None
         if not head:
             continue
         tok = None
-        for l in rest[2:]:
+        for l in rest[1:]:
             if l == "</details>":
                 break
             m = RE_NEW_TOKEN.match(l)

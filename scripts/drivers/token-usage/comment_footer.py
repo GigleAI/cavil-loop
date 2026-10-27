@@ -4,8 +4,7 @@
 形状（数字示意）：
 
     ---
-    ⏱️ 耗时：8m 0s（测试 4m 51s · AI 约 2m 30s · 其他 39s）｜模型：claude-opus-5-5 · 8.6m token · 约 $2.48
-    <details><summary>细节</summary>
+    <details><summary>⏱️ 耗时：8m 0s（测试 4m 51s · AI 约 2m 30s · 其他 39s）｜模型：claude-opus-5-5 · 8.6m token · 约 $2.48</summary>
 
     - 开始 2026-10-27 08:48:16 · 完工 08:56:16
     - <项目命令给的分条文字，原样>
@@ -17,6 +16,8 @@
 
 规矩：
   · 机器记录是最后一个非空行（周报采集器只认这一行）。
+  · 总览就是折叠块的标题（GitHub#90）：收起时只剩这一行，展开箭头在行首。总览按 HTML
+    转义后放进 <summary>，某个模型名带了尖括号也弄不坏折叠块。
   · 总览里的三段按**显示出来的整秒**相减：「其他」= 总 − 测试 − AI，最小 0。三段不重叠时
     相加恰好等于总耗时；测试和 AI 有重叠（AI 在想、测试在后台跑）时「其他」记 0，细节里说明。
   · AI 时间算不出来就写「AI 时间未知」，不写 0、也不算「其他」。
@@ -27,6 +28,7 @@
 """
 import argparse
 import datetime
+import html
 import math
 import os
 import re
@@ -250,7 +252,7 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
                 reserved.add(k)
                 marker.append(f"{k}={v}")
 
-    return "\n".join(["---", head, "<details><summary>细节</summary>", ""] + details
+    return "\n".join(["---", f"<details><summary>{html.escape(head, quote=False)}</summary>", ""] + details
                      + ["", "</details>", f"<!-- agent-metrics {' '.join(marker)} -->"])
 
 

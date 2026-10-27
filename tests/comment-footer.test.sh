@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 评论用量 footer（GitHub#88）：一行总览 + 折叠细节 + AI 时间估算 + 项目测试耗时接口。
+# 评论用量 footer（GitHub#88 / #90）：一行总览（就是折叠标题）+ 折叠细节 + AI 时间估算 + 项目测试耗时接口。
 #
 # 跑法：bash tests/comment-footer.test.sh
 # 依赖：python3、jq。不碰网络、不读本机真实会话（HOME 指到临时目录）。
@@ -119,7 +119,8 @@ foot() { # $1 = 总耗时秒数；其余是 env 赋值
 segs() {
     python3 - "$1" <<'PY'
 import re, sys
-line = next(l for l in sys.argv[1].splitlines() if l.startswith("⏱️"))
+line = next(l for l in sys.argv[1].splitlines() if l.startswith("<details><summary>⏱️"))
+line = re.sub(r'^<details><summary>|</summary>$', '', line)
 def secs(t):
     h = re.search(r'(\d+)h', t); m = re.search(r'(\d+)m', t); s = re.search(r'(\d+)s', t)
     return sum(int(x.group(1)) * k for x, k in ((h, 3600), (m, 60), (s, 1)) if x)
@@ -133,6 +134,8 @@ for seg in inner.split(" · "):
 print(secs(tot), *(part.get(k, "-") for k in ("test", "ai", "other")))
 PY
 }
+# 总览（折叠标题）去掉标签后的文字
+ov() { printf '%s\n' "$1" | sed -n 2p | sed -e 's|^<details><summary>||' -e 's|</summary>$||'; }
 setcfg() { printf 'COMMENT_FOOTER_EXTRA_CMD=%q\n' "$1" > "$CFG"; }
 CFG="$TMP/cfg"
 
@@ -141,10 +144,13 @@ out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 read -r tot t a o <<< "$(segs "$out")"
 say sum_equals_total "$(( t + a + o ))" "$tot"
 say sum_parts "$t $a" "291 150"
-say overview_model_cost "$(printf '%s\n' "$out" | grep -c '｜模型：claude-opus-5-5 · 8.5m token · 约 \$2.48$')" "1"
+say overview_model_cost "$(ov "$out" | grep -c '｜模型：claude-opus-5-5 · 8.5m token · 约 \$2.48$')" "1"
 say details_project_lines "$(printf '%s\n' "$out" | grep -c '^  - 单跑 3 次 约 11s$')" "1"
 say details_token_verbatim "$(printf '%s\n' "$out" | grep -cF -- "- token 明细：$HUMAN_FULL")" "1"
-say details_folded "$(printf '%s\n' "$out" | sed -n '3p;$p' | head -1)" "<details><summary>细节</summary>"
+# 总览就是折叠标题（GitHub#90）：收起时只剩一行；标题后空一行，细节里的列表才按 markdown 渲染
+say overview_is_summary "$(printf '%s\n' "$out" | sed -n 2p | grep -c '^<details><summary>⏱️ 耗时：.*</summary>$')" "1"
+say no_separate_details_head "$(printf '%s\n' "$out" | grep -c '细节</summary>')" "0"
+say summary_then_blank "$(printf '%s\n' "$out" | sed -n 3p)" ""
 say marker_last "$(printf '%s\n' "$out" | grep -v '^$' | tail -1 | grep -c '^<!-- agent-metrics .* -->$')" "1"
 say marker_fields "$(printf '%s\n' "$out" | tail -1 | grep -o 'ai_secs=150.400 ai_requests=12 test_secs=291 test_runs=4')" "ai_secs=150.400 ai_requests=12 test_secs=291 test_runs=4"
 printf '%s\n' "$out" > "$TMP/footer-full.txt"
@@ -198,19 +204,22 @@ say kv_unsafe_dropped "$(printf '%s' "$m" | grep -c 'bad=')" "0"
 setcfg ""
 out=$(foot 300 FAKE_KV="${KV_FULL% ai_secs=*}" FAKE_HUMAN="$HUMAN_FULL")
 say ai_unknown "$(printf '%s\n' "$out" | grep -c '（AI 时间未知）｜')" "1"
-say ai_unknown_no_other "$(printf '%s\n' "$out" | sed -n 2p | grep -c '其他')" "0"
+say ai_unknown_no_other "$(ov "$out" | grep -c '其他')" "0"
 
 out=$(foot 300 FAKE_KV="" FAKE_HUMAN="")
-say no_usage "$(printf '%s\n' "$out" | sed -n 2p | grep -c '｜模型未知 · token 未知$')" "1"
+say no_usage "$(ov "$out" | grep -c '｜模型未知 · token 未知$')" "1"
 say no_usage_detail "$(printf '%s\n' "$out" | grep -c 'token 明细：未知')" "1"
 
 out=$(foot 300 FAKE_KV="${KV_FULL/cost_state=full/cost_state=partial}" FAKE_HUMAN="$HUMAN_FULL")
-say cost_partial "$(printf '%s\n' "$out" | sed -n 2p | grep -c '约 \$2.48（部分用量未计价，偏低）$')" "1"
+say cost_partial "$(ov "$out" | grep -c '约 \$2.48（部分用量未计价，偏低）$')" "1"
 kv_none=$(printf '%s' "$KV_FULL" | sed 's/ cost_usd=[^ ]*//; s/cost_state=full/cost_state=none/')
 out=$(foot 300 FAKE_KV="$kv_none" FAKE_HUMAN="$HUMAN_FULL")
-say cost_none "$(printf '%s\n' "$out" | sed -n 2p | grep -c '金额未计（没有单价）$')" "1"
+say cost_none "$(ov "$out" | grep -c '金额未计（没有单价）$')" "1"
 out=$(foot 300 FAKE_KV="${KV_FULL/models=claude-opus-5-5 model_unknown=no/models=a,b model_unknown=yes}" FAKE_HUMAN="$HUMAN_FULL")
-say model_list "$(printf '%s\n' "$out" | sed -n 2p | grep -c '｜模型：a、b；另有模型无法确认 · ')" "1"
+say model_list "$(ov "$out" | grep -c '｜模型：a、b；另有模型无法确认 · ')" "1"
+# 总览进 <summary> 前做 HTML 转义：模型名带尖括号也弄不坏折叠块
+out=$(foot 300 FAKE_KV="${KV_FULL/models=claude-opus-5-5/models=x<y>\&z}" FAKE_HUMAN="$HUMAN_FULL")
+say summary_escaped "$(ov "$out" | grep -c '｜模型：x&lt;y&gt;&amp;z · ') $(printf '%s\n' "$out" | grep -c '</details>')" "1 1"
 
 # 【4】周报读法：同一条 footer，机器记录与可见部分读出同一组数
 python3 - "$S/weekly-report" "$TMP/footer-full.txt" <<'PY'
@@ -232,13 +241,22 @@ if v:
         (m["start"].replace(microsecond=0), m["end"].replace(microsecond=0)))
     say("weekly_new_same_tokens", v["tokens"], {"in": 24, "out": 15600, "cache_r": 8500000, "cache_w": 58700})
     say("weekly_new_same_cost", (v["cost"], v["has_cost"]), (2.48, True))
+# GitHub#88 那一版（总览一行、下面单独一个「细节」折叠头）已有评论在用，照样要认
+v88 = "\n".join(sum(([l[len("<details><summary>"):-len("</summary>")], "<details><summary>细节</summary>"]
+                      if l.startswith("<details><summary>⏱️") else [l] for l in lines[:-1]), []))
+w = record.extract(v88, "acme-bot", 5, 7)
+say("weekly_v88_visible", w and (w["src"], w["start"], w["end"], w["tokens"]),
+    v and ("footer", v["start"], v["end"], v["tokens"]))
 old = ("正文\n\n---\n⏱️ 开始 2026-10-27 08:48:16 · 完工 08:56:16 · 耗时 8m 0s\n"
        "token 24 input, 15.6k output, 8.5m cache read, 58.7k cache write ($2.48)（模型：claude-opus-5-5）")
 o = record.extract(old, "acme-bot", 3, 7)
 say("weekly_old_visible", o and (o["src"], o["wall"], o["cost"]), ("footer", 480, 2.48))
-# 正文里零散提到「耗时：」「token 明细：」凑不出新排版的形状
-loose = "⏱️ 耗时：8m 0s（AI 约 1m）\n\n上面那行是总览的样子，下面是细节的样子：\n- 开始 2026-10-27 08:48:16 · 完工 08:56:16\n- token 明细：1 input, 999k output ($9.00)"
-say("weekly_new_needs_shape", record.extract(loose, "acme-bot", 4, 7), None)
+# 正文里零散提到「耗时：」「token 明细：」凑不出新排版的形状：折叠头后第一条必须是开始 / 完工，
+# #88 那一版的总览后必须紧跟「细节」折叠头
+loose = ("<details><summary>⏱️ 耗时：8m 0s（AI 约 1m）</summary>\n\n上面那行是总览的样子，下面是细节的样子：\n"
+         "- 开始 2026-10-27 08:48:16 · 完工 08:56:16\n- token 明细：1 input, 999k output ($9.00)\n</details>")
+loose88 = "⏱️ 耗时：8m 0s（AI 约 1m）\n- 开始 2026-10-27 08:48:16 · 完工 08:56:16\n- token 明细：1 input, 999k output ($9.00)"
+say("weekly_new_needs_shape", (record.extract(loose, "acme-bot", 4, 7), record.extract(loose88, "acme-bot", 6, 7)), (None, None))
 PY
 CHECK
 
@@ -316,7 +334,7 @@ for name in new-issue issue-comment pr-comment review; do
     got="$TMP/body-$name.md.footer"
     if [ -s "$got" ] && head -1 "$got" | grep -q '^## 正文$' \
        && grep -v '^$' "$got" | tail -1 | grep -q '^<!-- agent-metrics agent=claude wt=7 .* ai_secs=31.000 ai_requests=5 test_secs=12 -->$' \
-       && grep -qE '^⏱️ 耗时：1h [0-9]+m [0-9]+s（测试 12s · AI 约 31s · 其他 ' "$got"; then
+       && grep -qE '^<details><summary>⏱️ 耗时：1h [0-9]+m [0-9]+s（测试 12s · AI 约 31s · 其他 ' "$got"; then
         echo "PASS tpl_$name"
     else
         echo "FAIL tpl_$name :: 照成品命令没跑出预期的评论：$(grep -v '^$' "$got" 2>/dev/null | sed -n '2p;$p' | tr '\n' '|')"
@@ -448,10 +466,18 @@ neg "超时不杀子进程组" drivers/token-usage/comment_footer.py \
     'os.killpg(p.pid, signal.SIGKILL)' 'p.kill()' cmd_timeout_not_hung
 neg "周报不认新排版" weekly-report/record.py \
     '(_legacy_footer(lines), _new_footer(lines))' '(_legacy_footer(lines),)' weekly_new_visible
-neg "新排版不核对折叠头的位置" weekly-report/record.py \
-    'if len(rest) < 2 or not RE_NEW_DETAILS.match(rest[0]):
-            continue
-        head = RE_NEW_HEAD.match(rest[1])' 'head = next((h for h in map(RE_NEW_HEAD.match, rest) if h), None)' weekly_new_needs_shape
+neg "新排版不核对开始 / 完工的位置" weekly-report/record.py \
+    'head = RE_NEW_HEAD.match(rest[0]) if rest else None' 'head = next((h for h in map(RE_NEW_HEAD.match, rest) if h), None)' weekly_new_needs_shape
+neg "#88 那一版不核对「细节」折叠头" weekly-report/record.py \
+    'if not rest or not RE_NEW_DETAILS.match(rest[0]):
+                continue
+            rest = rest[1:]' 'rest = [l for l in rest if not RE_NEW_DETAILS.match(l)]' weekly_new_needs_shape
+neg "周报不认 #88 那一版" weekly-report/record.py \
+    'RE_NEW_FOLD.match(l.strip()) or RE_NEW_SUM.match(l.strip())' 'RE_NEW_FOLD.match(l.strip())' weekly_v88_visible
+neg "总览不转义就进 <summary>" drivers/token-usage/comment_footer.py \
+    'html.escape(head, quote=False)' 'head' summary_escaped
+neg "总览不做折叠标题（退回 #88 的两行）" drivers/token-usage/comment_footer.py \
+    'f"<details><summary>{html.escape(head, quote=False)}</summary>"' 'head, "<details><summary>细节</summary>"' overview_is_summary
 
 # 模板：每份单独去掉 footer 段里调脚本那一行，只有那一份变红
 for name in new-issue issue-comment pr-comment review; do
