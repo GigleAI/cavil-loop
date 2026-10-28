@@ -9,8 +9,8 @@
 #        子代理、<synthetic>、窗口外的请求、老版本 CLI 没有「发请求」记录的情况
 #   【2】两个用量驱动的 --kv 真的带出 AI 时间（同一批文件、同一个窗口）
 #   【3】footer 生成器（comment-footer.sh）：总览各段相加 = 总耗时；测试与 AI 重叠时「其他」
-#        为 0 并说明；项目命令没配（不提测试）/ 确认没跑（「未跑测试」）/ 失败 / 超时 / 首行不对
-#        （「测试未知」）/ 字段撞名；AI 算不出来；没有用量；AI 估算长说明不再出现
+#        为 0 并说明；总览按 AI、测试、其他排（#93）；项目命令没配 / 确认没跑（都不提测试）/
+#        失败 / 超时 / 首行不对（「测试未知」）/ 字段撞名；AI 算不出来；没有用量；AI 估算长说明不再出现
 #   【4】周报读法：footer 末行是机器记录；去掉机器记录后从可见部分读出的时长 / token / 金额
 #        与机器记录一致；旧格式评论照旧能读
 #   【5】四份模板拼装后的 footer 段：走生产拼装函数，把成品里的命令原样跑一遍
@@ -145,6 +145,8 @@ out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 read -r tot t a o <<< "$(segs "$out")"
 say sum_equals_total "$(( t + a + o ))" "$tot"
 say sum_parts "$t $a" "291 150"
+# 总览顺序是 AI、测试、其他（GitHub#93）
+say overview_order "$(ov "$out" | grep -c '^⏱️ 耗时：8m 0s（AI 约 2m 30s · 测试 4m 51s · 其他 39s）｜')" "1"
 say overview_model_cost "$(ov "$out" | grep -c '｜模型：claude-opus-5-5 · 8.5m token · 约 \$2.48$')" "1"
 say details_project_lines "$(printf '%s\n' "$out" | grep -c '^  - 单跑 3 次 约 11s$')" "1"
 say details_token_verbatim "$(printf '%s\n' "$out" | grep -cF -- "- token 明细：$HUMAN_FULL")" "1"
@@ -170,7 +172,7 @@ read -r tot t a o <<< "$(segs "$out")"
 say no_cmd_no_test "$t" "-"
 say no_cmd_sum "$(( a + o ))" "$tot"
 say no_cmd_no_test_secs "$(printf '%s\n' "$out" | tail -1 | grep -c test_secs)" "0"
-# 没配项目命令的项目：总览照旧不提测试（「未跑测试」「测试未知」都只给配了命令的项目）
+# 没配项目命令的项目：总览照旧不提测试（「测试未知」只给配了命令的项目）
 say no_cmd_overview_no_test "$(ov "$out" | grep -c '测试')" "0"
 
 setcfg "echo test_secs=5; exit 3"
@@ -178,7 +180,7 @@ out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 say cmd_fail_no_test "$(segs "$out" | cut -d' ' -f2)" "-"
 say cmd_fail_noted "$(printf '%s\n' "$out" | grep -c '项目命令退出码 3')" "1"
 # 配了命令却没取到数：总览写「测试未知」，不和「没跑测试」「没配命令」混成一样
-say cmd_fail_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
+say cmd_fail_overview "$(ov "$out" | grep -cE '（AI 约 [^·）]+ · 测试未知 · 其他 [^·）]+）')" "1"
 
 setcfg "sleep 30 & sleep 30"
 t0=$(date +%s)
@@ -186,13 +188,13 @@ out=$(foot 300 CAVIL_FOOTER_EXTRA_TIMEOUT=2 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMA
 say cmd_timeout_noted "$(printf '%s\n' "$out" | grep -c '超过 2 秒没结束')" "1"
 say cmd_timeout_not_hung "$(( $(date +%s) - t0 < 15 ))" "1"
 say cmd_timeout_marker "$(printf '%s\n' "$out" | grep -v '^$' | tail -1 | grep -c '^<!-- agent-metrics')" "1"
-say cmd_timeout_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
+say cmd_timeout_overview "$(ov "$out" | grep -cE '（AI 约 [^·）]+ · 测试未知 · 其他 [^·）]+）')" "1"
 
 setcfg "echo 测试跑了 5 分钟"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 say cmd_badline_no_test "$(segs "$out" | cut -d' ' -f2)" "-"
 say cmd_badline_noted "$(printf '%s\n' "$out" | grep -c '第一行不是')" "1"
-say cmd_badline_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
+say cmd_badline_overview "$(ov "$out" | grep -cE '（AI 约 [^·）]+ · 测试未知 · 其他 [^·）]+）')" "1"
 
 # 机器记录里的测试秒数照项目命令的原文写，不在写出时舍入；总览照样按整秒显示
 setcfg "printf 'test_secs=123.456789\n'"
@@ -203,10 +205,12 @@ setcfg "printf 'test_secs=1234567\n'"
 out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
 say test_secs_exact_large "$(printf '%s\n' "$out" | tail -1 | grep -o 'test_secs=[^ ]*')" "test_secs=1234567"
 
-# 项目命令确认这轮一条测试都没跑：总览写「未跑测试」，各段相加仍等于总耗时，机器记录照写 0
+# 项目命令确认这轮一条测试都没跑：总览不提测试（GitHub#93，和没配命令一样只有 AI / 其他），
+# 各段相加仍等于总耗时，项目自己写的细节照留，机器记录照写 0（周报仍分得清「没跑」和「没配」）
 setcfg "printf 'test_secs=0\n- 本轮未跑测试\n'"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
-say zero_test_overview "$(ov "$out" | grep -c '（未跑测试 · AI 约 ')" "1"
+say zero_test_overview "$(ov "$out" | grep -c '测试') $(ov "$out" | grep -cE '（AI 约 [^·）]+ · 其他 [^·）]+）｜')" "0 1"
+say zero_test_detail_kept "$(printf '%s\n' "$out" | grep -c '^- 本轮未跑测试$')" "1"
 read -r tot t a o <<< "$(segs "$out")"
 say zero_test_sum "$t $(( a + o ))" "- $tot"
 say zero_test_secs_kept "$(printf '%s\n' "$out" | tail -1 | grep -c ' test_secs=0 ')" "1"
@@ -215,7 +219,7 @@ say zero_test_secs_kept "$(printf '%s\n' "$out" | tail -1 | grep -c ' test_secs=
 # 而不是「未跑测试」；项目给的细节和机器字段照常保留，机器记录里不写非数字的 test_secs
 setcfg "printf 'test_secs=unknown\n- 测试 1 次（后台运行，未计时）\nkv runs_seen=1\n'"
 out=$(foot 300 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
-say unknown_test_overview "$(ov "$out" | grep -c '（测试未知 · AI 约 ')" "1"
+say unknown_test_overview "$(ov "$out" | grep -cE '（AI 约 [^·）]+ · 测试未知 · 其他 [^·）]+）')" "1"
 say unknown_test_detail_kept "$(printf '%s\n' "$out" | grep -c '^- 测试 1 次（后台运行，未计时）$')" "1"
 say unknown_test_marker "$(printf '%s\n' "$out" | tail -1 | grep -c 'test_secs=') $(printf '%s\n' "$out" | tail -1 | grep -c ' runs_seen=1 ')" "0 1"
 say unknown_test_no_fail_note "$(printf '%s\n' "$out" | grep -c '测试统计没取到')" "0"
@@ -231,6 +235,11 @@ setcfg ""
 out=$(foot 300 FAKE_KV="${KV_FULL% ai_secs=*}" FAKE_HUMAN="$HUMAN_FULL")
 say ai_unknown "$(printf '%s\n' "$out" | grep -c '（AI 时间未知）｜')" "1"
 say ai_unknown_no_other "$(ov "$out" | grep -c '其他')" "0"
+# AI 算不出来时测试段照样排在 AI 之后
+setcfg "printf 'test_secs=291\n'"
+out=$(foot 300 FAKE_KV="${KV_FULL% ai_secs=*}" FAKE_HUMAN="$HUMAN_FULL")
+say ai_unknown_test_after "$(ov "$out" | grep -c '（AI 时间未知 · 测试 4m 51s）｜')" "1"
+setcfg ""
 
 out=$(foot 300 FAKE_KV="" FAKE_HUMAN="")
 say no_usage "$(ov "$out" | grep -c '｜模型未知 · token 未知$')" "1"
@@ -360,7 +369,7 @@ for name in new-issue issue-comment pr-comment review; do
     got="$TMP/body-$name.md.footer"
     if [ -s "$got" ] && head -1 "$got" | grep -q '^## 正文$' \
        && grep -v '^$' "$got" | tail -1 | grep -q '^<!-- agent-metrics agent=claude wt=7 .* ai_secs=31.000 ai_requests=5 test_secs=12 -->$' \
-       && grep -qE '^<details><summary>⏱️ 耗时：1h [0-9]+m [0-9]+s（测试 12s · AI 约 31s · 其他 ' "$got"; then
+       && grep -qE '^<details><summary>⏱️ 耗时：1h [0-9]+m [0-9]+s（AI 约 31s · 测试 12s · 其他 ' "$got"; then
         echo "PASS tpl_$name"
     else
         echo "FAIL tpl_$name :: 照成品命令没跑出预期的评论：$(grep -v '^$' "$got" 2>/dev/null | sed -n '2p;$p' | tr '\n' '|')"
@@ -377,7 +386,9 @@ report() { # 把 PASS / FAIL 行转成 ✅ / ❌；$1 = PASS 时的说明后缀
         esac
     done
 }
-template_check "$REPO_DIR" | report "（tpl_<模板> = 照成品命令跑出正文 + footer、机器记录在末行；same = 四份逐字一致；noold = 无手拼旧说明）"
+# 不用管道：管道右边在子 shell 里跑，ok / bad 的计数带不回来，模板检查全红时整套仍会退出 0
+report "（tpl_<模板> = 照成品命令跑出正文 + footer、机器记录在末行；same = 四份逐字一致；noold = 无手拼旧说明）" \
+    < <(template_check "$REPO_DIR")
 
 export HOME="$REAL_HOME"
 
@@ -507,10 +518,16 @@ neg "总览不做折叠标题（退回 #88 的两行）" drivers/token-usage/com
 
 neg "统计失败时总览不写「测试未知」" drivers/token-usage/comment_footer.py \
     'test_seg = "测试未知"' 'test_seg = None' cmd_fail_overview
-neg "命令确认没跑测试时总览不写「未跑测试」" drivers/token-usage/comment_footer.py \
-    'if test is not None else "未跑测试"' 'if test is not None else None' zero_test_overview
+neg "命令确认没跑测试时总览仍写「未跑测试」（#93 之前）" drivers/token-usage/comment_footer.py \
+    'if test is not None else None' 'if test is not None else "未跑测试"' zero_test_overview
 neg "没配命令的项目也写测试段" drivers/token-usage/comment_footer.py \
-    'segs = [test_seg] if test_seg else []' 'segs = [test_seg or "测试未知"]' no_cmd_overview_no_test
+    'test_seg = None     #' 'test_seg = "测试未知"     #' no_cmd_overview_no_test
+neg "总览测试段排在 AI 前面（#93 之前的顺序）" drivers/token-usage/comment_footer.py \
+    '        segs = [f"AI 约 {fmt_dur(ai)}"]
+        if test_seg:
+            segs.append(test_seg)' '        segs = ([test_seg] if test_seg else []) + [f"AI 约 {fmt_dur(ai)}"]' overview_order
+neg "AI 算不出来时测试段排在前面" drivers/token-usage/comment_footer.py \
+    'segs = ["AI 时间未知"] + ([test_seg] if test_seg else [])' 'segs = ([test_seg] if test_seg else []) + ["AI 时间未知"]' ai_unknown_test_after
 neg "AI 估算长说明又放回每条评论" drivers/token-usage/comment_footer.py \
     '    if ai is None:' '    details.append("- AI 时间是估算：偏差来源……") if ai is not None else None
     if ai is None:' ai_note_gone
