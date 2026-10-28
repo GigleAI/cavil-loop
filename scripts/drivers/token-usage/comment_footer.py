@@ -4,7 +4,7 @@
 形状（数字示意）：
 
     ---
-    <details><summary>⏱️ 耗时：8m 0s（测试 4m 51s · AI 约 2m 30s · 其他 39s）｜模型：claude-opus-5-5 · 8.6m token · 约 $2.48</summary>
+    <details><summary>⏱️ 耗时：8m 0s（AI 约 2m 30s · 测试 4m 51s · 其他 39s）｜模型：claude-opus-5-5 · 8.6m token · 约 $2.48</summary>
 
     - 开始 2026-10-27 08:48:16 · 完工 08:56:16
     - <项目命令给的分条文字，原样>
@@ -17,16 +17,18 @@
   · 机器记录是最后一个非空行（周报采集器只认这一行）。
   · 总览就是折叠块的标题（GitHub#90）：收起时只剩这一行，展开箭头在行首。总览按 HTML
     转义后放进 <summary>，某个模型名带了尖括号也弄不坏折叠块。
-  · 总览里的三段按**显示出来的整秒**相减：「其他」= 总 − 测试 − AI，最小 0。三段不重叠时
+  · 总览里的三段按 AI、测试、其他的顺序排（GitHub#93），按**显示出来的整秒**相减：
+    「其他」= 总 − 测试 − AI，最小 0。三段不重叠时
     相加恰好等于总耗时；测试和 AI 有重叠（AI 在想、测试在后台跑）时「其他」记 0，细节里说明。
   · AI 时间算不出来就写「AI 时间未知」，不写 0、也不算「其他」。AI 时间的估算口径写在
     docs/operations.md，不在每条评论里重复一大段说明。
   · token 明细整行用驱动的人读输出，金额措辞、价目提醒、模型说明都在里面，这里不重写；
     总览只按机器字段给一个短说法。
-  · 项目命令（配置项 COMMENT_FOOTER_EXTRA_CMD）：没配就完全不提测试；配了时总览一定有测试
-    那段，分得清三种情况——大于 0 秒写「测试 4m 51s」，命令确认这轮没跑（0 秒）写「未跑测试」，
-    命令回答 unknown（跑过但说不出耗时）或失败 / 超时 / 首行不对写「测试未知」，后者在细节里写原因。不管哪种 footer 都照常出；项目字段与
-    已有字段同名的丢掉，不覆盖核心字段。
+  · 项目命令（配置项 COMMENT_FOOTER_EXTRA_CMD）：没配、或命令确认这轮没跑（0 秒），总览都不提
+    测试（GitHub#93；机器记录照写 test_secs=0，周报仍分得清「没跑」和「没配」）；大于 0 秒写
+    「测试 4m 51s」；命令回答 unknown（跑过但说不出耗时）或失败 / 超时 / 首行不对写「测试未知」，
+    后者在细节里写原因——统计坏了要让人看得见。不管哪种 footer 都照常出；项目字段与已有字段
+    同名的丢掉，不覆盖核心字段。
 """
 import argparse
 import datetime
@@ -192,7 +194,7 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     notes = []
 
     test = None
-    test_seg = None     # 配了项目命令时总览里测试那一段；没配命令的项目不提测试
+    test_seg = None     # 总览里测试那一段；没配命令、或命令确认没跑测试时不提
     extra_details, extra_kv = [], []
     if extra is not None:
         if isinstance(extra, str):
@@ -205,7 +207,7 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
             else:
                 test_f = float(test_text)
                 test = min(int(round(test_f)), wall) if test_f > 0 else None
-                test_seg = f"测试 {fmt_dur(test)}" if test is not None else "未跑测试"
+                test_seg = f"测试 {fmt_dur(test)}" if test is not None else None
 
     ai = None
     try:
@@ -213,15 +215,17 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     except (KeyError, ValueError):
         pass
 
-    segs = [test_seg] if test_seg else []
+    # 顺序：AI、测试、其他（GitHub#93）
     if ai is not None:
         other = wall - (test or 0) - ai
-        segs.append(f"AI 约 {fmt_dur(ai)}")
+        segs = [f"AI 约 {fmt_dur(ai)}"]
+        if test_seg:
+            segs.append(test_seg)
         segs.append(f"其他 {fmt_dur(max(0, other))}")
         if other < 0:
             notes.append("- 测试和 AI 时间有重叠（AI 工作时测试也在跑），两段相加超过总耗时，「其他」记为 0")
     else:
-        segs.append("AI 时间未知")
+        segs = ["AI 时间未知"] + ([test_seg] if test_seg else [])
 
     usage = "token 未知"
     if kv_pairs:
