@@ -6,16 +6,17 @@
 # 模板里的「外部需求机器人交接规则」段已带好 --config，worker 只补编号。
 # 早期的入口名 notify-relay.sh 仍可用（转发到这里）。
 #
-# 做的事：加等待标签 → 摘掉全部触发标签、doing/agent、pending/review → 重新指派机器人
-# （已是 assignee 就先移掉、读回确认，再指派）→ **PR 上再请求机器人 review**（同样先移再请求）
-# → 读回核对。机器人在 GitHub 上收得到「issue 被指派」和「PR 被请求 review」，收不到「PR 被
-# 指派」，所以 PR 上光改 assignee 叫不醒它（GitHub#97）。失败整体重试一次；仍失败就交还维护者。
+# 做的事（GitHub#100）：加等待标签 → 摘掉全部触发标签、doing/agent、pending/review → 读回核对
+# → 确认成功后调一次 webhook（配了才发）。issue 和 PR 做法相同，不再指派机器人、不再请求它
+# review：机器人收不到那些事件，实际全靠它自己的定时扫描；webhook 一到它就来全量拉取挂着
+# 等待标签的条目。失败整体重试一次；仍失败就交还维护者。
 #
 # 退出码：
-#   0 叫醒成功（只说明标签、assignee、PR 上的 review 请求都改好了，不说明机器人已经转达）
+#   0 叫醒成功（只说明标签改好了；webhook 成败只记一行、不影响退出码；不说明机器人已经转达）
 #   2 前置检查拒绝，或功能没配全 —— 没发任何写请求，标签不动
-#   3 叫醒失败，已交还维护者（条目上只剩 pending/human，没有等待标签；PR 的待 review 名单里没有机器人）
+#   3 叫醒失败，已交还维护者（条目上只剩 pending/human，没有等待标签）
 #   4 交还也失败 —— 输出里是实际读回的标签；**不要**对外写「已交人」
+# 只有退出码 0 的那一个出口会调 webhook：2 / 3 / 4 时交接都还没确认成功。
 #
 # 不读评论内容，也不按评论去重：去重会把「刚发的这条汇报」当成已汇报，挡住首次叫醒。
 #
@@ -55,10 +56,9 @@ lc() { requester_bot_lc "$1"; }
 mapfile -t CLEAR_LABELS < <(printf '%s\n' "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" "${LABEL_PENDING_REVIEW:-}" \
     | awk 'NF && !seen[$0]++')
 
-# 现读条目：输出两行 —— 第一行 labels（\x1f 分隔），第二行 assignees（\x1f 分隔）
+# 现读条目的标签（\x1f 分隔）
 read_item() {
-    gh api "repos/$REPO/issues/$1" \
-        --jq '([.labels[].name] | join("\u001f")), ([.assignees[].login] | join("\u001f"))'
+    gh api "repos/$REPO/issues/$1" --jq '[.labels[].name] | join("\u001f")'
 }
 
 has_label() {   # <labels(\x1f)> <label>
@@ -90,6 +90,7 @@ requester_bot_check_actor || reject "$REQUESTER_BOT_REASON"
 
 ITEM_JSON=$(gh api "repos/$REPO/issues/$NUM") || reject "读不到 #$NUM"
 IS_PR=$(printf '%s' "$ITEM_JSON" | jq -r 'has("pull_request") and .pull_request != null')
+ITEM_KIND=issue; [ "$IS_PR" != true ] || ITEM_KIND=pr
 [ "$(printf '%s' "$ITEM_JSON" | jq -r '.state')" = open ] || reject "#$NUM 不是打开状态"
 
 # 是不是机器人提的需求：和合并后通知共用同一个判定（_lib.sh 的 requester_bot_item_origin）。
@@ -111,7 +112,7 @@ done
 # ── 叫醒 ──
 LAST_FAIL=""
 wake_once() {
-    local L enc state labels assignees reviewers
+    local L enc labels
     gh_write api -X POST "repos/$REPO/issues/$NUM/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null \
         || { LAST_FAIL="加等待标签失败"; return 1; }
     for L in "${CLEAR_LABELS[@]}"; do
@@ -119,63 +120,51 @@ wake_once() {
         # 404 = 本来就不在；别的失败交给下面的读回核对
         gh_write api -X DELETE "repos/$REPO/issues/$NUM/labels/$enc" >/dev/null 2>&1 || true
     done
-    requester_bot_reassign "$NUM" || { LAST_FAIL="$REQUESTER_BOT_FAIL"; return 1; }
-    if [ "$IS_PR" = true ]; then
-        requester_bot_request_review "$NUM" || { LAST_FAIL="$REQUESTER_BOT_FAIL"; return 1; }
-    fi
-    # 读回核对：等待标签在、要摘的一个都不在、机器人是 assignee；PR 上机器人在待 review 名单里
-    state=$(read_item "$NUM") || { LAST_FAIL="读回失败"; return 1; }
-    labels=$(printf '%s\n' "$state" | sed -n 1p)
-    assignees=$(printf '%s\n' "$state" | sed -n 2p)
+    # 读回核对：等待标签在、要摘的一个都不在
+    labels=$(read_item "$NUM") || { LAST_FAIL="读回失败"; return 1; }
     has_label "$labels" "$LABEL_PENDING_REQUESTER_BOT" || { LAST_FAIL="读回没有等待标签（实际：$(show_labels "$labels")）"; return 1; }
     for L in "${CLEAR_LABELS[@]}"; do
         has_label "$labels" "$L" && { LAST_FAIL="读回仍有 $L（实际：$(show_labels "$labels")）"; return 1; }
     done
-    requester_bot_has_login "$assignees" "$REQUESTER_BOT_ACCOUNT" || { LAST_FAIL="读回 assignee 里没有 $REQUESTER_BOT_ACCOUNT"; return 1; }
-    if [ "$IS_PR" = true ]; then
-        reviewers=$(requester_bot_read_reviewers "$NUM") || { LAST_FAIL="读回待 review 名单失败"; return 1; }
-        requester_bot_has_login "$reviewers" "$REQUESTER_BOT_ACCOUNT" || { LAST_FAIL="读回待 review 名单里没有 $REQUESTER_BOT_ACCOUNT"; return 1; }
-    fi
     return 0
 }
 
 # ── 交还维护者 ──
-# PR 上先把机器人移出待 review 名单（读回确认），再摘等待标签。
 # 等待标签**最后**才摘：它在的时候 greedy 兜底和 self-heal 都不会碰这一条；先摘它，
 # 中途失败就会露出一个「只剩触发标签 / 什么都没有」的状态。第 1–3 步失败 = 不摘等待
-# 标签、不算交还成功；移出待 review 名单失败同样不摘等待标签。每一步都可以安全重跑。
+# 标签、不算交还成功。每一步都可以安全重跑。
 handback() {
-    local L enc state labels
+    local L enc labels
     gh_write api -X POST "repos/$REPO/issues/$NUM/labels" -f "labels[]=$LABEL_PENDING_HUMAN" >/dev/null \
         || { LAST_FAIL="交还：加 $LABEL_PENDING_HUMAN 失败"; return 1; }
     for L in "${CLEAR_LABELS[@]}"; do
         enc=$(printf '%s' "$L" | jq -sRr @uri)
         gh_write api -X DELETE "repos/$REPO/issues/$NUM/labels/$enc" >/dev/null 2>&1 || true
     done
-    state=$(read_item "$NUM") || { LAST_FAIL="交还：读回失败"; return 1; }
-    labels=$(printf '%s\n' "$state" | sed -n 1p)
+    labels=$(read_item "$NUM") || { LAST_FAIL="交还：读回失败"; return 1; }
     has_label "$labels" "$LABEL_PENDING_HUMAN" || { LAST_FAIL="交还：读回没有 $LABEL_PENDING_HUMAN"; return 1; }
     for L in "${CLEAR_LABELS[@]}"; do
         has_label "$labels" "$L" && { LAST_FAIL="交还：读回仍有 $L"; return 1; }
     done
-    if [ "$IS_PR" = true ]; then
-        requester_bot_unrequest_review "$NUM" || { LAST_FAIL="交还：$REQUESTER_BOT_FAIL"; return 1; }
-    fi
     enc=$(printf '%s' "$LABEL_PENDING_REQUESTER_BOT" | jq -sRr @uri)
     gh_write api -X DELETE "repos/$REPO/issues/$NUM/labels/$enc" >/dev/null 2>&1 || true
-    state=$(read_item "$NUM") || { LAST_FAIL="交还：摘等待标签后读回失败"; return 1; }
-    labels=$(printf '%s\n' "$state" | sed -n 1p)
+    labels=$(read_item "$NUM") || { LAST_FAIL="交还：摘等待标签后读回失败"; return 1; }
     has_label "$labels" "$LABEL_PENDING_REQUESTER_BOT" && { LAST_FAIL="交还：等待标签没摘掉"; return 1; }
     return 0
 }
 
+WOKE=""
 if wake_once; then
-    say "✅ 已叫醒 $REQUESTER_BOT_ACCOUNT（#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT 并重新指派$([ "$IS_PR" = true ] && printf '、请求 review')）"
-    exit 0
+    WOKE="#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT"
+else
+    say "叫醒第 1 次失败：$LAST_FAIL，整体重试一次"
+    if wake_once; then WOKE="重试后成功，#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT"; fi
 fi
-say "叫醒第 1 次失败：$LAST_FAIL，整体重试一次"
-if wake_once; then
-    say "✅ 已叫醒 $REQUESTER_BOT_ACCOUNT（重试后成功）"
+# 唯一的成功出口：交接已读回确认，才通知 webhook
+if [ -n "$WOKE" ]; then
+    say "✅ 已叫醒 $REQUESTER_BOT_ACCOUNT（$WOKE）"
+    requester_bot_webhook_notify "$NUM" "$ITEM_KIND"
+    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || say "$REQUESTER_BOT_WEBHOOK_RESULT"
     exit 0
 fi
 WAKE_FAIL="$LAST_FAIL"
@@ -184,6 +173,6 @@ if handback; then
     say "⚠️ 叫醒失败（$WAKE_FAIL），已交还维护者：#$NUM 现在只挂 $LABEL_PENDING_HUMAN"
     exit 3
 fi
-FINAL=$(read_item "$NUM" 2>/dev/null | sed -n 1p) || FINAL=""
+FINAL=$(read_item "$NUM" 2>/dev/null) || FINAL=""
 say "❌ 叫醒失败（$WAKE_FAIL），交还维护者也失败（$LAST_FAIL）。实际读回的标签：${FINAL:+$(show_labels "$FINAL")}${FINAL:-读不到}"
 exit 4

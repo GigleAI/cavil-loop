@@ -432,19 +432,21 @@ Leave it empty to keep the previous behaviour exactly.
 
 When another AI assistant with its own GitHub account files requests directly, the agent's
 questions / reports skip `pending/human` and run the wake-up script instead: the item gets
-`LABEL_PENDING_REQUESTER_BOT` and `REQUESTER_BOT_ACCOUNT` is re-assigned (on a PR it is also asked
-to review — the bot receives "review requested" but not "PR assigned"). When the PR is merged or
-closed unmerged, the daemon posts a result comment on the bot's issue and re-assigns the bot.
+`LABEL_PENDING_REQUESTER_BOT` and, once that is confirmed, the bot's webhook is called once (issue and
+PR alike; the bot is no longer assigned or asked to review). When the PR is merged or closed
+unmerged, the daemon posts a result comment on the bot's issue, adds the waiting label and calls the webhook.
 Leaving the five settings (`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUNT` /
 `REQUESTER_BOT_ALLOWED_ACTORS` / `REQUESTER_BOT_ORIGIN_MARKER` / `REQUESTER_BOT_REPORT_FIRST`)
 empty keeps today's behaviour byte-for-byte. The early names (`LABEL_PENDING_RELAY`, `RELAY_*`)
-are still read; for each setting the new name wins when it has a value.
+are still read; for each setting the new name wins when it has a value. The webhook has three more
+settings (`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`); an empty URL sends nothing, and the
+config file must be mode 600.
 
 Operationally:
 
 - Items carrying the waiting label are left alone by the greedy pass and self-heal; adding a trigger label dispatches them through the normal flow and removes the waiting label
 - There is no waiting timeout. If the bot never answers, nothing shows up in `poll.log`; watch the board for items stuck on the waiting label
-- The wake-up script runs through the durable entry `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh` (survives release switches; the early `notify-relay.sh` entry forwards to it) and logs one `notify-requester-bot #<number>: …` line to `poll.log` per run
+- The wake-up script runs through the durable entry `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh` (survives release switches; the early `notify-relay.sh` entry forwards to it) and logs one `notify-requester-bot #<number>: …` line to `poll.log` per run, followed by one webhook result line when configured (`已通知 webhook（HTTP 200）` / `webhook 通知失败（…）` / `… 跳过`) — never the URL or key
 - Merge / close notices: pending ones sit in `state.json` under `requester_bot_done_queue`; each one logs `✅ 已把 PR #N 的结果…` when sent, or a ⚠️ line after 30 failed ticks. They run inside the post-merge cleanup pass, so `AUTO_CLEANUP_ON_MERGE=false` turns them off too
 - Full guide, exit codes, evidence rules and a worked example: [collaboration.md → External requester bot](collaboration.md#external-requester-bot)
 
