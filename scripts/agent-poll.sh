@@ -53,6 +53,10 @@ for field in seen_issue_comments seen_review_comments seen_reviews worker_models
         jq ".$field = {}" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     fi
 done
+# requester_bot_done_queue（GitHub#97）故意不进上面的补字段循环：功能关闭时 state.json 要和以前
+# 逐字节一样；读处一律 `// {}` 兜底。
+[ -z "$REQUESTER_BOT_NAME_CONFLICTS" ] \
+    || log "⚠️ 外部需求机器人配置新旧名字同时填了且不一样：$REQUESTER_BOT_NAME_CONFLICTS"
 
 # 本轮 open 快照目录：开头清一次，保证绝不会拿上一轮的数据做判断。
 # 放在 flock 之后——锁保证同一时刻只有一轮在跑，这里删目录不会踩到别人。
@@ -117,7 +121,7 @@ remember_trigger_label() {
 # 原触发模型的 pending label 并记录警告，让下一轮自动 fallback resume。
 # 两趟都从本轮快照里筛，不再各发一次 gh list（快照还没拉过的话这里触发第一次拉取）。
 # 失败仍然降级成空串：读不到就本轮不 self-heal，和原来一样，绝不瞎翻 label。
-# 第 4 列（labels_csv）一并带上：挂着等待传话标签（GitHub#95）的不翻回触发标签。
+# 第 4 列（labels_csv）一并带上：挂着外部需求机器人等待标签（GitHub#95）的不翻回触发标签。
 zombie_pr_data=$(snapshot_rows pr "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1,2,4 || true)
 zombie_issue_nums=$(snapshot_rows issue "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1,4 || true)
 
@@ -132,11 +136,11 @@ self_heal_one() {
         selfheal_reset "$issue_n"   # 活着 → 清连续失败计数
         return 0                    # session 真活着，不是 zombie
     fi
-    # 等待传话中（叫醒脚本摘 doing/agent 没摘成，或人手动挂上）：翻回触发标签会立刻
+    # 等外部需求机器人带回答复中（叫醒脚本摘 doing/agent 没摘成，或人手动挂上）：翻回触发标签会立刻
     # 按「有人又打了触发标签」重新派工并摘掉等待标签，等于 daemon 自己替人说了「接着干」。
     # 不动它：等机器人带回答复 / 人来处理。
-    if labels_have_relay "$labels_csv"; then
-        SELFHEAL_RELAY+=" ${kind}#${n}"
+    if labels_have_requester_bot_wait "$labels_csv"; then
+        SELFHEAL_REQUESTER_BOT+=" ${kind}#${n}"
         return 0
     fi
     # 多机分工：session 不存在**不等于**worker 死了 —— 也可能是另一台机器正在跑它。
@@ -182,7 +186,7 @@ self_heal_one() {
 # 本轮因「不是本机的活」而跳过的条目，攒起来最后一行汇总 —— 每条每轮各打一行的话，
 # 对面满载时这里每 30 秒就刷 4-5 行噪音，把真正的 self-heal 淹掉。
 SELFHEAL_FOREIGN=""
-SELFHEAL_RELAY=""
+SELFHEAL_REQUESTER_BOT=""
 
 if [ -n "$zombie_pr_data" ]; then
     while IFS=$'\t' read -r pr branch zlabels; do
@@ -199,8 +203,8 @@ if [ -n "$zombie_issue_nums" ]; then
         self_heal_one "issue" "$issue_n" "$issue_n" "$zlabels"
     done <<< "$zombie_issue_nums"
 fi
-if [ -n "$SELFHEAL_RELAY" ]; then
-    log "self-heal 跳过（挂着等待传话标签 $LABEL_PENDING_RELAY，等机器人带回答复）:$SELFHEAL_RELAY"
+if [ -n "$SELFHEAL_REQUESTER_BOT" ]; then
+    log "self-heal 跳过（挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，等机器人带回答复）:$SELFHEAL_REQUESTER_BOT"
 fi
 if [ -n "$SELFHEAL_FOREIGN" ]; then
     log "self-heal 跳过（不是本机 $SELFHEAL_HOST_ID 派的，括号里是记录的归属）:$SELFHEAL_FOREIGN"
@@ -341,10 +345,10 @@ collect_queue_rows() {
                     continue ;;
             esac
         fi
-        # 等待传话期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
-        # doing/agent 时一并摘掉等待标签（dispatch-*.sh 的 RELAY_DISPATCH_CLEAR）。
-        if labels_have_relay "$labels_csv"; then
-            log "${kind} #${num} 挂着等待传话标签 $LABEL_PENDING_RELAY，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
+        # 等外部需求机器人期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
+        # doing/agent 时一并摘掉等待标签（_lib.sh flip_to_doing 的 REQUESTER_BOT_DISPATCH_CLEAR）。
+        if labels_have_requester_bot_wait "$labels_csv"; then
+            log "${kind} #${num} 挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
         fi
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
@@ -669,6 +673,9 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 # 同样是因为 PR 已记入 cleaned_prs，任何一次读失败都不能丢掉这件事。
                 # 普通 issue（没有父）清队时一次 /parent 404 就出队。
                 sub_issue_rollup_enqueue "$issue_n" "$STATE_FILE"
+                # 来自外部需求机器人提的需求 → 把「已合并」告诉它（GitHub#97；功能关闭时不入队）。
+                # 和 cleaned_prs 同一时刻入队：这个 PR 之后不会再被扫到，不会重复入队。
+                requester_bot_done_enqueue "$prnum" merged "$STATE_FILE"
             else
                 log "  auto-cleanup PR #$prnum 失败（busy/dirty/hook 报错），下轮重试"
             fi
@@ -759,11 +766,20 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 fi
             fi
 
+            # 来自外部需求机器人提的需求、这项工作也没有别的 PR 开着 → 把「关闭未合并」告诉它
+            # （GitHub#97；功能关闭时不入队）。和 unmerged_prs_handled 同一时刻入队，不会重复。
+            case "$open_worknums" in
+                *" $issue_n "*) ;;
+                *) requester_bot_done_enqueue "$prnum" closed "$STATE_FILE" ;;
+            esac
             tmp=$(mktemp)
             jq --argjson n "$prnum" '.unmerged_prs_handled = ((.unmerged_prs_handled // []) + [$n])' \
                 "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
         done <<< "$unmerged_prs"
     fi
+    # 合并 / 关闭的结果通知外部需求机器人（GitHub#97）：放在 § 3 和 § 3c 都入过队之后清队。
+    # 队列为空时只读一次本地 state.json，不碰 GitHub。
+    requester_bot_done_drain "$STATE_FILE" || true
 
     # ── 4. 自动 cleanup 直接 close 的 issue（无关联 merged PR）──
     # § 3 通过 PR 反推 issue 清理；但有的 issue 不经 PR 直接被 close（duplicate / won't
