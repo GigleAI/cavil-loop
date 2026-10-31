@@ -396,12 +396,13 @@ reject_suite() {   # <scripts 副本>
     fresh_relay; add_item "$RW" 63 pr "" relay-bot "$MARK" chore/z
     add_item "$RW" 64 pr "doing/agent" worker-bot "实现" feature/issue-63; : > "$RW/gh/calls.log"
     relay_case "$S" 64; chk "拒绝 · 关联编号指向 PR：退出码 2" "$RC" 2; chk "拒绝 · 关联编号指向 PR：零写请求" "$(writes)" 0
-    # 只认分支名里的编号，不读正文：正文写了 Closes #50（单行、跨行都一样）也拒绝
-    fresh_relay; add_item "$RW" 65 pr "doing/agent" worker-bot "Closes #50" chore/v; : > "$RW/gh/calls.log"
-    relay_case "$S" 65; chk "拒绝 · 只在正文写 Closes、分支不带编号：退出码 2" "$RC" 2; chk "拒绝 · 只在正文写 Closes：零写请求" "$(writes)" 0
+    # 别人另开的 PR：分支名不带编号，正文写 Closes #50 → 照样认出 #50（作对照）
+    fresh_relay; add_item "$RW" 65 pr "doing/agent" worker-bot "这份改动解决 Closes #50" chore/v
+    relay_case "$S" 65; chk "对照 · 正文 Closes #50 的另开 PR：认出 #50，退出码 0" "$RC" 0
+    # 关键词和编号分在两行：daemon 两种找法结论不同 → 认不准，拒绝、零写请求
     fresh_relay; add_item "$RW" 66 pr "doing/agent" worker-bot "Closes
 #50" chore/u; : > "$RW/gh/calls.log"
-    relay_case "$S" 66; chk "拒绝 · 跨行写的 Closes、分支不带编号：退出码 2" "$RC" 2; chk "拒绝 · 跨行写的 Closes：零写请求" "$(writes)" 0
+    relay_case "$S" 66; chk "拒绝 · 跨行写的 Closes（两种找法不一致）：退出码 2" "$RC" 2; chk "拒绝 · 跨行写的 Closes：零写请求" "$(writes)" 0
 }
 success_suite() {   # <scripts 副本>
     local S="$1"
@@ -548,10 +549,9 @@ D=$(mutate relay-first scripts/notify-relay.sh \
 
 echo "── 3c. 从 PR 正文找关联 issue：关闭 / 开启都和改动前逐字节一致 ──"
 # 这条规则 daemon 里本来就有两份（会话命名用 grep 逐行找、活跃 worker 列表用 jq 整段找），
-# 两份对跨行写法本就判断不同。本 PR 不碰它们：叫醒脚本只认分支名，不读正文（PR #96 复审
-# 三轮的收口）。这里用同一批正文，在功能关闭 / 开启两种配置下，分别跑改动前（merge-base）
-# 和本版的会话命名与活跃 worker 列表，结果必须逐条相同；再起真的 PR 派工，确认选中的工作区
-# 也相同。负对照：把会话命名改成整段匹配（上一版的做法）→ 必须变红。
+# 两份对跨行写法判断不同（main 上就如此）。本 PR 不改它们的行为：功能关闭 / 开启两种配置下，
+# 同一批正文跑改动前（merge-base）和本版的会话命名与活跃 worker 列表，结果必须逐条相同；
+# 再起真的 PR 派工，确认选中的会话也相同。叫醒脚本两种都跑、一致才认（下面单独核对）。
 # 正文用 \n \r \t 转义写（python 解码），制表符、CRLF 是真的控制字符。
 LINK_CASES='1|Closes #50
 2|fixes #51 and refs #52
@@ -567,7 +567,8 @@ LINK_CASES='1|Closes #50
 12|intro\ncLoSeS #64\n
 13|Fixes\n\n  #65
 14|Closes # 66
-15|line one\r\nRefs #68\r\n'
+15|line one\r\nRefs #68\r\n
+16|Closes\n#70, then Fixes #71'
 link_numbers() {   # <scripts 副本> <W>：每条正文一行「PR 会话编号 列表里的编号」
     local S="$1" W="$2"
     env FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" TICK_DIR="$W/tick" bash -c '
@@ -600,23 +601,46 @@ link_suite() {   # <scripts 副本>
         link_env "$SANDBOX/link-old" $mode; link_env "$SANDBOX/link-new" $mode
         link_numbers "$OLD" "$SANDBOX/link-old" > "$SANDBOX/link-old.txt"
         link_numbers "$S" "$SANDBOX/link-new" > "$SANDBOX/link-new.txt"
-        chk "正文关联 · 功能$mode：15 条正文的会话编号和列表编号与改动前逐条相同" \
+        chk "正文关联 · 功能$mode：16 条正文的会话编号和列表编号与改动前逐条相同" \
             "$(cmp -s "$SANDBOX/link-old.txt" "$SANDBOX/link-new.txt" && echo same || { diff "$SANDBOX/link-old.txt" "$SANDBOX/link-new.txt" | grep -c '^>'; })" same
-        chk "正文关联 · 功能$mode：对拍不是两边都空" "$(wc -l < "$SANDBOX/link-new.txt" | tr -d ' ')" 15
+        chk "正文关联 · 功能$mode：对拍不是两边都空" "$(wc -l < "$SANDBOX/link-new.txt" | tr -d ' ')" 16
     done
 }
+# 叫醒脚本认定的来源：只在会话命名和活跃 worker 列表两边都指向同一个 issue 时才认，
+# 否则拒绝。逐条正文核对这个性质（功能开启；关联的 issue 不存在，脚本会在读它时报出编号）。
+relay_link_suite() {   # <scripts 副本>
+    local S="$1" W="$SANDBOX/link-relay" pr name lst want got
+    link_env "$W" on
+    link_numbers "$S" "$W" > "$W/numbers.txt"
+    while read -r pr name lst; do
+        lst=$(printf '%s' "$lst" | grep -oE '^\[issue #[0-9]+' | grep -oE '[0-9]+'); [ -n "$lst" ] || lst=$pr
+        if [ "$name" = "$lst" ] && [ "$name" != "$pr" ]; then want=$name; else want=-; fi
+        RW_SAVE="$RW"; RW="$W"; relay_case "$S" "$pr"; RW="$RW_SAVE"
+        got=$(printf '%s' "$OUT" | grep -oE '读不到关联的 issue #[0-9]+' | grep -oE '[0-9]+$' | head -1)
+        [ -n "$got" ] || { [ "$RC" = 2 ] && got=-; }
+        chk "正文关联 · PR #$pr：叫醒脚本的来源（会话命名 $name / 列表 $lst）" "${got:-?}" "$want"
+    done < "$W/numbers.txt"
+}
 link_suite "$NEW"
+relay_link_suite "$NEW"
+D=$(mutate relay-whole-only scripts/notify-relay.sh \
+    '        [ "$BY_LINE" = "$BY_WHOLE" ] \' \
+    '        BY_LINE="$BY_WHOLE"; [ "$BY_LINE" = "$BY_WHOLE" ] \') && neg "叫醒脚本只用整段找（跨行时和会话命名对不上）" relay_link_suite "$D"
+D=$(mutate relay-line-only scripts/notify-relay.sh \
+    '        [ "$BY_LINE" = "$BY_WHOLE" ] \' \
+    '        BY_WHOLE="$BY_LINE"; [ "$BY_LINE" = "$BY_WHOLE" ] \') && neg "叫醒脚本只用逐行找（跨行时和列表对不上）" relay_link_suite "$D"
+D=$(mutate relay-no-body scripts/notify-relay.sh \
+    '        ORIGIN="$BY_LINE"' \
+    '        ORIGIN=""') && neg "叫醒脚本不认正文关联（另开的 PR 叫不醒）" reject_suite "$D"
 D=$(mutate link-wholebody scripts/_lib.sh \
-    "    n=\$(gh pr view \"\$pr\" --repo \"\$REPO\" --json body --jq '.body // \"\"' 2>/dev/null \\
-        | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \\
+    "    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \\
         | head -1 \\
-        | grep -oE '[0-9]+' || true)" \
-    "    n=\$(gh pr view \"\$pr\" --repo \"\$REPO\" --json body --jq '.body // \"\"' 2>/dev/null \\
-        | jq -Rsr 'first(capture(\"(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)\").n) // empty' || true)") \
+        | grep -oE '[0-9]+' || true" \
+    "    jq -Rr --slurp --arg re \"\$PR_BODY_LINK_JQ_RE\" 'try capture(\$re).n catch \"\"' || true") \
     && neg "会话命名改成整段匹配（上一版的做法）" link_suite "$D"
 D=$(mutate link-jq scripts/_lib.sh \
-    '[[:space:]]+#(?<n>[0-9]+)").n catch "")' \
-    '[ ]+#(?<n>[0-9]+)").n catch "")') && neg "活跃 worker 列表改成只认空格" link_suite "$D"
+    'try capture($re).n catch "") // "")]' \
+    'try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[ ]+#(?<n>[0-9]+)").n catch "") // "")]') && neg "活跃 worker 列表改成只认空格" link_suite "$D"
 
 # 真的 PR 派工：功能关闭，分支不带编号、正文跨行写 Closes —— 选中的工作区与改动前相同
 pr_dispatch_ws() {   # <scripts 目录> → 派工后建出来的工作区目录名

@@ -164,7 +164,7 @@ agent reads the answer and carries on
 | `LABEL_PENDING_RELAY` | The waiting label, e.g. `pending/relay`. `setup.sh` creates it |
 | `RELAY_BOT_ACCOUNT` | The relay bot's GitHub login; it is assigned on wake-up |
 | `RELAY_ALLOWED_ACTORS` | Accounts allowed to run the wake-up (comma-separated) — normally the account workers / reviewers comment with |
-| `RELAY_ORIGIN_MARKER` | An issue counts as "filed by the bot for someone" only when its body contains this text **and** its author is the bot account; a PR is judged by the issue number in its branch name (worker PRs opened for an issue always carry it; `Closes #N` in the PR body is not read) |
+| `RELAY_ORIGIN_MARKER` | An issue counts as "filed by the bot for someone" only when its body contains this text **and** its author is the bot account; a PR is judged by its linked issue: the number in its branch name, else `Closes #N`-style links in its body (a keyword and number split across lines is ambiguous and refused) |
 | `RELAY_REPORT_FIRST` | `true`: report through the bot first, hand to the maintainer for merge once the requester approves the current commit; `false` (default): hand straight to the maintainer |
 
 The feature is on only when the first four are all set. With everything empty, dispatching, the greedy skip list and all four prompt kinds are byte-for-byte what they were.

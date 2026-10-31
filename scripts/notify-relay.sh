@@ -108,16 +108,24 @@ IS_PR=$(printf '%s' "$ITEM_JSON" | jq -r 'has("pull_request") and .pull_request 
 ORIGIN="$NUM"
 ORIGIN_JSON="$ITEM_JSON"
 if [ "$IS_PR" = true ]; then
-    # PR 的来源只认**分支名里的 issue 编号**（BRANCH_PREFIX + N，worker 为 issue 开 PR 时的固定命名）。
-    # 不读 PR 正文：daemon 里已有两份从正文找 Closes #N 的实现（会话命名的 grep 按行、
-    # 活跃 worker 列表的 jq 整段），两者对跨行写法判断本就不同；这里再接一份，要么复制规则，
-    # 要么去改那两份——改了就动到没开传话功能的项目的派工编号（PR #96 复审三轮）。
-    # 传话需求的 PR 都是 worker 从 issue 开的，分支名必然带编号，不读正文不丢场景。
-    # 也不用 pr_to_issue_num：它找不到时兜底返回 PR 自己的编号，拿来核验会让没关联需求的 PR 放行。
+    # PR 的来源：分支名里的 issue 编号（BRANCH_PREFIX + N）优先；没有就看正文的 Closes/Fixes/Resolves/Refs #N。
+    # 正文这一步用 daemon 现成的两种写法各找一次（会话命名的逐行版、活跃 worker 列表的整段版，
+    # 见 _lib.sh 的 pr_body_linked_issue），两者一致才认；不一致（典型是关键词和编号分在两行）
+    # 就拒绝、交维护者——这样叫醒的来源永远和 daemon 给这个 PR 用的工作编号、列表上显示的
+    # 关联都对得上，而且不需要改那两份实现（改了会动到没开传话功能的项目）。
+    # 不用 pr_to_issue_num：它找不到时兜底返回 PR 自己的编号，拿来核验会让没关联需求的 PR 放行。
     PR_JSON=$(gh api "repos/$REPO/pulls/$NUM") || reject "读不到 PR #$NUM"
     PR_BRANCH=$(printf '%s' "$PR_JSON" | jq -r '.head.ref // ""')
     ORIGIN=$(branch_to_issue_num "$PR_BRANCH")
-    case "$ORIGIN" in ''|*[!0-9]*) reject "PR #$NUM 的分支名 ${PR_BRANCH:-?} 不带 issue 编号，认不出它来自哪个需求" ;; esac
+    if [ -z "$ORIGIN" ]; then
+        PR_BODY=$(printf '%s' "$PR_JSON" | jq -r '.body // ""')
+        BY_LINE=$(printf '%s' "$PR_BODY" | pr_body_linked_issue)
+        BY_WHOLE=$(printf '%s' "$PR_BODY" | pr_body_linked_issue_jq)
+        [ "$BY_LINE" = "$BY_WHOLE" ] \
+            || reject "PR #$NUM 正文里的关联写法有歧义（逐行看是 ${BY_LINE:-无}、整段看是 ${BY_WHOLE:-无}，常见于关键词和 #编号分在两行），认不准来自哪个需求"
+        ORIGIN="$BY_LINE"
+    fi
+    case "$ORIGIN" in ''|*[!0-9]*) reject "PR #$NUM 没有关联 issue（分支名 ${PR_BRANCH:-?} 不带编号，正文里也没有 Closes #N 这类写法）" ;; esac
     [ "$ORIGIN" != "$NUM" ] || reject "PR #$NUM 没有关联 issue（关联编号就是它自己）"
     ORIGIN_JSON=$(gh api "repos/$REPO/issues/$ORIGIN") || reject "读不到关联的 issue #$ORIGIN"
     [ "$(printf '%s' "$ORIGIN_JSON" | jq -r 'has("pull_request") and .pull_request != null')" = false ] \

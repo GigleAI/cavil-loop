@@ -1228,6 +1228,23 @@ branch_to_issue_num() {
     fi
 }
 
+# PR 正文里写的关联 issue（Closes/Fixes/Resolves/Refs #N）。daemon 里这条规则一直有两种
+# 写法，对「关键词和编号分在两行」的判断不同（main 上就如此，本 PR 不改它们的行为）：
+#   pr_body_linked_issue     grep 逐行找：会话命名（pr_to_issue_num）用它
+#   PR_BODY_LINK_JQ_RE       jq 整段找：活跃 worker 列表（list_active_workers）用它
+# 叫醒传话机器人要从正文找来源时，两种都跑，结果一致才认（notify-relay.sh），这样它认定的
+# 来源永远和会话命名、活跃 worker 列表都对得上；不一致就拒绝、交维护者。
+# 正文从 stdin 读；没有就输出空。
+pr_body_linked_issue() {
+    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
+        | head -1 \
+        | grep -oE '[0-9]+' || true
+}
+PR_BODY_LINK_JQ_RE='(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)'
+pr_body_linked_issue_jq() {
+    jq -Rr --slurp --arg re "$PR_BODY_LINK_JQ_RE" 'try capture($re).n catch ""' 2>/dev/null || true
+}
+
 # 找一个 PR 对应的「工作编号 N」，用作 worktree / tmux / branch 命名标识。
 # fallback 链（任何一步成功就返回）：
 #   1. 分支名匹配 BRANCH_PREFIX → 拿数字（覆盖 daemon 自己派工出来的 PR）
@@ -1246,10 +1263,7 @@ pr_to_issue_num() {
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 2. PR body 关键词
-    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null \
-        | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
-        | head -1 \
-        | grep -oE '[0-9]+' || true)
+    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null | pr_body_linked_issue)
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 3. fallback：PR 编号本身
@@ -1384,10 +1398,10 @@ list_active_workers() {
                | select(any(.labels[]?; .name == $label)) | .number ] | map(tostring) | join("\n") end') || return 1
     # Include the body fallback in this successful snapshot instead of silently
     # falling back to the PR number when a separate gh pr view request fails.
-    pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
+    pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" --arg re "$PR_BODY_LINK_JQ_RE" '
         if type != "array" or any(.[]; type != "array") then error("invalid PR pages")
         else [ .[][] | select(any(.labels[]; .name == $label)) |
-            [.number, .head.ref, ((.body // "" | try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)").n catch "") // "")] | @tsv ] | join("\n") end') || return 1
+            [.number, .head.ref, ((.body // "" | try capture($re).n catch "") // "")] | @tsv ] | join("\n") end') || return 1
 
     local -A handled_issue=()
     local -a items=()
