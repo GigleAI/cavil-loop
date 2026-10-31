@@ -1228,6 +1228,17 @@ branch_to_issue_num() {
     fi
 }
 
+# PR 正文里关联的 issue 编号：第一个 Closes/Fixes/Resolves/Refs #N 的 N，没有就输出空。
+# 正文从 stdin 读。只管「从正文提取」这一步——拿正文的方式、找不到时怎么办留给调用方：
+# 会话命名（pr_to_issue_num）找不到就退回 PR 自己的编号，叫醒脚本找不到就拒绝。
+# 同一规则另有一份 jq 写法在 list_active_workers 里（那里在一次 jq 里过整页快照），
+# tests/relay-handoff.test.sh 用同一批正文对拍全部调用点。
+pr_body_linked_issue() {
+    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
+        | head -1 \
+        | grep -oE '[0-9]+' || true
+}
+
 # 找一个 PR 对应的「工作编号 N」，用作 worktree / tmux / branch 命名标识。
 # fallback 链（任何一步成功就返回）：
 #   1. 分支名匹配 BRANCH_PREFIX → 拿数字（覆盖 daemon 自己派工出来的 PR）
@@ -1246,10 +1257,7 @@ pr_to_issue_num() {
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 2. PR body 关键词
-    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null \
-        | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
-        | head -1 \
-        | grep -oE '[0-9]+' || true)
+    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null | pr_body_linked_issue)
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 3. fallback：PR 编号本身

@@ -109,15 +109,14 @@ ORIGIN="$NUM"
 ORIGIN_JSON="$ITEM_JSON"
 if [ "$IS_PR" = true ]; then
     # PR 的来源只认**真正关联上的 issue**：分支名带 issue 编号，或正文写了 Closes/Fixes/Resolves/Refs #N。
-    # 不用 pr_to_issue_num：它是给会话命名的，找不到 issue 时兜底返回 PR 自己的编号——
+    # 正文提取和会话命名共用 pr_body_linked_issue；但不用 pr_to_issue_num：它是给会话命名的，
+    # 找不到 issue 时兜底返回 PR 自己的编号——
     # 拿来做来源核验，机器人自己开的、没关联任何需求的 PR 就会拿自己的作者和正文放行。
     PR_JSON=$(gh api "repos/$REPO/pulls/$NUM") || reject "读不到 PR #$NUM"
     PR_BRANCH=$(printf '%s' "$PR_JSON" | jq -r '.head.ref // ""')
     ORIGIN=$(branch_to_issue_num "$PR_BRANCH")
     if [ -z "$ORIGIN" ]; then
-        ORIGIN=$(printf '%s' "$PR_JSON" | jq -r '.body // ""' \
-            | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
-            | head -1 | grep -oE '[0-9]+' || true)
+        ORIGIN=$(printf '%s' "$PR_JSON" | jq -r '.body // ""' | pr_body_linked_issue)
     fi
     case "$ORIGIN" in ''|*[!0-9]*) reject "PR #$NUM 没有关联 issue（分支名和正文里都找不到）" ;; esac
     [ "$ORIGIN" != "$NUM" ] || reject "PR #$NUM 没有关联 issue（关联编号就是它自己）"
