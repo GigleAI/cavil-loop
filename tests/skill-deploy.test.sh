@@ -22,6 +22,7 @@ cp "$REPO_DIR/scripts/skill-deploy.sh" "$SRC/scripts/skill-deploy.sh"
 cp "$REPO_DIR/scripts/poll-entry.sh" "$SRC/scripts/poll-entry.sh"
 cp "$REPO_DIR/scripts/release-entry.sh" "$SRC/scripts/release-entry.sh"
 cp "$REPO_DIR/scripts/_names.sh" "$SRC/scripts/_names.sh"
+cp "$REPO_DIR/scripts/notify-relay.sh" "$SRC/scripts/notify-relay.sh"
 cat > "$SRC/scripts/agent-poll.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
