@@ -162,16 +162,17 @@ REVIEW_WORKER_AGENT="codex"
 REVIEW_MODEL=""
 REVIEW_MAX_ROUNDS=3
 
-# ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97）──
+# ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97 / #100）──
 # For projects where another AI assistant with its own GitHub account (the "requester bot")
 # files requests directly. The loop closes in two places:
 #   · When the agent needs the requester to answer a question or confirm a result, it posts the
 #     comment and runs the wake-up script instead of flipping pending/human: the item gets
-#     LABEL_PENDING_REQUESTER_BOT and the bot is re-assigned; on a PR the bot is also asked to
-#     review (it receives "review requested", not "PR assigned"). The bot brings back the answer
-#     verbatim, then removes the waiting label, unassigns itself and drops its review request.
+#     LABEL_PENDING_REQUESTER_BOT and the bot's webhook is called once (issue and PR alike; the
+#     bot is no longer assigned or asked to review). The bot then pulls every item carrying the
+#     waiting label, brings back the answer verbatim and removes the waiting label.
 #   · When the PR is merged or closed unmerged, the daemon posts a result comment on the bot's
-#     issue and re-assigns the bot (once per PR; needs AUTO_CLEANUP_ON_MERGE, on by default).
+#     issue, adds the waiting label to it and calls the webhook (once per PR; needs
+#     AUTO_CLEANUP_ON_MERGE, on by default).
 # Full guide: docs/collaboration.md#external-requester-bot
 #
 # Leave all of these empty to keep today's behaviour byte-for-byte. The feature is on only when
@@ -183,11 +184,10 @@ REVIEW_MAX_ROUNDS=3
 # 有的项目让另一个 AI 助手（有自己的 GitHub 账号，下称「外部需求机器人」）直接给项目开 issue 提需求。
 # 闭环靠两处把结果告诉它：
 #   · agent 要提需求方回答问题、或要汇报时，发完评论跑叫醒脚本，而不是翻 pending/human：
-#     条目挂上 LABEL_PENDING_REQUESTER_BOT，并把机器人重新指派为 assignee；PR 上同时请求它 review
-#     （它收得到「被请求 review」，收不到「PR 被指派」）。机器人把答复原文带回来，再摘掉等待标签、
-#     把自己移出 assignee、取消 review 请求
-#   · PR 合并或关闭未合并时，daemon 在机器人提的 issue 上留一条结果评论并重新指派它
-#     （每个 PR 一次；依赖 AUTO_CLEANUP_ON_MERGE，默认开）
+#     条目挂上 LABEL_PENDING_REQUESTER_BOT，并调一次机器人的 webhook（issue、PR 一样；不再指派、
+#     不再请求 review）。机器人来拉所有挂着等待标签的条目，把答复原文带回来，再摘掉等待标签
+#   · PR 合并或关闭未合并时，daemon 在机器人提的 issue 上留一条结果评论、给它加等待标签并调
+#     webhook（每个 PR 一次；依赖 AUTO_CLEANUP_ON_MERGE，默认开）
 # 完整说明：docs/collaboration.zh.md#外部需求机器人
 #
 # 全部留空 = 关闭，行为和以前逐字节一样。前四项都填了才算开启；只填了等待标签时，
@@ -202,7 +202,8 @@ REVIEW_MAX_ROUNDS=3
 #   · 不做超时：机器人一直没回音时，由维护者自己处理
 #
 # LABEL_PENDING_REQUESTER_BOT   等待标签，例 "pending/requester-bot"。setup.sh 会按这个名字建 label
-# REQUESTER_BOT_ACCOUNT         外部需求机器人的 GitHub 登录名，叫醒时指派给它（PR 上同时请求它 review）
+# REQUESTER_BOT_ACCOUNT         外部需求机器人的 GitHub 登录名。只用来认出哪些 issue 是它提的（见下面的
+#                               标记），不再指派给它、不再请求它 review
 # REQUESTER_BOT_ALLOWED_ACTORS  允许执行叫醒的账号（逗号分隔），一般是 worker / reviewer 发评论用的
 #                               那个账号。叫醒脚本先核对当前账号在不在里面
 # REQUESTER_BOT_ORIGIN_MARKER   issue 正文里出现这段文字、**并且** issue 作者就是 REQUESTER_BOT_ACCOUNT，
@@ -215,6 +216,28 @@ REQUESTER_BOT_ACCOUNT=""
 REQUESTER_BOT_ALLOWED_ACTORS=""
 REQUESTER_BOT_ORIGIN_MARKER=""
 REQUESTER_BOT_REPORT_FIRST="false"
+
+# Optional webhook (GitHub#100). One POST and the bot pulls every item carrying the waiting label.
+# Sent only after a confirmed wake-up / merge-close notice; a failure is one log line and never
+# changes the outcome (the bot's own periodic scan is the fallback). Skipped with one log line
+# when the header name or key is empty, or when this file is group- / world-accessible
+# (any bit in mode & 077 -- chmod 600). URL / header / key never reach a command line or a log.
+# Read from this file only (a same-named variable in the systemd EnvironmentFile is ignored).
+#   REQUESTER_BOT_WEBHOOK_URL         webhook URL; empty = nothing is sent
+#   REQUESTER_BOT_WEBHOOK_KEY_HEADER  header that carries the key, e.g. "Authorization"
+#                                     (letters, digits and - only)
+#   REQUESTER_BOT_WEBHOOK_KEY         the header's value, sent as-is ("Bearer xxx" if needed)
+#
+# 可选 webhook（GitHub#100）：POST 一次，机器人就来拉所有挂着等待标签的条目。只在叫醒 / 合并关闭通知
+# 确认成功后发；失败只记一行，不影响结果（靠机器人自己的定时扫描兜底）。请求头名或密钥为空、本文件
+# 对组或其他用户有任何权限位（mode & 077 不为 0，请 chmod 600）时跳过并记一行。地址、请求头、
+# 密钥不进命令行、不进日志。只从本文件读（systemd EnvironmentFile 里的同名变量不算）。
+#   REQUESTER_BOT_WEBHOOK_URL         webhook 地址；留空 = 不发
+#   REQUESTER_BOT_WEBHOOK_KEY_HEADER  放密钥的请求头名，例如 "Authorization"（只许字母、数字、-）
+#   REQUESTER_BOT_WEBHOOK_KEY         该请求头的值，原样发送（要 "Bearer " 前缀就整串填）
+REQUESTER_BOT_WEBHOOK_URL=""
+REQUESTER_BOT_WEBHOOK_KEY_HEADER=""
+REQUESTER_BOT_WEBHOOK_KEY=""
 
 # When the worker and the review gate run the SAME agent, their model
 # conversations are kept apart per (work number, agent, role) — see

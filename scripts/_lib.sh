@@ -73,6 +73,9 @@ if [ -z "$CONFIG_FILE" ]; then
     echo "  2) 或 export CODING_AGENT_CONFIG=/path/to/config" >&2
     exit 2
 fi
+# webhook 的地址 / 密钥只认项目配置文件（GitHub#100）：worker 跑叫醒脚本时只 source 这个文件，
+# 拿不到 daemon 的环境变量；先清掉，两边才读同一处。
+unset REQUESTER_BOT_WEBHOOK_URL REQUESTER_BOT_WEBHOOK_KEY_HEADER REQUESTER_BOT_WEBHOOK_KEY
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
@@ -145,12 +148,12 @@ trigger_labels_array() {
     mapfile -t TRIGGER_LABELS_ALL < <(trigger_labels_all | awk 'NF && !seen[$0]++')
 }
 
-# ── 外部需求机器人（GitHub#95 / #97，可选，默认关闭）──
+# ── 外部需求机器人（GitHub#95 / #97 / #100，可选，默认关闭）──
 # 有的项目让另一个 AI 助手（有自己的 GitHub 账号，下称「外部需求机器人」）直接给项目开
 # issue 提需求，cavil-loop 照常处理。闭环靠两处把结果告诉它：
 #   · agent 要提需求方回答问题、或汇报结果时，不翻 pending/human，而是挂等待标签 + 叫醒
-#     机器人（scripts/notify-requester-bot.sh：issue 上重新指派；PR 上重新指派 + 请求 review）
-#   · PR 合并 / 关闭未合并时，daemon 在机器人提的 issue 上留一条结果评论并重新指派它
+#     机器人（scripts/notify-requester-bot.sh：issue、PR 一样，确认挂上后调一次 webhook）
+#   · PR 合并 / 关闭未合并时，daemon 在机器人提的 issue 上留一条结果评论、加等待标签、调 webhook
 #     （requester_bot_done_*，见下）
 # 全部留空 = 功能关闭，行为和以前一样。
 #
@@ -2148,21 +2151,12 @@ sub_issue_rollup_drain() {
 }
 
 # ── 外部需求机器人：叫醒脚本和 daemon 共用的几步（GitHub#95 / #97）──
-# 「是不是机器人提的需求」「重新指派机器人」这两条规则，叫醒脚本（notify-requester-bot.sh）
+# 「是不是机器人提的需求」「通知 webhook」这两条规则，叫醒脚本（notify-requester-bot.sh）
 # 和合并后通知（requester_bot_done_notify）各用一次，只在这里写一份。
 # 读用 gh（轮询身份），写用 gh_write（与 worker 发评论同一个身份）。
-# 失败原因写进 REQUESTER_BOT_FAIL / REQUESTER_BOT_REASON，调用方负责输出。
+# 失败原因写进 REQUESTER_BOT_REASON，调用方负责输出。
 
 requester_bot_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-
-# <logins（\x1f 分隔）> <login>：名单里有没有这个账号（GitHub 登录名不区分大小写）
-requester_bot_has_login() {
-    local x
-    while IFS= read -r x; do
-        [ -n "$x" ] && [ "$(requester_bot_lc "$x")" = "$(requester_bot_lc "$2")" ] && return 0
-    done < <(printf '%s\n' "$1" | tr '\037' '\n')
-    return 1
-}
 
 # 允许名单（逗号 / 空白分隔）里有没有这个账号
 requester_bot_actor_allowed() {
@@ -2267,61 +2261,61 @@ requester_bot_item_origin() {
     return 0
 }
 
-requester_bot_read_assignees() {   # <编号> → assignee 登录名（\x1f 分隔）
-    gh api "repos/$REPO/issues/$1" --jq '[.assignees[].login] | join("\u001f")'
-}
-
-# 重新指派机器人：它已经是 assignee 时直接再加不会通知它，必须先移掉、读回确认真的不在了，
-# 再加（没移掉就再加，机器人收不到通知，最后的读回也分辨不出来）；加完读回确认在。
-# 0 = 做完；1 = 失败，原因在 REQUESTER_BOT_FAIL。每一步都可以安全重跑。
-requester_bot_reassign() {
-    local n="$1" a
-    REQUESTER_BOT_FAIL=""
-    a=$(requester_bot_read_assignees "$n") || { REQUESTER_BOT_FAIL="读 assignee 失败"; return 1; }
-    if requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT"; then
-        gh_write api -X DELETE "repos/$REPO/issues/$n/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
-            || { REQUESTER_BOT_FAIL="移除机器人 assignee 失败"; return 1; }
-        a=$(requester_bot_read_assignees "$n") || { REQUESTER_BOT_FAIL="移除 assignee 后读回失败"; return 1; }
-        requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="移除机器人 assignee 没生效"; return 1; }
+# 通知外部需求机器人的 webhook（GitHub#100）：POST 一次，机器人就来仓库全量拉取挂着等待标签的
+# 条目。它只是「来看看」的提示，请求体不带指令；机器人那边按自己拉到的内容办事。
+#   requester_bot_webhook_notify <编号> <issue|pr>
+# 结果放进 REQUESTER_BOT_WEBHOOK_RESULT（一行，调用方负责输出）；地址没配时为空、什么都不做。
+# 永远 return 0：webhook 失败不算叫醒失败，机器人自己的定时扫描兜底。
+#
+# 地址、请求头、密钥**不进命令行**（`ps`、/proc/<pid>/cmdline 看得到）：写成 curl 配置经标准
+# 输入喂给 `curl --config -`。任何输出和日志都不含这三项；curl 的错误输出丢弃（可能带地址）。
+# 写进 curl 配置前：请求头名只许字母数字和 -，地址 / 密钥里有控制字符（换行能拼出额外的 curl
+# 指令）一律当配置不完整；再转义 \ 和 "。
+# -q 必须是第一个参数：不读用户的 ~/.curlrc（代理等设置会让同一份配置在不同机器表现不同）。
+# 不跟随跳转（会把密钥头带去另一个地址），只许 http / https，10 秒上限，不重试。
+REQUESTER_BOT_WEBHOOK_RESULT=""
+requester_bot_webhook_notify() {
+    local num="$1" kind="$2" mode go body conf code rc
+    REQUESTER_BOT_WEBHOOK_RESULT=""
+    [ -n "${REQUESTER_BOT_WEBHOOK_URL:-}" ] || return 0
+    if [ -z "${REQUESTER_BOT_WEBHOOK_KEY_HEADER:-}" ] || [ -z "${REQUESTER_BOT_WEBHOOK_KEY:-}" ] \
+       || ! [[ "$REQUESTER_BOT_WEBHOOK_KEY_HEADER" =~ ^[A-Za-z0-9-]+$ ]] \
+       || [[ "$REQUESTER_BOT_WEBHOOK_URL" =~ [[:cntrl:]] ]] || [[ "$REQUESTER_BOT_WEBHOOK_KEY" =~ [[:cntrl:]] ]]; then
+        REQUESTER_BOT_WEBHOOK_RESULT="webhook 配置不完整，跳过"
+        return 0
     fi
-    gh_write api -X POST "repos/$REPO/issues/$n/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
-        || { REQUESTER_BOT_FAIL="指派机器人失败"; return 1; }
-    a=$(requester_bot_read_assignees "$n") || { REQUESTER_BOT_FAIL="指派后读回失败"; return 1; }
-    requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT" || { REQUESTER_BOT_FAIL="读回 assignee 里没有 $REQUESTER_BOT_ACCOUNT"; return 1; }
-    return 0
-}
-
-requester_bot_read_reviewers() {   # <PR> → 待 review 名单里的个人账号（\x1f 分隔）
-    gh api "repos/$REPO/pulls/$1/requested_reviewers" --jq '[.users[].login] | join("\u001f")'
-}
-
-# PR 上请求机器人 review（GitHub#97）：机器人能收到「被请求 review」事件，收不到「PR 被指派」。
-# 已经在待 review 名单里时同样要先移掉、读回确认，再请求——直接再请求不产生新事件。
-requester_bot_request_review() {
-    local pr="$1" r
-    REQUESTER_BOT_FAIL=""
-    r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="读待 review 名单失败"; return 1; }
-    if requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT"; then
-        gh_write api -X DELETE "repos/$REPO/pulls/$pr/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
-            || { REQUESTER_BOT_FAIL="把机器人移出待 review 名单失败"; return 1; }
-        r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="移出待 review 名单后读回失败"; return 1; }
-        requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="把机器人移出待 review 名单没生效"; return 1; }
+    mode=$(file_mode_octal "$CONFIG_FILE")
+    case "$mode" in
+        ''|*[!0-7]*) REQUESTER_BOT_WEBHOOK_RESULT="读不到配置文件权限，webhook 跳过"; return 0 ;;
+    esac
+    go="00$mode"; go="${go: -2}"   # 末两位 = 组、其他人
+    if [ "$go" != 00 ]; then
+        REQUESTER_BOT_WEBHOOK_RESULT="配置文件权限过宽（应为 600），webhook 跳过"
+        return 0
     fi
-    gh_write api -X POST "repos/$REPO/pulls/$pr/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
-        || { REQUESTER_BOT_FAIL="请求机器人 review 失败"; return 1; }
-    return 0
-}
-
-# 交还维护者时把机器人移出待 review 名单，并读回确认。
-requester_bot_unrequest_review() {
-    local pr="$1" r
-    REQUESTER_BOT_FAIL=""
-    r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="读待 review 名单失败"; return 1; }
-    requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT" || return 0
-    gh_write api -X DELETE "repos/$REPO/pulls/$pr/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
-        || { REQUESTER_BOT_FAIL="把机器人移出待 review 名单失败"; return 1; }
-    r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="移出待 review 名单后读回失败"; return 1; }
-    requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="待 review 名单里仍有机器人"; return 1; }
+    if ! command -v curl >/dev/null 2>&1; then
+        REQUESTER_BOT_WEBHOOK_RESULT="找不到 curl，webhook 跳过"
+        return 0
+    fi
+    body=$(jq -cn --arg r "$REPO" --argjson n "$num" --arg k "$kind" '{repo: $r, number: $n, kind: $k}') \
+        || { REQUESTER_BOT_WEBHOOK_RESULT="webhook 通知失败（请求体生成失败）"; return 0; }
+    _rb_curl_quote() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }
+    conf=$(printf 'url = %s\nheader = %s\n' \
+        "$(_rb_curl_quote "$REQUESTER_BOT_WEBHOOK_URL")" \
+        "$(_rb_curl_quote "$REQUESTER_BOT_WEBHOOK_KEY_HEADER: $REQUESTER_BOT_WEBHOOK_KEY")")
+    rc=0
+    code=$(printf '%s\n' "$conf" | curl -q --config - -s -o /dev/null -w '%{http_code}' \
+        -X POST -H 'Content-Type: application/json' --data-binary "$body" \
+        --proto =http,https --max-redirs 0 --max-time 10 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+        REQUESTER_BOT_WEBHOOK_RESULT="已通知 webhook（HTTP $code）"
+    elif [ "$rc" -eq 0 ] && [[ "$code" =~ ^[1-9][0-9][0-9]$ ]]; then
+        REQUESTER_BOT_WEBHOOK_RESULT="webhook 通知失败（HTTP $code）"
+    elif [ "$rc" -eq 28 ]; then
+        REQUESTER_BOT_WEBHOOK_RESULT="webhook 通知失败（超时）"
+    else
+        REQUESTER_BOT_WEBHOOK_RESULT="webhook 通知失败（连接失败）"
+    fi
     return 0
 }
 
@@ -2334,9 +2328,11 @@ requester_bot_unrequest_review() {
 #   requester_bot_done_queue[<PR>] = {kind: merged|closed, tries}
 # 功能关闭时不入队、也不写这个字段（state.json 和以前逐字节相同）。
 #
-# 一次通知 = 在来源 issue 上发一条带隐藏标记的结果评论 + 重新指派机器人（见 requester_bot_reassign）。
+# 一次通知 = 在来源 issue 上发一条带隐藏标记的结果评论 + 给来源 issue 加等待标签（issue 可能
+# 已被合并自动关闭，照样加；机器人那边会连已关闭的一起拉，转达后自己摘）+ 读回确认 + 调一次
+# webhook（GitHub#100，不再重新指派）。
 # 「评论发过没有」以 issue 上实际有没有本身份发的那条标记评论为准，不另记进度：评论发了、
-# 指派失败时，重试只补指派，不会重复发评论。
+# 加标签失败时，重试只补标签，不会重复发评论。webhook 失败只记一行，不进重试。
 #
 # 返回 0 = 有定论、出队（通知完成 / 不是机器人提的需求 / PR 现状和入队时不符）；
 #      1 = 这次没做成，下轮再试（任何读写失败、PR 状态字段缺失、写身份不在名单）。
@@ -2418,11 +2414,22 @@ requester_bot_done_notify() {   # <PR> <merged|closed>
         run_gh "issue #$origin 发 PR #$pr 的结果评论" \
             gh_write api -X POST "repos/$REPO/issues/$origin/comments" -f "body=$body" || return 1
     fi
-    if ! requester_bot_reassign "$origin"; then
-        log "  issue #$origin 重新指派 $REQUESTER_BOT_ACCOUNT 失败（$REQUESTER_BOT_FAIL），下轮重试"
+    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then
+        log "  issue #$origin 加等待标签 $LABEL_PENDING_REQUESTER_BOT 失败，PR #$pr 的结果通知下轮重试"
         return 1
     fi
-    log "  ✅ 已把 PR #$pr 的结果（$kind）告诉 $REQUESTER_BOT_ACCOUNT：issue #$origin 留了评论并重新指派"
+    local labels
+    if ! labels=$(gh api "repos/$REPO/issues/$origin" --jq '.labels[].name'); then
+        log "  issue #$origin 加等待标签后读回失败，PR #$pr 的结果通知下轮重试"
+        return 1
+    fi
+    if ! printf '%s\n' "$labels" | grep -qxF "$LABEL_PENDING_REQUESTER_BOT"; then
+        log "  issue #$origin 读回没有等待标签 $LABEL_PENDING_REQUESTER_BOT，PR #$pr 的结果通知下轮重试"
+        return 1
+    fi
+    log "  ✅ 已把 PR #$pr 的结果（$kind）告诉 $REQUESTER_BOT_ACCOUNT：issue #$origin 留了评论并挂上等待标签"
+    requester_bot_webhook_notify "$origin" issue
+    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #$origin：$REQUESTER_BOT_WEBHOOK_RESULT"
     return 0
 }
 

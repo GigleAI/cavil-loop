@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 外部需求机器人（GitHub#95 / #97）的行为守卫。
 #
-# 跑法：bash tests/requester-bot.test.sh        （约 5 分钟）
-# 依赖：jq、python3、git。不碰网络、不调真 gh：假 gh（tests/fixtures/requester-bot-fake-gh.py）是一个
+# 跑法：bash tests/requester-bot.test.sh        （约 11 分钟：webhook 超时用例每条实等 10 秒）
+# 依赖：jq、python3、git、curl。不碰外网、不调真 gh：假 gh（tests/fixtures/requester-bot-fake-gh.py）是一个
 # 带状态的最小 GitHub，每次调用记进 calls.log，写调用另记一行 WRITE。
 #
 # 覆盖：
@@ -10,9 +10,12 @@
 #      scripts/ + prompts/）逐字节一致
 #   2. 等待期间：只挂等待标签 → greedy 兜底、self-heal 都不派；又打了触发标签（普通 / fable /
 #      追加 / pending/review，issue 与 PR）→ 按原流程派一次，派完等待标签被摘掉
-#   3. 叫醒脚本：前置检查拒绝（零写请求）、成功、先移再加、失败重试、交还维护者、交还中途失败
-#   3d. PR 上叫醒再请求机器人 review（issue 上不发），失败交还时把机器人移出待 review 名单
-#   3e. PR 合并 / 关闭未合并后，daemon 在机器人提的 issue 上留结果评论并重新指派（真跑 agent-poll.sh）
+#   3. 叫醒脚本：前置检查拒绝（零写请求）、成功、失败重试、交还维护者、交还中途失败
+#   3d. 叫醒 = 等待标签 + webhook（GitHub#100）：issue / PR 都不指派、不请求 review；webhook 只在
+#       成功出口发、恰好一次；配置不全 / 权限过宽 / 没有 curl 不发；地址、密钥不进输出和命令行
+#       （假 webhook：tests/fixtures/requester-bot-fake-webhook.py，只听 127.0.0.1）
+#   3e. PR 合并 / 关闭未合并后，daemon 在机器人提的 issue 上留结果评论、加等待标签、通知 webhook
+#       （真跑 agent-poll.sh）
 #   3f. 配置项新旧名字：只填旧名字照样开启、新旧都填用新的、早期入口名可用、setup.sh 同一规则
 #   4. 提示词：开启时四类提示词末尾恰好一段交接规则，项目整份替换模板也收得到
 #   6. 说法：除复盘记录外不再出现「传话」，文档锚点对得上
@@ -136,7 +139,6 @@ add_item() {
                       assignees: [], events: []}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 labels_of() { jq -r --arg n "$2" '.items[$n].labels | join(",")' "$1/gh/state.json"; }
-assignees_of() { jq -r --arg n "$2" '.items[$n].assignees | join(",")' "$1/gh/state.json"; }
 set_field() { local f="$1/gh/state.json"; jq --arg n "$2" --argjson v "$4" ".items[\$n].$3 = \$v" "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 set_me() { local f="$1/gh/state.json"; jq --arg m "$2" '.me = $m' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 dispatched() { grep -c " $2 " "$1/gh/dispatch.log" 2>/dev/null || true; }
@@ -428,13 +430,6 @@ success_suite() {   # <scripts 副本>
     bot_case "$S" 50
     chk "成功 · 普通叫醒：退出码 0" "$RC" 0
     chk "成功 · 只剩等待标签（触发标签、doing/agent 都摘了）" "$(labels_of "$RW" 50)" "waiting/bot"
-    chk "成功 · 机器人成了 assignee" "$(assignees_of "$RW" 50)" "req-bot"
-    # 机器人已是 assignee：必须先移再加（直接加不会通知它）
-    fresh_bot; set_field "$RW" 50 assignees '["req-bot"]'; : > "$RW/gh/calls.log"
-    bot_case "$S" 50
-    chk "成功 · 已是 assignee：退出码 0" "$RC" 0
-    chk "成功 · 已是 assignee：先 DELETE 再 POST" \
-        "$(grep -E '^WRITE (DELETE|POST) .*/assignees$' "$RW/gh/calls.log" | awk '{print $2}' | tr '\n' ' ')" "DELETE POST "
     # 带着 pending/agent / fable / 追加 / review 一起叫醒
     fresh_bot; set_field "$RW" 50 labels '["pending/agent","pending/agent/fable","pending/agent/05","pending/review","doing/agent"]'
     bot_case "$S" 50
@@ -452,9 +447,9 @@ success_suite() {   # <scripts 副本>
     bot_case "$S" 50
     chk "成功 · worker 自己打过的 pending/human 不算维护者接手" "$RC" 0
     # 首次失败、重试成功
-    fresh_bot; faults '[{"method":"POST","path":"/assignees$","mode":"fail","times":1}]'
+    fresh_bot; faults '[{"method":"POST","path":"/labels$","field":"waiting/bot","mode":"fail","times":1}]'
     bot_case "$S" 50
-    chk "重试 · 首次指派失败、重试成功：退出码 0" "$RC" 0
+    chk "重试 · 首次加等待标签失败、重试成功：退出码 0" "$RC" 0
     chk "重试 · 最终只剩等待标签" "$(labels_of "$RW" 50)" "waiting/bot"
 }
 # 每一步注入失败或读回不符，重试两次都失败 → 交还维护者（退出码 3，只剩 pending/human）
@@ -471,27 +466,16 @@ fail_suite() {   # <scripts 副本>
 加等待标签读回不在|[{"method":"POST","path":"/labels$","field":"waiting/bot","mode":"noop","times":2}]
 摘触发标签读回仍在|[{"method":"DELETE","path":"/labels/pending%2Fagent$","mode":"noop","times":2}]
 摘 doing/agent 读回仍在|[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2}]
-指派报错|[{"method":"POST","path":"/assignees$","mode":"fail","times":2}]
-指派读回不在|[{"method":"POST","path":"/assignees$","mode":"noop","times":2}]
 CASES
-    # 已是 assignee 时「先移」那一步报错
-    fresh_bot; set_field "$RW" 50 assignees '["req-bot"]'
-    faults '[{"method":"DELETE","path":"/assignees$","mode":"fail","times":2}]'
+    # 摘标签返回成功但没生效：必须检出，不能报「已叫醒」
+    fresh_bot; faults '[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2}]'
     bot_case "$S" 50
-    chk "失败 · 先移 assignee 报错：退出码 3" "$RC" 3
-    chk "失败 · 先移 assignee 报错：最终只有 pending/human" "$(labels_of "$RW" 50)" "pending/human"
-    # 移除 assignee 返回成功但没生效：必须检出，不能报「已叫醒」
-    fresh_bot; set_field "$RW" 50 assignees '["req-bot"]'
-    faults '[{"method":"DELETE","path":"/assignees$","mode":"noop"}]'
-    bot_case "$S" 50
-    chk "失败 · 移除 assignee 没生效：不报成功（退出码 3）" "$RC" 3
-    chk "失败 · 移除 assignee 没生效：最终只有 pending/human" "$(labels_of "$RW" 50)" "pending/human"
-    chk "失败 · 移除 assignee 没生效：输出说明原因" "$(printf '%s' "$OUT" | grep -q '移除机器人 assignee 没生效' && echo yes || echo no)" yes
-    # 只失效一次：重试时真的移掉了 → 成功，且两次叫醒之间确有「机器人不在」的读回
-    fresh_bot; set_field "$RW" 50 assignees '["req-bot"]'
-    faults '[{"method":"DELETE","path":"/assignees$","mode":"noop","times":1}]'
-    bot_case "$S" 50
-    chk "重试 · 第一次移除没生效、重试移除成功：退出码 0" "$RC" 0
+    chk "失败 · 摘 doing/agent 没生效：输出说明原因" "$(printf '%s' "$OUT" | grep -q '读回仍有 doing/agent' && echo yes || echo no)" yes
+    # PR 上同样：摘 pending/review 没生效 → 交还
+    fresh_bot; faults '[{"method":"DELETE","path":"/labels/pending%2Freview$","mode":"noop","times":2}]'
+    bot_case "$S" 60
+    chk "失败 · PR 摘 pending/review 没生效：退出码 3" "$RC" 3
+    chk "失败 · PR 摘 pending/review 没生效：最终只有 pending/human" "$(labels_of "$RW" 60)" "pending/human"
     # 交还也失败
     fresh_bot; faults '[{"method":"POST","path":"/labels$","mode":"fail"}]'
     bot_case "$S" 50
@@ -502,7 +486,7 @@ CASES
 reject_suite "$NEW"; success_suite "$NEW"; fail_suite "$NEW"
 
 # ── 交还中途失败：等待标签都还在，daemon 不派工 ──
-# 叫醒一直失败（指派读回不符），再在交还的第 1 / 2–3 / 4 步注入失败。之后跑两轮 greedy 轮询：
+# 叫醒一直失败（摘 doing/agent 读回仍在），再在交还的第 1 / 2–3 / 4 步注入失败。之后跑两轮 greedy 轮询：
 # 第一轮 self-heal 会碰 doing/agent 残留，第二轮才会把翻回来的触发标签派出去。
 handback_suite() {   # <scripts 副本>
     local S="$1" name spec want
@@ -521,17 +505,14 @@ handback_suite() {   # <scripts 副本>
         tick "$S" "$RW"; tick "$S" "$RW"
         chk "交还第 $name 步失败：两轮轮询零派工" "$(dispatched "$RW" 50)" 0
     done <<'CASES'
-1|waiting/bot|[{"method":"POST","path":"/assignees$","mode":"noop"},{"method":"POST","path":"/labels$","field":"pending/human","mode":"fail"}]
-2–3|doing/agent,pending/human,waiting/bot|[{"method":"POST","path":"/assignees$","mode":"noop"},{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop"}]
-4|pending/human,waiting/bot|[{"method":"POST","path":"/assignees$","mode":"noop"},{"method":"DELETE","path":"/labels/waiting%2Fbot$","mode":"noop"}]
+1|doing/agent,waiting/bot|[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2},{"method":"POST","path":"/labels$","field":"pending/human","mode":"fail"}]
+2–3|doing/agent,pending/human,waiting/bot|[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop"}]
+4|pending/human,waiting/bot|[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2},{"method":"DELETE","path":"/labels/waiting%2Fbot$","mode":"noop"}]
 CASES
 }
 handback_suite "$NEW"
 
 echo "── 3b. 负对照 ──"
-D=$(mutate add-directly scripts/_lib.sh \
-    '    if requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT"; then' \
-    '    if false; then') && neg "「先移再加」改成直接加" success_suite "$D"
 D=$(mutate no-precheck scripts/notify-requester-bot.sh \
     'requester_bot_check_actor || reject "$REQUESTER_BOT_REASON"' \
     'requester_bot_check_actor || true') && neg "删掉账号前置检查" reject_suite "$D"
@@ -541,9 +522,6 @@ D=$(mutate no-author-check scripts/_lib.sh \
 D=$(mutate no-history-check scripts/notify-requester-bot.sh \
     '        0) reject "#$n 曾由维护者' \
     '        0) : "#$n 曾由维护者') && neg "删掉「维护者接手过」检查" reject_suite "$D"
-D=$(mutate no-remove-readback scripts/_lib.sh \
-    '        requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="移除机器人 assignee 没生效"; return 1; }' \
-    '        :') && neg "删掉「移除 assignee 后读回」" fail_suite "$D"
 D=$(mutate no-pr-origin-check scripts/_lib.sh \
     '            REQUESTER_BOT_REASON="PR #$num 关联的 #$origin 是 PR，不是 issue"
             return 1' \
@@ -553,9 +531,7 @@ D=$(MUT_BASE="$D" mutate fallback-origin scripts/_lib.sh \
     '        origin=$(pr_to_issue_num "$num" "$branch"); [ "$origin" != "$num" ] || origin=""') \
     && neg "来源改用会话命名的编号（会读正文；叠加不核对 issue）" reject_suite "$D"
 D=$(mutate no-readback scripts/notify-requester-bot.sh \
-    '    # 读回核对：等待标签在、要摘的一个都不在、机器人是 assignee；PR 上机器人在待 review 名单里' \
-    '    return 0') && D=$(MUT_BASE="$D" mutate no-readback2 scripts/_lib.sh \
-    '    a=$(requester_bot_read_assignees "$n") || { REQUESTER_BOT_FAIL="指派后读回失败"; return 1; }' \
+    '    # 读回核对：等待标签在、要摘的一个都不在' \
     '    return 0') && neg "删掉叫醒后的读回核对" fail_suite "$D"
 D=$(mutate dedupe-comments scripts/notify-requester-bot.sh \
     '# ── 叫醒 ──' \
@@ -725,107 +701,238 @@ D=$(mutate tpl-only scripts/_lib.sh \
 }
 
 # ─────────────────────────────────────────────────────────────────────────
-echo "── 3d. PR 上叫醒：再请求 review（GitHub#97） ──"
+echo "── 3d. 叫醒 = 等待标签 + webhook（GitHub#100） ──"
 # ─────────────────────────────────────────────────────────────────────────
-# 机器人收不到「PR 被指派」，只收得到「PR 被请求 review」。PR 上叫醒的写请求必须依次是
-# 加标签 → 摘标签 → 指派 → 请求 review；issue 上一个 review 相关请求都不能有。
-reviewers_of() { jq -r --arg n "$2" '(.items[$n].reviewers // []) | join(",")' "$1/gh/state.json"; }
-# 写请求序列：L+ 加标签 / L- 摘标签 / A± 指派 / R± 请求 review；相邻相同的合并
-write_seq() {
-    grep '^WRITE ' "$RW/gh/calls.log" | awk '
-        $3 ~ /\/labels$/ && $2 == "POST" {t="L+"} $3 ~ /\/labels\// {t="L-"}
-        $3 ~ /\/assignees$/ {t=($2 == "POST" ? "A+" : "A-")}
-        $3 ~ /\/requested_reviewers$/ {t=($2 == "POST" ? "R+" : "R-")}
-        t != last {printf "%s ", t; last=t}'
+# 假 webhook 只听 127.0.0.1、随机端口；地址里的路径段和密钥都是本次测试现编的哨兵串，
+# 测试结束后在全部输出、日志、命令行采样里搜它们。每条用例开头清空请求记录。
+HOOK="$SANDBOX/hook"; mkdir -p "$HOOK"; echo 200 > "$HOOK/mode"
+python3 -I "$TEST_DIR/fixtures/requester-bot-fake-webhook.py" "$HOOK" >/dev/null 2>&1 &
+HOOK_PID=$!
+for _ in $(seq 50); do [ -s "$HOOK/port" ] && break; sleep 0.1; done
+HOOK_PORT=$(cat "$HOOK/port" 2>/dev/null)
+trap 'kill $HOOK_PID 2>/dev/null; cleanup' EXIT
+HOOK_SECRET_PATH="hk-path-$$-$RANDOM$RANDOM"
+HOOK_URL="http://127.0.0.1:$HOOK_PORT/$HOOK_SECRET_PATH"
+HOOK_KEY_SENTINEL="key-$$-$RANDOM$RANDOM"
+HOOK_KEY="Bearer q\"uo\\te-$HOOK_KEY_SENTINEL"    # 带 " 和 \：验证写进 curl 配置前转义了
+chk "假 webhook 起来了" "$([ -n "$HOOK_PORT" ] && echo yes || echo no)" yes
+hook_reset() { : > "$HOOK/req.log"; echo "${1:-200}" > "$HOOK/mode"; }
+hook_count() { grep -c . "$HOOK/req.log" 2>/dev/null || true; }
+hook_field() { jq -r "$1" "$HOOK/req.log" | head -1; }
+# 给 $RW 的配置追加 webhook 三项（单引号原样写，不经 shell 展开）并收紧到 600
+cfg_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+hook_cfg() {   # [地址] [请求头名] [密钥]（传 - 表示不写这一项）
+    local u="${1-$HOOK_URL}" h="${2-X-Hook-Key}" k="${3-$HOOK_KEY}"
+    { [ "$u" = - ] || printf 'REQUESTER_BOT_WEBHOOK_URL=%s\n' "$(cfg_q "$u")"
+      [ "$h" = - ] || printf 'REQUESTER_BOT_WEBHOOK_KEY_HEADER=%s\n' "$(cfg_q "$h")"
+      [ "$k" = - ] || printf 'REQUESTER_BOT_WEBHOOK_KEY=%s\n' "$(cfg_q "$k")"; } >> "$RW/cavil-loop.config"
+    chmod 600 "$RW/cavil-loop.config"
 }
-review_calls() { grep -c 'requested_reviewers' "$RW/gh/calls.log" 2>/dev/null || true; }
-pr_review_suite() {   # <scripts 副本>
-    local S="$1"
-    fresh_bot; : > "$RW/gh/calls.log"
-    bot_case "$S" 60
-    chk "PR 叫醒 · 退出码 0" "$RC" 0
-    chk "PR 叫醒 · 发出了 review 请求" "$(grep -c '^WRITE POST .*/pulls/60/requested_reviewers$' "$RW/gh/calls.log")" 1
-    chk "PR 叫醒 · 写请求依次是 加标签 → 摘标签 → 指派 → 请求 review" "$(write_seq)" "L+ L- A+ R+ "
-    chk "PR 叫醒 · 机器人在待 review 名单里" "$(reviewers_of "$RW" 60)" "req-bot"
-    chk "PR 叫醒 · 机器人也是 assignee" "$(assignees_of "$RW" 60)" "req-bot"
-    chk "PR 叫醒 · 输出写明请求了 review" "$(printf '%s' "$OUT" | grep -c '请求 review')" 1
-    # 机器人已在待 review 名单里：先移、读回确认，再请求（直接再请求不产生新事件）
-    fresh_bot; set_field "$RW" 60 reviewers '["req-bot"]'; : > "$RW/gh/calls.log"
-    bot_case "$S" 60
-    chk "PR 叫醒 · 已在名单里：退出码 0" "$RC" 0
-    chk "PR 叫醒 · 已在名单里：先移出再请求" "$(write_seq | grep -oE 'R[-+]' | tr '\n' ' ')" "R- R+ "
-    chk "PR 叫醒 · 已在名单里：最后仍在名单里" "$(reviewers_of "$RW" 60)" "req-bot"
-    # issue 上叫醒：一个 review 相关请求都没有
-    fresh_bot; : > "$RW/gh/calls.log"
-    bot_case "$S" 50
-    chk "issue 叫醒 · 退出码 0" "$RC" 0
-    chk "issue 叫醒 · 不发任何 review 相关请求（读写都没有）" "$(review_calls)" 0
-    chk "issue 叫醒 · 写请求依次是 加标签 → 摘标签 → 指派" "$(write_seq)" "L+ L- A+ "
+assign_review_calls() { grep -cE '/(assignees|requested_reviewers)' "$RW/gh/calls.log" 2>/dev/null || true; }
+ALL_OUT="$SANDBOX/all-output.txt"; : > "$ALL_OUT"
+keep_out() { printf '%s\n' "$OUT" >> "$ALL_OUT"; }
+
+# 成功出口：issue / PR × 首次成功 / 重试成功，各恰好 1 次 webhook；没有任何指派 / review 调用
+hook_success_suite() {   # <scripts 副本>
+    local S="$1" n kind
+    for n in 50 60; do
+        kind=issue; [ "$n" = 50 ] || kind=pr
+        fresh_bot; hook_cfg; hook_reset; : > "$RW/gh/calls.log"
+        bot_case "$S" $n; keep_out
+        chk "webhook · $kind 首次成功：退出码 0" "$RC" 0
+        chk "webhook · $kind 首次成功：等待标签读回在" "$(labels_of "$RW" $n)" "waiting/bot"
+        chk "webhook · $kind 首次成功：没有任何指派 / 请求 review 调用" "$(assign_review_calls)" 0
+        chk "webhook · $kind 首次成功：恰好 1 次" "$(hook_count)" 1
+        chk "webhook · $kind：POST 到配置的地址" "$(hook_field '.method + " " + .path')" "POST /$HOOK_SECRET_PATH"
+        chk "webhook · $kind：密钥请求头原样（含 \" 和 \\）" "$(hook_field '.headers["x-hook-key"]')" "$HOOK_KEY"
+        chk "webhook · $kind：Content-Type 是 JSON" "$(hook_field '.headers["content-type"]')" "application/json"
+        chk "webhook · $kind：请求体" "$(hook_field '.body | fromjson | tojson')" \
+            "{\"repo\":\"example/requester-bot\",\"number\":$n,\"kind\":\"$kind\"}"
+        chk "webhook · $kind：输出一行「已通知 webhook（HTTP 200）」" "$(printf '%s\n' "$OUT" | grep -cxF '已通知 webhook（HTTP 200）')" 1
+        fresh_bot; hook_cfg; hook_reset
+        faults '[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":1}]'
+        bot_case "$S" $n; keep_out
+        chk "webhook · $kind 首次失败、重试成功：退出码 0" "$RC" 0
+        chk "webhook · $kind 重试成功：恰好 1 次" "$(hook_count)" 1
+    done
 }
-pr_review_fail_suite() {   # <scripts 副本>：失败 → 重试 → 交还；交还后名单里没有机器人
-    local S="$1" name spec want_rc
-    while IFS='|' read -r name want_rc spec; do
+# 失败出口：2 / 3 / 4 各 0 次；交还路径没有撤 review 请求（也没有任何 review / 指派调用）
+hook_exit_suite() {   # <scripts 副本>
+    local S="$1" n kind
+    for n in 50 60; do
+        kind=issue; [ "$n" = 50 ] || kind=pr
+        fresh_bot; hook_cfg; set_me "$RW" outsider; hook_reset
+        bot_case "$S" $n; keep_out
+        chk "webhook · $kind 退出码 2：0 次" "$RC|$(hook_count)" "2|0"
+        fresh_bot; hook_cfg; hook_reset; : > "$RW/gh/calls.log"
+        faults '[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2}]'
+        bot_case "$S" $n; keep_out
+        chk "webhook · $kind 退出码 3：0 次" "$RC|$(hook_count)" "3|0"
+        chk "webhook · $kind 退出码 3：交还时没有撤 review / 指派之类的调用" "$(assign_review_calls)" 0
+        fresh_bot; hook_cfg; hook_reset
+        faults '[{"method":"POST","path":"/labels$","mode":"fail"}]'
+        bot_case "$S" $n; keep_out
+        chk "webhook · $kind 退出码 4：0 次" "$RC|$(hook_count)" "4|0"
+    done
+}
+# 不发的几种配置：一行固定日志，退出码 0，0 次请求
+hook_config_suite() {   # <scripts 副本>
+    local S="$1" name u h k mode want
+    fresh_bot; hook_reset; bot_case "$S" 50; keep_out
+    chk "webhook · 地址为空：退出码 0、0 次" "$RC|$(hook_count)" "0|0"
+    chk "webhook · 地址为空：输出里不提 webhook" "$(printf '%s\n' "$OUT" | grep -c webhook)" 0
+    while IFS='|' read -r name u h k mode want; do
         [ -n "$name" ] || continue
-        fresh_bot; faults "$spec"
-        bot_case "$S" 60
-        chk "PR 失败 · $name：退出码 $want_rc" "$RC" "$want_rc"
-        chk "PR 失败 · $name：交还后待 review 名单里没有机器人" "$(reviewers_of "$RW" 60)" ""
-        chk "PR 失败 · $name：最终只有 pending/human" "$(labels_of "$RW" 60)" "pending/human"
+        [ "$u" != URL ] || u="$HOOK_URL"; [ "$k" != KEY ] || k="$HOOK_KEY"
+        [ "$k" != NLKEY ] || k=$'abc\nurl = "http://127.0.0.1:1/x"'
+        fresh_bot; hook_cfg "$u" "$h" "$k"; chmod "$mode" "$RW/cavil-loop.config"; hook_reset
+        bot_case "$S" 50; keep_out
+        chk "webhook · $name：退出码 0、0 次请求" "$RC|$(hook_count)" "0|0"
+        chk "webhook · $name：一行「$want」" "$(printf '%s\n' "$OUT" | grep -cxF "$want")" 1
     done <<'CASES'
-请求 review 报错|3|[{"method":"POST","path":"/requested_reviewers$","mode":"fail","times":2}]
-请求 review 成功但读回不在|3|[{"method":"POST","path":"/requested_reviewers$","mode":"noop","times":2}]
-已请求 review 后标签读回不符|3|[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2}]
+只填地址和请求头名|URL|X-Hook-Key|-|600|webhook 配置不完整，跳过
+只填地址和密钥|URL|-|KEY|600|webhook 配置不完整，跳过
+请求头名带冒号和空格|URL|X-Hook-Key: x|KEY|600|webhook 配置不完整，跳过
+密钥里有换行|URL|X-Hook-Key|NLKEY|600|webhook 配置不完整，跳过
+权限 644|URL|X-Hook-Key|KEY|644|配置文件权限过宽（应为 600），webhook 跳过
+权限 640|URL|X-Hook-Key|KEY|640|配置文件权限过宽（应为 600），webhook 跳过
+权限 664|URL|X-Hook-Key|KEY|664|配置文件权限过宽（应为 600），webhook 跳过
+权限 604|URL|X-Hook-Key|KEY|604|配置文件权限过宽（应为 600），webhook 跳过
+权限 620（只有组写位）|URL|X-Hook-Key|KEY|620|配置文件权限过宽（应为 600），webhook 跳过
 CASES
-    # 已在名单里、「先移出」两次都没生效：不能报成功；交还时真的移掉了
-    fresh_bot; set_field "$RW" 60 reviewers '["req-bot"]'
-    faults '[{"method":"DELETE","path":"/requested_reviewers$","mode":"noop","times":2}]'
-    bot_case "$S" 60
-    chk "PR 失败 · 移出名单没生效：退出码 3" "$RC" 3
-    chk "PR 失败 · 移出名单没生效：输出说明原因" "$(printf '%s' "$OUT" | grep -q '移出待 review 名单没生效' && echo yes || echo no)" yes
-    chk "PR 失败 · 移出名单没生效：交还后名单里没有机器人" "$(reviewers_of "$RW" 60)" ""
-    # 交还时移出名单失败：不算交还成功（退出码 4），等待标签留着挡 greedy / self-heal
-    fresh_bot
-    faults '[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2},{"method":"DELETE","path":"/requested_reviewers$","mode":"fail"}]'
-    bot_case "$S" 60
-    chk "PR 交还失败 · 移出名单报错：退出码 4" "$RC" 4
-    chk "PR 交还失败 · 等待标签还在" "$(labels_of "$RW" 60 | tr ',' '\n' | grep -cx 'waiting/bot')" 1
-    chk "PR 交还失败 · 输出里没有「已交还维护者」" "$(printf '%s' "$OUT" | grep -c '已交还维护者')" 0
+    fresh_bot; hook_cfg; chmod 600 "$RW/cavil-loop.config"; hook_reset
+    bot_case "$S" 50; keep_out
+    chk "webhook · 权限 600：正常发" "$RC|$(hook_count)" "0|1"
+    # 没有 curl：PATH 里只放除 curl 以外的命令
+    local NC="$SANDBOX/nocurl-bin" f
+    if [ ! -d "$NC" ]; then
+        mkdir -p "$NC"
+        for f in /usr/local/bin/* /usr/bin/* /bin/*; do
+            [ "$(basename "$f")" != curl ] && [ -x "$f" ] && [ ! -e "$NC/$(basename "$f")" ] && ln -s "$f" "$NC/$(basename "$f")"
+        done
+    fi
+    fresh_bot; hook_cfg; hook_reset
+    RC=0; OUT=$(env PATH="$NC" FAKE_GH_DIR="$RW/gh" bash "$S/scripts/notify-requester-bot.sh" --config "$RW/cavil-loop.config" 50 2>&1) || RC=$?
+    keep_out
+    chk "webhook · 找不到 curl：退出码 0、0 次" "$RC|$(hook_count)" "0|0"
+    chk "webhook · 找不到 curl：一行固定日志" "$(printf '%s\n' "$OUT" | grep -cxF '找不到 curl，webhook 跳过')" 1
 }
-pr_review_suite "$NEW"; pr_review_fail_suite "$NEW"
-echo "── 3d 负对照 ──"
-D=$(mutate no-request-review scripts/notify-requester-bot.sh \
-    '        requester_bot_request_review "$NUM" || { LAST_FAIL="$REQUESTER_BOT_FAIL"; return 1; }' \
-    '        :') && neg "去掉「请求 review」那一步（红在「发出了 review 请求」）" pr_review_suite "$D"
-SHOW_ONE=$(QUIET=0; D2="$D"; fresh_bot; : > "$RW/gh/calls.log"; bot_case "$D2" 60; grep -c '^WRITE POST .*/requested_reviewers$' "$RW/gh/calls.log")
-chk "负对照细看：去掉那一步后确实没有发出 review 请求（0 次）" "$SHOW_ONE" 0
-D=$(mutate no-unrequest scripts/notify-requester-bot.sh \
-    '        requester_bot_unrequest_review "$NUM" || { LAST_FAIL="交还：$REQUESTER_BOT_FAIL"; return 1; }' \
-    '        :') && neg "交还时不把机器人移出待 review 名单" pr_review_fail_suite "$D"
-D=$(mutate review-directly scripts/_lib.sh \
-    '    if requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT"; then
-        gh_write api -X DELETE "repos/$REPO/pulls/$pr/requested_reviewers"' \
-    '    if false; then
-        gh_write api -X DELETE "repos/$REPO/pulls/$pr/requested_reviewers"') && neg "已在名单里时不先移出、直接再请求" pr_review_suite "$D"
-D=$(mutate no-unrequest-readback scripts/_lib.sh \
-    '        requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="把机器人移出待 review 名单没生效"; return 1; }' \
-    '        :') && neg "移出名单后不读回确认" pr_review_fail_suite "$D"
-D=$(mutate no-review-readback scripts/notify-requester-bot.sh \
-    '        requester_bot_has_login "$reviewers" "$REQUESTER_BOT_ACCOUNT" || { LAST_FAIL="读回待 review 名单里没有 $REQUESTER_BOT_ACCOUNT"; return 1; }' \
-    '        :') && neg "最后的读回不核对待 review 名单" pr_review_fail_suite "$D"
-D=$(mutate review-on-issue scripts/notify-requester-bot.sh \
-    '    if [ "$IS_PR" = true ]; then
-        requester_bot_request_review' \
-    '    if true; then
-        requester_bot_request_review') && neg "issue 上也请求 review" pr_review_suite "$D"
+# 对方出错：一行日志，退出码 0，不重试；超时单次不超过约 10 秒；不跟随跳转
+hook_error_suite() {   # <scripts 副本>
+    local S="$1" t0 t1
+    fresh_bot; hook_cfg; hook_reset 500; bot_case "$S" 50; keep_out
+    chk "webhook · 返回 500：退出码 0、只发 1 次（不重试）" "$RC|$(hook_count)" "0|1"
+    chk "webhook · 返回 500：一行日志" "$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（HTTP 500）')" 1
+    fresh_bot; hook_cfg; hook_reset 302; bot_case "$S" 50; keep_out
+    chk "webhook · 返回跳转：不跟随（只有 1 个请求）" "$RC|$(hook_count)" "0|1"
+    chk "webhook · 返回跳转：记为失败" "$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（HTTP 302）')" 1
+    fresh_bot; hook_cfg "http://127.0.0.1:1/$HOOK_SECRET_PATH"; hook_reset; bot_case "$S" 50; keep_out
+    chk "webhook · 连不上：退出码 0、一行日志" "$RC|$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（连接失败）')" "0|1"
+    fresh_bot; hook_cfg; hook_reset hang
+    t0=$(date +%s); bot_case "$S" 50; t1=$(date +%s); keep_out
+    chk "webhook · 超时：退出码 0、一行日志" "$RC|$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（超时）')" "0|1"
+    chk "webhook · 超时：整次叫醒不超过 14 秒（curl 上限 10 秒）" "$([ $((t1 - t0)) -le 14 ] && echo yes || echo "no:$((t1 - t0))s")" yes
+    chk "webhook · 超时：只发 1 次（不重试）" "$(hook_count)" 1
+}
+# 不泄露：输出、poll.log、假 gh 调用记录、运行期间所有进程的命令行里都搜不到地址路径段和密钥
+hook_leak_suite() {   # <scripts 副本>
+    local S="$1" SAMP="$SANDBOX/cmdline-samples" FLAG="$SANDBOX/sampling" spid
+    : > "$SAMP"; : > "$ALL_OUT"; touch "$FLAG"
+    python3 -I -c '
+import glob, os, sys
+flag, out = sys.argv[1:3]
+with open(out, "a") as o:
+    while os.path.exists(flag):
+        for f in glob.glob("/proc/[0-9]*/cmdline"):
+            try:
+                o.write(open(f, "rb").read().replace(b"\0", b" ").decode("utf-8", "replace") + "\n")
+            except OSError:
+                pass
+' "$FLAG" "$SAMP" &
+    spid=$!
+    fresh_bot; hook_cfg; hook_reset hang; bot_case "$S" 50; keep_out   # 慢请求：curl 活 10 秒，采样一定碰得到
+    fresh_bot; hook_cfg; hook_reset; bot_case "$S" 60; keep_out
+    rm -f "$FLAG"; wait "$spid" 2>/dev/null
+    chk "不泄露 · 采样确实碰到了 curl 进程（对照：采样不是空的）" "$(grep -c 'curl -q --config -' "$SAMP" | awk '{print ($1 > 0) ? "yes" : "no"}')" yes
+    chk "不泄露 · 命令行里没有地址和密钥" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$SAMP")" 0
+    chk "不泄露 · 脚本输出里没有" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$ALL_OUT")" 0
+    chk "不泄露 · poll.log 里没有" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$RW/state/poll.log" 2>/dev/null || true)" 0
+    chk "不泄露 · 假 gh 调用记录里没有" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$RW/gh/calls.log")" 0
+}
+hook_success_suite "$NEW"; hook_exit_suite "$NEW"; hook_config_suite "$NEW"; hook_error_suite "$NEW"; hook_leak_suite "$NEW"
+chk "不泄露 · 以上全部用例的输出里没有地址和密钥" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$ALL_OUT")" 0
+
+echo "── 3d 负对照（逐出口） ──"
+D=$(mutate hook-none scripts/notify-requester-bot.sh \
+    '    requester_bot_webhook_notify "$NUM" "$ITEM_KIND"' \
+    '    :') && neg "首次成功 · 删掉 webhook 调用（红在「恰好 1 次」）" hook_success_suite "$D"
+D=$(mutate hook-assign scripts/notify-requester-bot.sh \
+    '    # 读回核对：等待标签在、要摘的一个都不在' \
+    '    gh_write api -X POST "repos/$REPO/issues/$NUM/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null || true
+    # 读回核对：等待标签在、要摘的一个都不在') && neg "首次成功 · 恢复指派调用（红在「没有任何指派」）" hook_success_suite "$D"
+D=$(mutate hook-review scripts/notify-requester-bot.sh \
+    '    # 读回核对：等待标签在、要摘的一个都不在' \
+    '    [ "$IS_PR" != true ] || gh_write api -X POST "repos/$REPO/pulls/$NUM/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null || true
+    # 读回核对：等待标签在、要摘的一个都不在') && neg "首次成功 · PR 上恢复请求 review" hook_success_suite "$D"
+D=$(mutate hook-first-only scripts/notify-requester-bot.sh \
+    '    if wake_once; then WOKE="重试后成功' \
+    '    if wake_once; then NOHOOK=1; WOKE="重试后成功') \
+    && D=$(MUT_BASE="$D" mutate hook-first-only2 scripts/notify-requester-bot.sh \
+    '    requester_bot_webhook_notify "$NUM" "$ITEM_KIND"' \
+    '    [ -n "${NOHOOK:-}" ] || requester_bot_webhook_notify "$NUM" "$ITEM_KIND"') \
+    && neg "重试成功 · 只在首次成功分支调用（红在「重试成功：恰好 1 次」）" hook_success_suite "$D"
+D=$(mutate hook-on-2 scripts/notify-requester-bot.sh \
+    'reject() { say "❌ 拒绝叫醒（标签未改动）：$*"; exit 2; }' \
+    'reject() { say "❌ 拒绝叫醒（标签未改动）：$*"; requester_bot_webhook_notify "$NUM" issue; exit 2; }') \
+    && neg "退出码 2 · 退出前无条件调用" hook_exit_suite "$D"
+D=$(mutate hook-on-3 scripts/notify-requester-bot.sh \
+    '    exit 3' \
+    '    requester_bot_webhook_notify "$NUM" "$ITEM_KIND"; exit 3') && neg "退出码 3 · 退出前无条件调用" hook_exit_suite "$D"
+D=$(mutate hook-on-4 scripts/notify-requester-bot.sh \
+    'exit 4' \
+    'requester_bot_webhook_notify "$NUM" "$ITEM_KIND"; exit 4') && neg "退出码 4 · 退出前无条件调用" hook_exit_suite "$D"
+D=$(mutate hook-no-half scripts/_lib.sh \
+    '    if [ -z "${REQUESTER_BOT_WEBHOOK_KEY_HEADER:-}" ] || [ -z "${REQUESTER_BOT_WEBHOOK_KEY:-}" ] \' \
+    '    if false \') && neg "只填一半 / 带换行 · 去掉配置完整性检查" hook_config_suite "$D"
+D=$(mutate hook-no-perm scripts/_lib.sh \
+    '    if [ "$go" != 00 ]; then' \
+    '    if false; then') && neg "权限过宽 · 去掉权限检查" hook_config_suite "$D"
+D=$(mutate hook-perm-read-only scripts/_lib.sh \
+    '    if [ "$go" != 00 ]; then' \
+    '    if [ $(( ${go:0:1} & 4 )) -ne 0 ] || [ $(( ${go:1:1} & 4 )) -ne 0 ]; then') \
+    && neg "权限过宽 · 只看读位（照搬现有 token 告警的判法，放过 620）" hook_config_suite "$D"
+D=$(mutate hook-no-header-check scripts/_lib.sh \
+    '       || ! [[ "$REQUESTER_BOT_WEBHOOK_KEY_HEADER" =~ ^[A-Za-z0-9-]+$ ]] \' \
+    '       || false \') && neg "请求头名不校验字符" hook_config_suite "$D"
+D=$(mutate hook-no-curl-check scripts/_lib.sh \
+    '    if ! command -v curl >/dev/null 2>&1; then' \
+    '    if false; then') && neg "没有 curl · 去掉检查（红在固定日志）" hook_config_suite "$D"
+D=$(mutate hook-follow scripts/_lib.sh \
+    '--max-redirs 0' '-L') && neg "跟随跳转" hook_error_suite "$D"
+D=$(mutate hook-url-argv scripts/_lib.sh \
+    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - -s" \
+    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - \"\$REQUESTER_BOT_WEBHOOK_URL\" -H \"\$REQUESTER_BOT_WEBHOOK_KEY_HEADER: \$REQUESTER_BOT_WEBHOOK_KEY\" -s") \
+    && neg "不泄露 · 把地址和密钥放命令行" hook_leak_suite "$D"
+D=$(mutate hook-no-escape scripts/_lib.sh \
+    '    _rb_curl_quote() { local v="${1//\\/\\\\}"; printf '"'"'"%s"'"'"' "${v//\"/\\\"}"; }' \
+    '    _rb_curl_quote() { printf '"'"'"%s"'"'"' "$1"; }') && neg "写进 curl 配置前不转义" hook_success_suite "$D"
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3e. PR 合并 / 关闭未合并后告诉机器人（GitHub#97 Q2=A） ──"
 # ─────────────────────────────────────────────────────────────────────────
-# 起真的 agent-poll.sh（合并后清理那一段打开），看 daemon 是否在机器人提的 issue 上留结果评论
-# 并重新指派机器人；不是机器人的需求、还有别的 PR 开着的、别人伪造的标记都不能误判。
+# 起真的 agent-poll.sh（合并后清理那一段打开），看 daemon 是否在机器人提的 issue 上留结果评论、
+# 加等待标签并通知 webhook（GitHub#100，不再指派）；不是机器人的需求、还有别的 PR 开着的、
+# 别人伪造的标记都不能误判。
 DW="$SANDBOX/done"
 done_env() {   # <on|off>
     new_env "$DW" "$1" label 'AUTO_CLEANUP_ON_MERGE=true'
+    if [ "$1" = on ]; then
+        { printf 'REQUESTER_BOT_WEBHOOK_URL=%s\n' "$(cfg_q "$HOOK_URL")"
+          printf 'REQUESTER_BOT_WEBHOOK_KEY_HEADER=X-Hook-Key\n'
+          printf 'REQUESTER_BOT_WEBHOOK_KEY=%s\n' "$(cfg_q "$HOOK_KEY")"; } >> "$DW/cavil-loop.config"
+        chmod 600 "$DW/cavil-loop.config"
+    fi
+    hook_reset
     git init -q "$DW/project"
     printf '{"cleaned_prs":[],"cleaned_issues":[],"unmerged_prs_handled":[]}' > "$DW/state/state.json"
     # 机器人提的、已被 Closes 关掉的需求 + 合并的 PR
@@ -844,8 +951,8 @@ done_env() {   # <on|off>
     add_item "$DW" 53 issue "" req-bot "$MARK"
     add_item "$DW" 73 pr "" worker-bot "" feature/issue-53; set_field "$DW" 73 state '"closed"'
     add_item "$DW" 74 pr "pending/human" worker-bot "Refs #53" chore/second-try
-    # 机器人已是 assignee：先移再加
-    add_item "$DW" 54 issue "" req-bot "$MARK"; set_field "$DW" 54 assignees '["req-bot"]'
+    # 机器人的需求、已挂着等待标签（上一轮叫醒还没被机器人摘）：照样通知，标签不重复
+    add_item "$DW" 54 issue "waiting/bot" req-bot "$MARK"
     add_item "$DW" 75 pr "" worker-bot "" feature/issue-54
     set_field "$DW" 75 state '"closed"'; set_field "$DW" 75 merged true
     # 别人在评论里写了同样的标记：挡不掉通知
@@ -860,38 +967,56 @@ my_marks() {   # <issue> → 本身份（worker-bot）发的结果评论标记�
         | capture("<!-- requester-bot-done (?<m>pr=[0-9]+ kind=[a-z]+) -->").m] | join(" ")' "$DW/gh/state.json"
 }
 queue_len() { jq -r '(.requester_bot_done_queue // {}) | length' "$DW/state/state.json"; }
+has_wait() { labels_of "$DW" "$1" | tr ',' '\n' | grep -cx 'waiting/bot'; }
+done_assign_calls() { grep -cE '/(assignees|requested_reviewers)' "$DW/gh/calls.log" 2>/dev/null || true; }
+hook_numbers() { jq -r '.body | fromjson | "\(.number):\(.kind)"' "$HOOK/req.log" | sort -n | paste -sd' '; }
 done_suite() {   # <scripts 副本>
     local S="$1" before
     done_env on
     done_tick "$S"
     chk "合并 · 机器人的需求：留了「已合并」结果评论" "$(my_marks 50)" "pr=60 kind=merged"
-    chk "合并 · 机器人的需求：重新指派了机器人" "$(assignees_of "$DW" 50)" "req-bot"
+    chk "合并 · 机器人的需求：来源 issue（已关闭）挂上等待标签" "$(has_wait 50)" 1
     chk "合并 · 评论正文写明合并提交" "$(jq -r '.items["50"].comments[0].body' "$DW/gh/state.json" | grep -c '合并提交 `0123456789ab`')" 1
     chk "合并 · 普通人的需求：不评论" "$(my_marks 70)" ""
-    chk "合并 · 普通人的需求：不指派" "$(assignees_of "$DW" 70)" ""
+    chk "合并 · 普通人的需求：不加等待标签" "$(has_wait 70)" 0
     chk "关闭未合并 · 机器人的需求：留了「关闭未合并」评论" "$(my_marks 52)" "pr=72 kind=closed"
-    chk "关闭未合并 · 机器人的需求：重新指派了机器人" "$(assignees_of "$DW" 52)" "req-bot"
-    chk "关闭未合并 · 还有别的 PR 开着：不通知" "$(my_marks 53)$(assignees_of "$DW" 53)" ""
-    chk "合并 · 机器人已是 assignee：先移再加" \
-        "$(grep -E '^WRITE (DELETE|POST) .*/issues/54/assignees$' "$DW/gh/calls.log" | awk '{print $2}' | tr '\n' ' ')" "DELETE POST "
+    chk "关闭未合并 · 机器人的需求：挂上等待标签" "$(has_wait 52)" 1
+    chk "关闭未合并 · 还有别的 PR 开着：不通知" "$(my_marks 53)$(has_wait 53)" "0"
+    chk "合并 · 已挂着等待标签：照样通知、等待标签只有一个" "$(my_marks 54)|$(has_wait 54)" "pr=75 kind=merged|1"
+    chk "结果通知 · 没有任何指派 / 请求 review 调用" "$(done_assign_calls)" 0
+    chk "结果通知 · webhook 每个来源 issue 恰好 1 次，kind 都是 issue" "$(hook_numbers)" "50:issue 52:issue 54:issue 55:issue"
     chk "合并 · 别人伪造的标记挡不掉通知" "$(my_marks 55)" "pr=76 kind=merged"
     chk "清队 · 全部通知完，队列为空" "$(queue_len)" 0
     # 第二轮：一条都不重发
-    before=$(grep -cE '^WRITE POST .*/(comments|assignees)$' "$DW/gh/calls.log")
+    before=$(grep -cE '^WRITE POST .*/(comments|labels)$' "$DW/gh/calls.log")
+    hook_reset
     done_tick "$S"
-    chk "第二轮 · 不重发评论、不重新指派" "$(grep -cE '^WRITE POST .*/(comments|assignees)$' "$DW/gh/calls.log")" "$before"
+    chk "第二轮 · 不重发评论、不重加标签" "$(grep -cE '^WRITE POST .*/(comments|labels)$' "$DW/gh/calls.log")" "$before"
+    chk "第二轮 · 不再调 webhook" "$(hook_count)" 0
 }
-done_retry_suite() {   # <scripts 副本>：指派失败 → 下轮只补指派，不重复评论；PR 现状读不全 → 不写
-    local S="$1"
-    done_env on
-    printf '%s' '[{"method":"POST","path":"/issues/50/assignees$","mode":"fail","times":1}]' > "$DW/gh/faults.json"
+done_retry_suite() {   # <scripts 副本>：加标签失败 → 下轮只补标签，不重复评论；PR 现状读不全 → 不写
+    local S="$1" mode
+    for mode in fail noop; do
+        done_env on
+        # 只打「加等待标签」那一次：合并流程自己也会给 issue 加标签，不加 field 会先被它吃掉
+        printf '[{"method":"POST","path":"/issues/50/labels$","field":"waiting/bot","mode":"%s","times":1}]' "$mode" > "$DW/gh/faults.json"
+        done_tick "$S"
+        chk "重试（加标签 $mode）· 第一轮评论发了、标签没加上" "$(my_marks 50)|$(has_wait 50)" "pr=60 kind=merged|0"
+        chk "重试（加标签 $mode）· 失败的那条留在队里" "$(jq -r '.requester_bot_done_queue["60"].tries // "none"' "$DW/state/state.json")" 1
+        chk "重试（加标签 $mode）· 第一轮没调 webhook" "$(jq -r '.body | fromjson | .number' "$HOOK/req.log" | grep -cx 50)" 0
+        done_tick "$S"
+        chk "重试（加标签 $mode）· 第二轮补上等待标签" "$(has_wait 50)" 1
+        chk "重试（加标签 $mode）· 结果评论只有一条" "$(my_marks 50)" "pr=60 kind=merged"
+        chk "重试（加标签 $mode）· 第二轮调了 webhook，共 1 次" "$(jq -r '.body | fromjson | .number' "$HOOK/req.log" | grep -cx 50)" 1
+        chk "重试（加标签 $mode）· 出队" "$(queue_len)" 0
+    done
+    # webhook 失败不进重试：标签加上了就出队
+    done_env on; hook_reset 500
     done_tick "$S"
-    chk "重试 · 第一轮评论发了、指派失败" "$(my_marks 50)|$(assignees_of "$DW" 50)" "pr=60 kind=merged|"
-    chk "重试 · 失败的那条留在队里" "$(jq -r '.requester_bot_done_queue["60"].tries // "none"' "$DW/state/state.json")" 1
-    done_tick "$S"
-    chk "重试 · 第二轮补上指派" "$(assignees_of "$DW" 50)" "req-bot"
-    chk "重试 · 结果评论只有一条" "$(my_marks 50)" "pr=60 kind=merged"
-    chk "重试 · 出队" "$(queue_len)" 0
+    chk "webhook 返回 500 · 结果通知照样出队" "$(queue_len)|$(has_wait 50)" "0|1"
+    chk "webhook 返回 500 · 每个来源 issue 只试 1 次" "$(hook_count)" 4
+    chk "webhook 返回 500 · poll.log 记一行失败" "$(grep -c 'issue #50：webhook 通知失败（HTTP 500）' "$DW/state/poll.log")" 1
+    hook_reset
     # 写之前现读 PR：状态字段缺失 → 本轮不写、留队
     done_env on
     set_field "$DW" 75 drop_pull_fields '["merged","merged_at"]'
@@ -922,20 +1047,20 @@ done_rerun_suite() {   # <scripts 副本>
     add_item "$DW" 80 pr "" worker-bot "Refs #52" feature/issue-52
     done_tick "$S"
     chk "跨轮 · 重试前同一需求新开了 PR #80：不发关闭通知" "$(my_marks 52)" ""
-    chk "跨轮 · 不指派机器人" "$(assignees_of "$DW" 52)" ""
+    chk "跨轮 · 不加等待标签" "$(has_wait 52)" 0
     chk "跨轮 · 这条出队（工作在新 PR 上继续）" "$(jq -r '.requester_bot_done_queue | has("72")' "$DW/state/state.json")" false
     # 打开的 PR 列表读失败（只让这一个调用失败）
     done_env on
     printf '%s' '[{"method":"GET","path":"/pulls$","field":"sort=created","mode":"fail"}]' > "$DW/gh/faults.json"
     done_tick "$S"
-    chk "列表读失败 · 有别的 PR 开着的 #53：不通知" "$(my_marks 53)$(assignees_of "$DW" 53)" ""
+    chk "列表读失败 · 有别的 PR 开着的 #53：不通知" "$(my_marks 53)$(has_wait 53)" "0"
     chk "列表读失败 · 没有别的 PR 的 #52 这轮也不通知" "$(my_marks 52)" ""
     chk "列表读失败 · 两条都留队" "$(jq -r '[.requester_bot_done_queue["72"].tries, .requester_bot_done_queue["73"].tries] | map(tostring) | join(",")' "$DW/state/state.json")" "1,1"
     chk "列表读失败 · 合并通知不受影响" "$(my_marks 50)" "pr=60 kind=merged"
     printf '[]' > "$DW/gh/faults.json"
     done_tick "$S"
     chk "列表恢复 · #52 补发关闭通知" "$(my_marks 52)" "pr=72 kind=closed"
-    chk "列表恢复 · #53 仍不通知（#74 开着）" "$(my_marks 53)$(assignees_of "$DW" 53)" ""
+    chk "列表恢复 · #53 仍不通知（#74 开着）" "$(my_marks 53)$(has_wait 53)" "0"
     chk "列表恢复 · 队列清空" "$(queue_len)" 0
 }
 # 写身份资格：叫醒脚本和合并后通知用同一批账号，结论必须一致
@@ -955,7 +1080,7 @@ actor_suite() {   # <scripts 副本>
         done_env on
         if [ "$who" = - ]; then printf '%s' '[{"method":"GET","path":"^user$","mode":"fail"}]' > "$DW/gh/faults.json"; else set_me "$DW" "$who"; fi
         done_tick "$S"
-        got_done=$([ -n "$(jq -r '[(.items["50"].comments // [])[] | select(type == "object")] | length | select(. > 0)' "$DW/gh/state.json")" ]             && [ "$(assignees_of "$DW" 50)" = req-bot ] && echo yes || echo no)
+        got_done=$([ -n "$(jq -r '[(.items["50"].comments // [])[] | select(type == "object")] | length | select(. > 0)' "$DW/gh/state.json")" ]             && [ "$(has_wait 50)" = 1 ] && echo yes || echo no)
         chk "写身份 ${who} · 叫醒脚本是否放行" "$got_wake" "$want"
         chk "写身份 ${who} · 合并后通知是否发出" "$got_done" "$want"
         if [ "$want" = no ]; then
@@ -964,6 +1089,10 @@ actor_suite() {   # <scripts 副本>
     done <<< "$ACTOR_CASES"
 }
 done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"
+done_env on; done_tick "$NEW"   # 上面最后一条用例不发通知；这里补一轮会发的，再查日志
+chk "结果通知 · daemon 的 poll.log / 调用记录里没有 webhook 地址和密钥" \
+    "$(cat "$DW/state/poll.log" "$DW/gh/calls.log" 2>/dev/null | grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL")" 0
+chk "结果通知 · poll.log 里确实记了 webhook 结果（对照：上一条不是空日志）" "$(grep -c 'webhook' "$DW/state/poll.log" | awk '{print ($1 > 0) ? "yes" : "no"}')" yes
 # 功能关闭：和改动前逐字节一致（GitHub 调用、标签、state.json），也确实走到了合并后清理
 for v in old new; do
     rm -rf "$SANDBOX/done-off-$v"
@@ -1017,12 +1146,28 @@ D=$(mutate done-any-author scripts/_lib.sh \
 D=$(mutate done-no-state-check scripts/_lib.sh \
     '    if [ -z "$st" ] || [ -z "$merged" ]; then' \
     '    st=closed; merged=true; if false; then') && neg "写之前不核对 PR 现状" done_retry_suite "$D"
-D=$(mutate done-no-reassign scripts/_lib.sh \
-    '    if ! requester_bot_reassign "$origin"; then' \
-    '    if false; then') && neg "合并后通知只评论、不重新指派" done_suite "$D"
-D=$(mutate add-directly scripts/_lib.sh \
-    '    if requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT"; then' \
-    '    if false; then') && neg "合并后通知：「先移再加」改成直接加" done_suite "$D"
+D=$(mutate done-no-label scripts/_lib.sh \
+    '    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then' \
+    '    if false; then') && neg "结果通知 · 删掉加标签（红在「挂上等待标签」）" done_suite "$D"
+D=$(mutate done-reassign scripts/_lib.sh \
+    '    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then' \
+    '    gh_write api -X POST "repos/$REPO/issues/$origin/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null 2>&1 || true
+    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then') \
+    && neg "结果通知 · 恢复重新指派（红在「没有任何指派」）" done_suite "$D"
+D=$(mutate done-no-label-readback scripts/_lib.sh \
+    '    if ! printf '"'"'%s\n'"'"' "$labels" | grep -qxF "$LABEL_PENDING_REQUESTER_BOT"; then' \
+    '    if false; then') && neg "结果通知 · 加标签后不读回" done_retry_suite "$D"
+D=$(mutate done-no-hook scripts/_lib.sh \
+    '    requester_bot_webhook_notify "$origin" issue' \
+    '    :') && neg "结果通知 · 不调 webhook" done_suite "$D"
+D=$(mutate done-hook-retry scripts/_lib.sh \
+    '    requester_bot_webhook_notify "$origin" issue
+    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #$origin：$REQUESTER_BOT_WEBHOOK_RESULT"
+    return 0' \
+    '    requester_bot_webhook_notify "$origin" issue
+    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #$origin：$REQUESTER_BOT_WEBHOOK_RESULT"
+    case "$REQUESTER_BOT_WEBHOOK_RESULT" in *失败*) return 1 ;; esac
+    return 0') && neg "结果通知 · webhook 失败当成要重试" done_retry_suite "$D"
 D=$(mutate done-closed-after-merged scripts/_lib.sh \
     '    if [ "$kind" = closed ] && printf '"'"'%s\n'"'"' "$marks" | grep -q '"'"'kind=merged'"'"'; then' \
     '    if false; then') && neg "已合并过还补「关闭未合并」" done_retry_suite "$D"
@@ -1042,14 +1187,13 @@ CONF
 }
 names_suite() {   # <scripts 副本>
     local S="$1" kind W2="$SANDBOX/names-new"
-    # 旧名字照样开启：叫醒成功，PR 上同样请求 review
+    # 旧名字照样开启：叫醒成功
     old_names_env "$RW"
     add_item "$RW" 50 issue "doing/agent" req-bot "需求 $MARK"
     add_item "$RW" 60 pr "doing/agent" worker-bot "实现" feature/issue-50
     printf '[]' > "$RW/gh/faults.json"
     bot_case "$S" 60
     chk "旧名字 · PR 叫醒：退出码 0" "$RC" 0
-    chk "旧名字 · PR 叫醒：请求了 review" "$(reviewers_of "$RW" 60)" "req-bot"
     chk "旧名字 · 等待标签按旧名字的值" "$(labels_of "$RW" 60)" "waiting/bot"
     # 旧名字和新名字拼出来的提示词逐字节相同（包括「先汇报」那一项）
     new_env "$W2" on label 'REQUESTER_BOT_REPORT_FIRST="true"'
@@ -1065,7 +1209,8 @@ names_suite() {   # <scripts 副本>
     add_item "$RW" 50 issue "doing/agent" new-bot "需求 $MARK"
     printf '[]' > "$RW/gh/faults.json"
     bot_case "$S" 50
-    chk "新旧都填 · 用新名字的值" "$RC|$(assignees_of "$RW" 50)" "0|new-bot"
+    # 账号现在只用来认「是不是机器人提的」：作者是 new-bot 的需求能叫醒 = 用的是新名字的值
+    chk "新旧都填 · 用新名字的值" "$RC|$(labels_of "$RW" 50)" "0|waiting/bot"
     chk "新旧都填 · 输出提示了冲突" "$(printf '%s' "$OUT" | grep -c 'REQUESTER_BOT_ACCOUNT（用它）/ RELAY_BOT_ACCOUNT（忽略）')" 1
     # 早期入口名 notify-relay.sh 仍可用，转到同一个新脚本
     old_names_env "$RW"
@@ -1073,7 +1218,7 @@ names_suite() {   # <scripts 副本>
     add_item "$RW" 50 issue "doing/agent" req-bot "需求 $MARK"
     printf '[]' > "$RW/gh/faults.json"
     NOTIFY_ENTRY=notify-relay.sh bot_case "$S" 60
-    chk "早期入口名 · 照样叫醒（含请求 review）" "$RC|$(reviewers_of "$RW" 60)" "0|req-bot"
+    chk "早期入口名 · 照样叫醒" "$RC|$(labels_of "$RW" 60)" "0|waiting/bot"
 }
 names_suite "$NEW"
 D=$(mutate no-old-names scripts/_lib.sh \
