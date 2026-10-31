@@ -2273,6 +2273,8 @@ requester_bot_item_origin() {
 # 指令）一律当配置不完整；再转义 \ 和 "。
 # -q 必须是第一个参数：不读用户的 ~/.curlrc（代理等设置会让同一份配置在不同机器表现不同）。
 # 不跟随跳转（会把密钥头带去另一个地址），只许 http / https，10 秒上限，不重试。
+# --globoff：地址按字面发。curl 默认把 [1-2]、{a,b} 当范围展开成多个请求（写在配置文本里
+# 也照样展开），一次叫醒就变成多次 POST，状态码还会拼成 200200 被误记成「连接失败」。
 REQUESTER_BOT_WEBHOOK_RESULT=""
 requester_bot_webhook_notify() {
     local num="$1" kind="$2" mode go body conf code rc
@@ -2304,7 +2306,7 @@ requester_bot_webhook_notify() {
         "$(_rb_curl_quote "$REQUESTER_BOT_WEBHOOK_URL")" \
         "$(_rb_curl_quote "$REQUESTER_BOT_WEBHOOK_KEY_HEADER: $REQUESTER_BOT_WEBHOOK_KEY")")
     rc=0
-    code=$(printf '%s\n' "$conf" | curl -q --config - -s -o /dev/null -w '%{http_code}' \
+    code=$(printf '%s\n' "$conf" | curl -q --config - --globoff -s -o /dev/null -w '%{http_code}' \
         -X POST -H 'Content-Type: application/json' --data-binary "$body" \
         --proto =http,https --max-redirs 0 --max-time 10 2>/dev/null) || rc=$?
     if [ "$rc" -eq 0 ] && [[ "$code" =~ ^2[0-9][0-9]$ ]]; then

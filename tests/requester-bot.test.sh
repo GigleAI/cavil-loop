@@ -910,8 +910,8 @@ D=$(mutate hook-no-curl-check scripts/_lib.sh \
 D=$(mutate hook-follow scripts/_lib.sh \
     '--max-redirs 0' '-L') && neg "跟随跳转" hook_error_suite "$D"
 D=$(mutate hook-url-argv scripts/_lib.sh \
-    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - -s" \
-    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - \"\$REQUESTER_BOT_WEBHOOK_URL\" -H \"\$REQUESTER_BOT_WEBHOOK_KEY_HEADER: \$REQUESTER_BOT_WEBHOOK_KEY\" -s") \
+    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - --globoff -s" \
+    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - --globoff \"\$REQUESTER_BOT_WEBHOOK_URL\" -H \"\$REQUESTER_BOT_WEBHOOK_KEY_HEADER: \$REQUESTER_BOT_WEBHOOK_KEY\" -s") \
     && neg "不泄露 · 把地址和密钥放命令行" hook_leak_suite "$D"
 D=$(mutate hook-no-escape scripts/_lib.sh \
     '    _rb_curl_quote() { local v="${1//\\/\\\\}"; printf '"'"'"%s"'"'"' "${v//\"/\\\"}"; }' \
@@ -927,7 +927,7 @@ DW="$SANDBOX/done"
 done_env() {   # <on|off>
     new_env "$DW" "$1" label 'AUTO_CLEANUP_ON_MERGE=true'
     if [ "$1" = on ]; then
-        { printf 'REQUESTER_BOT_WEBHOOK_URL=%s\n' "$(cfg_q "$HOOK_URL")"
+        { printf 'REQUESTER_BOT_WEBHOOK_URL=%s\n' "$(cfg_q "${DONE_HOOK_URL:-$HOOK_URL}")"
           printf 'REQUESTER_BOT_WEBHOOK_KEY_HEADER=X-Hook-Key\n'
           printf 'REQUESTER_BOT_WEBHOOK_KEY=%s\n' "$(cfg_q "$HOOK_KEY")"; } >> "$DW/cavil-loop.config"
         chmod 600 "$DW/cavil-loop.config"
@@ -1089,6 +1089,23 @@ actor_suite() {   # <scripts 副本>
     done <<< "$ACTOR_CASES"
 }
 done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"
+# 地址里带 [1-2] / {a,b}（复审 #101 第 1 轮）：curl 默认把它们展开成多个请求。叫醒和结果通知
+# 两条真实路径各跑一遍：恰好 1 次、路径和查询原样、记 HTTP 200
+GLOB_QS='?filter[1-2]=x&pick={a,b}'
+glob_suite() {   # <scripts 副本>
+    local S="$1"
+    fresh_bot; hook_cfg "$HOOK_URL$GLOB_QS"; hook_reset; bot_case "$S" 50
+    chk "地址带范围写法 · 叫醒：恰好 1 次" "$RC|$(hook_count)" "0|1"
+    chk "地址带范围写法 · 叫醒：路径和查询原样" "$(hook_field .path)" "/$HOOK_SECRET_PATH$GLOB_QS"
+    chk "地址带范围写法 · 叫醒：记为 HTTP 200" "$(printf '%s\n' "$OUT" | grep -cxF '已通知 webhook（HTTP 200）')" 1
+    DONE_HOOK_URL="$HOOK_URL$GLOB_QS" done_env on
+    printf '%s' '{"cleaned_prs":[],"cleaned_issues":[],"unmerged_prs_handled":[]}' > "$DW/state/state.json"
+    done_tick "$S"
+    chk "地址带范围写法 · 结果通知：每个来源 issue 恰好 1 次" "$(hook_numbers)" "50:issue 52:issue 54:issue 55:issue"
+    chk "地址带范围写法 · 结果通知：路径和查询全部原样" "$(jq -r .path "$HOOK/req.log" | sort -u)" "/$HOOK_SECRET_PATH$GLOB_QS"
+    chk "地址带范围写法 · 结果通知：记为 HTTP 200" "$(grep -c 'issue #50：已通知 webhook（HTTP 200）' "$DW/state/poll.log")" 1
+}
+glob_suite "$NEW"
 done_env on; done_tick "$NEW"   # 上面最后一条用例不发通知；这里补一轮会发的，再查日志
 chk "结果通知 · daemon 的 poll.log / 调用记录里没有 webhook 地址和密钥" \
     "$(cat "$DW/state/poll.log" "$DW/gh/calls.log" 2>/dev/null | grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL")" 0
@@ -1146,6 +1163,8 @@ D=$(mutate done-any-author scripts/_lib.sh \
 D=$(mutate done-no-state-check scripts/_lib.sh \
     '    if [ -z "$st" ] || [ -z "$merged" ]; then' \
     '    st=closed; merged=true; if false; then') && neg "写之前不核对 PR 现状" done_retry_suite "$D"
+D=$(mutate hook-glob scripts/_lib.sh \
+    'curl -q --config - --globoff -s' 'curl -q --config - -s') && neg "去掉 --globoff（叫醒、结果通知两条路径都变红）" glob_suite "$D"
 D=$(mutate done-no-label scripts/_lib.sh \
     '    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then' \
     '    if false; then') && neg "结果通知 · 删掉加标签（红在「挂上等待标签」）" done_suite "$D"
