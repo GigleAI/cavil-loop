@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""tests/relay-handoff.test.sh 用的假 gh：带状态的最小 GitHub。
+"""tests/requester-bot.test.sh 用的假 gh：带状态的最小 GitHub。
 
 状态放在 $FAKE_GH_DIR/state.json：
   {"me": "<当前账号>", "items": {"<N>": {number, title, user, body, state, labels[], assignees[],
-   is_pr, head_ref, events[{event, actor, label}]}}}
+   is_pr, head_ref, events[{event, actor, label}], reviewers[], merged, comments[]}}}
+  PR：state = open / closed，merged = true / false（合并的 PR 是 closed + merged）；
+  reviewers = 待 review 名单（个人账号）；comments 每条是 {user, body}（只写字符串时算 "someone" 发的）
 
-只实现被测代码真实发出的那几种调用（agent-poll.sh / _lib.sh / notify-relay.sh）；--jq 交给真 jq。
+只实现被测代码真实发出的那几种调用（agent-poll.sh / _lib.sh / notify-requester-bot.sh）；--jq 交给真 jq。
 每次调用往 calls.log 追一行，写调用（POST / DELETE / PATCH）带 "WRITE " 前缀，测试据此断言
 「拒绝时零写请求」。
 
@@ -23,7 +25,7 @@ import sys
 import urllib.parse
 
 D = os.environ["FAKE_GH_DIR"]
-REPO = os.environ.get("FAKE_GH_REPO", "example/relay")
+REPO = os.environ.get("FAKE_GH_REPO", "example/requester-bot")
 R = f"repos/{REPO}"
 
 
@@ -104,8 +106,18 @@ def pull_view(it):
     o.pop("pull_request", None)
     o["head"] = {"ref": it.get("head_ref", f"feature/issue-{it['number']}"), "sha": "abc"}
     o["base"] = {"ref": "main"}
-    o["merged"] = False
+    o["merged"] = bool(it.get("merged", False))
+    o["merged_at"] = "2026-10-01T00:00:00Z" if it.get("merged") else None
+    o["merge_commit_sha"] = "0123456789abcdef0123" if it.get("merged") else None
+    for k in it.get("drop_pull_fields", []):   # 模拟接口少字段
+        o.pop(k, None)
     return o
+
+
+def comment_view(k, c):
+    if isinstance(c, str):
+        c = {"user": "someone", "body": c}
+    return {"id": k + 1, "user": {"login": c.get("user", "someone")}, "body": c.get("body", "")}
 
 
 # gh pr view N --json body --jq ...（pr_to_issue_num 的第 2 步）
@@ -114,6 +126,21 @@ if args[:2] == ["pr", "view"]:
     if not it:
         sys.exit(1)
     emit({"body": it.get("body", "")})
+# gh pr list：只有合并后清理那一段（不带 --label）要真数据；带 --label 的照旧返回空
+if args[:2] == ["pr", "list"] and "--label" not in args:
+    def opt(name):
+        return args[args.index(name) + 1] if name in args else ""
+    state, search = opt("--state"), opt("--search")
+    rows = []
+    for it in sorted(items.values(), key=lambda x: -x["number"]):
+        if not it.get("is_pr"):
+            continue
+        st_ = it.get("state", "open")
+        merged = bool(it.get("merged"))
+        if (state == "merged" and merged) or (state == "open" and st_ == "open") \
+                or ("is:unmerged" in search and st_ == "closed" and not merged):
+            rows.append({"number": it["number"], "headRefName": it.get("head_ref", f"feature/issue-{it['number']}")})
+    emit(rows)
 if args and args[0] in ("pr", "issue"):
     emit([])
 
@@ -199,13 +226,26 @@ if args and args[0] == "api":
                     cur.remove(w)
             save("state.json", st)
             emit(issue_view(it))
-        if rest == "/comments":
+        if rest.split("?")[0] == "/comments":
             if method == "POST":
                 body = next((kv[5:] for kv in fields if kv.startswith("body=")), "")
-                it.setdefault("comments", []).append(body)
+                it.setdefault("comments", []).append({"user": st.get("me"), "body": body})
                 save("state.json", st)
                 emit({"id": 1})
-            emit([{"id": k + 1, "body": b} for k, b in enumerate(it.get("comments", []))])
+            emit([comment_view(k, c) for k, c in enumerate(it.get("comments", []))])
+        if rest == "/requested_reviewers" and kind == "pulls":
+            cur = it.setdefault("reviewers", [])
+            who = [kv[len("reviewers[]="):] for kv in fields if kv.startswith("reviewers[]=")]
+            if method == "GET":
+                emit({"users": [{"login": x} for x in cur], "teams": []})
+            for w in who:
+                if method == "POST" and w not in cur:
+                    cur.append(w)
+                    it.setdefault("events", []).append({"event": "review_requested", "actor": st.get("me"), "label": w})
+                if method == "DELETE" and w in cur:
+                    cur.remove(w)
+            save("state.json", st)
+            emit(pull_view(it))
         emit([] if method == "GET" else {})
 
     # 其余（PR 评论 / review 列表等）：空列表

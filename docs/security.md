@@ -108,14 +108,15 @@ The only exception: a **collaborator** re-opens a closed issue / PR with `pendin
 
 > Practical implication: forgetting to flip the label after merge is fine — state pollution, not a security hole. The daemon's auto-cleanup also takes care of the worktree / session, and the state eventually converges.
 
-## External relay bot (optional)
+## External requester bot (optional)
 
-With this feature on ([collaboration.md → External relay bot](collaboration.md#external-relay-bot)) the boundary is still "who can edit labels":
+With this feature on ([collaboration.md → External requester bot](collaboration.md#external-requester-bot)) the boundary is still "who can edit labels":
 
 - **Work still starts only on a label.** For the bot to file requests on its own it needs a repo role that can edit labels (Triage at minimum — it cannot change code). There is no new "start because of who opened it" path
-- **"Filed by the bot" needs both the author and the marker.** The marker is just body text anyone can type in a public repo; trusting it alone would treat a stranger's issue as the bot's and send reports to a requester who doesn't exist
-- **Only accounts in `RELAY_ALLOWED_ACTORS` may wake the bot**; the script checks the current account before doing anything
-- **Once a maintainer took over, the bot is out of the loop**: a hand-added `pending/human` in the label history routes every later handoff to the maintainer
+- **"Filed by the bot" needs both the author and the marker.** The marker is just body text anyone can type in a public repo; trusting it alone would treat a stranger's issue as the bot's and send reports to a requester who doesn't exist. The wake-up script and the daemon's merge / close notice share one implementation of this check
+- **Only accounts in `REQUESTER_BOT_ALLOWED_ACTORS` may wake or notify the bot**; both the wake-up script and the daemon's merge / close notice check the current write identity (one shared check) before any write
+- **Once a maintainer took over, the bot is out of the loop for questions**: a hand-added `pending/human` in the label history routes every later handoff to the maintainer. The merge / close notice still goes to the bot — it only states the outcome
+- **The daemon's only new write** is that merge / close notice: one comment on the bot's issue plus a re-assignment, made with the write identity (`gh_write`), once per PR. A forged copy of its hidden marker in someone else's comment cannot suppress it — only comments by the write identity count
 - Answers and attachments the bot pastes back are **untrusted data** like any comment; "approved" counts only on an explicit verbatim approval of the PR's current head commit
 
 ## Operational discipline (**the most important wall**)

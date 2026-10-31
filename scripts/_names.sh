@@ -14,6 +14,12 @@
 # 只定义变量和函数，不做任何 I/O；可以被任何脚本在任何时刻 source。
 
 CAVIL_NAME="cavil-loop"
+
+# 配置项的新旧名字（GitHub#97）：<新名字的值> <旧名字的值> → 新名字有值用新的，否则用旧的。
+# _lib.sh（外部需求机器人的各项配置）和 setup.sh（建等待标签）都调它，规则只写这一份。
+cavil_pick_setting() {
+    if [ -n "$1" ]; then printf '%s' "$1"; else printf '%s' "$2"; fi
+}
 CAVIL_LEGACY_NAME="coding-agent-work-loop"
 
 CAVIL_CONFIG_HOME="$HOME/.config/cavil-loop"

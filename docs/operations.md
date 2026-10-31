@@ -428,20 +428,25 @@ Design notes:
 
 Leave it empty to keep the previous behaviour exactly.
 
-## External relay bot handoff (optional, **off by default**)
+## External requester bot (optional, **off by default**)
 
-When another AI assistant with its own GitHub account files requests on behalf of other people,
-the agent's questions / reports skip `pending/human` and run the wake-up script instead: the item
-gets `LABEL_PENDING_RELAY` and `RELAY_BOT_ACCOUNT` is re-assigned. Leaving the five settings
-(`LABEL_PENDING_RELAY` / `RELAY_BOT_ACCOUNT` / `RELAY_ALLOWED_ACTORS` / `RELAY_ORIGIN_MARKER` /
-`RELAY_REPORT_FIRST`) empty keeps today's behaviour byte-for-byte.
+When another AI assistant with its own GitHub account files requests directly, the agent's
+questions / reports skip `pending/human` and run the wake-up script instead: the item gets
+`LABEL_PENDING_REQUESTER_BOT` and `REQUESTER_BOT_ACCOUNT` is re-assigned (on a PR it is also asked
+to review — the bot receives "review requested" but not "PR assigned"). When the PR is merged or
+closed unmerged, the daemon posts a result comment on the bot's issue and re-assigns the bot.
+Leaving the five settings (`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUNT` /
+`REQUESTER_BOT_ALLOWED_ACTORS` / `REQUESTER_BOT_ORIGIN_MARKER` / `REQUESTER_BOT_REPORT_FIRST`)
+empty keeps today's behaviour byte-for-byte. The early names (`LABEL_PENDING_RELAY`, `RELAY_*`)
+are still read; for each setting the new name wins when it has a value.
 
 Operationally:
 
 - Items carrying the waiting label are left alone by the greedy pass and self-heal; adding a trigger label dispatches them through the normal flow and removes the waiting label
 - There is no waiting timeout. If the bot never answers, nothing shows up in `poll.log`; watch the board for items stuck on the waiting label
-- The wake-up script runs through the durable entry `~/.agents/releases/cavil-loop/entrypoints/notify-relay.sh` (survives release switches) and logs one `notify-relay #<number>: …` line to `poll.log` per run
-- Full guide, exit codes, evidence rules and a worked example: [collaboration.md → External relay bot](collaboration.md#external-relay-bot)
+- The wake-up script runs through the durable entry `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh` (survives release switches; the early `notify-relay.sh` entry forwards to it) and logs one `notify-requester-bot #<number>: …` line to `poll.log` per run
+- Merge / close notices: pending ones sit in `state.json` under `requester_bot_done_queue`; each one logs `✅ 已把 PR #N 的结果…` when sent, or a ⚠️ line after 30 failed ticks. They run inside the post-merge cleanup pass, so `AUTO_CLEANUP_ON_MERGE=false` turns them off too
+- Full guide, exit codes, evidence rules and a worked example: [collaboration.md → External requester bot](collaboration.md#external-requester-bot)
 
 ## Comment usage footer
 

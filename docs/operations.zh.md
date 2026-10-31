@@ -364,20 +364,24 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 留空 = 完全关闭，行为与从前一致。
 
-## 外部传话机器人交接（可选，**默认关闭**）
+## 外部需求机器人（可选，**默认关闭**）
 
-另一个 AI 助手（有自己的 GitHub 账号）替别人提需求时，agent 提问 / 汇报不翻 `pending/human`，
-而是跑叫醒脚本：挂 `LABEL_PENDING_RELAY`、把 `RELAY_BOT_ACCOUNT` 重新指派为 assignee。
-五个配置项（`LABEL_PENDING_RELAY` / `RELAY_BOT_ACCOUNT` / `RELAY_ALLOWED_ACTORS` /
-`RELAY_ORIGIN_MARKER` / `RELAY_REPORT_FIRST`）全部留空 = 关闭，行为逐字节不变。
+另一个 AI 助手（有自己的 GitHub 账号）直接给项目提需求时，agent 提问 / 汇报不翻 `pending/human`，
+而是跑叫醒脚本：挂 `LABEL_PENDING_REQUESTER_BOT`、把 `REQUESTER_BOT_ACCOUNT` 重新指派为 assignee
+（PR 上同时请求它 review——机器人收得到「被请求 review」，收不到「PR 被指派」）。PR 合并或关闭未合并时，
+daemon 在机器人提的 issue 上留一条结果评论并重新指派它。
+五个配置项（`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUNT` / `REQUESTER_BOT_ALLOWED_ACTORS` /
+`REQUESTER_BOT_ORIGIN_MARKER` / `REQUESTER_BOT_REPORT_FIRST`）全部留空 = 关闭，行为逐字节不变。
+早期的名字（`LABEL_PENDING_RELAY`、`RELAY_*`）照样认；同一项新名字有值时用新名字。
 
 运维上要知道的：
 
 - 挂着等待标签的条目，greedy 兜底和 self-heal 都不碰；有人打了触发标签就照原流程派，派工时摘掉等待标签
 - 没有等待超时。机器人一直没回音，`poll.log` 里不会有任何动静，要人自己看看板上挂着等待标签的条目
-- 叫醒脚本走长期入口 `~/.agents/releases/cavil-loop/entrypoints/notify-relay.sh`（发版切换时路径不失效），
-  每次叫醒在 `poll.log` 留一行 `notify-relay #<编号>: …`
-- 完整说明、退出码、证据规则和接入示例：[collaboration.zh.md → 外部传话机器人](collaboration.zh.md#外部传话机器人)
+- 叫醒脚本走长期入口 `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh`（发版切换时路径不失效；早期入口 `notify-relay.sh` 转发到它），
+  每次叫醒在 `poll.log` 留一行 `notify-requester-bot #<编号>: …`
+- 合并 / 关闭通知：没发成的记在 `state.json` 的 `requester_bot_done_queue`；发成一条 `poll.log` 有一行 `✅ 已把 PR #N 的结果…`，连续 30 轮失败放弃时有一行 ⚠️。它跑在合并后清理那一段里，`AUTO_CLEANUP_ON_MERGE=false` 时也一并不发
+- 完整说明、退出码、证据规则和接入示例：[collaboration.zh.md → 外部需求机器人](collaboration.zh.md#外部需求机器人)
 
 ## 评论用量 footer
 

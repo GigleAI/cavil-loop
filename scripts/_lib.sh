@@ -145,54 +145,72 @@ trigger_labels_array() {
     mapfile -t TRIGGER_LABELS_ALL < <(trigger_labels_all | awk 'NF && !seen[$0]++')
 }
 
-# ── 外部传话机器人交接（GitHub#95，可选，默认关闭）──
-# 有的项目让另一个 AI 助手（有自己的 GitHub 账号，下称「传话机器人」）替别人提需求。
-# agent 要问提需求的人、或要汇报时，不翻 pending/human，而是挂「等待传话」标签 + 把
-# 机器人设为 assignee 叫醒它（scripts/notify-relay.sh）。全部留空 = 功能关闭，行为和以前一样。
+# ── 外部需求机器人（GitHub#95 / #97，可选，默认关闭）──
+# 有的项目让另一个 AI 助手（有自己的 GitHub 账号，下称「外部需求机器人」）直接给项目开
+# issue 提需求，cavil-loop 照常处理。闭环靠两处把结果告诉它：
+#   · agent 要提需求方回答问题、或汇报结果时，不翻 pending/human，而是挂等待标签 + 叫醒
+#     机器人（scripts/notify-requester-bot.sh：issue 上重新指派；PR 上重新指派 + 请求 review）
+#   · PR 合并 / 关闭未合并时，daemon 在机器人提的 issue 上留一条结果评论并重新指派它
+#     （requester_bot_done_*，见下）
+# 全部留空 = 功能关闭，行为和以前一样。
 #
-# 等待标签在 daemon 这边只有三处作用，都在 LABEL_PENDING_RELAY 非空时才生效：
+# 等待标签在 daemon 这边只有三处作用，都在等待标签非空时才生效：
 #   1. greedy 兜底趟挡工（greedy_skip_label_list）——只挂等待标签的条目不派
 #   2. self-heal 不把挂着它的 doing/agent 条目翻回触发标签
 #   3. 有人在等待期间**又打了触发标签** → 按该标签原流程派工，派工时一并摘掉等待标签
-#      （relay_dispatch_clear_labels）。这条是 issue 讨论里定的：触发标签只有能改标签的人
-#      才打得上，是明确的「接着干」；不摘的话，这轮 worker 交完活还挂着一个过期的等待标签
+#      （REQUESTER_BOT_DISPATCH_CLEAR）。触发标签只有能改标签的人才打得上，是明确的
+#      「接着干」；不摘的话，这轮 worker 交完活还挂着一个过期的等待标签
 #
-# 判定「功能已开启」（提示词追加交接规则、叫醒脚本肯干活）要四项都填：标签、机器人账号、
-# 允许叫醒的账号、需求标记。只填了一部分时 daemon 侧的挡工照常生效（只会更保守），
-# 提示词不追加、叫醒脚本拒绝并说明缺哪项。
-LABEL_PENDING_RELAY="${LABEL_PENDING_RELAY:-}"
-RELAY_BOT_ACCOUNT="${RELAY_BOT_ACCOUNT:-}"
-RELAY_ALLOWED_ACTORS="${RELAY_ALLOWED_ACTORS:-}"
-RELAY_ORIGIN_MARKER="${RELAY_ORIGIN_MARKER:-}"
-RELAY_REPORT_FIRST="${RELAY_REPORT_FIRST:-false}"
+# 判定「功能已开启」（提示词追加交接规则、叫醒脚本肯干活、合并后通知）要四项都填：标签、
+# 机器人账号、允许叫醒的账号、需求标记。只填了一部分时 daemon 侧的挡工照常生效（只会更保守），
+# 其余都不做，叫醒脚本拒绝并说明缺哪项。
+#
+# 配置项名字（GitHub#97 Q1=B）：新名字是下面的 REQUESTER_BOT_* / LABEL_PENDING_REQUESTER_BOT；
+# 早期的 RELAY_* / LABEL_PENDING_RELAY 继续认。每一项单独挑：新名字有值就用新的，否则用旧的
+# （_names.sh 的 cavil_pick_setting，setup.sh 建等待标签时用的是同一个函数）。
+# 两个都有值且不同 → 用新的，并记进 REQUESTER_BOT_NAME_CONFLICTS（叫醒脚本和轮询日志会提示）。
+REQUESTER_BOT_NAME_CONFLICTS=""
+_requester_bot_pick() {   # <新名字> <旧名字>
+    local new="$1" old="$2"
+    if [ -n "${!new:-}" ] && [ -n "${!old:-}" ] && [ "${!old}" != "${!new}" ]; then
+        REQUESTER_BOT_NAME_CONFLICTS+="${REQUESTER_BOT_NAME_CONFLICTS:+, }$new（用它）/ $old（忽略）"
+    fi
+    printf -v "$new" '%s' "$(cavil_pick_setting "${!new:-}" "${!old:-}")"
+}
+_requester_bot_pick LABEL_PENDING_REQUESTER_BOT  LABEL_PENDING_RELAY
+_requester_bot_pick REQUESTER_BOT_ACCOUNT        RELAY_BOT_ACCOUNT
+_requester_bot_pick REQUESTER_BOT_ALLOWED_ACTORS RELAY_ALLOWED_ACTORS
+_requester_bot_pick REQUESTER_BOT_ORIGIN_MARKER  RELAY_ORIGIN_MARKER
+_requester_bot_pick REQUESTER_BOT_REPORT_FIRST   RELAY_REPORT_FIRST
+REQUESTER_BOT_REPORT_FIRST="${REQUESTER_BOT_REPORT_FIRST:-false}"
 
-relay_enabled() {
-    [ -n "$LABEL_PENDING_RELAY" ] && [ -n "$RELAY_BOT_ACCOUNT" ] \
-        && [ -n "$RELAY_ALLOWED_ACTORS" ] && [ -n "$RELAY_ORIGIN_MARKER" ]
+requester_bot_enabled() {
+    [ -n "$LABEL_PENDING_REQUESTER_BOT" ] && [ -n "$REQUESTER_BOT_ACCOUNT" ] \
+        && [ -n "$REQUESTER_BOT_ALLOWED_ACTORS" ] && [ -n "$REQUESTER_BOT_ORIGIN_MARKER" ]
 }
 
 # 缺了哪几项（给叫醒脚本和日志说清楚），全齐时输出空
-relay_missing_settings() {
+requester_bot_missing_settings() {
     local v out=""
-    for v in LABEL_PENDING_RELAY RELAY_BOT_ACCOUNT RELAY_ALLOWED_ACTORS RELAY_ORIGIN_MARKER; do
+    for v in LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_ACCOUNT REQUESTER_BOT_ALLOWED_ACTORS REQUESTER_BOT_ORIGIN_MARKER; do
         [ -n "${!v:-}" ] || out+=" $v"
     done
     printf '%s' "${out# }"
 }
 
-relay_report_first() {
-    case "$(printf '%s' "${RELAY_REPORT_FIRST:-}" | tr '[:upper:]' '[:lower:]')" in
+requester_bot_report_first() {
+    case "$(printf '%s' "${REQUESTER_BOT_REPORT_FIRST:-}" | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on|是) return 0 ;;
         *) return 1 ;;
     esac
 }
 
 # 派工翻 doing/agent 时要一并摘掉的额外标签。没配等待标签时为空数组：
-# 展开 "${RELAY_DISPATCH_CLEAR[@]}" 什么都不加，派工的 API 调用和以前逐个相同。
-RELAY_DISPATCH_CLEAR=()
-[ -z "$LABEL_PENDING_RELAY" ] || RELAY_DISPATCH_CLEAR=("$LABEL_PENDING_RELAY")
+# 展开 "${REQUESTER_BOT_DISPATCH_CLEAR[@]}" 什么都不加，派工的 API 调用和以前逐个相同。
+REQUESTER_BOT_DISPATCH_CLEAR=()
+[ -z "$LABEL_PENDING_REQUESTER_BOT" ] || REQUESTER_BOT_DISPATCH_CLEAR=("$LABEL_PENDING_REQUESTER_BOT")
 
-# 派工成功后翻 doing/agent：摘掉全部触发标签（+ 等待传话标签，见上）。三个 dispatch 脚本
+# 派工成功后翻 doing/agent：摘掉全部触发标签（+ 等待标签，见上）。三个 dispatch 脚本
 # 共用这一份，等待标签只在这里加一次，不会有哪条派工路径漏摘。
 # 用法：flip_to_doing <编号> <日志里的描述>
 flip_to_doing() {
@@ -200,13 +218,13 @@ flip_to_doing() {
     run_gh "label 翻转 ($2)" \
         gh_label_flip "$1" \
         --add "$LABEL_AGENT_DOING" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" ${RELAY_DISPATCH_CLEAR[@]+"${RELAY_DISPATCH_CLEAR[@]}"}
+        --remove "${TRIGGER_LABELS_ALL[@]}" ${REQUESTER_BOT_DISPATCH_CLEAR[@]+"${REQUESTER_BOT_DISPATCH_CLEAR[@]}"}
 }
 
 # labels_csv 里挂没挂等待标签（整名匹配，label 名可能含空格 / 正则元字符）
-labels_have_relay() {
-    [ -n "$LABEL_PENDING_RELAY" ] || return 1
-    case ",${1}," in *",$LABEL_PENDING_RELAY,"*) return 0 ;; esac
+labels_have_requester_bot_wait() {
+    [ -n "$LABEL_PENDING_REQUESTER_BOT" ] || return 1
+    case ",${1}," in *",$LABEL_PENDING_REQUESTER_BOT,"*) return 0 ;; esac
     return 1
 }
 
@@ -299,7 +317,7 @@ esac
 #   Done           已结案
 #   pending/PR     issue 的活已经转到 PR 上跟踪，再从 issue 派一次会重复开工
 #   pending/review 有自己的 agent / 模型 / 模板，由上面 review 那趟收，不该被兜底趟抢走
-#   等待传话标签   在等外部传话机器人带回答复（GitHub#95）；有人打了触发标签才由 label 趟按原流程收
+#   等待标签       在等外部需求机器人带回答复（GitHub#95）；有人打了触发标签才由 label 趟按原流程收
 # GREEDY_SKIP_LABELS 是项目自定义的**追加**项（逗号分隔），比如 "blocked,discussion"。
 greedy_skip_label_list() {
     printf '%s\n' \
@@ -308,7 +326,7 @@ greedy_skip_label_list() {
         "$LABEL_DONE" \
         "$LABEL_PENDING_PR" \
         "${LABEL_PENDING_REVIEW:-}" \
-        "${LABEL_PENDING_RELAY:-}"
+        "${LABEL_PENDING_REQUESTER_BOT:-}"
     if [ -n "${GREEDY_SKIP_LABELS:-}" ]; then
         printf '%s\n' "${GREEDY_SKIP_LABELS}" | tr ',' '\n'
     fi
@@ -1232,7 +1250,7 @@ branch_to_issue_num() {
 # 写法，对「关键词和编号分在两行」的判断不同（main 上就如此，本 PR 不改它们的行为）：
 #   pr_body_linked_issue     grep 逐行找：会话命名（pr_to_issue_num）用它
 #   PR_BODY_LINK_JQ_RE       jq 整段找：活跃 worker 列表（list_active_workers）用它
-# 叫醒传话机器人要从正文找来源时，两种都跑，结果一致才认（notify-relay.sh），这样它认定的
+# 外部需求机器人要从正文找来源时，两种都跑，结果一致才认（requester_bot_item_origin），这样它认定的
 # 来源永远和会话命名、活跃 worker 列表都对得上；不一致就拒绝、交维护者。
 # 正文从 stdin 读；没有就输出空。
 pr_body_linked_issue() {
@@ -2129,6 +2147,305 @@ sub_issue_rollup_drain() {
     done
 }
 
+# ── 外部需求机器人：叫醒脚本和 daemon 共用的几步（GitHub#95 / #97）──
+# 「是不是机器人提的需求」「重新指派机器人」这两条规则，叫醒脚本（notify-requester-bot.sh）
+# 和合并后通知（requester_bot_done_notify）各用一次，只在这里写一份。
+# 读用 gh（轮询身份），写用 gh_write（与 worker 发评论同一个身份）。
+# 失败原因写进 REQUESTER_BOT_FAIL / REQUESTER_BOT_REASON，调用方负责输出。
+
+requester_bot_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# <logins（\x1f 分隔）> <login>：名单里有没有这个账号（GitHub 登录名不区分大小写）
+requester_bot_has_login() {
+    local x
+    while IFS= read -r x; do
+        [ -n "$x" ] && [ "$(requester_bot_lc "$x")" = "$(requester_bot_lc "$2")" ] && return 0
+    done < <(printf '%s\n' "$1" | tr '\037' '\n')
+    return 1
+}
+
+# 允许名单（逗号 / 空白分隔）里有没有这个账号
+requester_bot_actor_allowed() {
+    local who x arr=()
+    who="$(requester_bot_lc "$1")"
+    [ -n "$who" ] || return 1
+    read -ra arr <<< "$(printf '%s' "$REQUESTER_BOT_ALLOWED_ACTORS" | tr ',' ' ')"
+    for x in ${arr[@]+"${arr[@]}"}; do [ "$(requester_bot_lc "$x")" = "$who" ] && return 0; done
+    return 1
+}
+
+# 当前写身份（gh_write）是否允许去叫醒 / 通知机器人。叫醒脚本和合并后通知在任何写请求之前
+# 都先过这一关。0 = 允许，REQUESTER_BOT_ME = 登录名；1 = 读不到身份或不在名单，原因在 REQUESTER_BOT_REASON。
+requester_bot_check_actor() {
+    REQUESTER_BOT_ME=$(gh_write api user --jq .login 2>/dev/null) || REQUESTER_BOT_ME=""
+    if [ -z "$REQUESTER_BOT_ME" ]; then
+        REQUESTER_BOT_REASON="读不到当前 GitHub 账号，无法核对是否允许叫醒"
+        return 1
+    fi
+    if ! requester_bot_actor_allowed "$REQUESTER_BOT_ME"; then
+        REQUESTER_BOT_REASON="当前账号 $REQUESTER_BOT_ME 不在允许叫醒的名单里"
+        return 1
+    fi
+    return 0
+}
+
+# 某个需求 issue 现在还有哪些打开的 PR（排除指定的那个）。关联的认法与来源判定一致：分支名
+# 里的编号，或正文的 Closes/Refs #N（逐行、整段两种写法任一指向它就算，宁可多算——多算只会
+# 少发一条「关闭未合并」）。输出编号（空格分隔），没有就输出空；读失败 return 1。
+requester_bot_open_prs_for() {
+    local issue="$1" except="$2" rows n ref body
+    # 单独现读，不用本轮开头的快照（open_snapshot）：马上要往外写，要的是此刻的真值
+    rows=$(gh api --paginate -X GET "repos/$REPO/pulls" -f state=open -f sort=created -f per_page=100 \
+        --jq '.[] | [(.number | tostring), (.head.ref // ""), ((.body // "") | @base64)] | @tsv') || return 1
+    while IFS=$'\t' read -r n ref body; do
+        [ -n "$n" ] && [ "$n" != "$except" ] || continue
+        body=$(printf '%s' "$body" | base64 -d 2>/dev/null || true)
+        if [ "$(branch_to_issue_num "$ref")" = "$issue" ] \
+           || [ "$(printf '%s' "$body" | pr_body_linked_issue)" = "$issue" ] \
+           || [ "$(printf '%s' "$body" | pr_body_linked_issue_jq)" = "$issue" ]; then
+            printf '%s ' "$n"
+        fi
+    done <<< "$rows"
+    return 0
+}
+
+# 判定一条 issue / PR 是不是外部需求机器人提的需求。
+#   requester_bot_item_origin <编号> <条目 JSON（GET /issues/<编号> 的返回）>
+# 返回 0 = 是：REQUESTER_BOT_ORIGIN = 来源 issue 编号，REQUESTER_BOT_ORIGIN_JSON = 它的 JSON，
+#          条目是 PR 时 REQUESTER_BOT_PR_JSON = GET /pulls/<编号> 的返回
+#      1 = 明确不是；2 = 读不到、判不了。两种都在 REQUESTER_BOT_REASON 里写原因。
+#
+# PR 的来源：分支名里的 issue 编号（BRANCH_PREFIX + N）优先；没有就看正文的 Closes/Fixes/Resolves/Refs #N。
+# 正文这一步用 daemon 现成的两种写法各找一次（会话命名的逐行版、活跃 worker 列表的整段版，
+# 见 pr_body_linked_issue），两者一致才认；不一致（典型是关键词和编号分在两行）就算「不是」——
+# 这样认定的来源永远和 daemon 给这个 PR 用的工作编号、列表上显示的关联都对得上。
+# 不用 pr_to_issue_num：它找不到时兜底返回 PR 自己的编号，拿来核验会让没关联需求的 PR 放行。
+# 只认标记不认作者的话，公开仓库里谁都能在正文里写这段文字，所以作者和标记都要对上。
+requester_bot_item_origin() {
+    local num="$1" item="$2" is_pr branch body by_line by_whole origin ojson author
+    REQUESTER_BOT_ORIGIN=""; REQUESTER_BOT_ORIGIN_JSON=""; REQUESTER_BOT_PR_JSON=""; REQUESTER_BOT_REASON=""
+    is_pr=$(printf '%s' "$item" | jq -r 'has("pull_request") and .pull_request != null') \
+        || { REQUESTER_BOT_REASON="#$num 的内容读不懂"; return 2; }
+    origin="$num"; ojson="$item"
+    if [ "$is_pr" = true ]; then
+        REQUESTER_BOT_PR_JSON=$(gh api "repos/$REPO/pulls/$num") \
+            || { REQUESTER_BOT_REASON="读不到 PR #$num"; return 2; }
+        branch=$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '.head.ref // ""')
+        origin=$(branch_to_issue_num "$branch")
+        if [ -z "$origin" ]; then
+            body=$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '.body // ""')
+            by_line=$(printf '%s' "$body" | pr_body_linked_issue)
+            by_whole=$(printf '%s' "$body" | pr_body_linked_issue_jq)
+            if [ "$by_line" != "$by_whole" ]; then
+                REQUESTER_BOT_REASON="PR #$num 正文里的关联写法有歧义（逐行看是 ${by_line:-无}、整段看是 ${by_whole:-无}，常见于关键词和 #编号分在两行），认不准来自哪个需求"
+                return 1
+            fi
+            origin="$by_line"
+        fi
+        case "$origin" in ''|*[!0-9]*)
+            REQUESTER_BOT_REASON="PR #$num 没有关联 issue（分支名 ${branch:-?} 不带编号，正文里也没有 Closes #N 这类写法）"
+            return 1 ;;
+        esac
+        [ "$origin" != "$num" ] || { REQUESTER_BOT_REASON="PR #$num 没有关联 issue（关联编号就是它自己）"; return 1; }
+        ojson=$(gh api "repos/$REPO/issues/$origin") || { REQUESTER_BOT_REASON="读不到关联的 issue #$origin"; return 2; }
+        if [ "$(printf '%s' "$ojson" | jq -r 'has("pull_request") and .pull_request != null')" != false ]; then
+            REQUESTER_BOT_REASON="PR #$num 关联的 #$origin 是 PR，不是 issue"
+            return 1
+        fi
+    fi
+    author=$(printf '%s' "$ojson" | jq -r '.user.login // ""')
+    if [ "$(requester_bot_lc "$author")" != "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then
+        REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 $REQUESTER_BOT_ACCOUNT）"
+        return 1
+    fi
+    if ! printf '%s' "$ojson" | jq -e --arg m "$REQUESTER_BOT_ORIGIN_MARKER" '(.body // "") | contains($m)' >/dev/null; then
+        REQUESTER_BOT_REASON="#$origin 正文里没有外部需求标记"
+        return 1
+    fi
+    REQUESTER_BOT_ORIGIN="$origin"
+    REQUESTER_BOT_ORIGIN_JSON="$ojson"
+    return 0
+}
+
+requester_bot_read_assignees() {   # <编号> → assignee 登录名（\x1f 分隔）
+    gh api "repos/$REPO/issues/$1" --jq '[.assignees[].login] | join("\u001f")'
+}
+
+# 重新指派机器人：它已经是 assignee 时直接再加不会通知它，必须先移掉、读回确认真的不在了，
+# 再加（没移掉就再加，机器人收不到通知，最后的读回也分辨不出来）；加完读回确认在。
+# 0 = 做完；1 = 失败，原因在 REQUESTER_BOT_FAIL。每一步都可以安全重跑。
+requester_bot_reassign() {
+    local n="$1" a
+    REQUESTER_BOT_FAIL=""
+    a=$(requester_bot_read_assignees "$n") || { REQUESTER_BOT_FAIL="读 assignee 失败"; return 1; }
+    if requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT"; then
+        gh_write api -X DELETE "repos/$REPO/issues/$n/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
+            || { REQUESTER_BOT_FAIL="移除机器人 assignee 失败"; return 1; }
+        a=$(requester_bot_read_assignees "$n") || { REQUESTER_BOT_FAIL="移除 assignee 后读回失败"; return 1; }
+        requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="移除机器人 assignee 没生效"; return 1; }
+    fi
+    gh_write api -X POST "repos/$REPO/issues/$n/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
+        || { REQUESTER_BOT_FAIL="指派机器人失败"; return 1; }
+    a=$(requester_bot_read_assignees "$n") || { REQUESTER_BOT_FAIL="指派后读回失败"; return 1; }
+    requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT" || { REQUESTER_BOT_FAIL="读回 assignee 里没有 $REQUESTER_BOT_ACCOUNT"; return 1; }
+    return 0
+}
+
+requester_bot_read_reviewers() {   # <PR> → 待 review 名单里的个人账号（\x1f 分隔）
+    gh api "repos/$REPO/pulls/$1/requested_reviewers" --jq '[.users[].login] | join("\u001f")'
+}
+
+# PR 上请求机器人 review（GitHub#97）：机器人能收到「被请求 review」事件，收不到「PR 被指派」。
+# 已经在待 review 名单里时同样要先移掉、读回确认，再请求——直接再请求不产生新事件。
+requester_bot_request_review() {
+    local pr="$1" r
+    REQUESTER_BOT_FAIL=""
+    r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="读待 review 名单失败"; return 1; }
+    if requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT"; then
+        gh_write api -X DELETE "repos/$REPO/pulls/$pr/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
+            || { REQUESTER_BOT_FAIL="把机器人移出待 review 名单失败"; return 1; }
+        r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="移出待 review 名单后读回失败"; return 1; }
+        requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="把机器人移出待 review 名单没生效"; return 1; }
+    fi
+    gh_write api -X POST "repos/$REPO/pulls/$pr/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
+        || { REQUESTER_BOT_FAIL="请求机器人 review 失败"; return 1; }
+    return 0
+}
+
+# 交还维护者时把机器人移出待 review 名单，并读回确认。
+requester_bot_unrequest_review() {
+    local pr="$1" r
+    REQUESTER_BOT_FAIL=""
+    r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="读待 review 名单失败"; return 1; }
+    requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT" || return 0
+    gh_write api -X DELETE "repos/$REPO/pulls/$pr/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null \
+        || { REQUESTER_BOT_FAIL="把机器人移出待 review 名单失败"; return 1; }
+    r=$(requester_bot_read_reviewers "$pr") || { REQUESTER_BOT_FAIL="移出待 review 名单后读回失败"; return 1; }
+    requester_bot_has_login "$r" "$REQUESTER_BOT_ACCOUNT" && { REQUESTER_BOT_FAIL="待 review 名单里仍有机器人"; return 1; }
+    return 0
+}
+
+# ── PR 合并 / 关闭未合并后，把结果告诉外部需求机器人（GitHub#97 Q2=A）──
+# § 3 记下一个新合并的 PR（cleaned_prs）、§ 3c 记下一个关闭未合并的 PR（unmerged_prs_handled）
+# 的同一时刻入队，每轮清队。入队点每个 PR 只会走到一次，所以出队后不会被再次入队。
+# 「该不该发」的全部条件（是机器人的需求、PR 现状、写身份在名单里、关闭时这项需求没有别的
+# PR 开着）都在 requester_bot_done_notify 里、每次尝试现查，入队处不做判断——首轮失败后
+# 重试时情况可能已经变了（比如同一需求新开了 PR）。
+#   requester_bot_done_queue[<PR>] = {kind: merged|closed, tries}
+# 功能关闭时不入队、也不写这个字段（state.json 和以前逐字节相同）。
+#
+# 一次通知 = 在来源 issue 上发一条带隐藏标记的结果评论 + 重新指派机器人（见 requester_bot_reassign）。
+# 「评论发过没有」以 issue 上实际有没有本身份发的那条标记评论为准，不另记进度：评论发了、
+# 指派失败时，重试只补指派，不会重复发评论。
+#
+# 返回 0 = 有定论、出队（通知完成 / 不是机器人提的需求 / PR 现状和入队时不符）；
+#      1 = 这次没做成，下轮再试（任何读写失败、PR 状态字段缺失、写身份不在名单）。
+REQUESTER_BOT_DONE_TAG='requester-bot-done'
+
+requester_bot_done_enqueue() {   # <PR> <merged|closed> <state_file>
+    local pr="$1" kind="$2" state_file="$3" tmp
+    requester_bot_enabled || return 0
+    tmp=$(mktemp)
+    jq --arg p "$pr" --arg k "$kind" \
+        '.requester_bot_done_queue = ((.requester_bot_done_queue // {}) + {($p): {kind: $k, tries: (((.requester_bot_done_queue // {})[$p].tries) // 0)}})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
+requester_bot_done_notify() {   # <PR> <merged|closed>
+    local pr="$1" kind="$2" item rc st merged origin me marks body mark
+    if ! requester_bot_enabled; then
+        log "  外部需求机器人功能已关闭，丢弃 PR #$pr 的结果通知"
+        return 0
+    fi
+    item=$(gh api "repos/$REPO/issues/$pr") || { log "  读取 PR #$pr 失败，结果通知下轮再试"; return 1; }
+    rc=0; requester_bot_item_origin "$pr" "$item" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) log "  PR #$pr 不来自外部需求机器人提的需求（$REQUESTER_BOT_REASON），不通知"; return 0 ;;
+        *) log "  PR #$pr 判不了是否来自外部需求机器人（$REQUESTER_BOT_REASON），下轮再试"; return 1 ;;
+    esac
+    origin="$REQUESTER_BOT_ORIGIN"
+    # 写之前按刚读到的 PR 现状核对入队时的判断：必须已关闭，合并与否和入队时一致。
+    # 字段缺失 = 判不了，本轮不写。
+    st=$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '.state // ""')
+    merged=$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r 'if has("merged") then (.merged | tostring) elif has("merged_at") then (.merged_at != null | tostring) else "" end')
+    if [ -z "$st" ] || [ -z "$merged" ]; then
+        log "  PR #$pr 现状读不全（state='$st' merged='$merged'），下轮再试"
+        return 1
+    fi
+    case "$kind:$st:$merged" in
+        merged:closed:true|closed:closed:false) ;;
+        *) log "  PR #$pr 现状（$st，merged=$merged）和入队时（$kind）不符，不通知"; return 0 ;;
+    esac
+
+    # 关闭未合并：这项需求还有别的 PR 开着 = 工作在继续，不发「没有落地」。每次尝试都现查；
+    # 查不到不能当成「没有」，留到下轮。
+    if [ "$kind" = closed ]; then
+        local others
+        if ! others=$(requester_bot_open_prs_for "$origin" "$pr"); then
+            log "  读不到打开的 PR 列表，PR #$pr 的关闭通知下轮再试"
+            return 1
+        fi
+        if [ -n "$others" ]; then
+            log "  需求 #$origin 还有打开的 PR（${others% }），PR #$pr 关闭不通知"
+            return 0
+        fi
+    fi
+    # 写身份必须在允许名单里，和叫醒脚本同一关（requester_bot_check_actor）
+    if ! requester_bot_check_actor; then
+        log "  PR #$pr 的结果通知不发：$REQUESTER_BOT_REASON（下轮再试）"
+        return 1
+    fi
+    # 只认本身份发过的标记评论：别人在评论里写同样的文字，不能挡掉通知
+    me="$REQUESTER_BOT_ME"
+    marks=$(gh api --paginate "repos/$REPO/issues/$origin/comments?per_page=100" \
+        --jq ".[] | select((.user.login // \"\" | ascii_downcase) == \"$(requester_bot_lc "$me")\") | (.body // \"\") | scan(\"<!-- $REQUESTER_BOT_DONE_TAG pr=[0-9]+ kind=[a-z]+ -->\")") \
+        || { log "  读不到 issue #$origin 的评论，PR #$pr 的结果通知下轮再试"; return 1; }
+    if [ "$kind" = closed ] && printf '%s\n' "$marks" | grep -q 'kind=merged'; then
+        log "  issue #$origin 已由别的 PR 合并完成并通知过，PR #$pr 关闭不再通知"
+        return 0
+    fi
+    mark="<!-- $REQUESTER_BOT_DONE_TAG pr=$pr kind=$kind -->"
+    if ! printf '%s\n' "$marks" | grep -qxF "$mark"; then
+        if [ "$kind" = merged ]; then
+            body=$(printf '## 需求已完成：PR #%s 已合并\n\nPR #%s（%s）已合并进 `%s`，合并提交 `%s`。这条需求到此完成。\n\n%s\n' \
+                "$pr" "$pr" "$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '.title // ""')" \
+                "$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '.base.ref // "?"')" \
+                "$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '(.merge_commit_sha // "?")[0:12]')" "$mark")
+        else
+            body=$(printf '## PR #%s 已关闭，没有合并\n\n这条需求的改动没有落地。后续是否继续，由维护者决定。\n\n%s\n' "$pr" "$mark")
+        fi
+        run_gh "issue #$origin 发 PR #$pr 的结果评论" \
+            gh_write api -X POST "repos/$REPO/issues/$origin/comments" -f "body=$body" || return 1
+    fi
+    if ! requester_bot_reassign "$origin"; then
+        log "  issue #$origin 重新指派 $REQUESTER_BOT_ACCOUNT 失败（$REQUESTER_BOT_FAIL），下轮重试"
+        return 1
+    fi
+    log "  ✅ 已把 PR #$pr 的结果（$kind）告诉 $REQUESTER_BOT_ACCOUNT：issue #$origin 留了评论并重新指派"
+    return 0
+}
+
+requester_bot_done_drain() {   # <state_file>
+    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" pr kind tries tmp
+    for pr in $(jq -r '(.requester_bot_done_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
+        [[ "$pr" =~ ^[0-9]+$ ]] || continue
+        kind=$(jq -r --arg p "$pr" '.requester_bot_done_queue[$p].kind // ""' "$state_file")
+        tmp=$(mktemp)
+        if requester_bot_done_notify "$pr" "$kind"; then
+            jq --arg p "$pr" 'del(.requester_bot_done_queue[$p])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+            continue
+        fi
+        tries=$(jq -r --arg p "$pr" '(.requester_bot_done_queue[$p].tries // 0) + 1' "$state_file")
+        if [ "$tries" -ge "$cap" ]; then
+            log "⚠️ PR #$pr 的结果连续 $tries 次没能告诉外部需求机器人 → 放弃（请手动在来源 issue 上通知它）"
+            jq --arg p "$pr" 'del(.requester_bot_done_queue[$p])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        else
+            jq --arg p "$pr" --argjson n "$tries" '.requester_bot_done_queue[$p].tries = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        fi
+    done
+}
+
 # ── 等人审的 PR 与目标分支冲突（GitHub#86，Q1=B + 「只对 2 天内有更新的自动解」）──
 # PR 挂着 pending/human 等人审期间，别的 PR 合进目标分支，它就可能变成冲突，人打开时
 # 合并按钮已经灰了。这里在每轮轮询里发现它：最近有更新的交回 worker 去解（翻回
@@ -2880,25 +3197,25 @@ find_prompt_template() {
 #
 # 两者可以并存（项目自己的 .template.md 当 base + .extra.md 追加），但既然都覆写了
 # 通常不需要。stdout 写最终要用的文件路径；没有增量时就是 base 本身。
-# 渲染「外部传话交接规则」段（prompts/relay-handoff.md）。占位符用 @@NAME@@ 而不是 ${NAME}：
+# 渲染「外部需求机器人交接规则」段（prompts/requester-bot-handoff.md）。占位符用 @@NAME@@ 而不是 ${NAME}：
 # 这一段由这里渲染完，后面 dispatch 的 sed 只认 ${NAME}，两边不会互相吃掉；值里有
 # `|` `&` 这类 sed 特殊字符也不会坏。替换值加了引号：bash 5.2 起未加引号的 & 表示匹配串。
-relay_handoff_section() {
-    local f="$SKILL_DIR/prompts/relay-handoff.md" text rule cmd
-    [ -s "$f" ] || { log "⚠️ 传话交接规则文件缺失：$f" 2>/dev/null || true; return 0; }
+requester_bot_handoff_section() {
+    local f="$SKILL_DIR/prompts/requester-bot-handoff.md" text rule cmd
+    [ -s "$f" ] || { log "⚠️ 外部需求机器人交接规则文件缺失：$f" 2>/dev/null || true; return 0; }
     text="$(cat "$f")"
-    if relay_report_first; then
-        rule="本项目要求**先经传话汇报**：做完（启用交叉 review 时，在代码复审通过后由 reviewer）先叫醒机器人汇报，提需求方认可当前提交后，再交维护者合并"
+    if requester_bot_report_first; then
+        rule="本项目要求**先向机器人汇报**：做完（启用交叉 review 时，在代码复审通过后由 reviewer）先叫醒机器人汇报，提需求方认可当前提交后，再交维护者合并"
     else
-        rule="本项目**不**要求先经传话汇报：做完照上文交维护者，不叫醒"
+        rule="本项目**不**要求先向机器人汇报：做完照上文交维护者，不叫醒"
     fi
-    cmd="$RELAY_NOTIFY_CMD"
+    cmd="$REQUESTER_BOT_NOTIFY_CMD"
     text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
-    text="${text//@@LABEL_PENDING_RELAY@@/"$LABEL_PENDING_RELAY"}"
-    text="${text//@@RELAY_BOT_ACCOUNT@@/"$RELAY_BOT_ACCOUNT"}"
-    text="${text//@@RELAY_ORIGIN_MARKER@@/"$RELAY_ORIGIN_MARKER"}"
-    text="${text//@@RELAY_REPORT_RULE@@/"$rule"}"
-    text="${text//@@RELAY_NOTIFY_CMD@@/"$cmd"}"
+    text="${text//@@LABEL_PENDING_REQUESTER_BOT@@/"$LABEL_PENDING_REQUESTER_BOT"}"
+    text="${text//@@REQUESTER_BOT_ACCOUNT@@/"$REQUESTER_BOT_ACCOUNT"}"
+    text="${text//@@REQUESTER_BOT_ORIGIN_MARKER@@/"$REQUESTER_BOT_ORIGIN_MARKER"}"
+    text="${text//@@REQUESTER_BOT_REPORT_RULE@@/"$rule"}"
+    text="${text//@@REQUESTER_BOT_NOTIFY_CMD@@/"$cmd"}"
     printf '%s\n' "$text"
 }
 
@@ -2915,7 +3232,7 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! relay_enabled; then echo "$base_tpl"; return; fi
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -2934,11 +3251,11 @@ compose_prompt_template() {
         printf '> 上面是通用工作流，这一段是 %s 特有的。两者冲突时**以这一段为准**。\n\n' "${REPO:-本仓库}"
         cat "$overlay"
         fi
-        # 外部传话交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
+        # 外部需求机器人交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
         # 工具自带模板时也收得到；写进工具模板里的话，那种项目就漏了。功能关着什么都不加。
-        if relay_enabled; then
+        if requester_bot_enabled; then
             printf '\n\n---\n\n'
-            relay_handoff_section
+            requester_bot_handoff_section
         fi
     } > "$out"
     log "prompt: base=$(basename "$base_tpl") + 增量=$(basename "$overlay")（合成 $(wc -l < "$out") 行）" 2>/dev/null || true
@@ -2973,12 +3290,13 @@ _MANAGED_FOOTER="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypo
 [ ! -f "$_MANAGED_FOOTER" ] || COMMENT_FOOTER_SCRIPT="$_MANAGED_FOOTER"
 COMMENT_FOOTER_CMD="bash '$COMMENT_FOOTER_SCRIPT' --agent '$WORKER_AGENT' --driver '$AGENT_TOKEN_USAGE_SCRIPT' --config '$CONFIG_FILE'"
 
-# ── 叫醒传话机器人的命令（GitHub#95，写进「外部传话交接规则」段）──
+# ── 叫醒外部需求机器人的命令（GitHub#95，写进「外部需求机器人交接规则」段）──
 # 同 footer：托管安装走长期入口（发版切换时不失效），配置路径由这里给定，不让 worker 自己找。
-RELAY_NOTIFY_SCRIPT="$_LIB_DIR/notify-relay.sh"
-_MANAGED_RELAY="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/notify-relay.sh"
-[ ! -f "$_MANAGED_RELAY" ] || RELAY_NOTIFY_SCRIPT="$_MANAGED_RELAY"
-RELAY_NOTIFY_CMD="bash '$RELAY_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
+# 早期的入口名 notify-relay.sh 仍保留（转发到新脚本），给发版切换那一刻还拿着旧提示词的 worker 用。
+REQUESTER_BOT_NOTIFY_SCRIPT="$_LIB_DIR/notify-requester-bot.sh"
+_MANAGED_REQUESTER_BOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/notify-requester-bot.sh"
+[ ! -f "$_MANAGED_REQUESTER_BOT" ] || REQUESTER_BOT_NOTIFY_SCRIPT="$_MANAGED_REQUESTER_BOT"
+REQUESTER_BOT_NOTIFY_CMD="bash '$REQUESTER_BOT_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
 
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
