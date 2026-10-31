@@ -252,7 +252,7 @@ wait_suite "$NEW" greedy
 # 负对照：复制一份新版、改坏一处（python 精确替换，替换不到就当场报错），整组断言必须变红
 mutate() {   # <名字> <文件（相对副本根）> <原文> <改成>
     local D="$SANDBOX/mut-$1"
-    rm -rf "$D"; cp -r "$NEW" "$D"
+    rm -rf "$D"; cp -r "${MUT_BASE:-$NEW}" "$D"
     python3 - "$D/$2" "$3" "$4" <<'PYM' || { echo "  ❌ 负对照 $1 没改上（原文找不到）"; fail=$((fail+1)); return 1; }
 import sys
 p, old, new = sys.argv[1:4]
@@ -386,6 +386,16 @@ reject_suite() {   # <scripts 副本>
     relay_case "$S" 50; chk "拒绝 · 读不到标签历史 → 当作不知道：退出码 2" "$RC" 2; chk "拒绝 · 读不到标签历史：零写请求" "$(writes)" 0
     fresh_relay; : > "$RW/gh/calls.log"
     relay_case "$S" 61; chk "拒绝 · PR 关联不到机器人的 issue：退出码 2" "$RC" 2
+    # 机器人自己开的 PR、正文只有标记、没关联任何 issue：不能拿 PR 自己当来源
+    fresh_relay; add_item "$RW" 62 pr "doing/agent" relay-bot "只有标记 $MARK" chore/y; : > "$RW/gh/calls.log"
+    relay_case "$S" 62; chk "拒绝 · 机器人开的无关联 PR：退出码 2" "$RC" 2; chk "拒绝 · 机器人开的无关联 PR：零写请求" "$(writes)" 0
+    # 关联编号指向另一个 PR（那个 PR 也是机器人开的、带标记）
+    fresh_relay; add_item "$RW" 63 pr "" relay-bot "$MARK" chore/z
+    add_item "$RW" 64 pr "doing/agent" worker-bot "Closes #63" chore/w; : > "$RW/gh/calls.log"
+    relay_case "$S" 64; chk "拒绝 · 关联编号指向 PR：退出码 2" "$RC" 2; chk "拒绝 · 关联编号指向 PR：零写请求" "$(writes)" 0
+    # 正文关联（分支名不带编号）照常认：作对照，证明拒绝不是因为正文关联整体失效
+    fresh_relay; add_item "$RW" 65 pr "doing/agent" worker-bot "Closes #50" chore/v
+    relay_case "$S" 65; chk "对照 · 正文 Closes 关联到机器人的 issue：退出码 0" "$RC" 0
 }
 success_suite() {   # <scripts 副本>
     local S="$1"
@@ -445,6 +455,18 @@ CASES
     relay_case "$S" 50
     chk "失败 · 先移 assignee 报错：退出码 3" "$RC" 3
     chk "失败 · 先移 assignee 报错：最终只有 pending/human" "$(labels_of "$RW" 50)" "pending/human"
+    # 移除 assignee 返回成功但没生效：必须检出，不能报「已叫醒」
+    fresh_relay; set_field "$RW" 50 assignees '["relay-bot"]'
+    faults '[{"method":"DELETE","path":"/assignees$","mode":"noop"}]'
+    relay_case "$S" 50
+    chk "失败 · 移除 assignee 没生效：不报成功（退出码 3）" "$RC" 3
+    chk "失败 · 移除 assignee 没生效：最终只有 pending/human" "$(labels_of "$RW" 50)" "pending/human"
+    chk "失败 · 移除 assignee 没生效：输出说明原因" "$(printf '%s' "$OUT" | grep -q '移除机器人 assignee 没生效' && echo yes || echo no)" yes
+    # 只失效一次：重试时真的移掉了 → 成功，且两次叫醒之间确有「机器人不在」的读回
+    fresh_relay; set_field "$RW" 50 assignees '["relay-bot"]'
+    faults '[{"method":"DELETE","path":"/assignees$","mode":"noop","times":1}]'
+    relay_case "$S" 50
+    chk "重试 · 第一次移除没生效、重试移除成功：退出码 0" "$RC" 0
     # 交还也失败
     fresh_relay; faults '[{"method":"POST","path":"/labels$","mode":"fail"}]'
     relay_case "$S" 50
@@ -494,6 +516,25 @@ D=$(mutate no-author-check scripts/notify-relay.sh \
 D=$(mutate no-history-check scripts/notify-relay.sh \
     '        0) reject "#$n 曾由维护者' \
     '        0) : "#$n 曾由维护者') && neg "删掉「维护者接手过」检查" reject_suite "$D"
+D=$(mutate no-remove-readback scripts/notify-relay.sh \
+    '        has_login "$assignees" "$RELAY_BOT_ACCOUNT" && { LAST_FAIL="移除机器人 assignee 没生效"; return 1; }' \
+    '        :') && neg "删掉「移除 assignee 后读回」" fail_suite "$D"
+D=$(mutate no-pr-origin-check scripts/notify-relay.sh \
+    '        || reject "PR #$NUM 关联的 #$ORIGIN 是 PR，不是 issue"' \
+    '        || true') && neg "不核对关联编号是不是 issue" reject_suite "$D"
+D=$(MUT_BASE="$D" mutate fallback-origin scripts/notify-relay.sh \
+    '    ORIGIN=$(branch_to_issue_num "$PR_BRANCH")
+    if [ -z "$ORIGIN" ]; then
+        ORIGIN=$(printf '"'"'%s'"'"' "$PR_JSON" | jq -r '"'"'.body // ""'"'"' \
+            | grep -oiE '"'"'(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+'"'"' \
+            | head -1 | grep -oE '"'"'[0-9]+'"'"' || true)
+    fi
+    case "$ORIGIN" in '"''"'|*[!0-9]*) reject "PR #$NUM 没有关联 issue（分支名和正文里都找不到）" ;; esac
+    [ "$ORIGIN" != "$NUM" ] || reject "PR #$NUM 没有关联 issue（关联编号就是它自己）"
+    ORIGIN_JSON=$(gh api "repos/$REPO/issues/$ORIGIN") || reject "读不到关联的 issue #$ORIGIN"' \
+    '    ORIGIN=$(pr_to_issue_num "$NUM" "$PR_BRANCH")
+    if [ "$ORIGIN" != "$NUM" ]; then ORIGIN_JSON=$(gh api "repos/$REPO/issues/$ORIGIN") || reject "x"; fi
+    [ "$ORIGIN" != "$NUM" ] || return_pr=1') && neg "来源改回会话命名的兜底编号（叠加不核对 issue，等于旧实现）" reject_suite "$D"
 D=$(mutate no-readback scripts/notify-relay.sh \
     '    # 读回核对：等待标签在、要摘的一个都不在、机器人是 assignee' \
     '    return 0') && neg "删掉叫醒后的读回核对" fail_suite "$D"

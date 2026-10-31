@@ -106,15 +106,24 @@ IS_PR=$(printf '%s' "$ITEM_JSON" | jq -r 'has("pull_request") and .pull_request 
 [ "$(printf '%s' "$ITEM_JSON" | jq -r '.state')" = open ] || reject "#$NUM 不是打开状态"
 
 ORIGIN="$NUM"
+ORIGIN_JSON="$ITEM_JSON"
 if [ "$IS_PR" = true ]; then
-    PR_BRANCH=$(gh api "repos/$REPO/pulls/$NUM" --jq '.head.ref') || reject "读不到 PR #$NUM 的分支"
-    ORIGIN=$(pr_to_issue_num "$NUM" "$PR_BRANCH")
-    case "$ORIGIN" in ''|*[!0-9]*) reject "找不到 PR #$NUM 关联的 issue" ;; esac
-fi
-if [ "$ORIGIN" = "$NUM" ]; then
-    ORIGIN_JSON="$ITEM_JSON"
-else
+    # PR 的来源只认**真正关联上的 issue**：分支名带 issue 编号，或正文写了 Closes/Fixes/Resolves/Refs #N。
+    # 不用 pr_to_issue_num：它是给会话命名的，找不到 issue 时兜底返回 PR 自己的编号——
+    # 拿来做来源核验，机器人自己开的、没关联任何需求的 PR 就会拿自己的作者和正文放行。
+    PR_JSON=$(gh api "repos/$REPO/pulls/$NUM") || reject "读不到 PR #$NUM"
+    PR_BRANCH=$(printf '%s' "$PR_JSON" | jq -r '.head.ref // ""')
+    ORIGIN=$(branch_to_issue_num "$PR_BRANCH")
+    if [ -z "$ORIGIN" ]; then
+        ORIGIN=$(printf '%s' "$PR_JSON" | jq -r '.body // ""' \
+            | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
+            | head -1 | grep -oE '[0-9]+' || true)
+    fi
+    case "$ORIGIN" in ''|*[!0-9]*) reject "PR #$NUM 没有关联 issue（分支名和正文里都找不到）" ;; esac
+    [ "$ORIGIN" != "$NUM" ] || reject "PR #$NUM 没有关联 issue（关联编号就是它自己）"
     ORIGIN_JSON=$(gh api "repos/$REPO/issues/$ORIGIN") || reject "读不到关联的 issue #$ORIGIN"
+    [ "$(printf '%s' "$ORIGIN_JSON" | jq -r 'has("pull_request") and .pull_request != null')" = false ] \
+        || reject "PR #$NUM 关联的 #$ORIGIN 是 PR，不是 issue"
 fi
 ORIGIN_AUTHOR=$(printf '%s' "$ORIGIN_JSON" | jq -r '.user.login // ""')
 [ "$(lc "$ORIGIN_AUTHOR")" = "$(lc "$RELAY_BOT_ACCOUNT")" ] \
@@ -150,6 +159,10 @@ wake_once() {
         # 已经是 assignee 时直接再加不会通知它，必须先移掉
         gh_write api -X DELETE "repos/$REPO/issues/$NUM/assignees" -f "assignees[]=$RELAY_BOT_ACCOUNT" >/dev/null \
             || { LAST_FAIL="移除机器人 assignee 失败"; return 1; }
+        # 移除要读回确认真的不在了：没移掉就再加，机器人不会收到通知，最后的读回也分辨不出来
+        state=$(read_item "$NUM") || { LAST_FAIL="移除 assignee 后读回失败"; return 1; }
+        assignees=$(printf '%s\n' "$state" | sed -n 2p)
+        has_login "$assignees" "$RELAY_BOT_ACCOUNT" && { LAST_FAIL="移除机器人 assignee 没生效"; return 1; }
     fi
     gh_write api -X POST "repos/$REPO/issues/$NUM/assignees" -f "assignees[]=$RELAY_BOT_ACCOUNT" >/dev/null \
         || { LAST_FAIL="指派机器人失败"; return 1; }
