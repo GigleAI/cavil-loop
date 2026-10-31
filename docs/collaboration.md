@@ -224,7 +224,8 @@ When a PR is merged, or closed without merging, the daemon tells the bot on its 
 
 - **Only requests filed by the bot**: the PR's linked issue must pass the same author + marker check as the wake-up script (one shared implementation)
 - **What it does**: posts a result comment on that issue ("request done: PR #N merged" with the merge commit, or "PR #N closed without merging") and re-assigns the bot (remove-then-add if it is already assigned). It does this even when `Closes #N` has already closed the issue
-- **Closed unmerged while the same work still has another PR open**: no notice (the work goes on); and once the request has been reported as merged, an old PR being closed is not reported
+- **Closed unmerged while the same request still has another PR open**: no notice (the work goes on). This is re-checked on every attempt — if the first try failed and a new PR was opened before the retry, nothing is sent; if the open-PR list cannot be read, that counts as unknown and waits for the next tick, never as "none". Once the request has been reported as merged, an old PR being closed is not reported
+- **The write identity must be on the allowed list** — the same check as the wake-up script; if it is not, or cannot be read, nothing is written, the notice waits for the next tick and `poll.log` says why
 - **Once only**: the comment carries a hidden marker; a retry first checks whether this account already posted it and, if so, only redoes the assignment. Read / write failures retry on the next tick, up to 30 ticks per PR; giving up logs a ⚠️ line to `poll.log`
 - **Re-reads the PR before writing**: it must be closed, merged-or-not as first seen; if the fields cannot be read, nothing is written this tick
 - Runs inside the post-merge cleanup pass (`AUTO_CLEANUP_ON_MERGE`, on by default): with that off, no merge / close notice is sent

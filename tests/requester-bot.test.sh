@@ -519,8 +519,8 @@ D=$(mutate add-directly scripts/_lib.sh \
     '    if requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT"; then' \
     '    if false; then') && neg "「先移再加」改成直接加" success_suite "$D"
 D=$(mutate no-precheck scripts/notify-requester-bot.sh \
-    'in_list "$ME" "$REQUESTER_BOT_ALLOWED_ACTORS" || reject' \
-    'true || reject') && neg "删掉账号前置检查" reject_suite "$D"
+    'requester_bot_check_actor || reject "$REQUESTER_BOT_REASON"' \
+    'requester_bot_check_actor || true') && neg "删掉账号前置检查" reject_suite "$D"
 D=$(mutate no-author-check scripts/_lib.sh \
     '    if [ "$(requester_bot_lc "$author")" != "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then' \
     '    if false; then') && neg "删掉作者核对（只认标记）" reject_suite "$D"
@@ -897,7 +897,59 @@ done_retry_suite() {   # <scripts 副本>：指派失败 → 下轮只补指派�
     done_tick "$S"
     chk "已合并过的需求，旧 PR 关闭不再通知" "$(my_marks 53)" "pr=99 kind=merged pr=74 kind=merged"
 }
-done_suite "$NEW"; done_retry_suite "$NEW"
+# 复审 #98 第 1 轮：首轮发送失败留在队里，重试前这项需求新开了 PR → 不能再发「没有落地」；
+# 打开的 PR 列表读失败 → 当成不知道、留队，不能当成「没有别的 PR」
+done_rerun_suite() {   # <scripts 副本>
+    local S="$1"
+    done_env on
+    printf '%s' '[{"method":"POST","path":"/issues/52/comments$","mode":"fail","times":1}]' > "$DW/gh/faults.json"
+    done_tick "$S"
+    chk "跨轮 · 首轮评论失败，#72 的关闭通知留在队里" "$(jq -r '.requester_bot_done_queue["72"].tries // "none"' "$DW/state/state.json")" 1
+    add_item "$DW" 80 pr "" worker-bot "Refs #52" feature/issue-52
+    done_tick "$S"
+    chk "跨轮 · 重试前同一需求新开了 PR #80：不发关闭通知" "$(my_marks 52)" ""
+    chk "跨轮 · 不指派机器人" "$(assignees_of "$DW" 52)" ""
+    chk "跨轮 · 这条出队（工作在新 PR 上继续）" "$(jq -r '.requester_bot_done_queue | has("72")' "$DW/state/state.json")" false
+    # 打开的 PR 列表读失败（只让这一个调用失败）
+    done_env on
+    printf '%s' '[{"method":"GET","path":"/pulls$","field":"sort=created","mode":"fail"}]' > "$DW/gh/faults.json"
+    done_tick "$S"
+    chk "列表读失败 · 有别的 PR 开着的 #53：不通知" "$(my_marks 53)$(assignees_of "$DW" 53)" ""
+    chk "列表读失败 · 没有别的 PR 的 #52 这轮也不通知" "$(my_marks 52)" ""
+    chk "列表读失败 · 两条都留队" "$(jq -r '[.requester_bot_done_queue["72"].tries, .requester_bot_done_queue["73"].tries] | map(tostring) | join(",")' "$DW/state/state.json")" "1,1"
+    chk "列表读失败 · 合并通知不受影响" "$(my_marks 50)" "pr=60 kind=merged"
+    printf '[]' > "$DW/gh/faults.json"
+    done_tick "$S"
+    chk "列表恢复 · #52 补发关闭通知" "$(my_marks 52)" "pr=72 kind=closed"
+    chk "列表恢复 · #53 仍不通知（#74 开着）" "$(my_marks 53)$(assignees_of "$DW" 53)" ""
+    chk "列表恢复 · 队列清空" "$(queue_len)" 0
+}
+# 写身份资格：叫醒脚本和合并后通知用同一批账号，结论必须一致
+ACTOR_CASES='worker-bot|yes
+Reviewer-Bot|yes
+outsider|no
+-|no'
+actor_suite() {   # <scripts 副本>
+    local S="$1" who want got_wake got_done
+    while IFS='|' read -r who want; do
+        # 叫醒脚本
+        fresh_bot
+        if [ "$who" = - ]; then faults '[{"method":"GET","path":"^user$","mode":"fail"}]'; else set_me "$RW" "$who"; fi
+        bot_case "$S" 50
+        got_wake=$([ "$RC" = 0 ] && echo yes || echo no)
+        # 合并后通知
+        done_env on
+        if [ "$who" = - ]; then printf '%s' '[{"method":"GET","path":"^user$","mode":"fail"}]' > "$DW/gh/faults.json"; else set_me "$DW" "$who"; fi
+        done_tick "$S"
+        got_done=$([ -n "$(jq -r '[(.items["50"].comments // [])[] | select(type == "object")] | length | select(. > 0)' "$DW/gh/state.json")" ]             && [ "$(assignees_of "$DW" 50)" = req-bot ] && echo yes || echo no)
+        chk "写身份 ${who} · 叫醒脚本是否放行" "$got_wake" "$want"
+        chk "写身份 ${who} · 合并后通知是否发出" "$got_done" "$want"
+        if [ "$want" = no ]; then
+            chk "写身份 ${who} · 合并后通知留队待下轮" "$(jq -r '.requester_bot_done_queue["60"].tries // "none"' "$DW/state/state.json")" 1
+        fi
+    done <<< "$ACTOR_CASES"
+}
+done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"
 # 功能关闭：和改动前逐字节一致（GitHub 调用、标签、state.json），也确实走到了合并后清理
 for v in old new; do
     rm -rf "$SANDBOX/done-off-$v"
@@ -917,11 +969,24 @@ D=$(mutate no-merged-enqueue scripts/agent-poll.sh \
 D=$(mutate no-closed-enqueue scripts/agent-poll.sh \
     '                *) requester_bot_done_enqueue "$prnum" closed "$STATE_FILE" ;;' \
     '                *) : ;;') && neg "关闭未合并路径不入队" done_suite "$D"
-D=$(mutate no-open-check scripts/agent-poll.sh \
-    '                *" $issue_n "*) ;;
-                *) requester_bot_done_enqueue' \
-    '                *" $issue_n NEVER"*) ;;
-                *) requester_bot_done_enqueue') && neg "关闭未合并时不看还有没有别的 PR 开着" done_suite "$D"
+D=$(mutate no-open-check scripts/_lib.sh \
+    '        if [ -n "$others" ]; then' \
+    '        if false; then') && neg "关闭通知不看还有没有别的 PR 开着" done_suite "$D"
+D=$(mutate no-open-check2 scripts/_lib.sh \
+    '        if [ -n "$others" ]; then' \
+    '        if false; then') && neg "关闭通知不看还有没有别的 PR 开着（跨轮）" done_rerun_suite "$D"
+D=$(mutate open-read-as-empty scripts/_lib.sh \
+    '        if ! others=$(requester_bot_open_prs_for "$origin" "$pr"); then' \
+    '        others=$(requester_bot_open_prs_for "$origin" "$pr") || others=""; if false; then') \
+    && neg "打开的 PR 列表读失败当成「没有」" done_rerun_suite "$D"
+D=$(mutate done-no-actor-check scripts/_lib.sh \
+    '    if ! requester_bot_check_actor; then
+        log "  PR #$pr 的结果通知不发' \
+    '    requester_bot_check_actor; if false; then
+        log "  PR #$pr 的结果通知不发') && neg "合并后通知不核对写身份在不在名单里" actor_suite "$D"
+D=$(mutate wake-no-actor-check scripts/notify-requester-bot.sh \
+    'requester_bot_check_actor || reject "$REQUESTER_BOT_REASON"' \
+    'requester_bot_check_actor || true') && neg "叫醒脚本不核对写身份在不在名单里" actor_suite "$D"
 D=$(mutate no-drain scripts/agent-poll.sh \
     '    requester_bot_done_drain "$STATE_FILE" || true' \
     '    :') && neg "不清队" done_suite "$D"
@@ -998,23 +1063,89 @@ names_suite() {   # <scripts 副本>
 }
 names_suite "$NEW"
 D=$(mutate no-old-names scripts/_lib.sh \
-    '        printf -v "$new" '"'"'%s'"'"' "${!old:-}"' \
-    '        printf -v "$new" '"'"'%s'"'"' ""') && neg "不再认旧名字" names_suite "$D"
-D=$(mutate old-wins scripts/_lib.sh \
-    '    if [ -n "${!new:-}" ]; then' \
-    '    if [ -z "${!old:-}" ] && [ -n "${!new:-}" ]; then') && neg "新旧都填时用了旧的" names_suite "$D"
-# setup.sh 建等待标签时挑名字的规则与 _lib.sh 相同：把 setup.sh 里那三行原样拿出来跑
-setup_pick() {   # <配置内容> → setup.sh 会建的等待标签名
-    local f="$SANDBOX/setup-cfg"; printf '%s\n' "$1" > "$f"
-    local snippet; snippet=$(awk '/^requester_bot_label=/{f=1} f{print} /^\[ -n "\$requester_bot_label" \] && label_defs/{exit}' "$REPO_DIR/setup.sh")
-    ( config="$f"; label_defs=()
-      config_value() { ( set -a; . "$config" >/dev/null 2>&1 || true; eval "printf '%s' \"\${$1:-}\"" ); }
-      eval "$snippet"; printf '%s' "${label_defs[0]:-}" | cut -d'|' -f1 )
+    'printf -v "$new" '"'"'%s'"'"' "$(cavil_pick_setting "${!new:-}" "${!old:-}")"' \
+    'printf -v "$new" '"'"'%s'"'"' "$(cavil_pick_setting "${!new:-}" "")"') && neg "公共库不再认旧名字" names_suite "$D"
+D=$(mutate old-wins scripts/_names.sh \
+    '    if [ -n "$1" ]; then printf '"'"'%s'"'"' "$1"; else printf '"'"'%s'"'"' "$2"; fi' \
+    '    if [ -n "$2" ]; then printf '"'"'%s'"'"' "$2"; else printf '"'"'%s'"'"' "$1"; fi') && neg "共用的挑名字函数改成旧的优先" names_suite "$D"
+# setup.sh 建等待标签：真跑安装入口（隔离 HOME、假 gh / systemctl），断言它实际发出的建标签请求，
+# 并和公共库（_lib.sh）对同一份配置挑出来的名字对拍。两边都调 _names.sh 的 cavil_pick_setting。
+SETUP_ROOT="$SANDBOX/setup"; mkdir -p "$SETUP_ROOT/fakebin"
+cat > "$SETUP_ROOT/fakebin/gh" <<'GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
+case "$*" in
+    "auth status"*) exit 0 ;;
+    "repo view"*) echo "acme/widget"; exit 0 ;;
+    "label create"*) exit 0 ;;
+    *"pr list"*--json*|*"issue list"*--json*) echo ""; exit 0 ;;
+    *"repos/acme/widget/pulls"*) echo '[[]]'; exit 0 ;;
+esac
+echo '[]'
+GH
+cat > "$SETUP_ROOT/fakebin/systemctl" <<'SC'
+#!/usr/bin/env bash
+case "$*" in *is-active*) exit 3 ;; *is-enabled*) echo disabled; exit 1 ;; esac
+exit 0
+SC
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SETUP_ROOT/fakebin/claude"
+chmod +x "$SETUP_ROOT/fakebin"/*
+make_skill_src() {   # <目录>：把当前工作区（含未提交改动）做成一个可发布的 skill 仓库
+    local d="$1"
+    rm -rf "$d" "$d.git"; git init -q --bare "$d.git"; git init -q -b main "$d"
+    (cd "$REPO_DIR" && git ls-files -co --exclude-standard -z) \
+        | (cd "$REPO_DIR" && xargs -0 -I{} cp --parents -P {} "$d/" 2>/dev/null)
+    git -C "$d" add -A >/dev/null
+    git -C "$d" -c user.email=t@example.invalid -c user.name=t commit -qm snapshot
+    git -C "$d" remote add origin "$d.git"; git -C "$d" push -q -u origin main 2>/dev/null
 }
-chk "setup.sh · 只填新名字" "$(setup_pick 'LABEL_PENDING_REQUESTER_BOT="w/new"')" "w/new"
-chk "setup.sh · 只填旧名字" "$(setup_pick 'LABEL_PENDING_RELAY="w/old"')" "w/old"
-chk "setup.sh · 新旧都填：用新的" "$(setup_pick $'LABEL_PENDING_RELAY="w/old"\nLABEL_PENDING_REQUESTER_BOT="w/new"')" "w/new"
-chk "setup.sh · 都不填：不建" "$(setup_pick 'X=1')" ""
+make_skill_src "$SETUP_ROOT/src"
+setup_label() {   # <skill 目录> <配置追加内容> → setup.sh 实际建的等待标签（颜色 f9a8d4 那一条），没建输出空
+    local src="$1" extra="$2" H="$SETUP_ROOT/h" HOST="$SETUP_ROOT/projects/widget"
+    rm -rf "$H" "$SETUP_ROOT/projects"; mkdir -p "$H" "$SETUP_ROOT/projects"
+    git init -q -b main "$HOST"; git -C "$HOST" -c user.email=t@x -c user.name=t commit -q --allow-empty -m init
+    # 和真实安装一样以配置模板打底，再追加本测试的覆盖项（后写的赋值生效）
+    { cat "$REPO_DIR/cavil-loop.config.example"
+      printf 'REPO="acme/widget"\nPROJECT_ROOT="%s"\nSTATE_DIR="%s/state"\nWORKTREE_BASE="%s/wt"\nTMUX_PREFIX="widget"\n' "$HOST" "$H" "$H"
+      printf '%s\n' "$extra"; } > "$HOST/cavil-loop.config"
+    printf 'n\n' | env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGENT_CONFIG \
+        -u CODING_AGENT_RELEASE_ROOT -u WORKER_AGENT HOME="$H" PATH="$SETUP_ROOT/fakebin:$PATH" GH_LOG="$H/gh.log" \
+        bash "$src/setup.sh" "$HOST" > "$H/setup.out" 2>&1 || { echo "SETUP-FAILED"; return; }
+    grep -- '--color f9a8d4' "$H/gh.log" | sed -E 's/^label create (.*) --color f9a8d4.*/\1/' | head -1
+}
+lib_label() {   # <配置追加内容> → 公共库对同一份配置挑出的等待标签名
+    local f="$SETUP_ROOT/lib.config"
+    { cat "$REPO_DIR/cavil-loop.config.example"
+      printf 'REPO="acme/widget"\nSTATE_DIR="%s/libstate"\nPROJECT_ROOT="%s"\nWORKTREE_BASE="%s/wt"\nTMUX_PREFIX="widget"\n' "$SETUP_ROOT" "$SETUP_ROOT" "$SETUP_ROOT"
+      printf '%s\n' "$1"; } > "$f"
+    env CODING_AGENT_CONFIG="$f" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; printf %s "$LABEL_PENDING_REQUESTER_BOT"' _ "$REPO_DIR"
+}
+SETUP_CASES='只填新名字|LABEL_PENDING_REQUESTER_BOT="w/new"|w/new
+只填旧名字|LABEL_PENDING_RELAY="w/old"|w/old
+新旧都填：用新的|LABEL_PENDING_RELAY="w/old";LABEL_PENDING_REQUESTER_BOT="w/new"|w/new
+都不填：不建|X=1|'
+setup_suite() {   # <skill 目录>
+    local src="$1" name cfg want got lib
+    while IFS='|' read -r name cfg want; do
+        [ -n "$name" ] || continue
+        cfg=$(printf '%s' "$cfg" | tr ';' '\n')
+        got=$(setup_label "$src" "$cfg")
+        lib=$(lib_label "$cfg")
+        chk "setup.sh 真跑 · $name：实际建的等待标签" "$got" "$want"
+        chk "setup.sh 真跑 · $name：与公共库挑出的名字相同" "$got" "$lib"
+        chk "setup.sh 真跑 · $name：公共库确实读到了配置（对拍不是两边都空）" "$(lib_label 'REQUESTER_BOT_ACCOUNT="probe"' >/dev/null; env CODING_AGENT_CONFIG="$SETUP_ROOT/lib.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; printf %s "$REQUESTER_BOT_ACCOUNT"' _ "$REPO_DIR")" probe
+    done <<< "$SETUP_CASES"
+}
+setup_suite "$SETUP_ROOT/src"
+# 负对照：只改坏安装入口那一处（只读新名字），公共库不动 → 「只填旧名字」必须变红
+cp -r "$SETUP_ROOT/src" "$SETUP_ROOT/src-mut"
+python3 - "$SETUP_ROOT/src-mut/setup.sh" <<'PYM' && neg "安装入口只读新名字（公共库不动）" setup_suite "$SETUP_ROOT/src-mut" || { echo "  ❌ 安装入口负对照没改上"; fail=$((fail+1)); }
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '"$(config_value LABEL_PENDING_RELAY)")"'
+if s.count(old) != 1: sys.exit(1)
+open(p, "w").write(s.replace(old, '"")"'))
+PYM
 
 echo "── 5. 代码和配置模板里不出现具体机器人名 ──"
 # 文档的接入示例一节可以点名（issue 讨论定的），代码、提示词、配置模板、测试夹具都不行

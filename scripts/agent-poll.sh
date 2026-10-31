@@ -766,12 +766,10 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 fi
             fi
 
-            # 来自外部需求机器人提的需求、这项工作也没有别的 PR 开着 → 把「关闭未合并」告诉它
-            # （GitHub#97；功能关闭时不入队）。和 unmerged_prs_handled 同一时刻入队，不会重复。
-            case "$open_worknums" in
-                *" $issue_n "*) ;;
-                *) requester_bot_done_enqueue "$prnum" closed "$STATE_FILE" ;;
-            esac
+            # 可能来自外部需求机器人提的需求 → 入队，由清队时判断要不要告诉它「关闭未合并」
+            # （GitHub#97；功能关闭时不入队）。是不是机器人的需求、这项需求还有没有别的 PR 开着，
+            # 都在清队时每次现查，这里不判断。和 unmerged_prs_handled 同一时刻入队，不会重复。
+            requester_bot_done_enqueue "$prnum" closed "$STATE_FILE"
             tmp=$(mktemp)
             jq --argjson n "$prnum" '.unmerged_prs_handled = ((.unmerged_prs_handled // []) + [$n])' \
                 "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"

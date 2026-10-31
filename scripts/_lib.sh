@@ -166,18 +166,16 @@ trigger_labels_array() {
 # 其余都不做，叫醒脚本拒绝并说明缺哪项。
 #
 # 配置项名字（GitHub#97 Q1=B）：新名字是下面的 REQUESTER_BOT_* / LABEL_PENDING_REQUESTER_BOT；
-# 早期的 RELAY_* / LABEL_PENDING_RELAY 继续认。每一项单独挑：新名字有值就用新的，否则用旧的。
+# 早期的 RELAY_* / LABEL_PENDING_RELAY 继续认。每一项单独挑：新名字有值就用新的，否则用旧的
+# （_names.sh 的 cavil_pick_setting，setup.sh 建等待标签时用的是同一个函数）。
 # 两个都有值且不同 → 用新的，并记进 REQUESTER_BOT_NAME_CONFLICTS（叫醒脚本和轮询日志会提示）。
 REQUESTER_BOT_NAME_CONFLICTS=""
 _requester_bot_pick() {   # <新名字> <旧名字>
     local new="$1" old="$2"
-    if [ -n "${!new:-}" ]; then
-        if [ -n "${!old:-}" ] && [ "${!old}" != "${!new}" ]; then
-            REQUESTER_BOT_NAME_CONFLICTS+="${REQUESTER_BOT_NAME_CONFLICTS:+, }$new（用它）/ $old（忽略）"
-        fi
-    else
-        printf -v "$new" '%s' "${!old:-}"
+    if [ -n "${!new:-}" ] && [ -n "${!old:-}" ] && [ "${!old}" != "${!new}" ]; then
+        REQUESTER_BOT_NAME_CONFLICTS+="${REQUESTER_BOT_NAME_CONFLICTS:+, }$new（用它）/ $old（忽略）"
     fi
+    printf -v "$new" '%s' "$(cavil_pick_setting "${!new:-}" "${!old:-}")"
 }
 _requester_bot_pick LABEL_PENDING_REQUESTER_BOT  LABEL_PENDING_RELAY
 _requester_bot_pick REQUESTER_BOT_ACCOUNT        RELAY_BOT_ACCOUNT
@@ -2166,6 +2164,51 @@ requester_bot_has_login() {
     return 1
 }
 
+# 允许名单（逗号 / 空白分隔）里有没有这个账号
+requester_bot_actor_allowed() {
+    local who x arr=()
+    who="$(requester_bot_lc "$1")"
+    [ -n "$who" ] || return 1
+    read -ra arr <<< "$(printf '%s' "$REQUESTER_BOT_ALLOWED_ACTORS" | tr ',' ' ')"
+    for x in ${arr[@]+"${arr[@]}"}; do [ "$(requester_bot_lc "$x")" = "$who" ] && return 0; done
+    return 1
+}
+
+# 当前写身份（gh_write）是否允许去叫醒 / 通知机器人。叫醒脚本和合并后通知在任何写请求之前
+# 都先过这一关。0 = 允许，REQUESTER_BOT_ME = 登录名；1 = 读不到身份或不在名单，原因在 REQUESTER_BOT_REASON。
+requester_bot_check_actor() {
+    REQUESTER_BOT_ME=$(gh_write api user --jq .login 2>/dev/null) || REQUESTER_BOT_ME=""
+    if [ -z "$REQUESTER_BOT_ME" ]; then
+        REQUESTER_BOT_REASON="读不到当前 GitHub 账号，无法核对是否允许叫醒"
+        return 1
+    fi
+    if ! requester_bot_actor_allowed "$REQUESTER_BOT_ME"; then
+        REQUESTER_BOT_REASON="当前账号 $REQUESTER_BOT_ME 不在允许叫醒的名单里"
+        return 1
+    fi
+    return 0
+}
+
+# 某个需求 issue 现在还有哪些打开的 PR（排除指定的那个）。关联的认法与来源判定一致：分支名
+# 里的编号，或正文的 Closes/Refs #N（逐行、整段两种写法任一指向它就算，宁可多算——多算只会
+# 少发一条「关闭未合并」）。输出编号（空格分隔），没有就输出空；读失败 return 1。
+requester_bot_open_prs_for() {
+    local issue="$1" except="$2" rows n ref body
+    # 单独现读，不用本轮开头的快照（open_snapshot）：马上要往外写，要的是此刻的真值
+    rows=$(gh api --paginate -X GET "repos/$REPO/pulls" -f state=open -f sort=created -f per_page=100 \
+        --jq '.[] | [(.number | tostring), (.head.ref // ""), ((.body // "") | @base64)] | @tsv') || return 1
+    while IFS=$'\t' read -r n ref body; do
+        [ -n "$n" ] && [ "$n" != "$except" ] || continue
+        body=$(printf '%s' "$body" | base64 -d 2>/dev/null || true)
+        if [ "$(branch_to_issue_num "$ref")" = "$issue" ] \
+           || [ "$(printf '%s' "$body" | pr_body_linked_issue)" = "$issue" ] \
+           || [ "$(printf '%s' "$body" | pr_body_linked_issue_jq)" = "$issue" ]; then
+            printf '%s ' "$n"
+        fi
+    done <<< "$rows"
+    return 0
+}
+
 # 判定一条 issue / PR 是不是外部需求机器人提的需求。
 #   requester_bot_item_origin <编号> <条目 JSON（GET /issues/<编号> 的返回）>
 # 返回 0 = 是：REQUESTER_BOT_ORIGIN = 来源 issue 编号，REQUESTER_BOT_ORIGIN_JSON = 它的 JSON，
@@ -2285,6 +2328,9 @@ requester_bot_unrequest_review() {
 # ── PR 合并 / 关闭未合并后，把结果告诉外部需求机器人（GitHub#97 Q2=A）──
 # § 3 记下一个新合并的 PR（cleaned_prs）、§ 3c 记下一个关闭未合并的 PR（unmerged_prs_handled）
 # 的同一时刻入队，每轮清队。入队点每个 PR 只会走到一次，所以出队后不会被再次入队。
+# 「该不该发」的全部条件（是机器人的需求、PR 现状、写身份在名单里、关闭时这项需求没有别的
+# PR 开着）都在 requester_bot_done_notify 里、每次尝试现查，入队处不做判断——首轮失败后
+# 重试时情况可能已经变了（比如同一需求新开了 PR）。
 #   requester_bot_done_queue[<PR>] = {kind: merged|closed, tries}
 # 功能关闭时不入队、也不写这个字段（state.json 和以前逐字节相同）。
 #
@@ -2293,7 +2339,7 @@ requester_bot_unrequest_review() {
 # 指派失败时，重试只补指派，不会重复发评论。
 #
 # 返回 0 = 有定论、出队（通知完成 / 不是机器人提的需求 / PR 现状和入队时不符）；
-#      1 = 这次没做成，下轮再试（任何读写失败、PR 状态字段缺失）。
+#      1 = 这次没做成，下轮再试（任何读写失败、PR 状态字段缺失、写身份不在名单）。
 REQUESTER_BOT_DONE_TAG='requester-bot-done'
 
 requester_bot_done_enqueue() {   # <PR> <merged|closed> <state_file>
@@ -2332,9 +2378,26 @@ requester_bot_done_notify() {   # <PR> <merged|closed>
         *) log "  PR #$pr 现状（$st，merged=$merged）和入队时（$kind）不符，不通知"; return 0 ;;
     esac
 
+    # 关闭未合并：这项需求还有别的 PR 开着 = 工作在继续，不发「没有落地」。每次尝试都现查；
+    # 查不到不能当成「没有」，留到下轮。
+    if [ "$kind" = closed ]; then
+        local others
+        if ! others=$(requester_bot_open_prs_for "$origin" "$pr"); then
+            log "  读不到打开的 PR 列表，PR #$pr 的关闭通知下轮再试"
+            return 1
+        fi
+        if [ -n "$others" ]; then
+            log "  需求 #$origin 还有打开的 PR（${others% }），PR #$pr 关闭不通知"
+            return 0
+        fi
+    fi
+    # 写身份必须在允许名单里，和叫醒脚本同一关（requester_bot_check_actor）
+    if ! requester_bot_check_actor; then
+        log "  PR #$pr 的结果通知不发：$REQUESTER_BOT_REASON（下轮再试）"
+        return 1
+    fi
     # 只认本身份发过的标记评论：别人在评论里写同样的文字，不能挡掉通知
-    me=$(gh_write api user --jq .login) || { log "  读不到当前写身份，PR #$pr 的结果通知下轮再试"; return 1; }
-    [ -n "$me" ] || return 1
+    me="$REQUESTER_BOT_ME"
     marks=$(gh api --paginate "repos/$REPO/issues/$origin/comments?per_page=100" \
         --jq ".[] | select((.user.login // \"\" | ascii_downcase) == \"$(requester_bot_lc "$me")\") | (.body // \"\") | scan(\"<!-- $REQUESTER_BOT_DONE_TAG pr=[0-9]+ kind=[a-z]+ -->\")") \
         || { log "  读不到 issue #$origin 的评论，PR #$pr 的结果通知下轮再试"; return 1; }

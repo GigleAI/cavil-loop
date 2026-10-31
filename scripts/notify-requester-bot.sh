@@ -50,14 +50,6 @@ fi
 trigger_labels_array
 
 lc() { requester_bot_lc "$1"; }
-# 逗号 / 空白分隔的名单里有没有这个账号（GitHub 登录名不区分大小写）
-in_list() {
-    local who x arr=()
-    who="$(lc "$1")"
-    read -ra arr <<< "$(printf '%s' "$2" | tr ',' ' ')"
-    for x in ${arr[@]+"${arr[@]}"}; do [ "$(lc "$x")" = "$who" ] && return 0; done
-    return 1
-}
 
 # 交接要摘掉的标签：全部触发标签 + doing/agent + pending/review（去空去重）
 mapfile -t CLEAR_LABELS < <(printf '%s\n' "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" "${LABEL_PENDING_REVIEW:-}" \
@@ -85,7 +77,7 @@ maintainer_took_over() {
         [ -n "$a" ] || continue
         # 打标签的账号读不出来（已注销等）→ 当作不是我们的人，保守算维护者接手
         [ "$a" != "?" ] || { printf '(账号未知)'; return 0; }
-        in_list "$a" "$REQUESTER_BOT_ALLOWED_ACTORS" && continue
+        requester_bot_actor_allowed "$a" && continue
         [ "$(lc "$a")" = "$(lc "$REQUESTER_BOT_ACCOUNT")" ] && continue
         printf '%s' "$a"; return 0
     done <<< "$actors"
@@ -93,9 +85,8 @@ maintainer_took_over() {
 }
 
 # ── 前置检查：任一条不过就拒绝，不发写请求 ──
-ME=$(gh_write api user --jq .login 2>/dev/null) || ME=""
-[ -n "$ME" ] || reject "读不到当前 GitHub 账号，无法核对是否允许叫醒"
-in_list "$ME" "$REQUESTER_BOT_ALLOWED_ACTORS" || reject "当前账号 $ME 不在允许叫醒的名单里"
+# 账号资格：和合并后通知同一关（_lib.sh 的 requester_bot_check_actor）
+requester_bot_check_actor || reject "$REQUESTER_BOT_REASON"
 
 ITEM_JSON=$(gh api "repos/$REPO/issues/$NUM") || reject "读不到 #$NUM"
 IS_PR=$(printf '%s' "$ITEM_JSON" | jq -r 'has("pull_request") and .pull_request != null')
