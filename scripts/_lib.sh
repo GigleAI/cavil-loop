@@ -1231,12 +1231,16 @@ branch_to_issue_num() {
 # PR 正文里关联的 issue 编号：第一个 Closes/Fixes/Resolves/Refs #N 的 N，没有就输出空。
 # 正文从 stdin 读。只管「从正文提取」这一步——拿正文的方式、找不到时怎么办留给调用方：
 # 会话命名（pr_to_issue_num）找不到就退回 PR 自己的编号，叫醒脚本找不到就拒绝。
-# 同一规则另有一份 jq 写法在 list_active_workers 里（那里在一次 jq 里过整页快照），
-# tests/relay-handoff.test.sh 用同一批正文对拍全部调用点。
+#
+# 规则本身只有 PR_LINK_RE 这一份，所有用到它的地方都交给 jq 去匹配（list_active_workers
+# 在一次 jq 里过整页快照，也用 --arg 传进同一个变量）。以前 shell 这边用 grep：grep 按行
+# 匹配，关键词和编号之间隔着换行（「Closes」换行「#50」）就认不出，jq 整段匹配却认得出，
+# 同一条正文两边判断相反（PR #96 复审）。现在两边是同一个正则、同一个引擎，不会再分叉。
+# 语义：不分大小写；关键词和 # 之间至少一个空白，空格 / 制表符 / 换行 / CRLF 都算；
+# `# 50`、`Closes#50` 不算；有多个时取正文里第一个。
+PR_LINK_RE='(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)'
 pr_body_linked_issue() {
-    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
-        | head -1 \
-        | grep -oE '[0-9]+' || true
+    jq -Rsr --arg re "$PR_LINK_RE" 'first(capture($re).n) // empty' 2>/dev/null || true
 }
 
 # 找一个 PR 对应的「工作编号 N」，用作 worktree / tmux / branch 命名标识。
@@ -1392,10 +1396,10 @@ list_active_workers() {
                | select(any(.labels[]?; .name == $label)) | .number ] | map(tostring) | join("\n") end') || return 1
     # Include the body fallback in this successful snapshot instead of silently
     # falling back to the PR number when a separate gh pr view request fails.
-    pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
+    pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" --arg re "$PR_LINK_RE" '
         if type != "array" or any(.[]; type != "array") then error("invalid PR pages")
         else [ .[][] | select(any(.labels[]; .name == $label)) |
-            [.number, .head.ref, ((.body // "" | try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)").n catch "") // "")] | @tsv ] | join("\n") end') || return 1
+            [.number, .head.ref, ((.body // "" | try capture($re).n catch "") // "")] | @tsv ] | join("\n") end') || return 1
 
     local -A handled_issue=()
     local -a items=()

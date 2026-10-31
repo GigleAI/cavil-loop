@@ -552,6 +552,9 @@ echo "── 3c. PR 正文关联的 issue 编号：四条路径对拍 ──"
 # 这条规则有四个用处：共用的提取函数本身、会话命名（找不到退回 PR 编号）、叫醒脚本的来源核验
 # （找不到就拒绝）、活跃 worker 列表里的 jq 写法（在一次 jq 里过整页快照）。期望值写死，
 # 四条路径逐条和它比；每个调用点各有一个负对照。
+# 正文用 \n \r \t 转义写（python 解码），这样制表符、CRLF 是真的控制字符。
+# 一次列全提取规则的输入边界（复审第 3 轮）：空正文、大小写、多个取首个、空格 / 制表符 /
+# LF / CRLF、关键词前后换行、缺少分隔空白、# 后有空格、像关键词但不是的词。
 LINK_CASES='1|Closes #50|50
 2|fixes #51 and refs #52|51
 3|Resolves #53|53
@@ -559,10 +562,19 @@ LINK_CASES='1|Closes #50|50
 5|Close #55|55
 6|relates to #56|-
 7|Closes#57|-
-8|see notes
-Fixed   #58|58
+8|see notes\nFixed   #58|58
 9|resolved #59, closes #60|59
-10||-'
+10||-
+11|Closes\n#61|61
+12|Closes\r\n#62|62
+13|Closes\t#63|63
+14|intro\ncLoSeS #64\n|64
+15|Fixes\n\n  #65|65
+16|Closes # 66|-
+17|enclosed #67|67
+18|line one\r\nRefs #68\r\n|68
+19|#69 closes nothing|-
+20|fix #70|70'
 link_suite() {   # <scripts 副本>
     local S="$1" W="$SANDBOX/link" i body want pr got_fn got_name got_relay got_list listing
     new_env "$W" on label
@@ -571,8 +583,8 @@ link_suite() {   # <scripts 副本>
 import json, re, sys
 p, cases = sys.argv[1], sys.argv[2]
 st = json.load(open(p))
-for m in re.finditer(r'^(\d+)\|(.*?)\|([^|\n]*)$', cases, re.S | re.M):
-    i, body = int(m.group(1)), m.group(2)
+for m in re.finditer(r'^(\d+)\|(.*)\|([^|\n]*)$', cases, re.M):
+    i, body = int(m.group(1)), m.group(2).encode().decode("unicode_escape")
     n = 300 + i
     st["items"][str(n)] = {"number": n, "title": f"pr {n}", "user": "worker-bot", "body": body,
                            "state": "open", "is_pr": True, "head_ref": f"chore/b{i}",
@@ -583,13 +595,12 @@ PYL
         source "$1/scripts/_lib.sh" 2>/dev/null; list_active_workers all' _ "$S")
     python3 - "$LINK_CASES" <<'PYL' > "$W/cases.tsv"
 import re, sys
-for m in re.finditer(r'^(\d+)\|(.*?)\|([^|\n]*)$', sys.argv[1], re.S | re.M):
+for m in re.finditer(r'^(\d+)\|(.*)\|([^|\n]*)$', sys.argv[1], re.M):
     print(m.group(1) + "\t" + m.group(3))
 PYL
     while IFS=$'\t' read -r i want; do
         pr=$((300 + i))
-        body=$(jq -r --arg n "$pr" '.items[$n].body' "$W/gh/state.json")
-        got_fn=$(printf '%s' "$body" | env CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c '
+        got_fn=$(jq -j --arg n "$pr" '.items[$n].body' "$W/gh/state.json" | env CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c '
             source "$1/scripts/_lib.sh" 2>/dev/null; pr_body_linked_issue' _ "$S")
         got_name=$(env FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c '
             source "$1/scripts/_lib.sh" 2>/dev/null; pr_to_issue_num "$2" "$3"' _ "$S" "$pr" "chore/b$i")
@@ -607,8 +618,9 @@ PYL
 }
 link_suite "$NEW"
 D=$(mutate link-shared scripts/_lib.sh \
-    "    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \\" \
-    "    grep -oiE '(close[sd]?|fix(es|ed)?|refs?)[[:space:]]+#[0-9]+' \\") && neg "共用提取函数漏认 Resolves" link_suite "$D"
+    "    jq -Rsr --arg re \"\$PR_LINK_RE\" 'first(capture(\$re).n) // empty' 2>/dev/null || true" \
+    "    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' | head -1 | grep -oE '[0-9]+' || true") \
+    && neg "共用提取函数改回按行匹配的旧写法（跨行认不出）" link_suite "$D"
 D=$(mutate link-naming scripts/_lib.sh \
     "--jq '.body // \"\"' 2>/dev/null | pr_body_linked_issue)" \
     "--jq '.body // \"\"' 2>/dev/null | head -0)") && neg "会话命名不再用正文关联" link_suite "$D"
@@ -616,8 +628,9 @@ D=$(mutate link-relay scripts/notify-relay.sh \
     "jq -r '.body // \"\"' | pr_body_linked_issue)" \
     "jq -r '.body // \"\"' | grep -oE '#[0-9]+' | head -1 | tr -d '#')") && neg "叫醒脚本改成认任意 #N" link_suite "$D"
 D=$(mutate link-jq scripts/_lib.sh \
-    'capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)")' \
-    'capture("(?i)(?:close[sd]?|fix(?:es|ed)?|refs?)[[:space:]]+#(?<n>[0-9]+)")') && neg "活跃 worker 列表的 jq 写法漏认 Resolves" link_suite "$D"
+    'try capture($re).n catch "") // "")]' \
+    'try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[ ]+#(?<n>[0-9]+)").n catch "") // "")]') \
+    && neg "活跃 worker 列表改用自己的正则（只认空格）" link_suite "$D"
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 4. 提示词拼装（开启） ──"
