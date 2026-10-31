@@ -40,6 +40,14 @@ EOF
 chmod +x "$SANDBOX/bin/gh"
 
 pass=0; fail=0; QUIET=0
+# 负对照的准备（复制一份、改坏一处）都跑在 `D=$(mutate …)` 的命令替换子 shell 里：在那里
+# 加 fail 传不回主进程，输出也被收进变量。所以准备失败一律记进这个文件（并打到 stderr），
+# 汇总时计入失败——找不到要改的原文必须让整套测试变红，不能悄悄少跑一项。
+PREP_FAILED="$SANDBOX/prep-failed"; : > "$PREP_FAILED"
+prep_failed() {   # <负对照名> <原因>
+    printf '%s（%s）\n' "$1" "$2" >> "$PREP_FAILED"
+    echo "  ❌ 负对照 $1 没改上（$2）" >&2
+}
 chk() {
     if [ "$2" = "$3" ]; then [ "$QUIET" = 1 ] || echo "  ✅ $1"; pass=$((pass+1))
     else [ "$QUIET" = 1 ] || echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
@@ -260,7 +268,7 @@ wait_suite "$NEW" greedy
 mutate() {   # <名字> <文件（相对副本根）> <原文> <改成>
     local D="$SANDBOX/mut-$1"
     rm -rf "$D"; cp -r "${MUT_BASE:-$NEW}" "$D"
-    python3 - "$D/$2" "$3" "$4" <<'PYM' || { echo "  ❌ 负对照 $1 没改上（原文找不到）"; fail=$((fail+1)); return 1; }
+    python3 - "$D/$2" "$3" "$4" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
 import sys
 p, old, new = sys.argv[1:4]
 s = open(p).read()
@@ -278,6 +286,12 @@ neg() {   # <说明> <要跑的 suite 函数及参数…>：跑一遍，失败�
     fail=$before
     chk "负对照：$desc → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
 }
+
+# 自检：准备失败必须被记下（否则下面每一个负对照都可能悄悄没跑）。
+# REQUESTER_BOT_TEST_BAD_MUT=1 时保留这条记录，用来验证整套测试确实会因此非零退出。
+D=$(mutate selftest-missing scripts/_lib.sh '这段原文不存在 #97' 'x' 2>/dev/null) && true
+chk "自检 · 负对照准备失败会记进失败（不被命令替换吞掉）" "$(grep -c '^selftest-missing（' "$PREP_FAILED")" 1
+[ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] || sed -i '/^selftest-missing（/d' "$PREP_FAILED"
 
 echo "── 2b. 负对照 ──"
 D=$(mutate skip-in-label-pass scripts/agent-poll.sh \
@@ -333,7 +347,7 @@ real_dispatch_suite "$REAL_NEW/scripts"
 real_mut() {   # <名字> <脚本> <原文>
     local Dm="$SANDBOX/real-mut-$1"
     rm -rf "$Dm"; cp -r "$REAL_NEW" "$Dm"
-    python3 - "$Dm/scripts/$2" "$3" <<'PYM' || { echo "  ❌ 负对照 $1 没改上"; fail=$((fail+1)); return 1; }
+    python3 - "$Dm/scripts/$2" "$3" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
 import sys, re
 p, old = sys.argv[1:3]
 s = open(p).read()
@@ -967,8 +981,8 @@ D=$(mutate no-merged-enqueue scripts/agent-poll.sh \
     '                requester_bot_done_enqueue "$prnum" merged "$STATE_FILE"' \
     '                :') && neg "合并路径不入队" done_suite "$D"
 D=$(mutate no-closed-enqueue scripts/agent-poll.sh \
-    '                *) requester_bot_done_enqueue "$prnum" closed "$STATE_FILE" ;;' \
-    '                *) : ;;') && neg "关闭未合并路径不入队" done_suite "$D"
+    '            requester_bot_done_enqueue "$prnum" closed "$STATE_FILE"' \
+    '            :') && neg "关闭未合并路径不入队" done_suite "$D"
 D=$(mutate no-open-check scripts/_lib.sh \
     '        if [ -n "$others" ]; then' \
     '        if false; then') && neg "关闭通知不看还有没有别的 PR 开着" done_suite "$D"
@@ -1139,13 +1153,16 @@ setup_suite() {   # <skill 目录>
 setup_suite "$SETUP_ROOT/src"
 # 负对照：只改坏安装入口那一处（只读新名字），公共库不动 → 「只填旧名字」必须变红
 cp -r "$SETUP_ROOT/src" "$SETUP_ROOT/src-mut"
-python3 - "$SETUP_ROOT/src-mut/setup.sh" <<'PYM' && neg "安装入口只读新名字（公共库不动）" setup_suite "$SETUP_ROOT/src-mut" || { echo "  ❌ 安装入口负对照没改上"; fail=$((fail+1)); }
+if python3 - "$SETUP_ROOT/src-mut/setup.sh" <<'PYM'
 import sys
 p = sys.argv[1]; s = open(p).read()
 old = '"$(config_value LABEL_PENDING_RELAY)")"'
 if s.count(old) != 1: sys.exit(1)
 open(p, "w").write(s.replace(old, '"")"'))
 PYM
+then neg "安装入口只读新名字（公共库不动）" setup_suite "$SETUP_ROOT/src-mut"
+else prep_failed setup-only-new "原文找不到"
+fi
 
 echo "── 5. 代码和配置模板里不出现具体机器人名 ──"
 # 文档的接入示例一节可以点名（issue 讨论定的），代码、提示词、配置模板、测试夹具都不行
@@ -1171,5 +1188,10 @@ chk "文档里指向外部需求机器人一节的链接都对得上" \
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 汇总 ──"
+if [ -s "$PREP_FAILED" ]; then
+    echo "  ❌ 有 $(wc -l < "$PREP_FAILED" | tr -d ' ') 个负对照没准备成功（没跑）："
+    sed 's/^/     · /' "$PREP_FAILED"
+    fail=$((fail + $(wc -l < "$PREP_FAILED")))
+fi
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]
