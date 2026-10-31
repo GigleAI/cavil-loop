@@ -47,6 +47,10 @@ LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 GH_CALLS="$GH_CALLS"
 PATH="$FAKEBIN:\$PATH"
+# 派工脚本要求 GH_TOKEN 有值，否则一开头就拒绝派工（exit 1，stderr 被 _lib.sh 吞掉）。
+# 不写这行，测试只在本来就带着 GH_TOKEN 的 daemon / worker 环境里是绿的，干净 shell 里端到端那组全红。
+# gh 是假的，这个值不会被拿去用。
+GH_TOKEN="fake-token-for-test"
 CONF
 
 cat > "$FAKEBIN/gh" <<'FAKEGH'

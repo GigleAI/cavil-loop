@@ -21,7 +21,12 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 
 PORT=4931
 BACKEND=14931
-CONF_DIR="$HOME/.config/coding-agent-work-loop/preview"
+# 单元名和登记目录按 _names.sh 的规则挑：本机装了新单元（cavil-loop-preview@）就测新的，
+# 只装了改名前的旧单元才测旧的。写死旧名字时，迁移过的机器上旧单元的入口
+# （~/.agents/skills/coding-agent-work-loop）已经不在，app 起不来，整组变红。
+source "$REPO_DIR/scripts/_names.sh"
+U="$(cavil_preview_unit_prefix)"
+CONF_DIR="$(cavil_preview_dir_of_prefix "$U")"
 CONF="$CONF_DIR/${PORT}.conf"
 SANDBOX="$(mktemp -d)"
 
@@ -32,12 +37,12 @@ chk() {
 }
 
 cleanup() {
-    systemctl --user stop "coding-agent-preview@${PORT}.socket" \
-        "coding-agent-preview@${PORT}.service" \
-        "coding-agent-preview-app@${PORT}.service" 2>/dev/null
-    systemctl --user reset-failed "coding-agent-preview@${PORT}.socket" \
-        "coding-agent-preview@${PORT}.service" \
-        "coding-agent-preview-app@${PORT}.service" 2>/dev/null
+    systemctl --user stop "${U}-preview@${PORT}.socket" \
+        "${U}-preview@${PORT}.service" \
+        "${U}-preview-app@${PORT}.service" 2>/dev/null
+    systemctl --user reset-failed "${U}-preview@${PORT}.socket" \
+        "${U}-preview@${PORT}.service" \
+        "${U}-preview-app@${PORT}.service" 2>/dev/null
     rm -f "$CONF"
     rm -rf "$SANDBOX"
 }
@@ -48,8 +53,8 @@ for dep in systemctl node; do
     command -v "$dep" >/dev/null 2>&1 || { echo "⏭  跳过：缺 $dep"; exit 0; }
 done
 [ -x /usr/lib/systemd/systemd-socket-proxyd ] || { echo "⏭  跳过：缺 systemd-socket-proxyd"; exit 0; }
-systemctl --user show-unit-file coding-agent-preview@.socket >/dev/null 2>&1 \
-    || [ -e "$HOME/.config/systemd/user/coding-agent-preview@.socket" ] \
+systemctl --user show-unit-file ${U}-preview@.socket >/dev/null 2>&1 \
+    || [ -e "$HOME/.config/systemd/user/${U}-preview@.socket" ] \
     || { echo "⏭  跳过：preview unit 没装（先跑 setup.sh）"; exit 0; }
 
 # 开头那次 cleanup 已经把 mktemp 建的 SANDBOX 删掉了（trap 和首次调用共用一个函数），
@@ -79,11 +84,11 @@ PATH="$PATH"
 CONF
 
 systemctl --user daemon-reload
-systemctl --user start "coding-agent-preview@${PORT}.socket" 2>/dev/null
+systemctl --user start "${U}-preview@${PORT}.socket" 2>/dev/null
 
 echo "【1】socket 起来了，但 app 还没起（这就是省下来的内存）"
-chk "socket active"     "$(systemctl --user is-active "coding-agent-preview@${PORT}.socket")" "active"
-chk "app 尚未启动"       "$(systemctl --user is-active "coding-agent-preview-app@${PORT}.service")" "inactive"
+chk "socket active"     "$(systemctl --user is-active "${U}-preview@${PORT}.socket")" "active"
+chk "app 尚未启动"       "$(systemctl --user is-active "${U}-preview-app@${PORT}.service")" "inactive"
 chk "公开端口已在监听"    "$(ss -tln 2>/dev/null | grep -cE "127.0.0.1:${PORT}\b")" "1"
 chk "后端端口还没人听"    "$(ss -tln 2>/dev/null | grep -cE "127.0.0.1:${BACKEND}\b")" "0"
 
@@ -91,15 +96,15 @@ echo "【2】首次访问触发冷启动，且**第一个**请求就必须成功
 # 不重试、不 sleep：重试会把「首访 502」这个 bug 掩盖掉，那正是要拦的东西。
 body="$(curl -s --max-time 30 "http://127.0.0.1:${PORT}/" 2>/dev/null)"
 chk "首访拿到 app 响应"   "$body" "ok"
-chk "app 已 active"      "$(systemctl --user is-active "coding-agent-preview-app@${PORT}.service")" "active"
+chk "app 已 active"      "$(systemctl --user is-active "${U}-preview-app@${PORT}.service")" "active"
 
 echo "【3】闲置 5s 后 proxy 退出，app 被 StopWhenUnneeded 带走"
 deadline=$(( $(date +%s) + 40 ))
-while [ "$(systemctl --user is-active "coding-agent-preview-app@${PORT}.service")" = "active" ] \
+while [ "$(systemctl --user is-active "${U}-preview-app@${PORT}.service")" = "active" ] \
       && [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done
-chk "app 闲置后已停"      "$(systemctl --user is-active "coding-agent-preview-app@${PORT}.service")" "inactive"
+chk "app 闲置后已停"      "$(systemctl --user is-active "${U}-preview-app@${PORT}.service")" "inactive"
 chk "后端端口已释放"      "$(ss -tln 2>/dev/null | grep -cE "127.0.0.1:${BACKEND}\b")" "0"
-chk "socket 仍在监听（URL 没死）" "$(systemctl --user is-active "coding-agent-preview@${PORT}.socket")" "active"
+chk "socket 仍在监听（URL 没死）" "$(systemctl --user is-active "${U}-preview@${PORT}.socket")" "active"
 
 echo "【4】停用之后再访问，自动拉回来"
 body2="$(curl -s --max-time 30 "http://127.0.0.1:${PORT}/" 2>/dev/null)"

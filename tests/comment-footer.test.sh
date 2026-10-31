@@ -428,6 +428,9 @@ LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
 WORKER_AGENT_DEFAULT="claude"
 PATH="$DSB/bin:\$PATH"
+# 派工脚本要求 GH_TOKEN 有值，否则一开头就拒绝派工、什么也不写。不写这行，测试只在
+# 本来带着 GH_TOKEN 的 daemon / worker 环境里是绿的。gh 是假的，这个值不会被拿去用。
+GH_TOKEN="fake-token-for-test"
 CONF
 # 编号取得很大，避免撞上本机真实派工写在 /tmp 下的 prompt
 N_NEW=987601; N_CMT=987602; N_PR=987603

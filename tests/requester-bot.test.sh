@@ -111,6 +111,10 @@ PENDING_HUMAN_CONFLICT_CHECK=false
 POLL_BACKOFF_LADDER=""
 PRICE_AUTO_FETCH=0
 WORKER_SECRET_ENV=""
+# 上面那行关不掉「GH_TOKEN 必须有值」：_lib.sh 用 \${WORKER_SECRET_ENV:-GH_TOKEN}，空串也回落到
+# GH_TOKEN。不给值时真派工脚本一开头就拒绝派工，测试只在本来带着 GH_TOKEN 的
+# daemon / worker 环境里是绿的。gh 是假的，这个值不会被拿去用。
+GH_TOKEN="fake-token-for-test"
 PATH="$SANDBOX/bin:\$PATH"
 CONF
     if [ "$bot" = on ]; then

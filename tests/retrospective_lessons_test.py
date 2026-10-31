@@ -7,6 +7,7 @@ switched off one at a time to prove each case actually depends on its check.
 """
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -410,13 +411,24 @@ class InstructionTest(unittest.TestCase):
         lessons = rl.parse((root / '.agents/skills/cavil-loop/prompts/lessons.md').read_text())
         table = (root / 'docs/retrospectives/lessons-migration.md').read_text()
         rows = table.split('\n')
+        # 迁移表只管迁移那一次：它自己写明「只在迁移时写一次；之后的 Seen 由复盘程序追加……
+        # 不再记在这里」，并列出当时有报告的 PR。之后复盘追加的（#62 起）不该去表里找出处——
+        # 以前不分来源一律查表，第一次自动复盘（#79）追加计数后这条就永久红了。
+        m = re.search(r'只有 (\d+) 个 PR 有复盘报告（([^）]*)）', table)
+        self.assertIsNotNone(m, 'migration table no longer states which PRs it covers')
+        migrated = {int(x) for x in re.findall(r'#(\d+)', m.group(2))}
+        self.assertEqual(len(migrated), int(m.group(1)), 'migration table: PR count does not match its list')
+        checked = 0
         for e in lessons.entries:
             for pr, url in e.seen:
-                self.assertTrue(url, f'L{e.id} #{pr}: migrated sighting without a link')
-                self.assertTrue(any(f'#{pr}' in row and url in row for row in rows),
-                                f'L{e.id} #{pr}: not in the migration table with {url}')
+                self.assertTrue(url, f'L{e.id} #{pr}: sighting without a link')
+                if int(pr) in migrated:
+                    checked += 1
+                    self.assertTrue(any(f'#{pr}' in row and url in row for row in rows),
+                                    f'L{e.id} #{pr}: not in the migration table with {url}')
                 self.assertTrue((root / f'docs/retrospectives/pr-{pr}.md').exists(),
                                 f'L{e.id} #{pr}: counted without a retrospective report')
+        self.assertGreater(checked, 0, 'no migrated sighting was checked against the table')
 
     def test_未知模式拒绝(self):
         os.environ['RETROSPECTIVE_PROMOTION'] = 'yolo'
