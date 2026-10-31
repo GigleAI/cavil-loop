@@ -144,9 +144,6 @@ fi
 agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
 
 # 5. 立即翻 label 到 doing/agent（worker 完工时它会自己翻成 pending/human）
-run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
-    gh_label_flip "$ISSUE" \
-    --add "$LABEL_AGENT_DOING" \
-    --remove "${TRIGGER_LABELS_ALL[@]}" || true
+flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true
 
 log "dispatch-new-issue done: #$ISSUE -> $TMUX_SESSION"

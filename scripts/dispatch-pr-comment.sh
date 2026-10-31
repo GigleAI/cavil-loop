@@ -96,10 +96,7 @@ fi
 
 flip_label() {
     # daemon dispatch 翻到 doing/agent；worker 完工时它自己翻成 pending/human
-    run_gh "label 翻转 (PR #$PR pending/agent → $LABEL_AGENT_DOING)" \
-        gh_label_flip "$PR" \
-        --add "$LABEL_AGENT_DOING" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" || true
+    flip_to_doing "$PR" "PR #$PR pending/agent → $LABEL_AGENT_DOING" || true
 }
 
 # 标签要求的 worker/model 与现有 session 不一致时，不能走 stdin 注入；重启后由

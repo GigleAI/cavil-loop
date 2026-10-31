@@ -364,6 +364,21 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 留空 = 完全关闭，行为与从前一致。
 
+## 外部传话机器人交接（可选，**默认关闭**）
+
+另一个 AI 助手（有自己的 GitHub 账号）替别人提需求时，agent 提问 / 汇报不翻 `pending/human`，
+而是跑叫醒脚本：挂 `LABEL_PENDING_RELAY`、把 `RELAY_BOT_ACCOUNT` 重新指派为 assignee。
+五个配置项（`LABEL_PENDING_RELAY` / `RELAY_BOT_ACCOUNT` / `RELAY_ALLOWED_ACTORS` /
+`RELAY_ORIGIN_MARKER` / `RELAY_REPORT_FIRST`）全部留空 = 关闭，行为逐字节不变。
+
+运维上要知道的：
+
+- 挂着等待标签的条目，greedy 兜底和 self-heal 都不碰；有人打了触发标签就照原流程派，派工时摘掉等待标签
+- 没有等待超时。机器人一直没回音，`poll.log` 里不会有任何动静，要人自己看看板上挂着等待标签的条目
+- 叫醒脚本走长期入口 `~/.agents/releases/cavil-loop/entrypoints/notify-relay.sh`（发版切换时路径不失效），
+  每次叫醒在 `poll.log` 留一行 `notify-relay #<编号>: …`
+- 完整说明、退出码、证据规则和接入示例：[collaboration.zh.md → 外部传话机器人](collaboration.zh.md#外部传话机器人)
+
 ## 评论用量 footer
 
 `COMMENT_FOOTER="on"` 时，交人评论末尾接一段由 `scripts/drivers/token-usage/comment-footer.sh`

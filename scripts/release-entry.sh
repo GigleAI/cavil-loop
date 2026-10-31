@@ -22,6 +22,7 @@ case "$0" in
         relative="scripts/drivers/token-usage/$(basename "$0")"
         ;;
     */weekly-report/run.sh) relative="scripts/weekly-report/run.sh" ;;
+    */notify-relay.sh) relative="scripts/notify-relay.sh" ;;   # worker 叫醒传话机器人（GitHub#95）
     *) echo "unknown managed entrypoint: $0" >&2; exit 2 ;;
 esac
 
