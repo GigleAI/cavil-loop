@@ -164,7 +164,7 @@ agent 读答复，继续
 | `LABEL_PENDING_RELAY` | 等待传话标签，例如 `pending/relay`。`setup.sh` 会按这个名字建标签 |
 | `RELAY_BOT_ACCOUNT` | 传话机器人的 GitHub 登录名，叫醒时指派给它 |
 | `RELAY_ALLOWED_ACTORS` | 允许执行叫醒的账号（逗号分隔），一般就是 worker / reviewer 发评论用的那个账号 |
-| `RELAY_ORIGIN_MARKER` | issue 正文里出现这段文字、**并且** issue 作者就是机器人账号，才算「机器人替别人提的需求」；PR 看它关联的 issue |
+| `RELAY_ORIGIN_MARKER` | issue 正文里出现这段文字、**并且** issue 作者就是机器人账号，才算「机器人替别人提的需求」；PR 看它分支名里的 issue 编号（worker 为 issue 开的 PR，分支名都带编号；不读 PR 正文里的 `Closes #N`） |
 | `RELAY_REPORT_FIRST` | `true`：做完先经传话汇报，提需求方认可当前提交后再交维护者合并；`false`（默认）：做完直接交维护者 |
 
 前四项都填了才算开启。全部留空时，派工、挡工清单、四类提示词都和以前逐字节一样。

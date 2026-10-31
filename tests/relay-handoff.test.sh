@@ -156,6 +156,9 @@ seed_mixed() {   # 一批覆盖各条路径的条目（不含等待标签：关�
     add_item "$W" 21 pr "pending/review"
     add_item "$W" 22 pr "doing/agent"
     add_item "$W" 23 pr "waiting/relay"
+    # 分支不带编号、正文跨行写 Closes：会话编号 / 列表都会读正文，关闭时必须和改动前一样
+    add_item "$W" 24 pr "doing/agent" someone $'Closes\n#9' chore/x
+    add_item "$W" 25 pr "pending/agent" someone $'Fixes\r\n#8' chore/y
 }
 for mode in label greedy; do
     for v in old new; do
@@ -391,11 +394,14 @@ reject_suite() {   # <scripts 副本>
     relay_case "$S" 62; chk "拒绝 · 机器人开的无关联 PR：退出码 2" "$RC" 2; chk "拒绝 · 机器人开的无关联 PR：零写请求" "$(writes)" 0
     # 关联编号指向另一个 PR（那个 PR 也是机器人开的、带标记）
     fresh_relay; add_item "$RW" 63 pr "" relay-bot "$MARK" chore/z
-    add_item "$RW" 64 pr "doing/agent" worker-bot "Closes #63" chore/w; : > "$RW/gh/calls.log"
+    add_item "$RW" 64 pr "doing/agent" worker-bot "实现" feature/issue-63; : > "$RW/gh/calls.log"
     relay_case "$S" 64; chk "拒绝 · 关联编号指向 PR：退出码 2" "$RC" 2; chk "拒绝 · 关联编号指向 PR：零写请求" "$(writes)" 0
-    # 正文关联（分支名不带编号）照常认：作对照，证明拒绝不是因为正文关联整体失效
-    fresh_relay; add_item "$RW" 65 pr "doing/agent" worker-bot "Closes #50" chore/v
-    relay_case "$S" 65; chk "对照 · 正文 Closes 关联到机器人的 issue：退出码 0" "$RC" 0
+    # 只认分支名里的编号，不读正文：正文写了 Closes #50（单行、跨行都一样）也拒绝
+    fresh_relay; add_item "$RW" 65 pr "doing/agent" worker-bot "Closes #50" chore/v; : > "$RW/gh/calls.log"
+    relay_case "$S" 65; chk "拒绝 · 只在正文写 Closes、分支不带编号：退出码 2" "$RC" 2; chk "拒绝 · 只在正文写 Closes：零写请求" "$(writes)" 0
+    fresh_relay; add_item "$RW" 66 pr "doing/agent" worker-bot "Closes
+#50" chore/u; : > "$RW/gh/calls.log"
+    relay_case "$S" 66; chk "拒绝 · 跨行写的 Closes、分支不带编号：退出码 2" "$RC" 2; chk "拒绝 · 跨行写的 Closes：零写请求" "$(writes)" 0
 }
 success_suite() {   # <scripts 副本>
     local S="$1"
@@ -523,16 +529,9 @@ D=$(mutate no-pr-origin-check scripts/notify-relay.sh \
     '        || reject "PR #$NUM 关联的 #$ORIGIN 是 PR，不是 issue"' \
     '        || true') && neg "不核对关联编号是不是 issue" reject_suite "$D"
 D=$(MUT_BASE="$D" mutate fallback-origin scripts/notify-relay.sh \
-    '    ORIGIN=$(branch_to_issue_num "$PR_BRANCH")
-    if [ -z "$ORIGIN" ]; then
-        ORIGIN=$(printf '"'"'%s'"'"' "$PR_JSON" | jq -r '"'"'.body // ""'"'"' | pr_body_linked_issue)
-    fi
-    case "$ORIGIN" in '"''"'|*[!0-9]*) reject "PR #$NUM 没有关联 issue（分支名和正文里都找不到）" ;; esac
-    [ "$ORIGIN" != "$NUM" ] || reject "PR #$NUM 没有关联 issue（关联编号就是它自己）"
-    ORIGIN_JSON=$(gh api "repos/$REPO/issues/$ORIGIN") || reject "读不到关联的 issue #$ORIGIN"' \
-    '    ORIGIN=$(pr_to_issue_num "$NUM" "$PR_BRANCH")
-    if [ "$ORIGIN" != "$NUM" ]; then ORIGIN_JSON=$(gh api "repos/$REPO/issues/$ORIGIN") || reject "x"; fi
-    [ "$ORIGIN" != "$NUM" ] || return_pr=1') && neg "来源改回会话命名的兜底编号（叠加不核对 issue，等于旧实现）" reject_suite "$D"
+    '    ORIGIN=$(branch_to_issue_num "$PR_BRANCH")' \
+    '    ORIGIN=$(pr_to_issue_num "$NUM" "$PR_BRANCH"); [ "$ORIGIN" != "$NUM" ] || ORIGIN=""') \
+    && neg "来源改用会话命名的编号（会读正文；叠加不核对 issue）" reject_suite "$D"
 D=$(mutate no-readback scripts/notify-relay.sh \
     '    # 读回核对：等待标签在、要摘的一个都不在、机器人是 assignee' \
     '    return 0') && neg "删掉叫醒后的读回核对" fail_suite "$D"
@@ -547,90 +546,96 @@ D=$(mutate relay-first scripts/notify-relay.sh \
     gh_write api -X POST "repos/$REPO/issues/$NUM/labels" -f "labels[]=$LABEL_PENDING_HUMAN" >/dev/null \
         || { LAST_FAIL="交还：加 $LABEL_PENDING_HUMAN 失败"; return 1; }') && neg "把「最后摘等待标签」挪到交还第 1 步" handback_suite "$D"
 
-echo "── 3c. PR 正文关联的 issue 编号：四条路径对拍 ──"
-# ── 3c. 「PR 正文关联的 issue 编号」：同一批正文对拍全部调用点 ──
-# 这条规则有四个用处：共用的提取函数本身、会话命名（找不到退回 PR 编号）、叫醒脚本的来源核验
-# （找不到就拒绝）、活跃 worker 列表里的 jq 写法（在一次 jq 里过整页快照）。期望值写死，
-# 四条路径逐条和它比；每个调用点各有一个负对照。
-# 正文用 \n \r \t 转义写（python 解码），这样制表符、CRLF 是真的控制字符。
-# 一次列全提取规则的输入边界（复审第 3 轮）：空正文、大小写、多个取首个、空格 / 制表符 /
-# LF / CRLF、关键词前后换行、缺少分隔空白、# 后有空格、像关键词但不是的词。
-LINK_CASES='1|Closes #50|50
-2|fixes #51 and refs #52|51
-3|Resolves #53|53
-4|REFS #54|54
-5|Close #55|55
-6|relates to #56|-
-7|Closes#57|-
-8|see notes\nFixed   #58|58
-9|resolved #59, closes #60|59
-10||-
-11|Closes\n#61|61
-12|Closes\r\n#62|62
-13|Closes\t#63|63
-14|intro\ncLoSeS #64\n|64
-15|Fixes\n\n  #65|65
-16|Closes # 66|-
-17|enclosed #67|67
-18|line one\r\nRefs #68\r\n|68
-19|#69 closes nothing|-
-20|fix #70|70'
-link_suite() {   # <scripts 副本>
-    local S="$1" W="$SANDBOX/link" i body want pr got_fn got_name got_relay got_list listing
-    new_env "$W" on label
-    # 逐条造 PR：编号 300+i，分支不带 issue 编号，正文就是用例
-    python3 - "$W/gh/state.json" "$LINK_CASES" <<'PYL'
+echo "── 3c. 从 PR 正文找关联 issue：关闭 / 开启都和改动前逐字节一致 ──"
+# 这条规则 daemon 里本来就有两份（会话命名用 grep 逐行找、活跃 worker 列表用 jq 整段找），
+# 两份对跨行写法本就判断不同。本 PR 不碰它们：叫醒脚本只认分支名，不读正文（PR #96 复审
+# 三轮的收口）。这里用同一批正文，在功能关闭 / 开启两种配置下，分别跑改动前（merge-base）
+# 和本版的会话命名与活跃 worker 列表，结果必须逐条相同；再起真的 PR 派工，确认选中的工作区
+# 也相同。负对照：把会话命名改成整段匹配（上一版的做法）→ 必须变红。
+# 正文用 \n \r \t 转义写（python 解码），制表符、CRLF 是真的控制字符。
+LINK_CASES='1|Closes #50
+2|fixes #51 and refs #52
+3|Resolves #53
+4|REFS #54
+5|relates to #56
+6|Closes#57
+7|see notes\nFixed   #58
+8|
+9|Closes\n#61
+10|Closes\r\n#62
+11|Closes\t#63
+12|intro\ncLoSeS #64\n
+13|Fixes\n\n  #65
+14|Closes # 66
+15|line one\r\nRefs #68\r\n'
+link_numbers() {   # <scripts 副本> <W>：每条正文一行「PR 会话编号 列表里的编号」
+    local S="$1" W="$2"
+    env FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" TICK_DIR="$W/tick" bash -c '
+        source "$1/scripts/_lib.sh" 2>/dev/null
+        listing=$(list_active_workers all)
+        for pr in $(jq -r ".items|keys[]" "$FAKE_GH_DIR/state.json" | sort -n); do
+            name=$(pr_to_issue_num "$pr" "chore/b$pr")
+            lst=$(printf "%s\n" "$listing" | grep -oE "^(issue #[0-9]+ \(PR #$pr\)|PR #$pr )" | head -1)
+            printf "%s %s [%s]\n" "$pr" "$name" "$lst"
+        done' _ "$S"
+}
+link_env() {   # <W> <on|off>
+    new_env "$1" "$2" label
+    python3 - "$1/gh/state.json" "$LINK_CASES" <<'PYL'
 import json, re, sys
 p, cases = sys.argv[1], sys.argv[2]
 st = json.load(open(p))
-for m in re.finditer(r'^(\d+)\|(.*)\|([^|\n]*)$', cases, re.M):
-    i, body = int(m.group(1)), m.group(2).encode().decode("unicode_escape")
-    n = 300 + i
-    st["items"][str(n)] = {"number": n, "title": f"pr {n}", "user": "worker-bot", "body": body,
-                           "state": "open", "is_pr": True, "head_ref": f"chore/b{i}",
+for m in re.finditer(r'^(\d+)\|(.*)$', cases, re.M):
+    n = 300 + int(m.group(1))
+    st["items"][str(n)] = {"number": n, "title": f"pr {n}", "user": "worker-bot",
+                           "body": m.group(2).encode().decode("unicode_escape"),
+                           "state": "open", "is_pr": True, "head_ref": f"chore/b{n}",
                            "labels": ["doing/agent"], "assignees": [], "events": []}
 json.dump(st, open(p, "w"))
 PYL
-    listing=$(env FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" TICK_DIR="$W/tick" bash -c '
-        source "$1/scripts/_lib.sh" 2>/dev/null; list_active_workers all' _ "$S")
-    python3 - "$LINK_CASES" <<'PYL' > "$W/cases.tsv"
-import re, sys
-for m in re.finditer(r'^(\d+)\|(.*)\|([^|\n]*)$', sys.argv[1], re.M):
-    print(m.group(1) + "\t" + m.group(3))
-PYL
-    while IFS=$'\t' read -r i want; do
-        pr=$((300 + i))
-        got_fn=$(jq -j --arg n "$pr" '.items[$n].body' "$W/gh/state.json" | env CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c '
-            source "$1/scripts/_lib.sh" 2>/dev/null; pr_body_linked_issue' _ "$S")
-        got_name=$(env FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c '
-            source "$1/scripts/_lib.sh" 2>/dev/null; pr_to_issue_num "$2" "$3"' _ "$S" "$pr" "chore/b$i")
-        [ "$got_name" = "$pr" ] && got_name=-
-        RW_SAVE="$RW"; RW="$W"; relay_case "$S" "$pr"; RW="$RW_SAVE"
-        got_relay=$(printf '%s' "$OUT" | grep -oE '读不到关联的 issue #[0-9]+' | grep -oE '[0-9]+$' | head -1)
-        [ -n "$got_relay" ] || { printf '%s' "$OUT" | grep -q '没有关联 issue' && got_relay=-; }
-        got_list=$(printf '%s\n' "$listing" | grep -oE "issue #[0-9]+ \(PR #$pr\)" | grep -oE '^issue #[0-9]+' | grep -oE '[0-9]+')
-        [ -n "$got_list" ] || { printf '%s\n' "$listing" | grep -qE "^PR #$pr " && got_list=-; }
-        chk "正文关联 · 用例 $i：提取函数" "${got_fn:--}" "$want"
-        chk "正文关联 · 用例 $i：会话命名" "$got_name" "$want"
-        chk "正文关联 · 用例 $i：叫醒脚本来源" "${got_relay:-?}" "$want"
-        chk "正文关联 · 用例 $i：活跃 worker 列表" "${got_list:-?}" "$want"
-    done < "$W/cases.tsv"
+}
+link_suite() {   # <scripts 副本>
+    local S="$1" mode
+    for mode in off on; do
+        link_env "$SANDBOX/link-old" $mode; link_env "$SANDBOX/link-new" $mode
+        link_numbers "$OLD" "$SANDBOX/link-old" > "$SANDBOX/link-old.txt"
+        link_numbers "$S" "$SANDBOX/link-new" > "$SANDBOX/link-new.txt"
+        chk "正文关联 · 功能$mode：15 条正文的会话编号和列表编号与改动前逐条相同" \
+            "$(cmp -s "$SANDBOX/link-old.txt" "$SANDBOX/link-new.txt" && echo same || { diff "$SANDBOX/link-old.txt" "$SANDBOX/link-new.txt" | grep -c '^>'; })" same
+        chk "正文关联 · 功能$mode：对拍不是两边都空" "$(wc -l < "$SANDBOX/link-new.txt" | tr -d ' ')" 15
+    done
 }
 link_suite "$NEW"
-D=$(mutate link-shared scripts/_lib.sh \
-    "    jq -Rsr --arg re \"\$PR_LINK_RE\" 'first(capture(\$re).n) // empty' 2>/dev/null || true" \
-    "    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' | head -1 | grep -oE '[0-9]+' || true") \
-    && neg "共用提取函数改回按行匹配的旧写法（跨行认不出）" link_suite "$D"
-D=$(mutate link-naming scripts/_lib.sh \
-    "--jq '.body // \"\"' 2>/dev/null | pr_body_linked_issue)" \
-    "--jq '.body // \"\"' 2>/dev/null | head -0)") && neg "会话命名不再用正文关联" link_suite "$D"
-D=$(mutate link-relay scripts/notify-relay.sh \
-    "jq -r '.body // \"\"' | pr_body_linked_issue)" \
-    "jq -r '.body // \"\"' | grep -oE '#[0-9]+' | head -1 | tr -d '#')") && neg "叫醒脚本改成认任意 #N" link_suite "$D"
+D=$(mutate link-wholebody scripts/_lib.sh \
+    "    n=\$(gh pr view \"\$pr\" --repo \"\$REPO\" --json body --jq '.body // \"\"' 2>/dev/null \\
+        | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \\
+        | head -1 \\
+        | grep -oE '[0-9]+' || true)" \
+    "    n=\$(gh pr view \"\$pr\" --repo \"\$REPO\" --json body --jq '.body // \"\"' 2>/dev/null \\
+        | jq -Rsr 'first(capture(\"(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)\").n) // empty' || true)") \
+    && neg "会话命名改成整段匹配（上一版的做法）" link_suite "$D"
 D=$(mutate link-jq scripts/_lib.sh \
-    'try capture($re).n catch "") // "")]' \
-    'try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[ ]+#(?<n>[0-9]+)").n catch "") // "")]') \
-    && neg "活跃 worker 列表改用自己的正则（只认空格）" link_suite "$D"
+    '[[:space:]]+#(?<n>[0-9]+)").n catch "")' \
+    '[ ]+#(?<n>[0-9]+)").n catch "")') && neg "活跃 worker 列表改成只认空格" link_suite "$D"
+
+# 真的 PR 派工：功能关闭，分支不带编号、正文跨行写 Closes —— 选中的工作区与改动前相同
+pr_dispatch_ws() {   # <scripts 目录> → 派工后建出来的工作区目录名
+    local SD="$1" W="$DX/ws" N=987961
+    rm -rf "$W"; mkdir -p "$W"
+    new_env "$W" off label "PATH=\"$DX/bin:$SANDBOX/bin:\$PATH\"" 'WORKER_SECRET_ENV=""'
+    git clone -q "$DX/up.git" "$W/project" 2>/dev/null
+    add_item "$W" $N pr "pending/agent" someone "Closes
+#50" "chore/ws"
+    (cd "$W/project" && env HOME="$DX/home" FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" \
+        timeout 120 bash "$SD/dispatch-pr-comment.sh" $N chore/ws 0) >/dev/null 2>&1
+    rm -f /tmp/cavil-loop-pr-$N-*
+    # 假 tmux 一律报「会话在」，派工走「注入现有会话」那条路：选中的会话名就是工作编号的落点
+    grep -oE "PR #$N -> [^ ]* ?[A-Za-z0-9_.-]+-issue[0-9]+" "$W/state/poll.log" | grep -oE '[A-Za-z0-9_.-]+-issue[0-9]+$' | head -1
+}
+REAL_OLD="$SANDBOX/real-old"; rm -rf "$REAL_OLD"; mkdir -p "$REAL_OLD"; cp -r "$SANDBOX/old-src/scripts" "$SANDBOX/old-src/prompts" "$REAL_OLD/"
+WS_OLD=$(pr_dispatch_ws "$REAL_OLD/scripts"); WS_NEW=$(pr_dispatch_ws "$REAL_NEW/scripts")
+chk "真 PR 派工 · 功能关闭：跨行 Closes 时选中的会话与改动前相同（$WS_OLD）" "$WS_NEW" "$WS_OLD"
+chk "真 PR 派工 · 对拍不是两边都空" "$([ -n "$WS_OLD" ] && echo yes || echo no)" yes
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 4. 提示词拼装（开启） ──"
