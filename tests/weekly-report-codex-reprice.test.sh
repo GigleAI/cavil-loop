@@ -16,6 +16,11 @@ COLLECT="$REPO_DIR/scripts/weekly-report/collect.py"
 REPORT="$REPO_DIR/scripts/weekly-report/report.py"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# 不读本机真实数据：collect.py 不设这几个就去扫 ~/.claude/projects（本机 7.4G，单次 18 秒）、
+# ~/.codex/sessions 和 ~/.cache——结果随机器变，测试还会越跑越慢。
+export CLAUDE_PROJECTS_DIR="$TMP/no-claude-projects" CODEX_SESSIONS_DIR="$TMP/no-codex-sessions"
+export XDG_CACHE_HOME="$TMP/xdg-cache"
+mkdir -p "$CLAUDE_PROJECTS_DIR" "$CODEX_SESSIONS_DIR" "$XDG_CACHE_HOME"
 export XDG_CACHE_HOME="$TMP/cache"; mkdir -p "$XDG_CACHE_HOME/cavil-loop"
 unset CODEX_PRICES CODEX_PRICE_IN_PER_M CODEX_PRICE_CACHED_IN_PER_M CODEX_PRICE_OUT_PER_M
 pass=0; fail=0

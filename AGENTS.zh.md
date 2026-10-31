@@ -257,7 +257,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 改动落在下面这些地方时，对应的测试必须跑：
 
-- 记账 / 周报口径 → `tests/weekly-report-*.test.sh`
+- 记账 / 周报口径 → `tests/weekly-report-*.test.sh`。凡是会跑 `collect.py` / `price_solve.py` 的测试，必须把 `CLAUDE_PROJECTS_DIR`、`CODEX_SESSIONS_DIR`、`XDG_CACHE_HOME` 指到自己的临时目录：不设就去扫本机真实的 `~/.claude/projects`（这台机器 7.4G，单次 18 秒，还在涨），测试一天比一天慢，结果还随机器变
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
 - 评论用量 footer（GitHub#88：`comment-footer.sh` / `comment_footer.py`、`ai_time.py` 的 AI 时间估算、四份模板的 footer 步骤、`${COMMENT_FOOTER_CMD}` 占位、周报认新的可见排版）→ `tests/comment-footer.test.sh`（约 1.5 分钟：会起真的派工脚本，并对每条规矩跑一份故意改坏的副本，必须变红）。footer 由脚本整段生成——模板里别再让 agent 手拼时间 / token 行；agent-metrics 机器记录仍是最后一个非空行
 - 缺价自动抓价（缺价标记 / `price_fetch.py` / `fetched` 可信度桶）→ `tests/price-fetch.test.sh`

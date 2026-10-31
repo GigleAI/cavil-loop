@@ -307,7 +307,7 @@ There is **no unified runner and no CI**: run the ones that cover what you touch
 
 Changes in these areas must run the matching tests:
 
-- Accounting / weekly report → `tests/weekly-report-*.test.sh`
+- Accounting / weekly report → `tests/weekly-report-*.test.sh`. Any test that runs `collect.py` / `price_solve.py` must point `CLAUDE_PROJECTS_DIR`, `CODEX_SESSIONS_DIR` and `XDG_CACHE_HOME` at its temp dir: left unset they scan the machine's real `~/.claude/projects` (7.4G here — 18s per call, and growing), so the test gets slower every day and its numbers depend on the machine
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
 - The comment usage footer (GitHub#88: `comment-footer.sh` / `comment_footer.py`, the AI-time estimate in `ai_time.py`, the footer step of the four templates, the `${COMMENT_FOOTER_CMD}` placeholder, the weekly report reading the new visible layout) → `tests/comment-footer.test.sh` (~1.5 min; it runs the real dispatch scripts and, for every rule, a deliberately broken copy that must turn red). The footer is generated whole by the script — templates must not tell the agent to assemble time / token lines by hand again, and the agent-metrics record stays the last non-empty line
 - Price gap-fill (markers / `price_fetch.py` / the fetched trust bucket) → `tests/price-fetch.test.sh`

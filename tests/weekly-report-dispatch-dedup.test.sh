@@ -22,6 +22,11 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 COLLECT="$REPO_DIR/scripts/weekly-report/collect.py"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# 不读本机真实数据：collect.py 不设这几个就去扫 ~/.claude/projects（本机 7.4G，单次 18 秒）、
+# ~/.codex/sessions 和 ~/.cache——结果随机器变，测试还会越跑越慢。
+export CLAUDE_PROJECTS_DIR="$TMP/no-claude-projects" CODEX_SESSIONS_DIR="$TMP/no-codex-sessions"
+export XDG_CACHE_HOME="$TMP/xdg-cache"
+mkdir -p "$CLAUDE_PROJECTS_DIR" "$CODEX_SESSIONS_DIR" "$XDG_CACHE_HOME"
 pass=0; fail=0
 chk() { if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1)); else echo "  ❌ $1 (期望 '$3'，实得 '$2')"; fail=$((fail+1)); fi; }
 
