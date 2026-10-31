@@ -938,6 +938,12 @@ D=$(mutate done-any-author scripts/_lib.sh \
 D=$(mutate done-no-state-check scripts/_lib.sh \
     '    if [ -z "$st" ] || [ -z "$merged" ]; then' \
     '    st=closed; merged=true; if false; then') && neg "写之前不核对 PR 现状" done_retry_suite "$D"
+D=$(mutate done-no-reassign scripts/_lib.sh \
+    '    if ! requester_bot_reassign "$origin"; then' \
+    '    if false; then') && neg "合并后通知只评论、不重新指派" done_suite "$D"
+D=$(mutate add-directly scripts/_lib.sh \
+    '    if requester_bot_has_login "$a" "$REQUESTER_BOT_ACCOUNT"; then' \
+    '    if false; then') && neg "合并后通知：「先移再加」改成直接加" done_suite "$D"
 D=$(mutate done-closed-after-merged scripts/_lib.sh \
     '    if [ "$kind" = closed ] && printf '"'"'%s\n'"'"' "$marks" | grep -q '"'"'kind=merged'"'"'; then' \
     '    if false; then') && neg "已合并过还补「关闭未合并」" done_retry_suite "$D"
