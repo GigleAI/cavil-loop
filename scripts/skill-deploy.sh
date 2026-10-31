@@ -60,6 +60,8 @@ install_entrypoints() {
         ln -sfn ../../release-entry.sh "$root/drivers/token-usage/$(basename "$driver")"
     done
     ln -sfn ../release-entry.sh "$root/weekly-report/run.sh"
+    # worker 在会话里跑的命令也要走长期入口：发版切换后旧版本目录会被清掉
+    ln -sfn release-entry.sh "$root/notify-relay.sh"
 }
 
 # 每一次写 GitHub 都走它。规则与 _lib.sh:gh_write 相同，但这里自带一份实现：部署器

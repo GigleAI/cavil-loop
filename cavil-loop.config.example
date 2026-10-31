@@ -162,6 +162,49 @@ REVIEW_WORKER_AGENT="codex"
 REVIEW_MODEL=""
 REVIEW_MAX_ROUNDS=3
 
+# ── Optional external relay bot handoff / 外部传话机器人交接（默认关闭，GitHub#95）──
+# For projects where another AI assistant with its own GitHub account (the "relay bot")
+# files requests on behalf of other people. When the agent needs that person to answer
+# a question or confirm a result, it posts the comment and then runs the wake-up script
+# instead of flipping pending/human: the item gets LABEL_PENDING_RELAY and the bot is
+# (re-)assigned, which wakes it. The bot relays the comment, says on the issue whom it
+# forwarded it to, pastes the answer back verbatim, removes the waiting label and
+# unassigns itself. Full guide: docs/collaboration.md#external-relay-bot
+#
+# Leave all of these empty to keep today's behaviour byte-for-byte. The feature is on
+# only when the first four are all set; with only LABEL_PENDING_RELAY set the daemon
+# still refuses to greedy-dispatch items carrying it (safer), but nothing else changes.
+#
+# 有的项目让另一个 AI 助手（有自己的 GitHub 账号，下称「传话机器人」）替别人提需求。
+# agent 要问提需求的人、或要汇报时，发完评论跑叫醒脚本，而不是翻 pending/human：
+# 条目挂上 LABEL_PENDING_RELAY，并把机器人重新指派为 assignee，这样就叫醒了它。
+# 机器人转话、在 issue 里说明转给了谁、把答复原文贴回来，再摘掉等待标签、把自己移出
+# assignee。完整说明：docs/collaboration.zh.md#外部传话机器人
+#
+# 全部留空 = 关闭，行为和以前逐字节一样。前四项都填了才算开启；只填了等待标签时，
+# daemon 仍然不让 greedy 兜底派挂着它的条目（只会更保守），其余都不变。
+#
+# 等待期间：
+#   · greedy 兜底、worker 意外退出后的自动重派都不碰挂着等待标签的条目
+#   · 有人又打了触发标签（pending/agent、fable、追加的、pending/review）→ 照该标签原流程派工，
+#     派工时 daemon 摘掉等待标签
+#   · 不做超时：机器人一直没回音时，由维护者自己处理
+#
+# LABEL_PENDING_RELAY   等待传话标签，例 "pending/relay"。setup.sh 会按这个名字建 label
+# RELAY_BOT_ACCOUNT     传话机器人的 GitHub 登录名，叫醒时指派给它。例 "my-relay-bot"
+# RELAY_ALLOWED_ACTORS  允许执行叫醒的账号（逗号分隔），一般是 worker / reviewer 发评论用的
+#                       那个账号。叫醒脚本先核对当前账号在不在里面
+# RELAY_ORIGIN_MARKER   issue 正文里出现这段文字、**并且** issue 作者就是 RELAY_BOT_ACCOUNT，
+#                       才算「机器人替别人提的需求」；PR 看它关联的 issue（分支名里的编号，或正文的 Closes #N）。
+#                       只认标记不认作者的话，公开仓库里谁都能在正文里写这段文字
+# RELAY_REPORT_FIRST    做完后是否先经传话汇报、提需求方认可当前提交后再交维护者合并。
+#                       true / false，默认 false（做完直接交维护者）
+LABEL_PENDING_RELAY=""
+RELAY_BOT_ACCOUNT=""
+RELAY_ALLOWED_ACTORS=""
+RELAY_ORIGIN_MARKER=""
+RELAY_REPORT_FIRST="false"
+
 # When the worker and the review gate run the SAME agent, their model
 # conversations are kept apart per (work number, agent, role) — see
 # docs/architecture.md#session-isolation. Two knobs, both rarely touched:

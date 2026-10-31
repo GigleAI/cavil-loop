@@ -145,6 +145,71 @@ trigger_labels_array() {
     mapfile -t TRIGGER_LABELS_ALL < <(trigger_labels_all | awk 'NF && !seen[$0]++')
 }
 
+# ── 外部传话机器人交接（GitHub#95，可选，默认关闭）──
+# 有的项目让另一个 AI 助手（有自己的 GitHub 账号，下称「传话机器人」）替别人提需求。
+# agent 要问提需求的人、或要汇报时，不翻 pending/human，而是挂「等待传话」标签 + 把
+# 机器人设为 assignee 叫醒它（scripts/notify-relay.sh）。全部留空 = 功能关闭，行为和以前一样。
+#
+# 等待标签在 daemon 这边只有三处作用，都在 LABEL_PENDING_RELAY 非空时才生效：
+#   1. greedy 兜底趟挡工（greedy_skip_label_list）——只挂等待标签的条目不派
+#   2. self-heal 不把挂着它的 doing/agent 条目翻回触发标签
+#   3. 有人在等待期间**又打了触发标签** → 按该标签原流程派工，派工时一并摘掉等待标签
+#      （relay_dispatch_clear_labels）。这条是 issue 讨论里定的：触发标签只有能改标签的人
+#      才打得上，是明确的「接着干」；不摘的话，这轮 worker 交完活还挂着一个过期的等待标签
+#
+# 判定「功能已开启」（提示词追加交接规则、叫醒脚本肯干活）要四项都填：标签、机器人账号、
+# 允许叫醒的账号、需求标记。只填了一部分时 daemon 侧的挡工照常生效（只会更保守），
+# 提示词不追加、叫醒脚本拒绝并说明缺哪项。
+LABEL_PENDING_RELAY="${LABEL_PENDING_RELAY:-}"
+RELAY_BOT_ACCOUNT="${RELAY_BOT_ACCOUNT:-}"
+RELAY_ALLOWED_ACTORS="${RELAY_ALLOWED_ACTORS:-}"
+RELAY_ORIGIN_MARKER="${RELAY_ORIGIN_MARKER:-}"
+RELAY_REPORT_FIRST="${RELAY_REPORT_FIRST:-false}"
+
+relay_enabled() {
+    [ -n "$LABEL_PENDING_RELAY" ] && [ -n "$RELAY_BOT_ACCOUNT" ] \
+        && [ -n "$RELAY_ALLOWED_ACTORS" ] && [ -n "$RELAY_ORIGIN_MARKER" ]
+}
+
+# 缺了哪几项（给叫醒脚本和日志说清楚），全齐时输出空
+relay_missing_settings() {
+    local v out=""
+    for v in LABEL_PENDING_RELAY RELAY_BOT_ACCOUNT RELAY_ALLOWED_ACTORS RELAY_ORIGIN_MARKER; do
+        [ -n "${!v:-}" ] || out+=" $v"
+    done
+    printf '%s' "${out# }"
+}
+
+relay_report_first() {
+    case "$(printf '%s' "${RELAY_REPORT_FIRST:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on|是) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 派工翻 doing/agent 时要一并摘掉的额外标签。没配等待标签时为空数组：
+# 展开 "${RELAY_DISPATCH_CLEAR[@]}" 什么都不加，派工的 API 调用和以前逐个相同。
+RELAY_DISPATCH_CLEAR=()
+[ -z "$LABEL_PENDING_RELAY" ] || RELAY_DISPATCH_CLEAR=("$LABEL_PENDING_RELAY")
+
+# 派工成功后翻 doing/agent：摘掉全部触发标签（+ 等待传话标签，见上）。三个 dispatch 脚本
+# 共用这一份，等待标签只在这里加一次，不会有哪条派工路径漏摘。
+# 用法：flip_to_doing <编号> <日志里的描述>
+flip_to_doing() {
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    run_gh "label 翻转 ($2)" \
+        gh_label_flip "$1" \
+        --add "$LABEL_AGENT_DOING" \
+        --remove "${TRIGGER_LABELS_ALL[@]}" ${RELAY_DISPATCH_CLEAR[@]+"${RELAY_DISPATCH_CLEAR[@]}"}
+}
+
+# labels_csv 里挂没挂等待标签（整名匹配，label 名可能含空格 / 正则元字符）
+labels_have_relay() {
+    [ -n "$LABEL_PENDING_RELAY" ] || return 1
+    case ",${1}," in *",$LABEL_PENDING_RELAY,"*) return 0 ;; esac
+    return 1
+}
+
 # ── 交叉 review 关卡（可选）──
 # 设了 LABEL_PENDING_REVIEW 才启用：worker 产出代码后不直接翻 pending/human，
 # 而是翻到这个 label；daemon 看到它用**另一个 agent**（默认 codex）起独立 session
@@ -234,6 +299,7 @@ esac
 #   Done           已结案
 #   pending/PR     issue 的活已经转到 PR 上跟踪，再从 issue 派一次会重复开工
 #   pending/review 有自己的 agent / 模型 / 模板，由上面 review 那趟收，不该被兜底趟抢走
+#   等待传话标签   在等外部传话机器人带回答复（GitHub#95）；有人打了触发标签才由 label 趟按原流程收
 # GREEDY_SKIP_LABELS 是项目自定义的**追加**项（逗号分隔），比如 "blocked,discussion"。
 greedy_skip_label_list() {
     printf '%s\n' \
@@ -241,7 +307,8 @@ greedy_skip_label_list() {
         "$LABEL_AGENT_DOING" \
         "$LABEL_DONE" \
         "$LABEL_PENDING_PR" \
-        "${LABEL_PENDING_REVIEW:-}"
+        "${LABEL_PENDING_REVIEW:-}" \
+        "${LABEL_PENDING_RELAY:-}"
     if [ -n "${GREEDY_SKIP_LABELS:-}" ]; then
         printf '%s\n' "${GREEDY_SKIP_LABELS}" | tr ',' '\n'
     fi
@@ -1161,6 +1228,23 @@ branch_to_issue_num() {
     fi
 }
 
+# PR 正文里写的关联 issue（Closes/Fixes/Resolves/Refs #N）。daemon 里这条规则一直有两种
+# 写法，对「关键词和编号分在两行」的判断不同（main 上就如此，本 PR 不改它们的行为）：
+#   pr_body_linked_issue     grep 逐行找：会话命名（pr_to_issue_num）用它
+#   PR_BODY_LINK_JQ_RE       jq 整段找：活跃 worker 列表（list_active_workers）用它
+# 叫醒传话机器人要从正文找来源时，两种都跑，结果一致才认（notify-relay.sh），这样它认定的
+# 来源永远和会话命名、活跃 worker 列表都对得上；不一致就拒绝、交维护者。
+# 正文从 stdin 读；没有就输出空。
+pr_body_linked_issue() {
+    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
+        | head -1 \
+        | grep -oE '[0-9]+' || true
+}
+PR_BODY_LINK_JQ_RE='(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)'
+pr_body_linked_issue_jq() {
+    jq -Rr --slurp --arg re "$PR_BODY_LINK_JQ_RE" 'try capture($re).n catch ""' 2>/dev/null || true
+}
+
 # 找一个 PR 对应的「工作编号 N」，用作 worktree / tmux / branch 命名标识。
 # fallback 链（任何一步成功就返回）：
 #   1. 分支名匹配 BRANCH_PREFIX → 拿数字（覆盖 daemon 自己派工出来的 PR）
@@ -1179,10 +1263,7 @@ pr_to_issue_num() {
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 2. PR body 关键词
-    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null \
-        | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \
-        | head -1 \
-        | grep -oE '[0-9]+' || true)
+    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null | pr_body_linked_issue)
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 3. fallback：PR 编号本身
@@ -1317,10 +1398,10 @@ list_active_workers() {
                | select(any(.labels[]?; .name == $label)) | .number ] | map(tostring) | join("\n") end') || return 1
     # Include the body fallback in this successful snapshot instead of silently
     # falling back to the PR number when a separate gh pr view request fails.
-    pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" '
+    pr_data=$(printf '%s' "$pr_pages" | jq -er --arg label "$LABEL_AGENT_DOING" --arg re "$PR_BODY_LINK_JQ_RE" '
         if type != "array" or any(.[]; type != "array") then error("invalid PR pages")
         else [ .[][] | select(any(.labels[]; .name == $label)) |
-            [.number, .head.ref, ((.body // "" | try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[[:space:]]+#(?<n>[0-9]+)").n catch "") // "")] | @tsv ] | join("\n") end') || return 1
+            [.number, .head.ref, ((.body // "" | try capture($re).n catch "") // "")] | @tsv ] | join("\n") end') || return 1
 
     local -A handled_issue=()
     local -a items=()
@@ -2799,6 +2880,28 @@ find_prompt_template() {
 #
 # 两者可以并存（项目自己的 .template.md 当 base + .extra.md 追加），但既然都覆写了
 # 通常不需要。stdout 写最终要用的文件路径；没有增量时就是 base 本身。
+# 渲染「外部传话交接规则」段（prompts/relay-handoff.md）。占位符用 @@NAME@@ 而不是 ${NAME}：
+# 这一段由这里渲染完，后面 dispatch 的 sed 只认 ${NAME}，两边不会互相吃掉；值里有
+# `|` `&` 这类 sed 特殊字符也不会坏。替换值加了引号：bash 5.2 起未加引号的 & 表示匹配串。
+relay_handoff_section() {
+    local f="$SKILL_DIR/prompts/relay-handoff.md" text rule cmd
+    [ -s "$f" ] || { log "⚠️ 传话交接规则文件缺失：$f" 2>/dev/null || true; return 0; }
+    text="$(cat "$f")"
+    if relay_report_first; then
+        rule="本项目要求**先经传话汇报**：做完（启用交叉 review 时，在代码复审通过后由 reviewer）先叫醒机器人汇报，提需求方认可当前提交后，再交维护者合并"
+    else
+        rule="本项目**不**要求先经传话汇报：做完照上文交维护者，不叫醒"
+    fi
+    cmd="$RELAY_NOTIFY_CMD"
+    text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
+    text="${text//@@LABEL_PENDING_RELAY@@/"$LABEL_PENDING_RELAY"}"
+    text="${text//@@RELAY_BOT_ACCOUNT@@/"$RELAY_BOT_ACCOUNT"}"
+    text="${text//@@RELAY_ORIGIN_MARKER@@/"$RELAY_ORIGIN_MARKER"}"
+    text="${text//@@RELAY_REPORT_RULE@@/"$rule"}"
+    text="${text//@@RELAY_NOTIFY_CMD@@/"$cmd"}"
+    printf '%s\n' "$text"
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -2812,7 +2915,7 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ]; then echo "$base_tpl"; return; fi
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! relay_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -2830,6 +2933,12 @@ compose_prompt_template() {
         printf '# 本项目的附加要求（覆盖上面与之冲突的部分）\n\n'
         printf '> 上面是通用工作流，这一段是 %s 特有的。两者冲突时**以这一段为准**。\n\n' "${REPO:-本仓库}"
         cat "$overlay"
+        fi
+        # 外部传话交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
+        # 工具自带模板时也收得到；写进工具模板里的话，那种项目就漏了。功能关着什么都不加。
+        if relay_enabled; then
+            printf '\n\n---\n\n'
+            relay_handoff_section
         fi
     } > "$out"
     log "prompt: base=$(basename "$base_tpl") + 增量=$(basename "$overlay")（合成 $(wc -l < "$out") 行）" 2>/dev/null || true
@@ -2863,6 +2972,13 @@ COMMENT_FOOTER_SCRIPT="$_LIB_DIR/drivers/token-usage/comment-footer.sh"
 _MANAGED_FOOTER="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/drivers/token-usage/comment-footer.sh"
 [ ! -f "$_MANAGED_FOOTER" ] || COMMENT_FOOTER_SCRIPT="$_MANAGED_FOOTER"
 COMMENT_FOOTER_CMD="bash '$COMMENT_FOOTER_SCRIPT' --agent '$WORKER_AGENT' --driver '$AGENT_TOKEN_USAGE_SCRIPT' --config '$CONFIG_FILE'"
+
+# ── 叫醒传话机器人的命令（GitHub#95，写进「外部传话交接规则」段）──
+# 同 footer：托管安装走长期入口（发版切换时不失效），配置路径由这里给定，不让 worker 自己找。
+RELAY_NOTIFY_SCRIPT="$_LIB_DIR/notify-relay.sh"
+_MANAGED_RELAY="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/notify-relay.sh"
+[ ! -f "$_MANAGED_RELAY" ] || RELAY_NOTIFY_SCRIPT="$_MANAGED_RELAY"
+RELAY_NOTIFY_CMD="bash '$RELAY_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
 
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空

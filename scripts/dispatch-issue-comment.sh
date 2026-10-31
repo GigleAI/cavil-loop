@@ -77,10 +77,7 @@ EOF
 fi
 
 flip_label() {
-    run_gh "label 翻转 (issue #$ISSUE pending/agent → doing/agent)" \
-        gh_label_flip "$ISSUE" \
-        --add "$LABEL_AGENT_DOING" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" || true
+    flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true
 }
 
 # fable 标签作用于本次实际 worker 进程；已有 session 的 worker/model 不同就不能

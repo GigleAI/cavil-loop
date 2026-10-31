@@ -22,6 +22,7 @@ cp "$REPO_DIR/scripts/skill-deploy.sh" "$SRC/scripts/skill-deploy.sh"
 cp "$REPO_DIR/scripts/poll-entry.sh" "$SRC/scripts/poll-entry.sh"
 cp "$REPO_DIR/scripts/release-entry.sh" "$SRC/scripts/release-entry.sh"
 cp "$REPO_DIR/scripts/_names.sh" "$SRC/scripts/_names.sh"
+cp "$REPO_DIR/scripts/notify-relay.sh" "$SRC/scripts/notify-relay.sh"
 cat > "$SRC/scripts/agent-poll.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -65,6 +66,9 @@ V1=$(git -C "$SRC" rev-parse HEAD)
 [ "$(readlink -f "$CAVIL_SKILL_LINK")" = "$CAVIL_DEPLOY_ROOT/releases/$V1" ] || fail bootstrap
 [ -f "$CAVIL_DEPLOY_ROOT/releases/$V1/.inuse" ] || fail lease-file
 [ -f "$CAVIL_DEPLOY_ROOT/entrypoints/poll-entry.sh" ] || fail durable-entrypoint
+# worker 叫醒传话机器人用的长期入口（GitHub#95）：真的转进发布目录里的脚本
+relay_out=$(bash "$CAVIL_DEPLOY_ROOT/entrypoints/notify-relay.sh" --help 2>&1) && fail relay-entrypoint-exit
+case "$relay_out" in *"用法: notify-relay.sh"*) ;; *) fail "relay-entrypoint: $relay_out" ;; esac
 pass bootstrap
 
 echo '▶ a running consumer stays on v1 while the stable link moves to v2'

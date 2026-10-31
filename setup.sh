@@ -493,6 +493,9 @@ label_defs=(
 # 交叉 review 关卡默认关闭；配置里设了 LABEL_PENDING_REVIEW 才建它，没开就不多塞一个 label。
 review_label="$(config_value LABEL_PENDING_REVIEW)"
 [ -n "$review_label" ] && label_defs+=("$review_label|1d76db|等待独立 Codex 复审")
+# 外部传话机器人交接（GitHub#95）默认关闭；配了等待标签才建它。
+relay_label="$(config_value LABEL_PENDING_RELAY)"
+[ -n "$relay_label" ] && label_defs+=("$relay_label|f9a8d4|等待传话机器人带回提需求方的答复")
 for ld in "${label_defs[@]}"; do
     IFS='|' read -r name color desc <<< "$ld"
     if gh label create "$name" --color "$color" --description "$desc" --repo "$repo" 2>/dev/null; then

@@ -117,18 +117,27 @@ remember_trigger_label() {
 # 原触发模型的 pending label 并记录警告，让下一轮自动 fallback resume。
 # 两趟都从本轮快照里筛，不再各发一次 gh list（快照还没拉过的话这里触发第一次拉取）。
 # 失败仍然降级成空串：读不到就本轮不 self-heal，和原来一样，绝不瞎翻 label。
-zombie_pr_data=$(snapshot_rows pr "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1,2 || true)
-zombie_issue_nums=$(snapshot_rows issue "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1 || true)
+# 第 4 列（labels_csv）一并带上：挂着等待传话标签（GitHub#95）的不翻回触发标签。
+zombie_pr_data=$(snapshot_rows pr "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1,2,4 || true)
+zombie_issue_nums=$(snapshot_rows issue "$LABEL_AGENT_DOING" 2>/dev/null | cut -f1,4 || true)
 
 self_heal_one() {
     local kind="$1"   # "PR" / "issue"
     local n="$2"      # 真编号（PR 编号 or issue 编号）
     local issue_n="$3"   # 用来推 session name（PR 走 pr_to_issue_num 链；issue 自己）
+    local labels_csv="${4:-}"
     local sess
     sess="$(tmux_session_name "$issue_n")"
     if session_alive "$sess"; then
         selfheal_reset "$issue_n"   # 活着 → 清连续失败计数
         return 0                    # session 真活着，不是 zombie
+    fi
+    # 等待传话中（叫醒脚本摘 doing/agent 没摘成，或人手动挂上）：翻回触发标签会立刻
+    # 按「有人又打了触发标签」重新派工并摘掉等待标签，等于 daemon 自己替人说了「接着干」。
+    # 不动它：等机器人带回答复 / 人来处理。
+    if labels_have_relay "$labels_csv"; then
+        SELFHEAL_RELAY+=" ${kind}#${n}"
+        return 0
     fi
     # 多机分工：session 不存在**不等于**worker 死了 —— 也可能是另一台机器正在跑它。
     # 两边 session 命名规则相同，本机 has-session 查不到是必然的，不能据此判僵尸。
@@ -173,21 +182,25 @@ self_heal_one() {
 # 本轮因「不是本机的活」而跳过的条目，攒起来最后一行汇总 —— 每条每轮各打一行的话，
 # 对面满载时这里每 30 秒就刷 4-5 行噪音，把真正的 self-heal 淹掉。
 SELFHEAL_FOREIGN=""
+SELFHEAL_RELAY=""
 
 if [ -n "$zombie_pr_data" ]; then
-    while IFS=$'\t' read -r pr branch; do
+    while IFS=$'\t' read -r pr branch zlabels; do
         n=$(pr_to_issue_num "$pr" "$branch")
-        self_heal_one "PR" "$pr" "$n"
+        self_heal_one "PR" "$pr" "$n" "$zlabels"
     done <<< "$zombie_pr_data"
 fi
 if [ -n "$zombie_issue_nums" ]; then
-    while read -r issue_n; do
+    while IFS=$'\t' read -r issue_n zlabels; do
         [ -z "$issue_n" ] && continue
         # 跳过被 PR 关联过的（上面 PR pass 已处理同 session_name）
         # 简单做法：让 self_heal_one 内部用 has-session 兜底——已 self-heal 过的 session
         # 不存在但 label 已翻、issue 没在 zombie_issue_nums 里出现，这里只处理纯 issue 的
-        self_heal_one "issue" "$issue_n" "$issue_n"
+        self_heal_one "issue" "$issue_n" "$issue_n" "$zlabels"
     done <<< "$zombie_issue_nums"
+fi
+if [ -n "$SELFHEAL_RELAY" ]; then
+    log "self-heal 跳过（挂着等待传话标签 $LABEL_PENDING_RELAY，等机器人带回答复）:$SELFHEAL_RELAY"
 fi
 if [ -n "$SELFHEAL_FOREIGN" ]; then
     log "self-heal 跳过（不是本机 $SELFHEAL_HOST_ID 派的，括号里是记录的归属）:$SELFHEAL_FOREIGN"
@@ -327,6 +340,11 @@ collect_queue_rows() {
                     REVIEW_CAPPED+=" ${kind}#${num}"
                     continue ;;
             esac
+        fi
+        # 等待传话期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
+        # doing/agent 时一并摘掉等待标签（dispatch-*.sh 的 RELAY_DISPATCH_CLEAR）。
+        if labels_have_relay "$labels_csv"; then
+            log "${kind} #${num} 挂着等待传话标签 $LABEL_PENDING_RELAY，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
         fi
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
