@@ -78,8 +78,8 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
    - 用 `gh issue comment ${ISSUE} --repo ${REPO} --body "..."` 发
 
 3. **翻 label**：
-   - `flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`
-   - daemon 在你 dispatch 时已经把 issue 翻成 `${LABEL_AGENT_DOING}`；现在你完工 → 翻回 `${LABEL_PENDING_HUMAN}` 等用户
+   - `flip_label ${ISSUE} --add ${LABEL_DESIGN_REVIEW_OR_HUMAN} --remove ${LABEL_AGENT_DOING}`
+   - daemon 在你 dispatch 时已经把 issue 翻成 `${LABEL_AGENT_DOING}`；现在你完工 → 翻回 `${LABEL_DESIGN_REVIEW_OR_HUMAN}` 等用户${DESIGN_REVIEW_NOTE}
 
 4. **停 idle**。一句话回复：`已发设计方案到 issue #${ISSUE}，等待确认`
 

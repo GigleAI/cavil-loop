@@ -10,8 +10,6 @@
 
 Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be human." That is the idea here: the agent does not need to pretend to be human, yet working with it feels like working with a real colleague — you hand it issues, it comes back with design proposals and PRs, and you review them.
 
-> The project was renamed from `coding-agent-work-loop`. New installations use `cavil-loop` for every path, scheduler name and the skill command; installations made before the rename keep running on their old names and are migrated to the new ones automatically once idle. See [operations → installations from before the rename](docs/operations.md#installations-from-before-the-rename).
-
 ## What it is
 
 ![create issues and review PRs from AI agent in github](./docs/github_project.png)
@@ -92,7 +90,7 @@ A **background poller** on your machine looks at GitHub every 60 seconds. When i
 
 ![One issue, once around cavil-loop: the red box walks through the nine steps, the notes underneath explain the current one](docs/images/issue-lifecycle.en.svg)
 
-<sub>No animation in your viewer? See the [static version](docs/images/issue-lifecycle.en.static.svg) with every step's notes. Step 5 (design proposal) always happens; step 6 (independent review) only when the project turns on the review gate — without it the proposal comes straight to you.</sub>
+<sub>No animation in your viewer? See the [static version](docs/images/issue-lifecycle.en.static.svg) with every step's notes. Step 5 (design proposal) always happens; step 6 (independent review) only when the project turns on design review — without it the proposal comes straight to you.</sub>
 
 Two trigger scenarios:
 
@@ -109,6 +107,8 @@ Two trigger scenarios:
 | **Who goes first** | When slots are full, the queue sorts by priority → stage → waiting time. Priority can come from `priority/p*` labels or straight from **GitHub's own Priority field** (`PRIORITY_SOURCE=project`) — reorder the options on the board and the tiers follow | [operations](docs/operations.md) |
 | **The prompt the AI reads** | The generic workflow ships with the skill; a project only writes its own delta (`<name>.extra.md`), appended after it. No need to fork the whole template — forking means never receiving upstream updates again | [operations](docs/operations.md) |
 | **Which AI CLI runs** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`, or write your own driver | [drivers](docs/drivers.md) |
+| **Orchestration: another AI checks before you do** | Set `LABEL_PENDING_REVIEW` to turn on the review gate: every PR round with code changes goes to another AI (codex by default) first; a fail bounces back to the coding AI with concrete feedback, at most `REVIEW_MAX_ROUNDS` rounds (default 3), and only a pass reaches you. If the two AIs cannot agree it stops and waits for you. Add `REVIEW_DESIGN_PROPOSALS=true` and design proposals are reviewed before they reach you too. Multi-role relays (PM → dev → QA) are wired up with labels as well | [operations](docs/operations.md#optional-cross-review-gate-off-by-default) · [collaboration](docs/collaboration.md) |
+| **Hook up an external requester bot (e.g. grokbot)** | Let another AI assistant file issues directly: when there is a question for it or the work is done, the item gets a waiting label and its webhook is called; it also hears when the PR is merged or closed. Off by default | [integration guide](docs/requester-bot.md) |
 
 ## What it **doesn't** do
 
@@ -200,6 +200,7 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 |-----|-------|
 | [docs/architecture.md](docs/architecture.md) | Five-state label machine, PR↔Issue closure (one PR, or split into sub-issues), why the design works this way |
 | [docs/collaboration.md](docs/collaboration.md) | Multi-human + multi-agent workflows: PM → Dev → QA handoff via label suffixes (`pending/agent/PM`, `pending/human/Alex`, …) |
+| [docs/requester-bot.md](docs/requester-bot.md) | Hooking up an external requester bot (grokbot as the example): integration steps, what the bot does on its side, troubleshooting |
 | [docs/persistence.md](docs/persistence.md) | Where design proposals / discussions / code / Claude conversations / tmux history live, how to look them up later, how to resume from a break point |
 | [docs/security.md](docs/security.md) | **Public-repo users must read.** Anonymous comments can contain prompt injection; how the defenses work |
 | [docs/operations.md](docs/operations.md) | Full config, dispatch modes and queue order, prompt templates (base + project delta), multi-project, upgrades, macOS launchd, webhook trigger, swapping AI worker, troubleshooting |

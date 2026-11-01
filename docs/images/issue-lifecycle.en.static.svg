@@ -116,12 +116,12 @@
 <g class="cap" transform="translate(72 982)">
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">5  Design proposal  ·  label now: pending/review</text>
 <text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">The worker reads the code and posts a plan with the choices for you. No code yet; every project has this step.</text>
-<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">With a review gate it flips to pending/review for review; without one, straight to pending/human and step 7.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">With design review on it flips to pending/review for review; otherwise straight to pending/human and step 7.</text>
 </g>
 <g class="cap" transform="translate(72 1102)">
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">6  codex review  ·  label now: pending/human</text>
 <text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Another model (codex by default, configurable) reviews the plan; a fail bounces it back to 5, at most 3 rounds.</text>
-<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Only a pass (or the last round) flips it to pending/human for you. Optional: no review gate, no step 6.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Only a pass (or the last round) flips it to pending/human for you. Optional: only with design review on.</text>
 </g>
 <g class="cap" transform="translate(72 1222)">
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">7  You decide  ·  label now: pending/agent</text>

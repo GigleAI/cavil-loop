@@ -254,6 +254,23 @@ REVIEW_MAX_ROUNDS="${REVIEW_MAX_ROUNDS:-3}"
 # `flip_label N --add "" --remove doing/agent` → 活丢了 doing/agent 又没拿到任何 pending
 # 标签，从看板上彻底消失；self-heal 只扫 doing/agent，也捞不回来。
 LABEL_REVIEW_OR_HUMAN="${LABEL_PENDING_REVIEW:-$LABEL_PENDING_HUMAN}"
+# 设计方案要不要也先过复审（GitHub#102）。默认关：写完方案直接交人，和从前逐字一样。
+# 只决定「写完方案 / 修订方案翻哪个标签」这一个出口；澄清答复、提问、受阻仍直接交人。
+# 开着但没配 LABEL_PENDING_REVIEW 时照样交人——不能翻进一个不存在的标签。
+#
+# 项目自己在 <name>.extra.md 里写「方案翻 ${LABEL_REVIEW_OR_HUMAN}」的老做法不受影响：
+# LABEL_REVIEW_OR_HUMAN 的取值和这个开关无关，追加段又排在通用模板后面、冲突时以它为准。
+REVIEW_DESIGN_PROPOSALS="${REVIEW_DESIGN_PROPOSALS:-false}"
+LABEL_DESIGN_REVIEW_OR_HUMAN="$LABEL_PENDING_HUMAN"
+DESIGN_REVIEW_NOTE=""
+case "$(printf '%s' "$REVIEW_DESIGN_PROPOSALS" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on)
+        if [ -n "$LABEL_PENDING_REVIEW" ]; then
+            LABEL_DESIGN_REVIEW_OR_HUMAN="$LABEL_PENDING_REVIEW"
+            # 渲染进模板时走 sed 替换：这段文字里不能出现 | & \ 和换行
+            DESIGN_REVIEW_NOTE="（本项目开了方案复审：独立复审者先审这份方案，通过后才交到人手上；不通过会带意见打回，那时是改方案，不是去实现）"
+        fi ;;
+esac
 # agent-poll 给 child dispatch 传这个变量，令同一套 prompt / label flip 逻辑
 # 针对实际触发标签工作；daemon 自己不传时仍使用普通 pending/agent。
 LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAULT}"

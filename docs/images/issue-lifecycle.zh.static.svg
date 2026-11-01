@@ -114,12 +114,12 @@
 <g class="cap" transform="translate(72 982)">
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑤ 先发设计方案　·　此时标签：pending/review</text>
 <text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">worker 先读代码，把方案发到 issue 评论里，列出要你拍板的选项。这一步不写代码，每个项目都有。</text>
-<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">开了复审关卡就翻 pending/review 交给复审；没开就直接翻 pending/human，跳到 ⑦。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">开了方案复审就翻 pending/review 交给复审；没开就直接翻 pending/human，跳到 ⑦。</text>
 </g>
 <g class="cap" transform="translate(72 1102)">
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑥ codex 复审　·　此时标签：pending/human</text>
 <text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">另一个模型（默认 codex，可配置）独立审方案：不通过就打回，worker 回到 ⑤ 重写，最多 3 轮。</text>
-<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">通过了（或轮数用完）才翻 pending/human，方案这才到你面前。这一步可选，项目没开复审关卡就没有。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">通过了（或轮数用完）才翻 pending/human，方案这才到你面前。这一步可选，项目开了方案复审才有。</text>
 </g>
 <g class="cap" transform="translate(72 1222)">
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑦ 你拍板　·　此时标签：pending/agent</text>

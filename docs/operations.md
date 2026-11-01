@@ -394,6 +394,17 @@ Design notes:
 
 - The reviewer starts from a **fresh context** and reviews the artifact, not the
   implementer's narrative — that is the whole point of a second pair of eyes
+- **Whether design proposals go through the gate too is a separate switch, `REVIEW_DESIGN_PROPOSALS`
+  (default `false`, GitHub#102).** Off, only code goes to review and a design proposal (or a revised
+  one) flips straight to `pending/human`; set to `true` with `LABEL_PENDING_REVIEW` configured, a
+  proposal flips to the review label and reaches you only after review. The switch alone, without a
+  review label, still hands to you. Clarifying answers and questions are unaffected. Projects that
+  already route proposals to review from their own `new-issue.extra.md` / `issue-comment.extra.md`
+  ("flip `${LABEL_REVIEW_OR_HUMAN}`") keep working with the switch on or off: the extra rules come
+  after the generic template and win on conflict, and `${LABEL_REVIEW_OR_HUMAN}` does not depend on
+  the switch. To move from that to the switch: merge and deploy the new version, turn the switch on
+  on every machine running the project, and only then delete that line from the extra rules — in the
+  other order, proposals go straight to you for a while
 - **Two kinds of output are gated — code and design proposals — each with its own checklist.**
   Reviewing a design means checking whether the stated root cause holds, whether the design
   actually addresses it, and whether the acceptance criteria are verifiable; having no code
@@ -448,7 +459,7 @@ Operationally:
 - There is no waiting timeout. If the bot never answers, nothing shows up in `poll.log`; watch the board for items stuck on the waiting label
 - The wake-up script runs through the durable entry `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh` (survives release switches; the early `notify-relay.sh` entry forwards to it) and logs one `notify-requester-bot #<number>: …` line to `poll.log` per run, followed by one webhook result line when configured (`已通知 webhook（HTTP 200）` / `webhook 通知失败（…）` / `… 跳过`) — never the URL or key
 - Merge / close notices: pending ones sit in `state.json` under `requester_bot_done_queue`; each one logs `✅ 已把 PR #N 的结果…` when sent, or a ⚠️ line after 30 failed ticks. They run inside the post-merge cleanup pass, so `AUTO_CLEANUP_ON_MERGE=false` turns them off too
-- Full guide, exit codes, evidence rules and a worked example: [collaboration.md → External requester bot](collaboration.md#external-requester-bot)
+- Full guide, exit codes, evidence rules and a worked example: [Hooking up an external requester bot](requester-bot.md)
 
 ## Comment usage footer
 
@@ -523,6 +534,8 @@ Available placeholders (`sed`-rendered):
 | `${BRANCH}` | full branch name |
 | `${ISSUE_N}` | issue number derived from branch (pr-comment only) |
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label names |
+| `${LABEL_DESIGN_REVIEW_OR_HUMAN}` | **where a design proposal / revised proposal goes**: `pending/review` with design review on (`REVIEW_DESIGN_PROPOSALS=true` and a review label configured), otherwise `pending/human`. Only for the proposal exits; clarifying answers and questions keep `${LABEL_PENDING_HUMAN}` |
+| `${DESIGN_REVIEW_NOTE}` | With design review on, a one-line note ("the reviewer checks the proposal first; a bounce means revise it"); otherwise empty, so the rendered prompt is byte-for-byte what it was |
 | `${LABEL_REVIEW_OR_HUMAN}` | **where output goes next**: `pending/review` when the gate is on, automatically degrading to `pending/human` when it is off. Always use this in templates rather than `${LABEL_PENDING_REVIEW}` — the latter renders empty when unconfigured, so the work loses `doing/agent` without gaining any pending label and vanishes from the board |
 | `${PREVIEW_URL_HOST}` | the host serving this machine's PR previews. Use it instead of hard-coding a hostname — the same template runs on every machine that polls the repo, and a baked-in host sends reviewers to a box that has none of the files |
 | `${REVIEW_ASSET_BASE_URL}` | public base URL for review screenshots (funnel path), from `WEEKLY_REPORT_ASSET_ROOT_URL`. Same reasoning: shots are written to the machine that took them, so the URL has to name that machine |

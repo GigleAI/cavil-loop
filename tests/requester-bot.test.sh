@@ -205,9 +205,17 @@ project_prompts() {   # 模拟项目：一份整份替换的模板 + 一份追�
 W="$SANDBOX/off-compose"; new_env "$W" off label; project_prompts "$W"
 chk "对拍前提：两份副本读的是各自的 prompts/（不是同一套安装）" \
     "$(env CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; printf %s "$SKILL_DIR"' _ "$NEW")" "$NEW"
+# 改动前的拼装代码（merge-base 的 scripts/）配本版的 prompts/：守的是「功能关闭时拼装不往模板里加东西」。
+# 不拿 merge-base 的 prompts/ 来比——那样后来任何一个改模板文字的 PR（GitHub#102 起）都会在这里
+# 变红，而它们和外部需求机器人无关。
+OLD_P="$SANDBOX/old-scripts-new-prompts"; make_copy "$SANDBOX/old-src" "$OLD_P"
+rm -rf "$OLD_P/prompts"; cp -r "$REPO_DIR/prompts" "$OLD_P/prompts"
 for kind in new-issue issue-comment pr-comment review; do
-    chk "关闭 · 提示词 $kind 和改动前逐字节一致" \
-        "$(cmp -s <(compose_out "$OLD" "$W" $kind) <(compose_out "$NEW" "$W" $kind) && echo same || echo diff)" same
+    # 先后拼、各存一份再比（两边共用一个状态目录，拼装结果写在同一个固定文件里，不能同时拼）
+    compose_out "$OLD_P" "$W" $kind > "$SANDBOX/off-old-$kind.md"
+    compose_out "$NEW" "$W" $kind > "$SANDBOX/off-new-$kind.md"
+    chk "关闭 · 提示词 $kind 和改动前的拼装逐字节一致" \
+        "$(cmp -s "$SANDBOX/off-old-$kind.md" "$SANDBOX/off-new-$kind.md" && [ -s "$SANDBOX/off-new-$kind.md" ] && echo same || echo diff)" same
 done
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1221,9 +1229,13 @@ names_suite() {   # <scripts 副本>
     # 旧名字和新名字拼出来的提示词逐字节相同（包括「先汇报」那一项）
     new_env "$W2" on label 'REQUESTER_BOT_REPORT_FIRST="true"'
     sed -i "s|$W2|$RW|g" "$W2/cavil-loop.config"
+    # 两边先后拼、各存一份再比：两份配置共用同一个状态目录，拼装结果写在同一个固定文件里，
+    # 用两个进程替换同时拼会互相覆盖，偶尔读到写了一半的文件
     for kind in new-issue review; do
+        compose_out "$S" "$RW" $kind > "$SANDBOX/names-old-$kind.md"
+        env CODING_AGENT_CONFIG="$W2/cavil-loop.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; cat "$(compose_prompt_template "$2")"' _ "$S" $kind > "$SANDBOX/names-new-$kind.md"
         chk "旧名字 · 提示词 $kind 与新名字的逐字节相同" \
-            "$(cmp -s <(compose_out "$S" "$RW" $kind) <(env CODING_AGENT_CONFIG="$W2/cavil-loop.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; cat "$(compose_prompt_template "$2")"' _ "$S" $kind) && echo same || echo diff)" same
+            "$(cmp -s "$SANDBOX/names-old-$kind.md" "$SANDBOX/names-new-$kind.md" && echo same || echo diff)" same
     done
     chk "旧名字 · 提示词里确实有交接规则（对拍不是两边都空）" "$(compose_out "$S" "$RW" new-issue | grep -cxF "$HEAD_LINE")" 1
     # 新旧都填且不同：用新的，并提示
@@ -1336,8 +1348,11 @@ echo "── 5. 代码和配置模板里不出现具体机器人名 ──"
 # 文档的接入示例一节可以点名（issue 讨论定的），代码、提示词、配置模板、测试夹具都不行
 chk "scripts/ prompts/ 配置模板 setup.sh 里没有 grokbot" \
     "$(grep -rli grokbot "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$REPO_DIR/cavil-loop.config.example" "$REPO_DIR/setup.sh" 2>/dev/null | wc -l | tr -d ' ')" 0
-chk "文档里只有「外部需求机器人」那一节点名" \
-    "$(grep -rli grokbot "$REPO_DIR/docs" "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" "$REPO_DIR/AGENTS.md" "$REPO_DIR/AGENTS.zh.md" 2>/dev/null | sed "s|$REPO_DIR/||" | sort | paste -sd,)" "docs/collaboration.md,docs/collaboration.zh.md"
+# GitHub#102：首页「可以调的地方」那一行和单独的对接文档以 grokbot 为例，其余文档不点名
+chk "文档里只有首页那一行和对接文档点名" \
+    "$(grep -rli grokbot "$REPO_DIR/docs" "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" "$REPO_DIR/AGENTS.md" "$REPO_DIR/AGENTS.zh.md" 2>/dev/null | sed "s|$REPO_DIR/||" | LC_ALL=C sort | paste -sd,)" "README.md,README.zh.md,docs/requester-bot.md,docs/requester-bot.zh.md"
+chk "首页只在「可以调的地方」和「深入阅读」各一行点名" \
+    "$(cat "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" | grep -ci grokbot)" 4
 
 
 echo "── 6. 说法：不再把这个功能叫「传话」（GitHub#97） ──"
@@ -1346,6 +1361,25 @@ chk "仓库里（复盘记录除外）不再出现「传话」" \
     "$(grep -rl '传话' "$REPO_DIR" --exclude-dir=.git --exclude-dir=retrospectives --exclude=requester-bot.test.sh 2>/dev/null | sed "s|$REPO_DIR/||" | paste -sd,)" ""
 chk "英文文档里不再叫它 relay bot" \
     "$(grep -rli 'relay bot' "$REPO_DIR" --exclude-dir=.git --exclude-dir=retrospectives --exclude=requester-bot.test.sh 2>/dev/null | sed "s|$REPO_DIR/||" | paste -sd,)" ""
+# 对接文档（GitHub#102）里的页内链接、以及别处指向对接文档的链接，锚点都必须真有对应标题
+anchor_of() { python3 -c '
+import re,sys
+for l in open(sys.argv[1]):
+    m=re.match(r"#+ (.*)",l)
+    if m:
+        t=m.group(1).strip().lower()
+        t=re.sub(r"[^\w\- ]","",t)   # GitHub：去标点，保留字母数字（含中文）、空格、-
+        print(t.replace(" ","-"))' "$1"; }
+chk "指向对接文档的链接锚点都对得上" \
+    "$(for f in requester-bot.md requester-bot.zh.md; do
+         anchors=$(anchor_of "$REPO_DIR/docs/$f")
+         { grep -hoE "\]\(#[^)]*\)" "$REPO_DIR/docs/$f" | sed 's/^](#//; s/)$//'
+           grep -rhoE "$f#[^)]*" "$REPO_DIR"/docs "$REPO_DIR"/*.md "$REPO_DIR/cavil-loop.config.example" | sed "s|^$f#||"; } \
+           | sort -u | while IFS= read -r a; do grep -qxF "$a" <<<"$anchors" || echo "$f#$a"; done
+       done | paste -sd,)" ""
+chk "指向对接文档的链接文件都在" \
+    "$(grep -rhoE '(docs/)?requester-bot(\.zh)?\.md' "$REPO_DIR"/docs "$REPO_DIR"/*.md "$REPO_DIR/cavil-loop.config.example" | sed 's|^docs/||' | sort -u \
+        | while read -r f; do [ -f "$REPO_DIR/docs/$f" ] || echo "$f"; done | paste -sd,)" ""
 # 改了章节标题，指过去的链接都要跟着改：文档里每个指向本节的锚点都必须真有这一节
 chk "文档里指向外部需求机器人一节的链接都对得上" \
     "$(grep -rhoE 'collaboration(\.zh)?\.md#[^)]*' "$REPO_DIR"/docs "$REPO_DIR"/*.md "$REPO_DIR/cavil-loop.config.example" 2>/dev/null | sort -u \
