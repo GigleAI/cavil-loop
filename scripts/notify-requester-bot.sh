@@ -67,21 +67,47 @@ has_label() {   # <labels(\x1f)> <label>
 }
 show_labels() { printf '%s' "$1" | tr '\037' ',' | sed 's/,/, /g'; }
 
-# 有没有维护者手打过 pending/human：打它的人既不在允许叫醒名单里，也不是机器人账号。
-# 输出那个人的登录名；读不到事件 → return 2（调用方当「不知道」处理，拒绝）
+# 「维护者」= 既不在允许叫醒名单里、也不是机器人账号的人。账号读不出（已注销等）不算数，
+# 由调用方决定往哪边偏。打标签和解除用的是同一个判定。
+is_maintainer() {   # <login>
+    [ -n "$1" ] && [ "$1" != "?" ] || return 1
+    requester_bot_actor_allowed "$1" && return 1
+    [ "$(lc "$1")" = "$(lc "$REQUESTER_BOT_ACCOUNT")" ] && return 1
+    return 0
+}
+
+# 维护者的暂停现在是否还有效（GitHub#106）：按事件编号从小到大读 labeled / unlabeled，
+#   · 维护者手打 pending/human（账号读不出也保守地算）→ 进入暂停，记下是谁
+#   · 暂停中出现**维护者**摘掉 pending/human，或打上任一触发标签（pending/agent 及其变体、
+#     pending/review）→ 暂停解除。机器人 / worker / 读不出的账号摘标签都不算解除
+# 再次暂停就重新进入，所以结论只取决于最后一次暂停之后发生了什么。
+# 输出仍在暂停中的那次是谁打的；读不到事件、或事件缺编号 → return 2（调用方当「不知道」，拒绝）。
+# 排序在拿全所有页之后做：--paginate 下 --jq 是逐页执行的，页内排序管不到跨页。
 maintainer_took_over() {
-    local n="$1" actors a
-    actors=$(gh api --paginate "repos/$REPO/issues/$n/events" \
-        --jq ".[] | select(.event == \"labeled\" and .label.name == \"$LABEL_PENDING_HUMAN\") | (.actor.login // \"?\")") || return 2
-    while IFS= read -r a; do
-        [ -n "$a" ] || continue
-        # 打标签的账号读不出来（已注销等）→ 当作不是我们的人，保守算维护者接手
-        [ "$a" != "?" ] || { printf '(账号未知)'; return 0; }
-        requester_bot_actor_allowed "$a" && continue
-        [ "$(lc "$a")" = "$(lc "$REQUESTER_BOT_ACCOUNT")" ] && continue
-        printf '%s' "$a"; return 0
-    done <<< "$actors"
-    return 1
+    local n="$1" rows id ev label actor paused="" L resume
+    rows=$(gh api --paginate "repos/$REPO/issues/$n/events" \
+        --jq '.[] | select(.event == "labeled" or .event == "unlabeled")
+              | [(.id // "" | tostring), .event, (.label.name // ""), (.actor.login // "?")] | @tsv') || return 2
+    rows=$(printf '%s\n' "$rows" | awk -F'\t' 'NF' ) || return 2
+    [ -z "$rows" ] && return 1
+    # 没有编号就排不了序：不猜，当「不知道」
+    printf '%s\n' "$rows" | awk -F'\t' '$1 !~ /^[0-9]+$/ { bad=1 } END { exit bad }' || return 2
+    while IFS=$'\t' read -r id ev label actor; do
+        if [ "$ev" = labeled ] && [ "$label" = "$LABEL_PENDING_HUMAN" ]; then
+            if [ "$actor" = "?" ]; then paused="(账号未知)"
+            elif is_maintainer "$actor"; then paused="$actor"; fi
+            continue
+        fi
+        [ -n "$paused" ] && is_maintainer "$actor" || continue
+        resume=""
+        if [ "$ev" = unlabeled ] && [ "$label" = "$LABEL_PENDING_HUMAN" ]; then resume=1
+        elif [ "$ev" = labeled ]; then
+            for L in "${TRIGGER_LABELS_ALL[@]}"; do [ "$label" = "$L" ] && resume=1; done
+        fi
+        [ -z "$resume" ] || paused=""
+    done < <(printf '%s\n' "$rows" | sort -t$'\t' -k1,1n)
+    [ -n "$paused" ] || return 1
+    printf '%s' "$paused"; return 0
 }
 
 # ── 前置检查：任一条不过就拒绝，不发写请求 ──
@@ -104,7 +130,7 @@ has_label "$CUR_LABELS" "$LABEL_PENDING_HUMAN" \
 for n in $(printf '%s\n%s\n' "$NUM" "$ORIGIN" | awk '!seen[$0]++'); do
     rc=0; who=$(maintainer_took_over "$n") || rc=$?
     case "$rc" in
-        0) reject "#$n 曾由维护者 $who 手动标过 $LABEL_PENDING_HUMAN，之后只交维护者" ;;
+        0) reject "#$n 由维护者 $who 手动标过 $LABEL_PENDING_HUMAN、之后没有维护者解除（摘掉它或重新打触发标签），只交维护者" ;;
         2) reject "读不到 #$n 的标签历史，无法确认维护者是否接手过" ;;
     esac
 done

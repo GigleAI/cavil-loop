@@ -139,7 +139,7 @@ With `REQUESTER_BOT_REPORT_FIRST="false"` steps 6 and 7 do not happen: finished 
 | You see | Cause / fix |
 |---|---|
 | The item has `pending/human` and a "wake-up failed, handed to the maintainer" comment | Read the script output quoted in it; common cause: the worker account cannot edit labels |
-| The proposal went straight to the maintainer and grokbot was not woken | A wake-up pre-check refused: the issue author is not `REQUESTER_BOT_ACCOUNT`, the body lacks the marker, the item carries `pending/human`, or a maintainer added `pending/human` by hand (from then on only the maintainer gets handoffs) |
+| The proposal went straight to the maintainer and grokbot was not woken | A wake-up pre-check refused: the issue author is not `REQUESTER_BOT_ACCOUNT`, the body lacks the marker, the item carries `pending/human`, or a maintainer added `pending/human` by hand and has not lifted it since (to resume: the maintainer removes it and re-adds `pending/agent`) |
 | `webhook 通知失败（…）` in `poll.log` | The label is still in place and grokbot sees it on its next periodic scan; check grokbot's side per the reason in brackets (HTTP status / timeout / connection failed) |
 | `webhook 配置不完整，跳过` | Header name or key empty, header name has characters other than letters / digits / `-`, or a newline in the URL / key |
 | `配置文件权限过宽（应为 600），webhook 跳过` | Do step 3 |
@@ -198,7 +198,7 @@ Pre-checks first — if any fails it refuses without sending a single write:
 - the current GitHub account is in the allowed list
 - the item was filed by the bot (author + marker, see above)
 - the item does not carry `pending/human` (including the review-cap `pending/review` + `pending/human` pair)
-- no maintainer ever added `pending/human` by hand. "Maintainer" = an account that is neither in the allowed list nor the bot. Once a maintainer has taken over, every later handoff goes to the maintainer
+- no hand-added `pending/human` by a maintainer is still in effect. "Maintainer" = an account that is neither in the allowed list nor the bot. Events are sorted by id and only what follows the maintainer's latest hand-added `pending/human` counts: if a maintainer later removes it or adds a dispatch label (`pending/agent` and its variants, `pending/review`), the pause is lifted; a removal by the bot / worker account, or by an account that can no longer be read, does not count. Unreadable label history, or events without an id → refuse (GitHub#106)
 
 Then it wakes the bot, the same way for issues and PRs: **wake-up = waiting label + one call to the bot's webhook**. It used to re-assign the bot and, on a PR, request its review, but on the first project that adopted this the bot never received those events and relied entirely on its own periodic scan (about every 15 minutes by day, 30 at night). Since GitHub#100 the webhook replaces them: no assignment, no review request.
 

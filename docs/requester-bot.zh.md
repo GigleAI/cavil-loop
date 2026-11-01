@@ -139,7 +139,7 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 | 看到什么 | 原因 / 怎么办 |
 |---|---|
 | 条目挂 `pending/human`，有一条「叫醒失败，已交维护者」评论 | 按评论里贴的脚本输出排查；常见是 worker 账号没有改标签的权限 |
-| 方案直接交到了维护者手上，没叫醒 grokbot | 叫醒脚本前置检查拒绝了：issue 作者不是 `REQUESTER_BOT_ACCOUNT`、正文没有标记、条目上挂着 `pending/human`，或维护者手打过 `pending/human`（之后只交维护者） |
+| 方案直接交到了维护者手上，没叫醒 grokbot | 叫醒脚本前置检查拒绝了：issue 作者不是 `REQUESTER_BOT_ACCOUNT`、正文没有标记、条目上挂着 `pending/human`，或维护者手打过 `pending/human` 且之后没有解除（要恢复：维护者自己摘掉它、重新打 `pending/agent`） |
 | `poll.log` 有 `webhook 通知失败（…）` | 标签照样挂上了，grokbot 下一次定时扫描会看到；按括号里的原因（HTTP 状态 / 超时 / 连接失败）查 grokbot 那边 |
 | `webhook 配置不完整，跳过` | 请求头名或密钥为空，或请求头名有字母、数字、`-` 以外的字符，或地址 / 密钥里有换行 |
 | `配置文件权限过宽（应为 600），webhook 跳过` | 做第 3 步 |
@@ -198,7 +198,7 @@ bash ~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh --config 
 - 当前 GitHub 账号在允许叫醒的名单里
 - 是机器人提的需求（作者 + 标记，见上表）
 - 条目上没挂 `pending/human`（包括复审轮次用尽的 `pending/review` + `pending/human` 双标签）
-- 标签历史里没有维护者手打过 `pending/human`。「维护者」= 打标签的账号既不在允许名单里，也不是机器人账号。维护者接手过的条目，之后的交接都只交维护者
+- 维护者手打的 `pending/human` 没有仍在生效的。「维护者」= 打标签的账号既不在允许名单里，也不是机器人账号。按事件编号排序，只看维护者最后一次手打之后：之后有维护者自己摘掉它、或打上派工标签（`pending/agent` 及其变体、`pending/review`），就算暂停已解除；机器人 / worker 账号摘掉、或解除者账号读不出，都不算。标签历史读不到、或事件缺编号 → 拒绝（GitHub#106）
 
 然后叫醒。issue 和 PR 做法相同：**叫醒 = 挂等待标签 + 调一次机器人的 webhook**。早先的做法是重新指派机器人、PR 上再请求它 review，但第一个接入的项目实测机器人收不到这些事件，全靠它自己的定时扫描（白天约 15 分钟、夜里约 30 分钟）兜底；GitHub#100 起改为 webhook，不再指派、不再请求 review。
 
