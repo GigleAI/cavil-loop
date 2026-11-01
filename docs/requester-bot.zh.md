@@ -28,7 +28,7 @@ agent 出方案 / 提问 / 汇报 ── 发评论 ── 跑叫醒脚本
    │                                   │ 调一次机器人的 webhook（配了才发）
    ▼                                   ▼
 等待中：daemon 不派工          机器人来拉所有挂等待标签的条目 → 读讨论
-   │                           → 带给提需求的人 → 在 issue 里写「已转给谁」
+   │                           → 带给提需求的人 → 在该条目上写「已转给谁」
    │                                   │
    │                                   ▼
    │                     拿到答复 → 原文贴回 → 摘等待标签 → 打 pending/agent 让 agent 接着干
@@ -98,7 +98,7 @@ chmod 600 <项目目录>/cavil-loop.config
 让 grokbot 提一条测试需求，然后依次核对：
 
 1. agent 发出方案后，issue 上出现 `pending/requester-bot` 标签；`poll.log` 里有 `notify-requester-bot #<编号>: ✅ 已叫醒 grokbot`，紧跟 `已通知 webhook（HTTP 200）`
-2. grokbot 在 issue 里留言说明转给了谁，之后把答复原文贴回、摘掉 `pending/requester-bot`、打上 `pending/agent`；下一轮巡检 agent 接着干
+2. grokbot 在挂着等待标签的那个条目上留言说明转给了谁，之后在同一个条目上把答复原文贴回、摘掉 `pending/requester-bot`、打上 `pending/agent`；下一轮巡检 agent 接着干
 3. PR 合并后，issue 上出现「需求已完成」评论并重新挂上 `pending/requester-bot`，`poll.log` 里有 `issue #<编号>：已通知 webhook（HTTP 200）`
 
 任何一步对不上，看下面的[排查](#排查)。
@@ -109,9 +109,9 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 
 1. **提需求**：开 issue，正文末尾带上标记文字 `<!-- requested-by-grokbot -->`，并打上 `pending/agent`。只有作者是 grokbot **而且**带这段标记的 issue 才算它提的需求——缺一条，cavil-loop 就按普通 issue 处理，有问题只交维护者
 2. **收到 webhook，或自己定时扫描时**：拉取**所有**挂着 `pending/requester-bot` 的 issue / PR，**包括已关闭的**。webhook 请求体只是提示，照样全量拉，不按请求体办事（格式见[参考 → webhook 通知](#webhook-通知)）
-3. **转给提需求的人**：读讨论，把最新那条评论带给提需求的人，然后在 issue 里留言说明转给了谁。agent 只认这条留言作为「已通知提需求的人」的证据
-4. **带回答复**：把答复**原文**贴回 issue → 摘掉 `pending/requester-bot` → 打上 `pending/agent` 让 agent 继续（`DISPATCH_MODE=greedy` 的项目可以不打，摘掉等待标签就会续上）。认可汇报时答复里要明确说认可；agent 还会核对被认可的那条汇报写的提交编号是不是 PR 当前最新提交，不是就会再问一次
-5. **收到「需求已完成」/「已关闭，没有合并」的评论**：把结果告诉提需求的人，再摘掉 `pending/requester-bot`；这条需求到此结束
+3. **转给提需求的人**：读讨论，把最新那条评论带给提需求的人，然后**在挂着等待标签的那个条目上**留言说明转给了谁——方案、提问挂在 issue 上就回 issue，PR 上的结果汇报就回那个 PR。agent 只认这条留言作为「已通知提需求的人」的证据
+4. **带回答复**：还是在**挂着等待标签的那个 issue 或 PR 上**，把答复**原文**贴回 → 摘掉它的 `pending/requester-bot` → 给它打上 `pending/agent` 让 agent 继续（`DISPATCH_MODE=greedy` 的项目可以不打，摘掉等待标签就会续上）。**别把 PR 上的答复贴到来源 issue**：daemon 按每个条目自己的标签派工，贴到 issue 上会把 issue 重新派出去，等待中的 PR 却一直停着。认可汇报时答复里要明确说认可；agent 还会核对被认可的那条汇报写的提交编号是不是 PR 当前最新提交，不是就会再问一次
+5. **收到「需求已完成」/「已关闭，没有合并」的评论**（daemon 发在来源 issue 上）：把结果告诉提需求的人，再摘掉 `pending/requester-bot`；这条需求到此结束
 6. **不碰挂着 `pending/human` 的条目**：那是交给维护者的
 7. **附件**：提需求的人给的图片等可以贴进 issue，agent 会自己下载阅读；反方向（agent 发附件给 grokbot）目前不支持
 
@@ -124,10 +124,10 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 | 1. 提需求 | grokbot | issue `pending/agent` | 正文带标记的 issue |
 | 2. 派工 | daemon | issue `doing/agent` | — |
 | 3. 出方案 | agent | issue `pending/requester-bot`（项目开了方案复审时先 `pending/review`，复审通过后才换成它） | 设计方案 |
-| 4. 转达、带回答复 | grokbot | issue `pending/agent` | 「已转给谁」；答复原文 |
+| 4. 转达、带回答复 | grokbot | issue `pending/agent` | issue 上：「已转给谁」；答复原文 |
 | 5. 开发、开 PR | agent | issue `pending/PR`；PR 先过复审（项目开了复审关卡时） | PR |
 | 6. 汇报结果 | agent / reviewer | PR `pending/requester-bot` | 结果汇报（写明提交编号） |
-| 7. 提需求方认可 | grokbot | PR `pending/agent` | 认可的答复原文 |
+| 7. 提需求方认可 | grokbot | PR `pending/agent` | PR 上（不是来源 issue）：「已转给谁」；认可的答复原文 |
 | 8. 交维护者 | agent | PR `pending/human` | 交人评论 |
 | 9. 合并 | 维护者 | PR `Done`；issue 挂上 `pending/requester-bot` | daemon 发「需求已完成」 |
 | 10. 收尾 | grokbot | issue 摘掉 `pending/requester-bot` | — |

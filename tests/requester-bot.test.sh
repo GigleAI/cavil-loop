@@ -240,6 +240,11 @@ seed_wait() {
     add_item "$W" 42 issue "doing/agent"
     # 对照：普通的待派条目
     add_item "$W" 51 issue ""
+    # GitHub#102 复审：PR 在等机器人认可，机器人却把答复贴到来源 issue、在 issue 上打了触发标签。
+    # daemon 按条目自己的标签派工——派出去的是 issue，PR 仍停在等待（对接文档因此要求「在等待的那个条目上回」）。
+    # 对照是 #31：答复贴在等待中的 PR 上、给 PR 打触发标签 → PR 续上
+    add_item "$W" 61 issue "pending/agent"
+    add_item "$W" 62 pr    "waiting/bot" someone "" feature/issue-61
 }
 wait_suite() {   # <scripts 副本> <mode>；断言写进 chk
     local S="$1" mode="$2" W="$SANDBOX/wait-$mode" n
@@ -255,6 +260,9 @@ wait_suite() {   # <scripts 副本> <mode>；断言写进 chk
     chk "$mode · fable 标签按 fable 原流程派" "$(dispatch_line "$W" 22 | grep -o 'label=[^ ]*')" "label=pending/agent/fable"
     chk "$mode · 追加标签按它自己派" "$(dispatch_line "$W" 33 | grep -o 'label=[^ ]*')" "label=pending/agent/05"
     chk "$mode · pending/review 按复审流程派" "$(dispatch_line "$W" 24 | grep -o 'kind=[^ ]*')" "kind=review"
+    chk "$mode · 答复贴在来源 issue 上：派出去的是 issue" "$(dispatch_line "$W" 61 | awk '{print $1}' | sed -E 's/^dispatch-(new-issue|issue-comment)$/issue/')" "issue"
+    chk "$mode · 答复贴在来源 issue 上：等待中的 PR 不派、仍挂等待标签" "$(dispatched "$W" 62) $(labels_of "$W" 62)" "0 waiting/bot"
+    chk "$mode · 答复贴在等待中的 PR 上：派出去的是 PR" "$(dispatch_line "$W" 31 | awk '{print $1}')" "dispatch-pr-comment"
     chk "$mode · self-heal 不碰等待中的条目" "$(labels_of "$W" 41)" "doing/agent,waiting/bot"
     chk "$mode · self-heal 照常恢复普通条目（对照）" "$(labels_of "$W" 42)" "pending/agent"
     if [ "$mode" = greedy ]; then

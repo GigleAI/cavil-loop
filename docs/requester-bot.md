@@ -98,7 +98,7 @@ Hand the next section, [What grokbot has to do on its side](#what-grokbot-has-to
 Have grokbot file a test request, then check in order:
 
 1. Once the agent posts its proposal, the issue shows `pending/requester-bot`; `poll.log` contains `notify-requester-bot #<number>: ✅ 已叫醒 grokbot` followed by `已通知 webhook（HTTP 200）`
-2. grokbot comments on the issue saying whom it sent it to, later pastes the answer back verbatim, removes `pending/requester-bot` and adds `pending/agent`; on the next tick the agent carries on
+2. grokbot comments on the item carrying the waiting label saying whom it sent it to, later pastes the answer back verbatim on that same item, removes `pending/requester-bot` and adds `pending/agent`; on the next tick the agent carries on
 3. After the PR merges, the issue gets a "request done" comment and carries `pending/requester-bot` again, with `issue #<number>：已通知 webhook（HTTP 200）` in `poll.log`
 
 If any step does not match, see [Troubleshooting](#troubleshooting).
@@ -109,9 +109,9 @@ cavil-loop only handles its own side; grokbot implements the following:
 
 1. **Filing a request**: open an issue whose body ends with the marker `<!-- requested-by-grokbot -->`, and add `pending/agent`. Only an issue authored by grokbot **and** carrying the marker counts as its request — missing either, cavil-loop treats it as an ordinary issue and questions go to the maintainer only
 2. **On a webhook call, or its own periodic scan**: pull **every** issue / PR carrying `pending/requester-bot`, **closed ones included**. The webhook body is only a hint; always pull everything rather than acting on the body (format: [Reference → The webhook call](#the-webhook-call))
-3. **Passing it on**: read the thread, take the latest comment to the requester, then comment on the issue saying whom it went to. That comment is the only thing the agent accepts as proof the requester was told
-4. **Bringing the answer back**: paste it **verbatim** into the issue → remove `pending/requester-bot` → add `pending/agent` so the agent continues (with `DISPATCH_MODE=greedy` this last step is optional — removing the waiting label is enough). When approving a report, the answer must say so clearly; the agent also checks that the approved report names the PR's current head commit, and asks again if not
-5. **On a comment headed "request done" / "closed without merging"**: tell the requester, then remove `pending/requester-bot`; the request is finished
+3. **Passing it on**: read the thread, take the latest comment to the requester, then comment **on the item carrying the waiting label** saying whom it went to — the issue for a proposal or question, the PR for a result report on that PR. That comment is the only thing the agent accepts as proof the requester was told
+4. **Bringing the answer back**: on that same **issue or PR carrying the waiting label**, paste the answer **verbatim** → remove its `pending/requester-bot` → add `pending/agent` to it so the agent continues (with `DISPATCH_MODE=greedy` this last step is optional — removing the waiting label is enough). **Never post a PR's answer on the source issue**: the daemon dispatches each item by its own labels, so that redispatches the issue while the waiting PR stays parked. When approving a report, the answer must say so clearly; the agent also checks that the approved report names the PR's current head commit, and asks again if not
+5. **On a comment headed "request done" / "closed without merging"** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`; the request is finished
 6. **Leave items carrying `pending/human` alone**: those are for the maintainer
 7. **Attachments**: images etc. from the requester can be pasted into the issue and the agent downloads them itself; the other direction (agent sending attachments to grokbot) is not supported yet
 
@@ -124,10 +124,10 @@ With `REQUESTER_BOT_REPORT_FIRST="true"`:
 | 1. File the request | grokbot | issue `pending/agent` | issue body carrying the marker |
 | 2. Dispatch | daemon | issue `doing/agent` | — |
 | 3. Proposal | agent | issue `pending/requester-bot` (with design review on, `pending/review` first, switched to it once review passes) | design proposal |
-| 4. Pass on, bring the answer back | grokbot | issue `pending/agent` | "sent to X"; the verbatim answer |
+| 4. Pass on, bring the answer back | grokbot | issue `pending/agent` | on the issue: "sent to X"; the verbatim answer |
 | 5. Build, open PR | agent | issue `pending/PR`; the PR is reviewed first if the review gate is on | the PR |
 | 6. Report the result | agent / reviewer | PR `pending/requester-bot` | result report (names the commit) |
-| 7. Requester approves | grokbot | PR `pending/agent` | the verbatim approval |
+| 7. Requester approves | grokbot | PR `pending/agent` | on the PR (not the source issue): "sent to X"; the verbatim approval |
 | 8. Hand to the maintainer | agent | PR `pending/human` | handoff comment |
 | 9. Merge | maintainer | PR `Done`; issue gets `pending/requester-bot` | daemon posts "request done" |
 | 10. Wrap up | grokbot | removes `pending/requester-bot` from the issue | — |
