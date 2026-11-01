@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 外部需求机器人（GitHub#95 / #97）的行为守卫。
 #
-# 跑法：bash tests/requester-bot.test.sh        （约 11 分钟：webhook 超时用例每条实等 10 秒）
+# 跑法：bash tests/requester-bot.test.sh        （默认不跑负对照；webhook 超时用例每条实等 10 秒）
+#       MUTATION=1 bash tests/requester-bot.test.sh   （连负对照一起跑，约 11 分钟；见 tests/lib/mutation.sh）
 # 依赖：jq、python3、git、curl。不碰外网、不调真 gh：假 gh（tests/fixtures/requester-bot-fake-gh.py）是一个
 # 带状态的最小 GitHub，每次调用记进 calls.log，写调用另记一行 WRITE。
 #
@@ -19,11 +20,17 @@
 #   3f. 配置项新旧名字：只填旧名字照样开启、新旧都填用新的、早期入口名可用、setup.sh 同一规则
 #   4. 提示词：开启时四类提示词末尾恰好一段交接规则，项目整份替换模板也收得到
 #   6. 说法：除复盘记录外不再出现「传话」，文档锚点对得上
-# 每组都配负对照：把被测脚本复制一份、改坏一处，同一组断言必须变红。
+# 每组都配负对照：把被测脚本复制一份、改坏一处，同一组断言必须变红。负对照只在 MUTATION=1 时跑；
+# 默认回归靠每组里「确实走到了」的断言（派工数 > 0、写请求确实发了、webhook 恰好 1 次…）防空转。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
+if [ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] && ! mutation_on; then
+    echo "REQUESTER_BOT_TEST_BAD_MUT 验证的是负对照的准备失败记账，要和 MUTATION=1 一起设" >&2; exit 2
+fi
 FAKE="$TEST_DIR/fixtures/requester-bot-fake-gh.py"
 
 # 从 worker / daemon 里跑时环境里带着这几个变量，会把 SKILL_DIR 钉到别处的安装上：
@@ -205,9 +212,13 @@ project_prompts() {   # 模拟项目：一份整份替换的模板 + 一份追�
 W="$SANDBOX/off-compose"; new_env "$W" off label; project_prompts "$W"
 chk "对拍前提：两份副本读的是各自的 prompts/（不是同一套安装）" \
     "$(env CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; printf %s "$SKILL_DIR"' _ "$NEW")" "$NEW"
+# 先后各拼一份再比：两份都写同一个 $STATE_DIR/prompt-composed-<kind>.md，用 <( ) <( ) 并行拼会互相
+# 覆盖，机器忙时偶发 diff（GitHub#103 全量并行跑时撞见过）
 for kind in new-issue issue-comment pr-comment review; do
+    compose_out "$OLD" "$W" $kind > "$SANDBOX/compose-old-$kind"
+    compose_out "$NEW" "$W" $kind > "$SANDBOX/compose-new-$kind"
     chk "关闭 · 提示词 $kind 和改动前逐字节一致" \
-        "$(cmp -s <(compose_out "$OLD" "$W" $kind) <(compose_out "$NEW" "$W" $kind) && echo same || echo diff)" same
+        "$(cmp -s "$SANDBOX/compose-old-$kind" "$SANDBOX/compose-new-$kind" && echo same || echo diff)" same
 done
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -272,6 +283,7 @@ wait_suite "$NEW" greedy
 
 # 负对照：复制一份新版、改坏一处（python 精确替换，替换不到就当场报错），整组断言必须变红
 mutate() {   # <名字> <文件（相对副本根）> <原文> <改成>
+    mutation_on || return 0      # 关着：不复制、不改，后面的 neg 只计数（见 tests/lib/mutation.sh）
     local D="$SANDBOX/mut-$1"
     rm -rf "$D"; cp -r "${MUT_BASE:-$NEW}" "$D"
     python3 - "$D/$2" "$3" "$4" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
@@ -285,6 +297,7 @@ PYM
     printf '%s' "$D"
 }
 neg() {   # <说明> <要跑的 suite 函数及参数…>：跑一遍，失败条数必须 > 0
+    mutation_gate || return 0
     local desc="$1"; shift
     local before=$fail
     QUIET=1; [ -z "${SHOW_NEG:-}" ] || QUIET=0; "$@"; QUIET=0
@@ -295,9 +308,11 @@ neg() {   # <说明> <要跑的 suite 函数及参数…>：跑一遍，失败�
 
 # 自检：准备失败必须被记下（否则下面每一个负对照都可能悄悄没跑）。
 # REQUESTER_BOT_TEST_BAD_MUT=1 时保留这条记录，用来验证整套测试确实会因此非零退出。
-D=$(mutate selftest-missing scripts/_lib.sh '这段原文不存在 #97' 'x' 2>/dev/null) && true
-chk "自检 · 负对照准备失败会记进失败（不被命令替换吞掉）" "$(grep -c '^selftest-missing（' "$PREP_FAILED")" 1
-[ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] || sed -i '/^selftest-missing（/d' "$PREP_FAILED"
+if mutation_on; then
+    D=$(mutate selftest-missing scripts/_lib.sh '这段原文不存在 #97' 'x' 2>/dev/null) && true
+    chk "自检 · 负对照准备失败会记进失败（不被命令替换吞掉）" "$(grep -c '^selftest-missing（' "$PREP_FAILED")" 1
+    [ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] || sed -i '/^selftest-missing（/d' "$PREP_FAILED"
+fi
 
 echo "── 2b. 负对照 ──"
 D=$(mutate skip-in-label-pass scripts/agent-poll.sh \
@@ -351,6 +366,7 @@ REAL_NEW="$SANDBOX/real-new"; rm -rf "$REAL_NEW"; mkdir -p "$REAL_NEW"; cp -r "$
 real_dispatch_suite "$REAL_NEW/scripts"
 # 负对照：逐个派工脚本改回不带等待标签的旧写法，那一条必须变红
 real_mut() {   # <名字> <脚本> <原文>
+    mutation_on || return 0
     local Dm="$SANDBOX/real-mut-$1"
     rm -rf "$Dm"; cp -r "$REAL_NEW" "$Dm"
     python3 - "$Dm/scripts/$2" "$3" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
@@ -506,8 +522,11 @@ handback_suite() {   # <scripts 副本>
         chk "交还第 $name 步失败：没有「已交还维护者」" "$(printf '%s' "$OUT" | grep -c '已交还维护者')" 0
         faults '[]'
         : > "$RW/gh/dispatch.log"
+        add_item "$RW" 51 issue ""     # 对照：普通条目，greedy 会兜底派它
         tick "$S" "$RW"; tick "$S" "$RW"
         chk "交还第 $name 步失败：两轮轮询零派工" "$(dispatched "$RW" 50)" 0
+        # 到达性：上一条「零派工」在轮询一开头就退出时也成立
+        chk "交还第 $name 步失败：到达性 · 同一轮询照常派了普通条目" "$(dispatched "$RW" 51)" 1
     done <<'CASES'
 1|doing/agent,waiting/bot|[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop","times":2},{"method":"POST","path":"/labels$","field":"pending/human","mode":"fail"}]
 2–3|doing/agent,pending/human,waiting/bot|[{"method":"DELETE","path":"/labels/doing%2Fagent$","mode":"noop"}]
@@ -698,9 +717,11 @@ D=$(mutate tpl-only scripts/_lib.sh \
             requester_bot_handoff_section
         fi' \
     '        :') && {
-    for f in new-issue issue-comment pr-comment review; do
-        printf '\n\n---\n\n%s\n' "$(cat "$D/prompts/requester-bot-handoff.md")" >> "$D/prompts/$f.template.md"
-    done
+    if mutation_on; then
+        for f in new-issue issue-comment pr-comment review; do
+            printf '\n\n---\n\n%s\n' "$(cat "$D/prompts/requester-bot-handoff.md")" >> "$D/prompts/$f.template.md"
+        done
+    fi
     neg "交接规则只写进工具自带模板" prompt_suite "$D"
 }
 
@@ -860,6 +881,7 @@ with open(out, "a") as o:
     chk "不泄露 · 采样确实碰到了 curl 进程（对照：采样不是空的）" "$(grep -c 'curl -q --config -' "$SAMP" | awk '{print ($1 > 0) ? "yes" : "no"}')" yes
     chk "不泄露 · 命令行里没有地址和密钥" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$SAMP")" 0
     chk "不泄露 · 脚本输出里没有" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$ALL_OUT")" 0
+    chk "不泄露 · 到达性：poll.log 确实记了叫醒过程（下一条不是空日志）" "$(grep -c 'notify-requester-bot #60' "$RW/state/poll.log" 2>/dev/null | awk '{print ($1 > 0) ? "yes" : "no"}')" yes
     chk "不泄露 · poll.log 里没有" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$RW/state/poll.log" 2>/dev/null || true)" 0
     chk "不泄露 · 假 gh 调用记录里没有" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$RW/gh/calls.log")" 0
 }
@@ -1320,8 +1342,8 @@ setup_suite() {   # <skill 目录>
 }
 setup_suite "$SETUP_ROOT/src"
 # 负对照：只改坏安装入口那一处（只读新名字），公共库不动 → 「只填旧名字」必须变红
-cp -r "$SETUP_ROOT/src" "$SETUP_ROOT/src-mut"
-if python3 - "$SETUP_ROOT/src-mut/setup.sh" <<'PYM'
+if ! mutation_on; then neg "安装入口只读新名字（公共库不动）" :      # 关着：只计数
+elif cp -r "$SETUP_ROOT/src" "$SETUP_ROOT/src-mut" && python3 - "$SETUP_ROOT/src-mut/setup.sh" <<'PYM'
 import sys
 p = sys.argv[1]; s = open(p).read()
 old = '"$(config_value LABEL_PENDING_RELAY)")"'
@@ -1361,5 +1383,6 @@ if [ -s "$PREP_FAILED" ]; then
     sed 's/^/     · /' "$PREP_FAILED"
     fail=$((fail + $(wc -l < "$PREP_FAILED")))
 fi
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

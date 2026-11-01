@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 等人审的 PR 与目标分支冲突的守卫 —— GitHub#86。
 #
-# 跑法：bash tests/pending-human-conflict.test.sh   （本机约 1.5 分钟：末尾的负对照会把
-#       整套场景在 7 份改坏的脚本副本上各重跑一遍）
+# 跑法：bash tests/pending-human-conflict.test.sh              （默认不跑末尾的负对照）
+#       MUTATION=1 bash tests/pending-human-conflict.test.sh   （连负对照一起跑，本机约 1.5 分钟：
+#       整套场景在 7 份改坏的脚本副本上各重跑一遍；见 tests/lib/mutation.sh）
 # 依赖：git（≥ 2.38，merge-tree --write-tree）、jq、tmux。不碰网络（假 gh + 本地 bare
 # 仓库当 origin，PR 提交按 GitHub 的形状挂在 refs/pull/N/head）、HOME 指向 temp。
 #
@@ -16,12 +17,14 @@
 #   · 每轮都问 → 调用量随轮数线性涨（bot 号被封过一次，这是最怕的那种）；
 #   · 拿本机过期的目标分支去判 → 主干新进的冲突看不见；
 #   · 两种评论共用标记 → 只提醒的 PR 在状态丢失后被静默升级成自动改代码。
-# 末尾的负对照把这七种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下；
+# 末尾的负对照（MUTATION=1 时）把这七种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下；
 # 「对拍」一节拿同一批 PR 让 worker 交 PR 前那段冲突检查命令和 daemon 各判一遍，结论必须一致。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 
 SANDBOX=$(mktemp -d)
 cleanup() {
@@ -207,6 +210,8 @@ CONF
     tick
     chk "不取目标分支提交" "$(n_calls '^git .*ls-remote')" 0
     chk "不拉任何 PR" "$(n_calls '^git .*fetch.*refs/pull/')" 0
+    # 到达性：上面两个 0 在「轮询一开头就退出」时也成立，确认这一轮真的读过 PR 列表
+    chk "到达性 · 这一轮确实读了 PR 列表" "$([ "$(n_calls '^gh api .*repos/example/cf/pulls')" -gt 0 ] && echo yes || echo no)" yes
 
     [ "$QUIET" = 1 ] || echo "【1】第一次看到：各类 PR 各走各的路"
     local H10 H11 H12 H13 H14 H15 H16
@@ -257,6 +262,7 @@ CONF
     [ "$QUIET" = 1 ] || echo "【4】全都有结论之后：目标分支没动 → 一个 PR 都不拉、不问"
     tick
     chk "拉取 0 次" "$(n_calls '^git .*fetch.*refs/pull/')" 0
+    chk "到达性 · 这一轮确实走到了冲突检查（取了目标分支提交）" "$(n_calls '^git .*ls-remote')" 1
     chk "GitHub 调用里没有单个 PR" "$(n_calls '^gh api repos/example/cf/pulls/[0-9]')" 0
     tick
     chk "再一轮仍是 0 次" "$(n_calls '^git .*fetch.*refs/pull/')" 0
@@ -319,6 +325,7 @@ CONF
     # #20：以前只提醒过；提醒那条评论把「最近更新」刷新成了刚才
     jq -cn --arg m "<!-- cavil-loop:pending-human-conflict head=$H20 mode=remind -->" '[{body:$m}]' > "$GD/comments-20.json"
     tick
+    chk "到达性 · #19 #20 这一轮确实判过" "$(judged 19)$(judged 20)" 11
     chk "#19 不再塞回 worker" "$(flipped 19 pending/agent)" 0
     chk "#19 不再发评论" "$(posted 19)" 0
     chk "#20 提醒过的不升级成自动解" "$(flipped 20 pending/agent)" 0
@@ -331,6 +338,7 @@ CONF
     prj 22 "$H22" "$(iso_ago 60)" "pending/agent"     # 快照之后人改了标签
     prj 23 "$H23" "$(iso_ago 60)" "$PH"
     tick
+    chk "到达性 · #21 #22 确实走到了写前现读" "$(got_pull 21)$(got_pull 22)" 11
     chk "#21 现读失败 → 不写" "$(posted 21)" 0
     chk "#22 现读标签已不是等人 → 不写" "$(posted 22)" 0
     chk "#22 不翻标签" "$(n_calls '^gh api -X POST repos/example/cf/issues/22/labels')" 0
@@ -366,6 +374,7 @@ CONF
     prj 28 "$H28" "$(iso_ago 60)" "$PH" main merged          # 快照之后已合并关闭，标签还留着
     prj 29 "$H29" "$(iso_ago 60)" "$PH"; jq 'del(.state, .merged)' "$GD/pr-29.json" > "$GD/x" && mv "$GD/x" "$GD/pr-29.json"
     tick
+    chk "到达性 · #27 #28 #29 确实走到了写前现读" "$(got_pull 27)$(got_pull 28)$(got_pull 29)" 111
     chk "#27 改投后不按旧 main 发评论" "$(posted 27)" 0
     chk "#27 不交回 worker" "$(flipped 27 pending/agent)" 0
     chk "#27 不记为已处理" "$(st 27 acted_head)" ""
@@ -430,9 +439,10 @@ real_pass=$pass real_fail=$fail
 # 改坏的方式用 python 精确替换源码片段；片段对不上（源码改了）→ 本条负对照算失败，
 # 免得替换悄悄没生效、负对照「通过」得毫无意义。
 # ─────────────────────────────────────────────────────────────────────────
-echo "═══ 负对照（每种错误实现都必须被拦下）═══"
+mutation_on && echo "═══ 负对照（每种错误实现都必须被拦下）═══"
 neg_fail=0
 negative() {   # name python-old python-new
+    mutation_gate || return 0
     local name="$1" dir="$SANDBOX/neg-scripts"
     rm -rf "$dir"; cp -r "$REPO_DIR/scripts" "$dir"
     if ! python3 - "$dir/_lib.sh" "$2" "$3" <<'PY'
@@ -478,5 +488,6 @@ negative "两种评论共用一个标记" \
     '        marker_remind="<!-- cavil-loop:pending-human-conflict head=$head mode=worker -->"'
 
 echo
+mutation_summary "$0"
 echo "正式版：$real_pass 通过 / $real_fail 失败；负对照失效 $neg_fail 条"
 [ "$real_fail" -eq 0 ] && [ "$neg_fail" -eq 0 ]

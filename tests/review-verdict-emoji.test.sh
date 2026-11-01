@@ -15,6 +15,8 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -53,7 +55,9 @@ FAIL_CASES=(
     "没有可审的产出"
 )
 
+SANDBOXES=0
 make_sandbox() {
+    SANDBOXES=$((SANDBOXES + 1))
     rm -rf "$TMP/skill" "$TMP/project"
     mkdir -p "$TMP/skill" "$TMP/project/.agents/skills/cavil-loop"
     cp -r "$REPO_DIR/prompts" "$TMP/skill/prompts"
@@ -121,7 +125,11 @@ out=$(check_all)
 if [ -z "$out" ]; then ok "review 成品（带 / 不带增量）都有规矩、对应关系正确，worker 成品里没有"
 else bad "当前成品有问题："; printf '      %s\n' "$out"; fi
 
-echo "── 负对照：每一处改坏都要红 ──"
+mutation_on && echo "── 负对照：每一处改坏都要红 ──"
+# 每项负对照的开关判断在建沙盘、改模板之前：关着时只计数，一个沙盘都不建、一处模板都不改
+# （GitHub#103 复审第 1 轮：判断放在 expect_red 里时，准备步骤默认模式照跑）
+neg_sandbox() { mutation_gate || return 1; make_sandbox; }
+SANDBOXES_BEFORE_NEG=$SANDBOXES
 expect_red() {
     local desc="$1" want="$2" o
     o=$(check_all)
@@ -141,37 +149,43 @@ open(p, "w").write(t[:s] + t[e:])
 PY
 }
 
-make_sandbox
+if neg_sandbox; then
 drop_rule "$SKILL_DIR/$T"
 expect_red "规矩整句删掉（带增量的成品）" "review: 没有「标题以 ✅ / ❌ 开头」"
+fi
 
-make_sandbox
+if neg_sandbox; then
 drop_rule "$SKILL_DIR/$T"
 expect_red "规矩整句删掉（无增量的项目）" "review(无增量): 没有「标题以 ✅ / ❌ 开头」"
+fi
 
-make_sandbox
+if neg_sandbox; then
 sed -i 's/只有本轮判了通过才用 ✅/只有本轮判了通过才用 ❌/' "$SKILL_DIR/$T"
 expect_red "通过写成 ❌" "review: 没写「只有通过才 ✅」"
+fi
 
-make_sandbox
+if neg_sandbox; then
 sed -i 's/其余一律 ❌/其余一律 ✅/' "$SKILL_DIR/$T"
 expect_red "其余写成 ✅" "review: 没写「其余一律 ❌」"
+fi
 
 for c in "${FAIL_CASES[@]}"; do
-    make_sandbox
+    neg_sandbox || continue
     sed -i "s/、\?$c//" "$SKILL_DIR/$T"
     expect_red "❌ 结局漏了「$c」" "review: ❌ 的结局漏了「$c」"
 done
 
-make_sandbox
+if neg_sandbox; then
 sed -i 's/`## ✅ 冲突检查复审通过`/`## ✅ 冲突检查复审未通过`/' "$SKILL_DIR/$T"
 expect_red "✅ 示例配了未通过" "review: ✅ 示例写的是没通过"
+fi
 
-make_sandbox
+if neg_sandbox; then
 sed -i 's/`## ❌ 复审未通过：/`## ❌ 复审通过：/' "$SKILL_DIR/$T"
 expect_red "❌ 示例配了通过" "review: ❌ 示例没说未通过"
+fi
 
-make_sandbox
+if neg_sandbox; then
 python3 - "$SKILL_DIR/$T" "$RULE_HEAD" <<'PY'
 import sys
 p, head = sys.argv[1], sys.argv[2]
@@ -182,11 +196,23 @@ a = t.index("\n", t.index("5. 通过：REST 翻"))
 open(p, "w").write(t[:a] + rule + t[a:])
 PY
 expect_red "规矩挪到翻 label 那一步之后" "review: 规矩排在翻 label 之后"
+fi
 
-make_sandbox
+if neg_sandbox; then
 printf '\n%s：通过 ✅，其余 ❌。\n' "$RULE_HEAD" >> "$SKILL_DIR/prompts/pr-comment.template.md"
 expect_red "规矩漏进 worker 模板" "pr-comment: worker 成品里出现了复审结论的标题规矩"
+fi
 
 echo
+# 开关真的挡在准备之前：默认模式负对照区一个沙盘都没建；打开时确实建了
+neg_sandboxes=$((SANDBOXES - SANDBOXES_BEFORE_NEG))
+if mutation_on; then
+    if [ "$neg_sandboxes" -gt 0 ]; then ok "开关打开：负对照区建了 $neg_sandboxes 个沙盘"
+    else bad "开关打开：负对照区一个沙盘都没建（负对照没真跑）"; fi
+else
+    if [ "$neg_sandboxes" -eq 0 ]; then ok "默认模式：负对照区一个沙盘都没建、没改模板"
+    else bad "默认模式：负对照区仍建了 $neg_sandboxes 个沙盘（开关放在准备之后）"; fi
+fi
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]
