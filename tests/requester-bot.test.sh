@@ -1229,11 +1229,14 @@ names_suite() {   # <scripts 副本>
     # 旧名字和新名字拼出来的提示词逐字节相同（包括「先汇报」那一项）
     new_env "$W2" on label 'REQUESTER_BOT_REPORT_FIRST="true"'
     sed -i "s|$W2|$RW|g" "$W2/cavil-loop.config"
-    # 两边先后拼、各存一份再比：两份配置共用同一个状态目录，拼装结果写在同一个固定文件里，
-    # 用两个进程替换同时拼会互相覆盖，偶尔读到写了一半的文件
+    # 两边先后拼、各存一份再比：两份配置共用同一个状态目录，拼装结果写在同一个固定文件里。
+    # 原来用两个进程替换同时拼，两边常常读到同一份最后写完的文件，于是下面这处差别被盖住了：
+    # 交接规则里的叫醒命令带着配置文件自己的路径，两份配置放在不同目录，这一处天然不同，
+    # 比之前先把它对齐（只换这一个路径，其余逐字节比）
     for kind in new-issue review; do
         compose_out "$S" "$RW" $kind > "$SANDBOX/names-old-$kind.md"
-        env CODING_AGENT_CONFIG="$W2/cavil-loop.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; cat "$(compose_prompt_template "$2")"' _ "$S" $kind > "$SANDBOX/names-new-$kind.md"
+        env CODING_AGENT_CONFIG="$W2/cavil-loop.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; cat "$(compose_prompt_template "$2")"' _ "$S" $kind \
+            | sed "s|$W2/cavil-loop.config|$RW/cavil-loop.config|g" > "$SANDBOX/names-new-$kind.md"
         chk "旧名字 · 提示词 $kind 与新名字的逐字节相同" \
             "$(cmp -s "$SANDBOX/names-old-$kind.md" "$SANDBOX/names-new-$kind.md" && echo same || echo diff)" same
     done
