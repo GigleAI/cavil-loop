@@ -157,9 +157,9 @@ chk "锁在新目录" "$(HOME="$NH" bash -c 'source "$1/scripts/_names.sh"; cavi
 chk "没有旧名字目录" "$([ -e "$NH/.config/coding-agent-work-loop" ] && echo yes || echo no)" "no"
 
 mutation_on && echo "【负对照】上一版实现（$BUGGY_COMMIT）跑同一场景，复审指出的几条必须变红"
-OLD="$SANDBOX/code-buggy"; mkdir -p "$OLD"
+OLD="$SANDBOX/code-buggy"
 if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif git -C "$REPO_DIR" archive "$BUGGY_COMMIT" 2>/dev/null | tar -x -C "$OLD" 2>/dev/null; then
+elif mkdir -p "$OLD" && git -C "$REPO_DIR" archive "$BUGGY_COMMIT" 2>/dev/null | tar -x -C "$OLD" 2>/dev/null; then
     mkdir -p "$SANDBOX/buggy"
     scenario "$OLD" "$SANDBOX/buggy" > "$SANDBOX/buggy.out"
     B="$SANDBOX/buggy.out"

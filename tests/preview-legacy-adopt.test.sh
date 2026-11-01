@@ -496,9 +496,9 @@ chk "第 2 轮：旧 app 停掉、旧登记收走、按原状不开新监听、�
 
 # ─────────────────────────────────────────────────────────────────────────────
 mutation_on && echo "【负对照】改动前的代码（$BASE_COMMIT）跑同一场景，必须变红"
-BASE="$TMP/code-base"; mkdir -p "$BASE"
+BASE="$TMP/code-base"
 if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif git -C "$REPO_DIR" archive "$BASE_COMMIT" 2>/dev/null | tar -x -C "$BASE" 2>/dev/null; then
+elif mkdir -p "$BASE" && git -C "$REPO_DIR" archive "$BASE_COMMIT" 2>/dev/null | tar -x -C "$BASE" 2>/dev/null; then
     scenario_issue "$BASE" "$TMP/b1" > "$TMP/b1.res"
     chk "issue 原场景：旧代码起不来却退出 0、打印地址（复现 issue）" \
         "$(expect "$TMP/b1.res" rc)|$(expect "$TMP/b1.res" url)|$(expect "$TMP/b1.res" new_app)" "0|1|inactive"
@@ -513,9 +513,9 @@ else
 fi
 
 mutation_on && echo "【负对照】PR #79 第 1 轮复审打回的那版（$PREV_COMMIT）：查不到状态时照样收尾，必须变红"
-PREV="$TMP/code-prev"; mkdir -p "$PREV"
+PREV="$TMP/code-prev"
 if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif git -C "$REPO_DIR" archive "$PREV_COMMIT" 2>/dev/null | tar -x -C "$PREV" 2>/dev/null; then
+elif mkdir -p "$PREV" && git -C "$REPO_DIR" archive "$PREV_COMMIT" 2>/dev/null | tar -x -C "$PREV" 2>/dev/null; then
     for when in from_start on_stop; do
         scenario_bus_down "$PREV" "$TMP/p10-$when" "$when" > "$TMP/p10-$when.res"
         chk "上一版（$when）第 1 轮就收走旧登记或删了旧入口（实得 $(expect "$TMP/p10-$when.res" r1_old)|$(expect "$TMP/p10-$when.res" r1_link)）" \
@@ -526,9 +526,9 @@ else
 fi
 
 mutation_on && echo "【负对照】PR #79 第 3 轮复审打回的那版（$PREV3_COMMIT）：换回时的两个缺陷必须复现"
-PREV3="$TMP/code-prev3"; mkdir -p "$PREV3"
+PREV3="$TMP/code-prev3"
 if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif git -C "$REPO_DIR" archive "$PREV3_COMMIT" 2>/dev/null | tar -x -C "$PREV3" 2>/dev/null; then
+elif mkdir -p "$PREV3" && git -C "$REPO_DIR" archive "$PREV3_COMMIT" 2>/dev/null | tar -x -C "$PREV3" 2>/dev/null; then
     scenario_swap_edges "$PREV3" "$TMP/p7g" > "$TMP/p7g.res"; R="$TMP/p7g.res"
     chk "上一版拿 4050 的备份换 4051 照样成功、改掉了 4051（实得 $(expect "$R" wrong_rc)|$(expect "$R" wrong_conf_same)）" \
         "$(expect "$R" wrong_rc)|$(expect "$R" wrong_conf_same)" "0|no"
