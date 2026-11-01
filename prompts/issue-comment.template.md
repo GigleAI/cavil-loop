@@ -131,7 +131,7 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 1. 根据用户的修改意见**重写设计方案**（不要硬怼旧版本，整体修订）
 2. `gh issue comment ${ISSUE} --repo ${REPO} --body "..."` 发新版方案
 3. 评论结尾 `@<author> 这是修订版，请再确认或继续提建议。OK 后重新标 \`${LABEL_PENDING_AGENT}\` 我开干。`
-4. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`
+4. 翻 label：`flip_label ${ISSUE} --add ${LABEL_DESIGN_REVIEW_OR_HUMAN} --remove ${LABEL_AGENT_DOING}`${DESIGN_REVIEW_NOTE}
 5. 一句话回复 `已发修订版方案，等再次确认`，停 idle
 
 ### § C. 澄清答复

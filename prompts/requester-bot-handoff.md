@@ -10,7 +10,7 @@
 
 ## 叫醒机器人的情况
 
-- 方案 / 修订方案等提需求方确认。启用了交叉 review 时，worker 照上文交 review；由 reviewer 在方案复审通过时叫醒（把原本「翻 `@@LABEL_PENDING_HUMAN@@`」那一步换成叫醒）
+- 方案 / 修订方案等提需求方确认。上文要你把方案先交复审时（本项目开了方案复审，或项目追加要求里这样写），worker 照上文交复审、不叫醒，由 reviewer 在方案复审通过时叫醒（把原本「翻 `@@LABEL_PENDING_HUMAN@@`」那一步换成叫醒）；上文让你直接交人时，worker 发完方案就叫醒
 - 实现过程中要提需求方回答的产品问题
 - 汇报结果：@@REQUESTER_BOT_REPORT_RULE@@
 

@@ -339,6 +339,13 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 几个设计要点：
 
 - **reviewer 拿的是全新上下文**，看产出而不是看实现者的自述——这才是第二双眼睛的价值
+- **设计方案要不要也过复审，另有一个开关 `REVIEW_DESIGN_PROPOSALS`（默认 `false`，GitHub#102）**。
+  关着时只有代码产出过复审，写完方案 / 修订方案直接翻 `pending/human`；设成 `true` 并且配了
+  `LABEL_PENDING_REVIEW` 时，方案改翻复审标签，审过才到你面前。只设开关、没配复审标签时照样交人。
+  澄清答复、提问不受它影响。项目自己在 `new-issue.extra.md` / `issue-comment.extra.md` 里写了
+  「方案翻 `${LABEL_REVIEW_OR_HUMAN}`」的老做法，开关开或关都照常先审——追加要求排在通用模板之后、
+  冲突时以它为准，而 `${LABEL_REVIEW_OR_HUMAN}` 的取值和这个开关无关。想从老做法换成开关：先合并部署
+  新版本，再在每台跑这个项目的机器上打开开关，最后才删追加要求里那句；顺序反了，方案会有一段时间直接交人
 - **拦「代码产出」和「设计方案」两类**，各用各的清单。设计方案审的是根因是否成立、
   Design 能否解决它、验收标准是否可验证——此时没有代码是正常的，reviewer 不该因此判不通过
   （实测踩过：codex 拿审代码的尺子去量一份只有方案的 issue，只能报「没有可 review 的实现」）
@@ -382,7 +389,7 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
 - 叫醒脚本走长期入口 `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh`（发版切换时路径不失效；早期入口 `notify-relay.sh` 转发到它），
   每次叫醒在 `poll.log` 留一行 `notify-requester-bot #<编号>: …`；配了 webhook 时紧跟一行结果（`已通知 webhook（HTTP 200）` / `webhook 通知失败（…）` / `… 跳过`），不含地址和密钥
 - 合并 / 关闭通知：没发成的记在 `state.json` 的 `requester_bot_done_queue`；发成一条 `poll.log` 有一行 `✅ 已把 PR #N 的结果…`，连续 30 轮失败放弃时有一行 ⚠️。它跑在合并后清理那一段里，`AUTO_CLEANUP_ON_MERGE=false` 时也一并不发
-- 完整说明、退出码、证据规则和接入示例：[collaboration.zh.md → 外部需求机器人](collaboration.zh.md#外部需求机器人)
+- 完整说明、退出码、证据规则和接入示例：[对接外部需求机器人](requester-bot.zh.md)
 
 ## 评论用量 footer
 
@@ -446,6 +453,8 @@ project/.agents/skills/cavil-loop/prompts/
 | `${BRANCH}` | branch 全名 |
 | `${ISSUE_N}` | 从 branch 反推的 issue 编号（仅 pr-comment） |
 | `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label 名 |
+| `${LABEL_DESIGN_REVIEW_OR_HUMAN}` | **设计方案 / 修订方案写完翻到哪**：开了方案复审（`REVIEW_DESIGN_PROPOSALS=true` 且配了复审标签）时 = `pending/review`，否则 = `pending/human`。只用在方案出口；澄清答复、提问照旧写 `${LABEL_PENDING_HUMAN}` |
+| `${DESIGN_REVIEW_NOTE}` | 开了方案复审时是一句「复审先审方案、打回是改方案」的说明，否则为空——关着时渲染结果和以前逐字一样 |
 | `${LABEL_REVIEW_OR_HUMAN}` | **产出后该翻到哪**：启用 review 关卡时 = `pending/review`，未启用时自动退化成 `pending/human`。模板一律用它，别直接写 `${LABEL_PENDING_REVIEW}`——没配置时那个渲染成空串，活会丢掉 `doing/agent` 又拿不到任何 pending 标签，从看板上彻底消失 |
 | `${PREVIEW_URL_HOST}` | 本机对外提供 PR 预览的主机名。**别在模板里硬写主机名**——同一份模板会在所有盯这个仓库的机器上跑，写死的主机会把审阅者指到一台根本没有这些文件的机器 |
 | `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL（funnel 那个 path），取自 `WEEKLY_REPORT_ASSET_ROOT_URL`。同理：截图落在哪台机器上，URL 就得指哪台 |

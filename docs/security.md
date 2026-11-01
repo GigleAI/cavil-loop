@@ -110,7 +110,7 @@ The only exception: a **collaborator** re-opens a closed issue / PR with `pendin
 
 ## External requester bot (optional)
 
-With this feature on ([collaboration.md → External requester bot](collaboration.md#external-requester-bot)) the boundary is still "who can edit labels":
+With this feature on ([Hooking up an external requester bot](requester-bot.md)) the boundary is still "who can edit labels":
 
 - **Work still starts only on a label.** For the bot to file requests on its own it needs a repo role that can edit labels (Triage at minimum — it cannot change code). There is no new "start because of who opened it" path
 - **"Filed by the bot" needs both the author and the marker.** The marker is just body text anyone can type in a public repo; trusting it alone would treat a stranger's issue as the bot's and send reports to a requester who doesn't exist. The wake-up script and the daemon's merge / close notice share one implementation of this check

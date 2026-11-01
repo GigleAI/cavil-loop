@@ -10,8 +10,6 @@
 
 Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说「I don't want to be human」的赛昂人。这个项目取的就是这个意思：agent 不必扮成人，但和它协作就像和一个真人同事一起工作——你把 issue 派给它，它交回设计方案和 PR，你来 review。
 
-> 本项目由 `coding-agent-work-loop` 改名而来。新安装的路径、后台任务名和调用命令全部用 `cavil-loop`；改名前装好的机器继续用旧名字照常运行，项目空闲时自动迁到新名字，见[运维手册 → 改名前的安装](docs/operations.zh.md#改名前的安装)。
-
 ## 它是什么
 
 ![在 github project 里给 Agent 建 issue，review PR](./docs/github_project.png)
@@ -92,7 +90,7 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 
 ![一个 issue 在 cavil-loop 里走一圈：红框按步骤移动，下方说明区讲当前这一步](docs/images/issue-lifecycle.zh.svg)
 
-<sub>看不到动画？看[静态版](docs/images/issue-lifecycle.zh.static.svg)，所有步骤的说明一次列全。⑤ 先发设计方案每个项目都有；⑥ 独立复审只在项目开了复审关卡时才有，没开时方案直接交给你。</sub>
+<sub>看不到动画？看[静态版](docs/images/issue-lifecycle.zh.static.svg)，所有步骤的说明一次列全。⑤ 先发设计方案每个项目都有；⑥ 独立复审只在项目开了方案复审时才有，没开时方案直接交给你。</sub>
 
 两种触发场景：
 
@@ -109,6 +107,8 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 | **谁先干** | 并发满时按「优先级 → 阶段 → 等待时长」排队。优先级可以读 `priority/p*` 标签，也可以直接读 **GitHub 上的 Priority 字段**（`PRIORITY_SOURCE=project`），看板上拖一下就改档位 | [operations](docs/operations.zh.md) |
 | **AI 读到的 prompt** | 通用工作流由 skill 提供，项目只写自己的增量（`<name>.extra.md`），追加在通用部分之后。不用整份抄一遍——抄了就再也拿不到上游更新 | [operations](docs/operations.zh.md) |
 | **用哪个 AI CLI** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`，也可以写自己的 driver | [drivers](docs/drivers.zh.md) |
+| **编排流程：交人之前先过另一个 AI** | 配 `LABEL_PENDING_REVIEW` 开复审关卡：PR 每次有代码改动，先交另一个 AI（默认 codex）审，不通过带意见打回给写代码的 AI 改，最多 `REVIEW_MAX_ROUNDS` 轮（默认 3），审过才交你验收；两个 AI 谈不拢就停下等你拍板。再加 `REVIEW_DESIGN_PROPOSALS=true`，设计方案也先审一遍才到你面前。PM → 开发 → 测试这种多角色接力也能用标签编排 | [operations](docs/operations.zh.md#交叉-review-关卡可选默认关闭) · [collaboration](docs/collaboration.zh.md) |
+| **接外部需求机器人（例：grokbot）** | 让另一个 AI 助手直接来提 issue：有问题要问它、或者做完了，自动挂等待标签并调它的 webhook 叫它来看；PR 合并或关闭时也告诉它。默认关 | [对接文档](docs/requester-bot.zh.md) |
 
 ## 它**不**做什么
 
@@ -213,6 +213,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 |------|------|
 | [docs/architecture.md](docs/architecture.zh.md) | 标签状态机的五种状态、PR↔Issue 闭环关系（一个 PR / 拆 sub-issue）、为什么这么设计 |
 | [docs/collaboration.md](docs/collaboration.zh.md) | 多人 + 多 agent 协作：用 label 后缀（`pending/agent/PM`、`pending/human/Alex` …）走 PM → Dev → QA 接力 |
+| [docs/requester-bot.md](docs/requester-bot.zh.md) | 对接外部需求机器人（以 grokbot 为例）：对接步骤、机器人那边要照做的约定、排查 |
 | [docs/persistence.md](docs/persistence.zh.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.zh.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
 | [docs/operations.md](docs/operations.zh.md) | 配置全字段、派工口径与取工顺序、prompt 模板（base + 项目增量）、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |

@@ -161,6 +161,19 @@ LABEL_PENDING_REVIEW=""
 REVIEW_WORKER_AGENT="codex"
 REVIEW_MODEL=""
 REVIEW_MAX_ROUNDS=3
+# Design proposals through the gate too (GitHub#102). Off by default: a design proposal (and a
+# revised one) goes straight to pending/human, exactly as before. With "true" *and*
+# LABEL_PENDING_REVIEW set, the worker flips a proposal to the review label instead; the reviewer
+# checks the proposal itself and passes it to pending/human or bounces it back for a rewrite
+# (never "go implement"). Clarifying answers / questions still go straight to the human.
+# Projects that already route proposals to review from their own <name>.extra.md keep working
+# whether this is on or off.
+#
+# 设计方案也先过复审（GitHub#102）。默认关：写完方案 / 修订方案直接翻 pending/human，和以前一样。
+# 设成 "true" **并且** 配了 LABEL_PENDING_REVIEW 时，方案改翻复审标签：复审审方案本身，通过才交人，
+# 不通过打回改方案（不是去实现）。澄清答复、提问仍直接交人。已经在自己的 <name>.extra.md 里
+# 写了「方案交复审」的项目，开不开这一项都照常工作。
+REVIEW_DESIGN_PROPOSALS="false"
 
 # ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97 / #100）──
 # For projects where another AI assistant with its own GitHub account (the "requester bot")
@@ -173,7 +186,7 @@ REVIEW_MAX_ROUNDS=3
 #   · When the PR is merged or closed unmerged, the daemon posts a result comment on the bot's
 #     issue, adds the waiting label to it and calls the webhook (once per PR; needs
 #     AUTO_CLEANUP_ON_MERGE, on by default).
-# Full guide: docs/collaboration.md#external-requester-bot
+# Full guide: docs/requester-bot.md
 #
 # Leave all of these empty to keep today's behaviour byte-for-byte. The feature is on only when
 # the first four are all set; with only the waiting label set the daemon still refuses to
@@ -188,7 +201,7 @@ REVIEW_MAX_ROUNDS=3
 #     不再请求 review）。机器人来拉所有挂着等待标签的条目，把答复原文带回来，再摘掉等待标签
 #   · PR 合并或关闭未合并时，daemon 在机器人提的 issue 上留一条结果评论、给它加等待标签并调
 #     webhook（每个 PR 一次；依赖 AUTO_CLEANUP_ON_MERGE，默认开）
-# 完整说明：docs/collaboration.zh.md#外部需求机器人
+# 完整说明：docs/requester-bot.zh.md
 #
 # 全部留空 = 关闭，行为和以前逐字节一样。前四项都填了才算开启；只填了等待标签时，
 # daemon 仍然不让 greedy 兜底派挂着它的条目（只会更保守），其余都不变。
