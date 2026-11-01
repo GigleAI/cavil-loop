@@ -15,6 +15,8 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -200,6 +202,7 @@ else
 
     # 夹具得分得清错误实现：拿成品命令改出两个看似等价的版本，同一夹具下必须判错
     variant() {   # <说明> <python 改写> <夹具准备> <正确值>
+        mutation_gate || return 0     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
         local out
         snippet "$TMP/composed-review.md" | sed 's|\${REPO}|acme/widget|g' > "$TMP/variant.sh"
         python3 -c "$2" "$TMP/variant.sh"
@@ -221,12 +224,13 @@ fi
 
 # ── 3. 负对照：每个写入点单独拿掉 / 改一个字，check_prompts 必须报出对应那条 ──
 expect_red() {   # <说明> <期望出现的报错片段>
+    mutation_gate || return 0     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
     out=$(check_prompts)
     if grep -qF -- "$2" <<<"$out"; then ok "负对照：$1 → 被拦下"
     else bad "负对照：$1 → 没被拦下（输出：${out:-空}）"; fi
 }
 
-echo "── 负对照 ──"
+mutation_on && echo "── 负对照 ──"
 for name in issue-comment pr-comment; do
     make_sandbox
     python3 - "$SKILL_DIR/prompts/$name.template.md" "$SECTION_HEAD" <<'PY'
@@ -283,5 +287,6 @@ sed -i 's/\*\*改判不通过\*\*/可以酌情通过/' "$SKILL_DIR/prompts/revie
 expect_red "review 有冲突不再判不通过" "review: 有冲突没写成改判不通过"
 
 echo
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

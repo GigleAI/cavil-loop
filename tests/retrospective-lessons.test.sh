@@ -10,11 +10,13 @@
 #
 # 两段：
 #   1. 用例全绿；
-#   2. 负对照：把每一项检查**单独**关掉（RETRO_LESSONS_DISABLE=<名>）重跑，必须变红。
+#   2. 负对照（只在 MUTATION=1 时跑）：把每一项检查**单独**关掉（RETRO_LESSONS_DISABLE=<名>）重跑，必须变红。
 #      检查名从模块的 CHECKS 读，不在这里抄一份——新加的检查自动纳入，漏写用例就红。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 SUITE="$TEST_DIR/retrospective_lessons_test.py"
 pass=0; fail=0
 
@@ -28,9 +30,10 @@ else
     fail=$((fail+1))
 fi
 
-echo "── 负对照：逐项关掉检查，必须变红 ──"
+mutation_on && echo "── 负对照：逐项关掉检查，必须变红 ──"
 checks=$(python3 -c "import sys; sys.path.insert(0, '$TEST_DIR/../scripts'); import retrospective_lessons as r; print(' '.join(r.CHECKS))")
 for name in $checks; do
+    mutation_gate || continue
     if RETRO_LESSONS_DISABLE="$name" QUIET=1 python3 "$SUITE" >/dev/null 2>&1; then
         echo "  ❌ 关掉 $name 后用例仍全绿——这项检查没有用例守着"
         fail=$((fail+1))
@@ -41,5 +44,6 @@ for name in $checks; do
 done
 
 echo
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

@@ -18,6 +18,8 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 BUGGY_COMMIT="205d252"   # 第 1 轮复审打回的那版
 
 SANDBOX="$(mktemp -d)"
@@ -154,9 +156,10 @@ NH="$SANDBOX/fresh"; mkdir -p "$NH/.config/systemd/user"; : > "$NH/.config/syste
 chk "锁在新目录" "$(HOME="$NH" bash -c 'source "$1/scripts/_names.sh"; cavil_preview_lock_dir' _ "$REPO_DIR" | sed "s|$NH|~|")" "~/.config/cavil-loop/preview"
 chk "没有旧名字目录" "$([ -e "$NH/.config/coding-agent-work-loop" ] && echo yes || echo no)" "no"
 
-echo "【负对照】上一版实现（$BUGGY_COMMIT）跑同一场景，复审指出的几条必须变红"
+mutation_on && echo "【负对照】上一版实现（$BUGGY_COMMIT）跑同一场景，复审指出的几条必须变红"
 OLD="$SANDBOX/code-buggy"; mkdir -p "$OLD"
-if git -C "$REPO_DIR" archive "$BUGGY_COMMIT" 2>/dev/null | tar -x -C "$OLD" 2>/dev/null; then
+if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
+elif git -C "$REPO_DIR" archive "$BUGGY_COMMIT" 2>/dev/null | tar -x -C "$OLD" 2>/dev/null; then
     mkdir -p "$SANDBOX/buggy"
     scenario "$OLD" "$SANDBOX/buggy" > "$SANDBOX/buggy.out"
     B="$SANDBOX/buggy.out"
@@ -171,5 +174,6 @@ else
 fi
 
 echo
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ]

@@ -15,6 +15,8 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -121,8 +123,9 @@ out=$(check_all)
 if [ -z "$out" ]; then ok "review 成品（带 / 不带增量）都有规矩、对应关系正确，worker 成品里没有"
 else bad "当前成品有问题："; printf '      %s\n' "$out"; fi
 
-echo "── 负对照：每一处改坏都要红 ──"
+mutation_on && echo "── 负对照：每一处改坏都要红 ──"
 expect_red() {
+    mutation_gate || return 0     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
     local desc="$1" want="$2" o
     o=$(check_all)
     if grep -qF -- "$want" <<<"$o"; then ok "$desc → 拦下"
@@ -188,5 +191,6 @@ printf '\n%s：通过 ✅，其余 ❌。\n' "$RULE_HEAD" >> "$SKILL_DIR/prompts
 expect_red "规矩漏进 worker 模板" "pr-comment: worker 成品里出现了复审结论的标题规矩"
 
 echo
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

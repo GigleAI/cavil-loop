@@ -18,6 +18,8 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -153,12 +155,13 @@ if [ -z "$out" ]; then ok "全部满足"; else bad "仓库现状不满足："; s
 
 # 负对照：每个改动点单独拿掉 / 改一个字，check_prompts 必须报出对应那条
 expect_red() {   # <说明> <期望出现的报错片段>
+    mutation_gate || return 0     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
     out=$(check_prompts)
     if grep -qF -- "$2" <<<"$out"; then ok "负对照：$1 → 被拦下"
     else bad "负对照：$1 → 没被拦下（输出：${out:-空}）"; fi
 }
 
-echo "── 负对照 ──"
+mutation_on && echo "── 负对照 ──"
 make_sandbox
 sed -i '/^### 评论里有要人拍板的问题时/,/^反面（读不懂的那版/d' "$SKILL_DIR/prompts/pr-comment.template.md"
 expect_red "pr-comment 没有骨架" "pr-comment: 没有拍板评论骨架"
@@ -227,5 +230,6 @@ sed -i '/链接不能代替步骤和结论/d' "$SKILL_DIR/prompts/pr-comment.tem
 expect_red "pr-comment「链接不能代替答案」没扩范围" "pr-comment: 「链接不能代替答案」没扩到步骤和复审结论"
 
 echo
+mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
 [ "$fail" -eq 0 ]
