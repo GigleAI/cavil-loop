@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 设计方案复审开关（GitHub#102）：REVIEW_DESIGN_PROPOSALS 决定「写完方案 / 修订方案翻哪个标签」。
 #
-# 跑法：bash tests/design-review-gate.test.sh
+# 跑法：bash tests/design-review-gate.test.sh              （默认不跑【5】负对照，约 1 分钟）
+#       MUTATION=1 bash tests/design-review-gate.test.sh   （连【5】一起跑，约 6 分钟；见 tests/lib/mutation.sh）
 # 依赖：git、python3。不碰网络（假 gh、假 tmux），HOME 指到临时目录。
 #
 # 全部跑真实的派工脚本（dispatch-new-issue.sh / dispatch-issue-comment.sh），读它们写出的
@@ -18,6 +19,8 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 TMP=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "TMP=$TMP" || rm -rf "$TMP"' EXIT
 
@@ -213,6 +216,7 @@ report < "$TMP/main.out"
 # 【5】负对照：改坏一处，对应检查必须变红
 echo "【5】负对照（改坏一处，对应检查必须变红）"
 neg() { # $1 = 说明；$2 = 文件（相对根）；$3 = 原文；$4 = 改成；$5 = 期望变红的检查名
+    mutation_gate || return 0
     local sb="$TMP/neg-$5"
     rm -rf "$sb"; mkdir -p "$sb"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$sb/"
     python3 - "$sb/$2" "$3" "$4" <<'PY' || { bad "$1：改坏失败（原文没找到）"; return; }
@@ -247,5 +251,6 @@ neg "开关关着时连追加要求里的交复审也变成交人" scripts/_lib.
     'DESIGN_REVIEW_NOTE=""' 'DESIGN_REVIEW_NOTE=""; LABEL_REVIEW_OR_HUMAN="$LABEL_DESIGN_REVIEW_OR_HUMAN"' tutor_new_false
 neg "开关不认 true" scripts/_lib.sh '    true|1|yes|on)' '    1|yes|on)' on_new
 
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

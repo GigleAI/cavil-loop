@@ -14,6 +14,8 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 
 TMP="$(mktemp -d)"
 cleanup() { chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"; }
@@ -318,12 +320,14 @@ chk "轮询不认的会话（预览服、前缀相近的别的项目），迁移
 
 # 轮询这一侧的负对照：把 list_worker_sessions 的结尾锚点去掉，同一批会话名上它的答案必须变——
 # 说明夹具分得出两种写法，上面「两边答案一致」那条在轮询一侧改动时也会变红。
+if mutation_gate; then     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
 MUT="$TMP/mutlib"; mkdir -p "$MUT"; cp -r "$REPO_DIR/scripts" "$MUT/"
 sed -i '/^list_worker_sessions()/,/^}/s/\[0-9\]+\\\$/[0-9]+/' "$MUT/scripts/_lib.sh"
 chk "负对照改到了轮询一侧的匹配" "$(sed -n '/^list_worker_sessions()/,/^}/p' "$MUT/scripts/_lib.sh" | grep -c '\[0-9\]+\\\$')" "0"
 changed=0
 for n in "${names[@]}"; do [ "$(lib_says "$n")" = "$(lib_says "$n" "$MUT")" ] || changed=$((changed+1)); done
 chk "负对照：轮询一侧去掉结尾锚点后，夹具里有会话名的答案变了" "$([ "$changed" -ge 1 ] && echo yes)" "yes"
+fi
 : > "$TMUXF"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -460,5 +464,6 @@ chk "主轮询的子进程里迁移锁已经是空闲的" "$(cat "$NEWC/.migrate
 rm -f "$OLDC/omicron.conf"
 
 echo
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

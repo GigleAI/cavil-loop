@@ -3,6 +3,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/mutation.sh
+source "$REPO_DIR/tests/lib/mutation.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
@@ -451,6 +453,8 @@ id_verdict=$(identity_scenario "$REPO_DIR/scripts/skill-deploy.sh" "$ID_WORK")
 [ "$id_verdict" = ok ] || fail "alert-identity: $id_verdict"
 
 # 负对照：把 gh_write 退回裸 gh，同一套断言必须变红 —— 否则这条用例分辨不出新旧实现。
+# 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
+if mutation_gate; then
 ID_OLD="$TMP/skill-deploy-bare-gh.sh"
 sed -e 's/^\(\s*\)issue=$(gh_write api -X POST/\1issue=$(gh api -X POST/' \
     -e 's/^\(\s*\)if gh_write api -X PATCH/\1if gh api -X PATCH/' \
@@ -460,6 +464,7 @@ ID_WORK_OLD="$TMP/identity-bare"; mkdir -p "$ID_WORK_OLD"
 old_verdict=$(identity_scenario "$ID_OLD" "$ID_WORK_OLD")
 [ "$old_verdict" = ok ] && fail negative-control-still-passed
 pass "alert-identity (negative control caught the bare-gh version: $old_verdict)"
+fi
 
 echo '▶ rename transition (#70): both skill links follow; files only added need no human'
 # 场景：一台改名前装好的机器（只有旧技能入口 coding-agent-work-loop），又新装了一个项目
@@ -541,7 +546,8 @@ rn_verdict=$(rename_scenario "$REPO_DIR/scripts/skill-deploy.sh" "$RN_WORK")
 [ "$rn_verdict" = ok ] || fail "rename-transition: $rn_verdict"
 # 负对照：改名前的部署器（main 上的版本）跑同一场景必须变红
 RN_OLD="$TMP/skill-deploy-before-rename.sh"
-if git -C "$REPO_DIR" show 'd1946f2:scripts/skill-deploy.sh' > "$RN_OLD" 2>/dev/null; then
+if ! mutation_gate; then :
+elif git -C "$REPO_DIR" show 'd1946f2:scripts/skill-deploy.sh' > "$RN_OLD" 2>/dev/null; then
     RN_WORK_OLD="$TMP/rename-old"; mkdir -p "$RN_WORK_OLD"
     rn_old_verdict=$(rename_scenario "$RN_OLD" "$RN_WORK_OLD")
     [ "$rn_old_verdict" = ok ] && fail rename-negative-control-still-passed
@@ -565,4 +571,5 @@ else
     pass "rename-transition (negative control skipped: base commit unavailable)"
 fi
 
+mutation_summary "$0"
 echo 'All skill deploy tests passed.'

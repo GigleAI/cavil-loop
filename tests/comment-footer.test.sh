@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 评论用量 footer（GitHub#88 / #90）：一行总览（就是折叠标题）+ 折叠细节 + AI 时间估算 + 项目测试耗时接口。
 #
-# 跑法：bash tests/comment-footer.test.sh
+# 跑法：bash tests/comment-footer.test.sh              （默认不跑【6】负对照）
+#       MUTATION=1 bash tests/comment-footer.test.sh   （连【6】一起跑；见 tests/lib/mutation.sh）
 # 依赖：python3、jq。不碰网络、不读本机真实会话（HOME 指到临时目录）。
 #
 # 覆盖（全部跑真实脚本，不断言源码文本）：
@@ -14,11 +15,13 @@
 #   【4】周报读法：footer 末行是机器记录；去掉机器记录后从可见部分读出的时长 / token / 金额
 #        与机器记录一致；旧格式评论照旧能读
 #   【5】四份模板拼装后的 footer 段：走生产拼装函数，把成品里的命令原样跑一遍
-#   【6】负对照：把上面每一条要守住的规矩逐个改坏（沙盘副本），对应检查必须变红
+#   【6】负对照：把上面每一条要守住的规矩逐个改坏（沙盘副本），对应检查必须变红（只在 MUTATION=1 时跑）
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
+# shellcheck source=lib/mutation.sh
+source "$TEST_DIR/lib/mutation.sh"
 TMP=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "TMP=$TMP" || rm -rf "$TMP"' EXIT
 export TZ=Asia/Shanghai     # 周报按 +08:00 读可见时刻；footer 按本机时区写。两边对齐
@@ -464,6 +467,7 @@ done <<< "$(dispatch_check "$REPO_DIR/scripts")"
 # 【6】负对照：沙盘副本逐个改坏，对应检查必须变红
 echo "【6】负对照（改坏一处，对应检查必须变红）"
 neg() { # $1 = 说明；$2 = 文件（相对 scripts/）；$3 = python 替换表达式 old；$4 = new；$5 = 期望变红的检查名
+    mutation_gate || return 0
     local sb="$TMP/neg/$5"
     rm -rf "$sb"; mkdir -p "$sb"; cp -r "$REPO_DIR/scripts" "$sb/scripts"
     python3 - "$sb/scripts/$2" "$3" "$4" <<'PY' || { bad "$1：改坏失败（原文没找到）"; return; }
@@ -544,6 +548,7 @@ neg "项目回答 unknown 时当成 0 秒（写成「未跑测试」）" drivers
 
 # 模板：每份单独去掉 footer 段里调脚本那一行，只有那一份变红
 for name in new-issue issue-comment pr-comment review; do
+    mutation_gate || continue
     sk="$TMP/neg/tpl-$name"; rm -rf "$sk"; mkdir -p "$sk"; cp -r "$REPO_DIR/prompts" "$sk/prompts"
     sed -i '/COMMENT_FOOTER_CMD/d' "$sk/prompts/$name.template.md"
     out=$(template_check "$sk")
@@ -556,6 +561,7 @@ for name in new-issue issue-comment pr-comment review; do
 done
 # 派工脚本：每个单独去掉渲染这个占位的那一行，只有它写出的 prompt 变红
 for kind in new-issue issue-comment pr-comment; do
+    mutation_gate || continue
     sb="$TMP/neg/dispatch-$kind"; rm -rf "$sb"; mkdir -p "$sb"
     cp -r "$REPO_DIR/scripts" "$sb/scripts"; cp -r "$REPO_DIR/prompts" "$sb/prompts"
     sed -i '/COMMENT_FOOTER_CMD/d' "$sb/scripts/dispatch-$kind.sh"
@@ -569,5 +575,6 @@ for kind in new-issue issue-comment pr-comment; do
 done
 
 echo
+mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

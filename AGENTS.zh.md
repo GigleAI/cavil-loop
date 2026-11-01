@@ -256,16 +256,32 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 退出码 0 = 全过）。它们造固定的假日志 / 假 `gh`、把 `HOME` 指到临时目录，**直接跑真实脚本**，
 不碰网络、不读本机真实会话。**没有统一 runner，也没有 CI**——改到哪块就手动跑哪几个。
 
+### 默认回归与负对照（GitHub#103）
+
+**负对照**是把被测代码复制一份、故意改坏一处（或换成旧提交），同一组断言必须变红。它检验的是**测试本身**分不分得出对错实现，不是代码对不对——代码和测试都没变时重跑，结果必然和上次一样。所以它默认不跑：
+
+```bash
+bash tests/<name>.test.sh              # 默认回归：只跑正向用例，末尾一行「负对照：跳过 N 项」
+MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 之前一样）
+```
+
+- **什么时候必须开**：改到某个测试覆盖的代码、新加或改了它的断言时；复审时复跑，贴命令、「负对照：本次跑了 N 项」那一行和通过 / 失败数
+- **新写的负对照一律挂在开关下**，不进默认回归：每一项过一次 `tests/lib/mutation.sh` 的 `mutation_gate`（在主 shell 里调，别放进 `$( )`，否则计数传不回来）。默认模式下它只计数、不准备也不跑，所以「跳过 N 项」和「跑了 N 项」是同一个计数器
+- **准备失败照样红**：要改的原文找不到，只在开关打开时才查，查到仍让整套测试失败（`requester-bot` 的 `REQUESTER_BOT_TEST_BAD_MUT=1` 自检要和 `MUTATION=1` 一起设）
+- **默认回归自带到达性断言**：负对照挪走后，只靠「没发生」撑着的断言（调用 0 次、状态没变、零写请求）在被测代码一开头就退出时也是绿的。这类断言旁边要有一条「确实发生了」的：派工数 > 0、假 GitHub 确实收到那条写请求、这一轮确实读过 PR 列表、确实走到了写前现读……
+- 名字叫负对照、实际是**给正式程序喂坏输入、看它拒绝**的（`doc-diagrams` 的坏图、`weekly-report-by-model` 第 4 节、`price-fetch` 的各条拒绝等），是正向用例，留在默认回归
+- 旧版对照本来就要手动指定的照旧：`paginated-latest-id`、`claude-resume-model`（`REPO_DIR=<旧版 checkout>`）、`release-auto`（`RELEASE_SH=<旧版>`）；`poll-pace` 末尾是一张手工改坏的清单
+
 改动落在下面这些地方时，对应的测试必须跑：
 
 - 记账 / 周报口径 → `tests/weekly-report-*.test.sh`。凡是会跑 `collect.py` / `price_solve.py` 的测试，必须把 `CLAUDE_PROJECTS_DIR`、`CODEX_SESSIONS_DIR`、`XDG_CACHE_HOME` 指到自己的临时目录：不设就去扫本机真实的 `~/.claude/projects`（这台机器 7.4G，单次 18 秒，还在涨），测试一天比一天慢，结果还随机器变
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
-- 评论用量 footer（GitHub#88：`comment-footer.sh` / `comment_footer.py`、`ai_time.py` 的 AI 时间估算、四份模板的 footer 步骤、`${COMMENT_FOOTER_CMD}` 占位、周报认新的可见排版）→ `tests/comment-footer.test.sh`（约 1.5 分钟：会起真的派工脚本，并对每条规矩跑一份故意改坏的副本，必须变红）。footer 由脚本整段生成——模板里别再让 agent 手拼时间 / token 行；agent-metrics 机器记录仍是最后一个非空行
+- 评论用量 footer（GitHub#88：`comment-footer.sh` / `comment_footer.py`、`ai_time.py` 的 AI 时间估算、四份模板的 footer 步骤、`${COMMENT_FOOTER_CMD}` 占位、周报认新的可见排版）→ `tests/comment-footer.test.sh`（默认约 10 秒，会起真的派工脚本；`MUTATION=1` 时再对每条规矩跑一份故意改坏的副本、必须变红，约 2.5 分钟）。footer 由脚本整段生成——模板里别再让 agent 手拼时间 / token 行；agent-metrics 机器记录仍是最后一个非空行
 - 缺价自动抓价（缺价标记 / `price_fetch.py` / `fetched` 可信度桶）→ `tests/price-fetch.test.sh`
 - 轮询节奏 / 空闲 + 故障退避 → `tests/poll-pace.test.sh`（约 40 秒：端到端那几组要真的把 `agent-poll.sh` 起几百次，别用 30 秒的命令窗口跑它，半截被掐看起来就像失败）
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh`、`tests/preview-port-ownership.test.sh` 等
-- 等人审（`pending/human`）的 PR 重查与目标分支的冲突（GitHub#86）→ `tests/pending-human-conflict.test.sh`（约 1.5 分钟：会在 7 份故意改坏的脚本副本上把全部场景再跑一遍，有一份没被拦下就失败，并拿同一批 PR 对拍 daemon 的判定和 worker 交 PR 前那段冲突检查命令）。它逐次数 GitHub 调用——这个设计的全部要点就是目标分支不动时一次都不多问。改 worker 那段检查命令的判定规则时，`_lib.sh` 的 `pr_conflict_verdict` 要同步改
+- 等人审（`pending/human`）的 PR 重查与目标分支的冲突（GitHub#86）→ `tests/pending-human-conflict.test.sh`（默认约 10 秒；`MUTATION=1` 时会在 7 份故意改坏的脚本副本上把全部场景再跑一遍，有一份没被拦下就失败，约 1 分钟。两种模式都拿同一批 PR 对拍 daemon 的判定和 worker 交 PR 前那段冲突检查命令）。它逐次数 GitHub 调用——这个设计的全部要点就是目标分支不动时一次都不多问。改 worker 那段检查命令的判定规则时，`_lib.sh` 的 `pr_conflict_verdict` 要同步改
 - 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`、`tests/preview-rename-coexist.test.sh`（同一台机器上新旧预览并存）、`tests/migrate-legacy.test.sh`（旧安装迁移：只迁空闲项目、断了能接着做、保留旧任务原来的开关）、`tests/preview-legacy-adopt.test.sh`（旧预览搬到新单元：失败后能接着搬、全部搬完才删旧入口、预览没真起来就不给地址）。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名
 - worker / 模型选择、driver 传的 `--model` → `tests/worker-selection.test.sh`、`tests/claude-resume-model.test.sh`
 - 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）
@@ -274,8 +290,8 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 - worker / 复审写「要人拍板」评论的规矩（固定骨架、不许出现代码里的名字）→ `tests/plain-language-prompts.test.sh`。骨架逐字抄在三份 worker 模板和本项目的 `review.extra.md` 里；「不许出现代码里的名字」那句另外还在 worker 的拍板问题规则和复审的打回依据（`review.template.md` 第 2Q 步）里。「交人评论自包含、链接只当出处」（GitHub#74）是同样四处「交人评论怎么写」的第 8 条，另在 `review.template.md` 交人那一步放一份，让没有 `review.extra.md` 的项目的复审也带上。要改就每处一起改——测试会对拍拼好的 prompt，任何一处走样都会红
 - PR 交出前查与主干的冲突（GitHub#82）→ `tests/conflict-check-prompts.test.sh`。检查命令（`# --- 冲突检查 开始 ---` 到 `# --- 冲突检查 结束 ---`）逐字抄在 `issue-comment.template.md`（§ A）、`pr-comment.template.md`、`review.template.md`（第 2C 步）三处；worker 那段处理规则在两份 worker 模板里逐字一致。测试对拍拼好的 prompt，检查它排在翻 label / 下结论之前，并用假 `gh` 在真实 git worktree 里实跑这段命令
 - 复审结论评论标题以 ✅（通过）/ ❌（其余一律）开头（GitHub#84）→ `tests/review-verdict-emoji.test.sh`。规矩只写在 `review.template.md` 第 3 步，没有 `review.extra.md` 的项目也带上；测试对拍带 / 不带增量的复审成品、✅/❌ 对应关系与示例，并确认没漏进 worker 模板
-- 设计方案过复审（GitHub#102：`REVIEW_DESIGN_PROPOSALS`、`new-issue.template.md` 与 `issue-comment.template.md` § B 两处方案出口里的 `${LABEL_DESIGN_REVIEW_OR_HUMAN}` / `${DESIGN_REVIEW_NOTE}` 占位）→ `tests/design-review-gate.test.sh`（约 6 分钟：真派工脚本跑一百来次）。开关关着时渲染出的提示词必须和 merge-base 的副本逐字节一致；项目自己在 `*.extra.md` 里写「方案翻 `${LABEL_REVIEW_OR_HUMAN}`」的，开关开 / 关都必须照样交复审——不要让 `${LABEL_REVIEW_OR_HUMAN}` 跟着开关变。澄清答复仍写 `${LABEL_PENDING_HUMAN}`
-- 外部需求机器人（GitHub#95 / #97：等待标签、`scripts/notify-requester-bot.sh`（及早期名字的转发壳 `notify-relay.sh`）、`prompts/requester-bot-handoff.md`、`flip_to_doing`、greedy 挡工清单 / self-heal 跳过、webhook 通知（GitHub#100）、daemon 的合并 / 关闭通知、旧的 `RELAY_*` 配置名）→ `tests/requester-bot.test.sh`（约 11 分钟：假 webhook 只听 127.0.0.1、记下每个请求，超时用例实等 10 秒）。功能关闭时把轮询的 GitHub 调用、派工记录、四类拼装提示词（用 merge-base 的拼装代码拼本版模板，后来改模板文字的 PR 不会被它误伤）、合并后清理那一段（含 `state.json`）与 merge-base 上的副本逐字节对拍。只有首页那两行和 `docs/requester-bot*.md` 可以点名具体机器人。交接规则由 `compose_prompt_template` 追加，不要写进工具自带模板——整份替换模板的项目会收不到。所有派工路径都经 `flip_to_doing` 翻 `doing/agent`，等待标签只在这一处摘。「是不是机器人提的需求」「通知 webhook」在 `_lib.sh` 里只有一份（`requester_bot_item_origin` / `requester_bot_webhook_notify`），叫醒脚本和合并 / 关闭通知共用，不要复制。叫醒脚本只在唯一的成功出口调 webhook；地址 / 请求头 / 密钥经标准输入喂给 `curl --config -`，不进命令行，也不进任何输出和日志。不再指派机器人、不再请求它 review：`REQUESTER_BOT_ACCOUNT` 只用来认机器人提的 issue
+- 设计方案过复审（GitHub#102：`REVIEW_DESIGN_PROPOSALS`、`new-issue.template.md` 与 `issue-comment.template.md` § B 两处方案出口里的 `${LABEL_DESIGN_REVIEW_OR_HUMAN}` / `${DESIGN_REVIEW_NOTE}` 占位）→ `tests/design-review-gate.test.sh`（默认约 1 分钟，跑真实派工脚本；`MUTATION=1` 再加 10 份故意改坏的副本，约 6 分钟）。开关关着时渲染出的提示词必须和 merge-base 的副本逐字节一致；项目自己在 `*.extra.md` 里写「方案翻 `${LABEL_REVIEW_OR_HUMAN}`」的，开关开 / 关都必须照样交复审——不要让 `${LABEL_REVIEW_OR_HUMAN}` 跟着开关变。澄清答复仍写 `${LABEL_PENDING_HUMAN}`
+- 外部需求机器人（GitHub#95 / #97：等待标签、`scripts/notify-requester-bot.sh`（及早期名字的转发壳 `notify-relay.sh`）、`prompts/requester-bot-handoff.md`、`flip_to_doing`、greedy 挡工清单 / self-heal 跳过、webhook 通知（GitHub#100）、daemon 的合并 / 关闭通知、旧的 `RELAY_*` 配置名）→ `tests/requester-bot.test.sh`（默认约 4 分钟，`MUTATION=1` 约 12 分钟：假 webhook 只听 127.0.0.1、记下每个请求，超时用例实等 10 秒）。功能关闭时把轮询的 GitHub 调用、派工记录、四类拼装提示词（用 merge-base 的拼装代码拼本版模板，后来改模板文字的 PR 不会被它误伤）、合并后清理那一段（含 `state.json`）与 merge-base 上的副本逐字节对拍。只有首页那两行和 `docs/requester-bot*.md` 可以点名具体机器人。交接规则由 `compose_prompt_template` 追加，不要写进工具自带模板——整份替换模板的项目会收不到。所有派工路径都经 `flip_to_doing` 翻 `doing/agent`，等待标签只在这一处摘。「是不是机器人提的需求」「通知 webhook」在 `_lib.sh` 里只有一份（`requester_bot_item_origin` / `requester_bot_webhook_notify`），叫醒脚本和合并 / 关闭通知共用，不要复制。叫醒脚本只在唯一的成功出口调 webhook；地址 / 请求头 / 密钥经标准输入喂给 `curl --config -`，不进命令行，也不进任何输出和日志。不再指派机器人、不再请求它 review：`REQUESTER_BOT_ACCOUNT` 只用来认机器人提的 issue
 - `docs/images/` 里的讲解动图 → `tests/doc-diagrams.test.sh`。不要手改这些 SVG：改 `scripts/doc-diagrams/gen.py` 里的表，重跑 `python3 scripts/doc-diagrams/gen.py`，把产物一起提交。测试会重新生成并对比，再在每张动图的所有关键帧把一圈切成小段、按每段两端的值逐段判定，不靠定时采样（任意时刻最多一段说明；说明只在红框停在它那一步、或正从那一步滑走时出现；红框按顺序走完每一步；不含脚本 / id / 外链）。图里画的流程变了，就在同一个 PR 里改说明
 
 没有对应测试的改动（daemon glue、prompt 模板）仍按最低保证走：
