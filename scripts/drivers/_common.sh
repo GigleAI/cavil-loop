@@ -62,11 +62,31 @@
 #     别人的会话登记给我们。不实现的话 daemon 走保守路线：只有「候选唯一且此前没有
 #     未解决的启动」才敢登记，否则宁可不登记。
 #
+#   ── 目录信任（可选，GitHub#108）──
+#   有的 agent 第一次在没见过的目录里起会话会弹 folder-trust 确认框，而且
+#   跳过权限确认的 flag 也不绕过它。弹框不让 session 秒退，worker 看着活着、其实
+#   一动不动。下面三样配齐，daemon 每次起会话前都会先补记录，起完再看一眼有没有框。
+#   没有目录信任概念的 agent 一样都不用实现——调用方会跳过。
+#
+#   agent_trust_key <dir>
+#     stdout 写一行：在 dir 里起会话时，本 agent **实际按哪个目录**判断信任。
+#     各家规则不一样、而且都不是「从上级目录继承」（2026-11 实测，见各 driver）：
+#     git worktree 一般归到所属仓库，子模块又各有说法。不实现就按 dir 本身算。
+#
 #   agent_trust_paths <path>...
-#     让 agent 预先把这些目录记成「可信」，免得 worker 第一次在新目录起会话时
-#     卡在 folder-trust 确认框上。setup.sh 在部署新项目时用仓库根 + worktree base
-#     调一次。没有目录信任这个概念的 agent 不实现即可——调用方会跳过。
-#     必须幂等：已经信任就不要改文件（那个文件通常正被活着的 agent 进程用着）。
+#     把这些目录（已经是 agent_trust_key 的结果）记成可信。
+#     必须幂等：已经信任就一个字节都不写（那个文件通常正被活着的 agent 进程用着）。
+#     写文件一律走下面的 trust_config_locked_update——多个项目的 daemon 共用同一份
+#     配置文件，自己读改写会互相抹掉对方刚加的条目。
+#
+#   AGENT_TRUST_PROMPT_TITLE / AGENT_TRUST_PROMPT_OPTION_RE / AGENT_TRUST_PROMPT_FOOTER_RE
+#     确认框的**结构**：屏幕最后一个非空行是框的底栏（FOOTER_RE），其上若干行里有一整行是
+#     「信任」那个选项（OPTION_RE），框的标题（TITLE，定长字符串，允许折行）也在其中。
+#     三样都设了，daemon 起完会话会看一眼屏幕：认出框就按启动失败转人工，不让 worker 挂着。
+#     不能只认一个短语：会话里引用这句话（讨论的正是这个功能时）会被误杀（PR #110 复审实测）。
+#     判定在 agent_trust_prompt_on_screen（本文件），拿真机截屏做夹具测。
+#
+#   入口统一是 agent_trust_dirs <dir>...（本文件），setup.sh 和每次派工都走它。
 
 # ── 通用工具：encoded cwd ──
 # 把 cwd 绝对路径里的 '/' 换成 '-'，作为本地历史目录名。
@@ -281,6 +301,9 @@ source_driver() {
     # 能力标志复位：同一进程里换 driver 时不能留着上一个 driver 的声明
     AGENT_SESSION_ISOLATION=0
     AGENT_SESSION_PROOF=0
+    # 目录信任是可选能力：上一个 driver 留下的实现会让新 driver 往别人的配置文件里写
+    unset -f agent_trust_key agent_trust_paths 2>/dev/null || true
+    AGENT_TRUST_PROMPT_TITLE=""; AGENT_TRUST_PROMPT_OPTION_RE=""; AGENT_TRUST_PROMPT_FOOTER_RE=""
     for d in "${candidates[@]}"; do
         if [ -f "$d" ]; then
             # shellcheck disable=SC1090
@@ -311,4 +334,231 @@ source_driver() {
     echo "  内置 driver 在 $self_dir/" >&2
     echo "  项目级 driver 路径：\$PROJECT_ROOT/.agents/skills/cavil-loop/drivers/<name>.sh" >&2
     return 1
+}
+
+# ── 目录信任：各 driver 共用的工具（GitHub#108）──
+
+# 目录的物理绝对路径（解开软链接）。agent 自己拿到的 cwd 就是物理路径，
+# git 吐出来的也是，所以信任记录的 key 一律用这个形状。
+trust_physical_dir() {
+    (cd "$1" 2>/dev/null && pwd -P)
+}
+
+# dir 所在 git 仓库的「公共 git 目录」（物理绝对路径）；不在 git 里就什么都不写、返回 1。
+#   普通仓库的主 checkout / 它的 worktree → <仓库>/.git
+#   子模块（及其 worktree）               → <上层仓库>/.git/modules/<名字>
+#   bare 仓库的 worktree                  → <bare 仓库目录>
+trust_git_common_dir() {
+    local dir="$1" c
+    c="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    [ -n "$c" ] || return 1
+    # 相对路径是相对 dir 的
+    (cd "$dir" 2>/dev/null && cd "$c" 2>/dev/null && pwd -P)
+}
+
+# dir 所在 worktree 的顶层目录（物理绝对路径）
+trust_git_toplevel() {
+    local t
+    t="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [ -n "$t" ] || return 1
+    trust_physical_dir "$t"
+}
+
+# 文件真实路径：内核以「写、不存在就建」方式打开 <path> 时，实际会落到的那个普通文件。
+# 走法和内核一样：从根开始逐个路径分量解析，遇到软链接就把链接内容接到剩余分量前面，
+# `..` 对**已解析的物理目录**取上一级（所以「目录链接/../文件」落在链接目标的上一级）。
+# 配置文件常被 dotfiles 仓库软链进来：直接 mv 到软链上会把链接换成普通文件，所以要写真实文件；
+# 同一个真实文件不管从哪个别名进来都得出同一路径——共享锁的位置也靠它。
+#
+# 内核会拒绝的，这里一律拒绝（返回 1、不写任何东西），绝不把非法路径「化简」成另一个可写路径：
+#   · 已存在的非目录被当目录穿过（`普通文件/..`、`普通文件/x`、`文件/`）  → 内核 ENOTDIR
+#   · 还不存在的东西后面跟 `/` 或 `/.`（要求它是目录，但它不存在）        → EISDIR / ENOENT
+#   · 链接超过 40 层 / 成环、链接读不出                                      → ELOOP 等
+#   · 最终目标已存在但不是普通文件（目录、设备…）                            → EISDIR 等
+#   · 不存在的目录后面又跟 `..`                                                → ENOENT
+# 唯一比内核宽的一处是有意的：路径**没经过任何软链接**、末尾若干级目录还不存在时
+# （codex 从没跑过，~/.codex 还没建），只要后面不再有 `..`，就把这些目录建出来——这是「首次写配置」。
+# 经过了软链接的路径不放宽：链接指进一个不存在的目录，内核打不开，我们也不替人建。
+# PR #110 三轮复审都出在这里：先 `cd` 逻辑路径再 `pwd -P`；见到 `..` 就删上一级而不看它是不是目录。
+# 测试拿内核的真实打开结果对拍（tests/agent-trust-paths.test.sh「真实路径」一节），不拿字符串化简对拍。
+# 只用 readlink（不带 -f，Linux / macOS 都有），不依赖 python。
+trust_real_file() {
+    local path="$1" resolved="" c t n=0 d missing=0
+    local -a queue more
+    [ -n "$path" ] || return 1
+    case "$path" in /*) ;; *) path="$(pwd -P)/$path" ;; esac
+    IFS=/ read -r -a queue <<< "$path"
+    # 原路径以 / 结尾：最后一个分量必须是目录，而我们要的是文件 → 内核会拒，这里也拒
+    case "$path" in */) queue+=(.) ;; esac
+    while [ "${#queue[@]}" -gt 0 ]; do
+        c="${queue[0]}"; queue=("${queue[@]:1}")
+        case "$c" in
+            '') continue ;;
+            .)  # 「x/.」和结尾的「x/」都要求 x 是目录：
+                #   x 已存在 → 必须是目录（否则 ENOTDIR）；
+                #   x 还不存在 → 内核不会替你把它建成目录（ENOENT / EISDIR），拒绝。
+                #   绝不能把这个要求丢掉、把 x 当成普通文件建出来（PR #110 复审第 2 轮）
+                [ "$missing" = 0 ] || return 1
+                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
+                continue ;;
+            ..) [ "$missing" = 0 ] || return 1                     # 不存在的目录后面跟 ..：ENOENT
+                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
+                resolved="${resolved%/*}"; continue ;;
+        esac
+        # 要往下走一级，当前已解析部分必须是目录（根除外）
+        if [ "$missing" = 0 ] && [ -n "$resolved" ] && [ ! -d "$resolved" ]; then return 1; fi
+        if [ "$missing" = 0 ] && [ -L "$resolved/$c" ]; then
+            n=$((n + 1)); [ "$n" -le 40 ] || return 1
+            t="$(readlink "$resolved/$c")" || return 1
+            [ -n "$t" ] || return 1
+            case "$t" in /*) resolved="" ;; esac
+            IFS=/ read -r -a more <<< "$t"
+            case "$t" in */) more+=(.) ;; esac
+            queue=(${more[@]+"${more[@]}"} ${queue[@]+"${queue[@]}"})
+        elif [ "$missing" = 0 ] && [ -e "$resolved/$c" ]; then
+            resolved="$resolved/$c"
+        else
+            missing=1                                             # 这一级起都不存在：只能是待建的目录 / 文件
+            resolved="$resolved/$c"
+        fi
+    done
+    [ -n "$resolved" ] || return 1
+    if [ -e "$resolved" ] || [ -L "$resolved" ]; then
+        [ -f "$resolved" ] && [ ! -L "$resolved" ] || return 1     # 已存在就必须是普通文件
+    fi
+    d="${resolved%/*}"; [ -n "$d" ] || d=/
+    if [ ! -d "$d" ]; then
+        [ "$missing" = 1 ] && [ "$n" = 0 ] || return 1   # 只给没经过链接的路径建目录
+        mkdir -p "$d" 2>/dev/null || return 1
+    fi
+    [ -d "$d" ] || return 1
+    printf '%s\n' "$resolved"
+}
+
+# 屏幕上是不是本 agent 的目录信任确认框。stdin = 整屏文字（tmux capture-pane -p）。
+# 返回 0 = 是。判定看结构（见文件头「目录信任」）：最后一个非空行是底栏、其上有一整行
+# 「信任」选项、标题也在这几行里。driver 没给齐三样 → 返回 1（不认、不误杀）。
+agent_trust_prompt_on_screen() {
+    [ -n "${AGENT_TRUST_PROMPT_TITLE:-}" ] && [ -n "${AGENT_TRUST_PROMPT_OPTION_RE:-}" ] \
+        && [ -n "${AGENT_TRUST_PROMPT_FOOTER_RE:-}" ] || { cat >/dev/null; return 1; }
+    local tail_lines last
+    tail_lines="$(grep -v '^[[:space:]]*$' | tail -n "${AGENT_TRUST_PROMPT_TAIL:-25}")"
+    last="$(printf '%s\n' "$tail_lines" | tail -n 1)"
+    printf '%s\n' "$last" | grep -qE "$AGENT_TRUST_PROMPT_FOOTER_RE" || return 1
+    printf '%s\n' "$tail_lines" | grep -qE "$AGENT_TRUST_PROMPT_OPTION_RE" || return 1
+    printf '%s\n' "$tail_lines" | tr -s '[:space:]' ' ' | grep -qF "$AGENT_TRUST_PROMPT_TITLE"
+}
+
+trust_fingerprint() {
+    if [ -e "$1" ]; then cksum < "$1"; else echo absent; fi
+}
+
+# 在「按配置文件划分」的共享锁里改一份配置文件。driver 的 agent_trust_paths 都走这里。
+#
+#   trust_config_locked_update <cfg> <render_fn> <verify_fn> <key>...
+#     render_fn <cfg> <out> <key>...  把要写的新内容写进 out。
+#                                     返回 0 = out 是新内容；10 = 不用写（都已信任）；
+#                                     其他 = 拒绝（文件读不懂、格式不对……），原文件不动
+#     verify_fn <cfg> <key>...        返回 0 = 这些 key 都已信任
+#   返回 0 = 都已信任（本来就是或刚写好）；1 = 没写成；2 = 等锁超时
+#
+# 为什么要锁：同一台机器上几个项目的 daemon 共用一个 ~/.claude.json / ~/.codex/config.toml，
+# 但各项目的轮询锁互不相见。两边同时「读 → 合并 → 原子替换」，后替换的那个会把
+# 先写的条目抹掉，两边都报成功（复审用真实写入函数复现过）。原子替换只保证不出半截文件，
+# 防不了这个。
+#
+# 锁的位置只由配置文件的真实路径决定，跟项目、新旧安装名、状态目录都无关——
+# 正是「各锁各的」才出的事。持锁之后才读文件、判断、生成新内容；锁外的判断一概不用。
+#
+# 正在跑的 claude / codex 和人手工编辑不认这把锁。对它们做到的是：替换前再比一次内容指纹，
+# 变了就丢掉这次结果重读重来（最多 3 次）；替换后读回核对。**保证不了的**：最后一次比对到
+# 替换之间那一瞬有人写入，那次写入会被覆盖；对方按自己的旧副本整体写回，也会冲掉我们刚写的。
+# 后者下次派工会再补，真卡在框上时由起会话后的弹框识别转人工。
+trust_config_locked_update() {
+    local cfg="$1" render="$2" verify="$3"; shift 3
+    local real lockdir lock fd try before after tmp r rc=1
+
+    if ! real="$(trust_real_file "$cfg")"; then
+        echo "[trust] WARN: $cfg 不是一个能写的配置文件路径（软链接成环、穿过了不是目录的东西、目标不是普通文件或目录建不出），不写" >&2
+        return 1
+    fi
+    lockdir="${CAVIL_TRUST_LOCK_DIR:-$HOME/.local/state/cavil-loop-trust-locks}"
+    mkdir -p "$lockdir" || { echo "[trust] WARN: 建不了锁目录 $lockdir，不写 $real" >&2; return 1; }
+    lock="$lockdir/$(printf '%s' "$real" | cksum | cut -d' ' -f1).lock"
+    exec {fd}>>"$lock" || { echo "[trust] WARN: 打不开锁文件 $lock，不写 $real" >&2; return 1; }
+    if ! flock -w "${TRUST_LOCK_WAIT_SECS:-10}" "$fd"; then
+        exec {fd}>&-
+        echo "[trust] WARN: 等 $real 的锁超过 ${TRUST_LOCK_WAIT_SECS:-10}s，本次不写" >&2
+        return 2
+    fi
+    # 持锁后再解析一次：等锁期间链接被人改指别处，锁护着的就不是我们要写的那个文件了
+    if declare -f trust_test_after_lock >/dev/null; then trust_test_after_lock "$cfg"; fi
+    local again
+    if ! again="$(trust_real_file "$cfg")" || [ "$again" != "$real" ]; then
+        flock -u "$fd"; exec {fd}>&-
+        echo "[trust] WARN: $cfg 在等锁期间改指到了别处（${again:-解析失败}），本次不写" >&2
+        return 1
+    fi
+
+    for try in 1 2 3; do
+        before="$(trust_fingerprint "$real")"
+        tmp="$(mktemp "${real}.XXXXXX")" || { rc=1; break; }
+        # mktemp 出来是 600；替换后保留原文件的权限位（GNU stat / BSD stat 两种写法）
+        if [ -e "$real" ]; then
+            chmod "$(stat -c %a "$real" 2>/dev/null || stat -f %Lp "$real" 2>/dev/null || echo 600)" "$tmp" 2>/dev/null || true
+        fi
+        r=0; "$render" "$real" "$tmp" "$@" || r=$?
+        if [ "$r" = 10 ]; then rm -f "$tmp"; rc=0; break; fi
+        if [ "$r" != 0 ]; then rm -f "$tmp"; rc=1; break; fi
+        # 测试用的插桩点：模拟「不认锁的写入者」恰好在这时改了文件
+        if declare -f trust_test_before_replace >/dev/null; then trust_test_before_replace "$real"; fi
+        after="$(trust_fingerprint "$real")"
+        if [ "$before" != "$after" ]; then
+            rm -f "$tmp"
+            echo "[trust] $real 在生成新内容期间被别的进程改了，重读重来（第 $try 次）" >&2
+            rc=3
+            continue
+        fi
+        mv -f "$tmp" "$real" || { rm -f "$tmp"; rc=1; break; }
+        if "$verify" "$real" "$@"; then
+            echo "[trust] 已写入 $real：$*" >&2
+            rc=0
+        else
+            echo "[trust] WARN: 写入 $real 后读回没找到自己的记录（可能刚被别的进程整体写回）" >&2
+            rc=1
+        fi
+        break
+    done
+    if [ "$rc" = 3 ]; then
+        echo "[trust] WARN: $real 连续 3 次在写入前被别的进程改动，本次不写" >&2
+        rc=1
+    fi
+    flock -u "$fd"
+    exec {fd}>&-
+    return "$rc"
+}
+
+# 统一入口：在这些目录里起会话之前调用。setup.sh 和每次派工都走这里。
+# stdout 每行一个实际记成可信的 key；返回 0 = 都已信任；3 = 本 agent 没有目录信任概念；
+# 其他 = 没写成（原因在 stderr）。
+agent_trust_dirs() {
+    declare -f agent_trust_paths >/dev/null || return 3
+    local d k x dup keys=()
+    for d in "$@"; do
+        if declare -f agent_trust_key >/dev/null; then
+            k="$(agent_trust_key "$d")" || k=""
+        else
+            k="$(trust_physical_dir "$d")" || k=""
+        fi
+        if [ -z "$k" ]; then
+            echo "[trust] WARN: 算不出 $d 的信任目录" >&2
+            continue
+        fi
+        dup=0
+        for x in ${keys[@]+"${keys[@]}"}; do [ "$x" = "$k" ] && dup=1; done
+        [ "$dup" = 1 ] || keys+=("$k")
+    done
+    [ "${#keys[@]}" -gt 0 ] || return 1
+    agent_trust_paths "${keys[@]}" || return $?
+    printf '%s\n' "${keys[@]}"
 }

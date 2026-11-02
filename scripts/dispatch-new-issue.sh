@@ -142,6 +142,9 @@ if ! verify_fresh_session "$TMUX_SESSION"; then
     exit 1
 fi
 
+# 4.65 # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
+agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0
+
 # 4.7 启动侧钉不了 session id 的 driver（codex），到这里把它实际用上的 id 捞回来登记
 agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
 

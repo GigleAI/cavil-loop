@@ -268,16 +268,19 @@ else
 fi
 
 # ── 1b. worker agent 目录信任 ──
-# 新项目第一次派工最容易栽的地方：claude 这类 agent 对没见过的目录会弹
-# folder-trust 确认框，而 `--dangerously-skip-permissions` **不绕过它**。
+# 新项目第一次派工最容易栽的地方：claude / codex 对没见过的目录会弹
+# folder-trust 确认框，而跳过权限确认的 flag **不绕过它**。
 # 弹窗不让 session 秒退，于是 dispatch 的秒退探测放行、issue 照常翻成
 # doing/agent，worker 却挂在弹窗上一动不动——日志里一切正常，不 attach 进去
-# 根本看不出来。driver 实现了 agent_trust_paths 的，这里先把信任记录写好。
+# 根本看不出来。
+#
+# 这里只给仓库本身写一条；每个 issue 的 worktree 由派工在起会话前补（GitHub#108）——
+# codex 对子模块项目只认每个 worktree 自己，部署时还不知道那些路径。
+# 以前这里还写过一条「worktree base」，指望子目录继承，实测 claude / codex 对 git worktree
+# 都不认上级目录，那条从来没起过作用，已去掉。
+# 写入与派工共用同一个入口（drivers/_common.sh 的 agent_trust_dirs）和同一把按配置文件划分的锁。
 echo
 echo "── 1b. worker agent 目录信任 ──"
-trust_paths=("$HOST")
-trust_wt="$(config_value WORKTREE_BASE)"
-[ -n "$trust_wt" ] && trust_paths+=("$trust_wt")
 # 三个 agent 都可能真的起会话：常规派工、fable 标签、交叉 review。
 # 现在没开的以后开也不用回来重跑 setup，所以一律先信任。
 trust_seen=""
@@ -287,16 +290,15 @@ for trust_agent in "$WORKER_AGENT_PICK" "$(config_value FABLE_WORKER_AGENT)" \
     case " $trust_seen " in *" $trust_agent "*) continue ;; esac
     trust_seen="$trust_seen $trust_agent"
     trust_rc=0
-    (
+    trust_keys="$(
         PROJECT_ROOT="$HOST" source_driver "$trust_agent" >/dev/null 2>&1 || exit 2
-        declare -f agent_trust_paths >/dev/null || exit 3
-        agent_trust_paths "${trust_paths[@]}"
-    ) || trust_rc=$?
+        agent_trust_dirs "$HOST"
+    )" || trust_rc=$?
     case "$trust_rc" in
-        0) echo "  ✓ $trust_agent 已信任：${trust_paths[*]}" ;;
+        0) echo "  ✓ $trust_agent 已信任：$(printf '%s' "$trust_keys" | tr '\n' ' ')" ;;
         3) echo "  · $trust_agent 没有目录信任的概念，跳过" ;;
         2) echo "  ⚠️  找不到 driver '$trust_agent'，跳过" ;;
-        *) echo "  ⚠️  $trust_agent 写信任记录失败——首次派工可能卡在 trust 弹窗" ;;
+        *) echo "  ⚠️  $trust_agent 写信任记录失败——派工时会再试；仍不行会在起会话后转人工" ;;
     esac
 done
 
