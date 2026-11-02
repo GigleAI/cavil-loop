@@ -51,6 +51,13 @@
 │   └── coding-agent-*         ← 改名前的单元，为旧安装一字不改地保留（见 docs/operations.zh.md）
 ├── launchd/                  ← macOS 调度器
 │   └── dev.luosky.cavil-loop.plist.template  ← setup.sh 给每个 project 生成一份
+├── tests/                    ← 自包含的 shell 测试（见下文「测试」）
+│   ├── run.sh                 ← 统一入口：跑全部 / 按名字跑 / 跑 CI 的某一路 / 汇总各路
+│   ├── ci-exclude.txt         ← CI 不跑的文件，每个写明原因
+│   └── ci-weights.txt         ← 各文件参考耗时，只用来均衡 CI 分组
+├── .github/workflows/
+│   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（检查名：测试）
+│   └── release.yml            ← 每周发版
 └── docs/
     ├── architecture.md        ← 五态 label 状态机 + 会话模型 + 选型 FAQ
     ├── requester-bot.md       ← 对接外部需求机器人（对接步骤 + 参考）
@@ -256,7 +263,25 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 `tests/` 下有一批**自包含的 shell 测试**，每个文件一跑就出结论（`bash tests/<name>.test.sh`，
 退出码 0 = 全过）。它们造固定的假日志 / 假 `gh`、把 `HOME` 指到临时目录，**直接跑真实脚本**，
-不碰网络、不读本机真实会话。**没有统一 runner，也没有 CI**——改到哪块就手动跑哪几个。
+不碰网络、不读本机真实会话。
+
+### 统一入口，每个 PR 自动跑（GitHub#117）
+
+`bash tests/run.sh` 跑全部（本机串行约 9 分钟）；`bash tests/run.sh 名字...` 按名字跑几个（文件名去掉 `.test.sh`）；
+`--list` 列出文件。GitHub Actions（`.github/workflows/tests.yml`）对每个 PR、每次推送 `main` 跑同一个脚本：
+四个并行任务各跑 `tests/run.sh --ci --shard K/4`，再由一个名叫 **测试** 的任务汇总（`--verify`）——
+只有每个该跑的文件在各路里恰好通过一次，它才是绿的。要设「合并必需检查」就勾这一条。
+每个文件的完整日志存成运行附件，失败的直接打印全文。
+
+- **新测试文件自动纳入**，不用登记。`tests/ci-weights.txt` 里的参考耗时只用来均衡分组；数字缺了或过时只会让某一路慢一点，
+  不会漏跑。某个文件明显变慢 / 变快时顺手更新
+- **`tests/ci-exclude.txt`** 列出 `--ci` 不跑的文件，一行一个、写明原因（目前只有 `preview-socket-activation`：
+  它要本机正在运行的用户级 systemd 且装好了预览单元）。被排除的文件本机照常跑；清单里写了不存在的文件直接报错
+- **整个文件自己跳过算失败**，除非它在上面的清单里。约定：顶格以 `⏭` 开头的一行 = 「整个文件跳过」；
+  缩进的 `⏭` = 文件里某一组跳过、其余照跑，只列出不判红。不这么做，CI 上某个依赖丢了，测试照样退出 0，检查一直绿、其实什么都没测
+- **PR 上不跑负对照。** Actions → Tests → *Run workflow* 里勾 `mutation`，会带 `MUTATION=1` 全部重跑。
+  改到被测代码时按下文打开负对照的要求不变
+- 检查绿了不等于可以不在本机跑改到的测试——它是底线，不是复审。`tests/run.sh` 自己由 `tests/run.test.sh` 守着
 
 ### 默认回归与负对照（GitHub#103）
 

@@ -51,6 +51,13 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   └── coding-agent-*         ← Pre-rename units, kept byte for byte for old installs (see docs/operations.md)
 ├── launchd/                      ← macOS scheduler
 │   └── dev.luosky.cavil-loop.plist.template  ← Generated per project by setup.sh
+├── tests/                        ← Self-contained shell tests (see "Tests" below)
+│   ├── run.sh                     ← One entry point: run all / by name / one CI shard / verify shards
+│   ├── ci-exclude.txt             ← Files CI does not run, each with the reason
+│   └── ci-weights.txt             ← Reference times per file, only to balance CI shards
+├── .github/workflows/
+│   ├── tests.yml                  ← Runs tests/run.sh on every PR and push to main (check: 测试)
+│   └── release.yml                ← Weekly release
 └── docs/
     ├── architecture.md / .zh.md   ← Five-state label machine + session model + design FAQ
     ├── collaboration.md / .zh.md  ← Multi-human + multi-agent workflows via label suffixes
@@ -306,7 +313,30 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 `tests/` holds a set of **self-contained shell tests** — run one file, get a verdict
 (`bash tests/<name>.test.sh`, exit code 0 = all passed). They build fixed fake logs / a fake `gh`,
 point `HOME` at a temp dir, and **run the real scripts** — no network, no reading your real sessions.
-There is **no unified runner and no CI**: run the ones that cover what you touched.
+
+### One entry point, and CI on every PR (GitHub#117)
+
+`bash tests/run.sh` runs them all (~9 min serially on a dev box); `bash tests/run.sh NAME...` runs a few
+by name (file name without `.test.sh`); `--list` prints the files. GitHub Actions
+(`.github/workflows/tests.yml`) runs the same script on every PR and every push to `main`:
+`tests/run.sh --ci --shard K/4` on four parallel jobs, then one job named **测试** that is green only
+when every expected file passed exactly once across the shards (`--verify`). That is the check to
+require for merging. Per-file logs are kept as a workflow artifact; failures print in full.
+
+- **New test files are picked up automatically** — nothing to register. `tests/ci-weights.txt` holds
+  reference times only to balance the shards; a missing or stale number makes one shard slower, never
+  skips a file. Update it when a file gets much slower or faster
+- **`tests/ci-exclude.txt`** lists files `--ci` does not run, one per line with the reason (today only
+  `preview-socket-activation`: it needs a running per-user systemd with the preview units installed).
+  Excluded files still run locally. Naming a file that no longer exists is an error
+- **A file that skips itself entirely is a failure** unless it is in that list. The convention: a line
+  starting with `⏭` in column 0 means "skipped the whole file"; an indented `⏭` is one group inside a
+  file that otherwise ran and is only listed. Without this, a test that loses a dependency on CI keeps
+  exiting 0 and the check stays green while testing nothing
+- **Negative controls are not run on PRs.** Actions → Tests → *Run workflow* has a `mutation` box that
+  reruns everything with `MUTATION=1`. Turning them on when you touch tested code (below) still applies
+- A green check is not a substitute for running what you touched locally before handing a PR on — it
+  is the floor, not the review. `tests/run.sh` itself is covered by `tests/run.test.sh`
 
 ### Default regression vs. negative controls (GitHub#103)
 
