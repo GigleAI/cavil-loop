@@ -335,6 +335,12 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   exiting 0 and the check stays green while testing nothing
 - **Negative controls are not run on PRs.** Actions → Tests → *Run workflow* has a `mutation` box that
   reruns everything with `MUTATION=1`. Turning them on when you touch tested code (below) still applies
+- **Tests must not lean on the dev box.** The first CI run caught three that did: bare fixture repos
+  taking their branch from the machine's `init.defaultBranch` (runners default to `master` — use
+  `git init -b main`), a fixture written in Beijing time while `date` followed the host timezone (pin
+  `TZ`), and a results directory inside the checkout that a repo-wide grep then read. Before pushing a
+  new test, `TZ=UTC GIT_CONFIG_GLOBAL=<file with only user.name/email> bash tests/<name>.test.sh`
+  is a quick approximation of a runner
 - A green check is not a substitute for running what you touched locally before handing a PR on — it
   is the floor, not the review. `tests/run.sh` itself is covered by `tests/run.test.sh`
 

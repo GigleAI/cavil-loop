@@ -281,6 +281,9 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   缩进的 `⏭` = 文件里某一组跳过、其余照跑，只列出不判红。不这么做，CI 上某个依赖丢了，测试照样退出 0，检查一直绿、其实什么都没测
 - **PR 上不跑负对照。** Actions → Tests → *Run workflow* 里勾 `mutation`，会带 `MUTATION=1` 全部重跑。
   改到被测代码时按下文打开负对照的要求不变
+- **测试不能依赖开发机。** 第一次 CI 就抓到三处：假仓库的分支名跟着本机 `init.defaultBranch` 走（GitHub 机器默认是 `master`，
+  要写 `git init -b main`）；夹具按北京时间写、`date` 却跟着本机时区（要固定 `TZ`）；结果目录放在仓库里，被扫全仓库的测试读到。
+  新测试推上去之前，用 `TZ=UTC GIT_CONFIG_GLOBAL=<只含 user.name/email 的文件> bash tests/<名>.test.sh` 粗略模拟一台 GitHub 机器
 - 检查绿了不等于可以不在本机跑改到的测试——它是底线，不是复审。`tests/run.sh` 自己由 `tests/run.test.sh` 守着
 
 ### 默认回归与负对照（GitHub#103）

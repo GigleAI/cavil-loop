@@ -34,6 +34,9 @@ jobs:
         shard: [1, 2, 3, 4]
     env:
       MUTATION: ${{ inputs.mutation && '1' || '' }}
+      # Per-file limit. With negative controls requester-bot alone takes ~12 min
+      # on a dev box, and hosted runners are slower.
+      RUN_TEST_TIMEOUT: ${{ inputs.mutation && '2400' || '900' }}
     steps:
       # Full history + origin/main: design-review-gate, requester-bot and
       # repair-unit-links compare against the merge-base with main. A shallow
