@@ -3556,13 +3556,12 @@ agent_prepare_trust() {   # <cwd>
 # 没认出（或 driver 没给特征）→ 返回 1。最多看 AGENT_TRUST_PROMPT_WAIT_SECS 秒
 # （claude 实测 0.3 秒内出框，codex 几秒内），会话自己退了就不再等。
 agent_trust_prompt_blocked() {   # <tmux_session> <cwd>
-    local sess="$1" cwd="$2" n i screen log_path key
-    [ -n "${AGENT_TRUST_PROMPT_RE:-}" ] || return 1
+    local sess="$1" cwd="$2" n i log_path key
+    [ -n "${AGENT_TRUST_PROMPT_FOOTER_RE:-}" ] || return 1
     n=$(( ${AGENT_TRUST_PROMPT_WAIT_SECS:-4} * 2 ))
     for ((i = 0; i < n; i++)); do
         session_alive "$sess" || return 1
-        screen="$(tmux capture-pane -t "$sess" -p 2>/dev/null | tr -s '[:space:]' ' ')"
-        if printf '%s' "$screen" | grep -qE "$AGENT_TRUST_PROMPT_RE"; then
+        if tmux capture-pane -t "$sess" -p 2>/dev/null | agent_trust_prompt_on_screen; then
             key="$( (agent_trust_key "$cwd") 2>/dev/null || echo "$cwd")"
             log "  ❌ $sess 卡在 $WORKER_AGENT 的目录信任确认框上（工作目录 $cwd，该补的信任记录：$key）"
             log_path="$(session_log_path "$sess")"

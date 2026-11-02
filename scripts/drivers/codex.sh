@@ -198,7 +198,15 @@ agent_command_resume() {
 # codex 第一次在没见过的目录里起会话会弹「Trust this folder?」，跳过审批的 flag 不绕过它。
 # 以前 setup.sh 一条都没给 codex 写，子模块项目（arktool）每开一个 issue 复审就卡一次，
 # 调度日志里只剩一行「没能确认 codex 本次启动的 session id（原因 timeout）」。
-AGENT_TRUST_PROMPT_RE='Trust this folder\?|Do you trust the contents of this directory'
+# 确认框长这样（0.163.0 真机截屏，tests/fixtures/trust-dialog/codex-trust.txt）：
+#    Trust this folder? Codex can read, edit, and run files here, …
+#  › 1. Trust and continue
+#    2. Back to Agent Command Center
+#    enter continue · esc back                 ← 屏幕最后一行
+# 「有新版本」提示的底栏是 `enter continue · esc skip`，选项也不同，不会被认成信任框。
+AGENT_TRUST_PROMPT_TITLE='Trust this folder?'
+AGENT_TRUST_PROMPT_OPTION_RE='^[[:space:]]*(›[[:space:]]*)?1\.[[:space:]]*Trust and continue[[:space:]]*$'
+AGENT_TRUST_PROMPT_FOOTER_RE='^[[:space:]]*enter continue · esc back[[:space:]]*$'
 
 # codex 按哪个目录判断信任（0.163.0 真机实测，GitHub#108；框里自己也写着
 # 「Trusting will apply to the repository root」）：

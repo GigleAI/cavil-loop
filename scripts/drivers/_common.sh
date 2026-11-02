@@ -79,9 +79,12 @@
 #     写文件一律走下面的 trust_config_locked_update——多个项目的 daemon 共用同一份
 #     配置文件，自己读改写会互相抹掉对方刚加的条目。
 #
-#   AGENT_TRUST_PROMPT_RE
-#     确认框的特征（ERE，按「整屏合成一行、空白压成一个空格」之后匹配）。
-#     设了它，daemon 起完会话会看一眼屏幕：认出框就按启动失败转人工，不让 worker 挂着。
+#   AGENT_TRUST_PROMPT_TITLE / AGENT_TRUST_PROMPT_OPTION_RE / AGENT_TRUST_PROMPT_FOOTER_RE
+#     确认框的**结构**：屏幕最后一个非空行是框的底栏（FOOTER_RE），其上若干行里有一整行是
+#     「信任」那个选项（OPTION_RE），框的标题（TITLE，定长字符串，允许折行）也在其中。
+#     三样都设了，daemon 起完会话会看一眼屏幕：认出框就按启动失败转人工，不让 worker 挂着。
+#     不能只认一个短语：会话里引用这句话（讨论的正是这个功能时）会被误杀（PR #110 复审实测）。
+#     判定在 agent_trust_prompt_on_screen（本文件），拿真机截屏做夹具测。
 #
 #   入口统一是 agent_trust_dirs <dir>...（本文件），setup.sh 和每次派工都走它。
 
@@ -300,7 +303,7 @@ source_driver() {
     AGENT_SESSION_PROOF=0
     # 目录信任是可选能力：上一个 driver 留下的实现会让新 driver 往别人的配置文件里写
     unset -f agent_trust_key agent_trust_paths 2>/dev/null || true
-    AGENT_TRUST_PROMPT_RE=""
+    AGENT_TRUST_PROMPT_TITLE=""; AGENT_TRUST_PROMPT_OPTION_RE=""; AGENT_TRUST_PROMPT_FOOTER_RE=""
     for d in "${candidates[@]}"; do
         if [ -f "$d" ]; then
             # shellcheck disable=SC1090
@@ -361,11 +364,41 @@ trust_git_toplevel() {
     trust_physical_dir "$t"
 }
 
-# 文件真实路径（解开软链接）。配置文件常被 dotfiles 仓库软链进来：
-# 直接 mv 到软链上会把链接换成普通文件，用户的 dotfiles 从此和真实配置分家。
+# 文件真实路径（逐级解开软链接，所在目录取物理路径；目录不存在就建出来）。
+# 配置文件常被 dotfiles 仓库软链进来：直接 mv 到软链上会把链接换成普通文件，
+# 用户的 dotfiles 从此和真实配置分家，信任记录也没进目标文件。
+# 只用 readlink（不带 -f，Linux / macOS 都有）+ cd/pwd -P，不依赖 python。
+# 解析不了（链接成环、目录建不出）→ 返回 1、什么都不写：调用方必须拒绝写入，
+# 绝不能拿原路径当真实路径继续替换（PR #110 复审实测：那样会拆掉链接还报成功）。
 trust_real_file() {
-    python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null \
-        || printf '%s\n' "$1"
+    local p="$1" t n=0 d
+    while [ -L "$p" ]; do
+        n=$((n + 1)); [ "$n" -le 40 ] || return 1
+        t="$(readlink "$p")" || return 1
+        [ -n "$t" ] || return 1
+        case "$t" in /*) p="$t" ;; *) p="$(dirname "$p")/$t" ;; esac
+    done
+    mkdir -p "$(dirname "$p")" 2>/dev/null || return 1
+    d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    [ -n "$d" ] || return 1
+    p="$d/$(basename "$p")"
+    # 物理目录里又可能是软链（目录被软链进来后，文件名本身还是链接的情况上面已解开）
+    [ ! -L "$p" ] || return 1
+    printf '%s\n' "$p"
+}
+
+# 屏幕上是不是本 agent 的目录信任确认框。stdin = 整屏文字（tmux capture-pane -p）。
+# 返回 0 = 是。判定看结构（见文件头「目录信任」）：最后一个非空行是底栏、其上有一整行
+# 「信任」选项、标题也在这几行里。driver 没给齐三样 → 返回 1（不认、不误杀）。
+agent_trust_prompt_on_screen() {
+    [ -n "${AGENT_TRUST_PROMPT_TITLE:-}" ] && [ -n "${AGENT_TRUST_PROMPT_OPTION_RE:-}" ] \
+        && [ -n "${AGENT_TRUST_PROMPT_FOOTER_RE:-}" ] || { cat >/dev/null; return 1; }
+    local tail_lines last
+    tail_lines="$(grep -v '^[[:space:]]*$' | tail -n "${AGENT_TRUST_PROMPT_TAIL:-25}")"
+    last="$(printf '%s\n' "$tail_lines" | tail -n 1)"
+    printf '%s\n' "$last" | grep -qE "$AGENT_TRUST_PROMPT_FOOTER_RE" || return 1
+    printf '%s\n' "$tail_lines" | grep -qE "$AGENT_TRUST_PROMPT_OPTION_RE" || return 1
+    printf '%s\n' "$tail_lines" | tr -s '[:space:]' ' ' | grep -qF "$AGENT_TRUST_PROMPT_TITLE"
 }
 
 trust_fingerprint() {
@@ -397,8 +430,10 @@ trust_config_locked_update() {
     local cfg="$1" render="$2" verify="$3"; shift 3
     local real lockdir lock fd try before after tmp r rc=1
 
-    real="$(trust_real_file "$cfg")"
-    mkdir -p "$(dirname "$real")" || return 1
+    if ! real="$(trust_real_file "$cfg")"; then
+        echo "[trust] WARN: 解析不出 $cfg 的真实路径（软链接成环或目录建不出），不写——免得把链接换成普通文件" >&2
+        return 1
+    fi
     lockdir="${CAVIL_TRUST_LOCK_DIR:-$HOME/.local/state/cavil-loop-trust-locks}"
     mkdir -p "$lockdir" || { echo "[trust] WARN: 建不了锁目录 $lockdir，不写 $real" >&2; return 1; }
     lock="$lockdir/$(printf '%s' "$real" | cksum | cut -d' ' -f1).lock"

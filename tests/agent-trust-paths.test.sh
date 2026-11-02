@@ -37,6 +37,8 @@ report() {
         case "$l" in
             PASS\ *) ok "${l#PASS }" ;;
             FAIL\ *) n="${l#FAIL }"; bad "${n%% ::*}" "${n#* :: }" ;;
+            # 认不出的行一律算红：截断到半个汉字的行会让 case 匹配失败，以前就这样悄悄少算了一条
+            *) [ -z "$l" ] || bad "认不出的检查输出" "$l" ;;
         esac
     done
 }
@@ -74,6 +76,27 @@ PY
         return 1
     fi
     printf '%s\n' "$d"
+}
+
+# ── 真机截屏（tests/fixtures/trust-dialog/，路径已换成假路径）──────────────────
+FIX="$TEST_DIR/fixtures/trust-dialog"
+# 正常界面里插一段「对话内容」：正好在讨论这个功能，把确认框的标题、选项、底栏原样引用了一遍。
+# 插在输入框上方——真实界面里对话永远在输入框和状态栏之上。
+prose_screen() {   # <agent> <quote-full|one-phrase>
+    local agent="$1" how="$2" normal quote
+    normal="$FIX/$agent-normal.txt"
+    if [ "$how" = one-phrase ]; then
+        # 复审给的原句，补成完整标题——比只出现半句更难分辨
+        quote="Assistant: I am investigating why the text Quick safety check: Is this a project you created or one you trust? / Trust this folder? appears in the startup code.
+Working normally..."
+    else
+        quote="⏺ 用户贴过来的屏幕是这样的：
+$(cat "$FIX/$agent-trust.txt" | grep -v '^[[:space:]]*$')
+⏺ 这就是信任确认框，下面开始修。"
+    fi
+    awk -v q="$quote" -v a="$agent" '
+        !done && ((a == "claude" && /^❯/) || (a == "codex" && /^› Ask Codex/)) { print q; done = 1 }
+        { print }' "$normal"
 }
 
 # ── 假命令 ───────────────────────────────────────────────────────────────────
@@ -420,10 +443,12 @@ scenario() {
     write_config "$D/config" "$PROOT" "$D/wt" "$D/state" "$agent"
     WT="$D/wt/issue-$N"
     PANE="$D/pane"; DIE=""
-    if [ "$dialog" = yes ]; then
-        if [ "$agent" = claude ]; then printf ' Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one\n you trust?\n\n ❯ 1. Yes, I trust this folder\n   2. No, exit\n' "$WT" > "$PANE"
-        else printf '  Folder access %s\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n' "$WT" > "$PANE"; fi
-    else printf ' 正常的输入框\n > \n' > "$PANE"; fi
+    # 屏幕内容一律用真机截屏：yes = 信任确认框；no = 正常界面；prose = 正常界面里对话引用了整段确认框文字
+    case "$dialog" in
+        yes)   cp "$FIX/$agent-trust.txt" "$PANE" ;;
+        prose) prose_screen "$agent" quote-full > "$PANE" ;;
+        *)     cp "$FIX/$agent-normal.txt" "$PANE" ;;
+    esac
     case "$entry" in
         new)  run_dispatch "$R" "$D" dispatch-new-issue.sh "$N" ;;
         cmtB|cmtR|prB)
@@ -473,7 +498,7 @@ scenario() {
     else
         grep -q "labels\[\]=doing/agent" "$D/gh.log" && ! grep -q "labels\[\]=pending/human" "$D/gh.log" \
             && echo "PASS disp·$name·没有确认框：照常翻 doing/agent" \
-            || echo "FAIL disp·$name·没有确认框：照常翻 doing/agent :: $(tr '\n' '|' < "$D/gh.log" 2>/dev/null | cut -c1-300)"
+            || { local calls; calls="$(tr '\n' '|' < "$D/gh.log" 2>/dev/null)"; echo "FAIL disp·$name·没有确认框：照常翻 doing/agent :: ${calls:0:300}"; }
     fi
 }
 suite_dispatch() {   # <skill 目录> [只跑这些场景名的子串]
@@ -498,6 +523,8 @@ dlg-cmtB-codex sub codex cmtB yes
 dlg-cmtR-claude sub claude cmtR yes
 dlg-prB-codex sub codex prB yes
 dlg-prC-claude normal claude prC yes
+prose-new-claude normal claude new prose
+prose-prB-codex sub codex prB prose
 EOF
 }
 
@@ -563,6 +590,72 @@ suite_setup() {   # <skill 目录>
     else echo "FAIL setup×派工·两边的记录和原有内容都在 :: $(jq -c . "$(cj)" 2>/dev/null)"; fi
 }
 
+# ═══ S9. 认框：真机截屏，看结构不看单个词 ═══
+suite_detect() {   # <skill 目录>
+    local R="$1" agent f got want name
+    new_home detect
+    for agent in claude codex; do
+        while IFS='|' read -r name want; do
+            [ -n "$name" ] || continue
+            case "$name" in
+                prose-*) prose_screen "$agent" "${name#prose-}" > "$TMP/screen"
+                         # 可达性：对话那段确实插进去了，而且标题原文就在屏幕上
+                         if [ "$(grep -c 'Working normally\|这就是信任确认框' "$TMP/screen")" = 1 ] \
+                            && tr -s '[:space:]' ' ' < "$TMP/screen" | grep -qF "$( [ "$agent" = claude ] && echo 'Quick safety check: Is this a project you created or one you trust?' || echo 'Trust this folder?')"; then
+                             echo "PASS detect·$agent·$name·夹具里确有那段对话和标题原文"
+                         else echo "FAIL detect·$agent·$name·夹具里确有那段对话和标题原文 :: 没插进去"; fi ;;
+                other-trust) cp "$FIX/$([ "$agent" = claude ] && echo codex || echo claude)-trust.txt" "$TMP/screen" ;;
+                modal) cp "$FIX/$([ "$agent" = claude ] && echo claude-bypass-modal || echo codex-update-modal).txt" "$TMP/screen" ;;
+                *) cp "$FIX/$agent-$name.txt" "$TMP/screen" ;;
+            esac
+            if in_driver "$R" "$agent" agent_trust_prompt_on_screen < "$TMP/screen"; then got=yes; else got=no; fi
+            if [ "$got" = "$want" ]; then echo "PASS detect·$agent·$name → $want"
+            else echo "FAIL detect·$agent·$name → $want :: 实得 $got"; fi
+        done <<'EOF'
+trust|yes
+normal|no
+modal|no
+other-trust|no
+prose-one-phrase|no
+prose-quote-full|no
+EOF
+    done
+}
+
+# ═══ S10. 配置是软链、python 不可用 / 链接解析不了 ═══
+suite_symlink() {   # <skill 目录>
+    local R="$1" f rc err bin T
+    # (a) python3 存在但一调就失败；(b) PATH 里根本没有 python3
+    for how in broken missing; do
+        new_home "sym-$how"; f="$(cj)"
+        mkdir -p "$H/dotfiles"; printf '{"keep":1}' > "$H/dotfiles/claude.json"; ln -s dotfiles/claude.json "$f"
+        bin="$TMP/bin-$how"; rm -rf "$bin"; mkdir -p "$bin"
+        for T in bash dirname basename mkdir cksum cut flock mktemp stat chmod cat jq mv rm readlink tr grep sed tail head ls env git cp; do
+            ln -s "$(command -v "$T")" "$bin/$T" 2>/dev/null
+        done
+        [ "$how" = broken ] && printf '#!/bin/sh\nexit 1\n' > "$bin/python3" && chmod +x "$bin/python3"
+        err="$(env PATH="$bin" HOME="$H" "$(command -v bash)" -c 'source "$1/scripts/drivers/_common.sh" && PROJECT_ROOT=/nonexistent source_driver claude >/dev/null 2>&1 || exit 99; agent_trust_paths /repo/test' _ "$R" 2>&1)"; rc=$?
+        if [ "$rc" = 0 ] && [ -L "$f" ] && [ "$(c_trusted "$H/dotfiles/claude.json" /repo/test)" = true ] \
+           && [ "$(jq -r .keep "$H/dotfiles/claude.json")" = 1 ]; then
+            echo "PASS symlink·python $how：链接保留、记录写进目标文件"
+        else
+            echo "FAIL symlink·python $how：链接保留、记录写进目标文件 :: rc=$rc 链接=$([ -L "$f" ] && echo 在 || echo 被换掉) 目标=$(cat "$H/dotfiles/claude.json") $err"
+        fi
+    done
+    # (c) 链接成环：解析不了 → 拒绝写入、链接原样、不报成功
+    new_home sym-loop; f="$(cj)"
+    ln -s loop-b "$H/loop-a"; ln -s loop-a "$H/loop-b"; ln -s loop-a "$f"
+    err="$(in_driver "$R" claude agent_trust_paths /repo/test 2>&1)"; rc=$?
+    if [ "$rc" != 0 ] && [ -L "$f" ] && [ -L "$H/loop-a" ] && [ -L "$H/loop-b" ] && [ "$(readlink "$f")" = loop-a ]; then
+        case "$err" in *已写入*) echo "FAIL symlink·链接成环：拒绝写入、链接原样 :: 日志说已写入" ;;
+            *) echo "PASS symlink·链接成环：拒绝写入、链接原样" ;; esac
+    else echo "FAIL symlink·链接成环：拒绝写入、链接原样 :: rc=$rc $(ls -l "$H" | tr '\n' '|')"; fi
+}
+
+echo "== 0a. 认框：真机截屏 =="
+run_suite suite_detect "$REPO_DIR"
+echo "== 0b. 配置软链接：不靠 python 解析，解析不了就不写 =="
+run_suite suite_symlink "$REPO_DIR"
 echo "== 1. 信任记到哪个目录（真实 git 布局）=="
 run_suite suite_keys "$REPO_DIR"
 echo "== 2. claude 写入函数 =="
@@ -632,10 +725,31 @@ neg_gate new scripts/dispatch-new-issue.sh 'agent_launch_trust_gate "$ISSUE" "$T
 neg_gate 评论续接 scripts/dispatch-issue-comment.sh '    agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0' dlg-cmtB-codex
 neg_gate PR续接 scripts/dispatch-pr-comment.sh '    agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0' dlg-prB-codex
 neg_gate PR重建 scripts/dispatch-pr-comment.sh $'\nagent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0' dlg-prC-claude
-if mutation_gate && M=$(mutant no-claude-re scripts/drivers/claude.sh \
-    "AGENT_TRUST_PROMPT_RE='Quick safety check|Yes, I trust this folder|Do you trust the files in this folder'" \
-    "AGENT_TRUST_PROMPT_RE=''"); then
-    neg "claude 不给确认框特征" "disp·dlg-cmtR-claude·卡在确认框" suite_dispatch "$M" dlg-cmtR-claude
+if mutation_gate && M=$(mutant no-claude-footer scripts/drivers/claude.sh \
+    "AGENT_TRUST_PROMPT_FOOTER_RE='^[[:space:]]*Enter to confirm · Esc to cancel[[:space:]]*\$'" \
+    "AGENT_TRUST_PROMPT_FOOTER_RE=''"); then
+    neg "claude 不给确认框结构" "disp·dlg-cmtR-claude·卡在确认框" suite_dispatch "$M" dlg-cmtR-claude
+fi
+# 上一版的宽松识别：整屏压成一行，命中标题就算（PR #110 复审指出会误杀正常会话）
+LOOSE='    printf '"'"'%s\n'"'"' "$last" | grep -qE "$AGENT_TRUST_PROMPT_FOOTER_RE" || return 1
+    printf '"'"'%s\n'"'"' "$tail_lines" | grep -qE "$AGENT_TRUST_PROMPT_OPTION_RE" || return 1
+'
+if mutation_gate && M=$(mutant loose-detect scripts/drivers/_common.sh "$LOOSE" ''); then
+    neg "认框退回「出现标题就算」" "detect·claude·prose-one-phrase" suite_detect "$M"
+    neg "认框退回「出现标题就算」（codex）" "detect·codex·prose-quote-full" suite_detect "$M"
+    neg "认框退回「出现标题就算」（真派工）" "disp·prose-new-claude·没有确认框" suite_dispatch "$M" prose-new-claude
+fi
+if mutation_gate && M=$(mutant no-footer-check scripts/drivers/_common.sh \
+    '    printf '"'"'%s\n'"'"' "$last" | grep -qE "$AGENT_TRUST_PROMPT_FOOTER_RE" || return 1
+' ''); then
+    neg "认框不再要求底栏在最后一行" "detect·claude·prose-quote-full" suite_detect "$M"
+fi
+if mutation_gate && M=$(mutant py-resolve scripts/drivers/_common.sh '    local p="$1" t n=0 d
+' '    python3 -c '"'"'import os,sys; print(os.path.realpath(sys.argv[1]))'"'"' "$1" 2>/dev/null || printf "%s\n" "$1"; return 0
+    local p="$1" t n=0 d
+'); then
+    neg "软链解析退回「python，失败就用原路径」" "symlink·python broken" suite_symlink "$M"
+    neg "软链解析退回「python，失败就用原路径」（成环）" "symlink·链接成环" suite_symlink "$M"
 fi
 if mutation_gate && M=$(mutant setup-old setup.sh '        agent_trust_dirs "$HOST"' \
     '        agent_trust_paths "$HOST" "$(config_value WORKTREE_BASE)"'); then

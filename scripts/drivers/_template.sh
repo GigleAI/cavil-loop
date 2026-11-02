@@ -63,7 +63,10 @@ agent_command_resume() {
 # 可选：你的 agent 进新目录要先确认「信不信这个目录」时实现这三样（契约见 _common.sh「目录信任」）。
 # setup.sh 部署时、每次派工起会话前都会调，免得 worker 挂在那个确认框上（不实现就会被跳过）。
 # 先拿真 CLI 实测它在 git worktree / 子模块里到底认哪个目录——别假设「子目录继承上级」。
-# AGENT_TRUST_PROMPT_RE='确认框里一定会出现的那句话'
+# 确认框的结构（照真机截屏写，见 _common.sh「目录信任」）：标题、整行的「信任」选项、最后一行的底栏
+# AGENT_TRUST_PROMPT_TITLE='…'
+# AGENT_TRUST_PROMPT_OPTION_RE='^[[:space:]]*…[[:space:]]*$'
+# AGENT_TRUST_PROMPT_FOOTER_RE='^[[:space:]]*…[[:space:]]*$'
 # agent_trust_key() {      # <dir> → 本 agent 实际按哪个目录判断信任
 #     trust_physical_dir "$1"
 # }

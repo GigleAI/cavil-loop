@@ -274,8 +274,16 @@ agent_command_resume() {
 # 但 worker 就挂在弹窗上一动不动——看日志一切正常，非 attach 进去不可能发现。
 #
 # 信任记录在 ~/.claude.json 的 projects["<绝对路径>"].hasTrustDialogAccepted。
-# 确认框出现时屏幕长这样（两种措辞都见过）
-AGENT_TRUST_PROMPT_RE='Quick safety check|Yes, I trust this folder|Do you trust the files in this folder'
+# 确认框长这样（2.1.316 真机截屏，tests/fixtures/trust-dialog/claude-trust.txt）：
+#    Quick safety check: Is this a project you created or one you trust? (…换行…)
+#    ❯ No, exit
+#      Yes, I trust this folder
+#    Enter to confirm · Esc to cancel          ← 屏幕最后一行
+# 认框看结构不看单个词：正常对话里引用这句话（修的就是这个功能时天天出现）不能被当成弹框。
+# 「bypass permissions」确认框底栏一模一样，靠选项行区分开。
+AGENT_TRUST_PROMPT_TITLE='Quick safety check: Is this a project you created or one you trust?'
+AGENT_TRUST_PROMPT_OPTION_RE='^[[:space:]]*(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Yes, I trust this folder[[:space:]]*$'
+AGENT_TRUST_PROMPT_FOOTER_RE='^[[:space:]]*Enter to confirm · Esc to cancel[[:space:]]*$'
 
 # claude 按哪个目录判断信任（2.1.316 隔离配置目录实测，GitHub#108）：
 #   · git 里：只看 worktree **所属仓库**那一条——普通仓库是主 checkout 目录，
