@@ -893,6 +893,33 @@ PROJECT_PRIORITY_FIELD="Priority"
 # bot 账号看不到看板、但你手上另有一个能看的 token 时，塞这里最省事。
 PROJECT_GH_TOKEN=""
 
+# ── Auto-add this repo's issues / PRs to GitHub Projects / 自动把本仓库条目加进 Project ──
+# One or more projects as "<org or user>/<number>", separated by spaces or commas.
+# Empty = off (default) — no extra GitHub request at all.
+# Why: on GitHub Free each project gets ONE auto-add workflow watching ONE repo, so several
+# repos cannot feed one board. The daemon scans the repo every poll anyway and adds them.
+#   · added: every open issue / PR; closed / merged ones only if created after the project
+#     was first synced here (so commenting on an ancient closed issue does not pull it in)
+#   · add-only: never edits fields, never removes cards; already on the board (archived
+#     cards included) = no write request
+#   · reads use PROJECT_GH_TOKEN (else GH_TOKEN); the add goes through the WRITE identity
+#     (WRITE_GH_TOKEN, else GH_TOKEN), which needs `project` scope (classic PAT) or write
+#     access to the project (fine-grained). A failure logs one warning and retries next
+#     poll; dispatch is never affected
+#   · per-project progress lives in $STATE_DIR/project-auto-add.json (delete it to start over)
+#
+# 一个或多个「组织或用户名/编号」，空格或逗号分隔。留空 = 关闭（默认），一个请求都不多发。
+# 为什么要有：GitHub 免费版每个 Project 只能开 1 条自动加入规则、只盯 1 个仓库，多个仓库
+# 汇总不进同一个看板；守护程序本来就每轮扫仓库，顺手加。
+#   · 加谁：开着的 issue / PR 全加；已关闭 / 已合并的只加「这个 Project 开始同步之后才新建的」
+#     （有人在很久以前关掉的 issue 下评论，不会把它拉进来）
+#   · 只加不改：不改字段、不移除卡片；已在看板里（含已归档）的不发写请求
+#   · 读走 PROJECT_GH_TOKEN（没配用 GH_TOKEN），加入走写身份（WRITE_GH_TOKEN，没配用
+#     GH_TOKEN），需要 classic PAT 的 `project` 权限或 fine-grained 对该 Project 的写权限。
+#     失败只记一行警告、下一轮重试，派工不受影响
+#   · 每个 Project 的进度在 $STATE_DIR/project-auto-add.json（删掉它 = 从头开始）
+AUTO_ADD_PROJECTS=""               # e.g. / 例：AUTO_ADD_PROJECTS="myorg/4 myorg/11"
+
 # ── Poll interval + idle backoff / 轮询间隔与空闲退避 ──
 
 # How often the scheduler wakes the poller (seconds). setup.sh writes this value

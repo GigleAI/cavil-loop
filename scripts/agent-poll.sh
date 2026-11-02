@@ -829,6 +829,10 @@ if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then
     nohup bash "$SCRIPT_DIR/post-merge-retrospective.sh" >> "$STATE_DIR/retrospective.log" 2>&1 &
 fi
 
+# ── 3e. 把本仓库的 issue / PR 补进配置的 Project（GitHub#116）──
+# 放在派工和清理全部做完之后；AUTO_ADD_PROJECTS 留空时一次 GitHub 调用都不发。
+project_auto_add_tick
+
 # ── 4. 缺价自动抓价（GitHub#51）──
 # 只动本机缓存、不碰 GitHub，所以不标 PACE_ACTED；没有缺价标记时就是一次 ls。
 price_fetch_tick

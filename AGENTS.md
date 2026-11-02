@@ -36,6 +36,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   ├── preview-resolve-conflict.sh ← Resolve a port registered in both old and new directories by different owners (by hand)
 │   ├── session-log.sh             ← View tmux pane history
 │   ├── repair-unit-links.sh       ← Repoint systemd unit links at the stable skill entry + restart timers that vanished (GitHub#109); run every poll round, by the deployer before cleanup, by setup / migration after enable
+│   ├── project-auto-add.sh        ← Add this repo's issues / PRs to the GitHub Projects in AUTO_ADD_PROJECTS (GitHub#116; one child process per poll, off when empty)
 │   ├── notify-requester-bot.sh    ← Wake the external requester bot (worker-side, off unless configured; GitHub#95 / #97); notify-relay.sh is the early name, forwarding to it
 │   ├── weekly-report/             ← Monday auto weekly report (collect / render / PDF / publish)
 │   └── doc-diagrams/              ← Generator + checker for the animated SVGs in docs/images/
@@ -329,6 +330,7 @@ Changes in these areas must run the matching tests:
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
 - The comment usage footer (GitHub#88: `comment-footer.sh` / `comment_footer.py`, the AI-time estimate in `ai_time.py`, the footer step of the four templates, the `${COMMENT_FOOTER_CMD}` placeholder, the weekly report reading the new visible layout) → `tests/comment-footer.test.sh` (~10 s by default, it runs the real dispatch scripts; with `MUTATION=1` it also runs, for every rule, a deliberately broken copy that must turn red — ~2.5 min). The footer is generated whole by the script — templates must not tell the agent to assemble time / token lines by hand again, and the agent-metrics record stays the last non-empty line
 - Price gap-fill (markers / `price_fetch.py` / the fetched trust bucket) → `tests/price-fetch.test.sh`
+- Auto-adding the repo's issues / PRs to GitHub Projects (GitHub#116: `AUTO_ADD_PROJECTS`, `scripts/project-auto-add.sh`, `project_auto_add_tick`, `$STATE_DIR/project-auto-add.json`) → `tests/project-auto-add.test.sh` (~1 min by default, real `agent-poll.sh` against a stateful fake GitHub; ~2.5 min with `MUTATION=1`, sixteen broken copies). Each project is judged only on the reads *it* needs — a failure on a page another project needs must not hold it back — and its candidates stay within its own range (a synced board does not pick up old items just because a new board triggered a full scan). Reads go through `project_gh_graphql`, the add through `gh_write`; a project the read identity cannot see gets no write
 - Poll pace / idle + failure backoff → `tests/poll-pace.test.sh` (~40s: the end-to-end groups really do spawn `agent-poll.sh` a few hundred times — do not run it under a 30-second command timeout, a half-finished run looks like a failure)
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, `tests/preview-port-ownership.test.sh`, …
