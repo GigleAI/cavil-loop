@@ -69,7 +69,7 @@ chk "pending/review 归 review 那趟" "$(verdict "pending/review")"            
 chk "混在一堆 label 里也能认出"    "$(verdict "bug,priority/p1,Done,ui")"   "Done"
 
 echo "── 该挡的（项目自定义追加）──"
-chk "GREEDY_SKIP_LABELS 第一项"    "$(verdict "blocked")"                   "deliberately-wrong-for-CI-red-demo"
+chk "GREEDY_SKIP_LABELS 第一项"    "$(verdict "blocked")"                   "blocked"
 chk "GREEDY_SKIP_LABELS 第二项"    "$(verdict "需要讨论")"                   "需要讨论"
 
 echo "── 精确匹配，不许子串误伤 ──"
