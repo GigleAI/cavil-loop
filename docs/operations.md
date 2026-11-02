@@ -480,7 +480,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 | No change under `.github/` | `pending/human` |
 | Every check run / commit status on that commit passed (none at all = rely on the record above) | failing → back to the worker; still running after `AUTOPILOT_CHECKS_TIMEOUT_HOURS` (6) → `pending/human` |
 | GitHub says mergeable (no conflict) | back to the worker |
-| Right before merging, everything above is read again — PR state / commit / target / branch / labels / conflict, binding, the issue's stop and authorization, changed files, and the checks (a check that turns red, restarts, or appears where there was none) | skip this round, record nothing |
+| Right before merging, the **same permit function runs again from fresh reads** — every row above, including the reviewer's test record (a comment can be edited or deleted) and the checks (red, re-running, or newly appeared); both runs must say "merge" for the same issue / commit / target | skip this round, record nothing |
 
 - **Can't read something** (events, permissions, checks, files, comments): nothing is
   written this round; after `AUTOPILOT_UNKNOWN_MAX` (10) rounds in a row it goes to a human.

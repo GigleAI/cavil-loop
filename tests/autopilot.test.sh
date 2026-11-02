@@ -264,7 +264,10 @@ Refs #3" "$H1" "pending/merge"
               "commits_${H1}_check-runs|2|jq '.[\"$H1\"] = {check_runs:[{name:\"unit\",status:\"completed\",conclusion:\"success\"}]}' checks.json|原本没有检查、新冒出一个" \
               "pulls_8_files|2|jq '.[\"8\"] = [{filename:\".github/workflows/x.yml\"}]' files.json|改动多了 .github/ 文件" \
               "pulls_8|2|jq '.[\"8\"] += {mergeable:false, mergeable_state:\"dirty\"}' items.json|变成与目标分支冲突" \
-              "pulls_8|2|jq '.[\"8\"].base.ref = \"release\"' items.json|改投了别的目标分支"; do
+              "pulls_8|2|jq '.[\"8\"].base.ref = \"release\"' items.json|改投了别的目标分支" \
+              "pulls_8|2|jq '.[\"8\"] = []' comments.json|复审的测试记录评论被删掉" \
+              "pulls_8|2|jq '.[\"8\"][0].body = \"<!-- autopilot-review-pass head=$H1 passed=12 failed=1 -->\"' comments.json|复审的测试记录被改成有失败" \
+              "pulls_8|2|jq '.[\"8\"][0].body = \"<!-- autopilot-review-pass head=$H2 passed=12 failed=0 -->\"' comments.json|复审的测试记录改成了别的提交"; do
         IFS='|' read -r key k cmd what <<< "$hk"
         fresh; happy
         # 检查「变红 / 重跑」的场景：一开始检查是通过的，才能单独测到重读检查这一步
@@ -587,18 +590,21 @@ REAL_PASS=$pass; REAL_FAIL=$fail
 # ─────────────────────────────────────────────────────────────────────────
 section "【10】负对照（改坏一处，至少一条检查必须变红）"
 mut_fail=0; mut_ran=0
-mutate() {   # <名字> <python 替换：文件相对 scripts/，原文，替换后>
-    local name="$1" file="$2" old="$3" new="$4" M="$SANDBOX/mut-$1"
+mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后> [<原文> <替换后> …]：每对原文都必须找得到
+    local name="$1" file="$2" M="$SANDBOX/mut-$1"
+    shift 2
     mutation_gate || return 0
     mut_ran=$((mut_ran + 1))
     rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
-    if ! python3 - "$M/scripts/$file" "$old" "$new" <<'PY'
+    if ! python3 - "$M/scripts/$file" "$@" <<'PY'
 import sys
-p, old, new = sys.argv[1:]
+p, pairs = sys.argv[1], sys.argv[2:]
 s = open(p).read()
-if s.count(old) < 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new, 1))
+for old, new in zip(pairs[0::2], pairs[1::2]):
+    if s.count(old) < 1:
+        sys.exit(1)
+    s = s.replace(old, new, 1)
+open(p, "w").write(s)
 PY
     then
         echo "  ❌ 负对照 $name：要改的原文找不到（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
@@ -612,73 +618,83 @@ PY
         echo "  ❌ 负对照 $name：改坏后整套检查仍全绿（测试分不出这个错误实现）"; mut_fail=$((mut_fail + 1))
     fi
 }
-# 绑定：只看分支、不看正文
+# 合并前那次重判用 AP_SECOND=1 标出来，「只在第二次跳过某一项」的负对照靠它
+SECOND_OLD='    autopilot_permit "$sf" "$pr"
+    if [ "$AP_V" != ok ]'
+SECOND_NEW='    AP_SECOND=1 autopilot_permit "$sf" "$pr"
+    if [ "$AP_V" != ok ]'
+mutate2() {   # <名字> <原文> <替换后>：只在合并前的第二次判定里改坏
+    mutate "$1" _lib.sh "$SECOND_OLD" "$SECOND_NEW" "$2" "$3"
+}
+
+# ── 判定本身（两次判定都受影响）──
 mutate binding-no-body _lib.sh 'if [ "$by_line" != "$n" ]; then' 'if false; then'
-# 绑定：只看正文、不核对来源仓库
 mutate binding-no-fork _lib.sh 'if [ -z "$repo" ] || [ "$(requester_bot_lc "$repo")" != "$(requester_bot_lc "$REPO")" ]; then' 'if false; then'
-# 授权：不排除 loop 自己的写入账号
 mutate auth-loop-actor _lib.sh 'if [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$me")" ]; then' 'if false; then'
-# 授权：不查写权限
 mutate auth-no-perm _lib.sh '        admin|write) ;;' '        *) ;;'
-# 授权：只看最后一次事件存在，不看是不是「加上」
 mutate auth-last-event _lib.sh 'if [ "$ev_kind" != labeled ]; then' 'if false; then'
-# 授权：读不到当成有授权
 mutate auth-unknown-ok _lib.sh 'AUTOPILOT_REASON="读不到 issue #$num 的标签记录"; return 2' 'AUTOPILOT_ACTOR=x; return 0'
-# 合并检查处的授权调用：拒绝时不交人（只靠最后重读兜底）
-mutate merge-site-auth _lib.sh '        1) if [ "$AUTOPILOT_DENY" = no-label ]; then' '        1) return 0; if false; then'
-# 合并前重读：不重读 PR
-mutate reread-pr _lib.sh 'if ! pj2=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || ! autopilot_pr_still "$pj2" "$head" "$base" "$ref" \' 'if ! pj2=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) \'
-# 合并前重读：不重读 issue 的授权
-mutate reread-auth _lib.sh '    rc=0; autopilot_authorization "$n" "$ij2" || rc=$?
-    if [ "$rc" != 0 ]; then' '    rc=0
-    if [ "$rc" != 0 ]; then'
-# 合并前重读：不看 issue 上的 pending/human
-mutate reread-issue-halt _lib.sh "       || printf '%s' \"\$ij2\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then" '; then'
-# 叫停：issue 上的 pending/human 不管
-mutate halt-issue _lib.sh "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
-        autopilot_to_human" '    if false; then
-        autopilot_to_human'
-# 复审提交：不核对复审看的是不是现在这个提交
-mutate reviewed-head _lib.sh 'if [ -z "$rh" ] || [ "$rh" != "$head" ] || ' 'if '
-# 复审测试记录：不核对
-mutate evidence _lib.sh 'rc=0; autopilot_review_evidence "$pr" "$head" "$rat" || rc=$?' 'rc=0'
-# 复审测试记录：不核对失败数
 mutate evidence-failed _lib.sh 'select(.h == $h and (.f | tonumber) == 0 and (.p | tonumber) > 0)' 'select(.h == $h)'
-# 检查没过当成通过
-mutate checks-fail _lib.sh '        fail)
-            autopilot_to_worker' '        fail) ;;
-        failx)
-            autopilot_to_worker'
-# .github/ 不拦
 mutate dot-github _lib.sh 'any(startswith(".github/"))' 'any(startswith(".nothing/"))'
-# 冲突不拦
-mutate conflict _lib.sh "        conflict) autopilot_to_worker" "        conflictx) autopilot_to_worker"
-# 派工处：不查授权，挂着托管标签就算托管条目
+mutate gnu-date _lib.sh "at=\$(jq -nr 'now - 120 | floor | strftime(\"%Y-%m-%dT%H:%M:%SZ\")' 2>/dev/null) || at=\"\"" 'at=$(date -u -d "@$(( $(date +%s) - 120 ))" +%Y-%m-%dT%H:%M:%SZ)'
+# ── 许可函数里的每一项判断（两次都跳过）──
+mutate permit-auth _lib.sh '    rc=0; autopilot_authorization "$AP_N" "$ij" || rc=$?' '    rc=0'
+mutate permit-issue-halt _lib.sh "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
+        AP_V=human" '    if false; then
+        AP_V=human'
+mutate permit-reviewed-head _lib.sh 'if [ -z "$AP_RH" ] || [ "$AP_RH" != "$AP_HEAD" ] || ' 'if '
+mutate permit-review-base _lib.sh '[ -z "$AP_RB" ] || [ "$AP_RB" != "$AP_BASE" ] || ' ''
+mutate permit-evidence _lib.sh '    rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?' '    rc=0'
+mutate permit-checks _lib.sh '        fail) AP_V=worker;' '        fail) ;; failx) AP_V=worker;'
+mutate permit-conflict _lib.sh '        conflict) AP_V=worker;' '        conflictx) AP_V=worker;'
+# ── 合并前的第二次判定：整个不做 / 只在第二次跳过某一项 ──
+mutate reread-none _lib.sh "$SECOND_OLD" '    :
+    if [ "$AP_V" != ok ]'
+mutate2 reread-pr-halt 'case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) AP_V=halt_pr' 'case ",$labels,${AP_SECOND:+x}" in *",$LABEL_PENDING_HUMAN,") AP_V=halt_pr'
+mutate2 reread-issue-halt "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
+        AP_V=human" "    if [ -z \"\${AP_SECOND:-}\" ] && printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
+        AP_V=human"
+mutate2 reread-auth '    rc=0; autopilot_authorization "$AP_N" "$ij" || rc=$?' '    rc=0; [ -n "${AP_SECOND:-}" ] || autopilot_authorization "$AP_N" "$ij" || rc=$?'
+# 第二次判定时新推送 / 改投有两道拦截：复审记录对不上、两次判定的身份对不上。单拆一道另一道仍会拦住
+# （本来就是双保险，不是测试漏洞），所以这项把两道一起拆掉，必须变红
+mutate reread-identity _lib.sh "$SECOND_OLD" "$SECOND_NEW" \
+    'if [ -z "$AP_RH" ] || [ "$AP_RH" != "$AP_HEAD" ] || [ -z "$AP_RB" ] || [ "$AP_RB" != "$AP_BASE" ] || [ -z "$AP_RAT" ]; then' \
+    'if [ -z "$AP_RH" ] || { [ -z "${AP_SECOND:-}" ] && { [ "$AP_RH" != "$AP_HEAD" ] || [ "$AP_RB" != "$AP_BASE" ]; }; } || [ -z "$AP_RB" ] || [ -z "$AP_RAT" ]; then' \
+    ' || [ "$AP_HEAD" != "$head" ] || [ "$AP_BASE" != "$base" ] \' ' \'
+mutate2 reread-files '    case "$(autopilot_files_verdict "$pr")" in' '    case "$([ -n "${AP_SECOND:-}" ] && echo ok || autopilot_files_verdict "$pr")" in'
+mutate2 reread-evidence '    rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?' '    rc=0; [ -n "${AP_SECOND:-}" ] || autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?'
+mutate2 reread-checks '        fail) AP_V=worker;' '        fail) [ -n "${AP_SECOND:-}" ] && { AP_V=ok; return 0; }; AP_V=worker;'
+mutate2 reread-checks-pending '        pending) AP_V=wait_checks;' '        pending) [ -n "${AP_SECOND:-}" ] && { AP_V=ok; return 0; }; AP_V=wait_checks;'
+mutate reread-new-checks _lib.sh ' \
+       || [ "$AP_REF" != "$ref" ] || { [ "$checks" = none ] && [ "$AP_CHECKS" != none ]; }; then' ' \
+       || [ "$AP_REF" != "$ref" ]; then'
+mutate2 reread-conflict '    case "$(autopilot_conflict_verdict "$pj")" in' '    case "$([ -n "${AP_SECOND:-}" ] && echo ok || autopilot_conflict_verdict "$pj")" in'
+# ── 派工 / 收队处 ──
 mutate dispatch-site _lib.sh '    rc=0; autopilot_authorization "$n" "$ij" || rc=$?
     case "$rc" in
         0) AUTOPILOT_ISSUE="$n"; return 0 ;;' '    rc=0
     case "$rc" in
         0) AUTOPILOT_ISSUE="$n"; return 0 ;;'
-# 只挂托管标签的 issue：不查授权就派
 mutate collect-site agent-poll.sh '        rc=0; autopilot_authorization "$num" "$ij" || rc=$?
         case "$rc" in' '        rc=0
         case "$rc" in'
-# 派复审不记提交
-# 复审记录不核对目标分支
-mutate review-base _lib.sh '|| [ -z "$rb" ] || [ "$rb" != "$base" ] ' ''
-# 合并前重读：不重读自动检查
-mutate reread-checks _lib.sh '        *) log "托管：PR #$pr 判定之后自动检查变成' '        *) ;; xx) log "托管：PR #$pr 判定之后自动检查变成'
-# 合并前重读：不管「原本没检查、新冒出检查」
-mutate reread-new-checks _lib.sh 'if [ "$checks_first" = none ] && [ "$AUTOPILOT_CHECKS" != none ]; then' 'if false; then'
-# 合并前重读：不重读改动文件
-mutate reread-files _lib.sh 'if [ "$(autopilot_files_verdict "$pr")" != ok ]; then
-        log "托管：PR #$pr 判定之后改动文件' 'if false; then
-        log "托管：PR #$pr 判定之后改动文件'
-# 合并前重读：不重看冲突
-mutate reread-conflict _lib.sh '       || [ "$(autopilot_conflict_verdict "$pj2")" != ok ]; then' '       ; then'
-# 时间换回 GNU 才有的 date -d
-mutate gnu-date _lib.sh "at=\$(jq -nr 'now - 120 | floor | strftime(\"%Y-%m-%dT%H:%M:%SZ\")' 2>/dev/null) || at=\"\"" 'at=$(date -u -d "@$(( $(date +%s) - 120 ))" +%Y-%m-%dT%H:%M:%SZ)'
 mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
+# 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
+mutate_old() {   # <名字> <提交>
+    local name="$1" rev="$2" M="$SANDBOX/mut-$1"
+    mutation_gate || return 0
+    mut_ran=$((mut_ran + 1))
+    rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
+    if ! git -C "$REPO_DIR" show "$rev:scripts/_lib.sh" > "$M/scripts/_lib.sh" 2>/dev/null; then
+        echo "  ❌ 负对照 $name：取不到 $rev 的旧实现（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
+    fi
+    pass=0; fail=0; QUIET=1
+    run_scenarios "$M/scripts"
+    QUIET=0
+    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照 $name：$fail 条检查变红"
+    else echo "  ❌ 负对照 $name：旧实现整套检查仍全绿"; mut_fail=$((mut_fail + 1)); fi
+}
+mutate_old old-a420448 a4204481429c54cd1803ca8d68aab27fecc9f71d
 pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
