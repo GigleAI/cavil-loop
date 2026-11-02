@@ -386,8 +386,10 @@ already-synced board looks at items updated since 10 minutes before its last syn
 someone removes by hand comes back if that item is updated again, or if it was itself updated
 within those 10 minutes (the overlap that keeps updates landing mid-poll from being missed).
 Older items are not touched — a new board's full scan does not push them back into a board that
-is already in sync. To keep an item off a board for good, close it or drop that board from
-`AUTO_ADD_PROJECTS`.
+is already in sync. There is **no per-item exclusion**: closing an item does not keep it off —
+an item created after the board started syncing stays a candidate when closed or merged (that is
+how items opened and closed during downtime get added). Removing the board from
+`AUTO_ADD_PROJECTS` stops auto-adding to that board **entirely**, for every item.
 
 **Permissions.** Reads go through `PROJECT_GH_TOKEN` (else `GH_TOKEN`); the add is a write
 and goes through `WRITE_GH_TOKEN` (else `GH_TOKEN`). The write identity needs the
