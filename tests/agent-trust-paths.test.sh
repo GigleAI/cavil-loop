@@ -72,11 +72,29 @@ if s.count(old) != 1:
 open(p, "w").write(s.replace(old, new))
 PY
     then
-        bad "负对照准备失败：$name（$rel 里找不到要改的原文）"
+        # 调用方都是 M=$(mutant …)：这里是子 shell，fail 计数和 stdout 都回不到父 shell。
+        # 所以写进记录文件 + stderr，由 report_prep_failures 在父 shell 里逐条记红（PR #110 第 3 轮复审）
+        printf '%s\t%s\n' "$name" "$rel" >> "$PREP_FAILED"
+        echo "  ❌ 负对照准备失败：$name（$rel 里找不到要改的原文）" >&2
         return 1
     fi
     printf '%s\n' "$d"
 }
+PREP_FAILED="$TMP/mutation-prep-failed"; : > "$PREP_FAILED"
+report_prep_failures() {
+    local name rel
+    while IFS=$'\t' read -r name rel; do
+        [ -n "$name" ] && bad "负对照准备失败：$name（$rel 里找不到要改的原文），这项负对照没有跑"
+    done < "$PREP_FAILED"
+    : > "$PREP_FAILED"
+}
+# 只跑自检（由文件末尾那次自检调起）：故意准备一个原文不存在的负对照，然后像正常结尾一样汇总退出
+if [ -n "${TRUST_TEST_ONLY_SELFCHECK:-}" ]; then
+    M=$(mutant selfcheck-bad scripts/drivers/_common.sh '这段原文不存在 9f3c' '') || true
+    report_prep_failures
+    echo "通过 $pass，失败 $fail"
+    [ "$fail" -eq 0 ]; exit
+fi
 
 # ── 真机截屏（tests/fixtures/trust-dialog/，路径已换成假路径）──────────────────
 FIX="$TEST_DIR/fixtures/trust-dialog"
@@ -652,67 +670,134 @@ suite_symlink() {   # <skill 目录>
     else echo "FAIL symlink·链接成环：拒绝写入、链接原样 :: rc=$rc $(ls -l "$H" | tr '\n' '|')"; fi
 }
 
-# ═══ S11. 真实路径：逐分量解析，和独立实现（python realpath）对拍 ═══
-suite_realpath() {   # <skill 目录>
-    local R="$1" L="$TMP/rp" name rel want got rc
-    rm -rf "$L"; mkdir -p "$L/versions/v1" "$L/links" "$L/a/b/c" "$L/abs" "$L/plain"
+# ═══ S11. 真实路径：拿内核的真实打开结果对拍 ═══
+# 每个场景在两份一模一样的布局里各跑一次：一份给被测函数解析，一份让内核以「写、不存在就建」
+# 打开（python os.open O_WRONLY|O_CREAT），看它实际落到哪个文件（按 inode 找回相对路径）。
+# 内核报错的，被测函数必须拒绝。字符串化简（非严格 realpath）不当参照：它会把内核打不开的路径化简成能写的路径。
+rp_layout() {   # <目录>：建出全部场景用到的布局（链接一律相对或指向本目录内）
+    local L="$1"
+    mkdir -p "$L/versions/v1" "$L/links" "$L/a/b/c" "$L/abs" "$L/plain" "$L/adir"
     printf '{"keep":"actual-target"}' > "$L/versions/claude.json"
     printf '{"keep":"unrelated-file"}' > "$L/links/claude.json"
-    ln -s ../versions/v1 "$L/links/current"                # 复审给的布局：目录链接后接 ..
-    ln -s links/current/../claude.json "$L/dirlink-dotdot.json"
+    printf 'regular file' > "$L/not-a-dir"
+    printf '{"keep":"unrelated"}' > "$L/real.json"
     echo '{}' > "$L/a/b/c/real.json"
-    ln -s b/c "$L/a/bc"; ln -s ../a/bc/real.json "$L/plain/rel.json"   # 相对链接，中间又有目录链接
-    ln -s rel.json "$L/plain/chain.json"                    # 链接接链接
-    ln -s "$L/a/b/c/real.json" "$L/abs/abs.json"            # 绝对目标
-    ln -s ../a/bc "$L/plain/deep"                           # 多层 ..：deep/../../ 落在 a 的上一级
-    ln -s missing.json "$L/plain/dangling.json"             # 指向还不存在的文件（首次写入）
-    ln -s "$L/newdir/x/cfg.json" "$L/plain/newdir.json"     # 指向还不存在的目录
-    ln -s loop2 "$L/loop1"; ln -s loop1 "$L/loop2"          # 成环
+    ln -s ../versions/v1 "$L/links/current"
+    ln -s links/current/../claude.json "$L/dirlink-dotdot.json"   # 第 2 轮：目录链接后接 ..
+    ln -s not-a-dir/../real.json "$L/notdir-dotdot.json"          # 第 3 轮：普通文件当目录再 ..
+    ln -s not-a-dir/x.json "$L/notdir-child.json"                 # 普通文件当目录往下走
+    ln -s real.json/ "$L/file-slash.json"                         # 文件后面带 /
+    ln -s real.json "$L/filelink"; ln -s filelink/../real.json "$L/filelink-dotdot.json"  # 指向文件的链接当目录
+    ln -s adir "$L/dir-target.json"                               # 目标是目录
+    ln -s nodir/../real.json "$L/missing-dotdot.json"             # 不存在的目录后接 ..
+    ln -s b/c "$L/a/bc"; ln -s ../a/bc/real.json "$L/plain/rel.json"
+    ln -s rel.json "$L/plain/chain.json"
+    ln -s "$L/a/b/c/real.json" "$L/abs/abs.json"
+    ln -s ../a/bc "$L/plain/deep"
+    ln -s missing.json "$L/plain/dangling.json"
+    ln -s newdir/x/cfg.json "$L/plain/newdir.json"                # 待建目录（首次写，内核会 ENOENT，我们有意建出来）
+    ln -s loop2 "$L/loop1"; ln -s loop1 "$L/loop2"
+}
+kernel_open() {   # <布局目录> <相对路径> → 打印内核实际写到的文件（相对布局目录）；打不开打印 ERR:<errno 名>
+    python3 -I -c '
+import os, sys, errno
+base, rel = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(os.path.join(base, rel), os.O_WRONLY | os.O_CREAT, 0o600)
+except OSError as e:
+    print("ERR:" + errno.errorcode.get(e.errno, str(e.errno))); sys.exit()
+st = os.fstat(fd)
+for root, dirs, files in os.walk(base):
+    for f in files:
+        p = os.path.join(root, f)
+        s = os.lstat(p)
+        if (s.st_dev, s.st_ino) == (st.st_dev, st.st_ino):
+            print(os.path.relpath(p, base)); sys.exit()
+print("ERR:notfound")' "$1" "$2"
+}
+suite_realpath() {   # <skill 目录>
+    local R="$1" name rel expect k got A B rc
     new_home rp
-    while IFS='|' read -r name rel; do
+    while IFS='|' read -r name rel expect; do
         [ -n "$name" ] || continue
-        want="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$L/$rel")"
-        got="$(in_driver "$R" claude trust_real_file "$L/$rel" 2>/dev/null)"
-        if [ "$got" = "$want" ]; then echo "PASS realpath·$name"
-        else echo "FAIL realpath·$name :: 期望 $want，实得 $got"; fi
+        A="$TMP/rp-ours"; B="$TMP/rp-kernel"; rm -rf "$A" "$B"; mkdir -p "$A" "$B"
+        rp_layout "$A"; rp_layout "$B"
+        k="$(kernel_open "$B" "$rel")"
+        got="$(in_driver "$R" claude trust_real_file "$A/$rel" 2>/dev/null)" && got="${got#"$A"/}" || got="REFUSED"
+        if [ "$expect" = kernel ]; then
+            case "$k" in ERR:*) want=REFUSED ;; *) want="$k" ;; esac
+            if [ "$got" = "$want" ]; then echo "PASS realpath·$name（内核：$k）"
+            else echo "FAIL realpath·$name（内核：$k） :: 期望 $want，实得 $got"; fi
+        else
+            # 有意比内核宽的那一处：内核 ENOENT，我们建出待建目录
+            if [ "$k" = ERR:ENOENT ] && [ "$got" = "$expect" ] && [ -d "$A/${expect%/*}" ]; then
+                echo "PASS realpath·$name（内核 ENOENT；首次写入，建出目录）"
+            else echo "FAIL realpath·$name :: 内核 $k，期望 $expect，实得 $got"; fi
+        fi
     done <<'EOF'
-目录链接后接 ..（复审布局）|dirlink-dotdot.json
-相对链接 + 中间目录链接|plain/rel.json
-链接接链接|plain/chain.json
-绝对目标|abs/abs.json
-多层 ..|plain/deep/../../versions/claude.json
-多余的 . 和 //|plain//./chain.json
-指向不存在的文件|plain/dangling.json
-指向不存在的目录|plain/newdir.json
-普通文件|versions/claude.json
+目录链接后接 ..|dirlink-dotdot.json|kernel
+普通文件当目录再 ..|notdir-dotdot.json|kernel
+普通文件当目录往下走|notdir-child.json|kernel
+文件后面带 /|file-slash.json|kernel
+指向文件的链接当目录再 ..|filelink-dotdot.json|kernel
+目标是目录|dir-target.json|kernel
+不存在的目录后接 ..|missing-dotdot.json|kernel
+相对链接 + 中间目录链接|plain/rel.json|kernel
+链接接链接|plain/chain.json|kernel
+绝对目标|abs/abs.json|kernel
+多层 ..|plain/deep/../../versions/claude.json|kernel
+多余的 . 和 //|plain//./chain.json|kernel
+指向不存在的文件|plain/dangling.json|kernel
+普通文件|versions/claude.json|kernel
+链接成环|loop1|kernel
+链接指进不存在的目录|plain/newdir.json|kernel
+没经过链接、目录还没建（首次写配置）|fresh/sub/config.toml|fresh/sub/config.toml
 EOF
-    got="$(cd "$L/plain" && in_driver "$R" claude trust_real_file chain.json 2>/dev/null)"
-    [ "$got" = "$L/a/b/c/real.json" ] && echo "PASS realpath·相对路径输入" || echo "FAIL realpath·相对路径输入 :: $got"
-    in_driver "$R" claude trust_real_file "$L/loop1" >/dev/null 2>&1; rc=$?
-    [ "$rc" != 0 ] && echo "PASS realpath·链接成环：解析失败" || echo "FAIL realpath·链接成环：解析失败 :: rc=0"
-    # 复审布局真实写入：真正的目标拿到记录、无关文件逐字节不变、链接保留
-    local before; before="$(cksum < "$L/links/claude.json")"
-    rc=0; in_driver "$R" claude eval "CLAUDE_JSON_PATH='$L/dirlink-dotdot.json' agent_trust_paths /repo/test" >/dev/null 2>&1 || rc=$?
-    if [ "$rc" = 0 ] && [ "$(c_trusted "$L/versions/claude.json" /repo/test)" = true ] \
-       && [ "$(jq -r .keep "$L/versions/claude.json")" = actual-target ] \
-       && [ "$(cksum < "$L/links/claude.json")" = "$before" ] && [ -L "$L/dirlink-dotdot.json" ]; then
-        echo "PASS realpath·复审布局真实写入：写进真正目标、无关文件不变、链接保留"
-    else echo "FAIL realpath·复审布局真实写入：写进真正目标、无关文件不变、链接保留 :: rc=$rc 目标=$(tr "\n" " " < "$L/versions/claude.json") 无关=$(tr "\n" " " < "$L/links/claude.json")"; fi
+    A="$TMP/rp-ours"; rm -rf "$A"; mkdir -p "$A"; rp_layout "$A"
+    got="$(cd "$A/plain" && in_driver "$R" claude trust_real_file chain.json 2>/dev/null)"
+    [ "$got" = "$A/a/b/c/real.json" ] && echo "PASS realpath·相对路径输入" || echo "FAIL realpath·相对路径输入 :: $got"
+    # 真实写入：合法布局写进真正目标；非法布局一个字节都不动、不报成功
+    local before snap err
+    before="$(cksum < "$A/links/claude.json")"
+    rc=0; in_driver "$R" claude eval "CLAUDE_JSON_PATH='$A/dirlink-dotdot.json' agent_trust_paths /repo/test" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" = 0 ] && [ "$(c_trusted "$A/versions/claude.json" /repo/test)" = true ] \
+       && [ "$(jq -r .keep "$A/versions/claude.json")" = actual-target ] \
+       && [ "$(cksum < "$A/links/claude.json")" = "$before" ] && [ -L "$A/dirlink-dotdot.json" ]; then
+        echo "PASS realpath·目录链接后接 ..：写进真正目标、无关文件不变、链接保留"
+    else echo "FAIL realpath·目录链接后接 ..：写进真正目标、无关文件不变、链接保留 :: rc=$rc"; fi
+    for name in notdir-dotdot.json notdir-child.json file-slash.json filelink-dotdot.json dir-target.json missing-dotdot.json loop1; do
+        snap="$(cd "$A" && find . -path ./home -prune -o -print0 | sort -z | xargs -0 -I{} sh -c 'if [ -L "{}" ]; then echo "L {} $(readlink "{}")"; elif [ -f "{}" ]; then echo "F {} $(cksum < "{}")"; else echo "D {}"; fi')"
+        rc=0; err="$(in_driver "$R" claude eval "CLAUDE_JSON_PATH='$A/$name' agent_trust_paths /repo/test" 2>&1)" || rc=$?
+        if [ "$rc" != 0 ] && [ "$snap" = "$(cd "$A" && find . -path ./home -prune -o -print0 | sort -z | xargs -0 -I{} sh -c 'if [ -L "{}" ]; then echo "L {} $(readlink "{}")"; elif [ -f "{}" ]; then echo "F {} $(cksum < "{}")"; else echo "D {}"; fi')" ]; then
+            case "$err" in *已写入*) echo "FAIL realpath·非法配置 $name：拒绝写入、所有文件和链接原样 :: 日志说已写入" ;;
+                *) echo "PASS realpath·非法配置 $name：拒绝写入、所有文件和链接原样" ;; esac
+        else echo "FAIL realpath·非法配置 $name：拒绝写入、所有文件和链接原样 :: rc=$rc"; fi
+    done
     # 同一个真实文件的两个别名：A 从别名一进来停在替换前，B 从别名二进来必须等同一把锁
     local P="$TMP/pause-alias" a b waited=no
-    rm -rf "$P"; mkdir -p "$P"; echo '{}' > "$L/a/b/c/real.json"
-    MV_PAUSE_TARGET="$L/a/b/c/real.json" MV_PAUSE_DIR="$P" \
-        in_driver "$R" claude eval "CLAUDE_JSON_PATH='$L/plain/chain.json' agent_trust_paths /repo/alias-a" >/dev/null 2>&1 &
+    rm -rf "$P"; mkdir -p "$P"; echo '{}' > "$A/a/b/c/real.json"
+    MV_PAUSE_TARGET="$A/a/b/c/real.json" MV_PAUSE_DIR="$P" \
+        in_driver "$R" claude eval "CLAUDE_JSON_PATH='$A/plain/chain.json' agent_trust_paths /repo/alias-a" >/dev/null 2>&1 &
     a=$!
     for _ in $(seq 1 100); do [ -e "$P/paused" ] && break; sleep 0.05; done
-    in_driver "$R" claude eval "CLAUDE_JSON_PATH='$L/abs/abs.json' agent_trust_paths /repo/alias-b" >/dev/null 2>&1 &
+    in_driver "$R" claude eval "CLAUDE_JSON_PATH='$A/abs/abs.json' agent_trust_paths /repo/alias-b" >/dev/null 2>&1 &
     b=$!
     sleep 1.5; kill -0 "$b" 2>/dev/null && waited=yes
     : > "$P/release"; wait "$a"; wait "$b"
     if [ -e "$P/paused" ] && [ "$waited" = yes ] \
-       && [ "$(c_trusted "$L/a/b/c/real.json" /repo/alias-a)$(c_trusted "$L/a/b/c/real.json" /repo/alias-b)" = truetrue ]; then
+       && [ "$(c_trusted "$A/a/b/c/real.json" /repo/alias-a)$(c_trusted "$A/a/b/c/real.json" /repo/alias-b)" = truetrue ]; then
         echo "PASS realpath·两个别名共用一把锁，两条记录都在"
-    else echo "FAIL realpath·两个别名共用一把锁，两条记录都在 :: 停住=$([ -e "$P/paused" ] && echo 是 || echo 否) 等了=$waited 内容=$(tr "\n" " " < "$L/a/b/c/real.json")"; fi
+    else echo "FAIL realpath·两个别名共用一把锁，两条记录都在 :: 停住=$([ -e "$P/paused" ] && echo 是 || echo 否) 等了=$waited"; fi
+    # 等锁期间链接被改指别处：持锁后重新解析发现不一致 → 不写，两边文件都不动
+    printf '{"keep":"first"}' > "$A/a/b/c/real.json"; before="$(cksum < "$A/a/b/c/real.json")"
+    local before2; before2="$(cksum < "$A/versions/claude.json")"
+    rc=0; err="$(in_driver "$R" claude eval "
+        trust_test_after_lock() { ln -sfn ../versions/claude.json '$A/plain/swap.json'; }
+        ln -sfn ../a/b/c/real.json '$A/plain/swap.json'
+        CLAUDE_JSON_PATH='$A/plain/swap.json' agent_trust_paths /repo/swap" 2>&1)" || rc=$?
+    if [ "$rc" != 0 ] && [ "$(cksum < "$A/a/b/c/real.json")" = "$before" ] && [ "$(cksum < "$A/versions/claude.json")" = "$before2" ]; then
+        echo "PASS realpath·等锁期间链接改指：持锁后重新解析，不一致就不写"
+    else echo "FAIL realpath·等锁期间链接改指：持锁后重新解析，不一致就不写 :: rc=$rc"; fi
 }
 
 echo "== 0c. 真实路径：逐分量解析 =="
@@ -809,9 +894,9 @@ if mutation_gate && M=$(mutant no-footer-check scripts/drivers/_common.sh \
 ' ''); then
     neg "认框不再要求底栏在最后一行" "detect·claude·prose-quote-full" suite_detect "$M"
 fi
-if mutation_gate && M=$(mutant py-resolve scripts/drivers/_common.sh '    local p="$1" t n=0 d
+if mutation_gate && M=$(mutant py-resolve scripts/drivers/_common.sh '    local path="$1" resolved="" c t n=0 d missing=0
 ' '    python3 -c '"'"'import os,sys; print(os.path.realpath(sys.argv[1]))'"'"' "$1" 2>/dev/null || printf "%s\n" "$1"; return 0
-    local p="$1" t n=0 d
+    local path="$1" resolved="" c t n=0 d missing=0
 '); then
     neg "软链解析退回「python，失败就用原路径」" "symlink·python broken" suite_symlink "$M"
     neg "软链解析退回「python，失败就用原路径」（成环）" "symlink·链接成环" suite_symlink "$M"
@@ -826,12 +911,35 @@ if mutation_gate && M=$(mutant logical-cd scripts/drivers/_common.sh '    IFS=/ 
     IFS=/ read -r -a queue <<< "$path"
 '); then
     neg "真实路径退回「先 cd 逻辑路径再取物理路径」" "realpath·目录链接后接 .." suite_realpath "$M"
-    neg "真实路径退回「先 cd 逻辑路径再取物理路径」（写入）" "realpath·复审布局真实写入" suite_realpath "$M"
+    neg "真实路径退回「先 cd 逻辑路径再取物理路径」（写入）" "realpath·目录链接后接 ..：写进真正目标" suite_realpath "$M"
+fi
+# 第 3 轮复审前的实现：逐分量解析，但见到 `..` 就删上一级、不看它是不是目录
+if mutation_gate && M=$(mutant no-dir-check scripts/drivers/_common.sh '            ..) [ "$missing" = 0 ] || return 1                     # 不存在的目录后面跟 ..：ENOENT
+                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
+' '            ..) [ "$missing" = 0 ] || return 1
+'); then
+    neg "解析退回「见 .. 就删上一级，不看是不是目录」" "realpath·普通文件当目录再 .." suite_realpath "$M"
+    neg "解析退回「见 .. 就删上一级，不看是不是目录」（写入）" "realpath·非法配置 notdir-dotdot.json" suite_realpath "$M"
+fi
+if mutation_gate && M=$(mutant no-relock scripts/drivers/_common.sh '    if ! again="$(trust_real_file "$cfg")" || [ "$again" != "$real" ]; then' '    if false; then'); then
+    neg "持锁后不再重新解析" "realpath·等锁期间链接改指" suite_realpath "$M"
 fi
 if mutation_gate && M=$(mutant setup-old setup.sh '        agent_trust_dirs "$HOST"' \
     '        agent_trust_paths "$HOST" "$(config_value WORKTREE_BASE)"'); then
     neg "setup.sh 退回旧写法（仓库根 + worktree base）" "setup·子模块项目：claude" suite_setup "$M"
 fi
+
+# 自检：负对照准备失败必须让整套测试变红（PR #110 第 3 轮复审：以前在子 shell 里记的失败丢了）
+if mutation_gate; then
+    out="$(MUTATION=1 TRUST_TEST_ONLY_SELFCHECK=1 bash "$0" 2>&1)"; rc=$?
+    if [ "$rc" != 0 ] && printf '%s\n' "$out" | grep -q '负对照准备失败：selfcheck-bad' \
+       && printf '%s\n' "$out" | grep -q '失败 1$'; then
+        ok "自检：负对照准备失败 → 整套测试非零退出、记 1 条失败"
+    else
+        bad "自检：负对照准备失败 → 整套测试非零退出、记 1 条失败" "rc=$rc $(printf '%s' "$out" | tail -3 | tr '\n' '|')"
+    fi
+fi
+report_prep_failures
 
 echo
 mutation_summary "$0"

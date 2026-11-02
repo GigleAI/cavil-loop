@@ -364,42 +364,69 @@ trust_git_toplevel() {
     trust_physical_dir "$t"
 }
 
-# 文件真实路径：和内核打开它时走的路一样——从根开始逐个路径分量解析，遇到软链接
-# 就把链接内容展开到剩余分量前面，`..` 一律对**已解析的物理目录**取上一级。
-# 所以「目录链接/../文件」这类组合解释的是链接目标的上一级，不是字面上的上一级
-# （PR #110 第 2 轮复审实测：先 `cd 逻辑路径` 再 `pwd -P` 会把 `..` 先消掉，写进另一个文件）。
-# 配置文件常被 dotfiles 仓库软链进来：直接 mv 到软链上会把链接换成普通文件，所以要写真实文件。
+# 文件真实路径：内核以「写、不存在就建」方式打开 <path> 时，实际会落到的那个普通文件。
+# 走法和内核一样：从根开始逐个路径分量解析，遇到软链接就把链接内容接到剩余分量前面，
+# `..` 对**已解析的物理目录**取上一级（所以「目录链接/../文件」落在链接目标的上一级）。
+# 配置文件常被 dotfiles 仓库软链进来：直接 mv 到软链上会把链接换成普通文件，所以要写真实文件；
 # 同一个真实文件不管从哪个别名进来都得出同一路径——共享锁的位置也靠它。
+#
+# 内核会拒绝的，这里一律拒绝（返回 1、不写任何东西），绝不把非法路径「化简」成另一个可写路径：
+#   · 已存在的非目录被当目录穿过（`普通文件/..`、`普通文件/x`、`文件/`）  → 内核 ENOTDIR
+#   · 链接超过 40 层 / 成环、链接读不出                                      → ELOOP 等
+#   · 最终目标已存在但不是普通文件（目录、设备…）                            → EISDIR 等
+#   · 不存在的目录后面又跟 `..`                                                → ENOENT
+# 唯一比内核宽的一处是有意的：路径**没经过任何软链接**、末尾若干级目录还不存在时
+# （codex 从没跑过，~/.codex 还没建），只要后面不再有 `..`，就把这些目录建出来——这是「首次写配置」。
+# 经过了软链接的路径不放宽：链接指进一个不存在的目录，内核打不开，我们也不替人建。
+# PR #110 三轮复审都出在这里：先 `cd` 逻辑路径再 `pwd -P`；见到 `..` 就删上一级而不看它是不是目录。
+# 测试拿内核的真实打开结果对拍（tests/agent-trust-paths.test.sh「真实路径」一节），不拿字符串化简对拍。
 # 只用 readlink（不带 -f，Linux / macOS 都有），不依赖 python。
-# 解析不了（链接超过 40 层 / 成环、读不出链接、目录建不出）→ 返回 1、什么都不写：
-# 调用方必须拒绝写入，绝不能拿原路径当真实路径继续替换。
 trust_real_file() {
-    local path="$1" resolved="" c t n=0 d
+    local path="$1" resolved="" c t n=0 d missing=0
     local -a queue more
     [ -n "$path" ] || return 1
     case "$path" in /*) ;; *) path="$(pwd -P)/$path" ;; esac
     IFS=/ read -r -a queue <<< "$path"
+    # 原路径以 / 结尾：最后一个分量必须是目录，而我们要的是文件 → 内核会拒，这里也拒
+    case "$path" in */) queue+=(.) ;; esac
     while [ "${#queue[@]}" -gt 0 ]; do
         c="${queue[0]}"; queue=("${queue[@]:1}")
         case "$c" in
-            ''|.) continue ;;
-            ..)   resolved="${resolved%/*}"; continue ;;
+            '') continue ;;
+            .)  # 「x/.」要求 x 是目录；已解析部分在 missing=0 时一定是目录或根，只需防「文件/.」
+                [ "$missing" = 0 ] && [ -n "$resolved" ] && [ ! -d "$resolved" ] && return 1
+                continue ;;
+            ..) [ "$missing" = 0 ] || return 1                     # 不存在的目录后面跟 ..：ENOENT
+                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
+                resolved="${resolved%/*}"; continue ;;
         esac
-        if [ -L "$resolved/$c" ]; then
+        # 要往下走一级，当前已解析部分必须是目录（根除外）
+        if [ "$missing" = 0 ] && [ -n "$resolved" ] && [ ! -d "$resolved" ]; then return 1; fi
+        if [ "$missing" = 0 ] && [ -L "$resolved/$c" ]; then
             n=$((n + 1)); [ "$n" -le 40 ] || return 1
             t="$(readlink "$resolved/$c")" || return 1
             [ -n "$t" ] || return 1
             case "$t" in /*) resolved="" ;; esac
             IFS=/ read -r -a more <<< "$t"
+            case "$t" in */) more+=(.) ;; esac
             queue=(${more[@]+"${more[@]}"} ${queue[@]+"${queue[@]}"})
+        elif [ "$missing" = 0 ] && [ -e "$resolved/$c" ]; then
+            resolved="$resolved/$c"
         else
+            missing=1                                             # 这一级起都不存在：只能是待建的目录 / 文件
             resolved="$resolved/$c"
         fi
     done
     [ -n "$resolved" ] || return 1
+    if [ -e "$resolved" ] || [ -L "$resolved" ]; then
+        [ -f "$resolved" ] && [ ! -L "$resolved" ] || return 1     # 已存在就必须是普通文件
+    fi
     d="${resolved%/*}"; [ -n "$d" ] || d=/
-    mkdir -p "$d" 2>/dev/null || return 1
-    [ ! -L "$resolved" ] || return 1
+    if [ ! -d "$d" ]; then
+        [ "$missing" = 1 ] && [ "$n" = 0 ] || return 1   # 只给没经过链接的路径建目录
+        mkdir -p "$d" 2>/dev/null || return 1
+    fi
+    [ -d "$d" ] || return 1
     printf '%s\n' "$resolved"
 }
 
@@ -447,7 +474,7 @@ trust_config_locked_update() {
     local real lockdir lock fd try before after tmp r rc=1
 
     if ! real="$(trust_real_file "$cfg")"; then
-        echo "[trust] WARN: 解析不出 $cfg 的真实路径（软链接成环或目录建不出），不写——免得把链接换成普通文件" >&2
+        echo "[trust] WARN: $cfg 不是一个能写的配置文件路径（软链接成环、穿过了不是目录的东西、目标不是普通文件或目录建不出），不写" >&2
         return 1
     fi
     lockdir="${CAVIL_TRUST_LOCK_DIR:-$HOME/.local/state/cavil-loop-trust-locks}"
@@ -458,6 +485,14 @@ trust_config_locked_update() {
         exec {fd}>&-
         echo "[trust] WARN: 等 $real 的锁超过 ${TRUST_LOCK_WAIT_SECS:-10}s，本次不写" >&2
         return 2
+    fi
+    # 持锁后再解析一次：等锁期间链接被人改指别处，锁护着的就不是我们要写的那个文件了
+    if declare -f trust_test_after_lock >/dev/null; then trust_test_after_lock "$cfg"; fi
+    local again
+    if ! again="$(trust_real_file "$cfg")" || [ "$again" != "$real" ]; then
+        flock -u "$fd"; exec {fd}>&-
+        echo "[trust] WARN: $cfg 在等锁期间改指到了别处（${again:-解析失败}），本次不写" >&2
+        return 1
     fi
 
     for try in 1 2 3; do
