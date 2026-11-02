@@ -175,6 +175,43 @@ REVIEW_MAX_ROUNDS=3
 # 写了「方案交复审」的项目，开不开这一项都照常工作。
 REVIEW_DESIGN_PROPOSALS="false"
 
+# ── Optional autopilot label / 托管标签（默认关闭，GitHub#114）──
+# A maintainer puts this label on an ISSUE to hand the whole thing to the agents: the design goes
+# through the review gate only (no human confirmation), and once the code review passes the PR is
+# flipped to LABEL_PENDING_MERGE and the daemon merges it — only if ALL of these hold:
+#   · the issue's most recent "add <autopilot label>" event was done by a real user with write
+#     access who is NOT the loop's write account and NOT the requester bot (labels on PRs are ignored)
+#   · the PR is from this repo, on branch BRANCH_PREFIX<N>, and its body closes exactly #N
+#   · the PR head is the exact commit the reviewer was dispatched on, and the reviewer's pass
+#     comment carries its test re-run record for that commit (passed>0, failed=0)
+#   · every check on that commit passed (a repo with no checks at all relies on the record above)
+#   · no conflict with the base branch, no change under .github/, nobody added pending/human on
+#     the issue or the PR, and the autopilot label is still on the issue (re-read right before merging)
+# Needs LABEL_PENDING_REVIEW (no review gate = nobody checks = nothing is put on autopilot).
+# The loop's write account and the maintainer must be different accounts, otherwise no label
+# can ever count as the maintainer's. Requests filed by the external requester bot are never put
+# on autopilot (they need the requester's confirmation, which the daemon cannot judge).
+# Leave LABEL_AUTOPILOT empty to keep the previous behaviour exactly. setup.sh creates both labels.
+#
+# 维护者在 **issue** 上打这个标签 = 从方案到合并全交给 agent：方案只过复审、不等人确认，代码复审
+# 通过后 PR 翻 LABEL_PENDING_MERGE，由 daemon 合并——以下全部成立才合：
+#   · issue 上最近一次「加上托管标签」的操作人是有写权限的真人，且不是 loop 的写入账号、不是外部
+#     需求机器人（PR 上的托管标签一概不看）
+#   · PR 来自本仓库、分支是 BRANCH_PREFIX<N>、正文只关闭 #N
+#   · PR 最新提交正是派复审时的那个提交，且复审的通过评论里有这个提交的测试重跑记录（通过 > 0、失败 = 0）
+#   · 这个提交上的自动检查全部通过（仓库一个检查都没有时，只靠上面那条记录）
+#   · 和目标分支无冲突、没改 .github/、issue 和 PR 都没挂 pending/human、issue 上托管标签还在（合并前最后一刻重读）
+# 必须同时配了 LABEL_PENDING_REVIEW（没有复审关卡 = 没人把关，什么都不托管）。
+# loop 的写入账号和维护者不能是同一个账号，否则任何标签都算不上维护者打的。
+# 外部需求机器人提的需求不托管（要提需求方确认，daemon 判断不了）。
+# 留空 = 关闭，行为与从前完全一致。setup.sh 会按这里的名字建这两个标签。
+LABEL_AUTOPILOT=""
+LABEL_PENDING_MERGE="pending/merge"
+# squash / merge / rebase（仓库设置里得允许这种方式，不允许时交人）
+AUTOPILOT_MERGE_METHOD="squash"
+# 自动检查超过几小时还没跑完就交人
+AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
+
 # ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97 / #100）──
 # For projects where another AI assistant with its own GitHub account (the "requester bot")
 # files requests directly. The loop closes in two places:

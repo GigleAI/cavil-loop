@@ -12,6 +12,8 @@
 | `pending/PR`    | Worker (when opening a PR) | Issue work moved to the PR for tracking; go look at the PR |
 | `Done`          | Daemon (auto-cleanup) | **Only on the PR** (PR merged = truly closed); **not on the issue** (the issue is a long-term tracker; closing it is your call) |
 
+Optional extras: `pending/review` (review gate, see [operations](operations.md#optional-cross-review-gate-off-by-default)) and, with the autopilot label configured (GitHub#114), `pending/merge` on a PR = "review passed, waiting for the daemon to check and merge", plus the autopilot *mode* label itself on an issue (never removed by the daemon) — see [operations](operations.md#autopilot-label-optional-off-by-default).
+
 ### PR↔Issue closure: decided at design time
 
 | Scenario | PR body uses | Issue state at merge | Daemon auto-cleanup |

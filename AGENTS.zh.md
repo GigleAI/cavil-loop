@@ -43,7 +43,8 @@
 │   ├── new-issue.template.md  ← 新 issue 派工时的 prompt
 │   ├── issue-comment.template.md ← issue 新评论时的 prompt（含 § A-split：拆 sub-issue）
 │   ├── sub-issue.template.md  ← 拆出来的子项追加这段：跳过设计轮直接开发
-│   └── pr-comment.template.md ← PR 新评论时的 prompt
+│   ├── pr-comment.template.md ← PR 新评论时的 prompt
+│   └── autopilot-{worker,review}.md ← 只给托管条目追加（GitHub#114）
 ├── systemd/                  ← Linux 调度器
 │   ├── cavil-loop-poll@.service ← user-scoped 模板服务
 │   ├── cavil-loop-poll@.timer
@@ -97,6 +98,8 @@
 | `pending/PR` | issue 工作已转 PR 跟踪 |
 | `Done` | merge 后真闭环（只标 PR，issue 是否标看用户决定） |
 
+可选：`pending/review`（复审关卡）；配了 `LABEL_AUTOPILOT`（GitHub#114）时还有 PR 上的 `pending/merge`（复审已通过，daemon 检查后合并）和 issue 上的托管「模式标签」（daemon 从不摘）。
+
 详细状态机见 [docs/architecture.md](docs/architecture.zh.md)。
 
 ### State.json schema
@@ -114,6 +117,7 @@
   "merged_label_queue":    { "<issue>": {"pr": .., "tries": ..} }, // 合并后 Done / pending/human 标签还没定下来的 issue（状态读不到或写失败）
   "pr_conflict":           { "<PR>": {"key": "<目标分支提交> <PR 提交>", "tries": .., "done": "clean|conflict|gaveup|", "acted_head": .., "flip_pending": ..} }, // 等人审 PR 的冲突检查（GitHub#86）；PR 关掉后条目自动清掉
   "requester_bot_done_queue": { "<PR>": {"kind": "merged|closed", "tries": ..} }, // 合并 / 关闭的结果还没告诉外部需求机器人的（GitHub#97）；只在功能开启时写，所以故意不进补字段循环
+  "autopilot":             { "prs": { "<PR>": {"reviewed_head": .., "reviewed_at": .., "bounces": .., "unknown": .., "checks_pending_since": ..} }, "notices": { "<issue>": ["<类别>", ..] }, "denied": { "<issue>": "<updated_at>" } }, // 托管（GitHub#114）：每个 PR 复审的提交、只说一次的评论、被拒的只挂托管标签的 issue；功能真做了事才写，故意不进补字段循环
   "cleaned_prs":           [ <PR>, ... ],           // 已 auto-cleanup 的 PR 不再扫
   "unmerged_prs_handled":  [ <PR>, ... ]            // § 3c 已判定过的 closed 未合并 PR
 }
@@ -294,6 +298,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 - PR 交出前查与主干的冲突（GitHub#82）→ `tests/conflict-check-prompts.test.sh`。检查命令（`# --- 冲突检查 开始 ---` 到 `# --- 冲突检查 结束 ---`）逐字抄在 `issue-comment.template.md`（§ A）、`pr-comment.template.md`、`review.template.md`（第 2C 步）三处；worker 那段处理规则在两份 worker 模板里逐字一致。测试对拍拼好的 prompt，检查它排在翻 label / 下结论之前，并用假 `gh` 在真实 git worktree 里实跑这段命令
 - 复审结论评论标题以 ✅（通过）/ ❌（其余一律）开头（GitHub#84）→ `tests/review-verdict-emoji.test.sh`。规矩只写在 `review.template.md` 第 3 步，没有 `review.extra.md` 的项目也带上；测试对拍带 / 不带增量的复审成品、✅/❌ 对应关系与示例，并确认没漏进 worker 模板
 - 设计方案过复审（GitHub#102：`REVIEW_DESIGN_PROPOSALS`、`new-issue.template.md` 与 `issue-comment.template.md` § B 两处方案出口里的 `${LABEL_DESIGN_REVIEW_OR_HUMAN}` / `${DESIGN_REVIEW_NOTE}` 占位）→ `tests/design-review-gate.test.sh`（默认约 1 分钟，跑真实派工脚本；`MUTATION=1` 再加 10 份故意改坏的副本，约 6 分钟）。开关关着时渲染出的提示词必须和 merge-base 的副本逐字节一致；项目自己在 `*.extra.md` 里写「方案翻 `${LABEL_REVIEW_OR_HUMAN}`」的，开关开 / 关都必须照样交复审——不要让 `${LABEL_REVIEW_OR_HUMAN}` 跟着开关变。澄清答复仍写 `${LABEL_PENDING_HUMAN}`
+- 托管标签（GitHub#114：`LABEL_AUTOPILOT` / `LABEL_PENDING_MERGE`、`_lib.sh` 里的 `autopilot_*` 一段——PR 与 issue 的绑定、按 issue 标签记录判授权、合并那一趟——`agent-poll.sh` 的 `collect_autopilot_rows` / `autopilot_dispatch_flags`、`prompts/autopilot-{worker,review}.md`）→ `tests/autopilot.test.sh`（默认约 1 分钟；`MUTATION=1` 约 20 分钟，20 份改坏的副本）。它让真轮询子进程对着有状态的假 GitHub（`tests/lib/fake_github.py`：标签、标签记录、评论、合并接口、故障注入和轮中钩子）跑。功能关闭时把轮询的 GitHub 调用、`state.json`、四份拼好的提示词和 merge-base 副本逐字节对拍。绑定 / 授权 / 叫停三个判断各只有一份实现，派工、合并检查、合并前重读都调它——不要复制。合并路径上 daemon 新增的写一律走 `gh_write`；「读不到」绝不能变成「有授权」「通过」「无冲突」
 - 外部需求机器人（GitHub#95 / #97：等待标签、`scripts/notify-requester-bot.sh`（及早期名字的转发壳 `notify-relay.sh`）、`prompts/requester-bot-handoff.md`、`flip_to_doing`、greedy 挡工清单 / self-heal 跳过、webhook 通知（GitHub#100）、daemon 的合并 / 关闭通知、旧的 `RELAY_*` 配置名）→ `tests/requester-bot.test.sh`（默认约 4 分钟，`MUTATION=1` 约 12 分钟：假 webhook 只听 127.0.0.1、记下每个请求，超时用例实等 10 秒）。功能关闭时把轮询的 GitHub 调用、派工记录、四类拼装提示词（用 merge-base 的拼装代码拼本版模板，后来改模板文字的 PR 不会被它误伤）、合并后清理那一段（含 `state.json`）与 merge-base 上的副本逐字节对拍。只有首页那两行和 `docs/requester-bot*.md` 可以点名具体机器人。交接规则由 `compose_prompt_template` 追加，不要写进工具自带模板——整份替换模板的项目会收不到。所有派工路径都经 `flip_to_doing` 翻 `doing/agent`，等待标签只在这一处摘。「是不是机器人提的需求」「通知 webhook」在 `_lib.sh` 里只有一份（`requester_bot_item_origin` / `requester_bot_webhook_notify`），叫醒脚本和合并 / 关闭通知共用，不要复制。叫醒脚本只在唯一的成功出口调 webhook；地址 / 请求头 / 密钥经标准输入喂给 `curl --config -`，不进命令行，也不进任何输出和日志。不再指派机器人、不再请求它 review：`REQUESTER_BOT_ACCOUNT` 只用来认机器人提的 issue
 - `docs/images/` 里的讲解动图 → `tests/doc-diagrams.test.sh`。不要手改这些 SVG：改 `scripts/doc-diagrams/gen.py` 里的表，重跑 `python3 scripts/doc-diagrams/gen.py`，把产物一起提交。测试会重新生成并对比，再在每张动图的所有关键帧把一圈切成小段、按每段两端的值逐段判定，不靠定时采样（任意时刻最多一段说明；说明只在红框停在它那一步、或正从那一步滑走时出现；红框按顺序走完每一步；不含脚本 / id / 外链）。图里画的流程变了，就在同一个 PR 里改说明
 

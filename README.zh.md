@@ -20,7 +20,7 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 - **本机跑，不是云服务**：AI worker 就是你本机的 `claude`（或其他支持的 coding CLI）
 - **GitHub 当 UI**：所有触发靠 label 标签（`pending/agent` / `pending/human` / `doing/agent`），没有要学的新 web UI
-- **你掌控权**：所有改动都通过 PR review 由你签字才合入；工具从不自动 merge
+- **你掌控权**：所有改动都通过 PR review 由你签字才合入；除非你给某个 issue 打了托管标签（默认关闭），工具不会自己合并任何东西
 
 ## 它好在哪
 
@@ -108,13 +108,14 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 | **AI 读到的 prompt** | 通用工作流由 skill 提供，项目只写自己的增量（`<name>.extra.md`），追加在通用部分之后。不用整份抄一遍——抄了就再也拿不到上游更新 | [operations](docs/operations.zh.md) |
 | **用哪个 AI CLI** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`，也可以写自己的 driver | [drivers](docs/drivers.zh.md) |
 | **编排流程：交人之前先过另一个 AI** | 配 `LABEL_PENDING_REVIEW` 开复审关卡：PR 每次有代码改动，先交另一个 AI（默认 codex）审，不通过带意见打回给写代码的 AI 改，最多 `REVIEW_MAX_ROUNDS` 轮（默认 3），审过才交你验收；两个 AI 谈不拢就停下等你拍板。再加 `REVIEW_DESIGN_PROPOSALS=true`，设计方案也先审一遍才到你面前。PM → 开发 → 测试这种多角色接力也能用标签编排 | [operations](docs/operations.zh.md#交叉-review-关卡可选默认关闭) · [collaboration](docs/collaboration.zh.md) |
+| **托管：一条 issue 从头交到尾** | 配 `LABEL_AUTOPILOT`（默认关，要求开着复审关卡）并在 issue 上打这个标签：方案只过复审、不等你确认，代码复审通过后 daemon 自己合并——只合复审亲眼看过的那个提交，且标签必须是有写权限的维护者在 issue 上亲手打的、检查全绿、没有冲突。随时摘掉标签、或在 issue / PR 上打 `pending/human` 就能叫停 | [operations](docs/operations.zh.md#托管标签可选默认关闭) · [security](docs/security.zh.md) |
 | **接外部需求机器人（例：grokbot）** | 让另一个 AI 助手直接来提 issue：有问题要问它、或者做完了，自动挂等待标签并调它的 webhook 叫它来看；PR 合并或关闭时也告诉它。默认关 | [对接文档](docs/requester-bot.zh.md) · [Grok 机器人](https://x.ai/bot/JrLKauAqSRAqNQtIP9BJQ) |
 
 ## 它**不**做什么
 
 - ❌ **不是云端服务**：跑在你自己的电脑 / NAS。机器关机就停
 - ❌ **不替代代码 review**：AI 会改代码 + 自动推送，review 仍是你的事。建议主分支保护 + required reviewer
-- ❌ **不自动 merge**：merge / 关 PR 永远是你手动操作
+- ❌ **不会自作主张 merge**：merge / 关 PR 是你的事——唯一例外是你明确给某个 issue 打了托管标签（默认关闭，逐条授权）
 
 ---
 

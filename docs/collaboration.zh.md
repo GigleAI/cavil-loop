@@ -138,6 +138,10 @@ triage 规则：根据 issue 涉及的文件路径 / 区域标签（`area/fronte
 
 对接步骤、机器人那边要照做的约定、配置项、叫醒脚本、webhook 格式和排查，都在单独的对接文档里：[对接外部需求机器人](requester-bot.zh.md)。
 
+## 托管：一条 issue 从头交到尾
+
+配了 `LABEL_AUTOPILOT`（默认关，要求开着复审关卡）后，维护者可以把单个 issue 整个交出去：方案只过复审，代码复审通过后 daemon 按固定条件自己合并 PR。托管标签是 issue 上的「模式标签」，不是又一个派工标签，所以和上面的分工方式（主机标签、fable、复审）并存。细节和合并条件见 [operations](operations.zh.md#托管标签可选默认关闭)。
+
 ## 实操注意点
 
 - **命名一致**：`<状态>` 保持基本五态（`pending`、`agent`、`Done`），角色放在第三个 `/` 后。不要在同仓库混用 `pending/PM` 跟 `pending/agent/PM` 这种不一致命名

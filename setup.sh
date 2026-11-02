@@ -499,6 +499,13 @@ review_label="$(config_value LABEL_PENDING_REVIEW)"
 # LABEL_PENDING_RELAY 也认（_names.sh 的 cavil_pick_setting，与 _lib.sh 同一个函数）。
 requester_bot_label="$(cavil_pick_setting "$(config_value LABEL_PENDING_REQUESTER_BOT)" "$(config_value LABEL_PENDING_RELAY)")"
 [ -n "$requester_bot_label" ] && label_defs+=("$requester_bot_label|f9a8d4|等外部需求机器人带回提需求方的答复")
+# 托管标签（GitHub#114）默认关闭；配了 LABEL_AUTOPILOT 才建它和「等 daemon 合并」标签。
+autopilot_label="$(config_value LABEL_AUTOPILOT)"
+if [ -n "$autopilot_label" ]; then
+    merge_label="$(config_value LABEL_PENDING_MERGE)"
+    label_defs+=("$autopilot_label|0e8a16|托管：从方案到合并全交给 agent（复审与测试通过后自动合并）")
+    label_defs+=("${merge_label:-pending/merge}|5319e7|托管：复审已通过，等 daemon 检查后自动合并")
+fi
 for ld in "${label_defs[@]}"; do
     IFS='|' read -r name color desc <<< "$ld"
     if gh label create "$name" --color "$color" --description "$desc" --repo "$repo" 2>/dev/null; then
