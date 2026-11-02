@@ -35,6 +35,7 @@
 │   ├── _preview_adopt.sh      ← 把改名前注册的预览搬到新单元（migrate-legacy.sh / preview-serve.sh 共用）
 │   ├── preview-resolve-conflict.sh ← 人工处理新旧目录各有一份、主人不同的预览端口
 │   ├── session-log.sh         ← 查 tmux pane 历史日志
+│   ├── repair-unit-links.sh   ← 把 systemd 单元链接改回稳定技能入口、拉起因此消失的定时任务（GitHub#109）；每轮轮询、部署器清理前、setup / 迁移启用后都会跑
 │   ├── notify-requester-bot.sh ← 叫醒外部需求机器人（worker 侧，不配置就不生效；GitHub#95 / #97）；notify-relay.sh 是早期名字，转发到它
 │   ├── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
 │   └── doc-diagrams/          ← docs/images/ 里那几张动图的生成脚本 + 检查脚本
@@ -284,6 +285,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 - 等人审（`pending/human`）的 PR 重查与目标分支的冲突（GitHub#86）→ `tests/pending-human-conflict.test.sh`（默认约 10 秒；`MUTATION=1` 时会在 7 份故意改坏的脚本副本上把全部场景再跑一遍，有一份没被拦下就失败，约 1 分钟。两种模式都拿同一批 PR 对拍 daemon 的判定和 worker 交 PR 前那段冲突检查命令）。它逐次数 GitHub 调用——这个设计的全部要点就是目标分支不动时一次都不多问。改 worker 那段检查命令的判定规则时，`_lib.sh` 的 `pr_conflict_verdict` 要同步改
 - 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`、`tests/preview-rename-coexist.test.sh`（同一台机器上新旧预览并存）、`tests/migrate-legacy.test.sh`（旧安装迁移：只迁空闲项目、断了能接着做、保留旧任务原来的开关）、`tests/preview-legacy-adopt.test.sh`（旧预览搬到新单元：失败后能接着搬、全部搬完才删旧入口、预览没真起来就不给地址）。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名
 - worker / 模型选择、driver 传的 `--model` → `tests/worker-selection.test.sh`、`tests/claude-resume-model.test.sh`
+- systemd 单元链接与旧版本清理（GitHub#109：`scripts/repair-unit-links.sh`、它的四个调用点——轮询入口、部署器、`setup.sh`、旧安装迁移——以及部署器不删还有单元链接指进去的版本）→ `tests/repair-unit-links.test.sh`（默认约 5 秒；`MUTATION=1` 约 11 秒，另跑 10 个改坏的副本）+ `tests/migrate-legacy.test.sh` 第 14 组。`systemctl enable` 会把模板链接解析进某个 `releases/<sha>/`，所以**任何启用单元的地方之后都要跑一次修复**。启动定时任务只看 systemd 自己记的状态（已启用 + 失败 + 原因 `resources` =「运行中单元文件消失」）；重新加载只看一个持久记号，只有 `daemon-reload` 成功才清——绝不看「这一轮有没有改链接」
 - 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
   daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份

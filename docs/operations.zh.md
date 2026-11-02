@@ -1000,6 +1000,94 @@ macOS 专属：
 - "Bootstrap failed: 5: Input/output error" → 之前的 load 还在。`launchctl bootout "gui/$UID/dev.luosky.cavil-loop.<key>"` 后重跑 setup。
 - `<key>.err.log` 报 `flock: command not found` → `brew install flock`。
 
+### 发新版后某个项目的定时任务消失了（`Unit to trigger vanished`）
+
+**现象**：某个项目的 `poll.log` 停在最后一轮、没有任何报错；`systemctl --user list-timers` 里它的 NEXT 是 `-`，或者根本不在列表里；journal 里有
+
+```
+cavil-loop-poll@<key>.timer: Failed to open …/cavil-loop-poll@<key>.timer: No such file or directory
+cavil-loop-poll@<key>.timer: Unit to trigger vanished.
+```
+
+**原因**（GitHub#109）：`systemctl --user enable` 会把模板链接解析到底，实例链接和 `timers.target.wants/` 里那条都直指某一个 `~/.agents/releases/cavil-loop/releases/<sha>/`，而不是稳定入口 `~/.agents/skills/cavil-loop/`。部署器一清理那一版，定时任务的单元文件就没了。
+
+**自动修复**：`scripts/repair-unit-links.sh`。每一轮轮询（总是当前版本）、部署器清理旧版本之前、`setup.sh` 启用之后、旧安装迁移启用之后都会跑它。它把我们自己的链接（新名字和改名前的名字）改回稳定入口；改之前先写一个持久的「待重新加载」记号，`daemon-reload` 成功才清掉（所以重新加载失败了，下一轮哪怕没有链接要改也会再做）；记号清掉之后，才启动 systemd 报告为「已启用 + 失败、原因 `resources`」的定时任务——这正是 systemd 记录「运行中单元文件消失」的方式。你停掉的（`inactive`）、禁用的，一律不启动；状态查不到也不动。部署器也不会删除还有单元链接指进去的版本。限制：手动 `systemctl --user reset-failed` 之后这个记录就没了，不会替你启动；user manager 重启也会丢掉它（链接修好后，已启用的任务登录时本来就会起来）。
+
+**什么时候要你动手**：只有一种情况——本修复部署之前，这台机器上**所有**项目的定时任务都已经停了，没有任何一轮轮询能来部署和执行它。
+
+0. 先确认是不是这种情况：
+
+   ```bash
+   systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
+   find ~/.config/systemd/user -xtype l -name '*.timer'
+   ```
+
+   有项目的 NEXT 是 `-`、有项目不在列表里，或者第二条列出了断链，就往下做；都正常就到此为止。
+
+1. 更新到含修复的版本（机器上只有改名前的入口时，`if` 那段会自动换成 `~/.agents/skills/coding-agent-work-loop`）：
+
+   ```bash
+   SKILL="$HOME/.agents/skills/cavil-loop"
+   if [ ! -e "$SKILL" ] && [ ! -L "$SKILL" ]; then
+       SKILL="$HOME/.agents/skills/coding-agent-work-loop"
+   fi
+   bash "$SKILL/scripts/skill-deploy.sh" --force
+   test -f "$SKILL/scripts/repair-unit-links.sh" && echo "has the fix"
+   ```
+
+   `--force` 只跳过「5 分钟内只拉一次」的节流，不跳过锁：看到 `another instance is fetching; skip` 或 `a consumer or another publisher is active`，等 1 分钟再跑同一段，最多 3 次。看到 `development mode`：技能入口指向的是一份代码 checkout，部署器不管它——改为在那份 checkout 里 `git pull`。没打印 `has the fix` 就停下，把两条命令的完整输出贴出来。
+
+2. 执行修复（逐条打印改了哪条链接、是否重新加载、启动了哪个任务；退出码非 0 就停下，贴出输出）：
+
+   <!-- repair-unit-links:repair -->
+   ```bash
+   SKILL="$HOME/.agents/skills/cavil-loop"
+   if [ ! -e "$SKILL" ] && [ ! -L "$SKILL" ]; then
+       SKILL="$HOME/.agents/skills/coding-agent-work-loop"
+   fi
+   bash "$SKILL/scripts/repair-unit-links.sh"
+   ```
+
+3. 确认成功：两条 `find` 都没有输出，你希望运行的定时任务 NEXT 都有时间（你有意暂停的可以保持未运行）：
+
+   <!-- repair-unit-links:check -->
+   ```bash
+   find ~/.config/systemd/user -lname '*/.agents/releases/cavil-loop/releases/*'
+   find ~/.config/systemd/user -xtype l -name '*.timer'
+   systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
+   ```
+
+4. 第 1–3 步走不通时，逐个项目手工兜底。`KEY` 换成项目名（`~/.config/cavil-loop/` 下、改名前安装是 `~/.config/coding-agent-work-loop/` 下那个 `<项目名>.conf`）；改名前的任务用 `P=coding-agent`，周报任务用 `KIND=weekly-report` 单独再跑一次。只对你确实要运行的任务操作：
+
+   <!-- repair-unit-links:fallback -->
+   ```bash
+   KEY=arktool
+   P=cavil-loop
+   KIND=poll
+   SKILL="$HOME/.agents/skills/cavil-loop"
+   if [ ! -e "$SKILL" ] && [ ! -L "$SKILL" ]; then
+       SKILL="$HOME/.agents/skills/coding-agent-work-loop"
+   fi
+   S="$SKILL/systemd/$P-$KIND@.timer"
+   U="$P-$KIND@$KEY.timer"
+   if [ ! -f "$S" ]; then
+       echo "template missing: $S"
+   else
+       (
+           set -e
+           cd "$HOME/.config/systemd/user"
+           mkdir -p timers.target.wants
+           ln -sfn "$S" "$U"
+           ln -sfn "$S" "timers.target.wants/$U"
+           systemctl --user daemon-reload
+           systemctl --user restart "$U"
+           systemctl --user list-timers --all "$U"
+       )
+   fi
+   ```
+
+   NEXT 有时间即恢复。任何一步报错就停下，贴出输出和 `systemctl --user status "$U"`。启动了不想跑的任务：`systemctl --user stop "$U"`（要登录后也不起来，再 `systemctl --user disable "$U"`）。
+
 ### Worker session 卡在权限弹窗
 
 确认 `cavil-loop.config` 里 `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"`。本机受信任环境下强烈推荐。

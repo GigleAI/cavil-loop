@@ -530,6 +530,10 @@ enable_systemd() {
         y|Y|yes)
             systemctl --user daemon-reload
             systemctl --user enable --now "$timer"
+            # enable 会把模板链接解析到底，实例链接直指某个 releases/<sha>/（GitHub#109）：
+            # 那一版一被清理，定时任务就消失。立刻改回稳定入口（同一个修复动作，见脚本头注释）。
+            bash "$SKILL_DIR/scripts/repair-unit-links.sh" \
+                || echo "  ⚠️  单元链接没能全部改回稳定入口；本项目每一轮轮询会再试，也可手动重跑：bash $SKILL_DIR/scripts/repair-unit-links.sh"
             echo "  ✓ enabled & running"
             echo
             echo "    状态：systemctl --user status $timer"
@@ -537,6 +541,8 @@ enable_systemd() {
             ;;
         *)
             echo "  跳过；以后：systemctl --user enable --now $timer"
+            echo "        然后：bash $SKILL_DIR/scripts/repair-unit-links.sh（把 enable 建的链接改回稳定入口；"
+            echo "        不跑也行，本项目第一轮轮询会自动改；或者直接重跑 setup.sh）"
             ;;
     esac
 }
