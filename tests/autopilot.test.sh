@@ -327,6 +327,9 @@ Refs #3" "$H1" "pending/merge"
     fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge" example/ap false dirty
     tick
     chk "有冲突 → 交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
+    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge" example/ap true dirty
+    tick
+    chk "只有合并状态说冲突（dirty）→ 也交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
     fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge" example/ap null unknown
     tick
     chk "GitHub 还在算能否合并 → 等，不写" "$(merged 8)/$(writes)" "0/0"
@@ -616,7 +619,7 @@ mutate checks-fail _lib.sh '        fail)
 # .github/ 不拦
 mutate dot-github _lib.sh 'any(startswith(".github/"))' 'any(startswith(".nothing/"))'
 # 冲突不拦
-mutate conflict _lib.sh "        false) autopilot_to_worker" "        falsex) autopilot_to_worker"
+mutate conflict _lib.sh "        conflict) autopilot_to_worker" "        conflictx) autopilot_to_worker"
 # 派工处：不查授权，挂着托管标签就算托管条目
 mutate dispatch-site _lib.sh '    rc=0; autopilot_authorization "$n" "$ij" || rc=$?
     case "$rc" in

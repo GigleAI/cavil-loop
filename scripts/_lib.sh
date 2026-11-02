@@ -3271,13 +3271,13 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
             return 0 ;;
         *) autopilot_unknown "$sf" "$pr" "读不到提交 ${head:0:7} 的自动检查结果"; return 0 ;;
     esac
-    case "$(printf '%s' "$pj" | jq -r '.mergeable | tostring')" in
-        null) log "托管：PR #$pr GitHub 还在算能不能合并，下轮再看"; return 0 ;;
-        false) autopilot_to_worker "$sf" "$pr" "$n" "与目标分支 \`$base\` 有冲突，先把 \`$base\` 合进来解决冲突"; return 0 ;;
+    # GitHub 的两个信号任一说冲突就算冲突（mergeable=false 或 mergeable_state=dirty）；
+    # mergeable=null 是还在算，等下一轮
+    case "$(printf '%s' "$pj" | jq -r 'if .mergeable == false or .mergeable_state == "dirty" then "conflict"
+                                      elif .mergeable == null then "computing" else "ok" end')" in
+        computing) log "托管：PR #$pr GitHub 还在算能不能合并，下轮再看"; return 0 ;;
+        conflict) autopilot_to_worker "$sf" "$pr" "$n" "与目标分支 \`$base\` 有冲突，先把 \`$base\` 合进来解决冲突"; return 0 ;;
     esac
-    if [ "$(printf '%s' "$pj" | jq -r '.mergeable_state // ""')" = dirty ]; then
-        autopilot_to_worker "$sf" "$pr" "$n" "与目标分支 \`$base\` 有冲突，先把 \`$base\` 合进来解决冲突"; return 0
-    fi
 
     # ── 合并前最后一刻：重读 PR 和 issue，判定所依据的每一项逐项再比一遍 ──
     # 任一项变了或读不全：本轮不合、不记任何状态，下轮按现状重新判。
