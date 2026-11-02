@@ -193,3 +193,39 @@ agent_command_resume() {
         "$model_arg" \
         "$prompt_file"
 }
+
+# ── 可选 hook：目录信任（接口见 _common.sh「目录信任」，GitHub#108）──
+# codex 第一次在没见过的目录里起会话会弹「Trust this folder?」，跳过审批的 flag 不绕过它。
+# 以前 setup.sh 一条都没给 codex 写，子模块项目（arktool）每开一个 issue 复审就卡一次，
+# 调度日志里只剩一行「没能确认 codex 本次启动的 session id（原因 timeout）」。
+AGENT_TRUST_PROMPT_RE='Trust this folder\?|Do you trust the contents of this directory'
+
+# codex 按哪个目录判断信任（0.163.0 真机实测，GitHub#108；框里自己也写着
+# 「Trusting will apply to the repository root」）：
+#   · 普通仓库的主 checkout 和它的 worktree → 仓库根（主 checkout 目录）
+#   · 子模块（及其 worktree）→ **worktree 自己**：.git/modules/<名字> 那条、
+#     子模块工作目录那条都不管用，所以子模块项目每个 issue 一条
+#   · 不在 git 里 → 目录本身（家目录整个信任了照弹，不继承上级）
+agent_trust_key() {
+    local dir="$1" common
+    if common="$(trust_git_common_dir "$dir")"; then
+        case "$common" in
+            */.git) dirname "$common"; return 0 ;;
+            *)      trust_git_toplevel "$dir" && return 0 ;;
+        esac
+    fi
+    trust_physical_dir "$dir"
+}
+
+_codex_trust_py() {
+    python3 "$(dirname "${BASH_SOURCE[0]}")/codex_trust.py" "$@"
+}
+_codex_trust_verify() { _codex_trust_py verify "$@" 2>/dev/null; }
+_codex_trust_render() { _codex_trust_py render "$@"; }
+
+agent_trust_paths() {
+    local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+    [ "$#" -gt 0 ] || return 0
+    _codex_trust_verify "$cfg" "$@" && return 0
+    trust_config_locked_update "$cfg" _codex_trust_render _codex_trust_verify "$@"
+}

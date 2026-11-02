@@ -176,13 +176,34 @@ pre-existing "resume the latest conversation" behaviour.
 
 Default: `tmux load-buffer + paste-buffer -p + Enter`. Works for most chat-REPL CLIs. Override if your agent needs to enter a `/slash-mode` first or has a different stdin contract.
 
-### Optional hook: `agent_trust_paths <path>...`
+### Optional hooks: directory trust (`agent_trust_key`, `agent_trust_paths`, `AGENT_TRUST_PROMPT_RE`)
 
-Some agents refuse to work in a directory they have never seen until a human confirms a folder-trust dialog — and for Claude Code `--dangerously-skip-permissions` does **not** skip it. The dialog doesn't kill the session, so the dispatcher's crash check lets it through and the issue still flips to `doing/agent`: the worker looks alive and does nothing. Nothing in the logs says otherwise; you only see it by attaching.
+Some agents refuse to work in a directory they have never seen until a human confirms a folder-trust dialog — and the "skip permissions" flags (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`) do **not** skip it. The dialog doesn't kill the session, so the dispatcher's crash check lets it through and the issue still flips to `doing/agent`: the worker looks alive and does nothing.
 
-`setup.sh` calls this hook once per deploy with the host project root and the worktree base. Leave it unimplemented if your agent has no notion of directory trust — callers detect that and move on. It must be idempotent: when the paths are already trusted, don't rewrite the file — a live agent process is usually holding it.
+Three optional pieces, all used through one entry point, `agent_trust_dirs <dir>...` in `scripts/drivers/_common.sh`:
 
-The built-in `claude` driver sets `projects["<abs path>"].hasTrustDialogAccepted` in `~/.claude.json` (point `CLAUDE_JSON_PATH` elsewhere in tests). Subdirectories inherit trust from ancestors, which is why those two entries cover every per-issue worktree.
+- `agent_trust_key <dir>` — print the directory the agent **actually** decides trust on when a session starts in `<dir>`. This is not "the directory or any parent": measured in 2026-11 (GitHub#108), neither agent inherits trust from a parent directory inside a git repository. Not implemented → the directory itself.
+- `agent_trust_paths <key>...` — record those keys as trusted. Idempotent: if they already are, don't write a byte (a live agent is usually holding the file). Write through `trust_config_locked_update` (below), never your own read-modify-write.
+- `AGENT_TRUST_PROMPT_RE` — an ERE for the dialog (matched against the screen joined into one line, whitespace squeezed). When set, the daemon checks the pane after every launch; a match kills the session and hands the item to a human (`pending/human`) with a comment saying which agent, which directory and which record was expected.
+
+When they run: `setup.sh` once per deploy for the project root, and **every dispatch** right before a session is launched — new session, resume, and the "resume died, start fresh" fallback in all three dispatch scripts (it lives in `agent_session_plan`). Per-dispatch is required: for submodule projects codex trusts each worktree on its own, and deploy time doesn't know those paths. It also brings projects deployed before this change up to date without rerunning setup. A failure to write never blocks the dispatch; the dialog check catches the case where it mattered.
+
+Rules of the built-in drivers (measured on real CLIs: claude 2.1.316 with an isolated config dir, codex 0.163.0):
+
+| session started in | claude trusts by | codex trusts by |
+|---|---|---|
+| main checkout of a normal repo, or one of its worktrees | the main checkout | the main checkout (its dialog says "Trusting will apply to the repository root") |
+| a submodule, or a worktree of a submodule | `<superproject>/.git/modules/<name>` | the worktree itself (one record per issue) |
+| a worktree of a bare repo | the bare repo directory (by the same rule; not measured) | the worktree itself |
+| not in git | the directory or any parent | the directory itself |
+
+The old `setup.sh` wrote a "worktree base" entry on the assumption that worktrees inherit it; it never had any effect and is gone. Normal projects didn't prompt only because the repo-root entry was there.
+
+`claude` writes `projects["<abs path>"].hasTrustDialogAccepted` in `~/.claude.json` (`CLAUDE_JSON_PATH` overrides it). `codex` appends `[projects."<abs path>"] trust_level = "trusted"` to `${CODEX_HOME:-~/.codex}/config.toml` (needs Python 3.11+ for `tomllib`); it never rewrites the rest of the file, and never changes an entry a human set to something other than `trusted`.
+
+**Concurrency.** Every project's daemon on a machine shares these two files, but each project's poll lock is its own. Two "read → merge → atomic replace" writers running at once silently drop each other's entries while both report success — an atomic rename only prevents half-written files. `trust_config_locked_update` therefore takes a lock keyed by the config file's real path (under `~/.local/state/cavil-loop-trust-locks/`, shared by every project, new or pre-rename install), and only then reads, decides, renders and replaces. It waits at most `TRUST_LOCK_WAIT_SECS` (10 s); on timeout it writes nothing. The post-launch dialog check looks for up to `AGENT_TRUST_PROMPT_WAIT_SECS` (4 s; claude shows its dialog within 0.3 s) and stops early if the session exits.
+
+The running claude / codex and hand edits don't take this lock. Before replacing, the content fingerprint is compared again; if it changed, the result is thrown away and redone (up to 3 times), and after replacing the record is read back. What it **cannot** guarantee: a write landing in the instant between the last comparison and the rename is overwritten, and an agent writing back its own older copy can drop the record just added. The next dispatch adds it again; a launch that actually hits the dialog is turned into a visible hand-off by the dialog check.
 
 ## Validating your driver
 

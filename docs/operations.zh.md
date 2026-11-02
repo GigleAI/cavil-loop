@@ -1004,6 +1004,13 @@ macOS 专属：
 
 确认 `cavil-loop.config` 里 `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"`。本机受信任环境下强烈推荐。
 
+### Worker 卡在目录信任确认框（「Quick safety check」/「Trust this folder?」）
+
+GitHub#108 之后，daemon 每次起会话前都会先写信任记录、起完看一眼屏幕，所以这种情况应当表现为：这条活被翻回 `pending/human`，留言写明哪个 agent、哪个目录；`poll.log` 里有一行 `卡在 <agent> 的目录信任确认框上（工作目录 …，该补的信任记录：…）`，当时的屏幕存进了会话日志。
+
+1. 先在 `poll.log` 里找那次派工前后以 `[trust]` 开头的行：等锁超时、「连续 3 次在写入前被别的进程改动」、配置文件读不懂，都会说明记录为什么没写进去。
+2. 都没有，多半是 agent 改了判定规则。在 daemon 机器上进入留言里的那个目录手动跑一次 agent，选信任后退出，再把标签改回 `pending/agent`。然后看 agent 自己写的是哪一条（`~/.claude.json` 的 `projects`、`~/.codex/config.toml` 的 `[projects."…"]`），据此改那个 driver 的 `agent_trust_key`。
+
 ### Daemon 不停 re-dispatch 同一 PR
 
 可能是 worker 没翻 label。检查 prompt 模板是否要求 worker 翻 label。或手动：

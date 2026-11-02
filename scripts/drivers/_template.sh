@@ -60,13 +60,13 @@ agent_command_resume() {
 #     ...
 # }
 
-# 可选：你的 agent 进新目录要先确认「信不信这个目录」时实现它。
-# setup.sh 部署新项目时会带上仓库根 + worktree base 调一次，
-# 免得第一次派工的 worker 挂在那个确认框上（不实现就会被跳过）。
-# 必须幂等：已经信任就别再写文件。
-# agent_trust_paths() {
-#     local p
-#     for p in "$@"; do
-#         ...
-#     done
+# 可选：你的 agent 进新目录要先确认「信不信这个目录」时实现这三样（契约见 _common.sh「目录信任」）。
+# setup.sh 部署时、每次派工起会话前都会调，免得 worker 挂在那个确认框上（不实现就会被跳过）。
+# 先拿真 CLI 实测它在 git worktree / 子模块里到底认哪个目录——别假设「子目录继承上级」。
+# AGENT_TRUST_PROMPT_RE='确认框里一定会出现的那句话'
+# agent_trust_key() {      # <dir> → 本 agent 实际按哪个目录判断信任
+#     trust_physical_dir "$1"
+# }
+# agent_trust_paths() {    # <key>... ；必须幂等，写文件走共享锁
+#     trust_config_locked_update "<配置文件>" _my_render _my_verify "$@"
 # }
