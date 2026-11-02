@@ -84,7 +84,7 @@ is_maintainer() {   # <login>
 # 输出仍在暂停中的那次是谁打的；读不到事件、或事件缺编号 → return 2（调用方当「不知道」，拒绝）。
 # 排序在拿全所有页之后做：--paginate 下 --jq 是逐页执行的，页内排序管不到跨页。
 maintainer_took_over() {
-    local n="$1" rows id ev label actor paused="" L resume
+    local n="$1" rows sorted id ev label actor paused="" L resume
     rows=$(gh api --paginate "repos/$REPO/issues/$n/events" \
         --jq '.[] | select(.event == "labeled" or .event == "unlabeled")
               | [(.id // "" | tostring), .event, (.label.name // ""), (.actor.login // "?")] | @tsv') || return 2
@@ -92,6 +92,10 @@ maintainer_took_over() {
     [ -z "$rows" ] && return 1
     # 没有编号就排不了序：不猜，当「不知道」
     printf '%s\n' "$rows" | awk -F'\t' '$1 !~ /^[0-9]+$/ { bad=1 } END { exit bad }' || return 2
+    # 排序单独一步、退出码在这里查：放进 `done < <(...)` 的进程替换里，sort 失败只会让循环
+    # 读到空输入，paused 为空 → 误判「没有暂停」而放行。行数对不上同样当「不知道」。
+    sorted=$(printf '%s\n' "$rows" | sort -t$'\t' -k1,1n) || return 2
+    [ "$(printf '%s\n' "$sorted" | grep -c .)" = "$(printf '%s\n' "$rows" | grep -c .)" ] || return 2
     while IFS=$'\t' read -r id ev label actor; do
         if [ "$ev" = labeled ] && [ "$label" = "$LABEL_PENDING_HUMAN" ]; then
             if [ "$actor" = "?" ]; then paused="(账号未知)"
@@ -105,7 +109,7 @@ maintainer_took_over() {
             for L in "${TRIGGER_LABELS_ALL[@]}"; do [ "$label" = "$L" ] && resume=1; done
         fi
         [ -z "$resume" ] || paused=""
-    done < <(printf '%s\n' "$rows" | sort -t$'\t' -k1,1n)
+    done <<< "$sorted"
     [ -n "$paused" ] || return 1
     printf '%s' "$paused"; return 0
 }
