@@ -136,8 +136,9 @@ boundary is drawn so that nothing a worker or a comment can do is enough:
 - **A PR inherits authorization only from the issue it is bound to**, and binding needs two
   independent facts to agree: the branch is exactly `BRANCH_PREFIX<N>` in this repo, and the body
   closes exactly `#N`. A stray `Closes #N` in another PR, a fork, or a suffixed branch borrows nothing
-- **Only the reviewed commit is merged**: the head sha is recorded when the review is dispatched and
-  passed to the merge API; any later push sends the PR back to review
+- **Only the reviewed change is merged**: the head sha and target branch are recorded when the review
+  is dispatched and the sha is passed to the merge API; a later push or a retarget sends the PR back to
+  review
 - **Stop is always one action away**: remove the label or add `pending/human` on the issue or the
   PR. Everything the decision relied on is re-read right before the merge call; any change, or
   anything unreadable, means no merge this round

@@ -408,7 +408,7 @@ autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
         AP_FLAG=1; AP_ISSUE="$AUTOPILOT_ISSUE"
         log "托管：$1 #$2 是托管条目（授权在 issue #$AP_ISSUE，$AUTOPILOT_ACTOR 打的），拼入托管规则"
         if [ "$1" = pr ] && [ "$3" = review ]; then
-            autopilot_remember_review "$STATE_FILE" "$2"
+            autopilot_remember_review "$STATE_FILE" "$2" || true
         fi
     fi
     return 0

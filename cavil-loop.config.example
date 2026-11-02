@@ -182,7 +182,7 @@ REVIEW_DESIGN_PROPOSALS="false"
 #   · the issue's most recent "add <autopilot label>" event was done by a real user with write
 #     access who is NOT the loop's write account and NOT the requester bot (labels on PRs are ignored)
 #   · the PR is from this repo, on branch BRANCH_PREFIX<N>, and its body closes exactly #N
-#   · the PR head is the exact commit the reviewer was dispatched on, and the reviewer's pass
+#   · the PR head and target branch are exactly those the reviewer was dispatched on, and the reviewer's pass
 #     comment carries its test re-run record for that commit (passed>0, failed=0)
 #   · every check on that commit passed (a repo with no checks at all relies on the record above)
 #   · no conflict with the base branch, no change under .github/, nobody added pending/human on
@@ -198,7 +198,7 @@ REVIEW_DESIGN_PROPOSALS="false"
 #   · issue 上最近一次「加上托管标签」的操作人是有写权限的真人，且不是 loop 的写入账号、不是外部
 #     需求机器人（PR 上的托管标签一概不看）
 #   · PR 来自本仓库、分支是 BRANCH_PREFIX<N>、正文只关闭 #N
-#   · PR 最新提交正是派复审时的那个提交，且复审的通过评论里有这个提交的测试重跑记录（通过 > 0、失败 = 0）
+#   · PR 最新提交和目标分支正是派复审时的那一对，且复审的通过评论里有这个提交的测试重跑记录（通过 > 0、失败 = 0）
 #   · 这个提交上的自动检查全部通过（仓库一个检查都没有时，只靠上面那条记录）
 #   · 和目标分支无冲突、没改 .github/、issue 和 PR 都没挂 pending/human、issue 上托管标签还在（合并前最后一刻重读）
 # 必须同时配了 LABEL_PENDING_REVIEW（没有复审关卡 = 没人把关，什么都不托管）。

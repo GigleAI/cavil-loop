@@ -402,25 +402,27 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 | issue `#N` 上**最近一次**「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT` | `pending/human` |
 | 这条 issue 不是外部需求机器人提的需求 | `pending/human` |
 | issue 和 PR 都没被打 `pending/human`，issue 上托管标签还在 | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
-| PR 最新提交就是派复审时记下的那个 | 回 `pending/review` 重审 |
+| PR 最新提交**和目标分支**都是派复审时记下的那一对（同一提交改投别的分支 = 另一份改动；旧版没记目标分支的记录算缺） | 回 `pending/review` 重审 |
 | 复审的结论评论（写入账号、派复审之后发的）里有这个提交的测试记录，`failed=0`、`passed>0` | `pending/human` |
 | 没改 `.github/` | `pending/human` |
 | 这个提交上的检查（check run / commit status）全部通过（一个都没有 = 只靠上一条记录） | 没过 → 交回 worker；超过 `AUTOPILOT_CHECKS_TIMEOUT_HOURS`（6）还没跑完 → `pending/human` |
 | GitHub 判定可合并（无冲突） | 交回 worker |
-| 合并前最后一刻重读 PR 和 issue，上面各项仍然成立 | 本轮不合、不记任何状态 |
+| 合并前最后一刻把上面各项重新读一遍：PR 的状态 / 提交 / 目标分支 / 分支名 / 标签 / 冲突、绑定、issue 的叫停与授权、改动文件、自动检查（变红、重跑中、原本没有又冒出来都算变了） | 本轮不合、不记任何状态 |
 
 - **读不到**（标签记录、权限、检查、文件、评论）：本轮不写任何东西；连续 `AUTOPILOT_UNKNOWN_MAX`（10）
   轮读不到才交人。「读不到」绝不当成「有授权」「通过」「无冲突」。
 - **交回 worker** 按 PR 计次，上限沿用 `REVIEW_MAX_ROUNDS`。
 - **叫停**：摘掉 issue 上的托管标签，或在 issue / PR 上打 `pending/human`。检查之后、合并之前的叫停由
   合并前的重读拦住。
+- **剩下的窗口**只在「最后这次读」到「合并请求到达 GitHub」之间。合并请求带着复审的提交号，这段时间的新推送
+  GitHub 会拒；这段时间检查变红则拦不住。要服务端兜底，把这些检查设成目标分支的「必须通过」（分支保护），daemon 不绕它。
 - **GitHub 拒绝的**（分支保护要求人工批准、合并方式没开）交人——daemon 不绕仓库规则。
 - **多机**：复审的提交号只记在派复审的那台机器上，`SELFHEAL_ONLY_OWN_WORKERS=true` 时另一台不碰这个 PR。
 - **两个账号**：loop 的写入账号和维护者必须是两个账号，否则任何标签都算不上维护者打的（worker 和复审都用写入账号写 GitHub）。
 - **本仓库会部署自己**：`GigleAI/cavil-loop` 的 `main` 合并后几分钟内就在 daemon 上生效，在这里开托管意味着
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
-状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交与时间、打回次数、连续读不到次数、开始等检查的时间；
+状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间；
 `notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
 

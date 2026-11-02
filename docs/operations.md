@@ -475,12 +475,12 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 | On issue `#N`, the **most recent** "added the autopilot label" event was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT` | `pending/human` |
 | The issue is not a request filed by the requester bot | `pending/human` |
 | Nobody added `pending/human` to the issue or the PR, and the label is still on the issue | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
-| The PR head is the commit recorded when the review was dispatched | back to `pending/review` |
+| The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
 | The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |
 | No change under `.github/` | `pending/human` |
 | Every check run / commit status on that commit passed (none at all = rely on the record above) | failing → back to the worker; still running after `AUTOPILOT_CHECKS_TIMEOUT_HOURS` (6) → `pending/human` |
 | GitHub says mergeable (no conflict) | back to the worker |
-| Re-read of the PR and the issue right before merging still matches all of the above | skip this round, record nothing |
+| Right before merging, everything above is read again — PR state / commit / target / branch / labels / conflict, binding, the issue's stop and authorization, changed files, and the checks (a check that turns red, restarts, or appears where there was none) | skip this round, record nothing |
 
 - **Can't read something** (events, permissions, checks, files, comments): nothing is
   written this round; after `AUTOPILOT_UNKNOWN_MAX` (10) rounds in a row it goes to a human.
@@ -489,6 +489,10 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 - **Stopping it**: remove the label from the issue, or add `pending/human` to the issue or
   the PR. The re-read right before merging catches a stop that lands between the checks and
   the merge.
+- **The window that is left** is between that last read and the merge request reaching GitHub.
+  The merge request carries the reviewed sha, so a push in that window is refused by GitHub; a
+  check that flips in that window is not. For a server-side guarantee on checks, mark them as
+  required on the target branch (branch protection) — the daemon never bypasses it.
 - **What GitHub refuses** (branch protection requiring approvals, merge method disabled)
   goes to a human — the daemon never works around repository rules.
 - **Multi-host**: only the machine that dispatched the review holds the reviewed commit, so
@@ -499,7 +503,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   daemon within minutes, so an autopilot merge here changes the running daemon with nobody in
   between. Turning it on here is a deliberate choice; merging the feature does not.
 
-State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / time, bounces,
+State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
 unreadable rounds, check-wait start; `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.

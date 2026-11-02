@@ -117,7 +117,7 @@
   "merged_label_queue":    { "<issue>": {"pr": .., "tries": ..} }, // 合并后 Done / pending/human 标签还没定下来的 issue（状态读不到或写失败）
   "pr_conflict":           { "<PR>": {"key": "<目标分支提交> <PR 提交>", "tries": .., "done": "clean|conflict|gaveup|", "acted_head": .., "flip_pending": ..} }, // 等人审 PR 的冲突检查（GitHub#86）；PR 关掉后条目自动清掉
   "requester_bot_done_queue": { "<PR>": {"kind": "merged|closed", "tries": ..} }, // 合并 / 关闭的结果还没告诉外部需求机器人的（GitHub#97）；只在功能开启时写，所以故意不进补字段循环
-  "autopilot":             { "prs": { "<PR>": {"reviewed_head": .., "reviewed_at": .., "bounces": .., "unknown": .., "checks_pending_since": ..} }, "notices": { "<issue>": ["<类别>", ..] }, "denied": { "<issue>": "<updated_at>" } }, // 托管（GitHub#114）：每个 PR 复审的提交、只说一次的评论、被拒的只挂托管标签的 issue；功能真做了事才写，故意不进补字段循环
+  "autopilot":             { "prs": { "<PR>": {"reviewed_head": .., "reviewed_base": .., "reviewed_at": .., "bounces": .., "unknown": .., "checks_pending_since": ..} }, "notices": { "<issue>": ["<类别>", ..] }, "denied": { "<issue>": "<updated_at>" } }, // 托管（GitHub#114）：每个 PR 复审的提交、只说一次的评论、被拒的只挂托管标签的 issue；功能真做了事才写，故意不进补字段循环
   "cleaned_prs":           [ <PR>, ... ],           // 已 auto-cleanup 的 PR 不再扫
   "unmerged_prs_handled":  [ <PR>, ... ]            // § 3c 已判定过的 closed 未合并 PR
 }

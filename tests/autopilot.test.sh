@@ -119,10 +119,11 @@ CONF
         jset events.json '.[$n] = ((.[$n] // []) + [{event:$e, label:{name:$l}, actor:{login:$a, type:$t}}])' \
             --arg n "$1" --arg e "$2" --arg l "$3" --arg a "$4" --arg t "${5:-User}"
     }
-    review_rec() {   # <pr> <提交> [时间]：派复审时 daemon 记下的那份
+    review_rec() {   # <pr> <提交> [时间] [目标分支，"-" = 不记（旧版记录）]：派复审时 daemon 记下的那份
         [ -f "$STATE" ] || echo '{}' > "$STATE"
-        jq --arg p "$1" --arg h "$2" --arg t "${3:-2026-01-01T00:00:00Z}" \
-            '.autopilot.prs[$p] = {reviewed_head:$h, reviewed_at:$t}' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+        jq --arg p "$1" --arg h "$2" --arg t "${3:-2026-01-01T00:00:00Z}" --arg b "${4:-main}" \
+            '.autopilot.prs[$p] = ({reviewed_head:$h, reviewed_at:$t} + (if $b == "-" then {} else {reviewed_base:$b} end))' \
+            "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
     }
     evidence() {   # <pr> <提交> <通过> <失败> [发评论的账号] [时间]
         jset comments.json '.[$p] = ((.[$p] // []) + [{id:(900 + ((.[$p] // []) | length)), user:{login:$u}, created_at:$t,
@@ -257,9 +258,20 @@ Refs #3" "$H1" "pending/merge"
               "issues_7|2|jq '.[\"7\"] += [\"pending/human\"]' labels.json|issue 打 pending/human" \
               "pulls_8|2|jq '.[\"8\"] += [\"pending/human\"]' labels.json|PR 打 pending/human" \
               "pulls_8|2|jq '.[\"8\"].head.sha = \"$H2\"' items.json|PR 推了新提交" \
-              "issues_7_events|2|jq '.[\"7\"] += [{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"}},{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"loop-bot\",type:\"User\"}}]' events.json|授权记录变成 loop 账号打的"; do
+              "issues_7_events|2|jq '.[\"7\"] += [{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"}},{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"loop-bot\",type:\"User\"}}]' events.json|授权记录变成 loop 账号打的" \
+              "commits_${H1}_check-runs|2|jq '.[\"$H1\"] = {check_runs:[{name:\"unit\",status:\"completed\",conclusion:\"failure\"}]}' checks.json|自动检查变红" \
+              "commits_${H1}_check-runs|2|jq '.[\"$H1\"] = {check_runs:[{name:\"unit\",status:\"in_progress\"}]}' checks.json|自动检查重跑中" \
+              "commits_${H1}_check-runs|2|jq '.[\"$H1\"] = {check_runs:[{name:\"unit\",status:\"completed\",conclusion:\"success\"}]}' checks.json|原本没有检查、新冒出一个" \
+              "pulls_8_files|2|jq '.[\"8\"] = [{filename:\".github/workflows/x.yml\"}]' files.json|改动多了 .github/ 文件" \
+              "pulls_8|2|jq '.[\"8\"] += {mergeable:false, mergeable_state:\"dirty\"}' items.json|变成与目标分支冲突" \
+              "pulls_8|2|jq '.[\"8\"].base.ref = \"release\"' items.json|改投了别的目标分支"; do
         IFS='|' read -r key k cmd what <<< "$hk"
         fresh; happy
+        # 检查「变红 / 重跑」的场景：一开始检查是通过的，才能单独测到重读检查这一步
+        # （一开始没有检查的话，「新冒出检查」那一条也会拦住，分不出重读检查做没做）
+        case "$what" in 自动检查变红|自动检查重跑中)
+            jset checks.json '.[$h] = {check_runs:[{name:"unit", status:"completed", conclusion:"success"}]}' --arg h "$H1" ;;
+        esac
         local f; f="${cmd##* }"
         printf 'cd %q && %s < /dev/null > %q.tmp && mv %q.tmp %q\n' "$GD" "$cmd" "$f" "$f" "$f" > "$GD/hook_${key}_$k"
         local before; before=$(jq -c '.autopilot' "$STATE")
@@ -303,6 +315,13 @@ Refs #3" "$H1" "pending/merge"
     tick
     chk "复审看的不是现在这个提交 → 不合并" "$(merged 8)" 0
     chk "  → 重新交复审" "$(has_label 8 pending/review)/$(has_label 8 pending/merge)" "yes/no"
+    fresh; happy; jset items.json '.["8"].base.ref = "release"'
+    tick
+    chk "复审时合进 main、现在改投 release（同一提交）→ 不合并" "$(merged 8)" 0
+    chk "  → 重新交复审，说明写改投" "$(has_label 8 pending/review)/$(comments_with 8 '现在改投了 `release`')" "yes/1"
+    fresh; happy; review_rec 8 "$H1" 2026-01-01T00:00:00Z -
+    tick
+    chk "复审记录没记目标分支（旧版记下的）→ 重新交复审" "$(merged 8)/$(has_label 8 pending/review)" "0/yes"
     fresh; happy; jq 'del(.autopilot)' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
     tick
     chk "没有复审记录 → 重新交复审" "$(merged 8)/$(has_label 8 pending/review)" "0/yes"
@@ -405,7 +424,21 @@ Refs #3" "$H1" "pending/merge"
     chk "#31（loop 账号打的）派工时不是托管条目" "$(log_has '托管：issue #31 是托管条目')" 0
     chk "PR #8 派复审时是托管条目" "$(log_has '托管：pr #8 是托管条目（授权在 issue #7')" 1
     chk "PR #8 派复审时记下复审的提交" "$(st 8 .reviewed_head)" "$H1"
+    chk "PR #8 派复审时记下复审的目标分支" "$(st 8 .reviewed_base)" main
     chk "PR #41（issue 没有托管标签）派复审时不记" "$(st 41 .reviewed_head)" ""
+
+    section "【7c】只有 BSD 那种 date（不认 -d）的机器：派托管复审照常，不把整轮轮询带崩"
+    mkdir -p "$SANDBOX/bsd"
+    printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in -d|-d*|--date*) echo "date: illegal option -- d" >&2; exit 1 ;; esac; done\nexec %q "$@"\n' \
+        "$(command -v date)" > "$SANDBOX/bsd/date"; chmod +x "$SANDBOX/bsd/date"
+    fresh 'MAX_CONCURRENT_WORKERS=5' "PATH=\"$SANDBOX/bsd:$SANDBOX/bin:\$PATH\""
+    mkissue 7 "autopilot,pending/PR"; ev 7 labeled autopilot maint
+    mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/review"
+    : > "$CALLS"; local trc=0
+    env CODING_AGENT_CONFIG="$CONF" bash "$SCRIPTS/agent-poll.sh" >/dev/null 2>&1 || trc=$?
+    chk "BSD date：轮询正常退出" "$trc" 0
+    chk "BSD date：复审提交与时间都记下了" "$(st 8 .reviewed_head)/$([ -n "$(st 8 .reviewed_at)" ] && echo yes || echo no)" "$H1/yes"
+    chk "到达性 · BSD date：替身确实拦过 -d（不是没走到）" "$(printf 'x' | env PATH="$SANDBOX/bsd:$PATH" date -u -d @0 >/dev/null 2>&1 && echo passed || echo blocked)" blocked
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -594,7 +627,7 @@ mutate auth-unknown-ok _lib.sh 'AUTOPILOT_REASON="读不到 issue #$num 的标�
 # 合并检查处的授权调用：拒绝时不交人（只靠最后重读兜底）
 mutate merge-site-auth _lib.sh '        1) if [ "$AUTOPILOT_DENY" = no-label ]; then' '        1) return 0; if false; then'
 # 合并前重读：不重读 PR
-mutate reread-pr _lib.sh 'if ! pj2=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || ! autopilot_pr_still "$pj2" "$head" "$base" "$ref"; then' 'if false; then'
+mutate reread-pr _lib.sh 'if ! pj2=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || ! autopilot_pr_still "$pj2" "$head" "$base" "$ref" \' 'if ! pj2=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) \'
 # 合并前重读：不重读 issue 的授权
 mutate reread-auth _lib.sh '    rc=0; autopilot_authorization "$n" "$ij2" || rc=$?
     if [ "$rc" != 0 ]; then' '    rc=0
@@ -606,7 +639,7 @@ mutate halt-issue _lib.sh "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL
         autopilot_to_human" '    if false; then
         autopilot_to_human'
 # 复审提交：不核对复审看的是不是现在这个提交
-mutate reviewed-head _lib.sh 'if [ -z "$rh" ] || [ "$rh" != "$head" ] || [ -z "$rat" ]; then' 'if false; then'
+mutate reviewed-head _lib.sh 'if [ -z "$rh" ] || [ "$rh" != "$head" ] || ' 'if '
 # 复审测试记录：不核对
 mutate evidence _lib.sh 'rc=0; autopilot_review_evidence "$pr" "$head" "$rat" || rc=$?' 'rc=0'
 # 复审测试记录：不核对失败数
@@ -631,6 +664,20 @@ mutate collect-site agent-poll.sh '        rc=0; autopilot_authorization "$num" 
         case "$rc" in' '        rc=0
         case "$rc" in'
 # 派复审不记提交
+# 复审记录不核对目标分支
+mutate review-base _lib.sh '|| [ -z "$rb" ] || [ "$rb" != "$base" ] ' ''
+# 合并前重读：不重读自动检查
+mutate reread-checks _lib.sh '        *) log "托管：PR #$pr 判定之后自动检查变成' '        *) ;; xx) log "托管：PR #$pr 判定之后自动检查变成'
+# 合并前重读：不管「原本没检查、新冒出检查」
+mutate reread-new-checks _lib.sh 'if [ "$checks_first" = none ] && [ "$AUTOPILOT_CHECKS" != none ]; then' 'if false; then'
+# 合并前重读：不重读改动文件
+mutate reread-files _lib.sh 'if [ "$(autopilot_files_verdict "$pr")" != ok ]; then
+        log "托管：PR #$pr 判定之后改动文件' 'if false; then
+        log "托管：PR #$pr 判定之后改动文件'
+# 合并前重读：不重看冲突
+mutate reread-conflict _lib.sh '       || [ "$(autopilot_conflict_verdict "$pj2")" != ok ]; then' '       ; then'
+# 时间换回 GNU 才有的 date -d
+mutate gnu-date _lib.sh "at=\$(jq -nr 'now - 120 | floor | strftime(\"%Y-%m-%dT%H:%M:%SZ\")' 2>/dev/null) || at=\"\"" 'at=$(date -u -d "@$(( $(date +%s) - 120 ))" +%Y-%m-%dT%H:%M:%SZ)'
 mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
 pass=$REAL_PASS; fail=$REAL_FAIL
 
