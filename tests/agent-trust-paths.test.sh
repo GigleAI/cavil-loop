@@ -244,9 +244,9 @@ JSON
     if [ "$(jq -r .numStartups "$f")" = 42 ] && [ "$(jq -r '.projects["/repo/old"].history[0].display' "$f")" = x ] \
        && [ "$(jq -r '.projects["/repo/old"].allowedTools[0]' "$f")" = "Bash(ls)" ]; then
         echo "PASS claude·别的字段和别的项目原样保留"
-    else echo "FAIL claude·别的字段和别的项目原样保留 :: $(cat "$f")"; fi
+    else echo "FAIL claude·别的字段和别的项目原样保留 :: $(tr "\n" " " < "$f")"; fi
     [ "$(c_trusted "$f" "/repo/ai hub")$(c_trusted "$f" "/工作区/项目")" = truetrue ] \
-        && echo "PASS claude·带空格 / 中文的路径" || echo "FAIL claude·带空格 / 中文的路径 :: $(cat "$f")"
+        && echo "PASS claude·带空格 / 中文的路径" || echo "FAIL claude·带空格 / 中文的路径 :: $(tr "\n" " " < "$f")"
     [ "$(stat -c %a "$f")" = 640 ] && echo "PASS claude·替换后保留原文件权限" || echo "FAIL claude·替换后保留原文件权限 :: $(stat -c %a "$f")"
     ino=$(ls -i "$f" | awk '{print $1}'); sum=$(cksum < "$f")
     in_driver "$R" claude agent_trust_paths "/repo/ai hub" 2>/dev/null; rc=$?
@@ -255,7 +255,7 @@ JSON
     echo '{"projects":{"/repo/acme":{"hasTrustDialogAccepted":false,"allowedTools":["Edit"]}}}' > "$f"
     in_driver "$R" claude agent_trust_paths /repo/acme 2>/dev/null
     [ "$(c_trusted "$f" /repo/acme)$(jq -r '.projects["/repo/acme"].allowedTools[0]' "$f")" = trueEdit ] \
-        && echo "PASS claude·false 补成 true，其余字段不动" || echo "FAIL claude·false 补成 true，其余字段不动 :: $(cat "$f")"
+        && echo "PASS claude·false 补成 true，其余字段不动" || echo "FAIL claude·false 补成 true，其余字段不动 :: $(tr "\n" " " < "$f")"
     printf '{ 这不是 json' > "$f"; sum=$(cksum < "$f")
     in_driver "$R" claude agent_trust_paths /repo/acme 2>/dev/null; rc=$?
     [ "$rc" != 0 ] && [ "$(cksum < "$f")" = "$sum" ] && [ "$(find "$H" -name '.claude.json.*' | wc -l)" = 0 ] \
@@ -276,7 +276,7 @@ suite_codex_writer() {
     new_home xw; f="$(ct)"
     in_driver "$R" codex agent_trust_paths /repo/acme 2>/dev/null; rc=$?
     [ "$rc" = 0 ] && [ "$(x_level "$f" /repo/acme)" = trusted ] && echo "PASS codex·文件不存在时建出来并信任" \
-        || echo "FAIL codex·文件不存在时建出来并信任 :: rc=$rc $(cat "$f" 2>/dev/null)"
+        || echo "FAIL codex·文件不存在时建出来并信任 :: rc=$rc $(tr "\n" " " < "$f" 2>/dev/null)"
     cat > "$f" <<'TOML'
 # 用户自己的注释
 model = "gpt-x"   # 行尾注释
@@ -291,10 +291,10 @@ TOML
     in_driver "$R" codex agent_trust_paths '/repo/ai "hub"' "/工作区/项目" '/repo/no' 2>/dev/null
     case "$(cat "$f")" in
         "$orig"*) echo "PASS codex·原有内容（注释、排版）逐字节保留在前面" ;;
-        *) echo "FAIL codex·原有内容（注释、排版）逐字节保留在前面 :: $(cat "$f")" ;;
+        *) echo "FAIL codex·原有内容（注释、排版）逐字节保留在前面 :: $(tr "\n" " " < "$f")" ;;
     esac
     [ "$(x_level "$f" '/repo/ai "hub"')$(x_level "$f" "/工作区/项目")" = trustedtrusted ] \
-        && echo "PASS codex·带引号 / 中文的路径读回一致" || echo "FAIL codex·带引号 / 中文的路径读回一致 :: $(cat "$f")"
+        && echo "PASS codex·带引号 / 中文的路径读回一致" || echo "FAIL codex·带引号 / 中文的路径读回一致 :: $(tr "\n" " " < "$f")"
     [ "$(x_level "$f" /repo/no)" = untrusted ] && echo "PASS codex·人设成不信任的条目不改" || echo "FAIL codex·人设成不信任的条目不改"
     ino=$(ls -i "$f" | awk '{print $1}'); sum=$(cksum < "$f")
     in_driver "$R" codex agent_trust_paths "/工作区/项目" 2>/dev/null; rc=$?
@@ -340,7 +340,7 @@ suite_race() {   # <skill 目录> <agent>
     fi
     case "$ka$kb" in truetrue|trustedtrusted) echo "PASS race·$agent·两个项目的记录都在" ;;
         *) echo "FAIL race·$agent·两个项目的记录都在 :: A=$ka B=$kb" ;; esac
-    [ "$kold" != bad ] && echo "PASS race·$agent·原有无关内容保留" || echo "FAIL race·$agent·原有无关内容保留 :: $(cat "$f")"
+    [ "$kold" != bad ] && echo "PASS race·$agent·原有无关内容保留" || echo "FAIL race·$agent·原有无关内容保留 :: $(tr "\n" " " < "$f")"
     [ "$rca$rcb" = 00 ] && echo "PASS race·$agent·两边都返回成功" || echo "FAIL race·$agent·两边都返回成功 :: A=$rca B=$rcb"
 }
 
@@ -491,7 +491,7 @@ scenario() {
            && grep -q "trusttest-issue$N" "$D/tmux/killed" 2>/dev/null && ! grep -q "labels\[\]=doing/agent" "$D/gh.log"; then
             echo "PASS disp·$name·卡在确认框：杀会话、留言、转 pending/human、不翻 doing"
         else
-            echo "FAIL disp·$name·卡在确认框：杀会话、留言、转 pending/human、不翻 doing :: $(grep -c . "$D/gh.log" 2>/dev/null) 次 gh 调用；killed=$(cat "$D/tmux/killed" 2>/dev/null)"
+            echo "FAIL disp·$name·卡在确认框：杀会话、留言、转 pending/human、不翻 doing :: $(grep -c . "$D/gh.log" 2>/dev/null) 次 gh 调用；killed=$(tr "\n" " " < "$D/tmux/killed" 2>/dev/null)"
         fi
         grep -q "目录信任确认框" "$D/state/poll.log" 2>/dev/null && echo "PASS disp·$name·poll.log 写明哪个 agent、哪个目录" \
             || echo "FAIL disp·$name·poll.log 写明哪个 agent、哪个目录 :: 日志里没有"
@@ -639,7 +639,7 @@ suite_symlink() {   # <skill 目录>
            && [ "$(jq -r .keep "$H/dotfiles/claude.json")" = 1 ]; then
             echo "PASS symlink·python $how：链接保留、记录写进目标文件"
         else
-            echo "FAIL symlink·python $how：链接保留、记录写进目标文件 :: rc=$rc 链接=$([ -L "$f" ] && echo 在 || echo 被换掉) 目标=$(cat "$H/dotfiles/claude.json") $err"
+            echo "FAIL symlink·python $how：链接保留、记录写进目标文件 :: rc=$rc 链接=$([ -L "$f" ] && echo 在 || echo 被换掉) 目标=$(tr "\n" " " < "$H/dotfiles/claude.json") $err"
         fi
     done
     # (c) 链接成环：解析不了 → 拒绝写入、链接原样、不报成功
@@ -652,6 +652,71 @@ suite_symlink() {   # <skill 目录>
     else echo "FAIL symlink·链接成环：拒绝写入、链接原样 :: rc=$rc $(ls -l "$H" | tr '\n' '|')"; fi
 }
 
+# ═══ S11. 真实路径：逐分量解析，和独立实现（python realpath）对拍 ═══
+suite_realpath() {   # <skill 目录>
+    local R="$1" L="$TMP/rp" name rel want got rc
+    rm -rf "$L"; mkdir -p "$L/versions/v1" "$L/links" "$L/a/b/c" "$L/abs" "$L/plain"
+    printf '{"keep":"actual-target"}' > "$L/versions/claude.json"
+    printf '{"keep":"unrelated-file"}' > "$L/links/claude.json"
+    ln -s ../versions/v1 "$L/links/current"                # 复审给的布局：目录链接后接 ..
+    ln -s links/current/../claude.json "$L/dirlink-dotdot.json"
+    echo '{}' > "$L/a/b/c/real.json"
+    ln -s b/c "$L/a/bc"; ln -s ../a/bc/real.json "$L/plain/rel.json"   # 相对链接，中间又有目录链接
+    ln -s rel.json "$L/plain/chain.json"                    # 链接接链接
+    ln -s "$L/a/b/c/real.json" "$L/abs/abs.json"            # 绝对目标
+    ln -s ../a/bc "$L/plain/deep"                           # 多层 ..：deep/../../ 落在 a 的上一级
+    ln -s missing.json "$L/plain/dangling.json"             # 指向还不存在的文件（首次写入）
+    ln -s "$L/newdir/x/cfg.json" "$L/plain/newdir.json"     # 指向还不存在的目录
+    ln -s loop2 "$L/loop1"; ln -s loop1 "$L/loop2"          # 成环
+    new_home rp
+    while IFS='|' read -r name rel; do
+        [ -n "$name" ] || continue
+        want="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$L/$rel")"
+        got="$(in_driver "$R" claude trust_real_file "$L/$rel" 2>/dev/null)"
+        if [ "$got" = "$want" ]; then echo "PASS realpath·$name"
+        else echo "FAIL realpath·$name :: 期望 $want，实得 $got"; fi
+    done <<'EOF'
+目录链接后接 ..（复审布局）|dirlink-dotdot.json
+相对链接 + 中间目录链接|plain/rel.json
+链接接链接|plain/chain.json
+绝对目标|abs/abs.json
+多层 ..|plain/deep/../../versions/claude.json
+多余的 . 和 //|plain//./chain.json
+指向不存在的文件|plain/dangling.json
+指向不存在的目录|plain/newdir.json
+普通文件|versions/claude.json
+EOF
+    got="$(cd "$L/plain" && in_driver "$R" claude trust_real_file chain.json 2>/dev/null)"
+    [ "$got" = "$L/a/b/c/real.json" ] && echo "PASS realpath·相对路径输入" || echo "FAIL realpath·相对路径输入 :: $got"
+    in_driver "$R" claude trust_real_file "$L/loop1" >/dev/null 2>&1; rc=$?
+    [ "$rc" != 0 ] && echo "PASS realpath·链接成环：解析失败" || echo "FAIL realpath·链接成环：解析失败 :: rc=0"
+    # 复审布局真实写入：真正的目标拿到记录、无关文件逐字节不变、链接保留
+    local before; before="$(cksum < "$L/links/claude.json")"
+    rc=0; in_driver "$R" claude eval "CLAUDE_JSON_PATH='$L/dirlink-dotdot.json' agent_trust_paths /repo/test" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" = 0 ] && [ "$(c_trusted "$L/versions/claude.json" /repo/test)" = true ] \
+       && [ "$(jq -r .keep "$L/versions/claude.json")" = actual-target ] \
+       && [ "$(cksum < "$L/links/claude.json")" = "$before" ] && [ -L "$L/dirlink-dotdot.json" ]; then
+        echo "PASS realpath·复审布局真实写入：写进真正目标、无关文件不变、链接保留"
+    else echo "FAIL realpath·复审布局真实写入：写进真正目标、无关文件不变、链接保留 :: rc=$rc 目标=$(tr "\n" " " < "$L/versions/claude.json") 无关=$(tr "\n" " " < "$L/links/claude.json")"; fi
+    # 同一个真实文件的两个别名：A 从别名一进来停在替换前，B 从别名二进来必须等同一把锁
+    local P="$TMP/pause-alias" a b waited=no
+    rm -rf "$P"; mkdir -p "$P"; echo '{}' > "$L/a/b/c/real.json"
+    MV_PAUSE_TARGET="$L/a/b/c/real.json" MV_PAUSE_DIR="$P" \
+        in_driver "$R" claude eval "CLAUDE_JSON_PATH='$L/plain/chain.json' agent_trust_paths /repo/alias-a" >/dev/null 2>&1 &
+    a=$!
+    for _ in $(seq 1 100); do [ -e "$P/paused" ] && break; sleep 0.05; done
+    in_driver "$R" claude eval "CLAUDE_JSON_PATH='$L/abs/abs.json' agent_trust_paths /repo/alias-b" >/dev/null 2>&1 &
+    b=$!
+    sleep 1.5; kill -0 "$b" 2>/dev/null && waited=yes
+    : > "$P/release"; wait "$a"; wait "$b"
+    if [ -e "$P/paused" ] && [ "$waited" = yes ] \
+       && [ "$(c_trusted "$L/a/b/c/real.json" /repo/alias-a)$(c_trusted "$L/a/b/c/real.json" /repo/alias-b)" = truetrue ]; then
+        echo "PASS realpath·两个别名共用一把锁，两条记录都在"
+    else echo "FAIL realpath·两个别名共用一把锁，两条记录都在 :: 停住=$([ -e "$P/paused" ] && echo 是 || echo 否) 等了=$waited 内容=$(tr "\n" " " < "$L/a/b/c/real.json")"; fi
+}
+
+echo "== 0c. 真实路径：逐分量解析 =="
+run_suite suite_realpath "$REPO_DIR"
 echo "== 0a. 认框：真机截屏 =="
 run_suite suite_detect "$REPO_DIR"
 echo "== 0b. 配置软链接：不靠 python 解析，解析不了就不写 =="
@@ -750,6 +815,18 @@ if mutation_gate && M=$(mutant py-resolve scripts/drivers/_common.sh '    local 
 '); then
     neg "软链解析退回「python，失败就用原路径」" "symlink·python broken" suite_symlink "$M"
     neg "软链解析退回「python，失败就用原路径」（成环）" "symlink·链接成环" suite_symlink "$M"
+fi
+# 第 2 轮复审前的实现：逐级 readlink 之后 `cd 逻辑目录 && pwd -P`——`..` 在逻辑路径上先被消掉
+if mutation_gate && M=$(mutant logical-cd scripts/drivers/_common.sh '    IFS=/ read -r -a queue <<< "$path"
+' '    while [ -L "$path" ]; do n=$((n + 1)); [ "$n" -le 40 ] || return 1; t="$(readlink "$path")" || return 1
+        case "$t" in /*) path="$t" ;; *) path="$(dirname "$path")/$t" ;; esac; done
+    mkdir -p "$(dirname "$path")" 2>/dev/null || return 1
+    d="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || return 1
+    printf "%s\n" "$d/$(basename "$path")"; return 0
+    IFS=/ read -r -a queue <<< "$path"
+'); then
+    neg "真实路径退回「先 cd 逻辑路径再取物理路径」" "realpath·目录链接后接 .." suite_realpath "$M"
+    neg "真实路径退回「先 cd 逻辑路径再取物理路径」（写入）" "realpath·复审布局真实写入" suite_realpath "$M"
 fi
 if mutation_gate && M=$(mutant setup-old setup.sh '        agent_trust_dirs "$HOST"' \
     '        agent_trust_paths "$HOST" "$(config_value WORKTREE_BASE)"'); then

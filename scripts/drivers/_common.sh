@@ -364,27 +364,43 @@ trust_git_toplevel() {
     trust_physical_dir "$t"
 }
 
-# 文件真实路径（逐级解开软链接，所在目录取物理路径；目录不存在就建出来）。
-# 配置文件常被 dotfiles 仓库软链进来：直接 mv 到软链上会把链接换成普通文件，
-# 用户的 dotfiles 从此和真实配置分家，信任记录也没进目标文件。
-# 只用 readlink（不带 -f，Linux / macOS 都有）+ cd/pwd -P，不依赖 python。
-# 解析不了（链接成环、目录建不出）→ 返回 1、什么都不写：调用方必须拒绝写入，
-# 绝不能拿原路径当真实路径继续替换（PR #110 复审实测：那样会拆掉链接还报成功）。
+# 文件真实路径：和内核打开它时走的路一样——从根开始逐个路径分量解析，遇到软链接
+# 就把链接内容展开到剩余分量前面，`..` 一律对**已解析的物理目录**取上一级。
+# 所以「目录链接/../文件」这类组合解释的是链接目标的上一级，不是字面上的上一级
+# （PR #110 第 2 轮复审实测：先 `cd 逻辑路径` 再 `pwd -P` 会把 `..` 先消掉，写进另一个文件）。
+# 配置文件常被 dotfiles 仓库软链进来：直接 mv 到软链上会把链接换成普通文件，所以要写真实文件。
+# 同一个真实文件不管从哪个别名进来都得出同一路径——共享锁的位置也靠它。
+# 只用 readlink（不带 -f，Linux / macOS 都有），不依赖 python。
+# 解析不了（链接超过 40 层 / 成环、读不出链接、目录建不出）→ 返回 1、什么都不写：
+# 调用方必须拒绝写入，绝不能拿原路径当真实路径继续替换。
 trust_real_file() {
-    local p="$1" t n=0 d
-    while [ -L "$p" ]; do
-        n=$((n + 1)); [ "$n" -le 40 ] || return 1
-        t="$(readlink "$p")" || return 1
-        [ -n "$t" ] || return 1
-        case "$t" in /*) p="$t" ;; *) p="$(dirname "$p")/$t" ;; esac
+    local path="$1" resolved="" c t n=0 d
+    local -a queue more
+    [ -n "$path" ] || return 1
+    case "$path" in /*) ;; *) path="$(pwd -P)/$path" ;; esac
+    IFS=/ read -r -a queue <<< "$path"
+    while [ "${#queue[@]}" -gt 0 ]; do
+        c="${queue[0]}"; queue=("${queue[@]:1}")
+        case "$c" in
+            ''|.) continue ;;
+            ..)   resolved="${resolved%/*}"; continue ;;
+        esac
+        if [ -L "$resolved/$c" ]; then
+            n=$((n + 1)); [ "$n" -le 40 ] || return 1
+            t="$(readlink "$resolved/$c")" || return 1
+            [ -n "$t" ] || return 1
+            case "$t" in /*) resolved="" ;; esac
+            IFS=/ read -r -a more <<< "$t"
+            queue=(${more[@]+"${more[@]}"} ${queue[@]+"${queue[@]}"})
+        else
+            resolved="$resolved/$c"
+        fi
     done
-    mkdir -p "$(dirname "$p")" 2>/dev/null || return 1
-    d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
-    [ -n "$d" ] || return 1
-    p="$d/$(basename "$p")"
-    # 物理目录里又可能是软链（目录被软链进来后，文件名本身还是链接的情况上面已解开）
-    [ ! -L "$p" ] || return 1
-    printf '%s\n' "$p"
+    [ -n "$resolved" ] || return 1
+    d="${resolved%/*}"; [ -n "$d" ] || d=/
+    mkdir -p "$d" 2>/dev/null || return 1
+    [ ! -L "$resolved" ] || return 1
+    printf '%s\n' "$resolved"
 }
 
 # 屏幕上是不是本 agent 的目录信任确认框。stdin = 整屏文字（tmux capture-pane -p）。

@@ -182,7 +182,7 @@ CLI 钉不了 id 的，要保证 `agent_session_list` 够便宜、且「最近�
 
 旧版 `setup.sh` 还写一条「worktree base」，以为 worktree 会继承它——从来没起过作用，已去掉。普通项目不弹，只是因为仓库根那条在。
 
-`claude` 写 `~/.claude.json` 的 `projects["<绝对路径>"].hasTrustDialogAccepted`（`CLAUDE_JSON_PATH` 可改）；`codex` 在 `${CODEX_HOME:-~/.codex}/config.toml` 末尾追加 `[projects."<绝对路径>"] trust_level = "trusted"`（要 Python 3.11+ 的 `tomllib`；没有就不写、派工日志里会说）。配置文件是软链接（dotfiles）时只靠 `readlink` / `cd -P` 解析真实路径；解析不了（链接成环、目录建不出）就不写——直接替换会把链接换成普通文件，用户的 dotfiles 从此和真实配置分家，不重写文件其余部分，人设成非 `trusted` 的条目不改。
+`claude` 写 `~/.claude.json` 的 `projects["<绝对路径>"].hasTrustDialogAccepted`（`CLAUDE_JSON_PATH` 可改）；`codex` 在 `${CODEX_HOME:-~/.codex}/config.toml` 末尾追加 `[projects."<绝对路径>"] trust_level = "trusted"`（要 Python 3.11+ 的 `tomllib`；没有就不写、派工日志里会说）。配置文件是软链接（dotfiles）时用 `readlink` 逐个路径分量解析，和内核打开它时一样——`..` 对已解析的物理目录取上一级，所以「目录链接/../文件」落在链接目标所指的位置，同一个文件的不同别名也得出同一路径（同一把锁）；不依赖 Python。解析不了（链接成环、目录建不出）就不写——直接替换会把链接换成普通文件，用户的 dotfiles 从此和真实配置分家，不重写文件其余部分，人设成非 `trusted` 的条目不改。
 
 **并发。** 同一台机器上所有项目的 daemon 共用这两个文件，但各项目的轮询锁各管各的。两个「读 → 合并 → 原子替换」同时跑，会互相抹掉对方刚加的条目、两边都报成功——原子替换只防半截文件。所以 `trust_config_locked_update` 拿一把**按配置文件真实路径划分**的锁（在 `~/.local/state/cavil-loop-trust-locks/` 下，所有项目、新旧安装共用），拿到锁之后才读、判断、生成、替换。最多等 `TRUST_LOCK_WAIT_SECS`（10 秒），超时就不写。起会话后的弹框识别最多看 `AGENT_TRUST_PROMPT_WAIT_SECS`（4 秒；claude 实测 0.3 秒内出框），会话自己退了就不再等。
 
