@@ -145,6 +145,8 @@ if [ -d "$WORKTREE" ]; then
         fi
     fi
 
+    # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
+    agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0
     agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
@@ -208,6 +210,8 @@ while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
 done < <(tmux_env_args)
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+# 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
+agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0
 agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
 configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
 start_session_logging "$TMUX_SESSION"

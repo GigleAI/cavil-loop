@@ -3536,6 +3536,63 @@ agent_session_adoptable() {   # <num> <cwd>
     return 0
 }
 
+# ── 目录信任（GitHub#108）──
+# 起会话前把本 agent 实际认的那个目录记成可信（规则在各 driver 的 agent_trust_key）。
+# 放在派工时而不只在部署时：codex 对子模块项目只认每个 worktree 自己，部署时根本不知道
+# 以后的 worktree 路径；顺带让部署在这个功能之前的老项目不用重跑 setup。
+# 写不成也不挡派工——起完会话后的弹框识别会把真卡住的那次变成明确的启动失败。
+agent_prepare_trust() {   # <cwd>
+    local cwd="$1" out rc=0 line
+    declare -f agent_trust_paths >/dev/null || return 0
+    out="$(agent_trust_dirs "$cwd" 2>&1 >/dev/null)" || rc=$?
+    while IFS= read -r line; do
+        [ -n "$line" ] && log "  $line"
+    done <<< "$out"
+    [ "$rc" = 0 ] || log "  ⚠️ 没能给 $WORKER_AGENT 补上 $cwd 的目录信任（rc=$rc）；若卡在信任框，起会话后会转人工"
+    return 0
+}
+
+# 起完会话后看一眼屏幕：认出本 agent 的目录信任确认框 → 截屏进日志、杀会话、返回 0。
+# 没认出（或 driver 没给特征）→ 返回 1。最多看 AGENT_TRUST_PROMPT_WAIT_SECS 秒
+# （claude 实测 0.3 秒内出框，codex 几秒内），会话自己退了就不再等。
+agent_trust_prompt_blocked() {   # <tmux_session> <cwd>
+    local sess="$1" cwd="$2" n i log_path key
+    [ -n "${AGENT_TRUST_PROMPT_FOOTER_RE:-}" ] || return 1
+    n=$(( ${AGENT_TRUST_PROMPT_WAIT_SECS:-4} * 2 ))
+    for ((i = 0; i < n; i++)); do
+        session_alive "$sess" || return 1
+        if tmux capture-pane -t "$sess" -p 2>/dev/null | agent_trust_prompt_on_screen; then
+            key="$( (agent_trust_key "$cwd") 2>/dev/null || echo "$cwd")"
+            log "  ❌ $sess 卡在 $WORKER_AGENT 的目录信任确认框上（工作目录 $cwd，该补的信任记录：$key）"
+            log_path="$(session_log_path "$sess")"
+            {
+                printf '\n===== %s session=%s 卡在目录信任框，pane capture =====\n' "$(date -Iseconds)" "$sess"
+                tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
+            } >> "${log_path:-/dev/null}" 2>/dev/null
+            tmux kill-session -t "$sess" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+# 起完会话后统一调用：卡在信任框上就留言、翻 pending/human 并返回 1（调用方 exit 0——
+# 这种失败在记录补上前是确定性的，重试白费，所以不进重试计数）。
+agent_launch_trust_gate() {   # <num> <tmux_session> <cwd>
+    local num="$1" sess="$2" cwd="$3" key
+    agent_trust_prompt_blocked "$sess" "$cwd" || return 0
+    key="$( (agent_trust_key "$cwd") 2>/dev/null || echo "$cwd")"
+    notify_bounced_to_human "$num" \
+        "\`$WORKER_AGENT\` 在工作目录 \`$cwd\` 弹出了目录信任确认框，没法自动开工。daemon 起会话前已经尝试写入信任记录（\`$key\`），但 \`$WORKER_AGENT\` 仍然要确认——可能是它改了判定规则，或者配置文件写不进去（原因见 daemon 机器的 poll.log）。" \
+        "在 daemon 所在机器上进入 \`$cwd\` 手动运行一次 \`$(agent_bin)\`，在确认框里选信任后退出，再把标签改回 \`$LABEL_PENDING_AGENT\`。"
+    run_gh "label 翻转 (#$num 卡在目录信任框 → $LABEL_PENDING_HUMAN)" \
+        gh_label_flip "$num" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
+    return 1
+}
+
 # 决定本次派工该起哪条会话。**只做决策（外加给 prompt 打启动标记），不产出命令。**
 # 设置三个全局：AGENT_LAUNCH_KIND（new|resume|adopt|legacy-resume）、WORKER_SESSION_ID
 # （driver 的 agent_command_new / agent_command_resume 读它决定钉哪个 / 续哪条 id）、
@@ -3556,6 +3613,9 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
     AGENT_LAUNCH_KIND=""
     WORKER_SESSION_ID=""
     AGENT_SESSION_PRELAUNCH_IDS=""
+
+    # 每次起会话（新建 / 续接 / 续接失败重建，三个派工脚本全部经过这里）之前先补目录信任
+    agent_prepare_trust "$cwd"
 
     # 白名单只在「本功能第一次管这条活」时拍一张，后面每次调用都只是存在性检查
     if [ "${AGENT_SESSION_ISOLATION:-0}" = 1 ]; then
