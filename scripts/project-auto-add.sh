@@ -64,6 +64,25 @@ if [ -f "$PAA_STATE" ]; then
 else
     echo '{}' > "$WORK/state.json"
 fi
+# ── 看板身份 = 「小写的组织或用户名/编号」──
+# GitHub 的登录名不分大小写（organization(login:"GigleAI") 和 "gigleai" 是同一个组织），所以配置里
+# 写 MyOrg/4 还是 myorg/4 都是同一个看板，状态也只能有一份：否则只改个大小写就会换来一个新的
+# 「开启时间」，停机期间新建又关掉的条目就再也补不进去；同时写两种大小写还会对同一个看板写两遍。
+# 已有状态里的键（可能按配置原文的大小写记的）读进来时先归一；同一个看板有多份时取最保守的合并：
+# 最早的开启时间、最早的同步时间、全部都完成才算首次完成——宁可多读，不能漏条目。
+paa_canon() { printf '%s/%s' "$(printf '%s' "${1%/*}" | tr 'A-Z' 'a-z')" "${1#*/}"; }
+jq '.projects = ((.projects // {}) | to_entries
+        | group_by(.key | ascii_downcase)
+        | map({key: (.[0].key | ascii_downcase),
+               value: (if length == 1 then .[0].value
+                       else (map(.value)) as $v
+                         | ($v | map(select(.project_id)) | first // {}) + {
+                             enabled_at:   ([$v[].enabled_at | select(.)] | min),
+                             initial_done: all($v[]; .initial_done == true),
+                             last_sync:    ([$v[].last_sync | select(.)] | min)}
+                         | with_entries(select(.value != null))
+                       end)})
+        | from_entries)' "$WORK/state.json" > "$WORK/state.tmp" && mv "$WORK/state.tmp" "$WORK/state.json"
 paa_save() {
     local tmp
     tmp=$(mktemp "$PAA_STATE.XXXXXX")
@@ -95,6 +114,7 @@ KEYS=(); BAD=()
 read -r -a _toks <<< "$(printf '%s' "${AUTO_ADD_PROJECTS:-}" | tr ',\t\n' '   ')"
 for t in ${_toks[@]+"${_toks[@]}"}; do
     if [[ "$t" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?/[1-9][0-9]*$ ]]; then
+        t=$(paa_canon "$t")
         case " ${KEYS[*]-} " in *" $t "*) ;; *) KEYS+=("$t") ;; esac
     else
         BAD+=("$t")
@@ -115,7 +135,7 @@ done
 paa_save || { paa_warn "写不进状态文件 $PAA_STATE，本轮跳过"; exit 0; }
 
 # ── 3. 解析 Project 编号 → 内部 id（缓存进状态；核对不过时清掉，下一轮重解析）──
-declare -A PID=() OK=() WHY=() CUT=() INITIAL=()
+declare -A PID=() OK=() WHY=() CUT=() INITIAL=() PID_OWNER=()
 for k in "${KEYS[@]}"; do
     OK[$k]=1; WHY[$k]=""
     pid=$(paa_get "$k" project_id)
@@ -133,6 +153,13 @@ for k in "${KEYS[@]}"; do
         paa_set 'del(.projects[$k].project_id)' --arg k "$k"
         continue
     fi
+    # 两个不同写法落到同一个看板（大小写之外的别名，例如组织改了名）：只同步第一个，免得同一个
+    # 看板一轮写两遍
+    if [ -n "${PID_OWNER[$pid]:-}" ]; then
+        OK[$k]=0; WHY[$k]="和 ${PID_OWNER[$pid]} 是同一个 Project，已跳过"
+        continue
+    fi
+    PID_OWNER[$pid]="$k"
     PID[$k]="$pid"
     if [ "$(paa_get "$k" initial_done)" = true ] && [ -n "$(paa_get "$k" last_sync)" ]; then
         INITIAL[$k]=0; CUT[$k]=$(iso_minus "$(paa_get "$k" last_sync)" "$PAA_OVERLAP_SECS")
@@ -306,7 +333,9 @@ for k in "${KEYS[@]}"; do
     #   · 首次全量：全部开着的 + 停止点之后有更新的（开着的，或开启之后才新建的已关闭 / 已合并）
     #   · 增量：只有停止点之后有更新的（同上）
     # 后一条要紧：新加 B 触发了「全部开着的」读取时，A 不能顺手把这批老条目也补进去——人从 A
-    # 里手动拿掉的卡片会被它塞回来。已在里面的不写。
+    # 里手动拿掉的老卡片会被它塞回来。（停止点之后有更新的条目照样会被加回：停止点是上次同步
+    # 减 10 分钟，所以刚同步过的条目在这 10 分钟重叠窗口里被人拿掉，下一轮还会补回一次。）
+    # 已在里面的不写。
     jq -c --arg p "$pid" --arg en "$enabled" --arg cut "${CUT[$k]}" --arg ini "${INITIAL[$k]}" '
         [.[] | select(($ini == "1" and .state == "OPEN")
                       or (.updatedAt >= $cut and (.state == "OPEN" or .createdAt > $en)))

@@ -368,6 +368,9 @@ To collect several repositories on one board, set this in each repository's conf
 AUTO_ADD_PROJECTS="myorg/4 myorg/11"   # "<org or user>/<number>", space or comma separated
 ```
 
+Owner names are case-insensitive, like on GitHub: `MyOrg/4` and `myorg/4` are the same board
+and share one sync record, so changing the spelling keeps its progress.
+
 Every poll the daemon then adds this repository's items to each listed project:
 
 | Item | Added? |
@@ -378,9 +381,13 @@ Every poll the daemon then adds this repository's items to each listed project:
 | An old item that gets reopened | yes (it is open again) |
 | Already on the board (archived cards included) | no write request |
 
-It only adds — no field edits, no removals. An already-synced board only looks at items
-updated since its last sync, so a card someone removed by hand is not pushed back unless
-that item changes again.
+It only adds — no field edits, no removals. **It does not remember removals**: an
+already-synced board looks at items updated since 10 minutes before its last sync, so a card
+someone removes by hand comes back if that item is updated again, or if it was itself updated
+within those 10 minutes (the overlap that keeps updates landing mid-poll from being missed).
+Older items are not touched — a new board's full scan does not push them back into a board that
+is already in sync. To keep an item off a board for good, close it or drop that board from
+`AUTO_ADD_PROJECTS`.
 
 **Permissions.** Reads go through `PROJECT_GH_TOKEN` (else `GH_TOKEN`); the add is a write
 and goes through `WRITE_GH_TOKEN` (else `GH_TOKEN`). The write identity needs the

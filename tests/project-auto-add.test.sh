@@ -2,7 +2,7 @@
 # 守护程序把本仓库 issue / PR 自动加进 Project 的守卫 —— GitHub#116。
 #
 # 跑法：bash tests/project-auto-add.test.sh              （默认不跑负对照，约 1 分钟）
-#       MUTATION=1 bash tests/project-auto-add.test.sh   （连 13 项负对照一起跑；见 tests/lib/mutation.sh）
+#       MUTATION=1 bash tests/project-auto-add.test.sh   （连 16 项负对照一起跑；见 tests/lib/mutation.sh）
 #       ONLY=s_basic bash tests/project-auto-add.test.sh  （只跑一组场景，排查用）
 # 依赖：jq、python3。不碰网络：假 gh（tests/fixtures/project-auto-add-fake-gh.py）是带状态的最小
 # GitHub——多个 Project、每个 Project 谁能读谁能写、条目分页、按段 / 按页的故障注入——每次调用
@@ -19,7 +19,7 @@
 #   · 读身份看不见 Project 还去写 → 每个条目都显得「不在里面」，每轮全量写一遍；
 #   · 一个 Project 读失败拖住另一个 → 新加的看板读不全时，老看板也停止同步；
 #   · 新加看板触发的全量读取让老看板也顺手补老条目 → 人从老看板里拿掉的卡片被塞回去。
-# 末尾的负对照（MUTATION=1）把这 13 种错误分别塞进脚本副本，断言对应场景变红。
+# 末尾的负对照（MUTATION=1）把这 16 种错误分别塞进脚本副本，断言对应场景变红。
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -443,9 +443,58 @@ s_read_blind() {
     chk "下一轮重新按编号解析、仍不写" "$(n_calls '^RESOLVE ') $(write_tries)" "2 0"
 }
 
+s_case() {
+    [ "$QUIET" = 1 ] || echo "【17】同一个看板换一种大小写写法：沿用原进度，停机期间的条目照样补上；多个写法只写一次"
+    local en
+    # (a) 旧状态按配置原文的大小写记成 MyOrg/4，配置改写成 myorg/4
+    new_env "myorg/4"
+    seed_done MyOrg/4 PVT_A $((30 * DAY)) $((3 * DAY))
+    en=$(st MyOrg/4 enabled_at)
+    add_item I_10 10 issue CLOSED "$(iso_ago $((2 * DAY)))" "$(iso_ago DAY)"
+    tick
+    chk "旧状态大小写不同 → 停机期间新建又关掉的条目被加入" "$(writes_to PVT_A I_10)" 1
+    chk "旧状态大小写不同 → 开启时间沿用" "$(st myorg/4 enabled_at)" "$en"
+    chk "状态里只剩一份（归一成小写）" "$(jq -r '.projects | keys | join(",")' "$W/state/project-auto-add.json")" "myorg/4"
+
+    # (b) 旧状态是 myorg/4，配置只改成 MYORG/4
+    new_env "MYORG/4"
+    seed_done myorg/4 PVT_A $((30 * DAY)) $((3 * DAY))
+    en=$(st myorg/4 enabled_at)
+    add_item I_10 10 issue CLOSED "$(iso_ago $((2 * DAY)))" "$(iso_ago DAY)"
+    tick
+    chk "只改配置大小写 → 停机期间的条目被加入" "$(writes_to PVT_A I_10)" 1
+    chk "只改配置大小写 → 开启时间沿用" "$(st myorg/4 enabled_at)" "$en"
+    chk "只改配置大小写 → 没有多出一份状态" "$(jq -r '.projects | keys | join(",")' "$W/state/project-auto-add.json")" "myorg/4"
+
+    # (c) 同时写两种大小写
+    new_env "myorg/4 MYORG/4"
+    add_item I_1 1 issue OPEN "$(iso_ago $DAY)" "$(iso_ago 60)"
+    tick
+    chk "两种大小写同时配置 → 同一条目只写 1 次" "$(write_tries)" 1
+    chk "到达性 · 确实写进去了" "$(in_proj I_1 PVT_A)" true
+
+    # (d) 状态里已经有两种大小写的两份：合并取最保守的（最早开启、最早同步）
+    new_env "myorg/4"
+    seed_done myorg/4 PVT_A $((30 * DAY)) $((3 * DAY))
+    seed_done MYORG/4 PVT_A 3600 60
+    en=$(st myorg/4 enabled_at)
+    add_item I_10 10 issue CLOSED "$(iso_ago $((2 * DAY)))" "$(iso_ago DAY)"
+    tick
+    chk "两份状态合并 → 按更早的那份补上停机期间的条目" "$(writes_to PVT_A I_10)" 1
+    chk "两份状态合并 → 开启时间取最早" "$(st myorg/4 enabled_at)" "$en"
+
+    # (e) 两个不同写法（不只是大小写）落到同一个看板
+    new_env "myorg/4 renamed-org/4"
+    world '.owners["renamed-org"] = "org" | .projects["renamed-org/4"] = .projects["myorg/4"]'
+    add_item I_1 1 issue OPEN "$(iso_ago $DAY)" "$(iso_ago 60)"
+    tick
+    chk "两个写法同一个看板 → 只写 1 次" "$(write_tries)" 1
+    chk "两个写法同一个看板 → 日志点名跳过" "$(grep -c 'renamed-org/4：和 myorg/4 是同一个 Project' "$W/state/poll.log" 2>/dev/null || true)" 1
+}
+
 ALL_SCENARIOS=(s_disabled s_basic s_paging s_tokens s_write_denied s_read_fail s_candidates
                s_first_enable s_add_second s_isolation_write s_initial_retry s_restart
-               s_read_isolation s_item_projects s_read_blind)
+               s_read_isolation s_item_projects s_read_blind s_case)
 for s in "${ONLY:-${ALL_SCENARIOS[@]}}"; do "$s"; done
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -505,6 +554,16 @@ mutate "读身份看不见 Project 仍去写" s_read_blind "$PAA" \
 mutate "任意读失败就让所有 Project 都不推进" s_read_isolation "$PAA" \
     'covered ri "${CUT[$k]}" && covered rp "${CUT[$k]}" || read_ok=0' \
     '[ "${SEG_FAIL[ri]}${SEG_FAIL[rp]}${SEG_FAIL[oi]}${SEG_FAIL[op]}" = 0000 ] && covered ri "${CUT[$k]}" && covered rp "${CUT[$k]}" || read_ok=0'
+
+mutate "配置里的组织名不归一大小写" s_case "$PAA" \
+    '        t=$(paa_canon "$t")
+' ''
+mutate "已有状态的键不归一大小写" s_case "$PAA" \
+    '| group_by(.key | ascii_downcase)
+        | map({key: (.[0].key | ascii_downcase),' '| group_by(.key)
+        | map({key: .[0].key,'
+mutate "同一个看板的不同写法不去重" s_case "$PAA" \
+    'if [ -n "${PID_OWNER[$pid]:-}" ]; then' 'if false; then'
 
 if [ -s "$PREP_FAILED" ]; then fail=$((fail + $(wc -l < "$PREP_FAILED"))); fi
 echo

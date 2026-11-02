@@ -163,12 +163,13 @@ if args[:2] == ["api", "graphql"]:
         logline(f"RESOLVE token={TOKEN} owner={owner} n={n} kind={kind}")
         if fault("resolve"):
             gql_fail("HTTP 502 (injected)")
-        okind = W.get("owners", {}).get(owner)
+        # GitHub 的登录名不分大小写
+        okind = {k.lower(): v for k, v in W.get("owners", {}).items()}.get(owner.lower())
         if okind is None or (okind == "org") != (kind == "organization"):
             sys.stdout.write(json.dumps({"data": {kind: None}, "errors": [{"type": "NOT_FOUND", "path": [kind],
                                          "message": f"Could not resolve to an {kind} with the login of '{owner}'."}]}))
             gql_fail(f"Could not resolve to an {kind} with the login of '{owner}'.")
-        p = W.get("projects", {}).get(f"{owner}/{n}")
+        p = {k.lower(): v for k, v in W.get("projects", {}).items()}.get(f"{owner.lower()}/{n}")
         if p is None or TOKEN not in p.get("readers", []):
             sys.stdout.write(json.dumps({"data": {kind: {"projectV2": None}}, "errors": [{"type": "NOT_FOUND",
                                          "path": [kind, "projectV2"], "message": f"Could not resolve to a ProjectV2 with the number {n}."}]}))
