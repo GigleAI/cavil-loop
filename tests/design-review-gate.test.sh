@@ -7,8 +7,8 @@
 #
 # 全部跑真实的派工脚本（dispatch-new-issue.sh / dispatch-issue-comment.sh），读它们写出的
 # 那份给 worker 的提示词，不断言源码文本：
-#   【1】开关关着（复审关卡开 / 不开两种）：提示词和改动前（merge-base 上的 scripts + prompts）
-#        渲染出来的逐字节一致——没开这一项的项目什么都没变
+#   【1】开关关着（复审关卡开 / 不开两种）：提示词和改动前的派工脚本（merge-base 上的 scripts，
+#        模板用当前的）渲染出来的逐字节一致——没开这一项的项目什么都没变
 #   【2】开关开着但没配复审标签：照样交人，也和改动前逐字节一致（不会翻进一个空标签）
 #   【3】开关开着 + 复审关卡开：方案、修订方案的出口是复审标签，并带「打回是改方案」的说明；
 #        澄清答复仍直接交人；PR 的交付出口不变
@@ -29,9 +29,13 @@ ok()  { echo "  ✅ $1"; pass=$((pass + 1)); }
 bad() { echo "  ❌ $1"; [ -n "${2:-}" ] && printf '     %s\n' "$2"; fail=$((fail + 1)); }
 
 # ── 改动前的版本 ──
+# 只取改动前的派工脚本，模板用当前的：【1】【2】守的是「开关关着时，派工逻辑不改变提示词」。
+# 模板文字本身的改动（加规矩、改措辞）不归这里管，各有自己的测试；把改动前的模板也拿来当基准，
+# 任何只改模板文字的 PR 都会在这里红（评论版式那次改模板就撞上过）。
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$TMP/old"
-git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$TMP/old"
+git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$TMP/old"
+cp -r "$REPO_DIR/prompts" "$TMP/old/"
 mkdir -p "$TMP/new"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$TMP/new/"
 
 # ── 假 gh / 假 tmux ──
