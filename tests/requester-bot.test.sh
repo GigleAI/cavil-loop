@@ -432,9 +432,9 @@ reject_suite() {   # <scripts 副本>
     bot_case "$S" 60; chk "拒绝 · 复审轮次用尽双标签：退出码 2" "$RC" 2
     chk "拒绝 · 复审轮次用尽：两个标签都保留" "$(labels_of "$RW" 60)" "pending/review,pending/human"
     chk "拒绝 · 复审轮次用尽：零写请求" "$(writes)" 0
-    fresh_bot; set_field "$RW" 50 events '[{"event":"labeled","actor":"maintainer","label":"pending/human"},{"event":"unlabeled","actor":"maintainer","label":"pending/human"}]'
+    fresh_bot; set_field "$RW" 50 events '[{"event":"labeled","actor":"maintainer","label":"pending/human"}]'
     : > "$RW/gh/calls.log"
-    bot_case "$S" 50; chk "拒绝 · 维护者曾手打 pending/human：退出码 2" "$RC" 2; chk "拒绝 · 维护者手打过：零写请求" "$(writes)" 0
+    bot_case "$S" 50; chk "拒绝 · 维护者手打 pending/human 未解除：退出码 2" "$RC" 2; chk "拒绝 · 维护者手打未解除：零写请求" "$(writes)" 0
     fresh_bot; set_field "$RW" 50 events '[{"event":"labeled","actor":"maintainer","label":"pending/human"}]'; : > "$RW/gh/calls.log"
     bot_case "$S" 60; chk "拒绝 · PR 关联的 issue 被维护者接手过：退出码 2" "$RC" 2
     fresh_bot; faults '[{"method":"GET","path":"/events$","mode":"fail"}]'; : > "$RW/gh/calls.log"
@@ -517,6 +517,107 @@ CASES
 }
 reject_suite "$NEW"; success_suite "$NEW"; fail_suite "$NEW"
 
+# ── 维护者暂停后又恢复（GitHub#106）──
+# 只看维护者最后一次手打 pending/human 之后：其后有维护者摘掉它、或打触发标签 = 暂停解除，放行；
+# 机器人 / worker / 读不出的账号摘掉不算。事件按编号排序（夹具可故意乱序、可分页）。
+# 拒绝的用例都断言输出里是「没有维护者解除」这条理由 —— 证明确实走到了这条判断，不是被前面的检查挡掉。
+SORTBIN="$SANDBOX/sortbin"; mkdir -p "$SORTBIN"
+cat > "$SORTBIN/sort" <<'EOS'
+#!/usr/bin/env bash
+# 故障注入用的 sort：没设 FAKE_SORT_MODE 时就是真 sort
+[ -n "${FAKE_SORT_MODE:-}" ] || exec /usr/bin/env -u FAKE_SORT_MODE PATH=/usr/bin:/bin sort "$@"
+printf '%s\n' "$*" >> "$FAKE_GH_DIR/sort.log"
+cat >/dev/null
+case "$FAKE_SORT_MODE" in fail) exit 2 ;; empty) exit 0 ;; esac
+EOS
+chmod +x "$SORTBIN/sort"
+PH='"label":"pending/human"'
+pause_case() {   # <说明> <期望退出码> <events JSON> [编号=50] [每页条数]
+    local desc="$1" want="$2" evs="$3" n="${4:-50}" page="${5:-}"
+    fresh_bot; set_field "$RW" 50 events "$evs"
+    [ "$n" = 50 ] || set_field "$RW" "$n" events "${PR_EVS:-[]}"
+    [ -z "$page" ] || set_field "$RW" 50 events_page "$page"
+    : > "$RW/gh/calls.log"
+    bot_case "$PS" "$n"
+    chk "暂停 · $desc：退出码 $want" "$RC" "$want"
+    if [ "$want" = 0 ]; then
+        chk "暂停 · $desc：确实叫醒（只剩等待标签）" "$(labels_of "$RW" "$n")" "waiting/bot"
+    else
+        chk "暂停 · $desc：零写请求" "$(writes)" 0
+        local why="${WHY:-之后没有维护者解除}"
+        chk "暂停 · $desc：拒绝理由是「$why」" "$(printf '%s' "$OUT" | grep -c "$why")" 1
+    fi
+}
+# issue 验收里的两种「放行」：退回旧判断时必须正是这两条变红
+pause_resume_cases() {   # <scripts 副本>
+    PS="$1"
+    pause_case "打过后维护者摘掉" 0 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]"
+    pause_case "打过后维护者打 pending/agent（pending/human 是机器人摘的）" 0 \
+        "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"worker-bot\",$PH},{\"event\":\"labeled\",\"actor\":\"maintainer\",\"label\":\"pending/agent\"}]"
+}
+pause_suite() {   # <scripts 副本>
+    PS="$1"
+    # —— issue 验收的四种 ——
+    pause_case "只打过、没解除" 2 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH}]"
+    pause_resume_cases "$PS"
+    pause_case "打过后只有 worker 账号摘掉" 2 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"worker-bot\",$PH},{\"event\":\"labeled\",\"actor\":\"worker-bot\",\"label\":\"pending/agent\"}]"
+    pause_case "打过后只有需求机器人摘掉" 2 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"req-bot\",$PH}]"
+    # —— 补充 ——
+    pause_case "解除后维护者再次暂停（只看最后一次）" 2 \
+        "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH}]"
+    pause_case "暂停两次、最后一次也解除了" 0 \
+        "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"labeled\",\"actor\":\"maintainer\",\"label\":\"pending/agent\"}]"
+    pause_case "用带后缀的触发标签恢复" 0 \
+        "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"worker-bot\",$PH},{\"event\":\"labeled\",\"actor\":\"maintainer\",\"label\":\"pending/agent/05\"}]"
+    pause_case "另一个维护者解除" 0 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"other-maint\",$PH}]"
+    pause_case "解除那次账号读不出" 2 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",$PH}]"
+    pause_case "账号读不出的人打的、没解除" 2 "[{\"event\":\"labeled\",$PH}]"
+    pause_case "解除后正常流程里 worker 又打又摘" 0 \
+        "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"labeled\",\"actor\":\"worker-bot\",$PH},{\"event\":\"unlabeled\",\"actor\":\"worker-bot\",$PH}]"
+    # #102 的真实形状：维护者同一秒「摘 pending/human、打 pending/agent」，之后机器人派工翻标签
+    pause_case "真实时间线（同秒摘标签 + 重新派工）" 0 \
+        "[{\"event\":\"labeled\",\"actor\":\"maintainer\",\"label\":\"pending/agent\"},{\"event\":\"unlabeled\",\"actor\":\"worker-bot\",\"label\":\"pending/agent\"},{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"labeled\",\"actor\":\"maintainer\",\"label\":\"pending/agent\"},{\"event\":\"unlabeled\",\"actor\":\"worker-bot\",\"label\":\"pending/agent\"},{\"event\":\"labeled\",\"actor\":\"worker-bot\",\"label\":\"doing/agent\"}]"
+    # —— 顺序：按编号判断，不按接口给出的顺序；每页 1 条时页内排序也救不了 ——
+    pause_case "乱序给出 · 真实顺序是暂停→解除→再暂停" 2 \
+        "[{\"id\":30,\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"id\":10,\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"id\":20,\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]" 50 1
+    pause_case "乱序给出 · 真实顺序是暂停→解除" 0 \
+        "[{\"id\":20,\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH},{\"id\":10,\"event\":\"labeled\",\"actor\":\"maintainer\",$PH}]" 50 1
+    pause_case "编号位数不同（9 在 10 之前）" 0 \
+        "[{\"id\":10,\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH},{\"id\":9,\"event\":\"labeled\",\"actor\":\"maintainer\",$PH}]"
+    WHY='读不到 #50 的标签历史' pause_case "事件缺编号 → 当作不知道" 2 \
+        "[{\"id\":null,\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"id\":2,\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]"
+    # —— PR：PR 自己和关联的 issue 各判各的 ——
+    PR_EVS="[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]" \
+        pause_case "PR · 两边都已解除" 0 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]" 60
+    PR_EVS="[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH}]" \
+        pause_case "PR · 自己仍在暂停、关联 issue 已解除" 2 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]" 60
+    PR_EVS="[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]" \
+        pause_case "PR · 自己已解除、关联 issue 仍在暂停" 2 "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH}]" 60
+    # 排序命令出故障（PR #107 复审）：同一份「维护者打过、没解除」的历史，当前标签已没有
+    # pending/human。排序失败或返回空，都必须当「读不到历史」拒绝，不能误判成没暂停而放行。
+    local mode
+    for mode in fail empty; do
+        fresh_bot; set_field "$RW" 50 labels '["doing/agent","pending/agent"]'
+        set_field "$RW" 50 events "[{\"id\":1,\"event\":\"labeled\",\"actor\":\"maintainer\",$PH}]"
+        printf 'PATH="%s:$PATH"\n' "$SORTBIN" >> "$RW/cavil-loop.config"
+        : > "$RW/gh/calls.log"; : > "$RW/gh/sort.log"
+        RC=0; OUT=$(env FAKE_GH_DIR="$RW/gh" FAKE_SORT_MODE="$mode" bash "$PS/scripts/notify-requester-bot.sh" \
+            --config "$RW/cavil-loop.config" 50 2>&1) || RC=$?
+        chk "暂停 · 排序 $mode：确实走到了排序" "$([ -s "$RW/gh/sort.log" ] && echo yes || echo no)" yes
+        chk "暂停 · 排序 $mode：退出码 2" "$RC" 2
+        chk "暂停 · 排序 $mode：零写请求" "$(writes)" 0
+        chk "暂停 · 排序 $mode：标签原样" "$(labels_of "$RW" 50)" "doing/agent,pending/agent"
+        chk "暂停 · 排序 $mode：理由是读不到历史" "$(printf '%s' "$OUT" | grep -c '读不到 #50 的标签历史')" 1
+    done
+    # 当前仍挂着 pending/human：不论历史怎么解除，照旧拒绝（这条判断不变）
+    fresh_bot; set_field "$RW" 50 labels '["pending/human"]'
+    set_field "$RW" 50 events "[{\"event\":\"labeled\",\"actor\":\"maintainer\",$PH},{\"event\":\"unlabeled\",\"actor\":\"maintainer\",$PH}]"
+    : > "$RW/gh/calls.log"; bot_case "$PS" 50
+    chk "暂停 · 历史已解除但当前挂着 pending/human：退出码 2" "$RC" 2
+    chk "暂停 · 当前挂着 pending/human：零写请求" "$(writes)" 0
+}
+pause_suite "$NEW"
+
 # ── 交还中途失败：等待标签都还在，daemon 不派工 ──
 # 叫醒一直失败（摘 doing/agent 读回仍在），再在交还的第 1 / 2–3 / 4 步注入失败。之后跑两轮 greedy 轮询：
 # 第一轮 self-heal 会碰 doing/agent 残留，第二轮才会把翻回来的触发标签派出去。
@@ -555,8 +656,42 @@ D=$(mutate no-author-check scripts/_lib.sh \
     '    if [ "$(requester_bot_lc "$author")" != "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then' \
     '    if false; then') && neg "删掉作者核对（只认标记）" reject_suite "$D"
 D=$(mutate no-history-check scripts/notify-requester-bot.sh \
-    '        0) reject "#$n 曾由维护者' \
-    '        0) : "#$n 曾由维护者') && neg "删掉「维护者接手过」检查" reject_suite "$D"
+    '        0) reject "#$n 由维护者' \
+    '        0) : "#$n 由维护者') && neg "删掉「维护者接手过」检查" reject_suite "$D"
+# GitHub#106：暂停解除的各条规则。退回旧版 = 用 merge-base 上的叫醒脚本（看全部历史）
+if mutation_on; then
+    D="$SANDBOX/mut-old-history"; rm -rf "$D"; cp -r "$NEW" "$D"
+    cp "$SANDBOX/old-src/scripts/notify-requester-bot.sh" "$D/scripts/notify-requester-bot.sh"
+else D=""; fi
+neg "退回旧判断（看全部历史）· issue 的两种放行" pause_resume_cases "$D"
+D=$(mutate resume-by-anyone scripts/notify-requester-bot.sh \
+    '        [ -n "$paused" ] && is_maintainer "$actor" || continue' \
+    '        [ -n "$paused" ] || continue') && neg "机器人 / worker 摘标签也算解除" pause_suite "$D"
+D=$(mutate resume-by-unknown scripts/notify-requester-bot.sh \
+    '    [ -n "$1" ] && [ "$1" != "?" ] || return 1' \
+    '    [ -n "$1" ] || return 1') && neg "账号读不出的人也能解除" pause_suite "$D"
+D=$(mutate first-resume-wins scripts/notify-requester-bot.sh \
+    '        [ -z "$resume" ] || paused=""' \
+    '        [ -z "$resume" ] || { paused=""; break; }') && neg "解除一次后不再看后面的暂停" pause_suite "$D"
+D=$(mutate no-sort scripts/notify-requester-bot.sh \
+    "    sorted=\$(printf '%s\\n' \"\$rows\" | sort -t\$'\\t' -k1,1n) || return 2" \
+    '    sorted="$rows"') && neg "不排序、按接口给出的顺序" pause_suite "$D"
+D=$(mutate text-sort scripts/notify-requester-bot.sh \
+    "sort -t\$'\\t' -k1,1n)" \
+    "sort -t\$'\\t' -k1,1)") && neg "按文本而不是数值排序" pause_suite "$D"
+D=$(mutate bare-trigger-only scripts/notify-requester-bot.sh \
+    '            for L in "${TRIGGER_LABELS_ALL[@]}"; do [ "$label" = "$L" ] && resume=1; done' \
+    '            [ "$label" = "$LABEL_PENDING_AGENT" ] && resume=1') && neg "只认裸 pending/agent 恢复" pause_suite "$D"
+D=$(mutate no-sort-count scripts/notify-requester-bot.sh \
+    "    [ \"\$(printf '%s\\n' \"\$sorted\" | grep -c .)\" = \"\$(printf '%s\\n' \"\$rows\" | grep -c .)\" ] || return 2" \
+    '    :') && neg "排序结果行数不核对" pause_suite "$D"
+# 叠加在上一条之上：排序退出码也不查 = 复审指出的旧写法（sort 放在进程替换里，失败被吞）
+D=$(MUT_BASE="$D" mutate sort-in-procsub scripts/notify-requester-bot.sh \
+    "    sorted=\$(printf '%s\\n' \"\$rows\" | sort -t\$'\\t' -k1,1n) || return 2" \
+    "    sorted=\$(printf '%s\\n' \"\$rows\" | sort -t\$'\\t' -k1,1n) || true") && neg "排序失败也不当「不知道」（等同进程替换里排序）" pause_suite "$D"
+D=$(mutate tolerate-missing-id scripts/notify-requester-bot.sh \
+    "    printf '%s\\n' \"\$rows\" | awk -F'\\t' '\$1 !~ /^[0-9]+\$/ { bad=1 } END { exit bad }' || return 2" \
+    '    :') && neg "事件缺编号照样判断" pause_suite "$D"
 D=$(mutate no-pr-origin-check scripts/_lib.sh \
     '            REQUESTER_BOT_REASON="PR #$num 关联的 #$origin 是 PR，不是 issue"
             return 1' \
@@ -697,6 +832,36 @@ chk "真 PR 派工 · 对拍不是两边都空" "$([ -n "$WS_OLD" ] && echo yes 
 echo "── 4. 提示词拼装（开启） ──"
 # ─────────────────────────────────────────────────────────────────────────
 HEAD_LINE='# 外部需求机器人交接规则（本项目开启了外部需求机器人）'
+# 「维护者暂停还算不算数」这条规则写在叫醒脚本（行为）、worker 交接说明和中英各两份文档里。
+# 文字各处措辞不同，但都要讲到同样几点；也不许再留旧说法（「打过一次就永远只交维护者」）。
+# 输出 ok，或缺了 / 多了哪一条。行为那边由第 3 组「暂停」用例跑真实脚本核对。
+rule_text_check() {   # <文本> <zh|en>
+    local t="$1" miss="" k
+    if [ "$2" = zh ]; then
+        for k in '没有解除' '摘掉' '派工标签' '机器人 / worker 账号摘掉' '最后一次' '读不到'; do
+            grep -qF -- "$k" <<< "$t" || miss="$miss 缺「$k」"
+        done
+        for k in '之后的交接都只交维护者' '之后只交维护者）'; do
+            grep -qF -- "$k" <<< "$t" && miss="$miss 仍有旧说法「$k」"
+        done
+    else
+        for k in 'lifted' 'remov' 'dispatch label' 'bot / worker account' 'latest' 'nreadable'; do
+            grep -qF -- "$k" <<< "$t" || miss="$miss missing '$k'"
+        done
+        for k in 'every later handoff' 'from then on only the maintainer'; do
+            grep -qF -- "$k" <<< "$t" && miss="$miss old wording '$k'"
+        done
+    fi
+    printf '%s' "${miss:-ok}"
+}
+RULE_DOCS="docs/requester-bot.zh.md:zh docs/security.zh.md:zh docs/requester-bot.md:en docs/security.md:en"
+doc_rule_suite() {   # <仓库根（含 docs/）>
+    local root="$1" e f
+    for e in $RULE_DOCS; do
+        f="${e%%:*}"
+        chk "文档 · $f：暂停解除规则是新口径" "$(rule_text_check "$(cat "$root/$f")" "${e##*:}")" ok
+    done
+}
 prompt_suite() {   # <scripts 副本>
     local S="$1" W="$SANDBOX/prompt-on" kind out
     new_env "$W" on label; project_prompts "$W"
@@ -707,6 +872,11 @@ prompt_suite() {   # <scripts 副本>
             "$(printf '%s\n' "$out" | awk -v h="$HEAD_LINE" '$0==h{f=1;next} f && /^---$/{n++} END{print n+0}')" 0
         chk "开启 · $kind：占位符都替换掉了" "$(printf '%s\n' "$out" | grep -c '@@')" 0
         chk "开启 · $kind：叫醒命令带上本项目配置" "$(printf '%s\n' "$out" | grep -cF -- "--config '$W/cavil-loop.config'")" 1
+    done
+    # 暂停解除规则（GitHub#106）：四类成品都带新口径、不带旧口径——和叫醒脚本的行为（第 3 组「暂停」）对上
+    for kind in new-issue issue-comment pr-comment review; do
+        out=$(compose_out "$S" "$W" $kind)
+        chk "开启 · $kind：暂停解除规则是新口径" "$(rule_text_check "$out" zh)" ok
     done
     out=$(compose_out "$S" "$W" new-issue)
     chk "开启 · 整份替换的模板保留了项目内容" "$(printf '%s\n' "$out" | grep -c '^项目整份替换的新 issue 模板$')" 1
@@ -736,6 +906,23 @@ D=$(mutate tpl-only scripts/_lib.sh \
     fi
     neg "交接规则只写进工具自带模板" prompt_suite "$D"
 }
+# 交接说明退回改动前的版本（「手打过就永远只交维护者」）→ 四类成品都要变红
+if mutation_on; then
+    D="$SANDBOX/mut-old-handoff"; rm -rf "$D"; cp -r "$NEW" "$D"
+    cp "$SANDBOX/old-src/prompts/requester-bot-handoff.md" "$D/prompts/requester-bot-handoff.md"
+else D=""; fi
+neg "交接说明退回旧口径" prompt_suite "$D"
+doc_rule_suite "$REPO_DIR"
+# 每份文档单独退回 merge-base 的版本，各自要变红
+for e in $RULE_DOCS; do
+    f="${e%%:*}"
+    if mutation_on; then
+        D="$SANDBOX/mut-old-doc-$(basename "$f")"; rm -rf "$D"; mkdir -p "$D/docs"
+        cp "$REPO_DIR"/docs/*.md "$D/docs/"
+        git -C "$REPO_DIR" show "$BASE_REV:$f" > "$D/$f" || prep_failed "old-doc-$f" "取不到旧版"
+    else D=""; fi
+    neg "$f 退回旧口径" doc_rule_suite "$D"
+done
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3d. 叫醒 = 等待标签 + webhook（GitHub#100） ──"

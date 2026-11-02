@@ -3,7 +3,7 @@
 
 状态放在 $FAKE_GH_DIR/state.json：
   {"me": "<当前账号>", "items": {"<N>": {number, title, user, body, state, labels[], assignees[],
-   is_pr, head_ref, events[{event, actor, label}], reviewers[], merged, comments[]}}}
+   is_pr, head_ref, events[{event, actor, label, id?}], events_page?, reviewers[], merged, comments[]}}}
   PR：state = open / closed，merged = true / false（合并的 PR 是 closed + merged）；
   reviewers = 待 review 名单（个人账号）；comments 每条是 {user, body}（只写字符串时算 "someone" 发的）
 
@@ -193,9 +193,21 @@ if args and args[0] == "api":
         if rest == "" and method == "GET":
             emit(pull_view(it) if kind == "pulls" else issue_view(it))
         if rest == "/events" and method == "GET":
-            evs = [{"event": e["event"], "actor": ({"login": e["actor"]} if e.get("actor") else None),
+            # 真接口每条事件都有全局递增的 id；夹具可以显式给 id（故意乱序），没给就按落库顺序编号。
+            # id 为 None = 模拟缺字段。events_page = 每页几条（--paginate 时 --jq 逐页执行，同真 gh）
+            evs = [{"id": e.get("id", k + 1), "event": e["event"],
+                    "actor": ({"login": e["actor"]} if e.get("actor") else None),
                     "label": {"name": e.get("label", "")}, "created_at": "2026-10-01T00:00:00Z"}
-                   for e in it.get("events", [])]
+                   for k, e in enumerate(it.get("events", []))]
+            size = it.get("events_page")
+            if paginate and size and jq:
+                rc = 0
+                for k in range(0, max(len(evs), 1), size):
+                    r = subprocess.run(["jq", "-r", jq], input=json.dumps(evs[k:k + size], ensure_ascii=False),
+                                       text=True, capture_output=True)
+                    sys.stdout.write(r.stdout)
+                    rc = rc or r.returncode
+                sys.exit(rc)
             emit(evs)
         if rest == "/labels" and method == "POST":
             for kv in fields:
