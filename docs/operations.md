@@ -1173,10 +1173,15 @@ cavil-loop-poll@<key>.timer: Unit to trigger vanished.
 
    ```bash
    systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
-   find ~/.config/systemd/user -xtype l -name '*.timer'
+   for l in ~/.config/systemd/user/* ~/.config/systemd/user/*/*; do
+       [ -L "$l" ] || continue
+       case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+       case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+       [ -e "$l" ] || echo "broken: $l"
+   done
    ```
 
-   A project with `-` under NEXT, a missing project, or any broken link listed by the second command means: continue. Otherwise stop here.
+   A project with `-` under NEXT, a missing project, or any line printed by the loop means: continue. Otherwise stop here.
 
 1. Update to a release that has the fix (if only the pre-rename entry exists, the `if` picks `~/.agents/skills/coding-agent-work-loop`):
 
@@ -1202,14 +1207,20 @@ cavil-loop-poll@<key>.timer: Unit to trigger vanished.
    bash "$SKILL/scripts/repair-unit-links.sh"
    ```
 
-3. Check — success means the two `find` commands print nothing and every timer you want running has a time under NEXT (a timer you paused on purpose may stay inactive):
+3. Check — success means the loop prints nothing and every timer you want running has a time under NEXT (a timer you paused on purpose may stay inactive):
 
    <!-- repair-unit-links:check -->
    ```bash
-   find ~/.config/systemd/user -lname '*/.agents/releases/cavil-loop/releases/*'
-   find ~/.config/systemd/user -xtype l -name '*.timer'
+   for l in ~/.config/systemd/user/* ~/.config/systemd/user/*/*; do
+       [ -L "$l" ] || continue
+       case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+       case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+       [ -e "$l" ] || echo "broken: $l"
+   done
    systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
    ```
+
+   (A shell loop, not `find`: `find` does not enter `~/.config/systemd/user` when that directory is itself a symlink, and would print nothing even with broken links inside.)
 
 4. Manual fallback for one project, only if 1–3 do not work. `KEY` is the project's name (the `<key>.conf` under `~/.config/cavil-loop/`, or `~/.config/coding-agent-work-loop/` on a pre-rename install); use `P=coding-agent` for a pre-rename unit and `KIND=weekly-report` for a weekly-report timer. Only run it for a timer you want running:
 

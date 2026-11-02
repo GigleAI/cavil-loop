@@ -1019,10 +1019,15 @@ cavil-loop-poll@<key>.timer: Unit to trigger vanished.
 
    ```bash
    systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
-   find ~/.config/systemd/user -xtype l -name '*.timer'
+   for l in ~/.config/systemd/user/* ~/.config/systemd/user/*/*; do
+       [ -L "$l" ] || continue
+       case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+       case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+       [ -e "$l" ] || echo "broken: $l"
+   done
    ```
 
-   有项目的 NEXT 是 `-`、有项目不在列表里，或者第二条列出了断链，就往下做；都正常就到此为止。
+   有项目的 NEXT 是 `-`、有项目不在列表里，或者那段循环打印了任何一行，就往下做；都正常就到此为止。
 
 1. 更新到含修复的版本（机器上只有改名前的入口时，`if` 那段会自动换成 `~/.agents/skills/coding-agent-work-loop`）：
 
@@ -1048,14 +1053,20 @@ cavil-loop-poll@<key>.timer: Unit to trigger vanished.
    bash "$SKILL/scripts/repair-unit-links.sh"
    ```
 
-3. 确认成功：两条 `find` 都没有输出，你希望运行的定时任务 NEXT 都有时间（你有意暂停的可以保持未运行）：
+3. 确认成功：循环没有任何输出，你希望运行的定时任务 NEXT 都有时间（你有意暂停的可以保持未运行）：
 
    <!-- repair-unit-links:check -->
    ```bash
-   find ~/.config/systemd/user -lname '*/.agents/releases/cavil-loop/releases/*'
-   find ~/.config/systemd/user -xtype l -name '*.timer'
+   for l in ~/.config/systemd/user/* ~/.config/systemd/user/*/*; do
+       [ -L "$l" ] || continue
+       case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+       case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+       [ -e "$l" ] || echo "broken: $l"
+   done
    systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
    ```
+
+   （这里用 shell 循环而不是 `find`：`~/.config/systemd/user` 本身是软链接时，`find` 不会进去，里面有断链也一行不打印。）
 
 4. 第 1–3 步走不通时，逐个项目手工兜底。`KEY` 换成项目名（`~/.config/cavil-loop/` 下、改名前安装是 `~/.config/coding-agent-work-loop/` 下那个 `<项目名>.conf`）；改名前的任务用 `P=coding-agent`，周报任务用 `KIND=weekly-report` 单独再跑一次。只对你确实要运行的任务操作：
 

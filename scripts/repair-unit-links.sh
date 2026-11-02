@@ -64,14 +64,38 @@ _ul_release_file() {
     return 1
 }
 
-# Our symlinks in the unit dir and its one-level subdirs (timers.target.wants/ …).
+# THE one listing of the unit dir, used by the repair and by the pre-delete
+# check alike (GitHub#111 review: they used to list differently — glob vs
+# `find`, which does not enter a symlinked start dir — so with
+# ~/.config/systemd/user itself a symlink the check saw nothing and the deployer
+# deleted a release a timer still pointed into). Every symlink in the unit dir
+# and in its one-level subdirs (timers.target.wants/ …); the dir and each subdir
+# are followed when they are symlinks themselves. Returns 1 when some directory
+# on the way cannot be listed — callers that protect something treat that as
+# "cannot tell".
+_ul_all_links() {
+    local d l rc=0
+    [ -d "$UL_SYS_DIR" ] || return 0
+    [ -r "$UL_SYS_DIR" ] && [ -x "$UL_SYS_DIR" ] || return 1
+    for d in "$UL_SYS_DIR" "$UL_SYS_DIR"/*/; do
+        d="${d%/}"
+        [ -d "$d" ] || continue
+        if [ ! -r "$d" ] || [ ! -x "$d" ]; then rc=1; continue; fi
+        for l in "$d"/*; do
+            [ -L "$l" ] && printf '%s\n' "$l"
+        done
+    done
+    return "$rc"
+}
+
+# Ours among them.
 _ul_links() {
     local l
-    for l in "$UL_SYS_DIR"/* "$UL_SYS_DIR"/*/*; do
-        [ -L "$l" ] || continue
+    while IFS= read -r l; do
+        [ -n "$l" ] || continue
         _ul_ours "$(basename "$l")" || continue
         printf '%s\n' "$l"
-    done
+    done < <(_ul_all_links || true)
 }
 
 _ul_repair_links() {
@@ -126,12 +150,10 @@ _ul_reload() {
 # Instance timers of ours that have a link anywhere in the unit dir.
 _ul_timers() {
     local l n
-    for l in "$UL_SYS_DIR"/*.timer "$UL_SYS_DIR"/*/*.timer; do
-        [ -L "$l" ] || [ -f "$l" ] || continue
+    while IFS= read -r l; do
         n="$(basename "$l")"
-        _ul_ours "$n" || continue
         case "$n" in *@?*.timer) printf '%s\n' "$n" ;; esac
-    done | sort -u
+    done < <(_ul_links) | sort -u
 }
 
 _ul_start_vanished() {
@@ -188,7 +210,7 @@ cavil_release_referenced() {
     _ul_init
     [ -e "$UL_SYS_DIR" ] || return 1
     real="$(readlink -f "$rel" 2>/dev/null || true)"
-    list="$(find "$UL_SYS_DIR" -maxdepth 2 -type l 2>/dev/null)" || return 0
+    list="$(_ul_all_links)" || return 0
     while IFS= read -r l; do
         [ -n "$l" ] || continue
         t="$(readlink "$l" 2>/dev/null)" || return 0

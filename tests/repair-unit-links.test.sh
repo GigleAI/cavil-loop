@@ -24,7 +24,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/mutation.sh
 source "$REPO_DIR/tests/lib/mutation.sh"
 TMP="$(mktemp -d)"
-trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap 'chmod -R u+w "$TMP" 2>/dev/null; [ -n "${KEEP_TMP:-}" ] || rm -rf "$TMP"; [ -n "${KEEP_TMP:-}" ] && echo "kept $TMP"' EXIT
 REAL_SYSTEMCTL="$(command -v systemctl || true)"
 TREES="$TMP"   # 新旧两份脚本快照；负对照在自己的临时目录里跑，但共用这两份
 
@@ -250,6 +250,7 @@ echo "enabled active success" > "$FAKE_SC/units/$u"
 : > "$H/repair.log"
 repair "$H"; local rcg=$?
 chk "退出码 0、无重新加载、无启动" "$rcg/$(calls daemon-reload)/$(calls '^start ')" "0/0/0"
+chk "确实查过这个任务的状态（不是一进来就退出）" "$([ "$(calls "^show .*$u")" -ge 1 ] && echo yes)" "yes"
 chk "日志为空" "$(cat "$H/repair.log")" ""
 }
 
@@ -272,9 +273,14 @@ commit_tree() {   # <src repo> <tree dir> <msg>
     git -C "$src" push -q origin main 2>/dev/null
     git -C "$src" rev-parse HEAD
 }
-group3() {   # [mutated new tree dir]
-local NEWTREE="${1:-$TREES/tree-new}"
-echo "【3】整条发布链：旧部署器升级 → 新轮询入口同轮修回 → 新部署器同轮修链再删旧版本"
+group3() {   # [mutated new tree dir] [plain|linked]
+local NEWTREE="${1:-$TREES/tree-new}" LAYOUT="${2:-plain}" L=""
+if [ "$LAYOUT" = linked ]; then
+    L="（单元目录本身是软链接）"
+    echo "【3b】同一条发布链，但 ~/.config/systemd/user 是指向别处真实目录的软链接（PR #111 复审第 1 轮）"
+else
+    echo "【3】整条发布链：旧部署器升级 → 新轮询入口同轮修回 → 新部署器同轮修链再删旧版本"
+fi
 local H="$TMP/h3$$$RANDOM"; mkdir -p "$H"
 local REMOTE="$H/remote.git" SRC="$H/src"
 git init -q --bare "$REMOTE"; git init -q -b main "$SRC"; git -C "$SRC" remote add origin "$REMOTE"
@@ -286,46 +292,53 @@ run() { env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" CAVIL_
 local V1 V2 V3 V4
 V1=$(commit_tree "$SRC" "$TREES/tree-old" v1)
 run bash "$SRC/scripts/skill-deploy.sh" --bootstrap --force
+local REALSYS="$SYS"
+if [ "$LAYOUT" = linked ]; then
+    REALSYS="$H/elsewhere/units"; mkdir -p "$REALSYS"; cp -a "$SYS/." "$REALSYS/" 2>/dev/null; rm -rf "$SYS"; ln -s "$REALSYS" "$SYS"   # 部署器 bootstrap 已建好真目录，换成软链接
+fi
 mkdir -p "$SYS"
 for f in cavil-loop-poll@.timer cavil-loop-poll@.service; do ln -sfn "$SK/systemd/$f" "$SYS/$f"; done
 run systemctl --user enable --now "$u"
-chk "起点：稳定入口在 V1，enable 把链接解析进 V1" "$(readlink -f "$SK" | xargs basename)|$(readlink "$SYS/$u")" \
+[ "$LAYOUT" = linked ] && chk "$L夹具：单元目录确实是软链接" "$([ -L "$SYS" ] && echo link)" "link"
+chk "$L起点：稳定入口在 V1，enable 把链接解析进 V1" "$(readlink -f "$SK" | xargs basename)|$(readlink "$SYS/$u")" \
     "$V1|$DR/releases/$V1/systemd/cavil-loop-poll@.timer"
 
 V2=$(commit_tree "$SRC" "$NEWTREE" v2)
 run bash "$SK/scripts/skill-deploy.sh" --force   # V1 里的旧部署器
-chk "旧部署器：切到 V2 并照旧删掉了 V1（问题重现）" \
+chk "$L旧部署器：切到 V2 并照旧删掉了 V1（问题重现）" \
     "$(readlink -f "$SK" | xargs basename)|$([ -e "$DR/releases/$V1" ] && echo kept || echo deleted)" "$V2|deleted"
-chk "旧部署器之后：链接已断" "$([ -e "$SYS/$u" ] && echo ok || echo broken)" "broken"
+chk "$L旧部署器之后：链接已断" "$([ -e "$SYS/$u" ] && echo ok || echo broken)" "broken"
 echo "enabled failed resources" > "$FAKE_SC/units/$u"   # systemd 下次重新加载时就会这样记
 : > "$FAKE_SC/calls"
 local out; out=$(run bash "$DR/entrypoints/poll-entry.sh")
-chk "同一轮新版本轮询主体照常跑了" "$out" "polled $V2"
-chk "同一轮：两条链接都改回稳定入口且能解析" \
+chk "$L同一轮新版本轮询主体照常跑了" "$out" "polled $V2"
+chk "$L同一轮：两条链接都改回稳定入口且能解析" \
     "$(readlink "$SYS/$u")|$(readlink "$SYS/timers.target.wants/$u")|$([ -f "$SYS/$u" ] && echo ok)" \
     "$SK/systemd/cavil-loop-poll@.timer|$SK/systemd/cavil-loop-poll@.timer|ok"
-chk "同一轮：先重新加载再启动消失的任务" "$(order)|$(calls "^start $u")" "reload-then-start|1"
+chk "$L同一轮：先重新加载再启动消失的任务" "$(order)|$(calls "^start $u")" "reload-then-start|1"
 
 run systemctl --user enable "$u"   # 又被人手动 enable 了一次：链接解析进 V2
-chk "再次 enable：链接解析进 V2" "$(readlink "$SYS/$u")" "$DR/releases/$V2/systemd/cavil-loop-poll@.timer"
+chk "$L再次 enable：链接解析进 V2" "$(readlink "$SYS/$u")" "$DR/releases/$V2/systemd/cavil-loop-poll@.timer"
 V3=$(commit_tree "$SRC" "$NEWTREE" v3)
 run bash "$SK/scripts/skill-deploy.sh" --force   # 现在是 V2 里的新部署器
-chk "新部署器：切到 V3、同一轮修链后删掉 V2" \
+chk "$L新部署器：切到 V3、同一轮修链后删掉 V2" \
     "$(readlink -f "$SK" | xargs basename)|$([ -e "$DR/releases/$V2" ] && echo kept || echo deleted)|$(readlink "$SYS/$u")" \
     "$V3|deleted|$SK/systemd/cavil-loop-poll@.timer"
-chk "新部署器之后任务链接仍能解析" "$([ -f "$SYS/$u" ] && [ -f "$SYS/timers.target.wants/$u" ] && echo ok)" "ok"
+chk "$L新部署器之后任务链接仍能解析" "$([ -f "$SYS/$u" ] && [ -f "$SYS/timers.target.wants/$u" ] && echo ok)" "ok"
 
 run systemctl --user enable "$u"   # 链接解析进 V3
-chmod a-w "$SYS/timers.target.wants"   # 这一条改不了
+# 改不了一条：普通布局里是 timers.target.wants/ 不可写；软链接布局里是软链接指向的那个真实目录不可写
+local RO="$SYS/timers.target.wants"; [ "$LAYOUT" = linked ] && RO="$REALSYS"
+chmod a-w "$RO"
 V4=$(commit_tree "$SRC" "$NEWTREE" v4)
 run bash "$SK/scripts/skill-deploy.sh" --force
-chk "修链失败：V3 保留" "$(readlink -f "$SK" | xargs basename)|$([ -e "$DR/releases/$V3" ] && echo kept || echo deleted)" "$V4|kept"
-chk "修链失败：日志说明保留原因" "$(grep -c "keeping $V3: a systemd unit link still points into it" "$H/run.log")" "1"
-chmod u+w "$SYS/timers.target.wants"
+chk "$L修链失败：V3 保留" "$(readlink -f "$SK" | xargs basename)|$([ -e "$DR/releases/$V3" ] && echo kept || echo deleted)" "$V4|kept"
+chk "$L修链失败：日志说明保留原因" "$(grep -c "keeping $V3: a systemd unit link still points into it" "$H/run.log")" "1"
+chmod u+w "$RO"
 run bash "$SK/scripts/skill-deploy.sh" --force
-chk "下一轮修好后删掉 V3，链接仍能解析" \
-    "$([ -e "$DR/releases/$V3" ] && echo kept || echo deleted)|$(readlink "$SYS/timers.target.wants/$u")|$([ -f "$SYS/timers.target.wants/$u" ] && echo ok)" \
-    "deleted|$SK/systemd/cavil-loop-poll@.timer|ok"
+chk "$L下一轮修好后删掉 V3，两条链接仍能解析" \
+    "$([ -e "$DR/releases/$V3" ] && echo kept || echo deleted)|$(readlink "$SYS/$u")|$(readlink "$SYS/timers.target.wants/$u")|$([ -f "$SYS/$u" ] && [ -f "$SYS/timers.target.wants/$u" ] && echo ok)" \
+    "deleted|$SK/systemd/cavil-loop-poll@.timer|$SK/systemd/cavil-loop-poll@.timer|ok"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -384,11 +397,15 @@ env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d-
 chk "$d 修复命令：链接改回、任务启动" "$(readlink "$H/.config/systemd/user/$u")|$(cat "$FAKE_SC/units/$u")" \
     "$H/.agents/skills/cavil-loop/systemd/cavil-loop-poll@.timer|enabled active success"
 local out; out=$(env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d-check.sh" 2>&1)
-chk "$d 检查命令：两条 find 都没有输出" "$(printf '%s\n' "$out" | grep -c '/\.config/systemd/user/')" "0"
+chk "$d 检查命令：修好后没有任何问题行" "$(printf '%s\n' "$out" | grep -c '/\.config/systemd/user/')" "0"
 # 检查命令确实分得出坏的：再弄断一条，它必须报出来
 ln -sfn "$H/.agents/releases/cavil-loop/releases/R1/systemd/cavil-loop-poll@.timer" "$H/.config/systemd/user/$u"
 out=$(env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d-check.sh" 2>&1)
 chk "$d 检查命令：断链和指向发布目录的链接都会报出来" "$(printf '%s\n' "$out" | grep -c "/\.config/systemd/user/$u")" "2"
+# 单元目录本身是软链接时也得报出来（find 默认不进软链接起点，这里会一行不打印）
+mv "$H/.config/systemd/user" "$H/units-real"; ln -s "$H/units-real" "$H/.config/systemd/user"
+out=$(env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d-check.sh" 2>&1)
+chk "$d 检查命令：单元目录是软链接时同样报出来" "$(printf '%s\n' "$out" | grep -c "/\.config/systemd/user/$u")" "2"
 # 手工兜底：示例里的项目名是 arktool，换成本夹具的 demo
 local H2="$TMP/h5b-$d"; fixture "$H2"; rm -rf "$H2/.agents/releases/cavil-loop/releases/R1"
 sed 's/^KEY=arktool$/KEY=demo/' "$TMP/$d-fallback.sh" > "$TMP/$d-fallback-demo.sh"
@@ -403,12 +420,15 @@ env -i HOME="$H3" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d
 chk "$d 手工兜底：模板不存在时停下，不留半截链接" "$(find "$H3/.config/systemd/user" -type l | wc -l)|$(calls daemon-reload)" "0|0"
 }
 
+group3_linked() { group3 "$1" linked; }
+
 # ═════════════════════════════════════════════════════════════════════════════
 make_tree "$TREES/tree-old" old
 make_tree "$TREES/tree-new" new
 group1
 group2
 group3
+group3 "" linked
 group4
 group5
 
@@ -459,6 +479,9 @@ mutant "部署器不调用修复" scripts/skill-deploy.sh \
     'if [ "$(uname -s)" = Linux ] && [ -f "$UNIT_LINKS_SH" ]; then' 'if false; then' group3 "新部署器：切到 V3、同一轮修链后删掉 V2"
 mutant "部署器删旧版本前不查引用" scripts/skill-deploy.sh \
     '    if [ -f "$UNIT_LINKS_SH" ] && CAVIL_SYSTEMD_USER_DIR' '    if false && CAVIL_SYSTEMD_USER_DIR' group3 "修链失败：V3 保留"
+mutant "删前引用检查改回 find 列目录（复审第 1 轮的实现）" scripts/repair-unit-links.sh \
+    '    list="$(_ul_all_links)" || return 0' \
+    '    list="$(find "$UL_SYS_DIR" -maxdepth 2 -type l 2>/dev/null)" || return 0' group3_linked "（单元目录本身是软链接）修链失败：V3 保留"
 mutant "setup 启用后不调用修复" setup.sh \
     '            bash "$SKILL_DIR/scripts/repair-unit-links.sh" \' '            false \' group4 "启用后两条链接都指向稳定入口"
 
