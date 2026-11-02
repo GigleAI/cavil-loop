@@ -6,6 +6,8 @@ Some projects let another AI assistant file requests directly — below, the "re
 
 The first half of this guide is a step-by-step integration, using [`grokbot`](https://github.com/grokbot) as the example (any other bot differs only in the name); the second half is reference.
 
+Looking for a ready-made requester bot? Try the [Grok bot](https://x.ai/bot/JrLKauAqSRAqNQtIP9BJQ), which can be used together with cavil-loop. This guide does not cover signing up for it or configuring it on its side, and opening it does not by itself hook it up — you still go through the steps below. `grokbot` below is only an example account name: when inviting (step 1) and configuring (step 2), use the GitHub account your bot actually uses.
+
 **Off by default.** Everything is switched on through config, and neither the code nor the config template names any particular bot (GitHub#95 / #97 / #100).
 
 - [How one request closes the loop](#how-one-request-closes-the-loop)
