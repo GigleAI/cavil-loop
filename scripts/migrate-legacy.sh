@@ -456,6 +456,10 @@ migrate_key() {
             if [ "$(env_value "$progress" "${tag}_ENABLED")" = yes ] && [ "$(unit_enabled "$nu")" != yes ]; then
                 sc enable "$nu" >/dev/null 2>&1 || { mlog "❌ 启用 $nu 失败（旧任务还开着，下一轮再试）"; return 1; }
                 mlog "新后台任务：$nu 已启用"
+                # enable 把实例链接解析进了某个 releases/<sha>/（GitHub#109）：改回稳定入口。
+                # 没改成不挡迁移——每轮轮询入口还会再修，部署器也不会删还被链接指着的版本。
+                CAVIL_SYSTEMD_USER_DIR="$SYS_DIR" bash "$SCRIPT_DIR/repair-unit-links.sh" 2>&1 | sed 's/^/[repair] /' >> "$MIG_LOG" \
+                    || mlog "⚠️ 单元链接没能全部改回稳定入口，之后每轮轮询会再试"
             fi
             if [ "$(env_value "$progress" "${tag}_ACTIVE")" = yes ] && [ "$(unit_active "$nu")" != yes ]; then
                 sc start "$nu" >/dev/null 2>&1 || { mlog "❌ 启动 $nu 失败（旧任务还开着，下一轮再试）"; return 1; }

@@ -49,7 +49,12 @@ for a in "$@"; do case "$a" in --now) now=1 ;; --quiet) quiet=1 ;; *) units+=("$
 case "$cmd" in
     is-enabled) [ -e "$SCTL/enabled/${units[0]}" ] && { echo enabled; exit 0; }; echo disabled; exit 1 ;;
     is-active)  [ -e "$SCTL/active/${units[0]}" ] && { [ $quiet = 1 ] || echo active; exit 0; }; [ $quiet = 1 ] || echo inactive; exit 3 ;;
-    enable)  for u in "${units[@]}"; do [ -e "$SCTL/fail-enable" ] && exit 1; : > "$SCTL/enabled/$u"; [ $now = 1 ] && : > "$SCTL/active/$u"; done ;;
+    enable)  for u in "${units[@]}"; do [ -e "$SCTL/fail-enable" ] && exit 1; : > "$SCTL/enabled/$u"; [ $now = 1 ] && : > "$SCTL/active/$u"
+                 # 真 systemd 255 的 enable 把模板链接解析到底（GitHub#109）：ENABLE_RESOLVES 设了就照做
+                 if [ -n "${ENABLE_RESOLVES:-}" ]; then
+                     sys="${CAVIL_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"; t="$(readlink -f "$sys/${u%%@*}@.${u##*.}")"
+                     ln -sfn "$t" "$sys/$u"; mkdir -p "$sys/timers.target.wants"; ln -sfn "$t" "$sys/timers.target.wants/$u"
+                 fi; done ;;
     disable) for u in "${units[@]}"; do [ -e "$SCTL/fail-disable" ] && exit 1; rm -f "$SCTL/enabled/$u"; [ $now = 1 ] && rm -f "$SCTL/active/$u"; done ;;
     start)   for u in "${units[@]}"; do [ -e "$SCTL/fail-start" ] && exit 1; : > "$SCTL/active/$u"; done ;;
     stop)    for u in "${units[@]}"; do rm -f "$SCTL/active/$u"; done ;;
@@ -462,6 +467,44 @@ env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGEN
 chk "已迁好的项目照常跑主轮询" "$(grep -c 'poll start' "$NEWS/beta/poll.log")" "1"
 chk "主轮询的子进程里迁移锁已经是空闲的" "$(cat "$NEWC/.migrate.lock.result" 2>/dev/null)" "free"
 rm -f "$OLDC/omicron.conf"
+
+echo "【14】受管安装（技能入口指向 releases/<sha>/）：迁移启用新任务后，链接立刻改回稳定入口（GitHub#109）"
+# 启用（enable）会把实例链接解析进具体发布目录；那一版一被清理，新任务就消失。
+mig14() {   # <迁移脚本所在目录>：在全新 HOME 里迁一个空闲的旧项目，打印新任务两条链接的去向
+    local scripts="$1" h; h=$(mktemp -d "$TMP/h14.XXXX")
+    local r="$h/.agents/releases/cavil-loop/releases/r1" sys="$h/.config/systemd/user" p="$h/projects/kap"
+    mkdir -p "$r" "$h/.agents/skills" "$h/.config/coding-agent-work-loop" "$sys" "$h/.local/state/coding-agent-poll/kap" "$p"
+    cp -a "$REPO_DIR/systemd" "$REPO_DIR/scripts" "$r/"; : > "$r/.inuse"
+    ln -s "$r" "$h/.agents/skills/coding-agent-work-loop"
+    local u
+    for u in coding-agent-poll@.service coding-agent-poll@.timer; do ln -s "$h/.agents/skills/coding-agent-work-loop/systemd/$u" "$sys/$u"; done
+    printf 'REPO="acme/kap"\nPROJECT_ROOT="%s"\nSTATE_DIR="%s"\nTMUX_PREFIX="kap"\n' "$p" "$h/.local/state/coding-agent-poll/kap" > "$p/coding-agent.config"
+    printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s/coding-agent.config\nPATH=/usr/bin:/bin\n' "$p" "$p" > "$h/.config/coding-agent-work-loop/kap.conf"
+    printf '{"seen_comments":{}}\n' > "$h/.local/state/coding-agent-poll/kap/state.json"
+    ln -s "$h/.agents/skills/coding-agent-work-loop/systemd/coding-agent-poll@.timer" "$sys/coding-agent-poll@kap.timer"
+    : > "$SCTL/enabled/coding-agent-poll@kap.timer"; : > "$SCTL/active/coding-agent-poll@kap.timer"
+    : > "$TMUXF"
+    env -u CAVIL_SYSTEMD_USER_DIR -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT HOME="$h" PATH="$FAKEBIN:$PATH" SCTL="$SCTL" TMUXF="$TMUXF" \
+        ENABLE_RESOLVES=1 bash "$scripts/migrate-legacy.sh" --key kap >/dev/null 2>>"$TMP/stderr14"
+    printf '%s|%s|%s\n' "$(enabled cavil-loop-poll@kap.timer)" "$(readlink "$sys/cavil-loop-poll@kap.timer" | sed "s|^$h||")" \
+        "$(readlink "$sys/timers.target.wants/cavil-loop-poll@kap.timer" | sed "s|^$h||")"
+    rm -f "$SCTL/enabled/cavil-loop-poll@kap.timer" "$SCTL/active/cavil-loop-poll@kap.timer"
+}
+want14="yes|/.agents/skills/cavil-loop/systemd/cavil-loop-poll@.timer|/.agents/skills/cavil-loop/systemd/cavil-loop-poll@.timer"
+chk "新任务已启用，两条链接都指向稳定入口（不是 releases/r1/）" "$(mig14 "$REPO_DIR/scripts")" "$want14"
+if mutation_gate; then
+    M14="$TMP/mut14"; mkdir -p "$M14"; cp "$REPO_DIR"/scripts/*.sh "$M14/"
+    if OLD='CAVIL_SYSTEMD_USER_DIR="$SYS_DIR" bash "$SCRIPT_DIR/repair-unit-links.sh"' python3 -c '
+import os,sys
+p=sys.argv[1]; s=open(p).read(); o=os.environ["OLD"]
+if s.count(o)!=1: sys.exit(1)
+open(p,"w").write(s.replace(o,"true"))' "$M14/migrate-legacy.sh"; then
+        got=$(mig14 "$M14")
+        chk "负对照：迁移不调用修复 → 链接留在发布目录里" "$([ "$got" != "$want14" ] && case "$got" in *releases/r1/*) echo caught ;; esac)" "caught"
+    else
+        chk "负对照准备：迁移脚本里的修复调用原文还在" "missing" "present"
+    fi
+fi
 
 echo
 mutation_summary "$0"
