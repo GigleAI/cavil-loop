@@ -22,6 +22,10 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 COLLECT="$REPO_DIR/scripts/weekly-report/collect.py"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# 夹具里的时刻都是北京时间（评论 created_at 02:05Z = footer 里的 10:05），采集器读没有时区的
+# 历史记账行也固定按北京时间（collect.py 的 TZ）。emit_footer 用 `date -d` 生成机器标记，
+# 跟着本机时区走——UTC 的机器（如 GitHub Actions）上标记就和同一次派工的历史行对不上。
+export TZ=Asia/Shanghai
 # 不读本机真实数据：collect.py 不设这几个就去扫 ~/.claude/projects（本机 7.4G，单次 18 秒）、
 # ~/.codex/sessions 和 ~/.cache——结果随机器变，测试还会越跑越慢。
 export CLAUDE_PROJECTS_DIR="$TMP/no-claude-projects" CODEX_SESSIONS_DIR="$TMP/no-codex-sessions"

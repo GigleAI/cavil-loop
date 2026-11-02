@@ -104,7 +104,7 @@ mkdir -p "$GIT_SB"
 (
     set -e
     cd "$GIT_SB"
-    git init -q --bare upstream.git
+    git init -q --bare -b main upstream.git   # -b main：不依赖本机 init.defaultBranch（CI 默认是 master）
     git clone -q upstream.git seed
     cd seed
     git config user.email t@example.invalid; git config user.name t

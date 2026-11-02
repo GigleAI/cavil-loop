@@ -19,6 +19,10 @@ RUNSH="$TEST_DIR/run.sh"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
 
+# 本文件自己也常常跑在 run.sh / GitHub Actions 底下：外层的这些变量不能漏进被测的那次运行，
+# 否则被测的 run.sh 会以为自己在 Actions 里（折叠输出、写外层的步骤摘要）。需要时各场景显式设。
+unset GITHUB_ACTIONS GITHUB_STEP_SUMMARY RUN_TESTS_DIR RUN_TEST_TIMEOUT
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

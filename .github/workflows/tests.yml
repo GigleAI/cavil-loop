@@ -56,14 +56,16 @@ jobs:
           tmux -V
 
       - name: Run shard ${{ matrix.shard }}/4
-        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 --out results
+        # Results go outside the checkout: some tests scan the whole repo tree
+        # (requester-bot greps it for retired wording) and would read their own logs.
+        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 --out "$RUNNER_TEMP/results"
 
       - name: Upload results and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-shard-${{ matrix.shard }}
-          path: results/
+          path: ${{ runner.temp }}/results/
           if-no-files-found: error
           retention-days: 14
 
