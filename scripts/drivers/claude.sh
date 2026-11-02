@@ -266,7 +266,7 @@ agent_command_resume() {
         "$prompt_file"
 }
 
-# ── 可选 hook：预先信任目录 ──
+# ── 可选 hook：目录信任（接口见 _common.sh「目录信任」）──
 # worker 第一次在一个 claude 没见过的目录里起会话时，会弹：
 #   "Quick safety check: Is this a project you created or one you trust?"
 # **`--dangerously-skip-permissions` 不绕过它**（2.1.273 实测）。后果比秒退更难查：
@@ -274,39 +274,67 @@ agent_command_resume() {
 # 但 worker 就挂在弹窗上一动不动——看日志一切正常，非 attach 进去不可能发现。
 #
 # 信任记录在 ~/.claude.json 的 projects["<绝对路径>"].hasTrustDialogAccepted。
-# 子目录从祖先继承，所以只写「仓库根 + worktree base」两条就够，每个 issue 的
-# worktree 不用单独加（2026-09-16 在 luosky/ai-hub 上实测：issue-1 的 worktree
-# 自己没有条目，照样跑起来了）。
+# 确认框长这样（2.1.316 真机截屏，tests/fixtures/trust-dialog/claude-trust.txt）：
+#    Quick safety check: Is this a project you created or one you trust? (…换行…)
+#    ❯ No, exit
+#      Yes, I trust this folder
+#    Enter to confirm · Esc to cancel          ← 屏幕最后一行
+# 认框看结构不看单个词：正常对话里引用这句话（修的就是这个功能时天天出现）不能被当成弹框。
+# 「bypass permissions」确认框底栏一模一样，靠选项行区分开。
+AGENT_TRUST_PROMPT_TITLE='Quick safety check: Is this a project you created or one you trust?'
+AGENT_TRUST_PROMPT_OPTION_RE='^[[:space:]]*(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Yes, I trust this folder[[:space:]]*$'
+AGENT_TRUST_PROMPT_FOOTER_RE='^[[:space:]]*Enter to confirm · Esc to cancel[[:space:]]*$'
+
+# claude 按哪个目录判断信任（2.1.316 隔离配置目录实测，GitHub#108）：
+#   · git 里：只看 worktree **所属仓库**那一条——普通仓库是主 checkout 目录，
+#     子模块是 <上层仓库>/.git/modules/<名字>。worktree 自己、worktree 上一级、
+#     子模块的工作目录、再往上的公共祖先，单信任哪一条都照弹。
+#   · 不在 git 里：才是「目录本身或任一上级」都算。
+# 以前 setup.sh 写「worktree base」那一条以为能被继承，其实一次都没起过作用；
+# 普通项目不弹，靠的是仓库根那条。子模块项目（arktool）就是这么漏出来的。
+agent_trust_key() {
+    local dir="$1" common
+    if common="$(trust_git_common_dir "$dir")"; then
+        case "$common" in
+            */.git) dirname "$common" ;;
+            *)      printf '%s\n' "$common" ;;
+        esac
+        return 0
+    fi
+    trust_physical_dir "$dir"
+}
+
+_claude_trust_verify() {   # <cfg> <key>...
+    local cfg="$1" p; shift
+    for p in "$@"; do
+        jq -e --arg p "$p" '.projects[$p].hasTrustDialogAccepted == true' \
+            "$cfg" >/dev/null 2>&1 || return 1
+    done
+}
+
+_claude_trust_render() {   # <cfg> <out> <key>...
+    local cfg="$1" out="$2" paths_json src; shift 2
+    _claude_trust_verify "$cfg" "$@" && return 10
+    paths_json="$(printf '%s\n' "$@" | jq -Rn '[inputs]')" || return 1
+    if [ -e "$cfg" ]; then src="$(cat "$cfg")" || return 1; else src='{}'; fi
+    # 读不动 / 不是合法 JSON / 顶层不是对象：拒绝，原文件一个字节都不动，宁可让人去点那个弹窗
+    if printf '%s' "$src" | jq --argjson paths "$paths_json" '
+            if type != "object" then error("not an object") else . end
+          | reduce $paths[] as $p (.;
+                .projects[$p].hasTrustDialogAccepted = true
+              | .projects[$p].allowedTools = (.projects[$p].allowedTools // [])
+            )' > "$out" 2>/dev/null \
+       && jq -e 'has("projects")' "$out" >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "[claude driver] WARN: $cfg 不是合法 JSON 对象，不动它；worker 首次进新目录可能卡 trust 弹窗" >&2
+    return 1
+}
+
 agent_trust_paths() {
     local cfg="${CLAUDE_JSON_PATH:-$HOME/.claude.json}"
     [ "$#" -gt 0 ] || return 0
-
-    # 已经全信任就一个字节都不写。这个文件是活着的 claude 进程在用的，
-    # 每多改写一次就多一次跟它抢写、把它刚写的东西盖掉的机会。
-    local p need=0
-    for p in "$@"; do
-        jq -e --arg p "$p" '.projects[$p].hasTrustDialogAccepted == true' \
-            "$cfg" >/dev/null 2>&1 || need=1
-    done
-    [ "$need" = 1 ] || return 0
-
-    [ -f "$cfg" ] || echo '{}' > "$cfg"
-
-    local paths_json tmp
-    paths_json="$(printf '%s\n' "$@" | jq -Rn '[inputs]')" || return 1
-    # tmp 跟 cfg 同目录：mv 才是同文件系统内的原子替换，不会半截文件落地
-    tmp="$(mktemp "${cfg}.XXXXXX")" || return 1
-    if jq --argjson paths "$paths_json" '
-            reduce $paths[] as $p (.;
-                .projects[$p].hasTrustDialogAccepted = true
-              | .projects[$p].allowedTools = (.projects[$p].allowedTools // [])
-            )' "$cfg" > "$tmp" \
-       && jq -e 'has("projects")' "$tmp" >/dev/null 2>&1; then
-        mv "$tmp" "$cfg"
-        return 0
-    fi
-    # 读不动 / 不是合法 JSON：原文件一个字节都不动，宁可让人去点那个弹窗
-    rm -f "$tmp"
-    echo "[claude driver] WARN: 写不了 $cfg，worker 首次进新目录可能卡 trust 弹窗" >&2
-    return 1
+    # 已经全信任就一个字节都不写，也不拿锁（只读）。真要写时锁里还会再判一次。
+    _claude_trust_verify "$cfg" "$@" && return 0
+    trust_config_locked_update "$cfg" _claude_trust_render _claude_trust_verify "$@"
 }

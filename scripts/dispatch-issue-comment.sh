@@ -127,6 +127,8 @@ if [ -d "$WORKTREE" ]; then
         fi
     fi
 
+    # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
+    agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0
     agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION" 2>/dev/null || true

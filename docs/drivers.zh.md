@@ -159,13 +159,34 @@ CLI 钉不了 id 的，要保证 `agent_session_list` 够便宜、且「最近�
 
 默认实现是 `tmux load-buffer + paste-buffer -p + Enter`，对大多数 chat-REPL CLI 通用。需要先 `/<slash-mode>` 切模式的 agent 可在 driver 里重写覆盖。
 
-### 可选 hook：`agent_trust_paths <path>...`
+### 可选 hook：目录信任（`agent_trust_key`、`agent_trust_paths`、`AGENT_TRUST_PROMPT_*`）
 
-有些 agent 进到没见过的目录会先要人确认「信不信这个目录」，claude 就是——而且 `--dangerously-skip-permissions` **不绕过它**。这个弹窗不会让 session 死掉，于是 dispatch 的秒退探测放行、issue 照常翻成 `doing/agent`：worker 看着活着，其实一动不动。日志里没有任何异常，只有 attach 进去才看得见。
+有些 agent 进到没见过的目录会先要人确认「信不信这个目录」，claude 和 codex 都是——而且跳过权限确认的 flag（`--dangerously-skip-permissions`、`--dangerously-bypass-approvals-and-sandbox`）**不绕过它**。这个弹窗不会让 session 死掉，于是 dispatch 的秒退探测放行、issue 照常翻成 `doing/agent`：worker 看着活着，其实一动不动。
 
-`setup.sh` 每次部署调一次这个 hook，参数是仓库根 + worktree base。agent 没有「目录信任」这个概念的，不实现就行——调用方认得出来并跳过。**必须幂等**：已经信任了就别重写那个文件，它通常正被活着的 agent 进程占着。
+三样都是可选的，统一走 `scripts/drivers/_common.sh` 里的入口 `agent_trust_dirs <dir>...`：
 
-内置 `claude` driver 写的是 `~/.claude.json` 里的 `projects["<绝对路径>"].hasTrustDialogAccepted`（测试时用 `CLAUDE_JSON_PATH` 改到别处）。子目录从祖先继承信任，所以这两条就覆盖了以后每个 issue 的 worktree。
+- `agent_trust_key <dir>`：在 `<dir>` 里起会话时，agent **实际**按哪个目录判断信任。不是「目录本身或任一上级」——2026-11 实测（GitHub#108），在 git 仓库里两个 agent 都不认上级目录。不实现就按目录本身算。
+- `agent_trust_paths <key>...`：把这些 key 记成可信。必须幂等：已经信任就一个字节都不写（那个文件通常正被活着的 agent 进程占着）。写文件一律走下面的 `trust_config_locked_update`，不要自己读改写。
+- `AGENT_TRUST_PROMPT_TITLE` / `AGENT_TRUST_PROMPT_OPTION_RE` / `AGENT_TRUST_PROMPT_FOOTER_RE`：确认框的**结构**——屏幕最后一个非空行是框的底栏，其上有一整行是「信任」选项，标题（定长字符串，允许折行）也在这几行里。三样都设了，daemon 每次起完会话都看一眼屏幕（判定在 `_common.sh` 的 `agent_trust_prompt_on_screen`）；认出框就杀会话、转人工（`pending/human`），留言写清哪个 agent、哪个目录、该补哪条记录。不能只认一个短语：会话里引用这句话（改的正是这个功能时天天出现）会被误杀（PR #110 复审复现过）。三样照真机截屏写，截屏放进 `tests/fixtures/trust-dialog/`，同底栏的其他框也截一张当反例（claude 的 bypass permissions 确认框、codex 的升级提示）。
+
+什么时候调：`setup.sh` 每次部署给仓库根调一次；**每次派工**在起会话之前都调——三个派工脚本的新建、续接、续接失败后重建全都算（调用放在 `agent_session_plan` 里）。必须每次派工都调：codex 对子模块项目按每个 worktree 单独记，部署时还不知道这些路径；顺带让这个改动之前部署的项目不用重跑 setup。写不成不挡派工——真卡在框上的那次由弹框识别兜住。
+
+内置 driver 的规则（真 CLI 实测：claude 2.1.316 用隔离配置目录，codex 0.163.0）：
+
+| 在哪里起会话 | claude 认 | codex 认 |
+|---|---|---|
+| 普通仓库的主 checkout 或它的 worktree | 主 checkout 目录 | 主 checkout 目录（框里写着「Trusting will apply to the repository root」） |
+| 子模块，或子模块的 worktree | `<上层仓库>/.git/modules/<名字>` | worktree 自己（每个 issue 一条） |
+| bare 仓库的 worktree | bare 仓库目录（同一规则推出，未实测） | worktree 自己 |
+| 不在 git 里 | 目录本身或任一上级 | 目录本身 |
+
+旧版 `setup.sh` 还写一条「worktree base」，以为 worktree 会继承它——从来没起过作用，已去掉。普通项目不弹，只是因为仓库根那条在。
+
+`claude` 写 `~/.claude.json` 的 `projects["<绝对路径>"].hasTrustDialogAccepted`（`CLAUDE_JSON_PATH` 可改）；`codex` 在 `${CODEX_HOME:-~/.codex}/config.toml` 末尾追加 `[projects."<绝对路径>"] trust_level = "trusted"`（要 Python 3.11+ 的 `tomllib`；没有就不写、派工日志里会说）。配置文件是软链接（dotfiles）时用 `readlink` 逐个路径分量解析，和内核打开它时一样——`..` 对已解析的物理目录取上一级，所以「目录链接/../文件」落在链接目标所指的位置，同一个文件的不同别名也得出同一路径（同一把锁）；不依赖 Python。解析不了（链接成环、目录建不出）就不写——直接替换会把链接换成普通文件，用户的 dotfiles 从此和真实配置分家，不重写文件其余部分，人设成非 `trusted` 的条目不改。
+
+**并发。** 同一台机器上所有项目的 daemon 共用这两个文件，但各项目的轮询锁各管各的。两个「读 → 合并 → 原子替换」同时跑，会互相抹掉对方刚加的条目、两边都报成功——原子替换只防半截文件。所以 `trust_config_locked_update` 拿一把**按配置文件真实路径划分**的锁（在 `~/.local/state/cavil-loop-trust-locks/` 下，所有项目、新旧安装共用），拿到锁之后才读、判断、生成、替换。最多等 `TRUST_LOCK_WAIT_SECS`（10 秒），超时就不写。起会话后的弹框识别最多看 `AGENT_TRUST_PROMPT_WAIT_SECS`（4 秒；claude 实测 0.3 秒内出框），会话自己退了就不再等。
+
+正在跑的 claude / codex 和手工编辑不认这把锁。替换前会再比一次内容指纹，变了就丢掉重来（最多 3 次），替换后读回核对。**保证不了的**：最后一次比对到替换之间那一瞬有人写入，会被覆盖；agent 按它自己的旧副本整体写回，可能冲掉刚加的记录。下次派工会再补；真卡在框上的那次由弹框识别变成明确的转人工。
 
 ## 验证你的 driver
 

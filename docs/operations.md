@@ -1158,6 +1158,13 @@ macOS-specific:
 
 Make sure `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"` is set in `cavil-loop.config`. Strongly recommended in trusted local environments.
 
+### Worker stuck on a folder-trust dialog ("Quick safety check" / "Trust this folder?")
+
+Since GitHub#108 the daemon writes the trust record before every launch and checks the screen afterwards, so this should show up as an item bounced to `pending/human` with a comment naming the agent and directory, and a `poll.log` line `卡在 <agent> 的目录信任确认框上（工作目录 …，该补的信任记录：…）`. The pane is saved in the session log.
+
+1. Look in `poll.log` for lines starting with `[trust]` around that dispatch: a lock timeout, "changed by another process 3 times", or an unreadable config file explain why the record wasn't written.
+2. Otherwise the agent's rule probably changed. On the daemon machine run the agent once by hand in the directory from the comment, pick "trust", exit, and relabel `pending/agent`. Then check which entry the agent itself wrote (`~/.claude.json` → `projects`, `~/.codex/config.toml` → `[projects."…"]`) and update that driver's `agent_trust_key`.
+
 ### Every project's poll.log stops at the same minute
 
 Not one stuck worker — the whole `systemd --user` manager is gone, and with it every timer,
