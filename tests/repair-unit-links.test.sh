@@ -271,8 +271,15 @@ chmod a-r "$B/real/u/timers.target.wants"; chk "子目录本身不可读 → 看
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 【3】整条发布链。V1 = 主干上（本 PR 之前）的整套脚本，V2/V3/V4 = 当前工作区；轮询主体换成桩。
-BASE_REV="$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD)"
+# 【3】整条发布链。V1 = 修复之前的整套脚本，V2/V3/V4 = 当前工作区；轮询主体换成桩。
+# V1 取「首次加入 scripts/repair-unit-links.sh 的那个提交」的上一个版本，而不是主干：
+# 修复合并之后主干上的部署器已经是修好的，拿它当旧部署器，「问题重现」那几条会恒红。
+FIX_REV="$(git -C "$REPO_DIR" log --diff-filter=A --format=%H -1 -- scripts/repair-unit-links.sh 2>/dev/null)"
+if [ -n "$FIX_REV" ] && git -C "$REPO_DIR" rev-parse -q --verify "$FIX_REV^" >/dev/null; then
+    BASE_REV="$FIX_REV^"
+else
+    BASE_REV="$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD)"
+fi
 make_tree() {   # <dir> <old|new>
     local d="$1"; mkdir -p "$d"
     if [ "$2" = old ]; then git -C "$REPO_DIR" archive "$BASE_REV" | tar -x -C "$d"
