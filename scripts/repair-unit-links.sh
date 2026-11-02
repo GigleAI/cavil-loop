@@ -64,26 +64,51 @@ _ul_release_file() {
     return 1
 }
 
+# What is at <path>, following symlinks: "dir", "other" (exists, not a dir),
+# "absent" (confirmed: the lookup said no such file), or "unknown" (anything
+# else — a parent we may not traverse, a symlink loop, …). `[ -e ]` / `[ -d ]`
+# cannot tell "absent" from "could not look" (PR #111 review round 2: a
+# non-traversable parent made the unit dir look absent and the deployer deleted
+# a release two timer links still pointed into), so every existence decision in
+# this file goes through here.
+_ul_state() {
+    local err
+    if [ -d "$1" ]; then echo dir; return; fi
+    if [ -e "$1" ]; then echo other; return; fi
+    err="$(LC_ALL=C stat -L -- "$1" 2>&1 >/dev/null)"
+    case "$err" in
+        *"No such file or directory"*|*"Not a directory"*) echo absent ;;
+        *) echo unknown ;;
+    esac
+}
+
 # THE one listing of the unit dir, used by the repair and by the pre-delete
-# check alike (GitHub#111 review: they used to list differently — glob vs
-# `find`, which does not enter a symlinked start dir — so with
-# ~/.config/systemd/user itself a symlink the check saw nothing and the deployer
-# deleted a release a timer still pointed into). Every symlink in the unit dir
-# and in its one-level subdirs (timers.target.wants/ …); the dir and each subdir
-# are followed when they are symlinks themselves. Returns 1 when some directory
-# on the way cannot be listed — callers that protect something treat that as
-# "cannot tell".
+# check alike (PR #111 review round 1: they used to list differently — glob vs
+# `find`, which does not enter a symlinked start dir). Prints every symlink in
+# the unit dir and in its one-level subdirs (timers.target.wants/ …), following
+# the dir and each subdir when they are symlinks.
+#   returns 0 — the listing is complete (empty output: confirmed nothing there)
+#   returns 1 — something on the way could not be looked at; output is partial.
+# Callers that protect something treat 1 as "cannot tell".
 _ul_all_links() {
-    local d l rc=0
-    [ -d "$UL_SYS_DIR" ] || return 0
+    local e st rc=0 l
+    case "$(_ul_state "$UL_SYS_DIR")" in
+        dir) ;;
+        absent) return 0 ;;
+        *) return 1 ;;
+    esac
     [ -r "$UL_SYS_DIR" ] && [ -x "$UL_SYS_DIR" ] || return 1
-    for d in "$UL_SYS_DIR" "$UL_SYS_DIR"/*/; do
-        d="${d%/}"
-        [ -d "$d" ] || continue
-        if [ ! -r "$d" ] || [ ! -x "$d" ]; then rc=1; continue; fi
-        for l in "$d"/*; do
-            [ -L "$l" ] && printf '%s\n' "$l"
-        done
+    for e in "$UL_SYS_DIR"/*; do
+        [ -e "$e" ] || [ -L "$e" ] || continue      # empty dir: the glob stays literal
+        [ -L "$e" ] && printf '%s\n' "$e"
+        st="$(_ul_state "$e")"
+        case "$st" in
+            dir)
+                if [ ! -r "$e" ] || [ ! -x "$e" ]; then rc=1; continue; fi
+                for l in "$e"/*; do [ -L "$l" ] && printf '%s\n' "$l"; done ;;
+            other|absent) ;;
+            *) rc=1 ;;
+        esac
     done
     return "$rc"
 }
@@ -183,8 +208,13 @@ _ul_start_vanished() {
 # is left for the next run (always safe to call again).
 cavil_unit_links_run() {
     _ul_init
-    [ -d "$UL_SYS_DIR" ] || return 0
-    [ -d "$UL_DEPLOY_ROOT" ] || return 0
+    local st
+    st="$(_ul_state "$UL_SYS_DIR")"
+    [ "$st" = absent ] && return 0
+    [ "$st" = dir ] || { _ul_log "cannot look into $UL_SYS_DIR ($st); nothing repaired this time"; return 1; }
+    st="$(_ul_state "$UL_DEPLOY_ROOT")"
+    [ "$st" = absent ] && return 0
+    [ "$st" = dir ] || { _ul_log "cannot look into $UL_DEPLOY_ROOT ($st); nothing repaired this time"; return 1; }
     command -v systemctl >/dev/null 2>&1 || return 0
     local fd
     exec {fd}>>"$UL_LOCK" || { _ul_log "cannot open $UL_LOCK"; return 1; }
@@ -208,13 +238,18 @@ cavil_unit_links_run() {
 cavil_release_referenced() {
     local rel="$1" real list l t r p
     _ul_init
-    [ -e "$UL_SYS_DIR" ] || return 1
     real="$(readlink -f "$rel" 2>/dev/null || true)"
+    # Complete listing or nothing: a partial one cannot prove "no reference".
     list="$(_ul_all_links)" || return 0
     while IFS= read -r l; do
         [ -n "$l" ] || continue
         t="$(readlink "$l" 2>/dev/null)" || return 0
-        r="$(readlink -f "$l" 2>/dev/null || true)"
+        # A link we cannot resolve only proves nothing when its target is
+        # confirmed absent; anything else (a parent we may not enter) counts.
+        if ! r="$(readlink -f "$l" 2>/dev/null)"; then
+            [ "$(_ul_state "$l")" = absent ] || return 0
+            r=""
+        fi
         for p in "$rel" ${real:+"$real"}; do
             case "$t" in "$p"/*) return 0 ;; esac
             case "$r" in "$p"/*) return 0 ;; esac

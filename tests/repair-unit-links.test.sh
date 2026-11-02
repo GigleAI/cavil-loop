@@ -16,7 +16,7 @@
 # 其余一律走假 systemctl（按单元记状态：是否启用 / 运行状态 / 结束原因，按顺序记每次调用，
 # 可按次数注入失败）。HOME 指向临时目录。
 #
-#   bash tests/repair-unit-links.test.sh            默认（约 5 秒；MUTATION=1 约 11 秒）
+#   bash tests/repair-unit-links.test.sh            默认（约 10 秒；MUTATION=1 约 27 秒）
 #   MUTATION=1 bash tests/repair-unit-links.test.sh 另跑负对照：把被测代码改坏一处，对应检查必须变红
 set -uo pipefail
 
@@ -252,6 +252,22 @@ repair "$H"; local rcg=$?
 chk "退出码 0、无重新加载、无启动" "$rcg/$(calls daemon-reload)/$(calls '^start ')" "0/0/0"
 chk "确实查过这个任务的状态（不是一进来就退出）" "$([ "$(calls "^show .*$u")" -ge 1 ] && echo yes)" "yes"
 chk "日志为空" "$(cat "$H/repair.log")" ""
+
+echo " 2h 列单元目录：确认没有 / 列全了 / 看不进去，三种答案分开（看不进去绝不能答「列全了」）"
+listing() {   # <unit dir> → "<退出码>|<列出的链接数>"
+    local out rc
+    out=$(CAVIL_SYSTEMD_USER_DIR="$1" CAVIL_DEPLOY_ROOT="$TMP" bash -c 'source "$1"; _ul_init; _ul_all_links' _ "${REPAIR_SH:-$REPO_DIR/scripts/repair-unit-links.sh}"); rc=$?
+    echo "$rc|$(printf '%s' "$out" | grep -c .)"
+}
+local B="$TMP/h2h"; mkdir -p "$B/real/u/timers.target.wants" "$B/far/w" "$B/w2/u"
+ln -s /x/a "$B/real/u/cavil-loop-poll@a.timer"; ln -s /x/b "$B/real/u/timers.target.wants/cavil-loop-poll@a.timer"
+ln -s /x/c "$B/far/w/cavil-loop-poll@c.timer"; ln -s "$B/far/w" "$B/w2/u/timers.target.wants"
+chk "确实不存在 → 0 条、列全了" "$(listing "$B/none/u")" "0|0"
+chk "正常目录 → 2 条、列全了" "$(listing "$B/real/u")" "0|2"
+chmod a-x "$B/real"; chk "上层目录不可进入 → 看不进去" "$(listing "$B/real/u" | cut -d'|' -f1)" "1"; chmod u+x "$B/real"
+chk "子目录是软链接、能进 → 列出它自己和里面那条，列全了" "$(listing "$B/w2/u")" "0|2"
+chmod a-x "$B/far"; chk "子目录是软链接、目标的上层不可进入 → 看不进去" "$(listing "$B/w2/u" | cut -d'|' -f1)" "1"; chmod u+x "$B/far"
+chmod a-r "$B/real/u/timers.target.wants"; chk "子目录本身不可读 → 看不进去" "$(listing "$B/real/u" | cut -d'|' -f1)" "1"; chmod u+r "$B/real/u/timers.target.wants"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -373,6 +389,53 @@ chk "启用后两条链接都指向稳定入口" "$(readlink "$SYS/$u")|$(readli
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 【6】看不进单元目录（上层目录没有进入权限）：既不能当「没有」、也不能当「没引用」（PR #111 复审第 2 轮）
+#   real     ~/.config 本身不可进入（单元目录是真目录）
+#   linked   单元目录是软链接，链接目标的上层目录不可进入
+#   wants    timers.target.wants/ 是软链接，它目标的上层目录不可进入
+group6() {   # [new tree dir] <real|linked|wants>
+local NEWTREE="${1:-$TREES/tree-new}" VAR="$2" L="（看不进单元目录·$2）"
+echo "【6·$VAR】看不进单元目录时，旧版本保留；恢复权限后修好再删"
+local H="$TMP/h6$VAR$$$RANDOM"; mkdir -p "$H"
+local REMOTE="$H/remote.git" SRC="$H/src"
+git init -q --bare "$REMOTE"; git init -q -b main "$SRC"; git -C "$SRC" remote add origin "$REMOTE"
+export FAKE_SC="$H/sc"; mkdir -p "$FAKE_SC"
+local DR="$H/.agents/releases/cavil-loop" SK="$H/.agents/skills/cavil-loop" SYS="$H/.config/systemd/user"
+local u="cavil-loop-poll@demo.timer"
+run() { env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" CAVIL_DEPLOY_REPO="$REMOTE" \
+        CAVIL_DEPLOY_ALERT_AFTER=999999 "$@" 2>>"$H/run.log"; }
+local V1 V2 LOCK
+V1=$(commit_tree "$SRC" "$NEWTREE" v1)
+run bash "$SRC/scripts/skill-deploy.sh" --bootstrap --force
+mkdir -p "$SYS"
+case "$VAR" in
+    real)   LOCK="$H/.config" ;;
+    linked) mkdir -p "$H/far/units"; cp -a "$SYS/." "$H/far/units/"; rm -rf "$SYS"; ln -s "$H/far/units" "$SYS"; LOCK="$H/far" ;;
+    wants)  mkdir -p "$H/far/wants" "$SYS"; ln -s "$H/far/wants" "$SYS/timers.target.wants"; LOCK="$H/far" ;;
+esac
+for f in cavil-loop-poll@.timer cavil-loop-poll@.service; do ln -sfn "$SK/systemd/$f" "$SYS/$f"; done
+run systemctl --user enable --now "$u"
+chk "$L起点：两条链接都解析进 V1" "$(readlink "$SYS/$u")|$(readlink "$SYS/timers.target.wants/$u")" \
+    "$DR/releases/$V1/systemd/cavil-loop-poll@.timer|$DR/releases/$V1/systemd/cavil-loop-poll@.timer"
+V2=$(commit_tree "$SRC" "$NEWTREE" v2)
+chmod a-x "$LOCK"
+: > "$H/run.log"
+run bash "$SK/scripts/skill-deploy.sh" --force
+chmod u+x "$LOCK"
+chk "$L部署确实切到了 V2（不是什么都没做）" "$(readlink -f "$SK" | xargs basename)" "$V2"
+chk "$L看不进去：V1 保留" "$([ -e "$DR/releases/$V1" ] && echo kept || echo deleted)" "kept"
+chk "$L看不进去：日志说明保留原因" "$(grep -c "keeping $V1: a systemd unit link still points into it" "$H/run.log")" "1"
+chk "$L恢复权限后两条链接仍能解析" "$([ -f "$SYS/$u" ] && [ -f "$SYS/timers.target.wants/$u" ] && echo ok || echo broken)" "ok"
+run bash "$SK/scripts/skill-deploy.sh" --force
+chk "$L下一轮：修好链接后删掉 V1，两条链接仍能解析" \
+    "$([ -e "$DR/releases/$V1" ] && echo kept || echo deleted)|$(readlink "$SYS/$u")|$(readlink "$SYS/timers.target.wants/$u")|$([ -f "$SYS/$u" ] && [ -f "$SYS/timers.target.wants/$u" ] && echo ok)" \
+    "deleted|$SK/systemd/cavil-loop-poll@.timer|$SK/systemd/cavil-loop-poll@.timer|ok"
+}
+group6_real()   { group6 "$1" real; }
+group6_linked() { group6 "$1" linked; }
+group6_wants()  { group6 "$1" wants; }
+
+# ═════════════════════════════════════════════════════════════════════════════
 group5() {
 echo "【5】文档里的人工命令按字面跑（干净环境，中英两份各跑一遍）"
 local doc
@@ -406,6 +469,9 @@ chk "$d 检查命令：断链和指向发布目录的链接都会报出来" "$(p
 mv "$H/.config/systemd/user" "$H/units-real"; ln -s "$H/units-real" "$H/.config/systemd/user"
 out=$(env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d-check.sh" 2>&1)
 chk "$d 检查命令：单元目录是软链接时同样报出来" "$(printf '%s\n' "$out" | grep -c "/\.config/systemd/user/$u")" "2"
+# 看不进去（软链接目标的上层目录缺进入权限）：必须说「cannot read」，不能一行不打印
+chmod a-x "$H"; out=$(env -i HOME="$H" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d-check.sh" 2>&1); chmod u+x "$H"
+chk "$d 检查命令：看不进单元目录时报 cannot read" "$(printf '%s\n' "$out" | grep -c '^cannot read: ')" "1"
 # 手工兜底：示例里的项目名是 arktool，换成本夹具的 demo
 local H2="$TMP/h5b-$d"; fixture "$H2"; rm -rf "$H2/.agents/releases/cavil-loop/releases/R1"
 sed 's/^KEY=arktool$/KEY=demo/' "$TMP/$d-fallback.sh" > "$TMP/$d-fallback-demo.sh"
@@ -431,6 +497,9 @@ group3
 group3 "" linked
 group4
 group5
+group6 "" real
+group6 "" linked
+group6 "" wants
 
 # ── 负对照：改坏一处，对应检查必须变红 ─────────────────────────────────────────
 MUT_BAD=0
@@ -482,6 +551,26 @@ mutant "部署器删旧版本前不查引用" scripts/skill-deploy.sh \
 mutant "删前引用检查改回 find 列目录（复审第 1 轮的实现）" scripts/repair-unit-links.sh \
     '    list="$(_ul_all_links)" || return 0' \
     '    list="$(find "$UL_SYS_DIR" -maxdepth 2 -type l 2>/dev/null)" || return 0' group3_linked "（单元目录本身是软链接）修链失败：V3 保留"
+mutant "列目录：看不进单元目录当成「没有」（复审第 2 轮的实现）" scripts/repair-unit-links.sh \
+    '        absent) return 0 ;;
+        *) return 1 ;;
+    esac
+    [ -r "$UL_SYS_DIR" ]' '        *) return 0 ;;
+    esac
+    [ -r "$UL_SYS_DIR" ]' group6_real "（看不进单元目录·real）看不进去：V1 保留"
+mutant "列目录：看不进单元目录当成「没有」——软链接目标那一种" scripts/repair-unit-links.sh \
+    '        absent) return 0 ;;
+        *) return 1 ;;
+    esac
+    [ -r "$UL_SYS_DIR" ]' '        *) return 0 ;;
+    esac
+    [ -r "$UL_SYS_DIR" ]' group6_linked "（看不进单元目录·linked）看不进去：V1 保留"
+mutant "列目录：看不进的子目录悄悄跳过" scripts/repair-unit-links.sh \
+    '            other|absent) ;;
+            *) rc=1 ;;' '            *) ;;' group2 "子目录是软链接、目标的上层不可进入 → 看不进去"
+mutant "存在性判断改回 [ -e ]（看不进 = 不存在）" scripts/repair-unit-links.sh \
+    '        *"No such file or directory"*|*"Not a directory"*) echo absent ;;
+        *) echo unknown ;;' '        *) echo absent ;;' group6_real "（看不进单元目录·real）看不进去：V1 保留"
 mutant "setup 启用后不调用修复" setup.sh \
     '            bash "$SKILL_DIR/scripts/repair-unit-links.sh" \' '            false \' group4 "启用后两条链接都指向稳定入口"
 

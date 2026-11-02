@@ -1173,11 +1173,16 @@ cavil-loop-poll@<key>.timer: Unit to trigger vanished.
 
    ```bash
    systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
-   for l in ~/.config/systemd/user/* ~/.config/systemd/user/*/*; do
-       [ -L "$l" ] || continue
-       case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
-       case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
-       [ -e "$l" ] || echo "broken: $l"
+   U=~/.config/systemd/user
+   for d in "$U" "$U"/*.wants "$U"/*.requires; do
+       case "$d" in *'*'*) continue ;; esac
+       [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || { echo "cannot read: $d"; continue; }
+       for l in "$d"/*; do
+           [ -L "$l" ] || continue
+           case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+           case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+           [ -e "$l" ] || echo "broken: $l"
+       done
    done
    ```
 
@@ -1211,16 +1216,21 @@ cavil-loop-poll@<key>.timer: Unit to trigger vanished.
 
    <!-- repair-unit-links:check -->
    ```bash
-   for l in ~/.config/systemd/user/* ~/.config/systemd/user/*/*; do
-       [ -L "$l" ] || continue
-       case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
-       case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
-       [ -e "$l" ] || echo "broken: $l"
+   U=~/.config/systemd/user
+   for d in "$U" "$U"/*.wants "$U"/*.requires; do
+       case "$d" in *'*'*) continue ;; esac
+       [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || { echo "cannot read: $d"; continue; }
+       for l in "$d"/*; do
+           [ -L "$l" ] || continue
+           case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+           case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+           [ -e "$l" ] || echo "broken: $l"
+       done
    done
    systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
    ```
 
-   (A shell loop, not `find`: `find` does not enter `~/.config/systemd/user` when that directory is itself a symlink, and would print nothing even with broken links inside.)
+   (A shell loop, not `find`: `find` does not enter `~/.config/systemd/user` when that directory is itself a symlink, and would print nothing even with broken links inside. A directory it cannot enter — a missing permission on it or on a parent — prints `cannot read: …` instead of passing silently; that is not a success either.)
 
 4. Manual fallback for one project, only if 1–3 do not work. `KEY` is the project's name (the `<key>.conf` under `~/.config/cavil-loop/`, or `~/.config/coding-agent-work-loop/` on a pre-rename install); use `P=coding-agent` for a pre-rename unit and `KIND=weekly-report` for a weekly-report timer. Only run it for a timer you want running:
 
