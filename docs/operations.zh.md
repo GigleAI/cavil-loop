@@ -120,6 +120,7 @@ PROJECT_PRIORITY_FIELD="Priority"
 PROJECT_NUMBER=""                # 留空 = 本仓库关联的第一个看板；看板在别处就填编号
 PROJECT_OWNER=""                 # 看板 owner 跟仓库 owner 不同时才填
 PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用 GH_TOKEN
+AUTO_ADD_PROJECTS=""             # 把本仓库 issue / PR 加进这些 Project（"myorg/4 myorg/11"）；留空 = 关闭
 # WRITE_GH_TOKEN=""              # 所有**写**用的 token；留空 = 复用 GH_TOKEN
 ```
 
@@ -306,6 +307,48 @@ label 语义完全不变。每轮排完的结果会整行写进 `poll.log`，并
 
 看到这条就去补 scope；补好后下一轮日志会变成
 `Project 优先级：读到 N 条（字段 Priority，source=both）`。
+
+## 自动把 issue / PR 加进 GitHub Project（可选，**默认关闭**）
+
+GitHub 免费版每个 Project 只能开 **1** 条「自动加入」规则，每条只盯 **1** 个仓库
+（[官方说明](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/adding-items-automatically)）。
+想让多个仓库汇总到同一个看板，在每个仓库自己的配置里写：
+
+```bash
+AUTO_ADD_PROJECTS="myorg/4 myorg/11"   # 「组织或用户名/编号」，空格或逗号分隔
+```
+
+之后每轮守护程序把本仓库的条目补进这些 Project：
+
+| 条目 | 加不加 |
+|---|---|
+| 开着的 issue / PR（不管多老） | 加 |
+| 已关闭 / 已合并、**新建时间晚于**这个 Project 第一次开始同步（例：守护程序停机期间新建又关掉） | 加 |
+| 开始同步前就已关闭，之后有人评论 | 不加 |
+| 老条目被重新打开 | 加（它又是开着的了） |
+| 已在看板里（含已归档卡片） | 不发写请求 |
+
+只加不改：不改字段、不移除卡片。已经同步过的看板只看「上次同步之后有更新」的条目，所以
+有人手动从看板拿掉的卡片不会被塞回去，除非那个条目又有了新动静。
+
+**权限**：读走 `PROJECT_GH_TOKEN`（没配用 `GH_TOKEN`）；加入是写操作，走 `WRITE_GH_TOKEN`
+（没配用 `GH_TOKEN`），写身份需要 classic PAT 的 **`project`** 权限，或 fine-grained 对该
+Project 的写权限。读身份看不见某个 Project 时，不往它写任何东西——否则每个条目都会显得
+「不在里面」、每轮全量写一遍。
+
+**出错怎么办**：配错的项（`foo`、不存在的编号）、读失败、写失败都只记**一行**警告（内容变了
+才再记），下一轮重试；派工和清理不受影响，各 Project 互相独立：新加的看板首次全量读失败，
+不会拖住已经同步好的看板。
+
+```
+⚠️ 自动加入 Project：myorg/11：写入失败（写身份需要能写这个 Project）：issue #12 加不进去：Resource not accessible by personal access token，同步时间不推进，下一轮重试
+自动加入 Project：myorg/4 已加入 3 条
+```
+
+**状态**（`$STATE_DIR/project-auto-add.json`，每个 Project 一项，故意不放进 `state.json`）：
+第一次开始同步的时间、首次全量是否完成、上次完整成功同步的时间。第一次开始同步的时间在第一次
+尝试时写下、之后不变。删掉这个文件 = 所有 Project 从头开始（「新建时间晚于」的分界随之挪到现在）。
+请求量：没什么改动时每轮多 1 次合并读取；多配一个 Project 不会翻倍。
 
 ## 交叉 review 关卡（可选，**默认关闭**）
 

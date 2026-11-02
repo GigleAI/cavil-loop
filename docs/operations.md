@@ -130,6 +130,7 @@ PROJECT_PRIORITY_FIELD="Priority"
 PROJECT_NUMBER=""                # empty = first board linked to this repo
 PROJECT_OWNER=""                 # only when the board's owner differs from the repo's
 PROJECT_GH_TOKEN=""              # token used only for the board read; empty = reuse GH_TOKEN
+AUTO_ADD_PROJECTS=""             # add this repo's issues / PRs to these projects ("myorg/4 myorg/11"); empty = off
 # WRITE_GH_TOKEN=""              # token used for every WRITE; empty = reuse GH_TOKEN
 ```
 
@@ -356,6 +357,53 @@ for that poll** — dispatch never stops over a board it cannot read:
 
 Once the scope is granted the next poll logs
 `Project 优先级：读到 N 条（字段 Priority，source=both）` instead.
+
+## Auto-add issues / PRs to GitHub Projects (optional, **off by default**)
+
+GitHub Free allows **one** auto-add workflow per project, and each watches **one**
+repository ([GitHub docs](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/adding-items-automatically)).
+To collect several repositories on one board, set this in each repository's config:
+
+```bash
+AUTO_ADD_PROJECTS="myorg/4 myorg/11"   # "<org or user>/<number>", space or comma separated
+```
+
+Every poll the daemon then adds this repository's items to each listed project:
+
+| Item | Added? |
+|---|---|
+| Open issue / PR (however old) | yes |
+| Closed / merged, **created after** the project was first synced here (e.g. opened and closed while the daemon was down) | yes |
+| Closed before the project was first synced, even if someone comments on it later | no |
+| An old item that gets reopened | yes (it is open again) |
+| Already on the board (archived cards included) | no write request |
+
+It only adds — no field edits, no removals. An already-synced board only looks at items
+updated since its last sync, so a card someone removed by hand is not pushed back unless
+that item changes again.
+
+**Permissions.** Reads go through `PROJECT_GH_TOKEN` (else `GH_TOKEN`); the add is a write
+and goes through `WRITE_GH_TOKEN` (else `GH_TOKEN`). The write identity needs the
+**`project`** scope (classic PAT) or write access to the project (fine-grained). If the read
+identity cannot see a project, nothing is written to it — otherwise every item would look
+"missing" and be re-added every poll.
+
+**Failure handling.** A wrong entry (`foo`, a number that does not exist), a read failure or
+a write failure logs **one** warning (repeated only when the message changes) and is retried
+next poll; dispatch and cleanup are unaffected, and each project is judged on its own: a new
+board whose first full scan fails does not hold back a board that is already in sync.
+
+```
+⚠️ 自动加入 Project：myorg/11：写入失败（写身份需要能写这个 Project）：issue #12 加不进去：Resource not accessible by personal access token，同步时间不推进，下一轮重试
+自动加入 Project：myorg/4 已加入 3 条
+```
+
+**State** (`$STATE_DIR/project-auto-add.json`, one entry per project, deliberately not in
+`state.json`): when this project was first synced, whether its first full scan finished,
+and the last fully successful sync. The first-sync time is written on the first attempt and
+never changes. Deleting the file starts every project over (the "created after" cut-off then
+moves to now). Requests: one combined read per poll when nothing changed; adding a second
+project does not double it.
 
 ## Optional cross-review gate (**off by default**)
 

@@ -395,6 +395,11 @@ PROJECT_NUMBER="${PROJECT_NUMBER:-}"
 # bot 账号两样都不满足时，与其去改 bot 的权限，不如在这里塞一个只读 Project 的 token。
 PROJECT_GH_TOKEN="${PROJECT_GH_TOKEN:-}"
 
+# ── 自动把本仓库 issue / PR 加进 Project（GitHub#116）──
+# 一个或多个「组织或用户名/编号」，空格或逗号分隔；留空 = 关闭（默认），不多发任何请求。
+# 逻辑全在 scripts/project-auto-add.sh；这里只放默认值和每轮的入口 project_auto_add_tick。
+AUTO_ADD_PROJECTS="${AUTO_ADD_PROJECTS:-}"
+
 project_gh_graphql() {
     if [ -n "${PROJECT_GH_TOKEN:-}" ]; then
         GH_TOKEN="$PROJECT_GH_TOKEN" gh api graphql "$@"
@@ -3332,6 +3337,17 @@ REQUESTER_BOT_NOTIFY_CMD="bash '$REQUESTER_BOT_NOTIFY_SCRIPT' --config '$CONFIG_
 # 开关 PRICE_AUTO_FETCH：默认开（issue #51 Q2=A），0 / false / no / off 关。
 # 抓价永远不许拖垮派工：脚本自己吞掉所有异常、恒返回 0，单次请求有超时，失败的模型
 # 冷却 6 小时；这里再兜一层 `|| true`。输出逐行转进 log（带项目前缀进 poll.log）。
+# 每轮一次：把本仓库的 issue / PR 补进配置的 Project（GitHub#116）。
+# 跑成独立子进程：同步里任何失败（读不到、写不进、脚本自己出错）都只留一行日志，
+# 不碰这一轮的派工、清理和退出码。不标 PACE_ACTED：加卡片不改仓库，不该打断空闲退避。
+project_auto_add_tick() {
+    [ -n "$(printf '%s' "${AUTO_ADD_PROJECTS:-}" | tr -d ' ,\t\n')" ] || return 0
+    local rc=0
+    CODING_AGENT_CONFIG="$CONFIG_FILE" bash "$_LIB_DIR/project-auto-add.sh" || rc=$?
+    [ "$rc" = 0 ] || log "⚠️ 自动加入 Project：同步脚本异常退出（退出码 $rc），本轮跳过，派工不受影响"
+    return 0
+}
+
 price_fetch_tick() {
     case "${PRICE_AUTO_FETCH:-1}" in 0|false|no|off) return 0 ;; esac
     local dir="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop/unpriced"

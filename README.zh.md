@@ -105,6 +105,7 @@ N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支
 |---|---|---|
 | **什么算待办** | `DISPATCH_MODE=greedy` —— 不用逐条打 `pending/agent`，开着的 issue / PR 一律干，除非挂了 `pending/human` 等挡工标签 | [architecture](docs/architecture.zh.md) |
 | **谁先干** | 并发满时按「优先级 → 阶段 → 等待时长」排队。优先级可以读 `priority/p*` 标签，也可以直接读 **GitHub 上的 Priority 字段**（`PRIORITY_SOURCE=project`），看板上拖一下就改档位 | [operations](docs/operations.zh.md) |
+| **多个仓库汇总到一个看板** | `AUTO_ADD_PROJECTS="myorg/4"` —— 守护程序每轮把本仓库开着的 issue / PR（以及开始同步后才新建又关掉的）加进这些 GitHub Project；免费版自带的自动加入每个 Project 只能盯一个仓库。只加不改，默认关 | [operations](docs/operations.zh.md#自动把-issue--pr-加进-github-project可选默认关闭) |
 | **AI 读到的 prompt** | 通用工作流由 skill 提供，项目只写自己的增量（`<name>.extra.md`），追加在通用部分之后。不用整份抄一遍——抄了就再也拿不到上游更新 | [operations](docs/operations.zh.md) |
 | **用哪个 AI CLI** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`，也可以写自己的 driver | [drivers](docs/drivers.zh.md) |
 | **编排流程：交人之前先过另一个 AI** | 配 `LABEL_PENDING_REVIEW` 开复审关卡：PR 每次有代码改动，先交另一个 AI（默认 codex）审，不通过带意见打回给写代码的 AI 改，最多 `REVIEW_MAX_ROUNDS` 轮（默认 3），审过才交你验收；两个 AI 谈不拢就停下等你拍板。再加 `REVIEW_DESIGN_PROPOSALS=true`，设计方案也先审一遍才到你面前。PM → 开发 → 测试这种多角色接力也能用标签编排 | [operations](docs/operations.zh.md#交叉-review-关卡可选默认关闭) · [collaboration](docs/collaboration.zh.md) |
