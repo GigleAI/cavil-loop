@@ -39,6 +39,14 @@ fi
 [ -z "${GLOBAL_FD:-}" ] || { flock -u "$GLOBAL_FD"; eval "exec ${GLOBAL_FD}>&-"; }
 export CODING_AGENT_RELEASE_ROOT
 
+# 定时任务的单元链接改回稳定入口、把因此消失的定时任务拉起来（GitHub#109）。放在这里而不只
+# 放在部署器里：这里每轮都跑，而且跑的总是**当前版本**——升级那一轮做切换和删旧版本的是旧版
+# 部署器，紧接着跑到这里的已经是新版本，本项目自己被删断的定时任务也在这一轮修回。
+# 修复自己出任何问题都不能挡住本轮轮询。
+if [ "$(uname -s)" = Linux ] && [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/repair-unit-links.sh" ]; then
+    bash "$CODING_AGENT_RELEASE_ROOT/scripts/repair-unit-links.sh" 2>&1 | sed 's/^/[cavil-loop] /' >&2 || true
+fi
+
 # 改名前的旧安装（GigleAI/cavil-loop#71）：任何一个项目的这一轮都顺手把本机空闲的旧项目迁到
 # 新名字。必须在 agent-poll.sh 之前——它一 source _lib.sh 就会 mkdir 配置里的状态目录，
 # 迁到一半时会在旧位置凭空建出一个空目录。迁移自己出任何问题都不能挡住本轮轮询。

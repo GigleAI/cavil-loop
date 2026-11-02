@@ -1154,6 +1154,115 @@ macOS-specific:
 - "Bootstrap failed: 5: Input/output error" → previous load is still around. `launchctl bootout "gui/$UID/dev.luosky.cavil-loop.<key>"`, then re-run setup.
 - `flock: command not found` in `<key>.err.log` → `brew install flock`.
 
+### A project's timer vanished after a new release (`Unit to trigger vanished`)
+
+**Symptom**: one project's `poll.log` stops at its last round with no error; `systemctl --user list-timers` shows `-` under NEXT for it, or does not list it at all; the journal has
+
+```
+cavil-loop-poll@<key>.timer: Failed to open …/cavil-loop-poll@<key>.timer: No such file or directory
+cavil-loop-poll@<key>.timer: Unit to trigger vanished.
+```
+
+**Cause** (GitHub#109): `systemctl --user enable` resolves the template symlink to the end, so the instance link and its `timers.target.wants/` twin point straight into one `~/.agents/releases/cavil-loop/releases/<sha>/` instead of the stable `~/.agents/skills/cavil-loop/`. Once the deployer cleans that release up, the timer's unit file is gone.
+
+**What fixes it automatically**: `scripts/repair-unit-links.sh`, run by every poll round (always the current release), by the deployer before it cleans up old releases, by `setup.sh` right after enabling, and by the legacy migration right after enabling. It repoints our links (new and pre-rename names) at the stable entry, writes a durable "reload pending" mark first and clears it only after a successful `daemon-reload` (so a failed reload is retried next round even with nothing left to relink), and only then starts timers that systemd reports as *enabled + failed with result `resources`* — how systemd records "unit file vanished while running". A timer you stopped (`inactive`) or disabled is never started; an unreadable state is left alone. The deployer also refuses to delete any release a unit link still reaches. Limits: after `systemctl --user reset-failed` the vanished state is gone and the timer is not started for you; a restart of the user manager also forgets it (an enabled timer then starts at login anyway, once its link is fixed).
+
+**When you have to step in**: only when *every* project's timer on the machine was already dead before this fix was deployed — then no poll round runs to deploy and apply it.
+
+0. Check whether you are in that case:
+
+   ```bash
+   systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
+   U=~/.config/systemd/user
+   for d in "$U" "$U"/*.wants "$U"/*.requires; do
+       case "$d" in *'*'*) continue ;; esac
+       [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || { echo "cannot read: $d"; continue; }
+       for l in "$d"/*; do
+           [ -L "$l" ] || continue
+           case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+           case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+           [ -e "$l" ] || echo "broken: $l"
+       done
+   done
+   ```
+
+   A project with `-` under NEXT, a missing project, or any line printed by the loop means: continue. Otherwise stop here.
+
+1. Update to a release that has the fix (if only the pre-rename entry exists, the `if` picks `~/.agents/skills/coding-agent-work-loop`):
+
+   ```bash
+   SKILL="$HOME/.agents/skills/cavil-loop"
+   if [ ! -e "$SKILL" ] && [ ! -L "$SKILL" ]; then
+       SKILL="$HOME/.agents/skills/coding-agent-work-loop"
+   fi
+   bash "$SKILL/scripts/skill-deploy.sh" --force
+   test -f "$SKILL/scripts/repair-unit-links.sh" && echo "has the fix"
+   ```
+
+   `--force` skips the 5-minute fetch throttle, not the locks: on `another instance is fetching; skip` or `a consumer or another publisher is active` wait a minute and rerun (at most 3 times). On `development mode` the entry points at a checkout the deployer does not manage — `git pull` in that checkout instead. No `has the fix` line → stop and report both commands' full output.
+
+2. Repair (prints every relinked link, the reload and every started timer; non-zero exit → stop and report the output):
+
+   <!-- repair-unit-links:repair -->
+   ```bash
+   SKILL="$HOME/.agents/skills/cavil-loop"
+   if [ ! -e "$SKILL" ] && [ ! -L "$SKILL" ]; then
+       SKILL="$HOME/.agents/skills/coding-agent-work-loop"
+   fi
+   bash "$SKILL/scripts/repair-unit-links.sh"
+   ```
+
+3. Check — success means the loop prints nothing and every timer you want running has a time under NEXT (a timer you paused on purpose may stay inactive):
+
+   <!-- repair-unit-links:check -->
+   ```bash
+   U=~/.config/systemd/user
+   for d in "$U" "$U"/*.wants "$U"/*.requires; do
+       case "$d" in *'*'*) continue ;; esac
+       [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || { echo "cannot read: $d"; continue; }
+       for l in "$d"/*; do
+           [ -L "$l" ] || continue
+           case "$(basename "$l")" in cavil-loop-*|coding-agent-*) ;; *) continue ;; esac
+           case "$(readlink "$l")" in */.agents/releases/cavil-loop/releases/*) echo "points into a release: $l" ;; esac
+           [ -e "$l" ] || echo "broken: $l"
+       done
+   done
+   systemctl --user list-timers --all 'cavil-loop-*' 'coding-agent-*'
+   ```
+
+   (A shell loop, not `find`: `find` does not enter `~/.config/systemd/user` when that directory is itself a symlink, and would print nothing even with broken links inside. A directory it cannot enter — a missing permission on it or on a parent — prints `cannot read: …` instead of passing silently; that is not a success either.)
+
+4. Manual fallback for one project, only if 1–3 do not work. `KEY` is the project's name (the `<key>.conf` under `~/.config/cavil-loop/`, or `~/.config/coding-agent-work-loop/` on a pre-rename install); use `P=coding-agent` for a pre-rename unit and `KIND=weekly-report` for a weekly-report timer. Only run it for a timer you want running:
+
+   <!-- repair-unit-links:fallback -->
+   ```bash
+   KEY=arktool
+   P=cavil-loop
+   KIND=poll
+   SKILL="$HOME/.agents/skills/cavil-loop"
+   if [ ! -e "$SKILL" ] && [ ! -L "$SKILL" ]; then
+       SKILL="$HOME/.agents/skills/coding-agent-work-loop"
+   fi
+   S="$SKILL/systemd/$P-$KIND@.timer"
+   U="$P-$KIND@$KEY.timer"
+   if [ ! -f "$S" ]; then
+       echo "template missing: $S"
+   else
+       (
+           set -e
+           cd "$HOME/.config/systemd/user"
+           mkdir -p timers.target.wants
+           ln -sfn "$S" "$U"
+           ln -sfn "$S" "timers.target.wants/$U"
+           systemctl --user daemon-reload
+           systemctl --user restart "$U"
+           systemctl --user list-timers --all "$U"
+       )
+   fi
+   ```
+
+   A time under NEXT means it is back. On any error stop and report the output plus `systemctl --user status "$U"`. If you started a timer you did not want: `systemctl --user stop "$U"` (and `systemctl --user disable "$U"` to keep it off across logins).
+
 ### Worker session stuck on permission prompt
 
 Make sure `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"` is set in `cavil-loop.config`. Strongly recommended in trusted local environments.

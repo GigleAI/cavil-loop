@@ -358,6 +358,17 @@ if [ "$BOOTSTRAP" -eq 1 ] && [ "$(uname -s)" = Linux ] && [ -d "$target/systemd"
     done
 fi
 
+# `systemctl enable` resolves the template symlink to the end, so instance links
+# can point straight into one releases/<sha>/ (GitHub#109). Repoint them at the
+# stable entry before the cleanup below; the cleanup itself also refuses to
+# delete a release that any unit link still reaches. Same script the poll entry
+# runs every round — one rule, see repair-unit-links.sh.
+UNIT_LINKS_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repair-unit-links.sh"
+if [ "$(uname -s)" = Linux ] && [ -f "$UNIT_LINKS_SH" ]; then
+    CAVIL_SYSTEMD_USER_DIR="$SYSTEMD_USER_DIR" CAVIL_DEPLOY_ROOT="$DEPLOY_ROOT" CAVIL_SKILL_LINK="$STABLE_LINK" \
+        bash "$UNIT_LINKS_SH" || log_deploy "unit link repair left work for the next run"
+fi
+
 if [ "$scheduler_reload" -eq 1 ]; then
     if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload; then
         log_deploy "systemd daemon-reload complete"
@@ -419,6 +430,13 @@ for old in "$RELEASES"/*; do
     [ "$old" != "$(readlink -f "$CAVIL_SKILL_HOME" 2>/dev/null || true)" ] || continue
     [ "$old" != "$(readlink -f "$CAVIL_LEGACY_SKILL_HOME" 2>/dev/null || true)" ] || continue
     [ -f "$old/.inuse" ] || continue
+    # A unit link still reaching into it (or a unit dir we cannot read) keeps it:
+    # deleting it would make that timer vanish (GitHub#109).
+    if [ -f "$UNIT_LINKS_SH" ] && CAVIL_SYSTEMD_USER_DIR="$SYSTEMD_USER_DIR" CAVIL_DEPLOY_ROOT="$DEPLOY_ROOT" \
+        bash -c 'source "$1" && cavil_release_referenced "$2"' _ "$UNIT_LINKS_SH" "$old"; then
+        log_deploy "keeping $(basename "$old"): a systemd unit link still points into it"
+        continue
+    fi
     exec {OLD_FD}<>"$old/.inuse"
     if flock -n -x "$OLD_FD"; then rm -rf -- "$old"; fi
     eval "exec ${OLD_FD}>&-"
