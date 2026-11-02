@@ -372,6 +372,7 @@ trust_git_toplevel() {
 #
 # 内核会拒绝的，这里一律拒绝（返回 1、不写任何东西），绝不把非法路径「化简」成另一个可写路径：
 #   · 已存在的非目录被当目录穿过（`普通文件/..`、`普通文件/x`、`文件/`）  → 内核 ENOTDIR
+#   · 还不存在的东西后面跟 `/` 或 `/.`（要求它是目录，但它不存在）        → EISDIR / ENOENT
 #   · 链接超过 40 层 / 成环、链接读不出                                      → ELOOP 等
 #   · 最终目标已存在但不是普通文件（目录、设备…）                            → EISDIR 等
 #   · 不存在的目录后面又跟 `..`                                                → ENOENT
@@ -393,8 +394,12 @@ trust_real_file() {
         c="${queue[0]}"; queue=("${queue[@]:1}")
         case "$c" in
             '') continue ;;
-            .)  # 「x/.」要求 x 是目录；已解析部分在 missing=0 时一定是目录或根，只需防「文件/.」
-                [ "$missing" = 0 ] && [ -n "$resolved" ] && [ ! -d "$resolved" ] && return 1
+            .)  # 「x/.」和结尾的「x/」都要求 x 是目录：
+                #   x 已存在 → 必须是目录（否则 ENOTDIR）；
+                #   x 还不存在 → 内核不会替你把它建成目录（ENOENT / EISDIR），拒绝。
+                #   绝不能把这个要求丢掉、把 x 当成普通文件建出来（PR #110 复审第 2 轮）
+                [ "$missing" = 0 ] || return 1
+                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
                 continue ;;
             ..) [ "$missing" = 0 ] || return 1                     # 不存在的目录后面跟 ..：ENOENT
                 [ -z "$resolved" ] || [ -d "$resolved" ] || return 1

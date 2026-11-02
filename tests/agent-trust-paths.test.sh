@@ -697,6 +697,13 @@ rp_layout() {   # <目录>：建出全部场景用到的布局（链接一律相
     ln -s missing.json "$L/plain/dangling.json"
     ln -s newdir/x/cfg.json "$L/plain/newdir.json"                # 待建目录（首次写，内核会 ENOENT，我们有意建出来）
     ln -s loop2 "$L/loop1"; ln -s loop1 "$L/loop2"
+    # 末级后缀矩阵（复审第 2 轮）：目标存在 / 不存在 × 无后缀 / 「/」/ 「/.」× 直接路径 / 经链接
+    local suf tag
+    for suf in "" "/" "/."; do
+        case "$suf" in '') tag=plain ;; /) tag=slash ;; *) tag=slashdot ;; esac
+        ln -s "real.json$suf" "$L/sfx-link-exist-$tag.json"
+        ln -s "nope-$tag.json$suf" "$L/sfx-link-missing-$tag.json"
+    done
 }
 kernel_open() {   # <布局目录> <相对路径> → 打印内核实际写到的文件（相对布局目录）；打不开打印 ERR:<errno 名>
     python3 -I -c '
@@ -752,6 +759,19 @@ suite_realpath() {   # <skill 目录>
 链接成环|loop1|kernel
 链接指进不存在的目录|plain/newdir.json|kernel
 没经过链接、目录还没建（首次写配置）|fresh/sub/config.toml|fresh/sub/config.toml
+后缀·直接·目标存在·无后缀|real.json|kernel
+后缀·直接·目标存在·/|real.json/|kernel
+后缀·直接·目标存在·/.|real.json/.|kernel
+后缀·直接·目标不存在·无后缀|new-config.json|kernel
+后缀·直接·目标不存在·/|new-config.json/|kernel
+后缀·直接·目标不存在·/.|new-config.json/.|kernel
+后缀·直接·目录不存在·/.|fresh2/./config.toml|kernel
+后缀·链接·目标存在·无后缀|sfx-link-exist-plain.json|kernel
+后缀·链接·目标存在·/|sfx-link-exist-slash.json|kernel
+后缀·链接·目标存在·/.|sfx-link-exist-slashdot.json|kernel
+后缀·链接·目标不存在·无后缀|sfx-link-missing-plain.json|kernel
+后缀·链接·目标不存在·/|sfx-link-missing-slash.json|kernel
+后缀·链接·目标不存在·/.|sfx-link-missing-slashdot.json|kernel
 EOF
     A="$TMP/rp-ours"; rm -rf "$A"; mkdir -p "$A"; rp_layout "$A"
     got="$(cd "$A/plain" && in_driver "$R" claude trust_real_file chain.json 2>/dev/null)"
@@ -765,7 +785,8 @@ EOF
        && [ "$(cksum < "$A/links/claude.json")" = "$before" ] && [ -L "$A/dirlink-dotdot.json" ]; then
         echo "PASS realpath·目录链接后接 ..：写进真正目标、无关文件不变、链接保留"
     else echo "FAIL realpath·目录链接后接 ..：写进真正目标、无关文件不变、链接保留 :: rc=$rc"; fi
-    for name in notdir-dotdot.json notdir-child.json file-slash.json filelink-dotdot.json dir-target.json missing-dotdot.json loop1; do
+    for name in notdir-dotdot.json notdir-child.json file-slash.json filelink-dotdot.json dir-target.json missing-dotdot.json loop1 \
+                new-config.json/ new-config.json/. real.json/. sfx-link-missing-slash.json sfx-link-missing-slashdot.json sfx-link-exist-slashdot.json; do
         snap="$(cd "$A" && find . -path ./home -prune -o -print0 | sort -z | xargs -0 -I{} sh -c 'if [ -L "{}" ]; then echo "L {} $(readlink "{}")"; elif [ -f "{}" ]; then echo "F {} $(cksum < "{}")"; else echo "D {}"; fi')"
         rc=0; err="$(in_driver "$R" claude eval "CLAUDE_JSON_PATH='$A/$name' agent_trust_paths /repo/test" 2>&1)" || rc=$?
         if [ "$rc" != 0 ] && [ "$snap" = "$(cd "$A" && find . -path ./home -prune -o -print0 | sort -z | xargs -0 -I{} sh -c 'if [ -L "{}" ]; then echo "L {} $(readlink "{}")"; elif [ -f "{}" ]; then echo "F {} $(cksum < "{}")"; else echo "D {}"; fi')" ]; then
@@ -773,6 +794,13 @@ EOF
                 *) echo "PASS realpath·非法配置 $name：拒绝写入、所有文件和链接原样" ;; esac
         else echo "FAIL realpath·非法配置 $name：拒绝写入、所有文件和链接原样 :: rc=$rc"; fi
     done
+    # 成功对照：目标不存在、无后缀 → 首次创建配置，直接路径和经链接各一次
+    rc=0; in_driver "$R" claude eval "CLAUDE_JSON_PATH='$A/first-config.json' agent_trust_paths /repo/first" >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 0 ] && [ -f "$A/first-config.json" ] && [ "$(c_trusted "$A/first-config.json" /repo/first)" = true ] \
+        && echo "PASS realpath·首次创建配置（直接路径）" || echo "FAIL realpath·首次创建配置（直接路径） :: rc=$rc"
+    rc=0; in_driver "$R" claude eval "CLAUDE_JSON_PATH='$A/sfx-link-missing-plain.json' agent_trust_paths /repo/first" >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 0 ] && [ -L "$A/sfx-link-missing-plain.json" ] && [ "$(c_trusted "$A/nope-plain.json" /repo/first)" = true ] \
+        && echo "PASS realpath·首次创建配置（经链接，链接保留）" || echo "FAIL realpath·首次创建配置（经链接，链接保留） :: rc=$rc"
     # 同一个真实文件的两个别名：A 从别名一进来停在替换前，B 从别名二进来必须等同一把锁
     local P="$TMP/pause-alias" a b waited=no
     rm -rf "$P"; mkdir -p "$P"; echo '{}' > "$A/a/b/c/real.json"
@@ -920,6 +948,15 @@ if mutation_gate && M=$(mutant no-dir-check scripts/drivers/_common.sh '        
 '); then
     neg "解析退回「见 .. 就删上一级，不看是不是目录」" "realpath·普通文件当目录再 .." suite_realpath "$M"
     neg "解析退回「见 .. 就删上一级，不看是不是目录」（写入）" "realpath·非法配置 notdir-dotdot.json" suite_realpath "$M"
+fi
+# 复审第 2 轮（重新送审后）前的实现：还不存在的东西后面跟 . 或 / 时直接忽略，把它当普通文件建出来
+if mutation_gate && M=$(mutant drop-dir-suffix scripts/drivers/_common.sh '                [ "$missing" = 0 ] || return 1
+                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
+                continue ;;' '                [ "$missing" = 0 ] && [ -n "$resolved" ] && [ ! -d "$resolved" ] && return 1
+                continue ;;'); then
+    neg "缺失目标后面的 / 和 /. 被丢掉" "realpath·后缀·直接·目标不存在·/（" suite_realpath "$M"
+    neg "缺失目标后面的 / 和 /. 被丢掉（写入）" "realpath·非法配置 new-config.json/：" suite_realpath "$M"
+    neg "缺失目标后面的 / 和 /. 被丢掉（经链接）" "realpath·后缀·链接·目标不存在·/.（" suite_realpath "$M"
 fi
 if mutation_gate && M=$(mutant no-relock scripts/drivers/_common.sh '    if ! again="$(trust_real_file "$cfg")" || [ "$again" != "$real" ]; then' '    if false; then'); then
     neg "持锁后不再重新解析" "realpath·等锁期间链接改指" suite_realpath "$M"
