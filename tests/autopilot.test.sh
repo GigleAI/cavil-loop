@@ -445,6 +445,67 @@ Refs #3" "$H1" "pending/merge"
     chk "BSD date：轮询正常退出" "$trc" 0
     chk "BSD date：复审提交与时间都记下了" "$(st 8 .reviewed_head)/$([ -n "$(st 8 .reviewed_at)" ] && echo yes || echo no)" "$H1/yes"
     chk "到达性 · BSD date：替身确实拦过 -d（不是没走到）" "$(printf 'x' | env PATH="$SANDBOX/bsd:$PATH" date -u -d @0 >/dev/null 2>&1 && echo passed || echo blocked)" blocked
+
+    # ── 【11】托管关掉之后（GitHub#124）：关托管只要改配置，等合并的 PR 由 daemon 交给人 ──
+    section "【11】托管关掉之后：本机托管过、还挂着等合并的 PR → 交人并说明；其他一概不碰"
+    local OFF='LABEL_AUTOPILOT=""'
+    fresh "$OFF"; happy
+    tick
+    chk "关掉后：不发合并请求" "$(merged 8)" 0
+    chk "关掉后：PR 交人" "$(has_label 8 pending/human)" yes
+    chk "关掉后：摘掉等合并标签" "$(has_label 8 pending/merge)" no
+    chk "关掉后：PR 上留言说明为什么停了" "$(comments_with 8 '托管已在配置里关掉')" 1
+    chk "关掉后：issue 不动（托管标签留着，不替人摘）" "$(has_label 7 autopilot)" yes
+    tick
+    chk "关掉后：再跑一轮不重复留言" "$(comments_with 8 '托管已在配置里关掉')" 1
+    chk "关掉后：再跑一轮零写入" "$(writes)" 0
+
+    fresh "$OFF"; happy
+    mkpr 9 feature/issue-9 "Closes #9" "$H2" "pending/merge"
+    tick
+    chk "本机没托管记录的 PR（别的用途的同名标签）→ 不碰" "$(labels_of 9)" "pending/merge"
+    chk "  …本机托管过的那个照样交人" "$(has_label 8 pending/human)" yes
+
+    fresh "$OFF"
+    mkpr 9 feature/issue-9 "Closes #9" "$H2" "pending/merge"
+    tick
+    chk "从没开过托管（state 里没有托管记录）→ 零写入" "$(writes)" 0
+    chk "  …也不为它多读任何一个 PR" "$(n_calls "^gh api $R/pulls/9\$")" 0
+    chk "到达性 · 这一轮确实读了 PR 列表" "$([ "$(n_calls "$R/pulls -f state=open")" -gt 0 ] && echo yes || echo no)" yes
+
+    fresh "$OFF"; happy
+    jset labels.json '.["8"] = ["pending/review"]'
+    tick
+    chk "本机托管过、但没挂等合并（还在复审）→ 不碰" "$(labels_of 8)" "pending/review"
+
+    fresh "$OFF"; happy
+    printf 'jq %q %q > %q.t && mv %q.t %q\n' '.["8"].merged = true | .["8"].state = "closed"' "$GD/items.json" "$GD/items.json" "$GD/items.json" "$GD/items.json" > "$GD/hook_pulls_8_1"
+    tick
+    chk "判定之后、动手之前 PR 已被合并 → 现读拦住，不翻标签" "$(has_label 8 pending/human)" no
+    chk "  …也不留言" "$(comments_with 8 '托管已在配置里关掉')" 0
+
+    fresh "$OFF"; happy
+    touch "$GD/F_pulls_8"
+    tick
+    chk "现读 PR 读不到 → 本轮不动" "$(labels_of 8)" "pending/merge"
+    rm -f "$GD/F_pulls_8"; tick
+    chk "  …恢复后下一轮交人" "$(has_label 8 pending/human)/$(has_label 8 pending/merge)" "yes/no"
+
+    fresh "$OFF"; happy
+    touch "$GD/F_delete_labels"
+    tick
+    chk "摘等合并标签失败 → 回读发现还挂着，不留言" "$(comments_with 8 '托管已在配置里关掉')" 0
+    rm -f "$GD/F_delete_labels"; tick
+    chk "  …恢复后下一轮补上：摘掉、留言一次" "$(has_label 8 pending/merge)/$(comments_with 8 '托管已在配置里关掉')" "no/1"
+
+    fresh "$OFF"; happy
+    jset items.json '.["8"].state = "closed"'
+    tick
+    chk "已关闭的 PR 的托管记录被清掉（之后这里不再读 GitHub）" "$(st 8 .reviewed_head)" ""
+
+    fresh; happy
+    tick
+    chk "开着时这段不插手：照常合并，不留「已关掉」的言" "$(merged 8)/$(comments_with 8 '托管已在配置里关掉')" "1/0"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -681,6 +742,11 @@ mutate dispatch-site _lib.sh '    rc=0; autopilot_authorization "$n" "$ij" || rc
 mutate collect-site agent-poll.sh '        rc=0; autopilot_authorization "$num" "$ij" || rc=$?
         case "$rc" in' '        rc=0
         case "$rc" in'
+# ── 托管关掉之后的收尾（GitHub#124）──
+mutate off-sweep-not-called agent-poll.sh 'autopilot_off_sweep "$STATE_FILE" || true' ':'
+mutate off-sweep-any-pr _lib.sh "        printf '%s\\n' \"\$mine\" | grep -qx \"\$pr\" || continue" '        :'
+mutate off-sweep-no-reread _lib.sh "        printf '%s' \"\$pj\" | jq -e --arg M \"\$m\" '.state == \"open\" and (.merged | not) and any(.labels[]?; .name == \$M)' >/dev/null 2>&1 || continue" '        :'
+mutate off-sweep-no-verify _lib.sh '            *",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;;' '            *",$m,"*) ;;'
 mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>

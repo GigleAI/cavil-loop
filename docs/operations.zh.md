@@ -426,7 +426,8 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 GitHub#114。配 `LABEL_AUTOPILOT`（例如 `autopilot`），并且开着复审关卡 `LABEL_PENDING_REVIEW`
 （必需），维护者就能给某个 **issue** 打上这个标签，把它从头交到尾。没打标签的 issue 一切照旧；
-`LABEL_AUTOPILOT` 留空时，提示词、轮询的 GitHub 调用和 `state.json` 与以前逐字节一样。
+`LABEL_AUTOPILOT` 留空时，提示词、轮询的 GitHub 调用和 `state.json` 与以前逐字节一样（从没开过托管的项目；开过又关掉的，
+daemon 会先把等合并的 PR 交给人，见下面「怎么整体关闭托管」）。
 
 ```
 issue：autopilot ──> 写方案 ──> pending/review ──通过──> pending/agent ──> 写代码 + 开 PR
@@ -610,176 +611,19 @@ echo "HOST_VERDICT=$verdict"
 
 ### 怎么整体关闭托管
 
-关掉配置里的 `LABEL_AUTOPILOT` 只管以后：已经开工的会话手里还拿着托管规则，挂着 `LABEL_PENDING_MERGE` 的 PR
-在配置关掉后再也没人合、也没人交人。关闭只保证「从此不再自动合并任何东西」：排队中、被中断的活**不清空**，daemon
-重开后照普通流程走完、交人；已完成的合并不撤回。
+在配置里把 `LABEL_AUTOPILOT` 留空（`LABEL_AUTOPILOT=""`）或删掉那一行就行，不用停定时任务、不用跑别的。
+下一轮起 daemon 自己收尾：
 
-全程在 daemon **停着**时做——停着时它不派活、不改标签、不把死掉的会话拉起来，核对完不会再变：
+- 不再自动合并任何东西，新派出去的活也不再带托管规则；
+- 本机托管过、还挂着 `LABEL_PENDING_MERGE` 等合并的 PR，翻成 `pending/human` 并在 PR 上留言说明。关掉之前就派出去、
+  之后才跑完的复审若又翻出等合并，下一轮照样收；
+- 排队中、正在跑的活不清空，照普通流程走完、交人；已完成的合并不撤回。
 
-1. 停定时任务：`systemctl --user stop cavil-loop-poll@<实例名>.timer`
-2. 跑下面这段（`CFG=<项目配置> UNIT=cavil-loop-poll@<实例名> bash close.sh`，仅 Linux，**在 worktree 目录之外跑**）。
-   仓库名、会话前缀、worktree 目录、两个标签名都按 daemon 的读法读：先载入这个实例的安装登记，再载入项目配置——
-   登记里指向的配置文件必须就是 `CFG`，否则停下（关错文件等于没关）。它核对：daemon 停了；这个项目的
-   worker 一个不剩——既看会话，也看工作目录在 `WORKTREE_BASE` 底下的进程（**只关 tmux 会话不等于 worker 退出**：
-   忽略 SIGHUP 的进程会话没了照样活着，手里还是托管规则；工作目录读不到的进程——sshd、gpg-agent 这类——只在
-   它的某个上级进程在 worktree 底下时才算，其余在 `note:` 一行列出、不算）；然后在配置**末尾追加** `LABEL_AUTOPILOT=""`
-   （不按文本删行：`export`、缩进、重复赋值、变量拼出来的写法对 daemon 都算数，最后一次赋值说了算），再按 daemon 的
-   读法重新载入，确认值为空才往下走；把所有挂等合并标签的
-   开着的 PR 改成 `pending/human`（读全部开着的 PR，不靠名单），最后回读确认。任何一次读取失败都打印 `STOP …`、
-   退出码 1。只有最后一行是 `CLOSE_READY` 才往下走；否则按提示处理后重跑，定时任务保持停着
-3. 还有 worker 在跑时它会停下并列出会话和进程号：等它们跑完再重跑；等不及就加 `KILL_WORKERS=1` 重跑——它按 daemon
-   回收 worker 的同一做法，给每个会话的进程组和残留进程发 SIGTERM，最多等 15 秒，还在的发 SIGKILL，再关会话，然后照样
-   核对一遍。被停掉的活在 daemon 重开后会被自愈重派，那时配置已关，它就是一条普通活。**不要在 daemon 还开着时停
-   worker**——它会被当成意外死亡，按原触发标签重派，手里还是托管规则
-4. 重开：`systemctl --user start cavil-loop-poll@<实例名>.timer`
+只认本机托管过的 PR（`state.json` 的 `autopilot.prs` 有记录）：别的项目恰好也有同名标签不受影响，从没开过托管的项目
+一个 GitHub 调用都不多。写之前现读那个 PR（仍开着、没合并、仍挂着等合并标签才动），读不到就下一轮再来；
+先翻标签、回读确认，再留言。
 
-以后要重新打开，照样在配置末尾追加 `LABEL_AUTOPILOT="autopilot"`（它在关闭追加的那行之后，所以生效）。
-issue 上残留的托管标签在配置关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，不想这样就摘掉。
-
-<!-- autopilot-ops:close -->
-```bash
-# autopilot close (GitHub#124). Linux / systemd only. Stop the poll timer first, then:
-#   CFG=<project config> UNIT=cavil-loop-poll@<key> bash close.sh
-#   CFG=... UNIT=... KILL_WORKERS=1 bash close.sh   # also stop this project's workers now
-# Only a last line of CLOSE_READY means it is safe to start the timer again. Any other
-# ending leaves the timer stopped. Every read is checked on its own: a failed read is STOP,
-# never "nothing there". Safe to run again. Run it from outside the project's worktrees.
-set -o pipefail
-CFG=${CFG:?set CFG=<path to the project config>}
-UNIT=${UNIT:?set UNIT=cavil-loop-poll@<key>}
-GRACE=${KILL_GRACE:-15}
-die() { echo "STOP $*"; echo "(leave the timer stopped; fix this and run again)"; exit 1; }
-# 0) read the project's settings exactly as its daemon will: the registry env file of this
-#    instance first, then the project config (clean env, subprocess, 10 s limit). The registry
-#    must point at CFG, otherwise turning CFG off would not turn the daemon off.
-[ -f "$CFG" ] && [ -r "$CFG" ] && [ -w "$CFG" ] || die "config missing or not read/writable: $CFG"
-key=${UNIT#*@}
-REG=""
-for f in "$HOME/.config/cavil-loop/$key.conf" "$HOME/.config/coding-agent-work-loop/$key.conf"; do
-  [ -e "$f" ] && { REG=$f; break; }
-done
-[ -n "$REG" ] && [ -r "$REG" ] || die "no readable registry for instance $key under ~/.config/cavil-loop or ~/.config/coding-agent-work-loop"
-load_cfg() {   # prints: repo, prefix, worktree base, merge label, human label, autopilot label
-  timeout 10 env -i HOME="$HOME" PATH="$PATH" bash -c '
-    set -a; . "$1" >/dev/null 2>&1 || exit 3; set +a
-    [ -n "${CODING_AGENT_CONFIG:-}" ] || exit 4
-    [ "$(realpath -e "$CODING_AGENT_CONFIG" 2>/dev/null)" = "$(realpath -e "$2" 2>/dev/null)" ] || exit 6
-    . "$2" >/dev/null 2>&1 || exit 5
-    printf "%s\n" "${REPO:-}" "${TMUX_PREFIX:-}" "${WORKTREE_BASE:-}" "${LABEL_PENDING_MERGE:-pending/merge}" \
-                  "${LABEL_PENDING_HUMAN:-}" "${LABEL_AUTOPILOT:-}"
-  ' _ "$REG" "$CFG" </dev/null 2>/dev/null
-}
-vals=$(load_cfg); rc=$?
-case $rc in
-  0) ;;
-  4|6) die "$REG does not point its daemon at $CFG (CODING_AGENT_CONFIG differs or is unset)" ;;
-  *) die "loading $REG + $CFG failed (syntax error, timeout or exit $rc)" ;;
-esac
-R=$(sed -n 1p <<<"$vals"); PREFIX=$(sed -n 2p <<<"$vals"); WT=$(sed -n 3p <<<"$vals")
-MERGE_LABEL=$(sed -n 4p <<<"$vals"); HUMAN_LABEL=$(sed -n 5p <<<"$vals")
-[ -n "$R" ] && [ -n "$PREFIX" ] && [ -n "$WT" ] && [ -n "$HUMAN_LABEL" ] \
-  || die "$CFG lacks REPO / TMUX_PREFIX / WORKTREE_BASE / LABEL_PENDING_HUMAN"
-WT=${WT%/}
-case "$PWD/" in "$WT"/*) die "run this from outside $WT (your own shell there looks like a worker)";; esac
-# 1) the daemon must be stopped: timer and current round both inactive / failed
-for u in "$UNIT.timer" "$UNIT.service"; do
-  a=$(systemctl --user is-active "$u" 2>&1)
-  [ "$a" = inactive ] || [ "$a" = failed ] || die "$u is not stopped (is-active said: $a)"
-done
-# 2) no worker of this project may be left: only they can still hold autopilot rules.
-#    A worker is a tmux session named <TMUX_PREFIX>-… OR any of my processes whose working
-#    directory is under WORKTREE_BASE — killing a session does not end a process that ignores
-#    SIGHUP, so the session list alone proves nothing.
-sessions() {   # prints this project's session names; fails if tmux cannot be asked
-  local out rc
-  out=$(tmux ls -F '#{session_name}' 2>&1); rc=$?
-  if [ $rc -eq 0 ]; then printf '%s\n' "$out" | awk -v p="$PREFIX-" 'index($0,p)==1'; return 0; fi
-  printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file' && return 0
-  echo "$out" >&2; return 1
-}
-# Which of my processes work under $1 (a worktree base)? Prints "W <pid>" for each, "S <pid> <name>"
-# for each one whose working directory cannot be read (setuid / setgid helpers such as sshd or
-# gpg-agent) and none of whose parents works there either; fails if a process cannot be judged.
-scan_procs() {
-  local d p c pp n hit bad=0
-  for d in /proc/[0-9]*; do
-    [ -O "$d" ] || continue
-    p=${d#/proc/}
-    if c=$(readlink "$d/cwd" 2>/dev/null); then
-      case "$c/" in "$1"/*) echo "W $p";; esac; continue
-    fi
-    [ -e "$d" ] || continue                                       # exited meanwhile
-    hit=0; n=0; pp=$p
-    while [ $n -lt 64 ]; do
-      pp=$(sed 's/.*) [A-Za-z] //; s/ .*//' "/proc/$pp/stat" 2>/dev/null) || { [ -e "$d" ] && bad=1; break; }
-      [ "$pp" -gt 1 ] 2>/dev/null || break
-      c=$(readlink "/proc/$pp/cwd" 2>/dev/null) && case "$c/" in "$1"/*) hit=1; break;; esac
-      n=$((n+1))
-    done
-    if [ $hit = 1 ]; then echo "W $p"; elif [ -e "$d" ]; then echo "S $p $(cat "$d/comm" 2>/dev/null)"; fi
-  done
-  return $bad
-}
-procs() {      # PIDs of my processes working under WT; fails if one cannot be judged
-  local out; out=$(scan_procs "$WT") || return 1
-  printf '%s\n' "$out" | awk '$1=="W"{print $2}'
-}
-if [ "${KILL_WORKERS:-}" = 1 ]; then
-  ss=$(sessions) || die "cannot list tmux sessions"
-  pids=""
-  for s in $ss; do pids="$pids $(tmux list-panes -t "=$s" -F '#{pane_pid}' 2>/dev/null)"; done
-  more=$(procs) || die "cannot judge every process under $WT"; pids="$pids $more"
-  for p in $pids; do kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; done   # whole process group, like the daemon's reaper
-  w=0; while [ $w -lt "$GRACE" ]; do more=$(procs 2>/dev/null); [ -z "$more" ] && break; sleep 1; w=$((w+1)); done
-  for p in $pids $more; do kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null; done
-  for s in $ss; do tmux kill-session -t "=$s" 2>/dev/null; done
-  sleep 1
-fi
-ss=$(sessions) || die "cannot list tmux sessions"
-[ -z "$ss" ] || die "sessions of this project still running: $(echo $ss) — wait for them, or rerun with KILL_WORKERS=1"
-left=$(procs) || die "cannot judge every process under $WT"
-skipped=$(scan_procs "$WT" 2>/dev/null | awk '$1=="S"{printf " %s(%s)", $3, $2}')
-[ -z "$skipped" ] || echo "note: not counted (working directory unreadable, no parent under $WT):$skipped"
-[ -z "$left" ] || die "processes still working under $WT (PIDs: $(echo $left)) — wait for them, or rerun with KILL_WORKERS=1"
-# 3) config: do not edit lines by pattern (export, indentation, repeated or derived assignments
-#    all count to the daemon). Append an empty assignment, which comes last and so wins, then
-#    load the config again the daemon's way and require the value to be empty.
-cur=$(sed -n 6p <<<"$vals")
-if [ -n "$cur" ]; then
-  { [ -s "$CFG" ] && [ -n "$(tail -c1 "$CFG")" ] && echo
-    echo "# autopilot turned off by the close script (GitHub#124). A later LABEL_AUTOPILOT line turns it back on."
-    echo 'LABEL_AUTOPILOT=""'; } >> "$CFG" || die "cannot append to $CFG"
-fi
-vals=$(load_cfg) || die "re-loading $CFG after the change failed"
-[ -z "$(sed -n 6p <<<"$vals")" ] || die "re-load of $CFG still gives LABEL_AUTOPILOT=$(sed -n 6p <<<"$vals")"
-# 4) every open PR still waiting for the autopilot merge goes to a human (with autopilot off
-#    nobody merges it). Fetch the whole list first and check the exit code before any text
-#    processing; a page failing midway makes gh exit non-zero too.
-list_merge() {
-  local raw
-  raw=$(gh api --paginate "repos/$R/pulls?state=open&per_page=100" \
-        --jq ".[] | select(any(.labels[]; .name==\"$MERGE_LABEL\")) | .number") || return 1
-  printf '%s\n' "$raw" | tr '\n' ' '
-}
-enc=$(printf '%s' "$MERGE_LABEL" | jq -sRr @uri) || die "cannot encode label name"
-prs=$(list_merge) || die "cannot read the full list of open PRs"
-for P in $prs; do
-  gh api -X POST "repos/$R/issues/$P/labels" -f "labels[]=$HUMAN_LABEL" >/dev/null || die "PR #$P: adding $HUMAN_LABEL failed"
-  gh api -X DELETE "repos/$R/issues/$P/labels/$enc" >/dev/null 2>&1   # judged by the re-read below
-  echo "PR #$P -> $HUMAN_LABEL"
-done
-left=$(list_merge) || die "re-reading the open PR list failed"
-[ -z "${left// /}" ] || die "these PRs still carry $MERGE_LABEL: $left"
-for P in $prs; do
-  l=$(gh api "repos/$R/issues/$P" --jq '[.labels[].name]|join(",")') || die "re-reading PR #$P failed"
-  case ",$l," in *",$HUMAN_LABEL,"*) ;; *) die "PR #$P re-read has no $HUMAN_LABEL (now: $l)";; esac
-done
-echo "handed to a human: ${prs:-none}"
-echo "CLOSE_READY"
-```
-
-两段脚本由 `tests/autopilot-ops.test.sh` 从本文和英文版里原样取出，用假的 `gh` / `systemctl` / `tmux` 跑全部场景，
-并核对中英两份逐字一致——改脚本要两份一起改。
+issue 上残留的托管标签在关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，不想这样就摘掉。
 
 ## 外部需求机器人（可选，**默认关闭**）
 
