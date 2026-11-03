@@ -687,6 +687,8 @@ fi
 # 放在派工之后、合并清理之前：这一轮合进去的 PR，这一轮的清理就能收尾（Done 标签、worktree）。
 # 条件与「为什么这样判」都在 _lib.sh 的 autopilot_merge_one 上面。托管关闭时直接返回。
 autopilot_merge_tick "$STATE_FILE" || true
+# 托管关掉之后：本机托管过、还挂着等合并的 PR 交给人（GitHub#124）。从没开过托管的项目零调用。
+autopilot_off_sweep "$STATE_FILE" || true
 if [ "$AUTOPILOT_ACTED" = 1 ]; then pace_mark_acted; fi
 
 # ── 3. 自动 cleanup merged PRs ──

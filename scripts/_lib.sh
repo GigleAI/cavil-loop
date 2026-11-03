@@ -286,6 +286,8 @@ LABEL_DONE="${LABEL_DONE:-Done}"
 # 和以前逐字节一样。开着但没配复审关卡（LABEL_PENDING_REVIEW）时不托管任何条目：没人把关。
 LABEL_AUTOPILOT="${LABEL_AUTOPILOT:-}"
 LABEL_PENDING_MERGE="${LABEL_PENDING_MERGE:-pending/merge}"
+# 关掉之后的收尾（autopilot_off_sweep）还要认得这个标签名，所以清空之前先留一份
+AUTOPILOT_MERGE_LABEL_NAME="$LABEL_PENDING_MERGE"
 [ -n "$LABEL_AUTOPILOT" ] || LABEL_PENDING_MERGE=""
 AUTOPILOT_MERGE_METHOD="${AUTOPILOT_MERGE_METHOD:-squash}"
 # 检查（CI）一直没跑完的上限，过了就交人
@@ -3390,6 +3392,89 @@ autopilot_merge_tick() {   # <state_file>
         '.[][] | select(any(.labels[]?; .name == $M)) | .number' 2>/dev/null) || return 0
     for num in $rows; do
         autopilot_merge_one "$sf" "$num" || true
+    done
+    return 0
+}
+
+# 托管关掉之后的收尾（GitHub#124）：关托管只要改配置，剩下的 daemon 自己处理。
+#
+# 配置一关，合并那一趟（autopilot_merge_tick）就整个跳过，而开着时留下的状态还在：
+#   · 已经挂着等合并标签的 PR——没人合、也没人交给人，会一直挂着；
+#   · 开着时就派出去的复审还拿着托管规则，跑完照样会把 PR 翻成等合并。
+# 其余状态都不用管：配置关了以后派工不再拼托管规则，排队、被打断的活按普通流程走完、交人。
+# 所以这里每轮把本机托管过的 PR（state.json 里 .autopilot.prs 有记录）交给人。
+#
+# 交接要做到的最终状态：有 pending/human、没有等合并标签、PR 上有一条交人说明。中间任何一步
+# （写本地记录、加标签、摘标签、回读、读评论、发评论、清记录，或者进程半路被杀）断掉，下一轮都要能接着做：
+#   · 先记意图：动 GitHub 之前先在 .prs[n].off_handover 记下「这个 PR 正在交接」，记不下就本轮不动它。
+#     候选 = 挂着等合并标签的，或者有这个记号的——所以标签改完、说明还没发的 PR 下一轮照样找得到。
+#   · 标签按目标收敛：缺 pending/human 就加、有等合并标签就摘（先加后摘），然后回读；回读读不到或还没到目标，
+#     记号留着，下一轮接着收敛。
+#   · 说明只发一条：发之前读这个 PR 的评论，已有带交接标记的就不再发（上一轮发出去了、只是记号没清掉）。
+#   · 最终状态都确认了才清记号。
+# 只认本机托管过的 PR：别的项目可能恰好也有叫这个名字的标签，从没开过托管的项目（没有 .autopilot.prs）
+# 这里直接返回，一个 GitHub 调用都不多。写之前现读这个 PR：仍开着、没合并才动；读不到本轮不动。
+AUTOPILOT_OFF_TAG='<!-- autopilot-off-handover -->'
+autopilot_off_sweep() {   # <state_file>
+    local sf="$1" m="${AUTOPILOT_MERGE_LABEL_NAME:-}" mine pages open_nums tmp pr pj labels enc cands cmts
+    # 只在托管开关本身关掉时收尾。配了开关但没配复审关卡是另一回事（托管没生效、但人没说要关），
+    # 那种情况合并这一段照旧整个不动
+    autopilot_configured && return 0
+    [ -n "$m" ] && [ -n "${LABEL_PENDING_HUMAN:-}" ] || return 0
+    mine=$(jq -r '(.autopilot.prs // {}) | keys[]' "$sf" 2>/dev/null) || return 0
+    [ -n "$mine" ] || return 0
+    pages=$(open_snapshot pulls) || return 0
+    # 已关闭 / 已合并的 PR 不再需要记录：记录清空后这里就不再读 GitHub
+    if open_nums=$(printf '%s' "$pages" | jq -c '[ .[][] | .number | tostring ]' 2>/dev/null); then
+        tmp=$(mktemp)
+        if jq --argjson open "$open_nums" \
+            '.autopilot.prs = ((.autopilot.prs // {}) | with_entries(select(.key as $k | $open | index($k))))' \
+            "$sf" > "$tmp" 2>/dev/null; then mv "$tmp" "$sf"; else rm -f "$tmp"; fi
+    fi
+    # 候选：本机有记录、开着的 PR 里，挂着等合并标签的，或者交接做到一半的
+    cands=$(printf '%s' "$pages" | jq -r --arg M "$m" --slurpfile st "$sf" '
+        (($st[0].autopilot.prs) // {}) as $prs
+        | .[][] | select($prs[(.number | tostring)] != null)
+        | select(any(.labels[]?; .name == $M) or ($prs[(.number | tostring)].off_handover // false))
+        | .number' 2>/dev/null) || return 0
+    enc=$(printf '%s' "$m" | jq -sRr @uri)
+    for pr in $cands; do
+        pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || { log "托管已关：读不到 PR #$pr，下轮再收尾"; continue; }
+        printf '%s' "$pj" | jq -e '.state == "open" and (.merged | not)' >/dev/null 2>&1 || continue
+        # ① 先记意图；记不下就本轮不碰 GitHub（等合并标签还在，下轮照样选中）
+        if [ "$(autopilot_state_get "$sf" '.prs[$p].off_handover // false' --arg p "$pr")" != true ]; then
+            autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) + {off_handover: true})' --arg p "$pr" \
+                || { log "托管已关：PR #$pr 记不下交接记号，本轮不动"; continue; }
+        fi
+        # ② 标签收敛到目标：先加 pending/human，再摘等合并标签
+        labels=$(printf '%s' "$pj" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null) || labels=""
+        case ",$labels," in
+            *",$LABEL_PENDING_HUMAN,"*) ;;
+            *) run_gh "托管已关：PR #$pr 加 $LABEL_PENDING_HUMAN" \
+                   gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_PENDING_HUMAN" || continue
+               AUTOPILOT_ACTED=1 ;;
+        esac
+        case ",$labels," in
+            *",$m,"*) gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" >/dev/null 2>&1 || true
+                      AUTOPILOT_ACTED=1 ;;
+        esac
+        labels=$(gh api "repos/$REPO/issues/$pr" --jq '[.labels[].name] | join(",")' 2>/dev/null) \
+            || { log "托管已关：PR #$pr 标签读不回来，下轮再看"; continue; }
+        case ",$labels," in *",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;; esac
+        case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) ;; *) log "托管已关：PR #$pr 回读没有 $LABEL_PENDING_HUMAN，下轮再收尾"; continue ;; esac
+        # ③ 交人说明只发一条：已经有了（上一轮发出去、只是记号没清）就不再发
+        cmts=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/comments" 2>/dev/null) \
+            || { log "托管已关：PR #$pr 评论读不到，下轮再发说明"; continue; }
+        if ! printf '%s' "$cmts" | jq -e --arg T "$AUTOPILOT_OFF_TAG" 'any(.[][]?; (.body // "") | contains($T))' >/dev/null 2>&1; then
+            run_gh "托管已关：PR #$pr 交人说明" gh_write api -X POST "repos/$REPO/issues/$pr/comments" \
+                -f "body=$(printf '⚠️ **托管已关掉，这个 PR 不再自动合并（`%s`）**\n\n**原因**：托管已在配置里关掉。这个 PR 是托管开着时复审通过、挂着 `%s` 等合并的，现在交给人。\n\n**怎么继续**：自己审、自己合并；或者重新打开托管后，把标签改成 `%s` 重新复审。\n\n%s\n%s' \
+                    "$LABEL_PENDING_HUMAN" "$m" "${LABEL_PENDING_REVIEW:-pending/review}" "$(autopilot_daemon_sig)" "$AUTOPILOT_OFF_TAG")" \
+                || { log "托管已关：PR #$pr 交人说明没发出去，下轮补发"; continue; }
+            AUTOPILOT_ACTED=1
+            log "托管已关：PR #$pr 不再等自动合并 → $LABEL_PENDING_HUMAN"
+        fi
+        # ④ 最终状态都确认了才清记号（清不掉：下一轮看到说明已在，只清记号、不重复发）
+        autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) | del(.off_handover))' --arg p "$pr" || true
     done
     return 0
 }

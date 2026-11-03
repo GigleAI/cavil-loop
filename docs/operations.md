@@ -501,7 +501,9 @@ Leave it empty to keep the previous behaviour exactly.
 GitHub#114. Set `LABEL_AUTOPILOT` (e.g. `autopilot`) — together with `LABEL_PENDING_REVIEW`,
 which it requires — and a maintainer can hand one **issue** over end to end by putting that
 label on it. Nothing changes for issues without the label, and with `LABEL_AUTOPILOT` empty
-the prompts, the poller's GitHub calls and `state.json` are byte for byte what they were.
+the prompts, the poller's GitHub calls and `state.json` are byte for byte what they were (for a project that never
+turned it on; one that turns it off again first gets its merge-waiting PRs handed to a human, see "Turning autopilot off"
+below).
 
 ```
 issue: autopilot ──> design ──> pending/review ──pass──> pending/agent ──> code + PR
@@ -553,7 +555,9 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 - **What GitHub refuses** (branch protection requiring approvals, merge method disabled)
   goes to a human — the daemon never works around repository rules.
 - **Multi-host**: only the machine that dispatched the review holds the reviewed commit, so
-  with `SELFHEAL_ONLY_OWN_WORKERS=true` the other machine leaves the PR alone.
+  with `SELFHEAL_ONLY_OWN_WORKERS=true` the other machine's **merge step** leaves the PR alone.
+  Ordinary dispatch and review do not check ownership, though, so a repo on autopilot should be
+  polled by one machine only (see "Poll the repo from one machine only" below).
 - **Two accounts**: the loop's write account and the maintainer must differ, otherwise no
   label can count as the maintainer's (workers and the reviewer write as that account).
 - **This repo deploys itself**: on `GigleAI/cavil-loop`, a merged `main` is activated on the
@@ -561,9 +565,165 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   between. Turning it on here is a deliberate choice; merging the feature does not.
 
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
-unreadable rounds, check-wait start; `notices` / `denied`: one-time comments and rejected
+unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
+
+### Poll the repo from one machine only
+
+Before turning autopilot on, make sure **exactly one machine** polls the repo. Any other machine still polling it,
+**autopilot on or off**, can take the review and dispatch of autopilot items (ordinary dispatch ignores the autopilot
+switch and which machine started the work; only the merge step checks ownership): its review carries no autopilot rules,
+so a design pass goes to a human and a code pass never reaches the auto-merge, breaking the loop. If it also has autopilot
+on without `SELFHEAL_ONLY_OWN_WORKERS`, it sends PRs the other machine reviewed back for review.
+
+Run the script below on **every other machine** (`REPO=<owner/repo> bash host-check.sh`). It loads each install's
+registry and project config the way the daemon does (clean env, subprocess, 10 s limit, output dropped) and reads the repo
+and session prefix the daemon actually uses — quoting, repeated assignments and variables behave as for the daemon. For an
+instance of this repo it then checks whether the timer is stopped, whether it still starts at boot, whether sessions
+are left, and whether any process still works under the project's worktree directory (a worker whose session is gone but
+whose process lives on is still running). Anything it cannot read is `UNKNOWN`.
+
+| Last line | What to do |
+|---|---|
+| `HOST_VERDICT=STOPPED` | That machine does not poll the repo; go on |
+| `HOST_VERDICT=RUNNING` | Stop the scheduler **first**, **then** wait for its sessions (no "looked idle, dispatched before the stop" gap): Linux `systemctl --user disable --now cavil-loop-poll@<key>.timer` (`coding-agent-poll@<key>.timer` on a pre-rename install); macOS `launchctl bootout gui/$UID/dev.luosky.cavil-loop.<key>`. Let the sessions end on their own — **do not kill them**: no other machine picks up its work, so it would stay on `doing/agent`. Rerun until `STOPPED` |
+| `HOST_VERDICT=UNKNOWN` | Cannot tell; **do not turn autopilot on** |
+
+It only knows pollers installed by `setup.sh`; a machine that polled the repo some other way (a hand-made cron job, …)
+counts as "cannot tell" too.
+
+<!-- autopilot-ops:host-check -->
+```bash
+# autopilot host check (GitHub#124). Run on every OTHER machine before turning autopilot on:
+#   REPO=<owner/repo> bash host-check.sh
+# Finds every poller instance installed on this machine for REPO and judges each one
+# STOPPED / RUNNING / UNKNOWN. Only a last line of HOST_VERDICT=STOPPED means "this machine
+# does not poll REPO". Anything it cannot read counts as UNKNOWN, never as "not installed".
+REPO=${REPO:?set REPO=<owner/repo>}
+verdict=STOPPED
+bad() { echo "$1 $2"; case "$1" in UNKNOWN) verdict=UNKNOWN;; RUNNING) [ "$verdict" = UNKNOWN ] || verdict=RUNNING;; esac; }
+found=0
+for d in "$HOME/.config/cavil-loop" "$HOME/.config/coding-agent-work-loop"; do
+  [ -e "$d" ] || continue
+  [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || bad UNKNOWN "cannot read registry dir $d"
+done
+# Read an instance's repo and session prefix the way its daemon does: load the registry
+# env file, then source the project config. Clean env, subprocess, 10 s limit, output dropped.
+if command -v timeout >/dev/null 2>&1; then lim() { timeout 10 "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then lim() { gtimeout 10 "$@"; }
+else lim() { perl -e 'alarm 10; exec @ARGV or exit 127' "$@"; }   # macOS has perl, not timeout
+fi
+load_instance() {   # <registry file>  -> prints "repo\nprefix\nworktree base"
+  lim env -i HOME="$HOME" PATH="$PATH" bash -c '
+    set -a; . "$1" >/dev/null 2>&1 || exit 3; set +a
+    [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -r "$CODING_AGENT_CONFIG" ] || exit 4
+    . "$CODING_AGENT_CONFIG" >/dev/null 2>&1 || exit 5
+    printf "%s\n%s\n%s\n" "${REPO:-}" "${TMUX_PREFIX:-}" "${WORKTREE_BASE:-}"
+  ' _ "$1" </dev/null 2>/dev/null
+}
+# Which of my processes work under $1 (a worktree base)? Prints "W <pid>" for each, "S <pid> <name>"
+# for each one whose working directory cannot be read (setuid / setgid helpers such as sshd or
+# gpg-agent) and none of whose parents works there either; fails if a process cannot be judged.
+scan_procs() {
+  local d p c pp n hit bad=0
+  for d in /proc/[0-9]*; do
+    [ -O "$d" ] || continue
+    p=${d#/proc/}
+    if c=$(readlink "$d/cwd" 2>/dev/null); then
+      case "$c/" in "$1"/*) echo "W $p";; esac; continue
+    fi
+    [ -e "$d" ] || continue                                       # exited meanwhile
+    hit=0; n=0; pp=$p
+    while [ $n -lt 64 ]; do
+      pp=$(sed 's/.*) [A-Za-z] //; s/ .*//' "/proc/$pp/stat" 2>/dev/null) || { [ -e "$d" ] && bad=1; break; }
+      [ "$pp" -gt 1 ] 2>/dev/null || break
+      c=$(readlink "/proc/$pp/cwd" 2>/dev/null) && case "$c/" in "$1"/*) hit=1; break;; esac
+      n=$((n+1))
+    done
+    if [ $hit = 1 ]; then echo "W $p"; elif [ -e "$d" ]; then echo "S $p $(cat "$d/comm" 2>/dev/null)"; fi
+  done
+  return $bad
+}
+want=$(printf '%s' "$REPO" | tr 'A-Z' 'a-z')
+for f in "$HOME"/.config/cavil-loop/*.conf "$HOME"/.config/coding-agent-work-loop/*.conf; do
+  [ -e "$f" ] || continue
+  key=$(basename "$f" .conf)
+  if ! got=$(load_instance "$f"); then bad UNKNOWN "instance $key: loading its config failed (unreadable, syntax error or timeout)"; continue; fi
+  repo=$(printf '%s\n' "$got" | sed -n 1p); prefix=$(printf '%s\n' "$got" | sed -n 2p); wt=$(printf '%s\n' "$got" | sed -n 3p); wt=${wt%/}
+  [ -n "$repo" ] || { bad UNKNOWN "instance $key: no REPO after loading its config"; continue; }
+  [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$want" ] || continue   # definitely another repo
+  found=$((found+1))
+  [ -n "$prefix" ] || { bad UNKNOWN "instance $key: no TMUX_PREFIX after loading its config"; continue; }
+  [ -n "$wt" ] || { bad UNKNOWN "instance $key: no WORKTREE_BASE after loading its config"; continue; }
+  # 1) scheduler: running or enabled at boot = RUNNING; unreadable or unknown words = UNKNOWN
+  if command -v systemctl >/dev/null 2>&1; then
+    for u in "cavil-loop-poll@$key.timer" "cavil-loop-poll@$key.service" "coding-agent-poll@$key.timer" "coding-agent-poll@$key.service"; do
+      if ! out=$(systemctl --user show -p LoadState,ActiveState,UnitFileState "$u" 2>&1); then bad UNKNOWN "instance $key: cannot query $u ($out)"; continue; fi
+      ld=$(printf '%s\n' "$out" | sed -n 's/^LoadState=//p'); ac=$(printf '%s\n' "$out" | sed -n 's/^ActiveState=//p'); uf=$(printf '%s\n' "$out" | sed -n 's/^UnitFileState=//p')
+      case "$ld" in not-found) continue;; loaded|masked) ;; *) bad UNKNOWN "instance $key: $u LoadState=$ld"; continue;; esac
+      case "$ac" in inactive|failed) ;; active|activating|deactivating|reloading) bad RUNNING "instance $key: $u is running ($ac)";; *) bad UNKNOWN "instance $key: $u ActiveState=$ac";; esac
+      case "$u" in *.timer)
+        case "$uf" in disabled|masked) ;; enabled|enabled-runtime|linked|linked-runtime|static|indirect|generated|alias) bad RUNNING "instance $key: $u still starts at boot ($uf)";; *) bad UNKNOWN "instance $key: $u UnitFileState=$uf";; esac;;
+      esac
+    done
+  elif command -v launchctl >/dev/null 2>&1; then
+    for lb in "dev.luosky.cavil-loop.$key" "dev.luosky.coding-agent-work-loop.$key"; do
+      out=$(launchctl print "gui/$(id -u)/$lb" 2>&1); rc=$?
+      if [ $rc -eq 0 ]; then bad RUNNING "instance $key: launchd still has $lb loaded"
+      elif printf '%s' "$out" | grep -qi 'could not find service'; then :
+      else bad UNKNOWN "instance $key: cannot query $lb ($out)"; fi
+    done
+  else
+    bad UNKNOWN "instance $key: neither systemctl nor launchctl found"
+  fi
+  # 2) sessions still running for this instance
+  out=$(tmux ls -F '#{session_name}' 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then
+    s=$(printf '%s\n' "$out" | awk -v p="$prefix-" 'index($0,p)==1' | tr '\n' ' ')
+    [ -z "$s" ] || bad RUNNING "instance $key: sessions still running: $s"
+  elif printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file'; then :
+  else bad UNKNOWN "instance $key: cannot list tmux sessions ($out)"; fi
+  # 3) worker processes left behind: a killed session does not end a process that ignores SIGHUP,
+  #    so also look for any of my processes whose working directory is under WORKTREE_BASE
+  if [ -d /proc/self ]; then
+    if out=$(scan_procs "$wt"); then
+      left=$(printf '%s\n' "$out" | awk '$1=="W"{printf " %s", $2}'); unk=""
+    else left=""; unk=" (some process could not be judged)"; fi
+  elif out=$(lsof -a -d cwd -u "$(id -u)" -Fpn 2>/dev/null); then   # macOS: no /proc
+    left=$(printf '%s\n' "$out" | awk -v w="$wt/" '/^p/{p=substr($0,2)} /^n/{if (index(substr($0,2)"/",w)==1) printf " %s", p}'); unk=""
+  else
+    left=""; unk="(cannot list processes)"
+  fi
+  [ -z "$unk" ] || bad UNKNOWN "instance $key: cannot read the working directory of:$unk"
+  [ -z "$left" ] || bad RUNNING "instance $key: processes still working under $wt (PIDs:$left)"
+  echo "instance $key (session prefix $prefix) checked"
+done
+echo "instances=$found"
+echo "HOST_VERDICT=$verdict"
+```
+
+### Turning autopilot off
+
+Leave `LABEL_AUTOPILOT` empty in the config (`LABEL_AUTOPILOT=""`) or delete the line — no timer to stop, nothing
+else to run. From the next round the daemon cleans up by itself:
+
+- nothing is auto-merged any more, and new dispatches no longer carry the autopilot rules;
+- every open PR this machine had on autopilot that still carries `LABEL_PENDING_MERGE` is moved to `pending/human`
+  with a comment saying why. A review dispatched before the switch that finishes later and flips a PR to the merge
+  label is caught the round after;
+- queued and running work is not cleared — it finishes the normal way and ends with a human; completed merges stay.
+
+Only PRs this machine had on autopilot are touched (recorded under `autopilot.prs` in `state.json`), so a same-named
+label used elsewhere is left alone and a project that never turned autopilot on makes no extra GitHub call. The PR is
+re-read before any write (still open, not merged) and an unreadable PR waits for the next round. The target state is
+`pending/human` present, the merge label gone, one hand-over comment on the PR. Before touching GitHub the sweep records
+"hand-over in progress" in `state.json`; it then converges the labels and reads them back, checks the PR's comments so the
+note is posted only once, and clears the record only when all of that is confirmed — a failure at any step, or a killed
+process, is picked up the next round through that record.
+
+Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
+still carrying it is back on autopilot** — remove them if that is not what you want.
 
 ## External requester bot (optional, **off by default**)
 

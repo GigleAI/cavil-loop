@@ -14,7 +14,8 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   me              login of the token (default loop-bot)
 
 Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (key = path with
-'/' -> '_', e.g. F_issues_7_events).  F_merge_<code> makes the merge endpoint fail with that code.
+'/' -> '_', e.g. F_issues_7_events).  F_merge_<code> makes the merge endpoint fail with that code;
+F_post_comment / F_post_labels / F_delete_labels make those writes fail.
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
 used to change GitHub between the daemon's check and its re-read.
 """
@@ -230,6 +231,8 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
 
 if method == "DELETE" and len(parts) == 4 and parts[0] == "issues" and parts[2] == "labels":
     from urllib.parse import unquote
+    if os.path.exists(p("F_delete_labels")):
+        fail("HTTP 500: injected label delete failure")
     name = unquote(parts[3])
     cur = labels.get(parts[1], [])
     if name not in cur:

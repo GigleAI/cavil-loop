@@ -426,7 +426,8 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 GitHub#114。配 `LABEL_AUTOPILOT`（例如 `autopilot`），并且开着复审关卡 `LABEL_PENDING_REVIEW`
 （必需），维护者就能给某个 **issue** 打上这个标签，把它从头交到尾。没打标签的 issue 一切照旧；
-`LABEL_AUTOPILOT` 留空时，提示词、轮询的 GitHub 调用和 `state.json` 与以前逐字节一样。
+`LABEL_AUTOPILOT` 留空时，提示词、轮询的 GitHub 调用和 `state.json` 与以前逐字节一样（从没开过托管的项目；开过又关掉的，
+daemon 会先把等合并的 PR 交给人，见下面「怎么整体关闭托管」）。
 
 ```
 issue：autopilot ──> 写方案 ──> pending/review ──通过──> pending/agent ──> 写代码 + 开 PR
@@ -468,14 +469,163 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 - **剩下的窗口**只在「最后这次读」到「合并请求到达 GitHub」之间。合并请求带着复审的提交号，这段时间的新推送
   GitHub 会拒；这段时间检查变红则拦不住。要服务端兜底，把这些检查设成目标分支的「必须通过」（分支保护），daemon 不绕它。
 - **GitHub 拒绝的**（分支保护要求人工批准、合并方式没开）交人——daemon 不绕仓库规则。
-- **多机**：复审的提交号只记在派复审的那台机器上，`SELFHEAL_ONLY_OWN_WORKERS=true` 时另一台不碰这个 PR。
+- **多机**：复审的提交号只记在派复审的那台机器上，`SELFHEAL_ONLY_OWN_WORKERS=true` 时另一台的**合并那一步**不碰这个 PR；
+  但普通派工和复审不看归属，所以托管的仓库只该有一台机器在轮询（见下面「只在一台机器上跑这个仓库的轮询」）。
 - **两个账号**：loop 的写入账号和维护者必须是两个账号，否则任何标签都算不上维护者打的（worker 和复审都用写入账号写 GitHub）。
 - **本仓库会部署自己**：`GigleAI/cavil-loop` 的 `main` 合并后几分钟内就在 daemon 上生效，在这里开托管意味着
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
-状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间；
+状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
 `notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
+
+### 只在一台机器上跑这个仓库的轮询
+
+开托管前，确认**只有一台机器**在跑这个仓库的轮询。另一台只要还在跑，**不管它开没开托管**都可能领走托管条目的
+复审和派工（普通派工不看托管开关，也不看活是哪台派的；只有合并那一步看归属）：它派的复审不带托管规则，
+设计通过会交人、代码通过不会进自动合并，闭环就断了；它若也开着托管、又没开 `SELFHEAL_ONLY_OWN_WORKERS`，还会把
+别家复审过的 PR 送回重审。
+
+在**每台别的机器**上跑下面这段（`REPO=<仓库> bash host-check.sh`）。它按 daemon 自己的读法载入安装登记和项目配置
+（干净环境、子进程、限时 10 秒、输出丢弃），读出 daemon 实际会用的仓库名和会话前缀——引号写法、重复赋值、变量拼写都
+和 daemon 一致；确定是这个仓库后再看定时任务停没停、开机会不会自启、还有没有会话，以及还有没有工作目录在
+这个项目 worktree 底下的进程（会话没了、进程还活着的 worker 也算在跑）。任何一样读不到都判 `UNKNOWN`。
+
+| 最后一行 | 怎么做 |
+|---|---|
+| `HOST_VERDICT=STOPPED` | 那台不跑这个仓库，可以继续 |
+| `HOST_VERDICT=RUNNING` | **先**停调度、**再**等会话跑完（不留「看着空闲、停之前又派出去」的空档）：Linux `systemctl --user disable --now cavil-loop-poll@<实例名>.timer`（改名前装的是 `coding-agent-poll@<实例名>.timer`）；macOS `launchctl bootout gui/$UID/dev.luosky.cavil-loop.<实例名>`。等它的会话自己结束——**不要杀**：别的机器不接手它派的活，杀了就卡在 `doing/agent`。重跑直到 `STOPPED` |
+| `HOST_VERDICT=UNKNOWN` | 查不清，**不要开托管** |
+
+它只认安装脚本装出来的轮询；用别的方式（自己写的定时任务等）跑过这个仓库的机器，同样按「查不清」处理。
+
+<!-- autopilot-ops:host-check -->
+```bash
+# autopilot host check (GitHub#124). Run on every OTHER machine before turning autopilot on:
+#   REPO=<owner/repo> bash host-check.sh
+# Finds every poller instance installed on this machine for REPO and judges each one
+# STOPPED / RUNNING / UNKNOWN. Only a last line of HOST_VERDICT=STOPPED means "this machine
+# does not poll REPO". Anything it cannot read counts as UNKNOWN, never as "not installed".
+REPO=${REPO:?set REPO=<owner/repo>}
+verdict=STOPPED
+bad() { echo "$1 $2"; case "$1" in UNKNOWN) verdict=UNKNOWN;; RUNNING) [ "$verdict" = UNKNOWN ] || verdict=RUNNING;; esac; }
+found=0
+for d in "$HOME/.config/cavil-loop" "$HOME/.config/coding-agent-work-loop"; do
+  [ -e "$d" ] || continue
+  [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || bad UNKNOWN "cannot read registry dir $d"
+done
+# Read an instance's repo and session prefix the way its daemon does: load the registry
+# env file, then source the project config. Clean env, subprocess, 10 s limit, output dropped.
+if command -v timeout >/dev/null 2>&1; then lim() { timeout 10 "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then lim() { gtimeout 10 "$@"; }
+else lim() { perl -e 'alarm 10; exec @ARGV or exit 127' "$@"; }   # macOS has perl, not timeout
+fi
+load_instance() {   # <registry file>  -> prints "repo\nprefix\nworktree base"
+  lim env -i HOME="$HOME" PATH="$PATH" bash -c '
+    set -a; . "$1" >/dev/null 2>&1 || exit 3; set +a
+    [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -r "$CODING_AGENT_CONFIG" ] || exit 4
+    . "$CODING_AGENT_CONFIG" >/dev/null 2>&1 || exit 5
+    printf "%s\n%s\n%s\n" "${REPO:-}" "${TMUX_PREFIX:-}" "${WORKTREE_BASE:-}"
+  ' _ "$1" </dev/null 2>/dev/null
+}
+# Which of my processes work under $1 (a worktree base)? Prints "W <pid>" for each, "S <pid> <name>"
+# for each one whose working directory cannot be read (setuid / setgid helpers such as sshd or
+# gpg-agent) and none of whose parents works there either; fails if a process cannot be judged.
+scan_procs() {
+  local d p c pp n hit bad=0
+  for d in /proc/[0-9]*; do
+    [ -O "$d" ] || continue
+    p=${d#/proc/}
+    if c=$(readlink "$d/cwd" 2>/dev/null); then
+      case "$c/" in "$1"/*) echo "W $p";; esac; continue
+    fi
+    [ -e "$d" ] || continue                                       # exited meanwhile
+    hit=0; n=0; pp=$p
+    while [ $n -lt 64 ]; do
+      pp=$(sed 's/.*) [A-Za-z] //; s/ .*//' "/proc/$pp/stat" 2>/dev/null) || { [ -e "$d" ] && bad=1; break; }
+      [ "$pp" -gt 1 ] 2>/dev/null || break
+      c=$(readlink "/proc/$pp/cwd" 2>/dev/null) && case "$c/" in "$1"/*) hit=1; break;; esac
+      n=$((n+1))
+    done
+    if [ $hit = 1 ]; then echo "W $p"; elif [ -e "$d" ]; then echo "S $p $(cat "$d/comm" 2>/dev/null)"; fi
+  done
+  return $bad
+}
+want=$(printf '%s' "$REPO" | tr 'A-Z' 'a-z')
+for f in "$HOME"/.config/cavil-loop/*.conf "$HOME"/.config/coding-agent-work-loop/*.conf; do
+  [ -e "$f" ] || continue
+  key=$(basename "$f" .conf)
+  if ! got=$(load_instance "$f"); then bad UNKNOWN "instance $key: loading its config failed (unreadable, syntax error or timeout)"; continue; fi
+  repo=$(printf '%s\n' "$got" | sed -n 1p); prefix=$(printf '%s\n' "$got" | sed -n 2p); wt=$(printf '%s\n' "$got" | sed -n 3p); wt=${wt%/}
+  [ -n "$repo" ] || { bad UNKNOWN "instance $key: no REPO after loading its config"; continue; }
+  [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$want" ] || continue   # definitely another repo
+  found=$((found+1))
+  [ -n "$prefix" ] || { bad UNKNOWN "instance $key: no TMUX_PREFIX after loading its config"; continue; }
+  [ -n "$wt" ] || { bad UNKNOWN "instance $key: no WORKTREE_BASE after loading its config"; continue; }
+  # 1) scheduler: running or enabled at boot = RUNNING; unreadable or unknown words = UNKNOWN
+  if command -v systemctl >/dev/null 2>&1; then
+    for u in "cavil-loop-poll@$key.timer" "cavil-loop-poll@$key.service" "coding-agent-poll@$key.timer" "coding-agent-poll@$key.service"; do
+      if ! out=$(systemctl --user show -p LoadState,ActiveState,UnitFileState "$u" 2>&1); then bad UNKNOWN "instance $key: cannot query $u ($out)"; continue; fi
+      ld=$(printf '%s\n' "$out" | sed -n 's/^LoadState=//p'); ac=$(printf '%s\n' "$out" | sed -n 's/^ActiveState=//p'); uf=$(printf '%s\n' "$out" | sed -n 's/^UnitFileState=//p')
+      case "$ld" in not-found) continue;; loaded|masked) ;; *) bad UNKNOWN "instance $key: $u LoadState=$ld"; continue;; esac
+      case "$ac" in inactive|failed) ;; active|activating|deactivating|reloading) bad RUNNING "instance $key: $u is running ($ac)";; *) bad UNKNOWN "instance $key: $u ActiveState=$ac";; esac
+      case "$u" in *.timer)
+        case "$uf" in disabled|masked) ;; enabled|enabled-runtime|linked|linked-runtime|static|indirect|generated|alias) bad RUNNING "instance $key: $u still starts at boot ($uf)";; *) bad UNKNOWN "instance $key: $u UnitFileState=$uf";; esac;;
+      esac
+    done
+  elif command -v launchctl >/dev/null 2>&1; then
+    for lb in "dev.luosky.cavil-loop.$key" "dev.luosky.coding-agent-work-loop.$key"; do
+      out=$(launchctl print "gui/$(id -u)/$lb" 2>&1); rc=$?
+      if [ $rc -eq 0 ]; then bad RUNNING "instance $key: launchd still has $lb loaded"
+      elif printf '%s' "$out" | grep -qi 'could not find service'; then :
+      else bad UNKNOWN "instance $key: cannot query $lb ($out)"; fi
+    done
+  else
+    bad UNKNOWN "instance $key: neither systemctl nor launchctl found"
+  fi
+  # 2) sessions still running for this instance
+  out=$(tmux ls -F '#{session_name}' 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then
+    s=$(printf '%s\n' "$out" | awk -v p="$prefix-" 'index($0,p)==1' | tr '\n' ' ')
+    [ -z "$s" ] || bad RUNNING "instance $key: sessions still running: $s"
+  elif printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file'; then :
+  else bad UNKNOWN "instance $key: cannot list tmux sessions ($out)"; fi
+  # 3) worker processes left behind: a killed session does not end a process that ignores SIGHUP,
+  #    so also look for any of my processes whose working directory is under WORKTREE_BASE
+  if [ -d /proc/self ]; then
+    if out=$(scan_procs "$wt"); then
+      left=$(printf '%s\n' "$out" | awk '$1=="W"{printf " %s", $2}'); unk=""
+    else left=""; unk=" (some process could not be judged)"; fi
+  elif out=$(lsof -a -d cwd -u "$(id -u)" -Fpn 2>/dev/null); then   # macOS: no /proc
+    left=$(printf '%s\n' "$out" | awk -v w="$wt/" '/^p/{p=substr($0,2)} /^n/{if (index(substr($0,2)"/",w)==1) printf " %s", p}'); unk=""
+  else
+    left=""; unk="(cannot list processes)"
+  fi
+  [ -z "$unk" ] || bad UNKNOWN "instance $key: cannot read the working directory of:$unk"
+  [ -z "$left" ] || bad RUNNING "instance $key: processes still working under $wt (PIDs:$left)"
+  echo "instance $key (session prefix $prefix) checked"
+done
+echo "instances=$found"
+echo "HOST_VERDICT=$verdict"
+```
+
+### 怎么整体关闭托管
+
+在配置里把 `LABEL_AUTOPILOT` 留空（`LABEL_AUTOPILOT=""`）或删掉那一行就行，不用停定时任务、不用跑别的。
+下一轮起 daemon 自己收尾：
+
+- 不再自动合并任何东西，新派出去的活也不再带托管规则；
+- 本机托管过、还挂着 `LABEL_PENDING_MERGE` 等合并的 PR，翻成 `pending/human` 并在 PR 上留言说明。关掉之前就派出去、
+  之后才跑完的复审若又翻出等合并，下一轮照样收；
+- 排队中、正在跑的活不清空，照普通流程走完、交人；已完成的合并不撤回。
+
+只认本机托管过的 PR（`state.json` 的 `autopilot.prs` 有记录）：别的项目恰好也有同名标签不受影响，从没开过托管的项目
+一个 GitHub 调用都不多。写之前现读那个 PR（仍开着、没合并才动），读不到就下一轮再来。交接的最终状态是：有
+`pending/human`、没有等合并标签、PR 上有一条交人说明。动 GitHub 之前先在 `state.json` 记下「正在交接」，
+然后让标签收敛到目标、回读确认，发说明前先看 PR 上是不是已经有了（只发一条），全部确认后才清记号——中间任何
+一步失败或进程被杀，下一轮靠这个记号找回这个 PR 接着做。
+
+issue 上残留的托管标签在关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，不想这样就摘掉。
 
 ## 外部需求机器人（可选，**默认关闭**）
 
