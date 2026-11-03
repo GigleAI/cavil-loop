@@ -1,0 +1,5 @@
+# Test files tests/run.sh --ci does not run (GitHub Actions uses --ci). One per line:
+#   <name without .test.sh>  <why it cannot run on a GitHub-hosted Ubuntu runner>
+# Every entry still runs locally: `bash tests/run.sh <name>`. A listed file that no
+# longer exists is an error, so this list cannot silently go stale.
+preview-socket-activation  Starts the real on-demand preview units: needs a running per-user systemd manager with the preview units installed by setup.sh. A hosted runner has neither, and without them the file skips itself and exits 0 — so it is excluded rather than left to look green.

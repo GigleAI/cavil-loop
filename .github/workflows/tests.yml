@@ -1,0 +1,103 @@
+name: Tests
+
+# Runs tests/*.test.sh on every PR and every push to main (GitHub#117).
+# The split, the exclusions and the pass/fail rules all live in tests/run.sh,
+# the same entry point you run locally — this file only fans it out.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mutation:
+        description: 'Also run the negative controls (MUTATION=1) — slow, tests the tests'
+        type: boolean
+        default: false
+
+# Fork PRs run with this read-only token and no secrets.
+permissions:
+  contents: read
+
+# A newer push to the same PR / branch cancels the run it supersedes.
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shard:
+    name: shard ${{ matrix.shard }}/4
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.mutation && 90 || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      MUTATION: ${{ inputs.mutation && '1' || '' }}
+      # Per-file limit. With negative controls requester-bot alone takes ~12 min
+      # on a dev box, and hosted runners are slower.
+      RUN_TEST_TIMEOUT: ${{ inputs.mutation && '2400' || '900' }}
+    steps:
+      # Full history + origin/main: design-review-gate, requester-bot and
+      # repair-unit-links compare against the merge-base with main. A shallow
+      # clone has none, and they would quietly fall back to comparing with
+      # HEAD~1 / HEAD instead.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check origin/main is present
+        run: |
+          git rev-parse --verify -q origin/main >/dev/null || git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base HEAD origin/main
+
+      # Everything else (git, jq, python3, node, flock, systemctl, timeout) is on
+      # the runner image already.
+      - name: Install tmux
+        run: |
+          command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
+          tmux -V
+
+      - name: Run shard ${{ matrix.shard }}/4
+        # Results go outside the checkout: some tests scan the whole repo tree
+        # (requester-bot greps it for retired wording) and would read their own logs.
+        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 --out "$RUNNER_TEMP/results"
+
+      - name: Upload results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/results/
+          if-no-files-found: error
+          retention-days: 14
+
+  # The one check to require for merging: green only when every expected test
+  # passed exactly once across the shards — a shard that never ran, or a file
+  # no shard picked up, turns it red too.
+  summary:
+    name: 测试
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Missing artifacts (a shard that never started) must not stop the check
+      # below: it is the step that reports which tests have no result.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: test-results-shard-*
+          path: results
+
+      - name: Every expected test passed exactly once
+        run: |
+          rc=0; mkdir -p results
+          bash tests/run.sh --ci --verify results || rc=$?
+          if [ "${{ needs.shard.result }}" != success ]; then
+            echo "::error::shard jobs ended with '${{ needs.shard.result }}'"
+            rc=1
+          fi
+          exit "$rc"

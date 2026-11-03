@@ -72,8 +72,10 @@ setup_repo() {  # <落后 commit 数>
     rm -f "$TMP/state/checkout-stale-alert"
     : > "$GH_CALLS"
 
-    git init -q --bare "$TMP/origin"
-    git init -q "$TMP/seed"
+    # -b main: don't depend on the machine's init.defaultBranch (CI runners default to master,
+    # and a bare repo whose HEAD names a missing branch clones with nothing checked out)
+    git init -q --bare -b main "$TMP/origin"
+    git init -q -b main "$TMP/seed"
     git_q "$TMP/seed" config user.email t@t.t
     git_q "$TMP/seed" config user.name t
     echo base > "$TMP/seed/f"
