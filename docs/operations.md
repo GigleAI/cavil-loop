@@ -578,8 +578,9 @@ on without `SELFHEAL_ONLY_OWN_WORKERS`, it sends PRs the other machine reviewed 
 Run the script below on **every other machine** (`REPO=<owner/repo> bash host-check.sh`). It loads each install's
 registry and project config the way the daemon does (clean env, subprocess, 10 s limit, output dropped) and reads the repo
 and session prefix the daemon actually uses — quoting, repeated assignments and variables behave as for the daemon. For an
-instance of this repo it then checks whether the timer is stopped, whether it still starts at boot, and whether sessions
-are left. Anything it cannot read is `UNKNOWN`.
+instance of this repo it then checks whether the timer is stopped, whether it still starts at boot, whether sessions
+are left, and whether any process still works under the project's worktree directory (a worker whose session is gone but
+whose process lives on is still running). Anything it cannot read is `UNKNOWN`.
 
 | Last line | What to do |
 |---|---|
@@ -611,24 +612,48 @@ if command -v timeout >/dev/null 2>&1; then lim() { timeout 10 "$@"; }
 elif command -v gtimeout >/dev/null 2>&1; then lim() { gtimeout 10 "$@"; }
 else lim() { perl -e 'alarm 10; exec @ARGV or exit 127' "$@"; }   # macOS has perl, not timeout
 fi
-load_instance() {   # <registry file>  -> prints "repo\nprefix"
+load_instance() {   # <registry file>  -> prints "repo\nprefix\nworktree base"
   lim env -i HOME="$HOME" PATH="$PATH" bash -c '
     set -a; . "$1" >/dev/null 2>&1 || exit 3; set +a
     [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -r "$CODING_AGENT_CONFIG" ] || exit 4
     . "$CODING_AGENT_CONFIG" >/dev/null 2>&1 || exit 5
-    printf "%s\n%s\n" "${REPO:-}" "${TMUX_PREFIX:-}"
+    printf "%s\n%s\n%s\n" "${REPO:-}" "${TMUX_PREFIX:-}" "${WORKTREE_BASE:-}"
   ' _ "$1" </dev/null 2>/dev/null
+}
+# Which of my processes work under $1 (a worktree base)? Prints "W <pid>" for each, "S <pid> <name>"
+# for each one whose working directory cannot be read (setuid / setgid helpers such as sshd or
+# gpg-agent) and none of whose parents works there either; fails if a process cannot be judged.
+scan_procs() {
+  local d p c pp n hit bad=0
+  for d in /proc/[0-9]*; do
+    [ -O "$d" ] || continue
+    p=${d#/proc/}
+    if c=$(readlink "$d/cwd" 2>/dev/null); then
+      case "$c/" in "$1"/*) echo "W $p";; esac; continue
+    fi
+    [ -e "$d" ] || continue                                       # exited meanwhile
+    hit=0; n=0; pp=$p
+    while [ $n -lt 64 ]; do
+      pp=$(sed 's/.*) [A-Za-z] //; s/ .*//' "/proc/$pp/stat" 2>/dev/null) || { [ -e "$d" ] && bad=1; break; }
+      [ "$pp" -gt 1 ] 2>/dev/null || break
+      c=$(readlink "/proc/$pp/cwd" 2>/dev/null) && case "$c/" in "$1"/*) hit=1; break;; esac
+      n=$((n+1))
+    done
+    if [ $hit = 1 ]; then echo "W $p"; elif [ -e "$d" ]; then echo "S $p $(cat "$d/comm" 2>/dev/null)"; fi
+  done
+  return $bad
 }
 want=$(printf '%s' "$REPO" | tr 'A-Z' 'a-z')
 for f in "$HOME"/.config/cavil-loop/*.conf "$HOME"/.config/coding-agent-work-loop/*.conf; do
   [ -e "$f" ] || continue
   key=$(basename "$f" .conf)
   if ! got=$(load_instance "$f"); then bad UNKNOWN "instance $key: loading its config failed (unreadable, syntax error or timeout)"; continue; fi
-  repo=$(printf '%s\n' "$got" | sed -n 1p); prefix=$(printf '%s\n' "$got" | sed -n 2p)
+  repo=$(printf '%s\n' "$got" | sed -n 1p); prefix=$(printf '%s\n' "$got" | sed -n 2p); wt=$(printf '%s\n' "$got" | sed -n 3p); wt=${wt%/}
   [ -n "$repo" ] || { bad UNKNOWN "instance $key: no REPO after loading its config"; continue; }
   [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$want" ] || continue   # definitely another repo
   found=$((found+1))
   [ -n "$prefix" ] || { bad UNKNOWN "instance $key: no TMUX_PREFIX after loading its config"; continue; }
+  [ -n "$wt" ] || { bad UNKNOWN "instance $key: no WORKTREE_BASE after loading its config"; continue; }
   # 1) scheduler: running or enabled at boot = RUNNING; unreadable or unknown words = UNKNOWN
   if command -v systemctl >/dev/null 2>&1; then
     for u in "cavil-loop-poll@$key.timer" "cavil-loop-poll@$key.service" "coding-agent-poll@$key.timer" "coding-agent-poll@$key.service"; do
@@ -657,6 +682,19 @@ for f in "$HOME"/.config/cavil-loop/*.conf "$HOME"/.config/coding-agent-work-loo
     [ -z "$s" ] || bad RUNNING "instance $key: sessions still running: $s"
   elif printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file'; then :
   else bad UNKNOWN "instance $key: cannot list tmux sessions ($out)"; fi
+  # 3) worker processes left behind: a killed session does not end a process that ignores SIGHUP,
+  #    so also look for any of my processes whose working directory is under WORKTREE_BASE
+  if [ -d /proc/self ]; then
+    if out=$(scan_procs "$wt"); then
+      left=$(printf '%s\n' "$out" | awk '$1=="W"{printf " %s", $2}'); unk=""
+    else left=""; unk=" (some process could not be judged)"; fi
+  elif out=$(lsof -a -d cwd -u "$(id -u)" -Fpn 2>/dev/null); then   # macOS: no /proc
+    left=$(printf '%s\n' "$out" | awk -v w="$wt/" '/^p/{p=substr($0,2)} /^n/{if (index(substr($0,2)"/",w)==1) printf " %s", p}'); unk=""
+  else
+    left=""; unk="(cannot list processes)"
+  fi
+  [ -z "$unk" ] || bad UNKNOWN "instance $key: cannot read the working directory of:$unk"
+  [ -z "$left" ] || bad RUNNING "instance $key: processes still working under $wt (PIDs:$left)"
   echo "instance $key (session prefix $prefix) checked"
 done
 echo "instances=$found"
@@ -674,15 +712,21 @@ Do all of it with the daemon **stopped** — then it dispatches nothing, flips n
 nothing changes after the checks:
 
 1. Stop the timer: `systemctl --user stop cavil-loop-poll@<key>.timer`
-2. Wait until every session of the project has ended (no `<TMUX_PREFIX>-…` in `tmux ls`). `tmux kill-session` is fine
-   here: a killed item is redispatched by self-heal after the restart, by then as ordinary work. **Never kill a session
-   while the daemon runs** — it is treated as a crash and redispatched on its original trigger label, still with the
-   autopilot rules
-3. Run the script below (`R=<owner/repo> CFG=<project config> UNIT=cavil-loop-poll@<key> PREFIX=<TMUX_PREFIX> bash close.sh`,
-   Linux only). It checks the daemon is stopped and no session is left, makes sure the config is readable and removes the
-   `LABEL_AUTOPILOT` line, moves every open PR on the merge label to `pending/human` (reading all open PRs, not a list),
-   then re-reads to confirm. Any failed read prints `STOP …` and exits 1. Go on only when the last line is `CLOSE_READY`;
-   otherwise fix what it says and rerun, with the timer still stopped
+2. Run the script below (`CFG=<project config> UNIT=cavil-loop-poll@<key> bash close.sh`, Linux only, **from outside
+   the worktrees**). Repo, session prefix, worktree directory and both label names are read from the project config the
+   way the daemon reads it. It checks: the daemon is stopped; no worker of the project is left — sessions *and* processes
+   whose working directory is under `WORKTREE_BASE` (**closing a tmux session does not end a worker**: a process that
+   ignores SIGHUP lives on without its session, still holding the autopilot rules; a process whose working directory
+   cannot be read — sshd, gpg-agent and the like — counts only if one of its parents is under the worktrees, the rest are
+   listed on a `note:` line); then it removes the `LABEL_AUTOPILOT`
+   line, moves every open PR on the merge label to `pending/human` (reading all open PRs, not a list) and re-reads to
+   confirm. Any failed read prints `STOP …` and exits 1. Go on only when the last line is `CLOSE_READY`; otherwise fix
+   what it says and rerun, with the timer still stopped
+3. If workers are still running it stops and lists the sessions and PIDs: wait for them and rerun, or rerun with
+   `KILL_WORKERS=1` — it does what the daemon's reaper does: SIGTERM to each session's process group and to every leftover
+   process, up to 15 s grace, SIGKILL for whatever is left, close the sessions, then the same checks. A stopped item is
+   redispatched by self-heal after the restart, by then as ordinary work. **Never stop a worker while the daemon runs** —
+   it is treated as a crash and redispatched on its original trigger label, still with the autopilot rules
 4. Restart: `systemctl --user start cavil-loop-poll@<key>.timer`
 
 Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
@@ -691,33 +735,89 @@ still carrying it is back on autopilot** — remove them if that is not what you
 <!-- autopilot-ops:close -->
 ```bash
 # autopilot close (GitHub#124). Linux / systemd only. Stop the poll timer first, then:
-#   R=<owner/repo> CFG=<project config> UNIT=cavil-loop-poll@<key> PREFIX=<TMUX_PREFIX> bash close.sh
+#   CFG=<project config> UNIT=cavil-loop-poll@<key> bash close.sh
+#   CFG=... UNIT=... KILL_WORKERS=1 bash close.sh   # also stop this project's workers now
 # Only a last line of CLOSE_READY means it is safe to start the timer again. Any other
 # ending leaves the timer stopped. Every read is checked on its own: a failed read is STOP,
-# never "nothing there". Safe to run again.
+# never "nothing there". Safe to run again. Run it from outside the project's worktrees.
 set -o pipefail
-R=${R:?set R=<owner/repo>}
 CFG=${CFG:?set CFG=<path to the project config>}
 UNIT=${UNIT:?set UNIT=cavil-loop-poll@<key>}
-PREFIX=${PREFIX:?set PREFIX=<TMUX_PREFIX>}
-MERGE_LABEL=${MERGE_LABEL:-pending/merge}
-HUMAN_LABEL=${HUMAN_LABEL:-pending/human}
+GRACE=${KILL_GRACE:-15}
 die() { echo "STOP $*"; echo "(leave the timer stopped; fix this and run again)"; exit 1; }
+# 0) read the project's own settings the way the daemon does (clean env, subprocess, 10 s limit)
+[ -f "$CFG" ] && [ -r "$CFG" ] && [ -w "$CFG" ] || die "config missing or not read/writable: $CFG"
+vals=$(timeout 10 env -i HOME="$HOME" PATH="$PATH" bash -c '
+  . "$1" >/dev/null 2>&1 || exit 3
+  printf "%s\n" "${REPO:-}" "${TMUX_PREFIX:-}" "${WORKTREE_BASE:-}" "${LABEL_PENDING_MERGE:-pending/merge}" "${LABEL_PENDING_HUMAN:-}"
+' _ "$CFG" </dev/null 2>/dev/null) || die "loading $CFG failed (syntax error or timeout)"
+R=$(sed -n 1p <<<"$vals"); PREFIX=$(sed -n 2p <<<"$vals"); WT=$(sed -n 3p <<<"$vals")
+MERGE_LABEL=$(sed -n 4p <<<"$vals"); HUMAN_LABEL=$(sed -n 5p <<<"$vals")
+[ -n "$R" ] && [ -n "$PREFIX" ] && [ -n "$WT" ] && [ -n "$HUMAN_LABEL" ] \
+  || die "$CFG lacks REPO / TMUX_PREFIX / WORKTREE_BASE / LABEL_PENDING_HUMAN"
+WT=${WT%/}
+case "$PWD/" in "$WT"/*) die "run this from outside $WT (your own shell there looks like a worker)";; esac
 # 1) the daemon must be stopped: timer and current round both inactive / failed
 for u in "$UNIT.timer" "$UNIT.service"; do
   a=$(systemctl --user is-active "$u" 2>&1)
   [ "$a" = inactive ] || [ "$a" = failed ] || die "$u is not stopped (is-active said: $a)"
 done
-# 2) no session of this project may be left: only they can still hold autopilot rules
-out=$(tmux ls -F '#{session_name}' 2>&1); rc=$?
-if [ $rc -eq 0 ]; then
-  s=$(printf '%s\n' "$out" | awk -v p="$PREFIX-" 'index($0,p)==1' | tr '\n' ' ')
-  [ -z "$s" ] || die "sessions of this project still running: $s- wait for them (or tmux kill-session -t <name>) and run again"
-elif ! printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file'; then
-  die "cannot list tmux sessions: $out"
+# 2) no worker of this project may be left: only they can still hold autopilot rules.
+#    A worker is a tmux session named <TMUX_PREFIX>-… OR any of my processes whose working
+#    directory is under WORKTREE_BASE — killing a session does not end a process that ignores
+#    SIGHUP, so the session list alone proves nothing.
+sessions() {   # prints this project's session names; fails if tmux cannot be asked
+  local out rc
+  out=$(tmux ls -F '#{session_name}' 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then printf '%s\n' "$out" | awk -v p="$PREFIX-" 'index($0,p)==1'; return 0; fi
+  printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file' && return 0
+  echo "$out" >&2; return 1
+}
+# Which of my processes work under $1 (a worktree base)? Prints "W <pid>" for each, "S <pid> <name>"
+# for each one whose working directory cannot be read (setuid / setgid helpers such as sshd or
+# gpg-agent) and none of whose parents works there either; fails if a process cannot be judged.
+scan_procs() {
+  local d p c pp n hit bad=0
+  for d in /proc/[0-9]*; do
+    [ -O "$d" ] || continue
+    p=${d#/proc/}
+    if c=$(readlink "$d/cwd" 2>/dev/null); then
+      case "$c/" in "$1"/*) echo "W $p";; esac; continue
+    fi
+    [ -e "$d" ] || continue                                       # exited meanwhile
+    hit=0; n=0; pp=$p
+    while [ $n -lt 64 ]; do
+      pp=$(sed 's/.*) [A-Za-z] //; s/ .*//' "/proc/$pp/stat" 2>/dev/null) || { [ -e "$d" ] && bad=1; break; }
+      [ "$pp" -gt 1 ] 2>/dev/null || break
+      c=$(readlink "/proc/$pp/cwd" 2>/dev/null) && case "$c/" in "$1"/*) hit=1; break;; esac
+      n=$((n+1))
+    done
+    if [ $hit = 1 ]; then echo "W $p"; elif [ -e "$d" ]; then echo "S $p $(cat "$d/comm" 2>/dev/null)"; fi
+  done
+  return $bad
+}
+procs() {      # PIDs of my processes working under WT; fails if one cannot be judged
+  local out; out=$(scan_procs "$WT") || return 1
+  printf '%s\n' "$out" | awk '$1=="W"{print $2}'
+}
+if [ "${KILL_WORKERS:-}" = 1 ]; then
+  ss=$(sessions) || die "cannot list tmux sessions"
+  pids=""
+  for s in $ss; do pids="$pids $(tmux list-panes -t "=$s" -F '#{pane_pid}' 2>/dev/null)"; done
+  more=$(procs) || die "cannot judge every process under $WT"; pids="$pids $more"
+  for p in $pids; do kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; done   # whole process group, like the daemon's reaper
+  w=0; while [ $w -lt "$GRACE" ]; do more=$(procs 2>/dev/null); [ -z "$more" ] && break; sleep 1; w=$((w+1)); done
+  for p in $pids $more; do kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null; done
+  for s in $ss; do tmux kill-session -t "=$s" 2>/dev/null; done
+  sleep 1
 fi
-# 3) config: must be readable and writable; tell "has the line" / "has not" / "read failed" apart
-[ -f "$CFG" ] && [ -r "$CFG" ] && [ -w "$CFG" ] || die "config missing or not read/writable: $CFG"
+ss=$(sessions) || die "cannot list tmux sessions"
+[ -z "$ss" ] || die "sessions of this project still running: $(echo $ss) — wait for them, or rerun with KILL_WORKERS=1"
+left=$(procs) || die "cannot judge every process under $WT"
+skipped=$(scan_procs "$WT" 2>/dev/null | awk '$1=="S"{printf " %s(%s)", $3, $2}')
+[ -z "$skipped" ] || echo "note: not counted (working directory unreadable, no parent under $WT):$skipped"
+[ -z "$left" ] || die "processes still working under $WT (PIDs: $(echo $left)) — wait for them, or rerun with KILL_WORKERS=1"
+# 3) config: tell "has the line" / "has not" / "read failed" apart, then re-read
 has_line() { grep -q '^LABEL_AUTOPILOT=' "$CFG"; }   # 0 = has, 1 = has not, other = read failed
 has_line; rc=$?
 case $rc in
