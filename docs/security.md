@@ -120,6 +120,36 @@ With this feature on ([Hooking up an external requester bot](requester-bot.md)) 
 - **The webhook sends a request outside github.com** (GitHub#100; the daemon's price gap-fill fetch is another such request). It is made by the wake-up script / daemon to the URL the operator set in the local project config — the agent does not pick it, and neither workers nor issue / comment content can change it, so the worker prompts' "no data to non-github.com endpoints" rule still holds for the agent itself. The body is only `repo` / `number` / `kind` — no issue text. The key gets the same treatment as `WRITE_GH_TOKEN`: it lives in the mode-`600` project config (the call is skipped if the file is group- / world-accessible), never on a command line (fed to `curl --config -` via stdin), never in output or logs; redirects are not followed, so the key header cannot be carried to another host. As with the write token, a worker running as the same local user could read that file — this is not a wider boundary than before
 - Answers and attachments the bot pastes back are **untrusted data** like any comment; "approved" counts only on an explicit verbatim approval of the PR's current head commit
 
+## Autopilot label (optional)
+
+With `LABEL_AUTOPILOT` set ([operations](operations.md#autopilot-label-optional-off-by-default)) the daemon
+**merges PRs for the first time** — the one place it changes the base branch on its own. The
+boundary is drawn so that nothing a worker or a comment can do is enough:
+
+- **Authorization is a maintainer's act on the issue, read from GitHub's event log.** The label's
+  mere presence proves nothing (workers can edit labels). The daemon reads the issue's events and
+  requires that the **most recent** "added the autopilot label" event was performed by a `User`
+  account with `write` / `admin` on the repo, which is neither the loop's write account (the one
+  workers and the reviewer write with) nor the requester bot. A label added or re-added by those
+  accounts never counts; a label on the PR is ignored entirely. This only works if the loop writes
+  with an account the maintainer does not use themselves
+- **A PR inherits authorization only from the issue it is bound to**, and binding needs two
+  independent facts to agree: the branch is exactly `BRANCH_PREFIX<N>` in this repo, and the body
+  closes exactly `#N`. A stray `Closes #N` in another PR, a fork, or a suffixed branch borrows nothing
+- **Only the reviewed change is merged**: the head sha and target branch are recorded when the review
+  is dispatched and the sha is passed to the merge API; a later push or a retarget sends the PR back to
+  review
+- **Stop is always one action away**: remove the label or add `pending/human` on the issue or the
+  PR. Everything the decision relied on is re-read right before the merge call; any change, or
+  anything unreadable, means no merge this round
+- **Never merged automatically**: changes under `.github/` (Actions / repo automation), PRs from
+  forks, drafts, anything GitHub's own rules refuse (the daemon does not bypass branch protection),
+  and requests filed by the requester bot
+- **Limit, stated plainly**: the "tests were re-run" record in the reviewer's comment is written by
+  the same account as the worker; the daemon checks that it exists, names the reviewed commit, is
+  newer than the review dispatch and reports zero failures — it cannot prove the run happened.
+  Repositories with real CI get the objective check on top (every check on that commit must pass)
+
 ## Operational discipline (**the most important wall**)
 
 **Prompt hardening blocks 90%; the remaining 10% is on you**. Before adding `pending/agent`:

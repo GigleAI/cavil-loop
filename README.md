@@ -20,7 +20,7 @@ Three things you should know up front:
 
 - **Local, not cloud**: the AI worker is your local `claude` (or any other supported coding CLI) — your code never leaves your machine
 - **GitHub is the interface**: labels (`pending/agent` / `pending/human` / `doing/agent`) drive everything; no web UI to learn
-- **You stay in control**: every change goes through a PR review you sign off on; the tool never auto-merges
+- **You stay in control**: every change goes through a PR review you sign off on; the tool merges nothing on its own unless you hand a specific issue over with the autopilot label (off by default)
 
 ## Why use it
 
@@ -109,13 +109,14 @@ Two trigger scenarios:
 | **The prompt the AI reads** | The generic workflow ships with the skill; a project only writes its own delta (`<name>.extra.md`), appended after it. No need to fork the whole template — forking means never receiving upstream updates again | [operations](docs/operations.md) |
 | **Which AI CLI runs** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`, or write your own driver | [drivers](docs/drivers.md) |
 | **Orchestration: another AI checks before you do** | Set `LABEL_PENDING_REVIEW` to turn on the review gate: every PR round with code changes goes to another AI (codex by default) first; a fail bounces back to the coding AI with concrete feedback, at most `REVIEW_MAX_ROUNDS` rounds (default 3), and only a pass reaches you. If the two AIs cannot agree it stops and waits for you. Add `REVIEW_DESIGN_PROPOSALS=true` and design proposals are reviewed before they reach you too. Multi-role relays (PM → dev → QA) are wired up with labels as well | [operations](docs/operations.md#optional-cross-review-gate-off-by-default) · [collaboration](docs/collaboration.md) |
+| **Autopilot: hand an issue over end to end** | Set `LABEL_AUTOPILOT` (off by default; needs the review gate) and put that label on an issue: the design goes through the review gate only, and once the code review passes the daemon merges the PR itself — only the exact commit the reviewer saw, only if the label was put on the issue by a maintainer with write access, checks are green and nothing conflicts. Pull the label or add `pending/human` on the issue or the PR to stop it at any point | [operations](docs/operations.md#autopilot-label-optional-off-by-default) · [security](docs/security.md) |
 | **Hook up an external requester bot (e.g. grokbot)** | Let another AI assistant file issues directly: when there is a question for it or the work is done, the item gets a waiting label and its webhook is called; it also hears when the PR is merged or closed. Off by default | [integration guide](docs/requester-bot.md) · [Grok bot](https://x.ai/bot/JrLKauAqSRAqNQtIP9BJQ) |
 
 ## What it **doesn't** do
 
 - ❌ **Not a cloud service**: runs on your laptop / NAS. Machine off = it stops
 - ❌ **Doesn't replace code review**: the AI changes code and auto-pushes, review is still your job. Protect main + require reviewers
-- ❌ **Doesn't auto-merge**: merging / closing PRs is always your call
+- ❌ **Doesn't auto-merge on its own**: merging / closing PRs is your call — the only exception is an issue you explicitly put on autopilot (off by default, opt in per issue)
 
 ---
 

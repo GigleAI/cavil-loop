@@ -496,6 +496,75 @@ Design notes:
 
 Leave it empty to keep the previous behaviour exactly.
 
+## Autopilot label (optional, **off by default**)
+
+GitHub#114. Set `LABEL_AUTOPILOT` (e.g. `autopilot`) — together with `LABEL_PENDING_REVIEW`,
+which it requires — and a maintainer can hand one **issue** over end to end by putting that
+label on it. Nothing changes for issues without the label, and with `LABEL_AUTOPILOT` empty
+the prompts, the poller's GitHub calls and `state.json` are byte for byte what they were.
+
+```
+issue: autopilot ──> design ──> pending/review ──pass──> pending/agent ──> code + PR
+                                     │fail (revise)                              │
+                                     └───────────────────────────────────────────┘
+PR:  pending/review ──pass + test record──> pending/merge ──daemon checks──> merged
+                                                  │ checks fail / conflict ──> back to the worker
+                                                  └ anything else wrong ─────> pending/human
+```
+
+- **Starting it**: the autopilot label alone is enough — an issue carrying it and no state /
+  trigger label is dispatched as if it had `pending/agent`. It is a *mode* label, not a
+  trigger: it is never removed and stays visible on the board.
+- **Design**: still written and posted on the issue, multiple-choice questions use their
+  defaults, and it always goes to review (whatever `REVIEW_DESIGN_PROPOSALS` says). A passing
+  design review flips the issue back to `pending/agent` and the worker starts building.
+  Splitting into sub-issues is *not* covered: the worker hands that plan to a human.
+- **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead
+  of `pending/human`, and the reviewer adds a machine line with its test re-run to the
+  verdict comment: `<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`.
+- **The daemon merges** (`PUT /pulls/N/merge` with the reviewed sha, `AUTOPILOT_MERGE_METHOD`,
+  `squash` by default) only when every item below holds; it then comments "已自动合并" on the
+  issue and the usual post-merge cleanup / `Done` / retrospective take over:
+
+| Check | Fails → |
+|---|---|
+| The PR is from this repo, on branch `BRANCH_PREFIX<N>` exactly, and its body closes exactly `#N` (read per line and as a whole, both must agree) | `pending/human` |
+| On issue `#N`, the **most recent** "added the autopilot label" event was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT` | `pending/human` |
+| The issue is not a request filed by the requester bot | `pending/human` |
+| Nobody added `pending/human` to the issue or the PR, and the label is still on the issue | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
+| The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
+| The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |
+| No change under `.github/` | `pending/human` |
+| Every check run / commit status on that commit passed (none at all = rely on the record above) | failing → back to the worker; still running after `AUTOPILOT_CHECKS_TIMEOUT_HOURS` (6) → `pending/human` |
+| GitHub says mergeable (no conflict) | back to the worker |
+| Right before merging, the **same permit function runs again from fresh reads** — every row above, including the reviewer's test record (a comment can be edited or deleted) and the checks (red, re-running, or newly appeared); both runs must say "merge" for the same issue / commit / target | skip this round, record nothing |
+
+- **Can't read something** (events, permissions, checks, files, comments): nothing is
+  written this round; after `AUTOPILOT_UNKNOWN_MAX` (10) rounds in a row it goes to a human.
+  "Can't read" is never treated as "authorized", "passed" or "no conflict".
+- **Bounces back to the worker** are counted per PR and capped at `REVIEW_MAX_ROUNDS`.
+- **Stopping it**: remove the label from the issue, or add `pending/human` to the issue or
+  the PR. The re-read right before merging catches a stop that lands between the checks and
+  the merge.
+- **The window that is left** is between that last read and the merge request reaching GitHub.
+  The merge request carries the reviewed sha, so a push in that window is refused by GitHub; a
+  check that flips in that window is not. For a server-side guarantee on checks, mark them as
+  required on the target branch (branch protection) — the daemon never bypasses it.
+- **What GitHub refuses** (branch protection requiring approvals, merge method disabled)
+  goes to a human — the daemon never works around repository rules.
+- **Multi-host**: only the machine that dispatched the review holds the reviewed commit, so
+  with `SELFHEAL_ONLY_OWN_WORKERS=true` the other machine leaves the PR alone.
+- **Two accounts**: the loop's write account and the maintainer must differ, otherwise no
+  label can count as the maintainer's (workers and the reviewer write as that account).
+- **This repo deploys itself**: on `GigleAI/cavil-loop`, a merged `main` is activated on the
+  daemon within minutes, so an autopilot merge here changes the running daemon with nobody in
+  between. Turning it on here is a deliberate choice; merging the feature does not.
+
+State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
+unreadable rounds, check-wait start; `notices` / `denied`: one-time comments and rejected
+issues by their `updated_at`). Like `requester_bot_done_queue` it is not in the migration loop
+and only appears once the feature does something.
+
 ## External requester bot (optional, **off by default**)
 
 When another AI assistant with its own GitHub account files requests directly, the agent's

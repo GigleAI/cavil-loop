@@ -138,6 +138,10 @@ Some projects let another AI assistant file requests directly (the "requester bo
 
 Integration steps, what the bot has to do on its side, settings, the wake-up script, the webhook format and troubleshooting are in a separate guide: [Hooking up an external requester bot](requester-bot.md).
 
+## Autopilot: one issue end to end
+
+With `LABEL_AUTOPILOT` configured (off by default, needs the review gate), a maintainer can hand a single issue over completely: the design goes through review only and, once the code review passes, the daemon merges the PR itself under fixed checks. The label is a *mode* label on the issue, not another dispatch label, so it coexists with the routing above (host labels, fable, review). Details and the merge conditions: [operations](operations.md#autopilot-label-optional-off-by-default).
+
 ## Practical considerations
 
 - **Naming convention**: keep `<state>` consistent (`pending`, `agent`, `Done`); role goes after the third `/`. Avoid mixing styles like `pending/PM` vs `pending/agent/PM` in the same repo

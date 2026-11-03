@@ -398,6 +398,22 @@ dispatch_failed() {
     dispatch_fail_reset "$key"
 }
 
+# 这次派工是不是托管条目（GitHub#114）：设 AP_FLAG / AP_ISSUE 给 dispatch 脚本（拼托管规则段用）。
+# 托管关闭时两个都是空串，autopilot_for_item 第一行就返回，不碰 GitHub。
+# 派复审到 PR 时顺带记下复审的提交：daemon 只合这一个提交。
+AP_FLAG=""; AP_ISSUE=""
+autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
+    AP_FLAG=""; AP_ISSUE=""
+    if autopilot_for_item "$STATE_FILE" "$1" "$2"; then
+        AP_FLAG=1; AP_ISSUE="$AUTOPILOT_ISSUE"
+        log "托管：$1 #$2 是托管条目（授权在 issue #$AP_ISSUE，$AUTOPILOT_ACTOR 打的），拼入托管规则"
+        if [ "$1" = pr ] && [ "$3" = review ]; then
+            autopilot_remember_review "$STATE_FILE" "$2" || true
+        fi
+    fi
+    return 0
+}
+
 dispatch_one_issue() {
     local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local sess wt latest_id tmp
@@ -420,11 +436,12 @@ dispatch_one_issue() {
             return 0
         fi
         log "dispatch issue-comment for #$num (agent=${worker_agent:-default}, model=${model:-default})"
+        autopilot_dispatch_flags issue "$num" "$prompt_kind"
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
         d_rc=0
-        d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
         if [ "$d_rc" = 0 ]; then
@@ -443,11 +460,12 @@ dispatch_one_issue() {
         return 0
     fi
     log "dispatch new issue #$num: $title (agent=${worker_agent:-default}, model=${model:-default})"
+    autopilot_dispatch_flags issue "$num" "$prompt_kind"
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
     d_rc=0
-    d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     if [ "$d_rc" = 0 ]; then
@@ -499,11 +517,12 @@ dispatch_one_pr() {
     log "dispatch PR #$prnum comment (agent=${worker_agent:-default}, model=${model:-default})"
     # 透传最大的 ID 给 dispatch（仅用于 prompt 文件命名去重，不参与语义）
     kick_id=$(printf '%s\n%s\n%s\n' "$latest_conv" "$latest_inline" "$latest_review" | sort -rn | head -1)
+    autopilot_dispatch_flags pr "$prnum" "$prompt_kind"
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
     d_rc=0
-    d_out=$(DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     if [ "$d_rc" = 0 ]; then
@@ -570,6 +589,59 @@ if [ -n "${LABEL_PENDING_AGENT_EXTRA:-}" ]; then
         collect_queue_rows pr    "$_extra_label" "$WORKER_MODEL" "" ""
     done < <(printf '%s\n' "$LABEL_PENDING_AGENT_EXTRA" | tr ',' '\n')
 fi
+# 托管（GitHub#114）：只挂托管标签、没有任何状态 / 触发标签的 issue，当作普通派工标签收进来。
+# 挂着别的标签的托管 issue 已经在某个流程里（上面几趟或复审那趟会收，或在等人 / 等 PR），不在这里收。
+# 授权不成立（标签不是维护者打的、外部需求机器人的需求）不派：只打托管标签不等于有人说了开工。
+# 被拒的结果按 issue 的更新时间记下，issue 没动过就不再每轮去查标签记录。
+collect_autopilot_rows() {
+    autopilot_configured || return 0
+    local raw num branch updated labels_csv title key ij rc prio stage
+    raw=$(snapshot_rows issue "$LABEL_AUTOPILOT" 2>/dev/null || true)
+    [ -n "$raw" ] || return 0
+    while IFS=$'\t' read -r num branch updated labels_csv title; do
+        [ -n "$num" ] || continue
+        key="issue:$num"
+        [ -z "${queued_keys[$key]:-}" ] || continue
+        autopilot_labels_in_flow "$labels_csv" && continue
+        if ! autopilot_enabled; then
+            # 托管需要复审关卡把关；没配就不托管，说一次、交人
+            if autopilot_notice_once "$STATE_FILE" "$num" no-review-gate "⚠️ **托管标签 \`$LABEL_AUTOPILOT\` 不生效：本项目没有开复审关卡**
+
+托管靠独立复审把关、通过后自动合并；本项目没配复审标签，就没人把关，所以不托管。已转人工（\`$LABEL_PENDING_HUMAN\`）。要开工请打 \`$LABEL_PENDING_AGENT_DEFAULT\` 走普通流程。"; then
+                run_gh "label 翻转 (托管 issue #$num 没有复审关卡 → $LABEL_PENDING_HUMAN)" \
+                    gh_label_flip "$num" --add "$LABEL_PENDING_HUMAN" || true
+                pace_mark_acted
+            fi
+            continue
+        fi
+        if [ "$(autopilot_state_get "$STATE_FILE" '.denied[$n]' --arg n "$num")" = "$updated" ]; then
+            continue
+        fi
+        ij=$(autopilot_snapshot_item issues "$num") || continue
+        [ -n "$ij" ] || continue
+        rc=0; autopilot_authorization "$num" "$ij" || rc=$?
+        case "$rc" in
+            0)
+                queued_keys[$key]=1
+                prio=$(priority_rank "$labels_csv" "$num")
+                stage=$(stage_rank issue "$LABEL_PENDING_AGENT_DEFAULT" "$num")
+                log "托管：issue #$num 只挂着托管标签（$AUTOPILOT_ACTOR 打的）→ 当作 $LABEL_PENDING_AGENT_DEFAULT 派工"
+                QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}issue${US}${num}${US}-${US}${LABEL_PENDING_AGENT_DEFAULT}${US}${WORKER_MODEL}${US}${US}${US}${title}"$'\n'
+                ;;
+            1)
+                log "托管：issue #$num 只挂着托管标签，但授权不成立（$AUTOPILOT_REASON）→ 不派工"
+                autopilot_note_denial "$STATE_FILE" "$num"
+                autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$updated" || true
+                ;;
+            *)
+                log "托管：issue #$num 的托管授权判不了（$AUTOPILOT_REASON），下轮再看"
+                ;;
+        esac
+    done <<< "$raw"
+}
+collect_autopilot_rows
+if [ "$AUTOPILOT_ACTED" = 1 ]; then pace_mark_acted; fi
+
 # 交叉 review 关卡：用另一个 agent（默认 codex）+ review 专用模板。留空则整段跳过。
 if [ -n "${LABEL_PENDING_REVIEW:-}" ]; then
     collect_queue_rows issue "$LABEL_PENDING_REVIEW" "$REVIEW_MODEL" "$REVIEW_WORKER_AGENT" "review"
@@ -610,6 +682,12 @@ if [ -n "$QUEUE_SORTED" ]; then
         fi
     done < <(printf '%s\n' "$QUEUE_SORTED")
 fi
+
+# ── 2b. 托管自动合并（GitHub#114）──
+# 放在派工之后、合并清理之前：这一轮合进去的 PR，这一轮的清理就能收尾（Done 标签、worktree）。
+# 条件与「为什么这样判」都在 _lib.sh 的 autopilot_merge_one 上面。托管关闭时直接返回。
+autopilot_merge_tick "$STATE_FILE" || true
+if [ "$AUTOPILOT_ACTED" = 1 ]; then pace_mark_acted; fi
 
 # ── 3. 自动 cleanup merged PRs ──
 # 配 AUTO_CLEANUP_ON_MERGE=false 可关闭整段
@@ -659,7 +737,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 run_gh "auto-cleanup label PR #$prnum → Done" \
                     gh_label_flip "$prnum" \
                     --add "$LABEL_DONE" \
-                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_AGENT_DOING" || true
+                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_PENDING_MERGE" "$LABEL_AGENT_DOING" || true
 
                 # Issue：看实际状态决定怎么标（merged_issue_label：CLOSED → Done；OPEN → pending/human；
                 # 状态读不到 → 一个标签都不写，进 merged_label_queue 下轮再判，#43 review）。

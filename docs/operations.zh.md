@@ -422,6 +422,61 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 留空 = 完全关闭，行为与从前一致。
 
+## 托管标签（可选，**默认关闭**）
+
+GitHub#114。配 `LABEL_AUTOPILOT`（例如 `autopilot`），并且开着复审关卡 `LABEL_PENDING_REVIEW`
+（必需），维护者就能给某个 **issue** 打上这个标签，把它从头交到尾。没打标签的 issue 一切照旧；
+`LABEL_AUTOPILOT` 留空时，提示词、轮询的 GitHub 调用和 `state.json` 与以前逐字节一样。
+
+```
+issue：autopilot ──> 写方案 ──> pending/review ──通过──> pending/agent ──> 写代码 + 开 PR
+                                     │不通过（改方案）                               │
+                                     └───────────────────────────────────────────────┘
+PR：  pending/review ──通过 + 测试记录──> pending/merge ──daemon 检查──> 合并
+                                               │ 检查没过 / 冲突 ──> 交回 worker
+                                               └ 其他不对 ────────> pending/human
+```
+
+- **开工**：只打托管标签就行——挂着它、没有任何状态 / 触发标签的 issue，当作打了 `pending/agent`
+  派工。它是「模式标签」不是触发标签：daemon 从不摘它，看板上一直看得见。
+- **方案**：照常写、照常发到 issue，选择题按默认项，一律送复审（不管 `REVIEW_DESIGN_PROPOSALS`）。
+  方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。拆成子 issue **不在托管范围**：
+  worker 把拆分计划交人。
+- **代码**：复审通过时 PR 翻 `LABEL_PENDING_MERGE`（`pending/merge`）而不是 `pending/human`，
+  并在结论评论里留一行测试重跑的机器记录：`<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`。
+- **daemon 合并**（`PUT /pulls/N/merge`，带复审时的提交号，方式 `AUTOPILOT_MERGE_METHOD`，默认 `squash`）
+  只在下表全部成立时进行；合并后在 issue 上留「已自动合并」评论，之后的清理 / `Done` / 复盘照常：
+
+| 检查 | 不成立 → |
+|---|---|
+| PR 来自本仓库、分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`（逐行和整段两种读法一致） | `pending/human` |
+| issue `#N` 上**最近一次**「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT` | `pending/human` |
+| 这条 issue 不是外部需求机器人提的需求 | `pending/human` |
+| issue 和 PR 都没被打 `pending/human`，issue 上托管标签还在 | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
+| PR 最新提交**和目标分支**都是派复审时记下的那一对（同一提交改投别的分支 = 另一份改动；旧版没记目标分支的记录算缺） | 回 `pending/review` 重审 |
+| 复审的结论评论（写入账号、派复审之后发的）里有这个提交的测试记录，`failed=0`、`passed>0` | `pending/human` |
+| 没改 `.github/` | `pending/human` |
+| 这个提交上的检查（check run / commit status）全部通过（一个都没有 = 只靠上一条记录） | 没过 → 交回 worker；超过 `AUTOPILOT_CHECKS_TIMEOUT_HOURS`（6）还没跑完 → `pending/human` |
+| GitHub 判定可合并（无冲突） | 交回 worker |
+| 合并前最后一刻，**同一个许可判断用现读的数据原样再跑一遍**——上面每一行都在内，包括复审的测试记录（评论可以被编辑、删除）和自动检查（变红、重跑中、原本没有又冒出来）；两次都判「可以合」、且是同一个 issue / 提交 / 目标分支才合 | 本轮不合、不记任何状态 |
+
+- **读不到**（标签记录、权限、检查、文件、评论）：本轮不写任何东西；连续 `AUTOPILOT_UNKNOWN_MAX`（10）
+  轮读不到才交人。「读不到」绝不当成「有授权」「通过」「无冲突」。
+- **交回 worker** 按 PR 计次，上限沿用 `REVIEW_MAX_ROUNDS`。
+- **叫停**：摘掉 issue 上的托管标签，或在 issue / PR 上打 `pending/human`。检查之后、合并之前的叫停由
+  合并前的重读拦住。
+- **剩下的窗口**只在「最后这次读」到「合并请求到达 GitHub」之间。合并请求带着复审的提交号，这段时间的新推送
+  GitHub 会拒；这段时间检查变红则拦不住。要服务端兜底，把这些检查设成目标分支的「必须通过」（分支保护），daemon 不绕它。
+- **GitHub 拒绝的**（分支保护要求人工批准、合并方式没开）交人——daemon 不绕仓库规则。
+- **多机**：复审的提交号只记在派复审的那台机器上，`SELFHEAL_ONLY_OWN_WORKERS=true` 时另一台不碰这个 PR。
+- **两个账号**：loop 的写入账号和维护者必须是两个账号，否则任何标签都算不上维护者打的（worker 和复审都用写入账号写 GitHub）。
+- **本仓库会部署自己**：`GigleAI/cavil-loop` 的 `main` 合并后几分钟内就在 daemon 上生效，在这里开托管意味着
+  自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
+
+状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间；
+`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue）。和 `requester_bot_done_queue` 一样
+不进迁移循环，功能真做了事才出现。
+
 ## 外部需求机器人（可选，**默认关闭**）
 
 另一个 AI 助手（有自己的 GitHub 账号）直接给项目提需求时，agent 提问 / 汇报不翻 `pending/human`，

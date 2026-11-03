@@ -156,6 +156,10 @@ Wake-up script exit codes: [Reference → The wake-up script](#the-wake-up-scrip
 - **Stop only the webhook, keep the waiting label**: clear `REQUESTER_BOT_WEBHOOK_URL`
 - **Turn it all off**: clear these settings and remove the waiting label by hand from any item still carrying it. With them cleared, dispatching, prompts and post-merge handling are as if it had never been on
 
+## Autopilot label does not apply
+
+If the project also uses the autopilot label (GitHub#114), it **never** applies to requests filed by the bot: those need the requester's confirmation, which the daemon cannot judge. Such an issue gets one comment saying so and is handled the normal way (confirmations go to the requester, a maintainer merges); the daemon also refuses to auto-merge a PR bound to it. See [operations](operations.md#autopilot-label-optional-off-by-default).
+
 ## Reference
 
 ### Config

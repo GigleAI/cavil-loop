@@ -12,6 +12,8 @@
 | `pending/PR` | worker（开 PR 时） | issue 工作已转 PR 跟踪；去看 PR |
 | `Done` | daemon（auto-cleanup） | **只标 PR**（PR merged = 真闭环）；**不标 issue**（issue 是长期 tracker，关闭权交给你） |
 
+可选的另外几个：`pending/review`（复审关卡，见 [operations](operations.zh.md#交叉-review-关卡可选默认关闭)）；配了托管标签（GitHub#114）时，PR 上的 `pending/merge` = 「复审已通过，等 daemon 检查后合并」，以及 issue 上的托管「模式标签」本身（daemon 从不摘它）——见 [operations](operations.zh.md#托管标签可选默认关闭)。
+
 ### 关于 PR↔Issue 闭环关系：worker 在设计阶段就决定
 
 | 场景 | PR body 用 | merge 时 issue 状态 | daemon auto-cleanup |
