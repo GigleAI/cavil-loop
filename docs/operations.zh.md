@@ -468,7 +468,8 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 - **剩下的窗口**只在「最后这次读」到「合并请求到达 GitHub」之间。合并请求带着复审的提交号，这段时间的新推送
   GitHub 会拒；这段时间检查变红则拦不住。要服务端兜底，把这些检查设成目标分支的「必须通过」（分支保护），daemon 不绕它。
 - **GitHub 拒绝的**（分支保护要求人工批准、合并方式没开）交人——daemon 不绕仓库规则。
-- **多机**：复审的提交号只记在派复审的那台机器上，`SELFHEAL_ONLY_OWN_WORKERS=true` 时另一台不碰这个 PR。
+- **多机**：复审的提交号只记在派复审的那台机器上，`SELFHEAL_ONLY_OWN_WORKERS=true` 时另一台的**合并那一步**不碰这个 PR；
+  但普通派工和复审不看归属，所以托管的仓库只该有一台机器在轮询（见下面「只在一台机器上跑这个仓库的轮询」）。
 - **两个账号**：loop 的写入账号和维护者必须是两个账号，否则任何标签都算不上维护者打的（worker 和复审都用写入账号写 GitHub）。
 - **本仓库会部署自己**：`GigleAI/cavil-loop` 的 `main` 合并后几分钟内就在 daemon 上生效，在这里开托管意味着
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
@@ -476,6 +477,186 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间；
 `notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
+
+### 只在一台机器上跑这个仓库的轮询
+
+开托管前，确认**只有一台机器**在跑这个仓库的轮询。另一台只要还在跑，**不管它开没开托管**都可能领走托管条目的
+复审和派工（普通派工不看托管开关，也不看活是哪台派的；只有合并那一步看归属）：它派的复审不带托管规则，
+设计通过会交人、代码通过不会进自动合并，闭环就断了；它若也开着托管、又没开 `SELFHEAL_ONLY_OWN_WORKERS`，还会把
+别家复审过的 PR 送回重审。
+
+在**每台别的机器**上跑下面这段（`REPO=<仓库> bash host-check.sh`）。它按 daemon 自己的读法载入安装登记和项目配置
+（干净环境、子进程、限时 10 秒、输出丢弃），读出 daemon 实际会用的仓库名和会话前缀——引号写法、重复赋值、变量拼写都
+和 daemon 一致；确定是这个仓库后再看定时任务停没停、开机会不会自启、还有没有会话。任何一样读不到都判 `UNKNOWN`。
+
+| 最后一行 | 怎么做 |
+|---|---|
+| `HOST_VERDICT=STOPPED` | 那台不跑这个仓库，可以继续 |
+| `HOST_VERDICT=RUNNING` | **先**停调度、**再**等会话跑完（不留「看着空闲、停之前又派出去」的空档）：Linux `systemctl --user disable --now cavil-loop-poll@<实例名>.timer`（改名前装的是 `coding-agent-poll@<实例名>.timer`）；macOS `launchctl bootout gui/$UID/dev.luosky.cavil-loop.<实例名>`。等它的会话自己结束——**不要杀**：别的机器不接手它派的活，杀了就卡在 `doing/agent`。重跑直到 `STOPPED` |
+| `HOST_VERDICT=UNKNOWN` | 查不清，**不要开托管** |
+
+它只认安装脚本装出来的轮询；用别的方式（自己写的定时任务等）跑过这个仓库的机器，同样按「查不清」处理。
+
+<!-- autopilot-ops:host-check -->
+```bash
+# autopilot host check (GitHub#124). Run on every OTHER machine before turning autopilot on:
+#   REPO=<owner/repo> bash host-check.sh
+# Finds every poller instance installed on this machine for REPO and judges each one
+# STOPPED / RUNNING / UNKNOWN. Only a last line of HOST_VERDICT=STOPPED means "this machine
+# does not poll REPO". Anything it cannot read counts as UNKNOWN, never as "not installed".
+REPO=${REPO:?set REPO=<owner/repo>}
+verdict=STOPPED
+bad() { echo "$1 $2"; case "$1" in UNKNOWN) verdict=UNKNOWN;; RUNNING) [ "$verdict" = UNKNOWN ] || verdict=RUNNING;; esac; }
+found=0
+for d in "$HOME/.config/cavil-loop" "$HOME/.config/coding-agent-work-loop"; do
+  [ -e "$d" ] || continue
+  [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || bad UNKNOWN "cannot read registry dir $d"
+done
+# Read an instance's repo and session prefix the way its daemon does: load the registry
+# env file, then source the project config. Clean env, subprocess, 10 s limit, output dropped.
+if command -v timeout >/dev/null 2>&1; then lim() { timeout 10 "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then lim() { gtimeout 10 "$@"; }
+else lim() { perl -e 'alarm 10; exec @ARGV or exit 127' "$@"; }   # macOS has perl, not timeout
+fi
+load_instance() {   # <registry file>  -> prints "repo\nprefix"
+  lim env -i HOME="$HOME" PATH="$PATH" bash -c '
+    set -a; . "$1" >/dev/null 2>&1 || exit 3; set +a
+    [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -r "$CODING_AGENT_CONFIG" ] || exit 4
+    . "$CODING_AGENT_CONFIG" >/dev/null 2>&1 || exit 5
+    printf "%s\n%s\n" "${REPO:-}" "${TMUX_PREFIX:-}"
+  ' _ "$1" </dev/null 2>/dev/null
+}
+want=$(printf '%s' "$REPO" | tr 'A-Z' 'a-z')
+for f in "$HOME"/.config/cavil-loop/*.conf "$HOME"/.config/coding-agent-work-loop/*.conf; do
+  [ -e "$f" ] || continue
+  key=$(basename "$f" .conf)
+  if ! got=$(load_instance "$f"); then bad UNKNOWN "instance $key: loading its config failed (unreadable, syntax error or timeout)"; continue; fi
+  repo=$(printf '%s\n' "$got" | sed -n 1p); prefix=$(printf '%s\n' "$got" | sed -n 2p)
+  [ -n "$repo" ] || { bad UNKNOWN "instance $key: no REPO after loading its config"; continue; }
+  [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$want" ] || continue   # definitely another repo
+  found=$((found+1))
+  [ -n "$prefix" ] || { bad UNKNOWN "instance $key: no TMUX_PREFIX after loading its config"; continue; }
+  # 1) scheduler: running or enabled at boot = RUNNING; unreadable or unknown words = UNKNOWN
+  if command -v systemctl >/dev/null 2>&1; then
+    for u in "cavil-loop-poll@$key.timer" "cavil-loop-poll@$key.service" "coding-agent-poll@$key.timer" "coding-agent-poll@$key.service"; do
+      if ! out=$(systemctl --user show -p LoadState,ActiveState,UnitFileState "$u" 2>&1); then bad UNKNOWN "instance $key: cannot query $u ($out)"; continue; fi
+      ld=$(printf '%s\n' "$out" | sed -n 's/^LoadState=//p'); ac=$(printf '%s\n' "$out" | sed -n 's/^ActiveState=//p'); uf=$(printf '%s\n' "$out" | sed -n 's/^UnitFileState=//p')
+      case "$ld" in not-found) continue;; loaded|masked) ;; *) bad UNKNOWN "instance $key: $u LoadState=$ld"; continue;; esac
+      case "$ac" in inactive|failed) ;; active|activating|deactivating|reloading) bad RUNNING "instance $key: $u is running ($ac)";; *) bad UNKNOWN "instance $key: $u ActiveState=$ac";; esac
+      case "$u" in *.timer)
+        case "$uf" in disabled|masked) ;; enabled|enabled-runtime|linked|linked-runtime|static|indirect|generated|alias) bad RUNNING "instance $key: $u still starts at boot ($uf)";; *) bad UNKNOWN "instance $key: $u UnitFileState=$uf";; esac;;
+      esac
+    done
+  elif command -v launchctl >/dev/null 2>&1; then
+    for lb in "dev.luosky.cavil-loop.$key" "dev.luosky.coding-agent-work-loop.$key"; do
+      out=$(launchctl print "gui/$(id -u)/$lb" 2>&1); rc=$?
+      if [ $rc -eq 0 ]; then bad RUNNING "instance $key: launchd still has $lb loaded"
+      elif printf '%s' "$out" | grep -qi 'could not find service'; then :
+      else bad UNKNOWN "instance $key: cannot query $lb ($out)"; fi
+    done
+  else
+    bad UNKNOWN "instance $key: neither systemctl nor launchctl found"
+  fi
+  # 2) sessions still running for this instance
+  out=$(tmux ls -F '#{session_name}' 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then
+    s=$(printf '%s\n' "$out" | awk -v p="$prefix-" 'index($0,p)==1' | tr '\n' ' ')
+    [ -z "$s" ] || bad RUNNING "instance $key: sessions still running: $s"
+  elif printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file'; then :
+  else bad UNKNOWN "instance $key: cannot list tmux sessions ($out)"; fi
+  echo "instance $key (session prefix $prefix) checked"
+done
+echo "instances=$found"
+echo "HOST_VERDICT=$verdict"
+```
+
+### 怎么整体关闭托管
+
+删掉配置里的 `LABEL_AUTOPILOT` 只管以后：已经开工的会话手里还拿着托管规则，挂着 `LABEL_PENDING_MERGE` 的 PR
+在配置关掉后再也没人合、也没人交人。关闭只保证「从此不再自动合并任何东西」：排队中、被中断的活**不清空**，daemon
+重开后照普通流程走完、交人；已完成的合并不撤回。
+
+全程在 daemon **停着**时做——停着时它不派活、不改标签、不把死掉的会话拉起来，核对完不会再变：
+
+1. 停定时任务：`systemctl --user stop cavil-loop-poll@<实例名>.timer`
+2. 等这个项目的会话全部结束（`tmux ls` 里没有 `<TMUX_PREFIX>-` 开头的）。等不及可以 `tmux kill-session`；被杀的活
+   在 daemon 重开后会被自愈重派，那时配置已关，它就是一条普通活。**不要在 daemon 还开着时单独杀会话**——它会被当成
+   意外死亡，按原触发标签重派，手里还是托管规则
+3. 跑下面这段（`R=<仓库> CFG=<项目配置> UNIT=cavil-loop-poll@<实例名> PREFIX=<TMUX_PREFIX> bash close.sh`，
+   仅 Linux）。它核对 daemon 停了、会话一个不剩，确认读得到配置并删掉 `LABEL_AUTOPILOT` 那一行，把所有挂等合并标签的
+   开着的 PR 改成 `pending/human`（读全部开着的 PR，不靠名单），最后回读确认。任何一次读取失败都打印 `STOP …`、
+   退出码 1。只有最后一行是 `CLOSE_READY` 才往下走；否则按提示处理后重跑，定时任务保持停着
+4. 重开：`systemctl --user start cavil-loop-poll@<实例名>.timer`
+
+issue 上残留的托管标签在配置关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，不想这样就摘掉。
+
+<!-- autopilot-ops:close -->
+```bash
+# autopilot close (GitHub#124). Linux / systemd only. Stop the poll timer first, then:
+#   R=<owner/repo> CFG=<project config> UNIT=cavil-loop-poll@<key> PREFIX=<TMUX_PREFIX> bash close.sh
+# Only a last line of CLOSE_READY means it is safe to start the timer again. Any other
+# ending leaves the timer stopped. Every read is checked on its own: a failed read is STOP,
+# never "nothing there". Safe to run again.
+set -o pipefail
+R=${R:?set R=<owner/repo>}
+CFG=${CFG:?set CFG=<path to the project config>}
+UNIT=${UNIT:?set UNIT=cavil-loop-poll@<key>}
+PREFIX=${PREFIX:?set PREFIX=<TMUX_PREFIX>}
+MERGE_LABEL=${MERGE_LABEL:-pending/merge}
+HUMAN_LABEL=${HUMAN_LABEL:-pending/human}
+die() { echo "STOP $*"; echo "(leave the timer stopped; fix this and run again)"; exit 1; }
+# 1) the daemon must be stopped: timer and current round both inactive / failed
+for u in "$UNIT.timer" "$UNIT.service"; do
+  a=$(systemctl --user is-active "$u" 2>&1)
+  [ "$a" = inactive ] || [ "$a" = failed ] || die "$u is not stopped (is-active said: $a)"
+done
+# 2) no session of this project may be left: only they can still hold autopilot rules
+out=$(tmux ls -F '#{session_name}' 2>&1); rc=$?
+if [ $rc -eq 0 ]; then
+  s=$(printf '%s\n' "$out" | awk -v p="$PREFIX-" 'index($0,p)==1' | tr '\n' ' ')
+  [ -z "$s" ] || die "sessions of this project still running: $s- wait for them (or tmux kill-session -t <name>) and run again"
+elif ! printf '%s' "$out" | grep -Eq 'no server running|error connecting to .*No such file'; then
+  die "cannot list tmux sessions: $out"
+fi
+# 3) config: must be readable and writable; tell "has the line" / "has not" / "read failed" apart
+[ -f "$CFG" ] && [ -r "$CFG" ] && [ -w "$CFG" ] || die "config missing or not read/writable: $CFG"
+has_line() { grep -q '^LABEL_AUTOPILOT=' "$CFG"; }   # 0 = has, 1 = has not, other = read failed
+has_line; rc=$?
+case $rc in
+  0) sed -i '/^LABEL_AUTOPILOT=/d' "$CFG" || die "cannot edit $CFG" ;;
+  1) ;;
+  *) die "cannot read $CFG (grep exit $rc)" ;;
+esac
+has_line; rc=$?
+[ $rc -eq 1 ] || die "re-read of $CFG: LABEL_AUTOPILOT still there or read failed (grep exit $rc)"
+# 4) every open PR still waiting for the autopilot merge goes to a human (with autopilot off
+#    nobody merges it). Fetch the whole list first and check the exit code before any text
+#    processing; a page failing midway makes gh exit non-zero too.
+list_merge() {
+  local raw
+  raw=$(gh api --paginate "repos/$R/pulls?state=open&per_page=100" \
+        --jq ".[] | select(any(.labels[]; .name==\"$MERGE_LABEL\")) | .number") || return 1
+  printf '%s\n' "$raw" | tr '\n' ' '
+}
+enc=$(printf '%s' "$MERGE_LABEL" | jq -sRr @uri) || die "cannot encode label name"
+prs=$(list_merge) || die "cannot read the full list of open PRs"
+for P in $prs; do
+  gh api -X POST "repos/$R/issues/$P/labels" -f "labels[]=$HUMAN_LABEL" >/dev/null || die "PR #$P: adding $HUMAN_LABEL failed"
+  gh api -X DELETE "repos/$R/issues/$P/labels/$enc" >/dev/null 2>&1   # judged by the re-read below
+  echo "PR #$P -> $HUMAN_LABEL"
+done
+left=$(list_merge) || die "re-reading the open PR list failed"
+[ -z "${left// /}" ] || die "these PRs still carry $MERGE_LABEL: $left"
+for P in $prs; do
+  l=$(gh api "repos/$R/issues/$P" --jq '[.labels[].name]|join(",")') || die "re-reading PR #$P failed"
+  case ",$l," in *",$HUMAN_LABEL,"*) ;; *) die "PR #$P re-read has no $HUMAN_LABEL (now: $l)";; esac
+done
+echo "handed to a human: ${prs:-none}"
+echo "CLOSE_READY"
+```
+
+两段脚本由 `tests/autopilot-ops.test.sh` 从本文和英文版里原样取出，用假的 `gh` / `systemctl` / `tmux` 跑全部场景，
+并核对中英两份逐字一致——改脚本要两份一起改。
 
 ## 外部需求机器人（可选，**默认关闭**）
 
