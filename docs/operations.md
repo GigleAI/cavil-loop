@@ -703,7 +703,7 @@ echo "HOST_VERDICT=$verdict"
 
 ### Turning autopilot off
 
-Removing `LABEL_AUTOPILOT` from the config only affects what comes next: sessions already running still hold the
+Switching `LABEL_AUTOPILOT` off in the config only affects what comes next: sessions already running still hold the
 autopilot rules, and a PR on `LABEL_PENDING_MERGE` is neither merged nor handed to anyone once the switch is off. Turning
 it off only guarantees "nothing is auto-merged from now on": queued and interrupted work is **not** cleared — it finishes
 the normal way after the daemon restarts and ends with a human — and completed merges are not undone.
@@ -713,13 +713,16 @@ nothing changes after the checks:
 
 1. Stop the timer: `systemctl --user stop cavil-loop-poll@<key>.timer`
 2. Run the script below (`CFG=<project config> UNIT=cavil-loop-poll@<key> bash close.sh`, Linux only, **from outside
-   the worktrees**). Repo, session prefix, worktree directory and both label names are read from the project config the
-   way the daemon reads it. It checks: the daemon is stopped; no worker of the project is left — sessions *and* processes
+   the worktrees**). Repo, session prefix, worktree directory and both label names are read the way the daemon reads
+   them: this instance's registry first, then the project config — and the registry must point at `CFG`, otherwise it
+   stops (turning off the wrong file turns off nothing). It checks: the daemon is stopped; no worker of the project is left — sessions *and* processes
    whose working directory is under `WORKTREE_BASE` (**closing a tmux session does not end a worker**: a process that
    ignores SIGHUP lives on without its session, still holding the autopilot rules; a process whose working directory
    cannot be read — sshd, gpg-agent and the like — counts only if one of its parents is under the worktrees, the rest are
-   listed on a `note:` line); then it removes the `LABEL_AUTOPILOT`
-   line, moves every open PR on the merge label to `pending/human` (reading all open PRs, not a list) and re-reads to
+   listed on a `note:` line); then it **appends** `LABEL_AUTOPILOT=""`
+   to the end of the config (no pattern-based line removal: `export`, indentation, repeated or derived assignments all
+   count to the daemon, and the last assignment wins), loads the config again the daemon's way and requires the value
+   to be empty; moves every open PR on the merge label to `pending/human` (reading all open PRs, not a list) and re-reads to
    confirm. Any failed read prints `STOP …` and exits 1. Go on only when the last line is `CLOSE_READY`; otherwise fix
    what it says and rerun, with the timer still stopped
 3. If workers are still running it stops and lists the sessions and PIDs: wait for them and rerun, or rerun with
@@ -729,7 +732,8 @@ nothing changes after the checks:
    it is treated as a crash and redispatched on its original trigger label, still with the autopilot rules
 4. Restart: `systemctl --user start cavil-loop-poll@<key>.timer`
 
-Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
+To turn it on again later, append `LABEL_AUTOPILOT="autopilot"` to the end of the config as before (it comes after the
+line the close script appended, so it wins). Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
 
 <!-- autopilot-ops:close -->
@@ -745,12 +749,32 @@ CFG=${CFG:?set CFG=<path to the project config>}
 UNIT=${UNIT:?set UNIT=cavil-loop-poll@<key>}
 GRACE=${KILL_GRACE:-15}
 die() { echo "STOP $*"; echo "(leave the timer stopped; fix this and run again)"; exit 1; }
-# 0) read the project's own settings the way the daemon does (clean env, subprocess, 10 s limit)
+# 0) read the project's settings exactly as its daemon will: the registry env file of this
+#    instance first, then the project config (clean env, subprocess, 10 s limit). The registry
+#    must point at CFG, otherwise turning CFG off would not turn the daemon off.
 [ -f "$CFG" ] && [ -r "$CFG" ] && [ -w "$CFG" ] || die "config missing or not read/writable: $CFG"
-vals=$(timeout 10 env -i HOME="$HOME" PATH="$PATH" bash -c '
-  . "$1" >/dev/null 2>&1 || exit 3
-  printf "%s\n" "${REPO:-}" "${TMUX_PREFIX:-}" "${WORKTREE_BASE:-}" "${LABEL_PENDING_MERGE:-pending/merge}" "${LABEL_PENDING_HUMAN:-}"
-' _ "$CFG" </dev/null 2>/dev/null) || die "loading $CFG failed (syntax error or timeout)"
+key=${UNIT#*@}
+REG=""
+for f in "$HOME/.config/cavil-loop/$key.conf" "$HOME/.config/coding-agent-work-loop/$key.conf"; do
+  [ -e "$f" ] && { REG=$f; break; }
+done
+[ -n "$REG" ] && [ -r "$REG" ] || die "no readable registry for instance $key under ~/.config/cavil-loop or ~/.config/coding-agent-work-loop"
+load_cfg() {   # prints: repo, prefix, worktree base, merge label, human label, autopilot label
+  timeout 10 env -i HOME="$HOME" PATH="$PATH" bash -c '
+    set -a; . "$1" >/dev/null 2>&1 || exit 3; set +a
+    [ -n "${CODING_AGENT_CONFIG:-}" ] || exit 4
+    [ "$(realpath -e "$CODING_AGENT_CONFIG" 2>/dev/null)" = "$(realpath -e "$2" 2>/dev/null)" ] || exit 6
+    . "$2" >/dev/null 2>&1 || exit 5
+    printf "%s\n" "${REPO:-}" "${TMUX_PREFIX:-}" "${WORKTREE_BASE:-}" "${LABEL_PENDING_MERGE:-pending/merge}" \
+                  "${LABEL_PENDING_HUMAN:-}" "${LABEL_AUTOPILOT:-}"
+  ' _ "$REG" "$CFG" </dev/null 2>/dev/null
+}
+vals=$(load_cfg); rc=$?
+case $rc in
+  0) ;;
+  4|6) die "$REG does not point its daemon at $CFG (CODING_AGENT_CONFIG differs or is unset)" ;;
+  *) die "loading $REG + $CFG failed (syntax error, timeout or exit $rc)" ;;
+esac
 R=$(sed -n 1p <<<"$vals"); PREFIX=$(sed -n 2p <<<"$vals"); WT=$(sed -n 3p <<<"$vals")
 MERGE_LABEL=$(sed -n 4p <<<"$vals"); HUMAN_LABEL=$(sed -n 5p <<<"$vals")
 [ -n "$R" ] && [ -n "$PREFIX" ] && [ -n "$WT" ] && [ -n "$HUMAN_LABEL" ] \
@@ -817,16 +841,17 @@ left=$(procs) || die "cannot judge every process under $WT"
 skipped=$(scan_procs "$WT" 2>/dev/null | awk '$1=="S"{printf " %s(%s)", $3, $2}')
 [ -z "$skipped" ] || echo "note: not counted (working directory unreadable, no parent under $WT):$skipped"
 [ -z "$left" ] || die "processes still working under $WT (PIDs: $(echo $left)) — wait for them, or rerun with KILL_WORKERS=1"
-# 3) config: tell "has the line" / "has not" / "read failed" apart, then re-read
-has_line() { grep -q '^LABEL_AUTOPILOT=' "$CFG"; }   # 0 = has, 1 = has not, other = read failed
-has_line; rc=$?
-case $rc in
-  0) sed -i '/^LABEL_AUTOPILOT=/d' "$CFG" || die "cannot edit $CFG" ;;
-  1) ;;
-  *) die "cannot read $CFG (grep exit $rc)" ;;
-esac
-has_line; rc=$?
-[ $rc -eq 1 ] || die "re-read of $CFG: LABEL_AUTOPILOT still there or read failed (grep exit $rc)"
+# 3) config: do not edit lines by pattern (export, indentation, repeated or derived assignments
+#    all count to the daemon). Append an empty assignment, which comes last and so wins, then
+#    load the config again the daemon's way and require the value to be empty.
+cur=$(sed -n 6p <<<"$vals")
+if [ -n "$cur" ]; then
+  { [ -s "$CFG" ] && [ -n "$(tail -c1 "$CFG")" ] && echo
+    echo "# autopilot turned off by the close script (GitHub#124). A later LABEL_AUTOPILOT line turns it back on."
+    echo 'LABEL_AUTOPILOT=""'; } >> "$CFG" || die "cannot append to $CFG"
+fi
+vals=$(load_cfg) || die "re-loading $CFG after the change failed"
+[ -z "$(sed -n 6p <<<"$vals")" ] || die "re-load of $CFG still gives LABEL_AUTOPILOT=$(sed -n 6p <<<"$vals")"
 # 4) every open PR still waiting for the autopilot merge goes to a human (with autopilot off
 #    nobody merges it). Fetch the whole list first and check the exit code before any text
 #    processing; a page failing midway makes gh exit non-zero too.

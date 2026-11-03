@@ -4,7 +4,7 @@
 #   close       — turn autopilot off with the daemon stopped; only CLOSE_READY lets you restart it
 #
 # 跑法：bash tests/autopilot-ops.test.sh            （约 30 秒；有一条故意让配置卡 30 秒，验证 10 秒限时）
-#       MUTATION=1 bash tests/autopilot-ops.test.sh （再跑 11 份改坏的副本，各自必须变红）
+#       MUTATION=1 bash tests/autopilot-ops.test.sh （再跑 14 份改坏的副本，各自必须变红）
 #
 # 脚本原样取自两份文档里 `<!-- autopilot-ops:host-check -->` / `<!-- autopilot-ops:close -->` 后面的
 # 第一个 bash 代码块——人照着文档复制的就是这一段，测的也是这一段。两份文档的同名脚本必须逐字一致。
@@ -102,14 +102,16 @@ export PATH="$FAKE:$PATH"
 close_suite() {   # <close 脚本>
     local cl="$1" W="$TMP/cl"; rm -rf "$W"; mkdir -p "$W"
     local OUT RC LAST
-    mkdir -p "$W/wt" "$W/out"
+    mkdir -p "$W/wt" "$W/out" "$W/home/.config/cavil-loop"
+    printf 'CODING_AGENT_CONFIG=%s/cfg\n' "$W" > "$W/home/.config/cavil-loop/demo.conf"
     reset() { printf 'REPO="acme/widget"\nTMUX_PREFIX=demo\nWORKTREE_BASE="%s/wt"\nLABEL_PENDING_HUMAN=pending/human\nLABEL_AUTOPILOT="autopilot"\nFOO=1\n' "$W" > "$W/cfg"
               echo '{"201":["pending/merge"],"202":["pending/merge","priority/p1"],"203":["pending/review"]}' > "$W/ghs"; rm -f "$W/ghs.n"; }
-    run() { OUT=$(cd "$W/out" && env CFG="$W/cfg" UNIT=cavil-loop-poll@demo GHS="$W/ghs" "$@" bash "$cl" 2>/dev/null); RC=$?
+    run() { cp "$W/cfg" "$W/cfg.before" 2>/dev/null
+            OUT=$(cd "$W/out" && env HOME="$W/home" CFG="$W/cfg" UNIT=cavil-loop-poll@demo GHS="$W/ghs" "$@" bash "$cl" 2>/dev/null); RC=$?
             LAST=$(printf '%s\n' "$OUT" | tail -1); }
     stop() { if [ $RC -ne 0 ] && [ "$LAST" != CLOSE_READY ]; then ok "$1 → STOP"; else ng "$1：应 STOP，实得退出码 $RC、最后一行 $LAST"; fi; }
     ready() { if [ $RC -eq 0 ] && [ "$LAST" = CLOSE_READY ]; then ok "$1 → CLOSE_READY"; else ng "$1：应 CLOSE_READY，实得退出码 $RC、最后一行 $LAST"; fi; }
-    untouched() { grep -q '^LABEL_AUTOPILOT=' "$W/cfg" && ok "  …配置没动" || ng "  …配置被改了"; }
+    untouched() { cmp -s "$W/cfg" "$W/cfg.before" && ok "  …配置没动" || ng "  …配置被改了"; }
 
     reset; run FAKE_ACTIVE=active;              stop "定时任务还在跑"; untouched
     reset; run FAKE_SC_FAIL=1;                  stop "连不上服务管理器"; untouched
@@ -128,21 +130,76 @@ close_suite() {   # <close 脚本>
     reset; run X=1;                             ready "正常"
     [ "$(jq -cS . "$W/ghs")" = '{"201":["pending/human"],"202":["pending/human","priority/p1"],"203":["pending/review"]}' ] \
         && ok "  …两个等合并的改成 pending/human、其他标签保留、排队的不动" || ng "  …标签结果：$(jq -cS . "$W/ghs")"
-    grep -q '^LABEL_AUTOPILOT=' "$W/cfg" && ng "  …配置那行还在" || ok "  …配置那行已删"
-    [ "$(grep -c . "$W/cfg")" = 5 ] && ok "  …配置其他行保留" || ng "  …配置其他行变了：$(cat "$W/cfg")"
+    [ -z "$(cfg_val "$W/cfg")" ] && ok "  …按配置的读法，托管已关" || ng "  …托管仍是 $(cfg_val "$W/cfg")"
+    [ "$(head -6 "$W/cfg")" = "$(head -6 "$W/cfg.before")" ] && ok "  …原有各行原样保留" || ng "  …原有的行变了"
     run X=1;                                    ready "正常完成后重跑"
     reset; printf 'REPO="acme/widget"\nTMUX_PREFIX=demo\nLABEL_PENDING_HUMAN=pending/human\nLABEL_AUTOPILOT=autopilot\n' > "$W/cfg"; run X=1
                                                 stop "配置里没有 worktree 目录"; untouched
     reset; printf 'REPO="acme/widget\nTMUX_PREFIX=demo\n' > "$W/cfg"; run X=1; stop "配置语法错"
-    reset; OUT=$(cd "$W/wt" && env CFG="$W/cfg" UNIT=cavil-loop-poll@demo GHS="$W/ghs" bash "$cl" 2>/dev/null); RC=$?; LAST=$(printf '%s\n' "$OUT" | tail -1)
+    reset; cp "$W/cfg" "$W/cfg.before"; OUT=$(cd "$W/wt" && env HOME="$W/home" CFG="$W/cfg" UNIT=cavil-loop-poll@demo GHS="$W/ghs" bash "$cl" 2>/dev/null); RC=$?; LAST=$(printf '%s\n' "$OUT" | tail -1)
                                                 stop "在 worktree 目录里跑"; untouched
+}
+
+# daemon 实际读到的托管开关：真的 source scripts/_lib.sh（daemon 每轮就是这么载入配置的），
+# 不是本测试另写一套读法。$1 = 项目配置；配置里缺的必填项由 cfg_full 补齐。
+daemon_val() {
+    env -i HOME="$TMP" PATH="$PATH" CODING_AGENT_CONFIG="$1" bash -c \
+        'exec 3>&1; source "$2/scripts/_lib.sh" >/dev/null 2>&1 || { echo "<load failed>" >&3; exit; }; printf "%s" "$LABEL_AUTOPILOT" >&3' _ "$1" "$REPO_DIR" 9>&-
+}
+# 只 source 配置本身（关闭段和 daemon 都这样读到托管开关），用于不带必填项的夹具
+cfg_val() { env -i PATH="$PATH" bash -c '. "$1" >/dev/null 2>&1; printf "%s" "${LABEL_AUTOPILOT:-}"' _ "$1"; }
+
+# ── 配置的各种合法写法：关闭段的结论必须和 daemon 实际读到的一致（PR #127 复审第 2 轮）──
+config_suite() {   # <close 脚本>
+    local cl="$1" W="$TMP/cf"; rm -rf "$W"; mkdir -p "$W/wt" "$W/out" "$W/st" "$W/home/.config/cavil-loop"
+    local OUT RC LAST
+    printf 'CODING_AGENT_CONFIG=%s/cfg\n' "$W" > "$W/home/.config/cavil-loop/demo.conf"
+    echo '{}' > "$W/ghs"
+    mk() {   # <开关那几行>：带齐 daemon 必填项的配置
+        printf 'REPO="acme/widget"\nPROJECT_ROOT=%s\nWORKTREE_BASE=%s/wt\nSTATE_DIR=%s/st\nTMUX_PREFIX=demo\nBRANCH_PREFIX=feature/issue-\nSESSION_NAME_PREFIX=issue\nLABEL_PENDING_AGENT=pending/agent\nLABEL_PENDING_HUMAN=pending/human\nLABEL_PENDING_REVIEW=pending/review\n%s' "$W" "$W" "$W" "$1" > "$W/cfg"; }
+    run() { OUT=$(cd "$W/out" && env HOME="$W/home" CFG="$W/cfg" UNIT=cavil-loop-poll@demo GHS="$W/ghs" bash "$cl" 2>/dev/null); RC=$?
+            LAST=$(printf '%s\n' "$OUT" | tail -1); }
+    shape() {   # <名字> <开关那几行>：daemon 读到开着 → 关闭段报完成 → daemon 读到关了
+        mk "$2"
+        local before; before=$(daemon_val "$W/cfg")
+        [ "$before" = autopilot ] || { ng "$1：前提不成立，daemon 读到的是 [$before]"; return; }
+        run
+        local after; after=$(daemon_val "$W/cfg")
+        if [ "$LAST" = CLOSE_READY ] && [ -z "$after" ]; then ok "$1 → CLOSE_READY，daemon 读到已关"
+        elif [ "$LAST" != CLOSE_READY ] && [ "$RC" -ne 0 ]; then ok "$1 → STOP（没能关就不报完成）；daemon 读到 [$after]"
+        else ng "$1：报了 ${LAST:-?}，daemon 读到的却是 [$after]"; fi
+    }
+    must_close() { shape "$@"; [ "$LAST" = CLOSE_READY ] || ng "  …$1 应能关掉"; }
+    must_close "普通赋值"               $'LABEL_AUTOPILOT=autopilot\n'
+    must_close "export 赋值"            $'export LABEL_AUTOPILOT=autopilot\n'
+    must_close "行首有空格"             $'  LABEL_AUTOPILOT=autopilot\n'
+    must_close "export 加缩进加单引号"   $'\texport LABEL_AUTOPILOT=\'autopilot\'\n'
+    must_close "先关后开、重复赋值"       $'LABEL_AUTOPILOT=\nLABEL_AUTOPILOT=autopilot\n'
+    must_close "由变量拼出来"            $'A=auto\nLABEL_AUTOPILOT="${A}pilot"\n'
+    must_close "条件赋值"               $'[ -n "$REPO" ] && LABEL_AUTOPILOT=autopilot\n'
+    must_close "文件末尾没有换行"         $'LABEL_AUTOPILOT=autopilot'
+    shape "readonly，改不了"            $'readonly LABEL_AUTOPILOT=autopilot\n'
+    [ "$LAST" = CLOSE_READY ] && ng "  …readonly 不该报完成" || true
+    shape "配置在末尾 return，追加的行读不到" $'LABEL_AUTOPILOT=autopilot\nreturn 0\n'
+    [ "$LAST" = CLOSE_READY ] && ng "  …return 不该报完成" || true
+    # 关了以后照文档在末尾追加一行就能重新打开
+    mk $'export LABEL_AUTOPILOT=autopilot\n'; run
+    printf '\nLABEL_AUTOPILOT="autopilot"\n' >> "$W/cfg"
+    [ "$(daemon_val "$W/cfg")" = autopilot ] && ok "关闭后照文档追加一行 → daemon 读到重新打开" || ng "关闭后追加一行没能重新打开：[$(daemon_val "$W/cfg")]"
+    # 安装登记指向的不是 CFG：关了这个文件等于没关
+    mk $'LABEL_AUTOPILOT=autopilot\n'; printf 'CODING_AGENT_CONFIG=%s/other.cfg\n' "$W" > "$W/home/.config/cavil-loop/demo.conf"; cp "$W/cfg" "$W/other.cfg"
+    run; { [ "$RC" -ne 0 ] && [ "$LAST" != CLOSE_READY ]; } && ok "登记指向别的配置文件 → STOP" || ng "登记指向别的配置文件：报了 $LAST"
+    [ "$(daemon_val "$W/cfg")" = autopilot ] && ok "  …配置没动" || ng "  …配置被改了"
+    rm -f "$W/home/.config/cavil-loop/demo.conf"; run
+    { [ "$RC" -ne 0 ] && [ "$LAST" != CLOSE_READY ]; } && ok "找不到这个实例的安装登记 → STOP" || ng "找不到安装登记：报了 $LAST"
 }
 
 # ── worker 退没退：真 tmux（独立 socket）+ 真子进程 ──
 REAL_TMUX=$(PATH="${PATH#"$FAKE:"}" command -v tmux)
 REAL="$TMP/fake-real"; mkdir -p "$REAL"; ln -s "$FAKE/gh" "$REAL/gh"; ln -s "$FAKE/systemctl" "$REAL/systemctl"
 worker_suite() {   # <close 脚本>
-    local cl="$1" W="$TMP/wk"; rm -rf "$W"; mkdir -p "$W/wt/issue-5" "$W/out" "$W/sock"
+    local cl="$1" W="$TMP/wk"; rm -rf "$W"; mkdir -p "$W/wt/issue-5" "$W/out" "$W/sock" "$W/home/.config/cavil-loop"
+    printf 'CODING_AGENT_CONFIG=%s/cfg\n' "$W" > "$W/home/.config/cavil-loop/demo.conf"
     local OUT RC LAST PIDF="$W/pid"
     export TMUX_TMPDIR="$W/sock"; unset TMUX
     cfg() { printf 'REPO="acme/widget"\nTMUX_PREFIX=demo\nWORKTREE_BASE="%s/wt"\nLABEL_PENDING_HUMAN=pending/human\nLABEL_AUTOPILOT=autopilot\n' "$W" > "$W/cfg"; echo '{}' > "$W/ghs"; }
@@ -152,7 +209,7 @@ worker_suite() {   # <close 脚本>
         local i=0; while [ ! -s "$PIDF" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done; }
     alive() { kill -0 "$(cat "$PIDF")" 2>/dev/null; }
     cleanup() { [ -s "$PIDF" ] && kill -KILL "$(cat "$PIDF")" 2>/dev/null; "$REAL_TMUX" kill-server 2>/dev/null; rm -f "$PIDF"; sleep 0.2; }
-    run() { OUT=$(cd "$W/out" && PATH="$REAL:$PATH" env CFG="$W/cfg" UNIT=cavil-loop-poll@demo GHS="$W/ghs" KILL_GRACE=2 "$@" bash "$cl" 2>/dev/null); RC=$?
+    run() { OUT=$(cd "$W/out" && PATH="$REAL:$PATH" env HOME="$W/home" CFG="$W/cfg" UNIT=cavil-loop-poll@demo GHS="$W/ghs" KILL_GRACE=2 "$@" bash "$cl" 2>/dev/null); RC=$?
             LAST=$(printf '%s\n' "$OUT" | tail -1); }
     stop() { if [ $RC -ne 0 ] && [ "$LAST" != CLOSE_READY ]; then ok "$1 → STOP"; else ng "$1：应 STOP，实得退出码 $RC、最后一行 $LAST"; fi; }
     ready() { if [ $RC -eq 0 ] && [ "$LAST" = CLOSE_READY ]; then ok "$1 → CLOSE_READY"; else ng "$1：应 CLOSE_READY，实得退出码 $RC、最后一行 $LAST"; fi; }
@@ -164,7 +221,7 @@ worker_suite() {   # <close 脚本>
     cfg; start "SIGHUP"; "$REAL_TMUX" kill-session -t demo-issue5; sleep 0.5
     if alive && ! "$REAL_TMUX" has-session -t demo-issue5 2>/dev/null; then ok "前提：会话关了、worker 还活着"; else ng "前提没造出来（会话关了 worker 也没了）"; fi
     run X=1; stop "会话没了、进程还在"; alive && ok "  …worker 没被动" || ng "  …worker 被杀了"
-    grep -q '^LABEL_AUTOPILOT=' "$W/cfg" && ok "  …配置没动" || ng "  …配置被改了"
+    [ "$(cfg_val "$W/cfg")" = autopilot ] && ok "  …配置没动" || ng "  …配置被改了"
     run KILL_WORKERS=1; ready "会话没了、进程还在，KILL_WORKERS=1"; alive && ng "  …报完成时 worker 还活着" || ok "  …worker 已退出"
     cleanup
     cfg; start "SIGHUP"; run KILL_WORKERS=1; ready "会话还在，KILL_WORKERS=1"
@@ -231,6 +288,7 @@ for m in host-check close; do
 done
 echo "关闭段："; close_suite "$CL"
 echo "机器核对段："; host_suite "$HC"
+echo "配置写法（和 daemon 实际读到的对拍）："; config_suite "$CL"
 echo "worker 退没退（真 tmux + 真进程）："; worker_suite "$CL"
 # 没有 timeout 命令的机器（macOS）走 perl 限时：把两种限时命令藏起来再跑一遍会卡住的那一条
 sed 's/command -v timeout >/command -v no_such_timeout_cmd >/; s/command -v gtimeout >/command -v no_such_gtimeout_cmd >/' "$HC" > "$TMP/hc-perl.sh"
@@ -246,10 +304,10 @@ V=$(env HOME="$H" REPO=GigleAI/cavil-loop FAKE_ACTIVE=active bash "$TMP/hc-perl.
 
 # ── 负对照：把历次复审打回的写法换回去，测试必须变红 ──
 MUT_BAD=0
-mutant() {   # <名字> <close|worker|host|doc> <旧文本> <新文本> [<旧文本> <新文本> ...]：逐对替换后整套重跑
+mutant() {   # <名字> <close|worker|config|host|doc> <旧文本> <新文本> [<旧文本> <新文本> ...]：逐对替换后整套重跑
     local name="$1" kind="$2" src dst; shift 2
     mutation_gate || return 0
-    case "$kind" in close|worker) src="$CL";; host) src="$HC";; doc) src="$TMP/operations.zh.close.sh";; esac
+    case "$kind" in close|worker|config) src="$CL";; host) src="$HC";; doc) src="$TMP/operations.zh.close.sh";; esac
     dst="$TMP/mut.sh"
     if ! python3 -c '
 import sys
@@ -266,6 +324,7 @@ open(sys.argv[2], "w").write(s)' "$src" "$dst" "$@" 2>/dev/null; then
         close) QUIET=1 close_suite "$dst" ;;
         host)  QUIET=1 host_suite "$dst" ;;
         worker) QUIET=1 worker_suite "$dst" ;;
+        config) QUIET=1 config_suite "$dst" ;;
         doc)   cmp -s "$CL" "$dst" && PASS=1 || FAIL=1 ;;
     esac
     if [ "$FAIL" -gt 0 ]; then echo "  ✅ 负对照「$name」：$FAIL 条变红"; else echo "  ❌ 负对照「$name」：全绿，测试没拦住"; MUT_BAD=$((MUT_BAD+1)); fi
@@ -280,10 +339,16 @@ mutant "列表读失败被管道吃掉（第 4 版写法）" close \
 # grep 读失败当「没有」，回读用 ! grep 取反
 mutant "配置读不到被当成已删（第 4 版写法）" close \
   $'[ -f "$CFG" ] && [ -r "$CFG" ] && [ -w "$CFG" ] || die "config missing or not read/writable: $CFG"' ':' \
-  $'\' _ "$CFG" </dev/null 2>/dev/null) || die "loading $CFG failed (syntax error or timeout)"' \
-  $'\' _ "$CFG" </dev/null 2>/dev/null) || vals=$(printf \'%s\\n\' acme/widget demo "$PWD/../wt" pending/merge pending/human)' \
-  $'  *) die "cannot read $CFG (grep exit $rc)" ;;' $'  *) ;;' \
-  $'[ $rc -eq 1 ] || die' $'! has_line || die'
+  $'  *) die "loading $REG + $CFG failed (syntax error, timeout or exit $rc)" ;;' \
+  $'  *) vals=$(printf \'%s\\n\' acme/widget demo "$PWD/../wt" pending/merge pending/human autopilot) ;;' \
+  $'vals=$(load_cfg) || die "re-loading $CFG after the change failed"' $'vals=$(load_cfg)'
+mutant "按文本删行、不按 daemon 读法回读（PR #127 复审第 2 轮）" config \
+  $'  { [ -s "$CFG" ] && [ -n "$(tail -c1 "$CFG")" ] && echo' $'  sed -i \'/^LABEL_AUTOPILOT=/d\' "$CFG"; false && { [ -s "$CFG" ] && [ -n "$(tail -c1 "$CFG")" ] && echo' \
+  $'[ -z "$(sed -n 6p <<<"$vals")" ] || die' $': || die'
+mutant "追加后不回读确认" config \
+  $'[ -z "$(sed -n 6p <<<"$vals")" ] || die' $': || die'
+mutant "不核对安装登记指向的配置" config \
+  $'[ "$(realpath -e "$CODING_AGENT_CONFIG" 2>/dev/null)" = "$(realpath -e "$2" 2>/dev/null)" ] || exit 6' ':'
 mutant "不回读等合并标签" close \
   $'[ -z "${left// /}" ] || die' ': ||'
 mutant "服务状态只排除 active" close \
