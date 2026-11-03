@@ -51,6 +51,9 @@ section() { [ "$QUIET" = 1 ] || echo "$1"; }
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$SANDBOX/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$SANDBOX/old"
+# 旧脚本拼的是当前的模板：这里对拍的是「功能关闭时脚本没改变拼法」，模板本身的改动（GitHub#125
+# 这类只改措辞的 PR）是有意的，不该让这条变红——和 requester-bot 测试的做法一致
+rm -rf "$SANDBOX/old/prompts"; cp -r "$REPO_DIR/prompts" "$SANDBOX/old/prompts"
 
 H1=1111111111111111111111111111111111111111
 H2=2222222222222222222222222222222222222222
