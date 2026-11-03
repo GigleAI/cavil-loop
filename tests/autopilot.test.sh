@@ -512,10 +512,10 @@ Refs #3" "$H1" "pending/merge"
     touch "$GD/F_post_comment"
     tick
     chk "留言失败 → 标签已交接" "$(labels_of 8)" "pending/human"
-    chk "  …记下欠一条留言" "$(st 8 .off_note)" "true"
+    chk "  …交接记号还在（说明还欠着）" "$(st 8 .off_handover)" "true"
     rm -f "$GD/F_post_comment"; tick
     chk "  …恢复后下一轮补发留言（等合并标签已经没了也找得回来）" "$(comments_with 8 '托管已在配置里关掉')" 1
-    chk "  …补发后清掉记号" "$(st 8 .off_note)" ""
+    chk "  …补发后清掉记号" "$(st 8 .off_handover)" ""
     tick
     chk "  …再一轮零写入、不重复留言" "$(writes)/$(comments_with 8 '托管已在配置里关掉')" "0/1"
 
@@ -526,9 +526,39 @@ Refs #3" "$H1" "pending/merge"
     rm -f "$GD/F_post_labels"; tick
     chk "  …只恢复加标签：两个标签都在（摘还在失败），不留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "pending/human,pending/merge/0"
     rm -f "$GD/F_delete_labels"; tick
-    chk "  …再恢复摘标签：交接完成，留言仍欠着" "$(labels_of 8)/$(st 8 .off_note)" "pending/human/true"
+    chk "  …再恢复摘标签：交接完成，留言仍欠着" "$(labels_of 8)/$(st 8 .off_handover)" "pending/human/true"
     rm -f "$GD/F_post_comment"; tick
-    chk "  …最后恢复留言：补发一次" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_note)" "1/"
+    chk "  …最后恢复留言：补发一次" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+
+    # 标签两步都写成功、紧接着的回读失败（PR #127 复审第 2 轮）：意图在动 GitHub 之前就记下了，下轮接着做
+    fresh "$OFF"; happy
+    touch "$GD/F_issues_8"
+    tick
+    chk "标签改好、回读失败 → 标签已是目标，交接记号在，没发说明" "$(labels_of 8)/$(st 8 .off_handover)/$(comments_with 8 '托管已在配置里关掉')" "pending/human/true/0"
+    rm -f "$GD/F_issues_8"; tick
+    chk "  …恢复后下一轮补发说明一次、清掉记号" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+
+    fresh "$OFF"; happy
+    touch "$GD/F_issues_8_comments"
+    tick
+    chk "读不到已有评论（判断不了发没发过）→ 不发" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "0/true"
+    rm -f "$GD/F_issues_8_comments"; tick
+    chk "  …恢复后发一次" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+
+    # 进程半路被杀 / 清记号失败：用状态直接摆出中间态
+    fresh "$OFF"; happy
+    jset labels.json '.["8"] = ["pending/human"]'
+    jq '.autopilot.prs["8"].off_handover = true' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+    tick
+    chk "中间态：标签已交接、说明没发 → 补发一次、清记号" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+
+    fresh "$OFF"; happy
+    jset labels.json '.["8"] = ["pending/human"]'
+    jset comments.json '.["8"] = [{id:950, user:{login:"loop-bot"}, created_at:"2026-06-02T00:00:00Z", body:"托管已在配置里关掉（上一轮发的）\n<!-- autopilot-off-handover -->"}]'
+    jq '.autopilot.prs["8"].off_handover = true' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+    tick
+    chk "中间态：说明已发、只是记号没清 → 不重复发，只清记号" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)/$(n_calls "^gh api -X POST $R/issues/8/comments")" "1//0"
+    chk "到达性 · 这一轮确实读了这个 PR 的评论" "$([ "$(n_calls "$R/issues/8/comments")" -gt 0 ] && echo yes || echo no)" yes
 
     fresh "$OFF"; happy
     jset items.json '.["8"].state = "closed"'
@@ -778,10 +808,13 @@ mutate collect-site agent-poll.sh '        rc=0; autopilot_authorization "$num" 
 mutate off-sweep-not-called agent-poll.sh 'autopilot_off_sweep "$STATE_FILE" || true' ':'
 mutate off-sweep-any-pr _lib.sh '| .[][] | select($prs[(.number | tostring)] != null)' '| .[][]'
 mutate off-sweep-no-reread _lib.sh "        printf '%s' \"\$pj\" | jq -e '.state == \"open\" and (.merged | not)' >/dev/null 2>&1 || continue" '        :'
-mutate off-sweep-remove-first _lib.sh '            # ① 先加 pending/human' '            gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" >/dev/null 2>&1 || true
-            # ① 先加 pending/human'
-mutate off-sweep-no-note _lib.sh ' or ($prs[(.number | tostring)].off_note // false)' ''
-mutate off-sweep-no-verify _lib.sh '            *",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;;' '            *",$m,"*) ;;'
+mutate off-sweep-no-intent _lib.sh ' or ($prs[(.number | tostring)].off_handover // false)' ''
+mutate off-sweep-intent-late _lib.sh "        if [ \"\$(autopilot_state_get \"\$sf\" '.prs[\$p].off_handover // false' --arg p \"\$pr\")\" != true ]; then" '        if false; then' \
+    '        # ③ 交人说明只发一条' '        autopilot_state_set "$sf" '"'"'.prs[$p] = ((.prs[$p] // {}) + {off_handover: true})'"'"' --arg p "$pr" || true
+        # ③ 交人说明只发一条'
+mutate off-sweep-no-dedupe _lib.sh "        if ! printf '%s' \"\$cmts\" | jq -e --arg T \"\$AUTOPILOT_OFF_TAG\" 'any(.[][]?; (.body // \"\") | contains(\$T))' >/dev/null 2>&1; then" '        if true; then'
+# 「先摘后加」那个旧写法不再单列：交接记号在动 GitHub 之前就记下，摘完加失败的 PR 下一轮靠记号也找得回来
+mutate off-sweep-no-verify _lib.sh '*",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;;' '*",$m,"*) ;;'
 mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>

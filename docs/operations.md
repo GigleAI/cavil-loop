@@ -565,7 +565,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   between. Turning it on here is a deliberate choice; merging the feature does not.
 
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
-unreadable rounds, check-wait start, `off_note` (hand-over comment still owed after autopilot was turned off); `notices` / `denied`: one-time comments and rejected
+unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
 
@@ -716,11 +716,11 @@ else to run. From the next round the daemon cleans up by itself:
 
 Only PRs this machine had on autopilot are touched (recorded under `autopilot.prs` in `state.json`), so a same-named
 label used elsewhere is left alone and a project that never turned autopilot on makes no extra GitHub call. The PR is
-re-read before any write (still open, not merged) and an unreadable PR waits for the next round. The hand-over is three
-writes — add `pending/human`, remove the merge label, comment once the labels read back — and any of them can fail:
-the next round picks up where it stopped (adding before removing keeps the merge label in place on failure, so the PR is
-found again; a comment still owed is recorded in `state.json` and sent later) until the labels are right and the comment
-is out.
+re-read before any write (still open, not merged) and an unreadable PR waits for the next round. The target state is
+`pending/human` present, the merge label gone, one hand-over comment on the PR. Before touching GitHub the sweep records
+"hand-over in progress" in `state.json`; it then converges the labels and reads them back, checks the PR's comments so the
+note is posted only once, and clears the record only when all of that is confirmed — a failure at any step, or a killed
+process, is picked up the next round through that record.
 
 Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
