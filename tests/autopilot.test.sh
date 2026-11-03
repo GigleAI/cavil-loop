@@ -498,6 +498,38 @@ Refs #3" "$H1" "pending/merge"
     rm -f "$GD/F_delete_labels"; tick
     chk "  …恢复后下一轮补上：摘掉、留言一次" "$(has_label 8 pending/merge)/$(comments_with 8 '托管已在配置里关掉')" "no/1"
 
+    # 交人是三步写（加 pending/human → 摘等合并 → 留言），每一步失败后下一轮都要接着做完（PR #127 复审）
+    fresh "$OFF"; happy
+    touch "$GD/F_post_labels"
+    tick
+    chk "加 pending/human 失败 → 等合并标签原样留着（下轮还找得到）" "$(labels_of 8)" "pending/merge"
+    chk "  …也不留言" "$(comments_with 8 '托管已在配置里关掉')" 0
+    rm -f "$GD/F_post_labels"; tick
+    chk "  …恢复后下一轮交人：有 pending/human、没有等合并" "$(labels_of 8)" "pending/human"
+    chk "  …留言一次" "$(comments_with 8 '托管已在配置里关掉')" 1
+
+    fresh "$OFF"; happy
+    touch "$GD/F_post_comment"
+    tick
+    chk "留言失败 → 标签已交接" "$(labels_of 8)" "pending/human"
+    chk "  …记下欠一条留言" "$(st 8 .off_note)" "true"
+    rm -f "$GD/F_post_comment"; tick
+    chk "  …恢复后下一轮补发留言（等合并标签已经没了也找得回来）" "$(comments_with 8 '托管已在配置里关掉')" 1
+    chk "  …补发后清掉记号" "$(st 8 .off_note)" ""
+    tick
+    chk "  …再一轮零写入、不重复留言" "$(writes)/$(comments_with 8 '托管已在配置里关掉')" "0/1"
+
+    fresh "$OFF"; happy
+    touch "$GD/F_post_labels" "$GD/F_delete_labels" "$GD/F_post_comment"
+    tick; tick
+    chk "三步全失败两轮 → 等合并标签仍在、没有留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "pending/merge/0"
+    rm -f "$GD/F_post_labels"; tick
+    chk "  …只恢复加标签：两个标签都在（摘还在失败），不留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "pending/human,pending/merge/0"
+    rm -f "$GD/F_delete_labels"; tick
+    chk "  …再恢复摘标签：交接完成，留言仍欠着" "$(labels_of 8)/$(st 8 .off_note)" "pending/human/true"
+    rm -f "$GD/F_post_comment"; tick
+    chk "  …最后恢复留言：补发一次" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_note)" "1/"
+
     fresh "$OFF"; happy
     jset items.json '.["8"].state = "closed"'
     tick
@@ -744,8 +776,11 @@ mutate collect-site agent-poll.sh '        rc=0; autopilot_authorization "$num" 
         case "$rc" in'
 # ── 托管关掉之后的收尾（GitHub#124）──
 mutate off-sweep-not-called agent-poll.sh 'autopilot_off_sweep "$STATE_FILE" || true' ':'
-mutate off-sweep-any-pr _lib.sh "        printf '%s\\n' \"\$mine\" | grep -qx \"\$pr\" || continue" '        :'
-mutate off-sweep-no-reread _lib.sh "        printf '%s' \"\$pj\" | jq -e --arg M \"\$m\" '.state == \"open\" and (.merged | not) and any(.labels[]?; .name == \$M)' >/dev/null 2>&1 || continue" '        :'
+mutate off-sweep-any-pr _lib.sh '| .[][] | select($prs[(.number | tostring)] != null)' '| .[][]'
+mutate off-sweep-no-reread _lib.sh "        printf '%s' \"\$pj\" | jq -e '.state == \"open\" and (.merged | not)' >/dev/null 2>&1 || continue" '        :'
+mutate off-sweep-remove-first _lib.sh '            # ① 先加 pending/human' '            gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" >/dev/null 2>&1 || true
+            # ① 先加 pending/human'
+mutate off-sweep-no-note _lib.sh ' or ($prs[(.number | tostring)].off_note // false)' ''
 mutate off-sweep-no-verify _lib.sh '            *",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;;' '            *",$m,"*) ;;'
 mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
