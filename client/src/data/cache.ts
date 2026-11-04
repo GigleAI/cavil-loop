@@ -62,6 +62,10 @@ export class Cache {
     return out;
   }
 
+  clearSnapshots(): void {
+    this.db.exec(`DELETE FROM snapshot`);
+  }
+
   deleteSnapshot(sourceKey: string): void {
     this.db.prepare(`DELETE FROM snapshot WHERE source_key = ?`).run(sourceKey);
   }

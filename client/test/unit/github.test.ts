@@ -12,9 +12,11 @@ describe('GitHub client boundaries', () => {
 
   it('refuses to follow a pagination link to another host (the token would go with it)', async () => {
     const seen: string[] = [];
+    // only the first page links onward, so a client that does follow it still terminates
     const fetchImpl = async (u: string) => {
       seen.push(u);
-      return new Response('[]', { status: 200, headers: { Link: '<https://evil.example/x?page=2>; rel="next"' } });
+      const headers: Record<string, string> = seen.length === 1 ? { Link: '<https://evil.example/x?page=2>; rel="next"' } : {};
+      return new Response('[]', { status: 200, headers });
     };
     const c = new GitHubClient({ api: 'https://api.github.com', web: 'https://github.com' }, 'gho_x', fetchImpl);
     await expect(c.restList('/repos/a/b/issues')).rejects.toThrow(/其他主机/);

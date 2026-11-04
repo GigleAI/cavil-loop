@@ -11,6 +11,13 @@ import { Endpoints, FetchLike, GitHubClient } from '../data/github';
 import { DeviceFlowError, pollForToken, requestDeviceCode } from '../data/deviceFlow';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
+import { VIEWER_QUERY } from '../data/queries';
+import { createHash } from 'node:crypto';
+
+/** Which credential the cache was last verified against (a hash, never the token itself). */
+function credentialTag(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
 
@@ -37,6 +44,13 @@ export class Controller {
   private resync = false;
   private loginRun = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** bumps on every login / logout: a round started in another session is dropped */
+  private session = 0;
+  /** per source key, bumps on every add / remove: a round only writes a source added before it started */
+  private epochs = new Map<string, number>();
+  private epochSeq = 0;
+  /** GitHub login the cached snapshots belong to (null = nobody: the cache must be empty) */
+  private owner: string | null;
   private readonly fetchImpl: FetchLike;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -59,7 +73,10 @@ export class Controller {
       credentialsPersistent: deps.credentials.persistent,
     };
     if (!MODES.includes(this.state.view.mode)) this.state.view.mode = 'iteration';
+    this.owner = deps.cache.getSetting<string | null>('cacheOwner', null);
     this.snapshots = deps.cache.loadSnapshots();
+    // A cache nobody owns cannot be shown to anybody.
+    if (!this.owner && this.snapshots.size) this.wipeCache();
     this.refreshDerived();
   }
 
@@ -97,6 +114,11 @@ export class Controller {
       this.set({ phase: 'login' });
       return;
     }
+    // A credential the cache was not read with (changed outside the app) means
+    // the account is unknown until GitHub answers: show nothing cached meanwhile.
+    if (this.deps.cache.getSetting<string | null>('cacheCredential', null) !== credentialTag(this.token)) {
+      this.adoptAccount(null, null);
+    }
     this.set({ phase: 'ready' });
     await this.syncNow();
   }
@@ -133,7 +155,20 @@ export class Controller {
         cancelled: () => run !== this.loginRun,
       });
       await this.deps.credentials.set(token);
+      this.session++;
       this.token = token;
+      // Bind the cache to the account that just signed in before anything is shown.
+      // Unknown account (viewer query failed) is never treated as "the same one".
+      let login: string | null = null;
+      try {
+        login = (await new GitHubClient(this.deps.endpoints, token, this.fetchImpl).graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})).viewer.login;
+      } catch {
+        /* the first sync round asks again */
+      }
+      if (run !== this.loginRun) return;
+      this.adoptAccount(login, token);
+      this.deps.cache.setSetting('viewer', login);
+      this.state = { ...this.state, viewer: login };
       this.set({
         phase: 'ready',
         loginReason: null,
@@ -167,7 +202,14 @@ export class Controller {
 
   async logout(reason: string | null = null): Promise<void> {
     this.loginRun++;
+    this.session++;
     this.token = null;
+    // Signing out forgets everything read with that account.
+    this.wipeCache();
+    this.owner = null;
+    this.deps.cache.setSetting('cacheOwner', null);
+    this.deps.cache.setSetting('cacheCredential', null);
+    this.deps.cache.setSetting('viewer', null);
     await this.deps.credentials.clear();
     this.set({
       phase: 'login',
@@ -175,6 +217,26 @@ export class Controller {
       viewer: null,
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
+  }
+
+  /** Drop every snapshot, in memory and in SQLite. */
+  private wipeCache(): void {
+    this.deps.cache.clearSnapshots();
+    this.snapshots.clear();
+    this.state = { ...this.state, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+  }
+
+  /** The cache may only hold data read by `login`; another (or unknown) account wipes it first. */
+  private adoptAccount(login: string | null, token: string | null): void {
+    this.deps.cache.setSetting('cacheCredential', login && token ? credentialTag(token) : null);
+    if (login && login === this.owner) return;
+    this.wipeCache();
+    this.owner = login;
+    this.deps.cache.setSetting('cacheOwner', login);
+  }
+
+  private bumpEpoch(key: string): void {
+    this.epochs.set(key, ++this.epochSeq);
   }
 
   setClientId(id: string): void {
@@ -190,6 +252,7 @@ export class Controller {
     if (!src) return { ok: false, error: '认不出这个地址：Project 请贴网址（https://github.com/orgs/<组织>/projects/<编号>），仓库写「组织/仓库名」' };
     if (this.state.sources.some((s) => s.key === src.key)) return { ok: false, error: '这个来源已经加过了' };
     const sources = [...this.state.sources, src];
+    this.bumpEpoch(src.key);
     this.deps.cache.setSetting('sources', sources);
     const view = this.state.view.selected ? { ...this.state.view, selected: [...this.state.view.selected, src.key] } : this.state.view;
     this.deps.cache.setSetting('view', view);
@@ -200,6 +263,7 @@ export class Controller {
 
   removeSource(key: string): void {
     const sources = this.state.sources.filter((s) => s.key !== key);
+    this.bumpEpoch(key);
     this.deps.cache.setSetting('sources', sources);
     this.deps.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
@@ -239,18 +303,31 @@ export class Controller {
   private async runRound(): Promise<void> {
     const token = this.token;
     if (!token) return;
-    this.set({ sync: { ...this.state.sync, syncing: true } });
+    const session = this.session;
     const sources = this.state.sources;
+    const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
+    this.set({ sync: { ...this.state.sync, syncing: true } });
     const round = await syncRound(new GitHubClient(this.deps.endpoints, token, this.fetchImpl), sources, this.snapshots, this.now());
-    if (token !== this.token) {
-      // logged out meanwhile: drop the round
+    if (session !== this.session) {
+      // logged out / another account logged in meanwhile: nothing of this round may land
       this.set({ sync: { ...this.state.sync, syncing: false } });
       return;
     }
-    if (round.replaced.length) this.deps.cache.replaceSnapshots(round.replaced);
-    // sources removed during the round must not come back
-    for (const [k, v] of round.snapshots) if (this.state.sources.some((s) => s.key === k)) this.snapshots.set(k, v);
+    // GitHub says who this token belongs to; data of anybody else goes first.
+    if (round.viewer) this.adoptAccount(round.viewer, token);
+    // Only sources still configured *as the same addition* the round started with.
+    // A source removed (or removed and re-added) meanwhile is skipped everywhere:
+    // database, memory and status all take this one filtered result.
+    const current = (key: string) =>
+      this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
+    const accepted = round.replaced.filter((snap) => current(snap.sourceKey));
+    if (accepted.length) this.deps.cache.replaceSnapshots(accepted);
+    for (const snap of accepted) this.snapshots.set(snap.sourceKey, snap);
     if (round.viewer) this.deps.cache.setSetting('viewer', round.viewer);
+    const status = round.status
+      .filter((st) => current(st.sourceKey))
+      .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }));
+    const untouched = this.state.sync.sources.filter((st) => !status.some((x) => x.sourceKey === st.sourceKey) && this.state.sources.some((x) => x.key === st.sourceKey));
     this.set({
       viewer: round.viewer ?? this.state.viewer,
       sync: {
@@ -258,7 +335,7 @@ export class Controller {
         offline: round.offline,
         lastOnlineAt: round.offline ? this.state.sync.lastOnlineAt : this.now(),
         dataFrom: this.state.sync.dataFrom,
-        sources: round.status.filter((s) => this.state.sources.some((x) => x.key === s.sourceKey)),
+        sources: [...status, ...untouched],
       },
     });
     if (round.authFailed) await this.logout(REASON_REVOKED);

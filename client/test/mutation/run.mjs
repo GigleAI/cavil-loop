@@ -1,171 +1,243 @@
 #!/usr/bin/env node
-// Negative controls for the client's unit tests (same convention as the
-// shell tests in ../../tests, GitHub#103): each entry breaks one spot of the
-// real source in a throw-away copy and requires `vitest run` to go red.
+// Negative controls for the client's unit tests (GitHub#103 convention).
+// Entry point is test/mutation/run.sh, which goes through
+// tests/lib/mutation.sh's `mutation_gate` once per entry. This file does the
+// work for one step at a time:
 //
-//   node test/mutation/run.mjs              -> only counts: "负对照：跳过 N 项"
-//   MUTATION=1 node test/mutation/run.mjs   -> runs every one
+//   node run.mjs --count        number of entries
+//   node run.mjs --name I       one-line description of entry I
+//   node run.mjs --baseline     unmodified copy: the suite must pass
+//   node run.mjs --one I        entry I: the listed tests must fail by assertion
 //
-// A mutation whose `from` text is no longer in the file is a failure too
-// (checked only with MUTATION=1), so a refactor cannot silently disarm one.
+// "Red" is only accepted when vitest itself ran and reported a failed result
+// for every test named in `expect`. A runner that cannot start, a signal, a
+// timeout, a missing report or "something else failed" all count as a failed
+// negative control — never as "went red as expected".
+//
+// Env for the runner's own tests: CLIENT_MUT_VITEST (vitest entry to run),
+// CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS).
 
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const MUTATIONS = [
-  {
-    what: '去重失效：同一条目按来源各算一张',
-    file: 'src/data/merge.ts',
+  { what: '去重失效：同一条目按来源各算一张', file: 'src/data/merge.ts',
     from: "byKey.set(it.key, { ...it, projects: [...it.projects], sources: [...it.sources] });",
     to: "byKey.set(it.key + '|' + snap.sourceKey, { ...it, projects: [...it.projects], sources: [...it.sources] });",
-  },
-  {
-    what: '迭代合列只看名字、不看开始日期',
-    file: 'src/data/board.ts',
-    from: 'return `iteration:${it.title}\\u0000${it.startDate}`;',
-    to: 'return `iteration:${it.title}`;',
-  },
-  {
-    what: '两个 Project 迭代不同时只出一张卡',
-    file: 'src/data/board.ts',
+    expect: ['an item from a Project and from its repository is one item'] },
+  { what: '迭代合列只看名字、不看开始日期', file: 'src/data/board.ts',
+    from: 'return `iteration:${it.title}\\u0000${it.startDate}`;', to: 'return `iteration:${it.title}`;',
+    expect: ['same title but different start date stays two columns'] },
+  { what: '两个 Project 迭代不同时只出一张卡', file: 'src/data/board.ts',
     from: 'for (const [col, titles] of byCol) place(placements, col, item, titles);',
     to: 'for (const [col, titles] of [...byCol].slice(0, 1)) place(placements, col, item, titles);',
-  },
-  {
-    what: '没有迭代字段时不回退到按状态',
-    file: 'src/data/board.ts',
-    from: "if (mode === 'iteration' && !projects.some((p) => p.hasIterationField)) {",
-    to: "if (false) {",
-  },
-  {
-    what: '已结束的迭代不再标出',
-    file: 'src/data/board.ts',
-    from: 'return addDays(it.startDate, it.duration) <= today;',
-    to: 'return false;',
-  },
-  {
-    what: '里程碑不按截止日期排序',
-    file: 'src/data/board.ts',
-    from: "const sort = due ? `0${due}` : '1';",
-    to: "const sort = '1';",
-  },
-  {
-    what: '不在任何所选 Project 的条目不进「未加入看板」',
-    file: 'src/data/board.ts',
-    from: '    place(placements, COL_UNBOARDED, item, []);\n    return;',
-    to: '    return;',
-  },
-  {
-    what: '离线时修改入口不变灰',
-    file: 'src/data/board.ts',
-    from: 'return !sync.offline;',
-    to: 'return true;',
-  },
-  {
-    what: 'Project 只读第一页',
-    file: 'src/data/fetchSources.ts',
-    from: 'if (!p.items.pageInfo.hasNextPage) break;',
-    to: 'break;',
-  },
-  {
-    what: '仓库来源不读最近 14 天关闭的',
-    file: 'src/data/fetchSources.ts',
-    from: 'export const REPO_RECENT_DAYS = 14;',
-    to: 'export const REPO_RECENT_DAYS = 0;',
-  },
-  {
-    what: '某来源读失败时把它当成空，而不是沿用上一轮',
-    file: 'src/data/sync.ts',
+    expect: ['one issue in two Projects with different iterations'] },
+  { what: '没有迭代字段时不回退到按状态', file: 'src/data/board.ts',
+    from: "if (mode === 'iteration' && !projects.some((p) => p.hasIterationField)) {", to: 'if (false) {',
+    expect: ['falls back to status with a notice'] },
+  { what: '已结束的迭代不再标出', file: 'src/data/board.ts',
+    from: 'return addDays(it.startDate, it.duration) <= today;', to: 'return false;',
+    expect: ['ended iterations are flagged'] },
+  { what: '里程碑不按截止日期排序', file: 'src/data/board.ts',
+    from: "const sort = due ? `0${due}` : '1';", to: "const sort = '1';",
+    expect: ['milestones: same title across repos merges'] },
+  { what: '不在任何所选 Project 的条目不进「未加入看板」', file: 'src/data/board.ts',
+    from: '    place(placements, COL_UNBOARDED, item, []);\n    return;', to: '    return;',
+    expect: ['items not in any selected Project go to 未加入看板'] },
+  { what: '离线时修改入口不变灰', file: 'src/data/board.ts',
+    from: 'return !sync.offline;', to: 'return true;',
+    expect: ['offline → disabled; online → enabled'] },
+  { what: 'Project 只读第一页', file: 'src/data/fetchSources.ts',
+    from: 'if (!p.items.pageInfo.hasNextPage) break;', to: 'break;',
+    expect: ['reads both pages'] },
+  { what: '仓库来源不读最近 14 天关闭的', file: 'src/data/fetchSources.ts',
+    from: 'export const REPO_RECENT_DAYS = 14;', to: 'export const REPO_RECENT_DAYS = 0;',
+    expect: ['reads every open item plus anything updated in the last 14 days'] },
+  { what: '某来源读失败时把它当成空，而不是沿用上一轮', file: 'src/data/sync.ts',
     from: "if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;",
-    to: "snapshots.set(src.key, { sourceKey: src.key, fetchedAt: now, items: [] });\n      if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;",
-  },
-  {
-    what: '连不上 GitHub 不算离线',
-    file: 'src/data/sync.ts',
-    from: "const offline = !(err instanceof GitHubError) || err.kind === 'network';",
-    to: 'const offline = false;',
-  },
-  {
-    what: '缓存不覆盖旧快照',
-    file: 'src/data/cache.ts',
+    to: "snapshots.set(src.key, { sourceKey: src.key, fetchedAt: now, items: [] });\n      replaced.push({ sourceKey: src.key, fetchedAt: now, items: [] });\n      if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;",
+    expect: ['a source that fails mid-pagination keeps its previous snapshot'] },
+  { what: '连不上 GitHub 不算离线', file: 'src/data/sync.ts',
+    from: "const offline = !(err instanceof GitHubError) || err.kind === 'network';", to: 'const offline = false;',
+    expect: ['offline restart: cached content still shows'] },
+  { what: '缓存不覆盖旧快照', file: 'src/data/cache.ts',
     from: 'ON CONFLICT(source_key) DO UPDATE SET fetched_at = excluded.fetched_at, data = excluded.data',
     to: 'ON CONFLICT(source_key) DO NOTHING',
-  },
-  {
-    what: '凭据被撤销后不回登录页',
-    file: 'src/main/controller.ts',
-    from: 'if (round.authFailed) await this.logout(REASON_REVOKED);',
-    to: '',
-  },
-  {
-    what: '授权等待中被当成失败',
-    file: 'src/data/deviceFlow.ts',
-    from: "case 'authorization_pending':",
-    to: "case 'authorization_pending_disabled':",
-  },
-  {
-    what: '用户拒绝授权不区分出来',
-    file: 'src/data/deviceFlow.ts',
-    from: "case 'access_denied':",
-    to: "case 'access_denied_disabled':",
-  },
-  {
-    what: '短码过期不区分出来',
-    file: 'src/data/deviceFlow.ts',
-    from: "case 'expired_token':",
-    to: "case 'expired_token_disabled':",
-  },
-  {
-    what: '分页链接指向别的主机也照跟',
-    file: 'src/data/github.ts',
-    from: "if (new URL(url).origin !== origin) throw",
-    to: "if (false) throw",
-  },
-  {
-    what: '钥匙串「找不到」被当成错误',
-    file: 'src/platform/credentials.ts',
-    from: 'if (exitCode(err) === 44) return resolve(null);',
-    to: '',
-  },
+    expect: ['each successful round replaces the cached snapshot as a whole'] },
+  { what: '凭据被撤销后不回登录页', file: 'src/main/controller.ts',
+    from: 'if (round.authFailed) await this.logout(REASON_REVOKED);', to: '',
+    expect: ['revoked credential → next sync returns to login'] },
+  { what: '授权等待中被当成失败', file: 'src/data/deviceFlow.ts',
+    from: "case 'authorization_pending':", to: "case 'authorization_pending_disabled':",
+    expect: ['waiting → user approves'] },
+  { what: '用户拒绝授权不区分出来', file: 'src/data/deviceFlow.ts',
+    from: "case 'access_denied':", to: "case 'access_denied_disabled':",
+    expect: ['user denies on GitHub'] },
+  { what: '短码过期不区分出来', file: 'src/data/deviceFlow.ts',
+    from: "case 'expired_token':", to: "case 'expired_token_disabled':",
+    expect: ['code expires (GitHub says so)'] },
+  { what: '分页链接指向别的主机也照跟', file: 'src/data/github.ts',
+    from: 'if (new URL(url).origin !== origin) throw', to: 'if (false) throw',
+    expect: ['refuses to follow a pagination link to another host'] },
+  { what: '钥匙串「找不到」被当成错误', file: 'src/platform/credentials.ts',
+    from: 'if (exitCode(err) === 44) return resolve(null);', to: '',
+    expect: ['set → get → clear round-trips'] },
+  // ---- review round 1 of PR #140 ----
+  { what: '退出登录不清缓存', file: 'src/main/controller.ts',
+    from: '    // Signing out forgets everything read with that account.\n    this.wipeCache();', to: '',
+    expect: ['sign out → another account signs in'] },
+  { what: '缓存归属不记账（同账号离线重启也看不到缓存）', file: 'src/main/controller.ts',
+    from: 'if (login && login === this.owner) return;', to: 'return;',
+    expect: ['offline restart: cached content still shows'] },
+  { what: '凭据在 App 外被换掉、离线重启时照显示旧缓存', file: 'src/main/controller.ts',
+    from: "if (this.deps.cache.getSetting<string | null>('cacheCredential', null) !== credentialTag(this.token)) {", to: 'if (false) {',
+    expect: ['restart offline: the other account'] },
+  { what: '旧账号的在途同步在换账号后照样写入', file: 'src/main/controller.ts',
+    from: 'if (session !== this.session) {', to: 'if (false) {',
+    expect: ['a round still in flight for the first account'] },
+  { what: '同步途中删掉的来源被旧请求写回', file: 'src/main/controller.ts',
+    from: 'const accepted = round.replaced.filter((snap) => current(snap.sourceKey));', to: 'const accepted = round.replaced;',
+    expect: ['removed → the finished old request'] },
+  { what: '删掉又重加的来源收下删除前发出的旧请求', file: 'src/main/controller.ts',
+    from: ' && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);', to: ';',
+    expect: ['removed and added again'] },
+  { what: '整份换回复审时的旧实现（提交 08b28c7）', file: 'src/main/controller.ts',
+    fromGit: '08b28c761bdd7500234915c21b158767a813224b:client/src/main/controller.ts',
+    expect: ['sign out → another account signs in', 'removed → the finished old request'] },
 ];
 
-if (process.env.MUTATION !== '1') {
-  console.log(`负对照：跳过 ${MUTATIONS.length} 项（MUTATION=1 时运行）`);
-  process.exit(0);
+const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
+const VITEST = process.env.CLIENT_MUT_VITEST ?? join(root, 'node_modules', 'vitest', 'vitest.mjs');
+const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 180_000);
+
+function sandbox() {
+  const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
+  for (const d of ['src', 'test']) cpSync(join(root, d), join(work, d), { recursive: true });
+  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts']) cpSync(join(root, f), join(work, f));
+  symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
+  return work;
 }
 
-let failed = 0;
-let ran = 0;
-for (const m of MUTATIONS) {
-  ran++;
-  const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
+/** Run vitest in `work`; resolve to { kind: 'report', status, report } or { kind: 'broken', why }. */
+function runVitest(work) {
+  const out = join(work, 'vitest-report.json');
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(process.execPath, [VITEST, 'run', '--reporter=json', `--outputFile=${out}`], {
+        cwd: work,
+        env: { ...process.env, CLIENT_MUT_CHILD: '1' },
+        stdio: ['ignore', 'ignore', 'pipe'],
+        detached: true, // own process group: a timeout kills vitest's workers too
+      });
+    } catch (e) {
+      return resolve({ kind: 'broken', why: `启动失败：${e.message}` });
+    }
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, TIMEOUT_MS);
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ kind: 'broken', why: `启动失败：${e.message}` });
+    });
+    child.on('close', (status, signal) => {
+      clearTimeout(timer);
+      if (timedOut) return resolve({ kind: 'broken', why: `超时（${TIMEOUT_MS} ms）被终止` });
+      if (signal) return resolve({ kind: 'broken', why: `被信号 ${signal} 终止` });
+      if (!existsSync(out)) return resolve({ kind: 'broken', why: `没有产出测试报告（退出码 ${status}）：${stderr.trim().split('\n').slice(-3).join(' / ')}` });
+      let report;
+      try {
+        report = JSON.parse(readFileSync(out, 'utf8'));
+      } catch (e) {
+        return resolve({ kind: 'broken', why: `测试报告读不了：${e.message}` });
+      }
+      resolve({ kind: 'report', status, report });
+    });
+  });
+}
+
+function results(report) {
+  return report.testResults.flatMap((f) => f.assertionResults.map((a) => ({ name: a.fullName, status: a.status })));
+}
+
+async function baseline() {
+  const work = sandbox();
   try {
-    for (const d of ['src', 'test']) cpSync(join(root, d), join(work, d), { recursive: true });
-    for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts']) cpSync(join(root, f), join(work, f));
-    symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
-    const target = join(work, m.file);
-    const text = readFileSync(target, 'utf8');
-    if (!text.includes(m.from)) {
-      console.log(`❌ 准备失败（原文不在 ${m.file}）：${m.what}`);
-      failed++;
-      continue;
+    const r = await runVitest(work);
+    if (r.kind === 'broken') return fail(`基线没跑成：${r.why}`);
+    const all = results(r.report);
+    // the runner's own self-tests skip themselves inside child runs; anything else must pass
+    const bad = all.filter((t) => t.status !== 'passed' && !(t.status === 'skipped' || t.status === 'pending') );
+    const passed = all.filter((t) => t.status === 'passed').length;
+    if (r.status !== 0 || bad.length || passed === 0 || r.report.numFailedTestSuites) {
+      return fail(`基线不是全绿（退出码 ${r.status}，${all.length} 条，未通过：${bad.map((t) => t.name).join('；') || '套件加载失败'}）`);
     }
-    writeFileSync(target, text.replace(m.from, m.to));
-    const r = spawnSync(join(work, 'node_modules', '.bin', 'vitest'), ['run', '--reporter=dot'], { cwd: work, encoding: 'utf8' });
-    if (r.status === 0) {
-      console.log(`❌ 没变红：${m.what}`);
-      failed++;
-    } else {
-      console.log(`✅ 变红：${m.what}`);
-    }
+    console.log(`✅ 基线：未改动的副本 ${passed} 条全过（另 ${all.length - passed} 条是负对照执行器的自检，子进程里不跑）`);
+    return 0;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
-console.log(`负对照：本次跑了 ${ran} 项，${ran - failed} 项按预期变红，${failed} 项失败`);
-process.exit(failed ? 1 : 0);
+
+async function one(i) {
+  const m = list[i];
+  if (!m) return fail(`没有第 ${i} 项`);
+  const work = sandbox();
+  try {
+    const target = join(work, m.file);
+    if (m.fromGit) {
+      let old;
+      try {
+        old = execFileSync('git', ['show', m.fromGit], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        return fail(`准备失败（取不到 ${m.fromGit}）：${m.what}`);
+      }
+      writeFileSync(target, old);
+    } else {
+      const text = readFileSync(target, 'utf8');
+      if (!text.includes(m.from)) return fail(`准备失败（原文不在 ${m.file}）：${m.what}`);
+      writeFileSync(target, text.replace(m.from, m.to));
+    }
+    const r = await runVitest(work);
+    if (r.kind === 'broken') return fail(`执行异常（${r.why}）：${m.what}`);
+    if (r.status === 0) return fail(`没变红：${m.what}`);
+    const all = results(r.report);
+    const missing = m.expect.filter((name) => !all.some((t) => t.status === 'failed' && t.name.includes(name)));
+    if (missing.length) {
+      const failed = all.filter((t) => t.status === 'failed').map((t) => t.name);
+      return fail(`红了，但不是预期的断言（缺：${missing.join('；')}；实际失败：${failed.join('；') || '无，可能是套件加载失败'}）：${m.what}`);
+    }
+    console.log(`✅ 变红（${m.expect.length} 条预期断言失败）：${m.what}`);
+    return 0;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+function fail(msg) {
+  console.log(`❌ ${msg}`);
+  return 1;
+}
+
+const [cmd, arg] = process.argv.slice(2);
+if (cmd === '--count') console.log(list.length);
+else if (cmd === '--name') console.log(list[Number(arg)]?.what ?? '');
+else if (cmd === '--baseline') process.exitCode = await baseline();
+else if (cmd === '--one') process.exitCode = await one(Number(arg));
+else {
+  console.error('用法：由 test/mutation/run.sh 调用（--count | --name I | --baseline | --one I）');
+  process.exitCode = 2;
+}

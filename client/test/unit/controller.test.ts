@@ -266,3 +266,176 @@ describe('sync and cache', () => {
     expect(c.addSource('https://github.com/gigleai/CAVIL-LOOP').ok).toBe(false);
   });
 });
+
+// ---- review round 1 (PR #140): account isolation and removals during a round ----
+
+const TOKEN_B = 'gho_faketokenB00000000000000000000002';
+const REPO_KEY = 'repo:gigleai/cavil-loop';
+
+/** account B ("user-2") exists on the fake and cannot read GigleAI/cavil-loop */
+function accountB() {
+  fake.state.tokenViewers.set(TOKEN_B, 'user-2');
+  fake.state.deniedRepos.set('user-2', new Set(['gigleai/cavil-loop']));
+}
+
+async function loginViaBrowser(c: Controller, token: string) {
+  fake.state.nextGrant = { token };
+  c.setClientId(fake.state.oauthClientId);
+  const p = c.startLogin();
+  await until(c, (s) => s.login.status === 'waiting', 'waiting');
+  fake.resolveGrant('approved');
+  return p;
+}
+
+/** wait until the fake has seen `n` requests whose path contains `fragment` */
+async function requestsSeen(fragment: string, n: number) {
+  for (let i = 0; i < 400; i++) {
+    if (fake.log.filter((l) => l.path.includes(fragment)).length >= n) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`fake never saw ${n} requests to ${fragment}`);
+}
+
+describe('the cache belongs to one account', () => {
+  async function accountA() {
+    const credentials = new FileStore(join(dir, 'cred'));
+    await credentials.set(FAKE_TOKEN);
+    const h = make({ credentials });
+    h.c.addSource(REPO);
+    await h.c.start();
+    await h.c.syncNow();
+    // "something did happen": A really read its private repository
+    expect(h.c.getBoardData().items.length).toBeGreaterThan(0);
+    expect(h.cache.loadSnapshots().size).toBe(1);
+    return h;
+  }
+
+  it('sign out → another account signs in: none of the first account\'s items are shown or kept', async () => {
+    accountB();
+    const { c, cache } = await accountA();
+    await c.logout();
+    expect(cache.loadSnapshots().size).toBe(0);
+    expect(c.getBoardData().items).toHaveLength(0);
+    expect(cache.getSetting('viewer', 'x')).toBeNull();
+
+    await loginViaBrowser(c, TOKEN_B);
+    expect(c.getState().viewer).toBe('user-2');
+    const st = c.getState().sync.sources.find((s) => s.sourceKey === REPO_KEY)!;
+    expect(st).toMatchObject({ ok: false, dataFrom: null });
+    expect(st.error).toContain('404');
+    expect(c.getBoardData().items).toHaveLength(0);
+    expect(cache.loadSnapshots().size).toBe(0);
+  });
+
+  it('credential replaced outside the app, restart offline: the other account\'s cache is not shown', async () => {
+    accountB();
+    const a = await accountA();
+    a.c.stopTimer();
+    await a.credentials.set(TOKEN_B);
+    fake.state.validTokens.add(TOKEN_B);
+    fake.state.offline = true;
+    const b = make({ credentials: a.credentials });
+    await b.c.start();
+    expect(b.c.getState()).toMatchObject({ phase: 'ready', sync: { offline: true } });
+    expect(b.c.getBoardData().items).toHaveLength(0);
+    expect(b.cache.loadSnapshots().size).toBe(0);
+  });
+
+  it('credential replaced outside the app, restart online: GitHub says another account → cache dropped', async () => {
+    accountB();
+    const a = await accountA();
+    a.c.stopTimer();
+    await a.credentials.set(TOKEN_B);
+    fake.state.validTokens.add(TOKEN_B);
+    const b = make({ credentials: a.credentials });
+    await b.c.start();
+    expect(b.c.getState().viewer).toBe('user-2');
+    expect(b.c.getBoardData().items).toHaveLength(0);
+    expect(b.cache.loadSnapshots().size).toBe(0);
+  });
+
+  it('a round still in flight for the first account never lands after the second one signs in', async () => {
+    accountB();
+    fake.state.deniedRepos.clear(); // B may read the repo too: only the round's owner decides
+    fake.state.tokenViewers.set(TOKEN_B, 'user-2');
+    const credentials = new FileStore(join(dir, 'cred'));
+    await credentials.set(FAKE_TOKEN);
+    const { c, cache } = make({ credentials });
+    c.addSource(REPO);
+    await c.start();
+    const release = fake.hold('/repos/GigleAI/cavil-loop/issues');
+    const before = fake.log.filter((l) => l.path.includes('/issues?')).length;
+    const inflight = c.syncNow();
+    await requestsSeen('/issues?', before + 2);
+    await c.logout();
+    // From here on, at no moment may A's data be visible or owned (a later B round
+    // overwriting it would hide the leak from an end-state check).
+    const leaks: string[] = [];
+    c.onChange(() => {
+      const n = c.getBoardData().items.length;
+      if (n > 1) leaks.push(`board showed ${n} items`);
+      if (cache.getSetting('cacheOwner', null) === 'user-1') leaks.push('cache owned by user-1 again');
+      const cached = cache.loadSnapshots().get(REPO_KEY)?.items.length ?? 0;
+      if (cached > 1) leaks.push(`cache held ${cached} items`);
+    });
+    // B's repository has different content: whatever is shown must be B's
+    fake.state.repos.set('gigleai/cavil-loop', [fake.state.repos.get('gigleai/cavil-loop')![0]]);
+    const login = loginViaBrowser(c, TOKEN_B);
+    await until(c, (s) => s.phase === 'ready', 'B ready');
+    release();
+    await inflight;
+    await login;
+    await c.syncNow();
+    // the held responses (A's) really were delivered
+    expect(fake.log.filter((l) => l.path.includes('/issues?') && l.auth === `Bearer ${FAKE_TOKEN}` && l.status === 200).length).toBeGreaterThanOrEqual(2);
+    expect(leaks).toEqual([]);
+    expect(c.getState().viewer).toBe('user-2');
+    expect(c.getBoardData().items).toHaveLength(1);
+    expect(cache.loadSnapshots().get(REPO_KEY)!.items).toHaveLength(1);
+    expect(cache.getSetting('cacheOwner', null)).toBe('user-2');
+  });
+});
+
+describe('sources removed while a round is in flight', () => {
+  async function started() {
+    const credentials = new FileStore(join(dir, 'cred'));
+    await credentials.set(FAKE_TOKEN);
+    const h = make({ credentials });
+    h.c.addSource(PROJECT_URL);
+    h.c.addSource(REPO);
+    await h.c.start();
+    const release = fake.hold('/repos/GigleAI/cavil-loop/issues');
+    const before = fake.log.filter((l) => l.path.includes('/issues?')).length;
+    const inflight = h.c.syncNow();
+    await requestsSeen('/issues?', before + 2);
+    return { ...h, release, inflight };
+  }
+
+  it('removed → the finished old request does not bring it back (database, memory, status)', async () => {
+    const { c, cache, release, inflight } = await started();
+    c.removeSource(REPO_KEY);
+    expect(cache.loadSnapshots().has(REPO_KEY)).toBe(false);
+    release();
+    await inflight;
+    expect(fake.log.filter((l) => l.path.includes('/issues?') && l.status === 200).length).toBeGreaterThanOrEqual(2);
+    expect(cache.loadSnapshots().has(REPO_KEY)).toBe(false);
+    expect(c.getState().sync.sources.map((s) => s.sourceKey)).not.toContain(REPO_KEY);
+    expect(c.getBoardData().items.every((i) => !i.sources.includes(REPO_KEY))).toBe(true);
+    // the other source of the same round did land
+    expect(cache.loadSnapshots().has('project:org/gigleai/11')).toBe(true);
+  });
+
+  it('removed and added again → the old request is not taken for the new addition', async () => {
+    const { c, cache, release, inflight } = await started();
+    c.removeSource(REPO_KEY);
+    expect(c.addSource(REPO).ok).toBe(true);
+    // the round queued by the re-add cannot read the repo: only the stale answer could fill it
+    fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
+    release();
+    await inflight;
+    expect(cache.loadSnapshots().has(REPO_KEY)).toBe(false);
+    const st = c.getState().sync.sources.find((s) => s.sourceKey === REPO_KEY)!;
+    expect(st).toMatchObject({ ok: false, dataFrom: null });
+    expect(fake.log.filter((l) => l.path.includes('/issues?') && l.status === 502).length).toBeGreaterThan(0);
+  });
+});

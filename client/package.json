@@ -10,8 +10,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run && node test/mutation/run.mjs",
-    "test:mutation": "node test/mutation/run.mjs",
+    "test": "vitest run && bash test/mutation/run.sh",
+    "test:mutation": "MUTATION=1 bash test/mutation/run.sh",
     "test:e2e": "node scripts/build.mjs && playwright test",
     "start": "node scripts/build.mjs && electron .",
     "dist:mac": "node scripts/build.mjs && electron-builder --mac --publish never"

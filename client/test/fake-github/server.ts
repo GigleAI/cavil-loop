@@ -55,6 +55,12 @@ export interface FakeState {
   nextGrant: Partial<DeviceGrant>;
   /** `scope` sent with the latest device-code request */
   lastScope: string | null;
+  /** token -> login; tokens not listed are `viewer` */
+  tokenViewers: Map<string, string>;
+  /** login -> repos (`owner/name` lower-cased) that answer 404 for that account */
+  deniedRepos: Map<string, Set<string>>;
+  /** responses of matching paths wait for `release()` (after the response is computed) */
+  holds: { match: (path: string) => boolean; gate: Promise<void> }[];
 }
 
 export interface LoggedRequest {
@@ -74,6 +80,8 @@ export interface FakeGitHub {
   log: LoggedRequest[];
   /** mark the pending grant for this user code (or the latest) approved/denied/expired */
   resolveGrant(state: DeviceGrant['state'], userCode?: string): DeviceGrant;
+  /** hold responses of paths containing `fragment` until the returned function is called */
+  hold(fragment: string): () => void;
   close(): Promise<void>;
 }
 
@@ -106,6 +114,9 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     deviceExpiresIn: 900,
     nextGrant: {},
     lastScope: null,
+    tokenViewers: new Map(),
+    deniedRepos: new Map(),
+    holds: [],
     ...init,
   };
   const log: LoggedRequest[] = [];
@@ -125,11 +136,15 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       entry.status = status;
       json(res, status, body, headers);
     };
+    const token = auth?.replace(/^Bearer\s+/i, '') ?? '';
+    const login = () => state.tokenViewers.get(token) ?? state.viewer;
     const authed = () => {
-      const t = auth?.replace(/^Bearer\s+/i, '') ?? '';
-      if (state.validTokens.has(t)) return true;
+      if (state.validTokens.has(token)) return true;
       send(401, { message: 'Bad credentials' });
       return false;
+    };
+    const held = async () => {
+      for (const h of state.holds) if (h.match(entry.path)) await h.gate;
     };
 
     // ---- OAuth device flow (web base) ----
@@ -182,7 +197,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       entry.operation = op;
       entry.variables = body.variables;
       if (!authed()) return;
-      if (op === 'CavilViewer') return send(200, { data: { viewer: { login: state.viewer } } });
+      if (op === 'CavilViewer') return send(200, { data: { viewer: { login: login() } } });
       if (op === 'CavilProjectItems') {
         const v = body.variables;
         const key = `${v.isOrg ? 'org' : 'user'}/${String(v.owner).toLowerCase()}/${v.number}`;
@@ -203,7 +218,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       if (!authed()) return;
       const key = `${m[1]}/${m[2]}`.toLowerCase();
       const issues = state.repos.get(key);
-      if (!issues) return send(404, { message: 'Not Found' });
+      if (!issues || state.deniedRepos.get(login())?.has(key)) return send(404, { message: 'Not Found' });
       const st = url.searchParams.get('state') ?? 'open';
       const since = url.searchParams.get('since');
       const per = Math.min(Number(url.searchParams.get('per_page') ?? 30), state.restPageSize);
@@ -221,6 +236,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         next.searchParams.set('page', String(page + 1));
         headers.Link = `<${next.toString()}>; rel="next"`;
       }
+      await held();
       return send(200, slice, headers);
     }
     send(404, { message: 'Not Found' });
@@ -243,6 +259,16 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       if (!g) throw new Error('fake: no grant to resolve');
       g.state = to;
       return g;
+    },
+    hold(fragment) {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const h = { match: (p: string) => p.includes(fragment), gate };
+      state.holds.push(h);
+      return () => {
+        state.holds = state.holds.filter((x) => x !== h);
+        release();
+      };
     },
     close: () =>
       new Promise<void>((r) => {
