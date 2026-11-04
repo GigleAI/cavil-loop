@@ -10,13 +10,13 @@
   not-waiting                    没挂等待标签（机器人不拉它）
   handed-back                    挂着 pending/human（机器人不碰）
   bot-origin                     正文带来源标记（走机器人自己的老规则，不归这里管）
-  preparing                      还没有对应的交接评论，且离挂标签不到 30 分钟
+  preparing                      还没有对应的叫醒记录，且离挂标签不到 30 分钟
   ready <评论编号> <对象>          转给这个对象
   error <原因>                   不转达，留言交维护者
 
 --minutes = 假设机器人在挂标签之后过了多少分钟才扫到（默认 0）。
---rule 只给负对照用：v3 = 找不到对应评论就判出错（第 3 版的规则）；v2 = 不看编号，取挂标签账号
-「时间早于挂标签」的最后一条评论（第 2 版的规则）。
+--rule 只给负对照用：v3 = 找不到对应的叫醒记录就判出错（方案第 3 版的规则）；v2 = 不看编号，取挂标签
+账号「时间早于挂标签」的最后一条评论（方案第 2 版的规则）。
 """
 import hashlib
 import json
@@ -60,19 +60,17 @@ for k, c in enumerate(it.get("comments", [])):
         c = {"user": "someone", "body": c}
     comments.append((c.get("id", k + 1), (c.get("user") or "").lower(), c.get("body") or ""))
 
-line_re = re.compile(r"^\s*<!-- requester-bot-forward-to: (.+?) ; wake-event: ([0-9]+) ; sha256: ([0-9a-f]{64}) -->\s*$")
+wake_re = re.compile(r"^\s*<!-- requester-bot-wake: event=([0-9]+) comment=([0-9]+) sha256=([0-9a-f]{64}) -->\s*$")
+fwd_re = re.compile(r"^\s*<!-- requester-bot-forward-to: (.*?) -->\s*$")
 
 
-def marker_lines(body):
-    return [ln.rstrip("\r") for ln in body.split("\n") if KEY in ln]
+def lines(body):
+    return [ln.rstrip("\r") for ln in body.split("\n")]
 
 
-def restored(body, target):
-    # 1. CRLF → LF  2. 标记行还原成未填编号的标准形式  3. 去掉末尾空白
-    out = []
-    for ln in body.replace("\r\n", "\n").split("\n"):
-        out.append(f"<!-- {KEY}: {target} -->" if KEY in ln else ln)
-    return "\n".join(out).rstrip()
+def fp(body):
+    # 规范化：CRLF → LF，去掉末尾空白；对结果按 UTF-8 算 SHA-256
+    return hashlib.sha256(body.replace("\r\n", "\n").rstrip().encode("utf-8")).hexdigest()
 
 
 def target_ok(t):
@@ -86,30 +84,33 @@ if rule == "v2":
     cands = [c for c in comments if c[1] == A and "2026-10-01T00:00:00Z" < t_ev]
     if not cands:
         print("error 选不到评论"); sys.exit(0)
-    cid, _, body = max(cands)
-    m = [ln for ln in marker_lines(body)]
-    print(f"ready {cid} ?" if m else "error 没有标记"); sys.exit(0)
+    print(f"ready {max(cands)[0]} ?"); sys.exit(0)
 
-hits = []
+receipts = []
 for cid, who, body in comments:
     if who != A:
         continue
-    ml = marker_lines(body)
-    if len(ml) != 1:
+    wl = [ln for ln in lines(body) if "requester-bot-wake" in ln]
+    if len(wl) != 1:
         continue
-    m = line_re.match(ml[0])
-    if m and m.group(2) == str(E):
-        hits.append((cid, body, m))
-if not hits:
+    m = wake_re.match(wl[0])
+    if m and m.group(1) == str(E):
+        receipts.append(m)
+if not receipts:
     if rule == "v3" or minutes >= GRACE_MIN:
-        print("error 挂标签之后没有对应的交接评论"); sys.exit(0)
+        print("error 挂标签之后没有对应的叫醒记录"); sys.exit(0)
     print("preparing"); sys.exit(0)
-if len(hits) > 1:
-    print("error 对应的交接评论不止一条"); sys.exit(0)
-cid, body, m = hits[0]
-target = m.group(1).strip()
-if not target_ok(target):
-    print("error 转交对象不合格"); sys.exit(0)
-if hashlib.sha256(restored(body, target).encode("utf-8")).hexdigest() != m.group(3):
+if len(receipts) > 1:
+    print("error 对应的叫醒记录不止一条"); sys.exit(0)
+m = receipts[0]
+cid, want_fp = int(m.group(2)), m.group(3)
+c = next((x for x in comments if x[0] == cid), None)
+if c is None or c[1] != A:
+    print("error 叫醒记录指向的交接评论不在了，或不是同一个账号发的"); sys.exit(0)
+if fp(c[2]) != want_fp:
     print("error 正文指纹对不上（评论被改过）"); sys.exit(0)
-print(f"ready {cid} {target}")
+fl = [ln for ln in lines(c[2]) if "requester-bot-forward-to" in ln]
+fm = fwd_re.match(fl[0]) if len(fl) == 1 else None
+if not fm or not target_ok(fm.group(1)):
+    print("error 交接评论的转交标记不合格"); sys.exit(0)
+print(f"ready {cid} {fm.group(1).strip()}")

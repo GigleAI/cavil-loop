@@ -326,6 +326,9 @@ if args and args[0] == "api":
         if rest.split("?")[0] == "/comments":
             if method == "POST":
                 body = next((kv[5:] for kv in fields if kv.startswith("body=")), "")
+                if input_file:
+                    with open(input_file, encoding="utf-8") as f:
+                        body = json.load(f).get("body", body)
                 cid = st.get("next_comment_id", 1000)
                 st["next_comment_id"] = cid + 1
                 it.setdefault("comments", []).append({"id": cid, "user": st.get("me"), "body": body})

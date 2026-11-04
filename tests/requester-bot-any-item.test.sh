@@ -155,6 +155,13 @@ body_of() { jq -j --arg n "$1" --argjson id "$2" '.items[$n].comments[] | select
 labels_of() { jq -r --arg n "$1" '.items[$n].labels | join(",")' "$(ST)"; }
 writes() { grep -c '^WRITE ' "$RW/gh/calls.log" 2>/dev/null || true; }
 patches() { grep -c '^WRITE PATCH ' "$RW/gh/calls.log" 2>/dev/null || true; }
+receipts() {   # <N> → 本账号发的叫醒记录条数
+    jq -r --arg n "$1" '[.items[$n].comments[] | select(.user == "worker-bot" and (.body | test("requester-bot-wake: ")))] | length' "$(ST)"
+}
+latest_receipt() {   # <N> → 编号最大的叫醒记录里那一行的 event=… comment=…
+    jq -r --arg n "$1" '[.items[$n].comments[] | select(.user == "worker-bot" and (.body | test("requester-bot-wake: ")))]
+        | max_by(.id) // {} | (.body // "") | capture("(?<k>event=[0-9]+ comment=[0-9]+)").k // ""' "$(ST)"
+}
 faults() { printf '%s' "$1" > "$RW/gh/faults.json"; }
 last_wait_event() {   # <N> → 最近一次挂等待标签的事件编号
     jq -r --arg n "$1" '[.items[$n].events | to_entries[] | select(.value.event == "labeled" and .value.label == "waiting/bot")
@@ -185,10 +192,7 @@ wake() {   # <scripts 副本> <N>
     OUT=$(env FAKE_GH_DIR="$RW/gh" ${OBS:+FAKE_GH_OBSERVER="python3 -I $REF $(ST) $2 --rule ${REF_RULE:-v4} >> $RW/gh/obs.log"} \
         bash "$1/scripts/notify-requester-bot.sh" --config "$RW/cavil-loop.config" "$2" 2>&1) || RC=$?
 }
-# 交接评论除标记那一行之外逐字节不变（含 footer），而且机器记录仍是最后一个非空行
-only_marker_changed() {   # <原正文> <现正文>
-    diff <(printf '%s' "$1") <(printf '%s' "$2") | grep -E '^[<>]' | grep -cv 'requester-bot-forward-to' || true
-}
+# 交接评论里的用量 footer：机器记录仍是最后一个非空行
 last_line_is_metrics() { printf '%s' "$1" | awk 'NF{l=$0} END{print (l ~ /^<!-- agent-metrics /) ? "yes" : "no"}'; }
 footer_intact() {   # 评论正文末尾就是 footer 原样（评论经 $( ) 存进去，末尾不带换行）
     [ "$(printf '%s' "$1" | tail -c "$(printf '%s' "$FOOTER" | wc -c)")" = "$FOOTER" ] && echo yes || echo no
@@ -274,12 +278,13 @@ success_suite() {   # <scripts 副本>
         now=$(body_of $n "$c"); e=$(last_wait_event $n)
         chk "成功 · #$n：退出码 0" "$RC" 0
         chk "成功 · #$n：只剩等待标签" "$(labels_of $n)" "waiting/bot"
-        chk "成功 · #$n：标记里填的是这次挂标签的事件编号" "$(printf '%s' "$now" | grep -c "wake-event: $e ;")" 1
-        chk "成功 · #$n：只改了标记那一行" "$(only_marker_changed "$orig" "$now")" 0
-        chk "成功 · #$n：用量 footer 字节不变" "$(footer_intact "$now")" yes
-        chk "成功 · #$n：机器记录仍是最后一个非空行" "$(last_line_is_metrics "$now")" yes
+        chk "成功 · #$n：交接评论一个字节都没动（含 footer）" "$([ "$now" = "$orig" ] && echo yes || echo no)" yes
+        chk "成功 · #$n：footer 仍在末尾、机器记录仍是最后一个非空行" "$(footer_intact "$now") $(last_line_is_metrics "$now")" "yes yes"
+        chk "成功 · #$n：没有编辑任何评论" "$(patches)" 0
+        chk "成功 · #$n：发了恰好一条叫醒记录" "$(receipts $n)" 1
+        chk "成功 · #$n：叫醒记录写的是这次挂标签的事件和这条交接评论" "$(latest_receipt $n)" "event=$e comment=$c"
         chk "成功 · #$n：webhook 恰好一次" "$(hook_count)" 1
-        chk "成功 · #$n：输出写明交接评论和事件编号" "$(printf '%s' "$OUT" | grep -c "交接评论 $c，挂标签事件 $e，转给：$t")" 1
+        chk "成功 · #$n：输出写明交接评论、事件编号和叫醒记录" "$(printf '%s' "$OUT" | grep -c "交接评论 $c，挂标签事件 $e，叫醒记录 [0-9]*，转给：$t")" 1
         chk "成功 · #$n：机器人参考实现选中同一条评论" "$(ref $n)" "ready $c $t"
         chk "成功 · #$n：叫醒过程中机器人任何时刻都没判「出错」、没选别的评论" \
             "$(grep -vE "^(not-waiting|preparing|handed-back|ready $c $t)\$" "$RW/gh/obs.log" | sort -u | paste -sd'|')" ""
@@ -367,8 +372,10 @@ CASES
     chk "拒绝 · 复用前提：第一次叫醒成功" "$RC" 0
     local before; before=$(body_of 80 "$C80")
     set_field 80 labels '["waiting/bot","doing/agent"]'
-    reject_case "复用已经叫醒过的交接评论" 80 "已经用于过一次叫醒"
+    # 叫醒成功后本账号最新的一条是叫醒记录，没有转交标记
+    reject_case "复用已经叫醒过的交接评论" 80 "没有转交标记"
     chk "拒绝 · 复用：交接评论没动" "$([ "$(body_of 80 "$C80")" = "$before" ] && echo yes || echo no)" yes
+    chk "拒绝 · 复用：没有多发叫醒记录" "$(receipts 80)" 1
     chk "拒绝 · 复用：标签没动" "$(labels_of 80)" "waiting/bot,doing/agent"
 }
 reject_suite "$NEW"
@@ -387,43 +394,54 @@ retry_case() {   # <说明> <期望退出码> <期望 webhook 次数> <期望挂
     chk "重试 · $desc：挂了 $nwait 次等待标签" "$(wait_events 80)" "$nwait"
     if [ "$want" = 0 ]; then
         chk "重试 · $desc：只剩等待标签" "$(labels_of 80)" "waiting/bot"
-        chk "重试 · $desc：标记填的是最后一次挂标签的编号" "$(printf '%s' "$now" | grep -c "wake-event: $(last_wait_event 80) ;")" 1
+        chk "重试 · $desc：最新的叫醒记录写的是最后一次挂标签" "$(latest_receipt 80)" "event=$(last_wait_event 80) comment=$C80"
         chk "重试 · $desc：机器人认这条评论" "$(ref 80)" "ready $C80 运营"
-        chk "重试 · $desc：只改了标记那一行" "$(only_marker_changed "$orig" "$now")" 0
+        chk "重试 · $desc：交接评论一个字节都没动" "$([ "$now" = "$orig" ] && echo yes || echo no)" yes
     else
         chk "重试 · $desc：交还后只挂 pending/human" "$(labels_of 80)" "pending/human"
         chk "重试 · $desc：交还后机器人不拉这一条" "$(ref 80)" not-waiting
     fi
-    # 填好编号之后被人改了评论：机器人此时判「出错」是对的（就该交人），不算违规
+    # 叫醒记录发出后交接评论被改、或存下的叫醒记录本身不对：机器人此时判「出错」是对的（就该交人），不算违规
     chk "重试 · $desc：过程中机器人没判「出错」、没选别的评论" \
-        "$(grep -vE "^(not-waiting|preparing|handed-back|ready $C80 运营${ALLOW_ERR:+|error 正文指纹对不上（评论被改过）})\$" "$RW/gh/obs.log" | sort -u | paste -sd'|')" ""
+        "$(grep -vE "^(not-waiting|preparing|handed-back|ready $C80 运营${ALLOW_ERR:+|error 正文指纹对不上（评论被改过）|error 挂标签之后没有对应的叫醒记录})\$" "$RW/gh/obs.log" | sort -u | paste -sd'|')" ""
 }
+RCPT_POST='issues/80/comments$'
+RCPT_JQ='(.items["80"].comments[] | select(.user == "worker-bot" and (.body | test("requester-bot-wake: "))) | .body)'
+EDIT_C='(.items["80"].comments[] | select(.user == "worker-bot" and (.body | test("requester-bot-forward-to"))) | .body) |= sub("一键开通"; "一键购买")'
+jsq() { jq -cn --arg x "$1" '$x'; }   # 把一段 jq 表达式写成 JSON 字符串
 retry_suite() {   # <scripts 副本>
     S="$1"
-    retry_case "填编号报错一次" 0 1 2 '[{"method":"PATCH","path":"'"$C_GET"'","mode":"fail","times":1}]'
-    retry_case "填编号报错、其实已生效" 0 1 2 '[{"method":"PATCH","path":"'"$C_GET"'","mode":"applyfail","times":1}]'
-    # 读交接评论：叫醒前核对一次（放过）、挂标签后重读一次（放过）、填完读回 —— 读回失败一次
-    retry_case "填完读回失败一次" 0 1 2 '[{"method":"GET","path":"'"$C_GET"'","mode":"fail","skip":2,"times":1}]'
-    retry_case "填完读回一直失败" 3 0 2 '[{"method":"GET","path":"'"$C_GET"'","mode":"fail","skip":2}]'
-    retry_case "填编号一直失败" 3 0 2 '[{"method":"PATCH","path":"'"$C_GET"'","mode":"fail"}]'
+    retry_case "发叫醒记录报错一次" 0 1 2 '[{"method":"POST","path":"'"$RCPT_POST"'","mode":"fail","times":1}]'
+    retry_case "发叫醒记录报错、其实已发出" 0 1 2 '[{"method":"POST","path":"'"$RCPT_POST"'","mode":"applyfail","times":1}]'
+    # 读评论：叫醒前核对交接评论、挂标签后重读交接评论（放过这两次），第 3 次是读回叫醒记录
+    retry_case "读回叫醒记录失败一次" 0 1 2 '[{"method":"GET","path":"'"$C_GET"'","mode":"fail","skip":2,"times":1}]'
+    retry_case "读回一直失败" 3 0 2 '[{"method":"GET","path":"'"$C_GET"'","mode":"fail","skip":2}]'
+    retry_case "发叫醒记录一直失败" 3 0 2 '[{"method":"POST","path":"'"$RCPT_POST"'","mode":"fail"}]'
     retry_case "读标签事件看不到这次挂的（新事件 0 个）" 3 0 2 '[{"method":"GET","path":"/events$","mode":"hidenew"}]'
     retry_case "本账号新事件 2 个" 3 0 4 '[{"method":"POST","path":"/labels$","field":"waiting/bot","mode":"set","jq":".items[\"80\"].events += [{\"event\":\"labeled\",\"actor\":\"worker-bot\",\"label\":\"waiting/bot\",\"id\":.next_event_id}] | .next_event_id += 1"}]'
+    # 存下的叫醒记录本身不对（指纹 / 事件编号）：读回发现，重试
+    ALLOW_ERR=1 retry_case "读回的叫醒记录指纹不对" 0 1 2 '[{"method":"GET","path":"'"$C_GET"'","mode":"set","skip":2,"times":1,"jq":'"$(jsq "$RCPT_JQ"' |= sub("sha256=[0-9a-f]+"; "sha256='"$(printf 0%.0s $(seq 64))"'")')"'}]'
+    ALLOW_ERR=1 retry_case "读回的叫醒记录事件编号不对" 0 1 2 '[{"method":"GET","path":"'"$C_GET"'","mode":"set","skip":2,"times":1,"jq":'"$(jsq "$RCPT_JQ"' |= sub("event=[0-9]+"; "event=1")')"'}]'
     # 不重试的：只挂了一次等待标签
-    retry_case "挂标签后交接评论被人改了" 3 0 1 '[{"method":"POST","path":"/labels$","field":"waiting/bot","mode":"set","jq":"(.items[\"80\"].comments[] | select(.user == \"worker-bot\") | .body) |= sub(\"一键开通\"; \"一键购买\")"}]'
+    retry_case "挂标签后交接评论被人改了" 3 0 1 '[{"method":"POST","path":"/labels$","field":"waiting/bot","mode":"set","jq":'"$(jsq "$EDIT_C")"'}]'
     retry_case "挂标签后交接评论被删了" 3 0 1 '[{"method":"POST","path":"/labels$","field":"waiting/bot","mode":"set","jq":".items[\"80\"].comments |= map(select(.user != \"worker-bot\"))"}]'
     retry_case "挂标签后本账号又发了评论" 3 0 1 '[{"method":"POST","path":"/labels$","field":"waiting/bot","mode":"set","jq":".items[\"80\"].comments += [{\"id\": 1999, \"user\": \"worker-bot\", \"body\": \"补一句\"}]"}]'
-    ALLOW_ERR=1 retry_case "填编号期间交接评论被人改了（读回发现）" 3 0 1 '[{"method":"GET","path":"'"$C_GET"'","mode":"set","skip":2,"times":1,"jq":"(.items[\"80\"].comments[] | select(.user == \"worker-bot\") | .body) |= sub(\"一键开通\"; \"一键购买\")"}]'
-    # 时限：设成 0 秒 = 一挂上就超时，不填编号、交还
+    # 复审第 1 轮的反例：重读交接评论之后、发叫醒记录的同时，有人改了交接评论
+    ALLOW_ERR=1 retry_case "发叫醒记录的同时交接评论被人改了" 3 0 1 '[{"method":"POST","path":"'"$RCPT_POST"'","mode":"set","times":1,"jq":'"$(jsq "$EDIT_C")"'}]'
+    chk "重试 · 发叫醒记录的同时被改：别人的修改原样保留（没被旧副本覆盖）" \
+        "$(body_of 80 "$C80" | grep -c '一键购买')|$(body_of 80 "$C80" | grep -c '一键开通')" "1|0"
+    chk "重试 · 发叫醒记录的同时被改：没有编辑任何评论" "$(patches)" 0
+    # 时限：设成 0 秒 = 一挂上就超时，不发叫醒记录、交还
     fresh "true"; printf 'REQUESTER_BOT_WAKE_DEADLINE_SECS=0\n' >> "$RW/cavil-loop.config"
     : > "$RW/gh/calls.log"; OBS=1 wake "$S" 80
     chk "重试 · 超过时限：退出码 3" "$RC" 3
-    chk "重试 · 超过时限：没编辑交接评论" "$(patches)" 0
+    chk "重试 · 超过时限：没发叫醒记录" "$(receipts 80)" 0
     chk "重试 · 超过时限：webhook 0 次" "$(hook_count)" 0
     chk "重试 · 超过时限：只挂 pending/human" "$(labels_of 80)" "pending/human"
-    chk "重试 · 超过时限：输出写明原因" "$(printf '%s' "$OUT" | grep -q '还没填好编号，不再填' && echo yes || echo no)" yes
+    chk "重试 · 超过时限：输出写明原因" "$(printf '%s' "$OUT" | grep -q '还没发出叫醒记录，不再发' && echo yes || echo no)" yes
     chk "重试 · 超过时限：过程中没判「出错」" "$(grep -c '^error' "$RW/gh/obs.log")" 0
     # 交还也失败：退出码 4，照旧路径
-    fresh; faults '[{"method":"PATCH","path":"'"$C_GET"'","mode":"fail"},{"method":"POST","path":"/labels$","field":"pending/human","mode":"fail"}]'
+    fresh; faults '[{"method":"POST","path":"'"$RCPT_POST"'","mode":"fail"},{"method":"POST","path":"/labels$","field":"pending/human","mode":"fail"}]'
     wake "$S" 80
     chk "重试 · 交还也失败：退出码 4" "$RC" 4
     chk "重试 · 交还也失败：webhook 0 次" "$(hook_count)" 0
@@ -437,10 +455,11 @@ consumer_suite() {   # <scripts 副本> [参考实现的规则]
     local S="$1" R="${2:-v4}" e
     fresh; wake "$S" 80; e=$(last_wait_event 80)
     chk "机器人 · 正常：就绪" "$(ref 80 --rule "$R")" "ready $C80 运营"
-    chk "机器人 · 过了 31 分钟仍是就绪（已填好就不受时限影响）" "$(ref 80 --minutes 31 --rule "$R")" "ready $C80 运营"
-    # 外人伪造一条写着同一编号的评论：不认
-    add_comment 80 someone "$(handoff_body 黑客 "<!-- requester-bot-forward-to: 黑客 ; wake-event: $e ; sha256: $(printf 0%.0s $(seq 64)) -->")" >/dev/null
-    chk "机器人 · 外人伪造同一编号：照旧认原评论" "$(ref 80 --rule "$R")" "ready $C80 运营"
+    chk "机器人 · 过了 31 分钟仍是就绪（叫醒记录在就不受时限影响）" "$(ref 80 --minutes 31 --rule "$R")" "ready $C80 运营"
+    # 外人伪造一条同一事件编号的叫醒记录，指向他自己写的交接评论：不认
+    local fc; fc=$(add_comment 80 someone "$(handoff_body 黑客)")
+    add_comment 80 someone "<!-- requester-bot-wake: event=$e comment=$fc sha256=$(printf 0%.0s $(seq 64)) -->" >/dev/null
+    chk "机器人 · 外人伪造同一编号的叫醒记录：照旧认原评论" "$(ref 80 --rule "$R")" "ready $C80 运营"
     # 交接评论被改
     jqset --argjson id "$C80" '(.items["80"].comments[] | select(.id == $id) | .body) |= sub("一键开通"; "一键购买")'
     chk "机器人 · 叫醒后评论被改：出错，不转达" "$(ref 80 --rule "$R" | awk '{print $1}')" error
@@ -449,8 +468,12 @@ consumer_suite() {   # <scripts 副本> [参考实现的规则]
     set_field 80 labels '["waiting/bot","pending/agent"]'
     local c2; c2=$(add_comment 80 worker-bot "$(handoff_body 法务)"); wake "$S" 80
     jqset --argjson id "$c2" '.items["80"].comments |= map(select(.id != $id))'
-    chk "机器人 · 新评论被删、旧交接评论还在：不往旧评论找（准备中）" "$(ref 80 --rule "$R")" preparing
-    chk "机器人 · 新评论被删、过了 31 分钟：出错交人" "$(ref 80 --minutes 31 --rule "$R" | awk '{print $1}')" error
+    chk "机器人 · 新交接评论被删、旧交接评论还在：出错交人，不往旧评论找" "$(ref 80 --rule "$R" | awk '{print $1}')" error
+    # 叫醒记录被删：找不到对应记录 → 准备中，过了时限出错
+    fresh; wake "$S" 80
+    jqset '.items["80"].comments |= map(select((.body | test("requester-bot-wake: ")) | not))'
+    chk "机器人 · 叫醒记录被删：准备中（不转达）" "$(ref 80 --rule "$R")" preparing
+    chk "机器人 · 叫醒记录被删、过了 31 分钟：出错交人" "$(ref 80 --minutes 31 --rule "$R" | awk '{print $1}')" error
     # 维护者手动摘了再挂等待标签
     fresh; wake "$S" 80
     jqset '.items["80"].events += [{"event":"unlabeled","actor":"maintainer","label":"waiting/bot","id":9000},{"event":"labeled","actor":"maintainer","label":"waiting/bot","id":9001}]'
@@ -523,22 +546,36 @@ D=$(mutate no-remove-first scripts/notify-requester-bot.sh \
     }
     wake_once || return 1') && neg "已挂着等待标签时不先摘再挂" success_suite "$D"
 D=$(mutate no-recheck scripts/notify-requester-bot.sh \
-    '    rc=0; recheck_c "$TMPD/c1" || rc=$?' \
-    '    cp "$TMPD/c0" "$TMPD/c1"; rc=0') && neg "挂标签后不重读交接评论" retry_suite "$D"
-D=$(mutate raw-compare scripts/notify-requester-bot.sh \
-    '        && cmp -s "$1.norm" "$TMPD/b0" || { LAST_FAIL="交接评论 $C_ID 的内容和核对时不一样（被改过）"; return 2; }' \
-    '        && cmp -s "$1" "$TMPD/c0" || { LAST_FAIL="交接评论 $C_ID 的内容和核对时不一样（被改过）"; return 2; }') \
-    && neg "重读时按原文比较（不还原）" retry_suite "$D"
+    '    E_ID="$e"
+    rc=0; recheck_c || rc=$?' \
+    '    E_ID="$e"
+    rc=0') && neg "挂标签后不重读交接评论" retry_suite "$D"
+D=$(mutate no-post-check scripts/notify-requester-bot.sh \
+    '    # 发记录的同时 C 被改过：机器人会判「出错」交人，这边也不报成功
+    rc=0; recheck_c || rc=$?' \
+    '    rc=0') && neg "发完叫醒记录不再核对交接评论" retry_suite "$D"
+D=$(mutate count-own-receipt scripts/notify-requester-bot.sh \
+    '    cur=$(my_latest_comment "$C_ID") || { LAST_FAIL="重读评论列表失败"; return 1; }' \
+    '    cur=$(my_latest_comment) || { LAST_FAIL="重读评论列表失败"; return 1; }') \
+    && neg "重试时把这次发的叫醒记录当成别的评论" retry_suite "$D"
+D=$(mutate no-verify scripts/notify-requester-bot.sh \
+    '    python3 "$HANDOFF_PY" verify "$TMPD/rr" "$E_ID" "$C_ID" "$C_FP" >/dev/null \' \
+    '    true \') && neg "不核对读回的叫醒记录" retry_suite "$D"
 D=$(mutate no-deadline scripts/notify-requester-bot.sh \
     '    if past_deadline; then' \
     '    if false; then') && neg "去掉时限" retry_suite "$D"
-D=$(mutate allow-reuse scripts/notify-requester-bot.sh \
-    '        6) reject "交接评论 $C_ID 已经用于过一次叫醒；要再叫醒，先发一条新的交接评论" ;;' \
-    '        6) TARGET=复用 ;;') && neg "允许复用已经叫醒过的交接评论" reject_suite "$D"
-D=$(mutate append-stamp scripts/requester_bot_handoff.py \
-    '        lines[i] = f"<!-- {KEY}: {t} ; wake-event: {ev} ; sha256: {fingerprint(body)} -->" + end' \
-    '        fp = fingerprint(body); lines[i] = ""; lines.append(f"\n<!-- {KEY}: {t} ; wake-event: {ev} ; sha256: {fp} -->\n")') \
-    && neg "编号追加在评论末尾" success_suite "$D"
+# 允许复用：找交接评论时跳过所有叫醒记录（于是叫醒过的旧交接评论又成了「最新」）
+D=$(mutate reuse-a scripts/notify-requester-bot.sh \
+    '            [[ "$body" == *"<!-- requester-bot-wake: event="*" comment=$1 sha256="* ]] && continue' \
+    '            [[ "$body" == *"<!-- requester-bot-wake: "* ]] && continue') \
+    && D=$(MUT_BASE="$D" mutate reuse-b scripts/notify-requester-bot.sh \
+    '    C_ID=$(my_latest_comment) || reject' \
+    '    C_ID=$(my_latest_comment any) || reject') && neg "允许复用已经叫醒过的交接评论" reject_suite "$D"
+D=$(mutate edit-comment scripts/notify-requester-bot.sh \
+    '    rid=$(gh_write api -X POST "repos/$REPO/issues/$NUM/comments" --input "$TMPD/receipt.json" --jq '"'"'.id'"'"') \' \
+    '    gh_write api -X PATCH "repos/$REPO/issues/comments/$C_ID" --input "$TMPD/receipt.json" >/dev/null || true
+    rid=$(gh_write api -X POST "repos/$REPO/issues/$NUM/comments" --input "$TMPD/receipt.json" --jq '"'"'.id'"'"') \') \
+    && neg "叫醒时还整段改写交接评论" success_suite "$D"
 D=$(mutate done-uses-class scripts/_lib.sh \
     '    rc=0; requester_bot_item_origin "$pr" "$item" || rc=$?
     case "$rc" in' \

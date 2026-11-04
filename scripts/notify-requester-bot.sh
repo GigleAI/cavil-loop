@@ -152,17 +152,27 @@ for n in $(printf '%s\n%s\n' "$NUM" "$ORIGIN" | awk '!seen[$0]++'); do
 done
 
 # ── 非机器人条目：交接评论（GitHub#133，规则见 docs/requester-bot*.md「交接协议」）──
-# 本账号在条目上编号最大的那条评论就是交接评论 C，里面要恰好一行**未填编号**的转交标记。
-# 叫醒挂上等待标签后，把这次挂标签的事件编号和正文指纹填进那一行；机器人按事件编号找回 C。
+# 本账号在条目上编号最大的那条评论就是交接评论 C，里面要恰好一行转交标记。脚本**不编辑 C**
+# （评论编辑接口没有条件写入，整段写回会覆盖别人同时做的修改）：挂上等待标签后另发一条叫醒记录，
+# 写明这次挂标签的事件编号、C 的编号和 C 的正文指纹；机器人按事件编号找到叫醒记录，再回到 C 核对指纹。
 HANDOFF_PY="$SCRIPT_DIR/requester_bot_handoff.py"
 TMPD=""
-# 本账号在该条目上编号最大的评论编号（大小写不敏感比账号）；读失败 return 1，没有输出空
-my_latest_comment() {
-    local rows me
+# 本账号在该条目上编号最大的评论编号（大小写不敏感比账号）。给了 C 的编号时，跳过本账号为 C
+# 发的叫醒记录（这次运行里重试前发出的那条）。读失败 return 1，没有输出空
+my_latest_comment() {   # [跳过为这条评论发的叫醒记录]
+    local rows me id who b64 max="" body
     me=$(lc "$REQUESTER_BOT_ME")
     rows=$(gh api --paginate "repos/$REPO/issues/$NUM/comments" \
-        --jq '.[] | [(.id // "" | tostring), (.user.login // "")] | @tsv') || return 1
-    printf '%s\n' "$rows" | awk -F'\t' -v me="$me" 'NF && $1 ~ /^[0-9]+$/ && tolower($2) == me && $1 + 0 > max + 0 { max = $1 } END { if (max != "") print max }'
+        --jq '.[] | [(.id // "" | tostring), (.user.login // ""), ((.body // "") | @base64)] | @tsv') || return 1
+    while IFS=$'\t' read -r id who b64; do
+        [[ "$id" =~ ^[0-9]+$ ]] && [ "$(lc "$who")" = "$me" ] || continue
+        if [ -n "${1:-}" ]; then
+            body=$(printf '%s' "$b64" | base64 -d 2>/dev/null) || return 1
+            [[ "$body" == *"<!-- requester-bot-wake: event="*" comment=$1 sha256="* ]] && continue
+        fi
+        [ -n "$max" ] && [ "$id" -le "$max" ] || max="$id"
+    done <<< "$rows"
+    printf '%s' "$max"
 }
 # 读一条评论的正文到文件；作者必须是本账号、必须属于本条目。读失败 return 1，对不上 return 2
 read_comment() {   # <评论编号> <输出文件>
@@ -179,12 +189,10 @@ if [ "$MODE" = any ]; then
     rc=0; read_comment "$C_ID" "$TMPD/c0" || rc=$?
     [ "$rc" = 0 ] || reject "读不到交接评论 $C_ID（或它不属于 #$NUM / 不是本账号发的）"
     rc=0; TARGET=$(python3 "$HANDOFF_PY" check "$TMPD/c0") || rc=$?
-    case "$rc" in
-        0) ;;
-        6) reject "交接评论 $C_ID 已经用于过一次叫醒；要再叫醒，先发一条新的交接评论" ;;
-        *) reject "交接评论 $C_ID 不合格：${TARGET:-转交标记核对失败}（要单独一行 <!-- requester-bot-forward-to: <对象> -->，见交接规则）" ;;
-    esac
-    python3 "$HANDOFF_PY" normalize "$TMPD/c0" > "$TMPD/b0" || reject "交接评论 $C_ID 还原失败"
+    # 叫醒成功后本账号最新的一条是叫醒记录（没有转交标记），所以复用旧交接评论也落在这里
+    [ "$rc" = 0 ] || reject "本账号在 #$NUM 上最新的评论 $C_ID 不是合格的交接评论：${TARGET:-转交标记核对失败}（要单独一行 <!-- requester-bot-forward-to: <对象> -->；一条交接评论只能叫醒一次，再叫醒要先发新的）"
+    python3 "$HANDOFF_PY" normalize "$TMPD/c0" > "$TMPD/b0" || reject "交接评论 $C_ID 读取失败"
+    C_FP=$(python3 "$HANDOFF_PY" fingerprint "$TMPD/c0") || reject "交接评论 $C_ID 算指纹失败"
 fi
 
 # ── 叫醒 ──
@@ -233,14 +241,14 @@ handback() {
 
 # ── 非机器人条目的叫醒（GitHub#133）──
 # 一次尝试 = 先摘后挂等待标签（保证产生一个新的挂标签事件）→ 读回 → 找本次事件 E →
-# 重读 C → 把 E 和指纹填进 C 的标记行 → 读回核对。
+# 重读 C → 发叫醒记录 → 读回叫醒记录 → 再读一次 C。
 # 返回 0 成功；1 可以重试（读写失败、读回不符、事件不是恰好一个）；
 #      2 不重试、直接交还（C 被删 / 被改 / 已不是本账号最新评论，超过时限）
-# 时限从开始叫醒算，默认 300 秒：机器人在「挂了标签、还没填编号」时判「准备中」，留的余量是 30 分钟。
+# 时限从开始叫醒算，默认 300 秒：机器人在「挂了标签、还没有对应的叫醒记录」时判「准备中」，留的余量是 30 分钟。
 WAKE_DEADLINE_SECS="${REQUESTER_BOT_WAKE_DEADLINE_SECS:-300}"
 case "$WAKE_DEADLINE_SECS" in ''|*[!0-9]*) WAKE_DEADLINE_SECS=300 ;; esac
 WAKE_START=$(date +%s)
-E_ID=""
+E_ID=""; R_ID=""
 past_deadline() { [ $(( $(date +%s) - WAKE_START )) -ge "$WAKE_DEADLINE_SECS" ]; }
 max_event_id() {
     local rows
@@ -255,19 +263,20 @@ new_wait_event() {   # <M>
     printf '%s\n' "$rows" | awk -F'\t' -v m="$1" -v l="$LABEL_PENDING_REQUESTER_BOT" -v me="$(lc "$REQUESTER_BOT_ME")" \
         'NF && $1 ~ /^[0-9]+$/ && $1 + 0 > m + 0 && $2 == l && tolower($3) == me { n++; e = $1 } END { if (n == 1) print e; else print "count=" n + 0 }'
 }
-# 重读 C：仍在、仍是本账号最新评论、还原后正文 = B0。0 好；1 读失败（可重试）；2 对不上（不重试）
-recheck_c() {   # <输出文件>
+# 重读 C：仍在、仍是本账号最新评论（这次运行发的叫醒记录不算）、规范化正文 = B0。
+# 0 好；1 读失败（可重试）；2 对不上（不重试）
+recheck_c() {
     local cur rc=0
-    cur=$(my_latest_comment) || { LAST_FAIL="重读评论列表失败"; return 1; }
+    cur=$(my_latest_comment "$C_ID") || { LAST_FAIL="重读评论列表失败"; return 1; }
     [ "$cur" = "$C_ID" ] || { LAST_FAIL="交接评论 $C_ID 已不在或已不是本账号最新的评论（现在是 ${cur:-无}）"; return 2; }
-    read_comment "$C_ID" "$1" || rc=$?
+    read_comment "$C_ID" "$TMPD/cr" || rc=$?
     [ "$rc" = 0 ] || { LAST_FAIL="重读交接评论 $C_ID 失败"; [ "$rc" = 1 ] && return 1; return 2; }
-    python3 "$HANDOFF_PY" normalize "$1" > "$1.norm" 2>/dev/null \
-        && cmp -s "$1.norm" "$TMPD/b0" || { LAST_FAIL="交接评论 $C_ID 的内容和核对时不一样（被改过）"; return 2; }
+    python3 "$HANDOFF_PY" normalize "$TMPD/cr" > "$TMPD/cr.norm" 2>/dev/null \
+        && cmp -s "$TMPD/cr.norm" "$TMPD/b0" || { LAST_FAIL="交接评论 $C_ID 的内容和核对时不一样（被改过）"; return 2; }
     return 0
 }
 wake_any_once() {
-    local m L enc labels e rc
+    local m enc e rc rid
     m=$(max_event_id) || { LAST_FAIL="读不到标签事件"; return 1; }
     has_label "$(read_item "$NUM" 2>/dev/null || true)" "$LABEL_PENDING_REQUESTER_BOT" && {
         enc=$(printf '%s' "$LABEL_PENDING_REQUESTER_BOT" | jq -sRr @uri)
@@ -277,30 +286,34 @@ wake_any_once() {
     e=$(new_wait_event "$m") || { LAST_FAIL="读不到挂标签事件"; return 1; }
     case "$e" in ''|count=*) LAST_FAIL="本账号这次挂等待标签的事件不是恰好一个（${e:-count=0}）"; return 1 ;; esac
     E_ID="$e"
-    rc=0; recheck_c "$TMPD/c1" || rc=$?
+    rc=0; recheck_c || rc=$?
     [ "$rc" = 0 ] || return "$rc"
-    if past_deadline; then LAST_FAIL="超过 ${WAKE_DEADLINE_SECS} 秒还没填好编号，不再填"; return 2; fi
-    python3 "$HANDOFF_PY" stamp "$TMPD/c1" "$E_ID" > "$TMPD/c2" || { LAST_FAIL="生成填好编号的正文失败"; return 1; }
-    jq -n --rawfile b "$TMPD/c2" '{body: $b}' > "$TMPD/patch.json" || { LAST_FAIL="生成请求失败"; return 1; }
-    gh_write api -X PATCH "repos/$REPO/issues/comments/$C_ID" --input "$TMPD/patch.json" >/dev/null \
-        || { LAST_FAIL="填编号（编辑交接评论）失败"; return 1; }
-    rc=0; read_comment "$C_ID" "$TMPD/c3" || rc=$?
-    [ "$rc" = 0 ] || { LAST_FAIL="填编号后读回交接评论失败"; [ "$rc" = 1 ] && return 1; return 2; }
-    python3 "$HANDOFF_PY" normalize "$TMPD/c3" > "$TMPD/c3.norm" 2>/dev/null && cmp -s "$TMPD/c3.norm" "$TMPD/b0" \
-        || { LAST_FAIL="填编号后读回的交接评论内容被改过"; return 2; }
-    python3 "$HANDOFF_PY" verify "$TMPD/c3" "$E_ID" >/dev/null || { LAST_FAIL="填编号后读回的编号 / 指纹不对"; return 1; }
+    if past_deadline; then LAST_FAIL="超过 ${WAKE_DEADLINE_SECS} 秒还没发出叫醒记录，不再发"; return 2; fi
+    python3 "$HANDOFF_PY" receipt "$E_ID" "$C_ID" "$C_FP" "$TARGET" > "$TMPD/receipt.md" \
+        && jq -n --rawfile b "$TMPD/receipt.md" '{body: $b}' > "$TMPD/receipt.json" || { LAST_FAIL="生成叫醒记录失败"; return 1; }
+    rid=$(gh_write api -X POST "repos/$REPO/issues/$NUM/comments" --input "$TMPD/receipt.json" --jq '.id') \
+        || { LAST_FAIL="发叫醒记录失败"; return 1; }
+    [[ "$rid" =~ ^[0-9]+$ ]] || { LAST_FAIL="发叫醒记录后没拿到评论编号"; return 1; }
+    R_ID="$rid"
+    # 读回叫醒记录：三项都对上才算发出去了
+    rc=0; read_comment "$R_ID" "$TMPD/rr" || rc=$?
+    [ "$rc" = 0 ] || { LAST_FAIL="读回叫醒记录失败"; return 1; }
+    python3 "$HANDOFF_PY" verify "$TMPD/rr" "$E_ID" "$C_ID" "$C_FP" >/dev/null \
+        || { LAST_FAIL="读回的叫醒记录编号 / 指纹不对"; return 1; }
+    # 发记录的同时 C 被改过：机器人会判「出错」交人，这边也不报成功
+    rc=0; recheck_c || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
     return 0
 }
-
 WOKE=""
 if [ "$MODE" = any ]; then
     rc=0; wake_any_once || rc=$?
     if [ "$rc" = 0 ]; then
-        WOKE="#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT；交接评论 $C_ID，挂标签事件 $E_ID，转给：$TARGET"
+        WOKE="#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT；交接评论 $C_ID，挂标签事件 $E_ID，叫醒记录 $R_ID，转给：$TARGET"
     elif [ "$rc" = 1 ]; then
         say "叫醒第 1 次失败：$LAST_FAIL，整体重试一次"
         rc=0; wake_any_once || rc=$?
-        [ "$rc" != 0 ] || WOKE="重试后成功，#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT；交接评论 $C_ID，挂标签事件 $E_ID，转给：$TARGET"
+        [ "$rc" != 0 ] || WOKE="重试后成功，#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT；交接评论 $C_ID，挂标签事件 $E_ID，叫醒记录 $R_ID，转给：$TARGET"
     fi
     [ "$rc" != 2 ] || NO_RETRY=1
 elif wake_once; then

@@ -91,6 +91,10 @@ STUB
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$SANDBOX/old-src"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$SANDBOX/old-src"
+# GitHub#106（维护者暂停可以解除）合并之前的那个提交。「退回旧口径 / 旧判断」那几条负对照要退回的是它，
+# 不能用 merge-base：#106 合并后 merge-base 本身就带着新规则，「退回」等于没改，负对照永远是绿的
+# （GitHub#133 复审时实测：main 上 MUTATION=1 有 6 条这样的负对照不变红）。
+PRE106_REV=8b92992e268a7ebe960b0e96c0d66417ada06caa
 
 # ── 一个运行环境：配置 + 假 GitHub 状态 ──
 # $1 = 目录，$2 = on/off（外部需求机器人功能），$3 = label/greedy，其余 KEY=VAL 追加进配置
@@ -658,10 +662,11 @@ D=$(mutate no-author-check scripts/_lib.sh \
 D=$(mutate no-history-check scripts/notify-requester-bot.sh \
     '        0) reject "#$n 由维护者' \
     '        0) : "#$n 由维护者') && neg "删掉「维护者接手过」检查" reject_suite "$D"
-# GitHub#106：暂停解除的各条规则。退回旧版 = 用 merge-base 上的叫醒脚本（看全部历史）
+# GitHub#106：暂停解除的各条规则。退回旧版 = 用 #106 之前的叫醒脚本（看全部历史）
 if mutation_on; then
     D="$SANDBOX/mut-old-history"; rm -rf "$D"; cp -r "$NEW" "$D"
-    cp "$SANDBOX/old-src/scripts/notify-requester-bot.sh" "$D/scripts/notify-requester-bot.sh"
+    git -C "$REPO_DIR" show "$PRE106_REV:scripts/notify-requester-bot.sh" > "$D/scripts/notify-requester-bot.sh" \
+        || prep_failed old-history "取不到 #106 之前的叫醒脚本"
 else D=""; fi
 neg "退回旧判断（看全部历史）· issue 的两种放行" pause_resume_cases "$D"
 D=$(mutate resume-by-anyone scripts/notify-requester-bot.sh \
@@ -906,20 +911,21 @@ D=$(mutate tpl-only scripts/_lib.sh \
     fi
     neg "交接规则只写进工具自带模板" prompt_suite "$D"
 }
-# 交接说明退回改动前的版本（「手打过就永远只交维护者」）→ 四类成品都要变红
+# 交接说明退回 #106 之前的版本（「手打过就永远只交维护者」）→ 四类成品都要变红
 if mutation_on; then
     D="$SANDBOX/mut-old-handoff"; rm -rf "$D"; cp -r "$NEW" "$D"
-    cp "$SANDBOX/old-src/prompts/requester-bot-handoff.md" "$D/prompts/requester-bot-handoff.md"
+    git -C "$REPO_DIR" show "$PRE106_REV:prompts/requester-bot-handoff.md" > "$D/prompts/requester-bot-handoff.md" \
+        || prep_failed old-handoff "取不到 #106 之前的交接说明"
 else D=""; fi
 neg "交接说明退回旧口径" prompt_suite "$D"
 doc_rule_suite "$REPO_DIR"
-# 每份文档单独退回 merge-base 的版本，各自要变红
+# 每份文档单独退回 #106 之前的版本，各自要变红
 for e in $RULE_DOCS; do
     f="${e%%:*}"
     if mutation_on; then
         D="$SANDBOX/mut-old-doc-$(basename "$f")"; rm -rf "$D"; mkdir -p "$D/docs"
         cp "$REPO_DIR"/docs/*.md "$D/docs/"
-        git -C "$REPO_DIR" show "$BASE_REV:$f" > "$D/$f" || prep_failed "old-doc-$f" "取不到旧版"
+        git -C "$REPO_DIR" show "$PRE106_REV:$f" > "$D/$f" || prep_failed "old-doc-$f" "取不到旧版"
     else D=""; fi
     neg "$f 退回旧口径" doc_rule_suite "$D"
 done

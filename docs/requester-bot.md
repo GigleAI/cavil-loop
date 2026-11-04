@@ -117,7 +117,7 @@ cavil-loop only handles its own side; grokbot implements the following:
 5. **On a comment headed "request done" / "closed without merging"** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`; the request is finished
 6. **Leave items carrying `pending/human` alone**: those are for the maintainer
 7. **Attachments**: images etc. from the requester can be pasted into the issue and the agent downloads them itself; the other direction (agent sending attachments to grokbot) is not supported yet
-8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): an item carrying the waiting label whose body has **no** origin marker is not grokbot's request, and whom to forward to is written in the handoff comment. Find that comment per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
+8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): an item carrying the waiting label whose body has **no** origin marker is not grokbot's request, and whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
 
 ## One request end to end: what you see on the issue
 
@@ -184,7 +184,7 @@ Whether a wake-up is warranted is the worker's call: the dispatch prompt only al
 
 ### Handoff protocol
 
-The wake-up script and grokbot follow one rule to agree on "which comment is this handoff", relying only on facts anyone can read on GitHub (label event ids, comment authors, comment bodies) — never on timestamps.
+The wake-up script and grokbot follow one rule to agree on "which comment is this handoff", relying only on facts anyone can read on GitHub (label event ids, comment ids, comment authors, comment bodies) — never on timestamps.
 
 **The worker's handoff comment**: the body says, in plain words, "please forward to: ops", and, before the usage footer, carries a forward marker on a line of its own:
 
@@ -194,52 +194,54 @@ The wake-up script and grokbot follow one rule to agree on "which comment is thi
 
 The target is 1–100 characters on one line, without `<`, `>`, `;` or control characters; one comment carries exactly one such line. A handoff comment serves one wake-up only — to ask again, post a new one.
 
+**The wake-up script never edits the handoff comment**: GitHub's comment-edit API has no "write only if unchanged" condition, so writing the whole body back would overwrite an edit someone made at the same time. Instead the script posts a separate **wake record** comment and leaves the handoff comment byte for byte as it was.
+
 **What the wake-up script does** (after the pre-checks pass):
 
-1. Take this account's comment with the **highest id** on the item, C; it must carry exactly one valid, not yet stamped marker, else refuse (exit 2, no writes)
+1. Take this account's comment with the **highest id** on the item, C; it must carry exactly one valid forward marker, else refuse (exit 2, no writes). After a successful wake-up this account's latest comment is the wake record, so reusing an old handoff comment is refused here too
 2. If the item already carries the waiting label, remove it first, then add it — so every wake-up produces a new labeling event; read the labels back
 3. Read the label events: exactly **one** "waiting label added by this account" event after the wake-up started, E
-4. Re-read C: still there, still this account's latest comment, unchanged apart from the marker line
-5. Edit C, replacing only the marker line with the stamped form, every other byte (the usage footer at the end included) untouched, then read it back:
+4. Re-read C: still there, still this account's latest comment (wake records posted by this run do not count), unchanged
+5. Post the wake record: one plain sentence plus a line
 
    ```
-   <!-- requester-bot-forward-to: ops ; wake-event: <E> ; sha256: <64 hex digits> -->
+   <!-- requester-bot-wake: event=<E> comment=<C's comment id> sha256=<C's body fingerprint> -->
    ```
 
-6. Only if all of that succeeded: call the webhook, exit 0, print C and E
+6. Read the wake record back (all three fields must match), then read C once more — still unchanged
+7. Only if all of that succeeded: call the webhook, exit 0, print C, E and the wake record's id
 
-**Body fingerprint**: replace `\r\n` with `\n`, restore the marker line to its unstamped form `<!-- requester-bot-forward-to: ops -->` (target trimmed), strip trailing whitespace from the whole body, and take SHA-256 of the UTF-8 result. Changing any character outside that line breaks the fingerprint; re-stamping with a new event id (a retry) leaves it unchanged.
+**Body fingerprint**: replace `\r\n` with `\n`, strip trailing whitespace from the whole body, and take SHA-256 of the UTF-8 result. Changing any character of C breaks it.
 
 **grokbot, for an item carrying the waiting label whose body has no origin marker**:
 
 1. Read the label events and take, by **event id**, the latest "waiting label added" event: id E, actor A, time t
-2. Find the comments authored by A whose marker says `wake-event: E`
-3. Four outcomes:
+2. Find the wake records authored by A that say `event=E`
+3. The comment C the record points at must still exist, be authored by A, match the record's fingerprint and carry a valid forward marker
+4. Four outcomes:
 
 | State | Condition | grokbot |
 |---|---|---|
-| ready | exactly one, fingerprint matches, target valid | forward to the marker's target |
-| preparing | none, and less than 30 minutes since t | **do nothing this round**: no forwarding, no comment, no handover |
-| error | none and more than 30 minutes since t; or more than one; or a bad fingerprint / target | do not forward; comment on the item and hand it to the maintainer |
+| ready | exactly one wake record, and everything in step 3 holds | forward to the target in C's forward marker |
+| preparing | no wake record, and less than 30 minutes since t | **do nothing this round**: no forwarding, no comment, no handover |
+| error | none and more than 30 minutes since t; or more than one; or anything in step 3 fails | do not forward; comment on the item and hand it to the maintainer |
 | handed back | the item carries `pending/human` | leave it alone (item 6 above) |
 
-When no matching comment exists, **never fall back to an older one**: that may be a previous wake-up's stale content.
+When no matching wake record exists, **never fall back to an older comment**: that may be a previous wake-up's stale content.
 
 ### Failures and retries
 
-The script allows itself 5 minutes from the start of the wake-up; if the marker is not stamped by then it stops and hands back to the maintainer (adds `pending/human`, removes the waiting label last). So "preparing" lasts minutes at most and grokbot's 30 minutes are headroom; once handed back the item carries `pending/human`, then loses the waiting label, and grokbot does not forward it.
+The script allows itself 5 minutes from the start of the wake-up; if the wake record is not posted by then it stops and hands back to the maintainer (adds `pending/human`, removes the waiting label last). So "preparing" lasts minutes at most and grokbot's 30 minutes are headroom; once handed back the item carries `pending/human`, then loses the waiting label, and grokbot does not forward it.
 
 | Case | Handling | Exit |
 |---|---|---|
-| label write / read-back failure, not exactly one labeling event by this account, stamping failed (whether or not it actually applied), read-back after stamping failed or shows the wrong id | retry the whole thing once (a new event; the marker is re-stamped with it); if that fails too, hand back | 0 or 3 |
-| C deleted, no longer this account's latest comment, or changed outside the marker line | no retry, hand back | 3 |
-| over 5 minutes | stop stamping, hand back | 3 |
+| label write / read-back failure, not exactly one labeling event by this account, posting the wake record failed (whether or not it actually went through), reading it back failed or shows the wrong content | retry the whole thing once (a new labeling event and a new wake record; the old record's event no longer matches, so grokbot ignores it); if that fails too, hand back | 0 or 3 |
+| C deleted, no longer this account's latest comment, or edited by someone (including while the wake record was being posted) | no retry, hand back; the other person's edit to C is kept as is | 3 |
+| over 5 minutes | stop, do not post the wake record, hand back | 3 |
 | the handback fails too | same as for the bot's own items | 4 |
-| the script is killed midway (label added, not stamped) | nothing follows | grokbot says "preparing" for up to 30 minutes, then "error" and hands to the maintainer |
+| the script is killed midway (label added, no wake record) | nothing follows | grokbot says "preparing" for up to 30 minutes, then "error" and hands to the maintainer |
 
-After a handback C may still carry an old event id; that event is no longer the latest labeling (any later labeling is a new event), so grokbot never takes it.
-
-If, after a successful wake-up, someone edits or deletes the handoff comment, or removes and re-adds the waiting label by hand, grokbot hands the item to the maintainer as "error" within 30 minutes. In the meantime it forwards nothing wrong and nothing stale.
+If, after a successful wake-up, someone edits or deletes the handoff comment, grokbot hands the item to the maintainer as "error". If the wake record is deleted, or someone removes and re-adds the waiting label by hand, it does so within 30 minutes. In the meantime it forwards nothing wrong and nothing stale.
 
 ## Autopilot label does not apply
 
