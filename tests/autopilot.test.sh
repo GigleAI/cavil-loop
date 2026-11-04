@@ -1114,7 +1114,7 @@ mutate pr-site-dispatch _lib.sh '        autopilot_authorization "$n" "$ij" "$nu
 mutate pr-site-takeover _lib.sh '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; autopilot_authorization "$AT_N" "$ij" || rc=$?'
 # 接手
 mutate takeover-not-called agent-poll.sh 'autopilot_takeover_tick "$STATE_FILE" || true' ':'
-mutate takeover-in-flow _lib.sh '           if autopilot_labels_in_flow "$rest"; then AT_V=skip; return 0; fi' '           :'
+mutate takeover-in-flow _lib.sh '    if autopilot_labels_in_flow "$rest"; then AT_V=skip; return 0; fi' '    :'
 mutate takeover-human-order _lib.sh '            before) AT_V=skip; return 0 ;;   # pending/human' '            before) ;;   # pending/human'
 mutate takeover-issue-halt _lib.sh "        AT_V=skip; return 0
     fi
