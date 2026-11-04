@@ -540,7 +540,9 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   maintainer re-authorized, the PR was closed / merged / rebound to another issue / moved into
   another flow, the issue was closed — → drop the task without writing any of it and handle the
   PR through the normal takeover path. The one exception: the loop already added the
-  `pending/human` for this task and only the comment is missing — then it posts the comment. When the PR-side label is not
+  `pending/human` for this task and only the comment is missing — then it posts the comment. Both ways of carrying on require the issue / branch / source to match the
+  ones recorded at decision time, and a task that already added `pending/human` is cancelled
+  (no comment, no further hand-off until the takeover is decidable) once someone removes that label. When the PR-side label is not
   accepted (not added by a maintainer, the PR does not bind to an issue, a requester-bot
   request, the issue is closed) the PR gets one comment saying why.
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead

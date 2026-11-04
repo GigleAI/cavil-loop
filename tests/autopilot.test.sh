@@ -1328,20 +1328,19 @@ mutate takeover-no-notice _lib.sh '        actor-*|binding|requester-bot|closed)
 mutate takeover-issue-only-candidate _lib.sh 'select(any(.labels[]?; .name == $L or .name == $H) or' 'select(any(.labels[]?; .name == $L) or'
 mutate takeover-coexist _lib.sh "'[.labels[]?.name | select(. != \$L and . != \$H)] | join(\",\")')" "'[.labels[]?.name | select(. != \$L and . != \$H and false)] | join(\",\")')"
 mutate takeover-unknown-no-count _lib.sh '        *) autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0 ;;' '        *) return 0 ;;'
-mutate takeover-unknown-no-done _lib.sh '    if [ "$k" = done ]; then' '    if false; then'
+mutate takeover-unknown-no-done _lib.sh '    if [ "$k" = done ] || [ "$k" = cancelled ]; then' '    if [ "$k" = cancelled ]; then'
 mutate takeover-unknown-done-early _lib.sh '    autopilot_state_set "$sf" '"'"'.takeover_handoff[$p].labeled = true'"'"' --arg p "$pr" || return 0' '    autopilot_state_set "$sf" '"'"'del(.takeover_handoff[$p]) | .takeover_unknown[$p] = "done"'"'"' --arg p "$pr"; return 0'
 mutate unk-second-not-counted _lib.sh '    if [ "$AT_V" = unknown ]; then autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0; fi' '    :'
 mutate unk-reset-on-first-take _lib.sh '    case "$AT_V" in skip|deny) autopilot_takeover_reset "$sf" "$pr" ;; esac' '    case "$AT_V" in skip|deny|take) autopilot_takeover_reset "$sf" "$pr" ;; esac'
 mutate handoff-not-first _lib.sh '        if [ -n "$(autopilot_state_get "$sf" '"'"'.takeover_handoff[$p]'"'"' --arg p "$num")" ]; then' '        if false; then'
-mutate handoff-no-rejudge _lib.sh '    # 现读重判：和普通接手用的是同一个许可函数
-    autopilot_takeover_permit "$pr"
-    case "$AT_V" in' '    autopilot_takeover_permit "$pr"; AT_V=unknown
-    case "$AT_V" in'
+mutate handoff-no-rejudge _lib.sh '    autopilot_takeover_permit "$pr"
+    local cont=""' '    autopilot_takeover_permit "$pr"; AT_V=unknown
+    local cont=""'
 mutate handoff-skip-not-dropped _lib.sh '                drop="现在判得出结论了（不接手）"' '                :'
 mutate handoff-take-not-dropped _lib.sh '        *) drop="现在判得出结论了（${AT_V}）" ;;' '        *) : ;;'
 mutate handoff-human-not-mine _lib.sh '               && [ "$(requester_bot_lc "$AT_HUMAN_BY")" = "$(requester_bot_lc "$me")" ]; then' '               ; then'
 # 记下的 issue 编号、分支、来源三项一起核对（分支必须和 issue 编号对应，所以单拆一项另两项仍会拦住，这里整段拆掉）
-mutate handoff-no-identity _lib.sh '                drop="PR 的 issue / 分支 / 来源和交人决定时不一样了"' '                :'
+mutate handoff-no-identity _lib.sh '            drop="PR 的 issue / 分支 / 来源和交人决定时不一样了"' '            :'
 mutate handoff-no-dedupe _lib.sh "    if ! printf '%s' \"\$cmts\" | jq -e --arg T \"<!-- cavil-loop:autopilot-takeover-unknown pr=\$pr -->\"" "    if true || ! printf '%s' \"\$cmts\" | jq -e --arg T \"<!-- cavil-loop:autopilot-takeover-unknown pr=\$pr -->\""
 mutate handoff-relabel _lib.sh '    if [ "$labeled" != true ]; then
         labels=' '    if true; then
