@@ -531,8 +531,13 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   label, a maintainer re-adding the label on the issue alone takes it over too. A PR that still
   carries `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` (even alongside
   `pending/human`) is never taken over — that is work in progress, and its next dispatch carries
-  the autopilot rules. If what the takeover needs stays unreadable for `AUTOPILOT_UNKNOWN_MAX`
-  rounds, the PR goes to a human (`pending/human` plus one comment), once. When the PR-side label is not
+  the autopilot rules. If the takeover cannot be decided for `AUTOPILOT_UNKNOWN_MAX` rounds
+  (a round's verdict is its last decision, so the re-check right before writing counts too), the
+  PR goes to a human (`pending/human` plus one comment), once. The hand-off is recorded as a
+  pending task before anything is written, so a failed label / comment write or a killed process
+  is picked up next round; each attempt re-reads the PR first, and drops the task without writing
+  when the PR was closed / merged, moved into another flow, changed branch or source, or the
+  `pending/human` it added was removed by someone. When the PR-side label is not
   accepted (not added by a maintainer, the PR does not bind to an issue, a requester-bot
   request, the issue is closed) the PR gets one comment saying why.
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead
@@ -601,8 +606,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
 unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
-issues by their `updated_at`; `takeover` / `takeover_unknown`: PRs judged "no takeover" with their cache key, and
-unreadable rounds during takeover). Like `requester_bot_done_queue` it is not in the migration loop
+issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handoff`: PRs judged "no takeover" with their
+cache key, undecidable rounds during takeover, and hand-offs not yet finished). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
 
 ### Poll the repo from one machine only

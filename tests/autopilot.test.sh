@@ -464,6 +464,9 @@ Closes #7" "$H1" "pending/human,autopilot"
         ev 8 labeled pending/human loop-bot
         ev 8 labeled autopilot "${1:-maint}" "${2:-User}"
     }
+    took_none() {   # 没有流程标签的 PR 8 被接手了没有：加上复审、留了接手说明
+        if [ "$(has_label 8 pending/review)/$(comments_with 8 'autopilot-takeover pr=8')" = "yes/1" ]; then echo yes; else echo no; fi
+    }
     took() {   # PR 8 被接手了没有：翻到复审、摘掉 pending/human、留了接手说明
         if [ "$(has_label 8 pending/review)/$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover pr=8')" = "yes/no/1" ]; then echo yes; else echo no; fi
     }
@@ -700,6 +703,104 @@ ROWS
     chk "第 3 轮交人时留言失败 → 标签已加、没有说明、还没记「已交人」" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_unknown 8)" "yes/0/3"
     rm -f "$GD/F_post_comment"; tick
     chk "  → 下一轮补发说明一次" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_unknown 8)" "1/done"
+
+    section "【12k】交人待办：判不了到上限之后，加标签 → 留言 → 收尾，中途失败 / 情况变化都接得上（复审第 2 轮）"
+    tk_owed() { jq -r --arg p "$1" 'if .autopilot.takeover_handoff[$p] then "yes" else "no" end' "$STATE" 2>/dev/null; }
+    unk_ready() { pr_ready; jset labels.json '.["8"] = ["autopilot"]'; touch "$GD/F_issues_8_events"; }
+    # A：第 3 轮交人时留言失败，下一轮读取和留言**同时**恢复
+    fresh; unk_ready
+    tick; tick; touch "$GD/F_post_comment"; tick
+    chk "A 留言失败：标签已加、没有说明、待办还在" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "yes/0/yes"
+    rm -f "$GD/F_post_comment" "$GD/F_issues_8_events"; tick
+    chk "A 两边同时恢复 → 下一轮补发说明一次、待办清掉" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "1/no"
+    tick
+    chk "到达性 · A 收尾后的下一轮确实重新判了接手（读了 PR 的标签记录）" "$([ "$(n_calls "$R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
+    chk "A 收尾后的下一轮：daemon 的交人在授权之后 → 不接手，计数清掉" "$(took)/$(tk_unknown 8)" "no/"
+    tick
+    chk "A 再一轮：说明仍是一条，零写入" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(writes)" "1/0"
+    # A2：只恢复读取，留言还在失败 → 不丢待办
+    fresh; unk_ready
+    tick; tick; touch "$GD/F_post_comment"; tick
+    rm -f "$GD/F_issues_8_events"; tick
+    chk "A2 只恢复读取、留言仍失败 → 没有说明、待办还在" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "0/yes"
+    rm -f "$GD/F_post_comment"; tick
+    chk "A2 留言也恢复 → 补发一次、待办清掉" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "1/no"
+    # A3：加标签就失败
+    fresh; unk_ready
+    tick; tick; touch "$GD/F_post_labels"; tick
+    chk "A3 加标签失败 → 没有说明、待办还在" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "no/0/yes"
+    rm -f "$GD/F_post_labels" "$GD/F_issues_8_events"; tick
+    chk "A3 恢复 → 加标签、说明一次" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "yes/1/no"
+    # A4：进程中途被杀——待办在，标签已加但没来得及记；或说明已发但没来得及清
+    fresh; pr_ready; jset labels.json '.["8"] = ["autopilot","pending/human"]'
+    jq '.autopilot.takeover_handoff["8"] = {k:3, reason:"x", ref:"feature/issue-7", repo:"example/ap", labeled:false}' "$STATE" > "$STATE.tmp" 2>/dev/null || echo '{"autopilot":{"takeover_handoff":{"8":{"k":3,"reason":"x","ref":"feature/issue-7","repo":"example/ap","labeled":false}}}}' > "$STATE.tmp"; mv "$STATE.tmp" "$STATE"
+    tick
+    chk "A4 标签已加、没记下 → 不重复加标签，说明一次" "$(n_calls "^gh api -X POST $R/issues/8/labels")/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "0/1/no"
+    fresh; pr_ready; jset labels.json '.["8"] = ["autopilot","pending/human"]'
+    jset comments.json '.["8"] = [{id:960, user:{login:"loop-bot"}, created_at:"2026-06-02T00:00:00Z", body:"（上一轮发的）\n<!-- cavil-loop:autopilot-takeover-unknown pr=8 -->"}]'
+    echo '{"autopilot":{"takeover_handoff":{"8":{"k":3,"reason":"x","ref":"feature/issue-7","repo":"example/ap","labeled":true}}}}' > "$STATE"
+    tick
+    chk "A4 说明已发、没清待办 → 不重复发，只收尾" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(n_calls "^gh api -X POST $R/issues/8/comments")/$(tk_owed 8)" "1/0/no"
+    chk "到达性 · A4 这一轮读了 PR 的评论" "$([ "$(n_calls "$R/issues/8/comments")" -gt 0 ] && echo yes || echo no)" yes
+    fresh; pr_ready; jset labels.json '.["8"] = ["autopilot"]'
+    echo '{"autopilot":{"takeover_handoff":{"8":{"k":3,"reason":"x","ref":"feature/issue-7","repo":"example/ap","labeled":true}}}}' > "$STATE"
+    tick
+    chk "A4 我们加的 pending/human 已被人摘掉 → 待办作废，不留言" "$(writes)/$(tk_owed 8)" "0/no"
+
+    # B：到上限、准备交人时，现读 PR 发现情况变了 → 一个字都不写，待办作废
+    # （读不到授权记录时，每轮只现读 PR 一次；第 3 轮是第 3 次，交人前那次是第 4 次）
+    for hk in "jq '.[\"8\"].state = \"closed\"' items.json|PR 被关闭" \
+              "jq '.[\"8\"] += {merged: true, state: \"closed\"}' items.json|PR 已合并" \
+              "jq '.[\"8\"] += [\"pending/review\"]' labels.json|PR 转进复审" \
+              "jq '.[\"8\"].head.ref = \"feature/issue-9\"' items.json|PR 换了分支" \
+              "jq '.[\"8\"].head.repo.full_name = \"someone/ap\"' items.json|PR 的来源变了"; do
+        IFS='|' read -r cmd what <<< "$hk"
+        fresh; unk_ready
+        local f; f="${cmd##* }"
+        printf 'cd %q && %s < /dev/null > %q.tmp && mv %q.tmp %q\n' "$GD" "$cmd" "$f" "$f" "$f" > "$GD/hook_pulls_8_4"
+        tick; tick; tick
+        chk "B $what（交人前现读到）→ 零写入、没有说明、待办作废" "$(writes)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "0/0/no"
+        chk "到达性 · B $what：确实走到了交人前的现读" "$([ "$(cat "$GD/count_pulls_8" 2>/dev/null)" -ge 4 ] && echo yes || echo no)" yes
+    done
+    fresh; unk_ready; touch "$GD/F_pulls_8"
+    tick; tick; tick
+    chk "B 交人前现读不到 PR → 零写入、待办留着" "$(writes)/$(tk_owed 8)" "0/yes"
+    rm -f "$GD/F_pulls_8"; tick
+    chk "  → 恢复后交人一次" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')" "yes/1"
+
+    # C：每轮第一次判定读得到、写前那次读不到（授权记录缺操作人）
+    fresh; pr_ready; jset labels.json '.["8"] = ["autopilot"]'
+    jq -c '.["8"]' "$GD/events.json" > "$GD/ev_good.json"
+    jq -c '[ .[] | if .label.name == "autopilot" then .actor = {} else . end ]' "$GD/ev_good.json" > "$GD/ev_bad.json"
+    local kk
+    for kk in 1 2 3 4 5 6 7 8 9 10; do
+        if [ $((kk % 2)) = 1 ]; then src=ev_good.json; else src=ev_bad.json; fi
+        printf 'cd %q && jq --slurpfile e %q %q events.json > events.json.tmp && mv events.json.tmp events.json\n' \
+            "$GD" "$src" '.["8"] = $e[0]' > "$GD/hook_issues_8_events_$kk"
+    done
+    tick
+    chk "C 第 1 轮：写前那次判不了 → 零写入、计数 1" "$(writes)/$(tk_unknown 8)" "0/1"
+    tick
+    chk "C 第 2 轮：计数 2（第一次判定读得到不能清零）" "$(writes)/$(tk_unknown 8)" "0/2"
+    tick
+    chk "C 第 3 轮（上限 3）→ 交人：加 pending/human、说明一次" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')" "yes/1"
+    chk "到达性 · C 每轮都读了两次 PR 的标签记录" "$(cat "$GD/count_issues_8_events")" 6
+    fresh; pr_ready; jset labels.json '.["8"] = ["autopilot"]'
+    jq -c '.["8"]' "$GD/events.json" > "$GD/ev_good.json"
+    jq -c '[ .[] | if .label.name == "autopilot" then .actor = {} else . end ]' "$GD/ev_good.json" > "$GD/ev_bad.json"
+    printf 'cd %q && jq --slurpfile e ev_bad.json %q events.json > events.json.tmp && mv events.json.tmp events.json\n' "$GD" '.["8"] = $e[0]' > "$GD/hook_issues_8_events_2"
+    printf 'cd %q && jq --slurpfile e ev_good.json %q events.json > events.json.tmp && mv events.json.tmp events.json\n' "$GD" '.["8"] = $e[0]' > "$GD/hook_issues_8_events_3"
+    tick
+    chk "C2 写前那次判不了一轮 → 计数 1" "$(tk_unknown 8)" 1
+    tick
+    chk "C2 下一轮两次都读得到 → 接手、计数清掉" "$(took_none)/$(tk_unknown 8)" "yes/"
+
+    fresh; pr_ready; jset labels.json '.["8"] = ["autopilot"]'; touch "$GD/F_issues_8_events"
+    tick; tick; tick
+    jset labels.json '.["8"] = ["autopilot"]'
+    tick; tick; tick; tick
+    chk "交过人之后维护者摘掉 pending/human、仍然判不了 → 不再把它加回去" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')" "no/1"
+    chk "到达性 · 这几轮确实还在读 PR 的标签记录" "$([ "$(n_calls "$R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
 
     section "【12j】pending/human 和别的流程标签共存：正在进行的工作不接手（复审第 1 轮）"
     for other in pending/review pending/agent doing/agent pending/merge; do
@@ -1137,14 +1238,28 @@ mutate takeover-reread-pr-only _lib.sh "$TAKE2_OLD" "$TAKE2_NEW" \
     '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; [ -n "${AT_SECOND:-}" ] || autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?'
 mutate takeover-cache-pr-only _lib.sh '        key="$upd|$n|$iupd"' '        key="$upd"'
 mutate takeover-no-notice _lib.sh '        actor-*|binding|requester-bot|closed) ;;' '        nothing) ;;'
-mutate takeover-issue-only-candidate _lib.sh '.[][] | select(any(.labels[]?; .name == $L or .name == $H))' '.[][] | select(any(.labels[]?; .name == $L))'
+mutate takeover-issue-only-candidate _lib.sh 'select(any(.labels[]?; .name == $L or .name == $H) or' 'select(any(.labels[]?; .name == $L) or'
 mutate takeover-coexist _lib.sh "'[.labels[]?.name | select(. != \$L and . != \$H)] | join(\",\")')" "'[.labels[]?.name | select(. != \$L and . != \$H and false)] | join(\",\")')"
-mutate takeover-unknown-no-count _lib.sh '        *) autopilot_takeover_unknown "$sf" "$pr" "$key" "$AT_REASON"; return 0 ;;' '        *) return 0 ;;'
+mutate takeover-unknown-no-count _lib.sh '        *) autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON"; return 0 ;;' '        *) return 0 ;;'
 mutate takeover-unknown-no-done _lib.sh '    if [ "$k" = done ]; then' '    if false; then'
-mutate takeover-unknown-done-early _lib.sh '"$pr" "$LABEL_PENDING_HUMAN" "$LABEL_AUTOPILOT" "$k" "$reason" "$LABEL_AUTOPILOT" "$(autopilot_daemon_sig)" "$pr")"; then
-        return 0' '"$pr" "$LABEL_PENDING_HUMAN" "$LABEL_AUTOPILOT" "$k" "$reason" "$LABEL_AUTOPILOT" "$(autopilot_daemon_sig)" "$pr")"; then
-        autopilot_state_set "$sf" '"'"'.takeover_unknown[$p] = "done"'"'"' --arg p "$pr"; return 0'
-mutate takeover-unknown-no-reset _lib.sh '            || autopilot_state_set "$sf" '"'"'del(.takeover_unknown[$p])'"'"' --arg p "$pr" || true ;;' '            || true ;;'
+mutate takeover-unknown-done-early _lib.sh '        autopilot_state_set "$sf" '"'"'.takeover_handoff[$p].labeled = true'"'"' --arg p "$pr" || return 0' '        autopilot_state_set "$sf" '"'"'del(.takeover_handoff[$p]) | .takeover_unknown[$p] = "done"'"'"' --arg p "$pr"; return 0'
+mutate unk-second-not-counted _lib.sh '    if [ "$AT_V" = unknown ]; then autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON"; return 0; fi' '    :'
+mutate unk-reset-on-first-take _lib.sh '    case "$AT_V" in skip|deny) autopilot_takeover_reset "$sf" "$pr" ;; esac' '    case "$AT_V" in skip|deny|take) autopilot_takeover_reset "$sf" "$pr" ;; esac'
+mutate handoff-not-first _lib.sh '        if [ -n "$(autopilot_state_get "$sf" '"'"'.takeover_handoff[$p]'"'"' --arg p "$num")" ]; then' '        if false; then'
+mutate handoff-no-open-check _lib.sh "    if ! printf '%s' \"\$pj\" | jq -e '.state == \"open\" and .merged == false' >/dev/null 2>&1; then gone=" "    if false; then gone="
+mutate handoff-no-flow-check _lib.sh '    elif autopilot_labels_in_flow "$rest"; then gone=' '    elif false; then gone='
+mutate handoff-no-ref-check _lib.sh '    elif [ -n "$ref" ] && [ "$(printf' '    elif false && [ "$(printf'
+mutate handoff-no-repo-check _lib.sh '    elif [ -n "$repo" ] && [ "$(printf' '    elif false && [ "$(printf'
+mutate handoff-no-human-gone _lib.sh '    elif [ "$labeled" = true ]; then
+        case' '    elif false; then
+        case'
+mutate handoff-no-dedupe _lib.sh "    if ! printf '%s' \"\$cmts\" | jq -e --arg T \"<!-- cavil-loop:autopilot-takeover-unknown pr=\$pr -->\"" "    if true || ! printf '%s' \"\$cmts\" | jq -e --arg T \"<!-- cavil-loop:autopilot-takeover-unknown pr=\$pr -->\""
+mutate handoff-relabel _lib.sh '    if [ "$labeled" != true ]; then
+        case ",$labels," in
+            *",$LABEL_PENDING_HUMAN,"*) ;;' '    if [ "$labeled" != true ]; then
+        case ",$labels," in
+            *",$LABEL_PENDING_HUMAN,nomatch"*) ;;'
+mutate takeover-unknown-no-reset _lib.sh '        || autopilot_state_set "$1" '"'"'del(.takeover_unknown[$p])'"'"' --arg p "$2" || true' '        || true'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-$1"
@@ -1162,6 +1277,8 @@ mutate_old() {   # <名字> <提交>
     else echo "  ❌ 负对照 $name：旧实现整套检查仍全绿"; mut_fail=$((mut_fail + 1)); fi
 }
 mutate_old old-a420448 a4204481429c54cd1803ca8d68aab27fecc9f71d
+# 上一轮复审（PR #132 第 2 轮）打回的那一版：交人待办丢失、写前那次判不了不计数、交人前不核对 PR 状态
+mutate_old prev-083fc09 083fc09b80972778d3efb47da4788d87e6fca881
 pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
