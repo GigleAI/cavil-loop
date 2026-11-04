@@ -931,6 +931,15 @@ ROWS
     EV_AT=2026-06-01T00:00:00Z ev 8 labeled pending/human maint; EV_AT=2026-06-01T00:00:00Z ev 8 labeled autopilot maint
     tick
     chk "复审反例接手时说明写授权打在 PR 上（用的是明确在后的那一条）" "$(comments_with 8 '`maint` 在 PR #8 上打了托管标签')" 1
+    tk_unknown() { jq -r --arg p "$1" '(.autopilot.takeover_unknown[$p]) // ""' "$STATE" 2>/dev/null; }
+    fresh
+    mkissue 7 "pending/PR,autopilot"; ev 7 labeled autopilot maint
+    jset events.json '.["7"] |= map(del(.created_at))'
+    mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human"
+    ev 8 labeled pending/human loop-bot
+    tick
+    chk "唯一的授权在 issue 上、记录缺时间，和 PR 上的 pending/human 比不出先后 → 判不了（计数 1），不当成叫停" "$(took)/$(tk_unknown 8)/$(writes)" "no/1/0"
+    chk "到达性 · 这一轮读了 PR 的标签记录" "$([ "$(n_calls "$R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
 
     # ── 【11】托管关掉之后（GitHub#124）：关托管只要改配置，等合并的 PR 由 daemon 交给人 ──
     section "【11】托管关掉之后：本机托管过、还挂着等合并的 PR → 交人并说明；其他一概不碰"

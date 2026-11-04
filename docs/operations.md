@@ -585,6 +585,9 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
     each decision reads the PR's label events once more
   - order across the two places is by event time; when it cannot be told (missing time) the
     decision is "can't tell"
+  - for the takeover, every valid authorization is compared with the PR's `pending/human` — by
+    event order on the PR, by time on the issue (the same second is not "later"); one provably
+    later authorization is enough, and a same-second one on the other place does not hide it
 - **Takeover is judged twice too**: after deciding to take a PR over and right before writing,
   the same decision runs again from fresh reads (issue open, request origin, stops and
   authorization on both places, the PR's state / head / target / source / binding); if the
