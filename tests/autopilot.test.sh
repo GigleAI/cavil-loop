@@ -96,6 +96,7 @@ AUTOPILOT_UNKNOWN_MAX=3
 PATH="$SANDBOX/bin:\$PATH"
 CONF
         local l; for l in "$@"; do printf '%s\n' "$l" >> "$CONF"; done
+        EVN=0
         echo '{}' > "$GD/items.json"; echo '{}' > "$GD/labels.json"; echo '{}' > "$GD/events.json"
         echo '{}' > "$GD/comments.json"; echo '{"maint":"admin","helper":"read"}' > "$GD/perms.json"
         echo '{}' > "$GD/checks.json"; echo '{}' > "$GD/files.json"; echo loop-bot > "$GD/me"
@@ -118,9 +119,12 @@ CONF
             --arg m "${7:-true}" --arg ms "${8:-clean}"
         jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$5"
     }
+    # 每条记录带时间（和真 GitHub 一样），按调用先后递增；daemon 自己写的标签记录用当前时间，一定更晚
     ev() {   # <n> <labeled|unlabeled> <标签> <操作人> [类型]
-        jset events.json '.[$n] = ((.[$n] // []) + [{event:$e, label:{name:$l}, actor:{login:$a, type:$t}}])' \
-            --arg n "$1" --arg e "$2" --arg l "$3" --arg a "$4" --arg t "${5:-User}"
+        EVN=$((EVN + 1))
+        jset events.json '.[$n] = ((.[$n] // []) + [{event:$e, label:{name:$l}, actor:{login:$a, type:$t}, created_at:$c}])' \
+            --arg n "$1" --arg e "$2" --arg l "$3" --arg a "$4" --arg t "${5:-User}" \
+            --arg c "$(printf '2026-01-01T%02d:%02d:00Z' $((EVN / 60)) $((EVN % 60)))"
     }
     review_rec() {   # <pr> <提交> [时间] [目标分支，"-" = 不记（旧版记录）]：派复审时 daemon 记下的那份
         [ -f "$STATE" ] || echo '{}' > "$STATE"
@@ -198,9 +202,10 @@ Closes #7" "$H1" "pending/merge"
     chk "被 loop 账号摘过、维护者又亲手打回 → 合并" "$(merged 8)" 1
 
     fresh; happy
-    mkissue 7 "pending/PR"; jset labels.json '.["8"] = ["pending/merge","autopilot"]'
+    mkissue 7 "pending/PR"; jset events.json '.["7"] = []'
+    jset labels.json '.["8"] = ["pending/merge","autopilot"]'; ev 8 labeled autopilot loop-bot
     tick
-    chk "只有 PR 上挂托管标签（worker 复制过去），issue 上没有 → 不合并" "$(merged 8)" 0
+    chk "只有 PR 上挂托管标签（worker 打的），issue 上从没打过 → 不合并" "$(merged 8)" 0
     chk "  → PR 交人" "$(has_label 8 pending/human)" yes
 
     fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; happy
@@ -446,6 +451,202 @@ Refs #3" "$H1" "pending/merge"
     chk "BSD date：复审提交与时间都记下了" "$(st 8 .reviewed_head)/$([ -n "$(st 8 .reviewed_at)" ] && echo yes || echo no)" "$H1/yes"
     chk "到达性 · BSD date：替身确实拦过 -d（不是没走到）" "$(printf 'x' | env PATH="$SANDBOX/bsd:$PATH" date -u -d @0 >/dev/null 2>&1 && echo passed || echo blocked)" blocked
 
+    # ── 【12】维护者在 PR 上打托管标签（GitHub#128）──
+    section "【12】PR 上打托管标签：维护者亲手打的 → 接手、从复审重来直到合并"
+    # 一条普通（非托管）PR：复审通过后 loop 账号翻了 pending/human 等人合并，维护者在 PR 上打托管标签
+    pr_ready() {   # [给 PR 打托管标签的人] [类型]
+        mkissue 7 "pending/PR"
+        mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "$H1" "pending/human,autopilot"
+        ev 8 labeled pending/human loop-bot
+        ev 8 labeled autopilot "${1:-maint}" "${2:-User}"
+    }
+    took() {   # PR 8 被接手了没有：翻到复审、摘掉 pending/human、留了接手说明
+        if [ "$(has_label 8 pending/review)/$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover pr=8')" = "yes/no/1" ]; then echo yes; else echo no; fi
+    }
+    fresh 'MAX_CONCURRENT_WORKERS=5'; pr_ready
+    tick
+    chk "接手：PR 翻到 pending/review、摘掉 pending/human、留一条说明" "$(took)" yes
+    chk "  → 说明写明授权打在 PR 上" "$(comments_with 8 '`maint` 在 PR #8 上打了托管标签')" 1
+    chk "  → 托管标签留着（daemon 不摘）" "$(has_label 8 autopilot)" yes
+    chk "  → issue 一个标签都不动" "$(labels_of 7)" "pending/PR"
+    chk "  → 同一轮不合并" "$(merged 8)" 0
+    chk "到达性 · 接手前读了 PR 的标签记录" "$([ "$(n_calls "^gh api --paginate --slurp $R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
+    tick
+    chk "下一轮派复审：是托管条目，授权写在 PR 上" "$(log_has '托管：pr #8 是托管条目（授权在 PR #8，maint 打的）')" 1
+    chk "  → 记下复审的提交" "$(st 8 .reviewed_head)" "$H1"
+    jset labels.json '.["8"] = ["pending/merge","autopilot"]'
+    evidence 8 "$H1" 12 0 loop-bot 2099-01-01T00:00:00Z
+    tick
+    chk "复审通过、留了测试记录 → 合并" "$(merged 8)" 1
+    chk "  → 合并说明写授权打在 PR 上" "$(comments_with 7 '`maint` 在 PR #8 上打的托管标签')" 1
+
+    fresh; pr_ready
+    jset labels.json '.["8"] = ["autopilot"]'; jset events.json '.["8"] = []'; ev 8 labeled autopilot maint
+    tick
+    chk "没有任何流程标签的 PR 打托管 → 也接手（加 pending/review）" "$(has_label 8 pending/review)/$(comments_with 8 'autopilot-takeover pr=8')" "yes/1"
+    fresh; pr_ready
+    jset labels.json '.["8"] = ["pending/review","autopilot"]'
+    tick
+    chk "已经在复审的 PR → 不接手、不说话" "$(writes)" 0
+
+    section "【12b】PR 上的托管标签不是维护者打的、或对不上 issue → 不接手，PR 上说一次"
+    for who in "loop-bot:User:loop 自己的写入账号:actor-loop" "helper:User:只有读权限:actor-perm" \
+               "renovate[bot]:Bot:Bot 账号:actor-bot" "req-bot:User:外部需求机器人账号:actor-requester-bot"; do
+        IFS=: read -r a t what k <<< "$who"
+        fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; pr_ready "$a" "$t"
+        tick
+        chk "$what 在 PR 上打的 → 不接手" "$(took)/$(has_label 8 pending/human)" "no/yes"
+        chk "$what 在 PR 上打的 → PR 上说一次" "$(comments_with 8 "kind=pr-$k")" 1
+        tick
+        chk "$what：再一轮不重复说、不再读 PR 的标签记录（PR 和 issue 都没变）" "$(comments_with 8 "kind=pr-$k")/$(n_calls "$R/issues/8/events")" "1/0"
+    done
+    fresh; pr_ready; mkpr 8 feature/issue-9 "Closes #7" "$H1" "pending/human,autopilot"
+    tick
+    chk "PR 对不上 issue（分支是 #9 的）→ 不接手、说一次" "$(took)/$(comments_with 8 'kind=pr-binding')" "no/1"
+    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; pr_ready; mkissue 7 "pending/PR" req-bot
+    tick
+    chk "issue 是外部需求机器人提的 → 不接手、说一次" "$(took)/$(comments_with 8 'kind=pr-requester-bot')" "no/1"
+    fresh; pr_ready; jset items.json '.["7"].state = "closed"'
+    tick
+    chk "issue 已关闭 → 不接手、说一次" "$(took)/$(comments_with 8 'kind=pr-closed')" "no/1"
+    fresh 'LABEL_PENDING_REVIEW=""'; pr_ready
+    tick
+    chk "项目没配复审关卡 → 不接手、说一次" "$(has_label 8 pending/human)/$(comments_with 8 'kind=no-review-gate')" "yes/1"
+
+    section "【12c】叫停：PR 上 pending/human 打在托管标签之后、issue 上挂 pending/human → 不接手"
+    fresh; pr_ready
+    jset events.json '.["8"] = []'; ev 8 labeled autopilot maint; ev 8 labeled pending/human maint
+    tick
+    chk "pending/human 打在托管标签之后（叫停）→ 不接手、不说话" "$(took)/$(writes)" "no/0"
+    fresh; pr_ready; jset labels.json '.["7"] += ["pending/human"]'
+    tick
+    chk "issue 上挂着 pending/human → 不接手、不说话" "$(took)/$(writes)" "no/0"
+
+    # ── 授权判据的组合表：三个调用点（派复审、接手、合并前许可）各跑一遍 ──
+    # 每行：名字 | issue 现在挂不挂托管 | PR 现在挂不挂 | 托管标签的事件序列（编号/l|u/操作人[/类型]，按时间先后） | 授权成立？
+    section "【12d】授权判据：只有晚于两处所有「摘掉」的那次维护者亲手打标签才算（三个调用点各跑一遍）"
+    local row name il pl seq want site got tk
+    while IFS='|' read -r name il pl seq want; do
+        [ -n "$name" ] || continue
+        for site in merge takeover dispatch; do
+            case "$site" in
+                merge) fresh ;;
+                takeover) fresh ;;
+                dispatch) fresh 'MAX_CONCURRENT_WORKERS=5' ;;
+            esac
+            mkissue 7 "pending/PR$( [ "$il" = yes ] && echo ,autopilot)"
+            case "$site" in
+                merge) mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge$( [ "$pl" = yes ] && echo ,autopilot)"
+                       review_rec 8 "$H1"; evidence 8 "$H1" 12 0 ;;
+                takeover) mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human$( [ "$pl" = yes ] && echo ,autopilot)"
+                          ev 8 labeled pending/human loop-bot ;;
+                dispatch) mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/review$( [ "$pl" = yes ] && echo ,autopilot)" ;;
+            esac
+            for tk in $seq; do
+                IFS=/ read -r en ek ea et <<< "$tk"
+                ev "$en" "$( [ "$ek" = l ] && echo labeled || echo unlabeled)" autopilot "$ea" "${et:-User}"
+            done
+            tick
+            case "$site" in
+                merge) got=$( [ "$(merged 8)" = 1 ] && echo yes || echo no ) ;;
+                takeover) got=$(took) ;;
+                dispatch) got=$( [ "$(log_has '托管：pr #8 是托管条目')" = 1 ] && echo yes || echo no ) ;;
+            esac
+            local exp="$want"
+            # 接手只看 PR 上挂着托管标签的；PR 上没挂，接手那一步本来就不管
+            [ "$site" = takeover ] && [ "$pl" = no ] && exp=no
+            chk "$site · $name" "$got" "$exp"
+        done
+    done <<'ROWS'
+只在 issue 上、PR 从没碰过（原有用法）|yes|no|7/l/maint|yes
+issue 有授权、loop 账号在 PR 上打了（没摘过）→ 仍按 issue 的授权|yes|yes|7/l/maint 8/l/loop-bot|yes
+只在 PR 上、维护者打的|no|yes|8/l/maint|yes
+issue 一直挂着，PR 上打过又摘掉 → 叫停|yes|no|7/l/maint 8/l/maint 8/u/maint|no
+复审的反例：issue 一直挂着 → PR 打又摘 → loop 账号在 PR 再打 → 仍叫停|yes|yes|7/l/maint 8/l/maint 8/u/maint 8/l/loop-bot|no
+同上，之后维护者在 PR 亲手重打 → 恢复|yes|yes|7/l/maint 8/l/maint 8/u/maint 8/u/loop-bot 8/l/maint|yes
+叫停后 Bot 在 PR 上补打 → 仍叫停|yes|yes|7/l/maint 8/l/maint 8/u/maint 8/l/renovate[bot]/Bot|no
+叫停后只读账号在 PR 上补打 → 仍叫停|yes|yes|7/l/maint 8/l/maint 8/u/maint 8/l/helper|no
+issue 上摘掉，维护者之后在 PR 上亲手打 → 恢复（Q1 默认 A）|no|yes|7/l/maint 7/u/maint 8/l/maint|yes
+PR 上摘掉，维护者之后在 issue 上亲手打 → 恢复|yes|no|8/l/maint 8/u/maint 7/l/maint|yes
+PR 上摘掉，之后 loop 账号在 issue 上打 → 仍叫停|yes|no|8/l/maint 8/u/maint 7/l/loop-bot|no
+PR 上有授权，之后 issue 上摘掉（issue 早先有过）→ 叫停|no|yes|7/l/maint 8/l/maint 7/u/maint|no
+两处都摘过、维护者最后在 issue 上重打 → 恢复|yes|no|7/l/maint 8/l/maint 8/u/maint 7/u/maint 7/l/maint|yes
+ROWS
+
+    section "【12e】判过「不接手」的缓存：只要 PR 或 issue 有变化就重判"
+    fresh; pr_ready
+    jset labels.json '.["7"] = ["pending/PR"]'
+    jset events.json '.["8"] = []'; ev 8 labeled pending/human loop-bot
+    ev 7 labeled autopilot maint; ev 8 labeled autopilot maint; ev 7 unlabeled autopilot maint
+    tick
+    chk "issue 上的摘掉晚于 PR 上的打 → 叫停，不接手" "$(took)" no
+    local pr_upd; pr_upd=$(jq -r '.["8"].updated_at' "$GD/items.json")
+    tick
+    chk "  → 下一轮 PR 和 issue 都没变 → 不再读 PR 的标签记录" "$(n_calls "$R/issues/8/events")" 0
+    jset labels.json '.["7"] += ["autopilot"]'; ev 7 labeled autopilot maint
+    jset items.json '.["7"].updated_at = "2026-02-01T00:00:00Z"'
+    tick
+    chk "  → 只在 issue 上由维护者重新打托管（PR 的更新时间没变）→ 接手" "$(took)" yes
+    chk "  → 这几轮里 PR 的更新时间确实没被测试改过（接手前）" "$pr_upd" "2026-01-01T00:00:00Z"
+    chk "  → 说明写授权打在 issue 上" "$(comments_with 8 '`maint` 在 issue #7 上打了托管标签')" 1
+
+    fresh; pr_ready; jset labels.json '.["7"] += ["pending/human"]'
+    tick; tick
+    chk "issue 上挂 pending/human 时不接手，缓存后两轮都不动" "$(took)" no
+    jset labels.json '.["7"] = ["pending/PR"]'; jset items.json '.["7"].updated_at = "2026-02-01T00:00:00Z"'
+    tick
+    chk "  → 只在 issue 上摘掉 pending/human → 接手" "$(took)" yes
+
+    fresh; pr_ready
+    jset labels.json '.["8"] = ["pending/merge","autopilot"]'; review_rec 8 "$H1"; evidence 8 "$H1" 12 0
+    tick
+    chk "PR 上的授权、等合并 → 合并" "$(merged 8)" 1
+    fresh; pr_ready
+    jset labels.json '.["8"] = ["pending/merge"]'; ev 8 unlabeled autopilot maint
+    review_rec 8 "$H1"; evidence 8 "$H1" 12 0
+    tick
+    chk "摘掉 PR 上的托管 → 等合并的 PR 交人、不合并" "$(merged 8)/$(has_label 8 pending/human)" "0/yes"
+    chk "  → 说明写已叫停" "$(comments_with 8 '已叫停')" 1
+
+    section "【12f】读不到：不接手、零写入"
+    fresh; pr_ready; touch "$GD/F_issues_8_events"
+    tick
+    chk "PR 的标签记录读不到 → 不接手、一次写调用都没有" "$(took)/$(writes)" "no/0"
+    rm -f "$GD/F_issues_8_events"; tick
+    chk "  → 恢复后接手" "$(took)" yes
+    fresh; pr_ready; touch "$GD/F_issues_7_events"
+    tick
+    chk "issue 的标签记录读不到 → 不接手、零写入" "$(took)/$(writes)" "no/0"
+    fresh; pr_ready; touch "$GD/F_collaborators_maint_permission"
+    tick
+    chk "打标签的人权限查不到 → 不接手、零写入" "$(took)/$(writes)" "no/0"
+    fresh; pr_ready
+    jset labels.json '.["7"] = ["pending/PR"]'; jset events.json '.["7"] = [{event:"unlabeled", label:{name:"autopilot"}, actor:{login:"maint",type:"User"}}]'
+    tick
+    chk "另一处的摘掉没有时间、比不出先后 → 判不了、零写入" "$(took)/$(writes)" "no/0"
+
+    section "【12g】判定接手之后、写之前有变化 → 本轮不写"
+    for hk in "issues_7|2|jq '.[\"7\"] += [\"pending/human\"]' labels.json|issue 打 pending/human" \
+              "issues_7|2|jq '.[\"7\"].state = \"closed\"' items.json|issue 被关闭" \
+              "issues_7_events|2|jq '.[\"7\"] += [{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2099-01-01T00:00:00Z\"},{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2099-01-01T00:00:01Z\"}]' events.json|issue 上新出现一次摘掉（叫停）" \
+              "issues_8_events|2|jq '.[\"8\"] += [{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2099-01-01T00:00:00Z\"},{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"loop-bot\",type:\"User\"},created_at:\"2099-01-01T00:00:01Z\"}]' events.json|PR 上的授权变成 loop 账号打的" \
+              "pulls_8|2|jq '.[\"8\"].head.sha = \"$H2\"' items.json|PR 推了新提交" \
+              "pulls_8|2|jq '.[\"8\"].base.ref = \"release\"' items.json|PR 改投了别的目标分支" \
+              "pulls_8|2|jq '.[\"8\"].head.ref = \"feature/issue-9\"' items.json|PR 换了分支（对不上 issue）" \
+              "pulls_8|2|jq '.[\"8\"].head.repo.full_name = \"someone/ap\"' items.json|PR 的来源变成外部仓库" \
+              "pulls_8|2|jq '.[\"8\"].state = \"closed\"' items.json|PR 被关闭" \
+              "pulls_8|2|jq '.[\"8\"] = [\"pending/human\"]' labels.json|PR 上的托管标签被摘掉"; do
+        IFS='|' read -r key k cmd what <<< "$hk"
+        fresh; pr_ready
+        local f; f="${cmd##* }"
+        printf 'cd %q && %s < /dev/null > %q.tmp && mv %q.tmp %q\n' "$GD" "$cmd" "$f" "$f" "$f" > "$GD/hook_${key}_$k"
+        tick
+        chk "$what（判定之后）→ 不接手、零写入" "$(took)/$(writes)" "no/0"
+        chk "到达性 · $what：确实走到了写前重判" "$([ -f "$GD/count_$key" ] && [ "$(cat "$GD/count_$key")" -ge 2 ] && echo yes || echo no)" yes
+    done
+
     # ── 【11】托管关掉之后（GitHub#124）：关托管只要改配置，等合并的 PR 由 daemon 交给人 ──
     section "【11】托管关掉之后：本机托管过、还挂着等合并的 PR → 交人并说明；其他一概不碰"
     local OFF='LABEL_AUTOPILOT=""'
@@ -604,7 +805,7 @@ CONF
                "8":{"kind":"pr","state":"open","merged":false,"title":"t","body":"Closes #7","user":{"login":"loop-bot"},
                     "head":{"sha":"'"$H1"'","ref":"feature/issue-7","repo":{"full_name":"example/ap"}},"base":{"ref":"main"},
                     "mergeable":true,"mergeable_state":"clean"}}' > "$out/gh/items.json"
-        echo '{"5":["autopilot"],"6":["autopilot","pending/agent"],"7":["autopilot","pending/PR"],"8":["pending/merge","pending/review"]}' > "$out/gh/labels.json"
+        echo '{"5":["autopilot"],"6":["autopilot","pending/agent"],"7":["autopilot","pending/PR"],"8":["pending/merge","pending/review","autopilot"]}' > "$out/gh/labels.json"
         echo '{"6":[{"event":"labeled","label":{"name":"autopilot"},"actor":{"login":"maint","type":"User"}}]}' > "$out/gh/events.json"
         for f in comments checks files; do echo '{}' > "$out/gh/$f.json"; done
         echo '{"maint":"admin"}' > "$out/gh/perms.json"; echo loop-bot > "$out/gh/me"
@@ -665,6 +866,13 @@ prompts_check() {
     done
     # shellcheck disable=SC2086
     n=$(compose "$root" review $on)
+    chk "review：没说授权在哪一处时写 issue #7" "$(printf '%s' "$n" | grep -c '维护者在 issue #7 上亲手打了托管标签')" 1
+    # shellcheck disable=SC2086
+    chk "review：授权打在 PR 上时写 PR #8（GitHub#128）" \
+        "$(compose "$root" review $on DISPATCH_AUTOPILOT_WHERE='PR #8' | grep -c '维护者在 PR #8 上亲手打了托管标签')" 1
+    # shellcheck disable=SC2086
+    chk "issue-comment：授权打在 PR 上时写 PR #8" \
+        "$(compose "$root" issue-comment $on DISPATCH_AUTOPILOT_WHERE='PR #8' | grep -c '维护者在 PR #8 上亲手打了托管标签')" 1
     chk "review：拼入复审的托管规则（通过翻 pending/merge、留测试记录）" \
         "$(printf '%s' "$n" | grep -c 'REST 翻 `pending/merge`，摘 `pending/review`')/$(printf '%s' "$n" | grep -c 'autopilot-review-pass head=')" "1/1"
     chk "review：方案通过翻 pending/agent" "$(printf '%s' "$n" | grep -c 'REST 翻 `pending/agent`，摘 `pending/review`')" 1
@@ -758,13 +966,13 @@ mutate binding-no-body _lib.sh 'if [ "$by_line" != "$n" ]; then' 'if false; then
 mutate binding-no-fork _lib.sh 'if [ -z "$repo" ] || [ "$(requester_bot_lc "$repo")" != "$(requester_bot_lc "$REPO")" ]; then' 'if false; then'
 mutate auth-loop-actor _lib.sh 'if [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$me")" ]; then' 'if false; then'
 mutate auth-no-perm _lib.sh '        admin|write) ;;' '        *) ;;'
-mutate auth-last-event _lib.sh 'if [ "$ev_kind" != labeled ]; then' 'if false; then'
-mutate auth-unknown-ok _lib.sh 'AUTOPILOT_REASON="读不到 issue #$num 的标签记录"; return 2' 'AUTOPILOT_ACTOR=x; return 0'
+mutate auth-last-event _lib.sh '        true:labeled|false:unlabeled|false:) ;;' '        true:labeled|true:unlabeled|false:unlabeled|false:) ;;'
+mutate auth-unknown-ok _lib.sh '    autopilot_place_read "$num" "$ij" "issue #$num" || return 2' '    autopilot_place_read "$num" "$ij" "issue #$num" || { AUTOPILOT_ACTOR=x; return 0; }'
 mutate evidence-failed _lib.sh 'select(.h == $h and (.f | tonumber) == 0 and (.p | tonumber) > 0)' 'select(.h == $h)'
 mutate dot-github _lib.sh 'any(startswith(".github/"))' 'any(startswith(".nothing/"))'
 mutate gnu-date _lib.sh "at=\$(jq -nr 'now - 120 | floor | strftime(\"%Y-%m-%dT%H:%M:%SZ\")' 2>/dev/null) || at=\"\"" 'at=$(date -u -d "@$(( $(date +%s) - 120 ))" +%Y-%m-%dT%H:%M:%SZ)'
 # ── 许可函数里的每一项判断（两次都跳过）──
-mutate permit-auth _lib.sh '    rc=0; autopilot_authorization "$AP_N" "$ij" || rc=$?' '    rc=0'
+mutate permit-auth _lib.sh '    rc=0; autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0'
 mutate permit-issue-halt _lib.sh "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
         AP_V=human" '    if false; then
         AP_V=human'
@@ -780,7 +988,7 @@ mutate2 reread-pr-halt 'case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) AP_V=hal
 mutate2 reread-issue-halt "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
         AP_V=human" "    if [ -z \"\${AP_SECOND:-}\" ] && printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
         AP_V=human"
-mutate2 reread-auth '    rc=0; autopilot_authorization "$AP_N" "$ij" || rc=$?' '    rc=0; [ -n "${AP_SECOND:-}" ] || autopilot_authorization "$AP_N" "$ij" || rc=$?'
+mutate2 reread-auth '    rc=0; autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; [ -n "${AP_SECOND:-}" ] || autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?'
 # 第二次判定时新推送 / 改投有两道拦截：复审记录对不上、两次判定的身份对不上。单拆一道另一道仍会拦住
 # （本来就是双保险，不是测试漏洞），所以这项把两道一起拆掉，必须变红
 mutate reread-identity _lib.sh "$SECOND_OLD" "$SECOND_NEW" \
@@ -796,8 +1004,7 @@ mutate reread-new-checks _lib.sh ' \
        || [ "$AP_REF" != "$ref" ]; then'
 mutate2 reread-conflict '    case "$(autopilot_conflict_verdict "$pj")" in' '    case "$([ -n "${AP_SECOND:-}" ] && echo ok || autopilot_conflict_verdict "$pj")" in'
 # ── 派工 / 收队处 ──
-mutate dispatch-site _lib.sh '    rc=0; autopilot_authorization "$n" "$ij" || rc=$?
-    case "$rc" in
+mutate dispatch-site _lib.sh '    case "$rc" in
         0) AUTOPILOT_ISSUE="$n"; return 0 ;;' '    rc=0
     case "$rc" in
         0) AUTOPILOT_ISSUE="$n"; return 0 ;;'
@@ -816,6 +1023,42 @@ mutate off-sweep-no-dedupe _lib.sh "        if ! printf '%s' \"\$cmts\" | jq -e 
 # 「先摘后加」那个旧写法不再单列：交接记号在动 GitHub 之前就记下，摘完加失败的 PR 下一轮靠记号也找得回来
 mutate off-sweep-no-verify _lib.sh '*",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;;' '*",$m,"*) ;;'
 mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
+# ── PR 上的托管标签（GitHub#128）──
+# 两处合起来的授权判据
+mutate pr-no-stopline _lib.sh 'elif all($u[]; . < $t) then "after" else "before" end' 'elif true then "after" else "before" end'
+mutate pr-stops-ignored _lib.sh 'unl: map(select(.value.event == "unlabeled")' 'unl: map(select(false)'
+mutate pr-no-actor-check _lib.sh '        rc=0; autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.lab.actor'"'"')"' '        rc=0; [ "$cand" = pr ] || autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.lab.actor'"'"')"'
+mutate pr-stale-auth-ok _lib.sh '            *:before) ;;' '            *:before) [ "$rc" = 0 ] && { ok_kind="$kind"; ok_num="$cnum"; ok_place="$here"; ok_actor="$AUTOPILOT_ACTOR"; } ;;'
+mutate pr-no-time-ok _lib.sh 'elif $t == null or $t == "" or any($u[]; . == null or . == "") then "unknown"' 'elif false then "unknown"'
+# 三个调用点各自接到两处判据（单独拆掉一处只看 issue）
+mutate pr-site-permit _lib.sh '    rc=0; autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; autopilot_authorization "$AP_N" "$ij" || rc=$?'
+mutate pr-site-dispatch _lib.sh '        autopilot_authorization "$n" "$ij" "$num" "$pj" || rc=$?' '        autopilot_authorization "$n" "$ij" || rc=$?'
+mutate pr-site-takeover _lib.sh '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; autopilot_authorization "$AT_N" "$ij" || rc=$?'
+# 接手
+mutate takeover-not-called agent-poll.sh 'autopilot_takeover_tick "$STATE_FILE" || true' ':'
+mutate takeover-in-flow _lib.sh '           if autopilot_labels_in_flow "$rest"; then AT_V=skip; return 0; fi' '           :'
+mutate takeover-human-order _lib.sh '            before) AT_V=skip; return 0 ;;   # pending/human' '            before) ;;   # pending/human'
+mutate takeover-issue-halt _lib.sh "        AT_V=skip; return 0
+    fi
+    rc=0; autopilot_authorization \"\$AT_N\"" "        :
+    fi
+    rc=0; autopilot_authorization \"\$AT_N\""
+mutate takeover-once _lib.sh '    # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
+    autopilot_takeover_permit "$pr"' '    :'
+mutate takeover-identity _lib.sh '    if [ "$AT_V" != take ] || [ "$AT_N" != "$n" ] || [ "$AT_HEAD" != "$head" ] || [ "$AT_BASE" != "$base" ] \
+       || [ "$AT_REF" != "$ref" ] || [ "$AT_REPO" != "$repo" ] || [ "$AT_MODE" != "$mode" ]; then' '    if [ "$AT_V" != take ] && [ "$AT_V" != deny ]; then'
+# 写前那次重判只看 PR、不看 issue 一侧（复审第 1 轮指出的错误做法）
+TAKE2_OLD='    # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
+    autopilot_takeover_permit "$pr"'
+TAKE2_NEW='    # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
+    AT_SECOND=1 autopilot_takeover_permit "$pr"'
+mutate takeover-reread-pr-only _lib.sh "$TAKE2_OLD" "$TAKE2_NEW" \
+    "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
+        AT_V=skip; return 0" "    if [ -z \"\${AT_SECOND:-}\" ] && printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
+        AT_V=skip; return 0" \
+    '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; [ -n "${AT_SECOND:-}" ] || autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?'
+mutate takeover-cache-pr-only _lib.sh '        key="$upd|$n|$iupd"' '        key="$upd"'
+mutate takeover-no-notice _lib.sh '        actor-*|binding|requester-bot|closed) ;;' '        nothing) ;;'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-$1"

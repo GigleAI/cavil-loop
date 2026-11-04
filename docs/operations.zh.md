@@ -443,6 +443,11 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 - **方案**：照常写、照常发到 issue，选择题按默认项，一律送复审（不管 `REVIEW_DESIGN_PROPOSALS`）。
   方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。拆成子 issue **不在托管范围**：
   worker 把拆分计划交人。
+- **在 PR 上打也行**（GitHub#128）：已经开好的 PR，维护者直接在 **PR** 上打托管标签，daemon 就接手——
+  PR 挂着 `pending/human`（且托管标签打在它之后）或没有任何流程标签时，翻到 `pending/review` 并在 PR 上说一句，
+  之后走下面同样的复审 → 合并。PR 上的托管只管「复审 → 合并」这一段，不涉及方案阶段（方案阶段只看 issue）。
+  已经在 `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` 的 PR 不用接手，下次派工自然带上托管规则。
+  PR 上的标签不被认可（不是维护者打的、PR 对不上 issue、外部需求机器人的需求、issue 已关）时在 PR 上说一次原因。
 - **代码**：复审通过时 PR 翻 `LABEL_PENDING_MERGE`（`pending/merge`）而不是 `pending/human`，
   并在结论评论里留一行测试重跑的机器记录：`<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`。
 - **daemon 合并**（`PUT /pulls/N/merge`，带复审时的提交号，方式 `AUTOPILOT_MERGE_METHOD`，默认 `squash`）
@@ -451,9 +456,9 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 | 检查 | 不成立 → |
 |---|---|
 | PR 来自本仓库、分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`（逐行和整段两种读法一致） | `pending/human` |
-| issue `#N` 上**最近一次**「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT` | `pending/human` |
+| 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
 | 这条 issue 不是外部需求机器人提的需求 | `pending/human` |
-| issue 和 PR 都没被打 `pending/human`，issue 上托管标签还在 | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
+| issue 和 PR 都没被打 `pending/human` | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
 | PR 最新提交**和目标分支**都是派复审时记下的那一对（同一提交改投别的分支 = 另一份改动；旧版没记目标分支的记录算缺） | 回 `pending/review` 重审 |
 | 复审的结论评论（写入账号、派复审之后发的）里有这个提交的测试记录，`failed=0`、`passed>0` | `pending/human` |
 | 没改 `.github/` | `pending/human` |
@@ -464,8 +469,20 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 - **读不到**（标签记录、权限、检查、文件、评论）：本轮不写任何东西；连续 `AUTOPILOT_UNKNOWN_MAX`（10）
   轮读不到才交人。「读不到」绝不当成「有授权」「通过」「无冲突」。
 - **交回 worker** 按 PR 计次，上限沿用 `REVIEW_MAX_ROUNDS`。
-- **叫停**：摘掉 issue 上的托管标签，或在 issue / PR 上打 `pending/human`。检查之后、合并之前的叫停由
+- **叫停**：摘掉 issue 或 PR 上的托管标签，或在 issue / PR 上打 `pending/human`。检查之后、合并之前的叫停由
   合并前的重读拦住。
+- **两处的标签怎么合起来算**（GitHub#128）：停止线 = issue 和 PR 两处所有「摘掉托管标签」里最晚的那一次。
+  授权只来自一次**晚于停止线**、由维护者亲手打的「加上」，而且那一处现在还挂着。所以：
+  - 在任一处摘掉 = 叫停；之后维护者在任一处亲手重新打上 = 恢复
+  - 叫停之后 loop 账号、Bot、没写权限的人再打上，不算恢复，也不能借另一处叫停之前的旧授权复活
+  - 没摘过时，worker 在 PR 上打的标签不影响 issue 上已有的授权（它不是授权，也不是叫停）
+  - PR 上从没碰过托管标签时，结果和只看 issue 一样；每次判断多读一次 PR 的标签记录
+  - 两处的先后按标签记录的时间比；比不出（缺时间）算判不了
+- **接手也判两次**：判定可接手后、写之前，同一个判断用现读的数据原样再跑一遍（issue 是否打开、需求来源、
+  两处的叫停与授权记录，PR 的状态 / 提交 / 目标分支 / 来源 / 绑定都在内），结论或身份变了本轮不写。
+  判过「不接手」的 PR 按 PR 更新时间 + 绑定的 issue 编号 + 该 issue 的更新时间记下，三样都没变就不重读
+  （打 / 摘标签会刷新更新时间）；合并前许可不走这个缓存。
+  ⚠️ 打标签的人在仓库里的**权限**变了不会刷新更新时间：被拒的 PR 要等 PR 或 issue 有任何变动才会重判。
 - **剩下的窗口**只在「最后这次读」到「合并请求到达 GitHub」之间。合并请求带着复审的提交号，这段时间的新推送
   GitHub 会拒；这段时间检查变红则拦不住。要服务端兜底，把这些检查设成目标分支的「必须通过」（分支保护），daemon 不绕它。
 - **GitHub 拒绝的**（分支保护要求人工批准、合并方式没开）交人——daemon 不绕仓库规则。
@@ -476,7 +493,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
 状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
-`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue）。和 `requester_bot_done_queue` 一样
+`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover`：判过「不接手」的 PR 及其缓存键）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
 
 ### 只在一台机器上跑这个仓库的轮询

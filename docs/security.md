@@ -126,21 +126,25 @@ With `LABEL_AUTOPILOT` set ([operations](operations.md#autopilot-label-optional-
 **merges PRs for the first time** — the one place it changes the base branch on its own. The
 boundary is drawn so that nothing a worker or a comment can do is enough:
 
-- **Authorization is a maintainer's act on the issue, read from GitHub's event log.** The label's
-  mere presence proves nothing (workers can edit labels). The daemon reads the issue's events and
-  requires that the **most recent** "added the autopilot label" event was performed by a `User`
+- **Authorization is a maintainer's act on the issue or the PR, read from GitHub's event log.** The
+  label's mere presence proves nothing (workers can edit labels). The daemon reads the events and
+  requires that the "added the autopilot label" event that grants it was performed by a `User`
   account with `write` / `admin` on the repo, which is neither the loop's write account (the one
   workers and the reviewer write with) nor the requester bot. A label added or re-added by those
-  accounts never counts; a label on the PR is ignored entirely. This only works if the loop writes
-  with an account the maintainer does not use themselves
+  accounts never counts. The PR may carry it too (GitHub#128) under exactly the same check; with
+  two places, the granting event must be **later than every "removed" event on both** — after a
+  maintainer removes it in either place, those accounts adding it back neither resumes autopilot
+  nor revives an older authorization from the other place. The design phase still looks at the
+  issue only. This only works if the loop writes with an account the maintainer does not use
+  themselves
 - **A PR inherits authorization only from the issue it is bound to**, and binding needs two
   independent facts to agree: the branch is exactly `BRANCH_PREFIX<N>` in this repo, and the body
   closes exactly `#N`. A stray `Closes #N` in another PR, a fork, or a suffixed branch borrows nothing
 - **Only the reviewed change is merged**: the head sha and target branch are recorded when the review
   is dispatched and the sha is passed to the merge API; a later push or a retarget sends the PR back to
   review
-- **Stop is always one action away**: remove the label or add `pending/human` on the issue or the
-  PR. Everything the decision relied on is re-read right before the merge call; any change, or
+- **Stop is always one action away**: remove the label from, or add `pending/human` to, the issue
+  or the PR. Everything the decision relied on is re-read right before the merge call; any change, or
   anything unreadable, means no merge this round
 - **Never merged automatically**: changes under `.github/` (Actions / repo automation), PRs from
   forks, drafts, anything GitHub's own rules refuse (the daemon does not bypass branch protection),
