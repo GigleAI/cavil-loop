@@ -1,0 +1,131 @@
+name: Client
+
+# The desktop client in client/ (GitHub#135): its own tests, its own macOS
+# packages, its own Releases (tag client/vX.Y.Z). Nothing here touches the
+# daemon's tests or its weekly release.
+on:
+  pull_request:
+    paths:
+      - 'client/**'
+      - '.github/workflows/client.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - '.github/workflows/client.yml'
+    tags:
+      - 'client/v*'
+  workflow_dispatch:
+    inputs:
+      mutation:
+        description: 'Also run the negative controls (MUTATION=1)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: client
+
+jobs:
+  test:
+    name: client tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - name: Type check
+        run: npm run typecheck
+      - name: Unit tests (vitest)
+        run: npm test
+      - name: Negative controls
+        if: ${{ inputs.mutation }}
+        run: MUTATION=1 npm run test:mutation
+      - name: UI tests (Playwright driving Electron, virtual display)
+        run: |
+          npm run build
+          xvfb-run -a npx playwright test
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-screens
+          path: client/test-results/
+          if-no-files-found: ignore
+
+  package:
+    name: dmg (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - name: Build dmg
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm run build
+          npx electron-builder --mac dmg --${{ matrix.arch }} --publish never
+          ls -la release
+      - name: Smoke test + first-open steps
+        run: bash scripts/mac-open-check.sh release/Cavil-Loop-*-${{ matrix.arch }}.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-dmg-${{ matrix.arch }}
+          path: client/release/*.dmg
+          if-no-files-found: error
+
+  release:
+    name: publish client release
+    if: startsWith(github.ref, 'refs/tags/client/v')
+    needs: [test, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches package.json version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          want="client/v$(node -p "require('./package.json').version")"
+          [ "$tag" = "$want" ] || { echo "::error::tag $tag does not match package.json ($want)"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: client-dmg-*
+          path: client/dist-release
+          merge-multiple: true
+      - name: Create Release (not marked latest: the daemon's weekly release stays "Latest")
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" dist-release/*.dmg \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Cavil Loop 客户端 ${tag#client/}" \
+            --notes-file RELEASE_NOTES.md \
+            --latest=false

@@ -1,0 +1,23 @@
+# macOS packaging (v1: dmg for Apple silicon and Intel, not Apple-signed).
+appId: dev.luosky.cavil-loop.client
+productName: Cavil Loop
+directories:
+  output: release
+files:
+  - dist/**/*
+  - '!dist/**/*.map'
+  - package.json
+asar: true
+npmRebuild: false
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+  # Ad-hoc signature only: Apple silicon refuses to run a binary with no
+  # signature at all. This is not an Apple Developer ID signature, so
+  # Gatekeeper still asks on first open (see RELEASE_NOTES.md).
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
+dmg:
+  artifactName: Cavil-Loop-${version}-${arch}.${ext}

@@ -1,0 +1,7979 @@
+{
+ "_note": "Recorded from GigleAI Project #11 (\"cavil project\") with test/fixtures/record.mjs; titles, logins, node ids and cursors scrubbed. Each element is one GraphQL page of organization.projectV2.",
+ "recordedAt": "2026-11-04T22:58:04.842Z",
+ "pages": [
+  {
+   "id": "PVT_fixture_435fd6e043de",
+   "title": "cavil project",
+   "url": "https://github.com/orgs/GigleAI/projects/11",
+   "fields": {
+    "nodes": [
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2SingleSelectField",
+      "id": "PVTF_fixture_c5fef67be389",
+      "name": "Status",
+      "options": [
+       {
+        "id": "f75ad846",
+        "name": "Backlog"
+       },
+       {
+        "id": "61e4505c",
+        "name": "Preparing"
+       },
+       {
+        "id": "47fc9ee4",
+        "name": "In progress"
+       },
+       {
+        "id": "df73e18b",
+        "name": "In review"
+       },
+       {
+        "id": "98236657",
+        "name": "Done"
+       }
+      ]
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2IterationField",
+      "id": "PVTF_fixture_c418626aa793",
+      "name": "Iteration",
+      "configuration": {
+       "iterations": [
+        {
+         "id": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7
+        },
+        {
+         "id": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7
+        },
+        {
+         "id": "3d96a307",
+         "title": "Iteration 27",
+         "startDate": "2026-11-16",
+         "duration": 7
+        }
+       ],
+       "completedIterations": [
+        {
+         "id": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7
+        },
+        {
+         "id": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7
+        },
+        {
+         "id": "74c4ff86",
+         "title": "Iteration 22",
+         "startDate": "2026-10-12",
+         "duration": 7
+        },
+        {
+         "id": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7
+        },
+        {
+         "id": "6336d658",
+         "title": "Iteration 20",
+         "startDate": "2026-09-28",
+         "duration": 7
+        },
+        {
+         "id": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7
+        },
+        {
+         "id": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7
+        },
+        {
+         "id": "43117234",
+         "title": "Iteration 17",
+         "startDate": "2026-09-07",
+         "duration": 7
+        },
+        {
+         "id": "4b7b7c56",
+         "title": "Iteration 16",
+         "startDate": "2026-08-31",
+         "duration": 7
+        },
+        {
+         "id": "39d50550",
+         "title": "Iteration 15",
+         "startDate": "2026-08-24",
+         "duration": 7
+        },
+        {
+         "id": "5d38d2fd",
+         "title": "Iteration 14",
+         "startDate": "2026-08-17",
+         "duration": 7
+        },
+        {
+         "id": "6db4501a",
+         "title": "Iteration 13",
+         "startDate": "2026-08-10",
+         "duration": 7
+        },
+        {
+         "id": "ea3041bd",
+         "title": "Iteration 12",
+         "startDate": "2026-08-03",
+         "duration": 7
+        },
+        {
+         "id": "742c7f27",
+         "title": "Iteration 11",
+         "startDate": "2026-07-27",
+         "duration": 7
+        },
+        {
+         "id": "6dae581f",
+         "title": "Iteration 10",
+         "startDate": "2026-07-20",
+         "duration": 7
+        },
+        {
+         "id": "eb6cb6a2",
+         "title": "Iteration 9",
+         "startDate": "2026-07-13",
+         "duration": 7
+        },
+        {
+         "id": "5cc2e456",
+         "title": "Iteration 8",
+         "startDate": "2026-07-06",
+         "duration": 7
+        },
+        {
+         "id": "2b608756",
+         "title": "Iteration 7",
+         "startDate": "2026-06-29",
+         "duration": 7
+        },
+        {
+         "id": "3ee282ed",
+         "title": "Iteration 6",
+         "startDate": "2026-06-22",
+         "duration": 7
+        },
+        {
+         "id": "b7b3cc41",
+         "title": "Iteration 5",
+         "startDate": "2026-06-15",
+         "duration": 7
+        },
+        {
+         "id": "612409b2",
+         "title": "Iteration 4",
+         "startDate": "2026-06-08",
+         "duration": 7
+        },
+        {
+         "id": "1c5af022",
+         "title": "Iteration 3",
+         "startDate": "2026-06-01",
+         "duration": 7
+        },
+        {
+         "id": "d5912ebb",
+         "title": "Iteration 2",
+         "startDate": "2026-05-25",
+         "duration": 7
+        },
+        {
+         "id": "d77dd21c",
+         "title": "Iteration 1",
+         "startDate": "2026-05-18",
+         "duration": 7
+        }
+       ]
+      }
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     }
+    ]
+   },
+   "items": {
+    "totalCount": 138,
+    "pageInfo": {
+     "hasNextPage": true,
+     "endCursor": "cursor-1"
+    },
+    "nodes": [
+     {
+      "id": "PVTI_fixture_64587a5a5d6f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 22,
+       "title": "示例 issue 22：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/22",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-16T06:28:40Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_2a696d901472",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 23,
+       "title": "示例 PR 23：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/23",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-16T06:28:34Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_4ef4444d580e",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 1,
+       "title": "示例 issue 1：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/1",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-02T14:24:56Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_1c0e3dc28723",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 2,
+       "title": "示例 PR 2：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/2",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-18T01:59:57Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_1f7c3bd0a435",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 3,
+       "title": "示例 issue 3：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/3",
+       "state": "CLOSED",
+       "updatedAt": "2026-05-18T01:59:55Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_6dd0d3a3a2f9",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 4,
+       "title": "示例 PR 4：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/4",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-18T01:59:53Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_d6995247aa14",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 5,
+       "title": "示例 issue 5：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/5",
+       "state": "CLOSED",
+       "updatedAt": "2026-05-18T13:54:38Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_b0e88e37e7d3",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 6,
+       "title": "示例 PR 6：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/6",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-18T13:54:15Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_b26398c9f74c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 7,
+       "title": "示例 issue 7：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/7",
+       "state": "CLOSED",
+       "updatedAt": "2026-05-19T21:17:39Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c490386ba8e5",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 8,
+       "title": "示例 issue 8：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/8",
+       "state": "CLOSED",
+       "updatedAt": "2026-05-21T12:03:43Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_b0dd1321299b",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 9,
+       "title": "示例 issue 9：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/9",
+       "state": "CLOSED",
+       "updatedAt": "2026-05-21T07:01:38Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c0f7f9fe86a5",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 10,
+       "title": "示例 issue 10：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/10",
+       "state": "CLOSED",
+       "updatedAt": "2026-05-19T21:47:39Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_541d22395120",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 11,
+       "title": "示例 PR 11：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/11",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-19T21:22:45Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_b797880e7288",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 12,
+       "title": "示例 PR 12：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/12",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-19T21:47:34Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_81e11c8e492d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 13,
+       "title": "示例 PR 13：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/13",
+       "state": "CLOSED",
+       "merged": false,
+       "updatedAt": "2026-09-15T14:31:55Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_561e5fddac34",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 14,
+       "title": "示例 issue 14：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/14",
+       "state": "CLOSED",
+       "updatedAt": "2026-07-26T08:59:59Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_bda3984c88b0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 15,
+       "title": "示例 PR 15：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/15",
+       "state": "CLOSED",
+       "merged": false,
+       "updatedAt": "2026-05-20T05:28:21Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_29d84c8a5413",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 16,
+       "title": "示例 PR 16：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/16",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-21T07:01:11Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_9f931a7dca1a",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 17,
+       "title": "示例 PR 17：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/17",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-21T12:03:38Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_393853a54a36",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 18,
+       "title": "示例 PR 18：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/18",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-23T00:29:50Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_d8b55e658270",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldUserValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 19,
+       "title": "示例 PR 19：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/19",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-05-26T01:29:42Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         },
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": [
+         {
+          "login": "user-1"
+         }
+        ]
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_cb9b09bf1712",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 20,
+       "title": "示例 issue 20：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/20",
+       "state": "CLOSED",
+       "updatedAt": "2026-08-30T05:56:01Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c3868ee310d2",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 21,
+       "title": "示例 issue 21：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/21",
+       "state": "CLOSED",
+       "updatedAt": "2026-08-30T05:57:40Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_abeddd4c0e7a",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 24,
+       "title": "示例 issue 24：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/24",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T02:11:07Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "priority/p2",
+          "color": "bfd4f2"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_eb2031d8ec9f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 25,
+       "title": "示例 issue 25：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/25",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-17T03:11:37Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_0ff2f6077d84",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 26,
+       "title": "示例 PR 26：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/26",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T02:11:02Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "priority/p2",
+          "color": "bfd4f2"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_a9ba582a611f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 27,
+       "title": "示例 PR 27：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/27",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-17T03:11:31Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_af065bc4fe4e",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 28,
+       "title": "示例 issue 28：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/28",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-17T06:58:06Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_6446b5cf1dbb",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 29,
+       "title": "示例 issue 29：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/29",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-17T07:07:35Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_be0f3576db2f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 30,
+       "title": "示例 PR 30：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/30",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-17T06:58:01Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_49e026d1ae98",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 31,
+       "title": "示例 PR 31：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/31",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-17T07:07:30Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_4597db677f7f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 32,
+       "title": "示例 issue 32：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/32",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T03:32:03Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_de518adca6ae",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 33,
+       "title": "示例 PR 33：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/33",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T03:31:58Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_643844c4d363",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 34,
+       "title": "示例 issue 34：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/34",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-22T04:59:20Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "priority/p1",
+          "color": "f9d0c4"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_ece5c6662ba8",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 35,
+       "title": "示例 issue 35：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/35",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-22T13:11:05Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_76b47d1f4f82",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 36,
+       "title": "示例 issue 36：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/36",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-22T06:12:01Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_4ee5db37376e",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 37,
+       "title": "示例 PR 37：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/37",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-22T04:59:15Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "priority/p1",
+          "color": "f9d0c4"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_839130082e45",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 38,
+       "title": "示例 PR 38：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/38",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-22T06:11:56Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_8a79498ac5f2",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 39,
+       "title": "示例 PR 39：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/39",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-22T13:11:00Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_33898367f8ed",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 40,
+       "title": "示例 issue 40：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/40",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-22T09:56:21Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "priority/p0",
+          "color": "b60205"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_4bff4ee6360d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 41,
+       "title": "示例 issue 41：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/41",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-28T23:58:34Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_9a36f97e43f0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 42,
+       "title": "示例 PR 42：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/42",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-28T23:57:01Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_a9dbda9b41c1",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 43,
+       "title": "示例 issue 43：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/43",
+       "state": "CLOSED",
+       "updatedAt": "2026-09-29T03:12:31Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_8c669722bedf",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 44,
+       "title": "示例 PR 44：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/44",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-29T03:12:26Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_125e2e205c0d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 45,
+       "title": "示例 PR 45：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/45",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-09-29T05:04:31Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_7e529b7a97df",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 46,
+       "title": "示例 issue 46：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/46",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T00:53:46Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_68ad55d16c80",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 47,
+       "title": "示例 PR 47：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/47",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-06T09:14:43Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c55df4700bc0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 48,
+       "title": "示例 PR 48：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/48",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T00:53:41Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_334821445cdf",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 49,
+       "title": "示例 issue 49：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/49",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T00:44:25Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_934b77862898",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 50,
+       "title": "示例 PR 50：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/50",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T00:45:37Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_fddf0b07ada9",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 51,
+       "title": "示例 issue 51：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/51",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T03:47:35Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_cf611c260ccd",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 52,
+       "title": "示例 issue 52：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/52",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T02:09:00Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_bc3c0fbc11c5",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 53,
+       "title": "示例 PR 53：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/53",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T02:08:55Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_931dc1cc0235",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 54,
+       "title": "示例 PR 54：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/54",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T03:40:16Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_f308a73efc9a",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 55,
+       "title": "示例 PR 55：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/55",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T03:47:30Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_0a6234446f1a",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 56,
+       "title": "示例 issue 56：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/56",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T05:01:08Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_9e2f1fa65842",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 57,
+       "title": "示例 PR 57：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/57",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T05:01:02Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_be4404971669",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 58,
+       "title": "示例 issue 58：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/58",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-08T11:12:45Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_0f8b326adb82",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 59,
+       "title": "示例 PR 59：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/59",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-08T11:13:36Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_12971ac11afd",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 60,
+       "title": "示例 PR 60：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/60",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-11T16:05:54Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "priority/p2",
+          "color": "bfd4f2"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_a270e2e377af",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 61,
+       "title": "示例 issue 61：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/61",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-19T02:45:19Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_035ee47c0768",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 62,
+       "title": "示例 PR 62：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/62",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-13T12:39:08Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_57c3f22fa178",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 63,
+       "title": "示例 issue 63：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/63",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-19T02:45:28Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_03c18409a8df",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 64,
+       "title": "示例 PR 64：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/64",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-19T02:45:23Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_71e4124dc4e9",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 65,
+       "title": "示例 PR 65：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/65",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-19T02:45:14Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_31ceb9d7b178",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 66,
+       "title": "示例 issue 66：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/66",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-19T05:03:34Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_f784ba85427f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 67,
+       "title": "示例 issue 67：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/67",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-20T16:13:42Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_55b03ebfd379",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 68,
+       "title": "示例 PR 68：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/68",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-19T05:03:29Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_2dc40d53c156",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 69,
+       "title": "示例 PR 69：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/69",
+       "state": "CLOSED",
+       "merged": false,
+       "updatedAt": "2026-10-20T04:16:04Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_e198e69f43a0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 70,
+       "title": "示例 issue 70：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/70",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-20T05:32:22Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_07c77e96eabe",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 71,
+       "title": "示例 issue 71：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/71",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-20T14:59:13Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_f0c27a6da23c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 72,
+       "title": "示例 PR 72：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/72",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-20T05:32:16Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c9aac7327ce7",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 73,
+       "title": "示例 PR 73：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/73",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-20T14:59:07Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_1a0cf1f9d859",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 74,
+       "title": "示例 issue 74：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/74",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-23T02:17:01Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_45788d02e360",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 75,
+       "title": "示例 issue 75：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/75",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-23T04:47:39Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_63e0edbd89d9",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 76,
+       "title": "示例 issue 76：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/76",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-23T02:46:21Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_15bbad06e96d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 77,
+       "title": "示例 PR 77：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/77",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-23T02:46:16Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_089965623268",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 78,
+       "title": "示例 PR 78：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/78",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-23T02:16:56Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_d1a20cc4f7c9",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 79,
+       "title": "示例 PR 79：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/79",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-23T04:47:34Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_ee3bd31494d0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 80,
+       "title": "示例 issue 80：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/80",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-23T04:45:47Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_a0f1cd6cebea",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 81,
+       "title": "示例 PR 81：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/81",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-23T04:45:42Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_f30680b8df1e",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 82,
+       "title": "示例 issue 82：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/82",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-23T06:31:59Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_82c6568d27be",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 83,
+       "title": "示例 PR 83：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/83",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-23T06:31:54Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_7828fa8a403a",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 84,
+       "title": "示例 issue 84：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/84",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-24T22:19:51Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_d19855a81cc7",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 85,
+       "title": "示例 PR 85：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/85",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-24T22:19:45Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_ec5ccae37361",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 86,
+       "title": "示例 issue 86：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/86",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-25T03:42:29Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_8b94f9b1a64b",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 87,
+       "title": "示例 PR 87：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/87",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-25T03:42:24Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_d02cf1275c04",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 88,
+       "title": "示例 issue 88：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/88",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-27T03:23:56Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_2c066b7f27f9",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 89,
+       "title": "示例 PR 89：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/89",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-27T03:23:50Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c8410e520ed1",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldUserValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 90,
+       "title": "示例 issue 90：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/90",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-27T04:52:21Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": [
+         {
+          "login": "user-2"
+         }
+        ]
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_efa8cc6075b0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 91,
+       "title": "示例 PR 91：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/91",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-27T04:52:16Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_e5ee9e2ad11c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 92,
+       "title": "示例 PR 92：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/92",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-27T08:27:48Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_0217b62529da",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 93,
+       "title": "示例 issue 93：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/93",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-28T04:51:02Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_5b5fc662ae46",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 94,
+       "title": "示例 PR 94：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/94",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-28T04:50:56Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_3cde3ac8f60a",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 95,
+       "title": "示例 issue 95：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/95",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-31T05:57:19Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_5ddd0e7c47bf",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 96,
+       "title": "示例 PR 96：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/96",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-31T05:57:14Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_3656301bca00",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 97,
+       "title": "示例 issue 97：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/97",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-31T09:12:42Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_66252b83dbb3",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 98,
+       "title": "示例 PR 98：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/98",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-31T09:12:36Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_aa1755789927",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 99,
+       "title": "示例 issue 99：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/99",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-31T11:52:50Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_0b494c096b09",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 100,
+       "title": "示例 issue 100：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/100",
+       "state": "CLOSED",
+       "updatedAt": "2026-10-31T14:06:06Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "PVT_fixture_435fd6e043de",
+   "title": "cavil project",
+   "url": "https://github.com/orgs/GigleAI/projects/11",
+   "fields": {
+    "nodes": [
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2SingleSelectField",
+      "id": "PVTF_fixture_c5fef67be389",
+      "name": "Status",
+      "options": [
+       {
+        "id": "f75ad846",
+        "name": "Backlog"
+       },
+       {
+        "id": "61e4505c",
+        "name": "Preparing"
+       },
+       {
+        "id": "47fc9ee4",
+        "name": "In progress"
+       },
+       {
+        "id": "df73e18b",
+        "name": "In review"
+       },
+       {
+        "id": "98236657",
+        "name": "Done"
+       }
+      ]
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2IterationField",
+      "id": "PVTF_fixture_c418626aa793",
+      "name": "Iteration",
+      "configuration": {
+       "iterations": [
+        {
+         "id": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7
+        },
+        {
+         "id": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7
+        },
+        {
+         "id": "3d96a307",
+         "title": "Iteration 27",
+         "startDate": "2026-11-16",
+         "duration": 7
+        }
+       ],
+       "completedIterations": [
+        {
+         "id": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7
+        },
+        {
+         "id": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7
+        },
+        {
+         "id": "74c4ff86",
+         "title": "Iteration 22",
+         "startDate": "2026-10-12",
+         "duration": 7
+        },
+        {
+         "id": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7
+        },
+        {
+         "id": "6336d658",
+         "title": "Iteration 20",
+         "startDate": "2026-09-28",
+         "duration": 7
+        },
+        {
+         "id": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7
+        },
+        {
+         "id": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7
+        },
+        {
+         "id": "43117234",
+         "title": "Iteration 17",
+         "startDate": "2026-09-07",
+         "duration": 7
+        },
+        {
+         "id": "4b7b7c56",
+         "title": "Iteration 16",
+         "startDate": "2026-08-31",
+         "duration": 7
+        },
+        {
+         "id": "39d50550",
+         "title": "Iteration 15",
+         "startDate": "2026-08-24",
+         "duration": 7
+        },
+        {
+         "id": "5d38d2fd",
+         "title": "Iteration 14",
+         "startDate": "2026-08-17",
+         "duration": 7
+        },
+        {
+         "id": "6db4501a",
+         "title": "Iteration 13",
+         "startDate": "2026-08-10",
+         "duration": 7
+        },
+        {
+         "id": "ea3041bd",
+         "title": "Iteration 12",
+         "startDate": "2026-08-03",
+         "duration": 7
+        },
+        {
+         "id": "742c7f27",
+         "title": "Iteration 11",
+         "startDate": "2026-07-27",
+         "duration": 7
+        },
+        {
+         "id": "6dae581f",
+         "title": "Iteration 10",
+         "startDate": "2026-07-20",
+         "duration": 7
+        },
+        {
+         "id": "eb6cb6a2",
+         "title": "Iteration 9",
+         "startDate": "2026-07-13",
+         "duration": 7
+        },
+        {
+         "id": "5cc2e456",
+         "title": "Iteration 8",
+         "startDate": "2026-07-06",
+         "duration": 7
+        },
+        {
+         "id": "2b608756",
+         "title": "Iteration 7",
+         "startDate": "2026-06-29",
+         "duration": 7
+        },
+        {
+         "id": "3ee282ed",
+         "title": "Iteration 6",
+         "startDate": "2026-06-22",
+         "duration": 7
+        },
+        {
+         "id": "b7b3cc41",
+         "title": "Iteration 5",
+         "startDate": "2026-06-15",
+         "duration": 7
+        },
+        {
+         "id": "612409b2",
+         "title": "Iteration 4",
+         "startDate": "2026-06-08",
+         "duration": 7
+        },
+        {
+         "id": "1c5af022",
+         "title": "Iteration 3",
+         "startDate": "2026-06-01",
+         "duration": 7
+        },
+        {
+         "id": "d5912ebb",
+         "title": "Iteration 2",
+         "startDate": "2026-05-25",
+         "duration": 7
+        },
+        {
+         "id": "d77dd21c",
+         "title": "Iteration 1",
+         "startDate": "2026-05-18",
+         "duration": 7
+        }
+       ]
+      }
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     }
+    ]
+   },
+   "items": {
+    "totalCount": 138,
+    "pageInfo": {
+     "hasNextPage": false,
+     "endCursor": "cursor-2"
+    },
+    "nodes": [
+     {
+      "id": "PVTI_fixture_60872dc30ec1",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 101,
+       "title": "示例 PR 101：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/101",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-10-31T14:06:01Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_12089c03b2ac",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 102,
+       "title": "示例 issue 102：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/102",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-01T07:43:50Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_4af3864abbf2",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 103,
+       "title": "示例 issue 103：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/103",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-01T06:15:00Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_4e4f6b502448",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 104,
+       "title": "示例 PR 104：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/104",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-01T06:14:55Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_81f611ba4b59",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 105,
+       "title": "示例 PR 105：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/105",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-01T07:43:45Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_d933e473da0f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 106,
+       "title": "示例 issue 106：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/106",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-02T01:35:58Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_fa24b3a0dfcb",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 107,
+       "title": "示例 PR 107：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/107",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-02T01:35:53Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_87a8aa6109bd",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 108,
+       "title": "示例 issue 108：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/108",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-02T07:29:57Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_4fbf5f38f7f4",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 109,
+       "title": "示例 issue 109：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/109",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-02T08:40:20Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_ee40e6a63e91",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 110,
+       "title": "示例 PR 110：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/110",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-02T07:29:52Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_f356d73213d1",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 111,
+       "title": "示例 PR 111：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/111",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-02T08:40:15Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_d1dbd18d441b",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 112,
+       "title": "示例 issue 112：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/112",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-02T10:59:08Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_adffe1064325",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 113,
+       "title": "示例 PR 113：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/113",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-02T10:59:02Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_659f9907605e",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 114,
+       "title": "示例 issue 114：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/114",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-03T05:05:00Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_015f184d3226",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 115,
+       "title": "示例 PR 115：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/115",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-02T13:21:03Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_eed650321bb0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 116,
+       "title": "示例 issue 116：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/116",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-02T14:04:39Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_aa6c59644524",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 117,
+       "title": "示例 issue 117：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/117",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-03T05:16:01Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_180a0a76f946",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 118,
+       "title": "示例 PR 118：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/118",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-02T14:04:33Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_da3a95782c62",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 119,
+       "title": "示例 PR 119：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/119",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-03T05:04:53Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_b3882d118d40",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 120,
+       "title": "示例 issue 120：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/120",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-02T14:28:33Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_cd327da89716",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 121,
+       "title": "示例 PR 121：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/121",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-03T05:15:56Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_766fa79c53e7",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 123,
+       "title": "示例 PR 123：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/123",
+       "state": "CLOSED",
+       "merged": false,
+       "updatedAt": "2026-11-02T14:28:37Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_49cebc582191",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 124,
+       "title": "示例 issue 124：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/124",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-03T23:43:56Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_9690fa2f1b36",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 125,
+       "title": "示例 issue 125：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/125",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-03T10:30:15Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_bb8ac225fc5f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 126,
+       "title": "示例 PR 126：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/126",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-03T10:30:10Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_a55bc03517da",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 127,
+       "title": "示例 PR 127：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/127",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-03T23:43:51Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_18b04fb8b1b2",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 128,
+       "title": "示例 issue 128：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/128",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-04T11:30:21Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_531d3eab6252",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 129,
+       "title": "示例 PR 129：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/129",
+       "state": "CLOSED",
+       "merged": false,
+       "updatedAt": "2026-11-04T11:42:20Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": []
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_dec9c9ff108c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 130,
+       "title": "示例 issue 130：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/130",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-04T00:28:27Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_e45aa3d9c388",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 131,
+       "title": "示例 PR 131：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/131",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-04T00:28:22Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c120140cde25",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 132,
+       "title": "示例 PR 132：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/132",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-04T11:30:16Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_9646a0132a94",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 133,
+       "title": "示例 issue 133：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/133",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-04T15:30:29Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c2706bc6975f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 134,
+       "title": "示例 PR 134：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/134",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-04T15:30:23Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_a6754a01539f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 135,
+       "title": "示例 issue 135：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/135",
+       "state": "OPEN",
+       "updatedAt": "2026-11-04T22:53:59Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/PR",
+          "color": "EEEEEE"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_493eb030f9f0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 136,
+       "title": "示例 issue 136：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/136",
+       "state": "OPEN",
+       "updatedAt": "2026-11-04T22:53:36Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "doing/agent",
+          "color": "c2e0c6"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_17e6b75a9068",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 137,
+       "title": "示例 issue 137：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/137",
+       "state": "OPEN",
+       "updatedAt": "2026-11-04T22:52:40Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_98ebe4fb8e4c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 138,
+       "title": "示例 issue 138：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/138",
+       "state": "OPEN",
+       "updatedAt": "2026-11-04T22:52:41Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     },
+     {
+      "id": "PVTI_fixture_c3dc96a8cb18",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 139,
+       "title": "示例 issue 139：fixture title",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/139",
+       "state": "OPEN",
+       "updatedAt": "2026-11-04T22:52:43Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -209,6 +209,14 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 ---
 
+## 客户端（桌面看板，预览版）
+
+`client/` 是一个可选的本地 macOS App，把多个 GitHub Project 和仓库合进一个看板：按迭代（默认）/ 状态 / 里程碑分列，可按仓库分泳道；断网时照样能看上次同步的内容。登录走浏览器授权（GitHub OAuth 设备授权），凭据存进 macOS 钥匙串。它只和 GitHub 通信，不和 daemon 打交道，daemon 也不依赖它。
+
+v0.1 只读；搜索筛选、修改操作（标签、迭代、合并 PR、回复评论）和 `pending/human` 提醒在 GigleAI/cavil-loop#135 的后续几块。安装包挂在 `client/v*` 的 Release 上（Apple 芯片和 Intel 各一个；没有苹果签名，第一次怎么打开写在 Release 说明里）。开发说明：[client/README.md](client/README.md)。
+
+---
+
 ## 深入阅读
 
 | 文档 | 内容 |

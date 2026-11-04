@@ -59,7 +59,9 @@
 │   └── ci-weights.txt         ← 各文件参考耗时，只用来均衡 CI 分组
 ├── .github/workflows/
 │   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（检查名：测试）
-│   └── release.yml            ← 每周发版
+│   ├── release.yml            ← 每周发版
+│   └── client.yml             ← 桌面客户端：测试、macOS dmg、client/v* Release
+├── client/                   ← 桌面看板客户端（Electron + TS + React；GitHub#135），见 client/README.md
 └── docs/
     ├── architecture.md        ← 五态 label 状态机 + 会话模型 + 选型 FAQ
     ├── requester-bot.md       ← 对接外部需求机器人（对接步骤 + 参考）
@@ -335,6 +337,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 - `docs/operations{,.zh}.md` 里人工跑的托管机器核对段（GitHub#124，在 `<!-- autopilot-ops:host-check -->` 后面）→ `tests/autopilot-ops.test.sh`（默认约 30 秒；`MUTATION=1` 另跑 5 份改坏的副本，包括设计阶段被打回的写法）。它从两份文档原样取出脚本，要求中英两份逐字一致，用假的 `systemctl` / `tmux` 和一个真的残留进程实跑。认实例按 daemon 的读法载入安装登记和配置，不按文本匹配。规矩只有一条：读不到绝不当成「没有」——要 UNKNOWN，不能是 STOPPED
 - 外部需求机器人（GitHub#95 / #97：等待标签、`scripts/notify-requester-bot.sh`（及早期名字的转发壳 `notify-relay.sh`）、`prompts/requester-bot-handoff.md`、`flip_to_doing`、greedy 挡工清单 / self-heal 跳过、webhook 通知（GitHub#100）、daemon 的合并 / 关闭通知、旧的 `RELAY_*` 配置名）→ `tests/requester-bot.test.sh`（默认约 4 分钟，`MUTATION=1` 约 12 分钟：假 webhook 只听 127.0.0.1、记下每个请求，超时用例实等 10 秒）。功能关闭时把轮询的 GitHub 调用、派工记录、四类拼装提示词（用 merge-base 的拼装代码拼本版模板，后来改模板文字的 PR 不会被它误伤）、合并后清理那一段（含 `state.json`）与 merge-base 上的副本逐字节对拍。只有首页那两行和 `docs/requester-bot*.md` 可以点名具体机器人。交接规则由 `compose_prompt_template` 追加，不要写进工具自带模板——整份替换模板的项目会收不到。所有派工路径都经 `flip_to_doing` 翻 `doing/agent`，等待标签只在这一处摘。「是不是机器人提的需求」「通知 webhook」在 `_lib.sh` 里只有一份（`requester_bot_item_origin` / `requester_bot_webhook_notify`），叫醒脚本和合并 / 关闭通知共用，不要复制。叫醒脚本只在唯一的成功出口调 webhook；地址 / 请求头 / 密钥经标准输入喂给 `curl --config -`，不进命令行，也不进任何输出和日志。不再指派机器人、不再请求它 review：`REQUESTER_BOT_ACCOUNT` 只用来认机器人提的 issue
 - 不是机器人提的条目也能叫醒（GitHub#133：`REQUESTER_BOT_WAKE_ANY_ITEM`、`notify-requester-bot.sh` 的 `MODE=any` 分支、`scripts/requester_bot_handoff.py`、`requester_bot_item_origin` 给出的 `REQUESTER_BOT_ORIGIN_CLASS` / `REQUESTER_BOT_LINKED`、`prompts/requester-bot-handoff-any-item.md`）→ `tests/requester-bot-any-item.test.sh`（默认约 1 分钟；`MUTATION=1` 约 3.5 分钟，18 个改坏的副本，含方案第 2、3 轮的机器人侧旧规则和「只看正文标记分流」）。机器人侧是 `tests/fixtures/requester-bot-ref-consumer.py`，照文档「交接协议」另写，**故意不** import `requester_bot_handoff.py`——它就是对拍的另一边，别合并。假 GitHub 在叫醒脚本的每一次调用之前都跑它一次（`FAKE_GH_OBSERVER`），所以「机器人任何时刻都不判出错、不选别的评论」是在每两步之间核对的，不只看终态。`requester_bot_item_origin` 的返回值 / 来源 / 原因在开关开、关下都必须和 merge-base 逐字节相同——合并 / 关闭通知和托管只读这些，新分类只给叫醒入口用。交接评论按标签事件编号和评论编号认，不比时间（GitHub 的时间只到秒）。脚本不编辑交接评论——GitHub 的评论编辑没有条件写入，整段写回曾覆盖别人同时做的修改（代码复审第 1 轮）；改为另发一条叫醒记录评论，用量 footer 也就不会被动到
+- `client/` 桌面客户端（GitHub#135 / #136：登录、同步与缓存、看板分列、打包）→ `cd client && npm ci && npm test && npm run typecheck && npm run test:e2e`；负对照 `MUTATION=1 npm run test:mutation`（约 2.5 分钟）。它们跑在 `.github/workflows/client.yml`，不在 `tests/run.sh` 里。夹具由 `client/test/fixtures/record.mjs` 从真实的 `cavil project` 录制，要改就重录，别手改。一个来源要么整个读成功，要么沿用上一轮快照；绝不把读了一半的结果写进缓存
 - `docs/images/` 里的讲解动图 → `tests/doc-diagrams.test.sh`。不要手改这些 SVG：改 `scripts/doc-diagrams/gen.py` 里的表，重跑 `python3 scripts/doc-diagrams/gen.py`，把产物一起提交。测试会重新生成并对比，再在每张动图的所有关键帧把一圈切成小段、按每段两端的值逐段判定，不靠定时采样（任意时刻最多一段说明；说明只在红框停在它那一步、或正从那一步滑走时出现；红框按顺序走完每一步；不含脚本 / id / 外链）。图里画的流程变了，就在同一个 PR 里改说明
 
 没有对应测试的改动（daemon glue、prompt 模板）仍按最低保证走：
