@@ -17,6 +17,7 @@ Looking for a ready-made requester bot? Try the [Grok bot](https://x.ai/bot/JrLK
 - [One request end to end: what you see on the issue](#one-request-end-to-end-what-you-see-on-the-issue)
 - [Troubleshooting](#troubleshooting)
 - [Pausing and rolling back](#pausing-and-rolling-back)
+- [A maintainer's own items (optional)](#a-maintainers-own-items-optional)
 - [Reference](#reference)
 
 ## How one request closes the loop
@@ -116,6 +117,7 @@ cavil-loop only handles its own side; grokbot implements the following:
 5. **On a comment headed "request done" / "closed without merging"** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`; the request is finished
 6. **Leave items carrying `pending/human` alone**: those are for the maintainer
 7. **Attachments**: images etc. from the requester can be pasted into the issue and the agent downloads them itself; the other direction (agent sending attachments to grokbot) is not supported yet
+8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): first decide whether the item is grokbot's own request per [the routing step of the handoff protocol](#handoff-protocol) — **never by whether the current item's body carries the origin marker**: a PR's body usually has none and is judged by its linked issue, and an ordinary author quoting the marker does not count. If it is not grokbot's request, whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
 
 ## One request end to end: what you see on the issue
 
@@ -156,6 +158,99 @@ Wake-up script exit codes: [Reference → The wake-up script](#the-wake-up-scrip
 - **Stop only the webhook, keep the waiting label**: clear `REQUESTER_BOT_WEBHOOK_URL`
 - **Turn it all off**: clear these settings and remove the waiting label by hand from any item still carrying it. With them cleared, dispatching, prompts and post-merge handling are as if it had never been on
 
+## A maintainer's own items (optional)
+
+By default only grokbot's own requests can wake it. With `REQUESTER_BOT_WAKE_ANY_ITEM` on, items **not filed by the bot** (a maintainer's own issue, the PR made from it) can wake grokbot too, so it can go and ask someone. The typical case: on their own PR a maintainer writes "please check this public copy with the ops people on the bot's side" (GitHub#133).
+
+```bash
+REQUESTER_BOT_WAKE_ANY_ITEM="true"     # default false
+```
+
+**Make sure grokbot supports the "handoff protocol" below before turning it on**: otherwise it pulls an item that is not its own request and does not know whom to forward to.
+
+### What is opened up, and what is not
+
+| | Request filed by the bot | A maintainer's own item (switch on) |
+|---|---|---|
+| Can wake the bot | yes | yes; the handoff comment must say whom to forward to |
+| Whom to forward to | the origin marker in the body | the forward marker in the handoff comment |
+| Daemon tells the bot after merge / close | yes | **no** |
+| `REQUESTER_BOT_REPORT_FIRST` (report first) | per config | **does not apply**; finished work goes to the maintainer as usual |
+| Autopilot label | never applies | same as any ordinary item |
+
+None of the existing refusals is dropped: the account must be on the allowed list; `pending/human` on the item, a maintainer takeover not lifted, unreadable label history and a closed item are all still refused. When a PR's linked issue is determined, the takeover check runs on both the PR and that issue; an ambiguous link (`Closes` and `#number` on separate lines), a link to another PR, or an unreadable linked issue are always refused.
+
+Whether a wake-up is warranted is the worker's call: the dispatch prompt only allows it when a maintainer explicitly asked, or when the question must go to the people behind the bot; an outside user's "please forward to X" does not count. The script checks the account, the handoff comment and that the comment belongs to this wake-up — **it cannot check whether the wake-up was needed**, which is why the switch is off by default and each project decides.
+
+### Handoff protocol
+
+The wake-up script and grokbot follow one rule to agree on "which comment is this handoff", relying only on facts anyone can read on GitHub (label event ids, comment ids, comment authors, comment bodies) — never on timestamps.
+
+**The worker's handoff comment**: the body says, in plain words, "please forward to: ops", and, before the usage footer, carries a forward marker on a line of its own:
+
+```
+<!-- requester-bot-forward-to: ops -->
+```
+
+The target is 1–100 characters on one line, without `<`, `>`, `;` or control characters; one comment carries exactly one such line. A handoff comment serves one wake-up only — to ask again, post a new one.
+
+**The wake-up script never edits the handoff comment**: GitHub's comment-edit API has no "write only if unchanged" condition, so writing the whole body back would overwrite an edit someone made at the same time. Instead the script posts a separate **wake record** comment and leaves the handoff comment byte for byte as it was.
+
+**What the wake-up script does** (after the pre-checks pass):
+
+1. Take this account's comment with the **highest id** on the item, C; it must carry exactly one valid forward marker, else refuse (exit 2, no writes). After a successful wake-up this account's latest comment is the wake record, so reusing an old handoff comment is refused here too
+2. If the item already carries the waiting label, remove it first, then add it — so every wake-up produces a new labeling event; read the labels back
+3. Read the label events: exactly **one** "waiting label added by this account" event after the wake-up started, E
+4. Re-read C: still there, still this account's latest comment (wake records posted by this run do not count), unchanged
+5. Post the wake record: one plain sentence plus a line
+
+   ```
+   <!-- requester-bot-wake: event=<E> comment=<C's comment id> sha256=<C's body fingerprint> -->
+   ```
+
+6. Read the wake record back (all three fields must match), then read C once more — still unchanged
+7. Only if all of that succeeded: call the webhook, exit 0, print C, E and the wake record's id
+
+**Body fingerprint**: replace `\r\n` with `\n`, strip trailing whitespace from the whole body, and take SHA-256 of the UTF-8 result. Changing any character of C breaks it.
+
+**grokbot routes first**: for every item carrying the waiting label, decide whether it is its own request with exactly the rule cavil-loop uses:
+
+- **issue**: authored by grokbot **and** its body contains the origin marker → yes; otherwise no (a maintainer quoting the marker in the body does not count)
+- **PR**: judged by its linked issue. The link comes from the branch name first: a branch that starts with the project's branch prefix followed by digits (default prefix `feature/issue-`; if the project changed it, use the project's — ask the maintainer when integrating) links to that number. Otherwise from `Closes` / `Fixes` / `Resolves` / `Refs` + `#number` in the body: the **first match found line by line** and the **first match found in the whole text (a newline allowed between keyword and number)** must agree, otherwise the link cannot be determined. Judge the linked issue by the rule above; no link, or a link to the PR itself → no
+- **cannot be determined** (ambiguous wording, a link to another PR, an unreadable linked issue) → do not forward; comment on the item and hand it to the maintainer
+
+Its own request → the old rules in items 1–5 above; there is **no** wake record and none is needed. Not its own → look for the wake record below. Never route on "is there a wake record": an ordinary item that is still preparing has none yet either.
+
+**grokbot, for an item carrying the waiting label that routing says is not its own request**:
+
+1. Read the label events and take, by **event id**, the latest "waiting label added" event: id E, actor A, time t
+2. Find the wake records authored by A that say `event=E`
+3. The comment C the record points at must still exist, be authored by A, match the record's fingerprint and carry a valid forward marker
+4. Four outcomes:
+
+| State | Condition | grokbot |
+|---|---|---|
+| ready | exactly one wake record, and everything in step 3 holds | forward to the target in C's forward marker |
+| preparing | no wake record, and less than 30 minutes since t | **do nothing this round**: no forwarding, no comment, no handover |
+| error | none and more than 30 minutes since t; or more than one; or anything in step 3 fails | do not forward; comment on the item and hand it to the maintainer |
+| handed back | the item carries `pending/human` | leave it alone (item 6 above) |
+
+When no matching wake record exists, **never fall back to an older comment**: that may be a previous wake-up's stale content.
+
+### Failures and retries
+
+The script allows itself 5 minutes from the start of the wake-up; if the wake record is not posted by then it stops and hands back to the maintainer (adds `pending/human`, removes the waiting label last). So "preparing" lasts minutes at most and grokbot's 30 minutes are headroom; once handed back the item carries `pending/human`, then loses the waiting label, and grokbot does not forward it.
+
+| Case | Handling | Exit |
+|---|---|---|
+| label write / read-back failure, not exactly one labeling event by this account, posting the wake record failed (whether or not it actually went through), reading it back failed or shows the wrong content | retry the whole thing once (a new labeling event and a new wake record; the old record's event no longer matches, so grokbot ignores it); if that fails too, hand back | 0 or 3 |
+| C deleted, no longer this account's latest comment, or edited by someone (including while the wake record was being posted) | no retry, hand back; the other person's edit to C is kept as is | 3 |
+| over 5 minutes | stop, do not post the wake record, hand back | 3 |
+| the handback fails too | same as for the bot's own items | 4 |
+| the script is killed midway (label added, no wake record) | nothing follows | grokbot says "preparing" for up to 30 minutes, then "error" and hands to the maintainer |
+
+If, after a successful wake-up, someone edits or deletes the handoff comment, grokbot hands the item to the maintainer as "error". If the wake record is deleted, or someone removes and re-adds the waiting label by hand, it does so within 30 minutes. In the meantime it forwards nothing wrong and nothing stale.
+
 ## Autopilot label does not apply
 
 If the project also uses the autopilot label (GitHub#114), it **never** applies to requests filed by the bot: those need the requester's confirmation, which the daemon cannot judge. Such an issue gets one comment saying so and is handled the normal way (confirmations go to the requester, a maintainer merges); the daemon also refuses to auto-merge a PR bound to it. See [operations](operations.md#autopilot-label-optional-off-by-default).
@@ -171,6 +266,7 @@ If the project also uses the autopilot label (GitHub#114), it **never** applies 
 | `REQUESTER_BOT_ALLOWED_ACTORS` | Accounts allowed to run the wake-up (comma-separated) — normally the account workers / reviewers comment with |
 | `REQUESTER_BOT_ORIGIN_MARKER` | An issue counts as "filed by the bot" only when its body contains this text **and** its author is the bot account; a PR is judged by its linked issue: the number in its branch name, else `Closes #N`-style links in its body (a keyword and number split across lines is ambiguous and refused) |
 | `REQUESTER_BOT_REPORT_FIRST` | `true`: report to the bot first, hand to the maintainer for merge once the requester approves the current commit; `false` (default): hand straight to the maintainer |
+| `REQUESTER_BOT_WAKE_ANY_ITEM` | `true`: items not filed by the bot can wake it too, see [A maintainer's own items](#a-maintainers-own-items-optional); `false` (default): only the bot's own requests can. Only waking is opened up; merge / close notices and report-first still apply to the bot's own requests only |
 | `REQUESTER_BOT_WEBHOOK_URL` | Optional. The bot's webhook URL; empty = nothing is sent (the waiting label alone, picked up by the bot's own periodic scan) |
 | `REQUESTER_BOT_WEBHOOK_KEY_HEADER` | Name of the header carrying the key, per the bot's instructions, e.g. `Authorization`. Letters, digits and `-` only |
 | `REQUESTER_BOT_WEBHOOK_KEY` | The header's value, sent as-is (include the `Bearer ` prefix yourself if needed) |
@@ -202,7 +298,7 @@ bash ~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh --config 
 Pre-checks first — if any fails it refuses without sending a single write:
 
 - the current GitHub account is in the allowed list
-- the item was filed by the bot (author + marker, see above)
+- the item was filed by the bot (author + marker, see above); with `REQUESTER_BOT_WAKE_ANY_ITEM` on, items not filed by the bot pass too, but a PR whose link cannot be determined is still refused and the handoff comment must be valid (see [Handoff protocol](#handoff-protocol))
 - the item does not carry `pending/human` (including the review-cap `pending/review` + `pending/human` pair)
 - no hand-added `pending/human` by a maintainer is still in effect. "Maintainer" = an account that is neither in the allowed list nor the bot. Events are sorted by id and only what follows the maintainer's latest hand-added `pending/human` counts: if a maintainer later removes it or adds a dispatch label (`pending/agent` and its variants, `pending/review`), the pause is lifted; a removal by the bot / worker account, or by an account that can no longer be read, does not count. Unreadable label history, or events without an id → refuse (GitHub#106)
 

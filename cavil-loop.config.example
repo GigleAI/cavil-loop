@@ -267,6 +267,21 @@ REQUESTER_BOT_ALLOWED_ACTORS=""
 REQUESTER_BOT_ORIGIN_MARKER=""
 REQUESTER_BOT_REPORT_FIRST="false"
 
+# Optional (GitHub#133): also allow waking the bot on items it did NOT file (a maintainer's own
+# issue, the PR made from it), e.g. "please check this copy with the bot's ops people". Off by
+# default. Only changes "may the wake-up script run here"; merge / close notices and
+# REQUESTER_BOT_REPORT_FIRST still apply to the bot's own requests only. The handoff comment must
+# say who to forward to (one hidden line); the script then posts a short wake-record comment naming
+# the label event and that comment, so the bot finds exactly it. The bot side must support this before you turn it on —
+# see docs/requester-bot.md "A maintainer's own items".
+# 可选（GitHub#133）：不是机器人提的条目（维护者自己开的 issue、它做出来的 PR）也允许叫醒机器人，
+# 例如「这段对外文案请和机器人那边的运营同步一下」。默认关。只放开「能不能叫醒」；合并 / 关闭后的
+# 通知和 REQUESTER_BOT_REPORT_FIRST 照旧只对机器人提的条目生效。交接评论里要单独一行写明转给谁，
+# 叫醒脚本另发一条叫醒记录，写明挂标签的事件编号和那条交接评论，机器人凭它找回那一条。机器人那边先支持这套约定才能打开——
+# 见 docs/requester-bot.zh.md「维护者自己的条目」。
+#   true / false，默认 false
+REQUESTER_BOT_WAKE_ANY_ITEM="false"
+
 # Optional webhook (GitHub#100). One POST and the bot pulls every item carrying the waiting label.
 # Sent only after a confirmed wake-up / merge-close notice; a failure is one log line and never
 # changes the outcome (the bot's own periodic scan is the fallback). Skipped with one log line

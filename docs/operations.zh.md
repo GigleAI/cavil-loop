@@ -664,6 +664,8 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 五个配置项（`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUNT` / `REQUESTER_BOT_ALLOWED_ACTORS` /
 `REQUESTER_BOT_ORIGIN_MARKER` / `REQUESTER_BOT_REPORT_FIRST`）全部留空 = 关闭，行为逐字节不变。
 webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`），地址留空 = 不发；配置文件必须是 600。
+`REQUESTER_BOT_WAKE_ANY_ITEM="true"`（默认 false，GitHub#133）让不是机器人提的条目也能叫醒它，见
+[requester-bot.zh.md](requester-bot.zh.md#维护者自己的条目可选)；合并 / 关闭通知照旧只发给机器人提的需求。
 早期的名字（`LABEL_PENDING_RELAY`、`RELAY_*`）照样认；同一项新名字有值时用新名字。
 
 运维上要知道的：

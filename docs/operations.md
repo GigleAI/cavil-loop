@@ -786,7 +786,9 @@ Leaving the five settings (`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUN
 empty keeps today's behaviour byte-for-byte. The early names (`LABEL_PENDING_RELAY`, `RELAY_*`)
 are still read; for each setting the new name wins when it has a value. The webhook has three more
 settings (`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`); an empty URL sends nothing, and the
-config file must be mode 600.
+config file must be mode 600. `REQUESTER_BOT_WAKE_ANY_ITEM="true"` (default false, GitHub#133) also lets
+items the bot did not file wake it — see [requester-bot.md](requester-bot.md#a-maintainers-own-items-optional);
+merge / close notices still go to the bot's own requests only.
 
 Operationally:
 
