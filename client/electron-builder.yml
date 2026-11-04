@@ -9,14 +9,15 @@ files:
   - package.json
 asar: true
 npmRebuild: false
+afterPack: scripts/after-pack.cjs
 mac:
   category: public.app-category.developer-tools
   target:
     - target: dmg
-  # Ad-hoc signature only: Apple silicon refuses to run a binary with no
-  # signature at all. This is not an Apple Developer ID signature, so
-  # Gatekeeper still asks on first open (see RELEASE_NOTES.md).
-  identity: '-'
+  # No Apple Developer ID in v1: electron-builder does not sign; the
+  # afterPack hook gives the bundle an ad-hoc signature instead (Apple
+  # silicon needs one). Gatekeeper still asks on first open (RELEASE_NOTES.md).
+  identity: null
   hardenedRuntime: false
   gatekeeperAssess: false
 dmg:
