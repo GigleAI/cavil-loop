@@ -2806,7 +2806,7 @@ pending_human_conflict_tick() {
 AUTOPILOT_ACTED=0
 AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""; AUTOPILOT_ISSUE=""
 AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
-AUTOPILOT_PR_EVENTS=""; AUTOPILOT_PLACE=""; AUTOPILOT_PLACE_EVENTS=""
+AUTOPILOT_PR_EVENTS=""; AUTOPILOT_PLACE=""; AUTOPILOT_PLACE_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
 
 # 托管标签配了（不管复审关卡在不在）
 autopilot_configured() { [ -n "$LABEL_AUTOPILOT" ]; }
@@ -2922,7 +2922,7 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     local num="$1" ij="$2" pr="${3:-}" pj="${4:-}" author rc
     AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""
     AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
-    AUTOPILOT_PR_EVENTS=""
+    AUTOPILOT_PR_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
     if ! printf '%s' "$ij" | jq -e '(.number != null) and (.pull_request == null)' >/dev/null 2>&1; then
         AUTOPILOT_DENY=not-issue; AUTOPILOT_REASON="#$num 不是 issue（托管标签只在 issue 上算数）"; return 1
     fi
@@ -2972,7 +2972,10 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
         kind="$cand"
         case "$rc:$when" in
             0:after)
-                # 两处都成立时取较晚的那次（之后和 PR 上的 pending/human 比先后用它）
+                # 每一条成立的授权都记下（接手时和 PR 上的 pending/human 比先后要逐条看：同秒时只留一条，
+                # 会把 PR 自己事件里明确在后的那条遮住）；对外报的「授权」取较晚的那次
+                # 分隔用 \x1f：tab 是空白，read 会把连续的空字段吞掉
+                AUTOPILOT_AUTH_CANDS+="$kind"$'\x1f'"$cnum"$'\x1f'"$(printf '%s' "$here" | jq -r '.lab.t // ""')"$'\x1f'"$(printf '%s' "$here" | jq -r '.lab.idx // ""')"$'\x1f'"$AUTOPILOT_ACTOR"$'\n'
                 if [ -z "$ok_kind" ] || [[ "$(printf '%s' "$here" | jq -r '.lab.t // ""')" > "$ok_t" ]]; then
                     ok_kind="$kind"; ok_num="$cnum"; ok_place="$here"; ok_t="$(printf '%s' "$here" | jq -r '.lab.t // ""')"
                     ok_actor="$AUTOPILOT_ACTOR"
@@ -3577,15 +3580,28 @@ autopilot_takeover_permit() {   # <PR 编号>
         *) AT_REASON="$AUTOPILOT_REASON"; return 0 ;;
     esac
     if [ "$AT_MODE" = human ]; then
-        # 授权那次打标签 vs PR 上最后一次打 pending/human：同在 PR 上按记录顺序比，一个在 issue 上按时间比
-        when=$(printf '%s' "$AUTOPILOT_PR_EVENTS" | jq -r --arg H "$LABEL_PENDING_HUMAN" \
-                --arg kind "$AUTOPILOT_AUTH_KIND" --arg t "$AUTOPILOT_AUTH_T" --arg idx "$AUTOPILOT_AUTH_IDX" '
-            [ .[][]? ] | to_entries
-            | map(select(.value.event == "labeled" and (.value.label.name // "") == $H)) | last
-            | if . == null then "unknown"
-              elif $kind == "pr" then (if ($idx | tonumber) > .key then "after" else "before" end)
-              elif $t == "" or (.value.created_at // "") == "" then "unknown"
-              elif $t > .value.created_at then "after" else "before" end' 2>/dev/null) || when=unknown
+        # 每一条成立的授权都和 PR 上最后一次打 pending/human 比：同在 PR 上按记录顺序比，在 issue 上按时间比
+        # （同秒 = 不在后）。有一条在后就接手，用的就是那一条；没有在后的、但有比不出的 → 判不了；否则叫停
+        local ck cn ct ci ca w any_unknown=""
+        when=before
+        while IFS=$'\x1f' read -r ck cn ct ci ca; do
+            [ -n "$ck" ] || continue
+            w=$(printf '%s' "$AUTOPILOT_PR_EVENTS" | jq -r --arg H "$LABEL_PENDING_HUMAN" \
+                    --arg kind "$ck" --arg t "$ct" --arg idx "$ci" '
+                [ .[][]? ] | to_entries
+                | map(select(.value.event == "labeled" and (.value.label.name // "") == $H)) | last
+                | if . == null then "unknown"
+                  elif $kind == "pr" then (if $idx != "" and ($idx | tonumber) > .key then "after" else "before" end)
+                  elif $t == "" or (.value.created_at // "") == "" then "unknown"
+                  elif $t > .value.created_at then "after" else "before" end' 2>/dev/null) || w=unknown
+            if [ "$w" = after ]; then
+                when=after
+                AUTOPILOT_AUTH_KIND="$ck"; AUTOPILOT_AUTH_NUM="$cn"; AUTOPILOT_AUTH_T="$ct"; AUTOPILOT_AUTH_IDX="$ci"; AUTOPILOT_ACTOR="$ca"
+                break
+            fi
+            [ "$w" = before ] || any_unknown=1
+        done <<< "$AUTOPILOT_AUTH_CANDS"
+        [ "$when" = after ] || [ -z "$any_unknown" ] || when=unknown
         case "$when" in
             after) ;;
             before)   # pending/human 打在授权之后：那是叫停（交人待办要知道这个 pending/human 是不是 daemon 自己加的）

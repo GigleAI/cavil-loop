@@ -902,6 +902,36 @@ ROWS
         chk "  → 复审记录没被清掉" "$(st 8 .reviewed_head)" "$H1"
     done
 
+    section "【12m】两处都有成立的授权、同一秒：只要有一条明确晚于 PR 上的 pending/human 就接手（复审重置后第 3 轮）"
+    # 每行：名字 | issue 挂托管？ | issue 授权时间 | PR 事件（按顺序：h=pending/human、a=autopilot，后接时间）| 期望接手？
+    local nm il it pev want
+    while IFS='|' read -r nm il it pev want; do
+        [ -n "$nm" ] || continue
+        fresh
+        mkissue 7 "pending/PR$( [ "$il" = yes ] && echo ,autopilot)"
+        [ "$il" = yes ] && EV_AT="$it" ev 7 labeled autopilot maint
+        mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human,autopilot"
+        for e in $pev; do
+            IFS=@ read -r what at <<< "$e"
+            EV_AT="$at" ev 8 labeled "$( [ "$what" = h ] && echo pending/human || echo autopilot)" maint
+        done
+        tick
+        chk "$nm" "$(took)" "$want"
+    done <<'ROWS'
+复审反例：issue 同秒有授权，PR 内先 pending/human 后 autopilot（同一秒）→ 接手|yes|2026-06-01T00:00:00Z|h@2026-06-01T00:00:00Z a@2026-06-01T00:00:00Z|yes
+对照：只有 PR 授权（同一秒，先 pending/human 后 autopilot）→ 接手|no||h@2026-06-01T00:00:00Z a@2026-06-01T00:00:00Z|yes
+对照：两处授权，PR 授权晚 1 秒 → 接手|yes|2026-06-01T00:00:00Z|h@2026-06-01T00:00:00Z a@2026-06-01T00:00:01Z|yes
+对照：PR 内先 autopilot 后 pending/human（同秒），issue 授权同秒 → 叫停，不接手|yes|2026-06-01T00:00:00Z|a@2026-06-01T00:00:00Z h@2026-06-01T00:00:00Z|no
+对照：PR 内先 autopilot 后 pending/human，issue 授权晚 1 秒 → 接手（issue 那条在后）|yes|2026-06-01T00:00:01Z|a@2026-06-01T00:00:00Z h@2026-06-01T00:00:00Z|yes
+对照：PR 内先 autopilot 后 pending/human，issue 授权同秒 → 不接手（同秒不算在后）|yes|2026-06-01T00:00:00Z|a@2026-06-01T00:00:00Z h@2026-06-01T00:00:00Z|no
+ROWS
+    fresh
+    mkissue 7 "pending/PR,autopilot"; EV_AT=2026-06-01T00:00:00Z ev 7 labeled autopilot maint
+    mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human,autopilot"
+    EV_AT=2026-06-01T00:00:00Z ev 8 labeled pending/human maint; EV_AT=2026-06-01T00:00:00Z ev 8 labeled autopilot maint
+    tick
+    chk "复审反例接手时说明写授权打在 PR 上（用的是明确在后的那一条）" "$(comments_with 8 '`maint` 在 PR #8 上打了托管标签')" 1
+
     # ── 【11】托管关掉之后（GitHub#124）：关托管只要改配置，等合并的 PR 由 daemon 交给人 ──
     section "【11】托管关掉之后：本机托管过、还挂着等合并的 PR → 交人并说明；其他一概不碰"
     local OFF='LABEL_AUTOPILOT=""'
@@ -1351,6 +1381,8 @@ mutate takeover-unknown-no-reset _lib.sh '        || autopilot_state_set "$1" '"
 mutate handoff-cont-no-identity _lib.sh '        if { [ -n "$n" ] && [ "$AT_N" != "$n" ]; } || { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } \' '        if false && { [ -n "$n" ] && [ "$AT_N" != "$n" ]; } || false && { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } \'
 mutate handoff-no-label-present _lib.sh '        elif [ "$labeled" = true ] && ! printf' '        elif false && ! printf'
 mutate handoff-cancelled-redo _lib.sh '    if [ "$k" = done ] || [ "$k" = cancelled ]; then' '    if [ "$k" = done ]; then'
+mutate auth-cands-first-only _lib.sh '        done <<< "$AUTOPILOT_AUTH_CANDS"' '        done <<< "$(printf '"'"'%s'"'"' "$AUTOPILOT_AUTH_CANDS" | head -1)"'
+mutate auth-cands-unknown-ok _lib.sh '        [ "$when" = after ] || [ -z "$any_unknown" ] || when=unknown' '        :'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-$1"
@@ -1374,6 +1406,8 @@ mutate_old prev-083fc09 083fc09b80972778d3efb47da4788d87e6fca881
 mutate_old prev-046867f 046867f24326de38f1cc373ce067ab5ca485b085
 # 复审第 5 轮打回的那一版：标签已加、只欠说明时不核对身份和 pending/human 还在不在
 mutate_old prev-58e19a2 58e19a224f64909f18cacbbacae3e1fe692e3d34
+# 同秒授权被遮住的那一版
+mutate_old prev-bee1a66 bee1a66b99fee7c3a47079612b0e8fc9a189a455
 pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
