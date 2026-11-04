@@ -186,6 +186,8 @@ _requester_bot_pick REQUESTER_BOT_ALLOWED_ACTORS RELAY_ALLOWED_ACTORS
 _requester_bot_pick REQUESTER_BOT_ORIGIN_MARKER  RELAY_ORIGIN_MARKER
 _requester_bot_pick REQUESTER_BOT_REPORT_FIRST   RELAY_REPORT_FIRST
 REQUESTER_BOT_REPORT_FIRST="${REQUESTER_BOT_REPORT_FIRST:-false}"
+# GitHub#133：非机器人提的条目（维护者自己的 issue / PR）也允许叫醒。默认关；没有早期名字。
+REQUESTER_BOT_WAKE_ANY_ITEM="${REQUESTER_BOT_WAKE_ANY_ITEM:-false}"
 
 requester_bot_enabled() {
     [ -n "$LABEL_PENDING_REQUESTER_BOT" ] && [ -n "$REQUESTER_BOT_ACCOUNT" ] \
@@ -203,6 +205,16 @@ requester_bot_missing_settings() {
 
 requester_bot_report_first() {
     case "$(printf '%s' "${REQUESTER_BOT_REPORT_FIRST:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on|是) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 非机器人提的条目也允许叫醒（GitHub#133）：功能本身开启 + 开关打开才算。
+# 只放开「能不能叫醒」；合并后通知、先汇报、托管排除照旧只认机器人提的条目（它们不读这个开关）。
+requester_bot_wake_any_item() {
+    requester_bot_enabled || return 1
+    case "$(printf '%s' "${REQUESTER_BOT_WAKE_ANY_ITEM:-}" | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on|是) return 0 ;;
         *) return 1 ;;
     esac
@@ -2249,6 +2261,13 @@ requester_bot_open_prs_for() {
 # 返回 0 = 是：REQUESTER_BOT_ORIGIN = 来源 issue 编号，REQUESTER_BOT_ORIGIN_JSON = 它的 JSON，
 #          条目是 PR 时 REQUESTER_BOT_PR_JSON = GET /pulls/<编号> 的返回
 #      1 = 明确不是；2 = 读不到、判不了。两种都在 REQUESTER_BOT_REASON 里写原因。
+# 返回值的含义不变（合并后通知、托管判定只看它）；另外给叫醒入口一个更细的分类（GitHub#133）：
+#   REQUESTER_BOT_ORIGIN_CLASS = bot           是机器人提的（返回 0）
+#                                linked-other  关联确定、但不是机器人提的（返回 1）；
+#                                              REQUESTER_BOT_LINKED = 关联的 issue（issue 本身就是自己）
+#                                none          PR 确定没有关联 issue（返回 1）
+#                                unknown       判不了：读失败（返回 2），或关联有歧义 / 关联的是 PR（返回 1）
+# 只有 linked-other / none 允许走「非机器人条目」的叫醒；unknown 一律拒绝。
 #
 # PR 的来源：分支名里的 issue 编号（BRANCH_PREFIX + N）优先；没有就看正文的 Closes/Fixes/Resolves/Refs #N。
 # 正文这一步用 daemon 现成的两种写法各找一次（会话命名的逐行版、活跃 worker 列表的整段版，
@@ -2259,6 +2278,7 @@ requester_bot_open_prs_for() {
 requester_bot_item_origin() {
     local num="$1" item="$2" is_pr branch body by_line by_whole origin ojson author
     REQUESTER_BOT_ORIGIN=""; REQUESTER_BOT_ORIGIN_JSON=""; REQUESTER_BOT_PR_JSON=""; REQUESTER_BOT_REASON=""
+    REQUESTER_BOT_ORIGIN_CLASS=unknown; REQUESTER_BOT_LINKED=""
     is_pr=$(printf '%s' "$item" | jq -r 'has("pull_request") and .pull_request != null') \
         || { REQUESTER_BOT_REASON="#$num 的内容读不懂"; return 2; }
     origin="$num"; ojson="$item"
@@ -2273,15 +2293,16 @@ requester_bot_item_origin() {
             by_whole=$(printf '%s' "$body" | pr_body_linked_issue_jq)
             if [ "$by_line" != "$by_whole" ]; then
                 REQUESTER_BOT_REASON="PR #$num 正文里的关联写法有歧义（逐行看是 ${by_line:-无}、整段看是 ${by_whole:-无}，常见于关键词和 #编号分在两行），认不准来自哪个需求"
-                return 1
+                return 1   # 分类保持 unknown
             fi
             origin="$by_line"
         fi
         case "$origin" in ''|*[!0-9]*)
+            [ -n "$origin" ] || REQUESTER_BOT_ORIGIN_CLASS=none
             REQUESTER_BOT_REASON="PR #$num 没有关联 issue（分支名 ${branch:-?} 不带编号，正文里也没有 Closes #N 这类写法）"
             return 1 ;;
         esac
-        [ "$origin" != "$num" ] || { REQUESTER_BOT_REASON="PR #$num 没有关联 issue（关联编号就是它自己）"; return 1; }
+        [ "$origin" != "$num" ] || { REQUESTER_BOT_ORIGIN_CLASS=none; REQUESTER_BOT_REASON="PR #$num 没有关联 issue（关联编号就是它自己）"; return 1; }
         ojson=$(gh api "repos/$REPO/issues/$origin") || { REQUESTER_BOT_REASON="读不到关联的 issue #$origin"; return 2; }
         if [ "$(printf '%s' "$ojson" | jq -r 'has("pull_request") and .pull_request != null')" != false ]; then
             REQUESTER_BOT_REASON="PR #$num 关联的 #$origin 是 PR，不是 issue"
@@ -2290,13 +2311,16 @@ requester_bot_item_origin() {
     fi
     author=$(printf '%s' "$ojson" | jq -r '.user.login // ""')
     if [ "$(requester_bot_lc "$author")" != "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then
+        REQUESTER_BOT_ORIGIN_CLASS=linked-other; REQUESTER_BOT_LINKED="$origin"
         REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 $REQUESTER_BOT_ACCOUNT）"
         return 1
     fi
     if ! printf '%s' "$ojson" | jq -e --arg m "$REQUESTER_BOT_ORIGIN_MARKER" '(.body // "") | contains($m)' >/dev/null; then
+        REQUESTER_BOT_ORIGIN_CLASS=linked-other; REQUESTER_BOT_LINKED="$origin"
         REQUESTER_BOT_REASON="#$origin 正文里没有外部需求标记"
         return 1
     fi
+    REQUESTER_BOT_ORIGIN_CLASS=bot
     REQUESTER_BOT_ORIGIN="$origin"
     REQUESTER_BOT_ORIGIN_JSON="$ojson"
     return 0
@@ -4419,6 +4443,16 @@ requester_bot_handoff_section() {
     text="${text//@@REQUESTER_BOT_REPORT_RULE@@/"$rule"}"
     text="${text//@@REQUESTER_BOT_NOTIFY_CMD@@/"$cmd"}"
     printf '%s\n' "$text"
+    # GitHub#133：开关打开时，再追加「维护者自己的条目」一段；关着时上面就是全部输出，逐字节不变
+    requester_bot_wake_any_item || return 0
+    f="$SKILL_DIR/prompts/requester-bot-handoff-any-item.md"
+    [ -s "$f" ] || { log "⚠️ 外部需求机器人交接规则（非机器人条目）文件缺失：$f" 2>/dev/null || true; return 0; }
+    text="$(cat "$f")"
+    text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
+    text="${text//@@LABEL_PENDING_REQUESTER_BOT@@/"$LABEL_PENDING_REQUESTER_BOT"}"
+    text="${text//@@REQUESTER_BOT_ACCOUNT@@/"$REQUESTER_BOT_ACCOUNT"}"
+    text="${text//@@REQUESTER_BOT_NOTIFY_CMD@@/"$cmd"}"
+    printf '\n%s\n' "$text"
 }
 
 # 托管规则段（GitHub#114）：这次派工是托管条目才追加。agent-poll 判定后传 DISPATCH_AUTOPILOT=1 和

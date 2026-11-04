@@ -16,6 +16,19 @@
     fail = 返回非 0（HTTP 500）；noop = 返回成功但不落状态（读回会发现不符）
     times 省略 = 一直生效；每命中一次减 1，减到 0 失效
     field（可选）= 只匹配 -f 参数里含这段文字的调用（区分「加等待标签」和「加 pending/human」）
+    skip（可选）= 前 n 次命中放过（照常处理），之后才生效
+  GitHub#133 加的几种 mode：
+    applyfail = 照常落状态，但返回非 0（「请求报错、其实已生效」）
+    set       = 处理这次调用之前，先用 "jq" 字段里的 jq 表达式改一下 state.json（模拟别人同时动了数据），
+                然后照常处理
+    noevent   = 加标签照常生效，但不记标签事件
+    hidenew   = 读标签事件时藏起 id ≥ 5000 的（本次运行新记的）事件（模拟读到的是旧数据）
+
+评论（GitHub#133）：comments 里每条可带 id；没带的按位置编号（1、2…）。新发的评论从
+next_comment_id（默认 1000）起编号。GET / PATCH repos/<R>/issues/comments/<id> 按编号找，PATCH 读 --input 的 JSON。
+标签事件：新记的事件带全局递增的 id（next_event_id，默认 5000 起）；夹具里没写 id 的按位置编号。
+观察钩子：设了 $FAKE_GH_OBSERVER（一条 shell 命令）时，每次调用处理之前先跑它一次（测试用它
+在被测脚本的每一步之间看「机器人此刻会怎么判」）。
 """
 import json
 import os
@@ -47,6 +60,10 @@ def save(name, obj):
 args = sys.argv[1:]
 with open(os.path.join(D, "calls.log"), "a") as f:
     f.write("gh " + " ".join(args) + "\n")
+if os.environ.get("FAKE_GH_OBSERVER"):
+    subprocess.run(["sh", "-c", os.environ["FAKE_GH_OBSERVER"]], stdin=subprocess.DEVNULL)
+FAIL_AFTER = False
+input_file = None
 
 jq = None
 method = None
@@ -58,6 +75,8 @@ while i < len(args):
     a = args[i]
     if a == "--jq":
         jq = args[i + 1]; i += 2; continue
+    if a == "--input":
+        input_file = args[i + 1]; i += 2; continue
     if a in ("-X", "--method"):
         method = args[i + 1]; i += 2; continue
     if a in ("-f", "-F"):
@@ -75,6 +94,9 @@ while i < len(args):
 
 def emit(obj):
     s = json.dumps(obj, ensure_ascii=False)
+    if FAIL_AFTER:
+        sys.stderr.write("HTTP 502 (injected after apply)\n")
+        sys.exit(1)
     if jq:
         r = subprocess.run(["jq", "-r", jq], input=s, text=True, capture_output=True)
         sys.stdout.write(r.stdout)
@@ -114,10 +136,20 @@ def pull_view(it):
     return o
 
 
-def comment_view(k, c):
+def comment_view(k, c, n=None):
     if isinstance(c, str):
         c = {"user": "someone", "body": c}
-    return {"id": k + 1, "user": {"login": c.get("user", "someone")}, "body": c.get("body", "")}
+    o = {"id": c.get("id", k + 1), "user": {"login": c.get("user", "someone")}, "body": c.get("body", ""),
+         "created_at": "2026-10-01T00:00:00Z"}
+    if n is not None:
+        o["issue_url"] = f"https://api.github.com/{R}/issues/{n}"
+    return o
+
+
+def add_event(it, ev):
+    ev["id"] = st.get("next_event_id", 5000)
+    st["next_event_id"] = ev["id"] + 1
+    it.setdefault("events", []).append(ev)
 
 
 # gh pr view N --json body --jq ...（pr_to_issue_num 的第 2 步）
@@ -151,14 +183,37 @@ if args and args[0] == "api":
         with open(os.path.join(D, "calls.log"), "a") as f:
             f.write(f"WRITE {method} {path}\n")
     faults = load("faults.json", [])
+    NOEVENT = False
+    HIDENEW = False
     for fl in faults:
         if fl.get("method", method) == method and re.search(fl["path"], path or "") \
                 and (not fl.get("field") or any(fl["field"] in kv for kv in fields)):
             if fl.get("times", -1) == 0:
                 continue
+            if fl.get("skip", 0) > 0:
+                fl["skip"] -= 1
+                save("faults.json", faults)
+                continue
             if fl.get("times", -1) > 0:
                 fl["times"] -= 1
                 save("faults.json", faults)
+            if fl["mode"] == "set":
+                cur = json.dumps(load("state.json", {"me": "worker-bot", "items": {}}))
+                r = subprocess.run(["jq", fl["jq"]], input=cur, text=True, capture_output=True)
+                if r.returncode != 0:
+                    sys.stderr.write("bad set fault: " + r.stderr)
+                    sys.exit(99)
+                save("state.json", json.loads(r.stdout))
+                break
+            if fl["mode"] == "applyfail":
+                FAIL_AFTER = True
+                break
+            if fl["mode"] == "noevent":
+                NOEVENT = True
+                break
+            if fl["mode"] == "hidenew":
+                HIDENEW = True
+                break
             if fl["mode"] == "fail":
                 sys.stderr.write("HTTP 500 (injected)\n")
                 sys.exit(1)
@@ -167,8 +222,35 @@ if args and args[0] == "api":
                 sys.exit(0)
             break
 
+    st = load("state.json", {"me": "worker-bot", "items": {}})
+    items = st["items"]
     if path == "user":
         emit({"login": st.get("me", "worker-bot")})
+
+    m = re.fullmatch(re.escape(R) + r"/issues/comments/(\d+)", path or "")
+    if m:
+        cid = int(m.group(1))
+        for n, it in items.items():
+            for k, c in enumerate(it.get("comments", [])):
+                if isinstance(c, str):
+                    c = it["comments"][k] = {"user": "someone", "body": c}
+                if c.get("id", k + 1) == cid:
+                    if method == "PATCH":
+                        body = None
+                        if input_file:
+                            with open(input_file, encoding="utf-8") as f:
+                                body = json.load(f).get("body")
+                        if body is None:
+                            body = next((kv[5:] for kv in fields if kv.startswith("body=")), None)
+                        if body is None:
+                            sys.stderr.write("HTTP 422 no body\n")
+                            sys.exit(1)
+                        c["body"] = body
+                        c["edited"] = c.get("edited", 0) + 1
+                        save("state.json", st)
+                    emit(comment_view(k, c, it["number"]))
+        sys.stderr.write("HTTP 404 comment\n")
+        sys.exit(1)
 
     m = re.fullmatch(re.escape(R) + r"/(issues|pulls)", path or "")
     if m and method == "GET":
@@ -199,6 +281,8 @@ if args and args[0] == "api":
                     "actor": ({"login": e["actor"]} if e.get("actor") else None),
                     "label": {"name": e.get("label", "")}, "created_at": "2026-10-01T00:00:00Z"}
                    for k, e in enumerate(it.get("events", []))]
+            if HIDENEW:
+                evs = [e for e in evs if not (isinstance(e["id"], int) and e["id"] >= 5000)]
             size = it.get("events_page")
             if paginate and size and jq:
                 rc = 0
@@ -215,7 +299,8 @@ if args and args[0] == "api":
                     name = kv[len("labels[]="):]
                     if name not in labels_of():
                         labels_of().append(name)
-                        it.setdefault("events", []).append({"event": "labeled", "actor": st.get("me"), "label": name})
+                        if not NOEVENT:
+                            add_event(it, {"event": "labeled", "actor": st.get("me"), "label": name})
             save("state.json", st)
             emit([{"name": x} for x in labels_of()])
         if rest.startswith("/labels/") and method == "DELETE":
@@ -224,7 +309,7 @@ if args and args[0] == "api":
                 sys.stderr.write("HTTP 404 Label does not exist\n")
                 sys.exit(1)
             labels_of().remove(name)
-            it.setdefault("events", []).append({"event": "unlabeled", "actor": st.get("me"), "label": name})
+            add_event(it, {"event": "unlabeled", "actor": st.get("me"), "label": name})
             save("state.json", st)
             emit([{"name": x} for x in labels_of()])
         if rest == "/assignees" and method in ("POST", "DELETE"):
@@ -241,10 +326,12 @@ if args and args[0] == "api":
         if rest.split("?")[0] == "/comments":
             if method == "POST":
                 body = next((kv[5:] for kv in fields if kv.startswith("body=")), "")
-                it.setdefault("comments", []).append({"user": st.get("me"), "body": body})
+                cid = st.get("next_comment_id", 1000)
+                st["next_comment_id"] = cid + 1
+                it.setdefault("comments", []).append({"id": cid, "user": st.get("me"), "body": body})
                 save("state.json", st)
-                emit({"id": 1})
-            emit([comment_view(k, c) for k, c in enumerate(it.get("comments", []))])
+                emit({"id": cid})
+            emit([comment_view(k, c, it["number"]) for k, c in enumerate(it.get("comments", []))])
         if rest == "/requested_reviewers" and kind == "pulls":
             cur = it.setdefault("reviewers", [])
             who = [kv[len("reviewers[]="):] for kv in fields if kv.startswith("reviewers[]=")]
