@@ -534,10 +534,13 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   the autopilot rules. If the takeover cannot be decided for `AUTOPILOT_UNKNOWN_MAX` rounds
   (a round's verdict is its last decision, so the re-check right before writing counts too), the
   PR goes to a human (`pending/human` plus one comment), once. The hand-off is recorded as a
-  pending task before anything is written, so a failed label / comment write or a killed process
-  is picked up next round; each attempt re-reads the PR first, and drops the task without writing
-  when the PR was closed / merged, moved into another flow, changed branch or source, or the
-  `pending/human` it added was removed by someone. When the PR-side label is not
+  pending task before anything is written. Its only basis is "cannot decide", so every attempt
+  re-runs the same takeover decision from fresh reads: still undecidable → carry on (label, then
+  comment; a failed write or a killed process is picked up next round); decidable now — a
+  maintainer re-authorized, the PR was closed / merged / rebound to another issue / moved into
+  another flow, the issue was closed — → drop the task without writing any of it and handle the
+  PR through the normal takeover path. The one exception: the loop already added the
+  `pending/human` for this task and only the comment is missing — then it posts the comment. When the PR-side label is not
   accepted (not added by a maintainer, the PR does not bind to an issue, a requester-bot
   request, the issue is closed) the PR gets one comment saying why.
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead

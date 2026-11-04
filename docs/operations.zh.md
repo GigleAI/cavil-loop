@@ -450,8 +450,10 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   同样会接手。还挂着 `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` 的 PR（哪怕同时挂着
   `pending/human`）一律不接手：那是正在进行的工作，下次派工自然带上托管规则。接手要读的东西连续
   `AUTOPILOT_UNKNOWN_MAX` 轮判不了（一轮的结论看这一轮最后一次判定，写前那次判不了也算），PR 交人（加 `pending/human`、
-  留一条说明），只交一次。「要交人」先记成一条待办再动手，加标签、留言任一步失败或进程被杀，下一轮都接着做；
-  每次动手前现读 PR，已关闭 / 已合并 / 转进别的流程 / 分支或来源变了 / 加上的 `pending/human` 被人摘了，待办作废、不写。
+  留一条说明），只交一次。「要交人」先记成一条待办再动手；这个决定的唯一依据是「判不了」，所以每次动手前都用同一个接手判断现读重判：
+  还判不了才接着做（加标签、留言，任一步失败或进程被杀下一轮接着做）；判得出结论了——维护者重新授权、PR 关闭 /
+  合并 / 改绑别的 issue / 转进别的流程、issue 关闭——待办作废，不写它的任何东西，改按现在的结论走普通接手流程。
+  唯一的例外是标签已经由 daemon 为这条待办加上、只差说明，这时把说明补完。
   PR 上的标签不被认可（不是维护者打的、PR 对不上 issue、外部需求机器人的需求、issue 已关）时在 PR 上说一次原因。
 - **代码**：复审通过时 PR 翻 `LABEL_PENDING_MERGE`（`pending/merge`）而不是 `pending/human`，
   并在结论评论里留一行测试重跑的机器记录：`<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`。
