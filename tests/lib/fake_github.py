@@ -140,6 +140,14 @@ def emit(data, pages=False):
     sys.exit(0)
 
 
+def touch(n):
+    # GitHub 上打 / 摘标签会刷新条目的 updated_at（在 cavil-loop#128 上实测）
+    its = load("items.json", {})
+    if str(n) in its:
+        its[str(n)]["updated_at"] = now_iso()
+        save("items.json", its)
+
+
 def append_event(n, ev, name):
     evs = load("events.json", {})
     evs.setdefault(str(n), []).append(
@@ -227,6 +235,7 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
             cur.append(l)
             append_event(parts[1], "labeled", l)
     save("labels.json", labels)
+    touch(parts[1])
     emit([{"name": l} for l in cur])
 
 if method == "DELETE" and len(parts) == 4 and parts[0] == "issues" and parts[2] == "labels":
@@ -241,6 +250,7 @@ if method == "DELETE" and len(parts) == 4 and parts[0] == "issues" and parts[2] 
     labels[parts[1]] = cur
     save("labels.json", labels)
     append_event(parts[1], "unlabeled", name)
+    touch(parts[1])
     emit({})
 
 if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "merge":

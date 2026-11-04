@@ -521,6 +521,30 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   defaults, and it always goes to review (whatever `REVIEW_DESIGN_PROPOSALS` says). A passing
   design review flips the issue back to `pending/agent` and the worker starts building.
   Splitting into sub-issues is *not* covered: the worker hands that plan to a human.
+- **On the PR works too** (GitHub#128): for a PR that already exists, a maintainer can put the
+  autopilot label on the **PR** itself and the daemon takes it over — when, besides the
+  autopilot label, the PR carries only `pending/human` (and the authorization came after it),
+  or no flow label at all while the PR itself carries the autopilot label, it moves the PR to
+  `pending/review` with a short comment, then the same review → merge path below. PR-side
+  autopilot covers only "review → merge"; the design phase still looks at the issue only. The
+  authorization may also come from the issue: after a PR was handed to a human for a removed
+  label, a maintainer re-adding the label on the issue alone takes it over too. A PR that still
+  carries `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` (even alongside
+  `pending/human`) is never taken over — that is work in progress, and its next dispatch carries
+  the autopilot rules. If the takeover cannot be decided for `AUTOPILOT_UNKNOWN_MAX` rounds
+  (a round's verdict is its last decision, so the re-check right before writing counts too), the
+  PR goes to a human (`pending/human` plus one comment), once. The hand-off is recorded as a
+  pending task before anything is written. Its only basis is "cannot decide", so every attempt
+  re-runs the same takeover decision from fresh reads: still undecidable → carry on (label, then
+  comment; a failed write or a killed process is picked up next round); decidable now — a
+  maintainer re-authorized, the PR was closed / merged / rebound to another issue / moved into
+  another flow, the issue was closed — → drop the task without writing any of it and handle the
+  PR through the normal takeover path. The one exception: the loop already added the
+  `pending/human` for this task and only the comment is missing — then it posts the comment. Both ways of carrying on require the issue / branch / source to match the
+  ones recorded at decision time, and a task that already added `pending/human` is cancelled
+  (no comment, no further hand-off until the takeover is decidable) once someone removes that label. When the PR-side label is not
+  accepted (not added by a maintainer, the PR does not bind to an issue, a requester-bot
+  request, the issue is closed) the PR gets one comment saying why.
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead
   of `pending/human`, and the reviewer adds a machine line with its test re-run to the
   verdict comment: `<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`.
@@ -531,9 +555,9 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 | Check | Fails → |
 |---|---|
 | The PR is from this repo, on branch `BRANCH_PREFIX<N>` exactly, and its body closes exactly `#N` (read per line and as a whole, both must agree) | `pending/human` |
-| On issue `#N`, the **most recent** "added the autopilot label" event was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT` | `pending/human` |
+| Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
 | The issue is not a request filed by the requester bot | `pending/human` |
-| Nobody added `pending/human` to the issue or the PR, and the label is still on the issue | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
+| Nobody added `pending/human` to the issue or the PR | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
 | The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
 | The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |
 | No change under `.github/` | `pending/human` |
@@ -545,9 +569,33 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   written this round; after `AUTOPILOT_UNKNOWN_MAX` (10) rounds in a row it goes to a human.
   "Can't read" is never treated as "authorized", "passed" or "no conflict".
 - **Bounces back to the worker** are counted per PR and capped at `REVIEW_MAX_ROUNDS`.
-- **Stopping it**: remove the label from the issue, or add `pending/human` to the issue or
-  the PR. The re-read right before merging catches a stop that lands between the checks and
-  the merge.
+- **Stopping it**: remove the label from the issue or the PR, or add `pending/human` to the
+  issue or the PR. The re-read right before merging catches a stop that lands between the
+  checks and the merge.
+- **How the two places combine** (GitHub#128): the stop line is the latest "removed the
+  autopilot label" event on either the issue or the PR. Authorization comes only from an
+  "added" event **later than the stop line**, performed by a maintainer, on a place that still
+  carries the label. So:
+  - removing it in either place stops; a maintainer adding it again in either place resumes
+  - after a stop, the loop account, a Bot or someone without write access adding it does not
+    resume, and cannot revive an older authorization from the other place
+  - with no removal at all, the worker adding the label to the PR does not affect the issue's
+    authorization (it is neither an authorization nor a stop)
+  - a PR whose label was never touched gives the same result as looking at the issue alone;
+    each decision reads the PR's label events once more
+  - order across the two places is by event time; when it cannot be told (missing time) the
+    decision is "can't tell"
+  - for the takeover, every valid authorization is compared with the PR's `pending/human` — by
+    event order on the PR, by time on the issue (the same second is not "later"); one provably
+    later authorization is enough, and a same-second one on the other place does not hide it
+- **Takeover is judged twice too**: after deciding to take a PR over and right before writing,
+  the same decision runs again from fresh reads (issue open, request origin, stops and
+  authorization on both places, the PR's state / head / target / source / binding); if the
+  verdict or identity changed, nothing is written this round. A PR judged "no takeover" is
+  remembered by PR `updated_at` + bound issue number + that issue's `updated_at`, and is not
+  re-read while all three are unchanged (adding / removing a label bumps `updated_at`); the
+  merge permit never uses this cache. ⚠️ A change in the labeler's **permission** does not bump
+  `updated_at`: a rejected PR is re-judged only once the PR or the issue changes.
 - **The window that is left** is between that last read and the merge request reaching GitHub.
   The merge request carries the reviewed sha, so a push in that window is refused by GitHub; a
   check that flips in that window is not. For a server-side guarantee on checks, mark them as
@@ -566,7 +614,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
 unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
-issues by their `updated_at`). Like `requester_bot_done_queue` it is not in the migration loop
+issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handoff`: PRs judged "no takeover" with their
+cache key, undecidable rounds during takeover, and hand-offs not yet finished). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
 
 ### Poll the repo from one machine only

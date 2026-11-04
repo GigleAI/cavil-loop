@@ -1,6 +1,6 @@
 # 托管规则（本条是托管条目）
 
-> 维护者在 issue #@@ISSUE@@ 上亲手打了托管标签 `@@LABEL_AUTOPILOT@@`：这条从方案到合并全交给 agent，**中间不等人确认**，由独立复审把关、daemon 按固定条件自动合并。这一段只改下面列出的几处；**和上文冲突时以这一段为准**，其余一律照上文。
+> 维护者在 @@AUTH_WHERE@@ 上亲手打了托管标签 `@@LABEL_AUTOPILOT@@`：这条从方案到合并全交给 agent，**中间不等人确认**，由独立复审把关、daemon 按固定条件自动合并。这一段只改下面列出的几处；**和上文冲突时以这一段为准**，其余一律照上文。
 
 ## 设计阶段
 
@@ -16,7 +16,7 @@ daemon 只在 PR 和 issue 能对上时才合并，对不上就交人。所以�
 - PR 从工作分支 `@@BRANCH@@` 开，不要换分支名。
 - PR 正文**只写一个**关闭关键词 `Closes #@@ISSUE@@`。不要再写其他 `Closes` / `Fixes` / `Resolves`，也不要把关键词和 `#编号` 分在两行。
 - 不要改 `.github/` 目录（改了 daemon 一律交人，不自动合并）。
-- 不要给 PR 打托管标签（PR 上的托管标签不起作用），不要自己翻 `@@LABEL_PENDING_MERGE@@`，不要合并 PR。翻 `@@LABEL_PENDING_MERGE@@` 是复审的事，合并是 daemon 的事。
+- 不要给 issue 或 PR 打 / 摘托管标签（你打的不算授权，摘掉会叫停托管），不要自己翻 `@@LABEL_PENDING_MERGE@@`，不要合并 PR。翻 `@@LABEL_PENDING_MERGE@@` 是复审的事，合并是 daemon 的事。
 
 ## daemon 打回时
 
