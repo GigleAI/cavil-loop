@@ -444,9 +444,12 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。拆成子 issue **不在托管范围**：
   worker 把拆分计划交人。
 - **在 PR 上打也行**（GitHub#128）：已经开好的 PR，维护者直接在 **PR** 上打托管标签，daemon 就接手——
-  PR 挂着 `pending/human`（且托管标签打在它之后）或没有任何流程标签时，翻到 `pending/review` 并在 PR 上说一句，
-  之后走下面同样的复审 → 合并。PR 上的托管只管「复审 → 合并」这一段，不涉及方案阶段（方案阶段只看 issue）。
-  已经在 `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` 的 PR 不用接手，下次派工自然带上托管规则。
+  PR 除托管标签外只挂着 `pending/human`（且授权打在它之后），或一个流程标签都没有、PR 自己挂着托管标签时，
+  翻到 `pending/review` 并在 PR 上说一句，之后走下面同样的复审 → 合并。PR 上的托管只管「复审 → 合并」这一段，
+  不涉及方案阶段（方案阶段只看 issue）。授权也可以来自 issue：PR 摘标交人之后，维护者只在 issue 上重新亲手打托管，
+  同样会接手。还挂着 `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` 的 PR（哪怕同时挂着
+  `pending/human`）一律不接手：那是正在进行的工作，下次派工自然带上托管规则。接手要读的东西连续
+  `AUTOPILOT_UNKNOWN_MAX` 轮读不到，PR 交人（加 `pending/human`、留一条说明），只交一次。
   PR 上的标签不被认可（不是维护者打的、PR 对不上 issue、外部需求机器人的需求、issue 已关）时在 PR 上说一次原因。
 - **代码**：复审通过时 PR 翻 `LABEL_PENDING_MERGE`（`pending/merge`）而不是 `pending/human`，
   并在结论评论里留一行测试重跑的机器记录：`<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`。
@@ -493,7 +496,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
 状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
-`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover`：判过「不接手」的 PR 及其缓存键）。和 `requester_bot_done_queue` 一样
+`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown`：判过「不接手」的 PR 及其缓存键、接手阶段连续读不到的轮数）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
 
 ### 只在一台机器上跑这个仓库的轮询

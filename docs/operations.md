@@ -522,12 +522,17 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   design review flips the issue back to `pending/agent` and the worker starts building.
   Splitting into sub-issues is *not* covered: the worker hands that plan to a human.
 - **On the PR works too** (GitHub#128): for a PR that already exists, a maintainer can put the
-  autopilot label on the **PR** itself and the daemon takes it over — when the PR carries
-  `pending/human` (and the label was added after it) or no flow label at all, it moves the PR to
+  autopilot label on the **PR** itself and the daemon takes it over — when, besides the
+  autopilot label, the PR carries only `pending/human` (and the authorization came after it),
+  or no flow label at all while the PR itself carries the autopilot label, it moves the PR to
   `pending/review` with a short comment, then the same review → merge path below. PR-side
-  autopilot covers only "review → merge"; the design phase still looks at the issue only. A PR
-  already in `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` needs no
-  takeover — its next dispatch carries the autopilot rules. When the PR-side label is not
+  autopilot covers only "review → merge"; the design phase still looks at the issue only. The
+  authorization may also come from the issue: after a PR was handed to a human for a removed
+  label, a maintainer re-adding the label on the issue alone takes it over too. A PR that still
+  carries `pending/agent` / `doing/agent` / `pending/review` / `pending/merge` (even alongside
+  `pending/human`) is never taken over — that is work in progress, and its next dispatch carries
+  the autopilot rules. If what the takeover needs stays unreadable for `AUTOPILOT_UNKNOWN_MAX`
+  rounds, the PR goes to a human (`pending/human` plus one comment), once. When the PR-side label is not
   accepted (not added by a maintainer, the PR does not bind to an issue, a requester-bot
   request, the issue is closed) the PR gets one comment saying why.
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead
@@ -596,7 +601,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
 unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
-issues by their `updated_at`). Like `requester_bot_done_queue` it is not in the migration loop
+issues by their `updated_at`; `takeover` / `takeover_unknown`: PRs judged "no takeover" with their cache key, and
+unreadable rounds during takeover). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
 
 ### Poll the repo from one machine only

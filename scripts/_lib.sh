@@ -3511,11 +3511,13 @@ autopilot_merge_tick() {   # <state_file>
 # 已经开好的 PR（比如复审通过后停在 pending/human 等人合并），维护者直接在 PR 上打托管标签：
 # 授权成立就把 PR 翻回复审（pending/review），之后完全是普通的托管流程（派复审时记下提交、复审通过
 # 翻 pending/merge、合并前全套核对）。只接手两种状态：
-#   · 挂着 pending/human，而且授权那次打标签晚于 PR 上最后一次打 pending/human（之后打的 pending/human
-#     是叫停，不动）
-#   · 没有任何状态 / 触发标签
-# 已经在流程里的（pending/agent、doing/agent、pending/review、pending/merge…）不用接手：下次派工自然
-# 带上托管规则。
+#   · 除托管标签外只挂着 pending/human，而且授权那次打标签晚于 PR 上最后一次打 pending/human（之后打的
+#     pending/human 是叫停，不动）。授权可以在 PR 上，也可以在绑定的 issue 上：PR 摘标交人之后，维护者
+#     只在 issue 上重新亲手打托管，也算重新授权这个 PR
+#   · 一个状态 / 触发标签都没有，而且 PR 自己挂着托管标签（只有 issue 挂着时不碰：worker 刚开出、还没
+#     来得及打标签的 PR 就是这个样子）
+# 还挂着别的流程标签的（pending/agent、doing/agent、pending/review、pending/merge…，哪怕同时挂着
+# pending/human）一律不接手：那是正在进行的工作，下次派工自然带上托管规则。
 #
 # autopilot_takeover_permit 是纯判定，和合并前许可一样调两次：判定可接手之后，紧挨着写之前用现读的
 # 数据原样再判一遍，结论和身份（issue / 提交 / 目标分支 / 分支名 / 来源 / 接手方式）都一致才写。
@@ -3523,7 +3525,7 @@ autopilot_merge_tick() {   # <state_file>
 #   AT_V   skip / take / deny / unknown；AT_MODE human / none；AT_N AT_HEAD AT_BASE AT_REF AT_REPO
 #   deny 时 AUTOPILOT_DENY / AUTOPILOT_REASON 是原因
 autopilot_takeover_permit() {   # <PR 编号>
-    local pr="$1" pj ij labels rest when rc
+    local pr="$1" pj ij labels rest when rc pl
     AT_V=unknown; AT_MODE=""; AT_N=""; AT_HEAD=""; AT_BASE=""; AT_REF=""; AT_REPO=""; AT_REASON=""
     AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
     if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ]; then
@@ -3532,13 +3534,16 @@ autopilot_takeover_permit() {   # <PR 编号>
     if ! printf '%s' "$pj" | jq -e '.state == "open" and .merged == false and (.draft | not)' >/dev/null 2>&1; then
         AT_V=skip; return 0
     fi
-    autopilot_has_label "$pj" || { AT_V=skip; return 0; }
+    pl=no; autopilot_has_label "$pj" && pl=yes
     labels=$(printf '%s' "$pj" | jq -r '[.labels[]?.name] | join(",")')
+    # 先保护正在进行的工作：除了托管标签和 pending/human，还挂着任何流程标签就不接手
+    rest=$(printf '%s' "$pj" | jq -r --arg L "$LABEL_AUTOPILOT" --arg H "$LABEL_PENDING_HUMAN" \
+        '[.labels[]?.name | select(. != $L and . != $H)] | join(",")')
+    if autopilot_labels_in_flow "$rest"; then AT_V=skip; return 0; fi
     case ",$labels," in
         *",$LABEL_PENDING_HUMAN,"*) AT_MODE=human ;;
-        *) rest=$(printf '%s' "$pj" | jq -r --arg L "$LABEL_AUTOPILOT" '[.labels[]?.name | select(. != $L)] | join(",")')
-           if autopilot_labels_in_flow "$rest"; then AT_V=skip; return 0; fi
-           AT_MODE=none ;;
+        *) AT_MODE=none
+           [ "$pl" = yes ] || { AT_V=skip; return 0; } ;;
     esac
     AT_HEAD=$(printf '%s' "$pj" | jq -r '.head.sha // ""')
     AT_BASE=$(printf '%s' "$pj" | jq -r '.base.ref // ""')
@@ -3548,11 +3553,15 @@ autopilot_takeover_permit() {   # <PR 编号>
         AT_REASON="PR #$pr 的提交 / 目标分支 / 分支名读不全"; return 0
     fi
     if ! AT_N=$(autopilot_pr_binding "$pj"); then
-        AT_V=deny; AUTOPILOT_DENY=binding; return 0
+        # PR 自己没挂托管标签时，对不上 issue 就和托管无关
+        if [ "$pl" = yes ]; then AT_V=deny; AUTOPILOT_DENY=binding; else AT_V=skip; fi
+        return 0
     fi
     if ! ij=$(gh api "repos/$REPO/issues/$AT_N" 2>/dev/null) || [ -z "$ij" ]; then
         AT_REASON="读不到 issue #$AT_N"; return 0
     fi
+    # 两处都没挂托管标签：不是托管的 PR（普通的等人 PR 一概不碰）
+    if [ "$pl" = no ] && ! autopilot_has_label "$ij"; then AT_V=skip; return 0; fi
     # issue 上挂着 pending/human = 叫停，不接手（是人做的，不说话）
     if printf '%s' "$ij" | jq -e --arg H "$LABEL_PENDING_HUMAN" 'any(.labels[]?; .name == $H)' >/dev/null 2>&1; then
         AT_V=skip; return 0
@@ -3585,6 +3594,11 @@ autopilot_takeover_permit() {   # <PR 编号>
 autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
     local sf="$1" pr="$2" key="$3" n head base ref repo mode body where
     autopilot_takeover_permit "$pr"
+    # 有确定结论（接手 / 不接手 / 不生效）：连续判不了的计数清零
+    case "$AT_V" in skip|deny|take)
+        [ -z "$(autopilot_state_get "$sf" '.takeover_unknown[$p]' --arg p "$pr")" ] \
+            || autopilot_state_set "$sf" 'del(.takeover_unknown[$p])' --arg p "$pr" || true ;;
+    esac
     case "$AT_V" in
         skip)
             autopilot_state_set "$sf" '.takeover[$p] = $k' --arg p "$pr" --arg k "$key" || true
@@ -3595,7 +3609,7 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
             autopilot_state_set "$sf" '.takeover[$p] = $k' --arg p "$pr" --arg k "$key" || true
             return 0 ;;
         take) ;;
-        *) log "托管：PR #$pr 能不能接手判不了（$AT_REASON），下轮再看"; return 0 ;;
+        *) autopilot_takeover_unknown "$sf" "$pr" "$key" "$AT_REASON"; return 0 ;;
     esac
     n="$AT_N"; head="$AT_HEAD"; base="$AT_BASE"; ref="$AT_REF"; repo="$AT_REPO"; mode="$AT_MODE"
     where="$(autopilot_auth_where)"
@@ -3624,6 +3638,45 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
     log "托管：PR #$pr 已接手（授权 $AUTOPILOT_ACTOR @ $where）→ $LABEL_PENDING_REVIEW"
 }
 
+# 接手阶段读不到（标签记录、权限、PR、issue）：本轮不写；连续 AUTOPILOT_UNKNOWN_MAX 轮读不到才交人。
+# 计数单独记在 .takeover_unknown，和合并那一趟的 .prs[].unknown 互不覆盖。交人写失败时计数留着，下轮再试；
+# 交人成功后记成 "done"：之后只要还是判不了就不再交第二次，一旦有确定结论（接手 / 不接手）就清掉。
+autopilot_takeover_unknown() {   # <state_file> <PR> <缓存键> <原因>
+    local sf="$1" pr="$2" key="$3" reason="$4" k max labels
+    k=$(autopilot_state_get "$sf" '.takeover_unknown[$p] // 0' --arg p "$pr")
+    if [ "$k" = done ]; then
+        # 已经因为判不了交过人：在有确定结论之前不再交第二次
+        log "托管：PR #$pr 能不能接手仍判不了（$reason），之前已交人"
+        return 0
+    fi
+    [[ "$k" =~ ^[0-9]+$ ]] || k=0
+    k=$(( k + 1 ))
+    max="${AUTOPILOT_UNKNOWN_MAX:-10}"
+    autopilot_state_set "$sf" '.takeover_unknown[$p] = ($k | tonumber)' --arg p "$pr" --arg k "$k" || true
+    if [ "$k" -lt "$max" ] 2>/dev/null; then
+        log "托管：PR #$pr 能不能接手判不了（$reason），第 $k 次，下轮再看"
+        return 0
+    fi
+    if ! labels=$(gh api "repos/$REPO/issues/$pr" --jq '[.labels[]?.name] | join(",")' 2>/dev/null); then
+        log "托管：PR #$pr 连续 $k 轮判不了，交人前读不到它的标签，下轮再试"
+        return 0
+    fi
+    case ",$labels," in
+        *",$LABEL_PENDING_HUMAN,"*) ;;
+        *) run_gh "label 翻转 (托管接手判不了 PR #$pr → $LABEL_PENDING_HUMAN)" \
+               gh_label_flip "$pr" --add "$LABEL_PENDING_HUMAN" || return 0
+           AUTOPILOT_ACTED=1 ;;
+    esac
+    if ! run_gh "托管接手判不了的交人说明 (PR #$pr)" gh_write api -X POST "repos/$REPO/issues/$pr/comments" -f "body=$(printf \
+        '⚠️ **托管：判断不了能不能接手 PR #%s，已转人工（`%s`）**\n\n**原因**：PR 上的托管标签 `%s` 连续 %s 轮判断不了，最后一次：%s。\n\n**怎么继续**：处理好之后请维护者摘掉再亲手打一次 `%s`（daemon 会重新判断、接手）；不托管就照普通流程处理。\n\n%s\n<!-- cavil-loop:autopilot-takeover-unknown pr=%s -->' \
+        "$pr" "$LABEL_PENDING_HUMAN" "$LABEL_AUTOPILOT" "$k" "$reason" "$LABEL_AUTOPILOT" "$(autopilot_daemon_sig)" "$pr")"; then
+        return 0
+    fi
+    AUTOPILOT_ACTED=1
+    autopilot_state_set "$sf" '.takeover_unknown[$p] = "done"' --arg p "$pr" || true
+    log "托管：PR #$pr 连续 $k 轮判不了能不能接手 → 交人"
+}
+
 # PR 上的托管标签不生效时在 PR 上说一次（只说「不是维护者打的」「对不上 issue」「需求机器人的需求」「issue 关了」）
 autopilot_note_pr_denial() {   # <state_file> <PR 编号>
     local sf="$1" pr="$2" text kind="$AUTOPILOT_DENY"
@@ -3646,19 +3699,24 @@ autopilot_takeover_tick() {   # <state_file>
     local sf="$1" pages ipages rows num upd pj n iupd key open_nums tmp
     autopilot_configured || return 0
     pages=$(open_snapshot pulls) || return 0
-    rows=$(printf '%s' "$pages" | jq -r --arg L "$LABEL_AUTOPILOT" \
-        '.[][] | select(any(.labels[]?; .name == $L)) | "\(.number)\t\(.updated_at // "")"' 2>/dev/null) || return 0
-    if jq -e '.autopilot.takeover' "$sf" >/dev/null 2>&1 \
-       && open_nums=$(printf '%s' "$pages" | jq -c --arg L "$LABEL_AUTOPILOT" '[ .[][] | select(any(.labels[]?; .name == $L)) | .number | tostring ]' 2>/dev/null); then
+    # 候选：PR 自己挂着托管标签；或者 PR 挂着 pending/human、绑定的 issue 挂着托管标签（PR 摘标交人之后，
+    # 维护者只在 issue 上重新授权）。后一种先在本地按快照筛，普通的等人 PR 一次 GitHub 调用都不多花。
+    rows=$(printf '%s' "$pages" | jq -r --arg L "$LABEL_AUTOPILOT" --arg H "$LABEL_PENDING_HUMAN" \
+        '.[][] | select(any(.labels[]?; .name == $L or .name == $H)) | "\(.number)\t\(.updated_at // "")"' 2>/dev/null) || return 0
+    if jq -e '.autopilot.takeover or .autopilot.takeover_unknown' "$sf" >/dev/null 2>&1 \
+       && open_nums=$(printf '%s' "$pages" | jq -c '[ .[][] | .number | tostring ]' 2>/dev/null); then
         tmp=$(mktemp)
         if jq --argjson open "$open_nums" \
-            '.autopilot.takeover = ((.autopilot.takeover // {}) | with_entries(select(.key as $k | $open | index($k))))' \
+            '.autopilot.takeover = ((.autopilot.takeover // {}) | with_entries(select(.key as $k | $open | index($k))))
+             | .autopilot.takeover_unknown = ((.autopilot.takeover_unknown // {}) | with_entries(select(.key as $k | $open | index($k))))' \
             "$sf" > "$tmp" 2>/dev/null; then mv "$tmp" "$sf"; else rm -f "$tmp"; fi
     fi
     [ -n "$rows" ] || return 0
     if ! autopilot_enabled; then
         while IFS=$'\t' read -r num upd; do
             [ -n "$num" ] || continue
+            printf '%s' "$pages" | jq -e --argjson n "$num" --arg L "$LABEL_AUTOPILOT" \
+                'any(.[][]; .number == $n and any(.labels[]?; .name == $L))' >/dev/null 2>&1 || continue
             autopilot_notice_once "$sf" "$num" no-review-gate "⚠️ **托管标签 \`$LABEL_AUTOPILOT\` 不生效：本项目没有开复审关卡**
 
 托管靠独立复审把关、通过后自动合并；本项目没配复审标签，就没人把关，所以不托管。这个 PR 照普通流程处理。" || true
@@ -3670,6 +3728,12 @@ autopilot_takeover_tick() {   # <state_file>
         [ -n "$num" ] || continue
         pj=$(printf '%s' "$pages" | jq -c --argjson n "$num" 'first(.[][] | select(.number == $n)) // empty' 2>/dev/null) || pj=""
         n=$(autopilot_pr_binding "$pj" 2>/dev/null) || n="-"
+        if ! autopilot_has_label "$pj"; then
+            # 只挂着 pending/human：绑定的 issue 在快照里挂着托管标签才算候选
+            [ "$n" != "-" ] || continue
+            printf '%s' "$ipages" | jq -e --argjson n "$n" --arg L "$LABEL_AUTOPILOT" \
+                'any(.[][]; .number == $n and any(.labels[]?; .name == $L))' >/dev/null 2>&1 || continue
+        fi
         iupd="-"
         if [ "$n" != "-" ]; then
             iupd=$(printf '%s' "$ipages" | jq -r --argjson n "$n" 'first(.[][] | select(.number == $n) | .updated_at) // "closed"' 2>/dev/null) || iupd="?"
