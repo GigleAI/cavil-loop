@@ -49,6 +49,8 @@ export class Controller {
   /** per source key, bumps on every add / remove: a round only writes a source added before it started */
   private epochs = new Map<string, number>();
   private epochSeq = 0;
+  /** every credential write / delete runs here, one after another, in call order */
+  private credQueue: Promise<unknown> = Promise.resolve();
   /** GitHub login the cached snapshots belong to (null = nobody: the cache must be empty) */
   private owner: string | null;
   private readonly fetchImpl: FetchLike;
@@ -154,11 +156,8 @@ export class Controller {
         sleep: this.sleep,
         cancelled: () => run !== this.loginRun,
       });
-      await this.deps.credentials.set(token);
-      this.session++;
-      this.token = token;
-      // Bind the cache to the account that just signed in before anything is shown.
-      // Unknown account (viewer query failed) is never treated as "the same one".
+      // Who is this? Asked with the token in memory only: nothing is persisted
+      // until the very last step. Unknown (query failed) is never "the same account".
       let login: string | null = null;
       try {
         login = (await new GitHubClient(this.deps.endpoints, token, this.fetchImpl).graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})).viewer.login;
@@ -166,15 +165,36 @@ export class Controller {
         /* the first sync round asks again */
       }
       if (run !== this.loginRun) return;
-      this.adoptAccount(login, token);
-      this.deps.cache.setSetting('viewer', login);
-      this.state = { ...this.state, viewer: login };
-      this.set({
-        phase: 'ready',
-        loginReason: null,
-        login: { status: 'idle', userCode: null, verificationUri: null, message: null },
+      // Persist and switch to "signed in" as one step of the credential queue.
+      // A cancel / sign-out / newer login that happens while the keychain write
+      // is in progress makes this login stale: the token it just wrote is
+      // removed in the same step, before anything queued after it (a newer
+      // login's write, a sign-out) runs — so it can neither survive nor delete
+      // somebody else's credential.
+      const committed = await this.serialCredential(async () => {
+        if (run !== this.loginRun) return false;
+        await this.deps.credentials.set(token);
+        if (run !== this.loginRun) {
+          try {
+            await this.deps.credentials.clear();
+          } catch (e) {
+            this.set({ loginReason: `登录已取消，但删除刚保存的凭据失败（${(e as Error).message}）。下次启动可能会自动登录，请到设置里退出登录` });
+          }
+          return false;
+        }
+        this.session++;
+        this.token = token;
+        this.adoptAccount(login, token);
+        this.deps.cache.setSetting('viewer', login);
+        this.state = { ...this.state, viewer: login };
+        this.set({
+          phase: 'ready',
+          loginReason: null,
+          login: { status: 'idle', userCode: null, verificationUri: null, message: null },
+        });
+        return true;
       });
-      await this.syncNow();
+      if (committed) await this.syncNow();
     } catch (e) {
       if (run !== this.loginRun) return;
       const reason = e instanceof DeviceFlowError ? e.reason : 'error';
@@ -188,6 +208,13 @@ export class Controller {
         },
       });
     }
+  }
+
+  /** Run `fn` after every credential operation queued before it (whatever their outcome). */
+  private serialCredential<T>(fn: () => Promise<T>): Promise<T> {
+    const p = this.credQueue.then(fn);
+    this.credQueue = p.catch(() => undefined);
+    return p;
   }
 
   cancelLogin(): void {
@@ -210,7 +237,7 @@ export class Controller {
     this.deps.cache.setSetting('cacheOwner', null);
     this.deps.cache.setSetting('cacheCredential', null);
     this.deps.cache.setSetting('viewer', null);
-    await this.deps.credentials.clear();
+    await this.serialCredential(() => this.deps.credentials.clear());
     this.set({
       phase: 'login',
       loginReason: reason,

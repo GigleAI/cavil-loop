@@ -439,3 +439,100 @@ describe('sources removed while a round is in flight', () => {
     expect(fake.log.filter((l) => l.path.includes('/issues?') && l.status === 502).length).toBeGreaterThan(0);
   });
 });
+
+// ---- review round 2 (PR #140): cancel / sign out / newer login while the credential is being saved ----
+
+/** A credential store whose writes wait for the test to release them (like a slow keychain prompt). */
+class SlowStore extends FileStore {
+  writes: { token: string; release: () => void }[] = [];
+  async set(token: string): Promise<void> {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    this.writes.push({ token, release });
+    await gate;
+    await super.set(token);
+  }
+}
+
+const TOKEN_A2 = 'gho_faketokenA20000000000000000000003';
+
+async function untilWrites(store: SlowStore, n: number) {
+  for (let i = 0; i < 400; i++) {
+    if (store.writes.length >= n) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`credential store never saw ${n} writes`);
+}
+
+describe('signing in is all-or-nothing against cancel / sign-out / a newer login', () => {
+  async function approvedAndSaving() {
+    const store = new SlowStore(join(dir, 'cred'));
+    const h = make({ credentials: store });
+    h.c.setClientId(fake.state.oauthClientId);
+    h.c.addSource(REPO);
+    await h.c.start();
+    fake.state.nextGrant = { token: FAKE_TOKEN };
+    const login = h.c.startLogin();
+    await until(h.c, (s) => s.login.status === 'waiting', 'waiting');
+    fake.resolveGrant('approved');
+    await untilWrites(store, 1); // GitHub handed out the token, the save is in progress
+    return { ...h, store, login };
+  }
+
+  async function assertSignedOutEverywhere(c: Controller, store: SlowStore) {
+    expect(c.getState().phase).toBe('login');
+    expect(await store.get()).toBeNull();
+    const before = fake.log.length;
+    await c.syncNow();
+    expect(fake.log.length).toBe(before); // holds no token: nothing is synced
+    expect(c.getBoardData().items).toHaveLength(0);
+    const restarted = make({ credentials: store });
+    await restarted.c.start();
+    expect(restarted.c.getState().phase).toBe('login');
+  }
+
+  it('cancel while saving → nothing kept: login page, no credential, no sync, restart asks to sign in', async () => {
+    const { c, store, login } = await approvedAndSaving();
+    c.cancelLogin();
+    store.writes[0].release();
+    await login;
+    // "something did happen": the write really reached the store before it was undone
+    expect(store.writes.map((w) => w.token)).toEqual([FAKE_TOKEN]);
+    expect(c.getState().login.status).toBe('idle');
+    await assertSignedOutEverywhere(c, store);
+  });
+
+  it('sign out while saving → same: nothing kept', async () => {
+    const { c, store, login } = await approvedAndSaving();
+    const out = c.logout();
+    store.writes[0].release();
+    await login;
+    await out;
+    expect(store.writes).toHaveLength(1);
+    await assertSignedOutEverywhere(c, store);
+  });
+
+  it('an older login finishing its save after a newer login neither survives nor deletes the newer one', async () => {
+    const { c, store, login } = await approvedAndSaving();
+    c.cancelLogin();
+    fake.state.tokenViewers.set(TOKEN_A2, 'user-2');
+    fake.state.nextGrant = { token: TOKEN_A2 };
+    const second = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'second waiting');
+    fake.resolveGrant('approved');
+    // the newer login has its token; its save queues behind the older, still-running one
+    await new Promise((r) => setTimeout(r, 50));
+    expect(store.writes).toHaveLength(1);
+    store.writes[0].release(); // the older save completes now
+    await login;
+    await untilWrites(store, 2);
+    store.writes[1].release();
+    await second;
+    expect(c.getState()).toMatchObject({ phase: 'ready', viewer: 'user-2' });
+    expect(await store.get()).toBe(TOKEN_A2);
+    const restarted = make({ credentials: new FileStore(join(dir, 'cred')) });
+    fake.state.validTokens.add(TOKEN_A2);
+    await restarted.c.start();
+    expect(restarted.c.getState()).toMatchObject({ phase: 'ready', viewer: 'user-2' });
+  });
+});

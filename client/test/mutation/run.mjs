@@ -109,6 +109,17 @@ const MUTATIONS = [
   { what: '整份换回复审时的旧实现（提交 08b28c7）', file: 'src/main/controller.ts',
     fromGit: '08b28c761bdd7500234915c21b158767a813224b:client/src/main/controller.ts',
     expect: ['sign out → another account signs in', 'removed → the finished old request'] },
+  // ---- review round 2 of PR #140 ----
+  { what: '凭据写完不再核对登录是否已取消 / 已退出', file: 'src/main/controller.ts',
+    from: 'await this.deps.credentials.set(token);\n        if (run !== this.loginRun) {',
+    to: 'await this.deps.credentials.set(token);\n        if (false) {',
+    expect: ['cancel while saving → nothing kept', 'sign out while saving → same'] },
+  { what: '凭据写入 / 删除不排队', file: 'src/main/controller.ts',
+    from: 'const p = this.credQueue.then(fn);', to: 'const p = fn();',
+    expect: ['an older login finishing its save after a newer login'] },
+  { what: '整份换回第 2 轮复审时的旧实现（提交 7a6681b）', file: 'src/main/controller.ts',
+    fromGit: '7a6681bf8799d459d56aef60a7d0b44dd7e780e0:client/src/main/controller.ts',
+    expect: ['cancel while saving → nothing kept', 'sign out while saving → same'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
