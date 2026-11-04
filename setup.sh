@@ -486,7 +486,7 @@ label_defs=(
     "pending/agent/fable|8250df|等待 agent 使用 Claude Fable 模型处理（版本见 FABLE_MODEL，默认别名 fable，跟最新版）"
     "doing/agent|c2e0c6|agent 正在处理"
     "pending/human|fbca04|等待人类处理"
-    "pending/PR|bbbbbb|工作已转 PR 跟踪"
+    "pending/PR|eeeeee|工作已转 PR 跟踪"
     "Done|586069|已结案"
     "priority/p0|b60205|插队：并发满时最先派工"
     "priority/p1|f9d0c4|优先：排在没打优先级的前面"
@@ -503,7 +503,7 @@ requester_bot_label="$(cavil_pick_setting "$(config_value LABEL_PENDING_REQUESTE
 autopilot_label="$(config_value LABEL_AUTOPILOT)"
 if [ -n "$autopilot_label" ]; then
     merge_label="$(config_value LABEL_PENDING_MERGE)"
-    label_defs+=("$autopilot_label|0e8a16|托管：从方案到合并全交给 agent（复审与测试通过后自动合并）")
+    label_defs+=("$autopilot_label|ff401e|托管：从方案到合并全交给 agent（复审与测试通过后自动合并）")
     label_defs+=("${merge_label:-pending/merge}|5319e7|托管：复审已通过，等 daemon 检查后自动合并")
 fi
 for ld in "${label_defs[@]}"; do

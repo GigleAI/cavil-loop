@@ -38,6 +38,7 @@ review-verdict-emoji 1
 run 2
 secret-env-not-in-argv 1
 session-isolation 22
+setup-label-colors 1
 skill-deploy 5
 sub-issue-split 3
 token-usage-claude 3
