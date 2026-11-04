@@ -3645,22 +3645,27 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
     log "托管：PR #$pr 已接手（授权 $AUTOPILOT_ACTOR @ $where）→ $LABEL_PENDING_REVIEW"
 }
 
-# ── 接手阶段「判不了」的完整生命周期（GitHub#128 复审第 2–4 轮）──
+# ── 接手阶段「判不了」的完整生命周期（GitHub#128 复审第 2–5 轮）──
 # 一轮的结论只看这一轮**最后一次**许可判定（判定可接手时，写之前那次重判才是最后一次）：
-#   确定（接手 / 不接手 / 不生效 / 两次之间有变化）→ 连续判不了的计数清零（已交人的 "done" 也清掉）
+#   确定（接手 / 不接手 / 不生效 / 两次之间有变化）→ 连续判不了的计数清零（done / cancelled 也清掉）
 #   判不了（第一次或写前那次，读不到或缺字段都算）→ 计数 +1；到 AUTOPILOT_UNKNOWN_MAX 记下「要交人」
 #
-# 「要交人」这个决定只有一个依据：**判不了**。所以它的失效规则也只有一条——
-#   每次动手前，用同一个接手许可（autopilot_takeover_permit）现读重判：
-#   · 还是判不了 → 决定仍然成立，接着做（加 pending/human、留言）。另外核对现读到的 PR 仍对得上记下的
-#     issue / 分支 / 来源，对不上就作废
-#   · 判得出结论了（维护者重新授权 → 可接手；PR 关闭 / 合并 / 改绑别的 issue / 转进别的流程 / 叫停 →
-#     不接手或不生效）→ 决定作废，不写它的任何东西，改按结论走普通的接手流程
-#   · 唯一的例外：结论是「PR 上最后一次 pending/human 晚于授权」，而那次 pending/human 正是 daemon 自己
-#     为这条待办加的——这说明标签已经加上、只差说明，这时把说明补完（不再动标签）。
-#     维护者之后又亲手重新授权（晚于这次 pending/human），结论就变成「可接手」，照上一条作废、接手
-# 待办记在 .takeover_handoff，在动 GitHub 之前就记下；做完（标签已在、说明已发）才清掉，并把计数记成
-# "done"：之后还是判不了也不再交第二次。加标签和留言都可重复：标签已在不再加，评论里有标记不再发。
+# 「要交人」这个决定只有一个依据：**判不了**。每次动手之前，用同一个接手许可（autopilot_takeover_permit）
+# 现读重判，再按下表处理（.takeover_handoff = 待办；labeled = 本地记过 daemon 已加 pending/human）：
+#
+#   现读结果                                   前提①身份同  前提②标签在   处理
+#   ────────────────────────────────────────  ───────────  ────────────  ─────────────────────────────
+#   PR 读不全（读不到 / 缺分支或 issue）       —            —             不写，待办留着，下轮再试
+#   仍判不了                                   是           是 / 未加过   继续：缺标签就加，缺说明就发，都齐了收尾 done
+#   pending/human 晚于授权，且是 daemon 加的   是           是            继续（标签已在，只补说明），收尾 done
+#   上面两行之一，但身份变了                   否           —             作废，改按现在的结论走普通接手
+#   上面两行之一，但 labeled 而 pending/human  是           否            作废，记 cancelled：人已接过这件事，
+#     已不在（被人摘了）                                                  不补说明、不再交人，直到有确定结论
+#   其他任何确定结论（重新授权可接手、PR 关闭  —            —             作废，改按现在的结论走普通接手
+#     / 合并 / 改绑 / 转进别的流程 / 人叫停…）
+#
+# 待办在动 GitHub 之前就记下；加标签、发说明都可重复（标签已在不再加，评论里有标记不再发），所以写到
+# 一半失败、进程被杀，下一轮按同一张表接着判。done / cancelled 之后仍判不了也不再交人。
 autopilot_takeover_reset() {   # <state_file> <PR>
     [ -z "$(autopilot_state_get "$1" '.takeover_unknown[$p]' --arg p "$2")" ] \
         || autopilot_state_set "$1" 'del(.takeover_unknown[$p])' --arg p "$2" || true
@@ -3668,8 +3673,10 @@ autopilot_takeover_reset() {   # <state_file> <PR>
 autopilot_takeover_unknown() {   # <state_file> <PR> <原因> <缓存键>
     local sf="$1" pr="$2" reason="$3" key="$4" k max
     k=$(autopilot_state_get "$sf" '.takeover_unknown[$p] // 0' --arg p "$pr")
-    if [ "$k" = done ]; then
-        log "托管：PR #$pr 能不能接手仍判不了（$reason），之前已交人"
+    if [ "$k" = done ] || [ "$k" = cancelled ]; then
+        # done = 已交人；cancelled = 交人途中维护者摘掉了 pending/human（人已接过这件事）。
+        # 两种都在有确定结论之前不再交人
+        log "托管：PR #$pr 能不能接手仍判不了（$reason），之前已$( [ "$k" = done ] && echo 交人 || echo 由人接过)"
         return 0
     fi
     [[ "$k" =~ ^[0-9]+$ ]] || k=0
@@ -3694,28 +3701,43 @@ autopilot_takeover_handoff() {   # <state_file> <PR> <缓存键>
     n=$(printf '%s' "$h" | jq -r '.n // ""')
     ref=$(printf '%s' "$h" | jq -r '.ref // ""'); repo=$(printf '%s' "$h" | jq -r '.repo // ""')
     labeled=$(printf '%s' "$h" | jq -r '.labeled // false')
-    # 现读重判：和普通接手用的是同一个许可函数
+    # 现读重判：和普通接手用的是同一个许可函数。结论分三类（完整状态表见本节开头）：
+    #   现状读不全 → 本轮不写，待办留着
+    #   结论仍是「判不了」，或是「标签由 daemon 为这条待办加上、只差说明」→ 这两种才可能继续，
+    #     而且都必须先通过同一组前提：①身份（issue / 分支 / 来源）和交人决定时一样；
+    #     ②本地记过「标签已加」的，现读到的标签里 pending/human 必须还在（被人摘了 = 人已接过这件事）
+    #   其他任何确定结论 → 作废，改按现在的结论走普通接手
     autopilot_takeover_permit "$pr"
+    local cont=""
     case "$AT_V" in
         unknown)
-            if [ -z "$AT_PJ" ]; then
-                log "托管：PR #$pr 交人前读不到它的现状（$AT_REASON），下轮再试"; return 0
+            if [ -z "$AT_PJ" ] || [ -z "$AT_N" ] || [ -z "$AT_REF" ]; then
+                log "托管：PR #$pr 交人前读不全它的现状（${AT_REASON:-缺字段}），下轮再试"; return 0
             fi
-            # 走到「判不了」之前，PR 的状态、流程标签、绑定都已经现读核过；再对一遍记下的身份
-            if { [ -n "$n" ] && [ -n "$AT_N" ] && [ "$AT_N" != "$n" ]; } \
-               || { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } || { [ -n "$repo" ] && [ "$AT_REPO" != "$repo" ]; }; then
-                drop="PR 的 issue / 分支 / 来源和交人决定时不一样了"
-            fi ;;
+            cont=unknown ;;
         skip)
             me=$(write_identity_login)
             if [ "$AT_WHY" = human-later ] && [ -n "$me" ] \
                && [ "$(requester_bot_lc "$AT_HUMAN_BY")" = "$(requester_bot_lc "$me")" ]; then
-                labeled=true   # 标签是 daemon 为这条待办加的，只差说明
+                cont=mine; labeled=true   # 标签是 daemon 为这条待办加的，只差说明
             else
                 drop="现在判得出结论了（不接手）"
             fi ;;
         *) drop="现在判得出结论了（${AT_V}）" ;;
     esac
+    if [ -n "$cont" ]; then
+        # 前提①：身份
+        if { [ -n "$n" ] && [ "$AT_N" != "$n" ]; } || { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } \
+           || { [ -n "$repo" ] && [ "$AT_REPO" != "$repo" ]; }; then
+            drop="PR 的 issue / 分支 / 来源和交人决定时不一样了"
+        # 前提②：本地记过标签已加，现读到的 pending/human 必须还在
+        elif [ "$labeled" = true ] && ! printf '%s' "$AT_PJ" | jq -e --arg H "$LABEL_PENDING_HUMAN" \
+                 'any(.labels[]?; .name == $H)' >/dev/null 2>&1; then
+            log "托管：PR #$pr 加上的 $LABEL_PENDING_HUMAN 已被人摘掉，交人待办作废，不补说明；在有确定结论之前不再交人"
+            autopilot_state_set "$sf" 'del(.takeover_handoff[$p]) | .takeover_unknown[$p] = "cancelled"' --arg p "$pr" || true
+            return 0
+        fi
+    fi
     if [ -n "$drop" ]; then
         log "托管：PR #$pr 的交人待办作废（$drop），改按现在的结论处理"
         autopilot_state_set "$sf" 'del(.takeover_handoff[$p]) | del(.takeover_unknown[$p])' --arg p "$pr" || return 0

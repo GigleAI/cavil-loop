@@ -727,6 +727,41 @@ ROWS
     chk "A2 留言也恢复 → 补发一次、待办清掉" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "1/no"
     # 交人这个决定只有一个依据：判不了。每次动手前用同一个接手判断现读重判——
     # 还判不了才接着交人；判得出结论（重新授权、恢复、改绑、关闭……）就作废，改按结论走（复审第 3 / 4 轮）
+    # 复审第 5 轮：标签已加、说明发送失败之后的恢复分支，同样要过「身份没变」「pending/human 还在」两个前提
+    lab_ready() { unk_ready; touch "$GD/F_post_comment"; tick; tick; tick; }
+    fresh; lab_ready
+    chk "前置：标签已加、说明没发、待办记着「标签已加」" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(jq -r '.autopilot.takeover_handoff["8"].labeled' "$STATE")" "yes/0/true"
+    # 正向对照：标签还在、身份没变、仍判不了 → 补发一次
+    rm -f "$GD/F_post_comment"; tick
+    chk "正向：评论恢复、仍判不了、标签还在 → 补发一次、收尾" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)/$(tk_unknown 8)" "1/no/done"
+    tick
+    chk "  → 再一轮不重复" "$(comments_with 8 'autopilot-takeover-unknown pr=8')" 1
+    # 反例 1：两接口恢复后，分支和正文一起改绑到打开的 issue #9
+    fresh; lab_ready
+    rm -f "$GD/F_issues_8_events" "$GD/F_post_comment"
+    mkissue 9 "pending/PR"
+    jset items.json '. * {"8": {head: {ref: "feature/issue-9"}, body: "Closes #9"}}'
+    tick
+    chk "反例 1 标签已加后改绑 #9 → 不发旧说明、待办作废" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "0/no"
+    chk "到达性 · 反例 1 这一轮读了 PR 的标签记录" "$([ "$(n_calls "$R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
+    # 同样改绑，但授权记录仍读不到（走「仍判不了」那一行）
+    fresh; lab_ready
+    rm -f "$GD/F_post_comment"
+    mkissue 9 "pending/PR"
+    jset items.json '. * {"8": {head: {ref: "feature/issue-9"}, body: "Closes #9"}}'
+    tick
+    chk "反例 1b 改绑且仍判不了 → 不发旧说明、待办作废" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "0/no"
+    # 反例 2：维护者摘掉 pending/human，评论恢复，授权记录仍读不到，连跑几轮
+    fresh; lab_ready
+    rm -f "$GD/F_post_comment"
+    jset labels.json '.["8"] = ["autopilot"]'; EV_AT=2099-01-01T00:00:00Z ev 8 unlabeled pending/human maint
+    tick
+    chk "反例 2 人工摘掉 pending/human → 不补说明、不记 done，记 cancelled" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)/$(tk_unknown 8)" "0/no/cancelled"
+    tick; tick; tick; tick
+    chk "反例 2 之后仍判不了 → 不加回 pending/human、不留言" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_unknown 8)" "no/0/cancelled"
+    chk "到达性 · 反例 2 这几轮仍在读授权记录" "$([ "$(n_calls "$R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
+    rm -f "$GD/F_issues_8_events"; tick
+    chk "反例 2 授权记录恢复（授权有效）→ 有确定结论，接手、清掉 cancelled" "$(took_none)/$(tk_unknown 8)" "yes/"
     # A3：加标签就失败，之后读取恢复、维护者**没有**重新授权：授权本来就有效，现在判得出了 → 接手，不交人
     fresh; unk_ready
     tick; tick; touch "$GD/F_post_labels"; tick
@@ -1314,6 +1349,9 @@ mutate handoff-relabel _lib.sh '    if [ "$labeled" != true ]; then
             *) run_gh "label 翻转 (托管接手判不了' '            *",$LABEL_PENDING_HUMAN,nomatch"*) ;;
             *) run_gh "label 翻转 (托管接手判不了'
 mutate takeover-unknown-no-reset _lib.sh '        || autopilot_state_set "$1" '"'"'del(.takeover_unknown[$p])'"'"' --arg p "$2" || true' '        || true'
+mutate handoff-cont-no-identity _lib.sh '        if { [ -n "$n" ] && [ "$AT_N" != "$n" ]; } || { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } \' '        if false && { [ -n "$n" ] && [ "$AT_N" != "$n" ]; } || false && { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } \'
+mutate handoff-no-label-present _lib.sh '        elif [ "$labeled" = true ] && ! printf' '        elif false && ! printf'
+mutate handoff-cancelled-redo _lib.sh '    if [ "$k" = done ] || [ "$k" = cancelled ]; then' '    if [ "$k" = done ]; then'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-$1"
@@ -1335,6 +1373,8 @@ mutate_old old-a420448 a4204481429c54cd1803ca8d68aab27fecc9f71d
 mutate_old prev-083fc09 083fc09b80972778d3efb47da4788d87e6fca881
 # 复审第 3 / 4 轮打回的那一版：交人待办不重判，压掉新授权、改绑后照写
 mutate_old prev-046867f 046867f24326de38f1cc373ce067ab5ca485b085
+# 复审第 5 轮打回的那一版：标签已加、只欠说明时不核对身份和 pending/human 还在不在
+mutate_old prev-58e19a2 58e19a224f64909f18cacbbacae3e1fe692e3d34
 pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
