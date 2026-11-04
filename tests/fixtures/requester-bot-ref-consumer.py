@@ -15,7 +15,7 @@
   error <原因>                   不转达，留言交维护者
 
 --minutes = 假设机器人在挂标签之后过了多少分钟才扫到（默认 0）。
---rule 只给负对照用：v3 = 找不到对应的叫醒记录就判出错（方案第 3 版的规则）；v2 = 不看编号，取挂标签
+--rule 只给负对照用：bodymark = 只看当前条目正文里有没有来源标记来分流（代码复审第 2 轮指出的旧规则）；v3 = 找不到对应的叫醒记录就判出错（方案第 3 版的规则）；v2 = 不看编号，取挂标签
 账号「时间早于挂标签」的最后一条评论（方案第 2 版的规则）。
 """
 import hashlib
@@ -44,8 +44,48 @@ if WAIT not in labels:
     print("not-waiting"); sys.exit(0)
 if HUMAN in labels:
     print("handed-back"); sys.exit(0)
-if ORIGIN_MARK in (it.get("body") or ""):
+BOT = "req-bot"
+BRANCH_PREFIX = "feature/issue-"
+LINK_KW = r"(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)"
+LINK = LINK_KW + r"[ \t\n\r\f\v]+#([0-9]+)"       # 整段：空白可以跨行
+LINK_LINE = LINK_KW + r"[ \t\r\f\v]+#([0-9]+)"     # 逐行：同一行内
+
+
+def is_bot_request(x):
+    return (x.get("user") or "").lower() == BOT and ORIGIN_MARK in (x.get("body") or "")
+
+
+def origin(x):
+    """文档「是不是机器人提的需求」：bot / other / unknown（认不准，不转达）"""
+    if not x.get("is_pr"):
+        return "bot" if is_bot_request(x) else "other"
+    m = re.match(re.escape(BRANCH_PREFIX) + r"([0-9]+)", x.get("head_ref") or "")
+    if m:
+        n = m.group(1)
+    else:
+        body = x.get("body") or ""
+        # 逐行找第一处（关键词和 #编号在同一行），和整段找第一处（可以跨行）：两种结果一致才认
+        by_line = next((mm.group(1) for ln in body.split("\n")
+                        for mm in [re.search(LINK_LINE, ln, re.I)] if mm), "")
+        mw = re.search(LINK, body, re.I)
+        by_whole = mw.group(1) if mw else ""
+        if by_line != by_whole:
+            return "unknown"
+        n = by_line
+    if not n or n == str(x["number"]):
+        return "other"
+    linked = st["items"].get(n)
+    if linked is None or linked.get("is_pr"):
+        return "unknown"
+    return "bot" if is_bot_request(linked) else "other"
+
+
+o = "bot" if rule == "bodymark" and ORIGIN_MARK in (it.get("body") or "") else \
+    ("other" if rule == "bodymark" else origin(it))
+if o == "bot":
     print("bot-origin"); sys.exit(0)
+if o == "unknown":
+    print("error 认不准这条是不是机器人提的需求"); sys.exit(0)
 
 evs = [(e["id"] if e.get("id") is not None else k + 1, e) for k, e in enumerate(it.get("events", []))]
 lab = [(i, e) for i, e in evs if e["event"] == "labeled" and e.get("label") == WAIT]

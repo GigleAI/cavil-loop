@@ -481,6 +481,43 @@ consumer_suite() {   # <scripts 副本> [参考实现的规则]
     chk "机器人 · 手动重挂、过了 31 分钟：出错交人" "$(ref 80 --minutes 31 --rule "$R" | awk '{print $1}')" error
 }
 consumer_suite "$NEW"
+
+# ── 6b. 机器人那边怎么分流（代码复审第 2 轮）──
+# 「是不是机器人提的需求」两边必须同一个规则：issue 看作者 + 来源标记；PR 看它关联的 issue。
+# 叫醒脚本走了老路（退出 0、没发叫醒记录）的，机器人参考实现必须判「机器人提的」；
+# 走了新路（发了叫醒记录）的，必须判就绪并选中同一条交接评论。
+route_case() {   # <说明> <编号> <对象> <规则>：wake 之前已布置好状态
+    local desc="$1" n="$2" t="$3" R="$4" c
+    wake "$NEW" "$n"
+    chk "分流 · $desc：叫醒成功" "$RC" 0
+    if [ "$(receipts "$n")" = 0 ]; then
+        chk "分流 · $desc：叫醒脚本走老路 → 机器人也判机器人提的需求" "$(ref "$n" --rule "$R")" bot-origin
+    else
+        c=$(jq -r --arg n "$n" '[.items[$n].comments[] | select(.user == "worker-bot" and (.body | test("requester-bot-forward-to")))] | max_by(.id).id' "$(ST)")
+        chk "分流 · $desc：叫醒脚本走新路 → 机器人选中同一条交接评论" "$(ref "$n" --rule "$R")" "ready $c $t"
+    fi
+}
+routing_suite() {   # [机器人侧规则]
+    local R="${1:-v4}"
+    fresh; route_case "机器人提的 issue" 50 - "$R"
+    fresh; add_item 60 pr "doing/agent" worker-bot "Closes #50" feature/issue-50
+    route_case "机器人需求的 PR（作者是 worker，正文没有来源标记）" 60 - "$R"
+    fresh; add_item 65 pr "doing/agent" worker-bot "这份改动 Closes #50" chore/v
+    route_case "机器人需求的另开 PR（分支不带编号，正文 Closes #50）" 65 - "$R"
+    fresh; set_field 80 body '"维护者的需求，正文引用了一段 <!-- bot-origin -->"'
+    route_case "维护者的 issue，正文引用了来源标记" 80 运营 "$R"
+    fresh; set_field 80 user '"req-bot"'
+    route_case "机器人账号开的 issue、但没有来源标记" 80 运营 "$R"
+    fresh; route_case "维护者 issue 做出的 PR" 81 运营 "$R"
+    fresh; add_item 86 pr "doing/agent" req-bot "说明 <!-- bot-origin -->" chore/w
+    add_comment 86 worker-bot "$(handoff_body 运营)" >/dev/null
+    route_case "机器人开的、没关联任何 issue 的 PR（正文带标记）" 86 运营 "$R"
+    # 认不准的条目叫醒脚本会拒绝；万一别人手动挂了等待标签，机器人也不转达
+    fresh; add_item 83 pr "waiting/bot" worker-bot $'Closes\n#50' chore/amb
+    set_field 83 events '[{"event":"labeled","actor":"maintainer","label":"waiting/bot","id":4000}]'
+    chk "分流 · PR 关联写法有歧义（Closes 和 #50 分两行）：机器人判认不准、不转达" "$(ref 83 --rule "$R" | awk '{print $1}')" error
+}
+routing_suite
 # 观察（第 5 组）已经并在第 2、4 组里：每次 GitHub 调用之前都跑一次参考实现，
 # 断言「过程中没判出错、没选别的评论」。
 
@@ -605,6 +642,7 @@ ref_rule_suite() {   # <规则>
     chk "规则 $R · 叫醒过程中确实观察了" "$([ -s "$RW/gh/obs.log" ] && echo yes || echo no)" yes
     consumer_suite "$NEW" "$R"
 }
+neg "机器人侧只看当前条目正文里有没有来源标记来分流" routing_suite bodymark
 if mutation_on; then
     for r in v3 v2; do
         mutation_gate || true

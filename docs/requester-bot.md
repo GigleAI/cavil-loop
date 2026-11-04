@@ -117,7 +117,7 @@ cavil-loop only handles its own side; grokbot implements the following:
 5. **On a comment headed "request done" / "closed without merging"** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`; the request is finished
 6. **Leave items carrying `pending/human` alone**: those are for the maintainer
 7. **Attachments**: images etc. from the requester can be pasted into the issue and the agent downloads them itself; the other direction (agent sending attachments to grokbot) is not supported yet
-8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): an item carrying the waiting label whose body has **no** origin marker is not grokbot's request, and whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
+8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): first decide whether the item is grokbot's own request per [the routing step of the handoff protocol](#handoff-protocol) — **never by whether the current item's body carries the origin marker**: a PR's body usually has none and is judged by its linked issue, and an ordinary author quoting the marker does not count. If it is not grokbot's request, whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
 
 ## One request end to end: what you see on the issue
 
@@ -166,7 +166,7 @@ By default only grokbot's own requests can wake it. With `REQUESTER_BOT_WAKE_ANY
 REQUESTER_BOT_WAKE_ANY_ITEM="true"     # default false
 ```
 
-**Make sure grokbot supports the "handoff protocol" below before turning it on**: otherwise it pulls an item with no origin marker and does not know whom to forward to.
+**Make sure grokbot supports the "handoff protocol" below before turning it on**: otherwise it pulls an item that is not its own request and does not know whom to forward to.
 
 ### What is opened up, and what is not
 
@@ -213,7 +213,15 @@ The target is 1–100 characters on one line, without `<`, `>`, `;` or control c
 
 **Body fingerprint**: replace `\r\n` with `\n`, strip trailing whitespace from the whole body, and take SHA-256 of the UTF-8 result. Changing any character of C breaks it.
 
-**grokbot, for an item carrying the waiting label whose body has no origin marker**:
+**grokbot routes first**: for every item carrying the waiting label, decide whether it is its own request with exactly the rule cavil-loop uses:
+
+- **issue**: authored by grokbot **and** its body contains the origin marker → yes; otherwise no (a maintainer quoting the marker in the body does not count)
+- **PR**: judged by its linked issue. The link comes from the branch name first: a branch that starts with the project's branch prefix followed by digits (default prefix `feature/issue-`; if the project changed it, use the project's — ask the maintainer when integrating) links to that number. Otherwise from `Closes` / `Fixes` / `Resolves` / `Refs` + `#number` in the body: the **first match found line by line** and the **first match found in the whole text (a newline allowed between keyword and number)** must agree, otherwise the link cannot be determined. Judge the linked issue by the rule above; no link, or a link to the PR itself → no
+- **cannot be determined** (ambiguous wording, a link to another PR, an unreadable linked issue) → do not forward; comment on the item and hand it to the maintainer
+
+Its own request → the old rules in items 1–5 above; there is **no** wake record and none is needed. Not its own → look for the wake record below. Never route on "is there a wake record": an ordinary item that is still preparing has none yet either.
+
+**grokbot, for an item carrying the waiting label that routing says is not its own request**:
 
 1. Read the label events and take, by **event id**, the latest "waiting label added" event: id E, actor A, time t
 2. Find the wake records authored by A that say `event=E`
