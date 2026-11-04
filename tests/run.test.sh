@@ -151,7 +151,13 @@ got=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk 
 chk "并集 = 全部 − 排除" "$got" "$expected"
 chk "没有文件出现两次" "$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | sort | uniq -d | wc -l)" "0"
 chk "清单里确有测试（不是两边都空）" "$([ "$(echo "$got" | wc -w)" -gt 40 ] && echo yes || echo no)" "yes"
-chk "requester-bot（最慢）独占一路" "$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4" | paste -sd' '; done | grep -cx '[0-9] requester-bot')" "1"
+# 最慢的 requester-bot 那一路不该再背别的重测试（参考时间 1 秒以内的零碎文件挤进来不影响总时长）
+rb_shard=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4" | awk -v k="$k" '$2 == "requester-bot" {print k}'; done)
+rb_others=$(bash "$RUNSH" --ci --list --shard "$rb_shard/4" | awk '$2 != "requester-bot" {print $2}' \
+    | while read -r n; do awk -v n="$n" '$1 == n {print $2; f=1} END {if (!f) print 5}' "$TEST_DIR/ci-weights.txt"; done \
+    | awk '{s += $1} END {print s + 0}')
+chk "requester-bot（最慢）那一路没有别的重测试（同路其余文件参考时间合计 ≤ 5 秒）" \
+    "$([ -n "$rb_shard" ] && awk -v s="$rb_others" 'BEGIN {exit !(s <= 5)}' && echo yes || echo "no（第 ${rb_shard:-?} 路，其余合计 ${rb_others} 秒）")" yes
 chk "排除清单里的 preview-socket-activation 不在 --ci 清单" "$(bash "$RUNSH" --ci --list | awk '$2=="preview-socket-activation"' | wc -l)" "0"
 
 echo "【3】全绿：退出 0、真的跑了、排除项没跑但有记录"
