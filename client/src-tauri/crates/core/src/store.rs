@@ -23,7 +23,12 @@ pub const SECRET_KEYS: [&str; 4] = [TRUSTED, CACHE_CREDENTIAL, CACHE_OWNER, GRAN
 
 pub struct Store {
     db: Mutex<Connection>,
+    /// next to the database: "a sign-out happened whose trust-list write failed" (see `mark_signed_out`)
+    marker: std::path::PathBuf,
 }
+
+/// File name of the sign-out marker, next to the database.
+pub const SIGNED_OUT_MARKER: &str = "signed-out";
 
 fn err(e: impl std::fmt::Display) -> String {
     format!("本地存储出错：{e}")
@@ -55,7 +60,37 @@ impl Store {
             }
             _ => {}
         }
-        Ok(Store { db: Mutex::new(db) })
+        let marker = path.parent().map(|d| d.join(SIGNED_OUT_MARKER)).unwrap_or_else(|| SIGNED_OUT_MARKER.into());
+        Ok(Store { db: Mutex::new(db), marker })
+    }
+
+    /// A second, independent record that the user signed out, for when the database
+    /// refused the trust-list write (GitHub#151 review): written and synced to disk,
+    /// then the folder entry synced. While it exists, start-up trusts no stored credential.
+    pub fn mark_signed_out(&self) -> Result<(), String> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&self.marker).map_err(err)?;
+        f.write_all(b"1\n").map_err(err)?;
+        f.sync_all().map_err(err)?;
+        if let Some(dir) = self.marker.parent() {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all(); // best effort: not every platform syncs a directory handle
+            }
+        }
+        Ok(())
+    }
+
+    pub fn signed_out_marked(&self) -> bool {
+        self.marker.exists()
+    }
+
+    /// Only once the trust list is empty on disk and the credential is gone.
+    pub fn clear_signed_out_mark(&self) -> Result<(), String> {
+        match std::fs::remove_file(&self.marker) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(err(e)),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {

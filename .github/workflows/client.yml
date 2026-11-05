@@ -37,7 +37,8 @@ jobs:
   test:
     name: client tests (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # negative controls rebuild the back end / the app per entry
+    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,7 +66,16 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb webkit2gtk-driver
+      # WebDriver for the real Tauri window (test/tauri); kept in the cache between runs
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tauri-driver
+          key: tauri-driver-2-${{ runner.os }}
+      - name: tauri-driver
+        run: |
+          [ -x "$HOME/.tauri-driver/bin/tauri-driver" ] || cargo install tauri-driver --locked --root "$HOME/.tauri-driver"
+          echo "$HOME/.tauri-driver/bin" >> "$GITHUB_PATH"
       - run: npm ci
       - name: Type check
         run: npm run typecheck
@@ -87,6 +97,11 @@ jobs:
           out="$(xvfb-run -a src-tauri/target/debug/cavil-loop-client --smoke-test 2>&1 || true)"
           echo "$out" | tail -5
           grep -q 'CAVIL_SMOKE_OK' <<<"$out"
+      - name: The real app over WebDriver (sign in, sync, a change, the shell's link and navigation handlers)
+        run: xvfb-run -a npm run test:tauri
+      - name: Negative controls for the app shell (each rebuilds the real app)
+        if: ${{ inputs.mutation }}
+        run: xvfb-run -a env MUTATION=1 node test/tauri/mutations.mjs
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4

@@ -21,7 +21,7 @@ fn u(a: &Value, k: &str) -> Result<u64, String> {
 pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, String> {
     match cmd {
         "init" => {
-            let snapshots = e.store().load_snapshots();
+            let snapshots = e.visible_snapshots();
             let ep = e.endpoints();
             Ok(json!({
                 "settings": e.public_settings(),
@@ -54,7 +54,10 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             Some(uri) => e.open_external(&uri).await.map(|_| Value::Null),
             None => Ok(Value::Null),
         },
-        "logout" => Ok(json!({ "session": e.logout(a.get("reason").and_then(|v| v.as_str())) })),
+        "logout" => {
+            let (session, message) = e.logout(a.get("reason").and_then(|v| v.as_str()));
+            Ok(json!({ "session": session, "message": message }))
+        }
         "logoutResult" => {
             let (message, current) = e.logout_result(u(&a, "session")?).await;
             Ok(json!({ "message": message, "current": current }))
@@ -80,8 +83,9 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         }),
         "grantInfo" => Ok(e.grant_info().await),
         "adoptViewer" => Ok(match e.adopt_viewer(u(&a, "session")?, s(&a, "login")?) {
-            None => json!({ "stale": true }),
-            Some(wiped) => json!({ "wiped": wiped }),
+            Ok(None) => json!({ "stale": true }),
+            Ok(Some(wiped)) => json!({ "wiped": wiped }),
+            Err(m) => json!({ "stale": true, "problem": format!("本地缓存写入失败（{m}），这一轮的结果没有保存") }),
         }),
         "request" => {
             let session = u(&a, "session")?;

@@ -14,7 +14,8 @@
     "test:rust": "cd src-tauri && cargo test --workspace --exclude cavil-loop-client",
     "test:e2e": "node scripts/build.mjs --test-bridge && playwright test",
     "start": "tauri dev",
-    "dist:mac": "tauri build --bundles app && node scripts/make-dmg.mjs"
+    "dist:mac": "tauri build --bundles app && node scripts/make-dmg.mjs",
+    "test:tauri": "playwright test -c playwright.tauri.config.ts && node test/tauri/mutations.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

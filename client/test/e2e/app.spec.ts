@@ -865,3 +865,29 @@ test('yellow bars: a closed "unsupported words" bar comes back when an import in
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
   await app.close();
 });
+
+// GitHub#151 review: the app's logic now runs in the system WebKit, the oldest supported being
+// macOS 11's (Safari 14). The window's code must not need what that engine lacks.
+test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, sync, detail, a change all work', async () => {
+  const app = await launchApp(env, { oldEngine: true });
+  const page = app.page;
+  // "something did happen": the APIs really are gone in this window
+  const removed = (await page.evaluate(() => (globalThis as any).__removedApis)) as string[];
+  expect(removed).toEqual(expect.arrayContaining(['AbortSignal.timeout', 'Array.prototype.at', 'structuredClone', 'Object.hasOwn']));
+  expect(await page.evaluate(() => typeof (AbortSignal as any).timeout)).toBe('undefined');
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await signInWithSources(page);
+  // the round really reached GitHub through the back end
+  expect(env.fake.log.some((l) => l.path === '/api/graphql' && l.auth)).toBe(true);
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('article').first()).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('label-add').selectOption('Done');
+  await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
+  await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
+  await expect(page.locator('[data-testid="sync-problem"]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+  await shot(page, '40-old-engine');
+  await app.close();
+});

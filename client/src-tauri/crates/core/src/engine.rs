@@ -159,9 +159,12 @@ impl Engine {
             }),
             queue: Mutex::new(ready.shared()),
         });
-        // A cache nobody owns cannot be shown to anybody.
+        // A cache nobody owns cannot be shown to anybody. If dropping it fails, it is still
+        // never handed to the window (see `visible_snapshots`); the next start tries again.
         if e.lock().owner.is_none() && e.d.store.snapshot_count() > 0 {
-            let _ = e.d.store.write_all(&[], true);
+            if let Err(err) = e.d.store.write_all(&[], true) {
+                eprintln!("cavil: dropping an ownerless cache failed: {err}");
+            }
         }
         e
     }
@@ -216,20 +219,31 @@ impl Engine {
         }
     }
 
-    /// The cache may only hold data read by `login`; another (or unknown) account wipes it first. true = wiped.
-    fn adopt_account(&self, st: &mut State, login: Option<&str>, token: Option<&str>) -> bool {
+    /// The cache may only hold data read by `login`; another (or unknown) account wipes it first.
+    /// Ok(true) = wiped. Err = the database refused: nothing about the account change is
+    /// certain on disk, so the caller must not let data land or be shown on its strength.
+    fn adopt_account(&self, st: &mut State, login: Option<&str>, token: Option<&str>) -> Result<bool, String> {
         let tag = match (login, token) {
             (Some(_), Some(t)) => Value::String(credential_tag(t)),
             _ => Value::Null,
         };
-        let _ = self.d.store.set_setting(CACHE_CREDENTIAL, &tag);
         if login.is_some() && login.map(str::to_string) == st.owner {
-            return false;
+            self.d.store.set_setting(CACHE_CREDENTIAL, &tag)?;
+            return Ok(false);
         }
+        let owner = login.map(|l| Value::String(l.to_string())).unwrap_or(Value::Null);
+        // one transaction: the old account's data goes, the new owner and credential binding come
+        self.d.store.write_all(&[(CACHE_OWNER, owner), (CACHE_CREDENTIAL, tag)], true)?;
         st.owner = login.map(str::to_string);
-        let owner = st.owner.clone().map(Value::String).unwrap_or(Value::Null);
-        let _ = self.d.store.write_all(&[(CACHE_OWNER, owner)], true);
-        true
+        Ok(true)
+    }
+
+    /// What the window may show from disk: nothing unless the cache has an owner.
+    pub fn visible_snapshots(&self) -> Vec<Value> {
+        if self.lock().owner.is_none() {
+            return vec![];
+        }
+        self.d.store.load_snapshots()
     }
 
     /// Delete the stored credential. Never fails: the error is returned for the caller to show.
@@ -249,27 +263,49 @@ impl Engine {
             return StartOut::Login { reason: None, wiped: false };
         };
         let tag = credential_tag(&stored.access_token);
-        if !self.trusted().contains(&tag) {
+        // The sign-out marker (written when a sign-out could not clear the trust list in
+        // the database) outranks the list: nothing stored is trusted while it exists.
+        let marked = self.d.store.signed_out_marked();
+        if marked || !self.trusted().contains(&tag) {
             // A leftover the user signed out of (or a login that never completed, or a
             // credential put there from outside): never sign in with it, show nothing
             // cached for it. Delete it now; say so if that fails again.
-            {
+            let wipe = {
                 let mut st = self.lock();
-                self.adopt_account(&mut st, None, None);
-            }
+                self.adopt_account(&mut st, None, None)
+            };
             let creds = self.d.credentials.clone();
             let err = self.serial(async move { Engine::clear_stored(creds).await }.boxed()).await;
-            return StartOut::Login { reason: err.map(|e| not_deleted_message(None, &e)), wiped: true };
+            // the marker goes only once nothing is trusted on disk and the credential is gone
+            if marked && err.is_none() && self.set_trusted(&[]).is_ok() {
+                if let Err(e) = self.d.store.clear_signed_out_mark() {
+                    eprintln!("cavil: removing the sign-out marker failed (next start asks to sign in again): {e}");
+                }
+            }
+            let mut reason = err.map(|e| not_deleted_message(None, &e));
+            if let Err(e) = wipe {
+                reason = Some(format!("{}本地缓存没能清空（{e}）", reason.map(|r| format!("{r}；")).unwrap_or_default()));
+            }
+            return StartOut::Login { reason, wiped: true };
         }
         let mut st = self.lock();
-        st.grant = Some(stored);
-        st.gen += 1;
         // A credential the cache was not read with (changed outside the app) means
         // the account is unknown until GitHub answers: show nothing cached meanwhile.
         let mut wiped = false;
         if self.d.store.get_str(CACHE_CREDENTIAL).as_deref() != Some(tag.as_str()) {
-            wiped = self.adopt_account(&mut st, None, None);
+            match self.adopt_account(&mut st, None, None) {
+                Ok(w) => wiped = w,
+                // another account's data may still be on disk: do not sign in on top of it
+                Err(e) => {
+                    return StartOut::Login {
+                        reason: Some(format!("本地缓存没能清空（{e}），为免显示别的账号的数据，这次没有自动登录；可以重新登录")),
+                        wiped: true,
+                    }
+                }
+            }
         }
+        st.grant = Some(stored);
+        st.gen += 1;
         StartOut::Ready { session: st.session, wiped }
     }
 
@@ -357,18 +393,44 @@ impl Engine {
                 let err = Engine::clear_stored(me.d.credentials.clone()).await;
                 return Ok(FinishOut::Stale { login_reason: err.map(|e| not_deleted_message(Some("登录已取消"), &e)) });
             }
-            me.set_trusted(&[&grant.access_token])?;
+            // Everything this sign-in records, in one transaction: the trust, the app it came
+            // from (a GitHub App token is refreshed with that app, whatever the setting says
+            // later), whose cache this is (another account's data goes), the viewer. If the
+            // database refuses, the credential just written is removed again: no half sign-in.
+            let tag = Value::String(credential_tag(&grant.access_token));
+            let same_owner = login.is_some() && login == me.lock().owner;
+            let owner = login.clone().map(Value::String).unwrap_or(Value::Null);
+            let viewer = owner.clone();
+            let recorded = me.d.store.write_all(
+                &[
+                    (TRUSTED, Value::Array(vec![tag.clone()])),
+                    (GRANT_CLIENT_ID, Value::String(client_id.clone())),
+                    (CACHE_OWNER, owner),
+                    (CACHE_CREDENTIAL, if login.is_some() { tag } else { Value::Null }),
+                    ("viewer", viewer),
+                ],
+                !same_owner,
+            );
+            if let Err(e) = recorded {
+                let left = Engine::clear_stored(me.d.credentials.clone()).await;
+                return Err(match left {
+                    None => format!("登录没能保存到本机（{e}），已撤销这次登录，请重试"),
+                    Some(d) => not_deleted_message(Some(&format!("登录没能保存到本机（{e}）")), &d),
+                });
+            }
+            // a sign-out marker from before is superseded by this trusted sign-in (if it cannot
+            // be removed, the next start only asks to sign in again: the safe direction)
+            if let Err(e) = me.d.store.clear_signed_out_mark() {
+                eprintln!("cavil: removing the sign-out marker failed: {e}");
+            }
             let mut st = me.lock();
             st.session += 1;
             st.grant = Some(grant.clone());
             st.gen += 1;
             st.pending_code = None;
             st.unsaved_grant = false;
-            // a GitHub App token is refreshed with the app it came from, whatever the setting says later
-            let _ = me.d.store.set_setting(GRANT_CLIENT_ID, &Value::String(client_id.clone()));
-            let wiped = me.adopt_account(&mut st, login.as_deref(), Some(&grant.access_token));
-            let _ = me.d.store.set_setting("viewer", &login.clone().map(Value::String).unwrap_or(Value::Null));
-            Ok::<FinishOut, String>(FinishOut::Ok { session: st.session, viewer: login.clone(), wiped })
+            st.owner = login.clone();
+            Ok::<FinishOut, String>(FinishOut::Ok { session: st.session, viewer: login.clone(), wiped: !same_owner })
         };
         match self.serial(job.boxed()).await {
             Ok(out) => out,
@@ -402,8 +464,10 @@ impl Engine {
 
     /// Sign out. Returns once nothing on disk trusts the credential any more and
     /// the cache is gone; the keychain delete is queued (see `logout_result`).
-    pub fn logout(self: &Arc<Self>, reason: Option<&str>) -> u64 {
-        let session = {
+    /// Returns the new session and, when the sign-out could not be made fully durable,
+    /// what to tell the user right away (it is never reported as a clean success then).
+    pub fn logout(self: &Arc<Self>, reason: Option<&str>) -> (u64, Option<String>) {
+        let (session, durable) = {
             let mut st = self.lock();
             st.login_run += 1;
             st.session += 1;
@@ -416,21 +480,60 @@ impl Engine {
             // whatever happens to the keychain delete below (queued, pending, failing,
             // or the process ending before it returns). Signing out forgets everything
             // read with that account — in the same transaction.
-            let _ = self.d.store.write_all(
-                &[(TRUSTED, Value::Array(vec![])), (CACHE_OWNER, Value::Null), (CACHE_CREDENTIAL, Value::Null), ("viewer", Value::Null)],
-                true,
-            );
-            st.session
+            let write = || {
+                self.d.store.write_all(
+                    &[(TRUSTED, Value::Array(vec![])), (CACHE_OWNER, Value::Null), (CACHE_CREDENTIAL, Value::Null), ("viewer", Value::Null)],
+                    true,
+                )
+            };
+            // If the database refuses (twice), the revocation goes to the sign-out marker
+            // instead — an independent file start-up honours before the trust list.
+            let durable = match write().or_else(|_| write()) {
+                Ok(()) => Durable::Yes,
+                Err(db) => match self.d.store.mark_signed_out() {
+                    Ok(()) => Durable::Marker(db),
+                    Err(m) => Durable::No(db, m),
+                },
+            };
+            (st.session, durable)
+        };
+        let now_message = match &durable {
+            Durable::Yes => None,
+            Durable::Marker(db) => Some(format!(
+                "{}退出时本地数据库写入失败（{db}），已改用备用标记确保下次启动不会自动登录",
+                reason.map(|r| format!("{r}。")).unwrap_or_default()
+            )),
+            Durable::No(db, m) => Some(format!(
+                "{}退出没能保存到本机（数据库：{db}；备用标记：{m}）。正在删除钥匙串里的凭据；删除成功前关掉 App，下次启动可能会自动登录回去",
+                reason.map(|r| format!("{r}。")).unwrap_or_default()
+            )),
         };
         let creds = self.d.credentials.clone();
         let reason = reason.map(str::to_string);
+        let undurable = matches!(durable, Durable::No(..));
+        // what is still worth saying once the delete is over, whatever it did
+        let note = if matches!(durable, Durable::Marker(_)) { now_message.clone() } else { None };
         let done = self.serial(
-            async move { Engine::clear_stored(creds).await.map(|e| not_deleted_message(reason.as_deref(), &e)) }.boxed(),
+            async move {
+                match Engine::clear_stored(creds).await {
+                    None => note,
+                    // nothing on disk says "signed out" and the credential is still there
+                    Some(e) if undurable => Some(format!(
+                        "{}退出没能保存到本机，钥匙串里的凭据也没能删除（{e}）。下次启动可能会自动登录回去：请在「钥匙串访问」里搜「Cavil Loop」手动删除",
+                        reason.as_deref().map(|r| format!("{r}。")).unwrap_or_default()
+                    )),
+                    Some(e) => Some(match &note {
+                        Some(n) => format!("{n}；{}", not_deleted_message(None, &e)),
+                        None => not_deleted_message(reason.as_deref(), &e),
+                    }),
+                }
+            }
+            .boxed(),
         );
         let mut st = self.lock();
         st.logouts.retain(|s, _| *s + 16 > session);
         st.logouts.insert(session, done);
-        session
+        (session, now_message)
     }
 
     /// The keychain delete of the sign-out that ended in `session`: what to tell the user when it failed.
@@ -542,8 +645,10 @@ impl Engine {
             if !current(&me) {
                 return FreshOut::of(Fresh::Ended);
             }
-            // while writing, either the old or the new one may be what ends up stored
-            let _ = me.set_trusted(&[&used.access_token, &next.access_token]);
+            // while writing, either the old or the new one may be what ends up stored. If the
+            // database refuses, only the old one stays trusted: a restart may ask to sign in
+            // again (never the reverse), and the user is told.
+            let mut db_problem = me.set_trusted(&[&used.access_token, &next.access_token]).err();
             let saved = match me.d.credentials.set(&encode_grant(&next)).await {
                 Ok(()) => true,
                 Err(e) => {
@@ -562,14 +667,20 @@ impl Engine {
             st.unsaved_grant = !saved;
             // saved: only the new one; not saved: the store still holds the old one (spent at
             // GitHub, so using it later just ends in "please sign in again") and the retry may store the new
-            if saved {
-                let _ = me.set_trusted(&[&next.access_token]);
+            if saved && db_problem.is_none() {
+                db_problem = me.set_trusted(&[&next.access_token]).err();
             }
             // same account, new token: the cache stays bound to it
             if st.owner.is_some() && saved {
-                let _ = me.d.store.set_setting(CACHE_CREDENTIAL, &Value::String(credential_tag(&next.access_token)));
+                if let Err(e) = me.d.store.set_setting(CACHE_CREDENTIAL, &Value::String(credential_tag(&next.access_token))) {
+                    db_problem.get_or_insert(e);
+                }
             }
-            let problem = if saved { None } else { Some(unsaved_message(st.unsaved_problem.as_deref())) };
+            let problem = if !saved {
+                Some(unsaved_message(st.unsaved_problem.as_deref()))
+            } else {
+                db_problem.map(db_problem_message)
+            };
             FreshOut { result: Fresh::Ok, problem: Some(problem), signed_out: None }
         };
         self.serial(job.boxed()).await
@@ -579,8 +690,8 @@ impl Engine {
         if !current {
             return FreshOut::of(Fresh::Ended);
         }
-        let session = self.logout(Some(REASON_REFRESH_ENDED));
-        FreshOut { result: Fresh::Ended, problem: None, signed_out: Some((session, REASON_REFRESH_ENDED.into())) }
+        let (session, message) = self.logout(Some(REASON_REFRESH_ENDED));
+        FreshOut { result: Fresh::Ended, problem: None, signed_out: Some((session, message.unwrap_or_else(|| REASON_REFRESH_ENDED.into()))) }
     }
 
     /// A refreshed grant that could not be stored: try again (same queue and session rules as any credential write).
@@ -612,13 +723,15 @@ impl Engine {
             if !same(&me) {
                 return None;
             }
-            let _ = me.set_trusted(&[&grant.access_token]);
+            let mut db_problem = me.set_trusted(&[&grant.access_token]).err();
             let mut st = me.lock();
             st.unsaved_grant = false;
             if st.owner.is_some() {
-                let _ = me.d.store.set_setting(CACHE_CREDENTIAL, &Value::String(credential_tag(&grant.access_token)));
+                if let Err(e) = me.d.store.set_setting(CACHE_CREDENTIAL, &Value::String(credential_tag(&grant.access_token))) {
+                    db_problem.get_or_insert(e);
+                }
             }
-            Some(None)
+            Some(db_problem.map(db_problem_message))
         };
         self.serial(job.boxed()).await
     }
@@ -645,14 +758,15 @@ impl Engine {
 
     // ---- the account the cache belongs to -----------------------------------
 
-    /// GitHub said who the token belongs to. Data of anybody else goes first. None = session over.
-    pub fn adopt_viewer(&self, session: u64, login: &str) -> Option<bool> {
+    /// GitHub said who the token belongs to. Data of anybody else goes first.
+    /// Ok(None) = session over; Err = the database refused (nothing of the round may land).
+    pub fn adopt_viewer(&self, session: u64, login: &str) -> Result<Option<bool>, String> {
         let mut st = self.lock();
         if st.session != session {
-            return None;
+            return Ok(None);
         }
-        let token = st.grant.as_ref()?.access_token.clone();
-        Some(self.adopt_account(&mut st, Some(login), Some(&token)))
+        let Some(token) = st.grant.as_ref().map(|g| g.access_token.clone()) else { return Ok(None) };
+        self.adopt_account(&mut st, Some(login), Some(&token)).map(Some)
     }
 
     /// Write snapshots read in `session`; refused (false) when that session is over.
@@ -716,6 +830,16 @@ impl Engine {
     }
 }
 
+/// How durable a sign-out's revocation is.
+enum Durable {
+    /// the trust list is empty in the database
+    Yes,
+    /// the database refused; the sign-out marker holds it
+    Marker(String),
+    /// neither could be written: (database error, marker error)
+    No(String, String),
+}
+
 pub enum RequestError {
     Stale,
     Refused(String),
@@ -728,6 +852,10 @@ fn failure_status(f: Failure) -> &'static str {
         Failure::Expired => "expired",
         _ => "error",
     }
+}
+
+fn db_problem_message(e: String) -> String {
+    format!("本地数据库写入失败（{e}）。这次运行照常可用；下次启动可能需要重新登录，离线时可能看不到缓存")
 }
 
 fn unsaved_message(problem: Option<&str>) -> String {

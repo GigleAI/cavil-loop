@@ -65,7 +65,20 @@ export async function closeEngine() {
 }
 
 /** Start the app: back end (Rust) on the profile in `env`, the window in a fresh browser context. */
-export async function launchApp(env: AppEnv): Promise<RunningApp> {
+/**
+ * Web APIs the oldest WebKit the app supports (macOS 11 = Safari 14) does not have.
+ * `launchApp(env, { oldEngine: true })` removes them before the window's code runs,
+ * so a dependency on any of them fails a test instead of failing only on old Macs.
+ * An emulation: it catches missing APIs, not missing syntax or rendering differences.
+ */
+export const NOT_IN_SAFARI_14 = [
+  'AbortSignal.timeout', 'AbortSignal.any', 'Array.prototype.at', 'String.prototype.at', 'Array.prototype.findLast',
+  'Array.prototype.findLastIndex', 'Array.prototype.toSorted', 'Array.prototype.toReversed', 'Array.prototype.toSpliced',
+  'Array.prototype.with', 'Object.hasOwn', 'Object.groupBy', 'Map.groupBy', 'Promise.withResolvers', 'structuredClone',
+  'Crypto.prototype.randomUUID', 'Set.prototype.union', 'Set.prototype.intersection', 'Set.prototype.difference',
+];
+
+export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {}): Promise<RunningApp> {
   const opened: string[] = [];
   const backend = new HarnessBackend({
     db: join(env.userData, 'cache.sqlite'),
@@ -121,6 +134,31 @@ export async function launchApp(env: AppEnv): Promise<RunningApp> {
   // `<a target="_blank">` in the detail view: the app's shell never opens a window for it,
   // it hands the address to the back end's open-in-browser rule (src-tauri/src/main.rs,
   // on_new_window). Same here: close the popup, ask the back end to open its address.
+  if (opts.oldEngine) {
+    await context.addInitScript((names: string[]) => {
+      for (const n of names) {
+        const parts = n.split('.');
+        const prop = parts.pop()!;
+        let owner: any = globalThis;
+        for (const p of parts) owner = owner?.[p];
+        if (owner && prop in owner) {
+          try {
+            delete owner[prop];
+          } catch {
+            /* non-configurable: shadow it */
+          }
+          if (prop in owner) Object.defineProperty(owner, prop, { value: undefined, configurable: true, writable: true });
+        }
+      }
+      (globalThis as any).__removedApis = names.filter((n) => {
+        const parts = n.split('.');
+        const prop = parts.pop()!;
+        let owner: any = globalThis;
+        for (const p of parts) owner = owner?.[p];
+        return !owner || owner[prop] === undefined;
+      });
+    }, NOT_IN_SAFARI_14);
+  }
   const page = await context.newPage();
   context.on('page', async (popup) => {
     if (popup === page) return;

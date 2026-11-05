@@ -100,8 +100,10 @@ fn main() {
     let smoke = smoke();
 
     let mut builder = tauri::Builder::default();
-    if !smoke {
-        // one app instance per profile: a second launch brings the first window forward
+    // one app instance per profile: a second launch brings the first window forward
+    // (not in the smoke test or test mode: each run has its own throw-away profile, and
+    // the plugin needs a desktop session bus a CI machine may not have)
+    if !smoke && !selection.test_mode {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
@@ -155,7 +157,9 @@ fn main() {
                         let e = open_engine.clone();
                         let u = url.to_string();
                         tauri::async_runtime::spawn(async move {
-                            let _ = e.open_external(&u).await;
+                            if let Err(err) = e.open_external(&u).await {
+                                eprintln!("cavil: opening {u} in the browser failed: {err}");
+                            }
                         });
                     }
                     false
@@ -165,7 +169,9 @@ fn main() {
                     let e = engine.clone();
                     let u = url.to_string();
                     tauri::async_runtime::spawn(async move {
-                        let _ = e.open_external(&u).await;
+                        if let Err(err) = e.open_external(&u).await {
+                            eprintln!("cavil: opening {u} in the browser failed: {err}");
+                        }
                     });
                     NewWindowResponse::Deny
                 })

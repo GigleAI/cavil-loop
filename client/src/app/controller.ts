@@ -287,8 +287,9 @@ export class Controller {
     // The back end first makes it durable that the stored credential may never
     // sign us in again, and drops the cache, in one transaction; only then does
     // the page switch. The keychain delete runs after that (see logoutResult).
-    const { session } = await this.backend.call<{ session: number }>('logout', { reason });
-    await this.applySignedOut(session, reason);
+    // `message`: the sign-out could not be made fully durable — never shown as a clean sign-out
+    const { session, message } = await this.backend.call<{ session: number; message?: string | null }>('logout', { reason });
+    await this.applySignedOut(session, message ?? reason);
   }
 
   /** The back end signed out (asked to here, or because a refresh ended the sign-in): switch the page, then report a failed delete. */
@@ -532,7 +533,8 @@ export class Controller {
     if (session !== this.session) return over();
     // GitHub says who this token belongs to; data of anybody else goes first.
     if (round.viewer) {
-      const a = await this.backend.call<{ wiped?: boolean; stale?: boolean }>('adoptViewer', { session, login: round.viewer });
+      const a = await this.backend.call<{ wiped?: boolean; stale?: boolean; problem?: string }>('adoptViewer', { session, login: round.viewer });
+      if (a.problem) this.setProblem(a.problem);
       if (a.stale || session !== this.session) return over();
       if (a.wiped) this.dropMirror();
     }
