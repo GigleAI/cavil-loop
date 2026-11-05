@@ -67,7 +67,56 @@ def fail(msg, code=1):
     sys.exit(code)
 
 
+def list_cmd():
+    # `gh issue list` / `gh pr list`（GitHub#159 的测试才打开：FAKE_GH_LISTS=1；不开时照旧返回 []，
+    # 托管测试的调用与结果不受影响）。只实现轮询用到的那几种：--state open|closed|merged、--label、
+    # --search "is:closed is:unmerged …"、--limit、--jq。按编号倒序（≈ 真接口按创建时间倒序）。
+    what, opts, k = argv[0], {}, 2
+    while k < len(argv):
+        if argv[k].startswith("--") and k + 1 < len(argv):
+            opts[argv[k]] = argv[k + 1]; k += 2
+        else:
+            k += 1
+    its, lbs = load("items.json", {}), load("labels.json", {})
+    out = []
+    for n in sorted(its, key=int, reverse=True):
+        it = its[n]
+        if it["kind"] != what:
+            continue
+        merged = bool(it.get("merged"))
+        state = "closed" if merged else it.get("state", "open")
+        want = opts.get("--state", "open")
+        search = opts.get("--search", "")
+        if "is:unmerged" in search:
+            if not (state == "closed" and not merged):
+                continue
+        elif want == "merged":
+            if not merged:
+                continue
+        elif want != state:
+            continue
+        ls = lbs.get(n, [])
+        if "--label" in opts and opts["--label"] not in ls:
+            continue
+        out.append({"number": int(n), "title": it.get("title", "t"),
+                    "headRefName": it.get("head", {}).get("ref", ""),
+                    "labels": [{"name": l} for l in ls],
+                    "stateReason": (it.get("state_reason") or "").upper(),
+                    "updatedAt": it.get("updated_at", "2026-01-01T00:00:00Z")})
+    out = out[:int(opts.get("--limit", "30"))]
+    txt = json.dumps(out)
+    if "--jq" in opts:
+        r = subprocess.run(["jq", "-r", opts["--jq"]], input=txt, capture_output=True, text=True)
+        sys.stdout.write(r.stdout)
+        sys.exit(r.returncode)
+    print(txt)
+    sys.exit(0)
+
+
 if not argv or argv[0] != "api":
+    if os.environ.get("FAKE_GH_LISTS") == "1" and len(argv) > 1 and argv[0] in ("issue", "pr") \
+            and argv[1] == "list":
+        list_cmd()
     # gh pr list / gh issue list etc.: nothing
     print("[]")
     sys.exit(0)

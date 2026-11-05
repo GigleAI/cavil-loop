@@ -167,3 +167,8 @@ button.danger { background: var(--closed); color: #fff; border-color: var(--clos
 .form label { display: flex; flex-direction: column; gap: 4px; }
 .labels.pick { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .err { color: var(--closed); }
+/* yellow bars with a "×" (GitHub#153) */
+.banner.closable { display: flex; align-items: flex-start; gap: 8px; }
+.banner.closable .banner-text { flex: 1; min-width: 0; }
+.banner-close { flex: none; border: none; background: transparent; color: inherit; opacity: 0.6; font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; }
+.banner-close:hover, .banner-close:focus-visible { opacity: 1; }

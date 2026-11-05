@@ -2388,6 +2388,149 @@ merged_label_drain() {
     done
 }
 
+# ── 人手动关闭（已完成）的 issue 打 Done（GitHub#159）──
+# 合并路径只给「合并的 PR」和「被 Closes #N 带关的 issue」打 Done；人在网页上直接关掉、选「已完成」
+# 的 issue，§ 4 清理只删本机工作目录，标签一个不动，关掉的 issue 还挂着 pending/human / pending/PR。
+#
+# 和本机清理分开：§ 4 每看到一个还没记入 cleaned_issues 的已关闭 issue，就入 closed_done_queue
+# （重复入队不重置次数），每轮清一次队。清理失败不拖住标签，标签失败也不拖住清理。
+# 队列字段故意不进 agent-poll.sh 顶部的补字段循环：没有条目入队时 state.json 和以前逐字节一样；
+# 读处一律 `// {}` 兜底（同 requester_bot_done_queue）。
+#
+# 一条记录的值：数字 = 还要再试、已试几次；"done" = 标签这件事已结束（打成了 / 确认不该打 / 到上限放弃）。
+# 结束时不能直接删记录：本机清理失败的 issue 不会记入 cleaned_issues，下一轮 § 4 会再入队一次，
+# 记录没了就从 0 重新数，「最多 30 轮」变成无限重试（代码复审第 1 轮）。所以结束时标 "done"，
+# 入队不覆盖已有值；等这个 issue 也记进 cleaned_issues（清理成功）时才删掉，见 closed_done_forget。
+#
+# 合并路径的两份 --remove 清单（agent-poll.sh § 3 的 PR、merged_issue_label 的 issue）各自不同，
+# 本次一行不动；这里是第三份，由全部派工标签加其余流程标签拼出，自定义派工标签自动包含。
+# 托管模式标签不是流程标签，不在清单里（daemon 永不摘它）。
+# 等前置标签（GitHub#157）也是流程标签：关成「已完成」的条目不该还挂着「等前置」。没配时为空、被滤掉
+closed_done_flow_labels() {
+    {
+        trigger_labels_all
+        printf '%s\n' \
+            "$LABEL_PENDING_HUMAN" \
+            "$LABEL_PENDING_PR" \
+            "$LABEL_AGENT_DOING" \
+            "${LABEL_PENDING_MERGE:-}" \
+            "${LABEL_PENDING_REQUESTER_BOT:-}" \
+            "${LABEL_PENDING_BLOCKED:-}"
+    } | awk 'NF && !seen[$0]++'
+}
+
+closed_done_enqueue() {
+    local issue="$1" state_file="$2" tmp
+    # 只收编号：列表接口异常时 § 4 读到的可能是别的字符串，进了队也永远清不掉
+    [[ "$issue" =~ ^[0-9]+$ ]] || return 0
+    tmp=$(mktemp)
+    jq --arg i "$issue" '.closed_done_queue = ((.closed_done_queue // {}) + {($i): ((.closed_done_queue // {})[$i] // 0)})' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
+# 一个 issue 处理一次。返回 0 = 定了（打成了 / 已确认不该打），出队；1 = 还没定，留队下轮再判。
+# 每次都先重读：入队到现在可能已被重新打开、改了关闭原因、标签被人动过。
+# 「打成了」= Done 已在、且每个该摘的流程标签都确认摘掉——只有 Done 不算（摘除失败时 Done 可能
+# 已经加上，下一轮还得补摘）。不用 gh_label_flip：它对每个摘除都 `|| true`，分不清
+# 「本来就不在」（404，算成功）和真失败；旧调用方保持原样。
+closed_done_label() {
+    local issue="$1" info st reason
+    info=$(run_gh_capture "读取 issue #$issue 状态" \
+        gh api "repos/$REPO/issues/$issue" \
+        --jq '{s: (.state // ""), r: (.state_reason // ""), pr: (.pull_request != null), l: [(.labels // [])[].name]}') \
+        || return 1
+    st=$(printf '%s' "$info" | jq -r '.s' 2>/dev/null) || st=""
+    reason=$(printf '%s' "$info" | jq -r '.r' 2>/dev/null) || reason=""
+    if [ "$(printf '%s' "$info" | jq -r '.pr' 2>/dev/null)" = true ]; then
+        return 0   # PR 不归这条路管（合并的 PR 由 § 3 打）
+    fi
+    case "$st" in
+        open)
+            log "  issue #$issue 已重新打开，不打 $LABEL_DONE"
+            return 0 ;;
+        closed) ;;
+        *)
+            log "  ⚠️ issue #$issue 状态读不出来（'$st'），下轮再判"
+            return 1 ;;
+    esac
+    case "$reason" in
+        completed) ;;
+        not_planned|duplicate)
+            log "  issue #$issue 以「$reason」关闭，不打 $LABEL_DONE"
+            return 0 ;;
+        *)
+            # 读不到 / 为空 / 没见过的原因：绝不当成「已完成」
+            log "  ⚠️ issue #$issue 关闭原因未知（'$reason'），不打标签，下轮再判"
+            return 1 ;;
+    esac
+
+    local L out ok=1 has_done=0 stale=()
+    printf '%s' "$info" | jq -e --arg d "$LABEL_DONE" '.l | index($d)' >/dev/null 2>&1 && has_done=1
+    while IFS= read -r L; do
+        [ -n "$L" ] || continue
+        printf '%s' "$info" | jq -e --arg L "$L" '.l | index($L)' >/dev/null 2>&1 && stale+=("$L")
+    done < <(closed_done_flow_labels)
+    if [ "$has_done" = 1 ] && [ ${#stale[@]} -eq 0 ]; then
+        return 0
+    fi
+    for L in "${stale[@]}"; do
+        if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$issue/labels/$(printf '%s' "$L" | jq -sRr @uri)" 2>&1); then
+            if printf '%s' "$out" | grep -q 'HTTP 404'; then continue; fi
+            log "  ⚠️ issue #$issue 摘 $L 失败: $out"
+            ok=0
+        fi
+    done
+    if [ "$has_done" = 0 ]; then
+        if ! out=$(gh_write api -X POST "repos/$REPO/issues/$issue/labels" -f "labels[]=$LABEL_DONE" 2>&1); then
+            log "  ⚠️ issue #$issue 加 $LABEL_DONE 失败: $out"
+            ok=0
+        fi
+    fi
+    [ "$ok" = 1 ] || return 1
+    log "  issue #$issue 手动关闭（已完成）→ $LABEL_DONE${stale[*]:+，摘掉 ${stale[*]}}"
+    return 0
+}
+
+# 标签这件事结束了：本机清理已经成功（记进 cleaned_issues，§ 4 不会再入队）就删记录，
+# 否则标 "done"，挡住下一轮的再次入队。
+closed_done_finish() {
+    local issue="$1" state_file="$2" tmp
+    tmp=$(mktemp)
+    jq --arg i "$issue" --argjson n "$issue" \
+        'if ((.cleaned_issues // []) | index($n)) != null then del(.closed_done_queue[$i])
+         else .closed_done_queue[$i] = "done" end' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
+# § 4 清理成功、记入 cleaned_issues 之后调：标签已结束的记录到此删掉；还在重试的留着。
+closed_done_forget() {
+    local issue="$1" state_file="$2" tmp
+    [[ "$issue" =~ ^[0-9]+$ ]] || return 0
+    tmp=$(mktemp)
+    jq --arg i "$issue" 'if (.closed_done_queue // {})[$i] == "done" then del(.closed_done_queue[$i]) else . end' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
+# 上限同 SUB_ISSUE_ROLLUP_MAX_TRIES（默认 30 轮）；放弃时记日志，要人手动补 Done。
+closed_done_drain() {
+    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" issue tries tmp
+    for issue in $(jq -r '(.closed_done_queue // {}) | to_entries[] | select(.value | type == "number") | .key' "$state_file" 2>/dev/null); do
+        [[ "$issue" =~ ^[0-9]+$ ]] || continue
+        tmp=$(mktemp)
+        if closed_done_label "$issue"; then
+            closed_done_finish "$issue" "$state_file"
+            continue
+        fi
+        tries=$(jq -r --arg i "$issue" '((.closed_done_queue // {})[$i] // 0) + 1' "$state_file")
+        if [ "$tries" -ge "$cap" ]; then
+            log "⚠️ issue #$issue 关闭后的 $LABEL_DONE 连续 $tries 次没打成 → 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
+            closed_done_finish "$issue" "$state_file"
+        else
+            jq --arg i "$issue" --argjson n "$tries" '.closed_done_queue[$i] = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        fi
+    done
+}
+
 # 汇总重试队列。merge 钩子只负责「入队」，每轮 poll 再「清队」：
 # 汇总所需的读写发生在 PR 已记入 cleaned_prs **之后**，那个 PR 下一轮不会再被扫到；
 # 要是汇总当场失败就算了，而这恰好是最后一个子项，父 issue 就永远等不到汇总。

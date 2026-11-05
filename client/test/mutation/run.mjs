@@ -370,6 +370,60 @@ const MUTATIONS = [
     from: "if (!existsSync(icnsPath)) throw new Error(`Info.plist names ${name}, but Contents/Resources/${name} does not exist`);",
     to: "if (!existsSync(icnsPath)) return { icon: name, entry: '', size: '', distance: 0, ok: true, img: decodePng(readFileSync(expectedPng)) };",
     expect: ['cannot read → refuses, never passes', 'exits 0 only on a match'] },
+  // ---- yellow bars can be closed (GitHub#153) ----
+  { what: '黄条标识带上「数据截至」时间：只是时间过去也当成新问题', file: 'src/renderer/warnings.ts',
+    from: "JSON.stringify([f.sourceKey, f.error ?? ''])", to: "JSON.stringify([f.sourceKey, f.error ?? '', f.dataFrom])",
+    expect: ['two states that differ only in "data as of"', 'only time passes (same failure, older data)'] },
+  { what: '离线标识带上「数据截至」时间', file: 'src/renderer/warnings.ts',
+    from: "if (sync.offline) out.offline = 'offline';", to: "if (sync.offline) out.offline = 'offline ' + sync.dataFrom;",
+    expect: ['two states that differ only in "data as of"'] },
+  { what: '同步不完整只认来源、不认失败原因', file: 'src/renderer/warnings.ts',
+    from: "JSON.stringify([f.sourceKey, f.error ?? ''])", to: 'f.sourceKey',
+    expect: ['the reason changes', 'sync incomplete: source + reason'] },
+  { what: '黄条不再出现时不清关闭记录（恢复后再失败、取消筛选后再筛选仍被收着）', file: 'src/renderer/warnings.ts',
+    from: 'if (current[k] !== undefined && current[k] === dismissed[k])', to: 'if (current[k] === undefined || current[k] === dismissed[k])',
+    expect: ['recovers, then fails the same way again', 'closed → filter cleared', 'sync incomplete closed → offline'] },
+  { what: '关一条黄条把别的也收起', file: 'src/renderer/warnings.ts',
+    from: 'return current[kind] !== undefined && dismissed[kind] !== current[kind];', to: 'return current[kind] !== undefined && Object.keys(dismissed).length === 0;',
+    expect: ['close → only that bar goes'] },
+  { what: '黄条不再出现时不清关闭记录（真窗口：恢复后再失败）', file: 'src/renderer/warnings.ts', runner: 'e2e',
+    from: 'if (current[k] !== undefined && current[k] === dismissed[k])', to: 'if (current[k] === undefined || current[k] === dismissed[k])',
+    expect: ['yellow bars: × closes one bar'] },
+  { what: '只在看板页对账：在设置页期间恢复 / 导入改了筛选都错过', file: 'src/renderer/App.tsx', runner: 'e2e',
+    from: 'const live = current ? reconcile(closed, current) : closed;', to: "const live = current && page === 'board' ? reconcile(closed, current) : closed;",
+    expect: ['yellow bars: × closes one bar', 'yellow bars: a closed "unsupported words" bar comes back'] },
+  { what: '切到设置页被当成取消筛选：只是来回切页，筛选黄条也重新弹出', file: 'src/renderer/App.tsx', runner: 'e2e',
+    from: 'warningIds(sync, parsed)', to: "warningIds(sync, page === 'board' ? parsed : parseFilter(''))",
+    expect: ['yellow bars: a closed "unsupported words" bar comes back'] },
+  // ---- the copy-the-command page in the dmg (GitHub#153) ----
+  { what: '剪贴板接口失败后不退回「选中 + 复制」', file: 'build/复制放行命令.html', runner: 'e2e',
+    from: "Promise.resolve(p).then(function () { say(COPIED, 'ok'); }, fallback);", to: "Promise.resolve(p).then(function () { say(COPIED, 'ok'); }, function () {});",
+    expect: ['clipboard API fails (reject)', 'both ways fail (older way refuses)'] },
+  { what: '旧写法复制失败也当成已复制', file: 'build/复制放行命令.html', runner: 'e2e',
+    from: "return document.execCommand('copy') === true;", to: "document.execCommand('copy');\n        return true;",
+    expect: ['both ways fail (older way refuses)'] },
+  { what: '网页里的命令和定义不一致', file: 'build/复制放行命令.html',
+    from: '<code id="cmd">xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"</code>', to: '<code id="cmd">xattr -d com.apple.quarantine "/Applications/Cavil Loop.app"</code>',
+    expect: ['build/复制放行命令.html carries exactly that command', 'copies the text of the element it shows'] },
+  { what: 'txt 里的命令和定义不一致', file: 'build/打不开时看这里.txt',
+    from: '"/Applications/Cavil Loop.app"', to: '"/Applications/CavilLoop.app"',
+    expect: ['build/打不开时看这里.txt carries exactly that command'] },
+  // review round 1 of PR #158: every copy of the command gets its own negative control
+  { what: '背景源文件里的命令和定义不一致', file: 'build/dmg-background.html',
+    from: '<code>xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"</code>', to: '<code>xattr -dr com.apple.quarantine "/Applications/Cavil-Loop.app"</code>',
+    expect: ['build/dmg-background.html carries exactly that command'] },
+  { what: '发版说明里的命令和定义不一致', file: 'RELEASE_NOTES.md',
+    from: '     xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"', to: '     xattr -dr com.apple.quarantine /Applications/Cavil\\ Loop.app"',
+    expect: ['RELEASE_NOTES.md carries exactly that command'] },
+  { what: 'Mac 检查脚本找的命令和定义不一致', file: 'scripts/mac-open-check.sh',
+    from: `grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$page"`, to: `grep -qF 'xattr -dr com.apple.quarantine "/Applications/CavilLoop.app"' "$page"`,
+    expect: ['scripts/mac-open-check.sh carries exactly that command'] },
+  { what: 'dmg 里列了一个不存在的文件', file: 'electron-builder.yml',
+    from: 'path: build/复制放行命令.html', to: 'path: build/复制命令.html',
+    expect: ['every listed file exists', 'lists the app, the Applications link and every extra file'] },
+  { what: 'dmg 里的图标放到窗口看不见的下方', file: 'electron-builder.yml',
+    from: '    - x: 240\n      y: 368', to: '    - x: 240\n      y: 440',
+    expect: ['every icon sits inside the visible part of the window'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
@@ -379,7 +433,7 @@ const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 180_000);
 function sandbox() {
   const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
   for (const d of ['src', 'test', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
-  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts']) cpSync(join(root, f), join(work, f));
+  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts', 'electron-builder.yml', 'RELEASE_NOTES.md']) cpSync(join(root, f), join(work, f));
   cpSync(join(root, 'scripts'), join(work, 'scripts'), { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
   return work;

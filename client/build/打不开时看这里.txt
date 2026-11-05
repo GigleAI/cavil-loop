@@ -11,4 +11,6 @@ Cavil Loop 第一次打开被 macOS 拦住时怎么办
 
    xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"
 
+   也可以双击 dmg 窗口里的「复制放行命令」，在浏览器里点「复制」，再到终端粘贴。
+
 之后就和普通 App 一样。每装一个新版本都要重新放行一次。

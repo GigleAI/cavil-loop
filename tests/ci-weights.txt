@@ -9,6 +9,7 @@ blocked-label 55
 cavil-names 3
 checkout-stale-alert 3
 claude-resume-model 8
+closed-issue-done 22
 comment-footer 11
 comment-layout-prompts 1
 conflict-check-prompts 1
@@ -34,7 +35,7 @@ prompt-compose 1
 reap-finished-workers 11
 release-auto 1
 repair-unit-links 7
-requester-bot 198
+requester-bot 206
 requester-bot-any-item 55
 retrospective-lessons 1
 review-verdict-emoji 1
