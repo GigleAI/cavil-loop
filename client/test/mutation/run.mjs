@@ -14,6 +14,10 @@
 // timeout, a missing report or "something else failed" all count as a failed
 // negative control — never as "went red as expected".
 //
+// Entries with `runner: 'e2e'` break the code the same way but run the named
+// Playwright tests against the real Electron window instead (`expect` names
+// test titles); the baseline then also runs those tests on an unmodified copy.
+//
 // Env for the runner's own tests: CLIENT_MUT_VITEST (vitest entry to run),
 // CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS).
 
@@ -34,8 +38,8 @@ const MUTATIONS = [
     from: 'return `iteration:${it.title}\\u0000${it.startDate}`;', to: 'return `iteration:${it.title}`;',
     expect: ['same title but different start date stays two columns'] },
   { what: '两个 Project 迭代不同时只出一张卡', file: 'src/data/board.ts',
-    from: 'for (const [col, titles] of byCol) place(placements, col, item, titles);',
-    to: 'for (const [col, titles] of [...byCol].slice(0, 1)) place(placements, col, item, titles);',
+    from: 'for (const [col, titles] of byCol) place(placements, col, item, titles, keysByCol.get(col));',
+    to: 'for (const [col, titles] of [...byCol].slice(0, 1)) place(placements, col, item, titles, keysByCol.get(col));',
     expect: ['one issue in two Projects with different iterations'] },
   { what: '没有迭代字段时不回退到按状态', file: 'src/data/board.ts',
     from: "if (mode === 'iteration' && !projects.some((p) => p.hasIterationField)) {", to: 'if (false) {',
@@ -224,6 +228,82 @@ const MUTATIONS = [
     from: "    oauth: '看应用的设置：开了「令牌过期」的会过期（本应用会自动续期）；没开的不过期，直到你撤销。',",
     to: "    oauth: '不过期，直到你撤销。',",
     expect: ['never states a fixed lifetime'] },
+  // ---- sub-item #138: viewing and changing items ----
+  { what: '合并不带看到的提交（PR 期间被推新提交也照合）', file: 'src/data/actions.ts',
+    from: '{ merge_method: action.method, sha: action.headOid }', to: '{ merge_method: action.method }',
+    expect: ['a new commit was pushed after the user looked', 'merge sends the method and the commit the user saw'] },
+  { what: '加标签改成整份覆盖（按缓存里的列表 PUT）', file: 'src/data/actions.ts',
+    from: '      await addLabel(client, it.repo, it.number, action.label);',
+    to: "      await client.rest('PUT', `${repoPath(it.repo)}/issues/${it.number}/labels`, { labels: [...it.labels.map((l) => l.name), action.label] });",
+    expect: ['add a label: POST with just that label'] },
+  { what: '删标签改成整份覆盖', file: 'src/data/actions.ts',
+    from: '      await removeLabel(client, it.repo, it.number, action.label);',
+    to: "      await client.rest('PUT', `${repoPath(it.repo)}/issues/${it.number}/labels`, { labels: it.labels.map((l) => l.name).filter((n) => n !== action.label) });",
+    expect: ['remove a label: DELETE of that one label'] },
+  { what: '仓库里没有同名里程碑时改用别的里程碑', file: 'src/data/actions.ts',
+    from: "const pick = same.find((m) => m.state === 'open') ?? same[0];", to: "const pick = same.find((m) => m.state === 'open') ?? same[0] ?? ms[0];",
+    expect: ['no milestone with that title in this repository'] },
+  { what: '看板不可写时照样发字段修改', file: 'src/data/actions.ts',
+    from: 'if (!p.viewerCanUpdate) throw', to: 'if (false) throw',
+    expect: ['a Project the account cannot change'] },
+  { what: '离线时照样发修改', file: 'src/main/controller.ts',
+    from: 'if (write && !writesEnabled(this.state.sync))', to: 'if (false)',
+    expect: ['offline round → every change refused before sending'] },
+  { what: '修改成功后不立即重读', file: 'src/main/controller.ts',
+    from: 'const problem = await this.refreshOne(c.client, c.session, repo, number);', to: 'const problem = null;',
+    expect: ['add a label: POST with just that label', 'iteration: set and clear', 'an item not on the board'] },
+  { what: '详情按时间正序（最老在上）', file: 'src/data/detail.ts',
+    from: 'const desc = (a: { at: string }, b: { at: string }) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0);',
+    to: 'const desc = (a: { at: string }, b: { at: string }) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0);',
+    expect: ['comments, reviews and their line comments by time', 'pure ordering'] },
+  { what: '详情只读评论第一页', file: 'src/data/detail.ts',
+    from: 'withComments = it.comments.pageInfo.hasNextPage;', to: 'withComments = false;',
+    expect: ['every page read'] },
+  { what: '合并方式不看仓库允许哪些', file: 'src/data/detail.ts',
+    from: "...(r.mergeCommitAllowed ? (['merge'] as const) : []),", to: "...(['merge'] as const),",
+    expect: ['only the methods the repository allows'] },
+  { what: '提交已变（409）不说明要刷新', file: 'src/data/actions.ts',
+    from: 'if (st === 409) return', to: 'if (false) return',
+    expect: ['a new commit was pushed after the user looked'] },
+  { what: '拖卡改了这一条所在的所有看板，而不只是这张卡所在的', file: 'src/data/board.ts',
+    from: '  for (const k of card.projectKeys) {', to: '  for (const k of it.projects.map((m) => m.projectKey)) {',
+    expect: ['a card in one Project changes only that one'] },
+  { what: '详情的 GitHub HTML 外层文字不转义', file: 'src/renderer/detailHtml.ts',
+    from: "return s.replace(/[&<>\"']/g,", to: "return s; void s.replace(/[&<>\"']/g,",
+    expect: ['names and paths around GitHub\'s HTML are escaped'] },
+  // ---- review round 1 of PR #150 ----
+  { what: '评审的逐行评论只读第一页（超过 100 条丢后面的）', file: 'src/data/detail.ts',
+    from: '    for (let n = 0; page.pageInfo.hasNextPage; n++) {', to: '    for (let n = 0; false; n++) {',
+    expect: ['a review with more than 100 line comments'] },
+  { what: '逐行评论后续页读失败时当作读完了', file: 'src/data/detail.ts',
+    from: '      const d: { node: { comments?: Page<GqlLineComment> } | null } = await client.graphql(REVIEW_COMMENTS_QUERY, { id: r.id, after: page.pageInfo.endCursor });',
+    to: '      let d: { node: { comments?: Page<GqlLineComment> } | null };\n      try { d = await client.graphql(REVIEW_COMMENTS_QUERY, { id: r.id, after: page.pageInfo.endCursor }); } catch { break; }',
+    expect: ['a review with more than 100 line comments'] },
+  { what: '详情图片放开到任何 HTTPS 地址', file: 'src/renderer/detailHtml.ts',
+    from: "img-src ${IMAGE_HOSTS.join(' ')} data:", to: 'img-src https: data:',
+    expect: ['images: only github.com / api.github.com load'] },
+  { what: '主进程请求过滤放行 github.com 以外的子域', file: 'src/platform/index.ts',
+    from: "(u.hostname === 'github.com' || u.hostname === 'api.github.com')", to: "u.hostname.endsWith('github.com')",
+    expect: ['the main-process request filter'] },
+  // ---- review round 2 of PR #150: every late answer of the detail panel, per call site (real Electron) ----
+  { what: '同一次打开里，慢的详情读取盖过改完后的重读', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '    const r = await api().loadDetail(itemKey);\n    if (!mine()) return;', to: '    const r = await api().loadDetail(itemKey);',
+    expect: ['leave an item and come back'] },
+  { what: '同一次打开里，改了字之后旧文字的预览照样显示', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: "              const r = await api().previewMarkdown(item.repo, reply);\n              if (!mine()) return;", to: "              const r = await api().previewMarkdown(item.repo, reply);",
+    expect: ['leave an item and come back'] },
+  { what: '离开再回来：旧的发送清掉新草稿（复审第 2 轮复现的情形）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '    if (!mine()) {\n      onLeftBehind', to: '    if (false) {\n      onLeftBehind',
+    expect: ['leave an item and come back', 'a slow answer for the item you left'] },
+  { what: '不按「打开」区分面板：换条目、回到原条目都沿用同一个面板', file: 'src/renderer/BoardView.tsx', runner: 'e2e',
+    from: '<DetailPanel key={opened.n} ', to: '<DetailPanel ',
+    expect: ['leave an item and come back'] },
+  { what: '同一次打开里，旧的读取盖过新的读取', file: 'src/renderer/openSession.ts',
+    from: "return () => open && seq[kind] === mine;", to: "return () => open;",
+    expect: ['within one opening a newer call of the same kind wins'] },
+  { what: '打开结束后仍收下它发出的回应', file: 'src/renderer/openSession.ts',
+    from: "      open = false;", to: "      void 0;",
+    expect: ['an opening that ended rejects every answer'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
@@ -233,7 +313,8 @@ const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 180_000);
 function sandbox() {
   const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
   for (const d of ['src', 'test']) cpSync(join(root, d), join(work, d), { recursive: true });
-  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts']) cpSync(join(root, f), join(work, f));
+  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts']) cpSync(join(root, f), join(work, f));
+  cpSync(join(root, 'scripts'), join(work, 'scripts'), { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
   return work;
 }
@@ -284,6 +365,63 @@ function runVitest(work) {
   });
 }
 
+/** Build the copy and run the Playwright tests whose title matches `grep`; resolve like runVitest. */
+function runE2e(work, grep) {
+  const out = join(work, 'e2e-report.json');
+  return new Promise((resolve) => {
+    let child;
+    try {
+      const cmd = `node scripts/build.mjs >/dev/null && node node_modules/@playwright/test/cli.js test --reporter=json -g ${JSON.stringify(grep)}`;
+      child = spawn('bash', ['-c', cmd], {
+        cwd: work,
+        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: out },
+        stdio: ['ignore', 'ignore', 'pipe'],
+        detached: true,
+      });
+    } catch (e) {
+      return resolve({ kind: 'broken', why: `启动失败：${e.message}` });
+    }
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, TIMEOUT_MS);
+    child.on('close', (status, signal) => {
+      clearTimeout(timer);
+      if (timedOut) return resolve({ kind: 'broken', why: `超时（${TIMEOUT_MS} ms）被终止` });
+      if (signal) return resolve({ kind: 'broken', why: `被信号 ${signal} 终止` });
+      if (!existsSync(out)) return resolve({ kind: 'broken', why: `没有产出界面测试报告（退出码 ${status}）：${stderr.trim().split('\n').slice(-3).join(' / ')}` });
+      let report;
+      try {
+        report = JSON.parse(readFileSync(out, 'utf8'));
+      } catch (e) {
+        return resolve({ kind: 'broken', why: `界面测试报告读不了：${e.message}` });
+      }
+      resolve({ kind: 'report', status, report });
+    });
+  });
+}
+
+/** Playwright JSON report -> [{ name, status }] with vitest-like statuses */
+function e2eResults(report) {
+  const out = [];
+  const walk = (suite) => {
+    for (const sp of suite.specs ?? []) out.push({ name: sp.title, status: sp.ok ? 'passed' : 'failed' });
+    for (const s of suite.suites ?? []) walk(s);
+  };
+  for (const s of report.suites ?? []) walk(s);
+  return out;
+}
+
+const E2E_GREPS = () => [...new Set(list.filter((m) => m.runner === 'e2e').flatMap((m) => m.expect))];
+const grepOf = (names) => names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+
 function results(report) {
   return report.testResults.flatMap((f) => f.assertionResults.map((a) => ({ name: a.fullName, status: a.status })));
 }
@@ -301,6 +439,15 @@ async function baseline() {
       return fail(`基线不是全绿（退出码 ${r.status}，${all.length} 条，未通过：${bad.map((t) => t.name).join('；') || '套件加载失败'}）`);
     }
     console.log(`✅ 基线：未改动的副本 ${passed} 条全过（另 ${all.length - passed} 条是负对照执行器的自检，子进程里不跑）`);
+    const names = E2E_GREPS();
+    if (names.length) {
+      const e = await runE2e(work, grepOf(names));
+      if (e.kind === 'broken') return fail(`界面基线没跑成：${e.why}`);
+      const got = e2eResults(e.report);
+      const missing = names.filter((n) => !got.some((t) => t.status === 'passed' && t.name.includes(n)));
+      if (e.status !== 0 || missing.length) return fail(`界面基线不是全绿（退出码 ${e.status}，没通过：${missing.join('；') || '其他'}）`);
+      console.log(`✅ 界面基线：未改动的副本 ${got.length} 条界面测试全过`);
+    }
     return 0;
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -326,10 +473,11 @@ async function one(i) {
       if (!text.includes(m.from)) return fail(`准备失败（原文不在 ${m.file}）：${m.what}`);
       writeFileSync(target, text.replace(m.from, m.to));
     }
-    const r = await runVitest(work);
+    const e2e = m.runner === 'e2e';
+    const r = e2e ? await runE2e(work, grepOf(m.expect)) : await runVitest(work);
     if (r.kind === 'broken') return fail(`执行异常（${r.why}）：${m.what}`);
     if (r.status === 0) return fail(`没变红：${m.what}`);
-    const all = results(r.report);
+    const all = e2e ? e2eResults(r.report) : results(r.report);
     const missing = m.expect.filter((name) => !all.some((t) => t.status === 'failed' && t.name.includes(name)));
     if (missing.length) {
       const failed = all.filter((t) => t.status === 'failed').map((t) => t.name);
