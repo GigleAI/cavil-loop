@@ -1,3 +1,7 @@
+// Test-only: the stored credential format, to seed a keychain and read it back.
+// The app's own implementation is src-tauri/crates/core/src/grant.rs; tests seed
+// with this one and the back end reads it, so the two are checked against each other.
+//
 // What a sign-in gives us, and how it is kept in the credential store.
 //
 // An OAuth App token (gho_…) never expires: only `accessToken` is set.

@@ -5,9 +5,13 @@
 // work for one step at a time:
 //
 //   node run.mjs --count        number of entries
+//   node run.mjs --check        every entry's source text is still there (nothing is run)
 //   node run.mjs --name I       one-line description of entry I
 //   node run.mjs --baseline     unmodified copy: the suite must pass
 //   node run.mjs --one I        entry I: the listed tests must fail by assertion
+//
+// Entries may break the Rust back end (src-tauri/…): every copy builds its own
+// back end (cargo, shared target dir MUT_TARGET) and the suites drive that one.
 //
 // "Red" is only accepted when vitest itself ran and reported a failed result
 // for every test named in `expect`. A runner that cannot start, a signal, a
@@ -69,150 +73,174 @@ const MUTATIONS = [
   { what: '连不上 GitHub 不算离线', file: 'src/data/sync.ts',
     from: "const offline = !(err instanceof GitHubError) || err.kind === 'network';", to: 'const offline = false;',
     expect: ['offline restart: cached content still shows'] },
-  { what: '缓存不覆盖旧快照', file: 'src/data/cache.ts',
+  { what: '缓存不覆盖旧快照', file: 'src-tauri/crates/core/src/store.rs',
     from: 'ON CONFLICT(source_key) DO UPDATE SET fetched_at = excluded.fetched_at, data = excluded.data',
     to: 'ON CONFLICT(source_key) DO NOTHING',
     expect: ['each successful round replaces the cached snapshot as a whole'] },
-  { what: '凭据被撤销后不回登录页', file: 'src/main/controller.ts',
-    from: 'if (session === this.session) await this.logout(REASON_REVOKED);', to: '',
+  { what: '凭据被撤销后不回登录页', file: 'src/app/controller.ts',
+    from: 'if (session === this.session && this.signedIn) await this.logout(REASON_REVOKED);',
+    to: '',
     expect: ['revoked credential → next sync returns to login'] },
-  { what: '授权等待中被当成失败', file: 'src/data/deviceFlow.ts',
-    from: "case 'authorization_pending':", to: "case 'authorization_pending_disabled':",
+  { what: '授权等待中被当成失败', file: 'src-tauri/crates/core/src/device.rs',
+    from: 'Some("authorization_pending") => continue,',
+    to: 'Some("authorization_pending_disabled") => continue,',
     expect: ['waiting → user approves'] },
-  { what: '用户拒绝授权不区分出来', file: 'src/data/deviceFlow.ts',
-    from: "case 'access_denied':", to: "case 'access_denied_disabled':",
+  { what: '用户拒绝授权不区分出来', file: 'src-tauri/crates/core/src/device.rs',
+    from: 'Some("access_denied") =>',
+    to: 'Some("access_denied_disabled") =>',
     expect: ['user denies on GitHub'] },
-  { what: '短码过期不区分出来', file: 'src/data/deviceFlow.ts',
-    from: "case 'expired_token':", to: "case 'expired_token_disabled':",
+  { what: '短码过期不区分出来', file: 'src-tauri/crates/core/src/device.rs',
+    from: 'Some("expired_token") =>',
+    to: 'Some("expired_token_disabled") =>',
     expect: ['code expires (GitHub says so)'] },
   { what: '分页链接指向别的主机也照跟', file: 'src/data/github.ts',
     from: 'if (new URL(url).origin !== origin) throw', to: 'if (false) throw',
     expect: ['refuses to follow a pagination link to another host'] },
-  { what: '钥匙串「找不到」被当成错误', file: 'src/platform/credentials.ts',
-    from: 'if (exitCode(err) === 44) return resolve(null);', to: '',
+  { what: '钥匙串「找不到」被当成错误', file: 'src-tauri/crates/core/src/platform.rs',
+    from: '            // 44 = errSecItemNotFound\n            Some(44) => Ok(None),\n',
+    to: '',
     expect: ['set → get → clear round-trips'] },
   // ---- review round 1 of PR #140 ----
-  { what: '退出登录不清缓存', file: 'src/main/controller.ts',
-    from: '    // Signing out forgets everything read with that account.\n    this.wipeCache();', to: '',
+  { what: '退出登录不清缓存',
+    edits: [
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '("viewer", Value::Null)],\n                true,', to: '("viewer", Value::Null)],\n                false,' },
+      { file: 'src/app/controller.ts', from: '    this.dropMirror();\n    this.cache.mirror(\'viewer\', null);', to: '    this.cache.mirror(\'viewer\', null);' },
+    ],
     expect: ['sign out → another account signs in'] },
-  { what: '缓存归属不记账（同账号离线重启也看不到缓存）', file: 'src/main/controller.ts',
-    from: 'if (login && login === this.owner) return;', to: 'return;',
+  { what: '缓存归属不记账（同账号离线重启也看不到缓存）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '        if login.is_some() && login.map(str::to_string) == st.owner {\n            return false;\n        }\n        st.owner',
+    to: '        if true {\n            return false;\n        }\n        st.owner',
     expect: ['offline restart: cached content still shows'] },
-  { what: '凭据在 App 外被换掉、离线重启时照显示旧缓存', file: 'src/main/controller.ts',
-    from: "if (this.deps.cache.getSetting<string | null>('cacheCredential', null) !== credentialTag(stored.accessToken)) {", to: 'if (false) {',
+  { what: '凭据在 App 外被换掉、离线重启时照显示旧缓存', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'if self.d.store.get_str(CACHE_CREDENTIAL).as_deref() != Some(tag.as_str()) {',
+    to: 'if false {',
     expect: ['restart offline: the other account'] },
-  { what: '旧账号的在途同步在换账号后照样写入', file: 'src/main/controller.ts',
-    from: 'if (session !== this.session) {', to: 'if (false) {',
+  { what: '旧账号的在途同步在换账号后照样写入（窗口和后台两道核对都去掉）',
+    edits: [
+      { file: 'src/app/controller.ts', from: '    if (session !== this.session) return over();\n    // GitHub says', to: '    // GitHub says' },
+      { file: 'src/app/controller.ts', from: '      if (a.stale || session !== this.session) return over();', to: '      if (false) return over();' },
+      { file: 'src/app/controller.ts', from: '    if (!(await this.writeSnapshots(session, accepted))) return over();', to: '    await this.writeSnapshots(session, accepted);' },
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '        if st.session != session || st.grant.is_none() {\n            return Ok(false);\n        }', to: '        if false {\n            return Ok(false);\n        }' },
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '        let mut st = self.lock();\n        if st.session != session {\n            return None;\n        }', to: '        let mut st = self.lock();\n        if false {\n            return None;\n        }' },
+    ],
     expect: ['a round still in flight for the first account'] },
-  { what: '同步途中删掉的来源被旧请求写回', file: 'src/main/controller.ts',
-    from: 'const accepted = round.replaced.filter((snap) => current(snap.sourceKey));', to: 'const accepted = round.replaced;',
+  { what: '同步途中删掉的来源被旧请求写回',
+    edits: [
+      { file: 'src/app/controller.ts', from: 'let accepted = round.replaced.filter((snap) => current(snap.sourceKey));', to: 'let accepted = round.replaced;' },
+      { file: 'src/app/controller.ts', from: '    accepted = accepted.filter((snap) => current(snap.sourceKey));\n', to: '' },
+    ],
     expect: ['removed → the finished old request'] },
-  { what: '删掉又重加的来源收下删除前发出的旧请求', file: 'src/main/controller.ts',
-    from: ' && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);', to: ';',
+  { what: '删掉又重加的来源收下删除前发出的旧请求', file: 'src/app/controller.ts',
+    from: ' && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);',
+    to: ';',
     expect: ['removed and added again'] },
   // ---- review round 2 of PR #140 ----
-  { what: '凭据写完不再核对登录是否已取消 / 已退出', file: 'src/main/controller.ts',
-    from: 'await this.deps.credentials.set(encodeGrant(grant));\n        if (run !== this.loginRun) {',
-    to: 'await this.deps.credentials.set(encodeGrant(grant));\n        if (false) {',
+  { what: '凭据写完不再核对登录是否已取消 / 已退出', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if run != me.lock().login_run {',
+    to: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if false {',
     expect: ['cancel while saving → nothing kept', 'sign out while saving → same'] },
-  { what: '凭据写入 / 删除不排队', file: 'src/main/controller.ts',
-    from: 'const p = this.credQueue.then(fn);', to: 'const p = fn();',
+  { what: '凭据写入 / 删除不排队', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '        let job: Shared<BoxFuture<\'static, T>> = async move {\n            prev.await;\n',
+    to: '        let job: Shared<BoxFuture<\'static, T>> = async move {\n            let _ = prev;\n',
     expect: ['an older login finishing its save after a newer login'] },
   // ---- GitHub App sign-in (maintainer's choice on PR #140) ----
-  { what: '快到期也不提前续期', file: 'src/main/controller.ts',
-    from: 'if (!force && (used.expiresAt == null || used.expiresAt - this.now() > REFRESH_MARGIN_MS)) return',
-    to: 'if (!force) return',
+  { what: '快到期也不提前续期', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'if !force && used.expires_at.map(|e| e - now > REFRESH_MARGIN_MS).unwrap_or(true) {',
+    to: 'if !force {',
     expect: ['near expiry: refreshed before the round'] },
-  { what: '续期不合并：同时触发会续两次', file: 'src/main/controller.ts',
-    from: 'if (this.refreshing) return this.refreshing;', to: '',
+  { what: '续期不合并：同时触发会续两次',
+    edits: [
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '        if let Some((_, f)) = existing {\n            return f.await;\n        }\n', to: '' },
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '                Some((_, f)) => Err(f),', to: '                Some((_, f)) if false => Err(f),' },
+    ],
     expect: ['two rounds asking at once share one refresh'] },
-  { what: 'GitHub 回 401 时不续期重试', file: 'src/main/controller.ts',
-    from: "if (r === 'ok') return this.runRound(true);", to: "if (r === 'ok') return;",
+  { what: 'GitHub 回 401 时不续期重试', file: 'src/app/controller.ts',
+    from: 'if (r === \'ok\') return this.runRound(true);',
+    to: 'if (r === \'ok\') return;',
     expect: ['GitHub says 401 before the deadline'] },
-  { what: '续期被拒当成连不上（不退出登录）', file: 'src/main/controller.ts',
-    from: "if (reason === 'expired') {",
-    to: 'if (false) {',
+  { what: '续期被拒当成连不上（不退出登录）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'Failure::Expired => self.sign_out_from_refresh(current(&self)),',
+    to: 'Failure::Expired => FreshOut::of(Fresh::Unreachable),',
     expect: ['GitHub refuses the refresh token'] },
-  { what: '连不上 GitHub 也当成续期被拒（误退出登录）', file: 'src/main/controller.ts',
-    from: "if (reason === 'unreachable') return 'unreachable';",
-    to: "if (reason === 'unreachable') { await signOut(); return 'ended'; }",
+  { what: '连不上 GitHub 也当成续期被拒（误退出登录）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'Failure::Unreachable => FreshOut::of(Fresh::Unreachable),',
+    to: 'Failure::Unreachable => self.sign_out_from_refresh(current(&self)),',
     expect: ['GitHub unreachable at refresh time'] },
-  { what: '续期后不更新缓存绑定（离线重启丢缓存）', file: 'src/main/controller.ts',
-    from: "if (this.owner && saved) this.deps.cache.setSetting('cacheCredential', credentialTag(next.accessToken));",
+  { what: '续期后不更新缓存绑定（离线重启丢缓存）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '            if st.owner.is_some() && saved {\n                let _ = me.d.store.set_setting(CACHE_CREDENTIAL, &Value::String(credential_tag(&next.access_token)));\n            }\n',
     to: '',
     expect: ['refreshed, then the round could not reach GitHub'] },
-  { what: '续期写完不再核对是否已退出', file: 'src/main/controller.ts',
-    from: "          if (!current()) return 'ended' as const;\n          // GitHub has rotated",
-    to: '          // GitHub has rotated',
+  { what: '续期写完不再核对是否已退出', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '            if !current(&me) {\n                return FreshOut::of(Fresh::Ended);\n            }\n            // GitHub has rotated',
+    to: '            // GitHub has rotated',
     expect: ['signing out while the refreshed token is being saved'] },
   // ---- review of 2026-11-05 17:48: refresh failure paths ----
-  { what: '续期接口 5xx 带错误正文时不先按「暂时不可用」处理', file: 'src/data/deviceFlow.ts',
-    from: 'if (res.status >= 500 || res.status === 429) {', to: 'if (false) {',
+  { what: '续期接口 5xx 带错误正文时不先按「暂时不可用」处理', file: 'src-tauri/crates/core/src/device.rs',
+    from: 'if res.status >= 500 || res.status == 429 {',
+    to: 'if false {',
     expect: ['HTTP 503 with an error body', 'HTTP 503 {"error":"temporarily_unavailable"} → unreachable'] },
-  { what: '续期的任何错误都当成凭据失效', file: 'src/data/deviceFlow.ts',
-    from: 'if (body.error === REFRESH_TOKEN_REJECTED) {', to: 'if (body.error) {',
+  { what: '续期的任何错误都当成凭据失效', file: 'src-tauri/crates/core/src/device.rs',
+    from: 'if body.get("error").and_then(|v| v.as_str()) == Some(REFRESH_TOKEN_REJECTED) {',
+    to: 'if truthy(body.get("error")) {',
     expect: ['an unknown refresh error', 'HTTP 400 {"error":"temporarily_unavailable"} → error'] },
-  { what: '续期后写钥匙串失败就整次作废（继续用已被 GitHub 作废的旧续期令牌）', file: 'src/main/controller.ts',
-    from: '          try {\n            await this.deps.credentials.set(encodeGrant(next));\n          } catch (e) {\n            saved = false;\n            this.unsavedProblem = (e as Error).message;\n          }',
-    to: '          await this.deps.credentials.set(encodeGrant(next));',
+  { what: '续期后写钥匙串失败就整次作废（继续用已被 GitHub 作废的旧续期令牌）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '                Err(e) => {\n                    me.lock().unsaved_problem = Some(e);\n                    false\n                }',
+    to: '                Err(e) => return FreshOut { result: Fresh::Failed, problem: Some(Some(e)), signed_out: None },',
     expect: ['refreshed but the keychain refuses the write'] },
-  { what: '没存进钥匙串的凭据之后不再重试保存', file: 'src/main/controller.ts',
-    from: '    await this.saveUnsavedGrant();\n', to: '',
+  { what: '没存进钥匙串的凭据之后不再重试保存', file: 'src/app/controller.ts',
+    from: '    await this.saveUnsaved();\n',
+    to: '',
     expect: ['refreshed but the keychain refuses the write'] },
-  { what: '登录轮询遇到 503 直接判登录失败', file: 'src/data/deviceFlow.ts',
-    from: "if (e instanceof DeviceFlowError && e.reason === 'unreachable') continue;", to: '',
+  { what: '登录轮询遇到 503 直接判登录失败', file: 'src-tauri/crates/core/src/device.rs',
+    from: '            Err(e) if e.reason == Failure::Unreachable => continue,\n',
+    to: '',
     expect: ['a device-flow poll that gets a 503'] },
-  { what: '整份换回本轮复审时的旧实现（提交 f533fcb：未处理拒绝 + 503 误清登录）', file: 'src/main/controller.ts',
-    fromGit: 'f533fcb78365446cce003ae5a28a4d088facb082:client/src/main/controller.ts',
-    expect: ['no unhandled rejection, still signed in', 'refreshed but the keychain refuses the write'] },
   // ---- review round 2 (18:10): sign-out when the keychain refuses the delete ----
-  { what: '退出时删凭据失败就把错误抛出去（页面停在看板）', file: 'src/main/controller.ts',
-    from: 'const err = await this.serialCredential(() => this.clearStored());\n    // only while',
-    to: 'const err = await this.serialCredential(async () => { await this.deps.credentials.clear(); return null as string | null; });\n    // only while',
+  { what: '退出时删凭据失败就把错误抛出去（页面停在看板）', file: 'src-tauri/crates/core/src/api.rs',
+    from: '        "logout" => Ok(json!({ "session": e.logout(a.get("reason").and_then(|v| v.as_str())) })),',
+    to: '        "logout" => {\n            let s = e.logout(a.get("reason").and_then(|v| v.as_str()));\n            if let (Some(m), _) = e.logout_result(s).await {\n                return Err(m);\n            }\n            Ok(json!({ "session": s }))\n        }',
     expect: ['manual sign-out + delete refused'] },
-  { what: '整份换回第 2 轮复审时的旧实现（提交 bdce2b2）', file: 'src/main/controller.ts',
-    fromGit: 'bdce2b2:client/src/main/controller.ts',
-    expect: ['manual sign-out + delete refused', 'refresh refused (bad_refresh_token) + delete refused'] },
   // ---- review (2026-11-05 19:49): quit while the sign-out's keychain delete is outstanding ----
-  { what: '退出登录不先撤销「可信」就去删钥匙串（删除没返回就关 App，重启自动登录旧账号）', file: 'src/main/controller.ts',
-    from: '    this.setTrusted([]);\n    // Signing out forgets', to: '    // Signing out forgets',
+  { what: '退出登录不先撤销「可信」就去删钥匙串（删除没返回就关 App，重启自动登录旧账号）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '                &[(TRUSTED, Value::Array(vec![])), (CACHE_OWNER, Value::Null)',
+    to: '                &[(CACHE_OWNER, Value::Null)',
     expect: ['sign-out, delete-pending, quit', 'sign-out, delete-queued, quit'] },
-  { what: '启动时不看可信名单，钥匙串里有什么就用什么', file: 'src/main/controller.ts',
-    from: 'if (!trusted.includes(credentialTag(stored.accessToken))) {', to: 'if (false) {',
+  { what: '启动时不看可信名单，钥匙串里有什么就用什么', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'if !self.trusted().contains(&tag) {',
+    to: 'if false {',
     expect: ['sign-out, delete-pending, quit', 'sign-out, delete-fails, quit', 'credential replaced outside the app: not trusted'] },
-  { what: '续期写钥匙串时不同时信任新旧两份（写一半关 App，重启被迫重新登录）', file: 'src/main/controller.ts',
-    from: '          this.setTrusted([used.accessToken, next.accessToken]);\n', to: '',
+  { what: '续期写钥匙串时不同时信任新旧两份（写一半关 App，重启被迫重新登录）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '            let _ = me.set_trusted(&[&used.access_token, &next.access_token]);\n',
+    to: '',
     expect: ['a refresh quits while writing the new token'] },
-  { what: '整份换回本轮复审时的旧实现（提交 1dc8219）', file: 'src/main/controller.ts',
-    fromGit: '1dc8219:client/src/main/controller.ts',
-    expect: ['sign-out, delete-pending, quit', 'sign-out, delete-queued, quit'] },
   // ---- review (2026-11-05 20:12): upgrade from a preview build ----
-  { what: '没有可信名单的旧数据就信任钥匙串里那份（旧版已退出的账号被登录回去）', file: 'src/main/controller.ts',
-    from: "this.deps.cache.getSetting<string[] | null>(TRUSTED, null) ?? [];", to: "this.deps.cache.getSetting<string[] | null>(TRUSTED, null) ?? [credentialTag(stored.accessToken)];",
+  { what: '没有可信名单的旧数据就信任钥匙串里那份（旧版已退出的账号被登录回去）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'if !self.trusted().contains(&tag) {',
+    to: 'if self.d.store.get_setting(TRUSTED).is_some() && !self.trusted().contains(&tag) {',
     expect: ['old build signed out but could not delete the credential', 'old build simply signed in'] },
-  { what: '整份换回本轮复审时的旧实现（提交 ad63b3f）', file: 'src/main/controller.ts',
-    fromGit: 'ad63b3f:client/src/main/controller.ts',
-    expect: ['old build signed out but could not delete the credential'] },
   // sign-in method (GitHub#140: OAuth app by default, GitHub App when chosen)
-  { what: '保存 Client ID 时不管选的是哪种，一律写进 OAuth 应用那一格', file: 'src/main/controller.ts',
-    from: 'this.deps.cache.setSetting(CLIENT_ID_SETTING[this.state.appKind], v);', to: 'this.deps.cache.setSetting(CLIENT_ID_SETTING.oauth, v);',
+  { what: '保存 Client ID 时不管选的是哪种，一律写进 OAuth 应用那一格', file: 'src/app/controller.ts',
+    from: 'this.cache.setSetting(CLIENT_ID_SETTING[this.state.appKind], v);',
+    to: 'this.cache.setSetting(CLIENT_ID_SETTING.oauth, v);',
     expect: ["the chosen kind's Client ID is the one sent to GitHub"] },
-  { what: '选 GitHub App 但没填 ID 时，偷偷改用内置的 OAuth 应用', file: 'src/main/controller.ts',
+  { what: '选 GitHub App 但没填 ID 时，偷偷改用内置的 OAuth 应用', file: 'src/app/controller.ts',
     from: "'github-app': deps.defaultGithubAppClientId ?? DEFAULT_GITHUB_APP_CLIENT_ID,",
     to: "'github-app': deps.defaultGithubAppClientId || (deps.defaultClientId ?? DEFAULT_OAUTH_CLIENT_ID),",
     expect: ['GitHub App has no built-in ID, so signing in says what to fill in and calls nothing'] },
-  { what: '切回 OAuth 应用后仍用 GitHub App 的 ID 登录', file: 'src/main/controller.ts',
+  { what: '切回 OAuth 应用后仍用 GitHub App 的 ID 登录', file: 'src/app/controller.ts',
     from: "    this.set({ appKind: k, ...this.clientIdFor(k) });", to: "    this.set({ appKind: k });",
     expect: ["switching back to the OAuth app sends the OAuth app's ID"] },
-  { what: '预览版存在唯一那格里的 GitHub App ID 被当成 OAuth 应用', file: 'src/main/controller.ts',
+  { what: '预览版存在唯一那格里的 GitHub App ID 被当成 OAuth 应用', file: 'src/app/controller.ts',
     from: "const kind: AppKind = /^Iv/.test(old) ? 'github-app' : 'oauth';", to: "const kind: AppKind = 'oauth';",
     expect: ['a preview build that saved a GitHub App ID in the single box'] },
-  { what: '续期用当前设置的 Client ID，而不是登录时那个应用的', file: 'src/main/controller.ts',
-    from: "this.deps.cache.getSetting<string>('grantClientId', '') || this.state.clientId;", to: 'this.state.clientId;',
+  { what: '续期用当前设置的 Client ID，而不是登录时那个应用的', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'let client_id = self.d.store.get_str(GRANT_CLIENT_ID).filter(|s| !s.is_empty()).unwrap_or(fallback);',
+    to: 'let client_id = fallback;',
     expect: ['changing the sign-in method while signed in: the token is still refreshed with the app it came from'] },
   // review round 1: what is said must match what is sent (GitHub#140)
-  { what: '登录前不核对 Client ID 和所选方式是否对得上', file: 'src/main/controller.ts',
-    from: '    if (mismatch) {', to: '    if (false) {',
+  { what: '登录前不核对 Client ID 和所选方式是否对得上', file: 'src/app/controller.ts',
+    from: '        clientIdKindProblem(this.state.appKind, clientId);',
+    to: '        null;',
     expect: ['a Client ID that does not match the chosen method is refused before anything is sent'] },
   { what: '选 GitHub App 却填了 OAuth 应用的 ID 也放行', file: 'src/shared/appKind.ts',
     from: "if (kind === 'github-app' && !isAppId) {", to: 'if (false) {',
@@ -253,13 +281,13 @@ const MUTATIONS = [
   { what: '合并来源时关联 PR 被仓库那份（读不到关联 PR）盖掉', file: 'src/data/merge.ts',
     from: 'const linked = newer.linkedPrs ?? older.linkedPrs;', to: 'const linked = newer.linkedPrs;',
     expect: ['linked pull requests come from the copy that knows them, even when the repository copy is newer'] },
-  { what: '导入覆盖用户在首次读取前改过的设置', file: 'src/main/controller.ts',
+  { what: '导入覆盖用户在首次读取前改过的设置', file: 'src/app/controller.ts',
     from: "if (!p.touched.includes(k)) (next as any)[k] = patch[k];", to: '(next as any)[k] = patch[k];',
     expect: ['a change made before the Project was first read wins over the import; a failed read imports later'] },
-  { what: '导入不只一次：之后每轮同步都重新导入，冲掉用户的修改', file: 'src/main/controller.ts',
-    from: '    this.deps.cache.setSetting(PENDING_IMPORTS, pending);\n    if (view !== this.state.view) {', to: '    if (view !== this.state.view) {',
+  { what: '导入不只一次：之后每轮同步都重新导入，冲掉用户的修改', file: 'src/app/controller.ts',
+    from: '    this.cache.setSetting(PENDING_IMPORTS, pending);\n    if (view !== this.state.view) {', to: '    if (view !== this.state.view) {',
     expect: ['the import happens once: a later change of the saved view on GitHub does not override the client'] },
-  { what: '删掉再加 Project 不重新导入', file: 'src/main/controller.ts',
+  { what: '删掉再加 Project 不重新导入', file: 'src/app/controller.ts',
     from: "    if (src.kind === 'project') {\n      const pending", to: "    if (false) {\n      const pending",
     expect: ['settings changed by the user survive a restart; removing and re-adding the Project imports again'] },
   { what: '字段名只认英文：中文 / 带引号的自定义字段落进文字搜索（筛成 0 条、没有黄条）', file: 'src/shared/filter.ts',
@@ -295,10 +323,10 @@ const MUTATIONS = [
   { what: '看板不可写时照样发字段修改', file: 'src/data/actions.ts',
     from: 'if (!p.viewerCanUpdate) throw', to: 'if (false) throw',
     expect: ['a Project the account cannot change'] },
-  { what: '离线时照样发修改', file: 'src/main/controller.ts',
+  { what: '离线时照样发修改', file: 'src/app/controller.ts',
     from: 'if (write && !writesEnabled(this.state.sync))', to: 'if (false)',
     expect: ['offline round → every change refused before sending'] },
-  { what: '修改成功后不立即重读', file: 'src/main/controller.ts',
+  { what: '修改成功后不立即重读', file: 'src/app/controller.ts',
     from: 'const problem = await this.refreshOne(c.client, c.session, repo, number);', to: 'const problem = null;',
     expect: ['add a label: POST with just that label', 'iteration: set and clear', 'an item not on the board'] },
   { what: '详情按时间正序（最老在上）', file: 'src/data/detail.ts',
@@ -331,9 +359,27 @@ const MUTATIONS = [
   { what: '详情图片放开到任何 HTTPS 地址', file: 'src/renderer/detailHtml.ts',
     from: "img-src ${IMAGE_HOSTS.join(' ')} data:", to: 'img-src https: data:',
     expect: ['images: only github.com / api.github.com load'] },
-  { what: '主进程请求过滤放行 github.com 以外的子域', file: 'src/platform/index.ts',
-    from: "(u.hostname === 'github.com' || u.hostname === 'api.github.com')", to: "u.hostname.endsWith('github.com')",
-    expect: ['the main-process request filter'] },
+  { what: '后台代发请求不核对地址（窗口能让它把凭据发去别处）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '        if !http::under(&self.d.endpoints.api, &req.url) {',
+    to: '        if false {',
+    expect: ['refused before anything is sent'] },
+  // ---- the back end holds the credential (GitHub#151) ----
+  { what: '后台把凭据交给窗口（登录状态里带上访问令牌）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '                "canRefresh": g.refresh_token.is_some(),',
+    to: '                "canRefresh": g.refresh_token.is_some(),\n                "token": g.access_token,',
+    expect: ['no command and no answer carries a token'] },
+  { what: '窗口带来的 Authorization 头盖过后台的凭据', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '                k != "authorization" && k != "cookie" && k != "host"',
+    to: '                k != "cookie" && k != "host"',
+    expect: ['a header the window sets cannot replace the credential'] },
+  { what: '窗口能写描述凭据的设置', file: 'src-tauri/crates/core/src/api.rs',
+    from: '            if SECRET_KEYS.contains(&k) {',
+    to: '            if false {',
+    expect: ['the settings that describe the credential cannot be written from the window'] },
+  { what: '地址核对按前缀比（/apix 也算 GitHub 接口）', file: 'src-tauri/crates/core/src/http.rs',
+    from: '    bp.is_empty() || up == bp || up.starts_with(&format!("{bp}/"))',
+    to: '    up.starts_with(bp)',
+    expect: ['refused before anything is sent'] },
   // ---- review round 2 of PR #150: every late answer of the detail panel, per call site (real Electron) ----
   { what: '同一次打开里，慢的详情读取盖过改完后的重读', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
     from: '    const r = await api().loadDetail(itemKey);\n    if (!mine()) return;', to: '    const r = await api().loadDetail(itemKey);',
@@ -379,21 +425,54 @@ const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 180_000);
 function sandbox() {
   const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
   for (const d of ['src', 'test', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
+  // the Rust back end's sources (not its build output: a mutated copy is built into MUT_TARGET)
+  cpSync(join(root, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
   for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts']) cpSync(join(root, f), join(work, f));
   cpSync(join(root, 'scripts'), join(work, 'scripts'), { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
   return work;
 }
 
+/** One cargo target dir for every mutated copy: dependencies are compiled once, only the mutated crates again. */
+const MUT_TARGET = process.env.CLIENT_MUT_CARGO_TARGET ?? join(root, 'src-tauri', 'target', 'mutation');
+
+/**
+ * The back end the copy's suites drive: the copy's own Rust sources, built.
+ * Resolves to the harness binary, or { broken } when it does not compile.
+ */
+function buildBackend(work) {
+  return new Promise((resolve) => {
+    const child = spawn('cargo', ['build', '-q', '-p', 'cavil-harness'], {
+      cwd: join(work, 'src-tauri'),
+      env: { ...process.env, CARGO_TARGET_DIR: MUT_TARGET },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
+    child.on('error', (e) => resolve({ broken: `后台编译启动失败：${e.message}` }));
+    child.on('close', (status) => {
+      const bin = join(MUT_TARGET, 'debug', 'cavil-harness');
+      if (status !== 0 || !existsSync(bin)) return resolve({ broken: `后台编译失败：${stderr.trim().split('\n').slice(-6).join(' / ')}` });
+      resolve({ bin });
+    });
+  });
+}
+
 /** Run vitest in `work`; resolve to { kind: 'report', status, report } or { kind: 'broken', why }. */
-function runVitest(work) {
+async function runVitest(work) {
+  const be = await buildBackend(work);
+  if (be.broken) return { kind: 'broken', why: be.broken };
+  return runVitestWith(work, be.bin);
+}
+
+function runVitestWith(work, harness) {
   const out = join(work, 'vitest-report.json');
   return new Promise((resolve) => {
     let child;
     try {
       child = spawn(process.execPath, [VITEST, 'run', '--reporter=json', `--outputFile=${out}`], {
         cwd: work,
-        env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_REPO: root },
+        env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_REPO: root, CAVIL_HARNESS: harness },
         stdio: ['ignore', 'ignore', 'pipe'],
         detached: true, // own process group: a timeout kills vitest's workers too
       });
@@ -525,7 +604,6 @@ async function one(i) {
   if (!m) return fail(`没有第 ${i} 项`);
   const work = sandbox();
   try {
-    const target = join(work, m.file);
     if (m.fromGit) {
       let old;
       try {
@@ -533,11 +611,15 @@ async function one(i) {
       } catch (e) {
         return fail(`准备失败（取不到 ${m.fromGit}）：${m.what}`);
       }
-      writeFileSync(target, old);
+      writeFileSync(join(work, m.file), old);
     } else {
-      const text = readFileSync(target, 'utf8');
-      if (!text.includes(m.from)) return fail(`准备失败（原文不在 ${m.file}）：${m.what}`);
-      writeFileSync(target, text.replace(m.from, m.to));
+      // one edit (`file` / `from` / `to`) or several (`edits`), applied in order
+      for (const ed of m.edits ?? [{ file: m.file, from: m.from, to: m.to }]) {
+        const target = join(work, ed.file);
+        const text = readFileSync(target, 'utf8');
+        if (!text.includes(ed.from)) return fail(`准备失败（原文不在 ${ed.file}）：${m.what}`);
+        writeFileSync(target, text.replace(ed.from, ed.to));
+      }
     }
     const e2e = m.runner === 'e2e';
     const r = e2e ? await runE2e(work, grepOf(m.expect)) : await runVitest(work);
@@ -561,8 +643,26 @@ function fail(msg) {
   return 1;
 }
 
+/** Every entry's source text is still there (no copying, no running). */
+function check() {
+  let bad = 0;
+  list.forEach((m, i) => {
+    if (m.fromGit) return;
+    for (const ed of m.edits ?? [{ file: m.file, from: m.from }]) {
+      const text = existsSync(join(root, ed.file)) ? readFileSync(join(root, ed.file), 'utf8') : '';
+      if (!text.includes(ed.from)) {
+        bad++;
+        console.log(`❌ ${i} 原文不在 ${ed.file}：${m.what}`);
+      }
+    }
+  });
+  if (!bad) console.log(`✅ ${list.length} 项的原文都在`);
+  return bad ? 1 : 0;
+}
+
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === '--count') console.log(list.length);
+else if (cmd === '--check') process.exitCode = check();
 else if (cmd === '--name') console.log(list[Number(arg)]?.what ?? '');
 else if (cmd === '--baseline') process.exitCode = await baseline();
 else if (cmd === '--one') process.exitCode = await one(Number(arg));

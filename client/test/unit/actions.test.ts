@@ -6,9 +6,11 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { Controller } from '../../src/main/controller';
-import { Cache } from '../../src/data/cache';
-import { FileStore } from '../../src/platform/credentials';
+import { Controller } from '../../src/app/controller';
+import { Cache } from '../support/cache';
+import { FileStore } from '../support/credentials';
+import { HarnessBackend } from '../support/harness';
+import type { Backend } from '../../src/backend/backend';
 import { buildTimeline } from '../../src/data/detail';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { headOidOf } from '../fake-github/writes';
@@ -28,6 +30,7 @@ let fake: FakeGitHub;
 let dir: string;
 let caches: Cache[] = [];
 let controllers: Controller[] = [];
+let backends: HarnessBackend[] = [];
 
 /**
  * The state these tests are written against: #137–#139 carry exactly
@@ -47,23 +50,22 @@ const nextNumber = () =>
     ...fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes.map((n: any) => n.content?.number ?? 0)),
   );
 
-async function ready(opts: { project?: boolean; repo?: boolean; fetch?: (u: string, init?: RequestInit) => Promise<Response> } = {}) {
+async function ready(opts: { project?: boolean; repo?: boolean; intercept?: (cmd: string, args: any) => unknown } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
   const credentials = new FileStore(join(dir, 'cred'));
   await credentials.set(FAKE_TOKEN);
   const clock = { t: FIXTURE_NOW };
-  const c = new Controller({
-    credentials,
-    endpoints: { api: fake.api, web: fake.web },
-    cache,
-    now: () => clock.t,
-    sleep: async () => {},
-    openExternal: async () => {},
-    defaultClientId: '',
-    ...(opts.fetch ? { fetch: opts.fetch } : {}),
-  });
+  const endpoints = { api: fake.api, web: fake.web };
+  // the real back end (Rust) as a child process
+  const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
+  backends.push(harness);
+  // a test may answer a command itself (e.g. "no connection" for one request) before it reaches the back end
+  const backend: Backend = opts.intercept
+    ? { call: async (cmd, args) => (opts.intercept!(cmd, args) as any) ?? harness.call(cmd, args) }
+    : harness;
+  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
   controllers.push(c);
   for (const n of [137, 138, 139]) pinLabels(n, ['pending/human']);
   if (opts.project !== false) c.addSource(PROJECT_URL);
@@ -109,9 +111,11 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   for (const c of controllers) c.stopTimer();
+  await Promise.all(backends.map((b) => b.close()));
   for (const c of caches) c.close();
   caches = [];
   controllers = [];
+  backends = [];
   await fake.close();
 });
 
@@ -463,14 +467,14 @@ describe('an edit keeps the Project order (#137 × #138)', () => {
 describe('re-read after a change', () => {
   it('re-read fails: the change stands, the user is told, the next round catches up', async () => {
     let refreshCalls = 0;
-    // fail exactly the one-item re-read (GraphQL CavilItemRefresh)
+    // fail exactly the one-item re-read (GraphQL CavilItemRefresh): the back end says "no connection"
     const { c } = await ready({
-      fetch: async (u, init) => {
-        if (typeof init?.body === 'string' && init.body.includes('CavilItemRefresh')) {
+      intercept: (cmd, args) => {
+        if (cmd === 'request' && typeof args?.body === 'string' && args.body.includes('CavilItemRefresh')) {
           refreshCalls++;
-          throw new Error('socket hang up');
+          return { error: 'network', message: 'socket hang up' };
         }
-        return fetch(u, init);
+        return undefined;
       },
     });
     const r = await c.act({ kind: 'addLabel', key: K(138), label: 'bug' });

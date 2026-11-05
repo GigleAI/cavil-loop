@@ -31,7 +31,8 @@ const USER_AGENT = 'cavil-loop-client';
 export class GitHubClient {
   constructor(
     private readonly endpoints: Endpoints,
-    private readonly token: string,
+    /** null: the request goes through the back end, which adds the credential (the window never has it) */
+    private readonly token: string | null,
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
@@ -41,7 +42,7 @@ export class GitHubClient {
       res = await this.fetchImpl(url, {
         ...init,
         headers: {
-          Authorization: `Bearer ${this.token}`,
+          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
           'User-Agent': USER_AGENT,
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',

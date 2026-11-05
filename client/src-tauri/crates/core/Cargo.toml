@@ -1,0 +1,17 @@
+[package]
+name = "cavil-core"
+version = "0.3.0"
+edition.workspace = true
+license.workspace = true
+description = "Cavil Loop client back end: sign-in, credential lifecycle, local store, GitHub request proxy"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+futures = { version = "0.3", default-features = false, features = ["std"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+url = "2"
+ureq = { version = "3", default-features = false, features = ["rustls"] }

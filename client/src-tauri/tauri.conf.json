@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cavil Loop",
+  "version": "0.3.0",
+  "identifier": "dev.luosky.cavil-loop.client",
+  "mainBinaryName": "Cavil Loop",
+  "build": {
+    "frontendDist": "../dist/renderer",
+    "beforeBuildCommand": "node scripts/build.mjs"
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: https://github.com https://api.github.com",
+        "connect-src": "ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      },
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "freezePrototype": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "DeveloperTool",
+    "copyright": "MIT",
+    "icon": ["../build/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
+      "hardenedRuntime": false
+    }
+  }
+}

@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GitHubClient, GitHubError, nextLink } from '../../src/data/github';
-import { isAllowedExternal, createPlatform } from '../../src/platform';
-import { assertTokenShape } from '../../src/platform/credentials';
+import { join } from 'node:path';
+import { HarnessBackend } from '../support/harness';
+import { MemoryStore } from '../support/credentials';
+import { tempDir } from './helpers';
 
 describe('GitHub client boundaries', () => {
   it('parses Link headers', () => {
@@ -37,35 +39,47 @@ describe('GitHub client boundaries', () => {
   });
 });
 
-describe('platform layer', () => {
-  it('only github.com (or the loopback test server) may be opened in the browser', () => {
+// The platform rules live in the back end (src-tauri/crates/core): asked through the test harness.
+describe('platform layer (back end)', () => {
+  let b: HarnessBackend;
+  beforeAll(() => {
+    b = new HarnessBackend({ db: join(tempDir(), 'cache.sqlite'), endpoints: { api: 'http://127.0.0.1:1/api', web: 'http://127.0.0.1:1/web' }, credentials: new MemoryStore() });
+  });
+  afterAll(() => b.close());
+  const isAllowedExternal = (url: string, ep: { api: string; web: string }) => b.call<boolean>('test.allowedExternal', { url, ...ep });
+  const select = (os: string, env: Record<string, string>) => b.call<{ api?: string; web?: string; store?: string; error?: string }>('test.selectPlatform', { os, env });
+
+  it('only github.com (or the loopback test server) may be opened in the browser', async () => {
     const prod = { api: 'https://api.github.com', web: 'https://github.com' };
-    expect(isAllowedExternal('https://github.com/login/device', prod)).toBe(true);
-    expect(isAllowedExternal('https://github.com.evil.example/', prod)).toBe(false);
-    expect(isAllowedExternal('http://127.0.0.1:9/web/login/device', prod)).toBe(false);
-    expect(isAllowedExternal('javascript:alert(1)', prod)).toBe(false);
-    expect(isAllowedExternal('http://127.0.0.1:9/web/x', { api: 'http://127.0.0.1:9/api', web: 'http://127.0.0.1:9/web' })).toBe(true);
+    expect(await isAllowedExternal('https://github.com/login/device', prod)).toBe(true);
+    expect(await isAllowedExternal('https://github.com.evil.example/', prod)).toBe(false);
+    expect(await isAllowedExternal('http://127.0.0.1:9/web/login/device', prod)).toBe(false);
+    expect(await isAllowedExternal('javascript:alert(1)', prod)).toBe(false);
+    expect(await isAllowedExternal('http://127.0.0.1:9/web/x', { api: 'http://127.0.0.1:9/api', web: 'http://127.0.0.1:9/web' })).toBe(true);
   });
 
-  it('test endpoints are only honoured in test mode and only on loopback', () => {
-    const open = async () => {};
-    const off = createPlatform({ platform: 'linux', env: { CAVIL_CLIENT_TEST_API: 'http://127.0.0.1:1/api', CAVIL_CLIENT_TEST_WEB: 'http://127.0.0.1:1/web' }, shellOpen: open });
-    expect(off.endpoints.api).toBe('https://api.github.com');
-    expect(() =>
-      createPlatform({ platform: 'linux', env: { CAVIL_CLIENT_TEST_MODE: '1', CAVIL_CLIENT_TEST_API: 'http://evil.example/api', CAVIL_CLIENT_TEST_WEB: 'http://127.0.0.1:1/web' }, shellOpen: open }),
-    ).toThrow();
-    const on = createPlatform({ platform: 'linux', env: { CAVIL_CLIENT_TEST_MODE: '1', CAVIL_CLIENT_TEST_API: 'http://127.0.0.1:1/api', CAVIL_CLIENT_TEST_WEB: 'http://127.0.0.1:1/web' }, shellOpen: open });
-    expect(on.endpoints).toEqual({ api: 'http://127.0.0.1:1/api', web: 'http://127.0.0.1:1/web' });
+  it('a link the window asks to open that is not GitHub: refused, nothing opened', async () => {
+    const opened: string[] = [];
+    const h = new HarnessBackend({ db: join(tempDir(), 'cache.sqlite'), endpoints: { api: 'http://127.0.0.1:9/api', web: 'http://127.0.0.1:9/web' }, credentials: new MemoryStore(), opened });
+    await expect(h.call('openExternal', { url: 'https://example.com/' })).rejects.toThrow(/不打开非 GitHub 链接/);
+    await h.call('openExternal', { url: 'https://github.com/GigleAI/cavil-loop' });
+    expect(opened).toEqual(['https://github.com/GigleAI/cavil-loop']);
+    await h.close();
   });
 
-  it('macOS uses the keychain store; other platforms keep the token for this run only', () => {
-    const open = async () => {};
-    expect(createPlatform({ platform: 'darwin', env: {}, shellOpen: open }).credentials.constructor.name).toBe('MacKeychainStore');
-    expect(createPlatform({ platform: 'linux', env: {}, shellOpen: open }).credentials.persistent).toBe(false);
+  it('test endpoints are only honoured in test mode and only on loopback', async () => {
+    const off = await select('linux', { CAVIL_CLIENT_TEST_API: 'http://127.0.0.1:1/api', CAVIL_CLIENT_TEST_WEB: 'http://127.0.0.1:1/web' });
+    expect(off.api).toBe('https://api.github.com');
+    expect((await select('linux', { CAVIL_CLIENT_TEST_MODE: '1', CAVIL_CLIENT_TEST_API: 'http://evil.example/api', CAVIL_CLIENT_TEST_WEB: 'http://127.0.0.1:1/web' })).error).toBeTruthy();
+    const on = await select('linux', { CAVIL_CLIENT_TEST_MODE: '1', CAVIL_CLIENT_TEST_API: 'http://127.0.0.1:1/api', CAVIL_CLIENT_TEST_WEB: 'http://127.0.0.1:1/web' });
+    expect({ api: on.api, web: on.web }).toEqual({ api: 'http://127.0.0.1:1/api', web: 'http://127.0.0.1:1/web' });
+    // a credential file is a test-mode thing only
+    expect((await select('macos', { CAVIL_CLIENT_TEST_CREDENTIAL_FILE: '/tmp/x' })).store).toBe('keychain');
+    expect((await select('linux', { CAVIL_CLIENT_TEST_MODE: '1', CAVIL_CLIENT_TEST_CREDENTIAL_FILE: '/tmp/x' })).store).toBe('file:/tmp/x');
   });
 
-  it('token shape is checked before it reaches the keychain command line', () => {
-    expect(() => assertTokenShape('gho_' + 'a'.repeat(36))).not.toThrow();
-    expect(() => assertTokenShape('gho_x" -w "evil')).toThrow();
+  it('macOS uses the keychain store; other platforms keep the token for this run only', async () => {
+    expect((await select('macos', {})).store).toBe('keychain');
+    expect((await select('linux', {})).store).toBe('memory');
   });
 });

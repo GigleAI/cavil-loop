@@ -3,3 +3,6 @@ dist/
 release/
 test-results/
 playwright-report/
+# Rust build output (src-tauri: the app and its back end)
+src-tauri/target/
+src-tauri/gen/
