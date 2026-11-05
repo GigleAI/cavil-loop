@@ -478,7 +478,7 @@ Design notes:
 - Other text-only exits (questions, clarifications, blocked runs, security stops) still go
   straight to `pending/human`; gating those would burn a review on "I have a question for
   you" and slow down your answer
-- `REVIEW_MAX_ROUNDS` (default 3) exists solely to stop two agents from bouncing work
+- `REVIEW_MAX_ROUNDS` (default 6) exists solely to stop two agents from bouncing work
   forever, so **a review a human explicitly asked for is exempt**: a human applying the review
   label bypasses the cap outright, and a human comment restarts the count from that comment.
   Detection compares the actor against `gh api user`, so no guessing at comment intent. Rounds

@@ -257,7 +257,7 @@ REVIEW_MODEL="${REVIEW_MODEL:-}"
 #   - 人留了评论 → 计数从那条评论之后重新算，自然归零
 # 轮次不存 state.json，而是数 issue/PR 上「最近一次人工动作之后」的
 # <!-- codex-review-round --> 标记：看板上看得见、state 丢了也不会重置。
-REVIEW_MAX_ROUNDS="${REVIEW_MAX_ROUNDS:-3}"
+REVIEW_MAX_ROUNDS="${REVIEW_MAX_ROUNDS:-6}"
 # 「worker 产出可评审的东西之后该翻到哪个 label」——模板一律用这个占位符，**不要**直接写
 # ${LABEL_PENDING_REVIEW}。启用 review 关卡时它是 pending/review，没启用时自动退化成
 # pending/human，于是同一份模板在开/关两种配置下都对，review 环节变成纯配置开关。
@@ -3269,7 +3269,7 @@ autopilot_to_human() {   # <state_file> <PR> <原因> [怎么继续]
 autopilot_to_worker() {   # <state_file> <PR> <issue 编号> <原因>
     local sf="$1" pr="$2" issue_n="$3" reason="$4" bounces cap label body
     bounces=$(autopilot_state_get "$sf" '.prs[$p].bounces // 0' --arg p "$pr"); bounces="${bounces:-0}"
-    cap="${REVIEW_MAX_ROUNDS:-3}"
+    cap="${REVIEW_MAX_ROUNDS:-6}"
     if [ "$bounces" -ge "$cap" ] 2>/dev/null; then
         autopilot_to_human "$sf" "$pr" "合并前检查已经打回 worker $bounces 次（上限 $cap），这次仍没过：$reason"
         return 0
