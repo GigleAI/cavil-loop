@@ -14,6 +14,10 @@
 // timeout, a missing report or "something else failed" all count as a failed
 // negative control — never as "went red as expected".
 //
+// Entries with `runner: 'e2e'` break the code the same way but run the named
+// Playwright tests against the real Electron window instead (`expect` names
+// test titles); the baseline then also runs those tests on an unmodified copy.
+//
 // Env for the runner's own tests: CLIENT_MUT_VITEST (vitest entry to run),
 // CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS).
 
@@ -281,6 +285,25 @@ const MUTATIONS = [
   { what: '主进程请求过滤放行 github.com 以外的子域', file: 'src/platform/index.ts',
     from: "(u.hostname === 'github.com' || u.hostname === 'api.github.com')", to: "u.hostname.endsWith('github.com')",
     expect: ['the main-process request filter'] },
+  // ---- review round 2 of PR #150: every late answer of the detail panel, per call site (real Electron) ----
+  { what: '同一次打开里，慢的详情读取盖过改完后的重读', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '    const r = await api().loadDetail(itemKey);\n    if (!mine()) return;', to: '    const r = await api().loadDetail(itemKey);',
+    expect: ['leave an item and come back'] },
+  { what: '同一次打开里，改了字之后旧文字的预览照样显示', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: "              const r = await api().previewMarkdown(item.repo, reply);\n              if (!mine()) return;", to: "              const r = await api().previewMarkdown(item.repo, reply);",
+    expect: ['leave an item and come back'] },
+  { what: '离开再回来：旧的发送清掉新草稿（复审第 2 轮复现的情形）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '    if (!mine()) {\n      onLeftBehind', to: '    if (false) {\n      onLeftBehind',
+    expect: ['leave an item and come back', 'a slow answer for the item you left'] },
+  { what: '不按「打开」区分面板：换条目、回到原条目都沿用同一个面板', file: 'src/renderer/BoardView.tsx', runner: 'e2e',
+    from: '<DetailPanel key={opened.n} ', to: '<DetailPanel ',
+    expect: ['leave an item and come back'] },
+  { what: '同一次打开里，旧的读取盖过新的读取', file: 'src/renderer/openSession.ts',
+    from: "return () => open && seq[kind] === mine;", to: "return () => open;",
+    expect: ['within one opening a newer call of the same kind wins'] },
+  { what: '打开结束后仍收下它发出的回应', file: 'src/renderer/openSession.ts',
+    from: "      open = false;", to: "      void 0;",
+    expect: ['an opening that ended rejects every answer'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
@@ -290,7 +313,8 @@ const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 180_000);
 function sandbox() {
   const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
   for (const d of ['src', 'test']) cpSync(join(root, d), join(work, d), { recursive: true });
-  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts']) cpSync(join(root, f), join(work, f));
+  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts']) cpSync(join(root, f), join(work, f));
+  cpSync(join(root, 'scripts'), join(work, 'scripts'), { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
   return work;
 }
@@ -341,6 +365,63 @@ function runVitest(work) {
   });
 }
 
+/** Build the copy and run the Playwright tests whose title matches `grep`; resolve like runVitest. */
+function runE2e(work, grep) {
+  const out = join(work, 'e2e-report.json');
+  return new Promise((resolve) => {
+    let child;
+    try {
+      const cmd = `node scripts/build.mjs >/dev/null && node node_modules/@playwright/test/cli.js test --reporter=json -g ${JSON.stringify(grep)}`;
+      child = spawn('bash', ['-c', cmd], {
+        cwd: work,
+        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: out },
+        stdio: ['ignore', 'ignore', 'pipe'],
+        detached: true,
+      });
+    } catch (e) {
+      return resolve({ kind: 'broken', why: `启动失败：${e.message}` });
+    }
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, TIMEOUT_MS);
+    child.on('close', (status, signal) => {
+      clearTimeout(timer);
+      if (timedOut) return resolve({ kind: 'broken', why: `超时（${TIMEOUT_MS} ms）被终止` });
+      if (signal) return resolve({ kind: 'broken', why: `被信号 ${signal} 终止` });
+      if (!existsSync(out)) return resolve({ kind: 'broken', why: `没有产出界面测试报告（退出码 ${status}）：${stderr.trim().split('\n').slice(-3).join(' / ')}` });
+      let report;
+      try {
+        report = JSON.parse(readFileSync(out, 'utf8'));
+      } catch (e) {
+        return resolve({ kind: 'broken', why: `界面测试报告读不了：${e.message}` });
+      }
+      resolve({ kind: 'report', status, report });
+    });
+  });
+}
+
+/** Playwright JSON report -> [{ name, status }] with vitest-like statuses */
+function e2eResults(report) {
+  const out = [];
+  const walk = (suite) => {
+    for (const sp of suite.specs ?? []) out.push({ name: sp.title, status: sp.ok ? 'passed' : 'failed' });
+    for (const s of suite.suites ?? []) walk(s);
+  };
+  for (const s of report.suites ?? []) walk(s);
+  return out;
+}
+
+const E2E_GREPS = () => [...new Set(list.filter((m) => m.runner === 'e2e').flatMap((m) => m.expect))];
+const grepOf = (names) => names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+
 function results(report) {
   return report.testResults.flatMap((f) => f.assertionResults.map((a) => ({ name: a.fullName, status: a.status })));
 }
@@ -358,6 +439,15 @@ async function baseline() {
       return fail(`基线不是全绿（退出码 ${r.status}，${all.length} 条，未通过：${bad.map((t) => t.name).join('；') || '套件加载失败'}）`);
     }
     console.log(`✅ 基线：未改动的副本 ${passed} 条全过（另 ${all.length - passed} 条是负对照执行器的自检，子进程里不跑）`);
+    const names = E2E_GREPS();
+    if (names.length) {
+      const e = await runE2e(work, grepOf(names));
+      if (e.kind === 'broken') return fail(`界面基线没跑成：${e.why}`);
+      const got = e2eResults(e.report);
+      const missing = names.filter((n) => !got.some((t) => t.status === 'passed' && t.name.includes(n)));
+      if (e.status !== 0 || missing.length) return fail(`界面基线不是全绿（退出码 ${e.status}，没通过：${missing.join('；') || '其他'}）`);
+      console.log(`✅ 界面基线：未改动的副本 ${got.length} 条界面测试全过`);
+    }
     return 0;
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -383,10 +473,11 @@ async function one(i) {
       if (!text.includes(m.from)) return fail(`准备失败（原文不在 ${m.file}）：${m.what}`);
       writeFileSync(target, text.replace(m.from, m.to));
     }
-    const r = await runVitest(work);
+    const e2e = m.runner === 'e2e';
+    const r = e2e ? await runE2e(work, grepOf(m.expect)) : await runVitest(work);
     if (r.kind === 'broken') return fail(`执行异常（${r.why}）：${m.what}`);
     if (r.status === 0) return fail(`没变红：${m.what}`);
-    const all = results(r.report);
+    const all = e2e ? e2eResults(r.report) : results(r.report);
     const missing = m.expect.filter((name) => !all.some((t) => t.status === 'failed' && t.name.includes(name)));
     if (missing.length) {
       const failed = all.filter((t) => t.status === 'failed').map((t) => t.name);

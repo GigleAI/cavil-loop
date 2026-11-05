@@ -184,7 +184,11 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   const failed = sync.sources.filter((s) => !s.ok);
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  // every opening of the detail panel is its own panel instance (its React key):
+  // going to another item and back is a new opening, never the old one resumed
+  const [opened, setOpened] = useState<{ key: string; n: number } | null>(null);
+  const openSeq = useRef(0);
+  const openItem = (key: string) => setOpened((cur) => (cur?.key === key ? cur : { key, n: ++openSeq.current }));
   const [newIssue, setNewIssue] = useState(false);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [busy, setBusy] = useState(false);
@@ -212,7 +216,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
   };
   const ops: CardOps = {
     canWrite: canWrite && !busy,
-    open: setOpenKey,
+    open: openItem,
     act: (a, okText) => runAll([a], okText),
     labelsOf: (repo) => {
       let p = labelCache.current.get(repo);
@@ -354,9 +358,9 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
             ))
           : renderRow(null)}
       </div>
-      {openKey && <DetailPanel itemKey={openKey} state={state} data={data} onClose={() => setOpenKey(null)} onLeftBehind={setNote} />}
+      {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} />}
       </div>
-      {newIssue && <NewIssueDialog state={state} data={data} onClose={() => setNewIssue(false)} onCreated={(k) => setOpenKey(k)} />}
+      {newIssue && <NewIssueDialog state={state} data={data} onClose={() => setNewIssue(false)} onCreated={openItem} />}
       {confirm && (
         <ConfirmDialog
           title="加入看板？"

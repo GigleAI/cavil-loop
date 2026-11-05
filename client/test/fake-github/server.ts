@@ -328,13 +328,27 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         req.socket.destroy();
         return;
       }
-      const sendText = (t: string) => {
-        entry.status = 200;
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(t);
-      };
-      await held();
-      if (handleRest(store, req.method ?? 'GET', url.pathname + url.search, parsed, send, sendText)) return;
+      // the answer is computed (and a write applied) first, then held: a held
+      // request carries the data of the moment it arrived, like a slow network
+      const out: (() => void)[] = [];
+      const handled = handleRest(
+        store,
+        req.method ?? 'GET',
+        url.pathname + url.search,
+        parsed,
+        (st, b) => out.push(() => send(st, b)),
+        (t) =>
+          out.push(() => {
+            entry.status = 200;
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end(t);
+          }),
+      );
+      if (handled) {
+        await held();
+        for (const f of out) f();
+        return;
+      }
     }
 
     // ---- REST issue list ----

@@ -6,6 +6,7 @@ import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { FRAME_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP } from './detailHtml';
 import { textColor } from './colors';
+import { createOpenSession, type OpenSession } from './openSession';
 
 const STATE_LABEL = { open: '开', closed: '已关闭', merged: '已合并' } as const;
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
@@ -59,13 +60,14 @@ export function DetailPanel({
   onLeftBehind: (note: ResultNote) => void;
 }) {
   const item = data.items.find((i) => i.key === itemKey) ?? null;
-  // Every answer that comes back later is checked against what is on screen
-  // now: the item shown (keyRef), the newest detail read (loadSeq), the text
-  // that was previewed (replyRef). An answer for anything else is dropped.
-  const keyRef = useRef(itemKey);
-  keyRef.current = itemKey;
-  const loadSeq = useRef(0);
-  const replyRef = useRef('');
+  // One panel instance = one opening (the board gives every opening its own
+  // React key). Every late answer goes through `session` (openSession.ts):
+  // after the opening ended, or once a newer call of the same kind started,
+  // it may not touch this panel.
+  const sessionRef = useRef<OpenSession | null>(null);
+  if (!sessionRef.current) sessionRef.current = createOpenSession();
+  const session = sessionRef.current;
+  useEffect(() => () => session.end(), [session]);
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -83,52 +85,45 @@ export function DetailPanel({
   const repo = item?.repo ?? '';
 
   const load = useCallback(async () => {
-    const seq = ++loadSeq.current;
+    const mine = session.begin('detail');
     setLoading(true);
     const r = await api().loadDetail(itemKey);
-    if (keyRef.current !== itemKey || seq !== loadSeq.current) return;
+    if (!mine()) return;
     setLoading(false);
     if (r.ok) {
       setDetail(r.detail);
       setLoadError(null);
     } else setLoadError(r.error);
-  }, [itemKey]);
+  }, [itemKey, session]);
 
+  // a fresh panel per opening: nothing to reset here, just read
   useEffect(() => {
-    setDetail(null);
-    setLoadError(null);
-    setBusy(false);
-    setCloseComment('');
-    setNote(null);
-    setReply('');
-    replyRef.current = '';
-    setPreview(null);
-    setReplied(false);
-    setAsk(null);
     void load();
   }, [load]);
   useEffect(() => {
     if (!repo) return;
     setOpts(null);
-    let live = true;
+    const mine = session.begin('options');
     api()
       .repoOptions(repo)
-      .then((o) => live && setOpts(o));
-    return () => {
-      live = false;
-    };
-  }, [repo]);
+      .then((o) => mine() && setOpts(o));
+  }, [repo, session]);
   useEffect(() => {
     if (detail?.pr && !detail.pr.mergeMethods.includes(method as MergeMethod)) setMethod(detail.pr.mergeMethods[0] ?? '');
   }, [detail, method]);
 
-  /** `here` is false when the panel moved to another item while the change was in flight */
+  /**
+   * `here` is false when this opening ended while the change was in flight (the
+   * panel closed, went to another item, or left and came back: that is a new
+   * opening with its own draft). The result then goes to the board, never into
+   * whatever panel is on screen.
+   */
   const run = async (action: WriteAction, okText: string): Promise<WriteResult & { here: boolean }> => {
-    const key = itemKey;
-    const label = item ? `${item.repo}#${item.number}` : key;
+    const label = item ? `${item.repo}#${item.number}` : itemKey;
+    const mine = session.begin('write');
     setBusy(true);
     const r = await api().act(action);
-    if (keyRef.current !== key) {
+    if (!mine()) {
       onLeftBehind(noteOf(r, `${label}：${okText}`));
       return { ...r, here: false };
     }
@@ -356,7 +351,7 @@ export function DetailPanel({
           disabled={!canWrite || busy}
           onChange={(e) => {
             setReply(e.target.value);
-            replyRef.current = e.target.value;
+            session.supersede('preview');
             setPreview(null);
           }}
         />
@@ -389,10 +384,9 @@ export function DetailPanel({
             disabled={!canWrite || !reply.trim()}
             onClick={async () => {
               if (preview !== null) return setPreview(null);
-              const key = itemKey;
-              const text = reply;
-              const r = await api().previewMarkdown(item.repo, text);
-              if (keyRef.current !== key || replyRef.current !== text) return;
+              const mine = session.begin('preview');
+              const r = await api().previewMarkdown(item.repo, reply);
+              if (!mine()) return;
               setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? '预览失败')}</p>`);
             }}
           >
@@ -406,7 +400,6 @@ export function DetailPanel({
               const r = await run({ kind: 'comment', key: item.key, body: reply }, '评论已发出');
               if (r.ok && r.here) {
                 setReply('');
-                replyRef.current = '';
                 setPreview(null);
                 setReplied(true);
               }

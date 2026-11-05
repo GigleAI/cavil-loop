@@ -467,3 +467,117 @@ test('a slow answer for the item you left never lands on the one you are looking
   await shot(page, '29-left-behind-result');
   await app.close();
 });
+
+/** hold only the first request matching `pred` (later ones go through) */
+function holdFirst(pred: (e: any) => boolean): () => void {
+  let taken = false;
+  return env.fake.holdWhen((e) => {
+    if (taken || !pred(e)) return false;
+    taken = true;
+    return true;
+  });
+}
+
+test('leave an item and come back: nothing that was in flight lands on the new opening (detail, labels, preview, reply)', async () => {
+  const w = env.fake.state.w;
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_OLD</p>');
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  const detail = page.getByTestId('detail');
+  const roundTrip = async () => {
+    await card(page, 137).click();
+    await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+    await card(page, 138).click();
+    await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  };
+
+  // the first opening of #138: its detail read and its label list are both slow
+  const releaseDetail = holdFirst((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
+  const releaseLabels = holdFirst((e) => e.method === 'GET' && /\/labels(\?|$)/.test(e.path));
+  await card(page, 138).click();
+  await expect.poll(() => env.fake.log.filter((l) => /\/labels(\?|$)/.test(l.path) && l.method === 'GET').length).toBe(1);
+  // the data changes on GitHub; the slow answers already carry the old one
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_NEW</p>');
+  w.repoLabels.set('gigleai/cavil-loop', [...w.repoLabels.get('gigleai/cavil-loop')!, { name: 'NEW_LABEL', color: '00ff00' }]);
+  await roundTrip();
+  await expect(frame.locator('body')).toContainText('BODY_NEW');
+  await expect(detail.getByTestId('label-add').locator('option', { hasText: 'NEW_LABEL' })).toHaveCount(1);
+  releaseDetail();
+  releaseLabels();
+  await expect.poll(() => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).every((l) => l.status === 200)).toBe(true);
+  await page.waitForTimeout(300);
+  await expect(frame.locator('body')).toContainText('BODY_NEW'); // [detail] old read did not land
+  await expect(detail.getByTestId('label-add').locator('option', { hasText: 'NEW_LABEL' })).toHaveCount(1); // [options] old list did not land
+
+  // [preview] asked in one opening, answered in the next
+  const releasePreview = holdFirst((e) => e.path === '/api/markdown');
+  await detail.getByTestId('reply-input').fill('PREVIEW_OLD');
+  await detail.getByTestId('reply-preview-toggle').click();
+  await expect.poll(() => env.fake.log.some((l) => l.path === '/api/markdown')).toBe(true);
+  await roundTrip();
+  await detail.getByTestId('reply-input').fill('PREVIEW_NEW');
+  await detail.getByTestId('reply-preview-toggle').click();
+  await expect(page.frameLocator('[data-testid="reply-preview"]').locator('body')).toContainText('PREVIEW_NEW');
+  releasePreview();
+  await expect.poll(() => env.fake.log.filter((l) => l.path === '/api/markdown').every((l) => l.status === 200)).toBe(true);
+  await page.waitForTimeout(300);
+  await expect(page.frameLocator('[data-testid="reply-preview"]').locator('body')).toContainText('PREVIEW_NEW');
+  await expect(page.frameLocator('[data-testid="reply-preview"]').locator('body')).not.toContainText('PREVIEW_OLD');
+  await detail.getByTestId('reply-preview-toggle').click(); // back to editing
+
+  // [write] the reviewer's case: send, leave, come back, write a new draft, then the old send finishes
+  const releaseSend = holdFirst((e) => e.method === 'POST' && e.path.endsWith('/issues/138/comments'));
+  await detail.getByTestId('reply-input').fill('OLD_MESSAGE_SENT');
+  await detail.getByTestId('reply-send').click();
+  await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/comments'))).toBe(true);
+  await roundTrip();
+  await detail.getByTestId('reply-input').fill('NEW_UNSENT_DRAFT_AFTER_RETURN');
+  releaseSend();
+  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：评论已发出');
+  await expect(detail.getByTestId('reply-input')).toHaveValue('NEW_UNSENT_DRAFT_AFTER_RETURN');
+  await expect(detail.getByTestId('reply-send')).toBeEnabled(); // the new opening is not left "busy"
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
+  await expect(detail.getByTestId('hand-back')).toHaveCount(0); // "hand back" belongs to the opening that replied
+  expect(w.comments.get('gigleai/cavil-loop#138')!.map((c) => c.bodyHTML)).toEqual(['<p>OLD_MESSAGE_SENT</p>']);
+
+  // within one opening, a newer call of the same kind wins: [detail] the re-read after a change vs. a slow refresh, [preview] typing after asking
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_OLD</p>');
+  const releaseRefresh = holdFirst((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
+  await detail.getByTestId('detail-refresh').click();
+  await expect.poll(() => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).at(-1)?.status).toBe(0);
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_NEW</p>');
+  // a change made meanwhile re-reads the detail: that newer read must win
+  await detail.getByTestId('label-add').selectOption('pending/PR');
+  await expect(page.getByTestId('action-result')).toContainText('pending/PR');
+  await expect(frame.locator('body')).toContainText('BODY_REFRESH_NEW');
+  releaseRefresh();
+  await page.waitForTimeout(300);
+  await expect(frame.locator('body')).toContainText('BODY_REFRESH_NEW');
+  await expect(frame.locator('body')).not.toContainText('BODY_REFRESH_OLD');
+
+  const releasePreview2 = holdFirst((e) => e.path === '/api/markdown');
+  await detail.getByTestId('reply-input').fill('TYPED_FIRST');
+  await detail.getByTestId('reply-preview-toggle').click();
+  await expect.poll(() => env.fake.log.filter((l) => l.path === '/api/markdown').at(-1)?.status).toBe(0);
+  await detail.getByTestId('reply-input').fill('TYPED_AFTER');
+  releasePreview2();
+  await expect.poll(() => env.fake.log.filter((l) => l.path === '/api/markdown').every((l) => l.status === 200)).toBe(true);
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('reply-preview')).toHaveCount(0); // the preview of text that is gone never shows
+  await detail.getByTestId('reply-input').fill('');
+
+  // close and reopen is a new opening too
+  const releaseLabel = holdFirst((e) => e.method === 'POST' && e.path.endsWith('/issues/138/labels'));
+  await detail.getByTestId('label-add').selectOption('Done');
+  await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
+  await page.getByTestId('detail-close').click();
+  await card(page, 138).click();
+  await detail.getByTestId('reply-input').fill('DRAFT_AFTER_REOPEN');
+  releaseLabel();
+  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：已加上标签「Done」');
+  await expect(detail.getByTestId('reply-input')).toHaveValue('DRAFT_AFTER_REOPEN');
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
+  await shot(page, '30-round-trip');
+  await app.close();
+});
