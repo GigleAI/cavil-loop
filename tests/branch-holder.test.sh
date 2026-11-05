@@ -44,16 +44,21 @@ printf '%s\n' "tmux $*" >> "$GH_CALLS"
 case "$1" in has-session) exit 1 ;; esac
 exit 0
 FAKETMUX
-# 受控交错用：git switch 真正执行前，先写入一个「检查之后才出现」的文件。
+# 受控交错用的 git 包装器：遇到参数里有 $INTERLEAVE_ON 的那次 git 调用（只触发一次），
+# 先用真 git 跑 $INTERLEAVE_DO（$G = 真 git），再原样执行原命令。生产代码里没有任何测试钩子。
 INTERBIN="$ROOT/interbin"
 mkdir -p "$INTERBIN"
 cat > "$INTERBIN/git" <<FAKEGIT
 #!/usr/bin/env bash
-for a in "\$@"; do
-    if [ "\$a" = switch ] && [ -n "\${INTERLEAVE_FILE:-}" ]; then
-        printf 'late local content\n' > "\$INTERLEAVE_FILE"; break
-    fi
-done
+if [ -n "\${INTERLEAVE_ON:-}" ] && [ ! -e "\$INTERLEAVE_ONCE" ]; then
+    for a in "\$@"; do
+        if [ "\$a" = "\$INTERLEAVE_ON" ]; then
+            : > "\$INTERLEAVE_ONCE"
+            G="$REAL_GIT" bash -c "\$INTERLEAVE_DO" >/dev/null 2>&1
+            break
+        fi
+    done
+fi
 exec "$REAL_GIT" "\$@"
 FAKEGIT
 chmod +x "$FAKEBIN/gh" "$FAKEBIN/tmux" "$INTERBIN/git"
@@ -200,7 +205,8 @@ s_interleave() {
     local c f0=$fail; c=$(case_std interleave 1)
     write_conf "$c" "$c/project" 1 "$INTERBIN"
     local rc
-    rc=$(INTERLEAVE_FILE="$c/project/gen.txt" run_pr "$c")
+    rc=$(INTERLEAVE_ON=switch INTERLEAVE_ONCE="$c/once" \
+        INTERLEAVE_DO="printf 'late local content\\n' > '$c/project/gen.txt'" run_pr "$c")
     chk "派工脚本正常退出"                  "$rc" 0
     chk "插入的文件确实写进去了（夹具生效）"   "$([ -f "$c/project/gen.txt" ] && echo yes || echo no)" yes
     chk "文件内容没被切换覆盖"               "$(cat "$c/project/gen.txt" 2>/dev/null)" "late local content"
@@ -318,8 +324,60 @@ s_new_issue() {
     [ "$fail" -eq "$f0" ]
 }
 
+# 检查之后、切换之前，人在主 checkout 里往 PR 分支提交了一次（复审第 1 轮复现的场景）
+s_commit_before_switch() {
+    echo "── 受控交错：检查之后、切换之前有人往 PR 分支提交 ──"
+    local c f0=$fail rc late; c=$(case_std commitrace 1)
+    write_conf "$c" "$c/project" 1 "$INTERBIN"
+    rc=$(INTERLEAVE_ON=switch INTERLEAVE_ONCE="$c/once" \
+        INTERLEAVE_DO="cd '$c/project' && printf 'late commit\\n' >> pr.txt && \$G commit -qam late && \$G rev-parse HEAD > '$c/late-sha'" \
+        run_pr "$c")
+    late=$(cat "$c/late-sha" 2>/dev/null)
+    chk "派工脚本正常退出"                  "$rc" 0
+    chk "夹具生效：确实插入了一个新提交"      "$([ -n "$late" ] && echo yes || echo no)" yes
+    chk "新提交仍在 PR 分支上（没被挤掉）"    "$(git -C "$c/project" rev-parse "refs/heads/$BR")" "$late"
+    chk "没有建 worktree（不派工）"          "$([ -d "$c/wt/issue-$N" ] && echo yes || echo no)" no
+    chk_not "没有翻成派工中"                 "$(labels "$c")" "labels[]=doing/agent"
+    chk_has "转人工"                         "$(labels "$c")" "labels[]=pending/human"
+    chk_has "说明里写出分支多了新提交"        "$(comments "$c")" "多出了新提交"
+    chk_not "没有「没有丢任何东西」的说法"    "$(comments "$c")" "没有丢任何东西"
+    [ "$fail" -eq "$f0" ]
+}
+
+# 切换之后、核对分支之前，分支被别处改了（例如 branch -f）
+s_move_after_switch() {
+    echo "── 受控交错：切换之后、核对分支之前分支被改动 ──"
+    local c f0=$fail rc moved; c=$(case_std moverace 1)
+    write_conf "$c" "$c/project" 1 "$INTERBIN"
+    rc=$(INTERLEAVE_ON=update-ref INTERLEAVE_ONCE="$c/once" \
+        INTERLEAVE_DO="cd '$c/project' && n=\$(\$G commit-tree -p $BR -m moved $BR^{tree}) && \$G update-ref refs/heads/$BR \$n && echo \$n > '$c/moved-sha'" \
+        run_pr "$c")
+    moved=$(cat "$c/moved-sha" 2>/dev/null)
+    chk "派工脚本正常退出"                  "$rc" 0
+    chk "夹具生效：分支确实被改动"            "$([ -n "$moved" ] && echo yes || echo no)" yes
+    chk "改动后的提交仍在分支上（没被覆盖）"  "$(git -C "$c/project" rev-parse "refs/heads/$BR")" "$moved"
+    chk "没有建 worktree"                    "$([ -d "$c/wt/issue-$N" ] && echo yes || echo no)" no
+    chk_has "转人工"                         "$(labels "$c")" "labels[]=pending/human"
+    chk_not "没有「没有丢任何东西」的说法"    "$(comments "$c")" "没有丢任何东西"
+    [ "$fail" -eq "$f0" ]
+}
+
+# 核对之后、建 worktree 之前，有人又在主 checkout 里签出了这个分支
+s_recheckout_before_add() {
+    echo "── 受控交错：核对之后、建 worktree 之前主 checkout 又签出了分支 ──"
+    local c f0=$fail rc; c=$(case_std recheckout 1)
+    write_conf "$c" "$c/project" 1 "$INTERBIN"
+    rc=$(INTERLEAVE_ON=add INTERLEAVE_ONCE="$c/once" \
+        INTERLEAVE_DO="\$G -C '$c/project' switch -q $BR" run_pr "$c")
+    chk "夹具生效：主 checkout 又回到了 PR 分支" "$(cur_branch "$c/project")" "$BR"
+    chk "分支只有一个签出（没建出第二个）"     "$(n_holders "$c/project")" 1
+    chk "这轮派工失败退出（下轮重新判断）"     "$rc" 1
+    chk_not "没有翻成派工中"                 "$(labels "$c")" "labels[]=doing/agent"
+    [ "$fail" -eq "$f0" ]
+}
+
 ALL=(s_main_clean_off s_main_clean_on s_dirty s_untracked s_ahead s_behind s_bisect s_nopr
-     s_interleave s_ab_other_main s_symlink_root s_linked_self s_base_held
+     s_interleave s_commit_before_switch s_move_after_switch s_recheckout_before_add s_ab_other_main s_symlink_root s_linked_self s_base_held
      s_submodule_off s_submodule_on s_new_issue)
 for s in "${ALL[@]}"; do "$s"; done
 
@@ -365,6 +423,11 @@ mutate base-held _lib.sh 'if base_holder=$(branch_checked_out_elsewhere "$base" 
 mutate linked-untouched _lib.sh 'if [ "$BH_KIND" != main ]; then
         AUTO_RELEASE_REASON' 'if false; then
         AUTO_RELEASE_REASON' s_linked_self
+mutate forced-fetch-after-release dispatch-pr-comment.sh 'if [ "${RELEASED:-0}" = 1 ]; then
+    if ! cas_out' 'if false; then
+    if ! cas_out' s_commit_before_switch
+mutate cas-old-value dispatch-pr-comment.sh '"$PR_HEAD_SHA" "$PR_HEAD_SHA" 2>&1)' '"$PR_HEAD_SHA" 2>&1)' s_move_after_switch
+mutate force-add-after-release dispatch-pr-comment.sh '[ "${RELEASED:-0}" = 1 ] && WT_FORCE=()' ':' s_recheckout_before_add
 mutate switch-off dispatch-pr-comment.sh 'if [ "$AUTO_RELEASE_MAIN_CHECKOUT" = 1 ]; then
         if main_checkout_auto_release' 'if true; then
         if main_checkout_auto_release' s_main_clean_off
