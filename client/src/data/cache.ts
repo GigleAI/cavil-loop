@@ -7,7 +7,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { SourceSnapshot } from '../shared/types';
 
-const SCHEMA_VERSION = 1;
+// 2: items carry node ids, Project items their ids, Projects their field ids (needed to write); older rows are dropped and re-read
+const SCHEMA_VERSION = 2;
 
 export class Cache {
   private db: DatabaseSync;

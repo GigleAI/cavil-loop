@@ -64,6 +64,21 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         </ul>
       </section>
 
+      <section data-testid="hand-back-settings">
+        <h3>「交回 agent」用的标签</h3>
+        <p className="muted small">详情页回复后可以一键交回 agent：去掉第一个标签、加上第二个。要和 daemon 配置里的标签名一致（默认 pending/human → pending/agent）。</p>
+        <div className="row">
+          <label>
+            等人处理的标签（去掉）
+            <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: e.target.value })} />
+          </label>
+          <label>
+            交给 agent 的标签（加上）
+            <input data-testid="hand-back-agent" defaultValue={state.handBack.agent} onBlur={(e) => api().setHandBack({ agent: e.target.value })} />
+          </label>
+        </div>
+      </section>
+
       <section>
         <h3>账号</h3>
         <p>

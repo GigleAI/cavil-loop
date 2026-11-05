@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData, ColumnMode } from '../shared/types';
+import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
-import { buildBoard, writesEnabled, type Card, type Column } from '../data/board';
+import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropPlan } from '../data/board';
 import { api } from './api';
+import { textColor } from './colors';
+import { ConfirmDialog } from './ConfirmDialog';
+import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
+import { NewIssueDialog } from './NewIssueDialog';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -30,17 +35,32 @@ function localToday(now: number): string {
 const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
 const STATE_LABEL = { open: '开', closed: '已关闭', merged: '已合并' } as const;
 
-function textColor(hex: string) {
-  if (!/^[0-9a-f]{6}$/i.test(hex)) return '#000';
-  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
-  return r * 0.299 + g * 0.587 + b * 0.114 > 150 ? '#1f2328' : '#fff';
+interface CardOps {
+  canWrite: boolean;
+  open: (key: string) => void;
+  act: (action: WriteAction, okText: string) => Promise<void>;
+  /** repository labels, loaded on demand */
+  labelsOf: (repo: string) => Promise<RepoOptions>;
+  dragStart: (card: Card, from: string) => void;
 }
 
-function CardView({ card, mode }: { card: Card; mode: ColumnMode }) {
+function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col: string; ops: CardOps }) {
   const it = card.item;
   const iterations = it.projects.filter((m) => m.iteration).map((m) => m.iteration!.title);
+  const [adding, setAdding] = useState<RepoOptions | null>(null);
   return (
-    <div className="card" data-testid="card" data-key={it.key}>
+    <div
+      className="card"
+      data-testid="card"
+      data-key={it.key}
+      draggable={ops.canWrite}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/plain', it.key);
+        e.dataTransfer.effectAllowed = 'move';
+        ops.dragStart(card, col);
+      }}
+      onClick={() => ops.open(it.key)}
+    >
       <div className="card-head">
         <span className={`kind ${it.kind} ${it.state}`} data-testid="card-state">
           {it.kind === 'pr' ? 'PR' : 'Issue'} · {STATE_LABEL[it.state]}
@@ -52,22 +72,59 @@ function CardView({ card, mode }: { card: Card; mode: ColumnMode }) {
       <a
         className="card-title"
         href={it.url}
+        data-testid="card-title"
         onClick={(e) => {
           e.preventDefault();
-          api().openExternal(it.url);
+          ops.open(it.key);
         }}
       >
         {it.title}
       </a>
-      {it.labels.length > 0 && (
-        <div className="labels">
-          {it.labels.map((l) => (
-            <span key={l.name} className="label" style={{ background: `#${l.color || 'ddd'}`, color: textColor(l.color) }}>
-              {l.name}
-            </span>
+      <div className="labels" onClick={(e) => e.stopPropagation()}>
+        {it.labels.map((l) => (
+          <span key={l.name} className="label" style={{ background: `#${l.color || 'ddd'}`, color: textColor(l.color) }}>
+            {l.name}
+            {ops.canWrite && (
+              <button
+                className="label-x"
+                data-testid="card-label-remove"
+                data-label={l.name}
+                title={`去掉「${l.name}」`}
+                onClick={() => void ops.act({ kind: 'removeLabel', key: it.key, label: l.name }, `${it.repo}#${it.number}：已去掉标签「${l.name}」`)}
+              >
+                ×
+              </button>
+            )}
+          </span>
+        ))}
+        {ops.canWrite &&
+          (adding ? (
+            <select
+              data-testid="card-label-add-select"
+              autoFocus
+              value=""
+              onBlur={() => setAdding(null)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setAdding(null);
+                if (v) void ops.act({ kind: 'addLabel', key: it.key, label: v }, `${it.repo}#${it.number}：已加上标签「${v}」`);
+              }}
+            >
+              <option value="">{adding.error ?? '选一个标签'}</option>
+              {adding.labels
+                .filter((l) => !it.labels.some((x) => x.name === l.name))
+                .map((l) => (
+                  <option key={l.name} value={l.name}>
+                    {l.name}
+                  </option>
+                ))}
+            </select>
+          ) : (
+            <button className="label-plus" data-testid="card-label-add" title="加标签" onClick={async () => setAdding(await ops.labelsOf(it.repo))}>
+              +
+            </button>
           ))}
-        </div>
-      )}
+      </div>
       <div className="meta small muted">
         {it.assignees.length > 0 && <span>负责人 {it.assignees.join('、')}</span>}
         {iterations.length > 0 && <span>迭代 {[...new Set(iterations)].join('、')}</span>}
@@ -82,16 +139,33 @@ function CardView({ card, mode }: { card: Card; mode: ColumnMode }) {
   );
 }
 
-function ColumnView({ col, cards, mode }: { col: Column; cards: Card[]; mode: ColumnMode }) {
+function ColumnView({ col, cards, mode, ops, onDrop }: { col: Column; cards: Card[]; mode: ColumnMode; ops: CardOps; onDrop: (col: Column) => void }) {
+  const [over, setOver] = useState(false);
   return (
-    <div className="column" data-testid="column" data-key={col.key} data-title={col.title}>
+    <div
+      className={`column${over ? ' drop-over' : ''}`}
+      data-testid="column"
+      data-key={col.key}
+      data-title={col.title}
+      onDragOver={(e) => {
+        if (!ops.canWrite) return;
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        onDrop(col);
+      }}
+    >
       <div className="column-head">
         <b>{col.title}</b> <span className="count" data-testid="column-count">{cards.length}</span>
         {col.subtitle && <div className="small muted">{col.subtitle}</div>}
       </div>
       <div className="column-body">
         {cards.map((c) => (
-          <CardView key={c.id} card={c} mode={mode} />
+          <CardView key={c.id} card={c} mode={mode} col={col.key} ops={ops} />
         ))}
       </div>
     </div>
@@ -109,7 +183,64 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   const failed = sync.sources.filter((s) => !s.ok);
-  const canWrite = writesEnabled(sync);
+  const canWrite = writesEnabled(sync) && state.sources.length > 0;
+  // every opening of the detail panel is its own panel instance (its React key):
+  // going to another item and back is a new opening, never the old one resumed
+  const [opened, setOpened] = useState<{ key: string; n: number } | null>(null);
+  const openSeq = useRef(0);
+  const openItem = (key: string) => setOpened((cur) => (cur?.key === key ? cur : { key, n: ++openSeq.current }));
+  const [newIssue, setNewIssue] = useState(false);
+  const [note, setNote] = useState<ResultNote | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<Extract<DropPlan, { kind: 'confirm' }> | null>(null);
+  const [choice, setChoice] = useState(0);
+  const dragging = useRef<{ card: Card; from: string } | null>(null);
+  const labelCache = useRef(new Map<string, Promise<RepoOptions>>());
+
+  /** run actions one after another; stop at the first refusal (the rest are not sent) */
+  const runAll = async (actions: WriteAction[], okText: string) => {
+    setBusy(true);
+    let warn: string[] = [];
+    for (const a of actions) {
+      const r = await api().act(a);
+      if (!r.ok) {
+        setBusy(false);
+        const done = actions.indexOf(a);
+        setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` });
+        return;
+      }
+      if (r.warning) warn.push(r.warning);
+    }
+    setBusy(false);
+    setNote(noteOf({ ok: true, error: null, warning: warn.join('；') || null }, okText));
+  };
+  const ops: CardOps = {
+    canWrite: canWrite && !busy,
+    open: openItem,
+    act: (a, okText) => runAll([a], okText),
+    labelsOf: (repo) => {
+      let p = labelCache.current.get(repo);
+      if (!p) {
+        p = api().repoOptions(repo);
+        labelCache.current.set(repo, p);
+        p.then((r) => r.error && labelCache.current.delete(repo));
+      }
+      return p;
+    },
+    dragStart: (card, from) => (dragging.current = { card, from }),
+  };
+  const onDrop = (col: Column) => {
+    const d = dragging.current;
+    dragging.current = null;
+    if (!d || !canWrite) return;
+    const plan = dropPlan(d.card, d.from, col, board.mode, data.projects);
+    if (plan.kind === 'refuse') setNote({ kind: 'error', text: `没有修改：${plan.reason}` });
+    else if (plan.kind === 'do') void runAll(plan.actions, plan.summary);
+    else if (plan.kind === 'confirm') {
+      setChoice(0);
+      setConfirm(plan);
+    }
+  };
 
   const toggle = (key: string) => {
     const next = new Set(selected);
@@ -126,7 +257,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
       <div className="columns">
         {ended.length > 0 &&
           (showEnded ? (
-            ended.map((c) => <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} />)
+            ended.map((c) => <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} ops={ops} onDrop={onDrop} />)
           ) : (
             <button className="column ended-group" data-testid="ended-group" onClick={() => setShowEnded(true)}>
               已结束的迭代（{ended.length} 个 · {ended.reduce((n, c) => n + pick(c).length, 0)} 张）
@@ -134,7 +265,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
             </button>
           ))}
         {shown.map((c) => (
-          <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} />
+          <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} ops={ops} onDrop={onDrop} />
         ))}
       </div>
     );
@@ -171,9 +302,10 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
         </button>
         <button
           data-testid="write-entry"
-          disabled
-          title={canWrite ? '新建 issue 在后续版本提供' : '离线时不能修改'}
-          data-offline={canWrite ? 'no' : 'yes'}
+          disabled={!canWrite}
+          title={writesEnabled(sync) ? (state.sources.length ? '新建 issue' : '先添加数据来源') : '离线时不能修改'}
+          data-offline={writesEnabled(sync) ? 'no' : 'yes'}
+          onClick={() => setNewIssue(true)}
         >
           新建 issue
         </button>
@@ -203,6 +335,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           {sync.problem}
         </div>
       )}
+      <ResultBanner note={note} testid="board-action-result" />
       {board.notice && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}
@@ -214,6 +347,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
         </div>
       )}
 
+      <div className="board-area">
       <div className="board">
         {board.lanes
           ? board.lanes.map((lane) => (
@@ -224,6 +358,33 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
             ))
           : renderRow(null)}
       </div>
+      {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} />}
+      </div>
+      {newIssue && <NewIssueDialog state={state} data={data} onClose={() => setNewIssue(false)} onCreated={openItem} />}
+      {confirm && (
+        <ConfirmDialog
+          title="加入看板？"
+          confirmLabel="加入并设置"
+          busy={busy}
+          onCancel={() => setConfirm(null)}
+          onConfirm={async () => {
+            const c = confirm.choices[choice];
+            await runAll([c.action], `已加入看板「${c.projectTitle}」`);
+            setConfirm(null);
+          }}
+        >
+          <p data-testid="confirm-question">{confirm.question}</p>
+          {confirm.choices.length > 1 && (
+            <select data-testid="confirm-project" value={choice} onChange={(e) => setChoice(Number(e.target.value))}>
+              {confirm.choices.map((c, i) => (
+                <option key={c.projectKey} value={i}>
+                  {c.projectTitle}
+                </option>
+              ))}
+            </select>
+          )}
+        </ConfirmDialog>
+      )}
       <div className="statusbar small muted">
         {state.viewer && <span>已登录 {state.viewer}</span>}
         {sync.lastOnlineAt && <span>上次同步 {ago(sync.lastOnlineAt, now)}</span>}

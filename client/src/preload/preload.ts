@@ -19,6 +19,11 @@ const api: CavilApi = {
   setView: (patch) => ipcRenderer.invoke(IPC.setView, patch),
   syncNow: () => ipcRenderer.invoke(IPC.syncNow),
   openExternal: (url) => ipcRenderer.invoke(IPC.openExternal, url),
+  loadDetail: (key) => ipcRenderer.invoke(IPC.loadDetail, key),
+  repoOptions: (repo) => ipcRenderer.invoke(IPC.repoOptions, repo),
+  previewMarkdown: (repo, text) => ipcRenderer.invoke(IPC.previewMarkdown, repo, text),
+  act: (action) => ipcRenderer.invoke(IPC.act, action),
+  setHandBack: (patch) => ipcRenderer.invoke(IPC.setHandBack, patch),
 };
 
 contextBridge.exposeInMainWorld('cavil', api);

@@ -8,6 +8,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { AddressInfo, Socket } from 'node:net';
+import { defaultWritable, digest, enrich, handleGraphql, handleRest, type Store, type WritableState } from './writes';
+
+export type { WritableState } from './writes';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -75,12 +78,14 @@ export interface FakeState {
   /** login -> repos (`owner/name` lower-cased) that answer 404 for that account */
   deniedRepos: Map<string, Set<string>>;
   /** responses of matching paths wait for `release()` (after the response is computed) */
-  holds: { match: (path: string) => boolean; gate: Promise<void> }[];
+  holds: { match: (path: string, entry: LoggedRequest) => boolean; gate: Promise<void> }[];
   /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
   refreshTokens: Map<string, string>;
   refreshSeq: number;
   /** canned answers for the token endpoint, used once each, in order: `refresh` = refresh requests, `poll` = device-flow polls */
   tokenAnswers: { kind: 'refresh' | 'poll'; status: number; body?: unknown; raw?: string }[];
+  /** the writable side (labels, milestones, comments, PRs, …), see writes.ts */
+  w: WritableState;
 }
 
 export interface LoggedRequest {
@@ -90,6 +95,8 @@ export interface LoggedRequest {
   variables?: Record<string, unknown>;
   auth: string | null;
   status: number;
+  /** parsed JSON body of a REST request that has one */
+  body?: unknown;
 }
 
 export interface FakeGitHub {
@@ -102,6 +109,12 @@ export interface FakeGitHub {
   resolveGrant(state: DeviceGrant['state'], userCode?: string): DeviceGrant;
   /** hold responses of paths containing `fragment` until the returned function is called */
   hold(fragment: string): () => void;
+  /** hold responses of requests matching `pred` (GraphQL: operation + variables are filled) until released */
+  holdWhen(pred: (entry: LoggedRequest) => boolean): () => void;
+  /** everything writable, serialised: equal before / after = GitHub changed nothing */
+  digest(): string;
+  /** requests that ask GitHub to change something (REST non-GET except the markdown renderer, GraphQL mutations) */
+  writes(): LoggedRequest[];
   close(): Promise<void>;
 }
 
@@ -144,14 +157,21 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     refreshTokens: new Map(),
     refreshSeq: 0,
     tokenAnswers: [],
+    w: defaultWritable(),
     ...init,
   };
+  const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
+  enrich(store);
   const log: LoggedRequest[] = [];
   const sockets = new Set<Socket>();
   let grantSeq = 0;
 
   const server: Server = createServer(async (req, res) => {
     if (state.offline || (state.offlineApi && (req.url ?? '').startsWith('/api/'))) {
+      req.socket.destroy();
+      return;
+    }
+    if (state.w.dropWrites && req.method !== 'GET' && (req.url ?? '').startsWith('/api/') && req.url !== '/api/graphql') {
       req.socket.destroy();
       return;
     }
@@ -171,7 +191,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       return false;
     };
     const held = async () => {
-      for (const h of state.holds) if (h.match(entry.path)) await h.gate;
+      for (const h of state.holds) if (h.match(entry.path, entry)) await h.gate;
     };
 
     // ---- OAuth device flow (web base) ----
@@ -263,10 +283,21 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     // ---- GraphQL ----
     if (req.method === 'POST' && url.pathname === '/api/graphql') {
       const body = JSON.parse(await readBody(req)) as { query: string; variables: Record<string, any> };
-      const op = body.query.match(/query\s+(\w+)/)?.[1];
+      const opm = body.query.match(/(query|mutation)\s+(\w+)/);
+      const op = opm?.[2];
       entry.operation = op;
       entry.variables = body.variables;
+      if (opm?.[1] === 'mutation' && state.w.dropWrites) {
+        req.socket.destroy();
+        return;
+      }
       if (!authed()) return;
+      const answered = handleGraphql(store, op, body.variables ?? {});
+      if (answered) {
+        await held();
+        if (answered.httpStatus) return send(answered.httpStatus, { message: 'Server Error' });
+        return send(200, answered);
+      }
       if (op === 'CavilViewer') return send(200, { data: { viewer: { login: login() } } });
       if (op === 'CavilProjectItems') {
         const v = body.variables;
@@ -277,9 +308,47 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         const idx = v.after ? pages.findIndex((p) => p.items.pageInfo.endCursor === v.after) + 1 : 0;
         if (idx <= 0 && v.after) return send(200, { errors: [{ message: 'bad cursor' }] });
         if (state.failProjectPage.get(key) === idx) return send(502, { message: 'Server Error' });
-        return send(200, { data: { [holder]: { projectV2: pages[idx] } } });
+        return send(200, { data: { [holder]: { projectV2: { ...pages[idx], viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } });
       }
       return send(200, { errors: [{ message: `fake: unknown operation ${op}` }] });
+    }
+
+    // ---- REST writes of #138, labels / milestones lists, markdown ----
+    if (url.pathname.startsWith('/api/') && (req.method !== 'GET' || /\/(labels|milestones)$/.test(url.pathname))) {
+      const raw = req.method === 'GET' ? '' : await readBody(req);
+      let parsed: any = undefined;
+      try {
+        parsed = raw ? JSON.parse(raw) : undefined;
+      } catch {
+        return send(400, { message: 'Problems parsing JSON' });
+      }
+      entry.body = parsed;
+      if (!authed()) return;
+      if (state.offlineApi) {
+        req.socket.destroy();
+        return;
+      }
+      // the answer is computed (and a write applied) first, then held: a held
+      // request carries the data of the moment it arrived, like a slow network
+      const out: (() => void)[] = [];
+      const handled = handleRest(
+        store,
+        req.method ?? 'GET',
+        url.pathname + url.search,
+        parsed,
+        (st, b) => out.push(() => send(st, b)),
+        (t) =>
+          out.push(() => {
+            entry.status = 200;
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end(t);
+          }),
+      );
+      if (handled) {
+        await held();
+        for (const f of out) f();
+        return;
+      }
     }
 
     // ---- REST issue list ----
@@ -340,6 +409,23 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         release();
       };
     },
+    holdWhen(pred) {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const h = { match: (_p: string, e: LoggedRequest) => pred(e), gate };
+      state.holds.push(h);
+      return () => {
+        state.holds = state.holds.filter((x) => x !== h);
+        release();
+      };
+    },
+    digest: () => digest(store),
+    writes: () =>
+      log.filter(
+        (l) =>
+          (l.path.startsWith('/api/') && l.path !== '/api/graphql' && l.path !== '/api/markdown' && l.method !== 'GET') ||
+          (l.path === '/api/graphql' && /^Cavil(AddProjectItem|SetIteration|SetStatus|ClearField)$/.test(l.operation ?? '')),
+      ),
     close: () =>
       new Promise<void>((r) => {
         for (const s of sockets) s.destroy();
