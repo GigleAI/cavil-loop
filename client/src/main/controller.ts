@@ -21,6 +21,13 @@ function credentialTag(token: string): string {
 }
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
+/** cache setting: a sign-out could not delete the stored credential — never sign in with it again */
+const PENDING_DELETE = 'pendingCredentialDelete';
+
+function notDeletedMessage(reason: string | null, err: string): string {
+  return `${reason ? `${reason}。` : ''}本机保存的旧登录凭据没能删除（${err}），它可能还留在钥匙串里。App 不会再用它自动登录；你可以直接重新登录（会覆盖它），或在「钥匙串访问」里搜「Cavil Loop」手动删除`;
+}
+
 export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
 /** refresh this long before the access token expires */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
@@ -129,6 +136,13 @@ export class Controller {
   }
 
   async start(): Promise<void> {
+    // The last sign-out could not delete the stored credential: it must not sign us
+    // back in. Try the delete again; either way this start begins on the login page.
+    if (this.deps.cache.getSetting<boolean>(PENDING_DELETE, false)) {
+      const err = await this.serialCredential(() => this.clearStored());
+      this.set({ phase: 'login', loginReason: err ? notDeletedMessage(null, err) : null });
+      return;
+    }
     try {
       this.grant = decodeGrant(await this.deps.credentials.get());
     } catch (e) {
@@ -199,13 +213,11 @@ export class Controller {
         if (run !== this.loginRun) return false;
         await this.deps.credentials.set(encodeGrant(grant));
         if (run !== this.loginRun) {
-          try {
-            await this.deps.credentials.clear();
-          } catch (e) {
-            this.set({ loginReason: `登录已取消，但删除刚保存的凭据失败（${(e as Error).message}）。下次启动可能会自动登录，请到设置里退出登录` });
-          }
+          const err = await this.clearStored();
+          if (err) this.set({ loginReason: notDeletedMessage('登录已取消', err) });
           return false;
         }
+        this.deps.cache.setSetting(PENDING_DELETE, false);
         this.session++;
         this.grant = grant;
         // a GitHub App token is refreshed with the app it came from, whatever the setting says later
@@ -264,7 +276,9 @@ export class Controller {
     this.deps.cache.setSetting('cacheOwner', null);
     this.deps.cache.setSetting('cacheCredential', null);
     this.deps.cache.setSetting('viewer', null);
-    await this.serialCredential(() => this.deps.credentials.clear());
+    // This session is over whatever the keychain does next: switch the page first
+    // (a failing delete must not leave the board on screen with nobody signed in).
+    const session = this.session;
     this.set({
       phase: 'login',
       loginReason: reason,
@@ -272,6 +286,25 @@ export class Controller {
       sync: { ...this.state.sync, problem: null },
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
+    const err = await this.serialCredential(() => this.clearStored());
+    // only while nothing newer happened (a new login commits after this delete, in the same queue)
+    if (err && session === this.session) this.set({ loginReason: notDeletedMessage(reason, err) });
+  }
+
+  /**
+   * Delete the stored credential. Runs inside the credential queue. Never throws:
+   * a failure is remembered (PENDING_DELETE) so no later start signs in with the
+   * leftover, and returned for the caller to show.
+   */
+  private async clearStored(): Promise<string | null> {
+    try {
+      await this.deps.credentials.clear();
+    } catch (e) {
+      this.deps.cache.setSetting(PENDING_DELETE, true);
+      return (e as Error).message;
+    }
+    this.deps.cache.setSetting(PENDING_DELETE, false);
+    return null;
   }
 
   /**
@@ -299,13 +332,7 @@ export class Controller {
     if (this.refreshing) return this.refreshing;
     const session = this.session;
     const current = () => session === this.session && this.grant === used;
-    const signOut = async () => {
-      try {
-        await this.logout(REASON_REFRESH_ENDED);
-      } catch (e) {
-        this.set({ loginReason: `${REASON_REFRESH_ENDED}（但删除本机保存的凭据失败：${(e as Error).message}）` });
-      }
-    };
+    const signOut = () => this.logout(REASON_REFRESH_ENDED); // never throws, see logout
     const run = (async (): Promise<'ok' | 'unreachable' | 'ended' | 'failed'> => {
       try {
         if (used.refreshExpiresAt != null && this.now() >= used.refreshExpiresAt) {

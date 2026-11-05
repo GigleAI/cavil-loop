@@ -427,3 +427,159 @@ describe('refresh failures keep what they should and recover', () => {
     expect(decodeGrant(await store.get())?.accessToken).toBe(APP_TOKEN);
   });
 });
+
+// ---- review (PR #140, round 2, 2026-11-05 18:10): sign-out when the keychain refuses the delete ----
+
+/** A credential store whose deletes can fail, and can be held. */
+class StickyStore extends FileStore {
+  failClear = false;
+  holdClear: (() => void) | null = null;
+  clears = 0;
+  private gate: Promise<void> | null = null;
+  armHold() {
+    this.gate = new Promise<void>((r) => (this.holdClear = r));
+  }
+  async clear(): Promise<void> {
+    this.clears++;
+    if (this.gate) await this.gate;
+    if (this.failClear) throw new Error('keychain delete denied');
+    await super.clear();
+  }
+}
+
+describe('signing out when the stored credential cannot be deleted', () => {
+  async function assertOnLoginPageAndInert(c: Controller) {
+    expect(c.getState().phase).toBe('login');
+    expect(c.getState().loginReason).toContain('没能删除');
+    expect(c.getBoardData().items).toHaveLength(0);
+    const n = fake.log.length;
+    await c.syncNow();
+    expect(fake.log.length).toBe(n); // signed out: nothing is sent any more
+  }
+
+  async function assertRestartDoesNotUseLeftover(store: StickyStore, clock: { t: number }) {
+    // the leftover is still in the store, yet a restart must not sign in with it
+    expect(await store.get()).not.toBeNull();
+    const again = make(store, clock);
+    await again.c.start();
+    expect(again.c.getState().phase).toBe('login');
+    expect(again.c.getState().loginReason).toContain('没能删除');
+    expect(fake.log.filter((l) => l.path.includes('/issues?') || l.operation === 'refresh').length).toBe(seenBeforeRestart);
+    // keychain works again: the next start deletes the leftover and stays on the login page
+    store.failClear = false;
+    const third = make(store, clock);
+    await third.c.start();
+    expect(third.c.getState()).toMatchObject({ phase: 'login', loginReason: null });
+    expect(await store.get()).toBeNull();
+    return third.c;
+  }
+  let seenBeforeRestart = 0;
+
+  it('refresh refused (bad_refresh_token) + delete refused: login page with the reason, inert, restart does not reuse it, a new login works', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new StickyStore(join(dir, 'cred'));
+    const { c } = await signInAsApp(store, clock);
+    fake.state.refreshTokens.clear();
+    store.failClear = true;
+    clock.t += 9 * HOUR;
+    await c.syncNow();
+    expect(refreshes()).toHaveLength(1);
+    expect(store.clears).toBe(1); // the delete really was attempted
+    await assertOnLoginPageAndInert(c);
+    expect(c.getState().loginReason).toContain(REASON_REFRESH_ENDED);
+    c.stopTimer();
+    seenBeforeRestart = fake.log.filter((l) => l.path.includes('/issues?') || l.operation === 'refresh').length;
+    const fresh = await assertRestartDoesNotUseLeftover(store, clock);
+    // and signing in again works normally
+    fake.state.nextGrant = { token: 'ghu_fakeapptoken0000000000000000000002', refreshToken: 'ghr_fakeapprefresh00000000000000000000002' };
+    const p = fresh.startLogin();
+    await until(fresh, (s) => s.login.status === 'waiting', 'waiting');
+    fake.resolveGrant('approved');
+    await p;
+    expect(fresh.getState()).toMatchObject({ phase: 'ready', loginReason: null });
+  });
+
+  it('refresh token past its own deadline + delete refused: same', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new StickyStore(join(dir, 'cred'));
+    const { c } = await signInAsApp(store, clock);
+    store.failClear = true;
+    clock.t += 200 * 24 * HOUR; // beyond the ~6 month refresh-token lifetime
+    await c.syncNow();
+    expect(refreshes()).toHaveLength(0); // decided locally, GitHub not even asked
+    expect(store.clears).toBe(1);
+    await assertOnLoginPageAndInert(c);
+    c.stopTimer();
+    seenBeforeRestart = fake.log.filter((l) => l.path.includes('/issues?') || l.operation === 'refresh').length;
+    await assertRestartDoesNotUseLeftover(store, clock);
+  });
+
+  it('manual sign-out + delete refused: login page with the reason; a restart does NOT sign back in with the still-valid leftover', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new StickyStore(join(dir, 'cred'));
+    const { c } = await signInAsApp(store, clock);
+    store.failClear = true;
+    await expect(c.logout()).resolves.toBeUndefined();
+    expect(store.clears).toBe(1);
+    await assertOnLoginPageAndInert(c);
+    c.stopTimer();
+    seenBeforeRestart = fake.log.filter((l) => l.path.includes('/issues?') || l.operation === 'refresh').length;
+    await assertRestartDoesNotUseLeftover(store, clock);
+  });
+
+  it('the page switches at once, even while the delete is still pending; a login started meanwhile is not undone when the delete fails late', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new StickyStore(join(dir, 'cred'));
+    const { c } = await signInAsApp(store, clock);
+    store.failClear = true;
+    store.armHold();
+    const out = c.logout();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(c.getState().phase).toBe('login'); // before the keychain has answered
+    // a new sign-in while the old delete is still pending
+    fake.state.nextGrant = { token: 'ghu_fakeapptoken0000000000000000000003', refreshToken: 'ghr_fakeapprefresh00000000000000000000003' };
+    const p = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'waiting');
+    fake.resolveGrant('approved');
+    await new Promise((r) => setTimeout(r, 50));
+    store.holdClear!(); // the old delete now fails, late
+    await out;
+    await p;
+    expect(c.getState()).toMatchObject({ phase: 'ready', loginReason: null });
+    expect(decodeGrant(await store.get())?.accessToken).toBe('ghu_fakeapptoken0000000000000000000003');
+    // the new login cleared the "do not reuse" mark: a restart signs in with it
+    c.stopTimer();
+    const again = make(store, clock);
+    await again.c.start();
+    expect(again.c.getState().phase).toBe('ready');
+  });
+});
+
+describe('every credential-store failure, at every call site, ends somewhere visible', () => {
+  it('the keychain refuses the write at the end of a sign-in: login page with the error, nothing stored, nothing synced, no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const on = (r: unknown) => unhandled.push(r);
+    process.on('unhandledRejection', on);
+    try {
+      const clock = { t: FIXTURE_NOW };
+      const store = new FlakyStore(join(dir, 'cred'));
+      store.failing = true;
+      fake.state.nextGrant = { token: APP_TOKEN, refreshToken: APP_REFRESH };
+      const { c } = make(store, clock);
+      c.addSource(REPO);
+      await c.start();
+      const p = c.startLogin();
+      await until(c, (s) => s.login.status === 'waiting', 'waiting');
+      fake.resolveGrant('approved');
+      await expect(p).resolves.toBeUndefined();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(c.getState()).toMatchObject({ phase: 'login', login: { status: 'error' } });
+      expect(c.getState().login.message).toContain('keychain write denied');
+      expect(await store.get()).toBeNull();
+      expect(fake.log.filter((l) => l.path.includes('/issues?'))).toHaveLength(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', on);
+    }
+  });
+});

@@ -161,6 +161,23 @@ const MUTATIONS = [
   { what: '整份换回本轮复审时的旧实现（提交 f533fcb：未处理拒绝 + 503 误清登录）', file: 'src/main/controller.ts',
     fromGit: 'f533fcb78365446cce003ae5a28a4d088facb082:client/src/main/controller.ts',
     expect: ['no unhandled rejection, still signed in', 'refreshed but the keychain refuses the write'] },
+  // ---- review round 2 (18:10): sign-out when the keychain refuses the delete ----
+  { what: '退出时删凭据失败就把错误抛出去（页面停在看板）', file: 'src/main/controller.ts',
+    from: 'const err = await this.serialCredential(() => this.clearStored());\n    // only while',
+    to: 'const err = await this.serialCredential(async () => { await this.deps.credentials.clear(); return null as string | null; });\n    // only while',
+    expect: ['manual sign-out + delete refused'] },
+  { what: '启动时不理会「旧凭据没删掉」，照样用它自动登录', file: 'src/main/controller.ts',
+    from: 'if (this.deps.cache.getSetting<boolean>(PENDING_DELETE, false)) {', to: 'if (false) {',
+    expect: ['manual sign-out + delete refused', 'refresh refused (bad_refresh_token) + delete refused'] },
+  { what: '删除失败不记下来', file: 'src/main/controller.ts',
+    from: '      this.deps.cache.setSetting(PENDING_DELETE, true);\n', to: '',
+    expect: ['refresh token past its own deadline + delete refused'] },
+  { what: '新登录成功后不清「旧凭据没删掉」标记（重启又回登录页）', file: 'src/main/controller.ts',
+    from: '          return false;\n        }\n        this.deps.cache.setSetting(PENDING_DELETE, false);', to: '          return false;\n        }',
+    expect: ['a login started meanwhile is not undone'] },
+  { what: '整份换回第 2 轮复审时的旧实现（提交 bdce2b2）', file: 'src/main/controller.ts',
+    fromGit: 'bdce2b2:client/src/main/controller.ts',
+    expect: ['manual sign-out + delete refused', 'refresh refused (bad_refresh_token) + delete refused'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
