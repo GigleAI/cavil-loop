@@ -160,7 +160,7 @@ LABEL_PENDING_AGENT_EXTRA=""
 LABEL_PENDING_REVIEW=""
 REVIEW_WORKER_AGENT="codex"
 REVIEW_MODEL=""
-REVIEW_MAX_ROUNDS=3
+REVIEW_MAX_ROUNDS=6
 # Design proposals through the gate too (GitHub#102). Off by default: a design proposal (and a
 # revised one) goes straight to pending/human, exactly as before. With "true" *and*
 # LABEL_PENDING_REVIEW set, the worker flips a proposal to the review label instead; the reviewer

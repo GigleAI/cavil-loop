@@ -391,10 +391,15 @@ Refs #3" "$H1" "pending/merge"
     tick
     chk "GitHub 拒绝合并（仓库规则）→ 交人" "$(has_label 8 pending/human)" yes
     fresh; happy
-    jq '.autopilot.prs["8"].bounces = 3' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+    jq '.autopilot.prs["8"].bounces = 5' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
     jset checks.json '.[$h] = {check_runs:[{name:"unit", status:"completed", conclusion:"failure"}]}' --arg h "$H1"
     tick
-    chk "打回次数已到上限（3）再没过 → 交人而不是再打回" "$(has_label 8 pending/human)/$(has_label 8 pending/agent)" "yes/no"
+    chk "打回 5 次（没到默认上限 6）再没过 → 仍交回 worker" "$(has_label 8 pending/human)/$(has_label 8 pending/agent)" "no/yes"
+    fresh; happy
+    jq '.autopilot.prs["8"].bounces = 6' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+    jset checks.json '.[$h] = {check_runs:[{name:"unit", status:"completed", conclusion:"failure"}]}' --arg h "$H1"
+    tick
+    chk "打回次数已到上限（默认 6）再没过 → 交人而不是再打回" "$(has_label 8 pending/human)/$(has_label 8 pending/agent)" "yes/no"
 
     fresh 'LABEL_PENDING_REVIEW=""'; happy
     tick
