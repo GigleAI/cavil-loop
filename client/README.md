@@ -1,28 +1,36 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Electron + TypeScript + React），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图。
+`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台。
 
 ## 目录
 
 ```
 src/
-  shared/    类型、来源地址解析、IPC 约定、搜索筛选（filter.ts）、视图设置与导入（viewSettings.ts / viewImport.ts）（界面也会打包它，不能引用 Node / Electron）
-  data/      GitHub 请求、同步、去重、看板分列（board.ts）、表格分组（table.ts）、两者共用的排序（sort.ts）、本地缓存（SQLite）、OAuth 设备授权；
+  shared/    类型、来源地址解析、界面 API 约定（ipc.ts）、搜索筛选（filter.ts）、视图设置与导入（viewSettings.ts / viewImport.ts）
+  data/      GitHub 请求、同步、去重、看板分列（board.ts）、表格分组（table.ts）、两者共用的排序（sort.ts）；
              actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条
-  platform/  和操作系统打交道的部分：凭据（v1 只有 macOS 钥匙串）；通知、角标、自启以后加在这里
-  main/      Electron 主进程：controller.ts 是不依赖 Electron 的应用逻辑，main.ts 只做接线
-  preload/   暴露给界面的 window.cavil
-  renderer/  React 界面
+  app/       controller.ts 应用逻辑（同步轮次、设置、修改、详情），跑在窗口里，不碰凭据；localApi.ts 把它包成 window.cavil
+  backend/   窗口到后台的唯一通道：backend.ts 命令约定 + 代发请求；tauri.ts 走 Tauri 的 IPC；testBridge.ts 只进界面测试的构建
+  renderer/  React 界面；main.tsx 启动
+src-tauri/   Tauri 外壳（Rust）
+  src/main.rs           只做接线：一个 IPC 命令 backend、窗口不导航、GitHub 链接交给系统浏览器
+  crates/core/          后台本体：登录（设备授权）、续期、凭据队列、可信名单、退出（engine.rs）、钥匙串（platform.rs）、
+                        本地存储（store.rs，SQLite，表结构和 Electron 版相同）、代发请求只放行 GitHub 接口（http.rs）、命令表（api.rs）
+  crates/harness/       测试专用：把后台本体接到 stdin/stdout，单元测试和界面测试都驱动它（发布的 App 里没有）
+  tauri.conf.json       窗口的 Content-Security-Policy、打包设置
 test/
-  unit/        vitest：数据层 + controller，对着本地假 GitHub 走真 HTTP
-  e2e/         Playwright 驱动真 Electron 窗口
+  unit/        vitest：数据层 + controller，对着本地假 GitHub 走真 HTTP；后台是真实的 Rust 子进程（test/support/harness.ts）
+  support/     测试用的凭据存储（可以卡住、失败）、SQLite 读写、凭据格式——用来预置和核对磁盘状态
+  e2e/         Playwright 在 WebKit 里驱动真实窗口（bridge.ts：窗口经本机回环桥接到真实后台）
   fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销；
                writes.ts 是可写的一面（标签、里程碑、评论、看板字段、合并 / 关闭、新建 issue），digest() 判断「GitHub 上什么都没改」
   fixtures/    从 cavil project（GigleAI #11）录下来的真实接口返回，已脱敏；record.mjs 可重录
                cavil-project-11.filters.json：同一次录制里 GitHub 服务端筛选对每条查询的结果，搜索框按它逐条对拍
   mutation/    负对照
 scripts/
-  build.mjs             构建 dist/
+  build.mjs             构建窗口 dist/renderer（--test-bridge：界面测试用的 dist/renderer-test）
+  make-dmg.mjs          把 Tauri 打出的 .app 做成 dmg（dmgbuild，dmg-settings.py 是窗口布局）
+  size-gate.mjs         安装包体积门槛：每个 dmg ≤ 20 MB（1 MB = 1,000,000 字节），目标 ≤ 10 MB
   mac-open-check.sh     CI 的 Mac 机器上：dmg 窗口内容 + 冒烟 + 第一次打开步骤的实测
   render-dmg-background.cjs  把 build/dmg-background.html 渲染成 dmg 窗口背景图（改了 HTML 后手动重跑，产物入库）
   icon.mjs              App 图标：`node scripts/icon.mjs build` 从 build/icon-source.png 生成 build/icon.png；`check-app` 在 CI 的 Mac 机器上核对打出的 App 用的确实是它
@@ -30,19 +38,23 @@ build/
   dmg-background.html / background.png / background@2x.png   dmg 窗口背景（写着两种放行办法）
   打不开时看这里.txt     放进 dmg 的说明，命令可以直接复制
   icon-source.png       App 图标原图（维护者在 #144 给的图，原样像素，不要改）
-  icon.png              App 图标（生成物，入库）：原图去掉黑边、按苹果图标网格缩到 824px 居中在 1024 透明画布上；打包工具按约定读这个文件，打包配置里不用写
+  icon.png              App 图标（生成物，入库）：原图去掉黑边、按苹果图标网格缩到 824px 居中在 1024 透明画布上；tauri.conf.json 的 bundle.icon 指向它
 ```
 
 ## 开发
 
+要装 Rust（`rustup`）。单元测试和界面测试会先 `cargo build -p cavil-harness`，把真实后台当子进程驱动。
+
 ```bash
 cd client
 npm ci
-npm test                       # 单元测试，末尾打印「负对照：跳过 N 项」
-npm run test:mutation          # 负对照（MUTATION=1）：先跑未改动的基线，再逐项改坏一处，指定的断言必须失败
+npm run test:rust              # 后台的 Rust 单元测试
+npm test                       # 单元测试（真实后台子进程），末尾打印「负对照：跳过 N 项」
+npm run test:mutation          # 负对照（MUTATION=1）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
 npm run typecheck
-npm run test:e2e               # 界面测试；Linux 无显示器时自动用 headless，CI 用 xvfb
-npm start                      # 本机跑起来（Linux 上凭据只在内存里，退出即忘）
+npm run test:e2e               # 界面测试（WebKit；WebKit 起不来的机器加 CAVIL_E2E_ENGINE=chromium）
+npm start                      # tauri dev：本机跑起来（Linux 要装 libwebkit2gtk-4.1-dev；凭据只在内存里，退出即忘）
+npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip install dmgbuild）
 ```
 
 ## 规则（改代码前读）
@@ -51,8 +63,8 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 - **缓存只属于一个账号**：退出登录清空缓存；启动时凭据和上次读缓存用的不是同一把（只比对哈希），在 GitHub 确认账号前一律不显示旧缓存；一轮同步发出后有人退出 / 换账号，这一轮整个作废；来源在同步途中被删除（或删了又加）时，这一轮对它的结果不写入。
 - **登录要么完整成功，要么什么都不留**：凭据只在登录最后一步写入，所有写入 / 删除在一条队列里依次执行；写完立刻核对这次登录是否已被取消、退出或被更新的登录取代，是就在同一步里删掉，不会误删排在后面的新凭据。
 - **去重按条目本身**（`仓库#编号`），不按来源。迭代、状态属于各个 Project：两个 Project 值不同，同一条目在两列各出现一次；里程碑属于仓库。
-- **凭据只在平台层**：界面拿不到 token；钥匙串写入走 `security -i` 的标准输入，不进命令行参数。
-- **测试模式**（`CAVIL_CLIENT_TEST_MODE=1`）只给自动测试用：可以把 GitHub 地址换成本机回环地址的假服务，换成别的主机会直接报错。
+- **凭据只在 Rust 后台**（#151）：登录、续期、凭据写入队列、可信名单、退出全在 `src-tauri/crates/core`，只有这一份实现。窗口里的应用逻辑只拿到「未登录 / 等待授权（短码、网址）/ 已登录（账号、会话编号）」，要发 GitHub 请求就交给后台代发——后台加上凭据，只放行 `api.github.com`（地址按解析结果比，不按前缀），窗口自己带的 `Authorization` 头被丢掉，会话结束后一律拒绝。描述凭据的几项设置（可信名单、缓存绑定的凭据、缓存所属账号、登录时的 Client ID）窗口既读不到也写不了。`test/unit/backend-boundary.test.ts` 把一次完整的登录、同步、修改、续期、退出里所有跨过边界的命令和回答扫一遍，里面不许出现任何令牌。钥匙串写入走 `security -i` 的标准输入，不进命令行参数（和 Electron 版同一个钥匙串条目，升级不用重新登录）。
+- **测试模式**（`CAVIL_CLIENT_TEST_MODE=1`）只给自动测试用：可以把 GitHub 地址换成本机回环地址的假服务，换成别的主机会直接报错（判断在 `src-tauri/crates/core/src/platform.rs` 的 `select`）。
 - 只和 `github.com` 通信；外链一律用系统浏览器打开，且只放行 GitHub 的地址。
 
 ### 查看与修改（#138）
@@ -63,8 +75,8 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 - **里程碑**改的是这一条所在仓库里同名的那个；没有就拒绝并说明，什么都不发，不新建。
 - **迭代 / 状态**只改那张卡所在 Project 的值，用那个 Project 自己的字段和选项 id；拖卡时卡上有两个 Project 就两个都改，其中一个没有目标迭代就整次拒绝。「未加入看板」的卡拖进迭代列先问「加入看板 X 并设为这个迭代？」。GitHub 说这个账号不能改某个 Project（`viewerCanUpdate`）时，那个 Project 的入口变灰并说明，标签 / 里程碑照常可改。
 - **详情**每次打开都从 GitHub 现读（不缓存），评论、评审、每个评审下的逐行评论全部分页读完（任何一页失败就整次报错，不显示半份讨论）；最新在上，正文最老所以在最下，逐行评论挂在所属评审下面。GitHub 渲染好的 HTML 放在 `sandbox` 隔离框里（不能跑脚本、不能导航，有自己的 CSP），链接用系统浏览器打开。
-- **详情面板按「这一次打开」认回应**（`src/renderer/openSession.ts`，四种异步调用——读详情、读仓库候选、预览、修改——都走它）：每次打开一条（换到别的再回来、关掉再开都算新的一次）是一个新面板，上一次打开发出的回应一律不进新面板；同一次打开里，同类的新调用作废旧的（改完后的重读胜过慢的刷新，改了字后旧文字的预览不显示）。修改晚到时，结果显示在看板顶部（带编号），不动新面板的草稿、忙碌状态和对话框。负对照里有真实界面的项（`runner: 'e2e'`），`MUTATION=1` 时自动构建并驱动 Electron。
-- **图片只从 `github.com` / `api.github.com` 加载**（两层：页面和隔离框的 CSP；主进程拦掉窗口发往其他主机的一切请求）。GitHub 把大多数图片改写成 `camo.githubusercontent.com` 或附件地址，这些不加载，那一条下面会写「有 N 张图片…没有加载，点『在网页上看』」。
+- **详情面板按「这一次打开」认回应**（`src/renderer/openSession.ts`，四种异步调用——读详情、读仓库候选、预览、修改——都走它）：每次打开一条（换到别的再回来、关掉再开都算新的一次）是一个新面板，上一次打开发出的回应一律不进新面板；同一次打开里，同类的新调用作废旧的（改完后的重读胜过慢的刷新，改了字后旧文字的预览不显示）。修改晚到时，结果显示在看板顶部（带编号），不动新面板的草稿、忙碌状态和对话框。负对照里有真实界面的项（`runner: 'e2e'`），`MUTATION=1` 时自动构建并驱动真实窗口（WebKit + 真实后台）。
+- **图片只从 `github.com` / `api.github.com` 加载**（页面和隔离框各自的 CSP；页面的写在 `src-tauri/tauri.conf.json`）。Electron 版还有第二层「主进程拦掉窗口发往其他主机的一切请求」，Tauri 用系统网页引擎，没有这一层（#151 方案里写明的取舍）；补偿是凭据从不进窗口，窗口即使被塞进别的内容也拿不到凭据去别处用。GitHub 把大多数图片改写成 `camo.githubusercontent.com` 或附件地址，这些不加载，那一条下面会写「有 N 张图片…没有加载，点『在网页上看』」。
 - **交回 agent** = 加 `pending/agent`、摘 `pending/human`（先加后摘：第二步失败也不会两个都没有）；标签名在设置里改，要和 daemon 配置一致。
 - 被拒时界面照实显示原因（含 GitHub 的原话），GitHub 上什么都不改；测试对每种被拒情况核对假 GitHub 的 `digest()` 前后相同。
 - 缓存格式升到第 2 版（多存了写入要用的各种 id），#137 再升到第 3 版（多存了作者、父 issue、子 issue 进度、关联 PR、网页视图）：升级后第一次启动会丢掉旧缓存、重新同步一次。
@@ -104,7 +116,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 | 能看到的 | 账号能看到的、申请范围内的 | 账号能看到的、App 权限允许的、App 装到的仓库，三者交集 |
 | 这一版 | 内置 Client ID，直接登录 | 没有内置的 App：要填自己建的 GitHub App 的 Client ID；还没做的：内置 App、引导组织安装、提示「哪些仓库没装到」 |
 
-客户端会在令牌到期前 5 分钟自动续期，GitHub 说 401 时也先续期重试一次。续期只在一处进行，同一时刻最多一次（续期令牌用过即作废）。续期的结果只有这几种（`src/main/controller.ts` 的 `ensureFresh` 注释里逐条列着）：
+客户端会在令牌到期前 5 分钟自动续期，GitHub 说 401 时也先续期重试一次。续期只在一处进行，同一时刻最多一次（续期令牌用过即作废）。续期的结果只有这几种（`src-tauri/crates/core/src/engine.rs` 的 `ensure_fresh` 注释里逐条列着）：
 
 | 续期遇到的 | 结果 |
 |---|---|
@@ -149,4 +161,4 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 
 ## 发版
 
-改 `package.json` 的 `version` → 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在 Mac 机器上打两个 dmg、跑 `scripts/mac-open-check.sh`，通过后建 Release（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
+改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg（`tauri build --bundles app` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh`，通过后建 Release（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
