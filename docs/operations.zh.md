@@ -109,6 +109,11 @@ SELFHEAL_MAX_RETRIES=3
 # 只有人真的上手干活的那个 checkout 才会卡住，所以是 opt-in；要开推荐设 20
 CHECKOUT_STALE_ALERT_COMMITS=0
 
+# 1 = PR 分支被本项目自己的主 checkout 占着、且它干净、没有进行中的操作、与 PR 最新提交
+# 完全一致时，把它切回 BASE_BRANCH 继续派工（会在 PR 上留言）。默认 0 = 关：它放宽了
+# 「daemon 不碰你的工作区」
+AUTO_RELEASE_MAIN_CHECKOUT=0
+
 # 派工口径：label = 只捡打了 pending/agent 的；greedy = 开着的都干，除非被挡工 label 挡住
 DISPATCH_MODE="label"
 GREEDY_SKIP_LABELS=""            # greedy 下额外的挡工 label（逗号分隔，追加在内置五个之后）
@@ -1433,12 +1438,21 @@ grep -E '派工失败|连续 .* 次派工失败' "$STATE_DIR/poll.log" | tail
 worktree 签出。** 这时 `git fetch` 必然失败（哪怕根本没东西要更新），而紧随其后的
 `git worktree add --force` 反倒会成功、建出**第二个**签出同一分支的 worktree —— 两个
 worker 往同一个分支上提交。所以派工会在动手之前就拒绝，并把占用者路径写进日志、直接
-转 `pending/human`：
+转 `pending/human`。留言里写出占用者的真实目录、它现在的状态（有没有未提交改动、比 PR
+领先 / 落后几个提交、有没有进行中的合并 / 变基），并按占用者种类给出能执行的命令：
 
 ```bash
-git worktree list                 # 找出占用者
-git worktree remove <占用者目录>   # 腾出分支，然后重新标 pending/agent
+# 占用者是主 checkout（你在那里开的分支并 push 了）：
+git -C '<主 checkout>' switch main    # 腾出分支，然后重新标 pending/agent
+# 占用者是附加 worktree：
+git worktree remove '<占用者目录>'     # 腾出分支，然后重新标 pending/agent
 ```
+
+主 checkout 不能 `git worktree remove`（`fatal: ... is a main working tree`）。项目是
+git submodule 时，`git worktree list` 给主 checkout 报的是它的 gitdir
+（`.../.git/modules/<名字>`），daemon 会先解析成真实工作目录再显示。配置
+`AUTO_RELEASE_MAIN_CHECKOUT=1` 后，确定安全时 daemon 会自己执行这个 `switch`（条件见配置
+模板），并在 PR 上留言说明。
 
 计数文件在 `$STATE_DIR/dispatch-fail/`，第一次成功时清零、升级转人工时也清零 —— 所以
 人工重标一次总能拿到完整的重试次数。要手工清某一条：

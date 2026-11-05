@@ -47,10 +47,17 @@ else
     # 分支被别的 worktree 签出时，`git worktree add`（不带 --force）本来就会失败，
     # 但错误只写在 stderr 上，而 _lib.sh 顶部的永久 `2>/dev/null` 会把它整个吞掉——
     # 于是 poll.log 里只剩一句「派工失败」。先显式判一次，把占用者路径写进日志。
-    if HOLDER=$(branch_checked_out_elsewhere "$BRANCH" "$WORKTREE_DIR"); then
-        log "  ⚠️ 分支 $BRANCH 已被另一个 worktree 签出：$HOLDER"
+    #
+    # 占用者是主 checkout 时给 `switch`、附加 worktree 时给 `worktree remove`，路径一律是
+    # 真实目录（submodule 下 git 报的是 gitdir）。这条路不自动切走主 checkout：分支是
+    # daemon 刚为 issue 建的，被主 checkout 占着说明人正在上面干活（GitHub#141）。
+    if find_branch_holder "$BRANCH" "$WORKTREE_DIR"; then
+        CMP_REF=$(git rev-parse -q --verify "refs/remotes/origin/$BRANCH^{commit}" 2>/dev/null || true)
+        branch_holder_state "$BRANCH" "$CMP_REF" "origin/$BRANCH（本机最近一次 fetch）" "远端没有这个分支（本地提交全部未推送）"
+        log "  ⚠️ 分支 $BRANCH 已被$(branch_holder_who) 签出（git 报的路径：$BH_RAW）"
+        log "     占用者现状：$BH_STATE_TEXT"
         log "     两个 worktree 共用一个分支 = 两个 worker 往同一分支提交，拒绝建 worktree"
-        log "     清掉占用者（git worktree remove '$HOLDER'）后重试"
+        log "     怎么继续：$(branch_holder_next_step "$BASE_BRANCH")"
         exit 1
     fi
     mkdir -p "$WORKTREE_BASE"

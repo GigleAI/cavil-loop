@@ -1064,6 +1064,38 @@ POLL_DUE_SLACK_SECS=10
 CHECKOUT_STALE_ALERT_COMMITS=0
 # CHECKOUT_STALE_ALERT_TITLE="[daemon] 主 checkout 长期落后 origin"
 
+# ── Release a PR branch held by the main checkout / 主 checkout 占着 PR 分支时自动让出 ──
+
+# A natural flow is: create a branch in the main checkout, push, open a PR, hand it
+# to the daemon. The daemon then cannot build the PR's worktree, because git refuses
+# to check one branch out twice; the item goes to pending/human with the exact
+# command (`git -C '<main checkout>' switch <base>`) and the holder's state.
+# Set this to 1 and the daemon switches the main checkout back to BASE_BRANCH by
+# itself — but only when ALL hold: the holder is this project's own main checkout
+# (PROJECT_ROOT's working tree; never a linked worktree, never another directory),
+# no uncommitted or untracked changes, no merge / rebase / cherry-pick / revert /
+# bisect in progress, the local branch equals the PR's latest commit exactly, and
+# BASE_BRANCH is not checked out by another worktree. The switch itself runs as
+# `git switch --no-overwrite-ignore`, so a file created after the checks is never
+# overwritten (git refuses, and the item goes to pending/human with git's message).
+# On success the daemon comments on the PR that it switched the checkout back.
+# Only the PR re-dispatch path does this; a branch the daemon just made for a new
+# issue is never switched away from (someone is working there).
+#
+# 常见流程：在主 checkout 里开分支 → push → 开 PR → 交给 daemon。这时 git 不许同一分支
+# 签出两次，daemon 建不了 PR 的 worktree，转 pending/human，并给出正确命令
+# （`git -C '<主 checkout>' switch <base>`）和占用者现状。设成 1，daemon 会自己把主
+# checkout 切回 BASE_BRANCH —— 但只在下面**全部**满足时：占用者就是本项目自己的主
+# checkout（PROJECT_ROOT 所在工作树；附加 worktree、别的目录一律不动）；没有未提交 /
+# 未跟踪的改动；没有进行中的 merge / rebase / cherry-pick / revert / bisect；本地分支与
+# PR 最新提交完全相同；BASE_BRANCH 没被别的 worktree 签出。切换命令是
+# `git switch --no-overwrite-ignore`：检查之后才出现的同名被忽略文件不会被覆盖（git 拒绝，
+# 照常转人工并附 git 原话）。切成功会在 PR 上留言说明。只有 PR 重建 worktree 那条路会这样做；
+# daemon 刚为新 issue 建的分支被主 checkout 占着，说明有人正在上面干活，不会切走。
+#
+# **默认 0 = 关**：它放宽了「daemon 不碰你的工作区」，要的项目自己打开。
+AUTO_RELEASE_MAIN_CHECKOUT=0
+
 # ── Latest-site refresh on merge / merge 钩子刷新常驻「最新站」 ──
 
 # When the poller detects a newly-merged PR (§ 3 auto-cleanup scan), it can
