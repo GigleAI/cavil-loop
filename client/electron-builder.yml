@@ -27,9 +27,10 @@ dmg:
   # form that can be copied. Background: build/background.png (+ @2x), rendered
   # from build/dmg-background.html by scripts/render-dmg-background.cjs.
   background: build/background.png
+  # the window size includes the title bar (~28 px): 480 px of content = the background
   window:
     width: 660
-    height: 480
+    height: 508
   contents:
     - x: 180
       y: 140
