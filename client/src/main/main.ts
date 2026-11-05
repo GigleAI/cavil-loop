@@ -1,16 +1,18 @@
 // Electron main process: one window, the controller, IPC. Everything the
 // app decides lives in controller.ts / data/; this file only wires it up.
 
-import { app, BrowserWindow, ipcMain, Notification, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Notification, session, shell } from 'electron';
+import { appendFileSync } from 'node:fs';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Controller } from './controller';
 import { itemAlertText } from '../data/pending';
 import { Cache } from '../data/cache';
-import { createPlatform } from '../platform';
+import { createPlatform, isAllowedRequest } from '../platform';
 import { IPC, type Snapshot } from '../shared/ipc';
-import type { ViewSettings } from '../shared/types';
+import type { HandBackLabels, ViewSettings } from '../shared/types';
+import type { WriteAction } from '../shared/actions';
 
 // --notify-check implies the smoke test: after the window mounts, one real
 // notification goes through the production path (platform layer → system
@@ -84,6 +86,21 @@ app.whenReady().then(async () => {
       showWindow,
     },
   });
+  // Second layer behind each page's own policy: the window reaches GitHub's two hosts only.
+  // Test mode records every request and never lets one leave the machine.
+  const requestLog = platform.testMode ? process.env.CAVIL_CLIENT_TEST_REQUESTS_FILE : undefined;
+  session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (d, cb) => {
+    const allowed = isAllowedRequest(d.url, platform.endpoints);
+    if (requestLog) {
+      try {
+        appendFileSync(requestLog, `${allowed ? 'allow' : 'block'} ${d.url}\n`);
+      } catch {
+        /* test bookkeeping only */
+      }
+    }
+    const local = /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(d.url);
+    cb({ cancel: !allowed || (platform.testMode && !local) });
+  });
   const cache = new Cache(join(app.getPath('userData'), 'cache.sqlite'));
   const controller = new Controller({
     credentials: platform.credentials,
@@ -128,6 +145,14 @@ app.whenReady().then(async () => {
     return { action: 'deny' };
   });
   w.webContents.on('will-navigate', (e) => e.preventDefault());
+  // The detail view's GitHub HTML lives in a sandboxed frame: it may never navigate
+  // itself (or anything) to a web page; links open in the system browser instead.
+  w.webContents.on('will-frame-navigate', (e) => {
+    if (!e.isMainFrame && !/^about:(srcdoc|blank)$/.test(e.url)) {
+      e.preventDefault();
+      if (/^https?:/.test(e.url)) platform.openExternal(e.url).catch(() => {});
+    }
+  });
 
   const snapshot = (): Snapshot => ({ state: controller.getState(), data: controller.getBoardData() });
   controller.onChange(() => {
@@ -145,7 +170,11 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.setView, (_e, patch: Partial<ViewSettings>) => controller.setView(patch));
   ipcMain.handle(IPC.syncNow, () => controller.syncNow());
   ipcMain.handle(IPC.openExternal, (_e, url: string) => platform.openExternal(String(url)));
-  ipcMain.handle(IPC.setPendingLabel, (_e, name: string) => controller.setPendingLabel(String(name)));
+  ipcMain.handle(IPC.loadDetail, (_e, key: string) => controller.loadDetail(String(key)));
+  ipcMain.handle(IPC.repoOptions, (_e, repo: string) => controller.repoOptions(String(repo)));
+  ipcMain.handle(IPC.previewMarkdown, (_e, repo: string, text: string) => controller.previewMarkdown(String(repo), String(text)));
+  ipcMain.handle(IPC.act, (_e, action: WriteAction) => controller.act(action));
+  ipcMain.handle(IPC.setHandBack, (_e, patch: Partial<HandBackLabels>) => controller.setHandBack(patch ?? {}));
   ipcMain.handle(IPC.setLaunchAtLogin, (_e, on: boolean) => controller.setLaunchAtLogin(on === true));
 
   /** One notification through the same platform call a sync round uses; what the system reported back. */
@@ -153,7 +182,7 @@ app.whenReady().then(async () => {
     new Promise((resolve) => {
       if (!platform.alerts) return resolve('no-alerts-on-this-platform');
       const t = setTimeout(() => resolve('timeout (no show / failed event in 15 s)'), 15_000);
-      const it = { key: 'gigleai/cavil-loop#139', repo: 'GigleAI/cavil-loop', number: 139, title: 'notify check', url: 'https://github.com/GigleAI/cavil-loop/issues/139', kind: 'issue' as const, state: 'open' as const, updatedAt: '', labels: [], assignees: [], milestone: null, projects: [], sources: [] };
+      const it = { key: 'gigleai/cavil-loop#139', repo: 'GigleAI/cavil-loop', number: 139, title: 'notify check', url: 'https://github.com/GigleAI/cavil-loop/issues/139', kind: 'issue' as const, state: 'open' as const };
       platform.alerts.notify({ kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) }, (d) => {
         clearTimeout(t);
         // shown: keep the process (and the banner) a moment longer

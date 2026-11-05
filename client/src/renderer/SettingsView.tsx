@@ -7,7 +7,6 @@ import { AppKindPicker } from './AppKindPicker';
 export function SettingsView({ state, data, onBack, onHelp }: { state: AppState; data: BoardData; onBack: () => void; onHelp: () => void }) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [label, setLabel] = useState(state.pendingLabel);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
 
   const add = async () => {
@@ -65,23 +64,26 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         </ul>
       </section>
 
+      <section data-testid="hand-back-settings">
+        <h3>「交回 agent」用的标签</h3>
+        <p className="muted small">详情页回复后可以一键交回 agent：去掉第一个标签、加上第二个。要和 daemon 配置里的标签名一致（默认 pending/human → pending/agent）。</p>
+        <div className="row">
+          <label>
+            等人处理的标签（去掉）
+            <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: e.target.value })} />
+          </label>
+          <label>
+            交给 agent 的标签（加上）
+            <input data-testid="hand-back-agent" defaultValue={state.handBack.agent} onBlur={(e) => api().setHandBack({ agent: e.target.value })} />
+          </label>
+        </div>
+      </section>
+
       <section data-testid="pending-settings">
         <h3>提醒</h3>
         <p className="muted small">
-          带这个标签的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知，Dock 角标显示总数。和 daemon 配置里的标签名保持一致。
+          带「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知，Dock 角标显示总数。
         </p>
-        <div className="row">
-          <input
-            data-testid="pending-label"
-            value={label}
-            placeholder="pending/human"
-            onChange={(e) => setLabel(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && api().setPendingLabel(label)}
-          />
-          <button data-testid="pending-label-save" disabled={label.trim() === state.pendingLabel} onClick={() => api().setPendingLabel(label)}>
-            保存
-          </button>
-        </div>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
             macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标和这里的数字不受影响。

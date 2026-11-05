@@ -153,7 +153,7 @@ export class PendingTracker {
 }
 
 /** Text of the notification for one item (shared by the app and its tests). */
-export function itemAlertText(it: Item): { title: string; body: string } {
+export function itemAlertText(it: Pick<Item, 'repo' | 'number' | 'state' | 'kind' | 'title'>): { title: string; body: string } {
   const state = it.state === 'merged' ? '（已合并）' : it.state === 'closed' ? '（已关闭）' : '';
   const kind = it.kind === 'pr' ? 'PR' : 'issue';
   return { title: `待处理：${it.repo}#${it.number}${state}`, body: `${kind} · ${it.title}` };

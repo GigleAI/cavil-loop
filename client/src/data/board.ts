@@ -2,6 +2,7 @@
 // (callers pass `today`), so the renderer and the tests run the same code.
 
 import type { ColumnMode, Item, Iteration, ProjectMeta } from '../shared/types';
+import type { WriteAction } from '../shared/actions';
 
 export const COL_UNBOARDED = 'unboarded';
 export const COL_NO_ITERATION = 'iteration:none';
@@ -14,6 +15,8 @@ export interface Card {
   item: Item;
   /** titles of the Projects whose value put the card in this column (empty for milestone / unboarded) */
   projectTitles: string[];
+  /** keys of those Projects (what a drag changes: only these Projects' values) */
+  projectKeys: string[];
   /** repository = swimlane */
   lane: string;
 }
@@ -81,9 +84,9 @@ function finish(
     }));
 }
 
-function place(placements: Map<string, Card[]>, col: string, item: Item, projectTitles: string[]) {
+function place(placements: Map<string, Card[]>, col: string, item: Item, projectTitles: string[], projectKeys: string[] = []) {
   const list = placements.get(col) ?? [];
-  list.push({ id: `${item.key}@${col}`, item, projectTitles, lane: item.repo });
+  list.push({ id: `${item.key}@${col}`, item, projectTitles, projectKeys, lane: item.repo });
   placements.set(col, list);
 }
 
@@ -105,14 +108,16 @@ function placeByMembership(
     return;
   }
   const byCol = new Map<string, string[]>();
+  const keysByCol = new Map<string, string[]>();
   for (const m of memberships) {
     const col = columnOf(m, selectedProjects.get(m.projectKey)!);
     const titles = byCol.get(col) ?? [];
     titles.push(m.projectTitle);
     byCol.set(col, titles);
+    keysByCol.set(col, [...(keysByCol.get(col) ?? []), m.projectKey]);
     if (!seeds.has(col)) throw new Error(`internal: column ${col} has no seed`);
   }
-  for (const [col, titles] of byCol) place(placements, col, item, titles);
+  for (const [col, titles] of byCol) place(placements, col, item, titles, keysByCol.get(col));
 }
 
 const RANK_REGULAR = 1;
@@ -244,7 +249,76 @@ export function buildBoard(
   return { mode, notice, columns, lanes };
 }
 
-/** Writes are only possible while GitHub is reachable (sub-item 1 has none yet; the entries are placeholders). */
+/** Writes are only possible while GitHub is reachable: offline, every change entry is grey and nothing is queued. */
 export function writesEnabled(sync: { offline: boolean }): boolean {
   return !sync.offline;
+}
+
+/** What dropping a card on a column means. */
+export type DropPlan =
+  | { kind: 'none' }
+  | { kind: 'refuse'; reason: string }
+  | { kind: 'do'; actions: WriteAction[]; summary: string }
+  /** an item on none of the selected Projects: ask "add it to Project X and set …?" first */
+  | { kind: 'confirm'; question: string; choices: { projectKey: string; projectTitle: string; action: WriteAction }[] };
+
+function iterationOfColumn(key: string): { title: string; startDate: string } | null {
+  if (!key.startsWith('iteration:') || key === COL_NO_ITERATION) return null;
+  const [title, startDate] = key.slice('iteration:'.length).split('\u0000');
+  return { title, startDate };
+}
+
+/**
+ * Drag & drop, decided without touching anything. A card changes only the
+ * Projects it sits in that column for (one value per Project, with that
+ * Project's own iteration / option). Milestones belong to the repository: the
+ * item's repository's milestone with the column's title (checked when sent).
+ */
+export function dropPlan(card: Card, from: string, to: Column, mode: ColumnMode, projects: ProjectMeta[]): DropPlan {
+  if (from === to.key) return { kind: 'none' };
+  const it = card.item;
+  const meta = (k: string) => projects.find((p) => p.key === k);
+  if (to.key === COL_UNBOARDED) return { kind: 'refuse', reason: '客户端不把条目移出看板；要移出请在网页上操作' };
+
+  if (mode === 'milestone') {
+    if (to.key === COL_NO_MILESTONE) return { kind: 'do', actions: [{ kind: 'setMilestone', key: it.key, title: null }], summary: `去掉 ${it.repo}#${it.number} 的里程碑` };
+    const title = to.key.slice('milestone:'.length);
+    return { kind: 'do', actions: [{ kind: 'setMilestone', key: it.key, title }], summary: `把 ${it.repo}#${it.number} 的里程碑改成「${title}」` };
+  }
+
+  const iteration = mode === 'iteration' ? iterationOfColumn(to.key) : null;
+  const clear = to.key === COL_NO_ITERATION || to.key === COL_NO_STATUS;
+  const status = mode === 'status' && !clear ? to.key.slice('status:'.length) : null;
+  const pickIteration = (p: ProjectMeta) => (iteration ? p.iterations.find((x) => x.title === iteration.title && x.startDate === iteration.startDate) : undefined);
+  const has = (p: ProjectMeta) => (mode === 'iteration' ? Boolean(pickIteration(p)) : p.statusOptions.includes(status ?? ''));
+  const what = mode === 'iteration' ? `迭代「${iteration?.title ?? ''}」` : `状态「${status ?? ''}」`;
+
+  if (card.projectKeys.length === 0) {
+    if (clear) return { kind: 'refuse', reason: '这一条不在所选看板上，没有可清空的值' };
+    const candidates = projects.filter((p) => has(p));
+    if (!candidates.length) return { kind: 'refuse', reason: `所选看板里没有${what}` };
+    const writable = candidates.filter((p) => p.viewerCanUpdate);
+    if (!writable.length) return { kind: 'refuse', reason: `你在看板${candidates.map((p) => `「${p.title}」`).join('、')}上没有修改权限` };
+    return {
+      kind: 'confirm',
+      question: `${it.repo}#${it.number} 还没加入看板。加入看板${writable.length === 1 ? `「${writable[0].title}」` : ''}并设为${what}？`,
+      choices: writable.map((p) => ({
+        projectKey: p.key,
+        projectTitle: p.title,
+        action: { kind: 'addToProject', key: it.key, projectKey: p.key, iterationId: pickIteration(p)?.id ?? null, status: mode === 'status' ? status : null },
+      })),
+    };
+  }
+
+  const actions: WriteAction[] = [];
+  for (const k of card.projectKeys) {
+    const p = meta(k);
+    if (!p) return { kind: 'refuse', reason: '这张卡所在的看板不在当前来源里，请刷新' };
+    if (!p.viewerCanUpdate) return { kind: 'refuse', reason: `你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）` };
+    if (!clear && !has(p)) return { kind: 'refuse', reason: `看板「${p.title}」没有${what}` };
+    if (mode === 'iteration') actions.push({ kind: 'setIteration', key: it.key, projectKey: k, iterationId: clear ? null : pickIteration(p)!.id });
+    else actions.push({ kind: 'setStatus', key: it.key, projectKey: k, status: clear ? null : status });
+  }
+  const where = card.projectTitles.map((t) => `「${t}」`).join('、');
+  return { kind: 'do', actions, summary: clear ? `清空 ${it.repo}#${it.number} 在看板${where}上的${mode === 'iteration' ? '迭代' : '状态'}` : `把 ${it.repo}#${it.number} 在看板${where}上改成${what}` };
 }

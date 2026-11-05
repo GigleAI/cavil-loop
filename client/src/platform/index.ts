@@ -53,6 +53,21 @@ export function isAllowedExternal(url: string, endpoints: Endpoints): boolean {
   }
 }
 
+/**
+ * Requests the window (pages, frames, images) may make: GitHub's two hosts,
+ * plus — in test mode only — the loopback fake. Everything else is cancelled
+ * in the main process, whatever a page's own policy says.
+ */
+export function isAllowedRequest(url: string, endpoints: Endpoints): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'https:' && (u.hostname === 'github.com' || u.hostname === 'api.github.com')) return true;
+    return isLoopback(url) && (u.origin === new URL(endpoints.api).origin || u.origin === new URL(endpoints.web).origin);
+  } catch {
+    return false;
+  }
+}
+
 export interface PlatformEnv {
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;

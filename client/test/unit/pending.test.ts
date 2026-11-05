@@ -309,27 +309,34 @@ describe('pending reminders against the fake GitHub', () => {
     expect(h.summaries()).toHaveLength(1);
   });
 
-  it('another label name: recounted silently; label match ignores case like GitHub', async () => {
+  it('another label name: recounted silently; label match ignores case like GitHub; one setting with "hand back to agent"', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
-    h.c.setPendingLabel('  DONE ');
-    expect(h.c.getState().pendingLabel).toBe('DONE');
+    // the reminder label IS the "waiting for a human" label that hand-back removes
+    h.c.setHandBack({ human: '  DONE ' });
+    expect(h.c.getState().handBack.human).toBe('DONE');
     expect(h.badge()).toBeGreaterThan(50);
     expect(h.badge()).toBe(h.c.getState().pendingCount);
     expect(h.alerts).toHaveLength(1);
     await tick(h);
     expect(h.alerts).toHaveLength(1);
-    // empty = back to the default, and it survives a restart
-    h.c.setPendingLabel('');
-    expect(h.c.getState().pendingLabel).toBe(LABEL);
+    // changing only the other label does not touch the count
+    const before = h.badges.length;
+    h.c.setHandBack({ agent: 'ready/agent' });
+    expect(h.badges.length).toBe(before);
+    // empty = back to the default
+    h.c.setHandBack({ human: '' });
+    expect(h.c.getState().handBack.human).toBe(LABEL);
     expect(h.badge()).toBe(11);
   });
 
   it('a configured label name survives a restart and is the one used', async () => {
-    const h = await signedIn({ sources: [PROJECT_URL], seed: { pendingLabel: 'Done' } });
+    const h = await signedIn({ sources: [PROJECT_URL], seed: { handBack: { human: 'Done', agent: 'pending/agent' } } });
     await h.c.start();
-    expect(h.c.getState().pendingLabel).toBe('Done');
+    expect(h.c.getState().handBack.human).toBe('Done');
     expect(h.summaries()[0].title).not.toBe('11 条待处理');
+    expect(h.badge()).toBe(h.c.getState().pendingCount);
+    expect(h.badge()).toBeGreaterThan(50);
   });
 
   it('sign out clears the badge and the count', async () => {

@@ -24,12 +24,25 @@ export function iter(title: string, startDate: string, duration = 7): Iteration 
 }
 
 export function project(key: string, title: string, iterations: Iteration[] | null, statusOptions = ['Todo', 'Done']): ProjectMeta {
-  return { key, title, url: `https://github.com/orgs/x/projects/${key}`, hasIterationField: iterations !== null, iterations: iterations ?? [], statusOptions };
+  return {
+    key,
+    title,
+    url: `https://github.com/orgs/x/projects/${key}`,
+    projectId: `PVT_${key}`,
+    viewerCanUpdate: true,
+    iterationFieldId: iterations !== null ? `PVTIF_${key}` : null,
+    statusFieldId: `PVTSSF_${key}`,
+    statusOptionIds: statusOptions.map((name) => ({ id: `opt-${name}`, name })),
+    hasIterationField: iterations !== null,
+    iterations: iterations ?? [],
+    statusOptions,
+  };
 }
 
 export function item(repo: string, number: number, extra: Partial<Item> = {}, memberships: ProjectMembership[] = []): Item {
   return {
     key: `${repo.toLowerCase()}#${number}`,
+    nodeId: `I_${repo}#${number}`,
     repo,
     number,
     title: `t${number}`,
@@ -47,7 +60,7 @@ export function item(repo: string, number: number, extra: Partial<Item> = {}, me
 }
 
 export function member(p: ProjectMeta, iteration: Iteration | null, status: string | null = null): ProjectMembership {
-  return { projectKey: p.key, projectTitle: p.title, iteration, status };
+  return { projectKey: p.key, projectTitle: p.title, itemId: `PVTI_${p.key}`, iteration, status };
 }
 
 /** Mark a credential as one this app signed in with (what a completed sign-in records), so a test may seed it directly. */

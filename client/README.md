@@ -1,13 +1,14 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Electron + TypeScript + React），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136。
+`client/` 是一个本地桌面客户端（Electron + TypeScript + React），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改。
 
 ## 目录
 
 ```
 src/
   shared/    类型、来源地址解析、IPC 约定（界面也会打包它，不能引用 Node / Electron）
-  data/      GitHub 请求、同步、去重、分列、本地缓存（SQLite）、OAuth 设备授权
+  data/      GitHub 请求、同步、去重、分列、本地缓存（SQLite）、OAuth 设备授权；
+             actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条，pending.ts 待处理提醒
   platform/  和操作系统打交道的部分：凭据（v1 只有 macOS 钥匙串）、通知、Dock 角标、开机自启、关窗后台运行（v1 只实现 macOS）
   main/      Electron 主进程：controller.ts 是不依赖 Electron 的应用逻辑，main.ts 只做接线
   preload/   暴露给界面的 window.cavil
@@ -15,7 +16,8 @@ src/
 test/
   unit/        vitest：数据层 + controller，对着本地假 GitHub 走真 HTTP
   e2e/         Playwright 驱动真 Electron 窗口
-  fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销
+  fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销；
+               writes.ts 是可写的一面（标签、里程碑、评论、看板字段、合并 / 关闭、新建 issue），digest() 判断「GitHub 上什么都没改」
   fixtures/    从 cavil project（GigleAI #11）录下来的真实接口返回，已脱敏；record.mjs 可重录
   mutation/    负对照
 scripts/
@@ -49,9 +51,23 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 - **测试模式**（`CAVIL_CLIENT_TEST_MODE=1`）只给自动测试用：可以把 GitHub 地址换成本机回环地址的假服务，换成别的主机会直接报错。
 - 只和 `github.com` 通信；外链一律用系统浏览器打开，且只放行 GitHub 的地址。
 
+### 查看与修改（#138）
+
+- **修改直接发给 GitHub，成功后立即重读那一条**：只替换缓存里那一条（所在的每个来源各一份，同样受「退出 / 换账号 / 来源被删」的保护）；同步正在进行时再补一轮。重读失败不影响修改本身，界面会说明，下一轮同步补上。离线时所有修改入口变灰，不排队、不重试。
+- **标签只发「加这个 / 删这个」**（`POST …/labels {labels:[一个]}`、`DELETE …/labels/<名字>`），从不整份覆盖——整份覆盖会把别人刚加的标签冲掉（负对照守着）。
+- **合并一定带上看到的提交**（`sha`）：期间被推了新提交，GitHub 回 409，界面说「请刷新」，什么都不合；合并方式只列仓库允许的；不提供绕过分支保护的管理员合并。关闭 PR 先关、关成功才发附带的评论。
+- **里程碑**改的是这一条所在仓库里同名的那个；没有就拒绝并说明，什么都不发，不新建。
+- **迭代 / 状态**只改那张卡所在 Project 的值，用那个 Project 自己的字段和选项 id；拖卡时卡上有两个 Project 就两个都改，其中一个没有目标迭代就整次拒绝。「未加入看板」的卡拖进迭代列先问「加入看板 X 并设为这个迭代？」。GitHub 说这个账号不能改某个 Project（`viewerCanUpdate`）时，那个 Project 的入口变灰并说明，标签 / 里程碑照常可改。
+- **详情**每次打开都从 GitHub 现读（不缓存），评论、评审、每个评审下的逐行评论全部分页读完（任何一页失败就整次报错，不显示半份讨论）；最新在上，正文最老所以在最下，逐行评论挂在所属评审下面。GitHub 渲染好的 HTML 放在 `sandbox` 隔离框里（不能跑脚本、不能导航，有自己的 CSP），链接用系统浏览器打开。
+- **详情面板按「这一次打开」认回应**（`src/renderer/openSession.ts`，四种异步调用——读详情、读仓库候选、预览、修改——都走它）：每次打开一条（换到别的再回来、关掉再开都算新的一次）是一个新面板，上一次打开发出的回应一律不进新面板；同一次打开里，同类的新调用作废旧的（改完后的重读胜过慢的刷新，改了字后旧文字的预览不显示）。修改晚到时，结果显示在看板顶部（带编号），不动新面板的草稿、忙碌状态和对话框。负对照里有真实界面的项（`runner: 'e2e'`），`MUTATION=1` 时自动构建并驱动 Electron。
+- **图片只从 `github.com` / `api.github.com` 加载**（两层：页面和隔离框的 CSP；主进程拦掉窗口发往其他主机的一切请求）。GitHub 把大多数图片改写成 `camo.githubusercontent.com` 或附件地址，这些不加载，那一条下面会写「有 N 张图片…没有加载，点『在网页上看』」。
+- **交回 agent** = 加 `pending/agent`、摘 `pending/human`（先加后摘：第二步失败也不会两个都没有）；标签名在设置里改，要和 daemon 配置一致。
+- 被拒时界面照实显示原因（含 GitHub 的原话），GitHub 上什么都不改；测试对每种被拒情况核对假 GitHub 的 `digest()` 前后相同。
+- 缓存格式升到第 2 版（多存了写入要用的各种 id）：升级后第一次启动会丢掉旧缓存、重新同步一次。
+
 ## `pending/human` 提醒（#139）
 
-「待处理」= 所有已加入来源里带提醒标签（默认 `pending/human`，设置里可改，不区分大小写）的条目，**不论开着还是已关闭 / 已合并**。通知、Dock 角标、启动汇总全部由 `src/data/pending.ts` 的同一个 `PendingTracker` 算出，controller 只在一轮同步收下结果后把「这一轮完整读到、且仍属于这次添加」的那些快照喂给它（和写缓存用的是同一份 `accepted`）。
+「待处理」= 所有已加入来源里带「等人处理的标签」（默认 `pending/human`，不区分大小写）的条目。这个标签名和「交回 agent」摘掉的是**同一个设置**（`handBack.human`），改一处两边一起变，不会出现提醒数的和交回摘的不是同一个标签，**不论开着还是已关闭 / 已合并**。通知、Dock 角标、启动汇总全部由 `src/data/pending.ts` 的同一个 `PendingTracker` 算出，controller 只在一轮同步收下结果后把「这一轮完整读到、且仍属于这次添加」的那些快照喂给它（和写缓存用的是同一份 `accepted`）。
 
 | 情况 | 结果 |
 |---|---|
@@ -61,6 +77,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 | 同一条目在几个来源里 | 按 `仓库#编号` 只算一个、只通知一次 |
 | 删除来源 / 改标签名 | 静默重算，角标跟着变，不发通知 |
 | 退出登录 / 换账号 | 清零，下次第一次读全时重新汇总 |
+| 在 App 里改了一条（加 / 摘标签、交回 agent） | 只重读那一条进缓存，不喂给提醒；角标在下一轮同步（≤ 60 秒）时跟上。自己在 App 里打上 `pending/human` 也会在下一轮收到一次通知 |
 
 每条通知系统收没收下都会回报给 controller：macOS 拒绝（如「Notifications are not allowed for this application」）时看板和设置页显示提示，下一条成功后清掉。打包后的 App 用 `--notify-check` 启动时，经同一条生产路径发一条真通知并把系统的回答写进冒烟结果，`scripts/mac-open-check.sh` 第 5 步在 CI 的 Mac 上跑它（只记录、不判失败：CI 机器上没人点「允许」）。测试模式下设 `CAVIL_CLIENT_TEST_NOTIFY_REFUSE=<消息>` 可模拟系统拒绝。平台层（`src/platform/index.ts`）决定怎么显示：macOS 用系统通知、`app.setBadgeCount`、登录项；关窗口只隐藏、继续同步。其他系统 v1 不显示通知和角标、关窗即退出，逻辑照常运行。测试模式下 `CAVIL_CLIENT_TEST_ALERTS_FILE` 把每次通知 / 角标变化写成一行 JSON，界面测试据此计数。
 
@@ -116,7 +133,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 9. 在 App 页面左侧 **Install App** → 安装到 GigleAI → 选 All repositories 或要看的那几个仓库。
 10. 把 App 页面上的 **Client ID**（形如 `Iv23li…`）写进 `DEFAULT_GITHUB_APP_CLIENT_ID`，或先在登录页选「GitHub App」、把它填进 Client ID 框试用。
 
-以后子项 #138 做「合并 PR」时，按 GitHub 文档合并接口还要 **Contents** = Read and write（届时单独确认）。
+要在客户端里**合并 PR**，按 GitHub 文档 App 还要 **Contents** = Read and write（上面没勾；OAuth 应用的 `repo` 已含这项）。不加的话，其他操作照常，合并会被 GitHub 拒绝、界面照实显示原因。
 
 ## 发版
 

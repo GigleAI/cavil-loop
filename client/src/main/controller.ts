@@ -2,7 +2,8 @@
 // cache. No Electron imports — the unit tests drive it against the fake
 // GitHub directly; main.ts only wires it to IPC and a BrowserWindow.
 
-import { APP_KINDS, type AppKind, type AppState, type BoardData, type ColumnMode, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type ColumnMode, type HandBackLabels, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import type { DetailResult, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { parseSource } from '../shared/sources';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
@@ -15,7 +16,12 @@ import { decodeGrant, encodeGrant, type TokenGrant } from '../data/grant';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { VIEWER_QUERY } from '../data/queries';
-import { DEFAULT_PENDING_LABEL, PendingTracker, itemAlertText, normalizeLabel, summaryAlertText } from '../data/pending';
+import { PendingTracker, itemAlertText, summaryAlertText } from '../data/pending';
+import { writesEnabled } from '../data/board';
+import { ActionRefused, explainError, listRepoOptions, performAction } from '../data/actions';
+import { fetchRawDetail, toDetail } from '../data/detail';
+import { applyFreshItem, fetchItem } from '../data/itemRefresh';
+import { GitHubError } from '../data/github';
 import { createHash } from 'node:crypto';
 
 /** Which credential the cache was last verified against (a hash, never the token itself). */
@@ -119,8 +125,8 @@ export class Controller {
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     const appKind = this.loadAppKind();
-    const pendingLabel = normalizeLabel(deps.cache.getSetting<string>('pendingLabel', '')) || DEFAULT_PENDING_LABEL;
-    this.pending = new PendingTracker(pendingLabel);
+    // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
+    this.pending = new PendingTracker({ ...DEFAULT_HAND_BACK, ...deps.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) }.human.trim() || DEFAULT_HAND_BACK.human);
     this.state = {
       phase: 'loading',
       loginReason: null,
@@ -132,7 +138,7 @@ export class Controller {
       view: { ...DEFAULT_VIEW, ...deps.cache.getSetting<Partial<ViewSettings>>('view', {}) },
       sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
       credentialsPersistent: deps.credentials.persistent,
-      pendingLabel,
+      handBack: { ...DEFAULT_HAND_BACK, ...deps.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) },
       pendingCount: 0,
       launchAtLogin: this.readLoginItem(),
       notifyProblem: null,
@@ -521,15 +527,6 @@ export class Controller {
     this.state = { ...this.state, pendingCount: this.pending.count() };
   }
 
-  /** The label that marks an item as waiting for a human (same idea as the daemon's setting). Empty = back to the default. */
-  setPendingLabel(name: string): void {
-    const label = normalizeLabel(name) || DEFAULT_PENDING_LABEL;
-    this.deps.cache.setSetting('pendingLabel', label === DEFAULT_PENDING_LABEL ? '' : label);
-    // A settings change is not new work arriving: recount silently.
-    this.pending.relabel(label, this.snapshots);
-    this.badge();
-    this.set({ pendingLabel: label, pendingCount: this.pending.count() });
-  }
 
   /**
    * What the system did with a notification (the platform layer reports it):
@@ -738,5 +735,140 @@ export class Controller {
       }
       if (session === this.session) await this.logout(REASON_REVOKED);
     }
+  }
+
+  // ---- view & change one item ---------------------------------------------
+
+  /** Labels "hand back to the agent" swaps; empty names fall back to the defaults. */
+  setHandBack(patch: Partial<HandBackLabels>): void {
+    const next: HandBackLabels = {
+      human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,
+      agent: (patch.agent ?? this.state.handBack.agent).trim() || DEFAULT_HAND_BACK.agent,
+    };
+    this.deps.cache.setSetting('handBack', next);
+    // The same label is what reminders count: another name is recounted silently
+    // (a settings change is not new work arriving).
+    if (next.human !== this.state.handBack.human) {
+      this.pending.relabel(next.human, this.snapshots);
+      this.badge();
+      this.state = { ...this.state, pendingCount: this.pending.count() };
+    }
+    this.set({ handBack: next });
+  }
+
+  /** A client for one call, or why there is none (signed out / offline / credential ended). */
+  private async clientForCall(write: boolean): Promise<{ client: GitHubClient; session: number } | { error: string }> {
+    if (!this.grant || this.state.phase !== 'ready') return { error: '还没有登录' };
+    if (write && !writesEnabled(this.state.sync)) return { error: '离线时不能修改：GitHub 上什么都没改' };
+    const fresh = await this.ensureFresh();
+    if (fresh === 'ended' || !this.grant) return { error: '登录已结束，请重新登录' };
+    return { client: new GitHubClient(this.deps.endpoints, this.grant.accessToken, this.fetchImpl), session: this.session };
+  }
+
+  private findItem(key: string) {
+    return this.getBoardData().items.find((i) => i.key === key) ?? null;
+  }
+
+  /** The whole detail of one item, read from GitHub now (not cached). */
+  async loadDetail(key: string): Promise<DetailResult> {
+    const item = this.findItem(key);
+    if (!item) return { ok: false, error: '看板上找不到这一条，请刷新后再试' };
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, error: c.error };
+    try {
+      const raw = await fetchRawDetail(c.client, item.repo, item.number);
+      if (c.session !== this.session) return { ok: false, error: '账号已切换' };
+      return { ok: true, detail: toDetail(item.repo, raw, this.now()) };
+    } catch (e) {
+      this.noteAuthFailure(e);
+      const msg = e instanceof GitHubError && e.kind === 'network' ? `连不上 GitHub，读不到详情（${e.message}）` : `读取详情失败：${(e as Error).message}`;
+      return { ok: false, error: msg };
+    }
+  }
+
+  /** Labels and milestones of one repository (the candidates the window offers). */
+  async repoOptions(repo: string): Promise<RepoOptions> {
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { labels: [], milestones: [], error: c.error };
+    try {
+      return await listRepoOptions(c.client, repo);
+    } catch (e) {
+      this.noteAuthFailure(e);
+      return { labels: [], milestones: [], error: `读取 ${repo} 的标签 / 里程碑失败：${(e as Error).message}` };
+    }
+  }
+
+  /** GitHub renders the reply preview (same renderer as the web page). */
+  async previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }> {
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, error: c.error };
+    try {
+      return { ok: true, html: await c.client.restText('/markdown', { text, mode: 'gfm', context: repo }) };
+    } catch (e) {
+      return { ok: false, error: `预览失败：${(e as Error).message}` };
+    }
+  }
+
+  /**
+   * Make one change on GitHub. Refused before sending when offline, signed
+   * out, or the app can already tell it cannot work. On success the touched
+   * item is read again from GitHub at once and the cache takes that copy.
+   */
+  async act(action: WriteAction): Promise<WriteResult> {
+    const c = await this.clientForCall(true);
+    if ('error' in c) return { ok: false, error: c.error, warning: null };
+    const data = this.getBoardData();
+    const item = 'key' in action ? (data.items.find((i) => i.key === action.key) ?? null) : null;
+    // the board data only holds the sources ticked in the view: a new issue joins exactly those Projects
+    const createInProjects = data.projects;
+    let outcome;
+    try {
+      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects });
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      return { ok: false, error: explainError(e, action.kind), warning: null };
+    }
+    let warning = outcome.warning;
+    if (c.session === this.session) {
+      for (const [repo, number] of outcome.touched) {
+        const problem = await this.refreshOne(c.client, c.session, repo, number);
+        if (problem) warning = [warning, problem].filter(Boolean).join('；');
+      }
+    }
+    return { ok: true, error: null, warning, ...(outcome.createdKey ? { createdKey: outcome.createdKey } : {}) };
+  }
+
+  /**
+   * Read one item again and put it into every cached source that carries it.
+   * Same guards as a sync round: nothing lands after a sign-out / account
+   * switch, nor into a source removed (or re-added) meanwhile. A round already
+   * in flight may have read the item before the change: one more round is queued.
+   */
+  private async refreshOne(client: GitHubClient, session: number, repo: string, number: number): Promise<string | null> {
+    const sources = this.state.sources;
+    const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
+    let fresh;
+    try {
+      fresh = await fetchItem(client, repo, number);
+    } catch (e) {
+      void this.syncNow();
+      return `修改已生效，但重读这一条失败（${(e as Error).message}），下一轮同步会更新`;
+    }
+    if (session !== this.session) return null;
+    const current = (key: string) =>
+      this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
+    const changed = applyFreshItem([...this.snapshots.values()].filter((s) => current(s.sourceKey)), fresh);
+    if (changed.length) {
+      this.deps.cache.replaceSnapshots(changed);
+      for (const snap of changed) this.snapshots.set(snap.sourceKey, snap);
+      this.set({});
+    }
+    if (this.syncing) void this.syncNow();
+    return null;
+  }
+
+  /** A 401 on a call outside the sync round: let the next round do the refresh / sign-out logic. */
+  private noteAuthFailure(e: unknown): void {
+    if (e instanceof GitHubError && e.kind === 'auth') void this.syncNow();
   }
 }
