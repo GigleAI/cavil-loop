@@ -6,7 +6,7 @@
 import { appendFileSync } from 'node:fs';
 import { CredentialStore, FileStore, MacKeychainStore, MemoryStore } from './credentials';
 import type { Endpoints } from '../data/github';
-import type { Alert, Alerts, LoginItem } from './alerts';
+import type { Alert, Alerts, Delivery, LoginItem } from './alerts';
 import { GITHUB_ENDPOINTS } from '../data/github';
 
 export interface Platform {
@@ -25,8 +25,8 @@ export interface Platform {
 
 /** The operating-system calls the platform layer is built on (Electron's, injected by main.ts). */
 export interface OsHooks {
-  /** show a system notification; `onClick` runs when the user clicks it */
-  notify(title: string, body: string, onClick: () => void): void;
+  /** show a system notification; `onClick` runs when the user clicks it, `onResult` when the system shows or refuses it */
+  notify(title: string, body: string, onClick: () => void, onResult: (d: Delivery) => void): void;
   setBadgeCount(n: number): void;
   getOpenAtLogin(): boolean;
   setOpenAtLogin(on: boolean): void;
@@ -97,18 +97,28 @@ export function createPlatform({ platform, env, shellOpen, os }: PlatformEnv): P
   const mac = platform === 'darwin';
   let alerts: Alerts | null = null;
   if (alertFile) {
+    // CAVIL_CLIENT_TEST_NOTIFY_REFUSE=<message>: answer every notification the way macOS does when not allowed
+    const refuse = env.CAVIL_CLIENT_TEST_NOTIFY_REFUSE;
     alerts = {
-      notify: (a) => recordLine(alertFile, { type: 'notify', ...a }),
+      notify: (a, done) => {
+        recordLine(alertFile, { type: 'notify', ...a });
+        done?.(refuse ? { ok: false, error: refuse } : { ok: true });
+      },
       setBadge: (n) => recordLine(alertFile, { type: 'badge', count: n }),
     };
   } else if (mac && os) {
     alerts = {
       // a click on one item opens it on GitHub; on the summary, brings the window up
-      notify: (a: Alert) =>
-        os.notify(a.title, a.body, () => {
-          if (a.kind === 'item') openExternal(a.url).catch(() => {});
-          else os.showWindow();
-        }),
+      notify: (a: Alert, done) =>
+        os.notify(
+          a.title,
+          a.body,
+          () => {
+            if (a.kind === 'item') openExternal(a.url).catch(() => {});
+            else os.showWindow();
+          },
+          (d) => done?.(d),
+        ),
       setBadge: (n) => os.setBadgeCount(n),
     };
   }

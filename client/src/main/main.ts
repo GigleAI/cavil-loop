@@ -55,8 +55,6 @@ app.on('activate', showWindow);
 
 /** notifications must stay referenced until clicked, or the click handler is collected */
 const liveNotifications = new Set<Notification>();
-/** --notify-check: told what happened to each notification ('shown', 'failed: …', 'unsupported') */
-let notifyProbe: ((result: string) => void) | null = null;
 
 app.whenReady().then(async () => {
   const platform = createPlatform({
@@ -64,15 +62,15 @@ app.whenReady().then(async () => {
     env: process.env,
     shellOpen: (u) => shell.openExternal(u),
     os: {
-      notify(title, body, onClick) {
-        if (!Notification.isSupported()) {
-          notifyProbe?.('unsupported');
-          return;
-        }
+      notify(title, body, onClick, onResult) {
+        if (!Notification.isSupported()) return onResult({ ok: false, error: '这台机器不支持系统通知' });
         const n = new Notification({ title, body });
         liveNotifications.add(n);
-        n.on('show', () => notifyProbe?.('shown'));
-        n.on('failed', (_e, error) => notifyProbe?.(`failed: ${error}`));
+        n.on('show', () => onResult({ ok: true }));
+        n.on('failed', (_e, error) => {
+          liveNotifications.delete(n);
+          onResult({ ok: false, error: String(error) });
+        });
         n.on('click', () => {
           liveNotifications.delete(n);
           onClick();
@@ -151,20 +149,18 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.setLaunchAtLogin, (_e, on: boolean) => controller.setLaunchAtLogin(on === true));
 
   /** One notification through the same platform call a sync round uses; what the system reported back. */
-  const probeNotification = async (): Promise<string> => {
-    if (!platform.alerts) return 'no-alerts-on-this-platform';
-    const result = new Promise<string>((resolve) => {
-      notifyProbe = resolve;
-      setTimeout(() => resolve('timeout (no show / failed event in 15 s)'), 15_000);
+  const probeNotification = (): Promise<string> =>
+    new Promise((resolve) => {
+      if (!platform.alerts) return resolve('no-alerts-on-this-platform');
+      const t = setTimeout(() => resolve('timeout (no show / failed event in 15 s)'), 15_000);
+      const it = { key: 'gigleai/cavil-loop#139', repo: 'GigleAI/cavil-loop', number: 139, title: 'notify check', url: 'https://github.com/GigleAI/cavil-loop/issues/139', kind: 'issue' as const, state: 'open' as const, updatedAt: '', labels: [], assignees: [], milestone: null, projects: [], sources: [] };
+      platform.alerts.notify({ kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) }, (d) => {
+        clearTimeout(t);
+        // shown: keep the process (and the banner) a moment longer
+        if (d.ok) setTimeout(() => resolve('shown'), 3000);
+        else resolve(`failed: ${d.error}`);
+      });
     });
-    const sample = { key: 'gigleai/cavil-loop#139', repo: 'GigleAI/cavil-loop', number: 139, title: 'notify check', url: 'https://github.com/GigleAI/cavil-loop/issues/139', kind: 'issue' as const, state: 'open' as const };
-    platform.alerts.notify({ kind: 'item', key: sample.key, url: sample.url, ...itemAlertText({ ...sample, updatedAt: '', labels: [], assignees: [], milestone: null, projects: [], sources: [] }) });
-    const r = await result;
-    notifyProbe = null;
-    // keep it on screen a moment so the check script can capture it
-    if (r === 'shown') await new Promise((res) => setTimeout(res, 3000));
-    return r;
-  };
 
   if (smoke) {
     const timer = setTimeout(() => smokeResult(false, 'timeout'), 60_000);

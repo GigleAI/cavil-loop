@@ -82,6 +82,11 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
             保存
           </button>
         </div>
+        {state.notifyProblem && (
+          <div className="banner warn" data-testid="notify-problem">
+            macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标和这里的数字不受影响。
+          </div>
+        )}
         <p className="small">
           现在待处理：<b data-testid="pending-count">{state.pendingCount}</b> 条
         </p>

@@ -203,6 +203,11 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           {sync.problem}
         </div>
       )}
+      {state.notifyProblem && (
+        <div className="banner warn" data-testid="board-notify-problem">
+          macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。
+        </div>
+      )}
       {board.notice && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}

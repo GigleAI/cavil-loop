@@ -40,7 +40,7 @@ interface Harness {
   badge(): number | undefined;
 }
 
-async function signedIn(opts: { sources?: string[]; seed?: Record<string, unknown>; clock?: { t: number }; credentials?: FileStore } = {}): Promise<Harness> {
+async function signedIn(opts: { sources?: string[]; seed?: Record<string, unknown>; clock?: { t: number }; credentials?: FileStore; delivery?: { refuse: string | null } } = {}): Promise<Harness> {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -58,7 +58,14 @@ async function signedIn(opts: { sources?: string[]; seed?: Record<string, unknow
     sleep: async () => {},
     openExternal: async () => {},
     defaultClientId: '',
-    alerts: { notify: (a) => void alerts.push(a), setBadge: (n) => void badges.push(n) },
+    alerts: {
+      notify: (a, done) => {
+        alerts.push(a);
+        const refuse = opts.delivery?.refuse;
+        done?.(refuse ? { ok: false, error: refuse } : { ok: true });
+      },
+      setBadge: (n) => void badges.push(n),
+    },
   });
   controllers.push(c);
   for (const s of opts.sources ?? []) c.addSource(s);
@@ -331,6 +338,24 @@ describe('pending reminders against the fake GitHub', () => {
     await h.c.logout();
     expect(h.badge()).toBe(0);
     expect(h.c.getState().pendingCount).toBe(0);
+  });
+});
+
+describe('a notification the system refuses', () => {
+  it('is shown in the app (not silently lost) and cleared once one goes out again; the badge is unaffected', async () => {
+    const delivery = { refuse: 'Notifications are not allowed for this application' as string | null };
+    const h = await signedIn({ sources: [PROJECT_URL], delivery });
+    await h.c.start();
+    // "did happen": the summary was sent and refused
+    expect(h.summaries()).toHaveLength(1);
+    expect(h.c.getState().notifyProblem).toBe('Notifications are not allowed for this application');
+    expect(h.badge()).toBe(11);
+    // the user allows notifications; the next one goes out and the warning goes away
+    delivery.refuse = null;
+    setLabel(22, true, h.clock);
+    await tick(h);
+    expect(h.items()).toEqual([key(22)]);
+    expect(h.c.getState().notifyProblem).toBeNull();
   });
 });
 

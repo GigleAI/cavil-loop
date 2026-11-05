@@ -140,6 +140,8 @@ export interface AppState {
   pendingCount: number;
   /** launch at login: on / off, null = this platform cannot */
   launchAtLogin: boolean | null;
+  /** the system refused the latest notification (e.g. not allowed in System Settings); null = the latest one went out */
+  notifyProblem: string | null;
 }
 
 export interface BoardData {

@@ -336,3 +336,24 @@ test('pending/human: start-up summary, one notification per new label, badge, la
   await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
   await app.close();
 });
+
+test('notifications refused by the system: the board says so and how to allow them', async () => {
+  const { app, page } = await launch(env, { CAVIL_CLIENT_TEST_NOTIFY_REFUSE: 'Notifications are not allowed for this application' });
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  // the start-up summary was sent (and refused)
+  await expect.poll(() => alertsOf(env).filter((a) => a.type === 'notify').length, { timeout: 15_000 }).toBe(1);
+  await expect(page.getByTestId('notify-problem')).toContainText('系统设置 → 通知 → Cavil Loop');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('board-notify-problem')).toContainText('Notifications are not allowed');
+  await shot(page, '21-notify-refused');
+  await app.close();
+});

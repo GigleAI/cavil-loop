@@ -7,7 +7,7 @@ import { parseSource } from '../shared/sources';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
 import type { CredentialStore } from '../platform/credentials';
-import type { Alert, Alerts, LoginItem } from '../platform/alerts';
+import type { Alert, Alerts, Delivery, LoginItem } from '../platform/alerts';
 import { Cache } from '../data/cache';
 import { Endpoints, FetchLike, GitHubClient } from '../data/github';
 import { DeviceFlowError, pollForToken, refreshGrant, requestDeviceCode } from '../data/deviceFlow';
@@ -135,6 +135,7 @@ export class Controller {
       pendingLabel,
       pendingCount: 0,
       launchAtLogin: this.readLoginItem(),
+      notifyProblem: null,
     };
     if (!MODES.includes(this.state.view.mode)) this.state.view.mode = 'iteration';
     this.owner = deps.cache.getSetting<string | null>('cacheOwner', null);
@@ -505,7 +506,7 @@ export class Controller {
 
   private notify(a: Alert): void {
     try {
-      this.deps.alerts?.notify(a);
+      this.deps.alerts?.notify(a, (d) => this.reportNotification(d));
     } catch {
       /* same */
     }
@@ -528,6 +529,16 @@ export class Controller {
     this.pending.relabel(label, this.snapshots);
     this.badge();
     this.set({ pendingLabel: label, pendingCount: this.pending.count() });
+  }
+
+  /**
+   * What the system did with a notification (the platform layer reports it):
+   * a refusal is shown in Settings instead of failing silently; the next one
+   * that goes out clears it.
+   */
+  private reportNotification(result: Delivery): void {
+    const problem = result.ok ? null : result.error;
+    if (problem !== this.state.notifyProblem) this.set({ notifyProblem: problem });
   }
 
   private readLoginItem(): boolean | null {

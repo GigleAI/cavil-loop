@@ -62,7 +62,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 | 删除来源 / 改标签名 | 静默重算，角标跟着变，不发通知 |
 | 退出登录 / 换账号 | 清零，下次第一次读全时重新汇总 |
 
-平台层（`src/platform/index.ts`）决定怎么显示：macOS 用系统通知、`app.setBadgeCount`、登录项；关窗口只隐藏、继续同步。其他系统 v1 不显示通知和角标、关窗即退出，逻辑照常运行。测试模式下 `CAVIL_CLIENT_TEST_ALERTS_FILE` 把每次通知 / 角标变化写成一行 JSON，界面测试据此计数。
+每条通知系统收没收下都会回报给 controller：macOS 拒绝（如「Notifications are not allowed for this application」）时看板和设置页显示提示，下一条成功后清掉。打包后的 App 用 `--notify-check` 启动时，经同一条生产路径发一条真通知并把系统的回答写进冒烟结果，`scripts/mac-open-check.sh` 第 5 步在 CI 的 Mac 上跑它（只记录、不判失败：CI 机器上没人点「允许」）。测试模式下设 `CAVIL_CLIENT_TEST_NOTIFY_REFUSE=<消息>` 可模拟系统拒绝。平台层（`src/platform/index.ts`）决定怎么显示：macOS 用系统通知、`app.setBadgeCount`、登录项；关窗口只隐藏、继续同步。其他系统 v1 不显示通知和角标、关窗即退出，逻辑照常运行。测试模式下 `CAVIL_CLIENT_TEST_ALERTS_FILE` 把每次通知 / 角标变化写成一行 JSON，界面测试据此计数。
 
 ## 登录用的 GitHub 应用
 
