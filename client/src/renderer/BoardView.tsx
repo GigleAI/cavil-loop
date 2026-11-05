@@ -141,8 +141,8 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
     [data, parsed, state.viewer, today],
   );
   const board = useMemo(
-    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today),
-    [items, data.projects, view.mode, view.swimlanes, today],
+    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort),
+    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
@@ -199,11 +199,9 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
             </button>
           ))}
         </div>
-        {view.layout === 'table' && (
-          <button data-testid="open-view-panel" className={panel ? 'on' : ''} onClick={() => setPanel(!panel)}>
-            视图设置
-          </button>
-        )}
+        <button data-testid="open-view-panel" className={panel ? 'on' : ''} onClick={() => setPanel(!panel)}>
+          视图设置
+        </button>
         {view.layout === 'board' && (
         <>
         <label>
@@ -271,7 +269,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           </button>
         </div>
       )}
-      {view.layout === 'table' && panel && <ViewSettingsPanel view={view} />}
+      {panel && <ViewSettingsPanel view={view} />}
 
       {sync.offline && (
         <div className="banner warn" data-testid="offline">

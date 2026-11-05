@@ -149,6 +149,11 @@ describe('words this client does not support: named, ignored, never "0 results"'
     ['iteration:>"Sprint 2"', 'iteration comparison'],
     ['assignee:@copilot', 'unknown @ token'],
     ['label:', 'empty value'],
+    ['优先级:高', 'Chinese custom field'],
+    ['-优先级:高', 'negated Chinese custom field'],
+    ['状态:完成,进行中', 'Chinese field name with several values'],
+    ['"Start date":2026-11-01', 'quoted field name with a space'],
+    ['-"Target date":>@today', 'negated quoted field name'],
   ];
   for (const [token, why] of cases) {
     it(`${why}: ${token}`, () => {
@@ -163,6 +168,20 @@ describe('words this client does not support: named, ignored, never "0 results"'
 
   it('several unsupported words are all listed, in order', () => {
     expect(parseFilter('updated:>x foo reason:y').unsupported).toEqual(['updated:>x', 'reason:y']);
+  });
+
+  it('a quoted word with a colon in it is plain text, not a field', () => {
+    const items = [...ITEMS, item('x/app', 9, { title: 'Error code a:b in log' })];
+    const p = parseFilter('"a:b"');
+    expect(p.unsupported).toEqual([]);
+    expect(applyFilter(items, p, ctx).map((i) => i.number)).toEqual([9]);
+  });
+
+  it('a Chinese custom field next to supported words: the supported part still filters (as in an imported view)', () => {
+    const p = parseFilter('优先级:高 -label:bug is:open');
+    expect(p.unsupported).toEqual(['优先级:高']);
+    expect(applyFilter(ITEMS, p, ctx).map((i) => i.number)).toEqual(nums('-label:bug is:open'));
+    expect(nums('-label:bug is:open').length).toBeGreaterThan(0);
   });
 
   it('qualifier names are case-insensitive', () => {

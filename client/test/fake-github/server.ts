@@ -16,6 +16,7 @@ export interface FixtureProjectPage {
   title: string;
   url: string;
   fields: { nodes: unknown[] };
+  views?: { nodes: any[] };
   items: { totalCount: number; pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: any[] };
 }
 

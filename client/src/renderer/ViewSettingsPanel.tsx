@@ -15,11 +15,16 @@ const SORT_LABEL: Record<SortField, string> = {
   milestone: '里程碑',
 };
 
-/** Table settings: grouping, sort, columns, repository slices, hierarchy. Every change is saved at once. */
+/**
+ * View settings, saved at once. Sort applies to both layouts (card order on
+ * the board, row order in the table); the rest is the table's.
+ */
 export function ViewSettingsPanel({ view }: { view: ViewSettings }) {
   const t = view.table;
+  const table = view.layout === 'table';
   return (
     <div className="view-panel" data-testid="view-panel">
+      {table && (
       <label>
         分组：
         <select data-testid="group-by" value={t.groupBy} onChange={(e) => api().setView({ table: { groupBy: e.target.value as GroupBy } })}>
@@ -30,6 +35,7 @@ export function ViewSettingsPanel({ view }: { view: ViewSettings }) {
           ))}
         </select>
       </label>
+      )}
       <label>
         排序：
         <select data-testid="sort-field" value={t.sort.field} onChange={(e) => api().setView({ table: { sort: { ...t.sort, field: e.target.value as SortField } } })}>
@@ -49,6 +55,8 @@ export function ViewSettingsPanel({ view }: { view: ViewSettings }) {
           <option value="asc">从旧到新 / 从小到大</option>
         </select>
       </label>
+      {table && (
+      <>
       <label className="chip">
         <input type="checkbox" data-testid="slice-by-repo" checked={t.sliceByRepo} onChange={(e) => api().setView({ table: { sliceByRepo: e.target.checked } })} />
         左侧按仓库切片
@@ -78,6 +86,8 @@ export function ViewSettingsPanel({ view }: { view: ViewSettings }) {
           </label>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

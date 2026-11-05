@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildTable, GROUP_NONE_KEY, iterationRange, type Table } from '../../src/data/table';
+import { buildBoard } from '../../src/data/board';
 import { fetchProject } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
 import { mergeSnapshots } from '../../src/data/merge';
@@ -37,6 +38,25 @@ describe('recorded cavil project: importing its saved view "Pending"', () => {
     data = mergeSnapshots([snap], null);
   });
   afterAll(() => fake.close());
+
+  it('recorded board view 2 ("by update, newest first") → every board column is newest first', () => {
+    const { view } = pickView(data.projects[0], 2);
+    expect(view).toMatchObject({ layout: 'BOARD_LAYOUT', sortBy: [{ field: { dataType: 'UPDATED' }, direction: 'DESC' }] });
+    const patch = importView(view!, data.projects[0], DEFAULT_VIEW, null);
+    const items = applyFilter(data.items, parseFilter(patch.query), { viewer: null, today: FIXTURE_TODAY, projects: data.projects });
+    const board = buildBoard(items, data.projects, patch.mode, patch.swimlanes, FIXTURE_TODAY, patch.table.sort);
+    const r = raw();
+    let checked = 0;
+    for (const col of board.columns) {
+      const ts = col.cards.map((c) => r.get(c.item.key).content.updatedAt);
+      expect(ts, col.title).toEqual([...ts].sort().reverse());
+      if (ts.length > 1) checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
+    // and that order differs from the old fixed "repository, newest number" one somewhere
+    const old = buildBoard(items, data.projects, patch.mode, patch.swimlanes, FIXTURE_TODAY);
+    expect(board.columns.map((c) => c.cards.map((x) => x.item.number))).not.toEqual(old.columns.map((c) => c.cards.map((x) => x.item.number)));
+  });
 
   /** raw recorded node per item key, read independently of the client code */
   function raw() {
@@ -253,6 +273,30 @@ describe('importing saved views', () => {
 
 // keep the recorded-data helper honest about the fixture day it relies on
 it('fixture day', () => expect(FIXTURE_TODAY).toBe(new Date(FIXTURE_NOW).toISOString().slice(0, 10)));
+
+describe('the view\'s sort applies to the board too', () => {
+  const P = { ...project('project:org/x/9', 'P', null, ['Todo', 'Done']), views: [] as any[] };
+  const items = [
+    item('x/a', 1, { updatedAt: '2026-11-05T00:00:00Z' }, [member(P, null, 'Todo')]),
+    item('x/a', 2, { updatedAt: '2026-11-01T00:00:00Z' }, [member(P, null, 'Todo')]),
+    item('x/a', 3, { updatedAt: '2026-11-03T00:00:00Z' }, [member(P, null, 'Todo')]),
+  ];
+  const cards = (b: ReturnType<typeof buildBoard>) => b.columns.find((c) => c.title === 'Todo')!.cards.map((c) => c.item.number);
+
+  it('import a board view sorted by "updated, newest first" → the board shows newest first', () => {
+    const v = { number: 2, name: 'b', layout: 'BOARD_LAYOUT', filter: '', groupBy: [], verticalGroupBy: [{ name: 'Status', dataType: 'SINGLE_SELECT' }], sortBy: [{ field: { name: 'Updated', dataType: 'UPDATED' }, direction: 'DESC' }], fields: [] } as any;
+    const patch = importView(v, P, DEFAULT_VIEW, null);
+    expect(patch).toMatchObject({ layout: 'board', mode: 'status' });
+    expect(patch.imported!.notes).toEqual([]);
+    // the same call the board page makes
+    expect(cards(buildBoard(items, [P], patch.mode, patch.swimlanes, TODAY, patch.table.sort))).toEqual([1, 3, 2]);
+    expect(cards(buildBoard(items, [P], 'status', false, TODAY, { field: 'updated', dir: 'asc' }))).toEqual([2, 3, 1]);
+  });
+
+  it('no sort given (older callers): repository, then newest number first, as before', () => {
+    expect(cards(buildBoard(items, [P], 'status', false, TODAY))).toEqual([3, 2, 1]);
+  });
+});
 
 describe('merging a Project copy with a repository copy of the same item', () => {
   it('linked pull requests come from the copy that knows them, even when the repository copy is newer', () => {

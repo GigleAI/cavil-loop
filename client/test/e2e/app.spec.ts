@@ -345,6 +345,12 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
   await shot(page, '11-unsupported-words');
+  // a Chinese custom field is named and ignored too, not searched as text
+  await page.getByTestId('search').fill('优先级:高 label:pending/human');
+  await expect(page.getByTestId('filter-unsupported')).toContainText('优先级:高');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+    filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
+  );
 
   // customise: group by status, repository slices, fewer columns; then restart
   await page.getByTestId('search').fill('');
@@ -381,3 +387,30 @@ function rawCountByStatus(): Record<string, number> {
     }
   return out;
 }
+
+test('a saved board view sorted by update time: the board shows each column newest first', async () => {
+  const { app, page } = await launch(env);
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/2`);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+
+  await expect(page.getByTestId('search')).toHaveValue('-label:nightly-failure', { timeout: 15_000 });
+  await expect(page.locator('[data-testid="column"][data-title="Done"]')).toBeVisible();
+  const updated = new Map<string, string>();
+  for (const p of loadCavilProjectPages())
+    for (const n of p.items.nodes) updated.set(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`, n.content.updatedAt);
+  const order = await page.$$eval('[data-testid="column"][data-title="Done"] [data-testid="card"]', (cs) => cs.map((c) => c.getAttribute('data-key')!));
+  expect(order.length).toBeGreaterThan(10);
+  const ts = order.map((k) => updated.get(k)!);
+  expect(ts).toEqual([...ts].sort().reverse());
+  await shot(page, '13-board-imported-sort');
+  await app.close();
+});

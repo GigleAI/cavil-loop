@@ -90,7 +90,10 @@ export function parseFilter(input: string): ParsedFilter {
   const clauses: Clause[] = [];
   const unsupported: string[] = [];
   for (const token of tokenize(input)) {
-    const m = token.match(/^(-?)([A-Za-z][A-Za-z0-9_-]*):(.*)$/);
+    // `name:value`: the name is anything up to the first colon (custom fields
+    // can be Chinese, or quoted when they contain spaces); a token that starts
+    // with a quote and has no closing quote before the colon is plain text
+    const m = token.match(/^(-?)("[^"]+"|[^\s:"]+):(.*)$/);
     if (!m) {
       // free text; a leading "-" would mean "exclude", which GitHub's Project
       // filter does not do either (it returns nothing) — say so instead
@@ -103,7 +106,7 @@ export function parseFilter(input: string): ParsedFilter {
       continue;
     }
     const negated = m[1] === '-';
-    const field = m[2].toLowerCase() as Field;
+    const field = m[2].replace(/"/g, '').toLowerCase() as Field;
     const values = splitValues(m[3]);
     if (!FIELDS.includes(field) || values.some((v) => !v) || !valuesSupported(field, values)) {
       unsupported.push(token);
