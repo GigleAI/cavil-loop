@@ -246,7 +246,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
   it('signing out while the refreshed token is being saved: nothing comes back either', async () => {
     const clock = { t: FIXTURE_NOW };
     const store = new GatedStore(join(dir, 'cred'));
-    const { c } = await signInAsApp(store, clock);
+    const { c, backend, cache } = await signInAsApp(store, clock);
     clock.t += 9 * HOUR;
     store.hold = true;
     const round = c.syncNow();
@@ -261,6 +261,12 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     const n = fake.log.length;
     await c.syncNow();
     expect(fake.log.length).toBe(n); // holds no token any more
+    // nor does the back end (it holds the credential, not the window): it signs nothing, trusts nothing
+    const info = await backend.call<{ signedIn: boolean; session: number }>('grantInfo');
+    expect(info.signedIn).toBe(false);
+    expect((await backend.call<{ error?: string }>('request', { session: info.session, method: 'GET', url: `${fake.api}/user` })).error).toBe('stale');
+    expect(cache.getSetting('trustedCredentials', ['unread'])).toEqual([]);
+    expect(fake.log.length).toBe(n);
   });
 
   it('refreshed, then the round could not reach GitHub: an offline restart still shows the cache', async () => {

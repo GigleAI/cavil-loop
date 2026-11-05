@@ -136,9 +136,11 @@ const MUTATIONS = [
     to: ';',
     expect: ['removed and added again'] },
   // ---- review round 2 of PR #140 ----
-  { what: '凭据写完不再核对登录是否已取消 / 已退出', file: 'src-tauri/crates/core/src/engine.rs',
-    from: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if run != me.lock().login_run {',
-    to: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if false {',
+  { what: '凭据写完不再核对登录是否已取消 / 已退出（后台那道核对和窗口收尾的那道都去掉）',
+    edits: [
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if run != me.lock().login_run {', to: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if false {' },
+      { file: 'src/app/controller.ts', from: "      if (run !== this.loginRun) {\n        // cancelled here after the back end had already committed: the cancel wins", to: "      if (false) {\n        // cancelled here after the back end had already committed: the cancel wins" },
+    ],
     expect: ['cancel while saving → nothing kept', 'sign out while saving → same'] },
   { what: '凭据写入 / 删除不排队', file: 'src-tauri/crates/core/src/engine.rs',
     from: '        let job: Shared<BoxFuture<\'static, T>> = async move {\n            prev.await;\n',
@@ -152,7 +154,7 @@ const MUTATIONS = [
   { what: '续期不合并：同时触发会续两次',
     edits: [
       { file: 'src-tauri/crates/core/src/engine.rs', from: '        if let Some((_, f)) = existing {\n            return f.await;\n        }\n', to: '' },
-      { file: 'src-tauri/crates/core/src/engine.rs', from: '                Some((_, f)) => Err(f),', to: '                Some((_, f)) if false => Err(f),' },
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '            match st.refreshing.clone() {', to: '            match None::<(u64, SharedFresh)> {' },
     ],
     expect: ['two rounds asking at once share one refresh'] },
   { what: 'GitHub 回 401 时不续期重试', file: 'src/app/controller.ts',
