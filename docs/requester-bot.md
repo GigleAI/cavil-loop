@@ -253,7 +253,7 @@ If, after a successful wake-up, someone edits or deletes the handoff comment, gr
 
 ## Autopilot label does not apply
 
-If the project also uses the autopilot label (GitHub#114), it **never** applies to requests filed by the bot: those need the requester's confirmation, which the daemon cannot judge. Such an issue gets one comment saying so and is handled the normal way (confirmations go to the requester, a maintainer merges); the daemon also refuses to auto-merge a PR bound to it. See [operations](operations.md#autopilot-label-optional-off-by-default).
+If the project also uses the autopilot label (GitHub#114), it **never** applies to requests filed by the bot: those need the requester's confirmation, which the daemon cannot judge. Such an issue gets one comment saying so and is handled the normal way (confirmations go to the requester, a maintainer merges); the daemon also refuses to auto-merge a PR bound to it, or — for a PR bound to no issue (GitHub#142) — a PR opened by the bot or whose branch / body links lead to such a request. See [operations](operations.md#autopilot-label-optional-off-by-default).
 
 ## Reference
 
