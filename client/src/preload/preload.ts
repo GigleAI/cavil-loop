@@ -19,6 +19,8 @@ const api: CavilApi = {
   setView: (patch) => ipcRenderer.invoke(IPC.setView, patch),
   syncNow: () => ipcRenderer.invoke(IPC.syncNow),
   openExternal: (url) => ipcRenderer.invoke(IPC.openExternal, url),
+  setPendingLabel: (name) => ipcRenderer.invoke(IPC.setPendingLabel, name),
+  setLaunchAtLogin: (on) => ipcRenderer.invoke(IPC.setLaunchAtLogin, on),
 };
 
 contextBridge.exposeInMainWorld('cavil', api);

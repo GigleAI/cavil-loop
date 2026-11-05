@@ -7,6 +7,7 @@ import { parseSource } from '../shared/sources';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
 import type { CredentialStore } from '../platform/credentials';
+import type { Alert, Alerts, LoginItem } from '../platform/alerts';
 import { Cache } from '../data/cache';
 import { Endpoints, FetchLike, GitHubClient } from '../data/github';
 import { DeviceFlowError, pollForToken, refreshGrant, requestDeviceCode } from '../data/deviceFlow';
@@ -14,6 +15,7 @@ import { decodeGrant, encodeGrant, type TokenGrant } from '../data/grant';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { VIEWER_QUERY } from '../data/queries';
+import { DEFAULT_PENDING_LABEL, PendingTracker, itemAlertText, normalizeLabel, summaryAlertText } from '../data/pending';
 import { createHash } from 'node:crypto';
 
 /** Which credential the cache was last verified against (a hash, never the token itself). */
@@ -61,6 +63,10 @@ export interface ControllerDeps {
   defaultClientId?: string;
   /** built-in GitHub App Client ID ('' = none, which is production today) */
   defaultGithubAppClientId?: string;
+  /** system notifications + Dock badge (none: nothing is shown, the logic still runs) */
+  alerts?: Alerts;
+  /** launch at login (none: the platform cannot, the setting is hidden) */
+  loginItem?: LoginItem;
 }
 
 /** where each kind's Client ID override is saved ('oauthClientId' predates the choice and keeps its name) */
@@ -101,6 +107,8 @@ export class Controller {
   private readonly sleep: (ms: number) => Promise<void>;
 
   private readonly defaultClientIds: Record<AppKind, string>;
+  /** items carrying the pending label: notifications, badge and summary all come from here */
+  private readonly pending: PendingTracker;
 
   constructor(private readonly deps: ControllerDeps) {
     this.defaultClientIds = {
@@ -111,6 +119,8 @@ export class Controller {
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     const appKind = this.loadAppKind();
+    const pendingLabel = normalizeLabel(deps.cache.getSetting<string>('pendingLabel', '')) || DEFAULT_PENDING_LABEL;
+    this.pending = new PendingTracker(pendingLabel);
     this.state = {
       phase: 'loading',
       loginReason: null,
@@ -122,6 +132,9 @@ export class Controller {
       view: { ...DEFAULT_VIEW, ...deps.cache.getSetting<Partial<ViewSettings>>('view', {}) },
       sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
       credentialsPersistent: deps.credentials.persistent,
+      pendingLabel,
+      pendingCount: 0,
+      launchAtLogin: this.readLoginItem(),
     };
     if (!MODES.includes(this.state.view.mode)) this.state.view.mode = 'iteration';
     this.owner = deps.cache.getSetting<string | null>('cacheOwner', null);
@@ -471,11 +484,69 @@ export class Controller {
     if (this.state.sync.problem !== problem) this.set({ sync: { ...this.state.sync, problem } });
   }
 
-  /** Drop every snapshot, in memory and in SQLite. */
+  /** Drop every snapshot, in memory and in SQLite. What was pending for that account goes with it. */
   private wipeCache(): void {
     this.deps.cache.clearSnapshots();
     this.snapshots.clear();
-    this.state = { ...this.state, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.pending.reset();
+    this.state = { ...this.state, pendingCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.badge();
+  }
+
+  // ---- pending (notifications, badge, summary) --------------------------------
+
+  private badge(): void {
+    try {
+      this.deps.alerts?.setBadge(this.pending.count());
+    } catch {
+      /* a badge that cannot be set must not break a sync round */
+    }
+  }
+
+  private notify(a: Alert): void {
+    try {
+      this.deps.alerts?.notify(a);
+    } catch {
+      /* same */
+    }
+  }
+
+  /** Feed the snapshots read completely this round; notify what became pending, summarise first reads. */
+  private observePending(fresh: SourceSnapshot[]): void {
+    const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
+    for (const it of change.appeared) this.notify({ kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) });
+    if (change.summary) this.notify({ kind: 'summary', ...summaryAlertText(change.summary) });
+    this.badge();
+    this.state = { ...this.state, pendingCount: this.pending.count() };
+  }
+
+  /** The label that marks an item as waiting for a human (same idea as the daemon's setting). Empty = back to the default. */
+  setPendingLabel(name: string): void {
+    const label = normalizeLabel(name) || DEFAULT_PENDING_LABEL;
+    this.deps.cache.setSetting('pendingLabel', label === DEFAULT_PENDING_LABEL ? '' : label);
+    // A settings change is not new work arriving: recount silently.
+    this.pending.relabel(label, this.snapshots);
+    this.badge();
+    this.set({ pendingLabel: label, pendingCount: this.pending.count() });
+  }
+
+  private readLoginItem(): boolean | null {
+    if (!this.deps.loginItem) return null;
+    try {
+      return this.deps.loginItem.get();
+    } catch {
+      return null;
+    }
+  }
+
+  setLaunchAtLogin(on: boolean): void {
+    if (!this.deps.loginItem) return;
+    try {
+      this.deps.loginItem.set(Boolean(on));
+    } catch {
+      /* read back below shows what the system actually has */
+    }
+    this.set({ launchAtLogin: this.readLoginItem() });
   }
 
   /** The cache may only hold data read by `login`; another (or unknown) account wipes it first. */
@@ -555,6 +626,9 @@ export class Controller {
     this.deps.cache.setSetting('sources', sources);
     this.deps.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
+    this.pending.prune(sources.map((s) => s.key));
+    this.badge();
+    this.state = { ...this.state, pendingCount: this.pending.count() };
     const view = this.state.view.selected ? { ...this.state.view, selected: this.state.view.selected.filter((k) => k !== key) } : this.state.view;
     this.deps.cache.setSetting('view', view);
     this.set({ sources, view, sync: { ...this.state.sync, sources: this.state.sync.sources.filter((s) => s.sourceKey !== key) } });
@@ -625,6 +699,8 @@ export class Controller {
     const accepted = round.replaced.filter((snap) => current(snap.sourceKey));
     if (accepted.length) this.deps.cache.replaceSnapshots(accepted);
     for (const snap of accepted) this.snapshots.set(snap.sourceKey, snap);
+    // Only what was read completely this round (and still belongs here) is compared.
+    this.observePending(accepted);
     if (round.viewer) this.deps.cache.setSetting('viewer', round.viewer);
     const status = round.status
       .filter((st) => current(st.sourceKey))

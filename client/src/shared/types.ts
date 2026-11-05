@@ -134,6 +134,12 @@ export interface AppState {
   sync: SyncState;
   /** whether the platform layer can persist credentials (false on unsupported platforms) */
   credentialsPersistent: boolean;
+  /** the label that marks an item as waiting for a human (default `pending/human`) */
+  pendingLabel: string;
+  /** items carrying it in every source read completely so far, open or closed (= the Dock badge) */
+  pendingCount: number;
+  /** launch at login: on / off, null = this platform cannot */
+  launchAtLogin: boolean | null;
 }
 
 export interface BoardData {

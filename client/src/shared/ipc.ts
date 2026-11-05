@@ -22,6 +22,8 @@ export interface CavilApi {
   setView(patch: Partial<ViewSettings>): Promise<void>;
   syncNow(): Promise<void>;
   openExternal(url: string): Promise<void>;
+  setPendingLabel(name: string): Promise<void>;
+  setLaunchAtLogin(on: boolean): Promise<void>;
 }
 
 export const IPC = {
@@ -38,4 +40,6 @@ export const IPC = {
   setView: 'cavil:view',
   syncNow: 'cavil:sync',
   openExternal: 'cavil:open',
+  setPendingLabel: 'cavil:pending-label',
+  setLaunchAtLogin: 'cavil:launch-at-login',
 } as const;

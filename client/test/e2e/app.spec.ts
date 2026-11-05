@@ -20,9 +20,11 @@ interface Env {
   userData: string;
   cred: string;
   opened: string;
+  /** notifications / badge changes the app made (test mode writes them here, one JSON per line) */
+  alerts: string;
 }
 
-async function launch(env: Env): Promise<{ app: ElectronApplication; page: Page }> {
+async function launch(env: Env, extra: Record<string, string> = {}): Promise<{ app: ElectronApplication; page: Page }> {
   const args = [root];
   if (process.platform === 'linux') {
     args.unshift('--no-sandbox');
@@ -38,6 +40,8 @@ async function launch(env: Env): Promise<{ app: ElectronApplication; page: Page 
       CAVIL_CLIENT_TEST_CREDENTIAL_FILE: env.cred,
       CAVIL_CLIENT_TEST_OPENED_FILE: env.opened,
       CAVIL_CLIENT_USER_DATA: env.userData,
+      CAVIL_CLIENT_TEST_ALERTS_FILE: env.alerts,
+      ...extra,
     },
   });
   current = app;
@@ -90,7 +94,7 @@ async function countOf(page: Page, title: string): Promise<string> {
 let env: Env;
 test.beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cavil-e2e-'));
-  env = { fake: await startFakeGitHub(), userData: join(dir, 'userData'), cred: join(dir, 'cred'), opened: join(dir, 'opened.txt') };
+  env = { fake: await startFakeGitHub(), userData: join(dir, 'userData'), cred: join(dir, 'cred'), opened: join(dir, 'opened.txt'), alerts: join(dir, 'alerts.jsonl') };
 });
 test.afterEach(async () => {
   await env.fake.close();
@@ -266,5 +270,69 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
   await expect(page.getByTestId('app-kind-help')).toBeVisible();
   await page.getByTestId('help-back').click();
   await expect(page.getByTestId('settings')).toBeVisible();
+  await app.close();
+});
+
+function alertsOf(env: Env): any[] {
+  if (!existsSync(env.alerts)) return [];
+  return readFileSync(env.alerts, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+}
+
+test('pending/human: start-up summary, one notification per new label, badge, label setting; closing the window keeps it running', async () => {
+  const { app, page } = await launch(env, { CAVIL_CLIENT_TEST_KEEP_RUNNING: '1' });
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
+  await page.getByTestId('source-add').click();
+
+  // the recorded data: 11 items carry pending/human (8 closed / merged), the repo repeats 3 of them
+  await expect(page.getByTestId('pending-count')).toHaveText('11', { timeout: 15_000 });
+  const notes = () => alertsOf(env).filter((a) => a.type === 'notify');
+  const badge = () => alertsOf(env).filter((a) => a.type === 'badge').pop()?.count;
+  await expect.poll(() => notes().length).toBeGreaterThan(0);
+  expect(notes().filter((a) => a.kind === 'item')).toEqual([]);
+  expect(notes().filter((a) => a.kind === 'summary').map((a) => a.title)).toContain('11 条待处理');
+  expect(badge()).toBe(11);
+  await shot(page, '20-pending-settings');
+
+  // a merged PR gets the label on GitHub → exactly one notification at the next round
+  for (const pg of env.fake.state.projects.get('org/gigleai/11')!)
+    for (const n of pg.items.nodes)
+      if (n.content?.number === 23) {
+        n.content.labels = { nodes: [...n.content.labels.nodes, { name: 'pending/human', color: 'ededed' }] };
+        n.content.updatedAt = new Date().toISOString();
+      }
+  await page.getByTestId('back').click();
+  await page.getByTestId('refresh').click();
+  await expect.poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key)).toEqual(['gigleai/cavil-loop#23']);
+  expect(notes().find((a) => a.kind === 'item').title).toContain('已合并');
+  await expect.poll(badge).toBe(12);
+  await page.getByTestId('refresh').click();
+  await page.waitForTimeout(500);
+  expect(notes().filter((a) => a.kind === 'item')).toHaveLength(1);
+
+  // another label name: recounted, nothing notified
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('pending-label').fill('doing/agent');
+  await page.getByTestId('pending-label-save').click();
+  await expect(page.getByTestId('pending-count')).not.toHaveText('12');
+  const count = Number(await page.getByTestId('pending-count').textContent());
+  await expect.poll(badge).toBe(count);
+  expect(notes().filter((a) => a.kind === 'item')).toHaveLength(1);
+
+  // closing the window hides it; the app (and its sync) keeps running
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isVisible()))).toEqual([false]);
+  // the Dock icon (activate) brings it back
+  await app.evaluate(({ app: a }) => a.emit('activate'));
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
   await app.close();
 });

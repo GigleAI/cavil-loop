@@ -7,6 +7,7 @@ import { AppKindPicker } from './AppKindPicker';
 export function SettingsView({ state, data, onBack, onHelp }: { state: AppState; data: BoardData; onBack: () => void; onHelp: () => void }) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [label, setLabel] = useState(state.pendingLabel);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
 
   const add = async () => {
@@ -62,6 +63,43 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           })}
           {state.sources.length === 0 && <li className="muted">还没有添加来源</li>}
         </ul>
+      </section>
+
+      <section data-testid="pending-settings">
+        <h3>提醒</h3>
+        <p className="muted small">
+          带这个标签的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知，Dock 角标显示总数。和 daemon 配置里的标签名保持一致。
+        </p>
+        <div className="row">
+          <input
+            data-testid="pending-label"
+            value={label}
+            placeholder="pending/human"
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && api().setPendingLabel(label)}
+          />
+          <button data-testid="pending-label-save" disabled={label.trim() === state.pendingLabel} onClick={() => api().setPendingLabel(label)}>
+            保存
+          </button>
+        </div>
+        <p className="small">
+          现在待处理：<b data-testid="pending-count">{state.pendingCount}</b> 条
+        </p>
+        {state.launchAtLogin !== null && (
+          <label className="row small">
+            <input
+              type="checkbox"
+              data-testid="launch-at-login"
+              checked={state.launchAtLogin}
+              onChange={(e) => api().setLaunchAtLogin(e.target.checked)}
+            />
+            开机自动启动（在后台运行，不弹窗口）
+          </label>
+        )}
+        {state.launchAtLogin !== null && (
+          // same platforms as launch at login (v1: macOS)
+          <p className="muted small">关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。</p>
+        )}
       </section>
 
       <section>
