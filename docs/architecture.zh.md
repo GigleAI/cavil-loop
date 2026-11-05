@@ -10,7 +10,7 @@
 | `doing/agent` | daemon | agent 正在 dispatching / worker tmux 正在处理 |
 | `pending/human` | worker / daemon | 等你 review / merge / 决策 |
 | `pending/PR` | worker（开 PR 时） | issue 工作已转 PR 跟踪；去看 PR |
-| `Done` | daemon（auto-cleanup） | **只标 PR**（PR merged = 真闭环）；**不标 issue**（issue 是长期 tracker，关闭权交给你） |
+| `Done` | daemon（auto-cleanup） | PR 合并后标 PR；issue 在**关闭为「已完成」**时标（被 `Closes #N` 带关，或你在网页上手动关闭并选「已完成」，同时摘掉残留的流程标签，GitHub#159）。issue 关不关始终由你决定，daemon 不会去关 issue；以「不做了 / 重复」关闭的不标 |
 
 可选的另外几个：`pending/review`（复审关卡，见 [operations](operations.zh.md#交叉-review-关卡可选默认关闭)）；配了托管标签（GitHub#114）时，PR 上的 `pending/merge` = 「复审已通过，等 daemon 检查后合并」，以及 issue（或已开好的 PR，GitHub#128）上的托管「模式标签」本身（daemon 从不摘它）——见 [operations](operations.zh.md#托管标签可选默认关闭)。
 
@@ -55,6 +55,7 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
                                        daemon auto-cleanup →
                                           - PR  : Done（PR 闭环）
                                           - Issue: 被 `Closes #N` 关闭 → Done
+                                          - 你手动关闭 issue 并选「已完成」→ Done（摘掉流程标签）
                                           - 子 issue 关闭 → 若兄弟子项也全关了，
                                             父 issue → pending/human（由你决定是否关闭）
 ```

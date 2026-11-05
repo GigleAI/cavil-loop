@@ -10,7 +10,7 @@
 | `doing/agent`   | Daemon | Daemon is dispatching / worker tmux is running |
 | `pending/human` | Worker / daemon | Wait for you to review / merge / decide |
 | `pending/PR`    | Worker (when opening a PR) | Issue work moved to the PR for tracking; go look at the PR |
-| `Done`          | Daemon (auto-cleanup) | **Only on the PR** (PR merged = truly closed); **not on the issue** (the issue is a long-term tracker; closing it is your call) |
+| `Done`          | Daemon (auto-cleanup) | On a PR once merged; on an issue once it is **closed as completed** — by a `Closes #N` merge, or by you closing it by hand with "Close as completed", which also strips leftover workflow labels (GitHub#159). Closing an issue is always your call; the daemon never closes one. Issues closed as "not planned" / "duplicate" get no `Done` |
 
 Optional extras: `pending/review` (review gate, see [operations](operations.md#optional-cross-review-gate-off-by-default)) and, with the autopilot label configured (GitHub#114), `pending/merge` on a PR = "review passed, waiting for the daemon to check and merge", plus the autopilot *mode* label itself on an issue (or on an existing PR, GitHub#128; never removed by the daemon) — see [operations](operations.md#autopilot-label-optional-off-by-default).
 
@@ -55,6 +55,7 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
                                        daemon auto-cleanup →
                                           - PR  : Done (PR closure)
                                           - Issue: closed by `Closes #N` → Done
+                                          - Issue you close by hand as completed → Done (workflow labels stripped)
                                           - Sub-issue closed → if every sibling is closed too,
                                             parent issue → pending/human (you decide whether to close it)
 ```
