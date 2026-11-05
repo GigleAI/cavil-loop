@@ -25,7 +25,10 @@ cp -R "$app_src" "$app"
 bin="$app/Contents/MacOS/Cavil Loop"
 
 echo "== 0. dmg window: background + the copyable first-open instructions"
-[ -n "$(find "$mnt/.background" -maxdepth 1 -type f \( -name '*.png' -o -name '*.tiff' \) 2>/dev/null)" ] || { echo "❌ no background image in the dmg"; ls -la "$mnt"; exit 1; }
+# electron-builder merges background.png + background@2x.png into one multi-resolution .background.tiff
+bg="$(find "$mnt" -maxdepth 2 \( -name '.background.tiff' -o -path '*/.background/*' \) -type f | head -n1)"
+[ -n "$bg" ] || { echo "❌ no background image in the dmg"; ls -la "$mnt"; exit 1; }
+tiffutil -info "$bg" 2>/dev/null | grep -iE 'width|height' | head -4 || true
 txt="$mnt/打不开时看这里.txt"
 [ -f "$txt" ] || { echo "❌ the instructions file is missing"; ls -la "$mnt"; exit 1; }
 grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$txt" || { echo "❌ the instructions file lacks the command"; exit 1; }
