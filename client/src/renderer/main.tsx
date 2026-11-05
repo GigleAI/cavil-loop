@@ -23,7 +23,9 @@ async function boot() {
     mounted = tauri.mounted;
   }
   const init = await backend.call<BackendInit>('init');
-  const controller = new Controller({ backend, endpoints: init.endpoints }, init);
+  // UI-test builds: the 60 s round never fires during a test, as when it ran on the real clock in
+  // Electron's main process (a test that fakes the window's clock must not trigger rounds by it)
+  const controller = new Controller({ backend, endpoints: init.endpoints, ...(CAVIL_TEST_BRIDGE ? { syncIntervalMs: 86_400_000 } : {}) }, init);
   window.cavil = localApi(controller, backend);
   createRoot(document.getElementById('root')!).render(<App />);
   // the packaged-app smoke test: the views mounted and the back end answered through IPC

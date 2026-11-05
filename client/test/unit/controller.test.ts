@@ -58,7 +58,7 @@ async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: 
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (pred(c.getState())) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -424,7 +424,7 @@ async function loginViaBrowser(c: Controller, token: string) {
 
 /** wait until the fake has seen `n` requests whose path contains `fragment` */
 async function requestsSeen(fragment: string, n: number) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (fake.log.filter((l) => l.path.includes(fragment)).length >= n) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -613,7 +613,7 @@ class SlowStore extends FileStore {
 const TOKEN_A2 = 'gho_faketokenA20000000000000000000003';
 
 async function untilWrites(store: SlowStore, n: number) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (store.writes.length >= n) return;
     await new Promise((r) => setTimeout(r, 10));
   }

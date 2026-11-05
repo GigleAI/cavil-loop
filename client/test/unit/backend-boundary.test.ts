@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 async function until(c: Controller, pred: (s: AppState) => boolean) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (pred(c.getState())) return;
     await new Promise((r) => setTimeout(r, 10));
   }

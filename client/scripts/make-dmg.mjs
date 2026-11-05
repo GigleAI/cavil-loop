@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // macOS installer: the .app Tauri built (`tauri build --bundles app`) into
 // release/Cavil-Loop-<version>-<arch>.dmg, laid out by dmgbuild
-// (scripts/dmg-settings.py). Tauri's own dmg step cannot add the first-open
-// instructions file, which is why this exists.
+// (scripts/dmg-settings.py, layout from scripts/dmg-layout.mjs). Tauri's own dmg
+// step cannot add the first-open files (copy page, instructions), which is why this exists.
 //
 //   node scripts/make-dmg.mjs [--arch arm64|x64] [--app <path to .app>]
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DMG_ICONS, DMG_ICON_SIZE, DMG_WINDOW } from './dmg-layout.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const arg = (name) => {
@@ -33,5 +34,6 @@ function findApp() {
 const app = findApp();
 mkdirSync(join(root, 'release'), { recursive: true });
 const out = join(root, 'release', `Cavil-Loop-${version}-${arch}.dmg`);
-execFileSync('dmgbuild', ['-s', join(root, 'scripts', 'dmg-settings.py'), '-D', `app=${app}`, '-D', `build=${join(root, 'build')}`, 'Cavil Loop', out], { stdio: 'inherit' });
+const layout = JSON.stringify({ window: DMG_WINDOW, iconSize: DMG_ICON_SIZE, icons: DMG_ICONS });
+execFileSync('dmgbuild', ['-s', join(root, 'scripts', 'dmg-settings.py'), '-D', `app=${app}`, '-D', `build=${join(root, 'build')}`, '-D', `layout=${layout}`, 'Cavil Loop', out], { stdio: 'inherit' });
 console.log(`${out} ${statSync(out).size} bytes`);

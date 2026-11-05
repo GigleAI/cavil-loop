@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
@@ -8,36 +8,10 @@ import { textColor } from './colors';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { NewIssueDialog } from './NewIssueDialog';
-import { applyFilter, parseFilter } from '../shared/filter';
+import { applyFilter, type ParsedFilter } from '../shared/filter';
+import { isFiltering, type WarnKind } from './warnings';
 import { TableView } from './TableView';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
-
-/**
- * The search box: filters as you type (the text lives here), saved to the
- * view settings a moment after typing stops. An import that replaces the
- * saved text replaces the box too.
- */
-function useQuery(saved: string): [string, (q: string) => void] {
-  const [text, setText] = useState(saved);
-  const lastSent = useRef(saved);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (saved !== lastSent.current) {
-      lastSent.current = saved;
-      setText(saved);
-    }
-  }, [saved]);
-  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
-  const update = (q: string) => {
-    setText(q);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      lastSent.current = q;
-      void api().setView({ query: q });
-    }, 300);
-  };
-  return [text, update];
-}
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -202,14 +176,47 @@ function ColumnView({ col, cards, mode, ops, onDrop }: { col: Column; cards: Car
   );
 }
 
-export function BoardView({ state, data, onSettings }: { state: AppState; data: BoardData; onSettings: () => void }) {
+/** The yellow bars' "×" (GitHub#153): the window decides what is shown, the board only asks. */
+export interface BoardWarnings {
+  shown: (kind: WarnKind) => boolean;
+  close: (kind: WarnKind) => void;
+}
+
+/** A yellow bar with a "×" that closes only this bar. */
+function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings; children: ReactNode }) {
+  if (!warn.shown(kind)) return null;
+  return (
+    <div className="banner warn closable" data-testid={kind}>
+      <span className="banner-text">{children}</span>
+      <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid={`${kind}-close`} onClick={() => warn.close(kind)}>
+        ×
+      </button>
+    </div>
+  );
+}
+
+export function BoardView({
+  state,
+  data,
+  query,
+  setQuery,
+  parsed,
+  warn,
+  onSettings,
+}: {
+  state: AppState;
+  data: BoardData;
+  query: string;
+  setQuery: (q: string) => void;
+  parsed: ParsedFilter;
+  warn: BoardWarnings;
+  onSettings: () => void;
+}) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
   const [panel, setPanel] = useState(false);
   const { view, sync } = state;
   const today = localToday(now);
-  const [query, setQuery] = useQuery(view.query);
-  const parsed = useMemo(() => parseFilter(query), [query]);
   const items = useMemo(
     () => applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects }),
     [data, parsed, state.viewer, today],
@@ -279,7 +286,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
       setConfirm(plan);
     }
   };
-  const filtering = parsed.clauses.length > 0 || parsed.unsupported.length > 0;
+  const filtering = isFiltering(parsed);
   const hasText = parsed.clauses.some((c) => c.kind === 'text');
 
   const toggle = (key: string) => {
@@ -382,16 +389,12 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           </span>
         )}
       </div>
-      {parsed.unsupported.length > 0 && (
-        <div className="banner warn" data-testid="filter-unsupported">
-          {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
-        </div>
-      )}
-      {filtering && failed.length > 0 && (
-        <div className="banner warn" data-testid="filter-incomplete">
-          有来源这次没读全，筛选结果可能不全（详见下方）。
-        </div>
-      )}
+      <WarnBar kind="filter-unsupported" warn={warn}>
+        {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
+      </WarnBar>
+      <WarnBar kind="filter-incomplete" warn={warn}>
+        有来源这次没读全，筛选结果可能不全（详见下方）。
+      </WarnBar>
       {hasText && <div className="small muted hint">文字只搜标题、编号和标签名，不搜正文和评论。</div>}
       {view.imported && view.imported.notes.length > 0 && (
         <div className="banner info" data-testid="import-notes">
@@ -403,27 +406,21 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
       )}
       {panel && <ViewSettingsPanel view={view} />}
 
-      {sync.offline && (
-        <div className="banner warn" data-testid="offline">
-          离线 · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'}。修改功能暂不可用。
-        </div>
-      )}
-      {!sync.offline && failed.length > 0 && (
-        <div className="banner warn" data-testid="incomplete">
-          同步不完整：
-          {failed
-            .map((f) => {
-              const s = state.sources.find((x) => x.key === f.sourceKey);
-              return `${s ? sourceLabel(s, titles.get(s.key)) : f.sourceKey} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
-            })
-            .join('；')}
-        </div>
-      )}
-      {sync.problem && (
-        <div className="banner warn" data-testid="sync-problem">
-          {sync.problem}
-        </div>
-      )}
+      <WarnBar kind="offline" warn={warn}>
+        离线 · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'}。修改功能暂不可用。
+      </WarnBar>
+      <WarnBar kind="incomplete" warn={warn}>
+        同步不完整：
+        {failed
+          .map((f) => {
+            const s = state.sources.find((x) => x.key === f.sourceKey);
+            return `${s ? sourceLabel(s, titles.get(s.key)) : f.sourceKey} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
+          })
+          .join('；')}
+      </WarnBar>
+      <WarnBar kind="sync-problem" warn={warn}>
+        {sync.problem}
+      </WarnBar>
       <ResultBanner note={note} testid="board-action-result" />
       {view.layout === 'board' && board.notice && (
         <div className="banner info" data-testid="board-notice">

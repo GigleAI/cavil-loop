@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复制放行命令 · Cavil Loop</title>
+<!-- Shipped inside the dmg (GitHub#153): the command drawn on the dmg background
+     cannot be clicked, so this page carries it with a copy button. Static, no
+     external resources. The command must stay identical to the one in
+     打不开时看这里.txt and dmg-background.html (test/unit/dmg.test.ts). -->
+<style>
+  :root { color-scheme: light dark; --bg: #f6f8fa; --panel: #fff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --code: #eff2f5; --accent: #0969da; --ok: #1a7f37; --warn: #9a6700; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --panel: #161b22; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d; --code: #262c36; --accent: #4493f8; --ok: #3fb950; --warn: #d29922; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+  main { max-width: 640px; margin: 48px auto; padding: 0 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  ol { padding-left: 20px; margin: 8px 0 16px; }
+  .cmd { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+  code { flex: 1; min-width: 0; display: block; font: 13px/1.5 ui-monospace, Menlo, monospace; background: var(--code); border-radius: 6px; padding: 10px 12px; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+  button { font: inherit; padding: 8px 20px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  #status { min-height: 1.6em; margin: 10px 0 0; }
+  #status.ok { color: var(--ok); }
+  #status.warn { color: var(--warn); font-weight: 600; }
+  .muted { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>Cavil Loop 第一次打开被 macOS 拦住时</h1>
+    <ol>
+      <li>先把 Cavil Loop 拖进「应用程序」。</li>
+      <li>点下面的「复制」。</li>
+      <li>打开「终端」，粘贴（⌘V）后回车，然后正常双击打开 App。</li>
+    </ol>
+    <div class="cmd">
+      <code id="cmd">xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"</code>
+      <button id="copy" type="button">复制</button>
+    </div>
+    <p id="status" role="status" aria-live="polite"></p>
+    <p class="muted">每装一个新版本都要重新放行一次。也可以不用终端：打开「系统设置 → 隐私与安全性」，往下找到「仍要打开」。</p>
+  </div>
+</main>
+<script>
+  (function () {
+    var cmd = document.getElementById('cmd');
+    var status = document.getElementById('status');
+    function say(text, kind) { status.textContent = text; status.className = kind; }
+    function selectCommand() {
+      var range = document.createRange();
+      range.selectNodeContents(cmd);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    // the older way: select the text and ask the browser to copy the selection
+    function copyBySelection() {
+      try {
+        selectCommand();
+        return document.execCommand('copy') === true;
+      } catch (e) {
+        return false;
+      }
+    }
+    var COPIED = '已复制。到「终端」里粘贴（⌘V）后回车。';
+    document.getElementById('copy').addEventListener('click', function () {
+      var text = cmd.textContent;
+      var fallback = function () {
+        if (copyBySelection()) return say(COPIED, 'ok');
+        // nothing could copy: leave the command selected and say what to press
+        selectCommand();
+        say('没能自动复制。命令已选中，请按 ⌘C 复制。', 'warn');
+      };
+      var clip = navigator.clipboard;
+      if (clip && typeof clip.writeText === 'function') {
+        var p;
+        try {
+          p = clip.writeText(text);
+        } catch (e) {
+          return fallback();
+        }
+        Promise.resolve(p).then(function () { say(COPIED, 'ok'); }, fallback);
+      } else fallback();
+    });
+  })();
+</script>
+</body>
+</html>
