@@ -118,7 +118,27 @@ chk "有项目增量时同样跳过、增量仍在最后" \
     "$(grep -c 'DIR-SECRET' "$out") $(tail -1 "$out")" "0 EXTRA-项目要求"
 rm -f "$PROMPTS/new-issue.extra.md"
 
-echo "── 2. shell 与 python 两份切法对拍（同一批输入逐字节相同）──"
+echo "── 1b. Windows 换行（CRLF）的经验文件：两个入口同样跳过目录经验段 ──"
+crlf_judge() {   # 给 CRLF 版本打分：两份经验都换成 CRLF 后拼装，返回失败条数
+    setup_both
+    sed -i 's/$/\r/' "$PROMPTS/lessons.md" "$SKILL_DIR/prompts/lessons.md"
+    judge_compose "$(compose_prompt_template new-issue)"
+}
+setup_both; sed -i 's/$/\r/' "$PROMPTS/lessons.md" "$SKILL_DIR/prompts/lessons.md"
+chk "夹具确实是 CRLF" "$(grep -c $'\r$' "$PROMPTS/lessons.md" | awk '{print ($1 > 10) ? "yes" : "no"}')" "yes"
+out=$(compose_prompt_template new-issue)
+chk "CRLF：硬规则在" "$(grep -c 'HARD-RULE-一条硬规则' "$out")" "1"
+chk "CRLF：通用经验在" "$(grep -c 'GENERAL-通用经验' "$out")" "1"
+chk "CRLF：项目目录经验不在" "$(grep -c 'DIR-SECRET' "$out")" "0"
+chk "CRLF：通用经验的目录段不在" "$(grep -c 'GENERAL-DIR' "$out")" "0"
+chk "CRLF：打分 0 失败" "$(crlf_judge)" "0"
+# 大文件：标题靠前、后面很长，管道里 grep -q 提前退出也不能判反（pipefail 下 SIGPIPE）
+{ project_lessons; for i in $(seq 1 20000); do echo "- 填充行 $i"; done; } > "$PROMPTS/lessons.md"
+sed -i '0,/^## 目录经验$/!{/^## 目录经验$/d}' "$PROMPTS/lessons.md"
+( set -o pipefail; lessons_for_prompt "$PROMPTS/lessons.md" ) > "$TMP/big.out"
+chk "pipefail 下大文件仍切掉目录段" "$(grep -c 'DIR-SECRET\|填充行' "$TMP/big.out")" "0"
+
+echo "── 2. shell 与 python 两份切法对拍（同一批输入：无 \r 的逐字节相同，有 \r 的按 python 读文本的换行规矩读回后相同）──"
 F="$TMP/fixtures"; mkdir -p "$F"
 project_lessons > "$F/real.md"
 printf '%s' "$(project_lessons)" > "$F/no-trailing-newline.md"
@@ -126,6 +146,10 @@ printf 'a\n\n## 目录经验\nx\n\n## 后面还有一段\nb\n\n\n' > "$F/middle.
 printf '## 目录经验\n' > "$F/heading-only.md"
 printf 'a\n## 目录经验 \nb\n' > "$F/heading-with-space.md"
 printf '一行没有换行' > "$F/plain-no-newline.md"
+project_lessons | sed 's/$/\r/' > "$F/crlf-real.md"
+printf 'a\r## 目录经验\rSECRET\r## 下一段\rb\r' > "$F/lone-cr.md"
+printf 'a\r\n\r\n## 目录经验\r\nx\r\n' > "$F/crlf-heading-last.md"
+printf 'a\r\nb\r\n' > "$F/crlf-plain.md"
 printf 'a\n\n\n' > "$F/plain-trailing-blanks.md"
 for f in "$F"/*.md; do
     lessons_for_prompt "$f" > "$f.sh"
@@ -133,13 +157,22 @@ for f in "$F"/*.md; do
 import sys
 sys.path.insert(0, sys.argv[3])
 import retrospective_lessons as rl
-text = open(sys.argv[1], encoding='utf-8').read()
-open(sys.argv[2], 'w', encoding='utf-8').write(rl.prompt_text(text))
+text = open(sys.argv[1], encoding='utf-8').read()          # 复盘程序的读法（换行归一）
+open(sys.argv[2], 'w', encoding='utf-8', newline='').write(rl.prompt_text(text))
 PY
-    if cmp -s "$f.sh" "$f.py"; then ok "$(basename "$f")：两边相同"; else bad "$(basename "$f")：两边不同"; diff "$f.sh" "$f.py" | head -5; fi
+    if ! grep -q $'\r' "$f"; then
+        if cmp -s "$f.sh" "$f.py"; then ok "$(basename "$f")：两边逐字节相同"; else bad "$(basename "$f")：两边不同"; diff "$f.sh" "$f.py" | head -5; fi
+    elif python3 -c 'import sys; a=open(sys.argv[1],encoding="utf-8").read(); b=open(sys.argv[2],encoding="utf-8",newline="").read(); sys.exit(a != b)' "$f.sh" "$f.py"; then
+        ok "$(basename "$f")：两边相同（按换行归一读回）"
+    else
+        bad "$(basename "$f")：两边不同"; od -c "$f.sh" | head -3
+    fi
 done
 chk "没有标题的文件原样输出（不补换行）" "$(cmp -s "$F/plain-no-newline.md" "$F/plain-no-newline.md.sh" && echo same)" "same"
 chk "没有标题的文件末尾空行不动" "$(cmp -s "$F/plain-trailing-blanks.md" "$F/plain-trailing-blanks.md.sh" && echo same)" "same"
+chk "CRLF 文件确实切掉了目录段" "$(grep -c 'DIR-SECRET' "$F/crlf-real.md.sh")" "0"
+chk "单独 \r 换行的文件也切掉了" "$(grep -c SECRET "$F/lone-cr.md.sh")" "0"
+chk "没有标题的 CRLF 文件原样输出" "$(cmp -s "$F/crlf-plain.md" "$F/crlf-plain.md.sh" && echo same)" "same"
 chk "中间一段切掉后下一段保留" "$(cat "$F/middle.md.sh")" "$(printf 'a\n\n## 后面还有一段\nb')"
 
 echo "── 3. 没有目录经验标题：与改动前的拼装逐字节相同 ──"
@@ -181,6 +214,29 @@ mutant() {   # <说明> <要改坏的原文> <改成>
 }
 mutant "通用经验入口退回 cat" 'lessons_for_prompt "$lessons"' 'cat "$lessons"'
 mutant "项目经验入口退回 cat" 'lessons_for_prompt "$project_lessons"' 'cat "$project_lessons"'
+if mutation_gate; then
+    # 上一版：只认 LF 的标题探测（CRLF 文件整份原样进了派工说明，复审第 1 轮）
+    eval "$(declare -f lessons_for_prompt | sed 's/< <(_lessons_lf "\$1")/"$1"/; s/_lessons_lf "\$1" | awk/awk/; s/}'"'"'$/}'"'"' "$1"/')"
+    if declare -f lessons_for_prompt | grep -q _lessons_lf; then
+        bad "准备失败：只认 LF 的旧探测（原文已不在）"
+    else
+        n=$(crlf_judge)
+        if [ "$n" -gt 0 ]; then ok "只认 LF 的旧探测 → CRLF 变红（$n 条断言失败）"; else bad "只认 LF 的旧探测 → CRLF 仍全绿"; fi
+    fi
+    eval "$real_filter"
+fi
+if mutation_gate; then
+    # 探测走管道：pipefail 下 grep -q 提前退出让 sed 吃 SIGPIPE，判成「没有标题」
+    eval "$(declare -f lessons_for_prompt | sed 's/grep -qx .## 目录经验. < <(_lessons_lf "\$1")/_lessons_lf "$1" | grep -qx "## 目录经验"/')"
+    if ! declare -f lessons_for_prompt | grep -q '_lessons_lf "$1" | grep'; then
+        bad "准备失败：管道版探测（原文已不在）"
+    else
+        { project_lessons; for i in $(seq 1 20000); do echo "- 填充行 $i"; done; } > "$TMP/big.md"
+        ( set -o pipefail; lessons_for_prompt "$TMP/big.md" ) > "$TMP/big.mut"
+        if [ "$(grep -c 'DIR-SECRET' "$TMP/big.mut")" -gt 0 ]; then ok "管道版探测 → pipefail 大文件变红"; else bad "管道版探测 → 仍全绿"; fi
+    fi
+    eval "$real_filter"
+fi
 if mutation_gate; then
     lessons_for_prompt() { cat "$1"; }
     setup_both
