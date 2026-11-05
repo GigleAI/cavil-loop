@@ -12,7 +12,7 @@
 | `pending/PR` | worker（开 PR 时） | issue 工作已转 PR 跟踪；去看 PR |
 | `Done` | daemon（auto-cleanup） | **只标 PR**（PR merged = 真闭环）；**不标 issue**（issue 是长期 tracker，关闭权交给你） |
 
-可选的另外几个：`pending/review`（复审关卡，见 [operations](operations.zh.md#交叉-review-关卡可选默认关闭)）；配了托管标签（GitHub#114）时，PR 上的 `pending/merge` = 「复审已通过，等 daemon 检查后合并」，以及 issue（或已开好的 PR，GitHub#128）上的托管「模式标签」本身（daemon 从不摘它）——见 [operations](operations.zh.md#托管标签可选默认关闭)。
+可选的另外几个：`pending/review`（复审关卡，见 [operations](operations.zh.md#交叉-review-关卡可选默认关闭)）；配了托管标签（GitHub#114）时，PR 上的 `pending/merge` = 「复审已通过，等 daemon 检查后合并」，`pending/blocked`（GitHub#157，配了 `LABEL_PENDING_BLOCKED` 时）= 「在等本仓库别的 issue / PR，前置全部完成后 daemon 自动翻回 `pending/agent`」，以及 issue（或已开好的 PR，GitHub#128）上的托管「模式标签」本身（daemon 从不摘它）——见 [operations](operations.zh.md#托管标签可选默认关闭)。
 
 ### 关于 PR↔Issue 闭环关系：worker 在设计阶段就决定
 
@@ -27,7 +27,7 @@ worker 在「设计提案」comment 里选 A 或 B（选 B 时附拆分计划：
 
 拆分怎么跑：
 
-1. 你确认 B 后，worker（`issue-comment.template.md` § A-split）逐个建子 issue、用 sub-issue 接口挂到父 issue 下、从父 issue 继承优先级 / Project iteration。没有前置的子项直接打 `pending/agent`；有前置的打 `pending/human`，前置合并后由你打 `pending/agent`
+1. 你确认 B 后，worker（`issue-comment.template.md` § A-split）逐个建子 issue、用 sub-issue 接口挂到父 issue 下、从父 issue 继承优先级 / Project iteration。没有前置的子项直接打 `pending/agent`；有前置的打 `pending/human`，前置合并后由你打 `pending/agent`。配了 `LABEL_PENDING_BLOCKED`（GitHub#157）时改挂 `pending/blocked` 并登记前置，前置合并后 daemon 自己把它翻成 `pending/agent`
 2. 子项跳过设计轮：`dispatch-new-issue.sh` 渲染开发阶段 prompt（`issue-comment` + `sub-issue.template.md`）而不是设计 prompt，**前提是三条同时成立**——GitHub 上它确实有本仓库的父 issue、正文带指向该父 issue 的 `<!-- agent-split-from: #父号 -->`、由写身份（bot）创建。任一不成立（或查询出错）就照常走设计轮
 3. merge 钩子把合并 PR 对应的 issue **无条件入队**——它关没关由汇总自己去读，因为钩子自己读状态失败时会兜底成 OPEN——（`state.json` 的 `split_rollup_queue`），每轮 poll 统一清队、逐个调 `sub_issue_rollup`。要队列是因为这个 PR 已记入 `cleaned_prs`、下轮不会再扫到——最后一个子项汇总时碰上一次接口抖动，父 issue 就永远等不到汇总。任何读写失败都留在队里下轮再试（上限 `SUB_ISSUE_ROLLUP_MAX_TRIES`，默认 30 轮）。评论和翻 label 分开记进度（`split_rollup_commented` / `split_rollups`），翻 label 失败后重试不会重复发评论。「全部关闭」只从确认完整的列表得出：列表必须包含刚关闭的这个子项，且条数等于父 issue 自己记的 `sub_issues_summary.total`——否则视为接口未刷新，下轮再试。合并 PR 对应 issue 自己的标签（关了打 `Done`、还开着打 `pending/human`）同理：状态读不到就一个标签都不写，进 `merged_label_queue` 下轮再判——绝不猜成 OPEN
 

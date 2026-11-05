@@ -143,6 +143,12 @@ self_heal_one() {
         SELFHEAL_REQUESTER_BOT+=" ${kind}#${n}"
         return 0
     fi
+    # 同理：挂着等前置标签（GitHub#157）= worker 已经说了「等别的条目完成」，翻回触发标签就是
+    # daemon 替前置做了决定。前置完成后由 blocked_tick 接力，或人来处理。
+    if labels_have_blocked "$labels_csv"; then
+        SELFHEAL_BLOCKED+=" ${kind}#${n}"
+        return 0
+    fi
     # 多机分工：session 不存在**不等于**worker 死了 —— 也可能是另一台机器正在跑它。
     # 两边 session 命名规则相同，本机 has-session 查不到是必然的，不能据此判僵尸。
     # 只认 state.json 里记着归属本机的那些；没记录 = 不是我派的 = 不碰。
@@ -187,6 +193,7 @@ self_heal_one() {
 # 对面满载时这里每 30 秒就刷 4-5 行噪音，把真正的 self-heal 淹掉。
 SELFHEAL_FOREIGN=""
 SELFHEAL_REQUESTER_BOT=""
+SELFHEAL_BLOCKED=""
 
 if [ -n "$zombie_pr_data" ]; then
     while IFS=$'\t' read -r pr branch zlabels; do
@@ -205,6 +212,9 @@ if [ -n "$zombie_issue_nums" ]; then
 fi
 if [ -n "$SELFHEAL_REQUESTER_BOT" ]; then
     log "self-heal 跳过（挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，等机器人带回答复）:$SELFHEAL_REQUESTER_BOT"
+fi
+if [ -n "$SELFHEAL_BLOCKED" ]; then
+    log "self-heal 跳过（挂着等前置标签 $LABEL_PENDING_BLOCKED，等前置完成后自动接力）:$SELFHEAL_BLOCKED"
 fi
 if [ -n "$SELFHEAL_FOREIGN" ]; then
     log "self-heal 跳过（不是本机 $SELFHEAL_HOST_ID 派的，括号里是记录的归属）:$SELFHEAL_FOREIGN"
@@ -349,6 +359,10 @@ collect_queue_rows() {
         # doing/agent 时一并摘掉等待标签（_lib.sh flip_to_doing 的 REQUESTER_BOT_DISPATCH_CLEAR）。
         if labels_have_requester_bot_wait "$labels_csv"; then
             log "${kind} #${num} 挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
+        fi
+        # 等前置期间有人打了触发标签（GitHub#157）：同上，按触发标签派，派工时一并摘掉等前置标签
+        if labels_have_blocked "$labels_csv"; then
+            log "${kind} #${num} 挂着等前置标签 $LABEL_PENDING_BLOCKED，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等前置标签"
         fi
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
@@ -907,6 +921,12 @@ fi
 pending_human_conflict_tick "$STATE_FILE" || true
 if [ "${PR_CONFLICT_ACTED:-0}" = 1 ]; then pace_mark_acted; fi
 
+# ── 3f. 等前置的条目：前置全部完成 → 翻回触发标签接着干（GitHub#157）──
+# 放在派工之后：这一轮翻回去的条目下一轮派工（翻标签算有动静，下一轮不会被退避推迟）。
+# LABEL_PENDING_BLOCKED 留空时一次 GitHub 调用都不发、不碰 state.json。
+blocked_tick "$STATE_FILE" || true
+if [ "${BLOCKED_ACTED:-0}" = 1 ]; then pace_mark_acted; fi
+
 # Durable merge review queue is independent of cleanup success and worker labels.
 if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then
     nohup bash "$SCRIPT_DIR/post-merge-retrospective.sh" >> "$STATE_DIR/retrospective.log" 2>&1 &
@@ -938,7 +958,11 @@ if [ -n "$(list_worker_sessions)" ]; then pace_active=1; fi
 # 绝不能把「算不出来」写成空指纹存下去——下一轮会把它读成「所有条目都消失了」。
 if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
     pace_fp=$(pace_fingerprint 2>/dev/null) || pace_fp=""
-    pace_record_ok "$pace_active" "$pace_fp"
+    # 有条目在等前置（GitHub#157）：下一轮最晚 BLOCKED_RECHECK_SECS 后，前置完成后才接得上。
+    # 只管「下一轮跑不跑」；第一次发现新挂上的等待仍按原来的节奏（闸门在任何 GitHub 读取之前）。
+    pace_cap=""
+    if [ "${BLOCKED_WAITING:-0}" = 1 ]; then pace_cap="$BLOCKED_RECHECK_SECS"; fi
+    pace_record_ok "$pace_active" "$pace_fp" "$pace_cap"
     if [ "${PACE_TIER_SECS:-0}" -eq 0 ]; then
         log_debug "本轮节奏：不退避（已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}")），下个 tick 照跑"
     else

@@ -499,6 +499,9 @@ review_label="$(config_value LABEL_PENDING_REVIEW)"
 # LABEL_PENDING_RELAY 也认（_names.sh 的 cavil_pick_setting，与 _lib.sh 同一个函数）。
 requester_bot_label="$(cavil_pick_setting "$(config_value LABEL_PENDING_REQUESTER_BOT)" "$(config_value LABEL_PENDING_RELAY)")"
 [ -n "$requester_bot_label" ] && label_defs+=("$requester_bot_label|f9a8d4|等外部需求机器人带回提需求方的答复")
+# 等前置标签（GitHub#157）：配了 LABEL_PENDING_BLOCKED 才建它。
+blocked_label="$(config_value LABEL_PENDING_BLOCKED)"
+[ -n "$blocked_label" ] && label_defs+=("$blocked_label|c5def5|等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干")
 # 托管标签（GitHub#114）默认关闭；配了 LABEL_AUTOPILOT 才建它和「等 daemon 合并」标签。
 autopilot_label="$(config_value LABEL_AUTOPILOT)"
 if [ -n "$autopilot_label" ]; then

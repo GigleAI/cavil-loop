@@ -810,6 +810,42 @@ process, is picked up the next round through that record.
 Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
 
+## Waiting on another item: `pending/blocked` (GitHub#157)
+
+Set `LABEL_PENDING_BLOCKED` (the example config uses `pending/blocked`) and a worker whose work is blocked on **another
+issue / PR of this repo** — not on a human decision — records the prerequisites and puts that label on instead of
+`pending/human`. Every poll round the daemon looks at items carrying it:
+
+| Prerequisites | Daemon does |
+|---|---|
+| all done (issue closed as *completed*, PR merged) | one comment, removes the label, adds back the trigger label the marker names (default `pending/agent`) — the next round dispatches it |
+| one ended otherwise (closed *not planned* / *duplicate* / no reason, PR closed unmerged, unreadable 404) | comment naming it, `pending/human` |
+| none can be found, or one lives in another repo | comment, `pending/human` |
+| some still open | nothing |
+| GitHub cannot be read (error, missing field) | nothing; looks again next round — never treated as done |
+
+**Where the prerequisites come from** (union): the issue's native *Blocked by* relationship (sidebar → Relationships;
+measured: GitHub accepts only issues as the blocker, a PR returns 422 "Target issue may only be an issue"), and the
+latest hidden marker `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->` posted by the loop's write account or a
+maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) after the label was last removed. Free text such as "waiting on #12" is
+never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+
+**Stopping it**: add `pending/human` (or any flow label — `doing/agent`, `pending/PR`, `pending/review`, a trigger label…)
+and the daemon leaves the item alone. Putting a trigger label on by hand dispatches it as usual and the dispatch removes
+`pending/blocked`. Greedy dispatch, self-heal and autopilot's "label only" pickup all skip items carrying it.
+
+**Before writing** the daemon reads everything again and decides a second time; if anything differs (a new
+prerequisite, the label removed and put back, `pending/human` added, a prerequisite reopened) it writes nothing this
+round. Progress is kept in `state.json` → `blocked_resume` (only while the feature is on) so a retry after a failed label
+write does not post the comment twice; after `BLOCKED_MAX_TRIES` failed attempts it gives up, logs, and leaves the item on
+`pending/blocked` for a human.
+
+**Timing**: while an item is waiting, the poll interval is capped at `BLOCKED_RECHECK_SECS` (300 s), so a finished
+prerequisite is usually picked up within about 7 minutes. *Noticing* a newly labelled item still follows the idle backoff —
+in a project that has been quiet for a week a hand-added label can take up to ~30 minutes to be seen (the worker's own
+label is seen within a minute, the project having just been active). `rm poll-pace.json` brings polling back to full speed.
+Not supported: prerequisites in other repos, cycle detection (two items waiting on each other both stay waiting).
+
 ## External requester bot (optional, **off by default**)
 
 When another AI assistant with its own GitHub account files requests directly, the agent's
