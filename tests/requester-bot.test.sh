@@ -1579,10 +1579,12 @@ chk "首页只在「可以调的地方」和「深入阅读」各一行点名" \
 
 echo "── 6. 说法：不再把这个功能叫「传话」（GitHub#97） ──"
 # 复盘记录是历史，不改；其余给人看的文字都不该再出现
-chk "仓库里（复盘记录除外）不再出现「传话」" \
-    "$(grep -rl '传话' "$REPO_DIR" --exclude-dir=.git --exclude-dir=retrospectives --exclude=requester-bot.test.sh 2>/dev/null | sed "s|$REPO_DIR/||" | paste -sd,)" ""
+# client/test/fixtures/ 是从 GitHub 原样录下来的接口返回（GitHub#137），里面有旧 issue / PR
+# 的真实标题，和复盘记录一样是历史，改不了名；只排除这一个目录，tests/fixtures 等照查
+chk "仓库里（复盘记录、客户端录制数据除外）不再出现「传话」" \
+    "$(grep -rl '传话' "$REPO_DIR" --exclude-dir=.git --exclude-dir=retrospectives --exclude=requester-bot.test.sh 2>/dev/null | sed "s|$REPO_DIR/||" | grep -v '^client/test/fixtures/' | paste -sd,)" ""
 chk "英文文档里不再叫它 relay bot" \
-    "$(grep -rli 'relay bot' "$REPO_DIR" --exclude-dir=.git --exclude-dir=retrospectives --exclude=requester-bot.test.sh 2>/dev/null | sed "s|$REPO_DIR/||" | paste -sd,)" ""
+    "$(grep -rli 'relay bot' "$REPO_DIR" --exclude-dir=.git --exclude-dir=retrospectives --exclude=requester-bot.test.sh 2>/dev/null | sed "s|$REPO_DIR/||" | grep -v '^client/test/fixtures/' | paste -sd,)" ""
 # 对接文档（GitHub#102）里的页内链接、以及别处指向对接文档的链接，锚点都必须真有对应标题
 anchor_of() { python3 -c '
 import re,sys
