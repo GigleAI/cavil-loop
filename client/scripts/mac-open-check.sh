@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Run on a macOS CI machine against a built dmg. Verifies, for real:
+#   0. the dmg window (background, Applications link, instructions file) and
+#      the app's icon being build/icon.png rather than Electron's default
 #   1. the app inside the dmg starts (smoke test, direct launch)
 #   2. it carries an ad-hoc signature that verifies (Apple silicon needs one)
 #   3. once marked as downloaded (quarantine), Gatekeeper rejects it — i.e.
@@ -43,6 +45,12 @@ if [ -n "$shot" ]; then
   screencapture -x "$shot" || true
   osascript -e 'tell application "Finder" to close every window' >/dev/null 2>&1 || true
 fi
+
+echo "== 0b. app icon is build/icon.png (GitHub#144), not Electron's default"
+# Reads the icon Info.plist names, takes the largest image in that .icns and
+# compares it with build/icon.png; unreadable or missing counts as a failure.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+node "$here/icon.mjs" check-app "$app" "$here/../build/icon.png" || { echo "❌ app icon check failed"; exit 1; }
 
 echo "== 1. direct launch smoke test"
 out="$("$bin" --smoke-test 2>&1 || true)"

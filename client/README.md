@@ -25,9 +25,12 @@ scripts/
   build.mjs             构建 dist/
   mac-open-check.sh     CI 的 Mac 机器上：dmg 窗口内容 + 冒烟 + 第一次打开步骤的实测
   render-dmg-background.cjs  把 build/dmg-background.html 渲染成 dmg 窗口背景图（改了 HTML 后手动重跑，产物入库）
+  icon.mjs              App 图标：`node scripts/icon.mjs build` 从 build/icon-source.png 生成 build/icon.png；`check-app` 在 CI 的 Mac 机器上核对打出的 App 用的确实是它
 build/
   dmg-background.html / background.png / background@2x.png   dmg 窗口背景（写着两种放行办法）
   打不开时看这里.txt     放进 dmg 的说明，命令可以直接复制
+  icon-source.png       App 图标原图（维护者在 #144 给的图，原样像素，不要改）
+  icon.png              App 图标（生成物，入库）：原图去掉黑边、按苹果图标网格缩到 824px 居中在 1024 透明画布上；打包工具按约定读这个文件，打包配置里不用写
 ```
 
 ## 开发
