@@ -23,8 +23,9 @@ mac:
 dmg:
   artifactName: Cavil-Loop-${version}-${arch}.${ext}
   # The window explains how to get past Gatekeeper the first time (no Apple
-  # signature in v1); the text file next to the icons carries the command in a
-  # form that can be copied. Background: build/background.png (+ @2x), rendered
+  # signature in v1). The command drawn there cannot be clicked, so two files
+  # next to the icons carry it in a form that can be copied: a static page
+  # with a "复制" button (GitHub#153) and the older text file. Background: build/background.png (+ @2x), rendered
   # from build/dmg-background.html by scripts/render-dmg-background.cjs.
   background: build/background.png
   # Finder sizes the window (title bar included) to the background, so only
@@ -39,7 +40,12 @@ dmg:
       y: 120
       type: link
       path: /Applications
-    - x: 330
+    # both at y=368, inside the visible top ~430 px, side by side below the help box
+    - x: 240
+      y: 368
+      type: file
+      path: build/复制放行命令.html
+    - x: 420
       y: 368
       type: file
       path: build/打不开时看这里.txt
