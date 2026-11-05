@@ -70,6 +70,8 @@ export interface FakeState {
   /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
   refreshTokens: Map<string, string>;
   refreshSeq: number;
+  /** canned answers for the token endpoint, used once each, in order: `refresh` = refresh requests, `poll` = device-flow polls */
+  tokenAnswers: { kind: 'refresh' | 'poll'; status: number; body?: unknown; raw?: string }[];
 }
 
 export interface LoggedRequest {
@@ -129,6 +131,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     holds: [],
     refreshTokens: new Map(),
     refreshSeq: 0,
+    tokenAnswers: [],
     ...init,
   };
   const log: LoggedRequest[] = [];
@@ -184,8 +187,17 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     }
     if (req.method === 'POST' && url.pathname === '/web/login/oauth/access_token') {
       const form = new URLSearchParams(await readBody(req));
-      if (form.get('grant_type') === 'refresh_token') {
-        entry.operation = 'refresh';
+      const kind = form.get('grant_type') === 'refresh_token' ? 'refresh' : 'poll';
+      if (kind === 'refresh') entry.operation = 'refresh';
+      const canned = state.tokenAnswers.findIndex((a) => a.kind === kind);
+      if (canned >= 0) {
+        const [a] = state.tokenAnswers.splice(canned, 1);
+        await held();
+        entry.status = a.status;
+        res.writeHead(a.status, { 'Content-Type': 'application/json' });
+        return res.end(a.raw ?? JSON.stringify(a.body ?? {}));
+      }
+      if (kind === 'refresh') {
         await held();
         const old = form.get('refresh_token') ?? '';
         const oldAccess = state.refreshTokens.get(old);

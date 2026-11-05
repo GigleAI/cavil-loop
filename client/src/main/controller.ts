@@ -50,7 +50,10 @@ export class Controller {
     return this.grant?.accessToken ?? null;
   }
   /** the one refresh in flight: GitHub rotates refresh tokens, a second refresh with the same one would fail */
-  private refreshing: Promise<'ok' | 'unreachable' | 'ended'> | null = null;
+  private refreshing: Promise<'ok' | 'unreachable' | 'ended' | 'failed'> | null = null;
+  /** the grant in use was refreshed but could not be written to the credential store */
+  private unsavedGrant = false;
+  private unsavedProblem: string | null = null;
   private listeners = new Set<(s: AppState) => void>();
   private syncing: Promise<void> | null = null;
   private resync = false;
@@ -86,7 +89,7 @@ export class Controller {
       viewer: deps.cache.getSetting<string | null>('viewer', null),
       sources: deps.cache.getSetting<SourceConfig[]>('sources', []),
       view: { ...DEFAULT_VIEW, ...deps.cache.getSetting<Partial<ViewSettings>>('view', {}) },
-      sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [] },
+      sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
       credentialsPersistent: deps.credentials.persistent,
     };
     if (!MODES.includes(this.state.view.mode)) this.state.view.mode = 'iteration';
@@ -126,7 +129,13 @@ export class Controller {
   }
 
   async start(): Promise<void> {
-    this.grant = decodeGrant(await this.deps.credentials.get());
+    try {
+      this.grant = decodeGrant(await this.deps.credentials.get());
+    } catch (e) {
+      // keychain unreadable: not "signed out" (nothing is deleted), just cannot use it now
+      this.set({ phase: 'login', loginReason: `读取本机保存的登录凭据失败（${(e as Error).message}），请重新登录` });
+      return;
+    }
     if (!this.token) {
       this.set({ phase: 'login' });
       return;
@@ -248,6 +257,7 @@ export class Controller {
     this.loginRun++;
     this.session++;
     this.grant = null;
+    this.unsavedGrant = false;
     // Signing out forgets everything read with that account.
     this.wipeCache();
     this.owner = null;
@@ -259,6 +269,7 @@ export class Controller {
       phase: 'login',
       loginReason: reason,
       viewer: null,
+      sync: { ...this.state.sync, problem: null },
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
   }
@@ -266,51 +277,117 @@ export class Controller {
   /**
    * Make sure the access token is usable (GitHub App tokens expire after 8 h).
    * `force` refreshes even before the deadline (GitHub said 401).
-   *   ok          — nothing to do, or refreshed and stored
-   *   unreachable — GitHub could not be asked: keep everything, try later
-   *   ended       — GitHub refused the refresh token: signed out with the reason
+   *
+   * Every way a refresh can go, and what it leaves behind:
+   *   not needed (no refresh token / not due)        → ok
+   *   refresh token past its own deadline            → ended: signed out with the reason
+   *   no answer, 5xx, 429 (whatever the body says)   → unreachable: keep everything, next round retries
+   *   GitHub says bad_refresh_token                  → ended: signed out with the reason
+   *   any other error / unparseable / no token       → failed: keep everything, tell the user, next round retries
+   *   new token, but saving it fails                 → ok: GitHub already retired the old refresh token, so the
+   *                                                    new grant stays in memory, the user is told, every later
+   *                                                    round retries the save (see saveUnsavedGrant)
+   *   signed out / new login before or during save   → ended: the newer action wins, nothing of this refresh lands
+   *   anything unexpected                            → failed (never a rejected promise: callers and timers
+   *                                                    must not see an unhandled rejection)
    * Single-flight: concurrent callers share one refresh (refresh tokens rotate).
    */
-  private ensureFresh(force = false): Promise<'ok' | 'unreachable' | 'ended'> {
+  private ensureFresh(force = false): Promise<'ok' | 'unreachable' | 'ended' | 'failed'> {
     const used = this.grant;
     if (!used || !used.refreshToken) return Promise.resolve('ok');
     if (!force && (used.expiresAt == null || used.expiresAt - this.now() > REFRESH_MARGIN_MS)) return Promise.resolve('ok');
     if (this.refreshing) return this.refreshing;
     const session = this.session;
-    const run = (async (): Promise<'ok' | 'unreachable' | 'ended'> => {
-      if (used.refreshExpiresAt != null && this.now() >= used.refreshExpiresAt) {
-        if (session === this.session) await this.logout(REASON_REFRESH_ENDED);
-        return 'ended';
-      }
-      const clientId = this.deps.cache.getSetting<string>('grantClientId', '') || this.state.oauthClientId;
-      let next: TokenGrant;
+    const current = () => session === this.session && this.grant === used;
+    const signOut = async () => {
       try {
-        next = await refreshGrant(this.deps.endpoints, clientId, used.refreshToken!, this.fetchImpl, this.now);
+        await this.logout(REASON_REFRESH_ENDED);
       } catch (e) {
-        if (e instanceof DeviceFlowError && e.reason === 'expired') {
-          if (session === this.session && this.grant === used) await this.logout(REASON_REFRESH_ENDED);
+        this.set({ loginReason: `${REASON_REFRESH_ENDED}（但删除本机保存的凭据失败：${(e as Error).message}）` });
+      }
+    };
+    const run = (async (): Promise<'ok' | 'unreachable' | 'ended' | 'failed'> => {
+      try {
+        if (used.refreshExpiresAt != null && this.now() >= used.refreshExpiresAt) {
+          if (current()) await signOut();
           return 'ended';
         }
-        return 'unreachable';
+        const clientId = this.deps.cache.getSetting<string>('grantClientId', '') || this.state.oauthClientId;
+        let next: TokenGrant;
+        try {
+          next = await refreshGrant(this.deps.endpoints, clientId, used.refreshToken!, this.fetchImpl, this.now);
+        } catch (e) {
+          const reason = e instanceof DeviceFlowError ? e.reason : 'error';
+          if (reason === 'expired') {
+            if (current()) await signOut();
+            return 'ended';
+          }
+          if (reason === 'unreachable') return 'unreachable';
+          if (current()) this.setProblem(`登录续期没有成功（${(e as Error).message}），会在下一轮自动重试；一直失败的话请退出后重新登录`);
+          return 'failed';
+        }
+        // Store + switch as one step of the credential queue, like a login: a
+        // sign-out / new login meanwhile wins, and anything queued after (a
+        // sign-out's delete, a newer login's write) runs after this write.
+        return await this.serialCredential(async () => {
+          if (!current()) return 'ended' as const;
+          let saved = true;
+          try {
+            await this.deps.credentials.set(encodeGrant(next));
+          } catch (e) {
+            saved = false;
+            this.unsavedProblem = (e as Error).message;
+          }
+          if (!current()) return 'ended' as const;
+          // GitHub has rotated the refresh token: only `next` works from now on,
+          // saved or not. Keep using it; an unsaved grant is retried every round.
+          this.grant = next;
+          this.unsavedGrant = !saved;
+          // same account, new token: the cache stays bound to it
+          if (this.owner && saved) this.deps.cache.setSetting('cacheCredential', credentialTag(next.accessToken));
+          this.setProblem(saved ? null : this.unsavedMessage());
+          return 'ok' as const;
+        });
+      } catch (e) {
+        if (current()) this.setProblem(`登录续期出错（${(e as Error).message}），会在下一轮自动重试`);
+        return 'failed';
       }
-      // Store + switch as one step of the credential queue, like a login: a
-      // sign-out / new login meanwhile wins, and anything queued after (a
-      // sign-out's delete, a newer login's write) runs after this write.
-      return this.serialCredential(async () => {
-        if (session !== this.session || this.grant !== used) return 'ended' as const;
-        await this.deps.credentials.set(encodeGrant(next));
-        if (session !== this.session || this.grant !== used) return 'ended' as const;
-        this.grant = next;
-        // same account, new token: the cache stays bound to it
-        if (this.owner) this.deps.cache.setSetting('cacheCredential', credentialTag(next.accessToken));
-        return 'ok' as const;
-      });
     })();
     this.refreshing = run;
-    void run.finally(() => {
+    const clear = () => {
       if (this.refreshing === run) this.refreshing = null;
-    });
+    };
+    run.then(clear, clear);
     return run;
+  }
+
+  private unsavedMessage(): string {
+    return `新的登录凭据没能存进钥匙串（${this.unsavedProblem ?? '未知错误'}）。这次运行照常可用，App 会每轮重试保存；在保存成功前退出 App，下次启动需要重新登录`;
+  }
+
+  /** A refreshed grant that could not be stored: try again (same queue and session rules as any credential write). */
+  private async saveUnsavedGrant(): Promise<void> {
+    if (!this.unsavedGrant || !this.grant) return;
+    const grant = this.grant;
+    const session = this.session;
+    await this.serialCredential(async () => {
+      if (session !== this.session || this.grant !== grant || !this.unsavedGrant) return;
+      try {
+        await this.deps.credentials.set(encodeGrant(grant));
+      } catch (e) {
+        this.unsavedProblem = (e as Error).message;
+        this.setProblem(this.unsavedMessage());
+        return;
+      }
+      if (session !== this.session || this.grant !== grant) return;
+      this.unsavedGrant = false;
+      if (this.owner) this.deps.cache.setSetting('cacheCredential', credentialTag(grant.accessToken));
+      this.setProblem(null);
+    });
+  }
+
+  private setProblem(problem: string | null): void {
+    if (this.state.sync.problem !== problem) this.set({ sync: { ...this.state.sync, problem } });
   }
 
   /** Drop every snapshot, in memory and in SQLite. */
@@ -385,7 +462,12 @@ export class Controller {
       try {
         do {
           this.resync = false;
-          await this.runRound();
+          try {
+            await this.runRound();
+          } catch (e) {
+            // a round must never reject: the 60 s timer and IPC callers would see an unhandled rejection
+            this.set({ sync: { ...this.state.sync, syncing: false, problem: `同步出错：${(e as Error).message}` } });
+          }
         } while (this.resync && this.token);
       } finally {
         this.syncing = null;
@@ -398,9 +480,11 @@ export class Controller {
     if (!this.token) return;
     const fresh = await this.ensureFresh();
     if (fresh === 'ended' || !this.grant) return;
-    if (fresh === 'unreachable' && this.grant.expiresAt != null && this.now() >= this.grant.expiresAt) {
-      // expired and GitHub cannot be asked for a new one: this is "offline", the cache stays
-      this.set({ sync: { ...this.state.sync, syncing: false, offline: true } });
+    await this.saveUnsavedGrant();
+    if (fresh !== 'ok' && this.grant.expiresAt != null && this.now() >= this.grant.expiresAt) {
+      // expired and no new token (GitHub unreachable, or the refresh failed for a reason
+      // that does not prove the credential dead): keep everything, the cache stays
+      this.set({ sync: { ...this.state.sync, syncing: false, offline: fresh === 'unreachable' } });
       return;
     }
     const token = this.grant.accessToken;
@@ -437,6 +521,7 @@ export class Controller {
         lastOnlineAt: round.offline ? this.state.sync.lastOnlineAt : this.now(),
         dataFrom: this.state.sync.dataFrom,
         sources: [...status, ...untouched],
+        problem: this.state.sync.problem,
       },
     });
     if (round.authFailed) {
@@ -445,7 +530,7 @@ export class Controller {
         const r = await this.ensureFresh(true);
         if (r === 'ok') return this.runRound(true);
         if (r === 'unreachable') this.set({ sync: { ...this.state.sync, offline: true } });
-        return;
+        return; // 'failed': kept signed in with the problem shown; 'ended': already signed out
       }
       if (session === this.session) await this.logout(REASON_REVOKED);
     }

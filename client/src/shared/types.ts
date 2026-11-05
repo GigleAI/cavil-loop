@@ -109,6 +109,8 @@ export interface SyncState {
   /** epoch ms of the oldest snapshot currently shown (for "数据截至") */
   dataFrom: number | null;
   sources: SourceStatus[];
+  /** something the user should know that is not "offline" (e.g. a refresh that failed, a credential not saved); null = none */
+  problem: string | null;
 }
 
 export interface AppState {

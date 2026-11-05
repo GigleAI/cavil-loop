@@ -273,3 +273,157 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     expect(again.c.getBoardData().items).toHaveLength(items);
   });
 });
+
+// ---- review (PR #140, 2026-11-05 17:48): every way a refresh can fail ----
+
+import { refreshGrant, DeviceFlowError } from '../../src/data/deviceFlow';
+
+describe('how a refresh answer is classified (HTTP status × body shape)', () => {
+  const ep = { api: 'http://x/api', web: 'http://x/web' };
+  async function classify(status: number, body: string | null) {
+    const fetchImpl = async () => (body === null ? Promise.reject(new TypeError('fetch failed')) : new Response(body, { status, headers: { 'Content-Type': 'application/json' } }));
+    try {
+      const g = await refreshGrant(ep, 'cid', 'ghr_x', fetchImpl, () => 0);
+      return `ok:${g.accessToken}`;
+    } catch (e) {
+      return (e as DeviceFlowError).reason;
+    }
+  }
+  const rejected = JSON.stringify({ error: 'bad_refresh_token', error_description: 'The refresh token passed is incorrect or expired.' });
+  const otherErr = JSON.stringify({ error: 'temporarily_unavailable' });
+  const good = JSON.stringify({ access_token: 'ghu_new', refresh_token: 'ghr_new', expires_in: 28800 });
+  const cases: [number, string | null, string][] = [
+    [200, good, 'ok:ghu_new'],
+    // only GitHub's "refresh token incorrect or expired" ends the sign-in
+    [200, rejected, 'expired'],
+    [400, rejected, 'expired'],
+    [401, rejected, 'expired'],
+    // 5xx / 429: GitHub not answering properly — whatever the body says
+    [503, otherErr, 'unreachable'],
+    [503, rejected, 'unreachable'],
+    [500, '{}', 'unreachable'],
+    [502, '<html>bad gateway</html>', 'unreachable'],
+    [429, otherErr, 'unreachable'],
+    // no connection at all
+    [0, null, 'unreachable'],
+    // anything else is not proof the credential is dead
+    [200, otherErr, 'error'],
+    [400, otherErr, 'error'],
+    [200, '{}', 'error'],
+    [200, 'not json', 'error'],
+    [400, 'not json', 'error'],
+    [404, '{}', 'error'],
+  ];
+  for (const [status, body, want] of cases) {
+    it(`HTTP ${status || 'none'} ${body === null ? '(no connection)' : body.slice(0, 40)} → ${want}`, async () => {
+      expect(await classify(status, body)).toBe(want);
+    });
+  }
+});
+
+/** A credential store that can be told to fail writes (like a keychain that refuses). */
+class FlakyStore extends FileStore {
+  failing = false;
+  async set(value: string): Promise<void> {
+    if (this.failing) throw new Error('keychain write denied');
+    await super.set(value);
+  }
+}
+
+describe('refresh failures keep what they should and recover', () => {
+  let unhandled: unknown[];
+  const onUnhandled = (r: unknown) => unhandled.push(r);
+  beforeEach(() => {
+    unhandled = [];
+    process.on('unhandledRejection', onUnhandled);
+  });
+  afterEach(() => {
+    process.off('unhandledRejection', onUnhandled);
+  });
+
+  it('HTTP 503 with an error body: still signed in, credential and cache kept, offline; recovers when GitHub is back', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new FileStore(join(dir, 'cred'));
+    const { c, cache } = await signInAsApp(store, clock);
+    expect(cache.loadSnapshots().size).toBe(1);
+    clock.t += 9 * HOUR;
+    fake.state.tokenAnswers.push({ kind: 'refresh', status: 503, body: { error: 'temporarily_unavailable' } });
+    await c.syncNow();
+    expect(refreshes()).toHaveLength(1); // the refresh really was asked
+    expect(c.getState()).toMatchObject({ phase: 'ready', sync: { offline: true } });
+    expect(decodeGrant(await store.get())?.refreshToken).toBe(APP_REFRESH);
+    expect(cache.loadSnapshots().size).toBe(1);
+    await c.syncNow();
+    expect(refreshes()).toHaveLength(2);
+    expect(c.getState()).toMatchObject({ phase: 'ready', sync: { offline: false, problem: null } });
+    expect(decodeGrant(await store.get())?.accessToken).toBe('ghu_fakerefreshed00000000000000000001');
+  });
+
+  it('an unknown refresh error: still signed in, problem shown, nothing deleted; cleared after a good refresh', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new FileStore(join(dir, 'cred'));
+    const { c, cache } = await signInAsApp(store, clock);
+    clock.t += 9 * HOUR;
+    fake.state.tokenAnswers.push({ kind: 'refresh', status: 400, body: { error: 'something_new', error_description: 'try again' } });
+    await c.syncNow();
+    expect(c.getState().phase).toBe('ready');
+    expect(c.getState().sync.problem).toContain('续期没有成功');
+    expect(decodeGrant(await store.get())?.refreshToken).toBe(APP_REFRESH);
+    expect(cache.loadSnapshots().size).toBe(1);
+    await c.syncNow();
+    expect(c.getState()).toMatchObject({ phase: 'ready', sync: { problem: null } });
+  });
+
+  it('refreshed but the keychain refuses the write: keeps working on the new token, says so, saves it later; no unhandled rejection', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new FlakyStore(join(dir, 'cred'));
+    const { c } = await signInAsApp(store, clock);
+    clock.t += 9 * HOUR;
+    store.failing = true;
+    await c.syncNow();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(unhandled).toEqual([]);
+    expect(refreshes()).toHaveLength(1);
+    expect(c.getState().phase).toBe('ready');
+    expect(c.getState().sync.problem).toContain('钥匙串');
+    // the round ran on the NEW token (the old refresh token is already spent at GitHub)
+    const last = fake.log.filter((l) => l.path.includes('/issues?')).at(-1)!;
+    expect(last).toMatchObject({ auth: 'Bearer ghu_fakerefreshed00000000000000000001', status: 200 });
+    expect(decodeGrant(await store.get())?.refreshToken).toBe(APP_REFRESH); // still the old one on disk
+    // keychain works again: the next round saves the grant in use, the problem goes away
+    store.failing = false;
+    await c.syncNow();
+    expect(refreshes()).toHaveLength(1); // no second refresh needed
+    expect(decodeGrant(await store.get())).toMatchObject({ accessToken: 'ghu_fakerefreshed00000000000000000001', refreshToken: 'ghr_fakerefresh0000000000000000000001' });
+    expect(c.getState().sync.problem).toBeNull();
+    // and a restart uses it without asking GitHub for another refresh
+    c.stopTimer();
+    const again = make(store, clock);
+    await again.c.start();
+    expect(again.c.getState()).toMatchObject({ phase: 'ready', sync: { offline: false } });
+    expect(refreshes()).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+  });
+
+  it('keychain unreadable at start: login page with the reason, no throw, nothing deleted', async () => {
+    const clock = { t: FIXTURE_NOW };
+    class Unreadable extends FileStore {
+      async get(): Promise<string | null> {
+        throw new Error('user interaction is not allowed');
+      }
+    }
+    const { c } = make(new Unreadable(join(dir, 'cred')), clock);
+    await expect(c.start()).resolves.toBeUndefined();
+    expect(c.getState()).toMatchObject({ phase: 'login' });
+    expect(c.getState().loginReason).toContain('读取本机保存的登录凭据失败');
+  });
+
+  it('a device-flow poll that gets a 503 keeps waiting instead of failing the sign-in', async () => {
+    const clock = { t: FIXTURE_NOW };
+    fake.state.tokenAnswers.push({ kind: 'poll', status: 503, body: { error: 'temporarily_unavailable' } });
+    const store = new FileStore(join(dir, 'cred'));
+    await signInAsApp(store, clock);
+    expect(fake.log.filter((l) => l.path === '/web/login/oauth/access_token' && l.status === 503)).toHaveLength(1);
+    expect(decodeGrant(await store.get())?.accessToken).toBe(APP_TOKEN);
+  });
+});

@@ -43,16 +43,20 @@ async function postForm(fetchImpl: FetchLike, url: string, form: Record<string, 
   } catch (e) {
     throw new DeviceFlowError('unreachable', `无法连接 GitHub：${(e as Error).message}`);
   }
-  let body: Record<string, unknown> = {};
+  // 5xx / 429 first, whatever the body says: GitHub is not answering properly,
+  // which is never a verdict on the credential (a 503 can carry {"error": …}).
+  if (res.status >= 500 || res.status === 429) {
+    throw new DeviceFlowError('unreachable', `GitHub 暂时不可用（HTTP ${res.status}）`);
+  }
+  let body: Record<string, unknown>;
   try {
-    body = (await res.json()) as Record<string, unknown>;
+    const parsed: unknown = await res.json();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    body = parsed as Record<string, unknown>;
   } catch {
-    /* handled below */
+    throw new DeviceFlowError('error', `GitHub 的回应无法解析（HTTP ${res.status}）`);
   }
-  if (!res.ok && !body.error) {
-    // 5xx / 429: GitHub is not answering properly — not a verdict on the credential
-    throw new DeviceFlowError(res.status >= 500 || res.status === 429 ? 'unreachable' : 'error', `GitHub 返回 HTTP ${res.status}`);
-  }
+  if (!res.ok && !body.error) throw new DeviceFlowError('error', `GitHub 返回 HTTP ${res.status}`);
   return body;
 }
 
@@ -103,11 +107,18 @@ export async function pollForToken(
     await opts.sleep(interval * 1000);
     if (opts.cancelled()) throw new DeviceFlowError('cancelled', '已取消登录');
     if (opts.now() >= code.expiresAt) throw new DeviceFlowError('expired', '短码已过期，请重新开始登录');
-    const body = await postForm(fetchImpl, `${endpoints.web}/login/oauth/access_token`, {
-      client_id: clientId,
-      device_code: code.deviceCode,
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-    });
+    let body: Record<string, unknown>;
+    try {
+      body = await postForm(fetchImpl, `${endpoints.web}/login/oauth/access_token`, {
+        client_id: clientId,
+        device_code: code.deviceCode,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      });
+    } catch (e) {
+      // a hiccup while the user is still typing the code: keep waiting until the code expires
+      if (e instanceof DeviceFlowError && e.reason === 'unreachable') continue;
+      throw e;
+    }
     if (opts.cancelled()) throw new DeviceFlowError('cancelled', '已取消登录');
     const grant = grantFromResponse(body, opts.now());
     if (grant) return grant;
@@ -127,11 +138,16 @@ export async function pollForToken(
   }
 }
 
+/** The one answer that proves the refresh token is dead (GitHub: "incorrect or expired"). */
+export const REFRESH_TOKEN_REJECTED = 'bad_refresh_token';
+
 /**
  * Exchange a GitHub App refresh token for a new access + refresh token.
- * Device-flow grants refresh without a client secret. Throws
- * DeviceFlowError('expired') when GitHub rejects the refresh token (sign in
- * again), 'unreachable' when GitHub could not be asked (keep everything).
+ * Device-flow grants refresh without a client secret. Throws DeviceFlowError:
+ *   'expired'     — GitHub said bad_refresh_token: sign in again
+ *   'unreachable' — no answer, 5xx or 429 (any body): keep everything, retry later
+ *   'error'       — anything else (unknown error, unparseable, no token): not proof
+ *                   the credential is dead; keep everything, tell the user, retry later
  */
 export async function refreshGrant(
   endpoints: Endpoints,
@@ -147,6 +163,9 @@ export async function refreshGrant(
   });
   const grant = grantFromResponse(body, now());
   if (grant) return grant;
-  if (body.error) throw new DeviceFlowError('expired', `GitHub 不再接受续期：${String(body.error_description ?? body.error)}`);
-  throw new DeviceFlowError('error', 'GitHub 的续期回应缺少令牌');
+  if (body.error === REFRESH_TOKEN_REJECTED) {
+    throw new DeviceFlowError('expired', `GitHub 不再接受续期：${String(body.error_description ?? body.error)}`);
+  }
+  if (body.error) throw new DeviceFlowError('error', `续期失败：${String(body.error_description ?? body.error)}`);
+  throw new DeviceFlowError('error', '续期失败：GitHub 的回应里没有新令牌');
 }

@@ -198,6 +198,11 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
             .join('；')}
         </div>
       )}
+      {sync.problem && (
+        <div className="banner warn" data-testid="sync-problem">
+          {sync.problem}
+        </div>
+      )}
       {board.notice && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}
