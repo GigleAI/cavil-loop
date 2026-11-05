@@ -478,7 +478,7 @@ const MUTATIONS = [
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
 const VITEST = process.env.CLIENT_MUT_VITEST ?? join(root, 'node_modules', 'vitest', 'vitest.mjs');
 // a copy builds the Rust back end, then runs the whole suite (≈ 320 tests): give it room
-const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 360_000);
+const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 600_000);
 
 function sandbox() {
   const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
