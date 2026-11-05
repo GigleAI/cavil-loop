@@ -1,6 +1,6 @@
 {
- "_note": "Recorded from GigleAI Project #11 (\"cavil project\") with test/fixtures/record.mjs; titles, logins, node ids and cursors scrubbed. Each element is one GraphQL page of organization.projectV2.",
- "recordedAt": "2026-11-04T22:58:04.842Z",
+ "_note": "Recorded from GigleAI Project #11 (\"cavil project\") with test/fixtures/record.mjs; logins, node ids and cursors scrubbed, titles kept for public repositories. Each element is one GraphQL page of organization.projectV2.",
+ "recordedAt": "2026-11-05T15:01:28.287Z",
  "pages": [
   {
    "id": "PVT_fixture_435fd6e043de",
@@ -252,8 +252,299 @@
      }
     ]
    },
+   "views": {
+    "nodes": [
+     {
+      "number": 1,
+      "name": "Pending",
+      "layout": "TABLE_LAYOUT",
+      "filter": "-label:Done -status:Done",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Updated",
+         "dataType": "UPDATED"
+        },
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      }
+     },
+     {
+      "number": 2,
+      "name": "迭代统计",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Milestone",
+         "dataType": "MILESTONE"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 3,
+      "name": "迭代规划",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-status:Done -iteration:\"Iteration 1\",\"Iteration 2\",\"Iteration 3\",\"Iteration 4\",\"Iteration 5\",\"Iteration 6\",\"Iteration 7\",\"Iteration 8\",\"Iteration 9\" -label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 4,
+      "name": "Roadmap",
+      "layout": "ROADMAP_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      }
+     },
+     {
+      "number": 5,
+      "name": "My items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "assignee:@me",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 6,
+      "name": "Team items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Project Start date",
+         "dataType": "DATE"
+        },
+        {
+         "name": "Project Target date",
+         "dataType": "DATE"
+        }
+       ]
+      }
+     }
+    ]
+   },
    "items": {
-    "totalCount": 138,
+    "totalCount": 144,
     "pageInfo": {
      "hasNextPage": true,
      "endCursor": "cursor-1"
@@ -290,7 +581,7 @@
       "content": {
        "__typename": "Issue",
        "number": 22,
-       "title": "示例 issue 22：fixture title",
+       "title": "查一下 codex 模型的定价，更新到模型价格表里，以便能够显示模型的预估费用",
        "url": "https://github.com/GigleAI/cavil-loop/issues/22",
        "state": "CLOSED",
        "updatedAt": "2026-09-16T06:28:40Z",
@@ -308,7 +599,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 23,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/23",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -339,7 +651,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 23,
-       "title": "示例 PR 23：fixture title",
+       "title": "feat: add default Codex API price estimates",
        "url": "https://github.com/GigleAI/cavil-loop/pull/23",
        "state": "MERGED",
        "merged": true,
@@ -358,7 +670,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -392,7 +707,7 @@
       "content": {
        "__typename": "Issue",
        "number": 1,
-       "title": "示例 issue 1：fixture title",
+       "title": "优化",
        "url": "https://github.com/GigleAI/cavil-loop/issues/1",
        "state": "CLOSED",
        "updatedAt": "2026-11-02T14:24:56Z",
@@ -410,7 +725,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 2,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/2",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -441,7 +777,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 2,
-       "title": "示例 PR 2：fixture title",
+       "title": "docs: 项目名 + 推荐安装方式 + 写清成本好处",
        "url": "https://github.com/GigleAI/cavil-loop/pull/2",
        "state": "MERGED",
        "merged": true,
@@ -460,7 +796,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       }
       }
      },
      {
@@ -494,7 +833,7 @@
       "content": {
        "__typename": "Issue",
        "number": 3,
-       "title": "示例 issue 3：fixture title",
+       "title": "tmux 里的 session 历史，能否持久化起来",
        "url": "https://github.com/GigleAI/cavil-loop/issues/3",
        "state": "CLOSED",
        "updatedAt": "2026-05-18T01:59:55Z",
@@ -512,7 +851,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 4,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/4",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -543,7 +903,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 4,
-       "title": "示例 PR 4：fixture title",
+       "title": "feat(persistence): tmux session 日志持久化（可选 pipe-pane）",
        "url": "https://github.com/GigleAI/cavil-loop/pull/4",
        "state": "MERGED",
        "merged": true,
@@ -562,7 +922,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       }
       }
      },
      {
@@ -596,7 +959,7 @@
       "content": {
        "__typename": "Issue",
        "number": 5,
-       "title": "示例 issue 5：fixture title",
+       "title": "文档里突出每个 issue/PR 的设计方案 / 代码改动 / AI 对话 session / 上下文都能保留，且随时可以断点续写",
        "url": "https://github.com/GigleAI/cavil-loop/issues/5",
        "state": "CLOSED",
        "updatedAt": "2026-05-18T13:54:38Z",
@@ -614,7 +977,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 6,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/6",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -645,7 +1029,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 6,
-       "title": "示例 PR 6：fixture title",
+       "title": "docs(persistence): 突出事后可追溯、可断点续写",
        "url": "https://github.com/GigleAI/cavil-loop/pull/6",
        "state": "MERGED",
        "merged": true,
@@ -664,7 +1048,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -695,7 +1082,7 @@
       "content": {
        "__typename": "Issue",
        "number": 7,
-       "title": "示例 issue 7：fixture title",
+       "title": "增加版本发布CI/CD",
        "url": "https://github.com/GigleAI/cavil-loop/issues/7",
        "state": "CLOSED",
        "updatedAt": "2026-05-19T21:17:39Z",
@@ -713,7 +1100,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -747,7 +1145,7 @@
       "content": {
        "__typename": "Issue",
        "number": 8,
-       "title": "示例 issue 8：fixture title",
+       "title": "自动判断操作系统（Linux/Mac)，执行对应的 daemon",
        "url": "https://github.com/GigleAI/cavil-loop/issues/8",
        "state": "CLOSED",
        "updatedAt": "2026-05-21T12:03:43Z",
@@ -765,7 +1163,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 17,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/17",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -799,7 +1218,7 @@
       "content": {
        "__typename": "Issue",
        "number": 9,
-       "title": "示例 issue 9：fixture title",
+       "title": "适配主流 coding agent，如 OpenCode，Codex 等",
        "url": "https://github.com/GigleAI/cavil-loop/issues/9",
        "state": "CLOSED",
        "updatedAt": "2026-05-21T07:01:38Z",
@@ -817,7 +1236,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 16,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/16",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -851,7 +1291,7 @@
       "content": {
        "__typename": "Issue",
        "number": 10,
-       "title": "示例 issue 10：fixture title",
+       "title": "`agent/doing` 标签改为 `doing/agent`，更好适配多 agent 的扩展",
        "url": "https://github.com/GigleAI/cavil-loop/issues/10",
        "state": "CLOSED",
        "updatedAt": "2026-05-19T21:47:39Z",
@@ -869,7 +1309,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 12,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/12",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -900,7 +1361,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 11,
-       "title": "示例 PR 11：fixture title",
+       "title": "ci: 加 release workflow + release.sh 帮手",
        "url": "https://github.com/GigleAI/cavil-loop/pull/11",
        "state": "MERGED",
        "merged": true,
@@ -919,7 +1380,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -950,7 +1414,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 12,
-       "title": "示例 PR 12：fixture title",
+       "title": "refactor: rename label `agent/doing` → `doing/agent`",
        "url": "https://github.com/GigleAI/cavil-loop/pull/12",
        "state": "MERGED",
        "merged": true,
@@ -969,7 +1433,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -997,7 +1464,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 13,
-       "title": "示例 PR 13：fixture title",
+       "title": "feat: rewrite from bash to Python3 with worker/platform abstraction",
        "url": "https://github.com/GigleAI/cavil-loop/pull/13",
        "state": "CLOSED",
        "merged": false,
@@ -1011,7 +1478,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-3"
+       }
       }
      },
      {
@@ -1042,7 +1512,7 @@
       "content": {
        "__typename": "Issue",
        "number": 14,
-       "title": "示例 issue 14：fixture title",
+       "title": "fix(dispatch): pending/agent PR 不该假设分支名能反推 issue 号",
        "url": "https://github.com/GigleAI/cavil-loop/issues/14",
        "state": "CLOSED",
        "updatedAt": "2026-07-26T08:59:59Z",
@@ -1055,7 +1525,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 15,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/15",
+          "state": "CLOSED",
+          "merged": false,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -1086,7 +1577,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 15,
-       "title": "示例 PR 15：fixture title",
+       "title": "fix(dispatch): pending/agent PR fallback when branch can't reveal issue #",
        "url": "https://github.com/GigleAI/cavil-loop/pull/15",
        "state": "CLOSED",
        "merged": false,
@@ -1105,7 +1596,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       }
       }
      },
      {
@@ -1136,7 +1630,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 16,
-       "title": "示例 PR 16：fixture title",
+       "title": "feat(drivers): 多 coding agent 适配 (claude / opencode / codex)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/16",
        "state": "MERGED",
        "merged": true,
@@ -1155,7 +1649,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -1186,7 +1683,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 17,
-       "title": "示例 PR 17：fixture title",
+       "title": "feat(setup): 自动判 OS 装对应 daemon（Linux=systemd / macOS=launchd）",
        "url": "https://github.com/GigleAI/cavil-loop/pull/17",
        "state": "MERGED",
        "merged": true,
@@ -1205,7 +1702,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -1236,7 +1736,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 18,
-       "title": "示例 PR 18：fixture title",
+       "title": "fix(setup): 修复 macOS launchd bootstrap 与 Homebrew PATH",
        "url": "https://github.com/GigleAI/cavil-loop/pull/18",
        "state": "MERGED",
        "merged": true,
@@ -1255,7 +1755,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-4"
+       }
       }
      },
      {
@@ -1289,7 +1792,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 19,
-       "title": "示例 PR 19：fixture title",
+       "title": "feat(drivers): 内置 Cursor Agent CLI driver",
        "url": "https://github.com/GigleAI/cavil-loop/pull/19",
        "state": "MERGED",
        "merged": true,
@@ -1312,11 +1815,14 @@
        "assignees": {
         "nodes": [
          {
-          "login": "user-1"
+          "login": "user-4"
          }
         ]
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-4"
+       }
       }
      },
      {
@@ -1347,7 +1853,7 @@
       "content": {
        "__typename": "Issue",
        "number": 20,
-       "title": "示例 issue 20：fixture title",
+       "title": "内置 Gemini CLI driver",
        "url": "https://github.com/GigleAI/cavil-loop/issues/20",
        "state": "CLOSED",
        "updatedAt": "2026-08-30T05:56:01Z",
@@ -1365,7 +1871,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -1393,7 +1910,7 @@
       "content": {
        "__typename": "Issue",
        "number": 21,
-       "title": "示例 issue 21：fixture title",
+       "title": "docs: replace old repository URL with GigleAI/cavil-loop",
        "url": "https://github.com/GigleAI/cavil-loop/issues/21",
        "state": "CLOSED",
        "updatedAt": "2026-08-30T05:57:40Z",
@@ -1406,7 +1923,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-5"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -1451,7 +1979,7 @@
       "content": {
        "__typename": "Issue",
        "number": 24,
-       "title": "示例 issue 24：fixture title",
+       "title": "部署机制：合并进 main 的改动不会到达本机在跑的 daemon（只有自身被派工时才同步）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/24",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T02:11:07Z",
@@ -1473,7 +2001,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 26,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/26",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -1518,7 +2067,7 @@
       "content": {
        "__typename": "Issue",
        "number": 25,
-       "title": "示例 issue 25：fixture title",
+       "title": "comment footer 里，加上使用的模型名",
        "url": "https://github.com/GigleAI/cavil-loop/issues/25",
        "state": "CLOSED",
        "updatedAt": "2026-09-17T03:11:37Z",
@@ -1536,7 +2085,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 27,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/27",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -1578,7 +2148,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 26,
-       "title": "示例 PR 26：fixture title",
+       "title": "feat: 部署不可变 skill release",
        "url": "https://github.com/GigleAI/cavil-loop/pull/26",
        "state": "MERGED",
        "merged": true,
@@ -1601,7 +2171,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -1643,7 +2216,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 27,
-       "title": "示例 PR 27：fixture title",
+       "title": "feat: 在评论 footer 展示实际模型名",
        "url": "https://github.com/GigleAI/cavil-loop/pull/27",
        "state": "MERGED",
        "merged": true,
@@ -1662,7 +2235,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -1707,7 +2283,7 @@
       "content": {
        "__typename": "Issue",
        "number": 28,
-       "title": "示例 issue 28：fixture title",
+       "title": "默认 model 用 claude，review 用 codex",
        "url": "https://github.com/GigleAI/cavil-loop/issues/28",
        "state": "CLOSED",
        "updatedAt": "2026-09-17T06:58:06Z",
@@ -1725,7 +2301,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 30,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/30",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -1770,7 +2367,7 @@
       "content": {
        "__typename": "Issue",
        "number": 29,
-       "title": "示例 issue 29：fixture title",
+       "title": "为什么footer 里还是没显示模型名",
        "url": "https://github.com/GigleAI/cavil-loop/issues/29",
        "state": "CLOSED",
        "updatedAt": "2026-09-17T07:07:35Z",
@@ -1788,7 +2385,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 31,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/31",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -1830,7 +2448,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 30,
-       "title": "示例 PR 30：fixture title",
+       "title": "fix: 保留普通 worker 的模型覆盖",
        "url": "https://github.com/GigleAI/cavil-loop/pull/30",
        "state": "MERGED",
        "merged": true,
@@ -1849,7 +2467,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -1891,7 +2512,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 31,
-       "title": "示例 PR 31：fixture title",
+       "title": "feat(token-usage): footer 的 token 行显示实际模型名",
        "url": "https://github.com/GigleAI/cavil-loop/pull/31",
        "state": "MERGED",
        "merged": true,
@@ -1910,7 +2531,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -1955,7 +2579,7 @@
       "content": {
        "__typename": "Issue",
        "number": 32,
-       "title": "示例 issue 32：fixture title",
+       "title": "如果 worker agent 和 review agent 用的是同一个 agent，review 的 session （不是 tmux session，是模型的 session）应该另起一个，不能直接用 worker session 的上下文。",
        "url": "https://github.com/GigleAI/cavil-loop/issues/32",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T03:32:03Z",
@@ -1973,7 +2597,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 33,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/33",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -2015,7 +2660,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 33,
-       "title": "示例 PR 33：fixture title",
+       "title": "feat(session): give the review gate its own model conversation",
        "url": "https://github.com/GigleAI/cavil-loop/pull/33",
        "state": "MERGED",
        "merged": true,
@@ -2034,7 +2679,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -2068,7 +2716,7 @@
       "content": {
        "__typename": "Issue",
        "number": 34,
-       "title": "示例 issue 34：fixture title",
+       "title": "dispatch 失败无退避导致热循环：PR ref 被别的 worktree 占住时每轮重试，2.4 小时烧了 270 次",
        "url": "https://github.com/GigleAI/cavil-loop/issues/34",
        "state": "CLOSED",
        "updatedAt": "2026-09-22T04:59:20Z",
@@ -2090,7 +2738,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 37,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/37",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -2135,7 +2804,7 @@
       "content": {
        "__typename": "Issue",
        "number": 35,
-       "title": "示例 issue 35：fixture title",
+       "title": "项目级自适应轮询间隔：长期无活动的项目应渐进退避，别一直按活跃项目的频率烧 API",
        "url": "https://github.com/GigleAI/cavil-loop/issues/35",
        "state": "CLOSED",
        "updatedAt": "2026-09-22T13:11:05Z",
@@ -2153,7 +2822,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 39,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/39",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -2187,7 +2877,7 @@
       "content": {
        "__typename": "Issue",
        "number": 36,
-       "title": "示例 issue 36：fixture title",
+       "title": "daemon 与 worker 的 GitHub 身份分离：轮询用 poller 账号，commit / 评论用 pusher 账号",
        "url": "https://github.com/GigleAI/cavil-loop/issues/36",
        "state": "CLOSED",
        "updatedAt": "2026-09-22T06:12:01Z",
@@ -2205,7 +2895,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 38,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/38",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -2236,7 +2947,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 37,
-       "title": "示例 PR 37：fixture title",
+       "title": "fix(poll): 派工失败加退避，并挡住被别的 worktree 占住的分支",
        "url": "https://github.com/GigleAI/cavil-loop/pull/37",
        "state": "MERGED",
        "merged": true,
@@ -2259,7 +2970,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2290,7 +3004,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 38,
-       "title": "示例 PR 38：fixture title",
+       "title": "feat(token): split the polling identity from the writing identity",
        "url": "https://github.com/GigleAI/cavil-loop/pull/38",
        "state": "MERGED",
        "merged": true,
@@ -2309,7 +3023,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2351,7 +3068,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 39,
-       "title": "示例 PR 39：fixture title",
+       "title": "feat(poll): 长期没动静的项目渐进退避，并给「读不到 GitHub」单配一套节奏",
        "url": "https://github.com/GigleAI/cavil-loop/pull/39",
        "state": "MERGED",
        "merged": true,
@@ -2370,7 +3087,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2412,7 +3132,7 @@
       "content": {
        "__typename": "Issue",
        "number": 40,
-       "title": "示例 issue 40：fixture title",
+       "title": "还是偶发会出现动画里的主体不显示的问题。刷新后能恢复",
        "url": "https://github.com/GigleAI/cavil-loop/issues/40",
        "state": "CLOSED",
        "updatedAt": "2026-09-22T09:56:21Z",
@@ -2430,7 +3150,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -2458,7 +3189,7 @@
       "content": {
        "__typename": "Issue",
        "number": 41,
-       "title": "示例 issue 41：fixture title",
+       "title": "chore: 2026-11-21 前复核 gpt-5.6-sol 促销价（Codex 内置价目表）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/41",
        "state": "CLOSED",
        "updatedAt": "2026-09-28T23:58:34Z",
@@ -2471,7 +3202,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -2502,7 +3244,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 42,
-       "title": "示例 PR 42：fixture title",
+       "title": "fix(codex-usage): 补 gpt-6-sol / gpt-6-luna 单价并整表复核内置价目表",
        "url": "https://github.com/GigleAI/cavil-loop/pull/42",
        "state": "MERGED",
        "merged": true,
@@ -2521,7 +3263,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2566,7 +3311,7 @@
       "content": {
        "__typename": "Issue",
        "number": 43,
-       "title": "示例 issue 43：fixture title",
+       "title": "一个 issue 需要包含多个 PR 的，请用建 sub issue 的方式，单独进行跟踪",
        "url": "https://github.com/GigleAI/cavil-loop/issues/43",
        "state": "CLOSED",
        "updatedAt": "2026-09-29T03:12:31Z",
@@ -2584,7 +3329,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 44,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/44",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -2626,7 +3392,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 44,
-       "title": "示例 PR 44：fixture title",
+       "title": "feat: split multi-PR issues into GitHub sub-issues instead of Refs PRs",
        "url": "https://github.com/GigleAI/cavil-loop/pull/44",
        "state": "MERGED",
        "merged": true,
@@ -2645,7 +3411,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2676,7 +3445,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 45,
-       "title": "示例 PR 45：fixture title",
+       "title": "fix(price-solve): price claude-opus-5-5 / sonnet-5-5 and re-check the reference table",
        "url": "https://github.com/GigleAI/cavil-loop/pull/45",
        "state": "MERGED",
        "merged": true,
@@ -2695,7 +3464,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2729,7 +3501,7 @@
       "content": {
        "__typename": "Issue",
        "number": 46,
-       "title": "示例 issue 46：fixture title",
+       "title": "weekly-report: bot accounts not ending in -bot are counted as humans (and their usage drops to 0)",
        "url": "https://github.com/GigleAI/cavil-loop/issues/46",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T00:53:46Z",
@@ -2747,7 +3519,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 47,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/47",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -2778,7 +3571,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 47,
-       "title": "示例 PR 47：fixture title",
+       "title": "fix(weekly-report): recognise bot accounts listed in WEEKLY_REPORT_BOT_LOGINS",
        "url": "https://github.com/GigleAI/cavil-loop/pull/47",
        "state": "MERGED",
        "merged": true,
@@ -2797,7 +3590,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2839,7 +3635,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 48,
-       "title": "示例 PR 48：fixture title",
+       "title": "fix(weekly-report): follow-ups to #47 — case-insensitive bot list, report caliber, end-to-end test",
        "url": "https://github.com/GigleAI/cavil-loop/pull/48",
        "state": "MERGED",
        "merged": true,
@@ -2858,7 +3654,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -2900,7 +3699,7 @@
       "content": {
        "__typename": "Issue",
        "number": 49,
-       "title": "示例 issue 49：fixture title",
+       "title": "weekly-report: re-estimate pre-switch legacy costs from tokens; add a token-usage trend",
        "url": "https://github.com/GigleAI/cavil-loop/issues/49",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T00:44:25Z",
@@ -2913,7 +3712,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 50,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/50",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -2955,7 +3775,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 50,
-       "title": "示例 PR 50：fixture title",
+       "title": "feat(weekly-report): re-estimate pre-switch legacy costs from tokens; add token-usage trend",
        "url": "https://github.com/GigleAI/cavil-loop/pull/50",
        "state": "MERGED",
        "merged": true,
@@ -2974,7 +3794,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3019,7 +3842,7 @@
       "content": {
        "__typename": "Issue",
        "number": 51,
-       "title": "示例 issue 51：fixture title",
+       "title": "一旦【出现该模型未配单价，金额未计】的情况，就自动更新模型价格数据",
        "url": "https://github.com/GigleAI/cavil-loop/issues/51",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T03:47:35Z",
@@ -3037,7 +3860,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 55,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/55",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3082,7 +3926,7 @@
       "content": {
        "__typename": "Issue",
        "number": 52,
-       "title": "示例 issue 52：fixture title",
+       "title": "默认的标签颜色，请按照当前设置的来",
        "url": "https://github.com/GigleAI/cavil-loop/issues/52",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T02:09:00Z",
@@ -3100,7 +3944,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 53,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/53",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3142,7 +4007,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 53,
-       "title": "示例 PR 53：fixture title",
+       "title": "fix(setup): default label colors follow this repo's current palette",
        "url": "https://github.com/GigleAI/cavil-loop/pull/53",
        "state": "MERGED",
        "merged": true,
@@ -3161,7 +4026,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3203,7 +4071,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 54,
-       "title": "示例 PR 54：fixture title",
+       "title": "feat(weekly-report): split token usage into its own chart, cache reads in a separate panel",
        "url": "https://github.com/GigleAI/cavil-loop/pull/54",
        "state": "MERGED",
        "merged": true,
@@ -3222,7 +4090,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3264,7 +4135,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 55,
-       "title": "示例 PR 55：fixture title",
+       "title": "feat(pricing): auto-fetch prices for models missing from the built-in tables",
        "url": "https://github.com/GigleAI/cavil-loop/pull/55",
        "state": "MERGED",
        "merged": true,
@@ -3283,7 +4154,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3328,7 +4202,7 @@
       "content": {
        "__typename": "Issue",
        "number": 56,
-       "title": "示例 issue 56：fixture title",
+       "title": "现在用的还是 opus 5，而非 5.5 吗？",
        "url": "https://github.com/GigleAI/cavil-loop/issues/56",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T05:01:08Z",
@@ -3346,7 +4220,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 57,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/57",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3388,7 +4283,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 57,
-       "title": "示例 PR 57：fixture title",
+       "title": "fix(claude): resumed sessions follow the current default model; Fable uses the alias",
        "url": "https://github.com/GigleAI/cavil-loop/pull/57",
        "state": "MERGED",
        "merged": true,
@@ -3407,7 +4302,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3449,7 +4347,7 @@
       "content": {
        "__typename": "Issue",
        "number": 58,
-       "title": "示例 issue 58：fixture title",
+       "title": "weekly-report: price codex records that were written before their model had a price",
        "url": "https://github.com/GigleAI/cavil-loop/issues/58",
        "state": "CLOSED",
        "updatedAt": "2026-10-08T11:12:45Z",
@@ -3462,7 +4360,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 59,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/59",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3504,7 +4423,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 59,
-       "title": "示例 PR 59：fixture title",
+       "title": "feat(weekly-report): reprice codex records written before their model had a price",
        "url": "https://github.com/GigleAI/cavil-loop/pull/59",
        "state": "MERGED",
        "merged": true,
@@ -3523,7 +4442,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3554,7 +4476,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 60,
-       "title": "示例 PR 60：fixture title",
+       "title": "feat(weekly-report): processing time from per-turn spans, uniquely claimed (GigleTutor-Web#933)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/60",
        "state": "MERGED",
        "merged": true,
@@ -3577,7 +4499,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3611,7 +4536,7 @@
       "content": {
        "__typename": "Issue",
        "number": 61,
-       "title": "示例 issue 61：fixture title",
+       "title": "weekly-report: per-model breakdown + PDF layout (conclusions first, one page per chart category, 10-week tables)",
        "url": "https://github.com/GigleAI/cavil-loop/issues/61",
        "state": "CLOSED",
        "updatedAt": "2026-10-19T02:45:19Z",
@@ -3629,7 +4554,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 65,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/65",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3660,7 +4606,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 62,
-       "title": "示例 PR 62：fixture title",
+       "title": "feat(retrospective): counted lessons — per-PR sightings, locked rules, hard rules checked in every review",
        "url": "https://github.com/GigleAI/cavil-loop/pull/62",
        "state": "MERGED",
        "merged": true,
@@ -3679,7 +4625,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3713,7 +4662,7 @@
       "content": {
        "__typename": "Issue",
        "number": 63,
-       "title": "示例 issue 63：fixture title",
+       "title": "交人拍板的评论必须用大白话：先给真实例子，再说「要你选的只有一件事」",
        "url": "https://github.com/GigleAI/cavil-loop/issues/63",
        "state": "CLOSED",
        "updatedAt": "2026-10-19T02:45:28Z",
@@ -3731,7 +4680,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 64,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/64",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3762,7 +4732,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 64,
-       "title": "示例 PR 64：fixture title",
+       "title": "feat(prompts): fixed skeleton for human-decision comments; no code names in questions (#63)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/64",
        "state": "MERGED",
        "merged": true,
@@ -3781,7 +4751,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3812,7 +4785,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 65,
-       "title": "示例 PR 65：fixture title",
+       "title": "feat(weekly-report): per-model breakdown + PDF layout (conclusions first, one page per category, 10-week tables)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/65",
        "state": "MERGED",
        "merged": true,
@@ -3831,7 +4804,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -3865,7 +4841,7 @@
       "content": {
        "__typename": "Issue",
        "number": 66,
-       "title": "示例 issue 66：fixture title",
+       "title": "更新下模型价目表",
        "url": "https://github.com/GigleAI/cavil-loop/issues/66",
        "state": "CLOSED",
        "updatedAt": "2026-10-19T05:03:34Z",
@@ -3883,7 +4859,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 68,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/68",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3917,7 +4914,7 @@
       "content": {
        "__typename": "Issue",
        "number": 67,
-       "title": "示例 issue 67：fixture title",
+       "title": "更新下文档",
        "url": "https://github.com/GigleAI/cavil-loop/issues/67",
        "state": "CLOSED",
        "updatedAt": "2026-10-20T16:13:42Z",
@@ -3935,7 +4932,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 2,
+        "completed": 2
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 69,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/69",
+          "state": "CLOSED",
+          "merged": false,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -3966,7 +4984,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 68,
-       "title": "示例 PR 68：fixture title",
+       "title": "fix(pricing): re-check both built-in price tables against the official pages (2026-10-19)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/68",
        "state": "MERGED",
        "merged": true,
@@ -3985,7 +5003,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4013,7 +5034,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 69,
-       "title": "示例 PR 69：fixture title",
+       "title": "docs: explain the cavil-loop name; call the tool cavil-loop in prose",
        "url": "https://github.com/GigleAI/cavil-loop/pull/69",
        "state": "CLOSED",
        "merged": false,
@@ -4027,7 +5048,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4061,7 +5085,7 @@
       "content": {
        "__typename": "Issue",
        "number": 70,
-       "title": "示例 issue 70：fixture title",
+       "title": "新安装全部改用 cavil-loop 命名（代码同时认旧名）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/70",
        "state": "CLOSED",
        "updatedAt": "2026-10-20T05:32:22Z",
@@ -4079,7 +5103,33 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 67,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 72,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/72",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4113,7 +5163,7 @@
       "content": {
        "__typename": "Issue",
        "number": 71,
-       "title": "示例 issue 71：fixture title",
+       "title": "旧安装自动检测并迁移到 cavil-loop 命名",
        "url": "https://github.com/GigleAI/cavil-loop/issues/71",
        "state": "CLOSED",
        "updatedAt": "2026-10-20T14:59:13Z",
@@ -4131,7 +5181,33 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 67,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 73,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/73",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4162,7 +5238,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 72,
-       "title": "示例 PR 72：fixture title",
+       "title": "feat: new installs use cavil-loop names everywhere; old names still honored",
        "url": "https://github.com/GigleAI/cavil-loop/pull/72",
        "state": "MERGED",
        "merged": true,
@@ -4181,7 +5257,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4212,7 +5291,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 73,
-       "title": "示例 PR 73：fixture title",
+       "title": "feat: migrate pre-rename installs to cavil-loop names automatically",
        "url": "https://github.com/GigleAI/cavil-loop/pull/73",
        "state": "MERGED",
        "merged": true,
@@ -4231,7 +5310,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4265,7 +5347,7 @@
       "content": {
        "__typename": "Issue",
        "number": 74,
-       "title": "示例 issue 74：fixture title",
+       "title": "交人评论必须自包含：要人做的步骤写全文，不能只给链接或指向 reviewer 阶段的评论",
        "url": "https://github.com/GigleAI/cavil-loop/issues/74",
        "state": "CLOSED",
        "updatedAt": "2026-10-23T02:17:01Z",
@@ -4283,7 +5365,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 78,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/78",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4317,7 +5420,7 @@
       "content": {
        "__typename": "Issue",
        "number": 75,
-       "title": "示例 issue 75：fixture title",
+       "title": "改名迁移后旧预览单元引用已删除的旧路径，预览全部 502；注册脚本失败仍打印 URL",
        "url": "https://github.com/GigleAI/cavil-loop/issues/75",
        "state": "CLOSED",
        "updatedAt": "2026-10-23T04:47:39Z",
@@ -4335,7 +5438,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 79,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/79",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4369,7 +5493,7 @@
       "content": {
        "__typename": "Issue",
        "number": 76,
-       "title": "示例 issue 76：fixture title",
+       "title": "文档加两张动图：issue 在 cavil-loop 里走一圈、评论怎么变成 worker 的指令",
        "url": "https://github.com/GigleAI/cavil-loop/issues/76",
        "state": "CLOSED",
        "updatedAt": "2026-10-23T02:46:21Z",
@@ -4387,7 +5511,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 77,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/77",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4418,7 +5563,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 77,
-       "title": "示例 PR 77：fixture title",
+       "title": "docs: animated diagrams for the issue lifecycle and prompt assembly",
        "url": "https://github.com/GigleAI/cavil-loop/pull/77",
        "state": "MERGED",
        "merged": true,
@@ -4437,7 +5582,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4468,7 +5616,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 78,
-       "title": "示例 PR 78：fixture title",
+       "title": "feat: hand-off comments must be self-contained, links only as sources",
        "url": "https://github.com/GigleAI/cavil-loop/pull/78",
        "state": "MERGED",
        "merged": true,
@@ -4487,7 +5635,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4518,7 +5669,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 79,
-       "title": "示例 PR 79：fixture title",
+       "title": "fix: move pre-rename previews onto the new units; no URL unless the preview came up",
        "url": "https://github.com/GigleAI/cavil-loop/pull/79",
        "state": "MERGED",
        "merged": true,
@@ -4537,7 +5688,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4571,7 +5725,7 @@
       "content": {
        "__typename": "Issue",
        "number": 80,
-       "title": "示例 issue 80：fixture title",
+       "title": "每个迭代结束固定发一个版本",
        "url": "https://github.com/GigleAI/cavil-loop/issues/80",
        "state": "CLOSED",
        "updatedAt": "2026-10-23T04:45:47Z",
@@ -4589,7 +5743,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 81,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/81",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4620,7 +5795,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 81,
-       "title": "示例 PR 81：fixture title",
+       "title": "feat: cut a release automatically at the end of every iteration",
        "url": "https://github.com/GigleAI/cavil-loop/pull/81",
        "state": "MERGED",
        "merged": true,
@@ -4639,7 +5814,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4673,7 +5851,7 @@
       "content": {
        "__typename": "Issue",
        "number": 82,
-       "title": "示例 issue 82：fixture title",
+       "title": "PR 阶段，每次要 pending/human 前，都先检查下是否和主干有冲突，有的话要先解一下冲突",
        "url": "https://github.com/GigleAI/cavil-loop/issues/82",
        "state": "CLOSED",
        "updatedAt": "2026-10-23T06:31:59Z",
@@ -4691,7 +5869,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 83,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/83",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4722,7 +5921,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 83,
-       "title": "示例 PR 83：fixture title",
+       "title": "feat: check for conflicts with the base branch before handing a PR on (#82)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/83",
        "state": "MERGED",
        "merged": true,
@@ -4741,7 +5940,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4786,7 +5988,7 @@
       "content": {
        "__typename": "Issue",
        "number": 84,
-       "title": "示例 issue 84：fixture title",
+       "title": "review 通过/不通过，都在一开始的 header 里加上✅ 或❌",
        "url": "https://github.com/GigleAI/cavil-loop/issues/84",
        "state": "CLOSED",
        "updatedAt": "2026-10-24T22:19:51Z",
@@ -4804,7 +6006,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 85,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/85",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4846,7 +6069,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 85,
-       "title": "示例 PR 85：fixture title",
+       "title": "feat: review verdict comment headings start with ✅ / ❌",
        "url": "https://github.com/GigleAI/cavil-loop/pull/85",
        "state": "MERGED",
        "merged": true,
@@ -4865,7 +6088,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -4910,7 +6136,7 @@
       "content": {
        "__typename": "Issue",
        "number": 86,
-       "title": "示例 issue 86：fixture title",
+       "title": "轮询时，如果想查 pending/human 的 pr 是否有冲突，需要额外增加查询次数不？",
        "url": "https://github.com/GigleAI/cavil-loop/issues/86",
        "state": "CLOSED",
        "updatedAt": "2026-10-25T03:42:29Z",
@@ -4928,7 +6154,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 87,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/87",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -4970,7 +6217,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 87,
-       "title": "示例 PR 87：fixture title",
+       "title": "feat: re-check pending/human PRs for conflicts when the base moves",
        "url": "https://github.com/GigleAI/cavil-loop/pull/87",
        "state": "MERGED",
        "merged": true,
@@ -4989,7 +6236,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -5023,7 +6273,7 @@
       "content": {
        "__typename": "Issue",
        "number": 88,
-       "title": "示例 issue 88：fixture title",
+       "title": "评论 footer 改成一行总览 + 折叠细节，并加上 AI 耗时",
        "url": "https://github.com/GigleAI/cavil-loop/issues/88",
        "state": "CLOSED",
        "updatedAt": "2026-10-27T03:23:56Z",
@@ -5041,7 +6291,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 89,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/89",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -5072,7 +6343,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 89,
-       "title": "示例 PR 89：fixture title",
+       "title": "feat: comment footer as one summary line + folded details, with AI time (#88)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/89",
        "state": "MERGED",
        "merged": true,
@@ -5091,7 +6362,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -5139,7 +6413,7 @@
       "content": {
        "__typename": "Issue",
        "number": 90,
-       "title": "示例 issue 90：fixture title",
+       "title": "footer 耗时的展开箭头和大概说明共用一行",
        "url": "https://github.com/GigleAI/cavil-loop/issues/90",
        "state": "CLOSED",
        "updatedAt": "2026-10-27T04:52:21Z",
@@ -5157,11 +6431,32 @@
        "assignees": {
         "nodes": [
          {
-          "login": "user-2"
+          "login": "user-1"
          }
         ]
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 91,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/91",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -5203,7 +6498,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 91,
-       "title": "示例 PR 91：fixture title",
+       "title": "feat: footer summary line is the details toggle (#90)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/91",
        "state": "MERGED",
        "merged": true,
@@ -5222,7 +6517,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -5253,7 +6551,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 92,
-       "title": "示例 PR 92：fixture title",
+       "title": "feat(footer): 总览写明「未跑测试」/「测试未知」，不再每条附 AI 估算长说明",
        "url": "https://github.com/GigleAI/cavil-loop/pull/92",
        "state": "MERGED",
        "merged": true,
@@ -5272,7 +6570,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -5306,7 +6607,7 @@
       "content": {
        "__typename": "Issue",
        "number": 93,
-       "title": "示例 issue 93：fixture title",
+       "title": "footer 优化",
        "url": "https://github.com/GigleAI/cavil-loop/issues/93",
        "state": "CLOSED",
        "updatedAt": "2026-10-28T04:51:02Z",
@@ -5324,7 +6625,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 94,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/94",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -5355,7 +6677,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 94,
-       "title": "示例 PR 94：fixture title",
+       "title": "feat(footer): 总览按 AI · 测试 · 其他排，确认没跑测试时不再写「未跑测试」",
        "url": "https://github.com/GigleAI/cavil-loop/pull/94",
        "state": "MERGED",
        "merged": true,
@@ -5374,7 +6696,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -5408,7 +6733,7 @@
       "content": {
        "__typename": "Issue",
        "number": 95,
-       "title": "示例 issue 95：fixture title",
+       "title": "外部传话机器人交接：等待期间不派工、叫醒脚本、失败/超时交还维护者（默认关闭，靠配置开启）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/95",
        "state": "CLOSED",
        "updatedAt": "2026-10-31T05:57:19Z",
@@ -5426,7 +6751,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 96,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/96",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -5457,7 +6803,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 96,
-       "title": "示例 PR 96：fixture title",
+       "title": "feat: external relay bot handoff, off by default (#95)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/96",
        "state": "MERGED",
        "merged": true,
@@ -5476,7 +6822,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -5510,7 +6859,7 @@
       "content": {
        "__typename": "Issue",
        "number": 97,
-       "title": "示例 issue 97：fixture title",
+       "title": "外部传话机器人：在 PR 上叫醒改为请求 review（只改 assignee 机器人收不到事件）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/97",
        "state": "CLOSED",
        "updatedAt": "2026-10-31T09:12:42Z",
@@ -5528,7 +6877,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 98,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/98",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -5559,7 +6929,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 98,
-       "title": "示例 PR 98：fixture title",
+       "title": "feat: external requester bot — PR wake-up requests review, daemon reports merge/close (#97)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/98",
        "state": "MERGED",
        "merged": true,
@@ -5578,7 +6948,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -5606,7 +6979,7 @@
       "content": {
        "__typename": "Issue",
        "number": 99,
-       "title": "示例 issue 99：fixture title",
+       "title": "Notify gigle_x via webhook when GitHub needs it (replace Cursor app notifications)",
        "url": "https://github.com/GigleAI/cavil-loop/issues/99",
        "state": "CLOSED",
        "updatedAt": "2026-10-31T11:52:50Z",
@@ -5619,7 +6992,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -5653,7 +7037,7 @@
       "content": {
        "__typename": "Issue",
        "number": 100,
-       "title": "示例 issue 100：fixture title",
+       "title": "外部需求机器人：叫醒改为「打等待标签 + 调 webhook」，不再指派 / 请求 review",
        "url": "https://github.com/GigleAI/cavil-loop/issues/100",
        "state": "CLOSED",
        "updatedAt": "2026-10-31T14:06:06Z",
@@ -5671,7 +7055,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 101,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/101",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      }
     ]
@@ -5927,8 +7332,299 @@
      }
     ]
    },
+   "views": {
+    "nodes": [
+     {
+      "number": 1,
+      "name": "Pending",
+      "layout": "TABLE_LAYOUT",
+      "filter": "-label:Done -status:Done",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Updated",
+         "dataType": "UPDATED"
+        },
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      }
+     },
+     {
+      "number": 2,
+      "name": "迭代统计",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Milestone",
+         "dataType": "MILESTONE"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 3,
+      "name": "迭代规划",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-status:Done -iteration:\"Iteration 1\",\"Iteration 2\",\"Iteration 3\",\"Iteration 4\",\"Iteration 5\",\"Iteration 6\",\"Iteration 7\",\"Iteration 8\",\"Iteration 9\" -label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 4,
+      "name": "Roadmap",
+      "layout": "ROADMAP_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      }
+     },
+     {
+      "number": 5,
+      "name": "My items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "assignee:@me",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 6,
+      "name": "Team items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Project Start date",
+         "dataType": "DATE"
+        },
+        {
+         "name": "Project Target date",
+         "dataType": "DATE"
+        }
+       ]
+      }
+     }
+    ]
+   },
    "items": {
-    "totalCount": 138,
+    "totalCount": 144,
     "pageInfo": {
      "hasNextPage": false,
      "endCursor": "cursor-2"
@@ -5962,7 +7658,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 101,
-       "title": "示例 PR 101：fixture title",
+       "title": "feat: requester bot wake-up = waiting label + webhook, no assign / review request (#100)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/101",
        "state": "MERGED",
        "merged": true,
@@ -5981,7 +7677,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6026,7 +7725,7 @@
       "content": {
        "__typename": "Issue",
        "number": 102,
-       "title": "示例 issue 102：fixture title",
+       "title": "首页 readme 优化",
        "url": "https://github.com/GigleAI/cavil-loop/issues/102",
        "state": "CLOSED",
        "updatedAt": "2026-11-01T07:43:50Z",
@@ -6044,7 +7743,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 105,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/105",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6078,7 +7798,7 @@
       "content": {
        "__typename": "Issue",
        "number": 103,
-       "title": "示例 issue 103：fixture title",
+       "title": "测试：负对照移出默认回归，改为开关触发；默认回归补到达性断言",
        "url": "https://github.com/GigleAI/cavil-loop/issues/103",
        "state": "CLOSED",
        "updatedAt": "2026-11-01T06:15:00Z",
@@ -6096,7 +7816,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 104,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/104",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6127,7 +7868,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 104,
-       "title": "示例 PR 104：fixture title",
+       "title": "test: move negative controls behind MUTATION=1, add reachability asserts",
        "url": "https://github.com/GigleAI/cavil-loop/pull/104",
        "state": "MERGED",
        "merged": true,
@@ -6146,7 +7887,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6188,7 +7932,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 105,
-       "title": "示例 PR 105：fixture title",
+       "title": "feat: design-proposal review switch, README knobs, requester-bot guide (#102)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/105",
        "state": "MERGED",
        "merged": true,
@@ -6207,7 +7951,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6252,7 +7999,7 @@
       "content": {
        "__typename": "Issue",
        "number": 106,
-       "title": "示例 issue 106：fixture title",
+       "title": "叫醒外部需求机器人：维护者暂停后又恢复，仍被永久拒绝",
        "url": "https://github.com/GigleAI/cavil-loop/issues/106",
        "state": "CLOSED",
        "updatedAt": "2026-11-02T01:35:58Z",
@@ -6270,7 +8017,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 107,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/107",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6312,7 +8080,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 107,
-       "title": "示例 PR 107：fixture title",
+       "title": "fix(requester-bot): a lifted maintainer pause no longer blocks wake-up",
        "url": "https://github.com/GigleAI/cavil-loop/pull/107",
        "state": "MERGED",
        "merged": true,
@@ -6331,7 +8099,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6376,7 +8147,7 @@
       "content": {
        "__typename": "Issue",
        "number": 108,
-       "title": "示例 issue 108：fixture title",
+       "title": "怎么我新配的项目总是要我同意 trust 某一个 worktree folder",
        "url": "https://github.com/GigleAI/cavil-loop/issues/108",
        "state": "CLOSED",
        "updatedAt": "2026-11-02T07:29:57Z",
@@ -6394,7 +8165,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 110,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/110",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6439,7 +8231,7 @@
       "content": {
        "__typename": "Issue",
        "number": 109,
-       "title": "示例 issue 109：fixture title",
+       "title": "setup 后 systemctl enable 把 timer 链接指向具体 release 目录，发新版后 timer 消失、项目静默停摆",
        "url": "https://github.com/GigleAI/cavil-loop/issues/109",
        "state": "CLOSED",
        "updatedAt": "2026-11-02T08:40:20Z",
@@ -6457,7 +8249,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 111,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/111",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6499,7 +8312,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 110,
-       "title": "示例 PR 110：fixture title",
+       "title": "fix(trust): pre-trust the directory each agent actually checks, before every launch",
        "url": "https://github.com/GigleAI/cavil-loop/pull/110",
        "state": "MERGED",
        "merged": true,
@@ -6518,7 +8331,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6560,7 +8376,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 111,
-       "title": "示例 PR 111：fixture title",
+       "title": "fix(systemd): keep timer links on the stable skill entry; never delete a release a unit link still reaches",
        "url": "https://github.com/GigleAI/cavil-loop/pull/111",
        "state": "MERGED",
        "merged": true,
@@ -6579,7 +8395,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6624,7 +8443,7 @@
       "content": {
        "__typename": "Issue",
        "number": 112,
-       "title": "示例 issue 112：fixture title",
+       "title": "这个 grok bot 可以和 cavil-loop 配套使用",
        "url": "https://github.com/GigleAI/cavil-loop/issues/112",
        "state": "CLOSED",
        "updatedAt": "2026-11-02T10:59:08Z",
@@ -6642,7 +8461,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 113,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/113",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6684,7 +8524,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 113,
-       "title": "示例 PR 113：fixture title",
+       "title": "docs: point readers to a ready-made Grok bot for the requester-bot integration",
        "url": "https://github.com/GigleAI/cavil-loop/pull/113",
        "state": "MERGED",
        "merged": true,
@@ -6703,7 +8543,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6737,7 +8580,7 @@
       "content": {
        "__typename": "Issue",
        "number": 114,
-       "title": "示例 issue 114：fixture title",
+       "title": "增加一个可以全权交给 agent 实现并在通过review 和测试后自动合并的 label",
        "url": "https://github.com/GigleAI/cavil-loop/issues/114",
        "state": "CLOSED",
        "updatedAt": "2026-11-03T05:05:00Z",
@@ -6755,7 +8598,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 119,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/119",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6786,7 +8650,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 115,
-       "title": "示例 PR 115：fixture title",
+       "title": "feat(prompts): fold everything but what the human needs; mark findings with ❌/✅/⚠️",
        "url": "https://github.com/GigleAI/cavil-loop/pull/115",
        "state": "MERGED",
        "merged": true,
@@ -6805,7 +8669,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6839,7 +8706,7 @@
       "content": {
        "__typename": "Issue",
        "number": 116,
-       "title": "示例 issue 116：fixture title",
+       "title": "守护程序可配置：把本仓库的 issue / PR 自动加进一个或多个 GitHub Project",
        "url": "https://github.com/GigleAI/cavil-loop/issues/116",
        "state": "CLOSED",
        "updatedAt": "2026-11-02T14:04:39Z",
@@ -6857,7 +8724,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 118,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/118",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6891,7 +8779,7 @@
       "content": {
        "__typename": "Issue",
        "number": 117,
-       "title": "示例 issue 117：fixture title",
+       "title": "把项目自测搬到 GitHub Actions，在 PR 上自动跑",
        "url": "https://github.com/GigleAI/cavil-loop/issues/117",
        "state": "CLOSED",
        "updatedAt": "2026-11-03T05:16:01Z",
@@ -6909,7 +8797,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 121,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/121",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -6940,7 +8849,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 118,
-       "title": "示例 PR 118：fixture title",
+       "title": "feat: auto-add this repo's issues / PRs to configured GitHub Projects",
        "url": "https://github.com/GigleAI/cavil-loop/pull/118",
        "state": "MERGED",
        "merged": true,
@@ -6959,7 +8868,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -6990,7 +8902,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 119,
-       "title": "示例 PR 119：fixture title",
+       "title": "feat: autopilot label — hand an issue over end to end, daemon merges after review and tests",
        "url": "https://github.com/GigleAI/cavil-loop/pull/119",
        "state": "MERGED",
        "merged": true,
@@ -7009,7 +8921,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -7037,7 +8952,7 @@
       "content": {
        "__typename": "Issue",
        "number": 120,
-       "title": "示例 issue 120：fixture title",
+       "title": "[test] auto-add to project: new issue (safe to ignore, will be closed)",
        "url": "https://github.com/GigleAI/cavil-loop/issues/120",
        "state": "CLOSED",
        "updatedAt": "2026-11-02T14:28:33Z",
@@ -7050,7 +8965,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -7081,7 +9007,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 121,
-       "title": "示例 PR 121：fixture title",
+       "title": "ci: run tests/ on every PR via one shared entry point",
        "url": "https://github.com/GigleAI/cavil-loop/pull/121",
        "state": "MERGED",
        "merged": true,
@@ -7100,7 +9026,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -7128,7 +9057,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 123,
-       "title": "示例 PR 123：fixture title",
+       "title": "[test] fork PR auto-add verification — do not merge",
        "url": "https://github.com/GigleAI/cavil-loop/pull/123",
        "state": "CLOSED",
        "merged": false,
@@ -7142,7 +9071,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-2"
+       }
       }
      },
      {
@@ -7176,7 +9108,7 @@
       "content": {
        "__typename": "Issue",
        "number": 124,
-       "title": "示例 issue 124：fixture title",
+       "title": "打开本项目的 autopilot",
        "url": "https://github.com/GigleAI/cavil-loop/issues/124",
        "state": "CLOSED",
        "updatedAt": "2026-11-03T23:43:56Z",
@@ -7194,7 +9126,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 127,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/127",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -7228,7 +9181,7 @@
       "content": {
        "__typename": "Issue",
        "number": 125,
-       "title": "示例 issue 125：fixture title",
+       "title": "评论格式优化",
        "url": "https://github.com/GigleAI/cavil-loop/issues/125",
        "state": "CLOSED",
        "updatedAt": "2026-11-03T10:30:15Z",
@@ -7246,7 +9199,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 126,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/126",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -7277,7 +9251,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 126,
-       "title": "示例 PR 126：fixture title",
+       "title": "feat(prompts): leave ❌ / ✅ / ⚠️ off by default; mark only what the human needs",
        "url": "https://github.com/GigleAI/cavil-loop/pull/126",
        "state": "MERGED",
        "merged": true,
@@ -7296,7 +9270,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -7327,7 +9304,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 127,
-       "title": "示例 PR 127：fixture title",
+       "title": "feat: turn autopilot on for this repo; turning it off is just the config line",
        "url": "https://github.com/GigleAI/cavil-loop/pull/127",
        "state": "MERGED",
        "merged": true,
@@ -7346,7 +9323,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -7391,7 +9371,7 @@
       "content": {
        "__typename": "Issue",
        "number": 128,
-       "title": "示例 issue 128：fixture title",
+       "title": "托管：维护者在 PR 上打托管标签也算授权（目前只认 issue 上的）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/128",
        "state": "CLOSED",
        "updatedAt": "2026-11-04T11:30:21Z",
@@ -7409,7 +9389,37 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 129,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/129",
+          "state": "CLOSED",
+          "merged": false,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 132,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/132",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -7437,7 +9447,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 129,
-       "title": "示例 PR 129：fixture title",
+       "title": "feat(escrow): 支持维护者在 PR 上打托管标签作为授权判定 (#128)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/129",
        "state": "CLOSED",
        "merged": false,
@@ -7451,7 +9461,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-7"
+       }
       }
      },
      {
@@ -7485,7 +9498,7 @@
       "content": {
        "__typename": "Issue",
        "number": 130,
-       "title": "示例 issue 130：fixture title",
+       "title": "默认的 label 颜色请改为目前 cavil  配置的这套",
        "url": "https://github.com/GigleAI/cavil-loop/issues/130",
        "state": "CLOSED",
        "updatedAt": "2026-11-04T00:28:27Z",
@@ -7507,7 +9520,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 131,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/131",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -7538,7 +9572,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 131,
-       "title": "示例 PR 131：fixture title",
+       "title": "fix(setup): default label colors follow this repo's labels page again",
        "url": "https://github.com/GigleAI/cavil-loop/pull/131",
        "state": "MERGED",
        "merged": true,
@@ -7557,7 +9591,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -7599,7 +9636,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 132,
-       "title": "示例 PR 132：fixture title",
+       "title": "feat(autopilot): a maintainer's autopilot label on the PR also authorizes it",
        "url": "https://github.com/GigleAI/cavil-loop/pull/132",
        "state": "MERGED",
        "merged": true,
@@ -7618,7 +9655,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -7652,7 +9692,7 @@
       "content": {
        "__typename": "Issue",
        "number": 133,
-       "title": "示例 issue 133：fixture title",
+       "title": "外部需求机器人：允许在非机器人提的条目上叫醒（双向通讯）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/133",
        "state": "CLOSED",
        "updatedAt": "2026-11-04T15:30:29Z",
@@ -7674,7 +9714,28 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 134,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/134",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -7705,7 +9766,7 @@
       "content": {
        "__typename": "PullRequest",
        "number": 134,
-       "title": "示例 PR 134：fixture title",
+       "title": "feat(requester-bot): let items the bot did not file wake it too (opt-in)",
        "url": "https://github.com/GigleAI/cavil-loop/pull/134",
        "state": "MERGED",
        "merged": true,
@@ -7724,7 +9785,10 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      },
      {
@@ -7755,7 +9819,7 @@
       "content": {
        "__typename": "Issue",
        "number": 135,
-       "title": "示例 issue 135：fixture title",
+       "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
        "url": "https://github.com/GigleAI/cavil-loop/issues/135",
        "state": "OPEN",
        "updatedAt": "2026-11-04T22:53:59Z",
@@ -7773,7 +9837,18 @@
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 4,
+        "completed": 1
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -7788,12 +9863,15 @@
          "__typename": "ProjectV2ItemFieldLabelValue"
         },
         {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
          "__typename": "ProjectV2ItemFieldTextValue"
         },
         {
          "__typename": "ProjectV2ItemFieldSingleSelectValue",
-         "optionId": "f75ad846",
-         "name": "Backlog",
+         "optionId": "98236657",
+         "name": "Done",
          "field": {
           "id": "PVTF_fixture_c5fef67be389",
           "name": "Status"
@@ -7804,25 +9882,51 @@
       "content": {
        "__typename": "Issue",
        "number": 136,
-       "title": "示例 issue 136：fixture title",
+       "title": "Cavil Loop Client：客户端骨架——浏览器授权登录、多 Project / 多仓库同步与本地缓存、只读看板、macOS 打包",
        "url": "https://github.com/GigleAI/cavil-loop/issues/136",
-       "state": "OPEN",
-       "updatedAt": "2026-11-04T22:53:36Z",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-05T14:52:15Z",
        "repository": {
         "nameWithOwner": "GigleAI/cavil-loop"
        },
        "labels": {
         "nodes": [
          {
-          "name": "doing/agent",
-          "color": "c2e0c6"
+          "name": "Done",
+          "color": "586069"
          }
         ]
        },
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 140,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/140",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
       }
      },
      {
@@ -7853,25 +9957,45 @@
       "content": {
        "__typename": "Issue",
        "number": 137,
-       "title": "示例 issue 137：fixture title",
+       "title": "Cavil Loop Client：搜索与筛选 + 表格视图（本地执行，沿用 GitHub 网页写法，默认导入网页视图设置）",
        "url": "https://github.com/GigleAI/cavil-loop/issues/137",
        "state": "OPEN",
-       "updatedAt": "2026-11-04T22:52:40Z",
+       "updatedAt": "2026-11-05T14:56:19Z",
        "repository": {
         "nameWithOwner": "GigleAI/cavil-loop"
        },
        "labels": {
         "nodes": [
          {
-          "name": "pending/human",
-          "color": "fbca04"
+          "name": "doing/agent",
+          "color": "c2e0c6"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
          }
         ]
        },
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -7902,25 +10026,45 @@
       "content": {
        "__typename": "Issue",
        "number": 138,
-       "title": "示例 issue 138：fixture title",
+       "title": "Cavil Loop Client：查看与操作——评论倒序、改标签 / 迭代 / 里程碑、新建 issue、回复评论、合并与关闭 PR",
        "url": "https://github.com/GigleAI/cavil-loop/issues/138",
        "state": "OPEN",
-       "updatedAt": "2026-11-04T22:52:41Z",
+       "updatedAt": "2026-11-05T14:56:34Z",
        "repository": {
         "nameWithOwner": "GigleAI/cavil-loop"
        },
        "labels": {
         "nodes": [
          {
-          "name": "pending/human",
-          "color": "fbca04"
+          "name": "doing/agent",
+          "color": "c2e0c6"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
          }
         ]
        },
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
       }
      },
      {
@@ -7951,25 +10095,413 @@
       "content": {
        "__typename": "Issue",
        "number": 139,
-       "title": "示例 issue 139：fixture title",
+       "title": "Cavil Loop Client：pending/human 提醒、Dock 角标与后台常驻",
        "url": "https://github.com/GigleAI/cavil-loop/issues/139",
        "state": "OPEN",
-       "updatedAt": "2026-11-04T22:52:43Z",
+       "updatedAt": "2026-11-05T14:55:20Z",
        "repository": {
         "nameWithOwner": "GigleAI/cavil-loop"
        },
        "labels": {
         "nodes": [
          {
-          "name": "pending/human",
-          "color": "fbca04"
+          "name": "doing/agent",
+          "color": "c2e0c6"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
          }
         ]
        },
        "assignees": {
         "nodes": []
        },
-       "milestone": null
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_a9bbbc449a66",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 140,
+       "title": "feat(client): 桌面看板客户端骨架——浏览器授权登录、多来源同步与缓存、只读看板、macOS 打包",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/140",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-05T14:52:09Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_c7447e9f7e5d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 141,
+       "title": "PR 分支被「主 checkout」占用时：提示路径/命令错误（submodule 下尤甚），且可安全自动释放",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/141",
+       "state": "CLOSED",
+       "updatedAt": "2026-11-05T14:11:22Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 145,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/145",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_c83a1e50b113",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 142,
+       "title": "托管：维护者亲手打在 PR 上的 autopilot 不再要求 PR 对得上一个 issue",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/142",
+       "state": "OPEN",
+       "updatedAt": "2026-11-05T13:30:53Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "doing/agent",
+          "color": "c2e0c6"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_af84f75724e7",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 143,
+       "title": "feat(review): default REVIEW_MAX_ROUNDS 3 -> 6",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/143",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-05T13:21:46Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_3eb6713a670d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "number": 144,
+       "title": "给 cavil-loop 设计一个 logo",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/144",
+       "state": "OPEN",
+       "updatedAt": "2026-11-05T14:54:20Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "doing/agent",
+          "color": "c2e0c6"
+         },
+         {
+          "name": "autopilot",
+          "color": "ff401e"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_98073875c0ca",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "PullRequest",
+       "number": 145,
+       "title": "fix(dispatch): name the main checkout correctly when it holds a PR branch; optional safe auto-release",
+       "url": "https://github.com/GigleAI/cavil-loop/pull/145",
+       "state": "MERGED",
+       "merged": true,
+       "updatedAt": "2026-11-05T14:11:16Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       }
       }
      }
     ]

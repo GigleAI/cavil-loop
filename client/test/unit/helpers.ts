@@ -24,7 +24,7 @@ export function iter(title: string, startDate: string, duration = 7): Iteration 
 }
 
 export function project(key: string, title: string, iterations: Iteration[] | null, statusOptions = ['Todo', 'Done']): ProjectMeta {
-  return { key, title, url: `https://github.com/orgs/x/projects/${key}`, hasIterationField: iterations !== null, iterations: iterations ?? [], statusOptions };
+  return { key, title, url: `https://github.com/orgs/x/projects/${key}`, hasIterationField: iterations !== null, iterations: iterations ?? [], statusOptions, views: [] };
 }
 
 export function item(repo: string, number: number, extra: Partial<Item> = {}, memberships: ProjectMembership[] = []): Item {
@@ -40,6 +40,10 @@ export function item(repo: string, number: number, extra: Partial<Item> = {}, me
     labels: [],
     assignees: [],
     milestone: null,
+    author: null,
+    parent: null,
+    subIssues: null,
+    linkedPrs: [],
     projects: memberships,
     sources: [],
     ...extra,

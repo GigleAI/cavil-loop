@@ -231,7 +231,7 @@ describe('sync and cache', () => {
     // "something did happen": the repo source was re-read this round
     expect(repo).toMatchObject({ ok: true, dataFrom: clock.t });
     expect(c.getBoardData().items.length).toBe(before);
-    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items.length).toBe(138);
+    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items.length).toBe(144);
     expect(st.offline).toBe(false);
   });
 
@@ -240,7 +240,7 @@ describe('sync and cache', () => {
     c.addSource(PROJECT_URL);
     await c.start();
     await c.syncNow();
-    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items).toHaveLength(138);
+    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items).toHaveLength(144);
     const pages = fake.state.projects.get('org/gigleai/11')!;
     fake.state.projects.set('org/gigleai/11', [{ ...pages[0], items: { ...pages[0].items, pageInfo: { hasNextPage: false, endCursor: null }, nodes: pages[0].items.nodes.slice(0, 5) } }]);
     await c.syncNow();
@@ -266,9 +266,109 @@ describe('sync and cache', () => {
     expect(s.sync.offline).toBe(true);
     expect(s.sync.dataFrom).toBe(FIXTURE_NOW);
     expect(writesEnabled(s.sync)).toBe(false);
-    expect(second.c.getBoardData().items).toHaveLength(138);
+    expect(second.c.getBoardData().items).toHaveLength(144);
     // and the token is NOT dropped just because GitHub is unreachable
     expect(await first.credentials.get()).toBe(FAKE_TOKEN);
+  });
+
+  it('adding a Project imports its saved web view (/views/N, else the first) after the first complete read', async () => {
+    const { c } = await loggedIn();
+    expect(c.getState().view).toMatchObject({ layout: 'board', query: '', imported: null });
+    c.addSource(`${PROJECT_URL}/views/2`);
+    // nothing is imported before the Project was read
+    expect(c.getState().view.imported).toBeNull();
+    await c.start();
+    await c.syncNow();
+    expect(c.getState().view).toMatchObject({
+      layout: 'board',
+      mode: 'status',
+      query: '-label:nightly-failure',
+      imported: { sourceKey: 'project:org/gigleai/11', viewNumber: 2, viewName: '迭代统计' },
+    });
+    // a later round does not import again
+    c.setView({ query: 'label:bug' });
+    await c.syncNow();
+    expect(c.getState().view.query).toBe('label:bug');
+
+    // a repository brings no view; a Project without /views/N imports the first one
+    c.removeSource('project:org/gigleai/11');
+    c.addSource(REPO);
+    await c.syncNow();
+    expect(c.getState().view.query).toBe('label:bug');
+    c.addSource(PROJECT_URL);
+    await c.syncNow();
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done', imported: { viewNumber: 1, viewName: 'Pending' } });
+    expect(c.getState().view.table).toMatchObject({ groupBy: 'iteration', sort: { field: 'updated', dir: 'desc' } });
+  });
+
+  it('the import happens once: a later change of the saved view on GitHub does not override the client', async () => {
+    const { c } = await loggedIn();
+    c.addSource(`${PROJECT_URL}/views/1`);
+    await c.start();
+    await c.syncNow();
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    // someone edits the saved view on github.com; the client keeps what it imported
+    const pages = fake.state.projects.get('org/gigleai/11')!;
+    const edited = pages.map((p: any) => ({
+      ...p,
+      views: { nodes: p.views.nodes.map((v: any) => (v.number === 1 ? { ...v, filter: 'is:open', layout: 'BOARD_LAYOUT' } : v)) },
+    }));
+    fake.state.projects.set('org/gigleai/11', edited);
+    await c.syncNow();
+    expect(c.getBoardData().projects[0].views[0]).toMatchObject({ filter: 'is:open' }); // the round did read the edit
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+  });
+
+  it('settings changed by the user survive a restart; removing and re-adding the Project imports again', async () => {
+    const first = await loggedIn();
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    first.c.setView({ table: { groupBy: 'status' } });
+    first.c.setView({ table: { sort: { field: 'title', dir: 'asc' }, columns: ['title', 'assignees'], sliceByRepo: false, slice: 'GigleAI/cavil-loop', hierarchy: false } });
+    first.c.setView({ layout: 'board', query: 'is:open' });
+    const changed = first.c.getState().view;
+    first.c.stopTimer();
+
+    const second = make({ credentials: first.credentials });
+    await second.c.start();
+    await second.c.syncNow();
+    expect(second.c.getState().view).toEqual(changed);
+    expect(changed.table).toMatchObject({ groupBy: 'status', sort: { field: 'title', dir: 'asc' }, columns: ['title', 'assignees'], sliceByRepo: false, slice: 'GigleAI/cavil-loop', hierarchy: false });
+
+    second.c.removeSource('project:org/gigleai/11');
+    second.c.addSource(`${PROJECT_URL}/views/1`);
+    await second.c.syncNow();
+    expect(second.c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    expect(second.c.getState().view.table).toMatchObject({ groupBy: 'iteration', sort: { field: 'updated', dir: 'desc' }, slice: null, sliceByRepo: true, hierarchy: true });
+  });
+
+  it('a change made before the Project was first read wins over the import; a failed read imports later', async () => {
+    const { c } = await loggedIn();
+    fake.state.failProjectPage.set('org/gigleai/11', 1);
+    c.addSource(`${PROJECT_URL}/views/1`);
+    await c.start();
+    await c.syncNow();
+    expect(c.getState().view.imported).toBeNull(); // read failed on page 2: nothing imported yet
+    c.setView({ table: { groupBy: 'repo' }, query: 'is:pr' });
+    fake.state.failProjectPage.delete('org/gigleai/11');
+    await c.syncNow();
+    const v = c.getState().view;
+    expect(v.imported).toMatchObject({ viewNumber: 1 });
+    expect(v).toMatchObject({ layout: 'table', query: 'is:pr' });
+    expect(v.table).toMatchObject({ groupBy: 'repo', sort: { field: 'updated', dir: 'desc' } });
+  });
+
+  it('invalid view changes are refused whole; settings saved by an older build are read with defaults', async () => {
+    const { c } = await loggedIn();
+    const before = c.getState().view;
+    c.setView({ table: { groupBy: 'priority' as any } });
+    c.setView({ layout: 'roadmap' as any });
+    c.setView({ table: { columns: [] } });
+    expect(c.getState().view).toEqual(before);
+    const old = make({ seed: { view: { mode: 'status', swimlanes: true, selected: null } } });
+    expect(old.c.getState().view).toMatchObject({ mode: 'status', swimlanes: true, layout: 'board', query: '', imported: null });
+    expect(old.c.getState().view.table.groupBy).toBe('iteration');
   });
 
   it('removing a source drops its cached data', async () => {

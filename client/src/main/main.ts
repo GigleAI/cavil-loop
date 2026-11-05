@@ -9,7 +9,7 @@ import { Controller } from './controller';
 import { Cache } from '../data/cache';
 import { createPlatform } from '../platform';
 import { IPC, type Snapshot } from '../shared/ipc';
-import type { ViewSettings } from '../shared/types';
+import type { ViewPatch } from '../shared/viewSettings';
 
 const smoke = process.argv.includes('--smoke-test');
 const smokeOut = process.argv.find((a) => a.startsWith('--smoke-out='))?.slice('--smoke-out='.length);
@@ -77,7 +77,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.setClientId, (_e, id: string) => controller.setClientId(String(id)));
   ipcMain.handle(IPC.addSource, (_e, input: string) => controller.addSource(String(input)));
   ipcMain.handle(IPC.removeSource, (_e, key: string) => controller.removeSource(String(key)));
-  ipcMain.handle(IPC.setView, (_e, patch: Partial<ViewSettings>) => controller.setView(patch));
+  ipcMain.handle(IPC.setView, (_e, patch: ViewPatch) => controller.setView(patch));
   ipcMain.handle(IPC.syncNow, () => controller.syncNow());
   ipcMain.handle(IPC.openExternal, (_e, url: string) => platform.openExternal(String(url)));
 

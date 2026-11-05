@@ -1,8 +1,38 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { AppState, BoardData, ColumnMode } from '../shared/types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
+import { applyFilter, parseFilter } from '../shared/filter';
 import { buildBoard, writesEnabled, type Card, type Column } from '../data/board';
 import { api } from './api';
+import { TableView } from './TableView';
+import { ViewSettingsPanel } from './ViewSettingsPanel';
+
+/**
+ * The search box: filters as you type (the text lives here), saved to the
+ * view settings a moment after typing stops. An import that replaces the
+ * saved text replaces the box too.
+ */
+function useQuery(saved: string): [string, (q: string) => void] {
+  const [text, setText] = useState(saved);
+  const lastSent = useRef(saved);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (saved !== lastSent.current) {
+      lastSent.current = saved;
+      setText(saved);
+    }
+  }, [saved]);
+  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
+  const update = (q: string) => {
+    setText(q);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      lastSent.current = q;
+      void api().setView({ query: q });
+    }, 300);
+  };
+  return [text, update];
+}
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -101,15 +131,25 @@ function ColumnView({ col, cards, mode }: { col: Column; cards: Card[]; mode: Co
 export function BoardView({ state, data, onSettings }: { state: AppState; data: BoardData; onSettings: () => void }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
+  const [panel, setPanel] = useState(false);
   const { view, sync } = state;
+  const today = localToday(now);
+  const [query, setQuery] = useQuery(view.query);
+  const parsed = useMemo(() => parseFilter(query), [query]);
+  const items = useMemo(
+    () => applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects }),
+    [data, parsed, state.viewer, today],
+  );
   const board = useMemo(
-    () => buildBoard(data.items, data.projects, view.mode, view.swimlanes, localToday(now)),
-    [data, view.mode, view.swimlanes, now],
+    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today),
+    [items, data.projects, view.mode, view.swimlanes, today],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   const failed = sync.sources.filter((s) => !s.ok);
   const canWrite = writesEnabled(sync);
+  const filtering = parsed.clauses.length > 0 || parsed.unsupported.length > 0;
+  const hasText = parsed.clauses.some((c) => c.kind === 'text');
 
   const toggle = (key: string) => {
     const next = new Set(selected);
@@ -152,6 +192,20 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           ))}
         </div>
         <div className="spacer" />
+        <div className="seg" data-testid="layout">
+          {(['board', 'table'] as Layout[]).map((l) => (
+            <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} onClick={() => api().setView({ layout: l })}>
+              {l === 'board' ? '看板' : '表格'}
+            </button>
+          ))}
+        </div>
+        {view.layout === 'table' && (
+          <button data-testid="open-view-panel" className={panel ? 'on' : ''} onClick={() => setPanel(!panel)}>
+            视图设置
+          </button>
+        )}
+        {view.layout === 'board' && (
+        <>
         <label>
           列：
           <select data-testid="mode" value={view.mode} onChange={(e) => api().setView({ mode: e.target.value as ColumnMode })}>
@@ -166,6 +220,8 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           <input type="checkbox" data-testid="swimlanes" checked={view.swimlanes} onChange={(e) => api().setView({ swimlanes: e.target.checked })} />
           按仓库分泳道
         </label>
+        </>
+        )}
         <button data-testid="refresh" disabled={sync.syncing} onClick={() => api().syncNow()}>
           {sync.syncing ? '同步中…' : '刷新'}
         </button>
@@ -181,6 +237,41 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           设置
         </button>
       </div>
+
+      <div className="searchbar">
+        <input
+          data-testid="search"
+          type="search"
+          value={query}
+          placeholder="搜索或筛选，写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me 客户端"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {filtering && (
+          <span className="small muted" data-testid="match-count">
+            {items.length} / {data.items.length} 条
+          </span>
+        )}
+      </div>
+      {parsed.unsupported.length > 0 && (
+        <div className="banner warn" data-testid="filter-unsupported">
+          {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
+        </div>
+      )}
+      {filtering && failed.length > 0 && (
+        <div className="banner warn" data-testid="filter-incomplete">
+          有来源这次没读全，筛选结果可能不全（详见下方）。
+        </div>
+      )}
+      {hasText && <div className="small muted hint">文字只搜标题、编号和标签名，不搜正文和评论。</div>}
+      {view.imported && view.imported.notes.length > 0 && (
+        <div className="banner info" data-testid="import-notes">
+          导入网页视图{view.imported.viewName ? `「${view.imported.viewName}」` : ''}时，有些设置本客户端做不到：{view.imported.notes.join('；')}
+          <button className="link" data-testid="import-notes-dismiss" onClick={() => api().setView({ imported: { ...view.imported!, notes: [] } })}>
+            知道了
+          </button>
+        </div>
+      )}
+      {view.layout === 'table' && panel && <ViewSettingsPanel view={view} />}
 
       {sync.offline && (
         <div className="banner warn" data-testid="offline">
@@ -203,7 +294,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
           {sync.problem}
         </div>
       )}
-      {board.notice && (
+      {view.layout === 'board' && board.notice && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}
         </div>
@@ -214,6 +305,9 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
         </div>
       )}
 
+      {view.layout === 'table' ? (
+        <TableView items={items} projects={data.projects} view={view} today={today} now={now} />
+      ) : (
       <div className="board">
         {board.lanes
           ? board.lanes.map((lane) => (
@@ -224,10 +318,11 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
             ))
           : renderRow(null)}
       </div>
+      )}
       <div className="statusbar small muted">
         {state.viewer && <span>已登录 {state.viewer}</span>}
         {sync.lastOnlineAt && <span>上次同步 {ago(sync.lastOnlineAt, now)}</span>}
-        <span>{data.items.length} 个条目</span>
+        <span data-testid="item-total">{data.items.length} 个条目</span>
       </div>
     </div>
   );

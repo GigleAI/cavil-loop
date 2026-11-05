@@ -10,7 +10,10 @@ describe('parseSource', () => {
       number: 11,
       key: 'project:org/gigleai/11',
     });
-    expect(parseSource('https://github.com/orgs/GigleAI/projects/11/views/2?filterQuery=x')).toMatchObject({ key: 'project:org/gigleai/11' });
+    expect(parseSource('https://github.com/orgs/GigleAI/projects/11/views/2?filterQuery=x')).toMatchObject({ key: 'project:org/gigleai/11', view: 2 });
+    // the view to import is remembered; without /views/N there is none (the first view is imported)
+    expect(parseSource('https://github.com/orgs/GigleAI/projects/11')).not.toHaveProperty('view');
+    expect(parseSource('https://github.com/orgs/GigleAI/projects/11/views/abc')).not.toHaveProperty('view');
     expect(parseSource('https://github.com/users/luosky/projects/3')).toMatchObject({ ownerType: 'user', number: 3 });
   });
 

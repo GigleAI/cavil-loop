@@ -2,7 +2,9 @@
 // cache. No Electron imports — the unit tests drive it against the fake
 // GitHub directly; main.ts only wires it to IPC and a BrowserWindow.
 
-import { APP_KINDS, type AppKind, type AppState, type BoardData, type ColumnMode, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { APP_KINDS, type AppKind, type AppState, type BoardData, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
+import { importView, pickView } from '../shared/viewImport';
 import { parseSource } from '../shared/sources';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
@@ -66,8 +68,17 @@ export interface ControllerDeps {
 /** where each kind's Client ID override is saved ('oauthClientId' predates the choice and keeps its name) */
 const CLIENT_ID_SETTING: Record<AppKind, string> = { oauth: 'oauthClientId', 'github-app': 'githubAppClientId' };
 
-const DEFAULT_VIEW: ViewSettings = { mode: 'iteration', swimlanes: false, selected: null };
-const MODES: ColumnMode[] = ['iteration', 'status', 'milestone'];
+/**
+ * A Project added and not yet imported: its saved web view is applied after
+ * its first complete read. `touched` = settings the user changed meanwhile;
+ * those keep the user's value (top-level keys, `table.<key>` for the table).
+ */
+interface PendingImport {
+  sourceKey: string;
+  view?: number;
+  touched: string[];
+}
+const PENDING_IMPORTS = 'pendingImports';
 
 export class Controller {
   private state: AppState;
@@ -119,11 +130,10 @@ export class Controller {
       ...this.clientIdFor(appKind),
       viewer: deps.cache.getSetting<string | null>('viewer', null),
       sources: deps.cache.getSetting<SourceConfig[]>('sources', []),
-      view: { ...DEFAULT_VIEW, ...deps.cache.getSetting<Partial<ViewSettings>>('view', {}) },
+      view: normalizeView(deps.cache.getSetting<unknown>('view', {})),
       sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
       credentialsPersistent: deps.credentials.persistent,
     };
-    if (!MODES.includes(this.state.view.mode)) this.state.view.mode = 'iteration';
     this.owner = deps.cache.getSetting<string | null>('cacheOwner', null);
     this.snapshots = deps.cache.loadSnapshots();
     // A cache nobody owns cannot be shown to anybody.
@@ -544,6 +554,11 @@ export class Controller {
     this.deps.cache.setSetting('sources', sources);
     const view = this.state.view.selected ? { ...this.state.view, selected: [...this.state.view.selected, src.key] } : this.state.view;
     this.deps.cache.setSetting('view', view);
+    // a Project brings its saved web view along (again when it is removed and added back)
+    if (src.kind === 'project') {
+      const pending = this.pendingImports().filter((p) => p.sourceKey !== src.key);
+      this.deps.cache.setSetting(PENDING_IMPORTS, [...pending, { sourceKey: src.key, ...(src.view !== undefined ? { view: src.view } : {}), touched: [] }]);
+    }
     this.set({ sources, view });
     void this.syncNow();
     return { ok: true };
@@ -557,14 +572,62 @@ export class Controller {
     this.snapshots.delete(key);
     const view = this.state.view.selected ? { ...this.state.view, selected: this.state.view.selected.filter((k) => k !== key) } : this.state.view;
     this.deps.cache.setSetting('view', view);
+    this.deps.cache.setSetting(PENDING_IMPORTS, this.pendingImports().filter((p) => p.sourceKey !== key));
     this.set({ sources, view, sync: { ...this.state.sync, sources: this.state.sync.sources.filter((s) => s.sourceKey !== key) } });
   }
 
-  setView(patch: Partial<ViewSettings>): void {
-    const view = { ...this.state.view, ...patch };
-    if (!MODES.includes(view.mode)) return;
+  /** A change made by the user. Invalid values are ignored as a whole. */
+  setView(patch: ViewPatch): void {
+    const merged = { ...this.state.view, ...patch, table: { ...this.state.view.table, ...(patch.table ?? {}) } };
+    if (!isValidView(merged)) return;
+    const view: ViewSettings = merged;
+    const touched = Object.keys(patch).flatMap((k) => (k === 'table' ? Object.keys(patch.table ?? {}).map((t) => `table.${t}`) : [k]));
+    const pending = this.pendingImports();
+    if (pending.length && touched.length) {
+      this.deps.cache.setSetting(
+        PENDING_IMPORTS,
+        pending.map((p) => ({ ...p, touched: [...new Set([...p.touched, ...touched])] })),
+      );
+    }
     this.deps.cache.setSetting('view', view);
     this.set({ view });
+  }
+
+  private pendingImports(): PendingImport[] {
+    const raw = this.deps.cache.getSetting<unknown>(PENDING_IMPORTS, []);
+    return Array.isArray(raw) ? raw.filter((p): p is PendingImport => typeof p?.sourceKey === 'string' && Array.isArray(p.touched)) : [];
+  }
+
+  /** Apply the saved web view of Projects read completely for the first time since they were added. */
+  private applyImports(accepted: SourceSnapshot[]): void {
+    let pending = this.pendingImports();
+    if (!pending.length) return;
+    let view = this.state.view;
+    for (const snap of accepted) {
+      const p = pending.find((x) => x.sourceKey === snap.sourceKey);
+      if (!p || !snap.project) continue;
+      pending = pending.filter((x) => x !== p);
+      const { view: saved, note } = pickView(snap.project, p.view);
+      if (!saved) {
+        view = { ...view, imported: { sourceKey: snap.sourceKey, viewNumber: 0, viewName: '', notes: [note!] } };
+        continue;
+      }
+      const patch = importView(saved, snap.project, view, note);
+      const next: ViewSettings = { ...view, table: { ...view.table } };
+      for (const k of ['layout', 'query', 'mode', 'swimlanes'] as const) {
+        if (!p.touched.includes(k)) (next as any)[k] = patch[k];
+      }
+      for (const k of Object.keys(patch.table) as (keyof ViewSettings['table'])[]) {
+        if (!p.touched.includes('table') && !p.touched.includes(`table.${k}`)) (next.table as any)[k] = patch.table[k];
+      }
+      next.imported = patch.imported;
+      view = normalizeView(next);
+    }
+    this.deps.cache.setSetting(PENDING_IMPORTS, pending);
+    if (view !== this.state.view) {
+      this.deps.cache.setSetting('view', view);
+      this.state = { ...this.state, view };
+    }
   }
 
   // ---- sync ----------------------------------------------------------------
@@ -625,6 +688,7 @@ export class Controller {
     const accepted = round.replaced.filter((snap) => current(snap.sourceKey));
     if (accepted.length) this.deps.cache.replaceSnapshots(accepted);
     for (const snap of accepted) this.snapshots.set(snap.sourceKey, snap);
+    this.applyImports(accepted);
     if (round.viewer) this.deps.cache.setSetting('viewer', round.viewer);
     const status = round.status
       .filter((st) => current(st.sourceKey))

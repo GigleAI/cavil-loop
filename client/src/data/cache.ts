@@ -7,7 +7,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { SourceSnapshot } from '../shared/types';
 
-const SCHEMA_VERSION = 1;
+// 2: items carry author / parent / sub-issues / linked PRs, Projects their saved views
+const SCHEMA_VERSION = 2;
 
 export class Cache {
   private db: DatabaseSync;

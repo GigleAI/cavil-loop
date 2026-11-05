@@ -96,3 +96,38 @@ table.compare { border-collapse: collapse; width: 100%; margin: 12px 0; }
 table.compare th, table.compare td { border: 1px solid var(--border); padding: 8px 10px; vertical-align: top; text-align: left; }
 table.compare thead th { background: var(--panel); }
 table.compare tbody th { width: 120px; font-weight: 600; white-space: nowrap; }
+/* search, layout switch, table (sub-item #137) */
+button.on { background: var(--info-bg); border-color: var(--accent); }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 6px 0 0 6px; }
+.seg button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+.searchbar { display: flex; gap: 8px; align-items: center; padding: 6px 12px; }
+.searchbar input { flex: 1; font: inherit; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--fg); }
+.hint { padding: 0 12px 4px; }
+.view-panel { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.view-panel select { font: inherit; }
+.columns-pick { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.table-layout { flex: 1; min-height: 0; display: flex; }
+.slices { flex: 0 0 200px; overflow: auto; padding: 8px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.slice { text-align: left; display: flex; justify-content: space-between; border: none; }
+.table-scroll { flex: 1; overflow: auto; padding: 0 12px 12px; }
+table.items { border-collapse: collapse; width: 100%; background: var(--panel); }
+table.items th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 600; border-bottom: 1px solid var(--border); padding: 6px 8px; z-index: 1; }
+table.items td { border-bottom: 1px solid var(--border); padding: 4px 8px; vertical-align: top; }
+table.items .group-head td { background: var(--bg); padding-top: 10px; }
+table.items .title-cell a { color: var(--fg); text-decoration: none; font-weight: 500; }
+table.items .title-cell a:hover { color: var(--accent); }
+.state { font-size: 11px; font-weight: 600; }
+.state.open { color: var(--open); }
+.state.closed { color: var(--closed); }
+.state.merged { color: var(--merged); }
+.current { margin-left: 6px; font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; }
+.pr-link { margin-right: 6px; text-decoration: none; }
+.pr-link.open { color: var(--open); }
+.pr-link.closed { color: var(--closed); }
+.pr-link.merged { color: var(--merged); }
+.progress { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; }
+.progress .bar { width: 60px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; display: inline-block; }
+.progress .bar span { display: block; height: 100%; background: var(--merged); }
+table.items th, table.items td.col-updated, table.items td.col-subIssues, table.items td.col-linkedPrs { white-space: nowrap; }

@@ -128,6 +128,13 @@ test('browser login → board; restart skips login; sources; three column modes;
   await shot(page, '03-settings');
   await page.getByTestId('back').click();
 
+  // the Project brought its first saved web view along ("Pending": table, -label:Done -status:Done);
+  // this test is about the board, so switch back to it and clear the filter
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await page.getByTestId('search').fill('');
+
   // iteration (default): each iteration column holds what the Project says
   await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe('12');
   const iter = rawCount('Iteration', 'title');
@@ -268,3 +275,109 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
   await expect(page.getByTestId('settings')).toBeVisible();
   await app.close();
 });
+
+const filterResults: { query: string; server: string[] }[] = JSON.parse(
+  readFileSync(join(root, 'test/fixtures/cavil-project-11.filters.json'), 'utf8'),
+).results;
+
+/** raw recorded iteration title per item key, independent of the client code */
+function rawIteration(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const p of loadCavilProjectPages())
+    for (const n of p.items.nodes) {
+      const v = n.fieldValues.nodes.find((x: any) => x.iterationId);
+      out.set(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`, v ? v.title : '无迭代');
+    }
+  return out;
+}
+
+async function groupCounts(page: Page): Promise<Record<string, number>> {
+  return page.$$eval('[data-testid="group"]', (gs) =>
+    Object.fromEntries(gs.map((g) => [g.getAttribute('data-title'), Number(g.querySelector('[data-testid="group-count"]')!.textContent)])),
+  );
+}
+
+test('saved web view imported as a table; search with GitHub syntax; yellow bar for unsupported words; table settings survive a restart', async () => {
+  // sign in through the device flow against the fake GitHub
+  let { app, page } = await launch(env);
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/1`);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+
+  // no setting touched: the table equals what the view shows on GitHub —
+  // same items as GitHub's own filter, grouped by the recorded iteration values
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
+  const server = filterResults.find((r) => r.query === '-label:Done -status:Done')!.server;
+  const iter = rawIteration();
+  const want: Record<string, number> = {};
+  for (const k of server) want[iter.get(k)!] = (want[iter.get(k)!] ?? 0) + 1;
+  await expect.poll(() => groupCounts(page)).toEqual(want);
+  const rows = await page.$$eval('[data-testid="row"]', (rs) => rs.map((r) => r.getAttribute('data-key')!));
+  expect([...rows].sort()).toEqual(server);
+  await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
+  await shot(page, '10-table-imported');
+
+  // search: GitHub syntax, and Chinese in the middle of a word
+  await page.getByTestId('search').fill('label:pending/human');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+    filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
+  );
+  await page.getByTestId('search').fill('客户端');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBeGreaterThan(
+    filterResults.find((r) => r.query === '客户端')!.server.length,
+  );
+
+  // words this client does not support: a yellow bar naming them, never "0 results"
+  await page.getByTestId('search').fill('label:pending/human updated:>2026-01-01 priority:High');
+  await expect(page.getByTestId('filter-unsupported')).toContainText('updated:>2026-01-01');
+  await expect(page.getByTestId('filter-unsupported')).toContainText('priority:High');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+    filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
+  );
+  await shot(page, '11-unsupported-words');
+
+  // customise: group by status, repository slices, fewer columns; then restart
+  await page.getByTestId('search').fill('');
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  // the repository slices are on after an import (GitHub's API does not say whether the web view has them)
+  await expect(page.getByTestId('slice-by-repo')).toBeChecked();
+  // the boxes follow the saved settings (a round trip to the main process), so click and wait
+  await page.locator('[data-testid="columns-pick"] input[data-col="labels"]').click();
+  await expect(page.locator('[data-testid="columns-pick"] input[data-col="labels"]')).not.toBeChecked();
+  await expect(page.getByTestId('slice-count')).toHaveText(['144']);
+  await page.locator('[data-testid="slice"][data-value="GigleAI/cavil-loop"]').click();
+  await expect.poll(() => groupCounts(page)).toEqual(Object.fromEntries(Object.entries(rawCountByStatus())));
+  await shot(page, '12-table-custom');
+  await page.waitForTimeout(500); // the search box saves 300 ms after typing stops
+  await app.close();
+
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('');
+  await expect.poll(() => groupCounts(page)).toEqual(Object.fromEntries(Object.entries(rawCountByStatus())));
+  await expect(page.getByTestId('slices')).toBeVisible();
+  await expect(page.locator('table.items th')).not.toContainText(['标签']);
+  await app.close();
+});
+
+function rawCountByStatus(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const p of loadCavilProjectPages())
+    for (const n of p.items.nodes) {
+      const v = n.fieldValues.nodes.find((x: any) => x.field?.name === 'Status');
+      const k = v ? v.name : '无状态';
+      out[k] = (out[k] ?? 0) + 1;
+    }
+  return out;
+}

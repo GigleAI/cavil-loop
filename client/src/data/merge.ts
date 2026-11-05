@@ -25,7 +25,10 @@ export function mergeSnapshots(snapshots: SourceSnapshot[], selected: string[] |
       }
       const sources = [...prev.sources];
       for (const s of it.sources) if (!sources.includes(s)) sources.push(s);
-      byKey.set(it.key, { ...newer, projects: memberships, sources });
+      const older = newer === it ? prev : it;
+      // a repository list does not know linked pull requests; take them from the copy that does
+      const linked = newer.linkedPrs ?? older.linkedPrs;
+      byKey.set(it.key, { ...newer, linkedPrs: linked, projects: memberships, sources });
     }
   }
   return { items: [...byKey.values()], projects };
