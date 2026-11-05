@@ -10,6 +10,7 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   perms.json      {"<login>": "admin|write|read|none"}
   files.json      {"<pr>": [ {filename, previous_filename?} ]}
   checks.json     {"<sha>": {"check_runs": [...], "statuses": [...]}}
+  edits.json      {"<pr>": [ {editedAt, deletedAt, diff} ]}  PR 正文修改历史，倒序（GraphQL userContentEdits）
   calls.log       one line per call: "gh <argv...>"
   me              login of the token (default loop-bot)
 
@@ -158,6 +159,28 @@ def append_event(n, ev, name):
 
 if path == "user":
     emit({"login": me()})
+
+if path == "graphql":
+    # PR 正文的修改历史（GitHub#142）：edits.json {"<pr>": [ {editedAt, deletedAt, diff}, ... ]}，按时间倒序，
+    # 和真接口一样；没有这一项 = 正文从没改过（历史为空）。F_graphql / F_graphql_<pr> 让读取失败；
+    # FAKE_GH_EDIT_PAGE 控制每页几条（测分页）；F_graphql_nocursor_<pr> 让还有下一页时不给游标。
+    n = fields.get("number", "")
+    if os.path.exists(p("F_graphql")) or os.path.exists(p("F_graphql_" + n)):
+        fail("HTTP 502: injected failure (graphql)")
+    cnt_file = p("count_graphql_" + n)
+    c = int(open(cnt_file).read()) + 1 if os.path.exists(cnt_file) else 1
+    open(cnt_file, "w").write(str(c))
+    hook = p("hook_graphql_%s_%d" % (n, c))
+    if os.path.exists(hook):
+        subprocess.run(["bash", hook], check=False, stdin=subprocess.DEVNULL, timeout=30)
+    edits = load("edits.json", {}).get(n, [])
+    size = int(os.environ.get("FAKE_GH_EDIT_PAGE", "100"))
+    start = int(fields.get("after") or 0)
+    nodes = edits[start:start + size]
+    more = start + size < len(edits)
+    cursor = str(start + size) if more and not os.path.exists(p("F_graphql_nocursor_" + n)) else None
+    emit({"data": {"repository": {"pullRequest": {"userContentEdits": {
+        "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": nodes}}}}})
 
 if path is None or not path.startswith("repos/" + REPO):
     emit([])

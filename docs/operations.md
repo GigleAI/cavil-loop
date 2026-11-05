@@ -549,18 +549,48 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   `pending/human` for this task and only the comment is missing — then it posts the comment. Both ways of carrying on require the issue / branch / source to match the
   ones recorded at decision time, and a task that already added `pending/human` is cancelled
   (no comment, no further hand-off until the takeover is decidable) once someone removes that label. When the PR-side label is not
-  accepted (not added by a maintainer, the PR does not bind to an issue, a requester-bot
-  request, the issue is closed) the PR gets one comment saying why.
+  accepted (not added by a maintainer, the PR does not qualify, a requester-bot
+  request, the issue is closed, the PR description did not qualify when the label was added)
+  the PR gets one comment saying why.
+- **PRs without an issue** (GitHub#142): for the other half of a cross-repo task, or any PR
+  that does not bind to an issue, a maintainer's own autopilot label on the PR is itself the
+  authorization — even when added right after the PR is opened. The daemon sorts PRs three ways:
+  - **bound to an issue**: from this repo, branch exactly `BRANCH_PREFIX<N>`, body closes only
+    `#N` — judged on the issue and the PR together, as above;
+  - **PR-only**: from this repo and the body has **no** closing keyword for an issue of this
+    repo — `#N`, `owner/repo#N` (this repo, case-insensitive), `https://github.com/owner/repo/issues/N`
+    and `GH-N` all count; a plain `Refs #N` or closing another repo's issue does not — authorization and stops
+    come from the PR alone: removing the label or adding `pending/human` on the PR stops it, no
+    issue's label is lent to it, and an issue that merely shares the branch's number is ignored;
+  - **not eligible**: anything else (closes an issue of this repo without binding to it, an
+    ambiguous closing line, a fork) — not accepted, with one comment on the PR saying how to fix it.
+
+  PR-only also requires the **PR description as it was when the label was added** to be
+  PR-only: the daemon reads GitHub's edit history of the description (GraphQL
+  `userContentEdits`) and takes the newest revision not later than the label event (revisions in
+  the same second and the one before them must all qualify; both timestamps are GitHub's, so the
+  local clock does not matter). Labeled in the same second the PR was opened and edited later: the
+  oldest revision counts as the opening description only if its time equals the PR's creation
+  time; otherwise (older revisions missing) it is "not found". So a label added while the body closed some issue, or while the PR
+  was bound to an issue, does not count after the body is edited — a maintainer re-adds it after
+  looking at the current PR. A deleted revision → not accepted, re-add; history unreadable or a
+  page missing → undecidable, nothing written this round. Nothing about this is stored locally, so
+  a new machine or a lost state file changes nothing. Requester bot: a PR opened by it, or whose
+  branch / body links (current body and the body at label time) lead to an issue it filed, is
+  not taken. Such PRs have no design phase — the takeover starts at code review — and the
+  takeover and merge notes go on the PR.
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead
   of `pending/human`, and the reviewer adds a machine line with its test re-run to the
   verdict comment: `<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`.
 - **The daemon merges** (`PUT /pulls/N/merge` with the reviewed sha, `AUTOPILOT_MERGE_METHOD`,
   `squash` by default) only when every item below holds; it then comments "已自动合并" on the
-  issue and the usual post-merge cleanup / `Done` / retrospective take over:
+  issue (on the PR when there is no issue) and the usual post-merge cleanup / `Done` /
+  retrospective take over:
 
 | Check | Fails → |
 |---|---|
-| The PR is from this repo, on branch `BRANCH_PREFIX<N>` exactly, and its body closes exactly `#N` (read per line and as a whole, both must agree) | `pending/human` |
+| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly and the body closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
+| PR-only: authorization comes from the PR alone (drop the issue side of the next row), and the PR description at label time (that revision in the edit history) also meets the previous row | `pending/human` |
 | Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
 | The issue is not a request filed by the requester bot | `pending/human` |
 | Nobody added `pending/human` to the issue or the PR | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |

@@ -1511,6 +1511,7 @@ pr_body_linked_issue_jq() {
 #
 # 设计前提：GitHub 上 issue/PR 共用编号 namespace，第 3 步 fallback 不会跟某个 issue 撞 id。
 # 跨平台（GitLab MR、Bitbucket 等）独立 namespace 的情况未来用 adapter 层隔离。
+# 可选第 3 个参数：调用方手上已有的 PR 正文（托管判定读过 PR 了，不再多发一次 gh pr view）。
 pr_to_issue_num() {
     local pr="$1"
     local branch="$2"
@@ -1521,7 +1522,11 @@ pr_to_issue_num() {
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 2. PR body 关键词
-    n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null | pr_body_linked_issue)
+    if [ "$#" -ge 3 ]; then
+        n=$(printf '%s' "$3" | pr_body_linked_issue)
+    else
+        n=$(gh pr view "$pr" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null | pr_body_linked_issue)
+    fi
     [ -n "$n" ] && { echo "$n"; return; }
 
     # 3. fallback：PR 编号本身
@@ -3006,13 +3011,17 @@ pending_human_conflict_tick() {
 # ── 托管标签：授权、绑定、合并（GitHub#114）──
 # 三个判断各只有一份实现，派工（autopilot_for_item）、合并检查与合并前重读
 # （autopilot_merge_one）都调它们：
-#   autopilot_pr_binding     PR 绑定到哪个 issue：分支名与正文关闭关键词必须同时指向同一个 issue
-#   autopilot_authorization  issue 上的托管授权是否有效：最近一次打上托管标签的是有写权限的真人
-#   叫停                     issue 摘了托管标签，或 issue / PR 任一处挂 pending/human
+#   autopilot_pr_kind        PR 属于哪一种：绑 issue（分支名与正文关闭关键词同时指向同一个 issue，
+#                            autopilot_pr_binding）/ 以 PR 为准（没绑 issue、正文不关本仓库任何 issue，
+#                            GitHub#142）/ 不合条件
+#   autopilot_authorization  托管授权是否有效：最近一次打上托管标签的是有写权限的真人；以 PR 为准时
+#                            只看 PR，而且打标签那一刻的 PR 正文也得是「以 PR 为准」那一种
+#   叫停                     摘了托管标签，或挂 pending/human（绑 issue 时看 issue 和 PR 两处，以 PR 为准时只看 PR）
 # 读不到（网络、接口报错）一律算「判不了」：不当成有授权，也不当成没授权，本轮不写、下轮再查。
 # ═════════════════════════════════════════════════════════════════════════
 AUTOPILOT_ACTED=0
-AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""; AUTOPILOT_ISSUE=""
+AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""; AUTOPILOT_ISSUE=""; AUTOPILOT_PR=""
+AUTOPILOT_PR_KIND=""; AUTOPILOT_PR_N=""
 AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
 AUTOPILOT_PR_EVENTS=""; AUTOPILOT_PLACE=""; AUTOPILOT_PLACE_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
 
@@ -3067,7 +3076,37 @@ autopilot_labels_in_flow() {   # <labels_csv>
 # 只认关闭类关键词（Close/Fix/Resolve 各变体，可带冒号）；Refs #N 不会关 issue，不算。
 AUTOPILOT_CLOSE_GREP='(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?):?[[:space:]]+#[0-9]+'
 AUTOPILOT_CLOSE_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+#([0-9]+)'
-autopilot_body_closes() {   # <line|whole>，正文从 stdin → 逗号分隔的编号（升序去重）
+# 第 2 个参数 any（GitHub#142，判「正文关不关本仓库的 issue」用）：除了 #N，再认 GitHub 也会照着关的写法——
+# owner/repo#N、https://github.com/owner/repo/issues/N（带不带 www、末尾斜杠），以及保守起见的 GH-N；
+# 只输出指向本仓库（REPO，不分大小写）的编号，指向别的仓库的不算。关键词表和不带 any 时同一份。
+# 不带 any 的严格读法（只认 #N）留给「绑 issue」：绑定的规则不因这次改动变宽。
+AUTOPILOT_CLOSE_REF='(#[0-9]+|gh-[0-9]+|[[:alnum:]_.-]+/[[:alnum:]_.-]+#[0-9]+|https?://(www\.)?github\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/issues/[0-9]+)'
+AUTOPILOT_CLOSE_ANY_GREP="(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?):?[[:space:]]+$AUTOPILOT_CLOSE_REF"
+AUTOPILOT_CLOSE_ANY_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+(#[0-9]+|gh-[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)'
+# 第 2 个参数 links：关键词再加上 Ref / Refs（和工作编号、外部需求机器人认来源用的关联写法同一组关键词），
+# 引用的写法、只留本仓库的规则和 any 完全一样——判「正文关联到哪些本仓库 issue」用（代码复审第 2 轮）
+AUTOPILOT_LINK_ANY_GREP="(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?):?[[:space:]]+$AUTOPILOT_CLOSE_REF"
+AUTOPILOT_LINK_ANY_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?):?\s+(#[0-9]+|gh-[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)'
+# 一个引用（关键词后面那一段）→ 本仓库的编号，别的仓库的输出空。两种读法共用这一个 jq 定义
+AUTOPILOT_CLOSE_LOCAL_DEF='def localnum($repo): ascii_downcase as $r | ($repo | ascii_downcase) as $me
+    | if ($r | test("^#[0-9]+$")) then ($r | ltrimstr("#"))
+      elif ($r | test("^gh-[0-9]+$")) then ($r | ltrimstr("gh-"))
+      elif ($r | test("github\\.com/")) then ($r | capture("github\\.com/(?<o>[^/]+/[^/]+)/issues/(?<n>[0-9]+)") | select(.o == $me) | .n)
+      else ($r | capture("^(?<o>[^#]+)#(?<n>[0-9]+)$") | select(.o == $me) | .n) end;'
+autopilot_body_closes() {   # <line|whole> [any|links]，正文从 stdin → 逗号分隔的编号（升序去重）
+    if [ "${2:-}" = any ] || [ "${2:-}" = links ]; then
+        local gre="$AUTOPILOT_CLOSE_ANY_GREP" jre="$AUTOPILOT_CLOSE_ANY_JQ"
+        if [ "$2" = links ]; then gre="$AUTOPILOT_LINK_ANY_GREP"; jre="$AUTOPILOT_LINK_ANY_JQ"; fi
+        if [ "$1" = line ]; then
+            { grep -oiE "$gre" || true; } | awk '{print $NF}' \
+                | jq -Rr --arg repo "$REPO" "$AUTOPILOT_CLOSE_LOCAL_DEF"' localnum($repo)' 2>/dev/null \
+                | sort -un | paste -sd, - || true
+        else
+            jq -Rrs --arg re "$jre" --arg repo "$REPO" "$AUTOPILOT_CLOSE_LOCAL_DEF"'
+                [scan($re)[0] | localnum($repo) | tonumber] | unique | map(tostring) | join(",")' 2>/dev/null || printf '?'
+        fi
+        return 0
+    fi
     if [ "$1" = line ]; then
         { grep -oiE "$AUTOPILOT_CLOSE_GREP" || true; } | grep -oE '[0-9]+$' | sort -un | paste -sd, - || true
     else
@@ -3112,9 +3151,132 @@ autopilot_pr_binding() {   # <PR JSON> → stdout issue 编号；return 1 = 对�
     printf '%s\n' "$n"
 }
 
+# PR 属于哪一种（GitHub#142）。在调用方自己的 shell 里调，结果在全局变量里：
+#   AUTOPILOT_PR_KIND = issue  绑 issue（AUTOPILOT_PR_N = issue 编号），授权和叫停看 issue 和 PR 两处
+#                     = pr     没绑 issue：授权和叫停都只看 PR 自己
+#                     = bad    不合条件（AUTOPILOT_REASON 是原因）
+# 第 2 个参数给了就拿它代替 PR 现在的正文（判「打标签那一刻的正文」用），其余照 PR JSON。
+# 「以 PR 为准」只给来自本仓库、正文一个本仓库关闭关键词都没有的 PR：正文谁都能改，不能靠它决定
+# 「借哪个 issue 的授权、看哪个 issue 的叫停」。写了关闭关键词却没正常绑定的，判不合条件。
+autopilot_pr_kind() {   # <PR JSON> [正文]
+    local pj="$1" n repo body by_line by_whole
+    AUTOPILOT_PR_KIND=bad; AUTOPILOT_PR_N=""; AUTOPILOT_REASON=""
+    if [ "$#" -ge 2 ] && ! pj=$(printf '%s' "$pj" | jq -c --arg b "$2" '.body = $b' 2>/dev/null); then
+        AUTOPILOT_REASON="读不懂 PR 的内容"; return 0
+    fi
+    if n=$(autopilot_pr_binding "$pj"); then
+        AUTOPILOT_PR_KIND=issue; AUTOPILOT_PR_N="$n"; return 0
+    fi
+    repo=$(printf '%s' "$pj" | jq -r '.head.repo.full_name // ""' 2>/dev/null) || repo=""
+    if [ -z "$repo" ] || [ "$(requester_bot_lc "$repo")" != "$(requester_bot_lc "$REPO")" ]; then
+        AUTOPILOT_REASON="PR 不是从本仓库的分支开的（来源：${repo:-未知}）"; return 0
+    fi
+    body=$(printf '%s' "$pj" | jq -r '.body // ""' 2>/dev/null) || body=""
+    by_line=$(printf '%s\n' "$body" | autopilot_body_closes line any)
+    by_whole=$(printf '%s' "$body" | autopilot_body_closes whole any)
+    if [ -z "$by_line" ] && [ -z "$by_whole" ]; then
+        AUTOPILOT_PR_KIND=pr; return 0
+    fi
+    if [ "$by_line" != "$by_whole" ]; then
+        AUTOPILOT_REASON="PR 正文的关闭写法有歧义（逐行看关闭 ${by_line:-无}、整段看关闭 ${by_whole:-无}，常见于关键词和 #编号分在两行）"
+    else
+        AUTOPILOT_REASON="PR 正文写着合并时关闭本仓库的 #${by_line//,/、#}，但 PR 没有正常绑定它（绑 issue：分支正好是 \`${BRANCH_PREFIX}<编号>\`、正文只写一个 \`Closes #<编号>\`；不绑 issue：把关闭改成只引用 \`Refs #<编号>\`）"
+    fi
+}
+
+# 打标签那一刻生效的 PR 正文（GitHub#142）。GitHub 给 PR 正文保存修改历史（GraphQL 的
+# userContentEdits：按时间倒序，每一版有修改时间 editedAt 和那一版的全文 diff，最早一版是开 PR 时的
+# 正文；在 #59、#115 上实测过最新一版和当前正文逐字一致）。取「修改时间不晚于打标签时间」的最新一版；
+# 同一秒既有修改又有打标签，分不出先后：同一秒的各版和它之前那一版都算候选，调用方要求全部合条件。
+# 没有早于打标签的版本时，只有一种情况查得到：历史最早那一版就是开 PR 时的正文（修改时间 = PR 的
+# created_at，#59 / #115 实测如此）而且和打标签同一秒——PR 刚开就打（复审第 1 轮）；这时同一秒的各版都算
+# 候选。最早一版不是开 PR 那一刻的（更早的版本缺了），一律算查不到。
+# 两边都是 GitHub 的时间，不受本机时钟影响。daemon 本机不记任何东西。
+#   0 = AUTOPILOT_BODY_CANDS 是候选正文（JSON 字符串数组）
+#   1 = 那一版查不到（被从历史里删掉 / 历史里没有早于打标签的版本）：AUTOPILOT_REASON
+#   2 = 读不到（接口报错、字段缺、分页读不全）
+# 历史为空 = 正文从开 PR 起没改过，候选就是现在的正文。
+AUTOPILOT_BODY_CANDS=""
+AUTOPILOT_EDITS_QUERY='query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    userContentEdits(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { editedAt deletedAt diff } } } } }'
+autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
+    local pr="$1" t="$2" pj="$3" owner name after="" page nodes edits='[]' out
+    local -a args
+    AUTOPILOT_BODY_CANDS=""
+    [ -n "$t" ] || { AUTOPILOT_REASON="PR #$pr 的标签记录里没有打标签的时间"; return 2; }
+    owner="${REPO%%/*}"; name="${REPO#*/}"
+    while :; do
+        args=(api graphql -f query="$AUTOPILOT_EDITS_QUERY" -f owner="$owner" -f name="$name" -F number="$pr")
+        [ -z "$after" ] || args+=(-f after="$after")
+        if ! page=$(gh "${args[@]}" 2>/dev/null) \
+           || ! nodes=$(printf '%s' "$page" | jq -ce '.data.repository.pullRequest.userContentEdits
+                  | select((.nodes | type) == "array" and (.pageInfo.hasNextPage | type) == "boolean") | .nodes' 2>/dev/null); then
+            AUTOPILOT_REASON="读不到 PR #$pr 正文的修改历史"; return 2
+        fi
+        edits=$(jq -cn --argjson a "$edits" --argjson b "$nodes" '$a + $b')
+        # 倒序：已经读到早于打标签的那一版就够了
+        printf '%s' "$nodes" | jq -e --arg t "$t" 'any(.[]; (.editedAt | type) == "string" and .editedAt < $t)' >/dev/null 2>&1 && break
+        [ "$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.hasNextPage')" = true ] || break
+        after=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.endCursor // ""')
+        [ -n "$after" ] || { AUTOPILOT_REASON="PR #$pr 正文的修改历史分页读不全"; return 2; }
+    done
+    out=$(jq -cn --argjson e "$edits" --arg t "$t" --arg cur "$(printf '%s' "$pj" | jq -r '.body // ""')" \
+              --arg created "$(printf '%s' "$pj" | jq -r '.created_at // ""')" '
+        if ($e | length) == 0 then {ok: [$cur]}
+        elif any($e[]; (.editedAt | type) != "string" or .editedAt == "") then {err: "unreadable"}
+        else
+          ([$e[] | select(.editedAt == $t)] + ([$e[] | select(.editedAt < $t)] | sort_by(.editedAt) | .[-1:])) as $c
+          | ($e | min_by(.editedAt) | .editedAt) as $first
+          | if ($c | map(select(.editedAt < $t)) | length) == 0
+               and ($created == "" or $first != $created or $first != $t) then {err: "none"}
+            elif any($c[]; .deletedAt != null or (.diff | type) != "string") then {err: "deleted"}
+            else {ok: [$c[].diff]} end
+        end' 2>/dev/null) || out=""
+    case "$out" in
+        '{"ok":'*) AUTOPILOT_BODY_CANDS=$(printf '%s' "$out" | jq -c '.ok'); return 0 ;;
+        '{"err":"deleted"}') AUTOPILOT_REASON="打标签那一刻的 PR 正文那一版已从修改历史里删掉，查不到当时写的是什么"; return 1 ;;
+        '{"err":"none"}') AUTOPILOT_REASON="PR 正文的修改历史里找不到打标签那一刻（或更早）的那一版"; return 1 ;;
+        *) AUTOPILOT_REASON="读不懂 PR #$pr 正文的修改历史"; return 2 ;;
+    esac
+}
+
+# 以 PR 为准时，这个 PR 是不是外部需求机器人的需求（GitHub#142）：PR 是它开的，或者顺着分支名 / 正文
+# 关联（Closes / Fixes / Resolves / Refs 后面跟本仓库的 #N、owner/repo#N、issue 链接、GH-N——和「关不关
+# 本仓库 issue」同一个解析，autopilot_body_closes … links；两种读法取并集）找到的本仓库 issue 是它提的。
+# 只认作者，比外部需求机器人那块的需求标记更严。没配 REQUESTER_BOT_ACCOUNT 时什么都不读。
+#   0 = 不是；1 = 是（AUTOPILOT_DENY=requester-bot）；2 = 判不了
+autopilot_pr_requester_check() {   # <PR 编号> <PR JSON> <正文>
+    local pr="$1" pj="$2" body="$3" acct nums n ij err
+    [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] || return 0
+    acct=$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")
+    if [ "$(requester_bot_lc "$(printf '%s' "$pj" | jq -r '.user.login // ""')")" = "$acct" ]; then
+        AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON="PR #$pr 是外部需求机器人开的"; return 1
+    fi
+    nums=$( { branch_to_issue_num "$(printf '%s' "$pj" | jq -r '.head.ref // ""')"
+              printf '%s\n' "$body" | autopilot_body_closes line links | tr ',' '\n'
+              printf '%s' "$body" | autopilot_body_closes whole links | tr ',' '\n'
+            } | grep -E '^[0-9]+$' | sort -un)
+    err=$(mktemp)
+    for n in $nums; do
+        [ "$n" != "$pr" ] || continue
+        if ! ij=$(gh api "repos/$REPO/issues/$n" 2>"$err"); then
+            grep -q 'HTTP 404' "$err" && continue
+            rm -f "$err"; AUTOPILOT_REASON="读不到 PR #$pr 关联的 #$n"; return 2
+        fi
+        printf '%s' "$ij" | jq -e '.pull_request == null' >/dev/null 2>&1 || continue
+        if [ "$(requester_bot_lc "$(printf '%s' "$ij" | jq -r '.user.login // ""')")" = "$acct" ]; then
+            rm -f "$err"; AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON="PR #$pr 关联的 #$n 是外部需求机器人提的需求"; return 1
+        fi
+    done
+    rm -f "$err"
+    return 0
+}
+
 # 托管授权是否有效。两种调法：
 #   autopilot_authorization <issue> <issue JSON>                   只看 issue 一处（issue 自己的派工）
 #   autopilot_authorization <issue> <issue JSON> <PR> <PR JSON>    PR 的托管：issue 和 PR 两处合起来判（GitHub#128）
+#   autopilot_authorization "" "" <PR> <PR JSON>                   没绑 issue 的 PR：只看 PR（GitHub#142）
 #   0 = 有效（AUTOPILOT_ACTOR = 打标签的人；AUTOPILOT_AUTH_KIND / _NUM = 授权打在哪一处，issue / pr）
 #   1 = 无效（AUTOPILOT_DENY = 原因类别，AUTOPILOT_REASON = 一句话）
 #   2 = 判不了（读不到）
@@ -3131,6 +3293,9 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""
     AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
     AUTOPILOT_PR_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
+    if [ -z "$num" ]; then
+        autopilot_authorization_pr_only "$pr" "$pj"; return $?
+    fi
     if ! printf '%s' "$ij" | jq -e '(.number != null) and (.pull_request == null)' >/dev/null 2>&1; then
         AUTOPILOT_DENY=not-issue; AUTOPILOT_REASON="#$num 不是 issue（托管标签只在 issue 上算数）"; return 1
     fi
@@ -3205,6 +3370,52 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     AUTOPILOT_DENY=no-label
     AUTOPILOT_REASON="托管标签 \`$LABEL_AUTOPILOT\` 在 issue #$num 或 PR #$pr 上被摘掉过（已叫停），之后没有维护者亲手重新打上"
     return 1
+}
+
+# 没绑 issue 的 PR 的授权（GitHub#142，只由 autopilot_authorization 调）。判据和两处合判是同一套：
+# PR 现在挂着托管标签、最后一次打上的人合格（autopilot_place_read / autopilot_actor_check）；PR 上的
+# 「摘掉」都早于这次打上（标签记录和当前标签对得上时自然成立）。另加两条：
+#   · 打标签那一刻的 PR 正文（autopilot_body_at）也必须是「以 PR 为准」那一种：先被拒、之后有人改了
+#     正文的，那次打标签不算，要维护者看过现在的 PR 重新打——旧标签不会因为正文改了就自己生效
+#   · 外部需求机器人的需求不托管：现在的正文和打标签那一刻的正文各查一遍
+autopilot_authorization_pr_only() {   # <PR 编号> <PR JSON>
+    local pr="$1" pj="$2" pp rc actor t i nb body
+    if [ -z "$pr" ] || [ -z "$pj" ]; then AUTOPILOT_REASON="缺少 PR 编号或内容"; return 2; fi
+    if ! autopilot_has_label "$pj"; then
+        AUTOPILOT_DENY=no-label; AUTOPILOT_REASON="PR #$pr 上的托管标签 \`$LABEL_AUTOPILOT\` 已摘掉（已叫停）"; return 1
+    fi
+    rc=0; autopilot_pr_requester_check "$pr" "$pj" "$(printf '%s' "$pj" | jq -r '.body // ""')" || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"
+    rc=0; autopilot_actor_check "$(printf '%s' "$pp" | jq -r '.lab.actor')" "$(printf '%s' "$pp" | jq -r '.lab.atype')" || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    actor="$AUTOPILOT_ACTOR"; AUTOPILOT_ACTOR=""
+    t=$(printf '%s' "$pp" | jq -r '.lab.t // ""')
+    rc=0; autopilot_body_at "$pr" "$t" "$pj" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) AUTOPILOT_DENY=label-body
+           AUTOPILOT_REASON="$AUTOPILOT_REASON（\`$actor\` 打标签的时间 $t）"; return 1 ;;
+        *) return 2 ;;
+    esac
+    nb=$(printf '%s' "$AUTOPILOT_BODY_CANDS" | jq 'length' 2>/dev/null) || nb=0
+    [ "${nb:-0}" -gt 0 ] 2>/dev/null || { AUTOPILOT_REASON="读不懂 PR #$pr 正文的修改历史"; return 2; }
+    for ((i = 0; i < nb; i++)); do
+        body=$(printf '%s' "$AUTOPILOT_BODY_CANDS" | jq -r --argjson i "$i" '.[$i]')
+        autopilot_pr_kind "$pj" "$body"
+        if [ "$AUTOPILOT_PR_KIND" != pr ]; then
+            AUTOPILOT_DENY=label-body
+            AUTOPILOT_REASON="\`$actor\` 打标签那一刻（$t），PR 正文不合条件：${AUTOPILOT_REASON:-那时它绑着 issue}。PR 后来改过，那次打标签不算"
+            return 1
+        fi
+        rc=0; autopilot_pr_requester_check "$pr" "$pj" "$body" || rc=$?
+        [ "$rc" = 0 ] || return "$rc"
+    done
+    AUTOPILOT_ACTOR="$actor"; AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
+    AUTOPILOT_AUTH_CANDS="pr"$'\x1f'"$pr"$'\x1f'"$t"$'\x1f'"$(printf '%s' "$pp" | jq -r '.lab.idx // ""')"$'\x1f'"$actor"$'\n'
+    autopilot_auth_from "$pp" pr "$pr"
+    return 0
 }
 
 autopilot_has_label() {   # <条目 JSON>
@@ -3326,16 +3537,32 @@ autopilot_note_denial() {   # <state_file> <issue 编号>
     autopilot_notice_once "$sf" "$num" "$AUTOPILOT_DENY" "$text" || true
 }
 
-# 这次派工是不是托管条目。是 → AUTOPILOT_ISSUE = 授权所在的 issue，return 0。
+# 这次派工是不是托管条目。是 → return 0：绑 issue 时 AUTOPILOT_ISSUE = 授权所在的 issue；
+# 没绑 issue、以 PR 为准时（GitHub#142）AUTOPILOT_ISSUE 为空、AUTOPILOT_PR = 这个 PR。
 # 只读本轮快照找托管标签；挂着标签才去查授权记录（读不到 → 本次按普通流程派，更保守）。
 autopilot_for_item() {   # <state_file> <issue|pr> <编号>
     local sf="$1" kind="$2" num="$3" pj ij n rc
-    AUTOPILOT_ISSUE=""
+    AUTOPILOT_ISSUE=""; AUTOPILOT_PR=""
     autopilot_enabled || return 1
     if [ "$kind" = pr ]; then
         pj=$(autopilot_snapshot_item pulls "$num") || return 1
         [ -n "$pj" ] || return 1
-        n=$(autopilot_pr_binding "$pj") || return 1
+        autopilot_pr_kind "$pj"
+        case "$AUTOPILOT_PR_KIND" in
+            issue) n="$AUTOPILOT_PR_N" ;;
+            pr)
+                autopilot_has_label "$pj" || return 1
+                rc=0; autopilot_authorization "" "" "$num" "$pj" || rc=$?
+                case "$rc" in
+                    0) AUTOPILOT_PR="$num"; return 0 ;;
+                    1) log "托管：PR #$num（没绑 issue）挂着托管标签但不托管（$AUTOPILOT_REASON），按普通流程派工"
+                       autopilot_note_pr_denial "$sf" "$num"
+                       return 1 ;;
+                    *) log "托管：PR #$num（没绑 issue）的托管授权判不了（$AUTOPILOT_REASON），本次按普通流程派工"
+                       return 1 ;;
+                esac ;;
+            *) return 1 ;;
+        esac
     else
         n="$num"
     fi
@@ -3543,9 +3770,10 @@ autopilot_conflict_verdict() {   # <PR JSON>
 #   AP_V        skip / halt_pr / human / worker / review / unknown / wait_checks / computing / ok
 #   AP_REASON   给人看的一句话；AP_NEXT 交人时「怎么继续」（可空）
 #   AP_N AP_HEAD AP_BASE AP_REF AP_RH AP_RB AP_RAT AP_CHECKS AP_CHECKS_DETAIL
+#   AP_KIND（issue / pr，GitHub#142；pr 时 AP_N 为空）AP_WN（这个 PR 的工作编号）
 autopilot_permit() {   # <state_file> <PR 编号>
     local sf="$1" pr="$2" pj ij labels rc
-    AP_V=unknown; AP_REASON=""; AP_NEXT=""; AP_N=""; AP_HEAD=""; AP_BASE=""; AP_REF=""
+    AP_V=unknown; AP_REASON=""; AP_NEXT=""; AP_N=""; AP_KIND=""; AP_WN=""; AP_HEAD=""; AP_BASE=""; AP_REF=""
     AP_RH=""; AP_RB=""; AP_RAT=""; AP_CHECKS=""; AP_CHECKS_DETAIL=""
     if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ]; then
         AP_REASON="读不到 PR #$pr"; return 0
@@ -3556,12 +3784,19 @@ autopilot_permit() {   # <state_file> <PR 编号>
     labels=$(printf '%s' "$pj" | jq -r '[.labels[]?.name] | join(",")')
     case ",$labels," in *",$LABEL_PENDING_MERGE,"*) ;; *) AP_V=skip; return 0 ;; esac
     case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) AP_V=halt_pr; return 0 ;; esac
-    if ! AP_N=$(autopilot_pr_binding "$pj"); then
-        AP_V=human; AP_REASON="这个 PR 和托管的 issue 对不上：$AUTOPILOT_REASON。"; return 0
-    fi
+    # PR 属于哪一种（GitHub#142）：绑 issue → issue 和 PR 两处判；以 PR 为准 → AP_N 为空、ij 为空，
+    # 下面 issue 上的叫停自然不成立，授权函数只看 PR
+    autopilot_pr_kind "$pj"
+    case "$AUTOPILOT_PR_KIND" in
+        issue) AP_KIND=issue; AP_N="$AUTOPILOT_PR_N"; AP_WN="$AP_N" ;;
+        pr)    AP_KIND=pr; AP_N=""
+               AP_WN=$(pr_to_issue_num "$pr" "$(printf '%s' "$pj" | jq -r '.head.ref // ""')" "$(printf '%s' "$pj" | jq -r '.body // ""')") ;;
+        *)     AP_V=human; AP_REASON="这个 PR 不满足托管条件：$AUTOPILOT_REASON。"; return 0 ;;
+    esac
     # 多机：复审记录只在派复审的那台机器上。别家的活不碰，免得两台机器互相送回重审。
-    if ! worker_is_ours "$AP_N"; then AP_V=skip; return 0; fi
-    if ! ij=$(gh api "repos/$REPO/issues/$AP_N" 2>/dev/null) || [ -z "$ij" ]; then
+    if ! worker_is_ours "$AP_WN"; then AP_V=skip; return 0; fi
+    ij=""
+    if [ "$AP_KIND" = issue ] && { ! ij=$(gh api "repos/$REPO/issues/$AP_N" 2>/dev/null) || [ -z "$ij" ]; }; then
         AP_REASON="读不到 issue #$AP_N"; return 0
     fi
     if printf '%s' "$ij" | jq -e --arg H "$LABEL_PENDING_HUMAN" 'any(.labels[]?; .name == $H)' >/dev/null 2>&1; then
@@ -3627,7 +3862,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
 }
 
 autopilot_merge_one() {   # <state_file> <PR 编号>
-    local sf="$1" pr="$2" n head base ref checks since now limit out short
+    local sf="$1" pr="$2" n kind head base ref checks since now limit out short where
     autopilot_permit "$sf" "$pr"
     case "$AP_V" in
         skip) return 0 ;;
@@ -3638,7 +3873,7 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
             log "托管：PR #$pr 上挂着 $LABEL_PENDING_HUMAN（已被叫停）→ 不合并，摘掉 $LABEL_PENDING_MERGE"
             return 0 ;;
         human) autopilot_to_human "$sf" "$pr" "$AP_REASON" "$AP_NEXT"; return 0 ;;
-        worker) autopilot_to_worker "$sf" "$pr" "$AP_N" "$AP_REASON"; return 0 ;;
+        worker) autopilot_to_worker "$sf" "$pr" "$AP_WN" "$AP_REASON"; return 0 ;;
         review) autopilot_to_review "$sf" "$pr" "$AP_HEAD" "$AP_RH" "$AP_BASE" "$AP_RB"; return 0 ;;
         unknown) autopilot_unknown "$sf" "$pr" "$AP_REASON"; return 0 ;;
         computing) log "托管：PR #$pr GitHub 还在算能不能合并，下轮再看"; return 0 ;;
@@ -3661,10 +3896,11 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
         *) return 0 ;;
     esac
     autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) | del(.checks_pending_since))' --arg p "$pr" || true
-    n="$AP_N"; head="$AP_HEAD"; base="$AP_BASE"; ref="$AP_REF"; checks="$AP_CHECKS"
+    n="$AP_N"; kind="$AP_KIND"; head="$AP_HEAD"; base="$AP_BASE"; ref="$AP_REF"; checks="$AP_CHECKS"
 
     # ── 合并前最后一刻：同一个许可函数原样再判一遍（全部输入现读）──
     # 结果不是 ok、或身份（issue / 提交 / 目标分支 / 分支名）和刚才不一样：本轮不合、不记任何状态，
+    # （绑 issue 和没绑 issue 之间来回变，issue 编号就从有变成空或反过来，同样算变；GitHub#142）
     # 下轮按现状重判。原本没有检查、现在冒出来的，检查结果从 none 变了，也算变化。
     autopilot_permit "$sf" "$pr"
     if [ "$AP_V" != ok ] || [ "$AP_N" != "$n" ] || [ "$AP_HEAD" != "$head" ] || [ "$AP_BASE" != "$base" ] \
@@ -3679,10 +3915,14 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
         AUTOPILOT_ACTED=1
         short="${head:0:7}"
         log "✅ 托管：PR #$pr 已自动合并（提交 $short → $base，授权 $AUTOPILOT_ACTOR @ $(autopilot_auth_where)）"
-        run_gh "托管合并说明评论 (issue #$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -f "body=$(printf \
+        # 说明发在绑定的 issue 上；没绑 issue（GitHub#142）就发在 PR 上
+        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"
+        elif [ "$AUTOPILOT_AUTH_KIND" = pr ]; then where=" PR #$pr 上"
+        else where="本 issue "; fi
+        run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -f "body=$(printf \
             '## ✅ 托管：已自动合并 PR #%s\n\n复审通过的提交 `%s` 已用 %s 方式合进 `%s`。依据：`%s` 在%s打的托管标签 `%s`；复审贴了测试重跑记录；自动检查%s；与 `%s` 无冲突。\n\n合并后的清理和标签照常由 daemon 处理。要撤回就在 GitHub 上 revert 这个 PR。\n\n%s\n<!-- cavil-loop:autopilot-merged pr=%s head=%s -->' \
             "$pr" "$short" "$AUTOPILOT_MERGE_METHOD" "$base" "$AUTOPILOT_ACTOR" \
-            "$( [ "$AUTOPILOT_AUTH_KIND" = pr ] && echo " PR #$pr 上" || echo "本 issue " )" "$LABEL_AUTOPILOT" \
+            "$where" "$LABEL_AUTOPILOT" \
             "$( [ "$AP_CHECKS" = none ] && echo '：仓库没有配置' || echo '全部通过' )" "$base" \
             "$(autopilot_daemon_sig)" "$pr" "$head")" || true
         autopilot_state_set "$sf" 'del(.prs[$p])' --arg p "$pr" || true
@@ -3734,10 +3974,11 @@ autopilot_merge_tick() {   # <state_file>
 # 数据原样再判一遍，结论和身份（issue / 提交 / 目标分支 / 分支名 / 来源 / 接手方式）都一致才写。
 # 结果在全局变量里（必须在调用方自己的 shell 里调）：
 #   AT_V   skip / take / deny / unknown；AT_MODE human / none；AT_N AT_HEAD AT_BASE AT_REF AT_REPO
+#   AT_KIND issue / pr（GitHub#142：没绑 issue、以 PR 为准时 AT_N 为空，只看 PR）
 #   deny 时 AUTOPILOT_DENY / AUTOPILOT_REASON 是原因
 autopilot_takeover_permit() {   # <PR 编号>
     local pr="$1" pj ij labels rest when rc pl
-    AT_V=unknown; AT_MODE=""; AT_N=""; AT_HEAD=""; AT_BASE=""; AT_REF=""; AT_REPO=""; AT_REASON=""
+    AT_V=unknown; AT_MODE=""; AT_N=""; AT_KIND=""; AT_HEAD=""; AT_BASE=""; AT_REF=""; AT_REPO=""; AT_REASON=""
     AT_WHY=""; AT_HUMAN_BY=""
     AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
     AT_PJ=""
@@ -3767,12 +4008,18 @@ autopilot_takeover_permit() {   # <PR 编号>
     if [ -z "$AT_HEAD" ] || [ -z "$AT_BASE" ] || [ -z "$AT_REF" ]; then
         AT_REASON="PR #$pr 的提交 / 目标分支 / 分支名读不全"; return 0
     fi
-    if ! AT_N=$(autopilot_pr_binding "$pj"); then
-        # PR 自己没挂托管标签时，对不上 issue 就和托管无关
-        if [ "$pl" = yes ]; then AT_V=deny; AUTOPILOT_DENY=binding; else AT_V=skip; fi
-        return 0
-    fi
-    if ! ij=$(gh api "repos/$REPO/issues/$AT_N" 2>/dev/null) || [ -z "$ij" ]; then
+    autopilot_pr_kind "$pj"
+    case "$AUTOPILOT_PR_KIND" in
+        issue) AT_KIND=issue; AT_N="$AUTOPILOT_PR_N" ;;
+        # 没绑 issue（GitHub#142）：只看 PR 自己；PR 没挂托管标签就和托管无关
+        pr)    AT_KIND=pr; AT_N=""
+               [ "$pl" = yes ] || { AT_V=skip; return 0; } ;;
+        # 不合条件：PR 自己没挂托管标签时和托管无关
+        *)     if [ "$pl" = yes ]; then AT_V=deny; AUTOPILOT_DENY=binding; else AT_V=skip; fi
+               return 0 ;;
+    esac
+    ij=""
+    if [ "$AT_KIND" = issue ] && { ! ij=$(gh api "repos/$REPO/issues/$AT_N" 2>/dev/null) || [ -z "$ij" ]; }; then
         AT_REASON="读不到 issue #$AT_N"; return 0
     fi
     # 两处都没挂托管标签：不是托管的 PR（普通的等人 PR 一概不碰）
@@ -3824,7 +4071,7 @@ autopilot_takeover_permit() {   # <PR 编号>
 }
 
 autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
-    local sf="$1" pr="$2" key="$3" n head base ref repo mode body where
+    local sf="$1" pr="$2" key="$3" n kind head base ref repo mode body where
     autopilot_takeover_permit "$pr"
     case "$AT_V" in skip|deny) autopilot_takeover_reset "$sf" "$pr" ;; esac
     case "$AT_V" in
@@ -3839,7 +4086,7 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
         take) ;;
         *) autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0 ;;
     esac
-    n="$AT_N"; head="$AT_HEAD"; base="$AT_BASE"; ref="$AT_REF"; repo="$AT_REPO"; mode="$AT_MODE"
+    n="$AT_N"; kind="$AT_KIND"; head="$AT_HEAD"; base="$AT_BASE"; ref="$AT_REF"; repo="$AT_REPO"; mode="$AT_MODE"
     where="$(autopilot_auth_where)"
     # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
     autopilot_takeover_permit "$pr"
@@ -3862,9 +4109,16 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
     # 维护者重新授权 = 重新开始：之前的打回 / 读不到计数、旧的复审记录都作废
     autopilot_state_set "$sf" 'del(.takeover[$p]) | .prs[$p] = ((.prs[$p] // {}) | del(.bounces, .unknown, .checks_pending_since, .reviewed_head, .reviewed_base, .reviewed_at))' \
         --arg p "$pr" || true
+    if [ "$kind" = pr ]; then
+        # 没绑 issue（GitHub#142）：授权和叫停都只看 PR
+        body="$(printf '## 托管：已接手 PR #%s，重新交复审\n\n`%s` 在 %s 上打了托管标签 `%s`，所以 daemon 接手这个 PR：已翻到 `%s` 重新复审。这个 PR 没绑 issue，授权和叫停都只看 PR 自己。复审通过并贴出测试重跑记录后，daemon 核对授权、提交、自动检查和冲突，全部满足才合并。\n\n要叫停：摘掉本 PR 上的 `%s`，或打 `%s`。\n\n%s\n<!-- cavil-loop:autopilot-takeover pr=%s head=%s -->' \
+            "$pr" "$AUTOPILOT_ACTOR" "$where" "$LABEL_AUTOPILOT" "$LABEL_PENDING_REVIEW" \
+            "$LABEL_AUTOPILOT" "$LABEL_PENDING_HUMAN" "$(autopilot_daemon_sig)" "$pr" "$head")"
+    else
     body="$(printf '## 托管：已接手 PR #%s，重新交复审\n\n`%s` 在 %s 上打了托管标签 `%s`，所以 daemon 接手这个 PR：已翻到 `%s` 重新复审（对应 issue #%s）。复审通过并贴出测试重跑记录后，daemon 核对授权、提交、自动检查和冲突，全部满足才合并。\n\n要叫停：摘掉 issue 或 PR 上的 `%s`，或在任一处打 `%s`。\n\n%s\n<!-- cavil-loop:autopilot-takeover pr=%s head=%s -->' \
         "$pr" "$AUTOPILOT_ACTOR" "$where" "$LABEL_AUTOPILOT" "$LABEL_PENDING_REVIEW" "$n" \
         "$LABEL_AUTOPILOT" "$LABEL_PENDING_HUMAN" "$(autopilot_daemon_sig)" "$pr" "$head")"
+    fi
     run_gh "托管接手说明评论 (PR #$pr)" gh_write api -X POST "repos/$REPO/issues/$pr/comments" -f "body=$body" || true
     log "托管：PR #$pr 已接手（授权 $AUTOPILOT_ACTOR @ $where）→ $LABEL_PENDING_REVIEW"
 }
@@ -3935,7 +4189,7 @@ autopilot_takeover_handoff() {   # <state_file> <PR> <缓存键>
     local cont=""
     case "$AT_V" in
         unknown)
-            if [ -z "$AT_PJ" ] || [ -z "$AT_N" ] || [ -z "$AT_REF" ]; then
+            if [ -z "$AT_PJ" ] || [ -z "$AT_KIND" ] || { [ "$AT_KIND" = issue ] && [ -z "$AT_N" ]; } || [ -z "$AT_REF" ]; then
                 log "托管：PR #$pr 交人前读不全它的现状（${AT_REASON:-缺字段}），下轮再试"; return 0
             fi
             cont=unknown ;;
@@ -3993,18 +4247,19 @@ autopilot_takeover_handoff() {   # <state_file> <PR> <缓存键>
     log "托管：PR #$pr 交人完成（加 $LABEL_PENDING_HUMAN、留言）"
 }
 
-# PR 上的托管标签不生效时在 PR 上说一次（只说「不是维护者打的」「对不上 issue」「需求机器人的需求」「issue 关了」）
+# PR 上的托管标签不生效时在 PR 上说一次（只说「不是维护者打的」「PR 不合条件」「需求机器人的需求」「issue 关了」
+# 「打标签那一刻的正文不合条件」）
 autopilot_note_pr_denial() {   # <state_file> <PR 编号>
     local sf="$1" pr="$2" text kind="$AUTOPILOT_DENY"
     case "$kind" in
-        actor-*|binding|requester-bot|closed) ;;
+        actor-*|binding|requester-bot|closed|label-body) ;;
         *) return 0 ;;
     esac
     text="⚠️ **PR 上的托管标签 \`$LABEL_AUTOPILOT\` 不生效**
 
-**原因**：${AUTOPILOT_REASON:-判定不成立}。托管只认在仓库有写权限的维护者亲手打的标签（issue 或 PR 上都行），PR 必须对得上一个打开着的 issue（分支 \`${BRANCH_PREFIX}<编号>\`、正文只写一个 \`Closes #<编号>\`），外部需求机器人提的需求不托管。
+**原因**：${AUTOPILOT_REASON:-判定不成立}。托管只认在仓库有写权限的维护者亲手打的标签，外部需求机器人的需求不托管。PR 绑了 issue（分支 \`${BRANCH_PREFIX}<编号>\`、正文只写一个 \`Closes #<编号>\`）时 issue 或 PR 上打都行；没绑 issue 时只看 PR 自己，正文里不能写关闭本仓库 issue 的关键词（只引用写 \`Refs #<编号>\`），而且打标签那一刻的正文也要满足这一条。
 
-**怎么继续**：条件满足后请维护者摘掉再亲手打一次 \`$LABEL_AUTOPILOT\`；不托管就照普通流程处理。"
+**怎么继续**：条件满足后请维护者看过现在的 PR、摘掉再亲手打一次 \`$LABEL_AUTOPILOT\`；不托管就照普通流程处理。"
     autopilot_notice_once "$sf" "$pr" "pr-$kind" "$text" || true
 }
 
@@ -4642,18 +4897,28 @@ requester_bot_handoff_section() {
 # 托管规则段（GitHub#114）：这次派工是托管条目才追加。agent-poll 判定后传 DISPATCH_AUTOPILOT=1 和
 # 授权所在的 issue 编号（DISPATCH_AUTOPILOT_ISSUE）、授权打在哪一处（DISPATCH_AUTOPILOT_WHERE）；复审拿 autopilot-review.md，其余拿 autopilot-worker.md。
 # 占位符同上用 @@NAME@@，由这里渲染完。
+# 没绑 issue 的 PR（GitHub#142）：DISPATCH_AUTOPILOT_ISSUE 为空、DISPATCH_AUTOPILOT_PR = PR 编号，worker 拿
+# autopilot-worker-pr.md（没有设计阶段、不改正文的关闭关键词和分支）
 autopilot_section_active() {
-    [ "${DISPATCH_AUTOPILOT:-}" = 1 ] && [[ "${DISPATCH_AUTOPILOT_ISSUE:-}" =~ ^[0-9]+$ ]] && autopilot_enabled
+    [ "${DISPATCH_AUTOPILOT:-}" = 1 ] && { [[ "${DISPATCH_AUTOPILOT_ISSUE:-}" =~ ^[0-9]+$ ]] || [[ "${DISPATCH_AUTOPILOT_PR:-}" =~ ^[0-9]+$ ]]; } && autopilot_enabled
 }
 autopilot_handoff_section() {   # <模板名>
-    local f text
-    if [ "$1" = review ]; then f="$SKILL_DIR/prompts/autopilot-review.md"; else f="$SKILL_DIR/prompts/autopilot-worker.md"; fi
+    local f text pr_only=""
+    [[ "${DISPATCH_AUTOPILOT_ISSUE:-}" =~ ^[0-9]+$ ]] || pr_only=1
+    if [ "$1" = review ]; then f="$SKILL_DIR/prompts/autopilot-review.md"
+    elif [ -n "$pr_only" ]; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"
+    else f="$SKILL_DIR/prompts/autopilot-worker.md"; fi
     [ -s "$f" ] || { log "⚠️ 托管规则文件缺失：$f（本次按普通流程，不会自动合并）" 2>/dev/null || true; return 0; }
     text="$(cat "$f")"
-    # 授权打在哪一处（GitHub#128：维护者也可以在 PR 上打）；没传就是 issue 上
+    # 授权打在哪一处（GitHub#128：维护者也可以在 PR 上打）；没传就是 issue 上（没绑 issue 时是 PR 上）
+    if [ -n "$pr_only" ]; then
+        text="${text//@@AUTH_WHERE@@/"${DISPATCH_AUTOPILOT_WHERE:-PR #$DISPATCH_AUTOPILOT_PR}"}"
+        text="${text//@@PR@@/"$DISPATCH_AUTOPILOT_PR"}"
+    else
     text="${text//@@AUTH_WHERE@@/"${DISPATCH_AUTOPILOT_WHERE:-issue #$DISPATCH_AUTOPILOT_ISSUE}"}"
     text="${text//@@ISSUE@@/"$DISPATCH_AUTOPILOT_ISSUE"}"
     text="${text//@@BRANCH@@/"$(branch_name "$DISPATCH_AUTOPILOT_ISSUE")"}"
+    fi
     text="${text//@@LABEL_AUTOPILOT@@/"$LABEL_AUTOPILOT"}"
     text="${text//@@LABEL_PENDING_MERGE@@/"$LABEL_PENDING_MERGE"}"
     text="${text//@@LABEL_PENDING_REVIEW@@/"$LABEL_PENDING_REVIEW"}"

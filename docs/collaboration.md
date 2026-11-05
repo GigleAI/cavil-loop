@@ -140,7 +140,7 @@ Integration steps, what the bot has to do on its side, settings, the wake-up scr
 
 ## Autopilot: one issue end to end
 
-With `LABEL_AUTOPILOT` configured (off by default, needs the review gate), a maintainer can hand a single issue over completely: the design goes through review only and, once the code review passes, the daemon merges the PR itself under fixed checks. The label is a *mode* label on the issue, not another dispatch label, so it coexists with the routing above (host labels, fable, review). For a PR that already exists, a maintainer can also put the label on the PR itself (GitHub#128): the daemon takes it over and runs it from review to merge. Details and the merge conditions: [operations](operations.md#autopilot-label-optional-off-by-default).
+With `LABEL_AUTOPILOT` configured (off by default, needs the review gate), a maintainer can hand a single issue over completely: the design goes through review only and, once the code review passes, the daemon merges the PR itself under fixed checks. The label is a *mode* label on the issue, not another dispatch label, so it coexists with the routing above (host labels, fable, review). For a PR that already exists, a maintainer can also put the label on the PR itself (GitHub#128): the daemon takes it over and runs it from review to merge — also for a PR that is bound to no issue (e.g. the other half of a cross-repo task), where authorization and stops come from the PR alone (GitHub#142). Details and the merge conditions: [operations](operations.md#autopilot-label-optional-off-by-default).
 
 ## Practical considerations
 

@@ -179,14 +179,17 @@ REVIEW_DESIGN_PROPOSALS="false"
 # A maintainer puts this label on an ISSUE to hand the whole thing to the agents: the design goes
 # through the review gate only (no human confirmation), and once the code review passes the PR is
 # flipped to LABEL_PENDING_MERGE and the daemon merges it — only if ALL of these hold:
-#   · the issue's most recent "add <autopilot label>" event was done by a real user with write
-#     access who is NOT the loop's write account and NOT the requester bot (labels on PRs are ignored)
-#   · the PR is from this repo, on branch BRANCH_PREFIX<N>, and its body closes exactly #N
+#   · the most recent "add <autopilot label>" event was done by a real user with write access who
+#     is NOT the loop's write account and NOT the requester bot — on the issue, or on the PR (GitHub#128)
+#   · the PR is from this repo, and either on branch BRANCH_PREFIX<N> with a body that closes
+#     exactly #N, or (no issue, GitHub#142) its body closes no issue of this repo — then only the
+#     PR's own label counts, and the PR description at the moment the label was added must also
+#     have closed no issue of this repo
 #   · the PR head and target branch are exactly those the reviewer was dispatched on, and the reviewer's pass
 #     comment carries its test re-run record for that commit (passed>0, failed=0)
 #   · every check on that commit passed (a repo with no checks at all relies on the record above)
 #   · no conflict with the base branch, no change under .github/, nobody added pending/human on
-#     the issue or the PR, and the autopilot label is still on the issue (re-read right before merging)
+#     the issue or the PR, and the autopilot label is still there (re-read right before merging)
 # Needs LABEL_PENDING_REVIEW (no review gate = nobody checks = nothing is put on autopilot).
 # The loop's write account and the maintainer must be different accounts, otherwise no label
 # can ever count as the maintainer's. Requests filed by the external requester bot are never put
@@ -195,12 +198,13 @@ REVIEW_DESIGN_PROPOSALS="false"
 #
 # 维护者在 **issue** 上打这个标签 = 从方案到合并全交给 agent：方案只过复审、不等人确认，代码复审
 # 通过后 PR 翻 LABEL_PENDING_MERGE，由 daemon 合并——以下全部成立才合：
-#   · issue 上最近一次「加上托管标签」的操作人是有写权限的真人，且不是 loop 的写入账号、不是外部
-#     需求机器人（PR 上的托管标签一概不看）
-#   · PR 来自本仓库、分支是 BRANCH_PREFIX<N>、正文只关闭 #N
+#   · 最近一次「加上托管标签」的操作人是有写权限的真人，且不是 loop 的写入账号、不是外部需求机器人——
+#     打在 issue 上或 PR 上都行（GitHub#128）
+#   · PR 来自本仓库，并且要么分支是 BRANCH_PREFIX<N>、正文只关闭 #N；要么（没绑 issue，GitHub#142）
+#     正文一个本仓库 issue 都不关——这时只认 PR 上的标签，而且打标签那一刻的 PR 正文也得一个都不关
 #   · PR 最新提交和目标分支正是派复审时的那一对，且复审的通过评论里有这个提交的测试重跑记录（通过 > 0、失败 = 0）
 #   · 这个提交上的自动检查全部通过（仓库一个检查都没有时，只靠上面那条记录）
-#   · 和目标分支无冲突、没改 .github/、issue 和 PR 都没挂 pending/human、issue 上托管标签还在（合并前最后一刻重读）
+#   · 和目标分支无冲突、没改 .github/、issue 和 PR 都没挂 pending/human、托管标签还在（合并前最后一刻重读）
 # 必须同时配了 LABEL_PENDING_REVIEW（没有复审关卡 = 没人把关，什么都不托管）。
 # loop 的写入账号和维护者不能是同一个账号，否则任何标签都算不上维护者打的。
 # 外部需求机器人提的需求不托管（要提需求方确认，daemon 判断不了）。

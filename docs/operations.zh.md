@@ -461,15 +461,31 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   唯一的例外是标签已经由 daemon 为这条待办加上、只差说明，这时把说明补完。继续做的两种情况都要求 issue / 分支 /
   来源和交人决定时一样；本地记过「标签已加」而 `pending/human` 已被人摘掉的，视为人已接过这件事：不补说明，
   在有确定结论之前也不再交人。
-  PR 上的标签不被认可（不是维护者打的、PR 对不上 issue、外部需求机器人的需求、issue 已关）时在 PR 上说一次原因。
+  PR 上的标签不被认可（不是维护者打的、PR 不合条件、外部需求机器人的需求、issue 已关、打标签那一刻的正文不合条件）时在 PR 上说一次原因。
+- **没绑 issue 的 PR**（GitHub#142）：跨仓库任务的配套 PR、不绑 issue 的 PR，维护者在 PR 上亲手打的托管标签本身就算授权，
+  新开就打也算。daemon 把 PR 分三种：
+  - **绑 issue**：来自本仓库、分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`——照上面「在 PR 上打也行」那套，issue 和 PR 两处合起来判；
+  - **以 PR 为准**：来自本仓库、正文里**一个**本仓库关闭关键词都没有——`#N`、`owner/repo#N`（本仓库名，不分大小写）、
+    `https://github.com/owner/repo/issues/N`、`GH-N` 这些写法都算关闭本仓库；只引用的 `Refs #N`、关别的仓库的不算——
+    授权和叫停都只看 PR：PR 上摘托管标签或打 `pending/human` 就叫停，任何 issue 上的标签都不借给它，分支名恰好和本仓库某个 issue 同号也不看那个 issue；
+  - **不合条件**：其余的（写了关闭本仓库 issue 的关键词却没正常绑定、关闭写法有歧义、来自 fork）——不生效，PR 上说一次怎么改。
+
+  以 PR 为准时还要求**打标签那一刻的 PR 正文**也是这一种：daemon 读 GitHub 保存的 PR 正文修改历史（GraphQL `userContentEdits`），
+  取修改时间不晚于打标签时间的最新一版（同一秒的几版和它之前那一版都要合条件；两边都是 GitHub 的时间，不受本机时钟影响）。
+  PR 刚开就打、同一秒、之后正文又改过：历史最早那一版的时间等于 PR 的创建时间，就认它是开 PR 时的正文；不等（更早的版本缺了）算查不到。
+  所以「先因为正文关着某个 issue 被拒、之后正文被改掉」「绑着 issue 时打的标签、之后删掉 `Closes #N`」，那次打标签都不算，
+  要维护者看过现在的 PR 再亲手打一次。那一版被从历史里删掉 → 不生效、请重打；历史读不到或分页读不全 → 判不了，本轮不写。
+  daemon 本机不为此记任何东西，换机器、状态文件丢失都不影响。外部需求机器人：PR 是它开的、或顺着分支名 / 正文关联（现在的正文和打标签那一刻的正文都查）
+  找到的本仓库 issue 是它提的，不托管。这类 PR 没有方案阶段，接手后从代码复审开始；接手、合并的说明都发在 PR 上。
 - **代码**：复审通过时 PR 翻 `LABEL_PENDING_MERGE`（`pending/merge`）而不是 `pending/human`，
   并在结论评论里留一行测试重跑的机器记录：`<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`。
 - **daemon 合并**（`PUT /pulls/N/merge`，带复审时的提交号，方式 `AUTOPILOT_MERGE_METHOD`，默认 `squash`）
-  只在下表全部成立时进行；合并后在 issue 上留「已自动合并」评论，之后的清理 / `Done` / 复盘照常：
+  只在下表全部成立时进行；合并后在 issue 上（没绑 issue 的发在 PR 上）留「已自动合并」评论，之后的清理 / `Done` / 复盘照常：
 
 | 检查 | 不成立 → |
 |---|---|
-| PR 来自本仓库、分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`（逐行和整段两种读法一致） | `pending/human` |
+| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
+| 以 PR 为准时：授权只看 PR（下一行去掉 issue 那一处），而且打标签那一刻的 PR 正文（修改历史里那一版）也合上一行的条件 | `pending/human` |
 | 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
 | 这条 issue 不是外部需求机器人提的需求 | `pending/human` |
 | issue 和 PR 都没被打 `pending/human` | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
