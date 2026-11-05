@@ -304,6 +304,23 @@ const MUTATIONS = [
   { what: '打开结束后仍收下它发出的回应', file: 'src/renderer/openSession.ts',
     from: "      open = false;", to: "      void 0;",
     expect: ['an opening that ended rejects every answer'] },
+  // ---- app icon (GitHub#144) ----
+  { what: '图标不留苹果网格边（满幅 1024）', file: 'scripts/icon.mjs',
+    from: 'export const BODY = 824;', to: 'export const BODY = 1024;',
+    expect: ['is exactly what the generator makes', "sits on Apple's icon grid"] },
+  { what: '原图的黑边不去掉', file: 'scripts/icon.mjs',
+    from: '          if (!insideSource(sx, sy)) continue;\n', to: '',
+    expect: ['is exactly what the generator makes'] },
+  { what: '包内图标比对不看差异，一律通过', file: 'scripts/icon.mjs',
+    from: 'ok: distance <= SAME_ICON_MAX_DISTANCE,', to: 'ok: true,',
+    expect: ['fails on a different picture', 'exits 0 only on a match'] },
+  { what: '取 .icns 里第一张而不是最大的一张', file: 'scripts/icon.mjs',
+    from: 'if (!best || img.width > best.img.width)', to: 'if (!best)',
+    expect: ['fails on a different picture, even when the smaller slots are ours'] },
+  { what: '读不到图标文件当成通过', file: 'scripts/icon.mjs',
+    from: "if (!existsSync(icnsPath)) throw new Error(`Info.plist names ${name}, but Contents/Resources/${name} does not exist`);",
+    to: "if (!existsSync(icnsPath)) return { icon: name, entry: '', size: '', distance: 0, ok: true, img: decodePng(readFileSync(expectedPng)) };",
+    expect: ['cannot read → refuses, never passes', 'exits 0 only on a match'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
@@ -312,7 +329,7 @@ const TIMEOUT_MS = Number(process.env.CLIENT_MUT_TIMEOUT_MS ?? 180_000);
 
 function sandbox() {
   const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
-  for (const d of ['src', 'test']) cpSync(join(root, d), join(work, d), { recursive: true });
+  for (const d of ['src', 'test', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
   for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts']) cpSync(join(root, f), join(work, f));
   cpSync(join(root, 'scripts'), join(work, 'scripts'), { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
