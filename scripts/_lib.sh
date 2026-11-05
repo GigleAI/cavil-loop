@@ -5069,6 +5069,25 @@ autopilot_handoff_section() {   # <模板名>
     printf '%s\n' "$text"
 }
 
+# 把经验文件拼进派工说明时用（GitHub#152）：可选的「## 目录经验」段（只在某块代码会踩的坑）
+# 经项目自己的各层目录说明到达 agent，不进派工说明。从这一行切到下一个「## 」标题或文件末尾，
+# 再去掉切口留下的末尾空行。
+# 换行按 python 读文本的规矩认（复盘程序就是这么读、这么判断有没有这一段的）：\r\n、单独的 \r
+# 都算换行。否则 Windows 换行的文件 python 认出了这一段、这里却认不出，整段原样进了派工说明。
+# 没有这个标题的文件原样 cat、逐字节不变——awk 会给缺末尾换行的文件补一个，所以不能一律走 awk。
+# 输出（按同样的换行规矩读回）与 scripts/retrospective_lessons.py:prompt_text 相同
+# （tests/retrospective-directory-lessons.test.sh 用同一批输入对拍两边）。
+_lessons_lf() { sed 's/\r$//' "$1" | tr '\r' '\n'; }
+lessons_for_prompt() {   # <经验文件>
+    # 进程替换而不是管道：grep -q 找到就退出，sed 可能吃 SIGPIPE，pipefail 下整条管道会算失败、判反
+    if ! grep -qx '## 目录经验' < <(_lessons_lf "$1"); then cat "$1"; return; fi
+    _lessons_lf "$1" | awk '/^## 目录经验$/ { skip = 1; next }
+         /^## / { skip = 0 }
+         skip { next }
+         /^$/ { blank++; next }
+         { while (blank > 0) { print ""; blank-- } print }'
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -5089,11 +5108,11 @@ compose_prompt_template() {
         cat "$base_tpl"
         if [ -s "$lessons" ]; then
             printf '\n\n---\n\n'
-            cat "$lessons"
+            lessons_for_prompt "$lessons"
         fi
         if [ -n "$project_lessons" ]; then
             printf '\n\n---\n\n'
-            cat "$project_lessons"
+            lessons_for_prompt "$project_lessons"
         fi
         if [ -n "$overlay" ]; then
         printf '\n\n---\n\n'

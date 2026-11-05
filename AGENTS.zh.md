@@ -313,6 +313,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 改动落在下面这些地方时，对应的测试必须跑：
 
 - 记账 / 周报口径 → `tests/weekly-report-*.test.sh`。凡是会跑 `collect.py` / `price_solve.py` 的测试，必须把 `CLAUDE_PROJECTS_DIR`、`CODEX_SESSIONS_DIR`、`XDG_CACHE_HOME` 指到自己的临时目录：不设就去扫本机真实的 `~/.claude/projects`（这台机器 7.4G，单次 18 秒，还在涨），测试一天比一天慢，结果还随机器变
+- 合并后复盘（`scripts/retrospective_lessons.py`、`scripts/post-merge-retrospective.py`、`prompts/retrospective.template.md`；可选的 `## 目录经验` 段与 `POST_RETROSPECTIVE_PROJECT_CMD`，GitHub#152）→ `tests/retrospective-lessons.test.sh`（约 5 秒；`MUTATION=1` 逐项关掉每个检查，再跑主程序的 6 个改坏副本，约 2 分钟）和 `tests/retrospective-directory-lessons.test.sh`（约 1 秒）。派工拼说明跳过目录经验段只靠 `_lib.sh` 里一个 `lessons_for_prompt`，两个经验入口共用；核对程序自己的切法（`prompt_text`）必须与它逐字节相同——测试用同一批输入对拍两边（LF、CRLF、单独 \r 换行的文件都有：shell 侧按 python 读文本的换行规矩认行，因为复盘程序就是这样判断这一段存不存在的），没有这个标题时拼出来的说明必须与 merge-base 逐字节相同。没有标题时复盘的说明、模型输入和 GitHub 读取都不变；新检查一律加进 `CHECKS`，由测试入口证明有用例守着
 - 用量驱动 → `tests/token-usage-claude.test.sh`、`tests/token-usage-codex.test.sh`
 - 评论用量 footer（GitHub#88：`comment-footer.sh` / `comment_footer.py`、`ai_time.py` 的 AI 时间估算、四份模板的 footer 步骤、`${COMMENT_FOOTER_CMD}` 占位、周报认新的可见排版）→ `tests/comment-footer.test.sh`（默认约 10 秒，会起真的派工脚本；`MUTATION=1` 时再对每条规矩跑一份故意改坏的副本、必须变红，约 2.5 分钟）。footer 由脚本整段生成——模板里别再让 agent 手拼时间 / token 行；agent-metrics 机器记录仍是最后一个非空行
 - 缺价自动抓价（缺价标记 / `price_fetch.py` / `fetched` 可信度桶）→ `tests/price-fetch.test.sh`
