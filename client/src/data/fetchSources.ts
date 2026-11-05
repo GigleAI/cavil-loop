@@ -2,7 +2,7 @@
 // A source is all-or-nothing: a failure on any page means the caller keeps
 // that source's previous snapshot. Never return a partial list.
 
-import type { Item, Iteration, ProjectMembership, ProjectMeta, SourceConfig, SourceSnapshot } from '../shared/types';
+import type { Item, ItemState, Iteration, LinkedPr, ProjectMembership, ProjectMeta, SavedView, SourceConfig, SourceSnapshot, ViewField } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
 import { PROJECT_ITEMS_QUERY } from './queries';
@@ -47,6 +47,23 @@ export interface GqlContent {
   labels?: { nodes: { name: string; color: string }[] };
   assignees?: { nodes: { login: string }[] };
   milestone?: { number: number; title: string; dueOn: string | null } | null;
+  author?: { login: string } | null;
+  parent?: { number: number; repository: { nameWithOwner: string } } | null;
+  subIssuesSummary?: { total: number; completed: number } | null;
+  closedByPullRequestsReferences?: {
+    nodes: { number: number; url: string; state: string; merged: boolean; repository: { nameWithOwner: string } }[];
+  } | null;
+}
+type GqlViewField = { name?: string; dataType?: string } | null;
+interface GqlView {
+  number: number;
+  name: string;
+  layout: string;
+  filter: string | null;
+  groupByFields?: { nodes: GqlViewField[] } | null;
+  verticalGroupByFields?: { nodes: GqlViewField[] } | null;
+  sortByFields?: { nodes: { direction: string; field: GqlViewField }[] } | null;
+  fields?: { nodes: GqlViewField[] } | null;
 }
 interface GqlProject {
   id: string;
@@ -54,6 +71,7 @@ interface GqlProject {
   url: string;
   viewerCanUpdate?: boolean;
   fields: { nodes: GqlField[] };
+  views?: { nodes: GqlView[] } | null;
   items: {
     totalCount: number;
     pageInfo: { hasNextPage: boolean; endCursor: string | null };
@@ -64,6 +82,36 @@ type GqlProjectResponse = {
   organization?: { projectV2: GqlProject | null } | null;
   user?: { projectV2: GqlProject | null } | null;
 };
+
+function viewFields(nodes: GqlViewField[] | undefined): ViewField[] {
+  return (nodes ?? []).filter((f): f is { name: string; dataType: string } => Boolean(f?.name && f.dataType)).map((f) => ({ name: f.name, dataType: f.dataType }));
+}
+
+function toSavedView(v: GqlView): SavedView {
+  return {
+    number: v.number,
+    name: v.name,
+    layout: v.layout,
+    filter: v.filter ?? '',
+    groupBy: viewFields(v.groupByFields?.nodes),
+    verticalGroupBy: viewFields(v.verticalGroupByFields?.nodes),
+    sortBy: (v.sortByFields?.nodes ?? [])
+      .filter((s) => s.field?.name && s.field.dataType)
+      .map((s) => ({ field: { name: s.field!.name!, dataType: s.field!.dataType! }, direction: s.direction === 'ASC' ? 'ASC' : 'DESC' })),
+    fields: viewFields(v.fields?.nodes),
+  };
+}
+
+function linkedPrs(c: GqlContent): LinkedPr[] {
+  return (c.closedByPullRequestsReferences?.nodes ?? []).map((pr) => {
+    const state: ItemState = pr.merged ? 'merged' : pr.state === 'OPEN' ? 'open' : 'closed';
+    return { key: itemKey(pr.repository.nameWithOwner, pr.number), repo: pr.repository.nameWithOwner, number: pr.number, url: pr.url, state };
+  });
+}
+
+function subIssues(s: { total: number; completed: number } | null | undefined): Item['subIssues'] {
+  return s && s.total > 0 ? { total: s.total, completed: s.completed } : null;
+}
 
 function contentState(c: GqlContent): Item['state'] {
   if (c.__typename === 'PullRequest' && c.merged) return 'merged';
@@ -105,6 +153,11 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
     labels: c.labels?.nodes.map((l) => ({ name: l.name, color: l.color })) ?? [],
     assignees: c.assignees?.nodes.map((a) => a.login) ?? [],
     milestone: c.milestone ? { title: c.milestone.title, dueOn: c.milestone.dueOn } : null,
+    author: c.author?.login ?? null,
+    parent: c.parent ? itemKey(c.parent.repository.nameWithOwner, c.parent.number) : null,
+    subIssues: subIssues(c.subIssuesSummary),
+    // a pull request has no "linked pull requests" of its own: known-empty, not unknown
+    linkedPrs: c.__typename === 'Issue' ? linkedPrs(c) : [],
     projects,
     sources,
   };
@@ -154,6 +207,7 @@ export async function fetchProject(
         hasIterationField: Boolean(iterField),
         iterations,
         statusOptions: statusField?.options?.map((o) => o.name) ?? [],
+        views: (p.views?.nodes ?? []).map(toSavedView),
       };
     }
     for (const node of p.items.nodes) {
@@ -180,6 +234,15 @@ interface RestIssue {
   assignees?: { login: string }[] | null;
   milestone: { title: string; due_on: string | null } | null;
   pull_request?: { merged_at: string | null };
+  user?: { login: string } | null;
+  parent_issue_url?: string | null;
+  sub_issues_summary?: { total: number; completed: number } | null;
+}
+
+/** `https://api.github.com/repos/<o>/<r>/issues/<n>` -> item key */
+function parentKey(url: string | null | undefined): string | null {
+  const m = url?.match(/\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/);
+  return m ? itemKey(`${m[1]}/${m[2]}`, Number(m[3])) : null;
 }
 
 function restToItem(repo: string, r: RestIssue, srcKey: string): Item {
@@ -197,6 +260,11 @@ function restToItem(repo: string, r: RestIssue, srcKey: string): Item {
     labels: r.labels.map((l) => (typeof l === 'string' ? { name: l, color: '' } : { name: l.name, color: l.color })),
     assignees: (r.assignees ?? []).map((a) => a.login),
     milestone: r.milestone ? { title: r.milestone.title, dueOn: r.milestone.due_on } : null,
+    author: r.user?.login ?? null,
+    parent: parentKey(r.parent_issue_url),
+    subIssues: subIssues(r.sub_issues_summary),
+    // the REST issue list does not say which pull requests are linked
+    linkedPrs: r.pull_request ? [] : null,
     projects: [],
     sources: [srcKey],
   };

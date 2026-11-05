@@ -9,7 +9,7 @@ import { GitHubClient } from '../../src/data/github';
 import { parseSource } from '../../src/shared/sources';
 import type { BoardData, SourceConfig } from '../../src/shared/types';
 import { FakeGitHub, loadCavilProjectPages, startFakeGitHub } from '../fake-github/server';
-import { FAKE_TOKEN, FIXTURE_NOW, FIXTURE_TODAY, item, iter, member, project } from './helpers';
+import { FAKE_TOKEN, FIXTURE_NOW, FIXTURE_TODAY, item, iter, member, project, FIXTURE_ITEM_COUNT } from './helpers';
 
 const counts = (b: ReturnType<typeof buildBoard>) => Object.fromEntries(b.columns.map((c) => [c.title, c.cards.length]));
 
@@ -40,7 +40,7 @@ describe('recorded cavil project (GigleAI #11)', () => {
 
   it('reads both pages: every item of the board is there', () => {
     const total = loadCavilProjectPages().reduce((n, p) => n + p.items.nodes.length, 0);
-    expect(total).toBe(138);
+    expect(total).toBe(FIXTURE_ITEM_COUNT);
     expect(data.items).toHaveLength(total);
     // the client asked for page 2 with page 1's cursor (it really paginated)
     const ops = fake.log.filter((l) => l.operation === 'CavilProjectItems');
@@ -53,7 +53,7 @@ describe('recorded cavil project (GigleAI #11)', () => {
     const raw = rawCounts('Iteration', 'title');
     const got = counts(b);
     for (const [title, n] of Object.entries(raw)) expect(got[title === '(none)' ? '无迭代' : title], title).toBe(n);
-    expect(b.columns.reduce((n, c) => n + c.cards.length, 0)).toBe(138);
+    expect(b.columns.reduce((n, c) => n + c.cards.length, 0)).toBe(FIXTURE_ITEM_COUNT);
     expect(b.columns[b.columns.length - 1].key).toBe(COL_NO_ITERATION);
     // active / upcoming iterations show even when empty, ended ones only with cards
     const byTitle = Object.fromEntries(b.columns.map((c) => [c.title, c]));
@@ -78,7 +78,7 @@ describe('recorded cavil project (GigleAI #11)', () => {
 
   it('milestone columns: the board has none, so everything sits in 无里程碑', () => {
     const b = buildBoard(data.items, data.projects, 'milestone', false, FIXTURE_TODAY);
-    expect(b.columns.map((c) => [c.key, c.cards.length])).toEqual([[COL_NO_MILESTONE, 138]]);
+    expect(b.columns.map((c) => [c.key, c.cards.length])).toEqual([[COL_NO_MILESTONE, FIXTURE_ITEM_COUNT]]);
   });
 
   it('cards carry state / kind / Project from the real shapes', () => {

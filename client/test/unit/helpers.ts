@@ -15,6 +15,11 @@ export const FIXTURE_NOW = Date.parse(
 );
 export const FIXTURE_TODAY = new Date(FIXTURE_NOW).toISOString().slice(0, 10);
 
+/** issues / PRs on the recorded board (archived and draft items do not count), read straight from the JSON */
+export const FIXTURE_ITEM_COUNT: number = JSON.parse(readFileSync(join(here, '../fixtures/cavil-project-11.pages.json'), 'utf8')).pages
+  .flatMap((p: any) => p.items.nodes)
+  .filter((n: any) => !n.isArchived && n.content && n.content.__typename !== 'DraftIssue').length;
+
 export function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'cavil-client-test-'));
 }
@@ -36,6 +41,7 @@ export function project(key: string, title: string, iterations: Iteration[] | nu
     hasIterationField: iterations !== null,
     iterations: iterations ?? [],
     statusOptions,
+    views: [],
   };
 }
 
@@ -53,6 +59,10 @@ export function item(repo: string, number: number, extra: Partial<Item> = {}, me
     labels: [],
     assignees: [],
     milestone: null,
+    author: null,
+    parent: null,
+    subIssues: null,
+    linkedPrs: [],
     projects: memberships,
     sources: [],
     ...extra,

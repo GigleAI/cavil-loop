@@ -1,13 +1,13 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Electron + TypeScript + React），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改。
+`client/` 是一个本地桌面客户端（Electron + TypeScript + React），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图。
 
 ## 目录
 
 ```
 src/
-  shared/    类型、来源地址解析、IPC 约定（界面也会打包它，不能引用 Node / Electron）
-  data/      GitHub 请求、同步、去重、分列、本地缓存（SQLite）、OAuth 设备授权；
+  shared/    类型、来源地址解析、IPC 约定、搜索筛选（filter.ts）、视图设置与导入（viewSettings.ts / viewImport.ts）（界面也会打包它，不能引用 Node / Electron）
+  data/      GitHub 请求、同步、去重、看板分列（board.ts）、表格分组（table.ts）、两者共用的排序（sort.ts）、本地缓存（SQLite）、OAuth 设备授权；
              actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条
   platform/  和操作系统打交道的部分：凭据（v1 只有 macOS 钥匙串）；通知、角标、自启以后加在这里
   main/      Electron 主进程：controller.ts 是不依赖 Electron 的应用逻辑，main.ts 只做接线
@@ -19,6 +19,7 @@ test/
   fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销；
                writes.ts 是可写的一面（标签、里程碑、评论、看板字段、合并 / 关闭、新建 issue），digest() 判断「GitHub 上什么都没改」
   fixtures/    从 cavil project（GigleAI #11）录下来的真实接口返回，已脱敏；record.mjs 可重录
+               cavil-project-11.filters.json：同一次录制里 GitHub 服务端筛选对每条查询的结果，搜索框按它逐条对拍
   mutation/    负对照
 scripts/
   build.mjs             构建 dist/
@@ -66,7 +67,31 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 - **图片只从 `github.com` / `api.github.com` 加载**（两层：页面和隔离框的 CSP；主进程拦掉窗口发往其他主机的一切请求）。GitHub 把大多数图片改写成 `camo.githubusercontent.com` 或附件地址，这些不加载，那一条下面会写「有 N 张图片…没有加载，点『在网页上看』」。
 - **交回 agent** = 加 `pending/agent`、摘 `pending/human`（先加后摘：第二步失败也不会两个都没有）；标签名在设置里改，要和 daemon 配置一致。
 - 被拒时界面照实显示原因（含 GitHub 的原话），GitHub 上什么都不改；测试对每种被拒情况核对假 GitHub 的 `digest()` 前后相同。
-- 缓存格式升到第 2 版（多存了写入要用的各种 id）：升级后第一次启动会丢掉旧缓存、重新同步一次。
+- 缓存格式升到第 2 版（多存了写入要用的各种 id），#137 再升到第 3 版（多存了作者、父 issue、子 issue 进度、关联 PR、网页视图）：升级后第一次启动会丢掉旧缓存、重新同步一次。
+
+## 搜索、筛选和表格视图（#137）
+
+**搜索框**在客户端本地、对缓存数据筛，写法沿用 GitHub 网页（`src/shared/filter.ts`，打字即出结果，停手 0.3 秒后存进视图设置）：
+
+| 写法 | 说明 |
+|---|---|
+| 文字 | 匹配标题、编号（`135` / `#135`）、标签名；不分大小写；中文词中间也能搜到（GitHub 按空格和标点切词，「看板客户端」里的「客户端」它搜不到） |
+| `label:` `status:` `milestone:` `assignee:` `author:` `repo:` `iteration:` | 值完全相等、不分大小写；`repo:` 要写 `组织/仓库名` |
+| `iteration:@current` / `@next` / `@previous`，`assignee:@me` / `author:@me` | 迭代按各自 Project 的期次算 |
+| `no:` / `has:` 加 `label` `assignee` `milestone` `iteration` `status` | |
+| `is:open` `closed`（含已合并的 PR，和 GitHub 一样）`merged` `issue` `pr` | |
+| `project:` | 本客户端新增：按来源 Project 的标题、编号或网址筛 |
+| `-` 取反、逗号「或」、引号包住带空格的值 | 同一字段写两次是「且」 |
+
+不支持的写法（正文 / 评论、日期比较、`reason:`、自定义字段——包括中文字段名 `优先级:高` 和带引号的 `"Start date":…`、`sort:`、文字前加 `-`、`is:draft` 这类不认识的值……）一律在黄条里点名、忽略，结果可能比网页多，**绝不会因为一个不认识的词变成「0 条」**（GitHub 自己对不认识的写法会静默返回 0 条，`-文字` 也是）。某个来源这次没读全时，筛选上方也有一行黄条。
+
+`author:` GitHub 的 Project 筛选并不支持（录制时 `author:x` 和 `-author:x` 都返回 0 条），本客户端按条目的作者筛。
+
+**和 GitHub 对拍**：`record.mjs` 录看板数据的同一次运行里，用 GitHub 的服务端筛选（`items(query:)`）跑一遍约 50 条查询，`test/unit/filter-parity.test.ts` 要求客户端对每条筛出完全相同的条目。只有两类预期不同、单独断言：中文词中间（客户端更全）和 `author:`（GitHub 不支持）。
+
+**表格视图**和看板并存，工具栏右侧切换。排序是两种布局共用的：看板每一列里卡片的顺序、表格里行的顺序都按它（导入的「按更新时间从新到旧」在看板上同样生效）。表格的「视图设置」里还能改：分组（迭代 / 状态 / 里程碑 / 仓库 / 不分组）、排序（含「Project 里的顺序」）、显示哪些列、左侧按仓库切片、子 issue 缩进在父 issue 下。一个条目在两个 Project 里迭代或状态不同时，在两组里各出现一次（和看板一样）。子 issue 只在父 issue 也在同一组里时才缩进。
+
+**导入网页视图**：添加 Project 时，第一次完整读到它之后导入它网页上存的一个视图（贴的网址带 `/views/N` 就导那个，没带就导第一个）：布局、分组、排序、列、筛选。只导入一次——之后网页上改了视图不会跟着变；导入前用户已经动过的设置以用户为准；删掉再加这个 Project 会重新导入。做不到的部分（自定义字段分组 / 排序 / 列、路线图布局、多级排序）在视图顶部列出来。GitHub 的接口不返回「按仓库切片」和「显示层级」两个开关，导入时都设成开。仓库来源（REST）读不到「关联 PR」，那一格显示「—」。
 
 ## 登录用的 GitHub 应用
 

@@ -54,8 +54,15 @@ export function applyFreshItem(snapshots: SourceSnapshot[], fresh: FreshItem): S
     } else continue;
     const had = snap.items.some((x) => x.key === base.key);
     if (!next && !had) continue;
-    const items = snap.items.filter((x) => x.key !== base.key);
-    if (next) items.push(next);
+    // replace in place: the array order is the Project's own order ("Project 里的顺序"
+    // in the table, and the board's tie order), so an edit must not move the item;
+    // only an item new to this source is appended (the next full sync puts it where
+    // GitHub has it)
+    const items = next
+      ? had
+        ? snap.items.map((x) => (x.key === base.key ? next! : x))
+        : [...snap.items, next]
+      : snap.items.filter((x) => x.key !== base.key);
     changed.push({ ...snap, items });
   }
   return changed;
