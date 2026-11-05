@@ -209,7 +209,7 @@ rc=$?
 after_wt=$(git -C "$PROJECT" worktree list --porcelain | grep -c '^worktree ')
 logged=$(cat "$LOG_FILE")
 
-chk_has "poll.log 写明分支被占用"        "$logged" "已被另一个 worktree 签出"
+chk_has "poll.log 写明分支被占用"        "$logged" "已被另一个 worktree"
 chk_has "poll.log 写出占用者的路径"      "$logged" "$HOLDER_DIR"
 chk "没有新建 worktree（没出现双签出）"  "$after_wt" "$before_wt"
 chk "占用分支仍然只有一个 checkout"      "$(git -C "$PROJECT" worktree list --porcelain | grep -c '^branch refs/heads/feature/issue-34$')" "1"
@@ -225,7 +225,7 @@ chk "没有尝试 fetch（不做注定失败的出网）" "$(printf '%s' "$logge
 out2=$(cd "$PROJECT" && CODING_AGENT_CONFIG="$TMP_CONF" \
     bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" 7 "feature/issue-7" 0 2>&1)
 logged2=$(cat "$LOG_FILE")
-chk "没被占用的分支不会被误挡"           "$(printf '%s' "$logged2" | grep -c '已被另一个 worktree 签出')" "0"
+chk "没被占用的分支不会被误挡"           "$(printf '%s' "$logged2" | grep -c '已被另一个 worktree')" "0"
 
 # ────────────────────────────────────────────────────────────────────────────
 # 端到端：跑**真的** agent-poll.sh 四轮，dispatch 每轮都失败。

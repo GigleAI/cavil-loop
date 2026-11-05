@@ -1268,27 +1268,211 @@ pace_record_fail() {
 #      worktree。也就是说：光把 fetch 修好并不安全，那只会把「派工失败」换成「两个
 #      worker 往同一个分支上提交、互相覆盖」。
 #
+# 实现：find_branch_holder（在调用方 shell 里设全局，不要放进 $( )）。
+# branch_checked_out_elsewhere 是它的薄包装，只打印占用者的真实目录，给只要路径的地方用。
+branch_checked_out_elsewhere() {
+    find_branch_holder "$@" || return 1
+    printf '%s' "$BH_DIR"
+}
+
+# 找出签出 $1 的另一个 worktree，并说清它是谁（GitHub#141）：
+#   BH_KIND      main（仓库的主 checkout）| linked（git worktree add 出来的附加 worktree）
+#   BH_DIR       占用者的真实工作目录（给人看、给 git -C 用）
+#   BH_RAW       `git worktree list --porcelain` 原样给的路径
+#   BH_RESOLVED  1 = 真实目录解析成功；0 = 没解析出来，BH_DIR 退回 BH_RAW
+# 命中 return 0，没命中 return 1。调用方必须已经 cd 进仓库。
+#
+# 为什么不能直接用 porcelain 的路径（本机实测，git 2.43）：仓库是别的仓库的 submodule 时，
+# 主 checkout 那条报的是 gitdir（…/.git/modules/<name>），不是工作目录——人在磁盘上找不到
+# 对应的目录，`git worktree remove` 它也只会得到 `is a main working tree`。对它跑
+# `rev-parse --show-toplevel` 会按子模块的 core.worktree 解析出真实目录。附加 worktree
+# 那条本来就是真实目录，同一条命令原样返回。
+#
+# 「哪条是主 checkout」：porcelain 的第一条恒为主工作树（git 文档保证），不靠路径猜。
+#
 # 匹配必须是**全等**，不能是子串/前缀：`feature/issue-3` 绝不能匹配上
 # `feature/issue-34`。这跟 greedy 挡工判据里防的 `pending/human` vs `pending/humanoid`
 # 是同一类坑——错了不会报错，只会悄悄挡住或悄悄放过一条活。
-branch_checked_out_elsewhere() {
+find_branch_holder() {
     local branch="$1" self="${2:-}"
-    local wt="" line
+    local wt="" line idx=0 is_main=0 real
+    BH_KIND=""; BH_DIR=""; BH_RAW=""; BH_RESOLVED=0
     while IFS= read -r line; do
         case "$line" in
-            "worktree "*) wt="${line#worktree }" ;;
+            "worktree "*) wt="${line#worktree }"; idx=$((idx + 1)) ;;
         esac
         # 用字符串全等而不是 case 的 glob：分支名虽然不允许 * ? [，但这里不值得赌。
         if [ "$line" = "branch refs/heads/$branch" ]; then
+            if [ "$idx" -eq 1 ]; then is_main=1; else is_main=0; fi
+            real=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null || true)
             # 自己那份不算占用（重复派工时 worktree 可能已经在了）
-            if [ -n "$self" ] && [ "$wt" = "$self" ]; then
+            if [ -n "$self" ] && { [ "$wt" = "$self" ] || [ "$real" = "$self" ]; }; then
                 continue
             fi
-            printf '%s' "$wt"
+            BH_RAW="$wt"
+            if [ -n "$real" ]; then BH_DIR="$real"; BH_RESOLVED=1
+            else BH_DIR="$wt"; BH_RESOLVED=0; fi
+            if [ "$is_main" -eq 1 ]; then BH_KIND=main; else BH_KIND=linked; fi
             return 0
         fi
     done < <(git worktree list --porcelain 2>/dev/null || true)
     return 1
+}
+
+# 目录的物理路径（消掉符号链接、..、尾部斜杠）；目录不存在 → 空。
+canon_dir() {
+    [ -n "${1:-}" ] || return 0
+    (cd "$1" 2>/dev/null && pwd -P) || true
+}
+
+# 占用者是不是本项目配置的那个目录（PROJECT_ROOT 所在工作树的根）。两边都要解析成功、
+# 规范化后全等才算；任一边解析不出 → 不算（拿不准就不动）。
+branch_holder_is_project_root() {
+    local mine theirs root
+    [ "${BH_RESOLVED:-0}" = 1 ] || return 1
+    root=$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+    mine=$(canon_dir "$root")
+    theirs=$(canon_dir "$BH_DIR")
+    [ -n "$mine" ] && [ -n "$theirs" ] && [ "$mine" = "$theirs" ]
+}
+
+# 读占用者（find_branch_holder 刚找到的那个）的现状，设全局并拼一行给人看的说明：
+#   BH_DIRTY   未提交改动行数（含未跟踪文件）；读不出 = "?"
+#   BH_OPS     进行中的 git 操作（空格分隔）；没有 = 空；读不出 = "?"
+#   BH_HEAD    本地分支 $1 的提交；读不出 = 空
+#   BH_AHEAD / BH_BEHIND  本地分支相对 $2 领先 / 落后几个提交；读不出 = "?"
+#   BH_STATE_TEXT        一行中文说明（评论和 poll.log 共用）
+# $2 = 拿来比的提交（空 = 没有可比的），$3 = 它在说明里的叫法，$4 = 没有可比提交时的原因。
+# 规则：任何一项读不出都写「读不出」，绝不当成「干净 / 一致」。
+branch_holder_state() {
+    local branch="$1" ref="${2:-}" ref_label="${3:-远端}" no_ref_note="${4:-读不出}"
+    local out gitdir counts dirty_txt ops_txt cmp_txt
+    if out=$(git -C "$BH_DIR" status --porcelain 2>/dev/null); then
+        BH_DIRTY=$(printf '%s' "$out" | awk 'NF' | wc -l | tr -d ' ')
+    else
+        BH_DIRTY="?"
+    fi
+    BH_OPS="?"
+    if gitdir=$(git -C "$BH_DIR" rev-parse --absolute-git-dir 2>/dev/null) && [ -d "$gitdir" ]; then
+        BH_OPS=""
+        [ -e "$gitdir/MERGE_HEAD" ] && BH_OPS="$BH_OPS merge"
+        { [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; } && BH_OPS="$BH_OPS rebase"
+        [ -e "$gitdir/CHERRY_PICK_HEAD" ] && BH_OPS="$BH_OPS cherry-pick"
+        [ -e "$gitdir/REVERT_HEAD" ] && BH_OPS="$BH_OPS revert"
+        [ -e "$gitdir/BISECT_LOG" ] && BH_OPS="$BH_OPS bisect"
+        BH_OPS="${BH_OPS# }"
+    fi
+    BH_HEAD=$(git -C "$BH_DIR" rev-parse -q --verify "refs/heads/$branch^{commit}" 2>/dev/null || true)
+    BH_AHEAD="?"; BH_BEHIND="?"
+    if [ -n "$ref" ] && [ -n "$BH_HEAD" ] \
+       && counts=$(git -C "$BH_DIR" rev-list --left-right --count "$BH_HEAD...$ref" 2>/dev/null); then
+        BH_AHEAD=$(printf '%s' "$counts" | awk '{print $1}')
+        BH_BEHIND=$(printf '%s' "$counts" | awk '{print $2}')
+    fi
+
+    case "$BH_DIRTY" in
+        "?") dirty_txt="未提交改动：读不出" ;;
+        0)   dirty_txt="没有未提交改动" ;;
+        *)   dirty_txt="有 $BH_DIRTY 处未提交改动（含未跟踪文件）" ;;
+    esac
+    case "$BH_OPS" in
+        "?") ops_txt="进行中的 git 操作：读不出" ;;
+        "")  ops_txt="没有进行中的合并 / 变基等操作" ;;
+        *)   ops_txt="有进行中的 git 操作：$BH_OPS" ;;
+    esac
+    if [ -z "$ref" ]; then
+        cmp_txt="与 ${ref_label} 比：${no_ref_note}"
+    elif [ "$BH_AHEAD" = "?" ]; then
+        cmp_txt="与 ${ref_label} 比：读不出"
+    elif [ "$BH_AHEAD" = 0 ] && [ "$BH_BEHIND" = 0 ]; then
+        cmp_txt="与 ${ref_label} 完全一致"
+    else
+        cmp_txt="比 ${ref_label} 领先 $BH_AHEAD 个、落后 $BH_BEHIND 个提交"
+    fi
+    BH_STATE_TEXT="$dirty_txt；$ops_txt；$cmp_txt"
+}
+
+# 给人看的「怎么继续」，按占用者种类分两种命令（主 checkout 不能 worktree remove）。
+# $1 = base 分支。要先跑过 find_branch_holder。
+branch_holder_next_step() {
+    local base="$1" base_holder
+    if [ "$BH_KIND" = main ]; then
+        printf '确认上面的现状没问题后，在 daemon 所在机器上执行 `git -C %s switch %s`（让主 checkout 回到 `%s`，分支就释放了），再把标签改回 `%s`。' \
+            "'$BH_DIR'" "$base" "$base" "${LABEL_PENDING_AGENT:-pending/agent}"
+        if base_holder=$(branch_checked_out_elsewhere "$base" "$BH_DIR"); then
+            printf '注意：`%s` 正被另一个 worktree `%s` 签出，上面的命令会被 git 拒绝；可以改用 `git -C %s switch --detach` 释放分支。' \
+                "$base" "$base_holder" "'$BH_DIR'"
+        fi
+        if ! branch_holder_is_project_root; then
+            printf '（占着分支的 `%s` 不是本项目配置的目录 `%s`，daemon 不会自动动它。）' \
+                "$BH_DIR" "$PROJECT_ROOT"
+        fi
+    else
+        printf '在 daemon 所在机器上确认那个 worktree 没有未提交 / 未推送的改动后执行 `git worktree remove %s`，再把标签改回 `%s`。' \
+            "'$BH_DIR'" "${LABEL_PENDING_AGENT:-pending/agent}"
+    fi
+    if [ "${BH_RESOLVED:-0}" != 1 ]; then
+        printf '（没能解析出真实目录，上面是 git 原样报的路径。）'
+    fi
+}
+
+# 一句话说清占用者是谁，评论和 poll.log 共用。
+branch_holder_who() {
+    if [ "$BH_KIND" = main ]; then
+        printf '主 checkout `%s`' "$BH_DIR"
+    else
+        printf '另一个 worktree `%s`' "$BH_DIR"
+    fi
+}
+
+# 默认关。只认 1：它放宽了「daemon 不碰你的工作区」，要项目维护者自己在配置里打开。
+AUTO_RELEASE_MAIN_CHECKOUT="${AUTO_RELEASE_MAIN_CHECKOUT:-0}"
+
+# 分支被本项目主 checkout 占着、而且确定切走不会丢任何东西时，把主 checkout 切回 base，
+# 释放分支（GitHub#141）。成功 return 0；不满足 / 失败 return 1，原因在 AUTO_RELEASE_REASON。
+# 先跑过 find_branch_holder + branch_holder_state（$2 = 刚 fetch 的 PR 最新提交）。
+#
+# 全部满足才动：
+#   1. 占用者是主 checkout，且就是本项目配置的那个目录（附加 worktree、别的目录一律不动）
+#   2. 工作区没有任何改动（含未跟踪文件）
+#   3. 没有进行中的 merge / rebase / cherry-pick / revert / bisect
+#   4. 本地分支与 PR 最新提交完全相同（不领先、不落后、不分叉）
+#   5. 主 checkout 此刻确实停在这个分支上
+#   6. base 分支没被别的 worktree 占着（否则 git 会拒绝切换）
+# 动作固定是 `git switch --no-overwrite-ignore <base>`：检查和切换之间若有人新建了一个
+# base 上跟踪、当前分支忽略的同名文件，普通 switch 会直接覆盖它（实测），这个参数让 git
+# 拒绝。有人改了跟踪文件，git 按自己的规则拒绝或带过去，都不会丢内容。被拒不重试。
+main_checkout_auto_release() {
+    local branch="$1" pr_sha="${2:-}" base="${BASE_BRANCH:-main}" cur out rc base_holder
+    AUTO_RELEASE_REASON=""
+    if [ "$BH_KIND" != main ]; then
+        AUTO_RELEASE_REASON="占用者是附加 worktree，daemon 不动它"; return 1
+    fi
+    if ! branch_holder_is_project_root; then
+        AUTO_RELEASE_REASON="占用者不是本项目配置的目录（$PROJECT_ROOT），daemon 不动它"; return 1
+    fi
+    if [ "$BH_DIRTY" != 0 ]; then
+        AUTO_RELEASE_REASON="主 checkout 有未提交改动或读不出"; return 1
+    fi
+    if [ -n "$BH_OPS" ]; then
+        AUTO_RELEASE_REASON="主 checkout 有进行中的 git 操作或读不出（$BH_OPS）"; return 1
+    fi
+    if [ -z "$pr_sha" ] || [ -z "$BH_HEAD" ] || [ "$BH_HEAD" != "$pr_sha" ]; then
+        AUTO_RELEASE_REASON="本地分支与 PR 最新提交不一致或读不出"; return 1
+    fi
+    cur=$(git -C "$BH_DIR" symbolic-ref -q HEAD 2>/dev/null || true)
+    if [ "$cur" != "refs/heads/$branch" ]; then
+        AUTO_RELEASE_REASON="主 checkout 当前不在 $branch 上（实得 ${cur:-读不出}）"; return 1
+    fi
+    if base_holder=$(branch_checked_out_elsewhere "$base" "$BH_DIR"); then
+        AUTO_RELEASE_REASON="\`$base\` 正被另一个 worktree \`$base_holder\` 签出，切不过去"; return 1
+    fi
+    out=$(git -C "$BH_DIR" switch --no-overwrite-ignore "$base" 2>&1); rc=$?
+    if [ "$rc" -ne 0 ]; then
+        AUTO_RELEASE_REASON="git 拒绝切换（退出码 $rc）：$(printf '%s' "$out" | tr '\n' ' ' | head -c 400)"
+        return 1
+    fi
+    return 0
 }
 
 branch_to_issue_num() {

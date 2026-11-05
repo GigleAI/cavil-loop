@@ -170,26 +170,94 @@ cd "$PROJECT_ROOT"
 # 这类失败在占用者还在期间是确定性的，重试 100% 白费（每次派工都含一次真出网的
 # sync_project_checkout），所以直接转人工，不进 agent-poll.sh 的重试计数通道。
 # 写法跟本文件上面 pr_to_issue_num 返空时那段同款：翻 label + exit 0。
-if HOLDER=$(branch_checked_out_elsewhere "$BRANCH" "$WORKTREE"); then
-    log "PR #$PR -> 分支 $BRANCH 已被另一个 worktree 签出：$HOLDER"
-    log "  → 拒绝重建 worktree（fetch 会被 git 拒绝；--force 建出来是两个 worktree 共用一个分支）"
-    log "  → 翻 label 回 $LABEL_PENDING_HUMAN，不重试。清掉占用者（git worktree remove '$HOLDER'）后重标 $LABEL_PENDING_AGENT 即可继续"
-    notify_bounced_to_human "$PR" \
-        "分支 \`$BRANCH\` 已被本机另一个 worktree 签出（\`$HOLDER\`），daemon 没法为这个 PR 建工作目录——硬建会变成两个 worktree 往同一分支提交。" \
-        "在 daemon 所在机器上确认那个 worktree 没有未提交 / 未推送的改动后执行 \`git worktree remove '$HOLDER'\`，再把标签改回 \`$LABEL_PENDING_AGENT\`。"
-    run_gh "label 翻转 (PR #$PR 分支被占用 → $LABEL_PENDING_HUMAN)" \
-        gh_label_flip "$PR" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" || true
-    exit 0
+#
+# 占用者是本项目的主 checkout 时（人在主 checkout 里开分支 → push → 交给 daemon），
+# 提示要给 `switch` 而不是必然失败的 `worktree remove`；配置打开
+# AUTO_RELEASE_MAIN_CHECKOUT=1 且确定零丢失时，daemon 自己切回 base 再往下走（GitHub#141）。
+if find_branch_holder "$BRANCH" "$WORKTREE"; then
+    BASE="${BASE_BRANCH:-main}"
+    # 拿 PR 最新提交来比：只写 FETCH_HEAD，不写被占用的分支，git 不会拒绝。
+    PR_HEAD_SHA=""
+    if run_git "fetch PR #$PR head（比对占用者用，只写 FETCH_HEAD）" \
+        git fetch origin "refs/pull/$PR/head"; then
+        PR_HEAD_SHA=$(git rev-parse -q --verify "FETCH_HEAD^{commit}" 2>/dev/null || true)
+    fi
+    branch_holder_state "$BRANCH" "$PR_HEAD_SHA" "PR #$PR 的最新提交" "读不出 PR 的最新提交"
+    HOLDER_WHO="$(branch_holder_who)"
+    HOLDER_DIR="$BH_DIR"   # 下面切换后重查会清掉 BH_*，留言要用切换前的那个目录
+    log "PR #$PR -> 分支 $BRANCH 已被${HOLDER_WHO} 签出（git 报的路径：$BH_RAW）"
+    log "  → 占用者现状：$BH_STATE_TEXT"
+
+    RELEASED=0
+    if [ "$AUTO_RELEASE_MAIN_CHECKOUT" = 1 ]; then
+        if main_checkout_auto_release "$BRANCH" "$PR_HEAD_SHA"; then
+            # 切完再查一次：确认分支真的空出来了，才往下 fetch / 建 worktree。
+            if find_branch_holder "$BRANCH" "$WORKTREE"; then
+                log "  → 已切换主 checkout，但分支仍被 $BH_DIR 签出，转人工"
+                AUTO_RELEASE_REASON="切换后分支仍被 \`$BH_DIR\` 签出"
+            else
+                RELEASED=1
+            fi
+        fi
+        [ "$RELEASED" = 1 ] || log "  → 不自动释放：$AUTO_RELEASE_REASON"
+    fi
+
+    if [ "$RELEASED" != 1 ]; then
+        log "  → 拒绝重建 worktree（fetch 会被 git 拒绝；--force 建出来是两个 worktree 共用一个分支）"
+        log "  → 翻 label 回 $LABEL_PENDING_HUMAN，不重试"
+        reason="分支 \`$BRANCH\` 已被本机${HOLDER_WHO} 签出，daemon 没法为这个 PR 建工作目录——硬建会变成两个 worktree 往同一分支提交。占用者现状：${BH_STATE_TEXT}。"
+        if [ "$AUTO_RELEASE_MAIN_CHECKOUT" = 1 ] && [ -n "${AUTO_RELEASE_REASON:-}" ]; then
+            reason="$reason 没有自动切走它：${AUTO_RELEASE_REASON}。"
+        fi
+        notify_bounced_to_human "$PR" "$reason" "$(branch_holder_next_step "$BASE")"
+        run_gh "label 翻转 (PR #$PR 分支被占用 → $LABEL_PENDING_HUMAN)" \
+            gh_label_flip "$PR" \
+            --add "$LABEL_PENDING_HUMAN" \
+            --remove "${TRIGGER_LABELS_ALL[@]}" || true
+        exit 0
+    fi
+
+    log "  → 已把主 checkout 从 $BRANCH 切回 $BASE（切换前干净、与 PR 最新提交一致）"
 fi
 
-run_git "fetch PR #$PR head → $BRANCH" \
-    git fetch origin "+refs/pull/$PR/head:refs/heads/$BRANCH" || exit 1
+# 本地分支要落到 PR 最新提交上，两条路写法不同：
+#   · 平常（分支没被占）：强制 fetch，PR 上的就是准的；
+#   · 刚自动让出主 checkout：**不能**再强制 fetch。检查之后、切换之前，人可能刚好在主
+#     checkout 里往这个分支提交了一次（检查时一致不代表现在一致）——强制 fetch 会把那个
+#     提交从分支上挤掉（复审实测）。这里用带旧值的 update-ref：git 加锁后核对分支仍是
+#     检查时那个提交，才算数；对不上就原样留着分支、不派工、转人工。
+#     核对通过之后主 checkout 已不在这个分支上，再有人改它（比如 branch -f）也只会被
+#     接下来建的 worktree 带上，不会被覆盖。
+if [ "${RELEASED:-0}" = 1 ]; then
+    if ! cas_out=$(git update-ref "refs/heads/$BRANCH" "$PR_HEAD_SHA" "$PR_HEAD_SHA" 2>&1); then
+        now_sha=$(git rev-parse -q --verify "refs/heads/$BRANCH^{commit}" 2>/dev/null || echo "读不出")
+        log "PR #$PR -> 让出主 checkout 期间分支 $BRANCH 变了（检查时 $PR_HEAD_SHA，现在 $now_sha），不覆盖、不派工，转人工"
+        log "  git: $(printf '%s' "$cas_out" | tr '\n' ' ' | head -c 300)"
+        notify_bounced_to_human "$PR" \
+            "daemon 已把本机主 checkout \`$HOLDER_DIR\` 从 \`$BRANCH\` 切回 \`$BASE\`，但就在检查和切换之间，分支 \`$BRANCH\` 多出了新提交（检查时是 \`$PR_HEAD_SHA\`，现在是 \`$now_sha\`）。daemon 没有覆盖它，也没有派工。" \
+            "确认这些新提交是否要进 PR：要的话 push 到 PR 分支；不要的话自行处理。然后把标签改回 \`$LABEL_PENDING_AGENT\`。"
+        run_gh "label 翻转 (PR #$PR 让出期间分支变化 → $LABEL_PENDING_HUMAN)" \
+            gh_label_flip "$PR" \
+            --add "$LABEL_PENDING_HUMAN" \
+            --remove "${TRIGGER_LABELS_ALL[@]}" || true
+        exit 0
+    fi
+    run_gh "说明主 checkout 已切回 (#$PR)" \
+        gh_write api -X POST "repos/$REPO/issues/$PR/comments" \
+        -f "body=$(printf 'ℹ️ 本机主 checkout `%s` 已从 `%s` 切回 `%s`，好为这个 PR 建工作目录。切换前没有未提交改动；切换后再次核对，分支仍停在 PR 最新提交 `%s`，没有丢任何东西。\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>' \
+            "$HOLDER_DIR" "$BRANCH" "$BASE" "$PR_HEAD_SHA" "$(hostname -s 2>/dev/null || hostname)")" || true
+else
+    run_git "fetch PR #$PR head → $BRANCH" \
+        git fetch origin "+refs/pull/$PR/head:refs/heads/$BRANCH" || exit 1
+fi
 mkdir -p "$WORKTREE_BASE"
-# 用本地刚拉好的分支建 worktree；如果分支已存在（再 dispatch），fetch 已经 force-update 到 PR head
+# 用本地分支建 worktree：平常路径上 fetch 已 force-update 到 PR head；让出路径上已核对过它就是 PR head。
+# 让出路径不加 --force：核对之后若有人又在主 checkout 里签出了这个分支，--force 会建出第二个
+# 签出同一分支的 worktree；不加时 git 直接拒绝，本轮派工失败、下轮重新判断，什么都不丢。
+WT_FORCE=(--force)
+[ "${RELEASED:-0}" = 1 ] && WT_FORCE=()
 run_git "worktree add $WORKTREE ($BRANCH)" \
-    git worktree add --force "$WORKTREE" "$BRANCH" || exit 1
+    git worktree add "${WT_FORCE[@]}" "$WORKTREE" "$BRANCH" || exit 1
 
 for rel in ${COPY_TO_WORKTREE:-}; do
     src="$PROJECT_ROOT/$rel"

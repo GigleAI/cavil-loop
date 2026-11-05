@@ -117,6 +117,12 @@ SELFHEAL_MAX_RETRIES=3
 # actually work in gets stuck this way. 20 is a good value when you want it.
 CHECKOUT_STALE_ALERT_COMMITS=0
 
+# 1 = when a PR's branch is held by this project's own main checkout, and that
+# checkout is clean, has nothing in progress and matches the PR's latest commit
+# exactly, switch it back to BASE_BRANCH and carry on (comments on the PR).
+# Off by default: it relaxes "the daemon never touches your working tree".
+AUTO_RELEASE_MAIN_CHECKOUT=0
+
 # What counts as actionable: label = only pending/agent items; greedy = every open item
 # unless a blocking label stops it
 DISPATCH_MODE="label"
@@ -1788,12 +1794,24 @@ branch is already checked out by another worktree.** `git fetch` into such a
 branch always fails, even when there is nothing to update, and
 `git worktree add --force` would happily create a *second* worktree on that same
 branch — two workers committing to one branch. Dispatch therefore refuses up
-front and sends the item straight to `pending/human`, naming the holder:
+front and sends the item straight to `pending/human`. The comment names the
+holder by its real directory, says what state it is in (uncommitted changes,
+commits ahead of / behind the PR, any merge / rebase in progress), and gives the
+command that fits the holder:
 
 ```bash
-git worktree list                 # find the holder
-git worktree remove <holder-dir>  # free the branch, then re-label pending/agent
+# the holder is the main checkout (you created the branch there and pushed it):
+git -C '<main checkout>' switch main    # free the branch, then re-label pending/agent
+# the holder is a linked worktree:
+git worktree remove '<holder-dir>'      # free the branch, then re-label pending/agent
 ```
+
+The main checkout cannot be `git worktree remove`d (`fatal: ... is a main working
+tree`). When the project is a git submodule, `git worktree list` reports the main
+checkout as its gitdir (`.../.git/modules/<name>`); the daemon resolves that to
+the real working directory before showing it. With `AUTO_RELEASE_MAIN_CHECKOUT=1`
+the daemon does the `switch` itself when it is provably safe (see the config
+template for the exact conditions) and comments on the PR that it did.
 
 The counters live in `$STATE_DIR/dispatch-fail/` and are cleared on the first
 success and again when an item is escalated, so re-labelling by hand always gives
