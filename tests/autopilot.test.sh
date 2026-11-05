@@ -28,7 +28,9 @@ trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 export HOME="$SANDBOX/home"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE
+unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE DISPATCH_AUTOPILOT_PR
+# 不继承运行者机器上的令牌（CI 上没有）：派工脚本需要的那把由沙盘配置给占位值（代码复审第 3 轮）
+unset GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN
 
 printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$TEST_DIR/lib/fake_github.py" > "$SANDBOX/bin/gh"
 cat > "$SANDBOX/bin/tmux" <<'SH'
@@ -95,6 +97,7 @@ PRICE_AUTO_FETCH=0
 MAX_CONCURRENT_WORKERS=0
 AUTOPILOT_UNKNOWN_MAX=3
 PATH="$SANDBOX/bin:\$PATH"
+GH_TOKEN="fake-token-for-test"
 CONF
         local l; for l in "$@"; do printf '%s\n' "$l" >> "$CONF"; done
         EVN=0
