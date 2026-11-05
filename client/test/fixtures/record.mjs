@@ -44,6 +44,7 @@ function scrubContent(c) {
   if (c.__typename === 'DraftIssue') return { ...c, title: 'Draft fixture' };
   return {
     ...c,
+    ...(c.id ? { id: scrubId(c.__typename === 'PullRequest' ? 'PR' : 'I', c.id) } : {}),
     title: scrubTitle(c.number, c.__typename),
     assignees: { nodes: c.assignees.nodes.map((a) => ({ login: scrubLogin(a.login) })) },
   };
@@ -106,6 +107,7 @@ writeFileSync(
 const rest = gh(['api', 'repos/GigleAI/cavil-loop/issues?state=all&per_page=40&sort=updated&direction=desc']);
 const keep = (x) => ({
   number: x.number,
+  node_id: scrubId(x.pull_request ? 'PR' : 'I', x.node_id),
   title: scrubTitle(x.number, x.pull_request ? 'PullRequest' : 'Issue'),
   state: x.state,
   html_url: x.html_url,

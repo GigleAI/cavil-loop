@@ -84,6 +84,35 @@ export class GitHubClient {
     return body.data;
   }
 
+  /**
+   * One REST write (or read) that is not a list. Returns the parsed JSON body,
+   * or null for an empty answer (204). Errors carry GitHub's own message.
+   */
+  async rest<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T | null> {
+    const res = await this.send(`${this.endpoints.api}${path}`, {
+      method,
+      ...(body !== undefined ? { body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } } : {}),
+    });
+    if (res.status === 204) return null;
+    const text = await res.text().catch(() => '');
+    if (!text) return null;
+    try {
+      return JSON.parse(text) as T;
+    } catch (e) {
+      throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
+    }
+  }
+
+  /** POST that answers with text (GitHub's markdown renderer). */
+  async restText(path: string, body: unknown): Promise<string> {
+    const res = await this.send(`${this.endpoints.api}${path}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json', Accept: 'text/html' },
+    });
+    return res.text();
+  }
+
   /** GET a REST list endpoint and follow every `Link: rel="next"` page. */
   async restList<T>(path: string): Promise<T[]> {
     const out: T[] = [];

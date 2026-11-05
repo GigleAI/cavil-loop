@@ -24,7 +24,7 @@ interface GqlField {
   configuration?: { iterations: GqlIteration[]; completedIterations: GqlIteration[] };
   options?: { id: string; name: string }[];
 }
-interface GqlFieldValue {
+export interface GqlFieldValue {
   __typename: string;
   iterationId?: string;
   title?: string;
@@ -34,8 +34,9 @@ interface GqlFieldValue {
   name?: string;
   field?: { id?: string; name?: string };
 }
-interface GqlContent {
+export interface GqlContent {
   __typename: 'Issue' | 'PullRequest' | 'DraftIssue';
+  id?: string;
   number?: number;
   title?: string;
   url?: string;
@@ -51,6 +52,7 @@ interface GqlProject {
   id: string;
   title: string;
   url: string;
+  viewerCanUpdate?: boolean;
   fields: { nodes: GqlField[] };
   items: {
     totalCount: number;
@@ -68,6 +70,46 @@ function contentState(c: GqlContent): Item['state'] {
   return c.state === 'OPEN' ? 'open' : 'closed';
 }
 
+/** One Project item's iteration / status, read with that Project's own field ids. */
+export function readMembership(
+  meta: ProjectMeta,
+  itemId: string,
+  values: GqlFieldValue[],
+): ProjectMembership {
+  let iteration: Iteration | null = null;
+  let status: string | null = null;
+  for (const v of values) {
+    if (v.__typename === 'ProjectV2ItemFieldIterationValue' && v.field?.id === meta.iterationFieldId && v.iterationId) {
+      iteration = { id: v.iterationId, title: v.title ?? '', startDate: v.startDate ?? '', duration: v.duration ?? 0 };
+    } else if (v.__typename === 'ProjectV2ItemFieldSingleSelectValue' && v.field?.id === meta.statusFieldId) {
+      status = v.name ?? null;
+    }
+  }
+  return { projectKey: meta.key, projectTitle: meta.title, itemId, iteration, status };
+}
+
+/** An issue / PR as GraphQL returns it → the board's item (memberships filled by the caller). */
+export function contentToItem(c: GqlContent, projects: ProjectMembership[], sources: string[]): Item | null {
+  if (c.__typename === 'DraftIssue' || !c.repository || c.number == null) return null;
+  const repo = c.repository.nameWithOwner;
+  return {
+    key: itemKey(repo, c.number),
+    nodeId: c.id ?? '',
+    repo,
+    number: c.number,
+    title: c.title ?? '',
+    url: c.url ?? '',
+    kind: c.__typename === 'PullRequest' ? 'pr' : 'issue',
+    state: contentState(c),
+    updatedAt: c.updatedAt ?? '',
+    labels: c.labels?.nodes.map((l) => ({ name: l.name, color: l.color })) ?? [],
+    assignees: c.assignees?.nodes.map((a) => a.login) ?? [],
+    milestone: c.milestone ? { title: c.milestone.title, dueOn: c.milestone.dueOn } : null,
+    projects,
+    sources,
+  };
+}
+
 export async function fetchProject(
   client: GitHubClient,
   src: Extract<SourceConfig, { kind: 'project' }>,
@@ -75,8 +117,6 @@ export async function fetchProject(
 ): Promise<SourceSnapshot> {
   let after: string | null = null;
   let meta: ProjectMeta | null = null;
-  let iterationFieldId: string | null = null;
-  let statusFieldId: string | null = null;
   const items = new Map<string, Item>();
   for (let page = 0; ; page++) {
     if (page >= MAX_PROJECT_PAGES) throw new GitHubError('http', `Project 分页超过 ${MAX_PROJECT_PAGES} 页，已停止`);
@@ -93,8 +133,6 @@ export async function fetchProject(
       const statusField = p.fields.nodes.find(
         (f) => f.__typename === 'ProjectV2SingleSelectField' && f.name === STATUS_FIELD_NAME,
       );
-      iterationFieldId = iterField?.id ?? null;
-      statusFieldId = statusField?.id ?? null;
       const iterations: Iteration[] = iterField?.configuration
         ? [...iterField.configuration.completedIterations, ...iterField.configuration.iterations].map((i) => ({
             id: i.id,
@@ -107,6 +145,12 @@ export async function fetchProject(
         key: src.key,
         title: p.title,
         url: p.url,
+        projectId: p.id,
+        // not answered = not known to be writable: the write entries stay grey
+        viewerCanUpdate: p.viewerCanUpdate === true,
+        iterationFieldId: iterField?.id ?? null,
+        statusFieldId: statusField?.id ?? null,
+        statusOptionIds: statusField?.options?.map((o) => ({ id: o.id, name: o.name })) ?? [],
         hasIterationField: Boolean(iterField),
         iterations,
         statusOptions: statusField?.options?.map((o) => o.name) ?? [],
@@ -114,34 +158,9 @@ export async function fetchProject(
     }
     for (const node of p.items.nodes) {
       const c = node.content;
-      if (node.isArchived || !c || c.__typename === 'DraftIssue' || !c.repository || c.number == null) continue;
-      let iteration: Iteration | null = null;
-      let status: string | null = null;
-      for (const v of node.fieldValues.nodes) {
-        if (v.__typename === 'ProjectV2ItemFieldIterationValue' && v.field?.id === iterationFieldId && v.iterationId) {
-          iteration = { id: v.iterationId, title: v.title ?? '', startDate: v.startDate ?? '', duration: v.duration ?? 0 };
-        } else if (v.__typename === 'ProjectV2ItemFieldSingleSelectValue' && v.field?.id === statusFieldId) {
-          status = v.name ?? null;
-        }
-      }
-      const membership: ProjectMembership = { projectKey: src.key, projectTitle: meta.title, iteration, status };
-      const repo = c.repository.nameWithOwner;
-      const key = itemKey(repo, c.number);
-      items.set(key, {
-        key,
-        repo,
-        number: c.number,
-        title: c.title ?? '',
-        url: c.url ?? '',
-        kind: c.__typename === 'PullRequest' ? 'pr' : 'issue',
-        state: contentState(c),
-        updatedAt: c.updatedAt ?? '',
-        labels: c.labels?.nodes.map((l) => ({ name: l.name, color: l.color })) ?? [],
-        assignees: c.assignees?.nodes.map((a) => a.login) ?? [],
-        milestone: c.milestone ? { title: c.milestone.title, dueOn: c.milestone.dueOn } : null,
-        projects: [membership],
-        sources: [src.key],
-      });
+      if (node.isArchived || !c) continue;
+      const it = contentToItem(c, [readMembership(meta, node.id, node.fieldValues.nodes)], [src.key]);
+      if (it) items.set(it.key, it);
     }
     if (!p.items.pageInfo.hasNextPage) break;
     if (!p.items.pageInfo.endCursor) throw new GitHubError('graphql', 'Project 分页缺少游标');
@@ -152,6 +171,7 @@ export async function fetchProject(
 
 interface RestIssue {
   number: number;
+  node_id?: string;
   title: string;
   state: string;
   html_url: string;
@@ -166,6 +186,7 @@ function restToItem(repo: string, r: RestIssue, srcKey: string): Item {
   const key = itemKey(repo, r.number);
   return {
     key,
+    nodeId: r.node_id ?? '',
     repo,
     number: r.number,
     title: r.title,

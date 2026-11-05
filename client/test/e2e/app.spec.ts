@@ -268,3 +268,146 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
   await expect(page.getByTestId('settings')).toBeVisible();
   await app.close();
 });
+
+// ---- sub-item #138: viewing and changing items, in the real window ----
+
+async function signInWithSources(page: Page) {
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe('12');
+}
+
+const card = (page: Page, n: number) => page.locator(`[data-testid="card"][data-key="gigleai/cavil-loop#${n}"]`).first();
+const writes = () => env.fake.writes().map((w) => [w.method === 'POST' && w.path === '/api/graphql' ? w.operation : w.method, w.path, w.body ?? w.variables]);
+
+test('detail newest first in an isolated view; labels, status, drag, reply + hand back, merge / refused merge, new issue; offline greys it all', async () => {
+  // one recorded PR made open, with comments to order
+  const node = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!;
+  const prN = node.content.number as number;
+  node.content.state = 'OPEN';
+  node.content.merged = false;
+  env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C-old', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>older comment</p>', author: { login: 'user-2' } },
+    { id: 'C-new', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c2', createdAt: '2026-11-02T01:00:00Z', bodyHTML: '<p>newer comment <a href="https://github.com/GigleAI/cavil-loop">link</a></p>', author: { login: 'user-3' } },
+  ]);
+  env.fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 1, title: 'v1', state: 'open', due_on: null }]);
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+
+  // ---- detail: newest first, GitHub's HTML in a sandboxed frame ----
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  const frameEl = page.getByTestId('timeline-frame');
+  await expect(frameEl).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(frame.locator('article')).toHaveCount(3);
+  expect(await frame.locator('article').evaluateAll((els) => els.map((e) => e.getAttribute('data-entry')))).toEqual(['C-new', 'C-old', expect.stringMatching(/^I_/)]);
+  await shot(page, '20-detail-newest-first');
+  // a link in GitHub's HTML opens the system browser; the frame itself never navigates
+  await frame.locator('a', { hasText: 'link' }).click();
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('https://github.com/GigleAI/cavil-loop\n');
+  await expect(frame.locator('article')).toHaveCount(3);
+
+  // ---- labels: add in the detail, remove on the card ----
+  await detail.getByTestId('label-add').selectOption('Done');
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
+  await card(page, 138).hover();
+  await card(page, 138).locator('[data-testid="card-label-remove"][data-label="Done"]').click();
+  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toHaveCount(0);
+
+  // ---- status and milestone in the detail ----
+  await detail.getByTestId('status-select').selectOption('In progress');
+  await expect(page.getByTestId('action-result')).toContainText('状态已改');
+  await detail.getByTestId('milestone-select').selectOption('v1');
+  await expect(page.getByTestId('action-result')).toContainText('里程碑改成「v1」');
+  await shot(page, '21-detail-fields');
+
+  // ---- reply with preview, then hand back to the agent ----
+  await detail.getByTestId('reply-input').fill('看过了，按 **A** 做');
+  await detail.getByTestId('reply-preview-toggle').click();
+  await expect(page.frameLocator('[data-testid="reply-preview"]').locator('body')).toContainText('看过了');
+  await detail.getByTestId('reply-send').click();
+  await expect(page.getByTestId('action-result')).toContainText('评论已发出');
+  await expect(frame.locator('article').first()).toContainText('看过了');
+  await shot(page, '22-replied');
+  await detail.getByTestId('hand-back').click();
+  await expect(page.getByTestId('action-result')).toContainText('已交回 agent');
+  await expect(card(page, 138).locator('.label', { hasText: 'pending/agent' })).toBeVisible();
+  await expect(card(page, 138).locator('.label', { hasText: 'pending/human' })).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+
+  // ---- drag a card to another iteration: only that Project's value changes ----
+  const before137 = writes().length;
+  await card(page, 137).dragTo(page.locator('[data-testid="column"][data-title="Iteration 26"]'));
+  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(page.locator('[data-testid="column"][data-title="Iteration 26"] [data-testid="card"][data-key="gigleai/cavil-loop#137"]')).toBeVisible();
+  expect(writes().slice(before137).map((w) => w[0])).toEqual(['CavilSetIteration']);
+  await shot(page, '23-dragged');
+
+  // ---- PR: status next to the buttons; merge refused when a new commit was pushed; then merged ----
+  await page.getByTestId('mode').selectOption('status');
+  await card(page, prN).click();
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  const pull = env.fake.state.w.pulls.get(`gigleai/cavil-loop#${prN}`)!;
+  const seen = pull.headOid;
+  pull.headOid = 'f'.repeat(40); // somebody pushed after the detail was read
+  const digest = env.fake.digest();
+  await page.getByTestId('merge').click();
+  await expect(page.getByTestId('merge-commit')).toContainText(seen.slice(0, 7));
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'error');
+  await expect(page.getByTestId('action-result')).toContainText('新提交');
+  expect(env.fake.digest()).toBe(digest);
+  await shot(page, '24-merge-refused');
+  await page.getByTestId('detail-refresh').click();
+  await expect(page.getByTestId('pr-status')).toContainText('fffffff');
+  await page.getByTestId('merge').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toContainText('已合并');
+  await expect(card(page, prN).getByTestId('card-state')).toContainText('已合并');
+  expect(env.fake.writes().filter((w) => w.path.endsWith('/merge')).map((w) => w.body)).toEqual([
+    { merge_method: 'merge', sha: seen },
+    { merge_method: 'merge', sha: 'f'.repeat(40) },
+  ]);
+  await shot(page, '25-merged');
+  await page.getByTestId('detail-close').click();
+
+  // ---- new issue: joins the ticked Project ----
+  await page.getByTestId('write-entry').click();
+  await page.getByTestId('new-issue-title').fill('客户端里建的 issue');
+  await page.getByTestId('new-issue-body').fill('正文');
+  await page.locator('[data-testid="new-issue-label"][data-label="pending/human"]').check();
+  await expect(page.getByTestId('new-issue-projects')).toContainText('cavil project');
+  await shot(page, '26-new-issue');
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#140');
+  expect(writes().filter((w) => w[0] === 'POST' && w[1] === '/api/repos/GigleAI/cavil-loop/issues')).toEqual([
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues', { title: '客户端里建的 issue', body: '正文', labels: ['pending/human'] }],
+  ]);
+  await expect(card(page, 140)).toBeVisible();
+
+  // ---- offline: every change entry greys out, nothing is sent ----
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('reply-input')).toBeDisabled();
+  await expect(page.getByTestId('label-add')).toBeDisabled();
+  await expect(page.getByTestId('write-entry')).toBeDisabled();
+  await shot(page, '27-offline-detail');
+  await app.close();
+});

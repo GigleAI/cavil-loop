@@ -9,7 +9,8 @@ import { Controller } from './controller';
 import { Cache } from '../data/cache';
 import { createPlatform } from '../platform';
 import { IPC, type Snapshot } from '../shared/ipc';
-import type { ViewSettings } from '../shared/types';
+import type { HandBackLabels, ViewSettings } from '../shared/types';
+import type { WriteAction } from '../shared/actions';
 
 const smoke = process.argv.includes('--smoke-test');
 const smokeOut = process.argv.find((a) => a.startsWith('--smoke-out='))?.slice('--smoke-out='.length);
@@ -63,6 +64,14 @@ app.whenReady().then(async () => {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // The detail view's GitHub HTML lives in a sandboxed frame: it may never navigate
+  // itself (or anything) to a web page; links open in the system browser instead.
+  win.webContents.on('will-frame-navigate', (e) => {
+    if (!e.isMainFrame && !/^about:(srcdoc|blank)$/.test(e.url)) {
+      e.preventDefault();
+      if (/^https?:/.test(e.url)) platform.openExternal(e.url).catch(() => {});
+    }
+  });
 
   const snapshot = (): Snapshot => ({ state: controller.getState(), data: controller.getBoardData() });
   controller.onChange(() => {
@@ -80,6 +89,11 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.setView, (_e, patch: Partial<ViewSettings>) => controller.setView(patch));
   ipcMain.handle(IPC.syncNow, () => controller.syncNow());
   ipcMain.handle(IPC.openExternal, (_e, url: string) => platform.openExternal(String(url)));
+  ipcMain.handle(IPC.loadDetail, (_e, key: string) => controller.loadDetail(String(key)));
+  ipcMain.handle(IPC.repoOptions, (_e, repo: string) => controller.repoOptions(String(repo)));
+  ipcMain.handle(IPC.previewMarkdown, (_e, repo: string, text: string) => controller.previewMarkdown(String(repo), String(text)));
+  ipcMain.handle(IPC.act, (_e, action: WriteAction) => controller.act(action));
+  ipcMain.handle(IPC.setHandBack, (_e, patch: Partial<HandBackLabels>) => controller.setHandBack(patch ?? {}));
 
   if (smoke) {
     const timer = setTimeout(() => smokeResult(false, 'timeout'), 30_000);

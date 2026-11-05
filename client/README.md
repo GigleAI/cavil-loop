@@ -1,13 +1,14 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Electron + TypeScript + React），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136。
+`client/` 是一个本地桌面客户端（Electron + TypeScript + React），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信，和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改。
 
 ## 目录
 
 ```
 src/
   shared/    类型、来源地址解析、IPC 约定（界面也会打包它，不能引用 Node / Electron）
-  data/      GitHub 请求、同步、去重、分列、本地缓存（SQLite）、OAuth 设备授权
+  data/      GitHub 请求、同步、去重、分列、本地缓存（SQLite）、OAuth 设备授权；
+             actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条
   platform/  和操作系统打交道的部分：凭据（v1 只有 macOS 钥匙串）；通知、角标、自启以后加在这里
   main/      Electron 主进程：controller.ts 是不依赖 Electron 的应用逻辑，main.ts 只做接线
   preload/   暴露给界面的 window.cavil
@@ -15,7 +16,8 @@ src/
 test/
   unit/        vitest：数据层 + controller，对着本地假 GitHub 走真 HTTP
   e2e/         Playwright 驱动真 Electron 窗口
-  fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销
+  fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销；
+               writes.ts 是可写的一面（标签、里程碑、评论、看板字段、合并 / 关闭、新建 issue），digest() 判断「GitHub 上什么都没改」
   fixtures/    从 cavil project（GigleAI #11）录下来的真实接口返回，已脱敏；record.mjs 可重录
   mutation/    负对照
 scripts/
@@ -48,6 +50,18 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 - **凭据只在平台层**：界面拿不到 token；钥匙串写入走 `security -i` 的标准输入，不进命令行参数。
 - **测试模式**（`CAVIL_CLIENT_TEST_MODE=1`）只给自动测试用：可以把 GitHub 地址换成本机回环地址的假服务，换成别的主机会直接报错。
 - 只和 `github.com` 通信；外链一律用系统浏览器打开，且只放行 GitHub 的地址。
+
+### 查看与修改（#138）
+
+- **修改直接发给 GitHub，成功后立即重读那一条**：只替换缓存里那一条（所在的每个来源各一份，同样受「退出 / 换账号 / 来源被删」的保护）；同步正在进行时再补一轮。重读失败不影响修改本身，界面会说明，下一轮同步补上。离线时所有修改入口变灰，不排队、不重试。
+- **标签只发「加这个 / 删这个」**（`POST …/labels {labels:[一个]}`、`DELETE …/labels/<名字>`），从不整份覆盖——整份覆盖会把别人刚加的标签冲掉（负对照守着）。
+- **合并一定带上看到的提交**（`sha`）：期间被推了新提交，GitHub 回 409，界面说「请刷新」，什么都不合；合并方式只列仓库允许的；不提供绕过分支保护的管理员合并。关闭 PR 先关、关成功才发附带的评论。
+- **里程碑**改的是这一条所在仓库里同名的那个；没有就拒绝并说明，什么都不发，不新建。
+- **迭代 / 状态**只改那张卡所在 Project 的值，用那个 Project 自己的字段和选项 id；拖卡时卡上有两个 Project 就两个都改，其中一个没有目标迭代就整次拒绝。「未加入看板」的卡拖进迭代列先问「加入看板 X 并设为这个迭代？」。GitHub 说这个账号不能改某个 Project（`viewerCanUpdate`）时，那个 Project 的入口变灰并说明，标签 / 里程碑照常可改。
+- **详情**每次打开都从 GitHub 现读（不缓存），评论、评审全部分页读完；最新在上，正文最老所以在最下，逐行评论挂在所属评审下面。GitHub 渲染好的 HTML 放在 `sandbox` 隔离框里（不能跑脚本、不能导航，有自己的 CSP），链接用系统浏览器打开。
+- **交回 agent** = 加 `pending/agent`、摘 `pending/human`（先加后摘：第二步失败也不会两个都没有）；标签名在设置里改，要和 daemon 配置一致。
+- 被拒时界面照实显示原因（含 GitHub 的原话），GitHub 上什么都不改；测试对每种被拒情况核对假 GitHub 的 `digest()` 前后相同。
+- 缓存格式升到第 2 版（多存了写入要用的各种 id）：升级后第一次启动会丢掉旧缓存、重新同步一次。
 
 ## 登录用的 GitHub 应用
 
@@ -101,7 +115,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 9. 在 App 页面左侧 **Install App** → 安装到 GigleAI → 选 All repositories 或要看的那几个仓库。
 10. 把 App 页面上的 **Client ID**（形如 `Iv23li…`）写进 `DEFAULT_GITHUB_APP_CLIENT_ID`，或先在登录页选「GitHub App」、把它填进 Client ID 框试用。
 
-以后子项 #138 做「合并 PR」时，按 GitHub 文档合并接口还要 **Contents** = Read and write（届时单独确认）。
+要在客户端里**合并 PR**，按 GitHub 文档 App 还要 **Contents** = Read and write（上面没勾；OAuth 应用的 `repo` 已含这项）。不加的话，其他操作照常，合并会被 GitHub 拒绝、界面照实显示原因。
 
 ## 发版
 
