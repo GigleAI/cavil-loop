@@ -54,8 +54,8 @@ export function LoginView({ state }: { state: AppState }) {
       )}
 
       <p className="muted small">
-        申请的权限：repo、read:org、project。OAuth 应用没有「只读写 issue / PR」这么细的权限，repo 实际包含仓库的代码和设置；
-        本 App 只读写 issue、PR 和 Project。凭据存在本机钥匙串里，只发给 GitHub。
+        授权页上列出的权限由所用的 GitHub 应用决定：用 GitHub App 时只有 Issues、Pull requests、Projects 读写和仓库基本信息只读；
+        用 OAuth 应用时是 repo（含代码与设置）、read:org、project。本 App 只读写 issue、PR 和 Project。凭据存在本机钥匙串里，只发给 GitHub。
         {!state.credentialsPersistent && ' 当前系统还不支持保存凭据，退出后需要重新登录。'}
       </p>
 

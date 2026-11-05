@@ -32,6 +32,10 @@ export interface DeviceGrant {
   state: 'pending' | 'approved' | 'denied' | 'expired';
   slowDownOnce?: boolean;
   token: string;
+  /** GitHub App style grant: the token expires and comes with a refresh token */
+  refreshToken?: string;
+  expiresIn?: number;
+  refreshExpiresIn?: number;
 }
 
 export interface FakeState {
@@ -44,6 +48,8 @@ export interface FakeState {
   restPageSize: number;
   /** drop every connection (simulates being offline) */
   offline: boolean;
+  /** drop only API connections (sign-in / refresh still answer) */
+  offlineApi: boolean;
   /** fail a given Project page index (0-based) with HTTP 502 */
   failProjectPage: Map<string, number>;
   /** fail REST lists for a repo with HTTP 502 on this page (1-based) */
@@ -61,6 +67,9 @@ export interface FakeState {
   deniedRepos: Map<string, Set<string>>;
   /** responses of matching paths wait for `release()` (after the response is computed) */
   holds: { match: (path: string) => boolean; gate: Promise<void> }[];
+  /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
+  refreshTokens: Map<string, string>;
+  refreshSeq: number;
 }
 
 export interface LoggedRequest {
@@ -106,6 +115,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     repos: new Map([['gigleai/cavil-loop', loadCavilRepoIssues()]]),
     restPageSize: 100,
     offline: false,
+    offlineApi: false,
     failProjectPage: new Map(),
     failRepoPage: new Map(),
     oauthClientId: 'Iv1.fakeclientid',
@@ -117,6 +127,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     tokenViewers: new Map(),
     deniedRepos: new Map(),
     holds: [],
+    refreshTokens: new Map(),
+    refreshSeq: 0,
     ...init,
   };
   const log: LoggedRequest[] = [];
@@ -124,7 +136,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
   let grantSeq = 0;
 
   const server: Server = createServer(async (req, res) => {
-    if (state.offline) {
+    if (state.offline || (state.offlineApi && (req.url ?? '').startsWith('/api/'))) {
       req.socket.destroy();
       return;
     }
@@ -172,6 +184,24 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     }
     if (req.method === 'POST' && url.pathname === '/web/login/oauth/access_token') {
       const form = new URLSearchParams(await readBody(req));
+      if (form.get('grant_type') === 'refresh_token') {
+        entry.operation = 'refresh';
+        await held();
+        const old = form.get('refresh_token') ?? '';
+        const oldAccess = state.refreshTokens.get(old);
+        if (!oldAccess || form.get('client_id') !== state.oauthClientId) {
+          return send(200, { error: 'bad_refresh_token', error_description: 'The refresh token passed is incorrect or expired.' });
+        }
+        state.refreshSeq++;
+        const access = `ghu_fakerefreshed${String(state.refreshSeq).padStart(20, '0')}`;
+        const refresh = `ghr_fakerefresh${String(state.refreshSeq).padStart(22, '0')}`;
+        state.refreshTokens.delete(old); // rotated: the old refresh token is spent
+        state.refreshTokens.set(refresh, access);
+        state.validTokens.add(access);
+        const who = state.tokenViewers.get(oldAccess);
+        if (who) state.tokenViewers.set(access, who);
+        return send(200, { access_token: access, token_type: 'bearer', scope: '', expires_in: 28800, refresh_token: refresh, refresh_token_expires_in: 15897600 });
+      }
       const g = state.grants.find((x) => x.deviceCode === form.get('device_code'));
       if (!g || form.get('client_id') !== state.oauthClientId) return send(200, { error: 'incorrect_device_code' });
       if (g.slowDownOnce) {
@@ -182,6 +212,17 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       if (g.state === 'denied') return send(200, { error: 'access_denied' });
       if (g.state === 'expired') return send(200, { error: 'expired_token' });
       state.validTokens.add(g.token);
+      if (g.refreshToken) {
+        state.refreshTokens.set(g.refreshToken, g.token);
+        return send(200, {
+          access_token: g.token,
+          token_type: 'bearer',
+          scope: '',
+          expires_in: g.expiresIn ?? 28800,
+          refresh_token: g.refreshToken,
+          refresh_token_expires_in: g.refreshExpiresIn ?? 15897600,
+        });
+      }
       return send(200, { access_token: g.token, token_type: 'bearer', scope: 'project,read:org,repo' });
     }
     if (req.method === 'GET' && url.pathname === '/web/login/device') {

@@ -22,8 +22,9 @@ function exitCode(err: Error): number | string | undefined {
 export const KEYCHAIN_SERVICE = 'dev.luosky.cavil-loop.client';
 export const KEYCHAIN_ACCOUNT = 'github-oauth';
 
-// GitHub tokens are [A-Za-z0-9_]; anything else is refused rather than quoted.
-const TOKEN_SHAPE = /^[A-Za-z0-9_]{20,255}$/;
+// Stored credentials are GitHub tokens ([A-Za-z0-9_]) or the `v2:` form that
+// joins them with ':' (see data/grant.ts); anything else is refused rather than quoted.
+const TOKEN_SHAPE = /^[A-Za-z0-9_:]{20,1024}$/;
 
 export function assertTokenShape(token: string): void {
   if (!TOKEN_SHAPE.test(token)) throw new Error('凭据格式不符合预期，未保存');

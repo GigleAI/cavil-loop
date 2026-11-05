@@ -8,7 +8,8 @@ import { DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
 import type { CredentialStore } from '../platform/credentials';
 import { Cache } from '../data/cache';
 import { Endpoints, FetchLike, GitHubClient } from '../data/github';
-import { DeviceFlowError, pollForToken, requestDeviceCode } from '../data/deviceFlow';
+import { DeviceFlowError, pollForToken, refreshGrant, requestDeviceCode } from '../data/deviceFlow';
+import { decodeGrant, encodeGrant, type TokenGrant } from '../data/grant';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { VIEWER_QUERY } from '../data/queries';
@@ -20,6 +21,9 @@ function credentialTag(token: string): string {
 }
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
+export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
+/** refresh this long before the access token expires */
+export const REFRESH_MARGIN_MS = 5 * 60_000;
 
 export interface ControllerDeps {
   credentials: CredentialStore;
@@ -40,7 +44,13 @@ const MODES: ColumnMode[] = ['iteration', 'status', 'milestone'];
 export class Controller {
   private state: AppState;
   private snapshots = new Map<string, SourceSnapshot>();
-  private token: string | null = null;
+  /** the signed-in credential (null = signed out); `token` is its access token */
+  private grant: TokenGrant | null = null;
+  private get token(): string | null {
+    return this.grant?.accessToken ?? null;
+  }
+  /** the one refresh in flight: GitHub rotates refresh tokens, a second refresh with the same one would fail */
+  private refreshing: Promise<'ok' | 'unreachable' | 'ended'> | null = null;
   private listeners = new Set<(s: AppState) => void>();
   private syncing: Promise<void> | null = null;
   private resync = false;
@@ -116,7 +126,7 @@ export class Controller {
   }
 
   async start(): Promise<void> {
-    this.token = await this.deps.credentials.get();
+    this.grant = decodeGrant(await this.deps.credentials.get());
     if (!this.token) {
       this.set({ phase: 'login' });
       return;
@@ -156,7 +166,7 @@ export class Controller {
       const code = await requestDeviceCode(this.deps.endpoints, clientId, this.fetchImpl, this.now);
       if (run !== this.loginRun) return;
       this.set({ login: { status: 'waiting', userCode: code.userCode, verificationUri: code.verificationUri, message: null } });
-      const token = await pollForToken(this.deps.endpoints, clientId, code, this.fetchImpl, {
+      const grant = await pollForToken(this.deps.endpoints, clientId, code, this.fetchImpl, {
         now: this.now,
         sleep: this.sleep,
         cancelled: () => run !== this.loginRun,
@@ -165,7 +175,7 @@ export class Controller {
       // until the very last step. Unknown (query failed) is never "the same account".
       let login: string | null = null;
       try {
-        login = (await new GitHubClient(this.deps.endpoints, token, this.fetchImpl).graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})).viewer.login;
+        login = (await new GitHubClient(this.deps.endpoints, grant.accessToken, this.fetchImpl).graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})).viewer.login;
       } catch {
         /* the first sync round asks again */
       }
@@ -178,7 +188,7 @@ export class Controller {
       // somebody else's credential.
       const committed = await this.serialCredential(async () => {
         if (run !== this.loginRun) return false;
-        await this.deps.credentials.set(token);
+        await this.deps.credentials.set(encodeGrant(grant));
         if (run !== this.loginRun) {
           try {
             await this.deps.credentials.clear();
@@ -188,8 +198,10 @@ export class Controller {
           return false;
         }
         this.session++;
-        this.token = token;
-        this.adoptAccount(login, token);
+        this.grant = grant;
+        // a GitHub App token is refreshed with the app it came from, whatever the setting says later
+        this.deps.cache.setSetting('grantClientId', clientId);
+        this.adoptAccount(login, grant.accessToken);
         this.deps.cache.setSetting('viewer', login);
         this.state = { ...this.state, viewer: login };
         this.set({
@@ -235,7 +247,7 @@ export class Controller {
   async logout(reason: string | null = null): Promise<void> {
     this.loginRun++;
     this.session++;
-    this.token = null;
+    this.grant = null;
     // Signing out forgets everything read with that account.
     this.wipeCache();
     this.owner = null;
@@ -249,6 +261,56 @@ export class Controller {
       viewer: null,
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
+  }
+
+  /**
+   * Make sure the access token is usable (GitHub App tokens expire after 8 h).
+   * `force` refreshes even before the deadline (GitHub said 401).
+   *   ok          — nothing to do, or refreshed and stored
+   *   unreachable — GitHub could not be asked: keep everything, try later
+   *   ended       — GitHub refused the refresh token: signed out with the reason
+   * Single-flight: concurrent callers share one refresh (refresh tokens rotate).
+   */
+  private ensureFresh(force = false): Promise<'ok' | 'unreachable' | 'ended'> {
+    const used = this.grant;
+    if (!used || !used.refreshToken) return Promise.resolve('ok');
+    if (!force && (used.expiresAt == null || used.expiresAt - this.now() > REFRESH_MARGIN_MS)) return Promise.resolve('ok');
+    if (this.refreshing) return this.refreshing;
+    const session = this.session;
+    const run = (async (): Promise<'ok' | 'unreachable' | 'ended'> => {
+      if (used.refreshExpiresAt != null && this.now() >= used.refreshExpiresAt) {
+        if (session === this.session) await this.logout(REASON_REFRESH_ENDED);
+        return 'ended';
+      }
+      const clientId = this.deps.cache.getSetting<string>('grantClientId', '') || this.state.oauthClientId;
+      let next: TokenGrant;
+      try {
+        next = await refreshGrant(this.deps.endpoints, clientId, used.refreshToken!, this.fetchImpl, this.now);
+      } catch (e) {
+        if (e instanceof DeviceFlowError && e.reason === 'expired') {
+          if (session === this.session && this.grant === used) await this.logout(REASON_REFRESH_ENDED);
+          return 'ended';
+        }
+        return 'unreachable';
+      }
+      // Store + switch as one step of the credential queue, like a login: a
+      // sign-out / new login meanwhile wins, and anything queued after (a
+      // sign-out's delete, a newer login's write) runs after this write.
+      return this.serialCredential(async () => {
+        if (session !== this.session || this.grant !== used) return 'ended' as const;
+        await this.deps.credentials.set(encodeGrant(next));
+        if (session !== this.session || this.grant !== used) return 'ended' as const;
+        this.grant = next;
+        // same account, new token: the cache stays bound to it
+        if (this.owner) this.deps.cache.setSetting('cacheCredential', credentialTag(next.accessToken));
+        return 'ok' as const;
+      });
+    })();
+    this.refreshing = run;
+    void run.finally(() => {
+      if (this.refreshing === run) this.refreshing = null;
+    });
+    return run;
   }
 
   /** Drop every snapshot, in memory and in SQLite. */
@@ -332,9 +394,16 @@ export class Controller {
     return this.syncing;
   }
 
-  private async runRound(): Promise<void> {
-    const token = this.token;
-    if (!token) return;
+  private async runRound(retried = false): Promise<void> {
+    if (!this.token) return;
+    const fresh = await this.ensureFresh();
+    if (fresh === 'ended' || !this.grant) return;
+    if (fresh === 'unreachable' && this.grant.expiresAt != null && this.now() >= this.grant.expiresAt) {
+      // expired and GitHub cannot be asked for a new one: this is "offline", the cache stays
+      this.set({ sync: { ...this.state.sync, syncing: false, offline: true } });
+      return;
+    }
+    const token = this.grant.accessToken;
     const session = this.session;
     const sources = this.state.sources;
     const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
@@ -370,6 +439,15 @@ export class Controller {
         sources: [...status, ...untouched],
       },
     });
-    if (round.authFailed) await this.logout(REASON_REVOKED);
+    if (round.authFailed) {
+      // A GitHub App token can be refreshed once before the credential is declared dead.
+      if (!retried && session === this.session && this.grant?.refreshToken && this.grant.accessToken === token) {
+        const r = await this.ensureFresh(true);
+        if (r === 'ok') return this.runRound(true);
+        if (r === 'unreachable') this.set({ sync: { ...this.state.sync, offline: true } });
+        return;
+      }
+      if (session === this.session) await this.logout(REASON_REVOKED);
+    }
   }
 }

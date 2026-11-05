@@ -5,10 +5,11 @@
 // https://docs.github.com/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow
 
 import type { Endpoints, FetchLike } from './github';
+import { grantFromResponse, type TokenGrant } from './grant';
 
 export const OAUTH_SCOPES = ['repo', 'read:org', 'project'];
 
-export type DeviceFlowFailure = 'denied' | 'expired' | 'error' | 'cancelled';
+export type DeviceFlowFailure = 'denied' | 'expired' | 'error' | 'cancelled' | 'unreachable';
 
 export class DeviceFlowError extends Error {
   constructor(
@@ -40,7 +41,7 @@ async function postForm(fetchImpl: FetchLike, url: string, form: Record<string, 
       signal: AbortSignal.timeout(30_000),
     });
   } catch (e) {
-    throw new DeviceFlowError('error', `无法连接 GitHub：${(e as Error).message}`);
+    throw new DeviceFlowError('unreachable', `无法连接 GitHub：${(e as Error).message}`);
   }
   let body: Record<string, unknown> = {};
   try {
@@ -48,7 +49,10 @@ async function postForm(fetchImpl: FetchLike, url: string, form: Record<string, 
   } catch {
     /* handled below */
   }
-  if (!res.ok && !body.error) throw new DeviceFlowError('error', `GitHub 返回 HTTP ${res.status}`);
+  if (!res.ok && !body.error) {
+    // 5xx / 429: GitHub is not answering properly — not a verdict on the credential
+    throw new DeviceFlowError(res.status >= 500 || res.status === 429 ? 'unreachable' : 'error', `GitHub 返回 HTTP ${res.status}`);
+  }
   return body;
 }
 
@@ -93,7 +97,7 @@ export async function pollForToken(
   code: DeviceCode,
   fetchImpl: FetchLike,
   opts: PollOptions,
-): Promise<string> {
+): Promise<TokenGrant> {
   let interval = code.interval;
   for (;;) {
     await opts.sleep(interval * 1000);
@@ -105,7 +109,8 @@ export async function pollForToken(
       grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
     });
     if (opts.cancelled()) throw new DeviceFlowError('cancelled', '已取消登录');
-    if (typeof body.access_token === 'string' && body.access_token) return body.access_token;
+    const grant = grantFromResponse(body, opts.now());
+    if (grant) return grant;
     switch (body.error) {
       case 'authorization_pending':
         continue;
@@ -120,4 +125,28 @@ export async function pollForToken(
         throw new DeviceFlowError('error', `授权失败：${String(body.error_description ?? body.error ?? '未知错误')}`);
     }
   }
+}
+
+/**
+ * Exchange a GitHub App refresh token for a new access + refresh token.
+ * Device-flow grants refresh without a client secret. Throws
+ * DeviceFlowError('expired') when GitHub rejects the refresh token (sign in
+ * again), 'unreachable' when GitHub could not be asked (keep everything).
+ */
+export async function refreshGrant(
+  endpoints: Endpoints,
+  clientId: string,
+  refreshToken: string,
+  fetchImpl: FetchLike,
+  now: () => number,
+): Promise<TokenGrant> {
+  const body = await postForm(fetchImpl, `${endpoints.web}/login/oauth/access_token`, {
+    client_id: clientId,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+  });
+  const grant = grantFromResponse(body, now());
+  if (grant) return grant;
+  if (body.error) throw new DeviceFlowError('expired', `GitHub 不再接受续期：${String(body.error_description ?? body.error)}`);
+  throw new DeviceFlowError('error', 'GitHub 的续期回应缺少令牌');
 }

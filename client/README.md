@@ -49,9 +49,37 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 - **测试模式**（`CAVIL_CLIENT_TEST_MODE=1`）只给自动测试用：可以把 GitHub 地址换成本机回环地址的假服务，换成别的主机会直接报错。
 - 只和 `github.com` 通信；外链一律用系统浏览器打开，且只放行 GitHub 的地址。
 
-## OAuth 应用
+## 登录用的 GitHub 应用
 
-浏览器授权（设备授权流程）用的是维护者建的「Cavil Loop」GitHub OAuth App（已开启 **Device Flow**）。Client ID 不是秘密，内置在 `src/shared/config.ts` 的 `DEFAULT_OAUTH_CLIENT_ID`，登录页「OAuth 应用设置」和设置页都能覆盖。不需要、也不要放 Client secret。
+浏览器授权走 GitHub 的设备授权流程（App 显示短码，浏览器里输入、同意）。两种 GitHub 应用都支持，登录代码不区分：
+
+| | GitHub App（维护者 2026-11-05 选定，目标） | OAuth App（当前内置，过渡） |
+|---|---|---|
+| 权限 | 逐项勾选：Issues、Pull requests、Projects 读写，仓库基本信息只读 | 只能整块申请：`repo`（含代码与设置）、`read:org`、`project` |
+| 令牌 | 8 小时过期，带续期令牌（约 6 个月）；GitHub 每次续期都换一个新的续期令牌 | 不过期 |
+| 能看到的 | 只有装了这个 App 的组织 / 仓库 | 账号能看到的全部 |
+
+客户端会在令牌到期前 5 分钟自动续期，GitHub 说 401 时也先续期重试一次；续期被拒才回登录页，连不上 GitHub 只算离线、什么都不丢。续期只在一处进行，同一时刻最多一次（续期令牌用过即作废）。
+
+内置的 Client ID 在 `src/shared/config.ts` 的 `DEFAULT_OAUTH_CLIENT_ID`（Client ID 不是秘密）；登录页「OAuth 应用设置」和设置页都能覆盖。续期时用的是登录那一刻的 Client ID，之后改设置不影响已登录的令牌。
+
+### 建 GitHub App 的逐项设置
+
+1. 在 GigleAI 组织页「Settings → Developer settings → GitHub Apps → New GitHub App」新建（建在组织下，组织的 Project 才能授权给它）。
+2. **GitHub App name**：`Cavil Loop`；**Homepage URL**：`https://github.com/GigleAI/cavil-loop`。
+3. **Identifying and authorizing users**：勾 **Expire user authorization tokens**（默认已勾）；**Callback URL** 留空也行（设备授权用不到）；不勾「Request user authorization (OAuth) during installation」。
+4. 勾 **Enable Device Flow**。
+5. **Webhook**：取消勾选 **Active**（客户端不需要回调）。
+6. **Permissions**：
+   - Repository permissions：**Issues** = Read and write；**Pull requests** = Read and write；**Metadata** = Read-only（必选）。其余保持 No access。
+   - Organization permissions：**Projects** = Read and write。其余保持 No access。
+   - Account permissions：全部 No access。
+7. **Where can this GitHub App be installed?**：Only on this account。点 **Create GitHub App**。
+8. 不需要生成 Client secret，也不需要 Private key。
+9. 在 App 页面左侧 **Install App** → 安装到 GigleAI → 选 All repositories 或要看的那几个仓库。
+10. 把 App 页面上的 **Client ID**（形如 `Iv23li…`）写进 `DEFAULT_OAUTH_CLIENT_ID`，或先在登录页「OAuth 应用设置」里填进去试用。
+
+以后子项 #138 做「合并 PR」时，按 GitHub 文档合并接口还要 **Contents** = Read and write（届时单独确认）。
 
 ## 发版
 
