@@ -1,6 +1,7 @@
 import type { AppState } from '../shared/types';
 import { api } from './api';
-import { AppKindPicker, permissionText } from './AppKindPicker';
+import { AppKindPicker } from './AppKindPicker';
+import { permissionText } from '../shared/appKind';
 
 const FAILURE_TEXT: Record<string, string> = {
   denied: '你在 GitHub 页面上拒绝了授权。',
@@ -54,7 +55,7 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
       )}
 
       <p className="muted small" data-testid="permission-text">
-        {permissionText(state.appKind)} 凭据存在本机钥匙串里，只发给 GitHub。
+        {permissionText(state.appKind, state.clientId)} 凭据存在本机钥匙串里，只发给 GitHub。
         {!state.credentialsPersistent && ' 当前系统还不支持保存凭据，退出后需要重新登录。'}
       </p>
     </div>

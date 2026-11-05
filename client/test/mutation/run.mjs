@@ -206,6 +206,24 @@ const MUTATIONS = [
   { what: '续期用当前设置的 Client ID，而不是登录时那个应用的', file: 'src/main/controller.ts',
     from: "this.deps.cache.getSetting<string>('grantClientId', '') || this.state.clientId;", to: 'this.state.clientId;',
     expect: ['changing the sign-in method while signed in: the token is still refreshed with the app it came from'] },
+  // review round 1: what is said must match what is sent (GitHub#140)
+  { what: '登录前不核对 Client ID 和所选方式是否对得上', file: 'src/main/controller.ts',
+    from: '    if (mismatch) {', to: '    if (false) {',
+    expect: ['a Client ID that does not match the chosen method is refused before anything is sent'] },
+  { what: '选 GitHub App 却填了 OAuth 应用的 ID 也放行', file: 'src/shared/appKind.ts',
+    from: "if (kind === 'github-app' && !isAppId) {", to: 'if (false) {',
+    expect: ['a Client ID that does not match the chosen method is refused before anything is sent'] },
+  { what: 'ID 和方式对不上时仍显示较小的权限说明', file: 'src/shared/appKind.ts',
+    from: "if (clientIdKindProblem(kind, clientId)) return '所填的 Client ID 和登录方式对不上，登录前请先改好。';", to: '',
+    expect: ['says nothing reassuring for a mismatched ID'] },
+  { what: '退回上一版说法：GitHub App「碰不到代码」', file: 'src/shared/appKind.ts',
+    from: "'用 GitHub App 时，权限由那个 App 登记时勾选的决定，登录时没法再收窄；GitHub 授权页上列的才算数。本应用这一版只读取看板数据。'",
+    to: "'GitHub 授权页上会列出：Issues、Pull requests、Projects 读写，仓库基本信息只读，碰不到代码。'",
+    expect: ['never promises a GitHub App cannot touch code'] },
+  { what: '退回上一版说法：OAuth 应用一律「不过期」', file: 'src/shared/appKind.ts',
+    from: "    oauth: '看应用的设置：开了「令牌过期」的会过期（本应用会自动续期）；没开的不过期，直到你撤销。',",
+    to: "    oauth: '不过期，直到你撤销。',",
+    expect: ['never states a fixed lifetime'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;

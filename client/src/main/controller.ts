@@ -4,6 +4,7 @@
 
 import { APP_KINDS, type AppKind, type AppState, type BoardData, type ColumnMode, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
 import { parseSource } from '../shared/sources';
+import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
 import type { CredentialStore } from '../platform/credentials';
 import { Cache } from '../data/cache';
@@ -215,6 +216,12 @@ export class Controller {
           ? '用 GitHub App 登录要先填它的 Client ID（这一版还没有内置的 GitHub App），或改回默认的 OAuth 应用'
           : '还没有配置 OAuth 应用的 Client ID，请先在下方填写';
       this.set({ login: { status: 'error', userCode: null, verificationUri: null, message } });
+      return;
+    }
+    // never sign in through a different kind of app than the page describes
+    const mismatch = clientIdKindProblem(this.state.appKind, clientId);
+    if (mismatch) {
+      this.set({ login: { status: 'error', userCode: null, verificationUri: null, message: mismatch } });
       return;
     }
     this.set({ login: { status: 'requesting', userCode: null, verificationUri: null, message: null } });

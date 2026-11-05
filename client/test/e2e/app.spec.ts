@@ -226,7 +226,8 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
   const help = page.getByTestId('app-kind-help');
   await expect(help).toBeVisible();
   await expect(help.locator('table.compare tbody tr')).toHaveCount(7);
-  await expect(help).toContainText('8 小时过期');
+  await expect(help).toContainText('看 App 的设置');
+  await expect(help).not.toContainText('碰不到代码');
   await shot(page, '12-app-kind-help');
   await page.getByTestId('help-back').click();
   await expect(page.getByTestId('login')).toBeVisible();
@@ -236,17 +237,24 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
   await expect(page.getByTestId('app-kind-github-app')).toBeChecked();
   await expect(page.getByTestId('client-id')).toBeVisible();
   await expect(page.getByTestId('client-id')).toHaveValue('');
-  await expect(page.getByTestId('permission-text')).toContainText('Issues、Pull requests、Projects');
+  await expect(page.getByTestId('permission-text')).toContainText('授权页上列的才算数');
   await page.getByTestId('start-login').click();
   await expect(page.getByTestId('login-error')).toContainText('GitHub App');
   await shot(page, '13-login-method-github-app');
 
-  // with the GitHub App's ID it signs in through that app
+  // an OAuth app's ID typed into the GitHub App box: flagged at once, cannot be saved
   await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await expect(page.getByTestId('client-id-mismatch')).toContainText('不是 GitHub App 的');
+  await expect(page.getByTestId('save-client-id')).toBeDisabled();
+  await shot(page, '14-client-id-mismatch');
+
+  // with the GitHub App's ID it signs in through that app
+  await page.getByTestId('client-id').fill(env.fake.state.appClientId);
+  await expect(page.getByTestId('client-id-mismatch')).toHaveCount(0);
   await page.getByTestId('save-client-id').click();
   await page.getByTestId('start-login').click();
   await expect(page.getByTestId('user-code')).toBeVisible();
-  expect(env.fake.state.deviceClientIds).toEqual([env.fake.state.oauthClientId]);
+  expect(env.fake.state.deviceClientIds).toEqual([env.fake.state.appClientId]);
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
 

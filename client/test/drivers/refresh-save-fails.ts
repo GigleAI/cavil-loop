@@ -50,7 +50,7 @@ const c = new Controller({
   fetch: fetchImpl,
   now: () => now,
   openExternal: async () => {},
-  defaultClientId: 'Iv1.test',
+  defaultClientId: 'Ov23litestclient0000',
 });
 await c.start().catch((e: Error) => console.log('CALLER_CAUGHT', e.message));
 console.log('AFTER_START', c.getState().phase, JSON.stringify(c.getState().sync.problem));

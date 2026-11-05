@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { AppKind, AppState } from '../shared/types';
 import { api } from './api';
+import { clientIdKindProblem } from '../shared/appKind';
 
 export const APP_KIND_LABEL: Record<AppKind, string> = {
   oauth: 'OAuth 应用（默认）',
@@ -15,6 +16,9 @@ export function AppKindPicker({ state, disabled, onHelp }: { state: AppState; di
   useEffect(() => setClientId(state.clientIdIsDefault ? '' : state.clientId), [state.appKind, state.clientId, state.clientIdIsDefault]);
   const [showAdvanced, setShowAdvanced] = useState(!state.clientId);
   const needsId = !state.clientId;
+  // checked on what is typed, before saving, and on what is saved
+  const problem = clientIdKindProblem(state.appKind, clientId) ?? clientIdKindProblem(state.appKind, state.clientId);
+  const typedProblem = clientIdKindProblem(state.appKind, clientId);
 
   return (
     <div className="app-kind" data-testid="app-kind">
@@ -43,7 +47,12 @@ export function AppKindPicker({ state, disabled, onHelp }: { state: AppState; di
           {showAdvanced ? '收起 Client ID' : '改 Client ID'}
         </button>
       )}
-      {(showAdvanced || needsId) && (
+      {problem && (
+        <div className="banner error" data-testid="client-id-mismatch">
+          {problem}
+        </div>
+      )}
+      {(showAdvanced || needsId || problem) && (
         <div className="advanced">
           <label>
             {state.appKind === 'github-app' ? 'GitHub App 的 Client ID' : 'OAuth 应用的 Client ID'}
@@ -56,7 +65,7 @@ export function AppKindPicker({ state, disabled, onHelp }: { state: AppState; di
               onChange={(e) => setClientId(e.target.value)}
             />
           </label>
-          <button data-testid="save-client-id" disabled={disabled} onClick={() => api().setClientId(clientId)}>
+          <button data-testid="save-client-id" disabled={disabled || !!typedProblem} onClick={() => api().setClientId(clientId)}>
             保存
           </button>
           <p className="muted small">
@@ -68,11 +77,4 @@ export function AppKindPicker({ state, disabled, onHelp }: { state: AppState; di
       )}
     </div>
   );
-}
-
-/** What the authorization page will ask for, per kind. */
-export function permissionText(kind: AppKind): string {
-  return kind === 'github-app'
-    ? 'GitHub 授权页上会列出：Issues、Pull requests、Projects 读写，仓库基本信息只读，碰不到代码。'
-    : 'GitHub 授权页上会列出：repo（仓库读写，含代码与设置）、read:org、project——OAuth 应用读私有仓库只能要整个 repo。本应用这一版只读取看板数据。';
 }

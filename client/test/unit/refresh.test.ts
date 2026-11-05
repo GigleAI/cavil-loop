@@ -71,6 +71,8 @@ async function signInAsApp(store: FileStore, clock: { t: number }) {
   const h = make(store, clock);
   h.c.addSource(REPO);
   await h.c.start();
+  h.c.setAppKind('github-app');
+  h.c.setClientId(fake.state.appClientId);
   const p = h.c.startLogin();
   await until(h.c, (s) => s.login.status === 'waiting', 'waiting');
   fake.resolveGrant('approved');
@@ -139,9 +141,10 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     const clock = { t: FIXTURE_NOW };
     const store = new FileStore(join(dir, 'cred'));
     const { c } = await signInAsApp(store, clock);
-    c.setAppKind('github-app'); // no built-in GitHub App: the next sign-in would have no Client ID at all
+    // signed in through the GitHub App; the next sign-in will go through the OAuth app
+    // (an app the fake also knows — but this token's refresh token belongs to the GitHub App)
     c.setAppKind('oauth');
-    c.setClientId('Ov23someotherapp0000'); // and the OAuth app's ID now points elsewhere
+    expect(c.getState().clientId).toBe(fake.state.oauthClientId);
     clock.t += 8 * HOUR - REFRESH_MARGIN_MS + 1_000;
     await c.syncNow();
     expect(refreshes()).toHaveLength(1);

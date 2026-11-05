@@ -64,7 +64,7 @@ const c = new Controller({
   now: () => NOW,
   sleep: async () => {},
   openExternal: async () => {},
-  defaultClientId: 'Iv1.test',
+  defaultClientId: 'Ov23litestclient0000',
 });
 const report = async (tag: string) => {
   const stored = decodeGrant(await new FileStore(join(dir, 'cred')).get());

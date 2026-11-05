@@ -597,29 +597,29 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
     const { c } = make({ defaultClientId: OAUTH_BUILTIN });
     await c.start();
     c.setAppKind('github-app');
-    c.setClientId(fake.state.oauthClientId); // the fake only accepts its own ID
-    expect(c.getState()).toMatchObject({ appKind: 'github-app', clientId: fake.state.oauthClientId, clientIdIsDefault: false });
+    c.setClientId(fake.state.appClientId);
+    expect(c.getState()).toMatchObject({ appKind: 'github-app', clientId: fake.state.appClientId, clientIdIsDefault: false });
     // the OAuth app's ID is untouched by it
     c.setAppKind('oauth');
     expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: OAUTH_BUILTIN, clientIdIsDefault: true });
     c.setAppKind('github-app');
     const p = c.startLogin();
     await until(c, (s) => s.login.status === 'waiting', 'waiting');
-    expect(fake.state.deviceClientIds).toEqual([fake.state.oauthClientId]);
+    expect(fake.state.deviceClientIds).toEqual([fake.state.appClientId]);
     fake.resolveGrant('approved');
     await p;
     expect(c.getState().phase).toBe('ready');
     c.stopTimer();
     const again = make({ defaultClientId: OAUTH_BUILTIN });
     await again.c.start();
-    expect(again.c.getState()).toMatchObject({ phase: 'ready', appKind: 'github-app', clientId: fake.state.oauthClientId });
+    expect(again.c.getState()).toMatchObject({ phase: 'ready', appKind: 'github-app', clientId: fake.state.appClientId });
   });
 
   it('switching back to the OAuth app sends the OAuth app\'s ID', async () => {
-    const { c } = make({ defaultClientId: fake.state.oauthClientId, defaultGithubAppClientId: 'Iv23builtinapp000000' });
+    const { c } = make({ defaultClientId: fake.state.oauthClientId, defaultGithubAppClientId: fake.state.appClientId });
     await c.start();
     c.setAppKind('github-app');
-    expect(c.getState()).toMatchObject({ clientId: 'Iv23builtinapp000000', clientIdIsDefault: true });
+    expect(c.getState()).toMatchObject({ clientId: fake.state.appClientId, clientIdIsDefault: true });
     c.setAppKind('oauth');
     const p = c.startLogin();
     await until(c, (s) => s.login.status === 'waiting', 'waiting');
@@ -645,5 +645,51 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
   it('a preview build that saved an OAuth app ID: stays on the OAuth app with it', () => {
     const { c } = make({ defaultClientId: OAUTH_BUILTIN, seed: { oauthClientId: 'Ov23liMyOwnApp000000' } });
     expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: 'Ov23liMyOwnApp000000', clientIdIsDefault: false });
+  });
+
+  it('a Client ID that does not match the chosen method is refused before anything is sent', async () => {
+    const { c } = make({ defaultClientId: fake.state.oauthClientId });
+    await c.start();
+    // GitHub App chosen, an OAuth app's ID filled in: would ask for repo while the page describes a GitHub App
+    c.setAppKind('github-app');
+    c.setClientId(fake.state.oauthClientId);
+    await c.startLogin();
+    expect(c.getState().login).toMatchObject({ status: 'error' });
+    expect(c.getState().login.message).toContain('不是 GitHub App 的');
+    // and the other way round
+    c.setAppKind('oauth');
+    c.setClientId(fake.state.appClientId);
+    await c.startLogin();
+    expect(c.getState().login.message).toContain('是 GitHub App 的');
+    expect(fake.state.deviceClientIds).toEqual([]);
+    // matched again → it goes through
+    c.setClientId('');
+    const p = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'waiting');
+    expect(fake.state.deviceClientIds).toEqual([fake.state.oauthClientId]);
+    fake.resolveGrant('approved');
+    await p;
+    expect(c.getState().phase).toBe('ready');
+  });
+});
+
+describe('what the app says about the two methods', () => {
+  it('never promises a GitHub App cannot touch code, never states a fixed lifetime, and says nothing reassuring for a mismatched ID', async () => {
+    const { APP_KIND_FACTS, permissionText } = await import('../../src/shared/appKind');
+    const all = [permissionText('github-app', 'Iv23liSomeApp0000000'), permissionText('oauth', 'Ov23liSomeApp0000000'), ...APP_KIND_FACTS.flatMap((r) => [r.oauth, r.app])].join('\n');
+    expect(all).not.toMatch(/碰不到代码|看不到也改不了代码/);
+    expect(all).not.toMatch(/最多 8 小时/);
+    const expiry = APP_KIND_FACTS.find((r) => r.topic.includes('过期'))!;
+    expect(expiry.oauth).toContain('看应用的设置'); // not an unconditional "never expires"
+    expect(expiry.oauth).not.toMatch(/^不过期/);
+    expect(expiry.app).toContain('看 App 的设置');
+    // a GitHub App's permissions are the App's own: the text says so instead of listing a fixed set
+    expect(permissionText('github-app', 'Iv23liSomeApp0000000')).toContain('授权页上列的才算数');
+    // mismatched pair: no permission promise at all, only "fix it first"
+    for (const [kind, id] of [['github-app', 'Ov23liSomeApp0000000'], ['oauth', 'Iv23liSomeApp0000000']] as const) {
+      const t = permissionText(kind, id);
+      expect(t).toContain('对不上');
+      expect(t).not.toMatch(/repo|Issues|授权页/);
+    }
   });
 });

@@ -32,6 +32,8 @@ export interface DeviceGrant {
   state: 'pending' | 'approved' | 'denied' | 'expired';
   slowDownOnce?: boolean;
   token: string;
+  /** the app the device code was requested for; polling must use the same one */
+  clientId: string;
   /** GitHub App style grant: the token expires and comes with a refresh token */
   refreshToken?: string;
   expiresIn?: number;
@@ -54,7 +56,12 @@ export interface FakeState {
   failProjectPage: Map<string, number>;
   /** fail REST lists for a repo with HTTP 502 on this page (1-based) */
   failRepoPage: Map<string, number>;
+  /** the fake's OAuth app (an OAuth-app-shaped ID) */
   oauthClientId: string;
+  /** the fake's GitHub App (a GitHub-App-shaped ID); both are accepted */
+  appClientId: string;
+  /** refresh token -> Client ID it was issued to: refreshing needs that same app, as on GitHub */
+  refreshClients: Map<string, string>;
   grants: DeviceGrant[];
   deviceInterval: number;
   deviceExpiresIn: number;
@@ -122,7 +129,9 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     offlineApi: false,
     failProjectPage: new Map(),
     failRepoPage: new Map(),
-    oauthClientId: 'Iv1.fakeclientid',
+    oauthClientId: 'Ov23lifakeoauthapp00',
+    appClientId: 'Iv1.fakeappclientid',
+    refreshClients: new Map(),
     grants: [],
     deviceInterval: 1,
     deviceExpiresIn: 900,
@@ -170,13 +179,15 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       const form = new URLSearchParams(await readBody(req));
       state.lastScope = form.get('scope');
       state.deviceClientIds.push(form.get('client_id') ?? '');
-      if (form.get('client_id') !== state.oauthClientId) return send(200, { error: 'incorrect_client_credentials', error_description: 'The client_id is not valid.' });
+      const clientId = form.get('client_id') ?? '';
+      if (clientId !== state.oauthClientId && clientId !== state.appClientId) return send(200, { error: 'incorrect_client_credentials', error_description: 'The client_id is not valid.' });
       grantSeq++;
       const g: DeviceGrant = {
         deviceCode: `dc-${grantSeq}`,
         userCode: `ABCD-${String(1000 + grantSeq)}`,
         state: 'pending',
         token: `gho_faketoken${String(grantSeq).padStart(24, '0')}`,
+        clientId,
         ...state.nextGrant,
       };
       state.nextGrant = {};
@@ -205,7 +216,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         await held();
         const old = form.get('refresh_token') ?? '';
         const oldAccess = state.refreshTokens.get(old);
-        if (!oldAccess || form.get('client_id') !== state.oauthClientId) {
+        if (!oldAccess || form.get('client_id') !== state.refreshClients.get(old)) {
           return send(200, { error: 'bad_refresh_token', error_description: 'The refresh token passed is incorrect or expired.' });
         }
         state.refreshSeq++;
@@ -213,13 +224,14 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         const refresh = `ghr_fakerefresh${String(state.refreshSeq).padStart(22, '0')}`;
         state.refreshTokens.delete(old); // rotated: the old refresh token is spent
         state.refreshTokens.set(refresh, access);
+        state.refreshClients.set(refresh, state.refreshClients.get(old)!);
         state.validTokens.add(access);
         const who = state.tokenViewers.get(oldAccess);
         if (who) state.tokenViewers.set(access, who);
         return send(200, { access_token: access, token_type: 'bearer', scope: '', expires_in: 28800, refresh_token: refresh, refresh_token_expires_in: 15897600 });
       }
       const g = state.grants.find((x) => x.deviceCode === form.get('device_code'));
-      if (!g || form.get('client_id') !== state.oauthClientId) return send(200, { error: 'incorrect_device_code' });
+      if (!g || form.get('client_id') !== g.clientId) return send(200, { error: 'incorrect_device_code' });
       if (g.slowDownOnce) {
         g.slowDownOnce = false;
         return send(200, { error: 'slow_down', interval: state.deviceInterval + 1 });
@@ -230,6 +242,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       state.validTokens.add(g.token);
       if (g.refreshToken) {
         state.refreshTokens.set(g.refreshToken, g.token);
+        state.refreshClients.set(g.refreshToken, g.clientId);
         return send(200, {
           access_token: g.token,
           token_type: 'bearer',
