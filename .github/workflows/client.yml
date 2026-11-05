@@ -61,7 +61,11 @@ jobs:
           restore-keys: cargo-linux-
       # system WebKit for the app's own Linux build (smoke test below)
       - name: System libraries for the Tauri window
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb
+        # a stuck package mirror fails this step quickly instead of eating the job's time
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb
       - run: npm ci
       - name: Type check
         run: npm run typecheck
