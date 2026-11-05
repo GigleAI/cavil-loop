@@ -19,9 +19,10 @@ let dir: string;
 let caches: Cache[] = [];
 let controllers: Controller[] = [];
 
-function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string } = {}) {
+function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown> } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
+  for (const [k, v] of Object.entries(opts.seed ?? {})) cache.setSetting(k, v);
   // tests seed FAKE_TOKEN straight into the store: record it as signed in with, like a completed login
   if (cache.getSetting('trustedCredentials', null) === null) cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
   const credentials = opts.credentials ?? new FileStore(join(dir, 'cred'));
@@ -40,6 +41,7 @@ function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number
     openExternal: async (u) => void opened.push(u),
     // no built-in Client ID unless a test asks for one (the real built-in one is GitHub's, not the fake's)
     defaultClientId: opts.defaultClientId ?? '',
+    ...(opts.defaultGithubAppClientId !== undefined ? { defaultGithubAppClientId: opts.defaultGithubAppClientId } : {}),
   });
   controllers.push(c);
   return { c, credentials, opened, clock, cache };
@@ -79,7 +81,7 @@ describe('login (OAuth device flow)', () => {
   it('the built-in Client ID is used when none is configured', async () => {
     const { c } = make({ defaultClientId: fake.state.oauthClientId });
     await c.start();
-    expect(c.getState()).toMatchObject({ oauthClientId: fake.state.oauthClientId, oauthClientIdIsDefault: true });
+    expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: fake.state.oauthClientId, clientIdIsDefault: true });
     const p = c.startLogin();
     await until(c, (s) => s.login.status === 'waiting', 'waiting');
     fake.resolveGrant('approved');
@@ -87,9 +89,9 @@ describe('login (OAuth device flow)', () => {
     expect(c.getState().phase).toBe('ready');
     // an override replaces it, clearing the override brings it back
     c.setClientId('Ov23other');
-    expect(c.getState()).toMatchObject({ oauthClientId: 'Ov23other', oauthClientIdIsDefault: false });
+    expect(c.getState()).toMatchObject({ clientId: 'Ov23other', clientIdIsDefault: false });
     c.setClientId('');
-    expect(c.getState()).toMatchObject({ oauthClientId: fake.state.oauthClientId, oauthClientIdIsDefault: true });
+    expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: fake.state.oauthClientId, clientIdIsDefault: true });
   });
 
   it('waiting → user approves → token stored, synced; a restart needs no login', async () => {
@@ -574,5 +576,74 @@ describe('signing in is all-or-nothing against cancel / sign-out / a newer login
     fake.state.validTokens.add(TOKEN_A2);
     await restarted.c.start();
     expect(restarted.c.getState()).toMatchObject({ phase: 'ready', viewer: 'user-2' });
+  });
+});
+describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
+  const OAUTH_BUILTIN = 'Ov23builtin000000000';
+
+  it('defaults to the OAuth app; GitHub App has no built-in ID, so signing in says what to fill in and calls nothing', async () => {
+    const { c } = make({ defaultClientId: OAUTH_BUILTIN });
+    await c.start();
+    expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: OAUTH_BUILTIN, clientIdIsDefault: true });
+    c.setAppKind('github-app');
+    expect(c.getState()).toMatchObject({ appKind: 'github-app', clientId: '', clientIdIsDefault: true });
+    await c.startLogin();
+    expect(c.getState().login).toMatchObject({ status: 'error' });
+    expect(c.getState().login.message).toContain('GitHub App');
+    expect(fake.state.deviceClientIds).toEqual([]);
+  });
+
+  it('the chosen kind\'s Client ID is the one sent to GitHub; each kind keeps its own; the choice survives a restart', async () => {
+    const { c } = make({ defaultClientId: OAUTH_BUILTIN });
+    await c.start();
+    c.setAppKind('github-app');
+    c.setClientId(fake.state.oauthClientId); // the fake only accepts its own ID
+    expect(c.getState()).toMatchObject({ appKind: 'github-app', clientId: fake.state.oauthClientId, clientIdIsDefault: false });
+    // the OAuth app's ID is untouched by it
+    c.setAppKind('oauth');
+    expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: OAUTH_BUILTIN, clientIdIsDefault: true });
+    c.setAppKind('github-app');
+    const p = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'waiting');
+    expect(fake.state.deviceClientIds).toEqual([fake.state.oauthClientId]);
+    fake.resolveGrant('approved');
+    await p;
+    expect(c.getState().phase).toBe('ready');
+    c.stopTimer();
+    const again = make({ defaultClientId: OAUTH_BUILTIN });
+    await again.c.start();
+    expect(again.c.getState()).toMatchObject({ phase: 'ready', appKind: 'github-app', clientId: fake.state.oauthClientId });
+  });
+
+  it('switching back to the OAuth app sends the OAuth app\'s ID', async () => {
+    const { c } = make({ defaultClientId: fake.state.oauthClientId, defaultGithubAppClientId: 'Iv23builtinapp000000' });
+    await c.start();
+    c.setAppKind('github-app');
+    expect(c.getState()).toMatchObject({ clientId: 'Iv23builtinapp000000', clientIdIsDefault: true });
+    c.setAppKind('oauth');
+    const p = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'waiting');
+    expect(fake.state.deviceClientIds).toEqual([fake.state.oauthClientId]);
+    fake.resolveGrant('approved');
+    await p;
+    expect(c.getState().phase).toBe('ready');
+  });
+
+  it('an unknown kind is ignored', async () => {
+    const { c } = make({ defaultClientId: OAUTH_BUILTIN });
+    c.setAppKind('something-else');
+    expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: OAUTH_BUILTIN });
+  });
+
+  it('a preview build that saved a GitHub App ID in the single box: that user stays on GitHub App, the OAuth app goes back to built-in', () => {
+    const { c } = make({ defaultClientId: OAUTH_BUILTIN, seed: { oauthClientId: 'Iv23liPreviewApp0000' } });
+    expect(c.getState()).toMatchObject({ appKind: 'github-app', clientId: 'Iv23liPreviewApp0000', clientIdIsDefault: false });
+    c.setAppKind('oauth');
+    expect(c.getState()).toMatchObject({ clientId: OAUTH_BUILTIN, clientIdIsDefault: true });
+  });
+
+  it('a preview build that saved an OAuth app ID: stays on the OAuth app with it', () => {
+    const { c } = make({ defaultClientId: OAUTH_BUILTIN, seed: { oauthClientId: 'Ov23liMyOwnApp000000' } });
+    expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: 'Ov23liMyOwnApp000000', clientIdIsDefault: false });
   });
 });

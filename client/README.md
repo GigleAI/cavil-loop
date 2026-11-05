@@ -51,13 +51,14 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 
 ## 登录用的 GitHub 应用
 
-浏览器授权走 GitHub 的设备授权流程（App 显示短码，浏览器里输入、同意）。两种 GitHub 应用都支持，登录代码不区分：
+浏览器授权走 GitHub 的设备授权流程（App 显示短码，浏览器里输入、同意）。登录页和设置页都有「登录方式」二选一：**默认 OAuth 应用**（已内置），用户想用时可选 **GitHub App**（预览，维护者 2026-11-05 在 #140 定：第一版先把 OAuth 做完整，GitHub App 以后再完整支持）。选项旁的小字链接「两种有什么区别？」打开一页说明（`src/renderer/AppKindHelp.tsx`，纯本地文字）。登录代码本身不区分两种：
 
-| | GitHub App（维护者 2026-11-05 选定，目标） | OAuth App（当前内置，过渡） |
+| | OAuth 应用（默认，已内置） | GitHub App（可选，预览） |
 |---|---|---|
-| 权限 | 逐项勾选：Issues、Pull requests、Projects 读写，仓库基本信息只读 | 只能整块申请：`repo`（含代码与设置）、`read:org`、`project` |
-| 令牌 | 8 小时过期，带续期令牌（约 6 个月）；GitHub 每次续期都换一个新的续期令牌 | 不过期 |
-| 能看到的 | 只有装了这个 App 的组织 / 仓库 | 账号能看到的全部 |
+| 权限 | 只能整块申请：`repo`（含代码与设置）、`read:org`、`project` | 逐项勾选：Issues、Pull requests、Projects 读写，仓库基本信息只读 |
+| 令牌 | 不过期 | 8 小时过期，带续期令牌（约 6 个月）；GitHub 每次续期都换一个新的续期令牌 |
+| 能看到的 | 账号能看到的全部 | 只有装了这个 App 的组织 / 仓库 |
+| 这一版 | 内置 Client ID，直接登录 | 没有内置的 App：要填自己建的 GitHub App 的 Client ID；还没做的：内置 App、引导组织安装、提示「哪些仓库没装到」 |
 
 客户端会在令牌到期前 5 分钟自动续期，GitHub 说 401 时也先续期重试一次。续期只在一处进行，同一时刻最多一次（续期令牌用过即作废）。续期的结果只有这几种（`src/main/controller.ts` 的 `ensureFresh` 注释里逐条列着）：
 
@@ -82,7 +83,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 
 退出时钥匙串删不掉，登录页会写明旧凭据可能还在钥匙串里；它已不在名单上，下次启动会再试着删。两进程测试（`test/unit/crash-restart.test.ts`）在每个时刻结束第一个进程，再用同一份磁盘数据启动第二个进程核对。
 
-内置的 Client ID 在 `src/shared/config.ts` 的 `DEFAULT_OAUTH_CLIENT_ID`（Client ID 不是秘密）；登录页「OAuth 应用设置」和设置页都能覆盖。续期时用的是登录那一刻的 Client ID，之后改设置不影响已登录的令牌。
+内置的 Client ID 在 `src/shared/config.ts`：OAuth 应用是 `DEFAULT_OAUTH_CLIENT_ID`，GitHub App 是 `DEFAULT_GITHUB_APP_CLIENT_ID`（目前为空）。Client ID 不是秘密。两种方式各存各的覆盖值（`oauthClientId` / `githubAppClientId`），在登录页或设置页「改 Client ID」里改；选了 GitHub App 而没有 Client ID 时，登录直接说明要填什么，不会联系 GitHub。预览版只有一格 Client ID：里面存的是 GitHub App 的 ID（`Iv` 开头）时，升级后自动归到 GitHub App 那一格并保持选 GitHub App。续期时用的是登录那一刻的 Client ID，之后改登录方式或 Client ID 都不影响已登录的令牌（有测试）。
 
 ### 建 GitHub App 的逐项设置
 
@@ -98,7 +99,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 7. **Where can this GitHub App be installed?**：Only on this account。点 **Create GitHub App**。
 8. 不需要生成 Client secret，也不需要 Private key。
 9. 在 App 页面左侧 **Install App** → 安装到 GigleAI → 选 All repositories 或要看的那几个仓库。
-10. 把 App 页面上的 **Client ID**（形如 `Iv23li…`）写进 `DEFAULT_OAUTH_CLIENT_ID`，或先在登录页「OAuth 应用设置」里填进去试用。
+10. 把 App 页面上的 **Client ID**（形如 `Iv23li…`）写进 `DEFAULT_GITHUB_APP_CLIENT_ID`，或先在登录页选「GitHub App」、把它填进 Client ID 框试用。
 
 以后子项 #138 做「合并 PR」时，按 GitHub 文档合并接口还要 **Contents** = Read and write（届时单独确认）。
 

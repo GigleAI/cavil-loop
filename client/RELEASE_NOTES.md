@@ -27,4 +27,4 @@
 
 ### 登录
 
-点「用 GitHub 登录」→ App 显示一个短码 → 点「打开 GitHub 授权页」→ 在浏览器里输入短码，点「Authorize」。授权页上列出的权限取决于所用的 GitHub 应用：GitHub App 只有 Issues、Pull requests、Projects 读写和仓库基本信息只读；OAuth 应用是 `repo`（含代码与设置）、`read:org`、`project`。用 GitHub App 时令牌每 8 小时自动续期，你感觉不到。凭据存进 macOS 钥匙串（条目名「Cavil Loop (GitHub)」），下次启动不用再登录；在设置里「退出登录」会同时删掉它。GigleAI 组织如果开了第三方应用限制，第一次授权需要组织管理员批准。
+点「用 GitHub 登录」→ App 显示一个短码 → 点「打开 GitHub 授权页」→ 在浏览器里输入短码，点「Authorize」。登录方式默认是「OAuth 应用」，直接用；也可以选「GitHub App（预览）」，但这一版没有内置的 GitHub App，要填你自己建的 App 的 Client ID。两种的区别点选项旁的「两种有什么区别？」看。授权页上列出的权限取决于登录方式：OAuth 应用是 `repo`（含代码与设置）、`read:org`、`project`；GitHub App 只有 Issues、Pull requests、Projects 读写和仓库基本信息只读，令牌每 8 小时自动续期，你感觉不到。凭据存进 macOS 钥匙串（条目名「Cavil Loop (GitHub)」），下次启动不用再登录；在设置里「退出登录」会同时删掉它。GigleAI 组织如果开了第三方应用限制，第一次授权需要组织管理员批准。

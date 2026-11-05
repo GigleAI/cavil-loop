@@ -2,11 +2,11 @@ import { useState } from 'react';
 import type { AppState, BoardData } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
 import { api } from './api';
+import { AppKindPicker } from './AppKindPicker';
 
-export function SettingsView({ state, data, onBack }: { state: AppState; data: BoardData; onBack: () => void }) {
+export function SettingsView({ state, data, onBack, onHelp }: { state: AppState; data: BoardData; onBack: () => void; onHelp: () => void }) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [clientId, setClientId] = useState(state.oauthClientIdIsDefault ? '' : state.oauthClientId);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
 
   const add = async () => {
@@ -75,13 +75,9 @@ export function SettingsView({ state, data, onBack }: { state: AppState; data: B
       </section>
 
       <section>
-        <h3>OAuth 应用</h3>
-        <label>
-          Client ID（留空 = 用内置值{state.oauthClientIdIsDefault && state.oauthClientId ? ` ${state.oauthClientId}` : ''}）
-          <input value={clientId} onChange={(e) => setClientId(e.target.value)} />
-        </label>
-        <button onClick={() => api().setClientId(clientId)}>保存</button>
-        <p className="muted small">改了以后，下次登录生效。</p>
+        <h3>登录方式</h3>
+        <AppKindPicker state={state} onHelp={onHelp} />
+        <p className="muted small">改了以后，下次登录生效；现在登录着的账号不受影响。</p>
       </section>
     </div>
   );

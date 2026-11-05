@@ -213,3 +213,50 @@ test('login: denied on GitHub shows why and stores nothing', async () => {
   await shot(page, '10-denied');
   await app.close();
 });
+
+test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "what is the difference" page', async () => {
+  const { app, page } = await launch(env);
+  await expect(page.getByTestId('login')).toBeVisible();
+  await expect(page.getByTestId('app-kind-oauth')).toBeChecked();
+  await expect(page.getByTestId('permission-text')).toContainText('repo');
+  await shot(page, '11-login-method-oauth');
+
+  // the small link opens the explanation page and comes back
+  await page.getByTestId('app-kind-help-link').click();
+  const help = page.getByTestId('app-kind-help');
+  await expect(help).toBeVisible();
+  await expect(help.locator('table.compare tbody tr')).toHaveCount(7);
+  await expect(help).toContainText('8 小时过期');
+  await shot(page, '12-app-kind-help');
+  await page.getByTestId('help-back').click();
+  await expect(page.getByTestId('login')).toBeVisible();
+
+  // GitHub App: no built-in one, so the ID box opens by itself and signing in says what is missing
+  await page.getByTestId('app-kind-github-app').click(); // the choice is the app's state: it shows once the app confirms
+  await expect(page.getByTestId('app-kind-github-app')).toBeChecked();
+  await expect(page.getByTestId('client-id')).toBeVisible();
+  await expect(page.getByTestId('client-id')).toHaveValue('');
+  await expect(page.getByTestId('permission-text')).toContainText('Issues、Pull requests、Projects');
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('login-error')).toContainText('GitHub App');
+  await shot(page, '13-login-method-github-app');
+
+  // with the GitHub App's ID it signs in through that app
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  expect(env.fake.state.deviceClientIds).toEqual([env.fake.state.oauthClientId]);
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+
+  // Settings shows the same choice and the same link
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await expect(page.getByTestId('app-kind-github-app')).toBeChecked();
+  await page.getByTestId('app-kind-help-link').click();
+  await expect(page.getByTestId('app-kind-help')).toBeVisible();
+  await page.getByTestId('help-back').click();
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await app.close();
+});

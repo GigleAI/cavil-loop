@@ -2,9 +2,9 @@
 // cache. No Electron imports — the unit tests drive it against the fake
 // GitHub directly; main.ts only wires it to IPC and a BrowserWindow.
 
-import type { AppState, BoardData, ColumnMode, SourceConfig, SourceSnapshot, ViewSettings } from '../shared/types';
+import { APP_KINDS, type AppKind, type AppState, type BoardData, type ColumnMode, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
 import { parseSource } from '../shared/sources';
-import { DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
+import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
 import type { CredentialStore } from '../platform/credentials';
 import { Cache } from '../data/cache';
 import { Endpoints, FetchLike, GitHubClient } from '../data/github';
@@ -58,7 +58,12 @@ export interface ControllerDeps {
   syncIntervalMs?: number;
   /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
   defaultClientId?: string;
+  /** built-in GitHub App Client ID ('' = none, which is production today) */
+  defaultGithubAppClientId?: string;
 }
+
+/** where each kind's Client ID override is saved ('oauthClientId' predates the choice and keeps its name) */
+const CLIENT_ID_SETTING: Record<AppKind, string> = { oauth: 'oauthClientId', 'github-app': 'githubAppClientId' };
 
 const DEFAULT_VIEW: ViewSettings = { mode: 'iteration', swimlanes: false, selected: null };
 const MODES: ColumnMode[] = ['iteration', 'status', 'milestone'];
@@ -94,20 +99,23 @@ export class Controller {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
-  private readonly defaultClientId: string;
+  private readonly defaultClientIds: Record<AppKind, string>;
 
   constructor(private readonly deps: ControllerDeps) {
-    this.defaultClientId = deps.defaultClientId ?? DEFAULT_OAUTH_CLIENT_ID;
+    this.defaultClientIds = {
+      oauth: deps.defaultClientId ?? DEFAULT_OAUTH_CLIENT_ID,
+      'github-app': deps.defaultGithubAppClientId ?? DEFAULT_GITHUB_APP_CLIENT_ID,
+    };
     this.fetchImpl = deps.fetch ?? ((u, i) => fetch(u, i));
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-    const override = deps.cache.getSetting<string>('oauthClientId', '');
+    const appKind = this.loadAppKind();
     this.state = {
       phase: 'loading',
       loginReason: null,
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
-      oauthClientId: override || this.defaultClientId,
-      oauthClientIdIsDefault: !override,
+      appKind,
+      ...this.clientIdFor(appKind),
       viewer: deps.cache.getSetting<string | null>('viewer', null),
       sources: deps.cache.getSetting<SourceConfig[]>('sources', []),
       view: { ...DEFAULT_VIEW, ...deps.cache.getSetting<Partial<ViewSettings>>('view', {}) },
@@ -199,12 +207,14 @@ export class Controller {
   // ---- login -------------------------------------------------------------
 
   async startLogin(): Promise<void> {
-    const clientId = this.state.oauthClientId.trim();
+    const clientId = this.state.clientId.trim();
     const run = ++this.loginRun;
     if (!clientId) {
-      this.set({
-        login: { status: 'error', userCode: null, verificationUri: null, message: '还没有配置 OAuth 应用的 Client ID，请先在下方填写' },
-      });
+      const message =
+        this.state.appKind === 'github-app'
+          ? '用 GitHub App 登录要先填它的 Client ID（这一版还没有内置的 GitHub App），或改回默认的 OAuth 应用'
+          : '还没有配置 OAuth 应用的 Client ID，请先在下方填写';
+      this.set({ login: { status: 'error', userCode: null, verificationUri: null, message } });
       return;
     }
     this.set({ login: { status: 'requesting', userCode: null, verificationUri: null, message: null } });
@@ -370,7 +380,7 @@ export class Controller {
           if (current()) await signOut();
           return 'ended';
         }
-        const clientId = this.deps.cache.getSetting<string>('grantClientId', '') || this.state.oauthClientId;
+        const clientId = this.deps.cache.getSetting<string>('grantClientId', '') || this.state.clientId;
         let next: TokenGrant;
         try {
           next = await refreshGrant(this.deps.endpoints, clientId, used.refreshToken!, this.fetchImpl, this.now);
@@ -474,10 +484,46 @@ export class Controller {
     this.epochs.set(key, ++this.epochSeq);
   }
 
+  /**
+   * Which kind of GitHub application the next sign-in uses. It never touches
+   * the current sign-in: a token is refreshed with the app it came from.
+   */
+  setAppKind(kind: string): void {
+    if (!APP_KINDS.includes(kind as AppKind)) return;
+    const k = kind as AppKind;
+    this.deps.cache.setSetting('appKind', k);
+    this.set({ appKind: k, ...this.clientIdFor(k) });
+  }
+
+  /** Saves the Client ID override of the kind currently chosen; '' = back to the built-in one. */
   setClientId(id: string): void {
     const v = id.trim();
-    this.deps.cache.setSetting('oauthClientId', v);
-    this.set({ oauthClientId: v || this.defaultClientId, oauthClientIdIsDefault: !v });
+    this.deps.cache.setSetting(CLIENT_ID_SETTING[this.state.appKind], v);
+    this.set(this.clientIdFor(this.state.appKind));
+  }
+
+  private clientIdFor(kind: AppKind): { clientId: string; clientIdIsDefault: boolean } {
+    const override = this.deps.cache.getSetting<string>(CLIENT_ID_SETTING[kind], '');
+    return { clientId: override || this.defaultClientIds[kind], clientIdIsDefault: !override };
+  }
+
+  /**
+   * The saved choice; OAuth app when none was saved. A preview build had only
+   * one Client ID box: a GitHub App's ID saved there (they start with "Iv",
+   * an OAuth app's with "Ov" or a hex string) means that user had chosen a
+   * GitHub App, so it moves to the GitHub App's box and that kind is kept.
+   */
+  private loadAppKind(): AppKind {
+    const saved = this.deps.cache.getSetting<string | null>('appKind', null);
+    if (APP_KINDS.includes(saved as AppKind)) return saved as AppKind;
+    const old = this.deps.cache.getSetting<string>(CLIENT_ID_SETTING.oauth, '');
+    const kind: AppKind = /^Iv/.test(old) ? 'github-app' : 'oauth';
+    if (kind === 'github-app') {
+      this.deps.cache.setSetting(CLIENT_ID_SETTING['github-app'], old);
+      this.deps.cache.setSetting(CLIENT_ID_SETTING.oauth, '');
+    }
+    this.deps.cache.setSetting('appKind', kind);
+    return kind;
   }
 
   // ---- sources & view ------------------------------------------------------

@@ -113,13 +113,21 @@ export interface SyncState {
   problem: string | null;
 }
 
+/** 'oauth' = an OAuth app (the default); 'github-app' = a GitHub App the user chose */
+export type AppKind = 'oauth' | 'github-app';
+export const APP_KINDS: readonly AppKind[] = ['oauth', 'github-app'];
+
 export interface AppState {
   phase: 'loading' | 'login' | 'ready';
   /** why the user is on the login page (e.g. credential revoked) */
   loginReason: string | null;
   login: LoginState;
-  oauthClientId: string;
-  oauthClientIdIsDefault: boolean;
+  /** which kind of GitHub application the next sign-in goes through (OAuth app by default) */
+  appKind: AppKind;
+  /** the Client ID the next sign-in uses for that kind; '' = none configured */
+  clientId: string;
+  /** true when clientId is the built-in one (no override saved for this kind) */
+  clientIdIsDefault: boolean;
   viewer: string | null;
   sources: SourceConfig[];
   view: ViewSettings;

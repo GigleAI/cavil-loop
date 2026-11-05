@@ -73,6 +73,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.cancelLogin, () => controller.cancelLogin());
   ipcMain.handle(IPC.openVerification, () => controller.openVerification());
   ipcMain.handle(IPC.logout, () => controller.logout());
+  ipcMain.handle(IPC.setAppKind, (_e, kind: string) => controller.setAppKind(String(kind)));
   ipcMain.handle(IPC.setClientId, (_e, id: string) => controller.setClientId(String(id)));
   ipcMain.handle(IPC.addSource, (_e, input: string) => controller.addSource(String(input)));
   ipcMain.handle(IPC.removeSource, (_e, key: string) => controller.removeSource(String(key)));

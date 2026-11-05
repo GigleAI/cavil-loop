@@ -12,6 +12,7 @@ const api: CavilApi = {
   cancelLogin: () => ipcRenderer.invoke(IPC.cancelLogin),
   openVerification: () => ipcRenderer.invoke(IPC.openVerification),
   logout: () => ipcRenderer.invoke(IPC.logout),
+  setAppKind: (kind) => ipcRenderer.invoke(IPC.setAppKind, kind),
   setClientId: (id) => ipcRenderer.invoke(IPC.setClientId, id),
   addSource: (input) => ipcRenderer.invoke(IPC.addSource, input),
   removeSource: (key) => ipcRenderer.invoke(IPC.removeSource, key),

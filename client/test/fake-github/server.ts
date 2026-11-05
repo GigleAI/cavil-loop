@@ -61,6 +61,8 @@ export interface FakeState {
   nextGrant: Partial<DeviceGrant>;
   /** `scope` sent with the latest device-code request */
   lastScope: string | null;
+  /** client_id of every device-code request, in order */
+  deviceClientIds: string[];
   /** token -> login; tokens not listed are `viewer` */
   tokenViewers: Map<string, string>;
   /** login -> repos (`owner/name` lower-cased) that answer 404 for that account */
@@ -126,6 +128,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     deviceExpiresIn: 900,
     nextGrant: {},
     lastScope: null,
+    deviceClientIds: [],
     tokenViewers: new Map(),
     deniedRepos: new Map(),
     holds: [],
@@ -166,6 +169,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     if (req.method === 'POST' && url.pathname === '/web/login/device/code') {
       const form = new URLSearchParams(await readBody(req));
       state.lastScope = form.get('scope');
+      state.deviceClientIds.push(form.get('client_id') ?? '');
       if (form.get('client_id') !== state.oauthClientId) return send(200, { error: 'incorrect_client_credentials', error_description: 'The client_id is not valid.' });
       grantSeq++;
       const g: DeviceGrant = {

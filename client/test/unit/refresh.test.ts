@@ -135,6 +135,21 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     expect(c.getState().phase).toBe('ready');
   });
 
+  it('changing the sign-in method while signed in: the token is still refreshed with the app it came from', async () => {
+    const clock = { t: FIXTURE_NOW };
+    const store = new FileStore(join(dir, 'cred'));
+    const { c } = await signInAsApp(store, clock);
+    c.setAppKind('github-app'); // no built-in GitHub App: the next sign-in would have no Client ID at all
+    c.setAppKind('oauth');
+    c.setClientId('Ov23someotherapp0000'); // and the OAuth app's ID now points elsewhere
+    clock.t += 8 * HOUR - REFRESH_MARGIN_MS + 1_000;
+    await c.syncNow();
+    expect(refreshes()).toHaveLength(1);
+    expect(refreshes()[0].status).toBe(200);
+    expect(c.getState()).toMatchObject({ phase: 'ready', loginReason: null });
+    expect(decodeGrant(await store.get())).toMatchObject({ accessToken: 'ghu_fakerefreshed00000000000000000001' });
+  });
+
   it('GitHub says 401 before the deadline: one refresh, the round is retried and succeeds', async () => {
     const clock = { t: FIXTURE_NOW };
     const store = new FileStore(join(dir, 'cred'));

@@ -87,3 +87,12 @@ input, select { font: inherit; padding: 4px 8px; border: 1px solid var(--border)
 .sources li { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
 .sources .kind { color: var(--muted); width: 56px; }
 .err { color: var(--closed); }
+.app-kind { margin: 8px 0 12px; }
+.app-kind .row { flex-wrap: wrap; }
+label.radio { display: inline-flex; gap: 4px; align-items: center; }
+.help { overflow: auto; height: 100%; }
+.help-body { max-width: 860px; padding: 12px 20px 32px; line-height: 1.6; }
+table.compare { border-collapse: collapse; width: 100%; margin: 12px 0; }
+table.compare th, table.compare td { border: 1px solid var(--border); padding: 8px 10px; vertical-align: top; text-align: left; }
+table.compare thead th { background: var(--panel); }
+table.compare tbody th { width: 120px; font-weight: 600; white-space: nowrap; }

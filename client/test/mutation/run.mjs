@@ -189,6 +189,23 @@ const MUTATIONS = [
   { what: '整份换回本轮复审时的旧实现（提交 ad63b3f）', file: 'src/main/controller.ts',
     fromGit: 'ad63b3f:client/src/main/controller.ts',
     expect: ['old build signed out but could not delete the credential'] },
+  // sign-in method (GitHub#140: OAuth app by default, GitHub App when chosen)
+  { what: '保存 Client ID 时不管选的是哪种，一律写进 OAuth 应用那一格', file: 'src/main/controller.ts',
+    from: 'this.deps.cache.setSetting(CLIENT_ID_SETTING[this.state.appKind], v);', to: 'this.deps.cache.setSetting(CLIENT_ID_SETTING.oauth, v);',
+    expect: ["the chosen kind's Client ID is the one sent to GitHub"] },
+  { what: '选 GitHub App 但没填 ID 时，偷偷改用内置的 OAuth 应用', file: 'src/main/controller.ts',
+    from: "'github-app': deps.defaultGithubAppClientId ?? DEFAULT_GITHUB_APP_CLIENT_ID,",
+    to: "'github-app': deps.defaultGithubAppClientId || (deps.defaultClientId ?? DEFAULT_OAUTH_CLIENT_ID),",
+    expect: ['GitHub App has no built-in ID, so signing in says what to fill in and calls nothing'] },
+  { what: '切回 OAuth 应用后仍用 GitHub App 的 ID 登录', file: 'src/main/controller.ts',
+    from: "    this.set({ appKind: k, ...this.clientIdFor(k) });", to: "    this.set({ appKind: k });",
+    expect: ["switching back to the OAuth app sends the OAuth app's ID"] },
+  { what: '预览版存在唯一那格里的 GitHub App ID 被当成 OAuth 应用', file: 'src/main/controller.ts',
+    from: "const kind: AppKind = /^Iv/.test(old) ? 'github-app' : 'oauth';", to: "const kind: AppKind = 'oauth';",
+    expect: ['a preview build that saved a GitHub App ID in the single box'] },
+  { what: '续期用当前设置的 Client ID，而不是登录时那个应用的', file: 'src/main/controller.ts',
+    from: "this.deps.cache.getSetting<string>('grantClientId', '') || this.state.clientId;", to: 'this.state.clientId;',
+    expect: ['changing the sign-in method while signed in: the token is still refreshed with the app it came from'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;

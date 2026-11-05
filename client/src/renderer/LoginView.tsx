@@ -1,6 +1,6 @@
-import { useState } from 'react';
 import type { AppState } from '../shared/types';
 import { api } from './api';
+import { AppKindPicker, permissionText } from './AppKindPicker';
 
 const FAILURE_TEXT: Record<string, string> = {
   denied: '你在 GitHub 页面上拒绝了授权。',
@@ -8,10 +8,8 @@ const FAILURE_TEXT: Record<string, string> = {
   error: '登录没有完成。',
 };
 
-export function LoginView({ state }: { state: AppState }) {
+export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => void }) {
   const { login } = state;
-  const [clientId, setClientId] = useState(state.oauthClientIdIsDefault ? '' : state.oauthClientId);
-  const [showAdvanced, setShowAdvanced] = useState(!state.oauthClientId);
   const busy = login.status === 'requesting' || login.status === 'waiting';
 
   return (
@@ -24,6 +22,8 @@ export function LoginView({ state }: { state: AppState }) {
           {state.loginReason}
         </div>
       )}
+
+      <AppKindPicker state={state} disabled={busy} onHelp={onHelp} />
 
       {login.status === 'waiting' && login.userCode ? (
         <div className="device" data-testid="device">
@@ -53,32 +53,10 @@ export function LoginView({ state }: { state: AppState }) {
         </div>
       )}
 
-      <p className="muted small">
-        授权页上列出的权限由所用的 GitHub 应用决定：用 GitHub App 时只有 Issues、Pull requests、Projects 读写和仓库基本信息只读；
-        用 OAuth 应用时是 repo（含代码与设置）、read:org、project。本 App 只读写 issue、PR 和 Project。凭据存在本机钥匙串里，只发给 GitHub。
+      <p className="muted small" data-testid="permission-text">
+        {permissionText(state.appKind)} 凭据存在本机钥匙串里，只发给 GitHub。
         {!state.credentialsPersistent && ' 当前系统还不支持保存凭据，退出后需要重新登录。'}
       </p>
-
-      <button className="link small" data-testid="oauth-settings-toggle" onClick={() => setShowAdvanced((v) => !v)}>
-        {showAdvanced ? '收起' : 'OAuth 应用设置'}
-      </button>
-      {showAdvanced && (
-        <div className="advanced">
-          <label>
-            OAuth 应用的 Client ID{state.oauthClientIdIsDefault && state.oauthClientId ? '（当前用内置值）' : ''}
-            <input
-              data-testid="client-id"
-              value={clientId}
-              placeholder={state.oauthClientIdIsDefault && state.oauthClientId ? state.oauthClientId : '例如 Ov23li…'}
-              onChange={(e) => setClientId(e.target.value)}
-            />
-          </label>
-          <button data-testid="save-client-id" onClick={() => api().setClientId(clientId)}>
-            保存
-          </button>
-          <p className="muted small">Client ID 不是秘密，不需要 Client secret。留空保存 = 用内置值。</p>
-        </div>
-      )}
     </div>
   );
 }
