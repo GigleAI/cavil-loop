@@ -269,25 +269,35 @@ export function checkApp(appPath, expectedPng) {
 
 // ---------- CLI ----------
 
+// Exit codes go through process.exitCode, never process.exit(): exiting
+// abruptly right after writing to both stdout and stderr hung the process now
+// and then (6 of 240 stress runs of the unit test, main thread parked on a
+// futex); letting the event loop drain ends it normally.
+function cli(cmd, args) {
+  if (cmd === 'build') {
+    writeFileSync(ICON_PNG, encodePng(renderIcon(decodePng(readFileSync(SOURCE_PNG)))));
+    console.log(`wrote ${ICON_PNG}`);
+    return 0;
+  }
+  if (cmd === 'check-app' && args.length >= 2) {
+    const r = checkApp(args[0], args[1]);
+    console.log(`app icon: ${r.icon}, largest image ${r.entry} ${r.size}, distance to ${args[1]} = ${r.distance.toFixed(2)} (pass ≤ ${SAME_ICON_MAX_DISTANCE})`);
+    if (args[2]) writeFileSync(args[2], encodePng({ width: r.img.width, height: r.img.height, data: toRgba(r.img) }));
+    if (!r.ok) { console.error('❌ the packaged app icon is not build/icon.png'); return 1; }
+    console.log('✅ the packaged app icon is build/icon.png');
+    return 0;
+  }
+  console.error('usage: icon.mjs build | icon.mjs check-app <App.app> <expected.png> [extracted-out.png]');
+  return 2;
+}
+
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   const [cmd, ...args] = process.argv.slice(2);
   try {
-    if (cmd === 'build') {
-      writeFileSync(ICON_PNG, encodePng(renderIcon(decodePng(readFileSync(SOURCE_PNG)))));
-      console.log(`wrote ${ICON_PNG}`);
-    } else if (cmd === 'check-app' && args.length >= 2) {
-      const r = checkApp(args[0], args[1]);
-      console.log(`app icon: ${r.icon}, largest image ${r.entry} ${r.size}, distance to ${args[1]} = ${r.distance.toFixed(2)} (pass ≤ ${SAME_ICON_MAX_DISTANCE})`);
-      if (args[2]) writeFileSync(args[2], encodePng({ width: r.img.width, height: r.img.height, data: toRgba(r.img) }));
-      if (!r.ok) { console.error('❌ the packaged app icon is not build/icon.png'); process.exit(1); }
-      console.log('✅ the packaged app icon is build/icon.png');
-    } else {
-      console.error('usage: icon.mjs build | icon.mjs check-app <App.app> <expected.png> [extracted-out.png]');
-      process.exit(2);
-    }
+    process.exitCode = cli(cmd, args);
   } catch (err) {
     console.error(`❌ ${err.message}`);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }

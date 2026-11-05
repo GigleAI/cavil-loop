@@ -80,8 +80,8 @@ describe('build/icon.png', () => {
 });
 
 // A fake .app with the same layout electron-builder writes on macOS.
-function fakeApp(opts: { plistIcon?: string | null; icnsName?: string; icns?: Buffer | null }) {
-  const dir = mkdtempSync(join(tmpdir(), 'cavil-icon-'));
+function fakeApp(opts: { plistIcon?: string | null; icnsName?: string; icns?: Buffer | null; label?: string }) {
+  const dir = mkdtempSync(join(tmpdir(), `cavil-icon-${opts.label ?? 'x'}-`));
   const app = join(dir, 'Cavil Loop.app');
   mkdirSync(join(app, 'Contents', 'Resources'), { recursive: true });
   const key = opts.plistIcon === null ? '' : `<key>CFBundleIconFile</key>\n    <string>${opts.plistIcon ?? 'icon.icns'}</string>\n    `;
@@ -147,9 +147,9 @@ describe('packaged-app icon check (runs on the macOS CI runner)', () => {
 
   it('the command-line entry the CI script calls exits 0 only on a match', () => {
     const script = join(__dirname, '..', '..', 'scripts', 'icon.mjs');
-    const good = fakeApp({ icns: icns([['ic10', iconBytes]]) });
-    const bad = fakeApp({ icns: icns([['ic10', solid(1024, [0, 0, 0, 255])]]) });
-    const broken = fakeApp({ icns: null });
+    const good = fakeApp({ label: 'good', icns: icns([['ic10', iconBytes]]) });
+    const bad = fakeApp({ label: 'bad', icns: icns([['ic10', solid(1024, [0, 0, 0, 255])]]) });
+    const broken = fakeApp({ label: 'broken', icns: null });
     try {
       const run = (app: string) => spawnSync(process.execPath, [script, 'check-app', app, ICON_PNG], { encoding: 'utf8' });
       const g = run(good.app), b = run(bad.app), x = run(broken.app);
