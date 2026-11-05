@@ -1147,6 +1147,35 @@ Refs #60"
     edit 8 2026-04-01T00:00:00Z "做了 X。"
     tick
     chk "打标签那一刻引用着机器人的需求、后来删掉 → 不合并" "$(merged 8)" 0
+    # 引用写法 × 正文位置（现在 / 只在打标签那一刻）× 需求作者（机器人 / 普通维护者）——代码复审第 2 轮
+    local rf where who want
+    for rf in "Refs #58" "Refs example/ap#58" "Refs https://github.com/example/ap/issues/58"; do
+        for where in now then; do
+            for who in req-bot maint; do
+                fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; mkissue 58 "" "$who"
+                if [ "$where" = now ]; then
+                    po_merge_ready feature/xyz "做了 X。
+
+$rf"
+                else
+                    po_merge_ready
+                    edit 8 2026-01-01T00:00:00Z "做了 X。
+
+$rf"
+                    edit 8 2026-04-01T00:00:00Z "做了 X。"
+                fi
+                tick
+                [ "$who" = req-bot ] && want=0 || want=1
+                chk "「$rf」·$( [ "$where" = now ] && echo 现在的正文 || echo 只在打标签那一刻 )·#58 作者 $who → 合并请求 $want" "$(merged 8)" "$want"
+            done
+        done
+    done
+    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; mkissue 58 "" req-bot
+    po_merge_ready feature/xyz "做了 X。
+
+Refs other/repo#58"
+    tick
+    chk "对照：引用别的仓库的同号 #58（本仓库 #58 是机器人的）→ 合并" "$(merged 8)" 1
     fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; po_merge_ready
     jset items.json '.["8"].user.login = "req-bot"'
     tick
@@ -1728,6 +1757,10 @@ mutate po-closes-no-url _lib.sh '|https?://(www\.)?github\.com/[[:alnum:]_.-]+/[
 mutate po-closes-other-repo-local _lib.sh '| select(.o == $me) | .n) end;' '| .n) end;'
 mutate po-initial-same-second-deny _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               then {err: "none"}'
 mutate po-initial-no-created-check _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               and ($first != $t) then {err: "none"}'
+mutate po-requester-links-strict _lib.sh '              printf '"'"'%s\n'"'"' "$body" | autopilot_body_closes line links | tr '"'"','"'"' '"'"'\n'"'"'
+              printf '"'"'%s'"'"' "$body" | autopilot_body_closes whole links | tr '"'"','"'"' '"'"'\n'"'"'' '              printf '"'"'%s'"'"' "$body" | pr_body_linked_issue
+              printf '"'"'%s'"'"' "$body" | pr_body_linked_issue_jq'
+mutate po-requester-links-not-local _lib.sh '        if [ "$2" = links ]; then gre="$AUTOPILOT_LINK_ANY_GREP"; jre="$AUTOPILOT_LINK_ANY_JQ"; fi' '        :'
 mutate po-dispatch-site _lib.sh '                    0) AUTOPILOT_PR="$num"; return 0 ;;' '                    0) return 1 ;;'
 mutate po-merge-note-issue _lib.sh '        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '        if false; then n="$pr"; where="本 PR 上"'
 mutate po-no-label-body-notice _lib.sh '        actor-*|binding|requester-bot|closed|label-body) ;;' '        actor-*|binding|requester-bot|closed) ;;'

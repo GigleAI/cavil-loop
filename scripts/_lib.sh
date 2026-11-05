@@ -2899,20 +2899,26 @@ AUTOPILOT_CLOSE_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+#([0-9]+
 AUTOPILOT_CLOSE_REF='(#[0-9]+|gh-[0-9]+|[[:alnum:]_.-]+/[[:alnum:]_.-]+#[0-9]+|https?://(www\.)?github\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/issues/[0-9]+)'
 AUTOPILOT_CLOSE_ANY_GREP="(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?):?[[:space:]]+$AUTOPILOT_CLOSE_REF"
 AUTOPILOT_CLOSE_ANY_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+(#[0-9]+|gh-[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)'
+# 第 2 个参数 links：关键词再加上 Ref / Refs（和工作编号、外部需求机器人认来源用的关联写法同一组关键词），
+# 引用的写法、只留本仓库的规则和 any 完全一样——判「正文关联到哪些本仓库 issue」用（代码复审第 2 轮）
+AUTOPILOT_LINK_ANY_GREP="(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?):?[[:space:]]+$AUTOPILOT_CLOSE_REF"
+AUTOPILOT_LINK_ANY_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?):?\s+(#[0-9]+|gh-[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)'
 # 一个引用（关键词后面那一段）→ 本仓库的编号，别的仓库的输出空。两种读法共用这一个 jq 定义
 AUTOPILOT_CLOSE_LOCAL_DEF='def localnum($repo): ascii_downcase as $r | ($repo | ascii_downcase) as $me
     | if ($r | test("^#[0-9]+$")) then ($r | ltrimstr("#"))
       elif ($r | test("^gh-[0-9]+$")) then ($r | ltrimstr("gh-"))
       elif ($r | test("github\\.com/")) then ($r | capture("github\\.com/(?<o>[^/]+/[^/]+)/issues/(?<n>[0-9]+)") | select(.o == $me) | .n)
       else ($r | capture("^(?<o>[^#]+)#(?<n>[0-9]+)$") | select(.o == $me) | .n) end;'
-autopilot_body_closes() {   # <line|whole> [any]，正文从 stdin → 逗号分隔的编号（升序去重）
-    if [ "${2:-}" = any ]; then
+autopilot_body_closes() {   # <line|whole> [any|links]，正文从 stdin → 逗号分隔的编号（升序去重）
+    if [ "${2:-}" = any ] || [ "${2:-}" = links ]; then
+        local gre="$AUTOPILOT_CLOSE_ANY_GREP" jre="$AUTOPILOT_CLOSE_ANY_JQ"
+        if [ "$2" = links ]; then gre="$AUTOPILOT_LINK_ANY_GREP"; jre="$AUTOPILOT_LINK_ANY_JQ"; fi
         if [ "$1" = line ]; then
-            { grep -oiE "$AUTOPILOT_CLOSE_ANY_GREP" || true; } | awk '{print $NF}' \
+            { grep -oiE "$gre" || true; } | awk '{print $NF}' \
                 | jq -Rr --arg repo "$REPO" "$AUTOPILOT_CLOSE_LOCAL_DEF"' localnum($repo)' 2>/dev/null \
                 | sort -un | paste -sd, - || true
         else
-            jq -Rrs --arg re "$AUTOPILOT_CLOSE_ANY_JQ" --arg repo "$REPO" "$AUTOPILOT_CLOSE_LOCAL_DEF"'
+            jq -Rrs --arg re "$jre" --arg repo "$REPO" "$AUTOPILOT_CLOSE_LOCAL_DEF"'
                 [scan($re)[0] | localnum($repo) | tonumber] | unique | map(tostring) | join(",")' 2>/dev/null || printf '?'
         fi
         return 0
@@ -3052,7 +3058,8 @@ autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
 }
 
 # 以 PR 为准时，这个 PR 是不是外部需求机器人的需求（GitHub#142）：PR 是它开的，或者顺着分支名 / 正文
-# 关联（Closes / Refs #N，和工作编号同一套写法，见 pr_to_issue_num）找到的本仓库 issue 是它提的。
+# 关联（Closes / Fixes / Resolves / Refs 后面跟本仓库的 #N、owner/repo#N、issue 链接、GH-N——和「关不关
+# 本仓库 issue」同一个解析，autopilot_body_closes … links；两种读法取并集）找到的本仓库 issue 是它提的。
 # 只认作者，比外部需求机器人那块的需求标记更严。没配 REQUESTER_BOT_ACCOUNT 时什么都不读。
 #   0 = 不是；1 = 是（AUTOPILOT_DENY=requester-bot）；2 = 判不了
 autopilot_pr_requester_check() {   # <PR 编号> <PR JSON> <正文>
@@ -3063,8 +3070,8 @@ autopilot_pr_requester_check() {   # <PR 编号> <PR JSON> <正文>
         AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON="PR #$pr 是外部需求机器人开的"; return 1
     fi
     nums=$( { branch_to_issue_num "$(printf '%s' "$pj" | jq -r '.head.ref // ""')"
-              printf '%s' "$body" | pr_body_linked_issue
-              printf '%s' "$body" | jq -Rr --slurp --arg re "$PR_BODY_LINK_JQ_RE" '[scan($re)[0]] | .[]' 2>/dev/null
+              printf '%s\n' "$body" | autopilot_body_closes line links | tr ',' '\n'
+              printf '%s' "$body" | autopilot_body_closes whole links | tr ',' '\n'
             } | grep -E '^[0-9]+$' | sort -un)
     err=$(mktemp)
     for n in $nums; do
