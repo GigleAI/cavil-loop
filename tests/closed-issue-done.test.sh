@@ -293,14 +293,42 @@ HOOK
     tick
     chk "第 1 轮：清理失败、没记已处理" "$(cleaned 22)" false
     chk "第 1 轮：标签照常打成" "$(labels_of 22)" "Done"
-    chk "第 1 轮：出队" "$(queued 22)" "无"
+    chk "第 1 轮：标签这件事记为已结束（不删记录，挡住下一轮再入队）" "$(queued 22)" "done"
     tick
-    chk "第 2 轮：重新入队、重读后零写入" "$(reread 22)/$(writes_on 22)" "1/0"
-    chk "第 2 轮：出队" "$(queued 22)" "无"
+    chk "第 2 轮：本机清理照样重试" "$(log_has 'auto-cleanup closed issue #22 → cleanup-issue.sh')" 2
+    chk "第 2 轮：不再重读、零写入" "$(reread 22)/$(writes_on 22)" "0/0"
+    chk "第 2 轮：记录仍是已结束" "$(queued 22)" "done"
     rm -f "$FAKE_TMUX_BUSY"
     tick
     chk "第 3 轮：清理成功、记为已处理" "$(cleaned 22)" true
-    chk "第 3 轮：标签不变" "$(labels_of 22)" "Done"
+    chk "第 3 轮：已结束的记录随清理成功删掉" "$(queued 22)" "无"
+    chk "第 3 轮：标签不变、零写入" "$(labels_of 22)/$(writes_on 22)" "Done/0"
+
+    # ── 【10b】本机清理一直失败 + 标签一直打不成：上限照样生效（代码复审第 1 轮）──
+    local variant
+    for variant in add-fails unknown-reason; do
+        section "【10b】清理一直失败 + 标签一直不成（$variant）：到上限后不再重读、不再写，清理继续重试"
+        fresh
+        if [ "$variant" = add-fails ]; then
+            mkissue 23 "pending/human" closed completed; touch "$GD/F_post_labels"
+        else
+            mkissue 23 "pending/human" closed -
+        fi
+        touch "$FAKE_TMUX_BUSY"
+        local seq="" reads="" r
+        for r in 1 2 3 4 5 6 7; do
+            tick
+            seq="$seq$(queued 23),"; reads="$reads$(reread 23),"
+        done
+        chk "$variant：队列次数 1,2 后结束且不再从 0 数" "$seq" "1,2,done,done,done,done,done,"
+        chk "$variant：只有前 3 轮重读，之后零读" "$reads" "1,1,1,0,0,0,0,"
+        chk "$variant：「放弃」只记一次" "$(log_has 'issue #23 关闭后的 Done 连续 3 次没打成 → 放弃')" 1
+        chk "$variant：本机清理 7 轮都在重试" "$(log_has 'auto-cleanup closed issue #23 → cleanup-issue.sh')" 7
+        chk "$variant：一直没记为已处理" "$(cleaned 23)" false
+        rm -f "$FAKE_TMUX_BUSY" "$GD/F_post_labels"
+        tick
+        chk "$variant：清理恢复后记为已处理、记录删掉、标签不再碰" "$(cleaned 23)/$(queued 23)/$(reread 23)/$(writes_on 23)" "true/无/0/0"
+    done
 
     # ── 【11】合并路径不变 ──
     section "【11】PR 合并带关 issue：合并路径的调用与改动前逐条一致（只多出新队列那一次重读）"
@@ -380,6 +408,15 @@ mutate dequeue-before-write _lib.sh '        if closed_done_label "$issue"; then
 mutate no-enqueue agent-poll.sh '            closed_done_enqueue "$issnum" "$STATE_FILE"
             log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"' '            log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"'
 mutate no-drain agent-poll.sh '    closed_done_drain "$STATE_FILE" || true' '    :'
+mutate finish-deletes _lib.sh '        if closed_done_label "$issue"; then
+            closed_done_finish "$issue" "$state_file"' '        if closed_done_label "$issue"; then
+            jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
+mutate giveup-deletes _lib.sh '→ 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
+            closed_done_finish "$issue" "$state_file"' '→ 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
+            jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
+mutate enqueue-resets _lib.sh '{($i): ((.closed_done_queue // {})[$i] // 0)}' '{($i): 0}'
+mutate no-forget agent-poll.sh '                closed_done_forget "$issnum" "$STATE_FILE"
+' ''
 mutate no-cap _lib.sh '        if [ "$tries" -ge "$cap" ]; then
             log "⚠️ issue #$issue 关闭后' '        if false; then
             log "⚠️ issue #$issue 关闭后'

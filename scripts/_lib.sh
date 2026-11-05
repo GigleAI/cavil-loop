@@ -2367,6 +2367,11 @@ merged_label_drain() {
 # 队列字段故意不进 agent-poll.sh 顶部的补字段循环：没有条目入队时 state.json 和以前逐字节一样；
 # 读处一律 `// {}` 兜底（同 requester_bot_done_queue）。
 #
+# 一条记录的值：数字 = 还要再试、已试几次；"done" = 标签这件事已结束（打成了 / 确认不该打 / 到上限放弃）。
+# 结束时不能直接删记录：本机清理失败的 issue 不会记入 cleaned_issues，下一轮 § 4 会再入队一次，
+# 记录没了就从 0 重新数，「最多 30 轮」变成无限重试（代码复审第 1 轮）。所以结束时标 "done"，
+# 入队不覆盖已有值；等这个 issue 也记进 cleaned_issues（清理成功）时才删掉，见 closed_done_forget。
+#
 # 合并路径的两份 --remove 清单（agent-poll.sh § 3 的 PR、merged_issue_label 的 issue）各自不同，
 # 本次一行不动；这里是第三份，由全部派工标签加其余流程标签拼出，自定义派工标签自动包含。
 # 托管模式标签不是流程标签，不在清单里（daemon 永不摘它）。
@@ -2454,20 +2459,40 @@ closed_done_label() {
     return 0
 }
 
+# 标签这件事结束了：本机清理已经成功（记进 cleaned_issues，§ 4 不会再入队）就删记录，
+# 否则标 "done"，挡住下一轮的再次入队。
+closed_done_finish() {
+    local issue="$1" state_file="$2" tmp
+    tmp=$(mktemp)
+    jq --arg i "$issue" --argjson n "$issue" \
+        'if ((.cleaned_issues // []) | index($n)) != null then del(.closed_done_queue[$i])
+         else .closed_done_queue[$i] = "done" end' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
+# § 4 清理成功、记入 cleaned_issues 之后调：标签已结束的记录到此删掉；还在重试的留着。
+closed_done_forget() {
+    local issue="$1" state_file="$2" tmp
+    [[ "$issue" =~ ^[0-9]+$ ]] || return 0
+    tmp=$(mktemp)
+    jq --arg i "$issue" 'if (.closed_done_queue // {})[$i] == "done" then del(.closed_done_queue[$i]) else . end' \
+        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+}
+
 # 上限同 SUB_ISSUE_ROLLUP_MAX_TRIES（默认 30 轮）；放弃时记日志，要人手动补 Done。
 closed_done_drain() {
     local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" issue tries tmp
-    for issue in $(jq -r '(.closed_done_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
+    for issue in $(jq -r '(.closed_done_queue // {}) | to_entries[] | select(.value | type == "number") | .key' "$state_file" 2>/dev/null); do
         [[ "$issue" =~ ^[0-9]+$ ]] || continue
         tmp=$(mktemp)
         if closed_done_label "$issue"; then
-            jq --arg i "$issue" 'del(.closed_done_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+            closed_done_finish "$issue" "$state_file"
             continue
         fi
         tries=$(jq -r --arg i "$issue" '((.closed_done_queue // {})[$i] // 0) + 1' "$state_file")
         if [ "$tries" -ge "$cap" ]; then
             log "⚠️ issue #$issue 关闭后的 $LABEL_DONE 连续 $tries 次没打成 → 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
-            jq --arg i "$issue" 'del(.closed_done_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+            closed_done_finish "$issue" "$state_file"
         else
             jq --arg i "$issue" --argjson n "$tries" '.closed_done_queue[$i] = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
         fi

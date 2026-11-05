@@ -892,6 +892,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" --force 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_issues += [$issnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+                closed_done_forget "$issnum" "$STATE_FILE"
                 remember_worker_model "$issnum" ""
                 remember_trigger_label "$issnum" ""
                 log "  auto-cleanup closed issue #$issnum done"
