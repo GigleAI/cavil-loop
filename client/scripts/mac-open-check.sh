@@ -39,6 +39,7 @@ if [ -n "$shot" ]; then
   # best effort: a picture of the window a user sees (the CI machine has a GUI session)
   open "$mnt" || true
   sleep 4
+  echo "Finder window bounds: $(osascript -e 'tell application "Finder" to get bounds of front window' 2>&1 || true)"
   screencapture -x "$shot" || true
   osascript -e 'tell application "Finder" to close every window' >/dev/null 2>&1 || true
 fi
