@@ -6,6 +6,11 @@
 #      the user WILL see the "cannot be opened" dialog on first open
 #   4. the documented terminal step (remove the quarantine mark) makes a
 #      LaunchServices launch (`open`, same path as a double-click) succeed
+#   5. that launched app sends one real system notification through the
+#      production path and reports what macOS did with it (shown / failed /
+#      timeout). Informational: a CI machine may never grant the permission a
+#      user grants on first use, so this step logs the result but does not
+#      fail the job — a person's Mac is the acceptance (GitHub#139).
 # The System Settings "Open Anyway" button path needs a human click and is
 # NOT verified here.
 #
@@ -73,3 +78,19 @@ kill "$pid" 2>/dev/null || true
 cat "$marker" 2>/dev/null || true
 grep -q 'CAVIL_SMOKE_OK' "$marker" 2>/dev/null || { echo "❌ app did not start via open after removing quarantine"; exit 1; }
 echo "✅ starts via LaunchServices after the documented step"
+
+echo "== 5. one real notification from the launched app (unsigned, as shipped)"
+sw_vers 2>/dev/null || true
+marker="$work/notify-open.txt"
+open -n -W "$app" --args --notify-check "--smoke-out=$marker" &
+pid=$!
+for _ in $(seq 1 90); do [ -s "$marker" ] && break; sleep 1; done
+kill "$pid" 2>/dev/null || true
+cat "$marker" 2>/dev/null || true
+grep -q 'CAVIL_SMOKE_OK' "$marker" 2>/dev/null || { echo "❌ app did not start for the notification check"; exit 1; }
+result="$(sed -n 's/.*notify-check=//p' "$marker")"
+echo "CAVIL_NOTIFY_RESULT ${result:-missing}"
+case "$result" in
+  shown) echo "✅ macOS reported the notification as delivered (show event)";;
+  *) echo "⚠️ macOS did not report the notification as delivered on this machine: ${result:-missing} (not a failure of the job; see the comment above)";;
+esac

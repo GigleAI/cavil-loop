@@ -6,12 +6,18 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Controller } from './controller';
+import { itemAlertText } from '../data/pending';
 import { Cache } from '../data/cache';
 import { createPlatform } from '../platform';
 import { IPC, type Snapshot } from '../shared/ipc';
 import type { ViewSettings } from '../shared/types';
 
-const smoke = process.argv.includes('--smoke-test');
+// --notify-check implies the smoke test: after the window mounts, one real
+// notification goes through the production path (platform layer → system
+// notification) and the result (shown / failed / timeout) is part of the
+// smoke line. Used by scripts/mac-open-check.sh on the packaged app.
+const notifyCheck = process.argv.includes('--notify-check');
+const smoke = notifyCheck || process.argv.includes('--smoke-test');
 const smokeOut = process.argv.find((a) => a.startsWith('--smoke-out='))?.slice('--smoke-out='.length);
 
 // Separate data dirs: the smoke test must not touch a real install, the UI
@@ -49,6 +55,8 @@ app.on('activate', showWindow);
 
 /** notifications must stay referenced until clicked, or the click handler is collected */
 const liveNotifications = new Set<Notification>();
+/** --notify-check: told what happened to each notification ('shown', 'failed: …', 'unsupported') */
+let notifyProbe: ((result: string) => void) | null = null;
 
 app.whenReady().then(async () => {
   const platform = createPlatform({
@@ -57,9 +65,14 @@ app.whenReady().then(async () => {
     shellOpen: (u) => shell.openExternal(u),
     os: {
       notify(title, body, onClick) {
-        if (!Notification.isSupported()) return;
+        if (!Notification.isSupported()) {
+          notifyProbe?.('unsupported');
+          return;
+        }
         const n = new Notification({ title, body });
         liveNotifications.add(n);
+        n.on('show', () => notifyProbe?.('shown'));
+        n.on('failed', (_e, error) => notifyProbe?.(`failed: ${error}`));
         n.on('click', () => {
           liveNotifications.delete(n);
           onClick();
@@ -137,15 +150,33 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.setPendingLabel, (_e, name: string) => controller.setPendingLabel(String(name)));
   ipcMain.handle(IPC.setLaunchAtLogin, (_e, on: boolean) => controller.setLaunchAtLogin(on === true));
 
+  /** One notification through the same platform call a sync round uses; what the system reported back. */
+  const probeNotification = async (): Promise<string> => {
+    if (!platform.alerts) return 'no-alerts-on-this-platform';
+    const result = new Promise<string>((resolve) => {
+      notifyProbe = resolve;
+      setTimeout(() => resolve('timeout (no show / failed event in 15 s)'), 15_000);
+    });
+    const sample = { key: 'gigleai/cavil-loop#139', repo: 'GigleAI/cavil-loop', number: 139, title: 'notify check', url: 'https://github.com/GigleAI/cavil-loop/issues/139', kind: 'issue' as const, state: 'open' as const };
+    platform.alerts.notify({ kind: 'item', key: sample.key, url: sample.url, ...itemAlertText({ ...sample, updatedAt: '', labels: [], assignees: [], milestone: null, projects: [], sources: [] }) });
+    const r = await result;
+    notifyProbe = null;
+    // keep it on screen a moment so the check script can capture it
+    if (r === 'shown') await new Promise((res) => setTimeout(res, 3000));
+    return r;
+  };
+
   if (smoke) {
-    const timer = setTimeout(() => smokeResult(false, 'timeout'), 30_000);
+    const timer = setTimeout(() => smokeResult(false, 'timeout'), 60_000);
     w.webContents.once('did-finish-load', async () => {
       try {
         for (let i = 0; i < 100; i++) {
           const ok = await w.webContents.executeJavaScript(`Boolean(document.querySelector('[data-testid="app-root"]'))`);
           if (ok) {
             clearTimeout(timer);
-            return smokeResult(true, `${process.platform}-${process.arch} electron ${process.versions.electron} notifications=${Notification.isSupported() ? 'supported' : 'unsupported'}`);
+            const base = `${process.platform}-${process.arch} electron ${process.versions.electron} notifications=${Notification.isSupported() ? 'supported' : 'unsupported'}`;
+            if (!notifyCheck) return smokeResult(true, base);
+            return smokeResult(true, `${base} notify-check=${await probeNotification()}`);
           }
           await new Promise((r) => setTimeout(r, 100));
         }
