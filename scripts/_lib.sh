@@ -2892,7 +2892,31 @@ autopilot_labels_in_flow() {   # <labels_csv>
 # 只认关闭类关键词（Close/Fix/Resolve 各变体，可带冒号）；Refs #N 不会关 issue，不算。
 AUTOPILOT_CLOSE_GREP='(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?):?[[:space:]]+#[0-9]+'
 AUTOPILOT_CLOSE_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+#([0-9]+)'
-autopilot_body_closes() {   # <line|whole>，正文从 stdin → 逗号分隔的编号（升序去重）
+# 第 2 个参数 any（GitHub#142，判「正文关不关本仓库的 issue」用）：除了 #N，再认 GitHub 也会照着关的写法——
+# owner/repo#N、https://github.com/owner/repo/issues/N（带不带 www、末尾斜杠），以及保守起见的 GH-N；
+# 只输出指向本仓库（REPO，不分大小写）的编号，指向别的仓库的不算。关键词表和不带 any 时同一份。
+# 不带 any 的严格读法（只认 #N）留给「绑 issue」：绑定的规则不因这次改动变宽。
+AUTOPILOT_CLOSE_REF='(#[0-9]+|gh-[0-9]+|[[:alnum:]_.-]+/[[:alnum:]_.-]+#[0-9]+|https?://(www\.)?github\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/issues/[0-9]+)'
+AUTOPILOT_CLOSE_ANY_GREP="(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?):?[[:space:]]+$AUTOPILOT_CLOSE_REF"
+AUTOPILOT_CLOSE_ANY_JQ='(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+(#[0-9]+|gh-[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)'
+# 一个引用（关键词后面那一段）→ 本仓库的编号，别的仓库的输出空。两种读法共用这一个 jq 定义
+AUTOPILOT_CLOSE_LOCAL_DEF='def localnum($repo): ascii_downcase as $r | ($repo | ascii_downcase) as $me
+    | if ($r | test("^#[0-9]+$")) then ($r | ltrimstr("#"))
+      elif ($r | test("^gh-[0-9]+$")) then ($r | ltrimstr("gh-"))
+      elif ($r | test("github\\.com/")) then ($r | capture("github\\.com/(?<o>[^/]+/[^/]+)/issues/(?<n>[0-9]+)") | select(.o == $me) | .n)
+      else ($r | capture("^(?<o>[^#]+)#(?<n>[0-9]+)$") | select(.o == $me) | .n) end;'
+autopilot_body_closes() {   # <line|whole> [any]，正文从 stdin → 逗号分隔的编号（升序去重）
+    if [ "${2:-}" = any ]; then
+        if [ "$1" = line ]; then
+            { grep -oiE "$AUTOPILOT_CLOSE_ANY_GREP" || true; } | awk '{print $NF}' \
+                | jq -Rr --arg repo "$REPO" "$AUTOPILOT_CLOSE_LOCAL_DEF"' localnum($repo)' 2>/dev/null \
+                | sort -un | paste -sd, - || true
+        else
+            jq -Rrs --arg re "$AUTOPILOT_CLOSE_ANY_JQ" --arg repo "$REPO" "$AUTOPILOT_CLOSE_LOCAL_DEF"'
+                [scan($re)[0] | localnum($repo) | tonumber] | unique | map(tostring) | join(",")' 2>/dev/null || printf '?'
+        fi
+        return 0
+    fi
     if [ "$1" = line ]; then
         { grep -oiE "$AUTOPILOT_CLOSE_GREP" || true; } | grep -oE '[0-9]+$' | sort -un | paste -sd, - || true
     else
@@ -2958,8 +2982,8 @@ autopilot_pr_kind() {   # <PR JSON> [正文]
         AUTOPILOT_REASON="PR 不是从本仓库的分支开的（来源：${repo:-未知}）"; return 0
     fi
     body=$(printf '%s' "$pj" | jq -r '.body // ""' 2>/dev/null) || body=""
-    by_line=$(printf '%s\n' "$body" | autopilot_body_closes line)
-    by_whole=$(printf '%s' "$body" | autopilot_body_closes whole)
+    by_line=$(printf '%s\n' "$body" | autopilot_body_closes line any)
+    by_whole=$(printf '%s' "$body" | autopilot_body_closes whole any)
     if [ -z "$by_line" ] && [ -z "$by_whole" ]; then
         AUTOPILOT_PR_KIND=pr; return 0
     fi
@@ -2974,6 +2998,9 @@ autopilot_pr_kind() {   # <PR JSON> [正文]
 # userContentEdits：按时间倒序，每一版有修改时间 editedAt 和那一版的全文 diff，最早一版是开 PR 时的
 # 正文；在 #59、#115 上实测过最新一版和当前正文逐字一致）。取「修改时间不晚于打标签时间」的最新一版；
 # 同一秒既有修改又有打标签，分不出先后：同一秒的各版和它之前那一版都算候选，调用方要求全部合条件。
+# 没有早于打标签的版本时，只有一种情况查得到：历史最早那一版就是开 PR 时的正文（修改时间 = PR 的
+# created_at，#59 / #115 实测如此）而且和打标签同一秒——PR 刚开就打（复审第 1 轮）；这时同一秒的各版都算
+# 候选。最早一版不是开 PR 那一刻的（更早的版本缺了），一律算查不到。
 # 两边都是 GitHub 的时间，不受本机时钟影响。daemon 本机不记任何东西。
 #   0 = AUTOPILOT_BODY_CANDS 是候选正文（JSON 字符串数组）
 #   1 = 那一版查不到（被从历史里删掉 / 历史里没有早于打标签的版本）：AUTOPILOT_REASON
@@ -3004,12 +3031,15 @@ autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
         after=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.endCursor // ""')
         [ -n "$after" ] || { AUTOPILOT_REASON="PR #$pr 正文的修改历史分页读不全"; return 2; }
     done
-    out=$(jq -cn --argjson e "$edits" --arg t "$t" --arg cur "$(printf '%s' "$pj" | jq -r '.body // ""')" '
+    out=$(jq -cn --argjson e "$edits" --arg t "$t" --arg cur "$(printf '%s' "$pj" | jq -r '.body // ""')" \
+              --arg created "$(printf '%s' "$pj" | jq -r '.created_at // ""')" '
         if ($e | length) == 0 then {ok: [$cur]}
         elif any($e[]; (.editedAt | type) != "string" or .editedAt == "") then {err: "unreadable"}
         else
           ([$e[] | select(.editedAt == $t)] + ([$e[] | select(.editedAt < $t)] | sort_by(.editedAt) | .[-1:])) as $c
-          | if ($c | map(select(.editedAt < $t)) | length) == 0 then {err: "none"}
+          | ($e | min_by(.editedAt) | .editedAt) as $first
+          | if ($c | map(select(.editedAt < $t)) | length) == 0
+               and ($created == "" or $first != $created or $first != $t) then {err: "none"}
             elif any($c[]; .deletedAt != null or (.diff | type) != "string") then {err: "deleted"}
             else {ok: [$c[].diff]} end
         end' 2>/dev/null) || out=""

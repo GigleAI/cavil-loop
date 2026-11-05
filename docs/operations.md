@@ -552,7 +552,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   - **bound to an issue**: from this repo, branch exactly `BRANCH_PREFIX<N>`, body closes only
     `#N` — judged on the issue and the PR together, as above;
   - **PR-only**: from this repo and the body has **no** closing keyword for an issue of this
-    repo (`Refs #N` and cross-repo `Refs owner/repo#N` don't count) — authorization and stops
+    repo — `#N`, `owner/repo#N` (this repo, case-insensitive), `https://github.com/owner/repo/issues/N`
+    and `GH-N` all count; a plain `Refs #N` or closing another repo's issue does not — authorization and stops
     come from the PR alone: removing the label or adding `pending/human` on the PR stops it, no
     issue's label is lent to it, and an issue that merely shares the branch's number is ignored;
   - **not eligible**: anything else (closes an issue of this repo without binding to it, an
@@ -562,7 +563,9 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   PR-only: the daemon reads GitHub's edit history of the description (GraphQL
   `userContentEdits`) and takes the newest revision not later than the label event (revisions in
   the same second and the one before them must all qualify; both timestamps are GitHub's, so the
-  local clock does not matter). So a label added while the body closed some issue, or while the PR
+  local clock does not matter). Labeled in the same second the PR was opened and edited later: the
+  oldest revision counts as the opening description only if its time equals the PR's creation
+  time; otherwise (older revisions missing) it is "not found". So a label added while the body closed some issue, or while the PR
   was bound to an issue, does not count after the body is edited — a maintainer re-adds it after
   looking at the current PR. A deleted revision → not accepted, re-add; history unreadable or a
   page missing → undecidable, nothing written this round. Nothing about this is stored locally, so

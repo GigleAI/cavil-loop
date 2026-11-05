@@ -113,11 +113,11 @@ CONF
     }
     mkpr() {   # <n> <分支> <正文> <提交> <labels_csv> [来源仓库] [mergeable] [mergeable_state]
         jset items.json '.[$n] = {kind:"pr", state:"open", merged:false, draft:false, title:"t", body:$b,
-                user:{login:"loop-bot"}, updated_at:"2026-01-01T00:00:00Z",
+                user:{login:"loop-bot"}, updated_at:"2026-01-01T00:00:00Z", created_at:$ca,
                 head:{sha:$h, ref:$r, repo:{full_name:$repo}}, base:{ref:"main"},
                 mergeable:($m | fromjson), mergeable_state:$ms}' \
             --arg n "$1" --arg r "$2" --arg b "$3" --arg h "$4" --arg repo "${6:-example/ap}" \
-            --arg m "${7:-true}" --arg ms "${8:-clean}"
+            --arg m "${7:-true}" --arg ms "${8:-clean}" --arg ca "${MKPR_CREATED:-2025-12-01T00:00:00Z}"
         jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$5"
     }
     # 每条记录带时间（和真 GitHub 一样），按调用先后递增；daemon 自己写的标签记录用当前时间，一定更晚。
@@ -1172,6 +1172,59 @@ Refs #60"
     chk "  → 本轮这个 PR 的托管记录不变" "$(jq -c '.autopilot.prs' "$STATE")" "$before"
     chk "到达性 · 确实走到了合并前重读" "$([ "$(cat "$GD/count_pulls_8" 2>/dev/null)" -ge 3 ] && echo yes || echo no)" yes
 
+    section "【13m】关闭本仓库 issue 的各种写法都算（代码复审第 1 轮）；指向别的仓库的不算"
+    local cb
+    while IFS= read -r cb; do
+        fresh; mkissue 58 "pending/human"; po_merge_ready feature/xyz "做了 X。
+
+$cb"
+        tick
+        chk "正文「$cb」→ 不合并、交人" "$(merged 8)/$(has_label 8 pending/human)" "0/yes"
+    done <<'CLOSES'
+Closes example/ap#58
+Fixes https://github.com/example/ap/issues/58
+closes: EXAMPLE/AP#58
+Resolves GH-58
+fixed http://www.github.com/example/ap/issues/58/
+CLOSES
+    fresh; mkissue 58 ""; po_merge_ready
+    edit 8 2026-01-01T00:00:00Z "做了 X。
+
+Fixes https://github.com/example/ap/issues/58"
+    edit 8 2026-04-01T00:00:00Z "做了 X。"
+    tick
+    chk "打标签那一刻的正文用链接写法关 #58、后来删掉 → 不合并" "$(merged 8)" 0
+    while IFS= read -r cb; do
+        fresh; po_merge_ready feature/xyz "做了 X。
+
+$cb"
+        tick
+        chk "对照：正文「$cb」（关的是别的仓库 / 只引用不关）→ 合并" "$(merged 8)" 1
+    done <<'CLOSES'
+Closes other/repo#58
+Fixes https://github.com/other/repo/issues/58
+Refs example/ap#58
+CLOSES
+
+    section "【13n】PR 刚开就打、同一秒：之后正文改过也照样有效；更早的版本缺了才不算（代码复审第 1 轮）"
+    fresh; MKPR_CREATED="$T_LABEL" po_merge_ready feature/xyz "做了 X。补充说明。"
+    edit 8 "$T_LABEL" "做了 X。"
+    edit 8 2026-04-01T00:00:00Z "做了 X。补充说明。"
+    tick
+    chk "开 PR 和打标签同一秒、之后改过一次（仍合条件）→ 合并" "$(merged 8)" 1
+    fresh; mkissue 58 ""; MKPR_CREATED="$T_LABEL" po_merge_ready feature/xyz "做了 X。"
+    edit 8 "$T_LABEL" "做了 X。
+
+Closes #58"
+    edit 8 2026-04-01T00:00:00Z "做了 X。"
+    tick
+    chk "同上，但开 PR 时那版关着 #58 → 不合并" "$(merged 8)" 0
+    fresh; po_merge_ready feature/xyz "做了 X。补充说明。"
+    edit 8 "$T_LABEL" "做了 X。"
+    edit 8 2026-04-01T00:00:00Z "做了 X。补充说明。"
+    tick
+    chk "最早一版和打标签同一秒、但不是开 PR 时那版（更早的缺了）→ 不合并" "$(merged 8)" 0
+
     section "【13l】绑 issue 的 PR 一次修改历史都不读"
     fresh; happy
     tick
@@ -1667,6 +1720,14 @@ mutate po-actor-skip _lib.sh '    rc=0; autopilot_actor_check "$(printf '"'"'%s'
     [ "$rc" = 0 ] || return "$rc"
     actor=' '    rc=0; autopilot_actor_check "$(printf '"'"'%s'"'"' "$pp" | jq -r '"'"'.lab.actor'"'"')" "$(printf '"'"'%s'"'"' "$pp" | jq -r '"'"'.lab.atype'"'"')" || rc=0; AUTOPILOT_ACTOR=x
     actor='
+mutate po-qualified-closes _lib.sh '    by_line=$(printf '"'"'%s\n'"'"' "$body" | autopilot_body_closes line any)
+    by_whole=$(printf '"'"'%s'"'"' "$body" | autopilot_body_closes whole any)' '    by_line=$(printf '"'"'%s\n'"'"' "$body" | autopilot_body_closes line)
+    by_whole=$(printf '"'"'%s'"'"' "$body" | autopilot_body_closes whole)'
+mutate po-closes-no-url _lib.sh '|https?://(www\.)?github\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/issues/[0-9]+)'"'" ')'"'" \
+    '|https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)'"'" ')'"'"
+mutate po-closes-other-repo-local _lib.sh '| select(.o == $me) | .n) end;' '| .n) end;'
+mutate po-initial-same-second-deny _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               then {err: "none"}'
+mutate po-initial-no-created-check _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               and ($first != $t) then {err: "none"}'
 mutate po-dispatch-site _lib.sh '                    0) AUTOPILOT_PR="$num"; return 0 ;;' '                    0) return 1 ;;'
 mutate po-merge-note-issue _lib.sh '        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '        if false; then n="$pr"; where="本 PR 上"'
 mutate po-no-label-body-notice _lib.sh '        actor-*|binding|requester-bot|closed|label-body) ;;' '        actor-*|binding|requester-bot|closed) ;;'
