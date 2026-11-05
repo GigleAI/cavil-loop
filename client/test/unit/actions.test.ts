@@ -14,6 +14,10 @@ import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { headOidOf } from '../fake-github/writes';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { Item } from '../../src/shared/types';
+import { buildTable } from '../../src/data/table';
+import { buildBoard } from '../../src/data/board';
+import { applyFreshItem } from '../../src/data/itemRefresh';
+import { DEFAULT_TABLE } from '../../src/shared/viewSettings';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -415,6 +419,44 @@ describe('offline: nothing is sent, nothing queued', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain('连不上 GitHub，没有修改');
     expect(fake.digest()).toBe(before);
+  });
+});
+
+describe('an edit keeps the Project order (#137 × #138)', () => {
+  const manual = { ...DEFAULT_TABLE, groupBy: 'none' as const, hierarchy: false, sort: { field: 'manual' as const, dir: 'asc' as const } };
+  const tableOrder = (c: Controller) => buildTable(c.getBoardData().items, c.getBoardData().projects, manual, '2026-11-05').groups[0].rows.map((r) => r.item.key);
+  const boardOrder = (c: Controller) =>
+    buildBoard(c.getBoardData().items, c.getBoardData().projects, 'status', false, '2026-11-05', manual.sort).columns.map((col) => col.cards.map((x) => x.item.key));
+
+  it('label added on the first item: re-read at once → table and board order unchanged → still unchanged after a full sync', async () => {
+    const { c } = await ready({ repo: false });
+    const before = tableOrder(c);
+    const boardBefore = boardOrder(c);
+    const first = before[0];
+    const n = Number(first.split('#')[1]);
+    expect(before.length).toBeGreaterThan(10);
+    const r = await c.act({ kind: 'addLabel', key: first, label: 'bug' });
+    expect(r).toMatchObject({ ok: true, warning: null });
+    // the change happened and was re-read (not a no-op)
+    expect(fake.writes().map((w) => [w.method, w.path])).toEqual([['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`]]);
+    expect(labelsOf(c, n)).toContain('bug');
+    expect(tableOrder(c)).toEqual(before);
+    expect(boardOrder(c)).toEqual(boardBefore);
+    await c.syncNow();
+    expect(tableOrder(c)).toEqual(before);
+    expect(labelsOf(c, n)).toContain('bug');
+  });
+
+  it('pure rule: an item still on the Project is replaced in place; one gone from it is removed; one new to it is appended', () => {
+    const snap = { sourceKey: 'repo:x/a', fetchedAt: 1, items: [1, 2, 3].map((n) => ({ key: `x/a#${n}`, repo: 'x/a', number: n }) as unknown as Item) };
+    const content = (n: number) => ({ __typename: 'Issue', id: `I${n}`, number: n, title: `new ${n}`, url: '', state: 'OPEN', updatedAt: '', repository: { nameWithOwner: 'x/a' } }) as any;
+    const [kept] = applyFreshItem([snap], { content: content(1), projectItems: [] } as any);
+    expect(kept.items.map((i) => [i.number, i.title])).toEqual([[1, 'new 1'], [2, undefined], [3, undefined]]);
+    const [added] = applyFreshItem([snap], { content: content(9), projectItems: [] } as any);
+    expect(added.items.map((i) => i.number)).toEqual([1, 2, 3, 9]);
+    const proj = { ...snap, sourceKey: 'project:org/x/1', project: { projectId: 'P1' } as any };
+    const [gone] = applyFreshItem([proj], { content: content(2), projectItems: [] } as any);
+    expect(gone.items.map((i) => i.number)).toEqual([1, 3]);
   });
 });
 

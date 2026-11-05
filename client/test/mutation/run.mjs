@@ -274,6 +274,9 @@ const MUTATIONS = [
   { what: '导入时 /views/N 被忽略，总是导入第一个视图', file: 'src/shared/viewImport.ts',
     from: 'if (wanted === undefined) return { view: project.views[0], note: null };', to: 'return { view: project.views[0], note: null };',
     expect: ['pickView: /views/N when present, else the first one with a note; no views at all is said'] },
+  { what: '改完重读时把条目挪到末尾（打乱「Project 里的顺序」）', file: 'src/data/itemRefresh.ts',
+    from: '        ? snap.items.map((x) => (x.key === base.key ? next! : x))', to: '        ? [...snap.items.filter((x) => x.key !== base.key), next]',
+    expect: ['label added on the first item: re-read at once → table and board order unchanged → still unchanged after a full sync', 'pure rule: an item still on the Project is replaced in place; one gone from it is removed; one new to it is appended'] },
   // ---- sub-item #138: viewing and changing items ----
   { what: '合并不带看到的提交（PR 期间被推新提交也照合）', file: 'src/data/actions.ts',
     from: '{ merge_method: action.method, sha: action.headOid }', to: '{ merge_method: action.method }',
