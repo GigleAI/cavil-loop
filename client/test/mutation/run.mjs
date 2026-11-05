@@ -19,8 +19,9 @@
 // negative control — never as "went red as expected".
 //
 // Entries with `runner: 'e2e'` break the code the same way but run the named
-// Playwright tests against the real Electron window instead (`expect` names
-// test titles); the baseline then also runs those tests on an unmodified copy.
+// Playwright tests against the real window (with the real back end behind the
+// test bridge) instead (`expect` names test titles); the baseline then also runs
+// those tests on an unmodified copy.
 //
 // Env for the runner's own tests: CLIENT_MUT_VITEST (vitest entry to run),
 // CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS).
@@ -510,16 +511,18 @@ function runVitestWith(work, harness) {
   });
 }
 
-/** Build the copy and run the Playwright tests whose title matches `grep`; resolve like runVitest. */
-function runE2e(work, grep) {
+/** Build the copy (window + back end) and run the Playwright tests whose title matches `grep`; resolve like runVitest. */
+async function runE2e(work, grep) {
+  const be = await buildBackend(work);
+  if (be.broken) return { kind: 'broken', why: be.broken };
   const out = join(work, 'e2e-report.json');
   return new Promise((resolve) => {
     let child;
     try {
-      const cmd = `node scripts/build.mjs >/dev/null && node node_modules/@playwright/test/cli.js test --reporter=json -g ${JSON.stringify(grep)}`;
+      const cmd = `node scripts/build.mjs --test-bridge >/dev/null && node node_modules/@playwright/test/cli.js test --reporter=json -g ${JSON.stringify(grep)}`;
       child = spawn('bash', ['-c', cmd], {
         cwd: work,
-        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: out },
+        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: out, CAVIL_HARNESS: be.bin },
         stdio: ['ignore', 'ignore', 'pipe'],
         detached: true,
       });

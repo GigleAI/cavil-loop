@@ -6,4 +6,5 @@ export default defineConfig({
   workers: 1,
   reporter: [['list']],
   outputDir: 'test-results/playwright',
+  globalSetup: './test/e2e/global-setup.ts',
 });
