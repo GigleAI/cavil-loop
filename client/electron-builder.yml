@@ -1,0 +1,45 @@
+# macOS packaging (v1: dmg for Apple silicon and Intel, not Apple-signed).
+appId: dev.luosky.cavil-loop.client
+productName: Cavil Loop
+directories:
+  output: release
+files:
+  - dist/**/*
+  - '!dist/**/*.map'
+  - package.json
+asar: true
+npmRebuild: false
+afterPack: scripts/after-pack.cjs
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+  # No Apple Developer ID in v1: electron-builder does not sign; the
+  # afterPack hook gives the bundle an ad-hoc signature instead (Apple
+  # silicon needs one). Gatekeeper still asks on first open (RELEASE_NOTES.md).
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+dmg:
+  artifactName: Cavil-Loop-${version}-${arch}.${ext}
+  # The window explains how to get past Gatekeeper the first time (no Apple
+  # signature in v1); the text file next to the icons carries the command in a
+  # form that can be copied. Background: build/background.png (+ @2x), rendered
+  # from build/dmg-background.html by scripts/render-dmg-background.cjs.
+  background: build/background.png
+  # Finder sizes the window (title bar included) to the background, so only
+  # the top ~430 px are visible: keep every icon and label above that.
+  window:
+    width: 660
+    height: 460
+  contents:
+    - x: 180
+      y: 120
+    - x: 480
+      y: 120
+      type: link
+      path: /Applications
+    - x: 330
+      y: 368
+      type: file
+      path: build/打不开时看这里.txt

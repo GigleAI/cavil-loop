@@ -196,6 +196,14 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 
 ---
 
+## Client (desktop board, preview)
+
+`client/` is an optional local macOS app that puts several GitHub Projects and repositories into one board: columns by iteration (default) / status / milestone, optional swimlanes per repository, and the last synced data stays readable offline. You sign in through the browser (GitHub OAuth device flow); the credential goes into the macOS keychain. It talks only to GitHub — never to the daemon — and the daemon does not need it.
+
+v0.1 is read-only; search / filters, editing (labels, iterations, merging PRs, replying) and `pending/human` notifications come in the next pieces of GigleAI/cavil-loop#135. Packages are attached to the `client/v*` Releases (Apple silicon and Intel; not Apple-signed — the release notes say how to open it the first time). Development: [client/README.md](client/README.md).
+
+---
+
 ## Read more
 
 | Doc | About |
