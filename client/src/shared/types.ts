@@ -34,6 +34,14 @@ export interface Milestone {
   dueOn: string | null;
 }
 
+export interface LinkedPr {
+  key: string;
+  repo: string;
+  number: number;
+  url: string;
+  state: ItemState;
+}
+
 export interface Item {
   /** `owner/repo#N`, lower-cased owner/repo: the identity used for de-duplication. */
   key: string;
@@ -49,6 +57,14 @@ export interface Item {
   labels: Label[];
   assignees: string[];
   milestone: Milestone | null;
+  /** login of whoever opened it (null: unknown / deleted account) */
+  author: string | null;
+  /** key (`owner/repo#N`) of the parent issue; null = none */
+  parent: string | null;
+  /** sub-issue progress; null = no sub-issues */
+  subIssues: { total: number; completed: number } | null;
+  /** pull requests linked to an issue (GitHub's "Linked pull requests"); null = not known for this source (repository lists do not carry them) */
+  linkedPrs: LinkedPr[] | null;
   projects: ProjectMembership[];
   /** keys of the sources this item came from (filled when sources are merged) */
   sources: string[];
@@ -76,10 +92,40 @@ export interface ProjectMeta {
   iterations: Iteration[];
   /** options of the "Status" single-select field, in field order */
   statusOptions: string[];
+  /** the Project's saved web views, in tab order (imported when the Project is added) */
+  views: SavedView[];
+}
+
+/** One field as a saved view refers to it: GitHub's name and data type (TITLE, ITERATION, SINGLE_SELECT, …). */
+export interface ViewField {
+  name: string;
+  dataType: string;
+}
+
+/** A view saved on the GitHub Project page, as the API returns it. */
+export interface SavedView {
+  number: number;
+  name: string;
+  /** BOARD_LAYOUT / TABLE_LAYOUT / ROADMAP_LAYOUT */
+  layout: string;
+  filter: string;
+  groupBy: ViewField[];
+  verticalGroupBy: ViewField[];
+  sortBy: { field: ViewField; direction: 'ASC' | 'DESC' }[];
+  fields: ViewField[];
 }
 
 export type SourceConfig =
-  | { kind: 'project'; key: string; ownerType: 'org' | 'user'; owner: string; number: number; url: string }
+  | {
+      kind: 'project';
+      key: string;
+      ownerType: 'org' | 'user';
+      owner: string;
+      number: number;
+      url: string;
+      /** `/views/N` in the pasted address: the saved view to import (none = the first view) */
+      view?: number;
+    }
   | { kind: 'repo'; key: string; owner: string; name: string };
 
 export interface SourceSnapshot {
@@ -100,6 +146,42 @@ export interface SourceStatus {
 }
 
 export type ColumnMode = 'iteration' | 'status' | 'milestone';
+export type Layout = 'board' | 'table';
+export type GroupBy = 'iteration' | 'status' | 'milestone' | 'repo' | 'none';
+export type SortField = 'manual' | 'updated' | 'title' | 'number' | 'repo' | 'iteration' | 'status' | 'milestone';
+export type TableColumn =
+  | 'title'
+  | 'assignees'
+  | 'labels'
+  | 'linkedPrs'
+  | 'subIssues'
+  | 'updated'
+  | 'iteration'
+  | 'status'
+  | 'milestone'
+  | 'repo'
+  | 'author';
+
+export interface TableSettings {
+  groupBy: GroupBy;
+  sort: { field: SortField; dir: 'asc' | 'desc' };
+  columns: TableColumn[];
+  /** the left-hand slice list by repository */
+  sliceByRepo: boolean;
+  /** the repository picked in that list; null = all */
+  slice: string | null;
+  /** sub-issues indented under their parent */
+  hierarchy: boolean;
+}
+
+/** What the last import of a saved web view brought in, and what it could not. */
+export interface ImportInfo {
+  sourceKey: string;
+  viewNumber: number;
+  viewName: string;
+  /** settings of that view this client cannot reproduce (shown to the user) */
+  notes: string[];
+}
 
 /** The two labels "hand back to the agent" swaps (follows the daemon's label names; editable in Settings). */
 export interface HandBackLabels {
@@ -116,6 +198,11 @@ export interface ViewSettings {
   swimlanes: boolean;
   /** source keys ticked at the top of the view; null = all */
   selected: string[] | null;
+  layout: Layout;
+  /** the search box (GitHub filter syntax) */
+  query: string;
+  table: TableSettings;
+  imported: ImportInfo | null;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';

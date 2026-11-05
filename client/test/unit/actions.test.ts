@@ -14,6 +14,10 @@ import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { headOidOf } from '../fake-github/writes';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { Item } from '../../src/shared/types';
+import { buildTable } from '../../src/data/table';
+import { buildBoard } from '../../src/data/board';
+import { applyFreshItem } from '../../src/data/itemRefresh';
+import { DEFAULT_TABLE } from '../../src/shared/viewSettings';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -24,6 +28,24 @@ let fake: FakeGitHub;
 let dir: string;
 let caches: Cache[] = [];
 let controllers: Controller[] = [];
+
+/**
+ * The state these tests are written against: #137–#139 carry exactly
+ * `pending/human` (as when they were written). Set on the fake GitHub here, not
+ * taken from whatever a re-recording of the fixtures happened to capture.
+ */
+function pinLabels(n: number, names: string[]) {
+  const nodes = names.map((name) => ({ name, color: 'ededed' }));
+  for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n) r.labels = nodes.map((l) => ({ ...l }));
+  for (const p of fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === n) node.content.labels.nodes = nodes.map((l) => ({ ...l }));
+}
+/** the number GitHub gives the next issue: one past the highest number in the recorded data */
+const nextNumber = () =>
+  1 +
+  Math.max(
+    ...fake.state.repos.get('gigleai/cavil-loop')!.map((r: any) => r.number),
+    ...fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes.map((n: any) => n.content?.number ?? 0)),
+  );
 
 async function ready(opts: { project?: boolean; repo?: boolean; fetch?: (u: string, init?: RequestInit) => Promise<Response> } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
@@ -43,6 +65,7 @@ async function ready(opts: { project?: boolean; repo?: boolean; fetch?: (u: stri
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
   });
   controllers.push(c);
+  for (const n of [137, 138, 139]) pinLabels(n, ['pending/human']);
   if (opts.project !== false) c.addSource(PROJECT_URL);
   if (opts.repo !== false) c.addSource(REPO);
   await c.start();
@@ -350,13 +373,14 @@ describe('PR merge / close', () => {
 describe('new issue', () => {
   it('created in the chosen repository with title, body, labels; joins the ticked Projects', async () => {
     const { c } = await ready();
+    const next = nextNumber();
     const r = await c.act({ kind: 'createIssue', repo: REPO, title: '新问题', body: '正文', labels: ['bug'] });
-    expect(r).toMatchObject({ ok: true, warning: null, createdKey: K(140) });
+    expect(r).toMatchObject({ ok: true, warning: null, createdKey: K(next) });
     const w = fake.writes();
     expect([w[0].method, w[0].path, w[0].body]).toEqual(['POST', '/api/repos/GigleAI/cavil-loop/issues', { title: '新问题', body: '正文', labels: ['bug'] }]);
     expect(w[1].operation).toBe('CavilAddProjectItem');
     expect(w).toHaveLength(2);
-    const created = itemOf(c, 140);
+    const created = itemOf(c, next);
     expect(created.projects.map((p) => p.projectKey)).toEqual([PROJECT_KEY]);
     expect(created.labels.map((l) => l.name)).toEqual(['bug']);
   });
@@ -395,6 +419,44 @@ describe('offline: nothing is sent, nothing queued', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain('连不上 GitHub，没有修改');
     expect(fake.digest()).toBe(before);
+  });
+});
+
+describe('an edit keeps the Project order (#137 × #138)', () => {
+  const manual = { ...DEFAULT_TABLE, groupBy: 'none' as const, hierarchy: false, sort: { field: 'manual' as const, dir: 'asc' as const } };
+  const tableOrder = (c: Controller) => buildTable(c.getBoardData().items, c.getBoardData().projects, manual, '2026-11-05').groups[0].rows.map((r) => r.item.key);
+  const boardOrder = (c: Controller) =>
+    buildBoard(c.getBoardData().items, c.getBoardData().projects, 'status', false, '2026-11-05', manual.sort).columns.map((col) => col.cards.map((x) => x.item.key));
+
+  it('label added on the first item: re-read at once → table and board order unchanged → still unchanged after a full sync', async () => {
+    const { c } = await ready({ repo: false });
+    const before = tableOrder(c);
+    const boardBefore = boardOrder(c);
+    const first = before[0];
+    const n = Number(first.split('#')[1]);
+    expect(before.length).toBeGreaterThan(10);
+    const r = await c.act({ kind: 'addLabel', key: first, label: 'bug' });
+    expect(r).toMatchObject({ ok: true, warning: null });
+    // the change happened and was re-read (not a no-op)
+    expect(fake.writes().map((w) => [w.method, w.path])).toEqual([['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`]]);
+    expect(labelsOf(c, n)).toContain('bug');
+    expect(tableOrder(c)).toEqual(before);
+    expect(boardOrder(c)).toEqual(boardBefore);
+    await c.syncNow();
+    expect(tableOrder(c)).toEqual(before);
+    expect(labelsOf(c, n)).toContain('bug');
+  });
+
+  it('pure rule: an item still on the Project is replaced in place; one gone from it is removed; one new to it is appended', () => {
+    const snap = { sourceKey: 'repo:x/a', fetchedAt: 1, items: [1, 2, 3].map((n) => ({ key: `x/a#${n}`, repo: 'x/a', number: n }) as unknown as Item) };
+    const content = (n: number) => ({ __typename: 'Issue', id: `I${n}`, number: n, title: `new ${n}`, url: '', state: 'OPEN', updatedAt: '', repository: { nameWithOwner: 'x/a' } }) as any;
+    const [kept] = applyFreshItem([snap], { content: content(1), projectItems: [] } as any);
+    expect(kept.items.map((i) => [i.number, i.title])).toEqual([[1, 'new 1'], [2, undefined], [3, undefined]]);
+    const [added] = applyFreshItem([snap], { content: content(9), projectItems: [] } as any);
+    expect(added.items.map((i) => i.number)).toEqual([1, 2, 3, 9]);
+    const proj = { ...snap, sourceKey: 'project:org/x/1', project: { projectId: 'P1' } as any };
+    const [gone] = applyFreshItem([proj], { content: content(2), projectItems: [] } as any);
+    expect(gone.items.map((i) => i.number)).toEqual([1, 3]);
   });
 });
 

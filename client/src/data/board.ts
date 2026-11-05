@@ -1,8 +1,9 @@
 // Turn merged items into board columns. Pure: no Node, no Electron, no clock
 // (callers pass `today`), so the renderer and the tests run the same code.
 
-import type { ColumnMode, Item, Iteration, ProjectMeta } from '../shared/types';
+import type { ColumnMode, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
 import type { WriteAction } from '../shared/actions';
+import { itemSorter } from './sort';
 
 export const COL_UNBOARDED = 'unboarded';
 export const COL_NO_ITERATION = 'iteration:none';
@@ -66,9 +67,13 @@ interface ColumnSeed {
   projects: Set<string>;
 }
 
+/** repository, then newest number first: the order when no sort is given */
+const BY_REPO_NUMBER = (a: Item, b: Item) => (a.repo === b.repo ? b.number - a.number : a.repo < b.repo ? -1 : 1);
+
 function finish(
   seeds: Map<string, ColumnSeed>,
   placements: Map<string, Card[]>,
+  order: (a: Item, b: Item) => number,
   subtitleFor: (s: ColumnSeed) => string | null,
 ): Column[] {
   return [...seeds.values()]
@@ -78,9 +83,7 @@ function finish(
       title: s.title,
       subtitle: subtitleFor(s),
       ended: s.ended,
-      cards: (placements.get(s.key) ?? []).sort((a, b) =>
-        a.item.repo === b.item.repo ? b.item.number - a.item.number : a.item.repo < b.item.repo ? -1 : 1,
-      ),
+      cards: (placements.get(s.key) ?? []).sort((a, b) => order(a.item, b.item)),
     }));
 }
 
@@ -130,7 +133,10 @@ export function buildBoard(
   requested: ColumnMode,
   swimlanes: boolean,
   today: string,
+  /** card order inside every column (the view's sort, shared with the table); none = repository, then number */
+  sort?: TableSettings['sort'],
 ): Board {
+  const cardOrder = sort ? itemSorter(sort, projects, items) : BY_REPO_NUMBER;
   let mode = requested;
   let notice: string | null = null;
   if (mode === 'iteration' && !projects.some((p) => p.hasIterationField)) {
@@ -189,7 +195,7 @@ export function buildBoard(
     // gets the Project names underneath so the two can be told apart.
     const titleCount = new Map<string, number>();
     for (const s of seeds.values()) if (s.rank === RANK_REGULAR) titleCount.set(s.title, (titleCount.get(s.title) ?? 0) + 1);
-    columns = finish(seeds, placements, (s) => {
+    columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
       const range = `${s.sort} 起`;
       return (titleCount.get(s.title) ?? 0) > 1 ? `${range} · ${[...s.projects].join('、')}` : range;
@@ -218,7 +224,7 @@ export function buildBoard(
         seeds,
       );
     }
-    columns = finish(seeds, placements, () => null);
+    columns = finish(seeds, placements, cardOrder, () => null);
   } else {
     // Milestones belong to repositories: same title across repositories = one column.
     seed({ key: COL_NO_MILESTONE, title: '无里程碑', sort: '', rank: RANK_NONE, ended: false });
@@ -236,7 +242,7 @@ export function buildBoard(
       else if (sort < cur.sort) cur.sort = sort;
       place(placements, key, item, []);
     }
-    columns = finish(seeds, placements, (s) => {
+    columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
       return s.sort.startsWith('0') ? `截止 ${s.sort.slice(1, 11)}` : '无截止日期';
     });

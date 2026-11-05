@@ -4,8 +4,11 @@
 //     real pagination failures, real SQLite), labels changed on the fake
 //     between rounds the way a maintainer changes them on GitHub;
 //   - the tracker alone for the orderings that are awkward to stage over HTTP.
-// Recorded data: `cavil project` (#11) has 11 items with pending/human, 8 of
-// them closed / merged; the repository source carries 3 of them (open ones).
+// Recorded data (test/fixtures, re-recorded by record.mjs — never hand-edited):
+// the expected numbers below are derived from it, not typed in. On top of the
+// recording every test puts the label on one open item that both sources carry
+// (SEEDED), so there is always an open pending item and a cross-source one,
+// whatever the board looked like on recording day.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
@@ -14,7 +17,7 @@ import { Cache } from '../../src/data/cache';
 import { FileStore } from '../../src/platform/credentials';
 import type { Alert } from '../../src/platform/alerts';
 import { PendingTracker } from '../../src/data/pending';
-import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
+import { startFakeGitHub, FakeGitHub, loadCavilProjectPages, loadCavilRepoIssues } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, item, tempDir, trustedList } from './helpers';
 import type { SourceSnapshot } from '../../src/shared/types';
 
@@ -132,9 +135,41 @@ function addToRepoList(number: number, state: 'closed', pr: boolean, clock: { t:
 
 const key = (n: number) => `gigleai/cavil-loop#${n}`;
 
+// ---- what the recording holds (read straight from the JSON, independent of the client code) ----
+const rawPages = loadCavilProjectPages();
+const rawRepo = loadCavilRepoIssues();
+const rawProject = rawPages.flatMap((pg) => pg.items.nodes).filter((n: any) => !n.isArchived && n.content?.number != null && n.content.repository);
+const projHas = (n: number) => rawProject.some((x: any) => x.content.number === n && x.content.repository.nameWithOwner === REPO);
+const projPending = (x: any) => x.content.labels.nodes.some((l: any) => l.name === LABEL);
+const repoOpen = (n: number) => rawRepo.some((i: any) => i.number === n && i.state === 'open');
+const repoPending = (i: any) => i.labels.some((l: any) => (l.name ?? l) === LABEL);
+/** open, in both sources, not pending in either: gets the label before every test */
+const SEEDED = rawRepo.find((i: any) => i.state === 'open' && !i.pull_request && !repoPending(i) && projHas(i.number) && !rawProject.some((x: any) => x.content.number === i.number && projPending(x)))!.number as number;
+/** another such item, used for "an open item gets the label" */
+const OPEN_NEW = rawRepo.find((i: any) => i.number !== SEEDED && i.state === 'open' && !i.pull_request && !repoPending(i) && projHas(i.number) && !rawProject.some((x: any) => x.content.number === i.number && projPending(x)))!.number as number;
+/** a closed issue / merged PR only the Project carries, without the label */
+const pickProj = (pred: (c: any) => boolean) => rawProject.find((x: any) => pred(x.content) && !projPending(x) && !rawRepo.some((i: any) => i.number === x.content.number))!.content.number as number;
+const CLOSED_ISSUE = pickProj((c) => c.__typename === 'Issue' && c.state === 'CLOSED');
+const MERGED_PR = pickProj((c) => c.__typename === 'PullRequest' && c.merged);
+/** pending in the Project after seeding, and how many of those are closed / merged */
+const P = rawProject.filter(projPending).length + 1;
+const P_CLOSED = rawProject.filter((x: any) => projPending(x) && x.content.state !== 'OPEN').length;
+/** pending in the repository source after seeding (it reads open items + the last 14 days) */
+const R = rawRepo.filter(repoPending).length + 1;
+/** items the Project brings that the repository source does not already count */
+const P_ONLY = P - rawProject.filter((x: any) => projPending(x) && rawRepo.some((i: any) => i.number === x.content.number && repoPending(i))).length - 1;
+
 beforeEach(async () => {
   fake = await startFakeGitHub();
   dir = tempDir();
+  setLabel(SEEDED, true, { t: FIXTURE_NOW - 3_600_000 });
+});
+
+it('the recording still has what these tests need', () => {
+  expect(repoOpen(SEEDED) && repoOpen(OPEN_NEW)).toBe(true);
+  expect(P_CLOSED).toBeGreaterThan(0); // closed / merged pending items: the case "only open ones" would miss
+  expect([CLOSED_ISSUE, MERGED_PR].every(Number.isInteger)).toBe(true);
+  expect(P).toBeGreaterThan(R);
 });
 afterEach(async () => {
   for (const c of controllers) c.stopTimer();
@@ -150,30 +185,30 @@ describe('pending reminders against the fake GitHub', () => {
     await h.c.start();
     expect(h.items()).toEqual([]);
     expect(h.summaries()).toHaveLength(1);
-    expect(h.summaries()[0]).toMatchObject({ title: '11 条待处理' });
-    expect(h.summaries()[0].body).toContain('其中 8 条已关闭 / 已合并');
-    expect(h.badge()).toBe(11);
-    expect(h.c.getState().pendingCount).toBe(11);
+    expect(h.summaries()[0]).toMatchObject({ title: `${P} 条待处理` });
+    expect(h.summaries()[0].body).toContain(`其中 ${P_CLOSED} 条已关闭 / 已合并`);
+    expect(h.badge()).toBe(P);
+    expect(h.c.getState().pendingCount).toBe(P);
     // a quiet round changes nothing
     await tick(h);
     expect(h.alerts).toHaveLength(1);
-    expect(h.badge()).toBe(11);
+    expect(h.badge()).toBe(P);
   });
 
   it('from nothing to pending: notified exactly once — open issue, closed issue and merged PR alike', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     expect(h.alerts).toHaveLength(1); // the start-up summary
-    setLabel(136, true, h.clock); // open issue
-    setLabel(22, true, h.clock); // closed issue
-    setLabel(23, true, h.clock); // merged PR
+    setLabel(OPEN_NEW, true, h.clock); // open issue
+    setLabel(CLOSED_ISSUE, true, h.clock); // closed issue
+    setLabel(MERGED_PR, true, h.clock); // merged PR
     await tick(h);
-    expect(h.items().sort()).toEqual([key(136), key(22), key(23)].sort());
+    expect(h.items().sort()).toEqual([key(OPEN_NEW), key(CLOSED_ISSUE), key(MERGED_PR)].sort());
     const byKey = new Map(h.alerts.filter((a) => a.kind === 'item').map((a) => [(a as { key: string }).key, a]));
-    expect(byKey.get(key(22))!.title).toContain('已关闭');
-    expect(byKey.get(key(23))!.title).toContain('已合并');
-    expect((byKey.get(key(23)) as { url: string }).url).toContain('/pull/23');
-    expect(h.badge()).toBe(14);
+    expect(byKey.get(key(CLOSED_ISSUE))!.title).toContain('已关闭');
+    expect(byKey.get(key(MERGED_PR))!.title).toContain('已合并');
+    expect((byKey.get(key(MERGED_PR)) as { url: string }).url).toContain(`/pull/${MERGED_PR}`);
+    expect(h.badge()).toBe(P + 3);
     // still pending next round: no second notification
     await tick(h);
     await tick(h);
@@ -184,31 +219,31 @@ describe('pending reminders against the fake GitHub', () => {
   it('label removed and put back → notified again; the removal itself is silent', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
-    setLabel(137, false, h.clock);
+    setLabel(SEEDED, false, h.clock);
     await tick(h);
     expect(h.items()).toEqual([]);
-    expect(h.badge()).toBe(10);
-    setLabel(137, true, h.clock);
+    expect(h.badge()).toBe(P - 1);
+    setLabel(SEEDED, true, h.clock);
     await tick(h);
-    expect(h.items()).toEqual([key(137)]);
-    expect(h.badge()).toBe(11);
+    expect(h.items()).toEqual([key(SEEDED)]);
+    expect(h.badge()).toBe(P);
   });
 
   it('an item carried by two sources is notified once, counted once', async () => {
     const h = await signedIn({ sources: [PROJECT_URL, REPO] });
     await h.c.start();
     // a merged PR known to the repo list too (recently updated), and an open issue in both
-    addToRepoList(23, 'closed', true, h.clock);
-    setLabel(23, true, h.clock);
-    setLabel(136, true, h.clock);
+    addToRepoList(MERGED_PR, 'closed', true, h.clock);
+    setLabel(MERGED_PR, true, h.clock);
+    setLabel(OPEN_NEW, true, h.clock);
     await tick(h);
     // "did happen": both sources were read this round and both carry the items
     const st = h.c.getState().sync.sources;
     expect(st.every((s) => s.ok)).toBe(true);
-    const data = h.c.getBoardData().items.find((i) => i.key === key(23))!;
+    const data = h.c.getBoardData().items.find((i) => i.key === key(MERGED_PR))!;
     expect(data.sources.sort()).toEqual([PROJECT_KEY, REPO_KEY].sort());
-    expect(h.items().sort()).toEqual([key(136), key(23)].sort());
-    expect(h.badge()).toBe(13);
+    expect(h.items().sort()).toEqual([key(OPEN_NEW), key(MERGED_PR)].sort());
+    expect(h.badge()).toBe(P + 2);
   });
 
   it('a source that fails mid-pagination: neither new nor removed that round; the real change is notified after it recovers', async () => {
@@ -221,19 +256,19 @@ describe('pending reminders against the fake GitHub', () => {
     // page 2 fails; meanwhile one label went away (page 1) and one came (page 1)
     fake.state.failProjectPage.set('org/gigleai/11', 1);
     setLabel(onPage1.content.number, false, h.clock);
-    setLabel(22, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
     await tick(h);
     expect(h.c.getState().sync.sources[0]).toMatchObject({ ok: false });
     expect(h.items()).toEqual([]);
-    expect(h.badge()).toBe(11);
+    expect(h.badge()).toBe(P);
     // still failing: still nothing
     await tick(h);
     expect(h.items()).toEqual([]);
-    // recovers: the real change shows — #22 is new, the removed one just drops out
+    // recovers: the real change shows — the newly labelled one is new, the removed one just drops out
     fake.state.failProjectPage.delete('org/gigleai/11');
     await tick(h);
-    expect(h.items()).toEqual([key(22)]);
-    expect(h.badge()).toBe(11);
+    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
+    expect(h.badge()).toBe(P);
     expect(h.summaries()).toHaveLength(1);
   });
 
@@ -244,7 +279,7 @@ describe('pending reminders against the fake GitHub', () => {
     await tick(h);
     await tick(h);
     expect(h.c.getState().sync.offline).toBe(true);
-    expect(h.badge()).toBe(11);
+    expect(h.badge()).toBe(P);
     fake.state.offline = false;
     await tick(h);
     expect(h.c.getState().sync.offline).toBe(false);
@@ -265,45 +300,45 @@ describe('pending reminders against the fake GitHub', () => {
     await tick(h);
     expect(h.items()).toEqual([]);
     expect(h.summaries()).toHaveLength(1);
-    expect(h.badge()).toBe(11);
+    expect(h.badge()).toBe(P);
   });
 
   it('a newly added source: what it brings is summarised once, not notified one by one', async () => {
     const h = await signedIn({ sources: [REPO] });
     await h.c.start();
     expect(h.summaries()).toHaveLength(1);
-    expect(h.summaries()[0].title).toBe('3 条待处理');
-    expect(h.badge()).toBe(3);
+    expect(h.summaries()[0].title).toBe(`${R} 条待处理`);
+    expect(h.badge()).toBe(R);
     h.c.addSource(PROJECT_URL);
     await h.c.syncNow();
     expect(h.items()).toEqual([]);
     expect(h.summaries()).toHaveLength(2);
-    expect(h.summaries()[1]).toMatchObject({ title: '11 条待处理' });
-    expect(h.summaries()[1].body).toContain('新加的来源带来 8 条');
-    expect(h.badge()).toBe(11);
+    expect(h.summaries()[1]).toMatchObject({ title: `${P} 条待处理` });
+    expect(h.summaries()[1].body).toContain(`新加的来源带来 ${P_ONLY} 条`);
+    expect(h.badge()).toBe(P);
     // and from then on it is a normal source
-    setLabel(22, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
     await tick(h);
-    expect(h.items()).toEqual([key(22)]);
+    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
   });
 
   it('a new label during the round that adds a source is still a notification when another source already had a baseline', async () => {
     const h = await signedIn({ sources: [REPO] });
     await h.c.start();
-    setLabel(136, true, h.clock); // in both sources
+    setLabel(OPEN_NEW, true, h.clock); // in both sources
     h.c.addSource(PROJECT_URL);
     await h.c.syncNow();
-    expect(h.items()).toEqual([key(136)]);
-    expect(h.summaries()[1].body).toContain('新加的来源带来 8 条');
-    expect(h.badge()).toBe(12);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.summaries()[1].body).toContain(`新加的来源带来 ${P_ONLY} 条`);
+    expect(h.badge()).toBe(P + 1);
   });
 
   it('removing a source drops what only it carried, silently', async () => {
     const h = await signedIn({ sources: [PROJECT_URL, REPO] });
     await h.c.start();
     h.c.removeSource(PROJECT_KEY);
-    expect(h.badge()).toBe(3);
-    expect(h.c.getState().pendingCount).toBe(3);
+    expect(h.badge()).toBe(R);
+    expect(h.c.getState().pendingCount).toBe(R);
     await tick(h);
     expect(h.items()).toEqual([]);
     expect(h.summaries()).toHaveLength(1);
@@ -327,14 +362,14 @@ describe('pending reminders against the fake GitHub', () => {
     // empty = back to the default
     h.c.setHandBack({ human: '' });
     expect(h.c.getState().handBack.human).toBe(LABEL);
-    expect(h.badge()).toBe(11);
+    expect(h.badge()).toBe(P);
   });
 
   it('a configured label name survives a restart and is the one used', async () => {
     const h = await signedIn({ sources: [PROJECT_URL], seed: { handBack: { human: 'Done', agent: 'pending/agent' } } });
     await h.c.start();
     expect(h.c.getState().handBack.human).toBe('Done');
-    expect(h.summaries()[0].title).not.toBe('11 条待处理');
+    expect(h.summaries()[0].title).not.toBe(`${P} 条待处理`);
     expect(h.badge()).toBe(h.c.getState().pendingCount);
     expect(h.badge()).toBeGreaterThan(50);
   });
@@ -356,12 +391,12 @@ describe('a notification the system refuses', () => {
     // "did happen": the summary was sent and refused
     expect(h.summaries()).toHaveLength(1);
     expect(h.c.getState().notifyProblem).toBe('Notifications are not allowed for this application');
-    expect(h.badge()).toBe(11);
+    expect(h.badge()).toBe(P);
     // the user allows notifications; the next one goes out and the warning goes away
     delivery.refuse = null;
-    setLabel(22, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
     await tick(h);
-    expect(h.items()).toEqual([key(22)]);
+    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
     expect(h.c.getState().notifyProblem).toBeNull();
   });
 });

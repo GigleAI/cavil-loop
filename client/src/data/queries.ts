@@ -9,6 +9,12 @@ const CONTENT_FIELDS = `
     labels(first: 50) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
+    author { login }
+    parent { number repository { nameWithOwner } }
+    subIssuesSummary { total completed }
+    closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+      nodes { number url state merged repository { nameWithOwner } }
+    }
   }
   ... on PullRequest {
     id number title url state merged updatedAt
@@ -16,6 +22,7 @@ const CONTENT_FIELDS = `
     labels(first: 50) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
+    author { login }
   }
   ... on DraftIssue { title }
 `;
@@ -38,6 +45,15 @@ fragment P on ProjectV2 {
         }
       }
       ... on ProjectV2SingleSelectField { id name options { id name } }
+    }
+  }
+  views(first: 30) {
+    nodes {
+      number name layout filter
+      groupByFields(first: 5) { nodes { ... on ProjectV2FieldCommon { name dataType } } }
+      verticalGroupByFields(first: 5) { nodes { ... on ProjectV2FieldCommon { name dataType } } }
+      sortByFields(first: 5) { nodes { direction field { ... on ProjectV2FieldCommon { name dataType } } } }
+      fields(first: 50) { nodes { ... on ProjectV2FieldCommon { name dataType } } }
     }
   }
   items(first: 100, after: $after) {

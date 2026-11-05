@@ -135,6 +135,13 @@ test('browser login → board; restart skips login; sources; three column modes;
   await shot(page, '03-settings');
   await page.getByTestId('back').click();
 
+  // the Project brought its first saved web view along ("Pending": table, -label:Done -status:Done);
+  // this test is about the board, so switch back to it and clear the filter
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await page.getByTestId('search').fill('');
+
   // iteration (default): each iteration column holds what the Project says
   await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe('12');
   const iter = rawCount('Iteration', 'title');
@@ -279,6 +286,7 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
 // ---- sub-item #138: viewing and changing items, in the real window ----
 
 async function signInWithSources(page: Page) {
+  pinLabels();
   await page.getByTestId('oauth-settings-toggle').click();
   await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
   await page.getByTestId('save-client-id').click();
@@ -292,7 +300,25 @@ async function signInWithSources(page: Page) {
   await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
+  // adding the Project imported its saved web view (#137: table, -label:Done -status:Done);
+  // these tests are about the board, so switch back to it and clear the filter
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await page.getByTestId('search').fill('');
   await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe('12');
+}
+
+/**
+ * The state these tests are written against: #137–#139 carry exactly
+ * `pending/human` (as when they were written), set on the fake GitHub before
+ * the first sync rather than taken from whatever a re-recording captured.
+ */
+function pinLabels() {
+  for (const n of [137, 138, 139]) {
+    for (const r of env.fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n) r.labels = [{ name: 'pending/human', color: 'ededed' }];
+    for (const p of env.fake.state.projects.get('org/gigleai/11')!)
+      for (const node of p.items.nodes) if (node.content?.number === n) node.content.labels.nodes = [{ name: 'pending/human', color: 'ededed' }];
+  }
 }
 
 const card = (page: Page, n: number) => page.locator(`[data-testid="card"][data-key="gigleai/cavil-loop#${n}"]`).first();
@@ -401,12 +427,19 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await page.locator('[data-testid="new-issue-label"][data-label="pending/human"]').check();
   await expect(page.getByTestId('new-issue-projects')).toContainText('cavil project');
   await shot(page, '26-new-issue');
+  // GitHub gives the next number: one past the highest one in the recorded data
+  const next =
+    1 +
+    Math.max(
+      ...env.fake.state.repos.get('gigleai/cavil-loop')!.map((r: any) => r.number),
+      ...env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes.map((n: any) => n.content?.number ?? 0)),
+    );
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#140');
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${next}`);
   expect(writes().filter((w) => w[0] === 'POST' && w[1] === '/api/repos/GigleAI/cavil-loop/issues')).toEqual([
     ['POST', '/api/repos/GigleAI/cavil-loop/issues', { title: '客户端里建的 issue', body: '正文', labels: ['pending/human'] }],
   ]);
-  await expect(card(page, 140)).toBeVisible();
+  await expect(card(page, next)).toBeVisible();
 
   // ---- offline: every change entry greys out, nothing is sent ----
   env.fake.state.offline = true;
@@ -586,6 +619,152 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   await app.close();
 });
 
+// ---- sub-item #137: search, table, imported views ----
+
+const filterResults: { query: string; server: string[] }[] = JSON.parse(
+  readFileSync(join(root, 'test/fixtures/cavil-project-11.filters.json'), 'utf8'),
+).results;
+
+/** raw recorded iteration title per item key, independent of the client code */
+function rawIteration(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const p of loadCavilProjectPages())
+    for (const n of p.items.nodes) {
+      const v = n.fieldValues.nodes.find((x: any) => x.iterationId);
+      out.set(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`, v ? v.title : '无迭代');
+    }
+  return out;
+}
+
+async function groupCounts(page: Page): Promise<Record<string, number>> {
+  return page.$$eval('[data-testid="group"]', (gs) =>
+    Object.fromEntries(gs.map((g) => [g.getAttribute('data-title'), Number(g.querySelector('[data-testid="group-count"]')!.textContent)])),
+  );
+}
+
+test('saved web view imported as a table; search with GitHub syntax; yellow bar for unsupported words; table settings survive a restart', async () => {
+  // sign in through the device flow against the fake GitHub
+  let { app, page } = await launch(env);
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/1`);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+
+  // no setting touched: the table equals what the view shows on GitHub —
+  // same items as GitHub's own filter, grouped by the recorded iteration values
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
+  const server = filterResults.find((r) => r.query === '-label:Done -status:Done')!.server;
+  const iter = rawIteration();
+  const want: Record<string, number> = {};
+  for (const k of server) want[iter.get(k)!] = (want[iter.get(k)!] ?? 0) + 1;
+  await expect.poll(() => groupCounts(page)).toEqual(want);
+  const rows = await page.$$eval('[data-testid="row"]', (rs) => rs.map((r) => r.getAttribute('data-key')!));
+  expect([...rows].sort()).toEqual(server);
+  await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
+  await shot(page, '10-table-imported');
+  // a row's title opens the same detail panel as a card on the board (#138)
+  await page.locator(`[data-testid="row"][data-key="${rows[0]}"] [data-testid="row-title"]`).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', rows[0]);
+  await page.getByTestId('detail-close').click();
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+
+  // search: GitHub syntax, and Chinese in the middle of a word
+  await page.getByTestId('search').fill('label:pending/human');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+    filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
+  );
+  await page.getByTestId('search').fill('客户端');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBeGreaterThan(
+    filterResults.find((r) => r.query === '客户端')!.server.length,
+  );
+
+  // words this client does not support: a yellow bar naming them, never "0 results"
+  await page.getByTestId('search').fill('label:pending/human updated:>2026-01-01 priority:High');
+  await expect(page.getByTestId('filter-unsupported')).toContainText('updated:>2026-01-01');
+  await expect(page.getByTestId('filter-unsupported')).toContainText('priority:High');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+    filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
+  );
+  await shot(page, '11-unsupported-words');
+  // a Chinese custom field is named and ignored too, not searched as text
+  await page.getByTestId('search').fill('优先级:高 label:pending/human');
+  await expect(page.getByTestId('filter-unsupported')).toContainText('优先级:高');
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+    filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
+  );
+
+  // customise: group by status, repository slices, fewer columns; then restart
+  await page.getByTestId('search').fill('');
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  // the repository slices are on after an import (GitHub's API does not say whether the web view has them)
+  await expect(page.getByTestId('slice-by-repo')).toBeChecked();
+  // the boxes follow the saved settings (a round trip to the main process), so click and wait
+  await page.locator('[data-testid="columns-pick"] input[data-col="labels"]').click();
+  await expect(page.locator('[data-testid="columns-pick"] input[data-col="labels"]')).not.toBeChecked();
+  await expect(page.getByTestId('slice-count')).toHaveText([String(rawIteration().size)]);
+  await page.locator('[data-testid="slice"][data-value="GigleAI/cavil-loop"]').click();
+  await expect.poll(() => groupCounts(page)).toEqual(Object.fromEntries(Object.entries(rawCountByStatus())));
+  await shot(page, '12-table-custom');
+  await page.waitForTimeout(500); // the search box saves 300 ms after typing stops
+  await app.close();
+
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('');
+  await expect.poll(() => groupCounts(page)).toEqual(Object.fromEntries(Object.entries(rawCountByStatus())));
+  await expect(page.getByTestId('slices')).toBeVisible();
+  await expect(page.locator('table.items th')).not.toContainText(['标签']);
+  await app.close();
+});
+
+function rawCountByStatus(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const p of loadCavilProjectPages())
+    for (const n of p.items.nodes) {
+      const v = n.fieldValues.nodes.find((x: any) => x.field?.name === 'Status');
+      const k = v ? v.name : '无状态';
+      out[k] = (out[k] ?? 0) + 1;
+    }
+  return out;
+}
+
+test('a saved board view sorted by update time: the board shows each column newest first', async () => {
+  const { app, page } = await launch(env);
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/2`);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+
+  await expect(page.getByTestId('search')).toHaveValue('-label:nightly-failure', { timeout: 15_000 });
+  await expect(page.locator('[data-testid="column"][data-title="Done"]')).toBeVisible();
+  const updated = new Map<string, string>();
+  for (const p of loadCavilProjectPages())
+    for (const n of p.items.nodes) updated.set(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`, n.content.updatedAt);
+  const order = await page.$$eval('[data-testid="column"][data-title="Done"] [data-testid="card"]', (cs) => cs.map((c) => c.getAttribute('data-key')!));
+  expect(order.length).toBeGreaterThan(10);
+  const ts = order.map((k) => updated.get(k)!);
+  expect(ts).toEqual([...ts].sort().reverse());
+  await shot(page, '13-board-imported-sort');
+  await app.close();
+});
+
 function alertsOf(env: Env): any[] {
   if (!existsSync(env.alerts)) return [];
   return readFileSync(env.alerts, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -606,28 +785,41 @@ test('pending/human: start-up summary, one notification per new label, badge, la
   await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
   await page.getByTestId('source-add').click();
 
-  // the recorded data: 11 items carry pending/human (8 closed / merged), the repo repeats 3 of them
-  await expect(page.getByTestId('pending-count')).toHaveText('11', { timeout: 15_000 });
+  // expected numbers come from the recording itself (re-recorded by record.mjs, never typed in)
+  const pendingInRecording = new Set<string>();
+  for (const pg of loadCavilProjectPages())
+    for (const n of pg.items.nodes)
+      if (!n.isArchived && n.content?.labels?.nodes.some((l: any) => l.name === 'pending/human'))
+        pendingInRecording.add(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`);
+  for (const i of env.fake.state.repos.get('gigleai/cavil-loop')!)
+    if (i.labels.some((l: any) => (l.name ?? l) === 'pending/human')) pendingInRecording.add(`gigleai/cavil-loop#${i.number}`);
+  const N = pendingInRecording.size;
+  expect(N).toBeGreaterThan(0);
+  // a merged PR without the label, only on the board
+  const mergedPr = loadCavilProjectPages()
+    .flatMap((pg) => pg.items.nodes)
+    .find((n: any) => n.content?.__typename === 'PullRequest' && n.content.merged && !n.content.labels.nodes.some((l: any) => l.name === 'pending/human'))!.content.number;
+  await expect(page.getByTestId('pending-count')).toHaveText(String(N), { timeout: 15_000 });
   const notes = () => alertsOf(env).filter((a) => a.type === 'notify');
   const badge = () => alertsOf(env).filter((a) => a.type === 'badge').pop()?.count;
   await expect.poll(() => notes().length).toBeGreaterThan(0);
   expect(notes().filter((a) => a.kind === 'item')).toEqual([]);
-  expect(notes().filter((a) => a.kind === 'summary').map((a) => a.title)).toContain('11 条待处理');
-  expect(badge()).toBe(11);
+  expect(notes().filter((a) => a.kind === 'summary').map((a) => a.title)).toContain(`${N} 条待处理`);
+  expect(badge()).toBe(N);
   await shot(page, '20-pending-settings');
 
   // a merged PR gets the label on GitHub → exactly one notification at the next round
   for (const pg of env.fake.state.projects.get('org/gigleai/11')!)
     for (const n of pg.items.nodes)
-      if (n.content?.number === 23) {
+      if (n.content?.number === mergedPr) {
         n.content.labels = { nodes: [...n.content.labels.nodes, { name: 'pending/human', color: 'ededed' }] };
         n.content.updatedAt = new Date().toISOString();
       }
   await page.getByTestId('back').click();
   await page.getByTestId('refresh').click();
-  await expect.poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key)).toEqual(['gigleai/cavil-loop#23']);
+  await expect.poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key)).toEqual([`gigleai/cavil-loop#${mergedPr}`]);
   expect(notes().find((a) => a.kind === 'item').title).toContain('已合并');
-  await expect.poll(badge).toBe(12);
+  await expect.poll(badge).toBe(N + 1);
   await page.getByTestId('refresh').click();
   await page.waitForTimeout(500);
   expect(notes().filter((a) => a.kind === 'item')).toHaveLength(1);
@@ -638,7 +830,7 @@ test('pending/human: start-up summary, one notification per new label, badge, la
   await page.getByTestId('hand-back-human').fill('doing/agent');
   await page.getByTestId('hand-back-human').blur();
   await expect(page.getByTestId('pending-label')).toHaveText('doing/agent');
-  await expect(page.getByTestId('pending-count')).not.toHaveText('12');
+  await expect(page.getByTestId('pending-count')).not.toHaveText(String(N + 1));
   const count = Number(await page.getByTestId('pending-count').textContent());
   await expect.poll(badge).toBe(count);
   expect(notes().filter((a) => a.kind === 'item')).toHaveLength(1);

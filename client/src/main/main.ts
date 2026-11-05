@@ -11,7 +11,8 @@ import { itemAlertText } from '../data/pending';
 import { Cache } from '../data/cache';
 import { createPlatform, isAllowedRequest } from '../platform';
 import { IPC, type Snapshot } from '../shared/ipc';
-import type { HandBackLabels, ViewSettings } from '../shared/types';
+import type { HandBackLabels } from '../shared/types';
+import type { ViewPatch } from '../shared/viewSettings';
 import type { WriteAction } from '../shared/actions';
 
 // --notify-check implies the smoke test: after the window mounts, one real
@@ -167,7 +168,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.setClientId, (_e, id: string) => controller.setClientId(String(id)));
   ipcMain.handle(IPC.addSource, (_e, input: string) => controller.addSource(String(input)));
   ipcMain.handle(IPC.removeSource, (_e, key: string) => controller.removeSource(String(key)));
-  ipcMain.handle(IPC.setView, (_e, patch: Partial<ViewSettings>) => controller.setView(patch));
+  ipcMain.handle(IPC.setView, (_e, patch: ViewPatch) => controller.setView(patch));
   ipcMain.handle(IPC.syncNow, () => controller.syncNow());
   ipcMain.handle(IPC.openExternal, (_e, url: string) => platform.openExternal(String(url)));
   ipcMain.handle(IPC.loadDetail, (_e, key: string) => controller.loadDetail(String(key)));

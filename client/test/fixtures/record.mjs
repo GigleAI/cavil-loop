@@ -7,8 +7,16 @@
 //
 // What is kept: the exact response *shape* (field names, nesting, typenames,
 // pagination, iteration configuration, label names, open/closed/merged state,
-// dates). What is replaced: titles, logins, bodies, node ids and cursors
-// (stable per-run mapping so cross-references stay consistent).
+// dates, saved views). Titles are kept for items of public repositories
+// (anyone can read them on github.com, and the filter parity test needs the
+// real text); items of any other repository get a placeholder title. What is
+// replaced: logins, bodies, node ids and cursors (stable per-run mapping so
+// cross-references stay consistent).
+//
+// It also records GitHub's own server-side filter (`items(query:)`) for every
+// query in FILTER_QUERIES, in the same run, so the client's local filter can
+// be compared item by item against what GitHub returned for the same data
+// (cavil-project-11.filters.json).
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -38,6 +46,24 @@ const scrubLogin = (l) => {
 };
 // Keep one CJK sample per title so search / rendering paths see real scripts.
 const scrubTitle = (n, kind) => `${kind === 'PullRequest' ? '示例 PR' : '示例 issue'} ${n}：fixture title`;
+const publicRepos = new Map();
+const isPublic = (nameWithOwner) => {
+  if (!publicRepos.has(nameWithOwner)) {
+    let vis = 'unknown';
+    try {
+      vis = gh(['api', `repos/${nameWithOwner}`]).visibility;
+    } catch {
+      /* unreadable = not public */
+    }
+    publicRepos.set(nameWithOwner, vis === 'public');
+  }
+  return publicRepos.get(nameWithOwner);
+};
+// logins inside a saved filter / a recorded query (`assignee:luosky`, `author:a,b`)
+const scrubQueryLogins = (q) =>
+  (q ?? '').replace(/\b(assignee|author):([^\s]+)/gi, (_, f, v) =>
+    `${f}:${v.split(',').map((x) => (x.startsWith('@') || !x ? x : scrubLogin(x.replace(/"/g, '')))).join(',')}`,
+  );
 
 function scrubContent(c) {
   if (!c) return c;
@@ -45,11 +71,13 @@ function scrubContent(c) {
   return {
     ...c,
     ...(c.id ? { id: scrubId(c.__typename === 'PullRequest' ? 'PR' : 'I', c.id) } : {}),
-    title: scrubTitle(c.number, c.__typename),
+    title: isPublic(c.repository.nameWithOwner) ? c.title : scrubTitle(c.number, c.__typename),
     assignees: { nodes: c.assignees.nodes.map((a) => ({ login: scrubLogin(a.login) })) },
+    author: c.author ? { login: scrubLogin(c.author.login) } : c.author,
   };
 }
 
+const recordedAt = new Date().toISOString();
 const pages = [];
 let after = null;
 for (;;) {
@@ -66,6 +94,7 @@ for (;;) {
 const scrubbedPages = pages.map((p, i) => ({
   ...p,
   id: scrubId('PVT', p.id),
+  views: { nodes: p.views.nodes.map((v) => ({ ...v, filter: v.filter == null ? v.filter : scrubQueryLogins(v.filter) })) },
   fields: {
     nodes: p.fields.nodes.map((f) => (f.id ? { ...f, id: scrubId('PVTF', f.id) } : f)),
   },
@@ -93,8 +122,8 @@ writeFileSync(
   JSON.stringify(
     {
       _note:
-        'Recorded from GigleAI Project #11 ("cavil project") with test/fixtures/record.mjs; titles, logins, node ids and cursors scrubbed. Each element is one GraphQL page of organization.projectV2.',
-      recordedAt: new Date().toISOString(),
+        'Recorded from GigleAI Project #11 ("cavil project") with test/fixtures/record.mjs; logins, node ids and cursors scrubbed, titles kept for public repositories. Each element is one GraphQL page of organization.projectV2.',
+      recordedAt,
       pages: scrubbedPages,
     },
     null,
@@ -108,13 +137,16 @@ const rest = gh(['api', 'repos/GigleAI/cavil-loop/issues?state=all&per_page=40&s
 const keep = (x) => ({
   number: x.number,
   node_id: scrubId(x.pull_request ? 'PR' : 'I', x.node_id),
-  title: scrubTitle(x.number, x.pull_request ? 'PullRequest' : 'Issue'),
+  title: x.title,
   state: x.state,
   html_url: x.html_url,
   updated_at: x.updated_at,
   labels: x.labels.map((l) => ({ name: l.name, color: l.color })),
   assignees: x.assignees.map((a) => ({ login: scrubLogin(a.login) })),
   milestone: x.milestone ? { number: x.milestone.number, title: x.milestone.title, due_on: x.milestone.due_on } : null,
+  user: x.user ? { login: scrubLogin(x.user.login) } : null,
+  parent_issue_url: x.parent_issue_url ?? null,
+  sub_issues_summary: x.sub_issues_summary ?? null,
   ...(x.pull_request ? { pull_request: { html_url: x.pull_request.html_url, merged_at: x.pull_request.merged_at } } : {}),
 });
 writeFileSync(
@@ -122,12 +154,116 @@ writeFileSync(
   JSON.stringify(
     {
       _note:
-        'Recorded from GET /repos/GigleAI/cavil-loop/issues?state=all&sort=updated with test/fixtures/record.mjs; only fields the client reads are kept, titles and logins scrubbed.',
-      recordedAt: new Date().toISOString(),
+        'Recorded from GET /repos/GigleAI/cavil-loop/issues?state=all&sort=updated with test/fixtures/record.mjs; only fields the client reads are kept, logins scrubbed (the repository is public, titles are kept).',
+      recordedAt,
       issues: rest.map(keep),
     },
     null,
     1,
   ) + '\n',
 );
+// ---- GitHub's server-side filter on the same board, same run --------------
+// Values that depend on the data (an iteration title, a login) are picked
+// from the pages just read so the queries keep meaning something after a
+// re-record. Logins go through the same scrub as the pages.
+const nodes = pages.flatMap((p) => p.items.nodes).filter((n) => n.content && n.content.__typename !== 'DraftIssue');
+const tally = (xs) => [...xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map())].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+const iterTitles = tally(nodes.map((n) => n.fieldValues.nodes.find((v) => v.iterationId)?.title).filter(Boolean));
+const assignees = tally(nodes.flatMap((n) => n.content.assignees.nodes.map((a) => a.login)));
+const authors = tally(nodes.map((n) => n.content.author?.login).filter(Boolean));
+const q = (s) => (/\s|,/.test(s) ? `"${s}"` : s);
+const FILTER_QUERIES = [
+  'label:pending/human',
+  '-label:Done',
+  'label:pending/human,pending/agent',
+  '-label:Done,pending/PR',
+  'label:"pending/human"',
+  'no:label',
+  'has:label',
+  'label:done',
+  'Label:Done',
+  'status:Done',
+  '-status:Done',
+  'status:"In progress"',
+  'status:"In review",Backlog',
+  'no:status',
+  'status:done',
+  'iteration:@current',
+  'iteration:@next',
+  'iteration:@previous',
+  '-iteration:@current',
+  `iteration:${q(iterTitles[0])}`,
+  `iteration:${q(iterTitles[0])},${q(iterTitles[1])}`,
+  'no:iteration',
+  'has:iteration',
+  `iteration:${q(iterTitles[0].toLowerCase())}`,
+  'no:milestone',
+  'milestone:"v1"',
+  'assignee:@me',
+  `assignee:${assignees[0]}`,
+  'no:assignee',
+  'has:assignee',
+  `author:${authors[0]}`,
+  `-author:${authors[0]}`,
+  'author:@me',
+  'repo:GigleAI/cavil-loop',
+  'is:open',
+  'is:closed',
+  'is:merged',
+  'is:issue',
+  'is:pr',
+  '-is:pr',
+  'is:open is:pr',
+  'is:open,merged',
+  '-is:closed',
+  '-label:Done -status:Done',
+  'is:open label:pending/human',
+  'autopilot',
+  'Autopilot',
+  'review gate',
+  '"review gate"',
+  'pending',
+  '135',
+  '#135',
+  'is:pr 140',
+  '客户端',
+];
+const filterResults = [];
+for (const query of FILTER_QUERIES) {
+  const keys = [];
+  let cur = null;
+  for (;;) {
+    const args = [
+      'api', 'graphql',
+      '-f', `query=query($q: String!, $after: String) { organization(login: "GigleAI") { projectV2(number: 11) { items(first: 100, after: $after, query: $q) { pageInfo { hasNextPage endCursor } nodes { isArchived content { __typename ... on Issue { number repository { nameWithOwner } } ... on PullRequest { number repository { nameWithOwner } } } } } } } }`,
+      '-f', `q=${query}`,
+    ];
+    if (cur) args.push('-f', `after=${cur}`);
+    const r = gh(args);
+    if (r.errors) throw new Error(`${query}: ${JSON.stringify(r.errors)}`);
+    const it = r.data.organization.projectV2.items;
+    for (const n of it.nodes) {
+      if (n.isArchived || !n.content || n.content.__typename === 'DraftIssue') continue;
+      keys.push(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`);
+    }
+    if (!it.pageInfo.hasNextPage) break;
+    cur = it.pageInfo.endCursor;
+  }
+  filterResults.push({ query: scrubQueryLogins(query), server: keys.sort() });
+}
+writeFileSync(
+  join(here, 'cavil-project-11.filters.json'),
+  JSON.stringify(
+    {
+      _note:
+        "GitHub's own server-side filter (ProjectV2.items(query:)) on GigleAI Project #11, recorded by test/fixtures/record.mjs in the same run as cavil-project-11.pages.json. `server` = item keys GitHub returned (archived and draft items dropped, as the client does). Logins in queries are scrubbed with the same mapping as the pages; `viewer` is the scrubbed login @me resolved to.",
+      recordedAt,
+      viewer: scrubLogin(gh(['api', 'user']).login),
+      results: filterResults,
+    },
+    null,
+    1,
+  ) + '\n',
+);
+
 console.log(`project pages: ${pages.length}, items: ${pages.reduce((n, p) => n + p.items.nodes.length, 0)}, rest issues: ${rest.length}`);

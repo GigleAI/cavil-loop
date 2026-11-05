@@ -1,7 +1,8 @@
 // The one API the renderer gets (exposed by the preload as `window.cavil`).
 // The token never crosses it: the renderer only sees state and board data.
 
-import type { AppKind, AppState, BoardData, HandBackLabels, ViewSettings } from './types';
+import type { AppKind, AppState, BoardData, HandBackLabels } from './types';
+import type { ViewPatch } from './viewSettings';
 import type { DetailResult, RepoOptions, WriteAction, WriteResult } from './actions';
 
 export interface Snapshot {
@@ -20,7 +21,7 @@ export interface CavilApi {
   setClientId(id: string): Promise<void>;
   addSource(input: string): Promise<{ ok: boolean; error?: string }>;
   removeSource(key: string): Promise<void>;
-  setView(patch: Partial<ViewSettings>): Promise<void>;
+  setView(patch: ViewPatch): Promise<void>;
   syncNow(): Promise<void>;
   openExternal(url: string): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;

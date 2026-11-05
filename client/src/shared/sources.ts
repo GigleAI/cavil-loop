@@ -24,6 +24,7 @@ export function parseSource(input: string): SourceConfig | null {
     if (!NAME.test(owner)) return null;
     const ownerType = parts[0] === 'orgs' ? 'org' : 'user';
     const number = Number(parts[3]);
+    const view = parts[4] === 'views' && /^\d+$/.test(parts[5] ?? '') ? Number(parts[5]) : undefined;
     return {
       kind: 'project',
       key: `project:${ownerType}/${owner.toLowerCase()}/${number}`,
@@ -31,6 +32,7 @@ export function parseSource(input: string): SourceConfig | null {
       owner,
       number,
       url: `https://github.com/${parts[0]}/${owner}/projects/${number}`,
+      ...(view !== undefined ? { view } : {}),
     };
   }
   if (!m && parts.length !== 2) return null;
