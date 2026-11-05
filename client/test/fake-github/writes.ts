@@ -64,6 +64,10 @@ export interface WritableState {
   dropWrites: boolean;
   /** page size of the detail page's comment / review lists */
   detailPageSize: number;
+  /** page size of one review's line comments (GitHub: 100) */
+  reviewCommentPageSize: number;
+  /** answer the follow-up page of a review's line comments with HTTP 502 */
+  failReviewCommentPages: boolean;
   /** clock of updated_at / createdAt written by the fake */
   clock: () => string;
 }
@@ -81,6 +85,8 @@ export function defaultWritable(): WritableState {
     readOnlyProjects: new Set(),
     dropWrites: false,
     detailPageSize: 100,
+    reviewCommentPageSize: 100,
+    failReviewCommentPages: false,
     clock: () => new Date().toISOString(),
   };
 }
@@ -351,7 +357,7 @@ function projectByNodeId(store: Store, id: string): { key: string; pages: Projec
   return null;
 }
 
-type GqlAnswer = { data?: unknown; errors?: { message: string; type?: string }[] };
+type GqlAnswer = { data?: unknown; errors?: { message: string; type?: string }[]; httpStatus?: number };
 
 /** GraphQL operations of #138 (mutations, one-item re-read, detail). Returns null when `op` is not one of them. */
 export function handleGraphql(store: Store, op: string | undefined, v: Record<string, any>): GqlAnswer | null {
@@ -397,6 +403,19 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     return { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: node.id } }, clearProjectV2ItemFieldValue: { projectV2Item: { id: node.id } } } };
   }
 
+  if (op === 'CavilReviewComments') {
+    if (w.failReviewCommentPages) return { httpStatus: 502 };
+    for (const list of w.reviews.values()) {
+      const r = list.find((x) => x.id === v.id);
+      if (!r) continue;
+      const start = v.after ? Number(String(v.after).replace(/^l-/, '')) : 0;
+      const nodes = r.comments.nodes.slice(start, start + w.reviewCommentPageSize);
+      const end = start + nodes.length;
+      return { data: { node: { comments: { pageInfo: { hasNextPage: end < r.comments.nodes.length, endCursor: nodes.length ? `l-${end}` : null }, nodes } } } };
+    }
+    return { data: { node: null }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${v.id}'` }] };
+  }
+
   if (op === 'CavilItemRefresh' || op === 'CavilItemDetail') {
     const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
     if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };
@@ -420,6 +439,12 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     };
     const isPr = c.kind === 'PullRequest';
     const pr = isPr ? pullOf(store, c) : null;
+    const linePage = (r: FakeReview, after: string | null) => {
+      const start = after ? Number(after.replace(/^l-/, '')) : 0;
+      const nodes = r.comments.nodes.slice(start, start + w.reviewCommentPageSize);
+      const end = start + nodes.length;
+      return { pageInfo: { hasNextPage: end < r.comments.nodes.length, endCursor: nodes.length ? `l-${end}` : null }, nodes };
+    };
     const allowed = w.mergeMethods.get(c.repo.toLowerCase()) ?? { merge: true, squash: true, rebase: true };
     const item: any = {
       __typename: c.kind,
@@ -446,7 +471,10 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
         headRefName: `feature/issue-${c.number}`,
         commits: { nodes: [{ commit: { oid: pr!.headOid, statusCheckRollup: pr!.checks ? { state: pr!.checks } : null } }] },
       });
-      if (v.withReviews) item.reviews = pageOf(w.reviews.get(ikey) ?? [], v.reviewsAfter ?? null);
+      if (v.withReviews) {
+        const rp = pageOf(w.reviews.get(ikey) ?? [], v.reviewsAfter ?? null);
+        item.reviews = { ...rp, nodes: rp.nodes.map((r) => ({ ...r, comments: linePage(r, null) })) };
+      }
     }
     return { data: { repository: { mergeCommitAllowed: allowed.merge, squashMergeAllowed: allowed.squash, rebaseMergeAllowed: allowed.rebase, issueOrPullRequest: item } } };
   }

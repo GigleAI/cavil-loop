@@ -20,6 +20,8 @@ interface Env {
   userData: string;
   cred: string;
   opened: string;
+  /** every request the window made, one per line: "allow|block <url>" */
+  requests: string;
 }
 
 async function launch(env: Env): Promise<{ app: ElectronApplication; page: Page }> {
@@ -37,6 +39,7 @@ async function launch(env: Env): Promise<{ app: ElectronApplication; page: Page 
       CAVIL_CLIENT_TEST_WEB: env.fake.web,
       CAVIL_CLIENT_TEST_CREDENTIAL_FILE: env.cred,
       CAVIL_CLIENT_TEST_OPENED_FILE: env.opened,
+      CAVIL_CLIENT_TEST_REQUESTS_FILE: env.requests,
       CAVIL_CLIENT_USER_DATA: env.userData,
     },
   });
@@ -90,7 +93,7 @@ async function countOf(page: Page, title: string): Promise<string> {
 let env: Env;
 test.beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cavil-e2e-'));
-  env = { fake: await startFakeGitHub(), userData: join(dir, 'userData'), cred: join(dir, 'cred'), opened: join(dir, 'opened.txt') };
+  env = { fake: await startFakeGitHub(), userData: join(dir, 'userData'), cred: join(dir, 'cred'), opened: join(dir, 'opened.txt'), requests: join(dir, 'requests.txt') };
 });
 test.afterEach(async () => {
   await env.fake.close();
@@ -409,5 +412,58 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(page.getByTestId('label-add')).toBeDisabled();
   await expect(page.getByTestId('write-entry')).toBeDisabled();
   await shot(page, '27-offline-detail');
+  await app.close();
+});
+
+test('a slow answer for the item you left never lands on the one you are looking at; images only from github.com', async () => {
+  const w = env.fake.state.w;
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_138</p>');
+  w.bodies.set('gigleai/cavil-loop#137', [
+    '<p>BODY_137</p>',
+    '<p><img alt="via proxy" src="https://camo.githubusercontent.com/probe-138"></p>',
+    '<p><img alt="attachment" src="https://private-user-images.githubusercontent.com/probe.png"></p>',
+    '<p><img alt="on github" src="https://github.com/GigleAI/cavil-loop/raw/main/probe.png"></p>',
+  ].join(''));
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+
+  // 1. #138's detail is slow; #137 is opened meanwhile and finishes first
+  const releaseDetail = env.fake.holdWhen((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
+  await card(page, 138).click();
+  await expect.poll(() => env.fake.log.some((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138)).toBe(true);
+  await card(page, 137).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await expect(frame.locator('body')).toContainText('BODY_137');
+  releaseDetail();
+  await expect.poll(() => env.fake.log.find((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138)?.status).toBe(200);
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await expect(frame.locator('body')).toContainText('BODY_137');
+  await expect(frame.locator('body')).not.toContainText('BODY_138');
+
+  // 2. images: only the github.com one is requested; the others are not even tried, and the entry says so
+  await expect(frame.locator('[data-blocked]')).toHaveAttribute('data-blocked', '2');
+  await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toContain('allow https://github.com/GigleAI/cavil-loop/raw/main/probe.png');
+  const seen = readFileSync(env.requests, 'utf8');
+  expect(seen).not.toContain('githubusercontent.com');
+  expect(seen.split('\n').filter((l) => l && !/^allow (https:\/\/(api\.)?github\.com\/|http:\/\/127\.0\.0\.1:)/.test(l))).toEqual([]);
+  await shot(page, '28-images-github-only');
+
+  // 3. a change still in flight when another item is opened: its result goes to the board, not into the new item
+  const releaseWrite = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/137/labels'));
+  await page.getByTestId('label-add').selectOption('Done');
+  await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/137/labels'))).toBe(true);
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(frame.locator('body')).toContainText('BODY_138');
+  await page.getByTestId('reply-input').fill('写给 138 的草稿');
+  releaseWrite();
+  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#137：已加上标签「Done」');
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
+  await expect(page.getByTestId('reply-input')).toHaveValue('写给 138 的草稿');
+  await expect(frame.locator('body')).toContainText('BODY_138');
+  await expect(card(page, 137).locator('.label', { hasText: 'Done' })).toBeVisible();
+  await shot(page, '29-left-behind-result');
   await app.close();
 });

@@ -354,7 +354,7 @@ export function BoardView({ state, data, onSettings }: { state: AppState; data: 
             ))
           : renderRow(null)}
       </div>
-      {openKey && <DetailPanel itemKey={openKey} state={state} data={data} onClose={() => setOpenKey(null)} />}
+      {openKey && <DetailPanel itemKey={openKey} state={state} data={data} onClose={() => setOpenKey(null)} onLeftBehind={setNote} />}
       </div>
       {newIssue && <NewIssueDialog state={state} data={data} onClose={() => setNewIssue(false)} onCreated={(k) => setOpenKey(k)} />}
       {confirm && (

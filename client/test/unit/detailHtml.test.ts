@@ -2,7 +2,8 @@
 // client writes around it is escaped, and the frame's own policy forbids scripts.
 
 import { describe, expect, it } from 'vitest';
-import { FRAME_CSP, FRAME_SANDBOX, timelineDocument } from '../../src/renderer/detailHtml';
+import { blockedImages, FRAME_CSP, FRAME_SANDBOX, timelineDocument } from '../../src/renderer/detailHtml';
+import { isAllowedRequest } from '../../src/platform';
 import type { ItemDetail } from '../../src/shared/actions';
 
 const detail = (author: string, path: string): ItemDetail => ({
@@ -26,7 +27,6 @@ const detail = (author: string, path: string): ItemDetail => ({
       bodyHtml: '<p>rendered <b>by GitHub</b></p>',
       reviewState: 'APPROVED',
       lineComments: [{ id: 'L1', url: '', author, at: '2026-11-01T00:00:00Z', path, line: 3, bodyHtml: '<p>line</p>' }],
-      moreLineComments: 0,
     },
   ],
 });
@@ -48,5 +48,26 @@ describe('isolated detail view', () => {
     const doc = timelineDocument(detail('a', 'b'), true);
     expect(doc).toContain(`content="${FRAME_CSP}"`);
     expect(doc).toContain('<base target="_blank">');
+  });
+
+  it('images: only github.com / api.github.com load; the others are counted and the entry says so', () => {
+    const img = (src: string) => `<img alt="x" src="${src}">`;
+    expect(blockedImages(img('https://github.com/o/r/raw/main/a.png') + img('https://api.github.com/x') + img('data:image/png;base64,AA'))).toBe(0);
+    expect(blockedImages(img('https://camo.githubusercontent.com/a') + img('https://github.com.evil.example/a') + img('http://github.com/a'))).toBe(3);
+    expect(FRAME_CSP).toMatch(/img-src https:\/\/github\.com https:\/\/api\.github\.com data:;/);
+    expect(FRAME_CSP).not.toMatch(/(img|media|default)-src[^;]*https:(?!\/\/)/);
+    const d = detail('a', 'b');
+    d.timeline[0].bodyHtml = img('https://camo.githubusercontent.com/a');
+    expect(timelineDocument(d, false)).toContain('data-blocked="1"');
+  });
+
+  it('the main-process request filter: GitHub\'s two hosts, plus the loopback fake in tests', () => {
+    const ep = { api: 'http://127.0.0.1:4000/api', web: 'http://127.0.0.1:4000/web' };
+    expect(isAllowedRequest('https://github.com/a.png', ep)).toBe(true);
+    expect(isAllowedRequest('https://api.github.com/graphql', ep)).toBe(true);
+    expect(isAllowedRequest('http://127.0.0.1:4000/api/x', ep)).toBe(true);
+    for (const u of ['https://camo.githubusercontent.com/a', 'https://evil.github.com/a', 'http://github.com/a', 'http://127.0.0.1:5000/x', 'https://example.com/']) {
+      expect(isAllowedRequest(u, ep), u).toBe(false);
+    }
   });
 });

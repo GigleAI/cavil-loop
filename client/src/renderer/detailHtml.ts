@@ -9,8 +9,26 @@ import type { ItemDetail, TimelineEntry } from '../shared/actions';
 
 export const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
 
-export const FRAME_CSP =
-  "default-src 'none'; img-src https: data:; media-src https:; style-src 'unsafe-inline'; font-src 'none'; script-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
+/**
+ * The app talks to github.com / api.github.com only (#135): images are loaded
+ * from those two hosts and nowhere else — GitHub's own image proxy and
+ * attachment hosts (*.githubusercontent.com) included. A blocked image shows
+ * its alt text; the entry says how many were not loaded.
+ */
+export const IMAGE_HOSTS = ['https://github.com', 'https://api.github.com'];
+
+export const FRAME_CSP = `default-src 'none'; img-src ${IMAGE_HOSTS.join(' ')} data:; media-src 'none'; style-src 'unsafe-inline'; font-src 'none'; script-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`;
+
+/** How many <img> in GitHub's HTML point outside the allowed hosts (they will not load). */
+export function blockedImages(html: string): number {
+  let n = 0;
+  for (const m of html.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']*)["']/gi)) {
+    const src = m[1];
+    if (src.startsWith('data:')) continue;
+    if (!IMAGE_HOSTS.some((h) => src === h || src.startsWith(`${h}/`))) n++;
+  }
+  return n;
+}
 
 export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -39,7 +57,9 @@ function entryHtml(e: TimelineEntry): string {
         ? `<b>${who}</b> · ${escapeHtml(REVIEW_STATE[e.reviewState ?? ''] ?? e.reviewState ?? '评审')} · ${escapeHtml(when(e.at))}`
         : `<b>${who}</b> · ${escapeHtml(when(e.at))}`;
   const link = e.url ? ` · <a href="${escapeHtml(e.url)}">在网页上看</a>` : '';
-  const body = e.bodyHtml.trim() ? `<div class="md">${e.bodyHtml}</div>` : '';
+  const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
+  const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片存放在 github.com 以外的地址，客户端只和 github.com 通信，没有加载；点「在网页上看」查看</div>` : '';
+  const body = (e.bodyHtml.trim() ? `<div class="md">${e.bodyHtml}</div>` : '') + note;
   let lines = '';
   if (e.lineComments?.length) {
     lines =
@@ -50,7 +70,6 @@ function entryHtml(e: TimelineEntry): string {
             `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code>${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · <b>${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md">${l.bodyHtml}</div></div>`,
         )
         .join('') +
-      (e.moreLineComments ? `<div class="more">还有 ${e.moreLineComments} 条逐行评论，在网页上看</div>` : '') +
       '</div>';
   }
   return `<article class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"><div class="head">${head}${link}</div>${body}${lines}</article>`;
@@ -79,6 +98,7 @@ a{color:${accent}}
 .lines{margin:4px 10px 8px 20px;border-left:2px solid ${border}}
 .line{padding:2px 8px}
 .line>.head,.more{color:${muted};font-size:12px}
+.blocked{margin:0 10px 6px;color:${muted};font-size:12px}
 </style></head><body>
 ${detail.timeline.map(entryHtml).join('\n')}
 </body></html>`;

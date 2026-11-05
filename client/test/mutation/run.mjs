@@ -267,6 +267,20 @@ const MUTATIONS = [
   { what: '详情的 GitHub HTML 外层文字不转义', file: 'src/renderer/detailHtml.ts',
     from: "return s.replace(/[&<>\"']/g,", to: "return s; void s.replace(/[&<>\"']/g,",
     expect: ['names and paths around GitHub\'s HTML are escaped'] },
+  // ---- review round 1 of PR #150 ----
+  { what: '评审的逐行评论只读第一页（超过 100 条丢后面的）', file: 'src/data/detail.ts',
+    from: '    for (let n = 0; page.pageInfo.hasNextPage; n++) {', to: '    for (let n = 0; false; n++) {',
+    expect: ['a review with more than 100 line comments'] },
+  { what: '逐行评论后续页读失败时当作读完了', file: 'src/data/detail.ts',
+    from: '      const d: { node: { comments?: Page<GqlLineComment> } | null } = await client.graphql(REVIEW_COMMENTS_QUERY, { id: r.id, after: page.pageInfo.endCursor });',
+    to: '      let d: { node: { comments?: Page<GqlLineComment> } | null };\n      try { d = await client.graphql(REVIEW_COMMENTS_QUERY, { id: r.id, after: page.pageInfo.endCursor }); } catch { break; }',
+    expect: ['a review with more than 100 line comments'] },
+  { what: '详情图片放开到任何 HTTPS 地址', file: 'src/renderer/detailHtml.ts',
+    from: "img-src ${IMAGE_HOSTS.join(' ')} data:", to: 'img-src https: data:',
+    expect: ['images: only github.com / api.github.com load'] },
+  { what: '主进程请求过滤放行 github.com 以外的子域', file: 'src/platform/index.ts',
+    from: "(u.hostname === 'github.com' || u.hostname === 'api.github.com')", to: "u.hostname.endsWith('github.com')",
+    expect: ['the main-process request filter'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;

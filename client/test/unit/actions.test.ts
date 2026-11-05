@@ -443,6 +443,37 @@ describe('detail: newest first', () => {
     expect(fake.log.filter((l) => l.operation === 'CavilItemDetail').length).toBe(3);
   });
 
+  it('a review with more than 100 line comments: every page read, newest first; a failed later page is an error, never a shorter discussion', async () => {
+    const n = openPr();
+    const key = `gigleai/cavil-loop#${n}`;
+    const lines = Array.from({ length: 101 }, (_, i) => ({
+      id: `L${i + 1}`,
+      url: '',
+      createdAt: new Date(Date.parse('2026-11-01T00:00:00Z') + i * 60_000).toISOString(),
+      bodyHTML: `<p>l${i + 1}</p>`,
+      author: { login: 'b' },
+      path: 'a.ts',
+      line: i + 1,
+      originalLine: i + 1,
+    }));
+    fake.state.w.reviews.set(key, [
+      { id: 'R-big', url: 'r', state: 'COMMENTED', submittedAt: '2026-11-02T00:00:00Z', createdAt: '2026-11-01T00:00:00Z', bodyHTML: '', author: { login: 'b' }, comments: { totalCount: 101, nodes: lines } },
+    ]);
+    const { c } = await ready();
+    const d = await c.loadDetail(K(n));
+    if (!d.ok) throw new Error(d.error);
+    const got = d.detail.timeline.find((e) => e.id === 'R-big')!.lineComments!.map((x) => x.id);
+    expect(got).toHaveLength(101);
+    expect(got[0]).toBe('L101'); // the newest, which sits on the second page
+    expect(got.at(-1)).toBe('L1');
+    expect(fake.log.filter((l) => l.operation === 'CavilReviewComments').map((l) => l.variables)).toEqual([{ id: 'R-big', after: 'l-100' }]);
+
+    fake.state.w.failReviewCommentPages = true;
+    const bad = await c.loadDetail(K(n));
+    expect(bad.ok).toBe(false);
+    expect(!bad.ok && bad.error).toContain('读取详情失败');
+  });
+
   it('pure ordering: same input in any order gives the same timeline', () => {
     const raw = {
       item: { __typename: 'Issue', id: 'B', number: 1, title: '', url: '', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', bodyHTML: '', author: null, labels: { nodes: [] } } as any,

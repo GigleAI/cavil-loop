@@ -1,13 +1,14 @@
 // Electron main process: one window, the controller, IPC. Everything the
 // app decides lives in controller.ts / data/; this file only wires it up.
 
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
+import { appendFileSync } from 'node:fs';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Controller } from './controller';
 import { Cache } from '../data/cache';
-import { createPlatform } from '../platform';
+import { createPlatform, isAllowedRequest } from '../platform';
 import { IPC, type Snapshot } from '../shared/ipc';
 import type { HandBackLabels, ViewSettings } from '../shared/types';
 import type { WriteAction } from '../shared/actions';
@@ -33,6 +34,21 @@ if (!smoke && !app.requestSingleInstanceLock()) app.quit();
 
 app.whenReady().then(async () => {
   const platform = createPlatform({ platform: process.platform, env: process.env, shellOpen: (u) => shell.openExternal(u) });
+  // Second layer behind each page's own policy: the window reaches GitHub's two hosts only.
+  // Test mode records every request and never lets one leave the machine.
+  const requestLog = platform.testMode ? process.env.CAVIL_CLIENT_TEST_REQUESTS_FILE : undefined;
+  session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (d, cb) => {
+    const allowed = isAllowedRequest(d.url, platform.endpoints);
+    if (requestLog) {
+      try {
+        appendFileSync(requestLog, `${allowed ? 'allow' : 'block'} ${d.url}\n`);
+      } catch {
+        /* test bookkeeping only */
+      }
+    }
+    const local = /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(d.url);
+    cb({ cancel: !allowed || (platform.testMode && !local) });
+  });
   const cache = new Cache(join(app.getPath('userData'), 'cache.sqlite'));
   const controller = new Controller({
     credentials: platform.credentials,

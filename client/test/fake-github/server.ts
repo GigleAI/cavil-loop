@@ -78,7 +78,7 @@ export interface FakeState {
   /** login -> repos (`owner/name` lower-cased) that answer 404 for that account */
   deniedRepos: Map<string, Set<string>>;
   /** responses of matching paths wait for `release()` (after the response is computed) */
-  holds: { match: (path: string) => boolean; gate: Promise<void> }[];
+  holds: { match: (path: string, entry: LoggedRequest) => boolean; gate: Promise<void> }[];
   /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
   refreshTokens: Map<string, string>;
   refreshSeq: number;
@@ -109,6 +109,8 @@ export interface FakeGitHub {
   resolveGrant(state: DeviceGrant['state'], userCode?: string): DeviceGrant;
   /** hold responses of paths containing `fragment` until the returned function is called */
   hold(fragment: string): () => void;
+  /** hold responses of requests matching `pred` (GraphQL: operation + variables are filled) until released */
+  holdWhen(pred: (entry: LoggedRequest) => boolean): () => void;
   /** everything writable, serialised: equal before / after = GitHub changed nothing */
   digest(): string;
   /** requests that ask GitHub to change something (REST non-GET except the markdown renderer, GraphQL mutations) */
@@ -189,7 +191,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       return false;
     };
     const held = async () => {
-      for (const h of state.holds) if (h.match(entry.path)) await h.gate;
+      for (const h of state.holds) if (h.match(entry.path, entry)) await h.gate;
     };
 
     // ---- OAuth device flow (web base) ----
@@ -293,6 +295,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       const answered = handleGraphql(store, op, body.variables ?? {});
       if (answered) {
         await held();
+        if (answered.httpStatus) return send(answered.httpStatus, { message: 'Server Error' });
         return send(200, answered);
       }
       if (op === 'CavilViewer') return send(200, { data: { viewer: { login: login() } } });
@@ -330,6 +333,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(t);
       };
+      await held();
       if (handleRest(store, req.method ?? 'GET', url.pathname + url.search, parsed, send, sendText)) return;
     }
 
@@ -385,6 +389,16 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       let release!: () => void;
       const gate = new Promise<void>((r) => (release = r));
       const h = { match: (p: string) => p.includes(fragment), gate };
+      state.holds.push(h);
+      return () => {
+        state.holds = state.holds.filter((x) => x !== h);
+        release();
+      };
+    },
+    holdWhen(pred) {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const h = { match: (_p: string, e: LoggedRequest) => pred(e), gate };
       state.holds.push(h);
       return () => {
         state.holds = state.holds.filter((x) => x !== h);

@@ -5,7 +5,7 @@
 import type { ItemDetail, MergeMethod, PrStatus, TimelineEntry } from '../shared/actions';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
-import { ITEM_DETAIL_QUERY } from './queries';
+import { ITEM_DETAIL_QUERY, REVIEW_COMMENTS_QUERY } from './queries';
 
 const MAX_PAGES = 50;
 
@@ -32,7 +32,7 @@ interface GqlReview {
   createdAt: string;
   bodyHTML: string;
   author: GqlAuthor | null;
-  comments: { totalCount: number; nodes: GqlLineComment[] };
+  comments: Page<GqlLineComment>;
 }
 interface Page<T> {
   pageInfo: { hasNextPage: boolean; endCursor: string | null };
@@ -128,6 +128,20 @@ export async function fetchRawDetail(client: GitHubClient, repo: string, number:
       } else withReviews = false;
     }
   }
+  // a review's line comments come 100 at a time: read every review's remaining pages
+  for (const r of reviews) {
+    let page = r.comments;
+    const all = [...page.nodes];
+    for (let n = 0; page.pageInfo.hasNextPage; n++) {
+      if (n >= MAX_PAGES) throw new GitHubError('http', `逐行评论分页超过 ${MAX_PAGES} 页，已停止`);
+      if (!page.pageInfo.endCursor) throw new GitHubError('graphql', '逐行评论分页缺少游标');
+      const d: { node: { comments?: Page<GqlLineComment> } | null } = await client.graphql(REVIEW_COMMENTS_QUERY, { id: r.id, after: page.pageInfo.endCursor });
+      if (!d.node?.comments) throw new GitHubError('graphql', '读不到评审的逐行评论');
+      page = d.node.comments;
+      all.push(...page.nodes);
+    }
+    r.comments = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: all };
+  }
   return { item: first!, comments, reviews, mergeMethods };
 }
 
@@ -166,7 +180,6 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
       bodyHtml: r.bodyHTML,
       reviewState: r.state,
       lineComments,
-      moreLineComments: Math.max(0, r.comments.totalCount - r.comments.nodes.length),
     });
   }
   out.sort(desc);

@@ -97,6 +97,19 @@ query CavilItemRefresh($owner: String!, $name: String!, $number: Int!) {
 }
 `;
 
+const LINE_COMMENT_FIELDS = 'id url createdAt bodyHTML path line originalLine author { login }';
+
+/** The rest of one review's line comments (a review can hold more than one page of them). */
+export const REVIEW_COMMENTS_QUERY = `
+query CavilReviewComments($id: ID!, $after: String) {
+  node(id: $id) {
+    ... on PullRequestReview {
+      comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${LINE_COMMENT_FIELDS} } }
+    }
+  }
+}
+`;
+
 const DETAIL_COMMENTS = `comments(first: 100, after: $commentsAfter) @include(if: $withComments) {
   pageInfo { hasNextPage endCursor }
   nodes { id url createdAt bodyHTML author { login } }
@@ -131,7 +144,7 @@ query CavilItemDetail($owner: String!, $name: String!, $number: Int!, $commentsA
           pageInfo { hasNextPage endCursor }
           nodes {
             id url state submittedAt createdAt bodyHTML author { login }
-            comments(first: 100) { totalCount nodes { id url createdAt bodyHTML path line originalLine author { login } } }
+            comments(first: 100) { pageInfo { hasNextPage endCursor } nodes { ${LINE_COMMENT_FIELDS} } }
           }
         }
       }

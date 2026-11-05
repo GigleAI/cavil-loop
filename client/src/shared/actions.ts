@@ -63,8 +63,6 @@ export interface TimelineEntry {
   reviewState?: string;
   /** review only: its line comments, newest first */
   lineComments?: { id: string; url: string; author: string | null; at: string; path: string; line: number | null; bodyHtml: string }[];
-  /** review only: GitHub has more line comments than were read */
-  moreLineComments?: number;
 }
 
 export interface PrStatus {

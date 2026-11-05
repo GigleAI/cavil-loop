@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData } from '../shared/types';
 import type { ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { writesEnabled } from '../data/board';
@@ -44,8 +44,28 @@ function dark(): boolean {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches;
 }
 
-export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string; state: AppState; data: BoardData; onClose: () => void }) {
+export function DetailPanel({
+  itemKey,
+  state,
+  data,
+  onClose,
+  onLeftBehind,
+}: {
+  itemKey: string;
+  state: AppState;
+  data: BoardData;
+  onClose: () => void;
+  /** a change made on an item the panel has since left: its result goes to the board instead */
+  onLeftBehind: (note: ResultNote) => void;
+}) {
   const item = data.items.find((i) => i.key === itemKey) ?? null;
+  // Every answer that comes back later is checked against what is on screen
+  // now: the item shown (keyRef), the newest detail read (loadSeq), the text
+  // that was previewed (replyRef). An answer for anything else is dropped.
+  const keyRef = useRef(itemKey);
+  keyRef.current = itemKey;
+  const loadSeq = useRef(0);
+  const replyRef = useRef('');
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -63,8 +83,10 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
   const repo = item?.repo ?? '';
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     const r = await api().loadDetail(itemKey);
+    if (keyRef.current !== itemKey || seq !== loadSeq.current) return;
     setLoading(false);
     if (r.ok) {
       setDetail(r.detail);
@@ -74,8 +96,12 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
 
   useEffect(() => {
     setDetail(null);
+    setLoadError(null);
+    setBusy(false);
+    setCloseComment('');
     setNote(null);
     setReply('');
+    replyRef.current = '';
     setPreview(null);
     setReplied(false);
     setAsk(null);
@@ -84,21 +110,32 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
   useEffect(() => {
     if (!repo) return;
     setOpts(null);
+    let live = true;
     api()
       .repoOptions(repo)
-      .then(setOpts);
+      .then((o) => live && setOpts(o));
+    return () => {
+      live = false;
+    };
   }, [repo]);
   useEffect(() => {
     if (detail?.pr && !detail.pr.mergeMethods.includes(method as MergeMethod)) setMethod(detail.pr.mergeMethods[0] ?? '');
   }, [detail, method]);
 
-  const run = async (action: WriteAction, okText: string): Promise<WriteResult> => {
+  /** `here` is false when the panel moved to another item while the change was in flight */
+  const run = async (action: WriteAction, okText: string): Promise<WriteResult & { here: boolean }> => {
+    const key = itemKey;
+    const label = item ? `${item.repo}#${item.number}` : key;
     setBusy(true);
     const r = await api().act(action);
+    if (keyRef.current !== key) {
+      onLeftBehind(noteOf(r, `${label}：${okText}`));
+      return { ...r, here: false };
+    }
     setBusy(false);
     setNote(noteOf(r, okText));
     if (r.ok) void load();
-    return r;
+    return { ...r, here: true };
   };
 
   const doc = useMemo(() => (detail ? timelineDocument(detail, dark()) : ''), [detail]);
@@ -319,6 +356,7 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
           disabled={!canWrite || busy}
           onChange={(e) => {
             setReply(e.target.value);
+            replyRef.current = e.target.value;
             setPreview(null);
           }}
         />
@@ -339,7 +377,7 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
               title={`去掉「${state.handBack.human}」、加上「${state.handBack.agent}」（标签名在设置里改）`}
               onClick={async () => {
                 const r = await run({ kind: 'handBack', key: item.key }, `已交回 agent：去掉「${state.handBack.human}」、加上「${state.handBack.agent}」`);
-                if (r.ok) setReplied(false);
+                if (r.ok && r.here) setReplied(false);
               }}
             >
               交回 agent
@@ -351,7 +389,10 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
             disabled={!canWrite || !reply.trim()}
             onClick={async () => {
               if (preview !== null) return setPreview(null);
-              const r = await api().previewMarkdown(item.repo, reply);
+              const key = itemKey;
+              const text = reply;
+              const r = await api().previewMarkdown(item.repo, text);
+              if (keyRef.current !== key || replyRef.current !== text) return;
               setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? '预览失败')}</p>`);
             }}
           >
@@ -363,8 +404,9 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
             disabled={!canWrite || busy || !reply.trim()}
             onClick={async () => {
               const r = await run({ kind: 'comment', key: item.key, body: reply }, '评论已发出');
-              if (r.ok) {
+              if (r.ok && r.here) {
                 setReply('');
+                replyRef.current = '';
                 setPreview(null);
                 setReplied(true);
               }
@@ -382,8 +424,8 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
           busy={busy}
           onCancel={() => setAsk(null)}
           onConfirm={async () => {
-            await run({ kind: 'merge', key: item.key, method, headOid: pr.headOid }, `PR #${item.number} 已合并`);
-            setAsk(null);
+            const r = await run({ kind: 'merge', key: item.key, method, headOid: pr.headOid }, `PR #${item.number} 已合并`);
+            if (r.here) setAsk(null);
           }}
         >
           <p>
@@ -403,6 +445,7 @@ export function DetailPanel({ itemKey, state, data, onClose }: { itemKey: string
           onCancel={() => setAsk(null)}
           onConfirm={async () => {
             const r = await run({ kind: 'closePr', key: item.key, comment: closeComment }, `PR #${item.number} 已关闭`);
+            if (!r.here) return;
             if (r.ok) setCloseComment('');
             setAsk(null);
           }}
