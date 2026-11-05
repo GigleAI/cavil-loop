@@ -17,6 +17,8 @@ export interface Iteration {
 export interface ProjectMembership {
   projectKey: string;
   projectTitle: string;
+  /** the Project item's node id (what field updates address); '' in snapshots cached before it was read */
+  itemId: string;
   iteration: Iteration | null;
   status: string | null;
 }
@@ -43,6 +45,8 @@ export interface LinkedPr {
 export interface Item {
   /** `owner/repo#N`, lower-cased owner/repo: the identity used for de-duplication. */
   key: string;
+  /** GitHub node id of the issue / PR (adding it to a Project needs it) */
+  nodeId: string;
   repo: string;
   number: number;
   title: string;
@@ -66,10 +70,23 @@ export interface Item {
   sources: string[];
 }
 
+export interface FieldOption {
+  id: string;
+  name: string;
+}
+
 export interface ProjectMeta {
   key: string;
   title: string;
   url: string;
+  /** GitHub node id of the Project */
+  projectId: string;
+  /** may the signed-in account change this Project's fields / items? (GitHub's viewerCanUpdate) */
+  viewerCanUpdate: boolean;
+  iterationFieldId: string | null;
+  statusFieldId: string | null;
+  /** the "Status" options with their ids, in field order (statusOptions is the same list by name) */
+  statusOptionIds: FieldOption[];
   hasIterationField: boolean;
   /** every iteration the field knows, active and completed */
   iterations: Iteration[];
@@ -166,6 +183,16 @@ export interface ImportInfo {
   notes: string[];
 }
 
+/** The two labels "hand back to the agent" swaps (follows the daemon's label names; editable in Settings). */
+export interface HandBackLabels {
+  /** removed: the item waits for a human */
+  human: string;
+  /** added: the daemon picks it up again */
+  agent: string;
+}
+
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent' };
+
 export interface ViewSettings {
   mode: ColumnMode;
   swimlanes: boolean;
@@ -221,6 +248,7 @@ export interface AppState {
   sync: SyncState;
   /** whether the platform layer can persist credentials (false on unsupported platforms) */
   credentialsPersistent: boolean;
+  handBack: HandBackLabels;
 }
 
 export interface BoardData {

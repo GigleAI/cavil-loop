@@ -2,14 +2,14 @@
 // small synthetic boards for the cross-Project / cross-repo rules.
 
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
-import { buildBoard, COL_NO_ITERATION, COL_NO_MILESTONE, COL_UNBOARDED, NOTICE_NO_ITERATION_FIELD, writesEnabled } from '../../src/data/board';
+import { buildBoard, COL_NO_ITERATION, COL_NO_MILESTONE, COL_UNBOARDED, dropPlan, NOTICE_NO_ITERATION_FIELD, writesEnabled } from '../../src/data/board';
 import { mergeSnapshots } from '../../src/data/merge';
 import { fetchProject, fetchRepo } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
 import { parseSource } from '../../src/shared/sources';
 import type { BoardData, SourceConfig } from '../../src/shared/types';
 import { FakeGitHub, loadCavilProjectPages, startFakeGitHub } from '../fake-github/server';
-import { FAKE_TOKEN, FIXTURE_NOW, FIXTURE_TODAY, item, iter, member, project } from './helpers';
+import { FAKE_TOKEN, FIXTURE_NOW, FIXTURE_TODAY, item, iter, member, project, FIXTURE_ITEM_COUNT } from './helpers';
 
 const counts = (b: ReturnType<typeof buildBoard>) => Object.fromEntries(b.columns.map((c) => [c.title, c.cards.length]));
 
@@ -40,7 +40,7 @@ describe('recorded cavil project (GigleAI #11)', () => {
 
   it('reads both pages: every item of the board is there', () => {
     const total = loadCavilProjectPages().reduce((n, p) => n + p.items.nodes.length, 0);
-    expect(total).toBe(144);
+    expect(total).toBe(FIXTURE_ITEM_COUNT);
     expect(data.items).toHaveLength(total);
     // the client asked for page 2 with page 1's cursor (it really paginated)
     const ops = fake.log.filter((l) => l.operation === 'CavilProjectItems');
@@ -53,7 +53,7 @@ describe('recorded cavil project (GigleAI #11)', () => {
     const raw = rawCounts('Iteration', 'title');
     const got = counts(b);
     for (const [title, n] of Object.entries(raw)) expect(got[title === '(none)' ? '无迭代' : title], title).toBe(n);
-    expect(b.columns.reduce((n, c) => n + c.cards.length, 0)).toBe(144);
+    expect(b.columns.reduce((n, c) => n + c.cards.length, 0)).toBe(FIXTURE_ITEM_COUNT);
     expect(b.columns[b.columns.length - 1].key).toBe(COL_NO_ITERATION);
     // active / upcoming iterations show even when empty, ended ones only with cards
     const byTitle = Object.fromEntries(b.columns.map((c) => [c.title, c]));
@@ -78,7 +78,7 @@ describe('recorded cavil project (GigleAI #11)', () => {
 
   it('milestone columns: the board has none, so everything sits in 无里程碑', () => {
     const b = buildBoard(data.items, data.projects, 'milestone', false, FIXTURE_TODAY);
-    expect(b.columns.map((c) => [c.key, c.cards.length])).toEqual([[COL_NO_MILESTONE, 144]]);
+    expect(b.columns.map((c) => [c.key, c.cards.length])).toEqual([[COL_NO_MILESTONE, FIXTURE_ITEM_COUNT]]);
   });
 
   it('cards carry state / kind / Project from the real shapes', () => {
@@ -249,5 +249,65 @@ describe('writes are disabled offline', () => {
   it('offline → disabled; online → enabled', () => {
     expect(writesEnabled({ offline: true })).toBe(false);
     expect(writesEnabled({ offline: false })).toBe(true);
+  });
+});
+
+describe('drag & drop plan (#138): only the card\'s own Projects, with their own ids', () => {
+  const a = project('A', 'Board A', [iter('Sprint 1', '2026-11-02'), iter('Sprint 2', '2026-11-09')], ['Todo', 'Done']);
+  const b = project('B', 'Board B', [iter('Sprint 1', '2026-11-02')], ['Todo']);
+  const plan = (items: ReturnType<typeof item>[], mode: 'iteration' | 'status' | 'milestone', n: number, to: string, projects = [a, b], fromKey?: string) => {
+    const board = buildBoard(items, projects, mode, false, '2026-11-03');
+    const from = board.columns.find((c) => (!fromKey || c.key === fromKey) && c.cards.some((x) => x.item.number === n))!;
+    const card = from.cards.find((x) => x.item.number === n)!;
+    const col = board.columns.find((c) => c.title === to) ?? { key: to, title: to, subtitle: null, ended: false, cards: [] };
+    return dropPlan(card, from.key, col, mode, projects);
+  };
+
+  it('a card in two Projects that agree: both Projects change, each with its own iteration id', () => {
+    const items = [item('o/r', 1, {}, [member(a, a.iterations[0]), member(b, b.iterations[0])])];
+    // Sprint 2 exists only on A: refused (B has no such iteration), nothing half-done
+    expect(plan(items, 'iteration', 1, 'Sprint 2')).toMatchObject({ kind: 'refuse' });
+    const p = plan(items, 'iteration', 1, COL_NO_ITERATION);
+    expect(p).toMatchObject({ kind: 'do' });
+    expect((p as any).actions).toEqual([
+      { kind: 'setIteration', key: 'o/r#1', projectKey: 'A', iterationId: null },
+      { kind: 'setIteration', key: 'o/r#1', projectKey: 'B', iterationId: null },
+    ]);
+  });
+
+  it('a card in one Project changes only that one', () => {
+    const items = [item('o/r', 1, {}, [member(a, null), member(b, b.iterations[0])])];
+    const p = plan(items, 'iteration', 1, 'Sprint 2', [a, b], COL_NO_ITERATION);
+    expect(p).toMatchObject({ kind: 'do', actions: [{ kind: 'setIteration', projectKey: 'A', iterationId: a.iterations[1].id }] });
+    expect((p as any).actions).toHaveLength(1);
+    // the same item's card in B's column: B has no Sprint 2 → refused, A untouched
+    expect(plan(items, 'iteration', 1, 'Sprint 2')).toMatchObject({ kind: 'refuse' });
+  });
+
+  it('not on any selected Project: asks first, offering every writable Project that has that iteration', () => {
+    const items = [item('o/r', 1), item('o/r', 2, {}, [member(a, a.iterations[0])])];
+    const p = plan(items, 'iteration', 1, 'Sprint 1');
+    expect(p.kind).toBe('confirm');
+    expect((p as any).choices.map((c: any) => [c.projectKey, c.action.iterationId])).toEqual([
+      ['A', a.iterations[0].id],
+      ['B', b.iterations[0].id],
+    ]);
+    expect((p as any).question).toContain('加入看板');
+  });
+
+  it('a Project the account cannot change: refused with the reason', () => {
+    const ro = { ...a, viewerCanUpdate: false };
+    const items = [item('o/r', 1, {}, [member(ro, ro.iterations[0])])];
+    const p = plan(items, 'iteration', 1, 'Sprint 2', [ro]);
+    expect(p).toMatchObject({ kind: 'refuse' });
+    expect((p as any).reason).toContain('没有修改权限');
+  });
+
+  it('status by name; milestone by title (the repository decides when sent); never out of the board', () => {
+    const items = [item('o/r', 1, {}, [member(a, null, 'Todo')]), item('o/r', 2, { milestone: { title: 'v1', dueOn: null } }), item('x/y', 3)];
+    expect(plan(items, 'status', 1, 'Done')).toMatchObject({ kind: 'do', actions: [{ kind: 'setStatus', projectKey: 'A', status: 'Done' }] });
+    expect(plan(items, 'milestone', 3, 'v1')).toMatchObject({ kind: 'do', actions: [{ kind: 'setMilestone', key: 'x/y#3', title: 'v1' }] });
+    expect(plan(items, 'milestone', 2, COL_NO_MILESTONE)).toMatchObject({ kind: 'do', actions: [{ kind: 'setMilestone', title: null }] });
+    expect(plan(items, 'status', 1, COL_UNBOARDED)).toMatchObject({ kind: 'refuse' });
   });
 });

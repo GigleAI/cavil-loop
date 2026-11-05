@@ -96,7 +96,22 @@ function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number })
   }
 }
 
-export function TableView({ items, projects, view, today, now }: { items: Item[]; projects: ProjectMeta[]; view: ViewSettings; today: string; now: number }) {
+/** `onOpen`: a row's title opens the item's detail panel, the same as clicking a card on the board */
+export function TableView({
+  items,
+  projects,
+  view,
+  today,
+  now,
+  onOpen,
+}: {
+  items: Item[];
+  projects: ProjectMeta[];
+  view: ViewSettings;
+  today: string;
+  now: number;
+  onOpen: (key: string) => void;
+}) {
   const [folded, setFolded] = useState<Set<string>>(new Set());
   const t = view.table;
   const table = buildTable(items, projects, t, today);
@@ -158,7 +173,14 @@ export function TableView({ items, projects, view, today, now }: { items: Item[]
                   <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth}>
                     <td className="title-cell" style={{ paddingLeft: 8 + r.depth * 20 }}>
                       <span className={`state ${r.item.kind} ${r.item.state}`}>{r.item.kind === 'pr' ? 'PR' : r.item.state === 'open' ? '◯' : '✓'}</span>{' '}
-                      <a href={r.item.url} onClick={open(r.item.url)}>
+                      <a
+                        href={r.item.url}
+                        data-testid="row-title"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          onOpen(r.item.key);
+                        }}
+                      >
                         {r.item.title}
                       </a>{' '}
                       <span className="muted small">

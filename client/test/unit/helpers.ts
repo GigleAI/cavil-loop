@@ -15,6 +15,11 @@ export const FIXTURE_NOW = Date.parse(
 );
 export const FIXTURE_TODAY = new Date(FIXTURE_NOW).toISOString().slice(0, 10);
 
+/** issues / PRs on the recorded board (archived and draft items do not count), read straight from the JSON */
+export const FIXTURE_ITEM_COUNT: number = JSON.parse(readFileSync(join(here, '../fixtures/cavil-project-11.pages.json'), 'utf8')).pages
+  .flatMap((p: any) => p.items.nodes)
+  .filter((n: any) => !n.isArchived && n.content && n.content.__typename !== 'DraftIssue').length;
+
 export function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'cavil-client-test-'));
 }
@@ -24,12 +29,26 @@ export function iter(title: string, startDate: string, duration = 7): Iteration 
 }
 
 export function project(key: string, title: string, iterations: Iteration[] | null, statusOptions = ['Todo', 'Done']): ProjectMeta {
-  return { key, title, url: `https://github.com/orgs/x/projects/${key}`, hasIterationField: iterations !== null, iterations: iterations ?? [], statusOptions, views: [] };
+  return {
+    key,
+    title,
+    url: `https://github.com/orgs/x/projects/${key}`,
+    projectId: `PVT_${key}`,
+    viewerCanUpdate: true,
+    iterationFieldId: iterations !== null ? `PVTIF_${key}` : null,
+    statusFieldId: `PVTSSF_${key}`,
+    statusOptionIds: statusOptions.map((name) => ({ id: `opt-${name}`, name })),
+    hasIterationField: iterations !== null,
+    iterations: iterations ?? [],
+    statusOptions,
+    views: [],
+  };
 }
 
 export function item(repo: string, number: number, extra: Partial<Item> = {}, memberships: ProjectMembership[] = []): Item {
   return {
     key: `${repo.toLowerCase()}#${number}`,
+    nodeId: `I_${repo}#${number}`,
     repo,
     number,
     title: `t${number}`,
@@ -51,7 +70,7 @@ export function item(repo: string, number: number, extra: Partial<Item> = {}, me
 }
 
 export function member(p: ProjectMeta, iteration: Iteration | null, status: string | null = null): ProjectMembership {
-  return { projectKey: p.key, projectTitle: p.title, iteration, status };
+  return { projectKey: p.key, projectTitle: p.title, itemId: `PVTI_${p.key}`, iteration, status };
 }
 
 /** Mark a credential as one this app signed in with (what a completed sign-in records), so a test may seed it directly. */

@@ -8,7 +8,7 @@ import { Cache } from '../../src/data/cache';
 import { FileStore, MemoryStore } from '../../src/platform/credentials';
 import { writesEnabled } from '../../src/data/board';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
-import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } from './helpers';
 import type { AppState } from '../../src/shared/types';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
@@ -231,7 +231,7 @@ describe('sync and cache', () => {
     // "something did happen": the repo source was re-read this round
     expect(repo).toMatchObject({ ok: true, dataFrom: clock.t });
     expect(c.getBoardData().items.length).toBe(before);
-    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items.length).toBe(144);
+    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items.length).toBe(FIXTURE_ITEM_COUNT);
     expect(st.offline).toBe(false);
   });
 
@@ -240,7 +240,7 @@ describe('sync and cache', () => {
     c.addSource(PROJECT_URL);
     await c.start();
     await c.syncNow();
-    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items).toHaveLength(144);
+    expect(cache.loadSnapshots().get('project:org/gigleai/11')!.items).toHaveLength(FIXTURE_ITEM_COUNT);
     const pages = fake.state.projects.get('org/gigleai/11')!;
     fake.state.projects.set('org/gigleai/11', [{ ...pages[0], items: { ...pages[0].items, pageInfo: { hasNextPage: false, endCursor: null }, nodes: pages[0].items.nodes.slice(0, 5) } }]);
     await c.syncNow();
@@ -266,7 +266,7 @@ describe('sync and cache', () => {
     expect(s.sync.offline).toBe(true);
     expect(s.sync.dataFrom).toBe(FIXTURE_NOW);
     expect(writesEnabled(s.sync)).toBe(false);
-    expect(second.c.getBoardData().items).toHaveLength(144);
+    expect(second.c.getBoardData().items).toHaveLength(FIXTURE_ITEM_COUNT);
     // and the token is NOT dropped just because GitHub is unreachable
     expect(await first.credentials.get()).toBe(FAKE_TOKEN);
   });

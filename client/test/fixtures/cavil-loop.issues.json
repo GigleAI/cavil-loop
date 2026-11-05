@@ -1,17 +1,68 @@
 {
  "_note": "Recorded from GET /repos/GigleAI/cavil-loop/issues?state=all&sort=updated with test/fixtures/record.mjs; only fields the client reads are kept, logins scrubbed (the repository is public, titles are kept).",
- "recordedAt": "2026-11-05T15:01:28.287Z",
+ "recordedAt": "2026-11-05T16:34:58.553Z",
  "issues": [
   {
-   "number": 138,
-   "title": "Cavil Loop Client：查看与操作——评论倒序、改标签 / 迭代 / 里程碑、新建 issue、回复评论、合并与关闭 PR",
+   "number": 146,
+   "node_id": "PR_fixture_57b8ebe0dc90",
+   "title": "feat(client): pending/human reminders, Dock badge and background mode",
    "state": "open",
-   "html_url": "https://github.com/GigleAI/cavil-loop/issues/138",
-   "updated_at": "2026-11-05T14:56:34Z",
+   "html_url": "https://github.com/GigleAI/cavil-loop/pull/146",
+   "updated_at": "2026-11-05T16:33:08Z",
    "labels": [
     {
      "name": "doing/agent",
      "color": "c2e0c6"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": null,
+   "pull_request": {
+    "html_url": "https://github.com/GigleAI/cavil-loop/pull/146",
+    "merged_at": null
+   }
+  },
+  {
+   "number": 148,
+   "node_id": "PR_fixture_a071e8a4fea3",
+   "title": "feat(client): search & filter with GitHub syntax, table view, import saved web views",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/pull/148",
+   "updated_at": "2026-11-05T16:32:50Z",
+   "labels": [
+    {
+     "name": "doing/agent",
+     "color": "c2e0c6"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": null,
+   "pull_request": {
+    "html_url": "https://github.com/GigleAI/cavil-loop/pull/148",
+    "merged_at": null
+   }
+  },
+  {
+   "number": 138,
+   "node_id": "I_fixture_79f494f383d0",
+   "title": "Cavil Loop Client：查看与操作——评论倒序、改标签 / 迭代 / 里程碑、新建 issue、回复评论、合并与关闭 PR",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/138",
+   "updated_at": "2026-11-05T16:32:05Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
     },
     {
      "name": "autopilot",
@@ -31,15 +82,86 @@
    }
   },
   {
-   "number": 137,
-   "title": "Cavil Loop Client：搜索与筛选 + 表格视图（本地执行，沿用 GitHub 网页写法，默认导入网页视图设置）",
+   "number": 150,
+   "node_id": "PR_fixture_a79b08a4ef69",
+   "title": "feat(client): view and change items — detail newest first, labels / fields / milestone, new issue, reply + hand back, PR merge / close",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/pull/150",
+   "updated_at": "2026-11-05T16:32:00Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": null,
+   "pull_request": {
+    "html_url": "https://github.com/GigleAI/cavil-loop/pull/150",
+    "merged_at": "2026-11-05T16:31:52Z"
+   }
+  },
+  {
+   "number": 149,
+   "node_id": "PR_fixture_6728e47f4d38",
+   "title": "feat(client): app icon from the maintainer's artwork",
    "state": "open",
-   "html_url": "https://github.com/GigleAI/cavil-loop/issues/137",
-   "updated_at": "2026-11-05T14:56:19Z",
+   "html_url": "https://github.com/GigleAI/cavil-loop/pull/149",
+   "updated_at": "2026-11-05T16:28:46Z",
+   "labels": [],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": null,
+   "pull_request": {
+    "html_url": "https://github.com/GigleAI/cavil-loop/pull/149",
+    "merged_at": null
+   }
+  },
+  {
+   "number": 147,
+   "node_id": "PR_fixture_5bebd8477a0c",
+   "title": "feat(autopilot): a maintainer's label on a PR bound to no issue authorizes it",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/pull/147",
+   "updated_at": "2026-11-05T16:23:48Z",
    "labels": [
     {
      "name": "doing/agent",
      "color": "c2e0c6"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": null,
+   "pull_request": {
+    "html_url": "https://github.com/GigleAI/cavil-loop/pull/147",
+    "merged_at": null
+   }
+  },
+  {
+   "number": 137,
+   "node_id": "I_fixture_bc55cbe1aab4",
+   "title": "Cavil Loop Client：搜索与筛选 + 表格视图（本地执行，沿用 GitHub 网页写法，默认导入网页视图设置）",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/137",
+   "updated_at": "2026-11-05T15:22:22Z",
+   "labels": [
+    {
+     "name": "pending/PR",
+     "color": "EEEEEE"
     },
     {
      "name": "autopilot",
@@ -52,6 +174,35 @@
     "login": "user-6"
    },
    "parent_issue_url": "https://api.github.com/repos/GigleAI/cavil-loop/issues/135",
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   }
+  },
+  {
+   "number": 142,
+   "node_id": "I_fixture_f5d8187c27cb",
+   "title": "托管：维护者亲手打在 PR 上的 autopilot 不再要求 PR 对得上一个 issue",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/142",
+   "updated_at": "2026-11-05T15:20:48Z",
+   "labels": [
+    {
+     "name": "pending/PR",
+     "color": "EEEEEE"
+    },
+    {
+     "name": "autopilot",
+     "color": "ff401e"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
    "sub_issues_summary": {
     "total": 0,
     "completed": 0,
@@ -60,14 +211,15 @@
   },
   {
    "number": 139,
+   "node_id": "I_fixture_e24ba0b4bfd5",
    "title": "Cavil Loop Client：pending/human 提醒、Dock 角标与后台常驻",
    "state": "open",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/139",
-   "updated_at": "2026-11-05T14:55:20Z",
+   "updated_at": "2026-11-05T15:08:09Z",
    "labels": [
     {
-     "name": "doing/agent",
-     "color": "c2e0c6"
+     "name": "pending/PR",
+     "color": "EEEEEE"
     },
     {
      "name": "autopilot",
@@ -88,6 +240,7 @@
   },
   {
    "number": 144,
+   "node_id": "I_fixture_0de5ae858993",
    "title": "给 cavil-loop 设计一个 logo",
    "state": "open",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/144",
@@ -116,6 +269,7 @@
   },
   {
    "number": 136,
+   "node_id": "I_fixture_ced76f7b6caa",
    "title": "Cavil Loop Client：客户端骨架——浏览器授权登录、多 Project / 多仓库同步与本地缓存、只读看板、macOS 打包",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/136",
@@ -140,6 +294,7 @@
   },
   {
    "number": 140,
+   "node_id": "PR_fixture_6d8e81c3320f",
    "title": "feat(client): 桌面看板客户端骨架——浏览器授权登录、多来源同步与缓存、只读看板、macOS 打包",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/140",
@@ -164,6 +319,7 @@
   },
   {
    "number": 141,
+   "node_id": "I_fixture_43d554ef7a92",
    "title": "PR 分支被「主 checkout」占用时：提示路径/命令错误（submodule 下尤甚），且可安全自动释放",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/141",
@@ -192,6 +348,7 @@
   },
   {
    "number": 145,
+   "node_id": "PR_fixture_115518a685f1",
    "title": "fix(dispatch): name the main checkout correctly when it holds a PR branch; optional safe auto-release",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/145",
@@ -215,35 +372,8 @@
    }
   },
   {
-   "number": 142,
-   "title": "托管：维护者亲手打在 PR 上的 autopilot 不再要求 PR 对得上一个 issue",
-   "state": "open",
-   "html_url": "https://github.com/GigleAI/cavil-loop/issues/142",
-   "updated_at": "2026-11-05T13:30:53Z",
-   "labels": [
-    {
-     "name": "doing/agent",
-     "color": "c2e0c6"
-    },
-    {
-     "name": "autopilot",
-     "color": "ff401e"
-    }
-   ],
-   "assignees": [],
-   "milestone": null,
-   "user": {
-    "login": "user-6"
-   },
-   "parent_issue_url": null,
-   "sub_issues_summary": {
-    "total": 0,
-    "completed": 0,
-    "percent_completed": 0
-   }
-  },
-  {
    "number": 143,
+   "node_id": "PR_fixture_9d68c02177a1",
    "title": "feat(review): default REVIEW_MAX_ROUNDS 3 -> 6",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/143",
@@ -272,6 +402,7 @@
   },
   {
    "number": 135,
+   "node_id": "I_fixture_c3b35f94e3c9",
    "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
    "state": "open",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/135",
@@ -290,12 +421,13 @@
    "parent_issue_url": null,
    "sub_issues_summary": {
     "total": 4,
-    "completed": 1,
-    "percent_completed": 25
+    "completed": 2,
+    "percent_completed": 50
    }
   },
   {
    "number": 133,
+   "node_id": "I_fixture_42b6d4dfd4df",
    "title": "外部需求机器人：允许在非机器人提的条目上叫醒（双向通讯）",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/133",
@@ -324,6 +456,7 @@
   },
   {
    "number": 134,
+   "node_id": "PR_fixture_8316218ee614",
    "title": "feat(requester-bot): let items the bot did not file wake it too (opt-in)",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/134",
@@ -348,6 +481,7 @@
   },
   {
    "number": 129,
+   "node_id": "PR_fixture_23f8da90ceb5",
    "title": "feat(escrow): 支持维护者在 PR 上打托管标签作为授权判定 (#128)",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/129",
@@ -367,6 +501,7 @@
   },
   {
    "number": 128,
+   "node_id": "I_fixture_c2c6722845e6",
    "title": "托管：维护者在 PR 上打托管标签也算授权（目前只认 issue 上的）",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/128",
@@ -391,6 +526,7 @@
   },
   {
    "number": 132,
+   "node_id": "PR_fixture_7c4d6fedcefa",
    "title": "feat(autopilot): a maintainer's autopilot label on the PR also authorizes it",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/132",
@@ -415,6 +551,7 @@
   },
   {
    "number": 130,
+   "node_id": "I_fixture_60ba32f3501b",
    "title": "默认的 label 颜色请改为目前 cavil  配置的这套",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/130",
@@ -443,6 +580,7 @@
   },
   {
    "number": 131,
+   "node_id": "PR_fixture_c4339f21ca1a",
    "title": "fix(setup): default label colors follow this repo's labels page again",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/131",
@@ -467,6 +605,7 @@
   },
   {
    "number": 124,
+   "node_id": "I_fixture_e016d0c76ca1",
    "title": "打开本项目的 autopilot",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/124",
@@ -491,6 +630,7 @@
   },
   {
    "number": 127,
+   "node_id": "PR_fixture_5a104475945c",
    "title": "feat: turn autopilot on for this repo; turning it off is just the config line",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/127",
@@ -515,6 +655,7 @@
   },
   {
    "number": 125,
+   "node_id": "I_fixture_455e04768aa1",
    "title": "评论格式优化",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/125",
@@ -539,6 +680,7 @@
   },
   {
    "number": 126,
+   "node_id": "PR_fixture_d6bb56a3ed81",
    "title": "feat(prompts): leave ❌ / ✅ / ⚠️ off by default; mark only what the human needs",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/126",
@@ -563,6 +705,7 @@
   },
   {
    "number": 117,
+   "node_id": "I_fixture_779a221020e2",
    "title": "把项目自测搬到 GitHub Actions，在 PR 上自动跑",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/117",
@@ -587,6 +730,7 @@
   },
   {
    "number": 121,
+   "node_id": "PR_fixture_37b3b4d49e13",
    "title": "ci: run tests/ on every PR via one shared entry point",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/121",
@@ -611,6 +755,7 @@
   },
   {
    "number": 114,
+   "node_id": "I_fixture_9373a0dd4b01",
    "title": "增加一个可以全权交给 agent 实现并在通过review 和测试后自动合并的 label",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/114",
@@ -635,6 +780,7 @@
   },
   {
    "number": 119,
+   "node_id": "PR_fixture_a8cad6c91b13",
    "title": "feat: autopilot label — hand an issue over end to end, daemon merges after review and tests",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/119",
@@ -659,6 +805,7 @@
   },
   {
    "number": 123,
+   "node_id": "PR_fixture_c36bce61518a",
    "title": "[test] fork PR auto-add verification — do not merge",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/123",
@@ -678,6 +825,7 @@
   },
   {
    "number": 120,
+   "node_id": "I_fixture_925f270a8d8c",
    "title": "[test] auto-add to project: new issue (safe to ignore, will be closed)",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/120",
@@ -697,6 +845,7 @@
   },
   {
    "number": 122,
+   "node_id": "I_fixture_e7880f0b6d5a",
    "title": "[test] auto-add to project: created and closed while the daemon was stopped (safe to ignore)",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/122",
@@ -716,6 +865,7 @@
   },
   {
    "number": 1,
+   "node_id": "I_fixture_a2e57766cd52",
    "title": "优化",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/1",
@@ -740,6 +890,7 @@
   },
   {
    "number": 116,
+   "node_id": "I_fixture_21615f3612b7",
    "title": "守护程序可配置：把本仓库的 issue / PR 自动加进一个或多个 GitHub Project",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/116",
@@ -764,6 +915,7 @@
   },
   {
    "number": 118,
+   "node_id": "PR_fixture_ade48d4e8bce",
    "title": "feat: auto-add this repo's issues / PRs to configured GitHub Projects",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/118",
@@ -788,6 +940,7 @@
   },
   {
    "number": 115,
+   "node_id": "PR_fixture_518f87d65fe6",
    "title": "feat(prompts): fold everything but what the human needs; mark findings with ❌/✅/⚠️",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/115",
@@ -812,6 +965,7 @@
   },
   {
    "number": 112,
+   "node_id": "I_fixture_856d281bada9",
    "title": "这个 grok bot 可以和 cavil-loop 配套使用",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/issues/112",
@@ -836,6 +990,7 @@
   },
   {
    "number": 113,
+   "node_id": "PR_fixture_d132720b49a0",
    "title": "docs: point readers to a ready-made Grok bot for the requester-bot integration",
    "state": "closed",
    "html_url": "https://github.com/GigleAI/cavil-loop/pull/113",
@@ -856,126 +1011,6 @@
    "pull_request": {
     "html_url": "https://github.com/GigleAI/cavil-loop/pull/113",
     "merged_at": "2026-11-02T10:58:20Z"
-   }
-  },
-  {
-   "number": 109,
-   "title": "setup 后 systemctl enable 把 timer 链接指向具体 release 目录，发新版后 timer 消失、项目静默停摆",
-   "state": "closed",
-   "html_url": "https://github.com/GigleAI/cavil-loop/issues/109",
-   "updated_at": "2026-11-02T08:40:20Z",
-   "labels": [
-    {
-     "name": "Done",
-     "color": "586069"
-    }
-   ],
-   "assignees": [],
-   "milestone": null,
-   "user": {
-    "login": "user-6"
-   },
-   "parent_issue_url": null,
-   "sub_issues_summary": {
-    "total": 0,
-    "completed": 0,
-    "percent_completed": 0
-   }
-  },
-  {
-   "number": 111,
-   "title": "fix(systemd): keep timer links on the stable skill entry; never delete a release a unit link still reaches",
-   "state": "closed",
-   "html_url": "https://github.com/GigleAI/cavil-loop/pull/111",
-   "updated_at": "2026-11-02T08:40:15Z",
-   "labels": [
-    {
-     "name": "Done",
-     "color": "586069"
-    }
-   ],
-   "assignees": [],
-   "milestone": null,
-   "user": {
-    "login": "user-6"
-   },
-   "parent_issue_url": null,
-   "sub_issues_summary": null,
-   "pull_request": {
-    "html_url": "https://github.com/GigleAI/cavil-loop/pull/111",
-    "merged_at": "2026-11-02T08:39:26Z"
-   }
-  },
-  {
-   "number": 108,
-   "title": "怎么我新配的项目总是要我同意 trust 某一个 worktree folder",
-   "state": "closed",
-   "html_url": "https://github.com/GigleAI/cavil-loop/issues/108",
-   "updated_at": "2026-11-02T07:29:57Z",
-   "labels": [
-    {
-     "name": "Done",
-     "color": "586069"
-    }
-   ],
-   "assignees": [],
-   "milestone": null,
-   "user": {
-    "login": "user-1"
-   },
-   "parent_issue_url": null,
-   "sub_issues_summary": {
-    "total": 0,
-    "completed": 0,
-    "percent_completed": 0
-   }
-  },
-  {
-   "number": 110,
-   "title": "fix(trust): pre-trust the directory each agent actually checks, before every launch",
-   "state": "closed",
-   "html_url": "https://github.com/GigleAI/cavil-loop/pull/110",
-   "updated_at": "2026-11-02T07:29:52Z",
-   "labels": [
-    {
-     "name": "Done",
-     "color": "586069"
-    }
-   ],
-   "assignees": [],
-   "milestone": null,
-   "user": {
-    "login": "user-6"
-   },
-   "parent_issue_url": null,
-   "sub_issues_summary": null,
-   "pull_request": {
-    "html_url": "https://github.com/GigleAI/cavil-loop/pull/110",
-    "merged_at": "2026-11-02T07:29:41Z"
-   }
-  },
-  {
-   "number": 106,
-   "title": "叫醒外部需求机器人：维护者暂停后又恢复，仍被永久拒绝",
-   "state": "closed",
-   "html_url": "https://github.com/GigleAI/cavil-loop/issues/106",
-   "updated_at": "2026-11-02T01:35:58Z",
-   "labels": [
-    {
-     "name": "Done",
-     "color": "586069"
-    }
-   ],
-   "assignees": [],
-   "milestone": null,
-   "user": {
-    "login": "user-6"
-   },
-   "parent_issue_url": null,
-   "sub_issues_summary": {
-    "total": 0,
-    "completed": 0,
-    "percent_completed": 0
    }
   }
  ]
