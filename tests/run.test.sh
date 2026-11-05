@@ -151,13 +151,28 @@ got=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk 
 chk "并集 = 全部 − 排除" "$got" "$expected"
 chk "没有文件出现两次" "$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | sort | uniq -d | wc -l)" "0"
 chk "清单里确有测试（不是两边都空）" "$([ "$(echo "$got" | wc -w)" -gt 40 ] && echo yes || echo no)" "yes"
-# 最慢的 requester-bot 那一路不该再背别的重测试（参考时间 1 秒以内的零碎文件挤进来不影响总时长）
+# 最慢的 requester-bot 那一路不该再背别的重测试，也不该成为拖慢整轮的那一路。
+# 以前判「同路其余文件参考时间合计 ≤ 5 秒」：那是全部测试加起来不到 4 × requester-bot 时的写法——
+# 别的路都比它轻，零碎文件自然不往它这里分。测试总量涨过这条线以后（GitHub#157 加了一个 55 秒的
+# 文件，四路变成 217/216/216/216），四路一样重才是对的，零碎文件必然也会分一些过来，旧判据就
+# 判错了方向。现在分两条判：
+#   · 同路的其它文件每一个都是零碎文件（参考时间 ≤ 5 秒）——重测试不和它挤一路
+#   · 这一路的合计不比「其它路里最重的那一路」和「requester-bot 自己」里较重的那个多出 5 秒以上——
+#     它不是多出来的那一截（requester-bot 单独就比别的路都重时，它自己就是下限，不算超）
 rb_shard=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4" | awk -v k="$k" '$2 == "requester-bot" {print k}'; done)
-rb_others=$(bash "$RUNSH" --ci --list --shard "$rb_shard/4" | awk '$2 != "requester-bot" {print $2}' \
-    | while read -r n; do awk -v n="$n" '$1 == n {print $2; f=1} END {if (!f) print 5}' "$TEST_DIR/ci-weights.txt"; done \
-    | awk '{s += $1} END {print s + 0}')
-chk "requester-bot（最慢）那一路没有别的重测试（同路其余文件参考时间合计 ≤ 5 秒）" \
-    "$([ -n "$rb_shard" ] && awk -v s="$rb_others" 'BEGIN {exit !(s <= 5)}' && echo yes || echo "no（第 ${rb_shard:-?} 路，其余合计 ${rb_others} 秒）")" yes
+shard_weights() {   # <路号> → 每行「名字 参考秒数」
+    bash "$RUNSH" --ci --list --shard "$1/4" | awk '{print $2}' \
+        | while read -r n; do printf '%s %s\n' "$n" "$(awk -v n="$n" '$1 == n {print $2; f=1} END {if (!f) print 5}' "$TEST_DIR/ci-weights.txt")"; done
+}
+rb_heavy_mates=$( [ -n "$rb_shard" ] && shard_weights "$rb_shard" | awk '$1 != "requester-bot" && $2 > 5 {printf "%s%s(%s)", (n++ ? " " : ""), $1, $2}')
+rb_total=$( [ -n "$rb_shard" ] && shard_weights "$rb_shard" | awk '{s += $2} END {print s + 0}')
+rb_self=$( [ -n "$rb_shard" ] && shard_weights "$rb_shard" | awk '$1 == "requester-bot" {print $2}')
+other_max=$(for k in 1 2 3 4; do [ "$k" = "${rb_shard:-}" ] && continue; shard_weights "$k" | awk '{s += $2} END {print s + 0}'; done | sort -n | tail -1)
+chk "requester-bot（最慢）那一路没有别的重测试（同路其余文件每个参考时间 ≤ 5 秒）" \
+    "$([ -n "$rb_shard" ] && [ -z "$rb_heavy_mates" ] && echo yes || echo "no（第 ${rb_shard:-?} 路：${rb_heavy_mates}）")" yes
+chk "requester-bot 那一路不是多出来的那一截（合计 ≤ max(其它路最重, requester-bot 自己) + 5 秒）" \
+    "$([ -n "$rb_shard" ] && awk -v a="${rb_total:-0}" -v b="${other_max:-0}" -v c="${rb_self:-0}" 'BEGIN {m = (b > c ? b : c); exit !(a <= m + 5)}' && echo yes || echo "no（这一路 ${rb_total} 秒，其它路最重 ${other_max} 秒，requester-bot 自己 ${rb_self} 秒）")" yes
+chk "到达性 · 两条判据确实读到了各路的参考时间" "$([ "${rb_self:-0}" -gt 0 ] 2>/dev/null && [ "${other_max:-0}" -gt 0 ] && echo yes || echo "no（${rb_self:-?}/${other_max:-?}）")" yes
 chk "排除清单里的 preview-socket-activation 不在 --ci 清单" "$(bash "$RUNSH" --ci --list | awk '$2=="preview-socket-activation"' | wc -l)" "0"
 
 echo "【3】全绿：退出 0、真的跑了、排除项没跑但有记录"
