@@ -35,7 +35,8 @@ release-auto 1
 repair-unit-links 7
 requester-bot 198
 requester-bot-any-item 55
-retrospective-lessons 1
+retrospective-directory-lessons 1
+retrospective-lessons 2
 review-verdict-emoji 1
 run 2
 secret-env-not-in-argv 1

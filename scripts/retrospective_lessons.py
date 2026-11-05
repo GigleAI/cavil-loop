@@ -39,15 +39,27 @@ is simply the next baseline):
 * Promotion is mechanical: crossing 3 sightings moves an entry out of 观察中 —
   into 硬规则 (`auto`) or 待确认 (`confirm`). Nothing else moves; in
   `confirm` mode only a human can put anything into 硬规则.
+
+Optional fourth section `## 目录经验` (GitHub#152): pitfalls that only bite in one
+part of the code. A project opts in by adding the heading by hand; a model may not
+add it. Entries look the same, but every sighting names the directories it
+happened in — `#1471 <url> [server/credits/ · server/usage/]` — so the project can
+rank lessons per directory and write them into each directory's own instructions.
+That section never promotes, entries never move in or out of it, every new
+sighting must name directories that exist in the merged tree, and old sightings
+(directories included) stay byte for byte. Prompt composition leaves it out.
 """
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 SECTIONS = ('硬规则', '待确认', '观察中')
 WATCH = '观察中'
+DIRS = '目录经验'
 THRESHOLD = 3
-MAX_CHARS = 24000
+MAX_CHARS = 24000       # everything prompt composition injects (all but 目录经验)
+MAX_DIR_CHARS = 24000   # the 目录经验 section on its own
 FIELDS = {'规则': 'rule', '适用': 'applies', '为什么': 'why', '这样做是对的': 'example'}
 
 NEXT_ID = re.compile(r'^<!-- next-id: (\d+) -->$')
@@ -55,12 +67,16 @@ SECTION = re.compile(r'^## (\S+)$')
 ENTRY = re.compile(r'^### L(\d+)$')
 FIELD = re.compile(r'^- (规则|适用|为什么|这样做是对的)：(.+)$')
 SEEN = re.compile(r'^- Seen (\d+)×:(.*)$')
-SIGHTING = re.compile(r'^#(\d+)(?: (https://\S+))?$')
+SIGHTING = re.compile(r'^#(\d+)(?: (https://\S+))?(?: \[([^\[\]]*)\])?$')
+DIR_HEADING = f'## {DIRS}'
 
 # Every check can be switched off by name (RETRO_LESSONS_DISABLE=a,b) so the
 # test wrapper can prove each test case really depends on the check it names.
 CHECKS = ('count', 'dup_pr', 'dup_id', 'preamble', 'next_id', 'keep_ids', 'locked',
-          'seen_prefix', 'seen_pr', 'seen_url', 'new_entry', 'dup_rule', 'section', 'length')
+          'seen_prefix', 'seen_pr', 'seen_url', 'new_entry', 'dup_rule', 'section', 'length',
+          'dir_section', 'dir_required', 'dir_valid',
+          # Checked by post-merge-retrospective.py around the project command:
+          'cmd_files', 'cmd_head')
 
 
 def _on(name):
@@ -79,11 +95,11 @@ class Entry:
     applies: str = None
     why: str = None
     example: str = None
-    seen: list = field(default_factory=list)  # [(pr, url-or-None)]
+    seen: list = field(default_factory=list)  # [(pr, url-or-None, dirs-tuple-or-None)]
 
     @property
     def seen_prs(self):
-        return [pr for pr, _ in self.seen]
+        return [pr for pr, _, _ in self.seen]
 
 
 @dataclass
@@ -91,6 +107,7 @@ class Lessons:
     preamble: str
     next_id: int
     entries: list
+    has_dirs: bool = False   # the file carries the optional 目录经验 section
 
     def by_id(self):
         return {e.id: e for e in self.entries}
@@ -115,7 +132,7 @@ def parse(text):
         if not line.strip():
             continue
         if m := SECTION.match(line):
-            if m[1] not in SECTIONS:
+            if m[1] not in SECTIONS + (DIRS,):
                 raise LessonsError(f'line {n}: unknown section {m[1]!r}')
             section, current = m[1], None
             seen_sections.append(section)
@@ -137,18 +154,26 @@ def parse(text):
         if m := SEEN.match(line):
             if current.seen:
                 raise LessonsError(f'L{current.id}: Seen given twice')
-            items = [s.strip() for s in m[2].split(' · ') if s.strip()]
+            items = [s.strip() for s in _split_sightings(m[2]) if s.strip()]
             for item in items:
                 s = SIGHTING.match(item)
                 if not s:
                     raise LessonsError(f'L{current.id}: bad sighting {item!r}')
-                current.seen.append((int(s[1]), s[2]))
+                dirs = None
+                if s[3] is not None:
+                    if current.section != DIRS:
+                        raise LessonsError(f'L{current.id}: directories only belong in {DIRS}')
+                    dirs = tuple(d.strip() for d in s[3].split(' · '))
+                    if not all(dirs):
+                        raise LessonsError(f'L{current.id}: empty directory in {item!r}')
+                current.seen.append((int(s[1]), s[2], dirs))
             if _on('count') and int(m[1]) != len(current.seen):
                 raise LessonsError(f'[count] L{current.id}: says Seen {m[1]}× but lists {len(current.seen)}')
             continue
         raise LessonsError(f'line {n}: unexpected line in L{current.id}: {line[:60]!r}')
-    if tuple(seen_sections) != SECTIONS:
-        raise LessonsError(f'sections must be exactly {" / ".join(SECTIONS)} in that order')
+    if tuple(seen_sections) not in (SECTIONS, SECTIONS + (DIRS,)):
+        raise LessonsError(f'sections must be exactly {" / ".join(SECTIONS)} in that order'
+                           f' (optionally followed by {DIRS})')
     ids = [e.id for e in entries]
     if _on('dup_id') and len(ids) != len(set(ids)):
         raise LessonsError('[dup_id] duplicate entry id')
@@ -159,7 +184,73 @@ def parse(text):
             raise LessonsError(f'[dup_pr] L{e.id}: the same PR is counted twice')
         if e.id >= next_id:
             raise LessonsError(f'L{e.id}: id not below next-id {next_id}')
-    return Lessons(preamble, next_id, entries)
+    return Lessons(preamble, next_id, entries, seen_sections[-1:] == [DIRS])
+
+
+def _split_sightings(text):
+    """Split a Seen list on ` · `, but not inside the `[...]` directory list."""
+    items, depth, start, i = [], 0, 0, 0
+    while i < len(text):
+        c = text[i]
+        if c == '[':
+            depth += 1
+        elif c == ']':
+            depth = max(depth - 1, 0)
+        elif depth == 0 and text.startswith(' · ', i):
+            items.append(text[start:i])
+            i += 3
+            start = i
+            continue
+        i += 1
+    items.append(text[start:])
+    return items
+
+
+def split_directory_section(text):
+    """(rest, section): the 目录经验 section cut out of the file, heading included.
+
+    Same cut as `lessons_for_prompt` in scripts/_lib.sh: from the heading line to the
+    next `## ` heading or the end of the file."""
+    lines = text.split('\n')
+    kept, cut, inside = [], [], False
+    for line in lines:
+        if line == DIR_HEADING:
+            inside = True
+        elif inside and line.startswith('## '):
+            inside = False
+        (cut if inside else kept).append(line)
+    return '\n'.join(kept), '\n'.join(cut)
+
+
+def prompt_text(text):
+    """What prompt composition injects for this file: everything except 目录经验.
+
+    Must equal `lessons_for_prompt` in scripts/_lib.sh byte for byte (a file without
+    the heading is passed through untouched; otherwise trailing blank lines go)."""
+    if DIR_HEADING not in text.split('\n'):
+        return text
+    rest = split_directory_section(text)[0].rstrip('\n')
+    return rest + '\n' if rest else ''
+
+
+def directory_problem(directory, root):
+    """None when `directory` is a well-formed directory inside the checkout at `root`."""
+    if not directory.endswith('/') or directory == '/':
+        return 'must be a relative directory ending in /'
+    if directory.startswith(('/', '~')) or '\\' in directory:
+        return 'must be relative to the repository root'
+    parts = directory[:-1].split('/')
+    if any(p in ('', '.', '..') for p in parts):
+        return 'may not contain empty, . or .. segments'
+    if '.git' in parts:
+        return 'may not point into .git'
+    if root is None:
+        return 'cannot be checked without the merged checkout'
+    base = Path(root).resolve()
+    target = (base / directory).resolve()
+    if base not in target.parents or not target.is_dir():
+        return 'is not a directory in the merged tree'
+    return None
 
 
 def is_ready(text):
@@ -181,8 +272,10 @@ def evidence_urls(evidence):
     return urls
 
 
-def validate(old_text, new_text, *, pr, evidence_urls, mode):
-    """Return a list of human-readable violations; empty means the rewrite is acceptable."""
+def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None):
+    """Return a list of human-readable violations; empty means the rewrite is acceptable.
+
+    `repo_root` is the merged checkout new 目录经验 directories must exist in."""
     if mode not in ('auto', 'confirm'):
         raise ValueError(f'unknown promotion mode {mode!r}')
     target = '硬规则' if mode == 'auto' else '待确认'
@@ -192,8 +285,13 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode):
     except LessonsError as error:
         return [str(error) if str(error).startswith('[') else f'[parse] {error}']
     errors = []
-    if _on('length') and len(new_text) > MAX_CHARS:
-        errors.append(f'[length] file has {len(new_text)} chars, limit {MAX_CHARS}')
+    prompt_part, dir_part = prompt_text(new_text), split_directory_section(new_text)[1]
+    if _on('length') and len(prompt_part) > MAX_CHARS:
+        errors.append(f'[length] file has {len(prompt_part)} chars outside {DIRS}, limit {MAX_CHARS}')
+    if _on('length') and len(dir_part) > MAX_DIR_CHARS:
+        errors.append(f'[length] {DIRS} has {len(dir_part)} chars, limit {MAX_DIR_CHARS}')
+    if _on('dir_section') and new.has_dirs and not old.has_dirs:
+        errors.append(f'[dir_section] {DIRS} may only be started by a human edit')
     if _on('preamble') and new.preamble != old.preamble:
         errors.append('[preamble] preamble changed')
     old_ids, new_ids = old.by_id(), new.by_id()
@@ -213,8 +311,14 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode):
             errors.append(f'[seen_prefix] L{i}: existing Seen entries must be kept unchanged')
         appended = after.seen[len(before.seen):]
         errors += _check_sightings(f'L{i}', appended, pr, evidence_urls)
+        errors += _check_directories(f'L{i}', after.section, appended, repo_root)
         crossed = len(before.seen) < THRESHOLD <= len(after.seen)
-        if _on('section'):
+        if DIRS in (before.section, after.section):
+            # Never promoted, never moved in or out: a hard rule must not leave the
+            # prompt by being re-filed as a directory lesson.
+            if _on('dir_section') and before.section != after.section:
+                errors.append(f'[dir_section] L{i}: may not move {before.section} → {after.section}')
+        elif _on('section'):
             if before.section == after.section:
                 if after.section == WATCH and crossed:
                     errors.append(f'[section] L{i}: reached {THRESHOLD} sightings, must move to {target}')
@@ -228,11 +332,12 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode):
             if twin is not None:
                 errors.append(f'[dup_rule] L{i}: same 规则/适用 as L{twin}; add this PR to L{twin} instead')
         claimed.setdefault(_meaning(entry), i)
-        if _on('new_entry') and [p for p, _ in entry.seen] != [pr]:
+        if _on('new_entry') and entry.seen_prs != [pr]:
             errors.append(f'[new_entry] L{i}: a new entry starts with exactly one sighting, this PR #{pr}')
         errors += _check_sightings(f'L{i}', entry.seen, pr, evidence_urls)
-        if _on('section') and entry.section != WATCH:
-            errors.append(f'[section] L{i}: a new entry starts in {WATCH}')
+        errors += _check_directories(f'L{i}', entry.section, entry.seen, repo_root)
+        if _on('section') and entry.section not in (WATCH, DIRS):
+            errors.append(f'[section] L{i}: a new entry starts in {WATCH} (or {DIRS})')
     return errors
 
 
@@ -242,9 +347,27 @@ def _meaning(entry):
 
 def _check_sightings(label, items, pr, urls):
     errors = []
-    for number, url in items:
+    for number, url, _ in items:
         if _on('seen_pr') and number != pr:
             errors.append(f'[seen_pr] {label}: may only add this PR #{pr}, not #{number}')
         if _on('seen_url') and url not in urls:
             errors.append(f'[seen_url] {label}: sighting #{number} must link to a comment collected for this PR')
+    return errors
+
+
+def _check_directories(label, section, items, root):
+    """New sightings in 目录经验 must name directories that exist in the merged tree."""
+    if section != DIRS:
+        return []
+    errors = []
+    for number, _, dirs in items:
+        if not dirs:
+            if _on('dir_required'):
+                errors.append(f'[dir_required] {label}: sighting #{number} must name its directories [a/ · b/]')
+            continue
+        if _on('dir_valid'):
+            for directory in dirs:
+                problem = directory_problem(directory, root)
+                if problem:
+                    errors.append(f'[dir_valid] {label}: #{number} directory {directory!r} {problem}')
     return errors

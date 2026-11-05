@@ -657,6 +657,20 @@ RETROSPECTIVE_MODEL="sonnet"
 # up after 3 attempts). An old-format lessons file is skipped without a model
 # call until the project migrates it. Format: scripts/retrospective_lessons.py
 RETROSPECTIVE_PROMOTION="auto"
+# Optional 目录经验 (directory lessons) section: a project adds the heading
+# `## 目录经验` by hand at the end of its lessons.md to keep pitfalls that only bite
+# in one part of the code; every sighting there names its directories, it never
+# promotes, and dispatch prompts leave it out. No config switch — the heading is it.
+#
+# Command run after the retrospective, before its commit (empty = off), at the root
+# of the retrospective's temporary checkout, 10-minute limit. Gets
+# RETROSPECTIVE_PR / RETROSPECTIVE_LESSONS_FILE / RETROSPECTIVE_REPORT_FILE. Whatever
+# it changes or creates (minus ignored files) lands in the same commit; non-zero
+# exit / timeout / touching the report or lessons / committing itself = this
+# retrospective fails and nothing is pushed. It runs as the daemon's user: the
+# GitHub tokens are not passed on, but stored logins still work. Trusted commands only.
+#   POST_RETROSPECTIVE_PROJECT_CMD="node scripts/rank-lessons.mjs --write"
+POST_RETROSPECTIVE_PROJECT_CMD=""
 
 # ── Post-acceptance project cleanup hook / 验收完成后的项目级 cleanup hook ──
 

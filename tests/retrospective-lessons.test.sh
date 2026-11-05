@@ -43,6 +43,38 @@ for name in $checks; do
     fi
 done
 
+# 复盘主程序里不是「开关」的几处行为：把主程序复制一份、改坏一处，用例必须变红。
+mutation_on && echo "── 负对照：主程序改坏一处，必须变红 ──"
+RUNNER="$TEST_DIR/../scripts/post-merge-retrospective.py"
+MUT_DIR=$(mktemp -d); trap 'rm -rf "$MUT_DIR"' EXIT
+runner_mutant() {   # <说明> <原文> <改成>
+    mutation_gate || return 0
+    local copy="$MUT_DIR/post-merge-retrospective.py"
+    python3 - "$RUNNER" "$copy" "$2" "$3" <<'PY' || { echo "  ❌ 准备失败：$1（原文已不在）"; fail=$((fail+1)); return; }
+import sys
+src, dst, old, new = sys.argv[1:]
+text = open(src, encoding='utf-8').read()
+if text.count(old) != 1:
+    sys.exit(1)
+open(dst, 'w', encoding='utf-8').write(text.replace(old, new))
+PY
+    if RETRO_RUNNER="$copy" QUIET=1 python3 "$SUITE" >/dev/null 2>&1; then
+        echo "  ❌ $1 后用例仍全绿"; fail=$((fail+1))
+    else
+        echo "  ✅ $1 → 变红"; pass=$((pass+1))
+    fi
+}
+runner_mutant "项目命令新建的文件不进提交" "command(['git', 'add', '-A', '--', '.'], checkout)" "pass"
+runner_mutant "把写 token 传给项目命令" "if k not in WITHHELD_ENV}" "}"
+runner_mutant "没开启目录经验也去取改动文件" "            if directories:
+                payload['directories']" "            if True:
+                payload['directories']"
+runner_mutant "提示词不按开启与否渲染" "render_instruction((root / 'prompts/retrospective.template.md').read_text(),
+                                             mode, directories)" "render_instruction((root / 'prompts/retrospective.template.md').read_text(),
+                                             mode, True)"
+runner_mutant "校验不给合并后的目录树" "evidence=evidence, mode=mode, repo_root=checkout)" "evidence=evidence, mode=mode)"
+runner_mutant "超时只杀 bash 不杀整组" "os.killpg(proc.pid, signal.SIGKILL)" "proc.kill()"
+
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"

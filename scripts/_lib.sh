@@ -4928,6 +4928,20 @@ autopilot_handoff_section() {   # <模板名>
     printf '%s\n' "$text"
 }
 
+# 把经验文件拼进派工说明时用（GitHub#152）：可选的「## 目录经验」段（只在某块代码会踩的坑）
+# 经项目自己的各层目录说明到达 agent，不进派工说明。从这一行切到下一个「## 」标题或文件末尾，
+# 再去掉切口留下的末尾空行。没有这个标题的文件原样 cat、逐字节不变——awk 会给缺末尾换行的
+# 文件补一个，所以不能一律走 awk。输出与 scripts/retrospective_lessons.py:prompt_text 逐字节
+# 相同（tests/retrospective-directory-lessons.test.sh 用同一份输入对拍两边）。
+lessons_for_prompt() {   # <经验文件>
+    if ! grep -qx '## 目录经验' "$1"; then cat "$1"; return; fi
+    awk '/^## 目录经验$/ { skip = 1; next }
+         /^## / { skip = 0 }
+         skip { next }
+         /^$/ { blank++; next }
+         { while (blank > 0) { print ""; blank-- } print }' "$1"
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -4948,11 +4962,11 @@ compose_prompt_template() {
         cat "$base_tpl"
         if [ -s "$lessons" ]; then
             printf '\n\n---\n\n'
-            cat "$lessons"
+            lessons_for_prompt "$lessons"
         fi
         if [ -n "$project_lessons" ]; then
             printf '\n\n---\n\n'
-            cat "$project_lessons"
+            lessons_for_prompt "$project_lessons"
         fi
         if [ -n "$overlay" ]; then
         printf '\n\n---\n\n'
