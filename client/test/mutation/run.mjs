@@ -174,17 +174,21 @@ const MUTATIONS = [
     from: '    this.setTrusted([]);\n    // Signing out forgets', to: '    // Signing out forgets',
     expect: ['sign-out, delete-pending, quit', 'sign-out, delete-queued, quit'] },
   { what: '启动时不看可信名单，钥匙串里有什么就用什么', file: 'src/main/controller.ts',
-    from: '} else if (!trusted.includes(credentialTag(stored.accessToken))) {', to: '} else if (false) {',
+    from: 'if (!trusted.includes(credentialTag(stored.accessToken))) {', to: 'if (false) {',
     expect: ['sign-out, delete-pending, quit', 'sign-out, delete-fails, quit', 'credential replaced outside the app: not trusted'] },
-  { what: '登录写钥匙串前不清空可信名单（写一半关 App，重启信了没完成的登录）', file: 'src/main/controller.ts',
-    from: '        this.setTrusted([]);\n        await this.deps.credentials.set(encodeGrant(grant));', to: '        await this.deps.credentials.set(encodeGrant(grant));',
-    expect: ['a new sign-in quits while its keychain write has not returned'] },
   { what: '续期写钥匙串时不同时信任新旧两份（写一半关 App，重启被迫重新登录）', file: 'src/main/controller.ts',
     from: '          this.setTrusted([used.accessToken, next.accessToken]);\n', to: '',
     expect: ['a refresh quits while writing the new token'] },
   { what: '整份换回本轮复审时的旧实现（提交 1dc8219）', file: 'src/main/controller.ts',
     fromGit: '1dc8219:client/src/main/controller.ts',
     expect: ['sign-out, delete-pending, quit', 'sign-out, delete-queued, quit'] },
+  // ---- review (2026-11-05 20:12): upgrade from a preview build ----
+  { what: '没有可信名单的旧数据就信任钥匙串里那份（旧版已退出的账号被登录回去）', file: 'src/main/controller.ts',
+    from: "this.deps.cache.getSetting<string[] | null>(TRUSTED, null) ?? [];", to: "this.deps.cache.getSetting<string[] | null>(TRUSTED, null) ?? [credentialTag(stored.accessToken)];",
+    expect: ['old build signed out but could not delete the credential', 'old build simply signed in'] },
+  { what: '整份换回本轮复审时的旧实现（提交 ad63b3f）', file: 'src/main/controller.ts',
+    fromGit: 'ad63b3f:client/src/main/controller.ts',
+    expect: ['old build signed out but could not delete the credential'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
@@ -207,7 +211,7 @@ function runVitest(work) {
     try {
       child = spawn(process.execPath, [VITEST, 'run', '--reporter=json', `--outputFile=${out}`], {
         cwd: work,
-        env: { ...process.env, CLIENT_MUT_CHILD: '1' },
+        env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_REPO: root },
         stdio: ['ignore', 'ignore', 'pipe'],
         detached: true, // own process group: a timeout kills vitest's workers too
       });

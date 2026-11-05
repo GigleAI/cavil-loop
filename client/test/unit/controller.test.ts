@@ -8,7 +8,7 @@ import { Cache } from '../../src/data/cache';
 import { FileStore, MemoryStore } from '../../src/platform/credentials';
 import { writesEnabled } from '../../src/data/board';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
-import { FAKE_TOKEN, FIXTURE_NOW, tempDir } from './helpers';
+import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { AppState } from '../../src/shared/types';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
@@ -22,6 +22,8 @@ let controllers: Controller[] = [];
 function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
+  // tests seed FAKE_TOKEN straight into the store: record it as signed in with, like a completed login
+  if (cache.getSetting('trustedCredentials', null) === null) cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
   const credentials = opts.credentials ?? new FileStore(join(dir, 'cred'));
   const clock = opts.clock ?? { t: FIXTURE_NOW };
   const opened: string[] = [];
@@ -361,14 +363,13 @@ describe('the cache belongs to one account', () => {
     expect(await a.credentials.get()).toBeNull(); // the untrusted leftover is removed
   });
 
-  // The two below are profiles from before the trust list existed (it is unset):
-  // the stored credential is adopted, and the cache binding is what keeps another
-  // account's data off the screen.
+  // The two below: even if the trust list did list the replaced credential (say a
+  // future bug), the cache binding still keeps the other account's data off screen.
   it('credential replaced outside the app, restart offline: the other account\'s cache is not shown', async () => {
     accountB();
     const a = await accountA();
     a.c.stopTimer();
-    a.cache.setSetting('trustedCredentials', null);
+    a.cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN, TOKEN_B));
     await a.credentials.set(TOKEN_B);
     fake.state.validTokens.add(TOKEN_B);
     fake.state.offline = true;
@@ -383,7 +384,7 @@ describe('the cache belongs to one account', () => {
     accountB();
     const a = await accountA();
     a.c.stopTimer();
-    a.cache.setSetting('trustedCredentials', null);
+    a.cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN, TOKEN_B));
     await a.credentials.set(TOKEN_B);
     fake.state.validTokens.add(TOKEN_B);
     const b = make({ credentials: a.credentials });

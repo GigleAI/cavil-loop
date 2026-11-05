@@ -33,8 +33,9 @@ export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过
  *     it is a leftover (sign-out not finished, cancelled login, …): login page,
  *     and the leftover is deleted.
  * So whatever point a process stops at, a restart never signs in with a
- * credential the user signed out of. `null` (never written) = a profile from
- * before this rule existed: its stored credential is trusted once.
+ * credential the user signed out of. Never written (a profile from a preview
+ * build before this rule) counts as empty: such a profile cannot tell "still
+ * signed in" from "signed out, delete failed", so its credential is not reused.
  */
 const TRUSTED = 'trustedCredentials';
 
@@ -162,11 +163,11 @@ export class Controller {
       this.set({ phase: 'login' });
       return;
     }
-    const trusted = this.deps.cache.getSetting<string[] | null>(TRUSTED, null);
-    if (trusted === null) {
-      // profile from before the trust list: adopt what is stored, from now on the rule applies
-      this.setTrusted([stored.accessToken]);
-    } else if (!trusted.includes(credentialTag(stored.accessToken))) {
+    // Not listed (including every profile written before the list existed — those
+    // cannot tell "still signed in" from "signed out but the delete failed"): a
+    // leftover, never signed in with. Costs a preview-build user one sign-in.
+    const trusted = this.deps.cache.getSetting<string[] | null>(TRUSTED, null) ?? [];
+    if (!trusted.includes(credentialTag(stored.accessToken))) {
       // A leftover the user signed out of (or a login that never completed, or a
       // credential put there from outside): never sign in with it, show nothing
       // cached for it. Delete it now; say so if that fails again.

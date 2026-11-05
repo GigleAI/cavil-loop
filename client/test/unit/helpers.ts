@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,4 +48,9 @@ export function item(repo: string, number: number, extra: Partial<Item> = {}, me
 
 export function member(p: ProjectMeta, iteration: Iteration | null, status: string | null = null): ProjectMembership {
   return { projectKey: p.key, projectTitle: p.title, iteration, status };
+}
+
+/** Mark a credential as one this app signed in with (what a completed sign-in records), so a test may seed it directly. */
+export function trustedList(...accessTokens: string[]): string[] {
+  return accessTokens.map((t) => createHash('sha256').update(t).digest('hex'));
 }

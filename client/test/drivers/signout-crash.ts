@@ -12,6 +12,7 @@ import { Controller } from '../../src/main/controller';
 import { Cache } from '../../src/data/cache';
 import { encodeGrant, decodeGrant } from '../../src/data/grant';
 import { FileStore } from '../../src/platform/credentials';
+import { createHash } from 'node:crypto';
 
 const [dir, scenario] = process.argv.slice(2);
 mkdirSync(dir, { recursive: true });
@@ -74,7 +75,10 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 /** A signed-in profile: grant stored and trusted through a real start(). */
 async function signedIn(grant = { accessToken: OLD, refreshToken: OLD_REFRESH, expiresAt: NOW + 3_600_000, refreshExpiresAt: NOW + 86_400_000 * 30 }) {
   await store.set(encodeGrant(grant));
-  await c.start(); // a fresh profile (no trust list yet) adopts what is stored
+  // what a completed sign-in leaves on disk; LEGACY=1 = a preview build from before the trust list,
+  // which never wrote it (its own start() signs in with whatever is stored)
+  if (process.env.LEGACY !== '1') cache.setSetting('trustedCredentials', [createHash('sha256').update(grant.accessToken).digest('hex')]);
+  await c.start();
   if (c.getState().phase !== 'ready') throw new Error('setup: not signed in');
 }
 
@@ -110,6 +114,16 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     void c.startLogin();
     for (let i = 0; i < 200 && !(await new FileStore(join(dir, 'cred')).get()); i++) await tick();
   },
+  // signed in, nothing else (used with LEGACY=1: an old build's normal signed-in profile)
+  'signed-in': async () => {
+    await signedIn();
+  },
+  // a full sign-in through the device flow, then quit normally
+  login: async () => {
+    await c.start();
+    await c.startLogin();
+    if (c.getState().phase !== 'ready') throw new Error('login did not complete');
+  },
   restart: async () => {
     await c.start();
   },
@@ -118,7 +132,6 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
 // signed in with an expiring token; the refreshed one is written but the call never returns
 if (scenario === 'refresh-write-pending') {
   // build the signed-in profile by hand: old grant stored and trusted, refresh due
-  const { createHash } = await import('node:crypto');
   await store.set(encodeGrant({ accessToken: OLD, refreshToken: OLD_REFRESH, expiresAt: NOW - 1, refreshExpiresAt: NOW + 86_400_000 * 30 }));
   cache.setSetting('trustedCredentials', [createHash('sha256').update(OLD).digest('hex')]);
   store.mode = 'set-writes-then-hangs';

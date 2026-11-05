@@ -10,6 +10,7 @@ import { Controller } from '../../src/main/controller';
 import { Cache } from '../../src/data/cache';
 import { encodeGrant } from '../../src/data/grant';
 import type { CredentialStore } from '../../src/platform/credentials';
+import { createHash } from 'node:crypto';
 
 const unhandled: string[] = [];
 process.on('unhandledRejection', (r) => unhandled.push(String((r as Error)?.message ?? r)));
@@ -40,6 +41,8 @@ const fetchImpl = async (url: string, init?: RequestInit) => {
 };
 
 const cache = new Cache(join(mkdtempSync(join(tmpdir(), 'cavil-driver-')), 'cache.sqlite'));
+// a profile that signed in with this credential (what a completed sign-in records)
+cache.setSetting('trustedCredentials', [createHash('sha256').update('ghu_expired000000000000000000000000001').digest('hex')]);
 const c = new Controller({
   credentials: store,
   endpoints: { api: 'http://127.0.0.1:9/api', web: 'http://127.0.0.1:9/web' },

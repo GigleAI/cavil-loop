@@ -9,17 +9,51 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 let driver: string;
+/** the same driver, but with the controller of the last preview build before the trust list */
+let legacyDriver: string;
+const LEGACY_REV = '1dc8219';
 
 beforeAll(async () => {
   driver = join(tempDir(), 'signout-crash.mjs');
   await build({ entryPoints: [join(root, 'test/drivers/signout-crash.ts')], outfile: driver, bundle: true, platform: 'node', format: 'esm', target: 'node22', logLevel: 'silent' });
+  // the real old code, straight from git (CI checks out full history for this)
+  // inside a negative-control sandbox (not a git checkout) the runner points at the real repository
+  const oldController = execFileSync('git', ['show', `${LEGACY_REV}:client/src/main/controller.ts`], { cwd: process.env.CLIENT_MUT_REPO ?? root, encoding: 'utf8' });
+  legacyDriver = join(tempDir(), 'signout-crash-legacy.mjs');
+  const controllerPath = join(root, 'src/main/controller.ts');
+  await build({
+    entryPoints: [join(root, 'test/drivers/signout-crash.ts')],
+    outfile: legacyDriver,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node22',
+    logLevel: 'silent',
+    plugins: [
+      {
+        name: 'legacy-controller',
+        setup(b) {
+          b.onLoad({ filter: /src[\\/]main[\\/]controller\.ts$/ }, (args) =>
+            args.path === controllerPath ? { contents: oldController, loader: 'ts', resolveDir: dirname(controllerPath) } : undefined,
+          );
+        },
+      },
+    ],
+  });
+  if (!readFileSync(legacyDriver, 'utf8').includes('pendingCredentialDelete')) throw new Error('legacy bundle does not contain the old controller');
 });
 
-function phase(dir: string, scenario: string) {
-  const r = spawnSync(process.execPath, [driver, dir, scenario], { encoding: 'utf8', timeout: 60_000 });
+function phase(dir: string, scenario: string, legacy = false) {
+  const r = spawnSync(process.execPath, [legacy ? legacyDriver : driver, dir, scenario], {
+    encoding: 'utf8',
+    timeout: 60_000,
+    env: { ...process.env, LEGACY: legacy ? '1' : '' },
+  });
   const line = `${r.stdout}`.split('\n').find((l) => l.startsWith(scenario === 'restart' ? 'PHASE2 ' : 'PHASE1 '));
   if (r.status !== 0 || !line) throw new Error(`driver ${scenario} failed (exit ${r.status}):\n${r.stdout}\n${r.stderr}`);
   return JSON.parse(line.slice(7)) as { phase: string; stored: string | null; auths: string[]; reason: string | null };
@@ -60,4 +94,39 @@ describe('quit at any point, start again: never back into an account the user si
     expect(two.auths.length).toBeGreaterThan(0);
     expect(two.auths.every((a) => a === `Bearer ${NEW}`)).toBe(true);
   });
+
+  // ---- upgrade from the last preview build (review 2026-11-05 20:12) ----
+  it('old build signed out but could not delete the credential (it promised never to reuse it) → new build does not sign back in', () => {
+    const dir = tempDir();
+    const one = phase(dir, 'logout-delete-fails', true);
+    expect(one.phase).toBe('login');
+    expect(one.stored).toBe(OLD); // the old build really left it on disk
+    const two = phase(dir, 'restart');
+    expect(two.phase).toBe('login');
+    expect(two.auths).toEqual([]);
+    expect(two.stored).toBeNull();
+    // starting again changes nothing
+    expect(phase(dir, 'restart')).toMatchObject({ phase: 'login', auths: [] });
+  });
+
+  it('old build simply signed in → the new build asks for one new sign-in (it cannot prove that credential was not signed out of)', () => {
+    const dir = tempDir();
+    expect(phase(dir, 'signed-in', true).phase).toBe('ready');
+    const two = phase(dir, 'restart');
+    expect(two.phase).toBe('login');
+    expect(two.auths).toEqual([]);
+  });
+
+  it('after the upgrade, a new sign-in sticks: restart signs in with it (the old build\'s leftover mark does not get in the way)', () => {
+    const dir = tempDir();
+    phase(dir, 'logout-delete-fails', true);
+    expect(phase(dir, 'restart').phase).toBe('login');
+    const login = phase(dir, 'login');
+    expect(login).toMatchObject({ phase: 'ready', stored: NEW });
+    const again = phase(dir, 'restart');
+    expect(again.phase).toBe('ready');
+    expect(again.auths.every((a) => a === `Bearer ${NEW}`)).toBe(true);
+    expect(again.auths.length).toBeGreaterThan(0);
+  });
 });
+
