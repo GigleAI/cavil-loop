@@ -886,6 +886,8 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 continue
             fi
             pace_mark_acted
+            # 人手动关闭的 issue 打 Done（GitHub#159）：先入队、和下面的清理互不牵连，见 _lib.sh closed_done_label
+            closed_done_enqueue "$issnum" "$STATE_FILE"
             log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" --force 2>&1; then
                 tmp=$(mktemp)
@@ -898,6 +900,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             fi
         done <<< "$recent_closed"
     fi
+    closed_done_drain "$STATE_FILE" || true
 fi
 
 # ── 3d. 等人审的 PR 与目标分支冲突（GitHub#86）──

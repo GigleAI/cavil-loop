@@ -8,6 +8,7 @@ autopilot-ops 30
 cavil-names 3
 checkout-stale-alert 3
 claude-resume-model 8
+closed-issue-done 18
 comment-footer 11
 comment-layout-prompts 1
 conflict-check-prompts 1
