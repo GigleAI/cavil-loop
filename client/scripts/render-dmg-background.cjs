@@ -1,4 +1,4 @@
-// Render build/dmg-background.html into build/background.png (660x480) and
+// Render build/dmg-background.html into build/background.png (660x460) and
 // build/background@2x.png with Electron. Run by hand after editing the HTML:
 //   npx electron scripts/render-dmg-background.cjs   (Linux without a display: add --ozone-platform=headless --no-sandbox)
 // The PNGs are committed; electron-builder uses them as the dmg window background.
@@ -6,7 +6,7 @@ const { app, BrowserWindow } = require('electron');
 const { writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 
-const W = 660, H = 480;
+const W = 660, H = 460;
 const build = join(__dirname, '..', 'build');
 // keep running between the two windows (default: quit when the last one closes)
 app.on('window-all-closed', () => {});
