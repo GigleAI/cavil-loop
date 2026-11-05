@@ -397,12 +397,13 @@ s_read_isolation() {
     new_env "myorg/4 myorg/11"
     seed_done myorg/4 PVT_A $((30 * DAY)) 600
     seed_done myorg/11 PVT_B $((30 * DAY)) 600
-    a_before=$(st myorg/4 last_sync)
+    # A、B 各自记下自己的起点：两次 seed_done 各取一次当前时间，跨秒时两者差 1 秒（CI 上实际出现过）
+    a_before=$(st myorg/4 last_sync); local b_before; b_before=$(st myorg/11 last_sync)
     add_item I_1 1 issue OPEN "$(iso_ago $DAY)" "$(iso_ago 60)" PVT_A PVT_B
     add_fault '{"op":"read","seg":"ri","page":1,"times":1}'
     tick
     chk "A 不推进" "$(st myorg/4 last_sync)" "$a_before"
-    chk "B 不推进" "$(st myorg/11 last_sync)" "$a_before"
+    chk "B 不推进" "$(st myorg/11 last_sync)" "$b_before"
     chk "派工照常" "$(dispatched)" 1
 }
 
