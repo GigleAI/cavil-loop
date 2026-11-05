@@ -692,7 +692,11 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 **前置从哪来**（两处取并集）：issue 侧栏 Relationships 里的「Blocked by」（实测：GitHub 只接受 issue 当前置，
 设 PR 报 422「Target issue may only be an issue」），以及最近一次摘掉这个标签之后、由 loop 写入账号或维护者
 （`OWNER` / `MEMBER` / `COLLABORATOR`）发的最新一条隐藏标记 `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->`。
+「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认。
 「等 #12」这种普通文字不认。`resume=` 必须是本项目配置的触发标签之一，否则用默认那个。
+
+**交人之后怎么恢复等待**：daemon 的评论里写了步骤——改前置（「Blocked by」里去掉失败的那个、加上新的，等 PR 就发一条新登记），
+**摘掉 `pending/human`**，重新挂 `pending/blocked`。`pending/human` 还在时 daemon 按叫停处理，永远不会自动继续。
 
 **叫停**：加 `pending/human`（或任何流程标签——`doing/agent`、`pending/PR`、`pending/review`、触发标签……），daemon 就不碰它。
 手动打触发标签照常派工，派工时摘掉 `pending/blocked`。greedy 兜底、self-heal、托管的「只挂托管标签就派」都跳过它。

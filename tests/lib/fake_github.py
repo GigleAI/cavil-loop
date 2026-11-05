@@ -257,7 +257,7 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
     cm = load("comments.json", {})
     lst = cm.setdefault(parts[1], [])
     lst.append({"id": 1000 + sum(len(v) for v in cm.values()), "body": fields.get("body", ""),
-                "user": {"login": me()}, "created_at": now_iso()})
+                "user": {"login": me()}, "author_association": "COLLABORATOR", "created_at": now_iso()})
     save("comments.json", cm)
     emit({"id": lst[-1]["id"]})
 

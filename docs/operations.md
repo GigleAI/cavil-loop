@@ -827,8 +827,13 @@ issue / PR of this repo** — not on a human decision — records the prerequisi
 **Where the prerequisites come from** (union): the issue's native *Blocked by* relationship (sidebar → Relationships;
 measured: GitHub accepts only issues as the blocker, a PR returns 422 "Target issue may only be an issue"), and the
 latest hidden marker `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->` posted by the loop's write account or a
-maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) after the label was last removed. Free text such as "waiting on #12" is
-never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) strictly after the label was last removed — GitHub timestamps are whole
+seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. Free
+text such as "waiting on #12" is never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+
+**Recovering after a hand-off**: the daemon's comment lists the steps — fix the prerequisites (remove the failed one from
+*Blocked by*, add the new one, or post a new marker for a PR), **remove `pending/human`**, put `pending/blocked` back. While
+`pending/human` is still on, the daemon treats the item as stopped and never resumes it.
 
 **Stopping it**: add `pending/human` (or any flow label — `doing/agent`, `pending/PR`, `pending/review`, a trigger label…)
 and the daemon leaves the item alone. Putting a trigger label on by hand dispatches it as usual and the dispatch removes

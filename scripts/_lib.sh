@@ -2429,7 +2429,10 @@ sub_issue_rollup_drain() {
 #     「Target issue may only be an issue」；PR 本身的这个列表读得到（200，空）
 #   · 评论里的隐藏标记 `<!-- agent-blocked-by: #12 #34 resume=<触发标签> -->`：只认 loop 的写入账号
 #     或仓库维护者（OWNER / MEMBER / COLLABORATOR）发的，而且发在「最近一次摘掉等前置标签」之后
-#     （属于这一轮等待）；多条取最新一条。等 PR、或被挡的本身是 PR，都靠它
+#     （属于这一轮等待）；多条取最新一条。等 PR、或被挡的本身是 PR，都靠它。
+#     「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认
+#     （代码复审第 1 轮：同秒的旧登记曾被当成本轮前置自动开工）。daemon 自己的结论评论（带
+#     agent-blocked-resolved）里有给人照抄的标记写法，一律不当登记
 # 普通评论里的「等 #12」这类文字不认：任何人都能写，让它决定什么时候自动开工等于把派工开关交出去。
 #
 # 完成的口径：issue 以 completed 关闭；PR 已合并。其余关闭（not planned / duplicate / 没写原因 /
@@ -2510,7 +2513,8 @@ blocked_decide() {   # <编号>
         [ .[][]? | select((.body // "") | contains($M))
           | select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)
                    or ((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)))
-          | select($since == "" or (.created_at // "") >= $since) ]
+          | select((.body | contains("<!-- agent-blocked-resolved")) | not)
+          | select($since == "" or (.created_at // "") > $since) ]
         | sort_by(.created_at // "", .id // 0) | last
         | if . == null then {set: [], resume: ""} else
             (.body | [ match("<!-- agent-blocked-by:([^>]*)-->"; "g") ] | last | .captures[0].string // "") as $m
@@ -2660,6 +2664,20 @@ blocked_apply() {   # <state_file> <编号> <判定 JSON>
     return 1
 }
 
+# 交人评论里「怎么继续」的步骤（失败收场 / 找不到前置共用）。要人照做，所以写全：在哪改前置、
+# 怎么解除人工等待、怎么重新挂、看到什么算成功（代码复审第 1 轮：只写「重新挂等前置标签」，
+# 人照做后 pending/human 还在，daemon 按叫停处理，条目永远卡住）。
+blocked_recovery_steps() {   # <failed|none>
+    local fix
+    if [ "$1" = failed ]; then
+        fix="1. **更新前置**：本条侧栏 Relationships 的「Blocked by」里如果有上面那个失败收场的条目，点它旁边的 × 去掉；要等的新 issue 在同一处用「Add blocked by」加上（只能加 issue）"
+    else
+        fix="1. **登记前置**：要等的 issue 在本条侧栏 Relationships 里用「Add blocked by」加上（只能加 issue）"
+    fi
+    printf '**接着等别的前置**（按顺序做）：\n\n%s；要等的是 PR，就在本条发一条评论，单独一行写 `<!-- agent-blocked-by: #编号 -->`（多个编号用空格隔开；以前的登记不用删，daemon 只认这次之后的）\n2. **解除人工等待**：摘掉本条的 `%s` 标签\n3. **重新挂** `%s`\n\n成功的样子：前置还没完成时，本条一直只挂着 `%s`，daemon 不留言；前置完成后几分钟内，daemon 留一条「前置已完成，自动继续」并改挂 `%s`。如果又出现一条「找不到在等谁」，说明第 1 步的登记没被认出（登记评论要由有写权限的人发）。\n\n**不需要再等**：摘掉 `%s`，打 `%s` 接着干。\n' \
+        "$fix" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT"
+}
+
 blocked_comment_body() {   # <判定 JSON>
     local d="$1" v list n o
     v=$(printf '%s' "$d" | jq -r .v)
@@ -2673,11 +2691,13 @@ blocked_comment_body() {   # <判定 JSON>
             printf '## 前置已完成，自动继续\n\n本条在等的前置都已完成：\n\n%s\n已摘掉 `%s`、改挂 `%s`，daemon 下一轮派工接着干。本条不需要你做任何事；想先拦住，给本条加 `%s`。\n' \
                 "$list" "$LABEL_PENDING_BLOCKED" "$(printf '%s' "$d" | jq -r .resume)" "$LABEL_PENDING_HUMAN" ;;
         failed)
-            printf '## 前置没有完成，交给你决定\n\n本条在等的前置里有以失败收场的，daemon 不会自动继续：\n\n%s\n已摘掉 `%s`、改挂 `%s`。怎么继续：\n\n1. 不再需要这个前置 → 在本条侧栏 Relationships 里去掉它（或在评论里说明），打 `%s` 接着干\n2. 换了一个前置 → 登记新的前置后，重新挂 `%s`\n' \
-                "$list" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_BLOCKED" ;;
+            printf '## 前置没有完成，交给你决定\n\n本条在等的前置里有以失败收场的，daemon 不会自动继续：\n\n%s\n已摘掉 `%s`、改挂 `%s`。\n\n' \
+                "$list" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN"
+            blocked_recovery_steps failed ;;
         none)
-            printf '## 挂了等前置标签，但找不到在等谁\n\n本条挂着 `%s`，可是侧栏 Relationships 的「Blocked by」是空的，这一轮等待里也没有可信的前置登记，daemon 不知道该等谁，已改挂 `%s`。\n\n怎么继续：在侧栏 Relationships 里把前置 issue 设成「Blocked by」，再重新挂 `%s`；不需要等就直接打 `%s`。\n' \
-                "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_AGENT_DEFAULT" ;;
+            printf '## 挂了等前置标签，但找不到在等谁\n\n本条挂着 `%s`，可是侧栏 Relationships 的「Blocked by」是空的，这一轮等待里也没有可信的前置登记，daemon 不知道该等谁，已摘掉 `%s`、改挂 `%s`。\n\n' \
+                "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN"
+            blocked_recovery_steps none ;;
         foreign)
             printf '## 前置在别的仓库，daemon 判不了\n\n本条的「Blocked by」里有别的仓库的条目（%s），等前置标签只支持本仓库的前置，已改挂 `%s`。等它完成后请手动打 `%s`。\n' \
                 "$(printf '%s' "$d" | jq -r .why)" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" ;;

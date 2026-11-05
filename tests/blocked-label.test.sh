@@ -266,9 +266,9 @@ CONF
     on; mkissue 10 "pending/blocked"; ev 10 labeled pending/blocked
     NOW=$T0 tick
     chk "交人" "$(labels_of 10)" "pending/human"
-    chk "评论说明找不到在等谁" "$(comments_with 10 '找不到在等谁')" 1
+    chk "评论说明找不到在等谁" "$(comments_with 10 '## 挂了等前置标签，但找不到在等谁')" 1
     NOW=$((T0 + 400)) tick
-    chk "再跑一轮不重复评论" "$(comments_with 10 '找不到在等谁')" 1
+    chk "再跑一轮不重复评论" "$(comments_with 10 '## 挂了等前置标签，但找不到在等谁')" 1
     fi
 
     # ── 【6】判定之后、写之前的变化（受控交错）──
@@ -358,6 +358,66 @@ CONF
     mark 10 "#11" "" maint MEMBER; mkissue 11 "" closed completed
     NOW=$T0 tick
     chk "维护者（MEMBER）写的标记认" "$(labels_of 10)" "pending/agent"
+
+    # 代码复审第 1 轮：GitHub 的时间只到秒。旧登记和摘标签同一秒 → 分不出先后，不能当本轮前置
+    # （ev 按调用次序编时间：第 N 个事件是 00:0N:00，所以摘标签那条是 00:02:00）
+    on; mkissue 10 "pending/blocked"; mkissue 11 "" closed completed
+    ev 10 labeled pending/blocked
+    mark 10 "#11" "" loop-bot COLLABORATOR "2026-01-01T00:02:00Z"
+    ev 10 unlabeled pending/blocked; ev 10 labeled pending/blocked
+    NOW=$T0 tick
+    chk "和摘标签同一秒的旧登记不认 → 不自动开工" "$(has_label 10 pending/agent)" no
+    chk "和摘标签同一秒的旧登记不认 → 没有接力评论" "$(comments_with 10 'v=resume')" 0
+    chk "和摘标签同一秒的旧登记不认 → 交人说明找不到前置" "$(comments_with 10 'v=none')" 1
+    # 对照：同样的布置，登记晚摘标签一秒 → 是本轮的，接力
+    on; mkissue 10 "pending/blocked"; mkissue 11 "" closed completed
+    ev 10 labeled pending/blocked; ev 10 unlabeled pending/blocked; ev 10 labeled pending/blocked
+    mark 10 "#11" "" loop-bot COLLABORATOR "2026-01-01T00:02:01Z"
+    NOW=$T0 tick
+    chk "对照 · 晚摘标签一秒的登记认 → 接力" "$(labels_of 10)" "pending/agent"
+    fi
+
+    # ── 【9b】交人之后，人照评论里的步骤恢复等待：整个生命周期走一遍 ──
+    if want recover; then
+    section "【9b】失败收场 / 找不到前置交人后，照 daemon 评论的步骤重新等别的前置 → 先等着，完成后接力"
+    # 人在 GitHub 上动手：都走假 GitHub 的接口（时间是现在，和真接口一样晚于 daemon 的写入）
+    as_human() { echo maint > "$GD/me"; env FAKE_GH_DIR="$GD" "$SANDBOX/bin/gh" "$@" >/dev/null 2>&1; echo loop-bot > "$GD/me"; }
+    local entry kind
+    for entry in failed-marker failed-native none; do
+        on; mkissue 12 ""
+        case "$entry" in
+            failed-marker) waiting "#11"; mkissue 11 "" closed not_planned ;;
+            failed-native) mkissue 10 "pending/blocked"; ev 10 labeled pending/blocked maint
+                           mkissue 11 "" closed not_planned; jset blocked_by.json '.["10"] = [11]' ;;
+            none) mkissue 10 "pending/blocked"; ev 10 labeled pending/blocked ;;
+        esac
+        NOW=$T0 tick
+        chk "$entry：先交人" "$(labels_of 10)" "pending/human"
+        local body; body=$(jq -r '.["10"][-1].body' "$GD/comments.json")
+        # 评论里的步骤（人只看这条评论）：改前置、摘 pending/human、重新挂 pending/blocked、成功的样子
+        chk "$entry：步骤里有「Blocked by」怎么改" "$(printf '%s' "$body" | grep -c 'Add blocked by')" 1
+        chk "$entry：步骤里有等 PR 时的登记写法" "$(printf '%s' "$body" | grep -c '<!-- agent-blocked-by: #编号 -->')" 1
+        chk "$entry：步骤里有「摘掉 pending/human」" "$(printf '%s' "$body" | grep -c '摘掉本条的 `pending/human` 标签')" 1
+        chk "$entry：步骤里有「重新挂 pending/blocked」" "$(printf '%s' "$body" | grep -c '重新挂\*\* `pending/blocked`')" 1
+        chk "$entry：步骤里写了成功的样子" "$(printf '%s' "$body" | grep -c '成功的样子')" 1
+        sleep 1.2   # 和 daemon 摘标签不在同一秒（GitHub 的时间只到秒）
+        # 照做：第 1 步（失败的那个原生关系去掉、改等 #12；或发登记评论）
+        case "$entry" in
+            failed-native) jset blocked_by.json '.["10"] = [12]' ;;
+            *) as_human api -X POST "repos/example/ap/issues/10/comments" -f "body=改等 #12
+<!-- agent-blocked-by: #12 -->" ;;
+        esac
+        as_human api -X DELETE "repos/example/ap/issues/10/labels/pending%2Fhuman"   # 第 2 步
+        as_human api -X POST "repos/example/ap/issues/10/labels" -f "labels[]=pending/blocked"   # 第 3 步
+        NOW=$((T0 + 400)) tick
+        chk "$entry：照做后、#12 还开着 → 只挂着等前置标签" "$(labels_of 10)" "pending/blocked"
+        chk "$entry：照做后、#12 还开着 → daemon 不留言" "$(writes)" 0
+        chk "到达性 · $entry：照做后那一轮确实细查了它" "$(yes_if_pos "$(read_deps 10)")" yes
+        set_state 12 closed completed
+        NOW=$((T0 + 800)) tick
+        chk "$entry：#12 完成 → 接力" "$(labels_of 10)" "pending/agent"
+        chk "$entry：#12 完成 → 留「前置已完成」" "$(comments_with 10 'v=resume')" 1
+    done
     fi
 
     # ── 【10】轮询节奏 ──
@@ -590,7 +650,9 @@ mutant "issue 关成「不做」也算完成" scripts/_lib.sh 'elif .state_reaso
 mutant "读不到前置当成已完成" scripts/_lib.sh '                _bfail "读不到前置 #$p"; return 2' '                o=completed' wait
 mutant "写前不重判" scripts/_lib.sh 'if [ "$rc" != 0 ] || [ "$d2" != "$d1" ]; then' 'if false; then' race
 mutant "标记不核对作者" scripts/_lib.sh '| select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)' '| select(true or ((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)' trust
-mutant "旧标记也认" scripts/_lib.sh '| select($since == "" or (.created_at // "") >= $since) ]' '| select(true) ]' trust
+mutant "旧标记也认" scripts/_lib.sh '| select($since == "" or (.created_at // "") > $since) ]' '| select(true) ]' trust
+mutant "同一秒的旧登记也认（回到 >=）" scripts/_lib.sh '| select($since == "" or (.created_at // "") > $since) ]' '| select($since == "" or (.created_at // "") >= $since) ]' trust
+mutant "交人步骤不写摘 pending/human" scripts/_lib.sh '2. **解除人工等待**：摘掉本条的 `%s` 标签\n3.' '2. **解除人工等待**：%s\n3.' recover
 mutant "不看人叫停" scripts/_lib.sh '    if stop=$(blocked_stop_reason "$labels_csv"); then
         jq -cn' '    if false; then
         jq -cn' race
