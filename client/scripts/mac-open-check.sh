@@ -9,9 +9,10 @@
 # The System Settings "Open Anyway" button path needs a human click and is
 # NOT verified here.
 #
-#   bash scripts/mac-open-check.sh release/Cavil-Loop-0.1.0-arm64.dmg
+#   bash scripts/mac-open-check.sh release/Cavil-Loop-0.1.0-arm64.dmg [window-screenshot.png]
 set -euo pipefail
 dmg="$1"
+shot="${2:-}"
 work="$(mktemp -d)"
 mnt="$work/mnt"
 mkdir -p "$mnt"
@@ -22,6 +23,22 @@ app_src="$(find "$mnt" -maxdepth 1 -name '*.app' | head -n1)"
 app="$work/Cavil Loop.app"
 cp -R "$app_src" "$app"
 bin="$app/Contents/MacOS/Cavil Loop"
+
+echo "== 0. dmg window: background + the copyable first-open instructions"
+[ -n "$(find "$mnt/.background" -maxdepth 1 -type f \( -name '*.png' -o -name '*.tiff' \) 2>/dev/null)" ] || { echo "❌ no background image in the dmg"; ls -la "$mnt"; exit 1; }
+txt="$mnt/打不开时看这里.txt"
+[ -f "$txt" ] || { echo "❌ the instructions file is missing"; ls -la "$mnt"; exit 1; }
+grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$txt" || { echo "❌ the instructions file lacks the command"; exit 1; }
+grep -qF '仍要打开' "$txt" || { echo "❌ the instructions file lacks the System Settings way"; exit 1; }
+[ -L "$mnt/Applications" ] || { echo "❌ no Applications link"; exit 1; }
+echo "✅ background, Applications link and instructions file present"
+if [ -n "$shot" ]; then
+  # best effort: a picture of the window a user sees (the CI machine has a GUI session)
+  open "$mnt" || true
+  sleep 4
+  screencapture -x "$shot" || true
+  osascript -e 'tell application "Finder" to close every window' >/dev/null 2>&1 || true
+fi
 
 echo "== 1. direct launch smoke test"
 out="$("$bin" --smoke-test 2>&1 || true)"

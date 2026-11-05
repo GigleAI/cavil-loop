@@ -54,12 +54,12 @@ export function LoginView({ state }: { state: AppState }) {
       )}
 
       <p className="muted small">
-        申请的权限：repo（读写仓库的 issue / PR）、read:org（读组织看板）、project（读写 Project）。凭据存在本机钥匙串里，
-        只发给 GitHub。
+        申请的权限：repo、read:org、project。OAuth 应用没有「只读写 issue / PR」这么细的权限，repo 实际包含仓库的代码和设置；
+        本 App 只读写 issue、PR 和 Project。凭据存在本机钥匙串里，只发给 GitHub。
         {!state.credentialsPersistent && ' 当前系统还不支持保存凭据，退出后需要重新登录。'}
       </p>
 
-      <button className="link small" onClick={() => setShowAdvanced((v) => !v)}>
+      <button className="link small" data-testid="oauth-settings-toggle" onClick={() => setShowAdvanced((v) => !v)}>
         {showAdvanced ? '收起' : 'OAuth 应用设置'}
       </button>
       {showAdvanced && (

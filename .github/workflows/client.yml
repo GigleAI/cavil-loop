@@ -95,13 +95,21 @@ jobs:
           npm run build
           npx electron-builder --mac dmg --${{ matrix.arch }} --publish never
           ls -la release
-      - name: Smoke test + first-open steps
-        run: bash scripts/mac-open-check.sh release/Cavil-Loop-*-${{ matrix.arch }}.dmg
-      - uses: actions/upload-artifact@v4
+      - name: Smoke test + first-open steps + dmg window
+        run: bash scripts/mac-open-check.sh release/Cavil-Loop-*-${{ matrix.arch }}.dmg "$RUNNER_TEMP/dmg-window-${{ matrix.arch }}.png"
+      # The dmg itself, not zipped (archive: false; the artifact is named after the file).
+      - uses: actions/upload-artifact@v7.0.1
         with:
-          name: client-dmg-${{ matrix.arch }}
-          path: client/release/*.dmg
+          path: client/release/Cavil-Loop-*-${{ matrix.arch }}.dmg
+          archive: false
           if-no-files-found: error
+      - name: Upload the dmg window screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-dmg-window-${{ matrix.arch }}
+          path: ${{ runner.temp }}/dmg-window-${{ matrix.arch }}.png
+          if-no-files-found: ignore
 
   release:
     name: publish client release
@@ -117,11 +125,15 @@ jobs:
           tag="${GITHUB_REF#refs/tags/}"
           want="client/v$(node -p "require('./package.json').version")"
           [ "$tag" = "$want" ] || { echo "::error::tag $tag does not match package.json ($want)"; exit 1; }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: client-dmg-*
+          pattern: Cavil-Loop-*.dmg
           path: client/dist-release
           merge-multiple: true
+      - name: Both dmgs are there
+        run: |
+          ls -la dist-release
+          [ "$(ls dist-release/*-arm64.dmg dist-release/*-x64.dmg | wc -l)" -eq 2 ]
       # Not marked latest: the daemon's weekly release stays "Latest".
       - name: Create Release
         env:

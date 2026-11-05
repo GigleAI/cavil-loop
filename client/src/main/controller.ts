@@ -30,6 +30,8 @@ export interface ControllerDeps {
   sleep?: (ms: number) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   syncIntervalMs?: number;
+  /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
+  defaultClientId?: string;
 }
 
 const DEFAULT_VIEW: ViewSettings = { mode: 'iteration', swimlanes: false, selected: null };
@@ -57,7 +59,10 @@ export class Controller {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
+  private readonly defaultClientId: string;
+
   constructor(private readonly deps: ControllerDeps) {
+    this.defaultClientId = deps.defaultClientId ?? DEFAULT_OAUTH_CLIENT_ID;
     this.fetchImpl = deps.fetch ?? ((u, i) => fetch(u, i));
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -66,7 +71,7 @@ export class Controller {
       phase: 'loading',
       loginReason: null,
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
-      oauthClientId: override || DEFAULT_OAUTH_CLIENT_ID,
+      oauthClientId: override || this.defaultClientId,
       oauthClientIdIsDefault: !override,
       viewer: deps.cache.getSetting<string | null>('viewer', null),
       sources: deps.cache.getSetting<SourceConfig[]>('sources', []),
@@ -269,7 +274,7 @@ export class Controller {
   setClientId(id: string): void {
     const v = id.trim();
     this.deps.cache.setSetting('oauthClientId', v);
-    this.set({ oauthClientId: v || DEFAULT_OAUTH_CLIENT_ID, oauthClientIdIsDefault: !v });
+    this.set({ oauthClientId: v || this.defaultClientId, oauthClientIdIsDefault: !v });
   }
 
   // ---- sources & view ------------------------------------------------------

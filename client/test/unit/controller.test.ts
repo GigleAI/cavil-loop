@@ -19,7 +19,7 @@ let dir: string;
 let caches: Cache[] = [];
 let controllers: Controller[] = [];
 
-function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number } } = {}) {
+function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   const credentials = opts.credentials ?? new FileStore(join(dir, 'cred'));
@@ -36,6 +36,8 @@ function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number
       await new Promise((r) => setTimeout(r, 5));
     },
     openExternal: async (u) => void opened.push(u),
+    // no built-in Client ID unless a test asks for one (the real built-in one is GitHub's, not the fake's)
+    defaultClientId: opts.defaultClientId ?? '',
   });
   controllers.push(c);
   return { c, credentials, opened, clock, cache };
@@ -70,6 +72,22 @@ describe('login (OAuth device flow)', () => {
     expect(c.getState().login).toMatchObject({ status: 'error' });
     expect(c.getState().login.message).toContain('Client ID');
     expect(fake.log.filter((l) => l.path.startsWith('/web/'))).toHaveLength(0);
+  });
+
+  it('the built-in Client ID is used when none is configured', async () => {
+    const { c } = make({ defaultClientId: fake.state.oauthClientId });
+    await c.start();
+    expect(c.getState()).toMatchObject({ oauthClientId: fake.state.oauthClientId, oauthClientIdIsDefault: true });
+    const p = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'waiting');
+    fake.resolveGrant('approved');
+    await p;
+    expect(c.getState().phase).toBe('ready');
+    // an override replaces it, clearing the override brings it back
+    c.setClientId('Ov23other');
+    expect(c.getState()).toMatchObject({ oauthClientId: 'Ov23other', oauthClientIdIsDefault: false });
+    c.setClientId('');
+    expect(c.getState()).toMatchObject({ oauthClientId: fake.state.oauthClientId, oauthClientIdIsDefault: true });
   });
 
   it('waiting → user approves → token stored, synced; a restart needs no login', async () => {

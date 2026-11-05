@@ -102,6 +102,8 @@ test('browser login → board; restart skips login; sources; three column modes;
   await shot(page, '01-login');
 
   // configure the OAuth Client ID (no built-in one yet), start the device flow
+  // the built-in Client ID is GitHub's real app; point the login at the fake's
+  await page.getByTestId('oauth-settings-toggle').click();
   await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
   await page.getByTestId('save-client-id').click();
   await page.getByTestId('start-login').click();
@@ -199,6 +201,8 @@ test('browser login → board; restart skips login; sources; three column modes;
 
 test('login: denied on GitHub shows why and stores nothing', async () => {
   const { app, page } = await launch(env);
+  // the built-in Client ID is GitHub's real app; point the login at the fake's
+  await page.getByTestId('oauth-settings-toggle').click();
   await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
   await page.getByTestId('save-client-id').click();
   await page.getByTestId('start-login').click();

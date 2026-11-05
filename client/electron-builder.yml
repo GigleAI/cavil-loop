@@ -22,3 +22,22 @@ mac:
   gatekeeperAssess: false
 dmg:
   artifactName: Cavil-Loop-${version}-${arch}.${ext}
+  # The window explains how to get past Gatekeeper the first time (no Apple
+  # signature in v1); the text file next to the icons carries the command in a
+  # form that can be copied. Background: build/background.png (+ @2x), rendered
+  # from build/dmg-background.html by scripts/render-dmg-background.cjs.
+  background: build/background.png
+  window:
+    width: 660
+    height: 480
+  contents:
+    - x: 180
+      y: 140
+    - x: 480
+      y: 140
+      type: link
+      path: /Applications
+    - x: 330
+      y: 418
+      type: file
+      path: build/打不开时看这里.txt

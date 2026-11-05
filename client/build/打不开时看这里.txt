@@ -1,0 +1,14 @@
+Cavil Loop 第一次打开被 macOS 拦住时怎么办
+
+本 App 没有苹果开发者签名，macOS 第一次会拦一次。先把 Cavil Loop 拖进「应用程序」，然后任选一种放行：
+
+1. 系统设置
+   打开「系统设置 → 隐私与安全性」，往下找到「仍要打开」，按提示输入开机密码，再在弹窗里点「打开」。
+   （macOS 14 及更早，也可以在 Finder 里右键 App →「打开」→「打开」。）
+
+2. 终端
+   打开「终端」，复制运行下面这一行，然后正常双击打开 App：
+
+   xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"
+
+之后就和普通 App 一样。每装一个新版本都要重新放行一次。

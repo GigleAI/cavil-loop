@@ -20,7 +20,11 @@ test/
   mutation/    负对照
 scripts/
   build.mjs             构建 dist/
-  mac-open-check.sh     CI 的 Mac 机器上：冒烟 + 第一次打开步骤的实测
+  mac-open-check.sh     CI 的 Mac 机器上：dmg 窗口内容 + 冒烟 + 第一次打开步骤的实测
+  render-dmg-background.cjs  把 build/dmg-background.html 渲染成 dmg 窗口背景图（改了 HTML 后手动重跑，产物入库）
+build/
+  dmg-background.html / background.png / background@2x.png   dmg 窗口背景（写着两种放行办法）
+  打不开时看这里.txt     放进 dmg 的说明，命令可以直接复制
 ```
 
 ## 开发
@@ -47,7 +51,7 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 
 ## OAuth 应用
 
-浏览器授权（设备授权流程）需要一个开启了 **Device Flow** 的 GitHub OAuth App。Client ID 不是秘密，内置在 `src/shared/config.ts` 的 `DEFAULT_OAUTH_CLIENT_ID`；为空时登录页会让你先填一个，设置里也能覆盖。不需要、也不要放 Client secret。
+浏览器授权（设备授权流程）用的是维护者建的「Cavil Loop」GitHub OAuth App（已开启 **Device Flow**）。Client ID 不是秘密，内置在 `src/shared/config.ts` 的 `DEFAULT_OAUTH_CLIENT_ID`，登录页「OAuth 应用设置」和设置页都能覆盖。不需要、也不要放 Client secret。
 
 ## 发版
 
