@@ -2384,6 +2384,8 @@ closed_done_flow_labels() {
 
 closed_done_enqueue() {
     local issue="$1" state_file="$2" tmp
+    # 只收编号：列表接口异常时 § 4 读到的可能是别的字符串，进了队也永远清不掉
+    [[ "$issue" =~ ^[0-9]+$ ]] || return 0
     tmp=$(mktemp)
     jq --arg i "$issue" '.closed_done_queue = ((.closed_done_queue // {}) + {($i): ((.closed_done_queue // {})[$i] // 0)})' \
         "$state_file" > "$tmp" && mv "$tmp" "$state_file"
