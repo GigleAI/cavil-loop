@@ -21,8 +21,22 @@ function credentialTag(token: string): string {
 }
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
-/** cache setting: a sign-out could not delete the stored credential — never sign in with it again */
-const PENDING_DELETE = 'pendingCredentialDelete';
+/**
+ * Cache setting: hashes of the stored credential(s) this app may sign in with
+ * at start. The one rule that keeps every sign-out / cancel / crash safe:
+ *   - a sign-out empties it FIRST (a synchronous SQLite write), before the page
+ *     switches and before the keychain delete is even queued;
+ *   - a login empties it before writing the keychain and adds the new
+ *     credential only after the write succeeded and the login is still current;
+ *   - a refresh trusts {old, new} while writing, then only the new one;
+ *   - start uses the stored credential only if its hash is listed, otherwise
+ *     it is a leftover (sign-out not finished, cancelled login, …): login page,
+ *     and the leftover is deleted.
+ * So whatever point a process stops at, a restart never signs in with a
+ * credential the user signed out of. `null` (never written) = a profile from
+ * before this rule existed: its stored credential is trusted once.
+ */
+const TRUSTED = 'trustedCredentials';
 
 function notDeletedMessage(reason: string | null, err: string): string {
   return `${reason ? `${reason}。` : ''}本机保存的旧登录凭据没能删除（${err}），它可能还留在钥匙串里。App 不会再用它自动登录；你可以直接重新登录（会覆盖它），或在「钥匙串访问」里搜「Cavil Loop」手动删除`;
@@ -136,27 +150,35 @@ export class Controller {
   }
 
   async start(): Promise<void> {
-    // The last sign-out could not delete the stored credential: it must not sign us
-    // back in. Try the delete again; either way this start begins on the login page.
-    if (this.deps.cache.getSetting<boolean>(PENDING_DELETE, false)) {
-      const err = await this.serialCredential(() => this.clearStored());
-      this.set({ phase: 'login', loginReason: err ? notDeletedMessage(null, err) : null });
-      return;
-    }
+    let stored: TokenGrant | null;
     try {
-      this.grant = decodeGrant(await this.deps.credentials.get());
+      stored = decodeGrant(await this.deps.credentials.get());
     } catch (e) {
       // keychain unreadable: not "signed out" (nothing is deleted), just cannot use it now
       this.set({ phase: 'login', loginReason: `读取本机保存的登录凭据失败（${(e as Error).message}），请重新登录` });
       return;
     }
-    if (!this.token) {
+    if (!stored) {
       this.set({ phase: 'login' });
       return;
     }
+    const trusted = this.deps.cache.getSetting<string[] | null>(TRUSTED, null);
+    if (trusted === null) {
+      // profile from before the trust list: adopt what is stored, from now on the rule applies
+      this.setTrusted([stored.accessToken]);
+    } else if (!trusted.includes(credentialTag(stored.accessToken))) {
+      // A leftover the user signed out of (or a login that never completed, or a
+      // credential put there from outside): never sign in with it, show nothing
+      // cached for it. Delete it now; say so if that fails again.
+      this.adoptAccount(null, null);
+      const err = await this.serialCredential(() => this.clearStored());
+      this.set({ phase: 'login', loginReason: err ? notDeletedMessage(null, err) : null });
+      return;
+    }
+    this.grant = stored;
     // A credential the cache was not read with (changed outside the app) means
     // the account is unknown until GitHub answers: show nothing cached meanwhile.
-    if (this.deps.cache.getSetting<string | null>('cacheCredential', null) !== credentialTag(this.token)) {
+    if (this.deps.cache.getSetting<string | null>('cacheCredential', null) !== credentialTag(stored.accessToken)) {
       this.adoptAccount(null, null);
     }
     this.set({ phase: 'ready' });
@@ -211,13 +233,15 @@ export class Controller {
       // somebody else's credential.
       const committed = await this.serialCredential(async () => {
         if (run !== this.loginRun) return false;
+        // nothing stored is trusted while the new credential is being written
+        this.setTrusted([]);
         await this.deps.credentials.set(encodeGrant(grant));
         if (run !== this.loginRun) {
           const err = await this.clearStored();
           if (err) this.set({ loginReason: notDeletedMessage('登录已取消', err) });
           return false;
         }
-        this.deps.cache.setSetting(PENDING_DELETE, false);
+        this.setTrusted([grant.accessToken]);
         this.session++;
         this.grant = grant;
         // a GitHub App token is refreshed with the app it came from, whatever the setting says later
@@ -270,6 +294,10 @@ export class Controller {
     this.session++;
     this.grant = null;
     this.unsavedGrant = false;
+    // First of all, durably: the stored credential may never sign us in again,
+    // whatever happens to the keychain delete below (queued, pending, failing,
+    // or the process ending before it returns).
+    this.setTrusted([]);
     // Signing out forgets everything read with that account.
     this.wipeCache();
     this.owner = null;
@@ -293,18 +321,20 @@ export class Controller {
 
   /**
    * Delete the stored credential. Runs inside the credential queue. Never throws:
-   * a failure is remembered (PENDING_DELETE) so no later start signs in with the
-   * leftover, and returned for the caller to show.
+   * the error is returned for the caller to show. Safety does not depend on it —
+   * whatever stays behind is not in the trust list (see TRUSTED).
    */
   private async clearStored(): Promise<string | null> {
     try {
       await this.deps.credentials.clear();
     } catch (e) {
-      this.deps.cache.setSetting(PENDING_DELETE, true);
       return (e as Error).message;
     }
-    this.deps.cache.setSetting(PENDING_DELETE, false);
     return null;
+  }
+
+  private setTrusted(accessTokens: string[]): void {
+    this.deps.cache.setSetting(TRUSTED, accessTokens.map(credentialTag));
   }
 
   /**
@@ -358,6 +388,8 @@ export class Controller {
         // sign-out's delete, a newer login's write) runs after this write.
         return await this.serialCredential(async () => {
           if (!current()) return 'ended' as const;
+          // while writing, either the old or the new one may be what ends up stored
+          this.setTrusted([used.accessToken, next.accessToken]);
           let saved = true;
           try {
             await this.deps.credentials.set(encodeGrant(next));
@@ -370,6 +402,9 @@ export class Controller {
           // saved or not. Keep using it; an unsaved grant is retried every round.
           this.grant = next;
           this.unsavedGrant = !saved;
+          // saved: only the new one; not saved: the store still holds the old one (spent at
+          // GitHub, so using it later just ends in "please sign in again") and the retry may store the new
+          if (saved) this.setTrusted([next.accessToken]);
           // same account, new token: the cache stays bound to it
           if (this.owner && saved) this.deps.cache.setSetting('cacheCredential', credentialTag(next.accessToken));
           this.setProblem(saved ? null : this.unsavedMessage());
@@ -407,6 +442,7 @@ export class Controller {
         return;
       }
       if (session !== this.session || this.grant !== grant) return;
+      this.setTrusted([grant.accessToken]);
       this.unsavedGrant = false;
       if (this.owner) this.deps.cache.setSetting('cacheCredential', credentialTag(grant.accessToken));
       this.setProblem(null);

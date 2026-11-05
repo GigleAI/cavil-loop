@@ -345,10 +345,30 @@ describe('the cache belongs to one account', () => {
     expect(cache.loadSnapshots().size).toBe(0);
   });
 
+  it('credential replaced outside the app: not trusted, so not used — login page, nothing cached shown, nothing sent', async () => {
+    accountB();
+    const a = await accountA();
+    a.c.stopTimer();
+    await a.credentials.set(TOKEN_B);
+    fake.state.validTokens.add(TOKEN_B);
+    const b = make({ credentials: a.credentials });
+    const n = fake.log.length;
+    await b.c.start();
+    expect(b.c.getState().phase).toBe('login');
+    expect(b.c.getBoardData().items).toHaveLength(0);
+    expect(b.cache.loadSnapshots().size).toBe(0);
+    expect(fake.log.length).toBe(n);
+    expect(await a.credentials.get()).toBeNull(); // the untrusted leftover is removed
+  });
+
+  // The two below are profiles from before the trust list existed (it is unset):
+  // the stored credential is adopted, and the cache binding is what keeps another
+  // account's data off the screen.
   it('credential replaced outside the app, restart offline: the other account\'s cache is not shown', async () => {
     accountB();
     const a = await accountA();
     a.c.stopTimer();
+    a.cache.setSetting('trustedCredentials', null);
     await a.credentials.set(TOKEN_B);
     fake.state.validTokens.add(TOKEN_B);
     fake.state.offline = true;
@@ -363,6 +383,7 @@ describe('the cache belongs to one account', () => {
     accountB();
     const a = await accountA();
     a.c.stopTimer();
+    a.cache.setSetting('trustedCredentials', null);
     await a.credentials.set(TOKEN_B);
     fake.state.validTokens.add(TOKEN_B);
     const b = make({ credentials: a.credentials });
