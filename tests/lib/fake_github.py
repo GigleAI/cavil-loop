@@ -11,6 +11,7 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   files.json      {"<pr>": [ {filename, previous_filename?} ]}
   checks.json     {"<sha>": {"check_runs": [...], "statuses": [...]}}
   edits.json      {"<pr>": [ {editedAt, deletedAt, diff} ]}  PR 正文修改历史，倒序（GraphQL userContentEdits）
+  blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
   calls.log       one line per call: "gh <argv...>"
   me              login of the token (default loop-bot)
 
@@ -169,7 +170,8 @@ def as_issue(n):
     out = {k: it[k] for k in ("number", "state", "state_reason", "labels", "title", "body", "user", "updated_at") if k in it}
     out.setdefault("title", "t")
     out.setdefault("updated_at", "2026-01-01T00:00:00Z")
-    out["pull_request"] = {"url": "x"} if kind == "pr" else None
+    out["pull_request"] = {"url": "x", "merged_at": it.get("merged_at") or ("2026-01-01T00:00:00Z" if it.get("merged") else None)} if kind == "pr" else None
+    out["repository_url"] = "https://api.github.com/repos/" + REPO
     if kind == "pr" and it.get("merged"):
         out["state"] = "closed"
     return out
@@ -201,8 +203,8 @@ def touch(n):
 def append_event(n, ev, name):
     evs = load("events.json", {})
     evs.setdefault(str(n), []).append(
-        {"event": ev, "label": {"name": name}, "actor": {"login": me(), "type": "User"},
-         "created_at": now_iso()})
+        {"id": 50000 + sum(len(v) for v in evs.values()), "event": ev, "label": {"name": name},
+         "actor": {"login": me(), "type": "User"}, "created_at": now_iso()})
     save("events.json", evs)
 
 
@@ -272,6 +274,16 @@ if method == "GET":
         emit(load("events.json", {}).get(parts[1], []), pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
         emit(load("comments.json", {}).get(parts[1], []), pages=True)
+    if len(parts) == 4 and parts[0] == "issues" and parts[2] == "dependencies" and parts[3] == "blocked_by":
+        out = []
+        for b in load("blocked_by.json", {}).get(parts[1], []):
+            if isinstance(b, str) and "#" in b:
+                other, _, bn = b.partition("#")
+                out.append({"number": int(bn), "state": "open", "html_url": "https://github.com/%s/issues/%s" % (other, bn),
+                            "repository_url": "https://api.github.com/repos/" + other})
+            elif str(b) in items:
+                out.append(as_issue(b))
+        emit(out, pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] == "files":
         emit(load("files.json", {}).get(parts[1], [{"filename": "scripts/x.sh"}]), pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] in ("comments", "reviews"):
@@ -294,7 +306,7 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
     cm = load("comments.json", {})
     lst = cm.setdefault(parts[1], [])
     lst.append({"id": 1000 + sum(len(v) for v in cm.values()), "body": fields.get("body", ""),
-                "user": {"login": me()}, "created_at": now_iso()})
+                "user": {"login": me()}, "author_association": "COLLABORATOR", "created_at": now_iso()})
     save("comments.json", cm)
     emit({"id": lst[-1]["id"]})
 
