@@ -4,10 +4,16 @@
 //   - one IPC command, `backend`, that hands a command to crates/core/src/api.rs
 //   - the window: links never navigate it, GitHub links open in the browser
 //   - the platform: keychain on macOS, where the profile lives, test mode
+//   - the desktop side (desktop.rs, mac.rs): notifications, Dock badge, launch at
+//     login, closing the window hides it, the sync beat (GitHub#169)
 //   - page zoom (GitHub#155): the 显示 menu's ⌘+ / ⌘- / ⌘0 (macOS), level kept by crates/core/src/zoom.rs
 //
 // The GitHub credential exists only in crates/core. Nothing here returns it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod desktop;
+#[cfg(target_os = "macos")]
+mod mac;
 
 use async_trait::async_trait;
 use cavil_core::api::dispatch;
@@ -20,8 +26,10 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use desktop::{Desktop, TestHooks};
+use serde_json::json;
 use tauri::webview::NewWindowResponse;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 struct AppState {
     engine: Arc<Engine>,
@@ -75,6 +83,17 @@ fn smoke_result(app: &tauri::AppHandle, ok: bool, detail: &str) {
 
 fn smoke() -> bool {
     std::env::args().any(|a| a == "--smoke-test")
+}
+
+/// Started at login (launch at login passes it): no window until the user asks for one.
+fn hidden_start() -> bool {
+    std::env::args().any(|a| a == "--hidden")
+}
+
+/// The packaged-app check (scripts/mac-open-check.sh): send one real notification through the
+/// same code as a reminder, report what the system answered, quit. Never fails the check by itself.
+fn notify_check() -> bool {
+    std::env::args().any(|a| a == "--notify-check")
 }
 
 fn smoke_out() -> Option<String> {
@@ -141,8 +160,11 @@ fn main() {
         }
     };
     let smoke = smoke();
+    let notify_check = notify_check();
+    let hidden = hidden_start();
+    let hooks = TestHooks::from_env(selection.test_mode, &env);
 
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().manage(Desktop::new(hooks));
     // one app instance per profile: a second launch brings the first window forward
     // (not in the smoke test or test mode: each run has its own throw-away profile, and
     // the plugin needs a desktop session bus a CI machine may not have)
@@ -167,12 +189,21 @@ fn main() {
             zoom(app, Some(step));
         });
     }
-    builder
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(
+            tauri_plugin_autostart::Builder::new()
+                .macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent)
+                .arg("--hidden")
+                .build(),
+        );
+    }
+    let app = builder
         .setup(move |app| {
             // Same profile folder as the Electron build ("Cavil Loop"), so an upgrade keeps
             // the sign-in and the cache. The smoke test gets a throw-away one; the test
             // suite may point it elsewhere (test mode only).
-            let profile = if smoke {
+            let profile = if smoke || notify_check {
                 std::env::temp_dir().join(format!("cavil-smoke-{}", std::process::id()))
             } else if let (true, Some(d)) = (selection.test_mode, env.get("CAVIL_CLIENT_USER_DATA")) {
                 PathBuf::from(d)
@@ -202,7 +233,13 @@ fn main() {
                 .title("Cavil Loop")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(720.0, 480.0)
-                .visible(!smoke)
+                .visible(!smoke && !notify_check && !hidden)
+                // The window does the syncing; hidden (closed, or started at login) it must keep
+                // running. By default macOS's WebKit suspends a page that is not on screen — at once
+                // when it was never shown, after about 5 minutes otherwise (GitHub#169, found on the
+                // CI Macs). WebKit honours this from macOS 14 on, which is why the app requires
+                // macOS 14 (maintainer's choice on PR #173): on 11–13 nothing keeps a hidden page running.
+                .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
                 // Links never navigate the app window; GitHub links go to the system browser.
                 .on_navigation(move |url| {
                     if is_app_url(url) {
@@ -233,6 +270,31 @@ fn main() {
                 .build()?;
             // the zoom level kept from the last run
             zoom(&handle, None);
+            let desk = app.state::<Desktop>();
+            desk.record(json!({ "op": "start", "hidden": hidden }));
+            #[cfg(target_os = "macos")]
+            {
+                let h = handle.clone();
+                mac::setup(move |id| desktop::on_click(&h, &id));
+            }
+            desktop::spawn_background(handle.clone());
+            if notify_check {
+                let h = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let alert = json!({ "kind": "summary", "title": "Cavil Loop 通知检查", "body": "打包检查发出的一条测试通知" });
+                    let line = match desktop::desktop_notify(h.clone(), alert).await {
+                        // accepted = the system took the request without an error; whether it was on screen is not known here
+                        Ok(v) if v["ok"] == true => "CAVIL_NOTIFY_OK accepted by the system (on screen or not: not known)".to_string(),
+                        Ok(v) => format!("CAVIL_NOTIFY_REFUSED {}", v["error"].as_str().unwrap_or("")),
+                        Err(e) => format!("CAVIL_NOTIFY_REFUSED {e}"),
+                    };
+                    println!("{line}");
+                    if let Some(out) = smoke_out() {
+                        let _ = std::fs::write(out, format!("{line}\n"));
+                    }
+                    h.exit(0);
+                });
+            }
             if smoke {
                 let h = handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -242,9 +304,35 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend, mounted])
-        .run(tauri::generate_context!())
-        .expect("error while running the app");
+        // closing the window hides it where the app keeps running (macOS; tests may ask for it elsewhere)
+        .on_window_event(|w, ev| {
+            if let WindowEvent::CloseRequested { api, .. } = ev {
+                let d = w.state::<Desktop>();
+                if w.label() == "main" && d.hide_on_close() {
+                    api.prevent_close();
+                    let _ = w.hide();
+                    d.record(json!({ "op": "hidden" }));
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            backend,
+            mounted,
+            desktop::desktop_notify,
+            desktop::desktop_badge,
+            desktop::desktop_login_item,
+            desktop::desktop_set_login_item,
+            desktop::desktop_next_event
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building the app");
+    app.run(|_app, _ev: RunEvent| {
+        // the Dock icon clicked while the window is hidden: it comes back
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = _ev {
+            desktop::show_main(_app, "reopen");
+        }
+    });
 }
 
 async fn tokio_sleep(ms: u64) {

@@ -7,6 +7,12 @@
 // What this does not cover, and where it is covered instead: Tauri's IPC and
 // the system WebKit window (CI: the packaged app's smoke test on both Macs and
 // on Linux; the maintainer's hands-on check).
+//
+// `POST /desktop` plays the shell's desktop side (src-tauri/src/desktop.rs) for
+// the window: it records every notification and badge, can refuse notifications
+// like macOS does, and hands the window the events the test sends (a sync beat,
+// a clicked notification). Hiding the window on close is the shell's own and is
+// tested on the real app (test/tauri).
 
 import { chromium, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { createServer, type Server } from 'node:http';
@@ -47,7 +53,38 @@ export interface AppEnv {
 export interface RunningApp {
   page: Page;
   backend: HarnessBackend;
+  desktop: FakeDesktop;
   close(): Promise<void>;
+}
+
+/** What the window asked of the shell's desktop side, and the events the test sends it. */
+export interface FakeDesktop {
+  /** `{ op: 'notify', alert, result }` / `{ op: 'badge', count }` / `{ op: 'loginItem', on }`, in order */
+  records: any[];
+  /** answer every notification with this refusal (null = shown) */
+  refuse: string | null;
+  /** launch at login as the "system" has it (null = this platform cannot) */
+  loginItem: boolean | null;
+  push(ev: { kind: 'tick' } | { kind: 'open'; key: string; url: string }): void;
+}
+
+function fakeDesktop(): FakeDesktop & { next(): Promise<unknown>; stop(): void } {
+  const queue: unknown[] = [];
+  const waiters: ((e: unknown) => void)[] = [];
+  return {
+    records: [],
+    refuse: null,
+    loginItem: false,
+    push(ev) {
+      const w = waiters.shift();
+      if (w) w(ev);
+      else queue.push(ev);
+    },
+    next: () => (queue.length ? Promise.resolve(queue.shift()) : new Promise((r) => waiters.push(r))),
+    stop() {
+      waiters.length = 0;
+    },
+  };
 }
 
 let browser: Browser | null = null;
@@ -80,6 +117,7 @@ export const NOT_IN_SAFARI_14 = [
 
 export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {}): Promise<RunningApp> {
   const opened: string[] = [];
+  const desktop = fakeDesktop();
   const backend = new HarnessBackend({
     db: join(env.userData, 'cache.sqlite'),
     endpoints: { api: env.fake.api, web: env.fake.web },
@@ -105,6 +143,31 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(reply));
+      });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/desktop') {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', async () => {
+        const { op, args } = JSON.parse(body);
+        let ok: unknown = null;
+        if (op === 'notify') {
+          ok = desktop.refuse ? { ok: false, error: desktop.refuse } : { ok: true };
+          desktop.records.push({ op, alert: args.alert, result: ok });
+        } else if (op === 'badge') {
+          desktop.records.push({ op, count: args.count });
+        } else if (op === 'loginItem') {
+          ok = desktop.loginItem;
+        } else if (op === 'setLoginItem') {
+          desktop.loginItem = Boolean(args.on);
+          desktop.records.push({ op: 'loginItem', on: desktop.loginItem });
+        } else if (op === 'nextEvent') {
+          ok = await desktop.next();
+        }
+        if (res.destroyed) return;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok }));
       });
       return;
     }
@@ -181,9 +244,13 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
   return {
     page,
     backend,
+    desktop,
     async close() {
+      desktop.stop();
       await context.close();
       await backend.close();
+      // a waiting `nextEvent` must not hold the server open
+      server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
     },
   };

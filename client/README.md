@@ -8,12 +8,15 @@
 src/
   shared/    类型、来源地址解析、界面 API 约定（ipc.ts）、搜索筛选（filter.ts）、视图设置与导入（viewSettings.ts / viewImport.ts）
   data/      GitHub 请求、同步、去重、看板分列（board.ts）、表格分组（table.ts）、两者共用的排序（sort.ts）；
-             actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条
-  app/       controller.ts 应用逻辑（同步轮次、设置、修改、详情），跑在窗口里，不碰凭据；localApi.ts 把它包成 window.cavil
-  backend/   窗口到后台的唯一通道：backend.ts 命令约定 + 代发请求；tauri.ts 走 Tauri 的 IPC；testBridge.ts 只进界面测试的构建
+             actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条，pending.ts 待处理提醒
+  app/       controller.ts 应用逻辑（同步轮次、设置、修改、详情、提醒），跑在窗口里，不碰凭据；localApi.ts 把它包成 window.cavil；
+             desktop.ts 窗口对外壳「桌面这一侧」的约定（通知、角标、开机自启、同步节拍、点了哪条通知）
+  backend/   窗口到后台的唯一通道：backend.ts 命令约定 + 代发请求；tauri.ts 走 Tauri 的 IPC（也接外壳的桌面命令）；testBridge.ts 只进界面测试的构建
   renderer/  React 界面；main.tsx 启动
 src-tauri/   Tauri 外壳（Rust）
   src/main.rs           只做接线：一个 IPC 命令 backend、窗口不导航、GitHub 链接交给系统浏览器
+  src/desktop.rs        桌面这一侧（#169）：通知、Dock 角标、开机自启、关窗只隐藏、同步节拍、测试模式记录
+  src/mac.rs            macOS：用系统现行的通知接口（UserNotifications）发通知、收点击；不让 App 小憩
   crates/core/          后台本体：登录（设备授权）、续期、凭据队列、可信名单、退出（engine.rs）、钥匙串（platform.rs）、
                         本地存储（store.rs，SQLite，表结构和 Electron 版相同）、代发请求只放行 GitHub 接口（http.rs）、命令表（api.rs）
   crates/harness/       测试专用：把后台本体接到 stdin/stdout，单元测试和界面测试都驱动它（发布的 App 里没有）
@@ -21,7 +24,10 @@ src-tauri/   Tauri 外壳（Rust）
 test/
   unit/        vitest：数据层 + controller，对着本地假 GitHub 走真 HTTP；后台是真实的 Rust 子进程（test/support/harness.ts）
   support/     测试用的凭据存储（可以卡住、失败）、SQLite 读写、凭据格式——用来预置和核对磁盘状态
-  e2e/         Playwright 在 WebKit 里驱动真实窗口（bridge.ts：窗口经本机回环桥接到真实后台）
+  e2e/         Playwright 在 WebKit 里驱动真实窗口（bridge.ts：窗口经本机回环桥接到真实后台；/desktop 扮演外壳的桌面这一侧）
+  tauri/       真实 Tauri App（Linux，WebDriver）：real-window.spec.ts 登录 / 同步 / 修改 / 外壳的链接规则；
+               background.spec.ts 关窗后、隐藏启动时仍在 120 秒内同步并提醒，点通知打开那一条
+  mac/         打包好的 macOS App 上同样的「关窗 / 隐藏启动仍同步」门槛，加 Dock 图标叫回窗口（scripts/mac-open-check.sh 第 6 步调用）
   fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销；
                writes.ts 是可写的一面（标签、里程碑、评论、看板字段、合并 / 关闭、新建 issue），digest() 判断「GitHub 上什么都没改」
   fixtures/    从 cavil project（GigleAI #11）录下来的真实接口返回，已脱敏；record.mjs 可重录
@@ -50,11 +56,12 @@ build/
 ```bash
 cd client
 npm ci
-npm run test:rust              # 后台的 Rust 单元测试
+npm run test:rust              # Rust 单元测试（后台 + 外壳；先构建一次界面，外壳编译要用）
 npm test                       # 单元测试（真实后台子进程），末尾打印「负对照：跳过 N 项」
 npm run test:mutation          # 负对照（MUTATION=1）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
 npm run typecheck
 npm run test:e2e               # 界面测试（WebKit；WebKit 起不来的机器加 CAVIL_E2E_ENGINE=chromium）
+npm run test:tauri             # 真实 App（Linux：要 tauri-driver、WebKitWebDriver，CI 用 xvfb-run；约 6 分钟，同步节拍是正式的 60 秒）
 npm start                      # tauri dev：本机跑起来（Linux 要装 libwebkit2gtk-4.1-dev；凭据只在内存里，退出即忘）
 npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip install dmgbuild）
 ```
@@ -119,6 +126,45 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 **表格视图**和看板并存，工具栏右侧切换。排序是两种布局共用的：看板每一列里卡片的顺序、表格里行的顺序都按它（导入的「按更新时间从新到旧」在看板上同样生效）。表格的「视图设置」里还能改：分组（迭代 / 状态 / 里程碑 / 仓库 / 不分组）、排序（含「Project 里的顺序」）、显示哪些列、左侧按仓库切片、子 issue 缩进在父 issue 下。一个条目在两个 Project 里迭代或状态不同时，在两组里各出现一次（和看板一样）。子 issue 只在父 issue 也在同一组里时才缩进。
 
 **导入网页视图**：添加 Project 时，第一次完整读到它之后导入它网页上存的一个视图（贴的网址带 `/views/N` 就导那个，没带就导第一个）：布局、分组、排序、列、筛选。只导入一次——之后网页上改了视图不会跟着变；导入前用户已经动过的设置以用户为准；删掉再加这个 Project 会重新导入。做不到的部分（自定义字段分组 / 排序 / 列、路线图布局、多级排序）在视图顶部列出来。GitHub 的接口不返回「按仓库切片」和「显示层级」两个开关，导入时都设成开。仓库来源（REST）读不到「关联 PR」，那一格显示「—」。
+
+## `pending/human` 提醒（#139，#169 在 Tauri 上重做）
+
+「待处理」= 所有已加入来源里带「等人处理的标签」（默认 `pending/human`，不区分大小写）的条目，**不论开着还是已关闭 / 已合并**。这个标签名和「交回 agent」摘掉的是**同一个设置**（`handBack.human`），改一处两边一起变。通知、Dock 角标、启动汇总全部由 `src/data/pending.ts` 的同一个 `PendingTracker` 算出，controller 只在一轮同步收下结果后把「这一轮完整读到、且仍属于这次添加」的那些快照喂给它（和写缓存用的是同一份 `accepted`）。
+
+| 情况 | 结果 |
+|---|---|
+| 某来源这一轮没读全（断网、凭据失效、分页中途失败） | 它不参与比较，沿用上一轮的那份：不报新增，也不报移除 |
+| 某来源在这次运行里第一次读全（启动、新加来源、换账号） | 它带来的、之前不算待处理的条目进**一条汇总**，不逐条通知 |
+| 已读全过的来源里，某条目上一轮不是待处理、这一轮是 | 通知一次；摘掉再挂上算新出现 |
+| 点一条条目通知 | 窗口回到前面，App 里打开那一条的详情；它已不在看板上（比如来源刚删掉）就在浏览器打开 |
+| 同一条目在几个来源里 | 按 `仓库#编号` 只算一个、只通知一次 |
+| 删除来源 / 改标签名 | 静默重算，角标跟着变，不发通知 |
+| 退出登录 / 换账号 | 清零，下次第一次读全时重新汇总 |
+| 在 App 里改了一条（加 / 摘标签、交回 agent） | 只重读那一条进缓存，不喂给提醒；角标在下一轮同步（≤ 60 秒）时跟上。自己在 App 里打上 `pending/human` 也会在下一轮收到一次通知 |
+
+**桌面这一侧在外壳里**（`src-tauri/src/desktop.rs`、`mac.rs`），窗口经 `src/app/desktop.ts` 的约定调用它，这些命令都不碰凭据：
+
+- **通知**：macOS 上用系统现行的通知接口（UserNotifications），第一次发之前向系统申请权限，每条的结果（成功 / 系统原话）回报给窗口；拒绝时看板顶部和设置页显示提示，下一条成功后清掉。不用 Tauri 官方通知插件：它在 macOS 上查权限一律回「已允许」、发送失败不回传（按插件仓库提交 `4356356d`、插件 2.7.0 的源码核对），「被拒要让人看见」就做不到。没打包的开发版（`npm start`）不发通知。
+- **角标**：Tauri 窗口的设角标接口（Dock 图标的数字），0 时清掉。
+- **开机自启**：Tauri 官方开机自启插件，macOS 用登录项 LaunchAgent（`~/Library/LaunchAgents`），启动参数带 `--hidden`：不显示窗口，照常同步提醒。
+- **关窗只隐藏**（macOS）：拦下关窗请求改成隐藏，点 Dock 图标（系统的「重新打开」事件）窗口回来，⌘Q 退出。其他系统 v1 不显示通知和角标、关窗即退出，计数照常。
+- **要求 macOS 14 或更新**（`tauri.conf.json` 的 `minimumSystemVersion`，维护者在 PR #173 定的）：窗口隐藏后网页还能继续跑，靠的是网页引擎「不挂起看不见的页面」这个开关，它从 macOS 14 起才生效；11–13 上没有办法保证关窗后继续提醒，所以不再支持。窗口仍按 Safari 14 的网页引擎构建（比需要的更宽），旧引擎的界面测试照留。`scripts/mac-open-check.sh` 第 0c 步核对打出来的 App 确实要求 14。
+- **同步节拍在外壳**：外壳每 60 秒告诉窗口「该同步了」，窗口收到才同步（窗口里不再有定时器）——隐藏窗口的定时器会被网页引擎放慢。macOS 上另外声明一个「用户发起的活动」，不让系统的 App 小憩把没有窗口的 App 停掉。
+- **窗口对外壳的调用一次只发一条**：隐藏窗口里同时发出的第二条请求可能被压到下一次唤醒（实测：角标比通知晚了整整一拍，超过 2 分钟的承诺），所以 controller 把它们排成队。
+
+**测试模式**（只在 `CAVIL_CLIENT_TEST_MODE=1` 且 GitHub 指向本机回环时生效）：`CAVIL_CLIENT_TEST_ALERTS_FILE` 把每次通知 / 角标 / 节拍（带当时窗口是否可见）/ 隐藏 / 显示写成一行 JSON，不弹真通知；`CAVIL_CLIENT_TEST_NOTIFY_REFUSE=<消息>` 模拟系统拒绝；`CAVIL_CLIENT_TEST_TICK_MS` 改节拍；`CAVIL_CLIENT_TEST_HIDE_ON_CLOSE=1` 让 Linux 上也关窗只隐藏；`CAVIL_CLIENT_TEST_CONTROL_FILE` 里追加 `close`（和关窗按钮同一个请求）或 `click <通知 id>`（和点那条通知同一段处理）。
+
+**怎么验的**：
+
+| 层 | 测什么 | 判失败 |
+|---|---|---|
+| `test/unit/pending.test.ts` | 计数、去重、汇总、读失败、离线启动、删来源、改标签名、退出、被拒、节拍、点通知、开机自启（真实后台子进程 + 假 GitHub） | 是 |
+| `test/e2e/app.spec.ts` | 窗口里的提醒流程、被拒黄条（可 × 关）、点通知打开详情且回到看板后不会再打开 | 是 |
+| `test/tauri/background.spec.ts`（Linux 真 App） | 关窗后、`--hidden` 启动时，挂标签后 **120 秒内**完成新一轮同步、发出这一条的通知、角标 +1，期间窗口一直不可见；点通知窗口回来并打开那一条 | 是 |
+| `test/mac/background.spec.ts`（CI 的 Mac，打包好的 App） | 同上两种情况的 120 秒门槛，再加 Dock 图标叫回窗口 | 是 |
+| `scripts/mac-open-check.sh` 第 5 步 | 打包好的 App 用 `--notify-check` 经正式路径真发一条通知，记下 macOS 的回答 | 否：CI 上没人点「允许」，只记录；能否真弹出由维护者在自己的 Mac 上确认 |
+
+120 秒的来由：#139 承诺 2 分钟内收到通知，节拍 60 秒，挂标签的时刻离下一拍最多 60 秒，剩下的留给一轮读取。
 
 ## 登录用的 GitHub 应用
 
