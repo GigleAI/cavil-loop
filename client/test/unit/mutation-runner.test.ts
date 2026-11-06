@@ -40,6 +40,7 @@ function baselineState() {
     join(dir, 'unit-tests.json'),
     JSON.stringify([
       { name: 'board writes enabled offline → disabled; online → enabled', file: 'test/unit/board.test.ts' },
+      { name: 'board fetch reads both pages', file: 'test/unit/board.test.ts' },
       { name: 'cache each successful round replaces the cached snapshot as a whole', file: 'test/unit/controller.test.ts' },
     ]),
   );
@@ -82,19 +83,22 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner',
   });
 
   it('a mutation that changes nothing is "did not go red"; red on the wrong assertion is a failure too', () => {
-    const noop = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, to: OFFLINE_ENTRY.from }]) });
+    // with the baseline's map each run is one small test file, not a second whole suite (a whole
+    // nested suite under load made unrelated timing tests flake and this case read them as red)
+    const state = baselineState();
+    const noop = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, to: OFFLINE_ENTRY.from }]), CLIENT_MUT_STATE: state });
     expect(noop.status).toBe(1);
     expect(noop.out).toContain('没变红');
-    const wrong = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, expect: ['reads both pages'] }]) });
+    const wrong = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, expect: ['reads both pages'] }]), CLIENT_MUT_STATE: state });
     expect(wrong.status).toBe(1);
     expect(wrong.out).toContain('不是预期的断言');
-    const gone = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, from: 'text that is not there' }]) });
+    const gone = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, from: 'text that is not there' }]), CLIENT_MUT_STATE: state });
     expect(gone.status).toBe(1);
     expect(gone.out).toContain('准备失败');
   }, 120_000);
 
   it('a real mutation caught by its named assertion is accepted (the runner can say yes)', () => {
-    const r = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]) });
+    const r = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]), CLIENT_MUT_STATE: baselineState() });
     expect(r.out).toContain('✅ 变红');
     expect(r.status).toBe(0);
   }, 120_000);
