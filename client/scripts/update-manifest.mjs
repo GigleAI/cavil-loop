@@ -20,7 +20,8 @@
 //   node scripts/update-manifest.mjs --set-pubkey <key.pub> [--conf …]      (the maintainer's step: put the key in)
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const REPO = 'GigleAI/cavil-loop';
 /** the updater's platform names → the arch in the package's file name */
@@ -134,7 +135,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     return i >= 0 ? a[i + 1] : undefined;
   };
   const read = (f) => (f && existsSync(f) ? readFileSync(f, 'utf8') : '');
-  const conf = opt('conf') ?? 'src-tauri/tauri.conf.json';
+  // the app's config next to this script (client/src-tauri/tauri.conf.json), whatever the current directory
+  const conf = opt('conf') ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'tauri.conf.json');
   const pubkey = existsSync(conf) ? configuredPubkey(conf) : '';
   if (a[0] === '--set-pubkey') {
     const text = read(a[1]).trim();

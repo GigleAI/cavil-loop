@@ -278,6 +278,7 @@ ls -l ~/.tauri/cavil-loop-updater.key ~/.tauri/cavil-loop-updater.key.pub
 
 <!-- update-key-steps:check:begin -->
 ```bash
+cd "$(git rev-parse --show-toplevel)/client"
 node scripts/update-manifest.mjs --set-pubkey ~/.tauri/cavil-loop-updater.key.pub
 echo "cavil key check" > ~/cavil-key-check.txt
 npx --yes @tauri-apps/cli@2 signer sign -f ~/.tauri/cavil-loop-updater.key ~/cavil-key-check.txt
@@ -285,7 +286,7 @@ node scripts/update-manifest.mjs --verify ~/cavil-key-check.txt ~/cavil-key-chec
 ```
 <!-- update-key-steps:check:end -->
 
-第一条把公钥写进 `src-tauri/tauri.conf.json`，打印「已把公钥（密钥编号 …）写进 …」。后两条用私钥签一个小文件（会问一次密码，填第一段设的那个），再用刚写进去的公钥验它：看到「✅ … 签名有效」才算这对钥匙能用。
+第一条先进到仓库的 `client/` 目录（在仓库里任何位置跑都行）；第二条把公钥写进 `client/src-tauri/tauri.conf.json`，打印「已把公钥（密钥编号 …）写进 …」。后两条用私钥签一个小文件（会问一次密码，填第一段设的那个），再用刚写进去的公钥验它：看到「✅ … 签名有效」才算这对钥匙能用。
 
 **出错了怎么办**
 
@@ -298,7 +299,7 @@ rm ~/.tauri/cavil-loop-updater.key ~/.tauri/cavil-loop-updater.key.pub
 ```
 <!-- update-key-steps:replace:end -->
 
-- **不想继续了**：`git checkout src-tauri/tauri.conf.json` 退回公钥那一处改动；钥匙文件留在 `~/.tauri/` 里不影响任何东西。
+- **不想继续了**：`git checkout "$(git rev-parse --show-toplevel)/client/src-tauri/tauri.conf.json"` 退回公钥那一处改动；钥匙文件留在 `~/.tauri/` 里不影响任何东西。
 
 钥匙检查通过之后：
 

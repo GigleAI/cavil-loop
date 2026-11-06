@@ -65,14 +65,17 @@ type Run = { code: number; prompts: string[]; out: string };
 /** A fresh HOME and a copy of client/ to run the blocks in. */
 function place() {
   const home = tempDir();
-  const work = join(tempDir(), 'client');
+  // a git repository with client/ inside, like a checkout; the blocks run from its top (not from client/)
+  const repo = tempDir();
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  const work = join(repo, 'client');
   mkdirSync(join(work, 'src-tauri'), { recursive: true });
   cpSync(join(root, 'scripts'), join(work, 'scripts'), { recursive: true });
   cpSync(join(root, 'src-tauri', 'tauri.conf.json'), join(work, 'src-tauri', 'tauri.conf.json'));
   writeFileSync(join(work, 'package.json'), readFileSync(join(root, 'package.json')));
   symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
   const run = (script: string, passwords: string[]): Run => {
-    const raw = execFileSync('python3', ['-c', DRIVER, work, home, script, JSON.stringify(passwords)], { encoding: 'utf8', timeout: 200_000 });
+    const raw = execFileSync('python3', ['-c', DRIVER, repo, home, script, JSON.stringify(passwords)], { encoding: 'utf8', timeout: 200_000 });
     return JSON.parse(raw.trim().split('\n').pop()!);
   };
   const key = join(home, '.tauri', 'cavil-loop-updater.key');
