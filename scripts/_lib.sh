@@ -3601,7 +3601,7 @@ AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""; AUTOPILOT_ISSUE=""; 
 AUTOPILOT_PR_KIND=""; AUTOPILOT_PR_N=""
 AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
 AUTOPILOT_PR_EVENTS=""; AUTOPILOT_PLACE=""; AUTOPILOT_PLACE_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
-AUTOPILOT_PLACE_COPY=""; AUTOPILOT_PR_COPY=""
+AUTOPILOT_PLACE_COPY=""; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
 
 # 托管标签配了（不管复审关卡在不在）
 autopilot_configured() { [ -n "$LABEL_AUTOPILOT" ]; }
@@ -3841,7 +3841,7 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     local num="$1" ij="$2" pr="${3:-}" pj="${4:-}" rc
     AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""
     AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
-    AUTOPILOT_PR_EVENTS=""; AUTOPILOT_AUTH_CANDS=""; AUTOPILOT_PR_COPY=""
+    AUTOPILOT_PR_EVENTS=""; AUTOPILOT_AUTH_CANDS=""; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
     if [ -z "$num" ]; then
         autopilot_authorization_pr_only "$pr" "$pj"; return $?
     fi
@@ -3870,7 +3870,7 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
     # PR 上 daemon 补的副本（GitHub#190）不是授权，当作没挂
     autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
     # 两处的候选授权（现在挂着的那一处最后一次打上），逐个判：操作人合格？晚于另一处所有的摘掉？
     local cand kind cnum other here when ok_kind="" ok_num="" ok_place="" ok_t="" ok_actor="" unknown="" deny_kind="" deny_reason=""
     for cand in issue pr; do
@@ -3929,7 +3929,7 @@ autopilot_authorization_pr_only() {   # <PR 编号> <PR JSON>
     fi
     autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
     autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
     if [ -n "$AUTOPILOT_PR_COPY" ]; then
         AUTOPILOT_DENY=no-label
         AUTOPILOT_REASON="PR #$pr 上的托管标签是 loop 自己的账号打的（daemon 补的副本，或 worker 打的），不算授权"
@@ -4983,7 +4983,7 @@ autopilot_mirror_judge() {   # <PR 编号>
         autopilot_place_strip_copy "PR #$pr" || { AM_REASON="$AUTOPILOT_REASON"; return 0; }
         if [ -z "$AUTOPILOT_PLACE_COPY" ]; then AM_V=none; return 0; fi
         copy="$AUTOPILOT_PLACE_COPY"
-        rc=0
+        rc=0; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
         case "$kind" in
             issue) autopilot_authorization "$n" "$ij" "$pr" "$pj" || rc=$? ;;
             pr)    autopilot_authorization "" "" "$pr" "$pj" || rc=$? ;;
@@ -4991,9 +4991,18 @@ autopilot_mirror_judge() {   # <PR 编号>
         esac
         case "$rc" in
             0) AM_V=none; return 0 ;;
-            1) AM_V=remove; AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_IDX="" ;;
+            1) ;;
             *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
         esac
+        # 授权判定自己又读了一遍 PR 的标签记录（PR #203 代码复审第 1 轮）：两次读之间维护者可能亲手重打了，
+        # 授权那次读到的已经不是副本、甚至因为和 issue 上的摘掉同一秒而仍判「不成立」。「要删的仍是自己那份」
+        # 只能由同一份证据证明：这一次判定里读过几遍 PR 的标签记录，每一遍都必须指向同一条副本记录，否则判不了。
+        # 授权判定没读 PR（issue 关了之类提前返回）时，这次判定只有上面那一遍，证据本来就是同一份。
+        if [ -n "$AUTOPILOT_PR_COPY_READ" ] && [ "$AUTOPILOT_PR_COPY" != "$copy" ]; then
+            AM_REASON="同一次判定里两遍读到的 PR #$pr 托管标签记录不一致（副本位置 ${copy} → ${AUTOPILOT_PR_COPY:-不是副本}），本轮不收回"
+            return 0
+        fi
+        AM_V=remove; AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_IDX=""
     fi
     AM_ID="$state|$merged|$head|$base|$repo|$ref|$pl|$kind|$n|$istate|$ph|$ih|$copy|$AUTOPILOT_AUTH_KIND|$AUTOPILOT_AUTH_NUM|$AUTOPILOT_AUTH_IDX"
 }

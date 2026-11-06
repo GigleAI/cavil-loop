@@ -1447,6 +1447,36 @@ Closes #7" "$H1" "${1:-pending/review,autopilot}"
         chk "到达性 · 收回 · $what：确实走到了写前重判" "$(log_has '托管：PR #8 判定收回托管标签之后有变化')" 1
     done
 
+    section "【14i】收回：同一次判定里先读到副本、授权那次又读到维护者重打 → 不删（PR #203 代码复审第 1 轮）"
+    # 收回判定的读取顺序：PR 标签记录（认副本）→ issue 标签记录 → PR 标签记录（授权）。
+    # 第一轮的两次判定读 PR 记录第 1–4 次、issue 记录第 1–2 次；钩子挂在第二次判定的 issue 那一遍上，
+    # 让维护者的重打恰好落在「认副本」之后、「授权」之前
+    local at sec
+    for sec in "2026-02-01T00:00:00Z:和 issue 上的摘掉同一秒" "2026-02-01T00:00:05Z:晚于 issue 上的摘掉"; do
+        at="${sec%%Z:*}Z"; what="${sec#*Z:}"
+        fresh "$WT"; copy_ready
+        jset events.json '.["7"] |= map(if .event == "unlabeled" then .created_at = "2026-02-01T00:00:00Z" else . end)'
+        hook issues_7_events 2 ".[\"8\"] += [{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"$at\"},{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"$at\"}]" events.json
+        tick
+        chk "维护者重打（$what）落在判定内部 → 不删" "$(dels)/$(has_label 8 autopilot)" "0/yes"
+        chk "到达性 · $what：确实走到了第二次判定的授权那一遍" "$(cat "$GD/count_issues_7_events" 2>/dev/null)/$(cat "$GD/count_issues_8_events" 2>/dev/null)" "2/4"
+        tick
+        chk "  → 下一轮：PR 上是维护者亲手打的，仍不删" "$(dels)/$(has_label 8 autopilot)" "0/yes"
+    done
+    # 没绑 issue 的 PR：授权只读 PR，同样两遍——第二次判定第 1 遍（认副本，第 3 次）之后、第 2 遍（第 4 次）之前重打
+    fresh "$WT"
+    mkpr 8 feature/xyz "做了 X。" "$H1" "pending/review,autopilot"
+    ev 8 labeled autopilot loop-bot
+    hook issues_8_events 4 '.["8"] += [{event:"unlabeled",label:{name:"autopilot"},actor:{login:"maint",type:"User"},created_at:"2026-02-01T00:00:00Z"},{event:"labeled",label:{name:"autopilot"},actor:{login:"maint",type:"User"},created_at:"2026-02-01T00:00:00Z"}]' events.json
+    tick
+    chk "没绑 issue 的 PR：判定内部维护者重打 → 不删" "$(dels)/$(has_label 8 autopilot)" "0/yes"
+    chk "到达性 · 两次判定共读了 4 遍 PR 的标签记录" "$(cat "$GD/count_issues_8_events" 2>/dev/null)" 4
+    fresh "$WT"
+    mkpr 8 feature/xyz "做了 X。" "$H1" "pending/review,autopilot"
+    ev 8 labeled autopilot loop-bot
+    tick
+    chk "对照：没绑 issue 的 PR 上只有副本 → 收回" "$(dels)/$(has_label 8 autopilot)" "1/no"
+
     section "【14h】副本不是授权：不触发接手"
     fresh "$WT"; mirror_ready ""
     jset labels.json '.["8"] = ["autopilot"]'; ev 8 labeled autopilot loop-bot
@@ -1994,6 +2024,7 @@ mutate mirror-rm-ph _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || ph=x; AM_ID=
 mutate mirror-rm-ih _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || ih=x; AM_ID="$state|'
 mutate mirror-rm-istate _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || istate=x; AM_ID="$state|'
 mutate mirror-rm-copy _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || copy=x; AM_ID="$state|'
+mutate mirror-rm-one-evidence _lib.sh '        if [ -n "$AUTOPILOT_PR_COPY_READ" ] && [ "$AUTOPILOT_PR_COPY" != "$copy" ]; then' '        if false; then'
 mutate mirror-rm-maint _lib.sh '        if [ -z "$AUTOPILOT_PLACE_COPY" ]; then AM_V=none; return 0; fi' '        :'
 mutate mirror-rm-unknown _lib.sh '            *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
         esac
