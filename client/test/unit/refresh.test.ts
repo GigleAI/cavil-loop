@@ -41,6 +41,8 @@ class GatedStore extends FileStore {
 }
 
 async function make(store: FileStore, clock: { t: number }) {
+  // a restart reads the files: every earlier app of this test has finished writing its settings
+  await Promise.all(controllers.map((c) => c.settled()));
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   const endpoints = { api: fake.api, web: fake.web };

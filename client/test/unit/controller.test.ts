@@ -22,6 +22,9 @@ let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
 async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown> } = {}) {
+  // a restart reads the files: every earlier app of this test has finished writing its settings
+  // (they reach the back end asynchronously — as when the app is quit, not killed)
+  await Promise.all(controllers.map((c) => c.settled()));
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   for (const [k, v] of Object.entries(opts.seed ?? {})) cache.setSetting(k, v);
