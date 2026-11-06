@@ -3,6 +3,7 @@
 
 import type { UpdateStatus } from '../shared/types';
 import { api } from './api';
+import { Icon } from './Icons';
 
 const MB = 1_000_000;
 const mb = (n: number) => (n / MB).toFixed(1);
@@ -30,7 +31,7 @@ export function UpdateSection({ update }: { update: UpdateStatus | null }) {
   if (!update) return null;
   const busy = update.phase !== 'idle' || !!update.problem;
   return (
-    <section data-testid="update-settings">
+    <section id="set-update" data-testid="update-settings">
       <h3>更新</h3>
       <p className="small">
         当前版本 <b data-testid="update-current">{update.current}</b>
@@ -63,6 +64,7 @@ export function UpdateReadyBar({ update }: { update: UpdateStatus | null }) {
   const v = update.version;
   return (
     <div className="banner info closable" data-testid="update-ready">
+      <Icon name="refresh" />
       <span className="banner-text">
         新版 {v} 已下载，重启后生效。
         <button className="link" data-testid="update-ready-restart" onClick={() => api().restartToUpdate()}>
@@ -70,7 +72,7 @@ export function UpdateReadyBar({ update }: { update: UpdateStatus | null }) {
         </button>
       </span>
       <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="update-ready-close" onClick={() => api().dismissUpdate(v)}>
-        ×
+        <Icon name="x" />
       </button>
     </div>
   );
