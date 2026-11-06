@@ -122,8 +122,12 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14px; white-space: nowrap; flex: none; }
 .brand img { width: 24px; height: 24px; }
 .vsep { width: 1px; height: 22px; background: var(--border); flex: none; }
-.sources-pick { display: flex; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
-.src-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-weight: 500; min-width: 0; max-width: 260px; cursor: pointer; }
+.sources-pick { display: flex; gap: 6px; min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: 3px 0; scrollbar-width: thin; }
+/* many sources: the strip scrolls sideways (wheel, trackpad, Tab); each chip keeps a readable name, the full one on hover */
+.sources-pick::-webkit-scrollbar { height: 4px; }
+.sources-pick::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.sources-pick::-webkit-scrollbar-track { background: transparent; }
+.src-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-weight: 500; flex: none; max-width: 220px; cursor: pointer; }
 .src-chip.on { background: var(--accent-subtle); border-color: transparent; color: var(--fg); }
 .src-chip .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .search { flex: 1 1 320px; min-width: 180px; max-width: 520px; margin-left: auto; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--canvas); color: var(--icon); }

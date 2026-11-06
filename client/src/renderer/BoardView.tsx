@@ -385,7 +385,15 @@ export function BoardView({
           Cavil Loop
         </div>
         {state.sources.length > 0 && <div className="vsep" />}
-        <div className="sources-pick" data-testid="source-pick">
+        <div
+          className="sources-pick"
+          data-testid="source-pick"
+          // a mouse wheel only scrolls up and down; turn it sideways so a plain mouse reaches every source
+          onWheel={(e) => {
+            const el = e.currentTarget;
+            if (e.deltaX === 0 && e.deltaY !== 0 && el.scrollWidth > el.clientWidth) el.scrollLeft += e.deltaY;
+          }}
+        >
           {state.sources.map((s) => (
             <label key={s.key} className={`src-chip${selected.has(s.key) ? ' on' : ''}`} title={sourceLabel(s, titles.get(s.key))}>
               <input type="checkbox" data-key={s.key} checked={selected.has(s.key)} onChange={() => toggle(s.key)} />
