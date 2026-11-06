@@ -162,7 +162,7 @@
 - 规则：测试自身的准备或夹具步骤失败（例如负对照找不到要改的原文）必须传到父进程并让整套测试非零退出，不能被子 shell 或命令替换吞掉；加一个故意准备失败的自检证明整套会红。
 - 适用：含变异、负对照、动态夹具的测试脚本。
 - 为什么：PR #110 一项负对照在子 shell 里准备失败，失败计数传不回父进程，整套仍报「通过 146，失败 0」，「18 项」只是 gate 计数。
-- 这样做是对的：PR #104 保留 `REQUESTER_BOT_TEST_BAD_MUT=1` 自检：开关打开时 58 项跑完，唯一失败是故意制造的准备失败；只设自检不开开关则退出码 2 报错。pending-human-conflict、comment-footer 把源码原文改一个空格，开关模式也会变红（https://github.com/GigleAI/cavil-loop/pull/104）。
+- 这样做是对的：PR #104 保留 `REQUESTER_BOT_TEST_BAD_MUT=1` 自检：开关打开时 58 项跑完，唯一失败是故意制造的准备失败；只设自检不开开关则退出码 2 报错。pending-human-conflict、comment-footer 把源码原文改一个空格，开关模式也会变红（https://github.com/GigleAI/cavil-loop/pull/104）。PR #94 在交付前自查发现 comment-footer 测试里 12 条模板检查经管道送进计数、失败进不了退出码（打印通过 99 少于实际 ✅ 111），改为进程替换后两者一致（https://github.com/GigleAI/cavil-loop/pull/94）。
 - Seen 1×: #110 https://github.com/GigleAI/cavil-loop/pull/110#issuecomment-6568519638
 
 ### L45
