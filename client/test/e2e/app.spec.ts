@@ -1070,18 +1070,30 @@ test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, s
 });
 
 // GitHub#172: the top of the detail tells an issue from a PR at a glance — a
-// different icon and the full name; the colour only says open / closed / merged.
-// Closed and merged win over a draft mark; only an open PR the detail read
-// confirmed as a draft turns grey, and a failed detail read keeps type + state.
+// different icon and the full name — and the colour is GitHub's state colour
+// (review of PR #174: "keep the issue / PR state colours the same as GitHub"):
+// open green, PR closed red, merged PR / issue closed as completed purple,
+// draft PR / issue closed as not planned grey. Closed and merged win over a
+// draft mark; only an open PR the detail read confirmed as a draft turns grey,
+// and a failed detail read keeps type + state. The board card and the table
+// row use the same colour rule.
 test('detail badge: issue and PR differ by icon and full name; colour by state; draft only when open and confirmed', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const draft = (n: number) => {
     pullOf(store, findCopies(store, 'GigleAI/cavil-loop', n)!).isDraft = true;
   };
+  /** GitHub's close reason on every copy of an issue (Project and repository list) */
+  const closedAs = (n: number, reason: string) => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) g.stateReason = reason.toUpperCase();
+    for (const r of c.rest) r.state_reason = reason;
+  };
   draft(147); // open draft
   draft(129); // closed, still carrying the draft mark
   draft(146); // open draft whose detail read fails
   env.fake.state.w.failDetail.add('gigleai/cavil-loop#146');
+  closedAs(128, 'completed');
+  closedAs(138, 'not_planned');
 
   const { app, page } = await launch(env);
   await signInWithSources(page);
@@ -1098,17 +1110,22 @@ test('detail badge: issue and PR differ by icon and full name; colour by state; 
     await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   };
   const bg = () => badge.evaluate((el) => getComputedStyle(el).backgroundColor);
+  const fg = (l: ReturnType<Page['locator']>) => l.evaluate((el) => getComputedStyle(el).color);
 
-  // expected values follow the rule (state first, then "open + confirmed draft"), not the implementation's output
-  const GREEN = 'rgb(26, 127, 55)', RED = 'rgb(207, 34, 46)', PURPLE = 'rgb(130, 80, 223)', GREY = 'rgb(89, 99, 110)';
-  const rows: { n: number; kind: 'issue' | 'pr'; tone: string; text: string; spoken: string; colour: string; why: string }[] = [
-    { n: 137, kind: 'issue', tone: 'open', text: 'Issue·开', spoken: 'Issue，开着', colour: GREEN, why: 'open issue' },
-    { n: 128, kind: 'issue', tone: 'closed', text: 'Issue·已关闭', spoken: 'Issue，已关闭', colour: RED, why: 'closed issue' },
-    { n: 148, kind: 'pr', tone: 'open', text: 'Pull Request·开', spoken: 'Pull Request，开着', colour: GREEN, why: 'open PR, not a draft' },
-    { n: 147, kind: 'pr', tone: 'draft', text: 'Pull Request·草稿', spoken: 'Pull Request，草稿', colour: GREY, why: 'open draft PR' },
-    { n: 123, kind: 'pr', tone: 'closed', text: 'Pull Request·已关闭', spoken: 'Pull Request，已关闭', colour: RED, why: 'closed PR' },
-    { n: 129, kind: 'pr', tone: 'closed', text: 'Pull Request·已关闭', spoken: 'Pull Request，已关闭', colour: RED, why: 'closed PR with a draft mark: closed wins' },
-    { n: 150, kind: 'pr', tone: 'merged', text: 'Pull Request·已合并', spoken: 'Pull Request，已合并', colour: PURPLE, why: 'merged PR' },
+  // GitHub's (Primer) colours. Expected values follow GitHub's rule, not the implementation's output.
+  const BG = { open: 'rgb(31, 136, 61)', closed: 'rgb(207, 34, 46)', done: 'rgb(130, 80, 223)', neutral: 'rgb(89, 99, 110)' };
+  const FG = { open: 'rgb(26, 127, 55)', closed: 'rgb(209, 36, 47)', done: 'rgb(130, 80, 223)', neutral: 'rgb(89, 99, 110)' };
+  type Tone = keyof typeof BG;
+  const rows: { n: number; kind: 'issue' | 'pr'; tone: Tone; cardTone: Tone; text: string; why: string }[] = [
+    { n: 137, kind: 'issue', tone: 'open', cardTone: 'open', text: 'Issue·开', why: 'open issue' },
+    { n: 128, kind: 'issue', tone: 'done', cardTone: 'done', text: 'Issue·已关闭', why: 'issue closed as completed: purple' },
+    { n: 138, kind: 'issue', tone: 'neutral', cardTone: 'neutral', text: 'Issue·已关闭（不计划）', why: 'issue closed as not planned: grey' },
+    { n: 148, kind: 'pr', tone: 'open', cardTone: 'open', text: 'Pull Request·开', why: 'open PR, not a draft' },
+    // the board has no draft mark (only the detail read does), so the card stays "open"
+    { n: 147, kind: 'pr', tone: 'neutral', cardTone: 'open', text: 'Pull Request·草稿', why: 'open draft PR' },
+    { n: 123, kind: 'pr', tone: 'closed', cardTone: 'closed', text: 'Pull Request·已关闭', why: 'closed PR: red' },
+    { n: 129, kind: 'pr', tone: 'closed', cardTone: 'closed', text: 'Pull Request·已关闭', why: 'closed PR with a draft mark: closed wins' },
+    { n: 150, kind: 'pr', tone: 'done', cardTone: 'done', text: 'Pull Request·已合并', why: 'merged PR' },
   ];
   const icons: Record<string, string> = {};
   for (const r of rows) {
@@ -1117,10 +1134,14 @@ test('detail badge: issue and PR differ by icon and full name; colour by state; 
     await expect(badge, r.why).toHaveAttribute('data-kind', r.kind);
     await expect(badge, r.why).toHaveAttribute('data-tone', r.tone);
     await expect(badge, r.why).toHaveText(r.text);
-    await expect(badge, r.why).toHaveAttribute('aria-label', r.spoken);
+    await expect(badge, r.why).toHaveAttribute('aria-label', r.text.replace('·', '，'));
     await expect(badge.locator('svg'), r.why).toHaveAttribute('data-icon', r.kind);
-    expect(await bg(), r.why).toBe(r.colour);
+    expect(await bg(), r.why).toBe(BG[r.tone]);
     expect(await badge.evaluate((el) => getComputedStyle(el).fontSize), r.why).toBe('13px');
+    // the card on the board: same colour rule
+    const cs = card(page, r.n).getByTestId('card-state');
+    await expect(cs, r.why).toHaveAttribute('data-tone', r.cardTone);
+    expect(await fg(cs), r.why).toBe(FG[r.cardTone]);
     icons[r.kind] = await badge.locator('svg').innerHTML();
     await shot(page, `31-badge-${r.n}-${r.tone}`);
   }
@@ -1136,16 +1157,28 @@ test('detail badge: issue and PR differ by icon and full name; colour by state; 
   await expect(badge).toHaveAttribute('data-kind', 'pr');
   await expect(badge).toHaveAttribute('data-tone', 'open');
   await expect(badge).toHaveText('Pull Request·开');
-  expect(await bg()).toBe(GREEN);
+  expect(await bg()).toBe(BG.open);
   await shot(page, '32-badge-detail-failed');
+  await page.getByTestId('detail-close').click();
 
-  // dark mode: the same rule on the darker palette, white text still on a coloured badge
+  // the table row: same colour rule
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  for (const [n, tone] of [[128, 'done'], [138, 'neutral'], [123, 'closed'], [137, 'open']] as const) {
+    await page.getByTestId('search').fill(`#${n}`);
+    const cell = page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"] [data-testid="row-state"]`).first();
+    await expect(cell, `table #${n}`).toHaveAttribute('data-tone', tone);
+    expect(await fg(cell), `table #${n}`).toBe(FG[tone]);
+  }
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+
+  // dark mode: GitHub's darker palette, white text still on a coloured badge
   await page.emulateMedia({ colorScheme: 'dark' });
-  for (const [n, colour, tone] of [[147, 'rgb(101, 108, 118)', 'draft'], [150, 'rgb(137, 87, 229)', 'merged'], [137, 'rgb(35, 134, 54)', 'open']] as const) {
+  const DARK_BG = { neutral: 'rgb(101, 108, 118)', done: 'rgb(137, 87, 229)', open: 'rgb(35, 134, 54)' };
+  for (const [n, tone] of [[147, 'neutral'], [150, 'done'], [137, 'open'], [138, 'neutral']] as const) {
     await open(n);
     await loaded();
     await expect(badge).toHaveAttribute('data-tone', tone);
-    expect(await bg()).toBe(colour);
+    expect(await bg()).toBe(DARK_BG[tone]);
     expect(await badge.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
     await shot(page, `33-badge-dark-${n}-${tone}`);
   }

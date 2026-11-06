@@ -3,6 +3,8 @@
 
 export type ItemKind = 'issue' | 'pr';
 export type ItemState = 'open' | 'closed' | 'merged';
+/** why an issue was closed, as GitHub records it (lower-cased); a PR never has one */
+export type IssueStateReason = 'completed' | 'not_planned' | 'duplicate' | 'reopened';
 
 export interface Iteration {
   id: string;
@@ -53,6 +55,8 @@ export interface Item {
   url: string;
   kind: ItemKind;
   state: ItemState;
+  /** issues only: GitHub's close reason; null = none recorded / a PR / not read (a cache written before #172 lacks it) */
+  stateReason: IssueStateReason | null;
   updatedAt: string;
   labels: Label[];
   assignees: string[];

@@ -55,6 +55,7 @@ export function item(repo: string, number: number, extra: Partial<Item> = {}, me
     url: `https://github.com/${repo}/issues/${number}`,
     kind: 'issue',
     state: 'open',
+    stateReason: null,
     updatedAt: '2026-11-01T00:00:00Z',
     labels: [],
     assignees: [],

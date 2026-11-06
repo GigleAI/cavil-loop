@@ -2,6 +2,7 @@
 // A source is all-or-nothing: a failure on any page means the caller keeps
 // that source's previous snapshot. Never return a partial list.
 
+import { parseStateReason } from '../shared/stateTone';
 import type { Item, ItemState, Iteration, LinkedPr, ProjectMembership, ProjectMeta, SavedView, SourceConfig, SourceSnapshot, ViewField } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -41,6 +42,7 @@ export interface GqlContent {
   title?: string;
   url?: string;
   state?: string;
+  stateReason?: string | null;
   merged?: boolean;
   updatedAt?: string;
   repository?: { nameWithOwner: string };
@@ -149,6 +151,7 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
     url: c.url ?? '',
     kind: c.__typename === 'PullRequest' ? 'pr' : 'issue',
     state: contentState(c),
+    stateReason: c.__typename === 'Issue' ? parseStateReason(c.stateReason) : null,
     updatedAt: c.updatedAt ?? '',
     labels: c.labels?.nodes.map((l) => ({ name: l.name, color: l.color })) ?? [],
     assignees: c.assignees?.nodes.map((a) => a.login) ?? [],
@@ -228,6 +231,7 @@ interface RestIssue {
   node_id?: string;
   title: string;
   state: string;
+  state_reason?: string | null;
   html_url: string;
   updated_at: string;
   labels: ({ name: string; color: string } | string)[];
@@ -256,6 +260,7 @@ function restToItem(repo: string, r: RestIssue, srcKey: string): Item {
     url: r.html_url,
     kind: r.pull_request ? 'pr' : 'issue',
     state: r.pull_request?.merged_at ? 'merged' : r.state === 'open' ? 'open' : 'closed',
+    stateReason: r.pull_request ? null : parseStateReason(r.state_reason),
     updatedAt: r.updated_at,
     labels: r.labels.map((l) => (typeof l === 'string' ? { name: l, color: '' } : { name: l.name, color: l.color })),
     assignees: (r.assignees ?? []).map((a) => a.login),

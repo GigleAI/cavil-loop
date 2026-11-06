@@ -1,3 +1,4 @@
+import { stateTone } from '../shared/stateTone';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
@@ -51,6 +52,8 @@ interface CardOps {
 
 function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col: string; ops: CardOps }) {
   const it = card.item;
+  // GitHub's state colour; no draft mark on the board (only the detail read has it)
+  const tone = stateTone(it.kind, it.state, it.stateReason, null);
   const iterations = it.projects.filter((m) => m.iteration).map((m) => m.iteration!.title);
   const [adding, setAdding] = useState<RepoOptions | null>(null);
   return (
@@ -68,7 +71,7 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
       onClick={() => ops.open(it.key)}
     >
       <div className="card-head">
-        <span className={`kind ${it.kind} ${it.state}`} data-testid="card-state">
+        <span className={`kind ${it.kind} ${tone}`} data-testid="card-state" data-tone={tone}>
           {card.under && (
             <span className="nest-mark" title="关联到上面这个 issue 的 PR">
               ↳{' '}

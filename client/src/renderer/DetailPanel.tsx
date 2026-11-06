@@ -190,7 +190,7 @@ export function DetailPanel({
     item.key,
     <>
       <div className="detail-head">
-        <KindBadge kind={item.kind} state={item.state} isDraft={detail?.pr ? detail.pr.isDraft : null} />
+        <KindBadge kind={item.kind} state={item.state} reason={item.stateReason} isDraft={detail?.pr ? detail.pr.isDraft : null} />
         <span className="muted small">
           {item.repo} #{item.number}
         </span>
