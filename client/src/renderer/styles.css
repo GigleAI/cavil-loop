@@ -130,7 +130,7 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .src-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-weight: 500; flex: none; max-width: 220px; cursor: pointer; }
 .src-chip.on { background: var(--accent-subtle); border-color: transparent; color: var(--fg); }
 .src-chip .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.search { flex: 1 1 320px; min-width: 180px; max-width: 520px; margin-left: auto; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--canvas); color: var(--icon); }
+.search { flex: 1 1 320px; min-width: 240px; max-width: 520px; margin-left: auto; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--canvas); color: var(--icon); }
 .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .search input { flex: 1; min-width: 0; border: none !important; background: transparent !important; padding: 0 !important; min-height: 0 !important; outline: none; }
 .hdr-right { display: flex; align-items: center; gap: 8px; flex: none; }
