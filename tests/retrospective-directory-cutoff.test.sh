@@ -134,6 +134,12 @@ mutant "恢复步骤停止失败后照样往下做" docs/operations.md,docs/oper
 mutant "恢复步骤删除失败后照样重启" docs/operations.md,docs/operations.zh.md \
     'rm -f "$Q/directory-lessons.json" || exit 1
 test ! -e "$Q/directory-lessons.json" || exit 1' 'rm -f "$Q/directory-lessons.json"'
+# 代码复审第 2 轮
+mutant "恢复步骤拿锁后立刻放掉" docs/operations.md,docs/operations.zh.md \
+    'exec 9>>"$Q/scan.lock" || exit 1
+flock 9 || exit 1' 'flock "$Q/scan.lock" true || exit 1'
+mutant "恢复步骤重启失败也报成没重置" docs/operations.md,docs/operations.zh.md \
+    'systemctl --user start "$TIMER" || exit 2' 'systemctl --user start "$TIMER" || exit 1'
 mutant "开关值写错也照跑" $PY_ "    if value not in ('true', 'false'):" "    if False:"
 
 echo

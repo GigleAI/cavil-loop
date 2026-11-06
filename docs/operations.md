@@ -1992,16 +1992,18 @@ Project lessons are a counted error book (format and checks: `scripts/retrospect
 <!-- retro-dir-recovery:begin -->
 ```bash
 (
-# Every step ends in "|| exit 1": nothing after a failed step runs.
+# Every step ends in "|| exit": nothing after a failed step runs.
 # 1) This project's state directory: replace <project> with the project's key, the
 #    directory name under ~/.local/state/cavil-loop/ (also the timer's instance name).
 STATE_DIR="$HOME/.local/state/cavil-loop/<project>"
 Q="$STATE_DIR/retrospectives"
 TIMER="cavil-loop-poll@$(basename "$STATE_DIR").timer"
-# 2) Stop this project's poller, then wait until no retrospective is running
-#    (holding the scan lock means none is).
+# 2) Stop this project's poller, then take the retrospective's scan lock and keep it
+#    until this block ends: a retrospective already running finishes first, and one
+#    started later (by a poll that was already under way) gives up while we hold it.
 systemctl --user stop "$TIMER" || exit 1
-flock "$Q/scan.lock" true || exit 1
+exec 9>>"$Q/scan.lock" || exit 1
+flock 9 || exit 1
 # 3) Keep the evidence: copy the start-time file and the scan record (copy only).
 ts=$(date -u +%Y%m%dT%H%M%SZ) || exit 1
 if [ -e "$Q/directory-lessons.json" ]; then cp -p "$Q/directory-lessons.json" "$Q/directory-lessons.json.bak-$ts" || exit 1; fi
@@ -2009,14 +2011,19 @@ cp -p "$Q/cursor.json" "$Q/cursor.json.bak-$ts" || exit 1
 # 4) Reset the start time: remove the start-time file only.
 rm -f "$Q/directory-lessons.json" || exit 1
 test ! -e "$Q/directory-lessons.json" || exit 1
-# 5) Start the poller again.
-systemctl --user start "$TIMER" || exit 1
-echo "reset done"
-) || echo "reset FAILED: stopped at the step that printed the error above; no later step ran"
+# 5) Release the lock, then start the poller again.
+exec 9>&- || exit 2
+systemctl --user start "$TIMER" || exit 2
+)
+case $? in
+0) echo "reset done" ;;
+2) echo "reset done, but the poller did NOT start again: run  systemctl --user start cavil-loop-poll@<project>.timer" ;;
+*) echo "reset FAILED: stopped at the step that printed the error above; no later step ran" ;;
+esac
 ```
 <!-- retro-dir-recovery:end -->
 
-Every step runs only if the one before it succeeded. Success: the block prints `reset done`, and the next `retrospective.log` line reads `directory lessons on: handling PRs merged at or after <time>` with a time after the reset. If it prints `reset FAILED`, nothing after the failing step ran: a failed stop leaves the poller as it was; a failure after the stop leaves it stopped, the start-time file and `cursor.json` untouched (a failed backup deletes nothing). Fix the cause (disk, permissions — an unreadable start-time file cannot be backed up either) and run the whole block again. On a pre-rename install the timer is `coding-agent-poll@<project>.timer`. The reset cannot undo directory lessons already committed under the old time: check `git log -p -- <lessons file>` on the base branch for `docs: learn from` commits in that window and remove the wrong entries by hand (a human edit is simply the next baseline).
+Every step runs only if the one before it succeeded. Success: the block prints `reset done`, and the next `retrospective.log` line reads `directory lessons on: handling PRs merged at or after <time>` with a time after the reset. The scan lock is held from step 2 to the end of step 4, so no retrospective runs while the evidence is copied and the start time reset. Three outcomes: `reset done` — all done. `reset done, but the poller did NOT start again` — the reset is complete (start-time file gone, backups kept); only the restart failed: run the printed `systemctl --user start` command. `reset FAILED` — nothing after the failing step ran and the reset has not happened: a failed stop leaves the poller as it was; a later failure leaves it stopped with the start-time file and `cursor.json` untouched (a failed backup deletes nothing). Fix the cause (disk, permissions — an unreadable start-time file cannot be backed up either) and run the whole block again. On a pre-rename install the timer is `coding-agent-poll@<project>.timer`. The reset cannot undo directory lessons already committed under the old time: check `git log -p -- <lessons file>` on the base branch for `docs: learn from` commits in that window and remove the wrong entries by hand (a human edit is simply the next baseline).
 
 **Project command after the retrospective (optional, GitHub#152).** `POST_RETROSPECTIVE_PROJECT_CMD` (empty = off) runs with `bash -c` at the root of the retrospective's temporary checkout, after the report and lessons are validated and written, before the commit — e.g. a script that ranks directory lessons and writes them into each directory's `AGENTS.md`. It gets `RETROSPECTIVE_PR`, `RETROSPECTIVE_LESSONS_FILE` and `RETROSPECTIVE_REPORT_FILE` (paths relative to the root) and a 10-minute limit. Everything it changes or creates goes into the same commit as the report and lessons, except files the repository's ignore rules exclude — a script that leaves stray files behind needs fixing. A non-zero exit, a timeout, changing the validated report or lessons, or committing on its own fails this retrospective: nothing is pushed, the temporary checkout is removed, and the usual retry applies (hourly, 3 attempts; each retry calls the model again). Its output tail is logged on success and kept in the failure reason. The checkout is fresh from the base branch, so untracked things such as `node_modules` are not there. **It runs with the daemon user's own permissions**: the retrospective's GitHub tokens (`GH_TOKEN` / `GITHUB_TOKEN`) are not passed on, but that is not isolation — a stored `gh` login or git credentials stay reachable, and a push made outside this checkout cannot be stopped. Configure trusted commands only.
 

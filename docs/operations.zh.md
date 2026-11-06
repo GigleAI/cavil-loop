@@ -1605,16 +1605,18 @@ rm ~/.config/cavil-loop/$KEY.conf
 <!-- retro-dir-recovery:begin -->
 ```bash
 (
-# Every step ends in "|| exit 1": nothing after a failed step runs.
+# Every step ends in "|| exit": nothing after a failed step runs.
 # 1) This project's state directory: replace <project> with the project's key, the
 #    directory name under ~/.local/state/cavil-loop/ (also the timer's instance name).
 STATE_DIR="$HOME/.local/state/cavil-loop/<project>"
 Q="$STATE_DIR/retrospectives"
 TIMER="cavil-loop-poll@$(basename "$STATE_DIR").timer"
-# 2) Stop this project's poller, then wait until no retrospective is running
-#    (holding the scan lock means none is).
+# 2) Stop this project's poller, then take the retrospective's scan lock and keep it
+#    until this block ends: a retrospective already running finishes first, and one
+#    started later (by a poll that was already under way) gives up while we hold it.
 systemctl --user stop "$TIMER" || exit 1
-flock "$Q/scan.lock" true || exit 1
+exec 9>>"$Q/scan.lock" || exit 1
+flock 9 || exit 1
 # 3) Keep the evidence: copy the start-time file and the scan record (copy only).
 ts=$(date -u +%Y%m%dT%H%M%SZ) || exit 1
 if [ -e "$Q/directory-lessons.json" ]; then cp -p "$Q/directory-lessons.json" "$Q/directory-lessons.json.bak-$ts" || exit 1; fi
@@ -1622,14 +1624,19 @@ cp -p "$Q/cursor.json" "$Q/cursor.json.bak-$ts" || exit 1
 # 4) Reset the start time: remove the start-time file only.
 rm -f "$Q/directory-lessons.json" || exit 1
 test ! -e "$Q/directory-lessons.json" || exit 1
-# 5) Start the poller again.
-systemctl --user start "$TIMER" || exit 1
-echo "reset done"
-) || echo "reset FAILED: stopped at the step that printed the error above; no later step ran"
+# 5) Release the lock, then start the poller again.
+exec 9>&- || exit 2
+systemctl --user start "$TIMER" || exit 2
+)
+case $? in
+0) echo "reset done" ;;
+2) echo "reset done, but the poller did NOT start again: run  systemctl --user start cavil-loop-poll@<project>.timer" ;;
+*) echo "reset FAILED: stopped at the step that printed the error above; no later step ran" ;;
+esac
 ```
 <!-- retro-dir-recovery:end -->
 
-每一步只在上一步成功后才执行。怎样算成功：整段打印 `reset done`，之后 `retrospective.log` 里下一行是 `directory lessons on: handling PRs merged at or after <时间>`，时间晚于这次重置。打印 `reset FAILED` 时，出错那一步之后的步骤都没执行：停止那一步失败，轮询保持原状；停止之后的步骤失败，轮询保持停止，时间文件和 `cursor.json` 都没动（备份失败不会删任何东西）。修好原因（磁盘、权限——时间文件读不出时也备份不了）后，把整段重新执行一遍。改名前的老安装，定时器叫 `coding-agent-poll@<项目>.timer`。重置救不回已经按旧时间写进去的目录经验：在主干上看经验文件的 `git log -p`，找那段时间的 `docs: learn from` 提交，手工删掉写错的条目（人工编辑就是下一轮的新基线）。
+每一步只在上一步成功后才执行。怎样算成功：整段打印 `reset done`，之后 `retrospective.log` 里下一行是 `directory lessons on: handling PRs merged at or after <时间>`，时间晚于这次重置。第 2 步拿到的复盘扫描锁一直持有到第 4 步结束，备份和重置期间不会有复盘在跑。三种结果：`reset done`——全部完成。`reset done, but the poller did NOT start again`——重置已经完成（时间文件已删、备份保留），只是重启失败：照打印出的 `systemctl --user start` 命令再启动一次。`reset FAILED`——出错那一步之后都没执行，重置没有发生：停止那一步失败，轮询保持原状；之后的步骤失败，轮询保持停止，时间文件和 `cursor.json` 都没动（备份失败不会删任何东西）。修好原因（磁盘、权限——时间文件读不出时也备份不了）后，把整段重新执行一遍。改名前的老安装，定时器叫 `coding-agent-poll@<项目>.timer`。重置救不回已经按旧时间写进去的目录经验：在主干上看经验文件的 `git log -p`，找那段时间的 `docs: learn from` 提交，手工删掉写错的条目（人工编辑就是下一轮的新基线）。
 
 **复盘后执行的项目命令（可选，GitHub#152）。** `POST_RETROSPECTIVE_PROJECT_CMD`（留空 = 关闭）在复盘的临时 checkout 根目录用 `bash -c` 执行，时机是报告和经验文件校验通过并写好之后、提交之前——比如把目录经验排名后写进各层 `AGENTS.md` 的脚本。它拿到 `RETROSPECTIVE_PR`、`RETROSPECTIVE_LESSONS_FILE`、`RETROSPECTIVE_REPORT_FILE`（相对仓库根的路径），限时 10 分钟。它改动或新建的文件和报告、经验文件进**同一个提交**，仓库忽略规则排除的文件除外——脚本留下多余文件是脚本的 bug，要修。非零退出、超时、改了校验过的报告或经验文件、自己提交，都算本次复盘失败：什么都不推、临时 checkout 删掉，按原有规则重试（一小时一次、共 3 次；每次重试都会重新调模型）。成功时日志记下输出末尾，失败时输出末尾进失败原因。临时 checkout 是从主干新取的，没有 `node_modules` 这类没提交的东西。**它按运行 daemon 的本机用户权限执行**：复盘自己用的 GitHub 令牌（`GH_TOKEN` / `GITHUB_TOKEN`）不传给它，但这不是隔离——本机已有的 `gh` 登录、git 凭据它仍然用得到，它绕开这个 checkout 直接推送也拦不住。只配置可信命令。
 

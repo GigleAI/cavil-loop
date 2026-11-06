@@ -14,6 +14,7 @@ so the wrapper can rerun everything against a broken copy.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -214,6 +215,8 @@ class Sandbox(unittest.TestCase):
                'CODING_AGENT_CONFIG': str(cfg), 'FAKE_DIR': str(self.fake), 'FAKE_REPO': REPO,
                'RL_DIR': str(REPO_DIR / 'scripts'), 'PYTHONPATH': str(self.site), 'FAULTS': faults}
         rel = release or RELEASE
+        self.round_cmd = ['env', '-i'] + [f'{k}={v}' for k, v in env.items()] + \
+            ['bash', str(rel / 'scripts/post-merge-retrospective.sh')]
         proc = subprocess.run(['bash', str(rel / 'scripts/post-merge-retrospective.sh')], env=env,
                               capture_output=True, text=True, timeout=120)
         self.out = proc.stdout + proc.stderr
@@ -526,8 +529,9 @@ class Recovery(Sandbox):
         self.assertIn('directory lessons on: handling PRs merged at or after', self.out)
         self.assertEqual(self.read_job(95)['status'], 'skipped')
 
-    def run_script(self, fakes):
-        """Run the page's block with some commands replaced by failing fakes."""
+    def run_script(self, fakes, wrap_cp=None):
+        """Run the page's block with some commands replaced by failing fakes;
+        `wrap_cp`: a shell line run every time the block calls cp, before the real cp."""
         home_state = self.t / 'home/.local/state/cavil-loop'
         home_state.mkdir(parents=True, exist_ok=True)
         if not (home_state / 'proj').exists():
@@ -546,6 +550,9 @@ class Recovery(Sandbox):
                 continue
             (over / name).write_text('#!/bin/sh\necho "$0 failed" >&2\nexit 7\n')
             (over / name).chmod(0o755)
+        if wrap_cp:
+            (over / 'cp').write_text(f'#!/usr/bin/env bash\n{wrap_cp}\nexec /bin/cp "$@"\n')
+            (over / 'cp').chmod(0o755)
         log = self.fake / 'systemctl.log'
         if log.exists():
             log.unlink()
@@ -566,6 +573,41 @@ class Recovery(Sandbox):
                 calls = (self.fake / 'systemctl.log').read_text().splitlines()
                 self.assertEqual(calls, ['--user stop cavil-loop-poll@proj.timer'])
         self.assertEqual(self.run_script([]).stdout.strip(), 'reset done')
+
+    def test_12f_重启失败_明说重置已完成_再启动一次即可(self):
+        (self.queue / 'directory-lessons.json').write_text(json.dumps({'state': 'on', 'since': OLD}) + '\n')
+        proc = self.run_script(['systemctl:start'])
+        self.assertIn('reset done, but the poller did NOT start again', proc.stdout, proc.stdout + proc.stderr)
+        self.assertIn('systemctl --user start cavil-loop-poll@proj.timer', proc.stdout)
+        self.assertNotIn('reset FAILED', proc.stdout)
+        self.assertIsNone(self.marker())
+        self.assertEqual(len(list(self.queue.glob('directory-lessons.json.bak-*'))), 1)
+        self.assertEqual((self.fake / 'systemctl.log').read_text().splitlines(),
+                         ['--user stop cavil-loop-poll@proj.timer', '--user start cavil-loop-poll@proj.timer'])
+        # Doing what it says: the next round records a new start time.
+        self.prs = {'98': MID}
+        self.job(98, MID)
+        self.assertEqual(self.run_round(), 0, self.out)
+        self.assertGreater(self.marker()['since'], MID)
+
+    def test_12g_备份和重置期间复盘进不来(self):
+        # A retrospective that would really run (a due job merged after the start time).
+        (self.queue / 'directory-lessons.json').write_text(json.dumps({'state': 'on', 'since': OLD}) + '\n')
+        self.prs = {'99': NEW}
+        self.job(99, NEW)
+        self.assertEqual(self.run_round(), 0, self.out)       # builds round_cmd; job 99 is done now
+        self.assertEqual(self.read_job(99)['status'], 'done')
+        self.job(99, NEW)                                     # queue it again
+        calls = len(self.model_calls())
+        cursor = (self.queue / 'cursor.json').read_bytes()
+        job = (self.queue / 'pr-99.json').read_bytes()
+        cmd = ' '.join(shlex.quote(c) for c in self.round_cmd)
+        proc = self.run_script([], wrap_cp=f'{cmd} >> {self.fake}/during.log 2>&1; echo $? >> {self.fake}/during.rc')
+        self.assertEqual(proc.stdout.strip(), 'reset done', proc.stdout + proc.stderr)
+        self.assertEqual((self.fake / 'during.rc').read_text().split(), ['0', '0'])   # really ran, twice
+        self.assertEqual(len(self.model_calls()), calls)
+        self.assertEqual((self.queue / 'cursor.json').read_bytes(), cursor)
+        self.assertEqual((self.queue / 'pr-99.json').read_bytes(), job)
 
 
 class ReviewRound1(Sandbox):
