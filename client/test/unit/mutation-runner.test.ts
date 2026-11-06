@@ -129,3 +129,22 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner',
     expect(r.out).toContain('没变红');
   }, 120_000);
 });
+
+// Runs in the default run and inside a negative-control copy (its entry breaks the baseline's
+// check), but not inside the baseline's own run: there it would start a second baseline.
+describe.skipIf(process.env.CLIENT_MUT_BASELINE === '1')('negative-control runner: the baseline', () => {
+  // GitHub#178 review round 1: #171 renamed a test and its entry kept naming the old title. The
+  // baseline stops on that (for the real list it does so at the start of every real run). Here the
+  // baseline runs one small file only, so the default run does not carry a second whole suite.
+  it('the baseline names every entry whose named test no longer exists', () => {
+    const env = { CLIENT_MUT_STATE: tempDir(), CLIENT_MUT_BASELINE_FILES: 'test/unit/board.test.ts' };
+    const ok = run(['--baseline'], { ...env, CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]) });
+    expect(ok.out).toContain('✅ 基线');
+    expect(ok.status).toBe(0);
+    const stale = { ...OFFLINE_ENTRY, what: '点名的测试已改名', expect: ['a test title nobody has any more'] };
+    const base = run(['--baseline'], { ...env, CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY, stale]) });
+    expect(base.out).toContain('a test title nobody has any more');
+    expect(base.out).not.toContain('✅ 基线');
+    expect(base.status).toBe(1);
+  }, 240_000);
+});

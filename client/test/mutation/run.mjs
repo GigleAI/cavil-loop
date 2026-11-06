@@ -34,14 +34,15 @@
 // those tests on an unmodified copy.
 //
 // Env for the runner's own tests: CLIENT_MUT_VITEST (vitest entry to run),
-// CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS).
+// CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS), CLIENT_MUT_BASELINE_FILES
+// (comma-separated test files the baseline runs instead of the whole suite).
 
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
-import { changedFiles, baseEntries, selectEntries, editedFiles } from './select.mjs';
+import { changedFiles, baseEntries, selectEntries, editedFiles, unmappedNames } from './select.mjs';
 import { MUTATIONS } from './mutations.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -123,14 +124,14 @@ async function runVitest(work, m = null, files = []) {
   return { ...(await runVitestWith(work, be.bin, files)), reused: !!be.reused };
 }
 
-function runVitestWith(work, harness, files = []) {
+function runVitestWith(work, harness, files = [], extraEnv = {}) {
   const out = join(work, 'vitest-report.json');
   return new Promise((resolve) => {
     let child;
     try {
       child = spawn(process.execPath, [VITEST, 'run', '--reporter=json', `--outputFile=${out}`, ...files], {
         cwd: work,
-        env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_REPO: root, CAVIL_HARNESS: harness },
+        env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_REPO: process.env.CLIENT_MUT_REPO ?? root, CAVIL_HARNESS: harness, ...extraEnv },
         stdio: ['ignore', 'ignore', 'pipe'],
         detached: true, // own process group: a timeout kills vitest's workers too
       });
@@ -253,7 +254,9 @@ async function baseline() {
   try {
     const be = await buildBackend(work);
     if (be.broken) return fail(`基线没跑成：${be.broken}`);
-    const r = await runVitestWith(work, be.bin);
+    // CLIENT_MUT_BASELINE_FILES: the runner's own tests run a baseline on a few files only
+    const only = (process.env.CLIENT_MUT_BASELINE_FILES ?? '').split(',').filter(Boolean);
+    const r = await runVitestWith(work, be.bin, only, { CLIENT_MUT_BASELINE: '1' });
     if (r.kind === 'broken') return fail(`基线没跑成：${r.why}`);
     const all = results(r.report, work);
     // the runner's own self-tests skip themselves inside child runs; anything else must pass
@@ -267,6 +270,13 @@ async function baseline() {
       // entries that leave src-tauri/ alone do not build it again
       writeFileSync(join(STATE, 'unit-tests.json'), JSON.stringify(all.map(({ name, file }) => ({ name, file }))));
       cpSync(be.bin, join(STATE, 'harness'));
+    }
+    // every test an entry names must still exist (GitHub#178 review round 1: a test renamed in #171
+    // left its entry naming nothing; that entry could never go red "as expected")
+    const map = all.map(({ name, file }) => ({ name, file }));
+    const missing = unmappedNames(list, { unit: map, e2e: e2eTests() });
+    if (missing.length) {
+      return fail(`清单里有项点名的测试已经不存在（改名或删掉后没同步清单）：${missing.map((x) => `第 ${x.i} 项「${x.what}」点名「${x.name}」`).join('；')}`);
     }
     console.log(`✅ 基线：未改动的副本 ${passed} 条全过（另 ${all.length - passed} 条是负对照执行器的自检，子进程里不跑）`);
     return 0;

@@ -464,8 +464,11 @@ test('GitHub#177: merging in the detail shows the issue it closes closed at once
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('action-result')).toContainText('已合并');
   // at once, with no sync round: the PR merged and the issue it closes closed, both still in their old columns
-  await expect(card(page, 139).getByTestId('card-state')).toHaveClass(/\bclosed\b/);
-  await expect(card(page, 146).getByTestId('card-state')).toHaveClass(/\bmerged\b/);
+  // (state shown by its words and its colour role since #174: a closed-as-completed issue and a merged PR are both "done")
+  await expect(card(page, 139).getByTestId('card-state')).toContainText('已关闭');
+  await expect(card(page, 139).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
+  await expect(card(page, 146).getByTestId('card-state')).toContainText('已合并');
+  await expect(card(page, 146).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
   expect(rounds()).toBe(before);
   await expect(inColumn('In progress', 139)).toBeVisible();
   await shot(page, '27-merged-issue-closed');

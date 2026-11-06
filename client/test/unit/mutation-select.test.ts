@@ -47,6 +47,9 @@ function repo(opts: { withList?: boolean } = {}) {
     'src/z.ts': 'export const z = 1;\n',
     'src-tauri/x.rs': 'fn x() {}\n',
     'src-tauri/src/main.rs': 'fn main() {}\n',
+    'test/fake-github/server.ts': 'export const fake = 1;\n',
+    'test/fixtures/recorded.json': '{}\n',
+    'README.md': 'client\n',
     'test/unit/a.test.ts': "it('alpha works', () => expect(1).toBe(1));\n",
     'test/unit/b.test.ts': "it('beta works', () => expect(1).toBe(1));\n",
     'test/unit/c.test.ts': "it('gamma works', () => expect(1).toBe(1));\n",
@@ -59,7 +62,7 @@ function repo(opts: { withList?: boolean } = {}) {
   mkdirSync(join(client, 'test', 'mutation'), { recursive: true });
   for (const f of ['run.mjs', 'run.sh', 'select.mjs']) cpSync(join(root, 'test', 'mutation', f), join(client, 'test', 'mutation', f));
   mkdirSync(join(client, 'test', 'tauri'), { recursive: true });
-  cpSync(join(root, 'test', 'tauri', 'mutations.mjs'), join(client, 'test', 'tauri', 'mutations.mjs'));
+  for (const f of ['mutations.mjs', 'mutations.sh']) cpSync(join(root, 'test', 'tauri', f), join(client, 'test', 'tauri', f));
   mkdirSync(join(top, 'tests', 'lib'), { recursive: true });
   cpSync(repoLib, join(top, 'tests', 'lib', 'mutation.sh'));
   if (opts.withList !== false) writeFileSync(join(client, 'test', 'mutation', 'mutations.mjs'), listModule(ENTRIES));
@@ -218,5 +221,34 @@ describe('negative controls related to a change (--changed)', () => {
     const unknown = related(r, { CLIENT_MUT_BASE: 'no-such-ref' });
     expect(unknown.status).toBe(2);
     expect(unknown.stdout).toContain('判断不了');
+  });
+
+  // GitHub#178 review round 1: the real-window suite starts ../fake-github/server, which reads
+  // test/fixtures; a change there can change what those entries catch
+  it('the real-app set: the fake GitHub and fixtures it loads count; through the real script, unrelated = nothing ran', () => {
+    const related = (r: ReturnType<typeof repo>) =>
+      spawnSync(process.execPath, [join(r.client, 'test', 'tauri', 'mutations.mjs'), '--related'], {
+        cwd: r.client,
+        encoding: 'utf8',
+        env: { ...process.env, CLIENT_MUT_BASE: r.base },
+      });
+    const fake = repo();
+    edit(fake, 'test/fake-github/server.ts', 'export const fake = 2;\n');
+    const f = related(fake);
+    expect(f.stdout).toContain('test/fake-github/server.ts');
+    expect(f.status).toBe(0);
+    const fx = repo();
+    edit(fx, 'test/fixtures/recorded.json', '{"x":1}\n');
+    expect(related(fx).status).toBe(0);
+
+    const readme = repo();
+    edit(readme, 'README.md', 'client, changed\n');
+    const p = spawnSync('bash', [join(readme.client, 'test', 'tauri', 'mutations.sh'), '--changed'], {
+      cwd: readme.client,
+      encoding: 'utf8',
+      env: { ...process.env, MUTATION: '1', CLIENT_MUT_BASE: readme.base },
+    });
+    expect(`${p.stdout}${p.stderr}`).toContain('本次改动没有相关项');
+    expect(p.status).toBe(0);
   });
 });

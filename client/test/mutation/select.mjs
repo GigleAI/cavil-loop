@@ -36,14 +36,22 @@ export function isSharedForUnit(f) {
 /** Repository paths outside client/ that both runners depend on. */
 export const SHARED_OUTSIDE = ['tests/lib/mutation.sh'];
 
-/** Client-relative paths whose change makes the real-app entries related (they all break src-tauri/src/main.rs). */
+/**
+ * What the real-app entries (test/tauri/mutations.mjs, they all break src-tauri/src/main.rs)
+ * depend on, enumerated from what test/tauri/real-window.spec.ts actually loads (GitHub#178
+ * review round 1): the app shell and its config, the real-window suite itself, the fake
+ * GitHub it starts (../fake-github/server) and the recorded fixtures that server reads,
+ * the window build script, and the selection rules.
+ */
+export const APP_DEP_PREFIXES = ['test/tauri/', 'test/fake-github/', 'test/fixtures/', 'src-tauri/src/', 'src-tauri/capabilities/'];
+export const APP_DEP_FILES = [
+  'src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml', 'playwright.tauri.config.ts', 'package.json', 'package-lock.json',
+  'scripts/build.mjs', 'test/mutation/select.mjs',
+];
+
+/** Client-relative paths whose change makes the real-app entries related. */
 export function isRelatedForApp(f) {
-  return (
-    f.startsWith('test/tauri/') ||
-    f.startsWith('src-tauri/src/') ||
-    f.startsWith('src-tauri/capabilities/') ||
-    ['src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml', 'playwright.tauri.config.ts', 'package.json', 'package-lock.json', 'test/mutation/select.mjs'].includes(f)
-  );
+  return APP_DEP_PREFIXES.some((p) => f.startsWith(p)) || APP_DEP_FILES.includes(f);
 }
 
 function git(root, args) {
@@ -112,6 +120,19 @@ export async function baseEntries(root, changes, path = 'test/mutation/mutations
   }
 }
 
+/**
+ * Entries naming a test that exists nowhere (a renamed test leaves its entry pointing at
+ * nothing). [{ i, what, name }]; the baseline stops on any, and selection cannot decide without them.
+ */
+export function unmappedNames(entries, tests) {
+  const out = [];
+  for (const [i, m] of entries.entries()) {
+    const known = m.runner === 'e2e' ? tests.e2e : tests.unit;
+    for (const name of m.expect) if (!known.some((t) => t.name.includes(name))) out.push({ i, what: m.what, name });
+  }
+  return out;
+}
+
 /** Client-relative files an entry edits. */
 export const editedFiles = (m) => (m.edits ? m.edits.map((e) => e.file) : [m.file]);
 
@@ -129,6 +150,8 @@ export function selectEntries({ entries, base, changes, tests }) {
   const all = entries.map((_, i) => i);
   if (shared.length) return { ok: true, indices: all, everything: `测试公共部分改了（${shared.join('、')}）`, reasons: {} };
   if (base === null) return { ok: true, indices: all, everything: '主干上还没有单独的负对照清单文件，每项都算新加', reasons: {} };
+  const missing = unmappedNames(entries, tests);
+  if (missing.length) return { ok: false, why: `找不到第 ${missing[0].i} 项点名的测试「${missing[0].name}」在哪个文件（${missing[0].what}）` };
   const before = new Map(base.map((m) => [m.what, JSON.stringify(m)]));
   const indices = [];
   const reasons = {};
@@ -140,7 +163,6 @@ export function selectEntries({ entries, base, changes, tests }) {
     const known = m.runner === 'e2e' ? tests.e2e : tests.unit;
     for (const name of m.expect) {
       const files = [...new Set(known.filter((t) => t.name.includes(name)).map((t) => t.file))];
-      if (!files.length) return { ok: false, why: `找不到第 ${i} 项点名的测试「${name}」在哪个文件（${m.what}）` };
       const hit = files.filter((f) => changed.has(f));
       if (hit.length) why.push(`点名的测试所在文件改了（${hit.join('、')}）`);
     }
