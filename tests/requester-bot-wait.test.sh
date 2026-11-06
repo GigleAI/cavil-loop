@@ -134,9 +134,27 @@ CONF
     chk "到达性 · #51（从没等过）照常进派工队列" "$(queued issue 51)" yes
     chk "到达性 · 这一轮确实读了 #50 的标签记录" "$([ "$(n_calls "$R/issues/50/events")" -gt 0 ] && echo yes || echo no)" yes
     tick
-    chk "第二轮没变化：不重读 #50 的标签记录、仍不派、不重复记日志" \
-        "$(n_calls "$R/issues/50/events")/$(queued issue 50)/$(log_has 'greedy：issue #50 不续工')" "0/no/0"
+    chk "第二轮没变化：照样现读 #50 的标签记录（结论不缓存）、仍不派、不重复记日志" \
+        "$([ "$(n_calls "$R/issues/50/events")" -gt 0 ] && echo yes || echo no)/$(queued issue 50)/$(log_has 'greedy：issue #50 不续工')" "yes/no/0"
     chk "到达性 · 第二轮仍派 #51" "$(queued issue 51)" yes
+    # 代码复审第 1 轮的两个反例：结论不能跨「同一秒的新标签事件」「标签配置变了」沿用
+    # ① #51 刚判过放行，同一秒（条目 updated_at 不变）里又被挂上等待标签、又被提前摘掉
+    wait_cycle 51
+    jset events.json '.["51"] |= map(.created_at = "2026-01-01T00:00:00Z")'
+    tick
+    chk "同一秒新增一次等待交接、条目更新时间没变 → 不派（不沿用上一轮的放行）" "$(queued issue 51)" no
+    # ② 只改本机配置的等待标签名，条目本身不变：#50 在新标签下从没等过
+    printf '\nLABEL_PENDING_REQUESTER_BOT="pending/new"\n' >> "$CONF"
+    tick
+    chk "等待标签换了名字、条目没变 → 按新配置重判，#50 放行（不沿用旧标签下的拦住）" "$(queued issue 50)" yes
+    # ③ 触发标签的配置变了：等待之后打过的 go/now 原来不算派工标签，配成追加的触发标签后就算
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    mkissue 57 ""; wait_cycle 57; ev 57 labeled go/now maint; ev 57 unlabeled go/now loop-bot
+    tick
+    chk "等待之后只打过 go/now（还不是派工标签）→ 不派" "$(queued issue 57)" no
+    printf '\nLABEL_PENDING_AGENT_EXTRA="go/now"\n' >> "$CONF"
+    tick
+    chk "把 go/now 配成派工标签、条目没变 → 按新配置重判，派" "$(queued issue 57)" yes
 
     section "【1b】跨轮：第 1 轮挂着等待标签（本来就挡），两轮之间被摘掉 → 第 2 轮不派；打了派工标签 → 派；第二次等待 → 又不派"
     fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
@@ -218,6 +236,15 @@ Closes #7" "autopilot"
     chk "  → 日志写明原因" "$(log_has '托管：PR #8 不接手——')" 1
     tick
     chk "第二轮没变化：仍不接手、不重复记日志" "$(took_none)/$(log_has '托管：PR #8 不接手——')" "no/0"
+    printf '\nLABEL_PENDING_REQUESTER_BOT="pending/new"\n' >> "$CONF"
+    tick
+    chk "等待标签换了名字、PR 没变 → 按新配置重判、接手（不沿用上一轮的不接手）" "$(took_none)" yes
+    fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
+    mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+    ev 8 labeled autopilot maint; wait_cycle 8
+    tick
     trigger_cycle 8 maint; bump 8 1
     tick
     chk "之后有人打过 pending/agent → 接手（翻 pending/review、留说明）" "$(took_none)" yes
@@ -305,18 +332,21 @@ REAL_PASS=$pass; REAL_FAIL=$fail
 
 section "【9】负对照（改坏一处，至少一条检查必须变红）"
 mut_fail=0; mut_ran=0
-mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后>
+mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后> [<原文> <替换后> …]：每对原文都必须找得到
     local name="$1" file="$2" M="$SANDBOX/mut-$1"
+    shift 2
     mutation_gate || return 0
     mut_ran=$((mut_ran + 1))
     rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
-    if ! python3 - "$M/scripts/$file" "$3" "$4" <<'PY'
+    if ! python3 - "$M/scripts/$file" "$@" <<'PY'
 import sys
-p, old, new = sys.argv[1:4]
+p, pairs = sys.argv[1], sys.argv[2:]
 s = open(p).read()
-if s.count(old) < 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new, 1))
+for old, new in zip(pairs[0::2], pairs[1::2]):
+    if s.count(old) < 1:
+        sys.exit(1)
+    s = s.replace(old, new, 1)
+open(p, "w").write(s)
 PY
     then
         echo "  ❌ 负对照 $name：要改的原文找不到（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
@@ -328,47 +358,62 @@ PY
     else echo "  ❌ 负对照 $name：改坏后整套检查仍全绿（测试分不出这个错误实现）"; mut_fail=$((mut_fail + 1)); fi
 }
 # 三个调用点各拆一个
-mutate site-greedy agent-poll.sh '        rc=0; requester_bot_wait_hold "$num" "$updated" || rc=$?
+mutate site-greedy agent-poll.sh '        rc=0; requester_bot_wait_hold "$num" || rc=$?
         case "$rc" in
-            0) [ -n "$REQUESTER_BOT_WAIT_CACHED" ] || log "greedy' '        rc=1
+            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy' '        rc=1
         case "$rc" in
-            0) [ -n "$REQUESTER_BOT_WAIT_CACHED" ] || log "greedy'
-mutate site-autopilot-rows agent-poll.sh '                rc=0; requester_bot_wait_hold "$num" "$updated" || rc=$?' '                rc=1'
+            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy'
+mutate site-autopilot-rows agent-poll.sh '                rc=0; requester_bot_wait_hold "$num" || rc=$?' '                rc=1'
 mutate site-takeover _lib.sh '    if [ "$AT_MODE" = none ]; then
         rc=0; requester_bot_wait_hold' '    if false; then
         rc=0; requester_bot_wait_hold'
 # 判据本身
-mutate no-trigger-release _lib.sh '                v=free; break' '                break'
+mutate no-trigger-release _lib.sh '            return 1
+        fi
+    done' '            :
+        fi
+    done'
 mutate order-by-position _lib.sh "sorted=\$(printf '%s\n' \"\$rows\" | awk -F'\t' 'NF' | sort -t\$'\t' -k1,1n)" "sorted=\$(printf '%s\n' \"\$rows\" | awk -F'\t' 'NF')"
 mutate unknown-is-free _lib.sh '        REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; return 2' '        REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; return 1'
 mutate missing-id-ok _lib.sh '        REQUESTER_BOT_WAIT_REASON="#$n 的标签记录缺事件编号"; return 2' '        :'
-mutate cache-ignores-update _lib.sh "if .u == \$u then (.v // \"\") else \"\" end" "(.v // \"\")"
-mutate cache-unknown _lib.sh '        REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; return 2' '        REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; [ -n "$upd" ] && printf '"'"'{"%s":{"u":"%s","v":"hold"}}'"'"' "$n" "$upd" > "$cf"; return 2'
-mutate enabled-gate-missing _lib.sh '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_CACHED=""
-    requester_bot_enabled || return 1' '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_CACHED=""'
+# 缓存（代码复审第 1 轮）：放回「判过放行就一直放行」「判过拦住就一直拦住」两种跨轮缓存，都必须变红
+mutate free-cached _lib.sh '    requester_bot_enabled || return 1
+    if ! rows=' '    requester_bot_enabled || return 1
+    grep -qx "$n" "$STATE_DIR/free-cache" 2>/dev/null && return 1
+    if ! rows=' '    [ -n "$e" ] || return 1' '    [ -n "$e" ] || { echo "$n" >> "$STATE_DIR/free-cache"; return 1; }'
+mutate hold-cached _lib.sh '    requester_bot_enabled || return 1
+    if ! rows=' '    requester_bot_enabled || return 1
+    grep -qx "$n" "$STATE_DIR/hold-cache" 2>/dev/null && return 0
+    if ! rows=' '    # 日志去重（不影响上面的结论）' '    echo "$n" >> "$STATE_DIR/hold-cache"'
+mutate takeover-hold-cached _lib.sh '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+                return 0' '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"'
+mutate log-dedup-missing _lib.sh '        REQUESTER_BOT_WAIT_LOGGED=1' '        :'
+mutate enabled-gate-missing _lib.sh '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
+    requester_bot_enabled || return 1' '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""'
 # 提示词
 mutate prompt-section-missing _lib.sh '                autopilot_requester_bot_section' '                :'
 mutate prompt-report-rule-swapped _lib.sh '    if requester_bot_report_first; then
         rule="本项目要求**先向机器人汇报结果**' '    if ! requester_bot_report_first; then
         rule="本项目要求**先向机器人汇报结果**'
-# 改动前的整份实现（merge-base 的 scripts/，配本版 prompts/）：必须变红
-mutate_base() {
-    local M="$SANDBOX/mut-base" rev
+# 整份换回旧实现（配本版 prompts/）：必须变红。merge-base = 改动前；83d29bf = 代码复审第 1 轮打回的那一版（按 updated_at 缓存结论）
+mutate_rev() {   # <名字> <提交（空 = merge-base）>
+    local name="$1" rev="$2" M="$SANDBOX/mut-rev-$1"
     mutation_gate || return 0
     mut_ran=$((mut_ran + 1))
-    rev=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null) || rev=""
+    [ -n "$rev" ] || rev=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null) || rev=""
     rm -rf "$M"; mkdir -p "$M"
     if [ -z "$rev" ] || ! git -C "$REPO_DIR" archive "$rev" scripts | tar -x -C "$M"; then
-        echo "  ❌ 负对照 merge-base：取不到改动前的实现（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
+        echo "  ❌ 负对照 $name：取不到 ${rev:-merge-base} 的实现（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
     fi
     cp -r "$REPO_DIR/prompts" "$M/"
     pass=0; fail=0; QUIET=1
     run_scenarios "$M/scripts"; prompts_check "$M"
     QUIET=0
-    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照 merge-base：$fail 条检查变红"
-    else echo "  ❌ 负对照 merge-base：改动前的实现整套检查仍全绿"; mut_fail=$((mut_fail + 1)); fi
+    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照 $name：$fail 条检查变红"
+    else echo "  ❌ 负对照 $name：旧实现整套检查仍全绿"; mut_fail=$((mut_fail + 1)); fi
 }
-mutate_base
+mutate_rev merge-base ""
+mutate_rev prev-83d29bf 83d29bf112d021fc965712be7548f5e9e8f31715
 pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo

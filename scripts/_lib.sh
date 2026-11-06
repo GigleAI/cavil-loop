@@ -258,23 +258,17 @@ labels_have_requester_bot_wait() {
 # 谁摘的等待标签不看——机器人、维护者、worker 摘的都要等派工标签。
 # 0 = 拦住（REQUESTER_BOT_WAIT_REASON）；1 = 放行；2 = 判不了（读不到 / 事件缺编号：本轮不续工，下轮再判）
 # 功能关着（requester_bot_enabled 不成立）→ 1，一次 GitHub 调用都不发。
-# 结论按条目的 updated_at 缓存在 $STATE_DIR/requester-bot-wait.json（打 / 摘标签都会刷新 updated_at，
-# 所以缓存命中时结论不会过期）；只缓存判得出的结论，判不了不缓存。缓存是本机的，丢了只是重读一次。
-# REQUESTER_BOT_WAIT_CACHED=1 = 这次结论来自缓存（调用方据此只在结论第一次得出时记日志）。
-REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_CACHED=""
-requester_bot_wait_hold() {   # <编号> [<updated_at>]
-    local n="$1" upd="${2:-}" cf rows sorted e v tmp L
-    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_CACHED=""
+# **不缓存结论**（代码复审第 1 轮）：GitHub 的 updated_at 只到秒，同一秒里又挂上又摘掉等待标签时它不变，
+# 按它缓存的「放行」会放过新的一次等待；改了等待标签 / 触发标签的配置，旧结论也会被沿用。所以每次都现读。
+# 只对「没有任何流程标签、正要自动续工」的条目读（明确派工、挡工标签都不走到这里），被拦住的条目每轮读一次。
+# 日志去重另记在 $STATE_DIR/requester-bot-wait-log.json（编号 → 「等待标签名|那次挂上的事件编号」）：只决定
+# 要不要再记一行日志，**从不参与判断**；文件坏了、丢了只会多记几行。
+# REQUESTER_BOT_WAIT_LOGGED=1 = 这一次拦住的原因（同一个等待标签、同一次挂上）已经记过日志。
+REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
+requester_bot_wait_hold() {   # <编号>
+    local n="$1" rows sorted e L lf key tmp
+    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
     requester_bot_enabled || return 1
-    cf="$STATE_DIR/requester-bot-wait.json"
-    if [ -n "$upd" ] && [ -s "$cf" ]; then
-        v=$(jq -r --arg n "$n" --arg u "$upd" '(.[$n] // {}) | if .u == $u then (.v // "") else "" end' "$cf" 2>/dev/null) || v=""
-        case "$v" in
-            hold) REQUESTER_BOT_WAIT_CACHED=1
-                  REQUESTER_BOT_WAIT_REASON="#$n 最近一次挂上等待标签 $LABEL_PENDING_REQUESTER_BOT 之后，没人打过派工标签（等待标签已被摘掉）"; return 0 ;;
-            free) REQUESTER_BOT_WAIT_CACHED=1; return 1 ;;
-        esac
-    fi
     if ! rows=$(gh api --paginate "repos/$REPO/issues/$n/events" \
             --jq '.[] | select(.event == "labeled") | [(.id // "" | tostring), (.label.name // "")] | @tsv' 2>/dev/null); then
         REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; return 2
@@ -287,29 +281,26 @@ requester_bot_wait_hold() {   # <编号> [<updated_at>]
     # 排序在拿全所有页之后做（--paginate 下 --jq 逐页执行）；排序和挑事件分两步，退出码各自查
     sorted=$(printf '%s\n' "$rows" | awk -F'\t' 'NF' | sort -t$'\t' -k1,1n) || { REQUESTER_BOT_WAIT_REASON="#$n 的标签记录排不了序"; return 2; }
     e=$(printf '%s\n' "$sorted" | awk -F'\t' -v W="$LABEL_PENDING_REQUESTER_BOT" '$2 == W { e = $1 } END { print e }')
-    v=hold
-    if [ -z "$e" ]; then
-        v=free
+    [ -n "$e" ] || return 1
+    for L in "${TRIGGER_LABELS_ALL[@]}"; do
+        if printf '%s\n' "$sorted" | awk -F'\t' -v E="$e" -v T="$L" '($1 + 0) > (E + 0) && $2 == T { f = 1 } END { exit !f }'; then
+            return 1
+        fi
+    done
+    REQUESTER_BOT_WAIT_REASON="#$n 最近一次挂上等待标签 $LABEL_PENDING_REQUESTER_BOT 之后，没人打过派工标签（等待标签已被摘掉）"
+    # 日志去重（不影响上面的结论）
+    lf="$STATE_DIR/requester-bot-wait-log.json"; key="$LABEL_PENDING_REQUESTER_BOT|$e"
+    if [ "$(jq -r --arg n "$n" '.[$n] // ""' "$lf" 2>/dev/null)" = "$key" ]; then
+        REQUESTER_BOT_WAIT_LOGGED=1
     else
-        for L in "${TRIGGER_LABELS_ALL[@]}"; do
-            if printf '%s\n' "$sorted" | awk -F'\t' -v E="$e" -v T="$L" '($1 + 0) > (E + 0) && $2 == T { f = 1 } END { exit !f }'; then
-                v=free; break
-            fi
-        done
-    fi
-    if [ -n "$upd" ]; then
-        tmp=$(mktemp "$cf.XXXXXX" 2>/dev/null) || tmp=""
+        tmp=$(mktemp "$lf.XXXXXX" 2>/dev/null) || tmp=""
         if [ -n "$tmp" ]; then
-            { [ -s "$cf" ] && cat "$cf" || echo '{}'; } \
-                | jq --arg n "$n" --arg u "$upd" --arg v "$v" '(if type == "object" then . else {} end) | .[$n] = {u: $u, v: $v}' \
-                > "$tmp" 2>/dev/null && mv "$tmp" "$cf" || rm -f "$tmp"
+            { [ -s "$lf" ] && cat "$lf" || echo '{}'; } \
+                | jq --arg n "$n" --arg k "$key" '(if type == "object" then . else {} end) | .[$n] = $k' \
+                > "$tmp" 2>/dev/null && mv "$tmp" "$lf" || rm -f "$tmp"
         fi
     fi
-    if [ "$v" = hold ]; then
-        REQUESTER_BOT_WAIT_REASON="#$n 最近一次挂上等待标签 $LABEL_PENDING_REQUESTER_BOT 之后，没人打过派工标签（等待标签已被摘掉）"
-        return 0
-    fi
-    return 1
+    return 0
 }
 
 # ── 等前置标签（GitHub#157，可选，默认关闭）──
@@ -4535,7 +4526,7 @@ autopilot_takeover_permit() {   # <PR 编号>
     # 一个流程标签都没有、自己挂着托管标签：接手 = 自动续工。等待标签被提前摘掉、之后没人打派工标签的
     # 不接手（GitHub#162）；判不了本轮不接手
     if [ "$AT_MODE" = none ]; then
-        rc=0; requester_bot_wait_hold "$pr" "$(printf '%s' "$pj" | jq -r '.updated_at // ""')" || rc=$?
+        rc=0; requester_bot_wait_hold "$pr" || rc=$?
         case "$rc" in
             0) AT_V=skip; AT_WHY=requester-wait; return 0 ;;
             2) AT_REASON="$REQUESTER_BOT_WAIT_REASON"; return 0 ;;
@@ -4616,7 +4607,12 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
     case "$AT_V" in skip|deny) autopilot_takeover_reset "$sf" "$pr" ;; esac
     case "$AT_V" in
         skip)
-            [ "$AT_WHY" != requester-wait ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+            # 等待被提前摘掉而不接手的不记进接手缓存：缓存按 PR 的 updated_at（只到秒）认，同一秒里的新标签
+            # 事件、改了标签配置都会被它盖住（代码复审第 1 轮）。每轮重判，日志只在原因变了时记
+            if [ "$AT_WHY" = requester-wait ]; then
+                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+                return 0
+            fi
             autopilot_state_set "$sf" '.takeover[$p] = $k' --arg p "$pr" --arg k "$key" || true
             return 0 ;;
         deny)

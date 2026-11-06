@@ -574,9 +574,9 @@ collect_queue_rows_greedy() {
         fi
         # 没有任何挡工标签 = 自动续工。等外部需求机器人期间等待标签被提前摘掉、之后没人打派工标签的
         # 不续工（GitHub#162，requester_bot_wait_hold）；判不了本轮也不续工
-        rc=0; requester_bot_wait_hold "$num" "$updated" || rc=$?
+        rc=0; requester_bot_wait_hold "$num" || rc=$?
         case "$rc" in
-            0) [ -n "$REQUESTER_BOT_WAIT_CACHED" ] || log "greedy：${kind} #${num} 不续工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy：${kind} #${num} 不续工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
                GREEDY_SKIPPED+=" ${kind}#${num}(等待已摘、无派工标签)"
                continue ;;
             2) log "greedy：${kind} #${num} 本轮不续工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
@@ -649,9 +649,9 @@ collect_autopilot_rows() {
         case "$rc" in
             0)
                 # 只挂托管标签 = 自动开工。等待标签被提前摘掉、之后没人打派工标签的不开工（GitHub#162）
-                rc=0; requester_bot_wait_hold "$num" "$updated" || rc=$?
+                rc=0; requester_bot_wait_hold "$num" || rc=$?
                 case "$rc" in
-                    0) [ -n "$REQUESTER_BOT_WAIT_CACHED" ] || log "托管：issue #$num 不自动开工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+                    0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：issue #$num 不自动开工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
                        continue ;;
                     2) log "托管：issue #$num 本轮不自动开工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
                        continue ;;
