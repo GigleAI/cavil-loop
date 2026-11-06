@@ -689,10 +689,17 @@ RETROSPECTIVE_MODEL="sonnet"
 # up after 3 attempts). An old-format lessons file is skipped without a model
 # call until the project migrates it. Format: scripts/retrospective_lessons.py
 RETROSPECTIVE_PROMOTION="auto"
-# Optional 目录经验 (directory lessons) section: a project adds the heading
-# `## 目录经验` by hand at the end of its lessons.md to keep pitfalls that only bite
-# in one part of the code; every sighting there names its directories, it never
-# promotes, and dispatch prompts leave it out. No config switch — the heading is it.
+# 目录经验 (directory lessons, GitHub#152 / #168): pitfalls that only bite in one part
+# of the code, kept in a `## 目录经验` section at the end of lessons.md; every sighting
+# names its directories, it never promotes, and dispatch prompts leave it out.
+#   true  (default) = retrospect only PRs merged at or after the moment this switch took
+#           effect on this machine; older PRs still waiting in the queue are marked
+#           `skipped` and never retrospected (no report, not counted). The handled PRs
+#           may write directory lessons; the section is added automatically if missing.
+#           Turning it off and on again starts counting anew.
+#   false = retrospect every queued PR as before, never write directory lessons.
+# Any other value stops the retrospective before it reads or writes anything.
+RETROSPECTIVE_DIRECTORY_LESSONS="true"
 #
 # Command run after the retrospective, before its commit (empty = off), at the root
 # of the retrospective's temporary checkout, 10-minute limit. Gets

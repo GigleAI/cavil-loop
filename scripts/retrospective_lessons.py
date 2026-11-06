@@ -41,8 +41,11 @@ is simply the next baseline):
   `confirm` mode only a human can put anything into 硬规则.
 
 Optional fourth section `## 目录经验` (GitHub#152): pitfalls that only bite in one
-part of the code. A project opts in by adding the heading by hand; a model may not
-add it. Entries look the same, but every sighting names the directories it
+part of the code. Whether a run may write it is decided outside this module
+(`RETROSPECTIVE_DIRECTORY_LESSONS` plus the PR's merge time, GitHub#168): when it may,
+the runner appends an empty heading to the baseline before the model sees it; when
+it may not, the section must come back byte for byte (`directories=False`). A model
+may never add the heading itself. Entries look the same, but every sighting names the directories it
 happened in — `#1471 <url> [server/credits/ · server/usage/]` — so the project can
 rank lessons per directory and write them into each directory's own instructions.
 That section never promotes, entries never move in or out of it, every new
@@ -74,7 +77,7 @@ DIR_HEADING = f'## {DIRS}'
 # test wrapper can prove each test case really depends on the check it names.
 CHECKS = ('count', 'dup_pr', 'dup_id', 'preamble', 'next_id', 'keep_ids', 'locked',
           'seen_prefix', 'seen_pr', 'seen_url', 'new_entry', 'dup_rule', 'section', 'length',
-          'dir_section', 'dir_required', 'dir_valid',
+          'dir_section', 'dir_required', 'dir_valid', 'dir_frozen',
           # Checked by post-merge-retrospective.py around the project command:
           'cmd_files', 'cmd_head')
 
@@ -222,6 +225,23 @@ def split_directory_section(text):
     return '\n'.join(kept), '\n'.join(cut)
 
 
+def with_directory_section(text):
+    """The baseline with an empty 目录经验 section appended when it has none."""
+    if DIR_HEADING in text.split('\n'):
+        return text
+    return text.rstrip('\n') + '\n\n' + DIR_HEADING + '\n'
+
+
+def detach_directory_section(text):
+    """(rest, reattach): `rest` is what the model may see; `reattach(new_rest)` puts the
+    original section back unchanged, so `reattach(rest) == text` byte for byte."""
+    rest, cut = split_directory_section(text)
+    if DIR_HEADING not in text.split('\n'):
+        return text, lambda new: new
+    gap = rest[len(rest.rstrip('\n')):] + '\n'
+    return rest, lambda new: new.rstrip('\n') + gap + cut
+
+
 def prompt_text(text):
     """What prompt composition injects for this file: everything except 目录经验.
 
@@ -272,10 +292,13 @@ def evidence_urls(evidence):
     return urls
 
 
-def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None):
+def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None, directories=None):
     """Return a list of human-readable violations; empty means the rewrite is acceptable.
 
-    `repo_root` is the merged checkout new 目录经验 directories must exist in."""
+    `repo_root` is the merged checkout new 目录经验 directories must exist in.
+    `directories=False`: this run may not write 目录经验 — the section (heading
+    included) must be byte-identical to the baseline's. Every other check applies
+    either way; True / None add nothing."""
     if mode not in ('auto', 'confirm'):
         raise ValueError(f'unknown promotion mode {mode!r}')
     target = '硬规则' if mode == 'auto' else '待确认'
@@ -292,6 +315,9 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None):
         errors.append(f'[length] {DIRS} has {len(dir_part)} chars, limit {MAX_DIR_CHARS}')
     if _on('dir_section') and new.has_dirs and not old.has_dirs:
         errors.append(f'[dir_section] {DIRS} may only be started by a human edit')
+    if (_on('dir_frozen') and directories is False
+            and split_directory_section(new_text)[1] != split_directory_section(old_text)[1]):
+        errors.append(f'[dir_frozen] {DIRS} must stay unchanged in this run')
     if _on('preamble') and new.preamble != old.preamble:
         errors.append('[preamble] preamble changed')
     old_ids, new_ids = old.by_id(), new.by_id()

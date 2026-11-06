@@ -505,6 +505,7 @@ class ReviewFlowTest(unittest.TestCase):
         self.model_calls, self.model_output = 0, None
         self.model_input, self.model_instruction, self.files_calls = None, None, 0
         self.pr_files = []
+        self.directories = False   # what main() decides per PR (GitHub#168)
         self.saved = {k: os.environ.get(k) for k in ('PROJECT_ROOT', 'RETROSPECTIVE_MODEL',
                                                       'RETROSPECTIVE_PROMOTION', 'GIT_CONFIG_GLOBAL',
                                                       'POST_RETROSPECTIVE_PROJECT_CMD', 'GH_TOKEN')}
@@ -566,7 +567,7 @@ class ReviewFlowTest(unittest.TestCase):
 
     def review(self):
         root = Path(__file__).resolve().parent.parent
-        runner.review(self.REPO, {'pr': 9}, self.tmp, root)
+        runner.review(self.REPO, {'pr': 9}, self.tmp, root, directories=self.directories)
 
     old = doc(watch=[entry(1, '判存活', [(1, None), (2, None)])])
 
@@ -622,7 +623,7 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(self.last_commit_files(), (f'docs: learn from {self.REPO}#9',
                                                     sorted(['docs/retrospectives/pr-9.md', self.LESSONS])))
 
-    def test_没有目录段时不取改动文件_输入与提示词不带目录(self):
+    def test_不写目录经验时不取改动文件_输入与提示词不带目录(self):
         self.publish(self.old)
         self.model_output = {'report_markdown': REPORT, 'lessons_markdown': self.old}
         self.review()
@@ -631,7 +632,8 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(sorted(self.model_input), ['evidence', 'lessons_markdown', 'templates'])
         self.assertNotIn('目录经验', self.model_instruction)
 
-    def test_有目录段时给出改动目录并推上带目录的新记录(self):
+    def test_写目录经验时给出改动目录并推上带目录的新记录(self):
+        self.directories = True
         old = doc(watch=[entry(1, '判存活', [(1, None)])], dirs=[])
         self.publish(old, {'server/credits/charge.ts': 'x\n', 'server/usage/meter.ts': 'y\n'})
         self.pr_files = ['server/credits/charge.ts', 'server/removed/old.ts']
@@ -645,6 +647,7 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(rl.parse(self.on_origin(self.LESSONS)).by_id()[2].seen[0][2], ('server/credits/',))
 
     def test_目录不在合并后的树里整份不推(self):
+        self.directories = True
         old = doc(watch=[entry(1, '判存活', [(1, None)])], dirs=[])
         self.publish(old)
         new = doc(watch=[entry(1, '判存活', [(1, None)])],
@@ -652,6 +655,45 @@ class ReviewFlowTest(unittest.TestCase):
         self.model_output = {'report_markdown': REPORT, 'lessons_markdown': new}
         before = self.commits_on_origin()
         with self.assertRaisesRegex(ValueError, r'\[dir_valid\]'):
+            self.review()
+        self.assertEqual(self.commits_on_origin(), before)
+
+    def test_写目录经验且经验文件没有这一段时程序先补空段(self):
+        self.directories = True
+        self.publish(self.old, {'server/credits/charge.ts': 'x\n'})
+        self.pr_files = ['server/credits/charge.ts']
+        self.model_output = {'report_markdown': REPORT,
+                             'lessons_markdown': doc(watch=[entry(1, '判存活', [(1, None), (2, None)])],
+                                                     dirs=[entry(2, '锁账户再扣', [(9, C9, ('server/credits/',))])])}
+        self.review()
+        self.assertEqual(self.files_calls, 1)
+        self.assertEqual(self.model_input['lessons_markdown'], self.old.rstrip('\n') + '\n\n## 目录经验\n')
+        self.assertIn('## 目录经验', self.model_instruction)
+        self.assertEqual(rl.parse(self.on_origin(self.LESSONS)).by_id()[2].section, '目录经验')
+
+    def test_不写目录经验时目录段不给模型_写回后原样接上(self):
+        dirs = [entry(2, '锁账户再扣', [(3, f'{U}/pull/3#a', ('server/credits/',))], why='原文')]
+        old = doc(watch=[entry(1, '判存活', [(1, None), (2, None)])], dirs=dirs)
+        self.publish(old)
+        rest = rl.split_directory_section(old)[0]
+        third = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (9, C9)])], next_id=3)
+        self.model_output = {'report_markdown': REPORT, 'lessons_markdown': third}
+        self.review()
+        self.assertEqual(self.files_calls, 0)
+        self.assertEqual(self.model_input['lessons_markdown'], rest)
+        self.assertNotIn('目录经验', self.model_input['lessons_markdown'])
+        self.assertNotIn('目录经验', self.model_instruction)
+        pushed = self.on_origin(self.LESSONS)
+        self.assertEqual(rl.split_directory_section(pushed)[1], rl.split_directory_section(old)[1])
+        self.assertEqual(rl.parse(pushed).by_id()[1].section, '硬规则')
+
+    def test_不写目录经验时模型自己加目录段被拒_什么都不推(self):
+        self.publish(self.old)
+        before = self.commits_on_origin()
+        self.model_output = {'report_markdown': REPORT,
+                             'lessons_markdown': doc(watch=[entry(1, '判存活', [(1, None), (2, None)])],
+                                                     dirs=[entry(2, '锁账户再扣', [(9, C9, ('docs/',))])])}
+        with self.assertRaisesRegex(ValueError, r'\[dir_section\]'):
             self.review()
         self.assertEqual(self.commits_on_origin(), before)
 
@@ -878,6 +920,40 @@ class DirectoryValidateTest(DirTree, Case):
     def test_目录段自身超长被拒(self):
         huge = entry(2, '锁账户再扣', [(3, None, (CRED,))], why='长' * rl.MAX_DIR_CHARS)
         self.rejects(self.old, doc(watch=[self.watch], dirs=[huge]), 'length')
+
+    def test_不写目录经验时合法追加也被拒(self):
+        new = self.new_with([(9, C9, (CRED,))])
+        self.assertEqual(rl.validate(self.old, new, pr=9, evidence_urls=EVIDENCE, mode='auto',
+                                     repo_root=self.root, directories=True), [])
+        errors = rl.validate(self.old, new, pr=9, evidence_urls=EVIDENCE, mode='auto',
+                             repo_root=self.root, directories=False)
+        self.assertTrue(any(e.startswith('[dir_frozen]') for e in errors), errors)
+
+    def test_不写目录经验时改说明_删段都被拒(self):
+        why = doc(watch=[self.watch], dirs=[entry(2, '锁账户再扣', [(3, None, (CRED,))], why='新说明')])
+        gone = doc(watch=[self.watch])
+        for new in (why, gone):
+            errors = rl.validate(self.old, new, pr=9, evidence_urls=EVIDENCE, mode='auto',
+                                 repo_root=self.root, directories=False)
+            self.assertTrue(any(e.startswith('[dir_frozen]') for e in errors), errors)
+        self.assertEqual(rl.validate(self.old, why, pr=9, evidence_urls=EVIDENCE, mode='auto',
+                                     repo_root=self.root, directories=True), [])
+
+    def test_写目录经验时旧保护照旧(self):
+        cases = {'keep_ids': doc(watch=[self.watch], dirs=[]),
+                 'locked': doc(watch=[self.watch], dirs=[entry(2, '改了规则', [(3, None, (CRED,))])]),
+                 'seen_prefix': doc(watch=[self.watch], dirs=[entry(2, '锁账户再扣', [(3, None, (USAGE,))])])}
+        for name, new in cases.items():
+            with self.subTest(name=name):
+                errors = rl.validate(self.old, new, pr=9, evidence_urls=EVIDENCE, mode='auto',
+                                     repo_root=self.root, directories=True)
+                self.assertTrue(any(e.startswith(f'[{name}]') for e in errors), errors)
+
+    def test_切段接回逐字节还原(self):
+        for text in (self.old, doc(watch=[self.watch]), self.old.rstrip('\n'), self.old + '\n\n'):
+            rest, reattach = rl.detach_directory_section(text)
+            self.assertEqual(reattach(rest), text)
+            self.assertNotIn('## 目录经验', rest)
 
     def test_流程部分超长仍被拒(self):
         new = doc(watch=[entry(1, '判存活', [(1, None)], why='长' * rl.MAX_CHARS)],

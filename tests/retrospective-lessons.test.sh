@@ -72,7 +72,7 @@ runner_mutant "没开启目录经验也去取改动文件" "            if direc
 runner_mutant "提示词不按开启与否渲染" "render_instruction((root / 'prompts/retrospective.template.md').read_text(),
                                              mode, directories)" "render_instruction((root / 'prompts/retrospective.template.md').read_text(),
                                              mode, True)"
-runner_mutant "校验不给合并后的目录树" "evidence=evidence, mode=mode, repo_root=checkout)" "evidence=evidence, mode=mode)"
+runner_mutant "校验不给合并后的目录树" "evidence=evidence, mode=mode, repo_root=checkout," "evidence=evidence, mode=mode,"
 runner_mutant "超时只杀 bash 不杀整组" "os.killpg(proc.pid, signal.SIGKILL)" "proc.kill()"
 
 echo

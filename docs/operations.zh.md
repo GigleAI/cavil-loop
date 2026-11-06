@@ -1598,7 +1598,33 @@ rm ~/.config/cavil-loop/$KEY.conf
 
 项目经验是一本按 PR 计次的错题本（格式与校验见 `scripts/retrospective_lessons.py`）：每条规则有永久编号 `L<n>`，所在段落（`硬规则` / `待确认` / `观察中`）就是它的状态，`Seen N×` 列出出现过它的不同 PR。模型每次只能给规则追加**本次 PR** 的一次出现，并且必须附上本次采集到的某条评论 / review 的链接作为证据；已有规则的「规则」「适用」字段、编号和旧的出现记录都不能改，含义不同只能新开一条从 1 次起算。在 3 个不同 PR 里出现的规则由程序要求升级：`RETROSPECTIVE_PROMOTION=auto`（默认）直接进 `硬规则`，`confirm` 只进 `待确认`、由人手改文件挪进 `硬规则`。违反任何一条，整份输出作废。自审与交叉 review 模板要求逐条核对 `硬规则`。项目里的 lessons.md 还是旧格式时，复盘在调模型之前就跳过、不计失败次数，一小时后再查，等项目迁移完自动补上。
 
-**目录经验（可选，GitHub#152）。** 项目可以把「只在某块代码会踩的坑」和流程经验分开记：手动在 lessons.md 末尾加一行 `## 目录经验` 标题并提交到主干。有了这个标题，复盘才会在说明里讲这一段的规则，并把本 PR 改动所在、合并后仍存在的目录列给模型（多读一次 GitHub 的 PR 改动文件列表）；没有这个标题时，给模型的说明、输入和结果与原来完全一样，模型自己加这个标题会被拒。条目格式与前三段一样、共用 `next-id`，区别是每次记录写明发生在哪些目录：`- Seen 2×: #1460 <链接> [server/credits/] · #1471 <链接> [server/credits/ · server/usage/]`。目录相对仓库根、以 `/` 结尾；每条新记录至少写一个，且必须是合并后目录树里真实存在的目录（不许绝对路径、`..`、`.git`、指出仓库的链接）。旧记录（包括目录）一字不改；同一 PR 在一条里只记一次；把流程经验原样抄进这一段会被拒。这一段不参与升级，条目不进不出。各目录的次数由项目自己从记录里筛（这里不存派生数据）；派工拼说明时跳过这一段，这些经验只经项目自己的各层目录说明到达 agent。24000 字的上限只算进派工说明的部分，这一段另有 24000 字上限。
+**目录经验与只复盘哪些 PR（GitHub#152 / #168）。** 项目配置里的 `RETROSPECTIVE_DIRECTORY_LESSONS` 是一个总开关，**默认打开**。打开时，复盘只处理「开关在本机生效那一刻及之后」合并的 PR；更早合并、还在队列里等的 PR 会在任务文件里标成 `skipped`（保留，不删），**永远不会被复盘**：没有复盘报告，也不计入任何经验次数。被处理的 PR 都可以写经验文件末尾的 `## 目录经验` 段，文件里没有这一段时复盘会自己补上。关掉开关时照旧复盘队列里所有 PR，不写目录经验（已有的这一段一字不改：根本不交给模型）。关掉再打开会重新计时，关着期间合并、还在排队的 PR 同样被跳过。开关写成 `true` / `false` 以外的值，复盘在读写任何东西之前就报错停下。每一轮先把整个队列分类一遍（所有未结束的任务，不看排队位置和重试时间；主干上已经有报告的算完成），再最多复盘一个。开始时间按机器记在 `$STATE_DIR/retrospectives/directory-lessons.json`（不进 `cursor.json`）；换机器或文件丢了，就从那一刻重新计时。开关打开时这个文件读不出或写不进，整个队列这一轮暂停（日志写明文件位置）——因为判断不了哪些该跳过。目录经验的条目格式与前三段一样、共用 `next-id`，区别是每次记录写明发生在哪些目录：`- Seen 2×: #1460 <链接> [server/credits/] · #1471 <链接> [server/credits/ · server/usage/]`。目录相对仓库根、以 `/` 结尾；每条新记录至少写一个，且必须是合并后目录树里真实存在的目录（不许绝对路径、`..`、`.git`、指出仓库的链接）。旧条目和旧记录（包括目录）一字不改；同一 PR 在一条里只记一次；把流程经验原样抄进这一段会被拒；模型自己加这个标题会被拒。这一段不参与升级，条目不进不出。各目录的次数由项目自己从记录里筛；派工拼说明时跳过这一段，这些经验只经项目自己的各层目录说明到达 agent。24000 字的上限只算进派工说明的部分，这一段另有 24000 字上限。
+
+**关掉开关却没记下来时。** 关掉开关会留下记录（时间文件写成「关」、或删掉、或在 `cursor.json` 里留一个标记）。如果这一轮三处都写不进去，队列暂停，`retrospective.log` 会写明原因和文件位置；之后如果没人处理就把开关改回打开，会沿用旧的开始时间，关着期间合并的 PR 可能被复盘并写上目录经验。要重新计时，按下面的顺序做（停下 → 留证据 → 重置 → 重启）：
+
+<!-- retro-dir-recovery:begin -->
+```bash
+# 1) This project's state directory: replace <project> with the project's key, the
+#    directory name under ~/.local/state/cavil-loop/ (also the timer's instance name).
+STATE_DIR="$HOME/.local/state/cavil-loop/<project>"
+Q="$STATE_DIR/retrospectives"
+# 2) Stop this project's poller, then wait until no retrospective is running:
+#    getting the scan lock means none is.
+systemctl --user stop "cavil-loop-poll@$(basename "$STATE_DIR").timer"
+flock "$Q/scan.lock" true
+# 3) Keep the evidence: copy the start-time file and the scan record (copy only).
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+if [ -e "$Q/directory-lessons.json" ]; then cp -p "$Q/directory-lessons.json" "$Q/directory-lessons.json.bak-$ts"; fi
+cp -p "$Q/cursor.json" "$Q/cursor.json.bak-$ts"
+# 4) Reset the start time: remove the start-time file only.
+rm -f "$Q/directory-lessons.json"
+if [ ! -e "$Q/directory-lessons.json" ]; then echo "reset done"; else echo "reset FAILED"; fi
+# 5) Start the poller again — only after step 4 printed "reset done".
+systemctl --user start "cavil-loop-poll@$(basename "$STATE_DIR").timer"
+```
+<!-- retro-dir-recovery:end -->
+
+怎样算成功：第 4 步打印 `reset done`，之后 `retrospective.log` 里下一行是 `directory lessons on: handling PRs merged at or after <时间>`，时间晚于这次重置。第 4 步打印 `reset FAILED` 时不要做第 5 步：轮询保持停止、别的都没变；先修好磁盘或权限，再从第 3 步重来。改名前的老安装，定时器叫 `coding-agent-poll@<项目>.timer`。重置救不回已经按旧时间写进去的目录经验：在主干上看经验文件的 `git log -p`，找那段时间的 `docs: learn from` 提交，手工删掉写错的条目（人工编辑就是下一轮的新基线）。
 
 **复盘后执行的项目命令（可选，GitHub#152）。** `POST_RETROSPECTIVE_PROJECT_CMD`（留空 = 关闭）在复盘的临时 checkout 根目录用 `bash -c` 执行，时机是报告和经验文件校验通过并写好之后、提交之前——比如把目录经验排名后写进各层 `AGENTS.md` 的脚本。它拿到 `RETROSPECTIVE_PR`、`RETROSPECTIVE_LESSONS_FILE`、`RETROSPECTIVE_REPORT_FILE`（相对仓库根的路径），限时 10 分钟。它改动或新建的文件和报告、经验文件进**同一个提交**，仓库忽略规则排除的文件除外——脚本留下多余文件是脚本的 bug，要修。非零退出、超时、改了校验过的报告或经验文件、自己提交，都算本次复盘失败：什么都不推、临时 checkout 删掉，按原有规则重试（一小时一次、共 3 次；每次重试都会重新调模型）。成功时日志记下输出末尾，失败时输出末尾进失败原因。临时 checkout 是从主干新取的，没有 `node_modules` 这类没提交的东西。**它按运行 daemon 的本机用户权限执行**：复盘自己用的 GitHub 令牌（`GH_TOKEN` / `GITHUB_TOKEN`）不传给它，但这不是隔离——本机已有的 `gh` 登录、git 凭据它仍然用得到，它绕开这个 checkout 直接推送也拦不住。只配置可信命令。
 

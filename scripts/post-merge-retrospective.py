@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -71,7 +72,8 @@ def scan(repo, queue):
             continue
         job = queue / f'pr-{pr["number"]}.json'
         if not job.exists():
-            save(job, {'pr': pr['number'], 'status': 'pending', 'attempts': 0})
+            save(job, {'pr': pr['number'], 'status': 'pending', 'attempts': 0,
+                       'merged_at': pr['merged_at']})
     state['since'] = started
     save(cursor, state)
 
@@ -124,15 +126,20 @@ def changed_directories(paths, checkout):
     return sorted(found)
 
 
-def accept(old_lessons, result, *, number, source, evidence, mode, repo_root=None):
-    """Judge the model's output; return (report, lessons) or raise ValueError naming what failed."""
+def accept(old_lessons, result, *, number, source, evidence, mode, repo_root=None,
+           directories=None, reattach=None):
+    """Judge the model's output; return (report, lessons) or raise ValueError naming what failed.
+
+    `reattach` puts back the 目录经验 section the model was not shown (directories=False)."""
     report, lessons = result['report_markdown'], result['lessons_markdown']
+    if reattach is not None:
+        lessons = reattach(lessons)
     if len(report.strip()) < 100 or source not in report:
         raise ValueError('report missing content/source')
     # The model only writes prose; ids, locked fields, counts and evidence are checked here.
     errors = lessons_format.validate(old_lessons, lessons, pr=number, mode=mode,
                                      evidence_urls=lessons_format.evidence_urls(evidence),
-                                     repo_root=repo_root)
+                                     repo_root=repo_root, directories=directories)
     if errors:
         raise ValueError('lessons rejected: ' + '; '.join(errors[:12]))
     return report, lessons
@@ -205,8 +212,11 @@ def baseline(text):
     return text
 
 
+TERMINAL = ('done', 'failed', 'skipped')
+
+
 def due(job, now):
-    return job['status'] not in ('done', 'failed') and job.get('retry_after', 0) <= now
+    return job['status'] not in TERMINAL and job.get('retry_after', 0) <= now
 
 
 def run_job(job, work, now):
@@ -245,7 +255,8 @@ def project_lessons_path(checkout):
     return f'{PROJECT_SKILL_DIRS[0]}/prompts/lessons.md'
 
 
-def review(repo, job, queue, root):
+def review(repo, job, queue, root, *, directories):
+    """`directories`: whether this PR may write 目录经验 (decided by `main`, GitHub#168)."""
     number = job['pr']
     project = Path(os.environ['PROJECT_ROOT'])
     remote = command(['git', 'remote', 'get-url', 'origin'], project).strip()
@@ -276,11 +287,16 @@ def review(repo, job, queue, root):
             templates = {p.name: p.read_text() for p in (root / 'prompts').glob('*.template.md')
                          if p.name != 'retrospective.template.md'}
             mode = promotion_mode()
-            # Opt-in by the heading alone: without it, no extra read, input or rule text.
-            directories = lessons_format.parse(old_lessons).has_dirs
+            if directories:
+                # The runner opens the section, so a model adding it is still rejected.
+                old_lessons = lessons_format.with_directory_section(old_lessons)
+                shown, reattach = old_lessons, None
+            else:
+                # Not shown at all, put back unchanged, and checked byte for byte.
+                shown, reattach = lessons_format.detach_directory_section(old_lessons)
             instruction = render_instruction((root / 'prompts/retrospective.template.md').read_text(),
                                              mode, directories)
-            payload = {'evidence': evidence, 'templates': templates, 'lessons_markdown': old_lessons}
+            payload = {'evidence': evidence, 'templates': templates, 'lessons_markdown': shown}
             if directories:
                 payload['directories'] = changed_directories(changed_files(repo, number), checkout)
             payload = json.dumps(payload, ensure_ascii=False)
@@ -297,7 +313,8 @@ def review(repo, job, queue, root):
                 raise ValueError('retrospective model returned an error')
             report, lessons = accept(old_lessons, response['structured_output'], number=number,
                                      source=f'https://github.com/{repo}/pull/{number}',
-                                     evidence=evidence, mode=mode, repo_root=checkout)
+                                     evidence=evidence, mode=mode, repo_root=checkout,
+                                     directories=directories, reattach=reattach)
             target = checkout / report_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report.rstrip() + '\n')
@@ -322,11 +339,193 @@ def review(repo, job, queue, root):
             command(['git', 'worktree', 'remove', '--force', str(checkout)], project)
 
 
+# ── Which PRs a run may touch (GitHub#168) ───────────────────────────────────
+# RETROSPECTIVE_DIRECTORY_LESSONS (default true) is one project-wide switch. While it is
+# on, the run only handles PRs merged at or after the moment it took effect on this
+# machine ("T"): older ones still waiting in the queue are marked `skipped`, and the
+# ones handled may write 目录经验. While it is off nothing is skipped and nothing writes
+# 目录经验. T lives in its own file next to the queue, never in cursor.json: the scan
+# must keep working whatever happens to it.
+MARKER = 'directory-lessons.json'
+# Set in cursor.json only when turning the switch off could not be recorded in MARKER
+# (write and delete both failed): a later "on" must not reuse the old T.
+OFF_PENDING = 'directory_lessons_off_pending'
+STAMP = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+
+
+def directory_switch():
+    """The switch, validated before anything is read or written."""
+    value = os.environ.get('RETROSPECTIVE_DIRECTORY_LESSONS', 'true')
+    if value not in ('true', 'false'):
+        raise SystemExit(f'RETROSPECTIVE_DIRECTORY_LESSONS must be true or false, not {value!r}')
+    return value == 'true'
+
+
+def read_marker(path):
+    """('missing'|'on'|'off'|'bad', T-or-reason). Anything unexpected is 'bad', never a guess."""
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return 'missing', None
+    except OSError as error:
+        return 'bad', f'cannot read {path}: {error}'
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        return 'bad', f'{path} is not valid JSON: {error}'
+    if value == {'state': 'off'}:
+        return 'off', None
+    if isinstance(value, dict) and set(value) == {'state', 'since'} and value['state'] == 'on' \
+            and isinstance(value['since'], str) and STAMP.match(value['since']):
+        try:
+            dt.datetime.strptime(value['since'], '%Y-%m-%dT%H:%M:%SZ')
+            return 'on', value['since']
+        except ValueError:
+            pass
+    return 'bad', f'{path} does not hold a valid directory-lessons start time'
+
+
+def write_atomic(path, value):
+    tmp = path.with_name(path.name + '.tmp')
+    try:
+        tmp.write_text(json.dumps(value) + '\n')
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def sync_directory_state(queue, on, start):
+    """Bring MARKER in line with the switch; return (state, value).
+
+    state: 'on' (value = T) / 'off' / 'unknown' (on, but T can't be trusted or recorded:
+    value = reason) / 'pause' (off, but no evidence of it could be kept: value = reason).
+    Runs after a successful scan, under the scan lock."""
+    marker, cursor = queue / MARKER, queue / 'cursor.json'
+    kind, value = read_marker(marker)
+    try:
+        state = json.loads(cursor.read_text())
+    except (OSError, ValueError):
+        state = None
+    if on:
+        if kind == 'bad':
+            return 'unknown', value
+        pending = state is None or bool(state.get(OFF_PENDING))
+        if kind == 'on' and not pending:
+            return 'on', value
+        # First start, a recorded off, or an off only cursor.json remembers: a new T.
+        try:
+            write_atomic(marker, {'state': 'on', 'since': start})
+        except OSError as error:
+            return 'unknown', f'cannot record the start time in {marker}: {error}'
+        if state is not None and OFF_PENDING in state:
+            try:
+                del state[OFF_PENDING]
+                save(cursor, state)
+            except OSError:
+                pass   # still there next round: that only records a later T
+        return 'on', start
+    if kind != 'on':
+        return 'off', None
+    try:
+        write_atomic(marker, {'state': 'off'})
+        return 'off', None
+    except OSError:
+        pass
+    try:
+        marker.unlink()
+        return 'off', None
+    except OSError:
+        pass
+    try:
+        if state is None:
+            raise OSError('cursor.json unreadable')
+        state[OFF_PENDING] = start
+        save(cursor, state)
+        return 'off', None
+    except OSError as error:
+        return 'pause', (f'switched off but could not record it ({marker} could not be '
+                         f'rewritten or removed, cursor.json not writable: {error})')
+
+
+def job_merged_at(repo, job):
+    """The PR's merge time, cached in the job; None when it can't be read this round."""
+    if isinstance(job.get('merged_at'), str) and STAMP.match(job['merged_at']):
+        return job['merged_at']
+    try:
+        merged = api(f'repos/{repo}/pulls/{job["pr"]}').get('merged_at')
+    except Exception:
+        return None
+    if isinstance(merged, str) and STAMP.match(merged):
+        job['merged_at'] = merged
+        return merged
+    return None
+
+
+def remote_report(project, base, number, fetched):
+    """True / False whether origin/<base> has this PR's report; None when git can't tell."""
+    if not fetched:
+        try:
+            command(['git', 'fetch', 'origin'], project)
+        except Exception:
+            return None
+        fetched.append(True)
+    result = subprocess.run(['git', 'cat-file', '-e', f'origin/{base}:docs/retrospectives/pr-{number}.md'],
+                            cwd=project, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def classify(repo, queue, since, log):
+    """Mark every unfinished job merged before `since` as skipped, whatever its place in
+    the queue or its retry time. Returns the job paths whose merge time is unknown."""
+    unknown, fetched = set(), []
+    project = Path(os.environ['PROJECT_ROOT'])
+    base = os.environ.get('BASE_BRANCH', 'main')
+    for path in sorted(queue.glob('pr-*.json')):
+        job = json.loads(path.read_text())
+        if job['status'] in TERMINAL:
+            continue
+        had = job.get('merged_at')
+        merged = job_merged_at(repo, job)
+        if merged is None:
+            unknown.add(path)
+            log(f'retrospective PR #{job["pr"]} merge time unreadable; left as is, retried next round')
+            continue
+        if merged >= since:
+            if had != merged:
+                save(path, job)
+            continue
+        done = remote_report(project, base, job['pr'], fetched)
+        if done is None:
+            unknown.add(path)
+            if had != merged:
+                save(path, job)
+            log(f'retrospective PR #{job["pr"]} cannot check the remote report; left as is')
+            continue
+        if done:
+            job.update(status='done', completed_at=utcnow())
+        else:
+            job.update(status='skipped', skipped_at=utcnow(), skipped_before=since)
+        save(path, job)
+        log(f'retrospective PR #{job["pr"]} merged {merged}, before directory lessons started {since}: '
+            + ('already reported' if done else 'skipped'))
+    return unknown
+
+
 def main():
+    on = directory_switch()
+    start = utcnow()
     repo = os.environ['REPO']
     root = Path(os.environ['RETROSPECTIVE_SKILL_ROOT'])
     queue = Path(os.environ['STATE_DIR']) / 'retrospectives'
     queue.mkdir(parents=True, exist_ok=True)
+
+    def log(message):
+        print(f'{utcnow()} [{repo}] {message}', flush=True)
+
     with (queue / 'scan.lock').open('w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -347,18 +546,31 @@ def main():
                 fcntl.flock(global_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return
+            # Still under the scan lock, and only after the scan succeeded.
+            before = read_marker(queue / MARKER)
+            state, value = sync_directory_state(queue, on, start)
+            if state in ('unknown', 'pause'):
+                log(f'retrospective queue paused this round: {value} '
+                    f'(directory lessons file: {queue / MARKER})')
+                return
+            if state == 'on' and before != ('on', value):
+                log(f'directory lessons on: handling PRs merged at or after {value} '
+                    f'(recorded in {queue / MARKER})')
+            # Classify the whole queue first, then retrospect at most one job.
+            unknown = classify(repo, queue, value, log) if state == 'on' else set()
             for path in sorted(queue.glob('pr-*.json')):
                 job = json.loads(path.read_text())
-                if not due(job, time.time()):
+                if path in unknown or not due(job, time.time()):
                     continue
                 job.update(status='running', started_at=utcnow())
                 save(path, job)
-                print(f'{utcnow()} [{repo}] retrospective PR #{job["pr"]} started', flush=True)
-                job = run_job(job, lambda j: review(repo, j, queue, root), time.time())
+                log(f'retrospective PR #{job["pr"]} started')
+                job = run_job(job, lambda j: review(repo, j, queue, root, directories=state == 'on'),
+                              time.time())
                 outcome = {'done': 'committed', 'failed': f'gave up after {MAX_ATTEMPTS} attempts'}.get(
                     job['status'], 'retry later')
                 detail = f': {job["error"]}' if job['status'] != 'done' else ''
-                print(f'{utcnow()} [{repo}] retrospective PR #{job["pr"]} {outcome}{detail}', flush=True)
+                log(f'retrospective PR #{job["pr"]} {outcome}{detail}')
                 save(path, job)
                 break  # Bound each background invocation; next tick drains more.
 
