@@ -12,6 +12,13 @@
 #                                      # stdout = the pushed tag only, messages on stderr;
 #                                      # exit 3 = HEAD already tagged, stdout = that tag
 #                                      # (its Release page may still be missing)
+#   bash scripts/release.sh --pending  # the weekly workflow's plan step: same checks as
+#                                      # --auto, tags nothing; stdout = the tag --auto would
+#                                      # cut (exit 0) or the tag already on the commit (exit 3)
+#   ... --auto --at <sha> / --pending --at <sha>
+#                                      # act on <sha> instead of HEAD: the commit the release
+#                                      # gate tested (GitHub#195). It must be main's tip or an
+#                                      # ancestor of it; main may have moved on meanwhile.
 #   bash scripts/release.sh --title <tag>
 #                                      # print the Release title: the tag plus the
 #                                      # Monday–Sunday iteration its date falls in
@@ -34,22 +41,32 @@ release_title() {
     printf '%s · 迭代 %s ~ %s\n' "$tag" "$start" "$end"
 }
 
+usage() { echo "usage: $0 [--dry-run | --auto [--at <sha>] | --pending [--at <sha>] | --title <tag>]" >&2; exit 2; }
 DRY_RUN=false
 AUTO=false
+PENDING=false
+AT=""
 case "${1:-}" in
-    --dry-run) DRY_RUN=true ;;
-    --auto) AUTO=true ;;
+    --dry-run) DRY_RUN=true; [ $# -eq 1 ] || usage ;;
+    --auto|--pending)
+        [ "$1" = --auto ] && AUTO=true || PENDING=true
+        case $# in
+            1) ;;
+            3) [ "$2" = --at ] && [ -n "$3" ] || usage; AT="$3" ;;
+            *) usage ;;
+        esac
+        ;;
     --title)
         [ $# -eq 2 ] || { echo "usage: $0 --title <tag>" >&2; exit 2; }
         release_title "$2"
         exit
         ;;
     "" ) ;;
-    * ) echo "usage: $0 [--dry-run | --auto | --title <tag>]" >&2; exit 2 ;;
+    * ) usage ;;
 esac
 
-# --auto keeps stdout for the tag name alone, so the workflow can capture it.
-$AUTO && exec 3>&1 1>&2
+# --auto / --pending keep stdout for the tag name alone, so the workflow can capture it.
+if $AUTO || $PENDING; then exec 3>&1 1>&2; fi
 
 branch="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$branch" != "main" ]; then
@@ -73,12 +90,26 @@ if [ "$local_sha" != "$remote_sha" ]; then
     exit 1
 fi
 
+# What gets tagged: HEAD, or with --at the commit the release gate tested. That
+# commit has to be on main (its tip or an ancestor); anything else is refused.
+target="$local_sha"
+if [ -n "$AT" ]; then
+    if ! target="$(git rev-parse -q --verify "${AT}^{commit}")"; then
+        echo "❌ --at $AT is not a commit here" >&2
+        exit 1
+    fi
+    if ! git merge-base --is-ancestor "$target" "$remote_sha"; then
+        echo "❌ --at $target is not on main (origin/main = $remote_sha)" >&2
+        exit 1
+    fi
+fi
+
 # A tag is not a published release: the Release page may have failed after the
 # push. So --auto only reports the existing tag; the caller decides whether the
 # page still has to be created.
-released="$(git tag --points-at HEAD -l 'release/v*' --sort=-v:refname | head -n1)"
-if [ -n "$released" ] && $AUTO; then
-    echo "HEAD $local_sha is already tagged $released — no new tag"
+released="$(git tag --points-at "$target" -l 'release/v*' --sort=-v:refname | head -n1)"
+if [ -n "$released" ] && { $AUTO || $PENDING; }; then
+    echo "$target is already tagged $released — no new tag"
     echo "$released" >&3
     exit 3
 fi
@@ -98,16 +129,22 @@ next_n=$((max_n + 1))
 tag="release/v${today}.${next_n}"
 
 echo "Will create tag:  $tag"
-echo "  pointing at:    $local_sha"
-echo "  commit subject: $(git log -1 --pretty='%s' HEAD)"
+echo "  pointing at:    $target"
+echo "  commit subject: $(git log -1 --pretty='%s' "$target")"
 
 if $DRY_RUN; then
     echo "(dry-run, not tagging)"
     exit 0
 fi
 
+if $PENDING; then
+    echo "(pending: a new tag would be cut, nothing tagged)"
+    echo "$tag" >&3
+    exit 0
+fi
+
 if $AUTO; then
-    git tag "$tag"
+    git tag "$tag" "$target"
     git push origin "$tag"
     echo "✓ pushed $tag"
     echo "$tag" >&3

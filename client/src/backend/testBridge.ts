@@ -28,5 +28,10 @@ export function bridgeDesktop(): Desktop {
     loginItem: () => d('loginItem'),
     setLoginItem: (on) => d('setLoginItem', { on }),
     nextEvent: () => d('nextEvent'),
+    updateStatus: () => d('updateStatus'),
+    checkUpdate: () => d('checkUpdate'),
+    setAutoUpdate: (on) => d('setAutoUpdate', { on }),
+    dismissUpdate: (version) => d('dismissUpdate', { version }),
+    restartToUpdate: () => d('restartToUpdate'),
   };
 }

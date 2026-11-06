@@ -65,7 +65,11 @@ export interface FakeDesktop {
   refuse: string | null;
   /** launch at login as the "system" has it (null = this platform cannot) */
   loginItem: boolean | null;
-  push(ev: { kind: 'tick' } | { kind: 'open'; key: string; url: string }): void;
+  /** the updater as the "shell" has it (GitHub#184; null = this build does not update itself) */
+  update: any | null;
+  push(ev: { kind: 'tick' } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any }): void;
+  /** the shell changed the updater's status: the window hears it the way it hears the real one */
+  setUpdate(status: any): void;
 }
 
 function fakeDesktop(): FakeDesktop & { next(): Promise<unknown>; stop(): void } {
@@ -75,6 +79,11 @@ function fakeDesktop(): FakeDesktop & { next(): Promise<unknown>; stop(): void }
     records: [],
     refuse: null,
     loginItem: false,
+    update: null,
+    setUpdate(status) {
+      this.update = status;
+      this.push({ kind: 'update', status });
+    },
     push(ev) {
       const w = waiters.shift();
       if (w) w(ev);
@@ -164,6 +173,16 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
           desktop.records.push({ op: 'loginItem', on: desktop.loginItem });
         } else if (op === 'nextEvent') {
           ok = await desktop.next();
+        } else if (op === 'updateStatus') {
+          ok = desktop.update;
+        } else if (op === 'checkUpdate' || op === 'restartToUpdate') {
+          desktop.records.push({ op });
+        } else if (op === 'setAutoUpdate') {
+          desktop.records.push({ op, on: args.on });
+          desktop.setUpdate({ ...desktop.update, auto: Boolean(args.on) });
+        } else if (op === 'dismissUpdate') {
+          desktop.records.push({ op, version: args.version });
+          desktop.setUpdate({ ...desktop.update, dismissed: args.version });
         }
         if (res.destroyed) return;
         res.writeHead(200, { 'Content-Type': 'application/json' });

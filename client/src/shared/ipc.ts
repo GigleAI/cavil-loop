@@ -25,6 +25,11 @@ export interface CavilApi {
   syncNow(): Promise<void>;
   openExternal(url: string): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;
+  /** the app updating itself (GitHub#184) */
+  checkUpdate(): Promise<void>;
+  setAutoUpdate(on: boolean): Promise<void>;
+  dismissUpdate(version: string): Promise<void>;
+  restartToUpdate(): Promise<void>;
   loadDetail(key: string): Promise<DetailResult>;
   repoOptions(repo: string): Promise<RepoOptions>;
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;

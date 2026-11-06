@@ -19,6 +19,11 @@ export const tauriDesktop: Desktop = {
   loginItem: () => invoke('desktop_login_item'),
   setLoginItem: (on) => invoke('desktop_set_login_item', { on }),
   nextEvent: () => invoke('desktop_next_event'),
+  updateStatus: () => invoke('desktop_update_status'),
+  checkUpdate: () => invoke('desktop_update_check'),
+  setAutoUpdate: (on) => invoke('desktop_update_set_auto', { on }),
+  dismissUpdate: (version) => invoke('desktop_update_dismiss', { version }),
+  restartToUpdate: () => invoke('desktop_update_restart'),
 };
 
 /** Tell the shell the window is up. true = this is the packaged-app smoke test: it reports and quits. */

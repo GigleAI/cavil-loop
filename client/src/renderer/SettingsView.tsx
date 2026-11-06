@@ -3,12 +3,15 @@ import type { AppState, BoardData } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
+import { UpdateSection } from './UpdateViews';
 import { Icon, type IconName } from './Icons';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-sources', icon: 'project', title: '数据来源' },
   { id: 'set-hand-back', icon: 'tag', title: '交回 agent' },
   { id: 'set-pending', icon: 'bell', title: '提醒' },
+  // only in a build that updates itself (GitHub#184); the section is not there otherwise
+  { id: 'set-update', icon: 'refresh', title: '更新' },
   { id: 'set-account', icon: 'user', title: '账号' },
   { id: 'set-login', icon: 'key', title: '登录方式' },
 ];
@@ -40,7 +43,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
       <div className="settings-body">
       {/* contents: a click scrolls to that card (one page, nothing hidden) */}
       <nav className="settings-nav" aria-label="设置目录">
-        {SECTIONS.map((x) => (
+        {SECTIONS.filter((x) => x.id !== 'set-update' || state.update).map((x) => (
           <a
             key={x.id}
             href={`#${x.id}`}
@@ -146,6 +149,8 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           <p className="muted small">关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。</p>
         )}
       </section>
+
+      <UpdateSection update={state.update} />
 
       <section id="set-account">
         <h3>账号</h3>

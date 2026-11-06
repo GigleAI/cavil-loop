@@ -185,6 +185,18 @@ Closes #7" "$H1" "pending/merge"
     chk "合并" "$(merged 8)" 1
     chk "说明写检查全部通过" "$(comments_with 7 '自动检查全部通过')" 1
 
+    section "【1c】PR 上 Mac 打包任务显示「已跳过」（GitHub#195）→ 照常合并；同一组里有失败的 → 不合并"
+    fresh; happy
+    jset checks.json '.[$h] = {check_runs:[{name:"client tests (Linux)", status:"completed", conclusion:"success"}, {name:"dmg (arm64)", status:"completed", conclusion:"skipped"}, {name:"dmg (x64)", status:"completed", conclusion:"skipped"}, {name:"download size (both dmgs)", status:"completed", conclusion:"skipped"}, {name:"测试", status:"completed", conclusion:"success"}]}' --arg h "$H1"
+    tick
+    chk "已跳过的任务不挡合并" "$(merged 8)" 1
+    chk "说明写检查全部通过" "$(comments_with 7 '自动检查全部通过')" 1
+    fresh; happy
+    jset checks.json '.[$h] = {check_runs:[{name:"client tests (Linux)", status:"completed", conclusion:"failure"}, {name:"dmg (arm64)", status:"completed", conclusion:"skipped"}, {name:"dmg (x64)", status:"completed", conclusion:"skipped"}]}' --arg h "$H1"
+    tick
+    chk "已跳过的旁边有失败 → 不合并" "$(merged 8)" 0
+    chk "  → 交回 worker，点名失败的那个" "$(has_label 8 pending/agent)/$(comments_with 8 '自动检查没过：client tests (Linux)')" "yes/1"
+
     # ── 【2】授权 ──
     section "【2】授权：不是有写权限的真人在 issue 上打的 → 不合并、交人"
     local who

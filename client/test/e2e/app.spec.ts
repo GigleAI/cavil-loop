@@ -1977,3 +1977,80 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   expect(env.fake.writes()).toEqual([]);
   await app.close();
 });
+
+// ---- the app updating itself (GitHub#184) -----------------------------------------------
+// The shell's updater is played by the bridge (app.desktop.update / setUpdate); what each state
+// says and which requests the buttons send is the window's part, checked here.
+
+test('GitHub#184: update section in Settings, every state; failures only in Settings; the ready bar on the board, restart, × keeps it closed', async () => {
+  const { app, page } = await launch(env);
+  await signInForReminders(page, []);
+  // a build that does not update itself shows nothing about it
+  await expect(page.getByTestId('pending-settings')).toBeVisible();
+  await expect(page.getByTestId('update-settings')).toHaveCount(0);
+  await expect(page.locator('.settings-nav a', { hasText: '更新' })).toHaveCount(0);
+
+  const base = { supported: true, current: '0.5.0', auto: true, problem: null, phase: 'idle', dismissed: null, last: null };
+  const at = new Date(2026, 10, 6, 14, 2).getTime();
+  app.desktop.setUpdate(base);
+  await expect(page.getByTestId('update-current')).toHaveText('0.5.0');
+  await expect(page.locator('.settings-nav a', { hasText: '更新' })).toHaveCount(1);
+  await expect(page.getByTestId('update-line')).toHaveText('还没有检查过');
+  await page.getByTestId('update-check').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'checkUpdate').length).toBe(1);
+
+  app.desktop.setUpdate({ ...base, phase: 'checking' });
+  await expect(page.getByTestId('update-line')).toHaveText('正在检查…');
+  await expect(page.getByTestId('update-check')).toBeDisabled();
+
+  app.desktop.setUpdate({ ...base, phase: 'downloading', version: '0.5.1', got: 3_200_000, total: 8_000_000 });
+  await expect(page.getByTestId('update-line')).toHaveText('正在下载 0.5.1（3.2 / 8.0 MB）');
+  await expect(page.getByTestId('update-check')).toBeDisabled();
+
+  app.desktop.setUpdate({ ...base, last: { at, ok: true, message: '已是最新' } });
+  await expect(page.getByTestId('update-line')).toHaveText('上次检查 14:02，已是最新');
+  await expect(page.getByTestId('update-check')).toBeEnabled();
+
+  // a failure: in Settings, in red, with when; never on the board
+  app.desktop.setUpdate({ ...base, last: { at, ok: false, message: '下载 0.5.1 失败：60 秒没有收到数据' } });
+  await expect(page.getByTestId('update-line')).toHaveText('下载 0.5.1 失败：60 秒没有收到数据（14:02）');
+  await expect(page.getByTestId('update-line')).toHaveClass(/err/);
+  await shot(page, '50-update-failed');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(page.getByTestId('update-ready')).toHaveCount(0);
+  await expect(page.locator('.banner', { hasText: '0.5.1' })).toHaveCount(0);
+  await page.getByTestId('open-settings').click();
+
+  // automatic checks: the box follows what the shell reports
+  await page.getByTestId('update-auto').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'setAutoUpdate').map((r) => r.on)).toEqual([false]);
+  await expect(page.getByTestId('update-auto')).not.toBeChecked();
+
+  // the new version is in place
+  app.desktop.setUpdate({ ...app.desktop.update, phase: 'ready', version: '0.5.1', last: { at, ok: true, message: '新版 0.5.1 已下载，重启后生效' } });
+  await expect(page.getByTestId('update-line')).toHaveText('新版 0.5.1 已下载，重启后生效');
+  await expect(page.getByTestId('update-check')).toHaveCount(0);
+  await shot(page, '51-update-ready-settings');
+  await page.getByTestId('update-restart').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'restartToUpdate').length).toBe(1);
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('update-ready')).toContainText('新版 0.5.1 已下载，重启后生效');
+  await shot(page, '52-update-ready-board');
+  await page.getByTestId('update-ready-restart').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'restartToUpdate').length).toBe(2);
+  await page.getByTestId('update-ready-close').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'dismissUpdate').map((r) => r.version)).toEqual(['0.5.1']);
+  await expect(page.getByTestId('update-ready')).toHaveCount(0);
+  // a later version is shown again
+  app.desktop.setUpdate({ ...app.desktop.update, version: '0.5.2' });
+  await expect(page.getByTestId('update-ready')).toContainText('0.5.2');
+
+  // a build that cannot update itself says why and offers nothing to click
+  app.desktop.setUpdate({ ...base, problem: '这一版没有带更新用的公钥，不能自动更新，请手动下载新版' });
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('update-line')).toHaveText('这一版没有带更新用的公钥，不能自动更新，请手动下载新版');
+  await expect(page.getByTestId('update-check')).toBeDisabled();
+  await expect(page.getByTestId('update-auto')).toBeDisabled();
+  await app.close();
+});
