@@ -384,6 +384,10 @@ export class Controller {
     this.snapshots.clear();
     this.pending.reset();
     this.state = { ...this.state, pendingCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    // what was queued for the shell belonged to that account: none of it goes out any more, and the
+    // cleared badge does not wait behind a notification the system is still answering
+    this.desktopEra++;
+    this.desktopCalls = Promise.resolve();
     this.badge();
   }
 
@@ -396,10 +400,26 @@ export class Controller {
    * sync beat behind its notification (found by test/tauri/background.spec.ts).
    */
   private desktopCalls: Promise<unknown> = Promise.resolve();
-  private toDesktop<T>(fn: (d: Desktop) => Promise<T>): Promise<T> | null {
+  /**
+   * Bumps on sign-out / another account (dropMirror). A call queued in an earlier era is
+   * dropped before it reaches the shell, and the answer to one already handed over is ignored.
+   */
+  private desktopEra = 0;
+
+  /**
+   * Queue one call to the shell. Right before it goes out it is checked again: same era, and
+   * `stillTrue` (when given) still holds — a notification for an item that stopped being
+   * pending meanwhile (source removed, label renamed) is not sent. Resolves with null when dropped.
+   */
+  private toDesktop<T>(fn: (d: Desktop) => Promise<T>, stillTrue?: () => boolean): Promise<{ answer: T; current: () => boolean } | null> | null {
     const d = this.deps.desktop;
     if (!d) return null;
-    const p = this.desktopCalls.then(() => fn(d));
+    const era = this.desktopEra;
+    const current = () => era === this.desktopEra;
+    const p = this.desktopCalls.then(async () => {
+      if (!current() || (stillTrue && !stillTrue())) return null;
+      return { answer: await fn(d), current };
+    });
     this.desktopCalls = p.catch(() => undefined);
     return p;
   }
@@ -410,15 +430,20 @@ export class Controller {
   }
 
   private badge(): void {
-    const n = this.pending.count();
-    // a badge that cannot be set must not break a sync round
-    this.toDesktop((d) => d.setBadge(n))?.catch(() => {});
+    // the count as it is when the call goes out; a badge that cannot be set must not break a sync round
+    this.toDesktop((d) => d.setBadge(this.pending.count()))?.catch(() => {});
   }
 
   private notify(a: Alert): void {
-    this.toDesktop((d) => d.notify(a))?.then(
-      (r) => this.reportNotification(r),
-      (e) => this.reportNotification({ ok: false, error: (e as Error).message ?? String(e) }),
+    const era = this.desktopEra;
+    const stillTrue = a.kind === 'item' ? () => this.pending.has(a.key) : undefined;
+    this.toDesktop((d) => d.notify(a), stillTrue)?.then(
+      (r) => {
+        if (r && r.current()) this.reportNotification(r.answer);
+      },
+      (e) => {
+        if (era === this.desktopEra) this.reportNotification({ ok: false, error: (e as Error).message ?? String(e) });
+      },
     );
   }
 

@@ -125,6 +125,11 @@ export class PendingTracker {
     return this.union().size;
   }
 
+  /** Is this item pending now (in any source still counted)? */
+  has(key: string): boolean {
+    return this.union().has(key);
+  }
+
   private pendingOf(snap: SourceSnapshot): Map<string, Item> {
     const out = new Map<string, Item>();
     for (const it of snap.items) if (hasLabel(it, this.label)) out.set(it.key, it);

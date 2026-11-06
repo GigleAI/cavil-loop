@@ -570,3 +570,98 @@ describe('what the shell tells the window (GitHub#169)', () => {
     expect(h.badge()).toBe(P);
   });
 });
+
+describe('calls to the shell that wait while things change (PR #173 review round 1)', () => {
+  /** The first notification is held by "the system" until `release`; later ones answer at once. */
+  function holdFirst(h: Harness) {
+    const calls: Alert[] = [];
+    let release: (d: { ok: boolean; error?: string }) => void = () => {};
+    (h.c as any).deps.desktop.notify = (a: Alert) => {
+      calls.push(a);
+      if (calls.length === 1) return new Promise((r) => (release = r));
+      return Promise.resolve({ ok: false, error: 'old account refusal' });
+    };
+    return { calls, release: (d: { ok: boolean; error?: string }) => release(d) };
+  }
+
+  it('signed out while a notification waits for the system: nothing more of that account goes out, its answer is ignored, the badge clears at once', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    // "did happen": the round produced two notifications, the first is with the system
+    expect(held.calls).toHaveLength(1);
+    await h.c.logout();
+    await h.c.desktopSettled();
+    // the cleared badge does not wait for the system's answer
+    expect(h.badge()).toBe(0);
+    held.release({ ok: false, error: 'old account refusal' });
+    await settle();
+    await h.c.desktopSettled();
+    expect(held.calls).toHaveLength(1);
+    expect(h.c.getState().notifyProblem).toBeNull();
+    expect(h.c.getState().phase).toBe('login');
+  });
+
+  it('signed out while a notification waits: a summary queued behind it is not sent either', async () => {
+    const h = await signedIn({ sources: [REPO] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    // one round: an item already counted becomes pending (notification) and a new source is read (summary)
+    setLabel(OPEN_NEW, true, h.clock);
+    h.c.addSource(PROJECT_URL);
+    await h.c.syncNow();
+    await settle();
+    expect(held.calls.map((a) => a.kind)).toEqual(['item']);
+    await h.c.logout();
+    held.release({ ok: true });
+    await settle();
+    await h.c.desktopSettled();
+    expect(held.calls.map((a) => a.kind)).toEqual(['item']);
+  });
+
+  it('a source removed while a notification waits: the queued notification for its item is not sent', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    expect(held.calls).toHaveLength(1);
+    h.c.removeSource(PROJECT_KEY);
+    held.release({ ok: true });
+    await settle();
+    await h.c.desktopSettled();
+    // only the one already with the system; the other one's source is gone
+    expect(held.calls).toHaveLength(1);
+    expect(h.badge()).toBe(0);
+  });
+
+  it('the label renamed while a notification waits: the queued one, no longer pending, is not sent', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    expect(held.calls).toHaveLength(1);
+    h.c.setHandBack({ human: 'some-other-label' });
+    held.release({ ok: true });
+    await settle();
+    await h.c.desktopSettled();
+    expect(held.calls).toHaveLength(1);
+    expect(h.badge()).toBe(h.c.getState().pendingCount);
+  });
+});
