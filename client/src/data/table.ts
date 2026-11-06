@@ -6,6 +6,7 @@ import type { GroupBy, Item, Iteration, ProjectMeta, TableSettings } from '../sh
 import { isCurrentIteration } from '../shared/filter';
 import { iterationColumnKey } from './board';
 import { itemSorter } from './sort';
+import { nestPrs, orderUnits, prHosts, PR_ORDER, unitUpdated } from './prNest';
 
 export const GROUP_NONE_KEY = 'none';
 
@@ -13,8 +14,10 @@ export interface Row {
   /** unique within the table: item key + group key */
   id: string;
   item: Item;
-  /** 0 = top level; 1 = a sub-issue shown under its parent; … */
+  /** 0 = top level; 1 = a sub-issue shown under its parent, or a PR under its issue; … */
   depth: number;
+  /** a PR shown right under the issue it is linked to: that issue's key (GitHub#155); null otherwise */
+  under: string | null;
 }
 
 export interface Group {
@@ -131,11 +134,20 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
 }
 
 
-/** Order rows of one group; with `hierarchy`, a sub-issue whose parent is in the same group goes right under it. */
-function arrange(items: Item[], groupKey: string, sort: (a: Item, b: Item) => number, hierarchy: boolean): Row[] {
+/**
+ * Order rows of one group. With `hierarchy`, a sub-issue whose parent is in
+ * the same group goes right under it; with `prs`, a PR goes right under the
+ * issue it is linked to (GitHub#155, the same rule as the board's columns),
+ * before that issue's sub-issues.
+ */
+function arrange(items: Item[], groupKey: string, sortSetting: TableSettings['sort'], sort: (a: Item, b: Item) => number, hierarchy: boolean, prs: boolean): Row[] {
   const sorted = [...items].sort(sort);
-  if (!hierarchy) return sorted.map((item) => ({ id: `${item.key}@${groupKey}`, item, depth: 0 }));
+  if (!hierarchy) {
+    if (!prs) return sorted.map((item) => ({ id: `${item.key}@${groupKey}`, item, depth: 0, under: null }));
+    return nestPrs(sorted, (it) => it, sortSetting).map(({ entry, under }) => ({ id: `${entry.key}@${groupKey}`, item: entry, depth: under ? 1 : 0, under }));
+  }
   const here = new Map(sorted.map((it) => [it.key, it]));
+  const hosts = prs ? prHosts(sorted) : new Map<string, string>();
   // parent inside this group, and no cycle on the way up
   const parentOf = (it: Item): string | null => {
     if (!it.parent || it.parent === it.key || !here.has(it.parent)) return null;
@@ -148,22 +160,36 @@ function arrange(items: Item[], groupKey: string, sort: (a: Item, b: Item) => nu
     return it.parent;
   };
   const children = new Map<string, Item[]>();
+  const guests = new Map<string, Item[]>();
   const top: Item[] = [];
   for (const it of sorted) {
+    const h = hosts.get(it.key);
     const p = parentOf(it);
-    if (p) children.set(p, [...(children.get(p) ?? []), it]);
+    if (h) guests.set(h, [...(guests.get(h) ?? []), it]);
+    else if (p) children.set(p, [...(children.get(p) ?? []), it]);
     else top.push(it);
   }
+  for (const g of guests.values()) g.sort(PR_ORDER);
+  // under "updated", an issue moves with its PRs (the latest of them decides)
+  const place = (list: Item[]) => orderUnits(list, (it) => unitUpdated(it, guests.get(it.key) ?? []), sortSetting);
   const out: Row[] = [];
   const walk = (it: Item, depth: number) => {
-    out.push({ id: `${it.key}@${groupKey}`, item: it, depth });
-    for (const c of children.get(it.key) ?? []) walk(c, depth + 1);
+    out.push({ id: `${it.key}@${groupKey}`, item: it, depth, under: null });
+    for (const pr of guests.get(it.key) ?? []) out.push({ id: `${pr.key}@${groupKey}`, item: pr, depth: depth + 1, under: it.key });
+    for (const c of place(children.get(it.key) ?? [])) walk(c, depth + 1);
   };
-  for (const it of top) walk(it, 0);
+  for (const it of place(top)) walk(it, 0);
   return out;
 }
 
-export function buildTable(items: Item[], projects: ProjectMeta[], settings: TableSettings, today: string): Table {
+export function buildTable(
+  items: Item[],
+  projects: ProjectMeta[],
+  settings: TableSettings,
+  today: string,
+  /** PRs right under the issue they are linked to (GitHub#155) */
+  prsUnderIssues = false,
+): Table {
   let slices: Slice[] | null = null;
   let slice: string | null = null;
   let picked = items;
@@ -181,7 +207,7 @@ export function buildTable(items: Item[], projects: ProjectMeta[], settings: Tab
 
   if (settings.groupBy === 'none') {
     return {
-      groups: [{ key: 'all', title: '全部', subtitle: null, current: false, empty: false, rows: arrange(picked, 'all', sort, settings.hierarchy) }],
+      groups: [{ key: 'all', title: '全部', subtitle: null, current: false, empty: false, rows: arrange(picked, 'all', settings.sort, sort, settings.hierarchy, prsUnderIssues) }],
       slices,
       slice,
       itemCount: picked.length,
@@ -193,6 +219,6 @@ export function buildTable(items: Item[], projects: ProjectMeta[], settings: Tab
   const groups = [...seeds.values()]
     .filter((s) => s.items.length > 0)
     .sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.key < b.key ? -1 : 1))
-    .map((s) => ({ key: s.key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, rows: arrange(s.items, s.key, sort, settings.hierarchy) }));
+    .map((s) => ({ key: s.key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, rows: arrange(s.items, s.key, settings.sort, sort, settings.hierarchy, prsUnderIssues) }));
   return { groups, slices, slice, itemCount: picked.length };
 }

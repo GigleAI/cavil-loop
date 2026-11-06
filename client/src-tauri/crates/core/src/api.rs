@@ -7,6 +7,7 @@
 use crate::engine::{BeginOut, Engine, FinishOut, RequestError, StartOut};
 use crate::http::HttpRequest;
 use crate::store::SECRET_KEYS;
+use crate::zoom;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -126,6 +127,16 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             Ok(Value::Null)
         }
         "openExternal" => e.open_external(s(&a, "url")?).await.map(|_| Value::Null),
+        // page zoom (GitHub#155): "get" reads the kept level, "in" / "out" / "reset" step and keep it
+        "zoom" => {
+            let step = s(&a, "step")?;
+            if step == "get" {
+                return Ok(json!({ "percent": zoom::saved(e.store()) }));
+            }
+            let step = zoom::Step::parse(step).ok_or_else(|| format!("未知的缩放：{step}"))?;
+            let (percent, kept) = zoom::apply(e.store(), step);
+            Ok(json!({ "percent": percent, "kept": kept.err() }))
+        }
         other => Err(format!("未知命令：{other}")),
     }
 }

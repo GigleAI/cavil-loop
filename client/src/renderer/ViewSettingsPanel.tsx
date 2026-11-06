@@ -16,8 +16,9 @@ const SORT_LABEL: Record<SortField, string> = {
 };
 
 /**
- * View settings, saved at once. Sort applies to both layouts (card order on
- * the board, row order in the table); the rest is the table's.
+ * View settings, saved at once. Sort and "PRs under their issue" apply to
+ * both layouts (card order on the board, row order in the table); the rest is
+ * the table's.
  */
 export function ViewSettingsPanel({ view }: { view: ViewSettings }) {
   const t = view.table;
@@ -54,6 +55,10 @@ export function ViewSettingsPanel({ view }: { view: ViewSettings }) {
           <option value="desc">从新到旧 / 从大到小</option>
           <option value="asc">从旧到新 / 从小到大</option>
         </select>
+      </label>
+      <label className="chip" title="同一列 / 同一组里，PR 紧跟在它关联的 issue 下面">
+        <input type="checkbox" data-testid="prs-under-issues" checked={view.prsUnderIssues} onChange={(e) => api().setView({ prsUnderIssues: e.target.checked })} />
+        PR 跟在关联 issue 下面
       </label>
       {table && (
       <>

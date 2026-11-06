@@ -39,7 +39,17 @@ export const DEFAULT_VIEW: ViewSettings = {
   query: '',
   table: DEFAULT_TABLE,
   imported: null,
+  prsUnderIssues: true,
+  detailWidth: 560,
 };
+
+/** The floating detail panel: narrowest it can be dragged to, and the widest any saved value may be. */
+export const DETAIL_MIN_WIDTH = 360;
+export const DETAIL_MAX_WIDTH = 4000;
+
+function validWidth(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= DETAIL_MIN_WIDTH && v <= DETAIL_MAX_WIDTH;
+}
 
 /** A change from the UI: any top-level setting, and any part of the table settings. */
 export type ViewPatch = Partial<Omit<ViewSettings, 'table'>> & { table?: Partial<TableSettings> };
@@ -75,7 +85,9 @@ export function isValidView(v: unknown): v is ViewSettings {
     LAYOUTS.includes(x.layout) &&
     typeof x.query === 'string' &&
     validTable(x.table) &&
-    (x.imported === null || (typeof x.imported === 'object' && Array.isArray(x.imported.notes)))
+    (x.imported === null || (typeof x.imported === 'object' && Array.isArray(x.imported.notes))) &&
+    typeof x.prsUnderIssues === 'boolean' &&
+    validWidth(x.detailWidth)
   );
 }
 
@@ -101,5 +113,7 @@ export function normalizeView(raw: unknown): ViewSettings {
     query: pick('query', (v) => typeof v === 'string'),
     table,
     imported: pick('imported', (v) => v === null || (typeof v === 'object' && Array.isArray(v.notes))),
+    prsUnderIssues: pick('prsUnderIssues', (v) => typeof v === 'boolean'),
+    detailWidth: pick('detailWidth', validWidth),
   };
 }
