@@ -1,7 +1,7 @@
 {
   "name": "cavil-loop-client",
   "productName": "Cavil Loop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Local GitHub Project board client for cavil-loop",
   "license": "MIT",
@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run && bash test/mutation/run.sh",
     "test:mutation": "MUTATION=1 bash test/mutation/run.sh",
-    "test:rust": "cd src-tauri && cargo test --workspace --exclude cavil-loop-client",
+    "test:rust": "node scripts/build.mjs && cd src-tauri && cargo test --workspace",
     "test:e2e": "node scripts/build.mjs --test-bridge && playwright test",
     "start": "tauri dev",
     "dist:mac": "tauri build --bundles app && node scripts/make-dmg.mjs",

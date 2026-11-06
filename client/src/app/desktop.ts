@@ -1,0 +1,27 @@
+// Notifications, the Dock badge, launch at login and the sync beat, as the app
+// logic sees them (GitHub#139 / #169). The shell implements them per OS
+// (src-tauri/src/desktop.rs); the controller only decides *what* to show.
+// None of this touches the GitHub credential.
+
+/** What a notification is about; a click on an item notification opens that item. */
+export type Alert =
+  | { kind: 'item'; key: string; url: string; title: string; body: string }
+  | { kind: 'summary'; title: string; body: string };
+
+/** What the system did with one notification. */
+export type Delivery = { ok: true } | { ok: false; error: string };
+
+/** Something the shell tells the window: time for a sync round, or a notification was clicked. */
+export type DesktopEvent = { kind: 'tick' } | { kind: 'open'; key: string; url: string };
+
+export interface Desktop {
+  /** resolves with what the system did (macOS may refuse: not allowed in System Settings) */
+  notify(a: Alert): Promise<Delivery>;
+  /** 0 clears the badge */
+  setBadge(count: number): Promise<void>;
+  /** launch at login: on / off; null = this platform cannot */
+  loginItem(): Promise<boolean | null>;
+  setLoginItem(on: boolean): Promise<void>;
+  /** the next event from the shell (waits until there is one; never rejects for "nothing yet") */
+  nextEvent(): Promise<DesktopEvent>;
+}

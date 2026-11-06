@@ -25,7 +25,8 @@ await vite({
   plugins: [react()],
   logLevel: 'warn',
   define: { CAVIL_TEST_BRIDGE: JSON.stringify(testBridge) },
-  // macOS 11's WebKit (Safari 14) is the oldest engine the app runs on
+  // the app requires macOS 14 (Safari 17); the window is still built for Safari 14's engine —
+  // a wider margin than needed, kept so the old-engine UI test keeps meaning something
   build: { outDir, emptyOutDir: true, sourcemap: testBridge, target: ['safari14', 'chrome110'] },
 });
 console.log(`built ${outDir.slice(root.length + 1)}/`);

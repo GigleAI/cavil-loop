@@ -263,6 +263,14 @@ export interface AppState {
   handBack: HandBackLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */
   mergePrefs: MergePrefs;
+  /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed (= the Dock badge) */
+  pendingCount: number;
+  /** launch at login: on / off, null = this platform cannot */
+  launchAtLogin: boolean | null;
+  /** the system refused the latest notification (e.g. not allowed in System Settings); null = the latest one went out */
+  notifyProblem: string | null;
+  /** a notification was clicked: open this item's detail (`seq` changes on every click) */
+  focus: { key: string; seq: number } | null;
 }
 
 export interface BoardData {

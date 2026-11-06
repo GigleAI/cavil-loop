@@ -3,6 +3,7 @@ import { App } from './App';
 import { Controller } from '../app/controller';
 import { localApi } from '../app/localApi';
 import type { Backend, BackendInit } from '../backend/backend';
+import type { Desktop } from '../app/desktop';
 import './styles.css';
 
 // The app logic runs here, in the window; the back end (Rust) holds the
@@ -12,20 +13,24 @@ declare const CAVIL_TEST_BRIDGE: boolean;
 
 async function boot() {
   let backend: Backend;
+  let desktop: Desktop;
   let mounted: (detail: string) => Promise<boolean>;
   if (CAVIL_TEST_BRIDGE) {
     const bridge = await import('../backend/testBridge');
     backend = bridge.bridgeBackend();
+    desktop = bridge.bridgeDesktop();
     mounted = async () => false;
   } else {
     const tauri = await import('../backend/tauri');
     backend = tauri.tauriBackend;
+    desktop = tauri.tauriDesktop;
     mounted = tauri.mounted;
   }
   const init = await backend.call<BackendInit>('init');
-  // UI-test builds: the 60 s round never fires during a test, as when it ran on the real clock in
-  // Electron's main process (a test that fakes the window's clock must not trigger rounds by it)
-  const controller = new Controller({ backend, endpoints: init.endpoints, ...(CAVIL_TEST_BRIDGE ? { syncIntervalMs: 86_400_000 } : {}) }, init);
+  // The sync beat comes from the shell (src-tauri/src/desktop.rs), not from a timer in this window:
+  // a hidden window's timers are slowed down by the web engine, the shell's are not (GitHub#169).
+  // UI-test builds get their beats from the test, so no round fires by itself during a test.
+  const controller = new Controller({ backend, endpoints: init.endpoints, desktop }, init);
   window.cavil = localApi(controller, backend);
   createRoot(document.getElementById('root')!).render(<App />);
   // the packaged-app smoke test: the views mounted and the back end answered through IPC
@@ -33,8 +38,8 @@ async function boot() {
   const rootUp = Boolean(document.querySelector('[data-testid="app-root"]'));
   const smoke = await mounted(`${rootUp ? 'mounted' : 'NOT mounted'}; back end answered (${Object.keys(init.settings).length} settings, persistent=${init.persistent})`);
   if (smoke) return;
+  void controller.runDesktopEvents();
   await controller.start();
-  controller.startTimer();
 }
 
 void boot();
