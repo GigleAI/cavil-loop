@@ -3601,6 +3601,7 @@ AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""; AUTOPILOT_ISSUE=""; 
 AUTOPILOT_PR_KIND=""; AUTOPILOT_PR_N=""
 AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
 AUTOPILOT_PR_EVENTS=""; AUTOPILOT_PLACE=""; AUTOPILOT_PLACE_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
+AUTOPILOT_PLACE_COPY=""; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
 
 # 托管标签配了（不管复审关卡在不在）
 autopilot_configured() { [ -n "$LABEL_AUTOPILOT" ]; }
@@ -3840,7 +3841,7 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     local num="$1" ij="$2" pr="${3:-}" pj="${4:-}" rc
     AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""
     AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""
-    AUTOPILOT_PR_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
+    AUTOPILOT_PR_EVENTS=""; AUTOPILOT_AUTH_CANDS=""; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
     if [ -z "$num" ]; then
         autopilot_authorization_pr_only "$pr" "$pj"; return $?
     fi
@@ -3867,7 +3868,9 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
         return 0
     fi
     autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"
+    # PR 上 daemon 补的副本（GitHub#190）不是授权，当作没挂
+    autopilot_place_strip_copy "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
     # 两处的候选授权（现在挂着的那一处最后一次打上），逐个判：操作人合格？晚于另一处所有的摘掉？
     local cand kind cnum other here when ok_kind="" ok_num="" ok_place="" ok_t="" ok_actor="" unknown="" deny_kind="" deny_reason=""
     for cand in issue pr; do
@@ -3905,7 +3908,11 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     if [ -n "$unknown" ]; then AUTOPILOT_DENY=""; AUTOPILOT_REASON="$unknown"; return 2; fi
     if [ -n "$deny_kind" ]; then AUTOPILOT_DENY="$deny_kind"; AUTOPILOT_REASON="$deny_reason"; return 1; fi
     AUTOPILOT_DENY=no-label
-    AUTOPILOT_REASON="托管标签 \`$LABEL_AUTOPILOT\` 在 issue #$num 或 PR #$pr 上被摘掉过（已叫停），之后没有维护者亲手重新打上"
+    if [ -n "$AUTOPILOT_PR_COPY" ] && [ "$(printf '%s' "$ip" | jq -r '.present')" != true ]; then
+        AUTOPILOT_REASON="issue #$num 上没有托管标签 \`$LABEL_AUTOPILOT\`；PR #$pr 上那个是 loop 自己的账号打的（daemon 从 issue 补过来的副本，或 worker 打的），不算授权"
+    else
+        AUTOPILOT_REASON="托管标签 \`$LABEL_AUTOPILOT\` 在 issue #$num 或 PR #$pr 上被摘掉过（已叫停），之后没有维护者亲手重新打上"
+    fi
     return 1
 }
 
@@ -3921,7 +3928,13 @@ autopilot_authorization_pr_only() {   # <PR 编号> <PR JSON>
         AUTOPILOT_DENY=no-label; AUTOPILOT_REASON="PR #$pr 上的托管标签 \`$LABEL_AUTOPILOT\` 已摘掉（已叫停）"; return 1
     fi
     autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"
+    autopilot_place_strip_copy "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
+    if [ -n "$AUTOPILOT_PR_COPY" ]; then
+        AUTOPILOT_DENY=no-label
+        AUTOPILOT_REASON="PR #$pr 上的托管标签是 loop 自己的账号打的（daemon 补的副本，或 worker 打的），不算授权"
+        return 1
+    fi
     rc=0; autopilot_actor_check "$(printf '%s' "$pp" | jq -r '.lab.actor')" "$(printf '%s' "$pp" | jq -r '.lab.atype')" || rc=$?
     [ "$rc" = 0 ] || return "$rc"
     actor="$AUTOPILOT_ACTOR"; AUTOPILOT_ACTOR=""
@@ -3991,6 +4004,28 @@ autopilot_place_read() {   # <编号> <条目 JSON> <称呼>
         *) AUTOPILOT_REASON="$what 的标签记录（最后一次是打上）和当前标签（没挂）对不上"; return 2 ;;
     esac
     AUTOPILOT_PLACE="$out"
+}
+
+# PR 上的托管标签是不是 daemon 补过去的副本（GitHub#190）：PR 上最后一次打上托管标签的是 loop 的写入账号。
+# 副本只是让 PR 列表看得出这是托管 PR，不是授权：在 AUTOPILOT_PLACE 上原地当作没挂（present=false），
+# AUTOPILOT_PLACE_COPY = 那次打标签在这一处全部事件里的位置。worker 违规打在 PR 上的也是这个账号，同样处理。
+# 只用在 PR 上：issue 上被 loop 账号打的照旧判「不生效」并说明。
+# 在调用方自己的 shell 里调（紧跟 autopilot_place_read）。return 2 = 写入账号读不到，判不了。
+autopilot_place_strip_copy() {   # <称呼>
+    local me actor
+    AUTOPILOT_PLACE_COPY=""
+    [ "$(printf '%s' "$AUTOPILOT_PLACE" | jq -r '.present' 2>/dev/null)" = true ] || return 0
+    actor=$(printf '%s' "$AUTOPILOT_PLACE" | jq -r '.lab.actor // ""' 2>/dev/null) || actor=""
+    me=$(write_identity_login)
+    if [ -z "$me" ]; then
+        AUTOPILOT_REASON="读不到 loop 的写入账号，无法判断 $1 上的托管标签是不是 daemon 补的"; return 2
+    fi
+    [ -n "$actor" ] && [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$me")" ] || return 0
+    AUTOPILOT_PLACE_COPY=$(printf '%s' "$AUTOPILOT_PLACE" | jq -r '.lab.idx // ""' 2>/dev/null) || AUTOPILOT_PLACE_COPY=""
+    if [ -z "$AUTOPILOT_PLACE_COPY" ]; then
+        AUTOPILOT_REASON="读不懂 $1 的标签记录"; return 2
+    fi
+    AUTOPILOT_PLACE=$(printf '%s' "$AUTOPILOT_PLACE" | jq -c '.present = false | .copy = true')
 }
 
 # 打托管标签的这个人算不算维护者授权：User 类型、不是 loop 的写入账号、不是外部需求机器人账号、有写权限。
@@ -4342,6 +4377,13 @@ autopilot_permit() {   # <state_file> <PR 编号>
            return 0 ;;
         *) AP_REASON="$AUTOPILOT_REASON"; return 0 ;;
     esac
+    # 绑 issue 的托管 PR 上必须挂着托管标签才合（GitHub#190）：PR 列表上要看得出它会被自动合并、能在 PR 上
+    # 叫停。标签由每轮的补标签那一趟（autopilot_mirror_tick，排在合并之前）从 issue 补过来；没补上就算判不了，
+    # 下轮再看，连续判不了到上限交人
+    if [ "$AP_KIND" = issue ] && ! autopilot_has_label "$pj"; then
+        AP_REASON="PR #$pr 上还没有托管标签 \`$LABEL_AUTOPILOT\`（daemon 每轮从 issue #$AP_N 补过来），补上之前不合并"
+        return 0
+    fi
     AP_HEAD=$(printf '%s' "$pj" | jq -r '.head.sha // ""')
     AP_BASE=$(printf '%s' "$pj" | jq -r '.base.ref // ""')
     AP_REF=$(printf '%s' "$pj" | jq -r '.head.ref // ""')
@@ -4571,6 +4613,9 @@ autopilot_takeover_permit() {   # <PR 编号>
         1) if [ "$AUTOPILOT_DENY" = no-label ]; then AT_V=skip; else AT_V=deny; fi; return 0 ;;
         *) AT_REASON="$AUTOPILOT_REASON"; return 0 ;;
     esac
+    # 没有流程标签时只接手「PR 自己挂着」的：daemon 补过去的副本不算 PR 自己挂着（GitHub#190）——
+    # 否则 worker 刚开、还没打流程标签的 PR 会被副本带着绕过「只有 issue 挂着时不碰」
+    if [ "$AT_MODE" = none ] && [ -n "$AUTOPILOT_PR_COPY" ]; then AT_V=skip; return 0; fi
     if [ "$AT_MODE" = human ]; then
         # 每一条成立的授权都和 PR 上最后一次打 pending/human 比：同在 PR 上按记录顺序比，在 issue 上按时间比
         # （同秒 = 不在后）。有一条在后就接手，用的就是那一条；没有在后的、但有比不出的 → 判不了；否则叫停
@@ -4855,6 +4900,12 @@ autopilot_takeover_tick() {   # <state_file>
         if [ -n "$(autopilot_state_get "$sf" '.takeover_handoff[$p]' --arg p "$num")" ]; then
             autopilot_takeover_handoff "$sf" "$num" "$key" || true; continue
         fi
+        # 快照里除托管标签和 pending/human 外还挂着流程标签：接手许可第一步就会判「正在进行的工作，不接手」，
+        # 不为它多读 PR（GitHub#190 起托管 PR 自己都挂着 daemon 补的托管标签，不筛的话每个都要读一次）
+        if autopilot_labels_in_flow "$(printf '%s' "$pj" | jq -r --arg L "$LABEL_AUTOPILOT" --arg H "$LABEL_PENDING_HUMAN" \
+                '[.labels[]?.name | select(. != $L and . != $H)] | join(",")' 2>/dev/null)"; then
+            continue
+        fi
         if ! autopilot_has_label "$pj"; then
             # 只挂着 pending/human：绑定的 issue 在快照里挂着托管标签才算候选
             [ "$n" != "-" ] || continue
@@ -4865,6 +4916,186 @@ autopilot_takeover_tick() {   # <state_file>
             continue
         fi
         autopilot_takeover_one "$sf" "$num" "$key" || true
+    done <<< "$rows"
+    return 0
+}
+
+# ── 托管 PR 上补一份托管标签（GitHub#190）──
+# issue 进到 PR 阶段后，PR 上也挂一个托管标签：PR 列表上看得出哪些 PR 会被自动合并，也能直接在 PR 上
+# 摘标签叫停。issue 上维护者亲手打的那个原样保留（它才是授权）；PR 上这份由 daemon 的写入账号打，
+# 判授权时当作没挂（autopilot_place_strip_copy），不授权、不触发接手、不引出「不生效」说明。
+# 授权明确不成立之后（标签被摘、issue 关了…），daemon 把自己补的那份收回；维护者亲手打的从不动。
+#
+# 补和收回是同一个纯判定 autopilot_mirror_judge，和合并前许可一样判两次：第一次判出 add / remove 之后，
+# 紧挨着写之前全部现读再判一次，结论和下面每个身份字段都一样才写；变了、缺字段、读不到 → 本轮不写、不缓存。
+#   PR：是否打开 / 已合并、最新提交、目标分支、来源仓库、分支名、托管标签在不在
+#   绑定：issue 编号（同 autopilot_pr_kind）；issue：状态；两处有没有 pending/human
+#   副本：PR 上最后一次打上托管标签的那条记录的位置（两次之间有人亲手重打，位置就变了）
+#   授权：结论、所依据那次打标签的位置
+# 结果在全局变量里（必须在调用方自己的 shell 里调）：AM_V = add / remove / none / unknown；AM_ID；AM_REASON
+autopilot_mirror_judge() {   # <PR 编号>
+    local pr="$1" pj ij="" state merged head base repo ref pl kind n="" wn istate="-" ph ih copy="-" rc
+    AM_V=unknown; AM_ID=""; AM_REASON=""
+    if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ] \
+       || ! printf '%s' "$pj" | jq -e '(.state | type) == "string" and (.merged | type) == "boolean" and (.labels | type) == "array"' >/dev/null 2>&1; then
+        AM_REASON="读不到 PR #$pr（或缺字段）"; return 0
+    fi
+    state=$(printf '%s' "$pj" | jq -r '.state'); merged=$(printf '%s' "$pj" | jq -r '.merged')
+    if [ "$state" != open ] || [ "$merged" != false ]; then AM_V=none; return 0; fi
+    head=$(printf '%s' "$pj" | jq -r '.head.sha // ""'); base=$(printf '%s' "$pj" | jq -r '.base.ref // ""')
+    repo=$(printf '%s' "$pj" | jq -r '.head.repo.full_name // ""'); ref=$(printf '%s' "$pj" | jq -r '.head.ref // ""')
+    if [ -z "$head" ] || [ -z "$base" ] || [ -z "$repo" ] || [ -z "$ref" ]; then
+        AM_REASON="PR #$pr 的提交 / 目标分支 / 来源 / 分支名读不全"; return 0
+    fi
+    pl=no; autopilot_has_label "$pj" && pl=yes
+    autopilot_pr_kind "$pj"; kind="$AUTOPILOT_PR_KIND"
+    if [ "$kind" = issue ]; then
+        n="$AUTOPILOT_PR_N"; wn="$n"
+    else
+        wn=$(pr_to_issue_num "$pr" "$ref" "$(printf '%s' "$pj" | jq -r '.body // ""')")
+    fi
+    # 多机：别的机器负责的活不碰（和合并那一趟同一条规则）
+    if ! worker_is_ours "$wn"; then AM_V=none; return 0; fi
+    if [ "$kind" = issue ]; then
+        if ! ij=$(gh api "repos/$REPO/issues/$n" 2>/dev/null) || [ -z "$ij" ] \
+           || ! printf '%s' "$ij" | jq -e '(.state | type) == "string" and (.labels | type) == "array"' >/dev/null 2>&1; then
+            AM_REASON="读不到 issue #$n（或缺字段）"; return 0
+        fi
+        istate=$(printf '%s' "$ij" | jq -r '.state')
+    fi
+    ph=no; printf '%s' "$pj" | jq -e --arg H "$LABEL_PENDING_HUMAN" 'any(.labels[]?; .name == $H)' >/dev/null 2>&1 && ph=yes
+    ih=no; [ -n "$ij" ] && printf '%s' "$ij" | jq -e --arg H "$LABEL_PENDING_HUMAN" 'any(.labels[]?; .name == $H)' >/dev/null 2>&1 && ih=yes
+    if [ "$pl" = no ]; then
+        # 补：只给绑 issue、两处都没叫停、授权成立的 PR
+        if [ "$kind" != issue ] || [ "$istate" != open ] || [ "$ph" = yes ] || [ "$ih" = yes ] \
+           || ! autopilot_has_label "$ij"; then
+            AM_V=none; return 0
+        fi
+        rc=0; autopilot_authorization "$n" "$ij" "$pr" "$pj" || rc=$?
+        case "$rc" in
+            0) AM_V=add ;;
+            1) AM_V=none; return 0 ;;
+            *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
+        esac
+    else
+        # 收回：PR 上的是副本，而且授权明确不成立（判不了不算）
+        autopilot_place_read "$pr" "$pj" "PR #$pr" || { AM_REASON="$AUTOPILOT_REASON"; return 0; }
+        autopilot_place_strip_copy "PR #$pr" || { AM_REASON="$AUTOPILOT_REASON"; return 0; }
+        if [ -z "$AUTOPILOT_PLACE_COPY" ]; then AM_V=none; return 0; fi
+        copy="$AUTOPILOT_PLACE_COPY"
+        rc=0; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
+        case "$kind" in
+            issue) autopilot_authorization "$n" "$ij" "$pr" "$pj" || rc=$? ;;
+            pr)    autopilot_authorization "" "" "$pr" "$pj" || rc=$? ;;
+            *)     rc=1; AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_IDX="" ;;   # 不合托管条件：没有授权可言
+        esac
+        case "$rc" in
+            0) AM_V=none; return 0 ;;
+            1) ;;
+            *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
+        esac
+        # 授权判定自己又读了一遍 PR 的标签记录（PR #203 代码复审第 1 轮）：两次读之间维护者可能亲手重打了，
+        # 授权那次读到的已经不是副本、甚至因为和 issue 上的摘掉同一秒而仍判「不成立」。「要删的仍是自己那份」
+        # 只能由同一份证据证明：这一次判定里读过几遍 PR 的标签记录，每一遍都必须指向同一条副本记录，否则判不了。
+        # 授权判定没读 PR（issue 关了之类提前返回）时，这次判定只有上面那一遍，证据本来就是同一份。
+        if [ -n "$AUTOPILOT_PR_COPY_READ" ] && [ "$AUTOPILOT_PR_COPY" != "$copy" ]; then
+            AM_REASON="同一次判定里两遍读到的 PR #$pr 托管标签记录不一致（副本位置 ${copy} → ${AUTOPILOT_PR_COPY:-不是副本}），本轮不收回"
+            return 0
+        fi
+        AM_V=remove; AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_IDX=""
+    fi
+    AM_ID="$state|$merged|$head|$base|$repo|$ref|$pl|$kind|$n|$istate|$ph|$ih|$copy|$AUTOPILOT_AUTH_KIND|$AUTOPILOT_AUTH_NUM|$AUTOPILOT_AUTH_IDX"
+}
+
+autopilot_mirror_one() {   # <state_file> <PR 编号> <缓存键>
+    local sf="$1" pr="$2" key="$3" v id enc out
+    autopilot_mirror_judge "$pr"
+    case "$AM_V" in
+        none) autopilot_state_set "$sf" '.mirror[$p] = $k' --arg p "$pr" --arg k "$key" || true; return 0 ;;
+        add|remove) ;;
+        *) log "托管：PR #$pr 要不要补 / 收回托管标签判不了（$AM_REASON），下轮再看"; return 0 ;;
+    esac
+    v="$AM_V"; id="$AM_ID"
+    # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
+    autopilot_mirror_judge "$pr"
+    if [ "$AM_V" != "$v" ] || [ "$AM_ID" != "$id" ]; then
+        log "托管：PR #$pr 判定$( [ "$v" = add ] && echo 补 || echo 收回)托管标签之后有变化（重判结果 $AM_V${AM_REASON:+：$AM_REASON}），本轮不动"
+        return 0
+    fi
+    if [ "$v" = add ]; then
+        run_gh "托管：给 PR #$pr 补托管标签 $LABEL_AUTOPILOT（来自 issue）" \
+            gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_AUTOPILOT" >/dev/null || return 0
+        AUTOPILOT_ACTED=1
+        # 读回：返回成功不等于标签真挂上了；没挂上下轮再补，合并前许可也会拦住
+        if gh api "repos/$REPO/issues/$pr" 2>/dev/null | jq -e --arg L "$LABEL_AUTOPILOT" 'any(.labels[]?; .name == $L)' >/dev/null 2>&1; then
+            log "托管：PR #$pr 补上托管标签 $LABEL_AUTOPILOT（授权在 $(autopilot_auth_where)）"
+        else
+            log "  ⚠️ 托管：PR #$pr 补托管标签的请求返回成功，读回却没有（或读不到），下轮再补"
+        fi
+        return 0
+    fi
+    enc=$(printf '%s' "$LABEL_AUTOPILOT" | jq -sRr @uri)
+    if out=$(gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" 2>&1); then
+        :
+    else
+        case "$out" in
+            *"HTTP 404"*) ;;   # 已经不在了：目标就是没有
+            *) log "  ⚠️ 托管：收回 PR #$pr 上的托管标签副本失败，下轮再试：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+               return 0 ;;
+        esac
+    fi
+    AUTOPILOT_ACTED=1
+    log "托管：PR #$pr 的托管授权已不成立，收回 daemon 补在 PR 上的托管标签 $LABEL_AUTOPILOT"
+}
+
+# 每轮：补 / 收回托管标签。候选只在本轮快照里本地筛，普通 PR 一个 GitHub 调用都不多花：
+#   补    PR 没挂托管标签，按绑定规则绑到一个挂着托管标签、仍打开的 issue
+#   收回  PR 挂着托管标签，而且（没绑 issue，或绑定的 issue 不在打开列表里、没挂托管标签）——是不是副本、
+#         授权还在不在，由判定现读。issue 还挂着托管标签的不当候选：健康的托管 PR 每轮零调用
+# 判过「不动」的按 PR 更新时间 + 绑定的 issue 编号 + 该 issue 的更新时间记下（打 / 摘标签会刷新更新时间），
+# 都没变就不再读标签记录。判不了不缓存。排在接手之后、合并之前：补上标签的 PR 同一轮就能合。
+autopilot_mirror_tick() {   # <state_file>
+    local sf="$1" pages ipages open_nums tmp rows num upd pj n iupd key ilab
+    autopilot_enabled || return 0
+    pages=$(open_snapshot pulls) || return 0
+    ipages=$(open_snapshot issues) || return 0
+    if jq -e '.autopilot.mirror' "$sf" >/dev/null 2>&1 \
+       && open_nums=$(printf '%s' "$pages" | jq -c '[ .[][] | .number | tostring ]' 2>/dev/null); then
+        tmp=$(mktemp)
+        if jq --argjson open "$open_nums" \
+            '.autopilot.mirror = ((.autopilot.mirror // {}) | with_entries(select(.key as $k | $open | index($k))))' \
+            "$sf" > "$tmp" 2>/dev/null; then mv "$tmp" "$sf"; else rm -f "$tmp"; fi
+    fi
+    # 打开的 issue / PR 都没挂托管标签：没有候选
+    if ! printf '%s\n%s' "$pages" "$ipages" | jq -se --arg L "$LABEL_AUTOPILOT" \
+            'any(.[][][]; any(.labels[]?; .name == $L))' >/dev/null 2>&1; then
+        return 0
+    fi
+    rows=$(printf '%s' "$pages" | jq -r '.[][] | "\(.number)\t\(.updated_at // "")"' 2>/dev/null) || return 0
+    while IFS=$'\t' read -r num upd; do
+        [ -n "$num" ] || continue
+        pj=$(printf '%s' "$pages" | jq -c --argjson n "$num" 'first(.[][] | select(.number == $n)) // empty' 2>/dev/null) || pj=""
+        [ -n "$pj" ] || continue
+        n=$(autopilot_pr_binding "$pj" 2>/dev/null) || n="-"
+        iupd="-"
+        if [ "$n" != "-" ]; then
+            iupd=$(printf '%s' "$ipages" | jq -r --argjson n "$n" 'first(.[][] | select(.number == $n) | .updated_at) // "closed"' 2>/dev/null) || iupd="?"
+        fi
+        ilab=no
+        if [ "$n" != "-" ] && printf '%s' "$ipages" | jq -e --argjson n "$n" --arg L "$LABEL_AUTOPILOT" \
+                'any(.[][]; .number == $n and any(.labels[]?; .name == $L))' >/dev/null 2>&1; then
+            ilab=yes
+        fi
+        if autopilot_has_label "$pj"; then
+            [ "$ilab" = no ] || continue
+        else
+            [ "$ilab" = yes ] || continue
+        fi
+        key="$AUTOPILOT_JUDGE_REV|$upd|$n|$iupd"
+        if [ "$iupd" != "?" ] && [ "$(autopilot_state_get "$sf" '.mirror[$p]' --arg p "$num")" = "$key" ]; then
+            continue
+        fi
+        autopilot_mirror_one "$sf" "$num" "$key" || true
     done <<< "$rows"
     return 0
 }

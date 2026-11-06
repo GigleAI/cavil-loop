@@ -523,6 +523,22 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 - **Starting it**: the autopilot label alone is enough — an issue carrying it and no state /
   trigger label is dispatched as if it had `pending/agent`. It is a *mode* label, not a
   trigger: it is never removed and stays visible on the board.
+- **The PR carries it too** (GitHub#190): once an autopilot issue has a PR bound to it, the daemon
+  copies the autopilot label onto that PR (checked every round, so a failed write is retried), so the
+  PR list shows which PRs will be merged automatically and you can stop it right on the PR by
+  removing the label. The issue keeps its own label — that one is the authorization. The copy is
+  added by the loop's write account and therefore **never counts as authorization**: it does not
+  start a takeover, does not trigger the "label not accepted" comment, and a worker adding the label
+  to its own PR gains nothing. Each add / remove is judged twice, the second time from fresh reads
+  right before writing (PR open / merged, head commit, target branch, source repo / branch, bound
+  issue and its state, `pending/human` on either side, the authorization event, and — for a removal —
+  the exact label event of the copy); any change or unreadable field means no write this round.
+  Once the authorization is definitely gone (label removed on the issue or PR, issue closed, PR no
+  longer bound…) the daemon removes **its own** copy again; a label a maintainer added by hand on the
+  PR is never removed. A bound PR is **not merged while it lacks the label**: that counts as an
+  undecidable round, so `AUTOPILOT_UNKNOWN_MAX` rounds without it hand the PR to a human. Only PRs
+  this machine works on are touched (same ownership rule as the merge step). After autopilot is
+  turned off the copies are left in place (they do nothing; remove them by hand if you like).
 - **Design**: still written and posted on the issue, multiple-choice questions use their
   defaults, and it always goes to review (whatever `REVIEW_DESIGN_PROPOSALS` says). A passing
   design review flips the issue back to `pending/agent` and the worker starts building.
@@ -599,6 +615,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 | The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly and the body closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
 | PR-only: authorization comes from the PR alone (drop the issue side of the next row), and the PR description at label time (that revision in the edit history) also meets the previous row | `pending/human` |
 | Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
+| The PR itself carries the autopilot label (for a bound PR the daemon copies it from the issue, see above; GitHub#190) | undecidable this round (→ `pending/human` after `AUTOPILOT_UNKNOWN_MAX` rounds) |
 | Nobody added `pending/human` to the issue or the PR | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
 | The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
 | The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |
@@ -658,7 +675,7 @@ State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / targ
 unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handoff`: PRs judged "no takeover" with their
 cache key (the values of `denied` and `takeover` carry a judging-rules revision, so after an upgrade that relaxes a rule the
-old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished). Like `requester_bot_done_queue` it is not in the migration loop
+old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished; `mirror`: PRs judged "nothing to copy / remove" with the same kind of cache key, GitHub#190). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
 
 ### Poll the repo from one machine only
