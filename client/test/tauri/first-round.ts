@@ -1,6 +1,6 @@
 // When has the app's first complete sync round of this start been taken (GitHub#186)?
 //
-// The background tests (test/tauri/background.spec.ts, test/mac/background.spec.ts) put a label
+// The background tests (test/tauri/background.spec.ts) put a label
 // on GitHub and require that item's own notification and the badge +1. That only holds for a
 // label put on *after* the first complete read of the source: what that read already finds is
 // the baseline (GitHub#139) and goes into one summary notification, never one per item. A badge

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLayer, useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
+import { MODAL } from './outsideClick';
 
 /**
  * A modal question. Nothing is sent to GitHub until "confirm" is clicked (or ⌘↩, which clicks it).
@@ -48,7 +49,7 @@ export function ConfirmDialog({
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => box.current?.focus(), []);
   return (
-    <div className="modal-back" data-testid="confirm-dialog" onClick={busy ? undefined : onCancel}>
+    <div className="modal-back" {...{ [MODAL]: '' }} data-testid="confirm-dialog" onClick={busy ? undefined : onCancel}>
       <div
         className="modal"
         role="dialog"

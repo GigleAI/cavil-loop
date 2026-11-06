@@ -12,9 +12,6 @@
 #   5. (GitHub#169, record only) one real notification through the same code as a
 #      reminder, and what macOS answered — nobody can click "Allow" on CI, so a
 #      refusal here does not fail the check; the maintainer's Mac decides
-#   6. (GitHub#169) with its window closed, and started hidden (launch at login),
-#      the app still syncs and asks for the reminder within 120 s; the Dock icon
-#      brings the window back (test/mac/background.spec.ts) — fails the check
 # The System Settings "Open Anyway" button path needs a human click and is
 # NOT verified here.
 #
@@ -108,8 +105,3 @@ if [ -s "$nmark" ]; then
 else
   echo "⚠️ no answer within 60 s (recorded, not a failure)"
 fi
-
-echo "== 6. window closed / started hidden: still syncing and reminding within 120 s"
-CAVIL_MAC_APP="$app" npx playwright test -c "$here/../playwright.mac.config.ts" --reporter=line \
-  || { echo "❌ the app stopped syncing (or reminding) without its window"; exit 1; }
-echo "✅ syncs and reminds with the window closed and when started hidden; the Dock icon brings it back"

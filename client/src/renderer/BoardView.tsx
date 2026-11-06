@@ -10,6 +10,7 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
+import { OPENS_ITEM } from './outsideClick';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { NewIssueDialog } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
@@ -68,6 +69,7 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
       className={`card${card.under ? ' nested' : ''}`}
       data-testid="card"
       data-key={it.key}
+      {...{ [OPENS_ITEM]: '' }}
       data-under={card.under ?? undefined}
       draggable={ops.canWrite}
       onDragStart={(e) => {

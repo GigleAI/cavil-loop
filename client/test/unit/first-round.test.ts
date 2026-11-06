@@ -1,5 +1,5 @@
 // "Has this start's first complete sync round been taken?" — the condition the background tests
-// (test/tauri/background.spec.ts, test/mac/background.spec.ts) wait on before they put a label on
+// (test/tauri/background.spec.ts) wait on before they put a label on
 // GitHub (GitHub#186). Fixed record sequences in the shape the shell writes them
 // (src-tauri/src/desktop.rs: one JSON object per line), so every ordering is staged exactly,
 // including the moment between the summary notification and the badge that follows it, which the

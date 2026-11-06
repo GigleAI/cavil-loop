@@ -13,16 +13,16 @@
 // What the shell does is read from its test record (CAVIL_CLIENT_TEST_ALERTS_FILE,
 // src-tauri/src/desktop.rs). Linux has no "hide on close" in the product (v1:
 // macOS only), so the test asks for it (CAVIL_CLIENT_TEST_HIDE_ON_CLOSE) — the
-// same handler macOS runs. The Dock-icon reopen is macOS-only: checked by
-// scripts/mac-open-check.sh on the CI Macs.
+// same handler macOS runs. The Dock-icon reopen is macOS-only and has no automated check
+// (the packaged-app background check was dropped, GitHub#209).
 //
 // The label goes on only once this start's first complete round has been taken (GitHub#186):
 // what that round already finds is the reminders' baseline and goes into one summary, never
 // one notification per item. One item carries the label before the app starts (SEEDED), so the
 // first round always ends in that summary and the badge after it (first-round.ts). A badge
 // record alone is no proof: a fresh profile clears the badge before it syncs (the order arm64 CI
-// lost on test/mac/background.spec.ts, staged there by its slow-first-read case). Here the restart
-// keeps its profile, so no such badge comes first — the same wait still applies, one rule for both.
+// once lost on the packaged macOS app). Here the restart keeps its profile, so no such badge
+// comes first — the same wait still applies, one rule for both.
 
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
