@@ -13,7 +13,7 @@ import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { importView, pickView } from '../shared/viewImport';
 import { parseSource } from '../shared/sources';
 import { clientIdKindProblem } from '../shared/appKind';
-import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, SYNC_INTERVAL_MS } from '../shared/config';
+import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
 import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
@@ -34,6 +34,8 @@ export interface ControllerDeps {
   endpoints: Endpoints;
   now?: () => number;
   syncIntervalMs?: number;
+  /** how long after the last successful change one more sync round runs (tests shorten / lengthen it) */
+  followUpSyncMs?: number;
   /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
   defaultClientId?: string;
   /** built-in GitHub App Client ID ('' = none, which is production today) */
@@ -113,6 +115,8 @@ export class Controller {
   /** the back end's number for the sign-in attempt in progress (a cancel names it) */
   private pendingRun: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** the one sync round queued after the last successful change (GigleAI/cavil-loop#177) */
+  private followUp: ReturnType<typeof setTimeout> | null = null;
   /** the back end's session: bumps on every login / logout, a round started in another session is dropped */
   private session = 0;
   /** the last sign-out applied here (a refresh ending the sign-in can be reported by several callers) */
@@ -216,6 +220,26 @@ export class Controller {
   stopTimer(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.cancelFollowUp();
+  }
+
+  /**
+   * One more sync round a few seconds after the last successful change: GitHub's
+   * own automations (closed / merged → Done, …) happen on GitHub's side after
+   * the immediate re-read. Several changes in a row push it back: one round, after
+   * the last. Dropped when the session it was queued in is over.
+   */
+  private scheduleFollowUp(session: number): void {
+    this.cancelFollowUp();
+    this.followUp = setTimeout(() => {
+      this.followUp = null;
+      if (session === this.session && this.signedIn) void this.syncNow();
+    }, this.deps.followUpSyncMs ?? FOLLOW_UP_SYNC_MS);
+  }
+
+  private cancelFollowUp(): void {
+    if (this.followUp) clearTimeout(this.followUp);
+    this.followUp = null;
   }
 
   // ---- login -------------------------------------------------------------
@@ -325,6 +349,7 @@ export class Controller {
     this.signedOutAt = session;
     this.session = session;
     this.signedIn = false;
+    this.cancelFollowUp();
     this.dropMirror();
     this.cache.mirror('viewer', null);
     this.set({
@@ -639,6 +664,12 @@ export class Controller {
     return { client: this.client(this.session), session: this.session };
   }
 
+  /** Every item the cache holds for the configured sources, whatever the view shows. */
+  private cachedItems() {
+    const configured = this.state.sources.map((s) => s.key);
+    return mergeSnapshots([...this.snapshots.values()].filter((s) => configured.includes(s.sourceKey)), null).items;
+  }
+
   private findItem(key: string) {
     return this.getBoardData().items.find((i) => i.key === key) ?? null;
   }
@@ -697,7 +728,7 @@ export class Controller {
     const createInProjects = data.projects;
     let outcome;
     try {
-      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects });
+      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects, cached: this.cachedItems() });
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       return { ok: false, error: explainError(e, action.kind), warning: null };
@@ -708,6 +739,8 @@ export class Controller {
         const problem = await this.refreshOne(c.client, c.session, repo, number);
         if (problem) warning = [warning, problem].filter(Boolean).join('；');
       }
+      // GitHub changed something (also when a follow-up step warned): one more round soon
+      if (c.session === this.session) this.scheduleFollowUp(c.session);
     }
     return { ok: true, error: null, warning, ...(outcome.createdKey ? { createdKey: outcome.createdKey } : {}) };
   }

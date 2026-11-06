@@ -434,6 +434,52 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await app.close();
 });
 
+// ---- GitHub#177: after a change in the detail, the list follows ----
+
+test('GitHub#177: merging in the detail shows the issue it closes closed at once; GitHub moving the cards later shows a few seconds after, without a manual sync', async () => {
+  // recorded: PR #146 (Status Backlog) closes issue #139 (Status In progress); both made open in every copy
+  for (const r of env.fake.state.repos.get('gigleai/cavil-loop')!) {
+    if (r.number === 146) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+    if (r.number === 139) r.state = 'open';
+  }
+  for (const p of env.fake.state.projects.get('org/gigleai/11')!)
+    for (const n of p.items.nodes) {
+      if (n.content?.number === 146) Object.assign(n.content, { state: 'OPEN', merged: false });
+      if (n.content?.number === 139) n.content.state = 'OPEN';
+    }
+  // GitHub's Project automation (merged / closed → Done) runs on GitHub's side a second later
+  env.fake.state.w.automation = { delayMs: 1000, status: 'Done' };
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.getByTestId('mode').selectOption('status');
+  const inColumn = (title: string, n: number) => page.locator(`[data-testid="column"][data-title="${title}"] [data-testid="card"][data-key="gigleai/cavil-loop#${n}"]`);
+  await expect(inColumn('In progress', 139)).toBeVisible();
+  await expect(card(page, 139).getByTestId('card-state')).toHaveClass(/\bopen\b/);
+  const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilProjectItems' && !(l.variables as any)?.after).length;
+  const before = rounds();
+
+  await card(page, 146).click();
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  await page.getByTestId('merge').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toContainText('已合并');
+  // at once, with no sync round: the PR merged and the issue it closes closed, both still in their old columns
+  // colours follow GitHub (#174): an issue a merge closed (completed) and a merged PR are both purple ("done")
+  await expect(card(page, 139).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
+  await expect(card(page, 139).getByTestId('card-state')).toContainText('已关闭');
+  await expect(card(page, 146).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
+  await expect(card(page, 146).getByTestId('card-state')).toContainText('已合并');
+  expect(rounds()).toBe(before);
+  await expect(inColumn('In progress', 139)).toBeVisible();
+  await shot(page, '27-merged-issue-closed');
+  // a few seconds later the follow-up round reads what GitHub's automation did: both in Done
+  await expect(inColumn('Done', 139)).toBeVisible({ timeout: 20_000 });
+  await expect(inColumn('Done', 146)).toBeVisible();
+  expect(rounds()).toBeGreaterThan(before);
+  await shot(page, '28-follow-up-done');
+  await app.close();
+});
+
 test('a slow answer for the item you left never lands on the one you are looking at; images only from github.com', async () => {
   const w = env.fake.state.w;
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_138</p>');
