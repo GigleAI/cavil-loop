@@ -1,3 +1,4 @@
+import { stateTone } from '../shared/stateTone';
 import { useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import { buildTable } from '../data/table';
@@ -43,6 +44,11 @@ function open(url: string) {
     e.preventDefault();
     api().openExternal(url);
   };
+}
+
+/** GitHub's state colour of a row */
+function toneOf(it: Item) {
+  return stateTone(it.kind, it.state, it.stateReason, it.isDraft ?? null);
 }
 
 function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number }) {
@@ -184,7 +190,7 @@ export function TableView({
                           ↳{' '}
                         </span>
                       )}
-                      <span className={`state ${r.item.kind} ${r.item.state}`}>{r.item.kind === 'pr' ? 'PR' : r.item.state === 'open' ? '◯' : '✓'}</span>{' '}
+                      <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>{r.item.kind === 'pr' ? 'PR' : r.item.state === 'open' ? '◯' : '✓'}</span>{' '}
                       <a
                         href={r.item.url}
                         data-testid="row-title"

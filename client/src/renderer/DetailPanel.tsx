@@ -10,8 +10,8 @@ import { Person } from './Avatar';
 import { usePanelWidth } from './panelWidth';
 import { textColor } from './colors';
 import { createOpenSession, type OpenSession } from './openSession';
+import { KindBadge } from './KindBadge';
 
-const STATE_LABEL = { open: '开', closed: '已关闭', merged: '已合并' } as const;
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
 const MERGE_STATE: Record<string, string> = {
@@ -194,9 +194,7 @@ export function DetailPanel({
     item.key,
     <>
       <div className="detail-head">
-        <span className={`kind ${item.kind} ${item.state}`}>
-          {item.kind === 'pr' ? 'PR' : 'Issue'} · {STATE_LABEL[item.state]}
-        </span>
+        <KindBadge kind={item.kind} state={item.state} reason={item.stateReason} isDraft={detail?.pr ? detail.pr.isDraft : (item.isDraft ?? null)} />
         <span className="muted small">
           {item.repo} #{item.number}
         </span>
