@@ -66,6 +66,8 @@ export interface WritableState {
   cannotUpdate: Set<string>;
   /** answer the re-read of a body / comment source (CavilTaskSource) with HTTP 502 */
   failTaskSource: boolean;
+  /** adding this label answers HTTP 422 (GitHub#205: a step of "autopilot" that fails) */
+  failLabel: string | null;
   /** repositories where every write answers 403 (the account has read access only) */
   readOnlyRepos: Set<string>;
   /** Project keys (`org/owner/n`) the account may not change: viewerCanUpdate false, mutations refused */
@@ -108,6 +110,7 @@ export function defaultWritable(): WritableState {
     bodies: new Map(),
     bodySources: new Map(),
     cannotUpdate: new Set(),
+    failLabel: null,
     failTaskSource: false,
     readOnlyRepos: new Set(),
     readOnlyProjects: new Set(),
@@ -393,6 +396,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
 
   if (im[1] === 'issues' && method === 'POST' && sub === '/labels') {
     const add: string[] = Array.isArray(body?.labels) ? body.labels : [];
+    if (w.failLabel !== null && add.includes(w.failLabel)) return send(422, { message: 'Validation Failed' }), true;
     const colors = new Map((w.repoLabels.get(key) ?? []).map((l) => [l.name, l.color]));
     for (const name of add) {
       const color = colors.get(name) ?? 'ededed';

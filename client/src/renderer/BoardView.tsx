@@ -575,7 +575,7 @@ export function BoardView({
 
       <div className="board-area">
       {view.layout === 'table' ? (
-        <TableView items={items} projects={data.projects} view={view} today={today} now={now} onOpen={openItem} />
+        <TableView items={items} projects={data.projects} view={view} today={today} now={now} canWrite={canWrite} onOpen={openItem} onNote={setNote} />
       ) : (
       <div className="board">
         {board.lanes

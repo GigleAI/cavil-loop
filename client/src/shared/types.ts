@@ -205,6 +205,8 @@ export interface TableSettings {
   slice: string | null;
   /** sub-issues indented under their parent */
   hierarchy: boolean;
+  /** GitHub#205: column widths dragged by hand, CSS px; a column not in here has its default width */
+  widths: Partial<Record<TableColumn, number>>;
 }
 
 /** What the last import of a saved web view brought in, and what it could not. */
@@ -216,15 +218,17 @@ export interface ImportInfo {
   notes: string[];
 }
 
-/** The two labels "hand back to the agent" swaps (follows the daemon's label names; editable in Settings). */
+/** The labels the "hand to the agent" buttons use (follows the daemon's label names; editable in Settings). */
 export interface HandBackLabels {
   /** removed: the item waits for a human */
   human: string;
   /** added: the daemon picks it up again */
   agent: string;
+  /** added by "autopilot (merge automatically)" before handing over (GitHub#205); '' = no such button */
+  autopilot: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot' };
 
 export interface ViewSettings {
   mode: ColumnMode;
@@ -302,5 +306,8 @@ export interface AppState {
 
 export interface BoardData {
   items: Item[];
+  /** the Projects of the sources ticked in the view */
   projects: ProjectMeta[];
+  /** GitHub#205: every configured Project, ticked or not (what a new issue may join) */
+  allProjects?: ProjectMeta[];
 }

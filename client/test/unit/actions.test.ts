@@ -486,7 +486,7 @@ describe('new issue', () => {
   it('created in the chosen repository with title, body, labels; joins the ticked Projects', async () => {
     const { c } = await ready();
     const next = nextNumber();
-    const r = await c.act({ kind: 'createIssue', repo: REPO, title: '新问题', body: '正文', labels: ['bug'] });
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: '新问题', body: '正文', labels: ['bug'], projects: [PROJECT_KEY] });
     expect(r).toMatchObject({ ok: true, warning: null, createdKey: K(next) });
     const w = fake.writes();
     expect([w[0].method, w[0].path, w[0].body]).toEqual(['POST', '/api/repos/GigleAI/cavil-loop/issues', { title: '新问题', body: '正文', labels: ['bug'] }]);
@@ -497,11 +497,29 @@ describe('new issue', () => {
     expect(created.labels.map((l) => l.name)).toEqual(['bug']);
   });
 
-  it('Projects not ticked in the view are left alone', async () => {
+  it('GitHub#205: joins exactly the Projects ticked in the dialog — none ticked, none joined, whatever the view shows', async () => {
     const { c } = await ready();
-    c.setView({ selected: ['repo:gigleai/cavil-loop'] });
-    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [] })).ok).toBe(true);
+    expect(c.getBoardData().allProjects!.map((p) => p.key)).toEqual([PROJECT_KEY]);
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], projects: [] })).ok).toBe(true);
     expect(fake.writes().map((w) => w.operation ?? w.method)).toEqual(['POST']);
+    // a view narrowed to the repository still lets the dialog put it on the Project, which it lists
+    c.setView({ selected: ['repo:gigleai/cavil-loop'] });
+    expect(c.getBoardData().projects).toEqual([]);
+    expect(c.getBoardData().allProjects!.map((p) => p.key)).toEqual([PROJECT_KEY]);
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'y', body: '', labels: [], projects: [PROJECT_KEY] })).ok).toBe(true);
+    expect(fake.writes().map((w) => w.operation ?? w.method)).toEqual(['POST', 'POST', 'CavilAddProjectItem']);
+  });
+
+  it('GitHub#205: a Project the app does not know (or no list at all): refused before anything is sent', async () => {
+    const { c } = await ready();
+    const before = fake.digest();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], projects: ['project:org/someone/9'] });
+    expect(r).toMatchObject({ ok: false });
+    expect(r.error).toContain('没有新建');
+    const r2 = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [] } as never);
+    expect(r2.ok).toBe(false);
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
   });
 });
 

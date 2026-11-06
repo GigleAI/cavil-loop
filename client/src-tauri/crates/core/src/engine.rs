@@ -920,12 +920,16 @@ fn api_headers(token: &str, extra: &[(String, String)]) -> Vec<(String, String)>
     h
 }
 
-/// Links the app may open in the system browser: GitHub, plus — in test mode — the loopback fake's web side.
+/// GitHub's own image hosts (GitHub#205): an image in the discussion links to itself, a click opens it.
+/// The same list as GITHUB_IMAGE_HOSTS (src/shared/avatar.ts); exact hosts only.
+pub const GITHUB_IMAGE_HOSTS: [&str; 3] = ["private-user-images.githubusercontent.com", "user-images.githubusercontent.com", "camo.githubusercontent.com"];
+
+/// Links the app may open in the system browser: GitHub (and its image hosts), plus — in test mode — the loopback fake's web side.
 pub fn is_allowed_external(url: &str, endpoints: &Endpoints) -> bool {
     let Ok(u) = url::Url::parse(url) else { return false };
     if u.scheme() == "https" {
         if let Some(h) = u.host_str() {
-            if h == "github.com" || h.ends_with(".github.com") {
+            if h == "github.com" || h.ends_with(".github.com") || GITHUB_IMAGE_HOSTS.contains(&h) {
                 return true;
             }
         }

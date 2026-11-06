@@ -358,7 +358,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(frame.locator('details.entry').first()).toContainText('看过了');
   await shot(page, '22-replied');
   await detail.getByTestId('hand-back').click();
-  await expect(page.getByTestId('action-result')).toContainText('已交回 agent');
+  await expect(page.getByTestId('action-result')).toContainText('已交给 agent');
   await expect(card(page, 138).locator('.label', { hasText: 'pending/agent' })).toBeVisible();
   await expect(card(page, 138).locator('.label', { hasText: 'pending/human' })).toHaveCount(0);
   await page.getByTestId('detail-close').click();
@@ -416,12 +416,19 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await shot(page, '25-merged');
   await page.getByTestId('detail-close').click();
 
-  // ---- new issue: joins the ticked Project ----
+  // ---- new issue: labels from the picker (GitHub's colours), joins the Project ticked in the dialog (GitHub#205) ----
   await page.getByTestId('write-entry').click();
   await page.getByTestId('new-issue-title').fill('客户端里建的 issue');
   await page.getByTestId('new-issue-body').fill('正文');
-  await page.locator('[data-testid="new-issue-label"][data-label="pending/human"]').check();
+  await page.getByTestId('new-issue-label-add').click();
+  await page.locator('[data-testid="new-issue-label-picker"] [data-testid="picker-item"][data-name="pending/human"]').click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-testid="new-issue-label-chip"][data-label="pending/human"]')).toBeVisible();
+  // every source shown: no Project ticked to begin with; tick the one wanted
+  await expect(page.getByTestId('new-issue-project')).toHaveCount(1);
+  await expect(page.getByTestId('new-issue-project')).not.toBeChecked();
   await expect(page.getByTestId('new-issue-projects')).toContainText('cavil project');
+  await page.getByTestId('new-issue-project').check();
   await shot(page, '26-new-issue');
   // GitHub gives the next number: one past the highest one in the recorded data
   const next =
@@ -435,6 +442,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   expect(writes().filter((w) => w[0] === 'POST' && w[1] === '/api/repos/GigleAI/cavil-loop/issues')).toEqual([
     ['POST', '/api/repos/GigleAI/cavil-loop/issues', { title: '客户端里建的 issue', body: '正文', labels: ['pending/human'] }],
   ]);
+  expect(writes().at(-1)?.[0]).toBe('CavilAddProjectItem');
   await expect(card(page, next)).toBeVisible();
 
   // ---- offline: every change entry greys out, nothing is sent ----
@@ -494,14 +502,18 @@ test('GitHub#177: merging in the detail shows the issue it closes closed at once
   await app.close();
 });
 
-test('a slow answer for the item you left never lands on the one you are looking at; images only from github.com', async () => {
+test('a slow answer for the item you left never lands on the one you are looking at; images only from GitHub\'s own hosts', async () => {
   const w = env.fake.state.w;
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_138</p>');
   w.bodies.set('gigleai/cavil-loop#137', [
     '<p>BODY_137</p>',
     '<p><img alt="via proxy" src="https://camo.githubusercontent.com/probe-138"></p>',
-    '<p><img alt="attachment" src="https://private-user-images.githubusercontent.com/probe.png"></p>',
+    '<p><img alt="attachment" src="https://private-user-images.githubusercontent.com/probe.png?jwt=x"></p>',
+    '<p><img alt="old attachment" src="https://user-images.githubusercontent.com/probe-old.png"></p>',
     '<p><img alt="on github" src="https://github.com/GigleAI/cavil-loop/raw/main/probe.png"></p>',
+    '<p><img alt="look-alike" src="https://camo.githubusercontent.com.evil.example/probe.png"></p>',
+    '<p><img alt="raw" src="https://raw.githubusercontent.com/o/r/main/probe.png"></p>',
+    '<p><img alt="s3" src="https://github-production-user-asset-6210df.s3.amazonaws.com/probe.png"></p>',
   ].join(''));
   const { app, page } = await launch(env);
   await signInWithSources(page);
@@ -521,15 +533,25 @@ test('a slow answer for the item you left never lands on the one you are looking
   await expect(frame.locator('body')).toContainText('BODY_137');
   await expect(frame.locator('body')).not.toContainText('BODY_138');
 
-  // 2. images: only the github.com one is requested; the others are not even tried, and the entry says so
-  await expect(frame.locator('[data-blocked]')).toHaveAttribute('data-blocked', '2');
+  // 2. images (GitHub#205): GitHub's own hosts are requested (and shown); the others are not even tried, and the entry says so
+  await expect(frame.locator('[data-blocked]')).toHaveAttribute('data-blocked', '3');
   // (every request the window made outside its own bridge; the app's page policy is what stops the rest)
-  await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toContain('request https://github.com/GigleAI/cavil-loop/raw/main/probe.png');
-  const seen = readFileSync(env.requests, 'utf8');
-  // GitHub's image proxy and attachment hosts: never even asked; the avatar host is the one exception (#155)
-  expect(seen).not.toContain('camo.githubusercontent.com');
-  expect(seen).not.toContain('private-user-images.githubusercontent.com');
-  expect(seen.split('\n').filter((l) => l && !/^request https:\/\/((api\.)?github\.com|avatars\.githubusercontent\.com)\//.test(l))).toEqual([]);
+  const reqs = () => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '');
+  for (const u of [
+    'https://github.com/GigleAI/cavil-loop/raw/main/probe.png',
+    'https://camo.githubusercontent.com/probe-138',
+    'https://private-user-images.githubusercontent.com/probe.png?jwt=x',
+    'https://user-images.githubusercontent.com/probe-old.png',
+  ])
+    await expect.poll(reqs).toContain(`request ${u}\n`);
+  for (const alt of ['via proxy', 'attachment', 'old attachment', 'on github'])
+    await expect.poll(() => frame.locator(`img[alt="${alt}"]`).evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth > 0)).toBe(true);
+  const seen = reqs();
+  // look-alikes, raw files, the storage behind attachments: never even asked
+  expect(seen).not.toContain('evil.example');
+  expect(seen).not.toContain('raw.githubusercontent.com');
+  expect(seen).not.toContain('amazonaws.com');
+  expect(seen.split('\n').filter((l) => l && !/^request https:\/\/((api\.)?github\.com|(avatars|private-user-images|user-images|camo)\.githubusercontent\.com)\//.test(l))).toEqual([]);
   await shot(page, '28-images-github-only');
 
   // 3. a change still in flight when another item is opened: its result goes to the board, not into the new item
@@ -628,7 +650,6 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   await expect(detail.getByTestId('reply-input')).toHaveValue('NEW_UNSENT_DRAFT_AFTER_RETURN');
   await expect(detail.getByTestId('reply-send')).toBeEnabled(); // the new opening is not left "busy"
   await expect(page.getByTestId('action-result')).toHaveCount(0);
-  await expect(detail.getByTestId('hand-back')).toHaveCount(0); // "hand back" belongs to the opening that replied
   expect(w.comments.get('gigleai/cavil-loop#138')!.map((c) => c.bodyHTML)).toEqual(['<p>OLD_MESSAGE_SENT</p>']);
 
   // within one opening, a newer call of the same kind wins: [detail] the re-read after a change vs. a slow refresh, [preview] typing after asking
@@ -2324,5 +2345,219 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   await expect(page.getByTestId('update-line')).toHaveText('这一版没有带更新用的公钥，不能自动更新，请手动下载新版');
   await expect(page.getByTestId('update-check')).toBeDisabled();
   await expect(page.getByTestId('update-auto')).toBeDisabled();
+  await app.close();
+});
+
+// ---- GitHub#205: client improvements ----
+
+test('GitHub#205: table cells change labels / status in place; columns can be resized and keep their width after a restart; group heads stand out', async () => {
+  let { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await expect(page.getByTestId('table')).toBeVisible();
+  const row = page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#138"]').first();
+  await expect(row).toBeVisible({ timeout: 15_000 });
+
+  // group heads: kept in view while their rows scroll, tinted, with a bar in front
+  const head = page.getByTestId('group-head').first().locator('td');
+  expect(await head.evaluate((td) => getComputedStyle(td).position)).toBe('sticky');
+  expect(await head.evaluate((td) => getComputedStyle(td).boxShadow)).toContain('inset');
+  await shot(page, '205-01-table-groups');
+
+  // labels: a click on the cell opens the picker; one click = one add, sent at once
+  const before = writes().length;
+  await row.locator('[data-testid="cell"][data-col="labels"]').click();
+  await row.locator('[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="Done"]').click();
+  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：已加上标签「Done」');
+  await page.keyboard.press('Escape');
+  await expect(row.locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
+  expect(writes().slice(before)).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['Done'] }]]);
+
+  // status: the cell becomes the Project's dropdown; the choice is written to that Project only
+  await page.getByTestId('open-view-panel').click();
+  const statusCol = page.locator('[data-testid="columns-pick"] input[data-col="status"]');
+  if (!(await statusCol.isChecked())) await statusCol.check();
+  await page.getByTestId('open-view-panel').click();
+  const statusCell = row.locator('[data-testid="cell"][data-col="status"]');
+  await expect(statusCell).toHaveCount(1);
+  const b2 = writes().length;
+  await statusCell.click();
+  await statusCell.getByTestId('cell-status').selectOption('In progress');
+  await expect(page.getByTestId('board-action-result')).toContainText('状态已改');
+  expect(writes().slice(b2).map((w) => w[0])).toEqual(['CavilSetStatus']);
+  await expect(statusCell).toContainText('In progress');
+  await shot(page, '205-02-table-edited');
+
+  // a column dragged wider keeps that width, also after a restart; double-click puts the default back
+  const th = page.locator('[data-testid="col-head"][data-col="labels"]');
+  const w0 = (await th.boundingBox())!.width;
+  const grip = (await page.locator('[data-testid="col-resize"][data-col="labels"]').boundingBox())!;
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 120, grip.y + grip.height / 2, { steps: 6 });
+  await page.mouse.up();
+  const want = Math.round(w0 + 120 - grip.width / 2);
+  await expect.poll(async () => Number(await th.getAttribute('data-width'))).toBeGreaterThan(w0 + 60);
+  const saved = Number(await th.getAttribute('data-width'));
+  expect(Math.abs(saved - want)).toBeLessThan(12);
+  await expect.poll(async () => Math.round((await th.boundingBox())!.width)).toBe(saved);
+  await shot(page, '205-03-column-wider');
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  const th2 = page.locator('[data-testid="col-head"][data-col="labels"]');
+  await expect(th2).toHaveAttribute('data-width', String(saved));
+  await expect.poll(async () => Math.round((await th2.boundingBox())!.width)).toBe(saved);
+  await page.locator('[data-testid="col-resize"][data-col="labels"]').dblclick();
+  await expect(th2).not.toHaveAttribute('data-width', String(saved));
+  await app.close();
+});
+
+test('GitHub#205: new issue — coloured label picker; boards ticked one by one, starting from the board being looked at', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  // narrowed to the Project: it starts ticked
+  await page.locator('[data-testid="source-pick"] input[data-key^="repo:"]').uncheck();
+  await page.getByTestId('write-entry').click();
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
+  await page.getByTestId('new-issue-title').fill('只进仓库的 issue');
+  await page.getByTestId('new-issue-label-add').click();
+  const picker = page.getByTestId('new-issue-label-picker');
+  await expect(picker.locator('[data-testid="picker-item"]').first()).toBeVisible();
+  // every candidate carries its colour dot; the chosen ones are chips in GitHub's colour
+  expect(await picker.locator('[data-testid="picker-item"] .dot').count()).toBe(await picker.locator('[data-testid="picker-item"]').count());
+  await picker.getByTestId('picker-filter').fill('pending/h');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Escape');
+  const chip = page.locator('[data-testid="new-issue-label-chip"][data-label="pending/human"]');
+  await expect(chip).toBeVisible();
+  expect(await chip.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+  await shot(page, '205-04-new-issue');
+  // untick the board: the new issue joins none
+  await page.getByTestId('new-issue-project').uncheck();
+  await expect(page.getByTestId('new-issue-projects-hint')).toContainText('不加入任何看板');
+  const before = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  expect(writes().slice(before).map((w) => [w[0], w[2]])).toEqual([['POST', { title: '只进仓库的 issue', body: '', labels: ['pending/human'] }]]);
+  // every source shown again: nothing starts ticked
+  await page.locator('[data-testid="source-pick"] input[data-key^="repo:"]').check();
+  await page.getByTestId('write-entry').click();
+  await expect(page.getByTestId('new-issue-project')).not.toBeChecked();
+  // an image pasted into the body: said, not dropped silently; the web page carries on with what was typed
+  await page.getByTestId('new-issue-title').fill('带图');
+  await page.getByTestId('new-issue-body').fill('看图');
+  await pasteImage(page, '[data-testid="new-issue-body"]');
+  await expect(page.getByTestId('paste-image-note')).toContainText('客户端不能把图片上传到 GitHub');
+  await expect(page.getByTestId('new-issue-body')).toHaveValue('看图');
+  await page.getByTestId('paste-image-web').click();
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain(
+    'https://github.com/GigleAI/cavil-loop/issues/new?title=%E5%B8%A6%E5%9B%BE&body=%E7%9C%8B%E5%9B%BE\n',
+  );
+  await app.close();
+});
+
+/** A paste carrying one PNG file and no text (a screenshot), into the box `sel`. */
+async function pasteImage(page: Page, sel: string) {
+  await page.locator(sel).evaluate((box) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' }));
+    box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+}
+
+test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a conflict is said loudly and blocks merging; edit a comment; a pasted image is said', async () => {
+  const w = env.fake.state.w;
+  const url = (id: string) => `https://github.com/GigleAI/cavil-loop/issues/138#${id}`;
+  w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C_THEIRS', url: url('C_THEIRS'), createdAt: '2026-11-02T01:00:00Z', bodyHTML: '', author: { login: 'user-2' }, body: '别人的评论' },
+    { id: 'C_MINE', url: url('C_MINE'), createdAt: '2026-11-03T01:00:00Z', bodyHTML: '', author: { login: 'user-3' }, body: '原来的**文字**' },
+  ]);
+  w.cannotUpdate.add('C_THEIRS');
+  for (const r of env.fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === 146) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+  for (const p of env.fake.state.projects.get('org/gigleai/11')!) for (const n of p.items.nodes) if (n.content?.number === 146) Object.assign(n.content, { state: 'OPEN', merged: false });
+  const pull = pullOf(env.fake.state, findCopies(env.fake.state, 'GigleAI/cavil-loop', 146)!);
+  Object.assign(pull, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' });
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+
+  // ---- 1. the buttons sit next to "send", without replying first ----
+  const row = detail.locator('.reply .row.end');
+  await expect(row.getByTestId('hand-back')).toBeVisible();
+  await expect(row.getByTestId('autopilot')).toBeVisible();
+  await expect(row.getByTestId('reply-send')).toBeVisible();
+  await shot(page, '205-05-quick-actions');
+  const before = writes().length;
+  await row.getByTestId('autopilot').click();
+  await expect(page.getByTestId('autopilot-explain')).toContainText('自动合并');
+  await shot(page, '205-06-autopilot-confirm');
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toContainText('已托管');
+  expect(writes().slice(before)).toEqual([
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['autopilot'] }],
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['pending/agent'] }],
+    ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/138/labels/pending%2Fhuman', undefined],
+  ]);
+  await expect(card(page, 138).locator('.label', { hasText: 'autopilot' })).toBeVisible();
+
+  // ---- 2. edit: only where GitHub allows it; the whole new text goes up, read back from GitHub ----
+  await frame.locator('details.entry[data-entry="C_THEIRS"] > summary').click({ position: { x: 40, y: 10 } });
+  await expect(frame.locator('details.entry[data-entry="C_THEIRS"] button[data-edit]')).toHaveCount(0);
+  await expect(frame.locator('details.entry[data-entry="C_MINE"] button[data-edit]')).toBeVisible();
+  await frame.locator('details.entry[data-entry="C_MINE"] button[data-edit]').click();
+  const box = page.getByTestId('edit-input');
+  await expect(box).toHaveValue('原来的**文字**');
+  // an image pasted while editing: said; the text stays as it was
+  await pasteImage(page, '[data-testid="edit-input"]');
+  await expect(page.getByTestId('paste-image-note')).toBeVisible();
+  await expect(box).toHaveValue('原来的**文字**');
+  await page.getByTestId('paste-image-dismiss').click();
+  await box.fill('改过的文字');
+  await shot(page, '205-07-edit');
+  const b2 = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toContainText('评论已保存');
+  expect(writes().slice(b2)).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_MINE', body: '改过的文字' }]]);
+  await expect(frame.locator('details.entry[data-entry="C_MINE"]')).toContainText('改过的文字');
+  // somebody changed it on the web while it was being edited: refused, the typed text stays in the box, theirs on GitHub
+  await frame.locator('details.entry[data-entry="C_MINE"] button[data-edit]').click();
+  w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === 'C_MINE')!.body = '别人刚改的';
+  await page.getByTestId('edit-input').fill('我的新版本');
+  const digest = env.fake.digest();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('edit-result')).toContainText('被别人改过');
+  await expect(page.getByTestId('edit-input')).toHaveValue('我的新版本');
+  expect(env.fake.digest()).toBe(digest);
+  await page.getByTestId('confirm-cancel').click();
+
+  // ---- 3. a pasted image in the reply box: said; the item's web page opens ----
+  await detail.getByTestId('reply-input').fill('回复');
+  await pasteImage(page, '[data-testid="reply-input"]');
+  await expect(detail.getByTestId('paste-image-note')).toBeVisible();
+  await expect(detail.getByTestId('reply-input')).toHaveValue('回复');
+  await detail.getByTestId('paste-image-web').click();
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('https://github.com/GigleAI/cavil-loop/issues/138\n');
+  await detail.getByTestId('reply-input').fill('');
+  await page.getByTestId('detail-close').click();
+
+  // ---- 4. a PR with a conflict: a red bar, and the merge button is off and says why ----
+  await page.getByTestId('mode').selectOption('status');
+  await card(page, 146).click();
+  await expect(page.getByTestId('pr-conflict')).toContainText('有冲突');
+  await expect(page.getByTestId('merge')).toBeDisabled();
+  await expect(page.getByTestId('merge')).toHaveText('有冲突，不能合并');
+  await shot(page, '205-08-conflict');
+  await page.getByTestId('detail-close').click();
+  // no conflict: no bar, the button works as before
+  Object.assign(pull, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
+  await card(page, 146).click();
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  await expect(page.getByTestId('pr-conflict')).toHaveCount(0);
+  await expect(page.getByTestId('merge')).toBeEnabled();
   await app.close();
 });

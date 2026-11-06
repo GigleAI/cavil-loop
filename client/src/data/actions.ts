@@ -13,6 +13,11 @@
 //     write; it must still belong to this item, still be changeable by this
 //     account and still hold exactly the source the click was made on — else
 //     nothing is written. Exactly one character of it changes;
+//   - "hand to the agent" / "autopilot" (GitHub#205): labels added before the
+//     "waiting for a human" one is removed; autopilot adds its own label first;
+//   - editing a body / comment (GitHub#205): the same read-before-write as a
+//     task-list box — written only while GitHub still holds the text the edit
+//     started from;
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
@@ -191,6 +196,9 @@ export async function relatedIssues(client: GitHubClient, pr: Item, cached: Item
   return { items, problem };
 }
 
+/** What an edit is refused with when the body / comment changed on GitHub since the edit started (GitHub#205). */
+export const EDIT_CHANGED = '这一条在你编辑期间被别人改过，没有保存（你的文字还在编辑框里）；请复制留底后重新打开详情再改';
+
 /** What a ticked box is refused with when the body / comment changed since the click was made on it. */
 export const TASK_CHANGED = '这一条刚被改过（和你看到的不一样了），没有修改；已重新读取，请看过后再勾';
 
@@ -285,12 +293,24 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.body });
       return { touched: [[it.repo, it.number]], warning: null };
     }
-    case 'handBack': {
+    case 'handBack':
+    case 'autopilot': {
       const it = needItem(ctx);
-      const { human, agent } = ctx.handBack;
-      if (!human.trim() || !agent.trim()) throw new ActionRefused('设置里「交回 agent」的两个标签名不能为空');
+      const { human, agent, autopilot } = ctx.handBack;
+      if (!human.trim() || !agent.trim()) throw new ActionRefused('设置里「交给 agent」的两个标签名不能为空');
+      if (action.kind === 'autopilot') {
+        if (!autopilot.trim()) throw new ActionRefused('设置里没有填托管标签，没有修改');
+        // the autopilot label first: the daemon must see it when it picks the item up
+        await addLabel(client, it.repo, it.number, autopilot);
+      }
       // add first: if the second step fails, the item is never left with neither label
-      await addLabel(client, it.repo, it.number, agent);
+      try {
+        await addLabel(client, it.repo, it.number, agent);
+      } catch (e) {
+        // the autopilot label is on GitHub already: say so, never as "nothing changed"
+        if (action.kind === 'autopilot') return { touched: [[it.repo, it.number]], warning: `已加上「${autopilot}」，但加「${agent}」没有成功，还没有交给 agent：${explainError(e, 'addLabel')}` };
+        throw e;
+      }
       let warning: string | null = null;
       // removed whatever the cached labels say (the cache may be a round behind)
       try {
@@ -356,6 +376,19 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       if (next === null) throw new ActionRefused(TASK_CHANGED);
       const written = await writeTaskSource(client, now.kind, action.entryId, next);
       const warning = written === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
+      return { touched: [[it.repo, it.number]], warning };
+    }
+    case 'editEntry': {
+      const it = needItem(ctx);
+      if (typeof action.body !== 'string' || typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你改的是哪一条、原文是什么，请刷新详情后再改');
+      const now = await readTaskSource(client, action.entryId);
+      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
+      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
+      if (now.body !== action.seenSource) throw new ActionRefused(EDIT_CHANGED);
+      if (now.kind === 'IssueComment' && !action.body.trim()) throw new ActionRefused('评论不能改成空的，没有修改（要删掉请去网页）');
+      if (action.body === now.body) return { touched: [], warning: null };
+      const written = await writeTaskSource(client, now.kind, action.entryId, action.body);
+      const warning = written === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
       return { touched: [[it.repo, it.number]], warning };
     }
     case 'createIssue': {
