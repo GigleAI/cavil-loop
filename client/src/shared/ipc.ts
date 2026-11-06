@@ -3,7 +3,7 @@
 
 import type { AppKind, AppState, BoardData, HandBackLabels } from './types';
 import type { ViewPatch } from './viewSettings';
-import type { DetailResult, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { DetailResult, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 
 export interface Snapshot {
   state: AppState;
@@ -29,4 +29,6 @@ export interface CavilApi {
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
+  /** remember the merge method chosen for a PR in `repo` */
+  setMergeMethod(repo: string, method: MergeMethod): Promise<void>;
 }

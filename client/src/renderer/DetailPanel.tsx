@@ -4,6 +4,7 @@ import type { ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } f
 import { writesEnabled } from '../data/board';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
+import { pickMergeMethod } from '../shared/mergePrefs';
 import { FRAME_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP, type Unfold } from './detailHtml';
 import { Person } from './Avatar';
 import { usePanelWidth } from './panelWidth';
@@ -79,7 +80,8 @@ export function DetailPanel({
   const [reply, setReply] = useState('');
   const [preview, setPreview] = useState<string | null>(null);
   const [replied, setReplied] = useState(false);
-  const [method, setMethod] = useState<MergeMethod | ''>('');
+  /** the method picked by hand in this opening; null = none yet */
+  const [picked, setPicked] = useState<MergeMethod | null>(null);
   const [ask, setAsk] = useState<'merge' | 'close' | null>(null);
   const [closeComment, setCloseComment] = useState('');
   const canWrite = writesEnabled(state.sync);
@@ -110,9 +112,11 @@ export function DetailPanel({
       .repoOptions(repo)
       .then((o) => mine() && setOpts(o));
   }, [repo, session]);
-  useEffect(() => {
-    if (detail?.pr && !detail.pr.mergeMethods.includes(method as MergeMethod)) setMethod(detail.pr.mergeMethods[0] ?? '');
-  }, [detail, method]);
+  // What the merge box starts with (GitHub#175): a hand pick of this opening while the repository
+  // (as last read) still allows it, else the remembered one. Derived, never stored: a detail that
+  // arrives late or is re-read cannot overwrite the pick, and a fallback is never remembered.
+  const allowed = detail?.pr?.mergeMethods ?? [];
+  const method: MergeMethod | '' = picked && allowed.includes(picked) ? picked : pickMergeMethod(state.mergePrefs, repo, allowed);
 
   /**
    * `here` is false when this opening ended while the change was in flight (the
@@ -362,7 +366,16 @@ export function DetailPanel({
           </div>
           {prOpen && (
             <div className="row">
-              <select data-testid="merge-method" value={method} onChange={(e) => setMethod(e.target.value as MergeMethod)} disabled={!canWrite || busy}>
+              <select
+                data-testid="merge-method"
+                value={method}
+                onChange={(e) => {
+                  const m = e.target.value as MergeMethod;
+                  setPicked(m);
+                  void Promise.resolve(api().setMergeMethod(item.repo, m)).catch(() => undefined);
+                }}
+                disabled={!canWrite || busy}
+              >
                 {pr.mergeMethods.map((m) => (
                   <option key={m} value={m}>
                     {METHOD_LABEL[m]}
@@ -480,9 +493,6 @@ export function DetailPanel({
         >
           <p>
             把 <code>{pr.headRef}</code> 合进 <code>{pr.baseRef}</code>，方式：{METHOD_LABEL[method]}。
-          </p>
-          <p className="small muted" data-testid="merge-commit">
-            合并的是你现在看到的提交 {pr.headOid.slice(0, 7)}；如果期间有人推了新提交，GitHub 会拒绝，什么都不会合并。不会绕过分支保护规则。
           </p>
         </ConfirmDialog>
       )}

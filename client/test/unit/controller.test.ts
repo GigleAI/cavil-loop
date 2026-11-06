@@ -386,6 +386,28 @@ describe('sync and cache', () => {
     expect(old.c.getState().view.table.groupBy).toBe('iteration');
   });
 
+  it('GitHub#175: the merge method chosen per repository survives a restart and a Project import; a broken saved value reads as none', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().mergePrefs).toEqual({ byRepo: {}, last: null });
+    first.c.setMergeMethod('GigleAI/cavil-loop', 'squash');
+    first.c.setMergeMethod('GigleAI/other', 'rebase');
+    first.c.setMergeMethod('GigleAI/other', 'fast-forward'); // unknown: ignored
+    const kept = { byRepo: { 'gigleai/cavil-loop': 'squash', 'gigleai/other': 'rebase' }, last: 'rebase' };
+    expect(first.c.getState().mergePrefs).toEqual(kept);
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().mergePrefs).toEqual(kept); // …and left the merge methods alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().mergePrefs).toEqual(kept);
+
+    const broken = await make({ seed: { mergePrefs: { byRepo: { 'GigleAI/cavil-loop': 'zip' }, last: 7 } } });
+    expect(broken.c.getState().mergePrefs).toEqual({ byRepo: {}, last: null });
+  });
+
   it('removing a source drops its cached data', async () => {
     const { c, cache } = await loggedIn();
     c.addSource(PROJECT_URL);
