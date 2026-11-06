@@ -398,7 +398,7 @@ const MUTATIONS = [
     expect: ['neither the database nor the marker can be written'] },
   { what: '窗口不显示退出时后台给的说明', file: 'src/app/controller.ts',
     from: 'await this.applySignedOut(session, message ?? reason);', to: 'await this.applySignedOut(session, reason);',
-    expect: ['the sign-out is not reported as clean', 'neither the database nor the marker can be written'] },
+    expect: ['the explanation is on screen at once, while the keychain delete is still pending'] },
   { what: '换账号时清不掉旧缓存也照常登录', file: 'src-tauri/crates/core/src/engine.rs',
     from: '                Err(e) => {\n                    return StartOut::Login {\n                        reason: Some(format!("本地缓存没能清空（{e}），为免显示别的账号的数据，这次没有自动登录；可以重新登录")),\n                        wiped: true,\n                    }\n                }',
     to: '                Err(_) => {}',

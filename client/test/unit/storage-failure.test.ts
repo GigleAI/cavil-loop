@@ -29,7 +29,12 @@ const caches: Cache[] = [];
 /** keychain stand-in whose delete can be refused */
 class Store extends FileStore {
   clearFails = false;
+  /** hold the delete until released */
+  clearGate: Promise<void> | null = null;
+  clearStarted = false;
   async clear() {
+    this.clearStarted = true;
+    if (this.clearGate) await this.clearGate;
     if (this.clearFails) throw new Error('keychain delete denied');
     return super.clear();
   }
@@ -120,6 +125,21 @@ describe('signing out when the database refuses to clear the trust list', () => 
     expect(again.c.getState().phase).toBe('login');
     expect(fake.log.slice(before).filter((l) => l.auth)).toEqual([]);
     expect(again.c.getBoardData().items).toHaveLength(0);
+  });
+
+  it('the explanation is on screen at once, while the keychain delete is still pending', async () => {
+    const store = new Store(join(dir, 'cred'));
+    const { c } = await signedIn(store);
+    refuseTrustWrites();
+    let release!: () => void;
+    store.clearGate = new Promise<void>((r) => (release = r));
+    const out = c.logout();
+    await until(c, (s) => s.phase === 'login', 'login page');
+    // "something did happen": the delete really is still pending
+    expect(store.clearStarted).toBe(true);
+    expect(c.getState().loginReason).toContain('本地数据库写入失败');
+    release();
+    await out;
   });
 
   it('once the database works again: the leftover is deleted, the marker goes, a new sign-in sticks across a restart', async () => {
