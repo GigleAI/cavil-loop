@@ -26,7 +26,7 @@
 
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,10 +79,52 @@ async function startApp(args: string[] = []) {
   await wd.start(APP, args);
 }
 
+/**
+ * What is still running of this test's app (Linux /proc): every process whose environment names
+ * this test's record file — the app, tauri-driver and the WebKit driver it started. Another test
+ * run on the same machine has its own record file and is never counted.
+ */
+function running(): { pid: number; name: string }[] {
+  const mark = `CAVIL_CLIENT_TEST_ALERTS_FILE=${record}`;
+  const out: { pid: number; name: string }[] = [];
+  for (const p of readdirSync('/proc')) {
+    if (!/^\d+$/.test(p)) continue;
+    try {
+      if (!readFileSync(`/proc/${p}/environ`, 'latin1').split('\0').includes(mark)) continue;
+      out.push({ pid: Number(p), name: readFileSync(`/proc/${p}/comm`, 'utf8').trim() });
+    } catch {
+      /* gone meanwhile, or not ours to read */
+    }
+  }
+  return out;
+}
+
+/**
+ * Quit the app, and wait until it is really gone (GitHub#186): ending the WebDriver session does
+ * not wait for the app to exit, and a first run still alive keeps its 60 s beat — with its window
+ * shown — writing into the same record as the run after it.
+ */
 async function stopApp() {
   await wd?.stop();
   driver?.kill();
   driver = null;
+  if (!record) return;
+  const t0 = Date.now();
+  try {
+    await until(() => running().length === 0, 'the app quit', 10_000);
+    console.log(`app quit ${Date.now() - t0} ms after the session ended`);
+  } catch {
+    const left = running();
+    console.log(`still running 10 s after the session ended, killed: ${left.map((x) => `${x.name}[${x.pid}]`).join(' ')}`);
+    for (const x of left) {
+      try {
+        process.kill(x.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }
+    await until(() => running().length === 0, 'the app quit after SIGKILL', 10_000);
+  }
 }
 
 /** An open issue of the repository that does not carry the label yet. */
@@ -137,6 +179,8 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await stopApp();
   await fake?.close();
+  // the shell's record, for a failure's log
+  console.log(records().map((r) => JSON.stringify(r).slice(0, 160)).join('\n'));
 });
 
 test('window closed: hidden, still syncing and reminding within 120 s; a click on the notification brings it back on that item', async () => {
@@ -181,6 +225,8 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   // started the way launch at login starts it
   await startApp(['--hidden']);
   await until(() => records().slice(before).some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 15_000);
+  // nothing of the first run wrote after it quit: this start is the first record since
+  expect(records()[before]).toMatchObject({ op: 'start', hidden: true });
   // its own first round (signed in from the stored credential): a new start takes a new baseline
   const badgeBefore = await firstRound(before, 30_000);
   expect(badgeBefore).toBe(1);
