@@ -278,6 +278,25 @@ describe('one round: check, download, install (GitHub#184)', () => {
     expect(await b.call('test.update.check')).toMatchObject({ phase: 'ready', version: '0.5.1' });
   });
 
+  it('a list that goes past 10 pages was not read to its end: a failure, never "up to date"', async () => {
+    srv.publish('0.5.1');
+    const daemon = (p: number) => Array.from({ length: 100 }, (_, i) => ({ tag: `release/v2026.${p}.${i}.1`, assets: [] }));
+    srv.pages = [...Array.from({ length: 10 }, (_, p) => daemon(p)), [{ tag: 'client/v0.5.1' }]];
+    const b = harness();
+    await start(b);
+    expect(await b.call('test.update.check')).toMatchObject({ phase: 'idle', last: { ok: false, message: '检查失败：发版列表超过 10 页，没读完' } });
+    expect(srv.releaseRequests().map((l) => new URL(l.path, srv.base).searchParams.get('page'))).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
+  });
+
+  it('a full page followed by an empty one: read to its end (both pages), the newer version found', async () => {
+    srv.publish('0.5.1');
+    srv.pages = [[{ tag: 'client/v0.5.1' }, ...Array.from({ length: 99 }, (_, i) => ({ tag: `release/v2026.01.${i}.1`, assets: [] }))], []];
+    const b = harness();
+    await start(b);
+    expect(await b.call('test.update.check')).toMatchObject({ phase: 'ready', version: '0.5.1' });
+    expect(srv.releaseRequests().length).toBe(2);
+  });
+
   it('GitHub does not answer within 30 s: a failure', async () => {
     srv.publish('0.5.1');
     srv.holdReleases = true;

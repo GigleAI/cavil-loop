@@ -29,8 +29,9 @@ pub const REPO: &str = "GigleAI/cavil-loop";
 pub const TAG_PREFIX: &str = "client/v";
 /// The release asset the updater reads.
 pub const MANIFEST: &str = "latest.json";
-/// Release pages read at most (100 releases each, newest first).
-pub const MAX_PAGES: u32 = 5;
+/// Release pages read at most (100 releases each, newest first). A list that is still going on
+/// the last of them was not read to its end: that round fails, it never reads as "up to date".
+pub const MAX_PAGES: u32 = 10;
 
 /// Kept settings (the local store).
 pub const AUTO_KEY: &str = "update.auto";
@@ -117,8 +118,9 @@ pub fn pick(pages: &[Value], current: &str, web: &str) -> Result<Option<Pick>, S
     Ok(Some(Pick { version, tag, manifest_url: url.to_string() }))
 }
 
-/// The release list, page by page, until a page has fewer than 100 entries or MAX_PAGES were read.
-/// No credential. Any page that fails fails the whole read.
+/// The whole release list, page by page, until a page has fewer than 100 entries. No credential.
+/// Any page that fails fails the whole read; so does a list longer than MAX_PAGES pages (its end
+/// was never seen, so "nothing newer" could not be told).
 pub async fn fetch_releases(ep: &Endpoints) -> Result<Vec<Value>, String> {
     let mut pages = vec![];
     for page in 1..=MAX_PAGES {
@@ -137,10 +139,10 @@ pub async fn fetch_releases(ep: &Endpoints) -> Result<Vec<Value>, String> {
         let n = v.as_array().map(Vec::len).ok_or("GitHub 返回的发版列表看不懂")?;
         pages.push(v);
         if n < 100 {
-            break;
+            return Ok(pages);
         }
     }
-    Ok(pages)
+    Err(format!("发版列表超过 {MAX_PAGES} 页，没读完"))
 }
 
 /// Why a step of a round failed.

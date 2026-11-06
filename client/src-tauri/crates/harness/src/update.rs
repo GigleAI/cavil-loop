@@ -148,6 +148,25 @@ pub async fn command(
             Err(m) => json!({ "error": m }),
         });
     }
+    // the update plugin's own signature check (same library, same decoding), on bytes the test hands over
+    if cmd == "test.update.verify" {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let data = b64.decode(s("data")).map_err(|e| e.to_string())?;
+        let text = |k: &str| -> Result<String, String> {
+            let raw = b64.decode(s(k).trim()).map_err(|e| e.to_string())?;
+            String::from_utf8(raw).map_err(|e| e.to_string())
+        };
+        let verdict = (|| -> Result<(), String> {
+            let pk = minisign_verify::PublicKey::decode(&text("pubkey")?).map_err(|e| e.to_string())?;
+            let sig = minisign_verify::Signature::decode(&text("signature")?).map_err(|e| e.to_string())?;
+            pk.verify(&data, &sig, true).map_err(|e| e.to_string())
+        })();
+        return Ok(match verdict {
+            Ok(()) => json!({ "ok": true }),
+            Err(m) => json!({ "ok": false, "error": m }),
+        });
+    }
     if cmd == "test.update.start" {
         let d = Timings::default();
         let timings = Timings {

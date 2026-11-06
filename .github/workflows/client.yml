@@ -172,23 +172,31 @@ jobs:
           "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
           echo "$RUNNER_TEMP/dmgbuild/bin" >> "$GITHUB_PATH"
       - run: npm ci
-      # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. A release tag
-      # signs it with the maintainer's update key (secret); every other run with a throw-away key, so
-      # each PR builds and measures the same files (the release job refuses a package that the key
-      # inside the app did not sign).
+      # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. The public key
+      # has one home, plugins.updater.pubkey in src-tauri/tauri.conf.json (the app reads it at run
+      # time, the bundler when it signs, the release job when it verifies). A release tag signs with
+      # the maintainer's key (secret) against that public key, and refuses when either is missing;
+      # every other run uses a throw-away key pair, passed to the bundler as a matching pair, so each
+      # PR builds and measures the same files (those packages are never published).
       - name: Build the app (Tauri), its update package, and the dmg
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            if [[ "$GITHUB_REF" == refs/tags/client/v* ]]; then
-              echo "::error::a release tag needs the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1
-            fi
+          if [[ "$GITHUB_REF" == refs/tags/client/v* ]]; then
+            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release tag needs the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
+            pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
+            [ -n "$pub" ] || { echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: the app could not check any update (see client/README.md 发版)"; exit 1; }
+          else
             npx tauri signer generate --ci -p "" -w "$RUNNER_TEMP/throwaway-update.key" >/dev/null
             export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/throwaway-update.key" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+            pub="$(cat "$RUNNER_TEMP/throwaway-update.key.pub")"
           fi
-          npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          conf="$(node -e 'console.log(JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: process.argv[1] } } }))' "$pub")"
+          npx tauri build --bundles app --config "$conf"
+          # the signature the bundler wrote verifies with the public key it was given (on a tag: the app's own)
+          printf '%s' "$conf" > "$RUNNER_TEMP/update-conf.json"
+          node scripts/update-manifest.mjs --verify "src-tauri/target/release/bundle/macos/Cavil Loop.app.tar.gz" "src-tauri/target/release/bundle/macos/Cavil Loop.app.tar.gz.sig" --conf "$RUNNER_TEMP/update-conf.json"
           node scripts/make-dmg.mjs --arch ${{ matrix.arch }}
           v="$(node -p "require('./package.json').version")"
           for ext in tar.gz tar.gz.sig; do
@@ -273,9 +281,9 @@ jobs:
           ls -la dist-release
           [ "$(ls dist-release/*-arm64.dmg dist-release/*-x64.dmg | wc -l)" -eq 2 ]
       # GitHub#184: what installed apps read to update themselves. Refuses unless both update packages
-      # are there and signed with the key whose public half the app carries (src-tauri/updater.pub).
+      # are there and their signatures verify with the app's public key (tauri.conf.json).
       - name: Update manifest (latest.json)
-        run: node scripts/update-manifest.mjs --version "$(node -p "require('./package.json').version")" --dir dist-release --pubkey src-tauri/updater.pub --notes RELEASE_NOTES.md --out dist-release/latest.json
+        run: node scripts/update-manifest.mjs --version "$(node -p "require('./package.json').version")" --dir dist-release --conf src-tauri/tauri.conf.json --notes RELEASE_NOTES.md --out dist-release/latest.json
       # Not marked latest: the daemon's weekly release stays "Latest".
       - name: Create Release
         env:

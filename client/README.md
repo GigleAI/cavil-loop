@@ -18,12 +18,11 @@ src-tauri/   Tauri 外壳（Rust）
   src/desktop.rs        桌面这一侧（#169）：通知、Dock 角标、开机自启、关窗只隐藏、同步节拍、测试模式记录
   src/mac.rs            macOS：用系统现行的通知接口（UserNotifications）发通知、收点击；不让 App 小憩
   src/updater.rs        自动更新（#184）：Tauri 官方更新插件读更新说明、下载、验签、换掉 App；哪些构建会查更新
-  updater.pub           更新包签名公钥（发版密钥的公开一半，编进 App；空着时 App 不能自我更新、发版流程拒绝发版）
   crates/core/          后台本体：登录（设备授权）、续期、凭据队列、可信名单、退出（engine.rs）、钥匙串（platform.rs）、
                         本地存储（store.rs，SQLite，表结构和 Electron 版相同）、代发请求只放行 GitHub 接口（http.rs）、命令表（api.rs）、
                         自动更新的判断（update.rs：挑哪个版本、什么时候查、一次只跑一轮、超时、失败怎么说，#184）
   crates/harness/       测试专用：把后台本体接到 stdin/stdout，单元测试和界面测试都驱动它（发布的 App 里没有）
-  tauri.conf.json       窗口的 Content-Security-Policy、打包设置
+  tauri.conf.json       窗口的 Content-Security-Policy、打包设置；plugins.updater.pubkey 是更新包签名公钥（#184，空着时 App 不能自我更新、发版拒绝）
 test/
   unit/        vitest：数据层 + controller，对着本地假 GitHub 走真 HTTP；后台是真实的 Rust 子进程（test/support/harness.ts）
   support/     测试用的凭据存储（可以卡住、失败）、SQLite 读写、凭据格式——用来预置和核对磁盘状态
@@ -42,7 +41,8 @@ scripts/
   size-gate.mjs         安装包体积门槛：每个 dmg ≤ 20 MB（1 MB = 1,000,000 字节），目标 ≤ 10 MB
   mac-open-check.sh     CI 的 Mac 机器上：dmg 窗口内容 + 冒烟 + 第一次打开步骤的实测
   mac-update-check.sh   CI 的 Mac 机器上：装在「应用程序」里的旧版真实更新到新版，被改过的更新包被拒（#184）
-  update-manifest.mjs   发版时生成 latest.json（App 读它更新）；两个更新包缺一个、签名密钥不是 App 里公钥那把，都拒绝
+  update-manifest.mjs   发版时生成 latest.json（App 读它更新）：用 App 的公钥逐个验签（minisign：包的内容 + 可信注释），缺包、验不过都拒绝；
+                        也给维护者用：--set-pubkey 写入公钥，--verify 验一个签名
   release-command.mjs   放行命令只在这里定义一次；网页 / txt / 背景源文件 / 发版说明里的副本由 test/unit/dmg.test.ts 逐字对拍
   render-dmg-background.cjs  把 build/dmg-background.html 渲染成 dmg 窗口背景图（改了 HTML 后手动重跑，产物入库）
   icon.mjs              App 图标：`node scripts/icon.mjs build` 从 build/icon-source.png 生成 build/icon.png；`check-app` 在 CI 的 Mac 机器上核对打出的 App 用的确实是它
@@ -234,7 +234,7 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 - **什么时候查**：启动时一次，之后每 6 小时一次；关掉「自动检查更新」后都不查，手动「立即检查」照查。一次只跑一轮：跑着时再点不会再开一轮；新版装好以后不再查（重启就是新版）。
 - **失败不等于已是最新**：发版列表或更新说明 30 秒没回应、任一页读失败、内容看不懂、下载 60 秒收不到数据（按「多久没收到数据」算，不按总时长）、中途断开、签名不符、换 App 失败，都记成失败并写明原因，下一轮再试；只有真的没有更高版本才说「已是最新」。
 - **免放行命令的依据**：macOS 只拦带「从网络下载」标记的 App，这个标记是浏览器下载时加的。更新插件用自己的网络代码下载、在进程里解包换掉 App，不加这个标记；万一换上的新版带着标记，`updater.rs` 会把新版自己身上的去掉。CI 的 Mac 上真跑更新核对（`scripts/mac-update-check.sh`）。
-- **哪些构建查更新**（`updater::mode`）：只有发布的 macOS App。开发版、`--smoke-test` / `--notify-check`、测试模式（除非 `CAVIL_CLIENT_TEST_UPDATE=1`）、Linux 都不查，设置页也不出现「更新」一节。`updater.pub` 空着时设置页写明「这一版没有带更新用的公钥」，从不去查。
+- **哪些构建查更新**（`updater::mode`）：只有发布的 macOS App。开发版、`--smoke-test` / `--notify-check`、测试模式（除非 `CAVIL_CLIENT_TEST_UPDATE=1`）、Linux 都不查，设置页也不出现「更新」一节。公钥（`tauri.conf.json` 的 `plugins.updater.pubkey`）空着时设置页写明「这一版没有带更新用的公钥」，从不去查。
 - **只在测试构建里有的开关**（cargo feature `update-test`，`scripts/mac-update-check.sh` 用）：公钥可以从 `CAVIL_CLIENT_TEST_UPDATE_PUBKEY` 来，调试构建也会查更新。发布的 App 不带这个 feature。
 
 **怎么验的**：
@@ -252,9 +252,26 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg 和一个更新包（`tauri build --bundles app`，带 `createUpdaterArtifacts` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：dmg 和更新包每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh` 和 `scripts/mac-update-check.sh`，通过后生成 `latest.json`（`scripts/update-manifest.mjs`）并建 Release，附件是两个 dmg、两个更新包（`Cavil-Loop-<版本>-<芯片>.app.tar.gz`）和它们的签名（`.sig`）、`latest.json`（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
 
-**更新签名密钥**（#184，维护者做一次）：发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名；它的公开一半写在 `src-tauri/updater.pub`，编进 App。没有这个 secret 时发版标签的打包直接失败；`updater.pub` 空着、或更新包不是这把钥匙签的，生成 `latest.json` 那一步拒绝发版。PR 和 main 上的打包用每次现生成的一次性密钥签（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
+**更新签名密钥**（#184，维护者做一次）：公钥只放一处——`src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`：App 运行时用它验更新包，打包时打包工具用它，发版前生成 `latest.json` 那一步也用它逐个验签。发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名。发版标签上缺这个 secret、或公钥是空的，打包直接失败；更新包的签名用公钥验不过（包被改过、签名坏了、不是这把钥匙签的、绑定的版本不对），生成 `latest.json` 那一步拒绝发版。PR 和 main 上的打包用每次现生成的一对一次性密钥（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
 
-1. 在自己的 Mac 上：`npx --yes @tauri-apps/cli@2 signer generate -w ~/.tauri/cavil-loop-updater.key`，按提示设密码（可留空）。成功后有两个文件：`~/.tauri/cavil-loop-updater.key`（私钥）和 `~/.tauri/cavil-loop-updater.key.pub`（公钥）；没生成两个就停下，不要上传。
-2. 仓库 **Settings → Secrets and variables → Actions → New repository secret**：`TAURI_SIGNING_PRIVATE_KEY` = 私钥文件全部内容；设了密码再建 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。列表里出现这两个名字就算成功。
-3. 公钥文件的全部内容写进 `src-tauri/updater.pub`（一行），随一个版本号升级一起合入 main。
-4. 私钥另外备份。丢了只能换一把新的：已经装好的 App 认不出新钥匙签的包，大家要再手动装一次（含一次放行）。
+在自己的 Mac 上，进仓库的 `client/` 目录，**一条一条**跑下面的命令；任何一条报错就停下，不要继续上传：
+
+<!-- update-key-steps:begin -->
+```bash
+npx --yes @tauri-apps/cli@2 signer generate -w ~/.tauri/cavil-loop-updater.key
+ls -l ~/.tauri/cavil-loop-updater.key ~/.tauri/cavil-loop-updater.key.pub
+node scripts/update-manifest.mjs --set-pubkey ~/.tauri/cavil-loop-updater.key.pub
+echo "cavil key check" > ~/cavil-key-check.txt
+npx --yes @tauri-apps/cli@2 signer sign -f ~/.tauri/cavil-loop-updater.key ~/cavil-key-check.txt
+node scripts/update-manifest.mjs --verify ~/cavil-key-check.txt ~/cavil-key-check.txt.sig
+```
+<!-- update-key-steps:end -->
+
+1. 第一条会问两次密码（可以直接回车留空；设了就记住）。`ls` 要列出两个文件：`cavil-loop-updater.key`（私钥）和 `cavil-loop-updater.key.pub`（公钥）。
+2. 第三条把公钥写进 `src-tauri/tauri.conf.json`，成功时打印「已把公钥（密钥编号 …）写进 …」。
+3. 最后两条用私钥签一个小文件（会问一次密码），再用刚写进去的公钥验它：看到「✅ … 签名有效」才算这对钥匙能用。密码输错、或验不过时会报错——这时 `git checkout src-tauri/tauri.conf.json` 退回，从第一条重来。
+4. 仓库 **Settings → Secrets and variables → Actions → New repository secret**：`TAURI_SIGNING_PRIVATE_KEY` = 私钥文件全部内容；设了密码再建 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。列表里出现这两个名字就算成功。私钥和密码不要贴到任何评论里。
+5. 把改过的 `src-tauri/tauri.conf.json`（只多了公钥）提交，随一个版本号升级一起合入 main。
+6. 私钥另外备份。丢了只能换一把新的：已经装好的 App 认不出新钥匙签的包，大家要再手动装一次（含一次放行）。
+
+`test/unit/update-key-steps.test.ts` 把上面这段命令原样取出，在伪终端里逐条跑（输入密码、核对两个文件、写入公钥、签名并验签，再试一次输错密码时会停下）。

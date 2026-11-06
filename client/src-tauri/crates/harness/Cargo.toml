@@ -12,3 +12,6 @@ tokio.workspace = true
 async-trait.workspace = true
 sha2 = "0.10"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# the library Tauri's updater plugin checks update signatures with (test.update.verify cross-checks scripts/update-manifest.mjs)
+minisign-verify = "0.3"
+base64 = "0.23"

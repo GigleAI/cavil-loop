@@ -25,9 +25,13 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-/// The public half of the key the release job signs update packages with (empty until the
-/// maintainer has made one: then this app cannot update itself, and says so).
-const PUBKEY: &str = include_str!("../updater.pub");
+/// The public half of the key the release job signs update packages with: `plugins.updater.pubkey`
+/// in tauri.conf.json, the one place the app, the bundler and the release check
+/// (scripts/update-manifest.mjs) all read it from. Empty until the maintainer has made one: then
+/// this app cannot update itself, and says so.
+fn configured_pubkey<R: Runtime>(app: &AppHandle<R>) -> String {
+    app.config().plugins.0.get("updater").and_then(|u| u.get("pubkey")).and_then(|k| k.as_str()).unwrap_or("").trim().to_string()
+}
 
 /// Whether this app looks for updates.
 #[derive(Debug, PartialEq, Eq)]
@@ -154,7 +158,7 @@ fn clear_quarantine<R: Runtime>(app: &AppHandle<R>) {
 /// window as `{ kind: "update", status }` events.
 pub fn build<R: Runtime>(app: &AppHandle<R>, store: Arc<Store>, endpoints: Endpoints, m: Mode, env: &HashMap<String, String>) -> Option<Arc<Updater>> {
     let Mode::On { problem } = m else { return None };
-    let mut pubkey = PUBKEY.trim().to_string();
+    let mut pubkey = configured_pubkey(app);
     if cfg!(feature = "update-test") {
         if let Some(k) = env.get("CAVIL_CLIENT_TEST_UPDATE_PUBKEY").filter(|k| !k.is_empty()) {
             pubkey = k.clone();
