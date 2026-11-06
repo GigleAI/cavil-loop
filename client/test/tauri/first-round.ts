@@ -30,3 +30,19 @@ export function firstRoundBadge(records: any[], from = 0): number | null {
   }
   return null;
 }
+
+// Since GitHub#185 the badge is the unread count: an item that becomes pending while the window is
+// in front is read at once. So the base the first round leaves depends on whether the window was in
+// front when it came in — the shell records `active` / `inactive` as the window gains and loses the
+// front. Returns whether it was in front at this start's first summary (null while there is none):
+// the last of those records before the summary, within this start; none at all = not in front.
+export function inFrontAtFirstRound(records: any[], from = 0): boolean | null {
+  let front = false;
+  for (let i = from; i < records.length; i++) {
+    const r = records[i];
+    if (r?.op === 'active') front = true;
+    else if (r?.op === 'inactive') front = false;
+    else if (r?.op === 'notify' && r.alert?.kind === 'summary') return front;
+  }
+  return null;
+}

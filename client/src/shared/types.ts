@@ -288,10 +288,12 @@ export interface AppState {
   handBack: HandBackLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */
   mergePrefs: MergePrefs;
-  /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed (= the Dock badge) */
+  /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed */
   pendingCount: number;
-  /** those same items, one entry each (GitHub#185: Settings lists what the badge counts); always as long as `pendingCount` */
+  /** those same items, one entry each (GitHub#185: Settings lists them); always as long as `pendingCount` */
   pendingItems: PendingEntry[];
+  /** of those, the ones not yet seen: became pending while the window was not in front (= the Dock badge, GitHub#185) */
+  unreadCount: number;
   /** launch at login: on / off, null = this platform cannot */
   launchAtLogin: boolean | null;
   /** the system refused the latest notification (e.g. not allowed in System Settings); null = the latest one went out */

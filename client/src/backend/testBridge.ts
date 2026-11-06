@@ -25,6 +25,7 @@ export function bridgeDesktop(): Desktop {
   return {
     notify: (alert) => d('notify', { alert }),
     setBadge: (count) => d('badge', { count }),
+    clearNotifications: () => d('clearNotifications'),
     loginItem: () => d('loginItem'),
     setLoginItem: (on) => d('setLoginItem', { on }),
     nextEvent: () => d('nextEvent'),

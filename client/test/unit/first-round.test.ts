@@ -6,7 +6,7 @@
 // real app goes through too fast to hold. The real app runs the same function in those suites.
 
 import { describe, expect, it } from 'vitest';
-import { firstRoundBadge } from '../tauri/first-round';
+import { firstRoundBadge, inFrontAtFirstRound } from '../tauri/first-round';
 
 const start = (hidden = false) => ({ op: 'start', hidden });
 const badge = (count: number) => ({ op: 'badge', count });
@@ -48,5 +48,18 @@ describe('first complete round of this start', () => {
     expect(firstRoundBadge([...first, ...second], first.length)).toBeNull();
     expect(firstRoundBadge([...first, ...second, summary(1)], first.length)).toBeNull();
     expect(firstRoundBadge([...first, ...second, summary(1), badge(1)], first.length)).toBe(1);
+  });
+
+  // GitHub#185: the badge is the unread count, so the base depends on whether the window was in front
+  it('in front at the first round: the last active / inactive before this start\'s summary decides', () => {
+    expect(inFrontAtFirstRound([start(true), badge(0), summary(1), badge(1)])).toBe(false);
+    expect(inFrontAtFirstRound([start(), { op: 'active' }, badge(0), summary(1), badge(0)])).toBe(true);
+    expect(inFrontAtFirstRound([start(), { op: 'active' }, { op: 'inactive' }, summary(1), badge(1)])).toBe(false);
+    // after the summary does not count; no summary yet = unknown
+    expect(inFrontAtFirstRound([start(true), summary(1), { op: 'active' }, badge(0)])).toBe(false);
+    expect(inFrontAtFirstRound([start(), { op: 'active' }, badge(0)])).toBeNull();
+    // an earlier start's state does not carry over
+    const first = [start(), { op: 'active' }, summary(1), badge(0)];
+    expect(inFrontAtFirstRound([...first, start(true), summary(1), badge(1)], first.length)).toBe(false);
   });
 });

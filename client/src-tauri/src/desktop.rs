@@ -134,6 +134,14 @@ pub fn on_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 }
 
+/// The window came to the front (focused) or left it (lost focus, hidden) — GitHub#185: the
+/// window clears the unread badge and the delivered notifications when the user switches to it.
+pub fn set_active<R: Runtime>(app: &AppHandle<R>, active: bool) {
+    let d = app.state::<Desktop>();
+    d.record(json!({ "op": if active { "active" } else { "inactive" } }));
+    d.push(json!({ "kind": if active { "active" } else { "inactive" } }));
+}
+
 pub fn show_main<R: Runtime>(app: &AppHandle<R>, why: &str) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
@@ -187,6 +195,9 @@ pub fn spawn_background<R: Runtime>(app: AppHandle<R>) {
                         }
                     } else if let Some(id) = line.strip_prefix("click ") {
                         on_click(&app, id);
+                    } else if line == "activate" {
+                        // the same handler the window's focus runs (a headless test display may never focus it)
+                        set_active(&app, true);
                     }
                 }
             }
@@ -240,6 +251,18 @@ pub async fn desktop_badge<R: Runtime>(app: AppHandle<R>, count: i64) -> Result<
         if let Some(w) = app.get_webview_window("main") {
             w.set_badge_count(if count > 0 { Some(count) } else { None }).map_err(|e| e.to_string())?;
         }
+    }
+    Ok(())
+}
+
+/// Take back this app's notifications still in Notification Center (GitHub#185). v1: macOS only.
+#[tauri::command]
+pub async fn desktop_clear_notifications<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let d = app.state::<Desktop>();
+    d.record(json!({ "op": "clearNotifications" }));
+    #[cfg(target_os = "macos")]
+    if d.hooks.record.is_none() {
+        crate::mac::clear_delivered();
     }
     Ok(())
 }

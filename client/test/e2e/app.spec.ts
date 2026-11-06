@@ -1241,8 +1241,10 @@ test('pending/human: start-up summary, one notification per new label at the nex
   await page.getByTestId('hand-back-human').blur();
   await expect(page.getByTestId('pending-label')).toHaveText('doing/agent');
   await expect(page.getByTestId('pending-count')).not.toHaveText(String(N + 1));
-  const count = Number(await page.getByTestId('pending-count').textContent());
-  await expect.poll(badge).toBe(count);
+  // the badge is the unread count (GitHub#185): a settings change adds nothing unread
+  const unread = Number(await page.getByTestId('unread-count').textContent());
+  expect(unread).toBeLessThanOrEqual(N + 1);
+  await expect.poll(badge).toBe(unread);
   expect(notes().filter((a) => a.kind === 'item')).toHaveLength(1);
   await app.close();
 });
@@ -1900,10 +1902,13 @@ test('settings lists what the badge counts: same colours and words as card, tabl
   await page.getByTestId('open-settings').click();
   const row = (n: number) => page.locator(`[data-testid="pending-item"][data-key="gigleai/cavil-loop#${n}"]`);
   await expect(row(137)).toBeVisible({ timeout: 15_000 });
-  // the list is exactly what the badge counts, one row per item
+  // the list is exactly what is pending, one row per item; nobody has switched to the window yet,
+  // so all of it is unread and the badge says so
   const count = Number(await page.getByTestId('pending-count').textContent());
   await expect(page.getByTestId('pending-item')).toHaveCount(count);
-  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'badge').pop()?.count).toBe(count);
+  await expect(page.getByTestId('unread-count')).toHaveText(String(count));
+  const lastBadge = () => app.desktop.records.filter((a) => a.op === 'badge').pop()?.count;
+  await expect.poll(lastBadge).toBe(count);
   const keys = await page.getByTestId('pending-item').evaluateAll((els) => els.map((e) => e.getAttribute('data-key')));
   expect(new Set(keys).size).toBe(keys.length);
   for (const r of rows) expect(keys, r.why).toContain(`gigleai/cavil-loop#${r.n}`);
@@ -1911,7 +1916,8 @@ test('settings lists what the badge counts: same colours and words as card, tabl
   const tones = await page.getByTestId('pending-item').evaluateAll((els) => els.map((e) => e.querySelector('[data-testid="pending-item-state"]')!.textContent!.includes('已')));
   expect(tones.indexOf(true)).toBeGreaterThan(-1);
   expect(tones.slice(tones.indexOf(true)).every(Boolean)).toBe(true);
-  await expect(page.getByTestId('pending-how-to-clear')).toContainText('不是「未读数」');
+  await expect(page.getByTestId('pending-how-to-clear')).toContainText('「未读数」');
+  await expect(page.getByTestId('pending-how-to-clear')).toContainText('切到 App 就清零');
   await expect(page.getByTestId('pending-how-to-clear')).toContainText('pending/human');
   const open = keys.length - tones.filter(Boolean).length;
   await expect(page.getByTestId('pending-breakdown')).toHaveText(`（开着 ${open} · 已关闭 / 已合并 ${keys.length - open}）`);
@@ -1925,6 +1931,16 @@ test('settings lists what the badge counts: same colours and words as card, tabl
     expect(await fg(st), r.why).toBe(FG[r.tone]);
   }
   await shot(page, '50-pending-list');
+
+  // the user switches to the window (the shell reports the focus): unread 0, the badge cleared after
+  // it, the delivered notifications taken back; the list stays as it is
+  const before = app.desktop.records.length;
+  app.desktop.push({ kind: 'active' });
+  await expect(page.getByTestId('unread-count')).toHaveText('0');
+  await expect.poll(() => app.desktop.records.slice(before).map((r) => (r.op === 'badge' ? `badge ${r.count}` : r.op))).toEqual(['badge 0', 'clearNotifications']);
+  await expect(page.getByTestId('pending-item')).toHaveCount(count);
+  await expect(page.getByTestId('pending-count')).toHaveText(String(count));
+  await shot(page, '50b-pending-list-read');
 
   // the same items on the board card, in the detail badge and in the table: same colour, same words
   await page.getByTestId('back').click();

@@ -36,6 +36,8 @@ export interface PendingChange {
   appeared: Item[];
   /** a source was read for the first time: one summary instead of per-item notifications (null = none) */
   summary: PendingSummary | null;
+  /** the items that summary brought in (empty when there is no summary) */
+  brought: string[];
 }
 
 /** GitHub label names are case-insensitive. */
@@ -120,7 +122,7 @@ export class PendingTracker {
       };
     }
     if (newSources.length) this.started = true;
-    return { appeared: [...appeared.values()], summary };
+    return { appeared: [...appeared.values()], summary, brought: [...brought] };
   }
 
   /** Pending now: one entry per item, the most recently updated copy. */

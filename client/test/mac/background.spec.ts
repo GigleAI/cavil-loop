@@ -36,7 +36,7 @@ import { join } from 'node:path';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { Cache } from '../support/cache';
 import { parseSource } from '../../src/shared/sources';
-import { firstRoundBadge } from '../tauri/first-round';
+import { firstRoundBadge, inFrontAtFirstRound } from '../tauri/first-round';
 
 const APP = process.env.CAVIL_MAC_APP ?? '';
 const BIN = process.env.CAVIL_BG_BIN ?? (APP ? join(APP, 'Contents', 'MacOS', 'Cavil Loop') : '');
@@ -135,7 +135,8 @@ test.afterEach(async () => {
 test('window closed: hidden, still syncing and reminding within 120 s; the Dock icon brings it back', async () => {
   launch();
   const badgeBefore = await firstRound(60_000);
-  expect(badgeBefore).toBe(1);
+  // the badge is the unread count (GitHub#185): the seeded item is unread unless the window was in front
+  expect(badgeBefore).toBe(inFrontAtFirstRound(records()) ? 0 : 1);
   appendFileSync(control, 'close\n');
   await until(() => records().some((r) => r.op === 'hidden'), 'window hidden, app still running', 15_000);
   // past the point where WebKit's default policy would suspend a hidden page
@@ -161,6 +162,8 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   launch(['--hidden']);
   await until(() => records().some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 30_000);
   const badgeBefore = await firstRound(60_000);
+  // started hidden: never in front, so the seeded item is unread (GitHub#185)
+  expect(inFrontAtFirstRound(records())).toBe(false);
   expect(badgeBefore).toBe(1);
   const from = records().length;
   const n = unlabelled();
@@ -188,6 +191,8 @@ test('started hidden, first read slow: the label goes on only after the first co
     release();
   }
   const badgeBefore = await firstRound(60_000);
+  // started hidden: never in front, so the seeded item is unread (GitHub#185)
+  expect(inFrontAtFirstRound(records())).toBe(false);
   expect(badgeBefore).toBe(1);
   const from = records().length;
   const n = unlabelled();

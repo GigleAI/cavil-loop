@@ -126,7 +126,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
       <section id="set-pending" data-testid="pending-settings">
         <h3>提醒</h3>
         <p className="muted small">
-          带「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知，Dock 角标显示总数。
+          带「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知。
         </p>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
@@ -135,10 +135,10 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           </div>
         )}
         <p className="note small" data-testid="pending-how-to-clear">
-          角标不是「未读数」，点开、看过都不会让它变小。要让它变小，就把条目上的 <b>{state.handBack.human}</b> 摘掉：点下面一条打开详情，在「标签」里删掉它（或直接去 GitHub 上摘）。摘掉后下一轮同步成功时角标跟上。
+          Dock 角标是「未读数」：窗口不在前台时新来的待处理条目会让它加一；切到 App 就清零，已经弹出的系统通知也一并收起。下面列的是现在全部待处理的条目，看过也还在；处理完了就在详情的「标签」里删掉 <b>{state.handBack.human}</b>（或直接去 GitHub 上摘），下一轮同步后它就不再列出。
         </p>
         <p className="small">
-          现在待处理：<b data-testid="pending-count">{state.pendingCount}</b> 条
+          未读：<b data-testid="unread-count">{state.unreadCount}</b> 条 · 现在待处理：<b data-testid="pending-count">{state.pendingCount}</b> 条
           {state.pendingItems.length > 0 && (
             <span className="muted" data-testid="pending-breakdown">
               （开着 {openCount} · 已关闭 / 已合并 {state.pendingItems.length - openCount}）

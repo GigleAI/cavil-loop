@@ -41,6 +41,7 @@ interface Harness {
   backend: HarnessBackend;
   alerts: Alert[];
   badges: number[];
+  cleared: number[];
   opened: string[];
   clock: { t: number };
   loginItem: { on: boolean | null; sets: boolean[] };
@@ -64,6 +65,8 @@ async function signedIn(
   const clock = opts.clock ?? { t: FIXTURE_NOW };
   const alerts: Alert[] = [];
   const badges: number[] = [];
+  /** each take-back of the delivered notifications, as how many badges had been set by then */
+  const cleared: number[] = [];
   const opened: string[] = [];
   const loginItem = { on: opts.loginItem === undefined ? false : opts.loginItem, sets: [] as boolean[] };
   const endpoints = { api: fake.api, web: fake.web };
@@ -77,6 +80,7 @@ async function signedIn(
       return refuse ? { ok: false, error: refuse } : { ok: true };
     },
     setBadge: async (n) => void badges.push(n),
+    clearNotifications: async () => void cleared.push(badges.length),
     loginItem: async () => loginItem.on,
     setLoginItem: async (on) => {
       loginItem.sets.push(on);
@@ -97,6 +101,7 @@ async function signedIn(
     backend,
     alerts,
     badges,
+    cleared,
     opened,
     clock,
     loginItem,
@@ -119,8 +124,8 @@ async function tick(h: Harness) {
 }
 
 /**
- * The settings page's list (GitHub#185) is exactly what the badge counts: as many
- * entries as the count and as the last badge sent, one entry per item. Checked after
+ * The settings page's list (GitHub#185) is exactly what is pending: as many entries as the
+ * count, one entry per item; the badge is the unread part of it (never more). Checked after
  * every round of every test here, not only in the list's own tests.
  */
 function expectListIsBadge(h: Harness) {
@@ -128,7 +133,8 @@ function expectListIsBadge(h: Harness) {
   const keys = st.pendingItems.map((e) => e.key);
   expect(new Set(keys).size).toBe(keys.length);
   expect(keys.length).toBe(st.pendingCount);
-  if (h.badges.length) expect(h.badge()).toBe(keys.length);
+  expect(st.unreadCount).toBeLessThanOrEqual(st.pendingCount);
+  if (h.badges.length) expect(h.badge()).toBe(st.unreadCount);
 }
 const listKeys = (h: Harness) => h.c.getState().pendingItems.map((e) => e.key).sort();
 
@@ -412,8 +418,10 @@ describe('pending reminders against the fake GitHub', () => {
     h.c.setHandBack({ human: '  DONE ' });
     await h.c.desktopSettled();
     expect(h.c.getState().handBack.human).toBe('DONE');
-    expect(h.badge()).toBeGreaterThan(50);
-    expect(h.badge()).toBe(h.c.getState().pendingCount);
+    expect(h.c.getState().pendingCount).toBeGreaterThan(50);
+    // the badge is the unread part (GitHub#185): a settings change brings no new unread item
+    expect(h.badge()).toBe(h.c.getState().unreadCount);
+    expect(h.badge()).toBeLessThanOrEqual(P);
     expect(h.alerts).toHaveLength(1);
     await tick(h);
     expect(h.alerts).toHaveLength(1);
@@ -540,6 +548,83 @@ describe("the settings page's list of what the badge counts (GitHub#185)", () =>
     await settle();
     expect(h.opened).toHaveLength(1);
     expect(h.c.getState().focus!.seq).toBe(seq);
+  });
+});
+
+describe('the badge is the unread count (GitHub#185 review: the maintainer\'s ask)', () => {
+  it('switching to the window clears the badge and takes back the notifications; what comes while it is in front is not unread; leaving it counts anew', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    // not looked at yet: everything the start-up summary brought is unread
+    expect(h.badge()).toBe(P);
+    expect(h.c.getState().unreadCount).toBe(P);
+    expect(h.cleared).toEqual([]);
+    // the user switches to the window: badge 0, the delivered notifications are taken back, nothing else changes
+    h.c.onDesktopEvent({ kind: 'active' });
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(0);
+    expect(h.cleared).toHaveLength(1);
+    expect(h.c.getState().unreadCount).toBe(0);
+    expect(h.c.getState().pendingCount).toBe(P);
+    expect(h.c.getState().pendingItems).toHaveLength(P);
+    // a new label while the window is in front: notified as before, but already seen
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.badge()).toBe(0);
+    // the user leaves the window: the next new item is unread again
+    h.c.onDesktopEvent({ kind: 'inactive' });
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    await tick(h);
+    expect(h.items()).toEqual([key(OPEN_NEW), key(CLOSED_ISSUE)]);
+    expect(h.badge()).toBe(1);
+    // its label taken off before anyone looked: nothing to read any more
+    setLabel(CLOSED_ISSUE, false, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(0);
+    // put back while still not looked at: unread again (and notified again, as before)
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(1);
+    // back to the window: read; the notifications are taken back once more
+    h.c.onDesktopEvent({ kind: 'active' });
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(0);
+    expect(h.cleared).toHaveLength(2);
+    // the take-back went out after the badge set to 0 by the same switch
+    expect(h.badges[h.cleared[1] - 1]).toBe(0);
+  });
+
+  it('a settings change brings no unread item; renaming the label and back keeps what was unread', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    h.c.onDesktopEvent({ kind: 'active' });
+    h.c.onDesktopEvent({ kind: 'inactive' });
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(1);
+    h.c.setHandBack({ human: 'DONE' });
+    await h.c.desktopSettled();
+    // DONE items are pending now, but nobody was told about them as new: not unread
+    expect(h.c.getState().pendingCount).toBeGreaterThan(50);
+    expect(h.badge()).toBe(h.c.getState().unreadCount);
+    expect(h.badge()).toBeLessThanOrEqual(1);
+    h.c.setHandBack({ human: '' });
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(1);
+  });
+
+  it('sign-out forgets what was unread', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(P);
+    await h.c.logout();
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(0);
+    expect(h.c.getState().unreadCount).toBe(0);
   });
 });
 
