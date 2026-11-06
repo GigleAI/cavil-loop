@@ -254,24 +254,49 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 **更新签名密钥**（#184，维护者做一次）：公钥只放一处——`src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`：App 运行时用它验更新包，打包时打包工具用它，发版前生成 `latest.json` 那一步也用它逐个验签。发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名。发版标签上缺这个 secret、或公钥是空的，打包直接失败；更新包的签名用公钥验不过（包被改过、签名坏了、不是这把钥匙签的、绑定的版本不对），生成 `latest.json` 那一步拒绝发版。PR 和 main 上的打包用每次现生成的一对一次性密钥（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
 
-在自己的 Mac 上，进仓库的 `client/` 目录，**一条一条**跑下面的命令；任何一条报错就停下，不要继续上传：
+在自己的 Mac 上，进仓库的 `client/` 目录，**一条一条**跑下面的命令；任何一条报错就停下，先看下面「出错了怎么办」，不要继续上传。
 
-<!-- update-key-steps:begin -->
+**第一段：生成钥匙（只做一次）**
+
+<!-- update-key-steps:generate:begin -->
 ```bash
 npx --yes @tauri-apps/cli@2 signer generate -w ~/.tauri/cavil-loop-updater.key
 ls -l ~/.tauri/cavil-loop-updater.key ~/.tauri/cavil-loop-updater.key.pub
+```
+<!-- update-key-steps:generate:end -->
+
+会问两次密码（可以直接回车留空；设了就记住）。`ls` 要列出两个文件：`cavil-loop-updater.key`（私钥）和 `cavil-loop-updater.key.pub`（公钥）。
+
+**第二段：写入公钥并检查这对钥匙（可以反复跑）**
+
+<!-- update-key-steps:check:begin -->
+```bash
 node scripts/update-manifest.mjs --set-pubkey ~/.tauri/cavil-loop-updater.key.pub
 echo "cavil key check" > ~/cavil-key-check.txt
 npx --yes @tauri-apps/cli@2 signer sign -f ~/.tauri/cavil-loop-updater.key ~/cavil-key-check.txt
 node scripts/update-manifest.mjs --verify ~/cavil-key-check.txt ~/cavil-key-check.txt.sig
 ```
-<!-- update-key-steps:end -->
+<!-- update-key-steps:check:end -->
 
-1. 第一条会问两次密码（可以直接回车留空；设了就记住）。`ls` 要列出两个文件：`cavil-loop-updater.key`（私钥）和 `cavil-loop-updater.key.pub`（公钥）。
-2. 第三条把公钥写进 `src-tauri/tauri.conf.json`，成功时打印「已把公钥（密钥编号 …）写进 …」。
-3. 最后两条用私钥签一个小文件（会问一次密码），再用刚写进去的公钥验它：看到「✅ … 签名有效」才算这对钥匙能用。密码输错、或验不过时会报错——这时 `git checkout src-tauri/tauri.conf.json` 退回，从第一条重来。
-4. 仓库 **Settings → Secrets and variables → Actions → New repository secret**：`TAURI_SIGNING_PRIVATE_KEY` = 私钥文件全部内容；设了密码再建 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。列表里出现这两个名字就算成功。私钥和密码不要贴到任何评论里。
-5. 把改过的 `src-tauri/tauri.conf.json`（只多了公钥）提交，随一个版本号升级一起合入 main。
-6. 私钥另外备份。丢了只能换一把新的：已经装好的 App 认不出新钥匙签的包，大家要再手动装一次（含一次放行）。
+第一条把公钥写进 `src-tauri/tauri.conf.json`，打印「已把公钥（密钥编号 …）写进 …」。后两条用私钥签一个小文件（会问一次密码，填第一段设的那个），再用刚写进去的公钥验它：看到「✅ … 签名有效」才算这对钥匙能用。
 
-`test/unit/update-key-steps.test.ts` 把上面这段命令原样取出，在伪终端里逐条跑（输入密码、核对两个文件、写入公钥、签名并验签，再试一次输错密码时会停下）。
+**出错了怎么办**
+
+- **签名那一步密码输错了**：钥匙没坏，**不要**重跑第一段（它不会覆盖已有的钥匙，会报 `already exists`）。把第二段整段再跑一次，输对密码即可——它会重新写入同一把公钥、重新签名、重新验签，钥匙文件不会变。
+- **密码忘了、或者想换一把钥匙**：只有在还没用这把钥匙发过版时才这样做（发过版的话，已装好的 App 只认旧钥匙，换了以后大家要再手动装一次）。先删掉旧的两个文件，再从第一段开始：
+
+<!-- update-key-steps:replace:begin -->
+```bash
+rm ~/.tauri/cavil-loop-updater.key ~/.tauri/cavil-loop-updater.key.pub
+```
+<!-- update-key-steps:replace:end -->
+
+- **不想继续了**：`git checkout src-tauri/tauri.conf.json` 退回公钥那一处改动；钥匙文件留在 `~/.tauri/` 里不影响任何东西。
+
+钥匙检查通过之后：
+
+1. 仓库 **Settings → Secrets and variables → Actions → New repository secret**：`TAURI_SIGNING_PRIVATE_KEY` = 私钥文件全部内容；设了密码再建 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。列表里出现这两个名字就算成功。私钥和密码不要贴到任何评论里。
+2. 把改过的 `src-tauri/tauri.conf.json`（只多了公钥）提交，随一个版本号升级一起合入 main。
+3. 私钥另外备份。丢了只能换一把新的：已经装好的 App 认不出新钥匙签的包，大家要再手动装一次（含一次放行）。
+
+`test/unit/update-key-steps.test.ts` 把上面三段命令原样取出，在伪终端里照上面写的走：正常一遍；签名输错密码 → 只重跑第二段 → 验签成功、钥匙文件一个字节没变；重跑第一段会被拒 → 跑「换钥匙」那段 → 重新生成并检查成功，钥匙换成了新的。
