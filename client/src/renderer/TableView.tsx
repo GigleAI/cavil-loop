@@ -4,6 +4,7 @@ import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/typ
 import { buildTable } from '../data/table';
 import { api } from './api';
 import { Person } from './Avatar';
+import { OPENS_ITEM } from './outsideClick';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 
@@ -193,6 +194,7 @@ export function TableView({
                       <a
                         href={r.item.url}
                         data-testid="row-title"
+                        {...{ [OPENS_ITEM]: '' }}
                         onClick={(e) => {
                           e.preventDefault();
                           onOpen(r.item.key);

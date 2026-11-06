@@ -2,6 +2,7 @@
 import { useEffect, useRef } from 'react';
 import { SCOPE_TITLE, SHORTCUTS, isMac, keyParts, type Scope } from './shortcuts';
 import { useLayer, useShortcuts } from './keyboard';
+import { MODAL } from './outsideClick';
 
 const ORDER: Scope[] = ['global', 'dialog', 'detail', 'reply', 'picker', 'help'];
 
@@ -23,7 +24,7 @@ export function ShortcutHelp({ onClose }: { onClose: () => void }) {
   useEffect(() => box.current?.focus(), []);
   const mac = isMac();
   return (
-    <div className="modal-back" data-testid="shortcut-help" onClick={onClose}>
+    <div className="modal-back" {...{ [MODAL]: '' }} data-testid="shortcut-help" onClick={onClose}>
       <div className="modal shortcuts" role="dialog" aria-modal="true" tabIndex={-1} ref={box} onClick={(e) => e.stopPropagation()}>
         <h3>键盘快捷键</h3>
         <div className="shortcut-groups">
