@@ -864,7 +864,7 @@ export const MUTATIONS = [
     from: "      data-key={it.key}\n      {...{ [OPENS_ITEM]: '' }}", to: '      data-key={it.key}',
     expect: ['GitHub#191'] },
   { what: '点面板外：表格行标题没标「打开条目」', file: 'src/renderer/TableView.tsx', runner: 'e2e',
-    from: "                        data-testid=\"row-title\"\n                        {...{ [OPENS_ITEM]: '' }}", to: '                        data-testid="row-title"',
+    from: "                data-testid=\"row-title\"\n                {...{ [OPENS_ITEM]: '' }}", to: '                data-testid="row-title"',
     expect: ['GitHub#191'] },
   { what: '点面板外：确认框遮罩没有标记（点遮罩关框时顺带收起面板）', file: 'src/renderer/ConfirmDialog.tsx', runner: 'e2e',
     from: "<div className=\"modal-back\" {...{ [MODAL]: '' }}", to: '<div className="modal-back"',
