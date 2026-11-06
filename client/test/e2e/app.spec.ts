@@ -808,6 +808,17 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   // (near the start of the line: the middle of it may be the "在网页上看" link)
   await frame.locator('details.entry[data-entry="C1"] > summary').click({ position: { x: 40, y: 10 } });
   await expect(frame.locator('details.entry[data-entry="C1"] .md')).toBeVisible();
+  // the keyboard is now inside the isolated discussion: Esc stays there and does not close the panel
+  // (PR #171: kept isolated by the maintainer's choice); a click on the panel outside it gives it back
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await detail.locator('.detail-title').click();
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  await card(page, 138).click();
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect.poll(async () => (await folds())[0]).toEqual(['C3', true]);
   await page.getByTestId('unfold-toggle').click();
   await expect.poll(async () => (await folds()).every(([, open]) => open)).toBe(true);
   await page.getByTestId('unfold-toggle').click();

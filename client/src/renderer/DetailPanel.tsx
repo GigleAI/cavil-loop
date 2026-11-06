@@ -143,7 +143,9 @@ export function DetailPanel({
   useEffect(() => {
     document.documentElement.style.setProperty('--detail-space', `${width}px`);
   }, [width]);
-  // Esc closes the panel — not while typing (a draft is not thrown away by a key) or while a dialog asks
+  // Esc closes the panel — not while typing (a draft is not thrown away by a key) or while a dialog asks.
+  // Not while the discussion frame has the keyboard either: its keys stay inside it (PR #171 review,
+  // the maintainer chose to keep the frame isolated); a click on the panel outside the frame gives it back.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || ask) return;
@@ -155,7 +157,9 @@ export function DetailPanel({
     return () => window.removeEventListener('keydown', on);
   }, [ask, onClose]);
   const shell = (key: string | undefined, children: React.ReactNode) => (
-    <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width}>
+    // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
+    // whose keys never reach this window (the frame is isolated and runs no scripts) — Esc works again after it
+    <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
       <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
       {children}
     </aside>
@@ -168,7 +172,7 @@ export function DetailPanel({
         <div className="detail-head">
           <span className="muted">这一条已不在当前视图里</span>
           <div className="spacer" />
-          <button onClick={onClose} data-testid="detail-close">
+          <button onClick={onClose} data-testid="detail-close" title="关闭（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）">
             关闭
           </button>
         </div>
@@ -199,7 +203,7 @@ export function DetailPanel({
         <button onClick={() => void load()} disabled={loading} data-testid="detail-refresh">
           {loading ? '读取中…' : '刷新'}
         </button>
-        <button onClick={onClose} data-testid="detail-close">
+        <button onClick={onClose} data-testid="detail-close" title="关闭（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）">
           关闭
         </button>
       </div>
