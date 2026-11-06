@@ -109,7 +109,9 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     void c.syncNow(); // due for a refresh → GitHub answers → the write holds the queue
     while (!store.setStarted) await tick();
     void c.logout();
-    await tick();
+    // the page switch does not wait for the queue, but on a slow machine one 20 ms tick is not
+    // always enough for it to land (GitHub CI, PR #183): wait for it, bounded
+    for (let i = 0; i < 200 && c.getState().phase !== 'login'; i++) await tick();
     if (store.clearStarted) throw new Error('setup: delete should not have started');
   },
   'logout-delete-fails': async () => {
