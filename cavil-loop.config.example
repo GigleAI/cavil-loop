@@ -216,6 +216,38 @@ AUTOPILOT_MERGE_METHOD="squash"
 # 自动检查超过几小时还没跑完就交人
 AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
 
+# ── Waiting on another item / 等前置标签（GitHub#157）──
+# When the work is blocked on ANOTHER issue / PR of this repo (not on a human decision), the worker
+# records the prerequisites and puts this label on instead of pending/human. The daemon checks it:
+#   · all prerequisites done (issue closed as completed / PR merged) → one comment, the item goes
+#     back to the trigger label it came from (default pending/agent) and is dispatched as usual
+#   · a prerequisite ended otherwise (closed not planned / duplicate / PR closed unmerged), or none
+#     can be found → pending/human with a comment saying which one and why
+#   · cannot read GitHub → does nothing, looks again next round (never treated as "done")
+# Prerequisites come from the issue's native "Blocked by" relationship (sidebar → Relationships;
+# GitHub only accepts issues there) plus a hidden marker comment written by the loop account or a
+# maintainer: <!-- agent-blocked-by: #12 #34 resume=pending/agent -->. Free text like "waiting on
+# #12" is never read. Adding pending/human stops it. While an item is waiting, the poll interval is
+# capped at BLOCKED_RECHECK_SECS; noticing a NEWLY labelled item still follows the idle backoff.
+# Only this repo's items count. Leave LABEL_PENDING_BLOCKED empty to keep the previous behaviour
+# exactly (no extra calls, no state.json field, prompts unchanged). setup.sh creates the label.
+#
+# 一条活卡在**本仓库别的 issue / PR 还没完成**上（不是卡在要人拍板）时，worker 登记前置、挂这个标签，
+# 不再翻 pending/human。daemon 定期检查：
+#   · 前置全部完成（issue 以「已完成」关闭 / PR 已合并）→ 留一条说明，翻回原来的触发标签（默认 pending/agent），照常派工
+#   · 有前置以别的方式收场（关成不做 / 重复、PR 没合就关），或找不到前置 → 翻 pending/human 并写明是哪个、为什么
+#   · 读不到 GitHub → 什么都不做，下一轮再看（绝不当成「已完成」）
+# 前置从两处取：issue 侧栏 Relationships 里的「Blocked by」（GitHub 只接受 issue），以及 loop 写入账号或维护者
+# 发的隐藏标记评论 <!-- agent-blocked-by: #12 #34 resume=pending/agent -->。「等 #12」这种普通文字不认。
+# 加 pending/human 即可叫停。有条目在等时轮询间隔最长 BLOCKED_RECHECK_SECS；新挂上的那一次仍按空闲退避才发现。
+# 只认本仓库的条目。LABEL_PENDING_BLOCKED 留空 = 关闭，行为和以前逐字节一样（不多发调用、不写 state.json、
+# 提示词不变）。setup.sh 会按这个名字建标签。
+LABEL_PENDING_BLOCKED="pending/blocked"
+# 同一个等待条目两次细查的最短间隔，也是「有条目在等」时轮询间隔的上限（秒）
+BLOCKED_RECHECK_SECS=300
+# 判定已定、写 GitHub 连续失败多少次就放弃（留在等前置标签上、记日志，要人处理）
+BLOCKED_MAX_TRIES=10
+
 # ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97 / #100）──
 # For projects where another AI assistant with its own GitHub account (the "requester bot")
 # files requests directly. The loop closes in two places:

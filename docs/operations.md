@@ -816,6 +816,47 @@ process, is picked up the next round through that record.
 Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
 
+## Waiting on another item: `pending/blocked` (GitHub#157)
+
+Set `LABEL_PENDING_BLOCKED` (the example config uses `pending/blocked`) and a worker whose work is blocked on **another
+issue / PR of this repo** — not on a human decision — records the prerequisites and puts that label on instead of
+`pending/human`. Every poll round the daemon looks at items carrying it:
+
+| Prerequisites | Daemon does |
+|---|---|
+| all done (issue closed as *completed*, PR merged) | one comment, removes the label, adds back the trigger label the marker names (default `pending/agent`) — the next round dispatches it |
+| one ended otherwise (closed *not planned* / *duplicate* / no reason, PR closed unmerged, unreadable 404) | comment naming it, `pending/human` |
+| none can be found, or one lives in another repo | comment, `pending/human` |
+| some still open | nothing |
+| GitHub cannot be read (error, missing field) | nothing; looks again next round — never treated as done |
+
+**Where the prerequisites come from** (union): the issue's native *Blocked by* relationship (sidebar → Relationships;
+measured: GitHub accepts only issues as the blocker, a PR returns 422 "Target issue may only be an issue"), and the
+latest hidden marker `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->` posted by the loop's write account or a
+maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) strictly after the label was last removed — GitHub timestamps are whole
+seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. Free
+text such as "waiting on #12" is never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+
+**Recovering after a hand-off**: the daemon's comment lists the steps — fix the prerequisites (remove the failed one from
+*Blocked by*, add the new one, or post a new marker for a PR), **remove `pending/human`**, put `pending/blocked` back. While
+`pending/human` is still on, the daemon treats the item as stopped and never resumes it.
+
+**Stopping it**: add `pending/human` (or any flow label — `doing/agent`, `pending/PR`, `pending/review`, a trigger label…)
+and the daemon leaves the item alone. Putting a trigger label on by hand dispatches it as usual and the dispatch removes
+`pending/blocked`. Greedy dispatch, self-heal and autopilot's "label only" pickup all skip items carrying it.
+
+**Before writing** the daemon reads everything again and decides a second time; if anything differs (a new
+prerequisite, the label removed and put back, `pending/human` added, a prerequisite reopened) it writes nothing this
+round. Progress is kept in `state.json` → `blocked_resume` (only while the feature is on) so a retry after a failed label
+write does not post the comment twice; after `BLOCKED_MAX_TRIES` failed attempts it gives up, logs, and leaves the item on
+`pending/blocked` for a human.
+
+**Timing**: while an item is waiting, the poll interval is capped at `BLOCKED_RECHECK_SECS` (300 s), so a finished
+prerequisite is usually picked up within about 7 minutes. *Noticing* a newly labelled item still follows the idle backoff —
+in a project that has been quiet for a week a hand-added label can take up to ~30 minutes to be seen (the worker's own
+label is seen within a minute, the project having just been active). `rm poll-pace.json` brings polling back to full speed.
+Not supported: prerequisites in other repos, cycle detection (two items waiting on each other both stay waiting).
+
 ## External requester bot (optional, **off by default**)
 
 When another AI assistant with its own GitHub account files requests directly, the agent's
@@ -1947,4 +1988,4 @@ Project lessons are a counted error book (format and checks: `scripts/retrospect
 
 **Project command after the retrospective (optional, GitHub#152).** `POST_RETROSPECTIVE_PROJECT_CMD` (empty = off) runs with `bash -c` at the root of the retrospective's temporary checkout, after the report and lessons are validated and written, before the commit — e.g. a script that ranks directory lessons and writes them into each directory's `AGENTS.md`. It gets `RETROSPECTIVE_PR`, `RETROSPECTIVE_LESSONS_FILE` and `RETROSPECTIVE_REPORT_FILE` (paths relative to the root) and a 10-minute limit. Everything it changes or creates goes into the same commit as the report and lessons, except files the repository's ignore rules exclude — a script that leaves stray files behind needs fixing. A non-zero exit, a timeout, changing the validated report or lessons, or committing on its own fails this retrospective: nothing is pushed, the temporary checkout is removed, and the usual retry applies (hourly, 3 attempts; each retry calls the model again). Its output tail is logged on success and kept in the failure reason. The checkout is fresh from the base branch, so untracked things such as `node_modules` are not there. **It runs with the daemon user's own permissions**: the retrospective's GitHub tokens (`GH_TOKEN` / `GITHUB_TOKEN`) are not passed on, but that is not isolation — a stored `gh` login or git credentials stay reachable, and a push made outside this checkout cannot be stopped. Configure trusted commands only.
 
-One review runs across local projects at a time; model timeout is 30 minutes, failures retry after one hour, and a PR that fails 3 times in a row is parked (`status: failed`, reason in the log) until a human sets its job file back to `pending`. Remote project reports are completion markers. See `$STATE_DIR/retrospective.log` and `$STATE_DIR/retrospectives/` for status, evidence and retries. Disable with `POST_MERGE_RETROSPECTIVE=false`; the queue is retained. Requires Python 3, Claude CLI with safe mode and structured output, and project push access. No existing comments or worker labels are changed.
+One review runs across local projects at a time (machine-wide lock `~/.local/state/cavil-loop/retrospective.lock`, independent of how the skill is deployed; GitHub#165); model timeout is 30 minutes, failures retry after one hour, and a PR that fails 3 times in a row is parked (`status: failed`, reason in the log) until a human sets its job file back to `pending`. Remote project reports are completion markers. See `$STATE_DIR/retrospective.log` and `$STATE_DIR/retrospectives/` for status, evidence and retries. Disable with `POST_MERGE_RETROSPECTIVE=false`; the queue is retained. Requires Python 3, Claude CLI with safe mode and structured output, and project push access. No existing comments or worker labels are changed.

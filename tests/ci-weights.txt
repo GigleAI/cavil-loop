@@ -5,6 +5,7 @@
 agent-trust-paths 56
 autopilot 150
 autopilot-ops 30
+blocked-label 55
 cavil-names 3
 checkout-stale-alert 3
 claude-resume-model 8
@@ -38,6 +39,7 @@ requester-bot 236
 requester-bot-any-item 55
 requester-bot-wait 9
 retrospective-directory-lessons 1
+retrospective-global-lock 2
 retrospective-lessons 2
 review-verdict-emoji 1
 run 2

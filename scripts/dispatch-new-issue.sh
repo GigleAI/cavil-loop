@@ -54,7 +54,10 @@ if [ -n "$PARENT_ISSUE" ]; then
     sub_overlay="$(find_prompt_template sub-issue)"
     if [ -n "$sub_base" ] && [ -n "$sub_overlay" ]; then
         TEMPLATE="$STATE_DIR/prompt-composed-sub-issue.md"
-        { cat "$sub_base"; printf '\n\n---\n\n'; cat "$sub_overlay"; } > "$TEMPLATE"
+        { cat "$sub_base"; printf '\n\n---\n\n'; cat "$sub_overlay"
+          # 等前置（GitHub#157）：子项说明里「前置还没合并 → 交人」要在它**之后**改掉，后文才覆盖得了
+          if blocked_enabled; then printf '\n\n---\n\n'; blocked_handoff_section sub-issue; fi
+        } > "$TEMPLATE"
         log "issue #$ISSUE 是 #$PARENT_ISSUE 拆出的子项 → 跳过设计轮，直接开发"
     else
         log "⚠️ issue #$ISSUE 是 #$PARENT_ISSUE 的子项，但缺 issue-comment / sub-issue 模板 → 照常走设计轮"

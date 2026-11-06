@@ -679,6 +679,39 @@ echo "HOST_VERDICT=$verdict"
 
 issue 上残留的托管标签在关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，不想这样就摘掉。
 
+## 等前置：`pending/blocked`（GitHub#157）
+
+配了 `LABEL_PENDING_BLOCKED`（示例配置写的是 `pending/blocked`）后，worker 的活卡在**本仓库别的 issue / PR** 上
+（不是卡在要人拍板）时，登记前置、挂这个标签，不再翻 `pending/human`。daemon 每轮看挂着它的条目：
+
+| 前置的情况 | daemon 做什么 |
+|---|---|
+| 全部完成（issue 以「已完成」关闭、PR 已合并） | 留一条说明，摘标签，加回标记里写的触发标签（默认 `pending/agent`），下一轮派工 |
+| 有一个以别的方式收场（关成不做 / 重复 / 没写原因、PR 没合就关、读到 404） | 评论写明是哪个，翻 `pending/human` |
+| 找不到前置，或前置在别的仓库 | 评论说明，翻 `pending/human` |
+| 还有没完成的 | 什么都不做 |
+| 读不到 GitHub（报错、缺字段） | 什么都不做，下一轮再看——绝不当成「已完成」 |
+
+**前置从哪来**（两处取并集）：issue 侧栏 Relationships 里的「Blocked by」（实测：GitHub 只接受 issue 当前置，
+设 PR 报 422「Target issue may only be an issue」），以及最近一次摘掉这个标签之后、由 loop 写入账号或维护者
+（`OWNER` / `MEMBER` / `COLLABORATOR`）发的最新一条隐藏标记 `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->`。
+「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认。
+「等 #12」这种普通文字不认。`resume=` 必须是本项目配置的触发标签之一，否则用默认那个。
+
+**交人之后怎么恢复等待**：daemon 的评论里写了步骤——改前置（「Blocked by」里去掉失败的那个、加上新的，等 PR 就发一条新登记），
+**摘掉 `pending/human`**，重新挂 `pending/blocked`。`pending/human` 还在时 daemon 按叫停处理，永远不会自动继续。
+
+**叫停**：加 `pending/human`（或任何流程标签——`doing/agent`、`pending/PR`、`pending/review`、触发标签……），daemon 就不碰它。
+手动打触发标签照常派工，派工时摘掉 `pending/blocked`。greedy 兜底、self-heal、托管的「只挂托管标签就派」都跳过它。
+
+**写之前**全部重读、再判一次；有任何不同（新前置、标签摘了又挂、加了 `pending/human`、前置被重开）本轮就不写。
+进度记在 `state.json` 的 `blocked_resume`（只在功能开启时写），翻标签失败后重试不会重复评论；连续失败
+`BLOCKED_MAX_TRIES` 次就放弃、记日志，条目留在 `pending/blocked` 上等人处理。
+
+**时间**：有条目在等时，轮询间隔最长 `BLOCKED_RECHECK_SECS`（300 秒），前置完成后通常 7 分钟内接上。**第一次发现**
+新挂上的条目仍按空闲退避：项目安静了一周时，手动挂上的标签最长约 30 分钟才被看到（worker 自己挂的，项目刚活跃过，
+1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。不支持：别的仓库的前置、环形依赖检测（互相等的两条都一直等）。
+
 ## 外部需求机器人（可选，**默认关闭**）
 
 另一个 AI 助手（有自己的 GitHub 账号）直接给项目提需求时，agent 提问 / 汇报不翻 `pending/human`，
@@ -1569,4 +1602,4 @@ rm ~/.config/cavil-loop/$KEY.conf
 
 **复盘后执行的项目命令（可选，GitHub#152）。** `POST_RETROSPECTIVE_PROJECT_CMD`（留空 = 关闭）在复盘的临时 checkout 根目录用 `bash -c` 执行，时机是报告和经验文件校验通过并写好之后、提交之前——比如把目录经验排名后写进各层 `AGENTS.md` 的脚本。它拿到 `RETROSPECTIVE_PR`、`RETROSPECTIVE_LESSONS_FILE`、`RETROSPECTIVE_REPORT_FILE`（相对仓库根的路径），限时 10 分钟。它改动或新建的文件和报告、经验文件进**同一个提交**，仓库忽略规则排除的文件除外——脚本留下多余文件是脚本的 bug，要修。非零退出、超时、改了校验过的报告或经验文件、自己提交，都算本次复盘失败：什么都不推、临时 checkout 删掉，按原有规则重试（一小时一次、共 3 次；每次重试都会重新调模型）。成功时日志记下输出末尾，失败时输出末尾进失败原因。临时 checkout 是从主干新取的，没有 `node_modules` 这类没提交的东西。**它按运行 daemon 的本机用户权限执行**：复盘自己用的 GitHub 令牌（`GH_TOKEN` / `GITHUB_TOKEN`）不传给它，但这不是隔离——本机已有的 `gh` 登录、git 凭据它仍然用得到，它绕开这个 checkout 直接推送也拦不住。只配置可信命令。
 
-本机所有项目最多同时一个复盘，模型超时 30 分钟，失败一小时后重试，同一个 PR 连续失败 3 次就停下（任务状态记为 `failed`，原因在日志里），需人处理后把任务文件的 `status` 改回 `pending`。项目远端报告作为完成标记。状态、证据、重试信息位于 `$STATE_DIR/retrospective.log` 和 `$STATE_DIR/retrospectives/`。设为 `POST_MERGE_RETROSPECTIVE=false` 暂停并保留队列。需要 Python 3、支持 safe mode/结构化输出的 Claude CLI 和来源项目推送权限。不修改旧评论或业务 worker 标签。
+本机所有项目最多同时一个复盘（靠全机锁 `~/.local/state/cavil-loop/retrospective.lock`，与部署方式无关，GitHub#165），模型超时 30 分钟，失败一小时后重试，同一个 PR 连续失败 3 次就停下（任务状态记为 `failed`，原因在日志里），需人处理后把任务文件的 `status` 改回 `pending`。项目远端报告作为完成标记。状态、证据、重试信息位于 `$STATE_DIR/retrospective.log` 和 `$STATE_DIR/retrospectives/`。设为 `POST_MERGE_RETROSPECTIVE=false` 暂停并保留队列。需要 Python 3、支持 safe mode/结构化输出的 Claude CLI 和来源项目推送权限。不修改旧评论或业务 worker 标签。
