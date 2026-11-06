@@ -1,5 +1,4 @@
-import { stateTone } from '../shared/stateTone';
-import { badgeText } from './KindBadge';
+import { badgeText, stateTone } from '../shared/stateTone';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';

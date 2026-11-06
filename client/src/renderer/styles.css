@@ -217,3 +217,13 @@ button.danger { background: var(--closed); color: #fff; border-color: var(--clos
 /* closing an issue (GitHub#180): the reason picker of the confirm dialog */
 .close-reasons { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .close-reasons label.radio { gap: 8px; }
+/* the settings page's pending list (GitHub#185) */
+.settings .note { border-left: 3px solid var(--accent); padding: 2px 10px; margin: 8px 0; }
+.pending-list { list-style: none; padding: 0; margin: 6px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); overflow: hidden; }
+.pending-list li + li { border-top: 1px solid var(--border); }
+.pending-row { display: flex; gap: 12px; align-items: baseline; width: 100%; padding: 7px 12px; border: none; border-radius: 0; background: none; text-align: left; }
+.pending-row:hover { background: var(--bg); }
+.pending-row .state { flex: 0 0 110px; font-size: 12px; font-weight: 600; }
+.pending-ref { flex: 0 0 170px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-ext { flex: 0 0 auto; }

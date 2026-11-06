@@ -1,5 +1,5 @@
 import type { IssueStateReason, ItemKind, ItemState } from '../shared/types';
-import { stateTone } from '../shared/stateTone';
+import { badgeText, stateTone } from '../shared/stateTone';
 
 /**
  * The type badge at the top of the detail panel (GitHub#172): an issue and a PR
@@ -13,14 +13,6 @@ import { stateTone } from '../shared/stateTone';
  * mark: only an open PR marked as a draft turns grey.
  */
 const NAME: Record<ItemKind, string> = { issue: 'Issue', pr: 'Pull Request' };
-const STATE_TEXT: Record<ItemState, string> = { open: '开', closed: '已关闭', merged: '已合并' };
-const REASON_TEXT: Partial<Record<IssueStateReason, string>> = { not_planned: '（不计划）', duplicate: '（重复）' };
-
-export function badgeText(kind: ItemKind, state: ItemState, reason: IssueStateReason | null | undefined, isDraft: boolean | null): string {
-  if (kind === 'pr' && state === 'open' && isDraft === true) return '草稿';
-  if (kind === 'issue' && state === 'closed' && reason) return STATE_TEXT.closed + (REASON_TEXT[reason] ?? '');
-  return STATE_TEXT[state];
-}
 
 /** circle with a dot */
 function IssueIcon() {

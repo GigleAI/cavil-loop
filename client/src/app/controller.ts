@@ -179,6 +179,7 @@ export class Controller {
       handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       pendingCount: 0,
+      pendingItems: [],
       launchAtLogin: null,
       notifyProblem: null,
       focus: null,
@@ -414,7 +415,7 @@ export class Controller {
   private dropMirror(): void {
     this.snapshots.clear();
     this.pending.reset();
-    this.state = { ...this.state, pendingCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.state = { ...this.state, pendingCount: 0, pendingItems: [], sync: { ...this.state.sync, sources: [], dataFrom: null } };
     // what was queued for the shell belonged to that account: none of it goes out any more, and the
     // cleared badge does not wait behind a notification the system is still answering
     this.desktopEra++;
@@ -457,6 +458,15 @@ export class Controller {
   /** Every call to the shell queued so far has been answered (the tests wait on this). */
   desktopSettled(): Promise<void> {
     return this.desktopCalls.then(() => undefined);
+  }
+
+  /**
+   * The count and the list the settings page shows, from the tracker's one
+   * de-duplicated set at the same moment (GitHub#185): every place that updates
+   * the count updates the list with it.
+   */
+  private pendingNow(): Pick<AppState, 'pendingCount' | 'pendingItems'> {
+    return { pendingCount: this.pending.count(), pendingItems: this.pending.list() };
   }
 
   private badge(): void {
@@ -532,7 +542,7 @@ export class Controller {
       this.notify(() => (this.summaryStillHolds(ctx) ? { kind: 'summary', ...summaryAlertText({ ...summary, ...this.pending.totals() }) } : null));
     }
     this.badge();
-    this.state = { ...this.state, pendingCount: this.pending.count() };
+    this.state = { ...this.state, ...this.pendingNow() };
   }
 
   /**
@@ -587,6 +597,16 @@ export class Controller {
 
   stopDesktopEvents(): void {
     this.eventsRunning = false;
+  }
+
+  /**
+   * A row of the settings page's pending list was clicked (GitHub#185): exactly what a
+   * click on that item's notification does — its detail in the app when the board
+   * has it, otherwise GitHub in the browser. A key no longer pending does nothing.
+   */
+  openPending(key: string): void {
+    const entry = this.state.pendingItems.find((e) => e.key === key);
+    if (entry) this.onDesktopEvent({ kind: 'open', key: entry.key, url: entry.url });
   }
 
   /** One event from the shell (also what the tests feed). */
@@ -686,7 +706,7 @@ export class Controller {
     // its own items stop counting, silently
     this.pending.prune(sources.map((s) => s.key));
     this.badge();
-    this.state = { ...this.state, pendingCount: this.pending.count() };
+    this.state = { ...this.state, ...this.pendingNow() };
     const view = this.state.view.selected ? { ...this.state.view, selected: this.state.view.selected.filter((k) => k !== key) } : this.state.view;
     this.cache.setSetting('view', view);
     this.cache.setSetting(PENDING_IMPORTS, this.pendingImports().filter((p) => p.sourceKey !== key));
@@ -873,7 +893,7 @@ export class Controller {
       this.labelVersion++;
       this.pending.relabel(next.human, this.snapshots);
       this.badge();
-      this.state = { ...this.state, pendingCount: this.pending.count() };
+      this.state = { ...this.state, ...this.pendingNow() };
     }
     this.set({ handBack: next });
   }

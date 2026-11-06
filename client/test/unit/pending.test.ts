@@ -110,7 +110,22 @@ async function tick(h: Harness) {
   await h.c.syncNow();
   await h.c.desktopSettled();
   await h.c.desktopSettled();
+  expectListIsBadge(h);
 }
+
+/**
+ * The settings page's list (GitHub#185) is exactly what the badge counts: as many
+ * entries as the count and as the last badge sent, one entry per item. Checked after
+ * every round of every test here, not only in the list's own tests.
+ */
+function expectListIsBadge(h: Harness) {
+  const st = h.c.getState();
+  const keys = st.pendingItems.map((e) => e.key);
+  expect(new Set(keys).size).toBe(keys.length);
+  expect(keys.length).toBe(st.pendingCount);
+  if (h.badges.length) expect(h.badge()).toBe(keys.length);
+}
+const listKeys = (h: Harness) => h.c.getState().pendingItems.map((e) => e.key).sort();
 
 /**
  * Put / take the label on GitHub (the fake): on the Project item and on the
@@ -430,6 +445,99 @@ describe('pending reminders against the fake GitHub', () => {
   });
 });
 
+describe("the settings page's list of what the badge counts (GitHub#185)", () => {
+  // what both sources carry with the label after seeding, read from the recording (not from the client)
+  const startKeys = () => {
+    const out = new Set<string>();
+    for (const x of rawProject) if (projPending(x)) out.add(`${x.content.repository.nameWithOwner.toLowerCase()}#${x.content.number}`);
+    for (const i of rawRepo) if (repoPending(i)) out.add(key(i.number));
+    out.add(key(SEEDED));
+    return [...out].sort();
+  };
+
+  it('lists exactly the items the badge counts through start, new labels, a failing source, a removed label, another label name, a removed source and sign-out', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL, REPO] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    // start: the recording's pending items, the cross-source one once
+    expect(listKeys(h)).toEqual(startKeys());
+    expect(h.badge()).toBe(P);
+    expectListIsBadge(h);
+    // a new label on an open issue and on a merged PR both sources carry: listed once each
+    addToRepoList(MERGED_PR, 'closed', true, h.clock);
+    setLabel(MERGED_PR, true, h.clock);
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(listKeys(h)).toEqual([...startKeys(), key(MERGED_PR), key(OPEN_NEW)].sort());
+    expect(h.c.getBoardData().items.find((i) => i.key === key(MERGED_PR))!.sources.sort()).toEqual([PROJECT_KEY, REPO_KEY].sort());
+    const merged = h.c.getState().pendingItems.find((e) => e.key === key(MERGED_PR))!;
+    expect(merged).toMatchObject({ kind: 'pr', state: 'merged', number: MERGED_PR, repo: REPO });
+    expect(merged.url).toContain(`/pull/${MERGED_PR}`);
+    // the Project fails mid-pagination while a label goes away on its page 1: the list keeps last round's, like the badge
+    const before = listKeys(h);
+    const onPage1 = fake.state.projects.get('org/gigleai/11')![0].items.nodes.find(
+      (n: any) => n.content?.labels?.nodes.some((l: any) => l.name === LABEL) && n.content.repository.nameWithOwner === REPO && !rawRepo.some((i: any) => i.number === n.content.number),
+    );
+    expect(onPage1).toBeTruthy();
+    fake.state.failProjectPage.set('org/gigleai/11', 1);
+    setLabel(onPage1.content.number, false, h.clock);
+    await tick(h);
+    expect(h.c.getState().sync.sources.find((s) => s.sourceKey === PROJECT_KEY)).toMatchObject({ ok: false });
+    expect(listKeys(h)).toEqual(before);
+    // recovers: the removed label drops out of the list
+    fake.state.failProjectPage.delete('org/gigleai/11');
+    await tick(h);
+    expect(listKeys(h)).toEqual(before.filter((k) => k !== key(onPage1.content.number)));
+    // another label name: list recounted with the badge
+    h.c.setHandBack({ human: 'Done' });
+    await h.c.desktopSettled();
+    expectListIsBadge(h);
+    expect(h.c.getState().pendingItems.length).toBeGreaterThan(50);
+    h.c.setHandBack({ human: '' });
+    await h.c.desktopSettled();
+    expectListIsBadge(h);
+    // a removed source: what only it carried leaves the list
+    h.c.removeSource(PROJECT_KEY);
+    await h.c.desktopSettled();
+    expectListIsBadge(h);
+    expect(listKeys(h).every((k) => k.startsWith('gigleai/cavil-loop#'))).toBe(true);
+    // and the list is what the repository source still shows with the label (the board now holds only that source)
+    const onBoard = h.c.getBoardData().items.filter((i) => i.labels.some((l) => l.name === LABEL)).map((i) => i.key).sort();
+    expect(onBoard.length).toBeGreaterThan(0);
+    expect(listKeys(h)).toEqual(onBoard);
+    expect(listKeys(h)).toContain(key(OPEN_NEW));
+    // sign-out: empty, like the badge
+    await h.c.logout();
+    await h.c.desktopSettled();
+    expect(h.c.getState().pendingItems).toEqual([]);
+    expect(h.badge()).toBe(0);
+  });
+
+  it('a row opens like its notification does: the detail when the board has it, GitHub when it does not, nothing for an item no longer pending', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL, REPO] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    setLabel(CLOSED_ISSUE, true, h.clock); // only the Project carries it
+    await tick(h);
+    // on the board: its detail in the app, no browser
+    h.c.openPending(key(SEEDED));
+    expect(h.c.getState().focus).toMatchObject({ key: key(SEEDED) });
+    // the board shows only the repository source now: the Project-only item opens on GitHub
+    h.c.setView({ selected: [REPO_KEY] });
+    expect(h.c.getBoardData().items.some((i) => i.key === key(CLOSED_ISSUE))).toBe(false);
+    const seq = h.c.getState().focus!.seq;
+    h.c.openPending(key(CLOSED_ISSUE));
+    for (let i = 0; i < 100 && !h.opened.length; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(h.opened).toEqual([`https://github.com/${REPO}/issues/${CLOSED_ISSUE}`]);
+    expect(h.c.getState().focus!.seq).toBe(seq);
+    // not pending (any more): nothing at all
+    h.c.openPending(key(OPEN_NEW));
+    await settle();
+    expect(h.opened).toHaveLength(1);
+    expect(h.c.getState().focus!.seq).toBe(seq);
+  });
+});
+
 describe('a notification the system refuses', () => {
   it('is shown in the app (not silently lost) and cleared once one goes out again; the badge is unaffected', async () => {
     const delivery = { refuse: 'Notifications are not allowed for this application' as string | null };
@@ -479,6 +587,32 @@ describe('the tracker on its own', () => {
     expect(t.count()).toBe(1);
     // b reads fine and still has it: nothing new
     expect(t.observe([snap('a'), snap('b', pend(1))], ['a', 'b']).appeared).toEqual([]);
+  });
+
+  it('the list keeps what colours and words an entry (kind, state, close reason, draft mark) and puts open ones first, newest first', () => {
+    const t = new PendingTracker(LABEL);
+    t.observe(
+      [
+        snap(
+          'a',
+          pend(1, { state: 'closed', stateReason: 'not_planned', updatedAt: '2026-11-05T00:00:00Z' }),
+          pend(2, { kind: 'pr', state: 'open', isDraft: true, updatedAt: '2026-10-01T00:00:00Z' }),
+          pend(3, { kind: 'pr', state: 'merged', isDraft: false, updatedAt: '2026-11-04T00:00:00Z' }),
+          pend(4, { state: 'open', updatedAt: '2026-11-02T00:00:00Z' }),
+          pend(5, { state: 'closed', stateReason: 'duplicate', updatedAt: '2026-11-06T00:00:00Z' }),
+        ),
+        // the same item in another source, updated later there: one entry, the newer copy
+        snap('b', pend(1, { state: 'closed', stateReason: 'not_planned', title: 'newer', updatedAt: '2026-11-05T12:00:00Z' })),
+      ],
+      ['a', 'b'],
+    );
+    const list = t.list();
+    expect(list.map((e) => e.number)).toEqual([4, 2, 5, 1, 3]);
+    expect(list.length).toBe(t.count());
+    expect(list.find((e) => e.number === 1)).toMatchObject({ stateReason: 'not_planned', title: 'newer', kind: 'issue', state: 'closed' });
+    expect(list.find((e) => e.number === 5)).toMatchObject({ stateReason: 'duplicate' });
+    expect(list.find((e) => e.number === 2)).toMatchObject({ kind: 'pr', state: 'open', isDraft: true });
+    expect(list.find((e) => e.number === 3)).toMatchObject({ kind: 'pr', state: 'merged', isDraft: false });
   });
 
   it('no summary when the first read brings nothing', () => {

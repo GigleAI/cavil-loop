@@ -1531,3 +1531,135 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   expect(env.fake.writes()).toHaveLength(before);
   await app.close();
 });
+
+// GitHub#185: the badge is not an unread count — Settings says how it goes down and
+// lists exactly the items it counts. Each row's colour and words come from the one
+// state rule the board card, the table row and the detail badge use (expected values
+// follow GitHub's rule, not the implementation's output); a row opens the way a click
+// on its notification does — the detail in the app when the board has the item
+// (whatever the search box says), GitHub in the browser when it does not. The list
+// only reads: nothing is written to GitHub.
+test('settings lists what the badge counts: same colours and words as card, table and badge; a row opens its detail, or GitHub when the board lacks it; no writes', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const copies = (n: number) => findCopies(store, 'GigleAI/cavil-loop', n)!;
+  const labelPending = (n: number) => {
+    const c = copies(n);
+    for (const g of c.gql) if (!g.labels.nodes.some((l: any) => l.name === 'pending/human')) g.labels.nodes.push({ name: 'pending/human', color: 'ededed' });
+    for (const r of c.rest) if (!r.labels.some((l: any) => (l.name ?? l) === 'pending/human')) r.labels.push({ name: 'pending/human', color: 'ededed' });
+  };
+  const closedAs = (n: number, reason: string) => {
+    const c = copies(n);
+    for (const g of c.gql) g.stateReason = reason.toUpperCase();
+    for (const r of c.rest) r.state_reason = reason;
+  };
+  const draft = (n: number) => {
+    const c = copies(n);
+    pullOf(store, c).isDraft = true;
+    for (const g of c.gql) g.isDraft = true;
+    for (const r of c.rest) r.draft = true;
+  };
+  // an item only the Project carries (the repository list does not have it)
+  const repoNumbers = new Set(env.fake.state.repos.get('gigleai/cavil-loop')!.map((r: any) => r.number));
+  const projectOnly = env.fake.state.projects
+    .get('org/gigleai/11')!
+    .flatMap((pg) => pg.items.nodes)
+    .find((n: any) => !n.isArchived && n.content?.repository?.nameWithOwner === 'GigleAI/cavil-loop' && !repoNumbers.has(n.content.number))!.content.number as number;
+  draft(147);
+  closedAs(128, 'completed');
+  closedAs(138, 'not_planned');
+  const rows: { n: number; tone: string; text: string; why: string }[] = [
+    { n: 137, tone: 'open', text: '开', why: 'open issue' },
+    { n: 148, tone: 'open', text: '开', why: 'open PR, not a draft' },
+    { n: 147, tone: 'neutral', text: '草稿', why: 'open draft PR: grey' },
+    { n: 128, tone: 'done', text: '已关闭', why: 'issue closed as completed: purple' },
+    { n: 138, tone: 'neutral', text: '已关闭（不计划）', why: 'issue closed as not planned: grey' },
+    { n: 123, tone: 'closed', text: '已关闭', why: 'PR closed without merging: red' },
+    { n: 150, tone: 'done', text: '已合并', why: 'merged PR: purple' },
+  ];
+  for (const r of rows) labelPending(r.n);
+  labelPending(projectOnly);
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const writesBefore = env.fake.writes().length;
+  await page.getByTestId('open-settings').click();
+  const row = (n: number) => page.locator(`[data-testid="pending-item"][data-key="gigleai/cavil-loop#${n}"]`);
+  await expect(row(137)).toBeVisible({ timeout: 15_000 });
+  // the list is exactly what the badge counts, one row per item
+  const count = Number(await page.getByTestId('pending-count').textContent());
+  await expect(page.getByTestId('pending-item')).toHaveCount(count);
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'badge').pop()?.count).toBe(count);
+  const keys = await page.getByTestId('pending-item').evaluateAll((els) => els.map((e) => e.getAttribute('data-key')));
+  expect(new Set(keys).size).toBe(keys.length);
+  for (const r of rows) expect(keys, r.why).toContain(`gigleai/cavil-loop#${r.n}`);
+  // open ones first
+  const tones = await page.getByTestId('pending-item').evaluateAll((els) => els.map((e) => e.querySelector('[data-testid="pending-item-state"]')!.textContent!.includes('已')));
+  expect(tones.indexOf(true)).toBeGreaterThan(-1);
+  expect(tones.slice(tones.indexOf(true)).every(Boolean)).toBe(true);
+  await expect(page.getByTestId('pending-how-to-clear')).toContainText('不是「未读数」');
+  await expect(page.getByTestId('pending-how-to-clear')).toContainText('pending/human');
+  const open = keys.length - tones.filter(Boolean).length;
+  await expect(page.getByTestId('pending-breakdown')).toHaveText(`（开着 ${open} · 已关闭 / 已合并 ${keys.length - open}）`);
+  // GitHub's colours, as in the badge test
+  const FG: Record<string, string> = { open: 'rgb(26, 127, 55)', closed: 'rgb(209, 36, 47)', done: 'rgb(130, 80, 223)', neutral: 'rgb(89, 99, 110)' };
+  const fg = (l: ReturnType<Page['locator']>) => l.evaluate((el) => getComputedStyle(el).color);
+  for (const r of rows) {
+    const st = row(r.n).getByTestId('pending-item-state');
+    await expect(row(r.n), r.why).toHaveAttribute('data-tone', r.tone);
+    await expect(st, r.why).toHaveText(`● ${r.text}`);
+    expect(await fg(st), r.why).toBe(FG[r.tone]);
+  }
+  await shot(page, '50-pending-list');
+
+  // the same items on the board card, in the detail badge and in the table: same colour, same words
+  await page.getByTestId('back').click();
+  for (const r of rows) {
+    await page.getByTestId('search').fill(`#${r.n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    const cs = card(page, r.n).getByTestId('card-state');
+    await expect(cs, `card ${r.why}`).toHaveAttribute('data-tone', r.tone);
+    await expect(cs, `card ${r.why}`).toContainText(r.text);
+    await card(page, r.n).click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${r.n}`);
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('detail-kind'), `badge ${r.why}`).toHaveAttribute('data-tone', r.tone);
+    await expect(page.getByTestId('detail-kind').locator('.kind-state'), `badge ${r.why}`).toHaveText(r.text);
+    await page.getByTestId('detail-close').click();
+  }
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  for (const r of rows) {
+    await page.getByTestId('search').fill(`#${r.n}`);
+    const cell = page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${r.n}"] [data-testid="row-state"]`).first();
+    await expect(cell, `table ${r.why}`).toHaveAttribute('data-tone', r.tone);
+  }
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+
+  // a row the board has opens its detail, even while the search box hides it
+  await page.getByTestId('search').fill('#150');
+  await expect(card(page, 137)).toHaveCount(0);
+  await page.getByTestId('open-settings').click();
+  await expect(row(137)).not.toContainText('在浏览器打开');
+  await row(137).click();
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await page.getByTestId('detail-close').click();
+
+  // the Project unticked on the board: its own item opens on GitHub, not in the app
+  await page.getByTestId('search').fill('');
+  await page.locator('[data-testid="source-pick"] input[data-key="project:org/gigleai/11"]').uncheck();
+  await page.getByTestId('open-settings').click();
+  await expect(row(projectOnly).getByTestId('pending-item-external')).toBeVisible();
+  await expect(row(137).getByTestId('pending-item-external')).toHaveCount(0);
+  await row(projectOnly).click();
+  const url = env.fake.state.projects
+    .get('org/gigleai/11')!
+    .flatMap((pg) => pg.items.nodes)
+    .find((n: any) => n.content?.number === projectOnly && n.content.repository.nameWithOwner === 'GigleAI/cavil-loop')!.content.url;
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain(`${url}\n`);
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  await shot(page, '51-pending-list-external');
+  // the list only reads: not one write reached GitHub
+  expect(env.fake.writes().slice(writesBefore)).toEqual([]);
+  await app.close();
+});

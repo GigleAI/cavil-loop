@@ -28,6 +28,19 @@ export function stateTone(kind: ItemKind, state: ItemState, reason: IssueStateRe
   return reason === 'not_planned' || reason === 'duplicate' ? 'neutral' : 'done';
 }
 
+const STATE_TEXT: Record<ItemState, string> = { open: '开', closed: '已关闭', merged: '已合并' };
+const REASON_TEXT: Partial<Record<IssueStateReason, string>> = { not_planned: '（不计划）', duplicate: '（重复）' };
+
+/**
+ * The state's words, next to its colour: the detail badge, the board card and the
+ * settings page's pending list all show these (draft / close reason included).
+ */
+export function badgeText(kind: ItemKind, state: ItemState, reason: IssueStateReason | null | undefined, isDraft: boolean | null): string {
+  if (kind === 'pr' && state === 'open' && isDraft === true) return '草稿';
+  if (kind === 'issue' && state === 'closed' && reason) return STATE_TEXT.closed + (REASON_TEXT[reason] ?? '');
+  return STATE_TEXT[state];
+}
+
 const REASONS: IssueStateReason[] = ['completed', 'not_planned', 'duplicate', 'reopened'];
 
 /** GraphQL `COMPLETED` / REST `completed` → `completed`; anything else (missing, a value GitHub may add later) → null */
