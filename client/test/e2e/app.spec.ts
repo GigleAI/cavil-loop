@@ -2080,7 +2080,8 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
 
   // ---- 6. offline: every box greys out, nothing sent ----
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  // from the keyboard: a click on the toolbar would put the panel away (GitHub#191)
+  await page.getByTestId('refresh').press('Enter');
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await expect(box('C_Q', 0)).toBeDisabled();
   await expect(box('C_Q', 1)).toBeDisabled();
