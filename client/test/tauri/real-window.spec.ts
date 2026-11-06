@@ -102,14 +102,18 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   // a change: one label added on GitHub, the card re-read
   await wd.click(card(138));
   await wd.find('[data-testid="detail"][data-key="gigleai/cavil-loop#138"]');
-  await wd.find('[data-testid="label-add"] option[value="Done"]');
-  await wd.exec(
+  // the candidates are the repository's labels the item does not carry yet: take the first one
+  await wd.find('[data-testid="label-add"]:not([disabled]) option:not([value=""])');
+  const label = await wd.exec<string>(
     `const s = document.querySelector('[data-testid="label-add"]');
+     const v = [...s.options].map((o) => o.value).find(Boolean);
      const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-     set.call(s, 'Done'); s.dispatchEvent(new Event('change', { bubbles: true }));`,
+     set.call(s, v); s.dispatchEvent(new Event('change', { bubbles: true }));
+     return v;`,
   );
+  expect(label).toBeTruthy();
   await until(() => fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels')), 'label POST reached GitHub');
-  await until(async () => (await wd.count(`${card(138)} .label`)) > 0 && (await wd.text(card(138))).includes('Done'), 'card shows the new label');
+  await until(async () => (await wd.text(card(138))).includes(label), 'card shows the new label');
 
   // GitHub's HTML in the sandboxed frame: a link there asks for a new window — the shell's
   // handler sends it to the browser, the window itself stays where it is
