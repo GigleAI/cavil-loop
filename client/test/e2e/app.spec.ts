@@ -464,8 +464,11 @@ test('GitHub#177: merging in the detail shows the issue it closes closed at once
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('action-result')).toContainText('已合并');
   // at once, with no sync round: the PR merged and the issue it closes closed, both still in their old columns
-  await expect(card(page, 139).getByTestId('card-state')).toHaveClass(/\bclosed\b/);
-  await expect(card(page, 146).getByTestId('card-state')).toHaveClass(/\bmerged\b/);
+  // colours follow GitHub (#174): an issue a merge closed (completed) and a merged PR are both purple ("done")
+  await expect(card(page, 139).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
+  await expect(card(page, 139).getByTestId('card-state')).toContainText('已关闭');
+  await expect(card(page, 146).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
+  await expect(card(page, 146).getByTestId('card-state')).toContainText('已合并');
   expect(rounds()).toBe(before);
   await expect(inColumn('In progress', 139)).toBeVisible();
   await shot(page, '27-merged-issue-closed');
@@ -1412,5 +1415,119 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
     expect(await badge.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
     await shot(page, `33-badge-dark-${n}-${tone}`);
   }
+  await app.close();
+});
+
+test('GitHub#180: close an issue from the detail (reason + optional comment); the panel\'s own button says 收起 and keeps its Esc rules', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  /** #n open on GitHub on every copy, whatever the recorded fixture captured */
+  const openOnGitHub = (n: number) => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  };
+  openOnGitHub(137);
+  openOnGitHub(139);
+  // one recorded PR made open (not merged): the detail of an open PR is where a wrong "close issue" would show
+  const prN = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!.content.number as number;
+  for (const g of findCopies(store, 'GigleAI/cavil-loop', prN)!.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of findCopies(store, 'GigleAI/cavil-loop', prN)!.rest) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const badge = page.getByTestId('detail-kind');
+  const open = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    // the detail read finished: the close entry depends on it
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+
+  // ---- 1. the panel's own button: 收起, the Esc rules still told; it only puts the panel away ----
+  await open(137);
+  const hide = page.getByTestId('detail-close');
+  await expect(hide).toHaveText('收起 ›');
+  await expect(hide).toHaveAttribute('title', '收起（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）');
+  await expect(page.getByTestId('close-issue')).toHaveText('关闭 issue…');
+  await shot(page, '50-issue-open-hide-button');
+  await hide.click();
+  await expect(detail).toHaveCount(0);
+  expect(env.fake.writes()).toEqual([]);
+  // Esc after a click into the discussion stays there; a click outside it, then Esc, puts the panel away
+  await open(137);
+  await page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry > summary').first().click({ position: { x: 40, y: 10 } });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await detail.locator('.detail-title').click();
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  expect(env.fake.writes()).toEqual([]);
+
+  // ---- 2. an open PR's detail has no "close issue" (its own close stays in the PR box) ----
+  await open(prN);
+  await expect(badge).toHaveAttribute('data-kind', 'pr');
+  await expect(badge).toHaveAttribute('data-tone', 'open');
+  await expect(page.getByTestId('close-pr')).toBeVisible();
+  await expect(page.getByTestId('close-issue')).toHaveCount(0);
+  await hide.click();
+
+  // ---- 3. close #137 as "not planned" with a comment ----
+  await open(137);
+  await page.getByTestId('close-issue').click();
+  const dialog = page.getByTestId('confirm-dialog');
+  await expect(dialog.locator('h3')).toHaveText('关闭 issue #137？');
+  await expect(page.getByTestId('close-reason-completed')).toBeChecked();
+  await expect(page.getByTestId('close-reason-not_planned')).not.toBeChecked();
+  // Esc while the dialog asks: the panel stays, nothing sent
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await expect(dialog).toBeVisible();
+  await page.getByTestId('close-reason-not_planned').check();
+  await page.getByTestId('close-comment').fill('不做了');
+  await shot(page, '51-close-issue-confirm');
+  expect(env.fake.writes()).toEqual([]);
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(page.getByTestId('action-result')).toHaveText('issue #137 已关闭（不计划）');
+  expect(writes()).toEqual([
+    ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137', { state: 'closed', state_reason: 'not_planned' }],
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '不做了' }],
+  ]);
+  // badge, card and table row all grey (GitHub: not planned), and the close entry is gone
+  await expect(badge).toHaveAttribute('data-tone', 'neutral');
+  await expect(badge).toHaveText('Issue·已关闭（不计划）');
+  await expect(card(page, 137).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
+  await expect(page.getByTestId('close-issue')).toHaveCount(0);
+  await shot(page, '52-issue-closed');
+  await hide.click();
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('search').fill('#137');
+  await expect(page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"] [data-testid="row-state"]').first()).toHaveAttribute('data-tone', 'neutral');
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+
+  // ---- 4. "completed" (the default) without a comment: one PATCH, purple ----
+  await open(139);
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toHaveText('issue #139 已关闭（已完成）');
+  expect(writes().slice(2)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'completed' }]]);
+  await expect(badge).toHaveAttribute('data-tone', 'done');
+  await hide.click();
+
+  // ---- 5. offline: the close entry greys out, nothing sent ----
+  openOnGitHub(139);
+  await page.getByTestId('refresh').click();
+  await open(139);
+  await expect(page.getByTestId('close-issue')).toBeEnabled();
+  const before = env.fake.writes().length;
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('close-issue')).toBeDisabled();
+  await expect(page.getByTestId('close-issue')).toHaveAttribute('title', '离线时不能修改');
+  expect(env.fake.writes()).toHaveLength(before);
   await app.close();
 });
