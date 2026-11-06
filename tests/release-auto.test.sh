@@ -123,13 +123,15 @@ check "impossible date → exit 2" "$(title release/v2026.13.40.1)" "rc=2"
 
 echo "== the workflow's own steps (run: blocks read out of release.yml)"
 WORKFLOW="${WORKFLOW:-$REPO_DIR/.github/workflows/release.yml}"
-step() {  # step <name> → that step's run: script
-    python3 - "$WORKFLOW" "$1" <<'PY2'
+step() {  # step [job] <name> → that step's run: script (job defaults to release)
+    local job=release; [ $# -eq 2 ] && { job="$1"; shift; }
+    python3 - "$WORKFLOW" "$job" "$1" <<'PY2'
 import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["release"]["steps"]
-print(next(s["run"] for s in steps if s.get("name") == sys.argv[2]))
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]]["steps"]
+print(next(s["run"] for s in steps if s.get("name") == sys.argv[3]))
 PY2
 }
+step plan "Decide what this run does" > "$TMP/plan.sh"
 step "Cut tag (scheduled / manual)" > "$TMP/cut.sh"
 step "Generate release notes" > "$TMP/notes.sh"
 step "Create GitHub Release" > "$TMP/create.sh"
@@ -141,10 +143,11 @@ fresh() {  # a new checkout of the remote, like every Actions run gets
     CLONES=$((CLONES + 1)); WORK="$TMP/run$CLONES"
     git clone -q "$REMOTE" "$WORK" 2>/dev/null
 }
-runstep() {  # runstep <script> → $RC, GITHUB_ENV content in $TMP/env
-    : > "$TMP/env"; rm -f "$TMP/gh-args"
+runstep() {  # runstep <script> → $RC, GITHUB_ENV content in $TMP/env, GITHUB_OUTPUT in $TMP/output
+    : > "$TMP/env"; : > "$TMP/output"; rm -f "$TMP/gh-args"
     set +e
-    (cd "$WORK" && GITHUB_ENV="$TMP/env" PATH="$TMP/bin:$PATH" bash -e "$1") >"$TMP/out" 2>"$TMP/err"
+    (cd "$WORK" && GITHUB_ENV="$TMP/env" GITHUB_OUTPUT="$TMP/output" EVENT="${EVENT:-schedule}" GITHUB_REF="${GITHUB_REF:-}" \
+        RELEASE_SHA="${RELEASE_SHA:-}" PATH="$TMP/bin:$PATH" bash -e "$1") >"$TMP/out" 2>"$TMP/err"
     RC=$?
     set -e
 }
@@ -171,11 +174,18 @@ export GH_ARGS="$TMP/gh-args" GH_RELEASES="$TMP/releases" GITHUB_REPOSITORY=o/r
 git -C "$REMOTE" tag -l 'release/v*' > "$GH_RELEASES"   # .1–.5 from above all have their page
 released() { grep -qxF "$1" "$GH_RELEASES"; }
 title_arg() { awk 'prev == "--title" { print; exit } { prev = $0 }' "$TMP/gh-args"; }
-# One whole run: cut → notes → create, stopping where Actions would.
+# One whole run: plan → (gate, not run here) → cut → notes → create, stopping where
+# Actions would. MOVE_MAIN=<msg> pushes a new commit to main between plan and cut,
+# like a merge landing while the gate runs; the release job's fresh checkout sees it.
 fullrun() {
-    fresh; runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$(cat "$TMP/out")"
+    fresh; runstep "$TMP/plan.sh"; PLAN_RC=$RC; CUT_OUT="$(cat "$TMP/out")"
+    PLAN_SHA="$(sed -n 's/^sha=//p' "$TMP/output")"; PLAN_WORK="$(sed -n 's/^work=//p' "$TMP/output")"
+    tag=""; export tag; NOTES=""; CREATE_RC=""; CUT_RC=$PLAN_RC
+    [ "$PLAN_RC" = 0 ] && [ "$PLAN_WORK" = true ] || return 0
+    if [ -n "${MOVE_MAIN:-}" ]; then commit "$MOVE_MAIN"; fi
+    fresh; RELEASE_SHA="$PLAN_SHA" runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$CUT_OUT
+$(cat "$TMP/out")"
     tag="$(sed -n 's/^tag=//p' "$TMP/env")"; export tag
-    NOTES=""; CREATE_RC=""
     [ "$CUT_RC" = 0 ] && [ -n "$tag" ] || return 0
     runstep "$TMP/notes.sh"; NOTES_RC=$RC; NOTES="$(cat "$WORK/release-notes.md" 2>/dev/null || true)"
     [ "$NOTES_RC" = 0 ] || return 0
@@ -199,7 +209,8 @@ check "Release title carries the iteration" "$(title_arg)" "$(bash "$RELEASE_SH"
 
 echo "-- nothing new and already released → nothing to do"
 fullrun
-check "cut step succeeds" "$CUT_RC" 0
+check "plan step succeeds" "$PLAN_RC" 0
+check "plan says no work (gate and release jobs skip)" "$PLAN_WORK" false
 check "no tag exported (later steps skip)" "$tag" ""
 has '本轮无新提交' "$CUT_OUT" "says so in the run log"
 check "no duplicate Release" "$(grep -cxF "release/v$TODAY.6" "$GH_RELEASES")" 1
@@ -211,6 +222,7 @@ check "first run: tag exported" "$tag" "release/v$TODAY.7"
 [ "$CREATE_RC" != 0 ] && ok "first run: create fails" || bad "first run: create fails"
 released "release/v$TODAY.7" && bad "first run: no Release page" || ok "first run: no Release page"
 fullrun
+check "rerun: plan asks for the gate before the missing page" "$PLAN_WORK" true
 check "rerun: cut step succeeds" "$CUT_RC" 0
 check "rerun: exports the existing tag" "$tag" "release/v$TODAY.7"
 has '补建' "$CUT_OUT" "rerun: says it is creating the missing page"
@@ -224,9 +236,15 @@ check "third run: nothing to do" "$tag" ""
 check "third run: no duplicate Release" "$(grep -cxF "release/v$TODAY.7" "$GH_RELEASES")" 1
 
 echo "-- Release lookup fails → the run fails, never guesses"
+commit seven-b
+git -C "$REMOTE" tag "release/v$TODAY.7b" main   # tagged, page unknown
 GH_FAIL_API=1 fullrun
-[ "$CUT_RC" != 0 ] && ok "cut step fails" || bad "cut step fails"
+[ "$PLAN_RC" != 0 ] && ok "plan step fails" || bad "plan step fails"
+check "plan writes no decision" "$PLAN_WORK" ""
 check "no tag exported" "$tag" ""
+fresh; GH_FAIL_API=1 RELEASE_SHA="$(git -C "$WORK" rev-parse HEAD)" runstep "$TMP/cut.sh"
+[ "$RC" != 0 ] && ok "cut step: lookup failure fails too" || bad "cut step: lookup failure fails too"
+git -C "$REMOTE" tag -d "release/v$TODAY.7b" >/dev/null
 
 echo "-- a tag that never got its page is skipped as the notes' starting point"
 commit eight
@@ -245,9 +263,29 @@ fresh; export tag="release/v$TODAY.9"
 GH_FAIL_API=1 runstep "$TMP/notes.sh"
 [ "$RC" != 0 ] && ok "notes: lookup failure fails the step" || bad "notes: lookup failure fails the step"
 
+echo "-- main moves while the gate runs → the tag goes on the tested commit"
+commit ten
+MOVE_MAIN=eleven fullrun
+check "tag .10 exported" "$tag" "release/v$TODAY.10"
+check ".10 points at the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.10^{commit}")" "$PLAN_SHA"
+[ "$PLAN_SHA" != "$(git -C "$REMOTE" rev-parse main)" ] && ok "… which is not main's newer tip" || bad "… which is not main's newer tip"
+has "- ten (" "$NOTES" "notes list the tested commit"
+lacks "- eleven (" "$NOTES" "notes leave out the commit that landed during the gate"
+check "Release created" "$CREATE_RC" 0
+fullrun
+check "next run plans the newer commit" "$PLAN_SHA" "$(git -C "$REMOTE" rev-parse main)"
+check "… and tags it .11" "$tag" "release/v$TODAY.11"
+
+echo "-- a pushed tag: the plan step gates that tag's commit"
+fresh; git -C "$WORK" tag "release/v$TODAY.99" HEAD~1
+EVENT=push GITHUB_REF="refs/tags/release/v$TODAY.99" runstep "$TMP/plan.sh"
+check "plan succeeds" "$RC" 0
+check "plan: work" "$(sed -n 's/^work=//p' "$TMP/output")" true
+check "plan: the tag's commit" "$(sed -n 's/^sha=//p' "$TMP/output")" "$(git -C "$WORK" rev-parse HEAD~1)"
+
 echo "-- not on main → the cut step fails"
 fresh; git -C "$WORK" checkout -qb not-main
-runstep "$TMP/cut.sh"
+RELEASE_SHA="$(git -C "$WORK" rev-parse HEAD)" runstep "$TMP/cut.sh"
 [ "$RC" -ne 0 ] && ok "step fails" || bad "step fails"
 check "no tag exported" "$(cat "$TMP/env")" ""
 
@@ -258,6 +296,49 @@ export tag=release/v2026.10.25.1
 runstep "$TMP/create.sh"
 check "release still created" "$RC" 0
 check "title falls back to the bare tag" "$(title_arg)" "release/v2026.10.25.1"
+
+echo "== --pending and --at (GitHub#195: the plan step, and tagging the commit the gate tested)"
+# A repo of its own, so the tag numbers above stay as they are.
+REMOTE="$TMP/remote2.git"; WORK="$TMP/work2"
+git init -q --bare "$REMOTE"; git clone -q "$REMOTE" "$WORK" 2>/dev/null
+commit p1
+run --pending
+check "--pending, new commit → exit 0" "$RC" 0
+check "--pending prints the tag --auto would cut" "$(cat "$TMP/out")" "release/v$TODAY.1"
+check "--pending tags nothing" "$(remote_tags)" ""
+check "--pending: no local tag either" "$(git -C "$WORK" tag -l 'release/v*')" ""
+echo dirt > "$WORK/untracked"; run --pending
+check "--pending, dirty tree → refuse like --auto" "$RC" 1
+rm "$WORK/untracked"
+PLANNED="$(git -C "$WORK" rev-parse HEAD)"
+commit p2
+run --pending --at "$PLANNED"
+check "--pending --at an older main commit → exit 0" "$RC" 0
+run --auto --at "$PLANNED"
+check "--auto --at: exit 0" "$RC" 0
+check "--auto --at: stdout is the tag" "$(cat "$TMP/out")" "release/v$TODAY.1"
+check "the tag points at the planned commit, not main's newer tip" \
+    "$(git -C "$REMOTE" rev-parse "release/v$TODAY.1^{commit}")" "$PLANNED"
+run --pending --at "$PLANNED"
+check "--pending --at an already tagged commit → exit 3" "$RC" 3
+check "… and prints that tag" "$(cat "$TMP/out")" "release/v$TODAY.1"
+run --auto --at "$PLANNED"
+check "--auto --at an already tagged commit → exit 3" "$RC" 3
+git -C "$WORK" checkout -qb side; echo side >> "$WORK/file"; git -C "$WORK" commit -qam side
+SIDE="$(git -C "$WORK" rev-parse HEAD)"; git -C "$WORK" checkout -q main
+run --auto --at "$SIDE"
+check "--at a commit not on main → exit 1" "$RC" 1
+run --pending --at "$SIDE"
+check "--pending --at a commit not on main → exit 1" "$RC" 1
+run --auto --at no-such-commit
+check "--at something that is not a commit → exit 1" "$RC" 1
+check "none of those created a tag" "$(remote_tags)" "release/v$TODAY.1"
+run --auto --at
+check "--at without a value → usage, exit 2" "$RC" 2
+run --dry-run --at "$PLANNED"
+check "--dry-run takes no --at → exit 2" "$RC" 2
+run --auto
+check "plain --auto still tags HEAD" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.2^{commit}")" "$(git -C "$WORK" rev-parse HEAD)"
 
 echo
 echo "passed $PASS, failed $FAIL"

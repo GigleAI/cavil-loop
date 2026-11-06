@@ -3,6 +3,14 @@ name: Client
 # The desktop client in client/ (GitHub#135): its own tests, its own macOS
 # packages, its own Releases (tag client/vX.Y.Z). Nothing here touches the
 # daemon's tests or its weekly release.
+#
+# What runs when (GitHub#195):
+#   pull request         typecheck, cargo, vitest, Playwright, the real app on Linux.
+#                        No Mac packaging and no negative controls (the Mac jobs show "skipped").
+#   push to main         all of the above + the Macs + the negative controls related to
+#                        what this push changed (every one when that cannot be told)
+#   client/v* tag        all of the above + every negative control; any failure, no Release
+#   manual run           as before: the Macs, negative controls only when asked
 on:
   pull_request:
     paths:
@@ -43,7 +51,7 @@ jobs:
     name: client tests (Linux)
     runs-on: ubuntu-latest
     # negative controls rebuild the back end / the app per entry
-    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
+    timeout-minutes: ${{ (inputs.mutation || github.event_name == 'push') && 240 || 60 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -109,9 +117,28 @@ jobs:
         run: npm run test:rust
       - name: Unit tests (vitest, real back end as a child process)
         run: npm test
+      # Which negative controls this run needs: none on a PR; on a push to main the ones
+      # related to the whole push (before..after — the selectors' own rules, GitHub#178),
+      # or every one when the start of the push cannot be read (new branch, force push);
+      # every one on a client/v* tag; a manual run keeps its two switches.
+      - name: Which negative controls
+        id: mut
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          MANUAL: ${{ inputs.mutation && 'yes' || '' }}
+          MANUAL_SCOPE: ${{ inputs.mutation_scope }}
+        run: |
+          bash scripts/mutation-scope.sh | tee -a "$GITHUB_OUTPUT"
       - name: Negative controls
-        if: ${{ inputs.mutation && inputs.mutation_scope != 'shell' }}
-        run: MUTATION=1 npm run test:mutation
+        if: ${{ steps.mut.outputs.backend != 'none' }}
+        env:
+          SCOPE: ${{ steps.mut.outputs.backend }}
+          CLIENT_MUT_BASE: ${{ steps.mut.outputs.base }}
+        run: |
+          if [ "$SCOPE" = changed ]; then MUTATION=1 npm run test:mutation -- --changed
+          else MUTATION=1 npm run test:mutation; fi
       - name: UI tests (Playwright on WebKit, real window + real back end)
         run: |
           npx playwright install --with-deps webkit
@@ -126,8 +153,13 @@ jobs:
       - name: The real app over WebDriver (sign in, sync, a change, the shell's link and navigation handlers)
         run: xvfb-run -a npm run test:tauri
       - name: Negative controls for the app shell (each rebuilds the real app)
-        if: ${{ inputs.mutation }}
-        run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
+        if: ${{ steps.mut.outputs.shell != 'none' }}
+        env:
+          SCOPE: ${{ steps.mut.outputs.shell }}
+          CLIENT_MUT_BASE: ${{ steps.mut.outputs.base }}
+        run: |
+          if [ "$SCOPE" = changed ]; then xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh --changed
+          else xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh; fi
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -138,6 +170,9 @@ jobs:
 
   package:
     name: dmg (${{ matrix.arch }})
+    # Not on pull requests (GitHub#195): packaging and the Mac checks run once the
+    # change is on main, on a client/v* tag, and on a manual run.
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
