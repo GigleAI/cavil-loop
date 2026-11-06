@@ -172,3 +172,15 @@ button.danger { background: var(--closed); color: #fff; border-color: var(--clos
 .banner.closable .banner-text { flex: 1; min-width: 0; }
 .banner-close { flex: none; border: none; background: transparent; color: inherit; opacity: 0.6; font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; }
 .banner-close:hover, .banner-close:focus-visible { opacity: 1; }
+/* type badge at the top of the detail panel (GitHub#172): shape + full name say issue / PR, the colour says the state */
+:root { --badge-open: #1a7f37; --badge-closed: #cf222e; --badge-merged: #8250df; --badge-draft: #59636e; }
+@media (prefers-color-scheme: dark) {
+  :root { --badge-open: #238636; --badge-closed: #da3633; --badge-merged: #8957e5; --badge-draft: #656c76; }
+}
+.kind-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 12px 3px 9px; border-radius: 999px; color: #fff; font-size: 13px; font-weight: 600; line-height: 20px; white-space: nowrap; }
+.kind-badge svg { flex: none; }
+.kind-badge.open { background: var(--badge-open); }
+.kind-badge.closed { background: var(--badge-closed); }
+.kind-badge.merged { background: var(--badge-merged); }
+.kind-badge.draft { background: var(--badge-draft); }
+.kind-badge .kind-sep { opacity: 0.7; font-weight: 400; }

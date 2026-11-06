@@ -10,6 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { findCopies, pullOf } from '../fake-github/writes';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -889,5 +890,88 @@ test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, s
   await expect(page.locator('[data-testid="sync-problem"]')).toHaveCount(0);
   expect(errors).toEqual([]);
   await shot(page, '40-old-engine');
+  await app.close();
+});
+
+// GitHub#172: the top of the detail tells an issue from a PR at a glance — a
+// different icon and the full name; the colour only says open / closed / merged.
+// Closed and merged win over a draft mark; only an open PR the detail read
+// confirmed as a draft turns grey, and a failed detail read keeps type + state.
+test('detail badge: issue and PR differ by icon and full name; colour by state; draft only when open and confirmed', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const draft = (n: number) => {
+    pullOf(store, findCopies(store, 'GigleAI/cavil-loop', n)!).isDraft = true;
+  };
+  draft(147); // open draft
+  draft(129); // closed, still carrying the draft mark
+  draft(146); // open draft whose detail read fails
+  env.fake.state.w.failDetail.add('gigleai/cavil-loop#146');
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const badge = page.getByTestId('detail-kind');
+
+  const open = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+  };
+  /** the detail read finished (so a draft mark, if any, has arrived) */
+  const loaded = async () => {
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('article').first()).toBeVisible({ timeout: 15_000 });
+  };
+  const bg = () => badge.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+  // expected values follow the rule (state first, then "open + confirmed draft"), not the implementation's output
+  const GREEN = 'rgb(26, 127, 55)', RED = 'rgb(207, 34, 46)', PURPLE = 'rgb(130, 80, 223)', GREY = 'rgb(89, 99, 110)';
+  const rows: { n: number; kind: 'issue' | 'pr'; tone: string; text: string; spoken: string; colour: string; why: string }[] = [
+    { n: 137, kind: 'issue', tone: 'open', text: 'Issue·开', spoken: 'Issue，开着', colour: GREEN, why: 'open issue' },
+    { n: 128, kind: 'issue', tone: 'closed', text: 'Issue·已关闭', spoken: 'Issue，已关闭', colour: RED, why: 'closed issue' },
+    { n: 148, kind: 'pr', tone: 'open', text: 'Pull Request·开', spoken: 'Pull Request，开着', colour: GREEN, why: 'open PR, not a draft' },
+    { n: 147, kind: 'pr', tone: 'draft', text: 'Pull Request·草稿', spoken: 'Pull Request，草稿', colour: GREY, why: 'open draft PR' },
+    { n: 123, kind: 'pr', tone: 'closed', text: 'Pull Request·已关闭', spoken: 'Pull Request，已关闭', colour: RED, why: 'closed PR' },
+    { n: 129, kind: 'pr', tone: 'closed', text: 'Pull Request·已关闭', spoken: 'Pull Request，已关闭', colour: RED, why: 'closed PR with a draft mark: closed wins' },
+    { n: 150, kind: 'pr', tone: 'merged', text: 'Pull Request·已合并', spoken: 'Pull Request，已合并', colour: PURPLE, why: 'merged PR' },
+  ];
+  const icons: Record<string, string> = {};
+  for (const r of rows) {
+    await open(r.n);
+    await loaded();
+    await expect(badge, r.why).toHaveAttribute('data-kind', r.kind);
+    await expect(badge, r.why).toHaveAttribute('data-tone', r.tone);
+    await expect(badge, r.why).toHaveText(r.text);
+    await expect(badge, r.why).toHaveAttribute('aria-label', r.spoken);
+    await expect(badge.locator('svg'), r.why).toHaveAttribute('data-icon', r.kind);
+    expect(await bg(), r.why).toBe(r.colour);
+    expect(await badge.evaluate((el) => getComputedStyle(el).fontSize), r.why).toBe('13px');
+    icons[r.kind] = await badge.locator('svg').innerHTML();
+    await shot(page, `31-badge-${r.n}-${r.tone}`);
+  }
+  // the two icons are really different drawings, not the same shape under two names
+  expect(icons.issue).toBeTruthy();
+  expect(icons.pr).toBeTruthy();
+  expect(icons.issue).not.toBe(icons.pr);
+
+  // a draft PR whose detail read fails: the panel says so, the badge keeps "PR, open" (it cannot know it is a draft)
+  await open(146);
+  await expect(page.getByTestId('detail-error')).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => env.fake.log.some((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 146 && l.status === 502)).toBe(true);
+  await expect(badge).toHaveAttribute('data-kind', 'pr');
+  await expect(badge).toHaveAttribute('data-tone', 'open');
+  await expect(badge).toHaveText('Pull Request·开');
+  expect(await bg()).toBe(GREEN);
+  await shot(page, '32-badge-detail-failed');
+
+  // dark mode: the same rule on the darker palette, white text still on a coloured badge
+  await page.emulateMedia({ colorScheme: 'dark' });
+  for (const [n, colour, tone] of [[147, 'rgb(101, 108, 118)', 'draft'], [150, 'rgb(137, 87, 229)', 'merged'], [137, 'rgb(35, 134, 54)', 'open']] as const) {
+    await open(n);
+    await loaded();
+    await expect(badge).toHaveAttribute('data-tone', tone);
+    expect(await bg()).toBe(colour);
+    expect(await badge.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
+    await shot(page, `33-badge-dark-${n}-${tone}`);
+  }
   await app.close();
 });

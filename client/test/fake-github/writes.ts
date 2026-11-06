@@ -68,6 +68,8 @@ export interface WritableState {
   reviewCommentPageSize: number;
   /** answer the follow-up page of a review's line comments with HTTP 502 */
   failReviewCommentPages: boolean;
+  /** items (`owner/repo#n` lower-cased) whose detail read answers HTTP 502 */
+  failDetail: Set<string>;
   /** clock of updated_at / createdAt written by the fake */
   clock: () => string;
 }
@@ -87,6 +89,7 @@ export function defaultWritable(): WritableState {
     detailPageSize: 100,
     reviewCommentPageSize: 100,
     failReviewCommentPages: false,
+    failDetail: new Set(),
     clock: () => new Date().toISOString(),
   };
 }
@@ -430,6 +433,7 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
               projectItems.push({ id: n.id, isArchived: n.isArchived, project: { id: p.id }, fieldValues: n.fieldValues });
       return { data: { repository: { issueOrPullRequest: { ...content, projectItems: { nodes: projectItems } } } } };
     }
+    if (w.failDetail.has(ikey)) return { httpStatus: 502 };
     const size = w.detailPageSize;
     const pageOf = <T,>(list: T[], after: string | null) => {
       const start = after ? Number(after.replace(/^c-/, '')) : 0;
