@@ -5,6 +5,8 @@ import { buildTable } from '../data/table';
 import { api } from './api';
 import { Person } from './Avatar';
 import { OPENS_ITEM } from './outsideClick';
+import { labelStyle, useDarkMode } from './colors';
+import { Icon, itemIcon } from './Icons';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -20,13 +22,7 @@ export const COLUMN_LABEL: Record<TableColumn, string> = {
   author: '作者',
 };
 
-const STATE_ICON = { open: '●', closed: '✕', merged: '⇄' } as const;
-
-function textColor(hex: string) {
-  if (!/^[0-9a-f]{6}$/i.test(hex)) return '#000';
-  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
-  return r * 0.299 + g * 0.587 + b * 0.114 > 150 ? '#1f2328' : '#fff';
-}
+const STATE_TEXT = { open: '开着', closed: '已关闭', merged: '已合并' } as const;
 
 function updatedText(iso: string, now: number): string {
   const t = Date.parse(iso);
@@ -52,7 +48,7 @@ function toneOf(it: Item) {
   return stateTone(it.kind, it.state, it.stateReason, it.isDraft ?? null);
 }
 
-function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number }) {
+function Cell({ col, item, now, dark }: { col: TableColumn; item: Item; now: number; dark: boolean }) {
   switch (col) {
     case 'assignees':
       return (
@@ -66,7 +62,7 @@ function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number })
       return (
         <span className="labels">
           {item.labels.map((l) => (
-            <span key={l.name} className="label" style={{ background: `#${l.color || 'ddd'}`, color: textColor(l.color) }}>
+            <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
               {l.name}
             </span>
           ))}
@@ -78,7 +74,7 @@ function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number })
         <>
           {item.linkedPrs.map((p) => (
             <a key={p.key} href={p.url} className={`pr-link ${p.state}`} onClick={open(p.url)} data-testid="linked-pr">
-              {STATE_ICON[p.state]} #{p.number}
+              <Icon name={itemIcon('pr', p.state, null)} size={14} title={`PR ${STATE_TEXT[p.state]}`} />#{p.number}
             </a>
           ))}
         </>
@@ -127,6 +123,7 @@ export function TableView({
   onOpen: (key: string) => void;
 }) {
   const [folded, setFolded] = useState<Set<string>>(new Set());
+  const dark = useDarkMode();
   const t = view.table;
   const table = buildTable(items, projects, t, today, view.prsUnderIssues);
   const cols = t.columns.filter((c) => c !== 'title');
@@ -173,7 +170,7 @@ export function TableView({
               {t.groupBy !== 'none' && (
                 <tr className="group-head">
                   <td colSpan={cols.length + 1}>
-                    <button className="link" data-testid="group-toggle" onClick={() => toggle(g.key)}>
+                    <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'} onClick={() => toggle(g.key)}>
                       {folded.has(g.key) ? '▸' : '▾'}
                     </button>{' '}
                     <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
@@ -191,7 +188,9 @@ export function TableView({
                           ↳{' '}
                         </span>
                       )}
-                      <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>{r.item.kind === 'pr' ? 'PR' : r.item.state === 'open' ? '◯' : '✓'}</span>{' '}
+                      <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>
+                        <Icon name={itemIcon(r.item.kind, r.item.state, r.item.stateReason)} title={`${r.item.kind === 'pr' ? 'PR' : 'Issue'} ${STATE_TEXT[r.item.state]}`} />
+                      </span>
                       <a
                         href={r.item.url}
                         data-testid="row-title"
@@ -209,7 +208,7 @@ export function TableView({
                     </td>
                     {cols.map((c) => (
                       <td key={c} className={`col-${c}`}>
-                        <Cell col={c} item={r.item} now={now} />
+                        <Cell col={c} item={r.item} now={now} dark={dark} />
                       </td>
                     ))}
                   </tr>

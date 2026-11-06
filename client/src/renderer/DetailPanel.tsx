@@ -8,7 +8,8 @@ import { pickMergeMethod } from '../shared/mergePrefs';
 import { FRAME_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP, type Unfold } from './detailHtml';
 import { Person } from './Avatar';
 import { usePanelWidth } from './panelWidth';
-import { textColor } from './colors';
+import { labelStyle, useDarkMode } from './colors';
+import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, type Press } from './outsideClick';
@@ -47,13 +48,10 @@ export function ResultBanner({ note, testid }: { note: ResultNote | null; testid
   if (!note) return null;
   return (
     <div className={`banner ${note.kind === 'error' ? 'error' : note.kind === 'warn' ? 'warn' : 'info'}`} data-testid={testid} data-kind={note.kind}>
-      {note.text}
+      <Icon name={note.kind === 'ok' ? 'check' : 'warn'} />
+      <span className="banner-text">{note.text}</span>
     </div>
   );
-}
-
-function dark(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches;
 }
 
 export function DetailPanel({
@@ -150,7 +148,8 @@ export function DetailPanel({
 
   // which entries are unfolded: the newest only, until the user asks for all / none (GitHub#155)
   const [unfold, setUnfold] = useState<Unfold>('latest');
-  const doc = useMemo(() => (detail ? timelineDocument(detail, dark(), unfold) : ''), [detail, unfold]);
+  const isDark = useDarkMode();
+  const doc = useMemo(() => (detail ? timelineDocument(detail, isDark, unfold) : ''), [detail, unfold, isDark]);
   const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
   // the board leaves this much room to scroll past the panel (BoardView's spacer)
   useEffect(() => {
@@ -209,7 +208,7 @@ export function DetailPanel({
         <div className="detail-head">
           <span className="muted">这一条已不在当前视图里</span>
           <div className="spacer" />
-          <button onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
+          <button className="ghost" onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
             {HIDE_LABEL}
           </button>
         </div>
@@ -230,17 +229,25 @@ export function DetailPanel({
     <>
       <div className="detail-head">
         <KindBadge kind={item.kind} state={item.state} reason={item.stateReason} isDraft={detail?.pr ? detail.pr.isDraft : (item.isDraft ?? null)} />
-        <span className="muted small">
+        <span className="ref">
           {item.repo} #{item.number}
         </span>
         <div className="spacer" />
-        <button className="link" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web">
+        <button className="ghost" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web">
+          <Icon name="ext" />
           在网页打开
         </button>
-        <button onClick={() => void load()} disabled={loading} data-testid="detail-refresh">
-          {loading ? '读取中…' : '刷新'}
+        <button
+          className="icon-btn"
+          onClick={() => void load()}
+          disabled={loading}
+          data-testid="detail-refresh"
+          aria-label={loading ? '读取中…' : '刷新这一条'}
+          title={loading ? '读取中…' : '刷新这一条'}
+        >
+          <Icon name="refresh" />
         </button>
-        <button onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
+        <button className="ghost" onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
           {HIDE_LABEL}
         </button>
       </div>
@@ -248,7 +255,8 @@ export function DetailPanel({
       <ResultBanner note={note} testid="action-result" />
       {loadError && (
         <div className="banner error" data-testid="detail-error">
-          {loadError}
+          <Icon name="warn" />
+          <span className="banner-text">{loadError}</span>
         </div>
       )}
 
@@ -271,7 +279,7 @@ export function DetailPanel({
           <span className="field-name">标签</span>
           <div className="labels">
             {item.labels.map((l) => (
-              <span key={l.name} className="label" style={{ background: `#${l.color || 'ddd'}`, color: textColor(l.color) }}>
+              <span key={l.name} className="label" style={labelStyle(l.color, isDark)}>
                 {l.name}
                 <button
                   className="label-x"
@@ -281,7 +289,7 @@ export function DetailPanel({
                   disabled={!canWrite || busy}
                   onClick={() => void run({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)}
                 >
-                  ×
+                  <Icon name="x" size={10} />
                 </button>
               </span>
             ))}
@@ -381,17 +389,20 @@ export function DetailPanel({
       </section>
 
       {item.kind === 'pr' && pr && (
-        <section className="pr-box" data-testid="pr-box">
-          <div className="small" data-testid="pr-status">
+        <section className={`pr-box${prOpen && pr.mergeStateStatus === 'CLEAN' ? ' mergeable' : ''}`} data-testid="pr-box">
+          <div data-testid="pr-status">
             {pr.merged ? (
-              '已合并'
+              <span className="kind done">
+                <Icon name="pr-merged" />
+                已合并
+              </span>
             ) : (
               <>
-                <span>合并：{MERGE_STATE[pr.mergeStateStatus] ?? pr.mergeStateStatus}</span>
+                <b>合并：{MERGE_STATE[pr.mergeStateStatus] ?? pr.mergeStateStatus}</b>
                 <span>冲突：{MERGEABLE[pr.mergeable] ?? pr.mergeable}</span>
                 <span>检查：{pr.checks ? (CHECKS[pr.checks] ?? pr.checks) : '没有检查'}</span>
                 <span>评审：{pr.reviewDecision ? (REVIEW[pr.reviewDecision] ?? pr.reviewDecision) : '无要求'}</span>
-                <span className="muted">
+                <span className="branch">
                   {pr.headRef} → {pr.baseRef} · 提交 {pr.headOid.slice(0, 7)}
                 </span>
               </>
@@ -423,12 +434,13 @@ export function DetailPanel({
               </button>
             </div>
           )}
-          {prOpen && pr.mergeMethods.length === 0 && <div className="small err">这个仓库没有开启任何合并方式</div>}
+          {prOpen && pr.mergeMethods.length === 0 && <div className="small err pr-note">这个仓库没有开启任何合并方式</div>}
         </section>
       )}
 
       {detail && detail.timeline.length > 1 && (
         <div className="timeline-tools small">
+          <b>动态</b>
           <span className="muted">
             {unfold === 'latest' ? '只展开了最新一条，点标题展开其他' : unfold === 'all' ? '已全部展开' : '已全部收起'}
           </span>
@@ -464,7 +476,7 @@ export function DetailPanel({
             title="预览"
             data-testid="reply-preview"
             sandbox={FRAME_SANDBOX}
-            srcDoc={`<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(FRAME_CSP)}"><base target="_blank"><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark() ? '#e6edf3' : '#1f2328'}">${preview}</body>`}
+            srcDoc={`<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(FRAME_CSP)}"><base target="_blank"><body style="font:13px/1.5 sans-serif;margin:6px;color:${isDark ? '#e6edf3' : '#1f2328'};background:${isDark ? '#151b23' : '#ffffff'}">${preview}</body>`}
           />
         )}
         <div className="row end">
@@ -482,7 +494,7 @@ export function DetailPanel({
             </button>
           )}
           {issueOpen && (
-            <button data-testid="close-issue" disabled={!canWrite || busy} title={offlineWhy ?? '在 GitHub 上关闭这个 issue（先选原因）'} onClick={() => setAsk('closeIssue')}>
+            <button className="danger" data-testid="close-issue" disabled={!canWrite || busy} title={offlineWhy ?? '在 GitHub 上关闭这个 issue（先选原因）'} onClick={() => setAsk('closeIssue')}>
               关闭 issue…
             </button>
           )}

@@ -843,7 +843,7 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   const loaded = page.locator('[data-testid="card-author"] img[data-testid="avatar"][data-fallback="no"]');
   await expect.poll(() => loaded.count()).toBeGreaterThan(0);
   expect(await loaded.first().evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
-  await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toMatch(/request https:\/\/avatars\.githubusercontent\.com\/[^?]+\?s=32\n/);
+  await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toMatch(/request https:\/\/avatars\.githubusercontent\.com\/[^?]+\?s=40\n/);
 
   // ---- 2. the detail floats over the board, stuck to the right; the board keeps its width ----
   const boardBefore = await page.locator('.board').boundingBox();
@@ -1024,7 +1024,7 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
     await page.clock.fastForward(step);
     await page.waitForTimeout(100);
   }
-  await expect(page.locator('.statusbar')).toContainText('上次同步 1 小时前'); // the window's clock really moved
+  await expect(page.getByTestId('sync-status')).toContainText('上次同步 1 小时前'); // the window's clock really moved
   await expect(page.getByTestId('incomplete')).toHaveCount(0);
   await expect(page.getByTestId('filter-incomplete')).toBeVisible();
 
@@ -1416,6 +1416,296 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
     expect(await badge.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
     await shot(page, `33-badge-dark-${n}-${tone}`);
   }
+  await app.close();
+});
+
+// ---- GitHub#181: one look for every page — text stays readable, the header fits ----
+
+/**
+ * Every piece of text on the page (light DOM, the discussion frame excepted) against what is really
+ * behind it: background layers composited up the tree, opacity multiplied in. WCAG AA: 4.5:1,
+ * 3:1 for large text (≥ 24 px, or ≥ 18.66 px bold). Disabled controls are exempt (WCAG's
+ * "inactive" rule), so is text that is not rendered (visibility, zero size, screen-reader only).
+ */
+async function lowContrast(page: Page) {
+  return page.evaluate(() => {
+    type C = [number, number, number, number];
+    const parse = (s: string): C => {
+      const m = s.match(/rgba?\(([^)]+)\)/);
+      if (!m) return [0, 0, 0, 0];
+      const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+      return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+    };
+    const over = (top: C, under: C): C => {
+      const a = top[3] + under[3] * (1 - top[3]);
+      if (a === 0) return [0, 0, 0, 0];
+      return [0, 1, 2].map((i) => (top[i] * top[3] + under[i] * under[3] * (1 - top[3])) / a).concat(a) as C;
+    };
+    const lum = (c: C) => {
+      const f = (v: number) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+    };
+    const ratio = (a: C, b: C) => {
+      const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+      return (x + 0.05) / (y + 0.05);
+    };
+    const backdrop = (el: Element): C => {
+      const layers: C[] = [];
+      for (let e: Element | null = el; e; e = e.parentElement) {
+        const c = parse(getComputedStyle(e).backgroundColor);
+        if (c[3] > 0) layers.push(c);
+        if (c[3] >= 1) break;
+      }
+      let acc: C = parse(getComputedStyle(document.documentElement).backgroundColor);
+      if (acc[3] < 1) acc = over(acc, matchMedia('(prefers-color-scheme: dark)').matches ? [13, 17, 23, 1] : [255, 255, 255, 1]);
+      for (const l of layers.reverse()) acc = over(l, acc);
+      return acc;
+    };
+    const opacity = (el: Element) => {
+      let o = 1;
+      for (let e: Element | null = el; e; e = e.parentElement) o *= Number(getComputedStyle(e).opacity);
+      return o;
+    };
+    const bad: string[] = [];
+    let checked = 0;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const seen = new Set<Element>();
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const el = n.parentElement;
+      if (!el || seen.has(el) || !n.textContent!.trim()) continue;
+      seen.add(el);
+      if (el.closest('option, script, style, .sr-only, :disabled, [aria-disabled="true"]')) continue;
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      if (cs.visibility !== 'visible' || cs.display === 'none' || r.width === 0 || r.height === 0) continue;
+      const bg = backdrop(el);
+      const fgRaw = parse(cs.color);
+      const fg = over([fgRaw[0], fgRaw[1], fgRaw[2], fgRaw[3] * opacity(el)], bg);
+      const size = parseFloat(cs.fontSize);
+      const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
+      const k = ratio(fg, bg);
+      checked++;
+      if (k < (large ? 3 : 4.5)) bad.push(`${k.toFixed(2)} 「${n.textContent!.trim().slice(0, 24)}」 ${cs.color} on rgb(${bg.slice(0, 3).map(Math.round).join(', ')})`);
+    }
+    return { checked, bad };
+  });
+}
+
+/** Background alpha of every label chip on the page (1 = solid). */
+const chipAlphas = (page: Page, sel = '.label') =>
+  page.locator(sel).evaluateAll((els) =>
+    els.map((e) => {
+      const m = getComputedStyle(e).backgroundColor.match(/rgba?\(([^)]+)\)/)!;
+      const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+      return p.length > 3 ? p[3] : 1;
+    }),
+  );
+
+/**
+ * Switch the colour scheme and wait until the window has really taken it: the media query
+ * reports it and every label chip has been re-rendered for it (the chips follow the scheme
+ * through a React state set from the media query's change event, so right after the switch
+ * they can still be the old ones — WebKit on CI read them in that gap). CSS-only colours
+ * follow at once. If the window never takes the scheme, this fails after the poll's timeout.
+ */
+async function schemeSettled(page: Page, scheme: 'light' | 'dark', where: string) {
+  await page.emulateMedia({ colorScheme: scheme });
+  await expect
+    .poll(
+      async () => {
+        const matches = await page.evaluate((s) => matchMedia(`(prefers-color-scheme: ${s})`).matches, scheme);
+        const alphas = await chipAlphas(page);
+        return matches && alphas.every((a) => (scheme === 'dark' ? a < 1 : a >= 1));
+      },
+      { message: `${where}: the window takes the ${scheme} scheme (media query + label chips)` },
+    )
+    .toBe(true);
+}
+
+/** Text check in both colour schemes; also asserts something was checked (an empty page passes nothing). */
+async function readableBoth(page: Page, where: string, min: number) {
+  for (const scheme of ['light', 'dark'] as const) {
+    await schemeSettled(page, scheme, where);
+    const r = await lowContrast(page);
+    expect(r.checked, `${where} (${scheme}): text was found`).toBeGreaterThan(min);
+    expect(r.bad, `${where} (${scheme})`).toEqual([]);
+    await shot(page, `52-look-${where}-${scheme}`);
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+}
+
+/** Dark mode: label chips are see-through tints, not GitHub's solid light-page colours (card, detail, table). */
+async function chipsTinted(page: Page, sel: string, where: string) {
+  await schemeSettled(page, 'dark', where);
+  const alphas = await chipAlphas(page, sel);
+  expect(alphas.length, `${where}: chips found`).toBeGreaterThan(0);
+  expect(alphas.filter((a) => a >= 1), `${where}: solid chips in dark mode`).toEqual([]);
+  await page.emulateMedia({ colorScheme: 'light' });
+}
+
+/** The two header rows at the current width: nothing overlaps, nothing sticks out, no sideways scroll. */
+async function headerFits(page: Page, where: string) {
+  const r = await page.evaluate(() => {
+    const out: string[] = [];
+    const doc = document.scrollingElement!;
+    if (doc.scrollWidth > window.innerWidth) out.push(`page scrolls sideways: ${doc.scrollWidth} > ${window.innerWidth}`);
+    let rows = 0;
+    for (const row of document.querySelectorAll('.hdr, .vbar')) {
+      rows++;
+      const box = row.getBoundingClientRect();
+      if (row.scrollWidth > row.clientWidth + 1) out.push(`${row.className} scrolls: ${row.scrollWidth} > ${row.clientWidth}`);
+      const kids = [...row.children].map((c) => ({ c, b: c.getBoundingClientRect() })).filter((k) => k.b.width > 0 && getComputedStyle(k.c).display !== 'none');
+      for (const k of kids) if (k.b.right > box.right + 0.5 || k.b.left < box.left - 0.5) out.push(`${row.className} > ${k.c.className}: outside the row`);
+      for (let i = 0; i < kids.length; i++)
+        for (let j = i + 1; j < kids.length; j++) {
+          const [a, b] = [kids[i].b, kids[j].b];
+          if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5)
+            out.push(`${row.className}: ${kids[i].c.className} overlaps ${kids[j].c.className}`);
+        }
+    }
+    return { rows, out };
+  });
+  expect(r.rows, `${where}: both header rows are there`).toBe(2);
+  expect(r.out, where).toEqual([]);
+}
+
+test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; dark label chips are tints; the header fits a 1024 px window', async () => {
+  const { app, page } = await launch(env);
+  await expect(page.getByTestId('login')).toBeVisible();
+  await readableBoth(page, 'sign-in', 5);
+
+  await signInWithSources(page);
+  await page.getByTestId('mode').selectOption('status');
+  await readableBoth(page, 'board', 100);
+  await chipsTinted(page, '[data-testid="card"] .label', 'board card');
+
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  await readableBoth(page, 'detail', 100);
+  await chipsTinted(page, '[data-testid="detail"] .label', 'detail');
+  await page.getByTestId('detail-close').click();
+
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('open-view-panel').click();
+  const labelsCol = page.locator('[data-testid="columns-pick"] input[data-col="labels"]');
+  if (!(await labelsCol.isChecked())) await labelsCol.check();
+  await readableBoth(page, 'table', 100);
+  await chipsTinted(page, '[data-testid="table"] .label', 'table');
+  await shot(page, '50-look-table');
+
+  // a 1024 × 700 window, both layouts, both schemes (dark changes no sizes, checked anyway)
+  await page.setViewportSize({ width: 1024, height: 700 });
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await headerFits(page, `table, 1024 px, ${scheme}`);
+    await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+    await headerFits(page, `board, 1024 px, ${scheme}`);
+    await shot(page, `51-look-1024-${scheme}`);
+    await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await readableBoth(page, 'settings', 20);
+  await app.close();
+});
+
+test('GitHub#181 many sources: at 1024 and 1280 px every source in the top bar can be reached with the wheel, is readable, and really switches what the board shows', async () => {
+  // 20 repositories, one open issue each, so switching one source changes the count by exactly one
+  const sample = env.fake.state.repos.get('gigleai/cavil-loop')!.find((i) => i.state === 'open' && !i.pull_request)!;
+  const names = Array.from({ length: 20 }, (_, i) => `GigleAI/many-source-${i + 1}`);
+  names.forEach((name, i) => {
+    const issue = JSON.parse(JSON.stringify(sample));
+    issue.id = 9_000_000 + i;
+    issue.node_id = `I_many_${i}`;
+    issue.number = 1;
+    issue.title = `item from ${name}`;
+    issue.html_url = `https://github.com/${name}/issues/1`;
+    issue.url = `https://api.github.com/repos/${name}/issues/1`;
+    issue.repository_url = `https://api.github.com/repos/${name}`;
+    env.fake.state.repos.set(name.toLowerCase(), [issue]);
+  });
+
+  const { app, page } = await launch(env);
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  for (const [i, name] of names.entries()) {
+    await page.getByTestId('source-input').fill(name);
+    await page.getByTestId('source-add').click();
+    await expect(page.getByTestId('source-row')).toHaveCount(i + 1);
+  }
+  await page.getByTestId('back').click();
+  const total = page.getByTestId('item-total');
+  await expect(total).toHaveText('20 个条目', { timeout: 15_000 });
+
+  const strip = page.getByTestId('source-pick');
+  for (const width of [1024, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await headerFits(page, `board, ${width} px, 20 sources`);
+    // the strip really overflows here, so this is not "everything fits anyway"
+    expect(await strip.evaluate((el) => el.scrollWidth > el.clientWidth), `${width} px: strip overflows`).toBe(true);
+    await strip.evaluate((el) => (el.scrollLeft = 0));
+
+    for (const [k, name] of [names[names.length - 1], names[10]].entries()) {
+      const key = `repo:${name.toLowerCase()}`;
+      const chip = strip.locator('label.src-chip', { has: page.locator(`input[data-key="${key}"]`) });
+      // a plain mouse wheel over the strip, as a user without a trackpad would do, until the chip is fully in view
+      const box = (await strip.boundingBox())!;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      for (let i = 0; i < 40; i++) {
+        const inView = await chip.evaluate((c) => {
+          const s = c.parentElement!.getBoundingClientRect();
+          const r = c.getBoundingClientRect();
+          return r.left >= s.left - 0.5 && r.right <= s.right + 0.5;
+        });
+        if (inView) break;
+        await page.mouse.wheel(0, k === 0 ? 120 : -120);
+        await page.waitForTimeout(30);
+      }
+      // fully inside the strip, the name readable (not squeezed away), and the checkbox is what a click there hits
+      const seen = await chip.evaluate((c) => {
+        const s = c.parentElement!.getBoundingClientRect();
+        const r = c.getBoundingClientRect();
+        const input = c.querySelector('input')!.getBoundingClientRect();
+        const hit = document.elementFromPoint(input.left + input.width / 2, input.top + input.height / 2);
+        const nameEl = c.querySelector('.src-name') as HTMLElement;
+        return {
+          inside: r.left >= s.left - 0.5 && r.right <= s.right + 0.5,
+          hitsOwnBox: hit === c.querySelector('input'),
+          nameWidth: nameEl.getBoundingClientRect().width,
+          nameText: nameEl.textContent,
+        };
+      });
+      expect(seen.inside, `${width} px: ${name} scrolled into view with the wheel`).toBe(true);
+      expect(seen.hitsOwnBox, `${width} px: a click on ${name}'s box hits that box`).toBe(true);
+      expect(seen.nameText).toBe(name);
+      expect(seen.nameWidth, `${width} px: ${name}'s name is not squeezed away`).toBeGreaterThan(100);
+
+      // a real click switches the source off and on again, and the board follows
+      const box2 = (await chip.locator('input').boundingBox())!;
+      await page.mouse.click(box2.x + box2.width / 2, box2.y + box2.height / 2);
+      await expect(chip.locator('input')).not.toBeChecked();
+      await expect(total).toHaveText('19 个条目');
+      await expect(page.getByText(`item from ${name}`)).toHaveCount(0);
+      await page.mouse.click(box2.x + box2.width / 2, box2.y + box2.height / 2);
+      await expect(chip.locator('input')).toBeChecked();
+      await expect(total).toHaveText('20 个条目');
+    }
+  }
+  await shot(page, '53-look-many-sources-1280');
+  await page.setViewportSize({ width: 1280, height: 800 });
   await app.close();
 });
 

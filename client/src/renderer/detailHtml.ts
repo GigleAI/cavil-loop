@@ -121,27 +121,35 @@ export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfo
   const border = dark ? '#3d444d' : '#d1d9e0';
   const muted = dark ? '#9198a1' : '#59636e';
   const accent = dark ? '#4493f8' : '#0969da';
+  // GitHub#181: same tokens as the window (styles.css): a softer rule between entries, a tinted head on the open one
+  const line = dark ? '#2a313c' : '#e3e8ed';
+  const canvas = dark ? '#0d1117' : '#f6f8fa';
+  const code = dark ? '#212830' : '#eef1f4';
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">
 <base target="_blank">
 <style>
-body{margin:0;padding:8px 12px;background:${bg};color:${fg};font:13px/1.5 -apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif;word-wrap:break-word}
+body{margin:0;padding:2px 0 8px;background:${bg};color:${fg};font:13px/1.5 -apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif;word-wrap:break-word}
 a{color:${accent}}
-.entry{border:1px solid ${border};border-radius:8px;margin:0 0 10px;overflow:hidden}
-.entry>.head{padding:6px 10px;color:${muted};font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.entry[open]>.head{border-bottom:1px solid ${border};white-space:normal}
+.entry{border:1px solid ${line};border-radius:8px;margin:0 0 10px;overflow:hidden;background:${bg}}
+.entry>.head{padding:7px 12px;color:${muted};font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.entry[open]>.head{border-bottom:1px solid ${line};background:${canvas};white-space:normal}
+.entry>.head b{color:${fg}}
 .entry[open]>.head>.excerpt{display:none}
 .entry>.head::marker,.entry>.head::-webkit-details-marker{color:${muted}}
 .av{position:relative;display:inline-block;vertical-align:middle;margin-right:5px;border-radius:50%;overflow:hidden;background:${border};color:${fg};font-size:10px;line-height:1;text-align:center}
 .av>span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 .av>img{position:absolute;inset:0;width:100%;height:100%;border-radius:50%}
-.entry.body{border-style:dashed}
+.entry.body{border-style:dashed;border-color:${border}}
 .entry.approved>.head{border-left:3px solid #1a7f37}.entry.changes_requested>.head{border-left:3px solid #cf222e}
-.md{padding:4px 10px}
+.md{padding:8px 12px;line-height:1.6}
+.md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
+.md code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:${code};padding:1px 4px;border-radius:4px}
+.md pre code{background:none;padding:0}
 .md img{max-width:100%}
-.md pre{overflow:auto;background:${dark ? '#0d1117' : '#f6f8fa'};padding:8px;border-radius:6px}
+.md pre{overflow:auto;background:${canvas};padding:10px;border-radius:6px}
 .md table{border-collapse:collapse}.md td,.md th{border:1px solid ${border};padding:2px 6px}
-.lines{margin:4px 10px 8px 20px;border-left:2px solid ${border}}
+.lines{margin:4px 12px 10px 22px;border-left:2px solid ${line}}
 .line{padding:2px 8px}
 .line>.head,.more{color:${muted};font-size:12px}
 .blocked{margin:0 10px 6px;color:${muted};font-size:12px}
