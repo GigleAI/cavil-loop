@@ -5,7 +5,8 @@ name: Client
 # daemon's tests or its weekly release.
 #
 # What runs when:
-#   every PR push, push to main   quick tests: typecheck, cargo, vitest (a few minutes)
+#   every PR push                 quick tests: typecheck, cargo, vitest (a few minutes)
+#   push to main                  quick tests + the Mac arm64 build (dmg + its checks)
 #   client/v* tag                 quick + full tests (Playwright, the real app on Linux) + the Macs,
 #                                 arm64 and x64; any failure, no Release
 #   weekly / manual run           quick + full tests + the Mac arm64 build (packaging or end-to-end
@@ -112,13 +113,13 @@ jobs:
 
   package:
     name: dmg (${{ matrix.arch }})
-    # Only on a client/v* tag, the weekly run and a manual run — not on pull requests (GitHub#195)
-    # and no longer on every push to main.
-    if: startsWith(github.ref, 'refs/tags/client/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Not on pull requests (GitHub#195). arm64 alone on a push to main, the weekly run and a manual
+    # run; arm64 and x64 on a client/v* tag.
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
-      # x64 (Intel) only on a client/v* tag, where the Release ships both dmgs; the weekly and
-      # manual runs build and check arm64 alone.
+      # x64 (Intel) only on a client/v* tag, where the Release ships both dmgs; a push to main, the
+      # weekly and the manual runs build and check arm64 alone.
       matrix:
         include: ${{ fromJSON(startsWith(github.ref, 'refs/tags/client/v') && '[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]' || '[{"arch":"arm64","runner":"macos-15"}]') }}
     runs-on: ${{ matrix.runner }}

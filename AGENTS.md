@@ -62,7 +62,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 ├── .github/workflows/
 │   ├── tests.yml                  ← Runs tests/run.sh on every PR and push to main that touches more than client/ (check: 测试)
 │   ├── release.yml                ← Weekly release, behind the gate that runs every negative control (GitHub#195)
-│   └── client.yml                 ← Desktop client: quick tests on every push; full tests + macOS dmg on tag / weekly / manual; client/v* Releases
+│   └── client.yml                 ← Desktop client: quick tests on every push; arm64 dmg on main; full tests + dmg on tag / weekly / manual; client/v* Releases
 ├── .github/actions/client-setup/  ← The client test environment, shared by client.yml and the release gate
 ├── client/                       ← Desktop board client (Tauri: TS + React window, Rust back end; GitHub#135 / #151), see client/README.md
 └── docs/
@@ -373,7 +373,7 @@ MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what ev
 | Worker develops, hands on, reworks (local) | the part the change touches | **not run** | not run |
 | Reviewer (local) | reruns the relevant part when needed | **not run, and not asked of the worker** | not run |
 | PR CI, every push | `Tests` (all shell tests; not when only `client/` changed) + `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
-| `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | **not run** (one per merge was mostly never used) |
+| `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | run, **arm64 only** |
 | `Client` on a `client/v*` tag | quick + full tests | not run | run, arm64 and x64; a red one means no Release |
 | `Client` weekly (Sunday 16:40 UTC) | quick + full tests | not run | run, **arm64 only**, so a packaging breakage shows up within a week |
 | `Release` (weekly, or a `release/v*` tag) | — | **all of them**: every `tests/*.test.sh` with `MUTATION=1` (4 shards + autopilot split over 6 jobs) and both client sets (`test/mutation`, the real app's `test/tauri/mutations.sh`), on the one commit the tag will point at; a red one means no tag and no Release | — |

@@ -62,7 +62,7 @@
 ├── .github/workflows/
 │   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（只改 client/ 的不跑；检查名：测试）
 │   ├── release.yml            ← 每周发版，先过跑全部负对照的门禁（GitHub#195）
-│   └── client.yml             ← 桌面客户端：每次推送跑快测；打标签 / 每周 / 手动时跑完整测试并打 macOS dmg；client/v* Release
+│   └── client.yml             ← 桌面客户端：每次推送跑快测；合入 main 打 arm64 dmg；打标签 / 每周 / 手动时跑完整测试并打 dmg；client/v* Release
 ├── .github/actions/client-setup/  ← 客户端测试环境，client.yml 和发版门禁共用
 ├── client/                   ← 桌面看板客户端（Tauri：TS + React 界面 + Rust 后台；GitHub#135 / #151），见 client/README.md
 └── docs/
@@ -314,7 +314,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 | worker 开发、交付、返工（本机） | 改动涉及的那部分 | **不跑** | 不跑 |
 | 复审（本机） | 需要时复跑相关部分 | **不跑，也不要求 worker 跑** | 不跑 |
 | PR 的 CI（每次推送） | `Tests`（全部 shell 测试；只改 `client/` 时不跑）+ `Client` 快测（类型检查、cargo、vitest） | 不跑 | 不跑（dmg 任务显示「已跳过」） |
-| `Client`：推到 `main` | 只跑快测（完整测试——Playwright、Linux 上的真实 App——留到打标签 / 每周那次） | 不跑 | **不跑**（每合一次打一次，多数没人用） |
+| `Client`：推到 `main` | 只跑快测（完整测试——Playwright、Linux 上的真实 App——留到打标签 / 每周那次） | 不跑 | 跑，**只打 arm64** |
 | `Client`：`client/v*` 标签 | 快测 + 完整测试 | 不跑 | 跑 arm64 和 x64；有红就不发版 |
 | `Client`：每周（周日 16:40 UTC） | 快测 + 完整测试 | 不跑 | 只跑 **arm64**，打包坏了一周内能发现 |
 | `Release`（每周，或推 `release/v*` 标签） | — | **全部**：全部 `tests/*.test.sh` 带 `MUTATION=1`（4 份并行 + 托管测试拆成 6 份），加客户端两组（`test/mutation`、真实 App 的 `test/tauri/mutations.sh`），跑在这次要打标签的那个提交上；有红就不打标签、不建发版页 | — |
