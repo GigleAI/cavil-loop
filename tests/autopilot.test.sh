@@ -1682,7 +1682,7 @@ mutate takeover-reread-pr-only _lib.sh "$TAKE2_OLD" "$TAKE2_NEW" \
         AT_V=skip; return 0" "    if [ -z \"\${AT_SECOND:-}\" ] && printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
         AT_V=skip; return 0" \
     '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; [ -n "${AT_SECOND:-}" ] || autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?'
-mutate takeover-cache-pr-only _lib.sh '        key="$upd|$n|$iupd"' '        key="$upd"'
+mutate takeover-cache-pr-only _lib.sh '        key="$AUTOPILOT_JUDGE_REV|$upd|$n|$iupd"' '        key="$AUTOPILOT_JUDGE_REV|$upd"'
 mutate takeover-no-notice _lib.sh '        actor-*|binding|closed|label-body) ;;' '        nothing) ;;'
 mutate takeover-issue-only-candidate _lib.sh 'select(any(.labels[]?; .name == $L or .name == $H) or' 'select(any(.labels[]?; .name == $L) or'
 mutate takeover-coexist _lib.sh "'[.labels[]?.name | select(. != \$L and . != \$H)] | join(\",\")')" "'[.labels[]?.name | select(. != \$L and . != \$H and false)] | join(\",\")')"

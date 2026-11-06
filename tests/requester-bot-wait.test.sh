@@ -47,6 +47,11 @@ chk() {
 section() { [ "$QUIET" = 1 ] || echo "$1"; }
 
 H1=1111111111111111111111111111111111111111
+# 功能加入前的真实旧版（固定提交，不随主干移动）：「旧版先跑、保留状态升级」的跨版本场景用（代码复审第 2 轮）
+OLD_REV=278efac7368694d95c66c50174148af3a6fb0534
+OLDROOT="$SANDBOX/oldrev"; mkdir -p "$OLDROOT"
+git -C "$REPO_DIR" archive "$OLD_REV" scripts prompts | tar -x -C "$OLDROOT" \
+    || { echo "取不到旧版 $OLD_REV（跨版本场景没法跑）" >&2; exit 1; }
 REQ_ON=('LABEL_PENDING_REQUESTER_BOT="pending/req"' 'REQUESTER_BOT_ACCOUNT="req-bot"' 'REQUESTER_BOT_ALLOWED_ACTORS="loop-bot"' 'REQUESTER_BOT_ORIGIN_MARKER="<!-- by-req -->"')
 
 run_scenarios() {
@@ -263,6 +268,27 @@ Closes #7" "autopilot"
     touch "$GD/F_issues_8_events"
     tick
     chk "读不到 PR 的标签记录 → 不接手" "$(took_none)" no
+
+    # ── 【5】从旧版升级：旧版按「机器人的需求不托管」记下的拒绝，升级后必须按新规则重判（代码复审第 2 轮）──
+    section "【5】旧版先跑两轮、保留状态升级 → 新版重判：机器人需求的托管 issue 开工、PR 被接手"
+    old_tick() { env CODING_AGENT_CONFIG="$CONF" bash "$OLDROOT/scripts/agent-poll.sh" >/dev/null 2>&1; }
+    fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
+    mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+    ev 8 labeled autopilot maint
+    old_tick; old_tick
+    chk "到达性 · 旧版确实拒绝过这个 PR（留了「机器人需求不托管」说明）" "$(comments_with 8 'kind=pr-requester-bot')" 1
+    chk "到达性 · 旧版确实记下了接手记录" "$(jq -r '.autopilot.takeover["8"] // "" | length > 0' "$W/state/state.json" 2>/dev/null)" true
+    tick
+    chk "升级后（状态原样保留、PR 没变）→ 按新规则重判、接手" "$(took_none)" yes
+    fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
+    mkissue 60 "autopilot"; ev 60 labeled autopilot maint
+    old_tick; old_tick
+    chk "到达性 · 旧版确实拒绝过这个 issue" "$(comments_with 60 'kind=requester-bot')" 1
+    chk "到达性 · 旧版确实记下了拒绝" "$(jq -r '.autopilot.denied["60"] // "" | length > 0' "$W/state/state.json" 2>/dev/null)" true
+    tick
+    chk "升级后（状态原样保留、issue 没变）→ 按新规则重判、开工" "$(queued issue 60)" yes
 }
 
 # ── 提示词：机器人需求 + 托管的合并规则 ──
@@ -387,6 +413,10 @@ mutate hold-cached _lib.sh '    requester_bot_enabled || return 1
     if ! rows=' '    # 日志去重（不影响上面的结论）' '    echo "$n" >> "$STATE_DIR/hold-cache"'
 mutate takeover-hold-cached _lib.sh '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
                 return 0' '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"'
+# 判定规则版本（代码复审第 2 轮）：两份记录各去掉一次，升级场景必须变红
+mutate judge-rev-takeover-ignored _lib.sh '        key="$AUTOPILOT_JUDGE_REV|$upd|$n|$iupd"' '        key="$upd|$n|$iupd"'
+mutate judge-rev-denied-ignored agent-poll.sh ''"'"'.denied[$n]'"'"' --arg n "$num")" = "$AUTOPILOT_JUDGE_REV|$updated" ]' ''"'"'.denied[$n]'"'"' --arg n "$num")" = "$updated" ]' \
+    '--arg u "$AUTOPILOT_JUDGE_REV|$updated"' '--arg u "$updated"'
 mutate log-dedup-missing _lib.sh '        REQUESTER_BOT_WAIT_LOGGED=1' '        :'
 mutate enabled-gate-missing _lib.sh '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
     requester_bot_enabled || return 1' '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""'
@@ -414,6 +444,8 @@ mutate_rev() {   # <名字> <提交（空 = merge-base）>
 }
 mutate_rev merge-base ""
 mutate_rev prev-83d29bf 83d29bf112d021fc965712be7548f5e9e8f31715
+# 代码复审第 2 轮打回的那一版：旧版留下的拒绝 / 接手记录升级后照旧复用
+mutate_rev prev-dd6cefb dd6cefbcf64f84c484b1d7a78c29a2bfd40523c8
 pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo

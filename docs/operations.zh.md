@@ -528,7 +528,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
 状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
-`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键、接手阶段连续判不了的轮数、还没做完的交人待办）。和 `requester_bot_done_queue` 一样
+`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键（`denied` 和 `takeover` 的值都带判定规则版本，规则放宽后的升级里旧记录自动作废、按新规则重判一次）、接手阶段连续判不了的轮数、还没做完的交人待办）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
 
 ### 只在一台机器上跑这个仓库的轮询

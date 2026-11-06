@@ -640,7 +640,8 @@ collect_autopilot_rows() {
             fi
             continue
         fi
-        if [ "$(autopilot_state_get "$STATE_FILE" '.denied[$n]' --arg n "$num")" = "$updated" ]; then
+        # 记录带判定规则版本（AUTOPILOT_JUDGE_REV）：旧版按旧规则记下的拒绝对不上，按新规则重判一次
+        if [ "$(autopilot_state_get "$STATE_FILE" '.denied[$n]' --arg n "$num")" = "$AUTOPILOT_JUDGE_REV|$updated" ]; then
             continue
         fi
         ij=$(autopilot_snapshot_item issues "$num") || continue
@@ -665,7 +666,7 @@ collect_autopilot_rows() {
             1)
                 log "托管：issue #$num 只挂着托管标签，但授权不成立（$AUTOPILOT_REASON）→ 不派工"
                 autopilot_note_denial "$STATE_FILE" "$num"
-                autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$updated" || true
+                autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$AUTOPILOT_JUDGE_REV|$updated" || true
                 ;;
             *)
                 log "托管：issue #$num 的托管授权判不了（$AUTOPILOT_REASON），下轮再看"

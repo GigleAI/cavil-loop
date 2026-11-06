@@ -3813,6 +3813,12 @@ autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
     esac
 }
 
+# 托管判定规则的版本，写进两份「判过、条目没变就不再判」的本机记录（state.json 的 .autopilot.denied、
+# .autopilot.takeover）的值里。规则改了、旧的「不」可能变成「是」时**必须改这个值**：旧版留下的记录对不上，
+# 每个条目按新规则重判一次后再记。GitHub#162 放开了机器人需求的托管，旧版记下的拒绝若照旧复用，升级后
+# 新授权永远不生效（代码复审第 2 轮）。只让旧记录失效一次，不删 state、不碰暂停 / 授权的判断本身。
+AUTOPILOT_JUDGE_REV="r162"
+
 # 托管授权是否有效。两种调法：
 #   autopilot_authorization <issue> <issue JSON>                   只看 issue 一处（issue 自己的派工）
 #   autopilot_authorization <issue> <issue JSON> <PR> <PR JSON>    PR 的托管：issue 和 PR 两处合起来判（GitHub#128）
@@ -4844,7 +4850,7 @@ autopilot_takeover_tick() {   # <state_file>
         if [ "$n" != "-" ]; then
             iupd=$(printf '%s' "$ipages" | jq -r --argjson n "$n" 'first(.[][] | select(.number == $n) | .updated_at) // "closed"' 2>/dev/null) || iupd="?"
         fi
-        key="$upd|$n|$iupd"
+        key="$AUTOPILOT_JUDGE_REV|$upd|$n|$iupd"
         # 欠着的交人待办先做（它自己现读重判，判得出结论就作废、改走普通接手），不看缓存、不筛候选
         if [ -n "$(autopilot_state_get "$sf" '.takeover_handoff[$p]' --arg p "$num")" ]; then
             autopilot_takeover_handoff "$sf" "$num" "$key" || true; continue

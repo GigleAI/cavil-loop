@@ -657,7 +657,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
 unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handoff`: PRs judged "no takeover" with their
-cache key, undecidable rounds during takeover, and hand-offs not yet finished). Like `requester_bot_done_queue` it is not in the migration loop
+cache key (the values of `denied` and `takeover` carry a judging-rules revision, so after an upgrade that relaxes a rule the
+old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
 
 ### Poll the repo from one machine only
