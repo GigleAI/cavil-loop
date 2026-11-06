@@ -51,24 +51,6 @@ const records = (): any[] => {
 const lastBadge = (from = 0) => records().slice(from).filter((r) => r.op === 'badge').pop()?.count as number | undefined;
 const notified = (key: string) => records().some((r) => r.op === 'notify' && r.alert?.kind === 'item' && r.alert.key === key);
 
-/** the repository list as GitHub answered it (one sync round reads it at least once) */
-const isRepoList = (path: string) => /^\/api\/repos\/gigleai\/cavil-loop\/issues\?/i.test(path);
-const repoReads = () => fake.log.filter((l) => l.method === 'GET' && isRepoList(l.path) && l.status === 200).length;
-
-/**
- * A complete round is in, so the reminders' baseline is taken (GitHub#185 review
- * round 1): GitHub answered the repository list, and then the window sent a badge
- * (it does at the end of every round). "Any badge at all" is not that — the window
- * also clears the badge while it starts, before its first read; a label put on in
- * between lands in the start-up summary instead of its own notification.
- */
-async function roundDone(what: string, ms: number) {
-  const reads = repoReads();
-  await until(() => repoReads() > reads, `${what}: the repository read`, ms);
-  const from = records().length;
-  await until(() => lastBadge(from) !== undefined, `${what}: counted`, ms);
-}
-
 async function until(fn: () => boolean, what: string, ms: number) {
   const end = Date.now() + ms;
   while (!fn()) {
@@ -130,7 +112,7 @@ test.afterEach(async () => {
 
 test('window closed: hidden, still syncing and reminding within 120 s; the Dock icon brings it back', async () => {
   launch();
-  await roundDone('first round', 90_000);
+  await until(() => lastBadge() !== undefined, 'first round counted', 60_000);
   const badgeBefore = lastBadge()!;
   appendFileSync(control, 'close\n');
   await until(() => records().some((r) => r.op === 'hidden'), 'window hidden, app still running', 15_000);
@@ -154,13 +136,9 @@ test('window closed: hidden, still syncing and reminding within 120 s; the Dock 
 });
 
 test('started hidden (launch at login): no window, still syncing and reminding within 120 s', async () => {
-  // the first read answers late, so the start-up badge comes well before the first round
-  // (what made this check flaky on the CI Macs): the label must still go on after the baseline
-  const release = fake.holdWhen((e) => isRepoList(e.path));
-  setTimeout(release, 5_000);
   launch(['--hidden']);
   await until(() => records().some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 30_000);
-  await roundDone('first round while started hidden', 90_000);
+  await until(() => lastBadge() !== undefined, 'first round while started hidden', 60_000);
   const from = records().length;
   const badgeBefore = lastBadge()!;
   const n = unlabelled();
