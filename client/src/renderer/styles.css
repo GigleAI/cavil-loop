@@ -343,3 +343,6 @@ table.compare tbody th { width: 120px; font-weight: 600; white-space: nowrap; }
 @media (max-width: 1180px) {
   .sync-status .sync-text { display: none; }
 }
+/* closing an issue (GitHub#180): the reason picker of the confirm dialog */
+.close-reasons { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.close-reasons label.radio { gap: 8px; }

@@ -6,10 +6,12 @@
 //   - milestone: the item's own repository's milestone with that title; none →
 //     refused before anything is sent (milestones are never created here);
 //   - Project fields: only that Project, only with its own field / option ids;
+//   - closing (PR or issue): close first, the attached comment only after it;
+//     an issue only with a reason the client offers (completed / not planned);
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
-import type { MergeMethod, RepoOptions, WriteAction } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -284,6 +286,22 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       // the linked issues show this PR's state: they are read again right away too
       const related = await relatedIssues(client, it, ctx.cached);
       return { touched: [[it.repo, it.number], ...related.items], warning: [warning, related.problem].filter(Boolean).join('；') || null };
+    }
+    case 'closeIssue': {
+      const it = needItem(ctx);
+      if (it.kind !== 'issue') throw new ActionRefused('这一条不是 issue');
+      if (!ISSUE_CLOSE_REASONS.includes(action.reason)) throw new ActionRefused('未知的关闭原因');
+      // close first: a refused close leaves no orphan comment behind; a failed comment never re-sends the close
+      await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { state: 'closed', state_reason: action.reason });
+      let warning: string | null = null;
+      if (action.comment.trim()) {
+        try {
+          await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.comment });
+        } catch (e) {
+          warning = `issue 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;
+        }
+      }
+      return { touched: [[it.repo, it.number]], warning };
     }
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');

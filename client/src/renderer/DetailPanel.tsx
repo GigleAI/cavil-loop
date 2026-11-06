@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData } from '../shared/types';
-import type { ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type IssueCloseReason, type ItemDetail, type MergeMethod, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { writesEnabled } from '../data/board';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -26,6 +26,13 @@ const MERGE_STATE: Record<string, string> = {
   UNKNOWN: 'GitHub 还在计算',
 };
 const CHECKS: Record<string, string> = { SUCCESS: '全部通过', FAILURE: '有失败', ERROR: '出错', PENDING: '进行中', EXPECTED: '等待中' };
+const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
+  completed: { name: '已完成', hint: '做完了 / 问题已解决' },
+  not_planned: { name: '不计划', hint: '不做了、不是问题' },
+};
+/** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
+const HIDE_LABEL = '收起 ›';
+const HIDE_TITLE = '收起（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）';
 const REVIEW: Record<string, string> = { APPROVED: '已批准', CHANGES_REQUESTED: '要求修改', REVIEW_REQUIRED: '需要评审' };
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
@@ -80,8 +87,9 @@ export function DetailPanel({
   const [replied, setReplied] = useState(false);
   /** the method picked by hand in this opening; null = none yet */
   const [picked, setPicked] = useState<MergeMethod | null>(null);
-  const [ask, setAsk] = useState<'merge' | 'close' | null>(null);
+  const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | null>(null);
   const [closeComment, setCloseComment] = useState('');
+  const [closeReason, setCloseReason] = useState<IssueCloseReason>('completed');
   const canWrite = writesEnabled(state.sync);
   const offlineWhy = canWrite ? undefined : '离线时不能修改';
   const repo = item?.repo ?? '';
@@ -175,8 +183,8 @@ export function DetailPanel({
         <div className="detail-head">
           <span className="muted">这一条已不在当前视图里</span>
           <div className="spacer" />
-          <button className="icon-btn" onClick={onClose} data-testid="detail-close" aria-label="收起详情" title="收起详情（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）">
-            <Icon name="x" />
+          <button className="ghost" onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
+            {HIDE_LABEL}
           </button>
         </div>
       </>,
@@ -186,6 +194,8 @@ export function DetailPanel({
   const metaOf = (k: string) => data.projects.find((p) => p.key === k);
   const pr = detail?.pr ?? null;
   const prOpen = item.kind === 'pr' && detail?.state === 'open';
+  // only once the detail read says it is open: the board's copy may be a round behind
+  const issueOpen = item.kind === 'issue' && detail?.state === 'open';
   const missingLabels = (opts?.labels ?? []).filter((l) => !item.labels.some((x) => x.name === l.name));
   const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
@@ -212,8 +222,8 @@ export function DetailPanel({
         >
           <Icon name="refresh" />
         </button>
-        <button className="icon-btn" onClick={onClose} data-testid="detail-close" aria-label="收起详情" title="收起详情（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）">
-          <Icon name="x" />
+        <button className="ghost" onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
+          {HIDE_LABEL}
         </button>
       </div>
       <h3 className="detail-title">{item.title}</h3>
@@ -458,6 +468,11 @@ export function DetailPanel({
               交回 agent
             </button>
           )}
+          {issueOpen && (
+            <button className="danger" data-testid="close-issue" disabled={!canWrite || busy} title={offlineWhy ?? '在 GitHub 上关闭这个 issue（先选原因）'} onClick={() => setAsk('closeIssue')}>
+              关闭 issue…
+            </button>
+          )}
           <div className="spacer" />
           <button
             data-testid="reply-preview-toggle"
@@ -520,6 +535,33 @@ export function DetailPanel({
             setAsk(null);
           }}
         >
+          <textarea data-testid="close-comment" placeholder="可选：附一句评论（关闭成功后发出）" value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
+        </ConfirmDialog>
+      )}
+      {ask === 'closeIssue' && (
+        <ConfirmDialog
+          title={`关闭 issue #${item.number}？`}
+          confirmLabel="确认关闭"
+          danger
+          busy={busy}
+          onCancel={() => setAsk(null)}
+          onConfirm={async () => {
+            const reason = closeReason;
+            const r = await run({ kind: 'closeIssue', key: item.key, reason, comment: closeComment }, `issue #${item.number} 已关闭（${CLOSE_REASON[reason].name}）`);
+            if (!r.here) return;
+            if (r.ok) setCloseComment('');
+            setAsk(null);
+          }}
+        >
+          <div className="close-reasons" data-testid="close-reason">
+            {ISSUE_CLOSE_REASONS.map((r) => (
+              <label key={r} className="radio">
+                <input type="radio" name="close-reason" value={r} data-testid={`close-reason-${r}`} checked={closeReason === r} onChange={() => setCloseReason(r)} />
+                <b>{CLOSE_REASON[r].name}</b>
+                <span className="muted">{CLOSE_REASON[r].hint}</span>
+              </label>
+            ))}
+          </div>
           <textarea data-testid="close-comment" placeholder="可选：附一句评论（关闭成功后发出）" value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
         </ConfirmDialog>
       )}
