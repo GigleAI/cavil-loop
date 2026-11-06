@@ -113,6 +113,24 @@ query CavilItemRefresh($owner: String!, $name: String!, $number: Int!) {
 }
 `;
 
+/**
+ * The issues a pull request closes (GitHub's "closing issues references"),
+ * one page at a time: after a merge / close they are read again too
+ * (GigleAI/cavil-loop#177). Read to the last page — the list has no upper bound.
+ */
+export const CLOSING_ISSUES_QUERY = `
+query CavilClosingIssues($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      closingIssuesReferences(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number repository { nameWithOwner } }
+      }
+    }
+  }
+}
+`;
+
 const LINE_COMMENT_FIELDS = 'id url createdAt bodyHTML path line originalLine author { login }';
 
 /** The rest of one review's line comments (a review can hold more than one page of them). */
