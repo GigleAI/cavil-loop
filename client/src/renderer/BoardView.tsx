@@ -1,4 +1,5 @@
 import { stateTone } from '../shared/stateTone';
+import { badgeText } from './KindBadge';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
@@ -39,7 +40,6 @@ function localToday(now: number): string {
 }
 
 const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
-const STATE_LABEL = { open: '开', closed: '已关闭', merged: '已合并' } as const;
 
 interface CardOps {
   canWrite: boolean;
@@ -52,8 +52,8 @@ interface CardOps {
 
 function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col: string; ops: CardOps }) {
   const it = card.item;
-  // GitHub's state colour; no draft mark on the board (only the detail read has it)
-  const tone = stateTone(it.kind, it.state, it.stateReason, null);
+  // GitHub's state colour and the badge's state text (draft / close reason included)
+  const tone = stateTone(it.kind, it.state, it.stateReason, it.isDraft ?? null);
   const iterations = it.projects.filter((m) => m.iteration).map((m) => m.iteration!.title);
   const [adding, setAdding] = useState<RepoOptions | null>(null);
   return (
@@ -77,7 +77,7 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
               ↳{' '}
             </span>
           )}
-          {it.kind === 'pr' ? 'PR' : 'Issue'} · {STATE_LABEL[it.state]}
+          {it.kind === 'pr' ? 'PR' : 'Issue'} · {badgeText(it.kind, it.state, it.stateReason, it.isDraft ?? null)}
         </span>
         <span className="muted small card-repo">
           {it.repo} #{it.number}

@@ -56,6 +56,7 @@ export function item(repo: string, number: number, extra: Partial<Item> = {}, me
     kind: 'issue',
     state: 'open',
     stateReason: null,
+    isDraft: null,
     updatedAt: '2026-11-01T00:00:00Z',
     labels: [],
     assignees: [],

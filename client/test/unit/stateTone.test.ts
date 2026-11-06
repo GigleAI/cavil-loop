@@ -66,19 +66,26 @@ describe('the close reason reaches the item on every sync path', () => {
     // closed issues on the recorded board, given three different reasons and one left without
     const set: Record<number, string | null> = { 128: 'NOT_PLANNED', 102: 'COMPLETED', 106: 'DUPLICATE', 108: null };
     for (const [n, r] of Object.entries(set)) for (const g of findCopies(store(), R, Number(n))!.gql) g.stateReason = r;
+    // and two open PRs: one a draft, one not
+    for (const g of findCopies(store(), R, 147)!.gql) g.isDraft = true;
+    for (const g of findCopies(store(), R, 148)!.gql) g.isDraft = false;
     const snap = await fetchProject(client, parseSource('https://github.com/orgs/GigleAI/projects/11') as any, FIXTURE_NOW);
     const got = (n: number) => snap.items.find((i) => i.number === n)!;
     expect(got(128).stateReason).toBe('not_planned');
     expect(got(102).stateReason).toBe('completed');
     expect(got(106).stateReason).toBe('duplicate');
     expect(got(108).stateReason).toBeNull();
+    expect(got(147).isDraft).toBe(true);
+    expect(got(148).isDraft).toBe(false);
+    // issues never carry a draft mark
+    expect(snap.items.filter((i) => i.kind === 'issue').every((i) => i.isDraft === null)).toBe(true);
     // something did come through: the board has PRs too, and none of them gets a reason
     const prs = snap.items.filter((i) => i.kind === 'pr');
     expect(prs.length).toBeGreaterThan(0);
     expect(prs.every((p) => p.stateReason === null)).toBe(true);
   });
 
-  it('repository read (REST): state_reason is read; PRs carry none', async () => {
+  it('repository read (REST): state_reason and the draft mark are read; PRs carry no reason', async () => {
     const issues = fake.state.repos.get('gigleai/cavil-loop')!;
     const closed = issues.filter((r) => !r.pull_request && r.state === 'closed');
     expect(closed.length).toBeGreaterThanOrEqual(2);
@@ -87,17 +94,28 @@ describe('the close reason reaches the item on every sync path', () => {
     b.state_reason = 'completed';
     // inside the 14-day window, so the repository read includes them
     a.updated_at = b.updated_at = new Date(FIXTURE_NOW - 86_400_000).toISOString();
+    const pr147 = issues.find((r) => r.number === 147)!;
+    const pr148 = issues.find((r) => r.number === 148)!;
+    pr147.draft = true;
+    pr148.draft = false;
     const snap = await fetchRepo(client, parseSource(R) as any, FIXTURE_NOW);
     expect(snap.items.find((i) => i.number === a.number)!.stateReason).toBe('not_planned');
     expect(snap.items.find((i) => i.number === b.number)!.stateReason).toBe('completed');
     const prs = snap.items.filter((i) => i.kind === 'pr');
     expect(prs.length).toBeGreaterThan(0);
     expect(prs.every((p) => p.stateReason === null)).toBe(true);
+    expect(snap.items.find((i) => i.number === 147)!.isDraft).toBe(true);
+    expect(snap.items.find((i) => i.number === 148)!.isDraft).toBe(false);
+    expect(snap.items.filter((i) => i.kind === 'issue').every((i) => i.isDraft === null)).toBe(true);
   });
 
-  it('one-item re-read after a change (GraphQL): the reason is read', async () => {
+  it('one-item re-read after a change (GraphQL): the reason and the draft mark are read', async () => {
     for (const g of findCopies(store(), R, 138)!.gql) g.stateReason = 'NOT_PLANNED';
     const fresh = await fetchItem(client, R, 138);
     expect(contentToItem(fresh.content, [], [])!.stateReason).toBe('not_planned');
+    for (const g of findCopies(store(), R, 146)!.gql) g.isDraft = true;
+    expect(contentToItem((await fetchItem(client, R, 146)).content, [], [])!.isDraft).toBe(true);
+    for (const g of findCopies(store(), R, 146)!.gql) g.isDraft = false;
+    expect(contentToItem((await fetchItem(client, R, 146)).content, [], [])!.isDraft).toBe(false);
   });
 });

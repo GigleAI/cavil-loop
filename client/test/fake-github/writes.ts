@@ -183,7 +183,7 @@ export function gqlContent(c: Copies): any {
     title: r.title,
     url: r.html_url,
     state: r.state === 'open' ? 'OPEN' : r.pull_request?.merged_at ? 'MERGED' : 'CLOSED',
-    ...(c.kind === 'Issue' ? { stateReason: r.state_reason ? String(r.state_reason).toUpperCase() : null } : {}),
+    ...(c.kind === 'Issue' ? { stateReason: r.state_reason ? String(r.state_reason).toUpperCase() : null } : { isDraft: Boolean(r.draft) }),
     ...(c.kind === 'PullRequest' ? { merged: Boolean(r.pull_request?.merged_at) } : {}),
     updatedAt: r.updated_at,
     repository: { nameWithOwner: c.repo },

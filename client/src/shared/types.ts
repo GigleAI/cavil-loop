@@ -57,6 +57,8 @@ export interface Item {
   state: ItemState;
   /** issues only: GitHub's close reason; null = none recorded / a PR / not read (a cache written before #172 lacks it) */
   stateReason: IssueStateReason | null;
+  /** PRs only: GitHub's draft mark; null = an issue / not read (a cache written before #172 lacks it) */
+  isDraft: boolean | null;
   updatedAt: string;
   labels: Label[];
   assignees: string[];

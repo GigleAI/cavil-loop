@@ -46,9 +46,9 @@ function open(url: string) {
   };
 }
 
-/** GitHub's state colour of a row; no draft mark in the table (only the detail read has it) */
+/** GitHub's state colour of a row */
 function toneOf(it: Item) {
-  return stateTone(it.kind, it.state, it.stateReason, null);
+  return stateTone(it.kind, it.state, it.stateReason, it.isDraft ?? null);
 }
 
 function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number }) {

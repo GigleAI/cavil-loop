@@ -44,6 +44,7 @@ export interface GqlContent {
   state?: string;
   stateReason?: string | null;
   merged?: boolean;
+  isDraft?: boolean | null;
   updatedAt?: string;
   repository?: { nameWithOwner: string };
   labels?: { nodes: { name: string; color: string }[] };
@@ -152,6 +153,7 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
     kind: c.__typename === 'PullRequest' ? 'pr' : 'issue',
     state: contentState(c),
     stateReason: c.__typename === 'Issue' ? parseStateReason(c.stateReason) : null,
+    isDraft: c.__typename === 'PullRequest' && typeof c.isDraft === 'boolean' ? c.isDraft : null,
     updatedAt: c.updatedAt ?? '',
     labels: c.labels?.nodes.map((l) => ({ name: l.name, color: l.color })) ?? [],
     assignees: c.assignees?.nodes.map((a) => a.login) ?? [],
@@ -232,6 +234,8 @@ interface RestIssue {
   title: string;
   state: string;
   state_reason?: string | null;
+  /** pull requests only */
+  draft?: boolean;
   html_url: string;
   updated_at: string;
   labels: ({ name: string; color: string } | string)[];
@@ -261,6 +265,7 @@ function restToItem(repo: string, r: RestIssue, srcKey: string): Item {
     kind: r.pull_request ? 'pr' : 'issue',
     state: r.pull_request?.merged_at ? 'merged' : r.state === 'open' ? 'open' : 'closed',
     stateReason: r.pull_request ? null : parseStateReason(r.state_reason),
+    isDraft: r.pull_request && typeof r.draft === 'boolean' ? r.draft : null,
     updatedAt: r.updated_at,
     labels: r.labels.map((l) => (typeof l === 'string' ? { name: l, color: '' } : { name: l.name, color: l.color })),
     assignees: (r.assignees ?? []).map((a) => a.login),
