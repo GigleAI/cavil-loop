@@ -19,22 +19,27 @@
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
+    "@tauri-apps/cli": "2.12.4",
     "@types/node": "24.10.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "esbuild": "0.28.2",
+    "micromark": "4.0.3",
+    "micromark-extension-gfm": "3.0.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "typescript": "7.0.2",
     "vite": "8.3.4",
-    "vitest": "5.0.5",
-    "@tauri-apps/cli": "2.12.4"
+    "vitest": "5.0.5"
   },
   "allowScripts": {
     "esbuild@0.28.2": true
   },
   "dependencies": {
-    "@tauri-apps/api": "2.12.4"
+    "@tauri-apps/api": "2.12.4",
+    "mdast-util-from-markdown": "2.1.0",
+    "mdast-util-gfm-task-list-item": "2.0.0",
+    "micromark-extension-gfm-task-list-item": "2.1.0"
   }
 }

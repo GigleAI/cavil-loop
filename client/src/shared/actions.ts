@@ -28,7 +28,14 @@ export type WriteAction =
   | { kind: 'closePr'; key: string; comment: string }
   /** close an issue with GitHub's close reason; the comment (optional) is sent only once the close went through */
   | { kind: 'closeIssue'; key: string; reason: IssueCloseReason; comment: string }
-  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[] };
+  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[] }
+  /**
+   * tick / untick one task-list box of a body or comment (GitHub#193): `entryId` is the
+   * body's / comment's node id, `index` the box's number in it (document order),
+   * `seenSource` the markdown source the click was made on — nothing is written
+   * unless GitHub still holds exactly that
+   */
+  | { kind: 'toggleTask'; key: string; entryId: string; index: number; checked: boolean; seenSource: string };
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 
@@ -56,6 +63,13 @@ export interface Author {
   login: string | null;
 }
 
+/**
+ * Whether an entry's task-list boxes can be clicked (GitHub#193): only when GitHub
+ * says this account may change it and its markdown source agrees box for box with
+ * GitHub's rendering. `source` is the markdown the boxes were checked against.
+ */
+export type TaskEntry = { clickable: true; source: string } | { clickable: false; why: string };
+
 /** One entry of the detail timeline. bodyHtml is GitHub's rendered HTML, shown only in the isolated view. */
 export interface TimelineEntry {
   kind: 'body' | 'comment' | 'review';
@@ -67,6 +81,8 @@ export interface TimelineEntry {
   bodyHtml: string;
   /** review only: APPROVED / CHANGES_REQUESTED / COMMENTED / DISMISSED */
   reviewState?: string;
+  /** the task-list boxes in bodyHtml (GitHub#193); absent when it has none */
+  tasks?: TaskEntry;
   /** review only: its line comments, newest first */
   lineComments?: { id: string; url: string; author: string | null; at: string; path: string; line: number | null; bodyHtml: string }[];
 }

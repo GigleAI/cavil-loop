@@ -2,7 +2,8 @@
 // client writes around it is escaped, and the frame's own policy forbids scripts.
 
 import { describe, expect, it } from 'vitest';
-import { blockedImages, FRAME_CSP, FRAME_SANDBOX, plainExcerpt, timelineDocument } from '../../src/renderer/detailHtml';
+import { blockedImages, FRAME_CSP, FRAME_SANDBOX, plainExcerpt, timelineDocument, TIMELINE_CSP, TIMELINE_SANDBOX } from '../../src/renderer/detailHtml';
+import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from '../../src/renderer/frameScript';
 import { avatarUrl } from '../../src/shared/avatar';
 import type { TimelineEntry } from '../../src/shared/actions';
 import type { ItemDetail } from '../../src/shared/actions';
@@ -36,19 +37,25 @@ describe('isolated detail view', () => {
   it('names and paths around GitHub\'s HTML are escaped; GitHub\'s HTML is kept', () => {
     const doc = timelineDocument(detail('<img src=x onerror=alert(1)>', 'a/<script>.ts'), false);
     expect(doc).not.toContain('<img src=x');
-    expect(doc).not.toContain('<script>');
+    expect(doc).not.toContain('a/<script>.ts');
+    expect(doc).toContain('a/&lt;script&gt;.ts');
     expect(doc).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(doc).toContain('<p>rendered <b>by GitHub</b></p>');
   });
 
-  it('no scripts, no forms, no navigation of the app; links open outside', () => {
+  it('no scripts but the frame\'s own (GitHub#193), no forms, no navigation of the app; links open outside', () => {
     expect(FRAME_SANDBOX.split(' ')).not.toContain('allow-scripts');
     expect(FRAME_SANDBOX.split(' ')).not.toContain('allow-same-origin');
     expect(FRAME_SANDBOX.split(' ')).not.toContain('allow-top-navigation');
+    expect(TIMELINE_SANDBOX.split(' ')).not.toContain('allow-same-origin');
+    expect(TIMELINE_SANDBOX.split(' ')).not.toContain('allow-top-navigation');
     expect(FRAME_CSP).toContain("script-src 'none'");
+    expect(TIMELINE_CSP).toContain(`script-src ${FRAME_SCRIPT_HASH};`);
     const doc = timelineDocument(detail('a', 'b'), true);
-    expect(doc).toContain(`content="${FRAME_CSP}"`);
+    expect(doc).toContain(`content="${TIMELINE_CSP}"`);
     expect(doc).toContain('<base target="_blank">');
+    // the one script in the document is the frame's own, byte for byte
+    expect([...doc.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1])).toEqual([FRAME_SCRIPT]);
   });
 
   it('images: only github.com / api.github.com (and the avatar host) load; the others are counted and the entry says so', () => {

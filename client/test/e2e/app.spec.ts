@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
 import { findCopies, pullOf } from '../fake-github/writes';
+import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -309,7 +310,8 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   const detail = page.getByTestId('detail');
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   const frameEl = page.getByTestId('timeline-frame');
-  await expect(frameEl).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+  // scripts on for the frame's own script only (GitHub#193: both policies allow just its hash), never same-origin
+  await expect(frameEl).toHaveAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await expect(frame.locator('details.entry')).toHaveCount(3);
   expect(await frame.locator('details.entry').evaluateAll((els) => els.map((e) => e.getAttribute('data-entry')))).toEqual(['C-new', 'C-old', expect.stringMatching(/^I_/)]);
@@ -1529,5 +1531,114 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await expect(page.getByTestId('close-issue')).toBeDisabled();
   await expect(page.getByTestId('close-issue')).toHaveAttribute('title', '离线时不能修改');
   expect(env.fake.writes()).toHaveLength(before);
+  await app.close();
+});
+
+// ---- GitHub#193: ticking a choice in the detail ----
+
+const QUESTION193 = '**Q1: 换手机后怎么找回？**（默认 A）\n\n- [ ] **A. 导出文件** — 手动\n- [ ] **B. 云端** — 自动\n\n```\n- [ ] 代码块里的不是选项\n```\n';
+/** raw HTML the frame must never run: an inline script, an error handler, a click handler (each would report itself) */
+const INJECTED193 =
+  '<p>INJECTED</p><script>parent.postMessage({cavil:"pwned-script"},"*")</script>' +
+  '<img alt="i" src="data:image/png;base64,xx" onerror="parent.postMessage({cavil:\'pwned-onerror\'},\'*\')">' +
+  '<button id="inj" onclick="parent.postMessage({cavil:\'pwned-onclick\'},\'*\')">inj</button>';
+
+test('GitHub#193: tick a choice in the detail — one character changes on GitHub; someone else\'s edit is never overwritten; read-only / offline boxes stay put; only the frame\'s own script runs', async () => {
+  const w = env.fake.state.w;
+  const at = (d: number) => `2026-11-0${d}T01:00:00Z`;
+  const url = (id: string) => `https://github.com/GigleAI/cavil-loop/issues/138#${id}`;
+  w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C_RO', url: url('C_RO'), createdAt: at(2), bodyHTML: '', author: { login: 'user-2' }, body: QUESTION193 },
+    { id: 'C_INJ', url: url('C_INJ'), createdAt: at(3), bodyHTML: INJECTED193, author: { login: 'user-3' } },
+    { id: 'C_Q', url: url('C_Q'), createdAt: at(4), bodyHTML: '', author: { login: 'user-4' }, body: QUESTION193 },
+  ]);
+  w.cannotUpdate.add('C_RO');
+  const sourceOfQ = () => w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === 'C_Q')!.body;
+  const { app, page } = await launch(env);
+  // every message the window receives, by kind (the frame's script reports "ready" when it ran)
+  await page.evaluate(() => {
+    (window as any).__msgs = [];
+    window.addEventListener('message', (e) => (window as any).__msgs.push(e.data?.cavil));
+  });
+  const msgs = () => page.evaluate(() => (window as any).__msgs as string[]);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const iframe = page.getByTestId('timeline-frame');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const box = (entry: string, i: number) => frame.locator(`details.entry[data-entry="${entry}"] input[data-task="${i}"]`);
+
+  // ---- 1. the trusted script ran; nothing GitHub's HTML carries does, even opened and clicked ----
+  await frame.locator('details.entry[data-entry="C_INJ"] > summary').click({ position: { x: 40, y: 10 } });
+  await expect(frame.locator('#inj')).toBeVisible();
+  await frame.locator('#inj').click();
+  await page.waitForTimeout(500);
+  expect(await msgs()).toContain('ready');
+  expect((await msgs()).filter((m) => /^pwned/.test(String(m)))).toEqual([]);
+  // the task boxes look like GitHub's: no list bullet
+  expect(await box('C_Q', 0).evaluate((el) => getComputedStyle(el.closest('li')!).listStyleType)).toBe('none');
+
+  // ---- 2. a comment this account may not change: its boxes are read-only and say why ----
+  await frame.locator('details.entry[data-entry="C_RO"] > summary').click({ position: { x: 40, y: 10 } });
+  await expect(box('C_RO', 0)).toBeDisabled();
+  await expect(frame.locator('details.entry[data-entry="C_RO"] [data-testid="task-readonly"]')).toHaveText('GitHub 说你没有权限改这一条，勾选框只读');
+  await box('C_RO', 0).click({ force: true });
+  await page.waitForTimeout(300);
+  expect(env.fake.writes()).toEqual([]);
+  await shot(page, '60-task-boxes');
+
+  // ---- 3. tick A: GitHub gets the comment with exactly that box changed ----
+  await expect(box('C_Q', 0)).toBeEnabled();
+  await box('C_Q', 0).click();
+  await expect(page.getByTestId('action-result')).toHaveText('已勾上，GitHub 上已更新');
+  const ticked = QUESTION193.replace('- [ ] **A.', '- [x] **A.');
+  expect(writes()).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_Q', body: ticked }]]);
+  expect(sourceOfQ()).toBe(ticked);
+  // re-read: A shown ticked, B not; the entries opened before are still open; hand back is offered
+  await expect(box('C_Q', 0)).toBeChecked();
+  await expect(box('C_Q', 1)).not.toBeChecked();
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  expect(await frame.locator('details.entry').evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry')))).toEqual([
+    'C_Q',
+    'C_INJ',
+    'C_RO',
+  ]);
+  await expect(page.getByTestId('hand-back')).toBeVisible();
+  await shot(page, '61-task-ticked');
+
+  // ---- 4. somebody edits the comment on the web meanwhile: the click is refused, their text stays ----
+  const theirs = ticked.replace('- [ ] **B.', '- [x] **B.').replace('— 自动', '— 自动（改过）');
+  w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === 'C_Q')!.body = theirs;
+  // the window still shows the old text: B unticked
+  await expect(box('C_Q', 1)).not.toBeChecked();
+  await box('C_Q', 1).click();
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'error');
+  await expect(page.getByTestId('action-result')).toHaveText(TASK_CHANGED193);
+  expect(env.fake.writes()).toHaveLength(1);
+  expect(sourceOfQ()).toBe(theirs);
+  // read again: what GitHub holds now
+  await expect(frame.locator('details.entry[data-entry="C_Q"] .md')).toContainText('自动（改过）');
+  await expect(box('C_Q', 1)).toBeChecked();
+
+  // ---- 5. messages the window drops: not from the frame, or from an older rendering; the same from the frame goes through ----
+  const render = (await iframe.getAttribute('data-render'))!;
+  await page.evaluate((r) => window.postMessage({ cavil: 'task', render: r, entry: 'C_Q', index: 0, checked: false, view: { open: [], scroll: 0 } }, '*'), render);
+  const inFrame = page.frames().find((f) => f !== page.mainFrame() && f.url() === 'about:srcdoc')!;
+  await inFrame.evaluate(() => parent.postMessage({ cavil: 'task', render: 'r0', entry: 'C_Q', index: 0, checked: false, view: { open: [], scroll: 0 } }, '*'));
+  await page.waitForTimeout(500);
+  expect(env.fake.writes()).toHaveLength(1);
+  await inFrame.evaluate((r) => parent.postMessage({ cavil: 'task', render: r, entry: 'C_Q', index: 0, checked: false, view: { open: [], scroll: 0 } }, '*'), render);
+  await expect(page.getByTestId('action-result')).toHaveText('已取消勾选，GitHub 上已更新');
+  expect(env.fake.writes()).toHaveLength(2);
+  expect(sourceOfQ()).toBe(theirs.replace('- [x] **A.', '- [ ] **A.'));
+
+  // ---- 6. offline: every box greys out, nothing sent ----
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(box('C_Q', 0)).toBeDisabled();
+  await expect(box('C_Q', 1)).toBeDisabled();
+  expect(env.fake.writes()).toHaveLength(2);
+  expect((await msgs()).filter((m) => /^pwned/.test(String(m)))).toEqual([]);
   await app.close();
 });

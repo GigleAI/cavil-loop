@@ -425,7 +425,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       log.filter(
         (l) =>
           (l.path.startsWith('/api/') && l.path !== '/api/graphql' && l.path !== '/api/markdown' && l.method !== 'GET') ||
-          (l.path === '/api/graphql' && /^Cavil(AddProjectItem|SetIteration|SetStatus|ClearField)$/.test(l.operation ?? '')),
+          (l.path === '/api/graphql' && /^Cavil(AddProjectItem|SetIteration|SetStatus|ClearField|UpdateComment|UpdateIssueBody|UpdatePrBody)$/.test(l.operation ?? '')),
       ),
     close: () =>
       new Promise<void>((r) => {

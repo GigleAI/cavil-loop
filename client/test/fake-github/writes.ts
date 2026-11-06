@@ -10,6 +10,8 @@
 // asserted as an unchanged digest.
 
 import { createHash } from 'node:crypto';
+import { micromark } from 'micromark';
+import { gfm, gfmHtml } from 'micromark-extension-gfm';
 
 export interface FakePull {
   headOid: string;
@@ -28,6 +30,8 @@ export interface FakeComment {
   createdAt: string;
   bodyHTML: string;
   author: { login: string } | null;
+  /** markdown source (GitHub#193): when set, bodyHTML is rendered from it */
+  body?: string;
 }
 
 export interface FakeReview {
@@ -56,6 +60,12 @@ export interface WritableState {
   reviews: Map<string, FakeReview[]>;
   /** `owner/repo#n` lower-cased -> rendered body */
   bodies: Map<string, string>;
+  /** `owner/repo#n` lower-cased -> markdown source of the body (GitHub#193): when set, the rendered body comes from it */
+  bodySources: Map<string, string>;
+  /** node ids (bodies: the item's, comments: the comment's) this account may not change: viewerCanUpdate false, edits refused */
+  cannotUpdate: Set<string>;
+  /** answer the re-read of a body / comment source (CavilTaskSource) with HTTP 502 */
+  failTaskSource: boolean;
   /** repositories where every write answers 403 (the account has read access only) */
   readOnlyRepos: Set<string>;
   /** Project keys (`org/owner/n`) the account may not change: viewerCanUpdate false, mutations refused */
@@ -96,6 +106,9 @@ export function defaultWritable(): WritableState {
     comments: new Map(),
     reviews: new Map(),
     bodies: new Map(),
+    bodySources: new Map(),
+    cannotUpdate: new Set(),
+    failTaskSource: false,
     readOnlyRepos: new Set(),
     readOnlyProjects: new Set(),
     dropWrites: false,
@@ -277,6 +290,39 @@ function runAutomation(store: Store, items: { repo: string; number: number }[]) 
   }, a.delayMs);
 }
 
+/**
+ * The fake's markdown renderer (GitHub#193): CommonMark + GFM, with task-list
+ * boxes in GitHub's own markup. Only the fake uses it — the client's reading of
+ * the source is checked against GitHub's real rendering (test/fixtures/tasklists.github.json).
+ */
+export function renderMarkdown(md: string): string {
+  return micromark(md, { extensions: [gfm()], htmlExtensions: [gfmHtml()] })
+    .replace(/<li><input type="checkbox" disabled="" checked="" \/>/g, '<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Completed task" checked="">')
+    .replace(/<li><input type="checkbox" disabled="" \/>/g, '<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" aria-label="Incomplete task">');
+}
+
+/** A comment as the detail query answers it: its source, rendered HTML and "may this account change it". */
+function commentAnswer(store: Store, c: FakeComment, repoKey: string) {
+  return {
+    id: c.id,
+    url: c.url,
+    createdAt: c.createdAt,
+    author: c.author,
+    body: c.body ?? '',
+    bodyHTML: c.body !== undefined ? renderMarkdown(c.body) : c.bodyHTML,
+    viewerCanUpdate: !store.w.cannotUpdate.has(c.id) && !store.w.readOnlyRepos.has(repoKey),
+  };
+}
+
+/** Find a comment by node id: [the item key `owner/repo#n` lower-cased, the comment]. */
+function findComment(store: Store, id: string): [string, FakeComment] | null {
+  for (const [k, list] of store.w.comments) {
+    const c = list.find((x) => x.id === id);
+    if (c) return [k, c];
+  }
+  return null;
+}
+
 export function digest(store: Store): string {
   const w = store.w;
   return JSON.stringify({
@@ -286,6 +332,7 @@ export function digest(store: Store): string {
     pulls: [...w.pulls],
     comments: [...w.comments],
     labels: [...w.repoLabels],
+    bodySources: [...w.bodySources],
   });
 }
 
@@ -396,7 +443,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
   if (im[1] === 'issues' && method === 'POST' && sub === '/comments') {
     const list = w.comments.get(ikey) ?? [];
     const id = `IC_fake_${list.length + 1}_${c.number}`;
-    list.push({ id, url: `https://github.com/${c.repo}/issues/${c.number}#issuecomment-${list.length + 1}`, createdAt: w.clock(), bodyHTML: `<p>${String(body?.body ?? '')}</p>`, author: { login: 'user-1' } });
+    list.push({ id, url: `https://github.com/${c.repo}/issues/${c.number}#issuecomment-${list.length + 1}`, createdAt: w.clock(), bodyHTML: `<p>${String(body?.body ?? '')}</p>`, author: { login: 'user-1' }, body: String(body?.body ?? '') });
     w.comments.set(ikey, list);
     touch(store, c);
     return send(201, { id }), true;
@@ -498,6 +545,50 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     return { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: node.id } }, clearProjectV2ItemFieldValue: { projectV2Item: { id: node.id } } } };
   }
 
+  // ---- GitHub#193: re-read one body / comment source, write it back ----
+  if (op === 'CavilTaskSource') {
+    if (w.failTaskSource) return { httpStatus: 502 };
+    const cm = findComment(store, v.id);
+    if (cm) {
+      const [k, c] = cm;
+      const [repoKey, n] = k.split('#');
+      const ic = findCopies(store, repoKey, Number(n))!;
+      return { data: { node: { __typename: 'IssueComment', body: c.body ?? '', viewerCanUpdate: commentAnswer(store, c, repoKey).viewerCanUpdate, issue: { number: ic.number, repository: { nameWithOwner: ic.repo } } } } };
+    }
+    const it = findByNodeId(store, v.id);
+    if (!it) return { data: { node: null }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${v.id}'` }] };
+    const k = `${it.repo.toLowerCase()}#${it.number}`;
+    return {
+      data: {
+        node: {
+          __typename: it.kind,
+          body: w.bodySources.get(k) ?? '',
+          viewerCanUpdate: !w.cannotUpdate.has(v.id) && !w.readOnlyRepos.has(it.repo.toLowerCase()),
+          number: it.number,
+          repository: { nameWithOwner: it.repo },
+        },
+      },
+    };
+  }
+  if (op === 'CavilUpdateComment' || op === 'CavilUpdateIssueBody' || op === 'CavilUpdatePrBody') {
+    const text = String(v.body ?? '');
+    if (op === 'CavilUpdateComment') {
+      const cm = findComment(store, v.id);
+      if (!cm) return err(`Could not resolve to a node with the global id of '${v.id}'`, 'NOT_FOUND');
+      const [k, c] = cm;
+      if (w.cannotUpdate.has(c.id) || w.readOnlyRepos.has(k.split('#')[0])) return err('Resource not accessible by integration', 'FORBIDDEN');
+      c.body = text;
+      return { data: { updateIssueComment: { issueComment: { body: text } } } };
+    }
+    const it = findByNodeId(store, v.id);
+    const want = op === 'CavilUpdateIssueBody' ? 'Issue' : 'PullRequest';
+    if (!it || it.kind !== want) return err(`Could not resolve to a ${want} with the global id of '${v.id}'`, 'NOT_FOUND');
+    if (w.cannotUpdate.has(v.id) || w.readOnlyRepos.has(it.repo.toLowerCase())) return err('Resource not accessible by integration', 'FORBIDDEN');
+    w.bodySources.set(`${it.repo.toLowerCase()}#${it.number}`, text);
+    touch(store, it);
+    return { data: want === 'Issue' ? { updateIssue: { issue: { body: text } } } : { updatePullRequest: { pullRequest: { body: text } } } };
+  }
+
   if (op === 'CavilReviewComments') {
     if (w.failReviewCommentPages) return { httpStatus: 502 };
     for (const list of w.reviews.values()) {
@@ -572,11 +663,16 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
       url: content.url,
       state: content.state,
       createdAt: '2026-01-01T00:00:00Z',
-      bodyHTML: w.bodies.get(ikey) ?? '<p>fixture body</p>',
+      bodyHTML: w.bodySources.has(ikey) ? renderMarkdown(w.bodySources.get(ikey)!) : (w.bodies.get(ikey) ?? '<p>fixture body</p>'),
+      body: w.bodySources.get(ikey) ?? '',
+      viewerCanUpdate: !w.cannotUpdate.has(content.id) && !w.readOnlyRepos.has(c.repo.toLowerCase()),
       author: { login: 'user-1' },
       labels: content.labels,
     };
-    if (v.withComments) item.comments = pageOf(w.comments.get(ikey) ?? [], v.commentsAfter ?? null);
+    if (v.withComments) {
+      const page = pageOf(w.comments.get(ikey) ?? [], v.commentsAfter ?? null);
+      item.comments = { ...page, nodes: page.nodes.map((x) => commentAnswer(store, x, c.repo.toLowerCase())) };
+    }
     if (isPr) {
       Object.assign(item, {
         merged: Boolean(content.merged),
