@@ -3,6 +3,31 @@
 
 import type { MergePrefs } from './mergePrefs';
 
+/**
+ * The app updating itself (GitHub#184), as the shell reports it (src-tauri/crates/core/src/update.rs
+ * decides; src-tauri/src/updater.rs installs). null from `updateStatus` = this build does not update itself.
+ */
+export interface UpdateStatus {
+  supported: true;
+  /** the running version */
+  current: string;
+  /** automatic checks (at start, then every 6 hours) */
+  auto: boolean;
+  /** why this build cannot update itself at all (it never looks) */
+  problem: string | null;
+  phase: 'idle' | 'checking' | 'downloading' | 'ready';
+  /** downloading / ready: the new version */
+  version?: string;
+  /** downloading: bytes so far, and the total when known */
+  got?: number;
+  total?: number | null;
+  /** the "ready" banner was closed for this version */
+  dismissed: string | null;
+  /** the last finished round: when, and what it ended with (a failure never reads as "up to date") */
+  last: { at: number; ok: boolean; message: string } | null;
+}
+
+
 export type ItemKind = 'issue' | 'pr';
 export type ItemState = 'open' | 'closed' | 'merged';
 /** why an issue was closed, as GitHub records it (lower-cased); a PR never has one */
@@ -271,6 +296,8 @@ export interface AppState {
   notifyProblem: string | null;
   /** a notification was clicked: open this item's detail (`seq` changes on every click) */
   focus: { key: string; seq: number } | null;
+  /** the app updating itself (GitHub#184); null = this build does not */
+  update: UpdateStatus | null;
 }
 
 export interface BoardData {

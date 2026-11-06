@@ -172,20 +172,57 @@ jobs:
           "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
           echo "$RUNNER_TEMP/dmgbuild/bin" >> "$GITHUB_PATH"
       - run: npm ci
-      - name: Build the app (Tauri) and the dmg
+      # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. A release tag
+      # signs it with the maintainer's update key (secret); every other run with a throw-away key, so
+      # each PR builds and measures the same files (the release job refuses a package that the key
+      # inside the app did not sign).
+      - name: Build the app (Tauri), its update package, and the dmg
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
-          npx tauri build --bundles app
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/client/v* ]]; then
+              echo "::error::a release tag needs the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1
+            fi
+            npx tauri signer generate --ci -p "" -w "$RUNNER_TEMP/throwaway-update.key" >/dev/null
+            export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/throwaway-update.key" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          fi
+          npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":true}}'
           node scripts/make-dmg.mjs --arch ${{ matrix.arch }}
+          v="$(node -p "require('./package.json').version")"
+          for ext in tar.gz tar.gz.sig; do
+            cp "src-tauri/target/release/bundle/macos/Cavil Loop.app.$ext" "release/Cavil-Loop-$v-${{ matrix.arch }}.app.$ext"
+          done
           ls -la release
       # GitHub#151: ≤ 10 MB is the target, > 20 MB fails (1 MB = 1,000,000 bytes)
       - name: Download size
-        run: node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.dmg --expect ${{ matrix.arch }}
+        run: |
+          node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.dmg --expect ${{ matrix.arch }}
+          node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz --expect ${{ matrix.arch }}
       - name: Smoke test + first-open steps + dmg window
         run: bash scripts/mac-open-check.sh release/Cavil-Loop-*-${{ matrix.arch }}.dmg "$RUNNER_TEMP/dmg-window-${{ matrix.arch }}.png"
+      # GitHub#184: the installed old version updates itself to a new one, for real (Tauri's updater
+      # plugin, /Applications, a loopback stand-in for GitHub); a tampered package is refused.
+      - name: A real update of the installed app
+        run: |
+          npx tauri build --debug --bundles app --features update-test
+          bash scripts/mac-update-check.sh "src-tauri/target/debug/bundle/macos/Cavil Loop.app"
       # The dmg itself, not zipped (archive: false; the artifact is named after the file).
       - uses: actions/upload-artifact@v7.0.1
         with:
           path: client/release/Cavil-Loop-*-${{ matrix.arch }}.dmg
+          archive: false
+          if-no-files-found: error
+      # and the update package and its signature (GitHub#184), the same way
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz.sig
           archive: false
           if-no-files-found: error
       - name: Upload the dmg window screenshot
@@ -204,11 +241,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*.dmg
+          pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
-      - name: Each dmg ≤ 20 MB (target ≤ 10 MB)
-        run: node scripts/size-gate.mjs dist-release/*.dmg --expect arm64,x64
+      - name: Each dmg and each update package ≤ 20 MB (target ≤ 10 MB)
+        run: |
+          node scripts/size-gate.mjs dist-release/*.dmg --expect arm64,x64
+          node scripts/size-gate.mjs dist-release/*.app.tar.gz --expect arm64,x64
 
   release:
     name: publish client release
@@ -226,20 +265,24 @@ jobs:
           [ "$tag" = "$want" ] || { echo "::error::tag $tag does not match package.json ($want)"; exit 1; }
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*.dmg
+          pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
       - name: Both dmgs are there
         run: |
           ls -la dist-release
           [ "$(ls dist-release/*-arm64.dmg dist-release/*-x64.dmg | wc -l)" -eq 2 ]
+      # GitHub#184: what installed apps read to update themselves. Refuses unless both update packages
+      # are there and signed with the key whose public half the app carries (src-tauri/updater.pub).
+      - name: Update manifest (latest.json)
+        run: node scripts/update-manifest.mjs --version "$(node -p "require('./package.json').version")" --dir dist-release --pubkey src-tauri/updater.pub --notes RELEASE_NOTES.md --out dist-release/latest.json
       # Not marked latest: the daemon's weekly release stays "Latest".
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" dist-release/*.dmg \
+          gh release create "$tag" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/latest.json \
             --repo "$GITHUB_REPOSITORY" \
             --title "Cavil Loop 客户端 ${tag#client/}" \
             --notes-file RELEASE_NOTES.md \

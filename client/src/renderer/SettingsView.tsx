@@ -3,6 +3,7 @@ import type { AppState, BoardData } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
+import { UpdateSection } from './UpdateViews';
 
 export function SettingsView({ state, data, onBack, onHelp }: { state: AppState; data: BoardData; onBack: () => void; onHelp: () => void }) {
   const [input, setInput] = useState('');
@@ -108,6 +109,8 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           <p className="muted small">关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。</p>
         )}
       </section>
+
+      <UpdateSection update={state.update} />
 
       <section>
         <h3>账号</h3>
