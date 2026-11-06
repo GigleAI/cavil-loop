@@ -536,8 +536,19 @@ function buildBackend(work) {
     });
     let stderr = '';
     child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
-    child.on('error', (e) => resolve({ broken: `后台编译启动失败：${e.message}` }));
+    // the time limit covers the build too: a slow or stuck build is a failed run, not a long wait
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, TIMEOUT_MS);
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ broken: `后台编译启动失败：${e.message}` });
+    });
     child.on('close', (status) => {
+      clearTimeout(timer);
+      if (timedOut) return resolve({ broken: `超时（${TIMEOUT_MS} ms）被终止（编译后台时）` });
       const bin = join(MUT_TARGET, 'debug', 'cavil-harness');
       if (status !== 0 || !existsSync(bin)) return resolve({ broken: `后台编译失败：${stderr.trim().split('\n').slice(-6).join(' / ')}` });
       resolve({ bin });
