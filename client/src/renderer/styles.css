@@ -74,9 +74,10 @@ input, select { font: inherit; padding: 4px 8px; border: 1px solid var(--border)
 .card-title { display: block; color: var(--fg); text-decoration: none; font-weight: 500; margin: 2px 0 4px; }
 .card-title:hover { color: var(--accent); }
 .kind { font-size: 11px; font-weight: 600; }
-.kind.open { color: var(--open); }
-.kind.closed { color: var(--closed); }
-.kind.merged { color: var(--merged); }
+.kind.open { color: var(--state-open-fg); }
+.kind.closed { color: var(--state-closed-fg); }
+.kind.done { color: var(--state-done-fg); }
+.kind.neutral { color: var(--state-neutral-fg); }
 .labels { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
 .label { font-size: 11px; padding: 0 6px; border-radius: 999px; }
 .meta { display: flex; flex-wrap: wrap; gap: 2px 10px; }
@@ -119,14 +120,15 @@ table.items .group-head td { background: var(--bg); padding-top: 10px; }
 table.items .title-cell a { color: var(--fg); text-decoration: none; font-weight: 500; }
 table.items .title-cell a:hover { color: var(--accent); }
 .state { font-size: 11px; font-weight: 600; }
-.state.open { color: var(--open); }
-.state.closed { color: var(--closed); }
-.state.merged { color: var(--merged); }
+.state.open { color: var(--state-open-fg); }
+.state.closed { color: var(--state-closed-fg); }
+.state.done { color: var(--state-done-fg); }
+.state.neutral { color: var(--state-neutral-fg); }
 .current { margin-left: 6px; font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; }
 .pr-link { margin-right: 6px; text-decoration: none; }
-.pr-link.open { color: var(--open); }
-.pr-link.closed { color: var(--closed); }
-.pr-link.merged { color: var(--merged); }
+.pr-link.open { color: var(--state-open-fg); }
+.pr-link.closed { color: var(--state-closed-fg); }
+.pr-link.merged { color: var(--state-done-fg); }
 .progress { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; }
 .progress .bar { width: 60px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; display: inline-block; }
 .progress .bar span { display: block; height: 100%; background: var(--merged); }
@@ -191,3 +193,24 @@ button.danger { background: var(--closed); color: #fff; border-color: var(--clos
 /* a PR right under the issue it is linked to (GitHub#155) */
 .card.nested { margin-left: 16px; border-left: 3px solid var(--merged); }
 .nest-mark { color: var(--muted); font-weight: 400; }
+/* GitHub's state colours (GitHub#172 review): Primer's open / closed / done / neutral roles,
+   foreground for card / table text, emphasis background for the detail badge.
+   Which role an item gets is decided in one place, src/shared/stateTone.ts. */
+:root {
+  --state-open-fg: #1a7f37; --state-closed-fg: #d1242f; --state-done-fg: #8250df; --state-neutral-fg: #59636e;
+  --state-open-bg: #1f883d; --state-closed-bg: #cf222e; --state-done-bg: #8250df; --state-neutral-bg: #59636e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --state-open-fg: #3fb950; --state-closed-fg: #f85149; --state-done-fg: #ab7df8; --state-neutral-fg: #9198a1;
+    --state-open-bg: #238636; --state-closed-bg: #da3633; --state-done-bg: #8957e5; --state-neutral-bg: #656c76;
+  }
+}
+/* type badge at the top of the detail panel (GitHub#172): shape + full name say issue / PR, the colour says the state */
+.kind-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 12px 3px 9px; border-radius: 999px; color: #fff; font-size: 13px; font-weight: 600; line-height: 20px; white-space: nowrap; }
+.kind-badge svg { flex: none; }
+.kind-badge.open { background: var(--state-open-bg); }
+.kind-badge.closed { background: var(--state-closed-bg); }
+.kind-badge.done { background: var(--state-done-bg); }
+.kind-badge.neutral { background: var(--state-neutral-bg); }
+.kind-badge .kind-sep { opacity: 0.7; font-weight: 400; }

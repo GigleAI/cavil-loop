@@ -10,6 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { findCopies, pullOf } from '../fake-github/writes';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -1202,5 +1203,171 @@ test('notifications refused by the system: the board says so and how to allow th
   await expect.poll(() => app.desktop.records.filter((a) => a.op === 'notify').length).toBe(2);
   await page.waitForTimeout(300);
   await expect(page.getByTestId('board-notify-problem')).toHaveCount(0);
+  await app.close();
+});
+
+// GitHub#172: the top of the detail tells an issue from a PR at a glance — a
+// different icon and the full name — and the colour is GitHub's state colour
+// (review of PR #174: "keep the issue / PR state colours the same as GitHub"):
+// open green, PR closed red, merged PR / issue closed as completed purple,
+// draft PR / issue closed as not planned grey. Closed and merged win over a
+// draft mark; an open PR marked as a draft turns grey. The lists carry the draft
+// mark; the badge prefers the fresher detail read and falls back to the board's
+// when the detail has not arrived or failed (neither knows → not a draft). The
+// board card and the table row use the same colour rule.
+test('detail badge: issue and PR differ by icon and full name; GitHub state colours on badge, card and table; draft mark from the detail or the board', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  /** GitHub's draft mark on every copy (detail, Project, repository list) — or only where `where` says */
+  const draft = (n: number, on = true, where: 'all' | 'detail' | 'lists' = 'all') => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    if (where !== 'lists') pullOf(store, c).isDraft = on;
+    if (where !== 'detail') {
+      for (const g of c.gql) g.isDraft = on;
+      for (const r of c.rest) r.draft = on;
+    }
+  };
+  /** GitHub's close reason on every copy of an issue (Project and repository list) */
+  const closedAs = (n: number, reason: string) => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) g.stateReason = reason.toUpperCase();
+    for (const r of c.rest) r.state_reason = reason;
+  };
+  draft(147); // open draft
+  draft(129); // closed, still carrying the draft mark
+  draft(146, true, 'detail'); // its detail read fails; the board's lists say "not a draft"
+  env.fake.state.w.failDetail.add('gigleai/cavil-loop#146');
+  draft(149, true, 'detail'); // became a draft after the board's last read: only the (fresher) detail knows yet
+  closedAs(128, 'completed');
+  closedAs(138, 'not_planned');
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const badge = page.getByTestId('detail-kind');
+
+  const open = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+  };
+  /** the detail read finished (so a draft mark, if any, has arrived) */
+  const loaded = async () => {
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+  const bg = () => badge.evaluate((el) => getComputedStyle(el).backgroundColor);
+  const fg = (l: ReturnType<Page['locator']>) => l.evaluate((el) => getComputedStyle(el).color);
+
+  // GitHub's (Primer) colours. Expected values follow GitHub's rule, not the implementation's output.
+  const BG = { open: 'rgb(31, 136, 61)', closed: 'rgb(207, 34, 46)', done: 'rgb(130, 80, 223)', neutral: 'rgb(89, 99, 110)' };
+  const FG = { open: 'rgb(26, 127, 55)', closed: 'rgb(209, 36, 47)', done: 'rgb(130, 80, 223)', neutral: 'rgb(89, 99, 110)' };
+  type Tone = keyof typeof BG;
+  const rows: { n: number; kind: 'issue' | 'pr'; tone: Tone; cardTone: Tone; text: string; why: string }[] = [
+    { n: 137, kind: 'issue', tone: 'open', cardTone: 'open', text: 'Issue·开', why: 'open issue' },
+    { n: 128, kind: 'issue', tone: 'done', cardTone: 'done', text: 'Issue·已关闭', why: 'issue closed as completed: purple' },
+    { n: 138, kind: 'issue', tone: 'neutral', cardTone: 'neutral', text: 'Issue·已关闭（不计划）', why: 'issue closed as not planned: grey' },
+    { n: 148, kind: 'pr', tone: 'open', cardTone: 'open', text: 'Pull Request·开', why: 'open PR, not a draft' },
+    { n: 147, kind: 'pr', tone: 'neutral', cardTone: 'neutral', text: 'Pull Request·草稿', why: 'open draft PR: grey on the badge and the card' },
+    { n: 123, kind: 'pr', tone: 'closed', cardTone: 'closed', text: 'Pull Request·已关闭', why: 'closed PR: red' },
+    { n: 129, kind: 'pr', tone: 'closed', cardTone: 'closed', text: 'Pull Request·已关闭', why: 'closed PR with a draft mark: closed wins' },
+    { n: 150, kind: 'pr', tone: 'done', cardTone: 'done', text: 'Pull Request·已合并', why: 'merged PR' },
+  ];
+  const icons: Record<string, string> = {};
+  for (const r of rows) {
+    await open(r.n);
+    await loaded();
+    await expect(badge, r.why).toHaveAttribute('data-kind', r.kind);
+    await expect(badge, r.why).toHaveAttribute('data-tone', r.tone);
+    await expect(badge, r.why).toHaveText(r.text);
+    await expect(badge, r.why).toHaveAttribute('aria-label', r.text.replace('·', '，'));
+    await expect(badge.locator('svg'), r.why).toHaveAttribute('data-icon', r.kind);
+    expect(await bg(), r.why).toBe(BG[r.tone]);
+    expect(await badge.evaluate((el) => getComputedStyle(el).fontSize), r.why).toBe('13px');
+    // the card on the board: same colour rule
+    const cs = card(page, r.n).getByTestId('card-state');
+    await expect(cs, r.why).toHaveAttribute('data-tone', r.cardTone);
+    expect(await fg(cs), r.why).toBe(FG[r.cardTone]);
+    icons[r.kind] = await badge.locator('svg').innerHTML();
+    await shot(page, `31-badge-${r.n}-${r.tone}`);
+  }
+  // the two icons are really different drawings, not the same shape under two names
+  expect(icons.issue).toBeTruthy();
+  expect(icons.pr).toBeTruthy();
+  expect(icons.issue).not.toBe(icons.pr);
+
+  // the card says the same as the badge, text included
+  await open(147);
+  await expect(card(page, 147).getByTestId('card-state')).toHaveText('PR · 草稿');
+  await open(129);
+  await expect(card(page, 129).getByTestId('card-state')).toHaveText('PR · 已关闭');
+
+  // became a draft after the board's last read: the badge follows the fresher detail read, the card the board's read …
+  await open(149);
+  await loaded();
+  await expect(badge).toHaveAttribute('data-tone', 'neutral');
+  await expect(card(page, 149).getByTestId('card-state')).toHaveAttribute('data-tone', 'open');
+  // … until the next sync brings the mark to the board too (ready → draft)
+  draft(149, true, 'lists');
+  await page.getByTestId('refresh').click();
+  await expect(card(page, 149).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
+  expect(await fg(card(page, 149).getByTestId('card-state'))).toBe(FG.neutral);
+
+  // draft → ready: after a sync the card is green again, and so is the badge on the next opening
+  draft(147, false);
+  await page.getByTestId('refresh').click();
+  await page.getByTestId('search').fill('#147');
+  await expect(card(page, 147).getByTestId('card-state')).toHaveAttribute('data-tone', 'open');
+  await open(147);
+  await loaded();
+  await expect(badge).toHaveAttribute('data-tone', 'open');
+  await expect(badge).toHaveText('Pull Request·开');
+  draft(147, true);
+  await page.getByTestId('refresh').click();
+  await page.getByTestId('search').fill('#147');
+  await expect(card(page, 147).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
+
+  // a detail read that fails: the panel says so, and the badge goes by the board's own read (here: not a draft) — nothing is guessed
+  await open(146);
+  await expect(page.getByTestId('detail-error')).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => env.fake.log.some((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 146 && l.status === 502)).toBe(true);
+  await expect(badge).toHaveAttribute('data-kind', 'pr');
+  await expect(badge).toHaveAttribute('data-tone', 'open');
+  await expect(badge).toHaveText('Pull Request·开');
+  expect(await bg()).toBe(BG.open);
+  await shot(page, '32-badge-detail-failed');
+  await page.getByTestId('detail-close').click();
+
+  // the table row: same colour rule
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  for (const [n, tone] of [[128, 'done'], [138, 'neutral'], [123, 'closed'], [137, 'open'], [147, 'neutral'], [129, 'closed'], [148, 'open']] as const) {
+    await page.getByTestId('search').fill(`#${n}`);
+    const cell = page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"] [data-testid="row-state"]`).first();
+    await expect(cell, `table #${n}`).toHaveAttribute('data-tone', tone);
+    expect(await fg(cell), `table #${n}`).toBe(FG[tone]);
+  }
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+
+  // a detail read that fails on a PR the board knows is a draft: the badge takes the board's mark (grey)
+  draft(148, true, 'lists');
+  env.fake.state.w.failDetail.add('gigleai/cavil-loop#148');
+  await page.getByTestId('refresh').click();
+  await page.getByTestId('search').fill('#148');
+  await expect(card(page, 148).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
+  await open(148);
+  await expect(page.getByTestId('detail-error')).toBeVisible({ timeout: 15_000 });
+  await expect(badge).toHaveAttribute('data-tone', 'neutral');
+  await expect(badge).toHaveText('Pull Request·草稿');
+  await page.getByTestId('detail-close').click();
+
+  // dark mode: GitHub's darker palette, white text still on a coloured badge
+  await page.emulateMedia({ colorScheme: 'dark' });
+  const DARK_BG = { neutral: 'rgb(101, 108, 118)', done: 'rgb(137, 87, 229)', open: 'rgb(35, 134, 54)' };
+  for (const [n, tone] of [[147, 'neutral'], [150, 'done'], [137, 'open'], [138, 'neutral']] as const) {
+    await open(n);
+    await loaded();
+    await expect(badge).toHaveAttribute('data-tone', tone);
+    expect(await bg()).toBe(DARK_BG[tone]);
+    expect(await badge.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
+    await shot(page, `33-badge-dark-${n}-${tone}`);
+  }
   await app.close();
 });

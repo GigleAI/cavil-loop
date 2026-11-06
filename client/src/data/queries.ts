@@ -4,7 +4,7 @@
 const CONTENT_FIELDS = `
   __typename
   ... on Issue {
-    id number title url state updatedAt
+    id number title url state stateReason updatedAt
     repository { nameWithOwner }
     labels(first: 50) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
@@ -17,7 +17,7 @@ const CONTENT_FIELDS = `
     }
   }
   ... on PullRequest {
-    id number title url state merged updatedAt
+    id number title url state merged isDraft updatedAt
     repository { nameWithOwner }
     labels(first: 50) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
