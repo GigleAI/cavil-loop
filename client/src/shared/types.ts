@@ -1,6 +1,8 @@
 // Types shared by the main process, the data layer and the renderer.
 // Nothing in here may import Node or Electron: the renderer bundles it.
 
+import type { MergePrefs } from './mergePrefs';
+
 export type ItemKind = 'issue' | 'pr';
 export type ItemState = 'open' | 'closed' | 'merged';
 
@@ -253,6 +255,8 @@ export interface AppState {
   /** whether the platform layer can persist credentials (false on unsupported platforms) */
   credentialsPersistent: boolean;
   handBack: HandBackLabels;
+  /** the merge method last chosen, per repository and overall (GitHub#175) */
+  mergePrefs: MergePrefs;
 }
 
 export interface BoardData {
