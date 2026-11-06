@@ -36,6 +36,15 @@ if mutation_on && [ "$scope" = changed ]; then
     esac
 fi
 
+# Entries that leave the window's code alone copy the built window (dist/) into their work dir, and
+# every entry compiles the app, which needs the icon set build.mjs generates (src-tauri/icons).
+# Neither is in git: a clean checkout — the weekly release gate starts from one (GitHub#195) — has
+# neither. So build them here, once, before the first entry; only when entries will run.
+if mutation_on; then
+    "$node" "$here/../../scripts/build.mjs" \
+        || { echo "❌ 构建窗口失败（dist/ 与 src-tauri/icons/），一项真实窗口负对照都没跑"; exit 1; }
+fi
+
 failed=0
 for ((i = 0; i < n; i++)); do
     mutation_gate || continue

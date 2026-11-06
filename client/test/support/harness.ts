@@ -49,6 +49,8 @@ export class HarnessBackend implements Backend {
   readonly exited: Promise<number | null>;
   /** every command sent, in order (what crossed the boundary) */
   readonly sent: { cmd: string; args: unknown }[] = [];
+  /** every status the updater reported (test.update.*), in order */
+  readonly updates: any[] = [];
   /** every answer received, in order */
   readonly received: unknown[] = [];
 
@@ -78,6 +80,10 @@ export class HarnessBackend implements Backend {
     try {
       m = JSON.parse(line);
     } catch {
+      return;
+    }
+    if (m.ev === 'update') {
+      this.updates.push(m.status);
       return;
     }
     if (typeof m.cb === 'number') {

@@ -7,11 +7,13 @@
 //   - the desktop side (desktop.rs, mac.rs): notifications, Dock badge, launch at
 //     login, closing the window hides it, the sync beat (GitHub#169)
 //   - page zoom (GitHub#155): the 显示 menu's ⌘+ / ⌘- / ⌘0 (macOS), level kept by crates/core/src/zoom.rs
+//   - updating itself (GitHub#184, updater.rs): Tauri's updater plugin; when and which release: crates/core/src/update.rs
 //
 // The GitHub credential exists only in crates/core. Nothing here returns it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod desktop;
+mod updater;
 #[cfg(target_os = "macos")]
 mod mac;
 
@@ -164,7 +166,7 @@ fn main() {
     let hidden = hidden_start();
     let hooks = TestHooks::from_env(selection.test_mode, &env);
 
-    let mut builder = tauri::Builder::default().manage(Desktop::new(hooks));
+    let mut builder = tauri::Builder::default().manage(Desktop::new(hooks)).plugin(tauri_plugin_updater::Builder::new().build());
     // one app instance per profile: a second launch brings the first window forward
     // (not in the smoke test or test mode: each run has its own throw-away profile, and
     // the plugin needs a desktop session bus a CI machine may not have)
@@ -211,6 +213,7 @@ fn main() {
                 app.path().data_dir()?.join("Cavil Loop")
             };
             let store = Arc::new(Store::open(&profile.join("cache.sqlite")).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?);
+            let update_store = store.clone();
             let credentials: Arc<dyn cavil_core::platform::CredentialStore> = match &selection.store {
                 StoreKind::Keychain => Arc::new(MacKeychainStore::default()),
                 StoreKind::File(p) => Arc::new(FileStore(p.clone())),
@@ -278,6 +281,20 @@ fn main() {
                 mac::setup(move |id| desktop::on_click(&h, &id));
             }
             desktop::spawn_background(handle.clone());
+            // the app updating itself: at start, then every 6 hours (when this build does at all)
+            let mode = updater::mode(&updater::Facts {
+                macos: cfg!(target_os = "macos"),
+                debug: cfg!(debug_assertions),
+                test_feature: cfg!(feature = "update-test"),
+                test_mode: selection.test_mode,
+                test_wants_it: env.get("CAVIL_CLIENT_TEST_UPDATE").map(String::as_str) == Some("1"),
+                check_run: smoke || notify_check,
+            });
+            let up = updater::build(&handle, update_store, endpoints.clone(), mode, &env);
+            if let Some(u) = &up {
+                tauri::async_runtime::spawn(u.clone().run());
+            }
+            app.manage(updater::UpdateSlot(up));
             if notify_check {
                 let h = handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -322,7 +339,12 @@ fn main() {
             desktop::desktop_badge,
             desktop::desktop_login_item,
             desktop::desktop_set_login_item,
-            desktop::desktop_next_event
+            desktop::desktop_next_event,
+            updater::desktop_update_status,
+            updater::desktop_update_check,
+            updater::desktop_update_set_auto,
+            updater::desktop_update_dismiss,
+            updater::desktop_update_restart
         ])
         .build(tauri::generate_context!())
         .expect("error while building the app");
