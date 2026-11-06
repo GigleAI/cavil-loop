@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { MODAL } from './outsideClick';
 
 /** A modal question. Nothing is sent to GitHub until "confirm" is clicked. */
 export function ConfirmDialog({
@@ -21,7 +22,7 @@ export function ConfirmDialog({
   onCancel: () => void;
 }) {
   return (
-    <div className="modal-back" data-testid="confirm-dialog" onClick={busy ? undefined : onCancel}>
+    <div className="modal-back" {...{ [MODAL]: '' }} data-testid="confirm-dialog" onClick={busy ? undefined : onCancel}>
       <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3>
         {children}

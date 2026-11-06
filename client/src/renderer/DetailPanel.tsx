@@ -11,6 +11,7 @@ import { usePanelWidth } from './panelWidth';
 import { textColor } from './colors';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
+import { hidesPanel, pressAt, releaseAt, type Press } from './outsideClick';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -31,7 +32,7 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
 };
 /** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
 const HIDE_LABEL = '收起 ›';
-const HIDE_TITLE = '收起（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）';
+const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）';
 const REVIEW: Record<string, string> = { APPROVED: '已批准', CHANGES_REQUESTED: '要求修改', REVIEW_REQUIRED: '需要评审' };
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
@@ -168,10 +169,34 @@ export function DetailPanel({
     window.addEventListener('keydown', on);
     return () => window.removeEventListener('keydown', on);
   }, [ask, onClose]);
+  // A click outside the panel puts it away (GitHub#191; the rule is outsideClick.ts): not on a card or
+  // a row title (those switch items), not while a dialog was open, not with a reply typed.
+  const panelRef = useRef<HTMLElement | null>(null);
+  const draftRef = useRef(reply);
+  draftRef.current = reply;
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    let press: Press | null = null;
+    const down = (e: PointerEvent) => {
+      press = pressAt(e, panelRef.current);
+    };
+    const click = (e: MouseEvent) => {
+      const p = press;
+      press = null;
+      if (hidesPanel(p, releaseAt(e, panelRef.current), draftRef.current)) closeRef.current();
+    };
+    window.addEventListener('pointerdown', down, true);
+    window.addEventListener('click', click, true);
+    return () => {
+      window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('click', click, true);
+    };
+  }, []);
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
     // whose keys never reach this window (the frame is isolated and runs no scripts) — Esc works again after it
-    <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
+    <aside ref={panelRef} className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
       <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
       {children}
     </aside>

@@ -425,7 +425,8 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
 
   // ---- offline: every change entry greys out, nothing is sent ----
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  // from the keyboard: a click on the toolbar would put the panel away (GitHub#191)
+  await page.getByTestId('refresh').press('Enter');
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('reply-input')).toBeDisabled();
   await expect(page.getByTestId('label-add')).toBeDisabled();
@@ -1449,7 +1450,7 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await open(137);
   const hide = page.getByTestId('detail-close');
   await expect(hide).toHaveText('收起 ›');
-  await expect(hide).toHaveAttribute('title', '收起（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）');
+  await expect(hide).toHaveAttribute('title', '收起（或点面板以外的地方、按 Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）');
   await expect(page.getByTestId('close-issue')).toHaveText('关闭 issue…');
   await shot(page, '50-issue-open-hide-button');
   await hide.click();
@@ -1524,10 +1525,132 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await expect(page.getByTestId('close-issue')).toBeEnabled();
   const before = env.fake.writes().length;
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  // from the keyboard: a click on the toolbar would put the panel away (GitHub#191)
+  await page.getByTestId('refresh').press('Enter');
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('close-issue')).toBeDisabled();
   await expect(page.getByTestId('close-issue')).toHaveAttribute('title', '离线时不能修改');
   expect(env.fake.writes()).toHaveLength(before);
+  await app.close();
+});
+
+test('GitHub#191: a click outside the detail puts it away; cards and row titles switch; not inside, not with a dialog up, not with a reply typed', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  for (const n of [137, 138]) {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  }
+  // two entries on #138, so its detail has the "unfold all" switch
+  env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C-191', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>a comment</p>', author: { login: 'user-2' } },
+  ]);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  /** a blank spot of the window outside the panel: the left end of the status bar */
+  const outside = () => page.locator('.statusbar').click({ position: { x: 4, y: 4 } });
+  const open = async (n: number) => {
+    await card(page, n).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    await expect(frame.locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+  const stays = async (n: number) => {
+    await page.waitForTimeout(200);
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+  };
+
+  // ---- 1. a plain click outside puts it away; nothing is sent ----
+  await open(137);
+  await outside();
+  await expect(detail).toHaveCount(0);
+  // the toolbar is outside too
+  await open(137);
+  await page.getByTestId('item-total').click();
+  await expect(detail).toHaveCount(0);
+
+  // ---- 2. another card switches; the same card keeps this opening (its unfold state survives) ----
+  await open(137);
+  await card(page, 138).click();
+  await stays(138);
+  await page.getByTestId('unfold-toggle').click();
+  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
+  await card(page, 138).click();
+  await stays(138);
+  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
+
+  // ---- 3. inside the panel; a selection dragged from inside to outside ----
+  await detail.locator('.detail-title').click();
+  await detail.locator('.detail-head').click({ position: { x: 4, y: 4 } });
+  await stays(138);
+  const title = await detail.locator('.detail-title').boundingBox();
+  const bar = await page.locator('.statusbar').boundingBox();
+  await page.mouse.move(title!.x + title!.width / 2, title!.y + title!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bar!.x + 4, bar!.y + 4, { steps: 5 });
+  await page.mouse.up();
+  await stays(138);
+  // the resize edge: dragged and let go
+  const edge = await page.getByTestId('detail-resize').boundingBox();
+  await page.mouse.move(edge!.x + edge!.width / 2, edge!.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(edge!.x - 60, edge!.y + 40, { steps: 5 });
+  await page.mouse.up();
+  await stays(138);
+
+  // ---- 4. a typed reply keeps the panel (and the reply); an emptied one does not ----
+  await detail.getByTestId('reply-input').fill('还没写完');
+  await outside();
+  await stays(138);
+  await expect(detail.getByTestId('reply-input')).toHaveValue('还没写完');
+  await detail.getByTestId('reply-input').fill('');
+  await outside();
+  await expect(detail).toHaveCount(0);
+
+  // ---- 5. the panel's own dialog: its backdrop closes the dialog only; the next click outside hides ----
+  await open(137);
+  await page.getByTestId('close-issue').click();
+  const dialog = page.getByTestId('confirm-dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.click({ position: { x: 4, y: 4 } });
+  await expect(dialog).toHaveCount(0);
+  await stays(137);
+  await outside();
+  await expect(detail).toHaveCount(0);
+
+  // ---- 6. the board's own dialog ("加入看板？", dropping a card that is on no board) ----
+  await open(137);
+  // the panel floats over the right of the board: bring the last iteration column to the left
+  // edge, so it and 未加入看板 next to it are both clear of the panel, then drop an unboarded card there
+  const titles = await page.locator('[data-testid="column"]').evaluateAll((cs) => cs.map((c) => c.getAttribute('data-title') ?? ''));
+  const target = titles.slice(0, titles.indexOf('未加入看板')).filter((t) => t.startsWith('Iteration')).pop()!;
+  const targetCol = page.locator(`[data-testid="column"][data-title="${target}"]`);
+  await targetCol.evaluate((el) => el.scrollIntoView({ inline: 'start', block: 'nearest' }));
+  const panelLeft = (await detail.boundingBox())!.x;
+  const unboarded = page.locator('[data-testid="column"][data-title="未加入看板"] [data-testid="card"]').first();
+  const ub = (await unboarded.boundingBox())!;
+  expect(ub.x + ub.width).toBeLessThan(panelLeft);
+  await unboarded.dragTo(targetCol);
+  await expect(page.getByTestId('confirm-question')).toContainText('还没加入看板');
+  await stays(137);
+  await shot(page, '60-outside-click-board-dialog');
+  await dialog.click({ position: { x: 4, y: 4 } });
+  await expect(dialog).toHaveCount(0);
+  await stays(137);
+  await outside();
+  await expect(detail).toHaveCount(0);
+
+  // ---- 7. the table: a row title opens / switches; a click elsewhere hides ----
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  const rowTitle = (n: number) => page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"] [data-testid="row-title"]`).first();
+  await rowTitle(137).click();
+  await stays(137);
+  await rowTitle(138).click();
+  await stays(138);
+  await outside();
+  await expect(detail).toHaveCount(0);
+
+  expect(env.fake.writes()).toEqual([]);
   await app.close();
 });
