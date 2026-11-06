@@ -16,6 +16,7 @@ import { GitHubClient, GitHubError } from './github';
 import {
   ADD_PROJECT_ITEM_MUTATION,
   CLEAR_FIELD_MUTATION,
+  CLOSING_ISSUES_QUERY,
   SET_ITERATION_MUTATION,
   SET_STATUS_MUTATION,
 } from './queries';
@@ -35,10 +36,12 @@ export interface ActionContext {
   handBack: HandBackLabels;
   /** Projects a new issue joins (the ones ticked in the view) */
   createInProjects: ProjectMeta[];
+  /** every item the cache holds (all configured sources): a merged / closed PR's issues are re-read only when cached */
+  cached: Item[];
 }
 
 export interface ActionOutcome {
-  /** items to re-read from GitHub now: [repo, number] */
+  /** items to re-read from GitHub now: [repo, number] — the changed item first, then what the change also changed */
   touched: [string, number][];
   /** done, but a follow-up step did not work */
   warning: string | null;
@@ -131,6 +134,51 @@ export async function removeLabel(client: GitHubClient, repo: string, number: nu
   await client.rest('DELETE', `${repoPath(repo)}/issues/${number}/labels/${enc(label)}`);
 }
 
+/**
+ * The cached issues a merge / close of `pr` also changes (GigleAI/cavil-loop#177):
+ * the issues GitHub says the PR closes — every page — plus the cached issues
+ * whose "linked pull requests" list it (repository sources do not know those
+ * links, Project sources do). Only issues the cache holds: the others are on
+ * no board. A list GitHub did not give in full is never taken for the whole
+ * list: what was read is still returned, with `problem` saying it is partial.
+ */
+export async function relatedIssues(client: GitHubClient, pr: Item, cached: Item[]): Promise<{ items: [string, number][]; problem: string | null }> {
+  const issues = new Map<string, Item>();
+  for (const it of cached) if (it.kind === 'issue' && !issues.has(it.key)) issues.set(it.key, it);
+  const found: string[] = [];
+  let problem: string | null = null;
+  const [owner, name] = pr.repo.split('/');
+  try {
+    let after: string | null = null;
+    const seen = new Set<string>();
+    for (;;) {
+      const data: { repository: { pullRequest: { closingIssuesReferences: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { number: number; repository: { nameWithOwner: string } }[] } } | null } | null } =
+        await client.graphql(CLOSING_ISSUES_QUERY, { owner, name, number: pr.number, after });
+      const conn = data.repository?.pullRequest?.closingIssuesReferences;
+      if (!conn) throw new GitHubError('graphql', `找不到 ${pr.repo}#${pr.number}`);
+      for (const n of conn.nodes ?? []) found.push(itemKey(n.repository.nameWithOwner, n.number));
+      if (!conn.pageInfo?.hasNextPage) break;
+      const next = conn.pageInfo.endCursor;
+      // "there is more" without a way to get it: the list is not complete
+      if (!next || seen.has(next)) throw new GitHubError('graphql', 'GitHub 说还有下一页，但没有给出翻页位置');
+      seen.add(next);
+      after = next;
+    }
+  } catch (e) {
+    problem = `修改已生效，但没读全这个 PR 关联的 issue（${(e as Error).message}），稍后的同步会更新`;
+  }
+  for (const it of issues.values()) if (it.linkedPrs?.some((l) => l.key === pr.key)) found.push(it.key);
+  const items: [string, number][] = [];
+  const done = new Set<string>();
+  for (const key of found) {
+    const it = issues.get(key);
+    if (!it || done.has(key)) continue;
+    done.add(key);
+    items.push([it.repo, it.number]);
+  }
+  return { items, problem };
+}
+
 export async function performAction(client: GitHubClient, action: WriteAction, ctx: ActionContext): Promise<ActionOutcome> {
   switch (action.kind) {
     case 'addLabel': {
@@ -216,7 +264,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       if (!/^[0-9a-f]{40}$/.test(action.headOid)) throw new ActionRefused('不知道你看到的是哪个提交，请刷新详情后再合并');
       if (!(['merge', 'squash', 'rebase'] as MergeMethod[]).includes(action.method)) throw new ActionRefused('未知的合并方式');
       await client.rest('PUT', `${repoPath(it.repo)}/pulls/${it.number}/merge`, { merge_method: action.method, sha: action.headOid });
-      return { touched: [[it.repo, it.number]], warning: null };
+      // merging closes the issues it links: they are read again right away too
+      const related = await relatedIssues(client, it, ctx.cached);
+      return { touched: [[it.repo, it.number], ...related.items], warning: related.problem };
     }
     case 'closePr': {
       const it = needItem(ctx);
@@ -231,7 +281,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
           warning = `PR 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;
         }
       }
-      return { touched: [[it.repo, it.number]], warning };
+      // the linked issues show this PR's state: they are read again right away too
+      const related = await relatedIssues(client, it, ctx.cached);
+      return { touched: [[it.repo, it.number], ...related.items], warning: [warning, related.problem].filter(Boolean).join('；') || null };
     }
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');

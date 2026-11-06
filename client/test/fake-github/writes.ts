@@ -72,6 +72,19 @@ export interface WritableState {
   failDetail: Set<string>;
   /** clock of updated_at / createdAt written by the fake */
   clock: () => string;
+  /**
+   * `owner/repo#n` lower-cased (a PR) -> issues it closes besides the ones whose
+   * recorded "linked pull requests" name it (GitHub's closing issues references)
+   */
+  closingIssues: Map<string, { repo: string; number: number }[]>;
+  /** page size of a PR's closing issues list (GitHub: whatever `first:` asks, at most 100) */
+  closingIssuesPageSize: number;
+  /**
+   * GitHub's own Project automation, run on GitHub's side after a PR is merged / closed:
+   * `delayMs` later the PR and the issues the merge closed get this Status in every Project.
+   * null = no automation (the recorded state).
+   */
+  automation: { delayMs: number; status: string } | null;
 }
 
 export function defaultWritable(): WritableState {
@@ -91,6 +104,9 @@ export function defaultWritable(): WritableState {
     failReviewCommentPages: false,
     failDetail: new Set(),
     clock: () => new Date().toISOString(),
+    closingIssues: new Map(),
+    closingIssuesPageSize: 100,
+    automation: null,
   };
 }
 
@@ -207,6 +223,58 @@ export function pullOf(store: Store, c: Copies): FakePull {
     store.w.pulls.set(k, p);
   }
   return p;
+}
+
+/** Every GraphQL content copy of any item (Project pages), for reference updates. */
+function allGqlContents(store: Store): any[] {
+  return [...store.projects.values()].flatMap((pages) => pages.flatMap((p) => p.items.nodes.map((n) => n.content).filter(Boolean)));
+}
+
+/** The issues PR `c` closes: the extra list plus every recorded issue whose "linked pull requests" name it, in that order. */
+export function closingIssuesOf(store: Store, c: Copies): { repo: string; number: number }[] {
+  const out: { repo: string; number: number }[] = [];
+  const seen = new Set<string>();
+  const add = (repo: string, number: number) => {
+    const k = `${repo.toLowerCase()}#${number}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ repo, number });
+  };
+  for (const x of store.w.closingIssues.get(`${c.repo.toLowerCase()}#${c.number}`) ?? []) add(x.repo, x.number);
+  for (const g of allGqlContents(store))
+    if (g.__typename === 'Issue' && (g.closedByPullRequestsReferences?.nodes ?? []).some((r: any) => r.number === c.number && r.repository.nameWithOwner.toLowerCase() === c.repo.toLowerCase()))
+      add(g.repository.nameWithOwner, g.number);
+  return out;
+}
+
+/** The PR's state as the issues' "linked pull requests" show it (GitHub computes these live). */
+function updateReferences(store: Store, c: Copies, state: 'MERGED' | 'CLOSED') {
+  for (const g of allGqlContents(store))
+    for (const r of g.closedByPullRequestsReferences?.nodes ?? [])
+      if (r.number === c.number && r.repository.nameWithOwner.toLowerCase() === c.repo.toLowerCase()) {
+        r.state = state;
+        r.merged = state === 'MERGED';
+      }
+}
+
+/** GitHub's Project automation, `delayMs` after the change: these items get the Status `status` in every Project. */
+function runAutomation(store: Store, items: { repo: string; number: number }[]) {
+  const a = store.w.automation;
+  if (!a) return;
+  setTimeout(() => {
+    for (const pages of store.projects.values()) {
+      const field = pages[0]?.fields.nodes.find((f: any) => f.__typename === 'ProjectV2SingleSelectField' && f.name === 'Status');
+      const option = field?.options.find((o: any) => o.name === a.status);
+      if (!option) continue;
+      for (const p of pages)
+        for (const n of p.items.nodes)
+          if (items.some((x) => n.content?.repository?.nameWithOwner?.toLowerCase() === x.repo.toLowerCase() && n.content.number === x.number))
+            n.fieldValues.nodes = [
+              ...n.fieldValues.nodes.filter((v: any) => v.field?.id !== field.id),
+              { __typename: 'ProjectV2ItemFieldSingleSelectValue', optionId: option.id, name: option.name, field: { id: field.id, name: field.name } },
+            ];
+    }
+  }, a.delayMs);
 }
 
 export function digest(store: Store): string {
@@ -343,12 +411,25 @@ export function handleRest(store: Store, method: string, path: string, body: any
       x.merged = true;
     }
     touch(store, c);
+    // GitHub closes the issues the PR closes, and its Project automation runs later
+    const closing = closingIssuesOf(store, c);
+    for (const ref of closing) {
+      const ic = findCopies(store, ref.repo, ref.number);
+      if (!ic) continue;
+      for (const r of ic.rest) r.state = 'closed';
+      for (const g of ic.gql) g.state = 'CLOSED';
+      touch(store, ic);
+    }
+    updateReferences(store, c, 'MERGED');
+    runAutomation(store, [{ repo: c.repo, number: c.number }, ...closing]);
     return send(200, { merged: true, sha: pr.headOid }), true;
   }
   if (im[1] === 'pulls' && method === 'PATCH' && sub === '') {
     if (body?.state === 'closed') {
       for (const r of c.rest) r.state = 'closed';
       for (const x of c.gql) if (x.state === 'OPEN') x.state = 'CLOSED';
+      updateReferences(store, c, 'CLOSED');
+      runAutomation(store, [{ repo: c.repo, number: c.number }]);
     }
     touch(store, c);
     return send(200, { number: c.number }), true;
@@ -418,6 +499,28 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
       return { data: { node: { comments: { pageInfo: { hasNextPage: end < r.comments.nodes.length, endCursor: nodes.length ? `l-${end}` : null }, nodes } } } };
     }
     return { data: { node: null }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${v.id}'` }] };
+  }
+
+  if (op === 'CavilClosingIssues') {
+    const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
+    if (!c || c.kind !== 'PullRequest')
+      return { data: { repository: { pullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a PullRequest with the number of ${v.number}.` }] };
+    const all = closingIssuesOf(store, c);
+    const start = v.after ? Number(String(v.after).replace(/^ci-/, '')) : 0;
+    const page = all.slice(start, start + w.closingIssuesPageSize);
+    const end = start + page.length;
+    return {
+      data: {
+        repository: {
+          pullRequest: {
+            closingIssuesReferences: {
+              pageInfo: { hasNextPage: end < all.length, endCursor: page.length ? `ci-${end}` : null },
+              nodes: page.map((x) => ({ number: x.number, repository: { nameWithOwner: x.repo } })),
+            },
+          },
+        },
+      },
+    };
   }
 
   if (op === 'CavilItemRefresh' || op === 'CavilItemDetail') {
