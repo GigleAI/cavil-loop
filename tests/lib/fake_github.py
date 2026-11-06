@@ -5,7 +5,7 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
 
   items.json      {"<n>": {kind: issue|pr, ...GitHub fields...}}   labels are kept separately
   labels.json     {"<n>": ["label", ...]}
-  events.json     {"<n>": [ {event, label:{name}, actor:{login,type}} ]}
+  events.json     {"<n>": [ {event, label:{name}, actor:{login,type}} ]}   id 按位置补（写了 "id": null 的不补）
   comments.json   {"<n>": [ {id, body, user:{login}, created_at} ]}
   perms.json      {"<login>": "admin|write|read|none"}
   files.json      {"<pr>": [ {filename, previous_filename?} ]}
@@ -269,7 +269,12 @@ if method == "GET":
             fail("HTTP 404: Not Found")
         emit(as_issue(parts[1]))
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "events":
-        emit(load("events.json", {}).get(parts[1], []), pages=True)
+        # 真接口的每个事件都带递增的 id；夹具没写 id 的按位置补上（写了 "id": null 的原样保留，测「缺编号」）
+        evl = [dict(e) for e in load("events.json", {}).get(parts[1], [])]
+        for i, e in enumerate(evl):
+            if "id" not in e:
+                e["id"] = 5000 + i
+        emit(evl, pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
         emit(load("comments.json", {}).get(parts[1], []), pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] == "files":

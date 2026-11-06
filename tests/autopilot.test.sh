@@ -60,6 +60,8 @@ rm -rf "$SANDBOX/old/prompts"; cp -r "$REPO_DIR/prompts" "$SANDBOX/old/prompts"
 
 H1=1111111111111111111111111111111111111111
 H2=2222222222222222222222222222222222222222
+# 外部需求机器人功能四项都填（requester_bot_enabled 成立）
+REQ_ON=('LABEL_PENDING_REQUESTER_BOT="pending/req"' 'REQUESTER_BOT_ACCOUNT="req-bot"' 'REQUESTER_BOT_ALLOWED_ACTORS="loop-bot"' 'REQUESTER_BOT_ORIGIN_MARKER="<!-- by-req -->"')
 
 # ─────────────────────────────────────────────────────────────────────────
 # 一整套轮询场景。$1 = 被测的 scripts 目录。
@@ -213,11 +215,17 @@ Closes #7" "$H1" "pending/merge"
     chk "只有 PR 上挂托管标签（worker 打的），issue 上从没打过 → 不合并" "$(merged 8)" 0
     chk "  → PR 交人" "$(has_label 8 pending/human)" yes
 
-    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; happy
-    mkissue 7 "autopilot,pending/PR" req-bot
-    tick
-    chk "外部需求机器人提的需求（误进了 pending/merge）→ 不合并" "$(merged 8)" 0
-    chk "  → PR 交人" "$(has_label 8 pending/human)" yes
+    # GitHub#162：外部需求机器人提的需求也能托管——授权看谁打的标签，不看需求是谁提的。
+    # 只配账号、和四项都配（功能开启，会走「是不是机器人提的需求」的判定）两种都合并
+    local reqcfg
+    for reqcfg in only-account enabled; do
+        if [ "$reqcfg" = enabled ]; then fresh "${REQ_ON[@]}"; else fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; fi
+        happy
+        mkissue 7 "autopilot,pending/PR" req-bot
+        jset items.json '.["7"].body = "需求\n\n<!-- by-req -->"'
+        tick
+        chk "外部需求机器人提的需求、维护者打的托管（$reqcfg）→ 合并" "$(merged 8)/$(has_label 8 pending/human)" "1/no"
+    done
 
     # ── 【3】绑定 ──
     section "【3】PR 与 issue 的绑定：分支和正文必须同时只指向同一个 issue"
@@ -409,7 +417,7 @@ Refs #3" "$H1" "pending/merge"
     chk "项目没配复审关卡 → 合并这一段整个不动" "$(merged 8)/$(has_label 8 pending/merge)" "0/yes"
 
     # ── 【7】只挂托管标签的 issue 进派工队列 ──
-    section "【7】只挂托管标签的 issue：维护者打的 → 当普通派工；别人打的 / 机器人需求 → 不派、说一次"
+    section "【7】只挂托管标签的 issue：维护者打的 → 当普通派工（机器人提的需求也一样）；别人打的 → 不派、说一次"
     fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'
     mkissue 20 "autopilot"; ev 20 labeled autopilot maint
     mkissue 21 "autopilot"; ev 21 labeled autopilot loop-bot
@@ -419,12 +427,12 @@ Refs #3" "$H1" "pending/merge"
     chk "#20（维护者打的）进派工队列" "$(log_has '托管：issue #20 只挂着托管标签（maint 打的）')" 1
     chk "#21（loop 账号打的）不派" "$(log_has 'issue#21')" 0
     chk "#21 说明一次" "$(comments_with 21 'kind=actor-loop')" 1
-    chk "#22（外部需求机器人的需求）不派" "$(log_has 'issue#22')" 0
-    chk "#22 说明一次：按普通流程" "$(comments_with 22 'kind=requester-bot')" 1
+    chk "#22（外部需求机器人的需求，维护者打的）也进派工队列" "$(log_has '托管：issue #22 只挂着托管标签（maint 打的）')" 1
+    chk "#22 不发「不生效」说明" "$(comments_with 22 'autopilot-notice')" 0
     chk "#23（挂着 pending/human）不当新活收" "$(log_has '托管：issue #23')" 0
     tick
-    chk "第二轮：说明不重复" "$(comments_with 21 'kind=actor-loop')/$(comments_with 22 'kind=requester-bot')" "1/1"
-    chk "第二轮：issue 没变过，不再去查被拒那两条的标签记录" "$(n_calls "$R/issues/2[12]/events")" 0
+    chk "第二轮：说明不重复" "$(comments_with 21 'kind=actor-loop')" 1
+    chk "第二轮：issue 没变过，不再去查被拒那条的标签记录" "$(n_calls "$R/issues/21/events")" 0
 
     fresh 'LABEL_PENDING_REVIEW=""'
     mkissue 20 "autopilot"; ev 20 labeled autopilot maint
@@ -520,7 +528,7 @@ Closes #7" "$H1" "pending/human,autopilot"
     chk "PR 对不上 issue（分支是 #9 的）→ 不接手、说一次" "$(took)/$(comments_with 8 'kind=pr-binding')" "no/1"
     fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; pr_ready; mkissue 7 "pending/PR" req-bot
     tick
-    chk "issue 是外部需求机器人提的 → 不接手、说一次" "$(took)/$(comments_with 8 'kind=pr-requester-bot')" "no/1"
+    chk "issue 是外部需求机器人提的、维护者在 PR 上打的托管 → 接手（GitHub#162）" "$(took)/$(has_label 8 pending/human)" "yes/no"
     fresh; pr_ready; jset items.json '.["7"].state = "closed"'
     tick
     chk "issue 已关闭 → 不接手、说一次" "$(took)/$(comments_with 8 'kind=pr-closed')" "no/1"
@@ -808,12 +816,12 @@ ROWS
     chk "反例 2 正文改成 Closes #99 → 旧待办作废：不加 pending/human、不发旧说明" \
         "$(tk_owed 8)/$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')" "no/no/0"
     chk "  → 改按现在的结论走：PR 对不上 issue，按不生效说一次" "$(comments_with 8 'kind=pr-binding')" 1
-    # 同样的待办，issue 被关闭 / 外部需求机器人的需求 → 作废，不写旧说明
-    for change in closed requester; do
-        fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; unk_ready
+    # 同样的待办，issue 被关闭 → 作废，不写旧说明
+    for change in closed; do
+        fresh; unk_ready
         tick; tick; touch "$GD/F_post_labels"; tick
         rm -f "$GD/F_post_labels"
-        if [ "$change" = closed ]; then jset items.json '.["7"].state = "closed"'; else jset items.json '.["7"].user.login = "req-bot"'; fi
+        jset items.json '.["7"].state = "closed"'
         tick
         chk "待办期间 issue 变化（$change）→ 作废，不加 pending/human、不发旧说明" \
             "$(tk_owed 8)/$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')" "no/no/0"
@@ -1135,27 +1143,14 @@ Closes #58"
     chk "一页一条、要翻到第 3 页才找到 → 合并" "$(merged 8)" 1
     chk "  → 确实翻了页" "$([ "$(n_calls ' -f after=')" -gt 0 ] && echo yes || echo no)" yes
 
-    section "【13j】外部需求机器人的需求、fork → 不托管（打标签那一刻和现在都查）"
-    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; mkissue 60 "" req-bot
-    po_merge_ready feature/xyz "做了 X。
-
-Refs #60"
-    tick
-    chk "正文引用的 #60 是机器人提的需求 → 不合并、交人" "$(merged 8)/$(has_label 8 pending/human)" "0/yes"
-    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; mkissue 60 "" req-bot
-    po_merge_ready
-    edit 8 2026-01-01T00:00:00Z "做了 X。
-
-Refs #60"
-    edit 8 2026-04-01T00:00:00Z "做了 X。"
-    tick
-    chk "打标签那一刻引用着机器人的需求、后来删掉 → 不合并" "$(merged 8)" 0
-    # 引用写法 × 正文位置（现在 / 只在打标签那一刻）× 需求作者（机器人 / 普通维护者）——代码复审第 2 轮
-    local rf where who want
-    for rf in "Refs #58" "Refs example/ap#58" "Refs https://github.com/example/ap/issues/58"; do
-        for where in now then; do
-            for who in req-bot maint; do
-                fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; mkissue 58 "" "$who"
+    section "【13j】没绑 issue 的 PR：关联到外部需求机器人的需求、PR 是机器人开的 → 也托管（GitHub#162）；fork 不托管"
+    # 原来这几种一律不合并；现在授权只看 PR 上的托管标签是谁打的。功能只配账号 / 四项都配两种都跑
+    local rf where reqcfg
+    for reqcfg in only-account enabled; do
+        for rf in "Refs #58" "Refs https://github.com/example/ap/issues/58"; do
+            for where in now then; do
+                if [ "$reqcfg" = enabled ]; then fresh "${REQ_ON[@]}"; else fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; fi
+                mkissue 58 "" req-bot; jset items.json '.["58"].body = "需求\n\n<!-- by-req -->"'
                 if [ "$where" = now ]; then
                     po_merge_ready feature/xyz "做了 X。
 
@@ -1168,27 +1163,15 @@ $rf"
                     edit 8 2026-04-01T00:00:00Z "做了 X。"
                 fi
                 tick
-                [ "$who" = req-bot ] && want=0 || want=1
-                chk "「$rf」·$( [ "$where" = now ] && echo 现在的正文 || echo 只在打标签那一刻 )·#58 作者 $who → 合并请求 $want" "$(merged 8)" "$want"
+                chk "「$rf」·$( [ "$where" = now ] && echo 现在的正文 || echo 只在打标签那一刻 )·#58 是机器人的需求（$reqcfg）→ 合并" "$(merged 8)" 1
             done
         done
+        if [ "$reqcfg" = enabled ]; then fresh "${REQ_ON[@]}"; else fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; fi
+        po_merge_ready
+        jset items.json '.["8"].user.login = "req-bot"'
+        tick
+        chk "PR 是机器人开的、维护者打的托管（$reqcfg）→ 合并" "$(merged 8)" 1
     done
-    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; mkissue 58 "" req-bot
-    po_merge_ready feature/xyz "做了 X。
-
-Refs other/repo#58"
-    tick
-    chk "对照：引用别的仓库的同号 #58（本仓库 #58 是机器人的）→ 合并" "$(merged 8)" 1
-    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; po_merge_ready
-    jset items.json '.["8"].user.login = "req-bot"'
-    tick
-    chk "PR 是机器人开的 → 不合并" "$(merged 8)" 0
-    fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; mkissue 60 "" maint
-    po_merge_ready feature/xyz "做了 X。
-
-Refs #60"
-    tick
-    chk "对照：引用的 #60 是普通需求 → 合并" "$(merged 8)" 1
     fresh; mkpr 8 feature/xyz "做了 X。" "$H1" "pending/merge,autopilot" someone/ap
     po_label; review_rec 8 "$H1"; evidence 8 "$H1" 12 0
     tick
@@ -1555,8 +1538,12 @@ mut_fail=0; mut_ran=0
 # 负对照很慢（每份都把整套场景重跑一遍，约 2.5 分钟，共 60 多份）。AUTOPILOT_MUT_SHARD=K/N 只跑第 K 份
 # （按顺序轮流分），各自独立的沙盘，可以开 N 个进程并行跑；不设 = 全跑。只影响跑哪几份，不改任何判断。
 MUT_IDX=0
-mut_in_shard() {
+# AUTOPILOT_MUT_ONLY=名字1,名字2 只跑点名的几份（改到某几处时复跑对应负对照用）；和 SHARD 可以一起用
+mut_in_shard() {   # [名字]
     MUT_IDX=$((MUT_IDX + 1))
+    if [ -n "${AUTOPILOT_MUT_ONLY:-}" ]; then
+        case ",$AUTOPILOT_MUT_ONLY," in *",${1:-},"*) ;; *) return 1 ;; esac
+    fi
     [ -n "${AUTOPILOT_MUT_SHARD:-}" ] || return 0
     local k="${AUTOPILOT_MUT_SHARD%/*}" n="${AUTOPILOT_MUT_SHARD#*/}"
     [ $(( (MUT_IDX - 1) % n + 1 )) -eq "$k" ]
@@ -1565,7 +1552,7 @@ mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后> [<原
     local name="$1" file="$2" M="$SANDBOX/mut-$1"
     shift 2
     mutation_gate || return 0
-    mut_in_shard || return 0
+    mut_in_shard "$name" || return 0
     mut_ran=$((mut_ran + 1))
     rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
     if ! python3 - "$M/scripts/$file" "$@" <<'PY'
@@ -1696,7 +1683,7 @@ mutate takeover-reread-pr-only _lib.sh "$TAKE2_OLD" "$TAKE2_NEW" \
         AT_V=skip; return 0" \
     '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; [ -n "${AT_SECOND:-}" ] || autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?'
 mutate takeover-cache-pr-only _lib.sh '        key="$upd|$n|$iupd"' '        key="$upd"'
-mutate takeover-no-notice _lib.sh '        actor-*|binding|requester-bot|closed|label-body) ;;' '        nothing) ;;'
+mutate takeover-no-notice _lib.sh '        actor-*|binding|closed|label-body) ;;' '        nothing) ;;'
 mutate takeover-issue-only-candidate _lib.sh 'select(any(.labels[]?; .name == $L or .name == $H) or' 'select(any(.labels[]?; .name == $L) or'
 mutate takeover-coexist _lib.sh "'[.labels[]?.name | select(. != \$L and . != \$H)] | join(\",\")')" "'[.labels[]?.name | select(. != \$L and . != \$H and false)] | join(\",\")')"
 mutate takeover-unknown-no-count _lib.sh '        *) autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0 ;;' '        *) return 0 ;;'
@@ -1739,10 +1726,6 @@ mutate po-unknown-ok _lib.sh '        *) return 2 ;;
     esac
     nb='
 mutate po-page-gap-ok _lib.sh '[ -n "$after" ] || { AUTOPILOT_REASON="PR #$pr 正文的修改历史分页读不全"; return 2; }' '[ -n "$after" ] || break'
-mutate po-requester-current-only _lib.sh '        rc=0; autopilot_pr_requester_check "$pr" "$pj" "$body" || rc=$?' '        rc=0'
-mutate po-requester-none _lib.sh '    [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] || return 0
-    acct=' '    return 0
-    acct='
 mutate po-fork-ok _lib.sh '        AUTOPILOT_REASON="PR 不是从本仓库的分支开的（来源：${repo:-未知}）"; return 0
     fi
     body=' '        :
@@ -1760,13 +1743,24 @@ mutate po-closes-no-url _lib.sh '|https?://(www\.)?github\.com/[[:alnum:]_.-]+/[
 mutate po-closes-other-repo-local _lib.sh '| select(.o == $me) | .n) end;' '| .n) end;'
 mutate po-initial-same-second-deny _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               then {err: "none"}'
 mutate po-initial-no-created-check _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               and ($first != $t) then {err: "none"}'
-mutate po-requester-links-strict _lib.sh '              printf '"'"'%s\n'"'"' "$body" | autopilot_body_closes line links | tr '"'"','"'"' '"'"'\n'"'"'
-              printf '"'"'%s'"'"' "$body" | autopilot_body_closes whole links | tr '"'"','"'"' '"'"'\n'"'"'' '              printf '"'"'%s'"'"' "$body" | pr_body_linked_issue
-              printf '"'"'%s'"'"' "$body" | pr_body_linked_issue_jq'
-mutate po-requester-links-not-local _lib.sh '        if [ "$2" = links ]; then gre="$AUTOPILOT_LINK_ANY_GREP"; jre="$AUTOPILOT_LINK_ANY_JQ"; fi' '        :'
+# GitHub#162：把「外部需求机器人提的需求不托管」逐处放回去，都必须变红（issue 上按作者、功能开启时按来源、没绑 issue 的 PR）
+mutate req-deny-issue-author _lib.sh '    local ip pp
+    autopilot_place_read "$num" "$ij" "issue #$num" || return 2' '    local ip pp
+    if [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] && [ "$(printf '"'"'%s'"'"' "$ij" | jq -r '"'"'.user.login'"'"')" = "$REQUESTER_BOT_ACCOUNT" ]; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
+    autopilot_place_read "$num" "$ij" "issue #$num" || return 2'
+mutate req-deny-issue-origin _lib.sh '    local ip pp
+    autopilot_place_read "$num" "$ij" "issue #$num" || return 2' '    local ip pp
+    if requester_bot_enabled && requester_bot_item_origin "$num" "$ij"; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
+    autopilot_place_read "$num" "$ij" "issue #$num" || return 2'
+mutate req-deny-pr-only _lib.sh '    autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"
+    rc=0; autopilot_actor_check' '    if [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.user.login'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ] || printf '"'"'%s'"'"' "$pj" | jq -e '"'"'.body | test("#58")'"'"' >/dev/null || [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.head.ref'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ]; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
+    autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"
+    rc=0; autopilot_actor_check'
 mutate po-dispatch-site _lib.sh '                    0) AUTOPILOT_PR="$num"; return 0 ;;' '                    0) return 1 ;;'
 mutate po-merge-note-issue _lib.sh '        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '        if false; then n="$pr"; where="本 PR 上"'
-mutate po-no-label-body-notice _lib.sh '        actor-*|binding|requester-bot|closed|label-body) ;;' '        actor-*|binding|requester-bot|closed) ;;'
+mutate po-no-label-body-notice _lib.sh '        actor-*|binding|closed|label-body) ;;' '        actor-*|binding|closed) ;;'
 mutate po-section-inactive _lib.sh ' || [[ "${DISPATCH_AUTOPILOT_PR:-}" =~ ^[0-9]+$ ]]; }' '; }'
 mutate po-worker-issue-file _lib.sh '    elif [ -n "$pr_only" ]; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"' '    elif false; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"'
 mutate po-dispatch-no-pr agent-poll.sh ' DISPATCH_AUTOPILOT_PR="$AP_PR"' ''
@@ -1774,7 +1768,7 @@ mutate po-dispatch-no-pr agent-poll.sh ' DISPATCH_AUTOPILOT_PR="$AP_PR"' ''
 mutate_old() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-$1"
     mutation_gate || return 0
-    mut_in_shard || return 0
+    mut_in_shard "$name" || return 0
     mut_ran=$((mut_ran + 1))
     rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
     if ! git -C "$REPO_DIR" show "$rev:scripts/_lib.sh" > "$M/scripts/_lib.sh" 2>/dev/null; then

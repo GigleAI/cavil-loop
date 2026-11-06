@@ -549,8 +549,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   `pending/human` for this task and only the comment is missing — then it posts the comment. Both ways of carrying on require the issue / branch / source to match the
   ones recorded at decision time, and a task that already added `pending/human` is cancelled
   (no comment, no further hand-off until the takeover is decidable) once someone removes that label. When the PR-side label is not
-  accepted (not added by a maintainer, the PR does not qualify, a requester-bot
-  request, the issue is closed, the PR description did not qualify when the label was added)
+  accepted (not added by a maintainer, the PR does not qualify, the issue is closed, the PR description did not qualify when the label was added)
   the PR gets one comment saying why.
 - **PRs without an issue** (GitHub#142): for the other half of a cross-repo task, or any PR
   that does not bind to an issue, a maintainer's own autopilot label on the PR is itself the
@@ -575,10 +574,18 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   was bound to an issue, does not count after the body is edited — a maintainer re-adds it after
   looking at the current PR. A deleted revision → not accepted, re-add; history unreadable or a
   page missing → undecidable, nothing written this round. Nothing about this is stored locally, so
-  a new machine or a lost state file changes nothing. Requester bot: a PR opened by it, or whose
-  branch / body links (current body and the body at label time) lead to an issue it filed, is
-  not taken. Such PRs have no design phase — the takeover starts at code review — and the
+  a new machine or a lost state file changes nothing. Such PRs have no design phase — the takeover starts at code review — and the
   takeover and merge notes go on the PR.
+- **Requests filed by the external requester bot** (on autopilot too since GitHub#162): authorization is
+  the same rule as above — who added the autopilot label, not who filed the request. None of the
+  requester's confirmations is skipped: after the proposal review passes, the bot is woken and the
+  requester confirms as usual; in report-first projects, once the requester approves the PR's head
+  commit the PR goes to review, and the reviewer checks the approved commit and reruns the tests
+  before flipping `pending/merge`. With both features on, the dispatch prompt gets one more section
+  ("requests filed by the bot + autopilot") spelling this out; see
+  [Hooking up an external requester bot → Autopilot label](requester-bot.md#autopilot-label). An item
+  whose waiting label was removed early, with no dispatch label added afterwards, is neither started
+  from the autopilot label alone nor taken over ([What the daemon does while waiting](requester-bot.md#what-the-daemon-does-while-waiting)).
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead
   of `pending/human`, and the reviewer adds a machine line with its test re-run to the
   verdict comment: `<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`.
@@ -592,7 +599,6 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 | The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly and the body closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
 | PR-only: authorization comes from the PR alone (drop the issue side of the next row), and the PR description at label time (that revision in the edit history) also meets the previous row | `pending/human` |
 | Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
-| The issue is not a request filed by the requester bot | `pending/human` |
 | Nobody added `pending/human` to the issue or the PR | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
 | The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
 | The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |

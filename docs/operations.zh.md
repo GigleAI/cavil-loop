@@ -461,7 +461,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   唯一的例外是标签已经由 daemon 为这条待办加上、只差说明，这时把说明补完。继续做的两种情况都要求 issue / 分支 /
   来源和交人决定时一样；本地记过「标签已加」而 `pending/human` 已被人摘掉的，视为人已接过这件事：不补说明，
   在有确定结论之前也不再交人。
-  PR 上的标签不被认可（不是维护者打的、PR 不合条件、外部需求机器人的需求、issue 已关、打标签那一刻的正文不合条件）时在 PR 上说一次原因。
+  PR 上的标签不被认可（不是维护者打的、PR 不合条件、issue 已关、打标签那一刻的正文不合条件）时在 PR 上说一次原因。
 - **没绑 issue 的 PR**（GitHub#142）：跨仓库任务的配套 PR、不绑 issue 的 PR，维护者在 PR 上亲手打的托管标签本身就算授权，
   新开就打也算。daemon 把 PR 分三种：
   - **绑 issue**：来自本仓库、分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`——照上面「在 PR 上打也行」那套，issue 和 PR 两处合起来判；
@@ -475,8 +475,12 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   PR 刚开就打、同一秒、之后正文又改过：历史最早那一版的时间等于 PR 的创建时间，就认它是开 PR 时的正文；不等（更早的版本缺了）算查不到。
   所以「先因为正文关着某个 issue 被拒、之后正文被改掉」「绑着 issue 时打的标签、之后删掉 `Closes #N`」，那次打标签都不算，
   要维护者看过现在的 PR 再亲手打一次。那一版被从历史里删掉 → 不生效、请重打；历史读不到或分页读不全 → 判不了，本轮不写。
-  daemon 本机不为此记任何东西，换机器、状态文件丢失都不影响。外部需求机器人：PR 是它开的、或顺着分支名 / 正文关联（现在的正文和打标签那一刻的正文都查）
-  找到的本仓库 issue 是它提的，不托管。这类 PR 没有方案阶段，接手后从代码复审开始；接手、合并的说明都发在 PR 上。
+  daemon 本机不为此记任何东西，换机器、状态文件丢失都不影响。这类 PR 没有方案阶段，接手后从代码复审开始；接手、合并的说明都发在 PR 上。
+- **外部需求机器人提的需求**（GitHub#162 起也能托管）：授权照上面同一套，看谁打的托管标签，不看需求是谁提的。
+  提需求方的确认一步不省：方案复审通过后照常叫醒机器人、等提需求方确认；要先汇报的项目，提需求方认可 PR 最新提交后交复审，
+  复审核对认可的提交、重跑测试再翻 `pending/merge`。两个功能都开时派工提示词多一段「外部需求机器人提的需求 + 托管」写清这些，
+  见[对接外部需求机器人 → 托管标签](requester-bot.zh.md#托管标签)。等待标签被提前摘掉、之后没人打派工标签的条目，
+  只挂托管标签也不自动开工、不被接手（[等待期间 daemon 怎么做](requester-bot.zh.md#等待期间-daemon-怎么做)）。
 - **代码**：复审通过时 PR 翻 `LABEL_PENDING_MERGE`（`pending/merge`）而不是 `pending/human`，
   并在结论评论里留一行测试重跑的机器记录：`<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`。
 - **daemon 合并**（`PUT /pulls/N/merge`，带复审时的提交号，方式 `AUTOPILOT_MERGE_METHOD`，默认 `squash`）
@@ -487,7 +491,6 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 | PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
 | 以 PR 为准时：授权只看 PR（下一行去掉 issue 那一处），而且打标签那一刻的 PR 正文（修改历史里那一版）也合上一行的条件 | `pending/human` |
 | 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
-| 这条 issue 不是外部需求机器人提的需求 | `pending/human` |
 | issue 和 PR 都没被打 `pending/human` | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
 | PR 最新提交**和目标分支**都是派复审时记下的那一对（同一提交改投别的分支 = 另一份改动；旧版没记目标分支的记录算缺） | 回 `pending/review` 重审 |
 | 复审的结论评论（写入账号、派复审之后发的）里有这个提交的测试记录，`failed=0`、`passed>0` | `pending/human` |

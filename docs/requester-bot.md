@@ -112,8 +112,8 @@ cavil-loop only handles its own side; grokbot implements the following:
 
 1. **Filing a request**: open an issue whose body ends with the marker `<!-- requested-by-grokbot -->`, and add `pending/agent`. Only an issue authored by grokbot **and** carrying the marker counts as its request — missing either, cavil-loop treats it as an ordinary issue and questions go to the maintainer only
 2. **On a webhook call, or its own periodic scan**: pull **every** issue / PR carrying `pending/requester-bot`, **closed ones included**. The webhook body is only a hint; always pull everything rather than acting on the body (format: [Reference → The webhook call](#the-webhook-call))
-3. **Passing it on**: read the thread, take the latest comment to the requester, then comment **on the item carrying the waiting label** saying whom it went to — the issue for a proposal or question, the PR for a result report on that PR. That comment is the only thing the agent accepts as proof the requester was told
-4. **Bringing the answer back**: on that same **issue or PR carrying the waiting label**, paste the answer **verbatim** → remove its `pending/requester-bot` → add `pending/agent` to it so the agent continues (with `DISPATCH_MODE=greedy` this last step is optional — removing the waiting label is enough). **Never post a PR's answer on the source issue**: the daemon dispatches each item by its own labels, so that redispatches the issue while the waiting PR stays parked. When approving a report, the answer must say so clearly; the agent also checks that the approved report names the PR's current head commit, and asks again if not
+3. **Passing it on**: read the thread, take the latest comment to the requester, then comment **on the item carrying the waiting label** saying whom it went to — the issue for a proposal or question, the PR for a result report on that PR. That comment is the only thing the agent accepts as proof the requester was told. **Leave the waiting label in place after passing it on**: it means "still waiting for the requester's answer". Removing it early does not make the agent start sooner (the daemon does not dispatch because of it, see [What the daemon does while waiting](#what-the-daemon-does-while-waiting)); it only makes the item look as if nobody is waiting
+4. **Bringing the answer back**: on that same **issue or PR carrying the waiting label**, paste the answer **verbatim** → remove its `pending/requester-bot` → add `pending/agent` to it so the agent continues. **Always add `pending/agent`**, also in `DISPATCH_MODE=greedy` projects (since GitHub#162 an item whose waiting label was removed, with no dispatch label added afterwards, is not picked up on its own). **Never post a PR's answer on the source issue**: the daemon dispatches each item by its own labels, so that redispatches the issue while the waiting PR stays parked. When approving a report, the answer must say so clearly; the agent also checks that the approved report names the PR's current head commit, and asks again if not
 5. **On a comment headed "request done" / "closed without merging"** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`; the request is finished
 6. **Leave items carrying `pending/human` alone**: those are for the maintainer
 7. **Attachments**: images etc. from the requester can be pasted into the issue and the agent downloads them itself; the other direction (agent sending attachments to grokbot) is not supported yet
@@ -148,6 +148,7 @@ With `REQUESTER_BOT_REPORT_FIRST="false"` steps 6 and 7 do not happen: finished 
 | `webhook 配置不完整，跳过` | Header name or key empty, header name has characters other than letters / digits / `-`, or a newline in the URL / key |
 | `配置文件权限过宽（应为 600），webhook 跳过` | Do step 3 |
 | `找不到 curl，webhook 跳过` | Install curl |
+| The item carries no flow label and nobody picks it up; `poll.log` has `不续工——#<number> 最近一次挂上等待标签 … 之后，没人打过派工标签` | The waiting label was removed early and nobody added `pending/agent` (GitHub#162). If the answer is already posted: add `pending/agent` and it continues. If not: put the waiting label back and remind grokbot's side not to remove it after passing the message on ([rules 3 and 4](#what-grokbot-has-to-do-on-its-side)) |
 | grokbot never got "request done" after a merge | Post-merge cleanup is off (`AUTO_CLEANUP_ON_MERGE`); or, for a PR closed unmerged, the same request still has another PR open (no notice then); or the write identity is not in `REQUESTER_BOT_ALLOWED_ACTORS` — `poll.log` says which |
 
 Wake-up script exit codes: [Reference → The wake-up script](#the-wake-up-script).
@@ -176,7 +177,7 @@ REQUESTER_BOT_WAKE_ANY_ITEM="true"     # default false
 | Whom to forward to | the origin marker in the body | the forward marker in the handoff comment |
 | Daemon tells the bot after merge / close | yes | **no** |
 | `REQUESTER_BOT_REPORT_FIRST` (report first) | per config | **does not apply**; finished work goes to the maintainer as usual |
-| Autopilot label | never applies | same as any ordinary item |
+| Autopilot label | valid when a maintainer adds it; the requester's confirmations still apply, see [Autopilot label](#autopilot-label) | same as any ordinary item |
 
 None of the existing refusals is dropped: the account must be on the allowed list; `pending/human` on the item, a maintainer takeover not lifted, unreadable label history and a closed item are all still refused. When a PR's linked issue is determined, the takeover check runs on both the PR and that issue; an ambiguous link (`Closes` and `#number` on separate lines), a link to another PR, or an unreadable linked issue are always refused.
 
@@ -251,9 +252,21 @@ The script allows itself 5 minutes from the start of the wake-up; if the wake re
 
 If, after a successful wake-up, someone edits or deletes the handoff comment, grokbot hands the item to the maintainer as "error". If the wake record is deleted, or someone removes and re-adds the waiting label by hand, it does so within 30 minutes. In the meantime it forwards nothing wrong and nothing stale.
 
-## Autopilot label does not apply
+## Autopilot label
 
-If the project also uses the autopilot label (GitHub#114), it **never** applies to requests filed by the bot: those need the requester's confirmation, which the daemon cannot judge. Such an issue gets one comment saying so and is handled the normal way (confirmations go to the requester, a maintainer merges); the daemon also refuses to auto-merge a PR bound to it, or — for a PR bound to no issue (GitHub#142) — a PR opened by the bot or whose branch / body links lead to such a request. See [operations](operations.md#autopilot-label-optional-off-by-default).
+If the project also uses the autopilot label (GitHub#114), requests filed by the bot **can be put on autopilot too** (since GitHub#162; before that they never could): what counts is who added the autopilot label, not who filed the request — a maintainer adding it by hand on the issue, on a PR bound to it, or on a PR bound to no issue all authorize it; the label added by the grokbot account itself or by the loop's write account still does not count.
+
+**None of the requester's confirmations is skipped**; autopilot only replaces the two steps that go to the maintainer — confirming the proposal and merging:
+
+| Step | Normal (no autopilot) | Autopilot |
+|---|---|---|
+| Proposal | review passes → wake grokbot → requester confirms | same |
+| Code review passes (`REQUESTER_BOT_REPORT_FIRST="true"`) | wake grokbot to report the current commit | same |
+| Requester approves the current commit | hand to the maintainer to merge (`pending/human`) | hand to review (`pending/review`) → the reviewer checks the approval names the PR's head commit and reruns the tests → `pending/merge` → the daemon merges under the usual autopilot conditions |
+| Code review passes (`REQUESTER_BOT_REPORT_FIRST="false"`) | hand to the maintainer | `pending/merge` → the daemon merges |
+| After the merge | the daemon posts "request done" | same |
+
+A new commit after the approval (say the maintainer asked for a change on the PR) voids it: review again, report again. The daemon does not read comment content: which commit was approved is checked by the reviewer under the [evidence rules](#what-grokbot-has-to-do-on-its-side), and none of the daemon's pre-merge checks is dropped. Workers and reviewers get these rules from the "requests filed by the bot + autopilot" section of the dispatch prompt, which appears only when both features are on and the item is on autopilot. See [operations](operations.md#autopilot-label-optional-off-by-default).
 
 ## Reference
 
@@ -282,7 +295,9 @@ The feature is on only when the first four are all set. The three webhook settin
 |---|---|
 | waiting label only | not dispatched: the greedy pass skips it, and self-heal does not flip its labels back after a worker dies |
 | waiting label + someone added a trigger label (`pending/agent`, fable, extra, `pending/review`) | dispatched through that label's normal flow; the daemon removes the waiting label when it dispatches. Only people allowed to edit labels can add a trigger label, so this is an explicit "carry on" |
-| waiting label removed, no trigger label | label mode: nothing happens until someone adds `pending/agent`; greedy mode: picked up as usual |
+| waiting label removed, no trigger label | **not picked up** until someone adds a trigger label (GitHub#162): none of the three automatic paths — the greedy pass, an issue carrying only the autopilot label, autopilot taking over a PR with no flow label — runs. In label mode an ordinary item already waits for `pending/agent`, unchanged |
+
+"Waiting label removed, no trigger label" is judged from the label history on GitHub, not from whether this machine ever saw the waiting label: take the latest "waiting label added" event by event id (not by time); if anyone added any trigger label after it, the item goes ahead, otherwise it is held. Who removed the waiting label does not matter. So a label added and removed between two polls is still caught, and a different machine or a wiped state directory changes nothing. Label history unreadable, or an event without an id: no pick-up that round, judged again next round (if it stays unreadable the item stays held, with one `poll.log` line per round). Results are cached per item update time in `$STATE_DIR/requester-bot-wait.json`, so an unchanged item is not re-read; only decided results are cached. With the feature off (the first four settings not all set) no label history is read and behavior is as before.
 
 There is no waiting timeout: if the bot never answers, the maintainer deals with it.
 
