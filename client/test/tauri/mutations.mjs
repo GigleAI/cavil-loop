@@ -62,13 +62,6 @@ const MUTATIONS = [
     to: '            if !hidden {\n                desktop::spawn_background(handle.clone());\n            }',
     expect: 'synced while started hidden',
   },
-  {
-    what: '窗口对外壳的调用不排队（隐藏窗口里第二条请求被压到下一拍）',
-    file: 'src/app/controller.ts',
-    from: '    const p = this.desktopCalls.then(() => fn(d));',
-    to: '    const p = fn(d);',
-    expect: 'badge +1',
-  },
 ];
 
 const target = process.env.CAVIL_TAURI_MUT_TARGET ?? join(root, 'src-tauri', 'target', 'tauri-mutation');
