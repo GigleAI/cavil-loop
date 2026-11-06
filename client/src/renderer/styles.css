@@ -145,7 +145,14 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .card:hover .label-x, .card:hover .label-plus { visibility: visible; }
 .label-plus { padding: 0 6px; font-size: 11px; line-height: 16px; border-radius: 999px; }
 button.danger { background: var(--closed); color: #fff; border-color: var(--closed); }
-.detail { width: 560px; max-width: 55%; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--panel); min-height: 0; overflow: auto; }
+.board-area { position: relative; }
+/* the detail floats over the board, stuck to the right (GitHub#155): the board keeps its width */
+.detail { position: absolute; top: 0; right: 0; bottom: 0; z-index: 5; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--panel); min-height: 0; overflow: auto; box-shadow: -6px 0 18px rgba(0, 0, 0, 0.18); }
+.detail-resize { position: absolute; top: 0; bottom: 0; left: 0; width: 6px; margin-left: -3px; cursor: col-resize; z-index: 6; }
+.detail-resize:hover, .detail.resizing .detail-resize { background: var(--accent); opacity: 0.35; }
+.detail.resizing { user-select: none; }
+.detail.resizing iframe { pointer-events: none; }
+.timeline-tools { display: flex; align-items: center; gap: 8px; padding: 2px 12px 0; }
 .detail-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .detail-title { margin: 8px 12px 4px; font-size: 15px; }
 .detail .banner { margin: 4px 12px; }
@@ -172,3 +179,13 @@ button.danger { background: var(--closed); color: #fff; border-color: var(--clos
 .banner.closable .banner-text { flex: 1; min-width: 0; }
 .banner-close { flex: none; border: none; background: transparent; color: inherit; opacity: 0.6; font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; }
 .banner-close:hover, .banner-close:focus-visible { opacity: 1; }
+/* avatars (GitHub#155) */
+.avatar { display: inline-block; flex: none; border-radius: 50%; vertical-align: middle; object-fit: cover; background: var(--border); }
+.avatar.initial { display: inline-flex; align-items: center; justify-content: center; color: var(--fg); font-weight: 600; line-height: 1; }
+.person { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+.people { display: inline-flex; flex-wrap: wrap; align-items: center; }
+.card-repo { display: inline-flex; align-items: center; gap: 6px; }
+.card-author { display: inline-flex; }
+/* a PR right under the issue it is linked to (GitHub#155) */
+.card.nested { margin-left: 16px; border-left: 3px solid var(--merged); }
+.nest-mark { color: var(--muted); font-weight: 400; }
