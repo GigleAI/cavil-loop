@@ -225,7 +225,8 @@ fn main() {
                 tauri::async_runtime::spawn(async move {
                     let alert = json!({ "kind": "summary", "title": "Cavil Loop 通知检查", "body": "打包检查发出的一条测试通知" });
                     let line = match desktop::desktop_notify(h.clone(), alert).await {
-                        Ok(v) if v["ok"] == true => "CAVIL_NOTIFY_OK shown".to_string(),
+                        // accepted = the system took the request without an error; whether it was on screen is not known here
+                        Ok(v) if v["ok"] == true => "CAVIL_NOTIFY_OK accepted by the system (on screen or not: not known)".to_string(),
                         Ok(v) => format!("CAVIL_NOTIFY_REFUSED {}", v["error"].as_str().unwrap_or("")),
                         Err(e) => format!("CAVIL_NOTIFY_REFUSED {e}"),
                     };

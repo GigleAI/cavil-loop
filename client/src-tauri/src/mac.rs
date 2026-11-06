@@ -132,7 +132,8 @@ fn add_request(id: &str, title: &str, body: &str) -> tokio::sync::oneshot::Recei
     rx
 }
 
-/// One notification. Resolves with what the system said: Ok once it accepted it, Err with its own words
+/// One notification. Resolves with what the system said: Ok once it accepted the request (that is not
+/// proof it was on screen), Err with its own words
 /// (e.g. "Notifications are not allowed for this application").
 pub async fn notify(id: &str, title: &str, body: &str) -> Result<(), String> {
     if !bundled() {
