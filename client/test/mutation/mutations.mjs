@@ -804,4 +804,14 @@ export const MUTATIONS = [
     from: '    const missing = unmappedNames(list, { unit: map, e2e: e2eTests() });\n    if (missing.length)',
     to: '    const missing = [];\n    if (missing.length)',
     expect: ['the baseline names every entry whose named test no longer exists'] },
+  // ---- GitHub#186: when the background tests may put the label on ----
+  { what: '首轮完成的判断退回「看到任何角标就算」（启动时清零的角标也算）', file: 'test/tauri/first-round.ts',
+    from: '  if (summary < 0) return null;\n', to: '  if (summary < 0) summary = from - 1;\n',
+    expect: ['only the start-up badge: not complete (the app clears the badge before any sync)', 'an item notification is not the summary'] },
+  { what: '汇总一到就算首轮完成，不等它之后的角标', file: 'test/tauri/first-round.ts',
+    from: 'for (let i = summary + 1; i < records.length; i++) {', to: 'for (let i = from; i < records.length; i++) {',
+    expect: ['summary out, its badge not yet: not complete', 'a badge before the summary is not the base'] },
+  { what: '上一次启动的汇总也算这次启动的首轮', file: 'test/tauri/first-round.ts',
+    from: 'for (let i = from; i < records.length; i++) {\n    const r = records[i];\n    if (r?.op === \'notify\'', to: 'for (let i = 0; i < records.length; i++) {\n    const r = records[i];\n    if (r?.op === \'notify\'',
+    expect: ["an earlier start's summary does not count for this start"] },
 ];
