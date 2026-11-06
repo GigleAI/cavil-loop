@@ -2,6 +2,8 @@ import type { AppState } from '../shared/types';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
 import { permissionText } from '../shared/appKind';
+import { Icon } from './Icons';
+import brandIcon from '../../build/icon.png';
 
 const FAILURE_TEXT: Record<string, string> = {
   denied: '你在 GitHub 页面上拒绝了授权。',
@@ -14,17 +16,19 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
   const busy = login.status === 'requesting' || login.status === 'waiting';
 
   return (
+    <div className="login-page">
     <div className="login" data-testid="login">
+      <div className="login-brand">
+        <img src={brandIcon} alt="" />
+      </div>
       <h1>Cavil Loop</h1>
-      <p className="muted">用你的 GitHub 账号登录，看你的 Project 看板和仓库。</p>
+      <p className="muted lead">用你的 GitHub 账号登录，看你的 Project 看板和仓库。</p>
 
       {state.loginReason && (
         <div className="banner warn" data-testid="login-reason">
           {state.loginReason}
         </div>
       )}
-
-      <AppKindPicker state={state} disabled={busy} onHelp={onHelp} />
 
       {login.status === 'waiting' && login.userCode ? (
         <div className="device" data-testid="device">
@@ -34,6 +38,7 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
           </div>
           <div className="row">
             <button className="primary" data-testid="open-browser" onClick={() => api().openVerification()}>
+              <Icon name="ext" />
               打开 GitHub 授权页
             </button>
             <button onClick={() => api().cancelLogin()}>取消</button>
@@ -54,10 +59,13 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
         </div>
       )}
 
+      <AppKindPicker state={state} disabled={busy} onHelp={onHelp} />
+
       <p className="muted small" data-testid="permission-text">
         {permissionText(state.appKind, state.clientId)} 凭据存在本机钥匙串里，只发给 GitHub。
         {!state.credentialsPersistent && ' 当前系统还不支持保存凭据，退出后需要重新登录。'}
       </p>
+    </div>
     </div>
   );
 }

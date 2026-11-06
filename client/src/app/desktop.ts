@@ -3,6 +3,10 @@
 // (src-tauri/src/desktop.rs); the controller only decides *what* to show.
 // None of this touches the GitHub credential.
 
+import type { UpdateStatus } from '../shared/types';
+
+export type { UpdateStatus };
+
 /** What a notification is about; a click on an item notification opens that item. */
 export type Alert =
   | { kind: 'item'; key: string; url: string; title: string; body: string }
@@ -11,8 +15,8 @@ export type Alert =
 /** What the system did with one notification. */
 export type Delivery = { ok: true } | { ok: false; error: string };
 
-/** Something the shell tells the window: time for a sync round, or a notification was clicked. */
-export type DesktopEvent = { kind: 'tick' } | { kind: 'open'; key: string; url: string };
+/** Something the shell tells the window: time for a sync round, a notification was clicked, or the updater changed. */
+export type DesktopEvent = { kind: 'tick' } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: UpdateStatus };
 
 export interface Desktop {
   /** resolves with what the system did (macOS may refuse: not allowed in System Settings) */
@@ -24,4 +28,13 @@ export interface Desktop {
   setLoginItem(on: boolean): Promise<void>;
   /** the next event from the shell (waits until there is one; never rejects for "nothing yet") */
   nextEvent(): Promise<DesktopEvent>;
+  /** the updater now; null = this build does not update itself */
+  updateStatus(): Promise<UpdateStatus | null>;
+  /** start a round now (returns at once; progress comes as `update` events) */
+  checkUpdate(): Promise<void>;
+  setAutoUpdate(on: boolean): Promise<void>;
+  /** close the "ready" banner for `version` (kept) */
+  dismissUpdate(version: string): Promise<void>;
+  /** quit and start the new version (only once it is in place) */
+  restartToUpdate(): Promise<void>;
 }

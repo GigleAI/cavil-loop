@@ -3,6 +3,18 @@ import type { AppState, BoardData } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
+import { UpdateSection } from './UpdateViews';
+import { Icon, type IconName } from './Icons';
+
+const SECTIONS: { id: string; icon: IconName; title: string }[] = [
+  { id: 'set-sources', icon: 'project', title: '数据来源' },
+  { id: 'set-hand-back', icon: 'tag', title: '交回 agent' },
+  { id: 'set-pending', icon: 'bell', title: '提醒' },
+  // only in a build that updates itself (GitHub#184); the section is not there otherwise
+  { id: 'set-update', icon: 'refresh', title: '更新' },
+  { id: 'set-account', icon: 'user', title: '账号' },
+  { id: 'set-login', icon: 'key', title: '登录方式' },
+];
 
 export function SettingsView({ state, data, onBack, onHelp }: { state: AppState; data: BoardData; onBack: () => void; onHelp: () => void }) {
   const [input, setInput] = useState('');
@@ -20,13 +32,33 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
   return (
     <div className="settings" data-testid="settings">
       <div className="toolbar">
-        <button onClick={onBack} data-testid="back">
-          ← 返回看板
+        <button className="ghost" onClick={onBack} data-testid="back">
+          <Icon name="back" />
+          返回看板
         </button>
         <h2>设置</h2>
+        <span className="muted small">只保存在这台电脑上</span>
       </div>
 
-      <section>
+      <div className="settings-body">
+      {/* contents: a click scrolls to that card (one page, nothing hidden) */}
+      <nav className="settings-nav" aria-label="设置目录">
+        {SECTIONS.filter((x) => x.id !== 'set-update' || state.update).map((x) => (
+          <a
+            key={x.id}
+            href={`#${x.id}`}
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById(x.id)?.scrollIntoView({ block: 'start' });
+            }}
+          >
+            <Icon name={x.icon} />
+            {x.title}
+          </a>
+        ))}
+      </nav>
+      <div className="settings-main">
+      <section id="set-sources">
         <h3>数据来源</h3>
         <p className="muted small">GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目，加上最近 14 天内有更新的。</p>
         <div className="row">
@@ -43,7 +75,8 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         </div>
         {error && (
           <div className="banner error" data-testid="source-error">
-            {error}
+            <Icon name="warn" />
+            <span className="banner-text">{error}</span>
           </div>
         )}
         <ul className="sources" data-testid="source-list">
@@ -51,10 +84,17 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
             const st = state.sync.sources.find((x) => x.sourceKey === s.key);
             return (
               <li key={s.key} data-testid="source-row" data-key={s.key}>
-                <span className="kind">{s.kind === 'project' ? 'Project' : '仓库'}</span>
-                <span>{sourceLabel(s, titles.get(s.key))}</span>
+                <span className="src-icon">
+                  <Icon name={s.kind === 'project' ? 'project' : 'repo'} />
+                </span>
+                <span className="src-main">
+                  <b>{sourceLabel(s, titles.get(s.key))}</b>
+                  <span className="kind">
+                    {s.kind === 'project' ? 'GitHub Project' : '仓库'} · {data.items.filter((it) => it.sources.includes(s.key)).length} 个条目
+                  </span>
+                </span>
                 {st && !st.ok && <span className="err small">读取失败：{st.error}</span>}
-                <button className="link" data-testid="source-remove" onClick={() => api().removeSource(s.key)}>
+                <button className="ghost" data-testid="source-remove" onClick={() => api().removeSource(s.key)}>
                   删除
                 </button>
               </li>
@@ -64,7 +104,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         </ul>
       </section>
 
-      <section data-testid="hand-back-settings">
+      <section id="set-hand-back" data-testid="hand-back-settings">
         <h3>「交回 agent」用的标签</h3>
         <p className="muted small">详情页回复后可以一键交回 agent：去掉第一个标签、加上第二个。要和 daemon 配置里的标签名一致（默认 pending/human → pending/agent）。</p>
         <div className="row">
@@ -79,13 +119,14 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         </div>
       </section>
 
-      <section data-testid="pending-settings">
+      <section id="set-pending" data-testid="pending-settings">
         <h3>提醒</h3>
         <p className="muted small">
           带「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知，Dock 角标显示总数。
         </p>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
+            <Icon name="warn" />
             macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标和这里的数字不受影响。
           </div>
         )}
@@ -109,7 +150,9 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         )}
       </section>
 
-      <section>
+      <UpdateSection update={state.update} />
+
+      <section id="set-account">
         <h3>账号</h3>
         <p>
           已登录：<b data-testid="viewer">{state.viewer ?? '…'}</b>
@@ -119,11 +162,13 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         </button>
       </section>
 
-      <section>
+      <section id="set-login">
         <h3>登录方式</h3>
         <AppKindPicker state={state} onHelp={onHelp} />
         <p className="muted small">改了以后，下次登录生效；现在登录着的账号不受影响。</p>
       </section>
+      </div>
+      </div>
     </div>
   );
 }
