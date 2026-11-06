@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run on a macOS CI machine against a built dmg. Verifies, for real:
 #   0. the dmg window (background, Applications link, instructions file, copy page) and
-#      the app's icon being build/icon.png rather than the framework's default
+#      the app's icon being build/icon.png rather than the framework's default;
+#      the app asks for macOS 14 or newer (GitHub#169)
 #   1. the app inside the dmg starts (smoke test, direct launch)
 #   2. it carries an ad-hoc signature that verifies (Apple silicon needs one)
 #   3. once marked as downloaded (quarantine), Gatekeeper rejects it — i.e.
@@ -60,6 +61,11 @@ echo "== 0b. app icon is build/icon.png (GitHub#144), not the framework's defaul
 # compares it with build/icon.png; unreadable or missing counts as a failure.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 node "$here/icon.mjs" check-app "$app" "$here/../build/icon.png" || { echo "❌ app icon check failed"; exit 1; }
+
+echo "== 0c. the app asks for macOS 14 or newer (GitHub#169: keeping a closed window's reminders needs it)"
+minos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist" 2>/dev/null || true)"
+[ "$minos" = "14.0" ] || { echo "❌ LSMinimumSystemVersion is [$minos], expected 14.0"; exit 1; }
+echo "✅ LSMinimumSystemVersion $minos"
 
 echo "== 1. direct launch smoke test"
 out="$("$bin" --smoke-test 2>&1 || true)"

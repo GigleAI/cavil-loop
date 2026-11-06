@@ -237,7 +237,8 @@ fn main() {
                 // The window does the syncing; hidden (closed, or started at login) it must keep
                 // running. By default macOS's WebKit suspends a page that is not on screen — at once
                 // when it was never shown, after about 5 minutes otherwise (GitHub#169, found on the
-                // CI Macs). Takes effect on macOS 14+; older macOS ignores it.
+                // CI Macs). WebKit honours this from macOS 14 on, which is why the app requires
+                // macOS 14 (maintainer's choice on PR #173): on 11–13 nothing keeps a hidden page running.
                 .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
                 // Links never navigate the app window; GitHub links go to the system browser.
                 .on_navigation(move |url| {
