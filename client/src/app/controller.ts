@@ -101,6 +101,12 @@ export class Controller {
   private syncing: Promise<void> | null = null;
   private resync = false;
   private loginRun = 0;
+  /**
+   * Cancels sent to the back end, in order. A new sign-in waits for them: commands to the back
+   * end run side by side, so a cancel that arrived after the next `loginBegin` would end that
+   * new attempt instead of the old one.
+   */
+  private loginCancels: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setInterval> | null = null;
   /** the back end's session: bumps on every login / logout, a round started in another session is dropped */
   private session = 0;
@@ -219,7 +225,7 @@ export class Controller {
         clientIdKindProblem(this.state.appKind, clientId);
     if (problem) {
       // a new attempt ends any older one, even when this one cannot start
-      void this.backend.call('loginCancel').catch(() => {});
+      this.sendCancel();
       this.set({ login: { status: 'error', userCode: null, verificationUri: null, message: problem } });
       return;
     }
@@ -229,6 +235,8 @@ export class Controller {
         login: { status: status === 'denied' ? 'denied' : status === 'expired' ? 'expired' : 'error', userCode: null, verificationUri: null, message },
       });
     try {
+      await this.loginCancels;
+      if (run !== this.loginRun) return;
       const begun = await this.backend.call<{ status: string; run?: number; userCode?: string; verificationUri?: string; message?: string }>('loginBegin', { clientId });
       if (run !== this.loginRun || begun.status === 'stale') return;
       if (begun.status !== 'waiting') return fail(begun.status, begun.message ?? '');
@@ -271,9 +279,14 @@ export class Controller {
     }
   }
 
+  private sendCancel(): void {
+    const sent = this.backend.call('loginCancel').catch(() => {});
+    this.loginCancels = this.loginCancels.then(() => sent);
+  }
+
   cancelLogin(): void {
     this.loginRun++;
-    void this.backend.call('loginCancel').catch(() => {});
+    this.sendCancel();
     this.set({ login: { status: 'idle', userCode: null, verificationUri: null, message: null } });
   }
 

@@ -787,6 +787,31 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
   });
 });
 
+describe('cancel, then sign in at once', () => {
+  it('a cancel that reaches the back end late does not end the sign-in started after it', async () => {
+    const { c, backend } = await make({ defaultClientId: fake.state.oauthClientId });
+    await c.start();
+    // the IPC hop for the cancel is slow (commands to the back end run side by side)
+    const call = backend.call.bind(backend);
+    let delayed = 0;
+    (backend as any).call = async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'loginCancel') {
+        delayed++;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return call(cmd, args);
+    };
+    c.cancelLogin();
+    const p = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'waiting');
+    expect(delayed).toBe(1); // "something did happen": the cancel really went the slow way
+    await new Promise((r) => setTimeout(r, 400));
+    fake.resolveGrant('approved');
+    await p;
+    expect(c.getState().phase).toBe('ready');
+  });
+});
+
 describe('what the app says about the two methods', () => {
   it('never promises a GitHub App cannot touch code, never states a fixed lifetime, and says nothing reassuring for a mismatched ID', async () => {
     const { APP_KIND_FACTS, permissionText } = await import('../../src/shared/appKind');

@@ -386,6 +386,9 @@ const MUTATIONS = [
   { what: '窗口里又用 macOS 11（Safari 14）没有的接口（请求全失败）', file: 'src/data/github.ts', runner: 'e2e',
     from: 'signal: init.signal ?? timeoutSignal(30_000),', to: 'signal: init.signal ?? AbortSignal.timeout(30_000),',
     expect: ['on an engine without the newer web APIs'] },
+  { what: '新登录不等先前的取消送达后台（晚到的取消把新登录也取消了）', file: 'src/app/controller.ts',
+    from: '      await this.loginCancels;\n', to: '',
+    expect: ['a cancel that reaches the back end late does not end the sign-in started after it'] },
   // ---- PR #161 review round 1: a database that refuses a write ----
   { what: '退出时数据库写失败也当成退出成功（不写备用标记、不告诉用户）', file: 'src-tauri/crates/core/src/engine.rs',
     from: 'let durable = match write().or_else(|_| write()) {', to: 'let durable = match write().or_else(|_| Ok::<(), String>(())) {',
