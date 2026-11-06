@@ -46,6 +46,25 @@ const records = (): any[] => {
 };
 const notified = (key: string) => records().some((r) => r.op === 'notify' && r.alert?.kind === 'item' && r.alert.key === key);
 const lastBadge = () => records().filter((r) => r.op === 'badge').pop()?.count as number | undefined;
+const badgeSince = (from: number) => records().slice(from).filter((r) => r.op === 'badge').pop()?.count as number | undefined;
+
+/** the repository list as GitHub answered it (one sync round reads it at least once) */
+const isRepoList = (path: string) => /^\/api\/repos\/gigleai\/cavil-loop\/issues\?/i.test(path);
+const repoReads = () => fake.log.filter((l) => l.method === 'GET' && isRepoList(l.path) && l.status === 200).length;
+
+/**
+ * A complete round is in, so the reminders' baseline is taken (GitHub#185 review
+ * round 1): GitHub answered the repository list, and then the window sent a badge
+ * (it does at the end of every round). "Any badge at all" is not that — the window
+ * also clears the badge while it starts, before its first read; a label put on in
+ * between lands in the start-up summary instead of its own notification.
+ */
+async function roundDone(what: string, ms: number) {
+  const reads = repoReads();
+  await until(() => repoReads() > reads, `${what}: the repository read`, ms);
+  const from = records().length;
+  await until(() => badgeSince(from) !== undefined, `${what}: counted`, ms);
+}
 
 async function startApp(args: string[] = []) {
   driver = spawn(DRIVER, [], {
@@ -158,11 +177,15 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   await stopApp();
   const before = records().length;
 
-  // started the way launch at login starts it
+  // started the way launch at login starts it; its first read answers late, so the
+  // start-up badge comes well before the first round (what made the same check flaky on
+  // the CI Macs): the label must still go on after the baseline
+  const release = fake.holdWhen((e) => isRepoList(e.path));
+  setTimeout(release, 5_000);
   await startApp(['--hidden']);
   await until(() => records().slice(before).some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 15_000);
-  // its own first round (signed in from the stored credential): every round sets the badge
-  await until(() => records().slice(before).some((r) => r.op === 'badge'), 'first round while started hidden', 30_000);
+  // its own first round (signed in from the stored credential)
+  await roundDone('first round while started hidden', 90_000);
   const badgeBefore = lastBadge()!;
   const n = unlabelled();
   label(n);
