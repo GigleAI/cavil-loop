@@ -60,9 +60,9 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   ├── ci-exclude.txt             ← Files CI does not run, each with the reason
 │   └── ci-weights.txt             ← Reference times per file, only to balance CI shards
 ├── .github/workflows/
-│   ├── tests.yml                  ← Runs tests/run.sh on every PR and push to main (check: 测试)
+│   ├── tests.yml                  ← Runs tests/run.sh on every PR and push to main that touches more than client/ (check: 测试)
 │   ├── release.yml                ← Weekly release, behind the gate that runs every negative control (GitHub#195)
-│   └── client.yml                 ← Desktop client: tests, macOS dmg, client/v* Releases
+│   └── client.yml                 ← Desktop client: quick tests on every push; full tests + macOS dmg on tag / weekly / manual; client/v* Releases
 ├── .github/actions/client-setup/  ← The client test environment, shared by client.yml and the release gate
 ├── client/                       ← Desktop board client (Tauri: TS + React window, Rust back end; GitHub#135 / #151), see client/README.md
 └── docs/
@@ -330,7 +330,7 @@ point `HOME` at a temp dir, and **run the real scripts** — no network, no read
 
 `bash tests/run.sh` runs them all (~9 min serially on a dev box); `bash tests/run.sh NAME...` runs a few
 by name (file name without `.test.sh`); `--list` prints the files. GitHub Actions
-(`.github/workflows/tests.yml`) runs the same script on every PR and every push to `main`:
+(`.github/workflows/tests.yml`) runs the same script on every PR and every push to `main` (except changes that only touch `client/`, which none of these tests read — `client/test/tauri/mutations.sh` still counts):
 `tests/run.sh --ci --shard K/4` on four parallel jobs, then one job named **测试** that is green only
 when every expected file passed exactly once across the shards (`--verify`). That is the check to
 require for merging. Per-file logs are kept as a workflow artifact; failures print in full.
@@ -372,11 +372,12 @@ MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what ev
 |---|---|---|---|
 | Worker develops, hands on, reworks (local) | the part the change touches | **not run** | not run |
 | Reviewer (local) | reruns the relevant part when needed | **not run, and not asked of the worker** | not run |
-| PR CI, every push | `Tests` (all shell tests) + `Client` Linux suites | not run | not run (the dmg jobs show "skipped") |
-| `Client` on a push to `main` | as on a PR | not run | run |
-| `Client` on a `client/v*` tag | as on a PR | not run | run; a red one means no Release |
+| PR CI, every push | `Tests` (all shell tests; not when only `client/` changed) + `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
+| `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | **not run** (one per merge was mostly never used) |
+| `Client` on a `client/v*` tag | quick + full tests | not run | run, arm64 and x64; a red one means no Release |
+| `Client` weekly (Sunday 16:40 UTC) | quick + full tests | not run | run, **arm64 only**, so a packaging breakage shows up within a week |
 | `Release` (weekly, or a `release/v*` tag) | — | **all of them**: every `tests/*.test.sh` with `MUTATION=1` (4 shards + autopilot split over 6 jobs) and both client sets (`test/mutation`, the real app's `test/tauri/mutations.sh`), on the one commit the tag will point at; a red one means no tag and no Release | — |
-| Manual *Run workflow* | as before | the existing `mutation` boxes (by hand only); `Release` → `gate_only` runs the whole gate without tagging, to try it out | `Client`: run |
+| Manual *Run workflow* | as before | the existing `mutation` boxes (by hand only); `Release` → `gate_only` runs the whole gate without tagging, to try it out | `Client`: run, arm64 only |
 
 - Negative controls are no longer part of handing on or reviewing a PR: a PR's evidence is the default regression. A negative control written in a PR runs for the first time at the next weekly release; say so in the hand-off. Reviewers do not reject a PR for missing negative-control or packaging results
 - A red negative control blocks the weekly release only: the daemon still deploys merged `main` on its own, the client's own `client/v*` release does not wait for it, and nothing notifies anyone

@@ -259,7 +259,7 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg 和一个更新包（`tauri build --bundles app`，带 `createUpdaterArtifacts` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：dmg 和更新包每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh` 和 `scripts/mac-update-check.sh`，通过后生成 `latest.json`（`scripts/update-manifest.mjs`）并建 Release，附件是两个 dmg、两个更新包（`Cavil-Loop-<版本>-<芯片>.app.tar.gz`）和它们的签名（`.sig`）、`latest.json`（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
 
-**更新签名密钥**（#184，维护者做一次）：公钥只放一处——`src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`：App 运行时用它验更新包，打包时打包工具用它，发版前生成 `latest.json` 那一步也用它逐个验签。发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名。发版标签上缺这个 secret、或公钥是空的，打包直接失败；更新包的签名用公钥验不过（包被改过、签名坏了、不是这把钥匙签的、绑定的版本不对），生成 `latest.json` 那一步拒绝发版。PR 和 main 上的打包用每次现生成的一对一次性密钥（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
+**更新签名密钥**（#184，维护者做一次）：公钥只放一处——`src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`：App 运行时用它验更新包，打包时打包工具用它，发版前生成 `latest.json` 那一步也用它逐个验签。发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名。发版标签上缺这个 secret、或公钥是空的，打包直接失败；更新包的签名用公钥验不过（包被改过、签名坏了、不是这把钥匙签的、绑定的版本不对），生成 `latest.json` 那一步拒绝发版。每周定时和手动触发的打包用每次现生成的一对一次性密钥（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
 
 在自己的 Mac 上，进仓库的 `client/` 目录，**一条一条**跑下面的命令；任何一条报错就停下，先看下面「出错了怎么办」，不要继续上传。
 

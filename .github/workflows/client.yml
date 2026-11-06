@@ -4,12 +4,12 @@ name: Client
 # packages, its own Releases (tag client/vX.Y.Z). Nothing here touches the
 # daemon's tests or its weekly release.
 #
-# What runs when (GitHub#195):
-#   pull request         typecheck, cargo, vitest, Playwright, the real app on Linux.
-#                        No Mac packaging (the Mac jobs show "skipped").
-#   push to main         all of the above + the Macs
-#   client/v* tag        all of the above + the Macs; any failure, no Release
-#   manual run           as before: the Macs, negative controls only when asked
+# What runs when:
+#   every PR push, push to main   quick tests: typecheck, cargo, vitest (a few minutes)
+#   client/v* tag                 quick + full tests (Playwright, the real app on Linux) + the Macs,
+#                                 arm64 and x64; any failure, no Release
+#   weekly / manual run           quick + full tests + the Mac arm64 build (packaging or end-to-end
+#                                 breakage shows up within a week); negative controls only when asked
 # Negative controls run automatically only in the weekly release gate
 # (.github/workflows/release.yml, job gate-client), on the commit that release tags.
 on:
@@ -26,6 +26,8 @@ on:
       - '.github/actions/client-setup/**'
     tags:
       - 'client/v*'
+  schedule:
+    - cron: '40 16 * * 0'
   workflow_dispatch:
     inputs:
       mutation:
@@ -42,7 +44,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: client-${{ github.event.pull_request.number || github.ref }}
+  # the weekly run has its own group, so it never cancels (or is cancelled by) a push to main
+  group: client-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'schedule' && '-weekly' || '' }}
   cancel-in-progress: true
 
 defaults:
@@ -51,10 +54,9 @@ defaults:
 
 jobs:
   test:
-    name: client tests (Linux)
+    name: client quick tests (Linux)
     runs-on: ubuntu-latest
-    # negative controls rebuild the back end / the app per entry
-    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
+    timeout-minutes: ${{ inputs.mutation && 240 || 30 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,6 +74,20 @@ jobs:
       - name: Negative controls
         if: ${{ inputs.mutation && inputs.mutation_scope != 'shell' }}
         run: MUTATION=1 npm run test:mutation
+
+  # Playwright + the real app on Linux. Each builds the whole app, so only on a client/v* tag,
+  # the weekly run and a manual run — not on pull requests, not on pushes to main.
+  e2e:
+    name: client full tests (Linux)
+    if: startsWith(github.ref, 'refs/tags/client/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # negative controls rebuild the back end / the app per entry
+    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/client-setup
       - name: UI tests (Playwright on WebKit, real window + real back end)
         run: npm run test:e2e
       - name: The app itself on Linux (Tauri window + IPC + back end) starts
@@ -96,17 +112,15 @@ jobs:
 
   package:
     name: dmg (${{ matrix.arch }})
-    # Not on pull requests (GitHub#195): packaging and the Mac checks run once the
-    # change is on main, on a client/v* tag, and on a manual run.
-    if: github.event_name != 'pull_request'
+    # Only on a client/v* tag, the weekly run and a manual run — not on pull requests (GitHub#195)
+    # and no longer on every push to main.
+    if: startsWith(github.ref, 'refs/tags/client/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
+      # x64 (Intel) only on a client/v* tag, where the Release ships both dmgs; the weekly and
+      # manual runs build and check arm64 alone.
       matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
+        include: ${{ fromJSON(startsWith(github.ref, 'refs/tags/client/v') && '[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]' || '[{"arch":"arm64","runner":"macos-15"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
@@ -203,7 +217,7 @@ jobs:
           if-no-files-found: ignore
 
   size:
-    name: download size (both dmgs)
+    name: download size (every dmg built)
     needs: [package]
     runs-on: ubuntu-latest
     steps:
@@ -214,14 +228,16 @@ jobs:
           path: client/dist-release
           merge-multiple: true
       - name: Each dmg and each update package ≤ 20 MB (target ≤ 10 MB)
+        env:
+          ARCHES: ${{ startsWith(github.ref, 'refs/tags/client/v') && 'arm64,x64' || 'arm64' }}
         run: |
-          node scripts/size-gate.mjs dist-release/*.dmg --expect arm64,x64
-          node scripts/size-gate.mjs dist-release/*.app.tar.gz --expect arm64,x64
+          node scripts/size-gate.mjs dist-release/*.dmg --expect "$ARCHES"
+          node scripts/size-gate.mjs dist-release/*.app.tar.gz --expect "$ARCHES"
 
   release:
     name: publish client release
     if: startsWith(github.ref, 'refs/tags/client/v')
-    needs: [test, package, size]
+    needs: [test, e2e, package, size]
     runs-on: ubuntu-latest
     permissions:
       contents: write

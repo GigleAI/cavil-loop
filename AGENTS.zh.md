@@ -60,9 +60,9 @@
 │   ├── ci-exclude.txt         ← CI 不跑的文件，每个写明原因
 │   └── ci-weights.txt         ← 各文件参考耗时，只用来均衡 CI 分组
 ├── .github/workflows/
-│   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（检查名：测试）
+│   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（只改 client/ 的不跑；检查名：测试）
 │   ├── release.yml            ← 每周发版，先过跑全部负对照的门禁（GitHub#195）
-│   └── client.yml             ← 桌面客户端：测试、macOS dmg、client/v* Release
+│   └── client.yml             ← 桌面客户端：每次推送跑快测；打标签 / 每周 / 手动时跑完整测试并打 macOS dmg；client/v* Release
 ├── .github/actions/client-setup/  ← 客户端测试环境，client.yml 和发版门禁共用
 ├── client/                   ← 桌面看板客户端（Tauri：TS + React 界面 + Rust 后台；GitHub#135 / #151），见 client/README.md
 └── docs/
@@ -280,7 +280,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 ### 统一入口，每个 PR 自动跑（GitHub#117）
 
 `bash tests/run.sh` 跑全部（本机串行约 9 分钟）；`bash tests/run.sh 名字...` 按名字跑几个（文件名去掉 `.test.sh`）；
-`--list` 列出文件。GitHub Actions（`.github/workflows/tests.yml`）对每个 PR、每次推送 `main` 跑同一个脚本：
+`--list` 列出文件。GitHub Actions（`.github/workflows/tests.yml`）对每个 PR、每次推送 `main` 跑同一个脚本（只改了 `client/` 的不跑——这些测试都不读它，`client/test/tauri/mutations.sh` 例外）：
 四个并行任务各跑 `tests/run.sh --ci --shard K/4`，再由一个名叫 **测试** 的任务汇总（`--verify`）——
 只有每个该跑的文件在各路里恰好通过一次，它才是绿的。要设「合并必需检查」就勾这一条。
 每个文件的完整日志存成运行附件，失败的直接打印全文。
@@ -313,11 +313,12 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 |---|---|---|---|
 | worker 开发、交付、返工（本机） | 改动涉及的那部分 | **不跑** | 不跑 |
 | 复审（本机） | 需要时复跑相关部分 | **不跑，也不要求 worker 跑** | 不跑 |
-| PR 的 CI（每次推送） | `Tests`（全部 shell 测试）+ `Client` 的 Linux 套件 | 不跑 | 不跑（dmg 任务显示「已跳过」） |
-| `Client`：推到 `main` | 同 PR | 不跑 | 跑 |
-| `Client`：`client/v*` 标签 | 同 PR | 不跑 | 跑；有红就不发版 |
+| PR 的 CI（每次推送） | `Tests`（全部 shell 测试；只改 `client/` 时不跑）+ `Client` 快测（类型检查、cargo、vitest） | 不跑 | 不跑（dmg 任务显示「已跳过」） |
+| `Client`：推到 `main` | 只跑快测（完整测试——Playwright、Linux 上的真实 App——留到打标签 / 每周那次） | 不跑 | **不跑**（每合一次打一次，多数没人用） |
+| `Client`：`client/v*` 标签 | 快测 + 完整测试 | 不跑 | 跑 arm64 和 x64；有红就不发版 |
+| `Client`：每周（周日 16:40 UTC） | 快测 + 完整测试 | 不跑 | 只跑 **arm64**，打包坏了一周内能发现 |
 | `Release`（每周，或推 `release/v*` 标签） | — | **全部**：全部 `tests/*.test.sh` 带 `MUTATION=1`（4 份并行 + 托管测试拆成 6 份），加客户端两组（`test/mutation`、真实 App 的 `test/tauri/mutations.sh`），跑在这次要打标签的那个提交上；有红就不打标签、不建发版页 | — |
-| 手动 *Run workflow* | 照旧 | 原有的 `mutation` 勾选框（只在手动时）；`Release` 的 `gate_only` 只跑整套门禁、不打标签，用来试跑 | `Client`：跑 |
+| 手动 *Run workflow* | 照旧 | 原有的 `mutation` 勾选框（只在手动时）；`Release` 的 `gate_only` 只跑整套门禁、不打标签，用来试跑 | `Client`：跑，只打 arm64 |
 
 - 负对照不再是交付 PR、复审 PR 的一部分：PR 的证据是默认回归。PR 里新写的负对照在下一次每周发版时第一次跑，交付时写明这一点。复审不因缺负对照或打包结果打回
 - 负对照红了只挡每周发版：daemon 照样自动部署合并后的 `main`，客户端自己的 `client/v*` 发版也不等它，也没有人会收到提醒
