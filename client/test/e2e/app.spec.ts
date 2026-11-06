@@ -1493,11 +1493,41 @@ async function lowContrast(page: Page) {
   });
 }
 
+/** Background alpha of every label chip on the page (1 = solid). */
+const chipAlphas = (page: Page, sel = '.label') =>
+  page.locator(sel).evaluateAll((els) =>
+    els.map((e) => {
+      const m = getComputedStyle(e).backgroundColor.match(/rgba?\(([^)]+)\)/)!;
+      const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+      return p.length > 3 ? p[3] : 1;
+    }),
+  );
+
+/**
+ * Switch the colour scheme and wait until the window has really taken it: the media query
+ * reports it and every label chip has been re-rendered for it (the chips follow the scheme
+ * through a React state set from the media query's change event, so right after the switch
+ * they can still be the old ones — WebKit on CI read them in that gap). CSS-only colours
+ * follow at once. If the window never takes the scheme, this fails after the poll's timeout.
+ */
+async function schemeSettled(page: Page, scheme: 'light' | 'dark', where: string) {
+  await page.emulateMedia({ colorScheme: scheme });
+  await expect
+    .poll(
+      async () => {
+        const matches = await page.evaluate((s) => matchMedia(`(prefers-color-scheme: ${s})`).matches, scheme);
+        const alphas = await chipAlphas(page);
+        return matches && alphas.every((a) => (scheme === 'dark' ? a < 1 : a >= 1));
+      },
+      { message: `${where}: the window takes the ${scheme} scheme (media query + label chips)` },
+    )
+    .toBe(true);
+}
+
 /** Text check in both colour schemes; also asserts something was checked (an empty page passes nothing). */
 async function readableBoth(page: Page, where: string, min: number) {
   for (const scheme of ['light', 'dark'] as const) {
-    await page.emulateMedia({ colorScheme: scheme });
-    await page.waitForTimeout(100);
+    await schemeSettled(page, scheme, where);
     const r = await lowContrast(page);
     expect(r.checked, `${where} (${scheme}): text was found`).toBeGreaterThan(min);
     expect(r.bad, `${where} (${scheme})`).toEqual([]);
@@ -1508,14 +1538,8 @@ async function readableBoth(page: Page, where: string, min: number) {
 
 /** Dark mode: label chips are see-through tints, not GitHub's solid light-page colours (card, detail, table). */
 async function chipsTinted(page: Page, sel: string, where: string) {
-  await page.emulateMedia({ colorScheme: 'dark' });
-  const alphas = await page.locator(sel).evaluateAll((els) =>
-    els.map((e) => {
-      const m = getComputedStyle(e).backgroundColor.match(/rgba?\(([^)]+)\)/)!;
-      const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
-      return p.length > 3 ? p[3] : 1;
-    }),
-  );
+  await schemeSettled(page, 'dark', where);
+  const alphas = await chipAlphas(page, sel);
   expect(alphas.length, `${where}: chips found`).toBeGreaterThan(0);
   expect(alphas.filter((a) => a >= 1), `${where}: solid chips in dark mode`).toEqual([]);
   await page.emulateMedia({ colorScheme: 'light' });
