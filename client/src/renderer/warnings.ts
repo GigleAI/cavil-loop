@@ -16,7 +16,7 @@
 import type { SyncState } from '../shared/types';
 import type { ParsedFilter } from '../shared/filter';
 
-export const WARN_KINDS = ['filter-unsupported', 'filter-incomplete', 'offline', 'incomplete', 'sync-problem'] as const;
+export const WARN_KINDS = ['filter-unsupported', 'filter-incomplete', 'offline', 'incomplete', 'sync-problem', 'board-notify-problem'] as const;
 export type WarnKind = (typeof WARN_KINDS)[number];
 
 /** kind -> fault id of every bar that is up; a kind that is absent is not up */
@@ -44,6 +44,16 @@ export function warningIds(sync: SyncState, parsed: ParsedFilter): WarnIds {
   if (!sync.offline && failed.length > 0) out.incomplete = sorted(failed.map((f) => JSON.stringify([f.sourceKey, f.error ?? ''])));
   if (sync.problem) out['sync-problem'] = sync.problem;
   return out;
+}
+
+/**
+ * The "macOS refused the notification" bar (GitHub#139): up while the latest
+ * notification was refused; its fault id is the system's own reason, which
+ * carries no time. Kept apart from warningIds because it comes from the
+ * app state, not from the sync or the search box.
+ */
+export function notifyWarningIds(notifyProblem: string | null): WarnIds {
+  return notifyProblem ? { 'board-notify-problem': notifyProblem } : {};
 }
 
 /**

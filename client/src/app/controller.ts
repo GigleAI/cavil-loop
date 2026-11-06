@@ -23,11 +23,19 @@ import { fetchRawDetail, toDetail } from '../data/detail';
 import { applyFreshItem, fetchItem } from '../data/itemRefresh';
 import { GitHubError } from '../data/github';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
+import { PendingTracker, itemAlertText, summaryAlertText } from '../data/pending';
+import type { Alert, Delivery, Desktop, DesktopEvent } from './desktop';
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
 export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
 /** the back end refreshes this long before the access token expires (src-tauri/crates/core/src/engine.rs) */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
+
+/** What a queued notification was decided on (see Controller.noticeContext). */
+interface NoticeContext {
+  label: number;
+  sources: (readonly [string, number])[];
+}
 
 export interface ControllerDeps {
   backend: Backend;
@@ -40,6 +48,8 @@ export interface ControllerDeps {
   defaultClientId?: string;
   /** built-in GitHub App Client ID ('' = none, which is production today) */
   defaultGithubAppClientId?: string;
+  /** notifications, Dock badge, launch at login, sync beat (none: nothing is shown, the counting still runs) */
+  desktop?: Desktop;
 }
 
 /** where each kind's Client ID override is saved ('oauthClientId' predates the choice and keeps its name) */
@@ -129,6 +139,10 @@ export class Controller {
   private readonly now: () => number;
 
   private readonly defaultClientIds: Record<AppKind, string>;
+  /** items carrying the pending label: notifications, badge and summary all come from here (GitHub#139) */
+  private readonly pending: PendingTracker;
+  private focusSeq = 0;
+  private eventsRunning = false;
 
   /** Read what the back end has (settings, cached snapshots), then build the controller. */
   static async create(deps: ControllerDeps): Promise<Controller> {
@@ -148,6 +162,9 @@ export class Controller {
     };
     this.now = deps.now ?? Date.now;
     const appKind = this.loadAppKind();
+    const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
+    // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
+    this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human);
     this.state = {
       phase: 'loading',
       loginReason: null,
@@ -159,8 +176,12 @@ export class Controller {
       view: normalizeView(this.cache.getSetting<unknown>('view', {})),
       sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
-      handBack: { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) },
+      handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
+      pendingCount: 0,
+      launchAtLogin: null,
+      notifyProblem: null,
+      focus: null,
     };
     for (const s of init.snapshots) this.snapshots.set(s.sourceKey, s);
     this.refreshDerived();
@@ -200,6 +221,7 @@ export class Controller {
   }
 
   async start(): Promise<void> {
+    void this.readLoginItem();
     const r = await this.backend.call<{ phase: 'login' | 'ready'; reason?: string | null; session?: number; wiped: boolean }>('start');
     if (r.wiped) this.dropMirror();
     if (r.phase === 'login') {
@@ -388,10 +410,197 @@ export class Controller {
     if (this.state.sync.problem !== problem) this.set({ sync: { ...this.state.sync, problem } });
   }
 
-  /** The back end dropped every snapshot (sign-out / another account): forget them here too. */
+  /** The back end dropped every snapshot (sign-out / another account): forget them here too, and what was pending with them. */
   private dropMirror(): void {
     this.snapshots.clear();
-    this.state = { ...this.state, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.pending.reset();
+    this.state = { ...this.state, pendingCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    // what was queued for the shell belonged to that account: none of it goes out any more, and the
+    // cleared badge does not wait behind a notification the system is still answering
+    this.desktopEra++;
+    this.desktopCalls = Promise.resolve();
+    this.badge();
+  }
+
+  // ---- pending: notifications, Dock badge, start-up summary (GitHub#139) ----
+
+  /**
+   * Calls to the shell go one at a time, in order. A window the user closed is
+   * hidden, and its web engine may hold back a second request sent while the
+   * first is in flight until the page wakes again — a badge then lagged a whole
+   * sync beat behind its notification (found by test/tauri/background.spec.ts).
+   */
+  private desktopCalls: Promise<unknown> = Promise.resolve();
+  /**
+   * Bumps on sign-out / another account (dropMirror). A call queued in an earlier era is
+   * dropped before it reaches the shell, and the answer to one already handed over is ignored.
+   */
+  private desktopEra = 0;
+  /** bumps when the "waiting for a human" label is renamed: a recount is silent, nothing queued before it goes out */
+  private labelVersion = 0;
+
+  /** Queue one call to the shell; `run` decides right before it goes out (null = dropped). */
+  private toDesktop<T>(run: (d: Desktop) => Promise<T> | null): Promise<{ answer: T; current: () => boolean } | null> | null {
+    const d = this.deps.desktop;
+    if (!d) return null;
+    const era = this.desktopEra;
+    const current = () => era === this.desktopEra;
+    const p = this.desktopCalls.then(async () => {
+      if (!current()) return null;
+      const call = run(d);
+      return call ? { answer: await call, current } : null;
+    });
+    this.desktopCalls = p.catch(() => undefined);
+    return p;
+  }
+
+  /** Every call to the shell queued so far has been answered (the tests wait on this). */
+  desktopSettled(): Promise<void> {
+    return this.desktopCalls.then(() => undefined);
+  }
+
+  private badge(): void {
+    // the count as it is when the call goes out; a badge that cannot be set must not break a sync round
+    this.toDesktop((d) => d.setBadge(this.pending.count()))?.catch(() => {});
+  }
+
+  /**
+   * What a notification was decided on: the label and the sources (each as the
+   * addition it was) that it came from. Checked again right before it goes out — the one rule for
+   * every queued notification (PR #173 review rounds 1–2: sign-out, a source removed, removed and
+   * added back, the label renamed and renamed back all happened while one waited).
+   */
+  private noticeContext(sources: string[]): NoticeContext {
+    return { label: this.labelVersion, sources: sources.map((k) => [k, this.epochs.get(k) ?? 0] as const) };
+  }
+
+  /** The recorded sources still configured as the same addition. */
+  private liveSources(ctx: NoticeContext): string[] {
+    return ctx.sources
+      .filter(([k, e]) => this.state.sources.some((s) => s.key === k) && (this.epochs.get(k) ?? 0) === e)
+      .map(([k]) => k);
+  }
+
+  /** (the session is checked once, by the queue: a call from an earlier era never runs) */
+  private sameContext(ctx: NoticeContext): boolean {
+    return ctx.label === this.labelVersion;
+  }
+
+  /**
+   * An item notification still holds when the item is pending now through at least one of the
+   * sources it came from, still the same addition (another source carrying it does not revive it,
+   * one of its own still carrying it keeps it — one item is one notification across sources).
+   */
+  private itemStillHolds(ctx: NoticeContext, key: string): boolean {
+    if (!this.sameContext(ctx)) return false;
+    const carriers = this.pending.carriers(key);
+    return this.liveSources(ctx).some((k) => carriers.includes(k));
+  }
+
+  /** A summary still holds when every source whose first read it reports is still that addition. */
+  private summaryStillHolds(ctx: NoticeContext): boolean {
+    return this.sameContext(ctx) && this.liveSources(ctx).length === ctx.sources.length;
+  }
+
+  private notify(make: () => Alert | null): void {
+    const era = this.desktopEra;
+    this.toDesktop((d) => {
+      const a = make();
+      return a ? d.notify(a) : null;
+    })?.then(
+      (r) => {
+        if (r && r.current()) this.reportNotification(r.answer);
+      },
+      (e) => {
+        if (era === this.desktopEra) this.reportNotification({ ok: false, error: (e as Error).message ?? String(e) });
+      },
+    );
+  }
+
+  /** Feed the snapshots read completely this round; notify what became pending, summarise first reads. */
+  private observePending(fresh: SourceSnapshot[]): void {
+    const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
+    for (const it of change.appeared) {
+      const ctx = this.noticeContext(this.pending.carriers(it.key));
+      const alert: Alert = { kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) };
+      this.notify(() => (this.itemStillHolds(ctx, it.key) ? alert : null));
+    }
+    if (change.summary) {
+      const summary = change.summary;
+      const ctx = this.noticeContext(summary.sources);
+      // the numbers are the ones at the moment it goes out: the same count as the badge then
+      this.notify(() => (this.summaryStillHolds(ctx) ? { kind: 'summary', ...summaryAlertText({ ...summary, ...this.pending.totals() }) } : null));
+    }
+    this.badge();
+    this.state = { ...this.state, pendingCount: this.pending.count() };
+  }
+
+  /**
+   * What the system did with a notification: a refusal is shown on the board
+   * and in Settings instead of failing silently; the next one that goes out clears it.
+   */
+  private reportNotification(result: Delivery): void {
+    const problem = result.ok ? null : result.error;
+    if (problem !== this.state.notifyProblem) this.set({ notifyProblem: problem });
+  }
+
+  private async readLoginItem(): Promise<void> {
+    let v: boolean | null = null;
+    try {
+      v = (await this.deps.desktop?.loginItem()) ?? null;
+    } catch {
+      v = null;
+    }
+    if (v !== this.state.launchAtLogin) this.set({ launchAtLogin: v });
+  }
+
+  async setLaunchAtLogin(on: boolean): Promise<void> {
+    if (!this.deps.desktop || this.state.launchAtLogin === null) return;
+    try {
+      await this.deps.desktop.setLoginItem(Boolean(on));
+    } catch {
+      /* read back below shows what the system actually has */
+    }
+    await this.readLoginItem();
+  }
+
+  /**
+   * Events from the shell, one at a time: a sync beat (the shell keeps time,
+   * so a hidden window keeps syncing) or a clicked notification.
+   */
+  async runDesktopEvents(): Promise<void> {
+    const d = this.deps.desktop;
+    if (!d || this.eventsRunning) return;
+    this.eventsRunning = true;
+    while (this.eventsRunning) {
+      let ev: DesktopEvent;
+      try {
+        ev = await d.nextEvent();
+      } catch {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      if (!this.eventsRunning) break;
+      this.onDesktopEvent(ev);
+    }
+  }
+
+  stopDesktopEvents(): void {
+    this.eventsRunning = false;
+  }
+
+  /** One event from the shell (also what the tests feed). */
+  onDesktopEvent(ev: DesktopEvent): void {
+    if (ev.kind === 'tick') {
+      void this.syncNow();
+      return;
+    }
+    // a click: the item's detail in the app; an item no longer on the board opens on GitHub instead
+    if (this.state.phase === 'ready' && this.findItem(ev.key)) {
+      this.set({ focus: { key: ev.key, seq: ++this.focusSeq } });
+    } else if (ev.url) {
+      void this.backend.call('openExternal', { url: ev.url }).catch(() => {});
+    }
   }
 
   /** Write snapshots read in `session`; false when that session is over (nothing lands, here or on disk). */
@@ -474,6 +683,10 @@ export class Controller {
     this.cache.setSetting('sources', sources);
     this.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
+    // its own items stop counting, silently
+    this.pending.prune(sources.map((s) => s.key));
+    this.badge();
+    this.state = { ...this.state, pendingCount: this.pending.count() };
     const view = this.state.view.selected ? { ...this.state.view, selected: this.state.view.selected.filter((k) => k !== key) } : this.state.view;
     this.cache.setSetting('view', view);
     this.cache.setSetting(PENDING_IMPORTS, this.pendingImports().filter((p) => p.sourceKey !== key));
@@ -601,6 +814,8 @@ export class Controller {
     accepted = accepted.filter((snap) => current(snap.sourceKey));
     for (const snap of accepted) this.snapshots.set(snap.sourceKey, snap);
     this.applyImports(accepted);
+    // Only what was read completely this round (and still belongs here) is compared.
+    this.observePending(accepted);
     if (round.viewer) this.cache.setSetting('viewer', round.viewer);
     const status = round.status
       .filter((st) => current(st.sourceKey))
@@ -652,6 +867,14 @@ export class Controller {
       agent: (patch.agent ?? this.state.handBack.agent).trim() || DEFAULT_HAND_BACK.agent,
     };
     this.cache.setSetting('handBack', next);
+    // The same label is what reminders count: another name is recounted silently
+    // (a settings change is not new work arriving).
+    if (next.human !== this.state.handBack.human) {
+      this.labelVersion++;
+      this.pending.relabel(next.human, this.snapshots);
+      this.badge();
+      this.state = { ...this.state, pendingCount: this.pending.count() };
+    }
     this.set({ handBack: next });
   }
 

@@ -1132,6 +1132,126 @@ test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, s
   await app.close();
 });
 
+// ---- "待处理" reminders (GitHub#139, rebuilt on Tauri in #169) ---------------------------
+
+async function signInForReminders(page: Page, sources: string[]) {
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  for (const s of sources) {
+    await page.getByTestId('source-input').fill(s);
+    await page.getByTestId('source-add').click();
+  }
+}
+
+test('pending/human: start-up summary, one notification per new label at the next beat, badge, label setting, a click opens the item', async () => {
+  const { app, page } = await launch(env);
+  await signInForReminders(page, [PROJECT_URL, 'GigleAI/cavil-loop']);
+
+  // expected numbers come from the recording itself (re-recorded by record.mjs, never typed in)
+  const pendingInRecording = new Set<string>();
+  for (const pg of loadCavilProjectPages())
+    for (const n of pg.items.nodes)
+      if (!n.isArchived && n.content?.labels?.nodes.some((l: any) => l.name === 'pending/human'))
+        pendingInRecording.add(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`);
+  for (const i of env.fake.state.repos.get('gigleai/cavil-loop')!)
+    if (i.labels.some((l: any) => (l.name ?? l) === 'pending/human')) pendingInRecording.add(`gigleai/cavil-loop#${i.number}`);
+  const N = pendingInRecording.size;
+  expect(N).toBeGreaterThan(0);
+  // a merged PR without the label, only on the board
+  const mergedPr = loadCavilProjectPages()
+    .flatMap((pg) => pg.items.nodes)
+    .find((n: any) => n.content?.__typename === 'PullRequest' && n.content.merged && !n.content.labels.nodes.some((l: any) => l.name === 'pending/human'))!.content.number;
+  await expect(page.getByTestId('pending-count')).toHaveText(String(N), { timeout: 15_000 });
+  const notes = () => app.desktop.records.filter((a) => a.op === 'notify').map((a) => a.alert);
+  const badge = () => app.desktop.records.filter((a) => a.op === 'badge').pop()?.count;
+  await expect.poll(() => notes().length).toBeGreaterThan(0);
+  expect(notes().filter((a) => a.kind === 'item')).toEqual([]);
+  expect(notes().filter((a) => a.kind === 'summary').map((a) => a.title)).toContain(`${N} 条待处理`);
+  expect(badge()).toBe(N);
+  await expect(page.getByTestId('launch-at-login')).not.toBeChecked();
+  // the box follows what the system says, not the click: it turns on once the system answered
+  await page.getByTestId('launch-at-login').click();
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'loginItem').map((a) => a.on)).toEqual([true]);
+  await expect(page.getByTestId('launch-at-login')).toBeChecked();
+  await shot(page, '20-pending-settings');
+
+  // a merged PR gets the label on GitHub → exactly one notification at the next beat from the shell
+  for (const pg of env.fake.state.projects.get('org/gigleai/11')!)
+    for (const n of pg.items.nodes)
+      if (n.content?.number === mergedPr) {
+        n.content.labels = { nodes: [...n.content.labels.nodes, { name: 'pending/human', color: 'ededed' }] };
+        n.content.updatedAt = new Date().toISOString();
+      }
+  await page.getByTestId('back').click();
+  app.desktop.push({ kind: 'tick' });
+  await expect.poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key)).toEqual([`gigleai/cavil-loop#${mergedPr}`]);
+  const itemNote = notes().find((a) => a.kind === 'item');
+  expect(itemNote.title).toContain('已合并');
+  await expect.poll(badge).toBe(N + 1);
+  app.desktop.push({ kind: 'tick' });
+  await page.waitForTimeout(800);
+  expect(notes().filter((a) => a.kind === 'item')).toHaveLength(1);
+
+  // a click on that notification opens the item in the app (also from the settings page)
+  await page.getByTestId('open-settings').click();
+  app.desktop.push({ kind: 'open', key: itemNote.key, url: itemNote.url });
+  await expect(page.getByTestId('detail')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('detail')).toContainText(`#${mergedPr}`);
+  await shot(page, '22-notification-click');
+  // closed, then the settings page and back: an old click never reopens it
+  await page.getByTestId('detail-close').click();
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('back').click();
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+
+  // another label name: recounted, nothing notified
+  await page.getByTestId('open-settings').click();
+  // the reminder label is the same setting as the "hand back to agent" one
+  await page.getByTestId('hand-back-human').fill('doing/agent');
+  await page.getByTestId('hand-back-human').blur();
+  await expect(page.getByTestId('pending-label')).toHaveText('doing/agent');
+  await expect(page.getByTestId('pending-count')).not.toHaveText(String(N + 1));
+  const count = Number(await page.getByTestId('pending-count').textContent());
+  await expect.poll(badge).toBe(count);
+  expect(notes().filter((a) => a.kind === 'item')).toHaveLength(1);
+  await app.close();
+});
+
+test('notifications refused by the system: the board says so and how to allow them', async () => {
+  const { app, page } = await launch(env);
+  app.desktop.refuse = 'Notifications are not allowed for this application';
+  await signInForReminders(page, [PROJECT_URL]);
+  // the start-up summary was sent (and refused)
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'notify').length, { timeout: 15_000 }).toBe(1);
+  await expect(page.getByTestId('notify-problem')).toContainText('系统设置 → 通知 → Cavil Loop');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('board-notify-problem')).toContainText('Notifications are not allowed');
+  await shot(page, '21-notify-refused');
+  // like every yellow bar (GitHub#153): × closes it, and the same refusal again does not bring it back
+  await page.getByTestId('board-notify-problem-close').click();
+  await expect(page.getByTestId('board-notify-problem')).toHaveCount(0);
+  // one more item gets the label: a second notification, refused for the same reason
+  const another = env.fake.state.projects
+    .get('org/gigleai/11')!
+    .flatMap((pg) => pg.items.nodes)
+    .find((n: any) => !n.isArchived && n.content?.__typename === 'Issue' && !n.content.labels.nodes.some((l: any) => l.name === 'pending/human'))!;
+  another.content.labels = { nodes: [...another.content.labels.nodes, { name: 'pending/human', color: 'ededed' }] };
+  another.content.updatedAt = new Date().toISOString();
+  app.desktop.push({ kind: 'tick' });
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'notify').length).toBe(2);
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('board-notify-problem')).toHaveCount(0);
+  await app.close();
+});
+
 // GitHub#172: the top of the detail tells an issue from a PR at a glance — a
 // different icon and the full name — and the colour is GitHub's state colour
 // (review of PR #174: "keep the issue / PR state colours the same as GitHub"):

@@ -2,7 +2,7 @@
 # wires it to the window (one IPC command) and to the operating system.
 [package]
 name = "cavil-loop-client"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "Cavil Loop desktop board client"
@@ -21,6 +21,16 @@ tauri = { version = "2.12", features = [] }
 tauri-plugin-single-instance = "2"
 async-trait.workspace = true
 url = "2"
+tokio.workspace = true
+
+# The desktop side (GitHub#169): notifications through the system's current
+# notification API, launch at login, keeping a hidden window's process awake.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-autostart = "2"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError", "NSBundle", "NSProcessInfo", "NSDictionary", "NSSet", "NSObject", "NSThread"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotification", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNNotificationSound"] }
 
 [workspace]
 members = [".", "crates/core", "crates/harness"]

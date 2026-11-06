@@ -7,7 +7,7 @@ import { BoardView, type BoardWarnings } from './BoardView';
 import { SettingsView } from './SettingsView';
 import { AppKindHelp } from './AppKindHelp';
 import { useQuery } from './query';
-import { dismiss, isShown, reconcile, warningIds, type Dismissed } from './warnings';
+import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
 
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -30,10 +30,23 @@ export function App() {
   // board: the board is unmounted while the settings page is up, and a
   // problem that clears (or a filter an import replaces) meanwhile must still
   // drop the record (GitHub#153). Closed bars are kept for this run only.
+  // A clicked notification (GitHub#169): back to the board, which opens that item once.
+  // The request lives here and is dropped once the board took it, so coming back to the
+  // board later (it is unmounted while Settings is up) never reopens an old click.
+  const focus = snap?.state.focus ?? null;
+  const [focusReq, setFocusReq] = useState<{ key: string; seq: number } | null>(null);
+  useEffect(() => {
+    if (!focus) return;
+    setHelp(false);
+    setPage('board');
+    setFocusReq(focus);
+  }, [focus?.seq]);
+
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
   const parsed = useMemo(() => parseFilter(query), [query]);
   const sync = snap?.state.sync;
-  const current = useMemo(() => (sync ? warningIds(sync, parsed) : null), [sync, parsed]);
+  const notifyProblem = snap?.state.notifyProblem ?? null;
+  const current = useMemo(() => (sync ? { ...warningIds(sync, parsed), ...notifyWarningIds(notifyProblem) } : null), [sync, parsed, notifyProblem]);
   const [closed, setClosed] = useState<Dismissed>({});
   // reconciled on every render, whichever page is showing; nothing is judged before the first snapshot
   const live = current ? reconcile(closed, current) : closed;
@@ -63,6 +76,8 @@ export function App() {
           setQuery={setQuery}
           parsed={parsed}
           warn={warn}
+          focus={focusReq}
+          onFocusTaken={() => setFocusReq(null)}
           onSettings={() => setPage('settings')}
         />
       )}
