@@ -47,6 +47,8 @@ function repo(opts: { withList?: boolean } = {}) {
     'src/z.ts': 'export const z = 1;\n',
     'src-tauri/x.rs': 'fn x() {}\n',
     'src-tauri/src/main.rs': 'fn main() {}\n',
+    // a shell source file no entry breaks: only the "app shell sources" rule can pick it
+    'src-tauri/src/shell_util.rs': 'fn util() {}\n',
     'test/fake-github/server.ts': 'export const fake = 1;\n',
     'test/fixtures/recorded.json': '{}\n',
     'README.md': 'client\n',
@@ -214,10 +216,10 @@ describe('negative controls related to a change (--changed)', () => {
     expect(none.status).toBe(1);
     expect(none.stdout).toContain('没有相关的真实窗口负对照');
     expect(none.stdout).toContain('src/z.ts');
-    edit(r, 'src-tauri/src/main.rs', 'fn main() { }\n');
+    edit(r, 'src-tauri/src/shell_util.rs', 'fn util() { }\n');
     const yes = related(r);
     expect(yes.status).toBe(0);
-    expect(yes.stdout).toContain('src-tauri/src/main.rs');
+    expect(yes.stdout).toContain('src-tauri/src/shell_util.rs');
     const unknown = related(r, { CLIENT_MUT_BASE: 'no-such-ref' });
     expect(unknown.status).toBe(2);
     expect(unknown.stdout).toContain('判断不了');
