@@ -32,6 +32,7 @@ agent posts a proposal / question / report ── comment ── runs the wake-u
    ▼                                           ▼
 waiting: daemon does not dispatch     bot pulls every item carrying the waiting label → reads the thread
    │                                  → takes it to the requester → comments "sent to X"
+   │                                  (the waiting label stays: it means "still waiting for the answer")
    │                                           │
    │                                           ▼
    │                         gets the answer → pastes it verbatim → removes the waiting label → adds pending/agent
@@ -96,12 +97,14 @@ No restart needed after editing the config: every poll tick reads it afresh.
 
 Hand the next section, [What grokbot has to do on its side](#what-grokbot-has-to-do-on-its-side), to whoever runs grokbot and have it implemented as written.
 
+**The rule most easily got wrong**: after passing a message on to the requester, **do not remove the waiting label**; remove it only when bringing the answer back (rules 3 and 4). The waiting label is the only thing on the board that shows "this item is waiting for the requester's answer"; removing it right after passing the message on leaves the item with no flow label at all, and nobody can tell what it is waiting for. Since the label stays, grokbot's next scan pulls the item again, so it has to recognise "already passed on" and not send it twice (end of rule 3).
+
 ### 6. Check it works
 
 Have grokbot file a test request, then check in order:
 
 1. Once the agent posts its proposal, the issue shows `pending/requester-bot`; `poll.log` contains `notify-requester-bot #<number>: ✅ 已叫醒 grokbot` followed by `已通知 webhook（HTTP 200）`
-2. grokbot comments on the item carrying the waiting label saying whom it sent it to, later pastes the answer back verbatim on that same item, removes `pending/requester-bot` and adds `pending/agent`; on the next tick the agent carries on
+2. grokbot comments on the item carrying the waiting label saying whom it sent it to, **and `pending/requester-bot` is still there afterwards**; grokbot's next scan does not send it a second time. Later it pastes the answer back verbatim on that same item, removes `pending/requester-bot` and adds `pending/agent`; on the next tick the agent carries on
 3. After the PR merges, the issue gets a "request done" comment and carries `pending/requester-bot` again, with `issue #<number>：已通知 webhook（HTTP 200）` in `poll.log`
 
 If any step does not match, see [Troubleshooting](#troubleshooting).
@@ -112,12 +115,12 @@ cavil-loop only handles its own side; grokbot implements the following:
 
 1. **Filing a request**: open an issue whose body ends with the marker `<!-- requested-by-grokbot -->`, and add `pending/agent`. Only an issue authored by grokbot **and** carrying the marker counts as its request — missing either, cavil-loop treats it as an ordinary issue and questions go to the maintainer only
 2. **On a webhook call, or its own periodic scan**: pull **every** issue / PR carrying `pending/requester-bot`, **closed ones included**. The webhook body is only a hint; always pull everything rather than acting on the body (format: [Reference → The webhook call](#the-webhook-call))
-3. **Passing it on**: read the thread, take the latest comment to the requester, then comment **on the item carrying the waiting label** saying whom it went to — the issue for a proposal or question, the PR for a result report on that PR. That comment is the only thing the agent accepts as proof the requester was told. **Leave the waiting label in place after passing it on**: it means "still waiting for the requester's answer". Removing it early does not make the agent start sooner (the daemon does not dispatch because of it, see [What the daemon does while waiting](#what-the-daemon-does-while-waiting)); it only makes the item look as if nobody is waiting
+3. **Passing it on**: read the thread, take the latest comment to the requester, then comment **on the item carrying the waiting label** saying whom it went to — the issue for a proposal or question, the PR for a result report on that PR. That comment is the only thing the agent accepts as proof the requester was told. **Leave the waiting label in place after passing it on**: it means "still waiting for the requester's answer". Removing it early does not make the agent start sooner (the daemon does not dispatch because of it, see [What the daemon does while waiting](#what-the-daemon-does-while-waiting)); it only makes the item look as if nobody is waiting. Because the label stays, every scan pulls the item again, so recognise "already passed on" and do not send it twice: on grokbot's own request, if the latest comment is its own "sent to X", it has been passed on and there is nothing to do this round; on a maintainer's own item, once rule 8 finds it "ready", if grokbot's own "sent to X" comment already follows that wake record, there is likewise nothing to do
 4. **Bringing the answer back**: on that same **issue or PR carrying the waiting label**, paste the answer **verbatim** → remove its `pending/requester-bot` → add `pending/agent` to it so the agent continues. **Always add `pending/agent`**, also in `DISPATCH_MODE=greedy` projects (since GitHub#162 an item whose waiting label was removed, with no dispatch label added afterwards, is not picked up on its own). **Never post a PR's answer on the source issue**: the daemon dispatches each item by its own labels, so that redispatches the issue while the waiting PR stays parked. When approving a report, the answer must say so clearly; the agent also checks that the approved report names the PR's current head commit, and asks again if not
 5. **On a comment headed "request done" / "closed without merging"** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`; the request is finished
 6. **Leave items carrying `pending/human` alone**: those are for the maintainer
 7. **Attachments**: images etc. from the requester can be pasted into the issue and the agent downloads them itself; the other direction (agent sending attachments to grokbot) is not supported yet
-8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): first decide whether the item is grokbot's own request per [the routing step of the handoff protocol](#handoff-protocol) — **never by whether the current item's body carries the origin marker**: a PR's body usually has none and is judged by its linked issue, and an ordinary author quoting the marker does not count. If it is not grokbot's request, whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
+8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): first decide whether the item is grokbot's own request per [the routing step of the handoff protocol](#handoff-protocol) — **never by whether the current item's body carries the origin marker**: a PR's body usually has none and is judged by its linked issue, and an ordinary author quoting the marker does not count. If it is not grokbot's request, whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; do not forward twice and do not remove the waiting label after forwarding (rule 3); bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
 
 ## One request end to end: what you see on the issue
 
@@ -128,15 +131,16 @@ With `REQUESTER_BOT_REPORT_FIRST="true"`:
 | 1. File the request | grokbot | issue `pending/agent` | issue body carrying the marker |
 | 2. Dispatch | daemon | issue `doing/agent` | — |
 | 3. Proposal | agent | issue `pending/requester-bot` (with design review on, `pending/review` first, switched to it once review passes) | design proposal |
-| 4. Pass on, bring the answer back | grokbot | issue `pending/agent` | on the issue: "sent to X"; the verbatim answer |
-| 5. Build, open PR | agent | issue `pending/PR`; the PR is reviewed first if the review gate is on | the PR |
-| 6. Report the result | agent / reviewer | PR `pending/requester-bot` | result report (names the commit) |
-| 7. Requester approves | grokbot | PR `pending/agent` | on the PR (not the source issue): "sent to X"; the verbatim approval |
-| 8. Hand to the maintainer | agent | PR `pending/human` | handoff comment |
-| 9. Merge | maintainer | PR `Done`; issue gets `pending/requester-bot` | daemon posts "request done" |
-| 10. Wrap up | grokbot | removes `pending/requester-bot` from the issue | — |
+| 4. Pass on | grokbot | issue still `pending/requester-bot` (not removed) | on the issue: "sent to X" |
+| 5. Bring the answer back | grokbot | issue `pending/agent` | on the issue: the verbatim answer |
+| 6. Build, open PR | agent | issue `pending/PR`; the PR is reviewed first if the review gate is on | the PR |
+| 7. Report the result | agent / reviewer | PR `pending/requester-bot` | result report (names the commit) |
+| 8. Pass on, requester approves | grokbot | PR still `pending/requester-bot` after passing on, `pending/agent` when bringing the approval back | on the PR (not the source issue): "sent to X"; the verbatim approval |
+| 9. Hand to the maintainer | agent | PR `pending/human` | handoff comment |
+| 10. Merge | maintainer | PR `Done`; issue gets `pending/requester-bot` | daemon posts "request done" |
+| 11. Wrap up | grokbot | removes `pending/requester-bot` from the issue | — |
 
-With `REQUESTER_BOT_REPORT_FIRST="false"` steps 6 and 7 do not happen: finished work goes straight to the maintainer, and steps 9 and 10 still follow the merge.
+With `REQUESTER_BOT_REPORT_FIRST="false"` steps 7 and 8 do not happen: finished work goes straight to the maintainer, and steps 10 and 11 still follow the merge.
 
 ## Troubleshooting
 
@@ -148,7 +152,8 @@ With `REQUESTER_BOT_REPORT_FIRST="false"` steps 6 and 7 do not happen: finished 
 | `webhook 配置不完整，跳过` | Header name or key empty, header name has characters other than letters / digits / `-`, or a newline in the URL / key |
 | `配置文件权限过宽（应为 600），webhook 跳过` | Do step 3 |
 | `找不到 curl，webhook 跳过` | Install curl |
-| The item carries no flow label and nobody picks it up; `poll.log` has `不续工——#<number> 最近一次挂上等待标签 … 之后，没人打过派工标签` | The waiting label was removed early and nobody added `pending/agent` (GitHub#162). If the answer is already posted: add `pending/agent` and it continues. If not: put the waiting label back and remind grokbot's side not to remove it after passing the message on ([rules 3 and 4](#what-grokbot-has-to-do-on-its-side)) |
+| Right after grokbot's "sent to X" comment the waiting label is gone and the item carries no flow label | grokbot removed the waiting label itself after passing the message on, against [rule 3](#what-grokbot-has-to-do-on-its-side). The daemon does not dispatch because of it (next row); the board just cannot show that it is waiting for an answer. The fix is on grokbot's side: keep the label after passing on, remove it only when bringing the answer back (GitHub#187) |
+| The item carries no flow label and nobody picks it up; `poll.log` has `不续工——#<number> 最近一次挂上等待标签 … 之后，没人打过派工标签` | The waiting label was removed early and nobody added `pending/agent` (GitHub#162). If the answer is already posted: add `pending/agent` and it continues. If not: leave it; when the answer comes back grokbot adds `pending/agent` per rule 4 and it continues. Remind grokbot's side not to remove the label after passing the message on ([rules 3 and 4](#what-grokbot-has-to-do-on-its-side)). **Do not put the waiting label back by hand**: on a maintainer's own item a hand-added label has no matching wake record, and grokbot marks it "error" and hands it to the maintainer after 30 minutes (see [Handoff protocol](#handoff-protocol)); on grokbot's own request it may be taken as a new wake-up and sent again |
 | grokbot never got "request done" after a merge | Post-merge cleanup is off (`AUTO_CLEANUP_ON_MERGE`); or, for a PR closed unmerged, the same request still has another PR open (no notice then); or the write identity is not in `REQUESTER_BOT_ALLOWED_ACTORS` — `poll.log` says which |
 
 Wake-up script exit codes: [Reference → The wake-up script](#the-wake-up-script).
@@ -330,7 +335,7 @@ Steps: add the waiting label → remove every trigger label, `doing/agent`, `pen
 | 3 | wake-up failed, handed back to the maintainer (only `pending/human` left) | post a short note |
 | 4 | the handback failed too; output shows the labels actually read back | say so plainly, never claim it was handed over |
 
-After answering, the bot removes the waiting label itself — that is the bot's side, not cavil-loop's.
+The bot removes the waiting label itself when it brings the answer back (rule 4; not when passing the message on, rule 3) — that is the bot's side, not cavil-loop's.
 
 
 ### The webhook call
