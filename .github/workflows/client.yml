@@ -133,20 +133,65 @@ jobs:
           "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
           echo "$RUNNER_TEMP/dmgbuild/bin" >> "$GITHUB_PATH"
       - run: npm ci
-      - name: Build the app (Tauri) and the dmg
+      # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. The public key
+      # has one home, plugins.updater.pubkey in src-tauri/tauri.conf.json (the app reads it at run
+      # time, the bundler when it signs, the release job when it verifies). A release tag signs with
+      # the maintainer's key (secret) against that public key, and refuses when either is missing;
+      # every other run uses a throw-away key pair, passed to the bundler as a matching pair, so each
+      # PR builds and measures the same files (those packages are never published).
+      - name: Build the app (Tauri), its update package, and the dmg
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
-          npx tauri build --bundles app
+          if [[ "$GITHUB_REF" == refs/tags/client/v* ]]; then
+            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release tag needs the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
+            pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
+            [ -n "$pub" ] || { echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: the app could not check any update (see client/README.md 发版)"; exit 1; }
+          else
+            npx tauri signer generate --ci -p "" -w "$RUNNER_TEMP/throwaway-update.key" >/dev/null
+            export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/throwaway-update.key" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+            pub="$(cat "$RUNNER_TEMP/throwaway-update.key.pub")"
+          fi
+          conf="$(node -e 'console.log(JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: process.argv[1] } } }))' "$pub")"
+          npx tauri build --bundles app --config "$conf"
+          # the signature the bundler wrote verifies with the public key it was given (on a tag: the app's own)
+          printf '%s' "$conf" > "$RUNNER_TEMP/update-conf.json"
+          node scripts/update-manifest.mjs --verify "src-tauri/target/release/bundle/macos/Cavil Loop.app.tar.gz" "src-tauri/target/release/bundle/macos/Cavil Loop.app.tar.gz.sig" --conf "$RUNNER_TEMP/update-conf.json"
           node scripts/make-dmg.mjs --arch ${{ matrix.arch }}
+          v="$(node -p "require('./package.json').version")"
+          for ext in tar.gz tar.gz.sig; do
+            cp "src-tauri/target/release/bundle/macos/Cavil Loop.app.$ext" "release/Cavil-Loop-$v-${{ matrix.arch }}.app.$ext"
+          done
           ls -la release
       # GitHub#151: ≤ 10 MB is the target, > 20 MB fails (1 MB = 1,000,000 bytes)
       - name: Download size
-        run: node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.dmg --expect ${{ matrix.arch }}
+        run: |
+          node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.dmg --expect ${{ matrix.arch }}
+          node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz --expect ${{ matrix.arch }}
       - name: Smoke test + first-open steps + dmg window
         run: bash scripts/mac-open-check.sh release/Cavil-Loop-*-${{ matrix.arch }}.dmg "$RUNNER_TEMP/dmg-window-${{ matrix.arch }}.png"
+      # GitHub#184: the installed old version updates itself to a new one, for real (Tauri's updater
+      # plugin, /Applications, a loopback stand-in for GitHub); a tampered package is refused.
+      - name: A real update of the installed app
+        run: |
+          npx tauri build --debug --bundles app --features update-test
+          bash scripts/mac-update-check.sh "src-tauri/target/debug/bundle/macos/Cavil Loop.app"
       # The dmg itself, not zipped (archive: false; the artifact is named after the file).
       - uses: actions/upload-artifact@v7.0.1
         with:
           path: client/release/Cavil-Loop-*-${{ matrix.arch }}.dmg
+          archive: false
+          if-no-files-found: error
+      # and the update package and its signature (GitHub#184), the same way
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz.sig
           archive: false
           if-no-files-found: error
       - name: Upload the dmg window screenshot
@@ -165,11 +210,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*.dmg
+          pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
-      - name: Each dmg ≤ 20 MB (target ≤ 10 MB)
-        run: node scripts/size-gate.mjs dist-release/*.dmg --expect arm64,x64
+      - name: Each dmg and each update package ≤ 20 MB (target ≤ 10 MB)
+        run: |
+          node scripts/size-gate.mjs dist-release/*.dmg --expect arm64,x64
+          node scripts/size-gate.mjs dist-release/*.app.tar.gz --expect arm64,x64
 
   release:
     name: publish client release
@@ -187,20 +234,24 @@ jobs:
           [ "$tag" = "$want" ] || { echo "::error::tag $tag does not match package.json ($want)"; exit 1; }
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*.dmg
+          pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
       - name: Both dmgs are there
         run: |
           ls -la dist-release
           [ "$(ls dist-release/*-arm64.dmg dist-release/*-x64.dmg | wc -l)" -eq 2 ]
+      # GitHub#184: what installed apps read to update themselves. Refuses unless both update packages
+      # are there and their signatures verify with the app's public key (tauri.conf.json).
+      - name: Update manifest (latest.json)
+        run: node scripts/update-manifest.mjs --version "$(node -p "require('./package.json').version")" --dir dist-release --conf src-tauri/tauri.conf.json --notes RELEASE_NOTES.md --out dist-release/latest.json
       # Not marked latest: the daemon's weekly release stays "Latest".
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" dist-release/*.dmg \
+          gh release create "$tag" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/latest.json \
             --repo "$GITHUB_REPOSITORY" \
             --title "Cavil Loop 客户端 ${tag#client/}" \
             --notes-file RELEASE_NOTES.md \

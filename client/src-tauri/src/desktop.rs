@@ -83,6 +83,10 @@ impl Desktop {
         if ev["kind"] == "tick" && q.iter().any(|e| e["kind"] == "tick") {
             return;
         }
+        // the updater's status: only the newest one matters (a download reports every piece)
+        if ev["kind"] == "update" {
+            q.retain(|e| e["kind"] != "update");
+        }
         q.push_back(ev);
         drop(q);
         self.wake.notify_one();
@@ -293,6 +297,18 @@ mod tests {
         // after the waiting beat was taken, a new one queues again
         d.push(json!({ "kind": "tick" }));
         assert_eq!(d.next().await["kind"], "tick");
+    }
+
+    #[tokio::test]
+    async fn only_the_newest_update_status_waits() {
+        let d = Desktop::new(TestHooks::default());
+        d.push(json!({ "kind": "update", "status": { "got": 1 } }));
+        d.push(json!({ "kind": "tick" }));
+        d.push(json!({ "kind": "update", "status": { "got": 2 } }));
+        assert_eq!(d.next().await["kind"], "tick");
+        assert_eq!(d.next().await["status"]["got"], 2);
+        d.push(json!({ "kind": "update", "status": { "got": 3 } }));
+        assert_eq!(d.next().await["status"]["got"], 3);
     }
 
     #[tokio::test]

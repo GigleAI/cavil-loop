@@ -2,7 +2,7 @@
 # wires it to the window (one IPC command) and to the operating system.
 [package]
 name = "cavil-loop-client"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "Cavil Loop desktop board client"
@@ -10,6 +10,11 @@ description = "Cavil Loop desktop board client"
 [[bin]]
 name = "cavil-loop-client"
 path = "src/main.rs"
+
+# Test builds only (scripts/mac-update-check.sh): the updater takes its public key from the
+# environment and a debug build updates itself. Never in a released app.
+[features]
+update-test = []
 
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }
@@ -22,6 +27,7 @@ tauri-plugin-single-instance = "2"
 async-trait.workspace = true
 url = "2"
 tokio.workspace = true
+tauri-plugin-updater = "2"
 
 # The desktop side (GitHub#169): notifications through the system's current
 # notification API, launch at login, keeping a hidden window's process awake.
