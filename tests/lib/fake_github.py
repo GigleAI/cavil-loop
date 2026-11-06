@@ -17,7 +17,9 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
 
 Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (key = path with
 '/' -> '_', e.g. F_issues_7_events).  F_merge_<code> makes the merge endpoint fail with that code;
-F_post_comment / F_post_labels / F_delete_labels make those writes fail.
+F_post_comment / F_post_labels / F_delete_labels make those writes fail; F_post_label_<name> fails
+adding just that label, F_post_label_noop_<name> answers success without adding it; F_user fails `gh api user`.
+tokens.log records the GH_TOKEN each call ran with.
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
 used to change GitHub between the daemon's check and its re-read.
 """
@@ -60,6 +62,9 @@ def me():
 argv = sys.argv[1:]
 with open(p("calls.log"), "a") as f:
     f.write("gh " + " ".join(argv) + "\n")
+# 每次调用用的是哪把令牌（GitHub#190：daemon 的写入走写入身份），单独记一份，不改 calls.log 的格式
+with open(p("tokens.log"), "a") as f:
+    f.write(os.environ.get("GH_TOKEN", "") + " gh " + " ".join(argv) + "\n")
 
 
 def fail(msg, code=1):
@@ -209,6 +214,8 @@ def append_event(n, ev, name):
 
 
 if path == "user":
+    if os.path.exists(p("F_user")):
+        fail("HTTP 502: injected failure (user)")
     emit({"login": me()})
 
 if path == "graphql":
@@ -320,6 +327,11 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
         fail("HTTP 500: injected label failure")
     cur = labels.setdefault(parts[1], [])
     for l in labels_add:
+        # F_post_label_<标签> 只让加这一个标签失败；F_post_label_noop_<标签> 返回成功却没加上（GitHub#190）
+        if os.path.exists(p("F_post_label_" + l)):
+            fail("HTTP 500: injected label failure (" + l + ")")
+        if os.path.exists(p("F_post_label_noop_" + l)):
+            continue
         if l not in cur:
             cur.append(l)
             append_event(parts[1], "labeled", l)

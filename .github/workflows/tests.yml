@@ -4,9 +4,22 @@ name: Tests
 # The split, the exclusions and the pass/fail rules all live in tests/run.sh,
 # the same entry point you run locally — this file only fans it out.
 on:
+  # A change that only touches the desktop client (client/**) has its own workflow (client.yml) and
+  # none of the shell tests read it, so it does not start this one. The exception is
+  # client/test/tauri/mutations.sh, which tests/client-tauri-mutation-prep.test.sh runs.
+  # Nothing requires this check by name; if one ever does, a skipped workflow reports nothing and the
+  # PR would wait forever: switch to running the workflow and skipping inside it instead.
   pull_request:
+    paths:
+      - '**'
+      - '!client/**'
+      - 'client/test/tauri/mutations.sh'
   push:
     branches: [main]
+    paths:
+      - '**'
+      - '!client/**'
+      - 'client/test/tauri/mutations.sh'
   workflow_dispatch:
     inputs:
       mutation:
