@@ -29,7 +29,6 @@ test/
   e2e/         Playwright 在 WebKit 里驱动真实窗口（bridge.ts：窗口经本机回环桥接到真实后台；/desktop 扮演外壳的桌面这一侧）
   tauri/       真实 Tauri App（Linux，WebDriver）：real-window.spec.ts 登录 / 同步 / 修改 / 外壳的链接规则；
                background.spec.ts 关窗后、隐藏启动时仍在 120 秒内同步并提醒，点通知打开那一条
-  mac/         打包好的 macOS App 上同样的「关窗 / 隐藏启动仍同步」门槛，加 Dock 图标叫回窗口（scripts/mac-open-check.sh 第 6 步调用）
   fake-github/ 假 GitHub：GraphQL、REST（带分页）、OAuth 设备授权，可注入失败 / 断网 / 凭据撤销；
                writes.ts 是可写的一面（标签、里程碑、评论、看板字段、合并 / 关闭、新建 issue），digest() 判断「GitHub 上什么都没改」
   fixtures/    从 cavil project（GigleAI #11）录下来的真实接口返回，已脱敏；record.mjs 可重录
@@ -209,7 +208,6 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 | `test/unit/pending.test.ts` | 计数、去重、汇总、读失败、离线启动、删来源、改标签名、退出、被拒、节拍、点通知、开机自启（真实后台子进程 + 假 GitHub） | 是 |
 | `test/e2e/app.spec.ts` | 窗口里的提醒流程、被拒黄条（可 × 关）、点通知打开详情且回到看板后不会再打开 | 是 |
 | `test/tauri/background.spec.ts`（Linux 真 App） | 关窗后、`--hidden` 启动时，挂标签后 **120 秒内**完成新一轮同步、发出这一条的通知、角标 +1，期间窗口一直不可见；点通知窗口回来并打开那一条 | 是 |
-| `test/mac/background.spec.ts`（CI 的 Mac，打包好的 App） | 同上两种情况的 120 秒门槛，再加 Dock 图标叫回窗口 | 是 |
 | `scripts/mac-open-check.sh` 第 5 步 | 打包好的 App 用 `--notify-check` 经正式路径真发一条通知，记下 macOS 的回答 | 否：CI 上没人点「允许」，只记录；能否真弹出由维护者在自己的 Mac 上确认 |
 
 120 秒的来由：#139 承诺 2 分钟内收到通知，节拍 60 秒，挂标签的时刻离下一拍最多 60 秒，剩下的留给一轮读取。
