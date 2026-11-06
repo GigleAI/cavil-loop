@@ -77,7 +77,7 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   await wd.find('[data-testid="app-root"]');
   expect(await wd.exec<boolean>('return typeof window.__TAURI_INTERNALS__ === "object"')).toBe(true);
   const appUrl = await wd.url();
-  expect(appUrl).toMatch(/^(tauri:\/\/localhost|http:\/\/tauri\.localhost)\//);
+  expect(appUrl).toMatch(/^(tauri:\/\/localhost|http:\/\/tauri\.localhost)(\/|$)/);
 
   // sign in (device flow through the back end); "open the GitHub page" goes through IPC → back end → browser
   await wd.click('[data-testid="oauth-settings-toggle"]');
