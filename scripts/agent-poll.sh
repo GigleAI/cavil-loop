@@ -723,6 +723,8 @@ fi
 # 条件与「为什么这样判」都在 _lib.sh 的 autopilot_merge_one 上面。托管关闭时直接返回。
 # 维护者在 PR 上打了托管标签：接手、翻回复审（GitHub#128）。放在合并之前：接手的 PR 先过复审，不会同一轮就合。
 autopilot_takeover_tick "$STATE_FILE" || true
+# 托管 PR 上补一份托管标签 / 授权没了收回（GitHub#190）。放在合并之前：合并前许可要求 PR 上挂着它
+autopilot_mirror_tick "$STATE_FILE" || true
 autopilot_merge_tick "$STATE_FILE" || true
 # 托管关掉之后：本机托管过、还挂着等合并的 PR 交给人（GitHub#124）。从没开过托管的项目零调用。
 autopilot_off_sweep "$STATE_FILE" || true

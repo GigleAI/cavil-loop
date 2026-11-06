@@ -150,7 +150,9 @@ CONF
         ev 7 labeled autopilot maint
         mkpr 8 feature/issue-7 "做了 X。
 
-Closes #7" "$H1" "pending/merge"
+Closes #7" "$H1" "pending/merge,autopilot"
+        # PR 上的托管标签是 daemon 从 issue 补过来的副本（GitHub#190），稳态下早就补好了
+        ev 8 labeled autopilot loop-bot
         review_rec 8 "$H1"
         evidence 8 "$H1" 12 0
     }
@@ -242,7 +244,7 @@ Closes #10|example/ap|正文还关闭了另一个 issue" \
         IFS='|' read -r br body repo what <<< "$(printf '%s' "$case_" | tr '\n' '\001')"
         br=$(printf '%s' "$br" | tr '\001' '\n'); body=$(printf '%s' "$body" | tr '\001' '\n'); what=$(printf '%s' "$what" | tr '\001' '\n')
         fresh; happy
-        mkpr 8 "$br" "$body" "$H1" "pending/merge" "$repo"
+        mkpr 8 "$br" "$body" "$H1" "pending/merge,autopilot" "$repo"
         tick
         chk "$what → 不合并" "$(merged 8)" 0
         chk "$what → PR 交人" "$(has_label 8 pending/human)" yes
@@ -250,7 +252,7 @@ Closes #10|example/ap|正文还关闭了另一个 issue" \
     fresh; happy
     mkpr 8 feature/issue-7 "Fixes: #7
 
-Refs #3" "$H1" "pending/merge"
+Refs #3" "$H1" "pending/merge,autopilot"
     tick
     chk "Fixes: #7（带冒号）+ 另有 Refs #3 → 合并（Refs 不关 issue）" "$(merged 8)" 1
 
@@ -367,13 +369,13 @@ Refs #3" "$H1" "pending/merge"
     tick
     chk "等了超过 6 小时 → 交人" "$(has_label 8 pending/human)" yes
 
-    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge" example/ap false dirty
+    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge,autopilot" example/ap false dirty
     tick
     chk "有冲突 → 交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
-    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge" example/ap true dirty
+    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge,autopilot" example/ap true dirty
     tick
     chk "只有合并状态说冲突（dirty）→ 也交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
-    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge" example/ap null unknown
+    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge,autopilot" example/ap null unknown
     tick
     chk "GitHub 还在算能否合并 → 等，不写" "$(merged 8)/$(writes)" "0/0"
 
@@ -513,7 +515,15 @@ Closes #7" "$H1" "pending/human,autopilot"
     chk "已经在复审的 PR → 不接手、不说话" "$(writes)" 0
 
     section "【12b】PR 上的托管标签不是维护者打的、或对不上 issue → 不接手，PR 上说一次"
-    for who in "loop-bot:User:loop 自己的写入账号:actor-loop" "helper:User:只有读权限:actor-perm" \
+    # loop 自己的写入账号打在 PR 上的（worker 违规打的，或 daemon 补的副本）：GitHub#190 起当作没挂——
+    # 不接手、也不说「不生效」（副本本来就不是授权，说了是误报）；issue 上没有授权，daemon 把它收回
+    fresh; pr_ready loop-bot User
+    tick
+    chk "loop 自己的写入账号在 PR 上打的 → 不接手、不说「不生效」" "$(took)/$(comments_with 8 'kind=pr-actor-loop')" "no/0"
+    chk "  → issue 上没有授权：收回 PR 上这份（GitHub#190）" "$(has_label 8 autopilot)/$(has_label 8 pending/human)" "no/yes"
+    tick
+    chk "  → 再一轮什么都不写" "$(writes)" 0
+    for who in "helper:User:只有读权限:actor-perm" \
                "renovate[bot]:Bot:Bot 账号:actor-bot" "req-bot:User:外部需求机器人账号:actor-requester-bot"; do
         IFS=: read -r a t what k <<< "$who"
         fresh 'REQUESTER_BOT_ACCOUNT="req-bot"'; pr_ready "$a" "$t"
@@ -663,7 +673,9 @@ ROWS
         local f; f="${cmd##* }"
         printf 'cd %q && %s < /dev/null > %q.tmp && mv %q.tmp %q\n' "$GD" "$cmd" "$f" "$f" "$f" > "$GD/hook_${key}_$k"
         tick
-        chk "$what（判定之后）→ 不接手、零写入" "$(took)/$(writes)" "no/0"
+        # PR 上那份变成 loop 账号打的、issue 上没有授权：那是副本，补标签那一趟把它收回（GitHub#190），不算接手的写入
+        chk "$what（判定之后）→ 不接手、零写入" "$(took)/$(( $(writes) - $(n_calls "^gh api -X DELETE $R/issues/8/labels/autopilot\$") ))" "no/0"
+        [ "$what" != "PR 上的授权变成 loop 账号打的" ] || chk "  → 变成副本、授权不成立：收回它" "$(has_label 8 autopilot)" no
         chk "到达性 · $what：确实走到了写前重判" "$([ -f "$GD/count_$key" ] && [ "$(cat "$GD/count_$key")" -ge 2 ] && echo yes || echo no)" yes
     done
 
@@ -694,7 +706,10 @@ ROWS
     mkissue 7 "pending/PR,autopilot"; ev 7 labeled autopilot maint
     jset labels.json '.["8"] = []'; jset events.json '.["8"] = []'
     tick
-    chk "没有流程标签、只有 issue 挂托管的 PR（worker 刚开出来）→ 不接手" "$(has_label 8 pending/review)/$(writes)" "no/0"
+    # 授权在 issue 上有效：补标签那一趟给 PR 补一份（GitHub#190）——这是唯一的写入；副本不算 PR 自己挂着，仍不接手
+    chk "没有流程标签、只有 issue 挂托管的 PR（worker 刚开出来）→ 不接手" "$(has_label 8 pending/review)/$(writes)/$(has_label 8 autopilot)" "no/1/yes"
+    tick
+    chk "  → 下一轮 PR 上挂着副本也不接手、不再写" "$(has_label 8 pending/review)/$(writes)" "no/0"
 
     section "【12i】接手阶段连续读不到：到上限（3）交人，只交一次；中途恢复就清零"
     fresh; pr_ready; jset labels.json '.["8"] = ["autopilot"]'; touch "$GD/F_issues_8_events"
@@ -847,7 +862,8 @@ ROWS
     chk "A4 我们加的 pending/human 已被人摘掉、授权有效 → 作废、接手，不留交人说明" "$(tk_owed 8)/$(took_none)/$(comments_with 8 'autopilot-takeover-unknown pr=8')" "no/yes/0"
 
     # B：到上限、准备交人时，现读 PR 发现情况变了 → 不写旧决定的任何东西，待办作废
-    # （读不到授权记录时，每轮只现读 PR 一次；第 3 轮是第 3 次，待办现读重判那次是第 4 次）
+    # （读不到授权记录时，接手每轮只现读 PR 一次，补标签那一趟（GitHub#190，PR 挂着托管标签、issue 没挂 → 要判收不收回）
+    # 每轮再读一次：第 3 轮接手那次是第 5 次，待办现读重判那次是第 6 次）
     for hk in "jq '.[\"8\"].state = \"closed\"' items.json|PR 被关闭" \
               "jq '.[\"8\"] += {merged: true, state: \"closed\"}' items.json|PR 已合并" \
               "jq '.[\"8\"] += [\"pending/review\"]' labels.json|PR 转进复审" \
@@ -858,11 +874,11 @@ ROWS
         IFS='|' read -r cmd what <<< "$hk"
         fresh; unk_ready
         local f; f="${cmd##* }"
-        printf 'cd %q && %s < /dev/null > %q.tmp && mv %q.tmp %q\n' "$GD" "$cmd" "$f" "$f" "$f" > "$GD/hook_pulls_8_4"
+        printf 'cd %q && %s < /dev/null > %q.tmp && mv %q.tmp %q\n' "$GD" "$cmd" "$f" "$f" "$f" > "$GD/hook_pulls_8_6"
         tick; tick; tick
         chk "B $what（交人前现读到）→ 不加 pending/human、没有交人说明、待办作废" \
             "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_owed 8)" "no/0/no"
-        chk "到达性 · B $what：确实走到了交人前的现读" "$([ "$(cat "$GD/count_pulls_8" 2>/dev/null)" -ge 4 ] && echo yes || echo no)" yes
+        chk "到达性 · B $what：确实走到了交人前的现读" "$([ "$(cat "$GD/count_pulls_8" 2>/dev/null)" -ge 6 ] && echo yes || echo no)" yes
     done
     fresh; unk_ready; touch "$GD/F_pulls_8"
     tick; tick; tick
@@ -1013,7 +1029,12 @@ ROWS
     chk "打标签之后正文又改过、改后仍合条件 → 照样合并（看的是打标签那一刻的那一版）" "$(merged 8)" 1
 
     section "【13b】不是维护者亲手打的 → 不接手、PR 上说一次、不读修改历史"
-    for who in "loop-bot:User:loop 自己的写入账号:actor-loop" "helper:User:只有读权限:actor-perm" "renovate[bot]:Bot:Bot 账号:actor-bot"; do
+    # loop 账号打在 PR 上的：GitHub#190 起当作副本（没挂），不接手、不说「不生效」，收回它
+    fresh; mkpr 8 feature/xyz "做了 X。" "$H1" "autopilot"; po_label loop-bot User
+    tick
+    chk "loop 自己的写入账号打的 → 不接手、不说「不生效」、收回" "$(has_label 8 pending/review)/$(comments_with 8 "kind=pr-actor-loop")/$(has_label 8 autopilot)" "no/0/no"
+    chk "  → 没读修改历史" "$(gql)" 0
+    for who in "helper:User:只有读权限:actor-perm" "renovate[bot]:Bot:Bot 账号:actor-bot"; do
         IFS=: read -r a t what k <<< "$who"
         fresh; mkpr 8 feature/xyz "做了 X。" "$H1" "autopilot"; po_label "$a" "$t"
         tick
@@ -1245,6 +1266,199 @@ Closes #58"
     tick
     chk "绑 issue 的 PR 照常合并、没读修改历史" "$(merged 8)/$(gql)" "1/0"
 
+    # ── 【14】PR 上补一份托管标签（GitHub#190）──
+    # 托管 issue 绑定的 PR 上，daemon 每轮补一份托管标签（写入身份打的「副本」）；授权明确没了再收回自己补的那份。
+    # 补和收回同一个判定、判两次，第二次紧挨着写、全部现读；合并前许可要求 PR 上挂着它。
+    local WT='WRITE_GH_TOKEN="write-tok"'
+    mirror_ready() {   # [PR 的标签]：issue 7（maint 打的托管）+ 绑定它的 PR 8，PR 上还没有托管标签
+        mkissue 7 "autopilot,pending/PR"
+        ev 7 labeled autopilot maint
+        mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "$H1" "${1-pending/review}"
+    }
+    copy_ready() {   # [PR 的标签]：PR 8 上挂着 daemon 补的副本；issue 7 上维护者已经摘掉托管标签
+        mkissue 7 "pending/PR"
+        ev 7 labeled autopilot maint
+        mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "$H1" "${1:-pending/review,autopilot}"
+        ev 8 labeled autopilot loop-bot
+        ev 7 unlabeled autopilot maint
+    }
+    adds() { n_calls "^gh api -X POST $R/issues/8/labels -f labels\[\]=autopilot\$"; }
+    dels() { n_calls "^gh api -X DELETE $R/issues/8/labels/autopilot\$"; }
+    hook() {   # <读取的键> <第几次> <jq 表达式> <文件>：第 k 次读这个路径之前改假 GitHub
+        printf 'cd %q && jq %q %s < /dev/null > %s.tmp && mv %s.tmp %s\n' "$GD" "$3" "$4" "$4" "$4" "$4" > "$GD/hook_${1}_$2"
+    }
+    notices() { echo "$(comments_with 7 'autopilot-notice')/$(comments_with 8 'autopilot-notice')"; }
+    unflag() { rm -f "${GD:?}/${1:?}"; }
+
+    section "【14】PR 上补托管标签：授权有效、PR 上没有 → 补一份，用写入身份；之后不再重复（GitHub#190）"
+    fresh "$WT"; mirror_ready
+    tick
+    chk "补上：PR 8 挂上 autopilot" "$(has_label 8 autopilot)" yes
+    chk "  → 正好一次加标签请求" "$(adds)" 1
+    chk "  → 用的是写入身份" "$(grep -cE "^write-tok gh api -X POST $R/issues/8/labels -f labels\[\]=autopilot\$" "$GD/tokens.log")" 1
+    chk "  → PR 上最后一次打托管标签的是 loop 账号（副本）" "$(jq -r '[.["8"][] | select(.event == "labeled" and .label.name == "autopilot")] | last | .actor.login' "$GD/events.json")" loop-bot
+    chk "  → issue 上的托管标签原样保留" "$(has_label 7 autopilot)" yes
+    chk "  → 不在任何地方说「不生效」" "$(notices)" "0/0"
+    chk "  → 日志写明授权在 issue" "$(log_has '托管：PR #8 补上托管标签 autopilot（授权在 issue #7）')" 1
+    tick
+    chk "再一轮：不再写，也不再读两处的标签记录" "$(writes)/$(n_calls "$R/issues/(7|8)/events")" "0/0"
+
+    section "【14a】补：两次判定之间有变化 → 本轮不写，下一轮按现状重判"
+    local hk k2 key cmd file what
+    for hk in "issues_7|2|.[\"7\"] = [\"pending/PR\"]|labels.json|issue 摘掉托管标签" \
+              "issues_7|2|.[\"7\"] += [\"pending/human\"]|labels.json|issue 打 pending/human" \
+              "issues_7|2|.[\"7\"].state = \"closed\"|items.json|issue 关闭" \
+              "pulls_8|2|.[\"8\"] += [\"pending/human\"]|labels.json|PR 打 pending/human" \
+              "pulls_8|2|.[\"8\"].head.sha = \"$H2\"|items.json|PR 推了新提交" \
+              "pulls_8|2|.[\"8\"].base.ref = \"release\"|items.json|PR 改投别的目标分支" \
+              "pulls_8|2|.[\"8\"].body = \"Closes #9\"|items.json|PR 正文改绑别的 issue" \
+              "pulls_8|2|.[\"8\"].state = \"closed\"|items.json|PR 被关闭" \
+              "pulls_8|2|.[\"8\"] += [\"autopilot\"]|labels.json|PR 上已经被人打了托管标签" \
+              "pulls_8|2|del(.[\"8\"].base.ref)|items.json|PR 的目标分支读不到" \
+              "issues_7_events|2|.[\"7\"] += [{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2026-02-01T00:00:00Z\"},{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2026-02-01T00:00:01Z\"}]|events.json|授权换成了另一次打标签（摘掉又重打）"; do
+        IFS='|' read -r key k2 cmd file what <<< "$hk"
+        fresh "$WT"; mirror_ready
+        hook "$key" "$k2" "$cmd" "$file"
+        tick
+        chk "补 · $what（判定之后）→ 不写" "$(adds)" 0
+        chk "到达性 · 补 · $what：确实走到了写前重判" "$(log_has '托管：PR #8 判定补托管标签之后有变化')" 1
+    done
+    fresh "$WT"; mirror_ready
+    hook issues_7_events 2 '.["7"] += [{event:"unlabeled",label:{name:"autopilot"},actor:{login:"maint",type:"User"},created_at:"2026-02-01T00:00:00Z"},{event:"labeled",label:{name:"autopilot"},actor:{login:"maint",type:"User"},created_at:"2026-02-01T00:00:01Z"}]' events.json
+    tick; tick
+    chk "授权换了一次但仍成立：下一轮照常补上" "$(has_label 8 autopilot)" yes
+
+    section "【14b】补：读不到 → 不写、不记下判定；恢复后补上"
+    local f
+    for f in "F_issues_7_events:issue 的标签记录" "F_collaborators_maint_permission:打标签人的权限" \
+             "F_user:loop 的写入账号" "F_issues_7:issue 本身"; do
+        IFS=: read -r key what <<< "$f"
+        fresh "$WT"; mirror_ready
+        touch "$GD/$key"
+        tick
+        chk "补 · $what 读不到 → 不写" "$(adds)" 0
+        chk "  → 不记下判定" "$(jq -r '.autopilot.mirror["8"] // ""' "$STATE" 2>/dev/null)" ""
+        unflag "$key"
+        tick
+        chk "  → 恢复后补上" "$(has_label 8 autopilot)" yes
+    done
+
+    section "【14c】补：不该补的不补"
+    fresh "$WT"; mirror_ready
+    jset events.json '.["7"] = [{event:"labeled", label:{name:"autopilot"}, actor:{login:"helper", type:"User"}, created_at:"2026-01-01T00:00:01Z"}]'
+    tick
+    chk "issue 上的标签是没写权限的人打的 → 不补" "$(adds)" 0
+    tick
+    chk "  → 判过「不补」：issue 和 PR 都没变就不再读标签记录" "$(n_calls "$R/issues/7/events")" 0
+    fresh "$WT"; mirror_ready; mkpr 8 feature/xyz "做了 X。" "$H1" "pending/review"
+    tick
+    chk "没绑 issue 的 PR → 不补" "$(adds)/$(has_label 8 autopilot)" "0/no"
+    fresh "$WT"; mirror_ready "pending/review,pending/human"
+    tick
+    chk "PR 挂着 pending/human（叫停）→ 不补" "$(adds)" 0
+    fresh "$WT" 'SELFHEAL_ONLY_OWN_WORKERS=true' 'SELFHEAL_HOST_ID="me"'; mirror_ready
+    echo '{"worker_hosts":{"7":"other"}}' > "$STATE"
+    tick
+    chk "别的机器负责的活 → 不补" "$(adds)" 0
+    fresh "$WT" 'LABEL_AUTOPILOT=""'; mirror_ready
+    tick
+    chk "托管关闭 → 不补" "$(adds)" 0
+
+    section "【14d】补标签失败、复审已通过：不带标签不合并；补上之后合并；一直补不上到上限交人"
+    fresh "$WT"; mirror_ready "pending/merge"; review_rec 8 "$H1"; evidence 8 "$H1" 12 0
+    touch "$GD/F_post_label_autopilot"
+    tick
+    chk "加标签失败 → 不合并" "$(merged 8)" 0
+    chk "  → 记一次判不了" "$(st 8 .unknown)" 1
+    unflag F_post_label_autopilot
+    tick
+    chk "下一轮补上 → 同一轮合并" "$(has_label 8 autopilot)/$(merged 8)" "yes/1"
+    fresh "$WT"; mirror_ready "pending/merge"; review_rec 8 "$H1"; evidence 8 "$H1" 12 0
+    touch "$GD/F_post_label_noop_autopilot"
+    tick
+    chk "加标签返回成功、其实没加上 → 不合并" "$(merged 8)/$(has_label 8 autopilot)" "0/no"
+    chk "  → 日志写明读回没有" "$(log_has '补托管标签的请求返回成功，读回却没有')" 1
+    : > "$GD/merge_calls"
+    tick; tick
+    chk "连续 3 轮（上限 3）补不上 → 交人" "$(has_label 8 pending/human)/$(has_label 8 pending/merge)" "yes/no"
+    chk "  → 交人说明写了原因" "$(comments_with 8 '上还没有托管标签')" 1
+    chk "  → 全程没合并" "$(jq -r '.["8"].merged' "$GD/items.json")" false
+
+    section "【14e】收回：维护者摘了 issue 上的托管标签 → 收回 daemon 补在 PR 上的那份，不说「不生效」"
+    fresh "$WT"; copy_ready "pending/merge,autopilot"; review_rec 8 "$H1"; evidence 8 "$H1" 12 0
+    tick
+    chk "收回副本" "$(has_label 8 autopilot)/$(dels)" "no/1"
+    chk "  → 用的是写入身份" "$(grep -cE "^write-tok gh api -X DELETE $R/issues/8/labels/autopilot\$" "$GD/tokens.log")" 1
+    chk "  → 不合并、PR 交人" "$(merged 8)/$(has_label 8 pending/human)" "0/yes"
+    chk "  → 不说「不生效」" "$(notices)" "0/0"
+    tick
+    chk "再一轮什么都不写" "$(writes)" 0
+    EV_AT=2099-01-01T00:00:00Z ev 7 labeled autopilot maint; jset labels.json '.["7"] += ["autopilot"]'
+    jset labels.json '.["8"] = ["pending/review"]'
+    tick
+    chk "维护者之后在 issue 上重新亲手打 → 再补一份" "$(has_label 8 autopilot)" yes
+    fresh "$WT"; copy_ready; jset items.json '.["7"].state = "closed"'
+    tick
+    chk "issue 关闭了 → 收回" "$(has_label 8 autopilot)" no
+    fresh "$WT"; copy_ready; mkissue 7 "autopilot,pending/PR"
+    mkpr 8 feature/issue-7 "做了 X。" "$H1" "pending/review,autopilot"
+    tick
+    chk "PR 正文不再关闭 #7（不绑 issue 了）→ 收回" "$(has_label 8 autopilot)" no
+
+    section "【14f】收回：不该收的不收"
+    fresh "$WT"; copy_ready
+    jset events.json '.["8"] = [{event:"labeled", label:{name:"autopilot"}, actor:{login:"maint", type:"User"}, created_at:"2026-01-01T00:00:01Z"}]'
+    tick
+    chk "PR 上的托管标签是维护者亲手打的 → 从不收回" "$(has_label 8 autopilot)/$(dels)" "yes/0"
+    fresh "$WT"; copy_ready
+    touch "$GD/F_issues_7_events"
+    tick
+    chk "授权判不了（issue 的标签记录读不到）→ 不收回" "$(dels)" 0
+    chk "  → 不记下判定" "$(jq -r '.autopilot.mirror["8"] // ""' "$STATE" 2>/dev/null)" ""
+    unflag F_issues_7_events
+    tick
+    chk "  → 恢复后收回" "$(has_label 8 autopilot)" no
+    fresh "$WT"; copy_ready
+    touch "$GD/F_user"
+    tick
+    chk "写入账号读不到（分不出是不是副本）→ 不收回" "$(dels)" 0
+
+    section "【14g】收回：两次判定之间有变化 → 本轮不删，下一轮按现状重判"
+    # 这些场景里 PR 挂着流程标签，接手那一趟不读它：收回的两次判定读的是第 1、2 次
+    for hk in "pulls_8|2|.[\"8\"].head.sha = \"$H2\"|items.json|PR 推了新提交" \
+              "pulls_8|2|.[\"8\"].base.ref = \"release\"|items.json|PR 改投别的目标分支" \
+              "pulls_8|2|.[\"8\"].state = \"closed\"|items.json|PR 被关闭" \
+              "pulls_8|2|.[\"8\"] += [\"pending/human\"]|labels.json|PR 打 pending/human" \
+              "pulls_8|2|del(.[\"8\"].base.ref)|items.json|PR 的目标分支读不到" \
+              "pulls_8|2|.[\"8\"].head.ref = \"feature/issue-7b\"|items.json|PR 换了来源分支名" \
+              "issues_7|2|.[\"7\"] += [\"pending/human\"]|labels.json|issue 打 pending/human" \
+              "issues_7|2|.[\"7\"].state = \"closed\"|items.json|issue 关闭" \
+              "issues_8_events|3|.[\"8\"] += [{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2026-02-01T00:00:00Z\"},{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2026-02-01T00:00:01Z\"}]|events.json|维护者在 PR 上亲手重打了托管标签" \
+              "issues_8_events|3|.[\"8\"] += [{event:\"unlabeled\",label:{name:\"autopilot\"},actor:{login:\"maint\",type:\"User\"},created_at:\"2026-02-01T00:00:00Z\"},{event:\"labeled\",label:{name:\"autopilot\"},actor:{login:\"loop-bot\",type:\"User\"},created_at:\"2026-02-01T00:00:01Z\"}]|events.json|PR 上的副本换成了另一次打的"; do
+        IFS='|' read -r key k2 cmd file what <<< "$hk"
+        fresh "$WT"; copy_ready
+        hook "$key" "$k2" "$cmd" "$file"
+        tick
+        chk "收回 · $what（判定之后）→ 不删" "$(dels)" 0
+        chk "到达性 · 收回 · $what：确实走到了写前重判" "$(log_has '托管：PR #8 判定收回托管标签之后有变化')" 1
+    done
+
+    section "【14h】副本不是授权：不触发接手"
+    fresh "$WT"; mirror_ready ""
+    jset labels.json '.["8"] = ["autopilot"]'; ev 8 labeled autopilot loop-bot
+    tick
+    chk "PR 一个流程标签都没有、只挂着副本 → 不接手" "$(has_label 8 pending/review)/$(comments_with 8 'autopilot-takeover pr=8')" "no/0"
+    chk "  → 不说「不生效」" "$(notices)" "0/0"
+    chk "到达性 · 这一轮确实为接手读了两处的标签记录" "$([ "$(n_calls "^gh api --paginate --slurp $R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
+    fresh "$WT"; mirror_ready ""
+    jset labels.json '.["8"] = ["autopilot"]'; ev 8 labeled autopilot maint
+    tick
+    chk "对照：维护者亲手打在 PR 上的 → 照旧接手" "$(has_label 8 pending/review)/$(comments_with 8 'autopilot-takeover pr=8')" "yes/1"
+
     section "【11】托管关掉之后：本机托管过、还挂着等合并的 PR → 交人并说明；其他一概不碰"
     local OFF='LABEL_AUTOPILOT=""'
     fresh "$OFF"; happy
@@ -1285,7 +1499,7 @@ Closes #58"
     fresh "$OFF"; happy
     touch "$GD/F_pulls_8"
     tick
-    chk "现读 PR 读不到 → 本轮不动" "$(labels_of 8)" "pending/merge"
+    chk "现读 PR 读不到 → 本轮不动" "$(labels_of 8)" "autopilot,pending/merge"
     rm -f "$GD/F_pulls_8"; tick
     chk "  …恢复后下一轮交人" "$(has_label 8 pending/human)/$(has_label 8 pending/merge)" "yes/no"
 
@@ -1300,16 +1514,16 @@ Closes #58"
     fresh "$OFF"; happy
     touch "$GD/F_post_labels"
     tick
-    chk "加 pending/human 失败 → 等合并标签原样留着（下轮还找得到）" "$(labels_of 8)" "pending/merge"
+    chk "加 pending/human 失败 → 等合并标签原样留着（下轮还找得到）" "$(labels_of 8)" "autopilot,pending/merge"
     chk "  …也不留言" "$(comments_with 8 '托管已在配置里关掉')" 0
     rm -f "$GD/F_post_labels"; tick
-    chk "  …恢复后下一轮交人：有 pending/human、没有等合并" "$(labels_of 8)" "pending/human"
+    chk "  …恢复后下一轮交人：有 pending/human、没有等合并" "$(labels_of 8)" "autopilot,pending/human"
     chk "  …留言一次" "$(comments_with 8 '托管已在配置里关掉')" 1
 
     fresh "$OFF"; happy
     touch "$GD/F_post_comment"
     tick
-    chk "留言失败 → 标签已交接" "$(labels_of 8)" "pending/human"
+    chk "留言失败 → 标签已交接" "$(labels_of 8)" "autopilot,pending/human"
     chk "  …交接记号还在（说明还欠着）" "$(st 8 .off_handover)" "true"
     rm -f "$GD/F_post_comment"; tick
     chk "  …恢复后下一轮补发留言（等合并标签已经没了也找得回来）" "$(comments_with 8 '托管已在配置里关掉')" 1
@@ -1320,11 +1534,11 @@ Closes #58"
     fresh "$OFF"; happy
     touch "$GD/F_post_labels" "$GD/F_delete_labels" "$GD/F_post_comment"
     tick; tick
-    chk "三步全失败两轮 → 等合并标签仍在、没有留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "pending/merge/0"
+    chk "三步全失败两轮 → 等合并标签仍在、没有留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "autopilot,pending/merge/0"
     rm -f "$GD/F_post_labels"; tick
-    chk "  …只恢复加标签：两个标签都在（摘还在失败），不留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "pending/human,pending/merge/0"
+    chk "  …只恢复加标签：两个标签都在（摘还在失败），不留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "autopilot,pending/human,pending/merge/0"
     rm -f "$GD/F_delete_labels"; tick
-    chk "  …再恢复摘标签：交接完成，留言仍欠着" "$(labels_of 8)/$(st 8 .off_handover)" "pending/human/true"
+    chk "  …再恢复摘标签：交接完成，留言仍欠着" "$(labels_of 8)/$(st 8 .off_handover)" "autopilot,pending/human/true"
     rm -f "$GD/F_post_comment"; tick
     chk "  …最后恢复留言：补发一次" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
 
@@ -1332,7 +1546,7 @@ Closes #58"
     fresh "$OFF"; happy
     touch "$GD/F_issues_8"
     tick
-    chk "标签改好、回读失败 → 标签已是目标，交接记号在，没发说明" "$(labels_of 8)/$(st 8 .off_handover)/$(comments_with 8 '托管已在配置里关掉')" "pending/human/true/0"
+    chk "标签改好、回读失败 → 标签已是目标，交接记号在，没发说明" "$(labels_of 8)/$(st 8 .off_handover)/$(comments_with 8 '托管已在配置里关掉')" "autopilot,pending/human/true/0"
     rm -f "$GD/F_issues_8"; tick
     chk "  …恢复后下一轮补发说明一次、清掉记号" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
 
@@ -1753,17 +1967,54 @@ mutate req-deny-issue-origin _lib.sh '    local ip pp
     if requester_bot_enabled && requester_bot_item_origin "$num" "$ij"; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
     autopilot_place_read "$num" "$ij" "issue #$num" || return 2'
 mutate req-deny-pr-only _lib.sh '    autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"
-    rc=0; autopilot_actor_check' '    if [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.user.login'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ] || printf '"'"'%s'"'"' "$pj" | jq -e '"'"'.body | test("#58")'"'"' >/dev/null || [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.head.ref'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ]; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
+    autopilot_place_strip_copy "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
+    if [ -n "$AUTOPILOT_PR_COPY" ]; then' '    if [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.user.login'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ] || printf '"'"'%s'"'"' "$pj" | jq -e '"'"'.body | test("#58")'"'"' >/dev/null || [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.head.ref'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ]; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
     autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"
-    rc=0; autopilot_actor_check'
+    autopilot_place_strip_copy "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
+    if [ -n "$AUTOPILOT_PR_COPY" ]; then'
 mutate po-dispatch-site _lib.sh '                    0) AUTOPILOT_PR="$num"; return 0 ;;' '                    0) return 1 ;;'
 mutate po-merge-note-issue _lib.sh '        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '        if false; then n="$pr"; where="本 PR 上"'
 mutate po-no-label-body-notice _lib.sh '        actor-*|binding|closed|label-body) ;;' '        actor-*|binding|closed) ;;'
 mutate po-section-inactive _lib.sh ' || [[ "${DISPATCH_AUTOPILOT_PR:-}" =~ ^[0-9]+$ ]]; }' '; }'
 mutate po-worker-issue-file _lib.sh '    elif [ -n "$pr_only" ]; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"' '    elif false; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"'
 mutate po-dispatch-no-pr agent-poll.sh ' DISPATCH_AUTOPILOT_PR="$AP_PR"' ''
+# ── PR 上补托管标签（GitHub#190）：补、收回两条路径各自的写前重判与每个身份字段，副本不授权，合并前要求标签 ──
+MIR_CMP='    if [ "$AM_V" != "$v" ] || [ "$AM_ID" != "$id" ]; then'
+mutate mirror-add-no-second _lib.sh "$MIR_CMP" '    if [ "$v" = remove ] && { [ "$AM_V" != "$v" ] || [ "$AM_ID" != "$id" ]; }; then'
+mutate mirror-rm-no-second _lib.sh "$MIR_CMP" '    if [ "$v" = add ] && { [ "$AM_V" != "$v" ] || [ "$AM_ID" != "$id" ]; }; then'
+MIR_ID='    AM_ID="$state|'
+mutate mirror-add-head _lib.sh "$MIR_ID" '    [ "$AM_V" != add ] || head=x; AM_ID="$state|'
+mutate mirror-add-base _lib.sh "$MIR_ID" '    [ "$AM_V" != add ] || base=x; AM_ID="$state|'
+mutate mirror-add-auth _lib.sh "$MIR_ID" '    [ "$AM_V" != add ] || AUTOPILOT_AUTH_IDX=x; AM_ID="$state|'
+mutate mirror-rm-head _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || head=x; AM_ID="$state|'
+mutate mirror-rm-base _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || base=x; AM_ID="$state|'
+mutate mirror-rm-ph _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || ph=x; AM_ID="$state|'
+mutate mirror-rm-ih _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || ih=x; AM_ID="$state|'
+mutate mirror-rm-istate _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || istate=x; AM_ID="$state|'
+mutate mirror-rm-copy _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || copy=x; AM_ID="$state|'
+mutate mirror-rm-maint _lib.sh '        if [ -z "$AUTOPILOT_PLACE_COPY" ]; then AM_V=none; return 0; fi' '        :'
+mutate mirror-rm-unknown _lib.sh '            *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
+        esac
+    fi
+    AM_ID=' '            *) AM_V=remove ;;
+        esac
+    fi
+    AM_ID='
+mutate mirror-cache-unknown _lib.sh '        *) log "托管：PR #$pr 要不要补 / 收回托管标签判不了' '        *) autopilot_state_set "$sf" '"'"'.mirror[$p] = $k'"'"' --arg p "$pr" --arg k "$key"; log "托管：PR #$pr 要不要补 / 收回托管标签判不了'
+mutate mirror-add-plain-gh _lib.sh '            gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_AUTOPILOT"' '            gh api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_AUTOPILOT"'
+mutate mirror-rm-plain-gh _lib.sh '    if out=$(gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" 2>&1); then' '    if out=$(gh api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" 2>&1); then'
+mutate copy-auth-no-strip _lib.sh '    autopilot_place_strip_copy "PR #$pr" || return 2
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
+    # 两处' '    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY=""
+    # 两处'
+mutate copy-pr-only-no-strip _lib.sh '    if [ -n "$AUTOPILOT_PR_COPY" ]; then
+        AUTOPILOT_DENY=no-label' '    if false; then
+        AUTOPILOT_DENY=no-label'
+mutate copy-takeover-guard _lib.sh '    if [ "$AT_MODE" = none ] && [ -n "$AUTOPILOT_PR_COPY" ]; then AT_V=skip; return 0; fi' ''
+mutate merge-needs-pr-label _lib.sh '    if [ "$AP_KIND" = issue ] && ! autopilot_has_label "$pj"; then' '    if false; then'
+mutate mirror-tick-off agent-poll.sh 'autopilot_mirror_tick "$STATE_FILE" || true' ':'
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-$1"
