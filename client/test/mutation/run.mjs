@@ -547,6 +547,8 @@ function buildBackend(work) {
 
 /** Run vitest in `work`; resolve to { kind: 'report', status, report } or { kind: 'broken', why }. */
 async function runVitest(work) {
+  // a runner that is not there fails at once, before minutes of building the back end
+  if (!existsSync(VITEST)) return { kind: 'broken', why: `启动失败：找不到测试执行器 ${VITEST}` };
   const be = await buildBackend(work);
   if (be.broken) return { kind: 'broken', why: be.broken };
   return runVitestWith(work, be.bin);
