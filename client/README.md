@@ -52,8 +52,8 @@ cd client
 npm ci
 npm run test:rust              # 后台的 Rust 单元测试
 npm test                       # 单元测试（真实后台子进程），末尾打印「负对照：跳过 N 项」
-npm run test:mutation -- --changed  # 负对照（MUTATION=1），只跑和本次改动相关的项（__TIMES_CHANGED__）
-npm run test:mutation          # 负对照全部 __N__ 项（__TIMES_FULL__）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
+npm run test:mutation -- --changed  # 负对照（MUTATION=1），只跑和本次改动相关的项：基线约 30 秒，之后每项几秒到十几秒（只跑它点名的测试所在文件）
+npm run test:mutation          # 全部负对照（很慢，只在复审点名或 CI 手动时跑）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
 npm run typecheck
 npm run test:e2e               # 界面测试（WebKit；WebKit 起不来的机器加 CAVIL_E2E_ENGINE=chromium）
 npm start                      # tauri dev：本机跑起来（Linux 要装 libwebkit2gtk-4.1-dev；凭据只在内存里，退出即忘）
