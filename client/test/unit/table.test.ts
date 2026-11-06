@@ -8,8 +8,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildTable, GROUP_NONE_KEY, iterationRange, type Table } from '../../src/data/table';
-import { buildBoard } from '../../src/data/board';
+import { buildTable, GROUP_NONE_KEY, iterationRange, type Group, type Table } from '../../src/data/table';
+import { buildBoard, iterationColumnKey } from '../../src/data/board';
 import { fetchProject } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
 import { mergeSnapshots } from '../../src/data/merge';
@@ -130,7 +130,10 @@ describe('recorded cavil project: importing its saved view "Pending"', () => {
 const A = project('project:org/x/1', 'Alpha', [iter('S1', '2026-10-27', 7), iter('S2', '2026-11-03', 7), iter('S3', '2026-11-10', 7)], ['Todo', 'Doing', 'Done']);
 const B = project('project:org/x/2', 'Beta', [iter('S2', '2026-11-03', 7)], ['Todo', 'Done']);
 const TODAY = '2026-11-05';
-const T = (patch: Partial<TableSettings> = {}): TableSettings => ({ ...DEFAULT_TABLE, ...patch });
+// The single-level grouping rules below run with the repository slices off: that is the table
+// without a repository layer, unchanged by GitHub#213 (with slices on and "all" picked the same
+// rules apply inside each repository — see "all repositories" below, which turns slicing on).
+const T = (patch: Partial<TableSettings> = {}): TableSettings => ({ ...DEFAULT_TABLE, sliceByRepo: false, ...patch });
 
 function board(): Item[] {
   return [
@@ -220,6 +223,103 @@ describe('table rules', () => {
 
   it('"no value" group key is stable', () => {
     expect(buildTable([item('x/a', 1)], [], T({ groupBy: 'milestone' }), TODAY).groups[0].key).toBe(GROUP_NONE_KEY);
+  });
+});
+
+describe('"all repositories": repository first, then the chosen grouping inside it (GitHub#213)', () => {
+  // board() plus a sub-issue of x/app#10 that lives in x/lib, in the same iteration as its parent
+  const items = () => [...board(), item('x/lib', 22, { title: 'cross-repo child', parent: 'x/app#10', updatedAt: '2026-11-06T00:00:00Z' }, [member(A, A.iterations[1], 'Todo')])];
+  const ALL = (patch: Partial<TableSettings> = {}) => T({ sliceByRepo: true, slice: null, ...patch });
+  const nested = (t: Table) => t.repos!.map((r) => [r.title, r.itemCount, r.groups.map((g) => [g.title, g.rows.map((x) => `${'  '.repeat(x.depth)}${x.item.number}`)])]);
+  /** what a group shows, without its key (keys carry the repository prefix) */
+  const shown = (gs: Group[]) => gs.map((g) => ({ ...g, key: undefined, rows: g.rows.map((r) => [r.item.key, r.depth, r.under]) }));
+
+  it('grouped by iteration: one section per repository, alphabetical, each with only its own iterations; an item in two iterations shows twice and counts once', () => {
+    const t = buildTable([...items()].reverse(), [A, B], ALL(), TODAY);
+    // expected by the rule, not copied from the output: x/app holds 10–14 (S2 and S3); x/lib holds 20 (S1 on Alpha, S2 on Beta), 21 (no iteration), 22 (S2)
+    expect(nested(t)).toEqual([
+      ['x/app', 5, [['S2', ['10', '  11', '    13', '  12']], ['S3', ['14']]]],
+      ['x/lib', 3, [['无迭代', ['21']], ['S1', ['20']], ['S2', ['22', '20']]]],
+    ]);
+    // the count is distinct items, not the rows of its groups added up (x/lib shows 4 rows)
+    expect(t.repos![1].groups.reduce((n, g) => n + g.rows.length, 0)).toBe(4);
+    expect(t.groups).toEqual(t.repos!.flatMap((r) => r.groups));
+    expect(t.itemCount).toBe(8);
+  });
+
+  it('a sub-issue in another repository is a top-level row in its own repository; without the layer it sat under its parent', () => {
+    const layered = buildTable(items(), [A, B], ALL(), TODAY);
+    const lib = layered.repos!.find((r) => r.title === 'x/lib')!;
+    expect(lib.groups.find((g) => g.title === 'S2')!.rows.find((r) => r.item.number === 22)!.depth).toBe(0);
+    const flatTable = buildTable(items(), [A, B], T(), TODAY);
+    expect(flatTable.groups.find((g) => g.title === 'S2')!.rows.find((r) => r.item.number === 22)!.depth).toBe(1);
+  });
+
+  for (const groupBy of ['iteration', 'status', 'milestone', 'none'] as const) {
+    for (const hierarchy of [true, false]) {
+      it(`grouped by ${groupBy}, sub-issues ${hierarchy ? 'indented' : 'flat'}: each repository's groups show exactly what picking that repository shows`, () => {
+        const t = buildTable(items(), [A, B], ALL({ groupBy, hierarchy }), TODAY, true);
+        expect(t.repos!.map((r) => r.title)).toEqual(['x/app', 'x/lib']);
+        for (const r of t.repos!) {
+          const one = buildTable(items(), [A, B], ALL({ groupBy, hierarchy, slice: r.title }), TODAY, true);
+          expect(one.repos).toBeNull();
+          expect(shown(r.groups), r.title).toEqual(shown(one.groups));
+          expect(r.itemCount).toBe(one.itemCount);
+          for (const g of r.groups) expect(g.key.startsWith(`${r.key}|`)).toBe(true);
+        }
+      });
+    }
+  }
+
+  it('grouped by nothing: only the repository layer', () => {
+    const t = buildTable(items(), [A, B], ALL({ groupBy: 'none', hierarchy: false }), TODAY);
+    expect(t.repos!.map((r) => [r.title, r.groups.map((g) => g.key)])).toEqual([
+      ['x/app', ['repo:x/app|all']],
+      ['x/lib', ['repo:x/lib|all']],
+    ]);
+  });
+
+  it('same-named groups in two repositories have different keys', () => {
+    const t = buildTable(items(), [A, B], ALL(), TODAY);
+    const s2 = t.groups.filter((g) => g.title === 'S2').map((g) => g.key);
+    expect(s2).toHaveLength(2);
+    expect(new Set(s2).size).toBe(2);
+    expect(new Set(t.groups.map((g) => g.key)).size).toBe(t.groups.length);
+    expect(new Set(t.groups.flatMap((g) => g.rows.map((r) => r.id))).size).toBe(t.groups.reduce((n, g) => n + g.rows.length, 0));
+  });
+
+  it('no repository layer when one repository is picked, when slicing is off, or when grouped by repository: the same table as before', () => {
+    for (const patch of [{ slice: 'x/lib' }, { sliceByRepo: false }, { groupBy: 'repo' as const }, { groupBy: 'repo' as const, sliceByRepo: false }]) {
+      const t = buildTable(items(), [A, B], ALL(patch), TODAY);
+      expect(t.repos, JSON.stringify(patch)).toBeNull();
+    }
+    // with slicing off the groups mix repositories, exactly as the single-level rules above
+    expect(flat(buildTable(items(), [A, B], ALL({ sliceByRepo: false }), TODAY))).toEqual([
+      ['无迭代', ['21']],
+      ['S1', ['20']],
+      ['S2', ['10', '  22', '  11', '    13', '  12', '20']],
+      ['S3', ['14']],
+    ]);
+    expect(buildTable(items(), [A, B], ALL({ groupBy: 'repo' }), TODAY).groups.map((g) => `${g.key}:${g.rows.length}`)).toEqual(['repo:x/app:5', 'repo:x/lib:3']);
+    const picked = buildTable(items(), [A, B], ALL({ slice: 'X/LIB' }), TODAY);
+    expect(picked.groups.map((g) => [g.key, g.title])).toEqual([
+      [GROUP_NONE_KEY, '无迭代'],
+      [iterationColumnKey(A.iterations[0]), 'S1'],
+      [iterationColumnKey(A.iterations[1]), 'S2'],
+    ]);
+  });
+
+  it('repository names that differ only in case are one repository, as in the slice list', () => {
+    const t = buildTable([item('x/Lib', 1), item('B/z', 3), item('x/lib', 2), item('a/y', 4)], [], ALL({ groupBy: 'milestone' }), TODAY);
+    expect(t.repos!.map((r) => [r.key, r.title, r.itemCount])).toEqual([
+      ['repo:a/y', 'a/y', 1],
+      ['repo:b/z', 'B/z', 1],
+      ['repo:x/lib', 'x/Lib', 2],
+    ]);
+  });
+
+  it('nothing left after filtering: no sections', () => {
+    expect(buildTable([], [A, B], ALL(), TODAY)).toMatchObject({ repos: [], groups: [], itemCount: 0 });
   });
 });
 
