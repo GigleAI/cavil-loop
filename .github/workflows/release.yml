@@ -183,6 +183,8 @@ jobs:
       - uses: ./.github/actions/client-setup
       - name: Negative controls (vitest / back end / UI)
         run: MUTATION=1 npm run test:mutation
+      # It builds the window (dist/) and the app's icons itself before its first entry: this
+      # checkout is clean, and neither is in git (tests/client-tauri-mutation-prep.test.sh).
       - name: Negative controls for the app shell (each rebuilds the real app)
         run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
       - name: Upload screenshots
