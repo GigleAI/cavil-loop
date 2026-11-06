@@ -360,3 +360,29 @@ table.compare tbody th { width: 120px; font-weight: 600; white-space: nowrap; }
 .pending-ref { flex: 0 0 170px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pending-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pending-ext { flex: 0 0 auto; }
+/* keyboard shortcuts (GitHub#192): key caps, the label / milestone picker, the shortcut list */
+kbd { display: inline-block; font: 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 5px; margin: 0 1px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--ctl); color: var(--muted); white-space: nowrap; vertical-align: middle; }
+button > kbd { margin-left: 6px; }
+button.primary > kbd { background: transparent; color: #fff; border-color: rgba(255, 255, 255, 0.55); }
+.picker-anchor { position: relative; display: inline-flex; align-items: center; }
+.picker { position: absolute; top: calc(100% + 4px); left: 0; width: 300px; z-index: 8; background: var(--raised); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); overflow: hidden; color: var(--fg); font-size: 13px; }
+.picker-head { padding: 8px 10px 6px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.picker input { display: block; width: calc(100% - 20px); margin: 0 10px 6px; }
+.picker ul { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; border-top: 1px solid var(--border); }
+.picker li { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; }
+.picker li .chk { width: 14px; color: var(--accent); font-weight: 700; }
+.picker li .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.picker li.active { background: var(--info-bg); }
+.picker li.disabled { opacity: 0.5; cursor: not-allowed; }
+.picker-foot { border-top: 1px solid var(--border); padding: 5px 10px; display: flex; gap: 10px; flex-wrap: wrap; }
+.modal.shortcuts { width: 720px; }
+.modal:focus { outline: none; }
+.shortcut-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+.shortcut-groups h4 { margin: 12px 0 4px; font-size: 12px; color: var(--muted); }
+.shortcut-groups table { width: 100%; border-collapse: collapse; }
+.shortcut-groups td { padding: 4px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.shortcut-groups td.keys { text-align: right; white-space: nowrap; padding-left: 8px; }
+.warn-text { color: var(--fg); background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 4px 8px; margin-top: 8px; }
+.reply .banner.draft-kept { margin: 6px 0; }
+.keys-hint { white-space: nowrap; }
+@media (max-width: 760px) { .shortcut-groups { grid-template-columns: 1fr; } }

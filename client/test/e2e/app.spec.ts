@@ -287,6 +287,18 @@ function pinLabels() {
   }
 }
 
+/**
+ * Add one label from the detail panel: "+ 加标签" opens the picker (GitHub#192), a click on the
+ * name sends that one add, Esc puts the picker away again.
+ */
+async function pickLabel(page: Page, name: string) {
+  const detail = page.getByTestId('detail');
+  await detail.getByTestId('label-add').click();
+  await detail.locator(`[data-testid="label-picker"] [data-testid="picker-item"][data-name="${name}"]`).click();
+  await page.keyboard.press('Escape');
+  await expect(detail.getByTestId('label-picker')).toHaveCount(0);
+}
+
 const card = (page: Page, n: number) => page.locator(`[data-testid="card"][data-key="gigleai/cavil-loop#${n}"]`).first();
 const writes = () => env.fake.writes().map((w) => [w.method === 'POST' && w.path === '/api/graphql' ? w.operation : w.method, w.path, w.body ?? w.variables]);
 
@@ -322,7 +334,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(frame.locator('details.entry')).toHaveCount(3);
 
   // ---- labels: add in the detail, remove on the card ----
-  await detail.getByTestId('label-add').selectOption('Done');
+  await pickLabel(page, 'Done');
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
   await card(page, 138).hover();
@@ -522,7 +534,7 @@ test('a slow answer for the item you left never lands on the one you are looking
 
   // 3. a change still in flight when another item is opened: its result goes to the board, not into the new item
   const releaseWrite = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/137/labels'));
-  await page.getByTestId('label-add').selectOption('Done');
+  await pickLabel(page, 'Done');
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/137/labels'))).toBe(true);
   await card(page, 138).click();
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
@@ -572,13 +584,21 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   w.repoLabels.set('gigleai/cavil-loop', [...w.repoLabels.get('gigleai/cavil-loop')!, { name: 'NEW_LABEL', color: '00ff00' }]);
   await roundTrip();
   await expect(frame.locator('body')).toContainText('BODY_NEW');
-  await expect(detail.getByTestId('label-add').locator('option', { hasText: 'NEW_LABEL' })).toHaveCount(1);
+  // the label candidates as the picker lists them (open it, count, put it away)
+  const newLabelListed = async () => {
+    await detail.getByTestId('label-add').click();
+    const n = await detail.locator('[data-testid="label-picker"] [data-testid="picker-item"][data-name="NEW_LABEL"]').count();
+    await page.keyboard.press('Escape');
+    await expect(detail.getByTestId('label-picker')).toHaveCount(0);
+    return n;
+  };
+  await expect.poll(newLabelListed).toBe(1);
   releaseDetail();
   releaseLabels();
   await expect.poll(() => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).every((l) => l.status === 200)).toBe(true);
   await page.waitForTimeout(300);
   await expect(frame.locator('body')).toContainText('BODY_NEW'); // [detail] old read did not land
-  await expect(detail.getByTestId('label-add').locator('option', { hasText: 'NEW_LABEL' })).toHaveCount(1); // [options] old list did not land
+  expect(await newLabelListed()).toBe(1); // [options] old list did not land
 
   // [preview] asked in one opening, answered in the next
   const releasePreview = holdFirst((e) => e.path === '/api/markdown');
@@ -618,7 +638,7 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   await expect.poll(() => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).at(-1)?.status).toBe(0);
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_NEW</p>');
   // a change made meanwhile re-reads the detail: that newer read must win
-  await detail.getByTestId('label-add').selectOption('pending/PR');
+  await pickLabel(page, 'pending/PR');
   await expect(page.getByTestId('action-result')).toContainText('pending/PR');
   await expect(frame.locator('body')).toContainText('BODY_REFRESH_NEW');
   releaseRefresh();
@@ -639,7 +659,7 @@ test('leave an item and come back: nothing that was in flight lands on the new o
 
   // close and reopen is a new opening too
   const releaseLabel = holdFirst((e) => e.method === 'POST' && e.path.endsWith('/issues/138/labels'));
-  await detail.getByTestId('label-add').selectOption('Done');
+  await pickLabel(page, 'Done');
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
   await page.getByTestId('detail-close').click();
   await card(page, 138).click();
@@ -1125,7 +1145,7 @@ test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, s
   await card(page, 138).click();
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('label-add').selectOption('Done');
+  await pickLabel(page, 'Done');
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
   await expect(page.locator('[data-testid="sync-problem"]')).toHaveCount(0);
@@ -1741,7 +1761,7 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await open(137);
   const hide = page.getByTestId('detail-close');
   await expect(hide).toHaveText('收起 ›');
-  await expect(hide).toHaveAttribute('title', '收起（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）');
+  await expect(hide).toHaveAttribute('title', '收起（Esc；回复框里有没发出的文字时 Esc 不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）');
   await expect(page.getByTestId('close-issue')).toHaveText('关闭 issue…');
   await shot(page, '50-issue-open-hide-button');
   await hide.click();
@@ -1773,9 +1793,12 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await expect(dialog.locator('h3')).toHaveText('关闭 issue #137？');
   await expect(page.getByTestId('close-reason-completed')).toBeChecked();
   await expect(page.getByTestId('close-reason-not_planned')).not.toBeChecked();
-  // Esc while the dialog asks: the panel stays, nothing sent
+  // Esc while the dialog asks cancels the dialog only (GitHub#192): the panel stays, nothing sent
   await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  expect(env.fake.writes()).toEqual([]);
+  await page.getByTestId('close-issue').click();
   await expect(dialog).toBeVisible();
   await page.getByTestId('close-reason-not_planned').check();
   await page.getByTestId('close-comment').fill('不做了');
@@ -1953,6 +1976,300 @@ test('settings lists what the badge counts: same colours and words as card, tabl
   await shot(page, '51-pending-list-external');
   // the list only reads: not one write reached GitHub
   expect(env.fake.writes().slice(writesBefore)).toEqual([]);
+  await app.close();
+});
+
+// ---- GitHub#192: keyboard shortcuts. Keys are pressed in the real window; what counts is what
+// the screen shows and what the fake GitHub received. Ctrl stands for ⌘ off macOS (both work). ----
+const MOD = 'ControlOrMeta';
+const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+const lastOnline = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.sync.lastOnlineAt as number | null);
+
+test('GitHub#192: shortcuts — nothing before sign-in; global keys on every signed-in page; a board request runs once', async () => {
+  const { app, page } = await launch(env);
+  const help = page.getByTestId('shortcut-help');
+  const dialog = page.getByTestId('confirm-dialog');
+  const search = page.getByTestId('search');
+
+  // ---- 1. the login page: no key does anything ----
+  await expect(page.getByTestId('login')).toBeVisible();
+  for (const k of ['/', 'c', '?', `${MOD}+,`]) await page.keyboard.press(k);
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('login')).toBeVisible();
+  await expect(help).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('settings')).toHaveCount(0);
+
+  await signInWithSources(page);
+  await blur(page);
+
+  // ---- 2. the board: "?" lists every shortcut of the one table; Esc closes it ----
+  await page.keyboard.press('?');
+  await expect(help).toBeVisible();
+  expect(await help.getByTestId('shortcut-row').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-id')))).toEqual([
+    'search', 'newIssue', 'sync', 'settings', 'help', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'hide',
+    'send', 'preview', 'leaveReply', 'pickerUp', 'pickerDown', 'pickerToggle', 'pickerClose', 'helpClose',
+  ]);
+  await shot(page, '60-shortcut-list');
+  // the list takes every key while it is up: "/" does not reach the search box
+  await page.keyboard.press('/');
+  await expect(search).not.toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(help).toHaveCount(0);
+  await page.keyboard.press('?');
+  await expect(help).toBeVisible();
+  await page.keyboard.press('?');
+  await expect(help).toHaveCount(0);
+
+  // ---- 3. "/" jumps to the search box without typing a "/"; letters typed there are just text ----
+  await page.keyboard.press('/');
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue('');
+  await page.keyboard.type('lmcr?/');
+  await expect(search).toHaveValue('lmcr?/');
+  await expect(dialog).toHaveCount(0);
+  await expect(help).toHaveCount(0);
+  await search.fill('');
+  // ⌘R and ⌘, act even while typing
+  const t0 = await lastOnline(page);
+  await page.waitForTimeout(20);
+  await page.keyboard.press(`${MOD}+r`);
+  await expect.poll(() => lastOnline(page), { timeout: 15_000 }).not.toBe(t0);
+  await expect(page.getByTestId('board')).toBeVisible();
+  await blur(page);
+
+  // ---- 4. "C": new issue. Esc with typed text keeps it (and says why); empty, Esc cancels; ⌘↩ creates ----
+  await page.keyboard.press('c');
+  await expect(dialog).toBeVisible();
+  await page.getByTestId('new-issue-title').fill('KEYS_NEW');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('dialog-esc-hint')).toBeVisible();
+  await expect(page.getByTestId('new-issue-title')).toHaveValue('KEYS_NEW');
+  await page.getByTestId('new-issue-title').fill('');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  expect(env.fake.writes()).toEqual([]);
+  await page.keyboard.press('c');
+  await page.getByTestId('new-issue-title').fill('KEYS_NEW');
+  await page.keyboard.press(`${MOD}+Enter`);
+  await expect(dialog).toHaveCount(0, { timeout: 15_000 });
+  expect(env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues').map((w) => (w.body as { title?: string } | undefined)?.title)).toEqual(['KEYS_NEW']);
+  await page.getByTestId('detail-close').click();
+  await blur(page);
+
+  // ---- 5. Settings (⌘,): every global key still works there ----
+  const settings = page.getByTestId('settings');
+  await page.keyboard.press(`${MOD}+,`);
+  await expect(settings).toBeVisible();
+  // "/": back to the board, the search box focused
+  await page.keyboard.press('/');
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(search).toBeFocused();
+  await blur(page);
+  // "C": back to the board, the new-issue dialog up
+  await page.keyboard.press(`${MOD}+,`);
+  await expect(settings).toBeVisible();
+  await page.keyboard.press('c');
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  // ⌘R: a sync round, the page stays; "?": the list over the settings page
+  await page.keyboard.press(`${MOD}+,`);
+  await expect(settings).toBeVisible();
+  const t1 = await lastOnline(page);
+  await page.waitForTimeout(20);
+  await page.keyboard.press(`${MOD}+r`);
+  await expect.poll(() => lastOnline(page), { timeout: 15_000 }).not.toBe(t1);
+  await expect(settings).toBeVisible();
+  await page.keyboard.press('?');
+  await expect(help).toBeVisible();
+  await expect(settings).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(help).toHaveCount(0);
+  await shot(page, '61-settings-after-keys');
+  // the earlier "/" and "C" were done once: back on the board (by the button), nothing repeats
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('board')).toBeVisible();
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  await expect(search).not.toBeFocused();
+
+  // ---- 6. the app-kind page (from Settings) takes the global keys too ----
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('app-kind-help-link').click();
+  await expect(page.getByTestId('app-kind-help')).toBeVisible();
+  await blur(page);
+  await page.keyboard.press('?');
+  await expect(help).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('/');
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(search).toBeFocused();
+  await app.close();
+});
+
+test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a draft, the label / milestone pickers send one change each, a dialog takes the keys first', async () => {
+  // #137 open on GitHub on every copy, whatever the recorded fixture captured (its "close issue" is used at the end)
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c137 = findCopies(store, 'GigleAI/cavil-loop', 137)!;
+  for (const g of c137.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+  for (const r of c137.rest) Object.assign(r, { state: 'open', state_reason: null });
+  env.fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 1, title: 'v1', state: 'open', due_on: null }]);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const reply = detail.getByTestId('reply-input');
+  const picker = detail.getByTestId('label-picker');
+  const dialog = page.getByTestId('confirm-dialog');
+  const open137 = async () => {
+    await card(page, 137).click();
+    await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+    await expect(detail.getByTestId('label-add')).toBeEnabled();
+    await blur(page);
+  };
+  const replyFocused = () => reply.evaluate((el) => el === document.activeElement);
+  await open137();
+
+  // ---- 1. R: to the reply box; letters typed there are text, never shortcuts ----
+  await page.keyboard.press('r');
+  await expect(reply).toBeFocused();
+  await page.keyboard.type('lmc/?r');
+  await expect(reply).toHaveValue('lmc/?r');
+  await expect(picker).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('shortcut-help')).toHaveCount(0);
+
+  // ---- 2. an input method still composing: ⌘↩ and Esc are its keys, not ours ----
+  for (const key of ['Enter', 'Escape'])
+    await reply.evaluate((el, key) => {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: key === 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+    }, key);
+  await page.waitForTimeout(500);
+  expect(env.fake.writes()).toEqual([]);
+  await expect(reply).toBeFocused();
+  await expect(reply).toHaveValue('lmc/?r');
+
+  // ---- 3. ⌘↩ sends (the send button's own action); blank text: nothing, like the greyed button ----
+  await page.keyboard.press(`${MOD}+Enter`);
+  await expect(page.getByTestId('action-result')).toHaveText('评论已发出');
+  expect(writes()).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: 'lmc/?r' }]]);
+  await expect(reply).toHaveValue('');
+  await reply.fill('   ');
+  await page.keyboard.press(`${MOD}+Enter`);
+  await page.waitForTimeout(500);
+  expect(writes()).toHaveLength(1);
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok'); // no "empty comment" refusal either
+  // ⌘⇧P: preview and back
+  await reply.fill('**PREVIEW_KEY**');
+  await page.keyboard.press(`${MOD}+Shift+KeyP`);
+  await expect(page.frameLocator('[data-testid="reply-preview"]').locator('body')).toContainText('PREVIEW_KEY');
+  await page.keyboard.press(`${MOD}+Shift+KeyP`);
+  await expect(page.getByTestId('reply-preview')).toHaveCount(0);
+
+  // ---- 4. Esc and an unsent reply: the text is never dropped by a key ----
+  const hint = page.getByTestId('draft-esc-hint');
+  await reply.fill('方案收到');
+  await page.keyboard.press('Escape'); // leaves the reply box
+  expect(await replyFocused()).toBe(false);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await expect(hint).toHaveCount(0);
+  await page.keyboard.press('Escape'); // the panel stays, and says why
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await expect(hint).toBeVisible();
+  await expect(reply).toHaveValue('方案收到');
+  await shot(page, '62-esc-keeps-draft');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await expect(reply).toHaveValue('方案收到');
+  // cleared: Esc leaves the box, the next Esc puts the panel away; reopened, the box is empty
+  await reply.fill('');
+  await expect(hint).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  await open137();
+  await expect(reply).toHaveValue('');
+  // an empty box from the start: R, Esc (leaves), Esc (puts away)
+  await page.keyboard.press('r');
+  await expect(reply).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  await open137();
+
+  // ---- 5. L: the label picker. Typing filters (even "c" or "/"); ↑↓ choose; one Enter = one add or one remove ----
+  const before = writes().length;
+  await page.keyboard.press('l');
+  await expect(picker).toBeVisible();
+  await expect(picker.getByTestId('picker-filter')).toBeFocused();
+  await page.keyboard.type('pending/');
+  await expect(dialog).toHaveCount(0);
+  const items = picker.getByTestId('picker-item');
+  expect(await items.count()).toBeGreaterThan(1);
+  const active = () => picker.locator('[data-testid="picker-item"][data-active="yes"]').getAttribute('data-name');
+  for (let i = 0; i < 20 && (await active()) !== 'pending/PR'; i++) await page.keyboard.press('ArrowDown');
+  expect(await active()).toBe('pending/PR');
+  await expect(picker.locator('[data-name="pending/PR"]')).toHaveAttribute('data-checked', 'no');
+  await shot(page, '63-label-picker');
+  await page.keyboard.press('Enter');
+  await expect(picker.locator('[data-name="pending/PR"]')).toHaveAttribute('data-checked', 'yes', { timeout: 15_000 });
+  await expect(picker).toBeVisible(); // stays open for the next one
+  expect(writes().slice(before)).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/labels', { labels: ['pending/PR'] }]]);
+  expect(await active()).toBe('pending/PR');
+  await page.keyboard.press('Enter');
+  await expect(picker.locator('[data-name="pending/PR"]')).toHaveAttribute('data-checked', 'no', { timeout: 15_000 });
+  expect(writes().slice(before)).toEqual([
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/labels', { labels: ['pending/PR'] }],
+    ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/137/labels/pending%2FPR', undefined],
+  ]);
+  // Esc puts the picker away, and only the picker
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+
+  // ---- 6. M: the milestone picker; Enter sets it and closes ----
+  await page.keyboard.press('m');
+  const ms = detail.getByTestId('milestone-picker');
+  await expect(ms).toBeVisible();
+  await page.keyboard.type('v1');
+  await page.keyboard.press('Enter');
+  await expect(ms).toHaveCount(0);
+  await expect(page.getByTestId('action-result')).toHaveText('里程碑改成「v1」');
+  expect(writes().slice(before + 2).map(([m, p]) => [m, p])).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137']]);
+
+  // ---- 7. a dialog on top takes every key: nothing behind it reacts ----
+  await page.getByTestId('close-issue').click();
+  await expect(dialog).toBeVisible();
+  const n = writes().length;
+  for (const k of ['/', 'c', 'l', 'm', 'r', '?']) await page.keyboard.press(k);
+  await page.waitForTimeout(300);
+  await expect(picker).toHaveCount(0);
+  await expect(detail.getByTestId('milestone-picker')).toHaveCount(0);
+  await expect(page.getByTestId('shortcut-help')).toHaveCount(0);
+  await expect(page.getByTestId('search')).not.toBeFocused();
+  await expect(reply).not.toBeFocused();
+  await expect(page.locator('[data-testid="confirm-dialog"]')).toHaveCount(1);
+  // a plain Enter, even on the confirm button, does not confirm: only a click or ⌘↩ does
+  await page.getByTestId('confirm-ok').focus();
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(500);
+  await expect(dialog).toBeVisible();
+  expect(writes()).toHaveLength(n);
+  // Esc cancels the dialog only
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  // ⌘↩ confirms: the close goes out
+  await page.getByTestId('close-issue').click();
+  await page.keyboard.press(`${MOD}+Enter`);
+  await expect(page.getByTestId('action-result')).toHaveText('issue #137 已关闭（已完成）');
+  expect(writes().slice(n)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137', { state: 'closed', state_reason: 'completed' }]]);
   await app.close();
 });
 
