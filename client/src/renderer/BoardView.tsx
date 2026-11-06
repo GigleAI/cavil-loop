@@ -1,4 +1,5 @@
 import { stateTone } from '../shared/stateTone';
+import { UpdateReadyBar } from './UpdateViews';
 import { badgeText } from './KindBadge';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
@@ -541,6 +542,7 @@ export function BoardView({
       )}
       {panel && <ViewSettingsPanel view={view} />}
 
+      <UpdateReadyBar update={state.update} />
       <WarnBar kind="offline" warn={warn}>
         离线 · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'}。修改功能暂不可用。
       </WarnBar>

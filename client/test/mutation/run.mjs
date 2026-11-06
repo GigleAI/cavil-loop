@@ -60,7 +60,7 @@ function sandbox() {
   for (const d of ['src', 'test', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
   // the Rust back end's sources (not its build output: a mutated copy is built into MUT_TARGET)
   cpSync(join(root, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
-  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts', 'RELEASE_NOTES.md']) cpSync(join(root, f), join(work, f));
+  for (const f of ['package.json', 'tsconfig.json', 'vitest.config.ts', 'playwright.config.ts', 'RELEASE_NOTES.md', 'README.md']) cpSync(join(root, f), join(work, f));
   cpSync(join(root, 'scripts'), join(work, 'scripts'), { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
   return work;

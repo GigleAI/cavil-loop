@@ -24,7 +24,7 @@ import { applyFreshItem, fetchItem } from '../data/itemRefresh';
 import { GitHubError } from '../data/github';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText, summaryAlertText } from '../data/pending';
-import type { Alert, Delivery, Desktop, DesktopEvent } from './desktop';
+import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
 export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
@@ -182,6 +182,7 @@ export class Controller {
       launchAtLogin: null,
       notifyProblem: null,
       focus: null,
+      update: null,
     };
     for (const s of init.snapshots) this.snapshots.set(s.sourceKey, s);
     this.refreshDerived();
@@ -222,6 +223,7 @@ export class Controller {
 
   async start(): Promise<void> {
     void this.readLoginItem();
+    void this.readUpdate();
     const r = await this.backend.call<{ phase: 'login' | 'ready'; reason?: string | null; session?: number; wiped: boolean }>('start');
     if (r.wiped) this.dropMirror();
     if (r.phase === 'login') {
@@ -564,6 +566,45 @@ export class Controller {
     await this.readLoginItem();
   }
 
+  // ---- the app updating itself (GitHub#184): the shell decides and reports; this only shows and asks ----
+
+  /** bumps on every status the shell sends: a read that started before one is older than it */
+  private updateSeq = 0;
+
+  private async readUpdate(): Promise<void> {
+    const d = this.deps.desktop;
+    if (!d) return;
+    const seq = this.updateSeq;
+    let v: UpdateStatus | null = null;
+    try {
+      v = (await d.updateStatus()) ?? null;
+    } catch {
+      v = null;
+    }
+    if (seq === this.updateSeq) this.set({ update: v });
+  }
+
+  private onUpdate(status: UpdateStatus): void {
+    this.updateSeq++;
+    this.set({ update: status });
+  }
+
+  async checkUpdate(): Promise<void> {
+    await this.deps.desktop?.checkUpdate().catch(() => {});
+  }
+
+  async setAutoUpdate(on: boolean): Promise<void> {
+    await this.deps.desktop?.setAutoUpdate(Boolean(on)).catch(() => {});
+  }
+
+  async dismissUpdate(version: string): Promise<void> {
+    await this.deps.desktop?.dismissUpdate(String(version)).catch(() => {});
+  }
+
+  async restartToUpdate(): Promise<void> {
+    await this.deps.desktop?.restartToUpdate().catch(() => {});
+  }
+
   /**
    * Events from the shell, one at a time: a sync beat (the shell keeps time,
    * so a hidden window keeps syncing) or a clicked notification.
@@ -593,6 +634,10 @@ export class Controller {
   onDesktopEvent(ev: DesktopEvent): void {
     if (ev.kind === 'tick') {
       void this.syncNow();
+      return;
+    }
+    if (ev.kind === 'update') {
+      this.onUpdate(ev.status);
       return;
     }
     // a click: the item's detail in the app; an item no longer on the board opens on GitHub instead

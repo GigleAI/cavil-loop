@@ -1,7 +1,7 @@
 {
   "name": "cavil-loop-client",
   "productName": "Cavil Loop",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Local GitHub Project board client for cavil-loop",
   "license": "MIT",

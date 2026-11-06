@@ -61,8 +61,9 @@
 │   └── ci-weights.txt         ← 各文件参考耗时，只用来均衡 CI 分组
 ├── .github/workflows/
 │   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（检查名：测试）
-│   ├── release.yml            ← 每周发版
+│   ├── release.yml            ← 每周发版，先过跑全部负对照的门禁（GitHub#195）
 │   └── client.yml             ← 桌面客户端：测试、macOS dmg、client/v* Release
+├── .github/actions/client-setup/  ← 客户端测试环境，client.yml 和发版门禁共用
 ├── client/                   ← 桌面看板客户端（Tauri：TS + React 界面 + Rust 后台；GitHub#135 / #151），见 client/README.md
 └── docs/
     ├── architecture.md        ← 五态 label 状态机 + 会话模型 + 选型 FAQ
@@ -290,8 +291,8 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   它要本机正在运行的用户级 systemd 且装好了预览单元）。被排除的文件本机照常跑；清单里写了不存在的文件直接报错
 - **整个文件自己跳过算失败**，除非它在上面的清单里。约定：顶格以 `⏭` 开头的一行 = 「整个文件跳过」；
   缩进的 `⏭` = 文件里某一组跳过、其余照跑，只列出不判红。不这么做，CI 上某个依赖丢了，测试照样退出 0，检查一直绿、其实什么都没测
-- **PR 上不跑负对照。** Actions → Tests → *Run workflow* 里勾 `mutation`，会带 `MUTATION=1` 全部重跑。
-  改到被测代码时按下文打开负对照的要求不变
+- **负对照只在每周自动发版时跑，Mac 打包 PR 上不跑**（GitHub#195），见下文「负对照什么时候跑」那张表。
+  Actions → Tests → *Run workflow* 里的 `mutation` 勾选框仍可手动带 `MUTATION=1` 全部重跑
 - **测试不能依赖开发机。** 第一次 CI 就抓到三处：假仓库的分支名跟着本机 `init.defaultBranch` 走（GitHub 机器默认是 `master`，
   要写 `git init -b main`）；夹具按北京时间写、`date` 却跟着本机时区（要固定 `TZ`）；结果目录放在仓库里，被扫全仓库的测试读到。
   新测试推上去之前，用 `TZ=UTC GIT_CONFIG_GLOBAL=<只含 user.name/email 的文件> bash tests/<名>.test.sh` 粗略模拟一台 GitHub 机器
@@ -306,8 +307,21 @@ bash tests/<name>.test.sh              # 默认回归：只跑正向用例，末
 MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 之前一样）
 ```
 
-- **什么时候必须开**：改到某个测试覆盖的代码、新加或改了它的断言时；复审时复跑，贴命令、「负对照：本次跑了 N 项」那一行和通过 / 失败数
-- **只跑和这次改动相关的负对照**（GitHub#178）：你新加或改过的项、改坏位置落在你改过的文件里的项、点名的测试所在测试文件被你改过的项（只改断言也算）。`tests/*.test.sh` 就是只对覆盖这次改动的那几个文件开 `MUTATION=1`，不是每个文件都跑。`client/` 用 `npm run test:mutation -- --changed`，它自己挑（测试公共部分改了就全挑：假 GitHub、夹具、测试辅助代码、测试配置、执行脚本本身），判断不了时退出 1，不会显示成「跑了 0 项、全过」。整套只在复审点名或 CI 手动 *Run workflow* 时跑
+#### 负对照什么时候跑（GitHub#195：只在每周自动发版时跑）
+
+| 场景 | 默认回归 | 负对照 | Mac 打包 + Mac 检查 |
+|---|---|---|---|
+| worker 开发、交付、返工（本机） | 改动涉及的那部分 | **不跑** | 不跑 |
+| 复审（本机） | 需要时复跑相关部分 | **不跑，也不要求 worker 跑** | 不跑 |
+| PR 的 CI（每次推送） | `Tests`（全部 shell 测试）+ `Client` 的 Linux 套件 | 不跑 | 不跑（dmg 任务显示「已跳过」） |
+| `Client`：推到 `main` | 同 PR | 不跑 | 跑 |
+| `Client`：`client/v*` 标签 | 同 PR | 不跑 | 跑；有红就不发版 |
+| `Release`（每周，或推 `release/v*` 标签） | — | **全部**：全部 `tests/*.test.sh` 带 `MUTATION=1`（4 份并行 + 托管测试拆成 6 份），加客户端两组（`test/mutation`、真实 App 的 `test/tauri/mutations.sh`），跑在这次要打标签的那个提交上；有红就不打标签、不建发版页 | — |
+| 手动 *Run workflow* | 照旧 | 原有的 `mutation` 勾选框（只在手动时）；`Release` 的 `gate_only` 只跑整套门禁、不打标签，用来试跑 | `Client`：跑 |
+
+- 负对照不再是交付 PR、复审 PR 的一部分：PR 的证据是默认回归。PR 里新写的负对照在下一次每周发版时第一次跑，交付时写明这一点。复审不因缺负对照或打包结果打回
+- 负对照红了只挡每周发版：daemon 照样自动部署合并后的 `main`，客户端自己的 `client/v*` 发版也不等它，也没有人会收到提醒
+- 每周门禁全跑。维护者点名时仍可手动跑几项：`MUTATION=1 bash tests/<name>.test.sh`，或 `client/` 的 `npm run test:mutation -- --changed`，它按 GitHub#178 的规则挑相关项（新加或改过的、改坏位置在改过的文件里的、点名的测试所在文件改过的；测试公共部分改了就全挑），判断不了时退出 1，不会显示成「跑了 0 项、全过」
 - **哪类代码要新写负对照**（GitHub#178）：只有出错时不会报错、而是悄悄给出错误结果的地方——计数、去重、金额；往 GitHub 写东西（评论、标签、合并）；凭据和权限；删数据或改登记；区分「读不到」和「没有」的判断；同一条规则写在多处（多份 prompt 模板、多个调用点）。纯展示——通知文案、提示条、设置页、配色和布局——写普通测试即可，不新写负对照
 - **新写的负对照一律挂在开关下**，不进默认回归：每一项过一次 `tests/lib/mutation.sh` 的 `mutation_gate`（在主 shell 里调，别放进 `$( )`，否则计数传不回来）。默认模式下它只计数、不准备也不跑，所以「跳过 N 项」和「跑了 N 项」是同一个计数器
 - **准备失败照样红**：要改的原文找不到，只在开关打开时才查，查到仍让整套测试失败（`requester-bot` 的 `REQUESTER_BOT_TEST_BAD_MUT=1` 自检要和 `MUTATION=1` 一起设）
@@ -333,7 +347,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 - systemd 单元链接与旧版本清理（GitHub#109：`scripts/repair-unit-links.sh`、它的四个调用点——轮询入口、部署器、`setup.sh`、旧安装迁移——以及部署器不删还有单元链接指进去的版本）→ `tests/repair-unit-links.test.sh`（默认约 10 秒；`MUTATION=1` 约 27 秒，另跑 15 个改坏的副本）+ `tests/migrate-legacy.test.sh` 第 14 组。`systemctl enable` 会把模板链接解析进某个 `releases/<sha>/`，所以**任何启用单元的地方之后都要跑一次修复**。启动定时任务只看 systemd 自己记的状态（已启用 + 失败 + 原因 `resources` =「运行中单元文件消失」）；重新加载只看一个持久记号，只有 `daemon-reload` 成功才清——绝不看「这一轮有没有改链接」
 - 目录信任记录与信任确认框（GitHub#108：driver 里的 `agent_trust_key` / `agent_trust_paths` / `AGENT_TRUST_PROMPT_*`，`drivers/_common.sh` 的 `trust_config_locked_update` / `agent_trust_dirs`，`_lib.sh` 的 `agent_prepare_trust` / `agent_launch_trust_gate`，setup 第 1b 步）→ `tests/agent-trust-paths.test.sh`（默认约 50 秒，`MUTATION=1` 约 2 分钟）。认框看真机截屏上的结构（`tests/fixtures/trust-dialog/`），不认单个短语——会话里引用这句话不能被误杀。agent 按哪个目录判断信任是拿真 CLI 实测的，不是推出来的——在 git 仓库里两个都不认上级目录，子模块各家规则不同；要改规则先重测。写 `~/.claude.json` / `~/.codex/config.toml` 一律走按文件划分的共享锁：各项目的轮询锁各管各的，两个不加锁的写入者会悄悄抹掉对方的条目
 - `setup.sh` 建标签的默认颜色（GitHub#130，照抄本仓库 labels 页）→ `tests/setup-label-colors.test.sh`（约 1 秒；打开全部可选标签真跑 `setup.sh`，核对 14 个标签的名字和颜色）。GigleAI/cavil-loop 上的标签改色时，`setup.sh` 和测试里的期望表一起改
-- 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）
+- 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）。GitHub#195 起一次发版分三段：计划 → 发版门禁（仓库里全部负对照，shell 加客户端）→ 发版。计划那步（`release.sh --pending`）定下一个提交，门禁测的是它，打标签那步只给这个提交打（`release.sh --auto --at <sha>`），期间 `main` 往前走了也不变。「门禁过没过」从 `needs` 读两次——`gate-summary` 核每个门禁任务、发版任务第一步再核一次——门禁任务从 `needs` 里漏掉只会变红，不会被跳过。测试从 yml 里读出计划、汇总、发版核对、打标签这几步真跑，并注入每个门禁任务的结果（失败、跳过、取消、缺失、只跑门禁 → 零标签、零发版页）；`MUTATION=1` 用 7 份改坏的 yml 整份重跑。客户端门禁任务和 `client.yml` 共用 `.github/actions/client-setup`（Playwright 的 WebKit 在这里先装好，再跑第一个界面基线）。门禁从干净签出开始，所以每个使用方自己准备要读的东西：`client/test/tauri/mutations.sh` 在第一项之前先构建窗口（`dist/`）和 App 图标，且只在开关打开时 → `tests/client-tauri-mutation-prep.test.sh`（约 1 秒；真脚本配假 `node`，不构建、不改坏任何东西）
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
   daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份
 - worker / 复审写「要人拍板」评论的规矩（固定骨架、不许出现代码里的名字）→ `tests/plain-language-prompts.test.sh`。骨架逐字抄在三份 worker 模板和本项目的 `review.extra.md` 里；「不许出现代码里的名字」那句另外还在 worker 的拍板问题规则和复审的打回依据（`review.template.md` 第 2Q 步）里。「交人评论自包含、链接只当出处」（GitHub#74）是同样四处「交人评论怎么写」的第 8 条，另在 `review.template.md` 交人那一步放一份，让没有 `review.extra.md` 的项目的复审也带上。要改就每处一起改——测试会对拍拼好的 prompt，任何一处走样都会红
