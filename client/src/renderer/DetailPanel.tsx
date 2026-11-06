@@ -4,7 +4,9 @@ import type { ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } f
 import { writesEnabled } from '../data/board';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
-import { FRAME_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP } from './detailHtml';
+import { FRAME_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP, type Unfold } from './detailHtml';
+import { Person } from './Avatar';
+import { usePanelWidth } from './panelWidth';
 import { textColor } from './colors';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
@@ -133,19 +135,48 @@ export function DetailPanel({
     return { ...r, here: true };
   };
 
-  const doc = useMemo(() => (detail ? timelineDocument(detail, dark()) : ''), [detail]);
+  // which entries are unfolded: the newest only, until the user asks for all / none (GitHub#155)
+  const [unfold, setUnfold] = useState<Unfold>('latest');
+  const doc = useMemo(() => (detail ? timelineDocument(detail, dark(), unfold) : ''), [detail, unfold]);
+  const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
+  // the board leaves this much room to scroll past the panel (BoardView's spacer)
+  useEffect(() => {
+    document.documentElement.style.setProperty('--detail-space', `${width}px`);
+  }, [width]);
+  // Esc closes the panel — not while typing (a draft is not thrown away by a key) or while a dialog asks.
+  // Not while the discussion frame has the keyboard either: its keys stay inside it (PR #171 review,
+  // the maintainer chose to keep the frame isolated); a click on the panel outside the frame gives it back.
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || ask) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      onClose();
+    };
+    window.addEventListener('keydown', on);
+    return () => window.removeEventListener('keydown', on);
+  }, [ask, onClose]);
+  const shell = (key: string | undefined, children: React.ReactNode) => (
+    // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
+    // whose keys never reach this window (the frame is isolated and runs no scripts) — Esc works again after it
+    <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
+      <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
+      {children}
+    </aside>
+  );
 
   if (!item) {
-    return (
-      <aside className="detail" data-testid="detail">
+    return shell(
+      undefined,
+      <>
         <div className="detail-head">
           <span className="muted">这一条已不在当前视图里</span>
           <div className="spacer" />
-          <button onClick={onClose} data-testid="detail-close">
+          <button onClick={onClose} data-testid="detail-close" title="关闭（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）">
             关闭
           </button>
         </div>
-      </aside>
+      </>,
     );
   }
 
@@ -155,8 +186,9 @@ export function DetailPanel({
   const missingLabels = (opts?.labels ?? []).filter((l) => !item.labels.some((x) => x.name === l.name));
   const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
-  return (
-    <aside className="detail" data-testid="detail" data-key={item.key}>
+  return shell(
+    item.key,
+    <>
       <div className="detail-head">
         <KindBadge kind={item.kind} state={item.state} isDraft={detail?.pr ? detail.pr.isDraft : null} />
         <span className="muted small">
@@ -169,7 +201,7 @@ export function DetailPanel({
         <button onClick={() => void load()} disabled={loading} data-testid="detail-refresh">
           {loading ? '读取中…' : '刷新'}
         </button>
-        <button onClick={onClose} data-testid="detail-close">
+        <button onClick={onClose} data-testid="detail-close" title="关闭（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）">
           关闭
         </button>
       </div>
@@ -182,6 +214,20 @@ export function DetailPanel({
       )}
 
       <section className="detail-fields">
+        <div className="field-row" data-testid="detail-people">
+          <span className="field-name">作者</span>
+          <Person login={item.author} size={20} />
+          {item.assignees.length > 0 && (
+            <>
+              <span className="field-name">负责人</span>
+              <span className="people">
+                {item.assignees.map((a) => (
+                  <Person key={a} login={a} size={20} />
+                ))}
+              </span>
+            </>
+          )}
+        </div>
         <div className="field-row">
           <span className="field-name">标签</span>
           <div className="labels">
@@ -333,6 +379,17 @@ export function DetailPanel({
         </section>
       )}
 
+      {detail && detail.timeline.length > 1 && (
+        <div className="timeline-tools small">
+          <span className="muted">
+            {unfold === 'latest' ? '只展开了最新一条，点标题展开其他' : unfold === 'all' ? '已全部展开' : '已全部收起'}
+          </span>
+          <div className="spacer" />
+          <button className="link" data-testid="unfold-toggle" data-unfold={unfold} onClick={() => setUnfold(unfold === 'all' ? 'none' : 'all')}>
+            {unfold === 'all' ? '全部收起' : '全部展开'}
+          </button>
+        </div>
+      )}
       <div className="timeline">
         {detail ? (
           <iframe title="评论" data-testid="timeline-frame" sandbox={FRAME_SANDBOX} srcDoc={doc} />
@@ -444,6 +501,6 @@ export function DetailPanel({
           <textarea data-testid="close-comment" placeholder="可选：附一句评论（关闭成功后发出）" value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
         </ConfirmDialog>
       )}
-    </aside>
+    </>,
   );
 }

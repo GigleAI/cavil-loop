@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import { buildTable } from '../data/table';
 import { api } from './api';
+import { Person } from './Avatar';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -47,7 +48,13 @@ function open(url: string) {
 function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number }) {
   switch (col) {
     case 'assignees':
-      return <>{item.assignees.join('、')}</>;
+      return (
+        <span className="people">
+          {item.assignees.map((a) => (
+            <Person key={a} login={a} />
+          ))}
+        </span>
+      );
     case 'labels':
       return (
         <span className="labels">
@@ -90,7 +97,7 @@ function Cell({ col, item, now }: { col: TableColumn; item: Item; now: number })
     case 'repo':
       return <>{item.repo}</>;
     case 'author':
-      return <>{item.author ?? ''}</>;
+      return <Person login={item.author} />;
     case 'title':
       return null;
   }
@@ -114,7 +121,7 @@ export function TableView({
 }) {
   const [folded, setFolded] = useState<Set<string>>(new Set());
   const t = view.table;
-  const table = buildTable(items, projects, t, today);
+  const table = buildTable(items, projects, t, today, view.prsUnderIssues);
   const cols = t.columns.filter((c) => c !== 'title');
   const toggle = (k: string) => {
     const next = new Set(folded);
@@ -170,8 +177,13 @@ export function TableView({
               )}
               {!folded.has(g.key) &&
                 g.rows.map((r) => (
-                  <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth}>
+                  <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth} data-under={r.under ?? undefined}>
                     <td className="title-cell" style={{ paddingLeft: 8 + r.depth * 20 }}>
+                      {r.under && (
+                        <span className="nest-mark" title="关联到上面这个 issue 的 PR">
+                          ↳{' '}
+                        </span>
+                      )}
                       <span className={`state ${r.item.kind} ${r.item.state}`}>{r.item.kind === 'pr' ? 'PR' : r.item.state === 'open' ? '◯' : '✓'}</span>{' '}
                       <a
                         href={r.item.url}

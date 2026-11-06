@@ -4,7 +4,7 @@
 // Screenshots of each step land in test-results/screens/ (uploaded by CI).
 
 import { test, expect, type Page } from '@playwright/test';
-import { mkdtempSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -311,13 +311,13 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   const frameEl = page.getByTestId('timeline-frame');
   await expect(frameEl).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
-  await expect(frame.locator('article')).toHaveCount(3);
-  expect(await frame.locator('article').evaluateAll((els) => els.map((e) => e.getAttribute('data-entry')))).toEqual(['C-new', 'C-old', expect.stringMatching(/^I_/)]);
+  await expect(frame.locator('details.entry')).toHaveCount(3);
+  expect(await frame.locator('details.entry').evaluateAll((els) => els.map((e) => e.getAttribute('data-entry')))).toEqual(['C-new', 'C-old', expect.stringMatching(/^I_/)]);
   await shot(page, '20-detail-newest-first');
   // a link in GitHub's HTML opens the system browser; the frame itself never navigates
   await frame.locator('a', { hasText: 'link' }).click();
   await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('https://github.com/GigleAI/cavil-loop\n');
-  await expect(frame.locator('article')).toHaveCount(3);
+  await expect(frame.locator('details.entry')).toHaveCount(3);
 
   // ---- labels: add in the detail, remove on the card ----
   await detail.getByTestId('label-add').selectOption('Done');
@@ -341,7 +341,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(page.frameLocator('[data-testid="reply-preview"]').locator('body')).toContainText('看过了');
   await detail.getByTestId('reply-send').click();
   await expect(page.getByTestId('action-result')).toContainText('评论已发出');
-  await expect(frame.locator('article').first()).toContainText('看过了');
+  await expect(frame.locator('details.entry').first()).toContainText('看过了');
   await shot(page, '22-replied');
   await detail.getByTestId('hand-back').click();
   await expect(page.getByTestId('action-result')).toContainText('已交回 agent');
@@ -449,8 +449,10 @@ test('a slow answer for the item you left never lands on the one you are looking
   // (every request the window made outside its own bridge; the app's page policy is what stops the rest)
   await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toContain('request https://github.com/GigleAI/cavil-loop/raw/main/probe.png');
   const seen = readFileSync(env.requests, 'utf8');
-  expect(seen).not.toContain('githubusercontent.com');
-  expect(seen.split('\n').filter((l) => l && !/^request https:\/\/(api\.)?github\.com\//.test(l))).toEqual([]);
+  // GitHub's image proxy and attachment hosts: never even asked; the avatar host is the one exception (#155)
+  expect(seen).not.toContain('camo.githubusercontent.com');
+  expect(seen).not.toContain('private-user-images.githubusercontent.com');
+  expect(seen.split('\n').filter((l) => l && !/^request https:\/\/((api\.)?github\.com|avatars\.githubusercontent\.com)\//.test(l))).toEqual([]);
   await shot(page, '28-images-github-only');
 
   // 3. a change still in flight when another item is opened: its result goes to the board, not into the new item
@@ -723,11 +725,185 @@ test('a saved board view sorted by update time: the board shows each column newe
   const updated = new Map<string, string>();
   for (const p of loadCavilProjectPages())
     for (const n of p.items.nodes) updated.set(`${n.content.repository.nameWithOwner.toLowerCase()}#${n.content.number}`, n.content.updatedAt);
-  const order = await page.$$eval('[data-testid="column"][data-title="Done"] [data-testid="card"]', (cs) => cs.map((c) => c.getAttribute('data-key')!));
-  expect(order.length).toBeGreaterThan(10);
+  const cards = () =>
+    page.$$eval('[data-testid="column"][data-title="Done"] [data-testid="card"]', (cs) => cs.map((c) => [c.getAttribute('data-key')!, c.getAttribute('data-under')] as const));
+  // PRs go right under their issue (#155): an issue and the PRs under it move as one,
+  // placed by the latest update among them — those units are newest first
+  const nested = await cards();
+  expect(nested.length).toBeGreaterThan(10);
+  const units: string[] = [];
+  for (const [k, under] of nested) {
+    const t = updated.get(k)!;
+    if (under === null) units.push(t);
+    else units[units.length - 1] = t > units[units.length - 1] ? t : units[units.length - 1];
+  }
+  expect(units).toEqual([...units].sort().reverse());
+  await shot(page, '13-board-imported-sort');
+  // with "PRs under their issue" off: every card newest first by its own update
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('prs-under-issues').uncheck();
+  await expect(page.locator('[data-testid="card"][data-under]')).toHaveCount(0);
+  const order = (await cards()).map(([k]) => k);
   const ts = order.map((k) => updated.get(k)!);
   expect(ts).toEqual([...ts].sort().reverse());
-  await shot(page, '13-board-imported-sort');
+  await app.close();
+});
+
+// ---- GitHub#155: avatars, folded discussion, floating detail, PRs under their issue ----
+
+/** per column: [item key, key of the issue it is shown under] of every card, top to bottom */
+const cardsByColumn = (page: Page) =>
+  page.$$eval('[data-testid="column"]', (cs) =>
+    cs.map((c) => [...c.querySelectorAll('[data-testid="card"]')].map((x) => [x.getAttribute('data-key')!, x.getAttribute('data-under')] as [string, string | null])),
+  );
+
+test('GitHub#155: avatars; the detail floats over the board, keeps its dragged width; only the newest entry unfolded; PRs under their issue', async () => {
+  const author138 = loadCavilProjectPages().flatMap((p: any) => p.items.nodes).find((n: any) => n.content?.number === 138)!.content.author.login as string;
+  env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C1', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>FIRST comment</p>', author: { login: 'user-2' } },
+    { id: 'C2', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c2', createdAt: '2026-11-02T01:00:00Z', bodyHTML: '<p>SECOND comment</p>', author: { login: 'user-3' } },
+    { id: 'C3', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c3', createdAt: '2026-11-03T01:00:00Z', bodyHTML: '<p>NEWEST comment</p>', author: { login: 'user-4' } },
+  ]);
+  let { app, page } = await launch(env);
+  // the avatar of #138's author does not load: its first letter stands in (the bridge's route still records it)
+  const broken = (u: URL) => u.href.startsWith(`https://avatars.githubusercontent.com/${author138}?`);
+  await page.context().route(broken, (r) => {
+    appendFileSync(env.requests, `request ${r.request().url()}\n`);
+    return r.abort();
+  });
+  await signInWithSources(page);
+
+  // ---- 1. avatars on the cards, from the avatar host only ----
+  await expect(card(page, 138).locator('[data-testid="card-author"] [data-testid="avatar"]')).toHaveAttribute('data-fallback', 'yes');
+  await expect(card(page, 138).locator('[data-testid="card-author"] [data-testid="avatar"]')).toHaveText(author138.charAt(0).toUpperCase());
+  const loaded = page.locator('[data-testid="card-author"] img[data-testid="avatar"][data-fallback="no"]');
+  await expect.poll(() => loaded.count()).toBeGreaterThan(0);
+  expect(await loaded.first().evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toMatch(/request https:\/\/avatars\.githubusercontent\.com\/[^?]+\?s=32\n/);
+
+  // ---- 2. the detail floats over the board, stuck to the right; the board keeps its width ----
+  const boardBefore = await page.locator('.board').boundingBox();
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(detail).toHaveAttribute('data-width', '560');
+  expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
+  let box = (await detail.boundingBox())!;
+  expect(Math.round(box.x + box.width)).toBe(1280);
+  expect(Math.round(box.width)).toBe(560);
+  await expect(detail.getByTestId('detail-people').locator('[data-testid="avatar"]').first()).toHaveAttribute('data-login', author138);
+
+  // ---- 3. only the newest entry is unfolded; a folded one opens on a click; unfold all / fold all ----
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  const folds = () => frame.locator('details.entry').evaluateAll((els) => els.map((e) => [e.getAttribute('data-entry'), (e as HTMLDetailsElement).open]));
+  await expect.poll(folds).toEqual([
+    ['C3', true],
+    ['C2', false],
+    ['C1', false],
+    [expect.stringMatching(/^I_/), false],
+  ]);
+  await expect(frame.locator('details.entry[data-entry="C2"] > summary')).toContainText('SECOND comment');
+  await expect(frame.locator('details.entry[data-entry="C2"] .md')).toBeHidden();
+  await expect(frame.locator('details.entry[data-entry="C3"] .md')).toBeVisible();
+  await shot(page, '40-detail-folded');
+  // (near the start of the line: the middle of it may be the "在网页上看" link)
+  await frame.locator('details.entry[data-entry="C1"] > summary').click({ position: { x: 40, y: 10 } });
+  await expect(frame.locator('details.entry[data-entry="C1"] .md')).toBeVisible();
+  // the keyboard is now inside the isolated discussion: Esc stays there and does not close the panel
+  // (PR #171: kept isolated by the maintainer's choice); a click on the panel outside it gives it back
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await detail.locator('.detail-title').click();
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  await card(page, 138).click();
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect.poll(async () => (await folds())[0]).toEqual(['C3', true]);
+  await page.getByTestId('unfold-toggle').click();
+  await expect.poll(async () => (await folds()).every(([, open]) => open)).toBe(true);
+  await page.getByTestId('unfold-toggle').click();
+  await expect.poll(async () => (await folds()).every(([, open]) => !open)).toBe(true);
+  // the people in the discussion have avatars too
+  await expect.poll(() => readFileSync(env.requests, 'utf8')).toContain('request https://avatars.githubusercontent.com/user-4?s=40\n');
+
+  // ---- 4. drag the left edge: wider; the board still does not move; the width is kept ----
+  const h = (await page.getByTestId('detail-resize').boundingBox())!;
+  const x0 = h.x + h.width / 2;
+  await page.mouse.move(x0, h.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(x0 - 100, h.y + 200, { steps: 4 });
+  await page.mouse.move(x0 - 200, h.y + 200, { steps: 4 });
+  await page.mouse.up();
+  // 200px wider, give or take the sub-pixel position of the edge
+  await expect.poll(async () => Math.abs(Number(await detail.getAttribute('data-width')) - 760)).toBeLessThanOrEqual(2);
+  const dragged = (await detail.getAttribute('data-width'))!;
+  expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
+  await shot(page, '41-detail-wider');
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  await card(page, 137).click();
+  await expect(detail).toHaveAttribute('data-width', dragged);
+  // a narrow window leaves a strip of the board uncovered; the kept width comes back when it is wide again
+  await page.setViewportSize({ width: 800, height: 800 });
+  await expect(detail).toHaveAttribute('data-width', '680');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(detail).toHaveAttribute('data-width', dragged);
+  // Esc while typing a reply does not close the panel (and so does not drop the draft)
+  await detail.getByTestId('reply-input').fill('草稿');
+  await detail.getByTestId('reply-input').press('Escape');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await app.close();
+
+  // a restart: the same width
+  ({ app, page } = await launch(env));
+  await expect(card(page, 138)).toBeVisible({ timeout: 15_000 });
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-width', dragged);
+  // a card under the panel can still be reached: the board scrolls it out from under the panel
+  const covered = page.locator('[data-testid="column"] [data-testid="card"]').last();
+  await covered.click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', (await covered.getAttribute('data-key'))!);
+  await page.getByTestId('detail-close').click();
+
+  // ---- 5. PRs right under the issue they are linked to (columns by status: the recorded pairs share one) ----
+  await page.getByTestId('mode').selectOption('status');
+  const cols = await cardsByColumn(page);
+  let pairs = 0;
+  for (const col of cols) {
+    col.forEach(([key, under], i) => {
+      if (!under) return;
+      pairs++;
+      const at = col.findIndex(([k]) => k === under);
+      expect(at, `${key} under ${under}`).toBeGreaterThanOrEqual(0);
+      expect(at).toBeLessThan(i);
+      expect(col.slice(at + 1, i).every(([, u]) => u === under), `${key} right under ${under}`).toBe(true);
+    });
+  }
+  expect(pairs).toBeGreaterThan(0);
+  const nestedCard = page.locator('[data-testid="card"][data-under]').first();
+  const hostKey = (await nestedCard.getAttribute('data-under'))!;
+  const nb = (await nestedCard.boundingBox())!;
+  const hb = (await page.locator(`[data-testid="card"][data-key="${hostKey}"]`).first().boundingBox())!;
+  expect(nb.x).toBeGreaterThan(hb.x);
+  await nestedCard.scrollIntoViewIfNeeded();
+  await shot(page, '42-pr-under-issue');
+  // the table grouped the same way: the same pair, the PR right under its issue, one level deeper
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  const rows = await page.$$eval('[data-testid="row"]', (rs) => rs.map((r) => [r.getAttribute('data-key'), r.getAttribute('data-under'), Number(r.getAttribute('data-depth'))] as const));
+  const pr = rows.findIndex(([, u]) => u === hostKey);
+  expect(pr).toBeGreaterThan(0);
+  const host = rows.findIndex(([k]) => k === hostKey);
+  expect(host).toBeLessThan(pr);
+  expect(rows.slice(host + 1, pr).every(([, u]) => u === hostKey)).toBe(true);
+  expect(rows[pr][2]).toBe(rows[host][2] + 1);
+  // switched off: nothing nested anywhere
+  await page.getByTestId('prs-under-issues').uncheck();
+  await expect(page.locator('[data-testid="row"][data-under]')).toHaveCount(0);
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await expect(page.locator('[data-testid="card"][data-under]')).toHaveCount(0);
   await app.close();
 });
 
@@ -883,7 +1059,7 @@ test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, s
   expect(env.fake.log.some((l) => l.path === '/api/graphql' && l.auth)).toBe(true);
   await card(page, 138).click();
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
-  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('article').first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('label-add').selectOption('Done');
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
@@ -919,7 +1095,7 @@ test('detail badge: issue and PR differ by icon and full name; colour by state; 
   };
   /** the detail read finished (so a draft mark, if any, has arrived) */
   const loaded = async () => {
-    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('article').first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   };
   const bg = () => badge.evaluate((el) => getComputedStyle(el).backgroundColor);
 

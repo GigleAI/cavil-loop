@@ -8,5 +8,6 @@ pub mod grant;
 pub mod http;
 pub mod platform;
 pub mod store;
+pub mod zoom;
 
 pub use engine::{Deps, Engine};
