@@ -19,10 +19,10 @@ export class WebDriver {
     return json.value as T;
   }
 
-  /** Start the app (the binary at `application`); it runs with this process's environment. */
-  async start(application: string): Promise<void> {
+  /** Start the app (the binary at `application`, with `args`); it runs with the driver's environment. */
+  async start(application: string, args: string[] = []): Promise<void> {
     const v = await this.cmd<{ sessionId: string }>('POST', '/session', {
-      capabilities: { alwaysMatch: { browserName: 'wry', 'tauri:options': { application } } },
+      capabilities: { alwaysMatch: { browserName: 'wry', 'tauri:options': { application, ...(args.length ? { args } : {}) } } },
     });
     this.session = v.sessionId;
   }

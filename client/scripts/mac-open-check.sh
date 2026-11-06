@@ -8,6 +8,12 @@
 #      the user WILL see the "cannot be opened" dialog on first open
 #   4. the documented terminal step (remove the quarantine mark) makes a
 #      LaunchServices launch (`open`, same path as a double-click) succeed
+#   5. (GitHub#169, record only) one real notification through the same code as a
+#      reminder, and what macOS answered — nobody can click "Allow" on CI, so a
+#      refusal here does not fail the check; the maintainer's Mac decides
+#   6. (GitHub#169) with its window closed, and started hidden (launch at login),
+#      the app still syncs and asks for the reminder within 120 s; the Dock icon
+#      brings the window back (test/mac/background.spec.ts) — fails the check
 # The System Settings "Open Anyway" button path needs a human click and is
 # NOT verified here.
 #
@@ -84,3 +90,20 @@ kill "$pid" 2>/dev/null || true
 cat "$marker" 2>/dev/null || true
 grep -q 'CAVIL_SMOKE_OK' "$marker" 2>/dev/null || { echo "❌ app did not start via open after removing quarantine"; exit 1; }
 echo "✅ starts via LaunchServices after the documented step"
+
+echo "== 5. one real notification (record only: nobody clicks \"Allow\" on CI)"
+nmark="$work/notify-check.txt"
+"$bin" --notify-check "--smoke-out=$nmark" >/dev/null 2>&1 &
+npid=$!
+for _ in $(seq 1 60); do [ -s "$nmark" ] && break; sleep 1; done
+kill "$npid" 2>/dev/null || true
+if [ -s "$nmark" ]; then
+  echo "macOS answered: $(cat "$nmark")"
+else
+  echo "⚠️ no answer within 60 s (recorded, not a failure)"
+fi
+
+echo "== 6. window closed / started hidden: still syncing and reminding within 120 s"
+CAVIL_MAC_APP="$app" npx playwright test -c "$here/../playwright.mac.config.ts" --reporter=line \
+  || { echo "❌ the app stopped syncing (or reminding) without its window"; exit 1; }
+echo "✅ syncs and reminds with the window closed and when started hidden; the Dock icon brings it back"

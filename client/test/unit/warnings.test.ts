@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseFilter } from '../../src/shared/filter';
 import type { SourceStatus, SyncState } from '../../src/shared/types';
-import { dismiss, isShown, reconcile, warningIds, WARN_KINDS, type Dismissed, type WarnIds, type WarnKind } from '../../src/renderer/warnings';
+import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, WARN_KINDS, type Dismissed, type WarnIds, type WarnKind } from '../../src/renderer/warnings';
 
 const T0 = Date.parse('2026-11-06T00:00:00Z');
 const ok = (sourceKey: string): SourceStatus => ({ sourceKey, ok: true, error: null, dataFrom: T0 });
@@ -171,5 +171,24 @@ describe('closing a bar and when it comes back (the table of GitHub#153)', () =>
 
   it('closing a bar that is not up records nothing', () => {
     expect(dismiss({}, {}, 'offline')).toEqual({});
+  });
+});
+
+describe('the "notifications refused" bar (GitHub#139)', () => {
+  const REFUSED = 'Notifications are not allowed for this application';
+  it('is up only while the latest notification was refused; its id is the system\'s reason', () => {
+    expect(notifyWarningIds(null)).toEqual({});
+    expect(notifyWarningIds(REFUSED)).toEqual({ 'board-notify-problem': REFUSED });
+  });
+  it('× closes it for this reason only: a refusal with the same reason stays closed, one going out then refused again shows it', () => {
+    // rebuilt at every step, as the window does on every render
+    const up = () => ({ state: notifyWarningIds(REFUSED) });
+    const r = replay([up(), { close: 'board-notify-problem' }, up(), up(), { state: notifyWarningIds(null) }, up()]);
+    expect(r.map((x) => x.shown.includes('board-notify-problem'))).toEqual([true, false, false, false, false, true]);
+  });
+  it('closing it leaves the other bars alone', () => {
+    const both = { state: { ...warningIds(sync({ offline: true }), none), ...notifyWarningIds(REFUSED) } };
+    const r = replay([both, { close: 'board-notify-problem' }]);
+    expect(last(r).shown).toEqual(['offline']);
   });
 });

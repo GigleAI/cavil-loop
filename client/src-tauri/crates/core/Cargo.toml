@@ -1,6 +1,6 @@
 [package]
 name = "cavil-core"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 description = "Cavil Loop client back end: sign-in, credential lifecycle, local store, GitHub request proxy"

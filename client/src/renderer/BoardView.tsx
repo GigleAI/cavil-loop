@@ -202,6 +202,8 @@ export function BoardView({
   setQuery,
   parsed,
   warn,
+  focus = null,
+  onFocusTaken,
   onSettings,
 }: {
   state: AppState;
@@ -210,6 +212,9 @@ export function BoardView({
   setQuery: (q: string) => void;
   parsed: ParsedFilter;
   warn: BoardWarnings;
+  /** a clicked notification's item, to open once (GitHub#169) */
+  focus?: { key: string; seq: number } | null;
+  onFocusTaken?: () => void;
   onSettings: () => void;
 }) {
   const now = useNow();
@@ -234,6 +239,12 @@ export function BoardView({
   const [opened, setOpened] = useState<{ key: string; n: number } | null>(null);
   const openSeq = useRef(0);
   const openItem = (key: string) => setOpened((cur) => (cur?.key === key ? cur : { key, n: ++openSeq.current }));
+  // a clicked notification (GitHub#169): every click opens that item, as a new opening
+  useEffect(() => {
+    if (!focus) return;
+    setOpened({ key: focus.key, n: ++openSeq.current });
+    onFocusTaken?.();
+  }, [focus?.seq]);
   const [newIssue, setNewIssue] = useState(false);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [busy, setBusy] = useState(false);
@@ -420,6 +431,9 @@ export function BoardView({
       </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
         {sync.problem}
+      </WarnBar>
+      <WarnBar kind="board-notify-problem" warn={warn}>
+        macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。
       </WarnBar>
       <ResultBanner note={note} testid="board-action-result" />
       {view.layout === 'board' && board.notice && (

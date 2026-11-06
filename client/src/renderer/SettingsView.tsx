@@ -79,6 +79,36 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         </div>
       </section>
 
+      <section data-testid="pending-settings">
+        <h3>提醒</h3>
+        <p className="muted small">
+          带「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知，Dock 角标显示总数。
+        </p>
+        {state.notifyProblem && (
+          <div className="banner warn" data-testid="notify-problem">
+            macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标和这里的数字不受影响。
+          </div>
+        )}
+        <p className="small">
+          现在待处理：<b data-testid="pending-count">{state.pendingCount}</b> 条
+        </p>
+        {state.launchAtLogin !== null && (
+          <label className="row small">
+            <input
+              type="checkbox"
+              data-testid="launch-at-login"
+              checked={state.launchAtLogin}
+              onChange={(e) => api().setLaunchAtLogin(e.target.checked)}
+            />
+            开机自动启动（在后台运行，不弹窗口）
+          </label>
+        )}
+        {state.launchAtLogin !== null && (
+          // same platforms as launch at login (v1: macOS)
+          <p className="muted small">关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。</p>
+        )}
+      </section>
+
       <section>
         <h3>账号</h3>
         <p>

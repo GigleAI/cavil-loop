@@ -23,6 +23,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setView: async (patch) => c.setView(patch),
     syncNow: () => c.syncNow(),
     openExternal: (url) => backend.call('openExternal', { url: String(url) }),
+    setLaunchAtLogin: (on) => c.setLaunchAtLogin(Boolean(on)),
     loadDetail: (key) => c.loadDetail(String(key)),
     repoOptions: (repo) => c.repoOptions(String(repo)),
     previewMarkdown: (repo, text) => c.previewMarkdown(String(repo), String(text)),
