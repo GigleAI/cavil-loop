@@ -33,6 +33,7 @@ commit() {
     git -C "$WORK" commit -qm "$1"
     git -C "$WORK" push -q origin main
 }
+remote_tags_all() { git -C "$REMOTE" tag -l 'release/v*' | sort | tr '\n' ' '; }
 remote_tags() { git -C "$REMOTE" tag -l 'release/v*' | sort | tr '\n' ' ' | sed 's/ $//'; }
 # Run the script inside the clone; stdout → $TMP/out, stderr → $TMP/err, rc → $RC.
 run() {
@@ -132,6 +133,25 @@ print(next(s["run"] for s in steps if s.get("name") == sys.argv[3]))
 PY2
 }
 step plan "Decide what this run does" > "$TMP/plan.sh"
+step gate-summary "Every gate job passed" > "$TMP/summary.sh"
+step "Gate passed" > "$TMP/guard.sh"
+# The `needs` context a job sees in Actions: exactly the jobs its `needs:` declares, each with a
+# result (and the plan's outputs). <job> <space-separated job=result overrides>; default success.
+needs_json() {
+    python3 - "$WORKFLOW" "$1" "$2" "${PLAN_SHA:-}" "${PLAN_WORK:-}" <<'PY3'
+import json, sys, yaml
+wf, job, over, sha, work = sys.argv[1:6]
+needs = yaml.safe_load(open(wf))["jobs"][job].get("needs", [])
+needs = [needs] if isinstance(needs, str) else needs
+res = dict(kv.split("=", 1) for kv in over.split())
+out = {}
+for j in needs:
+    out[j] = {"result": res.get(j, "success"), "outputs": {}}
+    if j == "plan":
+        out[j]["outputs"] = {"sha": sha, "work": work}
+print(json.dumps(out))
+PY3
+}
 step "Cut tag (scheduled / manual)" > "$TMP/cut.sh"
 step "Generate release notes" > "$TMP/notes.sh"
 step "Create GitHub Release" > "$TMP/create.sh"
@@ -147,6 +167,7 @@ runstep() {  # runstep <script> → $RC, GITHUB_ENV content in $TMP/env, GITHUB_
     : > "$TMP/env"; : > "$TMP/output"; rm -f "$TMP/gh-args"
     set +e
     (cd "$WORK" && GITHUB_ENV="$TMP/env" GITHUB_OUTPUT="$TMP/output" EVENT="${EVENT:-schedule}" GITHUB_REF="${GITHUB_REF:-}" \
+        NEEDS="${NEEDS:-}" GATE_ONLY="${GATE_ONLY:-}" \
         RELEASE_SHA="${RELEASE_SHA:-}" PATH="$TMP/bin:$PATH" bash -e "$1") >"$TMP/out" 2>"$TMP/err"
     RC=$?
     set -e
@@ -181,7 +202,13 @@ fullrun() {
     fresh; runstep "$TMP/plan.sh"; PLAN_RC=$RC; CUT_OUT="$(cat "$TMP/out")"
     PLAN_SHA="$(sed -n 's/^sha=//p' "$TMP/output")"; PLAN_WORK="$(sed -n 's/^work=//p' "$TMP/output")"
     tag=""; export tag; NOTES=""; CREATE_RC=""; CUT_RC=$PLAN_RC
+    SUMMARY_RC=""; GUARD_RC=""
     [ "$PLAN_RC" = 0 ] && [ "$PLAN_WORK" = true ] || return 0
+    # The gate jobs themselves are not run here: GATE="<job>=<result> …" says how they ended.
+    NEEDS="$(needs_json gate-summary "${GATE:-}")" runstep "$TMP/summary.sh"; SUMMARY_RC=$RC
+    local summary=success; [ "$SUMMARY_RC" = 0 ] || summary=failure
+    NEEDS="$(needs_json release "gate-summary=$summary")" runstep "$TMP/guard.sh"; GUARD_RC=$RC
+    [ "$GUARD_RC" = 0 ] || return 0
     if [ -n "${MOVE_MAIN:-}" ]; then commit "$MOVE_MAIN"; fi
     fresh; RELEASE_SHA="$PLAN_SHA" runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$CUT_OUT
 $(cat "$TMP/out")"
@@ -276,6 +303,28 @@ fullrun
 check "next run plans the newer commit" "$PLAN_SHA" "$(git -C "$REMOTE" rev-parse main)"
 check "… and tags it .11" "$tag" "release/v$TODAY.11"
 
+echo "-- the gate did not pass → no tag, no Release (GitHub#195)"
+commit twelve
+TAGS_BEFORE="$(remote_tags_all)"; PAGES_BEFORE="$(wc -l < "$GH_RELEASES")"
+for g in "gate-client=failure" "gate=failure" "gate-autopilot=failure" "gate-autopilot=skipped" "gate-client=cancelled"; do
+    GATE="$g" fullrun
+    check "$g: plan asked for the gate" "$PLAN_WORK" true
+    [ "$SUMMARY_RC" != 0 ] && ok "$g: release gate is red" || bad "$g: release gate is red"
+    [ "$GUARD_RC" != 0 ] && ok "$g: release job stops at its own check" || bad "$g: release job stops at its own check"
+    check "$g: no tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+    check "$g: no Release page" "$(wc -l < "$GH_RELEASES")" "$PAGES_BEFORE"
+done
+GATE_ONLY=true fullrun
+check "gate-only run: release gate green" "$SUMMARY_RC" 0
+[ "$GUARD_RC" != 0 ] && ok "gate-only run: release job refuses" || bad "gate-only run: release job refuses"
+check "gate-only run: no tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+check "gate-only run: no Release page" "$(wc -l < "$GH_RELEASES")" "$PAGES_BEFORE"
+fullrun
+check "gate passes → the release job's check passes" "$GUARD_RC" 0
+check "… and the planned commit is released" "$tag" "release/v$TODAY.12"
+check "… on the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.12^{commit}")" "$PLAN_SHA"
+check "… with its page" "$CREATE_RC" 0
+
 echo "-- a pushed tag: the plan step gates that tag's commit"
 fresh; git -C "$WORK" tag "release/v$TODAY.99" HEAD~1
 EVENT=push GITHUB_REF="refs/tags/release/v$TODAY.99" runstep "$TMP/plan.sh"
@@ -340,6 +389,39 @@ check "--dry-run takes no --at → exit 2" "$RC" 2
 run --auto
 check "plain --auto still tags HEAD" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.2^{commit}")" "$(git -C "$WORK" rev-parse HEAD)"
 
+# ── negative controls (MUTATION=1): a broken copy of release.yml must turn this file red ──
+# The whole file reruns against the broken copy (WORKFLOW=…) and must exit non-zero.
+if [ -z "${RELEASE_AUTO_NESTED:-}" ]; then
+    # shellcheck source=lib/mutation.sh
+    source "$REPO_DIR/tests/lib/mutation.sh"
+    MUT_FAIL=0
+    wf_mutant() {   # <name> <old> <new>
+        local name="$1" m="$TMP/wf-$1.yml" rc=0
+        mutation_gate || return 0
+        if ! python3 - "$WORKFLOW" "$m" "$2" "$3" <<'PY4'
+import sys
+src, dst, old, new = sys.argv[1:5]
+t = open(src).read()
+if t.count(old) != 1:
+    sys.exit(1)
+open(dst, "w").write(t.replace(old, new))
+PY4
+        then echo "  ❌ 负对照 $name：找不到要改的原文（准备失败）"; MUT_FAIL=$((MUT_FAIL + 1)); return 0; fi
+        RELEASE_AUTO_NESTED=1 WORKFLOW="$m" MUTATION= bash "$0" >"$TMP/wf-$1.log" 2>&1 || rc=$?
+        if [ "$rc" -ne 0 ]; then echo "  ✅ 负对照 $name：变红"; else echo "  ❌ 负对照 $name：仍全绿"; MUT_FAIL=$((MUT_FAIL + 1)); fi
+    }
+    wf_mutant guard-ignores-gate 'if [ "$plan" != success ] || [ "$work" != true ] || [ "$gate" != success ]; then' 'if false; then'
+    wf_mutant guard-ignores-gate-only 'if [ -n "$GATE_ONLY" ]; then echo' 'if false; then echo'
+    wf_mutant summary-skips-client 'for j in gate gate-autopilot gate-client; do' 'for j in gate gate-autopilot; do'
+    wf_mutant summary-accepts-skipped '[ "$r" = success ] ||' '[ "$r" = success ] || [ "$r" = skipped ] ||'
+    wf_mutant release-without-gate 'needs: [plan, gate-summary]' 'needs: [plan]'
+    wf_mutant summary-without-client 'needs: [plan, gate, gate-autopilot, gate-client]' 'needs: [plan, gate, gate-autopilot]'
+    wf_mutant cut-tags-head 'release.sh --auto --at "$RELEASE_SHA")' 'release.sh --auto)'
+    echo
+    mutation_summary "$0"
+fi
+
 echo
-echo "passed $PASS, failed $FAIL"
+echo "passed $PASS, failed $FAIL${MUT_FAIL:+; 负对照失效 $MUT_FAIL}"
+[ "${MUT_FAIL:-0}" -eq 0 ] || exit 1
 [ "$FAIL" -eq 0 ]

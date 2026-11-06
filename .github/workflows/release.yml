@@ -23,15 +23,18 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-# Negative controls run only when something is packaged (GitHub#195): for the
-# daemon's scripts that is this weekly release. Every negative control in
-# tests/*.test.sh runs before a tag is cut, against the one commit the tag will
-# point at; any failure means no tag and no Release this run.
+# Every negative control in the repo runs here and nowhere else automatically
+# (GitHub#195): the shell tests' and both client sets, before a tag is cut,
+# against the one commit the tag will point at. Any failure means no tag and no
+# Release this run.
 #   plan  → which commit, and is there anything to release at all
-#   gate / gate-autopilot → MUTATION=1 on every test file (autopilot's ~100
+#   gate / gate-autopilot → MUTATION=1 on every tests/*.test.sh (autopilot's ~100
 #           broken copies are split over their own jobs, the rest over 4 shards)
-#   gate-summary → green only when every shard and every autopilot part passed
-#   release → tag exactly the planned commit, notes, Release page
+#   gate-client → every client negative control: test/mutation and the real app's set
+#   gate-summary → green only when every shard and every gate job passed
+#   release → checks the gate again, then tags exactly the planned commit, notes, Release page
+# The two "did the gate pass" steps read the `needs` context, which only holds the
+# jobs a job declares: dropping a gate job from `needs` fails them, it never skips the check.
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -160,11 +163,41 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  gate-client:
+    name: gate client
+    needs: plan
+    if: needs.plan.outputs.work == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          # the negative-control runner takes earlier commits' files (git show / archive)
+          fetch-depth: 0
+      # The same environment as client.yml's tests, Playwright's WebKit included: the
+      # runner starts a UI baseline before the first broken copy.
+      - uses: ./.github/actions/client-setup
+      - name: Negative controls (vitest / back end / UI)
+        run: MUTATION=1 npm run test:mutation
+      - name: Negative controls for the app shell (each rebuilds the real app)
+        run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-client-screens
+          path: client/test-results/
+          if-no-files-found: ignore
+
   # Green only when every expected test file passed exactly once across the four
-  # shards and every autopilot part passed: a shard that never ran fails it too.
+  # shards and every gate job passed: a shard that never ran fails it too.
   gate-summary:
     name: release gate
-    needs: [plan, gate, gate-autopilot]
+    needs: [plan, gate, gate-autopilot, gate-client]
     if: ${{ !cancelled() && needs.plan.outputs.work == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -177,15 +210,19 @@ jobs:
         with:
           pattern: gate-results-shard-*
           path: results
-      - name: Every negative control passed
+      - name: Every shell shard passed exactly once
         run: |
-          rc=0; mkdir -p results
-          bash tests/run.sh --ci --verify results || rc=$?
-          for r in "${{ needs.gate.result }}" "${{ needs.gate-autopilot.result }}"; do
-            if [ "$r" != success ]; then
-              echo "::error::gate jobs ended with '$r'"
-              rc=1
-            fi
+          mkdir -p results
+          bash tests/run.sh --ci --verify results
+      - name: Every gate job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          rc=0
+          for j in gate gate-autopilot gate-client; do
+            r="$(jq -r --arg j "$j" '.[$j].result // "missing"' <<<"$NEEDS")"
+            echo "$j: $r"
+            [ "$r" = success ] || { echo "::error::gate job $j ended with '$r'"; rc=1; }
           done
           exit "$rc"
 
@@ -195,6 +232,23 @@ jobs:
     if: ${{ !cancelled() && needs.plan.outputs.work == 'true' && needs.gate-summary.result == 'success' && !inputs.gate_only }}
     runs-on: ubuntu-latest
     steps:
+      # Checked again here, not only in `if:` above: nothing below runs unless the
+      # gate passed for this very plan, and a gate-only run never releases.
+      - name: Gate passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          GATE_ONLY: ${{ inputs.gate_only && 'true' || '' }}
+        run: |
+          if [ -n "$GATE_ONLY" ]; then echo "::error::gate-only run: no tag, no Release"; exit 1; fi
+          plan="$(jq -r '.plan.result // "missing"' <<<"$NEEDS")"
+          work="$(jq -r '.plan.outputs.work // ""' <<<"$NEEDS")"
+          gate="$(jq -r '.["gate-summary"].result // "missing"' <<<"$NEEDS")"
+          echo "plan: $plan (work=$work), release gate: $gate"
+          if [ "$plan" != success ] || [ "$work" != true ] || [ "$gate" != success ]; then
+            echo "::error::release gate did not pass for this plan — no tag, no Release"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

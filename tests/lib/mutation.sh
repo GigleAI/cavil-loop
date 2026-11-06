@@ -3,16 +3,15 @@
 #
 # 负对照 = 把被测代码复制一份、故意改坏一处（或换成旧版本），同一组断言必须变红。
 # 它检验的是**测试本身**分得出对错实现，不是代码对不对：代码和测试都没变时重跑，
-# 结果必然和上次一样。所以默认回归不跑它，只在打包时打开（GitHub#195）：
-#   · 客户端：推到 main 时跑相关项、打 client/v* 标签时全跑（.github/workflows/client.yml）；
-#   · shell 测试：每周发版前全跑，有红不发版（.github/workflows/release.yml 的发版门禁）。
-# PR 阶段（worker、复审、PR 的 CI）不跑；维护者点名时仍可手动打开。
+# 结果必然和上次一样。所以默认回归不跑它，只在每周自动发版时打开（GitHub#195）：
+# .github/workflows/release.yml 的发版门禁把 shell 测试和客户端的负对照全跑一遍，有红不发版。
+# 其余时候（worker、复审、PR 与主干的 CI）不跑；维护者点名时仍可手动打开。
 #
 #   bash tests/<name>.test.sh              默认：负对照一条都不准备、不跑，只计数
 #   MUTATION=1 bash tests/<name>.test.sh   打开：和改动前一样全部跑
 #
 # 打开时跑多少由调用方定（GitHub#178）：client/ 的执行器能在一个文件里只挑相关项
-# （client/test/mutation/run.sh --changed，推到 main 时用）；发版时全跑。
+# （client/test/mutation/run.sh --changed，手动时用）；发版门禁全跑。
 #
 # 每个测试的每一条负对照都经过一次 mutation_gate：关着时它只记一笔、返回 1；开着时记一笔、
 # 返回 0。两种模式走同一个计数器，所以「默认跳过 N 条」和「打开跑了 N 条」是同一个数，

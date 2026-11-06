@@ -6,21 +6,24 @@ name: Client
 #
 # What runs when (GitHub#195):
 #   pull request         typecheck, cargo, vitest, Playwright, the real app on Linux.
-#                        No Mac packaging and no negative controls (the Mac jobs show "skipped").
-#   push to main         all of the above + the Macs + the negative controls related to
-#                        what this push changed (every one when that cannot be told)
-#   client/v* tag        all of the above + every negative control; any failure, no Release
+#                        No Mac packaging (the Mac jobs show "skipped").
+#   push to main         all of the above + the Macs
+#   client/v* tag        all of the above + the Macs; any failure, no Release
 #   manual run           as before: the Macs, negative controls only when asked
+# Negative controls run automatically only in the weekly release gate
+# (.github/workflows/release.yml, job gate-client), on the commit that release tags.
 on:
   pull_request:
     paths:
       - 'client/**'
       - '.github/workflows/client.yml'
+      - '.github/actions/client-setup/**'
   push:
     branches: [main]
     paths:
       - 'client/**'
       - '.github/workflows/client.yml'
+      - '.github/actions/client-setup/**'
     tags:
       - 'client/v*'
   workflow_dispatch:
@@ -51,98 +54,26 @@ jobs:
     name: client tests (Linux)
     runs-on: ubuntu-latest
     # negative controls rebuild the back end / the app per entry
-    timeout-minutes: ${{ (inputs.mutation || github.event_name == 'push') && 240 || 60 }}
+    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
     steps:
       - uses: actions/checkout@v4
         with:
           # the negative-control runner and the upgrade tests take earlier commits' files (git show / archive)
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-      # The back end is Rust (src-tauri/crates/core); the suites drive it as a child process.
-      - name: Rust toolchain
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            client/src-tauri/target
-          key: cargo-linux-${{ hashFiles('client/src-tauri/Cargo.lock') }}
-          restore-keys: cargo-linux-
-      # system WebKit for the app's own Linux build (smoke test below)
-      # The downloaded packages are kept between runs: the runner's package mirror sometimes
-      # crawls (25 MB of WebKit at a few KB/s), and a cached run hardly touches it.
-      - uses: actions/cache@v4
-        with:
-          path: ~/apt-archives
-          key: apt-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-webkit-v1
-          restore-keys: apt-${{ runner.os }}-${{ env.ImageOS }}-
-      - name: System libraries for the Tauri window
-        timeout-minutes: 25
-        run: |
-          mkdir -p "$HOME/apt-archives/partial"
-          A=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives="$HOME/apt-archives")
-          apt_install() {
-            for i in 1 2 3; do
-              sudo timeout 420 apt-get "${A[@]}" install -y --no-install-recommends "$@" && return 0
-              echo "apt-get install attempt $i failed or took too long; retrying"
-              sudo apt-get -o Acquire::Retries=3 update || true
-            done
-            return 1
-          }
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          apt_install libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb
-          # WebKitWebDriver (for test/tauri): the package was renamed in newer Ubuntu releases
-          drv=webkitgtk-webdriver; apt-cache show "$drv" >/dev/null 2>&1 || drv=webkit2gtk-driver
-          apt_install "$drv"
-          command -v WebKitWebDriver
-          sudo chown -R "$USER" "$HOME/apt-archives"
-      # WebDriver for the real Tauri window (test/tauri); kept in the cache between runs
-      - uses: actions/cache@v4
-        with:
-          path: ~/.tauri-driver
-          key: tauri-driver-2-${{ runner.os }}
-      - name: tauri-driver
-        run: |
-          [ -x "$HOME/.tauri-driver/bin/tauri-driver" ] || cargo install tauri-driver --locked --root "$HOME/.tauri-driver"
-          echo "$HOME/.tauri-driver/bin" >> "$GITHUB_PATH"
-      - run: npm ci
+      - uses: ./.github/actions/client-setup
       - name: Type check
         run: npm run typecheck
       - name: Back end unit tests (cargo)
         run: npm run test:rust
       - name: Unit tests (vitest, real back end as a child process)
         run: npm test
-      # Which negative controls this run needs: none on a PR; on a push to main the ones
-      # related to the whole push (before..after — the selectors' own rules, GitHub#178),
-      # or every one when the start of the push cannot be read (new branch, force push);
-      # every one on a client/v* tag; a manual run keeps its two switches.
-      - name: Which negative controls
-        id: mut
-        env:
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          BEFORE: ${{ github.event.before }}
-          MANUAL: ${{ inputs.mutation && 'yes' || '' }}
-          MANUAL_SCOPE: ${{ inputs.mutation_scope }}
-        run: |
-          bash scripts/mutation-scope.sh | tee -a "$GITHUB_OUTPUT"
+      # Negative controls run in the weekly release gate (.github/workflows/release.yml,
+      # GitHub#195), not here; a manual run can still ask for them.
       - name: Negative controls
-        if: ${{ steps.mut.outputs.backend != 'none' }}
-        env:
-          SCOPE: ${{ steps.mut.outputs.backend }}
-          CLIENT_MUT_BASE: ${{ steps.mut.outputs.base }}
-        run: |
-          if [ "$SCOPE" = changed ]; then MUTATION=1 npm run test:mutation -- --changed
-          else MUTATION=1 npm run test:mutation; fi
+        if: ${{ inputs.mutation && inputs.mutation_scope != 'shell' }}
+        run: MUTATION=1 npm run test:mutation
       - name: UI tests (Playwright on WebKit, real window + real back end)
-        run: |
-          npx playwright install --with-deps webkit
-          npm run test:e2e
+        run: npm run test:e2e
       - name: The app itself on Linux (Tauri window + IPC + back end) starts
         run: |
           node scripts/build.mjs
@@ -153,13 +84,8 @@ jobs:
       - name: The real app over WebDriver (sign in, sync, a change, the shell's link and navigation handlers)
         run: xvfb-run -a npm run test:tauri
       - name: Negative controls for the app shell (each rebuilds the real app)
-        if: ${{ steps.mut.outputs.shell != 'none' }}
-        env:
-          SCOPE: ${{ steps.mut.outputs.shell }}
-          CLIENT_MUT_BASE: ${{ steps.mut.outputs.base }}
-        run: |
-          if [ "$SCOPE" = changed ]; then xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh --changed
-          else xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh; fi
+        if: ${{ inputs.mutation }}
+        run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
