@@ -158,6 +158,7 @@ class Sandbox(unittest.TestCase):
         self.prs = {}
         self.gh_fail = []
         self.switch = None
+        self.extra_cfg = []
         (self.queue / 'cursor.json').write_text(json.dumps({'enabled_at': OLD, 'since': OLD}) + '\n')
         self.publish(lessons())
 
@@ -207,6 +208,7 @@ class Sandbox(unittest.TestCase):
                  'LABEL_PENDING_HUMAN=pending/human']
         if self.switch is not None:
             lines.append(f'RETROSPECTIVE_DIRECTORY_LESSONS={self.switch}')
+        lines += self.extra_cfg
         cfg.write_text('\n'.join(lines) + '\n')
         env = {'HOME': str(self.t / 'home'), 'PATH': f'{self.bin}:/usr/bin:/bin',
                'CODING_AGENT_CONFIG': str(cfg), 'FAKE_DIR': str(self.fake), 'FAKE_REPO': REPO,
@@ -491,7 +493,8 @@ class OffEvidence(Sandbox):
 class Recovery(Sandbox):
     """The recovery steps in docs/operations{,.zh}.md, run as written (12e)."""
     def script(self, page):
-        text = (REPO_DIR / page).read_text()
+        docs = RELEASE if (RELEASE / page).exists() else REPO_DIR
+        text = (docs / page).read_text()
         block = text.split('<!-- retro-dir-recovery:begin -->', 1)[1].split('<!-- retro-dir-recovery:end -->', 1)[0]
         return block.strip().removeprefix('```bash').removesuffix('```').strip() + '\n'
 
@@ -522,6 +525,109 @@ class Recovery(Sandbox):
         self.assertGreater(self.marker()['since'], MID)
         self.assertIn('directory lessons on: handling PRs merged at or after', self.out)
         self.assertEqual(self.read_job(95)['status'], 'skipped')
+
+    def run_script(self, fakes):
+        """Run the page's block with some commands replaced by failing fakes."""
+        home_state = self.t / 'home/.local/state/cavil-loop'
+        home_state.mkdir(parents=True, exist_ok=True)
+        if not (home_state / 'proj').exists():
+            (home_state / 'proj').symlink_to(self.state)
+        over = self.t / 'over'
+        shutil.rmtree(over, ignore_errors=True)
+        over.mkdir()
+        (self.bin / 'systemctl').write_text(
+            f'#!/usr/bin/env bash\necho "$*" >> {self.fake}/systemctl.log\n'
+            f'[ "$2" = "${{FAIL_SYSTEMCTL:-}}" ] && exit 1\nexit 0\n')
+        (self.bin / 'systemctl').chmod(0o755)
+        env = {'HOME': str(self.t / 'home'), 'PATH': f'{over}:{self.bin}:/usr/bin:/bin'}
+        for name in fakes:
+            if name.startswith('systemctl:'):
+                env['FAIL_SYSTEMCTL'] = name.split(':', 1)[1]
+                continue
+            (over / name).write_text('#!/bin/sh\necho "$0 failed" >&2\nexit 7\n')
+            (over / name).chmod(0o755)
+        log = self.fake / 'systemctl.log'
+        if log.exists():
+            log.unlink()
+        return subprocess.run(['bash'], input=self.script('docs/operations.md').replace('<project>', 'proj'),
+                              capture_output=True, text=True, env=env)
+
+    def test_12e_任何一步失败都停在原处_不删不重启(self):
+        for fakes in (['systemctl:stop'], ['flock'], ['cp'], ['rm']):
+            with self.subTest(fakes=fakes):
+                (self.queue / 'directory-lessons.json').write_text(json.dumps({'state': 'on', 'since': OLD}) + '\n')
+                before = (self.queue / 'directory-lessons.json').read_bytes()
+                cursor = (self.queue / 'cursor.json').read_bytes()
+                proc = self.run_script(fakes)
+                self.assertIn('reset FAILED', proc.stdout, proc.stdout + proc.stderr)
+                self.assertNotIn('reset done', proc.stdout)
+                self.assertEqual((self.queue / 'directory-lessons.json').read_bytes(), before)
+                self.assertEqual((self.queue / 'cursor.json').read_bytes(), cursor)
+                calls = (self.fake / 'systemctl.log').read_text().splitlines()
+                self.assertEqual(calls, ['--user stop cavil-loop-poll@proj.timer'])
+        self.assertEqual(self.run_script([]).stdout.strip(), 'reset done')
+
+
+class ReviewRound1(Sandbox):
+    """Cases found in code review round 1 of PR #170."""
+    def test_R1_时间文件读不出时关掉_扫描记录留标记_恢复后重开记新时间(self):
+        if os.geteuid() == 0:
+            self.skipTest('root reads a mode-000 file')
+        marker = self.queue / 'directory-lessons.json'
+        marker.write_text(json.dumps({'state': 'on', 'since': OLD}) + '\n')
+        before = marker.read_bytes()
+        self.prs = {'90': MID}
+        self.job(90, MID, retry_after=4102444800)
+        self.switch = 'false'
+        marker.chmod(0)
+        try:
+            self.assertEqual(self.run_round(), 0, self.out)
+        finally:
+            marker.chmod(0o644)
+        self.assertEqual(marker.read_bytes(), before)       # unreadable: left as it was
+        self.assertIn('directory_lessons_off_pending', json.loads((self.queue / 'cursor.json').read_text()))
+        self.switch = 'true'
+        self.assertEqual(self.run_round(), 0, self.out)
+        self.assertGreater(self.marker()['since'], MID)
+        self.assertEqual(self.read_job(90)['status'], 'skipped', self.out)
+        self.assertEqual(len(self.model_calls()), 0)
+
+    def test_R2_清标记失败只重试清理_开始时间不再移动(self):
+        import time
+        (self.queue / 'directory-lessons.json').write_text(json.dumps({'state': 'on', 'since': OLD}) + '\n')
+        cursor = json.loads((self.queue / 'cursor.json').read_text())
+        cursor['directory_lessons_off_pending'] = MID
+        (self.queue / 'cursor.json').write_text(json.dumps(cursor) + '\n')
+        self.assertEqual(self.run_round(faults='cursor.tmp:write:1'), 0, self.out)
+        first = self.marker()
+        self.assertEqual(first['consumed'], MID)
+        self.assertGreater(first['since'], MID)
+        self.assertIn('directory_lessons_off_pending', json.loads((self.queue / 'cursor.json').read_text()))
+        # A PR merged exactly at the new start, still waiting to be retried: it must stay eligible.
+        self.prs = {'96': first['since']}
+        self.job(96, first['since'], retry_after=4102444800)
+        job_before = (self.queue / 'pr-96.json').read_bytes()
+        for faults in ('cursor.tmp:write:1', 'cursor.tmp:write:1', ''):
+            time.sleep(1.1)
+            self.assertEqual(self.run_round(faults=faults), 0, self.out)
+            self.assertEqual(self.marker()['since'], first['since'])
+            self.assertEqual((self.queue / 'pr-96.json').read_bytes(), job_before)
+        self.assertNotIn('directory_lessons_off_pending', json.loads((self.queue / 'cursor.json').read_text()))
+        time.sleep(1.1)
+        self.assertEqual(self.run_round(), 0, self.out)
+        self.assertEqual(self.marker()['since'], first['since'])
+
+    def test_R3_目标分支取不到_旧任务原样留着(self):
+        self.extra_cfg = ['BASE_BRANCH=missing']
+        self.prs = {'97': OLD}
+        self.job(97, OLD)
+        before = (self.queue / 'pr-97.json').read_bytes()
+        self.assertEqual(self.run_round(), 0, self.out)
+        self.assertEqual((self.queue / 'pr-97.json').read_bytes(), before)
+        self.assertIn('cannot check origin/missing for its report', self.out)
+        self.extra_cfg = []
+        self.assertEqual(self.run_round(), 0, self.out)
+        self.assertEqual(self.read_job(97)['status'], 'skipped')
 
 
 if __name__ == '__main__':

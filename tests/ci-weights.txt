@@ -38,7 +38,7 @@ repair-unit-links 7
 requester-bot 236
 requester-bot-any-item 55
 requester-bot-wait 10
-retrospective-directory-cutoff 7
+retrospective-directory-cutoff 14
 retrospective-directory-lessons 1
 retrospective-global-lock 2
 retrospective-lessons 2

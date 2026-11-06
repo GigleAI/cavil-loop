@@ -362,7 +362,9 @@ def directory_switch():
 
 
 def read_marker(path):
-    """('missing'|'on'|'off'|'bad', T-or-reason). Anything unexpected is 'bad', never a guess."""
+    """('missing'|'on'|'off'|'bad', detail). 'on' → (T, consumed), where `consumed` is the
+    off note (see OFF_PENDING) this T was recorded for, or None. Anything unexpected —
+    unreadable included — is 'bad', never a guess."""
     try:
         raw = path.read_text()
     except FileNotFoundError:
@@ -375,14 +377,21 @@ def read_marker(path):
         return 'bad', f'{path} is not valid JSON: {error}'
     if value == {'state': 'off'}:
         return 'off', None
-    if isinstance(value, dict) and set(value) == {'state', 'since'} and value['state'] == 'on' \
-            and isinstance(value['since'], str) and STAMP.match(value['since']):
-        try:
-            dt.datetime.strptime(value['since'], '%Y-%m-%dT%H:%M:%SZ')
-            return 'on', value['since']
-        except ValueError:
-            pass
+    if isinstance(value, dict) and value.get('state') == 'on' and set(value) in (
+            {'state', 'since'}, {'state', 'since', 'consumed'}) and _stamp(value['since']) \
+            and (value.get('consumed') is None or _stamp(value['consumed'])):
+        return 'on', (value['since'], value.get('consumed'))
     return 'bad', f'{path} does not hold a valid directory-lessons start time'
+
+
+def _stamp(value):
+    if not (isinstance(value, str) and STAMP.match(value)):
+        return False
+    try:
+        dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ')
+        return True
+    except ValueError:
+        return False
 
 
 def write_atomic(path, value):
@@ -403,43 +412,60 @@ def sync_directory_state(queue, on, start):
 
     state: 'on' (value = T) / 'off' / 'unknown' (on, but T can't be trusted or recorded:
     value = reason) / 'pause' (off, but no evidence of it could be kept: value = reason).
-    Runs after a successful scan, under the scan lock."""
+    Runs after a successful scan, under the scan lock. The rule it keeps: once the
+    switch has been off, a later "on" never reuses a T recorded before that off.
+      * evidence of an off = MARKER says off, MARKER is gone, or cursor.json carries
+        OFF_PENDING (written only when MARKER could not be changed, or is unreadable);
+      * a T recorded because of a given OFF_PENDING value stores it as `consumed`, so a
+        note that could not be cleared afterwards is not mistaken for a new off."""
     marker, cursor = queue / MARKER, queue / 'cursor.json'
-    kind, value = read_marker(marker)
+    kind, detail = read_marker(marker)
     try:
         state = json.loads(cursor.read_text())
+        if not isinstance(state, dict):
+            raise ValueError('not an object')
     except (OSError, ValueError):
         state = None
+    pending = state.get(OFF_PENDING) if state else None
+
     if on:
         if kind == 'bad':
-            return 'unknown', value
-        pending = state is None or bool(state.get(OFF_PENDING))
-        if kind == 'on' and not pending:
-            return 'on', value
+            return 'unknown', detail
+        if state is None:
+            return 'unknown', 'cursor.json unreadable: cannot tell whether the switch was off'
+        if kind == 'on':
+            since, consumed = detail
+            if pending is None or pending == consumed:
+                if pending is not None:
+                    clear_off_note(cursor, state)   # left over: retry the clean-up only
+                return 'on', since
         # First start, a recorded off, or an off only cursor.json remembers: a new T.
+        value = {'state': 'on', 'since': start}
+        if pending is not None:
+            value['consumed'] = pending
         try:
-            write_atomic(marker, {'state': 'on', 'since': start})
+            write_atomic(marker, value)
         except OSError as error:
             return 'unknown', f'cannot record the start time in {marker}: {error}'
-        if state is not None and OFF_PENDING in state:
-            try:
-                del state[OFF_PENDING]
-                save(cursor, state)
-            except OSError:
-                pass   # still there next round: that only records a later T
+        if pending is not None:
+            clear_off_note(cursor, state)
         return 'on', start
-    if kind != 'on':
+
+    if kind in ('missing', 'off'):
         return 'off', None
-    try:
-        write_atomic(marker, {'state': 'off'})
-        return 'off', None
-    except OSError:
-        pass
-    try:
-        marker.unlink()
-        return 'off', None
-    except OSError:
-        pass
+    if kind == 'on':
+        try:
+            write_atomic(marker, {'state': 'off'})
+            return 'off', None
+        except OSError:
+            pass
+        try:
+            marker.unlink()
+            return 'off', None
+        except OSError:
+            pass
+    # MARKER still says on, or can't be read at all (left as it is for a human):
+    # the off is remembered in cursor.json instead.
     try:
         if state is None:
             raise OSError('cursor.json unreadable')
@@ -447,8 +473,19 @@ def sync_directory_state(queue, on, start):
         save(cursor, state)
         return 'off', None
     except OSError as error:
-        return 'pause', (f'switched off but could not record it ({marker} could not be '
-                         f'rewritten or removed, cursor.json not writable: {error})')
+        return 'pause', (f'switched off but could not record it ({marker}: '
+                         f'{detail if kind == "bad" else "could not be rewritten or removed"}; '
+                         f'cursor.json not writable: {error})')
+
+
+def clear_off_note(cursor, state):
+    """Drop OFF_PENDING once a T has consumed it. Failing is harmless: the T recorded
+    it as `consumed`, so the next round only retries this."""
+    try:
+        del state[OFF_PENDING]
+        save(cursor, state)
+    except OSError:
+        pass
 
 
 def job_merged_at(repo, job):
@@ -466,16 +503,23 @@ def job_merged_at(repo, job):
 
 
 def remote_report(project, base, number, fetched):
-    """True / False whether origin/<base> has this PR's report; None when git can't tell."""
+    """True / False whether origin/<base> has this PR's report; None when git can't tell
+    (fetch failed, the branch can't be resolved, the tree can't be read)."""
     if not fetched:
         try:
             command(['git', 'fetch', 'origin'], project)
         except Exception:
             return None
         fetched.append(True)
-    result = subprocess.run(['git', 'cat-file', '-e', f'origin/{base}:docs/retrospectives/pr-{number}.md'],
-                            cwd=project, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return result.returncode == 0
+    ref = f'origin/{base}'
+    if subprocess.run(['git', 'rev-parse', '-q', '--verify', f'{ref}^{{commit}}'], cwd=project,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        return None
+    listed = subprocess.run(['git', 'ls-tree', '--name-only', ref, '--', f'docs/retrospectives/pr-{number}.md'],
+                            cwd=project, capture_output=True, text=True)
+    if listed.returncode != 0:
+        return None
+    return bool(listed.stdout.strip())
 
 
 def classify(repo, queue, since, log):
@@ -503,7 +547,7 @@ def classify(repo, queue, since, log):
             unknown.add(path)
             if had != merged:
                 save(path, job)
-            log(f'retrospective PR #{job["pr"]} cannot check the remote report; left as is')
+            log(f'retrospective PR #{job["pr"]} cannot check origin/{base} for its report; left as is')
             continue
         if done:
             job.update(status='done', completed_at=utcnow())
@@ -553,7 +597,7 @@ def main():
                 log(f'retrospective queue paused this round: {value} '
                     f'(directory lessons file: {queue / MARKER})')
                 return
-            if state == 'on' and before != ('on', value):
+            if state == 'on' and (before[0] != 'on' or before[1][0] != value):
                 log(f'directory lessons on: handling PRs merged at or after {value} '
                     f'(recorded in {queue / MARKER})')
             # Classify the whole queue first, then retrospect at most one job.
