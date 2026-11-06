@@ -38,7 +38,12 @@ let dir: string;
 let record: string;
 let control: string;
 
-const records = (): any[] => (existsSync(record) ? readFileSync(record, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+/** the shell's record, whole lines only (the last one may still be being written) */
+const records = (): any[] => {
+  if (!existsSync(record)) return [];
+  const text = readFileSync(record, 'utf8');
+  return text.slice(0, text.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+};
 const notified = (key: string) => records().some((r) => r.op === 'notify' && r.alert?.kind === 'item' && r.alert.key === key);
 const lastBadge = () => records().filter((r) => r.op === 'badge').pop()?.count as number | undefined;
 

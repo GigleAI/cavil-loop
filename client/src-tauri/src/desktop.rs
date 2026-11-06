@@ -102,7 +102,8 @@ impl Desktop {
     pub fn record(&self, v: Value) {
         if let Some(f) = &self.hooks.record {
             if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(f) {
-                let _ = writeln!(file, "{v}");
+                // one write per line: a reader never sees half a record
+                let _ = file.write_all(format!("{v}\n").as_bytes());
             }
         }
     }

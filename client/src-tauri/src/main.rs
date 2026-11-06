@@ -179,6 +179,11 @@ fn main() {
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(720.0, 480.0)
                 .visible(!smoke && !notify_check && !hidden)
+                // The window does the syncing; hidden (closed, or started at login) it must keep
+                // running. By default macOS's WebKit suspends a page that is not on screen — at once
+                // when it was never shown, after about 5 minutes otherwise (GitHub#169, found on the
+                // CI Macs). Takes effect on macOS 14+; older macOS ignores it.
+                .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
                 // Links never navigate the app window; GitHub links go to the system browser.
                 .on_navigation(move |url| {
                     if is_app_url(url) {

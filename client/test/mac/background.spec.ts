@@ -7,7 +7,9 @@
 // Pass / fail is the window's own work, never a sign of life: within 120 s of a
 // label being put on GitHub the window must have run a new complete round and
 // asked for that item's notification and the new badge, its window hidden the
-// whole time. The shell keeps the beat at the app's real 60 s. In test mode the
+// whole time. The shell keeps the beat at the app's real 60 s. The closed window
+// stays hidden for 6 minutes before the label goes on: by default macOS's WebKit
+// suspends a page that has been off screen for about 5 minutes. In test mode the
 // notification is recorded instead of shown (CAVIL_CLIENT_TEST_ALERTS_FILE):
 // whether macOS shows a real one is the separate, record-only --notify-check.
 //
@@ -31,6 +33,7 @@ const BIN = process.env.CAVIL_BG_BIN ?? (APP ? join(APP, 'Contents', 'MacOS', 'C
 const MAC = process.platform === 'darwin';
 const REPO = 'gigleai/cavil-loop';
 const GATE_MS = 120_000;
+const HIDDEN_FOR_MS = Number(process.env.CAVIL_BG_HIDDEN_FOR_MS ?? 6 * 60_000);
 const TOKEN = 'gho_faketoken000000000000000000000001';
 
 let fake: FakeGitHub;
@@ -39,7 +42,12 @@ let record: string;
 let control: string;
 let proc: ChildProcess | null = null;
 
-const records = (): any[] => (existsSync(record) ? readFileSync(record, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+/** the shell's record, whole lines only (the last one may still be being written) */
+const records = (): any[] => {
+  if (!existsSync(record)) return [];
+  const text = readFileSync(record, 'utf8');
+  return text.slice(0, text.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+};
 const lastBadge = (from = 0) => records().slice(from).filter((r) => r.op === 'badge').pop()?.count as number | undefined;
 const notified = (key: string) => records().some((r) => r.op === 'notify' && r.alert?.kind === 'item' && r.alert.key === key);
 
@@ -108,6 +116,8 @@ test('window closed: hidden, still syncing and reminding within 120 s; the Dock 
   const badgeBefore = lastBadge()!;
   appendFileSync(control, 'close\n');
   await until(() => records().some((r) => r.op === 'hidden'), 'window hidden, app still running', 15_000);
+  // past the point where WebKit's default policy would suspend a hidden page
+  await new Promise((r) => setTimeout(r, HIDDEN_FOR_MS));
   const from = records().length;
   const n = unlabelled();
   label(n);
