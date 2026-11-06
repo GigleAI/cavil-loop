@@ -113,10 +113,25 @@ human=$(cd "$WT" && HOME="$TMP/home" CLAUDE_PROJECTS_DIR="$TMP/home/.claude/proj
 say driver_human_no_ai "$(printf '%s' "$human" | grep -c ai_secs)" "0"
 
 # 【3】footer 生成器
+# 时钟钉死：开始时间按「现在 − 秒数」算，生成器结束时又读一次现在；两次之间跨过一秒，
+# 总耗时就从 8m 0s 变成 8m 1s，精确断言偶发变红（PR #160 的 CI 撞上过）。所以给生成器的
+# python 进程放一个 sitecustomize，把 time.time() 钉在算开始时间用的那一刻；生产代码不动。
+# FOOTER_TEST_NO_CLOCK_PIN=1 关掉它（只给负对照用，证明 clock_pinned 那条真靠钉时钟才绿）。
+CLOCK="$TMP/clock-pin"
+mkdir -p "$CLOCK"
+cat > "$CLOCK/sitecustomize.py" <<'PY'
+import os, time
+_pin = os.environ.get("FOOTER_TEST_NOW")
+if _pin:
+    time.time = lambda: float(_pin)
+PY
 foot() { # $1 = 总耗时秒数；其余是 env 赋值
     local secs="$1"; shift
-    local st; st=$(date -d "@$(( $(date +%s) - secs ))" '+%Y-%m-%d %H:%M:%S')
-    (cd "$WT" && env HOME="$TMP/home" "$@" bash "$D/comment-footer.sh" --agent claude --driver "$FAKE" \
+    local now; now=$(date +%s)
+    local st; st=$(date -d "@$(( now - secs ))" '+%Y-%m-%d %H:%M:%S')
+    local pin=(FOOTER_TEST_NOW="$now" PYTHONPATH="$CLOCK${PYTHONPATH:+:$PYTHONPATH}")
+    [ -n "${FOOTER_TEST_NO_CLOCK_PIN:-}" ] && pin=()
+    (cd "$WT" && env HOME="$TMP/home" "${pin[@]}" "$@" bash "$D/comment-footer.sh" --agent claude --driver "$FAKE" \
         --config "$CFG" --start "$st" --wt 7)
 }
 # 总览 → "总 测试 AI 其他"（秒；缺的段写 -）
@@ -162,6 +177,12 @@ say summary_then_blank "$(printf '%s\n' "$out" | sed -n 3p)" ""
 say marker_last "$(printf '%s\n' "$out" | grep -v '^$' | tail -1 | grep -c '^<!-- agent-metrics .* -->$')" "1"
 say marker_fields "$(printf '%s\n' "$out" | tail -1 | grep -o 'ai_secs=150.400 ai_requests=12 test_secs=291 test_runs=4')" "ai_secs=150.400 ai_requests=12 test_secs=291 test_runs=4"
 printf '%s\n' "$out" > "$TMP/footer-full.txt"
+
+# 钉住的时钟真的生效：项目命令先睡 1.2 秒（必然跨过一个整秒），总耗时仍是 480 秒
+setcfg "sleep 1.2; printf 'test_secs=291\n'"
+out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
+read -r tot t a o <<< "$(segs "$out")"
+say clock_pinned "$tot" "480"
 
 setcfg "printf 'test_secs=400\n'"
 out=$(foot 480 FAKE_KV="$KV_FULL" FAKE_HUMAN="$HUMAN_FULL")
@@ -482,6 +503,12 @@ PY
     if grep -q "^FAIL $5 " "$sb/check.out"; then ok "$1 → $5 变红"
     else bad "$1 → $5 没变红（这条检查拦不住这种改坏）"; fi
 }
+if mutation_gate; then
+    # 不钉时钟（修之前的写法）：clock_pinned 必然变红，说明它真靠钉时钟才绿
+    FOOTER_TEST_NO_CLOCK_PIN=1 run_check "$REPO_DIR/scripts" > "$TMP/nopin.out"
+    if grep -q "^FAIL clock_pinned " "$TMP/nopin.out"; then ok "不钉时钟 → clock_pinned 变红"
+    else bad "不钉时钟 → clock_pinned 没变红（钉时钟的检查拦不住跨秒）"; fi
+fi
 neg "AI 时间不取并集、逐段相加" drivers/token-usage/ai_time.py \
     "return union_ms(spans, start_ms, end_ms), len(spans)" \
     "return sum(min(b, end_ms) - max(a, start_ms) for a, b in spans), len(spans)" ai_claude

@@ -10,9 +10,9 @@
 | `doing/agent`   | Daemon | Daemon is dispatching / worker tmux is running |
 | `pending/human` | Worker / daemon | Wait for you to review / merge / decide |
 | `pending/PR`    | Worker (when opening a PR) | Issue work moved to the PR for tracking; go look at the PR |
-| `Done`          | Daemon (auto-cleanup) | **Only on the PR** (PR merged = truly closed); **not on the issue** (the issue is a long-term tracker; closing it is your call) |
+| `Done`          | Daemon (auto-cleanup) | On a PR once merged; on an issue once it is **closed as completed** — by a `Closes #N` merge, or by you closing it by hand with "Close as completed", which also strips leftover workflow labels (GitHub#159). Closing an issue is always your call; the daemon never closes one. Issues closed as "not planned" / "duplicate" get no `Done` |
 
-Optional extras: `pending/review` (review gate, see [operations](operations.md#optional-cross-review-gate-off-by-default)) and, with the autopilot label configured (GitHub#114), `pending/merge` on a PR = "review passed, waiting for the daemon to check and merge", plus the autopilot *mode* label itself on an issue (or on an existing PR, GitHub#128; never removed by the daemon) — see [operations](operations.md#autopilot-label-optional-off-by-default).
+Optional extras: `pending/review` (review gate, see [operations](operations.md#optional-cross-review-gate-off-by-default)) and, with the autopilot label configured (GitHub#114), `pending/merge` on a PR = "review passed, waiting for the daemon to check and merge", plus `pending/blocked` (GitHub#157, when `LABEL_PENDING_BLOCKED` is set) = "waiting for another issue / PR of this repo; the daemon puts it back on `pending/agent` once every prerequisite is done", plus the autopilot *mode* label itself on an issue (or on an existing PR, GitHub#128; never removed by the daemon) — see [operations](operations.md#autopilot-label-optional-off-by-default).
 
 ### PR↔Issue closure: decided at design time
 
@@ -27,7 +27,7 @@ In its "design proposal" comment, the worker picks A or B (with a split plan: pe
 
 How a split runs:
 
-1. After you confirm B, the worker (`issue-comment.template.md` § A-split) creates each sub-issue, links it under the parent via the sub-issue API, and copies priority / Project iteration from the parent. Sub-issues with no prerequisite get `pending/agent` right away; ones that depend on another get `pending/human` — label them once the prerequisite merges
+1. After you confirm B, the worker (`issue-comment.template.md` § A-split) creates each sub-issue, links it under the parent via the sub-issue API, and copies priority / Project iteration from the parent. Sub-issues with no prerequisite get `pending/agent` right away; ones that depend on another get `pending/human` — label them once the prerequisite merges. With `LABEL_PENDING_BLOCKED` set (GitHub#157) they get `pending/blocked` plus a prerequisite marker instead, and the daemon flips them to `pending/agent` by itself once the prerequisite merges
 2. A sub-issue skips the design round: `dispatch-new-issue.sh` renders the development prompt (`issue-comment` + `sub-issue.template.md`) instead of the design one, **only if** all three hold — GitHub says it has a parent in this repo, its body carries `<!-- agent-split-from: #<parent> -->` naming that parent, and it was created by the write identity (bot). Any check failing (or erroring) falls back to the normal design round
 3. The merge hook **unconditionally enqueues** the merged PR's issue — whether it is actually closed is read by the rollup itself, because the hook's own state read falls back to OPEN on error — and it (`state.json` `split_rollup_queue`); every tick drains the queue through `sub_issue_rollup`. The queue exists because the merged PR is already in `cleaned_prs` and will never be rescanned — a transient failure on the last sub-issue would otherwise leave the parent un-summarised forever. Any read or write failure keeps the entry for the next tick (up to `SUB_ISSUE_ROLLUP_MAX_TRIES`, default 30). Comment and label are tracked separately (`split_rollup_commented` / `split_rollups`), so a retry after a failed label flip does not post the comment twice. "All closed" is only concluded from a list known to be complete: it must contain the sub-issue that just closed, and its length must equal the parent's own `sub_issues_summary.total` — otherwise it is treated as not refreshed yet and retried. The merged issue's own label (`Done` if closed, `pending/human` if still open) follows the same rule: if its state cannot be read, no label is written and it goes to `merged_label_queue` — it is never guessed as OPEN
 
@@ -55,6 +55,7 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
                                        daemon auto-cleanup →
                                           - PR  : Done (PR closure)
                                           - Issue: closed by `Closes #N` → Done
+                                          - Issue you close by hand as completed → Done (workflow labels stripped)
                                           - Sub-issue closed → if every sibling is closed too,
                                             parent issue → pending/human (you decide whether to close it)
 ```

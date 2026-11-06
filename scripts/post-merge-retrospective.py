@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,11 @@ import retrospective_lessons as lessons_format  # noqa: E402
 
 RETRY_SECONDS = 3600
 MAX_ATTEMPTS = 3
+PROJECT_CMD_TIMEOUT = 600
+OUTPUT_TAIL = 3000
+# Credentials the retrospective itself was handed. Not passing them on is not a
+# sandbox: the command runs as the daemon's user and can still use any stored login.
+WITHHELD_ENV = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN')
 DEFAULT_PREAMBLE = '# 项目复盘经验\n\n以下经验仅适用于本项目，不覆盖用户指令或安全约束。硬规则段的每一条，自审与交叉 review 都要逐条核对。'
 
 
@@ -96,14 +102,37 @@ def collect(repo, number):
             'inline_comments': api(f'repos/{repo}/pulls/{number}/comments?per_page=100', True)}
 
 
-def accept(old_lessons, result, *, number, source, evidence, mode):
+def changed_files(repo, number):
+    """Every path the PR touched (renames: both names), from GitHub's PR files list."""
+    paths = set()
+    for item in api(f'repos/{repo}/pulls/{number}/files?per_page=100', True):
+        paths.add(item['filename'])
+        if item.get('previous_filename'):
+            paths.add(item['previous_filename'])
+    return paths
+
+
+def changed_directories(paths, checkout):
+    """Directories (`a/b/`) holding a touched path that still exist in the merged tree."""
+    found = set()
+    for path in paths:
+        parts = path.split('/')[:-1]
+        for depth in range(1, len(parts) + 1):
+            directory = '/'.join(parts[:depth]) + '/'
+            if lessons_format.directory_problem(directory, checkout) is None:
+                found.add(directory)
+    return sorted(found)
+
+
+def accept(old_lessons, result, *, number, source, evidence, mode, repo_root=None):
     """Judge the model's output; return (report, lessons) or raise ValueError naming what failed."""
     report, lessons = result['report_markdown'], result['lessons_markdown']
     if len(report.strip()) < 100 or source not in report:
         raise ValueError('report missing content/source')
     # The model only writes prose; ids, locked fields, counts and evidence are checked here.
     errors = lessons_format.validate(old_lessons, lessons, pr=number, mode=mode,
-                                     evidence_urls=lessons_format.evidence_urls(evidence))
+                                     evidence_urls=lessons_format.evidence_urls(evidence),
+                                     repo_root=repo_root)
     if errors:
         raise ValueError('lessons rejected: ' + '; '.join(errors[:12]))
     return report, lessons
@@ -117,8 +146,53 @@ def promotion_mode():
     return mode
 
 
-def render_instruction(template, mode):
-    return template.replace('${PROMOTION_TARGET}', '硬规则' if mode == 'auto' else '待确认')
+# Only for a project whose lessons already carry the 目录经验 heading. Without it the
+# placeholder renders to nothing, so the instruction stays byte for byte what it was.
+DIRECTORY_RULES = '''
+  - 本项目的经验文件末尾还有第四段 `## 目录经验`，记「只在某块代码里会踩的坑」；前三段记「改哪都会踩」的流程经验。先判断本 PR 暴露的问题属于哪一种：只有换到别的目录就不会发生的，才算目录经验。
+  - 目录经验的条目格式和前三段一样，编号同样取 next-id；区别是 Seen 里每一次记录后面用方括号写明这次发生在哪些目录，多个用 ` · ` 分隔，例如 `#本PR号 <证据链接> [server/credits/ · server/usage/]`。目录是相对仓库根、以 `/` 结尾的目录，只从输入 `directories`（本 PR 改动所在、合并后仍存在的目录）里选；写不出目录就不记。
+  - 已有记录（包括它的目录）一字不改；同一条只加一次本 PR。目录经验够 3 次也留在本段，不挪去任何段；前三段的条目不能挪进来，本段的条目也不能挪出去。不要把前三段已有的规则原样抄进本段。本段单独计字数，上限 ${DIR_MAX_CHARS} 字符，前面说的全文上限不含本段。'''
+
+
+def render_instruction(template, mode, directories=False):
+    rules = DIRECTORY_RULES.replace('${DIR_MAX_CHARS}', str(lessons_format.MAX_DIR_CHARS)) if directories else ''
+    return (template.replace('${PROMOTION_TARGET}', '硬规则' if mode == 'auto' else '待确认')
+            .replace('${DIRECTORY_LESSONS}', rules))
+
+
+def _tail(text):
+    return text[-OUTPUT_TAIL:].strip()
+
+
+def run_project_command(cmd, checkout, *, number, report_path, lessons_path):
+    """Run POST_RETROSPECTIVE_PROJECT_CMD in the publish checkout; return its output tail.
+
+    Raises RuntimeError when it fails, times out, rewrites the validated report /
+    lessons, or commits on its own — what gets pushed must be what was checked."""
+    def snapshot():
+        return {p: (checkout / p).read_bytes() if (checkout / p).exists() else None
+                for p in (report_path, lessons_path)}
+    head = command(['git', 'rev-parse', 'HEAD'], checkout).strip()
+    before = snapshot()
+    env = {k: v for k, v in os.environ.items() if k not in WITHHELD_ENV}
+    env.update(RETROSPECTIVE_PR=str(number), RETROSPECTIVE_REPORT_FILE=report_path,
+               RETROSPECTIVE_LESSONS_FILE=lessons_path)
+    proc = subprocess.Popen(['bash', '-c', cmd], cwd=checkout, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors='replace', start_new_session=True)
+    try:
+        output, _ = proc.communicate(timeout=PROJECT_CMD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)   # the whole group: bash -c may have forked
+        output, _ = proc.communicate()
+        raise RuntimeError(f'project command timed out after {PROJECT_CMD_TIMEOUT}s: {_tail(output)}')
+    if proc.returncode:
+        raise RuntimeError(f'project command exited {proc.returncode}: {_tail(output)}')
+    if lessons_format._on('cmd_head') and command(['git', 'rev-parse', 'HEAD'], checkout).strip() != head:
+        raise RuntimeError('project command made its own commit; refusing to publish')
+    if lessons_format._on('cmd_files') and snapshot() != before:
+        raise RuntimeError('project command changed the validated report or lessons file; refusing to publish')
+    return _tail(output)
 
 
 def baseline(text):
@@ -202,9 +276,14 @@ def review(repo, job, queue, root):
             templates = {p.name: p.read_text() for p in (root / 'prompts').glob('*.template.md')
                          if p.name != 'retrospective.template.md'}
             mode = promotion_mode()
-            instruction = render_instruction((root / 'prompts/retrospective.template.md').read_text(), mode)
-            payload = json.dumps({'evidence': evidence, 'templates': templates,
-                                  'lessons_markdown': old_lessons}, ensure_ascii=False)
+            # Opt-in by the heading alone: without it, no extra read, input or rule text.
+            directories = lessons_format.parse(old_lessons).has_dirs
+            instruction = render_instruction((root / 'prompts/retrospective.template.md').read_text(),
+                                             mode, directories)
+            payload = {'evidence': evidence, 'templates': templates, 'lessons_markdown': old_lessons}
+            if directories:
+                payload['directories'] = changed_directories(changed_files(repo, number), checkout)
+            payload = json.dumps(payload, ensure_ascii=False)
             schema = {'type': 'object', 'properties': {
                 'report_markdown': {'type': 'string'}, 'lessons_markdown': {'type': 'string'}},
                 'required': ['report_markdown', 'lessons_markdown'], 'additionalProperties': False}
@@ -218,12 +297,21 @@ def review(repo, job, queue, root):
                 raise ValueError('retrospective model returned an error')
             report, lessons = accept(old_lessons, response['structured_output'], number=number,
                                      source=f'https://github.com/{repo}/pull/{number}',
-                                     evidence=evidence, mode=mode)
+                                     evidence=evidence, mode=mode, repo_root=checkout)
             target = checkout / report_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report.rstrip() + '\n')
             lessons_file.parent.mkdir(parents=True, exist_ok=True)
             lessons_file.write_text(lessons.rstrip() + '\n')
+            project_cmd = os.environ.get('POST_RETROSPECTIVE_PROJECT_CMD', '').strip()
+            if project_cmd:
+                output = run_project_command(project_cmd, checkout, number=number,
+                                             report_path=report_path, lessons_path=lessons_path)
+                print(f'{utcnow()} [{repo}] retrospective PR #{number} project command ok'
+                      + (f': {output}' if output else ''), flush=True)
+                # Everything it changed or created goes into the same commit, except what
+                # the repository's ignore rules exclude (decided on #152).
+                command(['git', 'add', '-A', '--', '.'], checkout)
             command(['git', 'add', '--', report_path, lessons_path], checkout)
             command(['git', 'commit', '-m', f'docs: learn from {repo}#{number}'], checkout)
             # Push is fast-forward only. Concurrent changes/conflicts remain pending.
@@ -248,9 +336,13 @@ def main():
         if '--scan-only' in sys.argv:
             return
         # One retrospective across all projects on this machine; separate from
-        # active implementation workers and from the daemon's poll.lock.
-        git_dir = Path(command(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], root).strip())
-        with (git_dir / 'retrospective.lock').open('w') as global_lock:
+        # active implementation workers and from the daemon's poll.lock. The path is
+        # fixed per machine (scripts/_names.sh), never derived from the skill root:
+        # a release directory is not a git checkout, and each release is its own
+        # directory, so anything under it would not be shared (GitHub#165).
+        lock_path = Path(os.environ['RETROSPECTIVE_LOCK'])
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open('w') as global_lock:
             try:
                 fcntl.flock(global_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
