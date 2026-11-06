@@ -665,3 +665,128 @@ describe('calls to the shell that wait while things change (PR #173 review round
     expect(h.badge()).toBe(h.c.getState().pendingCount);
   });
 });
+
+describe('one rule for every queued notification, across context changes (PR #173 review round 2)', () => {
+  /** Hold the first notification with "the system"; the rest answer at once. */
+  function holdFirst(h: Harness) {
+    const calls: Alert[] = [];
+    let release: () => void = () => {};
+    (h.c as any).deps.desktop.notify = (a: Alert) => {
+      calls.push(a);
+      if (calls.length === 1) return new Promise((r) => (release = () => r({ ok: true })));
+      return Promise.resolve({ ok: true });
+    };
+    return { calls, release: () => release() };
+  }
+  const keysOf = (calls: Alert[]) => calls.filter((a) => a.kind === 'item').map((a) => (a as { key: string }).key);
+  const kinds = (calls: Alert[]) => calls.map((a) => a.kind);
+  async function release(h: Harness, held: { release: () => void }) {
+    held.release();
+    await settle();
+    await h.c.desktopSettled();
+  }
+
+  it('a new source removed while its first-read summary is queued: the summary is not sent', async () => {
+    const h = await signedIn({ sources: [REPO] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    h.c.addSource(PROJECT_URL);
+    await h.c.syncNow();
+    await settle();
+    expect(kinds(held.calls)).toEqual(['item']);
+    h.c.removeSource(PROJECT_KEY);
+    await release(h, held);
+    expect(kinds(held.calls)).toEqual(['item']);
+  });
+
+  it('a source removed and added back while an item notification is queued: the old one is not sent, the new addition only summarises', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    expect(kinds(held.calls)).toEqual(['item']);
+    h.c.removeSource(PROJECT_KEY);
+    h.c.addSource(PROJECT_URL);
+    await h.c.syncNow();
+    await release(h, held);
+    // the held one was already with the system; the second old one never goes out; the re-added source summarises
+    expect(kinds(held.calls)).toEqual(['item', 'summary']);
+    expect(h.badge()).toBe(h.c.getState().pendingCount);
+  });
+
+  it('one of two sources carrying an item is removed while its notification is queued: still sent (one item, one notification across sources); an item only that source carried is not', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL, REPO] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock); // both sources
+    setLabel(CLOSED_ISSUE, true, h.clock); // the board only
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    expect(held.calls).toHaveLength(1);
+    const first = keysOf(held.calls)[0];
+    h.c.removeSource(PROJECT_KEY);
+    await release(h, held);
+    // whichever went first is already out; of the queued one: the repository still carries OPEN_NEW, nothing carries CLOSED_ISSUE
+    const expected = first === key(OPEN_NEW) ? [key(OPEN_NEW)] : [key(CLOSED_ISSUE), key(OPEN_NEW)];
+    expect(keysOf(held.calls)).toEqual(expected);
+  });
+
+  it('the label renamed and renamed back while a notification is queued: a settings change is silent, the queued one is not sent', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    expect(held.calls).toHaveLength(1);
+    h.c.setHandBack({ human: 'some-other-label' });
+    h.c.setHandBack({ human: LABEL });
+    await release(h, held);
+    expect(held.calls).toHaveLength(1);
+    expect(h.badge()).toBe(P + 2);
+  });
+
+  it('a queued summary that still holds goes out with the count of the moment it goes out (= the badge)', async () => {
+    const h = await signedIn({ sources: [REPO] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    h.c.addSource(PROJECT_URL);
+    await h.c.syncNow();
+    await settle();
+    expect(kinds(held.calls)).toEqual(['item']);
+    // a later round, sources unchanged: one item loses the label
+    setLabel(SEEDED, false, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await release(h, held);
+    const summary = held.calls.find((a) => a.kind === 'summary')!;
+    expect(summary.title).toBe(`${h.c.getState().pendingCount} 条待处理`);
+    expect(h.badge()).toBe(h.c.getState().pendingCount);
+  });
+
+  it('nothing changes while one waits: every queued notification goes out (the rule does not drop valid ones)', async () => {
+    const h = await signedIn({ sources: [REPO] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    const held = holdFirst(h);
+    setLabel(OPEN_NEW, true, h.clock);
+    h.c.addSource(PROJECT_URL);
+    await h.c.syncNow();
+    await release(h, held);
+    expect(kinds(held.calls)).toEqual(['item', 'summary']);
+  });
+});

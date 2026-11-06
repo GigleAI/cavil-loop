@@ -31,6 +31,12 @@ export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期
 /** the back end refreshes this long before the access token expires (src-tauri/crates/core/src/engine.rs) */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 
+/** What a queued notification was decided on (see Controller.noticeContext). */
+interface NoticeContext {
+  label: number;
+  sources: (readonly [string, number])[];
+}
+
 export interface ControllerDeps {
   backend: Backend;
   endpoints: Endpoints;
@@ -405,20 +411,19 @@ export class Controller {
    * dropped before it reaches the shell, and the answer to one already handed over is ignored.
    */
   private desktopEra = 0;
+  /** bumps when the "waiting for a human" label is renamed: a recount is silent, nothing queued before it goes out */
+  private labelVersion = 0;
 
-  /**
-   * Queue one call to the shell. Right before it goes out it is checked again: same era, and
-   * `stillTrue` (when given) still holds — a notification for an item that stopped being
-   * pending meanwhile (source removed, label renamed) is not sent. Resolves with null when dropped.
-   */
-  private toDesktop<T>(fn: (d: Desktop) => Promise<T>, stillTrue?: () => boolean): Promise<{ answer: T; current: () => boolean } | null> | null {
+  /** Queue one call to the shell; `run` decides right before it goes out (null = dropped). */
+  private toDesktop<T>(run: (d: Desktop) => Promise<T> | null): Promise<{ answer: T; current: () => boolean } | null> | null {
     const d = this.deps.desktop;
     if (!d) return null;
     const era = this.desktopEra;
     const current = () => era === this.desktopEra;
     const p = this.desktopCalls.then(async () => {
-      if (!current() || (stillTrue && !stillTrue())) return null;
-      return { answer: await fn(d), current };
+      if (!current()) return null;
+      const call = run(d);
+      return call ? { answer: await call, current } : null;
     });
     this.desktopCalls = p.catch(() => undefined);
     return p;
@@ -434,10 +439,50 @@ export class Controller {
     this.toDesktop((d) => d.setBadge(this.pending.count()))?.catch(() => {});
   }
 
-  private notify(a: Alert): void {
+  /**
+   * What a notification was decided on: the label and the sources (each as the
+   * addition it was) that it came from. Checked again right before it goes out — the one rule for
+   * every queued notification (PR #173 review rounds 1–2: sign-out, a source removed, removed and
+   * added back, the label renamed and renamed back all happened while one waited).
+   */
+  private noticeContext(sources: string[]): NoticeContext {
+    return { label: this.labelVersion, sources: sources.map((k) => [k, this.epochs.get(k) ?? 0] as const) };
+  }
+
+  /** The recorded sources still configured as the same addition. */
+  private liveSources(ctx: NoticeContext): string[] {
+    return ctx.sources
+      .filter(([k, e]) => this.state.sources.some((s) => s.key === k) && (this.epochs.get(k) ?? 0) === e)
+      .map(([k]) => k);
+  }
+
+  /** (the session is checked once, by the queue: a call from an earlier era never runs) */
+  private sameContext(ctx: NoticeContext): boolean {
+    return ctx.label === this.labelVersion;
+  }
+
+  /**
+   * An item notification still holds when the item is pending now through at least one of the
+   * sources it came from, still the same addition (another source carrying it does not revive it,
+   * one of its own still carrying it keeps it — one item is one notification across sources).
+   */
+  private itemStillHolds(ctx: NoticeContext, key: string): boolean {
+    if (!this.sameContext(ctx)) return false;
+    const carriers = this.pending.carriers(key);
+    return this.liveSources(ctx).some((k) => carriers.includes(k));
+  }
+
+  /** A summary still holds when every source whose first read it reports is still that addition. */
+  private summaryStillHolds(ctx: NoticeContext): boolean {
+    return this.sameContext(ctx) && this.liveSources(ctx).length === ctx.sources.length;
+  }
+
+  private notify(make: () => Alert | null): void {
     const era = this.desktopEra;
-    const stillTrue = a.kind === 'item' ? () => this.pending.has(a.key) : undefined;
-    this.toDesktop((d) => d.notify(a), stillTrue)?.then(
+    this.toDesktop((d) => {
+      const a = make();
+      return a ? d.notify(a) : null;
+    })?.then(
       (r) => {
         if (r && r.current()) this.reportNotification(r.answer);
       },
@@ -450,8 +495,17 @@ export class Controller {
   /** Feed the snapshots read completely this round; notify what became pending, summarise first reads. */
   private observePending(fresh: SourceSnapshot[]): void {
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
-    for (const it of change.appeared) this.notify({ kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) });
-    if (change.summary) this.notify({ kind: 'summary', ...summaryAlertText(change.summary) });
+    for (const it of change.appeared) {
+      const ctx = this.noticeContext(this.pending.carriers(it.key));
+      const alert: Alert = { kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) };
+      this.notify(() => (this.itemStillHolds(ctx, it.key) ? alert : null));
+    }
+    if (change.summary) {
+      const summary = change.summary;
+      const ctx = this.noticeContext(summary.sources);
+      // the numbers are the ones at the moment it goes out: the same count as the badge then
+      this.notify(() => (this.summaryStillHolds(ctx) ? { kind: 'summary', ...summaryAlertText({ ...summary, ...this.pending.totals() }) } : null));
+    }
     this.badge();
     this.state = { ...this.state, pendingCount: this.pending.count() };
   }
@@ -791,6 +845,7 @@ export class Controller {
     // The same label is what reminders count: another name is recounted silently
     // (a settings change is not new work arriving).
     if (next.human !== this.state.handBack.human) {
+      this.labelVersion++;
       this.pending.relabel(next.human, this.snapshots);
       this.badge();
       this.state = { ...this.state, pendingCount: this.pending.count() };

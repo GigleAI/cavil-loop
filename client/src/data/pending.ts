@@ -27,6 +27,8 @@ export interface PendingSummary {
   fromNewSources: number;
   /** true when this is the first summary of this run / account (app start) */
   atStart: boolean;
+  /** the sources read for the first time that brought it */
+  sources: string[];
 }
 
 export interface PendingChange {
@@ -87,10 +89,14 @@ export class PendingTracker {
     this.prune(configured);
     const before = this.union();
     const newSources: Map<string, Item>[] = [];
+    const newKeys: string[] = [];
     for (const snap of fresh) {
       if (!configured.includes(snap.sourceKey)) continue;
       const set = this.pendingOf(snap);
-      if (!this.bySource.has(snap.sourceKey)) newSources.push(set);
+      if (!this.bySource.has(snap.sourceKey)) {
+        newSources.push(set);
+        newKeys.push(snap.sourceKey);
+      }
       this.bySource.set(snap.sourceKey, set);
     }
     // Real changes come only from sources that already had a baseline.
@@ -110,6 +116,7 @@ export class PendingTracker {
         closed: now.filter((it) => it.state !== 'open').length,
         fromNewSources: brought.size,
         atStart: !this.started,
+        sources: newKeys,
       };
     }
     if (newSources.length) this.started = true;
@@ -125,9 +132,15 @@ export class PendingTracker {
     return this.union().size;
   }
 
-  /** Is this item pending now (in any source still counted)? */
-  has(key: string): boolean {
-    return this.union().has(key);
+  /** The sources that count this item as pending now (empty = not pending). */
+  carriers(key: string): string[] {
+    return [...this.bySource].filter(([, set]) => set.has(key)).map(([k]) => k);
+  }
+
+  /** Pending now, and how many of those are closed / merged (what a summary says). */
+  totals(): { total: number; closed: number } {
+    const now = this.pending();
+    return { total: now.length, closed: now.filter((it) => it.state !== 'open').length };
   }
 
   private pendingOf(snap: SourceSnapshot): Map<string, Item> {
