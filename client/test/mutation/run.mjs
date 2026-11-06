@@ -385,7 +385,7 @@ const MUTATIONS = [
   { what: '「通知被拒」黄条的标识里带上时间：同一个原因也当成新问题', file: 'src/renderer/warnings.ts',
     from: "return notifyProblem ? { 'board-notify-problem': notifyProblem } : {};",
     to: "return notifyProblem ? { 'board-notify-problem': `${notifyProblem}@${Date.now()}${Math.random()}` } : {};",
-    expect: ['× closes it for this reason only'] },
+    expect: ['× closes it for this reason only', "its id is the system's reason"] },
   { what: '删除来源后角标不变', file: 'src/main/controller.ts',
     from: '    this.pending.prune(sources.map((s) => s.key));\n', to: '',
     expect: ['removing a source drops what only it carried'] },

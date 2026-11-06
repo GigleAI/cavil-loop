@@ -181,8 +181,9 @@ describe('the "notifications refused" bar (GitHub#139)', () => {
     expect(notifyWarningIds(REFUSED)).toEqual({ 'board-notify-problem': REFUSED });
   });
   it('× closes it for this reason only: a refusal with the same reason stays closed, one going out then refused again shows it', () => {
-    const up = { state: notifyWarningIds(REFUSED) };
-    const r = replay([up, { close: 'board-notify-problem' }, up, up, { state: notifyWarningIds(null) }, up]);
+    // rebuilt at every step, as the window does on every render
+    const up = () => ({ state: notifyWarningIds(REFUSED) });
+    const r = replay([up(), { close: 'board-notify-problem' }, up(), up(), { state: notifyWarningIds(null) }, up()]);
     expect(r.map((x) => x.shown.includes('board-notify-problem'))).toEqual([true, false, false, false, false, true]);
   });
   it('closing it leaves the other bars alone', () => {
