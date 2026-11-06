@@ -107,6 +107,8 @@ export class Controller {
    * new attempt instead of the old one.
    */
   private loginCancels: Promise<unknown> = Promise.resolve();
+  /** the back end's number for the sign-in attempt in progress (a cancel names it) */
+  private pendingRun: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** the back end's session: bumps on every login / logout, a round started in another session is dropped */
   private session = 0;
@@ -240,6 +242,7 @@ export class Controller {
       const begun = await this.backend.call<{ status: string; run?: number; userCode?: string; verificationUri?: string; message?: string }>('loginBegin', { clientId });
       if (run !== this.loginRun || begun.status === 'stale') return;
       if (begun.status !== 'waiting') return fail(begun.status, begun.message ?? '');
+      this.pendingRun = begun.run ?? null;
       this.set({ login: { status: 'waiting', userCode: begun.userCode!, verificationUri: begun.verificationUri!, message: null } });
       // The back end polls GitHub, asks who this is, and stores + trusts the
       // credential as one step of its credential queue: a cancel / sign-out /
@@ -257,12 +260,11 @@ export class Controller {
         return;
       }
       if (run !== this.loginRun) {
-        // cancelled here after the back end had already committed: the cancel wins
-        this.session = done.session!;
-        this.signedIn = true;
-        await this.logout();
+        // cancelled here after the back end had already committed: the back end signs that
+        // login out when the cancel (which names this attempt) reaches it — see sendCancel
         return;
       }
+      this.pendingRun = null;
       this.session = done.session!;
       this.signedIn = true;
       if (done.wiped) this.dropMirror();
@@ -280,7 +282,15 @@ export class Controller {
   }
 
   private sendCancel(): void {
-    const sent = this.backend.call('loginCancel').catch(() => {});
+    const run = this.pendingRun;
+    this.pendingRun = null;
+    const sent = this.backend
+      .call<{ signedOut?: { session: number; message?: string | null } }>('loginCancel', run !== null ? { run } : {})
+      .then(async (r) => {
+        // the attempt had already committed: the back end signed it out
+        if (r?.signedOut) await this.applySignedOut(r.signedOut.session, r.signedOut.message ?? null);
+      })
+      .catch(() => {});
     this.loginCancels = this.loginCancels.then(() => sent);
   }
 

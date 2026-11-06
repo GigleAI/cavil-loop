@@ -635,9 +635,17 @@ describe('signing in is all-or-nothing against cancel / sign-out / a newer login
     return { ...h, store, login };
   }
 
-  async function assertSignedOutEverywhere(c: Controller, store: SlowStore) {
+  async function assertSignedOutEverywhere(c: Controller, store: SlowStore, backend?: HarnessBackend) {
     expect(c.getState().phase).toBe('login');
     expect(await store.get()).toBeNull();
+    if (backend) {
+      // the back end holds the credential, not the window: it must hold none and trust none on disk
+      await c.settled();
+      expect((await backend.call<{ signedIn: boolean }>('grantInfo')).signedIn).toBe(false);
+      const disk = new Cache(join(dir, 'cache.sqlite'));
+      caches.push(disk);
+      expect(disk.getSetting<string[]>('trustedCredentials', ['unread'])).toEqual([]);
+    }
     const before = fake.log.length;
     await c.syncNow();
     expect(fake.log.length).toBe(before); // holds no token: nothing is synced
@@ -648,24 +656,24 @@ describe('signing in is all-or-nothing against cancel / sign-out / a newer login
   }
 
   it('cancel while saving → nothing kept: login page, no credential, no sync, restart asks to sign in', async () => {
-    const { c, store, login } = await approvedAndSaving();
+    const { c, store, login, backend } = await approvedAndSaving();
     c.cancelLogin();
     store.writes[0].release();
     await login;
     // "something did happen": the write really reached the store before it was undone
     expect(store.writes.map((w) => w.token)).toEqual([FAKE_TOKEN]);
     expect(c.getState().login.status).toBe('idle');
-    await assertSignedOutEverywhere(c, store);
+    await assertSignedOutEverywhere(c, store, backend);
   });
 
   it('sign out while saving → same: nothing kept', async () => {
-    const { c, store, login } = await approvedAndSaving();
+    const { c, store, login, backend } = await approvedAndSaving();
     const out = c.logout();
     store.writes[0].release();
     await login;
     await out;
     expect(store.writes).toHaveLength(1);
-    await assertSignedOutEverywhere(c, store);
+    await assertSignedOutEverywhere(c, store, backend);
   });
 
   it('an older login finishing its save after a newer login neither survives nor deletes the newer one', async () => {

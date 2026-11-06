@@ -3,12 +3,12 @@
 // breaks one production handler of the app shell (src-tauri/src/main.rs), rebuilds
 // the real app into its own target dir, runs test/tauri against it, and requires
 // the test to fail at the step that handler is responsible for. Off by default
-// (GitHub#103); MUTATION=1 runs them. CI: Linux, under xvfb, after `npm run test:tauri`.
+// (GitHub#103); entry point test/tauri/mutations.sh. CI: Linux, under xvfb.
 //
-//   MUTATION=1 node test/tauri/mutations.mjs
+//   MUTATION=1 bash test/tauri/mutations.sh
 
-import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,51 +37,54 @@ const MUTATIONS = [
   },
 ];
 
-if (process.env.MUTATION !== '1') {
-  console.log(`真实窗口负对照：跳过 ${MUTATIONS.length} 项（MUTATION=1 打开）`);
-  process.exit(0);
-}
-
 const target = process.env.CAVIL_TAURI_MUT_TARGET ?? join(root, 'src-tauri', 'target', 'tauri-mutation');
-let failed = 0;
-for (const m of MUTATIONS) {
+
+/** One entry: copy, break, rebuild the real app, run test/tauri; 0 = red at the expected step. */
+function one(m) {
   const work = mkdtempSync(join(tmpdir(), 'cavil-tauri-mut-'));
   try {
     cpSync(join(root, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
     cpSync(join(root, 'dist'), join(work, 'dist'), { recursive: true });
     const file = join(work, MAIN);
     const text = readFileSync(file, 'utf8');
-    if (!text.includes(m.from)) {
-      console.log(`❌ 准备失败（原文不在 ${MAIN}）：${m.what}`);
-      failed++;
-      continue;
-    }
+    if (!text.includes(m.from)) return fail(`准备失败（原文不在 ${MAIN}）：${m.what}`);
     writeFileSync(file, text.replace(m.from, m.to));
     const build = spawnSync('cargo', ['build', '-q', '-p', 'cavil-loop-client'], { cwd: join(work, 'src-tauri'), env: { ...process.env, CARGO_TARGET_DIR: target }, encoding: 'utf8' });
-    if (build.status !== 0) {
-      console.log(`❌ 改坏的副本编译失败：${m.what}\n${build.stderr.split('\n').slice(-8).join('\n')}`);
-      failed++;
-      continue;
-    }
+    if (build.status !== 0) return fail(`改坏的副本编译失败：${m.what}\n${(build.stderr ?? '').split('\n').slice(-8).join('\n')}`);
     const run = spawnSync(process.execPath, [join(root, 'node_modules', '@playwright', 'test', 'cli.js'), 'test', '-c', 'playwright.tauri.config.ts', '--reporter=line'], {
       cwd: root,
       env: { ...process.env, CAVIL_TAURI_APP: join(target, 'debug', 'cavil-loop-client') },
       encoding: 'utf8',
       timeout: 600_000,
     });
-    const out = `${run.stdout}${run.stderr}`;
-    if (run.status === 0) {
-      console.log(`❌ 没变红：${m.what}`);
-      failed++;
-    } else if (!out.includes(m.expect)) {
-      console.log(`❌ 红了，但不是在预期那一步（缺「${m.expect}」）：${m.what}\n${out.split('\n').filter((l) => /Error|timeout|not found/.test(l)).slice(0, 5).join('\n')}`);
-      failed++;
-    } else {
-      console.log(`✅ 变红（在「${m.expect}」那一步）：${m.what}`);
+    const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+    if (run.error || run.signal) return fail(`执行异常（${run.error?.message ?? `信号 ${run.signal}`}）：${m.what}`);
+    if (run.status === 0) return fail(`没变红：${m.what}`);
+    if (!out.includes(m.expect)) {
+      return fail(`红了，但不是在预期那一步（缺「${m.expect}」）：${m.what}\n${out.split('\n').filter((l) => /Error|timeout|not found/.test(l)).slice(0, 5).join('\n')}`);
     }
+    console.log(`✅ 变红（在「${m.expect}」那一步）：${m.what}`);
+    return 0;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
-console.log(`真实窗口负对照：本次跑了 ${MUTATIONS.length} 项，${MUTATIONS.length - failed} 项按预期变红，${failed} 项失败`);
-process.exit(failed ? 1 : 0);
+
+function fail(msg) {
+  console.log(`❌ ${msg}`);
+  return 1;
+}
+
+// Driven by test/tauri/mutations.sh, which passes every entry through tests/lib/mutation.sh's
+// mutation_gate (so "skipped N" and "ran N" come from the project's one counter):
+//   node mutations.mjs --count | --name I | --one I
+const [cmd, arg] = process.argv.slice(2);
+if (cmd === '--count') console.log(MUTATIONS.length);
+else if (cmd === '--name') console.log(MUTATIONS[Number(arg)]?.what ?? '');
+else if (cmd === '--one') {
+  const m = MUTATIONS[Number(arg)];
+  process.exitCode = m ? one(m) : fail(`没有第 ${arg} 项`);
+} else {
+  console.error('用法：由 test/tauri/mutations.sh 调用（--count | --name I | --one I）');
+  process.exitCode = 2;
+}

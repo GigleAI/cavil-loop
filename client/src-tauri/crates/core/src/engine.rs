@@ -110,6 +110,8 @@ struct State {
     refresh_seq: u64,
     /// keychain deletes queued by sign-outs, by the session they ended
     logouts: HashMap<u64, SharedDone>,
+    /// the login attempt the current sign-in came from (a cancel of that attempt signs it out)
+    committed_run: Option<u64>,
 }
 
 pub struct Engine {
@@ -156,6 +158,7 @@ impl Engine {
                 refreshing: None,
                 refresh_seq: 0,
                 logouts: HashMap::new(),
+                committed_run: None,
             }),
             queue: Mutex::new(ready.shared()),
         });
@@ -312,10 +315,17 @@ impl Engine {
     // ---- login -------------------------------------------------------------
 
     /// Every login attempt (and every cancel) bumps the run: an older attempt can no longer land.
-    pub fn cancel_login(&self) {
-        let mut st = self.lock();
-        st.login_run += 1;
-        st.pending_code = None;
+    /// `run`: the attempt the window means. If that attempt already committed (its "signed in"
+    /// was on the way when the user cancelled), it is signed out here: a cancelled login never
+    /// survives, whatever the window manages to do afterwards. Returns that sign-out.
+    pub fn cancel_login(self: &Arc<Self>, run: Option<u64>) -> Option<(u64, Option<String>)> {
+        let committed = {
+            let mut st = self.lock();
+            st.login_run += 1;
+            st.pending_code = None;
+            run.is_some() && st.committed_run == run && st.grant.is_some()
+        };
+        committed.then(|| self.logout(Some("登录已取消")))
     }
 
     pub async fn login_begin(self: &Arc<Self>, client_id: &str) -> BeginOut {
@@ -389,48 +399,67 @@ impl Engine {
             // nothing stored is trusted while the new credential is being written
             me.set_trusted(&[])?;
             me.d.credentials.set(&encode_grant(&grant)).await?;
-            if run != me.lock().login_run {
-                let err = Engine::clear_stored(me.d.credentials.clone()).await;
-                return Ok(FinishOut::Stale { login_reason: err.map(|e| not_deleted_message(Some("登录已取消"), &e)) });
+            // The decision and everything it records happen under the state lock, the same
+            // lock a cancel or sign-out takes first: either this login commits before them (and
+            // a cancel of it then signs it out), or they win and nothing of it is recorded.
+            // Everything recorded goes in one transaction: the trust, the app it came from (a
+            // GitHub App token is refreshed with that app, whatever the setting says later),
+            // whose cache this is (another account's data goes), the viewer.
+            let outcome: Result<FinishOut, String> = {
+                let mut st = me.lock();
+                if run != st.login_run {
+                    Ok(FinishOut::Stale { login_reason: None })
+                } else {
+                    let tag = Value::String(credential_tag(&grant.access_token));
+                    let same_owner = login.is_some() && login == st.owner;
+                    let owner = login.clone().map(Value::String).unwrap_or(Value::Null);
+                    let viewer = owner.clone();
+                    match me.d.store.write_all(
+                        &[
+                            (TRUSTED, Value::Array(vec![tag.clone()])),
+                            (GRANT_CLIENT_ID, Value::String(client_id.clone())),
+                            (CACHE_OWNER, owner),
+                            (CACHE_CREDENTIAL, if login.is_some() { tag } else { Value::Null }),
+                            ("viewer", viewer),
+                        ],
+                        !same_owner,
+                    ) {
+                        Err(e) => Err(e),
+                        Ok(()) => {
+                            // a sign-out marker from before is superseded by this trusted sign-in (if it
+                            // cannot be removed, the next start only asks to sign in again: the safe direction)
+                            if let Err(e) = me.d.store.clear_signed_out_mark() {
+                                eprintln!("cavil: removing the sign-out marker failed: {e}");
+                            }
+                            st.session += 1;
+                            st.grant = Some(grant.clone());
+                            st.gen += 1;
+                            st.pending_code = None;
+                            st.unsaved_grant = false;
+                            st.owner = login.clone();
+                            st.committed_run = Some(run);
+                            Ok(FinishOut::Ok { session: st.session, viewer: login.clone(), wiped: !same_owner })
+                        }
+                    }
+                }
+            };
+            match outcome {
+                Ok(FinishOut::Stale { .. }) => {
+                    // cancelled / signed out / a newer login while the keychain write was on its way:
+                    // the token this login wrote goes again
+                    let err = Engine::clear_stored(me.d.credentials.clone()).await;
+                    Ok(FinishOut::Stale { login_reason: err.map(|e| not_deleted_message(Some("登录已取消"), &e)) })
+                }
+                Ok(out) => Ok(out),
+                // the database refused: the credential just written is removed again, no half sign-in
+                Err(e) => {
+                    let left = Engine::clear_stored(me.d.credentials.clone()).await;
+                    Err(match left {
+                        None => format!("登录没能保存到本机（{e}），已撤销这次登录，请重试"),
+                        Some(d) => not_deleted_message(Some(&format!("登录没能保存到本机（{e}）")), &d),
+                    })
+                }
             }
-            // Everything this sign-in records, in one transaction: the trust, the app it came
-            // from (a GitHub App token is refreshed with that app, whatever the setting says
-            // later), whose cache this is (another account's data goes), the viewer. If the
-            // database refuses, the credential just written is removed again: no half sign-in.
-            let tag = Value::String(credential_tag(&grant.access_token));
-            let same_owner = login.is_some() && login == me.lock().owner;
-            let owner = login.clone().map(Value::String).unwrap_or(Value::Null);
-            let viewer = owner.clone();
-            let recorded = me.d.store.write_all(
-                &[
-                    (TRUSTED, Value::Array(vec![tag.clone()])),
-                    (GRANT_CLIENT_ID, Value::String(client_id.clone())),
-                    (CACHE_OWNER, owner),
-                    (CACHE_CREDENTIAL, if login.is_some() { tag } else { Value::Null }),
-                    ("viewer", viewer),
-                ],
-                !same_owner,
-            );
-            if let Err(e) = recorded {
-                let left = Engine::clear_stored(me.d.credentials.clone()).await;
-                return Err(match left {
-                    None => format!("登录没能保存到本机（{e}），已撤销这次登录，请重试"),
-                    Some(d) => not_deleted_message(Some(&format!("登录没能保存到本机（{e}）")), &d),
-                });
-            }
-            // a sign-out marker from before is superseded by this trusted sign-in (if it cannot
-            // be removed, the next start only asks to sign in again: the safe direction)
-            if let Err(e) = me.d.store.clear_signed_out_mark() {
-                eprintln!("cavil: removing the sign-out marker failed: {e}");
-            }
-            let mut st = me.lock();
-            st.session += 1;
-            st.grant = Some(grant.clone());
-            st.gen += 1;
-            st.pending_code = None;
-            st.unsaved_grant = false;
-            st.owner = login.clone();
-            Ok::<FinishOut, String>(FinishOut::Ok { session: st.session, viewer: login.clone(), wiped: !same_owner })
         };
         match self.serial(job.boxed()).await {
             Ok(out) => out,
@@ -476,6 +505,7 @@ impl Engine {
             st.pending_code = None;
             st.unsaved_grant = false;
             st.owner = None;
+            st.committed_run = None;
             // First of all, durably: the stored credential may never sign us in again,
             // whatever happens to the keychain delete below (queued, pending, failing,
             // or the process ending before it returns). Signing out forgets everything
@@ -607,12 +637,13 @@ impl Engine {
     }
 
     async fn refresh_once(self: Arc<Self>, used: TokenGrant, session: u64, now: i64, fallback: String) -> FreshOut {
-        let current = {
+        let still = {
             let used = used.clone();
-            move |me: &Engine| {
-                let st = me.lock();
-                st.session == session && st.grant.as_ref() == Some(&used)
-            }
+            move |st: &State| st.session == session && st.grant.as_ref() == Some(&used)
+        };
+        let current = {
+            let still = still.clone();
+            move |me: &Engine| still(&me.lock())
         };
         if let Some(rexp) = used.refresh_expires_at {
             if now >= rexp {
@@ -642,13 +673,18 @@ impl Engine {
         // sign-out's delete, a newer login's write) runs after this write.
         let me = self.clone();
         let job = async move {
-            if !current(&me) {
-                return FreshOut::of(Fresh::Ended);
-            }
-            // while writing, either the old or the new one may be what ends up stored. If the
+            // While writing, either the old or the new one may be what ends up stored. Trust is
+            // only ever added under the state lock together with the "still current" check: a
+            // sign-out cannot slip in between and have its empty list overwritten. If the
             // database refuses, only the old one stays trusted: a restart may ask to sign in
             // again (never the reverse), and the user is told.
-            let mut db_problem = me.set_trusted(&[&used.access_token, &next.access_token]).err();
+            let mut db_problem = {
+                let st = me.lock();
+                if !still(&st) {
+                    return FreshOut::of(Fresh::Ended);
+                }
+                me.set_trusted(&[&used.access_token, &next.access_token]).err()
+            };
             let saved = match me.d.credentials.set(&encode_grant(&next)).await {
                 Ok(()) => true,
                 Err(e) => {
@@ -656,12 +692,13 @@ impl Engine {
                     false
                 }
             };
-            if !current(&me) {
-                return FreshOut::of(Fresh::Ended);
-            }
             // GitHub has rotated the refresh token: only `next` works from now on,
             // saved or not. Keep using it; an unsaved grant is retried every round.
+            // Check and switch under one lock (see above).
             let mut st = me.lock();
+            if !still(&st) {
+                return FreshOut::of(Fresh::Ended);
+            }
             st.grant = Some(next.clone());
             st.gen += 1;
             st.unsaved_grant = !saved;
@@ -720,11 +757,12 @@ impl Engine {
                 st.unsaved_problem = Some(e);
                 return Some(Some(unsaved_message(st.unsaved_problem.as_deref())));
             }
-            if !same(&me) {
+            // check and record trust under one lock: a sign-out cannot slip in between
+            let mut st = me.lock();
+            if !(st.session == session && st.grant.as_ref() == Some(&grant)) {
                 return None;
             }
             let mut db_problem = me.set_trusted(&[&grant.access_token]).err();
-            let mut st = me.lock();
             st.unsaved_grant = false;
             if st.owner.is_some() {
                 if let Err(e) = me.d.store.set_setting(CACHE_CREDENTIAL, &Value::String(credential_tag(&grant.access_token))) {

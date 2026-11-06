@@ -127,7 +127,7 @@ jobs:
         run: xvfb-run -a npm run test:tauri
       - name: Negative controls for the app shell (each rebuilds the real app)
         if: ${{ inputs.mutation }}
-        run: xvfb-run -a env MUTATION=1 node test/tauri/mutations.mjs
+        run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4

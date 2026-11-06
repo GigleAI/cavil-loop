@@ -46,10 +46,10 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             FinishOut::Failed { status, message } => json!({ "status": status, "message": message }),
             FinishOut::Stale { login_reason } => json!({ "status": "stale", "loginReason": login_reason }),
         }),
-        "loginCancel" => {
-            e.cancel_login();
-            Ok(Value::Null)
-        }
+        "loginCancel" => Ok(match e.cancel_login(a.get("run").and_then(|v| v.as_u64())) {
+            None => json!({}),
+            Some((session, message)) => json!({ "signedOut": { "session": session, "message": message } }),
+        }),
         "openVerification" => match e.verification_uri() {
             Some(uri) => e.open_external(&uri).await.map(|_| Value::Null),
             None => Ok(Value::Null),

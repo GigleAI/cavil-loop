@@ -136,11 +136,9 @@ const MUTATIONS = [
     to: ';',
     expect: ['removed and added again'] },
   // ---- review round 2 of PR #140 ----
-  { what: '凭据写完不再核对登录是否已取消 / 已退出（后台那道核对和窗口收尾的那道都去掉）',
-    edits: [
-      { file: 'src-tauri/crates/core/src/engine.rs', from: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if run != me.lock().login_run {', to: '            me.d.credentials.set(&encode_grant(&grant)).await?;\n            if false {' },
-      { file: 'src/app/controller.ts', from: "      if (run !== this.loginRun) {\n        // cancelled here after the back end had already committed: the cancel wins", to: "      if (false) {\n        // cancelled here after the back end had already committed: the cancel wins" },
-    ],
+  { what: '凭据写完不再核对登录是否已取消 / 已退出', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '                if run != st.login_run {\n                    Ok(FinishOut::Stale { login_reason: None })',
+    to: '                if false {\n                    Ok(FinishOut::Stale { login_reason: None })',
     expect: ['cancel while saving → nothing kept', 'sign out while saving → same'] },
   { what: '凭据写入 / 删除不排队', file: 'src-tauri/crates/core/src/engine.rs',
     from: '        let job: Shared<BoxFuture<\'static, T>> = async move {\n            prev.await;\n',
@@ -174,8 +172,8 @@ const MUTATIONS = [
     to: '',
     expect: ['refreshed, then the round could not reach GitHub'] },
   { what: '续期写完不再核对是否已退出', file: 'src-tauri/crates/core/src/engine.rs',
-    from: '            if !current(&me) {\n                return FreshOut::of(Fresh::Ended);\n            }\n            // GitHub has rotated',
-    to: '            // GitHub has rotated',
+    from: '            let mut st = me.lock();\n            if !still(&st) {\n                return FreshOut::of(Fresh::Ended);\n            }\n            st.grant = Some(next.clone());',
+    to: '            let mut st = me.lock();\n            st.grant = Some(next.clone());',
     expect: ['signing out while the refreshed token is being saved'] },
   // ---- review of 2026-11-05 17:48: refresh failure paths ----
   { what: '续期接口 5xx 带错误正文时不先按「暂时不可用」处理', file: 'src-tauri/crates/core/src/device.rs',
@@ -213,8 +211,8 @@ const MUTATIONS = [
     to: 'if false {',
     expect: ['sign-out, delete-pending, quit', 'sign-out, delete-fails, quit', 'credential replaced outside the app: not trusted'] },
   { what: '续期写钥匙串时不同时信任新旧两份（写一半关 App，重启被迫重新登录）', file: 'src-tauri/crates/core/src/engine.rs',
-    from: '            let mut db_problem = me.set_trusted(&[&used.access_token, &next.access_token]).err();',
-    to: '            let mut db_problem: Option<String> = None;',
+    from: '                me.set_trusted(&[&used.access_token, &next.access_token]).err()\n            };',
+    to: '                None::<String>\n            };',
     expect: ['a refresh quits while writing the new token'] },
   // ---- review (2026-11-05 20:12): upgrade from a preview build ----
   { what: '没有可信名单的旧数据就信任钥匙串里那份（旧版已退出的账号被登录回去）', file: 'src-tauri/crates/core/src/engine.rs',
@@ -389,6 +387,16 @@ const MUTATIONS = [
   { what: '新登录不等先前的取消送达后台（晚到的取消把新登录也取消了）', file: 'src/app/controller.ts',
     from: '      await this.loginCancels;\n', to: '',
     expect: ['a cancel that reaches the back end late does not end the sign-in started after it'] },
+  // ---- PR #161 review round 2: a cancel / sign-out landing while a sign-in commits ----
+  { what: '登录提交写数据库时放开状态锁（取消 / 退出能插进检查与提交之间）',
+    edits: [
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '                    match me.d.store.write_all(\n', to: '                    drop(st);\n                    let written = me.d.store.write_all(\n' },
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '                        !same_owner,\n                    ) {\n', to: '                        !same_owner,\n                    );\n                    st = me.lock();\n                    match written {\n' },
+    ],
+    expect: ['cancel sent while the commit waits for the database', 'sign-out sent while the commit waits for the database'] },
+  { what: '取消一个已经提交的登录尝试时不退出（「已登录」还在路上时用户点了取消）', file: 'src-tauri/crates/core/src/engine.rs',
+    from: '        committed.then(|| self.logout(Some("登录已取消")))', to: '        let _ = committed;\n        None',
+    expect: ['a cancel naming an attempt that already committed signs it out'] },
   // ---- PR #161 review round 1: a database that refuses a write ----
   { what: '退出时数据库写失败也当成退出成功（不写备用标记、不告诉用户）', file: 'src-tauri/crates/core/src/engine.rs',
     from: 'let durable = match write().or_else(|_| write()) {', to: 'let durable = match write().or_else(|_| Ok::<(), String>(())) {',
