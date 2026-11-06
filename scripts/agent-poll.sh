@@ -559,7 +559,7 @@ dispatch_one_pr() {
 # 那套 label 和模板），self-heal 也会因此把死掉的 worker 送回 pending/agent 队列。
 collect_queue_rows_greedy() {
     local kind="$1"
-    local raw num branch updated labels_csv title prio stage key blocked
+    local raw num branch updated labels_csv title prio stage key blocked rc
     # 快照已经是全量 open（分页拉完），这里只保留 GREEDY_SCAN_LIMIT 的语义：
     # 仍然只看前 N 条，配置含义不变。
     raw=$(snapshot_rows "$kind" "" 2>/dev/null | head -n "${GREEDY_SCAN_LIMIT:-100}" || true)
@@ -572,6 +572,16 @@ collect_queue_rows_greedy() {
             GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
             continue
         fi
+        # 没有任何挡工标签 = 自动续工。等外部需求机器人期间等待标签被提前摘掉、之后没人打派工标签的
+        # 不续工（GitHub#162，requester_bot_wait_hold）；判不了本轮也不续工
+        rc=0; requester_bot_wait_hold "$num" || rc=$?
+        case "$rc" in
+            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy：${kind} #${num} 不续工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+               GREEDY_SKIPPED+=" ${kind}#${num}(等待已摘、无派工标签)"
+               continue ;;
+            2) log "greedy：${kind} #${num} 本轮不续工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+               continue ;;
+        esac
         queued_keys[$key]=1
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "" "$num")
@@ -606,7 +616,8 @@ if [ -n "${LABEL_PENDING_AGENT_EXTRA:-}" ]; then
 fi
 # 托管（GitHub#114）：只挂托管标签、没有任何状态 / 触发标签的 issue，当作普通派工标签收进来。
 # 挂着别的标签的托管 issue 已经在某个流程里（上面几趟或复审那趟会收，或在等人 / 等 PR），不在这里收。
-# 授权不成立（标签不是维护者打的、外部需求机器人的需求）不派：只打托管标签不等于有人说了开工。
+# 授权不成立（标签不是维护者打的）不派：只打托管标签不等于有人说了开工。
+# 外部需求机器人期间等待标签被提前摘掉的，也不派（GitHub#162，同 greedy 兜底趟）。
 # 被拒的结果按 issue 的更新时间记下，issue 没动过就不再每轮去查标签记录。
 collect_autopilot_rows() {
     autopilot_configured || return 0
@@ -629,7 +640,8 @@ collect_autopilot_rows() {
             fi
             continue
         fi
-        if [ "$(autopilot_state_get "$STATE_FILE" '.denied[$n]' --arg n "$num")" = "$updated" ]; then
+        # 记录带判定规则版本（AUTOPILOT_JUDGE_REV）：旧版按旧规则记下的拒绝对不上，按新规则重判一次
+        if [ "$(autopilot_state_get "$STATE_FILE" '.denied[$n]' --arg n "$num")" = "$AUTOPILOT_JUDGE_REV|$updated" ]; then
             continue
         fi
         ij=$(autopilot_snapshot_item issues "$num") || continue
@@ -637,6 +649,14 @@ collect_autopilot_rows() {
         rc=0; autopilot_authorization "$num" "$ij" || rc=$?
         case "$rc" in
             0)
+                # 只挂托管标签 = 自动开工。等待标签被提前摘掉、之后没人打派工标签的不开工（GitHub#162）
+                rc=0; requester_bot_wait_hold "$num" || rc=$?
+                case "$rc" in
+                    0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：issue #$num 不自动开工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+                       continue ;;
+                    2) log "托管：issue #$num 本轮不自动开工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+                       continue ;;
+                esac
                 queued_keys[$key]=1
                 prio=$(priority_rank "$labels_csv" "$num")
                 stage=$(stage_rank issue "$LABEL_PENDING_AGENT_DEFAULT" "$num")
@@ -646,7 +666,7 @@ collect_autopilot_rows() {
             1)
                 log "托管：issue #$num 只挂着托管标签，但授权不成立（$AUTOPILOT_REASON）→ 不派工"
                 autopilot_note_denial "$STATE_FILE" "$num"
-                autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$updated" || true
+                autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$AUTOPILOT_JUDGE_REV|$updated" || true
                 ;;
             *)
                 log "托管：issue #$num 的托管授权判不了（$AUTOPILOT_REASON），下轮再看"

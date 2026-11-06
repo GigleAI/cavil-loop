@@ -35,8 +35,9 @@ prompt-compose 1
 reap-finished-workers 11
 release-auto 1
 repair-unit-links 7
-requester-bot 206
+requester-bot 236
 requester-bot-any-item 55
+requester-bot-wait 10
 retrospective-directory-lessons 1
 retrospective-global-lock 2
 retrospective-lessons 2

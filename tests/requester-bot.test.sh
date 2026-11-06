@@ -1570,9 +1570,11 @@ echo "── 5. 代码和配置模板里不出现具体机器人名 ──"
 # 文档的接入示例一节可以点名（issue 讨论定的），代码、提示词、配置模板、测试夹具都不行
 chk "scripts/ prompts/ 配置模板 setup.sh 里没有 grokbot" \
     "$(grep -rli grokbot "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$REPO_DIR/cavil-loop.config.example" "$REPO_DIR/setup.sh" 2>/dev/null | wc -l | tr -d ' ')" 0
-# GitHub#102：首页「可以调的地方」那一行和单独的对接文档以 grokbot 为例，其余文档不点名
-chk "文档里只有首页那一行和对接文档点名" \
-    "$(grep -rli grokbot "$REPO_DIR/docs" "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" "$REPO_DIR/AGENTS.md" "$REPO_DIR/AGENTS.zh.md" 2>/dev/null | sed "s|$REPO_DIR/||" | LC_ALL=C sort | paste -sd,)" "README.md,README.zh.md,docs/requester-bot.md,docs/requester-bot.zh.md"
+# GitHub#102：首页「可以调的地方」那一行和单独的对接文档以 grokbot 为例，其余文档不点名。
+# 复盘记录（docs/retrospectives/）是合并后自动生成的历史，原样引用当时的 issue / PR 内容，和第 6 节
+# 一样排除——主干上 #105、#113 的复盘点名了它，这条从那时起在主干上就是红的（GitHub#162 时发现）
+chk "文档里（复盘记录除外）只有首页那一行和对接文档点名" \
+    "$(grep -rli --exclude-dir=retrospectives grokbot "$REPO_DIR/docs" "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" "$REPO_DIR/AGENTS.md" "$REPO_DIR/AGENTS.zh.md" 2>/dev/null | sed "s|$REPO_DIR/||" | LC_ALL=C sort | paste -sd,)" "README.md,README.zh.md,docs/requester-bot.md,docs/requester-bot.zh.md"
 chk "首页只在「可以调的地方」和「深入阅读」各一行点名" \
     "$(cat "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" | grep -ci grokbot)" 4
 
