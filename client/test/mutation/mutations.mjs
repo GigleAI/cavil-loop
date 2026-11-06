@@ -760,7 +760,7 @@ export const MUTATIONS = [
     from: "          warning = `issue 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;", to: '          throw e;',
     expect: ['the comment fails: closed stands, told so'] },
   { what: '关 issue：离线时按钮不变灰', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: '<button data-testid="close-issue" disabled={!canWrite || busy}', to: '<button data-testid="close-issue" disabled={busy}',
+    from: '<button className="danger" data-testid="close-issue" disabled={!canWrite || busy}', to: '<button className="danger" data-testid="close-issue" disabled={busy}',
     expect: ['GitHub#180: close an issue from the detail'] },
   { what: '关 issue：已关闭的 issue 仍显示「关闭 issue…」', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
     from: "  const issueOpen = item.kind === 'issue' && detail?.state === 'open';", to: "  const issueOpen = item.kind === 'issue';",
