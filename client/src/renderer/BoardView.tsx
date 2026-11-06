@@ -6,7 +6,9 @@ import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
 import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropPlan } from '../data/board';
 import { api } from './api';
-import { textColor } from './colors';
+import { labelStyle, useDarkMode } from './colors';
+import { Icon, itemIcon } from './Icons';
+import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { NewIssueDialog } from './NewIssueDialog';
@@ -48,6 +50,9 @@ interface CardOps {
   /** repository labels, loaded on demand */
   labelsOf: (repo: string) => Promise<RepoOptions>;
   dragStart: (card: Card, from: string) => void;
+  /** the "本列来自 …" line: only when two or more Projects are picked (only then can it be either) */
+  showProjects: boolean;
+  dark: boolean;
 }
 
 function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col: string; ops: CardOps }) {
@@ -77,13 +82,15 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
               ↳{' '}
             </span>
           )}
+          <Icon name={itemIcon(it.kind, it.state, it.stateReason)} size={14} />
           {it.kind === 'pr' ? 'PR' : 'Issue'} · {badgeText(it.kind, it.state, it.stateReason, it.isDraft ?? null)}
         </span>
-        <span className="muted small card-repo">
+        <span className="ref card-repo">
           {it.repo} #{it.number}
-          <span className="card-author" data-testid="card-author" title={`作者 ${it.author ?? "（已删除的账号）"}`}>
-            <Avatar login={it.author} size={16} />
-          </span>
+        </span>
+        <span className="spacer" />
+        <span className="card-author" data-testid="card-author" title={`作者 ${it.author ?? "（已删除的账号）"}`}>
+          <Avatar login={it.author} size={20} />
         </span>
       </div>
       <a
@@ -99,7 +106,7 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
       </a>
       <div className="labels" onClick={(e) => e.stopPropagation()}>
         {it.labels.map((l) => (
-          <span key={l.name} className="label" style={{ background: `#${l.color || 'ddd'}`, color: textColor(l.color) }}>
+          <span key={l.name} className="label" style={labelStyle(l.color, ops.dark)}>
             {l.name}
             {ops.canWrite && (
               <button
@@ -142,21 +149,30 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
             </button>
           ))}
       </div>
-      <div className="meta small muted">
+      <div className="meta">
+        {iterations.length > 0 && (
+          <span title="迭代">
+            <Icon name="iteration" size={14} />
+            {[...new Set(iterations)].join('、')}
+          </span>
+        )}
+        {it.milestone && (
+          <span title="里程碑">
+            <Icon name="milestone" size={14} />
+            {it.milestone.title}
+          </span>
+        )}
         {it.assignees.length > 0 && (
-          <span className="people" data-testid="card-assignees">
-            负责人{' '}
+          <span className="people" data-testid="card-assignees" title={`负责人 ${it.assignees.join('、')}`}>
             {it.assignees.map((a) => (
               <span key={a} className="person">
-                <Avatar login={a} size={16} />
+                <Avatar login={a} size={18} />
                 {a}
               </span>
             ))}
           </span>
         )}
-        {iterations.length > 0 && <span>迭代 {[...new Set(iterations)].join('、')}</span>}
-        {it.milestone && <span>里程碑 {it.milestone.title}</span>}
-        {it.projects.length > 0 && (
+        {ops.showProjects && it.projects.length > 0 && (
           <span data-testid="card-projects">
             {mode !== 'milestone' && card.projectTitles.length ? '本列来自 ' + card.projectTitles.join('、') : '在 ' + it.projects.map((p) => p.projectTitle).join('、')}
           </span>
@@ -188,12 +204,13 @@ function ColumnView({ col, cards, mode, ops, onDrop }: { col: Column; cards: Car
     >
       <div className="column-head">
         <b>{col.title}</b> <span className="count" data-testid="column-count">{cards.length}</span>
-        {col.subtitle && <div className="small muted">{col.subtitle}</div>}
+        {col.subtitle && <div className="small muted sub">{col.subtitle}</div>}
       </div>
       <div className="column-body">
         {cards.map((c) => (
           <CardView key={c.id} card={c} mode={mode} col={col.key} ops={ops} />
         ))}
+        {cards.length === 0 && <div className="empty-note">没有条目{ops.canWrite ? ' · 可把卡片拖到这里' : ''}</div>}
       </div>
     </div>
   );
@@ -210,9 +227,10 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
   if (!warn.shown(kind)) return null;
   return (
     <div className="banner warn closable" data-testid={kind}>
+      <Icon name="warn" />
       <span className="banner-text">{children}</span>
       <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid={`${kind}-close`} onClick={() => warn.close(kind)}>
-        ×
+        <Icon name="x" />
       </button>
     </div>
   );
@@ -275,6 +293,8 @@ export function BoardView({
   const [choice, setChoice] = useState(0);
   const dragging = useRef<{ card: Card; from: string } | null>(null);
   const labelCache = useRef(new Map<string, Promise<RepoOptions>>());
+  const dark = useDarkMode();
+  const pickedProjects = state.sources.filter((s) => s.kind === 'project' && selected.has(s.key)).length;
 
   /** run actions one after another; stop at the first refusal (the rest are not sent) */
   const runAll = async (actions: WriteAction[], okText: string) => {
@@ -307,6 +327,8 @@ export function BoardView({
       return p;
     },
     dragStart: (card, from) => (dragging.current = { card, from }),
+    showProjects: pickedProjects >= 2,
+    dark,
   };
   const onDrop = (col: Column) => {
     const d = dragging.current;
@@ -356,74 +378,127 @@ export function BoardView({
 
   return (
     <div className="board-page" data-testid="board">
-      <div className="toolbar">
-        <div className="sources-pick" data-testid="source-pick">
+      {/* top row: what you are looking at (sources, search), sync state, new issue, settings */}
+      <header className="hdr">
+        <div className="brand">
+          <img src={brandIcon} alt="" />
+          Cavil Loop
+        </div>
+        {state.sources.length > 0 && <div className="vsep" />}
+        <div
+          className="sources-pick"
+          data-testid="source-pick"
+          // a mouse wheel only scrolls up and down; turn it sideways so a plain mouse reaches every source
+          onWheel={(e) => {
+            const el = e.currentTarget;
+            if (e.deltaX === 0 && e.deltaY !== 0 && el.scrollWidth > el.clientWidth) el.scrollLeft += e.deltaY;
+          }}
+        >
           {state.sources.map((s) => (
-            <label key={s.key} className="chip">
+            <label key={s.key} className={`src-chip${selected.has(s.key) ? ' on' : ''}`} title={sourceLabel(s, titles.get(s.key))}>
               <input type="checkbox" data-key={s.key} checked={selected.has(s.key)} onChange={() => toggle(s.key)} />
-              {sourceLabel(s, titles.get(s.key))}
+              <Icon name={s.kind === 'project' ? 'project' : 'repo'} size={14} />
+              <span className="src-name">{sourceLabel(s, titles.get(s.key))}</span>
             </label>
           ))}
         </div>
-        <div className="spacer" />
+        <div className="search">
+          <Icon name="search" />
+          <input
+            data-testid="search"
+            type="search"
+            value={query}
+            aria-label="搜索或筛选"
+            placeholder="搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me"
+            title="写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me"
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <div className="hdr-right">
+          {sync.lastOnlineAt && (
+            <span
+              className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}`}
+              data-testid="sync-status"
+              title={`上次同步 ${ago(sync.lastOnlineAt, now)}`}
+            >
+              <span className="dot" />
+              <span className="sync-text">上次同步 {ago(sync.lastOnlineAt, now)}</span>
+            </span>
+          )}
+          <button
+            className="icon-btn"
+            data-testid="refresh"
+            disabled={sync.syncing}
+            aria-label={sync.syncing ? '同步中…' : '刷新'}
+            title={sync.syncing ? '同步中…' : '刷新（马上同步一轮）'}
+            onClick={() => api().syncNow()}
+          >
+            <Icon name="refresh" />
+          </button>
+          <button
+            className="primary"
+            data-testid="write-entry"
+            disabled={!canWrite}
+            title={writesEnabled(sync) ? (state.sources.length ? '新建 issue' : '先添加数据来源') : '离线时不能修改'}
+            data-offline={writesEnabled(sync) ? 'no' : 'yes'}
+            onClick={() => setNewIssue(true)}
+          >
+            <Icon name="plus" />
+            新建 issue
+          </button>
+          <button className="icon-btn" onClick={onSettings} data-testid="open-settings" aria-label="设置" title="设置">
+            <Icon name="gear" />
+          </button>
+          {state.viewer && (
+            <span className="viewer" title={`已登录 ${state.viewer}`}>
+              <Avatar login={state.viewer} size={28} />
+            </span>
+          )}
+        </div>
+      </header>
+
+      {/* second row: how this view is laid out */}
+      <div className="vbar">
         <div className="seg" data-testid="layout">
           {(['board', 'table'] as Layout[]).map((l) => (
             <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} onClick={() => api().setView({ layout: l })}>
+              <Icon name={l === 'board' ? 'board' : 'table'} />
               {l === 'board' ? '看板' : '表格'}
             </button>
           ))}
         </div>
-        <button data-testid="open-view-panel" className={panel ? 'on' : ''} onClick={() => setPanel(!panel)}>
+        {view.layout === 'board' && (
+          <>
+            <label className="inline">
+              分列
+              <select data-testid="mode" value={view.mode} onChange={(e) => api().setView({ mode: e.target.value as ColumnMode })}>
+                {(Object.keys(MODE_LABEL) as ColumnMode[]).map((m) => (
+                  <option key={m} value={m}>
+                    {MODE_LABEL[m]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="toggle">
+              <input type="checkbox" data-testid="swimlanes" checked={view.swimlanes} onChange={(e) => api().setView({ swimlanes: e.target.checked })} />
+              按仓库分泳道
+            </label>
+          </>
+        )}
+        <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
+          <Icon name="sliders" />
           视图设置
         </button>
-        {view.layout === 'board' && (
-        <>
-        <label>
-          列：
-          <select data-testid="mode" value={view.mode} onChange={(e) => api().setView({ mode: e.target.value as ColumnMode })}>
-            {(Object.keys(MODE_LABEL) as ColumnMode[]).map((m) => (
-              <option key={m} value={m}>
-                {MODE_LABEL[m]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="chip">
-          <input type="checkbox" data-testid="swimlanes" checked={view.swimlanes} onChange={(e) => api().setView({ swimlanes: e.target.checked })} />
-          按仓库分泳道
-        </label>
-        </>
-        )}
-        <button data-testid="refresh" disabled={sync.syncing} onClick={() => api().syncNow()}>
-          {sync.syncing ? '同步中…' : '刷新'}
-        </button>
-        <button
-          data-testid="write-entry"
-          disabled={!canWrite}
-          title={writesEnabled(sync) ? (state.sources.length ? '新建 issue' : '先添加数据来源') : '离线时不能修改'}
-          data-offline={writesEnabled(sync) ? 'no' : 'yes'}
-          onClick={() => setNewIssue(true)}
-        >
-          新建 issue
-        </button>
-        <button onClick={onSettings} data-testid="open-settings">
-          设置
-        </button>
-      </div>
-
-      <div className="searchbar">
-        <input
-          data-testid="search"
-          type="search"
-          value={query}
-          placeholder="搜索或筛选，写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me 客户端"
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        {filtering && (
-          <span className="small muted" data-testid="match-count">
-            {items.length} / {data.items.length} 条
+        <span className="vbar-count">
+          {filtering ? (
+            <span data-testid="match-count">
+              显示 {items.length} / {data.items.length} 条
+            </span>
+          ) : null}
+          <span data-testid="item-total" className={filtering ? 'sr-only' : undefined}>
+            {data.items.length} 个条目
           </span>
-        )}
+        </span>
       </div>
       <WarnBar kind="filter-unsupported" warn={warn}>
         {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
@@ -514,11 +589,6 @@ export function BoardView({
           )}
         </ConfirmDialog>
       )}
-      <div className="statusbar small muted">
-        {state.viewer && <span>已登录 {state.viewer}</span>}
-        {sync.lastOnlineAt && <span>上次同步 {ago(sync.lastOnlineAt, now)}</span>}
-        <span data-testid="item-total">{data.items.length} 个条目</span>
-      </div>
     </div>
   );
 }
