@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
@@ -23,6 +23,29 @@ const OFFLINE_ENTRY = {
 function run(args: string[], env: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [runner, ...args], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 120_000 });
   return { status: r.status, out: `${r.stdout}${r.stderr}` };
+}
+
+const STORE_ENTRY = {
+  what: '缓存不覆盖旧快照',
+  file: 'src-tauri/crates/core/src/store.rs',
+  from: 'ON CONFLICT(source_key) DO UPDATE SET fetched_at = excluded.fetched_at, data = excluded.data',
+  to: 'ON CONFLICT(source_key) DO NOTHING',
+  expect: ['each successful round replaces the cached snapshot as a whole'],
+};
+
+/** What the baseline leaves for later steps: where the named tests live, and a back end (here a dud). */
+function baselineState() {
+  const dir = tempDir();
+  writeFileSync(
+    join(dir, 'unit-tests.json'),
+    JSON.stringify([
+      { name: 'board writes enabled offline → disabled; online → enabled', file: 'test/unit/board.test.ts' },
+      { name: 'cache each successful round replaces the cached snapshot as a whole', file: 'test/unit/controller.test.ts' },
+    ]),
+  );
+  writeFileSync(join(dir, 'harness'), '#!/bin/sh\nexit 1\n');
+  chmodSync(join(dir, 'harness'), 0o755);
+  return dir;
 }
 
 function listFile(entries: unknown[]) {
@@ -74,5 +97,35 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner',
     const r = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]) });
     expect(r.out).toContain('✅ 变红');
     expect(r.status).toBe(0);
+  }, 120_000);
+
+  // GitHub#178: an entry runs only the test files holding the tests it names, on the back end the
+  // baseline built — unless it breaks the back end itself, then it builds its own
+  it('with the baseline\'s map: only the named tests\' files; the baseline\'s back end unless the entry breaks it', () => {
+    const state = baselineState();
+    const ts = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]), CLIENT_MUT_STATE: state });
+    expect(ts.out).toContain('✅ 变红');
+    expect(ts.out).toContain('跑的测试文件：test/unit/board.test.ts；');
+    expect(ts.out).toContain('后台：用基线编好的');
+    expect(ts.status).toBe(0);
+    const rust = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([STORE_ENTRY]), CLIENT_MUT_STATE: state });
+    expect(rust.out).toContain('✅ 变红');
+    expect(rust.out).toContain('跑的测试文件：test/unit/controller.test.ts；');
+    expect(rust.out).toContain('后台：本项重编');
+    expect(rust.status).toBe(0);
+  }, 240_000);
+
+  it('a weakened assertion is reported, not passed: the test no longer catches the break', () => {
+    const weakened = {
+      what: '断言被删弱：离线时修改入口不变灰也没人发现',
+      edits: [
+        { file: OFFLINE_ENTRY.file, from: OFFLINE_ENTRY.from, to: OFFLINE_ENTRY.to },
+        { file: 'test/unit/board.test.ts', from: '    expect(writesEnabled({ offline: true })).toBe(false);\n', to: '' },
+      ],
+      expect: OFFLINE_ENTRY.expect,
+    };
+    const r = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([weakened]), CLIENT_MUT_STATE: baselineState() });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('没变红');
   }, 120_000);
 });

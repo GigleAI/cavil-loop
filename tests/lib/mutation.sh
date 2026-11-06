@@ -10,6 +10,9 @@
 #   bash tests/<name>.test.sh              默认：负对照一条都不准备、不跑，只计数
 #   MUTATION=1 bash tests/<name>.test.sh   打开：和改动前一样全部跑
 #
+# 打开时跑多少由调用方定（GitHub#178）：改动后只对覆盖这次改动的测试文件打开；client/ 的执行器
+# 还能在一个文件里只挑相关项（client/test/mutation/run.sh --changed）。整套只在复审点名或 CI 手动跑。
+#
 # 每个测试的每一条负对照都经过一次 mutation_gate：关着时它只记一笔、返回 1；开着时记一笔、
 # 返回 0。两种模式走同一个计数器，所以「默认跳过 N 条」和「打开跑了 N 条」是同一个数，
 # 不靠手写常数——条数对不上一眼可见。

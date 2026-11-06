@@ -12,6 +12,7 @@ import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { changedFiles, isRelatedForApp, SHARED_OUTSIDE } from '../mutation/select.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MAIN = 'src-tauri/src/main.rs';
@@ -78,13 +79,26 @@ function fail(msg) {
 // Driven by test/tauri/mutations.sh, which passes every entry through tests/lib/mutation.sh's
 // mutation_gate (so "skipped N" and "ran N" come from the project's one counter):
 //   node mutations.mjs --count | --name I | --one I
+//   node mutations.mjs --related   exit 0 = this change touches what these entries check, 1 = it does
+//                                  not (both print why), 2 = cannot tell (GitHub#178)
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === '--count') console.log(MUTATIONS.length);
+else if (cmd === '--related') {
+  const c = changedFiles(root);
+  if (!c.ok) {
+    console.log(`❌ 判断不了：${c.why}`);
+    process.exitCode = 2;
+  } else {
+    const hit = [...c.files.filter(isRelatedForApp), ...c.outside.filter((f) => SHARED_OUTSIDE.includes(f))];
+    console.log(hit.length ? `相关：改了 ${hit.join('、')}` : `本次改动没有相关的真实窗口负对照。改了的文件：${[...c.files, ...c.outside].join('、') || '（无）'}`);
+    process.exitCode = hit.length ? 0 : 1;
+  }
+}
 else if (cmd === '--name') console.log(MUTATIONS[Number(arg)]?.what ?? '');
 else if (cmd === '--one') {
   const m = MUTATIONS[Number(arg)];
   process.exitCode = m ? one(m) : fail(`没有第 ${arg} 项`);
 } else {
-  console.error('用法：由 test/tauri/mutations.sh 调用（--count | --name I | --one I）');
+  console.error('用法：由 test/tauri/mutations.sh 调用（--count | --name I | --related | --one I）');
   process.exitCode = 2;
 }
