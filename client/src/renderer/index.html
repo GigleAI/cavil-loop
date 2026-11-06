@@ -2,10 +2,8 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://github.com https://api.github.com; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-    />
+    <!-- The page's Content-Security-Policy is set by the app (src-tauri/tauri.conf.json → app.security.csp);
+         the UI tests' bridge sends the same policy (test/e2e/bridge.ts reads it from there). -->
     <title>Cavil Loop</title>
   </head>
   <body>

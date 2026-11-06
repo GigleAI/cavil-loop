@@ -1,10 +1,11 @@
 // The "复制放行命令" page that ships in the dmg (GitHub#153), opened from disk
-// in a plain Electron window. Each case replaces the browser's clipboard
+// in a plain browser window (WebKit in CI, like Safari opening it from Finder). Each case replaces the browser's clipboard
 // paths before the click, so the three outcomes are told apart:
 //   1. the clipboard API copies it
 //   2. the clipboard API fails → the older "select + copy" way copies it
 //   3. both fail → the command is left selected and the page says "按 ⌘C"
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { test, expect, chromium, webkit, type Browser, type Page } from '@playwright/test';
+import { pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RELEASE_COMMAND } from '../../scripts/release-command.mjs';
@@ -12,22 +13,22 @@ import { RELEASE_COMMAND } from '../../scripts/release-command.mjs';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const PAGE = join(root, 'build', '复制放行命令.html');
 
-let app: ElectronApplication;
+let browser: Browser;
 let page: Page;
+test.beforeAll(async () => {
+  browser = await (process.env.CAVIL_E2E_ENGINE === 'chromium' ? chromium : webkit).launch();
+});
+test.afterAll(async () => {
+  await browser.close();
+});
 test.beforeEach(async () => {
-  const args = [join(root, 'test', 'drivers', 'open-page.cjs')];
-  if (process.platform === 'linux') {
-    args.unshift('--no-sandbox');
-    if (!process.env.DISPLAY) args.unshift('--ozone-platform=headless');
-  }
-  app = await electron.launch({ args, env: { ...process.env, CAVIL_TEST_PAGE: PAGE } });
-  page = await app.firstWindow();
-  await page.setViewportSize({ width: 800, height: 600 });
+  page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  await page.goto(pathToFileURL(PAGE).href);
   await expect(page.locator('#cmd')).toHaveText(RELEASE_COMMAND);
   expect(page.url()).toMatch(/^file:/);
 });
 test.afterEach(async () => {
-  await app.close();
+  await page.close();
 });
 
 /** replace the two copy paths; each records what it was asked to copy */

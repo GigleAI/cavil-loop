@@ -1,0 +1,12 @@
+//! Back end of the Cavil Loop desktop client (GitHub#151): everything that
+//! touches the GitHub credential. The window (TypeScript) never sees it.
+
+pub mod api;
+pub mod device;
+pub mod engine;
+pub mod grant;
+pub mod http;
+pub mod platform;
+pub mod store;
+
+pub use engine::{Deps, Engine};

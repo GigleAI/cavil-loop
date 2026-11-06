@@ -1,13 +1,15 @@
-// UI tests: the real Electron app (built dist/), driven by Playwright,
-// talking to the local fake GitHub over loopback. Screenshots of each step
-// land in test-results/screens/ (uploaded by CI).
+// UI tests: the real window (built with --test-bridge) driven by Playwright,
+// the real back end (Rust, the harness build of crates/core) behind a loopback
+// bridge, talking to the local fake GitHub over loopback (test/e2e/bridge.ts).
+// Screenshots of each step land in test-results/screens/ (uploaded by CI).
 
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
-import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { test, expect, type Page } from '@playwright/test';
+import { mkdtempSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startFakeGitHub, loadCavilProjectPages, type FakeGitHub } from '../fake-github/server';
+import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
+import { launchApp, closeEngine, type AppEnv } from './bridge';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -15,53 +17,16 @@ mkdirSync(screens, { recursive: true });
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 
-interface Env {
-  fake: FakeGitHub;
-  userData: string;
-  cred: string;
-  opened: string;
-  /** every request the window made, one per line: "allow|block <url>" */
-  requests: string;
+type Env = AppEnv;
+
+async function launch(env: Env) {
+  const app = await launchApp(env);
+  return { app, page: app.page };
 }
 
-async function launch(env: Env): Promise<{ app: ElectronApplication; page: Page }> {
-  const args = [root];
-  if (process.platform === 'linux') {
-    args.unshift('--no-sandbox');
-    if (!process.env.DISPLAY) args.unshift('--ozone-platform=headless');
-  }
-  const app = await electron.launch({
-    args,
-    env: {
-      ...process.env,
-      CAVIL_CLIENT_TEST_MODE: '1',
-      CAVIL_CLIENT_TEST_API: env.fake.api,
-      CAVIL_CLIENT_TEST_WEB: env.fake.web,
-      CAVIL_CLIENT_TEST_CREDENTIAL_FILE: env.cred,
-      CAVIL_CLIENT_TEST_OPENED_FILE: env.opened,
-      CAVIL_CLIENT_TEST_REQUESTS_FILE: env.requests,
-      CAVIL_CLIENT_USER_DATA: env.userData,
-    },
-  });
-  current = app;
-  const page = await app.firstWindow();
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.waitForSelector('[data-testid="app-root"]');
-  return { app, page };
-}
-
-let current: ElectronApplication | null = null;
 async function shot(page: Page, name: string) {
   await page.waitForTimeout(150);
-  try {
-    await page.screenshot({ path: join(screens, `${name}.png`) });
-  } catch {
-    // headless Linux without a display: capture from the main process instead
-    const png = await current!.evaluate(async ({ BrowserWindow }) =>
-      (await BrowserWindow.getAllWindows()[0].webContents.capturePage()).toPNG().toString('base64'),
-    );
-    writeFileSync(join(screens, `${name}.png`), Buffer.from(png, 'base64'));
-  }
+  await page.screenshot({ path: join(screens, `${name}.png`) });
 }
 
 /** expected per-column counts straight from the recorded JSON */
@@ -97,6 +62,9 @@ test.beforeEach(async () => {
 });
 test.afterEach(async () => {
   await env.fake.close();
+});
+test.afterAll(async () => {
+  await closeEngine();
 });
 
 test('browser login → board; restart skips login; sources; three column modes; swimlanes; offline restart; revoked credential', async () => {
@@ -477,10 +445,11 @@ test('a slow answer for the item you left never lands on the one you are looking
 
   // 2. images: only the github.com one is requested; the others are not even tried, and the entry says so
   await expect(frame.locator('[data-blocked]')).toHaveAttribute('data-blocked', '2');
-  await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toContain('allow https://github.com/GigleAI/cavil-loop/raw/main/probe.png');
+  // (every request the window made outside its own bridge; the app's page policy is what stops the rest)
+  await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toContain('request https://github.com/GigleAI/cavil-loop/raw/main/probe.png');
   const seen = readFileSync(env.requests, 'utf8');
   expect(seen).not.toContain('githubusercontent.com');
-  expect(seen.split('\n').filter((l) => l && !/^allow (https:\/\/(api\.)?github\.com\/|http:\/\/127\.0\.0\.1:)/.test(l))).toEqual([]);
+  expect(seen.split('\n').filter((l) => l && !/^request https:\/\/(api\.)?github\.com\//.test(l))).toEqual([]);
   await shot(page, '28-images-github-only');
 
   // 3. a change still in flight when another item is opened: its result goes to the board, not into the new item
@@ -894,5 +863,31 @@ test('yellow bars: a closed "unsupported words" bar comes back when an import in
   await page.getByTestId('back').click();
   await expect(page.getByTestId('search')).toHaveValue('updated:>2026-01-01');
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
+  await app.close();
+});
+
+// GitHub#151 review: the app's logic now runs in the system WebKit, the oldest supported being
+// macOS 11's (Safari 14). The window's code must not need what that engine lacks.
+test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, sync, detail, a change all work', async () => {
+  const app = await launchApp(env, { oldEngine: true });
+  const page = app.page;
+  // "something did happen": the APIs really are gone in this window
+  const removed = (await page.evaluate(() => (globalThis as any).__removedApis)) as string[];
+  expect(removed).toEqual(expect.arrayContaining(['AbortSignal.timeout', 'Array.prototype.at', 'structuredClone', 'Object.hasOwn']));
+  expect(await page.evaluate(() => typeof (AbortSignal as any).timeout)).toBe('undefined');
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await signInWithSources(page);
+  // the round really reached GitHub through the back end
+  expect(env.fake.log.some((l) => l.path === '/api/graphql' && l.auth)).toBe(true);
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('article').first()).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('label-add').selectOption('Done');
+  await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
+  await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
+  await expect(page.locator('[data-testid="sync-problem"]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+  await shot(page, '40-old-engine');
   await app.close();
 });

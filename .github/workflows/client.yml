@@ -21,6 +21,11 @@ on:
         description: 'Also run the negative controls (MUTATION=1)'
         type: boolean
         default: false
+      mutation_scope:
+        description: 'Which negative controls: all, or only the app shell''s (each rebuilds the real app)'
+        type: choice
+        options: [all, shell]
+        default: all
 
 permissions:
   contents: read
@@ -37,29 +42,92 @@ jobs:
   test:
     name: client tests (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # negative controls rebuild the back end / the app per entry
+    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # the negative-control runner can swap in an earlier commit's file (git show)
+          # the negative-control runner and the upgrade tests take earlier commits' files (git show / archive)
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: client/package-lock.json
+      # The back end is Rust (src-tauri/crates/core); the suites drive it as a child process.
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/src-tauri/target
+          key: cargo-linux-${{ hashFiles('client/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-linux-
+      # system WebKit for the app's own Linux build (smoke test below)
+      # The downloaded packages are kept between runs: the runner's package mirror sometimes
+      # crawls (25 MB of WebKit at a few KB/s), and a cached run hardly touches it.
+      - uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-webkit-v1
+          restore-keys: apt-${{ runner.os }}-${{ env.ImageOS }}-
+      - name: System libraries for the Tauri window
+        timeout-minutes: 25
+        run: |
+          mkdir -p "$HOME/apt-archives/partial"
+          A=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives="$HOME/apt-archives")
+          apt_install() {
+            for i in 1 2 3; do
+              sudo timeout 420 apt-get "${A[@]}" install -y --no-install-recommends "$@" && return 0
+              echo "apt-get install attempt $i failed or took too long; retrying"
+              sudo apt-get -o Acquire::Retries=3 update || true
+            done
+            return 1
+          }
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          apt_install libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb
+          # WebKitWebDriver (for test/tauri): the package was renamed in newer Ubuntu releases
+          drv=webkitgtk-webdriver; apt-cache show "$drv" >/dev/null 2>&1 || drv=webkit2gtk-driver
+          apt_install "$drv"
+          command -v WebKitWebDriver
+          sudo chown -R "$USER" "$HOME/apt-archives"
+      # WebDriver for the real Tauri window (test/tauri); kept in the cache between runs
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tauri-driver
+          key: tauri-driver-2-${{ runner.os }}
+      - name: tauri-driver
+        run: |
+          [ -x "$HOME/.tauri-driver/bin/tauri-driver" ] || cargo install tauri-driver --locked --root "$HOME/.tauri-driver"
+          echo "$HOME/.tauri-driver/bin" >> "$GITHUB_PATH"
       - run: npm ci
       - name: Type check
         run: npm run typecheck
-      - name: Unit tests (vitest)
+      - name: Back end unit tests (cargo)
+        run: npm run test:rust
+      - name: Unit tests (vitest, real back end as a child process)
         run: npm test
       - name: Negative controls
-        if: ${{ inputs.mutation }}
+        if: ${{ inputs.mutation && inputs.mutation_scope != 'shell' }}
         run: MUTATION=1 npm run test:mutation
-      - name: UI tests (Playwright driving Electron, virtual display)
+      - name: UI tests (Playwright on WebKit, real window + real back end)
         run: |
-          npm run build
-          xvfb-run -a npx playwright test
+          npx playwright install --with-deps webkit
+          npm run test:e2e
+      - name: The app itself on Linux (Tauri window + IPC + back end) starts
+        run: |
+          node scripts/build.mjs
+          (cd src-tauri && cargo build -p cavil-loop-client)
+          out="$(xvfb-run -a src-tauri/target/debug/cavil-loop-client --smoke-test 2>&1 || true)"
+          echo "$out" | tail -5
+          grep -q 'CAVIL_SMOKE_OK' <<<"$out"
+      - name: The real app over WebDriver (sign in, sync, a change, the shell's link and navigation handlers)
+        run: xvfb-run -a npm run test:tauri
+      - name: Negative controls for the app shell (each rebuilds the real app)
+        if: ${{ inputs.mutation }}
+        run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -79,7 +147,7 @@ jobs:
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -87,14 +155,31 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - run: npm ci
-      - name: Build dmg
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/src-tauri/target
+          key: cargo-mac-${{ matrix.arch }}-${{ hashFiles('client/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-mac-${{ matrix.arch }}-
+      # dmgbuild lays out the dmg window without scripting Finder (scripts/make-dmg.mjs)
+      - name: dmgbuild
         run: |
-          npm run build
-          npx electron-builder --mac dmg --${{ matrix.arch }} --publish never
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
+          echo "$RUNNER_TEMP/dmgbuild/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - name: Build the app (Tauri) and the dmg
+        run: |
+          npx tauri build --bundles app
+          node scripts/make-dmg.mjs --arch ${{ matrix.arch }}
           ls -la release
+      # GitHub#151: ≤ 10 MB is the target, > 20 MB fails (1 MB = 1,000,000 bytes)
+      - name: Download size
+        run: node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.dmg --expect ${{ matrix.arch }}
       - name: Smoke test + first-open steps + dmg window
         run: bash scripts/mac-open-check.sh release/Cavil-Loop-*-${{ matrix.arch }}.dmg "$RUNNER_TEMP/dmg-window-${{ matrix.arch }}.png"
       # The dmg itself, not zipped (archive: false; the artifact is named after the file).
@@ -111,10 +196,24 @@ jobs:
           path: ${{ runner.temp }}/dmg-window-${{ matrix.arch }}.png
           if-no-files-found: ignore
 
+  size:
+    name: download size (both dmgs)
+    needs: [package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: Cavil-Loop-*.dmg
+          path: client/dist-release
+          merge-multiple: true
+      - name: Each dmg ≤ 20 MB (target ≤ 10 MB)
+        run: node scripts/size-gate.mjs dist-release/*.dmg --expect arm64,x64
+
   release:
     name: publish client release
     if: startsWith(github.ref, 'refs/tags/client/v')
-    needs: [test, package]
+    needs: [test, package, size]
     runs-on: ubuntu-latest
     permissions:
       contents: write

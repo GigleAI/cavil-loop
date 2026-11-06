@@ -5,7 +5,7 @@
 //                          (decoded once from the 1024x1024 JPEG attached to
 //                          GitHub#144, sha256 0fb66bd3…f22f0). Black margin,
 //                          orange rounded square in the middle.
-//   build/icon.png         what electron-builder turns into the app's .icns
+//   build/icon.png         what the build turns into the app's .icns (Tauri's icon generator, scripts/build.mjs)
 //                          (it reads build/icon.png by convention; the packaging
 //                          config names no icon). Generated from the source by
 //                          `node scripts/icon.mjs build` — never edit by hand.
@@ -248,7 +248,7 @@ export function largestIcnsPng(buf) {
   return best;
 }
 
-/** Which icon file Info.plist names (XML plist as written by electron-builder). */
+/** Which icon file Info.plist names (XML plist as the bundler writes it). */
 export function plistIconFile(xml) {
   const m = /<key>CFBundleIconFile<\/key>\s*<string>([^<]+)<\/string>/.exec(xml);
   if (!m) throw new Error('Info.plist names no CFBundleIconFile');

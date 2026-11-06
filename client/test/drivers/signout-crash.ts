@@ -1,17 +1,21 @@
 // Run as separate Node processes by test/unit/crash-restart.test.ts (bundled
-// with esbuild). Phase 1 brings a profile into some state and then ends the
-// process abruptly (process.exit) at a chosen point — the way quitting the app
-// does while a keychain operation has not returned. Phase 2 is a fresh process
+// with esbuild), each with the real back end (Rust) as its child process.
+// Phase 1 brings a profile into some state and then ends the process abruptly
+// (process.exit, which takes the back end with it) at a chosen point — the way
+// quitting the app does while a keychain operation has not returned. Phase 2 is a fresh process
 // on the same files: it must never sign in with a credential the user signed
 // out of, and must keep a credential that was legitimately being written.
 //
 //   node driver.mjs <dir> <scenario>   scenarios: see SCENARIOS below; "restart" = phase 2
 import { mkdirSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
-import { Controller } from '../../src/main/controller';
-import { Cache } from '../../src/data/cache';
-import { encodeGrant, decodeGrant } from '../../src/data/grant';
-import { FileStore } from '../../src/platform/credentials';
+import { Controller } from '../../src/app/controller';
+import { Cache } from '../support/cache';
+import { encodeGrant, decodeGrant } from '../support/grant';
+import { FileStore } from '../support/credentials';
+import { HarnessBackend } from '../support/harness';
 import { createHash } from 'node:crypto';
 
 const [dir, scenario] = process.argv.slice(2);
@@ -25,8 +29,9 @@ const never = new Promise<never>(() => {});
 
 /** File-backed store with switchable failure points. */
 class Store extends FileStore {
-  mode: 'normal' | 'clear-hangs' | 'clear-fails' | 'set-writes-then-hangs' = 'normal';
+  mode: 'normal' | 'clear-hangs' | 'clear-fails' | 'set-writes-then-hangs' | 'set-hangs' = 'normal';
   clearStarted = false;
+  setStarted = false;
   async clear() {
     this.clearStarted = true;
     if (this.mode === 'clear-hangs') return never;
@@ -34,38 +39,42 @@ class Store extends FileStore {
     return super.clear();
   }
   async set(v: string) {
+    this.setStarted = true;
+    if (this.mode === 'set-hangs') return never; // never written, never returns: holds the credential queue
     await super.set(v);
     if (this.mode === 'set-writes-then-hangs') return never; // written, but the call never returns
   }
 }
 
+// A tiny GitHub on loopback (the back end makes real HTTP requests): device flow,
+// token, viewer, empty lists; every Authorization header it sees is recorded.
 const auths: string[] = [];
-const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
-const fetchImpl = async (url: string, init?: RequestInit) => {
-  const h = (init?.headers ?? {}) as Record<string, string>;
-  if (h.Authorization) auths.push(h.Authorization);
-  if (url.endsWith('/login/device/code')) {
-    return json({ device_code: 'dc', user_code: 'ABCD-1234', verification_uri: 'http://127.0.0.1:9/web/login/device', expires_in: 900, interval: 0 });
-  }
-  if (url.endsWith('/login/oauth/access_token')) {
-    return json({ access_token: NEW, refresh_token: NEW_REFRESH, expires_in: 28800, refresh_token_expires_in: 15897600 });
-  }
-  if (url.endsWith('/graphql')) return json({ data: { viewer: { login: 'user-1' } } });
-  return json([]);
-};
+const server = createServer((req, res) => {
+  const auth = req.headers.authorization;
+  if (auth) auths.push(auth);
+  const json = (b: unknown) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(b));
+  };
+  req.resume();
+  req.on('end', () => {
+    const url = req.url ?? '';
+    if (url.endsWith('/login/device/code')) return json({ device_code: 'dc', user_code: 'ABCD-1234', verification_uri: `http://127.0.0.1:${port}/web/login/device`, expires_in: 900, interval: 0 });
+    if (url.endsWith('/login/oauth/access_token')) return json({ access_token: NEW, refresh_token: NEW_REFRESH, expires_in: 28800, refresh_token_expires_in: 15897600 });
+    if (url.endsWith('/graphql')) return json({ data: { viewer: { login: 'user-1' } } });
+    return json([]);
+  });
+});
+await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+const port = (server.address() as AddressInfo).port;
+const endpoints = { api: `http://127.0.0.1:${port}/api`, web: `http://127.0.0.1:${port}/web` };
 
 const store = new Store(join(dir, 'cred'));
 const cache = new Cache(join(dir, 'cache.sqlite'));
-const c = new Controller({
-  credentials: store,
-  endpoints: { api: 'http://127.0.0.1:9/api', web: 'http://127.0.0.1:9/web' },
-  cache,
-  fetch: fetchImpl,
-  now: () => NOW,
-  sleep: async () => {},
-  openExternal: async () => {},
-  defaultClientId: 'Ov23litestclient0000',
-});
+// the real back end (Rust) as a child process: it dies with this one
+let clock = NOW;
+const backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials: store, now: () => clock, sleep: async () => {} });
+const c = await Controller.create({ backend, endpoints, now: () => clock, defaultClientId: 'Ov23litestclient0000' });
 const report = async (tag: string) => {
   const stored = decodeGrant(await new FileStore(join(dir, 'cred')).get());
   console.log(tag, JSON.stringify({ phase: c.getState().phase, stored: stored?.accessToken ?? null, auths, reason: c.getState().loginReason }));
@@ -90,10 +99,15 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     void c.logout();
     while (!store.clearStarted) await tick();
   },
-  // sign-out, the delete has not even started (an earlier keychain call holds the queue)
+  // sign-out, the delete has not even started (an earlier keychain call holds the queue:
+  // a refresh whose keychain write never returns)
   'logout-delete-queued': async () => {
     await signedIn();
-    void (c as unknown as { serialCredential(f: () => Promise<unknown>): Promise<unknown> }).serialCredential(() => never);
+    clock += 3_600_000; // the token is now due for a refresh
+    store.mode = 'set-hangs';
+    store.setStarted = false;
+    void c.syncNow(); // due for a refresh → GitHub answers → the write holds the queue
+    while (!store.setStarted) await tick();
     void c.logout();
     await tick();
     if (store.clearStarted) throw new Error('setup: delete should not have started');

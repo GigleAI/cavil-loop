@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run on a macOS CI machine against a built dmg. Verifies, for real:
 #   0. the dmg window (background, Applications link, instructions file, copy page) and
-#      the app's icon being build/icon.png rather than Electron's default
+#      the app's icon being build/icon.png rather than the framework's default
 #   1. the app inside the dmg starts (smoke test, direct launch)
 #   2. it carries an ad-hoc signature that verifies (Apple silicon needs one)
 #   3. once marked as downloaded (quarantine), Gatekeeper rejects it — i.e.
@@ -27,8 +27,8 @@ cp -R "$app_src" "$app"
 bin="$app/Contents/MacOS/Cavil Loop"
 
 echo "== 0. dmg window: background + the copyable first-open instructions"
-# electron-builder merges background.png + background@2x.png into one multi-resolution .background.tiff
-bg="$(find "$mnt" -maxdepth 2 \( -name '.background.tiff' -o -path '*/.background/*' \) -type f | head -n1)"
+# dmgbuild (scripts/make-dmg.mjs) stores the background as .background.<ext> (tiff when it merges @2x)
+bg="$(find "$mnt" -maxdepth 2 \( -name '.background.*' -o -path '*/.background/*' \) -type f | head -n1)"
 [ -n "$bg" ] || { echo "❌ no background image in the dmg"; ls -la "$mnt"; exit 1; }
 tiffutil -info "$bg" 2>/dev/null | grep -iE 'width|height' | head -4 || true
 txt="$mnt/打不开时看这里.txt"
@@ -49,7 +49,7 @@ if [ -n "$shot" ]; then
   osascript -e 'tell application "Finder" to close every window' >/dev/null 2>&1 || true
 fi
 
-echo "== 0b. app icon is build/icon.png (GitHub#144), not Electron's default"
+echo "== 0b. app icon is build/icon.png (GitHub#144), not the framework's default"
 # Reads the icon Info.plist names, takes the largest image in that .icns and
 # compares it with build/icon.png; unreadable or missing counts as a failure.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

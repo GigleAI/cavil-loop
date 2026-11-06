@@ -1,11 +1,9 @@
-// Local cache (SQLite, built into Node / Electron as `node:sqlite`).
-// Only ever written from GitHub: a successful read of a source replaces that
-// source's row in one transaction; nothing here is ever sent back up.
-// Also keeps small settings (source list, view, client id override).
-// Credentials are NOT stored here — they live in the platform credential store.
+// Test-only reader / seeder of the client's SQLite file (the app's own store is
+// src-tauri/crates/core/src/store.rs, same layout). Tests use it to seed a profile
+// before the back end starts and to check what landed on disk.
 
 import { DatabaseSync } from 'node:sqlite';
-import type { SourceSnapshot } from '../shared/types';
+import type { SourceSnapshot } from '../../src/shared/types';
 
 // 2: items carry node ids, Project items their ids, Projects their field ids (needed to write); older rows are dropped and re-read
 // 3: items also carry author / parent / sub-issues / linked PRs, Projects their saved views (#137)
@@ -18,6 +16,7 @@ export class Cache {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS snapshot (
         source_key TEXT PRIMARY KEY,

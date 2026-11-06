@@ -28,10 +28,24 @@ export class GitHubError extends Error {
 
 const USER_AGENT = 'cavil-loop-client';
 
+/**
+ * A signal that aborts after `ms`. Not `AbortSignal.timeout`: this code now runs in
+ * the window, i.e. the system WebKit, and macOS 11's (Safari 14) does not have it
+ * (GitHub#151 review). In the app the back end's own 30 s limit applies as well.
+ */
+export function timeoutSignal(ms: number): AbortSignal {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  // Node (tests, record.mjs): a pending timer must not keep the process alive
+  (t as unknown as { unref?: () => void }).unref?.();
+  return c.signal;
+}
+
 export class GitHubClient {
   constructor(
     private readonly endpoints: Endpoints,
-    private readonly token: string,
+    /** null: the request goes through the back end, which adds the credential (the window never has it) */
+    private readonly token: string | null,
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
@@ -41,13 +55,13 @@ export class GitHubClient {
       res = await this.fetchImpl(url, {
         ...init,
         headers: {
-          Authorization: `Bearer ${this.token}`,
+          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
           'User-Agent': USER_AGENT,
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
           ...(init.headers as Record<string, string> | undefined),
         },
-        signal: init.signal ?? AbortSignal.timeout(30_000),
+        signal: init.signal ?? timeoutSignal(30_000),
       });
     } catch (e) {
       throw new GitHubError('network', `无法连接 GitHub：${(e as Error).message}`);

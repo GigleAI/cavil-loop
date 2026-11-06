@@ -5,10 +5,11 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { Controller, REASON_REFRESH_ENDED, REFRESH_MARGIN_MS } from '../../src/main/controller';
-import { Cache } from '../../src/data/cache';
-import { FileStore } from '../../src/platform/credentials';
-import { decodeGrant, encodeGrant } from '../../src/data/grant';
+import { Controller, REASON_REFRESH_ENDED, REFRESH_MARGIN_MS } from '../../src/app/controller';
+import { Cache } from '../support/cache';
+import { FileStore } from '../support/credentials';
+import { HarnessBackend } from '../support/harness';
+import { decodeGrant, encodeGrant } from '../support/grant';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { FIXTURE_NOW, tempDir } from './helpers';
 import type { AppState } from '../../src/shared/types';
@@ -22,6 +23,7 @@ let fake: FakeGitHub;
 let dir: string;
 const caches: Cache[] = [];
 const controllers: Controller[] = [];
+const backends: HarnessBackend[] = [];
 
 /** Credential store whose writes can be held by the test. */
 class GatedStore extends FileStore {
@@ -38,27 +40,31 @@ class GatedStore extends FileStore {
   }
 }
 
-function make(store: FileStore, clock: { t: number }) {
+async function make(store: FileStore, clock: { t: number }) {
+  // a restart reads the files: every earlier app of this test has finished writing its settings
+  await Promise.all(controllers.map((c) => c.settled()));
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
-  const c = new Controller({
+  const endpoints = { api: fake.api, web: fake.web };
+  // the real back end (Rust) as a child process, on the same files
+  const backend = new HarnessBackend({
+    db: join(dir, 'cache.sqlite'),
+    endpoints,
     credentials: store,
-    endpoints: { api: fake.api, web: fake.web },
-    cache,
     now: () => clock.t,
     sleep: async (ms) => {
       clock.t += ms;
       await new Promise((r) => setTimeout(r, 5));
     },
-    openExternal: async () => {},
-    defaultClientId: fake.state.oauthClientId,
   });
+  backends.push(backend);
+  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   controllers.push(c);
-  return { c, cache };
+  return { c, cache, backend };
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (pred(c.getState())) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -68,7 +74,7 @@ async function until(c: Controller, pred: (s: AppState) => boolean, what: string
 /** Sign in through the device flow as a GitHub App would: expiring token + refresh token. */
 async function signInAsApp(store: FileStore, clock: { t: number }) {
   fake.state.nextGrant = { token: APP_TOKEN, refreshToken: APP_REFRESH, expiresIn: 8 * 3600 };
-  const h = make(store, clock);
+  const h = await make(store, clock);
   h.c.addSource(REPO);
   await h.c.start();
   h.c.setAppKind('github-app');
@@ -90,6 +96,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   for (const c of controllers.splice(0)) c.stopTimer();
+  await Promise.all(backends.splice(0).map((b) => b.close()));
   for (const c of caches.splice(0)) c.close();
   await fake.close();
 });
@@ -115,7 +122,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     expect(stored.expiresAt! - clock.t).toBeLessThanOrEqual(8 * HOUR);
     expect(stored.expiresAt! - FIXTURE_NOW).toBeGreaterThanOrEqual(8 * HOUR);
     expect(stored.refreshExpiresAt).toBeGreaterThan(stored.expiresAt!);
-    const again = make(store, clock);
+    const again = await make(store, clock);
     await again.c.start();
     expect(again.c.getState().phase).toBe('ready');
     expect(refreshes()).toHaveLength(0); // nothing due yet
@@ -200,12 +207,15 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
   it('two rounds asking at once share one refresh (a second one would burn the rotated token)', async () => {
     const clock = { t: FIXTURE_NOW };
     const store = new FileStore(join(dir, 'cred'));
-    const { c } = await signInAsApp(store, clock);
+    const { c, backend } = await signInAsApp(store, clock);
     clock.t += 9 * HOUR;
+    const { session } = await backend.call<{ session: number }>('grantInfo');
     const release = fake.hold('/login/oauth/access_token');
     const a = c.syncNow();
-    // a second trigger while the first refresh is in flight (e.g. the 60 s timer + a manual refresh)
-    const b = (c as unknown as { ensureFresh(): Promise<string> }).ensureFresh();
+    // a second trigger while the first refresh is in flight (e.g. the 60 s timer + a manual
+    // refresh): the single flight lives in the back end, so ask it directly
+    await new Promise((r) => setTimeout(r, 20));
+    const b = backend.call('ensureFresh', { session, clientId: fake.state.appClientId });
     await new Promise((r) => setTimeout(r, 50));
     release();
     await Promise.all([a, b]);
@@ -230,7 +240,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     const n = fake.log.length;
     await c.syncNow();
     expect(fake.log.length).toBe(n); // holds no token any more
-    const restarted = make(store, clock);
+    const restarted = await make(store, clock);
     await restarted.c.start();
     expect(restarted.c.getState().phase).toBe('login');
   });
@@ -238,7 +248,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
   it('signing out while the refreshed token is being saved: nothing comes back either', async () => {
     const clock = { t: FIXTURE_NOW };
     const store = new GatedStore(join(dir, 'cred'));
-    const { c } = await signInAsApp(store, clock);
+    const { c, backend, cache } = await signInAsApp(store, clock);
     clock.t += 9 * HOUR;
     store.hold = true;
     const round = c.syncNow();
@@ -253,6 +263,12 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     const n = fake.log.length;
     await c.syncNow();
     expect(fake.log.length).toBe(n); // holds no token any more
+    // nor does the back end (it holds the credential, not the window): it signs nothing, trusts nothing
+    const info = await backend.call<{ signedIn: boolean; session: number }>('grantInfo');
+    expect(info.signedIn).toBe(false);
+    expect((await backend.call<{ error?: string }>('request', { session: info.session, method: 'GET', url: `${fake.api}/user` })).error).toBe('stale');
+    expect(cache.getSetting('trustedCredentials', ['unread'])).toEqual([]);
+    expect(fake.log.length).toBe(n);
   });
 
   it('refreshed, then the round could not reach GitHub: an offline restart still shows the cache', async () => {
@@ -268,7 +284,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     expect(c.getState().sync.offline).toBe(true);
     c.stopTimer();
     fake.state.offline = true;
-    const again = make(store, clock);
+    const again = await make(store, clock);
     await again.c.start();
     expect(again.c.getState()).toMatchObject({ phase: 'ready', sync: { offline: true } });
     expect(again.c.getBoardData().items).toHaveLength(items);
@@ -285,7 +301,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     expect(items).toBeGreaterThan(0);
     c.stopTimer();
     fake.state.offline = true;
-    const again = make(store, clock);
+    const again = await make(store, clock);
     await again.c.start();
     expect(again.c.getState()).toMatchObject({ phase: 'ready', sync: { offline: true } });
     expect(again.c.getBoardData().items).toHaveLength(items);
@@ -294,17 +310,32 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
 
 // ---- review (PR #140, 2026-11-05 17:48): every way a refresh can fail ----
 
-import { refreshGrant, DeviceFlowError } from '../../src/data/deviceFlow';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 describe('how a refresh answer is classified (HTTP status × body shape)', () => {
-  const ep = { api: 'http://x/api', web: 'http://x/web' };
+  // the back end's own refresh call, against a server that answers exactly `status` + `body`
   async function classify(status: number, body: string | null) {
-    const fetchImpl = async () => (body === null ? Promise.reject(new TypeError('fetch failed')) : new Response(body, { status, headers: { 'Content-Type': 'application/json' } }));
+    const srv = createServer((_req, res) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(body ?? '');
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as AddressInfo).port;
+    // no connection at all: a port nobody listens on
+    if (body === null) await new Promise<void>((r) => srv.close(() => r()));
+    const b = new HarnessBackend({
+      db: join(dir, 'cache.sqlite'),
+      endpoints: { api: `http://127.0.0.1:${port}/api`, web: `http://127.0.0.1:${port}/web` },
+      credentials: new FileStore(join(dir, 'cred')),
+      now: () => 0,
+    });
     try {
-      const g = await refreshGrant(ep, 'cid', 'ghr_x', fetchImpl, () => 0);
-      return `ok:${g.accessToken}`;
-    } catch (e) {
-      return (e as DeviceFlowError).reason;
+      const r = await b.call<{ ok?: string; reason?: string }>('test.refreshGrant', { clientId: 'cid', refreshToken: 'ghr_x' });
+      return r.ok ? `ok:${r.ok}` : r.reason;
+    } finally {
+      await b.close();
+      if (body !== null) await new Promise<void>((r) => srv.close(() => r()));
     }
   }
   const rejected = JSON.stringify({ error: 'bad_refresh_token', error_description: 'The refresh token passed is incorrect or expired.' });
@@ -416,7 +447,7 @@ describe('refresh failures keep what they should and recover', () => {
     expect(c.getState().sync.problem).toBeNull();
     // and a restart uses it without asking GitHub for another refresh
     c.stopTimer();
-    const again = make(store, clock);
+    const again = await make(store, clock);
     await again.c.start();
     expect(again.c.getState()).toMatchObject({ phase: 'ready', sync: { offline: false } });
     expect(refreshes()).toHaveLength(1);
@@ -430,7 +461,7 @@ describe('refresh failures keep what they should and recover', () => {
         throw new Error('user interaction is not allowed');
       }
     }
-    const { c } = make(new Unreadable(join(dir, 'cred')), clock);
+    const { c } = await make(new Unreadable(join(dir, 'cred')), clock);
     await expect(c.start()).resolves.toBeUndefined();
     expect(c.getState()).toMatchObject({ phase: 'login' });
     expect(c.getState().loginReason).toContain('读取本机保存的登录凭据失败');
@@ -478,14 +509,14 @@ describe('signing out when the stored credential cannot be deleted', () => {
   async function assertRestartDoesNotUseLeftover(store: StickyStore, clock: { t: number }) {
     // the leftover is still in the store, yet a restart must not sign in with it
     expect(await store.get()).not.toBeNull();
-    const again = make(store, clock);
+    const again = await make(store, clock);
     await again.c.start();
     expect(again.c.getState().phase).toBe('login');
     expect(again.c.getState().loginReason).toContain('没能删除');
     expect(fake.log.filter((l) => l.path.includes('/issues?') || l.operation === 'refresh').length).toBe(seenBeforeRestart);
     // keychain works again: the next start deletes the leftover and stays on the login page
     store.failClear = false;
-    const third = make(store, clock);
+    const third = await make(store, clock);
     await third.c.start();
     expect(third.c.getState()).toMatchObject({ phase: 'login', loginReason: null });
     expect(await store.get()).toBeNull();
@@ -567,7 +598,7 @@ describe('signing out when the stored credential cannot be deleted', () => {
     expect(decodeGrant(await store.get())?.accessToken).toBe('ghu_fakeapptoken0000000000000000000003');
     // the new login cleared the "do not reuse" mark: a restart signs in with it
     c.stopTimer();
-    const again = make(store, clock);
+    const again = await make(store, clock);
     await again.c.start();
     expect(again.c.getState().phase).toBe('ready');
   });
@@ -583,7 +614,7 @@ describe('every credential-store failure, at every call site, ends somewhere vis
       const store = new FlakyStore(join(dir, 'cred'));
       store.failing = true;
       fake.state.nextGrant = { token: APP_TOKEN, refreshToken: APP_REFRESH };
-      const { c } = make(store, clock);
+      const { c } = await make(store, clock);
       c.addSource(REPO);
       await c.start();
       const p = c.startLogin();

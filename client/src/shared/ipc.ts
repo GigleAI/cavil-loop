@@ -1,5 +1,5 @@
-// The one API the renderer gets (exposed by the preload as `window.cavil`).
-// The token never crosses it: the renderer only sees state and board data.
+// The one API the views get (`window.cavil`, src/app/localApi.ts). The
+// credential never reaches it: the views only see state and board data.
 
 import type { AppKind, AppState, BoardData, HandBackLabels } from './types';
 import type { ViewPatch } from './viewSettings';
@@ -30,24 +30,3 @@ export interface CavilApi {
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
 }
-
-export const IPC = {
-  get: 'cavil:get',
-  push: 'cavil:state',
-  startLogin: 'cavil:login:start',
-  cancelLogin: 'cavil:login:cancel',
-  openVerification: 'cavil:login:open',
-  logout: 'cavil:logout',
-  setAppKind: 'cavil:app-kind',
-  setClientId: 'cavil:client-id',
-  addSource: 'cavil:source:add',
-  removeSource: 'cavil:source:remove',
-  setView: 'cavil:view',
-  syncNow: 'cavil:sync',
-  openExternal: 'cavil:open',
-  loadDetail: 'cavil:detail',
-  repoOptions: 'cavil:repo-options',
-  previewMarkdown: 'cavil:markdown',
-  act: 'cavil:act',
-  setHandBack: 'cavil:hand-back',
-} as const;

@@ -1,11 +1,12 @@
 // The dmg window (GitHub#153): the first-open command is defined once
 // (scripts/release-command.mjs) and every copy a user can see or copy says
 // exactly that; every file the dmg lists exists and sits in the part of the
-// window Finder shows.
+// window Finder shows (GitHub#151: the layout is scripts/dmg-layout.mjs, built by dmgbuild).
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { RELEASE_COMMAND, DMG_EXTRA_FILES } from '../../scripts/release-command.mjs';
+import { DMG_ICONS } from '../../scripts/dmg-layout.mjs';
 
 const root = join(__dirname, '..', '..');
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
@@ -16,20 +17,9 @@ function commandsIn(text: string): string[] {
   return [...decoded.matchAll(/xattr [^\n<`]*?\.app"/g)].map((m) => m[0]);
 }
 
-/** the dmg `contents` entries of electron-builder.yml (x / y / type / path), read line by line */
+/** the dmg window entries (scripts/dmg-layout.mjs, what scripts/make-dmg.mjs hands to dmgbuild) */
 function dmgContents(): { x?: number; y?: number; type?: string; path?: string }[] {
-  const yml = read('electron-builder.yml');
-  const block = yml.slice(yml.indexOf('  contents:'));
-  const out: { x?: number; y?: number; type?: string; path?: string }[] = [];
-  for (const line of block.split('\n').slice(1)) {
-    if (/^\S/.test(line) || /^ {2}\S/.test(line)) break; // left the contents list
-    const m = line.match(/^ {4}(- )?\s*(x|y|type|path):\s*(.+)$/);
-    if (!m) continue;
-    if (m[1]) out.push({});
-    const [k, v] = [m[2], m[3].trim()];
-    (out[out.length - 1] as any)[k] = k === 'x' || k === 'y' ? Number(v) : v;
-  }
-  return out;
+  return DMG_ICONS.map((i) => ({ ...i }));
 }
 
 describe('the first-open command', () => {
@@ -72,7 +62,7 @@ describe('dmg window contents', () => {
   });
 
   it('every listed file exists', () => {
-    for (const c of contents.filter((x) => x.type === 'file')) expect(existsSync(join(root, c.path!)), c.path).toBe(true);
+    for (const p of [...contents.filter((x) => x.type === 'file').map((c) => c.path!), ...DMG_EXTRA_FILES]) expect(existsSync(join(root, p)), p).toBe(true);
   });
 
   it('every icon sits inside the visible part of the window (top ~430 px, 660 wide) and none overlap', () => {

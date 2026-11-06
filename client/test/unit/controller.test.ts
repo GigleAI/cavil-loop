@@ -3,9 +3,10 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { Controller, REASON_REVOKED } from '../../src/main/controller';
-import { Cache } from '../../src/data/cache';
-import { FileStore, MemoryStore } from '../../src/platform/credentials';
+import { Controller, REASON_REVOKED } from '../../src/app/controller';
+import { Cache } from '../support/cache';
+import { FileStore, MemoryStore } from '../support/credentials';
+import { HarnessBackend } from '../support/harness';
 import { writesEnabled } from '../../src/data/board';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } from './helpers';
@@ -18,8 +19,12 @@ let fake: FakeGitHub;
 let dir: string;
 let caches: Cache[] = [];
 let controllers: Controller[] = [];
+let backends: HarnessBackend[] = [];
 
-function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown> } = {}) {
+async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown> } = {}) {
+  // a restart reads the files: every earlier app of this test has finished writing its settings
+  // (they reach the back end asynchronously — as when the app is quit, not killed)
+  await Promise.all(controllers.map((c) => c.settled()));
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   for (const [k, v] of Object.entries(opts.seed ?? {})) cache.setSetting(k, v);
@@ -28,27 +33,35 @@ function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number
   const credentials = opts.credentials ?? new FileStore(join(dir, 'cred'));
   const clock = opts.clock ?? { t: FIXTURE_NOW };
   const opened: string[] = [];
-  const c = new Controller({
+  const endpoints = { api: fake.api, web: fake.web };
+  // the real back end (Rust) as a child process, on the same files
+  const backend = new HarnessBackend({
+    db: join(dir, 'cache.sqlite'),
+    endpoints,
     credentials,
-    endpoints: { api: fake.api, web: fake.web },
-    cache,
     now: () => clock.t,
     // device-flow polling: advance the fake clock instead of waiting
     sleep: async (ms) => {
       clock.t += ms;
       await new Promise((r) => setTimeout(r, 5));
     },
-    openExternal: async (u) => void opened.push(u),
+    opened,
+  });
+  backends.push(backend);
+  const c = await Controller.create({
+    backend,
+    endpoints,
+    now: () => clock.t,
     // no built-in Client ID unless a test asks for one (the real built-in one is GitHub's, not the fake's)
     defaultClientId: opts.defaultClientId ?? '',
     ...(opts.defaultGithubAppClientId !== undefined ? { defaultGithubAppClientId: opts.defaultGithubAppClientId } : {}),
   });
   controllers.push(c);
-  return { c, credentials, opened, clock, cache };
+  return { c, credentials, opened, clock, cache, backend };
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (pred(c.getState())) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -61,15 +74,17 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   for (const c of controllers) c.stopTimer();
+  await Promise.all(backends.map((b) => b.close()));
   for (const c of caches) c.close();
   caches = [];
   controllers = [];
+  backends = [];
   await fake.close();
 });
 
 describe('login (OAuth device flow)', () => {
   it('no stored credential → login page; without a Client ID it says so instead of calling GitHub', async () => {
-    const { c } = make();
+    const { c } = await make();
     await c.start();
     expect(c.getState().phase).toBe('login');
     await c.startLogin();
@@ -79,7 +94,7 @@ describe('login (OAuth device flow)', () => {
   });
 
   it('the built-in Client ID is used when none is configured', async () => {
-    const { c } = make({ defaultClientId: fake.state.oauthClientId });
+    const { c } = await make({ defaultClientId: fake.state.oauthClientId });
     await c.start();
     expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: fake.state.oauthClientId, clientIdIsDefault: true });
     const p = c.startLogin();
@@ -95,7 +110,7 @@ describe('login (OAuth device flow)', () => {
   });
 
   it('waiting → user approves → token stored, synced; a restart needs no login', async () => {
-    const { c, credentials, opened } = make();
+    const { c, credentials, opened } = await make();
     c.setClientId(fake.state.oauthClientId);
     await c.start();
     const p = c.startLogin();
@@ -117,14 +132,14 @@ describe('login (OAuth device flow)', () => {
     expect(fake.state.lastScope?.split(' ').sort()).toEqual(['project', 'read:org', 'repo']);
     expect(c.getState().viewer).toBe('user-1');
 
-    const again = make({ credentials });
+    const again = await make({ credentials });
     await again.c.start();
     expect(again.c.getState().phase).toBe('ready');
     expect(fake.log.filter((l) => l.path === '/web/login/device/code')).toHaveLength(1);
   });
 
   it('user denies on GitHub → back to the login page with the reason, nothing stored', async () => {
-    const { c, credentials } = make();
+    const { c, credentials } = await make();
     c.setClientId(fake.state.oauthClientId);
     await c.start();
     const p = c.startLogin();
@@ -136,7 +151,7 @@ describe('login (OAuth device flow)', () => {
   });
 
   it('code expires (GitHub says so) → expired', async () => {
-    const { c } = make();
+    const { c } = await make();
     c.setClientId(fake.state.oauthClientId);
     await c.start();
     const p = c.startLogin();
@@ -148,7 +163,7 @@ describe('login (OAuth device flow)', () => {
 
   it('code expires (deadline passes while pending) → expired without asking again', async () => {
     fake.state.deviceExpiresIn = 3;
-    const { c } = make();
+    const { c } = await make();
     c.setClientId(fake.state.oauthClientId);
     await c.start();
     await c.startLogin();
@@ -160,7 +175,7 @@ describe('login (OAuth device flow)', () => {
 
   it('slow_down is honoured (keeps polling, then succeeds)', async () => {
     fake.state.nextGrant = { slowDownOnce: true };
-    const { c } = make();
+    const { c } = await make();
     c.setClientId(fake.state.oauthClientId);
     await c.start();
     const p = c.startLogin();
@@ -174,7 +189,7 @@ describe('login (OAuth device flow)', () => {
   it('revoked credential → next sync returns to login with the reason and forgets the token', async () => {
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    const { c } = make({ credentials });
+    const { c } = await make({ credentials });
     c.addSource(PROJECT_URL);
     await c.start();
     expect(c.getState().phase).toBe('ready');
@@ -189,7 +204,7 @@ describe('sync and cache', () => {
   async function loggedIn(clock?: { t: number }) {
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    return make({ credentials, clock });
+    return await make({ credentials, clock });
   }
 
   it('Project + repository: items de-duplicated, both sources ok', async () => {
@@ -259,7 +274,7 @@ describe('sync and cache', () => {
 
     fake.state.offline = true;
     clock.t += 5 * 60_000;
-    const second = make({ credentials: first.credentials, clock });
+    const second = await make({ credentials: first.credentials, clock });
     await second.c.start();
     const s = second.c.getState();
     expect(s.phase).toBe('ready');
@@ -330,7 +345,7 @@ describe('sync and cache', () => {
     const changed = first.c.getState().view;
     first.c.stopTimer();
 
-    const second = make({ credentials: first.credentials });
+    const second = await make({ credentials: first.credentials });
     await second.c.start();
     await second.c.syncNow();
     expect(second.c.getState().view).toEqual(changed);
@@ -366,7 +381,7 @@ describe('sync and cache', () => {
     c.setView({ layout: 'roadmap' as any });
     c.setView({ table: { columns: [] } });
     expect(c.getState().view).toEqual(before);
-    const old = make({ seed: { view: { mode: 'status', swimlanes: true, selected: null } } });
+    const old = await make({ seed: { view: { mode: 'status', swimlanes: true, selected: null } } });
     expect(old.c.getState().view).toMatchObject({ mode: 'status', swimlanes: true, layout: 'board', query: '', imported: null });
     expect(old.c.getState().view.table.groupBy).toBe('iteration');
   });
@@ -378,6 +393,7 @@ describe('sync and cache', () => {
     await c.syncNow();
     c.removeSource('project:org/gigleai/11');
     expect(c.getBoardData().items).toHaveLength(0);
+    await c.settled(); // the back end has the file: wait until it answered
     expect(cache.loadSnapshots().size).toBe(0);
   });
 
@@ -411,7 +427,7 @@ async function loginViaBrowser(c: Controller, token: string) {
 
 /** wait until the fake has seen `n` requests whose path contains `fragment` */
 async function requestsSeen(fragment: string, n: number) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (fake.log.filter((l) => l.path.includes(fragment)).length >= n) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -422,7 +438,7 @@ describe('the cache belongs to one account', () => {
   async function accountA() {
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    const h = make({ credentials });
+    const h = await make({ credentials });
     h.c.addSource(REPO);
     await h.c.start();
     await h.c.syncNow();
@@ -455,7 +471,7 @@ describe('the cache belongs to one account', () => {
     a.c.stopTimer();
     await a.credentials.set(TOKEN_B);
     fake.state.validTokens.add(TOKEN_B);
-    const b = make({ credentials: a.credentials });
+    const b = await make({ credentials: a.credentials });
     const n = fake.log.length;
     await b.c.start();
     expect(b.c.getState().phase).toBe('login');
@@ -475,7 +491,7 @@ describe('the cache belongs to one account', () => {
     await a.credentials.set(TOKEN_B);
     fake.state.validTokens.add(TOKEN_B);
     fake.state.offline = true;
-    const b = make({ credentials: a.credentials });
+    const b = await make({ credentials: a.credentials });
     await b.c.start();
     expect(b.c.getState()).toMatchObject({ phase: 'ready', sync: { offline: true } });
     expect(b.c.getBoardData().items).toHaveLength(0);
@@ -489,7 +505,7 @@ describe('the cache belongs to one account', () => {
     a.cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN, TOKEN_B));
     await a.credentials.set(TOKEN_B);
     fake.state.validTokens.add(TOKEN_B);
-    const b = make({ credentials: a.credentials });
+    const b = await make({ credentials: a.credentials });
     await b.c.start();
     expect(b.c.getState().viewer).toBe('user-2');
     expect(b.c.getBoardData().items).toHaveLength(0);
@@ -502,7 +518,7 @@ describe('the cache belongs to one account', () => {
     fake.state.tokenViewers.set(TOKEN_B, 'user-2');
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    const { c, cache } = make({ credentials });
+    const { c, cache } = await make({ credentials });
     c.addSource(REPO);
     await c.start();
     const release = fake.hold('/repos/GigleAI/cavil-loop/issues');
@@ -542,7 +558,7 @@ describe('sources removed while a round is in flight', () => {
   async function started() {
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    const h = make({ credentials });
+    const h = await make({ credentials });
     h.c.addSource(PROJECT_URL);
     h.c.addSource(REPO);
     await h.c.start();
@@ -556,6 +572,7 @@ describe('sources removed while a round is in flight', () => {
   it('removed → the finished old request does not bring it back (database, memory, status)', async () => {
     const { c, cache, release, inflight } = await started();
     c.removeSource(REPO_KEY);
+    await c.settled();
     expect(cache.loadSnapshots().has(REPO_KEY)).toBe(false);
     release();
     await inflight;
@@ -599,7 +616,7 @@ class SlowStore extends FileStore {
 const TOKEN_A2 = 'gho_faketokenA20000000000000000000003';
 
 async function untilWrites(store: SlowStore, n: number) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1500; i++) {
     if (store.writes.length >= n) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -609,7 +626,7 @@ async function untilWrites(store: SlowStore, n: number) {
 describe('signing in is all-or-nothing against cancel / sign-out / a newer login', () => {
   async function approvedAndSaving() {
     const store = new SlowStore(join(dir, 'cred'));
-    const h = make({ credentials: store });
+    const h = await make({ credentials: store });
     h.c.setClientId(fake.state.oauthClientId);
     h.c.addSource(REPO);
     await h.c.start();
@@ -621,37 +638,45 @@ describe('signing in is all-or-nothing against cancel / sign-out / a newer login
     return { ...h, store, login };
   }
 
-  async function assertSignedOutEverywhere(c: Controller, store: SlowStore) {
+  async function assertSignedOutEverywhere(c: Controller, store: SlowStore, backend?: HarnessBackend) {
     expect(c.getState().phase).toBe('login');
     expect(await store.get()).toBeNull();
+    if (backend) {
+      // the back end holds the credential, not the window: it must hold none and trust none on disk
+      await c.settled();
+      expect((await backend.call<{ signedIn: boolean }>('grantInfo')).signedIn).toBe(false);
+      const disk = new Cache(join(dir, 'cache.sqlite'));
+      caches.push(disk);
+      expect(disk.getSetting<string[]>('trustedCredentials', ['unread'])).toEqual([]);
+    }
     const before = fake.log.length;
     await c.syncNow();
     expect(fake.log.length).toBe(before); // holds no token: nothing is synced
     expect(c.getBoardData().items).toHaveLength(0);
-    const restarted = make({ credentials: store });
+    const restarted = await make({ credentials: store });
     await restarted.c.start();
     expect(restarted.c.getState().phase).toBe('login');
   }
 
   it('cancel while saving → nothing kept: login page, no credential, no sync, restart asks to sign in', async () => {
-    const { c, store, login } = await approvedAndSaving();
+    const { c, store, login, backend } = await approvedAndSaving();
     c.cancelLogin();
     store.writes[0].release();
     await login;
     // "something did happen": the write really reached the store before it was undone
     expect(store.writes.map((w) => w.token)).toEqual([FAKE_TOKEN]);
     expect(c.getState().login.status).toBe('idle');
-    await assertSignedOutEverywhere(c, store);
+    await assertSignedOutEverywhere(c, store, backend);
   });
 
   it('sign out while saving → same: nothing kept', async () => {
-    const { c, store, login } = await approvedAndSaving();
+    const { c, store, login, backend } = await approvedAndSaving();
     const out = c.logout();
     store.writes[0].release();
     await login;
     await out;
     expect(store.writes).toHaveLength(1);
-    await assertSignedOutEverywhere(c, store);
+    await assertSignedOutEverywhere(c, store, backend);
   });
 
   it('an older login finishing its save after a newer login neither survives nor deletes the newer one', async () => {
@@ -672,7 +697,7 @@ describe('signing in is all-or-nothing against cancel / sign-out / a newer login
     await second;
     expect(c.getState()).toMatchObject({ phase: 'ready', viewer: 'user-2' });
     expect(await store.get()).toBe(TOKEN_A2);
-    const restarted = make({ credentials: new FileStore(join(dir, 'cred')) });
+    const restarted = await make({ credentials: new FileStore(join(dir, 'cred')) });
     fake.state.validTokens.add(TOKEN_A2);
     await restarted.c.start();
     expect(restarted.c.getState()).toMatchObject({ phase: 'ready', viewer: 'user-2' });
@@ -682,7 +707,7 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
   const OAUTH_BUILTIN = 'Ov23builtin000000000';
 
   it('defaults to the OAuth app; GitHub App has no built-in ID, so signing in says what to fill in and calls nothing', async () => {
-    const { c } = make({ defaultClientId: OAUTH_BUILTIN });
+    const { c } = await make({ defaultClientId: OAUTH_BUILTIN });
     await c.start();
     expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: OAUTH_BUILTIN, clientIdIsDefault: true });
     c.setAppKind('github-app');
@@ -694,7 +719,7 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
   });
 
   it('the chosen kind\'s Client ID is the one sent to GitHub; each kind keeps its own; the choice survives a restart', async () => {
-    const { c } = make({ defaultClientId: OAUTH_BUILTIN });
+    const { c } = await make({ defaultClientId: OAUTH_BUILTIN });
     await c.start();
     c.setAppKind('github-app');
     c.setClientId(fake.state.appClientId);
@@ -710,13 +735,13 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
     await p;
     expect(c.getState().phase).toBe('ready');
     c.stopTimer();
-    const again = make({ defaultClientId: OAUTH_BUILTIN });
+    const again = await make({ defaultClientId: OAUTH_BUILTIN });
     await again.c.start();
     expect(again.c.getState()).toMatchObject({ phase: 'ready', appKind: 'github-app', clientId: fake.state.appClientId });
   });
 
   it('switching back to the OAuth app sends the OAuth app\'s ID', async () => {
-    const { c } = make({ defaultClientId: fake.state.oauthClientId, defaultGithubAppClientId: fake.state.appClientId });
+    const { c } = await make({ defaultClientId: fake.state.oauthClientId, defaultGithubAppClientId: fake.state.appClientId });
     await c.start();
     c.setAppKind('github-app');
     expect(c.getState()).toMatchObject({ clientId: fake.state.appClientId, clientIdIsDefault: true });
@@ -730,25 +755,25 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
   });
 
   it('an unknown kind is ignored', async () => {
-    const { c } = make({ defaultClientId: OAUTH_BUILTIN });
+    const { c } = await make({ defaultClientId: OAUTH_BUILTIN });
     c.setAppKind('something-else');
     expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: OAUTH_BUILTIN });
   });
 
-  it('a preview build that saved a GitHub App ID in the single box: that user stays on GitHub App, the OAuth app goes back to built-in', () => {
-    const { c } = make({ defaultClientId: OAUTH_BUILTIN, seed: { oauthClientId: 'Iv23liPreviewApp0000' } });
+  it('a preview build that saved a GitHub App ID in the single box: that user stays on GitHub App, the OAuth app goes back to built-in', async () => {
+    const { c } = await make({ defaultClientId: OAUTH_BUILTIN, seed: { oauthClientId: 'Iv23liPreviewApp0000' } });
     expect(c.getState()).toMatchObject({ appKind: 'github-app', clientId: 'Iv23liPreviewApp0000', clientIdIsDefault: false });
     c.setAppKind('oauth');
     expect(c.getState()).toMatchObject({ clientId: OAUTH_BUILTIN, clientIdIsDefault: true });
   });
 
-  it('a preview build that saved an OAuth app ID: stays on the OAuth app with it', () => {
-    const { c } = make({ defaultClientId: OAUTH_BUILTIN, seed: { oauthClientId: 'Ov23liMyOwnApp000000' } });
+  it('a preview build that saved an OAuth app ID: stays on the OAuth app with it', async () => {
+    const { c } = await make({ defaultClientId: OAUTH_BUILTIN, seed: { oauthClientId: 'Ov23liMyOwnApp000000' } });
     expect(c.getState()).toMatchObject({ appKind: 'oauth', clientId: 'Ov23liMyOwnApp000000', clientIdIsDefault: false });
   });
 
   it('a Client ID that does not match the chosen method is refused before anything is sent', async () => {
-    const { c } = make({ defaultClientId: fake.state.oauthClientId });
+    const { c } = await make({ defaultClientId: fake.state.oauthClientId });
     await c.start();
     // GitHub App chosen, an OAuth app's ID filled in: would ask for repo while the page describes a GitHub App
     c.setAppKind('github-app');
@@ -767,6 +792,31 @@ describe('sign-in method: OAuth app by default, GitHub App when chosen', () => {
     const p = c.startLogin();
     await until(c, (s) => s.login.status === 'waiting', 'waiting');
     expect(fake.state.deviceClientIds).toEqual([fake.state.oauthClientId]);
+    fake.resolveGrant('approved');
+    await p;
+    expect(c.getState().phase).toBe('ready');
+  });
+});
+
+describe('cancel, then sign in at once', () => {
+  it('a cancel that reaches the back end late does not end the sign-in started after it', async () => {
+    const { c, backend } = await make({ defaultClientId: fake.state.oauthClientId });
+    await c.start();
+    // the IPC hop for the cancel is slow (commands to the back end run side by side)
+    const call = backend.call.bind(backend);
+    let delayed = 0;
+    (backend as any).call = async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'loginCancel') {
+        delayed++;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return call(cmd, args);
+    };
+    c.cancelLogin();
+    const p = c.startLogin();
+    await until(c, (s) => s.login.status === 'waiting', 'waiting');
+    expect(delayed).toBe(1); // "something did happen": the cancel really went the slow way
+    await new Promise((r) => setTimeout(r, 400));
     fake.resolveGrant('approved');
     await p;
     expect(c.getState().phase).toBe('ready');

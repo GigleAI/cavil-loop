@@ -3,7 +3,6 @@
 
 import { describe, expect, it } from 'vitest';
 import { blockedImages, FRAME_CSP, FRAME_SANDBOX, timelineDocument } from '../../src/renderer/detailHtml';
-import { isAllowedRequest } from '../../src/platform';
 import type { ItemDetail } from '../../src/shared/actions';
 
 const detail = (author: string, path: string): ItemDetail => ({
@@ -59,15 +58,5 @@ describe('isolated detail view', () => {
     const d = detail('a', 'b');
     d.timeline[0].bodyHtml = img('https://camo.githubusercontent.com/a');
     expect(timelineDocument(d, false)).toContain('data-blocked="1"');
-  });
-
-  it('the main-process request filter: GitHub\'s two hosts, plus the loopback fake in tests', () => {
-    const ep = { api: 'http://127.0.0.1:4000/api', web: 'http://127.0.0.1:4000/web' };
-    expect(isAllowedRequest('https://github.com/a.png', ep)).toBe(true);
-    expect(isAllowedRequest('https://api.github.com/graphql', ep)).toBe(true);
-    expect(isAllowedRequest('http://127.0.0.1:4000/api/x', ep)).toBe(true);
-    for (const u of ['https://camo.githubusercontent.com/a', 'https://evil.github.com/a', 'http://github.com/a', 'http://127.0.0.1:5000/x', 'https://example.com/']) {
-      expect(isAllowedRequest(u, ep), u).toBe(false);
-    }
   });
 });
