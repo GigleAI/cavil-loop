@@ -186,12 +186,13 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
 
   const context: BrowserContext = await (await engine()).newContext({ viewport: { width: 1280, height: 800 } });
   // Nothing leaves the machine. Every request the window makes outside the bridge is recorded;
-  // GitHub's image hosts get a 1×1 PNG, anything else is refused.
+  // the hosts the app may load images from (github.com / api.github.com, and GitHub's avatar
+  // host since #155) get a 1×1 PNG, anything else is refused.
   await context.route('**/*', async (route) => {
     const url = route.request().url();
     if (url.startsWith(`${origin}/`)) return route.continue();
     appendFileSync(env.requests, `request ${url}\n`);
-    if (/^https:\/\/(api\.)?github\.com\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
+    if (/^https:\/\/((api\.)?github\.com|avatars\.githubusercontent\.com)\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
     return route.abort();
   });
   // `<a target="_blank">` in the detail view: the app's shell never opens a window for it,

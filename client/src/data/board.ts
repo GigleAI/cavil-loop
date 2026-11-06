@@ -4,6 +4,7 @@
 import type { ColumnMode, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
 import type { WriteAction } from '../shared/actions';
 import { itemSorter } from './sort';
+import { nestPrs } from './prNest';
 
 export const COL_UNBOARDED = 'unboarded';
 export const COL_NO_ITERATION = 'iteration:none';
@@ -18,8 +19,10 @@ export interface Card {
   projectTitles: string[];
   /** keys of those Projects (what a drag changes: only these Projects' values) */
   projectKeys: string[];
-  /** repository = swimlane */
+  /** repository = swimlane (a PR shown under its issue follows the issue's lane) */
   lane: string;
+  /** a PR shown right under the issue it is linked to: that issue's key (GitHub#155); null = top level */
+  under: string | null;
 }
 
 export interface Column {
@@ -70,11 +73,27 @@ interface ColumnSeed {
 /** repository, then newest number first: the order when no sort is given */
 const BY_REPO_NUMBER = (a: Item, b: Item) => (a.repo === b.repo ? b.number - a.number : a.repo < b.repo ? -1 : 1);
 
+/** One column's cards in the view's order; with `nest`, every PR right under its linked issue. */
+function arrangeCards(cards: Card[], order: (a: Item, b: Item) => number, nest: Nest): Card[] {
+  const sorted = cards.sort((a, b) => order(a.item, b.item));
+  if (!nest.on) return sorted;
+  const lanes = new Map(sorted.map((c) => [c.item.key, c.lane]));
+  return nestPrs(sorted, (c) => c.item, nest.sort).map(({ entry, under }) =>
+    under ? { ...entry, under, lane: lanes.get(under) ?? entry.lane } : entry,
+  );
+}
+
+interface Nest {
+  on: boolean;
+  sort: TableSettings['sort'] | undefined;
+}
+
 function finish(
   seeds: Map<string, ColumnSeed>,
   placements: Map<string, Card[]>,
   order: (a: Item, b: Item) => number,
   subtitleFor: (s: ColumnSeed) => string | null,
+  nest: Nest,
 ): Column[] {
   return [...seeds.values()]
     .sort((a, b) => a.rank - b.rank || (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0) || (a.key < b.key ? -1 : 1))
@@ -83,13 +102,13 @@ function finish(
       title: s.title,
       subtitle: subtitleFor(s),
       ended: s.ended,
-      cards: (placements.get(s.key) ?? []).sort((a, b) => order(a.item, b.item)),
+      cards: arrangeCards(placements.get(s.key) ?? [], order, nest),
     }));
 }
 
 function place(placements: Map<string, Card[]>, col: string, item: Item, projectTitles: string[], projectKeys: string[] = []) {
   const list = placements.get(col) ?? [];
-  list.push({ id: `${item.key}@${col}`, item, projectTitles, projectKeys, lane: item.repo });
+  list.push({ id: `${item.key}@${col}`, item, projectTitles, projectKeys, lane: item.repo, under: null });
   placements.set(col, list);
 }
 
@@ -135,8 +154,11 @@ export function buildBoard(
   today: string,
   /** card order inside every column (the view's sort, shared with the table); none = repository, then number */
   sort?: TableSettings['sort'],
+  /** PRs right under the issue they are linked to, in the same column (GitHub#155) */
+  prsUnderIssues = false,
 ): Board {
   const cardOrder = sort ? itemSorter(sort, projects, items) : BY_REPO_NUMBER;
+  const nest: Nest = { on: prsUnderIssues, sort };
   let mode = requested;
   let notice: string | null = null;
   if (mode === 'iteration' && !projects.some((p) => p.hasIterationField)) {
@@ -199,7 +221,7 @@ export function buildBoard(
       if (s.rank !== RANK_REGULAR) return null;
       const range = `${s.sort} 起`;
       return (titleCount.get(s.title) ?? 0) > 1 ? `${range} · ${[...s.projects].join('、')}` : range;
-    });
+    }, nest);
   } else if (mode === 'status') {
     let order = 0;
     for (const p of projects) {
@@ -224,7 +246,7 @@ export function buildBoard(
         seeds,
       );
     }
-    columns = finish(seeds, placements, cardOrder, () => null);
+    columns = finish(seeds, placements, cardOrder, () => null, nest);
   } else {
     // Milestones belong to repositories: same title across repositories = one column.
     seed({ key: COL_NO_MILESTONE, title: '无里程碑', sort: '', rank: RANK_NONE, ended: false });
@@ -245,13 +267,13 @@ export function buildBoard(
     columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
       return s.sort.startsWith('0') ? `截止 ${s.sort.slice(1, 11)}` : '无截止日期';
-    });
+    }, nest);
   }
   // keep the "none" columns only when they hold something
   columns = columns.filter(
     (c) => c.cards.length > 0 || ![COL_NO_ITERATION, COL_NO_STATUS, COL_NO_MILESTONE, COL_UNBOARDED].includes(c.key),
   );
-  const lanes = swimlanes ? [...new Set(items.map((i) => i.repo))].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())) : null;
+  const lanes = swimlanes ? [...new Set(columns.flatMap((c) => c.cards.map((x) => x.lane)))].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())) : null;
   return { mode, notice, columns, lanes };
 }
 

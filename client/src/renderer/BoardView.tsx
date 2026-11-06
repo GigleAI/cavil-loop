@@ -12,6 +12,7 @@ import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, type WarnKind } from './warnings';
 import { TableView } from './TableView';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
+import { Avatar } from './Avatar';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -54,9 +55,10 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
   const [adding, setAdding] = useState<RepoOptions | null>(null);
   return (
     <div
-      className="card"
+      className={`card${card.under ? ' nested' : ''}`}
       data-testid="card"
       data-key={it.key}
+      data-under={card.under ?? undefined}
       draggable={ops.canWrite}
       onDragStart={(e) => {
         e.dataTransfer.setData('text/plain', it.key);
@@ -67,10 +69,18 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
     >
       <div className="card-head">
         <span className={`kind ${it.kind} ${it.state}`} data-testid="card-state">
+          {card.under && (
+            <span className="nest-mark" title="关联到上面这个 issue 的 PR">
+              ↳{' '}
+            </span>
+          )}
           {it.kind === 'pr' ? 'PR' : 'Issue'} · {STATE_LABEL[it.state]}
         </span>
-        <span className="muted small">
+        <span className="muted small card-repo">
           {it.repo} #{it.number}
+          <span className="card-author" data-testid="card-author" title={`作者 ${it.author ?? "（已删除的账号）"}`}>
+            <Avatar login={it.author} size={16} />
+          </span>
         </span>
       </div>
       <a
@@ -130,7 +140,17 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
           ))}
       </div>
       <div className="meta small muted">
-        {it.assignees.length > 0 && <span>负责人 {it.assignees.join('、')}</span>}
+        {it.assignees.length > 0 && (
+          <span className="people" data-testid="card-assignees">
+            负责人{' '}
+            {it.assignees.map((a) => (
+              <span key={a} className="person">
+                <Avatar login={a} size={16} />
+                {a}
+              </span>
+            ))}
+          </span>
+        )}
         {iterations.length > 0 && <span>迭代 {[...new Set(iterations)].join('、')}</span>}
         {it.milestone && <span>里程碑 {it.milestone.title}</span>}
         {it.projects.length > 0 && (
@@ -227,8 +247,8 @@ export function BoardView({
     [data, parsed, state.viewer, today],
   );
   const board = useMemo(
-    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort),
-    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort],
+    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues),
+    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
@@ -325,6 +345,8 @@ export function BoardView({
         {shown.map((c) => (
           <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} ops={ops} onDrop={onDrop} />
         ))}
+        {/* the floating detail covers the right of the board: room to scroll any column out from under it (#155) */}
+        {opened && <div className="detail-spacer" data-testid="detail-spacer" aria-hidden="true" />}
       </div>
     );
   };

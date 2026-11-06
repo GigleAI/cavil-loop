@@ -6,6 +6,7 @@
 //   - the platform: keychain on macOS, where the profile lives, test mode
 //   - the desktop side (desktop.rs, mac.rs): notifications, Dock badge, launch at
 //     login, closing the window hides it, the sync beat (GitHub#169)
+//   - page zoom (GitHub#155): the 显示 menu's ⌘+ / ⌘- / ⌘0 (macOS), level kept by crates/core/src/zoom.rs
 //
 // The GitHub credential exists only in crates/core. Nothing here returns it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -106,6 +107,48 @@ fn is_app_url(url: &url::Url) -> bool {
         || (cfg!(debug_assertions) && url.scheme() == "http" && url.host_str() == Some("localhost"))
 }
 
+#[cfg(target_os = "macos")]
+const ZOOM_ITEMS: [(&str, &str, &str); 3] = [
+    ("zoom-in", "放大", "CmdOrCtrl+="),
+    ("zoom-out", "缩小", "CmdOrCtrl+-"),
+    ("zoom-reset", "实际大小", "CmdOrCtrl+0"),
+];
+
+/// The standard macOS menu plus 缩放 (zoom in / out / actual size).
+#[cfg(target_os = "macos")]
+fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, Submenu};
+    let menu = Menu::default(app)?;
+    let items = ZOOM_ITEMS
+        .iter()
+        .map(|(id, text, key)| MenuItem::with_id(app, *id, *text, true, Some(*key)))
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+    menu.append(&Submenu::with_items(app, "缩放", true, &refs)?)?;
+    Ok(menu)
+}
+
+/// Step the zoom (or just apply the kept level: `None`) and set it on the window.
+fn zoom(app: &tauri::AppHandle, step: Option<cavil_core::zoom::Step>) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let store = state.engine.store();
+    let percent = match step {
+        Some(st) => {
+            let (percent, kept) = cavil_core::zoom::apply(store, st);
+            if let Err(e) = kept {
+                eprintln!("cavil: keeping the zoom level failed: {e}");
+            }
+            percent
+        }
+        None => cavil_core::zoom::saved(store),
+    };
+    if let Some(w) = app.get_webview_window("main") {
+        if let Err(e) = w.set_zoom(f64::from(percent) / 100.0) {
+            eprintln!("cavil: zoom failed: {e}");
+        }
+    }
+}
+
 fn main() {
     let env: HashMap<String, String> = std::env::vars().collect();
     let os = if cfg!(target_os = "macos") { "macos" } else { std::env::consts::OS };
@@ -133,6 +176,18 @@ fn main() {
                 let _ = w.set_focus();
             }
         }));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.menu(app_menu).on_menu_event(|app, event| {
+            let step = match event.id().as_ref() {
+                "zoom-in" => cavil_core::zoom::Step::In,
+                "zoom-out" => cavil_core::zoom::Step::Out,
+                "zoom-reset" => cavil_core::zoom::Step::Reset,
+                _ => return,
+            };
+            zoom(app, Some(step));
+        });
     }
     #[cfg(target_os = "macos")]
     {
@@ -212,6 +267,8 @@ fn main() {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            // the zoom level kept from the last run
+            zoom(&handle, None);
             let desk = app.state::<Desktop>();
             desk.record(json!({ "op": "start", "hidden": hidden }));
             #[cfg(target_os = "macos")]

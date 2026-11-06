@@ -203,6 +203,10 @@ export interface ViewSettings {
   query: string;
   table: TableSettings;
   imported: ImportInfo | null;
+  /** PRs shown right under the issue they are linked to, on the board and in the table (GitHub#155) */
+  prsUnderIssues: boolean;
+  /** width of the floating detail panel, CSS px (GitHub#155) */
+  detailWidth: number;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';
