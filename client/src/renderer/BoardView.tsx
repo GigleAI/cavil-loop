@@ -19,6 +19,8 @@ import { isFiltering, type WarnKind } from './warnings';
 import { TableView } from './TableView';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
 import { Avatar } from './Avatar';
+import type { BoardRequest } from './App';
+import { keyText } from './shortcuts';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -248,7 +250,10 @@ export function BoardView({
   warn,
   focus = null,
   onFocusTaken,
+  request = null,
+  onRequestTaken,
   onSettings,
+  onKeysHelp,
 }: {
   state: AppState;
   data: BoardData;
@@ -259,7 +264,11 @@ export function BoardView({
   /** a clicked notification's item, to open once (GitHub#169) */
   focus?: { key: string; seq: number } | null;
   onFocusTaken?: () => void;
+  /** a shortcut that needs the board (GitHub#192): done once, then handed back */
+  request?: BoardRequest | null;
+  onRequestTaken?: () => void;
   onSettings: () => void;
+  onKeysHelp?: () => void;
 }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
@@ -290,8 +299,19 @@ export function BoardView({
     onFocusTaken?.();
   }, [focus?.seq]);
   const [newIssue, setNewIssue] = useState(false);
+  const searchBox = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [busy, setBusy] = useState(false);
+  // a shortcut pressed on any page (GitHub#192): done once here, then dropped by App so coming
+  // back to the board later never repeats it. "New issue" only when its button would work.
+  useEffect(() => {
+    if (!request) return;
+    if (request.kind === 'search') {
+      searchBox.current?.focus();
+      searchBox.current?.select();
+    } else if (canWrite) setNewIssue(true);
+    onRequestTaken?.();
+  }, [request?.seq]);
   const [confirm, setConfirm] = useState<Extract<DropPlan, { kind: 'confirm' }> | null>(null);
   const [choice, setChoice] = useState(0);
   const dragging = useRef<{ card: Card; from: string } | null>(null);
@@ -409,10 +429,11 @@ export function BoardView({
           <Icon name="search" />
           <input
             data-testid="search"
+            ref={searchBox}
             type="search"
             value={query}
             aria-label="搜索或筛选"
-            placeholder="搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me"
+            placeholder="搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me（按 / 跳到这里）"
             title="写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me"
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -433,7 +454,7 @@ export function BoardView({
             data-testid="refresh"
             disabled={sync.syncing}
             aria-label={sync.syncing ? '同步中…' : '刷新'}
-            title={sync.syncing ? '同步中…' : '刷新（马上同步一轮）'}
+            title={sync.syncing ? '同步中…' : `刷新（马上同步一轮，${keyText('sync')}）`}
             onClick={() => api().syncNow()}
           >
             <Icon name="refresh" />
@@ -442,14 +463,14 @@ export function BoardView({
             className="primary"
             data-testid="write-entry"
             disabled={!canWrite}
-            title={writesEnabled(sync) ? (state.sources.length ? '新建 issue' : '先添加数据来源') : '离线时不能修改'}
+            title={writesEnabled(sync) ? (state.sources.length ? `新建 issue（${keyText('newIssue')}）` : '先添加数据来源') : '离线时不能修改'}
             data-offline={writesEnabled(sync) ? 'no' : 'yes'}
             onClick={() => setNewIssue(true)}
           >
             <Icon name="plus" />
             新建 issue
           </button>
-          <button className="icon-btn" onClick={onSettings} data-testid="open-settings" aria-label="设置" title="设置">
+          <button className="icon-btn" onClick={onSettings} data-testid="open-settings" aria-label="设置" title={`设置（${keyText('settings')}）`}>
             <Icon name="gear" />
           </button>
           {state.viewer && (
@@ -502,6 +523,9 @@ export function BoardView({
             {data.items.length} 个条目
           </span>
         </span>
+        <button className="ghost" onClick={onKeysHelp} data-testid="open-shortcuts" title={`快捷键一览（${keyText('help')}）`}>
+          快捷键 <kbd>?</kbd>
+        </button>
       </div>
       <WarnBar kind="filter-unsupported" warn={warn}>
         {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
