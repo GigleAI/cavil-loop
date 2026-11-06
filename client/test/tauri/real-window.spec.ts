@@ -102,14 +102,13 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   // a change: one label added on GitHub, the card re-read
   await wd.click(card(138));
   await wd.find('[data-testid="detail"][data-key="gigleai/cavil-loop#138"]');
-  // the candidates are the repository's labels the item does not carry yet: take the first one
-  await wd.find('[data-testid="label-add"]:not([disabled]) option:not([value=""])');
+  // "+ 加标签" opens the picker (GitHub#192); take the first label the item does not carry yet
+  await wd.click('[data-testid="label-add"]:not([disabled])');
+  await wd.find('[data-testid="label-picker"] [data-testid="picker-item"][data-checked="no"]');
   const label = await wd.exec<string>(
-    `const s = document.querySelector('[data-testid="label-add"]');
-     const v = [...s.options].map((o) => o.value).find(Boolean);
-     const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-     set.call(s, v); s.dispatchEvent(new Event('change', { bubbles: true }));
-     return v;`,
+    `const li = document.querySelector('[data-testid="label-picker"] [data-testid="picker-item"][data-checked="no"]');
+     li.click();
+     return li.getAttribute('data-name');`,
   );
   expect(label).toBeTruthy();
   await until(() => fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels')), 'label POST reached GitHub');

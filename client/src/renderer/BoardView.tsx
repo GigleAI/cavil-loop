@@ -15,6 +15,8 @@ import { isFiltering, type WarnKind } from './warnings';
 import { TableView } from './TableView';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
 import { Avatar } from './Avatar';
+import type { BoardRequest } from './App';
+import { keyText } from './shortcuts';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -227,7 +229,10 @@ export function BoardView({
   warn,
   focus = null,
   onFocusTaken,
+  request = null,
+  onRequestTaken,
   onSettings,
+  onKeysHelp,
 }: {
   state: AppState;
   data: BoardData;
@@ -238,7 +243,11 @@ export function BoardView({
   /** a clicked notification's item, to open once (GitHub#169) */
   focus?: { key: string; seq: number } | null;
   onFocusTaken?: () => void;
+  /** a shortcut that needs the board (GitHub#192): done once, then handed back */
+  request?: BoardRequest | null;
+  onRequestTaken?: () => void;
   onSettings: () => void;
+  onKeysHelp?: () => void;
 }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
@@ -269,8 +278,19 @@ export function BoardView({
     onFocusTaken?.();
   }, [focus?.seq]);
   const [newIssue, setNewIssue] = useState(false);
+  const searchBox = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [busy, setBusy] = useState(false);
+  // a shortcut pressed on any page (GitHub#192): done once here, then dropped by App so coming
+  // back to the board later never repeats it. "New issue" only when its button would work.
+  useEffect(() => {
+    if (!request) return;
+    if (request.kind === 'search') {
+      searchBox.current?.focus();
+      searchBox.current?.select();
+    } else if (canWrite) setNewIssue(true);
+    onRequestTaken?.();
+  }, [request?.seq]);
   const [confirm, setConfirm] = useState<Extract<DropPlan, { kind: 'confirm' }> | null>(null);
   const [choice, setChoice] = useState(0);
   const dragging = useRef<{ card: Card; from: string } | null>(null);
@@ -394,7 +414,7 @@ export function BoardView({
         </label>
         </>
         )}
-        <button data-testid="refresh" disabled={sync.syncing} onClick={() => api().syncNow()}>
+        <button data-testid="refresh" disabled={sync.syncing} onClick={() => api().syncNow()} title={`立即同步（${keyText('sync')}）`}>
           {sync.syncing ? '同步中…' : '刷新'}
         </button>
         <button
@@ -404,19 +424,23 @@ export function BoardView({
           data-offline={writesEnabled(sync) ? 'no' : 'yes'}
           onClick={() => setNewIssue(true)}
         >
-          新建 issue
+          新建 issue<kbd>{keyText('newIssue')}</kbd>
         </button>
-        <button onClick={onSettings} data-testid="open-settings">
+        <button onClick={onSettings} data-testid="open-settings" title={`设置（${keyText('settings')}）`}>
           设置
+        </button>
+        <button onClick={onKeysHelp} data-testid="open-shortcuts" title={`快捷键一览（${keyText('help')}）`} aria-label="快捷键一览">
+          ?
         </button>
       </div>
 
       <div className="searchbar">
         <input
           data-testid="search"
+          ref={searchBox}
           type="search"
           value={query}
-          placeholder="搜索或筛选，写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me 客户端"
+          placeholder="搜索或筛选（按 / 跳到这里），写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me 客户端"
           onChange={(e) => setQuery(e.target.value)}
         />
         {filtering && (

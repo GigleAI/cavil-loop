@@ -11,6 +11,10 @@ import { usePanelWidth } from './panelWidth';
 import { textColor } from './colors';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
+import { useShortcuts } from './keyboard';
+import { LabelPicker } from './LabelPicker';
+import { Keys } from './ShortcutHelp';
+import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -31,7 +35,7 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
 };
 /** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
 const HIDE_LABEL = '收起 ›';
-const HIDE_TITLE = '收起（Esc；点过讨论后，先点一下讨论以外的地方再按 Esc）';
+const HIDE_TITLE = '收起（Esc；回复框里有没发出的文字时 Esc 不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
 const REVIEW: Record<string, string> = { APPROVED: '已批准', CHANGES_REQUESTED: '要求修改', REVIEW_REQUIRED: '需要评审' };
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
@@ -92,6 +96,11 @@ export function DetailPanel({
   const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | null>(null);
   const [closeComment, setCloseComment] = useState('');
   const [closeReason, setCloseReason] = useState<IssueCloseReason>('completed');
+  /** the label / milestone picker that is open (GitHub#192) */
+  const [picker, setPicker] = useState<'labels' | 'milestone' | null>(null);
+  /** Esc was pressed while the reply box held unsent text: the panel stayed, say why */
+  const [escKept, setEscKept] = useState(false);
+  const replyBox = useRef<HTMLTextAreaElement>(null);
   const canWrite = writesEnabled(state.sync);
   const offlineWhy = canWrite ? undefined : '离线时不能修改';
   const repo = item?.repo ?? '';
@@ -155,19 +164,56 @@ export function DetailPanel({
   useEffect(() => {
     document.documentElement.style.setProperty('--detail-space', `${width}px`);
   }, [width]);
-  // Esc closes the panel — not while typing (a draft is not thrown away by a key) or while a dialog asks.
-  // Not while the discussion frame has the keyboard either: its keys stay inside it (PR #171 review,
-  // the maintainer chose to keep the frame isolated); a click on the panel outside the frame gives it back.
-  useEffect(() => {
-    const on = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || ask) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  // ---- keyboard (GitHub#192): each key presses a button, behind that button's own enabled condition ----
+  const sendBlocked = !item || !canWrite || busy || !reply.trim();
+  const previewBlocked = !item || !canWrite || !reply.trim();
+  /** the label / milestone controls: the same condition as their buttons */
+  const pickBlocked = !item || !canWrite || busy || !opts;
+  const send = async () => {
+    if (!item) return;
+    const r = await run({ kind: 'comment', key: item.key, body: reply }, '评论已发出');
+    if (r.ok && r.here) {
+      setReply('');
+      setPreview(null);
+      setReplied(true);
+      setEscKept(false);
+    }
+  };
+  const togglePreview = async () => {
+    if (!item) return;
+    if (preview !== null) return setPreview(null);
+    const mine = session.begin('preview');
+    const r = await api().previewMarkdown(item.repo, reply);
+    if (!mine()) return;
+    setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? '预览失败')}</p>`);
+  };
+  useShortcuts({
+    labels: () => {
+      if (!pickBlocked) setPicker('labels');
+    },
+    milestone: () => {
+      if (!pickBlocked) setPicker('milestone');
+    },
+    reply: () => replyBox.current?.focus(),
+    // Esc puts the panel away — never while the reply box holds unsent text: a key never drops a draft.
+    // (Dialogs and pickers are layers: their Esc never gets here. Neither does a key pressed inside the
+    // isolated discussion frame — PR #171, the maintainer chose to keep it isolated.)
+    hide: () => {
+      if (reply.trim()) {
+        setEscKept(true);
+        return;
+      }
       onClose();
-    };
-    window.addEventListener('keydown', on);
-    return () => window.removeEventListener('keydown', on);
-  }, [ask, onClose]);
+    },
+    send: () => {
+      if (!sendBlocked) void send();
+    },
+    preview: () => {
+      if (!previewBlocked) void togglePreview();
+    },
+    leaveReply: () => replyBox.current?.blur(),
+  });
+
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
     // whose keys never reach this window (the frame is isolated and runs no scripts) — Esc works again after it
@@ -197,8 +243,7 @@ export function DetailPanel({
   const prOpen = item.kind === 'pr' && detail?.state === 'open';
   // only once the detail read says it is open: the board's copy may be a round behind
   const issueOpen = item.kind === 'issue' && detail?.state === 'open';
-  const missingLabels = (opts?.labels ?? []).filter((l) => !item.labels.some((x) => x.name === l.name));
-  const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
+    const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
   return shell(
     item.key,
@@ -260,20 +305,36 @@ export function DetailPanel({
                 </button>
               </span>
             ))}
-            <select
-              data-testid="label-add"
-              value=""
-              disabled={!canWrite || busy || !opts}
-              title={offlineWhy ?? (opts?.error ? opts.error : `候选来自 ${item.repo} 的标签`)}
-              onChange={(e) => e.target.value && void run({ kind: 'addLabel', key: item.key, label: e.target.value }, `已加上标签「${e.target.value}」`)}
-            >
-              <option value="">{opts ? '+ 加标签' : '读取标签…'}</option>
-              {missingLabels.map((l) => (
-                <option key={l.name} value={l.name}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
+            <span className="picker-anchor">
+              <button
+                className="label-plus"
+                data-testid="label-add"
+                disabled={pickBlocked}
+                title={offlineWhy ?? (opts?.error ? opts.error : `候选来自 ${item.repo} 的标签（${keyText('labels')}）`)}
+                onClick={() => setPicker(picker === 'labels' ? null : 'labels')}
+              >
+                {opts ? '+ 加标签' : '读取标签…'}
+                <kbd>{keyText('labels')}</kbd>
+              </button>
+              {picker === 'labels' && opts && (
+                <LabelPicker
+                  title="设置标签"
+                  hint={item.repo}
+                  testid="label-picker"
+                  disabled={!canWrite || busy}
+                  items={[
+                    ...opts.labels.map((l) => ({ name: l.name, color: l.color, checked: item.labels.some((x) => x.name === l.name) })),
+                    ...item.labels.filter((l) => !opts.labels.some((x) => x.name === l.name)).map((l) => ({ name: l.name, color: l.color, checked: true })),
+                  ]}
+                  onToggle={(l) =>
+                    void (l.checked
+                      ? run({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)
+                      : run({ kind: 'addLabel', key: item.key, label: l.name }, `已加上标签「${l.name}」`))
+                  }
+                  onClose={() => setPicker(null)}
+                />
+              )}
+            </span>
           </div>
         </div>
         <div className="field-row">
@@ -281,8 +342,8 @@ export function DetailPanel({
           <select
             data-testid="milestone-select"
             value={item.milestone?.title ?? ''}
-            disabled={!canWrite || busy || !opts}
-            title={offlineWhy ?? `${item.repo} 的里程碑；客户端不新建里程碑`}
+            disabled={pickBlocked}
+            title={offlineWhy ?? `${item.repo} 的里程碑；客户端不新建里程碑（${keyText('milestone')}）`}
             onChange={(e) =>
               void run({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? `里程碑改成「${e.target.value}」` : '已去掉里程碑')
             }
@@ -295,6 +356,26 @@ export function DetailPanel({
               </option>
             ))}
           </select>
+          <span className="picker-anchor">
+            <kbd>{keyText('milestone')}</kbd>
+            {picker === 'milestone' && opts && (
+              <LabelPicker
+                title="设置里程碑"
+                hint={`${item.repo}；再选一次当前的就是去掉`}
+                testid="milestone-picker"
+                disabled={!canWrite || busy}
+                items={[
+                  ...(item.milestone && !msTitles.includes(item.milestone.title) ? [item.milestone.title] : []),
+                  ...msTitles,
+                ].map((t) => ({ name: t, checked: item.milestone?.title === t }))}
+                onToggle={(m) => {
+                  setPicker(null);
+                  void run({ kind: 'setMilestone', key: item.key, title: m.checked ? null : m.name }, m.checked ? '已去掉里程碑' : `里程碑改成「${m.name}」`);
+                }}
+                onClose={() => setPicker(null)}
+              />
+            )}
+          </span>
           {opts?.error && <span className="small err">{opts.error}</span>}
         </div>
         {item.projects.map((m) => {
@@ -424,15 +505,23 @@ export function DetailPanel({
       <section className="reply" data-testid="reply">
         <textarea
           data-testid="reply-input"
+          data-keys="reply"
+          ref={replyBox}
           value={reply}
           placeholder={canWrite ? '回复（支持 markdown）' : '离线时不能回复'}
           disabled={!canWrite || busy}
           onChange={(e) => {
             setReply(e.target.value);
+            if (!e.target.value.trim()) setEscKept(false);
             session.supersede('preview');
             setPreview(null);
           }}
         />
+        {escKept && reply.trim() && (
+          <div className="banner warn draft-kept" data-testid="draft-esc-hint" ref={(el) => el?.scrollIntoView?.({ block: 'nearest' })}>
+            回复框里还有没发出的文字，按 Esc 不会收起面板（免得文字丢掉）。发出去、清空，或点右上角「收起 ›」（文字会丢）。
+          </div>
+        )}
         {preview !== null && (
           <iframe
             className="preview"
@@ -462,32 +551,13 @@ export function DetailPanel({
             </button>
           )}
           <div className="spacer" />
-          <button
-            data-testid="reply-preview-toggle"
-            disabled={!canWrite || !reply.trim()}
-            onClick={async () => {
-              if (preview !== null) return setPreview(null);
-              const mine = session.begin('preview');
-              const r = await api().previewMarkdown(item.repo, reply);
-              if (!mine()) return;
-              setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? '预览失败')}</p>`);
-            }}
-          >
+          <span className="small muted keys-hint">
+            按 <Keys parts={keyParts(SHORTCUTS.find((x) => x.id === 'send')!.keys[0], isMac())} /> 发送
+          </span>
+          <button data-testid="reply-preview-toggle" disabled={previewBlocked} title={`预览（${keyText('preview')}）`} onClick={() => void togglePreview()}>
             {preview !== null ? '继续编辑' : '预览'}
           </button>
-          <button
-            className="primary"
-            data-testid="reply-send"
-            disabled={!canWrite || busy || !reply.trim()}
-            onClick={async () => {
-              const r = await run({ kind: 'comment', key: item.key, body: reply }, '评论已发出');
-              if (r.ok && r.here) {
-                setReply('');
-                setPreview(null);
-                setReplied(true);
-              }
-            }}
-          >
+          <button className="primary" data-testid="reply-send" disabled={sendBlocked} title={`发送（${keyText('send')}）`} onClick={() => void send()}>
             发送
           </button>
         </div>

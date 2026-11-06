@@ -1,0 +1,157 @@
+// Keyboard shortcuts (GitHub#192): one table and one decision.
+//
+// SHORTCUTS is the only list of keys: the window's single keydown listener
+// (App.tsx, through `resolve`) acts on it, and the shortcut list the user sees
+// (ShortcutHelp.tsx) is drawn from it, so the list and the behaviour cannot
+// drift apart. `resolve` is the only place that decides who gets a key press:
+// signed in or not, which layer (dialog / picker / shortcut list) is on top,
+// whether the user is typing, whether an input method is composing.
+//
+// A shortcut only presses a button for you: every handler is the button's own
+// handler, behind the same "is it enabled" condition (see the call sites).
+
+export type Scope = 'global' | 'detail' | 'reply' | 'dialog' | 'picker' | 'help';
+
+/** `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere) */
+export type KeySpec = { key: string; mod?: boolean; shift?: boolean };
+
+export type ShortcutId =
+  | 'search'
+  | 'newIssue'
+  | 'sync'
+  | 'settings'
+  | 'help'
+  | 'labels'
+  | 'milestone'
+  | 'reply'
+  | 'hide'
+  | 'send'
+  | 'preview'
+  | 'leaveReply'
+  | 'confirm'
+  | 'cancel'
+  | 'pickerUp'
+  | 'pickerDown'
+  | 'pickerToggle'
+  | 'pickerClose'
+  | 'helpClose';
+
+export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: string };
+
+export const SCOPE_TITLE: Record<Scope, string> = {
+  global: '已登录的任何页面',
+  detail: '详情面板（光标不在输入框里时）',
+  reply: '回复框里',
+  dialog: '对话框里',
+  picker: '标签 / 里程碑选择框',
+  help: '本列表',
+};
+
+export const SHORTCUTS: readonly Shortcut[] = [
+  { id: 'search', scope: 'global', keys: [{ key: '/' }], label: '跳到搜索框（在别的页面会先回到看板）' },
+  { id: 'newIssue', scope: 'global', keys: [{ key: 'c' }], label: '新建 issue（在别的页面会先回到看板）' },
+  { id: 'sync', scope: 'global', keys: [{ key: 'r', mod: true }], label: '立即同步' },
+  { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: '打开设置' },
+  { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: '快捷键一览' },
+  { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: '设置标签' },
+  { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
+  { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
+  { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '收起面板（回复框里有没发出的文字时不收起）' },
+  { id: 'send', scope: 'reply', keys: [{ key: 'Enter', mod: true }], label: '发送评论' },
+  { id: 'preview', scope: 'reply', keys: [{ key: 'p', mod: true, shift: true }], label: '预览 / 继续编辑' },
+  { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: '离开回复框（文字保留）' },
+  { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: '确认（创建 / 关闭 / 合并 / 加入看板）' },
+  { id: 'cancel', scope: 'dialog', keys: [{ key: 'Escape' }], label: '取消（新建 issue 里有字时不取消）' },
+  { id: 'pickerUp', scope: 'picker', keys: [{ key: 'ArrowUp' }], label: '上一个' },
+  { id: 'pickerDown', scope: 'picker', keys: [{ key: 'ArrowDown' }], label: '下一个' },
+  { id: 'pickerToggle', scope: 'picker', keys: [{ key: 'Enter' }], label: '加上 / 去掉选中的那个' },
+  { id: 'pickerClose', scope: 'picker', keys: [{ key: 'Escape' }], label: '收起选择框' },
+  { id: 'helpClose', scope: 'help', keys: [{ key: 'Escape' }, { key: '?', shift: true }], label: '关掉本列表' },
+];
+
+/** the fields of a KeyboardEvent this module reads */
+export type KeyLike = {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+};
+
+/** what is on top: a layer takes every key, only its own shortcuts act */
+export type Layer = 'none' | 'dialog' | 'picker' | 'help';
+/** where the keyboard is: the reply box, another text field / select, or nowhere that takes text */
+export type Typing = 'none' | 'reply' | 'other';
+export type KeyContext = { signedIn: boolean; layer: Layer; typing: Typing };
+
+/** an input method is building a character: its keys (Enter to pick, Esc to drop) are never ours */
+export function composing(e: KeyLike): boolean {
+  return e.isComposing === true || e.keyCode === 229;
+}
+
+export function matches(spec: KeySpec, e: KeyLike): boolean {
+  const mod = e.metaKey || e.ctrlKey;
+  if (Boolean(spec.mod) !== mod || e.altKey) return false;
+  // '?' needs Shift on most layouts: it is part of the key, not a separate modifier
+  if (spec.key === '?') return e.key === '?';
+  if (Boolean(spec.shift) !== e.shiftKey) return false;
+  return spec.key.length === 1 ? e.key.toLowerCase() === spec.key : e.key === spec.key;
+}
+
+const hasMod = (s: Shortcut) => s.keys.some((k) => k.mod);
+
+/**
+ * Who gets this key press: the id of the shortcut to run, or null (leave the key alone).
+ * The only rules, in order: never while composing; nothing before sign-in; a layer on top
+ * takes every key and only its own shortcuts act; while typing, single keys are typing
+ * (only the reply box's own keys and the ⌘ / Ctrl shortcuts act); otherwise the global
+ * and detail-panel keys.
+ */
+export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
+  if (composing(e)) return null;
+  if (!ctx.signedIn) return null;
+  const allowed = (s: Shortcut): boolean => {
+    if (ctx.layer !== 'none') return s.scope === ctx.layer;
+    if (ctx.typing === 'reply') return s.scope === 'reply' || (s.scope === 'global' && hasMod(s));
+    if (ctx.typing === 'other') return s.scope === 'global' && hasMod(s);
+    return s.scope === 'global' || s.scope === 'detail';
+  };
+  for (const s of SHORTCUTS) if (allowed(s) && s.keys.some((k) => matches(k, e))) return s.id;
+  return null;
+}
+
+/** where the keyboard is, judged from the focused element; the reply box marks itself with data-keys="reply" */
+export function typingOf(el: Element | null): Typing {
+  if (!el) return 'none';
+  const h = el as HTMLElement;
+  if (h.dataset?.keys === 'reply') return 'reply';
+  if (h.tagName === 'TEXTAREA' || h.tagName === 'SELECT' || h.isContentEditable) return 'other';
+  if (h.tagName === 'INPUT') {
+    const t = (h as HTMLInputElement).type;
+    return t === 'checkbox' || t === 'radio' || t === 'button' || t === 'submit' ? 'none' : 'other';
+  }
+  return 'none';
+}
+
+export function isMac(): boolean {
+  return typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+}
+
+const KEY_NAME: Record<string, string> = { Enter: '↩', Escape: 'Esc', ArrowUp: '↑', ArrowDown: '↓' };
+
+/** the keys of one spec as shown on screen, e.g. ['⌘', '↩'] or ['Ctrl', '↩'] */
+export function keyParts(spec: KeySpec, mac: boolean): string[] {
+  const out: string[] = [];
+  if (spec.mod) out.push(mac ? '⌘' : 'Ctrl');
+  if (spec.shift && spec.key !== '?') out.push(mac ? '⇧' : 'Shift');
+  out.push(KEY_NAME[spec.key] ?? (spec.key.length === 1 ? spec.key.toUpperCase() : spec.key));
+  return out;
+}
+
+/** one shortcut's keys as one short string (for tooltips): "⌘↩", "Ctrl+↩", "L" */
+export function keyText(id: ShortcutId, mac: boolean = isMac()): string {
+  const s = SHORTCUTS.find((x) => x.id === id)!;
+  return s.keys.map((k) => keyParts(k, mac).join(mac ? '' : '+')).join(' / ');
+}
