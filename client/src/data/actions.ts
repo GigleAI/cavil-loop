@@ -8,6 +8,11 @@
 //   - Project fields: only that Project, only with its own field / option ids;
 //   - closing (PR or issue): close first, the attached comment only after it;
 //     an issue only with a reason the client offers (completed / not planned);
+//   - a task-list box (GitHub#193): GitHub has no "change one box" and no
+//     conditional edit, so the body / comment is read again right before the
+//     write; it must still belong to this item, still be changeable by this
+//     account and still hold exactly the source the click was made on — else
+//     nothing is written. Exactly one character of it changes;
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
@@ -21,7 +26,12 @@ import {
   CLOSING_ISSUES_QUERY,
   SET_ITERATION_MUTATION,
   SET_STATUS_MUTATION,
+  TASK_SOURCE_QUERY,
+  UPDATE_COMMENT_MUTATION,
+  UPDATE_ISSUE_BODY_MUTATION,
+  UPDATE_PR_BODY_MUTATION,
 } from './queries';
+import { flipTask } from './taskList';
 
 /** The app refused before sending anything to GitHub. */
 export class ActionRefused extends Error {
@@ -181,6 +191,37 @@ export async function relatedIssues(client: GitHubClient, pr: Item, cached: Item
   return { items, problem };
 }
 
+/** What a ticked box is refused with when the body / comment changed since the click was made on it. */
+export const TASK_CHANGED = '这一条刚被改过（和你看到的不一样了），没有修改；已重新读取，请看过后再勾';
+
+interface TaskSource {
+  kind: 'IssueComment' | 'Issue' | 'PullRequest';
+  body: string;
+  canUpdate: boolean;
+  repo: string;
+  number: number;
+}
+
+/** The body / comment as GitHub holds it now. Anything missing from the answer is an error, never "empty". */
+async function readTaskSource(client: GitHubClient, id: string): Promise<TaskSource> {
+  type Ref = { number?: number; repository?: { nameWithOwner?: string } };
+  const d = await client.graphql<{ node: ({ __typename?: string; body?: unknown; viewerCanUpdate?: unknown; issue?: Ref } & Ref) | null }>(TASK_SOURCE_QUERY, { id });
+  const n = d.node;
+  if (!n) throw new ActionRefused('GitHub 上找不到这一条评论（可能已被删除），没有修改');
+  const kind = n.__typename;
+  if (kind !== 'IssueComment' && kind !== 'Issue' && kind !== 'PullRequest') throw new ActionRefused('这不是正文或评论，没有修改');
+  const ref = kind === 'IssueComment' ? n.issue : n;
+  if (typeof n.body !== 'string' || typeof n.viewerCanUpdate !== 'boolean' || typeof ref?.number !== 'number' || typeof ref.repository?.nameWithOwner !== 'string')
+    throw new GitHubError('graphql', 'GitHub 的回应缺少原文、权限或所属条目，没有修改');
+  return { kind, body: n.body, canUpdate: n.viewerCanUpdate, repo: ref.repository.nameWithOwner, number: ref.number };
+}
+
+async function writeTaskSource(client: GitHubClient, kind: TaskSource['kind'], id: string, body: string): Promise<unknown> {
+  if (kind === 'IssueComment') return (await client.graphql<any>(UPDATE_COMMENT_MUTATION, { id, body }))?.updateIssueComment?.issueComment?.body;
+  if (kind === 'Issue') return (await client.graphql<any>(UPDATE_ISSUE_BODY_MUTATION, { id, body }))?.updateIssue?.issue?.body;
+  return (await client.graphql<any>(UPDATE_PR_BODY_MUTATION, { id, body }))?.updatePullRequest?.pullRequest?.body;
+}
+
 export async function performAction(client: GitHubClient, action: WriteAction, ctx: ActionContext): Promise<ActionOutcome> {
   switch (action.kind) {
     case 'addLabel': {
@@ -301,6 +342,20 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
           warning = `issue 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;
         }
       }
+      return { touched: [[it.repo, it.number]], warning };
+    }
+    case 'toggleTask': {
+      const it = needItem(ctx);
+      if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused('不知道点的是哪一个勾选框，没有修改');
+      if (typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你看到的原文，请刷新详情后再勾');
+      const now = await readTaskSource(client, action.entryId);
+      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
+      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
+      if (now.body !== action.seenSource) throw new ActionRefused(TASK_CHANGED);
+      const next = flipTask(now.body, action.index, action.checked);
+      if (next === null) throw new ActionRefused(TASK_CHANGED);
+      const written = await writeTaskSource(client, now.kind, action.entryId, next);
+      const warning = written === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
       return { touched: [[it.repo, it.number]], warning };
     }
     case 'createIssue': {

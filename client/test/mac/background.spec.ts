@@ -17,6 +17,15 @@
 //
 // Off a Mac (only to try the check itself, under xvfb): CAVIL_BG_BIN=<the Linux build>; the
 // window is then hidden on close by the test switch, and the Dock-icon step is skipped.
+//
+// The label goes on only once this start's first complete round has been taken (GitHub#186):
+// what that round already finds is the reminders' baseline and goes into one summary, never one
+// notification per item. One item carries the label before the app starts (SEEDED), so the first
+// round always ends in that summary and the badge after it (../tauri/first-round.ts). A badge
+// record alone is no proof — the app clears the badge before it syncs; taking it as one put the
+// label into the baseline on every arm64 CI run (the item never got its own notification).
+// The slow-first-read case stages that order on purpose: the first read is held on the fake
+// GitHub while the start-up badge is already there.
 
 import { test, expect } from '@playwright/test';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
@@ -27,6 +36,7 @@ import { join } from 'node:path';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { Cache } from '../support/cache';
 import { parseSource } from '../../src/shared/sources';
+import { firstRoundBadge } from '../tauri/first-round';
 
 const APP = process.env.CAVIL_MAC_APP ?? '';
 const BIN = process.env.CAVIL_BG_BIN ?? (APP ? join(APP, 'Contents', 'MacOS', 'Cavil Loop') : '');
@@ -41,6 +51,8 @@ let dir: string;
 let record: string;
 let control: string;
 let proc: ChildProcess | null = null;
+/** carries the label from before the app starts: the first round ends in a summary of 1 */
+let SEEDED: number;
 
 /** the shell's record, whole lines only (the last one may still be being written) */
 const records = (): any[] => {
@@ -50,6 +62,12 @@ const records = (): any[] => {
 };
 const lastBadge = (from = 0) => records().slice(from).filter((r) => r.op === 'badge').pop()?.count as number | undefined;
 const notified = (key: string) => records().some((r) => r.op === 'notify' && r.alert?.kind === 'item' && r.alert.key === key);
+
+/** Wait for this start's first complete round (from = its first record); the badge it set. */
+async function firstRound(ms: number, from = 0): Promise<number> {
+  await until(() => firstRoundBadge(records(), from) !== null, 'first complete round: the summary and the badge after it', ms);
+  return firstRoundBadge(records(), from)!;
+}
 
 async function until(fn: () => boolean, what: string, ms: number) {
   const end = Date.now() + ms;
@@ -91,6 +109,10 @@ function label(number: number) {
 test.beforeEach(async () => {
   test.skip(!BIN || (MAC && !APP), 'the packaged macOS app (CAVIL_MAC_APP), on a Mac');
   fake = await startFakeGitHub();
+  // the recording has nothing on the label: this one is the whole baseline
+  expect(fake.state.repos.get(REPO)!.filter((x: any) => x.labels.some((l: any) => (l.name ?? l) === 'pending/human'))).toHaveLength(0);
+  SEEDED = unlabelled();
+  label(SEEDED);
   dir = mkdtempSync(join(tmpdir(), 'cavil-mac-bg-'));
   record = join(dir, 'desktop.jsonl');
   control = join(dir, 'control.txt');
@@ -112,8 +134,8 @@ test.afterEach(async () => {
 
 test('window closed: hidden, still syncing and reminding within 120 s; the Dock icon brings it back', async () => {
   launch();
-  await until(() => lastBadge() !== undefined, 'first round counted', 60_000);
-  const badgeBefore = lastBadge()!;
+  const badgeBefore = await firstRound(60_000);
+  expect(badgeBefore).toBe(1);
   appendFileSync(control, 'close\n');
   await until(() => records().some((r) => r.op === 'hidden'), 'window hidden, app still running', 15_000);
   // past the point where WebKit's default policy would suspend a hidden page
@@ -138,14 +160,40 @@ test('window closed: hidden, still syncing and reminding within 120 s; the Dock 
 test('started hidden (launch at login): no window, still syncing and reminding within 120 s', async () => {
   launch(['--hidden']);
   await until(() => records().some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 30_000);
-  await until(() => lastBadge() !== undefined, 'first round while started hidden', 60_000);
+  const badgeBefore = await firstRound(60_000);
+  expect(badgeBefore).toBe(1);
   const from = records().length;
-  const badgeBefore = lastBadge()!;
   const n = unlabelled();
   label(n);
   await until(() => notified(`${REPO}#${n}`) && lastBadge(from) === badgeBefore + 1, 'synced while started hidden: the new item notified, badge +1', GATE_MS);
   const all = records();
   expect(all.filter((r) => r.op === 'tick').length).toBeGreaterThan(0);
+  expect(all.filter((r) => r.op === 'tick').every((r) => r.visible === false)).toBe(true);
+  expect(all.some((r) => r.op === 'shown')).toBe(false);
+});
+
+test('started hidden, first read slow: the label goes on only after the first complete round', async () => {
+  const READ = '/repos/GigleAI/cavil-loop/issues';
+  const release = fake.hold(READ);
+  try {
+    launch(['--hidden']);
+    await until(() => records().some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 30_000);
+    // the first read has reached the fake and is held there (no answer sent yet)
+    await until(() => fake.log.some((e) => e.path.includes(READ) && e.status === 0), 'first read held', 60_000);
+    await until(() => lastBadge() !== undefined, 'start-up badge', 30_000);
+    // the old wait would go now; the first round is not complete
+    expect(fake.log.filter((e) => e.path.includes(READ)).every((e) => e.status === 0)).toBe(true);
+    expect(firstRoundBadge(records())).toBeNull();
+  } finally {
+    release();
+  }
+  const badgeBefore = await firstRound(60_000);
+  expect(badgeBefore).toBe(1);
+  const from = records().length;
+  const n = unlabelled();
+  label(n);
+  await until(() => notified(`${REPO}#${n}`) && lastBadge(from) === badgeBefore + 1, 'slow first read: the new item notified, badge +1', GATE_MS);
+  const all = records();
   expect(all.filter((r) => r.op === 'tick').every((r) => r.visible === false)).toBe(true);
   expect(all.some((r) => r.op === 'shown')).toBe(false);
 });

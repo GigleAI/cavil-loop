@@ -137,3 +137,72 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   expect(openedUrls()).not.toContain('https://example.com/');
   expect(await wd.url()).toBe(appUrl);
 });
+
+// GitHub#193: ticking a choice runs a script inside the discussion frame. That only works
+// if both policies — the window's as Tauri really sends it, and the frame's own — let the
+// frame's script run; and it is only safe if nothing GitHub's HTML carries runs, and the
+// frame still cannot reach the app's IPC or the network. All of it in the real app.
+test('real app (GitHub#193): a ticked box reaches GitHub as one changed character; injected HTML never runs; the frame has no IPC and no network', async () => {
+  const QUESTION = '**Q1: 选哪个？**（默认 A）\n\n- [ ] **A.** 一\n- [ ] **B.** 二\n';
+  fake.state.w.comments.set('gigleai/cavil-loop#138', [
+    {
+      id: 'C_INJ',
+      url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1',
+      createdAt: '2026-11-01T01:00:00Z',
+      bodyHTML:
+        '<p>INJECTED</p><script>parent.postMessage({cavil:"pwned-script"},"*")</script>' +
+        '<img alt="i" src="data:image/png;base64,xx" onerror="parent.postMessage({cavil:\'pwned-onerror\'},\'*\')">',
+      author: { login: 'user-2' },
+    },
+    { id: 'C_Q', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c2', createdAt: '2026-11-02T01:00:00Z', bodyHTML: '', author: { login: 'user-3' }, body: QUESTION },
+  ]);
+  await wd.find('[data-testid="app-root"]');
+  // every message the window receives, by kind
+  await wd.exec(`window.__msgs = []; window.addEventListener('message', (e) => window.__msgs.push(e.data && e.data.cavil)); return true;`);
+  await wd.click('[data-testid="oauth-settings-toggle"]');
+  await wd.type('[data-testid="client-id"]', fake.state.oauthClientId);
+  await wd.click('[data-testid="save-client-id"]');
+  await wd.click('[data-testid="start-login"]');
+  await wd.find('[data-testid="user-code"]');
+  fake.resolveGrant('approved');
+  await wd.find('[data-testid="board"]');
+  await wd.click('[data-testid="open-settings"]');
+  await wd.type('[data-testid="source-input"]', 'GigleAI/cavil-loop');
+  await wd.click('[data-testid="source-add"]');
+  await wd.click('[data-testid="back"]');
+  await wd.find(card(138), 30_000);
+  await wd.click(card(138));
+  // the frame's own script ran under the shipped policies (it reports "ready")
+  await wd.find('[data-testid="timeline-frame"]', 30_000);
+  try {
+    await wd.find('[data-testid="timeline-frame"][data-ready="yes"]', 30_000);
+  } catch (e) {
+    console.log('DIAG', await wd.exec<string>('const f=document.querySelector("[data-testid=timeline-frame]");return [f.getAttribute("sandbox"), f.dataset.ready, f.dataset.render, JSON.stringify(window.__msgs)].join(" | ")'));
+    throw e;
+  }
+
+  // inside the frame: no Tauri, no IPC, no network
+  await wd.frame('[data-testid="timeline-frame"]');
+  expect(await wd.exec<string>('return typeof window.__TAURI_INTERNALS__ + "/" + typeof window.__TAURI__')).toBe('undefined/undefined');
+  const userReadsBefore = fake.log.filter((l) => l.path === '/api/user').length;
+  const reach = await wd.exec<string>(
+    `return Promise.all([
+       fetch('ipc://localhost/backend', { method: 'POST', body: '{}' }).then(() => 'ipc reached', () => 'ipc blocked'),
+       fetch('http://ipc.localhost/backend', { method: 'POST', body: '{}' }).then(() => 'ipc2 reached', () => 'ipc2 blocked'),
+       fetch(${JSON.stringify(fake.api)} + '/user').then(() => 'net reached', () => 'net blocked'),
+     ]).then((r) => r.join(','));`,
+  );
+  expect(reach).toBe('ipc blocked,ipc2 blocked,net blocked');
+  expect(fake.log.filter((l) => l.path === '/api/user').length).toBe(userReadsBefore);
+  // the opened question: tick A
+  await wd.click('details.entry[data-entry="C_Q"] input[data-task="0"]');
+  await wd.frame(null);
+  await until(() => fake.writes().length > 0, 'the change reached GitHub', 30_000);
+  expect(fake.writes().map((w) => [w.operation, w.variables])).toEqual([['CavilUpdateComment', { id: 'C_Q', body: QUESTION.replace('- [ ] **A.**', '- [x] **A.**') }]]);
+  await until(async () => (await wd.text('[data-testid="action-result"]')).includes('已勾上'), 'told it is done');
+  // nothing injected ran; the frame's fetch above never reached the fake
+  const msgs = await wd.exec<string[]>('return window.__msgs');
+  expect(msgs).toContain('ready');
+  expect(msgs).toContain('task');
+  expect(msgs.filter((m) => /^pwned/.test(String(m)))).toEqual([]);
+});

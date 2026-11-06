@@ -146,7 +146,7 @@ query CavilReviewComments($id: ID!, $after: String) {
 
 const DETAIL_COMMENTS = `comments(first: 100, after: $commentsAfter) @include(if: $withComments) {
   pageInfo { hasNextPage endCursor }
-  nodes { id url createdAt bodyHTML author { login } }
+  nodes { id url createdAt bodyHTML body viewerCanUpdate author { login } }
 }`;
 
 /**
@@ -162,13 +162,13 @@ query CavilItemDetail($owner: String!, $name: String!, $number: Int!, $commentsA
     issueOrPullRequest(number: $number) {
       __typename
       ... on Issue {
-        id number title url state createdAt bodyHTML
+        id number title url state createdAt bodyHTML body viewerCanUpdate
         author { login }
         labels(first: 50) { nodes { name color } }
         ${DETAIL_COMMENTS}
       }
       ... on PullRequest {
-        id number title url state merged isDraft createdAt bodyHTML
+        id number title url state merged isDraft createdAt bodyHTML body viewerCanUpdate
         author { login }
         labels(first: 50) { nodes { name color } }
         mergeable mergeStateStatus reviewDecision headRefOid baseRefName headRefName
@@ -212,3 +212,36 @@ mutation CavilClearField($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
 `;
 
 export const VIEWER_QUERY = `query CavilViewer { viewer { login } }`;
+
+/**
+ * The markdown source of one body / comment, read again right before ticking a
+ * box in it (GitHub#193): what it says now, whether this account may change it,
+ * and which issue / PR it belongs to (a comment's `issue` is its PR for a PR comment).
+ */
+export const TASK_SOURCE_QUERY = `
+query CavilTaskSource($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on IssueComment { body viewerCanUpdate issue { number repository { nameWithOwner } } }
+    ... on Issue { body viewerCanUpdate number repository { nameWithOwner } }
+    ... on PullRequest { body viewerCanUpdate number repository { nameWithOwner } }
+  }
+}
+`;
+
+/** Write a whole body back (GitHub has no "change one box"): one per kind of entry. */
+export const UPDATE_COMMENT_MUTATION = `
+mutation CavilUpdateComment($id: ID!, $body: String!) {
+  updateIssueComment(input: { id: $id, body: $body }) { issueComment { body } }
+}
+`;
+export const UPDATE_ISSUE_BODY_MUTATION = `
+mutation CavilUpdateIssueBody($id: ID!, $body: String!) {
+  updateIssue(input: { id: $id, body: $body }) { issue { body } }
+}
+`;
+export const UPDATE_PR_BODY_MUTATION = `
+mutation CavilUpdatePrBody($id: ID!, $body: String!) {
+  updatePullRequest(input: { pullRequestId: $id, body: $body }) { pullRequest { body } }
+}
+`;

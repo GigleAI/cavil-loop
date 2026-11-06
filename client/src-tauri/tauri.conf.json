@@ -14,7 +14,7 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self'",
+        "script-src": "'self' 'sha256-RD4DYgQi2uzXYjLy4z9EhMMYeP2mRYbYP8GEPIdqmhs='",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: https://github.com https://api.github.com https://avatars.githubusercontent.com",
         "connect-src": "ipc: http://ipc.localhost",

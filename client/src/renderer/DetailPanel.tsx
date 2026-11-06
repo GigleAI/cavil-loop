@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type IssueCloseReason, type ItemDetail, type MergeMethod, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { writesEnabled } from '../data/board';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { pickMergeMethod } from '../shared/mergePrefs';
-import { FRAME_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP, type Unfold } from './detailHtml';
+import { FRAME_SANDBOX, TIMELINE_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP, type FrameView, type Unfold } from './detailHtml';
+import { renderedTaskBoxes } from '../data/taskList';
 import { Person } from './Avatar';
 import { usePanelWidth } from './panelWidth';
 import { labelStyle, useDarkMode } from './colors';
@@ -155,9 +156,70 @@ export function DetailPanel({
   };
 
   // which entries are unfolded: the newest only, until the user asks for all / none (GitHub#155)
-  const [unfold, setUnfold] = useState<Unfold>('latest');
+  const [unfold, setUnfoldRule] = useState<Unfold>('latest');
   const isDark = useDarkMode();
-  const doc = useMemo(() => (detail ? timelineDocument(detail, isDark, unfold) : ''), [detail, unfold, isDark]);
+  // what the frame last reported (unfolded entries, scroll): a re-render puts it back (GitHub#193)
+  const viewRef = useRef<FrameView | null>(null);
+  const setUnfold = (u: Unfold) => {
+    viewRef.current = null;
+    setUnfoldRule(u);
+  };
+  // bumped to render the frame again as it was (e.g. a click on a box that was not sent): the box shows its real state
+  const [redraw, setRedraw] = useState(0);
+  const renderSeq = useRef(0);
+  const canTick = canWrite && !busy;
+  const frame = useMemo(() => {
+    if (!detail) return { doc: '', render: '' };
+    const render = `r${++renderSeq.current}`;
+    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current }), render };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail, unfold, isDark, canTick, redraw]);
+  const doc = frame.doc;
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  /** the rendering whose script reported in: the frame's script ran (tests wait on it) */
+  const [readyRender, setReadyRender] = useState('');
+
+  /** A box was ticked in the frame. Sent only when everything the window knows says it may be. */
+  const tick = async (entryId: unknown, index: unknown, checked: unknown) => {
+    const e = detail?.timeline.find((x) => x.id === entryId && (x.kind === 'body' || x.kind === 'comment'));
+    const t = e?.tasks;
+    const count = e ? renderedTaskBoxes(e.bodyHtml).length : 0;
+    if (!item || !e || !t?.clickable || typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= count || typeof checked !== 'boolean' || !canWrite || busy) {
+      setRedraw((n) => n + 1);
+      return;
+    }
+    const r = await run(
+      { kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source },
+      checked ? '已勾上，GitHub 上已更新' : '已取消勾选，GitHub 上已更新',
+    );
+    if (!r.here) return;
+    if (r.ok) setReplied(true);
+    // refused or failed: read again, so the box shows what GitHub holds now
+    else void load();
+  };
+  // What the listener below reads: the latest values of this render, set before the frame can load.
+  const live = useRef({ tick, render: frame.render, ids: [] as string[] });
+  live.current = { tick, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
+  // One listener for the panel's whole life, in place before the first frame loads (a layout effect
+  // runs right after the frame is inserted, before its document can run): a frame that loads fast
+  // must not report before anyone listens.
+  useLayoutEffect(() => {
+    const on = (ev: MessageEvent) => {
+      const f = frameRef.current;
+      // only the frame on screen, only its current rendering: anything else is dropped
+      if (!f || ev.source !== f.contentWindow) return;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown } | null;
+      const now = live.current;
+      if (!m || typeof m !== 'object' || m.render !== now.render) return;
+      const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
+      if (v && Array.isArray(v.open) && typeof v.scroll === 'number')
+        viewRef.current = { known: now.ids, open: v.open.filter((x): x is string => typeof x === 'string'), scroll: v.scroll };
+      if (m.cavil === 'ready') setReadyRender(now.render);
+      else if (m.cavil === 'task') void now.tick(m.entry, m.index, m.checked);
+    };
+    window.addEventListener('message', on);
+    return () => window.removeEventListener('message', on);
+  }, []);
   const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
   // the board leaves this much room to scroll past the panel (BoardView's spacer)
   useEffect(() => {
@@ -196,7 +258,8 @@ export function DetailPanel({
     reply: () => replyBox.current?.focus(),
     // Esc puts the panel away — never while the reply box holds unsent text: a key never drops a draft.
     // (Dialogs and pickers are layers: their Esc never gets here. Neither does a key pressed inside the
-    // isolated discussion frame — PR #171, the maintainer chose to keep it isolated.)
+    // isolated discussion frame — PR #171, the maintainer chose to keep it isolated; its one script since
+    // GitHub#193 reports ticked boxes and the view, never keys.)
     hide: () => {
       if (reply.trim()) {
         setEscKept(true);
@@ -215,7 +278,7 @@ export function DetailPanel({
 
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
-    // whose keys never reach this window (the frame is isolated and runs no scripts) — Esc works again after it
+    // whose keys never reach this window (another origin; its own script forwards no keys) — Esc works again after it
     <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
       <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
       {children}
@@ -508,7 +571,15 @@ export function DetailPanel({
       )}
       <div className="timeline">
         {detail ? (
-          <iframe title="评论" data-testid="timeline-frame" sandbox={FRAME_SANDBOX} srcDoc={doc} />
+          <iframe
+            ref={frameRef}
+            title="评论"
+            data-testid="timeline-frame"
+            data-render={frame.render}
+            data-ready={readyRender === frame.render ? 'yes' : 'no'}
+            sandbox={TIMELINE_SANDBOX}
+            srcDoc={doc}
+          />
         ) : (
           !loadError && <div className="muted center">正在从 GitHub 读取…</div>
         )}

@@ -445,6 +445,15 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 
 - **开工**：只打托管标签就行——挂着它、没有任何状态 / 触发标签的 issue，当作打了 `pending/agent`
   派工。它是「模式标签」不是触发标签：daemon 从不摘它，看板上一直看得见。
+- **PR 上也挂一份**（GitHub#190）：托管 issue 开出绑定它的 PR 之后，daemon 把托管标签复制到这个 PR 上
+  （每轮检查，写失败下一轮再补）——PR 列表上就看得出哪些 PR 会被自动合并，也能直接在 PR 上摘标签叫停。
+  issue 上那个保留：它才是授权。PR 上这份由 loop 的写入账号打，**永远不算授权**：不触发接手、不引出
+  「托管标签不生效」说明，worker 自己往 PR 上打也没用。补和收回都判两次，第二次紧挨着写、全部现读
+  （PR 是否打开 / 已合并、最新提交、目标分支、来源仓库 / 分支名、绑定的 issue 和它的状态、两处的 `pending/human`、
+  授权所依据的那次打标签，收回时还有副本那条打标签记录），任一项变了或读不到，本轮不写。授权明确不成立之后
+  （issue 或 PR 上摘了标签、issue 关了、PR 不再绑定……）daemon 把**自己补的那份**收回；维护者亲手打在 PR 上的从不动。
+  绑 issue 的 PR **没挂这个标签就不合并**：算一轮判不了，连续 `AUTOPILOT_UNKNOWN_MAX` 轮补不上就交人。只管本机负责的 PR
+  （和合并那一步同一条规则）。关掉托管之后，已经补到 PR 上的标签不清理（不起任何作用，想摘就手动摘）。
 - **方案**：照常写、照常发到 issue，选择题按默认项，一律送复审（不管 `REVIEW_DESIGN_PROPOSALS`）。
   方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。拆成子 issue **不在托管范围**：
   worker 把拆分计划交人。
@@ -491,6 +500,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 | PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
 | 以 PR 为准时：授权只看 PR（下一行去掉 issue 那一处），而且打标签那一刻的 PR 正文（修改历史里那一版）也合上一行的条件 | `pending/human` |
 | 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
+| PR 自己挂着托管标签（绑 issue 的 PR 由 daemon 从 issue 复制过来，见上文；GitHub#190） | 本轮判不了（连续 `AUTOPILOT_UNKNOWN_MAX` 轮 → `pending/human`） |
 | issue 和 PR 都没被打 `pending/human` | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
 | PR 最新提交**和目标分支**都是派复审时记下的那一对（同一提交改投别的分支 = 另一份改动；旧版没记目标分支的记录算缺） | 回 `pending/review` 重审 |
 | 复审的结论评论（写入账号、派复审之后发的）里有这个提交的测试记录，`failed=0`、`passed>0` | `pending/human` |
@@ -528,7 +538,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
 状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
-`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键（`denied` 和 `takeover` 的值都带判定规则版本，规则放宽后的升级里旧记录自动作废、按新规则重判一次）、接手阶段连续判不了的轮数、还没做完的交人待办）。和 `requester_bot_done_queue` 一样
+`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键（`denied` 和 `takeover` 的值都带判定规则版本，规则放宽后的升级里旧记录自动作废、按新规则重判一次）、接手阶段连续判不了的轮数、还没做完的交人待办；`mirror`：判过「不用补 / 不用收回托管标签」的 PR 及同样的缓存键，GitHub#190）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
 
 ### 只在一台机器上跑这个仓库的轮询
