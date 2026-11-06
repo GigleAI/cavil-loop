@@ -64,7 +64,7 @@ function when(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** An avatar that falls back to the first letter by itself (the frame runs no scripts): the image sits over the letter. */
+/** An avatar that falls back to the first letter by itself, without a script: the image sits over the letter. */
 function avatarHtml(login: string | null, px: number): string {
   const img = login ? `<img src="${escapeHtml(avatarUrl(login, px))}" alt="" width="${px}" height="${px}">` : '';
   return `<span class="av" style="width:${px}px;height:${px}px" data-avatar="${escapeHtml(login ?? '')}"><span>${escapeHtml(avatarInitial(login))}</span>${img}</span>`;
@@ -133,7 +133,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean): string {
       '</div>';
   }
   // a folded entry is one line (who, when, what kind, the start of its text); the browser's own
-  // <details> opens it — the frame runs no scripts
+  // <details> opens it — no script involved (FRAME_SCRIPT only reports boxes and the view)
   return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${link}<span class="excerpt"> · ${escapeHtml(excerpt)}</span></summary>${body}${lines}</details>`;
 }
 

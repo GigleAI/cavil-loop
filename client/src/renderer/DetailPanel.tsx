@@ -218,7 +218,8 @@ export function DetailPanel({
   }, [width]);
   // Esc closes the panel — not while typing (a draft is not thrown away by a key) or while a dialog asks.
   // Not while the discussion frame has the keyboard either: its keys stay inside it (PR #171 review,
-  // the maintainer chose to keep the frame isolated); a click on the panel outside the frame gives it back.
+  // the maintainer chose to keep the frame isolated; its one script since GitHub#193 reports ticked boxes
+  // and the view, never keys); a click on the panel outside the frame gives it back.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || ask) return;
@@ -231,7 +232,7 @@ export function DetailPanel({
   }, [ask, onClose]);
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
-    // whose keys never reach this window (the frame is isolated and runs no scripts) — Esc works again after it
+    // whose keys never reach this window (another origin; its own script forwards no keys) — Esc works again after it
     <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
       <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
       {children}
