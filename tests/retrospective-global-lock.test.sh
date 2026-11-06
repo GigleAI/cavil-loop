@@ -79,7 +79,10 @@ LABEL_PENDING_HUMAN=pending/human
 CFG
     printf '{"enabled_at": "2026-01-01T00:00:00Z", "since": "2026-01-01T00:00:00Z"}\n' \
         > "$p/state/retrospectives/cursor.json"
-    printf '{"pr": 7, "status": "pending", "attempts": 0}\n' > "$p/state/retrospectives/pr-7.json"
+    # 合并时间晚于本轮：目录经验开关默认打开时只处理开关生效后合并的 PR（GitHub#168），
+    # 这里要的是「会被真处理」的那种任务。
+    printf '{"pr": 7, "status": "pending", "attempts": 0, "merged_at": "2099-01-01T00:00:00Z"}\n' \
+        > "$p/state/retrospectives/pr-7.json"
 }
 
 # run_retro <release> <project> [VAR=val...]：干净环境跑真实入口，输出写 <project>/out，返回退出码。
