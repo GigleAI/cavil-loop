@@ -1,7 +1,7 @@
 // GitHub#191: when a click outside the detail panel puts it away. Expected values follow the
 // agreed rule table on the issue (not the implementation's output).
 import { describe, expect, it } from 'vitest';
-import { hidesPanel, MOVE_SLOP, type Press, type Release } from '../../src/renderer/outsideClick';
+import { hidesPanel, MOVE_SLOP, releaseOfClick, type Press, type Release } from '../../src/renderer/outsideClick';
 
 const press = (o: Partial<Press> = {}): Press => ({ button: 0, x: 100, y: 100, inPanel: false, opensItem: false, onScrollbar: false, dialogOpen: false, ...o });
 const release = (o: Partial<Release> = {}): Release => ({ x: 100, y: 100, inPanel: false, opensItem: false, keyboard: false, ...o });
@@ -23,5 +23,13 @@ describe('detail panel: does this click put it away?', () => {
     ['a click from the keyboard (Enter on a toolbar button)', press(), release({ keyboard: true }), '', false],
     ['no press seen by this window (it went into the discussion frame)', null, release(), '', false],
   ];
+  it('no release seen by this window', () => expect(hidesPanel(press(), null, '')).toBe(false));
   for (const [name, p, r, draft, want] of rows) it(name, () => expect(hidesPanel(p, r, draft)).toBe(want));
+});
+
+describe('detail panel: which release a click stands for', () => {
+  const up = release({ inPanel: true });
+  it('a pointer click: the recorded button-up, not the click target', () => expect(releaseOfClick({ detail: 1 } as MouseEvent, up)).toBe(up));
+  it('a pointer click with no button-up recorded: none', () => expect(releaseOfClick({ detail: 1 } as MouseEvent, null)).toBeNull());
+  it('a keyboard click: keyboard, whatever button-up came before', () => expect(releaseOfClick({ detail: 0 } as MouseEvent, up)?.keyboard).toBe(true));
 });

@@ -809,7 +809,7 @@ export const MUTATIONS = [
     from: "  if (draft !== '') return false;\n", to: '',
     expect: ['a reply is typed'] },
   { what: '点面板外：面板没把回复框的字交给判定', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: 'releaseAt(e, panelRef.current), draftRef.current)', to: "releaseAt(e, panelRef.current), '')",
+    from: 'if (hidesPanel(p, r, draftRef.current)) closeRef.current();', to: "if (hidesPanel(p, r, '')) closeRef.current();",
     expect: ['GitHub#191'] },
   { what: '点面板外：只看按下点，松开在面板里也收起', file: 'src/renderer/outsideClick.ts',
     from: 'if (press.inPanel || release.inPanel) return false;', to: 'if (press.inPanel) return false;',
@@ -837,9 +837,12 @@ export const MUTATIONS = [
     expect: ['GitHub#191'] },
   { what: '点面板外：有没有确认框改在点击时才看（冒泡阶段，框已关）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
     edits: [
-      { file: 'src/renderer/DetailPanel.tsx', from: "      if (hidesPanel(p, releaseAt(e, panelRef.current), draftRef.current)) closeRef.current();",
-        to: "      if (hidesPanel(p && { ...p, dialogOpen: document.querySelector('[data-modal]') !== null }, releaseAt(e, panelRef.current), draftRef.current)) closeRef.current();" },
+      { file: 'src/renderer/DetailPanel.tsx', from: "      if (hidesPanel(p, r, draftRef.current)) closeRef.current();",
+        to: "      if (hidesPanel(p && { ...p, dialogOpen: document.querySelector('[data-modal]') !== null }, r, draftRef.current)) closeRef.current();" },
       { file: 'src/renderer/DetailPanel.tsx', from: "    window.addEventListener('click', click, true);", to: "    window.addEventListener('click', click);" },
     ],
+    expect: ['GitHub#191'] },
+  { what: '点面板外：松开位置取 click 的目标（跨边界按下 / 松开时是共同父元素，PR #199 代码复审第 1 轮）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '      const r = releaseOfClick(e, release);', to: "      const r = releaseOfClick(e, { x: e.clientX, y: e.clientY, inPanel: panelRef.current?.contains(e.target as Node) ?? false, opensItem: false, keyboard: false });",
     expect: ['GitHub#191'] },
 ];

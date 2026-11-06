@@ -12,7 +12,7 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
-import { hidesPanel, pressAt, releaseAt, type Press } from './outsideClick';
+import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -177,18 +177,28 @@ export function DetailPanel({
   closeRef.current = onClose;
   useEffect(() => {
     let press: Press | null = null;
+    let release: Release | null = null;
     const down = (e: PointerEvent) => {
       press = pressAt(e, panelRef.current);
+      release = null;
+    };
+    // where the button really went up: the click's own target is the common ancestor of press and release
+    const up = (e: PointerEvent) => {
+      release = releaseAt(e, panelRef.current);
     };
     const click = (e: MouseEvent) => {
       const p = press;
+      const r = releaseOfClick(e, release);
       press = null;
-      if (hidesPanel(p, releaseAt(e, panelRef.current), draftRef.current)) closeRef.current();
+      release = null;
+      if (hidesPanel(p, r, draftRef.current)) closeRef.current();
     };
     window.addEventListener('pointerdown', down, true);
+    window.addEventListener('pointerup', up, true);
     window.addEventListener('click', click, true);
     return () => {
       window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointerup', up, true);
       window.removeEventListener('click', click, true);
     };
   }, []);

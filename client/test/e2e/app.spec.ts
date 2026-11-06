@@ -1839,8 +1839,8 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await signInWithSources(page);
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
-  /** a blank spot of the window outside the panel: the left end of the status bar */
-  const outside = () => page.locator('.statusbar').click({ position: { x: 4, y: 4 } });
+  /** a blank spot of the window outside the panel: the head of the leftmost column (not a card) */
+  const outside = () => page.locator('[data-testid="column"] .column-head').first().click({ position: { x: 4, y: 4 } });
   const open = async (n: number) => {
     await card(page, n).click();
     await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
@@ -1855,10 +1855,36 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await open(137);
   await outside();
   await expect(detail).toHaveCount(0);
-  // the toolbar is outside too
+  // the top bar is outside too
   await open(137);
-  await page.getByTestId('item-total').click();
+  await page.locator('.hdr').click({ position: { x: 4, y: 4 } });
   await expect(detail).toHaveCount(0);
+  // pressed just above the panel's top edge, let go just inside it (2px): the panel stays
+  // (the click itself goes to the common ancestor; PR #199 review round 1)
+  await open(137);
+  {
+    const b = (await detail.boundingBox())!;
+    const x = b.x + 40;
+    const [above, inside] = [Math.floor(b.y) - 1, Math.ceil(b.y) + 1];
+    // the two points really are on either side of the edge, and the one above is not a card
+    const hit = (y: number) =>
+      page.evaluate(([px, py]) => {
+        const el = document.elementFromPoint(px, py);
+        return { inPanel: !!el?.closest('[data-testid="detail"]'), card: !!el?.closest('[data-opens-item]') };
+      }, [x, y]);
+    expect(await hit(above)).toEqual({ inPanel: false, card: false });
+    expect((await hit(inside)).inPanel).toBe(true);
+    await page.mouse.move(x, above);
+    await page.mouse.down();
+    await page.mouse.move(x, inside);
+    await page.mouse.up();
+    await stays(137);
+    // …and the same press let go where it started still puts it away
+    await page.mouse.move(x, above);
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(detail).toHaveCount(0);
+  }
 
   // ---- 2. another card switches; the same card keeps this opening (its unfold state survives) ----
   await open(137);
@@ -1875,10 +1901,10 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await detail.locator('.detail-head').click({ position: { x: 4, y: 4 } });
   await stays(138);
   const title = await detail.locator('.detail-title').boundingBox();
-  const bar = await page.locator('.statusbar').boundingBox();
+  const head = await page.locator('[data-testid="column"] .column-head').first().boundingBox();
   await page.mouse.move(title!.x + title!.width / 2, title!.y + title!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(bar!.x + 4, bar!.y + 4, { steps: 5 });
+  await page.mouse.move(head!.x + 4, head!.y + 4, { steps: 5 });
   await page.mouse.up();
   await stays(138);
   // the resize edge: dragged and let go
@@ -1938,7 +1964,14 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await stays(137);
   await rowTitle(138).click();
   await stays(138);
-  await outside();
+  // the same row title again keeps this opening: its unfold state survives
+  await page.getByTestId('unfold-toggle').click();
+  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
+  await rowTitle(138).click();
+  await stays(138);
+  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
+  // a table cell that is not a title is outside too
+  await page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#139"] [data-testid="row-state"]').first().click();
   await expect(detail).toHaveCount(0);
 
   expect(env.fake.writes()).toEqual([]);

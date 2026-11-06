@@ -33,11 +33,16 @@ export type Release = {
 };
 
 /**
- * Does this click put the panel away? `press` is the last button-down this window saw (null:
- * none, e.g. the press went into the isolated discussion frame); `draft` is the reply box's text.
+ * Does this click put the panel away? `press` is the last button-down this window saw and
+ * `release` the last button-up (null: none, e.g. it went into the isolated discussion frame);
+ * `draft` is the reply box's text.
+ *
+ * The release is the button-up event's own target, never the click's: when press and release land
+ * on different elements the browser sends the click to their common ancestor, so a press just
+ * outside the panel and a release just inside it would look like "outside" (PR #199 review round 1).
  */
-export function hidesPanel(press: Press | null, release: Release, draft: string): boolean {
-  if (!press || release.keyboard) return false;
+export function hidesPanel(press: Press | null, release: Release | null, draft: string): boolean {
+  if (!press || !release || release.keyboard) return false;
   if (press.button !== 0) return false;
   if (press.inPanel || release.inPanel) return false;
   if (press.opensItem || release.opensItem) return false;
@@ -70,6 +75,13 @@ export function pressAt(e: PointerEvent, panel: Element | null): Press {
   };
 }
 
-export function releaseAt(e: MouseEvent, panel: Element | null): Release {
-  return { x: e.clientX, y: e.clientY, inPanel: within(e.target, panel), opensItem: opens(e.target), keyboard: e.detail === 0 };
+/** What a button-up in the window was (its own target: where the pointer really was let go). */
+export function releaseAt(e: PointerEvent, panel: Element | null): Release {
+  return { x: e.clientX, y: e.clientY, inPanel: within(e.target, panel), opensItem: opens(e.target), keyboard: false };
+}
+
+/** The release a click stands for: the recorded button-up, or a keyboard activation (no pointer). */
+export function releaseOfClick(e: MouseEvent, up: Release | null): Release | null {
+  if (e.detail === 0) return { x: 0, y: 0, inPanel: false, opensItem: false, keyboard: true };
+  return up;
 }
