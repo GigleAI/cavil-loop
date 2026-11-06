@@ -1,14 +1,25 @@
 // The detail timeline as one HTML document for the isolated view: a frame
-// with `sandbox` (no scripts, no same-origin, no forms, no top navigation)
-// and its own Content-Security-Policy. GitHub's rendered HTML goes in as is;
-// everything this file writes around it (names, times, paths) is escaped.
-// Links open in a new window, which the main process turns into "open in
-// the system browser" (GitHub addresses only).
+// with `sandbox` (no same-origin, no forms, no top navigation) and its own
+// Content-Security-Policy. GitHub's rendered HTML goes in as is; everything
+// this file writes around it (names, times, paths) is escaped. Links open in
+// a new window, which the main process turns into "open in the system
+// browser" (GitHub addresses only).
+//
+// The one script that runs in the timeline frame is FRAME_SCRIPT (GitHub#193:
+// it reports a ticked task-list box to the window). Two policies stand between
+// GitHub's HTML and running anything, each allowing that script alone by its
+// hash: the window's (tauri.conf.json — a srcdoc frame inherits it) and the
+// frame's own (TIMELINE_CSP). The reply preview frame runs no script at all.
 
 import type { ItemDetail, TimelineEntry } from '../shared/actions';
 import { AVATAR_HOST, avatarInitial, avatarUrl } from '../shared/avatar';
+import { annotateTaskBoxes } from '../data/taskList';
+import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from './frameScript';
 
+/** the reply preview: no scripts at all */
 export const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
+/** the timeline: scripts on (only FRAME_SCRIPT gets past both policies), still no same-origin */
+export const TIMELINE_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
 
 /**
  * The app talks to github.com / api.github.com only (#135): images are loaded
@@ -20,6 +31,9 @@ export const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
 export const IMAGE_HOSTS = ['https://github.com', 'https://api.github.com', AVATAR_HOST];
 
 export const FRAME_CSP = `default-src 'none'; img-src ${IMAGE_HOSTS.join(' ')} data:; media-src 'none'; style-src 'unsafe-inline'; font-src 'none'; script-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`;
+
+/** The timeline frame's own policy: FRAME_CSP with FRAME_SCRIPT, and nothing else, allowed to run. */
+export const TIMELINE_CSP = FRAME_CSP.replace("script-src 'none'", `script-src ${FRAME_SCRIPT_HASH}`);
 
 /** How many <img> in GitHub's HTML point outside the allowed hosts (they will not load). */
 export function blockedImages(html: string): number {
@@ -50,7 +64,7 @@ function when(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** An avatar that falls back to the first letter by itself (the frame runs no scripts): the image sits over the letter. */
+/** An avatar that falls back to the first letter by itself, without a script: the image sits over the letter. */
 function avatarHtml(login: string | null, px: number): string {
   const img = login ? `<img src="${escapeHtml(avatarUrl(login, px))}" alt="" width="${px}" height="${px}">` : '';
   return `<span class="av" style="width:${px}px;height:${px}px" data-avatar="${escapeHtml(login ?? '')}"><span>${escapeHtml(avatarInitial(login))}</span>${img}</span>`;
@@ -80,7 +94,19 @@ export function plainExcerpt(html: string, max = 80): string {
 /** Which entries are unfolded: the newest only (the default), all, or none (GitHub#155). */
 export type Unfold = 'latest' | 'all' | 'none';
 
-function entryHtml(e: TimelineEntry, open: boolean): string {
+/**
+ * GitHub's HTML of one body / comment with its task-list boxes numbered; they
+ * can be clicked only when the entry allows it (GitHub#193) and `canTick` (online,
+ * no change in flight). A read-only entry says why under its text.
+ */
+function bodyWithTasks(e: TimelineEntry, canTick: boolean): { html: string; note: string } {
+  const t = e.tasks;
+  const html = annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true);
+  const note = t && !t.clickable ? `<div class="tasknote" data-testid="task-readonly">${escapeHtml(t.why)}</div>` : '';
+  return { html, note };
+}
+
+function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean): string {
   const who = escapeHtml(e.author ?? '（已删除的账号）');
   const head =
     e.kind === 'body'
@@ -92,7 +118,8 @@ function entryHtml(e: TimelineEntry, open: boolean): string {
   const link = e.url ? ` · <a href="${escapeHtml(e.url)}">在网页上看</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
   const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片存放在 GitHub 的图片代理或附件地址，客户端不加载这些地址；点「在网页上看」查看</div>` : '';
-  const body = (e.bodyHtml.trim() ? `<div class="md">${e.bodyHtml}</div>` : '') + note;
+  const tasks = bodyWithTasks(e, canTick);
+  const body = (e.bodyHtml.trim() ? `<div class="md">${tasks.html}</div>` : '') + tasks.note + note;
   let lines = '';
   if (e.lineComments?.length) {
     lines =
@@ -106,7 +133,7 @@ function entryHtml(e: TimelineEntry, open: boolean): string {
       '</div>';
   }
   // a folded entry is one line (who, when, what kind, the start of its text); the browser's own
-  // <details> opens it — the frame runs no scripts
+  // <details> opens it — no script involved (FRAME_SCRIPT only reports boxes and the view)
   return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${link}<span class="excerpt"> · ${escapeHtml(excerpt)}</span></summary>${body}${lines}</details>`;
 }
 
@@ -115,7 +142,31 @@ export function isUnfolded(i: number, unfold: Unfold): boolean {
   return unfold === 'all' || (unfold === 'latest' && i === 0);
 }
 
-export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfold = 'latest'): string {
+/**
+ * What the frame reported before a re-render (GitHub#193): the entries it knew,
+ * which of them were unfolded, how far it was scrolled. A re-read after ticking a
+ * box puts all three back; an entry it did not know yet follows `unfold`.
+ */
+export interface FrameView {
+  known: string[];
+  open: string[];
+  scroll: number;
+}
+
+export interface TimelineOptions {
+  /** this rendering's id: the frame's messages carry it, older frames' messages are dropped */
+  render?: string;
+  /** boxes of clickable entries can be ticked (online, no change in flight) */
+  canTick?: boolean;
+  view?: FrameView | null;
+}
+
+export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfold = 'latest', opts: TimelineOptions = {}): string {
+  const { render = '', canTick = false, view = null } = opts;
+  const known = new Set(view?.known ?? []);
+  const opened = new Set(view?.open ?? []);
+  const isOpen = (e: TimelineEntry, i: number) => (known.has(e.id) ? opened.has(e.id) : isUnfolded(i, unfold));
+  const scroll = view && Number.isFinite(view.scroll) && view.scroll > 0 ? Math.round(view.scroll) : 0;
   const fg = dark ? '#e6edf3' : '#1f2328';
   const bg = dark ? '#151b23' : '#ffffff';
   const border = dark ? '#3d444d' : '#d1d9e0';
@@ -126,7 +177,7 @@ export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfo
   const canvas = dark ? '#0d1117' : '#f6f8fa';
   const code = dark ? '#212830' : '#eef1f4';
   return `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">
+<meta http-equiv="Content-Security-Policy" content="${TIMELINE_CSP}">
 <base target="_blank">
 <style>
 body{margin:0;padding:2px 0 8px;background:${bg};color:${fg};font:13px/1.5 -apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif;word-wrap:break-word}
@@ -153,7 +204,14 @@ a{color:${accent}}
 .line{padding:2px 8px}
 .line>.head,.more{color:${muted};font-size:12px}
 .blocked{margin:0 10px 6px;color:${muted};font-size:12px}
-</style></head><body>
-${detail.timeline.map((e, i) => entryHtml(e, isUnfolded(i, unfold))).join('\n')}
+.md .contains-task-list{padding-left:2em}
+.md .task-list-item{list-style-type:none}
+.md .task-list-item+.task-list-item{margin-top:2px}
+.md .task-list-item-checkbox{margin:0 .3em .2em -1.5em;vertical-align:middle}
+.md .task-list-item-checkbox:not([disabled]){cursor:pointer}
+.tasknote{margin:0 12px 8px;color:${muted};font-size:12px}
+</style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}">
+${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick)).join('\n')}
+<script>${FRAME_SCRIPT}</script>
 </body></html>`;
 }

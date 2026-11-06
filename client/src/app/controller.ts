@@ -127,6 +127,8 @@ export class Controller {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** the one sync round queued after the last successful change (GigleAI/cavil-loop#177) */
   private followUp: ReturnType<typeof setTimeout> | null = null;
+  /** bodies / comments with a box being ticked right now: one read-change-write each at a time (GitHub#193) */
+  private tasksInFlight = new Set<string>();
   /** the back end's session: bumps on every login / logout, a round started in another session is dropped */
   private session = 0;
   /** the last sign-out applied here (a refresh ending the sign-in can be reported by several callers) */
@@ -988,6 +990,18 @@ export class Controller {
    * item is read again from GitHub at once and the cache takes that copy.
    */
   async act(action: WriteAction): Promise<WriteResult> {
+    if (action.kind !== 'toggleTask') return this.actNow(action);
+    // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
+    if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次勾选还没完成，等它完成再点', warning: null };
+    this.tasksInFlight.add(action.entryId);
+    try {
+      return await this.actNow(action);
+    } finally {
+      this.tasksInFlight.delete(action.entryId);
+    }
+  }
+
+  private async actNow(action: WriteAction): Promise<WriteResult> {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
