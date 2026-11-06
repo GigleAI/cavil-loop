@@ -360,12 +360,28 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await page.getByTestId('mode').selectOption('status');
   await card(page, prN).click();
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  // GitHub#175: the merge method starts where it was last left in this repository
+  await expect(page.getByTestId('merge-method')).toHaveValue('merge'); // nothing chosen yet: the first one allowed
+  await page.getByTestId('merge-method').selectOption('squash');
+  await page.getByTestId('detail-close').click();
+  env.fake.state.w.mergeMethods.set('gigleai/cavil-loop', { merge: true, squash: false, rebase: true });
+  await card(page, prN).click();
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  await expect(page.getByTestId('merge-method')).toHaveValue('merge'); // squash switched off meanwhile: first allowed…
+  await page.getByTestId('detail-close').click();
+  env.fake.state.w.mergeMethods.delete('gigleai/cavil-loop');
+  await card(page, prN).click();
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  await expect(page.getByTestId('merge-method')).toHaveValue('squash'); // …and that fallback was not remembered
   const pull = env.fake.state.w.pulls.get(`gigleai/cavil-loop#${prN}`)!;
   const seen = pull.headOid;
   pull.headOid = 'f'.repeat(40); // somebody pushed after the detail was read
   const digest = env.fake.digest();
   await page.getByTestId('merge').click();
-  await expect(page.getByTestId('merge-commit')).toContainText(seen.slice(0, 7));
+  // one sentence: what goes where, and how; no explanatory paragraph
+  await expect(page.getByTestId('confirm-dialog').locator('p')).toHaveCount(1);
+  await expect(page.getByTestId('confirm-dialog').locator('p')).toContainText('方式：压成一个提交（squash）');
+  await shot(page, '24-merge-confirm');
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'error');
   await expect(page.getByTestId('action-result')).toContainText('新提交');
@@ -373,13 +389,14 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await shot(page, '24-merge-refused');
   await page.getByTestId('detail-refresh').click();
   await expect(page.getByTestId('pr-status')).toContainText('fffffff');
+  await expect(page.getByTestId('merge-method')).toHaveValue('squash');
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('action-result')).toContainText('已合并');
   await expect(card(page, prN).getByTestId('card-state')).toContainText('已合并');
   expect(env.fake.writes().filter((w) => w.path.endsWith('/merge')).map((w) => w.body)).toEqual([
-    { merge_method: 'merge', sha: seen },
-    { merge_method: 'merge', sha: 'f'.repeat(40) },
+    { merge_method: 'squash', sha: seen },
+    { merge_method: 'squash', sha: 'f'.repeat(40) },
   ]);
   await shot(page, '25-merged');
   await page.getByTestId('detail-close').click();

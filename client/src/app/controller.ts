@@ -9,6 +9,7 @@
 import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type HandBackLabels, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
 import type { DetailResult, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
+import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { importView, pickView } from '../shared/viewImport';
 import { parseSource } from '../shared/sources';
 import { clientIdKindProblem } from '../shared/appKind';
@@ -57,6 +58,8 @@ interface PendingImport {
   touched: string[];
 }
 const PENDING_IMPORTS = 'pendingImports';
+/** its own key, not part of the view settings: importing a Project's web view must not touch it */
+const MERGE_PREFS = 'mergePrefs';
 
 /**
  * The settings, as the window sees them: read once at start, every change
@@ -164,6 +167,7 @@ export class Controller {
       sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
+      mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       pendingCount: 0,
       launchAtLogin: null,
       notifyProblem: null,
@@ -745,6 +749,14 @@ export class Controller {
   // ---- view & change one item ---------------------------------------------
 
   /** Labels "hand back to the agent" swaps; empty names fall back to the defaults. */
+  /** The user picked a merge method for a PR in `repo` (GitHub#175). An unknown method is ignored. */
+  setMergeMethod(repo: string, method: unknown): void {
+    const next = rememberMergeMethod(this.state.mergePrefs, repo, method);
+    if (next === this.state.mergePrefs) return;
+    this.cache.setSetting(MERGE_PREFS, next);
+    this.set({ mergePrefs: next });
+  }
+
   setHandBack(patch: Partial<HandBackLabels>): void {
     const next: HandBackLabels = {
       human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,

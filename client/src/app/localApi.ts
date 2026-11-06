@@ -29,5 +29,6 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     previewMarkdown: (repo, text) => c.previewMarkdown(String(repo), String(text)),
     act: (action) => c.act(action),
     setHandBack: async (patch) => c.setHandBack(patch ?? {}),
+    setMergeMethod: async (repo, method) => c.setMergeMethod(String(repo), method),
   };
 }

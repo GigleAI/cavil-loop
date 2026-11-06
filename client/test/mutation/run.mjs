@@ -623,6 +623,30 @@ const MUTATIONS = [
     from: "      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;\n", to: '',
     expect: ['GitHub#155: avatars; the detail floats over the board'] },
 
+  // ---- GitHub#175: merge method remembered per repository; the merge dialog is one sentence ----
+  { what: '合并方式不看本仓库的记录，只看最近一次', file: 'src/shared/mergePrefs.ts',
+    from: '  for (const m of [prefs.byRepo[repoKey(repo)], prefs.last]) if', to: '  for (const m of [prefs.last]) if',
+    expect: ['this repository first, then the last one chosen anywhere, then the first allowed'] },
+  { what: '记下的合并方式被仓库关掉了也照用', file: 'src/shared/mergePrefs.ts',
+    from: '  for (const m of [prefs.byRepo[repoKey(repo)], prefs.last]) if (m && allowed.includes(m)) return m;', to: '  for (const m of [prefs.byRepo[repoKey(repo)], prefs.last]) if (m) return m;',
+    expect: ['this repository first, then the last one chosen anywhere, then the first allowed'] },
+  { what: '存下的合并方式不校验（坏值照用）', file: 'src/shared/mergePrefs.ts',
+    from: '    for (const [k, v] of Object.entries(r.byRepo as Record<string, unknown>)) if (k && isMethod(v))', to: '    for (const [k, v] of Object.entries(r.byRepo as Record<string, unknown>)) if (k)',
+    expect: ['a saved setting that is missing or broken reads as nothing remembered; valid parts are kept'] },
+  { what: '选的合并方式不存下来（重开回到第一项）', file: 'src/app/controller.ts',
+    from: '    this.cache.setSetting(MERGE_PREFS, next);\n', to: '',
+    expect: ['GitHub#175: the merge method chosen per repository survives a restart'] },
+  { what: '下拉框里换合并方式不记下', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '                  void Promise.resolve(api().setMergeMethod(item.repo, m)).catch(() => undefined);\n', to: '',
+    expect: ['detail newest first in an isolated view'] },
+  { what: '仓库不允许记下的方式时，自动退回的那项也被当成选择记下', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: "  const method: MergeMethod | '' = picked && allowed.includes(picked) ? picked : pickMergeMethod(state.mergePrefs, repo, allowed);\n",
+    to: "  const method: MergeMethod | '' = picked && allowed.includes(picked) ? picked : pickMergeMethod(state.mergePrefs, repo, allowed);\n  if (detail?.pr && method && method !== state.mergePrefs.byRepo[repo.toLowerCase()]) void api().setMergeMethod(repo, method);\n",
+    expect: ['detail newest first in an isolated view'] },
+  { what: '合并确认框又带上那段说明', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '            把 <code>{pr.headRef}</code> 合进 <code>{pr.baseRef}</code>，方式：{METHOD_LABEL[method]}。\n          </p>\n',
+    to: '            把 <code>{pr.headRef}</code> 合进 <code>{pr.baseRef}</code>，方式：{METHOD_LABEL[method]}。\n          </p>\n          <p className="small muted">合并的是你现在看到的提交；如果期间有人推了新提交，GitHub 会拒绝。</p>\n',
+    expect: ['detail newest first in an isolated view'] },
 ];
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
