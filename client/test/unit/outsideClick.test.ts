@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { hidesPanel, MOVE_SLOP, releaseOfClick, type Press, type Release } from '../../src/renderer/outsideClick';
 
 const press = (o: Partial<Press> = {}): Press => ({ button: 0, x: 100, y: 100, inPanel: false, opensItem: false, onScrollbar: false, dialogOpen: false, ...o });
-const release = (o: Partial<Release> = {}): Release => ({ x: 100, y: 100, inPanel: false, opensItem: false, keyboard: false, ...o });
+const release = (o: Partial<Release> = {}): Release => ({ x: 100, y: 100, inPanel: false, opensItem: false, ...o });
 
 describe('detail panel: does this click put it away?', () => {
   const rows: [string, Press | null, Release, string, boolean][] = [
@@ -20,10 +20,9 @@ describe('detail panel: does this click put it away?', () => {
     ['on a scrollbar', press({ onScrollbar: true }), release(), '', false],
     ['a drag that moved (scrollbar thumb, text selection)', press(), release({ x: 100 + MOVE_SLOP + 1 }), '', false],
     ['right / middle button', press({ button: 2 }), release(), '', false],
-    ['a click from the keyboard (Enter on a toolbar button)', press(), release({ keyboard: true }), '', false],
     ['no press seen by this window (it went into the discussion frame)', null, release(), '', false],
   ];
-  it('no release seen by this window', () => expect(hidesPanel(press(), null, '')).toBe(false));
+  it('no release seen by this window (also: a click from the keyboard)', () => expect(hidesPanel(press(), null, '')).toBe(false));
   for (const [name, p, r, draft, want] of rows) it(name, () => expect(hidesPanel(p, r, draft)).toBe(want));
 });
 
@@ -31,5 +30,5 @@ describe('detail panel: which release a click stands for', () => {
   const up = release({ inPanel: true });
   it('a pointer click: the recorded button-up, not the click target', () => expect(releaseOfClick({ detail: 1 } as MouseEvent, up)).toBe(up));
   it('a pointer click with no button-up recorded: none', () => expect(releaseOfClick({ detail: 1 } as MouseEvent, null)).toBeNull());
-  it('a keyboard click: keyboard, whatever button-up came before', () => expect(releaseOfClick({ detail: 0 } as MouseEvent, up)?.keyboard).toBe(true));
+  it('a keyboard click: no release, even with a button-up recorded before it', () => expect(releaseOfClick({ detail: 0 } as MouseEvent, up)).toBeNull());
 });

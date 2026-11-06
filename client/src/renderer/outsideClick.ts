@@ -28,8 +28,6 @@ export type Release = {
   y: number;
   inPanel: boolean;
   opensItem: boolean;
-  /** the click came from the keyboard (Enter / Space on a button), not from the pointer */
-  keyboard: boolean;
 };
 
 /**
@@ -42,7 +40,7 @@ export type Release = {
  * outside the panel and a release just inside it would look like "outside" (PR #199 review round 1).
  */
 export function hidesPanel(press: Press | null, release: Release | null, draft: string): boolean {
-  if (!press || !release || release.keyboard) return false;
+  if (!press || !release) return false;
   if (press.button !== 0) return false;
   if (press.inPanel || release.inPanel) return false;
   if (press.opensItem || release.opensItem) return false;
@@ -77,11 +75,14 @@ export function pressAt(e: PointerEvent, panel: Element | null): Press {
 
 /** What a button-up in the window was (its own target: where the pointer really was let go). */
 export function releaseAt(e: PointerEvent, panel: Element | null): Release {
-  return { x: e.clientX, y: e.clientY, inPanel: within(e.target, panel), opensItem: opens(e.target), keyboard: false };
+  return { x: e.clientX, y: e.clientY, inPanel: within(e.target, panel), opensItem: opens(e.target) };
 }
 
-/** The release a click stands for: the recorded button-up, or a keyboard activation (no pointer). */
+/**
+ * The release a click stands for: the recorded button-up. A click from the keyboard (Enter / Space
+ * on a button, `detail` 0) has none, whatever button-up came before: it never puts the panel away.
+ */
 export function releaseOfClick(e: MouseEvent, up: Release | null): Release | null {
-  if (e.detail === 0) return { x: 0, y: 0, inPanel: false, opensItem: false, keyboard: true };
+  if (e.detail === 0) return null;
   return up;
 }

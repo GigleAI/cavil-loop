@@ -817,9 +817,11 @@ export const MUTATIONS = [
   { what: '点面板外：拖动（滚动条、选字）也算一次点击', file: 'src/renderer/outsideClick.ts',
     from: '  if (Math.abs(release.x - press.x) > MOVE_SLOP || Math.abs(release.y - press.y) > MOVE_SLOP) return false;\n', to: '',
     expect: ['a drag that moved'] },
-  { what: '点面板外：键盘触发的按钮（回车）也收起', file: 'src/renderer/outsideClick.ts', runner: 'e2e',
-    from: 'if (!press || !release || release.keyboard) return false;', to: 'if (!press || !release) return false;',
-    expect: ['GitHub#180'] },
+  // the keyboard guard is checked by the unit test that hands it a button-up recorded earlier: in the
+  // window every click consumes the recorded press / release, so a window test cannot set that up (PR #199 review round 3)
+  { what: '点面板外：键盘触发的点击沿用之前记下的松开（回车也可能收起）', file: 'src/renderer/outsideClick.ts',
+    from: '  if (e.detail === 0) return null;\n', to: '',
+    expect: ['a keyboard click: no release'] },
   { what: '点面板外：点卡片 / 行标题也先收起（切换变成重开，展开状态丢了）', file: 'src/renderer/outsideClick.ts', runner: 'e2e',
     from: '  if (press.opensItem || release.opensItem) return false;\n', to: '',
     expect: ['GitHub#191'] },
@@ -843,6 +845,6 @@ export const MUTATIONS = [
     ],
     expect: ['GitHub#191'] },
   { what: '点面板外：松开位置取 click 的目标（跨边界按下 / 松开时是共同父元素，PR #199 代码复审第 1 轮）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: '      const r = releaseOfClick(e, release);', to: "      const r = releaseOfClick(e, { x: e.clientX, y: e.clientY, inPanel: panelRef.current?.contains(e.target as Node) ?? false, opensItem: false, keyboard: false });",
+    from: '      const r = releaseOfClick(e, release);', to: "      const r = releaseOfClick(e, { x: e.clientX, y: e.clientY, inPanel: panelRef.current?.contains(e.target as Node) ?? false, opensItem: false });",
     expect: ['GitHub#191'] },
 ];
