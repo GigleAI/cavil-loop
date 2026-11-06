@@ -26,9 +26,15 @@ export type WriteAction =
   /** headOid: the commit the user saw; GitHub refuses the merge if the PR moved since */
   | { kind: 'merge'; key: string; method: MergeMethod; headOid: string }
   | { kind: 'closePr'; key: string; comment: string }
+  /** close an issue with GitHub's close reason; the comment (optional) is sent only once the close went through */
+  | { kind: 'closeIssue'; key: string; reason: IssueCloseReason; comment: string }
   | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[] };
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+/** The close reasons the client offers (GitHub#180). "Duplicate" needs the issue it duplicates: web only. */
+export type IssueCloseReason = 'completed' | 'not_planned';
+export const ISSUE_CLOSE_REASONS: readonly IssueCloseReason[] = ['completed', 'not_planned'];
 
 export interface WriteResult {
   ok: boolean;

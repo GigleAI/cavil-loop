@@ -214,3 +214,6 @@ button.danger { background: var(--closed); color: #fff; border-color: var(--clos
 .kind-badge.done { background: var(--state-done-bg); }
 .kind-badge.neutral { background: var(--state-neutral-bg); }
 .kind-badge .kind-sep { opacity: 0.7; font-weight: 400; }
+/* closing an issue (GitHub#180): the reason picker of the confirm dialog */
+.close-reasons { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.close-reasons label.radio { gap: 8px; }

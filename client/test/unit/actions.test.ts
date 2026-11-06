@@ -20,6 +20,7 @@ import { buildTable } from '../../src/data/table';
 import { buildBoard } from '../../src/data/board';
 import { applyFreshItem } from '../../src/data/itemRefresh';
 import { DEFAULT_TABLE } from '../../src/shared/viewSettings';
+import { stateTone } from '../../src/shared/stateTone';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -102,6 +103,14 @@ function openPr(): number {
   node.content.state = 'OPEN';
   node.content.merged = false;
   for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+  return n;
+}
+
+/** #n open on GitHub (all its copies), whatever the recorded fixture captured */
+function openIssue(n: number): number {
+  for (const p of fake.state.projects.get('org/gigleai/11')!)
+    for (const node of p.items.nodes) if (node.content?.number === n) Object.assign(node.content, { state: 'OPEN', stateReason: null });
+  for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n) Object.assign(r, { state: 'open', state_reason: null });
   return n;
 }
 
@@ -371,6 +380,105 @@ describe('PR merge / close', () => {
     expect(r.ok).toBe(false);
     expect(fake.writes()).toHaveLength(1);
     expect(fake.digest()).toBe(before);
+  });
+});
+
+describe('closing an issue (GitHub#180)', () => {
+  const ISSUE = 138;
+  beforeEach(() => void openIssue(ISSUE));
+  const toneOf = (it: Item) => stateTone(it.kind, it.state, it.stateReason, it.isDraft ?? null);
+
+  it('completed, with a comment: closed first (reason sent), then the comment; board and cache follow', async () => {
+    const { c } = await ready();
+    expect(itemOf(c, ISSUE)).toMatchObject({ kind: 'issue', state: 'open' });
+    const r = await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    expect(r).toMatchObject({ ok: true, warning: null });
+    expect(fake.writes().map((w) => [w.method, w.path, w.body])).toEqual([
+      ['PATCH', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}`, { state: 'closed', state_reason: 'completed' }],
+      ['POST', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}/comments`, { body: '做完了' }],
+    ]);
+    expect(itemOf(c, ISSUE)).toMatchObject({ state: 'closed', stateReason: 'completed' });
+    expect(toneOf(itemOf(c, ISSUE))).toBe('done');
+    // every cached source carrying it has the closed copy (what a restart would show)
+    const cached = cachedItem(ISSUE);
+    expect(cached.length).toBeGreaterThan(0);
+    for (const x of cached) expect([x.source, x.state, x.stateReason]).toEqual([x.source, 'closed', 'completed']);
+    const d = await c.loadDetail(K(ISSUE));
+    expect(d.ok && d.detail.state).toBe('closed');
+  });
+
+  it('not planned, no comment: one PATCH with that reason, nothing else; grey like GitHub', async () => {
+    const { c } = await ready();
+    expect((await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '  ' })).ok).toBe(true);
+    expect(fake.writes().map((w) => [w.method, w.path, w.body])).toEqual([
+      ['PATCH', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}`, { state: 'closed', state_reason: 'not_planned' }],
+    ]);
+    expect(itemOf(c, ISSUE)).toMatchObject({ state: 'closed', stateReason: 'not_planned' });
+    expect(toneOf(itemOf(c, ISSUE))).toBe('neutral');
+  });
+
+  it('close refused by GitHub: no comment left behind, GitHub unchanged, still open on the board', async () => {
+    const { c } = await ready();
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    const before = fake.digest();
+    const r = await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('没有权限');
+    expect(fake.writes().map((w) => w.method)).toEqual(['PATCH']);
+    expect(fake.digest()).toBe(before);
+    expect(itemOf(c, ISSUE).state).toBe('open');
+  });
+
+  it('the comment fails: closed stands, told so, the close is not sent again', async () => {
+    let commentTries = 0;
+    const { c } = await ready({
+      intercept: (cmd, args) => {
+        if (cmd === 'request' && args?.method === 'POST' && /\/issues\/\d+\/comments$/.test(String(args?.url))) {
+          commentTries++;
+          return { error: 'network', message: 'socket hang up' };
+        }
+        return undefined;
+      },
+    });
+    const r = await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    expect(commentTries).toBe(1);
+    expect(r.ok).toBe(true);
+    expect(r.warning).toContain('issue 已关闭，但附的评论没有发出去');
+    expect(fake.writes().map((w) => [w.method, w.path])).toEqual([['PATCH', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}`]]);
+    expect(itemOf(c, ISSUE).state).toBe('closed');
+  });
+
+  it('refused before sending: a PR, or a reason the client does not offer — nothing sent', async () => {
+    const n = openPr();
+    const { c } = await ready();
+    const before = fake.digest();
+    const onPr = await c.act({ kind: 'closeIssue', key: K(n), reason: 'completed', comment: 'x' });
+    expect(onPr).toMatchObject({ ok: false, error: '这一条不是 issue' });
+    for (const reason of ['duplicate', 'reopened', '']) {
+      const r = await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: reason as any, comment: 'x' });
+      expect(r).toMatchObject({ ok: false, error: '未知的关闭原因' });
+    }
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
+    // the same issue with an offered reason does go through (the refusals above were not a dead path)
+    expect((await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' })).ok).toBe(true);
+    expect(fake.writes()).toHaveLength(1);
+  });
+
+  it('offline: refused before sending; back online the same close goes through', async () => {
+    const { c } = await ready();
+    fake.state.offline = true;
+    await c.syncNow();
+    fake.state.offline = false;
+    const before = fake.digest();
+    const r = await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('离线');
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
+    await c.syncNow();
+    expect((await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' })).ok).toBe(true);
+    expect(itemOf(c, ISSUE).state).toBe('closed');
   });
 });
 

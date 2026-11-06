@@ -1,5 +1,5 @@
 // The fake GitHub's writable side (sub-item #138): labels, milestones,
-// comments, Project fields, adding to a Project, merging / closing PRs,
+// comments, Project fields, adding to a Project, merging / closing PRs, closing issues,
 // creating issues, plus the reads that go with them (one-item re-read, the
 // detail page, label / milestone lists, the markdown renderer).
 //
@@ -312,6 +312,15 @@ export function handleRest(store: Store, method: string, path: string, body: any
       if (body.milestone !== null && !ms) return send(422, { message: 'Validation Failed: milestone does not exist' }), true;
       for (const r of c.rest) r.milestone = ms ? { number: ms.number, title: ms.title, due_on: ms.due_on } : null;
       for (const g of c.gql) g.milestone = ms ? { number: ms.number, title: ms.title, dueOn: ms.due_on } : null;
+    }
+    if (body && 'state' in body) {
+      // GitHub: state open / closed; state_reason completed / not_planned / duplicate / reopened (closing without one = completed)
+      if (body.state !== 'open' && body.state !== 'closed') return send(422, { message: 'Validation Failed: state' }), true;
+      const reason = body.state_reason ?? (body.state === 'closed' ? 'completed' : 'reopened');
+      if (!['completed', 'not_planned', 'duplicate', 'reopened'].includes(reason)) return send(422, { message: 'Validation Failed: state_reason' }), true;
+      for (const r of c.rest) Object.assign(r, { state: body.state, state_reason: reason });
+      for (const g of c.gql)
+        if (g.state !== 'MERGED') Object.assign(g, { state: body.state === 'open' ? 'OPEN' : 'CLOSED', ...(c.kind === 'Issue' ? { stateReason: reason.toUpperCase() } : {}) });
     }
     touch(store, c);
     return send(200, { number: c.number }), true;
