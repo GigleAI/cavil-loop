@@ -16,6 +16,8 @@
 // stand-in executable); `test.cred.get|set|clear` then call that store directly.
 // `test.refreshGrant` runs the real refresh classifier against the configured web base.
 
+mod update;
+
 use async_trait::async_trait;
 use cavil_core::api::dispatch;
 use cavil_core::http::{is_loopback, Endpoints};
@@ -121,6 +123,8 @@ async fn main() {
         None => Arc::new(RemoteStore(link.clone(), persistent)),
     };
     let clock: Arc<dyn Clock> = Arc::new(RemoteClock(link.clone()));
+    let kept_store = store.clone();
+    let updater_slot = Arc::new(update::Slot::default());
     let engine = Engine::new(Deps {
         store,
         credentials,
@@ -159,8 +163,18 @@ async fn main() {
         let out = out_tx.clone();
         let kc = keychain.clone();
         let clk = clock.clone();
+        let st = kept_store.clone();
+        let slot = updater_slot.clone();
         tokio::spawn(async move {
             let res = match (cmd.as_str(), &kc) {
+                // the app's updater (cavil_core::update) against the fake GitHub; status changes go to the test as events
+                (c, _) if c.starts_with("test.update.") => {
+                    let ev = out.clone();
+                    let emit = move |status: Value| {
+                        let _ = ev.send(json!({ "ev": "update", "status": status }).to_string());
+                    };
+                    update::command(&slot, c, &a, e.endpoints(), &st, &clk, emit).await
+                }
                 // the app's start-up choice of endpoints and credential store (the real function)
                 ("test.selectPlatform", _) => {
                     let os = a.get("os").and_then(|v| v.as_str()).unwrap_or("");

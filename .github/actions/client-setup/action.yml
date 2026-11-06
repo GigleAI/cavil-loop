@@ -1,0 +1,73 @@
+name: Client test environment
+description: >
+  Everything the client's suites need on a Linux runner — Node, Rust, the system WebKit, tauri-driver,
+  npm ci and Playwright's own WebKit — shared by client.yml (the tests on every PR) and release.yml
+  (the weekly release gate's client negative controls, GitHub#195), so both start from the same setup.
+  Playwright's browser is installed here, before anything that can open the UI: the negative-control
+  runner starts a UI baseline first.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: client/package-lock.json
+    # The back end is Rust (src-tauri/crates/core); the suites drive it as a child process.
+    - name: Rust toolchain
+      shell: bash
+      run: rustup toolchain install stable --profile minimal && rustup default stable
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          client/src-tauri/target
+        key: cargo-linux-${{ hashFiles('client/src-tauri/Cargo.lock') }}
+        restore-keys: cargo-linux-
+    # system WebKit for the app's own Linux build (smoke test below)
+    # The downloaded packages are kept between runs: the runner's package mirror sometimes
+    # crawls (25 MB of WebKit at a few KB/s), and a cached run hardly touches it.
+    - uses: actions/cache@v4
+      with:
+        path: ~/apt-archives
+        key: apt-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-webkit-v1
+        restore-keys: apt-${{ runner.os }}-${{ env.ImageOS }}-
+    - name: System libraries for the Tauri window
+      shell: bash
+      run: |
+        mkdir -p "$HOME/apt-archives/partial"
+        A=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives="$HOME/apt-archives")
+        apt_install() {
+          for i in 1 2 3; do
+            sudo timeout 420 apt-get "${A[@]}" install -y --no-install-recommends "$@" && return 0
+            echo "apt-get install attempt $i failed or took too long; retrying"
+            sudo apt-get -o Acquire::Retries=3 update || true
+          done
+          return 1
+        }
+        sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+        apt_install libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb
+        # WebKitWebDriver (for test/tauri): the package was renamed in newer Ubuntu releases
+        drv=webkitgtk-webdriver; apt-cache show "$drv" >/dev/null 2>&1 || drv=webkit2gtk-driver
+        apt_install "$drv"
+        command -v WebKitWebDriver
+        sudo chown -R "$USER" "$HOME/apt-archives"
+    # WebDriver for the real Tauri window (test/tauri); kept in the cache between runs
+    - uses: actions/cache@v4
+      with:
+        path: ~/.tauri-driver
+        key: tauri-driver-2-${{ runner.os }}
+    - name: tauri-driver
+      shell: bash
+      run: |
+        [ -x "$HOME/.tauri-driver/bin/tauri-driver" ] || cargo install tauri-driver --locked --root "$HOME/.tauri-driver"
+        echo "$HOME/.tauri-driver/bin" >> "$GITHUB_PATH"
+    - name: npm ci
+      shell: bash
+      working-directory: client
+      run: npm ci
+    - name: Playwright WebKit
+      shell: bash
+      working-directory: client
+      run: npx playwright install --with-deps webkit

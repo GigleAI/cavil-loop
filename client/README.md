@@ -1,13 +1,13 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（唯一的例外是头像图片，从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155），和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。
+`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外两处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184），和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。
 
 ## 目录
 
 ```
 src/
   shared/    类型、来源地址解析、界面 API 约定（ipc.ts）、搜索筛选（filter.ts）、视图设置与导入（viewSettings.ts / viewImport.ts）
-  data/      GitHub 请求、同步、去重、看板分列（board.ts）、表格分组（table.ts）、两者共用的排序（sort.ts）；
+  data/      GitHub 请求、同步、去重、看板分列（board.ts）、表格分组（table.ts）、两者共用的排序（sort.ts）；taskList.ts 任务列表勾选框（GitHub#193）；
              actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条，pending.ts 待处理提醒
   app/       controller.ts 应用逻辑（同步轮次、设置、修改、详情、提醒），跑在窗口里，不碰凭据；localApi.ts 把它包成 window.cavil；
              desktop.ts 窗口对外壳「桌面这一侧」的约定（通知、角标、开机自启、同步节拍、点了哪条通知）
@@ -17,10 +17,12 @@ src-tauri/   Tauri 外壳（Rust）
   src/main.rs           只做接线：一个 IPC 命令 backend、窗口不导航、GitHub 链接交给系统浏览器
   src/desktop.rs        桌面这一侧（#169）：通知、Dock 角标、开机自启、关窗只隐藏、同步节拍、测试模式记录
   src/mac.rs            macOS：用系统现行的通知接口（UserNotifications）发通知、收点击；不让 App 小憩
+  src/updater.rs        自动更新（#184）：Tauri 官方更新插件读更新说明、下载、验签、换掉 App；哪些构建会查更新
   crates/core/          后台本体：登录（设备授权）、续期、凭据队列、可信名单、退出（engine.rs）、钥匙串（platform.rs）、
-                        本地存储（store.rs，SQLite，表结构和 Electron 版相同）、代发请求只放行 GitHub 接口（http.rs）、命令表（api.rs）
+                        本地存储（store.rs，SQLite，表结构和 Electron 版相同）、代发请求只放行 GitHub 接口（http.rs）、命令表（api.rs）、
+                        自动更新的判断（update.rs：挑哪个版本、什么时候查、一次只跑一轮、超时、失败怎么说，#184）
   crates/harness/       测试专用：把后台本体接到 stdin/stdout，单元测试和界面测试都驱动它（发布的 App 里没有）
-  tauri.conf.json       窗口的 Content-Security-Policy、打包设置
+  tauri.conf.json       窗口的 Content-Security-Policy、打包设置；plugins.updater.pubkey 是更新包签名公钥（#184，空着时 App 不能自我更新、发版拒绝）
 test/
   unit/        vitest：数据层 + controller，对着本地假 GitHub 走真 HTTP；后台是真实的 Rust 子进程（test/support/harness.ts）
   support/     测试用的凭据存储（可以卡住、失败）、SQLite 读写、凭据格式——用来预置和核对磁盘状态
@@ -38,6 +40,9 @@ scripts/
   make-dmg.mjs          把 Tauri 打出的 .app 做成 dmg（dmgbuild，dmg-settings.py 是窗口布局）
   size-gate.mjs         安装包体积门槛：每个 dmg ≤ 20 MB（1 MB = 1,000,000 字节），目标 ≤ 10 MB
   mac-open-check.sh     CI 的 Mac 机器上：dmg 窗口内容 + 冒烟 + 第一次打开步骤的实测
+  mac-update-check.sh   CI 的 Mac 机器上：装在「应用程序」里的旧版真实更新到新版，被改过的更新包被拒（#184）
+  update-manifest.mjs   发版时生成 latest.json（App 读它更新）：用 App 的公钥逐个验签（minisign：包的内容 + 可信注释），缺包、验不过都拒绝；
+                        也给维护者用：--set-pubkey 写入公钥，--verify 验一个签名
   release-command.mjs   放行命令只在这里定义一次；网页 / txt / 背景源文件 / 发版说明里的副本由 test/unit/dmg.test.ts 逐字对拍
   render-dmg-background.cjs  把 build/dmg-background.html 渲染成 dmg 窗口背景图（改了 HTML 后手动重跑，产物入库）
   icon.mjs              App 图标：`node scripts/icon.mjs build` 从 build/icon-source.png 生成 build/icon.png；`check-app` 在 CI 的 Mac 机器上核对打出的 App 用的确实是它
@@ -58,8 +63,8 @@ cd client
 npm ci
 npm run test:rust              # Rust 单元测试（后台 + 外壳；先构建一次界面，外壳编译要用）
 npm test                       # 单元测试（真实后台子进程），末尾打印「负对照：跳过 N 项」
-npm run test:mutation -- --changed  # 负对照（MUTATION=1），只跑和本次改动相关的项：基线约 30 秒，之后每项几秒到十几秒（只跑它点名的测试所在文件）
-npm run test:mutation          # 全部负对照（很慢，只在复审点名或 CI 手动时跑）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
+npm run test:mutation -- --changed  # 负对照（MUTATION=1），只跑和本次改动相关的项（只在手动时跑；CI 只在每周发版门禁里跑全部）：基线约 30 秒，之后每项几秒到十几秒（只跑它点名的测试所在文件）
+npm run test:mutation          # 全部负对照（很慢，每周发版门禁里自动跑，或手动跑）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
 npm run typecheck
 npm run test:e2e               # 界面测试（WebKit；WebKit 起不来的机器加 CAVIL_E2E_ENGINE=chromium）
 npm run test:tauri             # 真实 App（Linux：要 tauri-driver、WebKitWebDriver，CI 用 xvfb-run；约 6 分钟，同步节拍是正式的 60 秒）
@@ -86,7 +91,12 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 - **关闭 issue**（GitHub#180）：详情底部「发送」那一行左侧的「关闭 issue…」，只在详情现读到这个 issue 仍开着时出现（PR 的关闭仍在 PR 状态框里）。确认框里选关闭原因「已完成」（默认）或「不计划」，可附一句评论；发 `PATCH …/issues/<n> {state: closed, state_reason}`，关成功才发评论，评论没发出去只给警告、不再重发关闭。原因只认这两个、条目必须是 issue，否则发送前拒绝。「重复」要指定重复的是哪一条、重新打开 issue / PR，都不在客户端里做，去网页。
 - **里程碑**改的是这一条所在仓库里同名的那个；没有就拒绝并说明，什么都不发，不新建。
 - **迭代 / 状态**只改那张卡所在 Project 的值，用那个 Project 自己的字段和选项 id；拖卡时卡上有两个 Project 就两个都改，其中一个没有目标迭代就整次拒绝。「未加入看板」的卡拖进迭代列先问「加入看板 X 并设为这个迭代？」。GitHub 说这个账号不能改某个 Project（`viewerCanUpdate`）时，那个 Project 的入口变灰并说明，标签 / 里程碑照常可改。
-- **详情**每次打开都从 GitHub 现读（不缓存），评论、评审、每个评审下的逐行评论全部分页读完（任何一页失败就整次报错，不显示半份讨论）；最新在上，正文最老所以在最下，逐行评论挂在所属评审下面。默认只展开最新一条（没有评论时就是正文），其余折成一行（作者、时间、开头约 80 字），点一下展开，面板上有「全部展开 / 全部收起」（#155；折叠用浏览器自带的 `<details>`，隔离框里不跑脚本）。GitHub 渲染好的 HTML 放在 `sandbox` 隔离框里（不能跑脚本、不能导航，有自己的 CSP），链接用系统浏览器打开。
+- **详情**每次打开都从 GitHub 现读（不缓存），评论、评审、每个评审下的逐行评论全部分页读完（任何一页失败就整次报错，不显示半份讨论）；最新在上，正文最老所以在最下，逐行评论挂在所属评审下面。默认只展开最新一条（没有评论时就是正文），其余折成一行（作者、时间、开头约 80 字），点一下展开，面板上有「全部展开 / 全部收起」（#155；折叠用浏览器自带的 `<details>`）。GitHub 渲染好的 HTML 放在 `sandbox` 隔离框里（不同源、不能导航，有自己的 CSP），链接用系统浏览器打开。框里唯一能跑的是客户端自己的一段固定脚本（GitHub#193，`src/renderer/frameScript.ts`），见下一条。
+- **在详情里勾选择题**（GitHub#193）：正文和普通评论里的任务列表勾选框（`- [ ] A. …`）可以直接点，效果和在网页上勾一样——原文里那一个 `[ ]` 变成 `[x]`（或反过来），其他字节不动，然后重读详情（已展开的条目和滚动位置不变），并出现「交回 agent」。规则：
+  - **只有能确定的才可点**：GitHub 说这个账号能改这一条（`viewerCanUpdate`），而且客户端按 GitHub 的 markdown 规则（`src/data/taskList.ts`，CommonMark + GFM 任务列表）从原文读出的框，和 GitHub 渲染出的框逐个一致（个数、勾没勾）；任何一项没读到或对不上，这条的框只读，下面写原因。评审意见和代码逐行评论里的框一律只读（去网页勾）。离线、有修改在途时全部变灰。
+  - **写前现读**：GitHub 改评论没有「内容没变才写」，所以写之前按评论 / 正文的 id 现读一次：必须仍属于这一条、这个账号仍能改、原文和点的时候看到的一字不差，目标那个框正处在点之前的状态；任一不符就不写、重读、提示「刚被改过」。现读失败就报错，不拿旧原文写。现读和写入之间仍有空档（长度未测、给不出上限），这期间别人改了同一条会被覆盖——网页上勾选也一样。同一条评论一次只允许一个写入在途。写用 GraphQL `updateIssueComment` / `updateIssue` / `updatePullRequest`。
+  - **框里的脚本**：时间线隔离框的 `sandbox` 有 `allow-scripts`、没有 `allow-same-origin`（碰不到窗口的对象、存储和后台通道），自己的 CSP 是 `connect-src 'none'`（发不出请求）。能跑的只有 `FRAME_SCRIPT` 这一段：它只把「哪条评论第几个框、勾没勾」和「哪些条目展开、滚到哪」用 `postMessage` 告诉窗口，变化的数据放在 `<body data-…>` 里，脚本本身是常量。`srcdoc` 框同时受窗口和自己两层 CSP 约束，所以两层都按内容哈希只放行它：窗口那层写在 `src-tauri/tauri.conf.json` 的 `script-src`，框那层由 `TIMELINE_CSP` 生成。改了脚本就要同时改 `FRAME_SCRIPT_HASH` 和配置里的哈希，`test/unit/taskList.test.ts` 核对三处一致。窗口只认来自当前这个框（`event.source`）、当前这次渲染编号的消息，而且自己再核一遍条目可点、序号在范围内。回复预览框不跑任何脚本。
+  - **测试**：`test/fixtures/tasklists.github.json` 是 GitHub 自己对 18 种写法和两条真实评论的渲染（`node test/fixtures/record-tasklists.mjs` 重录，不手改），读框规则逐条和它对拍；`test/e2e/frame-policy.spec.ts` 两层策略各测各的（另一层在测试页里放宽），每组都要「框内脚本跑了」且「注入的脚本、事件属性一个没跑」；`test/tauri/real-window.spec.ts` 在真实 App、正式策略下真点一次，假 GitHub 恰好收到一次只差一个字符的修改，框里拿不到 IPC、发不出请求。
 - **详情顶部的类型徽章**（#172，`src/renderer/KindBadge.tsx`）：issue 和 PR 靠图标形状（圆圈带点 / 分支）和全称（「Issue」/「Pull Request」）区分，底色是 GitHub 的状态色。类型、状态、关闭原因和草稿标记都取自看板里的这一条，打开就有；草稿标记优先用详情现读的（更新），详情还没读到或读取失败时用看板读到的，两处都不知道就不当草稿；只有仍开着的草稿 PR 变灰写「草稿」，已关闭、已合并优先。图标是内联 SVG，不加载任何外部资源。
 - **状态配色跟 GitHub 一致**（PR #174 复审时维护者要求）：开着 = 绿；PR 关闭未合并 = 红；PR 已合并、issue 按「已完成」关闭（或没记关闭原因）= 紫；草稿 PR、issue 按「不计划 / 重复」关闭 = 灰（徽章文字补「（不计划）」「（重复）」）。哪种情况用哪种颜色只在 `src/shared/stateTone.ts` 一处判断，详情徽章、看板卡片、表格行都用它；色值是 GitHub 设计系统 Primer 的状态色（浅色 / 深色各一套，在 `styles.css` 的 `--state-*`）。关闭原因和草稿标记三条读取路径都读：Project（GraphQL `stateReason` / `isDraft`）、仓库列表（REST `state_reason` / `draft`）、改完后的单条重读，所以草稿 PR 在徽章、卡片、表格里都是灰色；徽章优先用详情现读的草稿标记（更新），详情没读到时用看板读到的。
 - **详情面板按「这一次打开」认回应**（`src/renderer/openSession.ts`，四种异步调用——读详情、读仓库候选、预览、修改——都走它）：每次打开一条（换到别的再回来、关掉再开都算新的一次）是一个新面板，上一次打开发出的回应一律不进新面板；同一次打开里，同类的新调用作废旧的（改完后的重读胜过慢的刷新，改了字后旧文字的预览不显示）。修改晚到时，结果显示在看板顶部（带编号），不动新面板的草稿、忙碌状态和对话框。负对照里有真实界面的项（`runner: 'e2e'`），`MUTATION=1` 时自动构建并驱动真实窗口（WebKit + 真实后台）。
@@ -97,8 +107,8 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 ### 头像、浮动详情、PR 跟在 issue 下面、缩放（#155）
 
-- **头像**：卡片（作者、负责人）、表格（作者、负责人两列）、详情（作者、负责人、讨论里每条的作者）都在名字前放头像，按登录名从 `avatars.githubusercontent.com` 取（不改查询、不改缓存）。已删除的账号、图片加载不出时显示首字母；隔离框里没有脚本，首字母垫在图片下面。
-- **详情浮在看板上**：贴右、从搜索栏下方到底，看板宽度不变；左边缘可拖动改宽度（最窄 360px，窗口左边总留 120px 看板），宽度存进视图设置，关掉再开、重开 App 都保持；窗口变窄时自动收窄，变宽恢复。右上角「收起 ›」或 Esc 收起（正在输入回复、或有对话框时不收；按钮原来叫「关闭」，和「关闭 issue」撞词，GitHub#180 改名）；点过讨论之后键盘在讨论框里，Esc 传不到外面，要先点一下讨论以外的地方（面板空白处、标题）再按 Esc，或直接点「收起 ›」——讨论框保持隔离、不跑脚本，维护者在 PR #171 选的。
+- **头像**：卡片（作者、负责人）、表格（作者、负责人两列）、详情（作者、负责人、讨论里每条的作者）都在名字前放头像，按登录名从 `avatars.githubusercontent.com` 取（不改查询、不改缓存）。已删除的账号、图片加载不出时显示首字母：首字母垫在图片下面，图片加载不出就露出来，不靠脚本（讨论框里唯一能跑的是 GitHub#193 那段只管勾选框的固定脚本，见上文「在详情里勾选择题」；评论内容里的脚本一律不跑）。
+- **详情浮在看板上**：贴右、从搜索栏下方到底，看板宽度不变；左边缘可拖动改宽度（最窄 360px，窗口左边总留 120px 看板），宽度存进视图设置，关掉再开、重开 App 都保持；窗口变窄时自动收窄，变宽恢复。右上角「收起 ›」或 Esc 收起（正在输入回复、或有对话框时不收；按钮原来叫「关闭」，和「关闭 issue」撞词，GitHub#180 改名）；点过讨论之后键盘在讨论框里，Esc 传不到外面，要先点一下讨论以外的地方（面板空白处、标题）再按 Esc，或直接点「收起 ›」——讨论框保持隔离、不把按键转给窗口，这是维护者在 PR #171 选的（当时框里不跑任何脚本）。GitHub#193 之后框里多了一段固定脚本，它只报告勾选框和展开 / 滚动位置，不转发按键，框也仍然不同源，所以这条行为不变。
 - **PR 跟在关联 issue 下面**（视图设置里的开关，默认开，看板和表格都生效；规则只有一份：`src/data/prNest.ts`）：关联关系是 issue 侧栏的「关联 PR」（会关掉这个 issue 的 PR）。只在同一列 / 同一组里归在一起，PR 缩进一格带「↳」；排序是「更新时间」时，这一对按两者里更晚的那个排，其他排序按 issue 的位置；一个 PR 关联同列几个 issue 只跟在排得最前的那个下面；一个 issue 有几个 PR 时按更新时间从新到旧；分泳道时 PR 跟进 issue 的泳道；表格同时缩进子 issue 时，PR 排在子 issue 前面。只从仓库来源读到的 issue 不知道关联 PR（表格里那格显示「—」），它们不归组。
 - **缩放**：macOS 菜单「缩放」里的放大 ⌘= / 缩小 ⌘- / 实际大小 ⌘0，档位 50%–200%，整个窗口（包括详情里的讨论）一起缩放；档位存在后台本地存储（`src-tauri/crates/core/src/zoom.rs`），重开 App 恢复。菜单快捷键只在 macOS 上有（其他平台的构建只用于测试）。
 
@@ -235,6 +245,78 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 要在客户端里**合并 PR**，按 GitHub 文档 App 还要 **Contents** = Read and write（上面没勾；OAuth 应用的 `repo` 已含这项）。不加的话，其他操作照常，合并会被 GitHub 拒绝、界面照实显示原因。
 
+## 自动更新（#184）
+
+**谁做什么**：判断全在后台本体 `src-tauri/crates/core/src/update.rs`（App 和测试后台跑同一份）；碰到已安装 App 的部分（读更新说明、下载、验签、换掉 App 包）是外壳的 `src-tauri/src/updater.rs`，用 Tauri 官方更新插件；窗口只显示外壳报来的状态（`state.update`，设置页「更新」一节 + 看板顶部的「已下载」提示条，`src/renderer/UpdateViews.tsx`）。
+
+- **挑哪个版本**（`update::pick`）：读本仓库发版列表（不带令牌，最多 5 页），只认标签 `client/vX.Y.Z`（三段纯数字、不带前导零）、不是草稿也不是预发布、版本号比当前大的；取版本号最大的，不看发布时间。它的附件里必须有 `latest.json`，而且地址在本仓库的下载地址下，否则判失败（不退而求其次装更旧的）。
+- **什么时候查**：启动时一次，之后每 6 小时一次；关掉「自动检查更新」后都不查，手动「立即检查」照查。一次只跑一轮：跑着时再点不会再开一轮；新版装好以后不再查（重启就是新版）。
+- **失败不等于已是最新**：发版列表或更新说明 30 秒没回应、任一页读失败、内容看不懂、下载 60 秒收不到数据（按「多久没收到数据」算，不按总时长）、中途断开、签名不符、换 App 失败，都记成失败并写明原因，下一轮再试；只有真的没有更高版本才说「已是最新」。
+- **免放行命令的依据**：macOS 只拦带「从网络下载」标记的 App，这个标记是浏览器下载时加的。更新插件用自己的网络代码下载、在进程里解包换掉 App，不加这个标记；万一换上的新版带着标记，`updater.rs` 会把新版自己身上的去掉。CI 的 Mac 上真跑更新核对（`scripts/mac-update-check.sh`）。
+- **哪些构建查更新**（`updater::mode`）：只有发布的 macOS App。开发版、`--smoke-test` / `--notify-check`、测试模式（除非 `CAVIL_CLIENT_TEST_UPDATE=1`）、Linux 都不查，设置页也不出现「更新」一节。公钥（`tauri.conf.json` 的 `plugins.updater.pubkey`）空着时设置页写明「这一版没有带更新用的公钥」，从不去查。
+- **只在测试构建里有的开关**（cargo feature `update-test`，`scripts/mac-update-check.sh` 用）：公钥可以从 `CAVIL_CLIENT_TEST_UPDATE_PUBKEY` 来，调试构建也会查更新。发布的 App 不带这个 feature。
+
+**怎么验的**：
+
+| 层 | 测什么 | 替身 |
+|---|---|---|
+| `test/unit/update.test.ts`（真实 Rust 后台子进程 + 本机发版服务器 + 测试拨动的时钟） | 挑版本的每条规则；一轮的每种结局（新版装好 / 已是最新 / 列表读失败 / 第二页失败 / 30 秒没回应 / 下载 60 秒没数据 / 慢但一直在下 / 中途断开 / 签名不符 / 换 App 失败 / 没有这台机器的包）；一次只跑一轮、装好后不再查；启动 + 每 6 小时、关掉后不查、开关和「关掉的提示条」重启后还在；没有公钥时从不去查 | 验签用 sha256 代替 minisign，「换 App」写一个文件 |
+| `test/e2e/app.spec.ts`（真实窗口） | 设置页每种状态的文字、按钮可不可点、失败只在设置页、提示条重启 / 关掉、关掉后新版本再提示 | 外壳的更新状态由测试给 |
+| `scripts/mac-update-check.sh`（CI 的两台 Mac） | 装在 `/Applications` 的旧版真实更新：版本号和只有新包才有的文件、没有隔离标记、签名有效、用 `open` 能启动；改过的包被拒、旧版逐字节不变 | 本机回环的「GitHub」，一次性密钥 |
+| `test/unit/update-manifest.test.ts` | 发版时生成的 `latest.json`：两个平台、本仓库下载地址；别的密钥签的包、缺包、签名绑定了别的版本、App 没公钥都拒绝 | 密钥和签名用 Tauri 自己的签名工具现生成 |
+
+负对照（`MUTATION=1 npm run test:mutation`）里每条挑版本规则、超时、卡住判定、一轮一次、自动开关、提示条记忆、发版说明的每项拒绝各有一项。
+
 ## 发版
 
-改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg（`tauri build --bundles app` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh`，通过后建 Release（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
+改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg 和一个更新包（`tauri build --bundles app`，带 `createUpdaterArtifacts` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：dmg 和更新包每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh` 和 `scripts/mac-update-check.sh`，通过后生成 `latest.json`（`scripts/update-manifest.mjs`）并建 Release，附件是两个 dmg、两个更新包（`Cavil-Loop-<版本>-<芯片>.app.tar.gz`）和它们的签名（`.sig`）、`latest.json`（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
+
+**更新签名密钥**（#184，维护者做一次）：公钥只放一处——`src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`：App 运行时用它验更新包，打包时打包工具用它，发版前生成 `latest.json` 那一步也用它逐个验签。发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名。发版标签上缺这个 secret、或公钥是空的，打包直接失败；更新包的签名用公钥验不过（包被改过、签名坏了、不是这把钥匙签的、绑定的版本不对），生成 `latest.json` 那一步拒绝发版。合入 main、每周定时和手动触发的打包用每次现生成的一对一次性密钥（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
+
+在自己的 Mac 上，进仓库的 `client/` 目录，**一条一条**跑下面的命令；任何一条报错就停下，先看下面「出错了怎么办」，不要继续上传。
+
+**第一段：生成钥匙（只做一次）**
+
+<!-- update-key-steps:generate:begin -->
+```bash
+npx --yes @tauri-apps/cli@2 signer generate -w ~/.tauri/cavil-loop-updater.key
+ls -l ~/.tauri/cavil-loop-updater.key ~/.tauri/cavil-loop-updater.key.pub
+```
+<!-- update-key-steps:generate:end -->
+
+会问两次密码（可以直接回车留空；设了就记住）。`ls` 要列出两个文件：`cavil-loop-updater.key`（私钥）和 `cavil-loop-updater.key.pub`（公钥）。
+
+**第二段：写入公钥并检查这对钥匙（可以反复跑）**
+
+<!-- update-key-steps:check:begin -->
+```bash
+cd "$(git rev-parse --show-toplevel)/client"
+node scripts/update-manifest.mjs --set-pubkey ~/.tauri/cavil-loop-updater.key.pub
+echo "cavil key check" > ~/cavil-key-check.txt
+npx --yes @tauri-apps/cli@2 signer sign -f ~/.tauri/cavil-loop-updater.key ~/cavil-key-check.txt
+node scripts/update-manifest.mjs --verify ~/cavil-key-check.txt ~/cavil-key-check.txt.sig
+```
+<!-- update-key-steps:check:end -->
+
+第一条先进到仓库的 `client/` 目录（在仓库里任何位置跑都行）；第二条把公钥写进 `client/src-tauri/tauri.conf.json`，打印「已把公钥（密钥编号 …）写进 …」。后两条用私钥签一个小文件（会问一次密码，填第一段设的那个），再用刚写进去的公钥验它：看到「✅ … 签名有效」才算这对钥匙能用。
+
+**出错了怎么办**
+
+- **签名那一步密码输错了**：钥匙没坏，**不要**重跑第一段（它不会覆盖已有的钥匙，会报 `already exists`）。把第二段整段再跑一次，输对密码即可——它会重新写入同一把公钥、重新签名、重新验签，钥匙文件不会变。
+- **密码忘了、或者想换一把钥匙**：只有在还没用这把钥匙发过版时才这样做（发过版的话，已装好的 App 只认旧钥匙，换了以后大家要再手动装一次）。先删掉旧的两个文件，再从第一段开始：
+
+<!-- update-key-steps:replace:begin -->
+```bash
+rm ~/.tauri/cavil-loop-updater.key ~/.tauri/cavil-loop-updater.key.pub
+```
+<!-- update-key-steps:replace:end -->
+
+- **不想继续了**：`git checkout "$(git rev-parse --show-toplevel)/client/src-tauri/tauri.conf.json"` 退回公钥那一处改动；钥匙文件留在 `~/.tauri/` 里不影响任何东西。
+
+钥匙检查通过之后：
+
+1. 仓库 **Settings → Secrets and variables → Actions → New repository secret**：`TAURI_SIGNING_PRIVATE_KEY` = 私钥文件全部内容；设了密码再建 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。列表里出现这两个名字就算成功。私钥和密码不要贴到任何评论里。
+2. 把改过的 `src-tauri/tauri.conf.json`（只多了公钥）提交，随一个版本号升级一起合入 main。
+3. 私钥另外备份。丢了只能换一把新的：已经装好的 App 认不出新钥匙签的包，大家要再手动装一次（含一次放行）。
+
+`test/unit/update-key-steps.test.ts` 把上面三段命令原样取出，在伪终端里照上面写的走：正常一遍；签名输错密码 → 只重跑第二段 → 验签成功、钥匙文件一个字节没变；重跑第一段会被拒 → 跑「换钥匙」那段 → 重新生成并检查成功，钥匙换成了新的。

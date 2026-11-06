@@ -15,15 +15,24 @@
 // macOS only), so the test asks for it (CAVIL_CLIENT_TEST_HIDE_ON_CLOSE) — the
 // same handler macOS runs. The Dock-icon reopen is macOS-only: checked by
 // scripts/mac-open-check.sh on the CI Macs.
+//
+// The label goes on only once this start's first complete round has been taken (GitHub#186):
+// what that round already finds is the reminders' baseline and goes into one summary, never
+// one notification per item. One item carries the label before the app starts (SEEDED), so the
+// first round always ends in that summary and the badge after it (first-round.ts). A badge
+// record alone is no proof: a fresh profile clears the badge before it syncs (the order arm64 CI
+// lost on test/mac/background.spec.ts, staged there by its slow-first-read case). Here the restart
+// keeps its profile, so no such badge comes first — the same wait still applies, one rule for both.
 
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { WebDriver, until } from './webdriver';
+import { firstRoundBadge } from './first-round';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const APP = process.env.CAVIL_TAURI_APP ?? join(root, 'src-tauri', 'target', 'debug', 'cavil-loop-client');
@@ -37,6 +46,8 @@ let wd: WebDriver;
 let dir: string;
 let record: string;
 let control: string;
+/** carries the label from before the app starts: the first round ends in a summary of 1 */
+let SEEDED: number;
 
 /** the shell's record, whole lines only (the last one may still be being written) */
 const records = (): any[] => {
@@ -68,10 +79,52 @@ async function startApp(args: string[] = []) {
   await wd.start(APP, args);
 }
 
+/**
+ * What is still running of this test's app (Linux /proc): every process whose environment names
+ * this test's record file — the app, tauri-driver and the WebKit driver it started. Another test
+ * run on the same machine has its own record file and is never counted.
+ */
+function running(): { pid: number; name: string }[] {
+  const mark = `CAVIL_CLIENT_TEST_ALERTS_FILE=${record}`;
+  const out: { pid: number; name: string }[] = [];
+  for (const p of readdirSync('/proc')) {
+    if (!/^\d+$/.test(p)) continue;
+    try {
+      if (!readFileSync(`/proc/${p}/environ`, 'latin1').split('\0').includes(mark)) continue;
+      out.push({ pid: Number(p), name: readFileSync(`/proc/${p}/comm`, 'utf8').trim() });
+    } catch {
+      /* gone meanwhile, or not ours to read */
+    }
+  }
+  return out;
+}
+
+/**
+ * Quit the app, and wait until it is really gone (GitHub#186): ending the WebDriver session does
+ * not wait for the app to exit, and a first run still alive keeps its 60 s beat — with its window
+ * shown — writing into the same record as the run after it.
+ */
 async function stopApp() {
   await wd?.stop();
   driver?.kill();
   driver = null;
+  if (!record) return;
+  const t0 = Date.now();
+  try {
+    await until(() => running().length === 0, 'the app quit', 10_000);
+    console.log(`app quit ${Date.now() - t0} ms after the session ended`);
+  } catch {
+    const left = running();
+    console.log(`still running 10 s after the session ended, killed: ${left.map((x) => `${x.name}[${x.pid}]`).join(' ')}`);
+    for (const x of left) {
+      try {
+        process.kill(x.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }
+    await until(() => running().length === 0, 'the app quit after SIGKILL', 10_000);
+  }
 }
 
 /** An open issue of the repository that does not carry the label yet. */
@@ -85,6 +138,12 @@ function label(number: number) {
   const i = fake.state.repos.get(REPO)!.find((x: any) => x.number === number);
   i.labels = [...i.labels, { name: 'pending/human', color: 'ededed' }];
   i.updated_at = new Date().toISOString();
+}
+
+/** Wait for this start's first complete round (from = its first record); the badge it set. */
+async function firstRound(from: number, ms: number): Promise<number> {
+  await until(() => firstRoundBadge(records(), from) !== null, 'first complete round: the summary and the badge after it', ms);
+  return firstRoundBadge(records(), from)!;
 }
 
 async function signInWithRepo() {
@@ -101,7 +160,7 @@ async function signInWithRepo() {
   await wd.click('[data-testid="back"]');
   // the first complete read is on the board (the reminders' baseline is taken in the same round)
   await wd.find('[data-testid="card"]', 30_000);
-  await until(() => lastBadge() !== undefined, 'first round counted', 10_000);
+  return firstRound(0, 30_000);
 }
 
 test.beforeEach(async () => {
@@ -111,19 +170,24 @@ test.beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'cavil-tauri-bg-'));
   record = join(dir, 'desktop.jsonl');
   control = join(dir, 'control.txt');
+  // the recording has nothing on the label: this one is the whole baseline
+  expect(fake.state.repos.get(REPO)!.filter((x: any) => x.labels.some((l: any) => (l.name ?? l) === 'pending/human'))).toHaveLength(0);
+  SEEDED = unlabelled();
+  label(SEEDED);
 });
 
 test.afterEach(async () => {
   await stopApp();
   await fake?.close();
+  // the shell's record, for a failure's log
+  console.log(records().map((r) => JSON.stringify(r).slice(0, 160)).join('\n'));
 });
 
 test('window closed: hidden, still syncing and reminding within 120 s; a click on the notification brings it back on that item', async () => {
   test.setTimeout(GATE_MS + 120_000);
   await startApp();
-  await signInWithRepo();
-  const badgeBefore = lastBadge()!;
-  expect(badgeBefore).toBeGreaterThanOrEqual(0);
+  const badgeBefore = await signInWithRepo();
+  expect(badgeBefore).toBe(1);
 
   // the close button's request: hidden, not quit
   appendFileSync(control, 'close\n');
@@ -161,9 +225,11 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   // started the way launch at login starts it
   await startApp(['--hidden']);
   await until(() => records().slice(before).some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 15_000);
-  // its own first round (signed in from the stored credential): every round sets the badge
-  await until(() => records().slice(before).some((r) => r.op === 'badge'), 'first round while started hidden', 30_000);
-  const badgeBefore = lastBadge()!;
+  // nothing of the first run wrote after it quit: this start is the first record since
+  expect(records()[before]).toMatchObject({ op: 'start', hidden: true });
+  // its own first round (signed in from the stored credential): a new start takes a new baseline
+  const badgeBefore = await firstRound(before, 30_000);
+  expect(badgeBefore).toBe(1);
   const n = unlabelled();
   label(n);
   const key = `${REPO}#${n}`;

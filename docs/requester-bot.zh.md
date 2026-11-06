@@ -32,6 +32,7 @@ agent 出方案 / 提问 / 汇报 ── 发评论 ── 跑叫醒脚本
    ▼                                   ▼
 等待中：daemon 不派工          机器人来拉所有挂等待标签的条目 → 读讨论
    │                           → 带给提需求的人 → 在该条目上写「已转给谁」
+   │                           （等待标签留着不摘：它表示「还在等答复」）
    │                                   │
    │                                   ▼
    │                     拿到答复 → 原文贴回 → 摘等待标签 → 打 pending/agent 让 agent 接着干
@@ -96,12 +97,14 @@ chmod 600 <项目目录>/cavil-loop.config
 
 把下一节[「grokbot 那边要照做的约定」](#grokbot-那边要照做的约定)整节交给 grokbot 的维护方照着实现。
 
+**最容易做错的一条**：转达给提需求的人之后，**不要摘等待标签**，要等带回答复时才摘（第 3、4 条）。等待标签是看板上唯一能看出「这条在等提需求方答复」的标志；转达完就摘，条目上一个流程标签都不剩，谁也看不出它在等谁。标签留着，grokbot 下一次扫描还会拉到这条，所以它要能认出「已经转达过」、不重复转（第 3 条末尾）。
+
 ### 6. 验证接上了
 
 让 grokbot 提一条测试需求，然后依次核对：
 
 1. agent 发出方案后，issue 上出现 `pending/requester-bot` 标签；`poll.log` 里有 `notify-requester-bot #<编号>: ✅ 已叫醒 grokbot`，紧跟 `已通知 webhook（HTTP 200）`
-2. grokbot 在挂着等待标签的那个条目上留言说明转给了谁，之后在同一个条目上把答复原文贴回、摘掉 `pending/requester-bot`、打上 `pending/agent`；下一轮巡检 agent 接着干
+2. grokbot 在挂着等待标签的那个条目上留言说明转给了谁，**这时 `pending/requester-bot` 仍挂着**；grokbot 下一次扫描不再转第二遍。之后它在同一个条目上把答复原文贴回、摘掉 `pending/requester-bot`、打上 `pending/agent`；下一轮巡检 agent 接着干
 3. PR 合并后，issue 上出现「需求已完成」评论并重新挂上 `pending/requester-bot`，`poll.log` 里有 `issue #<编号>：已通知 webhook（HTTP 200）`
 
 任何一步对不上，看下面的[排查](#排查)。
@@ -112,12 +115,12 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 
 1. **提需求**：开 issue，正文末尾带上标记文字 `<!-- requested-by-grokbot -->`，并打上 `pending/agent`。只有作者是 grokbot **而且**带这段标记的 issue 才算它提的需求——缺一条，cavil-loop 就按普通 issue 处理，有问题只交维护者
 2. **收到 webhook，或自己定时扫描时**：拉取**所有**挂着 `pending/requester-bot` 的 issue / PR，**包括已关闭的**。webhook 请求体只是提示，照样全量拉，不按请求体办事（格式见[参考 → webhook 通知](#webhook-通知)）
-3. **转给提需求的人**：读讨论，把最新那条评论带给提需求的人，然后**在挂着等待标签的那个条目上**留言说明转给了谁——方案、提问挂在 issue 上就回 issue，PR 上的结果汇报就回那个 PR。agent 只认这条留言作为「已通知提需求的人」的证据。**转达之后等待标签不动**：它表示「还在等提需求方的答复」，提前摘掉不会让 agent 早一点干活（daemon 不会因此派工，见[等待期间 daemon 怎么做](#等待期间-daemon-怎么做)），只会让条目看起来没人在等
+3. **转给提需求的人**：读讨论，把最新那条评论带给提需求的人，然后**在挂着等待标签的那个条目上**留言说明转给了谁——方案、提问挂在 issue 上就回 issue，PR 上的结果汇报就回那个 PR。agent 只认这条留言作为「已通知提需求的人」的证据。**转达之后等待标签不动**：它表示「还在等提需求方的答复」，提前摘掉不会让 agent 早一点干活（daemon 不会因此派工，见[等待期间 daemon 怎么做](#等待期间-daemon-怎么做)），只会让条目看起来没人在等。标签留着，每次扫描都还会拉到这一条，所以要认出「已经转达过」、不重复转：机器人提的需求，最新一条评论就是自己那条「已转给谁」时，说明已转达过，这一轮什么都不做；维护者自己的条目，按第 8 条判出「就绪」后，若那条叫醒记录之后已经有自己的「已转给谁」评论，同样什么都不做
 4. **带回答复**：还是在**挂着等待标签的那个 issue 或 PR 上**，把答复**原文**贴回 → 摘掉它的 `pending/requester-bot` → 给它打上 `pending/agent` 让 agent 继续。**`pending/agent` 一定要打**，`DISPATCH_MODE=greedy` 的项目也一样（GitHub#162 起，等待标签被摘掉、之后没人打派工标签的条目不会自动续上）。**别把 PR 上的答复贴到来源 issue**：daemon 按每个条目自己的标签派工，贴到 issue 上会把 issue 重新派出去，等待中的 PR 却一直停着。认可汇报时答复里要明确说认可；agent 还会核对被认可的那条汇报写的提交编号是不是 PR 当前最新提交，不是就会再问一次
 5. **收到「需求已完成」/「已关闭，没有合并」的评论**（daemon 发在来源 issue 上）：把结果告诉提需求的人，再摘掉 `pending/requester-bot`；这条需求到此结束
 6. **不碰挂着 `pending/human` 的条目**：那是交给维护者的
 7. **附件**：提需求的人给的图片等可以贴进 issue，agent 会自己下载阅读；反方向（agent 发附件给 grokbot）目前不支持
-8. **维护者自己的条目**（项目打开了 `REQUESTER_BOT_WAKE_ANY_ITEM` 时才会出现）：先按[交接协议里的「先分流」](#交接协议)判断这条是不是 grokbot 提的需求——**不能只看当前条目的正文有没有来源标记**：PR 的正文通常没有标记，要看它关联的 issue；普通作者的正文里引用了标记也不算。不是 grokbot 提的需求，要转给谁写在交接评论里。按[维护者自己的条目 → 交接协议](#交接协议)找到叫醒记录和它指向的交接评论，判出「就绪」才转达，「准备中」这一轮什么都不做；答复照第 4 条贴回同一个条目。这类条目合并后不会收到「需求已完成」
+8. **维护者自己的条目**（项目打开了 `REQUESTER_BOT_WAKE_ANY_ITEM` 时才会出现）：先按[交接协议里的「先分流」](#交接协议)判断这条是不是 grokbot 提的需求——**不能只看当前条目的正文有没有来源标记**：PR 的正文通常没有标记，要看它关联的 issue；普通作者的正文里引用了标记也不算。不是 grokbot 提的需求，要转给谁写在交接评论里。按[维护者自己的条目 → 交接协议](#交接协议)找到叫醒记录和它指向的交接评论，判出「就绪」才转达，「准备中」这一轮什么都不做；转达过的不重复转、等待标签不摘（第 3 条）；答复照第 4 条贴回同一个条目。这类条目合并后不会收到「需求已完成」
 
 ## 一条需求的完整来回：issue 上会看到什么
 
@@ -128,15 +131,16 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 | 1. 提需求 | grokbot | issue `pending/agent` | 正文带标记的 issue |
 | 2. 派工 | daemon | issue `doing/agent` | — |
 | 3. 出方案 | agent | issue `pending/requester-bot`（项目开了方案复审时先 `pending/review`，复审通过后才换成它） | 设计方案 |
-| 4. 转达、带回答复 | grokbot | issue `pending/agent` | issue 上：「已转给谁」；答复原文 |
-| 5. 开发、开 PR | agent | issue `pending/PR`；PR 先过复审（项目开了复审关卡时） | PR |
-| 6. 汇报结果 | agent / reviewer | PR `pending/requester-bot` | 结果汇报（写明提交编号） |
-| 7. 提需求方认可 | grokbot | PR `pending/agent` | PR 上（不是来源 issue）：「已转给谁」；认可的答复原文 |
-| 8. 交维护者 | agent | PR `pending/human` | 交人评论 |
-| 9. 合并 | 维护者 | PR `Done`；issue 挂上 `pending/requester-bot` | daemon 发「需求已完成」 |
-| 10. 收尾 | grokbot | issue 摘掉 `pending/requester-bot` | — |
+| 4. 转达 | grokbot | issue 仍是 `pending/requester-bot`（不摘） | issue 上：「已转给谁」 |
+| 5. 带回答复 | grokbot | issue `pending/agent` | issue 上：答复原文 |
+| 6. 开发、开 PR | agent | issue `pending/PR`；PR 先过复审（项目开了复审关卡时） | PR |
+| 7. 汇报结果 | agent / reviewer | PR `pending/requester-bot` | 结果汇报（写明提交编号） |
+| 8. 转达、提需求方认可 | grokbot | PR 转达后仍是 `pending/requester-bot`，带回认可时换成 `pending/agent` | PR 上（不是来源 issue）：「已转给谁」；认可的答复原文 |
+| 9. 交维护者 | agent | PR `pending/human` | 交人评论 |
+| 10. 合并 | 维护者 | PR `Done`；issue 挂上 `pending/requester-bot` | daemon 发「需求已完成」 |
+| 11. 收尾 | grokbot | issue 摘掉 `pending/requester-bot` | — |
 
-`REQUESTER_BOT_REPORT_FIRST="false"` 时没有第 6、7 步：做完直接交维护者，合并后照样有第 9、10 步。
+`REQUESTER_BOT_REPORT_FIRST="false"` 时没有第 7、8 步：做完直接交维护者，合并后照样有第 10、11 步。
 
 ## 排查
 
@@ -148,7 +152,8 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 | `webhook 配置不完整，跳过` | 请求头名或密钥为空，或请求头名有字母、数字、`-` 以外的字符，或地址 / 密钥里有换行 |
 | `配置文件权限过宽（应为 600），webhook 跳过` | 做第 3 步 |
 | `找不到 curl，webhook 跳过` | 本机装上 curl |
-| 条目一个流程标签都没有、一直没人接着干，`poll.log` 有 `不续工——#<编号> 最近一次挂上等待标签 … 之后，没人打过派工标签` | 等待标签被提前摘掉了、又没打 `pending/agent`（GitHub#162）。答复已经贴回：打 `pending/agent` 就会续上；还没答复：重新挂上等待标签，提醒 grokbot 那边转达后不要摘（[约定第 3、4 条](#grokbot-那边要照做的约定)） |
+| grokbot 留言「已转给谁」之后，等待标签马上就没了，条目一个流程标签都不剩 | grokbot 转达后自己摘了等待标签，违反[约定第 3 条](#grokbot-那边要照做的约定)。daemon 不会因此派工（见下一行），只是看板上看不出在等答复。要改的是 grokbot 那边：转达后不摘，带回答复时才摘（GitHub#187） |
+| 条目一个流程标签都没有、一直没人接着干，`poll.log` 有 `不续工——#<编号> 最近一次挂上等待标签 … 之后，没人打过派工标签` | 等待标签被提前摘掉了、又没打 `pending/agent`（GitHub#162）。答复已经贴回：打 `pending/agent` 就会续上。还没答复：不用动，答复回来时 grokbot 照第 4 条打 `pending/agent` 就会续上；同时提醒 grokbot 那边转达后不要摘（[约定第 3、4 条](#grokbot-那边要照做的约定)）。**别手动把等待标签挂回去**：维护者自己的条目上，手动挂上的标签没有对应的叫醒记录，grokbot 30 分钟后会判「出错」交维护者（见[交接协议](#交接协议)）；机器人提的需求上，也可能被当成新的一次叫醒再转一遍 |
 | 合并后 grokbot 没收到「需求已完成」 | 合并后清理被关了（`AUTO_CLEANUP_ON_MERGE`）；或关闭未合并时同一项需求还有别的 PR 开着（这种不通知）；或写身份不在 `REQUESTER_BOT_ALLOWED_ACTORS` 里——`poll.log` 会写明原因 |
 
 叫醒脚本的退出码见[参考 → 叫醒脚本](#叫醒脚本)。
@@ -330,7 +335,7 @@ bash ~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh --config 
 | 3 | 叫醒失败，已交还维护者（只剩 `pending/human`） | 补一条评论说明 |
 | 4 | 交还也失败，输出里是实际读回的标签 | 如实说明，不写「已交人」 |
 
-机器人回复后自己摘等待标签——这部分由机器人那边负责，cavil-loop 不管。
+等待标签由机器人在带回答复时自己摘（约定第 4 条；转达时不摘，第 3 条）——这部分由机器人那边负责，cavil-loop 不管。
 
 
 ### webhook 通知

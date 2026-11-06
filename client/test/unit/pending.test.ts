@@ -83,6 +83,11 @@ async function signedIn(
       loginItem.on = on;
     },
     nextEvent: () => new Promise<DesktopEvent>(() => {}),
+    updateStatus: async () => null,
+    checkUpdate: async () => {},
+    setAutoUpdate: async () => {},
+    dismissUpdate: async () => {},
+    restartToUpdate: async () => {},
   };
   const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
   controllers.push(c);

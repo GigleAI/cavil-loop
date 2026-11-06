@@ -3,18 +3,32 @@ name: Client
 # The desktop client in client/ (GitHub#135): its own tests, its own macOS
 # packages, its own Releases (tag client/vX.Y.Z). Nothing here touches the
 # daemon's tests or its weekly release.
+#
+# What runs when:
+#   every PR push                 quick tests: typecheck, cargo, vitest (a few minutes)
+#   push to main                  quick tests + the Mac arm64 build (dmg + its checks)
+#   client/v* tag                 quick + full tests (Playwright, the real app on Linux) + the Macs,
+#                                 arm64 and x64; any failure, no Release
+#   weekly / manual run           quick + full tests + the Mac arm64 build (packaging or end-to-end
+#                                 breakage shows up within a week); negative controls only when asked
+# Negative controls run automatically only in the weekly release gate
+# (.github/workflows/release.yml, job gate-client), on the commit that release tags.
 on:
   pull_request:
     paths:
       - 'client/**'
       - '.github/workflows/client.yml'
+      - '.github/actions/client-setup/**'
   push:
     branches: [main]
     paths:
       - 'client/**'
       - '.github/workflows/client.yml'
+      - '.github/actions/client-setup/**'
     tags:
       - 'client/v*'
+  schedule:
+    - cron: '40 16 * * 0'
   workflow_dispatch:
     inputs:
       mutation:
@@ -31,7 +45,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: client-${{ github.event.pull_request.number || github.ref }}
+  # the weekly run has its own group, so it never cancels (or is cancelled by) a push to main
+  group: client-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'schedule' && '-weekly' || '' }}
   cancel-in-progress: true
 
 defaults:
@@ -40,82 +55,42 @@ defaults:
 
 jobs:
   test:
-    name: client tests (Linux)
+    name: client quick tests (Linux)
     runs-on: ubuntu-latest
-    # negative controls rebuild the back end / the app per entry
-    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
+    timeout-minutes: ${{ inputs.mutation && 240 || 30 }}
     steps:
       - uses: actions/checkout@v4
         with:
           # the negative-control runner and the upgrade tests take earlier commits' files (git show / archive)
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-      # The back end is Rust (src-tauri/crates/core); the suites drive it as a child process.
-      - name: Rust toolchain
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            client/src-tauri/target
-          key: cargo-linux-${{ hashFiles('client/src-tauri/Cargo.lock') }}
-          restore-keys: cargo-linux-
-      # system WebKit for the app's own Linux build (smoke test below)
-      # The downloaded packages are kept between runs: the runner's package mirror sometimes
-      # crawls (25 MB of WebKit at a few KB/s), and a cached run hardly touches it.
-      - uses: actions/cache@v4
-        with:
-          path: ~/apt-archives
-          key: apt-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-webkit-v1
-          restore-keys: apt-${{ runner.os }}-${{ env.ImageOS }}-
-      - name: System libraries for the Tauri window
-        timeout-minutes: 25
-        run: |
-          mkdir -p "$HOME/apt-archives/partial"
-          A=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives="$HOME/apt-archives")
-          apt_install() {
-            for i in 1 2 3; do
-              sudo timeout 420 apt-get "${A[@]}" install -y --no-install-recommends "$@" && return 0
-              echo "apt-get install attempt $i failed or took too long; retrying"
-              sudo apt-get -o Acquire::Retries=3 update || true
-            done
-            return 1
-          }
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          apt_install libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xvfb
-          # WebKitWebDriver (for test/tauri): the package was renamed in newer Ubuntu releases
-          drv=webkitgtk-webdriver; apt-cache show "$drv" >/dev/null 2>&1 || drv=webkit2gtk-driver
-          apt_install "$drv"
-          command -v WebKitWebDriver
-          sudo chown -R "$USER" "$HOME/apt-archives"
-      # WebDriver for the real Tauri window (test/tauri); kept in the cache between runs
-      - uses: actions/cache@v4
-        with:
-          path: ~/.tauri-driver
-          key: tauri-driver-2-${{ runner.os }}
-      - name: tauri-driver
-        run: |
-          [ -x "$HOME/.tauri-driver/bin/tauri-driver" ] || cargo install tauri-driver --locked --root "$HOME/.tauri-driver"
-          echo "$HOME/.tauri-driver/bin" >> "$GITHUB_PATH"
-      - run: npm ci
+      - uses: ./.github/actions/client-setup
       - name: Type check
         run: npm run typecheck
       - name: Back end unit tests (cargo)
         run: npm run test:rust
       - name: Unit tests (vitest, real back end as a child process)
         run: npm test
+      # Negative controls run in the weekly release gate (.github/workflows/release.yml,
+      # GitHub#195), not here; a manual run can still ask for them.
       - name: Negative controls
         if: ${{ inputs.mutation && inputs.mutation_scope != 'shell' }}
         run: MUTATION=1 npm run test:mutation
+
+  # Playwright + the real app on Linux. Each builds the whole app, so only on a client/v* tag,
+  # the weekly run and a manual run — not on pull requests, not on pushes to main.
+  e2e:
+    name: client full tests (Linux)
+    if: startsWith(github.ref, 'refs/tags/client/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # negative controls rebuild the back end / the app per entry
+    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/client-setup
       - name: UI tests (Playwright on WebKit, real window + real back end)
-        run: |
-          npx playwright install --with-deps webkit
-          npm run test:e2e
+        run: npm run test:e2e
       - name: The app itself on Linux (Tauri window + IPC + back end) starts
         run: |
           node scripts/build.mjs
@@ -138,14 +113,15 @@ jobs:
 
   package:
     name: dmg (${{ matrix.arch }})
+    # Not on pull requests (GitHub#195). arm64 alone on a push to main, the weekly run and a manual
+    # run; arm64 and x64 on a client/v* tag.
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
+      # x64 (Intel) only on a client/v* tag, where the Release ships both dmgs; a push to main, the
+      # weekly and the manual runs build and check arm64 alone.
       matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
+        include: ${{ fromJSON(startsWith(github.ref, 'refs/tags/client/v') && '[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]' || '[{"arch":"arm64","runner":"macos-15"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
@@ -172,20 +148,65 @@ jobs:
           "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
           echo "$RUNNER_TEMP/dmgbuild/bin" >> "$GITHUB_PATH"
       - run: npm ci
-      - name: Build the app (Tauri) and the dmg
+      # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. The public key
+      # has one home, plugins.updater.pubkey in src-tauri/tauri.conf.json (the app reads it at run
+      # time, the bundler when it signs, the release job when it verifies). A release tag signs with
+      # the maintainer's key (secret) against that public key, and refuses when either is missing;
+      # every other run uses a throw-away key pair, passed to the bundler as a matching pair, so each
+      # PR builds and measures the same files (those packages are never published).
+      - name: Build the app (Tauri), its update package, and the dmg
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/client/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
-          npx tauri build --bundles app
+          if [[ "$GITHUB_REF" == refs/tags/client/v* ]]; then
+            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release tag needs the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
+            pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
+            [ -n "$pub" ] || { echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: the app could not check any update (see client/README.md 发版)"; exit 1; }
+          else
+            npx tauri signer generate --ci -p "" -w "$RUNNER_TEMP/throwaway-update.key" >/dev/null
+            export TAURI_SIGNING_PRIVATE_KEY="$RUNNER_TEMP/throwaway-update.key" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+            pub="$(cat "$RUNNER_TEMP/throwaway-update.key.pub")"
+          fi
+          conf="$(node -e 'console.log(JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: process.argv[1] } } }))' "$pub")"
+          npx tauri build --bundles app --config "$conf"
+          # the signature the bundler wrote verifies with the public key it was given (on a tag: the app's own)
+          printf '%s' "$conf" > "$RUNNER_TEMP/update-conf.json"
+          node scripts/update-manifest.mjs --verify "src-tauri/target/release/bundle/macos/Cavil Loop.app.tar.gz" "src-tauri/target/release/bundle/macos/Cavil Loop.app.tar.gz.sig" --conf "$RUNNER_TEMP/update-conf.json"
           node scripts/make-dmg.mjs --arch ${{ matrix.arch }}
+          v="$(node -p "require('./package.json').version")"
+          for ext in tar.gz tar.gz.sig; do
+            cp "src-tauri/target/release/bundle/macos/Cavil Loop.app.$ext" "release/Cavil-Loop-$v-${{ matrix.arch }}.app.$ext"
+          done
           ls -la release
       # GitHub#151: ≤ 10 MB is the target, > 20 MB fails (1 MB = 1,000,000 bytes)
       - name: Download size
-        run: node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.dmg --expect ${{ matrix.arch }}
+        run: |
+          node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.dmg --expect ${{ matrix.arch }}
+          node scripts/size-gate.mjs release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz --expect ${{ matrix.arch }}
       - name: Smoke test + first-open steps + dmg window
         run: bash scripts/mac-open-check.sh release/Cavil-Loop-*-${{ matrix.arch }}.dmg "$RUNNER_TEMP/dmg-window-${{ matrix.arch }}.png"
+      # GitHub#184: the installed old version updates itself to a new one, for real (Tauri's updater
+      # plugin, /Applications, a loopback stand-in for GitHub); a tampered package is refused.
+      - name: A real update of the installed app
+        run: |
+          npx tauri build --debug --bundles app --features update-test
+          bash scripts/mac-update-check.sh "src-tauri/target/debug/bundle/macos/Cavil Loop.app"
       # The dmg itself, not zipped (archive: false; the artifact is named after the file).
       - uses: actions/upload-artifact@v7.0.1
         with:
           path: client/release/Cavil-Loop-*-${{ matrix.arch }}.dmg
+          archive: false
+          if-no-files-found: error
+      # and the update package and its signature (GitHub#184), the same way
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-${{ matrix.arch }}.app.tar.gz.sig
           archive: false
           if-no-files-found: error
       - name: Upload the dmg window screenshot
@@ -197,23 +218,27 @@ jobs:
           if-no-files-found: ignore
 
   size:
-    name: download size (both dmgs)
+    name: download size (every dmg built)
     needs: [package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*.dmg
+          pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
-      - name: Each dmg ≤ 20 MB (target ≤ 10 MB)
-        run: node scripts/size-gate.mjs dist-release/*.dmg --expect arm64,x64
+      - name: Each dmg and each update package ≤ 20 MB (target ≤ 10 MB)
+        env:
+          ARCHES: ${{ startsWith(github.ref, 'refs/tags/client/v') && 'arm64,x64' || 'arm64' }}
+        run: |
+          node scripts/size-gate.mjs dist-release/*.dmg --expect "$ARCHES"
+          node scripts/size-gate.mjs dist-release/*.app.tar.gz --expect "$ARCHES"
 
   release:
     name: publish client release
     if: startsWith(github.ref, 'refs/tags/client/v')
-    needs: [test, package, size]
+    needs: [test, e2e, package, size]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -226,20 +251,24 @@ jobs:
           [ "$tag" = "$want" ] || { echo "::error::tag $tag does not match package.json ($want)"; exit 1; }
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*.dmg
+          pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
       - name: Both dmgs are there
         run: |
           ls -la dist-release
           [ "$(ls dist-release/*-arm64.dmg dist-release/*-x64.dmg | wc -l)" -eq 2 ]
+      # GitHub#184: what installed apps read to update themselves. Refuses unless both update packages
+      # are there and their signatures verify with the app's public key (tauri.conf.json).
+      - name: Update manifest (latest.json)
+        run: node scripts/update-manifest.mjs --version "$(node -p "require('./package.json').version")" --dir dist-release --conf src-tauri/tauri.conf.json --notes RELEASE_NOTES.md --out dist-release/latest.json
       # Not marked latest: the daemon's weekly release stays "Latest".
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" dist-release/*.dmg \
+          gh release create "$tag" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/latest.json \
             --repo "$GITHUB_REPOSITORY" \
             --title "Cavil Loop 客户端 ${tag#client/}" \
             --notes-file RELEASE_NOTES.md \

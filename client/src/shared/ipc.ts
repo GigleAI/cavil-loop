@@ -27,6 +27,11 @@ export interface CavilApi {
   setLaunchAtLogin(on: boolean): Promise<void>;
   /** a row of the settings page's pending list: open it the way a click on its notification does */
   openPending(key: string): Promise<void>;
+  /** the app updating itself (GitHub#184) */
+  checkUpdate(): Promise<void>;
+  setAutoUpdate(on: boolean): Promise<void>;
+  dismissUpdate(version: string): Promise<void>;
+  restartToUpdate(): Promise<void>;
   loadDetail(key: string): Promise<DetailResult>;
   repoOptions(repo: string): Promise<RepoOptions>;
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;

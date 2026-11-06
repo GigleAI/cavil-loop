@@ -2,10 +2,11 @@
 // of comments and reviews), and order it newest first. The rendered HTML is
 // GitHub's own (bodyHTML); it is only ever shown inside the isolated view.
 
-import type { ItemDetail, MergeMethod, PrStatus, TimelineEntry } from '../shared/actions';
+import type { ItemDetail, MergeMethod, PrStatus, TaskEntry, TimelineEntry } from '../shared/actions';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
 import { ITEM_DETAIL_QUERY, REVIEW_COMMENTS_QUERY } from './queries';
+import { planTasks, renderedTaskBoxes } from './taskList';
 
 const MAX_PAGES = 50;
 
@@ -18,6 +19,9 @@ interface GqlComment {
   createdAt: string;
   bodyHTML: string;
   author: GqlAuthor | null;
+  /** markdown source and "may this account change it" (issue / PR comments; GitHub#193) */
+  body?: string;
+  viewerCanUpdate?: boolean;
 }
 interface GqlLineComment extends GqlComment {
   path: string;
@@ -49,6 +53,8 @@ interface GqlDetail {
   isDraft?: boolean;
   createdAt: string;
   bodyHTML: string;
+  body?: string;
+  viewerCanUpdate?: boolean;
   author: GqlAuthor | null;
   labels: { nodes: { name: string; color: string }[] };
   mergeable?: string;
@@ -145,6 +151,23 @@ export async function fetchRawDetail(client: GitHubClient, repo: string, number:
   return { item: first!, comments, reviews, mergeMethods };
 }
 
+/**
+ * Can the boxes of this body / comment be clicked (GitHub#193)? Only with its source
+ * and GitHub's "you may change it" both read, and the source agreeing with the
+ * rendering box for box. Anything not read is read-only, never "probably fine".
+ */
+export function taskEntry(html: string, source: unknown, canUpdate: unknown): TaskEntry | undefined {
+  if (!renderedTaskBoxes(html).length) return undefined;
+  if (typeof source !== 'string' || typeof canUpdate !== 'boolean') return { clickable: false, why: '没读到这一条的原文或修改权限，勾选框只读' };
+  if (!canUpdate) return { clickable: false, why: 'GitHub 说你没有权限改这一条，勾选框只读' };
+  const plan = planTasks(source, html);
+  if (!plan.ok) return { clickable: false, why: plan.why };
+  return { clickable: true, source };
+}
+
+/** Boxes in a review or a line comment stay read-only: ticking them is left to the web page. */
+const REVIEW_TASKS: TaskEntry = { clickable: false, why: '评审意见里的勾选框只能在网页上勾' };
+
 const desc = (a: { at: string }, b: { at: string }) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
 
 /**
@@ -156,7 +179,8 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
   const it = raw.item;
   const out: TimelineEntry[] = [];
   for (const c of raw.comments) {
-    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML });
+    const tasks = taskEntry(c.bodyHTML, c.body, c.viewerCanUpdate);
+    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML, ...(tasks ? { tasks } : {}) });
   }
   for (const r of raw.reviews) {
     if (r.state === 'PENDING') continue;
@@ -178,12 +202,14 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
       author: r.author?.login ?? null,
       at: r.submittedAt ?? r.createdAt,
       bodyHtml: r.bodyHTML,
+      ...(renderedTaskBoxes(r.bodyHTML).length ? { tasks: REVIEW_TASKS } : {}),
       reviewState: r.state,
       lineComments,
     });
   }
   out.sort(desc);
-  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML });
+  const tasks = taskEntry(it.bodyHTML, it.body, it.viewerCanUpdate);
+  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML, ...(tasks ? { tasks } : {}) });
   return out;
 }
 

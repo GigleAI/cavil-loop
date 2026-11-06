@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
 import { findCopies, pullOf } from '../fake-github/writes';
+import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -309,7 +310,8 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   const detail = page.getByTestId('detail');
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   const frameEl = page.getByTestId('timeline-frame');
-  await expect(frameEl).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+  // scripts on for the frame's own script only (GitHub#193: both policies allow just its hash), never same-origin
+  await expect(frameEl).toHaveAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await expect(frame.locator('details.entry')).toHaveCount(3);
   expect(await frame.locator('details.entry').evaluateAll((els) => els.map((e) => e.getAttribute('data-entry')))).toEqual(['C-new', 'C-old', expect.stringMatching(/^I_/)]);
@@ -1951,5 +1953,191 @@ test('settings lists what the badge counts: same colours and words as card, tabl
   await shot(page, '51-pending-list-external');
   // the list only reads: not one write reached GitHub
   expect(env.fake.writes().slice(writesBefore)).toEqual([]);
+  await app.close();
+});
+
+// ---- GitHub#193: ticking a choice in the detail ----
+
+const QUESTION193 = '**Q1: 换手机后怎么找回？**（默认 A）\n\n- [ ] **A. 导出文件** — 手动\n- [ ] **B. 云端** — 自动\n\n```\n- [ ] 代码块里的不是选项\n```\n';
+/** raw HTML the frame must never run: an inline script, an error handler, a click handler (each would report itself) */
+const INJECTED193 =
+  '<p>INJECTED</p><script>parent.postMessage({cavil:"pwned-script"},"*")</script>' +
+  '<img alt="i" src="data:image/png;base64,xx" onerror="parent.postMessage({cavil:\'pwned-onerror\'},\'*\')">' +
+  '<button id="inj" onclick="parent.postMessage({cavil:\'pwned-onclick\'},\'*\')">inj</button>';
+
+test('GitHub#193: tick a choice in the detail — one character changes on GitHub; someone else\'s edit is never overwritten; read-only / offline boxes stay put; only the frame\'s own script runs', async () => {
+  const w = env.fake.state.w;
+  const at = (d: number) => `2026-11-0${d}T01:00:00Z`;
+  const url = (id: string) => `https://github.com/GigleAI/cavil-loop/issues/138#${id}`;
+  w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C_RO', url: url('C_RO'), createdAt: at(2), bodyHTML: '', author: { login: 'user-2' }, body: QUESTION193 },
+    { id: 'C_INJ', url: url('C_INJ'), createdAt: at(3), bodyHTML: INJECTED193, author: { login: 'user-3' } },
+    { id: 'C_Q', url: url('C_Q'), createdAt: at(4), bodyHTML: '', author: { login: 'user-4' }, body: QUESTION193 },
+  ]);
+  w.cannotUpdate.add('C_RO');
+  const sourceOfQ = () => w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === 'C_Q')!.body;
+  const { app, page } = await launch(env);
+  // every message the window receives, by kind (the frame's script reports "ready" when it ran)
+  await page.evaluate(() => {
+    (window as any).__msgs = [];
+    window.addEventListener('message', (e) => (window as any).__msgs.push(e.data?.cavil));
+  });
+  const msgs = () => page.evaluate(() => (window as any).__msgs as string[]);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const iframe = page.getByTestId('timeline-frame');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const box = (entry: string, i: number) => frame.locator(`details.entry[data-entry="${entry}"] input[data-task="${i}"]`);
+
+  // ---- 1. the trusted script ran; nothing GitHub's HTML carries does, even opened and clicked ----
+  await frame.locator('details.entry[data-entry="C_INJ"] > summary').click({ position: { x: 40, y: 10 } });
+  await expect(frame.locator('#inj')).toBeVisible();
+  await frame.locator('#inj').click();
+  await page.waitForTimeout(500);
+  expect(await msgs()).toContain('ready');
+  expect((await msgs()).filter((m) => /^pwned/.test(String(m)))).toEqual([]);
+  // the task boxes look like GitHub's: no list bullet
+  expect(await box('C_Q', 0).evaluate((el) => getComputedStyle(el.closest('li')!).listStyleType)).toBe('none');
+
+  // ---- 2. a comment this account may not change: its boxes are read-only and say why ----
+  await frame.locator('details.entry[data-entry="C_RO"] > summary').click({ position: { x: 40, y: 10 } });
+  await expect(box('C_RO', 0)).toBeDisabled();
+  await expect(frame.locator('details.entry[data-entry="C_RO"] [data-testid="task-readonly"]')).toHaveText('GitHub 说你没有权限改这一条，勾选框只读');
+  await box('C_RO', 0).click({ force: true });
+  await page.waitForTimeout(300);
+  expect(env.fake.writes()).toEqual([]);
+  await shot(page, '60-task-boxes');
+
+  // ---- 3. tick A: GitHub gets the comment with exactly that box changed ----
+  await expect(box('C_Q', 0)).toBeEnabled();
+  await box('C_Q', 0).click();
+  await expect(page.getByTestId('action-result')).toHaveText('已勾上，GitHub 上已更新');
+  const ticked = QUESTION193.replace('- [ ] **A.', '- [x] **A.');
+  expect(writes()).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_Q', body: ticked }]]);
+  expect(sourceOfQ()).toBe(ticked);
+  // re-read: A shown ticked, B not; the entries opened before are still open; hand back is offered
+  await expect(box('C_Q', 0)).toBeChecked();
+  await expect(box('C_Q', 1)).not.toBeChecked();
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  expect(await frame.locator('details.entry').evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry')))).toEqual([
+    'C_Q',
+    'C_INJ',
+    'C_RO',
+  ]);
+  await expect(page.getByTestId('hand-back')).toBeVisible();
+  await shot(page, '61-task-ticked');
+
+  // ---- 4. somebody edits the comment on the web meanwhile: the click is refused, their text stays ----
+  const theirs = ticked.replace('- [ ] **B.', '- [x] **B.').replace('— 自动', '— 自动（改过）');
+  w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === 'C_Q')!.body = theirs;
+  // the window still shows the old text: B unticked
+  await expect(box('C_Q', 1)).not.toBeChecked();
+  await box('C_Q', 1).click();
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'error');
+  await expect(page.getByTestId('action-result')).toHaveText(TASK_CHANGED193);
+  expect(env.fake.writes()).toHaveLength(1);
+  expect(sourceOfQ()).toBe(theirs);
+  // read again: what GitHub holds now
+  await expect(frame.locator('details.entry[data-entry="C_Q"] .md')).toContainText('自动（改过）');
+  await expect(box('C_Q', 1)).toBeChecked();
+
+  // ---- 5. messages the window drops: not from the frame, or from an older rendering; the same from the frame goes through ----
+  const render = (await iframe.getAttribute('data-render'))!;
+  await page.evaluate((r) => window.postMessage({ cavil: 'task', render: r, entry: 'C_Q', index: 0, checked: false, view: { open: [], scroll: 0 } }, '*'), render);
+  const inFrame = page.frames().find((f) => f !== page.mainFrame() && f.url() === 'about:srcdoc')!;
+  await inFrame.evaluate(() => parent.postMessage({ cavil: 'task', render: 'r0', entry: 'C_Q', index: 0, checked: false, view: { open: [], scroll: 0 } }, '*'));
+  await page.waitForTimeout(500);
+  expect(env.fake.writes()).toHaveLength(1);
+  await inFrame.evaluate((r) => parent.postMessage({ cavil: 'task', render: r, entry: 'C_Q', index: 0, checked: false, view: { open: [], scroll: 0 } }, '*'), render);
+  await expect(page.getByTestId('action-result')).toHaveText('已取消勾选，GitHub 上已更新');
+  expect(env.fake.writes()).toHaveLength(2);
+  expect(sourceOfQ()).toBe(theirs.replace('- [x] **A.', '- [ ] **A.'));
+
+  // ---- 6. offline: every box greys out, nothing sent ----
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(box('C_Q', 0)).toBeDisabled();
+  await expect(box('C_Q', 1)).toBeDisabled();
+  expect(env.fake.writes()).toHaveLength(2);
+  expect((await msgs()).filter((m) => /^pwned/.test(String(m)))).toEqual([]);
+  await app.close();
+});
+
+// ---- the app updating itself (GitHub#184) -----------------------------------------------
+// The shell's updater is played by the bridge (app.desktop.update / setUpdate); what each state
+// says and which requests the buttons send is the window's part, checked here.
+
+test('GitHub#184: update section in Settings, every state; failures only in Settings; the ready bar on the board, restart, × keeps it closed', async () => {
+  const { app, page } = await launch(env);
+  await signInForReminders(page, []);
+  // a build that does not update itself shows nothing about it
+  await expect(page.getByTestId('pending-settings')).toBeVisible();
+  await expect(page.getByTestId('update-settings')).toHaveCount(0);
+  await expect(page.locator('.settings-nav a', { hasText: '更新' })).toHaveCount(0);
+
+  const base = { supported: true, current: '0.5.0', auto: true, problem: null, phase: 'idle', dismissed: null, last: null };
+  const at = new Date(2026, 10, 6, 14, 2).getTime();
+  app.desktop.setUpdate(base);
+  await expect(page.getByTestId('update-current')).toHaveText('0.5.0');
+  await expect(page.locator('.settings-nav a', { hasText: '更新' })).toHaveCount(1);
+  await expect(page.getByTestId('update-line')).toHaveText('还没有检查过');
+  await page.getByTestId('update-check').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'checkUpdate').length).toBe(1);
+
+  app.desktop.setUpdate({ ...base, phase: 'checking' });
+  await expect(page.getByTestId('update-line')).toHaveText('正在检查…');
+  await expect(page.getByTestId('update-check')).toBeDisabled();
+
+  app.desktop.setUpdate({ ...base, phase: 'downloading', version: '0.5.1', got: 3_200_000, total: 8_000_000 });
+  await expect(page.getByTestId('update-line')).toHaveText('正在下载 0.5.1（3.2 / 8.0 MB）');
+  await expect(page.getByTestId('update-check')).toBeDisabled();
+
+  app.desktop.setUpdate({ ...base, last: { at, ok: true, message: '已是最新' } });
+  await expect(page.getByTestId('update-line')).toHaveText('上次检查 14:02，已是最新');
+  await expect(page.getByTestId('update-check')).toBeEnabled();
+
+  // a failure: in Settings, in red, with when; never on the board
+  app.desktop.setUpdate({ ...base, last: { at, ok: false, message: '下载 0.5.1 失败：60 秒没有收到数据' } });
+  await expect(page.getByTestId('update-line')).toHaveText('下载 0.5.1 失败：60 秒没有收到数据（14:02）');
+  await expect(page.getByTestId('update-line')).toHaveClass(/err/);
+  await shot(page, '50-update-failed');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(page.getByTestId('update-ready')).toHaveCount(0);
+  await expect(page.locator('.banner', { hasText: '0.5.1' })).toHaveCount(0);
+  await page.getByTestId('open-settings').click();
+
+  // automatic checks: the box follows what the shell reports
+  await page.getByTestId('update-auto').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'setAutoUpdate').map((r) => r.on)).toEqual([false]);
+  await expect(page.getByTestId('update-auto')).not.toBeChecked();
+
+  // the new version is in place
+  app.desktop.setUpdate({ ...app.desktop.update, phase: 'ready', version: '0.5.1', last: { at, ok: true, message: '新版 0.5.1 已下载，重启后生效' } });
+  await expect(page.getByTestId('update-line')).toHaveText('新版 0.5.1 已下载，重启后生效');
+  await expect(page.getByTestId('update-check')).toHaveCount(0);
+  await shot(page, '51-update-ready-settings');
+  await page.getByTestId('update-restart').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'restartToUpdate').length).toBe(1);
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('update-ready')).toContainText('新版 0.5.1 已下载，重启后生效');
+  await shot(page, '52-update-ready-board');
+  await page.getByTestId('update-ready-restart').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'restartToUpdate').length).toBe(2);
+  await page.getByTestId('update-ready-close').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'dismissUpdate').map((r) => r.version)).toEqual(['0.5.1']);
+  await expect(page.getByTestId('update-ready')).toHaveCount(0);
+  // a later version is shown again
+  app.desktop.setUpdate({ ...app.desktop.update, version: '0.5.2' });
+  await expect(page.getByTestId('update-ready')).toContainText('0.5.2');
+
+  // a build that cannot update itself says why and offers nothing to click
+  app.desktop.setUpdate({ ...base, problem: '这一版没有带更新用的公钥，不能自动更新，请手动下载新版' });
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('update-line')).toHaveText('这一版没有带更新用的公钥，不能自动更新，请手动下载新版');
+  await expect(page.getByTestId('update-check')).toBeDisabled();
+  await expect(page.getByTestId('update-auto')).toBeDisabled();
   await app.close();
 });

@@ -3,7 +3,7 @@
 # 2026-11-02. A file missing here counts as 5 s; a stale number only makes one
 # shard a little slower, never skips or repeats a test.
 agent-trust-paths 56
-autopilot 150
+autopilot 212
 autopilot-ops 30
 blocked-label 55
 cavil-names 3
@@ -34,6 +34,7 @@ project-priority 1
 prompt-compose 1
 reap-finished-workers 11
 release-auto 1
+client-tauri-mutation-prep 1
 repair-unit-links 7
 requester-bot 236
 requester-bot-any-item 55
