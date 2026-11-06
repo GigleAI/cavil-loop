@@ -58,7 +58,8 @@ cd client
 npm ci
 npm run test:rust              # Rust 单元测试（后台 + 外壳；先构建一次界面，外壳编译要用）
 npm test                       # 单元测试（真实后台子进程），末尾打印「负对照：跳过 N 项」
-npm run test:mutation          # 负对照（MUTATION=1）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
+npm run test:mutation -- --changed  # 负对照（MUTATION=1），只跑和本次改动相关的项：基线约 30 秒，之后每项几秒到十几秒（只跑它点名的测试所在文件）
+npm run test:mutation          # 全部负对照（很慢，只在复审点名或 CI 手动时跑）：先跑未改动的基线，再逐项改坏一处（含 Rust 后台），指定的断言必须失败
 npm run typecheck
 npm run test:e2e               # 界面测试（WebKit；WebKit 起不来的机器加 CAVIL_E2E_ENGINE=chromium）
 npm run test:tauri             # 真实 App（Linux：要 tauri-driver、WebKitWebDriver，CI 用 xvfb-run；约 6 分钟，同步节拍是正式的 60 秒）
