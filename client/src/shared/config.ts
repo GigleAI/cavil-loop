@@ -11,3 +11,12 @@ export const DEFAULT_OAUTH_CLIENT_ID = 'Ov23liTgYsFUdK0wup54';
 export const DEFAULT_GITHUB_APP_CLIENT_ID = '';
 
 export const SYNC_INTERVAL_MS = 60_000;
+
+/**
+ * After a change succeeded, one more sync round this long after the last one
+ * (GigleAI/cavil-loop#177): GitHub's own Project automations (closed / merged →
+ * Done, auto-add by label, …) run on GitHub's side a little later, so the
+ * immediate re-read can be too early for them. It only schedules a round —
+ * nothing promises GitHub has finished by then; the 60 s timer still follows.
+ */
+export const FOLLOW_UP_SYNC_MS = 5_000;
