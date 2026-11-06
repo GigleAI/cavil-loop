@@ -7,9 +7,10 @@ import { stateTone } from '../shared/stateTone';
  * (`stateTone`, the same rule the board card and the table row use).
  *
  * `state` / `reason` are the board item's own (there as soon as the panel
- * opens); `isDraft` comes from the detail read and is null until it arrives or
- * when it failed. Closed and merged always win over a draft mark: only an open
- * PR the detail confirmed as a draft turns grey.
+ * opens). `isDraft` is chosen by the caller: the detail read's mark when it has
+ * arrived (fresher), otherwise the board item's; null when neither knows, and
+ * then it is not treated as a draft. Closed and merged always win over a draft
+ * mark: only an open PR marked as a draft turns grey.
  */
 const NAME: Record<ItemKind, string> = { issue: 'Issue', pr: 'Pull Request' };
 const STATE_TEXT: Record<ItemState, string> = { open: '开', closed: '已关闭', merged: '已合并' };

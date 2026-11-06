@@ -1074,10 +1074,11 @@ test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, s
 // (review of PR #174: "keep the issue / PR state colours the same as GitHub"):
 // open green, PR closed red, merged PR / issue closed as completed purple,
 // draft PR / issue closed as not planned grey. Closed and merged win over a
-// draft mark; only an open PR the detail read confirmed as a draft turns grey,
-// and a failed detail read keeps type + state. The board card and the table
-// row use the same colour rule.
-test('detail badge: issue and PR differ by icon and full name; colour by state; draft only when open and confirmed', async () => {
+// draft mark; an open PR marked as a draft turns grey. The lists carry the draft
+// mark; the badge prefers the fresher detail read and falls back to the board's
+// when the detail has not arrived or failed (neither knows → not a draft). The
+// board card and the table row use the same colour rule.
+test('detail badge: issue and PR differ by icon and full name; GitHub state colours on badge, card and table; draft mark from the detail or the board', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   /** GitHub's draft mark on every copy (detail, Project, repository list) — or only where `where` says */
   const draft = (n: number, on = true, where: 'all' | 'detail' | 'lists' = 'all') => {

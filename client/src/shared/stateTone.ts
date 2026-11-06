@@ -10,7 +10,9 @@ import type { IssueStateReason, ItemKind, ItemState } from './types';
  * The one rule every place that colours a state goes through (detail badge, board
  * card, table row).
  *
- * `isDraft` is only known from the detail read: null = not known, never "draft".
+ * `isDraft` is the PR's draft mark: the lists (Project, repository, one-item re-read)
+ * carry it, and the detail badge prefers the fresher detail read. null = not known,
+ * never "draft". Closed and merged always win over a draft mark.
  * An issue closed before GitHub recorded reasons has none and GitHub shows it as
  * completed, so a missing reason is `done` too.
  */
