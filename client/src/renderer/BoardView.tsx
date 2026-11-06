@@ -334,6 +334,8 @@ export function BoardView({
         {shown.map((c) => (
           <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} ops={ops} onDrop={onDrop} />
         ))}
+        {/* the floating detail covers the right of the board: room to scroll any column out from under it (#155) */}
+        {opened && <div className="detail-spacer" data-testid="detail-spacer" aria-hidden="true" />}
       </div>
     );
   };

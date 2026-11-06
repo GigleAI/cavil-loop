@@ -152,6 +152,7 @@ button.danger { background: var(--closed); color: #fff; border-color: var(--clos
 .detail-resize:hover, .detail.resizing .detail-resize { background: var(--accent); opacity: 0.35; }
 .detail.resizing { user-select: none; }
 .detail.resizing iframe { pointer-events: none; }
+.detail-spacer { flex: 0 0 var(--detail-space, 560px); align-self: stretch; }
 .timeline-tools { display: flex; align-items: center; gap: 8px; padding: 2px 12px 0; }
 .detail-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .detail-title { margin: 8px 12px 4px; font-size: 15px; }

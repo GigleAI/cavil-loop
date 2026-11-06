@@ -823,18 +823,20 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   await page.mouse.move(x0 - 100, h.y + 200, { steps: 4 });
   await page.mouse.move(x0 - 200, h.y + 200, { steps: 4 });
   await page.mouse.up();
-  await expect(detail).toHaveAttribute('data-width', '760');
+  // 200px wider, give or take the sub-pixel position of the edge
+  await expect.poll(async () => Math.abs(Number(await detail.getAttribute('data-width')) - 760)).toBeLessThanOrEqual(2);
+  const dragged = (await detail.getAttribute('data-width'))!;
   expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
   await shot(page, '41-detail-wider');
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
   await card(page, 137).click();
-  await expect(detail).toHaveAttribute('data-width', '760');
+  await expect(detail).toHaveAttribute('data-width', dragged);
   // a narrow window leaves a strip of the board uncovered; the kept width comes back when it is wide again
   await page.setViewportSize({ width: 800, height: 800 });
   await expect(detail).toHaveAttribute('data-width', '680');
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect(detail).toHaveAttribute('data-width', '760');
+  await expect(detail).toHaveAttribute('data-width', dragged);
   // Esc while typing a reply does not close the panel (and so does not drop the draft)
   await detail.getByTestId('reply-input').fill('草稿');
   await detail.getByTestId('reply-input').press('Escape');
@@ -845,7 +847,11 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   ({ app, page } = await launch(env));
   await expect(card(page, 138)).toBeVisible({ timeout: 15_000 });
   await card(page, 138).click();
-  await expect(page.getByTestId('detail')).toHaveAttribute('data-width', '760');
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-width', dragged);
+  // a card under the panel can still be reached: the board scrolls it out from under the panel
+  const covered = page.locator('[data-testid="column"] [data-testid="card"]').last();
+  await covered.click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', (await covered.getAttribute('data-key'))!);
   await page.getByTestId('detail-close').click();
 
   // ---- 5. PRs right under the issue they are linked to (columns by status: the recorded pairs share one) ----

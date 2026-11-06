@@ -139,6 +139,10 @@ export function DetailPanel({
   const [unfold, setUnfold] = useState<Unfold>('latest');
   const doc = useMemo(() => (detail ? timelineDocument(detail, dark(), unfold) : ''), [detail, unfold]);
   const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
+  // the board leaves this much room to scroll past the panel (BoardView's spacer)
+  useEffect(() => {
+    document.documentElement.style.setProperty('--detail-space', `${width}px`);
+  }, [width]);
   // Esc closes the panel — not while typing (a draft is not thrown away by a key) or while a dialog asks
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
