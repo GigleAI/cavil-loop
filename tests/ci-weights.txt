@@ -38,6 +38,7 @@ repair-unit-links 7
 requester-bot 206
 requester-bot-any-item 55
 retrospective-directory-lessons 1
+retrospective-global-lock 2
 retrospective-lessons 2
 review-verdict-emoji 1
 run 2

@@ -28,6 +28,11 @@ CAVIL_SKILL_HOME="$HOME/.agents/skills/cavil-loop"
 CAVIL_LEGACY_SKILL_HOME="$HOME/.agents/skills/coding-agent-work-loop"
 CAVIL_STATE_HOME="$HOME/.local/state/cavil-loop"
 CAVIL_LEGACY_STATE_HOME="$HOME/.local/state/coding-agent-poll"
+# 合并后复盘的全机锁：本机所有项目共用一把，同一时刻只跑一个复盘（GitHub#165）。
+# 固定放在新名字的状态根目录下，不随部署方式变：按版本部署时 skill 目录不是 git 仓库，
+# 而且每个版本各是一个目录，放在那里不同版本就互不相斥了。也不按 cavil_pick 挑新旧——
+# 本机有的项目已迁、有的还没迁时，挑出来的会不是同一个文件。
+CAVIL_RETROSPECTIVE_LOCK="$CAVIL_STATE_HOME/retrospective.lock"
 
 # 项目根目录那份本地配置文件
 CAVIL_PROJECT_CONFIG_NAME="cavil-loop.config"

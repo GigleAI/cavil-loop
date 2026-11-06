@@ -8,6 +8,8 @@ exec 2>&8 8>&-
 export REPO STATE_DIR BRANCH_PREFIX PROJECT_ROOT
 export BASE_BRANCH="${BASE_BRANCH:-main}"
 export RETROSPECTIVE_SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# 全机一把复盘锁，位置见 _names.sh（GitHub#165：不能放在 skill 目录里，按版本部署时那里不是 git 仓库、每个版本也各是一个目录）
+export RETROSPECTIVE_LOCK="$CAVIL_RETROSPECTIVE_LOCK"
 export RETROSPECTIVE_MODEL="${RETROSPECTIVE_MODEL:-sonnet}"
 export RETROSPECTIVE_PROMOTION="${RETROSPECTIVE_PROMOTION:-auto}"
 # 复盘写完经验文件后、提交前在同一个临时 checkout 里跑的项目命令（GitHub#152），空 = 关闭。

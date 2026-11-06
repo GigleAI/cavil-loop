@@ -336,9 +336,13 @@ def main():
         if '--scan-only' in sys.argv:
             return
         # One retrospective across all projects on this machine; separate from
-        # active implementation workers and from the daemon's poll.lock.
-        git_dir = Path(command(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], root).strip())
-        with (git_dir / 'retrospective.lock').open('w') as global_lock:
+        # active implementation workers and from the daemon's poll.lock. The path is
+        # fixed per machine (scripts/_names.sh), never derived from the skill root:
+        # a release directory is not a git checkout, and each release is its own
+        # directory, so anything under it would not be shared (GitHub#165).
+        lock_path = Path(os.environ['RETROSPECTIVE_LOCK'])
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open('w') as global_lock:
             try:
                 fcntl.flock(global_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
