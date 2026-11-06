@@ -549,20 +549,56 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   `pending/human` for this task and only the comment is missing — then it posts the comment. Both ways of carrying on require the issue / branch / source to match the
   ones recorded at decision time, and a task that already added `pending/human` is cancelled
   (no comment, no further hand-off until the takeover is decidable) once someone removes that label. When the PR-side label is not
-  accepted (not added by a maintainer, the PR does not bind to an issue, a requester-bot
-  request, the issue is closed) the PR gets one comment saying why.
+  accepted (not added by a maintainer, the PR does not qualify, the issue is closed, the PR description did not qualify when the label was added)
+  the PR gets one comment saying why.
+- **PRs without an issue** (GitHub#142): for the other half of a cross-repo task, or any PR
+  that does not bind to an issue, a maintainer's own autopilot label on the PR is itself the
+  authorization — even when added right after the PR is opened. The daemon sorts PRs three ways:
+  - **bound to an issue**: from this repo, branch exactly `BRANCH_PREFIX<N>`, body closes only
+    `#N` — judged on the issue and the PR together, as above;
+  - **PR-only**: from this repo and the body has **no** closing keyword for an issue of this
+    repo — `#N`, `owner/repo#N` (this repo, case-insensitive), `https://github.com/owner/repo/issues/N`
+    and `GH-N` all count; a plain `Refs #N` or closing another repo's issue does not — authorization and stops
+    come from the PR alone: removing the label or adding `pending/human` on the PR stops it, no
+    issue's label is lent to it, and an issue that merely shares the branch's number is ignored;
+  - **not eligible**: anything else (closes an issue of this repo without binding to it, an
+    ambiguous closing line, a fork) — not accepted, with one comment on the PR saying how to fix it.
+
+  PR-only also requires the **PR description as it was when the label was added** to be
+  PR-only: the daemon reads GitHub's edit history of the description (GraphQL
+  `userContentEdits`) and takes the newest revision not later than the label event (revisions in
+  the same second and the one before them must all qualify; both timestamps are GitHub's, so the
+  local clock does not matter). Labeled in the same second the PR was opened and edited later: the
+  oldest revision counts as the opening description only if its time equals the PR's creation
+  time; otherwise (older revisions missing) it is "not found". So a label added while the body closed some issue, or while the PR
+  was bound to an issue, does not count after the body is edited — a maintainer re-adds it after
+  looking at the current PR. A deleted revision → not accepted, re-add; history unreadable or a
+  page missing → undecidable, nothing written this round. Nothing about this is stored locally, so
+  a new machine or a lost state file changes nothing. Such PRs have no design phase — the takeover starts at code review — and the
+  takeover and merge notes go on the PR.
+- **Requests filed by the external requester bot** (on autopilot too since GitHub#162): authorization is
+  the same rule as above — who added the autopilot label, not who filed the request. None of the
+  requester's confirmations is skipped: after the proposal review passes, the bot is woken and the
+  requester confirms as usual; in report-first projects, once the requester approves the PR's head
+  commit the PR goes to review, and the reviewer checks the approved commit and reruns the tests
+  before flipping `pending/merge`. With both features on, the dispatch prompt gets one more section
+  ("requests filed by the bot + autopilot") spelling this out; see
+  [Hooking up an external requester bot → Autopilot label](requester-bot.md#autopilot-label). An item
+  whose waiting label was removed early, with no dispatch label added afterwards, is neither started
+  from the autopilot label alone nor taken over ([What the daemon does while waiting](requester-bot.md#what-the-daemon-does-while-waiting)).
 - **Code**: a passing review flips the PR to `LABEL_PENDING_MERGE` (`pending/merge`) instead
   of `pending/human`, and the reviewer adds a machine line with its test re-run to the
   verdict comment: `<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`.
 - **The daemon merges** (`PUT /pulls/N/merge` with the reviewed sha, `AUTOPILOT_MERGE_METHOD`,
   `squash` by default) only when every item below holds; it then comments "已自动合并" on the
-  issue and the usual post-merge cleanup / `Done` / retrospective take over:
+  issue (on the PR when there is no issue) and the usual post-merge cleanup / `Done` /
+  retrospective take over:
 
 | Check | Fails → |
 |---|---|
-| The PR is from this repo, on branch `BRANCH_PREFIX<N>` exactly, and its body closes exactly `#N` (read per line and as a whole, both must agree) | `pending/human` |
+| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly and the body closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
+| PR-only: authorization comes from the PR alone (drop the issue side of the next row), and the PR description at label time (that revision in the edit history) also meets the previous row | `pending/human` |
 | Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
-| The issue is not a request filed by the requester bot | `pending/human` |
 | Nobody added `pending/human` to the issue or the PR | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
 | The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
 | The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |
@@ -621,7 +657,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
 unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handoff`: PRs judged "no takeover" with their
-cache key, undecidable rounds during takeover, and hand-offs not yet finished). Like `requester_bot_done_queue` it is not in the migration loop
+cache key (the values of `denied` and `takeover` carry a judging-rules revision, so after an upgrade that relaxes a rule the
+old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
 
 ### Poll the repo from one machine only
@@ -779,6 +816,47 @@ process, is picked up the next round through that record.
 
 Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
+
+## Waiting on another item: `pending/blocked` (GitHub#157)
+
+Set `LABEL_PENDING_BLOCKED` (the example config uses `pending/blocked`) and a worker whose work is blocked on **another
+issue / PR of this repo** — not on a human decision — records the prerequisites and puts that label on instead of
+`pending/human`. Every poll round the daemon looks at items carrying it:
+
+| Prerequisites | Daemon does |
+|---|---|
+| all done (issue closed as *completed*, PR merged) | one comment, removes the label, adds back the trigger label the marker names (default `pending/agent`) — the next round dispatches it |
+| one ended otherwise (closed *not planned* / *duplicate* / no reason, PR closed unmerged, unreadable 404) | comment naming it, `pending/human` |
+| none can be found, or one lives in another repo | comment, `pending/human` |
+| some still open | nothing |
+| GitHub cannot be read (error, missing field) | nothing; looks again next round — never treated as done |
+
+**Where the prerequisites come from** (union): the issue's native *Blocked by* relationship (sidebar → Relationships;
+measured: GitHub accepts only issues as the blocker, a PR returns 422 "Target issue may only be an issue"), and the
+latest hidden marker `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->` posted by the loop's write account or a
+maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) strictly after the label was last removed — GitHub timestamps are whole
+seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. Free
+text such as "waiting on #12" is never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+
+**Recovering after a hand-off**: the daemon's comment lists the steps — fix the prerequisites (remove the failed one from
+*Blocked by*, add the new one, or post a new marker for a PR), **remove `pending/human`**, put `pending/blocked` back. While
+`pending/human` is still on, the daemon treats the item as stopped and never resumes it.
+
+**Stopping it**: add `pending/human` (or any flow label — `doing/agent`, `pending/PR`, `pending/review`, a trigger label…)
+and the daemon leaves the item alone. Putting a trigger label on by hand dispatches it as usual and the dispatch removes
+`pending/blocked`. Greedy dispatch, self-heal and autopilot's "label only" pickup all skip items carrying it.
+
+**Before writing** the daemon reads everything again and decides a second time; if anything differs (a new
+prerequisite, the label removed and put back, `pending/human` added, a prerequisite reopened) it writes nothing this
+round. Progress is kept in `state.json` → `blocked_resume` (only while the feature is on) so a retry after a failed label
+write does not post the comment twice; after `BLOCKED_MAX_TRIES` failed attempts it gives up, logs, and leaves the item on
+`pending/blocked` for a human.
+
+**Timing**: while an item is waiting, the poll interval is capped at `BLOCKED_RECHECK_SECS` (300 s), so a finished
+prerequisite is usually picked up within about 7 minutes. *Noticing* a newly labelled item still follows the idle backoff —
+in a project that has been quiet for a week a hand-added label can take up to ~30 minutes to be seen (the worker's own
+label is seen within a minute, the project having just been active). `rm poll-pace.json` brings polling back to full speed.
+Not supported: prerequisites in other repos, cycle detection (two items waiting on each other both stay waiting).
 
 ## External requester bot (optional, **off by default**)
 
@@ -1901,10 +1979,14 @@ rm ~/.config/cavil-loop/$KEY.conf
 
 `POST_MERGE_RETROSPECTIVE=true` starts an independent background queue. First run records activation time; later scans paginate updated closed PRs and enqueue only new merges. Closed-unmerged PRs are excluded. Cleanup need not be enabled.
 
-The collector reads associated issues, conversation comments, reviews and inline comments with pagination. Claude (`RETROSPECTIVE_MODEL=sonnet`) receives evidence without tools or MCP access. A fixed publisher commits only `docs/retrospectives/pr-N.md` and `.agents/skills/cavil-loop/prompts/lessons.md` to the **source project's** `origin/$BASE_BRANCH` (`main` by default), using an isolated worktree and fast-forward-only push. Project lessons are loaded from that project's remote ref into its prompts, before project extras.
+The collector reads associated issues, conversation comments, reviews and inline comments with pagination. Claude (`RETROSPECTIVE_MODEL=sonnet`) receives evidence without tools or MCP access. A fixed publisher commits only `docs/retrospectives/pr-N.md` and `.agents/skills/cavil-loop/prompts/lessons.md` (plus whatever an optional project command changes, below) to the **source project's** `origin/$BASE_BRANCH` (`main` by default), using an isolated worktree and fast-forward-only push. Project lessons are loaded from that project's remote ref into its prompts, before project extras.
 
 The public cavil repository only holds independently reviewed, project-neutral workflow rules in `prompts/lessons.md`. The automatic publisher never writes generated project content, identifiers, links or reports there. Generalization candidates stay in the project report until separately reviewed for public suitability. Report evidence remains in the source project and local state directory.
 
 Project lessons are a counted error book (format and checks: `scripts/retrospective_lessons.py`). Each rule has a permanent id `L<n>`; the section it sits in (`硬规则` hard rules / `待确认` awaiting confirmation / `观察中` watching) is its state, and `Seen N×` lists the distinct PRs it occurred in. A run may only add **this PR** to a rule, once, citing the URL of a comment / review collected for this PR. A rule's 规则/适用 (rule/applies) fields, its id and its earlier sightings are locked; a different meaning is a new rule starting from one. A rule reaching 3 distinct PRs must be promoted: `RETROSPECTIVE_PROMOTION=auto` (default) moves it into `硬规则`, `confirm` only into `待确认`, from where a human edit moves it on. Any violation voids the whole output. The self-review and cross-review templates check every hard rule one by one. While a project's lessons.md is still in the old format the run is skipped before the model call, without counting an attempt, and retried hourly until the project migrates it.
 
-One review runs across local projects at a time; model timeout is 30 minutes, failures retry after one hour, and a PR that fails 3 times in a row is parked (`status: failed`, reason in the log) until a human sets its job file back to `pending`. Remote project reports are completion markers. See `$STATE_DIR/retrospective.log` and `$STATE_DIR/retrospectives/` for status, evidence and retries. Disable with `POST_MERGE_RETROSPECTIVE=false`; the queue is retained. Requires Python 3, Claude CLI with safe mode and structured output, and project push access. No existing comments or worker labels are changed.
+**Directory lessons (optional, GitHub#152).** A project can keep pitfalls that only bite in one part of its code apart from the process lessons: add a `## 目录经验` (directory lessons) heading by hand at the end of its lessons.md and commit it to the base branch. Only then does the retrospective tell the model about it and hand it the directories this PR touched that still exist after the merge (one extra GitHub read of the PR's file list); without the heading the model's instruction, its input and the result are exactly what they were, and a model adding the heading itself is rejected. Entries use the same format and share `next-id`, but every sighting names where it happened: `- Seen 2×: #1460 <url> [server/credits/] · #1471 <url> [server/credits/ · server/usage/]`. Directories are relative to the repository root and end in `/`; every new sighting must name at least one, each must be a real directory in the merged tree (no absolute paths, `..`, `.git`, or links out of the repository). Old sightings, directories included, never change; a PR is counted once per entry; copying a process lesson verbatim into this section is rejected. The section never promotes and entries never move in or out of it. Per-directory counts are left to the project (nothing derived is stored here), and prompt composition leaves the section out, so these lessons reach agents only through the project's own per-directory instructions. The 24 000-character limit covers what reaches prompts; this section has its own 24 000.
+
+**Project command after the retrospective (optional, GitHub#152).** `POST_RETROSPECTIVE_PROJECT_CMD` (empty = off) runs with `bash -c` at the root of the retrospective's temporary checkout, after the report and lessons are validated and written, before the commit — e.g. a script that ranks directory lessons and writes them into each directory's `AGENTS.md`. It gets `RETROSPECTIVE_PR`, `RETROSPECTIVE_LESSONS_FILE` and `RETROSPECTIVE_REPORT_FILE` (paths relative to the root) and a 10-minute limit. Everything it changes or creates goes into the same commit as the report and lessons, except files the repository's ignore rules exclude — a script that leaves stray files behind needs fixing. A non-zero exit, a timeout, changing the validated report or lessons, or committing on its own fails this retrospective: nothing is pushed, the temporary checkout is removed, and the usual retry applies (hourly, 3 attempts; each retry calls the model again). Its output tail is logged on success and kept in the failure reason. The checkout is fresh from the base branch, so untracked things such as `node_modules` are not there. **It runs with the daemon user's own permissions**: the retrospective's GitHub tokens (`GH_TOKEN` / `GITHUB_TOKEN`) are not passed on, but that is not isolation — a stored `gh` login or git credentials stay reachable, and a push made outside this checkout cannot be stopped. Configure trusted commands only.
+
+One review runs across local projects at a time (machine-wide lock `~/.local/state/cavil-loop/retrospective.lock`, independent of how the skill is deployed; GitHub#165); model timeout is 30 minutes, failures retry after one hour, and a PR that fails 3 times in a row is parked (`status: failed`, reason in the log) until a human sets its job file back to `pending`. Remote project reports are completion markers. See `$STATE_DIR/retrospective.log` and `$STATE_DIR/retrospectives/` for status, evidence and retries. Disable with `POST_MERGE_RETROSPECTIVE=false`; the queue is retained. Requires Python 3, Claude CLI with safe mode and structured output, and project push access. No existing comments or worker labels are changed.

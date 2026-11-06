@@ -143,6 +143,12 @@ self_heal_one() {
         SELFHEAL_REQUESTER_BOT+=" ${kind}#${n}"
         return 0
     fi
+    # 同理：挂着等前置标签（GitHub#157）= worker 已经说了「等别的条目完成」，翻回触发标签就是
+    # daemon 替前置做了决定。前置完成后由 blocked_tick 接力，或人来处理。
+    if labels_have_blocked "$labels_csv"; then
+        SELFHEAL_BLOCKED+=" ${kind}#${n}"
+        return 0
+    fi
     # 多机分工：session 不存在**不等于**worker 死了 —— 也可能是另一台机器正在跑它。
     # 两边 session 命名规则相同，本机 has-session 查不到是必然的，不能据此判僵尸。
     # 只认 state.json 里记着归属本机的那些；没记录 = 不是我派的 = 不碰。
@@ -187,6 +193,7 @@ self_heal_one() {
 # 对面满载时这里每 30 秒就刷 4-5 行噪音，把真正的 self-heal 淹掉。
 SELFHEAL_FOREIGN=""
 SELFHEAL_REQUESTER_BOT=""
+SELFHEAL_BLOCKED=""
 
 if [ -n "$zombie_pr_data" ]; then
     while IFS=$'\t' read -r pr branch zlabels; do
@@ -205,6 +212,9 @@ if [ -n "$zombie_issue_nums" ]; then
 fi
 if [ -n "$SELFHEAL_REQUESTER_BOT" ]; then
     log "self-heal 跳过（挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，等机器人带回答复）:$SELFHEAL_REQUESTER_BOT"
+fi
+if [ -n "$SELFHEAL_BLOCKED" ]; then
+    log "self-heal 跳过（挂着等前置标签 $LABEL_PENDING_BLOCKED，等前置完成后自动接力）:$SELFHEAL_BLOCKED"
 fi
 if [ -n "$SELFHEAL_FOREIGN" ]; then
     log "self-heal 跳过（不是本机 $SELFHEAL_HOST_ID 派的，括号里是记录的归属）:$SELFHEAL_FOREIGN"
@@ -350,6 +360,10 @@ collect_queue_rows() {
         if labels_have_requester_bot_wait "$labels_csv"; then
             log "${kind} #${num} 挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
         fi
+        # 等前置期间有人打了触发标签（GitHub#157）：同上，按触发标签派，派工时一并摘掉等前置标签
+        if labels_have_blocked "$labels_csv"; then
+            log "${kind} #${num} 挂着等前置标签 $LABEL_PENDING_BLOCKED，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等前置标签"
+        fi
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
         QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${trigger_label}${US}${model}${US}${worker_agent}${US}${prompt_kind}${US}${title}"$'\n'
@@ -401,11 +415,12 @@ dispatch_failed() {
 # 这次派工是不是托管条目（GitHub#114）：设 AP_FLAG / AP_ISSUE 给 dispatch 脚本（拼托管规则段用）。
 # 托管关闭时两个都是空串，autopilot_for_item 第一行就返回，不碰 GitHub。
 # 派复审到 PR 时顺带记下复审的提交：daemon 只合这一个提交。
-AP_FLAG=""; AP_ISSUE=""; AP_WHERE=""
+# 没绑 issue 的 PR（GitHub#142）：AP_ISSUE 为空，AP_PR = PR 编号
+AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
 autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
-    AP_FLAG=""; AP_ISSUE=""; AP_WHERE=""
+    AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
     if autopilot_for_item "$STATE_FILE" "$1" "$2"; then
-        AP_FLAG=1; AP_ISSUE="$AUTOPILOT_ISSUE"; AP_WHERE="$(autopilot_auth_where)"
+        AP_FLAG=1; AP_ISSUE="$AUTOPILOT_ISSUE"; AP_PR="$AUTOPILOT_PR"; AP_WHERE="$(autopilot_auth_where)"
         log "托管：$1 #$2 是托管条目（授权在 $AP_WHERE，$AUTOPILOT_ACTOR 打的），拼入托管规则"
         if [ "$1" = pr ] && [ "$3" = review ]; then
             autopilot_remember_review "$STATE_FILE" "$2" || true
@@ -522,7 +537,7 @@ dispatch_one_pr() {
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
     d_rc=0
-    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     if [ "$d_rc" = 0 ]; then
@@ -544,7 +559,7 @@ dispatch_one_pr() {
 # 那套 label 和模板），self-heal 也会因此把死掉的 worker 送回 pending/agent 队列。
 collect_queue_rows_greedy() {
     local kind="$1"
-    local raw num branch updated labels_csv title prio stage key blocked
+    local raw num branch updated labels_csv title prio stage key blocked rc
     # 快照已经是全量 open（分页拉完），这里只保留 GREEDY_SCAN_LIMIT 的语义：
     # 仍然只看前 N 条，配置含义不变。
     raw=$(snapshot_rows "$kind" "" 2>/dev/null | head -n "${GREEDY_SCAN_LIMIT:-100}" || true)
@@ -557,6 +572,16 @@ collect_queue_rows_greedy() {
             GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
             continue
         fi
+        # 没有任何挡工标签 = 自动续工。等外部需求机器人期间等待标签被提前摘掉、之后没人打派工标签的
+        # 不续工（GitHub#162，requester_bot_wait_hold）；判不了本轮也不续工
+        rc=0; requester_bot_wait_hold "$num" || rc=$?
+        case "$rc" in
+            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy：${kind} #${num} 不续工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+               GREEDY_SKIPPED+=" ${kind}#${num}(等待已摘、无派工标签)"
+               continue ;;
+            2) log "greedy：${kind} #${num} 本轮不续工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+               continue ;;
+        esac
         queued_keys[$key]=1
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "" "$num")
@@ -591,7 +616,8 @@ if [ -n "${LABEL_PENDING_AGENT_EXTRA:-}" ]; then
 fi
 # 托管（GitHub#114）：只挂托管标签、没有任何状态 / 触发标签的 issue，当作普通派工标签收进来。
 # 挂着别的标签的托管 issue 已经在某个流程里（上面几趟或复审那趟会收，或在等人 / 等 PR），不在这里收。
-# 授权不成立（标签不是维护者打的、外部需求机器人的需求）不派：只打托管标签不等于有人说了开工。
+# 授权不成立（标签不是维护者打的）不派：只打托管标签不等于有人说了开工。
+# 外部需求机器人期间等待标签被提前摘掉的，也不派（GitHub#162，同 greedy 兜底趟）。
 # 被拒的结果按 issue 的更新时间记下，issue 没动过就不再每轮去查标签记录。
 collect_autopilot_rows() {
     autopilot_configured || return 0
@@ -614,7 +640,8 @@ collect_autopilot_rows() {
             fi
             continue
         fi
-        if [ "$(autopilot_state_get "$STATE_FILE" '.denied[$n]' --arg n "$num")" = "$updated" ]; then
+        # 记录带判定规则版本（AUTOPILOT_JUDGE_REV）：旧版按旧规则记下的拒绝对不上，按新规则重判一次
+        if [ "$(autopilot_state_get "$STATE_FILE" '.denied[$n]' --arg n "$num")" = "$AUTOPILOT_JUDGE_REV|$updated" ]; then
             continue
         fi
         ij=$(autopilot_snapshot_item issues "$num") || continue
@@ -622,6 +649,14 @@ collect_autopilot_rows() {
         rc=0; autopilot_authorization "$num" "$ij" || rc=$?
         case "$rc" in
             0)
+                # 只挂托管标签 = 自动开工。等待标签被提前摘掉、之后没人打派工标签的不开工（GitHub#162）
+                rc=0; requester_bot_wait_hold "$num" || rc=$?
+                case "$rc" in
+                    0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：issue #$num 不自动开工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+                       continue ;;
+                    2) log "托管：issue #$num 本轮不自动开工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+                       continue ;;
+                esac
                 queued_keys[$key]=1
                 prio=$(priority_rank "$labels_csv" "$num")
                 stage=$(stage_rank issue "$LABEL_PENDING_AGENT_DEFAULT" "$num")
@@ -631,7 +666,7 @@ collect_autopilot_rows() {
             1)
                 log "托管：issue #$num 只挂着托管标签，但授权不成立（$AUTOPILOT_REASON）→ 不派工"
                 autopilot_note_denial "$STATE_FILE" "$num"
-                autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$updated" || true
+                autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$AUTOPILOT_JUDGE_REV|$updated" || true
                 ;;
             *)
                 log "托管：issue #$num 的托管授权判不了（$AUTOPILOT_REASON），下轮再看"
@@ -885,10 +920,13 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
                 continue
             fi
             pace_mark_acted
+            # 人手动关闭的 issue 打 Done（GitHub#159）：先入队、和下面的清理互不牵连，见 _lib.sh closed_done_label
+            closed_done_enqueue "$issnum" "$STATE_FILE"
             log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issnum" --force 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_issues += [$issnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+                closed_done_forget "$issnum" "$STATE_FILE"
                 remember_worker_model "$issnum" ""
                 remember_trigger_label "$issnum" ""
                 log "  auto-cleanup closed issue #$issnum done"
@@ -897,6 +935,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             fi
         done <<< "$recent_closed"
     fi
+    closed_done_drain "$STATE_FILE" || true
 fi
 
 # ── 3d. 等人审的 PR 与目标分支冲突（GitHub#86）──
@@ -905,6 +944,12 @@ fi
 # 配 PENDING_HUMAN_CONFLICT_CHECK=false 关掉整段。
 pending_human_conflict_tick "$STATE_FILE" || true
 if [ "${PR_CONFLICT_ACTED:-0}" = 1 ]; then pace_mark_acted; fi
+
+# ── 3f. 等前置的条目：前置全部完成 → 翻回触发标签接着干（GitHub#157）──
+# 放在派工之后：这一轮翻回去的条目下一轮派工（翻标签算有动静，下一轮不会被退避推迟）。
+# LABEL_PENDING_BLOCKED 留空时一次 GitHub 调用都不发、不碰 state.json。
+blocked_tick "$STATE_FILE" || true
+if [ "${BLOCKED_ACTED:-0}" = 1 ]; then pace_mark_acted; fi
 
 # Durable merge review queue is independent of cleanup success and worker labels.
 if [ "${POST_MERGE_RETROSPECTIVE:-true}" = true ]; then
@@ -937,7 +982,11 @@ if [ -n "$(list_worker_sessions)" ]; then pace_active=1; fi
 # 绝不能把「算不出来」写成空指纹存下去——下一轮会把它读成「所有条目都消失了」。
 if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
     pace_fp=$(pace_fingerprint 2>/dev/null) || pace_fp=""
-    pace_record_ok "$pace_active" "$pace_fp"
+    # 有条目在等前置（GitHub#157）：下一轮最晚 BLOCKED_RECHECK_SECS 后，前置完成后才接得上。
+    # 只管「下一轮跑不跑」；第一次发现新挂上的等待仍按原来的节奏（闸门在任何 GitHub 读取之前）。
+    pace_cap=""
+    if [ "${BLOCKED_WAITING:-0}" = 1 ]; then pace_cap="$BLOCKED_RECHECK_SECS"; fi
+    pace_record_ok "$pace_active" "$pace_fp" "$pace_cap"
     if [ "${PACE_TIER_SECS:-0}" -eq 0 ]; then
         log_debug "本轮节奏：不退避（已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}")），下个 tick 照跑"
     else

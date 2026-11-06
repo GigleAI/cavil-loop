@@ -765,6 +765,142 @@ test('a saved board view sorted by update time: the board shows each column newe
   await app.close();
 });
 
+// ---- yellow bars can be closed with "×" (GitHub#153) ----
+
+async function signIn(page: Page) {
+  await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+}
+
+/** the saved search text as the main process holds it (the box saves 300 ms after typing stops) */
+const savedQuery = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.view.query as string);
+
+/** a copy of the recorded Project whose only saved web view uses `filter` */
+function projectWithView(filter: string) {
+  return loadCavilProjectPages().map((p: any) => ({ ...p, views: { nodes: [{ ...p.views.nodes[1], number: 1, filter }] } }));
+}
+
+const P11 = 'org/gigleai/11';
+const sourceErr = (page: Page, key: string) => page.locator(`[data-testid="source-row"][data-key="${key}"] .err`);
+
+test('yellow bars: × closes one bar; time passing and page switches keep it closed; another failure, recovery, or a new filter shows it again', async () => {
+  const { app, page } = await launch(env);
+  // fake time in the window: "1 hour later" without waiting an hour
+  await page.clock.install();
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  const key = (await page.evaluate(async () => (await (window as any).cavil.get()).state.sources[0].key)) as string;
+
+  // a source fails: two bars (the filter is on); × closes only the one clicked
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('incomplete')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
+  await expect(page.getByTestId('incomplete-close')).toHaveAccessibleName('关闭提示');
+  await shot(page, '14-bars-with-close');
+  await page.getByTestId('incomplete-close').click();
+  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
+
+  // only time passes: the wording ("… 分钟前") changes, the problem does not → stays closed
+  for (const step of ['00:15', '01:00', '59:00']) { // 15 s, 1 min, then past 1 h in all
+    await page.clock.fastForward(step);
+    await page.waitForTimeout(100);
+  }
+  await expect(page.locator('.statusbar')).toContainText('上次同步 1 小时前'); // the window's clock really moved
+  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
+
+  // board → settings → board: stays closed
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
+  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+
+  // "filter may be incomplete": closed → filter cleared (the bar is gone, so is the record) → filtering again → back
+  await page.getByTestId('filter-incomplete-close').click();
+  await expect(page.getByTestId('filter-incomplete')).toHaveCount(0);
+  await page.getByTestId('search').fill('label:x');
+  await expect(page.getByTestId('filter-incomplete')).toHaveCount(0); // other words, same failure: still closed
+  await page.getByTestId('search').fill('');
+  await page.getByTestId('search').fill('-label:Done -status:Done');
+  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
+  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+
+  // recovers, then fails the same way again → shows again
+  env.fake.state.failProjectPage.clear();
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('filter-incomplete')).toHaveCount(0, { timeout: 15_000 }); // the round really recovered
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('incomplete')).toBeVisible({ timeout: 15_000 });
+
+  // closed, then recovers and fails again while the settings page is up → shows again back on the board
+  await page.getByTestId('incomplete-close').click();
+  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+  await page.getByTestId('open-settings').click();
+  await expect(sourceErr(page, key)).toBeVisible();
+  env.fake.state.failProjectPage.clear();
+  await page.getByTestId('source-input').fill('GigleAI/cavil-loop'); // adding a source starts a round
+  await page.getByTestId('source-add').click();
+  await expect(sourceErr(page, key)).toHaveCount(0, { timeout: 15_000 });
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.locator('[data-testid="source-row"][data-key="repo:gigleai/cavil-loop"] [data-testid="source-remove"]').click();
+  await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
+  await page.getByTestId('source-add').click();
+  await expect(sourceErr(page, key)).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('incomplete')).toBeVisible();
+  await shot(page, '15-bar-back-after-recovery');
+  await app.close();
+});
+
+test('yellow bars: a closed "unsupported words" bar comes back when an import in settings changes the filter and changes it back', async () => {
+  env.fake.state.projects.set('org/gigleai/21', projectWithView('updated:>2026-01-01'));
+  env.fake.state.projects.set('org/gigleai/22', projectWithView('-label:Done'));
+  env.fake.state.projects.set('org/gigleai/23', projectWithView('updated:>2026-01-01'));
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/21');
+  await page.getByTestId('source-add').click();
+  await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('updated:>2026-01-01');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('filter-unsupported')).toContainText('updated:>2026-01-01');
+  await page.getByTestId('filter-unsupported-close').click();
+  await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
+
+  // only switching pages, filter unchanged → stays closed
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('search')).toHaveValue('updated:>2026-01-01');
+  await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
+
+  // in settings: a Project whose view has a supported filter, then one with the old unsupported words
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/22');
+  await page.getByTestId('source-add').click();
+  await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('-label:Done');
+  await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/23');
+  await page.getByTestId('source-add').click();
+  await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('updated:>2026-01-01');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('search')).toHaveValue('updated:>2026-01-01');
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
+  await app.close();
+});
+
 function alertsOf(env: Env): any[] {
   if (!existsSync(env.alerts)) return [];
   return readFileSync(env.alerts, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -862,5 +998,19 @@ test('notifications refused by the system: the board says so and how to allow th
   await page.getByTestId('back').click();
   await expect(page.getByTestId('board-notify-problem')).toContainText('Notifications are not allowed');
   await shot(page, '21-notify-refused');
+  // like every yellow bar (GitHub#153): × closes it, and the same refusal again does not bring it back
+  await page.getByTestId('board-notify-problem-close').click();
+  await expect(page.getByTestId('board-notify-problem')).toHaveCount(0);
+  // one more item gets the label: a second notification, refused for the same reason
+  const another = env.fake.state.projects
+    .get('org/gigleai/11')!
+    .flatMap((pg) => pg.items.nodes)
+    .find((n: any) => !n.isArchived && n.content?.__typename === 'Issue' && !n.content.labels.nodes.some((l: any) => l.name === 'pending/human'))!;
+  another.content.labels = { nodes: [...another.content.labels.nodes, { name: 'pending/human', color: 'ededed' }] };
+  another.content.updatedAt = new Date().toISOString();
+  await page.getByTestId('refresh').click();
+  await expect.poll(() => alertsOf(env).filter((a) => a.type === 'notify').length).toBe(2);
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('board-notify-problem')).toHaveCount(0);
   await app.close();
 });

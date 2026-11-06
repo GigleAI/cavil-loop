@@ -5,11 +5,13 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
 
   items.json      {"<n>": {kind: issue|pr, ...GitHub fields...}}   labels are kept separately
   labels.json     {"<n>": ["label", ...]}
-  events.json     {"<n>": [ {event, label:{name}, actor:{login,type}} ]}
+  events.json     {"<n>": [ {event, label:{name}, actor:{login,type}} ]}   id 按位置补（写了 "id": null 的不补）
   comments.json   {"<n>": [ {id, body, user:{login}, created_at} ]}
   perms.json      {"<login>": "admin|write|read|none"}
   files.json      {"<pr>": [ {filename, previous_filename?} ]}
   checks.json     {"<sha>": {"check_runs": [...], "statuses": [...]}}
+  edits.json      {"<pr>": [ {editedAt, deletedAt, diff} ]}  PR 正文修改历史，倒序（GraphQL userContentEdits）
+  blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
   calls.log       one line per call: "gh <argv...>"
   me              login of the token (default loop-bot)
 
@@ -65,7 +67,56 @@ def fail(msg, code=1):
     sys.exit(code)
 
 
+def list_cmd():
+    # `gh issue list` / `gh pr list`（GitHub#159 的测试才打开：FAKE_GH_LISTS=1；不开时照旧返回 []，
+    # 托管测试的调用与结果不受影响）。只实现轮询用到的那几种：--state open|closed|merged、--label、
+    # --search "is:closed is:unmerged …"、--limit、--jq。按编号倒序（≈ 真接口按创建时间倒序）。
+    what, opts, k = argv[0], {}, 2
+    while k < len(argv):
+        if argv[k].startswith("--") and k + 1 < len(argv):
+            opts[argv[k]] = argv[k + 1]; k += 2
+        else:
+            k += 1
+    its, lbs = load("items.json", {}), load("labels.json", {})
+    out = []
+    for n in sorted(its, key=int, reverse=True):
+        it = its[n]
+        if it["kind"] != what:
+            continue
+        merged = bool(it.get("merged"))
+        state = "closed" if merged else it.get("state", "open")
+        want = opts.get("--state", "open")
+        search = opts.get("--search", "")
+        if "is:unmerged" in search:
+            if not (state == "closed" and not merged):
+                continue
+        elif want == "merged":
+            if not merged:
+                continue
+        elif want != state:
+            continue
+        ls = lbs.get(n, [])
+        if "--label" in opts and opts["--label"] not in ls:
+            continue
+        out.append({"number": int(n), "title": it.get("title", "t"),
+                    "headRefName": it.get("head", {}).get("ref", ""),
+                    "labels": [{"name": l} for l in ls],
+                    "stateReason": (it.get("state_reason") or "").upper(),
+                    "updatedAt": it.get("updated_at", "2026-01-01T00:00:00Z")})
+    out = out[:int(opts.get("--limit", "30"))]
+    txt = json.dumps(out)
+    if "--jq" in opts:
+        r = subprocess.run(["jq", "-r", opts["--jq"]], input=txt, capture_output=True, text=True)
+        sys.stdout.write(r.stdout)
+        sys.exit(r.returncode)
+    print(txt)
+    sys.exit(0)
+
+
 if not argv or argv[0] != "api":
+    if os.environ.get("FAKE_GH_LISTS") == "1" and len(argv) > 1 and argv[0] in ("issue", "pr") \
+            and argv[1] == "list":
+        list_cmd()
     # gh pr list / gh issue list etc.: nothing
     print("[]")
     sys.exit(0)
@@ -116,10 +167,11 @@ def view(n):
 
 def as_issue(n):
     kind, it = view(n)
-    out = {k: it[k] for k in ("number", "state", "labels", "title", "body", "user", "updated_at") if k in it}
+    out = {k: it[k] for k in ("number", "state", "state_reason", "labels", "title", "body", "user", "updated_at") if k in it}
     out.setdefault("title", "t")
     out.setdefault("updated_at", "2026-01-01T00:00:00Z")
-    out["pull_request"] = {"url": "x"} if kind == "pr" else None
+    out["pull_request"] = {"url": "x", "merged_at": it.get("merged_at") or ("2026-01-01T00:00:00Z" if it.get("merged") else None)} if kind == "pr" else None
+    out["repository_url"] = "https://api.github.com/repos/" + REPO
     if kind == "pr" and it.get("merged"):
         out["state"] = "closed"
     return out
@@ -151,13 +203,35 @@ def touch(n):
 def append_event(n, ev, name):
     evs = load("events.json", {})
     evs.setdefault(str(n), []).append(
-        {"event": ev, "label": {"name": name}, "actor": {"login": me(), "type": "User"},
-         "created_at": now_iso()})
+        {"id": 50000 + sum(len(v) for v in evs.values()), "event": ev, "label": {"name": name},
+         "actor": {"login": me(), "type": "User"}, "created_at": now_iso()})
     save("events.json", evs)
 
 
 if path == "user":
     emit({"login": me()})
+
+if path == "graphql":
+    # PR 正文的修改历史（GitHub#142）：edits.json {"<pr>": [ {editedAt, deletedAt, diff}, ... ]}，按时间倒序，
+    # 和真接口一样；没有这一项 = 正文从没改过（历史为空）。F_graphql / F_graphql_<pr> 让读取失败；
+    # FAKE_GH_EDIT_PAGE 控制每页几条（测分页）；F_graphql_nocursor_<pr> 让还有下一页时不给游标。
+    n = fields.get("number", "")
+    if os.path.exists(p("F_graphql")) or os.path.exists(p("F_graphql_" + n)):
+        fail("HTTP 502: injected failure (graphql)")
+    cnt_file = p("count_graphql_" + n)
+    c = int(open(cnt_file).read()) + 1 if os.path.exists(cnt_file) else 1
+    open(cnt_file, "w").write(str(c))
+    hook = p("hook_graphql_%s_%d" % (n, c))
+    if os.path.exists(hook):
+        subprocess.run(["bash", hook], check=False, stdin=subprocess.DEVNULL, timeout=30)
+    edits = load("edits.json", {}).get(n, [])
+    size = int(os.environ.get("FAKE_GH_EDIT_PAGE", "100"))
+    start = int(fields.get("after") or 0)
+    nodes = edits[start:start + size]
+    more = start + size < len(edits)
+    cursor = str(start + size) if more and not os.path.exists(p("F_graphql_nocursor_" + n)) else None
+    emit({"data": {"repository": {"pullRequest": {"userContentEdits": {
+        "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": nodes}}}}})
 
 if path is None or not path.startswith("repos/" + REPO):
     emit([])
@@ -197,9 +271,24 @@ if method == "GET":
             fail("HTTP 404: Not Found")
         emit(as_issue(parts[1]))
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "events":
-        emit(load("events.json", {}).get(parts[1], []), pages=True)
+        # 真接口的每个事件都带递增的 id；夹具没写 id 的按位置补上（写了 "id": null 的原样保留，测「缺编号」）
+        evl = [dict(e) for e in load("events.json", {}).get(parts[1], [])]
+        for i, e in enumerate(evl):
+            if "id" not in e:
+                e["id"] = 5000 + i
+        emit(evl, pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
         emit(load("comments.json", {}).get(parts[1], []), pages=True)
+    if len(parts) == 4 and parts[0] == "issues" and parts[2] == "dependencies" and parts[3] == "blocked_by":
+        out = []
+        for b in load("blocked_by.json", {}).get(parts[1], []):
+            if isinstance(b, str) and "#" in b:
+                other, _, bn = b.partition("#")
+                out.append({"number": int(bn), "state": "open", "html_url": "https://github.com/%s/issues/%s" % (other, bn),
+                            "repository_url": "https://api.github.com/repos/" + other})
+            elif str(b) in items:
+                out.append(as_issue(b))
+        emit(out, pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] == "files":
         emit(load("files.json", {}).get(parts[1], [{"filename": "scripts/x.sh"}]), pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] in ("comments", "reviews"):
@@ -222,7 +311,7 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
     cm = load("comments.json", {})
     lst = cm.setdefault(parts[1], [])
     lst.append({"id": 1000 + sum(len(v) for v in cm.values()), "body": fields.get("body", ""),
-                "user": {"login": me()}, "created_at": now_iso()})
+                "user": {"login": me()}, "author_association": "COLLABORATOR", "created_at": now_iso()})
     save("comments.json", cm)
     emit({"id": lst[-1]["id"]})
 

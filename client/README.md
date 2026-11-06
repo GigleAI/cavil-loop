@@ -24,11 +24,13 @@ test/
 scripts/
   build.mjs             构建 dist/
   mac-open-check.sh     CI 的 Mac 机器上：dmg 窗口内容 + 冒烟 + 第一次打开步骤的实测
+  release-command.mjs   放行命令只在这里定义一次；网页 / txt / 背景源文件 / 发版说明里的副本由 test/unit/dmg.test.ts 逐字对拍
   render-dmg-background.cjs  把 build/dmg-background.html 渲染成 dmg 窗口背景图（改了 HTML 后手动重跑，产物入库）
   icon.mjs              App 图标：`node scripts/icon.mjs build` 从 build/icon-source.png 生成 build/icon.png；`check-app` 在 CI 的 Mac 机器上核对打出的 App 用的确实是它
 build/
   dmg-background.html / background.png / background@2x.png   dmg 窗口背景（写着两种放行办法）
   打不开时看这里.txt     放进 dmg 的说明，命令可以直接复制
+  复制放行命令.html      放进 dmg 的小网页：双击用浏览器打开，点「复制」拿到放行命令（纯静态、无外部资源）
   icon-source.png       App 图标原图（维护者在 #144 给的图，原样像素，不要改）
   icon.png              App 图标（生成物，入库）：原图去掉黑边、按苹果图标网格缩到 824px 居中在 1024 透明画布上；打包工具按约定读这个文件，打包配置里不用写
 ```
@@ -84,6 +86,8 @@ npm start                      # 本机跑起来（Linux 上凭据只在内存�
 | `-` 取反、逗号「或」、引号包住带空格的值 | 同一字段写两次是「且」 |
 
 不支持的写法（正文 / 评论、日期比较、`reason:`、自定义字段——包括中文字段名 `优先级:高` 和带引号的 `"Start date":…`、`sort:`、文字前加 `-`、`is:draft` 这类不认识的值……）一律在黄条里点名、忽略，结果可能比网页多，**绝不会因为一个不认识的词变成「0 条」**（GitHub 自己对不认识的写法会静默返回 0 条，`-文字` 也是）。某个来源这次没读全时，筛选上方也有一行黄条。
+
+看板上的黄条（不支持的写法、筛选可能不全、离线、同步不完整、同步问题）右侧都有「×」，点了只收起那一条。按「问题本身」记，不按文字记：只是时间过去（「1 分钟前」变「5 分钟前」）、在看板和设置页之间来回切，都保持收起；失败的来源或原因变了、问题恢复后又出现、取消筛选后再筛选，都会重新出现。只记在本次运行里，重开 App 后仍存在的问题照常显示。
 
 `author:` GitHub 的 Project 筛选并不支持（录制时 `author:x` 和 `-author:x` 都返回 0 条），本客户端按条目的作者筛。
 

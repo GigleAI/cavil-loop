@@ -148,8 +148,10 @@ boundary is drawn so that nothing a worker or a comment can do is enough:
   or the PR. Everything the decision relied on is re-read right before the merge call; any change, or
   anything unreadable, means no merge this round
 - **Never merged automatically**: changes under `.github/` (Actions / repo automation), PRs from
-  forks, drafts, anything GitHub's own rules refuse (the daemon does not bypass branch protection),
-  and requests filed by the requester bot
+  forks, drafts, anything GitHub's own rules refuse (the daemon does not bypass branch protection).
+  Requests filed by the requester bot can be on autopilot (GitHub#162), but only a maintainer adding
+  the label by hand authorizes it — the bot account's own label does not count; the requester's
+  confirmations still apply and none of the daemon's pre-merge checks is dropped
 - **Limit, stated plainly**: the "tests were re-run" record in the reviewer's comment is written by
   the same account as the worker; the daemon checks that it exists, names the reviewed commit, is
   newer than the review dispatch and reports zero failures — it cannot prove the run happened.

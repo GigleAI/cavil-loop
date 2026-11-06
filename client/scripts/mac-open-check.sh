@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run on a macOS CI machine against a built dmg. Verifies, for real:
-#   0. the dmg window (background, Applications link, instructions file) and
+#   0. the dmg window (background, Applications link, instructions file, copy page) and
 #      the app's icon being build/icon.png rather than Electron's default
 #   1. the app inside the dmg starts (smoke test, direct launch)
 #   2. it carries an ad-hoc signature that verifies (Apple silicon needs one)
@@ -40,8 +40,11 @@ txt="$mnt/打不开时看这里.txt"
 [ -f "$txt" ] || { echo "❌ the instructions file is missing"; ls -la "$mnt"; exit 1; }
 grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$txt" || { echo "❌ the instructions file lacks the command"; exit 1; }
 grep -qF '仍要打开' "$txt" || { echo "❌ the instructions file lacks the System Settings way"; exit 1; }
+page="$mnt/复制放行命令.html"
+[ -f "$page" ] || { echo "❌ the copy-the-command page is missing"; ls -la "$mnt"; exit 1; }
+grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$page" || { echo "❌ the copy-the-command page lacks the command"; exit 1; }
 [ -L "$mnt/Applications" ] || { echo "❌ no Applications link"; exit 1; }
-echo "✅ background, Applications link and instructions file present"
+echo "✅ background, Applications link, instructions file and copy page present"
 if [ -n "$shot" ]; then
   # best effort: a picture of the window a user sees (the CI machine has a GUI session)
   open "$mnt" || true

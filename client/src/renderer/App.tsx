@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Snapshot } from '../shared/ipc';
+import { parseFilter } from '../shared/filter';
 import { api } from './api';
 import { LoginView } from './LoginView';
-import { BoardView } from './BoardView';
+import { BoardView, type BoardWarnings } from './BoardView';
 import { SettingsView } from './SettingsView';
 import { AppKindHelp } from './AppKindHelp';
+import { useQuery } from './query';
+import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
 
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -23,6 +26,26 @@ export function App() {
     };
   }, []);
 
+  // The search box text and the closed yellow bars live here, not in the
+  // board: the board is unmounted while the settings page is up, and a
+  // problem that clears (or a filter an import replaces) meanwhile must still
+  // drop the record (GitHub#153). Closed bars are kept for this run only.
+  const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
+  const parsed = useMemo(() => parseFilter(query), [query]);
+  const sync = snap?.state.sync;
+  const notifyProblem = snap?.state.notifyProblem ?? null;
+  const current = useMemo(() => (sync ? { ...warningIds(sync, parsed), ...notifyWarningIds(notifyProblem) } : null), [sync, parsed, notifyProblem]);
+  const [closed, setClosed] = useState<Dismissed>({});
+  // reconciled on every render, whichever page is showing; nothing is judged before the first snapshot
+  const live = current ? reconcile(closed, current) : closed;
+  if (live !== closed) setClosed(live);
+  const warn: BoardWarnings = {
+    shown: (kind) => current !== null && isShown(kind, current, live),
+    close: (kind) => {
+      if (current) setClosed((d) => dismiss(d, current, kind));
+    },
+  };
+
   return (
     <div data-testid="app-root" className="app" data-phase={snap?.state.phase ?? 'loading'}>
       {!snap || snap.state.phase === 'loading' ? (
@@ -34,7 +57,15 @@ export function App() {
       ) : page === 'settings' ? (
         <SettingsView state={snap.state} data={snap.data} onBack={() => setPage('board')} onHelp={openHelp} />
       ) : (
-        <BoardView state={snap.state} data={snap.data} onSettings={() => setPage('settings')} />
+        <BoardView
+          state={snap.state}
+          data={snap.data}
+          query={query}
+          setQuery={setQuery}
+          parsed={parsed}
+          warn={warn}
+          onSettings={() => setPage('settings')}
+        />
       )}
     </div>
   );

@@ -461,17 +461,36 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   唯一的例外是标签已经由 daemon 为这条待办加上、只差说明，这时把说明补完。继续做的两种情况都要求 issue / 分支 /
   来源和交人决定时一样；本地记过「标签已加」而 `pending/human` 已被人摘掉的，视为人已接过这件事：不补说明，
   在有确定结论之前也不再交人。
-  PR 上的标签不被认可（不是维护者打的、PR 对不上 issue、外部需求机器人的需求、issue 已关）时在 PR 上说一次原因。
+  PR 上的标签不被认可（不是维护者打的、PR 不合条件、issue 已关、打标签那一刻的正文不合条件）时在 PR 上说一次原因。
+- **没绑 issue 的 PR**（GitHub#142）：跨仓库任务的配套 PR、不绑 issue 的 PR，维护者在 PR 上亲手打的托管标签本身就算授权，
+  新开就打也算。daemon 把 PR 分三种：
+  - **绑 issue**：来自本仓库、分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`——照上面「在 PR 上打也行」那套，issue 和 PR 两处合起来判；
+  - **以 PR 为准**：来自本仓库、正文里**一个**本仓库关闭关键词都没有——`#N`、`owner/repo#N`（本仓库名，不分大小写）、
+    `https://github.com/owner/repo/issues/N`、`GH-N` 这些写法都算关闭本仓库；只引用的 `Refs #N`、关别的仓库的不算——
+    授权和叫停都只看 PR：PR 上摘托管标签或打 `pending/human` 就叫停，任何 issue 上的标签都不借给它，分支名恰好和本仓库某个 issue 同号也不看那个 issue；
+  - **不合条件**：其余的（写了关闭本仓库 issue 的关键词却没正常绑定、关闭写法有歧义、来自 fork）——不生效，PR 上说一次怎么改。
+
+  以 PR 为准时还要求**打标签那一刻的 PR 正文**也是这一种：daemon 读 GitHub 保存的 PR 正文修改历史（GraphQL `userContentEdits`），
+  取修改时间不晚于打标签时间的最新一版（同一秒的几版和它之前那一版都要合条件；两边都是 GitHub 的时间，不受本机时钟影响）。
+  PR 刚开就打、同一秒、之后正文又改过：历史最早那一版的时间等于 PR 的创建时间，就认它是开 PR 时的正文；不等（更早的版本缺了）算查不到。
+  所以「先因为正文关着某个 issue 被拒、之后正文被改掉」「绑着 issue 时打的标签、之后删掉 `Closes #N`」，那次打标签都不算，
+  要维护者看过现在的 PR 再亲手打一次。那一版被从历史里删掉 → 不生效、请重打；历史读不到或分页读不全 → 判不了，本轮不写。
+  daemon 本机不为此记任何东西，换机器、状态文件丢失都不影响。这类 PR 没有方案阶段，接手后从代码复审开始；接手、合并的说明都发在 PR 上。
+- **外部需求机器人提的需求**（GitHub#162 起也能托管）：授权照上面同一套，看谁打的托管标签，不看需求是谁提的。
+  提需求方的确认一步不省：方案复审通过后照常叫醒机器人、等提需求方确认；要先汇报的项目，提需求方认可 PR 最新提交后交复审，
+  复审核对认可的提交、重跑测试再翻 `pending/merge`。两个功能都开时派工提示词多一段「外部需求机器人提的需求 + 托管」写清这些，
+  见[对接外部需求机器人 → 托管标签](requester-bot.zh.md#托管标签)。等待标签被提前摘掉、之后没人打派工标签的条目，
+  只挂托管标签也不自动开工、不被接手（[等待期间 daemon 怎么做](requester-bot.zh.md#等待期间-daemon-怎么做)）。
 - **代码**：复审通过时 PR 翻 `LABEL_PENDING_MERGE`（`pending/merge`）而不是 `pending/human`，
   并在结论评论里留一行测试重跑的机器记录：`<!-- autopilot-review-pass head=<sha> passed=<n> failed=<n> -->`。
 - **daemon 合并**（`PUT /pulls/N/merge`，带复审时的提交号，方式 `AUTOPILOT_MERGE_METHOD`，默认 `squash`）
-  只在下表全部成立时进行；合并后在 issue 上留「已自动合并」评论，之后的清理 / `Done` / 复盘照常：
+  只在下表全部成立时进行；合并后在 issue 上（没绑 issue 的发在 PR 上）留「已自动合并」评论，之后的清理 / `Done` / 复盘照常：
 
 | 检查 | 不成立 → |
 |---|---|
-| PR 来自本仓库、分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`（逐行和整段两种读法一致） | `pending/human` |
+| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
+| 以 PR 为准时：授权只看 PR（下一行去掉 issue 那一处），而且打标签那一刻的 PR 正文（修改历史里那一版）也合上一行的条件 | `pending/human` |
 | 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
-| 这条 issue 不是外部需求机器人提的需求 | `pending/human` |
 | issue 和 PR 都没被打 `pending/human` | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
 | PR 最新提交**和目标分支**都是派复审时记下的那一对（同一提交改投别的分支 = 另一份改动；旧版没记目标分支的记录算缺） | 回 `pending/review` 重审 |
 | 复审的结论评论（写入账号、派复审之后发的）里有这个提交的测试记录，`failed=0`、`passed>0` | `pending/human` |
@@ -509,7 +528,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
 状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
-`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键、接手阶段连续判不了的轮数、还没做完的交人待办）。和 `requester_bot_done_queue` 一样
+`notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键（`denied` 和 `takeover` 的值都带判定规则版本，规则放宽后的升级里旧记录自动作废、按新规则重判一次）、接手阶段连续判不了的轮数、还没做完的交人待办）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
 
 ### 只在一台机器上跑这个仓库的轮询
@@ -659,6 +678,39 @@ echo "HOST_VERDICT=$verdict"
 一步失败或进程被杀，下一轮靠这个记号找回这个 PR 接着做。
 
 issue 上残留的托管标签在关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，不想这样就摘掉。
+
+## 等前置：`pending/blocked`（GitHub#157）
+
+配了 `LABEL_PENDING_BLOCKED`（示例配置写的是 `pending/blocked`）后，worker 的活卡在**本仓库别的 issue / PR** 上
+（不是卡在要人拍板）时，登记前置、挂这个标签，不再翻 `pending/human`。daemon 每轮看挂着它的条目：
+
+| 前置的情况 | daemon 做什么 |
+|---|---|
+| 全部完成（issue 以「已完成」关闭、PR 已合并） | 留一条说明，摘标签，加回标记里写的触发标签（默认 `pending/agent`），下一轮派工 |
+| 有一个以别的方式收场（关成不做 / 重复 / 没写原因、PR 没合就关、读到 404） | 评论写明是哪个，翻 `pending/human` |
+| 找不到前置，或前置在别的仓库 | 评论说明，翻 `pending/human` |
+| 还有没完成的 | 什么都不做 |
+| 读不到 GitHub（报错、缺字段） | 什么都不做，下一轮再看——绝不当成「已完成」 |
+
+**前置从哪来**（两处取并集）：issue 侧栏 Relationships 里的「Blocked by」（实测：GitHub 只接受 issue 当前置，
+设 PR 报 422「Target issue may only be an issue」），以及最近一次摘掉这个标签之后、由 loop 写入账号或维护者
+（`OWNER` / `MEMBER` / `COLLABORATOR`）发的最新一条隐藏标记 `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->`。
+「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认。
+「等 #12」这种普通文字不认。`resume=` 必须是本项目配置的触发标签之一，否则用默认那个。
+
+**交人之后怎么恢复等待**：daemon 的评论里写了步骤——改前置（「Blocked by」里去掉失败的那个、加上新的，等 PR 就发一条新登记），
+**摘掉 `pending/human`**，重新挂 `pending/blocked`。`pending/human` 还在时 daemon 按叫停处理，永远不会自动继续。
+
+**叫停**：加 `pending/human`（或任何流程标签——`doing/agent`、`pending/PR`、`pending/review`、触发标签……），daemon 就不碰它。
+手动打触发标签照常派工，派工时摘掉 `pending/blocked`。greedy 兜底、self-heal、托管的「只挂托管标签就派」都跳过它。
+
+**写之前**全部重读、再判一次；有任何不同（新前置、标签摘了又挂、加了 `pending/human`、前置被重开）本轮就不写。
+进度记在 `state.json` 的 `blocked_resume`（只在功能开启时写），翻标签失败后重试不会重复评论；连续失败
+`BLOCKED_MAX_TRIES` 次就放弃、记日志，条目留在 `pending/blocked` 上等人处理。
+
+**时间**：有条目在等时，轮询间隔最长 `BLOCKED_RECHECK_SECS`（300 秒），前置完成后通常 7 分钟内接上。**第一次发现**
+新挂上的条目仍按空闲退避：项目安静了一周时，手动挂上的标签最长约 30 分钟才被看到（worker 自己挂的，项目刚活跃过，
+1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。不支持：别的仓库的前置、环形依赖检测（互相等的两条都一直等）。
 
 ## 外部需求机器人（可选，**默认关闭**）
 
@@ -1540,10 +1592,14 @@ rm ~/.config/cavil-loop/$KEY.conf
 
 `POST_MERGE_RETROSPECTIVE=true` 启用独立后台队列。首次运行记录启用时间，后续分页扫描更新过的 closed PR，只处理新合并项，不补跑历史、不处理未合并关闭项，也不依赖自动 cleanup。
 
-分页采集关联 issue、普通评论、review、行内评论。Claude（`RETROSPECTIVE_MODEL=sonnet`）没有工具或 MCP 权限。固定发布程序只提交 `docs/retrospectives/pr-N.md` 和 `.agents/skills/cavil-loop/prompts/lessons.md` 到**来源项目自己的仓库** `origin/$BASE_BRANCH`（默认 main），使用隔离 worktree、仅 fast-forward 推送。项目经验从该项目远端读取，只加载进该项目的 prompt，位于项目增量要求之前。
+分页采集关联 issue、普通评论、review、行内评论。Claude（`RETROSPECTIVE_MODEL=sonnet`）没有工具或 MCP 权限。固定发布程序只提交 `docs/retrospectives/pr-N.md` 和 `.agents/skills/cavil-loop/prompts/lessons.md`（配了项目命令时再加上它的改动，见下）到**来源项目自己的仓库** `origin/$BASE_BRANCH`（默认 main），使用隔离 worktree、仅 fast-forward 推送。项目经验从该项目远端读取，只加载进该项目的 prompt，位于项目增量要求之前。
 
 公开 cavil 仓库的 `prompts/lessons.md` 只保留经过独立审查、脱离项目也成立的公开流程原则。自动发布程序不会向 cavil 写入生成的项目内容、标识、链接或复盘。通用改进候选先保存在项目报告中，另行去项目化审查后才能公开。证据保存在来源项目和本机状态目录。
 
 项目经验是一本按 PR 计次的错题本（格式与校验见 `scripts/retrospective_lessons.py`）：每条规则有永久编号 `L<n>`，所在段落（`硬规则` / `待确认` / `观察中`）就是它的状态，`Seen N×` 列出出现过它的不同 PR。模型每次只能给规则追加**本次 PR** 的一次出现，并且必须附上本次采集到的某条评论 / review 的链接作为证据；已有规则的「规则」「适用」字段、编号和旧的出现记录都不能改，含义不同只能新开一条从 1 次起算。在 3 个不同 PR 里出现的规则由程序要求升级：`RETROSPECTIVE_PROMOTION=auto`（默认）直接进 `硬规则`，`confirm` 只进 `待确认`、由人手改文件挪进 `硬规则`。违反任何一条，整份输出作废。自审与交叉 review 模板要求逐条核对 `硬规则`。项目里的 lessons.md 还是旧格式时，复盘在调模型之前就跳过、不计失败次数，一小时后再查，等项目迁移完自动补上。
 
-本机所有项目最多同时一个复盘，模型超时 30 分钟，失败一小时后重试，同一个 PR 连续失败 3 次就停下（任务状态记为 `failed`，原因在日志里），需人处理后把任务文件的 `status` 改回 `pending`。项目远端报告作为完成标记。状态、证据、重试信息位于 `$STATE_DIR/retrospective.log` 和 `$STATE_DIR/retrospectives/`。设为 `POST_MERGE_RETROSPECTIVE=false` 暂停并保留队列。需要 Python 3、支持 safe mode/结构化输出的 Claude CLI 和来源项目推送权限。不修改旧评论或业务 worker 标签。
+**目录经验（可选，GitHub#152）。** 项目可以把「只在某块代码会踩的坑」和流程经验分开记：手动在 lessons.md 末尾加一行 `## 目录经验` 标题并提交到主干。有了这个标题，复盘才会在说明里讲这一段的规则，并把本 PR 改动所在、合并后仍存在的目录列给模型（多读一次 GitHub 的 PR 改动文件列表）；没有这个标题时，给模型的说明、输入和结果与原来完全一样，模型自己加这个标题会被拒。条目格式与前三段一样、共用 `next-id`，区别是每次记录写明发生在哪些目录：`- Seen 2×: #1460 <链接> [server/credits/] · #1471 <链接> [server/credits/ · server/usage/]`。目录相对仓库根、以 `/` 结尾；每条新记录至少写一个，且必须是合并后目录树里真实存在的目录（不许绝对路径、`..`、`.git`、指出仓库的链接）。旧记录（包括目录）一字不改；同一 PR 在一条里只记一次；把流程经验原样抄进这一段会被拒。这一段不参与升级，条目不进不出。各目录的次数由项目自己从记录里筛（这里不存派生数据）；派工拼说明时跳过这一段，这些经验只经项目自己的各层目录说明到达 agent。24000 字的上限只算进派工说明的部分，这一段另有 24000 字上限。
+
+**复盘后执行的项目命令（可选，GitHub#152）。** `POST_RETROSPECTIVE_PROJECT_CMD`（留空 = 关闭）在复盘的临时 checkout 根目录用 `bash -c` 执行，时机是报告和经验文件校验通过并写好之后、提交之前——比如把目录经验排名后写进各层 `AGENTS.md` 的脚本。它拿到 `RETROSPECTIVE_PR`、`RETROSPECTIVE_LESSONS_FILE`、`RETROSPECTIVE_REPORT_FILE`（相对仓库根的路径），限时 10 分钟。它改动或新建的文件和报告、经验文件进**同一个提交**，仓库忽略规则排除的文件除外——脚本留下多余文件是脚本的 bug，要修。非零退出、超时、改了校验过的报告或经验文件、自己提交，都算本次复盘失败：什么都不推、临时 checkout 删掉，按原有规则重试（一小时一次、共 3 次；每次重试都会重新调模型）。成功时日志记下输出末尾，失败时输出末尾进失败原因。临时 checkout 是从主干新取的，没有 `node_modules` 这类没提交的东西。**它按运行 daemon 的本机用户权限执行**：复盘自己用的 GitHub 令牌（`GH_TOKEN` / `GITHUB_TOKEN`）不传给它，但这不是隔离——本机已有的 `gh` 登录、git 凭据它仍然用得到，它绕开这个 checkout 直接推送也拦不住。只配置可信命令。
+
+本机所有项目最多同时一个复盘（靠全机锁 `~/.local/state/cavil-loop/retrospective.lock`，与部署方式无关，GitHub#165），模型超时 30 分钟，失败一小时后重试，同一个 PR 连续失败 3 次就停下（任务状态记为 `failed`，原因在日志里），需人处理后把任务文件的 `status` 改回 `pending`。项目远端报告作为完成标记。状态、证据、重试信息位于 `$STATE_DIR/retrospective.log` 和 `$STATE_DIR/retrospectives/`。设为 `POST_MERGE_RETROSPECTIVE=false` 暂停并保留队列。需要 Python 3、支持 safe mode/结构化输出的 Claude CLI 和来源项目推送权限。不修改旧评论或业务 worker 标签。
