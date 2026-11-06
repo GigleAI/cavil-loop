@@ -35,6 +35,7 @@ export function NewIssueDialog({ state, data, onClose, onCreated }: { state: App
       confirmLabel="创建"
       busy={busy}
       disabled={!repo || !title.trim()}
+      dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
       onConfirm={async () => {
         setBusy(true);

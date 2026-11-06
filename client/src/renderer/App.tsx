@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Snapshot } from '../shared/ipc';
 import { parseFilter } from '../shared/filter';
 import { api } from './api';
@@ -8,6 +8,11 @@ import { SettingsView } from './SettingsView';
 import { AppKindHelp } from './AppKindHelp';
 import { useQuery } from './query';
 import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
+import { useKeyboard, useShortcuts } from './keyboard';
+import { ShortcutHelp } from './ShortcutHelp';
+
+/** a shortcut that needs the board (GitHub#192): taken once by the board, then dropped */
+export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number };
 
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -41,6 +46,33 @@ export function App() {
     setPage('board');
     setFocusReq(focus);
   }, [focus?.seq]);
+
+  // Keyboard shortcuts (GitHub#192). They live here, the layer that stays mounted on every page:
+  // the board is unmounted while Settings (or the app-kind page) is up. Shortcuts that need the
+  // board go back to it first and hand it a request, taken once (like a clicked notification).
+  const signedIn = snap?.state.phase === 'ready';
+  const keysOn = signedIn;
+  useKeyboard(keysOn);
+  const [keysHelp, setKeysHelp] = useState(false);
+  const [boardReq, setBoardReq] = useState<BoardRequest | null>(null);
+  const reqSeq = useRef(0);
+  const toBoard = (kind: BoardRequest['kind']) => {
+    setHelp(false);
+    setPage('board');
+    setBoardReq({ kind, seq: ++reqSeq.current });
+  };
+  useShortcuts({
+    search: () => toBoard('search'),
+    newIssue: () => toBoard('newIssue'),
+    sync: () => {
+      if (!snap?.state.sync.syncing) void api().syncNow();
+    },
+    settings: () => {
+      setHelp(false);
+      setPage('settings');
+    },
+    help: () => setKeysHelp(true),
+  });
 
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
   const parsed = useMemo(() => parseFilter(query), [query]);
@@ -78,9 +110,13 @@ export function App() {
           warn={warn}
           focus={focusReq}
           onFocusTaken={() => setFocusReq(null)}
+          request={boardReq}
+          onRequestTaken={() => setBoardReq(null)}
           onSettings={() => setPage('settings')}
+          onKeysHelp={() => setKeysHelp(true)}
         />
       )}
+      {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}
     </div>
   );
 }
