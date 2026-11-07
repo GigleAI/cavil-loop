@@ -1,7 +1,7 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, HandBackLabels } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 
@@ -54,4 +54,8 @@ export interface CavilApi {
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
   /** remember the merge method chosen for a PR in `repo` */
   setMergeMethod(repo: string, method: MergeMethod): Promise<void>;
+  /** fold / unfold one table group under one "group by" (GitHub#231) */
+  setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
+  /** whether "托管" asks first (GitHub#231) */
+  setAutopilotConfirm(on: boolean): Promise<void>;
 }

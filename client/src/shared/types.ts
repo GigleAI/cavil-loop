@@ -2,6 +2,7 @@
 // Nothing in here may import Node or Electron: the renderer bundles it.
 
 import type { MergePrefs } from './mergePrefs';
+import type { TableFolds } from './uiPrefs';
 
 /**
  * The app updating itself (GitHub#184), as the shell reports it (src-tauri/crates/core/src/update.rs
@@ -363,6 +364,10 @@ export interface AppState {
   handBack: HandBackLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */
   mergePrefs: MergePrefs;
+  /** which table groups are folded, per "group by" (GitHub#231; kept on this machine) */
+  tableFolds: TableFolds;
+  /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
+  autopilotConfirm: boolean;
   /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed */
   pendingCount: number;
   /** those same items, one entry each (GitHub#185: Settings lists them); always as long as `pendingCount` */
@@ -401,10 +406,25 @@ export interface PendingEntry {
   updatedAt: string;
 }
 
+/** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */
+export interface BoardRepoCount {
+  /** the source key (= ProjectMeta.key once synced) */
+  key: string;
+  /** what the dialog calls it */
+  title: string;
+  /**
+   * items on the board per lower-cased `owner/repo`, from its last complete read;
+   * null = never read completely yet (unknown — not "none of this repository's items")
+   */
+  repos: Record<string, number> | null;
+}
+
 export interface BoardData {
   items: Item[];
   /** the Projects of the sources ticked in the view */
   projects: ProjectMeta[];
   /** GitHub#205: every configured Project, ticked or not (what a new issue may join) */
   allProjects?: ProjectMeta[];
+  /** GitHub#231: every configured Project's items per repository (null = never read completely), whatever the view shows */
+  boardRepos?: BoardRepoCount[];
 }

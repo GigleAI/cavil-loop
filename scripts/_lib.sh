@@ -2359,7 +2359,7 @@ sub_issue_rollup() {
         body=$(mktemp)
         {
             printf '## 子项全部完成（%s/%s）\n\n' "$total" "$total"
-            printf '本 issue 拆出的 sub-issue 都已关闭，请决定是否关闭本 issue（daemon 不会替你关）：\n\n'
+            printf '本 issue 拆出的 sub-issue 都已关闭，请人决定是否关闭本 issue（daemon 不会自动关）：\n\n'
             printf '%s\n' "$subs" | awk -F'\t' 'NF {print "- #" $1}'
         } > "$body"
         if ! run_gh "父 issue #$parent 汇总评论" gh_write issue comment "$parent" --repo "$REPO" --body-file "$body"; then
@@ -2898,10 +2898,10 @@ blocked_comment_body() {   # <判定 JSON>
     done < <(printf '%s' "$d" | jq -r '.pre[] | "\(.n)\t\(.o)"')
     case "$v" in
         resume)
-            printf '## 前置已完成，自动继续\n\n本条在等的前置都已完成：\n\n%s\n已摘掉 `%s`、改挂 `%s`，daemon 下一轮派工接着干。本条不需要你做任何事；想先拦住，给本条加 `%s`。\n' \
+            printf '## 前置已完成，自动继续\n\n本条在等的前置都已完成：\n\n%s\n已摘掉 `%s`、改挂 `%s`，daemon 下一轮派工接着干。本条不需要人做任何事；想先拦住，给本条加 `%s`。\n' \
                 "$list" "$LABEL_PENDING_BLOCKED" "$(printf '%s' "$d" | jq -r .resume)" "$LABEL_PENDING_HUMAN" ;;
         failed)
-            printf '## 前置没有完成，交给你决定\n\n本条在等的前置里有以失败收场的，daemon 不会自动继续：\n\n%s\n已摘掉 `%s`、改挂 `%s`。\n\n' \
+            printf '## 前置没有完成，交给人决定\n\n本条在等的前置里有以失败收场的，daemon 不会自动继续：\n\n%s\n已摘掉 `%s`、改挂 `%s`。\n\n' \
                 "$list" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN"
             blocked_recovery_steps failed ;;
         none)
@@ -5699,7 +5699,7 @@ checkout_stale_alert_open() {
 | \`origin/$base\` | \`$(git -C "$PROJECT_ROOT" log -1 --format='%h %s' "origin/$base" 2>/dev/null | head -c 100)\` |
 | 落后 | ${behind} commit |
 
-**影响范围**：派工 prompt 本身**不受影响** —— find_project_prompt_file 把 \`origin/$base\` 当唯一真值直读远端，主 checkout 再旧也拿得到最新模板（GigleTutor-Web#516 的结构性修复）。真正受影响的是：你在主 checkout 上手工看到的代码是旧的，以及任何直接读工作区文件的流程（如常驻「最新站」刷新）。
+**影响范围**：派工 prompt 本身**不受影响** —— find_project_prompt_file 把 \`origin/$base\` 当唯一真值直读远端，主 checkout 再旧也拿得到最新模板（GigleTutor-Web#516 的结构性修复）。真正受影响的是：人在主 checkout 上手工看到的代码是旧的，以及任何直接读工作区文件的流程（如常驻「最新站」刷新）。
 
 **怎么解掉**：到主 checkout 里按现场选一种 —— 有 WIP 就 commit 掉或 \`git stash -u\`；停在别的分支就切回 \`$base\`；本地分叉就 rebase。之后 daemon 下一轮会自己 ff 上来。
 
@@ -5770,7 +5770,7 @@ sync_project_checkout() {
     fi
     if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null)" ]; then
         log "sync_project_checkout: 主 checkout 有未提交改动，不动工作区"
-        check_checkout_staleness "$base" "主 checkout 有未提交改动（daemon 不碰你的工作区）"
+        check_checkout_staleness "$base" "主 checkout 有未提交改动（daemon 不碰人的工作区）"
         return 0
     fi
     if git -C "$PROJECT_ROOT" merge --ff-only "origin/$base" --quiet 2>/dev/null; then

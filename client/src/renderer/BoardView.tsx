@@ -17,6 +17,7 @@ import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, type WarnKind } from './warnings';
 import { TableView } from './TableView';
+import { localToday } from './iterationOptions';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
 import { Avatar } from './Avatar';
 import type { BoardRequest } from './App';
@@ -38,11 +39,6 @@ export function ago(from: number, now: number): string {
   const h = Math.floor(mins / 60);
   if (h < 24) return `${h} 小时前`;
   return `${Math.floor(h / 24)} 天前`;
-}
-
-function localToday(now: number): string {
-  const d = new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
@@ -762,6 +758,7 @@ export function BoardView({
           canCreate={canWrite}
           createTitle={writesEnabled(sync) ? (state.sources.length ? '在这一组新建 issue，带上这一组的字段' : '先添加数据来源') : '离线时不能修改'}
           onNewInGroup={(g) => setNewIssue({ preset: g.preset, title: g.title, items: g.rows.map((r) => r.item) })}
+          folds={state.tableFolds}
         />
       ) : (
       <div className="board">

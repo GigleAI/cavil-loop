@@ -20,6 +20,7 @@ import { Keys } from './ShortcutHelp';
 import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
+import { IterationOptions, localToday } from './iterationOptions';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -229,6 +230,8 @@ export function DetailPanel({
   /** the method picked by hand in this opening; null = none yet */
   const [picked, setPicked] = useState<MergeMethod | null>(null);
   const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | 'autopilot' | null>(null);
+  /** GitHub#231: "不再提示" in the 托管 dialog, unticked every time it opens */
+  const [noMoreAsk, setNoMoreAsk] = useState(false);
   const [closeComment, setCloseComment] = useState('');
   const [closeReason, setCloseReason] = useState<IssueCloseReason>('completed');
   /** the label / milestone picker that is open (GitHub#192) */
@@ -332,6 +335,7 @@ export function DetailPanel({
    * opening with its own draft). The result then goes to the board, never into
    * whatever panel is on screen.
    */
+  const runAutopilot = () => run({ kind: 'autopilot', key: item!.key }, `已托管：加上「${hb.autopilot}」「${hb.agent}」、去掉「${hb.human}」`);
   const run = async (action: WriteAction, okText: string): Promise<WriteResult & { here: boolean }> => {
     const label = item ? `${item.repo}#${item.number}` : itemKey;
     const mine = session.begin('write');
@@ -797,12 +801,7 @@ export function DetailPanel({
                   }
                 >
                   <option value="">（无迭代）</option>
-                  {m.iteration && !p.iterations.some((i) => i.id === m.iteration!.id) && <option value={m.iteration.id}>{m.iteration.title}</option>}
-                  {p.iterations.map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.title}（{i.startDate} 起）
-                    </option>
-                  ))}
+                  <IterationOptions iterations={p.iterations} chosen={m.iteration} today={localToday(Date.now())} label={(i) => `${i.title}（${i.startDate} 起）`} />
                 </select>
               )}
               <EditStatus mark={markFor('iteration', { projectKey: p.key })} field="iteration" />
@@ -1000,10 +999,18 @@ export function DetailPanel({
                 <button
                   data-testid="autopilot"
                   disabled={!canWrite || busy}
-                  title={offlineWhy ?? `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）`}
-                  onClick={() => setAsk('autopilot')}
+                  title={
+                    offlineWhy ??
+                    `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}`
+                  }
+                  onClick={() => {
+                    // GitHub#231: "不再提示" was ticked once — no dialog, the same write as its "确认托管"
+                    if (!state.autopilotConfirm) return void runAutopilot();
+                    setNoMoreAsk(false);
+                    setAsk('autopilot');
+                  }}
                 >
-                  托管（自动合并）…
+                  {state.autopilotConfirm ? '托管（自动合并）…' : '托管（自动合并）'}
                 </button>
               )}
             </span>
@@ -1037,14 +1044,25 @@ export function DetailPanel({
           busy={busy}
           onCancel={() => setAsk(null)}
           onConfirm={async () => {
-            const r = await run({ kind: 'autopilot', key: item.key }, `已托管：加上「${hb.autopilot}」「${hb.agent}」、去掉「${hb.human}」`);
+            // the tick counts only with "确认托管": "取消" keeps asking
+            if (noMoreAsk) void Promise.resolve(api().setAutopilotConfirm(false)).catch(() => undefined);
+            const r = await runAutopilot();
             if (r.here) setAsk(null);
           }}
         >
-          <p data-testid="autopilot-explain">
-            会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>：agent 接手，从方案到合并不再等你确认；独立复审通过、检查通过后由 daemon 自动合并。
-            要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。
-          </p>
+          <div data-testid="autopilot-explain">
+            <p data-testid="autopilot-explain-labels">
+              会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。
+            </p>
+            <p data-testid="autopilot-explain-then">agent 接手，从方案到合并不再等你确认；独立复审通过、检查通过后由 daemon 自动合并。</p>
+            <p data-testid="autopilot-explain-stop">
+              要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。
+            </p>
+          </div>
+          <label className="row small">
+            <input type="checkbox" data-testid="autopilot-no-more-ask" checked={noMoreAsk} disabled={busy} onChange={(e) => setNoMoreAsk(e.target.checked)} />
+            不再提示，以后点「托管」直接执行（设置里可改回）
+          </label>
         </ConfirmDialog>
       )}
       {editing && (

@@ -15,6 +15,11 @@
 # 交人评论「自包含，链接只当出处」（GitHub#74）同理：同一句话在三份 worker 模板、本项目的
 # review 增量、通用 review 模板交人那一步里各一份，逐字一致；通用 review 模板那份单独对拍
 # 「别的项目没有 review 增量」的成品，否则只有本项目的复审会照这条写。
+#
+# 人称规则（GitHub#237）同理：「写明是人还是 agent，不用「你」「我」」在三份 worker 模板第 10 条、
+# 本项目 review 增量第 10 条、通用 review 模板 review 评论那一段各一份，逐字一致；review 模板另有
+# 2R 打回依据。交人评论那段里给 agent 照抄的范例句（以及方案 / 修订版结尾句、拆分交人评论）
+# 不许再带「你」「我」——只改规则不改范例，agent 照范例写，规则形同虚设。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -72,6 +77,12 @@ rules()     { sed -n '/凡是发到 issue \/ PR 让用户拍板的问题/,/勾�
 SELF_HEAD='**自包含，链接只当出处**'
 self_texts() { grep -o -- "\*\*自包含，链接只当出处\*\*。.*" "$1"; }
 SELF_CHECK='**只读这一条评论、不点任何链接，能不能知道发生了什么、要做哪几步？**'
+# 人称规则（GitHub#237）：同样从加粗开头截到行尾，所有出现逐字相同
+PRON_HEAD='**写明是人还是 agent，不用「你」「我」**'
+pron_texts() { grep -o -- "\*\*写明是人还是 agent，不用「你」「我」\*\*。.*" "$1"; }
+# 交人评论那段里给 agent 照抄的范例句（「」里的话），去掉人称规则本身那一行后不许带你 / 我 / 他
+handoff()   { sed -n '/^## 交人评论怎么写/,/^反面（读不懂的那版/p' "$1"; }
+quoted_pronouns() { handoff "$1" | grep -vF -- "$PRON_HEAD" | grep -oE '「[^」]*[你我他][^」]*」'; }
 ban_texts() { grep -oF -- "$BAN_HEAD" "$1" >/dev/null && grep -o -- "\*\*问题标题和选项里不许出现代码里的名字\*\*[^。]*。[^。]*不算" "$1"; }
 
 # 打印发现的问题，一行一条；空输出 = 全部满足
@@ -85,7 +96,7 @@ check_prompts() {
         s=$(skeleton "$f")
         if [ -z "$s" ]; then echo "$name: 没有拍板评论骨架"
         else
-            grep -qF '要你选的只有一件事' <<<"$s" || echo "$name: 骨架缺「要你选的只有一件事」"
+            grep -qF '要人选的只有一件事' <<<"$s" || echo "$name: 骨架缺「要人选的只有一件事」"
             grep -qF '先用一个真实例子讲清以前怎样、现在怎样' <<<"$s" || echo "$name: 骨架缺真实例子一步"
             grep -qF '只读标题、第一段和选项' <<<"$s" || echo "$name: 骨架缺发出前自查"
             if [ -z "$ref_skel" ]; then ref_skel="$s"; elif [ "$s" != "$ref_skel" ]; then echo "$name: 骨架和 ${ALL[0]} 不一致"; fi
@@ -121,6 +132,31 @@ check_prompts() {
         fi
     done
 
+    # 人称规则（GitHub#237）：三份 worker 第 10 条、review 增量第 10 条 + 通用模板 review 评论那一段
+    local ref_pron="" q
+    for name in "${ALL[@]}"; do
+        f="$TMP/composed-$name.md"; [ -s "$f" ] || continue
+        t=$(pron_texts "$f" | sort -u)
+        n=$(pron_texts "$f" | wc -l)
+        if [ -z "$t" ]; then echo "$name: 没有人称规则"
+        else
+            [ "$(wc -l <<<"$t")" -eq 1 ] || echo "$name: 人称规则有不同写法"
+            grep -qF '引用人的原话、代码和命令输出照原样保留' <<<"$t" || echo "$name: 人称规则缺引用例外"
+            grep -qF 'you / I / we' <<<"$t" || echo "$name: 人称规则没管到英文"
+            if [ -z "$ref_pron" ]; then ref_pron="$t"; elif [ "$t" != "$ref_pron" ]; then echo "$name: 人称规则和 ${ALL[0]} 不一致"; fi
+            if [ "$name" = review ]; then
+                [ "$n" -ge 2 ] || echo "review: 人称规则只出现 $n 处（应在本项目增量和通用模板 review 评论那一段各一处）"
+            else
+                grep -qF -- "10. $PRON_HEAD" "$f" || echo "$name: 人称规则不在交人评论那段的第 10 条"
+            fi
+        fi
+        q=$(quoted_pronouns "$f" | sort -u | tr '\n' ' ')
+        [ -z "$q" ] || echo "$name: 交人评论那段的范例带「你」「我」：$q"
+        # 会被原样抄进评论的结尾句 / 勾选项 / 拆分交人评论
+        q=$(grep -E '@<author>|- \[ \] \*\*B\. 拆成 sub-issue\*\*|^5\. \*\*交人评论\*\*（发在本 issue）|「待.{1,2}确认的问题」' "$f" | grep -E '[你我]' | cut -c1-60)
+        [ -z "$q" ] || echo "$name: 范例句带「你」「我」：$q"
+    done
+
     f="$TMP/composed-pr-comment.md"
     if [ -s "$f" ]; then
         grep -A3 -F '链接不能代替答案' "$f" | grep -qF '链接不能代替步骤和结论' \
@@ -134,6 +170,9 @@ check_prompts() {
         f=$(compose_prompt_template review 2>/dev/null)
         if [ -s "$f" ] && self_texts "$f" | grep -qF -- "$SELF_CHECK"; then :; else
             echo "review（无项目增量）: 通用模板交人那一步没有自包含规则"
+        fi
+        if [ -s "$f" ] && pron_texts "$f" | grep -qF '引用人的原话'; then :; else
+            echo "review（无项目增量）: 通用模板没有人称规则"
         fi
         mv "$extra.off" "$extra"
     fi
@@ -150,6 +189,7 @@ check_prompts() {
     if [ -s "$f" ]; then
         grep -E '^2Q\. ' "$f" | grep -qF -- "$BAN_HEAD" || echo "review: 打回依据里没有禁用规则"
         grep -E '^2Q\. ' "$f" | grep -qF '判不通过' || echo "review: 违反禁用规则没写成判不通过"
+        grep -E '^2R\. ' "$f" | grep -qF '判不通过' || echo "review: 打回依据里没有人称规则"
     fi
 }
 
@@ -248,6 +288,58 @@ fi
 if neg_sandbox; then
 sed -i '/链接不能代替步骤和结论/d' "$SKILL_DIR/prompts/pr-comment.template.md"
 expect_red "pr-comment「链接不能代替答案」没扩范围" "pr-comment: 「链接不能代替答案」没扩到步骤和复审结论"
+fi
+
+# 人称规则（GitHub#237）：每个写入点单独拿掉 / 改一个字，范例句改回「你」「我」
+for name in new-issue issue-comment pr-comment; do
+    neg_sandbox || continue
+    sed -i '/^10\. \*\*写明是人还是 agent/d' "$SKILL_DIR/prompts/$name.template.md"
+    expect_red "$name 交人评论那段少了人称规则" "$name: 没有人称规则"
+done
+
+if neg_sandbox; then
+sed -i '/^10\. \*\*写明是人还是 agent/d' "$TMP/project/.agents/skills/cavil-loop/prompts/review.extra.md"
+expect_red "review 增量少了人称规则" "review: 人称规则只出现 1 处"
+fi
+
+if neg_sandbox; then
+sed -i '/^review 评论（不论通过与否，交人的那条尤其）同样要/d' "$SKILL_DIR/prompts/review.template.md"
+expect_red "通用 review 模板少了人称规则" "review（无项目增量）: 通用模板没有人称规则"
+fi
+
+if neg_sandbox; then
+sed -i '/^10\. \*\*写明是人还是 agent/s/「维护者」「提出者」/「维护者」/' "$SKILL_DIR/prompts/issue-comment.template.md"
+expect_red "issue-comment 人称规则改了一个词" "issue-comment: 人称规则和 new-issue 不一致"
+fi
+
+if neg_sandbox; then
+sed -i '/^2R\. /d' "$SKILL_DIR/prompts/review.template.md"
+expect_red "review 模板没有人称打回依据" "review: 打回依据里没有人称规则"
+fi
+
+if neg_sandbox; then
+sed -i 's/，agent 继续开干。`/ 我继续开干。`/' "$SKILL_DIR/prompts/new-issue.template.md"
+expect_red "new-issue 方案结尾改回「我继续开干」" "new-issue: 范例句带「你」「我」"
+fi
+
+if neg_sandbox; then
+sed -i 's/，agent 开干。`/ 我开干。`/' "$SKILL_DIR/prompts/issue-comment.template.md"
+expect_red "issue-comment 修订版结尾改回「我开干」" "issue-comment: 范例句带「你」「我」"
+fi
+
+if neg_sandbox; then
+sed -i 's/或者等人点/或者等你点/; s/or 等人点/or 等你点/' "$SKILL_DIR/prompts/issue-comment.template.md"
+expect_red "issue-comment 拆分交人评论改回「等你点」" "issue-comment: 范例句带「你」「我」"
+fi
+
+if neg_sandbox; then
+sed -i 's/就直说「本条不需要人做任何事」/就直说「本条不需要你做任何事」/' "$TMP/project/.agents/skills/cavil-loop/prompts/review.extra.md"
+expect_red "review 增量范例改回「不需要你做任何事」" "review: 交人评论那段的范例带「你」「我」"
+fi
+
+if neg_sandbox; then
+sed -i 's/要人选：中文编号/要你选：中文编号/' "$SKILL_DIR/prompts/pr-comment.template.md"
+expect_red "pr-comment 骨架范例改回「要你选」" "pr-comment: 交人评论那段的范例带「你」「我」"
 fi
 
 echo

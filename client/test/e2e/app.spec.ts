@@ -425,11 +425,10 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await page.locator('[data-testid="new-issue-label-picker"] [data-testid="picker-item"][data-name="pending/human"]').click();
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-testid="new-issue-label-chip"][data-label="pending/human"]')).toBeVisible();
-  // every source shown: no Project ticked to begin with; tick the one wanted
+  // the board holding this repository's items starts ticked (GitHub#231)
   await expect(page.getByTestId('new-issue-project')).toHaveCount(1);
-  await expect(page.getByTestId('new-issue-project')).not.toBeChecked();
   await expect(page.getByTestId('new-issue-projects')).toContainText('cavil project');
-  await page.getByTestId('new-issue-project').check();
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
   await shot(page, '26-new-issue');
   // GitHub gives the next number: one past the highest one in the recorded data
   const next =
@@ -1097,7 +1096,8 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   expect(shape.filter((g) => g.key.startsWith(`${Z}|`)).map((g) => [g.title, [...g.rows].sort()])).toEqual([['无迭代', ['gigleai/zeta#1', 'gigleai/zeta#2']]]);
   // cavil-loop#22 shows in two iteration groups, and the heading counts it once
   const cav = shape.filter((g) => g.key.startsWith(`${C}|`));
-  expect(cav.filter((g) => g.rows.includes('gigleai/cavil-loop#22')).map((g) => g.title)).toEqual(['无迭代', 'Iteration 25']);
+  // the "no iteration" group comes last, as on the web (GitHub#231)
+  expect(cav.filter((g) => g.rows.includes('gigleai/cavil-loop#22')).map((g) => g.title)).toEqual(['Iteration 25', '无迭代']);
   const cavRows = cav.flatMap((g) => g.rows);
   const heads = Object.fromEntries(await repoHeads(page));
   expect(heads['GigleAI/cavil-loop']).toBe(new Set(cavRows).size);
@@ -3181,7 +3181,7 @@ test('GitHub#205: table cells change labels / status in place; columns can be re
   await app.close();
 });
 
-test('GitHub#205: new issue — coloured label picker; boards ticked one by one, starting from the board being looked at', async () => {
+test('GitHub#205: new issue — coloured label picker; boards ticked one by one, starting from the board of the repository (GitHub#231)', async () => {
   const { app, page } = await launch(env);
   await signInWithSources(page);
   // narrowed to the Project: it starts ticked
@@ -3211,10 +3211,10 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   await expect.poll(() => writes().slice(before).map((w) => [w[0], w[2]])).toEqual([['POST', { title: '只进仓库的 issue', body: '', labels: ['pending/human'] }]]);
   // the new issue opened in the detail: put it away first (a click outside it only does that, GitHub#191)
   await page.getByTestId('detail-close').click();
-  // every source shown again: nothing starts ticked
+  // every source shown again: the same board starts ticked — the top filter plays no part (GitHub#231)
   await page.locator('[data-testid="source-pick"] input[data-key^="repo:"]').check();
   await page.getByTestId('write-entry').click();
-  await expect(page.getByTestId('new-issue-project')).not.toBeChecked();
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
   // an image pasted into the body: said, not dropped silently; the web page carries on with what was typed
   await page.getByTestId('new-issue-title').fill('带图');
   await page.getByTestId('new-issue-body').fill('看图');
@@ -3420,6 +3420,8 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
   await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
   await expect(line(PROJECT_KEY)).toHaveAttribute('data-applies', 'yes');
   await expect(line(PROJECT_KEY)).toContainText('状态 = In progress');
+  // what a status group sets is said right under the board boxes (GitHub#231)
+  await expect(page.getByTestId('new-issue-projects').getByTestId('new-issue-preset')).toHaveAttribute('data-place', 'boards');
   await page.getByTestId('new-issue-title').fill('在 In progress 组里建的');
   await shot(page, '214-group-new-issue');
   const n1 = nextNumber();
@@ -3444,6 +3446,9 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
     await group('v1.2').getByTestId('group-add').click();
     await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
     await page.getByTestId('new-issue-title').fill(`里程碑组 ${stale}`);
+    // a milestone belongs to the repository: its line stays by the repository picker (GitHub#231)
+    await expect(page.getByTestId('new-issue-preset')).toHaveAttribute('data-place', 'repo');
+    await expect(page.getByTestId('new-issue-projects').getByTestId('new-issue-preset')).toHaveCount(0);
     // still reading: not offered
     await expect(page.getByTestId('new-issue-preset')).toHaveAttribute('data-blocked', 'yes');
     await expect(page.getByTestId('confirm-ok')).toBeDisabled();
@@ -3621,5 +3626,190 @@ test('GitHub#229: gear; short detail head; label list retried; re-opened detail 
   await expect(page.getByTestId('new-issue-title')).toHaveValue('REFUSED_229');
   await expect(page.getByTestId('new-issue-body')).toHaveValue('正文 229');
   expect(env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues')).toHaveLength(1);
+  await app.close();
+});
+
+test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded table groups survive the board and a restart; "no value" groups last; both iteration pickers in the same order; a new issue ticks the repository\'s board when only the repository is shown', async () => {
+  let { app, page } = await launch(env);
+  await signInWithSources(page);
+
+  // ---- 1. 托管: three paragraphs; "不再提示" unticked; cancel keeps asking; ticked + confirmed → no dialog next time ----
+  await card(page, 138).click();
+  const quick = page.getByTestId('detail').locator('.reply .row.end');
+  await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）…');
+  await quick.getByTestId('autopilot').click();
+  for (const part of ['labels', 'then', 'stop']) await expect(page.getByTestId(`autopilot-explain-${part}`)).toBeVisible();
+  await expect(page.getByTestId('autopilot-explain').locator('p')).toHaveCount(3);
+  const noMore = page.getByTestId('autopilot-no-more-ask');
+  await expect(noMore).not.toBeChecked();
+  await noMore.check();
+  await shot(page, '231-01-autopilot-confirm');
+  await page.getByTestId('confirm-cancel').click();
+  await quick.getByTestId('autopilot').click();
+  await expect(noMore).not.toBeChecked(); // a cancelled tick was not kept
+  await noMore.check();
+  const b1 = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toContainText('已托管');
+  const autopilotWrites = (n: number) => [
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['autopilot'] }],
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
+    ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
+  ];
+  expect(writes().slice(b1)).toEqual(autopilotWrites(138));
+  await page.getByTestId('detail-close').click();
+  // another item: the button has no "…", one click writes, no dialog
+  await card(page, 139).click();
+  await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）');
+  const b2 = writes().length;
+  await quick.getByTestId('autopilot').click();
+  await expect(page.getByTestId('action-result')).toContainText('已托管');
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  expect(writes().slice(b2)).toEqual(autopilotWrites(139));
+
+  // ---- 2. the detail's iteration picker: current → upcoming nearest first → ended latest first ----
+  const detailPick = page.getByTestId('iteration-select').first();
+  const groups = await detailPick.locator('optgroup').evaluateAll((gs) => gs.map((g) => g.getAttribute('label')));
+  expect(groups.length).toBeGreaterThan(0);
+  expect(['当前', '即将开始', '已结束'].filter((l) => groups.includes(l))).toEqual(groups);
+  const detailOptions = await detailPick.evaluate((sel: HTMLSelectElement) =>
+    [...sel.querySelectorAll('optgroup option')].map((o) => ({ id: (o as HTMLOptionElement).value, text: o.textContent!, part: o.parentElement!.getAttribute('label')! })),
+  );
+  const start = (t: string) => /（(\d{4}-\d{2}-\d{2}) 起）/.exec(t)![1];
+  const upcoming = detailOptions.filter((o) => o.part === '即将开始').map((o) => start(o.text));
+  const ended = detailOptions.filter((o) => o.part === '已结束').map((o) => start(o.text));
+  expect(upcoming).toEqual([...upcoming].sort());
+  expect(ended).toEqual([...ended].sort().reverse());
+  for (const o of detailOptions.filter((o) => o.part === '当前')) expect(o.text).toContain('（当前）');
+  // every iteration listed once, before or after today as its part says
+  expect(new Set(detailOptions.map((o) => o.id)).size).toBe(detailOptions.length);
+  await page.getByTestId('detail-close').click();
+
+  // ---- 3. table: "no iteration" last; a folded group stays folded across the board and a restart; per grouping ----
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await expect(page.getByTestId('table')).toBeVisible();
+  await page.getByTestId('search').fill('');
+  await expect.poll(async () => (await tableShape(page)).length, { timeout: 15_000 }).toBeGreaterThan(1);
+  await expect.poll(async () => (await tableShape(page)).at(-1)!.title).toBe('无迭代');
+  const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`);
+  await expect(group('Iteration 25').getByTestId('row').first()).toBeVisible();
+  await group('Iteration 25').getByTestId('group-toggle').click();
+  await expect(group('Iteration 25').getByTestId('row')).toHaveCount(0);
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await expect(group('Iteration 25')).toBeVisible();
+  await expect(group('Iteration 25').getByTestId('row')).toHaveCount(0);
+  await expect(group('无迭代').getByTestId('row').first()).toBeVisible();
+  await shot(page, '231-02-table-folded');
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(group('Iteration 25')).toBeVisible({ timeout: 15_000 });
+  await expect(group('Iteration 25').getByTestId('row')).toHaveCount(0);
+  // grouped by status: its own folds (none yet), "no status" last
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  await expect.poll(async () => (await tableShape(page)).at(-1)!.title, { timeout: 15_000 }).toBe('无状态');
+  for (const g of await tableShape(page)) expect(g.rows.length, g.title).toBeGreaterThan(0);
+  await page.getByTestId('group-by').selectOption('iteration');
+  await expect(group('Iteration 25').getByTestId('row')).toHaveCount(0);
+  await group('Iteration 25').getByTestId('group-toggle').click();
+  await expect(group('Iteration 25').getByTestId('row').first()).toBeVisible();
+
+  // ---- 4. the table cell's iteration picker lists the same iterations in the same order as the detail's ----
+  const columns = page.locator('[data-testid="columns-pick"] input[data-col="iteration"]');
+  if (!(await columns.isChecked())) await columns.check();
+  await page.getByTestId('open-view-panel').click();
+  const row = page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#139"]').first();
+  await row.locator('[data-testid="cell"][data-col="iteration"]').click();
+  const cellOptions = await row.getByTestId('cell-iteration').first().evaluate((sel: HTMLSelectElement) =>
+    [...sel.querySelectorAll('optgroup option')].map((o) => ({ id: (o as HTMLOptionElement).value, part: o.parentElement!.getAttribute('label')! })),
+  );
+  expect(cellOptions).toEqual(detailOptions.map(({ id, part }) => ({ id, part })));
+
+  // ---- 5. only the repository shown at the top: a new issue still starts on the board holding its items ----
+  await page.locator('[data-testid="source-pick"] input[data-key^="project:"]').uncheck();
+  await page.getByTestId('write-entry').click();
+  await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
+  await expect(page.getByTestId('new-issue-project-unsynced')).toHaveCount(0);
+  await shot(page, '231-03-new-issue-default-board');
+  // ticked off by hand: kept
+  await page.getByTestId('new-issue-project').uncheck();
+  await expect(page.getByTestId('new-issue-projects-hint')).toContainText('不加入任何看板');
+  await page.getByTestId('confirm-cancel').click();
+
+  // ---- 6. ticked back in Settings: 托管 asks again ----
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('autopilot-confirm')).not.toBeChecked();
+  await page.getByTestId('autopilot-confirm').check();
+  await page.getByTestId('back').click();
+  await page.locator('[data-testid="source-pick"] input[data-key^="project:"]').check();
+  await page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"] [data-testid="row-title"]').first().click();
+  await expect(page.getByTestId('detail').locator('.reply .row.end').getByTestId('autopilot')).toHaveText('托管（自动合并）…');
+  await app.close();
+});
+
+test('GitHub#231 (PR #241 review round 1): new issue while boards are not read yet — "not synced yet", never "no board added"; the default follows the first complete read', async () => {
+  const { app, page } = await launch(env);
+  await signIn(page);
+  const dialogOpen = async () => {
+    await page.getByTestId('write-entry').click();
+    await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
+  };
+  const unsynced = page.getByTestId('new-issue-project-unsynced');
+
+  // ---- 1. no board added at all: says so ----
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect.poll(async () => (await page.evaluate(async () => (await (window as any).cavil.get()).data.items.length)) as number, { timeout: 15_000 }).toBeGreaterThan(0);
+  await dialogOpen();
+  await expect(page.getByTestId('new-issue-projects-none')).toBeVisible();
+  await expect(page.getByTestId('new-issue-projects-none-synced')).toHaveCount(0);
+  await expect(unsynced).toHaveCount(0);
+  await page.getByTestId('confirm-cancel').click();
+
+  // ---- 2. the only board added, its first read failing: "not synced yet", not "no board added" ----
+  env.fake.state.failProjectPage.set(P11, 0);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await expect(sourceErr(page, 'project:org/gigleai/11')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('back').click();
+  await dialogOpen();
+  await expect(page.getByTestId('new-issue-projects-none-synced')).toBeVisible();
+  await expect(page.getByTestId('new-issue-projects-none')).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-project')).toHaveCount(0);
+  await expect(unsynced).toHaveCount(1);
+  await expect(unsynced).toHaveAttribute('data-project', 'project:org/gigleai/11');
+  await shot(page, '231-04-new-issue-board-not-synced');
+
+  // ---- 3. the read succeeds while the dialog is open (nothing ticked by hand): the board shows up ticked ----
+  env.fake.state.failProjectPage.delete(P11);
+  await page.evaluate(() => (window as any).cavil.syncNow());
+  await expect(page.getByTestId('new-issue-project')).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
+  await expect(unsynced).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-projects-none-synced')).toHaveCount(0);
+  await page.getByTestId('confirm-cancel').click();
+
+  // ---- 4. one board read, another never read (it cannot be found): the read one is ticked, the other is said ----
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/99');
+  await page.getByTestId('source-add').click();
+  await expect(sourceErr(page, 'project:org/gigleai/99')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('back').click();
+  await dialogOpen();
+  await expect(page.getByTestId('new-issue-project')).toHaveCount(1);
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
+  await expect(unsynced).toHaveCount(1);
+  await expect(unsynced).toHaveAttribute('data-project', 'project:org/gigleai/99');
+  // ticked off by hand: the default no longer speaks for itself, the note goes with it
+  await page.getByTestId('new-issue-project').uncheck();
+  await expect(unsynced).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-project')).not.toBeChecked();
+  await page.getByTestId('confirm-cancel').click();
   await app.close();
 });

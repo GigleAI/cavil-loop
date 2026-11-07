@@ -95,13 +95,17 @@ const NONE_TITLE: Record<Exclude<GroupBy, 'none'>, string> = {
   repo: '无仓库',
 };
 
+/** Sorts after every value's order (they all start with '1' or '2'). */
+const NONE_LAST = '9';
+
 /** Which groups one item lands in. Iteration / status belong to each Project: two Projects that disagree give two rows. */
 function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, today: string, seeds: Map<string, Seed>): string[] {
   const seed = (s: Omit<Seed, 'items'>) => {
     if (!seeds.has(s.key)) seeds.set(s.key, { ...s, items: [] });
     return s.key;
   };
-  const none = () => seed({ key: GROUP_NONE_KEY, title: NONE_TITLE[by as Exclude<GroupBy, 'none'>], subtitle: null, current: false, empty: true, order: '', preset: { by: 'none' } });
+  // the group without a value goes after every group with one, as on the web Project's table (GitHub#231)
+  const none = () => seed({ key: GROUP_NONE_KEY, title: NONE_TITLE[by as Exclude<GroupBy, 'none'>], subtitle: null, current: false, empty: true, order: NONE_LAST, preset: { by: 'none' } });
   if (by === 'repo')
     return [seed({ key: `repo:${item.repo.toLowerCase()}`, title: item.repo, subtitle: null, current: false, empty: false, order: `1${item.repo.toLowerCase()}`, preset: { by: 'repo', repo: item.repo } })];
   if (by === 'milestone') {
