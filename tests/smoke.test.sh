@@ -165,21 +165,25 @@ open(p, "w").write(s.replace(old, ':'))
 PY
     printf '%s' "$D"
 }
+# 正例的计数在这里存下：负对照在改坏的副本上重跑同一组断言，那些结果不算回归（tests/lib/report.sh）
+REAL_PASS=$pass; REAL_FAIL=$fail; mut_ran=0; mut_fail=0
 if mutation_gate; then
+    mut_ran=$((mut_ran + 1))
     if D=$(mutant_flip); then
-        before=$fail; QUIET=1; run_smoke "$D"; QUIET=0
-        if [ "$fail" -gt "$before" ]; then
-            fail=$before; echo "  ✅ 负对照拦下：新 issue 派工不翻 doing/agent"; pass=$((pass+1))
+        pass=0; fail=0; QUIET=1; run_smoke "$D"; QUIET=0
+        if [ "$fail" -gt 0 ]; then
+            echo "  ✅ 负对照拦下：新 issue 派工不翻 doing/agent（$fail 条变红）"
         else
-            echo "  ❌ 负对照没拦下：新 issue 派工不翻 doing/agent（改坏后冒烟仍全绿）"; fail=$((fail+1))
+            echo "  ❌ 负对照没拦下：新 issue 派工不翻 doing/agent（改坏后冒烟仍全绿）"; mut_fail=$((mut_fail + 1))
         fi
     else
-        echo "  ❌ 负对照准备失败：找不到新 issue 派工里翻 doing/agent 的那一行"; fail=$((fail+1))
+        echo "  ❌ 负对照准备失败：找不到新 issue 派工里翻 doing/agent 的那一行"; mut_fail=$((mut_fail + 1))
     fi
 fi
+pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
 mutation_summary "$0"
-echo "通过 $pass，失败 $fail"
-report_counts "$pass" "$fail"
-[ "$fail" -eq 0 ]
+echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
+REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
+[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]

@@ -454,5 +454,6 @@ pass=$REAL_PASS; fail=$REAL_FAIL
 echo
 mutation_summary "$0"
 echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
+# 正式版计数在负对照开始前已存下、负对照不改它：各模式下都只含回归（tests/lib/report.sh）
+REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
 [ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]

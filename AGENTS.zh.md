@@ -296,7 +296,10 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   source；在主 shell 里、最后一条断言之后、最终判定之前调；自己数负对照的文件再带上 `"$mut_ran" "$mut_fail"`），输出一行
   `CAVIL_TEST_COUNTS …`：断言通过 / 失败、「和改动前一致」对拍跑了 / 同版本跳过几组（取自 `compat.sh`）、负对照跑了 / 跳过几项
   （取自 `mutation.sh` 的计数器）。退出 0 的单位，只要这行缺了（「没汇报计数」——中途提前退出）、出现两次、格式不对、报了失败、
-  或和文件自己打印的「负对照：跳过 N 项」/「本次跑了 N 项」对不上，一律判红。终端、`summary.md`、CI 作业摘要、`--verify`
+  或和文件自己打印的「负对照：跳过 N 项」/「本次跑了 N 项」对不上，一律判红。回归两项只数回归：`MUTATION=1` 时多数文件的负对照
+  会加到同一组计数器上，这时报 `-`（「不单列」），任何合计都不加它，绝不混成一个数；各模式下都只数回归的文件（负对照开始前存下
+  正式版计数、负对照结论记在 `mut_ran` / `mut_fail`）在调用时写 `REPORT_REGRESS_ONLY=1`——目前是 autopilot、requester-bot-wait、
+  closed-issue-done、pending-human-conflict、release-auto、smoke 和 run.test。终端、`summary.md`、CI 作业摘要、`--verify`
   的汇总都按类型分组，回归和负对照分两栏；发版门禁另用 `--tally` 把各路 shell 结果和六个 autopilot 作业的负对照加总。
   `--kind unit,guard` 只跑这几类（可以和 `--ci` / `--shard` / `--list` / `--verify` 一起用）；`--quick` = 冒烟 + 单元 + 守卫 +
   测试框架自测，48 个单位，2026-11-07 用默认 `-j 8` 实测 33 秒（28 核开发机，负载约 4；其中最长的 `run.test` 占 28 秒）——开发中先跑它，再跑改到的文件。`tests/smoke.test.sh`（约 6 秒）用真实轮询跑一轮：新 issue

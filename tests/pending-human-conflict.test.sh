@@ -493,5 +493,6 @@ negative "两种评论共用一个标记" \
 echo
 mutation_summary "$0"
 echo "正式版：$real_pass 通过 / $real_fail 失败；负对照失效 $neg_fail 条"
-report_counts "$real_pass" "$real_fail" "" "$neg_fail"
+# 正式版计数在负对照开始前已存下、负对照不改它：各模式下都只含回归（tests/lib/report.sh）
+REPORT_REGRESS_ONLY=1 report_counts "$real_pass" "$real_fail" "" "$neg_fail"
 [ "$real_fail" -eq 0 ] && [ "$neg_fail" -eq 0 ]

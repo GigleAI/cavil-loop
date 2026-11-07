@@ -437,5 +437,6 @@ echo "正向：$POS_PASS 通过 / $POS_FAIL 失败"
 mutation_summary "$0"
 compat_summary
 if mutation_on; then echo "负对照：$mut_ran 项中 $mut_fail 项没能变红或准备失败"; fi
-report_counts "$POS_PASS" "$POS_FAIL" "$mut_ran" "$mut_fail"
+# 正式版计数在负对照开始前已存下、负对照不改它：各模式下都只含回归（tests/lib/report.sh）
+REPORT_REGRESS_ONLY=1 report_counts "$POS_PASS" "$POS_FAIL" "$mut_ran" "$mut_fail"
 [ "$POS_FAIL" -eq 0 ] && [ "$mut_fail" -eq 0 ]

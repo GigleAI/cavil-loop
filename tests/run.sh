@@ -42,11 +42,13 @@
 # stops every mode with exit 2 — a new file cannot slip in unclassified.
 #
 # Count line (GitHub#212). Every file ends by calling report_counts (tests/lib/report.sh), which prints
-#     CAVIL_TEST_COUNTS v=1 regress_pass=N regress_fail=N compat_ran=N compat_skipped=N mut_ran=N mut_skipped=N mut_fail=N|-
+#     CAVIL_TEST_COUNTS v=1 regress_pass=N|- regress_fail=N|- compat_ran=N compat_skipped=N mut_ran=N mut_skipped=N mut_fail=N|-
 # A unit that exits 0 is still a failure when that line is missing ("没汇报计数" — it stopped early
 # or never got to the end), printed more than once, malformed, reports failed assertions, or carries
 # a negative-control count different from the file's own "负对照：跳过 N 项" / "本次跑了 N 项" line.
-# Summaries group by kind, with regression and negative controls in separate columns.
+# Summaries group by kind, with regression and negative controls in separate columns. Under MUTATION=1
+# most files cannot keep the two apart (their negative controls bump the same counters), so they report
+# regression as "-": the summaries list those units as "not counted separately", never add them in.
 #
 # Verdicts per unit:
 #   pass      exit 0 and a valid count line
@@ -234,14 +236,15 @@ assign() {
 
 # ── counts (GitHub#212) ────────────────────────────────────────────────────────
 # results.tsv columns: unit status secs note kind regress_pass regress_fail compat_ran compat_skipped
-# mut_ran mut_skipped mut_fail ("-" where a unit has no count line). The note can be empty, so the
+# mut_ran mut_skipped mut_fail ("-" in every field where a unit has no count line; mut_ran is always a
+# number when it has one, so that is the field that tells them apart — regression alone may be "-"). The note can be empty, so the
 # file is always split on single tabs (awk -F'\t' / to_us), never with `read`'s whitespace IFS.
 NOCOUNTS="-	-	-	-	-	-	-"
 to_us() { awk -F'\t' -v OFS=$'\x1f' '{ $1 = $1; print }' "$@"; }
 
 # Parse one log's count line → "rp<TAB>rf<TAB>cr<TAB>cs<TAB>mr<TAB>ms<TAB>mf" on stdout, or a reason
 # on stderr with return 1 (0 lines / several / malformed).
-COUNT_RE='^CAVIL_TEST_COUNTS v=1 regress_pass=([0-9]+) regress_fail=([0-9]+) compat_ran=([0-9]+) compat_skipped=([0-9]+) mut_ran=([0-9]+) mut_skipped=([0-9]+) mut_fail=([0-9]+|-)$'
+COUNT_RE='^CAVIL_TEST_COUNTS v=1 regress_pass=([0-9]+|-) regress_fail=([0-9]+|-) compat_ran=([0-9]+) compat_skipped=([0-9]+) mut_ran=([0-9]+) mut_skipped=([0-9]+) mut_fail=([0-9]+|-)$'
 parse_counts() {   # <log>
     local n line
     n=$(grep -c '^CAVIL_TEST_COUNTS' "$1" || true)
@@ -261,23 +264,27 @@ counts_report() {
     awk -F'\t' -v kinds="$KINDS_ALL" -v labels="$labels" '
         BEGIN { split(labels, L, "|"); nk = split(kinds, K, " "); for (i = 1; i <= nk; i++) LBL[K[i]] = L[i] }
         { k = $3; units[k]++; U++
-          if ($4 == "-") { nocount[k]++; NC++ } else {
-              rp[k] += $4; rf[k] += $5; cr[k] += $6; cs[k] += $7; mr[k] += $8; ms[k] += $9
-              RP += $4; RF += $5; CR += $6; CS += $7; MR += $8; MS += $9
+          if ($8 == "-") { nocount[k]++; NC++ } else {
+              if ($4 == "-") { mixed[k]++; MX++ } else { rp[k] += $4; rf[k] += $5; RP += $4; RF += $5 }
+              cr[k] += $6; cs[k] += $7; mr[k] += $8; ms[k] += $9
+              CR += $6; CS += $7; MR += $8; MS += $9
               if ($10 == "-") MFU++; else MF += $10 }
           if ($2 != "pass" && $2 != "skipped-ok" && $2 != "excluded") bad[++nb] = $1 " (" $2 ")" }
-        function row(name, u, a, b, c, d, e, f, n) {
-            printf "| %s | %d | %d / %d | %d / %d | %d / %d | %s |\n", name, u, a, b, c, d, e, f, (n ? n " 个没有计数" : "") }
+        function row(name, u, a, b, c, d, e, f, n, x,   note) {
+            note = (n ? n " 个没有计数" : "")
+            if (x) note = note (note ? "；" : "") x " 个负对照模式下不单列回归"
+            printf "| %s | %d | %d / %d | %d / %d | %d / %d | %s |\n", name, u, a, b, c, d, e, f, note }
         END {
             print "| 类型 | 单位 | 回归（通过 / 失败） | 其中改动前对拍（跑 / 同版本跳过，组） | 负对照（跑 / 跳过） | 说明 |"
             print "|---|---|---|---|---|---|"
             for (i = 1; i <= nk; i++) { k = K[i]; if (!(k in units)) continue
-                row("`" k "` " LBL[k], units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k]) }
+                row("`" k "` " LBL[k], units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k], mixed[k]) }
             for (k in units) { known = 0; for (i = 1; i <= nk; i++) if (K[i] == k) known = 1
-                if (!known) row("`" k "`", units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k]) }
-            row("**合计**", U, RP, RF, CR, CS, MR, MS, NC)
+                if (!known) row("`" k "`", units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k], mixed[k]) }
+            row("**合计**", U, RP, RF, CR, CS, MR, MS, NC, MX)
             print ""
             printf "**回归 %d 项 / 负对照 %d 项**", RP + RF, MR + MS
+            if (MX) printf "（回归只计 %d 个单位：另 %d 个在负对照模式下与负对照共用计数，不单列）", U - NC - MX, MX
             if (MR > 0) {
                 printf "（负对照本次跑了 %d 项、跳过 %d 项）\n\n", MR, MS
                 printf "负对照：跑了 %d 项；没变红 %d 项", MR, MF
@@ -324,7 +331,7 @@ if [ -n "$VERIFY" ]; then
             [ "$status" = excluded ] && continue
             SEEN[$name]=$(( ${SEEN[$name]:-0} + 1 ))
             STATUS[$name]="$status"; SECS[$name]="$secs"
-            if [[ "${rp:-}" =~ ^[0-9]+$ ]]; then CNT[$name]="$rp	$rf_	$cr	$cs	$mr	$ms	$mf"; else CNT[$name]="$NOCOUNTS"; fi
+            if [[ "${mr:-}" =~ ^[0-9]+$ ]]; then CNT[$name]="$rp	$rf_	$cr	$cs	$mr	$ms	$mf"; else CNT[$name]="$NOCOUNTS"; fi
         done < <(to_us "$rf")
     done < <(find "$VERIFY" -name results.tsv -type f -print0)
     declare -A EXPECT=()
@@ -412,7 +419,7 @@ log_of() { printf '%s/logs/%s.log' "$OUT" "$(printf '%s' "$1" | tr ':/' '._')"; 
 count_problems() {   # <log> <counts> → prints the problem and returns 1, or returns 0
     local rp rf cr cs mr ms mf said
     IFS=$'\t' read -r rp rf cr cs mr ms mf <<< "$2"
-    if [ "$rf" -gt 0 ]; then echo "exit 0, but the count line reports $rf failed assertion(s)"; return 1; fi
+    if [ "$rf" != "-" ] && [ "$rf" -gt 0 ]; then echo "exit 0, but the count line reports $rf failed assertion(s)"; return 1; fi
     said=$(sed -n 's/^负对照：跳过 \([0-9][0-9]*\) 项.*/\1/p' "$1" | tail -1)
     if [ -n "$said" ] && [ "$said" != "$ms" ]; then
         echo "count line says $ms negative control(s) skipped, the file printed 负对照：跳过 $said 项"; return 1
@@ -426,8 +433,9 @@ count_problems() {   # <log> <counts> → prints the problem and returns 1, or r
 counts_brief() {   # <counts> → "回归 12/0 · 负对照 跳过 3" for the per-unit line
     local rp rf cr cs mr ms mf
     IFS=$'\t' read -r rp rf cr cs mr ms mf <<< "$1"
-    [ "$rp" != "-" ] || { echo "–"; return; }
+    [ "$mr" != "-" ] || { echo "–"; return; }
     local out="回归 $rp/$rf"
+    [ "$rp" != "-" ] || out="回归 不单列"
     [ $((cr + cs)) -eq 0 ] || out+=" · 对拍 $cr/$cs"
     if [ "$mr" -gt 0 ]; then out+=" · 负对照 跑 $mr${ms:+/跳过 $ms}"; elif [ "$ms" != 0 ]; then out+=" · 负对照 跳过 $ms"; fi
     echo "$out"

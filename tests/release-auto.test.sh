@@ -426,6 +426,7 @@ fi
 
 echo
 echo "passed $PASS, failed $FAIL${MUT_FAIL:+; 负对照失效 $MUT_FAIL}"
-report_counts "$PASS" "$FAIL" "" "${MUT_FAIL:--}"
+# negative controls run as child processes and never touch PASS / FAIL: regression-only in every mode
+REPORT_REGRESS_ONLY=1 report_counts "$PASS" "$FAIL" "" "${MUT_FAIL:--}"
 [ "${MUT_FAIL:-0}" -eq 0 ] || exit 1
 [ "$FAIL" -eq 0 ]

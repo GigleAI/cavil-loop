@@ -352,7 +352,13 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   "same as before the change" comparisons run / skipped (from `compat.sh`), negative controls run /
   skipped (from `mutation.sh`'s counter). A unit that exits 0 is still red when that line is missing
   ("没汇报计数" — it stopped early), printed twice, malformed, reports failures, or disagrees with the
-  file's own `负对照：跳过 N 项` / `本次跑了 N 项` line. Every summary — terminal, `summary.md`, the CI
+  file's own `负对照：跳过 N 项` / `本次跑了 N 项` line. The two regression numbers are regression
+  only: with `MUTATION=1` most files' negative controls bump the same counters, so there they are
+  reported as `-` ("not counted separately") and left out of every total, never added in mixed. A file
+  that keeps regression-only counters in every mode (it saves them before its negative controls and
+  keeps the controls' verdicts in `mut_ran` / `mut_fail`) sets `REPORT_REGRESS_ONLY=1` on the call —
+  today autopilot, requester-bot-wait, closed-issue-done, pending-human-conflict, release-auto, smoke and
+  run.test. Every summary — terminal, `summary.md`, the CI
   job summary, `--verify` — is grouped by kind with regression and negative controls in separate
   columns; the release gate adds `--tally` totals over the shell shards and the six autopilot jobs.
   `--kind unit,guard` runs only those kinds (combines with `--ci` / `--shard` / `--list` / `--verify`);
