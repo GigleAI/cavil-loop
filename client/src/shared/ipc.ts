@@ -25,6 +25,8 @@ export interface CavilApi {
   syncNow(): Promise<void>;
   openExternal(url: string): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;
+  /** a row of the settings page's pending list: open it the way a click on its notification does */
+  openPending(key: string): Promise<void>;
   /** the app updating itself (GitHub#184) */
   checkUpdate(): Promise<void>;
   setAutoUpdate(on: boolean): Promise<void>;
