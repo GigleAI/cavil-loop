@@ -5205,12 +5205,11 @@ configure_tmux_session_display() {
     session_alive "$sess" || return 0
 
     # 旧版本 / 新 issue 派工起的 session 没有 worker 窗格记录：只有一个窗格时它就是 worker，补记上。
-    # 不止一个窗格时不猜（见 worker_pane_id）。
-    if [ -z "$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null)" ]; then
-        local only
-        if only="$(worker_pane_id "$sess")"; then
-            worker_pane_record "$sess" "$only" || true
-        fi
+    # 不止一个窗格、或读不到时不猜（见 worker_pane_lookup）。
+    local st only
+    read -r st only _ <<<"$(worker_pane_lookup "$sess")"
+    if [ "$st" = single ]; then
+        worker_pane_record "$sess" "$only" || true
     fi
 
     if [ -n "$desc" ] && ! tmux set-option -t "$sess" @desc "$desc" 2>&1 | \
@@ -5250,47 +5249,78 @@ configure_tmux_session_display() {
 # @worker_pane 上；读的时候再核对这个窗格仍在、仍属于这个 session。
 #
 # 本功能上线前起的 session 没有记录：只有一个窗格时它必然是 worker（configure_tmux_session_display
-# 会顺手补记）；有多个窗格时**不猜**，返回空，交给调用方按「认不出」处理。
+# 会顺手补记）；有多个窗格时**不猜**。
+#
+# **读不到不等于没有**（PR #219 复审第 2 轮）：这里的结论会被拿去杀进程、重建 session、
+# 另起 worker、改记录，所以每一次 tmux 读取都核对退出码和输出形状，任何一步没读成就是
+# unknown——调用方遇到 unknown 一律什么都不动，留给下一轮。只有成功读到的完整窗格清单
+# 里确实没有记录的窗格，才算「记录的窗格已不在」。
 
 worker_pane_record() {   # <tmux_session> <pane id>
     [ -n "$2" ] || return 1
     tmux set-option -t "=$1:" @worker_pane "$2" 2>/dev/null
 }
 
-# 输出 worker 窗格的 pane id；认不出（没记录且不止一个窗格 / 记录的窗格已不在）输出空、返回 1。
-worker_pane_id() {   # <tmux_session>
-    local sess="$1" rec owner panes
-    rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null || true)"
-    if [ -n "$rec" ]; then
-        owner="$(tmux display-message -p -t "$rec" '#{session_name}' 2>/dev/null || true)"
-        if [ "$owner" = "$sess" ]; then
-            printf '%s\n' "$rec"
-            return 0
+# 一次读全 worker 窗格的状态。输出一行「状态 窗格 进程号 已结束」，状态是：
+#   found  <id> <pid> <dead>  记录的窗格在、属于这个 session
+#   single <id> <pid> <dead>  没有记录，session 只有一个窗格（就是 worker）
+#   gone   <记录的 id>        有记录，且成功读到的窗格清单里确实没有它
+#   multi                     没有记录，又不止一个窗格：认不出
+#   unknown                   任何一次读取失败或输出不成形
+# 两次读取：@worker_pane 选项（未设置时 -q 返回 0 且输出空，失败才非 0）和整个 session 的
+# 窗格清单（一次 list-panes 同时拿 id / pid / 是否已结束）。
+worker_pane_lookup() {   # <tmux_session>
+    local sess="$1" rec panes line id pid dead n=0 hit=""
+    if ! rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null)"; then
+        echo unknown; return 0
+    fi
+    if [ -n "$rec" ] && ! [[ "$rec" =~ ^%[0-9]+$ ]]; then
+        echo unknown; return 0
+    fi
+    if ! panes="$(tmux list-panes -s -t "=$sess:" -F '#{pane_id} #{pane_pid} #{pane_dead}' 2>/dev/null)"; then
+        echo unknown; return 0
+    fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        read -r id pid dead <<<"$line"
+        if ! [[ "$id" =~ ^%[0-9]+$ && "$pid" =~ ^[0-9]+$ && "$dead" =~ ^[01]$ ]]; then
+            echo unknown; return 0
         fi
-        return 1
+        n=$((n + 1))
+        if [ -n "$rec" ] && [ "$id" = "$rec" ]; then hit="$id $pid $dead"; fi
+        [ -z "$rec" ] && [ "$n" -eq 1 ] && hit="$id $pid $dead"
+    done <<<"$panes"
+    if [ "$n" -eq 0 ]; then echo unknown; return 0; fi
+    if [ -n "$rec" ]; then
+        if [ -n "$hit" ]; then echo "found $hit"; else echo "gone $rec"; fi
+    elif [ "$n" -eq 1 ]; then
+        echo "single $hit"
+    else
+        echo multi
     fi
-    panes="$(tmux list-panes -s -t "=$sess" -F '#{pane_id}' 2>/dev/null || true)"
-    if [ -n "$panes" ] && [ "$(printf '%s\n' "$panes" | wc -l)" -eq 1 ]; then
-        printf '%s\n' "$panes"
-        return 0
-    fi
-    return 1
+}
+
+# worker 窗格的 id（found / single 时），否则返回 1。只给「找到了才做事」的调用方用。
+worker_pane_id() {   # <tmux_session>
+    local st id
+    read -r st id _ <<<"$(worker_pane_lookup "$1")"
+    case "$st" in found|single) printf '%s\n' "$id" ;; *) return 1 ;; esac
 }
 
 # worker 窗格里的程序还在跑。人另开的窗格让 session 一直活着，所以派工判断「刚起的程序
 # 有没有秒退」要看 worker 窗格本身，不能只看 session 在不在。
-# 只在有确凿证据时判「死了」：session 不在、记录的 worker 窗格已不在、或窗格标着已结束。
-# 认不出 worker 窗格 / 读不到窗格状态时按原来的判据（session 在就算活着），不因为读不到
-# 就去重起一个可能还在干活的 worker。
+# 只在有确凿证据时判「死了」：session 不在、成功读到的清单里没有记录的窗格、或窗格明确
+# 标着已结束。unknown / 认不出时按原来的判据（session 在就算活着）——不因为读不到就去
+# 重起一个可能还在干活的 worker。
 worker_alive() {   # <tmux_session>
-    local pane rec
+    local st id pid dead
     session_alive "$1" || return 1
-    if ! pane="$(worker_pane_id "$1")"; then
-        rec="$(tmux show-options -qv -t "=$1:" @worker_pane 2>/dev/null || true)"
-        [ -z "$rec" ]
-        return
-    fi
-    [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" != 1 ]
+    read -r st id pid dead <<<"$(worker_pane_lookup "$1")"
+    case "$st" in
+        gone) return 1 ;;
+        found|single) [ "$dead" != 1 ] ;;
+        *) return 0 ;;
+    esac
 }
 
 # 在 worker session 里起一条命令（GitHub#197）。
@@ -5312,32 +5342,41 @@ worker_alive() {   # <tmux_session>
 # - session 在、从没记录过、又不止一个窗格（本功能上线前起的、被人分过屏的 session）：
 #   认不出哪个是 worker，不猜——按进程组停掉 session 里全部程序再删掉重建。这会像以前一样
 #   踢出 attach 的终端，但不会杀错一个、留下另一个；只发生一次，之后的 session 都有记录。
+# - 任何一次读取失败（unknown）：什么都不动，返回 1。
 #
-# 返回非 0 只表示 tmux 命令本身失败；程序是否起得来由调用方用 worker_alive 判断。
+# 返回非 0：读不到窗格状态，或 tmux 命令本身失败。程序是否起得来由调用方用 worker_alive 判断。
 worker_session_launch() {   # <tmux_session> <cwd> <command> [tmux -e 参数…]
-    local sess="$1" cwd="$2" cmd="$3" pane pid i rec
+    local sess="$1" cwd="$2" cmd="$3" st pane pid dead i
     shift 3
-    if session_alive "$sess" && ! pane="$(worker_pane_id "$sess")"; then
-        rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null || true)"
-        if [ -n "$rec" ]; then
-            log "  $sess 里记录的 worker 窗格 $rec 已不在（session 由别的窗格撑着）：新开窗口起 worker"
-            pane="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" "$@" -c "$cwd" "$cmd")" || return 1
-            worker_pane_record "$sess" "$pane"
-            return 0
-        fi
-        log "  ⚠️ $sess 有多个窗格且没有 worker 窗格记录（旧版本起的 session），认不出 worker：停掉全部程序后重建 session"
-        kill_session_procs "$sess"
-        tmux kill-session -t "=$sess" 2>/dev/null || true
-    fi
     if ! session_alive "$sess"; then
         pane="$(tmux new-session -d -P -F '#{pane_id}' -s "$sess" "$@" -c "$cwd" "$cmd")" || return 1
         worker_pane_record "$sess" "$pane" || true
         return 0
     fi
+    read -r st pane pid dead <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in
+        found|single) ;;
+        gone)
+            log "  $sess 里记录的 worker 窗格 $pane 已不在（session 由别的窗格撑着）：新开窗口起 worker"
+            pane="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" "$@" -c "$cwd" "$cmd")" || return 1
+            worker_pane_record "$sess" "$pane" || true
+            return 0 ;;
+        multi)
+            log "  ⚠️ $sess 有多个窗格且没有 worker 窗格记录（旧版本起的 session），认不出 worker：停掉全部程序后重建 session"
+            kill_session_procs "$sess"
+            tmux kill-session -t "=$sess" 2>/dev/null || true
+            pane="$(tmux new-session -d -P -F '#{pane_id}' -s "$sess" "$@" -c "$cwd" "$cmd")" || return 1
+            worker_pane_record "$sess" "$pane" || true
+            return 0 ;;
+        *)
+            # 读不到 = 不知道哪个是 worker、它还在不在：不杀、不起、不改记录，本次派工失败，
+            # 下一轮再判（调用方开着 set -e，非 0 让派工脚本在翻标签之前就退出）
+            log "  ❌ $sess 的 worker 窗格状态读不到（tmux 查询失败），本轮不换程序、不动任何窗格"
+            return 1 ;;
+    esac
     tmux set-option -w -t "$pane" remain-on-exit on 2>/dev/null || true
-    if [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" != 1 ]; then
-        pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
-        kill_pane_pids $pid
+    if [ "$dead" != 1 ]; then
+        kill_pane_pids "$pid"
         # 进程没了到 tmux 把窗格标成「已结束」之间有一点延迟
         for ((i = 0; i < 20; i++)); do
             [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" = 1 ] && break
@@ -5404,7 +5443,10 @@ start_session_logging() {
     } >> "$log_path"
     # 日志挂在 worker 窗格上：人分屏后「当前窗格」可能是人的那个
     local tgt
-    tgt="$(worker_pane_id "$sess")" || tgt="=$sess:"
+    if ! tgt="$(worker_pane_id "$sess")"; then
+        log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到），本次不挂会话日志"
+        return 0
+    fi
     if [ "$(tmux display-message -p -t "$tgt" '#{pane_pipe}' 2>/dev/null)" = 1 ]; then
         return 0
     fi

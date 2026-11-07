@@ -2,7 +2,7 @@
 # 换 worker / 换复审时不把 attach 着的终端踢出 tmux（GitHub#197）。
 #
 # 跑法：bash tests/session-switch-keeps-client.test.sh            （默认回归，约 30 秒）
-#       MUTATION=1 bash tests/session-switch-keeps-client.test.sh （另跑 5 条负对照，约 2.5 分钟）
+#       MUTATION=1 bash tests/session-switch-keeps-client.test.sh （另跑 7 条负对照，约 4 分钟）
 # 依赖：tmux（3.0+）、git、jq。
 #
 # 真跑两个派工脚本（issue 评论、PR 评论），真 tmux——但开在**私有 socket** 上，绝不碰本机
@@ -40,7 +40,9 @@ TMUX_DIR=$(mktemp -d /tmp/kc.XXXX)
 export TMUX_TMPDIR="$TMUX_DIR"
 SOCK="$TMUX_DIR/tmux-$(id -u)/default"
 mkdir -p "$(dirname "$SOCK")"; chmod 700 "$(dirname "$SOCK")"
-T() { timeout 10 tmux -S "$SOCK" "$@"; }
+REAL_TMUX="$(command -v tmux)"
+# 测试自己的查询走真 tmux，不经过下面的故障注入包装
+T() { timeout 10 "$REAL_TMUX" -S "$SOCK" "$@"; }
 cleanup() {
     # 显式 -S：就算 TMUX_TMPDIR 没生效也不会去关本机默认 server
     timeout 10 tmux -S "$SOCK" kill-server 2>/dev/null || true
@@ -56,9 +58,10 @@ bad() { echo "  ❌ $1"; fail=$((fail+1)); }
 
 # ── 假命令 ───────────────────────────────────────────────────────────────────
 FAKEBIN="$TMP/fakebin"; CTL="$TMP/ctl"; mkdir -p "$FAKEBIN" "$CTL"
-cat > "$FAKEBIN/gh" <<'SH'
+cat > "$FAKEBIN/gh" <<SH
 #!/usr/bin/env bash
-case "$*" in
+printf '%s\n' "\$*" >> "$CTL/gh.log"
+case "\$*" in
     *title*) echo "测试标题"; exit 0 ;;
 esac
 echo "{}"
@@ -82,6 +85,17 @@ cat > "$FAKEBIN/systemctl" <<'SH'
 exit 0
 SH
 chmod +x "$FAKEBIN"/*
+# 被测脚本用的 tmux：$CTL/fault 里写一个 glob，参数整串匹配上就返回 1（模拟一次查询失败），
+# 其余原样交给真 tmux
+cat > "$FAKEBIN/tmux" <<SH
+#!/usr/bin/env bash
+if [ -s "$CTL/fault" ]; then
+    pat="\$(cat "$CTL/fault")"
+    if [[ "\$*" == \$pat ]]; then echo "injected failure: \$*" >> "$CTL/fault.hits"; exit 1; fi
+fi
+exec "$REAL_TMUX" "\$@"
+SH
+chmod +x "$FAKEBIN/tmux"
 export PATH="$FAKEBIN:$PATH"
 
 # ── 真 git：bare origin + 主 checkout + 一条 worktree ─────────────────────────
@@ -138,7 +152,7 @@ dispatch() {
 # 挂一个控制模式客户端到 $SESS；输出写到 $D/client.out
 attach_client() {
     # 整个子 shell 的输出都要重定向：否则 sleep 继承调用方的管道，读的那头要等 90 秒才见 EOF
-    ( sleep 90 | timeout 90 tmux -S "$SOCK" -C attach -t "=$SESS" > "$D/client.out" 2>&1 ) > /dev/null 2>&1 < /dev/null &
+    ( sleep 90 | timeout 90 "$REAL_TMUX" -S "$SOCK" -C attach -t "=$SESS" > "$D/client.out" 2>&1 ) > /dev/null 2>&1 < /dev/null &
     echo $! >> "$TMP/clients.pids"
     local i
     for ((i = 0; i < 30; i++)); do
@@ -285,6 +299,67 @@ split_scenario() {
     T kill-server 2>/dev/null
 }
 
+# 在被测 skill 目录里 source 公共库，问一次 worker_alive
+lib_alive() {   # <skill 目录>
+    (cd "$D/proj" && HOME="$D/home" CODING_AGENT_CONFIG="$D/config" timeout 30 \
+        bash -c 'source "$1/scripts/_lib.sh" > /dev/null 2>&1; set +e; worker_alive "$2" && echo alive || echo dead' _ "$1" "$SESS" 2>/dev/null)
+}
+
+# 读 tmux 失败时（复审第 2 轮）：不杀、不另起、不改记录、不翻标签；恢复后正常切换。
+# $1 = skill 目录，$2 = issue|pr
+fault_scenario() {
+    local R="$1" kind="$2" w1 wpane hpane hpid name pat rc runs0 n
+    setup_scenario "$(basename "$R").fault.$kind"
+    dispatch "$R" "$kind" claude worker
+    if ! sess_alive || ! wait_runs 1; then
+        echo "FAIL 故障·首次派工起了 session :: $(tail -5 "$D/dispatch.out" | tr '\n' ' ')"; return
+    fi
+    w1="$(last_pid claude)"; wpane="$(pane_of_pid "$w1")"
+    hpane="$(T split-window -b -t "$wpane" -P -F '#{pane_id}' "exec sleep 600")"
+    hpid="$(T display-message -p -t "$hpane" '#{pane_pid}')"
+    attach_client || { echo "FAIL 故障·控制模式客户端挂上了"; return; }
+    [ "$(T show-options -qv -t "=$SESS:" @worker_pane)" = "$wpane" ] \
+        || { echo "FAIL 故障·夹具：已记录 worker 窗格 :: $(T show-options -qv -t "=$SESS:" @worker_pane)"; return; }
+
+    for name in 窗格清单读不到 记录读不到; do
+        case "$name" in
+            窗格清单读不到) pat='*list-panes*#{pane_pid} #{pane_dead}*' ;;
+            记录读不到)     pat='*show-options*@worker_pane*' ;;
+        esac
+        runs0="$(wc -l < "$CTL/runs")"; : > "$CTL/gh.log"; rm -f "$CTL/fault.hits"
+        printf '%s' "$pat" > "$CTL/fault"
+        [ "$(lib_alive "$R")" = alive ] && echo "PASS 故障·${name}·判活不判死" || echo "FAIL 故障·${name}·判活不判死"
+        dispatch "$R" "$kind" codex review; rc=$?
+        rm -f "$CTL/fault"
+        # 到达性：故障确实被被测代码撞上了
+        [ -s "$CTL/fault.hits" ] && echo "PASS 故障·${name}·查询确实失败过" || echo "FAIL 故障·${name}·查询确实失败过"
+        [ "$rc" != 0 ] && echo "PASS 故障·${name}·本次派工失败退出" || echo "FAIL 故障·${name}·本次派工失败退出 :: rc=0"
+        kill -0 "$w1" 2>/dev/null && echo "PASS 故障·${name}·原 worker 还活着" || echo "FAIL 故障·${name}·原 worker 还活着"
+        kill -0 "$hpid" 2>/dev/null && echo "PASS 故障·${name}·人的程序还活着" || echo "FAIL 故障·${name}·人的程序还活着"
+        n="$(wc -l < "$CTL/runs")"
+        [ "$n" = "$runs0" ] && echo "PASS 故障·${name}·没有起第二个程序" || echo "FAIL 故障·${name}·没有起第二个程序 :: $(tr '\n' ' ' < "$CTL/runs")"
+        [ "$(T show-options -qv -t "=$SESS:" @worker_pane)" = "$wpane" ] && echo "PASS 故障·${name}·记录没被改" \
+            || echo "FAIL 故障·${name}·记录没被改 :: $(T show-options -qv -t "=$SESS:" @worker_pane)"
+        [ "$(T list-panes -s -t "=$SESS:" -F x | wc -l)" = 2 ] && echo "PASS 故障·${name}·窗格数没变" || echo "FAIL 故障·${name}·窗格数没变"
+        if client_attached && ! grep -q '^%exit' "$D/client.out"; then echo "PASS 故障·${name}·客户端还挂着"
+        else echo "FAIL 故障·${name}·客户端还挂着"; fi
+        grep -q 'doing/agent' "$CTL/gh.log" && echo "FAIL 故障·${name}·没有翻标签 :: $(grep doing/agent "$CTL/gh.log" | head -1)" \
+            || echo "PASS 故障·${name}·没有翻标签"
+    done
+
+    # 查询恢复后：正常完成一次切换
+    : > "$CTL/gh.log"
+    dispatch "$R" "$kind" codex review
+    wait_runs 2
+    pid_gone "$w1" && echo "PASS 故障·恢复后·旧 worker 已停" || { echo "FAIL 故障·恢复后·旧 worker 已停"; kill -KILL "$w1" 2>/dev/null; }
+    kill -0 "$hpid" 2>/dev/null && echo "PASS 故障·恢复后·人的程序还活着" || echo "FAIL 故障·恢复后·人的程序还活着"
+    n="$(last_pid codex)"
+    [ -n "$n" ] && [ "$(pane_of_pid "$n")" = "$wpane" ] && echo "PASS 故障·恢复后·复审程序在原 worker 窗格里" \
+        || echo "FAIL 故障·恢复后·复审程序在原 worker 窗格里 :: $(tail -3 "$D/dispatch.out" | tr '\n' ' ')"
+    grep -q 'doing/agent' "$CTL/gh.log" && echo "PASS 故障·恢复后·翻了标签" || echo "FAIL 故障·恢复后·翻了标签"
+    T kill-server 2>/dev/null
+}
+
 # 把一份 skill 目录复制出来（不带 client/ 和 .git），改坏一处。$1 = 名字，$2 = python 替换脚本
 mutant() {
     local M="$TMP/mut-$1"
@@ -326,7 +401,11 @@ echo "── 3. 人在 worker 的 session 里分屏 ──"
 judge issue < <(split_scenario "$REPO_DIR" issue)
 judge PR < <(split_scenario "$REPO_DIR" pr)
 
-echo "── 4. 负对照 ──"
+echo "── 4. 读 tmux 失败时什么都不动 ──"
+judge issue < <(fault_scenario "$REPO_DIR" issue)
+judge PR < <(fault_scenario "$REPO_DIR" pr)
+
+echo "── 5. 负对照 ──"
 if mutation_gate; then
     # 换回删 session 再新建的旧做法
     expect_red "删 session 重建" "换去复审后客户端还挂着" '
@@ -341,7 +420,7 @@ if mutation_gate; then
     # 不先按进程组终止，只靠 respawn-pane -k 的挂断信号
     expect_red "不先终止旧程序" "不理挂断信号的旧程序已不在" '
 import sys; p=sys.argv[1]; s=open(p).read()
-old="        kill_pane_pids $pid\n"
+old="        kill_pane_pids \x22$pid\x22\n"
 assert old in s
 s=s.replace(old, "        :\n", 1)
 open(p,"w").write(s)' pr
@@ -372,10 +451,35 @@ if mutation_gate; then
     # 按排列顺序认 worker 窗格（复审第 1 轮的实现）
     expect_red "按顺序认 worker 窗格" "分屏·人的程序还活着" '
 import sys; p=sys.argv[1]; s=open(p).read()
-start=s.index("worker_pane_id() {   # <tmux_session>\n")
-end=s.index("\n}\n", start)+3
-s=s[:start]+"worker_pane_id() {\n    tmux list-panes -s -t \"=$1\" -F \"#{pane_id}\" 2>/dev/null | head -1\n}\n"+s[end:]
+old="""        if [ -n "$rec" ] && [ "$id" = "$rec" ]; then hit="$id $pid $dead"; fi"""
+assert old in s
+s=s.replace(old, "        [ \x22$n\x22 -eq 1 ] && hit=\x22$id $pid $dead\x22", 1)
 open(p,"w").write(s)' issue split_scenario
+fi
+if mutation_gate; then
+    # 记录读失败当成「没有记录」（复审第 2 轮复现 B）
+    expect_red "记录读失败当没有" "故障·记录读不到·人的程序还活着" '
+import sys; p=sys.argv[1]; s=open(p).read()
+old="""    if ! rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null)"; then
+        echo unknown; return 0
+    fi"""
+assert old in s
+s=s.replace(old, "    rec=\x22$(tmux show-options -qv -t \x22=$sess:\x22 @worker_pane 2>/dev/null || true)\x22", 1)
+open(p,"w").write(s)' issue fault_scenario
+fi
+if mutation_gate; then
+    # 窗格清单读失败当成「记录的窗格已不在」（复审第 2 轮复现 A）
+    expect_red "清单读失败当窗格不在" "故障·窗格清单读不到·没有起第二个程序" '
+import sys; p=sys.argv[1]; s=open(p).read()
+old="""    if ! panes="$(tmux list-panes -s -t "=$sess:" -F \x27#{pane_id} #{pane_pid} #{pane_dead}\x27 2>/dev/null)"; then
+        echo unknown; return 0
+    fi"""
+assert old in s
+s=s.replace(old, "    panes=\x22$(tmux list-panes -s -t \x22=$sess:\x22 -F \x27#{pane_id} #{pane_pid} #{pane_dead}\x27 2>/dev/null || true)\x22", 1)
+old2="""    if [ "$n" -eq 0 ]; then echo unknown; return 0; fi"""
+assert old2 in s
+s=s.replace(old2, """    if [ "$n" -eq 0 ] && [ -n "$rec" ]; then echo "gone $rec"; return 0; fi""", 1)
+open(p,"w").write(s)' pr fault_scenario
 fi
 
 echo
