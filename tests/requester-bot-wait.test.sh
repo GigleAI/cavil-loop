@@ -28,7 +28,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 unset CODING_AGENT_RELEASE_ROOT CLAUDE_PLUGIN_ROOT CAVIL_DEPLOY_ROOT CAVIL_DEPLOY_CONF CODING_AGENT_CONFIG \
       LABEL_AUTOPILOT DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE DISPATCH_AUTOPILOT_PR GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN
 
-printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$TEST_DIR/lib/fake_github.py" > "$SANDBOX/bin/gh"
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
 cat > "$SANDBOX/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 case "$1" in has-session) exit 1 ;; ls|list-sessions) exit 1 ;; esac

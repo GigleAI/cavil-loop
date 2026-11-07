@@ -16,12 +16,22 @@
 #   · 读不到当成「有授权」/「没冲突」/「检查通过」
 #   · 复审之后的新推送不重审、不核对复审的测试重跑记录
 # 功能关闭时：提示词、轮询的 GitHub 调用、state.json 与改动前（merge-base）逐字节一致。
+#
+# 拆成 3 段（GitHub#211）：tests/run.sh 用 TEST_PART=K/3 把每段当一个调度单位并行跑；直接跑本文件
+# 不带 TEST_PART 时三段全跑。段 1 =【1】–【7c】+【12k】+【8】【9】，段 2 =【12】系列（【12k】除外），
+# 段 3 =【13】【14】【11】；
+# 负对照按出现顺序轮流分给三段（每份负对照仍把整套场景跑一遍）。
+# parts: 3
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/parts.sh
+source "$TEST_DIR/lib/parts.sh"
+# shellcheck source=lib/compat.sh
+source "$TEST_DIR/lib/compat.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -32,13 +42,13 @@ unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT DISPATCH_AUTOPILOT DISPATCH_AUTO
 # 不继承运行者机器上的令牌（CI 上没有）：派工脚本需要的那把由沙盘配置给占位值（代码复审第 3 轮）
 unset GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN
 
-printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$TEST_DIR/lib/fake_github.py" > "$SANDBOX/bin/gh"
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
 cat > "$SANDBOX/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 case "$1" in has-session) exit 1 ;; ls|list-sessions) exit 1 ;; esac
 exit 0
 SH
-chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/tmux"
+chmod +x "$SANDBOX/bin/tmux"
 
 pass=0; fail=0; QUIET=0
 chk() {
@@ -66,6 +76,9 @@ REQ_ON=('LABEL_PENDING_REQUESTER_BOT="pending/req"' 'REQUESTER_BOT_ACCOUNT="req-
 # ─────────────────────────────────────────────────────────────────────────
 # 一整套轮询场景。$1 = 被测的 scripts 目录。
 # ─────────────────────────────────────────────────────────────────────────
+# 正式版只跑本段的场景（rs_part）；负对照（RS_ALL=1）不论哪段都跑整套
+RS_ALL=1
+rs_part() { [ "$RS_ALL" = 1 ] || part_on "$1"; }
 run_scenarios() {
     local SCRIPTS="$1" W="$SANDBOX/run"
     export FAKE_GH_REPO="example/ap"
@@ -168,6 +181,7 @@ Closes #7" "$H1" "pending/merge,autopilot"
     st() { jq -r --arg p "$1" "(.autopilot.prs[\$p] // {}) | $2 // \"\"" "$STATE" 2>/dev/null; }
     log_has() { grep -cF -- "$1" "$W/state/poll.log" 2>/dev/null || true; }
 
+    if rs_part 1; then
     # ── 【1】主路径 ──
     section "【1】主路径：人只在 issue 上打托管标签，PR 上没有 → 合并复审审过的那个提交"
     fresh; happy
@@ -483,8 +497,9 @@ Refs #3" "$H1" "pending/merge,autopilot"
     chk "BSD date：复审提交与时间都记下了" "$(st 8 .reviewed_head)/$([ -n "$(st 8 .reviewed_at)" ] && echo yes || echo no)" "$H1/yes"
     chk "到达性 · BSD date：替身确实拦过 -d（不是没走到）" "$(printf 'x' | env PATH="$SANDBOX/bsd:$PATH" date -u -d @0 >/dev/null 2>&1 && echo passed || echo blocked)" blocked
 
-    # ── 【12】维护者在 PR 上打托管标签（GitHub#128）──
-    section "【12】PR 上打托管标签：维护者亲手打的 → 接手、从复审重来直到合并"
+    fi   # 段 1 到此
+
+    # ── 【12】维护者在 PR 上打托管标签（GitHub#128）──（下面三个函数段 3 也用，定义放在段外）
     # 一条普通（非托管）PR：复审通过后 loop 账号翻了 pending/human 等人合并，维护者在 PR 上打托管标签
     pr_ready() {   # [给 PR 打托管标签的人] [类型]
         mkissue 7 "pending/PR"
@@ -500,6 +515,9 @@ Closes #7" "$H1" "pending/human,autopilot"
     took() {   # PR 8 被接手了没有：翻到复审、摘掉 pending/human、留了接手说明
         if [ "$(has_label 8 pending/review)/$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover pr=8')" = "yes/no/1" ]; then echo yes; else echo no; fi
     }
+    tk_unknown() { jq -r --arg p "$1" '(.autopilot.takeover_unknown[$p]) // ""' "$STATE" 2>/dev/null; }
+    if rs_part 2; then
+    section "【12】PR 上打托管标签：维护者亲手打的 → 接手、从复审重来直到合并"
     fresh 'MAX_CONCURRENT_WORKERS=5'; pr_ready
     tick
     chk "接手：PR 翻到 pending/review、摘掉 pending/human、留一条说明" "$(took)" yes
@@ -693,7 +711,6 @@ ROWS
 
 
     section "【12h】跨轮：PR 摘标交人 → 维护者只在 issue 上重新授权 → 接手（复审第 1 轮）"
-    tk_unknown() { jq -r --arg p "$1" '(.autopilot.takeover_unknown[$p]) // ""' "$STATE" 2>/dev/null; }
     fresh; happy
     jset labels.json '.["8"] = ["pending/merge"]'; ev 8 labeled autopilot maint; ev 8 unlabeled autopilot maint
     tick
@@ -747,6 +764,8 @@ ROWS
     rm -f "$GD/F_post_comment"; tick
     chk "  → 下一轮补发说明一次" "$(comments_with 8 'autopilot-takeover-unknown pr=8')/$(tk_unknown 8)" "1/done"
 
+    fi   # 段 2 前半到此；【12k】最慢，放进段 1（段 1 其余场景最轻）
+    if rs_part 1; then
     section "【12k】交人待办：判不了到上限之后，加标签 → 留言 → 收尾，中途失败 / 情况变化都接得上（复审第 2 轮）"
     tk_owed() { jq -r --arg p "$1" 'if .autopilot.takeover_handoff[$p] then "yes" else "no" end' "$STATE" 2>/dev/null; }
     unk_ready() { pr_ready; jset labels.json '.["8"] = ["autopilot"]'; touch "$GD/F_issues_8_events"; }
@@ -933,6 +952,8 @@ ROWS
     chk "交过人之后维护者摘掉 pending/human、仍然判不了 → 不再把它加回去" "$(has_label 8 pending/human)/$(comments_with 8 'autopilot-takeover-unknown pr=8')" "no/1"
     chk "到达性 · 这几轮确实还在读 PR 的标签记录" "$([ "$(n_calls "$R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
 
+    fi   # 段 1 的【12k】到此
+    if rs_part 2; then
     section "【12j】pending/human 和别的流程标签共存：正在进行的工作不接手（复审第 1 轮）"
     for other in pending/review pending/agent doing/agent pending/merge; do
         fresh; pr_ready
@@ -985,6 +1006,9 @@ ROWS
     chk "唯一的授权在 issue 上、记录缺时间，和 PR 上的 pending/human 比不出先后 → 判不了（计数 1），不当成叫停" "$(took)/$(tk_unknown 8)/$(writes)" "no/1/0"
     chk "到达性 · 这一轮读了 PR 的标签记录" "$([ "$(n_calls "$R/issues/8/events")" -gt 0 ] && echo yes || echo no)" yes
 
+    fi   # 段 2 到此
+
+    if rs_part 3; then
     # ── 【11】托管关掉之后（GitHub#124）：关托管只要改配置，等合并的 PR 由 daemon 交给人 ──
     # ── 【13】没绑 issue 的 PR（GitHub#142）──
     section "【13】没绑 issue 的 PR：维护者在 PR 上亲手打的标签就算授权，看的是打标签那一刻的正文"
@@ -1622,14 +1646,18 @@ Closes #7" "$H1" "${1:-pending/review,autopilot}"
     fresh; happy
     tick
     chk "开着时这段不插手：照常合并，不留「已关掉」的言" "$(merged 8)/$(comments_with 8 '托管已在配置里关掉')" "1/0"
+    fi   # 段 3 到此
 }
 
 # ─────────────────────────────────────────────────────────────────────────
 # 【8】功能关闭：轮询的 GitHub 调用、state.json、拼出来的提示词都和改动前逐字节一致
 # ─────────────────────────────────────────────────────────────────────────
 off_mode() {
-    local W="$SANDBOX/off" root out
-    for root in old new; do
+    local W="$SANDBOX/off" root out roots="old new" same=0
+    if compat_skip "功能关闭时两轮轮询的 GitHub 调用、state.json 与改动前" "$SANDBOX/old" "$REPO_DIR" scripts; then
+        roots="new"; same=1
+    fi
+    for root in $roots; do
         out="$W/$root"; rm -rf "$out"; mkdir -p "$out/state" "$out/wt" "$out/gh"
         git init -q "$out/project" 2>/dev/null
         export FAKE_GH_DIR="$out/gh" FAKE_GH_REPO="example/ap"
@@ -1666,9 +1694,11 @@ CONF
         env CODING_AGENT_CONFIG="$out/conf" bash "$scripts/agent-poll.sh" >/dev/null 2>&1
         env CODING_AGENT_CONFIG="$out/conf" bash "$scripts/agent-poll.sh" >/dev/null 2>&1
     done
+    if [ "$same" = 0 ]; then
     chk "关闭时：两轮轮询的 GitHub 调用和改动前逐条一致" \
         "$(diff <(sed "s|$W/new|W|g" "$W/new/gh/calls.log") <(sed "s|$W/old|W|g" "$W/old/gh/calls.log") >/dev/null && echo same || echo diff)" same
     chk "关闭时：state.json 和改动前逐字节一致" "$(cmp -s "$W/new/state/state.json" "$W/old/state/state.json" && echo same || echo diff)" same
+    fi
     chk "到达性 · 关闭时的轮询确实读了 issue / PR 列表" \
         "$(grep -c "repos/example/ap/pulls -f state=open" "$W/new/gh/calls.log")" 2
 }
@@ -1697,9 +1727,11 @@ CONF
 }
 
 prompts_check() {
-    local root="$1" name same=1 o n
+    local root="$1" name same=1 o n names="new-issue issue-comment pr-comment review"
     section "【9】提示词：关闭时和改动前逐字节一致；托管条目拼入托管规则"
-    for name in new-issue issue-comment pr-comment review; do
+    # 旧脚本那边的 prompts/ 已换成当前的，所以两边只差 scripts/
+    if compat_skip "四份提示词与改动前" "$SANDBOX/old" "$root" scripts prompts; then names=""; fi
+    for name in $names; do
         for env_set in "LABEL_PENDING_REVIEW=pending/review" "LABEL_PENDING_REVIEW=pending/review LABEL_AUTOPILOT=autopilot" \
                        "LABEL_PENDING_REVIEW= LABEL_AUTOPILOT=autopilot DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE=7" \
                        "LABEL_PENDING_REVIEW= LABEL_AUTOPILOT=autopilot DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_PR=8"; do
@@ -1708,7 +1740,7 @@ prompts_check() {
             if [ -z "$n" ] || [ "$o" != "$n" ]; then same=0; [ "$QUIET" = 1 ] || echo "     不一致：$name / $env_set"; fi
         done
     done
-    chk "不是托管条目（或没配复审关卡）时，四份提示词和改动前逐字节一致" "$same" 1
+    [ -z "$names" ] || chk "不是托管条目（或没配复审关卡）时，四份提示词和改动前逐字节一致" "$same" 1
     local on="LABEL_PENDING_REVIEW=pending/review LABEL_AUTOPILOT=autopilot DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE=7"
     for name in new-issue issue-comment pr-comment; do
         # shellcheck disable=SC2086
@@ -1780,10 +1812,12 @@ CONF
 }
 
 echo "=== 正式版 ==="
-run_scenarios "$REPO_DIR/scripts"
+RS_ALL=0; run_scenarios "$REPO_DIR/scripts"; RS_ALL=1
+if part_on 1; then
 section "【8】功能关闭：和改动前逐字节一致"
 off_mode
 prompts_check "$REPO_DIR"
+fi
 REAL_PASS=$pass; REAL_FAIL=$fail
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1807,6 +1841,7 @@ mut_in_shard() {   # [名字]
 mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后> [<原文> <替换后> …]：每对原文都必须找得到
     local name="$1" file="$2" M="$SANDBOX/mut-$1"
     shift 2
+    part_take || return 0
     mutation_gate || return 0
     mut_in_shard "$name" || return 0
     mut_ran=$((mut_ran + 1))
@@ -2061,6 +2096,7 @@ mutate mirror-tick-off agent-poll.sh 'autopilot_mirror_tick "$STATE_FILE" || tru
 # 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
 mutate_old() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-$1"
+    part_take || return 0
     mutation_gate || return 0
     mut_in_shard "$name" || return 0
     mut_ran=$((mut_ran + 1))
@@ -2087,5 +2123,6 @@ pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
 mutation_summary "$0"
+compat_summary
 echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
 [ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]

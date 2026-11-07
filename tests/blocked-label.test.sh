@@ -19,6 +19,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/compat.sh
+source "$TEST_DIR/lib/compat.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -28,7 +30,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TZ=UTC
 unset CODING_AGENT_RELEASE_ROOT LABEL_PENDING_BLOCKED LABEL_AUTOPILOT DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE DISPATCH_AUTOPILOT_PR
 unset GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN POLL_FAKE_NOW
 
-printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$TEST_DIR/lib/fake_github.py" > "$SANDBOX/bin/gh"
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
 cat > "$SANDBOX/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 case "$1" in has-session) exit 1 ;; ls|list-sessions) exit 1 ;; esac
@@ -154,8 +156,11 @@ CONF
     # ── 【1】功能关着：和改动前逐字节一致 ──
     if want off; then
     section "【1】功能关着：轮询的 GitHub 调用、state.json 和改动前一致（多轮）"
-    local side
-    for side in old new; do
+    local side sides="old new" csame=0
+    if compat_skip "功能关着：三轮轮询的 GitHub 调用、state.json 与改动前" "$SANDBOX/old" "$ROOT" scripts prompts; then
+        sides="new"; csame=1
+    fi
+    for side in $sides; do
         fresh
         waiting; mkissue 11 "" closed completed
         mkissue 20 "pending/agent"; mkissue 21 "doing/agent,pending/blocked"
@@ -168,9 +173,11 @@ CONF
         labels_of 10 > "$SANDBOX/off-$side-labels"
     done
     local same=same r
+    if [ "$csame" = 0 ]; then
     for r in 1 2 3; do cmp -s "$SANDBOX/off-old-calls-$r.log" "$SANDBOX/off-new-calls-$r.log" || same=diff; done
     chk "关闭：三轮的 GitHub 调用逐条相同" "$same" same
     chk "关闭：state.json 逐字节相同" "$(cmp -s "$SANDBOX/off-old-state.json" "$SANDBOX/off-new-state.json" && echo same || echo diff)" same
+    fi
     chk "关闭：state.json 没有新字段" "$(jq 'has("blocked_resume")' "$SANDBOX/off-new-state.json")" false
     chk "关闭：一次「Blocked by」都没读" "$(grep -c dependencies "$SANDBOX/off-new-calls-1.log" || true)" 0
     chk "关闭：挂着的等前置标签原样不动" "$(cat "$SANDBOX/off-new-labels")" "pending/blocked"
@@ -582,16 +589,20 @@ CONF
 
 # 一组提示词检查。$1 = 根目录。打印每条检查的结果（chk）
 run_prompt_checks() {
-    local R="$1" O="$SANDBOX/pout" k
+    local R="$1" O="$SANDBOX/pout" k csame=0
     mkdir -p "$O"
-    [ -d "$O/old-off" ] || render "$SANDBOX/old" off "$O/old-off"
+    compat_skip "提示词 · 功能关着时五类提示词与改动前的派工脚本" "$SANDBOX/old" "$R" scripts prompts && csame=1
+    [ "$csame" = 1 ] || [ -d "$O/old-off" ] || render "$SANDBOX/old" off "$O/old-off"
     render "$R" off "$O/off"; render "$R" on "$O/on"
     for k in new-issue sub-issue issue-comment; do
+        [ "$csame" = 0 ] || continue
         chk "提示词 · 关闭：$k 和改动前的派工脚本逐字节一致" \
             "$( [ -s "$O/off/$k.md" ] && cmp -s "$O/off/$k.md" "$O/old-off/$k.md" && echo same || echo diff)" same
     done
     for k in pr-comment review; do
-        compose_out "$SANDBOX/old" off "$k" > "$O/old-off-$k.md"; compose_out "$R" off "$k" > "$O/off-$k.md"
+        compose_out "$R" off "$k" > "$O/off-$k.md"
+        [ "$csame" = 0 ] || continue
+        compose_out "$SANDBOX/old" off "$k" > "$O/old-off-$k.md"
         chk "提示词 · 关闭：$k 拼装和改动前逐字节一致" \
             "$( [ -s "$O/off-$k.md" ] && cmp -s "$O/off-$k.md" "$O/old-off-$k.md" && echo same || echo diff)" same
     done
@@ -680,4 +691,5 @@ echo
 echo "通过 $pass，失败 $fail"
 [ "$MUT_BAD" = 0 ] || echo "负对照准备失败 $MUT_BAD 项"
 mutation_summary "$0"
+compat_summary
 [ "$fail" = 0 ] && [ "$MUT_BAD" = 0 ]

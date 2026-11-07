@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 外部需求机器人（GitHub#95 / #97）的行为守卫。
 #
-# 跑法：bash tests/requester-bot.test.sh        （默认不跑负对照；webhook 超时用例每条实等 10 秒）
+# 跑法：bash tests/requester-bot.test.sh        （默认不跑负对照；webhook 超时只有一条实等默认的 10 秒，
+#       其余用 REQUESTER_BOT_WEBHOOK_TIMEOUT 缩短，GitHub#211）
 #       MUTATION=1 bash tests/requester-bot.test.sh   （连负对照一起跑，约 11 分钟；见 tests/lib/mutation.sh）
 # 依赖：jq、python3、git、curl。不碰外网、不调真 gh：假 gh（tests/fixtures/requester-bot-fake-gh.py）是一个
 # 带状态的最小 GitHub，每次调用记进 calls.log，写调用另记一行 WRITE。
@@ -22,12 +23,20 @@
 #   6. 说法：除复盘记录外不再出现「传话」，文档锚点对得上
 # 每组都配负对照：把被测脚本复制一份、改坏一处，同一组断言必须变红。负对照只在 MUTATION=1 时跑；
 # 默认回归靠每组里「确实走到了」的断言（派工数 > 0、写请求确实发了、webhook 恰好 1 次…）防空转。
+#
+# 拆成 2 段（GitHub#211）：tests/run.sh 用 TEST_PART=K/2 把每段当一个调度单位并行跑；不带 TEST_PART
+# 时两段全跑。段 1 = 1–4；段 2 = 3d、3e、3f、5、6。负对照跟着它所在的那一组走。
+# parts: 2
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/parts.sh
+source "$TEST_DIR/lib/parts.sh"
+# shellcheck source=lib/compat.sh
+source "$TEST_DIR/lib/compat.sh"
 if [ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] && ! mutation_on; then
     echo "REQUESTER_BOT_TEST_BAD_MUT 验证的是负对照的准备失败记账，要和 MUTATION=1 一起设" >&2; exit 2
 fi
@@ -36,18 +45,14 @@ FAKE="$TEST_DIR/fixtures/requester-bot-fake-gh.py"
 # 从 worker / daemon 里跑时环境里带着这几个变量，会把 SKILL_DIR 钉到别处的安装上：
 # 新旧两份副本就都读同一套 prompts/，「和改动前逐字节一致」就成了自己比自己。
 unset CODING_AGENT_RELEASE_ROOT CLAUDE_PLUGIN_ROOT CAVIL_DEPLOY_ROOT CAVIL_DEPLOY_CONF \
-      CODING_AGENT_CONFIG CODING_AGENT_RELEASE_LEASE_FD TICK_DIR
+      CODING_AGENT_CONFIG CODING_AGENT_RELEASE_LEASE_FD TICK_DIR REQUESTER_BOT_WEBHOOK_TIMEOUT
 
 SANDBOX=$(mktemp -d)
 cleanup() { [ -n "${KEEP_SANDBOX:-}" ] && { echo "SANDBOX=$SANDBOX"; return 0; }; rm -rf "$SANDBOX"; }
 trap cleanup EXIT
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 export HOME="$SANDBOX/home"
-cat > "$SANDBOX/bin/gh" <<EOF
-#!/usr/bin/env bash
-exec python3 -I "$FAKE" "\$@"
-EOF
-chmod +x "$SANDBOX/bin/gh"
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 -I "$FAKE"
 
 pass=0; fail=0; QUIET=0
 # 负对照的准备（复制一份、改坏一处）都跑在 `D=$(mutate …)` 的命令替换子 shell 里：在那里
@@ -167,6 +172,82 @@ NEW="$SANDBOX/new"; OLD="$SANDBOX/old"
 make_copy "$REPO_DIR" "$NEW"
 make_copy "$SANDBOX/old-src" "$OLD"
 
+# ── 两段共用的定义（GitHub#211 拆段：段 2 也要用，放在分段之前）──
+compose_out() {   # <scripts 副本> <W> <kind> → 拼好的提示词内容
+    env FAKE_GH_DIR="$2/gh" CODING_AGENT_CONFIG="$2/cavil-loop.config" bash -c '
+        source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$3"
+}
+
+# 负对照：复制一份新版、改坏一处（python 精确替换，替换不到就当场报错），整组断言必须变红
+mutate() {   # <名字> <文件（相对副本根）> <原文> <改成>
+    mutation_on || return 0      # 关着：不复制、不改，后面的 neg 只计数（见 tests/lib/mutation.sh）
+    local D="$SANDBOX/mut-$1"
+    rm -rf "$D"; cp -r "${MUT_BASE:-$NEW}" "$D"
+    python3 - "$D/$2" "$3" "$4" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
+import sys
+p, old, new = sys.argv[1:4]
+s = open(p).read()
+if s.count(old) != 1:
+    sys.exit(1)
+open(p, "w").write(s.replace(old, new))
+PYM
+    printf '%s' "$D"
+}
+neg() {   # <说明> <要跑的 suite 函数及参数…>：跑一遍，失败条数必须 > 0
+    mutation_gate || return 0
+    local desc="$1"; shift
+    local before=$fail
+    QUIET=1; [ -z "${SHOW_NEG:-}" ] || QUIET=0; "$@"; QUIET=0
+    local got=$((fail - before))
+    fail=$before
+    chk "负对照：$desc → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
+}
+
+MARK='<!-- bot-origin -->'
+RW="$SANDBOX/bot"
+bot_case() {   # <scripts 副本> <N>：跑叫醒脚本，退出码进 RC，输出进 OUT
+    RC=0
+    OUT=$(env FAKE_GH_DIR="$RW/gh" bash "$1/scripts/${NOTIFY_ENTRY:-notify-requester-bot.sh}" --config "$RW/cavil-loop.config" "$2" 2>&1) || RC=$?
+}
+writes() { grep -c '^WRITE ' "$RW/gh/calls.log" 2>/dev/null || true; }
+fresh_bot() {   # 一条标准的「机器人提的需求」#50 + 关联它的 PR #60
+    new_env "$RW" on label
+    add_item "$RW" 50 issue "doing/agent,pending/agent" req-bot "需求正文
+$MARK"
+    add_item "$RW" 60 pr "doing/agent,pending/review" worker-bot "实现 #50" feature/issue-50
+    add_item "$RW" 61 pr "doing/agent" worker-bot "无关 PR" chore/x
+    printf '[]' > "$RW/gh/faults.json"
+}
+faults() { printf '%s' "$1" > "$RW/gh/faults.json"; }
+HEAD_LINE='# 外部需求机器人交接规则（本项目开启了外部需求机器人）'
+# 假 webhook（3d、3e 都用）
+HOOK="$SANDBOX/hook"; mkdir -p "$HOOK"; echo 200 > "$HOOK/mode"
+python3 -I "$TEST_DIR/fixtures/requester-bot-fake-webhook.py" "$HOOK" >/dev/null 2>&1 &
+HOOK_PID=$!
+for _ in $(seq 50); do [ -s "$HOOK/port" ] && break; sleep 0.1; done
+HOOK_PORT=$(cat "$HOOK/port" 2>/dev/null)
+trap 'kill $HOOK_PID 2>/dev/null; cleanup' EXIT
+HOOK_SECRET_PATH="hk-path-$$-$RANDOM$RANDOM"
+HOOK_URL="http://127.0.0.1:$HOOK_PORT/$HOOK_SECRET_PATH"
+HOOK_KEY_SENTINEL="key-$$-$RANDOM$RANDOM"
+HOOK_KEY="Bearer q\"uo\\te-$HOOK_KEY_SENTINEL"    # 带 " 和 \：验证写进 curl 配置前转义了
+hook_reset() { : > "$HOOK/req.log"; echo "${1:-200}" > "$HOOK/mode"; }
+hook_count() { grep -c . "$HOOK/req.log" 2>/dev/null || true; }
+hook_field() { jq -r "$1" "$HOOK/req.log" | head -1; }
+# 给 $RW 的配置追加 webhook 三项（单引号原样写，不经 shell 展开）并收紧到 600
+cfg_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+hook_cfg() {   # [地址] [请求头名] [密钥]（传 - 表示不写这一项）
+    local u="${1-$HOOK_URL}" h="${2-X-Hook-Key}" k="${3-$HOOK_KEY}"
+    { [ "$u" = - ] || printf 'REQUESTER_BOT_WEBHOOK_URL=%s\n' "$(cfg_q "$u")"
+      [ "$h" = - ] || printf 'REQUESTER_BOT_WEBHOOK_KEY_HEADER=%s\n' "$(cfg_q "$h")"
+      [ "$k" = - ] || printf 'REQUESTER_BOT_WEBHOOK_KEY=%s\n' "$(cfg_q "$k")"; } >> "$RW/cavil-loop.config"
+    chmod 600 "$RW/cavil-loop.config"
+}
+assign_review_calls() { grep -cE '/(assignees|requested_reviewers)' "$RW/gh/calls.log" 2>/dev/null || true; }
+ALL_OUT="$SANDBOX/all-output.txt"; : > "$ALL_OUT"
+keep_out() { printf '%s\n' "$OUT" >> "$ALL_OUT"; }
+
+if part_on 1; then   # ═══ 段 1：1、2、2b、3、3b、3c、4 ═══
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 1. 功能关闭：和改动前逐字节一致 ──"
 # ─────────────────────────────────────────────────────────────────────────
@@ -189,24 +270,25 @@ seed_mixed() {   # 一批覆盖各条路径的条目（不含等待标签：关�
     add_item "$W" 24 pr "doing/agent" someone $'Closes\n#9' chore/x
     add_item "$W" 25 pr "pending/agent" someone $'Fixes\r\n#8' chore/y
 }
+OFF_SAME=0
+compat_skip "功能关闭 · 两种模式的 GitHub 调用、派工记录、最终标签与改动前" "$OLD" "$NEW" scripts prompts && OFF_SAME=1
 for mode in label greedy; do
     for v in old new; do
+        [ "$v" = new ] || [ "$OFF_SAME" = 0 ] || continue
         W="$SANDBOX/off-$v-$mode"
         new_env "$W" off "$mode"
         seed_mixed "$W"
         if [ "$v" = old ]; then tick "$OLD" "$W"; tick "$OLD" "$W"; else tick "$NEW" "$W"; tick "$NEW" "$W"; fi
     done
     A="$SANDBOX/off-old-$mode/gh"; B="$SANDBOX/off-new-$mode/gh"
+    if [ "$OFF_SAME" = 0 ]; then
     chk "关闭 · $mode 模式：GitHub 调用逐条相同" "$(cmp -s "$A/calls.log" "$B/calls.log" && echo same || echo diff)" same
     chk "关闭 · $mode 模式：派工记录相同" "$(cmp -s "$A/dispatch.log" "$B/dispatch.log" && echo same || echo diff)" same
     chk "关闭 · $mode 模式：最终标签相同" "$(cmp -s <(jq -S '.items|map_values(.labels)' "$A/state.json") <(jq -S '.items|map_values(.labels)' "$B/state.json") && echo same || echo diff)" same
+    fi
     chk "关闭 · $mode 模式：确实派了工（对拍不是两边都空）" "$([ -s "$B/dispatch.log" ] && echo yes || echo no)" yes
 done
 
-compose_out() {   # <scripts 副本> <W> <kind> → 拼好的提示词内容
-    env FAKE_GH_DIR="$2/gh" CODING_AGENT_CONFIG="$2/cavil-loop.config" bash -c '
-        source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$3"
-}
 project_prompts() {   # 模拟项目：一份整份替换的模板 + 一份追加要求
     local P="$1/project/.agents/skills/cavil-loop/prompts"
     mkdir -p "$P"
@@ -221,7 +303,9 @@ chk "对拍前提：两份副本读的是各自的 prompts/（不是同一套安
 # 变红，而它们和外部需求机器人无关。
 OLD_P="$SANDBOX/old-scripts-new-prompts"; make_copy "$SANDBOX/old-src" "$OLD_P"
 rm -rf "$OLD_P/prompts"; cp -r "$REPO_DIR/prompts" "$OLD_P/prompts"
-for kind in new-issue issue-comment pr-comment review; do
+KINDS="new-issue issue-comment pr-comment review"
+compat_skip "功能关闭 · 四类提示词与改动前的拼装" "$OLD_P" "$NEW" scripts prompts && KINDS=""
+for kind in $KINDS; do
     # 先后拼、各存一份再比（两边共用一个状态目录，拼装结果写在同一个固定文件里，不能同时拼）
     compose_out "$OLD_P" "$W" $kind > "$SANDBOX/off-old-$kind.md"
     compose_out "$NEW" "$W" $kind > "$SANDBOX/off-new-$kind.md"
@@ -297,30 +381,6 @@ wait_suite() {   # <scripts 副本> <mode>；断言写进 chk
 wait_suite "$NEW" label
 wait_suite "$NEW" greedy
 
-# 负对照：复制一份新版、改坏一处（python 精确替换，替换不到就当场报错），整组断言必须变红
-mutate() {   # <名字> <文件（相对副本根）> <原文> <改成>
-    mutation_on || return 0      # 关着：不复制、不改，后面的 neg 只计数（见 tests/lib/mutation.sh）
-    local D="$SANDBOX/mut-$1"
-    rm -rf "$D"; cp -r "${MUT_BASE:-$NEW}" "$D"
-    python3 - "$D/$2" "$3" "$4" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if s.count(old) != 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new))
-PYM
-    printf '%s' "$D"
-}
-neg() {   # <说明> <要跑的 suite 函数及参数…>：跑一遍，失败条数必须 > 0
-    mutation_gate || return 0
-    local desc="$1"; shift
-    local before=$fail
-    QUIET=1; [ -z "${SHOW_NEG:-}" ] || QUIET=0; "$@"; QUIET=0
-    local got=$((fail - before))
-    fail=$before
-    chk "负对照：$desc → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
-}
 
 # 自检：准备失败必须被记下（否则下面每一个负对照都可能悄悄没跑）。
 # REQUESTER_BOT_TEST_BAD_MUT=1 时保留这条记录，用来验证整套测试确实会因此非零退出。
@@ -406,22 +466,6 @@ D=$(real_mut new dispatch-new-issue.sh 'flip_to_doing "$ISSUE" "issue #$ISSUE pe
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3. 叫醒脚本 ──"
 # ─────────────────────────────────────────────────────────────────────────
-MARK='<!-- bot-origin -->'
-RW="$SANDBOX/bot"
-bot_case() {   # <scripts 副本> <N>：跑叫醒脚本，退出码进 RC，输出进 OUT
-    RC=0
-    OUT=$(env FAKE_GH_DIR="$RW/gh" bash "$1/scripts/${NOTIFY_ENTRY:-notify-requester-bot.sh}" --config "$RW/cavil-loop.config" "$2" 2>&1) || RC=$?
-}
-writes() { grep -c '^WRITE ' "$RW/gh/calls.log" 2>/dev/null || true; }
-fresh_bot() {   # 一条标准的「机器人提的需求」#50 + 关联它的 PR #60
-    new_env "$RW" on label
-    add_item "$RW" 50 issue "doing/agent,pending/agent" req-bot "需求正文
-$MARK"
-    add_item "$RW" 60 pr "doing/agent,pending/review" worker-bot "实现 #50" feature/issue-50
-    add_item "$RW" 61 pr "doing/agent" worker-bot "无关 PR" chore/x
-    printf '[]' > "$RW/gh/faults.json"
-}
-faults() { printf '%s' "$1" > "$RW/gh/faults.json"; }
 reject_suite() {   # <scripts 副本>
     local S="$1"
     fresh_bot; set_me "$RW" outsider; : > "$RW/gh/calls.log"
@@ -768,13 +812,17 @@ json.dump(st, open(p, "w"))
 PYL
 }
 link_suite() {   # <scripts 副本>
-    local S="$1" mode
+    local S="$1" mode same=0
+    compat_skip "正文关联 · 会话编号和列表编号与改动前" "$OLD" "$S" scripts prompts && same=1
     for mode in off on; do
-        link_env "$SANDBOX/link-old" $mode; link_env "$SANDBOX/link-new" $mode
-        link_numbers "$OLD" "$SANDBOX/link-old" > "$SANDBOX/link-old.txt"
+        link_env "$SANDBOX/link-new" $mode
         link_numbers "$S" "$SANDBOX/link-new" > "$SANDBOX/link-new.txt"
+        if [ "$same" = 0 ]; then
+        link_env "$SANDBOX/link-old" $mode
+        link_numbers "$OLD" "$SANDBOX/link-old" > "$SANDBOX/link-old.txt"
         chk "正文关联 · 功能$mode：16 条正文的会话编号和列表编号与改动前逐条相同" \
             "$(cmp -s "$SANDBOX/link-old.txt" "$SANDBOX/link-new.txt" && echo same || { diff "$SANDBOX/link-old.txt" "$SANDBOX/link-new.txt" | grep -c '^>'; })" same
+        fi
         chk "正文关联 · 功能$mode：对拍不是两边都空" "$(wc -l < "$SANDBOX/link-new.txt" | tr -d ' ')" 16
     done
 }
@@ -829,14 +877,18 @@ pr_dispatch_ws() {   # <scripts 目录> → 派工后建出来的工作区目录
     grep -oE "PR #$N -> [^ ]* ?[A-Za-z0-9_.-]+-issue[0-9]+" "$W/state/poll.log" | grep -oE '[A-Za-z0-9_.-]+-issue[0-9]+$' | head -1
 }
 REAL_OLD="$SANDBOX/real-old"; rm -rf "$REAL_OLD"; mkdir -p "$REAL_OLD"; cp -r "$SANDBOX/old-src/scripts" "$SANDBOX/old-src/prompts" "$REAL_OLD/"
+if compat_skip "真 PR 派工 · 功能关闭时选中的会话与改动前" "$REAL_OLD" "$REAL_NEW" scripts prompts; then
+    WS_NEW=$(pr_dispatch_ws "$REAL_NEW/scripts")
+    chk "真 PR 派工 · 对拍不是两边都空" "$([ -n "$WS_NEW" ] && echo yes || echo no)" yes
+else
 WS_OLD=$(pr_dispatch_ws "$REAL_OLD/scripts"); WS_NEW=$(pr_dispatch_ws "$REAL_NEW/scripts")
 chk "真 PR 派工 · 功能关闭：跨行 Closes 时选中的会话与改动前相同（$WS_OLD）" "$WS_NEW" "$WS_OLD"
 chk "真 PR 派工 · 对拍不是两边都空" "$([ -n "$WS_OLD" ] && echo yes || echo no)" yes
+fi
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 4. 提示词拼装（开启） ──"
 # ─────────────────────────────────────────────────────────────────────────
-HEAD_LINE='# 外部需求机器人交接规则（本项目开启了外部需求机器人）'
 # 「维护者暂停还算不算数」这条规则写在叫醒脚本（行为）、worker 交接说明和中英各两份文档里。
 # 文字各处措辞不同，但都要讲到同样几点；也不许再留旧说法（「打过一次就永远只交维护者」）。
 # 输出 ok，或缺了 / 多了哪一条。行为那边由第 3 组「暂停」用例跑真实脚本核对。
@@ -930,37 +982,15 @@ for e in $RULE_DOCS; do
     neg "$f 退回旧口径" doc_rule_suite "$D"
 done
 
+fi   # 段 1 到此
+
+if part_on 2; then   # ═══ 段 2：3d、3e、3f、5、6 ═══
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3d. 叫醒 = 等待标签 + webhook（GitHub#100） ──"
 # ─────────────────────────────────────────────────────────────────────────
 # 假 webhook 只听 127.0.0.1、随机端口；地址里的路径段和密钥都是本次测试现编的哨兵串，
 # 测试结束后在全部输出、日志、命令行采样里搜它们。每条用例开头清空请求记录。
-HOOK="$SANDBOX/hook"; mkdir -p "$HOOK"; echo 200 > "$HOOK/mode"
-python3 -I "$TEST_DIR/fixtures/requester-bot-fake-webhook.py" "$HOOK" >/dev/null 2>&1 &
-HOOK_PID=$!
-for _ in $(seq 50); do [ -s "$HOOK/port" ] && break; sleep 0.1; done
-HOOK_PORT=$(cat "$HOOK/port" 2>/dev/null)
-trap 'kill $HOOK_PID 2>/dev/null; cleanup' EXIT
-HOOK_SECRET_PATH="hk-path-$$-$RANDOM$RANDOM"
-HOOK_URL="http://127.0.0.1:$HOOK_PORT/$HOOK_SECRET_PATH"
-HOOK_KEY_SENTINEL="key-$$-$RANDOM$RANDOM"
-HOOK_KEY="Bearer q\"uo\\te-$HOOK_KEY_SENTINEL"    # 带 " 和 \：验证写进 curl 配置前转义了
 chk "假 webhook 起来了" "$([ -n "$HOOK_PORT" ] && echo yes || echo no)" yes
-hook_reset() { : > "$HOOK/req.log"; echo "${1:-200}" > "$HOOK/mode"; }
-hook_count() { grep -c . "$HOOK/req.log" 2>/dev/null || true; }
-hook_field() { jq -r "$1" "$HOOK/req.log" | head -1; }
-# 给 $RW 的配置追加 webhook 三项（单引号原样写，不经 shell 展开）并收紧到 600
-cfg_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-hook_cfg() {   # [地址] [请求头名] [密钥]（传 - 表示不写这一项）
-    local u="${1-$HOOK_URL}" h="${2-X-Hook-Key}" k="${3-$HOOK_KEY}"
-    { [ "$u" = - ] || printf 'REQUESTER_BOT_WEBHOOK_URL=%s\n' "$(cfg_q "$u")"
-      [ "$h" = - ] || printf 'REQUESTER_BOT_WEBHOOK_KEY_HEADER=%s\n' "$(cfg_q "$h")"
-      [ "$k" = - ] || printf 'REQUESTER_BOT_WEBHOOK_KEY=%s\n' "$(cfg_q "$k")"; } >> "$RW/cavil-loop.config"
-    chmod 600 "$RW/cavil-loop.config"
-}
-assign_review_calls() { grep -cE '/(assignees|requested_reviewers)' "$RW/gh/calls.log" 2>/dev/null || true; }
-ALL_OUT="$SANDBOX/all-output.txt"; : > "$ALL_OUT"
-keep_out() { printf '%s\n' "$OUT" >> "$ALL_OUT"; }
 
 # 成功出口：issue / PR × 首次成功 / 重试成功，各恰好 1 次 webhook；没有任何指派 / review 调用
 hook_success_suite() {   # <scripts 副本>
@@ -1058,11 +1088,30 @@ hook_error_suite() {   # <scripts 副本>
     chk "webhook · 返回跳转：记为失败" "$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（HTTP 302）')" 1
     fresh_bot; hook_cfg "http://127.0.0.1:1/$HOOK_SECRET_PATH"; hook_reset; bot_case "$S" 50; keep_out
     chk "webhook · 连不上：退出码 0、一行日志" "$RC|$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（连接失败）')" "0|1"
+    # 超时上限（GitHub#211）：只有这一条真等默认的 10 秒；其余用「等 2 秒才回」的假服务区分 10 和 1。
+    # 本文件开头已 unset 这个变量，下面不带前缀的调用就是「不设」。
     fresh_bot; hook_cfg; hook_reset hang
     t0=$(date +%s); bot_case "$S" 50; t1=$(date +%s); keep_out
     chk "webhook · 超时：退出码 0、一行日志" "$RC|$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（超时）')" "0|1"
     chk "webhook · 超时：整次叫醒不超过 14 秒（curl 上限 10 秒）" "$([ $((t1 - t0)) -le 14 ] && echo yes || echo "no:$((t1 - t0))s")" yes
+    chk "webhook · 超时（不设上限变量）：至少等了 9 秒（默认值没被改小）" "$([ $((t1 - t0)) -ge 9 ] && echo yes || echo "no:$((t1 - t0))s")" yes
     chk "webhook · 超时：只发 1 次（不重试）" "$(hook_count)" 1
+    local v
+    for v in 不设 abc 0 -3 空串; do
+        fresh_bot; hook_cfg; hook_reset delay2
+        case "$v" in
+            不设) bot_case "$S" 50 ;;
+            空串) REQUESTER_BOT_WEBHOOK_TIMEOUT="" bot_case "$S" 50 ;;
+            *) REQUESTER_BOT_WEBHOOK_TIMEOUT="$v" bot_case "$S" 50 ;;
+        esac
+        keep_out
+        chk "webhook · 上限变量「$v」+ 对方 2 秒才回：按 10 秒算，成功（HTTP 200）、只发 1 次" \
+            "$RC|$(printf '%s\n' "$OUT" | grep -cxF '已通知 webhook（HTTP 200）')|$(hook_count)" "0|1|1"
+    done
+    fresh_bot; hook_cfg; hook_reset delay2
+    t0=$(date +%s); REQUESTER_BOT_WEBHOOK_TIMEOUT=1 bot_case "$S" 50; t1=$(date +%s); keep_out
+    chk "webhook · 上限设 1 + 对方 2 秒才回：超时（覆盖生效）" "$RC|$(printf '%s\n' "$OUT" | grep -cxF 'webhook 通知失败（超时）')" "0|1"
+    chk "webhook · 上限设 1：整次叫醒不超过 4 秒" "$([ $((t1 - t0)) -le 4 ] && echo yes || echo "no:$((t1 - t0))s")" yes
 }
 # 不泄露：输出、poll.log、假 gh 调用记录、运行期间所有进程的命令行里都搜不到地址路径段和密钥
 hook_leak_suite() {   # <scripts 副本>
@@ -1080,7 +1129,8 @@ with open(out, "a") as o:
                 pass
 ' "$FLAG" "$SAMP" &
     spid=$!
-    fresh_bot; hook_cfg; hook_reset hang; bot_case "$S" 50; keep_out   # 慢请求：curl 活 10 秒，采样一定碰得到
+    # 慢请求：curl 活 3 秒（上限设 3，GitHub#211；以前是默认的 10 秒），采样一定碰得到
+    fresh_bot; hook_cfg; hook_reset hang; REQUESTER_BOT_WEBHOOK_TIMEOUT=3 bot_case "$S" 50; keep_out
     fresh_bot; hook_cfg; hook_reset; bot_case "$S" 60; keep_out
     rm -f "$FLAG"; wait "$spid" 2>/dev/null
     chk "不泄露 · 采样确实碰到了 curl 进程（对照：采样不是空的）" "$(grep -c 'curl -q --config -' "$SAMP" | awk '{print ($1 > 0) ? "yes" : "no"}')" yes
@@ -1342,16 +1392,21 @@ chk "结果通知 · daemon 的 poll.log / 调用记录里没有 webhook 地址�
     "$(cat "$DW/state/poll.log" "$DW/gh/calls.log" 2>/dev/null | grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL")" 0
 chk "结果通知 · poll.log 里确实记了 webhook 结果（对照：上一条不是空日志）" "$(grep -c 'webhook' "$DW/state/poll.log" | awk '{print ($1 > 0) ? "yes" : "no"}')" yes
 # 功能关闭：和改动前逐字节一致（GitHub 调用、标签、state.json），也确实走到了合并后清理
+DONE_SAME=0
+compat_skip "关闭 · 合并后清理的 GitHub 调用、GitHub 状态、state.json 与改动前" "$OLD" "$NEW" scripts prompts && DONE_SAME=1
 for v in old new; do
+    [ "$v" = new ] || [ "$DONE_SAME" = 0 ] || continue
     rm -rf "$SANDBOX/done-off-$v"
     done_env off
     if [ "$v" = old ]; then done_tick "$OLD"; done_tick "$OLD"; else done_tick "$NEW"; done_tick "$NEW"; fi
     cp -r "$DW" "$SANDBOX/done-off-$v"
 done
 A="$SANDBOX/done-off-old"; B="$SANDBOX/done-off-new"
+if [ "$DONE_SAME" = 0 ]; then
 chk "关闭 · 合并后清理：GitHub 调用逐条相同" "$(cmp -s "$A/gh/calls.log" "$B/gh/calls.log" && echo same || echo diff)" same
 chk "关闭 · 合并后清理：GitHub 状态相同" "$(cmp -s <(jq -S . "$A/gh/state.json") <(jq -S . "$B/gh/state.json") && echo same || echo diff)" same
 chk "关闭 · 合并后清理：state.json 相同" "$(cmp -s <(jq -S . "$A/state/state.json") <(jq -S . "$B/state/state.json") && echo same || echo diff)" same
+fi
 chk "关闭 · 对拍不是两边都空（确实处理了合并的 PR）" "$(jq -r '.cleaned_prs | length' "$B/state/state.json")" 4
 echo "── 3e 负对照 ──"
 D=$(mutate no-merged-enqueue scripts/agent-poll.sh \
@@ -1614,6 +1669,8 @@ chk "文档里指向外部需求机器人一节的链接都对得上" \
             case "$a" in 外部需求机器人|external-requester-bot) grep -qxF "$h" "$REPO_DIR/docs/$f" || echo "$f#$a" ;; *需求机器人*|*requester*) echo "$f#$a" ;; esac
           done | paste -sd,)" ""
 
+fi   # 段 2 到此
+
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 汇总 ──"
 if [ -s "$PREP_FAILED" ]; then
@@ -1622,5 +1679,6 @@ if [ -s "$PREP_FAILED" ]; then
     fail=$((fail + $(wc -l < "$PREP_FAILED")))
 fi
 mutation_summary "$0"
+compat_summary
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]
