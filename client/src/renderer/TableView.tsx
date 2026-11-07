@@ -106,7 +106,10 @@ function Cell({ col, item, now, dark }: { col: TableColumn; item: Item; now: num
   }
 }
 
-/** `onOpen`: a row's title opens the item's detail panel, the same as clicking a card on the board */
+/**
+ * `onOpen`: a row's title opens the item's detail panel, the same as clicking a card on the board.
+ * `onNewInGroup`: a group's "+" (GitHub#214); `canCreate` false greys it (offline, no sources).
+ */
 export function TableView({
   items,
   projects,
@@ -114,6 +117,9 @@ export function TableView({
   today,
   now,
   onOpen,
+  onNewInGroup,
+  canCreate = false,
+  createTitle = '',
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -121,6 +127,9 @@ export function TableView({
   today: string;
   now: number;
   onOpen: (key: string) => void;
+  onNewInGroup?: (g: Group) => void;
+  canCreate?: boolean;
+  createTitle?: string;
 }) {
   const [folded, setFolded] = useState<Set<string>>(new Set());
   const dark = useDarkMode();
@@ -182,6 +191,15 @@ export function TableView({
             ))}
           </tr>
         ))}
+      {t.groupBy !== 'none' && onNewInGroup && !folded.has(g.key) && (
+        <tr className="group-add">
+          <td colSpan={cols.length + 1}>
+            <button className="link" data-testid="group-add" disabled={!canCreate} title={createTitle} onClick={() => onNewInGroup(g)}>
+              ＋ 新建 issue
+            </button>
+          </td>
+        </tr>
+      )}
     </tbody>
   );
 

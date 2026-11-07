@@ -505,6 +505,127 @@ describe('new issue', () => {
   });
 });
 
+describe('GitHub#214: a new issue from a table group\'s "+" carries what the dialog showed', () => {
+  const statusOf = (it: Item) => it.projects.find((m) => m.projectKey === PROJECT_KEY)?.status ?? null;
+  const planFor = (c: Controller, over: Partial<{ iterationId: string | null; status: string | null }>, milestone: { number: number; title: string } | null = null) => ({
+    milestone,
+    projects: c.getBoardData().projects.map((p) => ({ projectKey: p.key, iterationId: null, status: null, ...over })),
+  });
+
+  it('status group: created, joins the Project, that status set — the same Project calls as "add to board"', async () => {
+    const { c } = await ready();
+    const next = nextNumber();
+    const meta = c.getBoardData().projects.find((p) => p.key === PROJECT_KEY)!;
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: '组里建的', body: '', labels: [], plan: planFor(c, { status: 'In progress' }) });
+    expect(r).toMatchObject({ ok: true, warning: null, createdKey: K(next) });
+    const w = fake.writes();
+    expect([w[0].method, w[0].body]).toEqual(['POST', { title: '组里建的', body: '', labels: [] }]);
+    expect(w.slice(1).map((x) => x.operation)).toEqual(['CavilAddProjectItem', 'CavilSetStatus']);
+    expect(w[2].variables).toMatchObject({ projectId: meta.projectId, fieldId: meta.statusFieldId, optionId: meta.statusOptionIds.find((o) => o.name === 'In progress')!.id });
+    expect(statusOf(itemOf(c, next))).toBe('In progress');
+  });
+
+  it('iteration group: that Project\'s iteration id set', async () => {
+    const { c } = await ready();
+    const next = nextNumber();
+    const it25 = c.getBoardData().projects.find((p) => p.key === PROJECT_KEY)!.iterations.find((i) => i.title === 'Iteration 25')!;
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, { iterationId: it25.id }) })).ok).toBe(true);
+    expect(fake.writes().slice(1).map((x) => [x.operation, x.variables?.iterationId])).toEqual([['CavilAddProjectItem', undefined], ['CavilSetIteration', it25.id]]);
+    expect(itemOf(c, next).projects.find((m) => m.projectKey === PROJECT_KEY)?.iteration?.title).toBe('Iteration 25');
+  });
+
+  it('milestone promised and still there: created with that milestone number', async () => {
+    const { c } = await ready();
+    fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 9, title: 'v1.2', state: 'open', due_on: null }]);
+    const next = nextNumber();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, {}, { number: 9, title: 'v1.2' }) });
+    expect(r).toMatchObject({ ok: true, warning: null });
+    expect(fake.writes()[0].body).toEqual({ title: 'x', body: '', labels: [], milestone: 9 });
+    expect(itemOf(c, next).milestone?.title).toBe('v1.2');
+  });
+
+  it('milestone was never there (the dialog showed "will not be set"): created without one', async () => {
+    const { c } = await ready();
+    fake.state.w.milestones.set('gigleai/cavil-loop', []);
+    const next = nextNumber();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, {}, null) });
+    expect(r).toMatchObject({ ok: true, warning: null, createdKey: K(next) });
+    expect(fake.writes()[0].body).toEqual({ title: 'x', body: '', labels: [] });
+    // and "none" stays none even if a milestone with that title turns up meanwhile: no read, nothing set
+    fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 9, title: 'v1.2', state: 'open', due_on: null }]);
+    fake.log.length = 0;
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'y', body: '', labels: [], plan: planFor(c, {}, null) })).ok).toBe(true);
+    expect(fake.log.some((l) => l.path.endsWith('/milestones'))).toBe(false);
+    expect(itemOf(c, next + 1).milestone).toBeNull();
+  });
+
+  it('milestone promised, then deleted on GitHub: nothing created, says why; GitHub unchanged', async () => {
+    const { c } = await ready();
+    fake.state.w.milestones.set('gigleai/cavil-loop', []);
+    const before = fake.digest();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, {}, { number: 9, title: 'v1.2' }) });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('里程碑「v1.2」已经不在');
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
+  });
+
+  it('milestone promised, renamed since (same number, other title): refused', async () => {
+    const { c } = await ready();
+    fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 9, title: 'v1.3', state: 'open', due_on: null }]);
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, {}, { number: 9, title: 'v1.2' }) });
+    expect(r.ok).toBe(false);
+    expect(fake.writes()).toEqual([]);
+  });
+
+  it('the milestone list cannot be read right before creating: refused, not taken for "gone" nor "fine"', async () => {
+    const { c } = await ready();
+    fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 9, title: 'v1.2', state: 'open', due_on: null }]);
+    fake.state.w.failMilestones.add('gigleai/cavil-loop');
+    const before = fake.digest();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, {}, { number: 9, title: 'v1.2' }) });
+    expect(r.ok).toBe(false);
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
+  });
+
+  it('the ticked Projects changed after the dialog showed them: refused; the same plan with them as shown goes through', async () => {
+    const { c } = await ready();
+    const plan = planFor(c, { status: 'In progress' });
+    c.setView({ selected: ['repo:gigleai/cavil-loop'] });
+    const before = fake.digest();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('勾选的看板');
+    expect(fake.digest()).toBe(before);
+    c.setView({ selected: null });
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan })).ok).toBe(true);
+  });
+
+  it('a promised status no longer on the Project (as synced): refused before anything is sent', async () => {
+    const { c } = await ready();
+    const before = fake.digest();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, { status: 'No such status' }) });
+    expect(r.ok).toBe(false);
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
+  });
+
+  it('created and joined, but GitHub refuses the status: the issue stays, the warning names the Project and the field', async () => {
+    const { c } = await ready();
+    const next = nextNumber();
+    // removed on GitHub after the sync: the client still offers it
+    for (const page of fake.state.projects.get('org/gigleai/11')!)
+      for (const f of page.fields.nodes as any[]) if (f.options) f.options = f.options.filter((o: any) => o.name !== 'In progress');
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], plan: planFor(c, { status: 'In progress' }) });
+    expect(r.ok).toBe(true);
+    expect(r.warning).toContain(`issue #${next} 已建好`);
+    expect(r.warning).toContain('字段没设上');
+    expect(r.warning).toContain('cavil project');
+    expect(itemOf(c, next).projects.map((m) => m.projectKey)).toEqual([PROJECT_KEY]);
+  });
+});
+
 describe('offline: nothing is sent, nothing queued', () => {
   it('offline round → every change refused before sending; back online the same change goes through', async () => {
     const { c } = await ready();

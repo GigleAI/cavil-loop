@@ -4,6 +4,7 @@
 // `today`), shared by the renderer and the tests.
 
 import type { GroupBy, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
+import type { GroupPreset } from '../shared/actions';
 import { isCurrentIteration } from '../shared/filter';
 import { iterationColumnKey } from './board';
 import { itemSorter } from './sort';
@@ -30,6 +31,8 @@ export interface Group {
   current: boolean;
   /** "no value" group (No iteration / No status / …) */
   empty: boolean;
+  /** the group's value: what a new issue from its "+" carries (GitHub#214) */
+  preset: GroupPreset;
   rows: Row[];
 }
 
@@ -69,6 +72,7 @@ interface Seed {
   empty: boolean;
   /** smaller first */
   order: string;
+  preset: GroupPreset;
   items: Item[];
 }
 
@@ -97,8 +101,9 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
     if (!seeds.has(s.key)) seeds.set(s.key, { ...s, items: [] });
     return s.key;
   };
-  const none = () => seed({ key: GROUP_NONE_KEY, title: NONE_TITLE[by as Exclude<GroupBy, 'none'>], subtitle: null, current: false, empty: true, order: '' });
-  if (by === 'repo') return [seed({ key: `repo:${item.repo.toLowerCase()}`, title: item.repo, subtitle: null, current: false, empty: false, order: `1${item.repo.toLowerCase()}` })];
+  const none = () => seed({ key: GROUP_NONE_KEY, title: NONE_TITLE[by as Exclude<GroupBy, 'none'>], subtitle: null, current: false, empty: true, order: '', preset: { by: 'none' } });
+  if (by === 'repo')
+    return [seed({ key: `repo:${item.repo.toLowerCase()}`, title: item.repo, subtitle: null, current: false, empty: false, order: `1${item.repo.toLowerCase()}`, preset: { by: 'repo', repo: item.repo } })];
   if (by === 'milestone') {
     if (!item.milestone) return [none()];
     const due = item.milestone.dueOn ?? '';
@@ -106,7 +111,7 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
     const order = due ? `1${due}` : '2';
     const cur = seeds.get(key);
     if (cur && order < cur.order) cur.order = order;
-    return [seed({ key, title: item.milestone.title, subtitle: due ? `截止 ${due.slice(0, 10)}` : null, current: false, empty: false, order })];
+    return [seed({ key, title: item.milestone.title, subtitle: due ? `截止 ${due.slice(0, 10)}` : null, current: false, empty: false, order, preset: { by: 'milestone', title: item.milestone.title } })];
   }
   const members = item.projects.filter((m) => projects.has(m.projectKey));
   const keys = new Set<string>();
@@ -122,6 +127,7 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
             current: isCurrentIteration(m.iteration, today),
             empty: false,
             order: `1${m.iteration.startDate}`,
+            preset: { by: 'iteration', title: m.iteration.title, startDate: m.iteration.startDate },
           }),
         );
     }
@@ -140,7 +146,7 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
           break;
         }
       }
-      keys.add(seed({ key: `status:${m.status}`, title: m.status, subtitle: null, current: false, empty: false, order: `1${String(idx < 0 ? 9999 : idx).padStart(4, '0')}${m.status}` }));
+      keys.add(seed({ key: `status:${m.status}`, title: m.status, subtitle: null, current: false, empty: false, order: `1${String(idx < 0 ? 9999 : idx).padStart(4, '0')}${m.status}`, preset: { by: 'status', status: m.status } }));
     }
   }
   if (keys.size === 0) keys.add(none());
@@ -254,7 +260,7 @@ function groupItems(
 ): Group[] {
   if (settings.groupBy === 'none') {
     const key = `${prefix}all`;
-    return [{ key, title: '全部', subtitle: null, current: false, empty: false, rows: arrange(items, key, settings.sort, sort, settings.hierarchy, prs) }];
+    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, rows: arrange(items, key, settings.sort, sort, settings.hierarchy, prs) }];
   }
   const seeds = new Map<string, Seed>();
   for (const it of items) for (const g of groupsOf(it, settings.groupBy, byKey, today, seeds)) seeds.get(g)!.items.push(it);
@@ -263,6 +269,6 @@ function groupItems(
     .sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.key < b.key ? -1 : 1))
     .map((s) => {
       const key = `${prefix}${s.key}`;
-      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, rows: arrange(s.items, key, settings.sort, sort, settings.hierarchy, prs) };
+      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, preset: s.preset, rows: arrange(s.items, key, settings.sort, sort, settings.hierarchy, prs) };
     });
 }

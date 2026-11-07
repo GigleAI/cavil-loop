@@ -223,10 +223,17 @@ table.items td { border-bottom: 1px solid var(--border-muted); padding: 7px 12px
 table.items tr:not(.group-head):not(.repo-head):hover td { background: var(--hover); }
 table.items .group-head td { background: var(--canvas); padding: 6px 12px; }
 table.items .group-head .link { color: var(--muted); }
+/* a group's "+ new issue" row (GitHub#214) */
+table.items tr.group-add td { padding: 2px 12px 6px; }
+table.items tr.group-add .link { color: var(--muted); width: 100%; text-align: left; padding: 4px 0; }
+table.items tr.group-add .link:hover:not(:disabled) { color: var(--fg); }
+table.items tr.group-add .link:disabled { opacity: 0.5; cursor: default; }
+.form .preset { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
 /* "all repositories": a repository heading above its groups (GitHub#213) */
 table.items .repo-head td { background: var(--canvas); padding: 9px 12px; font-size: 15px; border-bottom: 1px solid var(--border); }
 table.items .repo-head .link { color: var(--muted); }
 table.items tbody.in-repo .group-head td { padding-left: 32px; }
+table.items tbody.in-repo tr.group-add td { padding-left: 32px; }
 table.items .title-cell a { color: var(--fg); text-decoration: none; font-weight: 500; }
 table.items .title-cell a:hover { color: var(--accent); }
 table.items .title-cell .state { margin-right: 6px; vertical-align: -3px; }

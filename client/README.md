@@ -1,6 +1,6 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外两处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184），和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。
+`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外两处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184），和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。#214 在表格每个分组底部加了「＋ 新建 issue」：对话框先列出会带上的迭代 / 状态 / 里程碑，创建时只按这份清单写，写前现读核对里程碑，对不上一条都不写。
 
 ## 目录
 

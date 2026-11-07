@@ -28,7 +28,11 @@ export type WriteAction =
   | { kind: 'closePr'; key: string; comment: string }
   /** close an issue with GitHub's close reason; the comment (optional) is sent only once the close went through */
   | { kind: 'closeIssue'; key: string; reason: IssueCloseReason; comment: string }
-  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[] }
+  /**
+   * `plan` (GitHub#214, the "+" of a table group): exactly what the dialog showed it would
+   * set — never re-derived when writing, only checked again; absent = the plain new issue
+   */
+  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; plan?: CreatePlan }
   /**
    * tick / untick one task-list box of a body or comment (GitHub#193): `entryId` is the
    * body's / comment's node id, `index` the box's number in it (document order),
@@ -38,6 +42,27 @@ export type WriteAction =
   | { kind: 'toggleTask'; key: string; entryId: string; index: number; checked: boolean; seenSource: string };
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+/**
+ * The value of one table group (GitHub#214): what a new issue made from that
+ * group's "+" carries. `none` = a "no iteration / no status / no milestone" group.
+ */
+export type GroupPreset =
+  | { by: 'iteration'; title: string; startDate: string }
+  | { by: 'status'; status: string }
+  | { by: 'milestone'; title: string }
+  | { by: 'repo'; repo: string }
+  | { by: 'none' };
+
+/**
+ * What a new issue from a group's "+" sets, as confirmed in the dialog (GitHub#214).
+ * `milestone: null` = explicitly none. `projects` = every Project the issue joins
+ * (the ones ticked when the dialog showed it), each with its iteration / status or null = none.
+ */
+export interface CreatePlan {
+  milestone: { number: number; title: string } | null;
+  projects: { projectKey: string; iterationId: string | null; status: string | null }[];
+}
 
 /** The close reasons the client offers (GitHub#180). "Duplicate" needs the issue it duplicates: web only. */
 export type IssueCloseReason = 'completed' | 'not_planned';
