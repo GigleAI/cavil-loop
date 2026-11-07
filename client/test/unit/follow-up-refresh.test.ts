@@ -311,7 +311,7 @@ describe('one more sync round after a change', () => {
     fake.state.w.readOnlyProjects.add('org/gigleai/11');
     const { c } = await ready({ followUpSyncMs: 200 });
     const rounds = count('rounds');
-    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'new', body: '', labels: [] });
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'new', body: '', labels: [], projects: ['project:org/gigleai/11'] });
     expect(r.ok).toBe(true);
     expect(r.warning).toContain('没能加入看板');
     await waitFor(() => count('rounds') > rounds, 'follow-up round');

@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type HandBackLabels, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type HandBackLabels, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
 import type { DetailResult, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -198,7 +198,12 @@ export class Controller {
     const configured = this.state.sources.map((s) => s.key);
     const snaps = [...this.snapshots.values()].filter((s) => configured.includes(s.sourceKey));
     const selected = this.state.view.selected?.filter((k) => configured.includes(k)) ?? null;
-    return mergeSnapshots(snaps, selected);
+    return { ...mergeSnapshots(snaps, selected), allProjects: this.allProjects() };
+  }
+
+  /** Every configured Project, in the order the sources were added (GitHub#205: what a new issue may join). */
+  private allProjects() {
+    return this.state.sources.map((s) => this.snapshots.get(s.key)?.project).filter((p): p is NonNullable<typeof p> => Boolean(p));
   }
 
   onChange(cb: (s: AppState) => void): () => void {
@@ -916,6 +921,8 @@ export class Controller {
     const next: HandBackLabels = {
       human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,
       agent: (patch.agent ?? this.state.handBack.agent).trim() || DEFAULT_HAND_BACK.agent,
+      // empty is a choice here: no autopilot button (a project without autopilot)
+      autopilot: typeof patch.autopilot === 'string' ? patch.autopilot.trim() : this.state.handBack.autopilot,
     };
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently
@@ -994,9 +1001,9 @@ export class Controller {
    * item is read again from GitHub at once and the cache takes that copy.
    */
   async act(action: WriteAction): Promise<WriteResult> {
-    if (action.kind !== 'toggleTask') return this.actNow(action);
+    if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
-    if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次勾选还没完成，等它完成再点', warning: null };
+    if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
     this.tasksInFlight.add(action.entryId);
     try {
       return await this.actNow(action);
@@ -1010,11 +1017,15 @@ export class Controller {
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
     const item = 'key' in action ? (data.items.find((i) => i.key === action.key) ?? null) : null;
-    // the board data only holds the sources ticked in the view: a new issue joins exactly those Projects
-    const createInProjects = data.projects;
+    // GitHub#205: a new issue joins exactly the Projects ticked in the dialog; one the app does not know is refused before sending
+    const known = this.allProjects();
+    const wanted = action.kind === 'createIssue' ? (Array.isArray(action.projects) ? action.projects : null) : [];
+    if (wanted === null) return { ok: false, error: '不知道要加入哪些看板，没有新建', warning: null };
+    const createInProjects = wanted.map((k) => known.find((p) => p.key === k));
+    if (createInProjects.some((p) => !p)) return { ok: false, error: '勾选的看板不在当前来源里（可能刚被删掉），没有新建；请重新打开对话框', warning: null };
     let outcome;
     try {
-      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects, cached: this.cachedItems() });
+      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: createInProjects as ProjectMeta[], cached: this.cachedItems() });
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       return { ok: false, error: explainError(e, action.kind), warning: null };
