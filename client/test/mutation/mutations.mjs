@@ -1600,7 +1600,7 @@ export const MUTATIONS = [
     from: "s.state === 'unknown' ? s.sentAt : null", to: 'null',
     expect: ['restart while waiting, GitHub had carried the close out', 'a step whose answer never came (restart)'] },
   { what: '用草稿发的回复没收到应答，当成「被拒」（草稿又能放进回复框，可能发两遍）', file: 'src/app/controller.ts',
-    from: "      else this.patchOp(id, { replyState: 'unknown' });", to: '      else this.patchOp(id, { replyState: null });',
+    from: "    else this.patchOp(id, { replyState: 'unknown' });", to: '    else this.patchOp(id, { replyState: null });',
     expect: ['no answer: "not sure", copy only'] },
   { what: '用草稿发回复途中，草稿仍可再放进回复框', file: 'src/shared/ops.ts',
     from: " && !r.replyState) out.push('toReply');", to: ") out.push('toReply');",
@@ -1618,10 +1618,21 @@ export const MUTATIONS = [
   { what: '重做时把可能已经发出的评论原样带回对话框', file: 'src/shared/ops.ts',
     from: '  if (!r.replyState) return left;\n', to: '  return left;\n',
     expect: ['the dialog of a retry never gets that comment back'] },
-  { what: '用草稿发回复前不等「正在发送」存盘（存不上照发）', file: 'src/app/controller.ts',
-    from: "    if (!(await this.storeOps())) return undo('没能存到本机，回复没有发送');", to: '    void this.storeOps();',
+  { what: '用草稿发回复前不等「正在发送」存盘（存不上照发）',
+    edits: [
+      { file: 'src/app/controller.ts', from: "    // 1. \"sending\" on disk before anything goes out\n    if (!(await this.storeOps())) return mine() ? undo('没能存到本机，回复没有发送') : ended();", to: "    // 1. \"sending\" on disk before anything goes out\n    void this.storeOps();" },
+      { file: 'src/app/controller.ts', from: "    this.setOp({ ...this.ops.get(id)!, reply: { body: plain.body, before } });\n    if (!(await this.storeOps())) return mine() ? undo('没能存到本机，回复没有发送') : ended();", to: "    this.setOp({ ...this.ops.get(id)!, reply: { body: plain.body, before } });\n    void this.storeOps();" },
+    ],
     expect: ['"sending" cannot be stored'] },
   { what: '查证用草稿发的回复时不排除发送前已有的评论', file: 'src/shared/ops.ts',
     from: '!reply.before!.includes(c.id) && ', to: '',
     expect: ['an older comment with the same text proves nothing for the reply either', 'proven only by a comment that was not there before the reply'] },
+  // ---- GitHub#250, PR #255 code review round 3 ----
+  { what: '用草稿发回复：等待之后不再核对账号，发送时改用当时登录账号的凭据（旧账号的草稿由新账号发出）',
+    edits: [
+      { file: 'src/app/controller.ts', from: "      // sent anyway; if its answer never comes it can only be checked by a person\n    }\n    if (!mine()) return ended();\n", to: "      // sent anyway; if its answer never comes it can only be checked by a person\n    }\n" },
+      { file: 'src/app/controller.ts', from: "    if (!(await this.storeOps())) return mine() ? undo('没能存到本机，回复没有发送') : ended();\n    if (!mine()) return ended();\n    // 5. the write, with the same client\n", to: "    await this.storeOps();\n    // 5. the write, with the same client\n" },
+      { file: 'src/app/controller.ts', from: '      await commentStep(c.client, item, plain.body);', to: "      const now = await this.clientForCall(true);\n      if ('error' in now) throw new ActionRefused(now.error);\n      await commentStep(now.client, item, plain.body);" },
+    ],
+    expect: ['never crosses a session'] },
 ];

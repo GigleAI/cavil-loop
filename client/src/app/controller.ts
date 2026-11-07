@@ -2520,8 +2520,16 @@ export class Controller {
     if (opPhase(rec) === 'waiting' || opPhase(rec) === 'unknown') return refuse(`这次操作还没结清，附带评论先不发：${opText(rec)}`);
     if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
     if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    const item = this.findItem(plain.key);
+    if (!item || item.key !== rec.key) return refuse('看板上找不到这一条，回复没有发送');
+    if (!plain.body.trim()) return refuse('评论是空的，没有发送');
+    // code review round 3: everything below belongs to the session it started in. One client, bound
+    // to that session (the back end refuses a request signed for a session that ended), is used for
+    // every read and the write; after every wait the session and the record are checked again, and a
+    // save that did not go through stops it. A sign-out / another account in between = nothing sent.
     const session = this.session;
-    // code review round 2: "sending" is on disk before the request goes out (set at once, so a second click is refused meanwhile); not stored = not sent
+    const mine = () => session === this.session && this.ops.get(id) !== undefined;
+    const ended = () => refuse('账号已切换或这次操作已不在，回复没有发送');
     this.setOp({ ...rec, replyState: 'sending', reply: { body: plain.body, before: null } });
     this.opsChanged();
     const undo = (error: string): WriteResult => {
@@ -2533,31 +2541,45 @@ export class Controller {
       }
       return refuse(error);
     };
-    if (!(await this.storeOps())) return undo('没能存到本机，回复没有发送');
-    if (session !== this.session || !this.ops.get(id)) return refuse('账号已切换，回复没有发送');
+    // 1. "sending" on disk before anything goes out
+    if (!(await this.storeOps())) return mine() ? undo('没能存到本机，回复没有发送') : ended();
+    if (!mine()) return ended();
+    // 2. the credential of this session (refreshed if due) — never of a later one
     const c = await this.clientForCall(true);
-    if ('error' in c) return undo(c.error);
-    // the comments already there: a comment proves this reply only when it is not one of them
+    if ('error' in c) return mine() ? undo(c.error) : ended();
+    if (c.session !== session || !mine()) return ended();
+    // 3. the comments already there (a comment proves this reply only when it is not one of them)
     let before: string[] | null = null;
     try {
       before = (await readItemRecords(c.client, rec.repo, rec.number)).comments.map((x) => x.id);
     } catch {
       // sent anyway; if its answer never comes it can only be checked by a person
     }
-    if (session !== this.session) return refuse('账号已切换，回复没有发送');
-    const mid = this.ops.get(id);
-    if (!mid) return refuse('这次操作已经不在了，回复没有发送');
-    this.setOp({ ...mid, reply: { body: plain.body, before } });
-    await this.storeOps();
-    let err: unknown = undefined;
-    const r = await this.actNow(plain, undefined, (e) => (err = e));
-    const now = this.ops.get(id);
-    if (now && session === this.session) {
-      if (r.ok) this.patchOp(id, { replyState: null, reply: null, commentUsed: true });
-      else if (err === undefined || refusedForSure(err)) this.patchOp(id, { replyState: null, reply: null });
-      else this.patchOp(id, { replyState: 'unknown' });
+    if (!mine()) return ended();
+    // 4. that list on disk too (not stored = not sent: the record must say what proves it)
+    this.setOp({ ...this.ops.get(id)!, reply: { body: plain.body, before } });
+    if (!(await this.storeOps())) return mine() ? undo('没能存到本机，回复没有发送') : ended();
+    if (!mine()) return ended();
+    // 5. the write, with the same client
+    let outcome: 'ok' | 'refused' | 'unknown';
+    let error: string | null = null;
+    try {
+      await commentStep(c.client, item, plain.body);
+      outcome = 'ok';
+    } catch (e) {
+      outcome = refusedForSure(e) ? 'refused' : 'unknown';
+      error = outcome === 'refused' ? explainError(e, 'comment') : `不确定有没有发出：${unknownReason(e)}`;
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
     }
-    return r;
+    if (!mine()) return outcome === 'ok' ? { ok: true, error: null, warning: '账号已切换，这条回复的结果没有记下' } : refuse(error ?? '账号已切换');
+    if (outcome === 'ok') this.patchOp(id, { replyState: null, reply: null, commentUsed: true });
+    else if (outcome === 'refused') this.patchOp(id, { replyState: null, reply: null });
+    else this.patchOp(id, { replyState: 'unknown' });
+    if (outcome !== 'ok') return refuse(error ?? '没有发出');
+    // the item read again with the same client, like any change
+    const read = await this.refreshOne(c.client, c.session, item.repo, item.number);
+    if (c.session === this.session) this.scheduleFollowUp(c.session);
+    return { ok: true, error: null, warning: read.problem };
   }
 
   /** `act` for the five operations: started like the window does, then waited for (requests and re-reads). */

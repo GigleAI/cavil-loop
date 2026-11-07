@@ -755,6 +755,51 @@ describe('a reply made from the kept comment is part of the lock (code review ro
   });
 });
 
+describe('a reply from a kept comment never crosses a session (code review round 3)', () => {
+  it('account A signs out and account B signs in (and syncs) while the reply waits on its way to GitHub: nothing is sent, not as A and not as B; a reply in one session does go out', async () => {
+    const OTHER = 'gho_othertoken0000000000000000000000002';
+    const c = await ready();
+    // reachability: in one session the same path does post the reply
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    const first = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '一次就好' });
+    await idle(c);
+    fake.state.w.readOnlyRepos.clear();
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '一次就好', draftOf: first.id })).ok).toBe(true);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['一次就好']);
+
+    // account A: another refused close, its comment put into a reply; the reply waits on GitHub (the read of what is there)
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '旧账号的草稿' });
+    await idle(c);
+    fake.state.w.readOnlyRepos.clear();
+    const holdRead = fake.holdWhen((e) => e.operation === 'CavilOpRecords');
+    const reply = c.act({ kind: 'comment', key: K(ISSUE), body: '旧账号的草稿', draftOf: s.id });
+    await until(() => fake.log.some((l) => l.operation === 'CavilOpRecords' && l.auth === `Bearer ${FAKE_TOKEN}` && l.status === 0), 'the reply is on its way');
+    // A signs out, B signs in and its first sync lands
+    await c.logout();
+    expect(c.getState().ops).toHaveLength(0);
+    fake.state.nextGrant = { token: OTHER };
+    fake.state.tokenViewers.set(OTHER, 'user-2');
+    c.setClientId(fake.state.oauthClientId);
+    const login = c.startLogin();
+    await until(() => c.getState().login.status === 'waiting', 'device code');
+    fake.resolveGrant('approved');
+    await login;
+    await until(() => c.getState().phase === 'ready' && !c.getState().sync.syncing && c.getState().viewer === 'user-2', 'B signed in and synced');
+    expect(c.getBoardData().items.some((i) => i.key === K(ISSUE))).toBe(true);
+    // the old request goes on
+    holdRead();
+    const r = await reply;
+    expect(r.ok).toBe(false);
+    expect(comments().filter((w) => (w.body as any)?.body === '旧账号的草稿')).toHaveLength(0);
+    // B did read (its sync), and wrote nothing at all
+    expect(fake.log.some((l) => l.auth === `Bearer ${OTHER}`)).toBe(true);
+    expect(fake.writes().filter((l) => l.auth === `Bearer ${OTHER}`)).toHaveLength(0);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['一次就好']);
+    expect(c.getState().ops).toHaveLength(0);
+  }, 60_000);
+});
+
 describe('restart, sign-out', () => {
   it('restart while waiting, GitHub had carried the close out: unknown, nothing re-sent; the first read after the restart proves it, settles it, keeps the comment that never went out (code review round 1)', async () => {
     const c = await ready();
