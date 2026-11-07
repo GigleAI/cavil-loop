@@ -15,6 +15,7 @@
 //   node scripts/dev-version.mjs            print the version (nothing changes)
 //   node scripts/dev-version.mjs --write    also write it into the three files (in CI's work tree only;
 //                                           never committed)
+//   [--root <dir>]                          another client directory (default: the one this script is in)
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -86,7 +87,8 @@ export function stamp(root, { write = false, count = commitCount(root) } = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const i = process.argv.indexOf('--root');
+  const root = i >= 0 ? process.argv[i + 1] : join(dirname(fileURLToPath(import.meta.url)), '..');
   try {
     console.log(stamp(root, { write: process.argv.includes('--write') }));
   } catch (e) {

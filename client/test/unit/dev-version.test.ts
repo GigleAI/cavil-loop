@@ -4,7 +4,7 @@
 // release job's manifest builder, so the three agree on what a development version is.
 
 import { afterAll, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,12 +86,23 @@ describe('the development build\'s version (GitHub#215)', () => {
     expect(readFileSync(join(d, 'package.json'), 'utf8')).toBe(pkg);
   });
 
-  it('the command line on this checkout prints the version for its own commit count and changes nothing', () => {
-    const before = readFileSync(join(root, 'package.json'), 'utf8');
-    const out = execFileSync('node', [join(root, 'scripts', 'dev-version.mjs')], { encoding: 'utf8' }).trim();
-    const n = Number(execFileSync('git', ['-C', root, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim());
-    expect(out).toBe(devVersion(JSON.parse(before).version, n));
-    expect(readFileSync(join(root, 'package.json'), 'utf8')).toBe(before);
+  it('the command line: prints without changing anything, --write writes, a failure is exit 1 with nothing written', () => {
+    const d = repo(3);
+    const cli = (...a: string[]) => spawnSync(process.execPath, [join(root, 'scripts', 'dev-version.mjs'), '--root', d, ...a], { encoding: 'utf8' });
+    const before = readVersions(d).text;
+    const [x, y, z] = readVersions(d).pkg.split('.').map(Number);
+    const want = `${x}.${y}.${z + 1}-dev.3`;
+    const p = cli();
+    expect([p.status, p.stdout.trim()]).toEqual([0, want]);
+    expect(readVersions(d).text).toEqual(before);
+    const w = cli('--write');
+    expect([w.status, w.stdout.trim()]).toEqual([0, want]);
+    expect(readVersions(d).pkg).toBe(want);
+    // now the three agree on a development version, which is not X.Y.Z: refused
+    const again = cli('--write');
+    expect(again.status).toBe(1);
+    expect(again.stderr).toMatch(/客户端版本号不是 X\.Y\.Z/);
+    expect(readVersions(d).pkg).toBe(want);
   });
 
   it('what it stamps is a development version to the release job and to the app: newer than the release it came from, older than the next', async () => {

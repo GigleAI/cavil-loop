@@ -208,8 +208,11 @@ describe('per channel: which machines a manifest must carry (GitHub#215)', () =>
     pack(dir, '0.5.1', 'arm64', k.priv);
     pack(dir, '0.5.1', 'x64', k.priv);
     expect((build({ version: '0.5.1', dir, pubkey: k.pub, channel: 'dev' }) as any).errors.join('\n')).toMatch(/版本号不是 X\.Y\.Z-dev\.N：0\.5\.1/);
-    for (const v of ['0.5.1-dev.01', '0.5.1-dev.', '0.5.1-rc.1', '0.5.1-dev.1.2']) {
-      expect(build({ version: v, dir, pubkey: k.pub, channel: 'dev' }).ok, v).toBe(false);
+    // refused for the version itself (not just because there is no package of that version)
+    for (const v of ['0.5.1-dev.01', '0.5.1-dev.', '0.5.1-rc.1', '0.5.1-dev.1.2', '05.1.1-dev.1']) {
+      const r = build({ version: v, dir, pubkey: k.pub, channel: 'dev' }) as any;
+      expect(r.ok, v).toBe(false);
+      expect(r.errors.join('\n'), v).toMatch(/版本号不是 X\.Y\.Z-dev\.N/);
     }
     expect((build({ version: '0.5.1-dev.3', dir, pubkey: k.pub }) as any).errors.join('\n')).toMatch(/版本号不是 X\.Y\.Z：/);
     expect((build({ version: '0.5.1', dir, pubkey: k.pub, channel: 'arm64' }) as any).errors.join('\n')).toMatch(/不认识的渠道/);
