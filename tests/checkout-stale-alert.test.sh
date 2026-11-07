@@ -176,6 +176,10 @@ setup_repo 25
 echo dirty > "$TMP/project/wip"
 sync_project_checkout >/dev/null 2>&1
 chk "脏工作区 → 告警" "$(grep -c -- '-X POST' "$GH_CALLS")" "1"
+# 告警 issue 是 daemon 写给人看的（GitHub#237）：正文和插进正文的原因都写明「人」，不用「你」「我」
+# 正文是多行的，整份调用记录拼成一行再查（这一组只有开 issue 这一次写）
+chk "脏工作区 → 告警正文写了原因和影响范围" "$(tr '\n' ' ' < "$GH_CALLS" | grep -c '有未提交改动（daemon 不碰人的工作区）.*影响范围.*人在主 checkout 上')" "1"
+chk "脏工作区 → 告警正文不用「你」「我」" "$(grep -cE '[你我]' "$GH_CALLS")" "0"
 chk "脏工作区 → 不碰工作区（WIP 还在）" "$([ -e "$TMP/project/wip" ] && echo yes || echo no)" "yes"
 chk "脏工作区 → 本地 main 没被 ff" "$(git -C "$TMP/project" rev-list --count refs/heads/main..origin/main)" "25"
 
