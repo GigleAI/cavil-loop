@@ -1957,7 +1957,7 @@ mutate remember-review agent-poll.sh '            autopilot_remember_review "$ST
 # 两处合起来的授权判据
 mutate pr-no-stopline _lib.sh 'elif all($u[]; . < $t) then "after" else "before" end' 'elif true then "after" else "before" end'
 mutate pr-stops-ignored _lib.sh 'unl: map(select(.value.event == "unlabeled")' 'unl: map(select(false)'
-mutate pr-no-actor-check _lib.sh '        rc=0; autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.lab.actor'"'"')"' '        rc=0; [ "$cand" = pr ] || autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.lab.actor'"'"')"'
+mutate pr-no-actor-check _lib.sh '        rc=0; autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.p.lab.actor'"'"')"' '        rc=0; [ "$kind" = pr ] || autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.p.lab.actor'"'"')"'
 mutate pr-stale-auth-ok _lib.sh '            *:before) ;;' '            *:before) [ "$rc" = 0 ] && { ok_kind="$kind"; ok_num="$cnum"; ok_place="$here"; ok_actor="$AUTOPILOT_ACTOR"; } ;;'
 mutate pr-no-time-ok _lib.sh 'elif $t == null or $t == "" or any($u[]; . == null or . == "") then "unknown"' 'elif false then "unknown"'
 # 三个调用点各自接到两处判据（单独拆掉一处只看 issue）

@@ -369,6 +369,36 @@ $SUMMARY" "$H1" "pending/merge"
     chk "  → 补发的是完整说明（带总结段）" "$(comments_with 51 '每个仓库各算各的再合并。')" 1
     tick
     chk "再下一轮不重复发" "$(comments_with 51 'autopilot-merged pr=52 ')" 1
+    # 复审第 1 轮的两个场景
+    fresh; split_ready
+    touch "$GD/F_post_comment"; merge_only_tick; rm -f "$GD/F_post_comment"
+    jset items.json '.["51"].state = "closed" | .["51"].state_reason = "completed"'
+    # 交接读评论（准备补发说明）时，维护者重开 issue、新一轮 worker 已经在跑
+    printf 'cd %q && jq %q items.json > i.tmp && mv i.tmp items.json && jq %q labels.json > l.tmp && mv l.tmp labels.json\n' \
+        "$GD" '.["51"].state = "open" | del(.["51"].state_reason)' '.["51"] = ["doing/agent"]' > "$GD/hook_issues_51_comments_1"
+    rm -f "$GD/count_issues_51_comments"
+    tick
+    chk "交接中途 issue 被重开、新一轮在跑 → 标签一个不动（只有 doing/agent）" "$(labels_of 51)" "doing/agent"
+    chk "  → 到达性：hook 确实跑了、说明补发了" "$(issue_state 51)/$(comments_with 51 'autopilot-merged pr=52 ')" "open/1"
+    fresh; split_ready
+    merge_only_tick
+    touch "$GD/F_delete_labels"
+    tick
+    chk "摘 pending/PR 失败 → 交接记录留着" "$(jq -r '.autopilot.handoff["52"].issue // "none"' "$STATE")" 51
+    chk "  → 这一轮 pending/human 已加上、pending/PR 还在" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/yes"
+    rm -f "$GD/F_delete_labels"
+    tick
+    chk "恢复后 → 摘掉 pending/PR，只剩 pending/human" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/no"
+    chk "  → 交接记录已清" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
+    fresh; split_ready
+    merge_only_tick
+    jset items.json '.["51"].state = "closed" | .["51"].state_reason = "completed"'
+    touch "$GD/F_delete_labels"
+    tick
+    chk "人先关了 issue、摘标签失败 → 交接记录留着" "$(jq -r '.autopilot.handoff["52"].issue // "none"' "$STATE")" 51
+    rm -f "$GD/F_delete_labels"
+    tick
+    chk "  → 恢复后 Done、pending/PR 已摘" "$(has_label 51 Done)/$(has_label 51 pending/PR)" "yes/no"
     fresh; split_ready
     jset items.json '.["52"].body = "做了 X。\n\nRefs #51"'
     tick
@@ -469,10 +499,11 @@ mutate unknown-as-not-split '        2) AUTOPILOT_REASON="$SPLIT_PARENT_WHY"; re
     esac
     return 1
 }'
-mutate handoff-ignores-flow 'if [ -n "$flow" ]; then
-        autopilot_state_set "$sf" '"'"'del(.handoff[$p])'"'"'' 'if false; then
-        autopilot_state_set "$sf" '"'"'del(.handoff[$p])'"'"''
-mutate handoff-no-reread '       || [ "$(printf '"'"'%s'"'"' "$ij2" | jq -c '"'"'[.labels[].name] | sort'"'"' 2>/dev/null)" != "$labs" ]; then' '       || false; then'
+mutate handoff-ignores-flow '            if [ -n "$rest" ]; then
+                AH_V=superseded' '            if false; then
+                AH_V=superseded'
+mutate handoff-no-reread '    if [ "$AH_V" != "$v" ] || [ "$AH_ID" != "$id" ]; then' '    if false; then'
+mutate handoff-delete-unchecked '            printf '"'"'%s'"'"' "$out" | grep -q '"'"'HTTP 404'"'"' && continue' '            continue'
 mutate bare-number-dropped '([ $refs[] | select(.[0] == null or (.[0] | ascii_downcase) == ($R | ascii_downcase)) | .[1] | tonumber ]' '([ $refs[] | select(.[0] != null and (.[0] | ascii_downcase) == ($R | ascii_downcase)) | .[1] | tonumber ]'
 mutate foreign-not-read '        if [[ "$p" == *"#"* ]]; then prepo="${p%#*}"; pn="${p##*#}"; else prepo="$REPO"; pn="$p"; fi' '        if [[ "$p" == *"#"* ]]; then prepo="$REPO"; pn="${p##*#}"; else prepo="$REPO"; pn="$p"; fi'
 mutate close-bounce-off 'if [ "$AP_KIND" = issue ] && printf '"'"'%s'"'"' "$AP_BODY" | autopilot_body_has_close; then' 'if false; then'
