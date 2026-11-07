@@ -7,7 +7,11 @@ import type { UpdateStatus } from '../shared/types';
 
 export type { UpdateStatus };
 
-/** What a notification is about; a click on an item notification opens that item. */
+/**
+ * What a notification is about; a click on an item notification opens that item. The app sends
+ * only `item` since GitHub#251 (no start-up summary); `summary` stays for the packaging check's
+ * test notification (`--notify-check`, src-tauri/src/main.rs).
+ */
 export type Alert =
   | { kind: 'item'; key: string; url: string; title: string; body: string }
   | { kind: 'summary'; title: string; body: string };

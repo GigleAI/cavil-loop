@@ -1,5 +1,8 @@
-// "待处理" reminders (GigleAI/cavil-loop#139, rebuilt on the Tauri client in #169):
-// notifications, Dock badge and the start-up summary. Three layers:
+// "待处理" reminders (GigleAI/cavil-loop#139, rebuilt on the Tauri client in #169,
+// narrowed in #251): notifications and the Dock badge. Since #251 only an open
+// item is a to-do, what a source already has on its first read is history (no
+// notification, no summary, never unread), and the badge is only the unread
+// count. Three layers:
 //   - the controller against the fake GitHub over real HTTP, with the real Rust
 //     back end as a child process (real sync rounds, real pagination failures,
 //     real SQLite), labels changed on the fake between rounds the way a
@@ -10,7 +13,8 @@
 // the expected numbers below are derived from it, not typed in. On top of the
 // recording every test puts the label on one open item that both sources carry
 // (SEEDED), so there is always an open pending item and a cross-source one,
-// whatever the board looked like on recording day.
+// whatever the board looked like on recording day. The recording's own labelled
+// items are closed / merged: the history #251 stops counting.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
@@ -47,7 +51,8 @@ interface Harness {
   loginItem: { on: boolean | null; sets: boolean[] };
   /** notifications about single items, as `repo#N` */
   items(): string[];
-  summaries(): Alert[];
+  /** notifications of any other kind (there must be none since GitHub#251) */
+  others(): Alert[];
   badge(): number | undefined;
 }
 
@@ -107,7 +112,7 @@ async function signedIn(
     clock,
     loginItem,
     items: () => alerts.filter((a) => a.kind === 'item').map((a) => (a as Extract<Alert, { kind: 'item' }>).key),
-    summaries: () => alerts.filter((a) => a.kind === 'summary'),
+    others: () => alerts.filter((a) => a.kind !== 'item'),
     badge: () => badges[badges.length - 1],
   };
 }
@@ -115,29 +120,27 @@ async function signedIn(
 /** what a notification's answer does lands a moment after the call */
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
+
 /** Next round, one minute later; then whatever it asked of the shell has been answered. */
 async function tick(h: Harness) {
   h.clock.t += 60_000;
   await h.c.syncNow();
   await h.c.desktopSettled();
   await h.c.desktopSettled();
-  expectListIsBadge(h);
+  expectBadgeIsUnread(h);
 }
 
 /**
- * The settings page's list (GitHub#185) is exactly what is pending: as many entries as the
- * count, one entry per item; the badge is the unread part of it (never more). Checked after
- * every round of every test here, not only in the list's own tests.
+ * The badge is the unread count and nothing else (GitHub#185, #251): never more than what is
+ * pending now, and no other kind of notification ever goes out. Checked after every round of
+ * every test here.
  */
-function expectListIsBadge(h: Harness) {
+function expectBadgeIsUnread(h: Harness) {
   const st = h.c.getState();
-  const keys = st.pendingItems.map((e) => e.key);
-  expect(new Set(keys).size).toBe(keys.length);
-  expect(keys.length).toBe(st.pendingCount);
   expect(st.unreadCount).toBeLessThanOrEqual(st.pendingCount);
   if (h.badges.length) expect(h.badge()).toBe(st.unreadCount);
+  expect(h.others()).toEqual([]);
 }
-const listKeys = (h: Harness) => h.c.getState().pendingItems.map((e) => e.key).sort();
 
 /**
  * Put / take the label on GitHub (the fake): on the Project item and on the
@@ -166,24 +169,24 @@ function setLabel(number: number, on: boolean, clock: { t: number }) {
   if (!found) throw new Error(`fixture has no #${number}`);
 }
 
-/** A closed issue / merged PR the recorded data has only in the Project (closed months ago). */
-function addToRepoList(number: number, state: 'closed', pr: boolean, clock: { t: number }) {
-  const list = fake.state.repos.get('gigleai/cavil-loop')!;
-  if (list.some((i) => i.number === number)) return;
-  list.push({
-    number,
-    title: `t${number}`,
-    state,
-    html_url: `https://github.com/${REPO}/${pr ? 'pull' : 'issues'}/${number}`,
-    updated_at: new Date(clock.t).toISOString(),
-    labels: [],
-    assignees: [],
-    milestone: null,
-    ...(pr ? { pull_request: { merged_at: new Date(clock.t).toISOString() } } : {}),
-  });
+/** Reopen / close an issue only the Project carries (the repository list does not have it). */
+function setOpen(number: number, open: boolean, clock: { t: number }) {
+  let found = false;
+  for (const pg of fake.state.projects.get('org/gigleai/11')!) {
+    for (const n of pg.items.nodes) {
+      const c = n.content;
+      if (!c || c.number !== number || c.repository?.nameWithOwner !== REPO) continue;
+      found = true;
+      c.state = open ? 'OPEN' : 'CLOSED';
+      c.updatedAt = new Date(clock.t).toISOString();
+    }
+  }
+  if (!found) throw new Error(`fixture has no #${number}`);
 }
 
 const key = (n: number) => `gigleai/cavil-loop#${n}`;
+/** the board's copy of an item carries the label (the round really read it) */
+const labelledOnBoard = (h: Harness, n: number) => h.c.getBoardData().items.some((i) => i.key === key(n) && i.labels.some((l) => l.name === LABEL));
 
 // ---- what the recording holds (read straight from the JSON, independent of the client code) ----
 const rawPages = loadCavilProjectPages();
@@ -193,21 +196,34 @@ const projHas = (n: number) => rawProject.some((x: any) => x.content.number === 
 const projPending = (x: any) => x.content.labels.nodes.some((l: any) => l.name === LABEL);
 const repoOpen = (n: number) => rawRepo.some((i: any) => i.number === n && i.state === 'open');
 const repoPending = (i: any) => i.labels.some((l: any) => (l.name ?? l) === LABEL);
-/** open, in both sources, not pending in either: gets the label before every test */
-const SEEDED = rawRepo.find((i: any) => i.state === 'open' && !i.pull_request && !repoPending(i) && projHas(i.number) && !rawProject.some((x: any) => x.content.number === i.number && projPending(x)))!.number as number;
-/** another such item, used for "an open item gets the label" */
-const OPEN_NEW = rawRepo.find((i: any) => i.number !== SEEDED && i.state === 'open' && !i.pull_request && !repoPending(i) && projHas(i.number) && !rawProject.some((x: any) => x.content.number === i.number && projPending(x)))!.number as number;
+/** open issues in both sources, pending in neither: SEEDED gets the label before every test, the others are "an open item gets the label" */
+const openFree = rawRepo
+  .filter((i: any) => i.state === 'open' && !i.pull_request && !repoPending(i) && projHas(i.number) && !rawProject.some((x: any) => x.content.number === i.number && projPending(x)))
+  .map((i: any) => i.number as number);
+const [SEEDED, OPEN_NEW, OPEN_NEW2] = openFree;
 /** a closed issue / merged PR only the Project carries, without the label */
 const pickProj = (pred: (c: any) => boolean) => rawProject.find((x: any) => pred(x.content) && !projPending(x) && !rawRepo.some((i: any) => i.number === x.content.number))!.content.number as number;
 const CLOSED_ISSUE = pickProj((c) => c.__typename === 'Issue' && c.state === 'CLOSED');
 const MERGED_PR = pickProj((c) => c.__typename === 'PullRequest' && c.merged);
-/** pending in the Project after seeding, and how many of those are closed / merged */
-const P = rawProject.filter(projPending).length + 1;
-const P_CLOSED = rawProject.filter((x: any) => projPending(x) && x.content.state !== 'OPEN').length;
-/** pending in the repository source after seeding (it reads open items + the last 14 days) */
-const R = rawRepo.filter(repoPending).length + 1;
-/** items the Project brings that the repository source does not already count */
-const P_ONLY = P - rawProject.filter((x: any) => projPending(x) && rawRepo.some((i: any) => i.number === x.content.number && repoPending(i))).length - 1;
+/** labelled in the recording but closed / merged: history, never counted (GitHub#251) */
+const HISTORY = rawProject.filter((x: any) => projPending(x) && x.content.state !== 'OPEN').length + rawRepo.filter((i: any) => repoPending(i) && i.state !== 'open').length;
+/** pending (open + labelled) in the Project / the repository source after seeding */
+const P = rawProject.filter((x: any) => projPending(x) && x.content.state === 'OPEN').length + 1;
+const R = rawRepo.filter((i: any) => repoPending(i) && i.state === 'open').length + 1;
+/**
+ * A label some open item carries, other than the pending one (for "another label name"), and on
+ * none of the items these tests label: renaming to it must really take those out of "pending".
+ */
+const OTHER = (() => {
+  const ours = new Set([SEEDED, OPEN_NEW, OPEN_NEW2]);
+  const onOurs = new Set(rawProject.filter((x: any) => ours.has(x.content.number)).flatMap((x: any) => x.content.labels.nodes.map((l: any) => l.name)));
+  const counts = new Map<string, Set<number>>();
+  for (const x of rawProject)
+    if (x.content.state === 'OPEN')
+      for (const l of x.content.labels.nodes) if (l.name !== LABEL && !onOurs.has(l.name)) counts.set(l.name, (counts.get(l.name) ?? new Set()).add(x.content.number));
+  const [name, items] = [...counts].sort((a, b) => b[1].size - a[1].size)[0];
+  return { name, open: items.size };
+})();
 
 beforeEach(async () => {
   fake = await startFakeGitHub();
@@ -216,10 +232,10 @@ beforeEach(async () => {
 });
 
 it('the recording still has what these tests need', () => {
-  expect(repoOpen(SEEDED) && repoOpen(OPEN_NEW)).toBe(true);
-  expect(P_CLOSED).toBeGreaterThan(0); // closed / merged pending items: the case "only open ones" would miss
+  expect([SEEDED, OPEN_NEW, OPEN_NEW2].every((n) => Number.isInteger(n) && repoOpen(n))).toBe(true);
+  expect(HISTORY).toBeGreaterThan(0); // closed / merged items carrying the label: what "count everything" would show
   expect([CLOSED_ISSUE, MERGED_PR].every(Number.isInteger)).toBe(true);
-  expect(P).toBeGreaterThan(R);
+  expect(OTHER.open).toBeGreaterThan(0);
 });
 afterEach(async () => {
   for (const c of controllers) c.stopTimer();
@@ -232,42 +248,63 @@ afterEach(async () => {
 });
 
 describe('pending reminders against the fake GitHub', () => {
-  it('start: what is already pending becomes one summary (closed / merged counted), never one notification each; badge = summary = count', async () => {
+  it('start: nothing is notified or summarised, the badge stays 0 (the window was never in front), closed / merged history is not counted', async () => {
     const h = await signedIn({ sources: [PROJECT_URL, REPO] });
     await h.c.start();
     await h.c.desktopSettled();
-    expect(h.items()).toEqual([]);
-    expect(h.summaries()).toHaveLength(1);
-    expect(h.summaries()[0]).toMatchObject({ title: `${P} 条待处理` });
-    expect(h.summaries()[0].body).toContain(`其中 ${P_CLOSED} 条已关闭 / 已合并`);
-    expect(h.badge()).toBe(P);
+    // "did happen": both sources were read completely, and the board shows the labelled history
+    expect(h.c.getState().sync.sources.every((s) => s.ok)).toBe(true);
+    const history = h.c.getBoardData().items.filter((i) => i.state !== 'open' && i.labels.some((l) => l.name === LABEL));
+    expect(history.length).toBe(HISTORY);
+    expect(labelledOnBoard(h, SEEDED)).toBe(true);
+    expect(h.alerts).toEqual([]);
+    expect(h.badge()).toBe(0);
     expect(h.c.getState().pendingCount).toBe(P);
     // a quiet round changes nothing
     await tick(h);
-    expect(h.alerts).toHaveLength(1);
-    expect(h.badge()).toBe(P);
+    expect(h.alerts).toEqual([]);
+    expect(h.badge()).toBe(0);
   });
 
-  it('from nothing to pending: notified exactly once — open issue, closed issue and merged PR alike', async () => {
+  it('from nothing to pending: an open issue is notified exactly once; a closed issue and a merged PR are not', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
-    expect(h.alerts).toHaveLength(1); // the start-up summary
     setLabel(OPEN_NEW, true, h.clock); // open issue
     setLabel(CLOSED_ISSUE, true, h.clock); // closed issue
     setLabel(MERGED_PR, true, h.clock); // merged PR
     await tick(h);
-    expect(h.items().sort()).toEqual([key(OPEN_NEW), key(CLOSED_ISSUE), key(MERGED_PR)].sort());
-    const byKey = new Map(h.alerts.filter((a) => a.kind === 'item').map((a) => [(a as { key: string }).key, a]));
-    expect(byKey.get(key(CLOSED_ISSUE))!.title).toContain('已关闭');
-    expect(byKey.get(key(MERGED_PR))!.title).toContain('已合并');
-    expect((byKey.get(key(MERGED_PR)) as { url: string }).url).toContain(`/pull/${MERGED_PR}`);
-    expect(h.badge()).toBe(P + 3);
+    // "did happen": this round read all three with the label
+    expect([OPEN_NEW, CLOSED_ISSUE, MERGED_PR].every((n) => labelledOnBoard(h, n))).toBe(true);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    const a = h.alerts[0] as Extract<Alert, { kind: 'item' }>;
+    expect(a.title).toBe(`待处理：${REPO}#${OPEN_NEW}`);
+    expect(a.url).toContain(`/issues/${OPEN_NEW}`);
+    expect(h.badge()).toBe(1);
+    expect(h.c.getState().pendingCount).toBe(P + 1);
     // still pending next round: no second notification
     await tick(h);
     await tick(h);
-    expect(h.items()).toHaveLength(3);
-    expect(h.summaries()).toHaveLength(1);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+  });
+
+  it('a labelled closed issue reopened is notified once; closed again before anyone looked, it is no longer unread', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    await tick(h);
+    expect(labelledOnBoard(h, CLOSED_ISSUE)).toBe(true);
+    expect(h.items()).toEqual([]);
+    setOpen(CLOSED_ISSUE, true, h.clock);
+    await tick(h);
+    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
+    expect(h.badge()).toBe(1);
+    setOpen(CLOSED_ISSUE, false, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(0);
+    expect(h.c.getState().pendingCount).toBe(P);
+    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
   });
 
   it('label removed and put back → notified again; the removal itself is silent', async () => {
@@ -277,75 +314,71 @@ describe('pending reminders against the fake GitHub', () => {
     setLabel(SEEDED, false, h.clock);
     await tick(h);
     expect(h.items()).toEqual([]);
-    expect(h.badge()).toBe(P - 1);
+    expect(h.c.getState().pendingCount).toBe(P - 1);
     setLabel(SEEDED, true, h.clock);
     await tick(h);
     expect(h.items()).toEqual([key(SEEDED)]);
-    expect(h.badge()).toBe(P);
+    expect(h.badge()).toBe(1);
   });
 
   it('an item carried by two sources is notified once, counted once', async () => {
     const h = await signedIn({ sources: [PROJECT_URL, REPO] });
     await h.c.start();
     await h.c.desktopSettled();
-    // a merged PR known to the repo list too (recently updated), and an open issue in both
-    addToRepoList(MERGED_PR, 'closed', true, h.clock);
-    setLabel(MERGED_PR, true, h.clock);
     setLabel(OPEN_NEW, true, h.clock);
     await tick(h);
-    // "did happen": both sources were read this round and both carry the items
-    const st = h.c.getState().sync.sources;
-    expect(st.every((s) => s.ok)).toBe(true);
-    const data = h.c.getBoardData().items.find((i) => i.key === key(MERGED_PR))!;
+    // "did happen": both sources were read this round and both carry the item
+    expect(h.c.getState().sync.sources.every((s) => s.ok)).toBe(true);
+    const data = h.c.getBoardData().items.find((i) => i.key === key(OPEN_NEW))!;
     expect(data.sources.sort()).toEqual([PROJECT_KEY, REPO_KEY].sort());
-    expect(h.items().sort()).toEqual([key(OPEN_NEW), key(MERGED_PR)].sort());
-    expect(h.badge()).toBe(P + 2);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.badge()).toBe(1);
+    expect(h.c.getState().pendingCount).toBe(P + 1);
   });
 
   it('a source that fails mid-pagination: neither new nor removed that round; the real change is notified after it recovers', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
-    const pages = fake.state.projects.get('org/gigleai/11')!;
-    const onPage2 = pages[1].items.nodes.find((n: any) => n.content?.labels?.nodes.some((l: any) => l.name === LABEL));
-    const onPage1 = pages[0].items.nodes.find((n: any) => n.content?.labels?.nodes.some((l: any) => l.name === LABEL));
-    expect(onPage1 && onPage2).toBeTruthy();
-    // page 2 fails; meanwhile one label went away (page 1) and one came (page 1)
+    // page 2 fails; meanwhile one label went away and one came
     fake.state.failProjectPage.set('org/gigleai/11', 1);
-    setLabel(onPage1.content.number, false, h.clock);
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(SEEDED, false, h.clock);
+    setLabel(OPEN_NEW, true, h.clock);
     await tick(h);
     expect(h.c.getState().sync.sources[0]).toMatchObject({ ok: false });
     expect(h.items()).toEqual([]);
-    expect(h.badge()).toBe(P);
+    expect(h.c.getState().pendingCount).toBe(P);
     // still failing: still nothing
     await tick(h);
     expect(h.items()).toEqual([]);
     // recovers: the real change shows — the newly labelled one is new, the removed one just drops out
     fake.state.failProjectPage.delete('org/gigleai/11');
     await tick(h);
-    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
-    expect(h.badge()).toBe(P);
-    expect(h.summaries()).toHaveLength(1);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.badge()).toBe(1);
+    expect(h.c.getState().pendingCount).toBe(P);
   });
 
   it('offline rounds and back: the same items are not notified again', async () => {
     const h = await signedIn({ sources: [PROJECT_URL, REPO] });
     await h.c.start();
     await h.c.desktopSettled();
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
     fake.state.offline = true;
     await tick(h);
     await tick(h);
     expect(h.c.getState().sync.offline).toBe(true);
-    expect(h.badge()).toBe(P);
+    expect(h.badge()).toBe(1);
     fake.state.offline = false;
     await tick(h);
     expect(h.c.getState().sync.offline).toBe(false);
-    expect(h.items()).toEqual([]);
-    expect(h.summaries()).toHaveLength(1);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.badge()).toBe(1);
   });
 
-  it('start offline: no summary, no badge until the first complete read; then exactly one summary', async () => {
+  it('start offline: nothing until the first complete read, which is only a baseline; later labels are notified', async () => {
     const first = await signedIn({ sources: [PROJECT_URL] });
     await first.c.start();
     await first.c.desktopSettled();
@@ -356,33 +389,36 @@ describe('pending reminders against the fake GitHub', () => {
     await h.c.start();
     await h.c.desktopSettled();
     expect(h.c.getBoardData().items.length).toBeGreaterThan(0); // the cache shows
-    expect(h.alerts).toEqual([]);
+    expect(h.c.getState().pendingCount).toBe(0);
     fake.state.offline = false;
     await tick(h);
-    expect(h.items()).toEqual([]);
-    expect(h.summaries()).toHaveLength(1);
-    expect(h.badge()).toBe(P);
+    expect(h.c.getState().pendingCount).toBe(P); // the baseline was taken
+    expect(h.alerts).toEqual([]);
+    expect(h.badge()).toBe(0);
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
   });
 
-  it('a newly added source: what it brings is summarised once, not notified one by one', async () => {
+  it('a newly added source: what it already has is silent — no notification, no summary, not unread', async () => {
     const h = await signedIn({ sources: [REPO] });
     await h.c.start();
     await h.c.desktopSettled();
-    expect(h.summaries()).toHaveLength(1);
-    expect(h.summaries()[0].title).toBe(`${R} 条待处理`);
-    expect(h.badge()).toBe(R);
+    expect(h.c.getState().pendingCount).toBe(R);
+    // an open labelled issue only the Project carries
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    setOpen(CLOSED_ISSUE, true, h.clock);
     h.c.addSource(PROJECT_URL);
     await h.c.syncNow();
     await h.c.desktopSettled();
-    expect(h.items()).toEqual([]);
-    expect(h.summaries()).toHaveLength(2);
-    expect(h.summaries()[1]).toMatchObject({ title: `${P} 条待处理` });
-    expect(h.summaries()[1].body).toContain(`新加的来源带来 ${P_ONLY} 条`);
-    expect(h.badge()).toBe(P);
+    expect(labelledOnBoard(h, CLOSED_ISSUE)).toBe(true);
+    expect(h.c.getState().pendingCount).toBe(R + 1);
+    expect(h.alerts).toEqual([]);
+    expect(h.badge()).toBe(0);
     // and from then on it is a normal source
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW, true, h.clock);
     await tick(h);
-    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
   });
 
   it('a new label during the round that adds a source is still a notification when another source already had a baseline', async () => {
@@ -394,21 +430,23 @@ describe('pending reminders against the fake GitHub', () => {
     await h.c.syncNow();
     await h.c.desktopSettled();
     expect(h.items()).toEqual([key(OPEN_NEW)]);
-    expect(h.summaries()[1].body).toContain(`新加的来源带来 ${P_ONLY} 条`);
-    expect(h.badge()).toBe(P + 1);
+    expect(h.badge()).toBe(1);
+    expectBadgeIsUnread(h);
   });
 
   it('removing a source drops what only it carried, silently', async () => {
     const h = await signedIn({ sources: [PROJECT_URL, REPO] });
+    setLabel(CLOSED_ISSUE, true, h.clock);
+    setOpen(CLOSED_ISSUE, true, h.clock);
     await h.c.start();
     await h.c.desktopSettled();
+    expect(h.c.getState().pendingCount).toBe(P + 1);
     h.c.removeSource(PROJECT_KEY);
     await h.c.desktopSettled();
-    expect(h.badge()).toBe(R);
     expect(h.c.getState().pendingCount).toBe(R);
     await tick(h);
-    expect(h.items()).toEqual([]);
-    expect(h.summaries()).toHaveLength(1);
+    expect(h.alerts).toEqual([]);
+    expect(h.badge()).toBe(0);
   });
 
   it('another label name: recounted silently; label match ignores case like GitHub; one setting with "hand back to agent"', async () => {
@@ -416,16 +454,14 @@ describe('pending reminders against the fake GitHub', () => {
     await h.c.start();
     await h.c.desktopSettled();
     // the reminder label IS the "waiting for a human" label that hand-back removes
-    h.c.setHandBack({ human: '  DONE ' });
+    h.c.setHandBack({ human: `  ${OTHER.name.toUpperCase()} ` });
     await h.c.desktopSettled();
-    expect(h.c.getState().handBack.human).toBe('DONE');
-    expect(h.c.getState().pendingCount).toBeGreaterThan(50);
-    // the badge is the unread part (GitHub#185): a settings change brings no new unread item
-    expect(h.badge()).toBe(h.c.getState().unreadCount);
-    expect(h.badge()).toBeLessThanOrEqual(P);
-    expect(h.alerts).toHaveLength(1);
+    expect(h.c.getState().handBack.human).toBe(OTHER.name.toUpperCase());
+    expect(h.c.getState().pendingCount).toBe(OTHER.open);
+    // a settings change brings no new unread item and no notification
+    expect(h.badge()).toBe(0);
     await tick(h);
-    expect(h.alerts).toHaveLength(1);
+    expect(h.alerts).toEqual([]);
     // changing only the other label does not touch the count
     const before = h.badges.length;
     h.c.setHandBack({ agent: 'ready/agent' });
@@ -435,131 +471,59 @@ describe('pending reminders against the fake GitHub', () => {
     h.c.setHandBack({ human: '' });
     await h.c.desktopSettled();
     expect(h.c.getState().handBack.human).toBe(LABEL);
-    expect(h.badge()).toBe(P);
+    expect(h.c.getState().pendingCount).toBe(P);
+    expect(h.badge()).toBe(0);
   });
 
   it('a configured label name survives a restart and is the one used', async () => {
-    const h = await signedIn({ sources: [PROJECT_URL], seed: { handBack: { human: 'Done', agent: 'pending/agent' } } });
+    const h = await signedIn({ sources: [PROJECT_URL], seed: { handBack: { human: OTHER.name, agent: 'pending/agent' } } });
     await h.c.start();
     await h.c.desktopSettled();
-    expect(h.c.getState().handBack.human).toBe('Done');
-    expect(h.summaries()[0].title).not.toBe(`${P} 条待处理`);
-    expect(h.badge()).toBe(h.c.getState().pendingCount);
-    expect(h.badge()).toBeGreaterThan(50);
+    expect(h.c.getState().handBack.human).toBe(OTHER.name);
+    expect(h.c.getState().pendingCount).toBe(OTHER.open);
+    expect(h.alerts).toEqual([]);
+    expect(h.badge()).toBe(0);
   });
 
-  it('sign out clears the badge and the count', async () => {
+  it('sign out clears the badge and the count; signing in again takes a new baseline, silently', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(1);
     await h.c.logout();
     await h.c.desktopSettled();
     expect(h.badge()).toBe(0);
     expect(h.c.getState().pendingCount).toBe(0);
-  });
-});
-
-describe("the settings page's list of what the badge counts (GitHub#185)", () => {
-  // what both sources carry with the label after seeding, read from the recording (not from the client)
-  const startKeys = () => {
-    const out = new Set<string>();
-    for (const x of rawProject) if (projPending(x)) out.add(`${x.content.repository.nameWithOwner.toLowerCase()}#${x.content.number}`);
-    for (const i of rawRepo) if (repoPending(i)) out.add(key(i.number));
-    out.add(key(SEEDED));
-    return [...out].sort();
-  };
-
-  it('lists exactly the items the badge counts through start, new labels, a failing source, a removed label, another label name, a removed source and sign-out', async () => {
-    const h = await signedIn({ sources: [PROJECT_URL, REPO] });
-    await h.c.start();
+    // labelled while signed out, then the same account signs in again through the browser
+    setLabel(OPEN_NEW2, true, h.clock);
+    fake.state.nextGrant = { token: FAKE_TOKEN };
+    h.c.setClientId(fake.state.oauthClientId);
+    const login = h.c.startLogin();
+    for (let i = 0; i < 500 && h.c.getState().login.status !== 'waiting'; i++) await new Promise((r) => setTimeout(r, 10));
+    fake.resolveGrant('approved');
+    await login;
     await h.c.desktopSettled();
-    // start: the recording's pending items, the cross-source one once
-    expect(listKeys(h)).toEqual(startKeys());
-    expect(h.badge()).toBe(P);
-    expectListIsBadge(h);
-    // a new label on an open issue and on a merged PR both sources carry: listed once each
-    addToRepoList(MERGED_PR, 'closed', true, h.clock);
-    setLabel(MERGED_PR, true, h.clock);
-    setLabel(OPEN_NEW, true, h.clock);
-    await tick(h);
-    expect(listKeys(h)).toEqual([...startKeys(), key(MERGED_PR), key(OPEN_NEW)].sort());
-    expect(h.c.getBoardData().items.find((i) => i.key === key(MERGED_PR))!.sources.sort()).toEqual([PROJECT_KEY, REPO_KEY].sort());
-    const merged = h.c.getState().pendingItems.find((e) => e.key === key(MERGED_PR))!;
-    expect(merged).toMatchObject({ kind: 'pr', state: 'merged', number: MERGED_PR, repo: REPO });
-    expect(merged.url).toContain(`/pull/${MERGED_PR}`);
-    // the Project fails mid-pagination while a label goes away on its page 1: the list keeps last round's, like the badge
-    const before = listKeys(h);
-    const onPage1 = fake.state.projects.get('org/gigleai/11')![0].items.nodes.find(
-      (n: any) => n.content?.labels?.nodes.some((l: any) => l.name === LABEL) && n.content.repository.nameWithOwner === REPO && !rawRepo.some((i: any) => i.number === n.content.number),
-    );
-    expect(onPage1).toBeTruthy();
-    fake.state.failProjectPage.set('org/gigleai/11', 1);
-    setLabel(onPage1.content.number, false, h.clock);
-    await tick(h);
-    expect(h.c.getState().sync.sources.find((s) => s.sourceKey === PROJECT_KEY)).toMatchObject({ ok: false });
-    expect(listKeys(h)).toEqual(before);
-    // recovers: the removed label drops out of the list
-    fake.state.failProjectPage.delete('org/gigleai/11');
-    await tick(h);
-    expect(listKeys(h)).toEqual(before.filter((k) => k !== key(onPage1.content.number)));
-    // another label name: list recounted with the badge
-    h.c.setHandBack({ human: 'Done' });
-    await h.c.desktopSettled();
-    expectListIsBadge(h);
-    expect(h.c.getState().pendingItems.length).toBeGreaterThan(50);
-    h.c.setHandBack({ human: '' });
-    await h.c.desktopSettled();
-    expectListIsBadge(h);
-    // a removed source: what only it carried leaves the list
-    h.c.removeSource(PROJECT_KEY);
-    await h.c.desktopSettled();
-    expectListIsBadge(h);
-    expect(listKeys(h).every((k) => k.startsWith('gigleai/cavil-loop#'))).toBe(true);
-    // and the list is what the repository source still shows with the label (the board now holds only that source)
-    const onBoard = h.c.getBoardData().items.filter((i) => i.labels.some((l) => l.name === LABEL)).map((i) => i.key).sort();
-    expect(onBoard.length).toBeGreaterThan(0);
-    expect(listKeys(h)).toEqual(onBoard);
-    expect(listKeys(h)).toContain(key(OPEN_NEW));
-    // sign-out: empty, like the badge
-    await h.c.logout();
-    await h.c.desktopSettled();
-    expect(h.c.getState().pendingItems).toEqual([]);
+    // "did happen": signed in and read again, both labelled items pending through that read
+    expect(h.c.getState().phase).toBe('ready');
+    expect(h.c.getState().pendingCount).toBe(P + 2);
+    // ...but that first read is history: nothing notified since, nothing unread
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
     expect(h.badge()).toBe(0);
   });
-
-  it('a row opens like its notification does: the detail when the board has it, GitHub when it does not, nothing for an item no longer pending', async () => {
-    const h = await signedIn({ sources: [PROJECT_URL, REPO] });
-    await h.c.start();
-    await h.c.desktopSettled();
-    setLabel(CLOSED_ISSUE, true, h.clock); // only the Project carries it
-    await tick(h);
-    // on the board: its detail in the app, no browser
-    h.c.openPending(key(SEEDED));
-    expect(h.c.getState().focus).toMatchObject({ key: key(SEEDED) });
-    // the board shows only the repository source now: the Project-only item opens on GitHub
-    h.c.setView({ selected: [REPO_KEY] });
-    expect(h.c.getBoardData().items.some((i) => i.key === key(CLOSED_ISSUE))).toBe(false);
-    const seq = h.c.getState().focus!.seq;
-    h.c.openPending(key(CLOSED_ISSUE));
-    for (let i = 0; i < 100 && !h.opened.length; i++) await new Promise((r) => setTimeout(r, 10));
-    expect(h.opened).toEqual([`https://github.com/${REPO}/issues/${CLOSED_ISSUE}`]);
-    expect(h.c.getState().focus!.seq).toBe(seq);
-    // not pending (any more): nothing at all
-    h.c.openPending(key(OPEN_NEW));
-    await settle();
-    expect(h.opened).toHaveLength(1);
-    expect(h.c.getState().focus!.seq).toBe(seq);
-  });
 });
 
-describe('the badge is the unread count (GitHub#185 review: the maintainer\'s ask)', () => {
+describe('the badge is only the unread count (GitHub#185, #251)', () => {
   it('switching to the window clears the badge and takes back the notifications; what comes while it is in front is not unread; leaving it counts anew', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
-    // not looked at yet: everything the start-up summary brought is unread
-    expect(h.badge()).toBe(P);
-    expect(h.c.getState().unreadCount).toBe(P);
+    // never looked at, but what was there at start is history: not unread
+    expect(h.badge()).toBe(0);
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(1);
     expect(h.cleared).toEqual([]);
     // the user switches to the window: badge 0, the delivered notifications are taken back, nothing else changes
     h.c.onDesktopEvent({ kind: 'active' });
@@ -567,18 +531,18 @@ describe('the badge is the unread count (GitHub#185 review: the maintainer\'s as
     expect(h.badge()).toBe(0);
     expect(h.cleared).toHaveLength(1);
     expect(h.c.getState().unreadCount).toBe(0);
-    expect(h.c.getState().pendingCount).toBe(P);
-    expect(h.c.getState().pendingItems).toHaveLength(P);
+    expect(h.c.getState().pendingCount).toBe(P + 1);
     // a new label while the window is in front: notified as before, but already seen
-    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
     await tick(h);
-    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.items()).toEqual([key(OPEN_NEW), key(OPEN_NEW2)]);
     expect(h.badge()).toBe(0);
     // the user leaves the window: the next new item is unread again
     h.c.onDesktopEvent({ kind: 'inactive' });
     setLabel(CLOSED_ISSUE, true, h.clock);
+    setOpen(CLOSED_ISSUE, true, h.clock);
     await tick(h);
-    expect(h.items()).toEqual([key(OPEN_NEW), key(CLOSED_ISSUE)]);
+    expect(h.items()).toEqual([key(OPEN_NEW), key(OPEN_NEW2), key(CLOSED_ISSUE)]);
     expect(h.badge()).toBe(1);
     // its label taken off before anyone looked: nothing to read any more
     setLabel(CLOSED_ISSUE, false, h.clock);
@@ -601,15 +565,13 @@ describe('the badge is the unread count (GitHub#185 review: the maintainer\'s as
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
-    h.c.onDesktopEvent({ kind: 'active' });
-    h.c.onDesktopEvent({ kind: 'inactive' });
     setLabel(OPEN_NEW, true, h.clock);
     await tick(h);
     expect(h.badge()).toBe(1);
-    h.c.setHandBack({ human: 'DONE' });
+    h.c.setHandBack({ human: OTHER.name });
     await h.c.desktopSettled();
-    // DONE items are pending now, but nobody was told about them as new: not unread
-    expect(h.c.getState().pendingCount).toBeGreaterThan(50);
+    // items with the other label are pending now, but nobody was told about them as new: not unread
+    expect(h.c.getState().pendingCount).toBe(OTHER.open);
     expect(h.badge()).toBe(h.c.getState().unreadCount);
     expect(h.badge()).toBeLessThanOrEqual(1);
     h.c.setHandBack({ human: '' });
@@ -621,7 +583,9 @@ describe('the badge is the unread count (GitHub#185 review: the maintainer\'s as
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
-    expect(h.badge()).toBe(P);
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(1);
     await h.c.logout();
     await h.c.desktopSettled();
     expect(h.badge()).toBe(0);
@@ -635,17 +599,19 @@ describe('a notification the system refuses', () => {
     const h = await signedIn({ sources: [PROJECT_URL], delivery });
     await h.c.start();
     await h.c.desktopSettled();
-    await settle();
-    // "did happen": the summary was sent and refused
-    expect(h.summaries()).toHaveLength(1);
-    expect(h.c.getState().notifyProblem).toBe('Notifications are not allowed for this application');
-    expect(h.badge()).toBe(P);
-    // the user allows notifications; the next one goes out and the warning goes away
-    delivery.refuse = null;
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW, true, h.clock);
     await tick(h);
     await settle();
-    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
+    // "did happen": the notification was sent and refused
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.c.getState().notifyProblem).toBe('Notifications are not allowed for this application');
+    expect(h.badge()).toBe(1);
+    // the user allows notifications; the next one goes out and the warning goes away
+    delivery.refuse = null;
+    setLabel(OPEN_NEW2, true, h.clock);
+    await tick(h);
+    await settle();
+    expect(h.items()).toEqual([key(OPEN_NEW), key(OPEN_NEW2)]);
     expect(h.c.getState().notifyProblem).toBeNull();
   });
 });
@@ -654,12 +620,31 @@ describe('the tracker on its own', () => {
   const snap = (sourceKey: string, ...items: ReturnType<typeof item>[]): SourceSnapshot => ({ sourceKey, fetchedAt: 0, items });
   const pend = (n: number, extra = {}) => item('o/r', n, { labels: [{ name: LABEL, color: '' }], ...extra });
 
-  it('a closed item counts the same as an open one', () => {
+  it('only open items are pending: a closed issue and a merged / closed PR never are; a draft PR is; reopened counts as new', () => {
     const t = new PendingTracker(LABEL);
     t.observe([snap('a')], ['a']);
-    const ch = t.observe([snap('a', pend(1, { state: 'closed' }), pend(2, { state: 'merged', kind: 'pr' }))], ['a']);
-    expect(ch.appeared.map((i) => i.number).sort()).toEqual([1, 2]);
+    const ch = t.observe(
+      [snap('a', pend(1, { state: 'closed' }), pend(2, { state: 'merged', kind: 'pr' }), pend(3, { state: 'closed', kind: 'pr' }), pend(4, { kind: 'pr', isDraft: true }), pend(5))],
+      ['a'],
+    );
+    expect(ch.appeared.map((i) => i.number).sort()).toEqual([4, 5]);
     expect(t.count()).toBe(2);
+    expect(t.has('o/r#1')).toBe(false);
+    expect(t.has('o/r#5')).toBe(true);
+    // #1 reopened with its label: new; #5 closed: drops out, silently
+    const next = t.observe([snap('a', pend(1), pend(2, { state: 'merged', kind: 'pr' }), pend(4, { kind: 'pr', isDraft: true }), pend(5, { state: 'closed' }))], ['a']);
+    expect(next.appeared.map((i) => i.number)).toEqual([1]);
+    expect(t.has('o/r#5')).toBe(false);
+  });
+
+  it('a first read is only a baseline: at start, and for a source added next to one that already had its baseline', () => {
+    const t = new PendingTracker(LABEL);
+    expect(t.observe([snap('a', pend(1))], ['a']).appeared).toEqual([]);
+    expect(t.count()).toBe(1);
+    // b is read for the first time while a newly carries #3: only #3 is new
+    const ch = t.observe([snap('a', pend(1), pend(3)), snap('b', pend(2), pend(3))], ['a', 'b']);
+    expect(ch.appeared.map((i) => i.number)).toEqual([3]);
+    expect(t.count()).toBe(3);
   });
 
   it('two sources that both start carrying one item in the same round: one notification', () => {
@@ -678,38 +663,6 @@ describe('the tracker on its own', () => {
     expect(t.count()).toBe(1);
     // b reads fine and still has it: nothing new
     expect(t.observe([snap('a'), snap('b', pend(1))], ['a', 'b']).appeared).toEqual([]);
-  });
-
-  it('the list keeps what colours and words an entry (kind, state, close reason, draft mark) and puts open ones first, newest first', () => {
-    const t = new PendingTracker(LABEL);
-    t.observe(
-      [
-        snap(
-          'a',
-          pend(1, { state: 'closed', stateReason: 'not_planned', updatedAt: '2026-11-05T00:00:00Z' }),
-          pend(2, { kind: 'pr', state: 'open', isDraft: true, updatedAt: '2026-10-01T00:00:00Z' }),
-          pend(3, { kind: 'pr', state: 'merged', isDraft: false, updatedAt: '2026-11-04T00:00:00Z' }),
-          pend(4, { state: 'open', updatedAt: '2026-11-02T00:00:00Z' }),
-          pend(5, { state: 'closed', stateReason: 'duplicate', updatedAt: '2026-11-06T00:00:00Z' }),
-        ),
-        // the same item in another source, updated later there: one entry, the newer copy
-        snap('b', pend(1, { state: 'closed', stateReason: 'not_planned', title: 'newer', updatedAt: '2026-11-05T12:00:00Z' })),
-      ],
-      ['a', 'b'],
-    );
-    const list = t.list();
-    expect(list.map((e) => e.number)).toEqual([4, 2, 5, 1, 3]);
-    expect(list.length).toBe(t.count());
-    expect(list.find((e) => e.number === 1)).toMatchObject({ stateReason: 'not_planned', title: 'newer', kind: 'issue', state: 'closed' });
-    expect(list.find((e) => e.number === 5)).toMatchObject({ stateReason: 'duplicate' });
-    expect(list.find((e) => e.number === 2)).toMatchObject({ kind: 'pr', state: 'open', isDraft: true });
-    expect(list.find((e) => e.number === 3)).toMatchObject({ kind: 'pr', state: 'merged', isDraft: false });
-  });
-
-  it('no summary when the first read brings nothing', () => {
-    const t = new PendingTracker(LABEL);
-    expect(t.observe([snap('a')], ['a']).summary).toBeNull();
-    expect(t.observe([snap('b', pend(1))], ['a', 'b']).summary).toMatchObject({ total: 1, fromNewSources: 1, atStart: false });
   });
 });
 
@@ -736,14 +689,14 @@ describe('what the shell tells the window (GitHub#169)', () => {
     const f = feed(h);
     (h.c as any).deps.desktop.nextEvent = f.next;
     void h.c.runDesktopEvents();
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW, true, h.clock);
     h.clock.t += 60_000;
     const rounds = () => h.backend.sent.filter((m) => m.cmd === 'replaceSnapshots').length;
     const before = rounds();
     f.push({ kind: 'tick' });
     for (let i = 0; i < 300 && !h.items().length; i++) await new Promise((r) => setTimeout(r, 10));
     expect(rounds()).toBeGreaterThan(before);
-    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
     h.c.stopDesktopEvents();
   });
 
@@ -790,9 +743,11 @@ describe('what the shell tells the window (GitHub#169)', () => {
     };
     await h.c.start();
     await h.c.desktopSettled();
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
     await settle();
     expect(h.c.getState().notifyProblem).toBe('shell went away');
-    expect(h.badge()).toBe(P);
+    expect(h.badge()).toBe(1);
   });
 });
 
@@ -815,7 +770,7 @@ describe('calls to the shell that wait while things change (PR #173 review round
     await h.c.desktopSettled();
     const held = holdFirst(h);
     setLabel(OPEN_NEW, true, h.clock);
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
     h.clock.t += 60_000;
     await h.c.syncNow();
     await settle();
@@ -833,31 +788,13 @@ describe('calls to the shell that wait while things change (PR #173 review round
     expect(h.c.getState().phase).toBe('login');
   });
 
-  it('signed out while a notification waits: a summary queued behind it is not sent either', async () => {
-    const h = await signedIn({ sources: [REPO] });
-    await h.c.start();
-    await h.c.desktopSettled();
-    const held = holdFirst(h);
-    // one round: an item already counted becomes pending (notification) and a new source is read (summary)
-    setLabel(OPEN_NEW, true, h.clock);
-    h.c.addSource(PROJECT_URL);
-    await h.c.syncNow();
-    await settle();
-    expect(held.calls.map((a) => a.kind)).toEqual(['item']);
-    await h.c.logout();
-    held.release({ ok: true });
-    await settle();
-    await h.c.desktopSettled();
-    expect(held.calls.map((a) => a.kind)).toEqual(['item']);
-  });
-
   it('a source removed while a notification waits: the queued notification for its item is not sent', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
     const held = holdFirst(h);
     setLabel(OPEN_NEW, true, h.clock);
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
     h.clock.t += 60_000;
     await h.c.syncNow();
     await settle();
@@ -877,7 +814,7 @@ describe('calls to the shell that wait while things change (PR #173 review round
     await h.c.desktopSettled();
     const held = holdFirst(h);
     setLabel(OPEN_NEW, true, h.clock);
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
     h.clock.t += 60_000;
     await h.c.syncNow();
     await settle();
@@ -887,7 +824,7 @@ describe('calls to the shell that wait while things change (PR #173 review round
     await settle();
     await h.c.desktopSettled();
     expect(held.calls).toHaveLength(1);
-    expect(h.badge()).toBe(h.c.getState().pendingCount);
+    expect(h.badge()).toBe(0);
   });
 });
 
@@ -904,46 +841,33 @@ describe('one rule for every queued notification, across context changes (PR #17
     return { calls, release: () => release() };
   }
   const keysOf = (calls: Alert[]) => calls.filter((a) => a.kind === 'item').map((a) => (a as { key: string }).key);
-  const kinds = (calls: Alert[]) => calls.map((a) => a.kind);
   async function release(h: Harness, held: { release: () => void }) {
     held.release();
     await settle();
     await h.c.desktopSettled();
   }
 
-  it('a new source removed while its first-read summary is queued: the summary is not sent', async () => {
-    const h = await signedIn({ sources: [REPO] });
-    await h.c.start();
-    await h.c.desktopSettled();
-    const held = holdFirst(h);
-    setLabel(OPEN_NEW, true, h.clock);
-    h.c.addSource(PROJECT_URL);
-    await h.c.syncNow();
-    await settle();
-    expect(kinds(held.calls)).toEqual(['item']);
-    h.c.removeSource(PROJECT_KEY);
-    await release(h, held);
-    expect(kinds(held.calls)).toEqual(['item']);
-  });
-
-  it('a source removed and added back while an item notification is queued: the old one is not sent, the new addition only summarises', async () => {
+  it('a source removed and added back while an item notification is queued: the old one is not sent, the new addition sends nothing', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
     const held = holdFirst(h);
     setLabel(OPEN_NEW, true, h.clock);
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
     h.clock.t += 60_000;
     await h.c.syncNow();
     await settle();
-    expect(kinds(held.calls)).toEqual(['item']);
+    expect(held.calls).toHaveLength(1);
     h.c.removeSource(PROJECT_KEY);
     h.c.addSource(PROJECT_URL);
     await h.c.syncNow();
     await release(h, held);
-    // the held one was already with the system; the second old one never goes out; the re-added source summarises
-    expect(kinds(held.calls)).toEqual(['item', 'summary']);
-    expect(h.badge()).toBe(h.c.getState().pendingCount);
+    // the held one was already with the system; the second old one never goes out; the re-added source is only a baseline
+    expect(held.calls).toHaveLength(1);
+    // "did happen": the re-added source was read again, both items pending through it
+    expect(h.c.getState().pendingCount).toBe(P + 2);
+    // both were unread before and nobody has looked since: still unread (only switching to the window reads them)
+    expect(h.badge()).toBe(2);
   });
 
   it('one of two sources carrying an item is removed while its notification is queued: still sent (one item, one notification across sources); an item only that source carried is not', async () => {
@@ -952,7 +876,8 @@ describe('one rule for every queued notification, across context changes (PR #17
     await h.c.desktopSettled();
     const held = holdFirst(h);
     setLabel(OPEN_NEW, true, h.clock); // both sources
-    setLabel(CLOSED_ISSUE, true, h.clock); // the board only
+    setLabel(CLOSED_ISSUE, true, h.clock); // the board only, reopened
+    setOpen(CLOSED_ISSUE, true, h.clock);
     h.clock.t += 60_000;
     await h.c.syncNow();
     await settle();
@@ -971,7 +896,7 @@ describe('one rule for every queued notification, across context changes (PR #17
     await h.c.desktopSettled();
     const held = holdFirst(h);
     setLabel(OPEN_NEW, true, h.clock);
-    setLabel(CLOSED_ISSUE, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
     h.clock.t += 60_000;
     await h.c.syncNow();
     await settle();
@@ -980,38 +905,19 @@ describe('one rule for every queued notification, across context changes (PR #17
     h.c.setHandBack({ human: LABEL });
     await release(h, held);
     expect(held.calls).toHaveLength(1);
-    expect(h.badge()).toBe(P + 2);
-  });
-
-  it('a queued summary that still holds goes out with the count of the moment it goes out (= the badge)', async () => {
-    const h = await signedIn({ sources: [REPO] });
-    await h.c.start();
-    await h.c.desktopSettled();
-    const held = holdFirst(h);
-    setLabel(OPEN_NEW, true, h.clock);
-    h.c.addSource(PROJECT_URL);
-    await h.c.syncNow();
-    await settle();
-    expect(kinds(held.calls)).toEqual(['item']);
-    // a later round, sources unchanged: one item loses the label
-    setLabel(SEEDED, false, h.clock);
-    h.clock.t += 60_000;
-    await h.c.syncNow();
-    await release(h, held);
-    const summary = held.calls.find((a) => a.kind === 'summary')!;
-    expect(summary.title).toBe(`${h.c.getState().pendingCount} 条待处理`);
-    expect(h.badge()).toBe(h.c.getState().pendingCount);
+    expect(h.badge()).toBe(2);
   });
 
   it('nothing changes while one waits: every queued notification goes out (the rule does not drop valid ones)', async () => {
-    const h = await signedIn({ sources: [REPO] });
+    const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
     const held = holdFirst(h);
     setLabel(OPEN_NEW, true, h.clock);
-    h.c.addSource(PROJECT_URL);
+    setLabel(OPEN_NEW2, true, h.clock);
+    h.clock.t += 60_000;
     await h.c.syncNow();
     await release(h, held);
-    expect(kinds(held.calls)).toEqual(['item', 'summary']);
+    expect(keysOf(held.calls).sort()).toEqual([key(OPEN_NEW), key(OPEN_NEW2)].sort());
   });
 });
