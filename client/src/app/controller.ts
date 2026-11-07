@@ -18,7 +18,7 @@ import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, explainError, listRepoOptions, performAction, refusedForSure } from '../data/actions';
+import { ActionRefused, CreateUnanswered, explainError, joinCreatedIssue, listRepoOptions, performAction, refusedForSure } from '../data/actions';
 import { fetchRawDetail, toDetail } from '../data/detail';
 import { applyFreshItem, fetchItem, freshKey, freshViews, type FreshItem } from '../data/itemRefresh';
 import { contentToItem } from '../data/fetchSources';
@@ -1220,7 +1220,7 @@ export class Controller {
     }
   }
 
-  private async actNow(action: WriteAction, onOutcome?: (o: { missingProjects?: string[] }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
+  private async actNow(action: WriteAction, onOutcome?: (o: { missingProjects?: string[]; createdNodeId?: string }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
@@ -1453,39 +1453,56 @@ export class Controller {
       }
       return { ok: false, error: '没能存到本机，这次修改没发出', warning: null };
     }
-    return this.enqueueItem(action.key, async (): Promise<WriteResult> => {
-      const before = this.edits.get(id);
-      if (session !== this.session || !before?.reqs.some((q) => q.id === reqId)) {
-        return { ok: false, error: '这次修改在发出前被放弃或被后一次修改取代，没有发出', warning: null };
-      }
-      const c = await this.clientForCall(true);
-      if ('error' in c) return this.answerEdit(id, reqId, session, 'rejected', c.error);
-      const sent = markSent(before, reqId, this.stamp());
-      this.setEdit(id, sent);
-      if (!(await this.storeEdits())) return this.answerEdit(id, reqId, session, 'rejected', '没能存到本机，这次修改没发出');
-      const data = this.getBoardData();
-      const item = data.items.find((i) => i.key === action.key) ?? null;
-      let outcome;
-      try {
-        outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: [], cached: this.cachedItems() });
-      } catch (e) {
-        if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
-        const error = explainError(e, action.kind);
-        if (refusedForSure(e)) return this.answerEdit(id, reqId, session, 'rejected', error);
-        // not explainError's words: they say "nothing was changed", which is exactly what is not known here
-        return this.answerEdit(id, reqId, session, 'unknown', `没收到 GitHub 的明确答复（${(e as Error)?.message ?? String(e)}），不确定改没改上`);
-      }
-      await this.answerEdit(id, reqId, session, 'accepted', '');
-      let warning = outcome.warning;
-      if (session === this.session) {
-        for (const [repo, number] of outcome.touched) {
-          const problem = await this.refreshOne(c.client, session, repo, number);
-          if (problem) warning = [warning, problem].filter(Boolean).join('；');
+    // Only the write and its answer hold the item's queue (GitHub#229 review round 1): the re-read
+    // after an accepted change runs once the next change of the item may go out.
+    const slot = await this.enqueueItem(action.key, () => this.sendInQueue(id, reqId, action, session));
+    return slot.after ? slot.after() : slot.result;
+  }
+
+  /**
+   * One request of the item's queue. Every await may let the record change (a newer change of the
+   * same field, abandon, sign-out): after each one the record is read again and the request must
+   * still be in it — the copy from before the await is never written back.
+   */
+  private async sendInQueue(id: string, reqId: number, action: FieldAction, session: number): Promise<{ result: WriteResult; after?: () => Promise<WriteResult> }> {
+    const notSent = { result: { ok: false, error: '这次修改在发出前被放弃或被后一次修改取代，没有发出', warning: null } };
+    const holds = () => session === this.session && Boolean(this.edits.get(id)?.reqs.some((q) => q.id === reqId));
+    if (!holds()) return notSent;
+    const c = await this.clientForCall(true);
+    if (!holds()) return notSent;
+    if ('error' in c) return { result: await this.answerEdit(id, reqId, session, 'rejected', c.error) };
+    this.setEdit(id, markSent(this.edits.get(id)!, reqId, this.stamp()));
+    if (!(await this.storeEdits())) return { result: await this.answerEdit(id, reqId, session, 'rejected', '没能存到本机，这次修改没发出') };
+    if (!holds()) return notSent;
+    const data = this.getBoardData();
+    const item = data.items.find((i) => i.key === action.key) ?? null;
+    let outcome;
+    try {
+      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: [], cached: this.cachedItems() });
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      const error = explainError(e, action.kind);
+      if (refusedForSure(e)) return { result: await this.answerEdit(id, reqId, session, 'rejected', error) };
+      // not explainError's words: they say "nothing was changed", which is exactly what is not known here
+      return { result: await this.answerEdit(id, reqId, session, 'unknown', `没收到 GitHub 的明确答复（${(e as Error)?.message ?? String(e)}），不确定改没改上`) };
+    }
+    await this.answerEdit(id, reqId, session, 'accepted', '');
+    const touched = outcome.touched;
+    const first = outcome.warning;
+    return {
+      result: { ok: true, error: null, warning: first },
+      after: async () => {
+        let warning = first;
+        if (session === this.session) {
+          for (const [repo, number] of touched) {
+            const problem = await this.refreshOne(c.client, session, repo, number);
+            if (problem) warning = [warning, problem].filter(Boolean).join('；');
+          }
+          if (session === this.session) this.scheduleFollowUp(session);
         }
-        if (session === this.session) this.scheduleFollowUp(session);
-      }
-      return { ok: true, error: null, warning };
-    });
+        return { ok: true, error: null, warning };
+      },
+    };
   }
 
   private async answerEdit(id: string, reqId: number, session: number, outcome: 'accepted' | 'rejected' | 'unknown', reason: string): Promise<WriteResult> {
@@ -1683,8 +1700,16 @@ export class Controller {
     let r: WriteResult;
     let unanswered: string | null = null;
     let missing: string[] = [];
+    let nodeId = '';
     try {
-      r = await this.actNow(action, (o) => (missing = o.missingProjects ?? []), (e) => (unanswered = e instanceof CreateUnanswered ? e.reason : null));
+      r = await this.actNow(
+        action,
+        (o) => {
+          missing = o.missingProjects ?? [];
+          nodeId = o.createdNodeId ?? '';
+        },
+        (e) => (unanswered = e instanceof CreateUnanswered ? e.reason : null),
+      );
     } catch (e) {
       r = { ok: false, error: (e as Error).message, warning: null };
     }
@@ -1692,7 +1717,17 @@ export class Controller {
     const cur = job()!;
     if (r.ok && r.createdKey) {
       const number = Number(r.createdKey.split('#')[1]);
-      if (r.warning) this.setCreate({ ...cur, status: 'partial', message: r.warning, createdKey: r.createdKey, number, missingProjects: missing });
+      if (r.warning)
+        this.setCreate({
+          ...cur,
+          status: 'partial',
+          message: r.warning,
+          createdKey: r.createdKey,
+          number,
+          missingProjects: missing,
+          createdNodeId: nodeId,
+          plan: missing.map((k) => action.plan?.projects.find((x) => x.projectKey === k) ?? { projectKey: k, iterationId: null, status: null }),
+        });
       else this.setCreate(null, id);
       this.set({ focus: { key: r.createdKey, seq: ++this.focusSeq } });
       return;
@@ -1725,23 +1760,46 @@ export class Controller {
     this.setCreate(null, id);
   }
 
-  /** A created issue that missed some Projects: add exactly those to it (never a new issue). */
+  /**
+   * A created issue that missed some Projects: add exactly those to it (never a new issue).
+   * Addressed by the node id GitHub returned when it was created — the issue need not be on
+   * any source (with only Project sources it is not, since joining that board is what failed).
+   */
   async retryCreateProjects(id: number): Promise<WriteResult> {
     const cur = this.state.creates.find((j) => j.id === id);
     if (!cur || cur.status !== 'partial' || !cur.createdKey) return { ok: false, error: '没有要补的看板', warning: null };
+    const c = await this.clientForCall(true);
+    if ('error' in c) return { ok: false, error: c.error, warning: null };
     const left: string[] = [];
+    const fieldProblems: string[] = [];
     let error: string | null = null;
     for (const projectKey of cur.missingProjects ?? []) {
-      const r = await this.actNow({ kind: 'addToProject', key: cur.createdKey, projectKey, iterationId: null, status: null });
-      if (!r.ok) {
+      const p = this.allProjects().find((x) => x.key === projectKey);
+      const entry = cur.plan?.find((x) => x.projectKey === projectKey) ?? { iterationId: null, status: null };
+      try {
+        if (!p) throw new ActionRefused('这个看板已不在来源里');
+        const fieldError = await joinCreatedIssue(c.client, p, cur.createdNodeId ?? '', entry.iterationId, entry.status);
+        if (fieldError !== null) fieldProblems.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+      } catch (e) {
+        if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
         left.push(projectKey);
-        error = r.error;
+        error = explainError(e, 'addToProject');
       }
     }
+    if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
+    const number = Number(cur.createdKey.split('#')[1]);
+    const joined = (cur.missingProjects ?? []).length > left.length;
+    if (joined) {
+      // the boards it joined carry it now: read it once so it shows there
+      await this.refreshOne(c.client, c.session, cur.repo, number);
+      this.scheduleFollowUp(c.session);
+    }
     const now = this.state.creates.find((j) => j.id === id);
-    if (!now) return { ok: !left.length, error, warning: null };
+    const warning = fieldProblems.length ? `已加入看板，但字段没设上 ${fieldProblems.join('、')}` : null;
+    if (!now) return { ok: !left.length, error, warning };
     if (!left.length) this.setCreate(null, id);
     else this.setCreate({ ...now, missingProjects: left, message: `#${now.number} 已建好，但还有 ${left.length} 个看板没加进去：${error}` });
-    return left.length ? { ok: false, error, warning: null } : { ok: true, error: null, warning: null };
+    return left.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
   }
+
 }

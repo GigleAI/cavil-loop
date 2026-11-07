@@ -66,6 +66,22 @@ export interface ActionOutcome {
   createdKey?: string;
   /** createIssue: keys of the Projects the new issue did not join (GitHub#229: a retry adds exactly these) */
   missingProjects?: string[];
+  /** createIssue: the new issue's node id, from GitHub's own answer (what a retry adds to a board) */
+  createdNodeId?: string;
+}
+
+/**
+ * GitHub#229: add an issue this app just created (its node id from the create answer)
+ * to one Project, then set the iteration / status it was meant to carry. Works whether or
+ * not the issue is on any source yet — it is not, when joining that very board failed.
+ * Returns the field error (joined, a field not set), null when everything was set.
+ */
+export async function joinCreatedIssue(client: GitHubClient, p: ProjectMeta, nodeId: string, iterationId: string | null, status: string | null): Promise<unknown | null> {
+  if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
+  if (!p.viewerCanUpdate) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);
+  if (!nodeId) throw new ActionRefused('不知道新 issue 在 GitHub 上的编号，不能补加；请到网页上加进看板');
+  checkFieldValues(p, iterationId, status);
+  return joinProject(client, p, nodeId, iterationId, status);
 }
 
 /**
@@ -502,6 +518,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
         createdKey: itemKey(action.repo, created.number),
         missingProjects,
+        createdNodeId: created.node_id,
       };
     }
   }

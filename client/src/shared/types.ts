@@ -149,6 +149,9 @@ export interface CreateJob {
   number?: number;
   /** partial: Projects it did not join (a retry adds exactly these to #number) */
   missingProjects?: string[];
+  /** partial: the new issue's node id from GitHub's create answer, and what each board was meant to carry (the retry needs neither the board data nor a search) */
+  createdNodeId?: string;
+  plan?: { projectKey: string; iterationId: string | null; status: string | null }[];
   /** unknown: same-title issues this account opened in this repository lately (links only) */
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */

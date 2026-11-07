@@ -27,7 +27,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function ready(opts: { intercept?: (cmd: string, args: any) => unknown; observeMs?: number; observeFirstMs?: number; keepFake?: boolean } = {}) {
+async function ready(opts: { intercept?: (cmd: string, args: any, next: (cmd: string, args: any) => Promise<unknown>) => unknown; observeMs?: number; observeFirstMs?: number; keepFake?: boolean; repo?: boolean } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -37,7 +37,7 @@ async function ready(opts: { intercept?: (cmd: string, args: any) => unknown; ob
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
-  const backend: Backend = opts.intercept ? { call: async (cmd, args) => (opts.intercept!(cmd, args) as any) ?? harness.call(cmd, args) } : harness;
+  const backend: Backend = opts.intercept ? { call: async (cmd, args) => (opts.intercept!(cmd, args, (c2, a2) => harness.call(c2, a2)) as any) ?? harness.call(cmd, args) } : harness;
   const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', observeMs: opts.observeMs ?? 60_000, observeFirstMs: opts.observeFirstMs ?? 60_000 });
   controllers.push(c);
   if (!opts.keepFake) {
@@ -50,7 +50,7 @@ async function ready(opts: { intercept?: (cmd: string, args: any) => unknown; ob
   }
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
-    c.addSource(REPO);
+    if (opts.repo !== false) c.addSource(REPO);
   }
   await c.start();
   await c.syncNow();
@@ -294,23 +294,104 @@ describe('kept on this computer, for this account only', () => {
     expect(c.getState().editsNeedingAction).toBe(0);
   });
 
-  it('not stored → not sent', async () => {
+  /** the stored row's requests, by answer: which save point a write of it is */
+  const answersIn = (args: any): string[] =>
+    (args.snapshots ?? []).filter((s: any) => s.sourceKey === EDITS_KEY).flatMap((s: any) => s.edits.flatMap((r: any) => r.reqs.map((q: any) => q.answer)));
+
+  it('not stored (the change itself) → not sent', async () => {
     let refuse = false;
+    let refused = 0;
     const { c } = await ready({
       intercept: (cmd, args) => {
-        if (refuse && cmd === 'replaceSnapshots' && (args.snapshots ?? []).some((s: any) => s.sourceKey === EDITS_KEY)) throw new Error('disk full');
+        // only the first save point: the record with its request not yet marked as sent
+        if (refuse && cmd === 'replaceSnapshots' && answersIn(args).includes('queued')) {
+          refused++;
+          throw new Error('disk full');
+        }
         return undefined;
       },
     });
     refuse = true;
     const before = milestoneWrites().length;
     const r = await c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    expect(refused).toBe(1);
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/没能存到本机/);
     expect(milestoneWrites().length).toBe(before);
     refuse = false;
     expect((await c.act({ kind: 'setMilestone', key: K(N), title: 'v2' })).ok).toBe(true);
     expect(milestoneWrites().length).toBe(before + 1);
+  });
+
+  it('stored, but the "sent" mark not stored → not sent', async () => {
+    let refuse = false;
+    let refused = 0;
+    const { c } = await ready({
+      intercept: (cmd, args) => {
+        // only the second save point: the request marked as sent (the first one went through)
+        if (refuse && cmd === 'replaceSnapshots' && answersIn(args).includes('waiting')) {
+          refused++;
+          throw new Error('disk full');
+        }
+        return undefined;
+      },
+    });
+    refuse = true;
+    const before = milestoneWrites().length;
+    const r = await c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    expect(refused).toBe(1);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/没能存到本机/);
+    expect(milestoneWrites().length).toBe(before);
+    expect(markOf(c, 'milestone')!.status).toBe('failed');
+  });
+});
+
+describe('the item\'s queue (code review round 1)', () => {
+  it('a newer change of the same field, made while the earlier one waits for the credential check, is not lost: both go out in order, GitHub ends on the newer', async () => {
+    let gate: Promise<void> | null = null;
+    let open!: () => void;
+    let held = 0;
+    const { c } = await ready({
+      intercept: (cmd, args, next) => {
+        if (cmd === 'ensureFresh' && gate) {
+          held++;
+          const g = gate;
+          gate = null;
+          return g.then(() => next(cmd, args));
+        }
+        return undefined;
+      },
+    });
+    gate = new Promise<void>((r) => (open = r));
+    const p2 = c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    await until(() => held === 1, 'the v2 send waits on the credential check');
+    const p3 = c.act({ kind: 'setMilestone', key: K(N), title: 'v3' });
+    await until(() => markOf(c, 'milestone')?.targetText === 'v3', 'v3 recorded');
+    await c.settled();
+    open();
+    const [r2, r3] = await Promise.all([p2, p3]);
+    expect(r2.ok).toBe(true);
+    expect(r3.ok).toBe(true);
+    expect(milestoneWrites().map((w) => (w.body as any).milestone)).toEqual([4, 5]);
+    expect(milestoneOnGitHub()).toBe('v3');
+    expect(itemOf(c).milestone?.title).toBe('v3');
+    expect(markOf(c, 'milestone')).toBeNull();
+  });
+
+  it('the re-read after an accepted change does not hold the item\'s next write', async () => {
+    const { c } = await ready();
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh');
+    const p1 = c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    await until(() => fake.log.some((e) => e.operation === 'CavilItemRefresh'), 'the re-read went out (and is held)');
+    const labelPosts = () => fake.writes().filter((w) => w.method === 'POST' && w.path.endsWith(`/issues/${N}/labels`)).length;
+    const p2 = c.act({ kind: 'addLabel', key: K(N), label: 'bug', color: 'd73a4a' });
+    await until(() => labelPosts() === 1, 'the label write reached GitHub while the re-read is still held');
+    release();
+    expect((await p1).ok).toBe(true);
+    expect((await p2).ok).toBe(true);
+    expect(milestoneOnGitHub()).toBe('v2');
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
   });
 });
 
@@ -341,6 +422,24 @@ describe('a new issue does not hold the dialog: four outcomes', () => {
     expect(c.getState().creates).toEqual([]);
     expect(issuesOnGitHub()).toBe(before + 1);
     expect(fake.writes().filter((w) => w.operation === 'CavilAddProjectItem').length).toBe(2);
+  });
+
+  it('only Project sources: the created issue is on no source, the retry still joins it (by the node id from the create answer)', async () => {
+    const { c } = await ready({ repo: false });
+    expect(c.getState().sources.map((s) => s.kind)).toEqual(['project']);
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    const before = issuesOnGitHub();
+    await create(c, 'project only', [PROJECT_KEY]);
+    await until(() => c.getState().creates[0]?.status === 'partial', 'partial');
+    const job = c.getState().creates[0];
+    expect(c.getBoardData().items.some((i) => i.key === job.createdKey)).toBe(false);
+    fake.state.w.readOnlyProjects.delete('org/gigleai/11');
+    const r = await c.retryCreateProjects(job.id);
+    expect(r).toMatchObject({ ok: true });
+    expect(c.getState().creates).toEqual([]);
+    expect(issuesOnGitHub()).toBe(before + 1);
+    expect(fake.writes().filter((w) => w.operation === 'CavilAddProjectItem').length).toBe(2);
+    expect(c.getBoardData().items.some((i) => i.key === job.createdKey)).toBe(true);
   });
 
   it('no answer: "not sure" — no create button, nothing claimed, nothing sent again; the issue appearing later changes none of that', async () => {
