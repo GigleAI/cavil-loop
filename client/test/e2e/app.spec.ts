@@ -3607,3 +3607,67 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await expect(page.getByTestId('detail').locator('.reply .row.end').getByTestId('autopilot')).toHaveText('托管（自动合并）…');
   await app.close();
 });
+
+test('GitHub#231 (PR #241 review round 1): new issue while boards are not read yet — "not synced yet", never "no board added"; the default follows the first complete read', async () => {
+  const { app, page } = await launch(env);
+  await signIn(page);
+  const dialogOpen = async () => {
+    await page.getByTestId('write-entry').click();
+    await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
+  };
+  const unsynced = page.getByTestId('new-issue-project-unsynced');
+
+  // ---- 1. no board added at all: says so ----
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect.poll(async () => (await page.evaluate(async () => (await (window as any).cavil.get()).data.items.length)) as number, { timeout: 15_000 }).toBeGreaterThan(0);
+  await dialogOpen();
+  await expect(page.getByTestId('new-issue-projects-none')).toBeVisible();
+  await expect(page.getByTestId('new-issue-projects-none-synced')).toHaveCount(0);
+  await expect(unsynced).toHaveCount(0);
+  await page.getByTestId('confirm-cancel').click();
+
+  // ---- 2. the only board added, its first read failing: "not synced yet", not "no board added" ----
+  env.fake.state.failProjectPage.set(P11, 0);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await expect(sourceErr(page, 'project:org/gigleai/11')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('back').click();
+  await dialogOpen();
+  await expect(page.getByTestId('new-issue-projects-none-synced')).toBeVisible();
+  await expect(page.getByTestId('new-issue-projects-none')).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-project')).toHaveCount(0);
+  await expect(unsynced).toHaveCount(1);
+  await expect(unsynced).toHaveAttribute('data-project', 'project:org/gigleai/11');
+  await shot(page, '231-04-new-issue-board-not-synced');
+
+  // ---- 3. the read succeeds while the dialog is open (nothing ticked by hand): the board shows up ticked ----
+  env.fake.state.failProjectPage.delete(P11);
+  await page.evaluate(() => (window as any).cavil.syncNow());
+  await expect(page.getByTestId('new-issue-project')).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
+  await expect(unsynced).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-projects-none-synced')).toHaveCount(0);
+  await page.getByTestId('confirm-cancel').click();
+
+  // ---- 4. one board read, another never read (it cannot be found): the read one is ticked, the other is said ----
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/99');
+  await page.getByTestId('source-add').click();
+  await expect(sourceErr(page, 'project:org/gigleai/99')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('back').click();
+  await dialogOpen();
+  await expect(page.getByTestId('new-issue-project')).toHaveCount(1);
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
+  await expect(unsynced).toHaveCount(1);
+  await expect(unsynced).toHaveAttribute('data-project', 'project:org/gigleai/99');
+  // ticked off by hand: the default no longer speaks for itself, the note goes with it
+  await page.getByTestId('new-issue-project').uncheck();
+  await expect(unsynced).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-project')).not.toBeChecked();
+  await page.getByTestId('confirm-cancel').click();
+  await app.close();
+});

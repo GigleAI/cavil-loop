@@ -1411,4 +1411,10 @@ export const MUTATIONS = [
   { what: '新建对话框：手动取消勾选后被默认勾选盖回去', file: 'src/renderer/NewIssueDialog.tsx', runner: 'e2e',
     from: '  const projects = manual ?? defaults.ticked;', to: '  const projects = manual?.length ? manual : defaults.ticked;',
     expect: ['GitHub#231: 托管 asks in three paragraphs'] },
+  { what: '新建对话框：已添加的看板全都没同步完时，说成「还没有添加看板」、不提示没同步完', runner: 'e2e',
+    edits: [
+      { file: 'src/renderer/NewIssueDialog.tsx', from: '          ) : configured ? (', to: '          ) : false ? (' },
+      { file: 'src/renderer/NewIssueDialog.tsx', from: '          {manual === null &&\n            defaults.unsynced.map', to: '          {manual === null && allProjects.length > 0 &&\n            defaults.unsynced.map' },
+    ],
+    expect: ['GitHub#231 (PR #241 review round 1)'] },
 ];

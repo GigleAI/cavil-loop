@@ -56,6 +56,8 @@ export function NewIssueDialog({
   const defaults = defaultBoards(data.boardRepos ?? [], allProjects, repo);
   const [manual, setManual] = useState<string[] | null>(null);
   const projects = manual ?? defaults.ticked;
+  // a board is "added" when it is a source, whether or not it was read completely yet
+  const configured = allProjects.length > 0 || (data.boardRepos ?? []).length > 0;
   const [pasted, setPasted] = useState<{ copied: boolean | null } | null>(null);
   const isDark = useDarkMode();
 
@@ -207,16 +209,21 @@ export function NewIssueDialog({
               <span className="small muted" data-testid="new-issue-projects-hint">
                 {projects.length ? `会加入 ${projects.length} 个看板` : '一个都不勾 = 不加入任何看板'}
               </span>
-              {manual === null &&
-                defaults.unsynced.map((b) => (
-                  <span key={b.key} className="small muted" data-testid="new-issue-project-unsynced" data-project={b.key}>
-                    看板「{b.title}」还没同步完，默认勾选没把它算进去
-                  </span>
-                ))}
             </div>
+          ) : configured ? (
+            // boards are added but none was read completely yet: not "no board added" (PR #241 review round 1)
+            <p className="small muted" data-testid="new-issue-projects-none-synced">
+              已添加的看板都还没同步完，现在没法勾选；同步完后这里会列出来
+            </p>
           ) : (
-            <p className="small muted">还没有添加看板来源，建好后不加入任何看板</p>
+            <p className="small muted" data-testid="new-issue-projects-none">还没有添加看板来源，建好后不加入任何看板</p>
           )}
+          {manual === null &&
+            defaults.unsynced.map((b) => (
+              <div key={b.key} className="small muted" data-testid="new-issue-project-unsynced" data-project={b.key}>
+                看板「{b.title}」还没同步完，默认勾选没把它算进去
+              </div>
+            ))}
           {preview && boardPreview && previewBox}
         </div>
         <ResultBanner note={note} testid="new-issue-result" />
