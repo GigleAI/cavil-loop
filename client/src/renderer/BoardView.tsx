@@ -318,7 +318,7 @@ function SyncTroublePanel({
         </div>
       )}
       <div className="trouble-foot">
-        <button data-testid="sync-trouble-resync" onClick={() => api().restartSync()}>
+        <button data-testid="sync-trouble-resync" onClick={() => void api().restartSync()}>
           <Icon name="refresh" />
           重新同步
         </button>
