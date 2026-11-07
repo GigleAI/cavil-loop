@@ -19,6 +19,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 # 在 worker 里跑时环境里带着派工变量（例如托管标记），会让拼出的提示词多出托管段：先清掉
 # shellcheck disable=SC2046
 unset $(compgen -v DISPATCH_)
+# 同理：worker 环境里的 CODING_AGENT_RELEASE_ROOT 会让被测的 _lib.sh 改用装好的那份 scripts/
+unset CODING_AGENT_RELEASE_ROOT
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -227,7 +229,11 @@ if [ -z "$out" ]; then ok "全部满足"; else bad "仓库现状不满足："; s
 
 # ── 外部需求机器人：合并说明只在先汇报时出现，不先汇报时交接段逐字节不变 ──
 echo "── 外部需求机器人交接段 ──"
+# HOME 指到沙盘、清掉 CAVIL_DEPLOY_ROOT：本机装过托管版本时，叫醒命令会指向装好的那份脚本，
+# 不装时指向被测那份 scripts/。不隔离的话，同一份测试在开发机和 CI 上比的不是同一个东西。
+mkdir -p "$TMP/bot-home"
 bot_env() {   # 在子 shell 里设好机器人配置后执行 "$@"
+    env -u CAVIL_DEPLOY_ROOT HOME="$TMP/bot-home" \
     LABEL_PENDING_REQUESTER_BOT="pending/requester-bot" REQUESTER_BOT_ACCOUNT="req-bot" \
     REQUESTER_BOT_ALLOWED_ACTORS="req-bot" REQUESTER_BOT_ORIGIN_MARKER="<!-- from-req-bot -->" \
     REQUESTER_BOT_REPORT_FIRST="$1" "${@:2}"
@@ -260,7 +266,8 @@ check_bot() {   # 打印问题；$1 = 被测 skill 目录
         [ -s "$f" ] || echo "bot: 不先汇报时 $name 拼不出 prompt"
         grep -qxF -- "$MERGE_H" "$f" 2>/dev/null && echo "bot: 不先汇报时 $name 成品里有合并说明"
     done
-    printf '%s\n' "$off" > "$TMP/bot-off.md"
+    # 叫醒命令里带着被测那份 scripts/ 的路径，两边各换成同一个占位再比
+    printf '%s\n' "$off" | sed "s|$sd/scripts|<SCRIPTS>|g; s|$REPO_DIR/scripts|<SCRIPTS>|g" > "$TMP/bot-off.md"
 }
 make_sandbox
 out=$(check_bot "$SKILL_DIR")
@@ -273,7 +280,8 @@ git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$TMP/old"
 old_off=$(bot_env false bash -c 'source "$0" >/dev/null 2>&1; set +e; SKILL_DIR="$1" requester_bot_handoff_section' \
     "$TMP/old/scripts/_lib.sh" "$TMP/old" 2>/dev/null)
 if [ -z "$old_off" ]; then bad "合并基点 ${BASE_REV:0:8} 拼不出交接段（对拍没真跑）"
-elif [ "$old_off" = "$(cat "$TMP/bot-off.md")" ]; then ok "不先汇报时交接段和合并基点 ${BASE_REV:0:8} 逐字节相同"
+elif old_off=$(printf '%s\n' "$old_off" | sed "s|$TMP/old/scripts|<SCRIPTS>|g"); grep -qF "<SCRIPTS>/notify-requester-bot.sh" <<<"$old_off" \
+     && [ "$old_off" = "$(cat "$TMP/bot-off.md")" ]; then ok "不先汇报时交接段和合并基点 ${BASE_REV:0:8} 逐字节相同"
 else bad "不先汇报时交接段和合并基点不同："; diff <(printf '%s\n' "$old_off") "$TMP/bot-off.md" | head -10 | sed 's/^/       /'; fi
 
 # ── 真实派工脚本把出图地址占位换掉（配了 / 没配两种） ──
