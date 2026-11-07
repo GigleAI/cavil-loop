@@ -395,6 +395,127 @@ describe('the item\'s queue (code review round 1)', () => {
   });
 });
 
+describe('a read that comes back after a newer one does not put the older value back (code review round 5)', () => {
+  const diskLabels = (sourceKey: string) => {
+    const cache = new Cache(join(dir, 'cache.sqlite'));
+    caches.push(cache);
+    return (cache.loadSnapshots().get(sourceKey)?.items.find((i) => i.key === K(N))?.labels ?? []).map((l) => l.name);
+  };
+  const labelsOnGitHub = () => ((fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === N) as any)?.labels ?? []).map((l: any) => l.name);
+
+  it('the first re-read (no "bug" yet) is held; the second (with "bug") lands; the first comes back last — board and disk keep "bug"', async () => {
+    const { c } = await ready();
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 1);
+    const p1 = c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    await until(() => seen >= 1, 'the first re-read went out (and is held)');
+    const p2 = c.act({ kind: 'addLabel', key: K(N), label: 'bug', color: 'd73a4a' });
+    expect((await p2).ok).toBe(true);
+    // this did happen: the second re-read ran and the board shows its answer
+    expect(fake.log.filter((e) => e.operation === 'CavilItemRefresh').length).toBeGreaterThanOrEqual(2);
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    release();
+    expect(await p1).toMatchObject({ ok: true, warning: null });
+    await c.settled();
+    expect(labelsOnGitHub()).toContain('bug');
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    expect(diskLabels(PROJECT_KEY)).toContain('bug');
+    expect(diskLabels(`repo:${REPO.toLowerCase()}`)).toContain('bug');
+    expect(milestoneOnGitHub()).toBe('v2');
+    expect(itemOf(c).milestone?.title).toBe('v2');
+  });
+
+  it('a re-read sent before a sync round comes back after the round landed: the round\'s newer copy stays', async () => {
+    const { c } = await ready();
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 1);
+    const p1 = c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    await until(() => seen >= 1, 'the re-read went out (and is held, without "bug")');
+    // somebody adds "bug" on GitHub; a whole round reads it and lands
+    const r = await fetch(`${fake.api}/repos/${REPO}/issues/${N}/labels`, { method: 'POST', headers: { authorization: `Bearer ${FAKE_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ labels: ['bug'] }) });
+    expect(r.status).toBe(200);
+    await c.syncNow();
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    expect(diskLabels(PROJECT_KEY)).toContain('bug');
+    release();
+    expect((await p1).ok).toBe(true);
+    await c.settled();
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    expect(diskLabels(PROJECT_KEY)).toContain('bug');
+    expect(diskLabels(`repo:${REPO.toLowerCase()}`)).toContain('bug');
+  });
+
+  it('a round that comes back while a re-read is still on its way to the disk is built on that re-read (the disk keeps it)', async () => {
+    let gate: (() => void) | null = null;
+    let gated = 0;
+    const { c } = await ready({
+      intercept: (cmd, args, next) => {
+        // the re-read's write of the Project row (#N with "bug") waits until the round's answer is in
+        const row = (args?.snapshots ?? []).find((x: any) => x.sourceKey === PROJECT_KEY);
+        const mine = row?.items.find((i: any) => i.key === K(N));
+        if (cmd === 'replaceSnapshots' && !gated && mine?.labels.some((l: any) => l.name === 'bug')) {
+          gated++;
+          return new Promise<void>((r) => (gate = r)).then(() => next(cmd, args));
+        }
+        return undefined;
+      },
+    });
+    const page = (e: { operation?: string; variables?: Record<string, unknown> }, after: string | null) => e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === after;
+    let armed = false;
+    let next = false;
+    let asked = 0;
+    const releaseOld = fake.holdWhen((e) => page(e, 'cursor-1') && !armed && ++asked > 0);
+    // (the round the landings ask for afterwards stays held: what is checked is what the old round left)
+    fake.holdWhen((e) => page(e, null) && armed && (next = true));
+    void c.syncNow();
+    await until(() => asked > 0, 'the round asked for the page with #138 (held, without "bug")');
+    const p1 = c.act({ kind: 'addLabel', key: K(N), label: 'bug', color: 'd73a4a' });
+    await until(() => gate !== null, 'the re-read is on its way to the disk (held)');
+    armed = true;
+    releaseOld();
+    // the round's answer is in and the round reaches its landing while the re-read still writes
+    await new Promise((r) => setTimeout(r, 200));
+    gate!();
+    expect((await p1).ok).toBe(true);
+    await until(() => next, 'the old round landed and the next one is held');
+    await c.settled();
+    expect(diskLabels(PROJECT_KEY)).toContain('bug');
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+  });
+
+  it('a sync round that read GitHub before a re-read lands after it: the re-read\'s copy stays (board and disk)', async () => {
+    const { c } = await ready();
+    const reads = () => fake.log.filter((e) => e.operation === 'CavilProjectItems' && e.variables?.after === 'cursor-1').length;
+    const before = reads();
+    // the round's Project page carrying #138 (the second) is held, its answer frozen without
+    // "bug"; once it is let go, the first page of the next round (the one the re-read asks
+    // for) is held, so what is checked in between is what the old round left
+    const page = (e: { operation?: string; variables?: Record<string, unknown> }, after: string | null) => e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === after;
+    let armed = false;
+    let landedOld = false;
+    const releaseOld = fake.holdWhen((e) => page(e, 'cursor-1') && !armed);
+    const releaseNext = fake.holdWhen((e) => page(e, null) && armed && (landedOld = true));
+    const round = c.syncNow();
+    await until(() => reads() > before, 'the round asked for the page with #138 (held)');
+    expect((await c.act({ kind: 'addLabel', key: K(N), label: 'bug', color: 'd73a4a' })).ok).toBe(true);
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    expect(diskLabels(PROJECT_KEY)).toContain('bug');
+    armed = true;
+    releaseOld();
+    await until(() => landedOld, 'the old round landed and the next round read the Project (held)');
+    await c.settled();
+    expect(labelsOnGitHub()).toContain('bug');
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    expect(diskLabels(PROJECT_KEY)).toContain('bug');
+    releaseNext();
+    await round;
+    await c.settled();
+    // the next round (issued after the re-read) still lands as usual
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    expect(diskLabels(PROJECT_KEY)).toContain('bug');
+  });
+});
+
 describe('a new issue does not hold the dialog: four outcomes', () => {
   const issuesOnGitHub = () => fake.state.repos.get('gigleai/cavil-loop')!.length;
   const create = (c: Controller, title: string, projects: string[] = []) => c.startCreate({ kind: 'createIssue', repo: REPO, title, body: 'b', labels: [], projects });

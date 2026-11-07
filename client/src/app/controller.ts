@@ -238,6 +238,12 @@ export class Controller {
   /** labels / milestones per repository, only reads that worked */
   private optionsCache = new Map<string, RepoOptions>();
   private createSeq = 0;
+  /**
+   * The newest read that landed, per source (a whole sync round) and per source + item (one
+   * item's re-read): a read issued before it is older than what is shown and does not land.
+   */
+  private sourceReadAt = new Map<string, number>();
+  private itemReadAt = new Map<string, number>();
 
   /** Read what the back end has (settings, cached snapshots), then build the controller. */
   static async create(deps: ControllerDeps): Promise<Controller> {
@@ -553,6 +559,8 @@ export class Controller {
     this.itemQueues.clear();
     this.detailCache.clear();
     this.optionsCache.clear();
+    this.sourceReadAt.clear();
+    this.itemReadAt.clear();
     this.state = { ...this.state, editsNeedingAction: 0, creates: [] };
     this.pending.reset();
     this.unread.clear();
@@ -849,6 +857,30 @@ export class Controller {
     return r.written && session === this.session;
   }
 
+  /**
+   * GitHub#229: land snapshots one after the other. `build` runs in the write queue, against
+   * memory as every earlier landing left it, so a later landing never builds on a copy an
+   * earlier one has since replaced; memory takes the rows right after the disk did (only
+   * the rows `keep` still accepts then). null = the session is over, nothing landed.
+   */
+  private landSnapshots(session: number, build: () => SourceSnapshot[], keep: (sourceKey: string) => boolean): Promise<SourceSnapshot[] | null> {
+    return this.cache.enqueue(async () => {
+      if (session !== this.session) return null;
+      const snaps = build();
+      if (!snaps.length) return [];
+      const r = await this.backend.call<{ written: boolean }>('replaceSnapshots', { session, snapshots: snaps });
+      if (!r.written || session !== this.session) return null;
+      const landed = snaps.filter((snap) => keep(snap.sourceKey));
+      for (const snap of landed) this.snapshots.set(snap.sourceKey, snap);
+      return landed;
+    });
+  }
+
+  /** the newest read of this item that landed in this source */
+  private readAt(sourceKey: string, key: string): number {
+    return Math.max(this.sourceReadAt.get(sourceKey) ?? 0, this.itemReadAt.get(`${sourceKey}\n${key}`) ?? 0);
+  }
+
   private bumpEpoch(key: string): void {
     this.epochs.set(key, ++this.epochSeq);
   }
@@ -1095,12 +1127,16 @@ export class Controller {
     // database, memory and status all take this one filtered result.
     const current = (key: string) =>
       this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
-    let accepted = round.replaced.filter((snap) => current(snap.sourceKey));
-    if (!(await this.writeSnapshots(session, accepted))) return over();
+    // GitHub#229: an item re-read after this round started keeps that newer copy
+    const newer = new Set<string>();
+    const accepted = await this.landSnapshots(
+      session,
+      () => this.roundRows(round.replaced.filter((snap) => current(snap.sourceKey)), issuedAt, newer),
+      current,
+    );
     // a source removed while the write was on its way: not shown either
-    accepted = accepted.filter((snap) => current(snap.sourceKey));
-    for (const snap of accepted) this.snapshots.set(snap.sourceKey, snap);
-    this.feedSnapshots(accepted, issuedAt);
+    if (!accepted) return over();
+    this.feedSnapshots(accepted, issuedAt, newer);
     this.applyImports(accepted);
     // Only what was read completely this round (and still belongs here) is compared.
     this.observePending(accepted);
@@ -1335,13 +1371,29 @@ export class Controller {
     if (opts.out) opts.out.fresh = fresh;
     const current = (key: string) =>
       this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
-    const changed = applyFreshItem([...this.snapshots.values()].filter((s) => current(s.sourceKey)), fresh);
-    if (changed.length && (await this.writeSnapshots(session, changed))) {
-      for (const snap of changed.filter((s) => current(s.sourceKey))) this.snapshots.set(snap.sourceKey, snap);
-      this.set({});
-    }
-    // GitHub#229: only once the read landed (or had nothing to change) in this session
-    if (session === this.session && (!changed.length || changed.some((snap) => this.snapshots.get(snap.sourceKey) === snap))) this.feedFresh(fresh, issuedAt, opts.final);
+    // GitHub#229: only into sources where nothing newer of this item landed meanwhile
+    // (a read that comes back after a later one would put the older value back)
+    const key = freshKey(fresh);
+    let stale = false;
+    const landed = await this.landSnapshots(
+      session,
+      () => {
+        if (!key) return [];
+        const carrying = [...this.snapshots.values()].filter((s) => current(s.sourceKey));
+        const views = freshViews(carrying, fresh);
+        const fresher = views.filter((v) => this.readAt(v.snap.sourceKey, key) < issuedAt);
+        stale = views.length > 0 && !fresher.length;
+        for (const v of fresher) this.itemReadAt.set(`${v.snap.sourceKey}\n${key}`, issuedAt);
+        return applyFreshItem(
+          fresher.map((v) => v.snap),
+          fresh,
+        );
+      },
+      current,
+    );
+    if (landed?.length) this.set({});
+    // GitHub#229: only once the read landed (or had nothing to change) in this session, and only when it is not older than what is shown
+    if (landed && !stale && session === this.session) this.feedFresh(fresh, issuedAt, opts.final);
     if (this.syncing) void this.syncNow();
     return null;
   }
@@ -1579,13 +1631,48 @@ export class Controller {
   }
 
   /** A sync round's snapshots landed: each record whose item is in one of them reads its field there. */
-  private feedSnapshots(snaps: SourceSnapshot[], issuedAt: number): void {
+  private feedSnapshots(snaps: SourceSnapshot[], issuedAt: number, newer: Set<string> = new Set()): void {
     if (!this.edits.size || !snaps.length) return;
     const keys = new Set([...this.edits.values()].map((r) => r.key));
     for (const key of keys) {
-      const copies = snaps.flatMap((snap) => snap.items.filter((i) => i.key === key));
+      // a copy kept from a newer re-read is not what this round read
+      const copies = snaps.flatMap((snap) => (newer.has(`${snap.sourceKey}\n${key}`) ? [] : snap.items.filter((i) => i.key === key)));
       if (copies.length) this.feedRead(key, copies, issuedAt);
     }
+  }
+
+  /**
+   * A round's rows as they may land: a source a newer round already landed is left out; an
+   * item re-read after this round started keeps the copy memory has (or stays absent when that
+   * re-read took it out of the source). `newer` collects "source\nitem" of the copies kept.
+   */
+  private roundRows(rows: SourceSnapshot[], issuedAt: number, newer: Set<string>): SourceSnapshot[] {
+    const out: SourceSnapshot[] = [];
+    for (const snap of rows) {
+      if ((this.sourceReadAt.get(snap.sourceKey) ?? 0) > issuedAt) continue;
+      const prefix = `${snap.sourceKey}\n`;
+      const kept = [...this.itemReadAt].filter(([k, at]) => k.startsWith(prefix) && at > issuedAt).map(([k]) => k.slice(prefix.length));
+      let items = snap.items;
+      if (kept.length) {
+        const shown = this.snapshots.get(snap.sourceKey)?.items ?? [];
+        const keptSet = new Set(kept);
+        items = snap.items.flatMap((i) => {
+          if (!keptSet.has(i.key)) return [i];
+          const s = shown.find((x) => x.key === i.key);
+          return s ? [s] : [];
+        });
+        for (const k of kept) {
+          const s = shown.find((x) => x.key === k);
+          if (s && !items.some((x) => x.key === k)) items.push(s);
+          newer.add(prefix + k);
+        }
+      }
+      // what this round read is now the floor of the source; older per-item stamps are covered by it
+      this.sourceReadAt.set(snap.sourceKey, issuedAt);
+      for (const [k, at] of [...this.itemReadAt]) if (k.startsWith(prefix) && at <= issuedAt) this.itemReadAt.delete(k);
+      out.push(items === snap.items ? snap : { ...snap, items });
+    }
+    return out;
   }
 
   /** One item was re-read: its own copy says labels / milestone, each Project it is on says that Project's fields. */
