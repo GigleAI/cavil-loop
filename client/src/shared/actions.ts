@@ -3,6 +3,7 @@
 // renderer: no Node, no Electron in here.
 
 import type { Label } from './types';
+import type { Handoff } from './handoff';
 
 /**
  * Every write the client can make. Each one is sent to GitHub as it is; the
@@ -34,9 +35,12 @@ export type WriteAction =
   /**
    * `projects`: the Project sources (keys) the new issue joins, ticked one by one in the dialog (GitHub#205).
    * `plan` (GitHub#214, the "+" of a table group): exactly what the dialog showed it would
-   * set — never re-derived when writing, only checked again; absent = the plain new issue
+   * set — never re-derived when writing, only checked again; absent = the plain new issue.
+   * `handoff` (GitHub#245): hand the new issue to the agent / autopilot in the same request — the
+   * labels come from Settings and are checked against a fresh read of the repository's labels;
+   * absent = 'none'. `handoffPicked`: chosen by hand in the dialog — the app remembers it once the issue exists
    */
-  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan }
+  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan; handoff?: Handoff; handoffPicked?: boolean }
   /**
    * tick / untick one task-list box of a body or comment (GitHub#193): `entryId` is the
    * body's / comment's node id, `index` the box's number in it (document order),
