@@ -1,49 +1,39 @@
-// "待处理" (items waiting for a human): every item of every configured source
-// that carries the pending label (`pending/human` by default), open, closed
-// or merged alike. Notifications, the Dock badge and the start-up summary are
-// all computed here, from the same sets, so they can never disagree.
+// "待处理" (items waiting for a human): every open item of every configured
+// source that carries the pending label (`pending/human` by default).
+// Notifications and the Dock badge are both computed from the sets kept here,
+// so they can never disagree.
 //
-// The rules (GigleAI/cavil-loop#139):
+// The rules (GigleAI/cavil-loop#139, narrowed by #251):
+//   - only an open issue / PR (a draft PR is open) is a to-do: a closed issue or
+//     a closed / merged PR never counts, whatever its labels;
 //   - only a source read completely this round takes part in the comparison;
 //     a source whose read failed (offline, revoked credential, a page failing
 //     mid-pagination) keeps last round's set as-is — no "new", no "removed";
 //   - a source's first complete read in this run (app start, a newly added
-//     source, a new account) is its baseline: what it already has goes into
-//     one summary, never into one notification per item;
+//     source, a new account) is only its baseline: what it already has is
+//     history, it is neither notified nor summarised nor unread (#251);
 //   - one item is one entry (`owner/repo#N`), whichever sources carry it;
 //   - an item that was not pending last round and is now → one notification;
-//     a label removed and put back later counts as new again.
+//     a label removed and put back, or a labelled item reopened, counts as new again.
 
-import type { Item, PendingEntry, SourceSnapshot } from '../shared/types';
+import type { Item, SourceSnapshot } from '../shared/types';
 
 export const DEFAULT_PENDING_LABEL = 'pending/human';
 
-export interface PendingSummary {
-  /** items pending now (= the badge) */
-  total: number;
-  /** of those, closed issues / closed or merged PRs */
-  closed: number;
-  /** how many of them came in with the source(s) read for the first time this round */
-  fromNewSources: number;
-  /** true when this is the first summary of this run / account (app start) */
-  atStart: boolean;
-  /** the sources read for the first time that brought it */
-  sources: string[];
-}
-
 export interface PendingChange {
-  /** became pending this round, one notification each */
+  /** became pending this round, one notification each (a first read's baseline is never here) */
   appeared: Item[];
-  /** a source was read for the first time: one summary instead of per-item notifications (null = none) */
-  summary: PendingSummary | null;
-  /** the items that summary brought in (empty when there is no summary) */
-  brought: string[];
 }
 
 /** GitHub label names are case-insensitive. */
 export function hasLabel(item: Item, label: string): boolean {
   const want = label.trim().toLowerCase();
   return want !== '' && item.labels.some((l) => l.name.toLowerCase() === want);
+}
+
+/** A to-do: open (a draft PR is open) and carrying the label (#251: closed / merged never counts). */
+export function isPending(item: Item, label: string): boolean {
+  return item.state === 'open' && hasLabel(item, label);
 }
 
 export function normalizeLabel(label: string): string {
@@ -53,15 +43,12 @@ export function normalizeLabel(label: string): string {
 export class PendingTracker {
   /** per baselined source: pending items by key, as of its latest complete read */
   private bySource = new Map<string, Map<string, Item>>();
-  /** has any source been baselined since the last reset (decides "at start") */
-  private started = false;
 
   constructor(private label: string = DEFAULT_PENDING_LABEL) {}
 
   /** Forget everything: sign-out, another account. The next complete reads are baselines again. */
   reset(): void {
     this.bySource.clear();
-    this.started = false;
   }
 
   /** Drop sources no longer configured (their items stop counting; nothing is notified). */
@@ -91,38 +78,19 @@ export class PendingTracker {
     this.prune(configured);
     const before = this.union();
     const newSources: Map<string, Item>[] = [];
-    const newKeys: string[] = [];
     for (const snap of fresh) {
       if (!configured.includes(snap.sourceKey)) continue;
       const set = this.pendingOf(snap);
-      if (!this.bySource.has(snap.sourceKey)) {
-        newSources.push(set);
-        newKeys.push(snap.sourceKey);
-      }
+      if (!this.bySource.has(snap.sourceKey)) newSources.push(set);
       this.bySource.set(snap.sourceKey, set);
     }
-    // Real changes come only from sources that already had a baseline.
+    // Real changes come only from sources that already had a baseline; a first read is history.
     const appeared = new Map<string, Item>();
-    for (const [k, set] of this.bySource) {
+    for (const set of this.bySource.values()) {
       if (newSources.includes(set)) continue;
       for (const [key, it] of set) if (!before.has(key)) appeared.set(key, this.latest(key) ?? it);
     }
-    // What a first read brought in that was neither pending before nor just notified.
-    const brought = new Set<string>();
-    for (const set of newSources) for (const key of set.keys()) if (!before.has(key) && !appeared.has(key)) brought.add(key);
-    let summary: PendingSummary | null = null;
-    if (brought.size) {
-      const now = this.pending();
-      summary = {
-        total: now.length,
-        closed: now.filter((it) => it.state !== 'open').length,
-        fromNewSources: brought.size,
-        atStart: !this.started,
-        sources: newKeys,
-      };
-    }
-    if (newSources.length) this.started = true;
-    return { appeared: [...appeared.values()], summary, brought: [...brought] };
+    return { appeared: [...appeared.values()] };
   }
 
   /** Pending now: one entry per item, the most recently updated copy. */
@@ -134,13 +102,10 @@ export class PendingTracker {
     return this.union().size;
   }
 
-  /**
-   * Pending now as the settings page lists it (GitHub#185): the same de-duplicated
-   * set as `count()` (so the list is exactly what the badge counts), open first,
-   * then the most recently updated.
-   */
-  list(): PendingEntry[] {
-    return sortPending(this.pending().map(pendingEntry));
+  /** Is this item pending now (through any source)? */
+  has(key: string): boolean {
+    for (const set of this.bySource.values()) if (set.has(key)) return true;
+    return false;
   }
 
   /** The sources that count this item as pending now (empty = not pending). */
@@ -148,15 +113,9 @@ export class PendingTracker {
     return [...this.bySource].filter(([, set]) => set.has(key)).map(([k]) => k);
   }
 
-  /** Pending now, and how many of those are closed / merged (what a summary says). */
-  totals(): { total: number; closed: number } {
-    const now = this.pending();
-    return { total: now.length, closed: now.filter((it) => it.state !== 'open').length };
-  }
-
   private pendingOf(snap: SourceSnapshot): Map<string, Item> {
     const out = new Map<string, Item>();
-    for (const it of snap.items) if (hasLabel(it, this.label)) out.set(it.key, it);
+    for (const it of snap.items) if (isPending(it, this.label)) out.set(it.key, it);
     return out;
   }
 
@@ -181,43 +140,8 @@ export class PendingTracker {
   }
 }
 
-/** What the settings page keeps of one pending item: enough to colour, word and open it. */
-export function pendingEntry(it: Item): PendingEntry {
-  return {
-    key: it.key,
-    repo: it.repo,
-    number: it.number,
-    title: it.title,
-    url: it.url,
-    kind: it.kind,
-    state: it.state,
-    stateReason: it.stateReason ?? null,
-    isDraft: it.isDraft ?? null,
-    updatedAt: it.updatedAt,
-  };
-}
-
-/** Open ones first (a draft PR is open), then the most recently updated; the key breaks ties. */
-export function sortPending(list: PendingEntry[]): PendingEntry[] {
-  return [...list].sort((a, b) => {
-    const oa = a.state === 'open' ? 0 : 1;
-    const ob = b.state === 'open' ? 0 : 1;
-    if (oa !== ob) return oa - ob;
-    if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
-    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
-  });
-}
-
-/** Text of the notification for one item (shared by the app and its tests). */
-export function itemAlertText(it: Pick<Item, 'repo' | 'number' | 'state' | 'kind' | 'title'>): { title: string; body: string } {
-  const state = it.state === 'merged' ? '（已合并）' : it.state === 'closed' ? '（已关闭）' : '';
+/** Text of the notification for one item (shared by the app and its tests). Only open items are pending. */
+export function itemAlertText(it: Pick<Item, 'repo' | 'number' | 'kind' | 'title'>): { title: string; body: string } {
   const kind = it.kind === 'pr' ? 'PR' : 'issue';
-  return { title: `待处理：${it.repo}#${it.number}${state}`, body: `${kind} · ${it.title}` };
-}
-
-/** Text of the summary notification. */
-export function summaryAlertText(s: PendingSummary): { title: string; body: string } {
-  const closed = s.closed ? `其中 ${s.closed} 条已关闭 / 已合并。` : '';
-  const from = s.atStart ? '' : `新加的来源带来 ${s.fromNewSources} 条。`;
-  return { title: `${s.total} 条待处理`, body: `${from}${closed}`.trim() || '点开查看看板' };
+  return { title: `待处理：${it.repo}#${it.number}`, body: `${kind} · ${it.title}` };
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseFilter } from '../../src/shared/filter';
 import type { SourceStatus, SyncState } from '../../src/shared/types';
-import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, WARN_KINDS, type Dismissed, type WarnIds, type WarnKind } from '../../src/renderer/warnings';
+import { dismiss, isShown, notifyWarningIds, reconcile, syncTrouble, warningIds, WARN_KINDS, type Dismissed, type WarnIds, type WarnKind } from '../../src/renderer/warnings';
 
 const T0 = Date.parse('2026-11-06T00:00:00Z');
 const ok = (sourceKey: string): SourceStatus => ({ sourceKey, ok: true, error: null, dataFrom: T0 });
@@ -28,9 +28,16 @@ function replay(steps: ({ state: WarnIds } | { close: WarnKind })[]): { shown: W
 }
 const last = <T,>(xs: T[]) => xs[xs.length - 1];
 
-describe('fault ids of the five yellow bars', () => {
+describe('fault ids of the yellow bars', () => {
   it('nothing wrong, no filter → no bar', () => {
     expect(warningIds(sync({ sources: [ok('a')] }), none)).toEqual({});
+  });
+
+  it('a failed source is no bar any more (GitHub#248: it is the ⚠️ next to refresh)', () => {
+    const s = sync({ sources: [bad('a'), ok('b')] });
+    expect(warningIds(s, none)).toEqual({});
+    expect(warningIds(s, parseFilter('label:x'))).toEqual({});
+    expect(Object.keys(warningIds({ ...s, offline: true }, parseFilter('label:x')))).toEqual(['offline']);
   });
 
   it('unsupported words: the words, sorted; the order typed does not matter', () => {
@@ -41,27 +48,9 @@ describe('fault ids of the five yellow bars', () => {
     expect(warningIds(sync(), parseFilter('priority:Low'))['filter-unsupported']).not.toBe(a['filter-unsupported']);
   });
 
-  it('filter may be incomplete: only while filtering, keyed on the failed sources (sorted), not on the words', () => {
-    const s = sync({ sources: [bad('b'), ok('c'), bad('a')] });
-    expect(warningIds(s, none)['filter-incomplete']).toBeUndefined();
-    const x = warningIds(s, parseFilter('label:x'))['filter-incomplete'];
-    expect(x).toBeDefined();
-    expect(warningIds(sync({ sources: [bad('a'), bad('b')] }), parseFilter('客户端'))['filter-incomplete']).toBe(x);
-    expect(warningIds(sync({ sources: [bad('a')] }), parseFilter('label:x'))['filter-incomplete']).not.toBe(x);
-  });
-
   it('offline: one fixed id', () => {
     expect(warningIds(sync({ offline: true, dataFrom: T0 }), none).offline).toBe(warningIds(sync({ offline: true, dataFrom: T0 + 3_600_000 }), none).offline);
     expect(warningIds(sync({ offline: true }), none).offline).toBeDefined();
-  });
-
-  it('sync incomplete: source + reason of each failure, sorted; not while offline', () => {
-    const one = warningIds(sync({ sources: [bad('a', 'x'), bad('b', 'y')] }), none).incomplete;
-    expect(one).toBeDefined();
-    expect(warningIds(sync({ sources: [bad('b', 'y'), bad('a', 'x')] }), none).incomplete).toBe(one);
-    expect(warningIds(sync({ sources: [bad('a', 'x'), bad('b', 'z')] }), none).incomplete).not.toBe(one);
-    expect(warningIds(sync({ sources: [bad('a', 'x'), bad('c', 'y')] }), none).incomplete).not.toBe(one);
-    expect(warningIds(sync({ offline: true, sources: [bad('a', 'x')] }), none).incomplete).toBeUndefined();
   });
 
   it('sync problem: its text', () => {
@@ -72,7 +61,7 @@ describe('fault ids of the five yellow bars', () => {
     const f = parseFilter('label:x priority:High');
     const a = warningIds(sync({ dataFrom: T0, lastOnlineAt: T0, sources: [bad('a', 'e', T0)], problem: 'p' }), f);
     const b = warningIds(sync({ dataFrom: T0 - 7_200_000, lastOnlineAt: T0 + 60_000, sources: [bad('a', 'e', T0 - 7_200_000)], problem: 'p' }), f);
-    expect(Object.keys(a).sort()).toEqual(['filter-incomplete', 'filter-unsupported', 'incomplete', 'sync-problem']);
+    expect(Object.keys(a).sort()).toEqual(['filter-unsupported', 'sync-problem']);
     expect(b).toEqual(a);
     const off = (dataFrom: number | null) => warningIds(sync({ offline: true, dataFrom, sources: [bad('a', 'e', dataFrom)] }), f);
     expect(off(T0 - 7_200_000)).toEqual(off(T0));
@@ -80,74 +69,93 @@ describe('fault ids of the five yellow bars', () => {
   });
 });
 
-describe('closing a bar and when it comes back (the table of GitHub#153)', () => {
-  const A = { incomplete: warningIds(sync({ sources: [bad('a', 'e1')] }), none).incomplete! };
-  const B = { incomplete: warningIds(sync({ sources: [bad('b', 'e1')] }), none).incomplete! };
+describe('failed sources: the ⚠️ next to refresh and its two parts (GitHub#248)', () => {
+  const filter = parseFilter('label:x');
 
-  it('close → only that bar goes; the others stay', () => {
-    const both = warningIds(sync({ sources: [bad('a')], problem: 'p' }), none);
-    const r = replay([{ state: both }, { close: 'incomplete' }]);
-    expect(r[0].shown).toEqual(['incomplete', 'sync-problem']);
-    expect(last(r).shown).toEqual(['sync-problem']);
+  it('nothing failed → no ⚠️, filtering or not, offline or not', () => {
+    for (const offline of [false, true]) for (const f of [none, filter]) expect(syncTrouble(sync({ offline, sources: [ok('a')] }), f)).toBeNull();
+    expect(syncTrouble(sync(), filter)).toBeNull();
   });
 
-  it('only time passes (same failure, older data) → stays closed', () => {
-    const at = (dataFrom: number) => warningIds(sync({ dataFrom, sources: [bad('a', 'e1', dataFrom)] }), none);
-    const r = replay([{ state: at(T0) }, { close: 'incomplete' }, { state: at(T0 - 60_000) }, { state: at(T0 - 3_600_000) }]);
+  it('online, a source failed, no filter → "sync incomplete" part only, with the failed sources only', () => {
+    const t = syncTrouble(sync({ sources: [ok('a'), bad('b', 'e1'), bad('c', 'e2')] }), none);
+    expect(t).toEqual({ failed: [bad('b', 'e1'), bad('c', 'e2')], incomplete: true, filterIncomplete: false });
+  });
+
+  it('online, a source failed, filtering → both parts', () => {
+    const t = syncTrouble(sync({ sources: [bad('a')] }), filter);
+    expect(t?.incomplete).toBe(true);
+    expect(t?.filterIncomplete).toBe(true);
+  });
+
+  it('unsupported words alone also count as filtering (same rule as the board)', () => {
+    expect(syncTrouble(sync({ sources: [bad('a')] }), parseFilter('updated:>2026-01-01'))?.filterIncomplete).toBe(true);
+  });
+
+  it('offline, not filtering → no ⚠️ (the offline bar says how old the data is)', () => {
+    expect(syncTrouble(sync({ offline: true, sources: [bad('a')] }), none)).toBeNull();
+  });
+
+  it('offline and filtering → ⚠️ with the "filter may be incomplete" part only', () => {
+    expect(syncTrouble(sync({ offline: true, sources: [bad('a')] }), filter)).toEqual({ failed: [bad('a')], incomplete: false, filterIncomplete: true });
+  });
+
+  it('fails → offline → recovers: the parts follow each state, then the ⚠️ goes', () => {
+    const fail = sync({ sources: [bad('a', 'e1')] });
+    const steps = [fail, { ...fail, offline: true }, sync({ sources: [ok('a')] })];
+    expect(steps.map((s) => syncTrouble(s, filter) && [syncTrouble(s, filter)!.incomplete, syncTrouble(s, filter)!.filterIncomplete])).toEqual([[true, true], [false, true], null]);
+    expect(steps.map((s) => syncTrouble(s, none) && syncTrouble(s, none)!.incomplete)).toEqual([true, null, null]);
+  });
+});
+
+describe('closing a bar and when it comes back (the table of GitHub#153)', () => {
+  const A = warningIds(sync({ problem: 'p1' }), none);
+  const B = warningIds(sync({ problem: 'p2' }), none);
+
+  it('close → only that bar goes; the others stay', () => {
+    const both = warningIds(sync({ problem: 'p' }), parseFilter('updated:>2026-01-01'));
+    const r = replay([{ state: both }, { close: 'sync-problem' }]);
+    expect(r[0].shown).toEqual(['filter-unsupported', 'sync-problem']);
+    expect(last(r).shown).toEqual(['filter-unsupported']);
+  });
+
+  it('only time passes (same problem, older data) → stays closed', () => {
+    const at = (dataFrom: number) => warningIds(sync({ offline: true, dataFrom, sources: [bad('a', 'e1', dataFrom)] }), none);
+    const r = replay([{ state: at(T0) }, { close: 'offline' }, { state: at(T0 - 60_000) }, { state: at(T0 - 3_600_000) }]);
     expect(last(r).shown).toEqual([]);
   });
 
-  it('the failing source changes → shows again', () => {
-    expect(last(replay([{ state: A }, { close: 'incomplete' }, { state: B }])).shown).toEqual(['incomplete']);
-  });
-
-  it('the reason changes → shows again', () => {
-    const e2 = { incomplete: warningIds(sync({ sources: [bad('a', 'e2')] }), none).incomplete! };
-    expect(last(replay([{ state: A }, { close: 'incomplete' }, { state: e2 }])).shown).toEqual(['incomplete']);
+  it('the problem changes → shows again', () => {
+    expect(last(replay([{ state: A }, { close: 'sync-problem' }, { state: B }])).shown).toEqual(['sync-problem']);
   });
 
   it('recovers, then fails the same way again → shows again', () => {
-    const r = replay([{ state: A }, { close: 'incomplete' }, { state: {} }, { state: A }]);
+    const r = replay([{ state: A }, { close: 'sync-problem' }, { state: {} }, { state: A }]);
     expect(r[2].dismissed).toEqual({});
-    expect(last(r).shown).toEqual(['incomplete']);
+    expect(last(r).shown).toEqual(['sync-problem']);
   });
 
   it('A → B → A → shows again on the way back to A', () => {
-    const r = replay([{ state: A }, { close: 'incomplete' }, { state: B }, { state: A }]);
-    expect(r[2].shown).toEqual(['incomplete']);
-    expect(last(r).shown).toEqual(['incomplete']);
+    const r = replay([{ state: A }, { close: 'sync-problem' }, { state: B }, { state: A }]);
+    expect(r[2].shown).toEqual(['sync-problem']);
+    expect(last(r).shown).toEqual(['sync-problem']);
   });
 
-  it('filter may be incomplete: closed → filter cleared → filtering again with the same failure → shows again', () => {
-    const s = sync({ sources: [bad('a')] });
+  it('offline closed → back online → offline again → shows again', () => {
+    const off = sync({ offline: true, sources: [bad('a', 'e1')] });
     const r = replay([
-      { state: warningIds(s, parseFilter('label:x')) },
-      { close: 'filter-incomplete' },
-      { state: warningIds(s, parseFilter('label:y')) },
-      { state: warningIds(s, none) },
-      { state: warningIds(s, parseFilter('label:x')) },
+      { state: warningIds(off, none) },
+      { close: 'offline' },
+      { state: warningIds({ ...off, offline: false }, none) },
+      { state: warningIds(off, none) },
     ]);
-    expect(r[1].shown).toEqual(['incomplete']);
-    expect(r[2].shown).toEqual(['incomplete']); // other words, same failed sources: still closed
-    expect(r[3].dismissed).toEqual({});
-    expect(last(r).shown).toEqual(['filter-incomplete', 'incomplete']);
+    expect(r[1].shown).toEqual([]);
+    expect(r[2].dismissed).toEqual({});
+    expect(last(r).shown).toEqual(['offline']);
   });
 
-  it('sync incomplete closed → offline → back online with the same failure → shows again', () => {
-    const fail = sync({ sources: [bad('a', 'e1')] });
-    const r = replay([
-      { state: warningIds(fail, none) },
-      { close: 'incomplete' },
-      { state: warningIds({ ...fail, offline: true }, none) },
-      { state: warningIds(fail, none) },
-    ]);
-    expect(r[2].shown).toEqual(['offline']);
-    expect(last(r).shown).toEqual(['incomplete']);
-  });
-
-  it('a round in progress keeps the failures: not a recovery', () => {
-    const fail = sync({ sources: [bad('a', 'e1')] });
-    const r = replay([{ state: warningIds(fail, none) }, { close: 'incomplete' }, { state: warningIds({ ...fail, syncing: true }, none) }, { state: warningIds(fail, none) }]);
+  it('a round in progress keeps the problem: not a recovery', () => {
+    const r = replay([{ state: A }, { close: 'sync-problem' }, { state: warningIds(sync({ problem: 'p1', syncing: true }), none) }, { state: A }]);
     expect(last(r).shown).toEqual([]);
   });
 
@@ -164,7 +172,7 @@ describe('closing a bar and when it comes back (the table of GitHub#153)', () =>
   });
 
   it('reconciling the same state again changes nothing (same object)', () => {
-    const d = dismiss({}, A, 'incomplete');
+    const d = dismiss({}, A, 'sync-problem');
     expect(reconcile(d, A)).toBe(d);
     expect(reconcile({}, {})).toEqual({});
   });

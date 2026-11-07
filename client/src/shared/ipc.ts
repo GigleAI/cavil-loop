@@ -4,6 +4,7 @@
 import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { Handoff } from './handoff';
 
 export interface Snapshot {
   state: AppState;
@@ -27,8 +28,6 @@ export interface CavilApi {
   restartSync(): Promise<void>;
   openExternal(url: string): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;
-  /** a row of the settings page's pending list: open it the way a click on its notification does */
-  openPending(key: string): Promise<void>;
   /** the app updating itself (GitHub#184) */
   checkUpdate(): Promise<void>;
   setAutoUpdate(on: boolean): Promise<void>;
@@ -72,4 +71,6 @@ export interface CavilApi {
   setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
+  /** who a new issue is handed to by default, as last chosen in the dialog (GitHub#245) */
+  setNewIssueHandoff(h: Handoff): Promise<void>;
 }
