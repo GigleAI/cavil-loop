@@ -368,10 +368,8 @@ export interface AppState {
   tableFolds: TableFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
-  /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed */
+  /** open items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far (not shown since GitHub#251) */
   pendingCount: number;
-  /** those same items, one entry each (GitHub#185: Settings lists them); always as long as `pendingCount` */
-  pendingItems: PendingEntry[];
   /** of those, the ones not yet seen: became pending while the window was not in front (= the Dock badge, GitHub#185) */
   unreadCount: number;
   /** launch at login: on / off, null = this platform cannot */
@@ -386,24 +384,6 @@ export interface AppState {
   editsNeedingAction: number;
   /** GitHub#229: new issues being created, and their outcome until dismissed */
   creates: CreateJob[];
-}
-
-/**
- * One item the badge counts, as the settings page lists it (GitHub#185). Kind,
- * state, close reason and draft mark are kept as read, so its colour and words
- * come from the same rule as the board card, the table row and the detail badge.
- */
-export interface PendingEntry {
-  key: string;
-  repo: string;
-  number: number;
-  title: string;
-  url: string;
-  kind: ItemKind;
-  state: ItemState;
-  stateReason: IssueStateReason | null;
-  isDraft: boolean | null;
-  updatedAt: string;
 }
 
 /** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */

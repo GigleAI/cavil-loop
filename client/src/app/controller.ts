@@ -46,7 +46,7 @@ import {
 } from '../data/edits';
 import { GitHubError } from '../data/github';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
-import { PendingTracker, itemAlertText, summaryAlertText } from '../data/pending';
+import { PendingTracker, itemAlertText } from '../data/pending';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
@@ -282,7 +282,6 @@ export class Controller {
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
       pendingCount: 0,
-      pendingItems: [],
       unreadCount: 0,
       launchAtLogin: null,
       notifyProblem: null,
@@ -564,7 +563,7 @@ export class Controller {
     this.state = { ...this.state, editsNeedingAction: 0, creates: [] };
     this.pending.reset();
     this.unread.clear();
-    this.state = { ...this.state, pendingCount: 0, pendingItems: [], unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
     // what was queued for the shell belonged to that account: none of it goes out any more, and the
     // cleared badge does not wait behind a notification the system is still answering
     this.desktopEra++;
@@ -613,24 +612,21 @@ export class Controller {
     return this.desktopCalls.then(() => undefined);
   }
 
-  /**
-   * The count and the list the settings page shows, from the tracker's one
-   * de-duplicated set at the same moment (GitHub#185): every place that updates
-   * the count updates the list with it.
-   */
-  private pendingNow(): Pick<AppState, 'pendingCount' | 'pendingItems' | 'unreadCount'> {
-    return { pendingCount: this.pending.count(), pendingItems: this.pending.list(), unreadCount: this.unreadNow() };
+  /** The count and the unread part of it, from the tracker's one de-duplicated set at the same moment. */
+  private pendingNow(): Pick<AppState, 'pendingCount' | 'unreadCount'> {
+    return { pendingCount: this.pending.count(), unreadCount: this.unreadNow() };
   }
 
   /**
    * The unread items (GitHub#185, the Dock badge): what became pending while the window was not
    * in front, until the user switches to it. Only items still pending count — one whose label
-   * went away meanwhile needs nobody. Nothing is forgotten here: only switching to the window
-   * reads them (a label renamed and renamed back has not been seen).
+   * went away or that was closed meanwhile needs nobody. Nothing is forgotten here: only switching
+   * to the window reads them (a label renamed and renamed back has not been seen). What a first
+   * read finds is history and never unread (GitHub#251).
    */
   private unreadNow(): number {
     let n = 0;
-    for (const e of this.pending.list()) if (this.unread.has(e.key)) n++;
+    for (const k of this.unread) if (this.pending.has(k)) n++;
     return n;
   }
 
@@ -680,11 +676,6 @@ export class Controller {
     return this.liveSources(ctx).some((k) => carriers.includes(k));
   }
 
-  /** A summary still holds when every source whose first read it reports is still that addition. */
-  private summaryStillHolds(ctx: NoticeContext): boolean {
-    return this.sameContext(ctx) && this.liveSources(ctx).length === ctx.sources.length;
-  }
-
   private notify(make: () => Alert | null): void {
     const era = this.desktopEra;
     this.toDesktop((d) => {
@@ -700,21 +691,18 @@ export class Controller {
     );
   }
 
-  /** Feed the snapshots read completely this round; notify what became pending, summarise first reads. */
+  /**
+   * Feed the snapshots read completely this round; notify what became pending. A source's first
+   * read is only its baseline: no notification, no summary, nothing unread (GitHub#251).
+   */
   private observePending(fresh: SourceSnapshot[]): void {
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
     // unread (the badge): what arrived while the user was not looking at the window
-    if (!this.active) for (const k of [...change.appeared.map((i) => i.key), ...change.brought]) this.unread.add(k);
+    if (!this.active) for (const it of change.appeared) this.unread.add(it.key);
     for (const it of change.appeared) {
       const ctx = this.noticeContext(this.pending.carriers(it.key));
       const alert: Alert = { kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) };
       this.notify(() => (this.itemStillHolds(ctx, it.key) ? alert : null));
-    }
-    if (change.summary) {
-      const summary = change.summary;
-      const ctx = this.noticeContext(summary.sources);
-      // the numbers are the ones at the moment it goes out: the same count as the badge then
-      this.notify(() => (this.summaryStillHolds(ctx) ? { kind: 'summary', ...summaryAlertText({ ...summary, ...this.pending.totals() }) } : null));
     }
     this.badge();
     this.state = { ...this.state, ...this.pendingNow() };
@@ -815,16 +803,6 @@ export class Controller {
 
   stopDesktopEvents(): void {
     this.eventsRunning = false;
-  }
-
-  /**
-   * A row of the settings page's pending list was clicked (GitHub#185): exactly what a
-   * click on that item's notification does — its detail in the app when the board
-   * has it, otherwise GitHub in the browser. A key no longer pending does nothing.
-   */
-  openPending(key: string): void {
-    const entry = this.state.pendingItems.find((e) => e.key === key);
-    if (entry) this.onDesktopEvent({ kind: 'open', key: entry.key, url: entry.url });
   }
 
   /** One event from the shell (also what the tests feed). */
