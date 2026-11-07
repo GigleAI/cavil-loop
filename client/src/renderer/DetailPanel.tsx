@@ -13,6 +13,7 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
+import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
 import { Keys } from './ShortcutHelp';
@@ -38,7 +39,7 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
 };
 /** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
 const HIDE_LABEL = '收起 ›';
-const HIDE_TITLE = '收起（Esc；回复框里有没发出的文字时 Esc 不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
+const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
 const REVIEW: Record<string, string> = { APPROVED: '已批准', CHANGES_REQUESTED: '要求修改', REVIEW_REQUIRED: '需要评审' };
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
@@ -308,10 +309,44 @@ export function DetailPanel({
     leaveReply: () => replyBox.current?.blur(),
   });
 
+  // A click outside the panel puts it away (GitHub#191; the rule is outsideClick.ts): not on a card or
+  // a row title (those switch items), not while a dialog was open, not with a reply typed.
+  const panelRef = useRef<HTMLElement | null>(null);
+  const draftRef = useRef(reply);
+  draftRef.current = reply;
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    let press: Press | null = null;
+    let release: Release | null = null;
+    const down = (e: PointerEvent) => {
+      press = pressAt(e, panelRef.current);
+      release = null;
+    };
+    // where the button really went up: the click's own target is the common ancestor of press and release
+    const up = (e: PointerEvent) => {
+      release = releaseAt(e, panelRef.current);
+    };
+    const click = (e: MouseEvent) => {
+      const p = press;
+      const r = releaseOfClick(e, release);
+      press = null;
+      release = null;
+      if (hidesPanel(p, r, draftRef.current)) closeRef.current();
+    };
+    window.addEventListener('pointerdown', down, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('click', click, true);
+    return () => {
+      window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('click', click, true);
+    };
+  }, []);
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
     // whose keys never reach this window (another origin; its own script forwards no keys) — Esc works again after it
-    <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
+    <aside ref={panelRef} className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
       <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
       {children}
     </aside>

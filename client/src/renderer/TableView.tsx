@@ -1,11 +1,12 @@
 import { stateTone } from '../shared/stateTone';
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
-import { buildTable } from '../data/table';
+import { buildTable, type Group } from '../data/table';
 import { api } from './api';
 import { Person } from './Avatar';
+import { OPENS_ITEM } from './outsideClick';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import { LabelPicker } from './LabelPicker';
@@ -357,6 +358,81 @@ export function TableView({
     </th>
   );
 
+  const groupBody = (g: Group, inRepo: boolean) => (
+    <tbody key={g.key} className={inRepo ? 'in-repo' : undefined} data-testid="group" data-key={g.key} data-title={g.title}>
+      {t.groupBy !== 'none' && (
+        <tr className="group-head" data-testid="group-head">
+          <td colSpan={cols.length + 1}>
+            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'} onClick={() => toggle(g.key)}>
+              {folded.has(g.key) ? '▸' : '▾'}
+            </button>{' '}
+            <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
+            {g.current && <span className="current" data-testid="group-current">当前</span>}
+            {g.subtitle && <span className="small muted"> {g.subtitle}</span>}
+          </td>
+        </tr>
+      )}
+      {!folded.has(g.key) &&
+        g.rows.map((r) => (
+          <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth} data-under={r.under ?? undefined}>
+            <td className="title-cell" style={{ paddingLeft: 8 + r.depth * 20 }}>
+              {r.under && (
+                <span className="nest-mark" title="关联到上面这个 issue 的 PR">
+                  ↳{' '}
+                </span>
+              )}
+              <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>
+                <Icon name={itemIcon(r.item.kind, r.item.state, r.item.stateReason)} title={`${r.item.kind === 'pr' ? 'PR' : 'Issue'} ${STATE_TEXT[r.item.state]}`} />
+              </span>
+              <a
+                href={r.item.url}
+                data-testid="row-title"
+                {...{ [OPENS_ITEM]: '' }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onOpen(r.item.key);
+                }}
+              >
+                {r.item.title}
+              </a>{' '}
+              <span className="muted small">
+                {r.item.repo} #{r.item.number}
+              </span>
+            </td>
+            {cols.map((c) => {
+              const editable = canWrite && EDITABLE_COLUMNS.includes(c);
+              const open = editing?.key === r.item.key && editing.col === c;
+              return (
+                <td
+                  key={c}
+                  className={`col-${c}${editable ? ' editable' : ''}`}
+                  data-testid="cell"
+                  data-col={c}
+                  data-editing={open ? 'yes' : undefined}
+                  title={editable && !open ? '点一下修改' : undefined}
+                  onClick={editable && !open ? () => startEdit(r.item, c) : undefined}
+                >
+                  {open ? (
+                    <CellEditor
+                      item={r.item}
+                      col={c}
+                      projects={projects}
+                      options={options[r.item.repo] ?? null}
+                      disabled={!canWrite || busy.has(r.item.key)}
+                      act={(a, ok) => void act(r.item)(a, ok)}
+                      close={() => setEditing(null)}
+                    />
+                  ) : (
+                    <Cell col={c} item={r.item} now={now} dark={dark} />
+                  )}
+                </td>
+              );
+            })}
+          </tr>
+        ))}
+    </tbody>
+  );
+
   return (
     <div className="table-layout" data-testid="table">
       {table.slices && (
@@ -393,79 +469,23 @@ export function TableView({
               {cols.map(head)}
             </tr>
           </thead>
-          {table.groups.map((g) => (
-            <tbody key={g.key} data-testid="group" data-key={g.key} data-title={g.title}>
-              {t.groupBy !== 'none' && (
-                <tr className="group-head" data-testid="group-head">
-                  <td colSpan={cols.length + 1}>
-                    <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'} onClick={() => toggle(g.key)}>
-                      {folded.has(g.key) ? '▸' : '▾'}
-                    </button>{' '}
-                    <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
-                    {g.current && <span className="current" data-testid="group-current">当前</span>}
-                    {g.subtitle && <span className="small muted"> {g.subtitle}</span>}
-                  </td>
-                </tr>
-              )}
-              {!folded.has(g.key) &&
-                g.rows.map((r) => (
-                  <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth} data-under={r.under ?? undefined}>
-                    <td className="title-cell" style={{ paddingLeft: 8 + r.depth * 20 }}>
-                      {r.under && (
-                        <span className="nest-mark" title="关联到上面这个 issue 的 PR">
-                          ↳{' '}
-                        </span>
-                      )}
-                      <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>
-                        <Icon name={itemIcon(r.item.kind, r.item.state, r.item.stateReason)} title={`${r.item.kind === 'pr' ? 'PR' : 'Issue'} ${STATE_TEXT[r.item.state]}`} />
-                      </span>
-                      <a
-                        href={r.item.url}
-                        data-testid="row-title"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          onOpen(r.item.key);
-                        }}
-                      >
-                        {r.item.title}
-                      </a>{' '}
-                      <span className="muted small">
-                        {r.item.repo} #{r.item.number}
-                      </span>
-                    </td>
-                    {cols.map((c) => {
-                      const editable = canWrite && EDITABLE_COLUMNS.includes(c);
-                      const open = editing?.key === r.item.key && editing.col === c;
-                      return (
-                        <td
-                          key={c}
-                          className={`col-${c}${editable ? ' editable' : ''}`}
-                          data-testid="cell"
-                          data-col={c}
-                          data-editing={open ? 'yes' : undefined}
-                          title={editable && !open ? '点一下修改' : undefined}
-                          onClick={editable && !open ? () => startEdit(r.item, c) : undefined}
-                        >
-                          {open ? (
-                            <CellEditor
-                              item={r.item}
-                              col={c}
-                              projects={projects}
-                              options={options[r.item.repo] ?? null}
-                              disabled={!canWrite || busy.has(r.item.key)}
-                              act={(a, ok) => void act(r.item)(a, ok)}
-                              close={() => setEditing(null)}
-                            />
-                          ) : (
-                            <Cell col={c} item={r.item} now={now} dark={dark} />
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-            </tbody>
-          ))}
+          {table.repos
+            ? table.repos.map((r) => (
+                <Fragment key={r.key}>
+                  <tbody data-testid="repo-group" data-key={r.key} data-title={r.title}>
+                    <tr className="repo-head">
+                      <td colSpan={cols.length + 1}>
+                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'} onClick={() => toggle(r.key)}>
+                          {folded.has(r.key) ? '▸' : '▾'}
+                        </button>{' '}
+                        <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                  {!folded.has(r.key) && r.groups.map((g) => groupBody(g, true))}
+                </Fragment>
+              ))
+            : table.groups.map((g) => groupBody(g, false))}
         </table>
         {table.itemCount === 0 && <div className="center muted" data-testid="table-empty">没有符合条件的条目</div>}
       </div>
