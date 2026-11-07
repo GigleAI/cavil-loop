@@ -27,7 +27,7 @@ describe('the first-open command', () => {
     expect(RELEASE_COMMAND).toBe('xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"');
   });
 
-  for (const file of ['build/复制放行命令.html', 'build/打不开时看这里.txt', 'build/dmg-background.html', 'RELEASE_NOTES.md', 'scripts/mac-open-check.sh']) {
+  for (const file of ['build/复制放行命令.html', 'build/dmg-background.html', 'RELEASE_NOTES.md', 'scripts/mac-open-check.sh']) {
     it(`${file} carries exactly that command (and no other)`, () => {
       const found = commandsIn(read(file));
       expect(found.length).toBeGreaterThan(0);
@@ -42,6 +42,12 @@ describe('the first-open command', () => {
     const html = read('build/复制放行命令.html');
     const m = html.match(/<code id="cmd">([^<]*)<\/code>/);
     expect(m?.[1]).toBe(RELEASE_COMMAND);
+  });
+
+  it('the copy page is the one help file, so it carries the System Settings way in full too (GitHub#228)', () => {
+    const text = read('build/复制放行命令.html').replace(/<[^>]*>/g, '');
+    for (const step of ['隐私与安全性', '仍要打开', '开机密码', '在弹窗里点「打开」'])
+      expect(text, step).toContain(step);
   });
 
   it('the copy page is static: no external resource of any kind', () => {
@@ -59,6 +65,11 @@ describe('dmg window contents', () => {
     expect(contents.length).toBe(2 + DMG_EXTRA_FILES.length);
     expect(contents.some((c) => c.type === 'link' && c.path === '/Applications')).toBe(true);
     expect(contents.filter((c) => c.type === 'file').map((c) => c.path).sort()).toEqual([...DMG_EXTRA_FILES].sort());
+  });
+
+  it('shows one help file only: the copy page (GitHub#228)', () => {
+    expect(DMG_EXTRA_FILES).toEqual(['build/复制放行命令.html']);
+    expect(existsSync(join(root, 'build/打不开时看这里.txt'))).toBe(false);
   });
 
   it('every listed file exists', () => {

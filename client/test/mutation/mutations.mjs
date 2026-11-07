@@ -664,9 +664,13 @@ export const MUTATIONS = [
   { what: '网页里的命令和定义不一致', file: 'build/复制放行命令.html',
     from: '<code id="cmd">xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"</code>', to: '<code id="cmd">xattr -d com.apple.quarantine "/Applications/Cavil Loop.app"</code>',
     expect: ['build/复制放行命令.html carries exactly that command', 'copies the text of the element it shows'] },
-  { what: 'txt 里的命令和定义不一致', file: 'build/打不开时看这里.txt',
-    from: '"/Applications/Cavil Loop.app"', to: '"/Applications/CavilLoop.app"',
-    expect: ['build/打不开时看这里.txt carries exactly that command'] },
+  // GitHub#228: the .txt is gone, the page is the one help file
+  { what: '网页里缺了「系统设置 → 仍要打开」这条路', file: 'build/复制放行命令.html',
+    from: '往下找到「仍要打开」，按提示输入开机密码', to: '往下找到对应按钮，按提示输入密码',
+    expect: ['carries the System Settings way in full too'] },
+  { what: 'dmg 里又放回第二个说明文件', file: 'scripts/release-command.mjs',
+    from: "export const DMG_EXTRA_FILES = ['build/复制放行命令.html'];", to: "export const DMG_EXTRA_FILES = ['build/复制放行命令.html', 'build/dmg-background.html'];",
+    expect: ['shows one help file only', 'lists the app, the Applications link and every extra file'] },
   // review round 1 of PR #158: every copy of the command gets its own negative control
   { what: '背景源文件里的命令和定义不一致', file: 'build/dmg-background.html',
     from: '<code>xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"</code>', to: '<code>xattr -dr com.apple.quarantine "/Applications/Cavil-Loop.app"</code>',
@@ -681,7 +685,7 @@ export const MUTATIONS = [
     from: "export const DMG_EXTRA_FILES = ['build/复制放行命令.html',", to: "export const DMG_EXTRA_FILES = ['build/复制命令.html',",
     expect: ['every listed file exists', 'lists the app, the Applications link and every extra file'] },
   { what: 'dmg 里的图标放到窗口看不见的下方', file: 'scripts/dmg-layout.mjs',
-    from: "{ path: 'build/复制放行命令.html', x: 240, y: 368 }", to: "{ path: 'build/复制放行命令.html', x: 240, y: 440 }",
+    from: "{ path: 'build/复制放行命令.html', x: 330, y: 368 }", to: "{ path: 'build/复制放行命令.html', x: 330, y: 440 }",
     expect: ['every icon sits inside the visible part of the window'] },
   // ---- GitHub#155: PRs under their issue (board and table, each call site), folded detail, avatars, floating detail, zoom ----
   { what: '看板不把 PR 挪到关联 issue 下面', file: 'src/data/board.ts',

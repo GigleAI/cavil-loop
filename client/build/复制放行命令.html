@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>复制放行命令 · Cavil Loop</title>
 <!-- Shipped inside the dmg (GitHub#153): the command drawn on the dmg background
-     cannot be clicked, so this page carries it with a copy button. Static, no
-     external resources. The command must stay identical to the one in
-     打不开时看这里.txt and dmg-background.html (test/unit/dmg.test.ts). -->
+     cannot be clicked, so this page carries it with a copy button. It is the one
+     help file in the dmg (GitHub#228: the separate .txt is gone), so it also
+     carries the System Settings way in full. Static, no external resources.
+     The command must stay identical to the one in dmg-background.html
+     (test/unit/dmg.test.ts). -->
 <style>
   :root { color-scheme: light dark; --bg: #f6f8fa; --panel: #fff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --code: #eff2f5; --accent: #0969da; --ok: #1a7f37; --warn: #9a6700; }
   @media (prefers-color-scheme: dark) {
@@ -17,6 +19,7 @@
   main { max-width: 640px; margin: 48px auto; padding: 0 16px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; }
   h1 { font-size: 18px; margin: 0 0 8px; }
+  h2 { font-size: 15px; margin: 20px 0 4px; }
   ol { padding-left: 20px; margin: 8px 0 16px; }
   .cmd { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
   code { flex: 1; min-width: 0; display: block; font: 13px/1.5 ui-monospace, Menlo, monospace; background: var(--code); border-radius: 6px; padding: 10px 12px; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
@@ -31,9 +34,10 @@
 <main>
   <div class="card">
     <h1>Cavil Loop 第一次打开被 macOS 拦住时</h1>
+    <p>本 App 没有苹果开发者签名，macOS 第一次会拦一次。先把 Cavil Loop 拖进「应用程序」，然后任选一种放行：</p>
+    <h2>办法一：终端</h2>
     <ol>
-      <li>先把 Cavil Loop 拖进「应用程序」。</li>
-      <li>点下面的「复制」。</li>
+      <li>点下面的「复制」（或单击命令选中整行，再按 ⌘C）。</li>
       <li>打开「终端」，粘贴（⌘V）后回车，然后正常双击打开 App。</li>
     </ol>
     <div class="cmd">
@@ -41,7 +45,13 @@
       <button id="copy" type="button">复制</button>
     </div>
     <p id="status" role="status" aria-live="polite"></p>
-    <p class="muted">App 自己更新到新版本时不用再放行；手动下载 dmg 装新版本时要重新放行一次。也可以不用终端：打开「系统设置 → 隐私与安全性」，往下找到「仍要打开」。</p>
+    <h2>办法二：系统设置（不用终端）</h2>
+    <ol>
+      <li>先双击 App 一次，macOS 提示无法打开时点「完成」或「取消」。</li>
+      <li>打开「系统设置 → 隐私与安全性」，往下找到「仍要打开」，按提示输入开机密码，再在弹窗里点「打开」。</li>
+    </ol>
+    <p class="muted">macOS 14 及更早，也可以在 Finder 里右键 App →「打开」→「打开」。</p>
+    <p class="muted">之后就和普通 App 一样。App 自己更新到新版本时不用再放行；手动下载 dmg 装新版本时要重新放行一次。</p>
   </div>
 </main>
 <script>
