@@ -443,6 +443,32 @@ describe('sync and cache', () => {
     expect(broken.c.getState().autopilotConfirm).toBe(true);
   });
 
+  it('GitHub#245: the new-issue hand-over is kept on this machine — a restart and a Project import keep it; anything unknown is ignored or read as "none"', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().newIssueHandoff).toBe('none');
+    first.c.setNewIssueHandoff('autopilot');
+    first.c.setNewIssueHandoff('everything'); // unknown: ignored
+    first.c.setNewIssueHandoff(3 as any);
+    expect(first.c.getState().newIssueHandoff).toBe('autopilot');
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().newIssueHandoff).toBe('autopilot'); // …and left it alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().newIssueHandoff).toBe('autopilot');
+    second.c.setNewIssueHandoff('agent');
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().newIssueHandoff).toBe('agent');
+
+    for (const bad of ['Autopilot', 1, true, null, { h: 'agent' }]) {
+      const broken = await make({ seed: { newIssueHandoff: bad } });
+      expect(broken.c.getState().newIssueHandoff).toBe('none');
+    }
+  });
+
   it('GitHub#231: every configured Project is counted per repository for a new issue\'s default board, whatever the top filter shows; never read = unknown', async () => {
     const { c } = await loggedIn();
     c.addSource(PROJECT_URL);

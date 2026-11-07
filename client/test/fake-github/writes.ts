@@ -84,6 +84,10 @@ export interface WritableState {
   failDetail: Set<string>;
   /** repositories (`owner/repo` lower-cased) whose milestone list answers HTTP 502 (GitHub#214) */
   failMilestones: Set<string>;
+  /** repositories whose label list answers HTTP 502 (GitHub#245: "cannot read" is not "has none") */
+  failLabels: Set<string>;
+  /** repositories where a new issue's labels are dropped without an error, as GitHub does for an account without write access (GitHub#245) */
+  dropIssueLabels: Set<string>;
   /** clock of updated_at / createdAt written by the fake */
   clock: () => string;
   /**
@@ -114,6 +118,8 @@ export function defaultWritable(): WritableState {
     cannotUpdate: new Set(),
     failLabel: null,
     failMilestones: new Set(),
+    failLabels: new Set(),
+    dropIssueLabels: new Set(),
     failTaskSource: false,
     readOnlyRepos: new Set(),
     readOnlyProjects: new Set(),
@@ -360,7 +366,10 @@ export function handleRest(store: Store, method: string, path: string, body: any
   const known = store.repos.has(key) || [...store.projects.values()].some((pages) => pages.some((p) => p.items.nodes.some((n) => n.content?.repository?.nameWithOwner?.toLowerCase() === key)));
   if (!known) return false;
 
-  if (method === 'GET' && rest === '/labels') return send(200, w.repoLabels.get(key) ?? []), true;
+  if (method === 'GET' && rest === '/labels') {
+    if (w.failLabels.has(key)) return send(502, { message: 'Server Error' }), true;
+    return send(200, w.repoLabels.get(key) ?? []), true;
+  }
   if (method === 'GET' && rest === '/milestones') {
     if (w.failMilestones.has(key)) return send(502, { message: 'Server Error' }), true;
     return send(200, w.milestones.get(key) ?? []), true;
@@ -383,7 +392,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
       state: 'open',
       html_url: `https://github.com/${repo}/issues/${number}`,
       updated_at: w.clock(),
-      labels: (body.labels ?? []).map((n: string) => ({ name: n, color: colors.get(n) ?? 'ededed' })),
+      labels: (w.dropIssueLabels.has(key) ? [] : (body.labels ?? [])).map((n: string) => ({ name: n, color: colors.get(n) ?? 'ededed' })),
       assignees: [],
       milestone: null as null | { number: number; title: string; due_on: string | null },
     };

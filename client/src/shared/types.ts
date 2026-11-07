@@ -3,6 +3,7 @@
 
 import type { MergePrefs } from './mergePrefs';
 import type { TableFolds } from './uiPrefs';
+import type { Handoff } from './handoff';
 
 /**
  * The app updating itself (GitHub#184), as the shell reports it (src-tauri/crates/core/src/update.rs
@@ -169,10 +170,12 @@ export interface CreateJob {
   boards?: CreateBoard[];
   /** partial: the new issue's node id from GitHub's create answer (what a retry adds to a board) */
   createdNodeId?: string;
+  /** partial (GitHub#245): labels GitHub dropped from the new issue — stays in the notice until dismissed; a board retry never clears it */
+  labelsNote?: string;
   /** unknown: same-title issues this account opened in this repository lately (links only) */
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */
-  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[] };
+  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean };
 }
 
 export interface FieldOption {
@@ -368,6 +371,8 @@ export interface AppState {
   tableFolds: TableFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
+  /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */
+  newIssueHandoff: Handoff;
   /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed */
   pendingCount: number;
   /** those same items, one entry each (GitHub#185: Settings lists them); always as long as `pendingCount` */
