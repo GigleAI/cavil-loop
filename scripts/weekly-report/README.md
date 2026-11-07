@@ -65,8 +65,12 @@ systemctl --user enable --now cavil-loop-weekly-report@<project>.timer
 issue 开在主项目仓库里。
 
 - **每个项目各自走完整条采数**：仓库名、代码目录（算提交与增删行）、worktree 目录与会话前缀（找本机日志）、
-  口径切换周、机器人账号名单、GitHub 凭据都从**它自己的**配置取。每个项目在子 shell 里从「读项目配置之前」
-  的环境起步，主项目配置里的变量不会漏进别的项目。订阅月费、配图地址、开 issue 的 label 只看主项目的配置。
+  口径切换周、机器人账号名单、GitHub 凭据都从**它自己的**配置取，**没写就是没配**，不沿用主项目的。
+  定时任务启动 `run.sh` 之前，systemd 已经用 `EnvironmentFile=` 把主项目配置整份导进了环境，所以读每个项目的
+  配置前先按名字清掉：主项目配置文件里赋过值的每个名字，加上 `PROJECT_ROOT` / `GH_TOKEN` / `GITHUB_TOKEN` /
+  `WORKTREE_BASE` / `SESSION_NAME_PREFIX` / `WEEKLY_REPORT_*`。本机公共的运行环境（`PATH`、`HOME`、语言、
+  时区、`XDG_*`、日志目录覆盖）不清，附加项目没写就沿用。附加项目没写 `GH_TOKEN` 时，读它的仓库交给
+  `gh` 自己的登录。订阅月费、配图地址、开 issue 的 label 只看主项目的配置。
 - **只在结果层合并**（`merge.py`）。采数链里的认领、调用归属、重叠组能否相加、处理时长归属都只按 issue 号分组，
   两个仓库都有 #42 时混进同一次采数就会串账，所以每个仓库先各算各的，最后只把结果合起来：
 

@@ -2,8 +2,8 @@
 # kind: e2e
 # 周报把多个项目合并成一份（GitHub#232）：各仓库独立采数，只在结果层合并，同号不串账。
 #
-# 跑法：bash tests/weekly-report-multi-repo.test.sh            （默认回归，~7 s）
-#       MUTATION=1 bash tests/weekly-report-multi-repo.test.sh （再跑 5 项负对照，~10 s）
+# 跑法：bash tests/weekly-report-multi-repo.test.sh            （默认回归，~9 s）
+#       MUTATION=1 bash tests/weekly-report-multi-repo.test.sh （再跑 6 项负对照，~15 s）
 # 依赖：bash / python3 / jq / git。走真实入口 scripts/weekly-report/run.sh（不加 --dry-run，
 # 一路走到「开 issue」那一步）：真实 collect.py / merge.py / render.py / report.py 子进程，
 # 假 gh（按仓库返回不同数据、记下每次调用带的凭据）、假 node（出图）、假 curl（公网 200），
@@ -291,6 +291,49 @@ python3 "$TMP/new/scripts/weekly-report/render.py" --data "$TMP/data-alpha.json"
 chk "两个仓库切换周不同：成本图上各画一条竖线、写明是哪个仓库" \
     "$(grep -o '口径切换（[a-z、]*）' "$TMP/html/cost.html" | sort | tr '\n' ' ')" "口径切换（alpha） 口径切换（beta） "
 
+echo "── 定时任务的启动形状：主项目配置在脚本启动前已在环境里（PR #235 复审第 1 轮）──"
+# systemd 的 service 用 EnvironmentFile= 把主项目配置整份导入，再启动 run.sh。附加项目没写的
+# 字段（凭据、切换周、机器人名单、仓库名、worktree 目录规则）必须是「没配」，不能沿用主项目的。
+# 复审实测：按「启动时的环境快照」隔离的旧实现，beta 的切换周被填成 alpha 的、凭据用了 alpha 的。
+preload_case() {   # $1 被测根目录 → 结果写进 $TMP/pre.*
+    build_fixtures
+    cat >> "$HOME/.config/cavil-loop/alpha.conf" <<EOF
+WEEKLY_REPORT_SWITCH_WEEK=2024-12-18
+WEEKLY_REPORT_BOT_LOGINS=carol
+WORKTREE_BASE=$TMP/wt-alpha
+SESSION_NAME_PREFIX=issue
+EOF
+    sed -i '/^GH_TOKEN=/d' "$HOME/.config/cavil-loop/beta.conf"
+    sed -i '/^SESSION_NAME_PREFIX=/d' "$TMP/src/beta/cavil-loop.config"
+    jq --arg t "$(date -u -d "$W 14:00 +0800" +%Y-%m-%dT%H:%M:%SZ)" \
+        '. + [{id: 777, issue_url: "https://api.github.com/repos/acme/beta/issues/44", user: {login: "carol"}, created_at: $t, body: "看了一下"}]' \
+        "$FIX/acme_beta/comments.json" > "$FIX/c.tmp" && mv "$FIX/c.tmp" "$FIX/acme_beta/comments.json"
+    ( set -a; . "$HOME/.config/cavil-loop/alpha.conf"; set +a; runsh_data "$1" alpha >/dev/null ); echo "$?" > "$TMP/pre.rc"
+    cp "$TMP/gh.log" "$TMP/pre.gh" 2>/dev/null; cp "$TMP/data-alpha.json" "$TMP/pre.json" 2>/dev/null
+    # 仓库名：beta 没写 WEEKLY_REPORT_REPO、remote 又推不出 → 应报「推不出仓库名」，不是拿 alpha 的
+    sed -i '/^WEEKLY_REPORT_REPO=/d' "$HOME/.config/cavil-loop/beta.conf"
+    ( set -a; . "$HOME/.config/cavil-loop/alpha.conf"; set +a; runsh "$1" alpha ); echo "$?" > "$TMP/pre2.rc"
+    cp "$RUNSH_ERR" "$TMP/pre2.err"
+}
+preload_checks() {
+    local BR="{r['repo']:r['week'] for r in D.get('by_repo',[])}"
+    chk "预载主项目配置后仍成功出报告" "$(cat "$TMP/pre.rc")" "0"
+    chk "beta 没配凭据：读 beta 的调用不带 alpha 的凭据（交给 gh 自己的登录）" \
+        "$(grep 'repos/acme/beta/' "$TMP/pre.gh" | grep -c '^token=token-alpha ')/$(grep -c '^token=<none> .*repos/acme/beta/issues/comments' "$TMP/pre.gh")" "0/1"
+    chk "主项目自己仍用自己的凭据" "$(grep 'repos/acme/alpha/' "$TMP/pre.gh" | grep -vc '^token=token-alpha ')/$(grep -c 'repos/acme/alpha/issues/comments' "$TMP/pre.gh")" "0/1"
+    chk "beta 没配切换周：是「未配置」，主项目的切换周照旧" \
+        "$(J "$TMP/pre.json" "D['switch_weeks']")" "{'acme/alpha': '2024-12-16', 'acme/beta': None}"
+    chk "beta 没配机器人名单：carol 在 beta 算人（不按 alpha 的名单当机器人）" \
+        "$(num "$(J "$TMP/pre.json" "$BR['acme/beta']['human']")")" "1"
+    chk "beta 的 daemon 配置没写会话前缀：beta 不读日志（不沿用环境里 alpha 的）" \
+        "$(num "$(J "$TMP/pre.json" "$BR['acme/beta']['work_records']")")/$(num "$(J "$TMP/pre.json" "$BR['acme/alpha']['work_records']")")" "0/1"
+    # beta 没写仓库名 → 从它自己的 remote 推（夹具的 remote 是本地路径，推出来的不是 owner/name，
+    # 严格采数随即失败）。要钉住的是：用的是 beta 自己的 remote，不是环境里 alpha 的 acme/alpha。
+    chk "beta 没写仓库名：按 beta 自己的 remote 推，不拿 alpha 的仓库名" \
+        "$(grep -c '项目 beta（[^）]*origin/beta）' "$TMP/pre2.err")/$(grep -c '项目 beta（acme/alpha）\|同一个仓库被算了不止一次' "$TMP/pre2.err")" "1/0"
+}
+preload_case "$TMP/new"; preload_checks
+
 echo "── 3. 同仓重叠去重不变：现有测试原样通过（见 tests/weekly-report-*.test.sh），这里不重复 ──"
 
 echo "── 4b. 合并器遇到没声明的字段报错 ──"
@@ -405,7 +448,7 @@ quiet_check() {   # $1 输出文件  其余：命令
     local f="$1" p0=$pass f0=$fail; shift
     "$@" >"$f" 2>&1; pass=$p0; fail=$f0
 }
-red() { grep -F "❌ $2" "$1" >/dev/null; }
+red() { grep -F "❌ " "$1" | grep -qF -- "$2"; }   # 那条断言（名字里含 $2）在输出里是 ❌
 
 if mutation_gate; then
     # M1：把两个仓库的窗口和日志合进同一次认领（一次采数、一个日志目录）——
@@ -480,6 +523,27 @@ if mutation_gate; then
     fi
     mut "M5 去掉严格采数标记检查" "$r"
 fi
+
+if mutation_gate; then
+    # M6：不按名字清，等于本 PR 首版「启动时的环境快照」在定时任务下的效果
+    # （快照里已经有主项目配置，还原它就把主项目的值带给了附加项目）
+    M6="$TMP/m6"; mutcopy "$M6"; r=0
+    if apply "$M6/scripts/weekly-report/run.sh" '        for v in $SCOPED_NAMES; do unset "$v" 2>/dev/null || true; done' '        :' \
+       && apply "$M6/scripts/weekly-report/run.sh" \
+            'wtb=$(unset WORKTREE_BASE SESSION_NAME_PREFIX; set -a;' 'wtb=$(set -a;' \
+       && apply "$M6/scripts/weekly-report/run.sh" \
+            'wtp=$(unset WORKTREE_BASE SESSION_NAME_PREFIX; set -a;' 'wtp=$(set -a;'; then
+        preload_case "$M6"
+        quiet_check "$TMP/m6.out" preload_checks
+        r=1
+        for k in '不带 alpha 的凭据' 'beta 没配切换周' 'carol 在 beta 算人' 'beta 不读日志' '不拿 alpha 的仓库名'; do
+            red "$TMP/m6.out" "$k" || { echo "     M6 下仍为绿：$k"; r=0; }
+        done
+        red "$TMP/m6.out" '预载主项目配置后仍成功出报告' && { echo "     M6 没跑成，不能算变红"; r=0; }
+    fi
+    mut "M6 不清主项目配置（= 首版环境快照）→ 凭据 / 切换周 / 机器人名单 / 目录规则 / 仓库名各自变红" "$r"
+fi
+
 
 echo
 mutation_summary

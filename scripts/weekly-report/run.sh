@@ -38,12 +38,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# 读项目配置之前的环境快照：多仓库合并时每个项目都从这里起步、再读它自己的配置，
-# 主项目配置里的 GH_TOKEN / WEEKLY_REPORT_* 不会漏进别的项目（GitHub#232）。
-BASE_ENV="$(mktemp)"; trap 'rm -f "$BASE_ENV"' EXIT
-export -p > "$BASE_ENV"
-BASE_NAMES=" $(compgen -e | tr '\n' ' ') "
-
 CONF="$(cavil_project_env "$PROJECT")"
 [ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
 # shellcheck disable=SC1090
@@ -66,7 +60,7 @@ ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-}"
 FONTS_DIR="${WEEKLY_REPORT_FONTS_DIR:-$PROJECT_ROOT/public/fonts}"
 LABEL="${WEEKLY_REPORT_LABEL:-pending/agent}"
 
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK" "$BASE_ENV"' EXIT
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 # camo 按源 URL 缓存约一年，每轮必须换新 URL，否则顶死旧图
 REV="wk-$(date +%Y%m%d)-$(date +%s%N | tail -c 7)"
 
@@ -106,15 +100,31 @@ else
 # 每个项目在子 shell 里从「读项目配置之前」的环境起步，再读它**自己**的配置：仓库名、
 # 代码目录（算提交与增删行）、worktree 目录与会话前缀（找本机日志）、口径切换周、
 # 机器人账号名单、GitHub 凭据都取它自己的。
+#
+# ⚠️ 主项目的配置**在本脚本启动之前**就可能已经在环境里了：定时任务的 service 用
+# EnvironmentFile= 把它整份导入（PR #235 复审第 1 轮实测：靠「启动时的环境快照」隔离，
+# 附加项目没写的切换周、凭据照样继承主项目的）。所以不靠快照，而是按名字清：
+#   · 主项目配置文件里**赋过值的每一个名字**（systemd 与本脚本开头导入的正是这些）；
+#   · 再加几个一律属于项目的名字（凭据、代码目录、worktree 目录规则、WEEKLY_REPORT_*），
+#     不管它是从哪来的；
+#   · 例外是本机公共的运行环境（PATH、HOME、语言、时区、XDG_* 目录、日志目录覆盖），
+#     附加项目没写就沿用——主项目配置里写 PATH 正是为了让 systemd 找得到 node。
+# 清完再读该项目**自己**的配置，没写的字段就是「没配」。
+SHARED_ENV_RE='^(PATH|HOME|USER|LOGNAME|SHELL|TERM|TMPDIR|TZ|LANG|LANGUAGE|LC_[A-Z_]+|XDG_[A-Z_]+|CLAUDE_PROJECTS_DIR|CODEX_SESSIONS_DIR)$'
+PROJECT_ENV_RE='^(PROJECT_ROOT|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|WORKTREE_BASE|SESSION_NAME_PREFIX|WEEKLY_REPORT_[A-Za-z0-9_]*)$'
+project_scoped_names() {   # 打印要在读附加项目配置前清掉的变量名，一行一个
+    {
+        sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' "$CONF"
+        compgen -v | grep -E "$PROJECT_ENV_RE" || true
+    } | grep -vE "$SHARED_ENV_RE" | sort -u
+}
+SCOPED_NAMES="$(project_scoped_names)"
+
 collect_one() {   # $1 项目名  $2 输出文件  $3 记录「仓库名 + worktree 目录规则」的文件
     (
         set -euo pipefail
         local v
-        for v in $(compgen -e); do
-            case "$BASE_NAMES" in *" $v "*) ;; *) unset "$v" 2>/dev/null || true ;; esac
-        done
-        # shellcheck disable=SC1090
-        . "$BASE_ENV" 2>/dev/null || true
+        for v in $SCOPED_NAMES; do unset "$v" 2>/dev/null || true; done
         local conf; conf="$(cavil_project_env "$1")"
         [ -f "$conf" ] || { echo "[error] 项目 $1：找不到项目配置 $conf" >&2; exit 1; }
         # shellcheck disable=SC1090
@@ -129,8 +139,9 @@ collect_one() {   # $1 项目名  $2 输出文件  $3 记录「仓库名 + workt
         local dconf wtb="" wtp=""
         dconf="$(cavil_project_config "$PROJECT_ROOT")"
         if [ -f "$dconf" ]; then
-            wtb=$(set -a; . "$dconf" >/dev/null 2>&1; printf '%s' "${WORKTREE_BASE:-}")
-            wtp=$(set -a; . "$dconf" >/dev/null 2>&1; printf '%s' "${SESSION_NAME_PREFIX:-}")
+            # 先清掉环境里同名的值：该项目的 daemon 配置没写，就是没配，不沿用别处的
+            wtb=$(unset WORKTREE_BASE SESSION_NAME_PREFIX; set -a; . "$dconf" >/dev/null 2>&1; printf '%s' "${WORKTREE_BASE:-}")
+            wtp=$(unset WORKTREE_BASE SESSION_NAME_PREFIX; set -a; . "$dconf" >/dev/null 2>&1; printf '%s' "${SESSION_NAME_PREFIX:-}")
         fi
         # 只有两项都配了才会去读日志（collect.py 两个都给才读），才需要查撞没撞
         local wtkey=""; [ -z "$wtb" ] || [ -z "$wtp" ] || wtkey="$wtb/$wtp-"
