@@ -2824,3 +2824,55 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
   await expect(page.getByTestId('merge')).toBeEnabled();
   await app.close();
 });
+
+test('GitHub#205 (PR #220 review round 1): an item shown in two groups (two boards, different status) — only the clicked cell opens, its label is written once', async () => {
+  // a second board holding the same items, #138 with another status there: grouped by status, #138 shows twice
+  const second = loadCavilProjectPages().map((p: any) => ({
+    ...p,
+    id: `${p.id}_second`,
+    title: 'second board',
+    url: 'https://github.com/orgs/GigleAI/projects/31',
+    views: { nodes: [] },
+    items: {
+      ...p.items,
+      nodes: p.items.nodes.map((n: any) => ({
+        ...n,
+        id: `${n.id}_second`,
+        fieldValues: { nodes: n.fieldValues.nodes.map((v: any) => (n.content?.number === 138 && v.field?.name === 'Status' ? { ...v, name: 'In progress' } : v)) },
+      })),
+    },
+  }));
+  env.fake.state.projects.set('org/gigleai/31', second);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/31');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('search').fill('');
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  const labelsCol = page.locator('[data-testid="columns-pick"] input[data-col="labels"]');
+  if (!(await labelsCol.isChecked())) await labelsCol.check();
+  await page.getByTestId('open-view-panel').click();
+  const rows = page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#138"]');
+  await expect(rows).toHaveCount(2, { timeout: 15_000 });
+
+  for (const i of [1, 0]) {
+    const before = writes().length;
+    const label = i === 1 ? 'Done' : 'doing/agent';
+    await rows.nth(i).locator('[data-testid="cell"][data-col="labels"]').click();
+    // one picker, in the row that was clicked
+    await expect(page.getByTestId('cell-label-picker')).toHaveCount(1);
+    await expect(rows.nth(i).getByTestId('cell-label-picker')).toHaveCount(1);
+    await rows.nth(i).locator(`[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="${label}"]`).click();
+    await expect(page.getByTestId('board-action-result')).toContainText(`GigleAI/cavil-loop#138：已加上标签「${label}」`);
+    expect(writes().slice(before)).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: [label] }]]);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('cell-label-picker')).toHaveCount(0);
+  }
+  // both rows are the same item: both show both labels
+  for (const i of [0, 1]) for (const l of ['Done', 'doing/agent']) await expect(rows.nth(i).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: l })).toBeVisible();
+  await app.close();
+});

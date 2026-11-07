@@ -1118,4 +1118,8 @@ export const MUTATIONS = [
   { what: '小组 key 不带仓库前缀：窗口里收起一个仓库的组，另一个仓库的同名组也跟着收起', file: 'src/data/table.ts', runner: 'e2e',
     from: '      const key = `${prefix}${s.key}`;', to: '      const key = s.key;',
     expect: ['GitHub#213: "all repositories" in the table'] },
+  // ---- PR #220 review round 1: an item shown in two groups ----
+  { what: '表格编辑：按条目认格子（同一条目在两组各一行时两个都打开、点了不写）', file: 'src/renderer/TableView.tsx', runner: 'e2e',
+    from: '              const open = editing?.row === r.id && editing.col === c;', to: "              const open = editing?.row.split('@')[0] === r.item.key && editing.col === c;",
+    expect: ['GitHub#205 (PR #220 review round 1)'] },
 ];

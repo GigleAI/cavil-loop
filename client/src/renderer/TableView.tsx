@@ -282,7 +282,8 @@ export function TableView({
   };
 
   // ---- editing a cell (GitHub#205) ----
-  const [editing, setEditing] = useState<{ key: string; col: TableColumn } | null>(null);
+  // which cell is open: the table row (item + group: an item can show in two groups, PR #220 review round 1) and column
+  const [editing, setEditing] = useState<{ row: string; col: TableColumn } | null>(null);
   const [options, setOptions] = useState<Record<string, RepoOptions>>({});
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const asked = useRef(new Set<string>());
@@ -297,10 +298,10 @@ export function TableView({
         if (o.error) asked.current.delete(repo);
       });
   };
-  const startEdit = (item: Item, col: TableColumn) => {
+  const startEdit = (row: string, item: Item, col: TableColumn) => {
     if (!canWrite || !EDITABLE_COLUMNS.includes(col)) return;
     if (col === 'labels' || col === 'milestone') needOptions(item.repo);
-    setEditing({ key: item.key, col });
+    setEditing({ row, col });
   };
   const act = (item: Item) => async (a: WriteAction, okText: string) => {
     setBusy((b) => new Set(b).add(item.key));
@@ -401,7 +402,7 @@ export function TableView({
             </td>
             {cols.map((c) => {
               const editable = canWrite && EDITABLE_COLUMNS.includes(c);
-              const open = editing?.key === r.item.key && editing.col === c;
+              const open = editing?.row === r.id && editing.col === c;
               return (
                 <td
                   key={c}
@@ -410,7 +411,7 @@ export function TableView({
                   data-col={c}
                   data-editing={open ? 'yes' : undefined}
                   title={editable && !open ? '点一下修改' : undefined}
-                  onClick={editable && !open ? () => startEdit(r.item, c) : undefined}
+                  onClick={editable && !open ? () => startEdit(r.id, r.item, c) : undefined}
                 >
                   {open ? (
                     <CellEditor
