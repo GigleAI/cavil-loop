@@ -19,6 +19,7 @@ import { LabelPicker } from './LabelPicker';
 import { Keys } from './ShortcutHelp';
 import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
+import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -80,6 +81,12 @@ export function PasteImageNotice({ copied, onWeb, onDismiss, webLabel = '到 Git
   );
 }
 
+/** HH:MM of an epoch-ms time, local clock */
+function clock(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export function DetailPanel({
   itemKey,
   state,
@@ -104,6 +111,8 @@ export function DetailPanel({
   const session = sessionRef.current;
   useEffect(() => () => session.end(), [session]);
   const [detail, setDetail] = useState<ItemDetail | null>(null);
+  const detailRef = useRef(detail);
+  detailRef.current = detail;
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [opts, setOpts] = useState<RepoOptions | null>(null);
@@ -130,22 +139,64 @@ export function DetailPanel({
   const offlineWhy = canWrite ? undefined : '离线时不能修改';
   const repo = item?.repo ?? '';
 
-  const load = useCallback(async () => {
-    const mine = session.begin('detail');
-    setLoading(true);
-    const r = await api().loadDetail(itemKey);
-    if (!mine()) return;
-    setLoading(false);
-    if (r.ok) {
-      setDetail(r.detail);
-      setLoadError(null);
-    } else setLoadError(r.error);
-  }, [itemKey, session]);
+  // GitHub#226: the board's `updatedAt` of this item when the detail on screen was read. Set only
+  // when a read lands: a read that was dropped, superseded or failed leaves it, so the next round tries again.
+  const itemRef = useRef(item);
+  itemRef.current = item;
+  const readAt = useRef<string | null>(null);
+  /** an automatic re-read failed: what is on screen was last confirmed by a read at this time (epoch ms) */
+  const [autoFailed, setAutoFailed] = useState<number | null>(null);
+  /**
+   * When GitHub last confirmed what is on screen: every read that lands moves it, also one with the
+   * same content (the object on screen is kept then, so its own read time is older). A read that
+   * failed or was dropped never moves it.
+   */
+  const confirmedAt = useRef<number | null>(null);
+  /**
+   * Read the detail. `quiet`: a read nobody asked for (a sync round, the re-read after a
+   * failed change) — a failure keeps what is on screen and says so in small print, no error
+   * banner; with nothing on screen yet it shows the banner like any read.
+   */
+  const load = useCallback(
+    async (quiet = false) => {
+      const mine = session.begin('detail');
+      const seen = itemRef.current?.updatedAt ?? null;
+      setLoading(true);
+      const r = await api().loadDetail(itemKey);
+      if (!mine()) return;
+      setLoading(false);
+      if (r.ok) {
+        readAt.current = seen;
+        confirmedAt.current = r.detail.fetchedAt;
+        // same content: keep the object on screen, so the frame is not rendered again
+        setDetail((prev) => (sameDetail(prev, r.detail) ? prev : r.detail));
+        setLoadError(null);
+        setAutoFailed(null);
+      } else {
+        const shown = detailRef.current;
+        if (quiet && shown) setAutoFailed(confirmedAt.current ?? shown.fetchedAt);
+        else setLoadError(r.error);
+      }
+    },
+    [itemKey, session],
+  );
 
   // a fresh panel per opening: nothing to reset here, just read
   useEffect(() => {
     void load();
   }, [load]);
+  // GitHub#226: a sync round read a source carrying this item completely → maybe read the detail again.
+  // The mark the panel opened with is not a new round (the opening read is already on its way).
+  const mark = freshMark(item, state.sync.sources);
+  const lastMark = useRef(mark);
+  useEffect(() => {
+    if (mark === lastMark.current) return;
+    lastMark.current = mark;
+    if (mark === null) return;
+    if (shouldAutoRefresh({ item, readAt: readAt.current, detail, busy, loading })) void load(true);
+    // only a new round decides; the values are this render's
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mark]);
   useEffect(() => {
     if (!repo) return;
     setOpts(null);
@@ -169,6 +220,10 @@ export function DetailPanel({
   const run = async (action: WriteAction, okText: string): Promise<WriteResult & { here: boolean }> => {
     const label = item ? `${item.repo}#${item.number}` : itemKey;
     const mine = session.begin('write');
+    // GitHub#226: a read already on its way carries GitHub as it was before this change — it never
+    // lands; the read after the change does (both ways it ends, so the panel never stays behind)
+    session.supersede('detail');
+    setLoading(false);
     setBusy(true);
     const r = await api().act(action);
     if (!mine()) {
@@ -177,7 +232,8 @@ export function DetailPanel({
     }
     setBusy(false);
     setNote(noteOf(r, okText));
-    if (r.ok) void load();
+    // refused or failed: read again too, so the panel shows what GitHub holds now (the change's own banner says what went wrong)
+    void load(!r.ok);
     return { ...r, here: true };
   };
 
@@ -218,9 +274,9 @@ export function DetailPanel({
       { kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source },
       checked ? '已勾上，GitHub 上已更新' : '已取消勾选，GitHub 上已更新',
     );
-    if (!r.here) return;
-    // refused or failed: read again, so the box shows what GitHub holds now
-    if (!r.ok) void load();
+    // refused or failed: the box goes back to what is on screen at once, and `run` reads again, so it
+    // ends up showing what GitHub holds now (a re-read with the same content does not redraw by itself)
+    if (r.here && !r.ok) setRedraw((n) => n + 1);
   };
   // What the listener below reads: the latest values of this render, set before the frame can load.
   /** GitHub#205: "edit" was clicked in the frame. Opened only for an entry GitHub said this account may change. */
@@ -414,6 +470,11 @@ export function DetailPanel({
         <div className="banner error" data-testid="detail-error">
           <Icon name="warn" />
           <span className="banner-text">{loadError}</span>
+        </div>
+      )}
+      {autoFailed !== null && !loadError && (
+        <div className="detail-stale muted" data-testid="detail-stale" role="status">
+          自动更新失败，显示的是 {clock(autoFailed)} 的内容
         </div>
       )}
 
