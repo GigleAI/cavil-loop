@@ -860,25 +860,76 @@ export class Controller {
   /**
    * GitHub#229: land snapshots one after the other. `build` runs in the write queue, against
    * memory as every earlier landing left it, so a later landing never builds on a copy an
-   * earlier one has since replaced; memory takes the rows right after the disk did (only
-   * the rows `keep` still accepts then). null = the session is over, nothing landed.
+   * earlier one has since replaced. It returns the rows to write and `commit`, which records
+   * which reads these rows hold. Only after the disk took the rows, in this session, does
+   * memory take them (the ones `keep` still accepts then) and `commit` run, in the same step:
+   * a read whose rows did not reach the disk leaves no trace — no row, no read time — so it
+   * is never taken for evidence (PR #240 plan review round 2).
+   * `ended`: the session is over; `failed`: the write threw or was refused (nothing landed).
    */
-  private landSnapshots(session: number, build: () => SourceSnapshot[], keep: (sourceKey: string) => boolean): Promise<SourceSnapshot[] | null> {
+  private landSnapshots(
+    session: number,
+    build: () => { rows: SourceSnapshot[]; commit: (keep: (sourceKey: string) => boolean) => void },
+    keep: (sourceKey: string) => boolean,
+  ): Promise<{ kind: 'landed'; rows: SourceSnapshot[] } | { kind: 'ended' } | { kind: 'failed'; reason: string; error?: unknown }> {
     return this.cache.enqueue(async () => {
-      if (session !== this.session) return null;
-      const snaps = build();
-      if (!snaps.length) return [];
-      const r = await this.backend.call<{ written: boolean }>('replaceSnapshots', { session, snapshots: snaps });
-      if (!r.written || session !== this.session) return null;
-      const landed = snaps.filter((snap) => keep(snap.sourceKey));
-      for (const snap of landed) this.snapshots.set(snap.sourceKey, snap);
-      return landed;
+      if (session !== this.session) return { kind: 'ended' as const };
+      const plan = build();
+      if (plan.rows.length) {
+        let r: { written: boolean };
+        try {
+          r = await this.backend.call<{ written: boolean }>('replaceSnapshots', { session, snapshots: plan.rows });
+        } catch (e) {
+          return { kind: 'failed' as const, reason: `没能存到本机：${(e as Error).message}`, error: e };
+        }
+        if (session !== this.session) return { kind: 'ended' as const };
+        if (!r.written) return { kind: 'failed' as const, reason: '没能存到本机' };
+      }
+      const rows = plan.rows.filter((snap) => keep(snap.sourceKey));
+      for (const snap of rows) this.snapshots.set(snap.sourceKey, snap);
+      plan.commit(keep);
+      return { kind: 'landed' as const, rows };
     });
   }
 
-  /** the newest read of this item that landed in this source */
+  /** the newest read of this item that landed in this source (recorded only once its rows were on disk) */
   private readAt(sourceKey: string, key: string): number {
     return Math.max(this.sourceReadAt.get(sourceKey) ?? 0, this.itemReadAt.get(`${sourceKey}\n${key}`) ?? 0);
+  }
+
+  /**
+   * GitHub#229 (PR #240 plan revision 1): what GitHub holds in this field, from reads issued
+   * at `since` or later that landed — the one place every decision taken on GitHub's value
+   * reads it (the checks of a change, the end of a watch, the check before a resend).
+   * Only the board data counts, never a read's own answer: an answer that came back after a
+   * newer one, or whose rows never reached the disk, is no evidence. Among the sources that
+   * qualify the newest read wins. A Project field is only read in that Project's source;
+   * an item a qualifying Project source no longer has is `absent` there.
+   * `own`: the read's own copy, passed only when no source carries the item at all (then
+   * nothing newer can have landed) — labels and milestone only, a Project field never.
+   * null: no evidence that new.
+   */
+  private evidence(key: string, field: EditField, since: number, own: Item | null = null): { value: EditValue } | 'absent' | null {
+    let best: { value: EditValue; at: number } | null = null;
+    let absent = false;
+    for (const snap of this.snapshots.values()) {
+      const at = this.readAt(snap.sourceKey, key);
+      if (at < since) continue;
+      if ((field.kind === 'status' || field.kind === 'iteration') && snap.project?.key !== field.projectKey) continue;
+      const item = snap.items.find((i) => i.key === key);
+      const value = item ? fieldValue(item, field) : undefined;
+      if (value === undefined) {
+        if (field.kind === 'status' || field.kind === 'iteration') absent = true;
+        continue;
+      }
+      if (!best || at > best.at) best = { value, at };
+    }
+    if (best) return { value: best.value };
+    if (own && field.kind !== 'status' && field.kind !== 'iteration') {
+      const value = fieldValue(own, field);
+      if (value !== undefined) return { value };
+    }
+    return absent ? 'absent' : null;
   }
 
   private bumpEpoch(key: string): void {
@@ -954,6 +1005,9 @@ export class Controller {
     this.cache.setSetting('sources', sources);
     this.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
+    // GitHub#229: the read times of that addition go with it
+    this.sourceReadAt.delete(key);
+    for (const k of [...this.itemReadAt.keys()]) if (k.startsWith(`${key}\n`)) this.itemReadAt.delete(k);
     // its own items stop counting, silently
     this.pending.prune(sources.map((s) => s.key));
     this.badge();
@@ -1128,15 +1182,12 @@ export class Controller {
     const current = (key: string) =>
       this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
     // GitHub#229: an item re-read after this round started keeps that newer copy
-    const newer = new Set<string>();
-    const accepted = await this.landSnapshots(
-      session,
-      () => this.roundRows(round.replaced.filter((snap) => current(snap.sourceKey)), issuedAt, newer),
-      current,
-    );
+    const landing = await this.landSnapshots(session, () => this.roundRows(round.replaced.filter((snap) => current(snap.sourceKey)), issuedAt), current);
+    if (landing.kind === 'failed' && landing.error !== undefined) throw landing.error;
     // a source removed while the write was on its way: not shown either
-    if (!accepted) return over();
-    this.feedSnapshots(accepted, issuedAt, newer);
+    if (landing.kind !== 'landed') return over();
+    const accepted = landing.rows;
+    this.feedSnapshots(accepted, issuedAt);
     this.applyImports(accepted);
     // Only what was read completely this round (and still belongs here) is compared.
     this.observePending(accepted);
@@ -1340,7 +1391,7 @@ export class Controller {
     let warning = outcome.warning;
     if (c.session === this.session) {
       for (const [repo, number] of outcome.touched) {
-        const problem = await this.refreshOne(c.client, c.session, repo, number);
+        const { problem } = await this.refreshOne(c.client, c.session, repo, number);
         if (problem) warning = [warning, problem].filter(Boolean).join('；');
       }
       // GitHub changed something (also when a follow-up step warned): one more round soon
@@ -1355,47 +1406,74 @@ export class Controller {
    * switch, nor into a source removed (or re-added) meanwhile. A round already
    * in flight may have read the item before the change: one more round is queued.
    */
-  private async refreshOne(client: GitHubClient, session: number, repo: string, number: number, opts: { final?: boolean; out?: { fresh?: FreshItem } } = {}): Promise<string | null> {
+  /**
+   * Read one item again and land it in every source that carries it. GitHub#229: the answer
+   * itself is never handed out (PR #240 plan revision 1) — whoever decides on GitHub's value
+   * reads it from the board data through `evidence`, with this read's `issuedAt`:
+   *   done   — the read landed, or in a source was overtaken by a newer read that had landed;
+   *            either way the board data holds a read issued at `issuedAt` or later
+   *   failed — GitHub could not be read, or the rows did not reach the disk (`problem` says which)
+   *   ended  — the session is over
+   * `own`: the item's own copy, only when no source carries it (see `evidence`).
+   */
+  private async refreshOne(
+    client: GitHubClient,
+    session: number,
+    repo: string,
+    number: number,
+    opts: { final?: boolean } = {},
+  ): Promise<{ kind: 'done' | 'failed' | 'ended'; problem: string | null; issuedAt: number; own: Item | null }> {
     const sources = this.state.sources;
     const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
     const issuedAt = this.stamp();
+    const key = itemKey(repo, number);
+    const failed = (reason: string) => {
+      if (session === this.session) this.feedReadFailure(key, reason, issuedAt);
+      void this.syncNow();
+      return { kind: 'failed' as const, problem: `修改已生效，但重读这一条失败（${reason}），下一轮同步会更新`, issuedAt, own: null };
+    };
     let fresh;
     try {
       fresh = await fetchItem(client, repo, number);
     } catch (e) {
-      if (session === this.session) this.feedReadFailure(itemKey(repo, number), (e as Error).message);
-      void this.syncNow();
-      return `修改已生效，但重读这一条失败（${(e as Error).message}），下一轮同步会更新`;
+      return failed((e as Error).message);
     }
-    if (session !== this.session) return null;
-    if (opts.out) opts.out.fresh = fresh;
-    const current = (key: string) =>
-      this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
-    // GitHub#229: only into sources where nothing newer of this item landed meanwhile
-    // (a read that comes back after a later one would put the older value back)
-    const key = freshKey(fresh);
-    let stale = false;
-    const landed = await this.landSnapshots(
+    if (session !== this.session) return { kind: 'ended', problem: null, issuedAt, own: null };
+    const current = (k: string) => this.state.sources.some((s) => s.key === k) && (this.epochs.get(k) ?? 0) === epochAtStart.get(k);
+    const freshK = freshKey(fresh);
+    let own: Item | null = null;
+    // only into sources where nothing newer of this item landed meanwhile (a read that comes back
+    // after a later one would put the older value back); its read time is recorded only once the
+    // rows are on disk
+    const landing = await this.landSnapshots(
       session,
       () => {
-        if (!key) return [];
-        const carrying = [...this.snapshots.values()].filter((s) => current(s.sourceKey));
-        const views = freshViews(carrying, fresh);
-        const fresher = views.filter((v) => this.readAt(v.snap.sourceKey, key) < issuedAt);
-        stale = views.length > 0 && !fresher.length;
-        for (const v of fresher) this.itemReadAt.set(`${v.snap.sourceKey}\n${key}`, issuedAt);
-        return applyFreshItem(
-          fresher.map((v) => v.snap),
+        if (!freshK) return { rows: [], commit: () => {} };
+        const views = freshViews(
+          [...this.snapshots.values()].filter((s) => current(s.sourceKey)),
           fresh,
         );
+        if (views.every((v) => !v.item)) own = contentToItem(fresh.content, [], []);
+        const fresher = views.filter((v) => this.readAt(v.snap.sourceKey, freshK) < issuedAt);
+        return {
+          rows: applyFreshItem(
+            fresher.map((v) => v.snap),
+            fresh,
+          ),
+          commit: (keep) => {
+            for (const v of fresher) if (keep(v.snap.sourceKey)) this.itemReadAt.set(`${v.snap.sourceKey}\n${freshK}`, issuedAt);
+          },
+        };
       },
       current,
     );
-    if (landed?.length) this.set({});
-    // GitHub#229: only once the read landed (or had nothing to change) in this session, and only when it is not older than what is shown
-    if (landed && !stale && session === this.session) this.feedFresh(fresh, issuedAt, opts.final);
+    if (landing.kind === 'ended') return { kind: 'ended', problem: null, issuedAt, own: null };
+    if (landing.kind === 'failed') return failed(landing.reason);
+    if (landing.rows.length) this.set({});
+    // the checks of the changes read what the board data holds now (this read, or a newer one)
+    this.feedEvidence(freshK ?? key, issuedAt, own, opts.final);
     if (this.syncing) void this.syncNow();
-    return null;
+    return { kind: 'done', problem: null, issuedAt, own };
   }
 
   /** A 401 on a call outside the sync round: let the next round do the refresh / sign-out logic. */
@@ -1608,7 +1686,7 @@ export class Controller {
         let warning = first;
         if (session === this.session) {
           for (const [repo, number] of touched) {
-            const problem = await this.refreshOne(c.client, session, repo, number);
+            const { problem } = await this.refreshOne(c.client, session, repo, number);
             if (problem) warning = [warning, problem].filter(Boolean).join('；');
           }
           if (session === this.session) this.scheduleFollowUp(session);
@@ -1630,23 +1708,21 @@ export class Controller {
     return outcome === 'accepted' ? { ok: true, error: null, warning: null } : { ok: false, error: reason, warning: null };
   }
 
-  /** A sync round's snapshots landed: each record whose item is in one of them reads its field there. */
-  private feedSnapshots(snaps: SourceSnapshot[], issuedAt: number, newer: Set<string> = new Set()): void {
+  /** A sync round's snapshots landed: each record whose item is in one of them reads its field from the board data. */
+  private feedSnapshots(snaps: SourceSnapshot[], issuedAt: number): void {
     if (!this.edits.size || !snaps.length) return;
     const keys = new Set([...this.edits.values()].map((r) => r.key));
     for (const key of keys) {
-      // a copy kept from a newer re-read is not what this round read
-      const copies = snaps.flatMap((snap) => (newer.has(`${snap.sourceKey}\n${key}`) ? [] : snap.items.filter((i) => i.key === key)));
-      if (copies.length) this.feedRead(key, copies, issuedAt);
+      if (snaps.some((snap) => snap.items.some((i) => i.key === key))) this.feedEvidence(key, issuedAt);
     }
   }
 
   /**
    * A round's rows as they may land: a source a newer round already landed is left out; an
    * item re-read after this round started keeps the copy memory has (or stays absent when that
-   * re-read took it out of the source). `newer` collects "source\nitem" of the copies kept.
+   * re-read took it out of the source). The read times move only in `commit`, after the write.
    */
-  private roundRows(rows: SourceSnapshot[], issuedAt: number, newer: Set<string>): SourceSnapshot[] {
+  private roundRows(rows: SourceSnapshot[], issuedAt: number): { rows: SourceSnapshot[]; commit: (keep: (sourceKey: string) => boolean) => void } {
     const out: SourceSnapshot[] = [];
     for (const snap of rows) {
       if ((this.sourceReadAt.get(snap.sourceKey) ?? 0) > issuedAt) continue;
@@ -1664,37 +1740,35 @@ export class Controller {
         for (const k of kept) {
           const s = shown.find((x) => x.key === k);
           if (s && !items.some((x) => x.key === k)) items.push(s);
-          newer.add(prefix + k);
         }
       }
-      // what this round read is now the floor of the source; older per-item stamps are covered by it
-      this.sourceReadAt.set(snap.sourceKey, issuedAt);
-      for (const [k, at] of [...this.itemReadAt]) if (k.startsWith(prefix) && at <= issuedAt) this.itemReadAt.delete(k);
       out.push(items === snap.items ? snap : { ...snap, items });
     }
-    return out;
+    const commit = (keep: (sourceKey: string) => boolean) => {
+      for (const snap of out) {
+        if (!keep(snap.sourceKey)) continue;
+        // what this round read is now the floor of the source; older per-item stamps are covered by it
+        const prefix = `${snap.sourceKey}\n`;
+        this.sourceReadAt.set(snap.sourceKey, issuedAt);
+        for (const [k, at] of [...this.itemReadAt]) if (k.startsWith(prefix) && at <= issuedAt) this.itemReadAt.delete(k);
+      }
+    };
+    return { rows: out, commit };
   }
 
-  /** One item was re-read: its own copy says labels / milestone, each Project it is on says that Project's fields. */
-  private feedFresh(fresh: FreshItem, issuedAt: number, final = false): void {
-    const key = freshKey(fresh);
-    if (!key || ![...this.edits.values()].some((r) => r.key === key)) return;
-    const base = contentToItem(fresh.content, [], []);
-    const projectCopies = freshViews(
-      [...this.snapshots.values()].filter((s) => s.project),
-      fresh,
-    ).flatMap((v) => (v.item ? [v.item] : []));
-    this.feedRead(key, [...(base ? [base] : []), ...projectCopies], issuedAt, final);
-  }
-
-  private feedRead(key: string, copies: Item[], issuedAt: number, final = false): void {
-    const receivedAt = this.stamp();
+  /**
+   * Every record of this item reads its field through `evidence` (reads issued at `since` or
+   * later that landed); `since` is the read's issue time, a lower bound for whatever newer read
+   * may have given the value — it only ever makes a read count less.
+   */
+  private feedEvidence(key: string, since: number, own: Item | null = null, final = false): void {
     let changed = false;
     for (const r of [...this.edits.values()]) {
       if (r.key !== key) continue;
-      const value = copies.map((c) => fieldValue(c, r.field)).find((v) => v !== undefined);
-      if (value === undefined) continue;
-      this.setEdit(r.id, applyRead(r, { issuedAt, receivedAt, value }, this.deps.observeMs ?? OBSERVE_MS, final));
+      const ev = this.evidence(key, r.field, since, own);
+      if (!ev || ev === 'absent') continue;
+      const receivedAt = this.stamp();
+      this.setEdit(r.id, applyRead(r, { issuedAt: since, receivedAt, value: ev.value }, this.deps.observeMs ?? OBSERVE_MS, final));
       changed = true;
     }
     if (changed) {
@@ -1703,10 +1777,12 @@ export class Controller {
     }
   }
 
-  private feedReadFailure(key: string, reason: string): void {
+  /** A read of this item issued at `issuedAt` failed: "GitHub unreadable" only where nothing issued later has landed. */
+  private feedReadFailure(key: string, reason: string, issuedAt: number): void {
     let changed = false;
     for (const r of [...this.edits.values()]) {
       if (r.key !== key) continue;
+      if (this.evidence(key, r.field, issuedAt) !== null) continue;
       this.setEdit(r.id, applyReadFailure(r, reason, this.stamp()));
       changed = true;
     }
@@ -1731,9 +1807,9 @@ export class Controller {
     const c = await this.clientForCall(false);
     if ('error' in c) return;
     // the same re-read as after a change: it lands in the board data, then reads the field
-    const problem = await this.refreshOne(c.client, c.session, r.repo, r.number, { final });
-    // the watch must not end on a failed read: try the end again a little later
-    if (problem && final && c.session === this.session && this.edits.get(id)) {
+    const read = await this.refreshOne(c.client, c.session, r.repo, r.number, { final });
+    // the watch must not end on a failed read (GitHub unreadable, or not stored): try the end again a little later
+    if (read.kind === 'failed' && final && c.session === this.session && this.edits.get(id)) {
       this.editTimers.set(id, [setTimeout(() => void this.rereadForEdit(id, true), this.deps.observeFirstMs ?? OBSERVE_FIRST_MS)]);
     }
   }
@@ -1753,32 +1829,29 @@ export class Controller {
     if (!force) {
       const c = await this.clientForCall(false);
       if ('error' in c) return { ok: false, error: c.error, warning: null };
-      // the same re-read as after a change (it lands in the board data and reads the field), kept for the comparison
-      const out: { fresh?: FreshItem } = {};
-      const problem = await this.refreshOne(c.client, c.session, r.repo, r.number, { out });
+      // the same re-read as after a change (it lands in the board data and feeds the checks);
+      // the comparison reads GitHub's value from the board data, from reads issued at this
+      // check or later that landed — never this read's own answer (PR #240 plan revision 1)
+      const read = await this.refreshOne(c.client, c.session, r.repo, r.number);
       if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
-      const fresh = out.fresh;
-      if (!fresh) {
-        const cur = this.edits.get(id);
-        const why = problem ?? '读取失败';
-        if (cur) this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: why.replace(/^修改已生效，但重读这一条失败（(.*)），下一轮同步会更新$/, '$1') } });
+      const cur = this.edits.get(id);
+      // the read itself showed the change is on GitHub: nothing to send
+      if (!cur) return { ok: true, error: null, warning: null };
+      const ev = read.kind === 'done' || read.kind === 'failed' ? this.evidence(cur.key, cur.field, read.issuedAt, read.own) : null;
+      if (ev === null) {
+        const why = read.problem?.replace(/^修改已生效，但重读这一条失败（(.*)），下一轮同步会更新$/, '$1') ?? '读取失败';
+        this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: why } });
         this.editsChanged();
         void this.storeEdits();
         return { ok: false, error: '读不到 GitHub 现在的值，没有重新发送；确认要发就点「仍然发送」', warning: null };
       }
-      const cur = this.edits.get(id);
-      // the read itself showed the change is on GitHub: nothing to send
-      if (!cur) return { ok: true, error: null, warning: null };
-      const base = contentToItem(fresh.content, [], []);
-      const copies = [...(base ? [base] : []), ...freshViews([...this.snapshots.values()].filter((s) => s.project), fresh).flatMap((v) => (v.item ? [v.item] : []))];
-      const now = copies.map((x) => fieldValue(x, cur.field)).find((v) => v !== undefined);
-      if (now === undefined) {
+      if (ev === 'absent') {
         this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: '这一条已不在那个看板上' } });
         this.editsChanged();
         return { ok: false, error: '这一条已不在那个看板上，没有重新发送', warning: null };
       }
-      if (now !== cur.base && now !== cur.target) {
-        this.setEdit(id, { ...cur, hold: { kind: 'changed', value: now } });
+      if (ev.value !== cur.base && ev.value !== cur.target) {
+        this.setEdit(id, { ...cur, hold: { kind: 'changed', value: ev.value } });
         this.editsChanged();
         void this.storeEdits();
         return { ok: false, error: '你改之后有人改过这一项，没有重新发送；确认要覆盖就点「仍然覆盖」', warning: null };

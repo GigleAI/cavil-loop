@@ -756,3 +756,293 @@ describe('detail and label lists: kept for this run', () => {
     expect(drops).toBe(-1);
   });
 });
+
+describe('every decision on GitHub\'s value reads landed reads only (PR #240 plan revision 1)', () => {
+  const refreshes = () => fake.log.filter((e) => e.operation === 'CavilItemRefresh').length;
+  /** a not-confirmed milestone change v1 → v2 (its write got no answer), ready to be sent again */
+  async function unconfirmedV2(c: Controller) {
+    await milestoneBy(3); // v1
+    await c.syncNow();
+    fake.state.w.dropWrites = true;
+    await c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    fake.state.w.dropWrites = false;
+    const m = markOf(c, 'milestone')!;
+    expect(m.status).toBe('unconfirmed');
+    return m.id;
+  }
+  /** fail the next write of board rows (not the changes' own row) — `gate` holds it first when given */
+  function failingDisk() {
+    const st = { armed: false, failed: 0, gate: null as Promise<void> | null };
+    const intercept = async (cmd: string, args: any, next: (cmd: string, args: any) => Promise<unknown>) => {
+      if (cmd === 'replaceSnapshots' && st.armed && (args?.snapshots ?? []).some((x: any) => x.sourceKey !== EDITS_KEY)) {
+        st.armed = false;
+        if (st.gate) await st.gate;
+        st.failed++;
+        throw new Error('disk full');
+      }
+      return next(cmd, args);
+    };
+    return { st, intercept };
+  }
+
+  it('1. the check\'s answer (v1) comes back after a round landed v5: held as changed by somebody — nothing sent, GitHub keeps v5', async () => {
+    const { c } = await ready();
+    const id = await unconfirmedV2(c);
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 1);
+    const p = c.resendEdit(id);
+    await until(() => seen >= 1, 'the check read went out (held, frozen at v1)');
+    await milestoneBy(6); // somebody: v5
+    await c.syncNow();
+    expect(markOf(c, 'milestone')!.github && 'text' in markOf(c, 'milestone')!.github! ? (markOf(c, 'milestone')!.github as any).text : null).toBe('v5');
+    const before = milestoneWrites().length;
+    release();
+    const r = await p;
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/有人改过/);
+    expect(milestoneWrites().length).toBe(before);
+    expect(milestoneOnGitHub()).toBe('v5');
+    expect(markOf(c, 'milestone')!.hold?.kind).toBe('changed');
+  });
+
+  it('2. the check\'s answer comes back after a round that still read v1: sent as usual (not every overtaken check is held)', async () => {
+    const { c } = await ready();
+    const id = await unconfirmedV2(c);
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 1);
+    const p = c.resendEdit(id);
+    await until(() => seen >= 1, 'the check read went out (held)');
+    await c.syncNow();
+    const before = milestoneWrites().length;
+    release();
+    expect((await p).ok).toBe(true);
+    expect(milestoneWrites().length).toBe(before + 1);
+    expect(milestoneOnGitHub()).toBe('v2');
+  });
+
+  it('3. the check read GitHub (v5) but its rows did not reach the disk: no evidence — held as unreadable, nothing sent, the board keeps v1', async () => {
+    const disk = failingDisk();
+    const { c } = await ready({ intercept: disk.intercept });
+    const id = await unconfirmedV2(c);
+    await milestoneBy(6); // GitHub: v5; the cache: v1
+    disk.st.armed = true;
+    const before = milestoneWrites().length;
+    const reads = refreshes();
+    const r = await c.resendEdit(id);
+    expect(refreshes()).toBe(reads + 1);
+    expect(disk.st.failed).toBe(1);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/读不到/);
+    expect(markOf(c, 'milestone')!.hold?.kind).toBe('unreadable');
+    expect(milestoneWrites().length).toBe(before);
+    expect(milestoneOnGitHub()).toBe('v5');
+    // the disk works again: the next check reads v5 and holds it as changed by somebody
+    const again = await c.resendEdit(id);
+    expect(again.error).toMatch(/有人改过/);
+    expect(milestoneWrites().length).toBe(before);
+  });
+
+  it('4. a newer read\'s rows did not reach the disk; an older answer comes back later: the older one lands on the board, the check still has no evidence', async () => {
+    const disk = failingDisk();
+    const { c } = await ready({ intercept: disk.intercept });
+    const id = await unconfirmedV2(c);
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 1);
+    // the older read: the re-read after a label change, held (frozen with "bug" and v1)
+    const p1 = c.act({ kind: 'addLabel', key: K(N), label: 'bug', color: 'd73a4a' });
+    await until(() => seen >= 1, 'the older re-read went out (held)');
+    await milestoneBy(6);
+    disk.st.armed = true;
+    const before = milestoneWrites().length;
+    const r = await c.resendEdit(id);
+    expect(disk.st.failed).toBe(1);
+    expect(r.error).toMatch(/读不到/);
+    release();
+    expect((await p1).ok).toBe(true);
+    await c.settled();
+    // the older answer is newer than what the board had: it landed
+    expect(itemOf(c).labels.map((l) => l.name)).toContain('bug');
+    // and it never counted for the check
+    expect(markOf(c, 'milestone')!.hold?.kind).toBe('unreadable');
+    expect(milestoneWrites().length).toBe(before);
+    expect(milestoneOnGitHub()).toBe('v5');
+  });
+
+  it('5 + 9. the check read fails after a round issued later landed v5: decided on v5; the late failure does not say "unreadable"', async () => {
+    let gate: (() => void) | null = null;
+    let failNext = false;
+    const { c } = await ready({
+      intercept: (cmd, args, next) => {
+        if (failNext && cmd === 'request' && String(args.body ?? '').includes('CavilItemRefresh')) {
+          failNext = false;
+          return new Promise((r) => (gate = () => r({ error: 'network', message: 'offline for this one' })));
+        }
+        return undefined;
+      },
+    });
+    const id = await unconfirmedV2(c);
+    failNext = true;
+    const p = c.resendEdit(id);
+    await until(() => gate !== null, 'the check read is on its way (it will fail)');
+    await milestoneBy(6);
+    await c.syncNow();
+    const before = milestoneWrites().length;
+    gate!();
+    const r = await p;
+    expect(r.error).toMatch(/有人改过/);
+    expect(milestoneWrites().length).toBe(before);
+    const m = markOf(c, 'milestone')!;
+    expect(m.hold?.kind).toBe('changed');
+    expect(m.github && 'unreadable' in m.github).toBe(false);
+  });
+
+  it('6a. the only source is removed while the check\'s rows are being written: nothing counts — held as unreadable', async () => {
+    const disk = { gate: null as (() => void) | null, armed: false };
+    const { c } = await ready({
+      repo: false,
+      intercept: (cmd, args, next) => {
+        if (disk.armed && cmd === 'replaceSnapshots' && (args?.snapshots ?? []).some((x: any) => x.sourceKey === PROJECT_KEY)) {
+          disk.armed = false;
+          return new Promise<void>((r) => (disk.gate = r)).then(() => next(cmd, args));
+        }
+        return undefined;
+      },
+    });
+    const id = await unconfirmedV2(c);
+    await milestoneBy(4); // v2 itself is on GitHub now — the raw answer would say "nothing to send"… or "base": either way it must not count
+    disk.armed = true;
+    const before = milestoneWrites().length;
+    const p = c.resendEdit(id);
+    await until(() => disk.gate !== null, 'the check\'s rows are on their way to the disk');
+    c.removeSource(PROJECT_KEY);
+    disk.gate!();
+    const r = await p;
+    expect(r.ok).toBe(false);
+    expect(milestoneWrites().length).toBe(before);
+    // the item is on no board now; the record says why it was not sent
+    await c.settled();
+    expect(storedEdits()?.[0]?.hold?.kind).toBe('unreadable');
+  });
+
+  it('6b. signed out while the check\'s rows are being written: nothing is sent', async () => {
+    const disk = { gate: null as (() => void) | null, armed: false };
+    const { c } = await ready({
+      intercept: (cmd, args, next) => {
+        if (disk.armed && cmd === 'replaceSnapshots' && (args?.snapshots ?? []).some((x: any) => x.sourceKey !== EDITS_KEY)) {
+          disk.armed = false;
+          return new Promise<void>((r) => (disk.gate = r)).then(() => next(cmd, args));
+        }
+        return undefined;
+      },
+    });
+    const id = await unconfirmedV2(c);
+    disk.armed = true;
+    const before = milestoneWrites().length;
+    const p = c.resendEdit(id);
+    await until(() => disk.gate !== null, 'the check\'s rows are on their way to the disk');
+    const out = c.logout();
+    disk.gate!();
+    const r = await p;
+    await out;
+    expect(r.ok).toBe(false);
+    expect(milestoneWrites().length).toBe(before);
+  });
+
+  it('7. the last re-read of a watch: its rows fail to reach the disk once — it is read again and the watch still ends', async () => {
+    const disk = failingDisk();
+    const { c } = await ready({ intercept: disk.intercept, observeMs: 400, observeFirstMs: 100 });
+    fake.state.w.dropWrites = true;
+    await c.act({ kind: 'setMilestone', key: K(N), title: 'v2' });
+    fake.state.w.dropWrites = false;
+    expect((await c.act({ kind: 'setMilestone', key: K(N), title: 'v3' })).ok).toBe(true);
+    expect(markOf(c, 'milestone')!.status).toBe('observing');
+    const reads = refreshes();
+    // the first watch re-read goes through; the next write of board rows (the last re-read's) fails
+    await until(() => refreshes() > reads, 'the first watch re-read');
+    await c.settled();
+    disk.st.armed = true;
+    await until(() => disk.st.failed === 1, 'the last re-read\'s rows failed to reach the disk');
+    await until(() => markOf(c, 'milestone') === null, 'the watch ended after the retry');
+    expect(itemOf(c).milestone?.title).toBe('v3');
+  });
+
+  it('8. two boards: the check lands on board A but is overtaken on board B (a round read only B, someone changed B\'s status) — B\'s change is held', async () => {
+    const pagesB = JSON.parse(JSON.stringify(fake.state.projects.get('org/gigleai/11')));
+    for (const pg of pagesB) {
+      pg.id = 'PVT_fixture_second';
+      pg.title = 'second board';
+      pg.url = 'https://github.com/orgs/GigleAI/projects/12';
+    }
+    fake.state.projects.set('org/gigleai/12', pagesB);
+    const { c } = await ready({ repo: false });
+    c.addSource('https://github.com/orgs/GigleAI/projects/12');
+    await c.syncNow();
+    const B = 'project:org/gigleai/12';
+    const statusField = pagesB[0].fields.nodes.find((f: any) => f.__typename === 'ProjectV2SingleSelectField' && f.name === 'Status');
+    const options: string[] = statusField.options.map((o: any) => o.name);
+    const statusOn = (key: string) => itemOf(c).projects.find((p) => p.projectKey === key)?.status ?? null;
+    const before0 = statusOn(B);
+    const [target, other] = options.filter((o) => o !== before0);
+    /** somebody sets B's status on GitHub (straight in the fake's store) */
+    const statusByOnB = (name: string) => {
+      const node = pagesB.flatMap((p: any) => p.items.nodes).find((x: any) => x.content?.number === N);
+      const o = statusField.options.find((x: any) => x.name === name);
+      node.fieldValues.nodes = [...node.fieldValues.nodes.filter((x: any) => x.field?.id !== statusField.id), { __typename: 'ProjectV2ItemFieldSingleSelectValue', optionId: o.id, name: o.name, field: { id: statusField.id, name: statusField.name } }];
+    };
+    fake.state.w.dropWrites = true;
+    await c.act({ kind: 'setStatus', key: K(N), projectKey: B, status: target });
+    fake.state.w.dropWrites = false;
+    const m = markOf(c, 'status')!;
+    expect(m.status).toBe('unconfirmed');
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 1);
+    const p = c.resendEdit(m.id);
+    await until(() => seen >= 1, 'the check read went out (held, B still at the old status)');
+    statusByOnB(other);
+    // a round that reads only B (A's page fails)
+    fake.state.failProjectPage.set('org/gigleai/11', 0);
+    await c.syncNow();
+    fake.state.failProjectPage.delete('org/gigleai/11');
+    expect(statusOn(B)).toBe(other);
+    const writes = fake.writes().length;
+    release();
+    const r = await p;
+    expect(r.error).toMatch(/有人改过/);
+    expect(fake.writes().length).toBe(writes);
+  });
+
+  it('11. a sync round whose rows did not reach the disk does not move the board\'s read time: the check read (v5) issued before it still lands and decides', async () => {
+    const disk = failingDisk();
+    const { c } = await ready({ intercept: disk.intercept });
+    const id = await unconfirmedV2(c);
+    await milestoneBy(6); // GitHub: v5; the board: v1
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 1);
+    const p = c.resendEdit(id);
+    await until(() => seen >= 1, 'the check read went out (held, frozen at v5)');
+    disk.st.armed = true;
+    await c.syncNow();
+    expect(disk.st.failed).toBe(1);
+    expect(itemOf(c).milestone?.title).toBe('v1');
+    const before = milestoneWrites().length;
+    release();
+    const r = await p;
+    expect(r.error).toMatch(/有人改过/);
+    expect(milestoneWrites().length).toBe(before);
+    expect(milestoneOnGitHub()).toBe('v5');
+  });
+
+  it('10. an item on no source: the check still reads GitHub (its own answer) and holds a change by somebody', async () => {
+    const { c } = await ready();
+    const id = await unconfirmedV2(c);
+    c.removeSource(PROJECT_KEY);
+    c.removeSource(`repo:${REPO.toLowerCase()}`);
+    await milestoneBy(6);
+    const before = milestoneWrites().length;
+    const reads = refreshes();
+    const r = await c.resendEdit(id);
+    expect(refreshes()).toBe(reads + 1);
+    expect(r.error).toMatch(/有人改过/);
+    expect(milestoneWrites().length).toBe(before);
+  });
+});
