@@ -358,7 +358,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(frame.locator('details.entry').first()).toContainText('看过了');
   await shot(page, '22-replied');
   await detail.getByTestId('hand-back').click();
-  await expect(page.getByTestId('action-result')).toContainText('已交给 agent');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已交给 agent');
   await expect(card(page, 138).locator('.label', { hasText: 'pending/agent' })).toBeVisible();
   await expect(card(page, 138).locator('.label', { hasText: 'pending/human' })).toHaveCount(0);
   await page.getByTestId('detail-close').click();
@@ -399,8 +399,8 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(page.getByTestId('confirm-dialog').locator('p')).toContainText('方式：压成一个提交（squash）');
   await shot(page, '24-merge-confirm');
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'error');
-  await expect(page.getByTestId('action-result')).toContainText('新提交');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last()).toHaveAttribute('data-kind', 'error');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('新提交');
   expect(env.fake.digest()).toBe(digest);
   await shot(page, '24-merge-refused');
   await page.getByTestId('detail-refresh').click();
@@ -408,7 +408,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(page.getByTestId('merge-method')).toHaveValue('squash');
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toContainText('已合并');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已合并');
   await expect(card(page, prN).getByTestId('card-state')).toContainText('已合并');
   expect(env.fake.writes().filter((w) => w.path.endsWith('/merge')).map((w) => w.body)).toEqual([
     { merge_method: 'squash', sha: seen },
@@ -485,7 +485,7 @@ test('GitHub#177: merging in the detail shows the issue it closes closed at once
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toContainText('已合并');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已合并');
   // at once, with no sync round: the PR merged and the issue it closes closed, both still in their old columns
   // colours follow GitHub (#174): an issue a merge closed (completed) and a merged PR are both purple ("done")
   await expect(card(page, 139).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
@@ -2155,8 +2155,8 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await shot(page, '51-close-issue-confirm');
   expect(env.fake.writes()).toEqual([]);
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
-  await expect(page.getByTestId('action-result')).toHaveText('issue #137 已关闭（不计划）');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last()).toHaveAttribute('data-kind', 'ok');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（不计划），评论已发出');
   expect(writes()).toEqual([
     ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137', { state: 'closed', state_reason: 'not_planned' }],
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '不做了' }],
@@ -2177,7 +2177,7 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await open(139);
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toHaveText('issue #139 已关闭（已完成）');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）');
   expect(writes().slice(2)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'completed' }]]);
   await expect(badge).toHaveAttribute('data-tone', 'done');
   await hide.click();
@@ -2801,7 +2801,7 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
   // ⌘↩ confirms: the close goes out
   await page.getByTestId('close-issue').click();
   await page.keyboard.press(`${MOD}+Enter`);
-  await expect(page.getByTestId('action-result')).toHaveText('issue #137 已关闭（已完成）');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（已完成）');
   expect(writes().slice(n)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137', { state: 'closed', state_reason: 'completed' }]]);
   await app.close();
 });
@@ -3268,7 +3268,7 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
   await expect(page.getByTestId('autopilot-explain')).toContainText('自动合并');
   await shot(page, '205-06-autopilot-confirm');
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toContainText('已托管');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已托管');
   expect(writes().slice(before)).toEqual([
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['autopilot'] }],
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['pending/agent'] }],
@@ -3650,7 +3650,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await noMore.check();
   const b1 = writes().length;
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toContainText('已托管');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已托管');
   const autopilotWrites = (n: number) => [
     ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['autopilot'] }],
     ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
@@ -3663,7 +3663,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）');
   const b2 = writes().length;
   await quick.getByTestId('autopilot').click();
-  await expect(page.getByTestId('action-result')).toContainText('已托管');
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已托管');
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
   expect(writes().slice(b2)).toEqual(autopilotWrites(139));
 
@@ -3811,5 +3811,95 @@ test('GitHub#231 (PR #241 review round 1): new issue while boards are not read y
   await expect(unsynced).toHaveCount(0);
   await expect(page.getByTestId('new-issue-project')).not.toBeChecked();
   await page.getByTestId('confirm-cancel').click();
+  await app.close();
+});
+
+// ---- GitHub#250: closing does not hold the dialog ----
+
+test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not answered; the panel opened again cannot close it twice; a refused close gives the reason and the comment back', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const openOnGitHub = (n: number) => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  };
+  openOnGitHub(137);
+  openOnGitHub(139);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const open = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+  const notice = page.locator('[data-testid="detail"] [data-testid="op-notice"]').last();
+  const noticeText = notice.getByTestId('op-notice-text');
+  const dialog = page.getByTestId('confirm-dialog');
+
+  // ---- 1. GitHub holds its answer: the dialog is gone at once, the rest of the panel works ----
+  const release = env.fake.holdWhen((e) => e.method === 'PATCH' && e.path === '/api/repos/GigleAI/cavil-loop/issues/137');
+  await open(137);
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('close-comment').fill('做完了');
+  await page.getByTestId('confirm-ok').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(noticeText).toHaveText('正在关闭 issue #137…');
+  await expect(notice).toHaveAttribute('data-kind', 'busy');
+  await expect(page.getByTestId('reply-input')).toBeEnabled();
+  await expect(page.getByTestId('close-issue')).toBeDisabled();
+  await expect(page.getByTestId('close-issue')).toHaveAttribute('title', /^上一次操作还没结清：正在关闭 issue #137…/);
+  await expect.poll(() => env.fake.writes().filter((w) => w.method === 'PATCH').length).toBe(1);
+  await shot(page, '250-01-closing-dialog-gone');
+  // put away and opened again: the notice waited above the board, the close entry is still off
+  await page.getByTestId('detail-close').click();
+  await expect(page.locator('[data-testid="op-notice"][data-key="gigleai/cavil-loop#137"]')).toBeVisible();
+  await open(137);
+  // GitHub already carried the close out (only its answer is held), so the detail reads it closed and
+  // offers no close; what still conflicts — hand to the agent — is off, with the reason
+  await expect(page.getByTestId('hand-back')).toBeDisabled();
+  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /^上一次操作还没结清：正在关闭 issue #137…/);
+  await expect(page.getByTestId('reply-input')).toBeEnabled();
+  release();
+  await expect(noticeText).toHaveText('issue #137 已关闭（已完成），评论已发出');
+  await expect(notice).toHaveAttribute('data-kind', 'ok');
+  await expect(page.getByTestId('close-issue')).toHaveCount(0);
+  expect(writes().filter((w) => String(w[1]).includes('/issues/137'))).toEqual([
+    ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137', { state: 'closed', state_reason: 'completed' }],
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '做完了' }],
+  ]);
+  await shot(page, '250-02-closed');
+  await page.getByTestId('detail-close').click();
+
+  // ---- 2. refused by GitHub: the reason is said; "重新关闭" brings back the reason and the comment ----
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await open(139);
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('close-reason-not_planned').check();
+  await page.getByTestId('close-comment').fill('不做了');
+  await page.getByTestId('confirm-ok').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(notice).toHaveAttribute('data-kind', 'error');
+  await expect(noticeText).toContainText('没有关闭 issue #139：没有权限');
+  await expect(notice.getByTestId('op-draft-comment')).toContainText('不做了');
+  await shot(page, '250-03-close-refused');
+  expect(writes().filter((w) => String(w[1]).includes('/issues/139/comments'))).toEqual([]);
+  env.fake.state.w.readOnlyRepos.clear();
+  await notice.getByTestId('op-retry').click();
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('close-reason-not_planned')).toBeChecked();
+  await expect(page.getByTestId('close-comment')).toHaveValue('不做了');
+  await page.getByTestId('confirm-ok').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(noticeText).toHaveText('issue #139 已关闭（不计划），评论已发出');
+  expect(writes().filter((w) => String(w[1]).includes('/issues/139'))).toEqual([
+    ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'not_planned' }],
+    ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'not_planned' }],
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues/139/comments', { body: '不做了' }],
+  ]);
+  // the refused one handed its draft on: one notice left for #139
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]')).toHaveCount(1);
   await app.close();
 });

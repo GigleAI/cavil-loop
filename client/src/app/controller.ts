@@ -7,7 +7,7 @@
 // as a child process.
 
 import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
-import type { DetailResult, ItemDetail, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { normalizeAutopilotConfirm, normalizeTableFolds, setFold } from '../shared/uiPrefs';
@@ -20,7 +20,24 @@ import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, createBoard, explainError, joinCreatedIssue, listRepoOptions, performAction, refusedForSure } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentFound, commentStep, createBoard, explainError, joinCreatedIssue, labelEventFound, listRepoOptions, mergeStep, performAction, refusedForSure, relatedIssues, removeLabel } from '../data/actions';
+import {
+  CLOCK_SLACK_MS,
+  STUCK_MS,
+  finishSteps,
+  isOpKind,
+  isOpRecord,
+  opAfterRestart,
+  opApplyRead,
+  opDisposable,
+  opLockOf,
+  opPhase,
+  opProveStep,
+  opText,
+  type OpKind,
+  type OpRecord,
+  type OpStep,
+} from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
 import { applyFreshItem, fetchItem, freshKey, freshViews, type FreshItem } from '../data/itemRefresh';
 import { contentToItem } from '../data/fetchSources';
@@ -76,10 +93,16 @@ export interface ControllerDeps {
   /** GitHub#229: how long an older unanswered change is watched for, and the first re-read of it (tests shorten them) */
   observeMs?: number;
   observeFirstMs?: number;
+  /** GitHub#250: how long a succeeded operation waits for its re-read before the manual unlock is offered (tests shorten it) */
+  opStuckMs?: number;
 }
 
 /** GitHub#229: the row of the snapshot table that holds the changes not yet confirmed (not a source). */
 export const EDITS_KEY = '__edits__';
+/** GitHub#250: the row of the snapshot table that holds the close / merge / autopilot / hand-back operations (not a source). */
+export const OPS_KEY = '__ops__';
+/** GitHub#250: the operations started from the window: one action of one of the five kinds */
+export type OpAction = Extract<WriteAction, { kind: OpKind }>;
 /** GitHub#229: how many item details are kept for a fast re-open (this run only, never on disk). */
 export const DETAIL_CACHE_SIZE = 50;
 
@@ -245,6 +268,18 @@ export class Controller {
   private sourceReadAt = new Map<string, number>();
   private itemReadAt = new Map<string, number>();
 
+  // ---- GitHub#250 ----
+  /** close / merge / autopilot / hand-back operations (shared/ops.ts), stored under OPS_KEY */
+  private ops = new Map<string, OpRecord>();
+  private opsStored = false;
+  private opSeq = 0;
+  /** an operation's requests and re-reads, while they run */
+  private opJobs = new Map<string, Promise<void>>();
+  /** items a "finish the remaining steps" is preparing for (it re-reads first): the send gate counts them */
+  private opPreparing = new Set<string>();
+  /** the wait of a succeeded operation for its re-read: offers the manual unlock when it runs out */
+  private opTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   /** Read what the back end has (settings, cached snapshots), then build the controller. */
   static async create(deps: ControllerDeps): Promise<Controller> {
     const init = await deps.backend.call<BackendInit>('init');
@@ -290,9 +325,11 @@ export class Controller {
       update: null,
       editsNeedingAction: 0,
       creates: [],
+      ops: [],
     };
     for (const s of init.snapshots) {
       if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
+      else if (s.sourceKey === OPS_KEY) this.loadOps(s);
       else this.snapshots.set(s.sourceKey, s);
     }
     this.refreshDerived();
@@ -561,7 +598,12 @@ export class Controller {
     this.optionsCache.clear();
     this.sourceReadAt.clear();
     this.itemReadAt.clear();
-    this.state = { ...this.state, editsNeedingAction: 0, creates: [] };
+    for (const t of this.opTimers.values()) clearTimeout(t);
+    this.opTimers.clear();
+    this.ops.clear();
+    this.opsStored = false;
+    this.opPreparing.clear();
+    this.state = { ...this.state, editsNeedingAction: 0, creates: [], ops: [] };
     this.pending.reset();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, pendingItems: [], unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
@@ -1188,6 +1230,7 @@ export class Controller {
     if (landing.kind !== 'landed') return over();
     const accepted = landing.rows;
     this.feedSnapshots(accepted, issuedAt);
+    for (const key of new Set([...this.ops.values()].map((r) => r.key))) if (accepted.some((snap) => snap.items.some((i) => i.key === key))) this.feedOps(key, issuedAt);
     this.applyImports(accepted);
     // Only what was read completely this round (and still belongs here) is compared.
     this.observePending(accepted);
@@ -1357,6 +1400,8 @@ export class Controller {
    */
   async act(action: WriteAction): Promise<WriteResult> {
     if (isFieldAction(action)) return this.actEdit(action);
+    // GitHub#250: the five operations go through the one send gate; this waits for them (the window does not)
+    if (isOpKind(action.kind)) return this.actOp(action as OpAction);
     if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
     if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
@@ -1472,6 +1517,7 @@ export class Controller {
     if (landing.rows.length) this.set({});
     // the checks of the changes read what the board data holds now (this read, or a newer one)
     this.feedEvidence(freshK ?? key, issuedAt, own, opts.final);
+    this.feedOps(freshK ?? key, issuedAt, own);
     if (this.syncing) void this.syncNow();
     return { kind: 'done', problem: null, issuedAt, own };
   }
@@ -2028,4 +2074,523 @@ export class Controller {
     return stillMissing.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
   }
 
+
+  // ---- GitHub#250: close / merge / autopilot / hand-back do not hold a dialog ------
+  //
+  // Each one is a record (shared/ops.ts) stored before its first request goes out and
+  // updated after every answer. shared/ops.ts alone decides what a record means — whether
+  // it locks its item, its notice, its buttons, its draft; this part only runs requests,
+  // re-reads and evidence reads, and feeds their results in. `startOp` is the one send
+  // gate: the panel, the board and `act` all go through it.
+
+  /** The window's entry: refused at once (nothing sent) or started in the background. */
+  startOp(action: OpAction, opts: { from?: string } = {}): { ok: boolean; error: string | null; id?: string } {
+    const refuse = (error: string) => ({ ok: false, error });
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
+    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    if (!action || !isOpKind(action.kind)) return refuse('未知的操作');
+    const item = this.findItem(action.key);
+    if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
+    const blocked = this.opBlocked(item.key);
+    if (blocked) return refuse(blocked);
+    const step = (name: OpStep['name'], label?: string): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null });
+    let steps: OpStep[];
+    let draft: OpRecord['draft'] = {};
+    switch (action.kind) {
+      case 'closeIssue': {
+        if (item.kind !== 'issue') return refuse('这一条不是 issue');
+        if (!ISSUE_CLOSE_REASONS.includes(action.reason)) return refuse('未知的关闭原因');
+        const comment = typeof action.comment === 'string' ? action.comment : '';
+        draft = { reason: action.reason, ...(comment.trim() ? { comment } : {}) };
+        steps = comment.trim() ? [step('close'), step('comment')] : [step('close')];
+        break;
+      }
+      case 'closePr': {
+        if (item.kind !== 'pr') return refuse('这一条不是 PR');
+        const comment = typeof action.comment === 'string' ? action.comment : '';
+        draft = comment.trim() ? { comment } : {};
+        steps = comment.trim() ? [step('close'), step('comment')] : [step('close')];
+        break;
+      }
+      case 'merge': {
+        if (item.kind !== 'pr') return refuse('这一条不是 PR');
+        if (!/^[0-9a-f]{40}$/.test(action.headOid)) return refuse('不知道你看到的是哪个提交，请刷新详情后再合并');
+        if (!['merge', 'squash', 'rebase'].includes(action.method)) return refuse('未知的合并方式');
+        draft = { method: action.method, headOid: action.headOid };
+        steps = [step('merge')];
+        break;
+      }
+      case 'autopilot':
+      case 'handBack': {
+        const { human, agent, autopilot } = this.state.handBack;
+        if (!human.trim() || !agent.trim()) return refuse('设置里「交给 agent」的两个标签名不能为空');
+        if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');
+        // the autopilot label first (the daemon must see it when it picks the item up); add before remove
+        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot)] : []), step('addLabel', agent), step('removeLabel', human)];
+        break;
+      }
+    }
+    const id = `op-${++this.opSeq}`;
+    const rec: OpRecord = {
+      id,
+      key: item.key,
+      repo: item.repo,
+      number: item.number,
+      kind: action.kind,
+      startedAt: this.stamp(),
+      steps,
+      draft,
+      readAt: null,
+      targetSeen: false,
+      unlocked: false,
+      draftDropped: false,
+      dismissed: false,
+      stuck: false,
+      checkProblem: null,
+      running: true,
+    };
+    // a draft taken from an earlier record (its "重新关闭 / 合并 / 托管") now lives here
+    const from = opts.from ? this.ops.get(opts.from) : undefined;
+    if (from) this.setOp({ ...from, draftDropped: true, dismissed: true });
+    this.setOp(rec);
+    this.pruneOps();
+    this.opsChanged();
+    this.launchOp(id, item);
+    return { ok: true, error: null, id };
+  }
+
+  /** Why nothing conflicting may be sent for this item now; null = it may. */
+  private opBlocked(key: string): string | null {
+    const lock = opLockOf([...this.ops.values()], key);
+    if (lock) return `上一次操作还没结清，没有发送：${opText(lock)}`;
+    if (this.opPreparing.has(key)) return '正在准备补做上一次操作剩下的步骤，没有发送';
+    return null;
+  }
+
+  private launchOp(id: string, item: Item, client?: { client: GitHubClient; session: number }): void {
+    const session = this.session;
+    const job = this.runOp(id, item, client)
+      .catch(() => undefined)
+      .then(() => {
+        // whatever happened, it no longer runs: the record says what came of it
+        const r = this.ops.get(id);
+        if (!r || !r.running || session !== this.session) return;
+        this.setOp({ ...r, running: false });
+        this.opsChanged();
+        void this.storeOps();
+      });
+    this.opJobs.set(id, job);
+    void job.then(() => {
+      if (this.opJobs.get(id) === job) this.opJobs.delete(id);
+    });
+  }
+
+  /** The requests of a record, one after the other; then the re-reads, then (if an answer never came) the evidence. */
+  private async runOp(id: string, item: Item, given?: { client: GitHubClient; session: number }): Promise<void> {
+    const session = this.session;
+    const fail = (reason: string) => {
+      const r = this.ops.get(id);
+      if (!r || session !== this.session) return;
+      // nothing went out: the first step that was going to carries why
+      const i = r.steps.findIndex((s) => s.state === 'unsent');
+      if (i < 0) return;
+      this.setOp({ ...r, steps: r.steps.map((s, j) => (j === i ? { ...s, reason } : s)) });
+      this.opsChanged();
+      void this.storeOps();
+    };
+    // stored before anything goes out: not stored = not sent
+    if (!(await this.storeOps())) return fail('没能存到本机，没有发送');
+    const c = given ?? (await this.clientForCall(true));
+    if ('error' in c) return fail(c.error);
+    if (c.session !== session || session !== this.session) return;
+    let sent = false;
+    for (let i = 0; ; i++) {
+      let r = this.ops.get(id);
+      if (!r || session !== this.session || i >= r.steps.length) break;
+      if (r.steps[i].state !== 'unsent') continue;
+      if (i > 0 && r.steps[i - 1].state !== 'ok') break;
+      this.setOp((r = { ...r, steps: r.steps.map((s, j) => (j === i ? { ...s, state: 'pending' as const, reason: null, sentAt: this.stamp() } : s)) }));
+      this.opsChanged();
+      if (!(await this.storeOps())) {
+        const now = this.ops.get(id);
+        if (now && session === this.session) {
+          this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? { ...s, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null } : s)) });
+          this.opsChanged();
+        }
+        break;
+      }
+      sent = true;
+      let state: 'ok' | 'refused' | 'unknown';
+      let reason: string | null = null;
+      try {
+        await this.sendStep(c.client, item, r, i);
+        state = 'ok';
+      } catch (e) {
+        if (r.steps[i].name === 'removeLabel' && e instanceof GitHubError && e.status === 404) {
+          // the label is not on it (any more): that is the state wanted
+          state = 'ok';
+          reason = '这个标签本来就不在';
+        } else if (refusedForSure(e)) {
+          state = 'refused';
+          reason = explainError(e, this.stepKind(r, i));
+        } else {
+          state = 'unknown';
+          reason = unknownReason(e);
+        }
+        if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      }
+      if (session !== this.session) return;
+      const now = this.ops.get(id);
+      if (!now) return;
+      this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? { ...s, state, reason, answeredAt: this.stamp() } : s)) });
+      this.opsChanged();
+      await this.storeOps();
+      if (state !== 'ok') break;
+    }
+    // every request has its result: from here the steps lock by themselves (unknown / waiting for the re-read)
+    const done = this.ops.get(id);
+    if (done?.running && session === this.session) {
+      this.setOp({ ...done, running: false });
+      this.opsChanged();
+    }
+    if (!sent || session !== this.session) return;
+    await this.opReread(id, item, c);
+    const after = this.ops.get(id);
+    if (after && opPhase(after) === 'unknown') await this.recheckWith(id, c);
+  }
+
+  private stepKind(r: OpRecord, i: number): WriteAction['kind'] {
+    const n = r.steps[i].name;
+    if (n === 'merge') return 'merge';
+    if (n === 'close') return r.kind === 'closePr' ? 'closePr' : 'closeIssue';
+    if (n === 'comment') return 'comment';
+    return n === 'addLabel' ? 'addLabel' : 'removeLabel';
+  }
+
+  private async sendStep(client: GitHubClient, item: Item, r: OpRecord, i: number): Promise<void> {
+    const s = r.steps[i];
+    switch (s.name) {
+      case 'close':
+        return closeStep(client, item, r.draft.reason);
+      case 'comment':
+        return commentStep(client, item, r.draft.comment ?? '');
+      case 'merge':
+        return mergeStep(client, item, r.draft.method ?? 'merge', r.draft.headOid ?? '');
+      case 'addLabel':
+        return addLabel(client, item.repo, item.number, s.label ?? '');
+      case 'removeLabel':
+        return removeLabel(client, item.repo, item.number, s.label ?? '');
+    }
+  }
+
+  /** The item, and what a merge / close of a PR also changed, read again; their landing feeds the records. */
+  private async opReread(id: string, item: Item, c: { client: GitHubClient; session: number }): Promise<void> {
+    const r = this.ops.get(id);
+    if (!r) return;
+    const touched: [string, number][] = [[r.repo, r.number]];
+    const problems: string[] = [];
+    const closedPr = (r.kind === 'merge' || r.kind === 'closePr') && r.steps[0].state !== 'refused' && r.steps[0].state !== 'unsent';
+    if (closedPr) {
+      try {
+        const rel = await relatedIssues(c.client, item, this.cachedItems());
+        touched.push(...rel.items);
+        if (rel.problem) problems.push(rel.problem);
+      } catch (e) {
+        // the follow-up round reads them
+        problems.push(`没读到这个 PR 关联的 issue（${(e as Error)?.message ?? String(e)}），下一轮同步会更新`);
+      }
+    }
+    for (const [repo, number] of touched) {
+      if (c.session !== this.session) return;
+      const read = await this.refreshOne(c.client, c.session, repo, number);
+      if (read.problem) problems.push(read.problem);
+    }
+    if (c.session !== this.session) return;
+    this.scheduleFollowUp(c.session);
+    const now = this.ops.get(id);
+    if (now && (problems.length || now.readProblem)) this.patchOp(id, { readProblem: problems.length ? problems.join('；') : null });
+  }
+
+  /**
+   * A read of this item landed (issued at `since`): every record of it reads the item from
+   * the board data — the newest read issued at `since` or later that landed (the same rule
+   * as the field changes' evidence). `own`: the read's own copy, when no source carries the item.
+   */
+  private feedOps(key: string, since: number, own: Item | null = null): void {
+    let changed = false;
+    for (const r of [...this.ops.values()]) {
+      if (r.key !== key) continue;
+      const seen = this.itemEvidence(key, since, own);
+      if (!seen) continue;
+      const next = opApplyRead(r, { issuedAt: since, ...seen });
+      if (next !== r) {
+        this.setOp(next);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.opsChanged();
+      void this.storeOps();
+    }
+  }
+
+  /** The item's state and labels from landed reads issued at `since` or later (the newest wins); null = none that new. */
+  private itemEvidence(key: string, since: number, own: Item | null): { state: 'open' | 'closed' | 'merged'; labels: string[] } | null {
+    let best: { item: Item; at: number } | null = null;
+    for (const snap of this.snapshots.values()) {
+      if (!this.state.sources.some((s) => s.key === snap.sourceKey)) continue;
+      const at = this.readAt(snap.sourceKey, key);
+      if (at < since) continue; // only reads issued at `since` or later that landed
+      const it = snap.items.find((i) => i.key === key);
+      if (it && (!best || at > best.at)) best = { item: it, at };
+    }
+    const it = best?.item ?? own;
+    return it ? { state: it.state, labels: it.labels.map((l) => l.name) } : null;
+  }
+
+  /** "重新查证据": reads only — the item again, the comments, the label events. */
+  async opRecheck(id: string): Promise<WriteResult> {
+    const r = this.ops.get(id);
+    if (!r || opPhase(r) !== 'unknown') return { ok: false, error: '这次操作没有需要查证的步骤', warning: null };
+    const c = await this.clientForCall(false);
+    if ('error' in c) {
+      this.patchOp(id, { checkProblem: c.error });
+      return { ok: false, error: c.error, warning: null };
+    }
+    await this.recheckWith(id, c);
+    const after = this.ops.get(id);
+    return after && opPhase(after) === 'unknown' ? { ok: false, error: after.checkProblem ?? '还是查不到这一步的结果', warning: null } : { ok: true, error: null, warning: null };
+  }
+
+  private async recheckWith(id: string, c: { client: GitHubClient; session: number }): Promise<void> {
+    const start = this.ops.get(id);
+    if (!start) return;
+    const problems: string[] = [];
+    // the item itself: an unknown close / merge read back closed / merged, a label read back gone
+    const read = await this.refreshOne(c.client, c.session, start.repo, start.number);
+    if (read.kind === 'failed' && read.problem) problems.push(`重读这一条失败（${read.problem}）`);
+    if (c.session !== this.session) return;
+    const login = this.state.viewer;
+    const r0 = this.ops.get(id);
+    if (!r0) return;
+    for (let i = 0; i < r0.steps.length; i++) {
+      const r = this.ops.get(id);
+      if (!r || c.session !== this.session) return;
+      const s = r.steps[i];
+      if (s.state !== 'unknown' || (s.name !== 'comment' && s.name !== 'addLabel' && s.name !== 'removeLabel')) continue;
+      if (!login) {
+        problems.push('不知道当前账号是谁，查不了评论和标签记录');
+        continue;
+      }
+      const since = (s.sentAt ?? r.startedAt) - CLOCK_SLACK_MS;
+      try {
+        const found =
+          s.name === 'comment'
+            ? await commentFound(c.client, r.repo, r.number, login, r.draft.comment ?? '', since)
+            : await labelEventFound(c.client, r.repo, r.number, login, s.label ?? '', s.name === 'addLabel' ? 'labeled' : 'unlabeled', since);
+        if (c.session !== this.session) return;
+        const now = this.ops.get(id);
+        if (found && now) this.setOp(opProveStep(now, i, s.name === 'comment' ? '在评论列表里找到了这条评论' : '在 GitHub 的标签记录里找到了这一步'));
+        else if (!found) problems.push(s.name === 'comment' ? '评论列表里没找到这条评论（可能还没出现）' : `标签记录里没找到「${s.label}」这一步`);
+      } catch (e) {
+        problems.push(`读${s.name === 'comment' ? '评论列表' : '标签记录'}失败（${(e as Error)?.message ?? String(e)}）`);
+      }
+    }
+    if (c.session !== this.session) return;
+    const end = this.ops.get(id);
+    if (!end) return;
+    this.setOp({ ...end, checkProblem: problems.length ? problems.join('；') : null });
+    this.opsChanged();
+    await this.storeOps();
+  }
+
+  /** "补做剩下的步骤": the item is read first; only the label steps still missing on GitHub go out, as a new record. */
+  async opFinish(id: string): Promise<{ ok: boolean; error: string | null; id?: string }> {
+    const r = this.ops.get(id);
+    if (!r) return { ok: false, error: '这次操作已经不在了' };
+    if (!finishSteps(r).length) return { ok: false, error: '没有需要补做的步骤' };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改' };
+    const blocked = this.opBlocked(r.key);
+    if (blocked) return { ok: false, error: blocked };
+    this.opPreparing.add(r.key);
+    try {
+      const c = await this.clientForCall(true);
+      if ('error' in c) return { ok: false, error: c.error };
+      const read = await this.refreshOne(c.client, c.session, r.repo, r.number);
+      if (c.session !== this.session) return { ok: false, error: '账号已切换' };
+      const seen = read.kind === 'done' ? this.itemEvidence(r.key, read.issuedAt, read.own) : null;
+      if (!seen) return { ok: false, error: `重读这一条失败，什么都没发${read.problem ? `（${read.problem}）` : ''}` };
+      const now = this.ops.get(id);
+      if (!now) return { ok: false, error: '这次操作已经不在了' };
+      const steps = finishSteps(now, seen.labels);
+      const item = this.findItem(r.key);
+      if (!item) return { ok: false, error: '看板上找不到这一条，请刷新后再试' };
+      this.opPreparing.delete(r.key);
+      const lock = this.opBlocked(r.key);
+      if (lock) return { ok: false, error: lock };
+      if (!steps.length) {
+        this.setOp({ ...now, dismissed: true });
+        this.pruneOps();
+        this.opsChanged();
+        void this.storeOps();
+        return { ok: true, error: null };
+      }
+      const nid = `op-${++this.opSeq}`;
+      const rec: OpRecord = {
+        id: nid,
+        key: r.key,
+        repo: r.repo,
+        number: r.number,
+        kind: r.kind,
+        startedAt: this.stamp(),
+        steps,
+        draft: {},
+        readAt: null,
+        targetSeen: false,
+        unlocked: false,
+        draftDropped: false,
+        dismissed: false,
+        stuck: false,
+        checkProblem: null,
+        finishOf: id,
+        running: true,
+      };
+      this.setOp({ ...now, dismissed: true });
+      this.setOp(rec);
+      this.pruneOps();
+      this.opsChanged();
+      this.launchOp(nid, item, c);
+      return { ok: true, error: null, id: nid };
+    } finally {
+      this.opPreparing.delete(r.key);
+    }
+  }
+
+  /** "已核对，解除锁定": local only, nothing is sent. */
+  opUnlock(id: string): void {
+    const r = this.ops.get(id);
+    if (!r || r.unlocked) return;
+    const p = opPhase(r);
+    if (p !== 'unknown' && !(p === 'settling' && r.stuck)) return;
+    this.patchOp(id, { unlocked: true, dismissed: false });
+  }
+
+  /** Put a notice away (a record still locking cannot be), or show it again. */
+  opDismiss(id: string, dismissed = true): void {
+    const r = this.ops.get(id);
+    if (!r) return;
+    if (dismissed && ['waiting', 'unknown', 'settling'].includes(opPhase(r))) return;
+    this.patchOp(id, { dismissed });
+  }
+
+  /** "丢掉草稿": the only way besides the step being done. */
+  opDropDraft(id: string): void {
+    const r = this.ops.get(id);
+    if (!r || opPhase(r) === 'waiting') return;
+    this.patchOp(id, { draftDropped: true });
+  }
+
+  private patchOp(id: string, patch: Partial<OpRecord>): void {
+    const r = this.ops.get(id);
+    if (!r) return;
+    this.setOp({ ...r, ...patch });
+    this.pruneOps();
+    this.opsChanged();
+    void this.storeOps();
+  }
+
+  /** `act` for the five operations: started like the window does, then waited for (requests and re-reads). */
+  private async actOp(action: OpAction): Promise<WriteResult> {
+    const s = this.startOp(action);
+    if (!s.ok || !s.id) return { ok: false, error: s.error, warning: null };
+    await this.opJobs.get(s.id);
+    const r = this.ops.get(s.id);
+    if (!r) return { ok: false, error: '这次操作已经不在了', warning: null };
+    const m = r.steps[0];
+    if (m.state !== 'ok') return { ok: false, error: opText(r), warning: null };
+    return { ok: true, error: null, warning: r.steps.every((x) => x.state === 'ok') && !r.readProblem ? null : opText(r) };
+  }
+
+  private setOp(r: OpRecord): void {
+    this.ops.set(r.id, r);
+    // a succeeded record waiting for its re-read: the manual unlock is offered when the wait runs out
+    const settling = opPhase(r) === 'settling' && !r.stuck;
+    const t = this.opTimers.get(r.id);
+    if (!settling) {
+      if (t) clearTimeout(t);
+      this.opTimers.delete(r.id);
+    } else if (!t) {
+      const session = this.session;
+      this.opTimers.set(
+        r.id,
+        setTimeout(() => {
+          this.opTimers.delete(r.id);
+          const now = this.ops.get(r.id);
+          if (!now || session !== this.session || opPhase(now) !== 'settling') return;
+          this.setOp({ ...now, stuck: true });
+          this.opsChanged();
+          void this.storeOps();
+        }, this.deps.opStuckMs ?? STUCK_MS),
+      );
+    }
+  }
+
+  /** Records settled, put away and with no draft left are forgotten. */
+  private pruneOps(): void {
+    for (const r of [...this.ops.values()]) {
+      if (!opDisposable(r)) continue;
+      this.ops.delete(r.id);
+      const t = this.opTimers.get(r.id);
+      if (t) clearTimeout(t);
+      this.opTimers.delete(r.id);
+    }
+  }
+
+  private opsChanged(): void {
+    this.set({ ops: [...this.ops.values()] });
+  }
+
+  /** One row of the snapshot table, this session only (the back end drops it with the cache on sign-out). false = not stored. */
+  private async storeOps(): Promise<boolean> {
+    const session = this.session;
+    const list = [...this.ops.values()];
+    try {
+      if (!list.length) {
+        if (this.opsStored) {
+          this.opsStored = false;
+          this.cache.deleteSnapshot(OPS_KEY);
+        }
+        return session === this.session;
+      }
+      const row = { sourceKey: OPS_KEY, fetchedAt: this.now(), items: [], ops: list } as unknown as SourceSnapshot;
+      const ok = await this.writeSnapshots(session, [row]);
+      if (ok) this.opsStored = true;
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The stored records as the last run left them: a request still waiting has no answer now, and nothing is sent again. */
+  private loadOps(row: SourceSnapshot): void {
+    const raw = (row as unknown as { ops?: unknown }).ops;
+    const list = Array.isArray(raw) ? raw.filter(isOpRecord).map(opAfterRestart) : [];
+    for (const r of list) {
+      this.setOp({ ...r, stuck: false });
+      this.stampAt = Math.max(this.stampAt, r.startedAt, ...r.steps.map((s) => Math.max(s.sentAt ?? 0, s.answeredAt ?? 0)), r.readAt ?? 0);
+      const n = Number(/^op-(\d+)$/.exec(r.id)?.[1] ?? 0);
+      if (n > this.opSeq) this.opSeq = n;
+    }
+    this.opsStored = true;
+    this.state = { ...this.state, ops: [...this.ops.values()] };
+  }
+}
+
+/** Why an answer never came (GitHub#250): the request may have been carried out. */
+function unknownReason(e: unknown): string {
+  if (e instanceof GitHubError) {
+    if (e.kind === 'network') return `连接中断，没有收到 GitHub 的应答（${e.message}）`;
+    if (e.status) return `GitHub 返回 HTTP ${e.status}，不确定有没有生效`;
+  }
+  return `没有收到明确的应答（${(e as Error)?.message ?? String(e)}）`;
 }

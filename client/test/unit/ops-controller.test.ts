@@ -1,0 +1,603 @@
+// GitHub#250: close an issue / PR, merge, autopilot and hand-back do not hold the dialog.
+// The controller against the fake GitHub over real HTTP, with the real back end (Rust) as a
+// child process and a real SQLite file. Every "nothing more was sent" assertion has a
+// "this did go out" sibling (the first request reached GitHub, the daemon's step happened).
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { join } from 'node:path';
+import { Controller, OPS_KEY } from '../../src/app/controller';
+import { Cache } from '../support/cache';
+import { FileStore } from '../support/credentials';
+import { HarnessBackend } from '../support/harness';
+import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/server';
+import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { opButtons, opDraftLeft, opLockOf, opPhase, opText, type OpRecord } from '../../src/shared/ops';
+import type { Item } from '../../src/shared/types';
+
+const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
+const REPO = 'GigleAI/cavil-loop';
+const K = (n: number) => `gigleai/cavil-loop#${n}`;
+const ISSUE = 138;
+const DAEMON_TOKEN = 'gho_daemontoken0000000000000000000000';
+
+let fake: FakeGitHub;
+let dir: string;
+let caches: Cache[] = [];
+let controllers: Controller[] = [];
+let backends: HarnessBackend[] = [];
+
+async function ready(opts: { opStuckMs?: number; fresh?: boolean } = {}) {
+  const cache = new Cache(join(dir, 'cache.sqlite'));
+  caches.push(cache);
+  cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
+  const credentials = new FileStore(join(dir, 'cred'));
+  await credentials.set(FAKE_TOKEN);
+  const endpoints = { api: fake.api, web: fake.web };
+  const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
+  backends.push(harness);
+  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000 });
+  controllers.push(c);
+  if (!c.getState().sources.length) {
+    c.addSource(PROJECT_URL);
+    c.addSource(REPO);
+  }
+  await c.start();
+  await c.syncNow();
+  expect(c.getState().phase).toBe('ready');
+  return c;
+}
+
+const itemOf = (c: Controller, n: number): Item => {
+  const it = c.getBoardData().items.find((i) => i.key === K(n));
+  if (!it) throw new Error(`#${n} not on the board`);
+  return it;
+};
+const opOf = (c: Controller, id: string): OpRecord => {
+  const r = c.getState().ops.find((x) => x.id === id);
+  if (!r) throw new Error(`no op ${id}`);
+  return r;
+};
+async function until(pred: () => boolean, what: string) {
+  for (let i = 0; i < 1500; i++) {
+    if (pred()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`timeout waiting for: ${what}`);
+}
+/** every job of the controller is through (requests, re-reads, evidence) */
+const idle = async (c: Controller) => {
+  for (const j of [...((c as any).opJobs as Map<string, Promise<void>>).values()]) await j;
+  await c.settled();
+};
+const writes = (pred: (w: LoggedRequest) => boolean) => fake.writes().filter(pred);
+const closes = (n = ISSUE) => writes((w) => w.method === 'PATCH' && w.path === `/api/repos/${REPO}/issues/${n}` && (w.body as any)?.state === 'closed');
+const prCloses = (n: number) => writes((w) => w.method === 'PATCH' && w.path === `/api/repos/${REPO}/pulls/${n}`);
+const comments = (n = ISSUE) => writes((w) => w.method === 'POST' && w.path === `/api/repos/${REPO}/issues/${n}/comments`);
+const merges = (n: number) => writes((w) => w.method === 'PUT' && w.path === `/api/repos/${REPO}/pulls/${n}/merge`);
+const labelAdds = (label: string, n = ISSUE) => writes((w) => w.method === 'POST' && w.path === `/api/repos/${REPO}/issues/${n}/labels` && ((w.body as any)?.labels ?? []).includes(label));
+const labelRemoves = (label: string, n = ISSUE) => writes((w) => w.method === 'DELETE' && w.path === `/api/repos/${REPO}/issues/${n}/labels/${encodeURIComponent(label)}`);
+/** every read of the item / the board (the one-item re-read and a sync round alike) */
+const isRead = (e: LoggedRequest) => e.operation === 'CavilItemRefresh' || e.operation === 'CavilProjectItems' || (e.method === 'GET' && /\/issues(\?|$)/.test(e.path));
+/** the comments GitHub holds on #n */
+const commentsOnGitHub = (n = ISSUE) => fake.state.w.comments.get(`gigleai/cavil-loop#${n}`) ?? [];
+const labelsOnGitHub = (n = ISSUE): string[] => (fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === n)?.labels ?? []).map((l: any) => l.name);
+const stateOnGitHub = (n = ISSUE): string => fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === n)?.state;
+/** the daemon (another account) picks the item up: takes "pending/agent" away, puts "doing/agent" on */
+async function daemonPicksUp(n = ISSUE) {
+  const h = { authorization: `Bearer ${DAEMON_TOKEN}`, 'content-type': 'application/json' };
+  expect((await fetch(`${fake.api}/repos/${REPO}/issues/${n}/labels/${encodeURIComponent('pending/agent')}`, { method: 'DELETE', headers: h })).status).toBe(200);
+  expect((await fetch(`${fake.api}/repos/${REPO}/issues/${n}/labels`, { method: 'POST', headers: h, body: JSON.stringify({ labels: ['doing/agent'] }) })).status).toBe(200);
+}
+/** somebody reopens #n on the web */
+async function reopen(n = ISSUE) {
+  const r = await fetch(`${fake.api}/repos/${REPO}/issues/${n}`, { method: 'PATCH', headers: { authorization: `Bearer ${DAEMON_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ state: 'open' }) });
+  expect(r.status).toBe(200);
+}
+const storedOps = (): OpRecord[] | null => {
+  const cache = new Cache(join(dir, 'cache.sqlite'));
+  caches.push(cache);
+  return ((cache.loadSnapshots().get(OPS_KEY) as any)?.ops ?? null) as OpRecord[] | null;
+};
+
+function openIssue(n: number) {
+  for (const p of fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === n) Object.assign(node.content, { state: 'OPEN', stateReason: null });
+  for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n) Object.assign(r, { state: 'open', state_reason: null });
+}
+function openPr(): number {
+  const node = fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n) => n.content?.__typename === 'PullRequest')!;
+  const n = node.content.number as number;
+  node.content.state = 'OPEN';
+  node.content.merged = false;
+  for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+  return n;
+}
+/** #n carries "pending/human" on GitHub (every copy) */
+function waitingForHuman(n = ISSUE) {
+  for (const p of fake.state.projects.get('org/gigleai/11')!)
+    for (const node of p.items.nodes) if (node.content?.number === n && !node.content.labels.nodes.some((l: any) => l.name === 'pending/human')) node.content.labels.nodes.push({ name: 'pending/human', color: 'ededed' });
+  for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n && !r.labels.some((l: any) => l.name === 'pending/human')) r.labels.push({ name: 'pending/human', color: 'ededed' });
+}
+
+beforeEach(async () => {
+  fake = await startFakeGitHub();
+  fake.state.validTokens.add(DAEMON_TOKEN);
+  fake.state.tokenViewers.set(DAEMON_TOKEN, 'loop-bot');
+  dir = tempDir();
+  openIssue(ISSUE);
+});
+afterEach(async () => {
+  for (const c of controllers) c.stopTimer();
+  await Promise.all(backends.map((b) => b.close()));
+  for (const c of caches) c.close();
+  caches = [];
+  controllers = [];
+  backends = [];
+  await fake.close();
+});
+
+describe('nothing waits for the answer any more', () => {
+  it('startOp returns before GitHub answers; the answer shows before the re-read; the item stays locked until the re-read lands and shows it closed', async () => {
+    const c = await ready();
+    const holdClose = fake.hold(`/issues/${ISSUE}`);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    // returned at once (synchronously), with the operation on record
+    expect(s.ok).toBe(true);
+    const id = s.id!;
+    expect(opPhase(opOf(c, id))).toBe('waiting');
+    expect(opText(opOf(c, id))).toBe(`正在关闭 issue #${ISSUE}…`);
+    await until(() => closes().length === 1, 'the close request reached GitHub');
+    // the re-read is held now: the answers must show without it
+    const holdRead = fake.holdWhen(isRead);
+    holdClose();
+    await until(() => opOf(c, id).steps.every((x) => x.state === 'ok'), 'close and comment answered');
+    expect(opText(opOf(c, id))).toBe(`issue #${ISSUE} 已关闭（已完成），评论已发出（正在等 GitHub 的最新状态）`);
+    expect(opPhase(opOf(c, id))).toBe('settling');
+    expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(id);
+    // GitHub closed it, but the board has not read it back: a second close is refused, nothing sent
+    const again = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '再关一次' });
+    expect(again.ok).toBe(false);
+    expect(again.error).toContain('上一次操作还没结清');
+    holdRead();
+    await idle(c);
+    expect(opPhase(opOf(c, id))).toBe('settled');
+    expect(itemOf(c, ISSUE).state).toBe('closed');
+    expect(closes()).toHaveLength(1);
+    expect(comments()).toHaveLength(1);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['做完了']);
+    // done: the draft is gone, the notice can be put away and then the record is forgotten
+    expect(opDraftLeft(opOf(c, id))).toBeNull();
+    c.opDismiss(id);
+    expect(c.getState().ops.find((x) => x.id === id)).toBeUndefined();
+  });
+
+  it('a reply and a label change go out while the close waits (they do not conflict)', async () => {
+    const c = await ready();
+    const holdClose = fake.holdWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}`);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' });
+    await until(() => closes().length === 1, 'close sent');
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '顺便说一句' })).ok).toBe(true);
+    expect(comments()).toHaveLength(1);
+    holdClose();
+    await idle(c);
+    expect(opPhase(opOf(c, s.id!))).toBe('settled');
+  });
+
+  it('the gate is the one entry: act, startOp and a second click are refused while one is waiting; hand-back and autopilot too', async () => {
+    const c = await ready();
+    const hold = fake.hold(`/issues/${ISSUE}`);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    expect(s.ok).toBe(true);
+    for (const a of [
+      { kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: 'x' },
+      { kind: 'handBack', key: K(ISSUE) },
+      { kind: 'autopilot', key: K(ISSUE) },
+    ] as const) {
+      expect(c.startOp(a as any).ok).toBe(false);
+      expect((await c.act(a as any)).ok).toBe(false);
+    }
+    await until(() => closes().length === 1, 'the first close reached GitHub');
+    hold();
+    await idle(c);
+    expect(closes()).toHaveLength(1);
+    expect(comments()).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+  });
+});
+
+describe('the lock lives in the controller, not in a panel (plan review round 1)', () => {
+  it('held close answer: a new startOp (what a re-opened panel sends) is refused; released: one close, one comment', async () => {
+    const c = await ready();
+    const hold = fake.hold(`/issues/${ISSUE}`);
+    const first = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await until(() => closes().length === 1, 'close sent');
+    // a re-opened panel has nothing of its own: the lock is the controller's record
+    expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(first.id);
+    expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' }).ok).toBe(false);
+    hold();
+    await idle(c);
+    expect(closes()).toHaveLength(1);
+    expect(comments()).toHaveLength(1);
+  });
+});
+
+describe('first step refused: settled at once, later steps never sent, draft kept and restorable', () => {
+  it('close issue refused: one PATCH, no comment; unlocked; the reason and the comment are kept; a new close takes the draft', async () => {
+    const c = await ready();
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '不做了' });
+    await idle(c);
+    const r = opOf(c, s.id!);
+    expect(closes()).toHaveLength(1);
+    expect(comments()).toHaveLength(0);
+    expect(r.steps.map((x) => x.state)).toEqual(['refused', 'unsent']);
+    expect(opPhase(r)).toBe('settled');
+    expect(opText(r)).toContain(`没有关闭 issue #${ISSUE}：没有权限`);
+    expect(opDraftLeft(r)).toEqual({ reason: 'not_planned', comment: '不做了' });
+    expect(opButtons(r)).toEqual(expect.arrayContaining(['retry', 'copy', 'toReply', 'dropDraft', 'dismiss']));
+    // settling never deletes the draft: put away, it is still there (and on disk)
+    c.opDismiss(s.id!);
+    expect(opDraftLeft(opOf(c, s.id!))).toEqual({ reason: 'not_planned', comment: '不做了' });
+    await c.settled();
+    expect(storedOps()?.find((x) => x.id === s.id)?.draft).toEqual({ reason: 'not_planned', comment: '不做了' });
+    // "重新关闭": the draft moves to the new operation, which goes out like any other
+    fake.state.w.readOnlyRepos.clear();
+    const again = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '不做了' }, { from: s.id });
+    expect(again.ok).toBe(true);
+    await idle(c);
+    expect(closes()).toHaveLength(2);
+    expect(comments()).toHaveLength(1);
+    expect(stateOnGitHub()).toBe('closed');
+    expect(opDraftLeft(opOf(c, again.id!))).toBeNull();
+    // the old record handed its draft on: nothing of it is left
+    expect(c.getState().ops.find((x) => x.id === s.id)).toBeUndefined();
+  });
+
+  it('close PR, merge, autopilot and hand-back refused on their first step: that request reached GitHub, nothing after it, unlocked', async () => {
+    const pr = openPr();
+    const c = await ready();
+    const headOid = (await c.loadDetail(K(pr))).ok ? ((await c.loadDetail(K(pr))) as any).detail.pr.headOid : '';
+    const cases: [any, () => number, () => number][] = [];
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    cases.push([{ kind: 'closePr', key: K(pr), comment: '不合了' }, () => prCloses(pr).length, () => comments(pr).length]);
+    for (const [a, sent, after] of cases) {
+      const s = c.startOp(a);
+      await idle(c);
+      expect(sent()).toBe(1);
+      expect(after()).toBe(0);
+      expect(opPhase(opOf(c, s.id!))).toBe('settled');
+      expect(opButtons(opOf(c, s.id!))).toContain('retry');
+    }
+    fake.state.w.readOnlyRepos.clear();
+    fake.state.w.pulls.get(`gigleai/cavil-loop#${pr}`)!.mergeRefusal = { status: 405, message: 'Required status check is failing' };
+    const m = c.startOp({ kind: 'merge', key: K(pr), method: 'squash', headOid });
+    await idle(c);
+    expect(merges(pr)).toHaveLength(1);
+    expect(opPhase(opOf(c, m.id!))).toBe('settled');
+    expect(opDraftLeft(opOf(c, m.id!))).toEqual({ method: 'squash', headOid });
+    waitingForHuman();
+    fake.state.w.failLabel = 'autopilot';
+    const a = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    expect(labelRemoves('pending/human')).toHaveLength(0);
+    expect(opPhase(opOf(c, a.id!))).toBe('settled');
+    fake.state.w.failLabel = 'pending/agent';
+    const h = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await idle(c);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(0);
+    expect(opPhase(opOf(c, h.id!))).toBe('settled');
+    expect(opButtons(opOf(c, h.id!))).toContain('retry');
+  });
+});
+
+describe('an answer that never came stays unknown: a read showing the old state does not unlock (plan review round 2)', () => {
+  it('close accepted but landing late: the client gives up, the re-read shows it open, no second close from anywhere; once it lands the re-read proves it; the comment is never sent after', async () => {
+    const c = await ready();
+    const late = fake.lateWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}`);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await idle(c);
+    // the close request did reach GitHub
+    expect(late.caught()).toBe(1);
+    let r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['unknown', 'unsent']);
+    expect(opText(r)).toContain(`不确定 issue #${ISSUE} 有没有关上`);
+    // the re-read (and the evidence check) saw it open: still unknown, still locked
+    expect(itemOf(c, ISSUE).state).toBe('open');
+    expect(opPhase(r)).toBe('unknown');
+    expect(opButtons(r)).toEqual(expect.arrayContaining(['recheck', 'openWeb', 'unlock', 'copy', 'toReply']));
+    expect(opButtons(r)).not.toContain('retry');
+    expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' }).ok).toBe(false);
+    expect((await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' })).ok).toBe(false);
+    expect((await c.opRecheck(s.id!)).ok).toBe(false);
+    expect(opPhase(opOf(c, s.id!))).toBe('unknown');
+    // now the old request lands
+    late.land();
+    expect(stateOnGitHub()).toBe('closed');
+    expect((await c.opRecheck(s.id!)).ok).toBe(true);
+    await idle(c);
+    r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent']);
+    expect(opPhase(r)).toBe('settled');
+    expect(opText(r)).toContain('附的评论没有发出（关闭的应答丢了，没敢接着发）');
+    expect(closes()).toHaveLength(1);
+    expect(comments()).toHaveLength(0);
+    // the comment is kept: it may be put into the reply box (it surely did not go out)
+    expect(opDraftLeft(r)).toEqual({ comment: '做完了' });
+    expect(opButtons(r)).toEqual(expect.arrayContaining(['copy', 'toReply', 'dropDraft']));
+  });
+
+  it('merge accepted but landing late: no second merge until it is proven; the proof is the re-read showing it merged', async () => {
+    const pr = openPr();
+    const c = await ready();
+    const d = await c.loadDetail(K(pr));
+    const headOid = d.ok ? d.detail.pr!.headOid : '';
+    const late = fake.lateWhen((e) => e.method === 'PUT' && e.path.endsWith(`/pulls/${pr}/merge`));
+    const s = c.startOp({ kind: 'merge', key: K(pr), method: 'merge', headOid });
+    await idle(c);
+    expect(late.caught()).toBe(1);
+    expect(opPhase(opOf(c, s.id!))).toBe('unknown');
+    expect(c.startOp({ kind: 'merge', key: K(pr), method: 'merge', headOid }).ok).toBe(false);
+    late.land();
+    await c.opRecheck(s.id!);
+    await idle(c);
+    expect(opPhase(opOf(c, s.id!))).toBe('settled');
+    expect(merges(pr)).toHaveLength(1);
+    expect(itemOf(c, pr).state).toBe('merged');
+  });
+
+  it('the comment went out but its answer was lost: "not sure", only "copy"; the comment list proves it; one comment on GitHub', async () => {
+    const c = await ready();
+    fake.state.w.failCommentList = true;
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await idle(c);
+    expect(lost.caught()).toBe(1);
+    let r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown']);
+    expect(opText(r)).toContain('附的评论不确定有没有发出');
+    expect(opButtons(r)).toContain('copy');
+    expect(opButtons(r)).not.toContain('toReply');
+    expect(opPhase(r)).toBe('unknown');
+    fake.state.w.failCommentList = false;
+    expect((await c.opRecheck(s.id!)).ok).toBe(true);
+    r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok']);
+    expect(opPhase(r)).toBe('settled');
+    expect(opDraftLeft(r)).toBeNull();
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['做完了']);
+    expect(comments()).toHaveLength(1);
+  });
+});
+
+describe('the "agent" label is consumed by the daemon: never added twice (plan review rounds 2 and 3)', () => {
+  it('autopilot: label added; agent label landed but answer lost; daemon took it; events unreadable while the item re-read works — every entry refused, then the events prove it', async () => {
+    waitingForHuman();
+    const c = await ready();
+    fake.state.w.failEvents = true;
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('pending/agent'));
+    // the daemon picks it up as soon as the label is on GitHub, before any re-read of ours
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await until(() => lost.caught() === 1, 'the agent label reached GitHub');
+    lost.stop();
+    await daemonPicksUp();
+    await idle(c);
+    // it happened: the first add went out, the daemon took the label and put its own on
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelsOnGitHub()).toEqual(expect.arrayContaining(['autopilot', 'doing/agent']));
+    expect(labelsOnGitHub()).not.toContain('pending/agent');
+    let r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown', 'unsent']);
+    // the item was re-read after the answers, and it landed: still locked
+    expect(r.readAt).not.toBeNull();
+    expect(opPhase(r)).toBe('unknown');
+    expect(opButtons(r)).not.toContain('finish');
+    expect(opButtons(r)).not.toContain('retry');
+    // every entry: what a re-opened panel would send, the board, act
+    expect(c.startOp({ kind: 'handBack', key: K(ISSUE) }).ok).toBe(false);
+    expect(c.startOp({ kind: 'autopilot', key: K(ISSUE) }).ok).toBe(false);
+    expect((await c.act({ kind: 'handBack', key: K(ISSUE) })).ok).toBe(false);
+    expect((await c.opFinish(s.id!)).ok).toBe(false);
+    expect((await c.opRecheck(s.id!)).ok).toBe(false);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    // the events can be read again: the add by this account is found
+    fake.state.w.failEvents = false;
+    expect((await c.opRecheck(s.id!)).ok).toBe(true);
+    await idle(c);
+    r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent']);
+    expect(opPhase(r)).toBe('settled');
+    // "finish" only takes "pending/human" off; the agent label is never sent again
+    expect(opButtons(r)).toContain('finish');
+    const f = await c.opFinish(s.id!);
+    expect(f.ok).toBe(true);
+    await idle(c);
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelsOnGitHub()).not.toContain('pending/human');
+  });
+
+  it('hand-back: answer received, the daemon took the label before the re-read: settled, nothing added again', async () => {
+    waitingForHuman();
+    const c = await ready();
+    const holdRead = fake.holdWhen(isRead);
+    const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await until(() => opOf(c, s.id!).steps.every((x) => x.state === 'ok'), 'both answered');
+    await daemonPicksUp();
+    holdRead();
+    await idle(c);
+    const r = opOf(c, s.id!);
+    expect(opPhase(r)).toBe('settled');
+    expect(opText(r)).toContain('已交给 agent');
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelsOnGitHub()).toContain('doing/agent');
+  });
+
+  it('unknown and no evidence at all: only the person unlocks; then a new hand-back may go out', async () => {
+    waitingForHuman();
+    const c = await ready();
+    fake.state.w.failEvents = true;
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`));
+    const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await idle(c);
+    expect(lost.caught()).toBe(1);
+    lost.stop();
+    await daemonPicksUp();
+    expect((await c.opRecheck(s.id!)).ok).toBe(false);
+    expect(c.startOp({ kind: 'handBack', key: K(ISSUE) }).ok).toBe(false);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    c.opUnlock(s.id!);
+    expect(opPhase(opOf(c, s.id!))).toBe('unlocked');
+    expect(opText(opOf(c, s.id!))).toContain('已由人核对后解除锁定');
+    const again = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    expect(again.ok).toBe(true);
+    await idle(c);
+    expect(labelAdds('pending/agent')).toHaveLength(2);
+  });
+});
+
+describe('partly done: each step said, only refused label steps may be finished', () => {
+  it('autopilot: agent label refused — "finish" adds it and takes "pending/human" off; a second finish while it prepares is refused', async () => {
+    waitingForHuman();
+    const c = await ready();
+    fake.state.w.failLabel = 'pending/agent';
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    const r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'refused', 'unsent']);
+    expect(opText(r)).toContain('加「pending/agent」没有成功');
+    expect(opPhase(r)).toBe('settled');
+    fake.state.w.failLabel = null;
+    const [a, b] = await Promise.all([c.opFinish(s.id!), c.opFinish(s.id!)]);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    await idle(c);
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(2); // the refused one, then the finish
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+    expect(labelsOnGitHub()).toEqual(expect.arrayContaining(['autopilot', 'pending/agent']));
+  });
+
+  it('hand-back: agent label added, removing "pending/human" refused — "finish" only removes it', async () => {
+    waitingForHuman();
+    const c = await ready();
+    fake.state.w.failUnlabel = 'pending/human';
+    const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await idle(c);
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'refused']);
+    expect(opText(opOf(c, s.id!))).toContain('摘「pending/human」没有成功');
+    fake.state.w.failUnlabel = null;
+    expect((await c.opFinish(s.id!)).ok).toBe(true);
+    await idle(c);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(2);
+    expect(labelsOnGitHub()).not.toContain('pending/human');
+  });
+
+  it('close done, comment refused: one close; the comment is kept, may go into the reply box, and the reply sending it ends the draft', async () => {
+    const c = await ready();
+    fake.state.w.failComment = true;
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await idle(c);
+    const r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'refused']);
+    expect(opText(r)).toContain(`issue #${ISSUE} 已关闭（已完成），但附的评论没有发出去：GitHub 不接受这次修改`);
+    expect(opPhase(r)).toBe('settled');
+    expect(closes()).toHaveLength(1);
+    expect(comments()).toHaveLength(1);
+    expect(commentsOnGitHub()).toHaveLength(0);
+    expect(opDraftLeft(r)).toEqual({ comment: '做完了' });
+    expect(opButtons(r)).toEqual(expect.arrayContaining(['copy', 'toReply', 'dropDraft', 'dismiss']));
+    expect(opButtons(r)).not.toContain('retry');
+    // what the panel does after the reply carrying it went out
+    fake.state.w.failComment = false;
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '做完了' })).ok).toBe(true);
+    c.opDropDraft(s.id!);
+    expect(opDraftLeft(opOf(c, s.id!))).toBeNull();
+    expect(closes()).toHaveLength(1);
+  });
+});
+
+describe('restart, sign-out', () => {
+  it('a request still waiting when the app stops is "unknown" after the restart: locked, nothing sent by itself', async () => {
+    const c = await ready();
+    const hold = fake.hold(`/issues/${ISSUE}`);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await until(() => closes().length === 1, 'close sent');
+    await until(() => storedOps()?.find((x) => x.id === s.id)?.steps[0].state === 'pending', 'stored as sent');
+    c.stopTimer();
+    const before = fake.writes().length;
+    const c2 = await ready();
+    const r = opOf(c2, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['unknown', 'unsent']);
+    expect(opPhase(r)).toBe('unknown');
+    expect(opDraftLeft(r)).toEqual({ reason: 'completed', comment: '做完了' });
+    expect(c2.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' }).ok).toBe(false);
+    await idle(c2);
+    expect(fake.writes().length).toBe(before);
+    hold();
+  });
+
+  it('a draft kept after settling survives the restart', async () => {
+    const c = await ready();
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '不做了' });
+    await idle(c);
+    c.opDismiss(s.id!);
+    await c.settled();
+    c.stopTimer();
+    const c2 = await ready();
+    const r = opOf(c2, s.id!);
+    expect(r.dismissed).toBe(true);
+    expect(opDraftLeft(r)).toEqual({ reason: 'not_planned', comment: '不做了' });
+    // only a person drops it
+    c2.opDropDraft(s.id!);
+    expect(c2.getState().ops.find((x) => x.id === s.id)).toBeUndefined();
+  });
+
+  it('sign-out drops the records with the cache', async () => {
+    const c = await ready();
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await idle(c);
+    expect(c.getState().ops).toHaveLength(1);
+    await c.logout();
+    expect(c.getState().ops).toHaveLength(0);
+    expect(storedOps()).toBeNull();
+  });
+});
+
+describe('a success never read back', () => {
+  it('re-reads keep failing: after the wait the person is offered the check and the unlock', async () => {
+    const c = await ready({ opStuckMs: 2000 });
+    fake.state.w.failDetail.add('never');
+    const holdRead = fake.holdWhen(isRead);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' });
+    await until(() => opOf(c, s.id!).steps[0].state === 'ok', 'answered');
+    expect(opPhase(opOf(c, s.id!))).toBe('settling');
+    expect(opButtons(opOf(c, s.id!))).not.toContain('unlock');
+    await until(() => opOf(c, s.id!).stuck, 'stuck');
+    expect(opButtons(opOf(c, s.id!))).toEqual(expect.arrayContaining(['openWeb', 'unlock']));
+    c.opUnlock(s.id!);
+    expect(opLockOf(c.getState().ops, K(ISSUE))).toBeNull();
+    holdRead();
+    await idle(c);
+  });
+
+  it('closed, then reopened on the web before our re-read: the re-read shows it open — stays waiting (not taken as done)', async () => {
+    const c = await ready({ opStuckMs: 600_000 });
+    // GitHub carries out the close at once; its answer is held while somebody reopens it on the web
+    const holdClose = fake.holdWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}` && e.auth === `Bearer ${FAKE_TOKEN}`);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' });
+    await until(() => closes().length === 1, 'close sent');
+    await reopen();
+    holdClose();
+    await idle(c);
+    const r = opOf(c, s.id!);
+    expect(r.steps[0].state).toBe('ok');
+    expect(r.readAt).not.toBeNull();
+    expect(itemOf(c, ISSUE).state).toBe('open');
+    expect(opPhase(r)).toBe('settling');
+    expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' }).ok).toBe(false);
+  });
+});

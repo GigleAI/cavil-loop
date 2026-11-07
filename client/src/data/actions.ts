@@ -22,7 +22,7 @@
 // Nothing is retried or queued: one request, its answer is the result.
 
 import type { CreateBoard } from '../shared/types';
-import { ISSUE_CLOSE_REASONS, type CreatePlan, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type CreatePlan, type IssueCloseReason, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -228,6 +228,56 @@ export async function removeLabel(client: GitHubClient, repo: string, number: nu
   await client.rest('DELETE', `${repoPath(repo)}/issues/${number}/labels/${enc(label)}`);
 }
 
+// ---- GitHub#250: the steps of a close / merge / autopilot / hand-back, one request each ----
+// The controller runs them one after the other (data/../shared/ops.ts decides what a result
+// means); every check that can be made before sending is made by the caller first.
+
+/** Close an issue (with its reason) or a PR. */
+export async function closeStep(client: GitHubClient, it: Item, reason: IssueCloseReason | undefined): Promise<void> {
+  if (it.kind === 'issue') {
+    if (!reason || !ISSUE_CLOSE_REASONS.includes(reason)) throw new ActionRefused('未知的关闭原因');
+    await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { state: 'closed', state_reason: reason });
+  } else {
+    await client.rest('PATCH', `${repoPath(it.repo)}/pulls/${it.number}`, { state: 'closed' });
+  }
+}
+
+export async function commentStep(client: GitHubClient, it: Item, body: string): Promise<void> {
+  await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body });
+}
+
+/** Merge exactly the commit the user saw (GitHub refuses when the PR moved). */
+export async function mergeStep(client: GitHubClient, it: Item, method: MergeMethod, headOid: string): Promise<void> {
+  if (!/^[0-9a-f]{40}$/.test(headOid)) throw new ActionRefused('不知道你看到的是哪个提交，请刷新详情后再合并');
+  if (!(['merge', 'squash', 'rebase'] as MergeMethod[]).includes(method)) throw new ActionRefused('未知的合并方式');
+  await client.rest('PUT', `${repoPath(it.repo)}/pulls/${it.number}/merge`, { merge_method: method, sha: headOid });
+}
+
+/**
+ * Positive evidence that a comment went out (GitHub#250): this account wrote one with
+ * exactly this text, no earlier than `since` (epoch ms, already allowing for clock skew).
+ * Not found is not "not sent" — the caller keeps it unknown.
+ */
+export async function commentFound(client: GitHubClient, repo: string, number: number, login: string, body: string, since: number): Promise<boolean> {
+  const list = await client.restList<{ body?: string; created_at?: string; user?: { login?: string } | null }>(
+    `${repoPath(repo)}/issues/${number}/comments?per_page=100&since=${enc(new Date(since).toISOString())}`,
+  );
+  return list.some((c) => c.user?.login === login && c.body === body && Date.parse(c.created_at ?? '') >= since);
+}
+
+/**
+ * Positive evidence that this account added / removed a label (GitHub#250), from the
+ * item's events: a "labeled" / "unlabeled" event of that label by `login`, no earlier
+ * than `since`. Whether the label is there now says nothing (the daemon takes the
+ * "agent" label away when it picks the item up).
+ */
+export async function labelEventFound(client: GitHubClient, repo: string, number: number, login: string, label: string, event: 'labeled' | 'unlabeled', since: number): Promise<boolean> {
+  const list = await client.restList<{ event?: string; created_at?: string; actor?: { login?: string } | null; label?: { name?: string } | null }>(
+    `${repoPath(repo)}/issues/${number}/events?per_page=100`,
+  );
+  return list.some((e) => e.event === event && e.label?.name === label && e.actor?.login === login && Date.parse(e.created_at ?? '') >= since);
+}
+
 /**
  * The cached issues a merge / close of `pr` also changes (GigleAI/cavil-loop#177):
  * the issues GitHub says the PR closes — every page — plus the cached issues
@@ -385,76 +435,12 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       return { touched: [[it.repo, it.number]], warning: null };
     }
     case 'handBack':
-    case 'autopilot': {
-      const it = needItem(ctx);
-      const { human, agent, autopilot } = ctx.handBack;
-      if (!human.trim() || !agent.trim()) throw new ActionRefused('设置里「交给 agent」的两个标签名不能为空');
-      if (action.kind === 'autopilot') {
-        if (!autopilot.trim()) throw new ActionRefused('设置里没有填托管标签，没有修改');
-        // the autopilot label first: the daemon must see it when it picks the item up
-        await addLabel(client, it.repo, it.number, autopilot);
-      }
-      // add first: if the second step fails, the item is never left with neither label
-      try {
-        await addLabel(client, it.repo, it.number, agent);
-      } catch (e) {
-        // the autopilot label is on GitHub already: say so, never as "nothing changed"
-        if (action.kind === 'autopilot') return { touched: [[it.repo, it.number]], warning: `已加上「${autopilot}」，但加「${agent}」没有成功，还没有交给 agent：${explainError(e, 'addLabel')}` };
-        throw e;
-      }
-      let warning: string | null = null;
-      // removed whatever the cached labels say (the cache may be a round behind)
-      try {
-        await removeLabel(client, it.repo, it.number, human);
-      } catch (e) {
-        // 404 = the label is not on it (any more): that is the state we wanted
-        if (!(e instanceof GitHubError && e.status === 404)) warning = `已加上「${agent}」，但摘「${human}」没有成功：${explainError(e, 'removeLabel')}`;
-      }
-      return { touched: [[it.repo, it.number]], warning };
-    }
-    case 'merge': {
-      const it = needItem(ctx);
-      if (it.kind !== 'pr') throw new ActionRefused('这一条不是 PR');
-      if (!/^[0-9a-f]{40}$/.test(action.headOid)) throw new ActionRefused('不知道你看到的是哪个提交，请刷新详情后再合并');
-      if (!(['merge', 'squash', 'rebase'] as MergeMethod[]).includes(action.method)) throw new ActionRefused('未知的合并方式');
-      await client.rest('PUT', `${repoPath(it.repo)}/pulls/${it.number}/merge`, { merge_method: action.method, sha: action.headOid });
-      // merging closes the issues it links: they are read again right away too
-      const related = await relatedIssues(client, it, ctx.cached);
-      return { touched: [[it.repo, it.number], ...related.items], warning: related.problem };
-    }
-    case 'closePr': {
-      const it = needItem(ctx);
-      if (it.kind !== 'pr') throw new ActionRefused('这一条不是 PR');
-      // close first: a refused close leaves no orphan comment behind
-      await client.rest('PATCH', `${repoPath(it.repo)}/pulls/${it.number}`, { state: 'closed' });
-      let warning: string | null = null;
-      if (action.comment.trim()) {
-        try {
-          await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.comment });
-        } catch (e) {
-          warning = `PR 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;
-        }
-      }
-      // the linked issues show this PR's state: they are read again right away too
-      const related = await relatedIssues(client, it, ctx.cached);
-      return { touched: [[it.repo, it.number], ...related.items], warning: [warning, related.problem].filter(Boolean).join('；') || null };
-    }
-    case 'closeIssue': {
-      const it = needItem(ctx);
-      if (it.kind !== 'issue') throw new ActionRefused('这一条不是 issue');
-      if (!ISSUE_CLOSE_REASONS.includes(action.reason)) throw new ActionRefused('未知的关闭原因');
-      // close first: a refused close leaves no orphan comment behind; a failed comment never re-sends the close
-      await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { state: 'closed', state_reason: action.reason });
-      let warning: string | null = null;
-      if (action.comment.trim()) {
-        try {
-          await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.comment });
-        } catch (e) {
-          warning = `issue 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;
-        }
-      }
-      return { touched: [[it.repo, it.number]], warning };
-    }
+    case 'autopilot':
+    case 'merge':
+    case 'closePr':
+    case 'closeIssue':
+      // GitHub#250: these run step by step in the controller (closeStep / commentStep / mergeStep / labels), never here
+      throw new ActionRefused('这类操作走后台的逐步执行，不在这里发送');
     case 'toggleTask': {
       const it = needItem(ctx);
       if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused('不知道点的是哪一个勾选框，没有修改');

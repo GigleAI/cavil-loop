@@ -429,6 +429,7 @@ describe('closing an issue (GitHub#180)', () => {
     expect(itemOf(c, ISSUE).state).toBe('open');
   });
 
+  // GitHub#250: a comment whose answer never came is "not sure", never "not sent" (it may have gone out)
   it('the comment fails: closed stands, told so, the close is not sent again', async () => {
     let commentTries = 0;
     const { c } = await ready({
@@ -443,7 +444,7 @@ describe('closing an issue (GitHub#180)', () => {
     const r = await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
     expect(commentTries).toBe(1);
     expect(r.ok).toBe(true);
-    expect(r.warning).toContain('issue 已关闭，但附的评论没有发出去');
+    expect(r.warning).toContain('issue #138 已关闭（已完成），附的评论不确定有没有发出');
     expect(fake.writes().map((w) => [w.method, w.path])).toEqual([['PATCH', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}`]]);
     expect(itemOf(c, ISSUE).state).toBe('closed');
   });

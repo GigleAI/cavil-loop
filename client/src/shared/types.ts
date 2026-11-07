@@ -3,6 +3,7 @@
 
 import type { MergePrefs } from './mergePrefs';
 import type { TableFolds } from './uiPrefs';
+import type { OpRecord } from './ops';
 
 /**
  * The app updating itself (GitHub#184), as the shell reports it (src-tauri/crates/core/src/update.rs
@@ -386,6 +387,8 @@ export interface AppState {
   editsNeedingAction: number;
   /** GitHub#229: new issues being created, and their outcome until dismissed */
   creates: CreateJob[];
+  /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */
+  ops: OpRecord[];
 }
 
 /**

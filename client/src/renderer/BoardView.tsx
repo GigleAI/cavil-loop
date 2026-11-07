@@ -13,6 +13,7 @@ import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
+import { OpNotice } from './OpNotice';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, type WarnKind } from './warnings';
@@ -451,7 +452,7 @@ export function BoardView({
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
   // every opening of the detail panel is its own panel instance (its React key):
   // going to another item and back is a new opening, never the old one resumed
-  const [opened, setOpened] = useState<{ key: string; n: number } | null>(null);
+  const [opened, setOpened] = useState<{ key: string; n: number; intent?: { opId: string; what: 'retry' | 'toReply' } } | null>(null);
   const openSeq = useRef(0);
   const openItem = (key: string) => setOpened((cur) => (cur?.key === key ? cur : { key, n: ++openSeq.current }));
   // a clicked notification (GitHub#169): every click opens that item, as a new opening
@@ -730,6 +731,18 @@ export function BoardView({
       </WarnBar>
       <ResultBanner note={note} testid="board-action-result" />
       <EditsBar state={state} data={data} onOpen={openItem} />
+      {state.ops
+        .filter((r) => !r.dismissed && r.key !== opened?.key)
+        .map((r) => (
+          <OpNotice
+            key={r.id}
+            r={r}
+            prefix={`${r.repo}#${r.number}：`}
+            onOpen={openItem}
+            onRetry={(x) => setOpened({ key: x.key, n: ++openSeq.current, intent: { opId: x.id, what: 'retry' } })}
+            onToReply={(x) => setOpened({ key: x.key, n: ++openSeq.current, intent: { opId: x.id, what: 'toReply' } })}
+          />
+        ))}
       {state.creates.map((j) => (
         <CreateBar key={j.id} job={j} onOpen={openItem} onDraft={(d) => setNewIssue({ draft: d })} />
       ))}
@@ -772,7 +785,7 @@ export function BoardView({
           : renderRow(null)}
       </div>
       )}
-      {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} />}
+      {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} intent={opened.intent ?? null} />}
       </div>
       {newIssue && (
         <NewIssueDialog

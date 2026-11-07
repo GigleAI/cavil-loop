@@ -99,6 +99,16 @@ export interface WritableState {
    * null = no automation (the recorded state).
    */
   automation: { delayMs: number; status: string } | null;
+  /** GitHub#250: `owner/repo#n` lower-cased -> label events (labeled / unlabeled), oldest first */
+  labelEvents: Map<string, { id: number; event: 'labeled' | 'unlabeled'; label: { name: string }; actor: { login: string }; created_at: string }[]>;
+  /** GitHub#250: posting a comment answers HTTP 422 */
+  failComment: boolean;
+  /** GitHub#250: removing this label answers HTTP 422 */
+  failUnlabel: string | null;
+  /** GitHub#250: answer the item events list with HTTP 502 */
+  failEvents: boolean;
+  /** GitHub#250: answer the item comments list with HTTP 502 */
+  failCommentList: boolean;
 }
 
 export function defaultWritable(): WritableState {
@@ -126,6 +136,11 @@ export function defaultWritable(): WritableState {
     closingIssues: new Map(),
     closingIssuesPageSize: 100,
     automation: null,
+    labelEvents: new Map(),
+    failUnlabel: null,
+    failComment: false,
+    failEvents: false,
+    failCommentList: false,
   };
 }
 
@@ -345,7 +360,7 @@ export function digest(store: Store): string {
 type Send = (status: number, body: unknown) => void;
 
 /** REST writes + reads of #138. Returns false when the path is not one of them. */
-export function handleRest(store: Store, method: string, path: string, body: any, send: Send, sendText: (s: string) => void): boolean {
+export function handleRest(store: Store, method: string, path: string, body: any, send: Send, sendText: (s: string) => void, actor = 'user-1'): boolean {
   const w = store.w;
   if (method === 'POST' && path === '/api/markdown') {
     const esc = String(body?.text ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
@@ -364,6 +379,19 @@ export function handleRest(store: Store, method: string, path: string, body: any
   if (method === 'GET' && rest === '/milestones') {
     if (w.failMilestones.has(key)) return send(502, { message: 'Server Error' }), true;
     return send(200, w.milestones.get(key) ?? []), true;
+  }
+  // GitHub#250: an item's comments and events (what proves a write whose answer was lost)
+  const gm = rest.match(/^\/issues\/(\d+)\/(comments|events)$/);
+  if (method === 'GET' && gm) {
+    const gc = findCopies(store, repo, Number(gm[1]));
+    if (!gc) return send(404, { message: 'Not Found' }), true;
+    const gk = `${key}#${gc.number}`;
+    if (gm[2] === 'events') {
+      if (w.failEvents) return send(502, { message: 'Server Error' }), true;
+      return send(200, w.labelEvents.get(gk) ?? []), true;
+    }
+    if (w.failCommentList) return send(502, { message: 'Server Error' }), true;
+    return send(200, (w.comments.get(gk) ?? []).map((x, i) => ({ id: i + 1, node_id: x.id, body: x.body ?? '', created_at: x.createdAt, user: x.author ? { login: x.author.login } : null }))), true;
   }
   if (method === 'GET') return false;
 
@@ -412,6 +440,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
     const colors = new Map((w.repoLabels.get(key) ?? []).map((l) => [l.name, l.color]));
     for (const name of add) {
       const color = colors.get(name) ?? 'ededed';
+      if (!gqlContent(c).labels.nodes.some((l: any) => l.name === name)) labelEvent(w, ikey, 'labeled', name, actor);
       for (const r of c.rest) if (!r.labels.some((l: any) => l.name === name)) r.labels.push({ name, color });
       for (const g of c.gql) if (!g.labels.nodes.some((l: any) => l.name === name)) g.labels.nodes.push({ name, color });
     }
@@ -432,6 +461,8 @@ export function handleRest(store: Store, method: string, path: string, body: any
   if (im[1] === 'issues' && method === 'DELETE' && dl) {
     const name = decodeURIComponent(dl[1]);
     if (!gqlContent(c).labels.nodes.some((l: any) => l.name === name)) return send(404, { message: 'Label does not exist' }), true;
+    if (w.failUnlabel === name) return send(422, { message: 'Validation Failed' }), true;
+    labelEvent(w, ikey, 'unlabeled', name, actor);
     for (const r of c.rest) r.labels = r.labels.filter((l: any) => l.name !== name);
     for (const g of c.gql) g.labels.nodes = g.labels.nodes.filter((l: any) => l.name !== name);
     touch(store, c);
@@ -457,9 +488,10 @@ export function handleRest(store: Store, method: string, path: string, body: any
     return send(200, { number: c.number }), true;
   }
   if (im[1] === 'issues' && method === 'POST' && sub === '/comments') {
+    if (w.failComment) return send(422, { message: 'Validation Failed: body is too long' }), true;
     const list = w.comments.get(ikey) ?? [];
     const id = `IC_fake_${list.length + 1}_${c.number}`;
-    list.push({ id, url: `https://github.com/${c.repo}/issues/${c.number}#issuecomment-${list.length + 1}`, createdAt: w.clock(), bodyHTML: `<p>${String(body?.body ?? '')}</p>`, author: { login: 'user-1' }, body: String(body?.body ?? '') });
+    list.push({ id, url: `https://github.com/${c.repo}/issues/${c.number}#issuecomment-${list.length + 1}`, createdAt: w.clock(), bodyHTML: `<p>${String(body?.body ?? '')}</p>`, author: { login: actor }, body: String(body?.body ?? '') });
     w.comments.set(ikey, list);
     touch(store, c);
     return send(201, { id }), true;
@@ -508,6 +540,12 @@ export function handleRest(store: Store, method: string, path: string, body: any
     return send(200, { number: c.number }), true;
   }
   return false;
+}
+
+function labelEvent(w: WritableState, ikey: string, event: 'labeled' | 'unlabeled', name: string, actor: string) {
+  const list = w.labelEvents.get(ikey) ?? [];
+  list.push({ id: list.length + 1, event, label: { name }, actor: { login: actor }, created_at: w.clock() });
+  w.labelEvents.set(ikey, list);
 }
 
 function projectByNodeId(store: Store, id: string): { key: string; pages: ProjectPage[] } | null {
