@@ -368,7 +368,8 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await card(page, 137).dragTo(page.locator('[data-testid="column"][data-title="Iteration 26"]'));
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
   await expect(page.locator('[data-testid="column"][data-title="Iteration 26"] [data-testid="card"][data-key="gigleai/cavil-loop#137"]')).toBeVisible();
-  expect(writes().slice(before137).map((w) => w[0])).toEqual(['CavilSetIteration']);
+  // GitHub#229: the card moves before GitHub answers — wait for the write itself
+  await expect.poll(() => writes().slice(before137).map((w) => w[0])).toEqual(['CavilSetIteration']);
   await shot(page, '23-dragged');
 
   // ---- PR: status next to the buttons; merge refused when a new commit was pushed; then merged ----
@@ -1696,7 +1697,8 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
     await expect(badge, r.why).toHaveAttribute('aria-label', r.text.replace('·', '，'));
     await expect(badge.locator('svg'), r.why).toHaveAttribute('data-icon', r.kind);
     expect(await bg(), r.why).toBe(BG[r.tone]);
-    expect(await badge.evaluate((el) => getComputedStyle(el).fontSize), r.why).toBe('13px');
+    // GitHub#229: the detail head got shorter, the badge with it
+    expect(await badge.evaluate((el) => getComputedStyle(el).fontSize), r.why).toBe('12px');
     // the card on the board: same colour rule
     const cs = card(page, r.n).getByTestId('card-state');
     await expect(cs, r.why).toHaveAttribute('data-tone', r.cardTone);
@@ -1768,7 +1770,8 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
   await page.getByTestId('search').fill('#148');
   await expect(card(page, 148).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
   await open(148);
-  await expect(page.getByTestId('detail-error')).toBeVisible({ timeout: 15_000 });
+  // GitHub#229: #148 was opened above, so its last read shows and the failed read is said in small print
+  await expect(page.getByTestId('detail-stale')).toBeVisible({ timeout: 15_000 });
   await expect(badge).toHaveAttribute('data-tone', 'neutral');
   await expect(badge).toHaveText('Pull Request·草稿');
   await page.getByTestId('detail-close').click();
@@ -2582,7 +2585,8 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await page.getByTestId('new-issue-title').fill('KEYS_NEW');
   await page.keyboard.press(`${MOD}+Enter`);
   await expect(dialog).toHaveCount(0, { timeout: 15_000 });
-  expect(env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues').map((w) => (w.body as { title?: string } | undefined)?.title)).toEqual(['KEYS_NEW']);
+  // GitHub#229: the dialog closes before GitHub answers — wait for the write itself
+  await expect.poll(() => env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues').map((w) => (w.body as { title?: string } | undefined)?.title)).toEqual(['KEYS_NEW']);
   await page.getByTestId('detail-close').click();
   await blur(page);
 
@@ -2748,11 +2752,12 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
   await page.keyboard.press('Enter');
   await expect(picker.locator('[data-name="pending/PR"]')).toHaveAttribute('data-checked', 'yes', { timeout: 15_000 });
   await expect(picker).toBeVisible(); // stays open for the next one
-  expect(writes().slice(before)).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/labels', { labels: ['pending/PR'] }]]);
+  // GitHub#229: ticked before GitHub answers — wait for the write itself
+  await expect.poll(() => writes().slice(before)).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/labels', { labels: ['pending/PR'] }]]);
   expect(await active()).toBe('pending/PR');
   await page.keyboard.press('Enter');
   await expect(picker.locator('[data-name="pending/PR"]')).toHaveAttribute('data-checked', 'no', { timeout: 15_000 });
-  expect(writes().slice(before)).toEqual([
+  await expect.poll(() => writes().slice(before)).toEqual([
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/labels', { labels: ['pending/PR'] }],
     ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/137/labels/pending%2FPR', undefined],
   ]);
@@ -3202,7 +3207,8 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   const before = writes().length;
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-  expect(writes().slice(before).map((w) => [w[0], w[2]])).toEqual([['POST', { title: '只进仓库的 issue', body: '', labels: ['pending/human'] }]]);
+  // GitHub#229: the dialog closes before GitHub answers — wait for the write itself
+  await expect.poll(() => writes().slice(before).map((w) => [w[0], w[2]])).toEqual([['POST', { title: '只进仓库的 issue', body: '', labels: ['pending/human'] }]]);
   // the new issue opened in the detail: put it away first (a click outside it only does that, GitHub#191)
   await page.getByTestId('detail-close').click();
   // every source shown again: nothing starts ticked
@@ -3479,5 +3485,141 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('group-add').first()).toBeDisabled();
   env.fake.state.offline = false;
+  await app.close();
+});
+
+// ---- GitHub#229: client improvements 5 ----
+
+/** somebody else (or a request that lands late) sets #n's milestone on GitHub, in every copy */
+function milestoneOnGitHub(n: number, ms: { number: number; title: string } | null) {
+  const c = findCopies(env.fake.state as any, 'GigleAI/cavil-loop', n)!;
+  for (const r of c.rest) r.milestone = ms ? { number: ms.number, title: ms.title, due_on: null } : null;
+  for (const g of c.gql) g.milestone = ms ? { number: ms.number, title: ms.title, dueOn: null } : null;
+}
+
+test('GitHub#229: gear; short detail head; label list retried; re-opened detail shows at once; a change shows at once, a refused / unanswered one stays with both values and is sent again only after a check; whole group rows fold; a new issue never holds the dialog', async () => {
+  env.fake.state.w.milestones.set('gigleai/cavil-loop', [
+    { number: 9, title: 'v9', state: 'open', due_on: null },
+    { number: 10, title: 'v10', state: 'open', due_on: null },
+  ]);
+  // the label / milestone lists fail until the first retry
+  env.fake.state.w.failMilestones.add('gigleai/cavil-loop');
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+
+  // ① settings: a gear with teeth, not a dot with rays
+  const gear = await page.getByTestId('open-settings').locator('svg path').first().getAttribute('d');
+  expect((gear ?? '').match(/L/g)?.length ?? 0).toBeGreaterThan(20);
+  await shot(page, '229-01-gear');
+
+  // ② the head is one short line: author beside the number; a failed list says so in a few words, with a retry
+  await card(page, 139).getByTestId('card-title').click();
+  const detail = page.getByTestId('detail');
+  await expect(detail.locator('.detail-head [data-testid="detail-people"]')).toBeVisible();
+  await expect(detail.getByTestId('options-error')).toContainText('没读到标签 / 里程碑列表');
+  const headH = await detail.locator('.detail-head').evaluate((e) => e.getBoundingClientRect().height);
+  expect(headH).toBeLessThanOrEqual(40);
+  await shot(page, '229-02-head-list-failed');
+  env.fake.state.w.failMilestones.delete('gigleai/cavil-loop');
+  await detail.getByTestId('options-retry').click();
+  await expect(detail.getByTestId('options-error')).toHaveCount(0);
+  await expect(detail.locator('[data-testid="milestone-select"] option', { hasText: 'v9' })).toHaveCount(1);
+
+  // ③ re-opening: the last read shows at once, marked, while the new read is held
+  await page.getByTestId('detail-close').click();
+  const releaseDetail = env.fake.holdWhen((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 139);
+  await card(page, 139).getByTestId('card-title').click();
+  await expect(detail.getByTestId('detail-cached')).toContainText('正在更新');
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible();
+  await shot(page, '229-03-cached-detail');
+  releaseDetail();
+  await expect(detail.getByTestId('detail-cached')).toHaveCount(0);
+
+  // ④ a label GitHub refuses: kept, marked "not saved" with both values; the card says so; resend after GitHub accepts again
+  env.fake.state.w.failLabel = 'pending/PR';
+  await pickLabel(page, 'pending/PR');
+  const issue = detail.locator('[data-testid="edit-issue"][data-field="label"]');
+  await expect(issue).toHaveAttribute('data-edit', 'failed');
+  await expect(issue.getByTestId('edit-target')).toContainText('加上「pending/PR」');
+  await expect(card(page, 139).getByTestId('card-edit-flag')).toBeVisible();
+  await expect(page.getByTestId('edits-bar')).toHaveAttribute('data-count', '1');
+  await shot(page, '229-04-label-not-saved');
+  env.fake.state.w.failLabel = null;
+  const posts = () => env.fake.writes().filter((w) => w.method === 'POST' && w.path.endsWith('/issues/139/labels')).length;
+  const p0 = posts();
+  await issue.getByTestId('edit-resend').click();
+  await expect(detail.getByTestId('edit-issues')).toHaveCount(0);
+  await expect(detail.locator('[data-testid="detail-label"][data-label="pending/PR"]')).toBeVisible();
+  // shown at once ("saving"), then confirmed: the mark goes once GitHub answered and it was read back
+  await expect.poll(() => posts()).toBe(p0 + 1);
+  await expect(detail.locator('[data-testid="detail-label"][data-label="pending/PR"]')).toHaveAttribute('data-edit', '');
+  await expect(page.getByTestId('edits-bar')).toHaveCount(0);
+
+  // ⑤ no answer for a milestone, somebody sets another one meanwhile: the resend is held ("overwrite anyway")
+  env.fake.state.w.dropWrites = true;
+  await detail.getByTestId('milestone-select').selectOption('v9');
+  const ms = detail.locator('[data-testid="edit-issue"][data-field="milestone"]');
+  await expect(ms).toHaveAttribute('data-edit', 'unconfirmed');
+  env.fake.state.w.dropWrites = false;
+  milestoneOnGitHub(139, { number: 10, title: 'v10' });
+  const patches = () => env.fake.writes().filter((w) => w.method === 'PATCH' && w.path.endsWith('/issues/139')).length;
+  const m0 = patches();
+  await ms.getByTestId('edit-resend').click();
+  await expect(ms.getByTestId('edit-hold')).toContainText('你改之后有人改成了「v10」');
+  await expect(ms.getByTestId('edit-github')).toContainText('v10');
+  await expect(ms.getByTestId('edit-force')).toHaveText('仍然覆盖');
+  expect(patches()).toBe(m0);
+  await shot(page, '229-05-held-resend');
+  await ms.getByTestId('edit-force').click();
+  await expect(detail.getByTestId('edit-issues')).toHaveCount(0);
+  await expect(detail.getByTestId('milestone-select')).toHaveValue('v9');
+  await expect.poll(() => patches()).toBe(m0 + 1);
+  await expect(detail.locator('[data-testid="edit-status"][data-field="milestone"]')).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+
+  // ⑥ the table: a click anywhere on a group heading folds it; the arrow still toggles once
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  const group = page.getByTestId('group').first();
+  const rows = group.getByTestId('row');
+  await expect(rows.first()).toBeVisible({ timeout: 15_000 });
+  const headCell = group.getByTestId('group-head').locator('td');
+  const box = (await headCell.boundingBox())!;
+  await page.mouse.click(box.x + box.width - 40, box.y + box.height / 2);
+  await expect(rows).toHaveCount(0);
+  await page.mouse.click(box.x + box.width - 40, box.y + box.height / 2);
+  await expect(rows.first()).toBeVisible();
+  await group.getByTestId('group-toggle').click();
+  await expect(rows).toHaveCount(0);
+  await group.getByTestId('group-toggle').click();
+  await expect(rows.first()).toBeVisible();
+  await shot(page, '229-06-table-group-row');
+
+  // ⑦ a new issue with no answer: the dialog closed at once; "not sure" — no create button, the draft can be copied
+  env.fake.state.w.dropWrites = true;
+  await page.getByTestId('write-entry').click();
+  await page.getByTestId('new-issue-title').fill('UNSURE_229');
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  const unsure = page.locator('[data-testid="create-bar"][data-status="unknown"]');
+  await expect(unsure).toContainText('不确定「UNSURE_229」有没有建好');
+  await expect(unsure.getByTestId('create-reopen')).toHaveCount(0);
+  await expect(unsure.getByTestId('create-copy')).toBeVisible();
+  await shot(page, '229-07-create-unsure');
+  await unsure.getByTestId('create-bar-close').click();
+  env.fake.state.w.dropWrites = false;
+
+  // ⑧ refused for sure: the draft comes back with everything typed
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await page.getByTestId('write-entry').click();
+  await page.getByTestId('new-issue-title').fill('REFUSED_229');
+  await page.getByTestId('new-issue-body').fill('正文 229');
+  await page.getByTestId('confirm-ok').click();
+  const refused = page.locator('[data-testid="create-bar"][data-status="failed"]');
+  await expect(refused).toContainText('没能新建「REFUSED_229」');
+  await shot(page, '229-08-create-refused');
+  await refused.getByTestId('create-reopen').click();
+  await expect(page.getByTestId('new-issue-title')).toHaveValue('REFUSED_229');
+  await expect(page.getByTestId('new-issue-body')).toHaveValue('正文 229');
+  expect(env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues')).toHaveLength(1);
   await app.close();
 });

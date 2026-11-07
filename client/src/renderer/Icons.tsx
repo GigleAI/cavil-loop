@@ -6,7 +6,8 @@ const PATHS = {
   search: <><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></>,
   refresh: <><path d="M13.5 8a5.5 5.5 0 1 1-1.7-4" /><path d="M12.5 1.8v2.6H9.9" /></>,
   plus: <path d="M8 3v10M3 8h10" />,
-  gear: <><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></>,
+  // GitHub#229: a toothed gear (the old dot with eight rays read as a light / dark switch)
+  gear: <><path d="M12.82 6.35L14.57 6.67V9.33L12.82 9.65L12.58 10.24L13.58 11.7L11.7 13.58L10.24 12.58L9.65 12.82L9.33 14.57H6.67L6.35 12.82L5.76 12.58L4.3 13.58L2.42 11.7L3.42 10.24L3.18 9.65L1.43 9.33V6.67L3.18 6.35L3.42 5.76L2.42 4.3L4.3 2.42L5.76 3.42L6.35 3.18L6.67 1.43H9.33L9.65 3.18L10.24 3.42L11.7 2.42L13.58 4.3L12.58 5.76Z" strokeLinejoin="round" /><circle cx="8" cy="8" r="2.1" /></>,
   board: <><rect x="2" y="2.5" width="3.2" height="11" rx="1" /><rect x="6.4" y="2.5" width="3.2" height="7.5" rx="1" /><rect x="10.8" y="2.5" width="3.2" height="9" rx="1" /></>,
   table: <><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><path d="M2 6h12M2 9.5h12M6 6v7.5" /></>,
   sliders: <><path d="M2.5 4.5h7M12.5 4.5h1M2.5 11.5h1M6.5 11.5h7" /><circle cx="11" cy="4.5" r="1.5" /><circle cx="5" cy="11.5" r="1.5" /></>,

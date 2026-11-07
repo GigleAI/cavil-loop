@@ -64,6 +64,38 @@ export interface ActionOutcome {
   /** done, but a follow-up step did not work */
   warning: string | null;
   createdKey?: string;
+  /** createIssue: keys of the Projects the new issue did not join (GitHub#229: a retry adds exactly these) */
+  missingProjects?: string[];
+}
+
+/**
+ * createIssue (GitHub#229): the create request went out but no clear answer came
+ * back — a lost connection, a timeout, a server error (5xx), an answer without the
+ * new issue. GitHub may or may not have created it: it must never be sent again
+ * from the draft as if nothing had happened.
+ */
+export class CreateUnanswered extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = 'CreateUnanswered';
+  }
+}
+
+/**
+ * Did GitHub refuse for sure (nothing changed)? A refusal before sending, an
+ * answered GraphQL error, a 401, or an HTTP 4xx other than 408 (timeout) / 429
+ * (too many requests): yes. A network failure, a timeout or a 5xx: no — the
+ * request may have been carried out (GitHub#229).
+ */
+export function refusedForSure(e: unknown): boolean {
+  if (e instanceof ActionRefused) return true;
+  if (!(e instanceof GitHubError)) return false;
+  if (e.kind === 'graphql' || e.kind === 'auth') return true;
+  if (e.kind === 'http') {
+    const st = e.status ?? 0;
+    return st >= 400 && st < 500 && st !== 408 && st !== 429;
+  }
+  return false;
 }
 
 const enc = encodeURIComponent;
@@ -434,14 +466,21 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       if (!/^[^/\s]+\/[^/\s]+$/.test(action.repo)) throw new ActionRefused('请选择仓库');
       const plan = action.plan;
       if (plan) await checkCreatePlan(client, action.repo, plan, ctx.createInProjects);
-      const created = await client.rest<{ number: number; node_id: string }>('POST', `${repoPath(action.repo)}/issues`, {
-        title: action.title,
-        body: action.body,
-        labels: action.labels,
-        ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
-      });
-      if (!created) throw new GitHubError('http', 'GitHub 没有返回新 issue');
+      let created: { number: number; node_id: string } | null;
+      try {
+        created = await client.rest<{ number: number; node_id: string }>('POST', `${repoPath(action.repo)}/issues`, {
+          title: action.title,
+          body: action.body,
+          labels: action.labels,
+          ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
+        });
+      } catch (e) {
+        if (refusedForSure(e)) throw e;
+        throw new CreateUnanswered((e as Error)?.message ?? String(e));
+      }
+      if (!created || typeof created.number !== 'number') throw new CreateUnanswered('GitHub 的回应里没有新 issue');
       const failed: string[] = [];
+      const missingProjects: string[] = [];
       const fields: string[] = [];
       for (const p of ctx.createInProjects) {
         const entry = plan?.projects.find((x) => x.projectKey === p.key);
@@ -451,6 +490,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
           if (fieldError !== null) fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
         } catch (e) {
           failed.push(`「${p.title}」（${explainError(e, 'addToProject')}）`);
+          missingProjects.push(p.key);
         }
       }
       const problems = [
@@ -461,6 +501,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         touched: [[action.repo, created.number]],
         warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
         createdKey: itemKey(action.repo, created.number),
+        missingProjects,
       };
     }
   }

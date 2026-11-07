@@ -6,21 +6,42 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type HandBackLabels, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
-import type { DetailResult, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateJob, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import type { DetailResult, ItemDetail, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { importView, pickView } from '../shared/viewImport';
-import { parseSource } from '../shared/sources';
+import { itemKey, parseSource } from '../shared/sources';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
 import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, explainError, listRepoOptions, performAction } from '../data/actions';
+import { ActionRefused, CreateUnanswered, explainError, listRepoOptions, performAction, refusedForSure } from '../data/actions';
 import { fetchRawDetail, toDetail } from '../data/detail';
-import { applyFreshItem, fetchItem } from '../data/itemRefresh';
+import { applyFreshItem, fetchItem, freshKey, freshViews, type FreshItem } from '../data/itemRefresh';
+import { contentToItem } from '../data/fetchSources';
+import {
+  MAX_EDITS,
+  OBSERVE_FIRST_MS,
+  OBSERVE_MS,
+  afterRestart,
+  applyAnswer,
+  applyRead,
+  applyReadFailure,
+  editStatus,
+  fieldId,
+  fieldValue,
+  isEditRecord,
+  latestStamp,
+  markSent,
+  overlayItem,
+  startEdit,
+  type EditField,
+  type EditRecord,
+  type EditValue,
+} from '../data/edits';
 import { GitHubError } from '../data/github';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText, summaryAlertText } from '../data/pending';
@@ -50,6 +71,20 @@ export interface ControllerDeps {
   defaultGithubAppClientId?: string;
   /** notifications, Dock badge, launch at login, sync beat (none: nothing is shown, the counting still runs) */
   desktop?: Desktop;
+  /** GitHub#229: how long an older unanswered change is watched for, and the first re-read of it (tests shorten them) */
+  observeMs?: number;
+  observeFirstMs?: number;
+}
+
+/** GitHub#229: the row of the snapshot table that holds the changes not yet confirmed (not a source). */
+export const EDITS_KEY = '__edits__';
+/** GitHub#229: how many item details are kept for a fast re-open (this run only, never on disk). */
+export const DETAIL_CACHE_SIZE = 50;
+
+/** The four kinds of change shown before GitHub confirms them (GitHub#229). */
+type FieldAction = Extract<WriteAction, { kind: 'addLabel' | 'removeLabel' | 'setMilestone' | 'setStatus' | 'setIteration' }>;
+function isFieldAction(a: WriteAction): a is FieldAction {
+  return a.kind === 'addLabel' || a.kind === 'removeLabel' || a.kind === 'setMilestone' || a.kind === 'setStatus' || a.kind === 'setIteration';
 }
 
 /** where each kind's Client ID override is saved ('oauthClientId' predates the choice and keeps its name) */
@@ -157,6 +192,24 @@ export class Controller {
   private focusSeq = 0;
   private eventsRunning = false;
 
+  // ---- GitHub#229 ----
+  /** changes shown before GitHub confirmed them, one per field (see data/edits.ts); stored in the snapshot table under EDITS_KEY */
+  private edits = new Map<string, EditRecord>();
+  /** the EDITS_KEY row exists on disk (an empty set deletes it instead of writing it) */
+  private editsStored = false;
+  private editSeq = 0;
+  /** the last stamp handed out: stamps only ever grow, so "sent after" never ties */
+  private stampAt = 0;
+  /** one chain per item: its changes go out one after the other, in the order they were made */
+  private itemQueues = new Map<string, Promise<unknown>>();
+  /** the watch re-reads of a record (cleared when it ends) */
+  private editTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
+  /** details read in this run, newest last (re-opening shows the last one while the new read is on its way) */
+  private detailCache = new Map<string, ItemDetail>();
+  /** labels / milestones per repository, only reads that worked */
+  private optionsCache = new Map<string, RepoOptions>();
+  private createSeq = 0;
+
   /** Read what the back end has (settings, cached snapshots), then build the controller. */
   static async create(deps: ControllerDeps): Promise<Controller> {
     const init = await deps.backend.call<BackendInit>('init');
@@ -198,8 +251,13 @@ export class Controller {
       notifyProblem: null,
       focus: null,
       update: null,
+      editsNeedingAction: 0,
+      creates: [],
     };
-    for (const s of init.snapshots) this.snapshots.set(s.sourceKey, s);
+    for (const s of init.snapshots) {
+      if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
+      else this.snapshots.set(s.sourceKey, s);
+    }
     this.refreshDerived();
   }
 
@@ -211,7 +269,13 @@ export class Controller {
     const configured = this.state.sources.map((s) => s.key);
     const snaps = [...this.snapshots.values()].filter((s) => configured.includes(s.sourceKey));
     const selected = this.state.view.selected?.filter((k) => configured.includes(k)) ?? null;
-    return { ...mergeSnapshots(snaps, selected), allProjects: this.allProjects() };
+    const merged = mergeSnapshots(snaps, selected);
+    if (!this.edits.size) return { ...merged, allProjects: this.allProjects() };
+    // GitHub#229: the changes on their way show on the item itself, the others beside it
+    const byKey = new Map<string, EditRecord[]>();
+    for (const r of this.edits.values()) byKey.set(r.key, [...(byKey.get(r.key) ?? []), r]);
+    const all = this.allProjects();
+    return { ...merged, items: merged.items.map((it) => (byKey.has(it.key) ? overlayItem(it, byKey.get(it.key)!, all) : it)), allProjects: all };
   }
 
   /** Every configured Project, in the order the sources were added (GitHub#205: what a new issue may join). */
@@ -435,6 +499,15 @@ export class Controller {
   /** The back end dropped every snapshot (sign-out / another account): forget them here too, and what was pending with them. */
   private dropMirror(): void {
     this.snapshots.clear();
+    // GitHub#229: the changes, cached details and candidates belonged to that account too (the back end dropped the stored changes in the same step)
+    for (const t of this.editTimers.values()) t.forEach(clearTimeout);
+    this.editTimers.clear();
+    this.edits.clear();
+    this.editsStored = false;
+    this.itemQueues.clear();
+    this.detailCache.clear();
+    this.optionsCache.clear();
+    this.state = { ...this.state, editsNeedingAction: 0, creates: [] };
     this.pending.reset();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, pendingItems: [], unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
@@ -953,6 +1026,8 @@ export class Controller {
     this.set({ sync: { ...this.state.sync, syncing: true } });
     // the one stretch a restart may cut: reading GitHub (GitHub#217)
     run.reading = true;
+    // GitHub#229: every read of this round went out after this stamp (a lower bound is what the check of a change needs)
+    const issuedAt = this.stamp();
     const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, this.now());
     run.reading = false;
     // dropped meanwhile: a newer round owns the state now, nothing of this one may land
@@ -979,6 +1054,7 @@ export class Controller {
     // a source removed while the write was on its way: not shown either
     accepted = accepted.filter((snap) => current(snap.sourceKey));
     for (const snap of accepted) this.snapshots.set(snap.sourceKey, snap);
+    this.feedSnapshots(accepted, issuedAt);
     this.applyImports(accepted);
     // Only what was read completely this round (and still belongs here) is compared.
     this.observePending(accepted);
@@ -1074,7 +1150,11 @@ export class Controller {
     try {
       const raw = await fetchRawDetail(c.client, item.repo, item.number);
       if (c.session !== this.session) return { ok: false, error: '账号已切换' };
-      return { ok: true, detail: toDetail(item.repo, raw, this.now()) };
+      const detail = toDetail(item.repo, raw, this.now());
+      this.detailCache.delete(key);
+      this.detailCache.set(key, detail);
+      while (this.detailCache.size > DETAIL_CACHE_SIZE) this.detailCache.delete(this.detailCache.keys().next().value!);
+      return { ok: true, detail };
     } catch (e) {
       this.noteAuthFailure(e);
       const msg = e instanceof GitHubError && e.kind === 'network' ? `连不上 GitHub，读不到详情（${e.message}）` : `读取详情失败：${(e as Error).message}`;
@@ -1082,15 +1162,32 @@ export class Controller {
     }
   }
 
-  /** Labels and milestones of one repository (the candidates the window offers). */
-  async repoOptions(repo: string): Promise<RepoOptions> {
+  /** GitHub#229: the detail read last in this run (shown at once on re-opening, while it is read again); null = none. */
+  cachedDetail(key: string): ItemDetail | null {
+    return this.detailCache.get(key) ?? null;
+  }
+
+  /**
+   * Labels and milestones of one repository (the candidates the window offers).
+   * GitHub#229: a read that worked is kept for this run and answers the next call
+   * at once; `fresh` reads again (the detail's refresh button). A lost connection
+   * is tried once more before the failure is reported; a failure is never kept.
+   */
+  async repoOptions(repo: string, fresh = false): Promise<RepoOptions> {
+    const kept = this.optionsCache.get(repo);
+    if (kept && !fresh) return kept;
     const c = await this.clientForCall(false);
     if ('error' in c) return { labels: [], milestones: [], error: c.error };
-    try {
-      return await listRepoOptions(c.client, repo);
-    } catch (e) {
-      this.noteAuthFailure(e);
-      return { labels: [], milestones: [], error: `读取 ${repo} 的标签 / 里程碑失败：${(e as Error).message}` };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await listRepoOptions(c.client, repo);
+        if (c.session === this.session) this.optionsCache.set(repo, r);
+        return r;
+      } catch (e) {
+        if (attempt === 0 && e instanceof GitHubError && e.kind === 'network') continue;
+        this.noteAuthFailure(e);
+        return { labels: [], milestones: [], error: `读取 ${repo} 的标签 / 里程碑失败：${(e as Error).message}` };
+      }
     }
   }
 
@@ -1111,6 +1208,7 @@ export class Controller {
    * item is read again from GitHub at once and the cache takes that copy.
    */
   async act(action: WriteAction): Promise<WriteResult> {
+    if (isFieldAction(action)) return this.actEdit(action);
     if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
     if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
@@ -1122,7 +1220,7 @@ export class Controller {
     }
   }
 
-  private async actNow(action: WriteAction): Promise<WriteResult> {
+  private async actNow(action: WriteAction, onOutcome?: (o: { missingProjects?: string[] }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
@@ -1138,8 +1236,10 @@ export class Controller {
       outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: createInProjects as ProjectMeta[], cached: this.cachedItems() });
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
-      return { ok: false, error: explainError(e, action.kind), warning: null };
+      onError?.(e);
+      return { ok: false, error: e instanceof CreateUnanswered ? `不确定有没有建好：${e.reason}` : explainError(e, action.kind), warning: null };
     }
+    onOutcome?.(outcome);
     let warning = outcome.warning;
     if (c.session === this.session) {
       for (const [repo, number] of outcome.touched) {
@@ -1158,17 +1258,20 @@ export class Controller {
    * switch, nor into a source removed (or re-added) meanwhile. A round already
    * in flight may have read the item before the change: one more round is queued.
    */
-  private async refreshOne(client: GitHubClient, session: number, repo: string, number: number): Promise<string | null> {
+  private async refreshOne(client: GitHubClient, session: number, repo: string, number: number, opts: { final?: boolean; out?: { fresh?: FreshItem } } = {}): Promise<string | null> {
     const sources = this.state.sources;
     const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
+    const issuedAt = this.stamp();
     let fresh;
     try {
       fresh = await fetchItem(client, repo, number);
     } catch (e) {
+      if (session === this.session) this.feedReadFailure(itemKey(repo, number), (e as Error).message);
       void this.syncNow();
       return `修改已生效，但重读这一条失败（${(e as Error).message}），下一轮同步会更新`;
     }
     if (session !== this.session) return null;
+    if (opts.out) opts.out.fresh = fresh;
     const current = (key: string) =>
       this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
     const changed = applyFreshItem([...this.snapshots.values()].filter((s) => current(s.sourceKey)), fresh);
@@ -1176,6 +1279,8 @@ export class Controller {
       for (const snap of changed.filter((s) => current(s.sourceKey))) this.snapshots.set(snap.sourceKey, snap);
       this.set({});
     }
+    // GitHub#229: only once the read landed (or had nothing to change) in this session
+    if (session === this.session && (!changed.length || changed.some((snap) => this.snapshots.get(snap.sourceKey) === snap))) this.feedFresh(fresh, issuedAt, opts.final);
     if (this.syncing) void this.syncNow();
     return null;
   }
@@ -1183,5 +1288,460 @@ export class Controller {
   /** A 401 on a call outside the sync round: let the next round do the refresh / sign-out logic. */
   private noteAuthFailure(e: unknown): void {
     if (e instanceof GitHubError && e.kind === 'auth') void this.syncNow();
+  }
+
+  // ---- GitHub#229: changes shown before GitHub confirms them ----------------
+
+  /** A stamp later than every one handed out before (also across a restart: see loadEdits). */
+  private stamp(): number {
+    this.stampAt = Math.max(this.now(), this.stampAt + 1);
+    return this.stampAt;
+  }
+
+  /** The stored records, as the last run left them: every request still waiting has no answer now, and nothing is sent again. */
+  private loadEdits(row: SourceSnapshot): void {
+    const raw = (row as unknown as { edits?: unknown }).edits;
+    const list = Array.isArray(raw) ? raw.filter(isEditRecord) : [];
+    for (const r of list) this.edits.set(r.id, afterRestart(r));
+    this.editsStored = true;
+    this.stampAt = Math.max(this.stampAt, latestStamp(list));
+    this.editSeq = Math.max(0, ...list.flatMap((r) => r.reqs.map((q) => q.id)));
+    this.state = { ...this.state, editsNeedingAction: this.needingAction() };
+    // a watch that was running goes on: the first sync round reads every source anyway, the end is re-read when due
+    for (const r of this.edits.values()) this.scheduleWatch(r);
+  }
+
+  private needingAction(): number {
+    let n = 0;
+    for (const r of this.edits.values()) {
+      const st = editStatus(r);
+      if (st === 'failed' || st === 'unconfirmed') n++;
+    }
+    return n;
+  }
+
+  /** Records changed in memory: views see them now (the caller stores them). */
+  private editsChanged(): void {
+    this.set({ editsNeedingAction: this.needingAction() });
+  }
+
+  /**
+   * Store every record (one row of the snapshot table, written in this session
+   * only: the back end refuses it after a sign-out, and drops it with the cache).
+   * false = not stored: the change it was for must not go out.
+   */
+  private async storeEdits(): Promise<boolean> {
+    const session = this.session;
+    const list = [...this.edits.values()];
+    try {
+      if (!list.length) {
+        if (this.editsStored) {
+          this.editsStored = false;
+          this.cache.deleteSnapshot(EDITS_KEY);
+        }
+        return session === this.session;
+      }
+      const row = { sourceKey: EDITS_KEY, fetchedAt: this.now(), items: [], edits: list } as unknown as SourceSnapshot;
+      const ok = await this.writeSnapshots(session, [row]);
+      if (ok) this.editsStored = true;
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private setEdit(id: string, next: EditRecord | null): void {
+    const before = this.edits.get(id);
+    if (next) this.edits.set(id, next);
+    else this.edits.delete(id);
+    if (!next) {
+      this.editTimers.get(id)?.forEach(clearTimeout);
+      this.editTimers.delete(id);
+    } else if (next.observeUntil !== null && next.observeUntil !== before?.observeUntil) {
+      this.scheduleWatch(next);
+    }
+  }
+
+  /** A change was made by the user: shown at once, stored, then sent behind the item's earlier changes. */
+  private async actEdit(action: FieldAction): Promise<WriteResult> {
+    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录', warning: null };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
+    const item = this.findItem(action.key);
+    if (!item) return { ok: false, error: '看板上找不到这一条（可能刚被同步掉了），请刷新后再试', warning: null };
+    const field = this.fieldOf(action, item);
+    const id = fieldId(item.key, field);
+    const prev = this.edits.get(id) ?? null;
+    if (!prev && this.edits.size >= MAX_EDITS) return { ok: false, error: `还有 ${MAX_EDITS} 处修改没确认，请先处理掉一些（重新发送或放弃）再改`, warning: null };
+    const value = this.valueOf(action);
+    const shown = fieldValue(item, field);
+    const reqId = ++this.editSeq;
+    this.setEdit(id, startEdit(prev, { id, key: item.key, repo: item.repo, number: item.number, field, base: shown ?? null }, value, reqId));
+    this.editsChanged();
+    return this.sendEdit(id, reqId, action);
+  }
+
+  private fieldOf(action: FieldAction, item: Item): EditField {
+    switch (action.kind) {
+      case 'addLabel':
+      case 'removeLabel': {
+        const color = (action.kind === 'addLabel' ? action.color : undefined) ?? item.labels.find((l) => l.name === action.label)?.color ?? this.optionsCache.get(item.repo)?.labels.find((l) => l.name === action.label)?.color ?? '';
+        return { kind: 'label', label: action.label, color };
+      }
+      case 'setMilestone':
+        return { kind: 'milestone' };
+      case 'setStatus':
+        return { kind: 'status', projectKey: action.projectKey };
+      case 'setIteration':
+        return { kind: 'iteration', projectKey: action.projectKey };
+    }
+  }
+
+  private valueOf(action: FieldAction): EditValue {
+    switch (action.kind) {
+      case 'addLabel':
+        return true;
+      case 'removeLabel':
+        return false;
+      case 'setMilestone':
+        return action.title;
+      case 'setStatus':
+        return action.status;
+      case 'setIteration':
+        return action.iterationId;
+    }
+  }
+
+  /** The request that writes a record's target (for a resend). */
+  private actionOf(r: EditRecord): FieldAction {
+    const f = r.field;
+    switch (f.kind) {
+      case 'label':
+        return r.target ? { kind: 'addLabel', key: r.key, label: f.label, color: f.color } : { kind: 'removeLabel', key: r.key, label: f.label };
+      case 'milestone':
+        return { kind: 'setMilestone', key: r.key, title: typeof r.target === 'string' ? r.target : null };
+      case 'status':
+        return { kind: 'setStatus', key: r.key, projectKey: f.projectKey, status: typeof r.target === 'string' ? r.target : null };
+      case 'iteration':
+        return { kind: 'setIteration', key: r.key, projectKey: f.projectKey, iterationId: typeof r.target === 'string' ? r.target : null };
+    }
+  }
+
+  /** Behind the item's earlier changes. */
+  private enqueueItem<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.itemQueues.get(key) ?? Promise.resolve();
+    const p = prev.then(fn, fn);
+    const tail = p.catch(() => undefined);
+    this.itemQueues.set(key, tail);
+    void tail.then(() => {
+      if (this.itemQueues.get(key) === tail) this.itemQueues.delete(key);
+    });
+    return p;
+  }
+
+  /**
+   * Store the record, then send its request behind the item's earlier ones. The
+   * record is stored as "sent" before the request goes out (a crash in between
+   * then reads as "no answer", never as "never sent"); not stored = not sent.
+   */
+  private async sendEdit(id: string, reqId: number, action: FieldAction): Promise<WriteResult> {
+    const session = this.session;
+    if (!(await this.storeEdits())) {
+      const r = this.edits.get(id);
+      if (r && session === this.session) {
+        this.setEdit(id, applyAnswer(r, reqId, 'rejected', this.stamp(), '没能存到本机，这次修改没发出'));
+        this.editsChanged();
+      }
+      return { ok: false, error: '没能存到本机，这次修改没发出', warning: null };
+    }
+    return this.enqueueItem(action.key, async (): Promise<WriteResult> => {
+      const before = this.edits.get(id);
+      if (session !== this.session || !before?.reqs.some((q) => q.id === reqId)) {
+        return { ok: false, error: '这次修改在发出前被放弃或被后一次修改取代，没有发出', warning: null };
+      }
+      const c = await this.clientForCall(true);
+      if ('error' in c) return this.answerEdit(id, reqId, session, 'rejected', c.error);
+      const sent = markSent(before, reqId, this.stamp());
+      this.setEdit(id, sent);
+      if (!(await this.storeEdits())) return this.answerEdit(id, reqId, session, 'rejected', '没能存到本机，这次修改没发出');
+      const data = this.getBoardData();
+      const item = data.items.find((i) => i.key === action.key) ?? null;
+      let outcome;
+      try {
+        outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: [], cached: this.cachedItems() });
+      } catch (e) {
+        if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+        const error = explainError(e, action.kind);
+        if (refusedForSure(e)) return this.answerEdit(id, reqId, session, 'rejected', error);
+        // not explainError's words: they say "nothing was changed", which is exactly what is not known here
+        return this.answerEdit(id, reqId, session, 'unknown', `没收到 GitHub 的明确答复（${(e as Error)?.message ?? String(e)}），不确定改没改上`);
+      }
+      await this.answerEdit(id, reqId, session, 'accepted', '');
+      let warning = outcome.warning;
+      if (session === this.session) {
+        for (const [repo, number] of outcome.touched) {
+          const problem = await this.refreshOne(c.client, session, repo, number);
+          if (problem) warning = [warning, problem].filter(Boolean).join('；');
+        }
+        if (session === this.session) this.scheduleFollowUp(session);
+      }
+      return { ok: true, error: null, warning };
+    });
+  }
+
+  private async answerEdit(id: string, reqId: number, session: number, outcome: 'accepted' | 'rejected' | 'unknown', reason: string): Promise<WriteResult> {
+    if (session === this.session) {
+      const r = this.edits.get(id);
+      if (r) {
+        this.setEdit(id, applyAnswer(r, reqId, outcome, this.stamp(), reason));
+        this.editsChanged();
+        await this.storeEdits();
+      }
+    }
+    return outcome === 'accepted' ? { ok: true, error: null, warning: null } : { ok: false, error: reason, warning: null };
+  }
+
+  /** A sync round's snapshots landed: each record whose item is in one of them reads its field there. */
+  private feedSnapshots(snaps: SourceSnapshot[], issuedAt: number): void {
+    if (!this.edits.size || !snaps.length) return;
+    const keys = new Set([...this.edits.values()].map((r) => r.key));
+    for (const key of keys) {
+      const copies = snaps.flatMap((snap) => snap.items.filter((i) => i.key === key));
+      if (copies.length) this.feedRead(key, copies, issuedAt);
+    }
+  }
+
+  /** One item was re-read: its own copy says labels / milestone, each Project it is on says that Project's fields. */
+  private feedFresh(fresh: FreshItem, issuedAt: number, final = false): void {
+    const key = freshKey(fresh);
+    if (!key || ![...this.edits.values()].some((r) => r.key === key)) return;
+    const base = contentToItem(fresh.content, [], []);
+    const projectCopies = freshViews(
+      [...this.snapshots.values()].filter((s) => s.project),
+      fresh,
+    ).flatMap((v) => (v.item ? [v.item] : []));
+    this.feedRead(key, [...(base ? [base] : []), ...projectCopies], issuedAt, final);
+  }
+
+  private feedRead(key: string, copies: Item[], issuedAt: number, final = false): void {
+    const receivedAt = this.stamp();
+    let changed = false;
+    for (const r of [...this.edits.values()]) {
+      if (r.key !== key) continue;
+      const value = copies.map((c) => fieldValue(c, r.field)).find((v) => v !== undefined);
+      if (value === undefined) continue;
+      this.setEdit(r.id, applyRead(r, { issuedAt, receivedAt, value }, this.deps.observeMs ?? OBSERVE_MS, final));
+      changed = true;
+    }
+    if (changed) {
+      this.editsChanged();
+      void this.storeEdits();
+    }
+  }
+
+  private feedReadFailure(key: string, reason: string): void {
+    let changed = false;
+    for (const r of [...this.edits.values()]) {
+      if (r.key !== key) continue;
+      this.setEdit(r.id, applyReadFailure(r, reason, this.stamp()));
+      changed = true;
+    }
+    if (changed) this.editsChanged();
+  }
+
+  /** A watched record is re-read soon after it was checked, and once more when the watch runs out. */
+  private scheduleWatch(r: EditRecord): void {
+    if (r.observeUntil === null) return;
+    this.editTimers.get(r.id)?.forEach(clearTimeout);
+    const now = this.now();
+    const first = this.deps.observeFirstMs ?? OBSERVE_FIRST_MS;
+    const id = r.id;
+    const end = Math.max(0, r.observeUntil - now);
+    const timers = [setTimeout(() => void this.rereadForEdit(id, false), Math.min(first, end)), setTimeout(() => void this.rereadForEdit(id, true), end + 10)];
+    this.editTimers.set(id, timers);
+  }
+
+  private async rereadForEdit(id: string, final: boolean): Promise<void> {
+    const r = this.edits.get(id);
+    if (!r || r.observeUntil === null) return;
+    const c = await this.clientForCall(false);
+    if ('error' in c) return;
+    // the same re-read as after a change: it lands in the board data, then reads the field
+    const problem = await this.refreshOne(c.client, c.session, r.repo, r.number, { final });
+    // the watch must not end on a failed read: try the end again a little later
+    if (problem && final && c.session === this.session && this.edits.get(id)) {
+      this.editTimers.set(id, [setTimeout(() => void this.rereadForEdit(id, true), this.deps.observeFirstMs ?? OBSERVE_FIRST_MS)]);
+    }
+  }
+
+  /**
+   * Send a change again (one not saved or not confirmed). Q1 = A: GitHub is read
+   * first; only when it still holds the value from before the first click (or
+   * already the wanted one) does it go out. Changed by somebody, or unreadable:
+   * held back until `force` (the user's "overwrite anyway" / "send anyway").
+   */
+  async resendEdit(id: string, force = false): Promise<WriteResult> {
+    const r = this.edits.get(id);
+    if (!r) return { ok: false, error: '这处修改已经不在了', warning: null };
+    const st = editStatus(r);
+    if (st !== 'failed' && st !== 'unconfirmed') return { ok: false, error: '这处修改还在保存或核对中，不用重新发送', warning: null };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
+    if (!force) {
+      const c = await this.clientForCall(false);
+      if ('error' in c) return { ok: false, error: c.error, warning: null };
+      // the same re-read as after a change (it lands in the board data and reads the field), kept for the comparison
+      const out: { fresh?: FreshItem } = {};
+      const problem = await this.refreshOne(c.client, c.session, r.repo, r.number, { out });
+      if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
+      const fresh = out.fresh;
+      if (!fresh) {
+        const cur = this.edits.get(id);
+        const why = problem ?? '读取失败';
+        if (cur) this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: why.replace(/^修改已生效，但重读这一条失败（(.*)），下一轮同步会更新$/, '$1') } });
+        this.editsChanged();
+        void this.storeEdits();
+        return { ok: false, error: '读不到 GitHub 现在的值，没有重新发送；确认要发就点「仍然发送」', warning: null };
+      }
+      const cur = this.edits.get(id);
+      // the read itself showed the change is on GitHub: nothing to send
+      if (!cur) return { ok: true, error: null, warning: null };
+      const base = contentToItem(fresh.content, [], []);
+      const copies = [...(base ? [base] : []), ...freshViews([...this.snapshots.values()].filter((s) => s.project), fresh).flatMap((v) => (v.item ? [v.item] : []))];
+      const now = copies.map((x) => fieldValue(x, cur.field)).find((v) => v !== undefined);
+      if (now === undefined) {
+        this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: '这一条已不在那个看板上' } });
+        this.editsChanged();
+        return { ok: false, error: '这一条已不在那个看板上，没有重新发送', warning: null };
+      }
+      if (now !== cur.base && now !== cur.target) {
+        this.setEdit(id, { ...cur, hold: { kind: 'changed', value: now } });
+        this.editsChanged();
+        void this.storeEdits();
+        return { ok: false, error: '你改之后有人改过这一项，没有重新发送；确认要覆盖就点「仍然覆盖」', warning: null };
+      }
+    }
+    const cur = this.edits.get(id);
+    if (!cur) return { ok: true, error: null, warning: null };
+    const reqId = ++this.editSeq;
+    this.setEdit(id, startEdit(cur, cur, cur.target, reqId));
+    this.editsChanged();
+    return this.sendEdit(id, reqId, this.actionOf(cur));
+  }
+
+  /** Give a change up: GitHub's value shows again. A request still on its way may land later; the next read shows what GitHub holds. */
+  async abandonEdit(id: string): Promise<void> {
+    if (!this.edits.has(id)) return;
+    this.setEdit(id, null);
+    this.editsChanged();
+    await this.storeEdits();
+  }
+
+  /** Every change that needs the user, one after the other (each with its own check). */
+  async resendAllEdits(): Promise<WriteResult> {
+    const ids = [...this.edits.values()].filter((r) => ['failed', 'unconfirmed'].includes(editStatus(r))).map((r) => r.id);
+    const held: string[] = [];
+    for (const id of ids) {
+      const r = await this.resendEdit(id);
+      if (!r.ok && r.error) held.push(r.error);
+    }
+    return held.length ? { ok: false, error: `${held.length} 处没有重新发送：${held[0]}`, warning: null } : { ok: true, error: null, warning: null };
+  }
+
+  async abandonAllEdits(): Promise<void> {
+    for (const r of [...this.edits.values()]) if (['failed', 'unconfirmed'].includes(editStatus(r))) this.setEdit(r.id, null);
+    this.editsChanged();
+    await this.storeEdits();
+  }
+
+  // ---- GitHub#229: a new issue does not hold the dialog --------------------
+
+  /**
+   * Create an issue in the background: refused at once (the dialog stays) when it
+   * cannot go out at all; otherwise the dialog closes and the outcome shows above
+   * the board. Only an outcome that is known to have created nothing gives the
+   * draft back with a create button; no answer = "not sure", never "try again".
+   */
+  async startCreate(action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<{ ok: boolean; error: string | null; job?: number }> {
+    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录' };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改' };
+    if (!action.title.trim()) return { ok: false, error: '标题不能为空' };
+    const id = ++this.createSeq;
+    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [] };
+    this.setCreate({ id, repo: action.repo, title: action.title, status: 'running', message: null, draft });
+    void this.runCreate(id, action);
+    return { ok: true, error: null, job: id };
+  }
+
+  private setCreate(job: CreateJob | null, drop?: number): void {
+    const others = this.state.creates.filter((j) => j.id !== (job?.id ?? drop));
+    this.set({ creates: job ? [...others, job].sort((a, b) => a.id - b.id) : others });
+  }
+
+  private async runCreate(id: number, action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<void> {
+    const session = this.session;
+    const job = () => this.state.creates.find((j) => j.id === id);
+    const sentAt = new Date(this.now() - 60_000).toISOString();
+    let r: WriteResult;
+    let unanswered: string | null = null;
+    let missing: string[] = [];
+    try {
+      r = await this.actNow(action, (o) => (missing = o.missingProjects ?? []), (e) => (unanswered = e instanceof CreateUnanswered ? e.reason : null));
+    } catch (e) {
+      r = { ok: false, error: (e as Error).message, warning: null };
+    }
+    if (session !== this.session || !job()) return;
+    const cur = job()!;
+    if (r.ok && r.createdKey) {
+      const number = Number(r.createdKey.split('#')[1]);
+      if (r.warning) this.setCreate({ ...cur, status: 'partial', message: r.warning, createdKey: r.createdKey, number, missingProjects: missing });
+      else this.setCreate(null, id);
+      this.set({ focus: { key: r.createdKey, seq: ++this.focusSeq } });
+      return;
+    }
+    if (unanswered === null) {
+      this.setCreate({ ...cur, status: 'failed', message: r.error });
+      return;
+    }
+    this.setCreate({ ...cur, status: 'unknown', message: `请求发出后没收到 GitHub 的明确答复（${unanswered}），不确定有没有建好` });
+    // same-title issues this account opened in this repository lately: links to look at, nothing is claimed or changed
+    const c = await this.clientForCall(false);
+    if ('error' in c || c.session !== session) return;
+    try {
+      const [owner, name] = action.repo.split('/');
+      const list = await c.client.restList<{ number: number; html_url: string; title: string; created_at: string; user?: { login?: string }; pull_request?: unknown }>(
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues?state=all&sort=created&direction=desc&since=${encodeURIComponent(sentAt)}&per_page=50`,
+      );
+      const since = Date.parse(sentAt) - 9 * 60_000;
+      const candidates = list
+        .filter((x) => !x.pull_request && x.title === action.title && (!this.state.viewer || x.user?.login === this.state.viewer) && Date.parse(x.created_at) >= since)
+        .map((x) => ({ number: x.number, url: x.html_url, createdAt: x.created_at }));
+      const now = job();
+      if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, candidates });
+    } catch {
+      // no list: the notice still says "not sure", with the web link
+    }
+  }
+
+  dismissCreate(id: number): void {
+    this.setCreate(null, id);
+  }
+
+  /** A created issue that missed some Projects: add exactly those to it (never a new issue). */
+  async retryCreateProjects(id: number): Promise<WriteResult> {
+    const cur = this.state.creates.find((j) => j.id === id);
+    if (!cur || cur.status !== 'partial' || !cur.createdKey) return { ok: false, error: '没有要补的看板', warning: null };
+    const left: string[] = [];
+    let error: string | null = null;
+    for (const projectKey of cur.missingProjects ?? []) {
+      const r = await this.actNow({ kind: 'addToProject', key: cur.createdKey, projectKey, iterationId: null, status: null });
+      if (!r.ok) {
+        left.push(projectKey);
+        error = r.error;
+      }
+    }
+    const now = this.state.creates.find((j) => j.id === id);
+    if (!now) return { ok: !left.length, error, warning: null };
+    if (!left.length) this.setCreate(null, id);
+    else this.setCreate({ ...now, missingProjects: left, message: `#${now.number} 已建好，但还有 ${left.length} 个看板没加进去：${error}` });
+    return left.length ? { ok: false, error, warning: null } : { ok: true, error: null, warning: null };
   }
 }

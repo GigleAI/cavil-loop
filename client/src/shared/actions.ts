@@ -10,7 +10,8 @@ import type { Label } from './types';
  * `key` is the item (`owner/repo#N`, see itemKey).
  */
 export type WriteAction =
-  | { kind: 'addLabel'; key: string; label: string }
+  /** `color`: the label's colour, so it can be shown before GitHub confirms (GitHub#229); optional */
+  | { kind: 'addLabel'; key: string; label: string; color?: string }
   | { kind: 'removeLabel'; key: string; label: string }
   /** title = a milestone of the item's own repository with this title; null = remove the milestone */
   | { kind: 'setMilestone'; key: string; title: string | null }

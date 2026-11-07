@@ -32,6 +32,34 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
 }
 
 /**
+ * What `fresh` says each snapshot should hold for this item: the item as that
+ * source carries it, or null when it is not there (a Project it is not on, or
+ * archived there). Sources it says nothing about (another repository) are left
+ * out. The one rule both the cache update and the check of a pending change
+ * (GitHub#229) read the re-read through.
+ */
+export function freshViews(snapshots: SourceSnapshot[], fresh: FreshItem): { snap: SourceSnapshot; item: Item | null }[] {
+  const base = contentToItem(fresh.content, [], []);
+  if (!base) return [];
+  const out: { snap: SourceSnapshot; item: Item | null }[] = [];
+  for (const snap of snapshots) {
+    if (snap.project) {
+      const meta: ProjectMeta = snap.project;
+      const pi = fresh.projectItems.find((p) => p.project.id === meta.projectId && !p.isArchived);
+      out.push({ snap, item: pi ? { ...base, projects: [readMembership(meta, pi.id, pi.fieldValues.nodes)], sources: [snap.sourceKey] } : null });
+    } else if (snap.sourceKey === `repo:${base.repo.toLowerCase()}`) {
+      out.push({ snap, item: { ...base, projects: [], sources: [snap.sourceKey] } });
+    }
+  }
+  return out;
+}
+
+/** The key of the item `fresh` describes (null when GitHub returned something the board cannot show). */
+export function freshKey(fresh: FreshItem): string | null {
+  return contentToItem(fresh.content, [], [])?.key ?? null;
+}
+
+/**
  * Put `fresh` into the snapshots. Returns only the snapshots that changed
  * (same fetchedAt: the rest of the source is as old as it was).
  *   Project source: the item is on that Project (not archived) → upsert with that Project's values;
@@ -40,19 +68,11 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
  *   anything else → untouched.
  */
 export function applyFreshItem(snapshots: SourceSnapshot[], fresh: FreshItem): SourceSnapshot[] {
+  const key = freshKey(fresh);
+  if (!key) return [];
   const changed: SourceSnapshot[] = [];
-  const base = contentToItem(fresh.content, [], []);
-  if (!base) return changed;
-  for (const snap of snapshots) {
-    let next: Item | null = null;
-    if (snap.project) {
-      const meta: ProjectMeta = snap.project;
-      const pi = fresh.projectItems.find((p) => p.project.id === meta.projectId && !p.isArchived);
-      if (pi) next = { ...base, projects: [readMembership(meta, pi.id, pi.fieldValues.nodes)], sources: [snap.sourceKey] };
-    } else if (snap.sourceKey === `repo:${base.repo.toLowerCase()}`) {
-      next = { ...base, projects: [], sources: [snap.sourceKey] };
-    } else continue;
-    const had = snap.items.some((x) => x.key === base.key);
+  for (const { snap, item: next } of freshViews(snapshots, fresh)) {
+    const had = snap.items.some((x) => x.key === key);
     if (!next && !had) continue;
     // replace in place: the array order is the Project's own order ("Project 里的顺序"
     // in the table, and the board's tie order), so an edit must not move the item;
@@ -60,9 +80,9 @@ export function applyFreshItem(snapshots: SourceSnapshot[], fresh: FreshItem): S
     // GitHub has it)
     const items = next
       ? had
-        ? snap.items.map((x) => (x.key === base.key ? next! : x))
+        ? snap.items.map((x) => (x.key === key ? next : x))
         : [...snap.items, next]
-      : snap.items.filter((x) => x.key !== base.key);
+      : snap.items.filter((x) => x.key !== key);
     changed.push({ ...snap, items });
   }
   return changed;

@@ -66,7 +66,7 @@ function Cell({ col, item, now, dark }: { col: TableColumn; item: Item; now: num
       return (
         <span className="labels">
           {item.labels.map((l) => (
-            <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+            <span key={l.name} className={`label${item.edits?.some((m) => m.label === l.name && ['saving', 'verifying', 'observing'].includes(m.status)) ? ' pending' : ''}`} style={labelStyle(l.color, dark)}>
               {l.name}
             </span>
           ))}
@@ -371,9 +371,10 @@ export function TableView({
   const groupBody = (g: Group, inRepo: boolean) => (
     <tbody key={g.key} className={inRepo ? 'in-repo' : undefined} data-testid="group" data-key={g.key} data-title={g.title}>
       {t.groupBy !== 'none' && (
-        <tr className="group-head" data-testid="group-head">
+        // GitHub#229: the whole row folds; the arrow stays a button (Tab reaches it) and its click is this same one
+        <tr className="group-head" data-testid="group-head" onClick={() => toggle(g.key)} title={folded.has(g.key) ? '点一下展开这一组' : '点一下收起这一组'}>
           <td colSpan={cols.length + 1}>
-            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'} onClick={() => toggle(g.key)}>
+            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'}>
               {folded.has(g.key) ? '▸' : '▾'}
             </button>{' '}
             <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
@@ -492,9 +493,9 @@ export function TableView({
             ? table.repos.map((r) => (
                 <Fragment key={r.key}>
                   <tbody data-testid="repo-group" data-key={r.key} data-title={r.title}>
-                    <tr className="repo-head">
+                    <tr className="repo-head" data-testid="repo-head" onClick={() => toggle(r.key)} title={folded.has(r.key) ? '点一下展开这个仓库' : '点一下收起这个仓库'}>
                       <td colSpan={cols.length + 1}>
-                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'} onClick={() => toggle(r.key)}>
+                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'}>
                           {folded.has(r.key) ? '▸' : '▾'}
                         </button>{' '}
                         <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
