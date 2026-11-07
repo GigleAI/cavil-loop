@@ -2384,7 +2384,7 @@ export class Controller {
     const login = this.state.viewer;
     const mid = this.ops.get(id);
     if (!mid) return;
-    if (mid.steps.some((s) => s.state === 'unknown' && needsRecords(s))) {
+    if (mid.replyState === 'unknown' || mid.steps.some((s) => s.state === 'unknown' && needsRecords(s))) {
       if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
       else {
         try {
@@ -2515,14 +2515,46 @@ export class Controller {
     const rec = this.ops.get(id);
     const { draftOf: _drop, ...plain } = action;
     if (!rec) return this.actNow(plain);
-    if (rec.replyState) return { ok: false, error: '这条附带评论已经用来发过回复（结果还没确定），没有再发', warning: null };
-    this.patchOp(id, { replyState: 'sending' });
+    const refuse = (error: string): WriteResult => ({ ok: false, error, warning: null });
+    if (rec.replyState) return refuse('这条附带评论已经用来发过回复（结果还没确定），没有再发');
+    if (opPhase(rec) === 'waiting' || opPhase(rec) === 'unknown') return refuse(`这次操作还没结清，附带评论先不发：${opText(rec)}`);
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
+    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    const session = this.session;
+    // code review round 2: "sending" is on disk before the request goes out (set at once, so a second click is refused meanwhile); not stored = not sent
+    this.setOp({ ...rec, replyState: 'sending', reply: { body: plain.body, before: null } });
+    this.opsChanged();
+    const undo = (error: string): WriteResult => {
+      const now = this.ops.get(id);
+      if (now && session === this.session) {
+        this.setOp({ ...now, replyState: null, reply: null });
+        this.opsChanged();
+        void this.storeOps();
+      }
+      return refuse(error);
+    };
+    if (!(await this.storeOps())) return undo('没能存到本机，回复没有发送');
+    if (session !== this.session || !this.ops.get(id)) return refuse('账号已切换，回复没有发送');
+    const c = await this.clientForCall(true);
+    if ('error' in c) return undo(c.error);
+    // the comments already there: a comment proves this reply only when it is not one of them
+    let before: string[] | null = null;
+    try {
+      before = (await readItemRecords(c.client, rec.repo, rec.number)).comments.map((x) => x.id);
+    } catch {
+      // sent anyway; if its answer never comes it can only be checked by a person
+    }
+    if (session !== this.session) return refuse('账号已切换，回复没有发送');
+    const mid = this.ops.get(id);
+    if (!mid) return refuse('这次操作已经不在了，回复没有发送');
+    this.setOp({ ...mid, reply: { body: plain.body, before } });
+    await this.storeOps();
     let err: unknown = undefined;
     const r = await this.actNow(plain, undefined, (e) => (err = e));
     const now = this.ops.get(id);
-    if (now) {
-      if (r.ok) this.patchOp(id, { replyState: null, draftDropped: true });
-      else if (err === undefined || refusedForSure(err)) this.patchOp(id, { replyState: null });
+    if (now && session === this.session) {
+      if (r.ok) this.patchOp(id, { replyState: null, reply: null, commentUsed: true });
+      else if (err === undefined || refusedForSure(err)) this.patchOp(id, { replyState: null, reply: null });
       else this.patchOp(id, { replyState: 'unknown' });
     }
     return r;

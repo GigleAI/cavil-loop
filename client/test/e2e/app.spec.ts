@@ -4076,3 +4076,45 @@ test('GitHub#250 (PR #255 code review round 1): a reply built from a kept commen
   expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['恢复原文']);
   await app.close();
 });
+
+test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comment loses its answer — no "重新关闭" carrying the comment again, one comment on GitHub', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c0 = findCopies(store, 'GigleAI/cavil-loop', 137)!;
+  for (const g of c0.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+  for (const r of c0.rest) Object.assign(r, { state: 'open', state_reason: null });
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.getByTestId('search').fill('#137');
+  if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+  await card(page, 137).click();
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  const notice = page.locator('[data-testid="detail"] [data-testid="op-notice"]').last();
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('close-comment').fill('未知回复再次关闭');
+  await page.getByTestId('confirm-ok').click();
+  await expect(notice).toHaveAttribute('data-kind', 'error');
+  await expect(notice.getByTestId('op-retry')).toBeVisible();
+  env.fake.state.w.readOnlyRepos.clear();
+  await notice.getByTestId('op-to-reply').click();
+  const lost = env.fake.dropAnswerWhen((e) => e.method === 'POST' && e.path === '/api/repos/GigleAI/cavil-loop/issues/137/comments');
+  await page.getByTestId('reply-send').click();
+  await expect(notice).toHaveAttribute('data-phase', 'unknown');
+  lost.stop();
+  expect(lost.caught()).toBe(1);
+  await expect(notice.getByTestId('op-notice-text')).toContainText('用附的评论原文发的回复不确定有没有发出');
+  await expect(notice.getByTestId('op-retry')).toHaveCount(0);
+  await expect(notice.getByTestId('op-to-reply')).toHaveCount(0);
+  await expect(notice.getByTestId('op-copy')).toBeVisible();
+  await expect(page.getByTestId('close-issue')).toBeDisabled();
+  await shot(page, '250-04-reply-unknown');
+  // "重新查证据": the comment list shows a new comment with that text — the comment is done, "重新关闭" comes back without it
+  await notice.getByTestId('op-recheck').click();
+  await expect(notice.getByTestId('op-retry')).toBeVisible();
+  await notice.getByTestId('op-retry').click();
+  await expect(page.getByTestId('close-comment')).toHaveValue('');
+  await expect(page.getByTestId('close-reason-completed')).toBeChecked();
+  await page.getByTestId('confirm-cancel').click();
+  expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['未知回复再次关闭']);
+  await app.close();
+});

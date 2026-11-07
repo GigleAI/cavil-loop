@@ -15,6 +15,7 @@ import {
   opLocked,
   opPhase,
   opProveFromRecords,
+  opReusableDraft,
   opProveStep,
   readBoundary,
   opText,
@@ -250,5 +251,32 @@ describe('code review round 1: evidence newer than the request; restart boundary
     expect(x.steps[0].answeredAt).toBeNull();
     expect(opPhase(x)).toBe('settled');
     expect(opDraftLeft(x)).toEqual({ comment: '做完了' });
+  });
+});
+
+describe('code review round 2: a reply made from the kept comment', () => {
+  const base = () => close('refused', 'unsent');
+  it('on its way: waiting; no answer: unknown — locked either way, no retry, no reply box, copy only', () => {
+    expect(opPhase({ ...base(), replyState: 'sending' })).toBe('waiting');
+    const u = { ...base(), replyState: 'unknown' as const, reply: { body: '做完了', before: [] } };
+    expect(opPhase(u)).toBe('unknown');
+    expect(opLocked(u)).toBe(true);
+    expect(opButtons(u)).toEqual(['recheck', 'openWeb', 'unlock', 'copy', 'dropDraft']);
+  });
+  it('the dialog of a retry never gets that comment back; unlocked by hand neither', () => {
+    const u = { ...base(), replyState: 'unknown' as const };
+    expect(opDraftLeft(u)).toEqual({ reason: 'completed', comment: '做完了' });
+    expect(opReusableDraft(u)).toEqual({ reason: 'completed' });
+    expect(opReusableDraft({ ...u, unlocked: true })).toEqual({ reason: 'completed' });
+    expect(opReusableDraft(base())).toEqual({ reason: 'completed', comment: '做完了' });
+  });
+  it('proven only by a comment that was not there before the reply; that ends the draft comment', () => {
+    const u = { ...base(), replyState: 'unknown' as const, reply: { body: '做完了', before: ['c1'] } };
+    const recs = (ids: [string, string][]) => ({ comments: ids.map(([id, author]) => ({ id, author, body: '做完了' })), labelEvents: [] });
+    expect(opProveFromRecords(u, recs([['c1', 'me']]), 'me').record.replyState).toBe('unknown');
+    const ok = opProveFromRecords(u, recs([['c1', 'me'], ['c2', 'me']]), 'me').record;
+    expect(ok.replyState).toBeNull();
+    expect(opDraftLeft(ok)).toEqual({ reason: 'completed' });
+    expect(opProveFromRecords({ ...u, reply: { body: '做完了', before: null } }, recs([['c2', 'me']]), 'me').record.replyState).toBe('unknown');
   });
 });

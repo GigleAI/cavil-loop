@@ -11,7 +11,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
-import { opButtons, opDraftLeft, opLockOf, opPhase, opText, type OpRecord } from '../../src/shared/ops';
+import { opButtons, opDraftLeft, opLockOf, opPhase, opReusableDraft, opText, type OpRecord } from '../../src/shared/ops';
 import type { Item } from '../../src/shared/types';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
@@ -26,7 +26,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function ready(opts: { opStuckMs?: number; fresh?: boolean } = {}) {
+async function ready(opts: { opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -35,7 +35,8 @@ async function ready(opts: { opStuckMs?: number; fresh?: boolean } = {}) {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000 });
+  const backend = opts.intercept ? { call: async (cmd: string, args?: any) => ((await opts.intercept!(cmd, args)) as any) ?? harness.call(cmd, args) } : harness;
+  const c = await Controller.create({ backend: backend as any, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000 });
   controllers.push(c);
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
@@ -639,6 +640,118 @@ describe('a reply built from the kept comment is finished by the controller (cod
     expect(comments()).toHaveLength(2); // the refused step, then the refused reply
     expect(opOf(c, id).replyState).toBeNull();
     expect(opButtons(opOf(c, id))).toContain('toReply');
+  });
+});
+
+describe('a reply made from the kept comment is part of the lock (code review round 2)', () => {
+  /** the close is refused: its comment is kept and offered for the reply box */
+  async function refusedClose(c: Controller, comment = '恢复评论') {
+    fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment });
+    await idle(c);
+    fake.state.w.readOnlyRepos.clear();
+    const r = opOf(c, s.id!);
+    expect(opButtons(r)).toEqual(expect.arrayContaining(['retry', 'toReply']));
+    return s.id!;
+  }
+
+  it('close refused, the reply from its comment reached GitHub but the answer was lost: no "重新关闭", every entry refused, the comment is never sent twice; the comment list then proves it', async () => {
+    const c = await ready();
+    const id = await refusedClose(c);
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id })).ok).toBe(false);
+    lost.stop();
+    // it did go out once
+    expect(lost.caught()).toBe(1);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['恢复评论']);
+    let r = opOf(c, id);
+    expect(r.replyState).toBe('unknown');
+    expect(opPhase(r)).toBe('unknown');
+    expect(opButtons(r)).not.toContain('retry');
+    expect(opButtons(r)).not.toContain('toReply');
+    expect(opButtons(r)).toContain('copy');
+    expect(opReusableDraft(r)).toEqual({ reason: 'not_planned' });
+    // every entry: a new close (what "重新关闭" or a re-opened panel sends), with the comment or without; another reply from it
+    expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '恢复评论' }, { from: id }).ok).toBe(false);
+    expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '' }).ok).toBe(false);
+    expect((await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '恢复评论' })).ok).toBe(false);
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id })).ok).toBe(false);
+    expect(comments()).toHaveLength(1);
+    // the list shows a comment that was not there before the reply: proven, the comment is done
+    expect((await c.opRecheck(id)).ok).toBe(true);
+    r = opOf(c, id);
+    expect(r.replyState).toBeNull();
+    expect(opDraftLeft(r)).toEqual({ reason: 'not_planned' });
+    expect(opButtons(r)).toContain('retry');
+    // closing again now carries no comment
+    const again = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '' }, { from: id });
+    expect(again.ok).toBe(true);
+    await idle(c);
+    expect(stateOnGitHub()).toBe('closed');
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['恢复评论']);
+  });
+
+  it('an older comment with the same text proves nothing for the reply either', async () => {
+    const c = await ready();
+    const id = await refusedClose(c);
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论' })).ok).toBe(true);
+    const late = fake.lateWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id })).ok).toBe(false);
+    expect(late.caught()).toBe(1);
+    expect((await c.opRecheck(id)).ok).toBe(false);
+    expect(opOf(c, id).replyState).toBe('unknown');
+    late.land();
+    expect((await c.opRecheck(id)).ok).toBe(true);
+    expect(opOf(c, id).replyState).toBeNull();
+  });
+
+  it('"sending" cannot be stored: the reply is refused, no comment request at all; storing was really tried', async () => {
+    let tried = 0;
+    let failing = false;
+    const c = await ready({
+      intercept: (cmd, args) => {
+        if (failing && cmd === 'replaceSnapshots' && (args?.snapshots ?? []).some((x: any) => x.sourceKey === '__ops__' && (x.ops ?? []).some((o: any) => o.replyState === 'sending'))) {
+          tried++;
+          return { written: false };
+        }
+        return undefined;
+      },
+    });
+    const id = await refusedClose(c);
+    const before = comments().length;
+    failing = true;
+    const r = await c.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('没能存到本机');
+    expect(tried).toBeGreaterThan(0);
+    expect(comments()).toHaveLength(before);
+    expect(opOf(c, id).replyState).toBeNull();
+    expect(opButtons(opOf(c, id))).toContain('toReply');
+    // stored fine again: it goes out
+    failing = false;
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id })).ok).toBe(true);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['恢复评论']);
+  });
+
+  it('the app stops while the reply is on its way: after the restart it is "not sure", locked, not offered again; the list then proves it', async () => {
+    const c = await ready();
+    const id = await refusedClose(c);
+    fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    void c.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id });
+    await until(() => comments().length === 1, 'reply sent');
+    await until(() => storedOps()?.find((x) => x.id === id)?.replyState === 'sending', 'stored as sending');
+    c.stopTimer();
+    const c2 = await ready();
+    const r = opOf(c2, id);
+    expect(r.replyState).toBe('unknown');
+    expect(opPhase(r)).toBe('unknown');
+    expect(opButtons(r)).not.toContain('toReply');
+    expect(opButtons(r)).not.toContain('retry');
+    expect((await c2.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id })).ok).toBe(false);
+    expect(c2.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '' }).ok).toBe(false);
+    expect((await c2.opRecheck(id)).ok).toBe(true);
+    expect(opOf(c2, id).replyState).toBeNull();
+    expect(comments()).toHaveLength(1);
   });
 });
 

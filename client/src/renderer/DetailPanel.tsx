@@ -21,7 +21,7 @@ import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
-import { opDraftLeft, opLockOf, opText, type OpRecord } from '../shared/ops';
+import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
 import { OpNotice } from './OpNotice';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
@@ -384,7 +384,8 @@ export function DetailPanel({
   const runAutopilot = () => startOp({ kind: 'autopilot', key: item!.key }, ask === 'autopilot');
   /** the dialog of an operation again, its draft restored (GitHub#250) */
   const retryOp = (r: OpRecord) => {
-    const d = opDraftLeft(r) ?? {};
+    // never a comment a reply made from it may already have posted (code review round 2)
+    const d = opReusableDraft(r) ?? {};
     setRetryFrom(r.id);
     setDialogNote(null);
     if (r.kind === 'closeIssue') {

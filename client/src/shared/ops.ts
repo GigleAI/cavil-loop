@@ -95,6 +95,13 @@ export interface OpRecord {
    * refused for sure = cleared, offered again.
    */
   replyState?: 'sending' | 'unknown' | null;
+  /**
+   * Code review round 2: the reply above — its exact text, and the item's comments read right before it
+   * went out (only a comment not in this list proves it; null = that read failed: never proven).
+   */
+  reply?: { body: string; before: string[] | null } | null;
+  /** a reply made from the kept comment went out (or was proven): the comment is done, the rest of the draft stays */
+  commentUsed?: boolean;
   /** the re-read after the answers (the item, a merged / closed PR's issues) did not work in full; the next sync round catches up */
   readProblem?: string | null;
   /** this record finishes the label steps of an earlier one ("补做剩下的步骤") */
@@ -111,8 +118,9 @@ export type OpPhase = 'waiting' | 'unknown' | 'settling' | 'settled' | 'unlocked
 /** The phase of a record (table A). */
 export function opPhase(r: OpRecord): OpPhase {
   if (r.unlocked) return 'unlocked';
-  if (r.running || r.steps.some((s) => s.state === 'pending')) return 'waiting';
-  if (r.steps.some((s) => s.state === 'unknown')) return 'unknown';
+  if (r.running || r.replyState === 'sending' || r.steps.some((s) => s.state === 'pending')) return 'waiting';
+  // code review round 2: a reply made from the kept comment whose answer never came is an unknown step of this record
+  if (r.replyState === 'unknown' || r.steps.some((s) => s.state === 'unknown')) return 'unknown';
   if (!r.steps.some((s) => s.state === 'ok')) return 'settled';
   if (r.readAt === null) return 'settling';
   if (needsTarget(r) && !r.targetSeen) return 'settling';
@@ -254,7 +262,7 @@ export function opDraftLeft(r: OpRecord): OpDraft | null {
   const close = step('close');
   if (r.draft.reason && close && close.state !== 'ok') out.reason = r.draft.reason;
   const comment = r.draft.comment?.trim() ? r.draft.comment : undefined;
-  if (comment !== undefined) {
+  if (comment !== undefined && !r.commentUsed) {
     const c = step('comment');
     if (!c || c.state !== 'ok') out.comment = comment;
   }
@@ -264,6 +272,19 @@ export function opDraftLeft(r: OpRecord): OpDraft | null {
     if (r.draft.headOid) out.headOid = r.draft.headOid;
   }
   return Object.keys(out).length ? out : null;
+}
+
+/**
+ * What may be put back into a dialog to do the operation again ("重新关闭 / 合并…", code review
+ * round 2): the draft left, minus a comment that a reply made from it may already have posted.
+ * That comment can still be copied (opDraftLeft keeps it), never sent again from here.
+ */
+export function opReusableDraft(r: OpRecord): OpDraft | null {
+  const left = opDraftLeft(r);
+  if (!left) return null;
+  if (!r.replyState) return left;
+  const { comment: _c, ...rest } = left;
+  return Object.keys(rest).length ? rest : null;
 }
 
 /** the comment step's state, when the record carries a comment */
@@ -380,6 +401,13 @@ export function opProveFromRecords(
 ): { record: OpRecord; missing: string[] } {
   let record = r;
   const missing: string[] = [];
+  if (r.replyState === 'unknown') {
+    const reply = r.reply;
+    if (!reply || !reply.before) missing.push('用附的评论原文发的回复：发送前没读到这一条原有的评论，无法区分新旧，只能人工核对');
+    else if (records.comments.some((c) => !reply.before!.includes(c.id) && c.author === login && c.body === reply.body))
+      record = { ...record, replyState: null, reply: null, commentUsed: true };
+    else missing.push('评论列表里没有用附的评论原文发的那条回复（可能还没出现）');
+  }
   r.steps.forEach((s, i) => {
     if (s.state !== 'unknown' || !needsRecords(s)) return;
     const what = s.name === 'comment' ? '附带评论' : `「${s.label ?? ''}」`;
