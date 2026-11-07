@@ -1440,4 +1440,8 @@ export const MUTATIONS = [
   { what: '详情缓存：退出登录不清空（上一个账号的详情会在下一个账号里出现）', file: 'src/app/controller.ts',
     from: '    this.detailCache.clear();\n', to: '',
     expect: ['a detail read is shown again on re-opening; signing out forgets it'] },
+  // ---- PR #240 code review round 2 ----
+  { what: '新建：补加入看板成功但字段没设上时，提示条整个消失（字段失败被藏起来）', file: 'src/app/controller.ts',
+    from: "  if (fieldProblems.length) parts.push(`已加入看板但字段没设上 ${fieldProblems.join('、')}，请在详情里手动设置`);\n", to: '',
+    expect: ['code review round 2: the retry joins the board but its status is refused', 'the notice of a created issue after a retry'] },
 ];

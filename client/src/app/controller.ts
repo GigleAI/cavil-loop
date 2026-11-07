@@ -81,6 +81,19 @@ export const EDITS_KEY = '__edits__';
 /** GitHub#229: how many item details are kept for a fast re-open (this run only, never on disk). */
 export const DETAIL_CACHE_SIZE = 50;
 
+/**
+ * GitHub#229 (code review round 2): what the notice of a created issue says after a retry
+ * of its boards. null = all done (every board joined, every field set). Boards still missing
+ * and fields that did not get set are both kept in the words: a joined board does not hide a
+ * field that failed on it.
+ */
+export function retryOutcome(number: number, missing: number, error: string | null, fieldProblems: string[]): string | null {
+  const parts: string[] = [];
+  if (missing > 0) parts.push(`还有 ${missing} 个看板没加进去（${error ?? '原因未知'}）`);
+  if (fieldProblems.length) parts.push(`已加入看板但字段没设上 ${fieldProblems.join('、')}，请在详情里手动设置`);
+  return parts.length ? `issue #${number} 已建好，但${parts.join('；')}` : null;
+}
+
 /** The four kinds of change shown before GitHub confirms them (GitHub#229). */
 type FieldAction = Extract<WriteAction, { kind: 'addLabel' | 'removeLabel' | 'setMilestone' | 'setStatus' | 'setIteration' }>;
 function isFieldAction(a: WriteAction): a is FieldAction {
@@ -1796,9 +1809,12 @@ export class Controller {
     }
     const now = this.state.creates.find((j) => j.id === id);
     const warning = fieldProblems.length ? `已加入看板，但字段没设上 ${fieldProblems.join('、')}` : null;
-    if (!now) return { ok: !left.length, error, warning };
-    if (!left.length) this.setCreate(null, id);
-    else this.setCreate({ ...now, missingProjects: left, message: `#${now.number} 已建好，但还有 ${left.length} 个看板没加进去：${error}` });
+    if (now) {
+      const message = retryOutcome(now.number ?? number, left.length, error, fieldProblems);
+      // the notice goes only when everything is done: a board still missing, or a field not set, stays said
+      if (message === null) this.setCreate(null, id);
+      else this.setCreate({ ...now, missingProjects: left, plan: (now.plan ?? []).filter((x) => left.includes(x.projectKey)), message });
+    }
     return left.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
   }
 

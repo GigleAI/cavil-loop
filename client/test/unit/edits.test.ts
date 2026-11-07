@@ -21,6 +21,7 @@ import {
   type EditValue,
 } from '../../src/data/edits';
 import type { Item, ProjectMeta } from '../../src/shared/types';
+import { retryOutcome } from '../../src/app/controller';
 
 const KEY = 'o/r#7';
 const MS: EditField = { kind: 'milestone' };
@@ -203,5 +204,16 @@ describe('what the views see', () => {
     const withRead = markOf(read({ ...ms, failure: ms.failure }, 20, 21, 'v5')!, [project]);
     expect(withRead.github).toEqual({ text: 'v5', at: 21 });
     expect(withRead.changedByOthers).toBe(true);
+  });
+});
+
+describe('the notice of a created issue after a retry of its boards (code review round 2)', () => {
+  it('all joined and set → gone; a board missing, a field not set, or both → said, each in its words', () => {
+    expect(retryOutcome(7, 0, null, [])).toBeNull();
+    expect(retryOutcome(7, 1, '没权限', [])).toBe('issue #7 已建好，但还有 1 个看板没加进去（没权限）');
+    expect(retryOutcome(7, 0, null, ['「A」（拒绝）'])).toBe('issue #7 已建好，但已加入看板但字段没设上 「A」（拒绝），请在详情里手动设置');
+    const both = retryOutcome(7, 1, '没权限', ['「A」（拒绝）'])!;
+    expect(both).toContain('还有 1 个看板没加进去');
+    expect(both).toContain('字段没设上 「A」');
   });
 });

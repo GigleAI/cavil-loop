@@ -442,6 +442,42 @@ describe('a new issue does not hold the dialog: four outcomes', () => {
     expect(c.getBoardData().items.some((i) => i.key === job.createdKey)).toBe(true);
   });
 
+  it('code review round 2: the retry joins the board but its status is refused — the notice stays and says so (nothing new created)', async () => {
+    const { c } = await ready({ repo: false });
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    const before = issuesOnGitHub();
+    await c.startCreate({
+      kind: 'createIssue',
+      repo: REPO,
+      title: 'field fails on retry',
+      body: '',
+      labels: [],
+      projects: [PROJECT_KEY],
+      plan: { milestone: null, projects: [{ projectKey: PROJECT_KEY, iterationId: null, status: 'In progress' }] },
+    });
+    await until(() => c.getState().creates[0]?.status === 'partial', 'partial');
+    const job = c.getState().creates[0];
+    expect(job.plan).toEqual([{ projectKey: PROJECT_KEY, iterationId: null, status: 'In progress' }]);
+    fake.state.w.readOnlyProjects.delete('org/gigleai/11');
+    // the join's answer is held; meanwhile the board turns read-only, so the status write that follows is refused
+    const release = fake.holdWhen((e) => e.operation === 'CavilAddProjectItem');
+    const p = c.retryCreateProjects(job.id);
+    await until(() => fake.log.filter((e) => e.operation === 'CavilAddProjectItem').length === 2, 'the retry\'s join went out');
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    release();
+    const r = await p;
+    expect(r.ok).toBe(true);
+    expect(r.warning).toMatch(/字段没设上/);
+    // the status write really went out and was refused
+    expect(fake.log.filter((e) => e.operation === 'CavilSetStatus' && e.status === 200).length).toBe(1);
+    const left = c.getState().creates.find((j) => j.id === job.id)!;
+    expect(left).toBeDefined();
+    expect(left.status).toBe('partial');
+    expect(left.missingProjects).toEqual([]);
+    expect(left.message).toMatch(/字段没设上/);
+    expect(issuesOnGitHub()).toBe(before + 1);
+  });
+
   it('no answer: "not sure" — no create button, nothing claimed, nothing sent again; the issue appearing later changes none of that', async () => {
     const { c } = await ready();
     fake.state.w.dropWrites = true;

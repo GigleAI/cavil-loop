@@ -305,6 +305,8 @@ function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; o
 /** GitHub#229: one new issue on its way, or what came of it. Only "surely nothing was created" gives the draft back. */
 function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: string) => void; onDraft: (d: CreateJob['draft']) => void }) {
   const [copied, setCopied] = useState(false);
+  /** a retry that could not run at all (offline, signed out): said here; its outcome otherwise lives in the notice itself */
+  const [retryError, setRetryError] = useState<string | null>(null);
   const close = (
     <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
       <Icon name="x" />
@@ -327,9 +329,24 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
             打开 #{job.number}
           </button>
           {(job.missingProjects?.length ?? 0) > 0 && (
-            <button className="link" data-testid="create-retry-projects" onClick={() => void api().retryCreateProjects(job.id)}>
+            <button
+              className="link"
+              data-testid="create-retry-projects"
+              onClick={() => {
+                setRetryError(null);
+                void api()
+                  .retryCreateProjects(job.id)
+                  .then((r) => setRetryError(r.ok ? null : r.error));
+              }}
+            >
               再试加入看板
             </button>
+          )}
+          {retryError && (
+            <span className="small err" data-testid="create-retry-error">
+              {' '}
+              {retryError}
+            </span>
           )}
         </span>
         {close}
