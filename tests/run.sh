@@ -11,10 +11,16 @@
 #                                        about --ci; CI passes both)
 #   bash tests/run.sh -j N               run up to N units at once (default: half the CPUs,
 #                                        at most 8; -j 1 = one after another)
+#   bash tests/run.sh --kind unit,guard  run only files of these kinds (see "Kinds" below);
+#                                        combines with --ci / --shard / --list / --verify
+#   bash tests/run.sh --quick            = --kind smoke,unit,guard,meta (the fast ones)
 #   bash tests/run.sh --list [--shard K/N] [--ci]
 #                                        print "<shard> <unit>" (shard 1 without --shard)
 #   bash tests/run.sh --verify DIR --ci  read every results.tsv under DIR (one per shard)
 #                                        and pass only if each expected unit passed once
+#   bash tests/run.sh --tally DIR...     add up the count lines of every results.tsv under DIR...
+#                                        (no "exactly once" rule; the release gate uses it for
+#                                        the autopilot jobs, whose parts run in six jobs)
 #   --out DIR                            where results.tsv and logs/<unit>.log go
 #                                        (default: a fresh temp dir, printed at the end)
 #
@@ -29,8 +35,21 @@
 # never runs next to anything else: its units run one at a time after the parallel ones
 # (it touches something machine-wide — a real tmux server, systemd, fixed ports or paths).
 #
+# Kinds (GitHub#212). Every file declares exactly one, in its header:
+#     # kind: unit | e2e | install | guard | smoke | meta
+# (unit regression / end to end through the real poller or dispatch / local install & migration /
+# consistency guard / smoke / tests of the test tooling). A file with none, two, or an unknown one
+# stops every mode with exit 2 — a new file cannot slip in unclassified.
+#
+# Count line (GitHub#212). Every file ends by calling report_counts (tests/lib/report.sh), which prints
+#     CAVIL_TEST_COUNTS v=1 regress_pass=N regress_fail=N compat_ran=N compat_skipped=N mut_ran=N mut_skipped=N mut_fail=N|-
+# A unit that exits 0 is still a failure when that line is missing ("没汇报计数" — it stopped early
+# or never got to the end), printed more than once, malformed, reports failed assertions, or carries
+# a negative-control count different from the file's own "负对照：跳过 N 项" / "本次跑了 N 项" line.
+# Summaries group by kind, with regression and negative controls in separate columns.
+#
 # Verdicts per unit:
-#   pass      exit 0
+#   pass      exit 0 and a valid count line
 #   fail      exit != 0
 #   timeout   still running after RUN_TEST_TIMEOUT seconds (default 900) — a failure
 #   skipped   exit 0 but printed a line starting with "⏭" in column 0 — the file's
@@ -59,6 +78,15 @@ TIMEOUT_SECS="${RUN_TEST_TIMEOUT:-900}"
 
 die() { echo "run.sh: $*" >&2; exit 2; }
 
+KINDS_ALL="unit e2e install guard smoke meta"
+QUICK_KINDS="smoke,unit,guard,meta"
+kind_label() {
+    case "$1" in
+        unit) echo "单元回归" ;; e2e) echo "端到端" ;; install) echo "本机安装 / 迁移" ;;
+        guard) echo "一致性守卫" ;; smoke) echo "冒烟" ;; meta) echo "测试框架自测" ;; *) echo "?" ;;
+    esac
+}
+
 default_jobs() {
     local n
     n=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 2)
@@ -67,7 +95,7 @@ default_jobs() {
     echo "$n"
 }
 
-CI_MODE=0; LIST=0; SHARD=""; OUT=""; VERIFY=""; NAMES=(); JOBS=""
+CI_MODE=0; LIST=0; SHARD=""; OUT=""; VERIFY=""; NAMES=(); JOBS=""; KIND_OPT=""; QUICK=0; TALLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --ci) CI_MODE=1 ;;
@@ -78,6 +106,10 @@ while [ $# -gt 0 ]; do
         --out=*) OUT="${1#--out=}" ;;
         --verify) [ $# -ge 2 ] || die "--verify needs a directory"; VERIFY="$2"; shift ;;
         --verify=*) VERIFY="${1#--verify=}" ;;
+        --kind) [ $# -ge 2 ] || die "--kind needs a list, e.g. unit,guard"; KIND_OPT="$2"; shift ;;
+        --kind=*) KIND_OPT="${1#--kind=}" ;;
+        --quick) QUICK=1 ;;
+        --tally) TALLY=1 ;;
         -j|--jobs) [ $# -ge 2 ] || die "$1 needs a number"; JOBS="$2"; shift ;;
         -j*) JOBS="${1#-j}" ;;
         --jobs=*) JOBS="${1#--jobs=}" ;;
@@ -90,6 +122,22 @@ done
 [ -n "$JOBS" ] || JOBS=$(default_jobs)
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "-j wants a positive number, got [$JOBS]"
 
+# Which kinds this run is about (empty = all).
+if [ "$QUICK" = 1 ]; then
+    [ -z "$KIND_OPT" ] || die "--quick and --kind don't mix (--quick is --kind $QUICK_KINDS)"
+    KIND_OPT="$QUICK_KINDS"
+fi
+declare -A WANT_KIND=()
+if [ -n "$KIND_OPT" ]; then
+    IFS=',' read -r -a _ks <<< "$KIND_OPT"
+    for k in "${_ks[@]}"; do
+        k="${k// /}"; [ -n "$k" ] || continue
+        case " $KINDS_ALL " in *" $k "*) WANT_KIND[$k]=1 ;; *) die "--kind: unknown kind [$k] (kinds: $KINDS_ALL)" ;; esac
+    done
+    [ ${#WANT_KIND[@]} -gt 0 ] || die "--kind: empty list"
+    [ "$TALLY" = 0 ] || die "--tally adds up what is there; --kind / --quick don't apply"
+fi
+
 SHARD_K=1; SHARD_N=1
 if [ -n "$SHARD" ]; then
     [[ "$SHARD" =~ ^([0-9]+)/([0-9]+)$ ]] || die "--shard wants K/N, got [$SHARD]"
@@ -98,6 +146,7 @@ if [ -n "$SHARD" ]; then
         || die "--shard $SHARD out of range"
     [ ${#NAMES[@]} -eq 0 ] || die "--shard and explicit test names don't mix"
 fi
+[ ${#WANT_KIND[@]} -eq 0 ] || [ ${#NAMES[@]} -eq 0 ] || die "--kind / --quick and explicit test names don't mix"
 
 # ── what exists ────────────────────────────────────────────────────────────────
 discover() {
@@ -111,8 +160,13 @@ mapfile -t ALL < <(discover)
 [ ${#ALL[@]} -gt 0 ] || die "no *.test.sh in $TESTS_DIR"
 
 # Header declarations. Same pattern as tests/lib/parts.sh reads; anything else means 1 part.
-declare -A PARTS=() SERIAL=()
+declare -A PARTS=() SERIAL=() KIND=()
 for n in "${ALL[@]}"; do
+    kl=$(grep -cE '^# kind:' "$TESTS_DIR/$n.test.sh" || true)
+    [ "$kl" -eq 1 ] || die "$n.test.sh: needs exactly one '# kind: <kind>' header line, found $kl (kinds: $KINDS_ALL)"
+    k=$(sed -n 's/^# kind: *\([^ ]*\) *$/\1/p' "$TESTS_DIR/$n.test.sh")
+    case " $KINDS_ALL " in *" ${k:-?} "*) ;; *) die "$n.test.sh: unknown kind in '$(grep -E '^# kind:' "$TESTS_DIR/$n.test.sh")' (kinds: $KINDS_ALL)" ;; esac
+    KIND[$n]="$k"
     p=$(sed -n 's/^# parts: *\([0-9][0-9]*\) *$/\1/p' "$TESTS_DIR/$n.test.sh" | head -1)
     [ -z "$p" ] || [ "$p" -ge 1 ] || die "$n.test.sh: '# parts: $p' must be at least 1"
     PARTS[$n]="${p:-1}"
@@ -161,6 +215,7 @@ selected() {
     local n
     for n in "${ALL[@]}"; do
         if [ "$CI_MODE" = 1 ] && [ -n "${EXCLUDED[$n]+x}" ]; then continue; fi
+        if [ ${#WANT_KIND[@]} -gt 0 ] && [ -z "${WANT_KIND[${KIND[$n]}]+x}" ]; then continue; fi
         units_of "$n"
     done
 }
@@ -177,6 +232,62 @@ assign() {
         | LC_ALL=C sort -k2,2
 }
 
+# ── counts (GitHub#212) ────────────────────────────────────────────────────────
+# results.tsv columns: unit status secs note kind regress_pass regress_fail compat_ran compat_skipped
+# mut_ran mut_skipped mut_fail ("-" where a unit has no count line). The note can be empty, so the
+# file is always split on single tabs (awk -F'\t' / to_us), never with `read`'s whitespace IFS.
+NOCOUNTS="-	-	-	-	-	-	-"
+to_us() { awk -F'\t' -v OFS=$'\x1f' '{ $1 = $1; print }' "$@"; }
+
+# Parse one log's count line → "rp<TAB>rf<TAB>cr<TAB>cs<TAB>mr<TAB>ms<TAB>mf" on stdout, or a reason
+# on stderr with return 1 (0 lines / several / malformed).
+COUNT_RE='^CAVIL_TEST_COUNTS v=1 regress_pass=([0-9]+) regress_fail=([0-9]+) compat_ran=([0-9]+) compat_skipped=([0-9]+) mut_ran=([0-9]+) mut_skipped=([0-9]+) mut_fail=([0-9]+|-)$'
+parse_counts() {   # <log>
+    local n line
+    n=$(grep -c '^CAVIL_TEST_COUNTS' "$1" || true)
+    if [ "$n" -eq 0 ]; then echo "没汇报计数 (no CAVIL_TEST_COUNTS line: stopped early, or never reached report_counts)" >&2; return 1; fi
+    if [ "$n" -gt 1 ]; then echo "count line printed $n times (report_counts must run once)" >&2; return 1; fi
+    line=$(grep '^CAVIL_TEST_COUNTS' "$1")
+    if ! [[ "$line" =~ $COUNT_RE ]]; then echo "malformed count line: $line" >&2; return 1; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" \
+        "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}" "${BASH_REMATCH[6]}" "${BASH_REMATCH[7]}"
+}
+
+# Markdown: one row per kind plus a total, then the negative-control section.
+# stdin: rows "unit status kind rp rf cr cs mr ms mf", tab-separated.
+counts_report() {
+    local labels="" k
+    for k in $KINDS_ALL; do labels+="$(kind_label "$k")|"; done
+    awk -F'\t' -v kinds="$KINDS_ALL" -v labels="$labels" '
+        BEGIN { split(labels, L, "|"); nk = split(kinds, K, " "); for (i = 1; i <= nk; i++) LBL[K[i]] = L[i] }
+        { k = $3; units[k]++; U++
+          if ($4 == "-") { nocount[k]++; NC++ } else {
+              rp[k] += $4; rf[k] += $5; cr[k] += $6; cs[k] += $7; mr[k] += $8; ms[k] += $9
+              RP += $4; RF += $5; CR += $6; CS += $7; MR += $8; MS += $9
+              if ($10 == "-") MFU++; else MF += $10 }
+          if ($2 != "pass" && $2 != "skipped-ok" && $2 != "excluded") bad[++nb] = $1 " (" $2 ")" }
+        function row(name, u, a, b, c, d, e, f, n) {
+            printf "| %s | %d | %d / %d | %d / %d | %d / %d | %s |\n", name, u, a, b, c, d, e, f, (n ? n " 个没有计数" : "") }
+        END {
+            print "| 类型 | 单位 | 回归（通过 / 失败） | 其中改动前对拍（跑 / 同版本跳过，组） | 负对照（跑 / 跳过） | 说明 |"
+            print "|---|---|---|---|---|---|"
+            for (i = 1; i <= nk; i++) { k = K[i]; if (!(k in units)) continue
+                row("`" k "` " LBL[k], units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k]) }
+            for (k in units) { known = 0; for (i = 1; i <= nk; i++) if (K[i] == k) known = 1
+                if (!known) row("`" k "`", units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k]) }
+            row("**合计**", U, RP, RF, CR, CS, MR, MS, NC)
+            print ""
+            printf "**回归 %d 项 / 负对照 %d 项**", RP + RF, MR + MS
+            if (MR > 0) {
+                printf "（负对照本次跑了 %d 项、跳过 %d 项）\n\n", MR, MS
+                printf "负对照：跑了 %d 项；没变红 %d 项", MR, MF
+                if (MFU) printf "（另有 %d 个单位不单独统计这一项，看下面的失败单位）", MFU
+                print ""
+            } else printf "（负对照本次一项没跑：只在发版门禁或 MUTATION=1 时跑）\n"
+            if (nb) { print ""; print "没通过的单位："; for (i = 1; i <= nb; i++) print "- ❌ `" bad[i] "`" }
+        }'
+}
+
 if [ "$LIST" = 1 ]; then
     if [ -n "$SHARD" ]; then assign | awk -v k="$SHARD_K" '$1 == k'; else assign; fi
     exit 0
@@ -184,18 +295,37 @@ fi
 
 GHA=0; [ "${GITHUB_ACTIONS:-}" = true ] && GHA=1
 
+# ── --tally: add up the count lines found, nothing else ────────────────────────
+if [ "$TALLY" = 1 ]; then
+    [ ${#NAMES[@]} -gt 0 ] || die "--tally needs at least one directory"
+    rows=$(mktemp "${TMPDIR:-/tmp}/run-tally.XXXXXX")
+    for d in "${NAMES[@]}"; do
+        [ -d "$d" ] || { echo "run.sh --tally: no directory $d (counted as nothing)" >&2; continue; }
+        while IFS= read -r -d '' rf; do
+            awk -F'\t' -v OFS='\t' '$1 != "" && $2 != "excluded" {
+                k = ($5 == "" ? "?" : $5); print $1, $2, k, ($6 == "" ? "-" : $6), $7, $8, $9, $10, $11, $12 }' "$rf"
+        done < <(find "$d" -name results.tsv -type f -print0)
+    done > "$rows"
+    { echo "## 负对照汇总：$(wc -l < "$rows" | tr -d ' ') 个结果（${NAMES[*]}）"; echo; counts_report < "$rows"; } > "$rows.md"
+    cat "$rows.md"
+    [ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$rows.md" >> "$GITHUB_STEP_SUMMARY"
+    rm -f "$rows" "$rows.md"
+    exit 0
+fi
+
 # ── --verify: did every expected unit pass exactly once across the shards? ─────
 if [ -n "$VERIFY" ]; then
     [ -d "$VERIFY" ] || die "--verify: no directory $VERIFY"
-    declare -A SEEN=() STATUS=() SECS=()
+    declare -A SEEN=() STATUS=() SECS=() CNT=()
     bad=0; problems=()
     while IFS= read -r -d '' rf; do
-        while IFS=$'\t' read -r name status secs _; do
+        while IFS=$'\x1f' read -r name status secs _note _kind rp rf_ cr cs mr ms mf _rest; do
             [ -n "$name" ] || continue
             [ "$status" = excluded ] && continue
             SEEN[$name]=$(( ${SEEN[$name]:-0} + 1 ))
             STATUS[$name]="$status"; SECS[$name]="$secs"
-        done < "$rf"
+            if [[ "${rp:-}" =~ ^[0-9]+$ ]]; then CNT[$name]="$rp	$rf_	$cr	$cs	$mr	$ms	$mf"; else CNT[$name]="$NOCOUNTS"; fi
+        done < <(to_us "$rf")
     done < <(find "$VERIFY" -name results.tsv -type f -print0)
     declare -A EXPECT=()
     for n in $(selected); do EXPECT[$n]=1; done
@@ -204,6 +334,7 @@ if [ -n "$VERIFY" ]; then
         if [ "$c" -eq 0 ]; then problems+=("$n: no result (no shard ran it)"); bad=1
         elif [ "$c" -gt 1 ]; then problems+=("$n: ran $c times"); bad=1
         elif [ "${STATUS[$n]:-}" != pass ]; then problems+=("$n: ${STATUS[$n]}"); bad=1
+        elif [ "${CNT[$n]}" = "$NOCOUNTS" ]; then problems+=("$n: passed but its result has no counts"); bad=1
         fi
     done
     for n in "${!SEEN[@]}"; do
@@ -217,6 +348,11 @@ if [ -n "$VERIFY" ]; then
         if [ ${#problems[@]} -gt 0 ]; then
             for p in "${problems[@]}"; do echo "- ❌ $p"; done; echo
         fi
+        for n in $(selected); do
+            [ "${SEEN[$n]:-0}" -ge 1 ] || continue
+            printf '%s\t%s\t%s\t%s\n' "$n" "${STATUS[$n]}" "${KIND[$(file_of "$n")]}" "${CNT[$n]}"
+        done | counts_report
+        echo
         if [ "$CI_MODE" = 1 ] && [ ${#EXCLUDED[@]} -gt 0 ]; then
             echo "Excluded on CI (tests/ci-exclude.txt):"
             echo
@@ -263,14 +399,39 @@ TIMEOUT_CMD=(); command -v timeout >/dev/null 2>&1 && TIMEOUT_CMD=(timeout "$TIM
 
 failed=0; declare -A ROW=()
 note_excluded() {  # $1 name
-    printf '%s\texcluded\t0\t%s\n' "$1" "${EXCLUDED[$1]}" >> "$RESULTS"
-    ROW[$1]="| \`$1\` | ⏭ excluded | – | ${EXCLUDED[$1]} |"
+    printf '%s\texcluded\t0\t%s\t%s\t%s\n' "$1" "${EXCLUDED[$1]}" "${KIND[$1]}" "$NOCOUNTS" >> "$RESULTS"
+    ROW[$1]="| \`$1\` | ⏭ excluded | – | – | ${EXCLUDED[$1]} |"
 }
 if [ "$CI_MODE" = 1 ] && [ -z "$SHARD" ] && [ ${#NAMES[@]} -eq 0 ]; then
     for n in $(printf '%s\n' "${!EXCLUDED[@]}" | LC_ALL=C sort); do note_excluded "$n"; done
 fi
 
 log_of() { printf '%s/logs/%s.log' "$OUT" "$(printf '%s' "$1" | tr ':/' '._')"; }
+
+# A passing unit's count line must agree with itself and with the file's own summary lines.
+count_problems() {   # <log> <counts> → prints the problem and returns 1, or returns 0
+    local rp rf cr cs mr ms mf said
+    IFS=$'\t' read -r rp rf cr cs mr ms mf <<< "$2"
+    if [ "$rf" -gt 0 ]; then echo "exit 0, but the count line reports $rf failed assertion(s)"; return 1; fi
+    said=$(sed -n 's/^负对照：跳过 \([0-9][0-9]*\) 项.*/\1/p' "$1" | tail -1)
+    if [ -n "$said" ] && [ "$said" != "$ms" ]; then
+        echo "count line says $ms negative control(s) skipped, the file printed 负对照：跳过 $said 项"; return 1
+    fi
+    said=$(sed -n 's/^负对照：本次跑了 \([0-9][0-9]*\) 项.*/\1/p' "$1" | tail -1)
+    if [ -n "$said" ] && [ "$ms" != "?" ] && [ "$said" != "$((mr + ms))" ]; then
+        echo "count line says $((mr + ms)) negative control(s), the file printed 负对照：本次跑了 $said 项"; return 1
+    fi
+    return 0
+}
+counts_brief() {   # <counts> → "回归 12/0 · 负对照 跳过 3" for the per-unit line
+    local rp rf cr cs mr ms mf
+    IFS=$'\t' read -r rp rf cr cs mr ms mf <<< "$1"
+    [ "$rp" != "-" ] || { echo "–"; return; }
+    local out="回归 $rp/$rf"
+    [ $((cr + cs)) -eq 0 ] || out+=" · 对拍 $cr/$cs"
+    if [ "$mr" -gt 0 ]; then out+=" · 负对照 跑 $mr${ms:+/跳过 $ms}"; elif [ "$ms" != 0 ]; then out+=" · 负对照 跳过 $ms"; fi
+    echo "$out"
+}
 
 # Start one unit in the background; it leaves "<rc> <seconds>" in $RUNSTATE/<id>.done.
 start_unit() {   # <unit>
@@ -309,9 +470,23 @@ finish_unit() {   # <unit>
     else
         status=pass
     fi
-    printf '%s\t%s\t%s\t%s\n' "$u" "$status" "$secs" "$note" >> "$RESULTS"
+    # The count line: required for a pass; read (when there) for every other verdict, for the summary.
+    local counts why
+    counts="$NOCOUNTS"
+    case "$status" in
+        skipped|skipped-ok) ;;
+        *)
+            if counts=$(parse_counts "$log" 2>"$RUNSTATE/$id.why"); then
+                [ "$status" != pass ] || why=$(count_problems "$log" "$counts") || { status=fail; note="$why"; }
+            else
+                counts="$NOCOUNTS"
+                [ "$status" != pass ] || { status=fail; note="$(cat "$RUNSTATE/$id.why")"; }
+            fi ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$status" "$secs" "$note" "${KIND[$f]}" "$counts" >> "$RESULTS"
     case "$status" in pass|skipped-ok) mark="✅" ;; *) mark="❌"; failed=$((failed+1)) ;; esac
-    ROW[$u]="| \`$u\` | $mark $status | ${secs}s | $note |"
+    local cshow; cshow=$(counts_brief "$counts")
+    ROW[$u]="| \`$u\` | $mark $status | ${secs}s | $cshow | $note |"
 
     if [ "$GHA" = 1 ]; then
         echo "::group::$mark $u ($status, ${secs}s)"; cat "$log"; echo "::endgroup::"
@@ -320,7 +495,7 @@ finish_unit() {   # <unit>
             echo "──── full output of $u ────"; cat "$log"; echo "──── end of $u ────"
         fi
     else
-        printf '%s %-34s %-10s %4ss %s\n' "$mark" "$u" "$status" "$secs" "$note"
+        printf '%s %-34s %-10s %4ss  %-30s %s\n' "$mark" "$u" "$status" "$secs" "$cshow" "$note"
         if [ "$mark" = "❌" ]; then echo "──── last 40 lines of $log ────"; tail -n 40 "$log"; echo "────"; fi
     fi
 }
@@ -367,14 +542,25 @@ rm -rf "$RUNSTATE"
 
 ran=$(( ${#PAR[@]} + ${#SER[@]} ))
 {
-    echo "### ${SHARD:+Shard $SHARD: }$(( ran - failed )) / $ran passed${MUTATION:+ (MUTATION=$MUTATION)}"
+    echo "### ${SHARD:+Shard $SHARD: }$(( ran - failed )) / $ran passed${MUTATION:+ (MUTATION=$MUTATION)}${KIND_OPT:+ (kinds: $KIND_OPT)}"
     echo
-    echo "| test | result | time | note |"
-    echo "|---|---|---|---|"
-    for k in $(printf '%s\n' "${!ROW[@]}" | LC_ALL=C sort); do echo "${ROW[$k]}"; done
+    awk -F'\t' -v OFS='\t' '$2 != "excluded" { print $1, $2, $5, $6, $7, $8, $9, $10, $11, $12 }' "$RESULTS" | counts_report
+    for kk in $KINDS_ALL; do
+        keys=$(for k in "${!ROW[@]}"; do if [ "${KIND[$(file_of "$k")]}" = "$kk" ]; then printf '%s\n' "$k"; fi; done | LC_ALL=C sort)
+        [ -n "$keys" ] || continue
+        echo
+        echo "#### \`$kk\` $(kind_label "$kk")"
+        echo
+        echo "| test | result | time | counts | note |"
+        echo "|---|---|---|---|---|"
+        for k in $keys; do echo "${ROW[$k]}"; done
+    done
 } > "$OUT/summary.md"
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
+echo
+# The per-kind table in the terminal too (the per-unit lines are above).
+awk -F'\t' -v OFS='\t' '$2 != "excluded" { print $1, $2, $5, $6, $7, $8, $9, $10, $11, $12 }' "$RESULTS" | counts_report
 echo
 echo "Results: $RESULTS"
 if [ "$failed" -gt 0 ]; then echo "❌ $failed of $ran failed"; exit 1; fi

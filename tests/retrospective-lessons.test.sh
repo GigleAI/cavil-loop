@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 复盘经验文件的计次 / 锁定 / 转正校验（scripts/retrospective_lessons.py）+ 复盘主程序的接线。
 #
 # 跑法：bash tests/retrospective-lessons.test.sh
@@ -13,6 +14,8 @@
 #   2. 负对照（只在 MUTATION=1 时跑）：把每一项检查**单独**关掉（RETRO_LESSONS_DISABLE=<名>）重跑，必须变红。
 #      检查名从模块的 CHECKS 读，不在这里抄一份——新加的检查自动纳入，漏写用例就红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/mutation.sh
@@ -78,4 +81,5 @@ runner_mutant "超时只杀 bash 不杀整组" "os.killpg(proc.pid, signal.SIGKI
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

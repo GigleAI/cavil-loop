@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 本侧的用量驱动（scripts/drivers/token-usage/claude.sh）。
 #
 # 跑法：bash tests/token-usage-claude.test.sh
@@ -30,6 +31,8 @@
 #   先两位、再六位地挪阈值只是把边界推远（#934 交叉 review 第 8、9 轮两次打回）。
 #   本文件里这些期望值是由「旧值 == 新值的舍入结果」逐条核对后更新的，数值本身没变。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -346,4 +349,5 @@ done
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

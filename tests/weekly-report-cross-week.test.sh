@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 跨周派工按**开工那一周**入账（scripts/weekly-report/collect.py）。
 #
 # 跑法：bash tests/weekly-report-cross-week.test.sh
@@ -16,6 +17,8 @@
 # 否则上一周只拿得到中途那个较小的快照。注意**不是**把周加进去重键再逐周相加——
 # 那会把 900 秒 / $15 错算成 1200 秒 / $20（300 + 900）。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -196,4 +199,5 @@ chk "不会同时混进 issue 明细"              "$(has '上周有推进但没
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

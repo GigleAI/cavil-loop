@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 拉评论的查询起点必须按**统计用的时区**换算成 UTC（scripts/weekly-report/collect.py）。
 #
 # 跑法：bash tests/weekly-report-window-boundary.test.sh
@@ -15,6 +16,8 @@
 # ⚠️ 其他几个采集测试的假 `gh` 对 comments 请求一律返回全部 fixture，**绕开了查询起点**，
 # 挡不住这类问题。这里的假 `gh` 必须解析 `since=` 并照它过滤。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -120,4 +123,5 @@ done
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

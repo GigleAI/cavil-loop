@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # 新旧两套名字（GigleAI/cavil-loop#70）的守卫。
 #
 # 跑法：bash tests/cavil-names.test.sh   （约 20 秒：要真的跑两次 setup.sh 和三轮轮询）
@@ -13,6 +14,8 @@
 # 「挑新还是挑旧」这条规则有四份实现（_names.sh、release-entry.sh 内联、Python 复盘、
 # setup.sh 的安装布局判断），这里用同一组夹具对拍。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -410,4 +413,5 @@ fi
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" = 0 ]

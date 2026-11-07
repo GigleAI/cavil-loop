@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 等外部需求机器人期间等待标签被提前摘掉时不自动续工；机器人的需求 + 托管的合并规则 —— GitHub#162。
 #
 # 跑法：bash tests/requester-bot-wait.test.sh              （默认不跑负对照）
@@ -14,6 +15,8 @@
 #   · 按位置 / 时间排先后 → 同一秒、跨页时判反
 #   · 读不到当成「没等过」→ 读失败那一轮照样空转；读不到也被缓存 → 恢复后永远不续工
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -451,4 +454,5 @@ pass=$REAL_PASS; fail=$REAL_FAIL
 echo
 mutation_summary "$0"
 echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
+report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
 [ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]

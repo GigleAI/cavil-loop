@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 口径切换那一周必须是**部署事实**，不能由展示窗口算出来（scripts/weekly-report/collect.py）。
 #
 # 跑法：bash tests/weekly-report-switch-week.test.sh
@@ -19,6 +20,8 @@
 # 切换周、不画竖线、不出过渡期并列块，环比照常给；窗口里确实有交叉 review 记账却没配
 # 时打一条 warn，报告的口径说明里也写明。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -127,4 +130,5 @@ chk "stderr 里有提醒" "$(grep -c 'WEEKLY_REPORT_SWITCH_WEEK' "$TMP/err.log")
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

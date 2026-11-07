@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 周报趋势图的渲染契约（render.py 的投入面 / 交付面）。
 #
 # 跑法：bash tests/weekly-report-render.test.sh
@@ -13,6 +14,8 @@
 #     必须断成缺口而不是画到 0——画到 0 会被读成「那周产出为 0」，那是两回事。
 
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -286,4 +289,5 @@ chk "左轴上界 ≥ 30M（三项之和）"    "$(stack axmax_ge_30)" "True"
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

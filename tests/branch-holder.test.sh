@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 分支被「主 checkout」占用时的提示与自动释放（GitHub#141）。
 #
 # 跑法：bash tests/branch-holder.test.sh            （默认回归，~30 s）
@@ -16,6 +17,8 @@
 #   submodule → 提示真实目录（不含 .git/modules）；干净时能自动释放
 #   新 issue 建 worktree 那条路 → 只给 switch 提示，开关开也不切
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -435,4 +438,5 @@ mutate switch-off dispatch-pr-comment.sh 'if [ "$AUTO_RELEASE_MAIN_CHECKOUT" = 1
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

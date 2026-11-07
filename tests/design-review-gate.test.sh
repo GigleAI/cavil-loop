@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 设计方案复审开关（GitHub#102）：REVIEW_DESIGN_PROPOSALS 决定「写完方案 / 修订方案翻哪个标签」。
 #
 # 跑法：bash tests/design-review-gate.test.sh              （默认不跑【5】负对照，约 1 分钟）
@@ -16,6 +17,8 @@
 #        那句都是交复审——开关上线不打断这种项目
 #   【5】负对照：沙盘副本逐个改坏，对应检查必须变红
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -269,4 +272,5 @@ neg "开关不认 true" scripts/_lib.sh '    true|1|yes|on)' '    1|yes|on)' on_
 mutation_summary "$0"
 compat_summary
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

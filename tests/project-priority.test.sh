@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # GitHub Project (v2) 优先级来源的守卫（`project_priority_pairs` 解析 + `priority_rank` 取舍）。
 #
 # 跑法：bash tests/project-priority.test.sh
@@ -12,6 +13,8 @@
 #   · 分页：Project 超过 100 项时只读第一页 = 后面的条目全体降级，且毫无迹象；
 #   · 读不到时必须**降级不中断**：token 缺 scope 是常态，不能让派工整轮停摆。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -215,4 +218,5 @@ chk "拼错的来源名 exit 非 0" "$([ $? -ne 0 ] && echo yes || echo no)" "ye
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

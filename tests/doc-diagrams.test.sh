@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 文档里那两张会动的讲解图（GitHub#76）。
 #
 # 跑法：bash tests/doc-diagrams.test.sh
@@ -12,6 +13,8 @@
 #   4. 四份文档各自引用了对应语言的动图和静态版，且文件存在
 # 再对 check.py 的每条承诺各造一个坏图做负对照：检查放过了哪一种坏图，这里就红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -175,4 +178,5 @@ if static:
 
 echo
 echo "通过 $PASS，失败 $FAIL"
+report_counts "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

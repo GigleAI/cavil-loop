@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 合并后复盘的全机锁（GitHub#165）：锁不再放在 skill 目录的 .git 里，改放本机固定的
 # ~/.local/state/cavil-loop/retrospective.lock。
 #
@@ -17,6 +18,8 @@
 # 负对照（MUTATION=1）：换回「在 skill 目录找 .git」→ 1 变红；锁按项目各一把 → 3 变红；
 #   入口不导出锁路径 → 1 变红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$TEST_DIR/.." && pwd)"
@@ -199,4 +202,5 @@ mutant "入口不把锁路径传给 python" post-merge-retrospective.sh \
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

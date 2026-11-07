@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 「这条记账有没有金额」必须看**字段在不在**，不能看**金额是不是 0**。
 #
 # 跑法：bash tests/weekly-report-cost-coverage.test.sh
@@ -16,6 +17,8 @@
 # ⚠️ 这个测试**必须走采集层**：呈现层 fixture 直接预填 `cost_records`，正好绕开了
 # 出错的那段逻辑，挡不住这类回归。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -125,4 +128,5 @@ chk "提示缺金额"                         "$(has '条没有金额')"      "y
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

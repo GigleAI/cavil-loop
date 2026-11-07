@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # sub-issue 拆分（issue #43）的行为守卫：`split_parent_of` / `sub_issue_rollup`。
 #
 # 跑法：bash tests/sub-issue-split.test.sh
@@ -10,6 +11,8 @@
 #   · sub_issue_rollup 把「查不到」当成「全完成」→ 父 issue 被提前翻回人工；
 #     不幂等 → 同一轮合并两个子 PR 时父 issue 收到两条汇总。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -387,4 +390,5 @@ chk "没有漏渲染的占位符" "${missing:-无}" "无"
 
 echo
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 本轮 open 快照（`open_snapshot` / `snapshot_rows`）的守卫。
 #
 # 跑法：bash tests/open-snapshot.test.sh
@@ -10,6 +11,8 @@
 #   · 过滤写错（label 筛漏 / PR 条目混进 issue）→ 活悄悄不派，或者同一条活派两次。
 # 再加一条：坏响应绝不能进缓存——进去了，本轮后面每一个判断都建立在它上面。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -128,4 +131,5 @@ chk "少一层（没 slurp 成页数组）被拒" "$?" "1"
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

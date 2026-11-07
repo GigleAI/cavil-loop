@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # The hand-run autopilot host check in docs/operations{,.zh}.md (GitHub#124): run on every OTHER machine
 # before turning autopilot on; only HOST_VERDICT=STOPPED lets you go on. (Turning autopilot off needs no
 # script: the daemon cleans up by itself — that is covered by tests/autopilot.test.sh §11.)
@@ -13,6 +14,8 @@
 # 规矩只有一条：读不到 ≠ 没有。设计阶段每一轮打回的都是这条的一个变体（登记目录读不了当成没装、
 # 单引号配置被文本匹配漏掉……），所以每个「读失败」场景都要求 UNKNOWN，负对照把这些历史写法换回去。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -172,4 +175,5 @@ mutant "中英两份脚本不一致" doc 'echo "HOST_VERDICT=$verdict"' 'echo "H
 echo
 echo "合计：通过 $PASS / 失败 $FAIL"
 mutation_summary "$0"
+report_counts "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] && [ "$MUT_BAD" -eq 0 ]

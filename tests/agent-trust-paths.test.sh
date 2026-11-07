@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # 目录信任（GitHub#108）：派工 / 部署前给 agent 预写 folder-trust 记录，起会话后认出确认框。
 #
 # 跑法：bash tests/agent-trust-paths.test.sh            （默认回归，约 1 分钟）
@@ -15,6 +16,8 @@
 #   · 写坏了 → 赔上用户整个配置文件；不幂等 → 每次派工都跟活着的 agent 抢写；
 #   · 认不出确认框 → 卡住的那次静默挂着。派工脚本有四个起会话的入口，逐个跑真脚本。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -981,4 +984,5 @@ report_prep_failures
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

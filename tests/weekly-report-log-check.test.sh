@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 从本机日志重算金额：什么时候重算、什么时候沿用原值、哪些能进「去重合计」。
 #
 # 跑法：bash tests/weekly-report-log-check.test.sh
@@ -15,6 +16,8 @@
 # ⚠️ 必须走采集层到最终 markdown：只断言中间状态（比如 log_check 的取值）会漏掉
 #    「状态判对了、但合计照样把两边加起来」这类错。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -526,4 +529,5 @@ chk "token 用认领到的 100 万（不是 ÷1.68 的 59.5 万）" "$(q tok_out
 
 echo
 echo "结果：$pass passed, $fail failed"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

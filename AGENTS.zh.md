@@ -56,7 +56,9 @@
 ├── launchd/                  ← macOS 调度器
 │   └── dev.luosky.cavil-loop.plist.template  ← setup.sh 给每个 project 生成一份
 ├── tests/                    ← 自包含的 shell 测试（见下文「测试」）
-│   ├── run.sh                 ← 统一入口：跑全部 / 按名字跑 / 跑 CI 的某一路 / 汇总各路；-j 并行、按段调度
+│   ├── run.sh                 ← 统一入口：跑全部 / 按名字跑 / 按类型跑（--kind、--quick）/ 跑 CI 的某一路 / 汇总各路；-j 并行、按段调度
+│   ├── lib/report.sh          ← 每个测试文件结尾那一行计数（回归 / 改动前对拍 / 负对照）
+│   ├── smoke.test.sh          ← shell 冒烟测试：真实轮询跑一轮、三条主路径，几秒
 │   ├── ci-exclude.txt         ← CI 不跑的文件，每个写明原因
 │   └── ci-weights.txt         ← 各文件参考耗时，只用来均衡 CI 分组
 ├── .github/workflows/
@@ -287,6 +289,18 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 - **新测试文件自动纳入**，不用登记。`tests/ci-weights.txt` 里的参考耗时只用来均衡分组；数字缺了或过时只会让某一路慢一点，
   不会漏跑。某个文件明显变慢 / 变快时顺手更新
+- **类型与计数行**（GitHub#212）。每个文件头恰好写一行 `# kind: unit | e2e | install | guard | smoke | meta`——
+  单元回归（固定输入，不碰真实入口）/ 端到端（真跑 `agent-poll.sh` / `dispatch-*.sh` / 发版步骤）/ 本机安装与迁移（假 `HOME`、
+  假 systemd）/ 一致性守卫（多处复制的规则文字、文档、生成的图）/ 冒烟 / 测试框架自测。缺了、写了两行或写错，`run.sh` 直接退出 2，
+  新文件没法不标就混进来。每个文件结尾还要调一次 `tests/lib/report.sh` 的 `report_counts "$pass" "$fail"`（紧跟 `set -…` 那行
+  source；在主 shell 里、最后一条断言之后、最终判定之前调；自己数负对照的文件再带上 `"$mut_ran" "$mut_fail"`），输出一行
+  `CAVIL_TEST_COUNTS …`：断言通过 / 失败、「和改动前一致」对拍跑了 / 同版本跳过几组（取自 `compat.sh`）、负对照跑了 / 跳过几项
+  （取自 `mutation.sh` 的计数器）。退出 0 的单位，只要这行缺了（「没汇报计数」——中途提前退出）、出现两次、格式不对、报了失败、
+  或和文件自己打印的「负对照：跳过 N 项」/「本次跑了 N 项」对不上，一律判红。终端、`summary.md`、CI 作业摘要、`--verify`
+  的汇总都按类型分组，回归和负对照分两栏；发版门禁另用 `--tally` 把各路 shell 结果和六个 autopilot 作业的负对照加总。
+  `--kind unit,guard` 只跑这几类（可以和 `--ci` / `--shard` / `--list` / `--verify` 一起用）；`--quick` = 冒烟 + 单元 + 守卫 +
+  测试框架自测，48 个单位，2026-11-07 用默认 `-j 8` 实测 33 秒（28 核开发机，负载约 4；其中最长的 `run.test` 占 28 秒）——开发中先跑它，再跑改到的文件。`tests/smoke.test.sh`（约 6 秒）用真实轮询跑一轮：新 issue
+  被派工（翻 `doing/agent`、起 worker 会话、建 worktree）、PR 评论被派工、合并的 PR 打上 `Done`
 - **并行与拆段**（GitHub#211）。`-j N` 同时跑最多 N 个调度单位（默认 CPU 数一半、最多 8；`-j 1` 就是以前那样一个接一个）。
   文件头写了 `# parts: N` 的文件是 N 个单位 `名字:1/N` … `名字:N/N`，各自以 `TEST_PART=K/N bash tests/名字.test.sh` 跑；
   分路、参考耗时、汇总都按段算，`--verify` 在少一段、某段跑了两次、或冒出这个文件不拆段的结果时都是红的。文件里用
@@ -362,6 +376,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 - 派工 / 回收 / 预览 / 退避 → `tests/greedy-dispatch.test.sh`、`tests/dispatch-backoff.test.sh`、`tests/reap-finished-workers.test.sh`、
   `tests/preview-socket-activation.test.sh`、`tests/preview-port-ownership.test.sh` 等
 - 常驻假 GitHub（`tests/lib/fake_gh_server.py` / `fake_gh_client.sh`）、拆段与 `-j`（`tests/run.sh`、`tests/lib/parts.sh`）、同版本跳过（`tests/lib/compat.sh`）（GitHub#211）→ `tests/fake-gh-server.test.sh`（约 10 秒）和 `tests/run.test.sh`（约 20 秒）；改了用到它们的测试文件后，把它的断言清单（「名字 + 结果」排序）和 merge-base 上的版本对一遍，并核对「跳过 N 项」没变
+- 类型、计数行、`--kind` / `--quick`、分组汇总与 `--tally`（GitHub#212：`tests/run.sh`、`tests/lib/report.sh`、每个文件的 `# kind:` 头和 `report_counts` 调用）→ `tests/run.test.sh`（约 30 秒）加 `bash tests/run.sh --quick`；冒烟测试 → `tests/smoke.test.sh`（约 6 秒；`MUTATION=1` 另跑一份改坏的副本：新 issue 派工不翻 `doing/agent`）
 - 等人审（`pending/human`）的 PR 重查与目标分支的冲突（GitHub#86）→ `tests/pending-human-conflict.test.sh`（默认约 10 秒；`MUTATION=1` 时会在 7 份故意改坏的脚本副本上把全部场景再跑一遍，有一份没被拦下就失败，约 1 分钟。两种模式都拿同一批 PR 对拍 daemon 的判定和 worker 交 PR 前那段冲突检查命令）。它逐次数 GitHub 调用——这个设计的全部要点就是目标分支不动时一次都不多问。改 worker 那段检查命令的判定规则时，`_lib.sh` 的 `pr_conflict_verdict` 要同步改
 - 手动关闭为「已完成」的 issue 打 `Done`（GitHub#159：`_lib.sh` 的 `closed_done_enqueue` / `closed_done_drain` / `closed_done_label` / `closed_done_flow_labels`，`agent-poll.sh` § 4 的入队与清队）→ `tests/closed-issue-done.test.sh`（默认约 20 秒，真跑 `agent-poll.sh`，假 GitHub 开 `FAKE_GH_LISTS=1`；`MUTATION=1` 另跑 14 份改坏的副本，约 4.5 分钟）。只有 `completed` 会写；`not_planned` / `duplicate` / 已重新打开的不写、出队；读不到或不认识的留队。「打成了」= `Done` 在、且每个流程标签都确认摘掉——删除只有 2xx 或 404 才算成功。结束或放弃的记录标成 `"done"`、不删，直到这个 issue 也记进 `cleaned_issues`——清理失败时每轮都会再入队，删掉就会从 0 重新数、永远重试（代码复审第 1 轮）。合并路径的两份摘除清单原样不动，测试拿它们的调用和 merge-base 版逐条对拍
 - 新名 / 改名前旧名（用哪个配置 / 状态 / 单元 / 覆盖目录，旧安装重跑 setup，部署器同时切两个技能入口）→ `tests/cavil-names.test.sh`、`tests/skill-deploy.test.sh`、`tests/preview-rename-coexist.test.sh`（同一台机器上新旧预览并存）、`tests/migrate-legacy.test.sh`（旧安装迁移：只迁空闲项目、断了能接着做、保留旧任务原来的开关）、`tests/preview-legacy-adopt.test.sh`（旧预览搬到新单元：失败后能接着搬、全部搬完才删旧入口、预览没真起来就不给地址）。新增路径一律经 `scripts/_names.sh` 取，不要写死新名或旧名

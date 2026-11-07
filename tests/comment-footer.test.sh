@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 评论用量 footer（GitHub#88 / #90）：一行总览（就是折叠标题）+ 折叠细节 + AI 时间估算 + 项目测试耗时接口。
 #
 # 跑法：bash tests/comment-footer.test.sh              （默认不跑【6】负对照）
@@ -17,6 +18,8 @@
 #   【5】四份模板拼装后的 footer 段：走生产拼装函数，把成品里的命令原样跑一遍
 #   【6】负对照：把上面每一条要守住的规矩逐个改坏（沙盘副本），对应检查必须变红（只在 MUTATION=1 时跑）
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -604,4 +607,5 @@ done
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

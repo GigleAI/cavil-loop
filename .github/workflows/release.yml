@@ -212,10 +212,26 @@ jobs:
         with:
           pattern: gate-results-shard-*
           path: results
+      # The autopilot jobs' results, only for the negative-control totals below: each of the six
+      # jobs runs every autopilot part, so they cannot go through the exactly-once check.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: gate-autopilot-*
+          path: results-autopilot
       - name: Every shell shard passed exactly once
         run: |
           mkdir -p results
           bash tests/run.sh --ci --verify results
+      # Reports only (exit 0): how many negative controls ran across the shell shards and the six
+      # autopilot jobs, how many did not go red, and which units failed (GitHub#212). The verdict is
+      # the step above and the next one. "Skipped" adds up overlapping slices (each autopilot job
+      # skips what the other five run); "ran" is the number to read.
+      - name: Negative-control totals
+        if: always()
+        run: |
+          mkdir -p results results-autopilot
+          bash tests/run.sh --tally results results-autopilot
       - name: Every gate job passed
         env:
           NEEDS: ${{ toJSON(needs) }}

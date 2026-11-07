@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 评论版式规矩：外面只放要人看的、其余折叠；❌ / ✅ / ⚠️ 默认不标，只标要人看的那几条。
 #
 # 跑法：bash tests/comment-layout-prompts.test.sh（MUTATION=1 连负对照一起跑）
@@ -19,6 +20,8 @@
 # 再对每个写入点各造一个负对照（含第 8 条新说法、修订记录折叠、打回依据 ⑧ 的每个条件，
 # 以及「通用 review 模板那份还在、增量自己的第 9 条没了」），确认少了哪一处这里都会红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -404,4 +407,5 @@ else
 fi
 mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

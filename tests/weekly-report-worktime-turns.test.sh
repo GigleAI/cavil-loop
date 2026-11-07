@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 「处理时长」：按**每一轮对话的起止**算，每一轮只归一个派工（scripts/weekly-report/worktime.py）。
 #
 # 跑法：bash tests/weekly-report-worktime-turns.test.sh
@@ -12,6 +13,8 @@
 # 认领到的派工拿**整轮**时长，不封顶、不裁剪。会话日志会被 CLI 按保留期删掉，所以每次
 # 采集时把轮的起止写进本地台账，日志没了也还算得出。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -300,4 +303,5 @@ chk "合计 60 秒，不是 120 秒"                    "$(q work)" "60"
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

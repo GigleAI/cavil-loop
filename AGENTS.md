@@ -56,7 +56,9 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 ├── launchd/                      ← macOS scheduler
 │   └── dev.luosky.cavil-loop.plist.template  ← Generated per project by setup.sh
 ├── tests/                        ← Self-contained shell tests (see "Tests" below)
-│   ├── run.sh                     ← One entry point: run all / by name / one CI shard / verify shards; -j, parts
+│   ├── run.sh                     ← One entry point: run all / by name / by kind (--kind, --quick) / one CI shard / verify shards; -j, parts
+│   ├── lib/report.sh              ← The one count line every test file ends with (regression / comparisons / negative controls)
+│   ├── smoke.test.sh              ← Shell smoke test: one real poll round, three main paths, a few seconds
 │   ├── ci-exclude.txt             ← Files CI does not run, each with the reason
 │   └── ci-weights.txt             ← Reference times per file, only to balance CI shards
 ├── .github/workflows/
@@ -338,6 +340,25 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
 - **New test files are picked up automatically** — nothing to register. `tests/ci-weights.txt` holds
   reference times only to balance the shards; a missing or stale number makes one shard slower, never
   skips a file. Update it when a file gets much slower or faster
+- **Kinds and the count line** (GitHub#212). Every file's header carries exactly one
+  `# kind: unit | e2e | install | guard | smoke | meta` — unit regression (fixed input, no real entry
+  point) / end to end (the real `agent-poll.sh` / `dispatch-*.sh` / release steps) / local install and
+  migration (fake `HOME`, fake systemd) / consistency guard (copied rule text, docs, generated images) /
+  smoke / tests of the test tooling. `run.sh` stops with exit 2 when a file has none, two, or an unknown
+  one, so a new file cannot land unclassified. Every file also ends with `report_counts "$pass" "$fail"`
+  from `tests/lib/report.sh` (sourced right after the `set -…` line; called in the main shell after the
+  last assertion, just before the final verdict; files that count their own negative controls add
+  `"$mut_ran" "$mut_fail"`). It prints one `CAVIL_TEST_COUNTS …` line: assertions passed / failed, the
+  "same as before the change" comparisons run / skipped (from `compat.sh`), negative controls run /
+  skipped (from `mutation.sh`'s counter). A unit that exits 0 is still red when that line is missing
+  ("没汇报计数" — it stopped early), printed twice, malformed, reports failures, or disagrees with the
+  file's own `负对照：跳过 N 项` / `本次跑了 N 项` line. Every summary — terminal, `summary.md`, the CI
+  job summary, `--verify` — is grouped by kind with regression and negative controls in separate
+  columns; the release gate adds `--tally` totals over the shell shards and the six autopilot jobs.
+  `--kind unit,guard` runs only those kinds (combines with `--ci` / `--shard` / `--list` / `--verify`);
+  `--quick` = smoke + unit + guard + meta, 48 units, 33 s measured with the default `-j 8` on 2026-11-07 (28-core dev box, load ~4; the longest unit, `run.test`, takes 28 s of that) — run it first while working, then the files
+  your change touches. `tests/smoke.test.sh` (~6 s) runs one real poll round: a new issue is dispatched
+  (`doing/agent`, worker session, worktree), a PR comment is dispatched, a merged PR gets `Done`
 - **Parallel, and split files** (GitHub#211). `-j N` runs up to N units at once (default: half the
   CPUs, at most 8; `-j 1` is the old one-after-another). A file that declares `# parts: N` in its header
   is N units, `NAME:1/N` … `NAME:N/N`, each run as `TEST_PART=K/N bash tests/NAME.test.sh`; it is
@@ -437,6 +458,7 @@ Changes in these areas must run the matching tests:
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, `tests/preview-port-ownership.test.sh`, …
 - The resident fake GitHub (`tests/lib/fake_gh_server.py` / `fake_gh_client.sh`), splitting files into parts and `-j` (`tests/run.sh`, `tests/lib/parts.sh`), the same-version skip (`tests/lib/compat.sh`) (GitHub#211) → `tests/fake-gh-server.test.sh` (~10 s) and `tests/run.test.sh` (~20 s); after changing a file that uses one of them, compare its assertion list ("name + result", sorted) against the merge-base copy and check its "跳过 N 项" did not move
+- Kinds, the count line, `--kind` / `--quick`, the grouped summaries and `--tally` (GitHub#212: `tests/run.sh`, `tests/lib/report.sh`, the `# kind:` header and the `report_counts` call in every file) → `tests/run.test.sh` (~30 s) plus `bash tests/run.sh --quick`; the smoke test → `tests/smoke.test.sh` (~6 s; `MUTATION=1` adds one broken copy, new-issue dispatch that never flips `doing/agent`)
 - Re-checking `pending/human` PRs for conflicts with their base (GitHub#86) → `tests/pending-human-conflict.test.sh` (~10 s by default; with `MUTATION=1` it also reruns every scenario on seven deliberately broken copies of the scripts and fails if any of them slips through — ~1 min. Both modes cross-check the daemon's verdict against the worker's hand-off conflict-check snippet on the same PRs). It counts every GitHub call — the whole point of the design is that an unchanged base costs zero extra calls. If you change the hand-off snippet's verdict rules, change `pr_conflict_verdict` in `_lib.sh` the same way
 - New vs pre-rename names (which config / state / unit / override path is used, setup on an old install, deployer switching both skill links) → `tests/cavil-names.test.sh`, `tests/skill-deploy.test.sh`, `tests/preview-rename-coexist.test.sh` (old and new previews on one machine), `tests/migrate-legacy.test.sh` (moving an old install: idle projects only, resumable, old timer on/off state kept), `tests/preview-legacy-adopt.test.sh` (old previews moved to the new units: resumable after a failure, old link kept until all are moved, registration prints no URL unless the preview came up). Any new path goes through `scripts/_names.sh`, never a hard-coded old or new name
 - Worker / model selection, the `--model` a driver passes → `tests/worker-selection.test.sh`, `tests/claude-resume-model.test.sh`

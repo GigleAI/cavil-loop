@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 派工失败退避 + 分支占用前置检查的行为守卫（issue #34）。
 #
 # 跑法：bash tests/dispatch-backoff.test.sh
@@ -18,6 +19,8 @@
 #   · 计数器那组里有 issue-959 / pr-959 的同号不同类陷阱——共用命名空间的实现会挂；
 #   · Case C 那组跑的是**真的** dispatch-pr-comment.sh，不是字符串比对。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -371,4 +374,5 @@ chk "升级后计数已清零"                      "$([ -f "$E2E/state/dispatch
 
 echo
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

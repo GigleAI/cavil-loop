@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 非机器人提的条目也能叫醒外部需求机器人（GitHub#133）的行为守卫。
 #
 # 跑法：bash tests/requester-bot-any-item.test.sh            （默认不跑负对照）
@@ -21,6 +22,8 @@
 #   7. 合并后通知不碰非机器人条目；8. 开关开时的提示词
 # 负对照只在 MUTATION=1 时跑；默认回归靠「确实叫醒成功」「确实写了」这类到达性断言防空转。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -674,4 +677,5 @@ fi
 mutation_summary "$0"
 compat_summary
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

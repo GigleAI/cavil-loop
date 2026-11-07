@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 复审结论评论的标题以 ✅ / ❌ 开头（GitHub#84）。
 #
 # 跑法：bash tests/review-verdict-emoji.test.sh
@@ -12,6 +13,8 @@
 #   4. 没漏进 worker 模板——worker 的评论不是复审结论
 # 再对每一条造一个负对照，确认少了哪一处这里都会红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -215,4 +218,5 @@ else
 fi
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

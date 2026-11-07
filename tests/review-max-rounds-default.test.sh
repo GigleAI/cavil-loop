@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 复审轮数上限 REVIEW_MAX_ROUNDS 的默认值（6）。
 #
 # 跑法：bash tests/review-max-rounds-default.test.sh             （约 1 秒）
@@ -13,6 +14,8 @@
 #        不从样例文本里抠数字——样例后面再有一行覆盖成 3 时，抠文本会放过）
 # 托管合并前「交回 worker 修」的次数上限沿用同一个数，由 tests/autopilot.test.sh 守。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -107,4 +110,5 @@ mutation_summary "$0"
 
 echo
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

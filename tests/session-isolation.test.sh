@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 跑法：bash tests/session-isolation.test.sh
 # 依赖：无网络。HOME 指向临时目录，造假的 claude / codex 历史文件，跑真脚本。
 #
@@ -8,6 +9,8 @@
 #   - review 不会续 worker 的会话，worker 也不会续 review 的会话（两个方向都要守）
 #   - 上线前留下的、没登记过的会话仍然能被 worker 收养，不丢正在做的活
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -759,4 +762,5 @@ chk "别的 cwd 不会被误配（前缀相同也不行）" \
 
 echo
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

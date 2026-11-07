@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 机器人账号判定（record.is_bot + WEEKLY_REPORT_BOT_LOGINS）。
 #
 # 跑法：bash tests/weekly-report-bot-logins.test.sh
@@ -13,6 +14,8 @@
 # 里（随 #47 合入）。本文件只补它没覆盖的：大小写、换行分隔，以及**端到端**跑 collect.py——
 # 只测函数挡不住「collect 里某处调用没走共用判定」。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -113,4 +116,5 @@ chk "名单大小写与评论账号不同：结果同上" \
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

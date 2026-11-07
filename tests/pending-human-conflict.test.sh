@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 等人审的 PR 与目标分支冲突的守卫 —— GitHub#86。
 #
 # 跑法：bash tests/pending-human-conflict.test.sh              （默认不跑末尾的负对照）
@@ -20,6 +21,8 @@
 # 末尾的负对照（MUTATION=1 时）把这七种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下；
 # 「对拍」一节拿同一批 PR 让 worker 交 PR 前那段冲突检查命令和 daemon 各判一遍，结论必须一致。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -490,4 +493,5 @@ negative "两种评论共用一个标记" \
 echo
 mutation_summary "$0"
 echo "正式版：$real_pass 通过 / $real_fail 失败；负对照失效 $neg_fail 条"
+report_counts "$real_pass" "$real_fail" "" "$neg_fail"
 [ "$real_fail" -eq 0 ] && [ "$neg_fail" -eq 0 ]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # PR 交给复审 / 交给人之前先查与主干有没有冲突（GitHub#82）。
 #
 # 跑法：bash tests/conflict-check-prompts.test.sh
@@ -12,6 +13,8 @@
 #      取不到分支 / 本地没推的提交，各自判对，而且不动工作区、不产生提交
 #   3. 每个写入点单独拿掉 / 改一个字，1 必须红
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -310,4 +313,5 @@ else
 fi
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

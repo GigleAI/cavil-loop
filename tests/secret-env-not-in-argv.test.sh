@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 「敏感 env 不进命令行」的行为守卫（issue #745 现场发现）。
 #
 # 跑法：bash tests/secret-env-not-in-argv.test.sh
@@ -10,6 +11,8 @@
 # 全局可读的，同机任何用户 `ps aux` 就能抄走 PAT。现场实测一个 classic PAT 在
 # 长驻 tmux server 的命令行里挂了 11 小时。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 # 在干净环境里重跑自己。worker 会话是 daemon 起的，环境里本来就带着真的 GH_TOKEN /
 # WRITE_GH_TOKEN / GH_TOKEN_FILE；继承下来，被测函数读到的是这些真值而不是下面造的
@@ -188,4 +191,5 @@ chk "两把都缺席 → 拒绝派工"       "$?" "1"
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 交叉 review（codex）那一侧：写评论时缺单价、记账行没写金额的记录，周报出报告时用
 # **当时的价目**（内置表 + 缺价自动补来的价）按记录里的 token 补算金额。
 #
@@ -9,6 +10,8 @@
 # 金额；之前已经写进评论、没有金额的 codex 记录，周报一律「沿用原值」= 没有金额，价补上了
 # 周报也不变。claude 那一侧能按本机日志重算，codex 这一侧原来一条路都没有。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -255,4 +258,5 @@ xcheck "认不出模型 → 两边都没有金额"         CODEX_PRICES='{"gpt-x
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

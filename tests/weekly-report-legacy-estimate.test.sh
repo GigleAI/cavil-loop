@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 9/14 口径切换前的历史记账：金额按记录里的 token × 现行 Opus 价重估，再抵掉重复计；
 # 同时每周汇总四项 token，供趋势图出「token 用量」面板。
 #
@@ -12,6 +13,8 @@
 # 前后成本差出 3~5 倍，读起来像「突然省了一大笔钱」。原值又改不回去（本机日志多已清掉），
 # 只能用记录里留下的 token 数按现行价目估一遍，并在报告里写明是估算。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -186,4 +189,5 @@ chk "报告不提重估"                         "$(has '按记录里的 token �
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

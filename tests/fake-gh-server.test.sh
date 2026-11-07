@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: meta
 # 常驻假 GitHub（GitHub#211）：tests/lib/fake_gh_server.py + tests/lib/fake_gh_client.sh 的守卫。
 #
 # 跑法：bash tests/fake-gh-server.test.sh              （默认不跑负对照）
@@ -15,6 +16,8 @@
 #   4. 中断时序：正例 / 两次调用之间服务被杀 / 已接手未执行就断开 / 已执行未回结果就断开 / 服务回复退回
 #      ——退出码、stderr、评论条数、调用记录行数、观察回调次数
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/mutation.sh
@@ -350,4 +353,5 @@ neg "结果未知时改成重跑" fake_gh_client.sh \
 echo
 mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

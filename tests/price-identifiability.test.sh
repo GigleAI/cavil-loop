@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 单价反解的两道检验（scripts/weekly-report/price_solve.py）。
 #
 # 跑法：bash tests/price-identifiability.test.sh
@@ -23,6 +24,8 @@
 # ⚠️ 造数注意：各列必须**独立变化**。若每列都与同一个序号成比例，设计矩阵秩为 1，
 #    解出来的东西没有意义（写这个测试时先踩过一次）。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -248,4 +251,5 @@ print('ok' if 'platform.claude.com/docs/en/about-claude/pricing' in s and '2026-
 
 echo
 echo "结果：$pass passed, $fail failed"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

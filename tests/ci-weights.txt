@@ -4,7 +4,7 @@
 # Linux dev box with tests/run.sh -j 1, default regression (no MUTATION), 2026-11-07
 # (GitHub#211; a second full run was going on at the same time). A unit missing here
 # counts as 5 s; a stale number only makes one shard a little slower, never skips or
-# repeats a test.
+# repeats a test. smoke (GitHub#212): 5 s in a full -j 8 run on the same box, 2026-11-07.
 agent-trust-paths 54
 autopilot:1/3 108
 autopilot:2/3 70
@@ -58,6 +58,7 @@ secret-env-not-in-argv 1
 session-isolation 24
 setup-label-colors 1
 skill-deploy 6
+smoke 6
 sub-issue-split 3
 token-usage-claude 3
 token-usage-codex 3

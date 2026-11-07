@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 周报**呈现**层的两条硬规矩（scripts/weekly-report/report.py）。
 #
 # 跑法：bash tests/weekly-report-presentation.test.sh
@@ -13,6 +14,8 @@
 #     那段说明又写着「与切换前的周不可直接比」，自相矛盾。
 # 这两类错都不会报错，只会让人读出错误结论，所以必须钉住。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -207,4 +210,5 @@ chk "写解读的提示：不再要求写「模型 + 工具（不含等待）」
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

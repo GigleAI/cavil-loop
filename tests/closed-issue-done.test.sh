@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 人手动关闭（「已完成」）的 issue 自动打 Done —— GitHub#159。
 #
 # 跑法：bash tests/closed-issue-done.test.sh              （默认不跑末尾的负对照）
@@ -15,6 +16,8 @@
 #   · 清单漏了自定义派工标签 → 关掉的 issue 下一轮又被派工
 # 合并路径（PR 合并后给 PR 和被带关的 issue 打 Done）的调用与改动前（merge-base）逐条一致。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -434,4 +437,5 @@ echo "正向：$POS_PASS 通过 / $POS_FAIL 失败"
 mutation_summary "$0"
 compat_summary
 if mutation_on; then echo "负对照：$mut_ran 项中 $mut_fail 项没能变红或准备失败"; fi
+report_counts "$POS_PASS" "$POS_FAIL" "$mut_ran" "$mut_fail"
 [ "$POS_FAIL" -eq 0 ] && [ "$mut_fail" -eq 0 ]

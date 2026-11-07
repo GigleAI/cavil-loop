@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 托管标签：方案只过复审、复审与测试通过后 daemon 自动合并 —— GitHub#114。
 #
 # 跑法：bash tests/autopilot.test.sh              （默认不跑末尾的负对照）
@@ -23,6 +24,8 @@
 # 负对照按出现顺序轮流分给三段（每份负对照仍把整套场景跑一遍）。
 # parts: 3
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -2125,4 +2128,5 @@ echo
 mutation_summary "$0"
 compat_summary
 echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
+report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
 [ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
