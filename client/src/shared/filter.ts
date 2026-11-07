@@ -242,3 +242,41 @@ export function applyFilter(items: Item[], parsed: ParsedFilter, ctx: FilterCont
 export function isCurrentIteration(it: Iteration, today: string): boolean {
   return it.startDate <= today && today < addDays(it.startDate, it.duration);
 }
+
+/** The three parts of an iteration picker, as the web Project's picker shows them (GitHub#231). */
+export interface IterationSections {
+  /** the iteration(s) `today` falls in, by start date */
+  current: Iteration[];
+  /** not started yet, nearest first */
+  upcoming: Iteration[];
+  /** over, the one that ended last first */
+  ended: Iteration[];
+}
+
+/**
+ * Split a Project's iterations for a picker (GitHub#231): current, then upcoming nearest first,
+ * then ended latest first. GitHub hands the field's iterations over as "completed, latest first"
+ * and "not completed, earliest first"; the order they come in plays no part here — every part is
+ * sorted by its own dates, so the same set gives the same picker whatever order it was read in.
+ * "Current" is `isCurrentIteration`, the rule the table's "当前" mark uses.
+ */
+export function iterationSections(iterations: Iteration[], today: string): IterationSections {
+  const byStart = (a: Iteration, b: Iteration) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const end = (it: Iteration) => addDays(it.startDate, it.duration);
+  const current: Iteration[] = [];
+  const upcoming: Iteration[] = [];
+  const ended: Iteration[] = [];
+  for (const it of iterations) {
+    if (isCurrentIteration(it, today)) current.push(it);
+    else if (it.startDate > today) upcoming.push(it);
+    else ended.push(it);
+  }
+  current.sort(byStart);
+  upcoming.sort(byStart);
+  ended.sort((a, b) => {
+    const ea = end(a);
+    const eb = end(b);
+    return ea > eb ? -1 : ea < eb ? 1 : -byStart(a, b);
+  });
+  return { current, upcoming, ended };
+}

@@ -11,6 +11,8 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import { LabelPicker } from './LabelPicker';
 import { noteOf, type ResultNote } from './DetailPanel';
+import { IterationOptions } from './iterationOptions';
+import type { TableFolds } from '../shared/uiPrefs';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -123,12 +125,14 @@ type Editor = {
   projects: ProjectMeta[];
   options: RepoOptions | null;
   disabled: boolean;
+  /** YYYY-MM-DD: which iteration is current (GitHub#231) */
+  today: string;
   act: (a: WriteAction, okText: string) => void;
   close: () => void;
 };
 
 /** The open editor of one cell: a picker for labels, one dropdown per Project for iteration / status, a dropdown for the milestone. */
-function CellEditor({ item, col, projects, options, disabled, act, close }: Editor) {
+function CellEditor({ item, col, projects, options, disabled, today, act, close }: Editor) {
   const box = useRef<HTMLSpanElement>(null);
   // a click outside the editor puts it away (the label picker has its own)
   useEffect(() => {
@@ -223,15 +227,7 @@ function CellEditor({ item, col, projects, options, disabled, act, close }: Edit
           >
             <option value="">{field === 'iteration' ? '（无迭代）' : '（无状态）'}</option>
             {field === 'iteration' ? (
-              <>
-                {m.iteration && !p.iterations.some((i) => i.id === m.iteration!.id) && <option value={m.iteration.id}>{m.iteration.title}</option>}
-                {p.iterations.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {rows.length > 1 ? `${p.title}：` : ''}
-                    {i.title}
-                  </option>
-                ))}
-              </>
+              <IterationOptions iterations={p.iterations} chosen={m.iteration} today={today} label={(i) => `${rows.length > 1 ? `${p.title}：` : ''}${i.title}`} />
             ) : (
               p.statusOptions.map((o) => (
                 <option key={o} value={o}>
@@ -263,6 +259,7 @@ export function TableView({
   onNewInGroup,
   canCreate = false,
   createTitle = '',
+  folds = {},
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -277,18 +274,15 @@ export function TableView({
   onNewInGroup?: (g: Group) => void;
   canCreate?: boolean;
   createTitle?: string;
+  /** folded groups, per "group by" — kept on this machine, so switching to the board and back, or a restart, keeps them (GitHub#231) */
+  folds?: TableFolds;
 }) {
-  const [folded, setFolded] = useState<Set<string>>(new Set());
   const dark = useDarkMode();
   const t = view.table;
   const table = buildTable(items, projects, t, today, view.prsUnderIssues);
   const cols = t.columns.filter((c) => c !== 'title');
-  const toggle = (k: string) => {
-    const next = new Set(folded);
-    if (next.has(k)) next.delete(k);
-    else next.add(k);
-    setFolded(next);
-  };
+  const folded = new Set(folds[t.groupBy] ?? []);
+  const toggle = (k: string) => void Promise.resolve(api().setTableFold(t.groupBy, k, !folded.has(k))).catch(() => undefined);
 
   // ---- editing a cell (GitHub#205) ----
   // which cell is open: the table row (item + group: an item can show in two groups, PR #220 review round 1) and column
@@ -429,6 +423,7 @@ export function TableView({
                       projects={projects}
                       options={options[r.item.repo] ?? null}
                       disabled={!canWrite || busy.has(r.item.key)}
+                      today={today}
                       act={(a, ok) => void act(r.item)(a, ok)}
                       close={() => setEditing(null)}
                     />

@@ -10,8 +10,10 @@ import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardDa
 import type { DetailResult, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
+import { normalizeAutopilotConfirm, normalizeTableFolds, setFold } from '../shared/uiPrefs';
 import { importView, pickView } from '../shared/viewImport';
-import { parseSource } from '../shared/sources';
+import { parseSource, sourceLabel } from '../shared/sources';
+import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
 import { Endpoints, GitHubClient } from '../data/github';
@@ -68,6 +70,9 @@ interface PendingImport {
 const PENDING_IMPORTS = 'pendingImports';
 /** its own key, not part of the view settings: importing a Project's web view must not touch it */
 const MERGE_PREFS = 'mergePrefs';
+/** GitHub#231: their own keys too, for the same reason */
+const TABLE_FOLDS = 'tableFolds';
+const AUTOPILOT_CONFIRM = 'autopilotConfirm';
 
 /**
  * The settings, as the window sees them: read once at start, every change
@@ -191,6 +196,8 @@ export class Controller {
       credentialsPersistent: init.persistent,
       handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
+      tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
+      autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
       pendingCount: 0,
       pendingItems: [],
       unreadCount: 0,
@@ -211,7 +218,22 @@ export class Controller {
     const configured = this.state.sources.map((s) => s.key);
     const snaps = [...this.snapshots.values()].filter((s) => configured.includes(s.sourceKey));
     const selected = this.state.view.selected?.filter((k) => configured.includes(k)) ?? null;
-    return { ...mergeSnapshots(snaps, selected), allProjects: this.allProjects() };
+    return { ...mergeSnapshots(snaps, selected), allProjects: this.allProjects(), boardRepos: this.boardRepos() };
+  }
+
+  /**
+   * GitHub#231: every configured Project with its items counted per repository, from its own
+   * snapshot — not the filtered view — so a new issue's default board does not depend on what the
+   * top filter shows. No snapshot yet = never read completely = unknown (null).
+   */
+  private boardRepos(): BoardRepoCount[] {
+    const out: BoardRepoCount[] = [];
+    for (const s of this.state.sources) {
+      if (s.kind !== 'project') continue;
+      const snap = this.snapshots.get(s.key);
+      out.push({ key: s.key, title: snap?.project?.title ?? sourceLabel(s), repos: snap?.project ? countRepos(snap.items) : null });
+    }
+    return out;
   }
 
   /** Every configured Project, in the order the sources were added (GitHub#205: what a new issue may join). */
@@ -1025,6 +1047,21 @@ export class Controller {
     if (next === this.state.mergePrefs) return;
     this.cache.setSetting(MERGE_PREFS, next);
     this.set({ mergePrefs: next });
+  }
+
+  /** GitHub#231: a table group folded or unfolded. Unknown input is ignored. */
+  setTableFold(groupBy: unknown, key: unknown, folded: unknown): void {
+    const next = setFold(this.state.tableFolds, groupBy, key, folded);
+    if (next === this.state.tableFolds) return;
+    this.cache.setSetting(TABLE_FOLDS, next);
+    this.set({ tableFolds: next });
+  }
+
+  /** GitHub#231: "托管" asks first (true) or not ("不再提示", false). Anything but a boolean is ignored. */
+  setAutopilotConfirm(on: unknown): void {
+    if (typeof on !== 'boolean' || on === this.state.autopilotConfirm) return;
+    this.cache.setSetting(AUTOPILOT_CONFIRM, on);
+    this.set({ autopilotConfirm: on });
   }
 
   setHandBack(patch: Partial<HandBackLabels>): void {

@@ -149,27 +149,27 @@ function board(): Item[] {
 const flat = (t: Table) => t.groups.map((g) => [g.title, g.rows.map((r) => `${'  '.repeat(r.depth)}${r.item.number}`)]);
 
 describe('table rules', () => {
-  it('group by iteration: date range, Current mark, the "no iteration" group first, an item in two Projects twice', () => {
+  it('group by iteration: date range, Current mark, the "no iteration" group last (as on the web, GitHub#231), an item in two Projects twice', () => {
     const t = buildTable(board(), [A, B], T({ hierarchy: false }), TODAY);
     expect(t.groups.map((g) => [g.title, g.subtitle, g.current, g.empty])).toEqual([
-      ['无迭代', null, false, true],
       ['S1', iterationRange(A.iterations[0]), false, false],
       ['S2', '11/03 – 11/09', true, false],
       ['S3', '11/10 – 11/16', false, false],
+      ['无迭代', null, false, true],
     ]);
     expect(t.groups.find((g) => g.title === 'S1')!.rows.map((r) => r.item.number)).toEqual([20]);
     expect(t.groups.find((g) => g.title === 'S2')!.rows.map((r) => r.item.number)).toEqual([11, 13, 12, 10, 20]);
-    expect(t.groups[0].rows.map((r) => r.item.number)).toEqual([21]);
+    expect(t.groups[3].rows.map((r) => r.item.number)).toEqual([21]);
     expect(t.itemCount).toBe(7);
   });
 
   it('hierarchy: sub-issues under their parent, recursively; a child in another group stays at top level there', () => {
     const t = buildTable(board(), [A, B], T(), TODAY);
     expect(flat(t)).toEqual([
-      ['无迭代', ['21']],
       ['S1', ['20']],
       ['S2', ['10', '  11', '    13', '  12', '20']],
       ['S3', ['14']],
+      ['无迭代', ['21']],
     ]);
   });
 
@@ -184,15 +184,15 @@ describe('table rules', () => {
     expect(t.groups[0].rows.map((r) => r.item.number).sort()).toEqual([1, 2, 3]);
   });
 
-  it('group by status follows option order; by milestone by due date; by repository alphabetically; none groups first', () => {
+  it('group by status follows option order; by milestone by due date; by repository alphabetically; none groups last', () => {
     const items = board();
     expect(buildTable(items, [A, B], T({ groupBy: 'status', hierarchy: false }), TODAY).groups.map((g) => `${g.title}:${g.rows.length}`)).toEqual([
-      '无状态:2',
       'Todo:3',
       'Doing:1',
       'Done:2',
+      '无状态:2',
     ]);
-    expect(buildTable(items, [A, B], T({ groupBy: 'milestone' }), TODAY).groups.map((g) => `${g.title}:${g.rows.length}`)).toEqual(['无里程碑:5', 'v1:1', 'v2:1']);
+    expect(buildTable(items, [A, B], T({ groupBy: 'milestone' }), TODAY).groups.map((g) => `${g.title}:${g.rows.length}`)).toEqual(['v1:1', 'v2:1', '无里程碑:5']);
     expect(buildTable(items, [A, B], T({ groupBy: 'repo' }), TODAY).groups.map((g) => `${g.title}:${g.rows.length}`)).toEqual(['x/app:5', 'x/lib:2']);
   });
 
@@ -239,7 +239,7 @@ describe('"all repositories": repository first, then the chosen grouping inside 
     // expected by the rule, not copied from the output: x/app holds 10–14 (S2 and S3); x/lib holds 20 (S1 on Alpha, S2 on Beta), 21 (no iteration), 22 (S2)
     expect(nested(t)).toEqual([
       ['x/app', 5, [['S2', ['10', '  11', '    13', '  12']], ['S3', ['14']]]],
-      ['x/lib', 3, [['无迭代', ['21']], ['S1', ['20']], ['S2', ['22', '20']]]],
+      ['x/lib', 3, [['S1', ['20']], ['S2', ['22', '20']], ['无迭代', ['21']]]],
     ]);
     // the count is distinct items, not the rows of its groups added up (x/lib shows 4 rows)
     expect(t.repos![1].groups.reduce((n, g) => n + g.rows.length, 0)).toBe(4);
@@ -295,17 +295,17 @@ describe('"all repositories": repository first, then the chosen grouping inside 
     }
     // with slicing off the groups mix repositories, exactly as the single-level rules above
     expect(flat(buildTable(items(), [A, B], ALL({ sliceByRepo: false }), TODAY))).toEqual([
-      ['无迭代', ['21']],
       ['S1', ['20']],
       ['S2', ['10', '  22', '  11', '    13', '  12', '20']],
       ['S3', ['14']],
+      ['无迭代', ['21']],
     ]);
     expect(buildTable(items(), [A, B], ALL({ groupBy: 'repo' }), TODAY).groups.map((g) => `${g.key}:${g.rows.length}`)).toEqual(['repo:x/app:5', 'repo:x/lib:3']);
     const picked = buildTable(items(), [A, B], ALL({ slice: 'X/LIB' }), TODAY);
     expect(picked.groups.map((g) => [g.key, g.title])).toEqual([
-      [GROUP_NONE_KEY, '无迭代'],
       [iterationColumnKey(A.iterations[0]), 'S1'],
       [iterationColumnKey(A.iterations[1]), 'S2'],
+      [GROUP_NONE_KEY, '无迭代'],
     ]);
   });
 

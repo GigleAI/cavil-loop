@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData, Item } from '../shared/types';
 import type { GroupPreset, RepoOptions } from '../shared/actions';
 import { defaultRepo, previewCreate, type MilestoneRead } from '../data/groupPreset';
+import { defaultBoards } from '../data/newIssueBoards';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { noteOf, PasteImageNotice, ResultBanner, type ResultNote } from './DetailPanel';
@@ -16,20 +17,6 @@ export function knownRepos(state: AppState, data: BoardData): string[] {
   for (const s of state.sources) if (s.kind === 'repo') out.set(`${s.owner}/${s.name}`.toLowerCase(), `${s.owner}/${s.name}`);
   for (const i of data.items) if (!out.has(i.repo.toLowerCase())) out.set(i.repo.toLowerCase(), i.repo);
   return [...out.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-}
-
-/**
- * GitHub#205 (maintainer's choice C): which Projects are ticked when the dialog opens — the
- * ones the view is narrowed to (that this account may change); none when the view shows every source
- * (nothing ticked off at the top, or every source ticked one by one). From a table group's "+", the
- * boards the table shows start ticked (their iteration / status is what the group carries).
- */
-export function defaultProjects(state: AppState, data: BoardData, fromGroup = false): string[] {
-  // a table group's "+" (GitHub#214) is about the boards the table shows: those start ticked
-  if (fromGroup) return data.projects.filter((p) => p.viewerCanUpdate).map((p) => p.key);
-  const sel = state.view.selected;
-  const everything = sel === null || state.sources.every((s) => sel.includes(s.key));
-  return everything ? [] : data.projects.filter((p) => p.viewerCanUpdate).map((p) => p.key);
 }
 
 /** A new issue from a table group's "+" (GitHub#214): the group's value, its title, the items in it. */
@@ -62,8 +49,13 @@ export function NewIssueDialog({
   const [note, setNote] = useState<ResultNote | null>(null);
   const [picking, setPicking] = useState(false);
   const allProjects = data.allProjects ?? data.projects;
-  // decided once, when the dialog opens: a sync round meanwhile does not re-tick what the user unticked
-  const [projects, setProjects] = useState<string[]>(() => defaultProjects(state, data, Boolean(group)));
+  // GitHub#231: the same rule for both ways in (the "新建" button and a table group's "+"): the board
+  // holding the most of this repository's items, judged on every configured board whatever the view
+  // shows. It follows the repository picked and each finished sync — until a box is ticked or
+  // unticked by hand (`manual`), which is then kept as it is.
+  const defaults = defaultBoards(data.boardRepos ?? [], allProjects, repo);
+  const [manual, setManual] = useState<string[] | null>(null);
+  const projects = manual ?? defaults.ticked;
   const [pasted, setPasted] = useState<{ copied: boolean | null } | null>(null);
   const isDark = useDarkMode();
 
@@ -86,6 +78,19 @@ export function NewIssueDialog({
   // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
   const ticked = allProjects.filter((p) => projects.includes(p.key));
   const preview = group ? previewCreate(group.preset, ticked, repo, read) : null;
+  // GitHub#231: what an iteration / status group sets is about the boards: said right under their boxes
+  const boardPreview = group?.preset.by === 'iteration' || group?.preset.by === 'status';
+  const previewBox = preview && (
+    <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'} data-place={boardPreview ? 'boards' : 'repo'}>
+      <div className="small muted">会带上：</div>
+      {preview.lines.map((l) => (
+        <div key={l.target} className={l.applies ? 'small' : 'small muted'} data-testid="new-issue-preset-line" data-target={l.target} data-applies={l.applies ? 'yes' : 'no'}>
+          {l.applies ? '✓ ' : '– '}
+          {l.text}
+        </div>
+      ))}
+    </div>
+  );
 
   const colorOf = (name: string) => opts?.labels.find((l) => l.name === name)?.color ?? '';
   const toggleLabel = (name: string) => setLabels((ls) => (ls.includes(name) ? ls.filter((x) => x !== name) : [...ls, name]));
@@ -121,17 +126,7 @@ export function NewIssueDialog({
             ))}
           </select>
         </label>
-        {preview && (
-          <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'}>
-            <div className="small muted">会带上：</div>
-            {preview.lines.map((l) => (
-              <div key={l.target} className={l.applies ? 'small' : 'small muted'} data-testid="new-issue-preset-line" data-target={l.target} data-applies={l.applies ? 'yes' : 'no'}>
-                {l.applies ? '✓ ' : '– '}
-                {l.text}
-              </div>
-            ))}
-          </div>
-        )}
+        {preview && !boardPreview && previewBox}
         <label>
           标题
           <input data-testid="new-issue-title" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -203,7 +198,7 @@ export function NewIssueDialog({
                     data-project={p.key}
                     checked={projects.includes(p.key)}
                     disabled={!p.viewerCanUpdate}
-                    onChange={(e) => setProjects((ps) => (e.target.checked ? [...ps, p.key] : ps.filter((x) => x !== p.key)))}
+                    onChange={(e) => setManual(e.target.checked ? [...projects.filter((x) => x !== p.key), p.key] : projects.filter((x) => x !== p.key))}
                   />
                   「{p.title}」
                   {!p.viewerCanUpdate && <span className="small muted">（这个账号不能修改它）</span>}
@@ -212,10 +207,17 @@ export function NewIssueDialog({
               <span className="small muted" data-testid="new-issue-projects-hint">
                 {projects.length ? `会加入 ${projects.length} 个看板` : '一个都不勾 = 不加入任何看板'}
               </span>
+              {manual === null &&
+                defaults.unsynced.map((b) => (
+                  <span key={b.key} className="small muted" data-testid="new-issue-project-unsynced" data-project={b.key}>
+                    看板「{b.title}」还没同步完，默认勾选没把它算进去
+                  </span>
+                ))}
             </div>
           ) : (
             <p className="small muted">还没有添加看板来源，建好后不加入任何看板</p>
           )}
+          {preview && boardPreview && previewBox}
         </div>
         <ResultBanner note={note} testid="new-issue-result" />
       </div>
