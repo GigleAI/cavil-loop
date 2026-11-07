@@ -80,6 +80,12 @@ export interface FakeState {
   deniedRepos: Map<string, Set<string>>;
   /** responses of matching paths wait for `release()` (after the response is computed) */
   holds: { match: (path: string, entry: LoggedRequest) => boolean; gate: Promise<void> }[];
+  /**
+   * GitHub#250: REST writes whose connection is dropped. `apply: 'now'` = carried out, then the
+   * answer is lost; `apply: 'later'` = the client sees the connection drop at once, the write is
+   * carried out only when `land()` of `lateWhen` is called (it arrived and lands late).
+   */
+  lost: { match: (entry: LoggedRequest) => boolean; apply: 'now' | 'later'; pending: (() => void)[]; caught: number }[];
   /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
   refreshTokens: Map<string, string>;
   refreshSeq: number;
@@ -112,6 +118,10 @@ export interface FakeGitHub {
   hold(fragment: string): () => void;
   /** hold responses of requests matching `pred` (GraphQL: operation + variables are filled) until released */
   holdWhen(pred: (entry: LoggedRequest) => boolean): () => void;
+  /** GitHub#250: matching REST writes are carried out, then their connection is dropped (the answer is lost) */
+  dropAnswerWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; stop: () => void };
+  /** GitHub#250: matching REST writes see the connection drop at once and are carried out only on `land()` */
+  lateWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; land: () => void; stop: () => void };
   /** everything writable, serialised: equal before / after = GitHub changed nothing */
   digest(): string;
   /** requests that ask GitHub to change something (REST non-GET except the markdown renderer, GraphQL mutations) */
@@ -155,6 +165,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     tokenViewers: new Map(),
     deniedRepos: new Map(),
     holds: [],
+    lost: [],
     refreshTokens: new Map(),
     refreshSeq: 0,
     tokenAnswers: [],
@@ -320,7 +331,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     }
 
     // ---- REST writes of #138, labels / milestones lists, markdown ----
-    if (url.pathname.startsWith('/api/') && (req.method !== 'GET' || /\/(labels|milestones)$/.test(url.pathname))) {
+    if (url.pathname.startsWith('/api/') && (req.method !== 'GET' || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname))) {
       const raw = req.method === 'GET' ? '' : await readBody(req);
       let parsed: any = undefined;
       try {
@@ -331,6 +342,26 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       entry.body = parsed;
       if (!authed()) return;
       if (state.offlineApi) {
+        req.socket.destroy();
+        return;
+      }
+      // GitHub#250: a write whose answer is lost (carried out now or later)
+      const lost = req.method !== 'GET' ? state.lost.find((l) => l.match(entry)) : undefined;
+      if (lost) {
+        lost.caught++;
+        const run = () =>
+          handleRest(
+            store,
+            req.method ?? 'GET',
+            url.pathname + url.search,
+            parsed,
+            () => {},
+            () => {},
+            login(),
+          );
+        if (lost.apply === 'now') run();
+        else lost.pending.push(run);
+        entry.status = -1;
         req.socket.destroy();
         return;
       }
@@ -353,6 +384,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(t);
           }),
+        login(),
       );
       if (handled) {
         await held();
@@ -429,6 +461,22 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       return () => {
         state.holds = state.holds.filter((x) => x !== h);
         release();
+      };
+    },
+    dropAnswerWhen(pred) {
+      const l = { match: pred, apply: 'now' as const, pending: [], caught: 0 };
+      state.lost.push(l);
+      return { caught: () => l.caught, stop: () => void (state.lost = state.lost.filter((x) => x !== l)) };
+    },
+    lateWhen(pred) {
+      const l = { match: pred, apply: 'later' as const, pending: [] as (() => void)[], caught: 0 };
+      state.lost.push(l);
+      return {
+        caught: () => l.caught,
+        land: () => {
+          for (const f of l.pending.splice(0)) f();
+        },
+        stop: () => void (state.lost = state.lost.filter((x) => x !== l)),
       };
     },
     digest: () => digest(store),

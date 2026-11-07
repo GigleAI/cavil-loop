@@ -200,6 +200,8 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
     fake.state.w.failLabel = 'pending/agent';
     const r = await c.act({ kind: 'autopilot', key: K(138) });
     expect(r.ok).toBe(true);
-    expect(r.warning).toContain('已加上「autopilot」，但加「pending/agent」没有成功，还没有交给 agent');
+    // GitHub#250: every step is named, the one that failed with GitHub's reason
+    expect(r.warning).toContain('托管没有全部完成：已加上「autopilot」；加「pending/agent」没有成功');
+    expect(r.warning).toContain('还没摘「pending/human」');
   });
 });

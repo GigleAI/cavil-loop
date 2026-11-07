@@ -3,6 +3,7 @@
 
 import type { MergePrefs } from './mergePrefs';
 import type { TableFolds } from './uiPrefs';
+import type { OpRecord } from './ops';
 import type { Handoff } from './handoff';
 
 /**
@@ -389,6 +390,8 @@ export interface AppState {
   editsNeedingAction: number;
   /** GitHub#229: new issues being created, and their outcome until dismissed */
   creates: CreateJob[];
+  /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */
+  ops: OpRecord[];
 }
 
 /** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */

@@ -48,6 +48,20 @@ export interface CavilApi {
   startCreate(action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<{ ok: boolean; error: string | null; job?: number }>;
   dismissCreate(id: number): Promise<void>;
   retryCreateProjects(id: number): Promise<WriteResult>;
+  /**
+   * GitHub#250: close an issue / PR, merge, autopilot, hand to the agent — started in the background
+   * (the dialog closes); refused at once, nothing sent, when it cannot go out (offline, or the item
+   * still has an operation that is not settled). Its progress is `state.ops`.
+   */
+  startOp(action: Extract<WriteAction, { kind: 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' }>, from?: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
+  /** read the evidence of an operation whose answer never came again (reads only) */
+  opRecheck(id: string): Promise<WriteResult>;
+  /** "补做剩下的步骤" (re-reads first) */
+  opFinish(id: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
+  /** "已核对，解除锁定": local only */
+  opUnlock(id: string): Promise<void>;
+  opDismiss(id: string, dismissed: boolean): Promise<void>;
+  opDropDraft(id: string): Promise<void>;
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;

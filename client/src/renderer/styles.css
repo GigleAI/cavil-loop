@@ -444,6 +444,11 @@ table.items td .cell-selects { display: inline-flex; flex-direction: column; gap
 table.items tr.group-head, table.items tr.repo-head { cursor: pointer; }
 table.items tr.group-head:hover td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
 table.items tr.repo-head:hover td { background: var(--hover); }
+
+/* GitHub#250: the notice of a close / merge / autopilot / hand-back operation */
+.op-notice .op-buttons { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; margin-left: 8px; }
+.op-notice .op-draft { display: block; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.op-draft-line { margin: 0 16px 8px; }
 /* GitHub#248: failed sources as a ⚠️ next to refresh, details in a popover (no full-width bars) */
 .trouble-anchor { position: relative; display: inline-flex; align-items: center; }
 button.icon-btn.trouble-btn, button.icon-btn.trouble-btn:hover:not(:disabled) { color: var(--warn-icon); }

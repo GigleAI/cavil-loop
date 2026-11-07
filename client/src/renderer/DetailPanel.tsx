@@ -21,6 +21,8 @@ import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
+import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
+import { OpNotice } from './OpNotice';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -206,11 +208,14 @@ export function DetailPanel({
   data,
   onClose,
   onLeftBehind,
+  intent,
 }: {
   itemKey: string;
   state: AppState;
   data: BoardData;
   onClose: () => void;
+  /** GitHub#250: opened from a notice above the board to do this with one of the item's operations */
+  intent?: { opId: string; what: 'retry' | 'toReply' } | null;
   /** a change made on an item the panel has since left: its result goes to the board instead */
   onLeftBehind: (note: ResultNote) => void;
 }) {
@@ -247,6 +252,12 @@ export function DetailPanel({
   const [noMoreAsk, setNoMoreAsk] = useState(false);
   const [closeComment, setCloseComment] = useState('');
   const [closeReason, setCloseReason] = useState<IssueCloseReason>('completed');
+  /** GitHub#250: the dialog was opened again from an operation's notice: its draft moves to the new one */
+  const [retryFrom, setRetryFrom] = useState<string | null>(null);
+  /** GitHub#250: the operation refused at once (nothing sent): said inside the dialog, which stays */
+  const [dialogNote, setDialogNote] = useState<ResultNote | null>(null);
+  /** GitHub#250: the reply box holds an operation's kept comment: sent = that draft is done */
+  const [replyFromOp, setReplyFromOp] = useState<string | null>(null);
   /** the label / milestone picker that is open (GitHub#192) */
   const [picker, setPicker] = useState<'labels' | 'milestone' | null>(null);
   /** Esc was pressed while the reply box held unsent text: the panel stayed, say why */
@@ -348,7 +359,67 @@ export function DetailPanel({
    * opening with its own draft). The result then goes to the board, never into
    * whatever panel is on screen.
    */
-  const runAutopilot = () => run({ kind: 'autopilot', key: item!.key }, `已托管：加上「${hb.autopilot}」「${hb.agent}」、去掉「${hb.human}」`);
+  /**
+   * GitHub#250: close / merge / autopilot / hand-back start in the background and hold nothing:
+   * true = started (the dialog closes), false = refused before anything was sent (said here).
+   */
+  const startOp = async (action: Parameters<ReturnType<typeof api>['startOp']>[0], inDialog: boolean): Promise<boolean> => {
+    // GitHub#226: a read already on its way carries GitHub as it was before this change — it never lands
+    session.supersede('detail');
+    setLoading(false);
+    const from = retryFrom ?? undefined;
+    const r = await api().startOp(action, from);
+    if (!session.current()) return r.ok;
+    if (!r.ok) {
+      const n: ResultNote = { kind: 'error', text: r.error ?? '没有发送' };
+      if (inDialog) setDialogNote(n);
+      else setNote(n);
+      return false;
+    }
+    setRetryFrom(null);
+    setDialogNote(null);
+    setNote(null);
+    return true;
+  };
+  const runAutopilot = () => startOp({ kind: 'autopilot', key: item!.key }, ask === 'autopilot');
+  /** the dialog of an operation again, its draft restored (GitHub#250) */
+  const retryOp = (r: OpRecord) => {
+    // never a comment a reply made from it may already have posted (code review round 2)
+    const d = opReusableDraft(r) ?? {};
+    setRetryFrom(r.id);
+    setDialogNote(null);
+    if (r.kind === 'closeIssue') {
+      if (d.reason) setCloseReason(d.reason);
+      setCloseComment(d.comment ?? '');
+      setAsk('closeIssue');
+    } else if (r.kind === 'closePr') {
+      setCloseComment(d.comment ?? '');
+      setAsk('close');
+    } else if (r.kind === 'merge') {
+      if (d.method) setPicked(d.method);
+      setAsk('merge');
+    } else if (r.kind === 'autopilot') {
+      setNoMoreAsk(false);
+      setAsk('autopilot');
+    } else {
+      void (async () => {
+        setRetryFrom(r.id);
+        const res = await api().startOp({ kind: 'handBack', key: r.key }, r.id);
+        if (!session.current()) return;
+        setRetryFrom(null);
+        setNote(res.ok ? null : { kind: 'error', text: res.error ?? '没有发送' });
+      })();
+    }
+  };
+  const toReply = (r: OpRecord) => {
+    const c = opDraftLeft(r)?.comment;
+    if (c === undefined) return;
+    setReply((cur) => (cur.trim() ? `${cur}\n\n${c}` : c));
+    setReplyFromOp(r.id);
+    session.supersede('preview');
+    setPreview(null);
+    replyBox.current?.focus();
+  };
   const run = async (action: WriteAction, okText: string): Promise<WriteResult & { here: boolean }> => {
     const label = item ? `${item.repo}#${item.number}` : itemKey;
     const mine = session.begin('write');
@@ -484,8 +555,10 @@ export function DetailPanel({
   const pickBlocked = !item || !canWrite || !opts;
   const send = async () => {
     if (!item) return;
-    const r = await run({ kind: 'comment', key: item.key, body: reply }, '评论已发出');
+    // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
+    const r = await run({ kind: 'comment', key: item.key, body: reply, ...(replyFromOp ? { draftOf: replyFromOp } : {}) }, '评论已发出');
     if (r.ok && r.here) {
+      setReplyFromOp(null);
       setReply('');
       setPreview(null);
       setEscKept(false);
@@ -562,6 +635,40 @@ export function DetailPanel({
       window.removeEventListener('click', click, true);
     };
   }, []);
+  // ---- GitHub#250: this item's operations ----
+  const myOps = state.ops.filter((r) => r.key === itemKey);
+  const lock = opLockOf(state.ops, itemKey);
+  const lockWhy = lock ? `上一次操作还没结清：${opText(lock)}` : undefined;
+  // an operation got an answer or settled: read the detail again, so the panel shows what GitHub holds now
+  const opSig = myOps.map((r) => `${r.id}:${r.steps.map((x) => x.state).join(',')}:${r.readAt ?? ''}`).join('|');
+  const seenSig = useRef(opSig);
+  useEffect(() => {
+    if (opSig === seenSig.current) return;
+    seenSig.current = opSig;
+    void load(true);
+  }, [opSig, load]);
+  // opened from a notice above the board (GitHub#250): do what was asked there, once
+  const intentDone = useRef(false);
+  useEffect(() => {
+    if (intentDone.current || !intent || !item) return;
+    const r = state.ops.find((x) => x.id === intent.opId);
+    intentDone.current = true;
+    if (!r) return;
+    if (intent.what === 'retry') retryOp(r);
+    else toReply(r);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intent, item]);
+  const openAsk = (k: 'merge' | 'close' | 'closeIssue' | 'autopilot') => {
+    setRetryFrom(null);
+    setDialogNote(null);
+    setAsk(k);
+  };
+  const cancelAsk = () => {
+    setAsk(null);
+    setRetryFrom(null);
+    setDialogNote(null);
+  };
+
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
     // whose keys never reach this window (another origin; its own script forwards no keys) — Esc works again after it
@@ -652,6 +759,20 @@ export function DetailPanel({
         </div>
       )}
       <ResultBanner note={note} testid="action-result" />
+      {myOps
+        .filter((r) => !r.dismissed)
+        .map((r) => (
+          <OpNotice key={r.id} r={r} onRetry={retryOp} onToReply={toReply} />
+        ))}
+      {myOps
+        .filter((r) => r.dismissed && opDraftLeft(r))
+        .map((r) => (
+          <div key={r.id} className="detail-stale small op-draft-line">
+            <button className="link" data-testid="op-draft-line" onClick={() => void api().opDismiss(r.id, false)}>
+              {opDraftLeft(r)?.comment !== undefined ? '有一条没发出的附带评论' : '有一次没完成的操作的草稿'}，点这里找回
+            </button>
+          </div>
+        ))}
       {loadError && (
         <div className="banner error" data-testid="detail-error">
           <Icon name="warn" />
@@ -897,13 +1018,13 @@ export function DetailPanel({
                 className={conflict ? 'danger' : 'primary'}
                 data-testid="merge"
                 data-conflict={conflict ? 'yes' : 'no'}
-                disabled={!canWrite || busy || !method || conflict}
-                title={offlineWhy ?? (conflict ? conflictWhy : undefined)}
-                onClick={() => setAsk('merge')}
+                disabled={!canWrite || busy || !method || conflict || Boolean(lock)}
+                title={offlineWhy ?? lockWhy ?? (conflict ? conflictWhy : undefined)}
+                onClick={() => openAsk('merge')}
               >
                 {conflict ? '有冲突，不能合并' : '合并…'}
               </button>
-              <button className="danger" data-testid="close-pr" disabled={!canWrite || busy} title={offlineWhy} onClick={() => setAsk('close')}>
+              <button className="danger" data-testid="close-pr" disabled={!canWrite || busy || Boolean(lock)} title={offlineWhy ?? lockWhy} onClick={() => openAsk('close')}>
                 关闭 PR…
               </button>
             </div>
@@ -950,7 +1071,11 @@ export function DetailPanel({
           disabled={!canWrite || busy}
           onChange={(e) => {
             setReply(e.target.value);
-            if (!e.target.value.trim()) setEscKept(false);
+            if (!e.target.value.trim()) {
+              setEscKept(false);
+              // emptied: what is sent next is not that operation's kept comment any more
+              setReplyFromOp(null);
+            }
             session.supersede('preview');
             setPreview(null);
           }}
@@ -987,7 +1112,7 @@ export function DetailPanel({
         )}
         <div className="row end">
           {issueOpen && (
-            <button className="danger" data-testid="close-issue" disabled={!canWrite || busy} title={offlineWhy ?? '在 GitHub 上关闭这个 issue（先选原因）'} onClick={() => setAsk('closeIssue')}>
+            <button className="danger" data-testid="close-issue" disabled={!canWrite || busy || Boolean(lock)} title={offlineWhy ?? lockWhy ?? '在 GitHub 上关闭这个 issue（先选原因）'} onClick={() => openAsk('closeIssue')}>
               关闭 issue…
             </button>
           )}
@@ -1002,25 +1127,26 @@ export function DetailPanel({
             <span className="quick-actions" data-testid="quick-actions">
               <button
                 data-testid="hand-back"
-                disabled={!canWrite || busy}
-                title={offlineWhy ?? `加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改）`}
-                onClick={() => void run({ kind: 'handBack', key: item.key }, `已交给 agent：加上「${hb.agent}」、去掉「${hb.human}」`)}
+                disabled={!canWrite || busy || Boolean(lock)}
+                title={offlineWhy ?? lockWhy ?? `加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改）`}
+                onClick={() => void startOp({ kind: 'handBack', key: item.key }, false)}
               >
                 交给 agent
               </button>
               {hb.autopilot && (
                 <button
                   data-testid="autopilot"
-                  disabled={!canWrite || busy}
+                  disabled={!canWrite || busy || Boolean(lock)}
                   title={
                     offlineWhy ??
+                    lockWhy ??
                     `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}`
                   }
                   onClick={() => {
                     // GitHub#231: "不再提示" was ticked once — no dialog, the same write as its "确认托管"
                     if (!state.autopilotConfirm) return void runAutopilot();
                     setNoMoreAsk(false);
-                    setAsk('autopilot');
+                    openAsk('autopilot');
                   }}
                 >
                   {state.autopilotConfirm ? '托管（自动合并）…' : '托管（自动合并）'}
@@ -1039,12 +1165,12 @@ export function DetailPanel({
           title={`合并 PR #${item.number}？`}
           confirmLabel="确认合并"
           busy={busy}
-          onCancel={() => setAsk(null)}
+          onCancel={cancelAsk}
           onConfirm={async () => {
-            const r = await run({ kind: 'merge', key: item.key, method, headOid: pr.headOid }, `PR #${item.number} 已合并`);
-            if (r.here) setAsk(null);
+            if (await startOp({ kind: 'merge', key: item.key, method, headOid: pr.headOid }, true)) setAsk(null);
           }}
         >
+          <ResultBanner note={dialogNote} testid="dialog-result" />
           <p>
             把 <code>{pr.headRef}</code> 合进 <code>{pr.baseRef}</code>，方式：{METHOD_LABEL[method]}。
           </p>
@@ -1055,14 +1181,14 @@ export function DetailPanel({
           title={`托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}
           confirmLabel="确认托管"
           busy={busy}
-          onCancel={() => setAsk(null)}
+          onCancel={cancelAsk}
           onConfirm={async () => {
             // the tick counts only with "确认托管": "取消" keeps asking
             if (noMoreAsk) void Promise.resolve(api().setAutopilotConfirm(false)).catch(() => undefined);
-            const r = await runAutopilot();
-            if (r.here) setAsk(null);
+            if (await runAutopilot()) setAsk(null);
           }}
         >
+          <ResultBanner note={dialogNote} testid="dialog-result" />
           <div data-testid="autopilot-explain">
             <p data-testid="autopilot-explain-labels">
               会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。
@@ -1130,14 +1256,15 @@ export function DetailPanel({
           confirmLabel="确认关闭"
           danger
           busy={busy}
-          onCancel={() => setAsk(null)}
+          onCancel={cancelAsk}
           onConfirm={async () => {
-            const r = await run({ kind: 'closePr', key: item.key, comment: closeComment }, `PR #${item.number} 已关闭`);
-            if (!r.here) return;
-            if (r.ok) setCloseComment('');
+            // the comment now lives in the operation (kept until it went out, or dropped by hand)
+            if (!(await startOp({ kind: 'closePr', key: item.key, comment: closeComment }, true))) return;
+            setCloseComment('');
             setAsk(null);
           }}
         >
+          <ResultBanner note={dialogNote} testid="dialog-result" />
           <textarea data-testid="close-comment" placeholder="可选：附一句评论（关闭成功后发出）" value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
         </ConfirmDialog>
       )}
@@ -1147,15 +1274,14 @@ export function DetailPanel({
           confirmLabel="确认关闭"
           danger
           busy={busy}
-          onCancel={() => setAsk(null)}
+          onCancel={cancelAsk}
           onConfirm={async () => {
-            const reason = closeReason;
-            const r = await run({ kind: 'closeIssue', key: item.key, reason, comment: closeComment }, `issue #${item.number} 已关闭（${CLOSE_REASON[reason].name}）`);
-            if (!r.here) return;
-            if (r.ok) setCloseComment('');
+            if (!(await startOp({ kind: 'closeIssue', key: item.key, reason: closeReason, comment: closeComment }, true))) return;
+            setCloseComment('');
             setAsk(null);
           }}
         >
+          <ResultBanner note={dialogNote} testid="dialog-result" />
           <div className="close-reasons" data-testid="close-reason">
             {ISSUE_CLOSE_REASONS.map((r) => (
               <label key={r} className="radio">
