@@ -449,13 +449,14 @@ export function BoardView({
               <span className="sync-text">上次同步 {ago(sync.lastOnlineAt, now)}</span>
             </span>
           )}
+          {/* never greyed out while a round runs (GitHub#217): a click starts over */}
           <button
-            className="icon-btn"
+            className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
             data-testid="refresh"
-            disabled={sync.syncing}
-            aria-label={sync.syncing ? '同步中…' : '刷新'}
-            title={sync.syncing ? '同步中…' : `刷新（马上同步一轮，${keyText('sync')}）`}
-            onClick={() => api().syncNow()}
+            data-syncing={sync.syncing ? 'yes' : 'no'}
+            aria-label={sync.syncing ? '同步中…（点一下重新同步）' : '刷新'}
+            title={sync.syncing ? `同步中…（点一下：放弃这一轮，重新同步，${keyText('sync')}）` : `刷新（马上同步一轮，${keyText('sync')}）`}
+            onClick={() => api().restartSync()}
           >
             <Icon name="refresh" />
           </button>

@@ -107,6 +107,15 @@ class Settings {
   }
 }
 
+/** One sync round as `restartSync` sees it (GitHub#217). */
+interface SyncRun {
+  /** aborts when the round is dropped: no further request goes out */
+  signal: AbortSignal;
+  /** true only while the round reads GitHub, the one stretch a restart may cut */
+  reading: boolean;
+  drop(): void;
+}
+
 export class Controller {
   private state: AppState;
   private snapshots = new Map<string, SourceSnapshot>();
@@ -115,6 +124,8 @@ export class Controller {
   private listeners = new Set<(s: AppState) => void>();
   private syncing: Promise<void> | null = null;
   private resync = false;
+  /** the round in flight (GitHub#217): a restart may drop it, but only while it is reading GitHub */
+  private round: SyncRun | null = null;
   private loginRun = 0;
   /**
    * Cancels sent to the back end, in order. A new sign-in waits for them: commands to the back
@@ -807,7 +818,7 @@ export class Controller {
         do {
           this.resync = false;
           try {
-            await this.runRound();
+            await this.runOne();
           } catch (e) {
             // a round must never reject: the 60 s timer and the window would see an unhandled rejection
             this.set({ sync: { ...this.state.sync, syncing: false, problem: `同步出错：${(e as Error).message}` } });
@@ -815,12 +826,53 @@ export class Controller {
         } while (this.resync && this.signedIn);
       } finally {
         this.syncing = null;
+        // no round runs any more: a dropped round set "syncing" and the next one may have ended early
+        if (this.state.sync.syncing) this.set({ sync: { ...this.state.sync, syncing: false } });
       }
     })();
     return this.syncing;
   }
 
-  private async runRound(retried = false): Promise<void> {
+  /**
+   * Refresh asked for by hand — the button or its key (GitHub#217): start over now.
+   * A round that is reading GitHub is dropped: nothing it read lands anywhere, it
+   * sends no further request (one already sent runs out, its answer is thrown away),
+   * and a new round starts at once. A round renewing the sign-in or saving what it
+   * read is not cut there (a half-done renewal can lose the sign-in, a half-done save
+   * would race the new round's): it finishes, then the new round starts right after.
+   * The timer and every other automatic caller keep queueing (`syncNow`): automatic
+   * rounds never cut each other short.
+   */
+  restartSync(): Promise<void> {
+    if (this.round?.reading) this.round.drop();
+    return this.syncNow();
+  }
+
+  /** One round, given up on (without waiting for it) when it is dropped. */
+  private runOne(): Promise<void> {
+    const abort = new AbortController();
+    let dropped!: () => void;
+    const gone = new Promise<void>((r) => (dropped = r));
+    const run: SyncRun = {
+      signal: abort.signal,
+      reading: false,
+      drop: () => {
+        abort.abort();
+        this.resync = true;
+        dropped();
+      },
+    };
+    this.round = run;
+    // the dropped round goes on alone until its next check; whatever it ends in is nobody's business
+    const done = this.runRound(run).catch((e) => {
+      if (!abort.signal.aborted) throw e;
+    });
+    return Promise.race([done, gone]).finally(() => {
+      if (this.round === run) this.round = null;
+    });
+  }
+
+  private async runRound(run: SyncRun, retried = false): Promise<void> {
     if (!this.signedIn) return;
     const fresh = await this.fresh();
     if (fresh === 'ended' || !this.signedIn) return;
@@ -837,7 +889,12 @@ export class Controller {
     const sources = this.state.sources;
     const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
     this.set({ sync: { ...this.state.sync, syncing: true } });
-    const round = await syncRound(this.client(session), sources, this.snapshots, this.now());
+    // the one stretch a restart may cut: reading GitHub (GitHub#217)
+    run.reading = true;
+    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, this.now());
+    run.reading = false;
+    // dropped meanwhile: a newer round owns the state now, nothing of this one may land
+    if (run.signal.aborted) return;
     const over = () => {
       // logged out / another account logged in meanwhile: nothing of this round may land
       this.set({ sync: { ...this.state.sync, syncing: false } });
@@ -884,7 +941,7 @@ export class Controller {
       // the token this round used, not one that changed meanwhile.
       if (!retried && session === this.session && info.canRefresh) {
         const r = await this.fresh(true, info.gen);
-        if (r === 'ok') return this.runRound(true);
+        if (r === 'ok') return this.runRound(run, true);
         if (r === 'unreachable') this.set({ sync: { ...this.state.sync, offline: true } });
         if (r !== 'changed') return; // 'failed': kept signed in with the problem shown; 'ended': already signed out
       }
@@ -893,8 +950,8 @@ export class Controller {
   }
 
   /** A GitHub client whose requests the back end signs for `session`. */
-  private client(session: number): GitHubClient {
-    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session));
+  private client(session: number, signal?: AbortSignal): GitHubClient {
+    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal);
   }
 
   // ---- view & change one item ---------------------------------------------

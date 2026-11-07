@@ -47,9 +47,12 @@ export class GitHubClient {
     /** null: the request goes through the back end, which adds the credential (the window never has it) */
     private readonly token: string | null,
     private readonly fetchImpl: FetchLike = fetch,
+    /** aborted: this client's work was given up on (a dropped sync round, GitHub#217) — send nothing more */
+    private readonly cancelled?: AbortSignal,
   ) {}
 
   private async send(url: string, init: RequestInit): Promise<Response> {
+    if (this.cancelled?.aborted) throw new GitHubError('network', '已放弃这一轮同步');
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
