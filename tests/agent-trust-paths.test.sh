@@ -140,7 +140,7 @@ case "$1" in
     new-session)
         shift; name=""; dir=""
         while [ $# -gt 0 ]; do
-            case "$1" in -s) name="$2"; shift 2 ;; -c) dir="$2"; shift 2 ;; -e) shift 2 ;; -d) shift ;; *) break ;; esac
+            case "$1" in -s) name="$2"; shift 2 ;; -c) dir="$2"; shift 2 ;; -e|-F) shift 2 ;; -d|-P) shift ;; *) break ;; esac
         done
         n=$(( $(cat "$FT/launches" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FT/launches"
         mkdir -p "$FT/snap.$n"
