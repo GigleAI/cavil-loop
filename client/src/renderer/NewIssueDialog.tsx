@@ -10,6 +10,9 @@ import { LabelPicker } from './LabelPicker';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
+import { checkHandoff, handoffProblem, handoffSummary, mergeLabels, type Handoff, type HandoffCheck, type LabelRead } from '../shared/handoff';
+
+const HANDOFF_TITLES: Record<Handoff, string> = { none: '只建 issue', agent: '交给 agent', autopilot: '托管（自动合并）' };
 
 /** Repositories a new issue can go to: the repository sources plus every repository seen on the board. */
 export function knownRepos(state: AppState, data: BoardData): string[] {
@@ -60,6 +63,11 @@ export function NewIssueDialog({
   const configured = allProjects.length > 0 || (data.boardRepos ?? []).length > 0;
   const [pasted, setPasted] = useState<{ copied: boolean | null } | null>(null);
   const isDark = useDarkMode();
+  // GitHub#245: who the new issue is handed to. `picked` = clicked in this dialog (null = not touched):
+  // only a choice made here and actually used for a created issue is remembered — a fallback to
+  // "只建 issue" because the labels are unknown / missing never overwrites what was remembered
+  const [picked, setPicked] = useState<Handoff | null>(null);
+  const hb = state.handBack;
 
   // every pick of a repository is a read of its own: only the latest one may land. Compared by
   // read, not by repository name — after A → B → A the first read of A is as stale as B's.
@@ -77,6 +85,16 @@ export function NewIssueDialog({
         });
   }, [repo]);
   const read: MilestoneRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', milestones: opts.milestones };
+  const labelRead: LabelRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', names: opts.labels.map((l) => l.name) };
+  const choices: Handoff[] = hb.autopilot.trim() ? ['none', 'agent', 'autopilot'] : ['none', 'agent'];
+  const checks = Object.fromEntries(choices.map((h) => [h, checkHandoff(h, hb, labelRead)])) as Record<Handoff, HandoffCheck>;
+  const wanted = picked ?? state.newIssueHandoff;
+  const wantedCheck = checks[wanted] ?? checkHandoff(wanted, hb, labelRead);
+  // still reading: the wanted choice stays shown (creating waits); unknown / missing / unset: this time a plain issue
+  const handoff: Handoff = wantedCheck.state === 'ok' || wantedCheck.state === 'loading' ? wanted : 'none';
+  const handoffWaits = handoff !== 'none' && wantedCheck.state === 'loading';
+  const handoffLabels = wantedCheck.state === 'ok' && handoff !== 'none' ? wantedCheck.labels : [];
+  const fellBack = handoff !== wanted ? handoffProblem(repo, wantedCheck) : '';
   // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
   const ticked = allProjects.filter((p) => projects.includes(p.key));
   const preview = group ? previewCreate(group.preset, ticked, repo, read) : null;
@@ -102,15 +120,17 @@ export function NewIssueDialog({
       title={group ? `新建 issue · 加到「${group.title}」` : '新建 issue'}
       confirmLabel="创建"
       busy={busy}
-      disabled={!repo || !title.trim() || Boolean(preview?.blocked)}
+      disabled={!repo || !title.trim() || Boolean(preview?.blocked) || handoffWaits}
       dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
       onConfirm={async () => {
         if (preview && !preview.plan) return;
         setBusy(true);
-        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), ...(preview?.plan ? { plan: preview.plan } : {}) });
+        const used = handoff;
+        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), handoff: used, ...(preview?.plan ? { plan: preview.plan } : {}) });
         setBusy(false);
         if (r.ok && r.createdKey) {
+          if (picked !== null && picked === used) void Promise.resolve(api().setNewIssueHandoff(used)).catch(() => undefined);
           onCreated(r.createdKey);
           if (!r.warning) return onClose();
         }
@@ -152,7 +172,7 @@ export function NewIssueDialog({
             webLabel="到 GitHub 网页上继续新建"
             onWeb={() => {
               // the web page's new-issue form, filled with what was typed here
-              void api().openExternal(newIssueOnWeb('https://github.com', repo, title, body, labels));
+              void api().openExternal(newIssueOnWeb('https://github.com', repo, title, body, mergeLabels(handoffLabels, labels)));
               setPasted({ copied: null });
             }}
             onDismiss={() => setPasted(null)}
@@ -187,6 +207,52 @@ export function NewIssueDialog({
             </span>
             {opts?.error && <span className="err small">{opts.error}</span>}
           </div>
+        </div>
+        <div data-testid="new-issue-handoff" data-handoff={handoff} data-wanted={wanted}>
+          建好后
+          <div className="handoff-picks">
+            {choices.map((h) => {
+              const c = checks[h];
+              const usable = c.state === 'ok' || (c.state === 'loading' && h === wanted);
+              return (
+                <label key={h} title={handoffProblem(repo, c)}>
+                  <input
+                    type="radio"
+                    name="new-issue-handoff"
+                    data-testid="new-issue-handoff-choice"
+                    data-choice={h}
+                    data-state={c.state}
+                    checked={handoff === h}
+                    disabled={busy || !usable}
+                    onChange={() => setPicked(h)}
+                  />
+                  {HANDOFF_TITLES[h]}
+                </label>
+              );
+            })}
+          </div>
+          {handoffSummary(handoff, handoffLabels) && (
+            <div className="small muted" data-testid="new-issue-handoff-summary">
+              {handoffSummary(handoff, handoffLabels)}
+            </div>
+          )}
+          {handoffWaits && (
+            <div className="small muted" data-testid="new-issue-handoff-wait">
+              {handoffProblem(repo, wantedCheck)}
+            </div>
+          )}
+          {!fellBack &&
+            !handoffWaits &&
+            [...new Set(choices.filter((h) => h !== handoff && checks[h].state !== 'ok' && checks[h].state !== 'loading').map((h) => handoffProblem(repo, checks[h])))].map((why) => (
+              <div key={why} className="small muted" data-testid="new-issue-handoff-why">
+                {why}
+              </div>
+            ))}
+          {fellBack && (
+            <div className="small muted" data-testid="new-issue-handoff-fallback" data-reason={wantedCheck.state}>
+              {wantedCheck.state === 'error' ? fellBack : `${fellBack}，本次只建普通 issue，记住的「${HANDOFF_TITLES[wanted]}」不变`}
+            </div>
+          )}
         </div>
         <div data-testid="new-issue-projects">
           建好后加入这些看板

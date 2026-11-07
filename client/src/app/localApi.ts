@@ -39,5 +39,6 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setMergeMethod: async (repo, method) => c.setMergeMethod(String(repo), method),
     setTableFold: async (groupBy, key, folded) => c.setTableFold(groupBy, key, folded),
     setAutopilotConfirm: async (on) => c.setAutopilotConfirm(on),
+    setNewIssueHandoff: async (h) => c.setNewIssueHandoff(h),
   };
 }

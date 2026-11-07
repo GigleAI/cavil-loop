@@ -11,6 +11,7 @@ import type { DetailResult, RepoOptions, WriteAction, WriteResult } from '../sha
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { normalizeAutopilotConfirm, normalizeTableFolds, setFold } from '../shared/uiPrefs';
+import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
 import { parseSource, sourceLabel } from '../shared/sources';
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
@@ -73,6 +74,7 @@ const MERGE_PREFS = 'mergePrefs';
 /** GitHub#231: their own keys too, for the same reason */
 const TABLE_FOLDS = 'tableFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
+const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 
 /**
  * The settings, as the window sees them: read once at start, every change
@@ -198,6 +200,7 @@ export class Controller {
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
+      newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
       pendingItems: [],
       unreadCount: 0,
@@ -1062,6 +1065,13 @@ export class Controller {
     if (typeof on !== 'boolean' || on === this.state.autopilotConfirm) return;
     this.cache.setSetting(AUTOPILOT_CONFIRM, on);
     this.set({ autopilotConfirm: on });
+  }
+
+  /** GitHub#245: who the next new issue is handed to by default (the dialog calls this after a create it was chosen for). Unknown values are ignored. */
+  setNewIssueHandoff(h: unknown): void {
+    if (typeof h !== 'string' || normalizeHandoff(h) !== h || h === this.state.newIssueHandoff) return;
+    this.cache.setSetting(NEW_ISSUE_HANDOFF, h);
+    this.set({ newIssueHandoff: h as Handoff });
   }
 
   setHandBack(patch: Partial<HandBackLabels>): void {

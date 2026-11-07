@@ -4,6 +4,7 @@
 import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { Handoff } from './handoff';
 
 export interface Snapshot {
   state: AppState;
@@ -46,4 +47,6 @@ export interface CavilApi {
   setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
+  /** who a new issue is handed to by default, as last chosen in the dialog (GitHub#245) */
+  setNewIssueHandoff(h: Handoff): Promise<void>;
 }
