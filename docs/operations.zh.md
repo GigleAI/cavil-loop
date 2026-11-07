@@ -810,7 +810,7 @@ project/.agents/skills/cavil-loop/prompts/
 | `${DESIGN_REVIEW_NOTE}` | 开了方案复审时是一句「复审先审方案、打回是改方案」的说明，否则为空——关着时渲染结果和以前逐字一样 |
 | `${LABEL_REVIEW_OR_HUMAN}` | **产出后该翻到哪**：启用 review 关卡时 = `pending/review`，未启用时自动退化成 `pending/human`。模板一律用它，别直接写 `${LABEL_PENDING_REVIEW}`——没配置时那个渲染成空串，活会丢掉 `doing/agent` 又拿不到任何 pending 标签，从看板上彻底消失 |
 | `${PREVIEW_URL_HOST}` | 本机对外提供 PR 预览的主机名。**别在模板里硬写主机名**——同一份模板会在所有盯这个仓库的机器上跑，写死的主机会把审阅者指到一台根本没有这些文件的机器 |
-| `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL（funnel 那个 path），取自 `WEEKLY_REPORT_ASSET_ROOT_URL`。同理：截图落在哪台机器上，URL 就得指哪台 |
+| `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL（funnel 那个 path），取自 `WEEKLY_REPORT_ASSET_ROOT_URL`。同理：截图落在哪台机器上，URL 就得指哪台。工具自带的三份 worker 模板和复审模板也用它判断「本项目有没有配出图地址」：为空时，界面 / 样式选择题改用文字描述候选差异（GitHub#238） |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | 默认的 `pending/agent`。review 模板打回时必须用它——`${LABEL_PENDING_AGENT}` 是**触发**标签，在 review 关卡里拿它打回等于打回自己，死循环 |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `cavil-loop.config` 读，默认 `en`） |
 | `${COMMENT_FOOTER_CMD}` | 生成评论用量 footer 的完整命令（已带 agent、用量驱动、项目配置），模板只需再补 `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`。输出整段 footer，原样接在评论末尾；项目测试耗时的接口见配置样例的 `COMMENT_FOOTER_EXTRA_CMD` |
