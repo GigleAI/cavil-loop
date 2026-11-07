@@ -36,11 +36,7 @@ cleanup() { [ -n "${KEEP_SANDBOX:-}" ] && { echo "SANDBOX=$SANDBOX"; return 0; }
 trap cleanup EXIT
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 export HOME="$SANDBOX/home"
-cat > "$SANDBOX/bin/gh" <<EOF
-#!/usr/bin/env bash
-exec python3 -I "$FAKE" "\$@"
-EOF
-chmod +x "$SANDBOX/bin/gh"
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 -I "$FAKE"
 
 POLL_TOKEN="ghp_POLL0000000000000000000000000000000"
 READ_TOKEN="ghp_READ1111111111111111111111111111111"

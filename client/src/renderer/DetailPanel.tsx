@@ -13,10 +13,12 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
+import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
 import { Keys } from './ShortcutHelp';
 import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
+import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -37,7 +39,7 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
 };
 /** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
 const HIDE_LABEL = '收起 ›';
-const HIDE_TITLE = '收起（Esc；回复框里有没发出的文字时 Esc 不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
+const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
 const REVIEW: Record<string, string> = { APPROVED: '已批准', CHANGES_REQUESTED: '要求修改', REVIEW_REQUIRED: '需要评审' };
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
@@ -54,6 +56,26 @@ export function ResultBanner({ note, testid }: { note: ResultNote | null; testid
     <div className={`banner ${note.kind === 'error' ? 'error' : note.kind === 'warn' ? 'warn' : 'info'}`} data-testid={testid} data-kind={note.kind}>
       <Icon name={note.kind === 'ok' ? 'check' : 'warn'} />
       <span className="banner-text">{note.text}</span>
+    </div>
+  );
+}
+
+/** GitHub#205: an image was pasted where it cannot be uploaded from; offer the web page instead. */
+export function PasteImageNotice({ copied, onWeb, onDismiss, webLabel = '到 GitHub 网页上继续写' }: { copied: boolean | null; onWeb: () => void; onDismiss: () => void; webLabel?: string }) {
+  return (
+    <div className="banner warn paste-image" data-testid="paste-image-note">
+      <Icon name="warn" />
+      <span className="banner-text">
+        {PASTE_IMAGE_NOTE}
+        {copied === true && ' 你写的文字已复制，在网页上粘贴后再贴图。'}
+        {copied === false && ' 没能复制你写的文字，请先手动复制。'}
+      </span>
+      <button data-testid="paste-image-web" onClick={onWeb}>
+        {webLabel}
+      </button>
+      <button className="ghost" data-testid="paste-image-dismiss" onClick={onDismiss}>
+        知道了
+      </button>
     </div>
   );
 }
@@ -89,10 +111,14 @@ export function DetailPanel({
   const [note, setNote] = useState<ResultNote | null>(null);
   const [reply, setReply] = useState('');
   const [preview, setPreview] = useState<string | null>(null);
-  const [replied, setReplied] = useState(false);
+  /** GitHub#205: the body / comment being edited (its source when the edit started), and the text so far */
+  const [editing, setEditing] = useState<{ entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null>(null);
+  const [editNote, setEditNote] = useState<ResultNote | null>(null);
+  /** GitHub#205: an image was pasted into the reply / edit box (it cannot be uploaded from here) */
+  const [pasted, setPasted] = useState<{ where: 'reply' | 'edit'; copied: boolean | null } | null>(null);
   /** the method picked by hand in this opening; null = none yet */
   const [picked, setPicked] = useState<MergeMethod | null>(null);
-  const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | null>(null);
+  const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | 'autopilot' | null>(null);
   const [closeComment, setCloseComment] = useState('');
   const [closeReason, setCloseReason] = useState<IssueCloseReason>('completed');
   /** the label / milestone picker that is open (GitHub#192) */
@@ -193,13 +219,19 @@ export function DetailPanel({
       checked ? '已勾上，GitHub 上已更新' : '已取消勾选，GitHub 上已更新',
     );
     if (!r.here) return;
-    if (r.ok) setReplied(true);
     // refused or failed: read again, so the box shows what GitHub holds now
-    else void load();
+    if (!r.ok) void load();
   };
   // What the listener below reads: the latest values of this render, set before the frame can load.
-  const live = useRef({ tick, render: frame.render, ids: [] as string[] });
-  live.current = { tick, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
+  /** GitHub#205: "edit" was clicked in the frame. Opened only for an entry GitHub said this account may change. */
+  const edit = (entryId: unknown) => {
+    const e = detail?.timeline.find((x) => x.id === entryId && (x.kind === 'body' || x.kind === 'comment'));
+    if (!e || e.editSource === undefined || !canWrite || busy || editing) return;
+    setEditNote(null);
+    setEditing({ entryId: e.id, kind: e.kind as 'body' | 'comment', url: e.url, source: e.editSource, text: e.editSource });
+  };
+  const live = useRef({ tick, edit, render: frame.render, ids: [] as string[] });
+  live.current = { tick, edit, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
   // One listener for the panel's whole life, in place before the first frame loads (a layout effect
   // runs right after the frame is inserted, before its document can run): a frame that loads fast
   // must not report before anyone listens.
@@ -216,6 +248,7 @@ export function DetailPanel({
         viewRef.current = { known: now.ids, open: v.open.filter((x): x is string => typeof x === 'string'), scroll: v.scroll };
       if (m.cavil === 'ready') setReadyRender(now.render);
       else if (m.cavil === 'task') void now.tick(m.entry, m.index, m.checked);
+      else if (m.cavil === 'edit') now.edit(m.entry);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
@@ -236,8 +269,8 @@ export function DetailPanel({
     if (r.ok && r.here) {
       setReply('');
       setPreview(null);
-      setReplied(true);
       setEscKept(false);
+      setPasted(null);
     }
   };
   const togglePreview = async () => {
@@ -276,10 +309,44 @@ export function DetailPanel({
     leaveReply: () => replyBox.current?.blur(),
   });
 
+  // A click outside the panel puts it away (GitHub#191; the rule is outsideClick.ts): not on a card or
+  // a row title (those switch items), not while a dialog was open, not with a reply typed.
+  const panelRef = useRef<HTMLElement | null>(null);
+  const draftRef = useRef(reply);
+  draftRef.current = reply;
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    let press: Press | null = null;
+    let release: Release | null = null;
+    const down = (e: PointerEvent) => {
+      press = pressAt(e, panelRef.current);
+      release = null;
+    };
+    // where the button really went up: the click's own target is the common ancestor of press and release
+    const up = (e: PointerEvent) => {
+      release = releaseAt(e, panelRef.current);
+    };
+    const click = (e: MouseEvent) => {
+      const p = press;
+      const r = releaseOfClick(e, release);
+      press = null;
+      release = null;
+      if (hidesPanel(p, r, draftRef.current)) closeRef.current();
+    };
+    window.addEventListener('pointerdown', down, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('click', click, true);
+    return () => {
+      window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('click', click, true);
+    };
+  }, []);
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
     // whose keys never reach this window (another origin; its own script forwards no keys) — Esc works again after it
-    <aside className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
+    <aside ref={panelRef} className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
       <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
       {children}
     </aside>
@@ -305,6 +372,12 @@ export function DetailPanel({
   const prOpen = item.kind === 'pr' && detail?.state === 'open';
   // only once the detail read says it is open: the board's copy may be a round behind
   const issueOpen = item.kind === 'issue' && detail?.state === 'open';
+  // GitHub#205: a conflict is said loudly, and the merge button is off (GitHub refuses the merge anyway)
+  const conflict = Boolean(pr && prOpen && (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'));
+  const conflictWhy = '有冲突，GitHub 不能合并：先在分支上解决冲突（或在网页上点「Resolve conflicts」）';
+  // the buttons need the detail read (labels can be changed on a closed item too: it may be waiting for a decision)
+  const detailRead = Boolean(detail);
+  const hb = state.handBack;
     const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
   return shell(
@@ -508,7 +581,15 @@ export function DetailPanel({
       </section>
 
       {item.kind === 'pr' && pr && (
-        <section className={`pr-box${prOpen && pr.mergeStateStatus === 'CLEAN' ? ' mergeable' : ''}`} data-testid="pr-box">
+        <section className={`pr-box${prOpen && pr.mergeStateStatus === 'CLEAN' ? ' mergeable' : ''}${conflict ? ' conflict' : ''}`} data-testid="pr-box">
+          {conflict && (
+            <div className="banner error" data-testid="pr-conflict">
+              <Icon name="warn" />
+              <span className="banner-text">
+                <b>有冲突</b>：这个 PR 和目标分支 <code>{pr.baseRef}</code> 有冲突，GitHub 不能合并。先在分支上解决冲突（或在网页上点「Resolve conflicts」），再回来合并。
+              </span>
+            </div>
+          )}
           <div data-testid="pr-status">
             {pr.merged ? (
               <span className="kind done">
@@ -545,8 +626,15 @@ export function DetailPanel({
                   </option>
                 ))}
               </select>
-              <button className="primary" data-testid="merge" disabled={!canWrite || busy || !method} title={offlineWhy} onClick={() => setAsk('merge')}>
-                合并…
+              <button
+                className={conflict ? 'danger' : 'primary'}
+                data-testid="merge"
+                data-conflict={conflict ? 'yes' : 'no'}
+                disabled={!canWrite || busy || !method || conflict}
+                title={offlineWhy ?? (conflict ? conflictWhy : undefined)}
+                onClick={() => setAsk('merge')}
+              >
+                {conflict ? '有冲突，不能合并' : '合并…'}
               </button>
               <button className="danger" data-testid="close-pr" disabled={!canWrite || busy} title={offlineWhy} onClick={() => setAsk('close')}>
                 关闭 PR…
@@ -599,7 +687,23 @@ export function DetailPanel({
             session.supersede('preview');
             setPreview(null);
           }}
+          onPaste={(e) => {
+            if (!isImageOnlyPaste(e.clipboardData)) return;
+            e.preventDefault();
+            setPasted({ where: 'reply', copied: null });
+          }}
         />
+        {pasted?.where === 'reply' && (
+          <PasteImageNotice
+            copied={pasted.copied}
+            onWeb={async () => {
+              const copied = reply.trim() ? await copyText(reply) : null;
+              setPasted({ where: 'reply', copied });
+              void api().openExternal(item.url);
+            }}
+            onDismiss={() => setPasted(null)}
+          />
+        )}
         {escKept && reply.trim() && (
           <div className="banner warn draft-kept" data-testid="draft-esc-hint" ref={(el) => el?.scrollIntoView?.({ block: 'nearest' })}>
             回复框里还有没发出的文字，按 Esc 不会收起面板（免得文字丢掉）。发出去、清空，或点右上角「收起 ›」（文字会丢）。
@@ -615,19 +719,6 @@ export function DetailPanel({
           />
         )}
         <div className="row end">
-          {replied && (
-            <button
-              data-testid="hand-back"
-              disabled={!canWrite || busy}
-              title={`去掉「${state.handBack.human}」、加上「${state.handBack.agent}」（标签名在设置里改）`}
-              onClick={async () => {
-                const r = await run({ kind: 'handBack', key: item.key }, `已交回 agent：去掉「${state.handBack.human}」、加上「${state.handBack.agent}」`);
-                if (r.ok && r.here) setReplied(false);
-              }}
-            >
-              交回 agent
-            </button>
-          )}
           {issueOpen && (
             <button className="danger" data-testid="close-issue" disabled={!canWrite || busy} title={offlineWhy ?? '在 GitHub 上关闭这个 issue（先选原因）'} onClick={() => setAsk('closeIssue')}>
               关闭 issue…
@@ -640,6 +731,28 @@ export function DetailPanel({
           <button data-testid="reply-preview-toggle" disabled={previewBlocked} title={`预览（${keyText('preview')}）`} onClick={() => void togglePreview()}>
             {preview !== null ? '继续编辑' : '预览'}
           </button>
+          {detailRead && (
+            <span className="quick-actions" data-testid="quick-actions">
+              <button
+                data-testid="hand-back"
+                disabled={!canWrite || busy}
+                title={offlineWhy ?? `加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改）`}
+                onClick={() => void run({ kind: 'handBack', key: item.key }, `已交给 agent：加上「${hb.agent}」、去掉「${hb.human}」`)}
+              >
+                交给 agent
+              </button>
+              {hb.autopilot && (
+                <button
+                  data-testid="autopilot"
+                  disabled={!canWrite || busy}
+                  title={offlineWhy ?? `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）`}
+                  onClick={() => setAsk('autopilot')}
+                >
+                  托管（自动合并）…
+                </button>
+              )}
+            </span>
+          )}
           <button className="primary" data-testid="reply-send" disabled={sendBlocked} title={`发送（${keyText('send')}）`} onClick={() => void send()}>
             发送
           </button>
@@ -660,6 +773,69 @@ export function DetailPanel({
           <p>
             把 <code>{pr.headRef}</code> 合进 <code>{pr.baseRef}</code>，方式：{METHOD_LABEL[method]}。
           </p>
+        </ConfirmDialog>
+      )}
+      {ask === 'autopilot' && (
+        <ConfirmDialog
+          title={`托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}
+          confirmLabel="确认托管"
+          busy={busy}
+          onCancel={() => setAsk(null)}
+          onConfirm={async () => {
+            const r = await run({ kind: 'autopilot', key: item.key }, `已托管：加上「${hb.autopilot}」「${hb.agent}」、去掉「${hb.human}」`);
+            if (r.here) setAsk(null);
+          }}
+        >
+          <p data-testid="autopilot-explain">
+            会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>：agent 接手，从方案到合并不再等你确认；独立复审通过、检查通过后由 daemon 自动合并。
+            要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。
+          </p>
+        </ConfirmDialog>
+      )}
+      {editing && (
+        <ConfirmDialog
+          title={editing.kind === 'body' ? '编辑正文' : '编辑评论'}
+          confirmLabel="保存到 GitHub"
+          busy={busy}
+          disabled={editing.text === editing.source || (editing.kind === 'comment' && !editing.text.trim())}
+          dirty={editing.text !== editing.source}
+          onCancel={() => {
+            setEditing(null);
+            if (pasted?.where === 'edit') setPasted(null);
+          }}
+          onConfirm={async () => {
+            const r = await run({ kind: 'editEntry', key: item.key, entryId: editing.entryId, body: editing.text, seenSource: editing.source }, editing.kind === 'body' ? '正文已保存' : '评论已保存');
+            if (!r.here) return;
+            if (r.ok) {
+              setEditing(null);
+              setEditNote(null);
+              if (pasted?.where === 'edit') setPasted(null);
+            } else setEditNote(noteOf(r, ''));
+          }}
+        >
+          <textarea
+            className="edit-box"
+            data-testid="edit-input"
+            value={editing.text}
+            onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+            onPaste={(e) => {
+              if (!isImageOnlyPaste(e.clipboardData)) return;
+              e.preventDefault();
+              setPasted({ where: 'edit', copied: null });
+            }}
+          />
+          {pasted?.where === 'edit' && (
+            <PasteImageNotice
+              copied={pasted.copied}
+              onWeb={async () => {
+                const copied = await copyText(editing.text);
+                setPasted({ where: 'edit', copied });
+                void api().openExternal(editing.url || item.url);
+              }}
+              onDismiss={() => setPasted(null)}
+            />
+          )}
+          <ResultBanner note={editNote} testid="edit-result" />
         </ConfirmDialog>
       )}
       {ask === 'close' && (

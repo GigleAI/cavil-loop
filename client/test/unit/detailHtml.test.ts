@@ -2,7 +2,8 @@
 // client writes around it is escaped, and the frame's own policy forbids scripts.
 
 import { describe, expect, it } from 'vitest';
-import { blockedImages, FRAME_CSP, FRAME_SANDBOX, plainExcerpt, timelineDocument, TIMELINE_CSP, TIMELINE_SANDBOX } from '../../src/renderer/detailHtml';
+import { readFileSync } from 'node:fs';
+import { blockedImages, FRAME_CSP, FRAME_SANDBOX, IMAGE_HOSTS, plainExcerpt, timelineDocument, TIMELINE_CSP, TIMELINE_SANDBOX } from '../../src/renderer/detailHtml';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from '../../src/renderer/frameScript';
 import { avatarUrl } from '../../src/shared/avatar';
 import type { TimelineEntry } from '../../src/shared/actions';
@@ -58,25 +59,46 @@ describe('isolated detail view', () => {
     expect([...doc.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1])).toEqual([FRAME_SCRIPT]);
   });
 
-  it('images: only github.com / api.github.com (and the avatar host) load; the others are counted and the entry says so', () => {
+  it('images: github.com / api.github.com, the avatar host and GitHub\'s own image hosts (GitHub#205) load; the others are counted and the entry says so', () => {
     const img = (src: string) => `<img alt="x" src="${src}">`;
     expect(blockedImages(img('https://github.com/o/r/raw/main/a.png') + img('https://api.github.com/x') + img('data:image/png;base64,AA'))).toBe(0);
     expect(blockedImages(img('https://avatars.githubusercontent.com/u/1?v=4'))).toBe(0);
+    // GitHub#205: a pasted screenshot (as GitHub's HTML has it today), an attachment from before 2023, an image via GitHub's proxy
     expect(
       blockedImages(
-        img('https://camo.githubusercontent.com/a') +
-          img('https://github.com.evil.example/a') +
+        img('https://private-user-images.githubusercontent.com/307601/698127950-cb2c.png?jwt=eyJ0eXAi.x.y') +
+          img('https://user-images.githubusercontent.com/1/a.png') +
+          img('https://camo.githubusercontent.com/abc/def'),
+      ),
+    ).toBe(0);
+    expect(
+      blockedImages(
+        img('https://github.com.evil.example/a') +
           img('http://github.com/a') +
-          img('https://private-user-images.githubusercontent.com/a.png') +
+          img('http://private-user-images.githubusercontent.com/a.png') +
+          img('https://private-user-images.githubusercontent.com.evil.example/a.png') +
+          img('https://camo.githubusercontent.com.evil.example/a') +
+          img('https://raw.githubusercontent.com/o/r/main/a.png') +
+          img('https://github-production-user-asset-6210df.s3.amazonaws.com/1/a.png') +
+          img('https://example.com/a.png') +
           img('https://avatars.githubusercontent.com.evil.example/a'),
       ),
-    ).toBe(5);
-    expect(FRAME_CSP).toMatch(/img-src https:\/\/github\.com https:\/\/api\.github\.com https:\/\/avatars\.githubusercontent\.com data:;/);
+    ).toBe(9);
+    expect(FRAME_CSP).toMatch(
+      /img-src https:\/\/github\.com https:\/\/api\.github\.com https:\/\/avatars\.githubusercontent\.com https:\/\/private-user-images\.githubusercontent\.com https:\/\/user-images\.githubusercontent\.com https:\/\/camo\.githubusercontent\.com data:;/,
+    );
     expect(FRAME_CSP).not.toMatch(/\*/);
     expect(FRAME_CSP).not.toMatch(/(img|media|default)-src[^;]*https:(?!\/\/)/);
     const d = detail('a', 'b');
-    d.timeline[0].bodyHtml = img('https://camo.githubusercontent.com/a');
-    expect(timelineDocument(d, false)).toContain('data-blocked="1"');
+    d.timeline[0].bodyHtml = img('https://example.com/a.png') + img('https://private-user-images.githubusercontent.com/a.png');
+    const doc = timelineDocument(d, false);
+    expect(doc).toContain('data-blocked="1"');
+    expect(doc).toContain('有 1 张图片不在 GitHub 的地址上');
+  });
+
+  it('GitHub#205: the window\'s own policy (tauri.conf.json, which the frame also falls under) allows exactly the same image hosts', () => {
+    const conf = JSON.parse(readFileSync(new URL('../../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+    expect(conf.app.security.csp['img-src'].split(' ')).toEqual(["'self'", 'data:', ...IMAGE_HOSTS]);
   });
 });
 

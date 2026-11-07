@@ -1,11 +1,16 @@
 import { stateTone } from '../shared/stateTone';
-import { useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
-import { buildTable } from '../data/table';
+import type { RepoOptions, WriteAction } from '../shared/actions';
+import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
+import { buildTable, type Group } from '../data/table';
 import { api } from './api';
 import { Person } from './Avatar';
+import { OPENS_ITEM } from './outsideClick';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
+import { LabelPicker } from './LabelPicker';
+import { noteOf, type ResultNote } from './DetailPanel';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -105,21 +110,173 @@ function Cell({ col, item, now, dark }: { col: TableColumn; item: Item; now: num
   }
 }
 
-/** `onOpen`: a row's title opens the item's detail panel, the same as clicking a card on the board */
+/** GitHub#205: the columns a table cell can change, the same changes the detail panel makes. */
+export const EDITABLE_COLUMNS: readonly TableColumn[] = ['labels', 'iteration', 'status', 'milestone'];
+
+/** A column's width when none was dragged (fixed layout only, once any column has been dragged). */
+const DEFAULT_WIDTH: Partial<Record<TableColumn, number>> = { title: 360, labels: 200, assignees: 120, linkedPrs: 120, author: 120 };
+const widthOf = (c: TableColumn, widths: Partial<Record<TableColumn, number>>) => widths[c] ?? DEFAULT_WIDTH[c] ?? 140;
+
+type Editor = {
+  item: Item;
+  col: TableColumn;
+  projects: ProjectMeta[];
+  options: RepoOptions | null;
+  disabled: boolean;
+  act: (a: WriteAction, okText: string) => void;
+  close: () => void;
+};
+
+/** The open editor of one cell: a picker for labels, one dropdown per Project for iteration / status, a dropdown for the milestone. */
+function CellEditor({ item, col, projects, options, disabled, act, close }: Editor) {
+  const box = useRef<HTMLSpanElement>(null);
+  // a click outside the editor puts it away (the label picker has its own)
+  useEffect(() => {
+    if (col === 'labels') return;
+    const out = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) close();
+    };
+    document.addEventListener('mousedown', out);
+    return () => document.removeEventListener('mousedown', out);
+  }, [col, close]);
+  if (col === 'labels') {
+    if (!options) return <span className="small muted">读取标签…</span>;
+    if (options.error) return <span className="small err">{options.error}</span>;
+    return (
+      <span className="picker-anchor">
+        <LabelPicker
+          title="设置标签"
+          hint={item.repo}
+          testid="cell-label-picker"
+          disabled={disabled}
+          items={[
+            ...options.labels.map((l) => ({ name: l.name, color: l.color, checked: item.labels.some((x) => x.name === l.name) })),
+            ...item.labels.filter((l) => !options.labels.some((x) => x.name === l.name)).map((l) => ({ name: l.name, color: l.color, checked: true })),
+          ]}
+          onToggle={(l) =>
+            l.checked
+              ? act({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)
+              : act({ kind: 'addLabel', key: item.key, label: l.name }, `已加上标签「${l.name}」`)
+          }
+          onClose={close}
+        />
+      </span>
+    );
+  }
+  if (col === 'milestone') {
+    if (!options) return <span className="small muted">读取里程碑…</span>;
+    if (options.error) return <span className="small err">{options.error}</span>;
+    const titles = [...new Set(options.milestones.map((m) => m.title))];
+    if (item.milestone && !titles.includes(item.milestone.title)) titles.unshift(item.milestone.title);
+    return (
+      <span ref={box}>
+        <select
+          className="cell-select"
+          data-testid="cell-milestone"
+          autoFocus
+          disabled={disabled}
+          value={item.milestone?.title ?? ''}
+          onChange={(e) => {
+            act({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? `里程碑改成「${e.target.value}」` : '已去掉里程碑');
+            close();
+          }}
+        >
+          <option value="">（无）</option>
+          {titles.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </span>
+    );
+  }
+  // iteration / status: one dropdown per Project the item is on (the values belong to the Project)
+  const field = col as 'iteration' | 'status';
+  const rows = item.projects
+    .map((m) => ({ m, p: projects.find((x) => x.key === m.projectKey) }))
+    .filter((x): x is { m: Item['projects'][number]; p: ProjectMeta } => Boolean(x.p && (field === 'iteration' ? x.p.hasIterationField : x.p.statusFieldId)));
+  if (!rows.length) return <span className="small muted">{item.projects.length ? '看板没有这个字段' : '不在看板上；加入看板请在详情里'}</span>;
+  return (
+    <span ref={box} className="cell-selects">
+      {rows.map(({ m, p }) => {
+        const ro = !p.viewerCanUpdate;
+        return (
+          <select
+            key={p.key}
+            className="cell-select"
+            data-testid={`cell-${field}`}
+            data-project={p.key}
+            disabled={disabled || ro}
+            title={ro ? `你在看板「${p.title}」上没有修改权限` : `看板「${p.title}」`}
+            value={field === 'iteration' ? (m.iteration?.id ?? '') : (m.status ?? '')}
+            onChange={(e) => {
+              const v = e.target.value || null;
+              act(
+                field === 'iteration'
+                  ? { kind: 'setIteration', key: item.key, projectKey: p.key, iterationId: v }
+                  : { kind: 'setStatus', key: item.key, projectKey: p.key, status: v },
+                `看板「${p.title}」的${field === 'iteration' ? '迭代' : '状态'}已改`,
+              );
+              close();
+            }}
+          >
+            <option value="">{field === 'iteration' ? '（无迭代）' : '（无状态）'}</option>
+            {field === 'iteration' ? (
+              <>
+                {m.iteration && !p.iterations.some((i) => i.id === m.iteration!.id) && <option value={m.iteration.id}>{m.iteration.title}</option>}
+                {p.iterations.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {rows.length > 1 ? `${p.title}：` : ''}
+                    {i.title}
+                  </option>
+                ))}
+              </>
+            ) : (
+              p.statusOptions.map((o) => (
+                <option key={o} value={o}>
+                  {rows.length > 1 ? `${p.title}：` : ''}
+                  {o}
+                </option>
+              ))
+            )}
+          </select>
+        );
+      })}
+    </span>
+  );
+}
+
+/**
+ * `onOpen`: a row's title opens the item's detail panel, the same as clicking a card on the board.
+ * `onNewInGroup`: a group's "+" (GitHub#214); `canCreate` false greys it (offline, no sources).
+ */
 export function TableView({
   items,
   projects,
   view,
   today,
   now,
+  canWrite = false,
   onOpen,
+  onNote,
+  onNewInGroup,
+  canCreate = false,
+  createTitle = '',
 }: {
   items: Item[];
   projects: ProjectMeta[];
   view: ViewSettings;
   today: string;
   now: number;
+  /** online and signed in: cells can be changed (GitHub#205) */
+  canWrite?: boolean;
   onOpen: (key: string) => void;
+  /** the result of a change made from a cell (shown on top of the board) */
+  onNote?: (note: ResultNote) => void;
+  onNewInGroup?: (g: Group) => void;
+  canCreate?: boolean;
+  createTitle?: string;
 }) {
   const [folded, setFolded] = useState<Set<string>>(new Set());
   const dark = useDarkMode();
@@ -132,6 +289,168 @@ export function TableView({
     else next.add(k);
     setFolded(next);
   };
+
+  // ---- editing a cell (GitHub#205) ----
+  // which cell is open: the table row (item + group: an item can show in two groups, PR #220 review round 1) and column
+  const [editing, setEditing] = useState<{ row: string; col: TableColumn } | null>(null);
+  const [options, setOptions] = useState<Record<string, RepoOptions>>({});
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const asked = useRef(new Set<string>());
+  const needOptions = (repo: string) => {
+    if (asked.current.has(repo)) return;
+    asked.current.add(repo);
+    void api()
+      .repoOptions(repo)
+      .then((o) => {
+        setOptions((m) => ({ ...m, [repo]: o }));
+        // a failed read is asked again next time the cell is opened
+        if (o.error) asked.current.delete(repo);
+      });
+  };
+  const startEdit = (row: string, item: Item, col: TableColumn) => {
+    if (!canWrite || !EDITABLE_COLUMNS.includes(col)) return;
+    if (col === 'labels' || col === 'milestone') needOptions(item.repo);
+    setEditing({ row, col });
+  };
+  const act = (item: Item) => async (a: WriteAction, okText: string) => {
+    setBusy((b) => new Set(b).add(item.key));
+    const r = await api().act(a);
+    setBusy((b) => {
+      const n = new Set(b);
+      n.delete(item.key);
+      return n;
+    });
+    onNote?.(noteOf(r, `${item.repo}#${item.number}：${okText}`));
+  };
+
+  // ---- column widths (GitHub#205): dragged on the head's right edge, kept in the view settings; double-click = default ----
+  const widths = t.widths ?? {};
+  const [live, setLive] = useState<{ col: TableColumn; w: number } | null>(null);
+  const shown = live ? { ...widths, [live.col]: live.w } : widths;
+  const sized = Object.keys(shown).length > 0;
+  const startResize = (col: TableColumn) => (e: React.PointerEvent<HTMLSpanElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const th = (e.currentTarget as HTMLElement).parentElement!;
+    const x0 = e.clientX;
+    const w0 = th.getBoundingClientRect().width;
+    let w = Math.round(w0);
+    const clamp = (v: number) => Math.min(COLUMN_MAX_WIDTH, Math.max(COLUMN_MIN_WIDTH, Math.round(v)));
+    const move = (ev: PointerEvent) => {
+      w = clamp(w0 + ev.clientX - x0);
+      setLive({ col, w });
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setLive(null);
+      if (w !== Math.round(w0) || widths[col] === undefined) void api().setView({ table: { widths: { ...widths, [col]: w } } });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  const resetWidth = (col: TableColumn) => {
+    const next = { ...widths };
+    delete next[col];
+    void api().setView({ table: { widths: next } });
+  };
+  const head = (c: TableColumn) => (
+    <th key={c} data-testid="col-head" data-col={c} data-width={sized ? widthOf(c, shown) : undefined}>
+      {COLUMN_LABEL[c]}
+      <span
+        className={`col-resize${live?.col === c ? ' on' : ''}`}
+        data-testid="col-resize"
+        data-col={c}
+        title="拖动改列宽；双击恢复默认"
+        onPointerDown={startResize(c)}
+        onDoubleClick={() => resetWidth(c)}
+      />
+    </th>
+  );
+
+  const groupBody = (g: Group, inRepo: boolean) => (
+    <tbody key={g.key} className={inRepo ? 'in-repo' : undefined} data-testid="group" data-key={g.key} data-title={g.title}>
+      {t.groupBy !== 'none' && (
+        <tr className="group-head" data-testid="group-head">
+          <td colSpan={cols.length + 1}>
+            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'} onClick={() => toggle(g.key)}>
+              {folded.has(g.key) ? '▸' : '▾'}
+            </button>{' '}
+            <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
+            {g.current && <span className="current" data-testid="group-current">当前</span>}
+            {g.subtitle && <span className="small muted"> {g.subtitle}</span>}
+          </td>
+        </tr>
+      )}
+      {!folded.has(g.key) &&
+        g.rows.map((r) => (
+          <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth} data-under={r.under ?? undefined}>
+            <td className="title-cell" style={{ paddingLeft: 8 + r.depth * 20 }}>
+              {r.under && (
+                <span className="nest-mark" title="关联到上面这个 issue 的 PR">
+                  ↳{' '}
+                </span>
+              )}
+              <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>
+                <Icon name={itemIcon(r.item.kind, r.item.state, r.item.stateReason)} title={`${r.item.kind === 'pr' ? 'PR' : 'Issue'} ${STATE_TEXT[r.item.state]}`} />
+              </span>
+              <a
+                href={r.item.url}
+                data-testid="row-title"
+                {...{ [OPENS_ITEM]: '' }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onOpen(r.item.key);
+                }}
+              >
+                {r.item.title}
+              </a>{' '}
+              <span className="muted small">
+                {r.item.repo} #{r.item.number}
+              </span>
+            </td>
+            {cols.map((c) => {
+              const editable = canWrite && EDITABLE_COLUMNS.includes(c);
+              const open = editing?.row === r.id && editing.col === c;
+              return (
+                <td
+                  key={c}
+                  className={`col-${c}${editable ? ' editable' : ''}`}
+                  data-testid="cell"
+                  data-col={c}
+                  data-editing={open ? 'yes' : undefined}
+                  title={editable && !open ? '点一下修改' : undefined}
+                  onClick={editable && !open ? () => startEdit(r.id, r.item, c) : undefined}
+                >
+                  {open ? (
+                    <CellEditor
+                      item={r.item}
+                      col={c}
+                      projects={projects}
+                      options={options[r.item.repo] ?? null}
+                      disabled={!canWrite || busy.has(r.item.key)}
+                      act={(a, ok) => void act(r.item)(a, ok)}
+                      close={() => setEditing(null)}
+                    />
+                  ) : (
+                    <Cell col={c} item={r.item} now={now} dark={dark} />
+                  )}
+                </td>
+              );
+            })}
+          </tr>
+        ))}
+      {t.groupBy !== 'none' && onNewInGroup && !folded.has(g.key) && (
+        <tr className="group-add">
+          <td colSpan={cols.length + 1}>
+            <button className="link" data-testid="group-add" disabled={!canCreate} title={createTitle} onClick={() => onNewInGroup(g)}>
+              ＋ 新建 issue
+            </button>
+          </td>
+        </tr>
+      )}
+    </tbody>
+  );
 
   return (
     <div className="table-layout" data-testid="table">
@@ -155,64 +474,37 @@ export function TableView({
         </nav>
       )}
       <div className="table-scroll">
-        <table className="items">
+        <table className={`items${sized ? ' sized' : ''}`} style={sized ? { width: ['title' as TableColumn, ...cols].reduce((n, c) => n + widthOf(c, shown), 0) } : undefined}>
+          {sized && (
+            <colgroup>
+              {(['title', ...cols] as TableColumn[]).map((c) => (
+                <col key={c} style={{ width: widthOf(c, shown) }} />
+              ))}
+            </colgroup>
+          )}
           <thead>
             <tr>
-              <th>{COLUMN_LABEL.title}</th>
-              {cols.map((c) => (
-                <th key={c}>{COLUMN_LABEL[c]}</th>
-              ))}
+              {head('title')}
+              {cols.map(head)}
             </tr>
           </thead>
-          {table.groups.map((g) => (
-            <tbody key={g.key} data-testid="group" data-key={g.key} data-title={g.title}>
-              {t.groupBy !== 'none' && (
-                <tr className="group-head">
-                  <td colSpan={cols.length + 1}>
-                    <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'} onClick={() => toggle(g.key)}>
-                      {folded.has(g.key) ? '▸' : '▾'}
-                    </button>{' '}
-                    <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
-                    {g.current && <span className="current" data-testid="group-current">当前</span>}
-                    {g.subtitle && <span className="small muted"> {g.subtitle}</span>}
-                  </td>
-                </tr>
-              )}
-              {!folded.has(g.key) &&
-                g.rows.map((r) => (
-                  <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth} data-under={r.under ?? undefined}>
-                    <td className="title-cell" style={{ paddingLeft: 8 + r.depth * 20 }}>
-                      {r.under && (
-                        <span className="nest-mark" title="关联到上面这个 issue 的 PR">
-                          ↳{' '}
-                        </span>
-                      )}
-                      <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>
-                        <Icon name={itemIcon(r.item.kind, r.item.state, r.item.stateReason)} title={`${r.item.kind === 'pr' ? 'PR' : 'Issue'} ${STATE_TEXT[r.item.state]}`} />
-                      </span>
-                      <a
-                        href={r.item.url}
-                        data-testid="row-title"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          onOpen(r.item.key);
-                        }}
-                      >
-                        {r.item.title}
-                      </a>{' '}
-                      <span className="muted small">
-                        {r.item.repo} #{r.item.number}
-                      </span>
-                    </td>
-                    {cols.map((c) => (
-                      <td key={c} className={`col-${c}`}>
-                        <Cell col={c} item={r.item} now={now} dark={dark} />
+          {table.repos
+            ? table.repos.map((r) => (
+                <Fragment key={r.key}>
+                  <tbody data-testid="repo-group" data-key={r.key} data-title={r.title}>
+                    <tr className="repo-head">
+                      <td colSpan={cols.length + 1}>
+                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'} onClick={() => toggle(r.key)}>
+                          {folded.has(r.key) ? '▸' : '▾'}
+                        </button>{' '}
+                        <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
                       </td>
-                    ))}
-                  </tr>
-                ))}
-            </tbody>
-          ))}
+                    </tr>
+                  </tbody>
+                  {!folded.has(r.key) && r.groups.map((g) => groupBody(g, true))}
+                </Fragment>
+              ))
+            : table.groups.map((g) => groupBody(g, false))}
         </table>
         {table.itemCount === 0 && <div className="center muted" data-testid="table-empty">没有符合条件的条目</div>}
       </div>

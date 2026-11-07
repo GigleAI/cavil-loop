@@ -11,8 +11,9 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
+import { OPENS_ITEM } from './outsideClick';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
-import { NewIssueDialog } from './NewIssueDialog';
+import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, type WarnKind } from './warnings';
 import { TableView } from './TableView';
@@ -69,6 +70,7 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
       className={`card${card.under ? ' nested' : ''}`}
       data-testid="card"
       data-key={it.key}
+      {...{ [OPENS_ITEM]: '' }}
       data-under={card.under ?? undefined}
       draggable={ops.canWrite}
       onDragStart={(e) => {
@@ -296,7 +298,8 @@ export function BoardView({
     setOpened({ key: focus.key, n: ++openSeq.current });
     onFocusTaken?.();
   }, [focus?.seq]);
-  const [newIssue, setNewIssue] = useState(false);
+  // false = closed; true = the plain dialog; a seed = from a table group's "+" (GitHub#214)
+  const [newIssue, setNewIssue] = useState<boolean | GroupSeed>(false);
   const searchBox = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [busy, setBusy] = useState(false);
@@ -575,7 +578,19 @@ export function BoardView({
 
       <div className="board-area">
       {view.layout === 'table' ? (
-        <TableView items={items} projects={data.projects} view={view} today={today} now={now} onOpen={openItem} />
+        <TableView
+          items={items}
+          projects={data.projects}
+          view={view}
+          today={today}
+          now={now}
+          canWrite={canWrite}
+          onOpen={openItem}
+          onNote={setNote}
+          canCreate={canWrite}
+          createTitle={writesEnabled(sync) ? (state.sources.length ? '在这一组新建 issue，带上这一组的字段' : '先添加数据来源') : '离线时不能修改'}
+          onNewInGroup={(g) => setNewIssue({ preset: g.preset, title: g.title, items: g.rows.map((r) => r.item) })}
+        />
       ) : (
       <div className="board">
         {board.lanes
@@ -590,7 +605,9 @@ export function BoardView({
       )}
       {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} />}
       </div>
-      {newIssue && <NewIssueDialog state={state} data={data} onClose={() => setNewIssue(false)} onCreated={openItem} />}
+      {newIssue && (
+        <NewIssueDialog state={state} data={data} group={newIssue === true ? undefined : newIssue} onClose={() => setNewIssue(false)} onCreated={openItem} />
+      )}
       {confirm && (
         <ConfirmDialog
           title="加入看板？"

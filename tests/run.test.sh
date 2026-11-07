@@ -50,6 +50,19 @@ mkfx() {
             sleep)     echo 'sleep 4; exit 0' >> "$f" ;;
             mut)       echo 'echo "MUT=[${MUTATION:-}]"; exit 0' >> "$f" ;;
             cwd)       echo 'pwd > "$(dirname "$0")/../ran/cwd.txt"; exit 0' >> "$f" ;;
+            # 拆段（GitHub#211）：文件头声明 3 段，每段把收到的 TEST_PART 记一行
+            parts3)    printf '%s\n' '# parts: 3' 'echo "${TEST_PART:-none}" >> "$(dirname "$0")/../ran/parts.txt"; exit 0' >> "$f" ;;
+            # 记下自己收到的 TEST_PART（不拆段的文件应当是空的）
+            seepart)   echo 'echo "[${TEST_PART:-}]" > "$(dirname "$0")/../ran/seepart.txt"; exit 0' >> "$f" ;;
+            # 并行：开始时留 .live，最多等 4 秒看有没有别的单元也在跑，记下看到的最大同时数
+            par)       printf '%s\n' 'R="$(dirname "$0")/../ran"; touch "$R/$$.live"; m=0' \
+                           'for i in $(seq 40); do c=$(ls "$R" | grep -c "\.live$"); [ "$c" -gt "$m" ] && m=$c; [ "$m" -ge 2 ] && break; sleep 0.1; done' \
+                           'sleep 0.3; echo "$m" >> "$R/par.txt"; rm -f "$R/$$.live"; exit 0' >> "$f" ;;
+            # 第一次执行通过、之后每次都失败（测「同一单位只跑一次」：跑两次就会有一次红）
+            once)      printf '%s\n' 'R="$(dirname "$0")/../ran"; n=$( { cat "$R/once.n" 2>/dev/null || echo 0; } ); n=$((n + 1)); echo "$n" > "$R/once.n"' \
+                           '[ "$n" -eq 1 ] || { sleep 1; echo "SECOND_RUN_FAILED"; exit 1; }; exit 0' >> "$f" ;;
+            # 标了 parallel: no：开始时数一数还有几个单元在跑（应当是 0）
+            solo)      printf '%s\n' '# parallel: no' 'R="$(dirname "$0")/../ran"; ls "$R" | grep -c "\.live$" > "$R/solo.txt"; exit 0' >> "$f" ;;
         esac
     done
 }
@@ -145,39 +158,33 @@ mkfx "$FX" pass:newcomer
 chk "新加的测试文件不用登记就进了某一路" "$(part_union "$RUNSH" 3 | tr ' ' '\n' | grep -c '^newcomer=1$')" "1"
 chk "分 1 路时就是全部" "$(RUN_TESTS_DIR="$FX" bash "$RUNSH" --ci --list --shard 1/1 | wc -l)" "8"
 
-echo "【2】真实 tests/：4 路并集正好是全部测试减去排除清单"
-expected=$(cd "$TEST_DIR" && for f in *.test.sh; do n=${f%.test.sh}; grep -qE "^$n[[:space:]]" ci-exclude.txt || echo "$n"; done | LC_ALL=C sort | paste -sd' ')
+echo "【2】真实 tests/：4 路并集正好是全部调度单位减去排除清单"
+# 调度单位（GitHub#211）：没声明 parts 的文件是一个单位；声明了「# parts: N」的是 名字:1/N … 名字:N/N
+expected=$(cd "$TEST_DIR" && for f in *.test.sh; do n=${f%.test.sh}; grep -qE "^$n[[:space:]]" ci-exclude.txt && continue
+    p=$(sed -n 's/^# parts: *\([0-9][0-9]*\) *$/\1/p' "$f" | head -1)
+    if [ -n "$p" ] && [ "$p" -gt 1 ]; then for k in $(seq 1 "$p"); do echo "$n:$k/$p"; done; else echo "$n"; fi
+done | LC_ALL=C sort | paste -sd' ')
 got=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | LC_ALL=C sort | paste -sd' ')
 chk "并集 = 全部 − 排除" "$got" "$expected"
-chk "没有文件出现两次" "$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | sort | uniq -d | wc -l)" "0"
+chk "没有单位出现两次" "$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | sort | uniq -d | wc -l)" "0"
 chk "清单里确有测试（不是两边都空）" "$([ "$(echo "$got" | wc -w)" -gt 40 ] && echo yes || echo no)" "yes"
-# 最慢的 requester-bot 那一路不该再背别的重测试，也不该成为拖慢整轮的那一路。
-# 以前判「同路其余文件参考时间合计 ≤ 5 秒」：那是全部测试加起来不到 4 × requester-bot 时的写法——
-# 别的路都比它轻，零碎文件自然不往它这里分。测试总量涨过这条线以后（GitHub#157 加了一个 55 秒的
-# 文件，四路变成 217/216/216/216），四路一样重才是对的，零碎文件必然也会分一些过来，旧判据就
-# 判错了方向。现在分两条判：
-#   · 同路的其它文件每一个都是零碎文件（参考时间 ≤ 10 秒）——重测试不和它挤一路。
-#     原来是 ≤ 5 秒。GitHub#197 加了一个实测约 74 秒的文件后，四路各约 271 秒，
-#     requester-bot（236 秒）那一路要补约 35 秒零碎文件；按现有参考时间（全部实测过），
-#     新文件参考时间取 25–74 秒中任何值，都会分来 6–10 秒的文件（price-fetch 6 /
-#     preview-legacy-adopt 6 / repair-unit-links 7 / claude-resume-model 8 / requester-bot-wait 10）。
-#     那不是「重测试」，下一条判据（合计不超）才是真正兜底的
-#   · 这一路的合计不比「其它路里最重的那一路」和「requester-bot 自己」里较重的那个多出 5 秒以上——
-#     它不是多出来的那一截（requester-bot 单独就比别的路都重时，它自己就是下限，不算超）
-rb_shard=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4" | awk -v k="$k" '$2 == "requester-bot" {print k}'; done)
-shard_weights() {   # <路号> → 每行「名字 参考秒数」
-    bash "$RUNSH" --ci --list --shard "$1/4" | awk '{print $2}' \
-        | while read -r n; do printf '%s %s\n' "$n" "$(awk -v n="$n" '$1 == n {print $2; f=1} END {if (!f) print 5}' "$TEST_DIR/ci-weights.txt")"; done
+chk "最慢的两个文件确实拆了段（autopilot 3 段、requester-bot 2 段）" \
+    "$(echo "$got" | tr ' ' '\n' | grep -cE '^(autopilot:[123]/3|requester-bot:[12]/2)$')" 5
+# 四路各自的参考时间合计（拆段文件的一行参考时间平分到各段，单独写了「名字:K/N」的以它为准——和 run.sh 同一规则）
+unit_weight() {   # <单位>
+    local u="$1" f="${1%%:*}" p w
+    w=$(awk -v n="$u" '$1 == n {print $2; f=1} END {if (!f) print ""}' "$TEST_DIR/ci-weights.txt")
+    if [ -n "$w" ]; then echo "$w"; return; fi
+    w=$(awk -v n="$f" '$1 == n {print $2; f=1} END {if (!f) print 5}' "$TEST_DIR/ci-weights.txt")
+    if [ "$u" != "$f" ]; then p=${u##*/}; awk -v w="$w" -v p="$p" 'BEGIN {printf "%.3f\n", w / p}'; else echo "$w"; fi
 }
-rb_heavy_mates=$( [ -n "$rb_shard" ] && shard_weights "$rb_shard" | awk '$1 != "requester-bot" && $2 > 10 {printf "%s%s(%s)", (n++ ? " " : ""), $1, $2}')
-rb_total=$( [ -n "$rb_shard" ] && shard_weights "$rb_shard" | awk '{s += $2} END {print s + 0}')
-rb_self=$( [ -n "$rb_shard" ] && shard_weights "$rb_shard" | awk '$1 == "requester-bot" {print $2}')
-other_max=$(for k in 1 2 3 4; do [ "$k" = "${rb_shard:-}" ] && continue; shard_weights "$k" | awk '{s += $2} END {print s + 0}'; done | sort -n | tail -1)
-chk "requester-bot（最慢）那一路没有别的重测试（同路其余文件每个参考时间 ≤ 10 秒）" \
-    "$([ -n "$rb_shard" ] && [ -z "$rb_heavy_mates" ] && echo yes || echo "no（第 ${rb_shard:-?} 路：${rb_heavy_mates}）")" yes
-chk "requester-bot 那一路不是多出来的那一截（合计 ≤ max(其它路最重, requester-bot 自己) + 5 秒）" \
-    "$([ -n "$rb_shard" ] && awk -v a="${rb_total:-0}" -v b="${other_max:-0}" -v c="${rb_self:-0}" 'BEGIN {m = (b > c ? b : c); exit !(a <= m + 5)}' && echo yes || echo "no（这一路 ${rb_total} 秒，其它路最重 ${other_max} 秒，requester-bot 自己 ${rb_self} 秒）")" yes
-chk "到达性 · 两条判据确实读到了各路的参考时间" "$([ "${rb_self:-0}" -gt 0 ] 2>/dev/null && [ "${other_max:-0}" -gt 0 ] && echo yes || echo "no（${rb_self:-?}/${other_max:-?}）")" yes
+shard_total() { bash "$RUNSH" --ci --list --shard "$1/4" | awk '{print $2}' | while read -r u; do unit_weight "$u"; done | awk '{s += $1} END {printf "%.3f\n", s + 0}'; }
+totals=$(for k in 1 2 3 4; do shard_total "$k"; done | paste -sd' ')
+max_unit=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | while read -r u; do unit_weight "$u"; done | sort -g | tail -1)
+# 先放最重的、每个放进当前最轻的那一路：最重一路和最轻一路之差不会超过最重的那个单位
+chk "四路负载均衡：最重一路 − 最轻一路 ≤ 最重的单个调度单位（$totals；最重单位 $max_unit 秒）" \
+    "$(echo "$totals" | tr ' ' '\n' | sort -g | awk -v m="$max_unit" 'NR == 1 {lo = $1} {hi = $1} END {print (hi - lo <= m + 0.001) ? "yes" : "no"}')" yes
+chk "到达性 · 确实读到了各路的参考时间" "$(echo "$totals" | awk '{print ($1 > 0 && $4 > 0) ? "yes" : "no"}')" yes
 chk "排除清单里的 preview-socket-activation 不在 --ci 清单" "$(bash "$RUNSH" --ci --list | awk '$2=="preview-socket-activation"' | wc -l)" "0"
 
 echo "【3】全绿：退出 0、真的跑了、排除项没跑但有记录"
@@ -247,6 +254,53 @@ chk "--shard 和指定测试名混用 → 退出 2" "$RC" "2"
 runsh "$RUNSH" --shard 3/2
 chk "--shard 越界 → 退出 2" "$RC" "2"
 
+echo "【11】拆段：每段一个调度单位，用 TEST_PART=K/N 跑一次；汇总要每段恰好通过一次（GitHub#211）"
+rm -rf "$TMP/pt"; FX="$TMP/pt/tests"; mkfx "$FX" parts3:big seepart:small
+chk "清单里拆段文件出现为 3 个单位" "$(RUN_TESTS_DIR="$FX" bash "$RUNSH" --list | awk '{print $2}' | paste -sd' ')" "big:1/3 big:2/3 big:3/3 small"
+RC=0; TEST_PART=9/9 RUN_TESTS_DIR="$FX" bash "$RUNSH" -j 2 --out "$TMP/pt/out" > "$OUTF" 2>&1 || RC=$?
+chk "rc / 三段各跑一次、各收到自己的 TEST_PART" "$RC $(LC_ALL=C sort "$TMP/pt/ran/parts.txt" | paste -sd' ')" "0 1/3 2/3 3/3"
+chk "不拆段的文件收不到 TEST_PART（外面带进来的也不漏进去）" "$(cat "$TMP/pt/ran/seepart.txt")" "[]"
+chk "结果里每段一行" "$(awk -F'\t' '{print $1 "=" $2}' "$TMP/pt/out/results.tsv" | LC_ALL=C sort | paste -sd' ')" "big:1/3=pass big:2/3=pass big:3/3=pass small=pass"
+rm -f "$TMP/pt/ran/parts.txt"; runsh "$RUNSH" big:2/3 --out "$TMP/pt/out1"
+chk "点名一段：只跑那一段" "$RC $(cat "$TMP/pt/ran/parts.txt")" "0 2/3"
+runsh "$RUNSH" big:4/3 --out "$TMP/pt/out2"
+chk "点名不存在的段 → 退出 2" "$RC" "2"
+for k in 1 2; do RUN_TESTS_DIR="$FX" bash "$RUNSH" --shard "$k/2" --out "$TMP/pt/res/shard-$k" > /dev/null 2>&1; done
+chk "各路合起来每段恰好一次 → 绿" "$(verify_rc "$RUNSH" "$TMP/pt/res" | sed 's/^/rc=/')" "rc=0"
+cp -r "$TMP/pt/res" "$TMP/pt/res-miss"; grep -l 'big:2/3' "$TMP"/pt/res-miss/*/results.tsv | xargs sed -i '/^big:2\/3\t/d'
+chk "少跑一段 → 红" "$(verify_rc "$RUNSH" "$TMP/pt/res-miss")" "1"
+chk "  并说明是哪一段" "$(grep -c 'big:2/3: no result' "$OUTF")" 1
+cp -r "$TMP/pt/res" "$TMP/pt/res-dup"; grep -h '^big:1/3' "$TMP"/pt/res/*/results.tsv >> "$TMP/pt/res-dup/shard-1/results.tsv"
+chk "同一段跑了两次 → 红" "$(verify_rc "$RUNSH" "$TMP/pt/res-dup")" "1"
+cp -r "$TMP/pt/res" "$TMP/pt/res-extra"; printf 'big:4/3\tpass\t1\t\n' >> "$TMP/pt/res-extra/shard-1/results.tsv"
+chk "多跑一段（不存在的第 4 段）→ 红" "$(verify_rc "$RUNSH" "$TMP/pt/res-extra")" "1"
+cp -r "$TMP/pt/res" "$TMP/pt/res-whole"; printf 'big\tpass\t1\t\n' >> "$TMP/pt/res-whole/shard-1/results.tsv"
+chk "拆段文件又整份跑了一次 → 红" "$(verify_rc "$RUNSH" "$TMP/pt/res-whole")" "1"
+printf 'big:2/3 40\nbig 30\n' > "$FX/ci-weights.txt"
+chk "参考时间：段自己有一行就用它，其余段平分整份那一行" \
+    "$(RUN_TESTS_DIR="$FX" bash "$RUNSH" --list --shard 1/2 | awk '{print $2}' | paste -sd' ')" "big:2/3"
+
+echo "【12】并行：-j 2 时两个单位同时在跑；标了 parallel: no 的单独跑"
+rm -rf "$TMP/j"; FX="$TMP/j/tests"; mkfx "$FX" par:p1 par:p2 solo:s
+runsh "$RUNSH" -j 2 --out "$TMP/j/out"
+chk "rc / 两个并行单位都看到了对方（同时数 2）" "$RC $(LC_ALL=C sort "$TMP/j/ran/par.txt" | paste -sd' ')" "0 2 2"
+chk "parallel: no 的那个开始时没有别的单位在跑" "$(cat "$TMP/j/ran/solo.txt")" "0"
+chk "三个都有结果" "$(awk -F'\t' '$2 == "pass"' "$TMP/j/out/results.tsv" | wc -l)" 3
+rm -f "$TMP/j/ran/par.txt"; runsh "$RUNSH" -j 1 p1 p2 --out "$TMP/j/out1"
+chk "-j 1：一个接一个（每个都只看到自己）" "$RC $(paste -sd' ' "$TMP/j/ran/par.txt")" "0 1 1"
+runsh "$RUNSH" -j 0 --list
+chk "-j 0 → 退出 2" "$RC" "2"
+
+echo "【13】同一单位点名两次 / 整份文件和其中一段一起点名：每个单位只跑一次（PR #221 复审第 1 轮）"
+# 输出：rc / 执行次数 / results.tsv 行数 / 拆段文件各段的执行记录
+scenario_dup() {   # $1 run.sh
+    rm -rf "$TMP/dup"; FX="$TMP/dup/tests"; mkfx "$FX" once:probe parts3:big
+    RC=0; RUN_TESTS_DIR="$FX" bash "$1" probe probe big big:2/3 -j 2 --out "$TMP/dup/out" > "$OUTF" 2>&1 || RC=$?
+    echo "$RC $(cat "$TMP/dup/ran/once.n" 2>/dev/null || echo 0) $(wc -l < "$TMP/dup/out/results.tsv" | tr -d ' ') $(LC_ALL=C sort "$TMP/dup/ran/parts.txt" | paste -sd,)"
+}
+chk "rc / probe 只执行 1 次 / 4 行结果 / 三段各 1 次" "$(scenario_dup "$RUNSH")" "0 1 4 1/3,2/3,3/3"
+chk "  并说明哪些名字重复了" "$(grep -c 'named more than once' "$OUTF")" 2
+
 # ══ 负对照：改坏入口脚本的副本，对应场景必须变红 ════════════════════════════════
 echo "【负对照】"
 mutant() {  # $1 名字  $2 python 替换：旧 → 新（必须恰好命中一次）
@@ -275,11 +329,13 @@ neg "分组总放进第 1 路" scenario_heavy_alone "a" all-in-one \
 neg "--ci 不去掉排除项" scenario_allpass "0 pass pass yes yes no excluded" ci-runs-excluded \
     'if [ "$CI_MODE" = 1 ] && [ -n "${EXCLUDED[$n]+x}" ]; then continue; fi' ':'
 neg "失败不影响退出码" scenario_fail "1 fail pass 1" swallow-exit \
-    'if [ "$failed" -gt 0 ]; then echo "❌ $failed of ${#RUN[@]} failed"; exit 1; fi' ':'
+    'if [ "$failed" -gt 0 ]; then echo "❌ $failed of $ran failed"; exit 1; fi' ':'
 neg "整文件跳过当成通过" scenario_selfskip "1 skipped skipped-ok yes" no-skip-check \
     "elif grep -qE '^⏭' \"\$log\"; then" 'elif false; then'
 neg "超时没生效" scenario_timeout "1 timeout" no-timeout \
     '"${TIMEOUT_CMD[@]}" bash' 'bash'
+neg "重复点名不去重（失败被同名的通过盖住）" scenario_dup "0 1 4 1/3,2/3,3/3" no-dedup \
+    'if [ -n "${ONCE[$u]+x}" ]; then echo "run.sh: $u named more than once; it runs once" >&2; continue; fi' ':'
 neg "汇总只看收到的结果、不对照该跑的清单" scenario_verify_missing "1" verify-no-missing \
     'for n in $(selected); do
         c=${SEEN[$n]:-0}' 'for n in "${!SEEN[@]}"; do

@@ -107,7 +107,9 @@ G="$TMP/git"; mkdir -p "$G"
 gq init -q --bare -b main "$G/up.git"
 gq clone -q "$G/up.git" "$G/seed"
 (cd "$G/seed" && echo x > f && gq add f && gq commit -qm init && gq push -q origin HEAD:main)
-N=77
+# 编号取一个真实 issue 用不到的大数：派工脚本把提示词写到固定的 /tmp/cavil-loop-issue-<N>-*.md，
+# 用小编号会和本机正在跑的真 worker 或别的测试撞同一个文件（GitHub#211 起测试会并行跑）
+N=987971
 SESS="kctest-issue$N"
 
 # 一个场景一套独立目录。$1 = 被测 skill 目录

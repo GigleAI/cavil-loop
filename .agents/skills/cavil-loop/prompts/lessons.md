@@ -8,7 +8,7 @@
 
 为满足复盘 8 条上限，本版仅保留硬规则与高价值观察项，其余低频观察项（L6–L8、L10、L12–L28）已移出共享文件，历史见迁移表。
 
-<!-- next-id: 67 -->
+<!-- next-id: 68 -->
 
 ## 硬规则
 
@@ -37,7 +37,7 @@
 - 规则：PR 正文里的实测数字（尤其是新测试套到旧版本的通过/失败/未拦下个数）写明命令与口径，交付前复跑核对；独立复审复跑得出不同数字时，以复跑为准并在正文更正。
 - 适用：PR 正文或交人评论引用对拍、负对照的计数时。
 - 为什么：PR #78 正文称旧 main 上「另有 1 个反例没被拦下」，复审复跑为 4 个；PR #132 正文写负对照 58 份、已跑 12 份，复审实测当前为 55 项；PR #98 两轮正文数字（770/771、834/833）及三项负对照失败条数均与复审复跑不符；PR #174 首版正文的负对照命令写成区间，原样执行即报错、一项都不跑。
-- 这样做是对的：PR #83、#85、#87、#131、#163、#121 正文的通过/失败数经复审复跑完全一致，并说明通过项为何天然满足（如 https://github.com/GigleAI/cavil-loop/pull/87#issuecomment-6392752532）。PR #170 终轮正文的 26 个用例 / 29 项负对照 / 旧基准 18 个红，经复审复跑一致（https://github.com/GigleAI/cavil-loop/pull/170#issuecomment-6676666474）。PR #171 正文的 189 注明是不依赖后台的子集，与复审全量 351 口径分开，无冲突（https://github.com/GigleAI/cavil-loop/pull/171#issuecomment-6677366735）。PR #176 正文每个数字都写了命令，并注明只跑了新增 7 项负对照、未跑全部 157 项，复审复跑 357 + 19 + 7 项一致（https://github.com/GigleAI/cavil-loop/pull/176#issuecomment-6677622041）。
+- 这样做是对的：PR #83、#85、#87、#131、#163、#121 正文的通过/失败数经复审复跑完全一致，并说明通过项为何天然满足（如 https://github.com/GigleAI/cavil-loop/pull/87#issuecomment-6392752532）。PR #170 终轮正文的 26 个用例 / 29 项负对照 / 旧基准 18 个红，经复审复跑一致（https://github.com/GigleAI/cavil-loop/pull/170#issuecomment-6676666474）。PR #171 正文的 189 注明是不依赖后台的子集，与复审全量 351 口径分开，无冲突（https://github.com/GigleAI/cavil-loop/pull/171#issuecomment-6677366735）。PR #176 正文每个数字都写了命令，并注明只跑了新增 7 项负对照、未跑全部 157 项，复审复跑 357 + 19 + 7 项一致（https://github.com/GigleAI/cavil-loop/pull/176#issuecomment-6677622041）。PR #198 正文写明命令与口径（默认模式通过 416、失败 0、负对照跳过 73），复审复跑一致（https://github.com/GigleAI/cavil-loop/pull/198#issuecomment-6686325047）。
 - Seen 4×: #78 https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6619558657 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6541045282 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677419671
 
 ### L41
@@ -86,7 +86,7 @@
 ### L11
 - 规则：测试全绿、复审「实测通过」、PR 合并、生产已实际执行分别声明，不互相代替；「实测过的 / 没跑过的」分栏披露。改到复审/派工自己运行时依赖的脚本或模板时，同时声明「合并部署前仍用旧版」的验证滞后。
 - 适用：交人评论、复审结论、复盘里提到验证或上线状态。
-- 这样做是对的：PR #64 起的多个 PR（#68、#72、#73、#78、#77、#79、#81、#83、#85、#87、#96、#98、#101、#104、#105、#110、#115、#121、#131、#132、#134、#143、#150、#163、#170、#171）均单列「还没验证的」，复审区分自报与独立复跑，例如 PR #101 把自报 1124 更正为独立复跑的 1125（https://github.com/GigleAI/cavil-loop/pull/101#issuecomment-6544324626），PR #96 单列真实 GitHub/grokbot 未跑、部署前仍是旧版（https://github.com/GigleAI/cavil-loop/pull/96#issuecomment-6539637660）。
+- 这样做是对的：PR #64 起的多个 PR（#68、#72、#73、#78、#77、#79、#81、#83、#85、#87、#96、#98、#101、#104、#105、#110、#115、#121、#131、#132、#134、#143、#150、#163、#170、#171）均单列「还没验证的」，复审区分自报与独立复跑，例如 PR #101 把自报 1124 更正为独立复跑的 1125（https://github.com/GigleAI/cavil-loop/pull/101#issuecomment-6544324626），PR #96 单列真实 GitHub/grokbot 未跑、部署前仍是旧版（https://github.com/GigleAI/cavil-loop/pull/96#issuecomment-6539637660）。PR #198 明写“文档写对不等于机器人已照做”，真实机器人效果待观察（https://github.com/GigleAI/cavil-loop/pull/198#issuecomment-6686325047）。
 - Seen 1×: #27 https://github.com/GigleAI/cavil-loop/pull/27#issuecomment-5707826052
 
 ### L29
@@ -314,3 +314,10 @@
 - 为什么：PR #188 把来源区设为不换行、可收缩且 overflow:hidden，20 个来源时末尾复选框落在裁切区外，其中心实际命中搜索框；原有的顶栏宽度检查只测外层容器，示例只有 2 个来源，没有拦下。
 - 这样做是对的：PR #188 返工后来源条可横向滚动、胶囊不收缩，新测试 20→19→20，套到旧样式上变红（https://github.com/GigleAI/cavil-loop/pull/188#issuecomment-6684794762）。
 - Seen 1×: #188 https://github.com/GigleAI/cavil-loop/pull/188#issuecomment-6684429031 [client/src/renderer/]
+
+### L67
+- 规则：重构把某段被负对照（mutations.mjs）当作替换原文的代码抽成共享函数或删除时，在同一提交里把对应变异改指向新调用点，并在交付前跑 `node test/mutation/run.mjs --check`；不得靠删掉该条保护消除检查错误。
+- 适用：client/test/mutation/ 的负对照清单与被它引用的 client/src/ 代码一起被重构时。
+- 为什么：PR #222 抽出共享的里程碑选择函数后，一条旧负对照仍寻找已删除的内联代码，静态检查退出码 1；默认 `npm test` 只跳过负对照，578 条单元测试全绿也发现不了，会让每周发版门禁因准备失败变红。
+- 这样做是对的：PR #222 返工后把变异改到详情里的真实调用点，保留「无同名里程碑则拒绝」的覆盖，静态检查 317 项原文都在（https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699647411）。
+- Seen 1×: #222 https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699572556 [client/test/mutation/]
