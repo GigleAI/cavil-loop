@@ -181,8 +181,9 @@ REVIEW_DESIGN_PROPOSALS="false"
 # flipped to LABEL_PENDING_MERGE and the daemon merges it — only if ALL of these hold:
 #   · the most recent "add <autopilot label>" event was done by a real user with write access who
 #     is NOT the loop's write account and NOT the requester bot — on the issue, or on the PR (GitHub#128)
-#   · the PR is from this repo, and either on branch BRANCH_PREFIX<N> with a body that closes
-#     exactly #N, or (no issue, GitHub#142) its body closes no issue of this repo — then only the
+#   · the PR is from this repo, and either on branch BRANCH_PREFIX<N> with a body that only says
+#     `Refs #N` (no closing keyword — the issue stays open for a human, GitHub#233; a body that
+#     still closes #N is handed back to the worker), or (no issue, GitHub#142) its body closes no issue of this repo — then only the
 #     PR's own label counts, and the PR description at the moment the label was added must also
 #     have closed no issue of this repo
 #   · the PR head and target branch are exactly those the reviewer was dispatched on, and the reviewer's pass
@@ -200,7 +201,8 @@ REVIEW_DESIGN_PROPOSALS="false"
 # 通过后 PR 翻 LABEL_PENDING_MERGE，由 daemon 合并——以下全部成立才合：
 #   · 最近一次「加上托管标签」的操作人是有写权限的真人，且不是 loop 的写入账号、不是外部需求机器人——
 #     打在 issue 上或 PR 上都行（GitHub#128）
-#   · PR 来自本仓库，并且要么分支是 BRANCH_PREFIX<N>、正文只关闭 #N；要么（没绑 issue，GitHub#142）
+#   · PR 来自本仓库，并且要么分支是 BRANCH_PREFIX<N>、正文只写 `Refs #N`、不写关闭关键词（合并后 issue 留给人关，
+#     GitHub#233；正文还关闭 #N 的交回 worker 改）；要么（没绑 issue，GitHub#142）
 #     正文一个本仓库 issue 都不关——这时只认 PR 上的标签，而且打标签那一刻的 PR 正文也得一个都不关
 #   · PR 最新提交和目标分支正是派复审时的那一对，且复审的通过评论里有这个提交的测试重跑记录（通过 > 0、失败 = 0）
 #   · 这个提交上的自动检查全部通过（仓库一个检查都没有时，只靠上面那条记录）
@@ -215,6 +217,14 @@ LABEL_PENDING_MERGE="pending/merge"
 AUTOPILOT_MERGE_METHOD="squash"
 # 自动检查超过几小时还没跑完就交人
 AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
+# Trusted repos (GitHub#233), comma-separated owner/repo. A listed repo may hold the parent issue of a split
+# sub-issue (its maintainer-added autopilot label authorizes the sub-issue here; whoever added it needs write
+# access in both repos), and may hold prerequisites for pending/blocked (`<!-- agent-blocked-by: owner/repo#N -->`).
+# Empty = only this repo, exactly as before.
+# 互通名单（GitHub#233），逗号分隔的 owner/repo。名单里的仓库可以当拆分子项的父 issue 所在仓库（父 issue 上维护者
+# 亲手打的托管标签授权本仓库的子项，打标签的人两个仓库都要有写权限），也可以当等前置的前置所在仓库
+# （`<!-- agent-blocked-by: owner/repo#N -->`）。留空 = 只认本仓库，和以前一样。
+TRUSTED_REPOS=""
 
 # ── Waiting on another item / 等前置标签（GitHub#157）──
 # When the work is blocked on ANOTHER issue / PR of this repo (not on a human decision), the worker

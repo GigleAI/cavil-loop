@@ -46,8 +46,15 @@ TEMPLATE="$(compose_prompt_template "${DISPATCH_PROMPT_KIND:-new-issue}")"
 # 在 prompt 里覆盖前文的决策树。三项核对（真有父子关系 / 正文标记 / bot 建的）任一不过
 # → split_parent_of 返回空，照常走设计轮。review 等显式指定的 kind 不受影响。
 PARENT_ISSUE=""
+PARENT_REPO="$REPO"
 if [ -z "${DISPATCH_PROMPT_KIND:-}" ]; then
     PARENT_ISSUE="$(split_parent_of "$ISSUE")"
+    # 父 issue 在互通名单里的别的仓库（GitHub#233）：同三项核对，只是父 issue 不在本仓库
+    if [ -z "$PARENT_ISSUE" ] && [ -n "${TRUSTED_REPOS:-}" ] \
+       && sub_ij=$(gh api "repos/$REPO/issues/$ISSUE" 2>/dev/null) && split_parent_check "$ISSUE" "$sub_ij" \
+       && [ "$(requester_bot_lc "$SPLIT_PARENT_REPO")" != "$(requester_bot_lc "$REPO")" ]; then
+        PARENT_ISSUE="$SPLIT_PARENT_NUM"; PARENT_REPO="$SPLIT_PARENT_REPO"
+    fi
 fi
 if [ -n "$PARENT_ISSUE" ]; then
     sub_base="$(compose_prompt_template issue-comment)"
@@ -57,8 +64,13 @@ if [ -n "$PARENT_ISSUE" ]; then
         { cat "$sub_base"; printf '\n\n---\n\n'; cat "$sub_overlay"
           # 等前置（GitHub#157）：子项说明里「前置还没合并 → 交人」要在它**之后**改掉，后文才覆盖得了
           if blocked_enabled; then printf '\n\n---\n\n'; blocked_handoff_section sub-issue; fi
+          # 父 issue 在别的仓库（GitHub#233）：上文读父 issue 的命令要换仓库
+          if [ "$PARENT_REPO" != "$REPO" ]; then
+              printf '\n\n---\n\n# 父 issue 在另一个仓库\n\n父 issue #%s 在 **%s**（不是本仓库）。上文读父 issue、列兄弟子项的两条命令，把 `--repo %s` 换成 `--repo %s`、`repos/%s/issues/%s/sub_issues` 换成 `repos/%s/issues/%s/sub_issues`。本子项的 PR 照常开在本仓库。\n' \
+                  "$PARENT_ISSUE" "$PARENT_REPO" "$REPO" "$PARENT_REPO" "$REPO" "$PARENT_ISSUE" "$PARENT_REPO" "$PARENT_ISSUE"
+          fi
         } > "$TEMPLATE"
-        log "issue #$ISSUE 是 #$PARENT_ISSUE 拆出的子项 → 跳过设计轮，直接开发"
+        log "issue #$ISSUE 是 $(split_parent_ref "$PARENT_REPO" "$PARENT_ISSUE") 拆出的子项 → 跳过设计轮，直接开发"
     else
         log "⚠️ issue #$ISSUE 是 #$PARENT_ISSUE 的子项，但缺 issue-comment / sub-issue 模板 → 照常走设计轮"
         PARENT_ISSUE=""
