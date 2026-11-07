@@ -105,7 +105,13 @@ flip_label() {
 # 终端不会被踢出 tmux（GitHub#197）。
 REUSE_SESSION=0
 if session_alive "$TMUX_SESSION"; then
-    if tmux_session_matches_worker "$TMUX_SESSION"; then
+    _match=0; tmux_session_matches_worker "$TMUX_SESSION" || _match=$?
+    if [ "$_match" = 2 ]; then
+        # 读不到 session 记的 agent / 模型 / 角色：既不能注入（可能是别的角色），也不能换程序
+        # （可能停掉正在干活的 worker）。本轮不动，非 0 退出，标签不翻，下一轮再判。
+        log "PR #$PR -> 读不到 $TMUX_SESSION 记录的 worker / 模型 / 角色（tmux 查询失败），本轮不注入也不换程序"
+        exit 1
+    elif [ "$_match" = 0 ]; then
         REUSE_SESSION=1
     else
         log "PR #$PR -> session worker/model/角色与请求不一致，原地换程序为 $WORKER_AGENT/${WORKER_MODEL:-default}（$WORKER_SESSION_ROLE）"
@@ -142,7 +148,13 @@ if [ -d "$WORKTREE" ]; then
     # → tmux session 立即关。等 2s 看是否还在，死了就降级成全新会话。
     if [ "$AGENT_LAUNCH_KIND" != "new" ]; then
         sleep 2
-        if ! worker_alive "$TMUX_SESSION"; then
+        _alive=0; worker_alive "$TMUX_SESSION" || _alive=$?
+        if [ "$_alive" = 2 ]; then
+            # 读不到程序是否还在：不退休会话记录、不重起（可能正在跑），本轮失败退出，下一轮再判
+            log "PR #$PR -> 读不到 $TMUX_SESSION 里的程序是否还在（tmux 查询失败），不降级、不重起"
+            exit 1
+        fi
+        if [ "$_alive" = 1 ]; then
             log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 PR context 仍可工作）"
             agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"

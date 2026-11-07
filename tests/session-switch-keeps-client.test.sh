@@ -2,7 +2,7 @@
 # 换 worker / 换复审时不把 attach 着的终端踢出 tmux（GitHub#197）。
 #
 # 跑法：bash tests/session-switch-keeps-client.test.sh            （默认回归，约 30 秒）
-#       MUTATION=1 bash tests/session-switch-keeps-client.test.sh （另跑 7 条负对照，约 4 分钟）
+#       MUTATION=1 bash tests/session-switch-keeps-client.test.sh （另跑 10 条负对照，约 6 分钟）
 # 依赖：tmux（3.0+）、git、jq。
 #
 # 真跑两个派工脚本（issue 评论、PR 评论），真 tmux——但开在**私有 socket** 上，绝不碰本机
@@ -77,6 +77,9 @@ trap '' HUP
 secs=\$(cat "$CTL/secs" 2>/dev/null || echo 120)
 echo "AGENT-RUN $a pid=\$\$ cwd=\$(pwd -P) token=\${GH_TOKEN:-none}"
 echo "$a \$\$ token=\${GH_TOKEN:-none}" >> "$CTL/runs"
+if [ -e "$CTL/tick" ]; then
+    while :; do echo "TICK \$\$"; sleep 0.1; done
+fi
 exec sleep "\$secs"
 SH
 done
@@ -302,7 +305,12 @@ split_scenario() {
 # 在被测 skill 目录里 source 公共库，问一次 worker_alive
 lib_alive() {   # <skill 目录>
     (cd "$D/proj" && HOME="$D/home" CODING_AGENT_CONFIG="$D/config" timeout 30 \
-        bash -c 'source "$1/scripts/_lib.sh" > /dev/null 2>&1; set +e; worker_alive "$2" && echo alive || echo dead' _ "$1" "$SESS" 2>/dev/null)
+        bash -c 'source "$1/scripts/_lib.sh" > /dev/null 2>&1; set +e; worker_alive "$2"; case $? in 0) echo alive ;; 1) echo dead ;; 2) echo unknown ;; *) echo "rc$?" ;; esac' _ "$1" "$SESS" 2>/dev/null)
+}
+# 在被测 skill 目录里 source 公共库，调一次 start_session_logging
+lib_logging() {   # <skill 目录>
+    (cd "$D/proj" && HOME="$D/home" CODING_AGENT_CONFIG="$D/config" timeout 30 \
+        bash -c 'source "$1/scripts/_lib.sh" > /dev/null 2>&1; set +e; start_session_logging "$2"' _ "$1" "$SESS" > /dev/null 2>&1)
 }
 
 # 读 tmux 失败时（复审第 2 轮）：不杀、不另起、不改记录、不翻标签；恢复后正常切换。
@@ -321,19 +329,29 @@ fault_scenario() {
     [ "$(T show-options -qv -t "=$SESS:" @worker_pane)" = "$wpane" ] \
         || { echo "FAIL 故障·夹具：已记录 worker 窗格 :: $(T show-options -qv -t "=$SESS:" @worker_pane)"; return; }
 
-    for name in 窗格清单读不到 记录读不到; do
+    local round rcs r
+    for name in 窗格清单读不到 记录读不到 身份读不到; do
         case "$name" in
             窗格清单读不到) pat='*list-panes*#{pane_pid} #{pane_dead}*' ;;
             记录读不到)     pat='*show-options*@worker_pane*' ;;
+            身份读不到)     pat='*show-options*@worker_agent*' ;;
         esac
         runs0="$(wc -l < "$CTL/runs")"; : > "$CTL/gh.log"; rm -f "$CTL/fault.hits"
         printf '%s' "$pat" > "$CTL/fault"
-        [ "$(lib_alive "$R")" = alive ] && echo "PASS 故障·${name}·判活不判死" || echo "FAIL 故障·${name}·判活不判死"
-        dispatch "$R" "$kind" codex review; rc=$?
+        if [ "$name" != 身份读不到 ]; then
+            # 判活只读窗格清单 / 记录；身份那一项和判活无关
+            [ "$(lib_alive "$R")" != dead ] && echo "PASS 故障·${name}·判活不判死" || echo "FAIL 故障·${name}·判活不判死"
+        fi
+        # 故障连续持续两轮派工
+        rcs=""; rc=1
+        for round in 1 2; do
+            dispatch "$R" "$kind" codex review; r=$?
+            rcs="$rcs $r"; [ "$r" = 0 ] && rc=0
+        done
         rm -f "$CTL/fault"
         # 到达性：故障确实被被测代码撞上了
         [ -s "$CTL/fault.hits" ] && echo "PASS 故障·${name}·查询确实失败过" || echo "FAIL 故障·${name}·查询确实失败过"
-        [ "$rc" != 0 ] && echo "PASS 故障·${name}·本次派工失败退出" || echo "FAIL 故障·${name}·本次派工失败退出 :: rc=0"
+        [ "$rc" != 0 ] && echo "PASS 故障·${name}·两轮派工都失败退出" || echo "FAIL 故障·${name}·两轮派工都失败退出 :: 退出码 $rcs"
         kill -0 "$w1" 2>/dev/null && echo "PASS 故障·${name}·原 worker 还活着" || echo "FAIL 故障·${name}·原 worker 还活着"
         kill -0 "$hpid" 2>/dev/null && echo "PASS 故障·${name}·人的程序还活着" || echo "FAIL 故障·${name}·人的程序还活着"
         n="$(wc -l < "$CTL/runs")"
@@ -357,6 +375,59 @@ fault_scenario() {
     [ -n "$n" ] && [ "$(pane_of_pid "$n")" = "$wpane" ] && echo "PASS 故障·恢复后·复审程序在原 worker 窗格里" \
         || echo "FAIL 故障·恢复后·复审程序在原 worker 窗格里 :: $(tail -3 "$D/dispatch.out" | tr '\n' ' ')"
     grep -q 'doing/agent' "$CTL/gh.log" && echo "PASS 故障·恢复后·翻了标签" || echo "FAIL 故障·恢复后·翻了标签"
+    T kill-server 2>/dev/null
+}
+
+# 会话日志与 session 清单读不到时（复审第 3 轮）。$1 = skill 目录
+log_fault_scenario() {
+    local R="$1" wpane w1 t0 t1 t2 r
+    setup_scenario "$(basename "$R").logfault"
+    : > "$CTL/tick"
+    dispatch "$R" issue claude worker
+    if ! sess_alive || ! wait_runs 1; then
+        echo "FAIL 日志·首次派工起了 session :: $(tail -5 "$D/dispatch.out" | tr '\n' ' ')"; return
+    fi
+    w1="$(last_pid claude)"; wpane="$(pane_of_pid "$w1")"
+    lib_logging "$R"
+    [ "$(T display-message -p -t "$wpane" '#{pane_pipe}')" = 1 ] \
+        || { echo "FAIL 日志·夹具：日志管道已开 :: $(T display-message -p -t "$wpane" '#{pane_pipe}')"; return; }
+    ticks() { grep -ac TICK "$D/logs/$SESS.log" 2>/dev/null; }
+    sleep 0.5; t0="$(ticks)"
+    # 任何读日志状态（pane_pipe）的查询都失败，连续两轮
+    printf '%s' '*pane_pipe*' > "$CTL/fault"; rm -f "$CTL/fault.hits"
+    # 每一轮之后都查：旧写法的 -o 是开关，两轮会关了又开，只看最后会把错误抵消掉
+    local closed=""
+    for r in 1 2; do
+        lib_logging "$R"
+        [ "$(T display-message -p -t "$wpane" '#{pane_pipe}')" = 1 ] || closed="$closed 第${r}轮"
+    done
+    rm -f "$CTL/fault"
+    [ -s "$CTL/fault.hits" ] && echo "PASS 日志·读不到·查询确实失败过" || echo "FAIL 日志·读不到·查询确实失败过"
+    [ -z "$closed" ] && echo "PASS 日志·读不到时管道还开着" || echo "FAIL 日志·读不到时管道还开着 ::$closed 后被关掉"
+    sleep 0.6; t1="$(ticks)"
+    [ "$t1" -gt "$t0" ] && echo "PASS 日志·读不到时日志还在增长" || echo "FAIL 日志·读不到时日志还在增长 :: $t0 -> $t1"
+    # 恢复后连调两次：仍是开着（不会被开关切回关闭），日志继续增长
+    closed=""
+    for r in 1 2; do
+        lib_logging "$R"
+        [ "$(T display-message -p -t "$wpane" '#{pane_pipe}')" = 1 ] || closed="$closed 第${r}轮"
+    done
+    [ -z "$closed" ] && echo "PASS 日志·恢复后重复调用管道还开着" || echo "FAIL 日志·恢复后重复调用管道还开着 ::$closed 后被关掉"
+    sleep 0.6; t2="$(ticks)"
+    [ "$t2" -gt "$t1" ] && echo "PASS 日志·恢复后日志还在增长" || echo "FAIL 日志·恢复后日志还在增长 :: $t1 -> $t2"
+    # 日志确实关着时，恢复后能开起来（到达性：「开」这条路真的走得到）
+    T pipe-pane -t "$wpane"; sleep 0.2
+    [ "$(T display-message -p -t "$wpane" '#{pane_pipe}')" = 0 ] || { echo "FAIL 日志·夹具：手动关掉日志"; return; }
+    lib_logging "$R"
+    [ "$(T display-message -p -t "$wpane" '#{pane_pipe}')" = 1 ] && echo "PASS 日志·确实没开时会开起来" \
+        || echo "FAIL 日志·确实没开时会开起来"
+    # session 清单读不到：判活要说「不知道」，不能说「死了」
+    printf '%s' '*list-sessions*' > "$CTL/fault"
+    r="$(lib_alive "$R")"
+    rm -f "$CTL/fault"
+    [ "$r" = unknown ] && echo "PASS 会话清单读不到·判活为不知道" || echo "FAIL 会话清单读不到·判活为不知道 :: $r"
+    [ "$(lib_alive "$R")" = alive ] && echo "PASS 会话清单恢复后·判活为活着" || echo "FAIL 会话清单恢复后·判活为活着"
+    rm -f "$CTL/tick"
     T kill-server 2>/dev/null
 }
 
@@ -405,7 +476,10 @@ echo "── 4. 读 tmux 失败时什么都不动 ──"
 judge issue < <(fault_scenario "$REPO_DIR" issue)
 judge PR < <(fault_scenario "$REPO_DIR" pr)
 
-echo "── 5. 负对照 ──"
+echo "── 5. 读不到日志状态 / session 清单时 ──"
+judge issue < <(log_fault_scenario "$REPO_DIR")
+
+echo "── 6. 负对照 ──"
 if mutation_gate; then
     # 换回删 session 再新建的旧做法
     expect_red "删 session 重建" "换去复审后客户端还挂着" '
@@ -436,24 +510,24 @@ s=s.replace(old, """    if [ "$(tmux display-message""")
 open(p,"w").write(s)' issue
 fi
 if mutation_gate; then
-    # 会话日志不先看有没有 pipe，直接 pipe-pane -o（它是开关，会把已有日志关掉）
+    # 会话日志不先看有没有 pipe，又用回 pipe-pane -o（它是开关，会把已有日志关掉）
     expect_red "日志开关没先判断" "换程序后的两次启动都写进同一份会话日志" '
 import sys; p=sys.argv[1]; s=open(p).read()
-old="""    if [ "$(tmux display-message -p -t "$tgt" \x27#{pane_pipe}\x27 2>/dev/null)" = 1 ]; then
-        return 0
-    fi
-"""
+old="    [ \x22$pipe\x22 = 1 ] && return 0\n"
 assert old in s
 s=s.replace(old, "", 1)
+old2="    if ! tmux pipe-pane -t \x22$tgt\x22"
+assert old2 in s
+s=s.replace(old2, "    if ! tmux pipe-pane -o -t \x22$tgt\x22", 1)
 open(p,"w").write(s)' pr
 fi
 if mutation_gate; then
     # 按排列顺序认 worker 窗格（复审第 1 轮的实现）
     expect_red "按顺序认 worker 窗格" "分屏·人的程序还活着" '
 import sys; p=sys.argv[1]; s=open(p).read()
-old="""        if [ -n "$rec" ] && [ "$id" = "$rec" ]; then hit="$id $pid $dead"; fi"""
+old="""        if [ -n "$rec" ] && [ "$id" = "$rec" ]; then hit="$id $pid $dead $pipe"; fi"""
 assert old in s
-s=s.replace(old, "        [ \x22$n\x22 -eq 1 ] && hit=\x22$id $pid $dead\x22", 1)
+s=s.replace(old, "        [ \x22$n\x22 -eq 1 ] && hit=\x22$id $pid $dead $pipe\x22", 1)
 open(p,"w").write(s)' issue split_scenario
 fi
 if mutation_gate; then
@@ -471,15 +545,53 @@ if mutation_gate; then
     # 窗格清单读失败当成「记录的窗格已不在」（复审第 2 轮复现 A）
     expect_red "清单读失败当窗格不在" "故障·窗格清单读不到·没有起第二个程序" '
 import sys; p=sys.argv[1]; s=open(p).read()
-old="""    if ! panes="$(tmux list-panes -s -t "=$sess:" -F \x27#{pane_id} #{pane_pid} #{pane_dead}\x27 2>/dev/null)"; then
+old="""    if ! panes="$(tmux list-panes -s -t "=$sess:" -F \x27#{pane_id} #{pane_pid} #{pane_dead} #{pane_pipe}\x27 2>/dev/null)"; then
         echo unknown; return 0
     fi"""
 assert old in s
-s=s.replace(old, "    panes=\x22$(tmux list-panes -s -t \x22=$sess:\x22 -F \x27#{pane_id} #{pane_pid} #{pane_dead}\x27 2>/dev/null || true)\x22", 1)
+s=s.replace(old, "    panes=\x22$(tmux list-panes -s -t \x22=$sess:\x22 -F \x27#{pane_id} #{pane_pid} #{pane_dead} #{pane_pipe}\x27 2>/dev/null || true)\x22", 1)
 old2="""    if [ "$n" -eq 0 ]; then echo unknown; return 0; fi"""
 assert old2 in s
 s=s.replace(old2, """    if [ "$n" -eq 0 ] && [ -n "$rec" ]; then echo "gone $rec"; return 0; fi""", 1)
 open(p,"w").write(s)' pr fault_scenario
+fi
+if mutation_gate; then
+    # 日志状态读不到时照旧用 -o 开（复审第 3 轮复现）
+    expect_red "日志读不到当没开" "日志·读不到时管道还开着" '
+import sys; p=sys.argv[1]; s=open(p).read()
+old="""    case "$st" in
+        found|single) ;;
+        *)
+            log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 $st），本次不碰会话日志"
+            return 0 ;;
+    esac
+    [ "$pipe" = 1 ] && return 0"""
+assert old in s
+s=s.replace(old, "    [ \x22$pipe\x22 = 1 ] && return 0\n    tgt=\x22=$sess:\x22", 1)
+old2="    if ! tmux pipe-pane -t \x22$tgt\x22"
+assert old2 in s
+s=s.replace(old2, "    if ! tmux pipe-pane -o -t \x22$tgt\x22", 1)
+open(p,"w").write(s)' issue log_fault_scenario
+fi
+if mutation_gate; then
+    # 身份读不到时当成默认值（改动前的写法）
+    expect_red "身份读不到当默认" "故障·身份读不到·原 worker 还活着" '
+import sys; p=sys.argv[1]; s=open(p).read()
+old="2>/dev/null)\x22 || return 2"
+assert s.count(old) == 3
+s=s.replace(old, "2>/dev/null || true)\x22")
+open(p,"w").write(s)' pr fault_scenario
+fi
+if mutation_gate; then
+    # session 清单读不到时当成「不在」
+    expect_red "清单读不到当不在" "会话清单读不到·判活为不知道" '
+import sys; p=sys.argv[1]; s=open(p).read()
+old="""    rm -f "$err"
+    return 2
+}"""
+assert old in s
+s=s.replace(old, "    rm -f \x22$err\x22\n    return 1\n}", 1)
+open(p,"w").write(s)' issue log_fault_scenario
 fi
 
 echo
