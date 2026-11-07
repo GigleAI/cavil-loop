@@ -436,7 +436,10 @@ def read_codex(env, wt, since):
     while day <= datetime.date.today() + datetime.timedelta(days=1):
         files += glob.glob(os.path.join(root, f"{day:%Y}", f"{day:%m}", f"{day:%d}", "rollout-*.jsonl"))
         day += datetime.timedelta(days=1)
-    cmds, unparsed, mine = [], 0, 0
+    # 「属于本轮」只在函数末尾判一次（#247 复审第 2 轮：有一处解析失败计数漏了时间判断，旧调用让本轮
+    # 变成「测试未知」）。这里先把所有调用连同发出时刻都记下来——旧命令的 session_id 还要用来认后续轮询——
+    # 最后按同一条件（调用发出时刻 ≥ 本轮开始）一起筛命令和解析失败。
+    cmds, bad, mine = [], [], 0
     try:
         for p in sorted(files):
             recs = list(_records(p))
@@ -451,7 +454,7 @@ def read_codex(env, wt, since):
             live = {}                            # session_id → 还在跑的那条命令
 
             def new_cmd(t, cmd, chunk, body, offset):
-                c = {"t": t + offset, "cmd": cmd, "text": body, "exit": chunk["exit"], "bg": False, "end": None}
+                c = {"t": t + offset, "call_t": t, "cmd": cmd, "text": body, "exit": chunk["exit"], "bg": False, "end": None}
                 if chunk["sid"] is not None and chunk["exit"] is None:
                     c["bg"] = True               # 还在跑：此后只靠轮询补输出，不计时
                     live[chunk["sid"]] = c
@@ -490,9 +493,9 @@ def read_codex(env, wt, since):
                                 found.append(json.loads(m.group(1)))
                             except ValueError:
                                 pass
-                        unparsed += max(0, calls - len(found))
-                        if t >= since:
-                            cmds += [{"t": t, "cmd": c, "text": None, "exit": None, "bg": True, "end": None} for c in found]
+                        bad += [t] * max(0, calls - len(found))
+                        cmds += [{"t": t, "call_t": t, "cmd": c, "text": None, "exit": None, "bg": True, "end": None}
+                                 for c in found]
                         continue
                     offset = 0.0
                     for (name, fields, raw), item in zip(stmts, items[1:]):
@@ -500,11 +503,9 @@ def read_codex(env, wt, since):
                         if name.endswith("exec_command"):
                             cmd = _cmd_text(fields)
                             if cmd is None:
-                                unparsed += 1 if t >= since else 0
+                                bad.append(t)
                                 continue
-                            c = new_cmd(t, cmd, chunk, body, offset)
-                            if t >= since:
-                                cmds.append(c)
+                            cmds.append(new_cmd(t, cmd, chunk, body, offset))
                         elif name.endswith("write_stdin"):
                             poll(fields, chunk, body)
                         if isinstance(chunk["dur"], (int, float)):
@@ -521,26 +522,25 @@ def read_codex(env, wt, since):
                     except ValueError:
                         fields = None
                     if not isinstance(fields, dict):
-                        unparsed += 1 if (name in SHELL_FUNCS and t >= since) else 0
+                        if name in SHELL_FUNCS:
+                            bad.append(t)
                         continue
                 chunk, body = _chunk(out if isinstance(out, str) else "\n".join(_out_items(out) or []))
                 if name in SHELL_FUNCS:
                     cmd = _cmd_text(fields)
                     if cmd is None:
-                        unparsed += 1 if t >= since else 0
+                        bad.append(t)
                         continue
                     if out is None:
                         chunk, body = {"exit": None, "dur": None, "sid": None}, None
-                    c = new_cmd(t, cmd, chunk, body, 0.0)
-                    if t >= since:
-                        cmds.append(c)
+                    cmds.append(new_cmd(t, cmd, chunk, body, 0.0))
                 elif name == "write_stdin":
                     poll(fields, chunk, body)
     except OSError as e:
         return False, f"codex 会话记录读不了（{e.strerror}）", [], 0
     if not mine:
         return False, "没找到本 worktree 的 codex 会话", [], 0
-    return True, "", cmds, unparsed
+    return True, "", [c for c in cmds if c["call_t"] >= since], sum(1 for x in bad if x >= since)
 
 
 # ── 汇总 ──────────────────────────────────────────────────────────────────

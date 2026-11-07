@@ -19,7 +19,8 @@
 #         坏行；流水读不了；会话读不了；两栏都读不了
 #   单跑：前台计时；后台只计次 → 未知；引号 / here-doc 里的命令不算；并行取并集；一次都没跑 → 0
 #   codex：每条命令只认它自己的输出（含同一 session_id 的后续轮询）；JSON 参数的函数调用；单元对不上号 /
-#         写法解析不了时不归、不答 0；别的命令输出里的编号不认（#247 复审第 1 轮反例）；同一场景 claude / codex 结论一致
+#         写法解析不了时不归、不答 0；别的命令输出里的编号不认（#247 复审第 1 轮反例）；同一场景 claude / codex 结论一致；
+#         本轮时间窗前 / 边界 / 窗口内，各条路径同一条件（#247 复审第 2 轮反例）
 #   部署前空窗：入口不存在时 footer 写「测试未知」
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -175,6 +176,7 @@ mk() { printf '%s\n' "$MARK" | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }
 # ── 全部检查：用给定的 scripts 目录和 run.sh 跑，打印 PASS/FAIL <名字> ──────────────
 run_check() {   # <scripts 目录> <run.sh>
     local SD="$1" RS="$2" a b t0 t1 x
+    local -A WIN_U=() WIN_A=() WIN_S=()
     chk() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1 :: ${3:-}"; fi; }
 
     # 1 前台整套测试：编号印在输出里，按流水计时
@@ -369,6 +371,41 @@ text(await tools.exec_command({cmd:"cat /tmp/x"}));' "$(cat "$C/out.1")"
     chk codex_unparsed_not_zero '[ "$(mk cmd_unparsed)" = 1 ] && [ -z "$(mk test_secs)" ] && [[ "$HEAD" == *"测试未知"* ]]' \
         "实得 unparsed=$(mk cmd_unparsed) test_secs=[$(mk test_secs)] / $HEAD"
 
+    # 12g 本轮时间窗（#247 复审第 2 轮）：凡「属于本轮」都按调用发出时刻 ≥ 本轮开始判，各条路径同一条件。
+    #     本轮开始前的调用——解析不了的、非纯单元里认出的、纯单元里的、标准函数调用——一概不进本轮；
+    #     恰好在开始那一刻、和开始之后的照算
+    new_case window "$RS"
+    SINCE=$(( $(date +%s) - 100 ))
+    for at in -10 0; do   # 窗口前 10 秒、恰在边界
+        t=$(( SINCE + at ))
+        rm -rf "$C/codex"
+        cx_spec "$t" raw 'const r = await tools.exec_command({cmd:`bash tests/run.sh --quick`}); text(r);' 'ok'
+        cx_spec "$t" raw 'const r = await tools.exec_command({cmd:"bash tests/autopilot.test.sh"}); text(r);' 'ok'
+        cx_spec "$t" cell "$(cx_exec "bash tests/comment-footer.test.sh" "ok" 2 0)"
+        cx_spec "$t" fc exec_command '{"cmd":"bash tests/smoke.test.sh"}' '{"wall_time_seconds":1,"exit_code":0,"output":"ok"}'
+        cx_spec "$t" fc exec_command 'not json' ''
+        footer "$SD" codex
+        WIN_U[$at]=$(mk cmd_unparsed); WIN_A[$at]=$(mk adhoc_runs); WIN_S[$at]=$(mk test_secs)
+    done
+    chk window_before_excluded '[ "${WIN_U[-10]}" = 0 ] && [ "${WIN_A[-10]}" = 0 ] && [ "${WIN_S[-10]}" = 0 ]' \
+        "窗口前：期望全 0，实得 unparsed=${WIN_U[-10]} adhoc=${WIN_A[-10]} test_secs=[${WIN_S[-10]}]"
+    chk window_boundary_included '[ "${WIN_U[0]}" = 2 ] && [ "${WIN_A[0]}" = 3 ]' \
+        "恰在边界：期望 unparsed=2 adhoc=3，实得 unparsed=${WIN_U[0]} adhoc=${WIN_A[0]}"
+    # 旧命令（窗口前发出、带 session_id）在窗口内才被轮询到结束：它仍是旧命令，不算本轮；它印的编号也认不领本轮的运行
+    rm -rf "$C/codex"; : > "$LOG"
+    cx_spec "$(( SINCE - 20 ))" cell "$(cx_exec "bash tests/run.sh quick" "" 1 "" 91)"
+    cx_spec "$(( SINCE + 5 ))" cell "$(cx_poll 91 "cavil-test-run id=old-run" 0)"
+    footer "$SD" codex
+    chk window_old_polled_excluded '[ "$(mk suite_runs)" = 0 ] && [ "$(mk test_secs)" = 0 ]' \
+        "实得 runs=$(mk suite_runs) test_secs=[$(mk test_secs)]"
+    # 同一条件在 Claude 那一侧：窗口前的命令不算，恰在边界的算
+    rm -rf "$C/codex"; : > "$C/cmds"
+    add w1 "$(( SINCE - 10 ))" "bash tests/autopilot.test.sh" 0 "$(( SINCE - 5 ))" "ok" 0
+    footer "$SD" claude; a=$(mk adhoc_runs)
+    add w2 "$SINCE" "bash tests/autopilot.test.sh" 0 "$(( SINCE + 3 ))" "ok" 0
+    footer "$SD" claude; b=$(mk adhoc_runs)
+    chk window_claude_same '[ "$a" = 0 ] && [ "$b" = 1 ]' "窗口前 adhoc=$a（期望 0），加上边界那条后 adhoc=$b（期望 1）"
+
     # 12f 同一场景两种 agent 的记录：整套测试的结论必须一字不差（同一套规则，L3）
     new_case same "$RS"; mkdir -p "$C/ro"; chmod 555 "$C/ro"
     t=$(now); suite 1 CAVIL_TEST_RUNS_LOG="$C/ro/x/runs.jsonl"; t1=$(now); suite 2
@@ -472,6 +509,10 @@ neg "codex 轮询到的后续输出不归回原命令" $TT \
     '                c["text"] = (c["text"] or "") + body' '                pass' codex_poll_linked
 neg "codex 单元的语句数和输出项数对不上也照顺序配" $TT \
     'and len(items) - 1 == len(stmts))' ')' codex_misaligned_unlinked
+neg "#247 复审第 2 轮：解析失败计数不按本轮时间窗筛" $TT \
+    'sum(1 for x in bad if x >= since)' 'len(bad)' window_before_excluded
+neg "codex 命令不按本轮时间窗筛" $TT \
+    '[c for c in cmds if c["call_t"] >= since]' 'cmds' window_before_excluded
 neg "解析不了的命令不影响回答（可能答 0）" $TT \
     '    elif runs > 0 or unparsed:' '    elif runs > 0:' codex_unparsed_not_zero
 
