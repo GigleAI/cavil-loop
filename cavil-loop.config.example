@@ -412,6 +412,9 @@ COMMENT_FOOTER="on"
 # Empty → the summary line never mentions tests. Failing, timing out or a bad first line →
 # the footer is still posted, the summary line says "测试未知" and the details give the reason.
 # Kept in this local config on purpose: a script in the repo could be changed by any PR.
+# Built in (GitHub#244; full runs come from cavil-loop's own tests/run.sh, single runs from the
+# agent's session; see docs/operations.md → Comment usage footer):
+#   COMMENT_FOOTER_EXTRA_CMD='f="$HOME/.agents/releases/cavil-loop/entrypoints/drivers/token-usage/test-time.sh"; if [ -e "$f" ]; then bash "$f"; else printf "test_secs=unknown\n- 测试统计命令尚未部署\n"; fi'
 #
 # 可选：报告本项目测试耗时的命令。在 worktree 里跑（30 秒超时），环境变量带上
 # CAVIL_FOOTER_START / CAVIL_FOOTER_START_EPOCH / CAVIL_FOOTER_WORK_NUM /
@@ -424,6 +427,8 @@ COMMENT_FOOTER="on"
 # 留空 → 总览完全不提测试。失败、超时、第一行不对 → footer 照常发，总览写「测试未知」，
 # 原因写在折叠细节里。
 # 故意放在本机配置而不是仓库里：仓库里的脚本任何 PR 都能改。
+# 内置一个（GitHub#244；整套测试读 cavil-loop 自己的 tests/run.sh 记账，单跑读 agent 会话；
+# 详见 docs/operations.zh.md → 评论用量 footer），写法同上面英文段那一行。
 COMMENT_FOOTER_EXTRA_CMD=""
 
 # ── Worker setup / Worker 安装 ──

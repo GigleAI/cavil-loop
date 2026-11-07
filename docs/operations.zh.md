@@ -757,6 +757,29 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   或命令失败、超时、第一行不对，这几种原因写在细节里）。命令回答 0 表示确认这轮没跑测试：总览
   不提测试，和没配命令的项目一样；机器记录照写 `test_secs=0`，周报仍分得清两者。拿不准有没有跑的
   命令要回答 `unknown`，不能回答 0。
+- **skill 自带一个测试耗时命令**（GitHub#244）：`scripts/drivers/token-usage/test-time.sh`，和
+  footer 脚本一样有长期入口，跑的永远是已合并、已部署的版本，worktree 里正在改的那份不会被执行。
+  在本机配置里打开（带存在判断：合并到部署之间那几分钟入口还不在，footer 照样不报错）：
+  ```bash
+  COMMENT_FOOTER_EXTRA_CMD='f="$HOME/.agents/releases/cavil-loop/entrypoints/drivers/token-usage/test-time.sh"; if [ -e "$f" ]; then bash "$f"; else printf "test_secs=unknown\n- 测试统计命令尚未部署\n"; fi'
+  ```
+  检查：下一条交人评论的总览里出现 `测试 …`（或 `测试未知`，细节里写原因）。退回：把这一行清空。两栏：
+  - **整套测试**——`tests/run.sh` 每次运行生成一个编号，在自己的输出里印 `cavil-test-run id=<编号>`
+    （记账没写进去时后面加 ` log=failed`），并往 `${XDG_STATE_HOME:-~/.local/state}/cavil-loop/test-runs.jsonl`
+    （`CAVIL_TEST_RUNS_LOG` 可改）追加带同一编号的开始行、结束行。会话里的命令和记录**只按这条命令
+    自己输出里的编号**关联（前台看工具结果；Claude 放后台的命令看工具结果里写明的输出文件；codex
+    看本会话的全部输出），不按开始时刻接近——人在旁边手跑的、同一 agent 并发的另一次，都是另一次。
+    两行都在、或只有结束行（结束行自带开始时刻）→ 实测计时；只有开始行 →「未记到结束」；印了编号
+    但没有记录 →「没有记账」；读不到编号 →「无法关联」；记录里有、没有任何会话命令印出过 → 单独
+    算一次、实测计时。嵌套运行（测试里再跑 `tests/run.sh`）不记账。
+  - **单跑测试**——从 agent 自己的会话里认出的测试命令（`bash tests/<名字>.test.sh`、
+    `bash test/tauri/mutations.sh`、`npm test` / `npm run test…`、`npx vitest`、`npx playwright test`、
+    `cargo test`；引号和 here-doc 里的文字不算），按工具调用到工具结果计时，是整条命令的估算。
+  - 回答：任何一栏读不了 → `unknown`；有实测部分 → 各段时间的并集（并行的同一秒只算一次；另有未计时的
+    写进细节，所以是下限）；看到了运行、一秒都没计上 → `unknown`；两栏都读到、一次都没跑 → 0。
+  - 限制：包一层（`bash -c '…'`、自己的脚本）认不出来；Claude 放后台的单跑和 codex 的单跑只计次数
+    （codex 一次工具调用里可以跑多条命令，输出和命令对不上号）；整套测试的输出读不到时，同一次可能
+    算两遍——一次「无法关联」、一次按记录——次数多 1，秒数不多。
 - **AI 时间是估算**（总览写「AI 约 …」）。每次模型请求从发出请求算到最后一段回复写进会话记录，
   几次请求同时覆盖的那一秒只算一次。偏差来源：含网络往返和排队等首字的时间；会话记录是写盘
   时刻，与真实收发差几毫秒到几秒；AI 在想的时候后台命令可能也在跑。这段说明不在每条评论里重复；

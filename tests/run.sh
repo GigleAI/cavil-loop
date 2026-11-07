@@ -97,6 +97,7 @@ default_jobs() {
     echo "$n"
 }
 
+ORIG_ARGS="$*"
 CI_MODE=0; LIST=0; SHARD=""; OUT=""; VERIFY=""; NAMES=(); JOBS=""; KIND_OPT=""; QUICK=0; TALLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -540,6 +541,49 @@ for u in "${RUN[@]}"; do
     if [ "$CI_MODE" = 1 ] && [ -n "${EXCLUDED[$f]+x}" ]; then note_excluded "$f"; continue; fi
     if [ -n "${SERIAL[$f]+x}" ]; then SER+=("$u"); else PAR+=("$u"); fi
 done
+
+# ── run record for the comment footer's test time (GitHub#244) ─────────────────
+# Each run gets an id, printed in its own output (`cavil-test-run id=…`) whether or not the record
+# below could be written, plus a start and an end line in a local JSONL file with the same id. The
+# footer's test-time command links an agent's `bash tests/run.sh` to its record only by that id —
+# never by "a run started around the same time in the same directory". The end line carries the
+# start time too, so a lost start line costs nothing. Writing is best effort: a failure never changes
+# this run's result, it only adds `log=failed` to the printed line.
+# Nested runs (a test that runs this script again: CAVIL_TEST_RUN_ID inherited, or a fixture tests
+# dir via RUN_TESTS_DIR) record nothing and print nothing, unless CAVIL_TEST_RUNS_LOG names a log.
+RUN_REC=""
+if [ -z "${CAVIL_TEST_RUN_ID:-}" ] && { [ -z "${RUN_TESTS_DIR:-}" ] || [ -n "${CAVIL_TEST_RUNS_LOG:-}" ]; }; then
+    RUN_REC="${CAVIL_TEST_RUNS_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/cavil-loop/test-runs.jsonl}"
+    CAVIL_TEST_RUN_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s-%s' "$(date +%s)" "$$" "$RANDOM")
+    CAVIL_TEST_RUN_ID="${CAVIL_TEST_RUN_ID//[^A-Za-z0-9._-]/}"
+    export CAVIL_TEST_RUN_ID
+    RUN_WT=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$REPO_DIR")
+    run_now() {   # epoch seconds with milliseconds where date can (GNU); whole seconds elsewhere
+        local t; t=$(date +%s.%3N 2>/dev/null)
+        [[ "$t" =~ ^[0-9]+\.[0-9]{3}$ ]] || t=$(date +%s)
+        printf '%s' "$t"
+    }
+    RUN_T0=$(run_now)
+    run_record() {   # <jq filter> [jq args...] → append one line; 0 = written
+        local line
+        line=$(jq -nc --arg id "$CAVIL_TEST_RUN_ID" --arg wt "$RUN_WT" --argjson t0 "$RUN_T0" \
+            --argjson t "$(run_now)" "$@") || return 1
+        mkdir -p "$(dirname "$RUN_REC")" 2>/dev/null
+        { printf '%s\n' "$line" >> "$RUN_REC"; } 2>/dev/null
+    }
+    run_record_end() {   # trap: the exit status is passed through untouched
+        local rc=$?
+        run_record --argjson exit "$rc" --argjson units "${ran:-0}" --argjson failed "${failed:-0}" \
+            '{ev:"end",id:$id,wt:$wt,t0:$t0,t:$t,exit:$exit,units:$units,failed:$failed}' || true
+        exit "$rc"
+    }
+    if run_record --arg args "$ORIG_ARGS" '{ev:"start",id:$id,wt:$wt,t:$t0,args:$args}'; then
+        echo "cavil-test-run id=$CAVIL_TEST_RUN_ID"
+    else
+        echo "cavil-test-run id=$CAVIL_TEST_RUN_ID log=failed"
+    fi
+    trap run_record_end EXIT
+fi
 
 echo "Running ${#RUN[@]} unit(s)${SHARD:+ (shard $SHARD)}, up to $JOBS at a time${MUTATION:+, with MUTATION=$MUTATION}; logs in $OUT/logs"
 [ ${#PAR[@]} -eq 0 ] || run_pool "$JOBS" "${PAR[@]}"

@@ -916,6 +916,39 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
   the summary then leaves tests out, as for a project without the command, while the
   machine record keeps `test_secs=0` so the weekly report can still tell the two apart. A
   command that cannot tell whether anything ran must answer `unknown`, never 0.
+- **A built-in test-time command ships with the skill** (GitHub#244):
+  `scripts/drivers/token-usage/test-time.sh`, which gets a durable entry point like the footer
+  script, so it always runs the merged and deployed version — never the copy a worktree is
+  editing. Turn it on in the local config (the guard keeps the footer working in the minutes
+  between merge and deployment):
+  ```bash
+  COMMENT_FOOTER_EXTRA_CMD='f="$HOME/.agents/releases/cavil-loop/entrypoints/drivers/token-usage/test-time.sh"; if [ -e "$f" ]; then bash "$f"; else printf "test_secs=unknown\n- 测试统计命令尚未部署\n"; fi'
+  ```
+  Check: the next hand-off comment's summary line shows `测试 …` (or `测试未知` with a reason in
+  the details). Undo: empty the line again. Two sources:
+  - **Full runs** — `tests/run.sh` gives each run an id, prints `cavil-test-run id=<id>` in its own
+    output (with ` log=failed` when the record could not be written) and appends a start and an
+    end line with that id to `${XDG_STATE_HOME:-~/.local/state}/cavil-loop/test-runs.jsonl`
+    (`CAVIL_TEST_RUNS_LOG` overrides it). A command in the agent's session is linked to a record
+    **only by the id in that command's own output** (the tool result; for a Claude background
+    command, the output file the tool result names; for codex, any output of the session) —
+    never by a nearby start time: a run a human started next to it, or a second run of the same
+    agent, is a different run. Linked with both lines, or with only the end line (it carries the
+    start time) → measured. Only a start line → "未记到结束". Id printed but no record →
+    "没有记账". No id readable → "无法关联". A record no session command printed → counted on
+    its own, measured. Nested runs (a test running `tests/run.sh` again) record nothing.
+  - **Single runs** — test commands recognised in the agent's own session (`bash tests/<x>.test.sh`,
+    `bash test/tauri/mutations.sh`, `npm test` / `npm run test…`, `npx vitest`,
+    `npx playwright test`, `cargo test`; text inside quotes and here-docs does not count), timed
+    from tool call to tool result — an estimate of the whole command.
+  - The answer: a source that cannot be read → `unknown`; anything measured → the union of the
+    measured spans (parallel tests count once; other untimed runs are listed in the details, so
+    the number is a lower bound); runs seen but none measured → `unknown`; both sources read
+    and nothing ran → 0.
+  - Limits: wrappers (`bash -c '…'`, an own script) are not recognised; a Claude background single
+    run and every codex single run is counted, not timed (one codex tool call may run several
+    commands and its output cannot be matched to them); when a full run's output cannot be
+    read it can be counted twice — once as "无法关联", once from its record — the seconds are not.
 - **AI time is an estimate** (the summary says `AI 约 …`). Per model request it counts from the
   request being sent to the last reply chunk written into the session log, and a second
   covered by several requests counts once. It includes network round-trips and queueing
