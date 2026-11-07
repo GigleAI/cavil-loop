@@ -136,7 +136,7 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 | 6. 开发、开 PR | agent | issue `pending/PR`；PR 先过复审（项目开了复审关卡时） | PR |
 | 7. 汇报结果 | agent / reviewer | PR `pending/requester-bot` | 结果汇报（写明提交编号） |
 | 8. 转达、提需求方认可 | grokbot | PR 转达后仍是 `pending/requester-bot`，带回认可时换成 `pending/agent` | PR 上（不是来源 issue）：「已转给谁」；认可的答复原文 |
-| 9. 交维护者 | agent | PR `pending/human` | 交人评论 |
+| 9. 交维护者 | agent | PR `pending/human` | 合并说明（一屏读完：一句话上下文 + 改了什么 / 怎么改 / 为什么 + 合并后要做的事）+ 交人评论 |
 | 10. 合并 | 维护者 | PR `Done`；issue 挂上 `pending/requester-bot` | daemon 发「需求已完成」 |
 | 11. 收尾 | grokbot | issue 摘掉 `pending/requester-bot` | — |
 

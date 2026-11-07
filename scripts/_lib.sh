@@ -5876,6 +5876,17 @@ requester_bot_handoff_section() {
     text="${text//@@REQUESTER_BOT_REPORT_RULE@@/"$rule"}"
     text="${text//@@REQUESTER_BOT_NOTIFY_CMD@@/"$cmd"}"
     printf '%s\n' "$text"
+    # GitHub#238：先汇报时，交维护者合并前先发一条合并说明。不先汇报时什么都不加，上面就是原样输出
+    if requester_bot_report_first; then
+        f="$SKILL_DIR/prompts/requester-bot-merge-note.md"
+        if [ -s "$f" ]; then
+            text="$(cat "$f")"
+            text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
+            printf '\n%s\n' "$text"
+        else
+            log "⚠️ 外部需求机器人合并说明规则文件缺失：$f" 2>/dev/null || true
+        fi
+    fi
     # GitHub#133：开关打开时，再追加「维护者自己的条目」一段；关着时上面就是全部输出，逐字节不变
     requester_bot_wake_any_item || return 0
     f="$SKILL_DIR/prompts/requester-bot-handoff-any-item.md"
