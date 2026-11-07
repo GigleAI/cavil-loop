@@ -12,6 +12,8 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   checks.json     {"<sha>": {"check_runs": [...], "statuses": [...]}}
   edits.json      {"<pr>": [ {editedAt, deletedAt, diff} ]}  PR 正文修改历史，倒序（GraphQL userContentEdits）
   blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
+  subs.json       {"<n>": [<n> | "<owner/repo>#<n>", ...]}  子项（GitHub#233）：/issues/N/sub_issues 和 sub_issues_summary
+  items 里的 parent_issue_url 原样带进 issue（GitHub#233）；repos/<owner>__<repo>/ 子目录 = 另一个仓库的同一套状态
   calls.log       one line per call: "gh <argv...>"
   me              login of the token (default loop-bot)
 
@@ -151,8 +153,53 @@ while i < len(argv):
         path = a
     i += 1
 
+# 别的仓库（GitHub#233：跨仓库的父 issue / 前置）：$FAKE_GH_DIR/repos/<owner>__<repo>/ 存在时，
+# 发往那个仓库的请求就用那个目录里的同一套状态文件（calls.log / tokens.log 仍记在主目录）
+if path and path.startswith("repos/"):
+    _seg = path.split("?")[0].split("/")
+    if len(_seg) >= 3 and (_seg[1] + "/" + _seg[2]).lower() != REPO.lower():
+        _od = os.path.join(D, "repos", _seg[1] + "__" + _seg[2])
+        if os.path.isdir(_od):
+            D = _od
+            REPO = _seg[1] + "/" + _seg[2]
+
 items = load("items.json", {})
 labels = load("labels.json", {})
+
+
+def other_items(repo):
+    """另一个仓库的 (items, 目录)；没有这个仓库的目录 → ({}, None)"""
+    if repo.lower() == REPO.lower():
+        return items, D
+    root = os.environ["FAKE_GH_DIR"]
+    od = os.path.join(root, "repos", repo.replace("/", "__"))
+    if repo.lower() == os.environ.get("FAKE_GH_REPO", "example/ap").lower():
+        od = root
+    if not os.path.isdir(od):
+        return {}, None
+    try:
+        with open(os.path.join(od, "items.json")) as fh:
+            return json.load(fh), od
+    except FileNotFoundError:
+        return {}, od
+
+
+def sub_refs(n):
+    """subs.json {"<父号>": [<子号> | "owner/repo#<子号>", ...]} → [(仓库, 子号)]"""
+    out = []
+    for s in load("subs.json", {}).get(str(n), []):
+        if isinstance(s, str) and "#" in s:
+            r, _, sn = s.partition("#")
+            out.append((r, sn))
+        else:
+            out.append((REPO, str(s)))
+    return out
+
+
+def sub_state(repo, sn):
+    its, _ = other_items(repo)
+    it = its.get(str(sn))
+    return None if it is None else it.get("state", "open")
 
 
 def key_of(path):
@@ -177,6 +224,12 @@ def as_issue(n):
     out.setdefault("updated_at", "2026-01-01T00:00:00Z")
     out["pull_request"] = {"url": "x", "merged_at": it.get("merged_at") or ("2026-01-01T00:00:00Z" if it.get("merged") else None)} if kind == "pr" else None
     out["repository_url"] = "https://api.github.com/repos/" + REPO
+    if "parent_issue_url" in it:
+        out["parent_issue_url"] = it["parent_issue_url"]
+    refs = sub_refs(n)
+    if refs:
+        sts = [sub_state(r, sn) for r, sn in refs]
+        out["sub_issues_summary"] = {"total": len(refs), "completed": sum(1 for s in sts if s == "closed")}
     if kind == "pr" and it.get("merged"):
         out["state"] = "closed"
     return out
@@ -286,6 +339,19 @@ if method == "GET":
         emit(evl, pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
         emit(load("comments.json", {}).get(parts[1], []), pages=True)
+    if len(parts) == 3 and parts[0] == "issues" and parts[2] == "sub_issues":
+        out = []
+        for r, sn in sub_refs(parts[1]):
+            st = sub_state(r, sn)
+            if st is not None:
+                out.append({"number": int(sn), "state": st, "repository_url": "https://api.github.com/repos/" + r})
+        emit(out, pages=True)
+    if len(parts) == 3 and parts[0] == "issues" and parts[2] == "parent":
+        url = (items.get(parts[1]) or {}).get("parent_issue_url")
+        if not url:
+            fail("HTTP 404: Not Found")
+        seg = url.split("/")
+        emit({"number": int(seg[-1]), "repository_url": "/".join(seg[:-2])})
     if len(parts) == 4 and parts[0] == "issues" and parts[2] == "dependencies" and parts[3] == "blocked_by":
         out = []
         for b in load("blocked_by.json", {}).get(parts[1], []):

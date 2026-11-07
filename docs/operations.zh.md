@@ -455,8 +455,24 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   绑 issue 的 PR **没挂这个标签就不合并**：算一轮判不了，连续 `AUTOPILOT_UNKNOWN_MAX` 轮补不上就交人。只管本机负责的 PR
   （和合并那一步同一条规则）。关掉托管之后，已经补到 PR 上的标签不清理（不起任何作用，想摘就手动摘）。
 - **方案**：照常写、照常发到 issue，选择题按默认项，一律送复审（不管 `REVIEW_DESIGN_PROPOSALS`）。
-  方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。拆成子 issue **不在托管范围**：
-  worker 把拆分计划交人。
+  方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。
+- **拆成子 issue 也托管**（GitHub#233）：拆分计划和方案一样只过复审，复审通过后 worker 直接建子项。复审额外审
+  「真需要拆吗」和「父 issue 还留着子项以外的活吗」（托管时收尾也要落成子项）。本工具拆出来的子项——GitHub 上真挂在
+  父 issue 下、正文带指向父 issue 的拆分标记、由 loop 的写入账号建——**继承父 issue 的托管**：子项和它的 PR 上都不用挂
+  托管标签，派工、接手、PR 补标签、合并前许可都把父 issue 当作第三处，和 issue / PR 两处用同一条判据（停止线取三处
+  所有「摘掉」里最晚的一次，授权来自晚于停止线、维护者亲手打的那一次）。父 issue 摘标签、打 `pending/human`、关闭，
+  整组子项一起停；只停一个子项就在那个子项上打 `pending/human`。读不到父 issue / 它的标签记录 = 判不了：本轮不派工、
+  不写任何东西，下轮再判（不按普通流程派出去）。子项全部关闭后父 issue 翻 `pending/human`，由人关闭。
+- **合并后 issue 留给人关**（GitHub#233）：托管 PR 的正文只写 `Refs #N`、不写关闭关键词，GitHub 合并时不会关 issue。
+  合并后 daemon 在 issue 上发一条说明——外面一句话结论和「要人做什么」，背景 / 采用的方案 / 排除的方案和原因照搬
+  worker 写在 PR 正文里的总结段（`<!-- autopilot-summary:begin -->` 到 `<!-- autopilot-summary:end -->`），合并依据折叠在
+  最后——然后把 issue 翻 `pending/human`、摘 `pending/PR`。人看过满意就关闭（关成「已完成」照常自动打 `Done`），要返工就打
+  `pending/agent`。合并之后、交接之前 issue 上已经挂了任何流程标签（派工、进行中、复审、等前置、等人……），说明新一轮已经
+  开始，交接一个标签都不动、只补说明。交接每次写之前现读 issue，状态或标签集合变了本轮不写；读不到下轮再试，说明按标记去重。
+  ⚠️ 正文还带关闭关键词的托管 PR（包括以前开的 `Closes #N` 写法）合并前会被交回 worker，只把那一处改成 `Refs #N`。
+- **互通名单**（`TRUSTED_REPOS`，GitHub#233，默认空）：逗号分隔的 `owner/repo`。名单里的仓库 ① 可以当拆分子项的父 issue
+  所在仓库：父 issue 上维护者亲手打的托管标签授权本仓库的子项，打标签的人在**两个仓库**都要有写权限；② 可以当等前置的
+  前置所在仓库（见下面「等前置」）。跨仓库读不到（父 issue、标签记录、权限）一律判不了，本轮不写。名单外的仓库照旧不认。
 - **在 PR 上打也行**（GitHub#128）：已经开好的 PR，维护者直接在 **PR** 上打托管标签，daemon 就接手——
   PR 除托管标签外只挂着 `pending/human`（且授权打在它之后），或一个流程标签都没有、PR 自己挂着托管标签时，
   翻到 `pending/review` 并在 PR 上说一句，之后走下面同样的复审 → 合并。PR 上的托管只管「复审 → 合并」这一段，
@@ -497,7 +513,8 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 
 | 检查 | 不成立 → |
 |---|---|
-| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
+| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`，正文只引用一个 `Refs #N`、没有关闭关键词；或正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
+| 绑 issue 的 PR 正文里没有会让 GitHub 合并时关掉本仓库 issue 的关键词（GitHub#233：合并后 issue 留给人关） | 交回 worker 改成 `Refs #N` |
 | 以 PR 为准时：授权只看 PR（下一行去掉 issue 那一处），而且打标签那一刻的 PR 正文（修改历史里那一版）也合上一行的条件 | `pending/human` |
 | 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
 | PR 自己挂着托管标签（绑 issue 的 PR 由 daemon 从 issue 复制过来，见上文；GitHub#190） | 本轮判不了（连续 `AUTOPILOT_UNKNOWN_MAX` 轮 → `pending/human`） |
@@ -698,7 +715,7 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 |---|---|
 | 全部完成（issue 以「已完成」关闭、PR 已合并） | 留一条说明，摘标签，加回标记里写的触发标签（默认 `pending/agent`），下一轮派工 |
 | 有一个以别的方式收场（关成不做 / 重复 / 没写原因、PR 没合就关、读到 404） | 评论写明是哪个，翻 `pending/human` |
-| 找不到前置，或前置在别的仓库 | 评论说明，翻 `pending/human` |
+| 找不到前置，或前置在互通名单外的别的仓库 | 评论说明，翻 `pending/human` |
 | 还有没完成的 | 什么都不做 |
 | 读不到 GitHub（报错、缺字段） | 什么都不做，下一轮再看——绝不当成「已完成」 |
 
@@ -707,6 +724,11 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 （`OWNER` / `MEMBER` / `COLLABORATOR`）发的最新一条隐藏标记 `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->`。
 「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认。
 「等 #12」这种普通文字不认。`resume=` 必须是本项目配置的触发标签之一，否则用默认那个。
+
+**别的仓库的前置**（GitHub#233）：配了互通名单 `TRUSTED_REPOS` 时，标记里可以写 `owner/repo#N`，「Blocked by」里那个仓库的
+条目也认；daemon 读那个仓库里的状态，完成口径和本仓库一样。裸 `#N` 永远指本仓库，本仓库同号的条目不会触发它。名单外的
+仓库照旧交人；名单为空时标记的读法和以前一字不差。⚠️ 托管合并后 issue 留给人关，所以等一个托管 issue 实际等的是**人验收
+关闭它**；想在代码合并时就接着做，前置写那个 PR。
 
 **交人之后怎么恢复等待**：daemon 的评论里写了步骤——改前置（「Blocked by」里去掉失败的那个、加上新的，等 PR 就发一条新登记），
 **摘掉 `pending/human`**，重新挂 `pending/blocked`。`pending/human` 还在时 daemon 按叫停处理，永远不会自动继续。

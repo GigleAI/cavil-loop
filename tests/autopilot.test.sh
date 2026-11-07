@@ -166,7 +166,7 @@ CONF
         ev 7 labeled autopilot maint
         mkpr 8 feature/issue-7 "做了 X。
 
-Closes #7" "$H1" "pending/merge,autopilot"
+Refs #7" "$H1" "pending/merge,autopilot"
         # PR 上的托管标签是 daemon 从 issue 补过来的副本（GitHub#190），稳态下早就补好了
         ev 8 labeled autopilot loop-bot
         review_rec 8 "$H1"
@@ -268,7 +268,9 @@ Closes #7" "$H1" "pending/merge,autopilot"
                  "feature/issue-7|Closes #7
 Closes #10|example/ap|正文还关闭了另一个 issue" \
                  "feature/issue-7-fix|Closes #7|example/ap|分支名带后缀" \
-                 "feature/issue-7|Refs #7|example/ap|只有 Refs，没有关闭关键词" \
+                 "feature/issue-9|Refs #7|example/ap|分支是别的 issue 的、正文借用 Refs #7" \
+                 "feature/issue-7|Refs #7
+Refs #10|example/ap|正文引用了两个 issue（Refs 不唯一）" \
                  "feature/issue-7|Closes #7|someone/ap|来自外部仓库（fork）"; do
         IFS='|' read -r br body repo what <<< "$(printf '%s' "$case_" | tr '\n' '\001')"
         br=$(printf '%s' "$br" | tr '\001' '\n'); body=$(printf '%s' "$body" | tr '\001' '\n'); what=$(printf '%s' "$what" | tr '\001' '\n')
@@ -283,7 +285,16 @@ Closes #10|example/ap|正文还关闭了另一个 issue" \
 
 Refs #3" "$H1" "pending/merge,autopilot"
     tick
-    chk "Fixes: #7（带冒号）+ 另有 Refs #3 → 合并（Refs 不关 issue）" "$(merged 8)" 1
+    # GitHub#233：绑定照旧成立（Fixes: #7 绑 #7，Refs 不关 issue），但正文带关闭关键词，合并时 issue 会被关掉 → 交回 worker 改成 Refs
+    chk "Fixes: #7（带冒号）+ 另有 Refs #3 → 不合并，交回 worker 改写" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
+    chk "  → 打回说明里写了改成 Refs #7" "$(comments_with 8 '改成 `Refs #7`')" 1
+    fresh; happy
+    mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "$H1" "pending/merge,autopilot"
+    tick
+    chk "老写法 Closes #7（绑定照旧成立）→ 不合并，交回 worker" "$(merged 8)/$(has_label 8 pending/agent)/$(has_label 8 pending/merge)" "0/yes/no"
+    chk "  → 记一次打回" "$(st 8 .bounces)" 1
 
     # ── 【4】叫停 ──
     section "【4】叫停：issue 摘托管标签、issue / PR 任一处打 pending/human"
@@ -398,13 +409,13 @@ Refs #3" "$H1" "pending/merge,autopilot"
     tick
     chk "等了超过 6 小时 → 交人" "$(has_label 8 pending/human)" yes
 
-    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge,autopilot" example/ap false dirty
+    fresh; happy; mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/merge,autopilot" example/ap false dirty
     tick
     chk "有冲突 → 交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
-    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge,autopilot" example/ap true dirty
+    fresh; happy; mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/merge,autopilot" example/ap true dirty
     tick
     chk "只有合并状态说冲突（dirty）→ 也交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
-    fresh; happy; mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge,autopilot" example/ap null unknown
+    fresh; happy; mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/merge,autopilot" example/ap null unknown
     tick
     chk "GitHub 还在算能否合并 → 等，不写" "$(merged 8)/$(writes)" "0/0"
 
@@ -476,9 +487,9 @@ Refs #3" "$H1" "pending/merge,autopilot"
     mkissue 30 "autopilot,pending/agent"; ev 30 labeled autopilot maint
     mkissue 31 "autopilot,pending/agent"; ev 31 labeled autopilot loop-bot
     mkissue 7 "autopilot,pending/PR"; ev 7 labeled autopilot maint
-    mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/review"
+    mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/review"
     mkissue 40 "pending/PR"
-    mkpr 41 feature/issue-40 "Closes #40" "$H2" "pending/review"
+    mkpr 41 feature/issue-40 "Refs #40" "$H2" "pending/review"
     tick
     chk "#30（维护者授权）派工时是托管条目" "$(log_has '托管：issue #30 是托管条目')" 1
     chk "#31（loop 账号打的）派工时不是托管条目" "$(log_has '托管：issue #31 是托管条目')" 0
@@ -493,7 +504,7 @@ Refs #3" "$H1" "pending/merge,autopilot"
         "$(command -v date)" > "$SANDBOX/bsd/date"; chmod +x "$SANDBOX/bsd/date"
     fresh 'MAX_CONCURRENT_WORKERS=5' "PATH=\"$SANDBOX/bsd:$SANDBOX/bin:\$PATH\""
     mkissue 7 "autopilot,pending/PR"; ev 7 labeled autopilot maint
-    mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/review"
+    mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/review"
     : > "$CALLS"; local trc=0
     env CODING_AGENT_CONFIG="$CONF" bash "$SCRIPTS/agent-poll.sh" >/dev/null 2>&1 || trc=$?
     chk "BSD date：轮询正常退出" "$trc" 0
@@ -508,7 +519,7 @@ Refs #3" "$H1" "pending/merge,autopilot"
         mkissue 7 "pending/PR"
         mkpr 8 feature/issue-7 "做了 X。
 
-Closes #7" "$H1" "pending/human,autopilot"
+Refs #7" "$H1" "pending/human,autopilot"
         ev 8 labeled pending/human loop-bot
         ev 8 labeled autopilot "${1:-maint}" "${2:-User}"
     }
@@ -602,11 +613,11 @@ Closes #7" "$H1" "pending/human,autopilot"
             esac
             mkissue 7 "pending/PR$( [ "$il" = yes ] && echo ,autopilot)"
             case "$site" in
-                merge) mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/merge$( [ "$pl" = yes ] && echo ,autopilot)"
+                merge) mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/merge$( [ "$pl" = yes ] && echo ,autopilot)"
                        review_rec 8 "$H1"; evidence 8 "$H1" 12 0 ;;
-                takeover) mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human$( [ "$pl" = yes ] && echo ,autopilot)"
+                takeover) mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/human$( [ "$pl" = yes ] && echo ,autopilot)"
                           ev 8 labeled pending/human loop-bot ;;
-                dispatch) mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/review$( [ "$pl" = yes ] && echo ,autopilot)" ;;
+                dispatch) mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/review$( [ "$pl" = yes ] && echo ,autopilot)" ;;
             esac
             for tk in $seq; do
                 IFS=/ read -r en ek ea et <<< "$tk"
@@ -978,7 +989,7 @@ ROWS
         fresh
         mkissue 7 "pending/PR$( [ "$il" = yes ] && echo ,autopilot)"
         [ "$il" = yes ] && EV_AT="$it" ev 7 labeled autopilot maint
-        mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human,autopilot"
+        mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/human,autopilot"
         for e in $pev; do
             IFS=@ read -r what at <<< "$e"
             EV_AT="$at" ev 8 labeled "$( [ "$what" = h ] && echo pending/human || echo autopilot)" maint
@@ -995,7 +1006,7 @@ ROWS
 ROWS
     fresh
     mkissue 7 "pending/PR,autopilot"; EV_AT=2026-06-01T00:00:00Z ev 7 labeled autopilot maint
-    mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human,autopilot"
+    mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/human,autopilot"
     EV_AT=2026-06-01T00:00:00Z ev 8 labeled pending/human maint; EV_AT=2026-06-01T00:00:00Z ev 8 labeled autopilot maint
     tick
     chk "复审反例接手时说明写授权打在 PR 上（用的是明确在后的那一条）" "$(comments_with 8 '`maint` 在 PR #8 上打了托管标签')" 1
@@ -1003,7 +1014,7 @@ ROWS
     fresh
     mkissue 7 "pending/PR,autopilot"; ev 7 labeled autopilot maint
     jset events.json '.["7"] |= map(del(.created_at))'
-    mkpr 8 feature/issue-7 "Closes #7" "$H1" "pending/human"
+    mkpr 8 feature/issue-7 "Refs #7" "$H1" "pending/human"
     ev 8 labeled pending/human loop-bot
     tick
     chk "唯一的授权在 issue 上、记录缺时间，和 PR 上的 pending/human 比不出先后 → 判不了（计数 1），不当成叫停" "$(took)/$(tk_unknown 8)/$(writes)" "no/1/0"
@@ -1314,14 +1325,14 @@ Closes #58"
         ev 7 labeled autopilot maint
         mkpr 8 feature/issue-7 "做了 X。
 
-Closes #7" "$H1" "${1-pending/review}"
+Refs #7" "$H1" "${1-pending/review}"
     }
     copy_ready() {   # [PR 的标签]：PR 8 上挂着 daemon 补的副本；issue 7 上维护者已经摘掉托管标签
         mkissue 7 "pending/PR"
         ev 7 labeled autopilot maint
         mkpr 8 feature/issue-7 "做了 X。
 
-Closes #7" "$H1" "${1:-pending/review,autopilot}"
+Refs #7" "$H1" "${1:-pending/review,autopilot}"
         ev 8 labeled autopilot loop-bot
         ev 7 unlabeled autopilot maint
     }
@@ -1542,13 +1553,13 @@ Closes #7" "$H1" "${1:-pending/review,autopilot}"
     chk "关掉后：再跑一轮零写入" "$(writes)" 0
 
     fresh "$OFF"; happy
-    mkpr 9 feature/issue-9 "Closes #9" "$H2" "pending/merge"
+    mkpr 9 feature/issue-9 "Refs #9" "$H2" "pending/merge"
     tick
     chk "本机没托管记录的 PR（别的用途的同名标签）→ 不碰" "$(labels_of 9)" "pending/merge"
     chk "  …本机托管过的那个照样交人" "$(has_label 8 pending/human)" yes
 
     fresh "$OFF"
-    mkpr 9 feature/issue-9 "Closes #9" "$H2" "pending/merge"
+    mkpr 9 feature/issue-9 "Refs #9" "$H2" "pending/merge"
     tick
     chk "从没开过托管（state 里没有托管记录）→ 零写入" "$(writes)" 0
     chk "  …也不为它多读任何一个 PR" "$(n_calls "^gh api $R/pulls/9\$")" 0
@@ -1749,7 +1760,7 @@ prompts_check() {
         # shellcheck disable=SC2086
         n=$(compose "$root" "$name" $on)
         chk "$name：拼入 worker 的托管规则" "$(printf '%s' "$n" | grep -c '^# 托管规则（本条是托管条目）')" 1
-        chk "$name：写明只写一个 Closes #7、分支 feature/issue-7" "$(printf '%s' "$n" | grep -cF '**只写一个**关闭关键词 `Closes #7`')/$(printf '%s' "$n" | grep -c '`feature/issue-7`')" "1/1"
+        chk "$name：写明只写一个 Refs #7、不写关闭关键词、分支 feature/issue-7" "$(printf '%s' "$n" | grep -cF '**只写一个** `Refs #7`，**不写**任何关闭关键词')/$(printf '%s' "$n" | grep -c '`feature/issue-7`')" "1/1"
         chk "$name：没有复审那份" "$(printf '%s' "$n" | grep -c 'autopilot-review-pass')" 0
         chk "$name：没有没换掉的占位" "$(printf '%s' "$n" | grep -c '@@')" 0
     done

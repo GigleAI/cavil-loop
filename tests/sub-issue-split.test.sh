@@ -243,7 +243,9 @@ set_json "$R/issues/51" "$(issue_json 51 bot 'c' closed)"
 chk "下轮恢复为 CLOSED → 汇总一次" "$(rc_of 51; comments; flipped)" "$(printf '0\n1\n1')"
 rollup_setup closed closed
 set_json "$R/issues/51" "$(issue_json 51 bot 'c' open)"
-chk "有父但子项还开着 → 返回 1，不汇总" "$(rc_of 51; comments)" "$(printf '1\n0')"
+# GitHub#233：托管合并后子项留给人关，可能一直开着——出队（返回 0）、不汇总；子项关掉后由父 issue 一侧
+# 每轮从打开列表发现「子项全部完成」再汇总（sub_issue_rollup_discover），不再在这里空转重试
+chk "有父但子项还开着 → 返回 0（出队，交给父 issue 一侧发现），不汇总" "$(rc_of 51; comments)" "$(printf '0\n0')"
 
 echo "【5b】写失败：评论和翻 label 分开记进度，重试不重复评论"
 rollup_setup closed closed

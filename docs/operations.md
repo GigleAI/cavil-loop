@@ -542,7 +542,34 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 - **Design**: still written and posted on the issue, multiple-choice questions use their
   defaults, and it always goes to review (whatever `REVIEW_DESIGN_PROPOSALS` says). A passing
   design review flips the issue back to `pending/agent` and the worker starts building.
-  Splitting into sub-issues is *not* covered: the worker hands that plan to a human.
+- **Splitting into sub-issues is covered too** (GitHub#233): the split plan goes through review like any
+  design, and once it passes the worker creates the sub-issues directly. The reviewer also checks "does this really
+  need splitting" and "is any work left on the parent outside the sub-issues" (on autopilot the wrap-up becomes a
+  sub-issue too). A sub-issue this tool created — really attached to the parent on GitHub, carrying the split marker
+  that points at the parent, created by the loop's write account — **inherits the parent's autopilot**: neither the
+  sub-issue nor its PR needs the label. Dispatch, takeover, adding the label to the PR and the merge permit all treat
+  the parent as a third place under the same rule as issue + PR (the stop line is the latest removal across all
+  three; the authorization is a maintainer's own add after it). Removing the label from the parent, adding
+  `pending/human` to it or closing it stops every sub-issue; to stop just one, add `pending/human` to that sub-issue.
+  The parent or its label history unreadable = undecidable: not dispatched this round, nothing written (never
+  dispatched as a normal item). Once every sub-issue is closed the parent goes to `pending/human` for a human to close.
+- **The issue stays open after the merge** (GitHub#233): an autopilot PR body says only `Refs #N` and no closing
+  keyword, so GitHub does not close the issue on merge. After merging, the daemon comments on the issue — one visible
+  line of conclusion plus what the human needs to do; background / chosen approach / ruled-out approaches and why
+  copied verbatim from the summary section the worker wrote in the PR body (`<!-- autopilot-summary:begin -->` to
+  `<!-- autopilot-summary:end -->`), the merge evidence folded at the end — and flips the issue to `pending/human`,
+  removing `pending/PR`. The human closes it when satisfied (closing as *completed* adds `Done` as usual) or adds
+  `pending/agent` for rework. If any flow label (dispatch, in progress, review, waiting, pending/human…) is already on
+  the issue by the time of the hand-over, a new round has started: no label is touched, only the comment is posted if
+  missing. Every write re-reads the issue first and writes nothing if its state or label set changed; unreadable =
+  retried next round; the comment is de-duplicated by its marker. ⚠️ A bound autopilot PR whose body still has a
+  closing keyword (including older `Closes #N` PRs) is handed back to the worker before merging, to change just that
+  line to `Refs #N`.
+- **Trusted repos** (`TRUSTED_REPOS`, GitHub#233, empty by default): comma-separated `owner/repo`. A listed repo
+  ① may hold the parent of a split sub-issue: a maintainer's own autopilot label on that parent authorizes this
+  repo's sub-issue, and whoever added it needs write access in **both** repos; ② may hold a prerequisite for
+  "waiting on another item" (see below). Anything unreadable across repos (parent, label history, permission) is
+  undecidable and nothing is written. Repos not on the list are not trusted, as before.
 - **On the PR works too** (GitHub#128): for a PR that already exists, a maintainer can put the
   autopilot label on the **PR** itself and the daemon takes it over — when, besides the
   autopilot label, the PR carries only `pending/human` (and the authorization came after it),
@@ -612,7 +639,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 
 | Check | Fails → |
 |---|---|
-| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly and the body closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
+| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly, and the body references only one `Refs #N` with no closing keyword, or closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
+| A bound PR's body has no keyword that would make GitHub close an issue of this repo on merge (GitHub#233: the issue stays open for a human) | handed back to the worker to change it to `Refs #N` |
 | PR-only: authorization comes from the PR alone (drop the issue side of the next row), and the PR description at label time (that revision in the edit history) also meets the previous row | `pending/human` |
 | Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
 | The PR itself carries the autopilot label (for a bound PR the daemon copies it from the issue, see above; GitHub#190) | undecidable this round (→ `pending/human` after `AUTOPILOT_UNKNOWN_MAX` rounds) |
@@ -844,7 +872,7 @@ issue / PR of this repo** — not on a human decision — records the prerequisi
 |---|---|
 | all done (issue closed as *completed*, PR merged) | one comment, removes the label, adds back the trigger label the marker names (default `pending/agent`) — the next round dispatches it |
 | one ended otherwise (closed *not planned* / *duplicate* / no reason, PR closed unmerged, unreadable 404) | comment naming it, `pending/human` |
-| none can be found, or one lives in another repo | comment, `pending/human` |
+| none can be found, or one lives in another repo that is not on the trusted list | comment, `pending/human` |
 | some still open | nothing |
 | GitHub cannot be read (error, missing field) | nothing; looks again next round — never treated as done |
 
@@ -854,6 +882,13 @@ latest hidden marker `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->` p
 maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) strictly after the label was last removed — GitHub timestamps are whole
 seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. Free
 text such as "waiting on #12" is never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+
+**Prerequisites in another repo** (GitHub#233): with `TRUSTED_REPOS` set, the marker may say `owner/repo#N` and that
+repo's *Blocked by* entries count too; the daemon reads their state there, with the same notion of done. A bare `#N`
+always means this repo, so an item here with the same number never triggers it. Repos not on the list still go to a
+human; with the list empty the marker is read exactly as before. ⚠️ After an autopilot merge the issue stays open for a
+human, so waiting on an autopilot issue really waits for **a human to close it**; to continue as soon as the code is
+merged, name the PR as the prerequisite.
 
 **Recovering after a hand-off**: the daemon's comment lists the steps — fix the prerequisites (remove the failed one from
 *Blocked by*, add the new one, or post a new marker for a PR), **remove `pending/human`**, put `pending/blocked` back. While
