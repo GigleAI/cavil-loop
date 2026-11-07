@@ -38,6 +38,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# 读项目配置之前的环境快照：多仓库合并时每个项目都从这里起步、再读它自己的配置，
+# 主项目配置里的 GH_TOKEN / WEEKLY_REPORT_* 不会漏进别的项目（GitHub#232）。
+BASE_ENV="$(mktemp)"; trap 'rm -f "$BASE_ENV"' EXIT
+export -p > "$BASE_ENV"
+BASE_NAMES=" $(compgen -e | tr '\n' ' ') "
+
 CONF="$(cavil_project_env "$PROJECT")"
 [ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
 # shellcheck disable=SC1090
@@ -60,10 +66,15 @@ ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-}"
 FONTS_DIR="${WEEKLY_REPORT_FONTS_DIR:-$PROJECT_ROOT/public/fonts}"
 LABEL="${WEEKLY_REPORT_LABEL:-pending/agent}"
 
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK" "$BASE_ENV"' EXIT
 # camo 按源 URL 缓存约一年，每轮必须换新 URL，否则顶死旧图
 REV="wk-$(date +%Y%m%d)-$(date +%s%N | tail -c 7)"
 
+# 再算进来的项目（GitHub#232）：本机另外几个已部署项目的实例配置名，空格或逗号分隔。
+# 不配 = 只算本项目，下面走原来那条路，产物与原来逐字节相同。
+EXTRA_PROJECTS="$(printf '%s' "${WEEKLY_REPORT_EXTRA_PROJECTS:-}" | tr ',' ' ' | xargs)"
+
+if [ -z "$EXTRA_PROJECTS" ]; then
 echo "== 1/4 采数（repo=$REPO）"
 git -C "$PROJECT_ROOT" fetch origin --quiet || true
 # 处理时长要去本机 agent 日志里取每一轮的起止，需要知道 worktree 路径。
@@ -88,6 +99,73 @@ SWITCH_WEEK="${WEEKLY_REPORT_SWITCH_WEEK:-}"
     ${WT_BASE:+--worktree-base "$WT_BASE"} \
     ${WT_PREFIX:+--session-prefix "$WT_PREFIX"} \
     ${SWITCH_WEEK:+--switch-week "$SWITCH_WEEK"} )
+else
+# ── 多个项目：每个项目各自走完整条采数（严格模式），最后只在结果上合并 ──
+# 任一项目读失败就整份不发：一份「少算了一个仓库」的合计看上去完全正常，没人会发现。
+#
+# 每个项目在子 shell 里从「读项目配置之前」的环境起步，再读它**自己**的配置：仓库名、
+# 代码目录（算提交与增删行）、worktree 目录与会话前缀（找本机日志）、口径切换周、
+# 机器人账号名单、GitHub 凭据都取它自己的。
+collect_one() {   # $1 项目名  $2 输出文件  $3 记录「仓库名 + worktree 目录规则」的文件
+    (
+        set -euo pipefail
+        local v
+        for v in $(compgen -e); do
+            case "$BASE_NAMES" in *" $v "*) ;; *) unset "$v" 2>/dev/null || true ;; esac
+        done
+        # shellcheck disable=SC1090
+        . "$BASE_ENV" 2>/dev/null || true
+        local conf; conf="$(cavil_project_env "$1")"
+        [ -f "$conf" ] || { echo "[error] 项目 $1：找不到项目配置 $conf" >&2; exit 1; }
+        # shellcheck disable=SC1090
+        set -a; . "$conf"; set +a
+        [ -n "${PROJECT_ROOT:-}" ] || { echo "[error] 项目 $1：$conf 里缺 PROJECT_ROOT" >&2; exit 1; }
+        local repo="${WEEKLY_REPORT_REPO:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null \
+              | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')}"
+        [ -n "$repo" ] || { echo "[error] 项目 $1：推不出仓库名，请在 $conf 里设 WEEKLY_REPORT_REPO" >&2; exit 1; }
+        # 取最新主干：合并模式下失败就是失败（单项目那条路是 `|| true`）
+        git -C "$PROJECT_ROOT" fetch origin --quiet \
+            || { echo "[error] 项目 $1（$repo）：取最新主干失败（git fetch origin）" >&2; exit 1; }
+        local dconf wtb="" wtp=""
+        dconf="$(cavil_project_config "$PROJECT_ROOT")"
+        if [ -f "$dconf" ]; then
+            wtb=$(set -a; . "$dconf" >/dev/null 2>&1; printf '%s' "${WORKTREE_BASE:-}")
+            wtp=$(set -a; . "$dconf" >/dev/null 2>&1; printf '%s' "${SESSION_NAME_PREFIX:-}")
+        fi
+        # 只有两项都配了才会去读日志（collect.py 两个都给才读），才需要查撞没撞
+        local wtkey=""; [ -z "$wtb" ] || [ -z "$wtp" ] || wtkey="$wtb/$wtp-"
+        printf '%s\t%s\t%s\n' "$1" "$repo" "$wtkey" >> "$3"
+        local sw="${WEEKLY_REPORT_SWITCH_WEEK:-}"
+        echo "   · $1（repo=$repo）"
+        ( cd "$PROJECT_ROOT" && python3 "$HERE/collect.py" --strict --repo "$repo" --out "$2" \
+            ${WEEK_OF:+--week-of "$WEEK_OF"} \
+            ${wtb:+--worktree-base "$wtb"} \
+            ${wtp:+--session-prefix "$wtp"} \
+            ${sw:+--switch-week "$sw"} ) \
+            || { echo "[error] 项目 $1（$repo）：采数失败，整份周报不发" >&2; exit 1; }
+    )
+}
+
+echo "== 1/4 采数（多个项目合并：$PROJECT $EXTRA_PROJECTS）"
+IDS="$WORK/ids.tsv"; : > "$IDS"
+PARTS=()
+i=0
+for P in "$PROJECT" $EXTRA_PROJECTS; do
+    i=$((i + 1))
+    collect_one "$P" "$WORK/part-$i.json" "$IDS"
+    PARTS+=("$WORK/part-$i.json")
+done
+# 两个项目的 worktree 目录规则相同 → 两边会读到同一份本机日志，金额和处理时长串账
+DUP=$(awk -F'\t' '$3!="" {print $3}' "$IDS" | sort | uniq -d)
+if [ -n "$DUP" ]; then
+    echo "[error] 下面这些项目的 worktree 目录规则相同，本机日志分不开、会串账：" >&2
+    awk -F'\t' -v d="$DUP" '$3==d {print "   " $1 "（" $2 "）→ " $3 "<编号>"}' "$IDS" >&2
+    exit 1
+fi
+DUPR=$(cut -f2 "$IDS" | sort | uniq -d)
+[ -z "$DUPR" ] || { echo "[error] 同一个仓库被算了不止一次：$DUPR" >&2; exit 1; }
+python3 "$HERE/merge.py" --out "$WORK/data.json" --primary "${PARTS[0]}" "${PARTS[@]:1}"
+fi
 
 echo "== 2/4 出图"
 python3 "$HERE/render.py" --data "$WORK/data.json" --out-dir "$WORK" \

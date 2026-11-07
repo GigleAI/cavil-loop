@@ -66,6 +66,28 @@ def _tok_fine(v):
 
 
 SIDE = {"claude": "主 worker", "codex": "交叉 review"}
+
+
+# ── 多仓库合并（GitHub#232）──
+# 合并后的数据带 `repos`（第一个是主仓库），每行明细 / 披露 / 按模型拆分行都带 `repo`。
+# 单仓库数据里没有这些键，下面三个函数都退回原来的写法，报告逐字节不变。
+def multi(D):
+    return len(D.get("repos") or []) > 1
+
+
+def ref(D, row, num):
+    """条目编号：主仓库照旧 `#123`，其他仓库 `owner/name#123`。"""
+    r = row.get("repo")
+    if not multi(D) or r is None or r == D["repos"][0]:
+        return f"#{num}"
+    return f"{r}#{num}"
+
+
+def switch_weeks(D):
+    """口径切换周的集合。合并数据按仓库各留一份，任一仓库切换的那周都算跨口径。"""
+    if "switch_weeks" in D:
+        return {v for v in D["switch_weeks"].values() if v}
+    return {D["switch_week"]} if D.get("switch_week") else set()
 KIND_LABEL = {"multi": "多模型派工", "unrecorded": "未记录模型 / 多模型"}
 
 
@@ -91,21 +113,31 @@ def by_model_section(D, cur, L):
     # 时长表：行 = (模型, 侧)。只列有派工记到它头上的行——多模型派工里出现过、但没有整次
     # 归属给它的模型，只在下面的 token 表里出现
     trows = [r for r in rows if r["records"]]
+    M = multi(D)
     L.append("**时长**\n")
-    L.append("| 模型 | 用在哪一侧 | 派工次数 | 总耗时（含等待） | 处理时长（不含轮间等待） |")
-    L.append("|---|---|---|---|---|")
+    if M:
+        L.append("| 仓库 | 模型 | 用在哪一侧 | 派工次数 | 总耗时（含等待） | 处理时长（不含轮间等待） |")
+        L.append("|---|---|---|---|---|---|")
+    else:
+        L.append("| 模型 | 用在哪一侧 | 派工次数 | 总耗时（含等待） | 处理时长（不含轮间等待） |")
+        L.append("|---|---|---|---|---|")
 
     def work_txt(w, n, total):
         if not n:
             return "—"
         return hm(w) + (f"（{n:.0f}/{total:.0f} 次算得出）" if n < total else "")
 
+    if M:
+        order = {r: i for i, r in enumerate(D["repos"])}
+        trows = sorted(trows, key=lambda r: order.get(r.get("repo"), len(order)))
     for r in trows:
-        L.append(f"| {name(r)} | {SIDE.get(r['side'], r['side'])} | {r['records']:.0f} | "
+        L.append((f"| {r.get('repo')} " if M else "") +
+                 f"| {name(r)} | {SIDE.get(r['side'], r['side'])} | {r['records']:.0f} | "
                  f"{hm(r['wall'])} | {work_txt(r['work'], r['work_records'], r['records'])} |")
     T = {f: sum(r[f] for r in rows) for f in ("records", "wall", "work", "work_records", "cost",
                                                "tok_in", "tok_out", "tok_cache_r", "tok_cache_w")}
-    L.append(f"| **合计** | | **{T['records']:.0f}** | **{hm(T['wall'])}** | "
+    L.append(("| " if M else "") +
+             f"| **合计** | | **{T['records']:.0f}** | **{hm(T['wall'])}** | "
              f"**{work_txt(T['work'], T['work_records'], T['records'])}** |\n")
 
     # token 与折算价值表：同一个模型两侧的用量合并成一行（单价跟侧无关）
@@ -151,6 +183,34 @@ def by_model_section(D, cur, L):
         L.append(f"> {n}\n")
 
 
+def switch_text(D):
+    """口径说明里「口径切换周」那一条，合并多个仓库时按仓库逐个写。"""
+    parts = [f"{r} {'配置为 ' + v if v else '未配置'}" for r, v in D["switch_weeks"].items()]
+    return ("本报告合并了多个仓库，切换周按仓库各自配置：" + "；".join(parts) +
+            "。任一仓库在某周切换，那周就标 †、不给时长 / 成本类环比；"
+            "过渡期并列块按最近的那次切换算。")
+
+
+def by_repo_section(D, cur, L):
+    """按仓库拆分（只算本周，GitHub#232）。各行原样取自各仓库自己的采数结果，合计行 = 本周总数。"""
+    rows = D.get("by_repo") or []
+    L.append("### 按仓库拆分（本周）\n")
+    L.append("每个仓库各自独立采数，下表各行是它自己那份结果，合计行就是上面各页的本周总数。"
+             "成本、token 只含进得了去重合计的派工。\n")
+    L.append("| 仓库 | 新提 issue | 关闭 issue | 合并 PR | 净增代码行 | AI 总耗时（含等待） | "
+             "处理时长（不含轮间等待） | 折算价值（美元） | 输出 token | 缓存读取 token |")
+    L.append("|---|---|---|---|---|---|---|---|---|---|")
+
+    def line(label, v):
+        work = hm(v["work"]) if v.get("work_records") else "—"
+        return (f"| {label} | {v['iss_open']:,.0f} | {v['iss_closed']:,.0f} | {v['pr_merged']:,.0f} | "
+                f"{v['add'] - v['del']:,.0f} | {hm(v['wall'])} | {work} | {_usd_small(v['cost'])} | "
+                f"{_tok_fine(v.get('tok_out', 0))} | {_tok_fine(v.get('tok_cache_r', 0))} |")
+    for r in rows:
+        L.append(line(r["repo"], r["week"]))
+    L.append(line("**合计**", cur) + "\n")
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--data",required=True); ap.add_argument("--out",required=True)
@@ -186,7 +246,10 @@ def main():
     # 后者会随 10 周窗口每周往后滚一格，把历史上的切换日期越推越晚（GitHub#932 review 第 6 轮）。
     # 报告与趋势图读同一个字段，保证两边说的是同一周。拿不到就什么都不标。
     first_codex=D.get("switch_week")
-    at_switch=(first_codex is not None and tw["start"]==first_codex)
+    # 合并多个仓库时每个仓库的切换周各留一份（GitHub#232）：任一仓库在某周切换，那周就跨口径。
+    # 单仓库时这个集合就是 {switch_week}，下面的判断与原来完全一样。
+    SWS=switch_weeks(D)
+    at_switch=(tw["start"] in SWS)
 
     def delta(a_, b_):
         return "—" if not b_ else f"{(a_ - b_) / b_ * 100:+.0f}%"
@@ -201,7 +264,7 @@ def main():
         for k in W:
             v=wk[k]; d0=datetime.date.fromisoformat(k); d1=d0+datetime.timedelta(days=6)
             # 切换周打个记号：它左右两侧的时长 / 成本不是同一把尺子量的，不能连着读趋势
-            cells=[f"{d0.month}/{d0.day}–{d1.month}/{d1.day}" + (" †" if k==first_codex else "")]
+            cells=[f"{d0.month}/{d0.day}–{d1.month}/{d1.day}" + (" †" if k in SWS else "")]
             for _, get, fm, _cross, est in cols:
                 x=get(v)
                 txt="—" if x is None else fm(x)
@@ -224,6 +287,15 @@ def main():
         L.append("| " + " | ".join(chg) + " |\n")
 
     def switch_note(what, same=""):
+        if multi(D):
+            hit=[(r, v) for r, v in D["switch_weeks"].items() if v in W]
+            if hit:
+                who="、".join(f"{r} 从 {datetime.date.fromisoformat(v).month}/{datetime.date.fromisoformat(v).day} 那周起"
+                             for r, v in sorted(hit, key=lambda x: x[1]))
+                L.append(f"† 本报告合并了多个仓库，各仓库口径改的时间不同：{who}"
+                         "（用量按 API 调用去重 + 纳入交叉 review 那一侧）。"
+                         f"**标 † 的周前后的{what}不是同一把尺子量的**，别连成一条趋势读{same}。\n")
+            return
         if first_codex in W:
             fd=datetime.date.fromisoformat(first_codex)
             L.append(f"† {fd.month}/{fd.day} 那周起口径改了（用量按 API 调用去重 + 纳入交叉 review 那一侧）。"
@@ -374,12 +446,15 @@ def main():
     L.append(PAGE)
     L.append("### 按模型拆分（本周）\n")
     by_model_section(D, cur, L)
+    if multi(D):
+        by_repo_section(D, cur, L)
 
     # ── 本周明细：写解读的 agent 据此写「详细展开」 ──
     L.append(PAGE)
     L.append("## 📋 本周明细\n")
 
-    czn={d["num"] for d in D["detail"]
+    # 合并多个仓库时编号会撞（两个仓库都有 #42），身份是（仓库, 编号）
+    czn={(d.get("repo"), d["num"]) for d in D["detail"]
          if d["closed_at"] and d["closed_at"][:10]>=tw["start"]}
 
     def worked(d):
@@ -393,31 +468,45 @@ def main():
         """
         return d["rounds"] > 0 or d["wall"] > 0 or d["cost"] > 0
 
-    closed=[d for d in D["detail"] if d["num"] in czn]
-    active=[d for d in D["detail"] if d["num"] not in czn and worked(d)]
+    closed=[d for d in D["detail"] if (d.get("repo"), d["num"]) in czn]
+    active=[d for d in D["detail"] if (d.get("repo"), d["num"]) not in czn and worked(d)]
     loose=[d for d in D.get("loose_prs",[]) if worked(d) or d["merged_at"]]
+
+    def by_repo(rows, head, line):
+        """一组明细：单仓库原样一张表；合并多个仓库时按仓库分小节，主仓库在前。"""
+        if not multi(D):
+            L.extend(head)
+            for d in rows:
+                L.append(line(d))
+            return
+        for r in D["repos"]:
+            sub=[d for d in rows if d.get("repo")==r]
+            if not sub:
+                continue
+            L.append(f"\n**{r}**（{len(sub)} 个）\n")
+            L.extend(head)
+            for d in sub:
+                L.append(line(d))
+
+    def prs_txt(d):
+        return " ".join(f"{ref(D, d, p['num'])}{'（已合并）' if p['merged_at'] else ''}" for p in d["prs"]) or "—"
+
     L.append(f"### 上周收口的 issue（{len(closed)} 个）\n")
-    L.append("| # | 标题 | 轮数（你参与） | AI 总耗时 | PR |")
-    L.append("|---|---|---|---|---|")
-    for d in closed:
-        pr=" ".join(f"#{p['num']}{'（已合并）' if p['merged_at'] else ''}" for p in d["prs"]) or "—"
-        L.append(f"| #{d['num']} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） | {hm(d['wall'])} | {pr} |")
+    by_repo(closed, ["| # | 标题 | 轮数（你参与） | AI 总耗时 | PR |", "|---|---|---|---|---|"],
+            lambda d: f"| {ref(D, d, d['num'])} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） | {hm(d['wall'])} | {prs_txt(d)} |")
     L.append(f"\n### 上周有推进但没关的 issue（{len(active)} 个）\n")
-    L.append("| # | 标题 | 轮数（你参与） | AI 总耗时 | 当前 label |")
-    L.append("|---|---|---|---|---|")
-    for d in active:
-        L.append(f"| #{d['num']} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） | {hm(d['wall'])} | {', '.join(d['labels']) or '—'} |")
+    by_repo(active, ["| # | 标题 | 轮数（你参与） | AI 总耗时 | 当前 label |", "|---|---|---|---|---|"],
+            lambda d: f"| {ref(D, d, d['num'])} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） | {hm(d['wall'])} | {', '.join(d['labels']) or '—'} |")
 
     if loose:
         L.append(f"\n### 上周没有对应 issue 的 PR（{len(loose)} 个）\n")
         L.append("> 多为 chore / 工具链改动。它们不挂在任何 issue 下，单列在这里，"
                  "否则只看 issue 清单会完全看不见这部分工作。\n")
-        L.append("| PR | 标题 | 轮数（你参与） | AI 总耗时 | 状态 |")
-        L.append("|---|---|---|---|---|")
-        for d in loose:
-            stt="已合并" if d["merged_at"] else ("已关闭" if d["closed_at"] else "开着")
-            L.append(f"| #{d['num']} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） "
-                     f"| {hm(d['wall'])} | {stt} |")
+        def stt(d):
+            return "已合并" if d["merged_at"] else ("已关闭" if d["closed_at"] else "开着")
+        by_repo(loose, ["| PR | 标题 | 轮数（你参与） | AI 总耗时 | 状态 |", "|---|---|---|---|---|"],
+                lambda d: f"| {ref(D, d, d['num'])} | {d['title'][:60]} | {d['rounds']:.0f}（你 {d['human']:.0f}） "
+                          f"| {hm(d['wall'])} | {stt(d)} |")
     L.append("")
     lw=[x for x in D.get("long_windows",[]) if x["week"]==tw["start"]]
     ms=[x for x in D.get("long_turns",[]) if x["week"]==tw["start"]]
@@ -430,7 +519,7 @@ def main():
             L.append("| # | 开始 | 完工 | 总耗时 |")
             L.append("|---|---|---|---|")
             for x in lw:
-                L.append(f"| #{x['num']} | {x['start'][:19]} | {x['end'][:19]} | {hm(x['wall'])} |")
+                L.append(f"| {ref(D, x, x['num'])} | {x['start'][:19]} | {x['end'][:19]} | {hm(x['wall'])} |")
         if ms:
             L.append(f"\n**处理时长明显超过自身总耗时的派工（{len(ms)} 条）**。"
                      "一轮按它的开始时刻整轮算给一次派工，不封顶、不裁剪；超出通常是**这一轮在完工评论"
@@ -439,7 +528,7 @@ def main():
             L.append("| # | 总耗时 | 处理时长 | 倍数 |")
             L.append("|---|---|---|---|")
             for x in ms:
-                L.append(f"| #{x['num']} | {hm(x['wall'])} | {hm(x['work'])} | {x['work']/max(x['wall'],1):.1f}× |")
+                L.append(f"| {ref(D, x, x['num'])} | {hm(x['wall'])} | {hm(x['work'])} | {x['work']/max(x['wall'],1):.1f}× |")
         if ua:
             L.append(f"\n**没归给任何派工的轮（{sum(x['turns'] for x in ua)} 轮）**。"
                      "这些轮开始时不在任何一次派工的窗口里（例如完工评论之后后台任务又唤起了一轮），"
@@ -447,7 +536,7 @@ def main():
             L.append("| issue / PR | agent | 轮数 | 合计 |")
             L.append("|---|---|---|---|")
             for x in ua:
-                L.append(f"| #{x['wt']} | {x['agent']} | {x['turns']} | {hm(x['secs'])} |")
+                L.append(f"| {ref(D, x, x['wt'])} | {x['agent']} | {x['turns']} | {hm(x['secs'])} |")
         L.append("\n</details>\n")
 
     # ── 单价可信度：金额按「这个价站不站得住」分桶（GitHub#934 交叉 review 第 1 轮）──
@@ -486,7 +575,7 @@ def main():
 - **按派工去重**：一次派工的身份是 **(worktree, 开始时刻)** 两项，**不含完工时刻**——记账行里的时长 / 金额 / token 都是从开始起的**累计值**，而「完工」只是写那条评论的时刻，同一次派工发多条评论就是多个越来越大的累计快照。所以同一身份只入账一次，并取**完工最晚**的那条（累计值最完整）。本次区间折叠了 {t('dupes'):.0f} 条这样的快照。
 - **AI 总耗时（含等待）**：一次派工从「开工」到「完工」之间**走过的钟点时间**，也就是记账行里的「完工 − 开始」。它**把中间的干等也算进去**——会话卡住不动的那几个钟头照样计入，所以它回答的是「这件事占了多长时间」，**不等于 AI 一直在跑**。
 - **处理时长**：AI **每一轮**处理从开始到结束经过的时间（一轮 = 收到一次指令到做完回复），出报告时从本机 agent 日志取。它**不含轮与轮之间的等待**（等下一次派工、指令没提交上去），但**含轮内的等待**（权限确认、重试退避、进程挂起），所以不等于精确的执行时长（交叉 review 那一侧按 codex 日志里逐项的起止算）。每一轮按开始时刻**只算给一次派工**（与 token 认领同一条规则），整轮计入、不封顶，因此可能超过该派工的总耗时（见上方清单）。本次区间 {t('work_records'):.0f} 条算得出、{t('work_missing'):.0f} 条拿不到（日志已不在且本地台账里也没有），拿不到的不计入该项{f"；另有 {t('work_in_progress'):.0f} 轮在出报告时还没有结束标记（还在跑，或进程中途退出），按当时已有的记录计" if t('work_in_progress') else ""}。会话日志会被 CLI 按保留期删掉，所以每次出报告都会把读到的轮存进本地台账，之后日志没了也算得出；台账建立之前就被删掉的日志补不回来。每次出报告都对窗口内**所有周**用同一方法重算——但它和 2026 年 10 月之前发出的周报里的「模型 + 工具」（按累计快照差分）不是同一个量，别拿新旧两份报告的这一项直接比。
-- **口径切换周**：{'配置为 ' + first_codex + '（那周起用量按 API 调用去重、纳入交叉 review 那一侧；它前后的时长 / 成本不是同一把尺子量的）。' if first_codex else ('**未配置**——所以本报告不标切换周、不画切换竖线、也不出过渡期并列块，环比照常给。本次区间里交叉 review 那一侧**已经有记账**，说明新口径已经上线，请把 `WEEKLY_REPORT_SWITCH_WEEK` 设成它上线那一周内的任意一天。' if t('records_codex') else '未配置，且本次区间里交叉 review 那一侧还没有记账 —— 新口径尚未上线，暂时无需配置。')}
+- **口径切换周**：{switch_text(D) if multi(D) else ('配置为 ' + first_codex + '（那周起用量按 API 调用去重、纳入交叉 review 那一侧；它前后的时长 / 成本不是同一把尺子量的）。' if first_codex else ('**未配置**——所以本报告不标切换周、不画切换竖线、也不出过渡期并列块，环比照常给。本次区间里交叉 review 那一侧**已经有记账**，说明新口径已经上线，请把 `WEEKLY_REPORT_SWITCH_WEEK` 设成它上线那一周内的任意一天。' if t('records_codex') else '未配置，且本次区间里交叉 review 那一侧还没有记账 —— 新口径尚未上线，暂时无需配置。'))}
 - **金额来源**：本次区间 {t('src_recomputed'):.0f} 条按本机日志**重算**、{t('src_original'):.0f} 条**沿用记录里的原值**{f"、{t('src_estimated'):.0f} 条历史记账**按记录里的 token 数重估**（旧驱动的原值按 Opus 4 老价目算、又重复计了调用，偏高数倍；改按现行 Opus 参照价计、再除以 1.68 抵掉重复计。这是估算：按 53 个会话实测的重复计范围（1.39~2.46 倍）推，估算值可能比实际高约 45% 到低约 20%，且历史记录没写模型，一律按 Opus 算）" if t('src_estimated') else ""}{f"、{t('src_repriced'):.0f} 条交叉 review 记录写评论时还没有单价、没写金额，出报告时**按记录里的 token 补算**（用现在的价目，取价顺序与交叉 review 那一侧的驱动一致：部署者配置的价，或内置表 + 缺价自动补抓来的价；只有一部分项有价的，没价的那部分不计，金额偏低，计入下面「单价覆盖」的部分计价条数；一条记录用了多个模型、或有调用认不出模型的，token 拆不开，不补算）" if t('src_repriced') else ""}。重算只在「本机有这次派工的日志且通过检验」时才做，**不按周划线**——所以**同一个历史周的数值会随本机日志被清理而改变**，重跑可能不一样（报告生成时间见文末）。日志检验只能**证伪**（比记录里少就是确证缺失），**证明不了日志完整**：记录本身可能就没看全，后来新增的调用也可能把被删调用的 token 补上。{f"其中 {t('log_shortfall_detected'):.0f} 条检出缺失、{t('log_unknown'):.0f} 条覆盖未知，这些一律沿用原值、不拿残缺的重算值顶替。" if (t('log_shortfall_detected') or t('log_unknown')) else ""}
 - **不可去重合计的部分**：{f"本次区间另有 **{t('records_not_summable'):.0f} 条**派工的窗口互相重叠、且组内有沿用原值的，合计 ${t('cost_not_summable'):,.0f}——原值是驱动按自己窗口、自己那套价目算的累计值，和重算值**不是同一个口径**，两者直接相加会把共用的调用算两遍。所以这部分**单列，不可与上面的成本相加**。{f"它们的 token（输出 {t('tok_out_not_summable')/1e6:.1f}M、缓存读取 {t('tok_cache_r_not_summable')/1e6:.1f}M，按各自记录的原值）同理**不计入** token 页的 10 周表、token 图和按模型拆分的表。" if (t('tok_out_not_summable') or t('tok_cache_r_not_summable') or t('tok_in_not_summable') or t('tok_cache_w_not_summable')) else ""}" if t('records_not_summable') else "本周没有「重叠且证据不足」的派工，成本栏就是全部。"}
 - **单价覆盖**：本次区间 {t('state_full'):.0f} 条金额完整、{t('state_partial'):.0f} 条**只算了一部分用量**（有的模型、或同一模型里的某一项没有单价，那部分没计进金额，所以金额必定偏低）、{t('state_none'):.0f} 条一条都算不出。
@@ -496,7 +585,8 @@ def main():
 - **代码行数**：`origin/main` 上当周提交的「新增 − 删除」，含自动生成文件与依赖锁文件，是工作量的粗略代理。
 - **提交数不适合看趋势**（因此未入图）：合并方式改成 squash 后，一个 PR 只留一个提交，提交数会断崖式下降，那是记账方式变了而非产出变了。
 - **数据生成时间**：{D['generated_at'][:19].replace('T',' ')}，由 `scripts/weekly-report/` 自动产出。
-""")
+""" + (f"""- **合并了 {len(D['repos'])} 个仓库**：{'、'.join(D['repos'])}。每个仓库各自独立采数（只读它自己的 GitHub 数据和它自己 worktree 下的本机日志、各自认领与去重），最后只把结果相加：总数、图和 10 周表是合计，派工总耗时的中位数按全部派工重算。明细里主仓库照旧写 `#编号`，其他仓库写 `仓库名#编号`。任一仓库读不到数据时整份周报不出。
+""" if multi(D) else ""))
     L.append("</details>")
     open(a.out,"w").write("\n".join(L)+"\n")
     print(f"[ok] {a.out}")

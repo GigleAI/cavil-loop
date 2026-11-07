@@ -121,8 +121,9 @@ class Chart:
                 if v is None: continue
                 out.append(f'<circle cx="{ix+step*i+step/2:.1f}" cy="{yy(v):.1f}" r="3.4" fill="{BG}" stroke="{s["color"]}" stroke-width="2"/>')
         out.extend(vals)
-        if note:
-            idx,txt=note; mx=ix+step*idx
+        # note：一条 (下标, 文字)，或多条组成的列表（合并多个仓库、各自切换周不同时，GitHub#232）
+        for idx,txt in ([note] if isinstance(note,tuple) else (note or [])):
+            mx=ix+step*idx
             out.append(f'<line x1="{mx:.1f}" y1="{iy-6}" x2="{mx:.1f}" y2="{iy+ih}" stroke="{RED}" stroke-width="1.4" stroke-dasharray="4 3"/>')
             out.append(f'<text x="{mx+6:.1f}" y="{iy+8}" class="note" fill="{RED}">{esc(txt)}</text>')
         lx=x0+W-PR; ly=y0+16
@@ -218,6 +219,13 @@ def main():
     swk=D.get("switch_week")
     fc=W.index(swk) if swk in W else None
     sw=(fc,"口径切换") if fc is not None else None
+    if "switch_weeks" in D:
+        # 合并多个仓库：每个仓库的切换周各画一条（同一周只画一条），竖线旁写是哪几个仓库
+        hit={}
+        for r,v in D["switch_weeks"].items():
+            if v in W: hit.setdefault(W.index(v),[]).append(r.split("/")[-1])
+        sw=[(i,"口径切换（"+"、".join(rs)+"）") for i,rs in sorted(hit.items())] or None
+        fc=min(hit) if hit else None
     hrs=[wk[k]["wall"]/3600 for k in W]
     # 处理时长不是每周都算得出（日志已不在、本地台账里也没有）。
     # 算不出的周给 None → 折线断开，不画成 0（那会被读成「那周没在跑模型」）。

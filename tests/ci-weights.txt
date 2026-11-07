@@ -73,6 +73,7 @@ weekly-report-dispatch-dedup 1
 weekly-report-legacy-estimate 1
 weekly-report-log-check 5
 weekly-report-money-render 1
+weekly-report-multi-repo 7
 weekly-report-presentation 1
 weekly-report-record 1
 weekly-report-render 1
