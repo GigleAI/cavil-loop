@@ -59,6 +59,7 @@ if (a[0] === 'api' && a[1] === '-X' && a[2] === 'DELETE') {
   }
   if ((m = /^git\/refs\/tags\/(.+)$/.exec(p))) {
     if (!st.tags.includes(m[1])) die('HTTP 422: Reference does not exist');
+    if (fail('tagdel:' + m[1])) die('HTTP 500');
     st.tags = st.tags.filter((t) => t !== m[1]);
     st.tagsDeleted.push(m[1]);
     save();
@@ -66,8 +67,18 @@ if (a[0] === 'api' && a[1] === '-X' && a[2] === 'DELETE') {
   }
   die('fake gh: unknown delete ' + p);
 }
+if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH') {
+  const m = /^releases\/(\d+)$/.exec(relPath(a[3]));
+  const r = m && st.releases.find((x) => x.id === Number(m[1]));
+  if (!r) die('HTTP 404: Not Found');
+  if (fail('patch:' + r.tag_name)) die('HTTP 500');
+  if (!fail('patch-noop:' + r.tag_name) && a.includes('draft=true')) r.draft = true;
+  save();
+  process.exit(0);
+}
 if (a[0] === 'api' && /^repos\/[^/]+\/[^/]+\/git\/ref\/tags\//.test(a[1])) {
   const t = relPath(a[1]).slice('git/ref/tags/'.length);
+  if (fail('tagread:' + t)) die('HTTP 502: Bad Gateway');
   if (!st.tags.includes(t)) die('HTTP 404: Not Found');
   save();
   process.stdout.write(JSON.stringify({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: st.tagSha?.[t] ?? st.sha } }));
@@ -279,12 +290,15 @@ describe('keeping the latest 10 development builds (GitHub#215)', () => {
     expect(r.code, r.out).toBe(0);
     const s = w.read();
     expect(s.deleted.sort()).toEqual(['client/v0.5.1-dev.1', 'client/v0.5.1-dev.2']);
-    // by id, then the tag
-    const idOf = (t: string) => devIds.get(t);
-    expect(writes(s.calls).filter((x) => x.startsWith('DELETE'))).toEqual([`DELETE releases/${idOf('client/v0.5.1-dev.2')}`, 'DELETE git/refs/tags/client/v0.5.1-dev.2', `DELETE releases/${idOf('client/v0.5.1-dev.1')}`, 'DELETE git/refs/tags/client/v0.5.1-dev.1']);
+    // each in three steps, by id: turned into a draft, its tag, the draft
+    const id = (t: string) => devIds.get(t);
+    const steps = s.calls.filter((c) => c[0] === 'api' && (c[2] === 'DELETE' || c[2] === 'PATCH')).map((c) => `${c[2]} ${c[3].replace(/^repos\/[^/]+\/[^/]+\//, '')}`);
+    expect(steps).toEqual([
+      `PATCH releases/${id('client/v0.5.1-dev.2')}`, 'DELETE git/refs/tags/client/v0.5.1-dev.2', `DELETE releases/${id('client/v0.5.1-dev.2')}`,
+      `PATCH releases/${id('client/v0.5.1-dev.1')}`, 'DELETE git/refs/tags/client/v0.5.1-dev.1', `DELETE releases/${id('client/v0.5.1-dev.1')}`,
+    ]);
     expect(s.tagsDeleted.sort()).toEqual(['client/v0.5.1-dev.1', 'client/v0.5.1-dev.2']);
-    const left = devsLeft(s);
-    expect(left).toEqual(Array.from({ length: 10 }, (_, i) => `0.5.1-dev.${12 - i}`));
+    expect(devsLeft(s)).toEqual(Array.from({ length: 10 }, (_, i) => `0.5.1-dev.${12 - i}`));
     for (const o of others) expect(s.releases.map((x) => x.tag_name)).toContain(o.tag_name);
   });
 
@@ -294,9 +308,10 @@ describe('keeping the latest 10 development builds (GitHub#215)', () => {
     w.build('0.5.1-dev.50');
     expect(w.run('0.5.1-dev.50').code).toBe(0);
     expect(w.read().deleted.sort()).toEqual(['client/v0.5.1-dev.100', 'client/v0.5.1-dev.101']);
+    expect(w.read().tagsDeleted.sort()).toEqual(['client/v0.5.1-dev.100', 'client/v0.5.1-dev.101']);
   });
 
-  it('drafts an earlier, cancelled run left of a lower version go (draft only, there is no tag); a higher one is left alone', () => {
+  it('drafts an earlier, cancelled run left of a lower version go (it has no tag yet); a higher one is left alone', () => {
     const w = world([devRel('0.5.1-dev.380', { draft: true }), devRel('0.5.1-dev.390', { draft: true }), devRel('0.5.1-dev.370')]);
     w.build('0.5.1-dev.387');
     const r = w.run('0.5.1-dev.387');
@@ -307,7 +322,7 @@ describe('keeping the latest 10 development builds (GitHub#215)', () => {
     expect(s.releases.map((x) => x.tag_name).sort()).toEqual(['client/v0.5.1-dev.370', 'client/v0.5.1-dev.387', 'client/v0.5.1-dev.390']);
   });
 
-  it('changed while the clean-up runs: a build un-marked as pre-release meanwhile is neither deleted nor loses its tag (re-read before each deletion)', () => {
+  it('changed while the clean-up runs: a build un-marked as pre-release meanwhile is neither deleted nor loses its tag (re-read before each step)', () => {
     const devs = Array.from({ length: 12 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
     // dev.2 goes first (higher of the two); while it is being deleted, dev.1 stops being a pre-release
     const w = world([...devs].reverse(), [], { afterDelete: { 'client/v0.5.1-dev.2': [{ tag: 'client/v0.5.1-dev.1', set: { prerelease: false } }] } });
@@ -318,65 +333,101 @@ describe('keeping the latest 10 development builds (GitHub#215)', () => {
     // reachability: the clean-up did run and delete dev.2
     expect(s.deleted).toEqual(['client/v0.5.1-dev.2']);
     expect(s.tagsDeleted).toEqual(['client/v0.5.1-dev.2']);
-    expect(s.releases.find((x) => x.tag_name === 'client/v0.5.1-dev.1')).toMatchObject({ prerelease: false });
+    expect(s.releases.find((x) => x.tag_name === 'client/v0.5.1-dev.1')).toMatchObject({ prerelease: false, draft: false });
     expect(s.tags).toContain('client/v0.5.1-dev.1');
     expect(r.out).toContain('不删 client/v0.5.1-dev.1');
   });
 
-  it('a release replaced under the same tag meanwhile (new id) is not deleted; a newer build published meanwhile moves nothing out of the latest 10', () => {
+  it('a release replaced under the same tag meanwhile (new id) is not touched', () => {
     const devs = Array.from({ length: 12 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
     const replaced = { ...devRel('0.5.1-dev.1'), id: 9999, target_commitish: SHA };
     const w = world([...devs].reverse(), [], {
-      afterDelete: { 'client/v0.5.1-dev.2': [{ add: replaced }] },
+      afterDelete: { 'client/v0.5.1-dev.2': [{ tag: 'client/v0.5.1-dev.1', set: { tag_name: 'gone/x' } }, { add: replaced }] },
     });
-    // the replacement only appears once dev.2 is gone: drop the original dev.1 at the same moment
-    const st = w.read() as any;
-    st.afterDelete['client/v0.5.1-dev.2'].unshift({ tag: 'client/v0.5.1-dev.1', set: { tag_name: 'gone/x' } });
-    writeFileSync((w as any).stateFile, JSON.stringify(st));
     w.build('0.5.1-dev.12');
     const r = w.run('0.5.1-dev.12');
     expect(r.code, r.out).toBe(0);
     const s = w.read();
     expect(s.deleted).toEqual(['client/v0.5.1-dev.2']);
-    expect(s.releases.some((x) => x.id === 9999)).toBe(true);
+    expect(s.releases.find((x) => x.id === 9999)).toMatchObject({ draft: false });
+    // the original release (now under another tag) is not touched either: no step at all on its id
+    const orig = s.releases.find((x) => x.tag_name === 'gone/x')!;
+    expect(orig).toMatchObject({ draft: false });
+    expect(s.calls.filter((c) => c[0] === 'api' && c[3]?.endsWith(`/releases/${orig.id}`))).toEqual([]);
   });
 
-  it('the fresh read before a deletion fails: that one and the rest are left for the next push', () => {
+  it('the fresh read before a step fails: the clean-up stops, nothing half-done is left behind, the next run finishes', () => {
     const devs = Array.from({ length: 12 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
-    // dev.12 is already published: list reads 1 to decide, 2 to select, 3 before the first delete,
-    // 4 for its tag, 5 before the second delete
-    const w = world([...devs].reverse(), ['list#5']);
+    // dev.12 is already published: list reads 1 to decide, 2 to select; dev.2 takes 3 (before the
+    // draft step), 4 (before the tag), 5 (before the delete); 6 is the first read for dev.1
+    const w = world([...devs].reverse(), ['list#6']);
     w.build('0.5.1-dev.12');
     const r = w.run('0.5.1-dev.12');
     expect(r.code, r.out).toBe(0);
     expect(r.out).toContain('重读发版列表失败');
-    expect(w.read().deleted).toEqual(['client/v0.5.1-dev.2']);
+    let s = w.read();
+    expect(s.deleted).toEqual(['client/v0.5.1-dev.2']);
+    expect(s.releases.find((x) => x.tag_name === 'client/v0.5.1-dev.1')).toMatchObject({ draft: false, prerelease: true });
+    expect(w.run('0.5.1-dev.12').code).toBe(0);
+    s = w.read();
+    expect(s.deleted.sort()).toEqual(['client/v0.5.1-dev.1', 'client/v0.5.1-dev.2']);
+    expect(s.tags).not.toContain('client/v0.5.1-dev.1');
   });
 
-  it('a tag that no longer points at the release\'s commit is kept (the release still goes)', () => {
+  // GitHub#215 code review round 2: a step that fails after the release is out of sight must not
+  // lose the rest — the half-done build stays a draft (its tag name and commit are recorded on it),
+  // and a later, fresh process finishes it. Each case: three separate processes on one GitHub.
+  for (const [what, fail] of [
+    ['reading its tag fails once', 'tagread:client/v0.5.1-dev.1'],
+    ['deleting its tag fails once', 'tagdel:client/v0.5.1-dev.1'],
+    ['deleting the draft fails once (the tag is already gone)', 'delete:client/v0.5.1-dev.1'],
+    ['turning it into a draft fails once', 'patch:client/v0.5.1-dev.1'],
+    ['turning it into a draft answers "ok" but does not take', 'patch-noop:client/v0.5.1-dev.1'],
+  ] as const) {
+    it(`a step of the clean-up that fails is finished by a later run, release and tag both: ${what}`, () => {
+      const devs = Array.from({ length: 11 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
+      const w = world([...devs].reverse(), [fail]);
+      w.build('0.5.1-dev.11');
+      const first = w.run('0.5.1-dev.11');
+      expect(first.code, first.out).toBe(0);
+      expect(first.out).toContain('留到下次');
+      let s = w.read();
+      // not finished, and nothing an app could install: either still a published pre-release, or a draft
+      const half = s.releases.find((x) => x.tag_name === 'client/v0.5.1-dev.1');
+      expect(half, 'the release is kept until its tag is settled, or the tag is already gone').toBeTruthy();
+      // a fresh process, the fault gone: finishes it
+      const second = w.run('0.5.1-dev.11');
+      expect(second.code, second.out).toBe(0);
+      s = w.read();
+      expect(s.releases.some((x) => x.tag_name === 'client/v0.5.1-dev.1')).toBe(false);
+      expect(s.tags).not.toContain('client/v0.5.1-dev.1');
+      // and the next build's clean-up works as usual (dev.2 out of the latest 10)
+      w.build('0.5.1-dev.12');
+      expect(w.run('0.5.1-dev.12').code).toBe(0);
+      s = w.read();
+      expect(s.deleted.filter((t) => t === 'client/v0.5.1-dev.1')).toHaveLength(1);
+      expect(s.deleted).toContain('client/v0.5.1-dev.2');
+      expect(s.tags).not.toContain('client/v0.5.1-dev.2');
+      expect(s.tags).toContain('client/v0.5.1-dev.3');
+    });
+  }
+
+  it('a tag that is definitely not the release\'s (points at another commit) is kept, the release goes, and later runs leave that tag alone', () => {
     const devs = Array.from({ length: 10 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
     const w = world([...devs].reverse(), [], { tagSha: { 'client/v0.5.1-dev.1': 'b'.repeat(40) } });
     w.build('0.5.1-dev.11');
     const r = w.run('0.5.1-dev.11');
     expect(r.code, r.out).toBe(0);
-    const s = w.read();
+    let s = w.read();
     expect(s.deleted).toEqual(['client/v0.5.1-dev.1']);
     expect(s.tagsDeleted).toEqual([]);
     expect(s.tags).toContain('client/v0.5.1-dev.1');
-    expect(r.out).toContain('标签 client/v0.5.1-dev.1 没删');
-  });
-
-  it('a deletion that fails is a warning on the run; the others still go, and the next run retries it', () => {
-    const devs = Array.from({ length: 12 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
-    const w = world(devs, ['delete:client/v0.5.1-dev.1']);
+    expect(r.out).toContain('标签 client/v0.5.1-dev.1 不删');
     w.build('0.5.1-dev.12');
-    const r = w.run('0.5.1-dev.12');
-    expect(r.code, r.out).toBe(0);
-    expect(r.out).toContain('::warning::删旧开发版 client/v0.5.1-dev.1 失败');
-    expect(w.read().deleted).toEqual(['client/v0.5.1-dev.2']);
-    w.build('0.5.1-dev.13');
-    expect(w.run('0.5.1-dev.13').code).toBe(0);
-    expect(w.read().deleted.sort()).toEqual(['client/v0.5.1-dev.1', 'client/v0.5.1-dev.2', 'client/v0.5.1-dev.3']);
+    expect(w.run('0.5.1-dev.12').code).toBe(0);
+    s = w.read();
+    expect(s.tags).toContain('client/v0.5.1-dev.1');
+    expect(s.tagsDeleted).toEqual(['client/v0.5.1-dev.2']);
   });
 });
 

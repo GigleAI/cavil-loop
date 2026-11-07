@@ -79,16 +79,19 @@ export function toPrune(list, keep) {
 }
 
 /**
- * Drafts an earlier run left behind (cancelled by a newer push mid-publish): development-shaped
- * drafts of a version lower than `version`. Never one of a higher version — a newer run may be
- * publishing it right now. A draft has no tag yet, so only the draft goes.
+ * Drafts the clean-up deletes: development-shaped drafts of a version lower than both this run's
+ * `version` and the highest published development build. Two kinds end up here — a run a newer push
+ * cancelled mid-publish, and an old build this clean-up (or an earlier one) already turned into a
+ * draft as its first step. Never one of a higher version — a newer run may be publishing it now.
  */
 export function staleDrafts(list, version) {
-  const mine = parseDev(version);
+  let bar = parseDev(version);
+  const top = devReleases(list)[0];
+  if (top && cmp(top.parsed, bar) > 0) bar = top.parsed;
   return list
     .filter((r) => r?.draft === true && typeof r?.tag_name === 'string' && r.tag_name.startsWith(TAG_PREFIX))
     .map((r) => ({ tag: r.tag_name, parsed: parseDev(r.tag_name.slice(TAG_PREFIX.length)) }))
-    .filter((r) => r.parsed && cmp(r.parsed, mine) < 0);
+    .filter((r) => r.parsed && cmp(r.parsed, bar) < 0);
 }
 
 /**
@@ -110,13 +113,13 @@ export function pruneCandidates(list, keep, version) {
  * kind, still selected by the same rule — and the tag names exactly one release. Anything missing
  * or changed → { ok: false, why }.
  */
-export function stillToDelete(list, c, keep, version) {
+export function stillToDelete(list, c, keep, version, kind = c?.kind) {
   if (!Number.isSafeInteger(c?.id)) return { ok: false, why: '读不到它的发版编号' };
   const same = list.filter((r) => r?.id === c.id);
   if (same.length !== 1) return { ok: false, why: '这个发版已经不在了' };
   if (list.filter((r) => r?.tag_name === c.tag).length !== 1) return { ok: false, why: `标签 ${c.tag} 对应的发版不止一个` };
   const now = pruneCandidates(list, keep, version).find((x) => x.id === c.id);
-  if (!now || now.tag !== c.tag || now.kind !== c.kind) return { ok: false, why: '它已经不符合清理条件（被改过）' };
+  if (!now || now.tag !== c.tag || now.kind !== kind) return { ok: false, why: '它已经不符合清理条件（被改过）' };
   return { ok: true, release: same[0] };
 }
 
@@ -134,21 +137,85 @@ export function readReleases(repo) {
 }
 
 /**
- * The tag of a deleted release: only when no release names it any more (fresh read) and it still
- * points at the commit that release recorded (`target_commitish`, the full commit id it was created
- * with). Anything else (a read that fails, another release on it, moved, not a commit id) keeps the tag.
+ * The tag of a release about to be deleted (a draft by now). → 'gone' (deleted, or there is none),
+ * 'kept' (definitely not this release's: another release names it, it points at another commit, or
+ * the release recorded no full commit id — the release still goes, the tag stays), or 'retry' (could
+ * not tell or could not delete: the draft stays, so the next run comes back to it).
  */
-function deleteTag(repo, tag, release) {
-  const keepIt = (why) => console.log(`::warning::标签 ${tag} 没删：${why}`);
+function settleTag(repo, release, fresh) {
+  const tag = release.tag_name;
+  const path = `repos/${repo}/git/refs/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`;
   const want = String(release?.target_commitish ?? '');
-  if (!/^[0-9a-f]{40}$/.test(want)) return keepIt('发版没记下完整的提交号');
+  if (fresh.some((r) => r?.tag_name === tag && r?.id !== release.id)) return note('kept', tag, '还有别的发版用着它');
+  let ref;
   try {
-    if (readReleases(repo).some((r) => r?.tag_name === tag)) return keepIt('还有发版用着它');
-    const ref = JSON.parse(gh(['api', `repos/${repo}/git/ref/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`]));
-    if (ref?.object?.type !== 'commit' || ref?.object?.sha !== want) return keepIt('它已经不指向那个发版的提交');
-    gh(['api', '-X', 'DELETE', `repos/${repo}/git/refs/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`]);
+    ref = JSON.parse(gh(['api', path.replace('/git/refs/', '/git/ref/')]));
   } catch (e) {
-    keepIt(String(e.stderr ?? e.message).trim());
+    const err = String(e.stderr ?? e.message);
+    if (/HTTP 404/.test(err)) return 'gone';
+    return note('retry', tag, `读不到这个标签（${err.trim()}）`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(want)) return note('kept', tag, '发版没记下完整的提交号');
+  if (ref?.object?.type !== 'commit' || ref?.object?.sha !== want) return note('kept', tag, '它已经不指向那个发版的提交');
+  try {
+    gh(['api', '-X', 'DELETE', path]);
+    return 'gone';
+  } catch (e) {
+    return note('retry', tag, `删不掉（${String(e.stderr ?? e.message).trim()}）`);
+  }
+}
+
+function note(what, tag, why) {
+  console.log(`::warning::标签 ${tag} ${what === 'kept' ? '不删' : '这次没删成，下次再来'}：${why}`);
+  return what;
+}
+
+/**
+ * One old development build, in steps whose progress lives on GitHub itself (so any step that fails,
+ * or a run that is killed, is picked up by the next run — nothing is remembered locally):
+ *   1. a published one is turned into a draft (no installed app sees it any more; the draft keeps the
+ *      tag's name and the commit it was made from, which is how the next run knows the tag is its own)
+ *   2. its tag goes, if it is this release's (settleTag); can't tell / can't delete → stop here
+ *   3. the draft goes
+ * Before every step the list is read again and the same rule decides whether it still qualifies.
+ * → 'done' | 'skipped' (no longer qualifies) | 'later' (left for the next run) | 'stop' (a read failed)
+ */
+function cleanOne(repo, c, keep, version) {
+  let kind = c.kind;
+  for (;;) {
+    let fresh;
+    try {
+      fresh = readReleases(repo);
+    } catch (e) {
+      console.log(`::warning::清理前重读发版列表失败，这次不再清理（下次合并再试）：${String(e.stderr ?? e.message).trim()}`);
+      return 'stop';
+    }
+    const v = stillToDelete(fresh, c, keep, version, kind);
+    if (!v.ok) {
+      console.log(`⏭ 不删 ${c.tag}：${v.why}`);
+      return kind === c.kind ? 'skipped' : 'later';
+    }
+    try {
+      if (kind === 'old') {
+        gh(['api', '-X', 'PATCH', `repos/${repo}/releases/${c.id}`, '-F', 'draft=true']);
+        kind = 'draft';
+        continue;
+      }
+      const t = settleTag(repo, v.release, fresh);
+      if (t === 'retry') return 'later';
+      // the tag step took time: read again before the last write
+      const again = stillToDelete(readReleases(repo), c, keep, version, 'draft');
+      if (!again.ok) {
+        console.log(`⏭ 不删 ${c.tag}：${again.why}`);
+        return 'later';
+      }
+      gh(['api', '-X', 'DELETE', `repos/${repo}/releases/${c.id}`]);
+      console.log(`🗑 删掉旧开发版 ${c.tag}${t === 'gone' ? '（连同标签）' : '（标签留着）'}`);
+      return 'done';
+    } catch (e) {
+      console.log(`::warning::清理 ${c.tag} 这一步失败（下次合并再试）：${String(e.stderr ?? e.message).trim()}`);
+      return 'later';
+    }
   }
 }
 
@@ -196,40 +263,20 @@ function main() {
     console.log(`✅ 已发布 ${tag}（预发布）：${files.join(', ')}`);
   }
 
-  // Each deletion is judged again from a fresh read right before it (the list can change meanwhile:
-  // someone unmarks a pre-release, a newer run publishes). The release goes by its id; its tag only
-  // when no release names it any more and it still points at the commit the release recorded.
-  // A read that fails stops the clean-up (the next push retries it); GitHub has no conditional
-  // delete, so a change between that last read and the delete itself is not caught.
+  // The clean-up (cleanOne): every step judged again from a fresh read, every step's progress kept
+  // on GitHub, so a failure anywhere is finished by a later run. GitHub has no conditional delete,
+  // so a change between the last read and a write itself is not caught.
   const old = pruneCandidates(readReleases(repo), keep, version);
-  let failed = 0;
-  let done = 0;
+  const tally = { done: 0, skipped: 0, later: 0 };
   for (const c of old) {
-    let fresh;
-    try {
-      fresh = readReleases(repo);
-    } catch (e) {
-      console.log(`::warning::删旧开发版前重读发版列表失败，这次不再删（下次合并再试）：${String(e.stderr ?? e.message).trim()}`);
-      failed += old.length - done - failed;
+    const r = cleanOne(repo, c, keep, version);
+    if (r === 'stop') {
+      tally.later += old.length - tally.done - tally.skipped - tally.later;
       break;
     }
-    const v = stillToDelete(fresh, c, keep, version);
-    if (!v.ok) {
-      console.log(`⏭ 不删 ${c.tag}：${v.why}`);
-      done++;
-      continue;
-    }
-    try {
-      gh(['api', '-X', 'DELETE', `repos/${repo}/releases/${c.id}`]);
-      console.log(`🗑 删掉旧开发版${c.kind === 'draft' ? '（没发完的草稿）' : ''} ${c.tag}`);
-      if (c.kind === 'old') deleteTag(repo, c.tag, v.release);
-      done++;
-    } catch (e) {
-      failed++;
-      console.log(`::warning::删旧开发版 ${c.tag} 失败（下次合并再试）：${String(e.stderr ?? e.message).trim()}`);
-    }
+    tally[r]++;
   }
-  console.log(`保留最近 ${keep} 个开发版；这次处理了 ${done} 个${failed ? `，${failed} 个没删掉` : ''}`);
+  console.log(`保留最近 ${keep} 个开发版；这次删了 ${tally.done} 个，跳过 ${tally.skipped} 个${tally.later ? `，${tally.later} 个留到下次` : ''}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
