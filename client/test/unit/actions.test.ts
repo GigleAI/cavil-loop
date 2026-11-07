@@ -675,7 +675,10 @@ describe('offline: nothing is sent, nothing queued', () => {
     const before = fake.digest();
     const r = await c.act({ kind: 'addLabel', key: K(138), label: 'bug' });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain('连不上 GitHub，没有修改');
+    // GitHub#229: a dropped connection is no answer — the change may or may not have landed, it stays "not confirmed"
+    expect(r.error).toContain('没收到 GitHub 的明确答复');
+    expect(r.error).toContain('不确定改没改上');
+    expect(itemOf(c, 138).edits?.find((m) => m.field === 'label')?.status).toBe('unconfirmed');
     expect(fake.digest()).toBe(before);
   });
 });

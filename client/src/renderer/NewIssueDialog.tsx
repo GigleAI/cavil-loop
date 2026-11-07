@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppState, BoardData, Item } from '../shared/types';
+import type { AppState, BoardData, CreateJob, Item } from '../shared/types';
 import type { GroupPreset, RepoOptions } from '../shared/actions';
 import { defaultRepo, previewCreate, type MilestoneRead } from '../data/groupPreset';
 import { defaultBoards } from '../data/newIssueBoards';
@@ -30,20 +30,21 @@ export function NewIssueDialog({
   state,
   data,
   group,
+  draft,
   onClose,
-  onCreated,
 }: {
   state: AppState;
   data: BoardData;
   group?: GroupSeed;
+  /** GitHub#229: a draft given back after a create that surely created nothing */
+  draft?: CreateJob['draft'];
   onClose: () => void;
-  onCreated: (key: string) => void;
 }) {
   const repos = useMemo(() => knownRepos(state, data), [state, data]);
-  const [repo, setRepo] = useState(() => (group ? defaultRepo(group.preset, group.items, repos) : (repos[0] ?? '')));
-  const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
-  const [labels, setLabels] = useState<string[]>([]);
+  const [repo, setRepo] = useState(() => (draft ? draft.repo : group ? defaultRepo(group.preset, group.items, repos) : (repos[0] ?? '')));
+  const [title, setTitle] = useState(draft?.title ?? '');
+  const [body, setBody] = useState(draft?.body ?? '');
+  const [labels, setLabels] = useState<string[]>(draft?.labels ?? []);
   const [opts, setOpts] = useState<RepoOptions | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<ResultNote | null>(null);
@@ -52,9 +53,10 @@ export function NewIssueDialog({
   // GitHub#231: the same rule for both ways in (the "新建" button and a table group's "+"): the board
   // holding the most of this repository's items, judged on every configured board whatever the view
   // shows. It follows the repository picked and each finished sync — until a box is ticked or
-  // unticked by hand (`manual`), which is then kept as it is.
+  // unticked by hand (`manual`), which is then kept as it is. GitHub#229: a draft given back after a
+  // create that surely created nothing keeps the boards it had (as if ticked by hand).
   const defaults = defaultBoards(data.boardRepos ?? [], allProjects, repo);
-  const [manual, setManual] = useState<string[] | null>(null);
+  const [manual, setManual] = useState<string[] | null>(draft?.projects ?? null);
   const projects = manual ?? defaults.ticked;
   // a board is "added" when it is a source, whether or not it was read completely yet
   const configured = allProjects.length > 0 || (data.boardRepos ?? []).length > 0;
@@ -66,12 +68,14 @@ export function NewIssueDialog({
   const readSeq = useRef(0);
   useEffect(() => {
     const seq = ++readSeq.current;
-    setLabels([]);
+    // a draft given back keeps its labels for the repository it was written for
+    if (!(draft && seq === 1 && repo === draft.repo)) setLabels([]);
     setOpts(null);
     setPicking(false);
+    // read now, never from this run's earlier read (GitHub#214: the milestone it will carry must be GitHub's current one)
     if (repo)
       api()
-        .repoOptions(repo)
+        .repoOptions(repo, true)
         .then((o) => {
           if (seq === readSeq.current) setOpts(o);
         });
@@ -107,14 +111,13 @@ export function NewIssueDialog({
       onCancel={onClose}
       onConfirm={async () => {
         if (preview && !preview.plan) return;
+        // GitHub#229: the dialog does not wait for GitHub — the outcome shows above the board,
+        // the new issue opens once it exists; only a refusal before anything went out keeps it open
         setBusy(true);
-        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), ...(preview?.plan ? { plan: preview.plan } : {}) });
+        const r = await api().startCreate({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), ...(preview?.plan ? { plan: preview.plan } : {}) });
         setBusy(false);
-        if (r.ok && r.createdKey) {
-          onCreated(r.createdKey);
-          if (!r.warning) return onClose();
-        }
-        setNote(noteOf(r, 'issue 已建好'));
+        if (r.ok) return onClose();
+        setNote(noteOf({ ok: false, error: r.error, warning: null }, ''));
       }}
     >
       <div className="form" data-testid="new-issue">

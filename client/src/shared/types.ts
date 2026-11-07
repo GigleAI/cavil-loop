@@ -106,6 +106,73 @@ export interface Item {
   projects: ProjectMembership[];
   /** keys of the sources this item came from (filled when sources are merged) */
   sources: string[];
+  /** GitHub#229: changes of this item not yet confirmed by GitHub (only on board data, never in the cache) */
+  edits?: EditMark[];
+}
+
+/**
+ * One change shown before GitHub confirmed it (GitHub#229), as the views see it.
+ * saving / verifying / observing: the item already shows the new value;
+ * unconfirmed / failed: the item shows GitHub's value, the view shows this one beside it.
+ */
+export interface EditMark {
+  id: string;
+  field: 'label' | 'milestone' | 'status' | 'iteration';
+  label?: string;
+  color?: string;
+  projectKey?: string;
+  status: 'saving' | 'verifying' | 'observing' | 'unconfirmed' | 'failed';
+  /** what the user wants, in words ("加上「x」", a milestone title, "（无状态）", …) */
+  targetText: string;
+  /** GitHub's value as last read (words + when), or why it could not be read; null = not read since */
+  github: { text: string; at: number } | { unreadable: string; at: number } | null;
+  /** GitHub's value (as last read) differs from the value before the first click */
+  changedByOthers: boolean;
+  /** why it is not saved: GitHub's refusal, or "read a value an earlier unanswered change wrote" */
+  failure: string | null;
+  /** a resend held back (GitHub changed meanwhile / could not be read): what the button asks to confirm */
+  hold: { kind: 'changed' | 'unreadable'; text: string } | null;
+}
+
+/**
+ * A new issue being created, or what came of it (GitHub#229): the dialog closes
+ * at once, the result shows above the board. Only `failed` (nothing was created
+ * for sure) gives the draft back with a create button.
+ */
+/** One board a created issue is not finished on (GitHub#229). */
+export interface CreateBoard {
+  projectKey: string;
+  title: string;
+  state: 'missing' | 'fieldsFailed';
+  /** GitHub's words for what went wrong last time */
+  reason: string;
+  /** what the board was meant to carry */
+  iterationId: string | null;
+  status: string | null;
+}
+
+export interface CreateJob {
+  id: number;
+  repo: string;
+  title: string;
+  status: 'running' | 'partial' | 'unknown' | 'failed';
+  message: string | null;
+  /** partial: the new issue */
+  createdKey?: string;
+  number?: number;
+  /**
+   * partial: every board still unfinished (code review round 3: kept across retries — a retry
+   * only changes the boards it worked on). `missing` = not on the board yet (a retry adds it,
+   * then sets its fields); `fieldsFailed` = on the board, a field it was meant to carry not set
+   * (set it in the detail; a retry does not touch it). The notice goes when the list is empty.
+   */
+  boards?: CreateBoard[];
+  /** partial: the new issue's node id from GitHub's create answer (what a retry adds to a board) */
+  createdNodeId?: string;
+  /** unknown: same-title issues this account opened in this repository lately (links only) */
+  candidates?: { number: number; url: string; createdAt: string }[];
+  /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */
+  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[] };
 }
 
 export interface FieldOption {
@@ -315,6 +382,10 @@ export interface AppState {
   focus: { key: string; seq: number } | null;
   /** the app updating itself (GitHub#184); null = this build does not */
   update: UpdateStatus | null;
+  /** GitHub#229: changes not saved (refused) or not confirmed (no answer): the ones that need the user */
+  editsNeedingAction: number;
+  /** GitHub#229: new issues being created, and their outcome until dismissed */
+  creates: CreateJob[];
 }
 
 /**

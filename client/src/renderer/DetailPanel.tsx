@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { AppState, BoardData } from '../shared/types';
+import type { AppState, BoardData, EditMark } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type IssueCloseReason, type ItemDetail, type MergeMethod, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { writesEnabled } from '../data/board';
 import { api } from './api';
@@ -62,6 +62,105 @@ export function ResultBanner({ note, testid }: { note: ResultNote | null; testid
   );
 }
 
+/** GitHub#229: what a change on its way says next to its field. */
+export const EDIT_WORDS: Record<EditMark['status'], string> = {
+  saving: '保存中…',
+  verifying: '已保存，待核对',
+  observing: '已保存，观察中',
+  unconfirmed: '没确认',
+  failed: '没保存上',
+};
+
+/** The small status next to a milestone / status / iteration that is on its way (the others are listed above the fields). */
+function EditStatus({ mark, field }: { mark: EditMark | null; field: EditMark['field'] }) {
+  if (!mark || mark.status === 'failed' || mark.status === 'unconfirmed') return null;
+  return (
+    <span className="saving" data-testid="edit-status" data-field={field} data-edit={mark.status}>
+      {mark.status === 'saving' && <span className="spin" aria-hidden="true" />}
+      {EDIT_WORDS[mark.status]}
+    </span>
+  );
+}
+
+function at(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * GitHub#229: the changes of this item that need the user — not saved (GitHub refused, or
+ * it read back an earlier change's value) or not confirmed (no answer). Each shows what the
+ * user wants beside what GitHub holds, and offers to send it again or give it up. A resend
+ * reads GitHub first and is held back when somebody changed it (or it could not be read):
+ * then only an explicit "overwrite anyway" / "send anyway" sends it.
+ */
+export function EditIssues({ marks, canWrite }: { marks: EditMark[]; canWrite: boolean }) {
+  const [working, setWorking] = useState<string | null>(null);
+  const open = marks.filter((m) => m.status === 'failed' || m.status === 'unconfirmed');
+  if (!open.length) return null;
+  const go = async (id: string, fn: () => Promise<unknown>) => {
+    setWorking(id);
+    try {
+      await fn();
+    } finally {
+      setWorking(null);
+    }
+  };
+  return (
+    <div className="banner error edit-issues" data-testid="edit-issues">
+      <Icon name="warn" />
+      <div className="banner-text">
+        <b>{open.length} 处修改{open.some((m) => m.status === 'failed') ? '没保存上' : '没确认'}</b>
+        {open.map((m) => (
+          <div key={m.id} className="edit-issue" data-testid="edit-issue" data-id={m.id} data-edit={m.status} data-field={m.field}>
+            <div>
+              你要{m.field === 'label' ? '' : '设成：'}
+              <b data-testid="edit-target">{m.targetText}</b> <span className="muted small">{m.status === 'failed' ? '没保存上' : '没确认'}</span>
+            </div>
+            <div className={`small${m.changedByOthers ? ' err' : ''}`} data-testid="edit-github">
+              {!m.github
+                ? 'GitHub 现在：还没读到'
+                : 'unreadable' in m.github
+                  ? `GitHub 现在：读不到（${m.github.unreadable}），没法确认有没有人改过`
+                  : `GitHub 现在：${m.github.text}（${at(m.github.at)} 读到）${m.changedByOthers ? '，你改之后有人改过' : ''}`}
+            </div>
+            {m.failure && (
+              <div className="small" data-testid="edit-failure">
+                {m.failure}
+              </div>
+            )}
+            {m.hold && (
+              <div className="small err" data-testid="edit-hold">
+                {m.hold.text}
+              </div>
+            )}
+            <div className="row" style={{ margin: '2px 0 0' }}>
+              {m.hold ? (
+                <button className="link" data-testid="edit-force" disabled={!canWrite || working !== null} onClick={() => void go(m.id, () => api().resendEdit(m.id, true))}>
+                  {m.hold.kind === 'changed' ? '仍然覆盖' : '仍然发送'}
+                </button>
+              ) : (
+                <button className="link" data-testid="edit-resend" disabled={!canWrite || working !== null} onClick={() => void go(m.id, () => api().resendEdit(m.id))}>
+                  重新发送
+                </button>
+              )}
+              <button
+                className="link"
+                data-testid="edit-abandon"
+                disabled={working !== null}
+                title="不再显示这处修改，显示 GitHub 上的值；没确认的那次请求如果之后才执行，下一次同步会如实显示 GitHub 的值"
+                onClick={() => void go(m.id, () => api().abandonEdit(m.id))}
+              >
+                放弃
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** GitHub#205: an image was pasted where it cannot be uploaded from; offer the web page instead. */
 export function PasteImageNotice({ copied, onWeb, onDismiss, webLabel = '到 GitHub 网页上继续写' }: { copied: boolean | null; onWeb: () => void; onDismiss: () => void; webLabel?: string }) {
   return (
@@ -118,6 +217,8 @@ export function DetailPanel({
   const [loading, setLoading] = useState(false);
   const [opts, setOpts] = useState<RepoOptions | null>(null);
   const [busy, setBusy] = useState(false);
+  /** GitHub#229: label / milestone / status / iteration changes of this opening still waiting for GitHub (nothing waits for them, but a sync round does not read the detail meanwhile) */
+  const [changing, setChanging] = useState(0);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [reply, setReply] = useState('');
   const [preview, setPreview] = useState<string | null>(null);
@@ -171,6 +272,7 @@ export function DetailPanel({
       if (r.ok) {
         readAt.current = seen;
         confirmedAt.current = r.detail.fetchedAt;
+        setFromCache(null);
         // same content: keep the object on screen, so the frame is not rendered again
         setDetail((prev) => (sameDetail(prev, r.detail) ? prev : r.detail));
         setLoadError(null);
@@ -184,10 +286,21 @@ export function DetailPanel({
     [itemKey, session],
   );
 
-  // a fresh panel per opening: nothing to reset here, just read
+  // a fresh panel per opening: show what this run read last (GitHub#229), then read
+  const [fromCache, setFromCache] = useState<number | null>(null);
   useEffect(() => {
-    void load();
-  }, [load]);
+    void (async () => {
+      const kept = await api().cachedDetail(itemKey);
+      if (!session.current()) return;
+      if (kept && !detailRef.current) {
+        confirmedAt.current = kept.fetchedAt;
+        setDetail(kept);
+        setFromCache(kept.fetchedAt);
+      }
+      // with something on screen the opening read is a quiet one: a failure keeps it and says so in small print
+      void load(Boolean(kept));
+    })();
+  }, [load, itemKey, session]);
   // GitHub#226: a sync round read a source carrying this item completely → maybe read the detail again.
   // The mark the panel opened with is not a new round (the opening read is already on its way).
   const mark = freshMark(item, state.sync.sources);
@@ -196,18 +309,20 @@ export function DetailPanel({
     if (mark === lastMark.current) return;
     lastMark.current = mark;
     if (mark === null) return;
-    if (shouldAutoRefresh({ item, readAt: readAt.current, detail, busy, loading })) void load(true);
+    if (shouldAutoRefresh({ item, readAt: readAt.current, detail, busy: busy || changing > 0, loading })) void load(true);
     // only a new round decides; the values are this render's
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mark]);
+  // GitHub#229: the refresh button and "重试" read the labels / milestones again (a failed read used to stay until the panel closed)
+  const [optsRound, setOptsRound] = useState(0);
   useEffect(() => {
     if (!repo) return;
-    setOpts(null);
     const mine = session.begin('options');
     api()
-      .repoOptions(repo)
-      .then((o) => mine() && setOpts(o));
-  }, [repo, session]);
+      .repoOptions(repo, optsRound > 0)
+      .then((o) => mine() && setOpts((prev) => (o.error && prev && !prev.error ? prev : o)));
+  }, [repo, session, optsRound]);
+  const rereadOptions = () => setOptsRound((n) => n + 1);
   // What the merge box starts with (GitHub#175): a hand pick of this opening while the repository
   // (as last read) still allows it, else the remembered one. Derived, never stored: a detail that
   // arrives late or is re-read cannot overwrite the pick, and a fallback is never remembered.
@@ -240,6 +355,37 @@ export function DetailPanel({
     void load(!r.ok);
     return { ...r, here: true };
   };
+
+  /**
+   * GitHub#229: a label / milestone / status / iteration change. It shows at once (the board
+   * data carries it, marked), nothing else in the panel waits for it; the outcome comes in a
+   * note when GitHub answered. A change made here and answered after the panel moved on
+   * goes to the board like any other.
+   */
+  const change = async (action: WriteAction, okText: string): Promise<WriteResult> => {
+    const label = item ? `${item.repo}#${item.number}` : itemKey;
+    // GitHub#226: a detail read already on its way carries GitHub as it was before this change — it never lands
+    session.supersede('detail');
+    setLoading(false);
+    setChanging((n) => n + 1);
+    let r: WriteResult;
+    try {
+      r = await api().act(action);
+    } finally {
+      setChanging((n) => n - 1);
+    }
+    if (!session.current()) {
+      onLeftBehind(noteOf(r, `${label}：${okText}`));
+      return r;
+    }
+    setNote(noteOf(r, okText));
+    // read again either way, so the panel shows what GitHub holds now
+    void load(!r.ok);
+    return r;
+  };
+  const marks = item?.edits ?? [];
+  const markFor = (field: EditMark['field'], extra: { label?: string; projectKey?: string } = {}) =>
+    marks.find((m) => m.field === field && (extra.label === undefined || m.label === extra.label) && (extra.projectKey === undefined || m.projectKey === extra.projectKey)) ?? null;
 
   // which entries are unfolded: the newest only, until the user asks for all / none (GitHub#155)
   const [unfold, setUnfoldRule] = useState<Unfold>('latest');
@@ -322,7 +468,7 @@ export function DetailPanel({
   const sendBlocked = !item || !canWrite || busy || !reply.trim();
   const previewBlocked = !item || !canWrite || !reply.trim();
   /** the label / milestone controls: the same condition as their buttons */
-  const pickBlocked = !item || !canWrite || busy || !opts;
+  const pickBlocked = !item || !canWrite || !opts;
   const send = async () => {
     if (!item) return;
     const r = await run({ kind: 'comment', key: item.key, body: reply }, '评论已发出');
@@ -444,23 +590,41 @@ export function DetailPanel({
     item.key,
     <>
       <div className="detail-head">
-        <KindBadge kind={item.kind} state={item.state} reason={item.stateReason} isDraft={detail?.pr ? detail.pr.isDraft : (item.isDraft ?? null)} />
+        {/* a detail shown from this run's memory (GitHub#229) is older than the board: the board's draft mark wins until it is read again */}
+        <KindBadge kind={item.kind} state={item.state} reason={item.stateReason} isDraft={detail?.pr && fromCache === null ? detail.pr.isDraft : (item.isDraft ?? detail?.pr?.isDraft ?? null)} />
         <span className="ref">
           {item.repo} #{item.number}
         </span>
+        {/* GitHub#229: author and assignees moved up from the field rows, to keep the head short */}
+        <span className="head-people" data-testid="detail-people">
+          <span className="sep">·</span>
+          <Person login={item.author} size={16} />
+          {item.assignees.length > 0 && (
+            <>
+              <span className="muted small">负责人</span>
+              <span className="people">
+                {item.assignees.map((a) => (
+                  <Person key={a} login={a} size={16} />
+                ))}
+              </span>
+            </>
+          )}
+        </span>
         <div className="spacer" />
-        <button className="ghost" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web">
+        <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
           <Icon name="ext" />
-          在网页打开
         </button>
         {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}
         <button
           className={`icon-btn${loading ? ' spinning' : ''}`}
-          onClick={() => void load()}
+          onClick={() => {
+            void load();
+            rereadOptions();
+          }}
           data-testid="detail-refresh"
           data-loading={loading ? 'yes' : 'no'}
           aria-label={loading ? '读取中…（点一下重新读取）' : '刷新这一条'}
-          title={loading ? '读取中…（点一下：重新读取）' : '刷新这一条'}
+          title={loading ? '读取中…（点一下：重新读取）' : '刷新这一条（连同标签 / 里程碑列表）'}
         >
           <Icon name="refresh" />
         </button>
@@ -469,6 +633,11 @@ export function DetailPanel({
         </button>
       </div>
       <h3 className="detail-title">{item.title}</h3>
+      {fromCache !== null && !loadError && autoFailed === null && (
+        <div className="detail-stale muted" data-testid="detail-cached" role="status">
+          显示 {clock(fromCache)} 读到的内容{loading ? ' · 正在更新…' : ''}
+        </div>
+      )}
       <ResultBanner note={note} testid="action-result" />
       {loadError && (
         <div className="banner error" data-testid="detail-error">
@@ -481,40 +650,52 @@ export function DetailPanel({
           自动更新失败，显示的是 {clock(autoFailed)} 的内容
         </div>
       )}
+      <EditIssues marks={marks} canWrite={canWrite} />
 
       <section className="detail-fields">
-        <div className="field-row" data-testid="detail-people">
-          <span className="field-name">作者</span>
-          <Person login={item.author} size={20} />
-          {item.assignees.length > 0 && (
-            <>
-              <span className="field-name">负责人</span>
-              <span className="people">
-                {item.assignees.map((a) => (
-                  <Person key={a} login={a} size={20} />
-                ))}
-              </span>
-            </>
-          )}
-        </div>
         <div className="field-row">
           <span className="field-name">标签</span>
           <div className="labels">
-            {item.labels.map((l) => (
-              <span key={l.name} className="label" style={labelStyle(l.color, isDark)}>
-                {l.name}
-                <button
-                  className="label-x"
-                  data-testid="label-remove"
+            {item.labels.map((l) => {
+              const m = markFor('label', { label: l.name });
+              const pend = m && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing') ? m : null;
+              return (
+                <span
+                  key={l.name}
+                  className={`label${pend ? ' pending' : ''}`}
+                  style={labelStyle(l.color, isDark)}
+                  data-testid="detail-label"
                   data-label={l.name}
-                  title={offlineWhy ?? `去掉「${l.name}」`}
-                  disabled={!canWrite || busy}
-                  onClick={() => void run({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)}
+                  data-edit={pend?.status ?? ''}
+                  title={pend ? EDIT_WORDS[pend.status] : undefined}
                 >
-                  <Icon name="x" size={10} />
-                </button>
+                  {pend?.status === 'saving' && <span className="spin" aria-hidden="true" />}
+                  {l.name}
+                  <button
+                    className="label-x"
+                    data-testid="label-remove"
+                    data-label={l.name}
+                    title={offlineWhy ?? `去掉「${l.name}」`}
+                    disabled={!canWrite}
+                    onClick={() => void change({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)}
+                  >
+                    <Icon name="x" size={10} />
+                  </button>
+                </span>
+              );
+            })}
+            {marks
+              .filter((m) => m.field === 'label' && m.label && !item.labels.some((l) => l.name === m.label) && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing'))
+              .map((m) => (
+                <span key={m.id} className="label pending removing" style={labelStyle(m.color ?? '', isDark)} data-testid="detail-label-removing" data-label={m.label} data-edit={m.status} title={`正在去掉 · ${EDIT_WORDS[m.status]}`}>
+                  {m.label}
+                </span>
+              ))}
+            {marks.some((m) => m.field === 'label' && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing')) && (
+              <span className="saving" data-testid="edit-status" data-field="label">
+                {EDIT_WORDS[marks.find((m) => m.field === 'label' && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing'))!.status]}
               </span>
-            ))}
+            )}
             <span className="picker-anchor">
               <button
                 className="label-plus"
@@ -531,15 +712,15 @@ export function DetailPanel({
                   title="设置标签"
                   hint={item.repo}
                   testid="label-picker"
-                  disabled={!canWrite || busy}
+                  disabled={!canWrite}
                   items={[
                     ...opts.labels.map((l) => ({ name: l.name, color: l.color, checked: item.labels.some((x) => x.name === l.name) })),
                     ...item.labels.filter((l) => !opts.labels.some((x) => x.name === l.name)).map((l) => ({ name: l.name, color: l.color, checked: true })),
                   ]}
                   onToggle={(l) =>
                     void (l.checked
-                      ? run({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)
-                      : run({ kind: 'addLabel', key: item.key, label: l.name }, `已加上标签「${l.name}」`))
+                      ? change({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)
+                      : change({ kind: 'addLabel', key: item.key, label: l.name, ...(l.color ? { color: l.color } : {}) }, `已加上标签「${l.name}」`))
                   }
                   onClose={() => setPicker(null)}
                 />
@@ -555,7 +736,7 @@ export function DetailPanel({
             disabled={pickBlocked}
             title={offlineWhy ?? `${item.repo} 的里程碑；客户端不新建里程碑（${keyText('milestone')}）`}
             onChange={(e) =>
-              void run({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? `里程碑改成「${e.target.value}」` : '已去掉里程碑')
+              void change({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? `里程碑改成「${e.target.value}」` : '已去掉里程碑')
             }
           >
             <option value="">（无）</option>
@@ -573,20 +754,30 @@ export function DetailPanel({
                 title="设置里程碑"
                 hint={`${item.repo}；再选一次当前的就是去掉`}
                 testid="milestone-picker"
-                disabled={!canWrite || busy}
+                disabled={!canWrite}
                 items={[
                   ...(item.milestone && !msTitles.includes(item.milestone.title) ? [item.milestone.title] : []),
                   ...msTitles,
                 ].map((t) => ({ name: t, checked: item.milestone?.title === t }))}
                 onToggle={(m) => {
                   setPicker(null);
-                  void run({ kind: 'setMilestone', key: item.key, title: m.checked ? null : m.name }, m.checked ? '已去掉里程碑' : `里程碑改成「${m.name}」`);
+                  void change({ kind: 'setMilestone', key: item.key, title: m.checked ? null : m.name }, m.checked ? '已去掉里程碑' : `里程碑改成「${m.name}」`);
                 }}
                 onClose={() => setPicker(null)}
               />
             )}
           </span>
-          {opts?.error && <span className="small err">{opts.error}</span>}
+          <EditStatus mark={markFor('milestone')} field="milestone" />
+          {opts?.error && (
+            <>
+              <span className="small err" data-testid="options-error" title={opts.error}>
+                <Icon name="warn" size={12} /> 没读到标签 / 里程碑列表
+              </span>
+              <button className="link small" data-testid="options-retry" onClick={rereadOptions}>
+                重试
+              </button>
+            </>
+          )}
         </div>
         {item.projects.map((m) => {
           const p = metaOf(m.projectKey);
@@ -600,10 +791,10 @@ export function DetailPanel({
                 <select
                   data-testid="iteration-select"
                   value={m.iteration?.id ?? ''}
-                  disabled={!canWrite || ro || busy}
+                  disabled={!canWrite || ro}
                   title={why}
                   onChange={(e) =>
-                    void run(
+                    void change(
                       { kind: 'setIteration', key: item.key, projectKey: p.key, iterationId: e.target.value || null },
                       `看板「${p.title}」的迭代已改`,
                     )
@@ -613,14 +804,15 @@ export function DetailPanel({
                   <IterationOptions iterations={p.iterations} chosen={m.iteration} today={localToday(Date.now())} label={(i) => `${i.title}（${i.startDate} 起）`} />
                 </select>
               )}
+              <EditStatus mark={markFor('iteration', { projectKey: p.key })} field="iteration" />
               {p.statusFieldId && (
                 <select
                   data-testid="status-select"
                   value={m.status ?? ''}
-                  disabled={!canWrite || ro || busy}
+                  disabled={!canWrite || ro}
                   title={why}
                   onChange={(e) =>
-                    void run({ kind: 'setStatus', key: item.key, projectKey: p.key, status: e.target.value || null }, `看板「${p.title}」的状态已改`)
+                    void change({ kind: 'setStatus', key: item.key, projectKey: p.key, status: e.target.value || null }, `看板「${p.title}」的状态已改`)
                   }
                 >
                   <option value="">（无状态）</option>
@@ -631,6 +823,7 @@ export function DetailPanel({
                   ))}
                 </select>
               )}
+              <EditStatus mark={markFor('status', { projectKey: p.key })} field="status" />
               {ro && (
                 <span className="small muted" data-testid="project-readonly">
                   只读：这个账号不能修改看板「{p.title}」
