@@ -2492,8 +2492,9 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await rowTitle(138).click();
   await stays(138);
   await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
-  // a table cell that is not a title is outside too
-  await page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#139"] [data-testid="row-state"]').first().click();
+  // a spot of the table page outside the title cells is outside too: the repository list's heading on the left
+  // (the panel covers every other column; the title cell itself opens, GitHub#257)
+  await page.locator('[data-testid="slices"] > .small.muted').click();
   await expect(detail).toHaveCount(0);
 
   expect(env.fake.writes()).toEqual([]);
@@ -2505,6 +2506,90 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
 const MOD = 'ControlOrMeta';
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 const lastOnline = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.sync.lastOnlineAt as number | null);
+
+test('GitHub#257: the whole title cell of a table row opens the detail — icon, number, blank space, a nested PR\'s indent; switches without hiding; other cells unchanged', async () => {
+  // two entries on #138, so its detail has the "unfold all" switch
+  env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C-257', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>a comment</p>', author: { login: 'user-2' } },
+  ]);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  // PRs right under their issue need a grouping the recorded pairs share
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  await page.getByTestId('open-view-panel').click();
+  const rowOf = (k: string) => page.locator(`[data-testid="row"][data-key="${k}"]`).first();
+  const cellOf = (k: string) => rowOf(k).getByTestId('title-cell');
+  const [a, b, c] = [137, 139, 138].map((n) => `gigleai/cavil-loop#${n}`);
+  const opened = async (k: string) => {
+    await expect(detail).toHaveAttribute('data-key', k);
+    await expect(frame.locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+
+  // the hand cursor on the whole cell, not only on the words
+  expect(await cellOf(a).evaluate((el) => getComputedStyle(el).cursor)).toBe('pointer');
+
+  // 1. the blank right end of the cell
+  const box = (await cellOf(a).boundingBox())!;
+  const words = (await rowOf(a).getByTestId('row-title').boundingBox())!;
+  const num = (await rowOf(a).locator('.title-cell .muted.small').boundingBox())!;
+  expect(box.x + box.width - 4).toBeGreaterThan(Math.max(words.x + words.width, num.x + num.width));
+  await cellOf(a).click({ position: { x: box.width - 4, y: box.height / 2 } });
+  await opened(a);
+
+  // 2. the state icon and the "repo #number" text of another row: switches, never hides first
+  await rowOf(b).getByTestId('row-state').click();
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', b);
+  await rowOf(c).locator('.title-cell .muted.small').click();
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', c);
+
+  // 3. the same cell again keeps this opening (its unfold state survives)
+  await opened(c);
+  const unfold = page.getByTestId('unfold-toggle');
+  await expect(unfold).toHaveCount(1);
+  await unfold.click();
+  await expect(unfold).toHaveAttribute('data-unfold', 'all');
+  await cellOf(c).click({ position: { x: (await cellOf(c).boundingBox())!.width - 4, y: 6 } });
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', c);
+  await expect(unfold).toHaveAttribute('data-unfold', 'all');
+
+  // 4. a PR nested under its issue: the indent left of the ↳ mark opens the PR
+  const nested = page.locator('[data-testid="row"][data-under]').first();
+  const prKey = (await nested.getAttribute('data-key'))!;
+  const nb = (await nested.getByTestId('title-cell').boundingBox())!;
+  const mark = (await nested.locator('.nest-mark').boundingBox())!;
+  expect(mark.x - nb.x).toBeGreaterThan(16);
+  await nested.getByTestId('title-cell').click({ position: { x: 6, y: nb.height / 2 } });
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', prKey);
+
+  // 5. the title link still works from the keyboard: focus it, Enter opens that row
+  await rowOf(a).getByTestId('row-title').focus();
+  await page.keyboard.press('Enter');
+  await opened(a);
+
+  // 6. outside the title cells (the repository list's heading; the panel covers the other columns) puts it away
+  await page.locator('[data-testid="slices"] > .small.muted').click();
+  await expect(detail).toHaveCount(0);
+  // with the panel away: a cell that cannot be edited opens nothing; an editable one still edits in place
+  await rowOf(b).locator('[data-testid="cell"][data-col="updated"]').click();
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveCount(0);
+  const labels = rowOf(b).locator('[data-testid="cell"][data-col="labels"]');
+  await labels.click();
+  await expect(labels).toHaveAttribute('data-editing', 'yes');
+  await expect(detail).toHaveCount(0);
+  await shot(page, '257-title-cell');
+
+  expect(env.fake.writes()).toEqual([]);
+  await app.close();
+});
 
 test('GitHub#192: shortcuts — nothing before sign-in; global keys on every signed-in page; a board request runs once', async () => {
   const { app, page } = await launch(env);
