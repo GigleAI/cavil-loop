@@ -64,9 +64,8 @@ export function App() {
   useShortcuts({
     search: () => toBoard('search'),
     newIssue: () => toBoard('newIssue'),
-    sync: () => {
-      if (!snap?.state.sync.syncing) void api().syncNow();
-    },
+    // also while a round runs: starts over, like the button (GitHub#217)
+    sync: () => void api().restartSync(),
     settings: () => {
       setHelp(false);
       setPage('settings');

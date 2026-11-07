@@ -26,7 +26,8 @@ function block(name: 'generate' | 'check' | 'replace'): string {
 }
 
 // Runs `bash -e -c <script>` on a pseudo-terminal. Whenever the output so far ends in a line asking
-// for a password and waiting ("...: "), types the next password from the list. Reports every prompt
+// for a password and waiting ("...: ", then nothing more for half a second), types the next password
+// from the list. Reports every prompt
 // it answered, so a test can say which ones came.
 const DRIVER = String.raw`
 import json, os, pty, select, sys, time
@@ -53,6 +54,11 @@ while time.time() - t0 < 180:
     tail = out[answered:]
     last = tail.rsplit(b"\n", 1)[-1].replace(b"\r", b"")
     if b"assword" in last and last.rstrip().endswith(b":"):
+        # A prompt waits for an answer; an error line read in two pieces ("...key password:" then
+        # " Wrong password for that key") does not. Only a line followed by silence is a prompt (PR #224).
+        r, _, _ = select.select([fd], [], [], 0.5)
+        if r:
+            continue
         prompts.append(last.strip().decode(errors="replace"))
         os.write(fd, (passwords[len(prompts) - 1] if len(prompts) <= len(passwords) else "").encode() + b"\r")
         answered = len(out)

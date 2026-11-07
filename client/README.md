@@ -98,6 +98,7 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
   - **测试**：`test/fixtures/tasklists.github.json` 是 GitHub 自己对 18 种写法和两条真实评论的渲染（`node test/fixtures/record-tasklists.mjs` 重录，不手改），读框规则逐条和它对拍；`test/e2e/frame-policy.spec.ts` 两层策略各测各的（另一层在测试页里放宽），每组都要「框内脚本跑了」且「注入的脚本、事件属性一个没跑」；`test/tauri/real-window.spec.ts` 在真实 App、正式策略下真点一次，假 GitHub 恰好收到一次只差一个字符的修改，框里拿不到 IPC、发不出请求。
 - **详情顶部的类型徽章**（#172，`src/renderer/KindBadge.tsx`）：issue 和 PR 靠图标形状（圆圈带点 / 分支）和全称（「Issue」/「Pull Request」）区分，底色是 GitHub 的状态色。类型、状态、关闭原因和草稿标记都取自看板里的这一条，打开就有；草稿标记优先用详情现读的（更新），详情还没读到或读取失败时用看板读到的，两处都不知道就不当草稿；只有仍开着的草稿 PR 变灰写「草稿」，已关闭、已合并优先。图标是内联 SVG，不加载任何外部资源。
 - **状态配色跟 GitHub 一致**（PR #174 复审时维护者要求）：开着 = 绿；PR 关闭未合并 = 红；PR 已合并、issue 按「已完成」关闭（或没记关闭原因）= 紫；草稿 PR、issue 按「不计划 / 重复」关闭 = 灰（徽章文字补「（不计划）」「（重复）」）。哪种情况用哪种颜色只在 `src/shared/stateTone.ts` 一处判断，详情徽章、看板卡片、表格行都用它；色值是 GitHub 设计系统 Primer 的状态色（浅色 / 深色各一套，在 `styles.css` 的 `--state-*`）。关闭原因和草稿标记三条读取路径都读：Project（GraphQL `stateReason` / `isDraft`）、仓库列表（REST `state_reason` / `draft`）、改完后的单条重读，所以草稿 PR 在徽章、卡片、表格里都是灰色；徽章优先用详情现读的草稿标记（更新），详情没读到时用看板读到的。
+- **同步中点刷新 = 重新开始**（GitHub#217，`restartSync` in `src/app/controller.ts`）：刷新按钮和 ⌘R 在同步中也能点，图标在转。正在读 GitHub 的这一轮被放弃——它读到的东西不进界面、不进缓存，也不再发下一页（已经发出的那一个请求由后台跑完、结果丢掉；后台没有取消单个请求的接口）——新一轮马上开始。正在续期登录或正在写缓存的那一段不打断（半路断开可能丢登录 / 让新旧两轮抢着写），做完马上重来。60 秒定时器等自动触发仍是排队，不互相打断。详情的「刷新这一条」读取中也能点，新的读取作废旧的（同上一条的规则）。
 - **详情面板按「这一次打开」认回应**（`src/renderer/openSession.ts`，四种异步调用——读详情、读仓库候选、预览、修改——都走它）：每次打开一条（换到别的再回来、关掉再开都算新的一次）是一个新面板，上一次打开发出的回应一律不进新面板；同一次打开里，同类的新调用作废旧的（改完后的重读胜过慢的刷新，改了字后旧文字的预览不显示）。修改晚到时，结果显示在看板顶部（带编号），不动新面板的草稿、忙碌状态和对话框。负对照里有真实界面的项（`runner: 'e2e'`），`MUTATION=1` 时自动构建并驱动真实窗口（WebKit + 真实后台）。
 - **图片只从 GitHub 的地址加载**：`github.com` / `api.github.com`、头像地址 `avatars.githubusercontent.com`（#155），以及 GitHub#205 维护者放开的 GitHub 自己的图片地址——附件 `private-user-images.githubusercontent.com`（GitHub 返回的正文里粘贴截图的地址，带有效期约 5 分钟的签名，不带凭据就能取）、2023 年以前的老附件 `user-images.githubusercontent.com`、图片代理 `camo.githubusercontent.com`（外链图片由 GitHub 代取）。只按完整主机名放行，不放开 `*.githubusercontent.com`；名单在 `src/shared/avatar.ts` 一处，页面的 CSP（`src-tauri/tauri.conf.json`）由 `test/unit/detailHtml.test.ts` 逐项核对与它一致，「在浏览器里打开」的放行规则（`src-tauri/crates/core/src/engine.rs` 的 `GITHUB_IMAGE_HOSTS`，点图片打开原图）由 `test/unit/github.test.ts` 逐个地址核对。Electron 版还有第二层「主进程拦掉窗口发往其他主机的一切请求」，Tauri 用系统网页引擎，没有这一层（#151 方案里写明的取舍）；补偿是凭据从不进窗口，加载图片也从不带凭据。不在这些地址上的图片不加载，那一条下面会写「有 N 张图片不在 GitHub 的地址上…点『在网页上看』」。详情开着超过约 5 分钟后才第一次加载的附件图片可能因签名过期而裂开，重新打开这一条即可。
 - **交给 agent / 托管**（GitHub#205）：详情底部发送按钮左边，条目开着就有，不用先回复。「交给 agent」= 加 `pending/agent`、摘 `pending/human`（先加后摘：第二步失败也不会两个都没有）；「托管（自动合并）…」先弹确认框，再加托管标签（默认 `autopilot`），然后同「交给 agent」——托管标签加上了但交给 agent 失败时，结果条明说「还没有交给 agent」。三个标签名都在设置里改，要和 daemon 配置一致；托管标签留空就不显示「托管」按钮。
@@ -130,7 +131,7 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 |---|---|---|
 | 已登录的任何页面（看板、设置、「选哪种 App」说明页） | `/` | 跳到搜索框（在别的页面先回到看板） |
 | | `C` | 新建 issue（在别的页面先回到看板；离线或没有来源时不弹，和按钮一样） |
-| | ⌘R | 立即同步，停在当前页 |
+| | ⌘R | 立即同步，停在当前页；正在同步时放弃这一轮、马上重新开始（同刷新按钮） |
 | | ⌘, | 打开设置 |
 | | `?` | 快捷键一览 |
 | 详情面板（光标不在输入框里） | `L` / `M` | 标签 / 里程碑选择框 |

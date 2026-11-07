@@ -87,6 +87,10 @@ button.ghost { background: transparent; border-color: transparent; color: var(--
 button.ghost:hover:not(:disabled) { color: var(--fg); }
 button.icon-btn { width: 28px; padding: 0; color: var(--muted); }
 button.icon-btn:hover:not(:disabled) { color: var(--fg); }
+/* a round / read in flight (GitHub#217): the icon turns; the button stays clickable */
+@keyframes icon-spin { to { transform: rotate(360deg); } }
+button.icon-btn.spinning svg { animation: icon-spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { button.icon-btn.spinning svg { animation: none; } }
 button.link { border: none; background: none; color: var(--accent); padding: 0 4px; min-height: 0; font-weight: 400; }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 button.on { background: var(--accent-subtle); border-color: var(--accent); color: var(--fg); }

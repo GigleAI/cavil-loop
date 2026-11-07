@@ -2757,6 +2757,71 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   await app.close();
 });
 
+test('GitHub#217: refresh while a round runs — the button and ⌘R start over; the detail refresh reads again', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const refresh = page.getByTestId('refresh');
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c138 = findCopies(store, 'GigleAI/cavil-loop', 138)!;
+  const retitle = (t: string) => {
+    for (const r of c138.rest) r.title = t;
+    for (const g of c138.gql) g.title = t;
+  };
+  /** the next sync round's read of the repository's open issues (first page), held */
+  const holdRound = () =>
+    holdFirst((e) => e.method === 'GET' && e.path.startsWith('/api/repos/GigleAI/cavil-loop/issues?') && e.path.includes('state=open') && !/[?&]page=/.test(e.path));
+  const roundReads = () => env.fake.log.filter((e) => e.method === 'GET' && e.path.startsWith('/api/repos/GigleAI/cavil-loop/issues?') && e.path.includes('state=open')).length;
+
+  for (const how of ['button', 'key'] as const) {
+    const press = () => (how === 'button' ? refresh.click() : page.keyboard.press(`${MOD}+r`));
+    const release = holdRound();
+    const reads = roundReads();
+    await press();
+    await expect.poll(roundReads).toBe(reads + 1);
+    // a round is running: the button turns and can still be pressed
+    await expect(refresh).toHaveAttribute('data-syncing', 'yes');
+    await expect(refresh).toBeEnabled();
+    await expect(refresh).toHaveClass(/spinning/);
+    if (how === 'button') await shot(page, '70-refresh-while-syncing');
+    const fresh = `TITLE_217_${how}`;
+    retitle(fresh);
+    await press(); // start over: the held round is not waited for
+    await expect(card(page, 138)).toContainText(fresh, { timeout: 15_000 });
+    await expect(refresh).toHaveAttribute('data-syncing', 'no');
+    await expect(refresh).not.toHaveClass(/spinning/);
+    // the dropped round's answer comes late: nothing of it shows
+    retitle(`TITLE_217_${how}_DROPPED`);
+    release();
+    await page.waitForTimeout(800);
+    await expect(card(page, 138)).toContainText(fresh);
+    await expect(card(page, 138)).not.toContainText('DROPPED');
+    await expect(page.getByTestId('sync-problem')).toHaveCount(0);
+  }
+
+  // the detail's "refresh this one": clickable while reading, the newer read is the one shown
+  env.fake.state.w.bodies.set('gigleai/cavil-loop#137', '<p>BODY_217_OLD</p>');
+  const detail = page.getByTestId('detail');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await card(page, 137).click();
+  await expect(frame.locator('body')).toContainText('BODY_217_OLD', { timeout: 15_000 });
+  const detailReads = () => env.fake.log.filter((e) => e.operation === 'CavilItemDetail').length;
+  const release = holdFirst((e) => e.operation === 'CavilItemDetail');
+  const n = detailReads();
+  const again = detail.getByTestId('detail-refresh');
+  await again.click();
+  await expect.poll(detailReads).toBe(n + 1);
+  await expect(again).toHaveAttribute('data-loading', 'yes');
+  await expect(again).toBeEnabled();
+  env.fake.state.w.bodies.set('gigleai/cavil-loop#137', '<p>BODY_217_NEW</p>');
+  await again.click();
+  await expect(frame.locator('body')).toContainText('BODY_217_NEW', { timeout: 15_000 });
+  await expect(again).toHaveAttribute('data-loading', 'no');
+  release();
+  await page.waitForTimeout(800);
+  await expect(frame.locator('body')).toContainText('BODY_217_NEW');
+  await app.close();
+});
+
 // ---- GitHub#205: client improvements ----
 
 test('GitHub#205: table cells change labels / status in place; columns can be resized and keep their width after a restart; group heads stand out', async () => {
