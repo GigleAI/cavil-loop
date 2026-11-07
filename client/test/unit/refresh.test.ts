@@ -583,8 +583,10 @@ describe('signing out when the stored credential cannot be deleted', () => {
     store.failClear = true;
     store.armHold();
     const out = c.logout();
-    await new Promise((r) => setTimeout(r, 10));
-    expect(c.getState().phase).toBe('login'); // before the keychain has answered
+    // before the keychain has answered: the delete is held until `holdClear` below. Polled, not a fixed
+    // 10 ms sleep — on a loaded CI runner the switch took longer than that (PR #241, CI run 42361155753)
+    await until(c, (s) => s.phase === 'login', 'login page while the delete is still pending');
+    expect(store.holdClear).not.toBeNull();
     // a new sign-in while the old delete is still pending
     fake.state.nextGrant = { token: 'ghu_fakeapptoken0000000000000000000003', refreshToken: 'ghr_fakeapprefresh00000000000000000000003' };
     const p = c.startLogin();
