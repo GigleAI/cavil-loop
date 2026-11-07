@@ -2,7 +2,7 @@
 # 常驻假 GitHub（GitHub#211）：tests/lib/fake_gh_server.py + tests/lib/fake_gh_client.sh 的守卫。
 #
 # 跑法：bash tests/fake-gh-server.test.sh              （默认不跑负对照）
-#       MUTATION=1 bash tests/fake-gh-server.test.sh   （另跑 5 个负对照：改坏服务 / 转发脚本的副本）
+#       MUTATION=1 bash tests/fake-gh-server.test.sh   （另跑 6 个负对照：改坏服务 / 转发脚本的副本）
 # 依赖：bash、python3、jq。不碰网络：服务只听 127.0.0.1。
 #
 # 要守住的只有一件事：换成常驻方式以后，测试看到的东西和以前一模一样，而且出了故障不会悄悄多做一次。
@@ -271,13 +271,24 @@ suite() {
     # 4 种 PYTHON* 设置也照接；区域设置变了两份都退回。不带 -I 的那份遇到任何 PYTHON* 设置都退回
     chk "服务接的次数：2（无设置）+ 4（带 -I 那份对 4 种 PYTHON* 设置），其余都退回原方式" \
         "$(served "$EW/new-bin/gh")+$(served "$EW/new-bin/gh-rb")" "1+5"
-    # 服务自己就是在这组设置下启动的：调用方设置相同 → 由服务接、结果仍和原方式一样
-    mkdir -p "$EW/same-bin"
-    PYTHONIOENCODING=ascii:backslashreplace FAKE_GH_OWNER=$$ bash "$LIB/fake_gh_client.sh" install "$EW/same-bin/gh" python3 "$FAKE_AP"
-    ( export PYTHONIOENCODING=ascii:backslashreplace FAKE_GH_DIR="$EW/gd" FAKE_GH_REPO=example/ap
-      cap "$EW/same" -- "$EW/same-bin/gh" api repos/example/ap/issues/7 --jq .title )
-    chk "服务与调用方是同一组设置：由服务接（计数 1），输出与原方式相同" \
-        "$(served "$EW/same-bin/gh")/$(cmp -s "$EW/same.out" "$EW/o3-ap.out" && cmp -s "$EW/same.rc" "$EW/o3-ap.rc" && echo same || echo diff)" "1/same"
+    # 服务自己就是在这组设置下启动的：调用方设置相同 → 由服务接、结果仍和原方式一样。两组：一组照常输出
+    # （ascii:backslashreplace），一组让原脚本真的抛异常（严格 ascii 输出中文），stderr 也逐字节比
+    # （PR #221 复审第 2 轮：异常调用栈里多出服务自己的执行入口）
+    local sv sname
+    for sv in "ascii:backslashreplace:3" "ascii:2"; do
+        sname="${sv%:*}"
+        mkdir -p "$EW/same-$sname-bin"
+        PYTHONIOENCODING="$sname" FAKE_GH_OWNER=$$ bash "$LIB/fake_gh_client.sh" install "$EW/same-$sname-bin/gh" python3 "$FAKE_AP"
+        ( export PYTHONIOENCODING="$sname" FAKE_GH_DIR="$EW/gd" FAKE_GH_REPO=example/ap
+          cap "$EW/same-$sname" -- "$EW/same-$sname-bin/gh" api repos/example/ap/issues/7 --jq .title )
+        i="${sv##*:}"
+        chk "服务与调用方同为 PYTHONIOENCODING=$sname：由服务接（计数 1），stdout / stderr / 退出码与原方式逐字节相同" \
+            "$(served "$EW/same-$sname-bin/gh")/$(cmp -s "$EW/same-$sname.out" "$EW/o$i-ap.out" && cmp -s "$EW/same-$sname.err" "$EW/o$i-ap.err" \
+                && cmp -s "$EW/same-$sname.rc" "$EW/o$i-ap.rc" && echo same || echo diff)" "1/same"
+    done
+    chk "到达性 · 严格 ascii 那组原脚本确实抛了异常（退出码 1、stderr 以调用栈开头、带 UnicodeEncodeError）" \
+        "$(cat "$EW/same-ascii.rc")/$(head -1 "$EW/same-ascii.err")/$(grep -c UnicodeEncodeError "$EW/same-ascii.err")" \
+        "1/Traceback (most recent call last):/1"
 
     # ── 安全：没带对令牌的请求不执行任何东西 ──
     local P; P=$(cat "$W/new-bin/gh.d/port"); D="$W/tok"; seed_ap "$D"
@@ -329,6 +340,8 @@ neg "该退回时不退回（普通文件也直接写）" fake_gh_server.py \
     '                if not (stat.S_ISFIFO(st.st_mode) or stat.S_ISCHR(st.st_mode)):' '                if False:'
 neg "服务端不核对解释器启动设置（调用方的输出编码等被忽略）" fake_gh_server.py \
     '            if startup_env(env) != START_ENV:' '            if False:'
+neg "原脚本抛异常时，调用栈带上服务自己的执行入口" fake_gh_server.py \
+    '                traceback.print_exception(type(e), e, tb)' '                traceback.print_exc()'
 neg "结果未知时改成重跑" fake_gh_client.sh \
     '                echo "假 GitHub：请求已交出、执行结果未知，不重试（已接手，但没收到退出码）" >&2
                 exit 70 ;;' \

@@ -232,9 +232,15 @@ def serve(conn):
                 except Exception:
                     pass
                 code = 1
-        except BaseException:
+        except BaseException as e:
+            # Print it the way `python3 <script>` would: the traceback starts at the script's own
+            # frames. The frames before that are this server's (serve → exec) and the original never
+            # had them (PR #221 review round 2).
             try:
-                traceback.print_exc()
+                tb = e.__traceback__
+                while tb is not None and tb.tb_frame.f_code.co_filename != SCRIPT:
+                    tb = tb.tb_next
+                traceback.print_exception(type(e), e, tb)
             except Exception:
                 pass
             code = 1
