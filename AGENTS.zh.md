@@ -299,7 +299,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   `tests/fixtures/project-auto-add-fake-gh.py`）用 `bash tests/lib/fake_gh_client.sh install "$SANDBOX/bin/gh" python3 [-I] <假 gh>`
   生成 `gh`，不再写 `exec python3` 包装：每个测试文件只起一个 Python，每次调用 fork 一个子进程跑同一份、没改过的假 gh 代码
   （参数 / 环境变量 / 工作目录从 `/proc/<调用方>` 读，输出直接写进调用方的管道），每次约 4 毫秒、原来约 25 毫秒。
-  只在能证明这次没执行时退回原方式（连不上；服务因调用方的 stdout / stderr 是普通文件或 `/proc` 打不开而回「请退回」）；
+  只在能证明这次没执行时退回原方式（连不上；服务因调用方的 stdout / stderr 是普通文件、`/proc` 打不开、或调用方的解释器启动设置——原命令不带 `-I` 时的 `PYTHON*` 变量、`LC_ALL` / `LC_CTYPE` / `LANG`——和服务启动时不同而回「请退回」；服务和原命令一样用 `python3` 或 `python3 -I` 起）；同一个调度单位在一次 `run.sh` 里最多跑一次，重复点名、整份文件和其中一段一起点名都只跑一次；
   请求交出后的其他任何故障都以退出码 70 失败、stderr 写「假 GitHub：请求已交出、执行结果未知，不重试」，绝不重跑。
   `<gh>.d/served`、`<gh>.d/fallback` 分别记两条路各走了几次。由 `tests/fake-gh-server.test.sh` 守着（同一组调用两种方式逐字节对拍、并发、中断时序）
 - **「和改动前一致」的对拍：没改就跳过**（GitHub#211）。拿 merge-base 的脚本和当前脚本对拍的测试统一经过

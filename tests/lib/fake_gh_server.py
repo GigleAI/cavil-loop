@@ -102,8 +102,28 @@ import subprocess  # noqa: E402,F401  (the fakes all shell out to jq; keep it wa
 with open(os.path.join(STATE, "token"), "rb") as f:
     TOKEN = f.read().strip()
 
+# How the standard streams are set up is decided once, when an interpreter starts, from its flags and
+# environment (PYTHONIOENCODING, PYTHONUTF8, PYTHONUNBUFFERED, the locale variables, …). The server is
+# started the way the original command starts the fake (`python3` or `python3 -I`, see
+# fake_gh_client.sh), so its own streams show what the original would get — but only for the
+# environment it was started with. A call whose startup-relevant variables differ is answered with
+# FALLBACK and runs the old way (review round 1 of PR #221: PYTHONIOENCODING=ascii turned a failing
+# call into a passing one).
 STDOUT_ENC = sys.__stdout__.encoding if sys.__stdout__ else "utf-8"
+STDOUT_ERRORS = sys.__stdout__.errors if sys.__stdout__ else "strict"
 STDERR_ENC = sys.__stderr__.encoding if sys.__stderr__ else "utf-8"
+STDERR_ERRORS = sys.__stderr__.errors if sys.__stderr__ else "backslashreplace"
+UNBUFFERED = bool(getattr(sys.__stdout__, "write_through", False))   # PYTHONUNBUFFERED / -u
+LOCALE_VARS = ("LC_ALL", "LC_CTYPE", "LANG")
+
+
+def startup_env(env):
+    """The part of an environment that changes how `python3 [-I]` sets itself up."""
+    return {k: v for k, v in env.items()
+            if k in LOCALE_VARS or (not O["isolated"] and k.startswith("PYTHON"))}
+
+
+START_ENV = startup_env(dict(os.environ))
 
 
 def recv_line(conn, limit=4096):
@@ -152,7 +172,13 @@ def serve(conn):
             if argc < 0 or argc > len(cmdline) - 1:
                 raise OSError("argc out of range")
             args = cmdline[len(cmdline) - argc:] if argc else []
-            env_raw = proc_read(pid, "environ").split(b"\0")[:-1]
+            env = {}
+            for kv in proc_read(pid, "environ").split(b"\0")[:-1]:
+                k, sep, v = kv.partition(b"=")
+                if sep:
+                    env[os.fsdecode(k)] = os.fsdecode(v)
+            if startup_env(env) != START_ENV:
+                raise OSError("interpreter startup settings differ from the server's")
             cwd = os.readlink("/proc/%d/cwd" % pid)
             if not os.path.isdir(cwd):
                 raise OSError("cwd gone")
@@ -177,11 +203,6 @@ def serve(conn):
         os.dup2(fds[1], 2)
         for fd in fds + [devnull]:
             os.close(fd)
-        env = {}
-        for kv in env_raw:
-            k, sep, v = kv.partition(b"=")
-            if sep:
-                env[os.fsdecode(k)] = os.fsdecode(v)
         os.environ.clear()
         os.environ.update(env)
         time.tzset()
@@ -191,9 +212,11 @@ def serve(conn):
             sys.path.insert(0, os.path.dirname(SCRIPT))   # what `python3 <script>` puts first
         sys.stdin = io.TextIOWrapper(io.FileIO(0, "r", closefd=False))
         sys.stdout = io.TextIOWrapper(io.BufferedWriter(io.FileIO(1, "w", closefd=False)),
-                                      encoding=STDOUT_ENC, line_buffering=os.isatty(1))
+                                      encoding=STDOUT_ENC, errors=STDOUT_ERRORS,
+                                      line_buffering=os.isatty(1), write_through=UNBUFFERED)
         sys.stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(2, "w", closefd=False)),
-                                      encoding=STDERR_ENC, errors="backslashreplace", line_buffering=True)
+                                      encoding=STDERR_ENC, errors=STDERR_ERRORS, line_buffering=True,
+                                      write_through=UNBUFFERED)
         signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         code = 0
         try:
@@ -239,7 +262,13 @@ def serve(conn):
         fault("after-exec")
         conn.sendall(b"EXIT %d\n" % (code & 0xFF))
     except BaseException:
-        pass
+        # The serving child itself broke (not the fake): leave a trace for whoever reads server.log;
+        # the client sees no exit status and reports "result unknown" (exit 70).
+        try:
+            with open(os.path.join(STATE, "server.log"), "a") as f:
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
     os._exit(0)
 
 

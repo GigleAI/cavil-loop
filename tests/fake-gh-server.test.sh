@@ -2,7 +2,7 @@
 # 常驻假 GitHub（GitHub#211）：tests/lib/fake_gh_server.py + tests/lib/fake_gh_client.sh 的守卫。
 #
 # 跑法：bash tests/fake-gh-server.test.sh              （默认不跑负对照）
-#       MUTATION=1 bash tests/fake-gh-server.test.sh   （另跑 4 个负对照：改坏服务 / 转发脚本的副本）
+#       MUTATION=1 bash tests/fake-gh-server.test.sh   （另跑 5 个负对照：改坏服务 / 转发脚本的副本）
 # 依赖：bash、python3、jq。不碰网络：服务只听 127.0.0.1。
 #
 # 要守住的只有一件事：换成常驻方式以后，测试看到的东西和以前一模一样，而且出了故障不会悄悄多做一次。
@@ -239,6 +239,46 @@ suite() {
     chk "中断 · 服务在两次调用之间被杀，下一次调用：连不上 → 退回旧方式执行一次，结果与正例相同" "$(tally killed)" "0/1/1/1"
     chk "  …输出与正例相同、stderr 为空" "$(cat "$W/int-killed.out")/$(wc -c < "$W/int-killed.err" | tr -d ' ')" "$(cat "$W/int-ok.out")/0"
 
+    # ── 解释器启动设置（PR #221 复审第 1 轮）：输出编码、出错时的处理方式、不缓冲、区域设置 ──
+    # 原方式每次起一个 python3，这些设置按调用方当时的环境定；常驻服务的在它启动时就定了。
+    # 两种方式对同一份中文标题、同一组设置逐字节比；设置和服务启动时不同的，必须退回原方式。
+    local EW="$W/enc" v i=0 enc_same=0 enc_n=0
+    mkdir -p "$EW/old-bin" "$EW/new-bin" "$EW/gd"
+    echo '{"7":{"kind":"issue","state":"open","title":"中文标题","body":"x"}}' > "$EW/gd/items.json"
+    echo '{"me":"worker-bot","items":{"50":{"number":50,"title":"中文标题","user":"u","body":"b","state":"open","labels":[]}}}' > "$EW/gd/state.json"
+    FAKE_GH_SERVER=0 bash "$LIB/fake_gh_client.sh" install "$EW/old-bin/gh" python3 "$FAKE_AP"
+    FAKE_GH_SERVER=0 bash "$LIB/fake_gh_client.sh" install "$EW/old-bin/gh-rb" python3 -I "$FAKE_RB"
+    FAKE_GH_OWNER=$$ bash "$LIB/fake_gh_client.sh" install "$EW/new-bin/gh" python3 "$FAKE_AP"
+    FAKE_GH_OWNER=$$ bash "$LIB/fake_gh_client.sh" install "$EW/new-bin/gh-rb" python3 -I "$FAKE_RB"
+    enc_call() {   # <前缀> <gh 目录> <设置> → 读一次中文标题（ap 与 rb 两份假 GitHub 各一次）
+        # shellcheck disable=SC2086
+        ( [ -z "$3" ] || export $3
+          FAKE_GH_DIR="$EW/gd" FAKE_GH_REPO=example/ap cap "$1-ap" -- "$2/gh" api repos/example/ap/issues/7 --jq .title
+          FAKE_GH_DIR="$EW/gd" FAKE_GH_REPO=example/requester-bot cap "$1-rb" -- "$2/gh-rb" api repos/example/requester-bot/issues/50 --jq .title )
+    }
+    for v in "" "PYTHONIOENCODING=ascii" "PYTHONIOENCODING=ascii:backslashreplace" "PYTHONIOENCODING=latin-1:replace" \
+             "LC_ALL=C" "LC_ALL=C PYTHONUTF8=0" "PYTHONUNBUFFERED=1"; do
+        i=$((i + 1))
+        enc_call "$EW/o$i" "$EW/old-bin" "$v"; enc_call "$EW/n$i" "$EW/new-bin" "$v"
+        for f in ap.out ap.err ap.rc rb.out rb.err rb.rc; do
+            enc_n=$((enc_n + 1)); cmp -s "$EW/o$i-$f" "$EW/n$i-$f" && enc_same=$((enc_same + 1)) \
+                || { [ "$QUIET" = 1 ] || echo "     不同：设置「$v」的 $f"; }
+        done
+    done
+    chk "7 种启动设置 × 两份假 GitHub：stdout / stderr / 退出码与原方式逐字节相同" "$enc_same/$enc_n" "$enc_n/$enc_n"
+    chk "到达性 · 这组设置里确实有原方式会失败的（ascii 输出中文 → 退出码 1）" "$(cat "$EW/o2-ap.rc")/$(grep -c UnicodeEncodeError "$EW/o2-ap.err")" "1/1"
+    # 服务接了几次：无设置时两份各 1 次；带 -I 的那份（requester-bot 假 gh）原方式本来就不看 PYTHON* 变量，
+    # 4 种 PYTHON* 设置也照接；区域设置变了两份都退回。不带 -I 的那份遇到任何 PYTHON* 设置都退回
+    chk "服务接的次数：2（无设置）+ 4（带 -I 那份对 4 种 PYTHON* 设置），其余都退回原方式" \
+        "$(served "$EW/new-bin/gh")+$(served "$EW/new-bin/gh-rb")" "1+5"
+    # 服务自己就是在这组设置下启动的：调用方设置相同 → 由服务接、结果仍和原方式一样
+    mkdir -p "$EW/same-bin"
+    PYTHONIOENCODING=ascii:backslashreplace FAKE_GH_OWNER=$$ bash "$LIB/fake_gh_client.sh" install "$EW/same-bin/gh" python3 "$FAKE_AP"
+    ( export PYTHONIOENCODING=ascii:backslashreplace FAKE_GH_DIR="$EW/gd" FAKE_GH_REPO=example/ap
+      cap "$EW/same" -- "$EW/same-bin/gh" api repos/example/ap/issues/7 --jq .title )
+    chk "服务与调用方是同一组设置：由服务接（计数 1），输出与原方式相同" \
+        "$(served "$EW/same-bin/gh")/$(cmp -s "$EW/same.out" "$EW/o3-ap.out" && cmp -s "$EW/same.rc" "$EW/o3-ap.rc" && echo same || echo diff)" "1/same"
+
     # ── 安全：没带对令牌的请求不执行任何东西 ──
     local P; P=$(cat "$W/new-bin/gh.d/port"); D="$W/tok"; seed_ap "$D"
     python3 -I - "$P" "$$" <<'PY' > "$W/tok.reply"
@@ -287,6 +327,8 @@ neg "服务端丢掉调用方的环境变量" fake_gh_server.py '        os.envi
 neg "服务端丢掉退出码（一律回 0）" fake_gh_server.py '        conn.sendall(b"EXIT %d\n" % (code & 0xFF))' '        conn.sendall(b"EXIT 0\n")'
 neg "该退回时不退回（普通文件也直接写）" fake_gh_server.py \
     '                if not (stat.S_ISFIFO(st.st_mode) or stat.S_ISCHR(st.st_mode)):' '                if False:'
+neg "服务端不核对解释器启动设置（调用方的输出编码等被忽略）" fake_gh_server.py \
+    '            if startup_env(env) != START_ENV:' '            if False:'
 neg "结果未知时改成重跑" fake_gh_client.sh \
     '                echo "假 GitHub：请求已交出、执行结果未知，不重试（已接手，但没收到退出码）" >&2
                 exit 70 ;;' \

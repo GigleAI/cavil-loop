@@ -75,10 +75,18 @@ fake_gh_install() {
     } > "$gh"
     chmod +x "$gh"
     [ "${FAKE_GH_SERVER:-1}" = 0 ] && return 0
+    # The server can only stand in for `python3 <script>` or `python3 -I <script>`: it is started the
+    # same way, so its interpreter is set up like the original. Anything else: no server, every call
+    # runs the fallback.
+    case "$*" in
+        "python3 $script"|"python3 -I $script") ;;
+        *) echo "fake_gh_client.sh: no resident server for '$*' (only 'python3 [-I] <script>')" >&2; return 0 ;;
+    esac
+    local pyflags=(); [ ${#isolated[@]} -eq 0 ] || pyflags=(-I)
     (umask 077; { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo; } > "$state/token")
     local fault=()
     [ -n "${FAKE_GH_SERVER_FAULT_FILE:-}" ] && fault=(--fault-file "$FAKE_GH_SERVER_FAULT_FILE")
-    python3 -I "$self/fake_gh_server.py" --state "$state" --script "$script" --owner "${FAKE_GH_OWNER:-$PPID}" \
+    python3 "${pyflags[@]}" "$self/fake_gh_server.py" --state "$state" --script "$script" --owner "${FAKE_GH_OWNER:-$PPID}" \
         "${isolated[@]}" "${fault[@]}" < /dev/null > "$state/server.log" 2>&1 &
     # Wait for the port file (the server writes it last, atomically). If it never comes the
     # forwarder simply cannot connect and runs the fallback — slower, never wrong.

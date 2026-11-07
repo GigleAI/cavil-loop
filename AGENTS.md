@@ -358,7 +358,11 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   call (argv / environment / cwd read from `/proc/<caller>`, output written straight into the
   caller's pipes) — about 4 ms a call instead of about 25. It falls back to the old way only when the
   call provably did not run (cannot connect; the server answered "fall back" because the caller's
-  stdout / stderr is a regular file, or `/proc` is unreadable). Any other failure after the request
+  stdout / stderr is a regular file, `/proc` is unreadable, or the caller's interpreter-startup
+  environment — `PYTHON*` unless the original runs with `-I`, `LC_ALL` / `LC_CTYPE` / `LANG` —
+  differs from the server's, which is started the same way, `python3` or `python3 -I`, as the original).
+  Each unit runs at most once per `run.sh` run: a name given twice, or a file plus one of its parts, is
+  run once. Any other failure after the request
   went out exits 70 with "假 GitHub：请求已交出、执行结果未知，不重试" and is never re-run.
   `<gh>.d/served` and `<gh>.d/fallback` count both paths. Guarded by `tests/fake-gh-server.test.sh`
   (both ways byte-for-byte on one set of calls, concurrency, the interruption timings)

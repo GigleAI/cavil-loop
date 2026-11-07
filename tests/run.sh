@@ -244,6 +244,15 @@ if [ ${#NAMES[@]} -gt 0 ]; then
 else
     mapfile -t RUN < <(assign | awk -v k="$SHARD_K" '$1 == k { print $2 }')
 fi
+# Each unit runs at most once per run: results, logs and the "finished" marker are keyed by the unit
+# name, so a second copy (a name given twice, or a file plus one of its parts) would share them and
+# one copy's failure could vanish behind the other's pass (PR #221 review round 1).
+declare -A ONCE=(); UNIQ=()
+for u in "${RUN[@]}"; do
+    if [ -n "${ONCE[$u]+x}" ]; then echo "run.sh: $u named more than once; it runs once" >&2; continue; fi
+    ONCE[$u]=1; UNIQ+=("$u")
+done
+RUN=("${UNIQ[@]}")
 
 if [ -z "$OUT" ]; then OUT=$(mktemp -d "${TMPDIR:-/tmp}/cavil-tests.XXXXXX"); fi
 mkdir -p "$OUT/logs"

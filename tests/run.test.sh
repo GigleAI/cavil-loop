@@ -58,6 +58,9 @@ mkfx() {
             par)       printf '%s\n' 'R="$(dirname "$0")/../ran"; touch "$R/$$.live"; m=0' \
                            'for i in $(seq 40); do c=$(ls "$R" | grep -c "\.live$"); [ "$c" -gt "$m" ] && m=$c; [ "$m" -ge 2 ] && break; sleep 0.1; done' \
                            'sleep 0.3; echo "$m" >> "$R/par.txt"; rm -f "$R/$$.live"; exit 0' >> "$f" ;;
+            # 第一次执行通过、之后每次都失败（测「同一单位只跑一次」：跑两次就会有一次红）
+            once)      printf '%s\n' 'R="$(dirname "$0")/../ran"; n=$( { cat "$R/once.n" 2>/dev/null || echo 0; } ); n=$((n + 1)); echo "$n" > "$R/once.n"' \
+                           '[ "$n" -eq 1 ] || { sleep 1; echo "SECOND_RUN_FAILED"; exit 1; }; exit 0' >> "$f" ;;
             # 标了 parallel: no：开始时数一数还有几个单元在跑（应当是 0）
             solo)      printf '%s\n' '# parallel: no' 'R="$(dirname "$0")/../ran"; ls "$R" | grep -c "\.live$" > "$R/solo.txt"; exit 0' >> "$f" ;;
         esac
@@ -288,6 +291,16 @@ chk "-j 1：一个接一个（每个都只看到自己）" "$RC $(paste -sd' ' "
 runsh "$RUNSH" -j 0 --list
 chk "-j 0 → 退出 2" "$RC" "2"
 
+echo "【13】同一单位点名两次 / 整份文件和其中一段一起点名：每个单位只跑一次（PR #221 复审第 1 轮）"
+# 输出：rc / 执行次数 / results.tsv 行数 / 拆段文件各段的执行记录
+scenario_dup() {   # $1 run.sh
+    rm -rf "$TMP/dup"; FX="$TMP/dup/tests"; mkfx "$FX" once:probe parts3:big
+    RC=0; RUN_TESTS_DIR="$FX" bash "$1" probe probe big big:2/3 -j 2 --out "$TMP/dup/out" > "$OUTF" 2>&1 || RC=$?
+    echo "$RC $(cat "$TMP/dup/ran/once.n" 2>/dev/null || echo 0) $(wc -l < "$TMP/dup/out/results.tsv" | tr -d ' ') $(LC_ALL=C sort "$TMP/dup/ran/parts.txt" | paste -sd,)"
+}
+chk "rc / probe 只执行 1 次 / 4 行结果 / 三段各 1 次" "$(scenario_dup "$RUNSH")" "0 1 4 1/3,2/3,3/3"
+chk "  并说明哪些名字重复了" "$(grep -c 'named more than once' "$OUTF")" 2
+
 # ══ 负对照：改坏入口脚本的副本，对应场景必须变红 ════════════════════════════════
 echo "【负对照】"
 mutant() {  # $1 名字  $2 python 替换：旧 → 新（必须恰好命中一次）
@@ -321,6 +334,8 @@ neg "整文件跳过当成通过" scenario_selfskip "1 skipped skipped-ok yes" n
     "elif grep -qE '^⏭' \"\$log\"; then" 'elif false; then'
 neg "超时没生效" scenario_timeout "1 timeout" no-timeout \
     '"${TIMEOUT_CMD[@]}" bash' 'bash'
+neg "重复点名不去重（失败被同名的通过盖住）" scenario_dup "0 1 4 1/3,2/3,3/3" no-dedup \
+    'if [ -n "${ONCE[$u]+x}" ]; then echo "run.sh: $u named more than once; it runs once" >&2; continue; fi' ':'
 neg "汇总只看收到的结果、不对照该跑的清单" scenario_verify_missing "1" verify-no-missing \
     'for n in $(selected); do
         c=${SEEN[$n]:-0}' 'for n in "${!SEEN[@]}"; do
