@@ -781,6 +781,98 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   await app.close();
 });
 
+/** Groups of the table as shown: repository section (from the group key's prefix), title, rows. */
+async function tableShape(page: Page) {
+  return page.$$eval('[data-testid="group"]', (gs) =>
+    gs.map((g) => ({
+      key: g.getAttribute('data-key')!,
+      title: g.getAttribute('data-title')!,
+      rows: [...g.querySelectorAll('[data-testid="row"]')].map((r) => r.getAttribute('data-key')!),
+    })),
+  );
+}
+const repoHeads = (page: Page) =>
+  page.$$eval('[data-testid="repo-group"]', (rs) => rs.map((r) => [r.getAttribute('data-title'), Number(r.querySelector('[data-testid="repo-count"]')!.textContent)] as [string, number]));
+
+test('GitHub#213: "all repositories" in the table — repository first, then iteration; counts are distinct items; folding is per repository; picking one repository goes back to one level', async () => {
+  // a second Project holding cavil-loop#22 in Iteration 25 (Project 11 has it without an iteration):
+  // the item then shows in two iteration groups of the same repository
+  const [p11] = loadCavilProjectPages();
+  const node = p11.items.nodes.find((n: any) => n.content.number === 22 && n.content.__typename === 'Issue');
+  const it25 = (p11.fields.nodes.find((f: any) => f.name === 'Iteration') as any).configuration.iterations[0];
+  env.fake.state.projects.set('org/gigleai/24', [
+    {
+      ...p11,
+      id: 'PVT_fixture_issue213',
+      title: 'second board',
+      url: 'https://github.com/orgs/GigleAI/projects/24',
+      views: { nodes: [] },
+      items: {
+        totalCount: 1,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ ...node, id: 'PVTI_fixture_issue213', fieldValues: { nodes: [...node.fieldValues.nodes, { __typename: 'ProjectV2ItemFieldIterationValue', iterationId: it25.id, title: it25.title, startDate: it25.startDate, duration: it25.duration, field: { id: 'PVTF_fixture_c418626aa793', name: 'Iteration' } }] } }],
+      },
+    },
+  ]);
+  // a second repository with two open issues, no Project, so both are "no iteration"
+  const zeta = (n: number) => ({ number: n, node_id: `I_fixture_zeta${n}`, title: `zeta issue ${n}`, state: 'open', html_url: `https://github.com/GigleAI/zeta/issues/${n}`, updated_at: '2026-11-04T00:00:00Z', labels: [], assignees: [], milestone: null, user: { login: 'user-1' }, parent_issue_url: null, sub_issues_summary: null });
+  env.fake.state.repos.set('gigleai/zeta', [zeta(1), zeta(2)]);
+
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/1`); // a table grouped by iteration
+  await page.getByTestId('source-add').click();
+  await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('-label:Done -status:Done');
+  await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/24');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('source-input').fill('GigleAI/zeta');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('search').fill('');
+  await expect(page.locator('[data-testid="slice"][data-value=""]')).toHaveClass(/on/);
+
+  // repository first, alphabetical; zeta has only its own "no iteration" group
+  const C = 'repo:gigleai/cavil-loop', Z = 'repo:gigleai/zeta';
+  await expect.poll(async () => (await repoHeads(page)).map(([t]) => t), { timeout: 15_000 }).toEqual(['GigleAI/cavil-loop', 'GigleAI/zeta']);
+  await expect.poll(async () => (await tableShape(page)).some((g) => g.title === 'Iteration 25' && g.rows.includes('gigleai/cavil-loop#22'))).toBe(true);
+  const shape = await tableShape(page);
+  for (const g of shape) expect(g.key.startsWith(`${C}|`) || g.key.startsWith(`${Z}|`), g.key).toBe(true);
+  // the sections come in the heading order: every cavil-loop group before every zeta group
+  expect(shape.map((g) => g.key.startsWith(`${Z}|`))).toEqual([...shape.map((g) => g.key.startsWith(`${Z}|`))].sort());
+  expect(shape.filter((g) => g.key.startsWith(`${Z}|`)).map((g) => [g.title, [...g.rows].sort()])).toEqual([['无迭代', ['gigleai/zeta#1', 'gigleai/zeta#2']]]);
+  // cavil-loop#22 shows in two iteration groups, and the heading counts it once
+  const cav = shape.filter((g) => g.key.startsWith(`${C}|`));
+  expect(cav.filter((g) => g.rows.includes('gigleai/cavil-loop#22')).map((g) => g.title)).toEqual(['无迭代', 'Iteration 25']);
+  const cavRows = cav.flatMap((g) => g.rows);
+  const heads = Object.fromEntries(await repoHeads(page));
+  expect(heads['GigleAI/cavil-loop']).toBe(new Set(cavRows).size);
+  expect(heads['GigleAI/cavil-loop']).toBe(cavRows.length - 1);
+  expect(heads['GigleAI/zeta']).toBe(2);
+  await shot(page, '213-table-by-repository');
+
+  // folding "no iteration" in zeta leaves cavil-loop's group of the same name open
+  const group = (key: string) => page.locator(`[data-testid="group"][data-key="${key}"]`);
+  await group(`${Z}|none`).getByTestId('group-toggle').click();
+  await expect(group(`${Z}|none`).getByTestId('row')).toHaveCount(0);
+  await expect(group(`${C}|none`).getByTestId('row')).toHaveCount(cav.find((g) => g.key === `${C}|none`)!.rows.length);
+  await group(`${Z}|none`).getByTestId('group-toggle').click();
+  // folding the whole cavil-loop section hides all its groups; zeta stays
+  await page.locator(`[data-testid="repo-group"][data-key="${C}"]`).getByTestId('repo-toggle').click();
+  await expect(page.locator(`[data-testid="group"][data-key^="${C}|"]`)).toHaveCount(0);
+  await expect(group(`${Z}|none`).getByTestId('row')).toHaveCount(2);
+  await expect(page.locator(`[data-testid="repo-group"][data-key="${C}"]`)).toBeVisible();
+  await page.locator(`[data-testid="repo-group"][data-key="${C}"]`).getByTestId('repo-toggle').click();
+  await expect(page.locator(`[data-testid="group"][data-key^="${C}|"]`)).toHaveCount(cav.length);
+
+  // picking one repository: one level again, no repository heading
+  await page.locator('[data-testid="slice"][data-value="GigleAI/zeta"]').click();
+  await expect(page.getByTestId('repo-group')).toHaveCount(0);
+  await expect.poll(async () => (await tableShape(page)).map((g) => ({ ...g, rows: [...g.rows].sort() }))).toEqual([{ key: 'none', title: '无迭代', rows: ['gigleai/zeta#1', 'gigleai/zeta#2'] }]);
+  await app.close();
+});
+
 function rawCountByStatus(): Record<string, number> {
   const out: Record<string, number> = {};
   for (const p of loadCavilProjectPages())
