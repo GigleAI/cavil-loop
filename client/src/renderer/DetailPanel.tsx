@@ -144,8 +144,14 @@ export function DetailPanel({
   const itemRef = useRef(item);
   itemRef.current = item;
   const readAt = useRef<string | null>(null);
-  /** an automatic re-read failed: the detail on screen is the one read at this time (epoch ms) */
+  /** an automatic re-read failed: what is on screen was last confirmed by a read at this time (epoch ms) */
   const [autoFailed, setAutoFailed] = useState<number | null>(null);
+  /**
+   * When GitHub last confirmed what is on screen: every read that lands moves it, also one with the
+   * same content (the object on screen is kept then, so its own read time is older). A read that
+   * failed or was dropped never moves it.
+   */
+  const confirmedAt = useRef<number | null>(null);
   /**
    * Read the detail. `quiet`: a read nobody asked for (a sync round, the re-read after a
    * failed change) — a failure keeps what is on screen and says so in small print, no error
@@ -161,13 +167,14 @@ export function DetailPanel({
       setLoading(false);
       if (r.ok) {
         readAt.current = seen;
+        confirmedAt.current = r.detail.fetchedAt;
         // same content: keep the object on screen, so the frame is not rendered again
         setDetail((prev) => (sameDetail(prev, r.detail) ? prev : r.detail));
         setLoadError(null);
         setAutoFailed(null);
       } else {
         const shown = detailRef.current;
-        if (quiet && shown) setAutoFailed(shown.fetchedAt);
+        if (quiet && shown) setAutoFailed(confirmedAt.current ?? shown.fetchedAt);
         else setLoadError(r.error);
       }
     },

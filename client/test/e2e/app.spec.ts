@@ -880,6 +880,51 @@ test('GitHub#226: an open PR whose checks are still running is read every round 
   await app.close();
 });
 
+test('GitHub#226 (PR #227 review round 1): a read with the same content still counts as confirmed — a later failed read says the time of that one, and nothing was redrawn', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const node = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!;
+  const prN = node.content.number as number;
+  const c = findCopies(store, 'GigleAI/cavil-loop', prN)!;
+  for (const g of c.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of c.rest) Object.assign(r, { state: 'open', pull_request: { ...(r.pull_request ?? {}), merged_at: null } });
+  pullOf(store, c).checks = 'PENDING'; // read every round, the same content each time
+  const reads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === prN);
+  const { app, page } = await launch(env);
+  // the window's clock (where the read time is taken) at 09:00 local, then 09:05, then 09:10
+  const local = (hh: number, mm: number) => {
+    const d = new Date();
+    d.setHours(hh, mm, 0, 0);
+    return d;
+  };
+  await page.clock.setFixedTime(local(9, 0));
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  /** one round from the shell's beat, waited until the detail read it started has answered */
+  const round = async () => {
+    const n = reads().length;
+    app.desktop.push({ kind: 'tick' });
+    await expect.poll(() => reads().length).toBeGreaterThan(n);
+    await expect.poll(() => reads()[n]?.status ?? 0).toBeGreaterThanOrEqual(200);
+    await expect(page.getByTestId('detail-refresh')).toBeEnabled();
+    await page.waitForTimeout(300);
+  };
+  await signInWithSources(page);
+  await card(page, prN).click();
+  await expect(page.getByTestId('pr-status')).toContainText('检查：进行中');
+  const frameEl = page.getByTestId('timeline-frame');
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes');
+  const render0 = await frameEl.getAttribute('data-render');
+  await page.clock.setFixedTime(local(9, 5));
+  await round(); // succeeds, same content
+  await expect(frameEl).toHaveAttribute('data-render', render0!);
+  await page.clock.setFixedTime(local(9, 10));
+  env.fake.state.w.failDetail.add(`gigleai/cavil-loop#${prN}`);
+  await round(); // fails
+  await expect(page.getByTestId('detail-stale')).toHaveText('自动更新失败，显示的是 09:05 的内容');
+  await expect(page.getByTestId('detail-error')).toHaveCount(0);
+  await app.close();
+});
+
 // ---- sub-item #137: search, table, imported views ----
 
 const filterResults: { query: string; server: string[] }[] = JSON.parse(

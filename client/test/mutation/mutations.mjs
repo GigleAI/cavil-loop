@@ -393,7 +393,7 @@ export const MUTATIONS = [
     expect: ['still signed in on the new token, and the user is told'] },
   // ---- review round 2 of PR #150: every late answer of the detail panel, per call site (real Electron) ----
   { what: '同一次打开里，慢的详情读取盖过改完后的重读', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: '    const r = await api().loadDetail(itemKey);\n    if (!mine()) return;', to: '    const r = await api().loadDetail(itemKey);',
+    from: '      const r = await api().loadDetail(itemKey);\n      if (!mine()) return;', to: '      const r = await api().loadDetail(itemKey);',
     expect: ['leave an item and come back'] },
   { what: '同一次打开里，改了字之后旧文字的预览照样显示', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
     from: "    const r = await api().previewMarkdown(item.repo, reply);\n    if (!mine()) return;", to: "    const r = await api().previewMarkdown(item.repo, reply);",
@@ -1266,4 +1266,7 @@ export const MUTATIONS = [
   { what: '自动更新：内容没变也换掉、讨论区重绘', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
     from: 'setDetail((prev) => (sameDetail(prev, r.detail) ? prev : r.detail));', to: 'setDetail(r.detail);',
     expect: ['GitHub#226: an open PR whose checks are still running'] },
+  { what: '自动更新：内容相同的成功读取不算核实，失败提示写更早那次的时间', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
+    from: '        confirmedAt.current = r.detail.fetchedAt;\n', to: '',
+    expect: ['GitHub#226 (PR #227 review round 1)'] },
 ];
