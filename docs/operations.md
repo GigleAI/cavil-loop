@@ -94,6 +94,11 @@ POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
 # Force a full poll if this long has passed since the last successful GitHub
 # read, whatever the ladder or the local state says.
 POLL_FORCE_SYNC_SECS=1800
+# Idle probe (GitHub#252): while backed off, each tick first sends one
+# conditional request (free when the answer is 304); if the repo changed, a full
+# poll runs now. "false" turns it off. While on, full polls are at most this far apart.
+POLL_IDLE_PROBE=true
+POLL_IDLE_PROBE_MAX_SECS=600
 # Failure gets its own ladder (starts at POLL_INTERVAL_SECS, doubles each time,
 # capped here) and never
 # advances the quiet timer: "cannot read GitHub" is not "nothing to do".
@@ -1636,6 +1641,16 @@ regardless of what is in it: a full poll happens at least every
 `POLL_FORCE_SYNC_SECS`, and any unparseable / out-of-range state is treated as
 "due now" rather than "wait longer". To turn the whole thing off, set
 `POLL_BACKOFF_LADDER=""`.
+
+With the idle probe on (`POLL_IDLE_PROBE`, GitHub#252) a skip line ends with
+`；轻量检查：无变化` ("idle probe: unchanged"), and a tick it woke up logs
+`轻量检查：仓库有变化 → 提前跑一轮` ("repo changed → polling now") — or the reason it
+could not tell (`读不到 GitHub` = could not reach GitHub, `GitHub 回了 HTTP <n>`),
+which also polls. Labels, comments, edits and close / merge are seen within about
+a tick; new commits on the base branch and CI results are not, and wait for the
+next full poll (at most `POLL_IDLE_PROBE_MAX_SECS`, default 10 min).
+`rm ~/.local/state/cavil-loop/<key>/poll-probe.etag` is safe too: the next probe
+just polls once more.
 
 If the log is genuinely silent — no skip lines either — the daemon really is
 down; carry on below.

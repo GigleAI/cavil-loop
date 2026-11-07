@@ -168,6 +168,28 @@ suspended"; the same window under this ladder is 905.
 | Only a state the writer could have produced | Before any decision to wait, the file must pass two tests. Each numeric field is checked for character class *and* digit width, since bash arithmetic silently wraps an oversized all-digit value into a plausible-looking timestamp. Then the fields are checked against each other: the writer always leaves `last_active <= last_poll <= next_due <= last_poll + the cap for whichever ladder it used`, so anything else cannot have come from this program and counts as corrupt. Stating it as one closed rule rather than a list of field checks is deliberate — a list only ever covers the variants someone thought of, and the combinations are unbounded. Corrupt means "due now"; the next real poll rewrites the file clean. |
 | Two timestamps | Bash has no monotonic clock (`date +%s` is wall time), so both "next due" and "last polled" are stored. Clock jumps forward → poll; jumps backward → state is untrustworthy → poll; file cannot be written (full/read-only disk) → every tick polls, i.e. the pre-#35 behaviour. |
 
+**Idle probe** (GitHub#252, `POLL_IDLE_PROBE`, on by default). Backoff saves
+calls at the price of a quiet project only noticing a new `pending/agent` at its
+next tier. So while backed off, each tick that would be skipped first sends one
+conditional request: `issues?state=all&sort=updated&direction=desc&per_page=1`
+with the last ETag. Any item whose updated time changes moves to the top and the
+ETag changes with it. Unchanged → `304`, which does not count against the
+primary rate limit when authenticated → skip as before; `200` → run a full poll
+now; unreachable, an unexpected status, a broken local tag → poll too (fail
+open). A new tag is stored as pending and only committed once that round has
+read GitHub in full — committing first and then failing mid-round would make the
+next probe answer 304 and swallow the change. Not sent when not backed off, nor
+during failure backoff.
+
+It only decides whether a tick runs, and can only bring a round forward, never
+delay one; whether the woken round counts as activity is still the fingerprint's
+call (an unrelated change elsewhere costs one round and leaves the tier alone).
+It sees changes that bump an item's updated time (measured: adding / removing a
+label; being cross-referenced does **not**). It does not see new commits on the
+base branch or CI results — those wait for a full poll, so while the probe is on
+full polls are additionally capped at `POLL_IDLE_PROBE_MAX_SECS` (default 600 s:
+the 7-day tier goes from 30 to 10 minutes).
+
 State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
 `rm`-ing it returns the project to full speed without losing the "which comments
 have I seen" cursors. A backed-off tick still writes one line to `poll.log`
@@ -254,6 +276,19 @@ A single template service supports multiple project instances, so we don't insta
 ### Why not just use Claude Code's `--from-pr`
 
 Claude Code CLI has a `--from-pr` flag, but it depends on Anthropic's official GitHub App / Action flow. This project's "label + local daemon" approach exists specifically to **avoid that dependency**, so you can use your own machine + Max plan, no API key required.
+
+### Why poll instead of subscribing to GitHub
+
+GitHub has no subscription a local process can use: no WebSocket / SSE, no
+GraphQL subscriptions; the web UI's live updates use a private channel. The only
+push is a webhook, which needs a publicly reachable receiver configured by a repo
+admin in the repo settings — at odds with "runs on a personal machine, talks only
+to github.com" (workers are also forbidden to touch repo webhooks). The repo
+events feed (`/repos/{owner}/{repo}/events`) can be polled, but GitHub documents
+its latency as anywhere from 30 seconds to 6 hours; notifications only cover
+threads the account is subscribed to. So the daemon keeps polling, and while
+idle uses the free-when-unchanged conditional request above to bring pickup
+latency back to about one tick (GitHub#252).
 
 ### Why this stack is cheap (vs webhook + Claude API)
 

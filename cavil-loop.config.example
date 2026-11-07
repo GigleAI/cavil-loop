@@ -1073,8 +1073,10 @@ POLL_INTERVAL_SECS=60
 # 自愈翻了标签 / 回收了 session / 清理动了东西；GitHub 上还挂着 doing/agent 或本机还有
 # worker session 活着；队列里有待派工的活；仓库里相关条目的最后更新时间或标签变了。
 #
-# 代价只有一个，写在这里免得以后找：项目安静越久，你打上 pending/agent 之后要等的越久，
-# 最坏就是最后那一档（默认 30 分钟）。活跃项目完全不受影响——第一档要安静满一整天。
+# 代价写在这里免得以后找：项目安静越久，完整检查越稀。下面的空闲轻量检查（默认开）让
+# 打标签、评论这类变化在约 1 分钟内被看到；看不到的（主干新提交、CI 结果）最长等
+# POLL_IDLE_PROBE_MAX_SECS（默认 10 分钟）。关掉轻量检查时最坏就是最后那一档（默认 30 分钟）。
+# 活跃项目完全不受影响——第一档要安静满一整天。
 #
 # **留空 = 整个特性关闭**（空闲退避和故障退避一起关），行为逐字节回到改动前。
 POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
@@ -1087,6 +1089,44 @@ POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
 # 不管指纹说什么、也不管这套逻辑本身有没有 bug。它是「本地状态坏了也不会把项目卡死」
 # 这条保证的兜底。阶梯里比它还慢的档位会被夹到这个值（并打一行警告）。
 POLL_FORCE_SYNC_SECS=1800
+
+# Idle probe (GitHub#252). GitHub offers no subscription a local process can use
+# (webhooks need a public endpoint and repo settings), but REST supports
+# conditional requests: ask again with the last ETag and an unchanged answer is
+# `304 Not Modified`, which does not count against the primary rate limit when
+# authenticated. While backed off, each tick that would be skipped first asks
+# "has the most recently updated issue / PR in the repo changed?"
+# (`issues?state=all&sort=updated&per_page=1`): 304 → skip as before; anything
+# else (changed, unreadable, unexpected status) → run a full poll now. Not sent
+# while not backed off, nor during failure backoff. Seen: labels, comments,
+# edits, close / merge — anything that bumps an item's updated time. Not seen:
+# new commits on the base branch, CI results; those wait for the next full poll,
+# which is capped at POLL_IDLE_PROBE_MAX_SECS while the probe is on.
+# Cost: one request per tick while backed off (free when 304); a change anywhere
+# in the repo, related or not, triggers one full poll (counts against quota).
+# "false" turns it off: no probe, no cap, byte-identical to before.
+#
+# 空闲轻量检查（GitHub#252）。GitHub 没有本机进程能用的订阅接口（webhook 要公网接收端
+# + 改仓库设置），但 REST 支持条件请求：带上次的 ETag 再问，没变化回 304，正确认证时
+# 不占主调用额度。退避中、本来要跳过的每个 tick，先问一次「仓库里最近更新的那一条变了
+# 没有」：304 → 照旧跳过；其余（变了、读不到、状态码不认识）→ 立刻完整跑一轮。没在
+# 退避、或在故障退避中时不问。看得到的：打标签、评论、编辑、关闭 / 合并——凡是会刷新
+# 条目更新时间的。看不到的：主干新提交、CI 结果，等下一次完整检查；开着时完整检查最长
+# 间隔封顶 POLL_IDLE_PROBE_MAX_SECS。
+# 代价：退避中每 tick 一次请求（回 304 时不占主额度）；仓库里任何条目一变（不管跟本机
+# 有没有关系）都会提前完整跑一轮，那一轮照常占额度。
+# 写 "false" 关掉：不问、不封顶，行为逐字节回到改动前。版本标记存在
+# $STATE_DIR/poll-probe.etag，删掉它只会让下一次检查多跑一轮。
+POLL_IDLE_PROBE=true
+
+# Longest gap between full polls while the idle probe is on (seconds, 1 ..
+# POLL_FORCE_SYNC_SECS). Ladder steps above it are clamped to it. An invalid
+# value logs a warning and is ignored (ladder as written).
+#
+# 轻量检查开着时完整检查的最长间隔（秒，1 到 POLL_FORCE_SYNC_SECS 之间）。阶梯里比它慢
+# 的档位按它算；默认 600 = 安静 7 天那一档从 30 分钟变成 10 分钟。写错了打一行警告、
+# 不封顶（按阶梯原样）。
+POLL_IDLE_PROBE_MAX_SECS=600
 
 # Failure backoff cap. Reading GitHub is not the same as having nothing to do,
 # so failures get their own ladder — it starts at POLL_INTERVAL_SECS, doubles on

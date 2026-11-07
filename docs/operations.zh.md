@@ -90,6 +90,10 @@ POLL_INTERVAL_SECS=60
 POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
 # 心跳：距上次成功读到 GitHub 超过这么久就无条件跑一次完整轮询，不管退到哪一档。
 POLL_FORCE_SYNC_SECS=1800
+# 空闲时的轻量检查（GitHub#252）：退避中每 tick 先发一次不占主额度的条件请求，仓库变了
+# 就提前完整跑一轮。写 false 关掉。开着时完整检查最长间隔封顶下面这个值。
+POLL_IDLE_PROBE=true
+POLL_IDLE_PROBE_MAX_SECS=600
 # 读不到 GitHub 时单独一套阶梯（从 POLL_INTERVAL_SECS 起步、每多失败一次翻倍、封顶在
 # 这个值），且**不推进安静
 # 计时**：「读不到」不等于「没活干」。
@@ -1372,6 +1376,13 @@ rm ~/.local/state/cavil-loop/<key>/poll-pace.json     # 立刻回最快档
 `state.json` 里）。而且不管它里面是什么，两条保证都成立：最长
 `POLL_FORCE_SYNC_SECS` 一定会跑一次完整轮询；任何解析不出来、或者超出合法范围的状态
 一律按「现在就该跑」处理，而不是「再等等」。想整个关掉就把 `POLL_BACKOFF_LADDER` 置空。
+
+空闲轻量检查开着时（`POLL_IDLE_PROBE`，GitHub#252），跳过那行末尾带「；轻量检查：无变化」；
+被它叫醒的那个 tick 记一行「轻量检查：仓库有变化 → 提前跑一轮」，或者写明为什么说不准
+（「读不到 GitHub」「GitHub 回了 HTTP <n>」），说不准时同样照跑。打标签、评论、编辑、
+关闭 / 合并大约一个 tick 内就能看到；主干新提交、CI 结果看不到，等下一次完整检查（最长
+`POLL_IDLE_PROBE_MAX_SECS`，默认 10 分钟）。删 `~/.local/state/cavil-loop/<key>/poll-probe.etag`
+同样安全：下一次检查只是多跑一轮。
 
 如果日志是**真**的一行都没有（连跳过那行也没有），那才是 daemon 真的停了，往下看。
 
