@@ -35,15 +35,17 @@ echo "== 0. dmg window: background + the copyable first-open instructions"
 bg="$(find "$mnt" -maxdepth 2 \( -name '.background.*' -o -path '*/.background/*' \) -type f | head -n1)"
 [ -n "$bg" ] || { echo "❌ no background image in the dmg"; ls -la "$mnt"; exit 1; }
 tiffutil -info "$bg" 2>/dev/null | grep -iE 'width|height' | head -4 || true
-txt="$mnt/打不开时看这里.txt"
-[ -f "$txt" ] || { echo "❌ the instructions file is missing"; ls -la "$mnt"; exit 1; }
-grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$txt" || { echo "❌ the instructions file lacks the command"; exit 1; }
-grep -qF '仍要打开' "$txt" || { echo "❌ the instructions file lacks the System Settings way"; exit 1; }
+# the copy page is the one help file in the window (GitHub#228): it carries both ways
 page="$mnt/复制放行命令.html"
 [ -f "$page" ] || { echo "❌ the copy-the-command page is missing"; ls -la "$mnt"; exit 1; }
 grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$page" || { echo "❌ the copy-the-command page lacks the command"; exit 1; }
+grep -qF '仍要打开' "$page" || { echo "❌ the copy-the-command page lacks the System Settings way"; exit 1; }
+# nothing else shows in the window: the app, the Applications link, the page (hidden dot-files aside)
+shown="$(cd "$mnt" && ls -A | { grep -v '^\.' || true; } | LC_ALL=C sort | tr '\n' '|')"
+want="$(printf '%s\n' 'Applications' 'Cavil Loop.app' '复制放行命令.html' | LC_ALL=C sort | tr '\n' '|')"
+[ "$shown" = "$want" ] || { echo "❌ the dmg window shows [$shown], expected [$want]"; exit 1; }
 [ -L "$mnt/Applications" ] || { echo "❌ no Applications link"; exit 1; }
-echo "✅ background, Applications link, instructions file and copy page present"
+echo "✅ background, Applications link and the one copy page present"
 if [ -n "$shot" ]; then
   # best effort: a picture of the window a user sees (the CI machine has a GUI session)
   open "$mnt" || true

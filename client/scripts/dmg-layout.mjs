@@ -9,7 +9,6 @@ export const DMG_ICON_SIZE = 100;
 export const DMG_ICONS = [
   { type: 'app', x: 180, y: 120 },
   { type: 'link', path: '/Applications', x: 480, y: 120 },
-  // both at y=368, side by side below the help box drawn in the background
-  { type: 'file', ...{ path: 'build/复制放行命令.html', x: 240, y: 368 } },
-  { type: 'file', ...{ path: 'build/打不开时看这里.txt', x: 420, y: 368 } },
+  // the one help page, centred below the help box drawn in the background
+  { type: 'file', ...{ path: 'build/复制放行命令.html', x: 330, y: 368 } },
 ];
