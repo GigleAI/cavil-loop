@@ -126,7 +126,7 @@ export const MUTATIONS = [
     ],
     expect: ['two rounds asking at once share one refresh'] },
   { what: 'GitHub 回 401 时不续期重试', file: 'src/app/controller.ts',
-    from: 'if (r === \'ok\') return this.runRound(true);',
+    from: 'if (r === \'ok\') return this.runRound(run, true);',
     to: 'if (r === \'ok\') return;',
     expect: ['GitHub says 401 before the deadline'] },
   { what: '续期被拒当成连不上（不退出登录）', file: 'src-tauri/crates/core/src/engine.rs',
