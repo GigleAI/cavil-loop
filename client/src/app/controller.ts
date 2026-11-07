@@ -90,10 +90,12 @@ export const DETAIL_CACHE_SIZE = 50;
  * hides a field that failed on it, a later retry of another board never drops it). null =
  * nothing left: the notice goes.
  */
-export function createNotice(number: number, boards: CreateBoard[]): string | null {
+export function createNotice(number: number, boards: CreateBoard[], labelsNote = ''): string | null {
   const missing = boards.filter((b) => b.state === 'missing');
   const fields = boards.filter((b) => b.state === 'fieldsFailed');
   const parts: string[] = [];
+  // GitHub#245: labels GitHub dropped come first — the issue may not be handed to the agent at all
+  if (labelsNote) parts.push(labelsNote);
   if (missing.length) parts.push(`没能加入看板 ${missing.map((b) => `「${b.title}」（${b.reason}）`).join('、')}`);
   if (fields.length) parts.push(`已加入看板但字段没设上 ${fields.map((b) => `「${b.title}」（${b.reason}）`).join('、')}，请在详情里手动设置`);
   return parts.length ? `issue #${number} 已建好，但${parts.join('；')}` : null;
@@ -1378,7 +1380,7 @@ export class Controller {
     }
   }
 
-  private async actNow(action: WriteAction, onOutcome?: (o: { boards?: CreateBoard[]; createdNodeId?: string }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
+  private async actNow(action: WriteAction, onOutcome?: (o: { boards?: CreateBoard[]; createdNodeId?: string; labelsNote?: string }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
@@ -1932,12 +1934,14 @@ export class Controller {
     let unanswered: string | null = null;
     let boards: CreateBoard[] = [];
     let nodeId = '';
+    let labelsNote = '';
     try {
       r = await this.actNow(
         action,
         (o) => {
           boards = o.boards ?? [];
           nodeId = o.createdNodeId ?? '';
+          labelsNote = o.labelsNote ?? '';
         },
         (e) => (unanswered = e instanceof CreateUnanswered ? e.reason : null),
       );
@@ -1955,11 +1959,12 @@ export class Controller {
           ...cur,
           status: 'partial',
           // the boards' state words it when there is any; another warning (the re-read failed) is said as it came
-          message: createNotice(number, boards) ?? r.warning,
+          message: createNotice(number, boards, labelsNote) ?? r.warning,
           createdKey: r.createdKey,
           number,
           boards,
           createdNodeId: nodeId,
+          ...(labelsNote ? { labelsNote } : {}),
         });
       else this.setCreate(null, id);
       this.set({ focus: { key: r.createdKey, seq: ++this.focusSeq } });
@@ -2032,8 +2037,8 @@ export class Controller {
     const warning = fieldsNow.length ? `已加入看板，但字段没设上 ${fieldsNow.map((x) => `「${x.title}」（${x.reason}）`).join('、')}` : null;
     if (now) {
       const boards = mergeRetry(now.boards ?? [], results);
-      const message = createNotice(now.number ?? number, boards);
-      // the notice goes only when nothing is left on any board
+      const message = createNotice(now.number ?? number, boards, now.labelsNote);
+      // the notice goes only when nothing is left on any board, and no dropped label is left unsaid (GitHub#245)
       if (message === null) this.setCreate(null, id);
       else this.setCreate({ ...now, boards, message });
     }

@@ -170,6 +170,8 @@ export interface CreateJob {
   boards?: CreateBoard[];
   /** partial: the new issue's node id from GitHub's create answer (what a retry adds to a board) */
   createdNodeId?: string;
+  /** partial (GitHub#245): labels GitHub dropped from the new issue — stays in the notice until dismissed; a board retry never clears it */
+  labelsNote?: string;
   /** unknown: same-title issues this account opened in this repository lately (links only) */
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */

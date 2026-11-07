@@ -543,6 +543,30 @@ describe('GitHub#245: the hand-over picked in the dialog is remembered only once
   });
 });
 
+describe('GitHub#245 (PR #249 review round 1): dropped labels and a refused board are both said; a board retry keeps the label part', () => {
+  it('labels dropped and the board refused: the notice names both; after the board joins on retry, the label part stays', async () => {
+    const { c } = await ready();
+    fake.state.w.repoLabels.set('gigleai/cavil-loop', ['autopilot', 'pending/agent'].map((name) => ({ name, color: 'ededed' })));
+    fake.state.w.dropIssueLabels.add('gigleai/cavil-loop');
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    await c.startCreate({ kind: 'createIssue', repo: REPO, title: 'both', body: '', labels: [], projects: [PROJECT_KEY], handoff: 'autopilot', handoffPicked: true });
+    await until(() => c.getState().creates[0]?.status === 'partial', 'partial');
+    // the create request did carry both labels
+    expect((fake.writes().find((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues')?.body as any)?.labels).toEqual(['autopilot', 'pending/agent']);
+    const job = c.getState().creates[0];
+    expect(job.message).toContain('「autopilot」、「pending/agent」');
+    expect(job.message).toContain('还没有交给 agent');
+    expect(job.message).toContain('没能加入看板 「cavil project」');
+    // the board joins on retry: the board part goes, the label part stays (nothing about the labels was fixed)
+    fake.state.w.readOnlyProjects.delete('org/gigleai/11');
+    expect((await c.retryCreateProjects(job.id)).ok).toBe(true);
+    const after = c.getState().creates.find((j) => j.id === job.id);
+    expect(after?.message).toContain('还没有交给 agent');
+    expect(after?.message).not.toContain('没能加入看板');
+    expect(fake.writes().filter((w) => w.operation === 'CavilAddProjectItem').length).toBe(2);
+  });
+});
+
 describe('a new issue does not hold the dialog: four outcomes', () => {
   const issuesOnGitHub = () => fake.state.repos.get('gigleai/cavil-loop')!.length;
   const create = (c: Controller, title: string, projects: string[] = []) => c.startCreate({ kind: 'createIssue', repo: REPO, title, body: 'b', labels: [], projects });

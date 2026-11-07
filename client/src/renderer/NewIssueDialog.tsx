@@ -174,7 +174,10 @@ export function NewIssueDialog({
           <PasteImageNotice
             copied={pasted.copied}
             webLabel="到 GitHub 网页上继续新建"
+            // the same wait as 创建: a hand-over whose labels are still being read is not sent as "no labels"
+            webBlocked={handoffWaits ? handoffProblem(repo, wantedCheck) : ''}
             onWeb={() => {
+              if (handoffWaits) return;
               // the web page's new-issue form, filled with what was typed here
               void api().openExternal(newIssueOnWeb('https://github.com', repo, title, body, mergeLabels(handoffLabels, labels)));
               setPasted({ copied: null });

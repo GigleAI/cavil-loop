@@ -1583,4 +1583,13 @@ export const MUTATIONS = [
   { what: '交接（GitHub#245）：到网页继续新建时不带交接标签（两条路标签不一致）', file: 'src/renderer/NewIssueDialog.tsx', runner: 'e2e',
     from: 'newIssueOnWeb(\'https://github.com\', repo, title, body, mergeLabels(handoffLabels, labels))', to: 'newIssueOnWeb(\'https://github.com\', repo, title, body, labels)',
     expect: ['GitHub#245: new issue'] },
+  { what: '交接（GitHub#245，PR #249 复审第 1 轮）：标签还在读取时「到网页继续新建」照样能点（网页不带交接标签）', file: 'src/renderer/NewIssueDialog.tsx', runner: 'e2e',
+    from: "            webBlocked={handoffWaits ? handoffProblem(repo, wantedCheck) : ''}", to: "            webBlocked={''}",
+    expect: ['GitHub#245: new issue'] },
+  { what: '交接（GitHub#245，PR #249 复审第 1 轮）：标签被丢和看板失败同时发生时，提示只剩看板', file: 'src/app/controller.ts',
+    from: '  if (labelsNote) parts.push(labelsNote);\n', to: '',
+    expect: ['dropped labels and a refused board are both said'] },
+  { what: '交接（GitHub#245，PR #249 复审第 1 轮）：补加入看板后把标签缺失的提示一起抹掉', file: 'src/app/controller.ts',
+    from: '      const message = createNotice(now.number ?? number, boards, now.labelsNote);', to: '      const message = createNotice(now.number ?? number, boards);',
+    expect: ['dropped labels and a refused board are both said'] },
 ];

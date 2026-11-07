@@ -70,6 +70,8 @@ export interface ActionOutcome {
   boards?: CreateBoard[];
   /** createIssue: the new issue's node id, from GitHub's own answer (what a retry adds to a board) */
   createdNodeId?: string;
+  /** createIssue (GitHub#245): labels GitHub dropped, as said in the notice; kept apart from the boards so neither hides the other */
+  labelsNote?: string;
 }
 
 /**
@@ -539,8 +541,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
           boards.push(createBoard(p, 'missing', explainError(e, 'addToProject'), entry));
         }
       }
+      const labelsNote = dropped.length ? `GitHub 没有加上标签${dropped.map((n) => `「${n}」`).join('、')}（这个账号可能没有该仓库的写权限）${droppedHandoff ? '，还没有交给 agent' : ''}` : '';
       const problems = [
-        dropped.length ? `GitHub 没有加上标签${dropped.map((n) => `「${n}」`).join('、')}（这个账号可能没有该仓库的写权限）${droppedHandoff ? '，还没有交给 agent' : ''}` : '',
+        labelsNote,
         failed.length ? `没能加入看板 ${failed.join('、')}` : '',
         fields.length ? `已加入看板但字段没设上 ${fields.join('、')}` : '',
       ].filter(Boolean);
@@ -550,6 +553,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         createdKey: itemKey(action.repo, created.number),
         boards,
         createdNodeId: created.node_id,
+        ...(labelsNote ? { labelsNote } : {}),
       };
     }
   }

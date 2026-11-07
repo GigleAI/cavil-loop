@@ -162,7 +162,20 @@ export function EditIssues({ marks, canWrite }: { marks: EditMark[]; canWrite: b
 }
 
 /** GitHub#205: an image was pasted where it cannot be uploaded from; offer the web page instead. */
-export function PasteImageNotice({ copied, onWeb, onDismiss, webLabel = '到 GitHub 网页上继续写' }: { copied: boolean | null; onWeb: () => void; onDismiss: () => void; webLabel?: string }) {
+export function PasteImageNotice({
+  copied,
+  onWeb,
+  onDismiss,
+  webLabel = '到 GitHub 网页上继续写',
+  webBlocked = '',
+}: {
+  copied: boolean | null;
+  onWeb: () => void;
+  onDismiss: () => void;
+  webLabel?: string;
+  /** why the web page cannot be opened yet ('' = it can) — GitHub#245: the hand-over labels are still being read */
+  webBlocked?: string;
+}) {
   return (
     <div className="banner warn paste-image" data-testid="paste-image-note">
       <Icon name="warn" />
@@ -171,7 +184,7 @@ export function PasteImageNotice({ copied, onWeb, onDismiss, webLabel = '到 Git
         {copied === true && ' 你写的文字已复制，在网页上粘贴后再贴图。'}
         {copied === false && ' 没能复制你写的文字，请先手动复制。'}
       </span>
-      <button data-testid="paste-image-web" onClick={onWeb}>
+      <button data-testid="paste-image-web" onClick={onWeb} disabled={Boolean(webBlocked)} title={webBlocked || undefined}>
         {webLabel}
       </button>
       <button className="ghost" data-testid="paste-image-dismiss" onClick={onDismiss}>

@@ -3906,12 +3906,19 @@ test('GitHub#245: new issue — hand to the agent / autopilot when creating; the
   await page.getByTestId('new-issue-title').fill('等标签');
   await expect(page.getByTestId('new-issue-handoff-wait')).toContainText('正在读取仓库 GigleAI/cavil-loop 的标签');
   await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  // the web page waits the same way (PR #249 review round 1): no page opened without the hand-over labels
+  await page.getByTestId('new-issue-body').fill('看图');
+  await pasteImage(page, '[data-testid="new-issue-body"]');
+  const openedBefore = existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '';
+  await expect(page.getByTestId('paste-image-web')).toBeDisabled();
+  await page.getByTestId('paste-image-web').click({ force: true });
+  await page.waitForTimeout(300);
+  expect(existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '').toBe(openedBefore);
   release();
   await expect(page.getByTestId('confirm-ok')).toBeEnabled();
   await expect(choice('agent')).toBeChecked();
-  // the web page gets the same labels as the create request would
-  await page.getByTestId('new-issue-body').fill('看图');
-  await pasteImage(page, '[data-testid="new-issue-body"]');
+  // read: the web page gets the same labels as the create request would
+  await expect(page.getByTestId('paste-image-web')).toBeEnabled();
   await page.getByTestId('paste-image-web').click();
   await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('&labels=pending%2Fagent\n');
   await page.getByTestId('confirm-cancel').click();
