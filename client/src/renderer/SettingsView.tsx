@@ -127,6 +127,10 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
             <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
           </label>
         </div>
+        <label className="row small">
+          <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
+          「托管」前先弹确认框（在确认框里勾过「不再提示」会关掉这一项，在这里勾回来）
+        </label>
       </section>
 
       <section id="set-pending" data-testid="pending-settings">
