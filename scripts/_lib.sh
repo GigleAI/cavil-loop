@@ -4847,11 +4847,11 @@ autopilot_merged_handoff() {   # <issue> <PR>
     fi
     # 2. 一次只写一个标签：每一步都现读判定两次（结论、依据、下一步都不变才写），写完回到循环开头重新判。
     #    这样加完 Done / pending/human 之后、摘下一个标签之前，有人重开 issue、新一轮开工，下一圈就停手
-    local step=0 kind lab
+    local step=0 kind lab next
     while [ "$step" -lt 12 ]; do
         step=$((step + 1))
         autopilot_handoff_judge "$issue" "$pr"
-        v="$AH_V"; id="$AH_ID|$AH_NEXT"
+        v="$AH_V"; id="$AH_ID|$AH_NEXT"; next="$AH_NEXT"
         case "$v" in
             unknown) log "  ⚠️ 托管合并交接：$AH_REASON，下轮再试"; return 1 ;;
             finished)
@@ -4867,7 +4867,8 @@ autopilot_merged_handoff() {   # <issue> <PR>
         if [ "$AH_V" != "$v" ] || [ "$AH_ID|$AH_NEXT" != "$id" ]; then
             log "  托管合并交接：issue #$issue 判定之后有变化（重判 $AH_V${AH_REASON:+：$AH_REASON}），本轮不写"; return 1
         fi
-        kind="${AH_NEXT%%:*}"; lab="${AH_NEXT#*:}"
+        # 写的是第一次判定定下的那一步（两次一致时它和第二次的相同）
+        kind="${next%%:*}"; lab="${next#*:}"
         case "$kind" in
             add)
                 run_gh "托管合并交接 issue #$issue 加 $lab" \

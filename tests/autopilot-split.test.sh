@@ -386,6 +386,8 @@ $SUMMARY" "$H1" "pending/merge"
     tick
     chk "摘 pending/PR 失败 → 交接记录留着" "$(jq -r '.autopilot.handoff["52"].issue // "none"' "$STATE")" 51
     chk "  → 这一轮 pending/human 已加上、pending/PR 还在" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/yes"
+    # 交接一次只摘一次，失败就停手；同一轮里合并后标签的重试队列会再调一次，所以最多 2 次
+    chk "  → 摘失败就停手，不在一轮里反复打 GitHub（最多 2 次）" "$([ "$(n_calls "^gh api -X DELETE $R/issues/51/labels/")" -le 2 ] && echo yes || echo no)" yes
     rm -f "$GD/F_delete_labels"
     tick
     chk "恢复后 → 摘掉 pending/PR，只剩 pending/human" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/no"
