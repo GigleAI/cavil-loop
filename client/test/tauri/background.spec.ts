@@ -32,7 +32,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { WebDriver, until } from './webdriver';
-import { firstRoundBadge } from './first-round';
+import { firstRoundBadge, inFrontAtFirstRound } from './first-round';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const APP = process.env.CAVIL_TAURI_APP ?? join(root, 'src-tauri', 'target', 'debug', 'cavil-loop-client');
@@ -187,7 +187,8 @@ test('window closed: hidden, still syncing and reminding within 120 s; a click o
   test.setTimeout(GATE_MS + 120_000);
   await startApp();
   const badgeBefore = await signInWithRepo();
-  expect(badgeBefore).toBe(1);
+  // the badge is the unread count (GitHub#185): the seeded item is unread unless the window was in front
+  expect(badgeBefore).toBe(inFrontAtFirstRound(records()) ? 0 : 1);
 
   // the close button's request: hidden, not quit
   appendFileSync(control, 'close\n');
@@ -229,6 +230,8 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   expect(records()[before]).toMatchObject({ op: 'start', hidden: true });
   // its own first round (signed in from the stored credential): a new start takes a new baseline
   const badgeBefore = await firstRound(before, 30_000);
+  // started hidden: never in front, so the seeded item is unread (GitHub#185)
+  expect(inFrontAtFirstRound(records(), before)).toBe(false);
   expect(badgeBefore).toBe(1);
   const n = unlabelled();
   label(n);
@@ -238,4 +241,12 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   expect(since.filter((r) => r.op === 'tick').length).toBeGreaterThan(0);
   expect(since.filter((r) => r.op === 'tick').every((r) => r.visible === false)).toBe(true);
   expect(since.some((r) => r.op === 'shown')).toBe(false);
+
+  // the user switches to the app (GitHub#185): the same handler the window's focus runs, through the
+  // real shell — everything is read: the badge goes to 0, then the delivered notifications are taken back
+  const at = records().length;
+  appendFileSync(control, 'activate\n');
+  await until(() => records().slice(at).some((r) => r.op === 'clearNotifications'), 'notifications taken back', 15_000);
+  const ops = records().slice(at).filter((r) => ['active', 'badge', 'clearNotifications'].includes(r.op)).map((r) => (r.op === 'badge' ? `badge ${r.count}` : r.op));
+  expect(ops.slice(0, 3)).toEqual(['active', 'badge 0', 'clearNotifications']);
 });

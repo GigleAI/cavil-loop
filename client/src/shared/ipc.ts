@@ -23,8 +23,12 @@ export interface CavilApi {
   removeSource(key: string): Promise<void>;
   setView(patch: ViewPatch): Promise<void>;
   syncNow(): Promise<void>;
+  /** refresh by hand (GitHub#217): a round reading GitHub is dropped and a new one starts at once */
+  restartSync(): Promise<void>;
   openExternal(url: string): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;
+  /** a row of the settings page's pending list: open it the way a click on its notification does */
+  openPending(key: string): Promise<void>;
   /** the app updating itself (GitHub#184) */
   checkUpdate(): Promise<void>;
   setAutoUpdate(on: boolean): Promise<void>;

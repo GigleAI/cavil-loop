@@ -802,9 +802,38 @@ class DirectoryParseTest(Case):
         with self.assertRaisesRegex(rl.LessonsError, 'directories only belong'):
             rl.parse(doc(watch=[entry(1, '判存活', [(1, None, (CRED,))])]))
 
-    def test_没有目录段的文件解析结果不变(self):
+    def test_没有目录段的文件计长范围是整份(self):
         text = doc(hard=[entry(1, '判存活', [(1, None), (2, None), (3, None)])])
+        self.assertEqual(rl.outside_directory_text(text), text)
+
+    def test_派工只带要照做的部分(self):
+        # GitHub#208：硬规则 / 待确认留编号、规则、适用、为什么；观察中整段、举例、出现记录都不进
+        hard = entry(1, 'HARD-判存活', [(1, None), (2, None), (3, None)], why='WHY-硬')
+        hard = hard.replace('- Seen', '- 这样做是对的：EXAMPLE-硬\n- Seen')
+        confirm = entry(2, 'CONFIRM-待确认', [(4, None), (5, None), (6, None)], why='WHY-待')
+        watch = entry(3, 'WATCH-观察', [(7, None)], why='WHY-观察')
+        text = doc(hard=[hard], confirm=[confirm], watch=[watch], dirs=[])
+        out = rl.prompt_text(text)
+        for kept in ('### L1', 'HARD-判存活', 'WHY-硬', '### L2', 'CONFIRM-待确认', 'WHY-待',
+                     '- 适用：异步回调', '## 硬规则', '## 待确认', '<!-- next-id: 4 -->', PRE.split('\n')[0]):
+            self.assertIn(kept, out)
+        for gone in ('EXAMPLE-硬', '- Seen', '## 观察中', 'WATCH-观察', 'WHY-观察', '## 目录经验'):
+            self.assertNotIn(gone, out)
+        self.assertTrue(out.endswith('\n\n' + rl.PROMPT_NOTE + '\n'))
+        # 计长仍按整份（减目录经验）算：观察中和举例都算在内
+        self.assertIn('WATCH-观察', rl.outside_directory_text(text))
+        self.assertIn('EXAMPLE-硬', rl.outside_directory_text(text))
+
+    def test_非计次格式的文件不裁字段(self):
+        text = '# 通用经验\n\n### L1\n- Seen 3×: 普通文本\n- 这样做是对的：也是普通文本\n\n## 观察中\n- 留着\n'
         self.assertEqual(rl.prompt_text(text), text)
+
+    def test_裁剪后长度上限不放宽(self):
+        # 整份超限、裁剪后不超限：复盘仍须拒收（上限管的是模型读写的整份文件）
+        old = doc()
+        new = doc(watch=[entry(1, '判存活', [(1, None)], why='长' * rl.MAX_CHARS)])
+        self.assertLess(len(rl.prompt_text(new)), rl.MAX_CHARS)
+        self.rejects(old, new, 'length')
 
 
 class DirectoryValidateTest(DirTree, Case):

@@ -107,6 +107,15 @@ class Settings {
   }
 }
 
+/** One sync round as `restartSync` sees it (GitHub#217). */
+interface SyncRun {
+  /** aborts when the round is dropped: no further request goes out */
+  signal: AbortSignal;
+  /** true only while the round reads GitHub, the one stretch a restart may cut */
+  reading: boolean;
+  drop(): void;
+}
+
 export class Controller {
   private state: AppState;
   private snapshots = new Map<string, SourceSnapshot>();
@@ -115,6 +124,8 @@ export class Controller {
   private listeners = new Set<(s: AppState) => void>();
   private syncing: Promise<void> | null = null;
   private resync = false;
+  /** the round in flight (GitHub#217): a restart may drop it, but only while it is reading GitHub */
+  private round: SyncRun | null = null;
   private loginRun = 0;
   /**
    * Cancels sent to the back end, in order. A new sign-in waits for them: commands to the back
@@ -181,6 +192,8 @@ export class Controller {
       handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       pendingCount: 0,
+      pendingItems: [],
+      unreadCount: 0,
       launchAtLogin: null,
       notifyProblem: null,
       focus: null,
@@ -423,7 +436,8 @@ export class Controller {
   private dropMirror(): void {
     this.snapshots.clear();
     this.pending.reset();
-    this.state = { ...this.state, pendingCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.unread.clear();
+    this.state = { ...this.state, pendingCount: 0, pendingItems: [], unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
     // what was queued for the shell belonged to that account: none of it goes out any more, and the
     // cleared badge does not wait behind a notification the system is still answering
     this.desktopEra++;
@@ -445,6 +459,10 @@ export class Controller {
    * dropped before it reaches the shell, and the answer to one already handed over is ignored.
    */
   private desktopEra = 0;
+  /** items not yet seen (GitHub#185): the Dock badge */
+  private unread = new Set<string>();
+  /** the window is in front (the shell says so); while it is, new items are seen as they come */
+  private active = false;
   /** bumps when the "waiting for a human" label is renamed: a recount is silent, nothing queued before it goes out */
   private labelVersion = 0;
 
@@ -468,9 +486,38 @@ export class Controller {
     return this.desktopCalls.then(() => undefined);
   }
 
+  /**
+   * The count and the list the settings page shows, from the tracker's one
+   * de-duplicated set at the same moment (GitHub#185): every place that updates
+   * the count updates the list with it.
+   */
+  private pendingNow(): Pick<AppState, 'pendingCount' | 'pendingItems' | 'unreadCount'> {
+    return { pendingCount: this.pending.count(), pendingItems: this.pending.list(), unreadCount: this.unreadNow() };
+  }
+
+  /**
+   * The unread items (GitHub#185, the Dock badge): what became pending while the window was not
+   * in front, until the user switches to it. Only items still pending count — one whose label
+   * went away meanwhile needs nobody. Nothing is forgotten here: only switching to the window
+   * reads them (a label renamed and renamed back has not been seen).
+   */
+  private unreadNow(): number {
+    let n = 0;
+    for (const e of this.pending.list()) if (this.unread.has(e.key)) n++;
+    return n;
+  }
+
+  /** The user switched to the window: everything is read — the badge and the delivered notifications go. */
+  private markRead(): void {
+    this.unread.clear();
+    this.set({ unreadCount: 0 });
+    this.badge();
+    this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
+  }
+
   private badge(): void {
     // the count as it is when the call goes out; a badge that cannot be set must not break a sync round
-    this.toDesktop((d) => d.setBadge(this.pending.count()))?.catch(() => {});
+    this.toDesktop((d) => d.setBadge(this.unreadNow()))?.catch(() => {});
   }
 
   /**
@@ -529,6 +576,8 @@ export class Controller {
   /** Feed the snapshots read completely this round; notify what became pending, summarise first reads. */
   private observePending(fresh: SourceSnapshot[]): void {
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
+    // unread (the badge): what arrived while the user was not looking at the window
+    if (!this.active) for (const k of [...change.appeared.map((i) => i.key), ...change.brought]) this.unread.add(k);
     for (const it of change.appeared) {
       const ctx = this.noticeContext(this.pending.carriers(it.key));
       const alert: Alert = { kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) };
@@ -541,7 +590,7 @@ export class Controller {
       this.notify(() => (this.summaryStillHolds(ctx) ? { kind: 'summary', ...summaryAlertText({ ...summary, ...this.pending.totals() }) } : null));
     }
     this.badge();
-    this.state = { ...this.state, pendingCount: this.pending.count() };
+    this.state = { ...this.state, ...this.pendingNow() };
   }
 
   /**
@@ -641,8 +690,23 @@ export class Controller {
     this.eventsRunning = false;
   }
 
+  /**
+   * A row of the settings page's pending list was clicked (GitHub#185): exactly what a
+   * click on that item's notification does — its detail in the app when the board
+   * has it, otherwise GitHub in the browser. A key no longer pending does nothing.
+   */
+  openPending(key: string): void {
+    const entry = this.state.pendingItems.find((e) => e.key === key);
+    if (entry) this.onDesktopEvent({ kind: 'open', key: entry.key, url: entry.url });
+  }
+
   /** One event from the shell (also what the tests feed). */
   onDesktopEvent(ev: DesktopEvent): void {
+    if (ev.kind === 'active' || ev.kind === 'inactive') {
+      this.active = ev.kind === 'active';
+      if (this.active) this.markRead();
+      return;
+    }
     if (ev.kind === 'tick') {
       void this.syncNow();
       return;
@@ -742,7 +806,7 @@ export class Controller {
     // its own items stop counting, silently
     this.pending.prune(sources.map((s) => s.key));
     this.badge();
-    this.state = { ...this.state, pendingCount: this.pending.count() };
+    this.state = { ...this.state, ...this.pendingNow() };
     const view = this.state.view.selected ? { ...this.state.view, selected: this.state.view.selected.filter((k) => k !== key) } : this.state.view;
     this.cache.setSetting('view', view);
     this.cache.setSetting(PENDING_IMPORTS, this.pendingImports().filter((p) => p.sourceKey !== key));
@@ -816,7 +880,7 @@ export class Controller {
         do {
           this.resync = false;
           try {
-            await this.runRound();
+            await this.runOne();
           } catch (e) {
             // a round must never reject: the 60 s timer and the window would see an unhandled rejection
             this.set({ sync: { ...this.state.sync, syncing: false, problem: `同步出错：${(e as Error).message}` } });
@@ -824,12 +888,53 @@ export class Controller {
         } while (this.resync && this.signedIn);
       } finally {
         this.syncing = null;
+        // no round runs any more: a dropped round set "syncing" and the next one may have ended early
+        if (this.state.sync.syncing) this.set({ sync: { ...this.state.sync, syncing: false } });
       }
     })();
     return this.syncing;
   }
 
-  private async runRound(retried = false): Promise<void> {
+  /**
+   * Refresh asked for by hand — the button or its key (GitHub#217): start over now.
+   * A round that is reading GitHub is dropped: nothing it read lands anywhere, it
+   * sends no further request (one already sent runs out, its answer is thrown away),
+   * and a new round starts at once. A round renewing the sign-in or saving what it
+   * read is not cut there (a half-done renewal can lose the sign-in, a half-done save
+   * would race the new round's): it finishes, then the new round starts right after.
+   * The timer and every other automatic caller keep queueing (`syncNow`): automatic
+   * rounds never cut each other short.
+   */
+  restartSync(): Promise<void> {
+    if (this.round?.reading) this.round.drop();
+    return this.syncNow();
+  }
+
+  /** One round, given up on (without waiting for it) when it is dropped. */
+  private runOne(): Promise<void> {
+    const abort = new AbortController();
+    let dropped!: () => void;
+    const gone = new Promise<void>((r) => (dropped = r));
+    const run: SyncRun = {
+      signal: abort.signal,
+      reading: false,
+      drop: () => {
+        abort.abort();
+        this.resync = true;
+        dropped();
+      },
+    };
+    this.round = run;
+    // the dropped round goes on alone until its next check; whatever it ends in is nobody's business
+    const done = this.runRound(run).catch((e) => {
+      if (!abort.signal.aborted) throw e;
+    });
+    return Promise.race([done, gone]).finally(() => {
+      if (this.round === run) this.round = null;
+    });
+  }
+
+  private async runRound(run: SyncRun, retried = false): Promise<void> {
     if (!this.signedIn) return;
     const fresh = await this.fresh();
     if (fresh === 'ended' || !this.signedIn) return;
@@ -846,7 +951,12 @@ export class Controller {
     const sources = this.state.sources;
     const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
     this.set({ sync: { ...this.state.sync, syncing: true } });
-    const round = await syncRound(this.client(session), sources, this.snapshots, this.now());
+    // the one stretch a restart may cut: reading GitHub (GitHub#217)
+    run.reading = true;
+    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, this.now());
+    run.reading = false;
+    // dropped meanwhile: a newer round owns the state now, nothing of this one may land
+    if (run.signal.aborted) return;
     const over = () => {
       // logged out / another account logged in meanwhile: nothing of this round may land
       this.set({ sync: { ...this.state.sync, syncing: false } });
@@ -893,7 +1003,7 @@ export class Controller {
       // the token this round used, not one that changed meanwhile.
       if (!retried && session === this.session && info.canRefresh) {
         const r = await this.fresh(true, info.gen);
-        if (r === 'ok') return this.runRound(true);
+        if (r === 'ok') return this.runRound(run, true);
         if (r === 'unreachable') this.set({ sync: { ...this.state.sync, offline: true } });
         if (r !== 'changed') return; // 'failed': kept signed in with the problem shown; 'ended': already signed out
       }
@@ -902,8 +1012,8 @@ export class Controller {
   }
 
   /** A GitHub client whose requests the back end signs for `session`. */
-  private client(session: number): GitHubClient {
-    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session));
+  private client(session: number, signal?: AbortSignal): GitHubClient {
+    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal);
   }
 
   // ---- view & change one item ---------------------------------------------
@@ -931,7 +1041,7 @@ export class Controller {
       this.labelVersion++;
       this.pending.relabel(next.human, this.snapshots);
       this.badge();
-      this.state = { ...this.state, pendingCount: this.pending.count() };
+      this.state = { ...this.state, ...this.pendingNow() };
     }
     this.set({ handBack: next });
   }

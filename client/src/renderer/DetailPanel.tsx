@@ -393,13 +393,14 @@ export function DetailPanel({
           <Icon name="ext" />
           在网页打开
         </button>
+        {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}
         <button
-          className="icon-btn"
+          className={`icon-btn${loading ? ' spinning' : ''}`}
           onClick={() => void load()}
-          disabled={loading}
           data-testid="detail-refresh"
-          aria-label={loading ? '读取中…' : '刷新这一条'}
-          title={loading ? '读取中…' : '刷新这一条'}
+          data-loading={loading ? 'yes' : 'no'}
+          aria-label={loading ? '读取中…（点一下重新读取）' : '刷新这一条'}
+          title={loading ? '读取中…（点一下：重新读取）' : '刷新这一条'}
         >
           <Icon name="refresh" />
         </button>

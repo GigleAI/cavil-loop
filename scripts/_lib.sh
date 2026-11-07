@@ -1907,9 +1907,17 @@ reap_finished_workers() {
 # esbuild / vite 子进程能一起带走，不会留下新的孤儿。
 kill_session_procs() {
     local sess="$1"
-    local grace="${REAP_KILL_GRACE_SECS:-10}"
-    local pids p waited alive
+    local pids
     pids=$(tmux list-panes -t "=$sess" -F '#{pane_pid}' 2>/dev/null || true)
+    kill_pane_pids $pids
+}
+
+# 按进程组 TERM → 等最多 REAP_KILL_GRACE_SECS 秒 → 还活着就 KILL。参数是若干 pane pid。
+# kill_session_procs（回收整个 session）和 worker_session_launch（原地换程序，只杀
+# worker 那个窗格）共用这一份：claude 不理 SIGHUP 的坑两边一样。
+kill_pane_pids() {
+    local grace="${REAP_KILL_GRACE_SECS:-10}"
+    local pids="$*" p waited alive
     if [ -z "$pids" ]; then
         return 0
     fi
@@ -3104,12 +3112,17 @@ requester_bot_item_origin() {
 # 指令）一律当配置不完整；再转义 \ 和 "。
 # -q 必须是第一个参数：不读用户的 ~/.curlrc（代理等设置会让同一份配置在不同机器表现不同）。
 # 不跟随跳转（会把密钥头带去另一个地址），只许 http / https，10 秒上限，不重试。
+# 上限可用环境变量 REQUESTER_BOT_WEBHOOK_TIMEOUT 改（GitHub#211，测试用来缩短真实等待）：只认
+# 1–600 的正整数，未设置、空、0、负数、非数字、带前导 0 等一律按 10 秒。
 # --globoff：地址按字面发。curl 默认把 [1-2]、{a,b} 当范围展开成多个请求（写在配置文本里
 # 也照样展开），一次叫醒就变成多次 POST，状态码还会拼成 200200 被误记成「连接失败」。
 REQUESTER_BOT_WEBHOOK_RESULT=""
 requester_bot_webhook_notify() {
-    local num="$1" kind="$2" mode go body conf code rc
+    local num="$1" kind="$2" mode go body conf code rc limit=10
     REQUESTER_BOT_WEBHOOK_RESULT=""
+    if [[ "${REQUESTER_BOT_WEBHOOK_TIMEOUT:-}" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$REQUESTER_BOT_WEBHOOK_TIMEOUT" -le 600 ]; then
+        limit="$REQUESTER_BOT_WEBHOOK_TIMEOUT"
+    fi
     [ -n "${REQUESTER_BOT_WEBHOOK_URL:-}" ] || return 0
     if [ -z "${REQUESTER_BOT_WEBHOOK_KEY_HEADER:-}" ] || [ -z "${REQUESTER_BOT_WEBHOOK_KEY:-}" ] \
        || ! [[ "$REQUESTER_BOT_WEBHOOK_KEY_HEADER" =~ ^[A-Za-z0-9-]+$ ]] \
@@ -3139,7 +3152,7 @@ requester_bot_webhook_notify() {
     rc=0
     code=$(printf '%s\n' "$conf" | curl -q --config - --globoff -s -o /dev/null -w '%{http_code}' \
         -X POST -H 'Content-Type: application/json' --data-binary "$body" \
-        --proto =http,https --max-redirs 0 --max-time 10 2>/dev/null) || rc=$?
+        --proto =http,https --max-redirs 0 --max-time "$limit" 2>/dev/null) || rc=$?
     if [ "$rc" -eq 0 ] && [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
         REQUESTER_BOT_WEBHOOK_RESULT="已通知 webhook（HTTP $code）"
     elif [ "$rc" -eq 0 ] && [[ "$code" =~ ^[1-9][0-9][0-9]$ ]]; then
@@ -5196,6 +5209,14 @@ configure_tmux_session_display() {
 
     session_alive "$sess" || return 0
 
+    # 旧版本 / 新 issue 派工起的 session 没有 worker 窗格记录：只有一个窗格时它就是 worker，补记上。
+    # 不止一个窗格、或读不到时不猜（见 worker_pane_lookup）。
+    local st only
+    read -r st only _ <<<"$(worker_pane_lookup "$sess")"
+    if [ "$st" = single ]; then
+        worker_pane_record "$sess" "$only" || true
+    fi
+
     if [ -n "$desc" ] && ! tmux set-option -t "$sess" @desc "$desc" 2>&1 | \
         sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @desc 失败（worker 继续运行）"
@@ -5222,6 +5243,186 @@ configure_tmux_session_display() {
     fi
 }
 
+# ── worker 所在的窗格（GitHub#197）──
+#
+# 人会在 worker 的 session 里自己分屏、开窗口（`split-window -b` 会把新窗格排在 worker
+# 前面），所以「第一个窗格」「当前窗格」都不能当 worker——按排列顺序认领，换程序时就会
+# 杀掉人的程序、留下旧 worker（PR #219 复审第 1 轮实测）。
+#
+# 唯一可靠的身份是 tmux 的 pane id（%N）：在一个 tmux server 里单调递增、不复用，
+# respawn-pane 换程序时也不变。daemon 每次建出 worker 窗格时就把它记在 session 选项
+# @worker_pane 上；读的时候再核对这个窗格仍在、仍属于这个 session。
+#
+# 本功能上线前起的 session 没有记录：只有一个窗格时它必然是 worker（configure_tmux_session_display
+# 会顺手补记）；有多个窗格时**不猜**。
+#
+# **读不到不等于没有**（PR #219 复审第 2 轮）：这里的结论会被拿去杀进程、重建 session、
+# 另起 worker、改记录，所以每一次 tmux 读取都核对退出码和输出形状，任何一步没读成就是
+# unknown——调用方遇到 unknown 一律什么都不动，留给下一轮。只有成功读到的完整窗格清单
+# 里确实没有记录的窗格，才算「记录的窗格已不在」。
+
+worker_pane_record() {   # <tmux_session> <pane id>
+    [ -n "$2" ] || return 1
+    tmux set-option -t "=$1:" @worker_pane "$2" 2>/dev/null
+}
+
+# 一次读全 worker 窗格的状态。输出一行「状态 窗格 进程号 已结束 日志管道」，状态是：
+#   found  <id> <pid> <dead> <pipe>  记录的窗格在、属于这个 session
+#   single <id> <pid> <dead> <pipe>  没有记录，session 只有一个窗格（就是 worker）
+#   gone   <记录的 id>        有记录，且成功读到的窗格清单里确实没有它
+#   multi                     没有记录，又不止一个窗格：认不出
+#   unknown                   任何一次读取失败或输出不成形
+# 两次读取：@worker_pane 选项（未设置时 -q 返回 0 且输出空，失败才非 0）和整个 session 的
+# 窗格清单（一次 list-panes 同时拿 id / pid / 是否已结束 / 是否已挂日志管道）。
+worker_pane_lookup() {   # <tmux_session>
+    local sess="$1" rec panes line id pid dead pipe n=0 hit=""
+    if ! rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null)"; then
+        echo unknown; return 0
+    fi
+    if [ -n "$rec" ] && ! [[ "$rec" =~ ^%[0-9]+$ ]]; then
+        echo unknown; return 0
+    fi
+    if ! panes="$(tmux list-panes -s -t "=$sess:" -F '#{pane_id} #{pane_pid} #{pane_dead} #{pane_pipe}' 2>/dev/null)"; then
+        echo unknown; return 0
+    fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        read -r id pid dead pipe <<<"$line"
+        if ! [[ "$id" =~ ^%[0-9]+$ && "$pid" =~ ^[0-9]+$ && "$dead" =~ ^[01]$ && "$pipe" =~ ^[01]$ ]]; then
+            echo unknown; return 0
+        fi
+        n=$((n + 1))
+        if [ -n "$rec" ] && [ "$id" = "$rec" ]; then hit="$id $pid $dead $pipe"; fi
+        [ -z "$rec" ] && [ "$n" -eq 1 ] && hit="$id $pid $dead $pipe"
+    done <<<"$panes"
+    if [ "$n" -eq 0 ]; then echo unknown; return 0; fi
+    if [ -n "$rec" ]; then
+        if [ -n "$hit" ]; then echo "found $hit"; else echo "gone $rec"; fi
+    elif [ "$n" -eq 1 ]; then
+        echo "single $hit"
+    else
+        echo multi
+    fi
+}
+
+# worker 窗格的 id（found / single 时），否则返回 1。只给「找到了才做事」的调用方用。
+worker_pane_id() {   # <tmux_session>
+    local st id
+    read -r st id _ <<<"$(worker_pane_lookup "$1")"
+    case "$st" in found|single) printf '%s\n' "$id" ;; *) return 1 ;; esac
+}
+
+# worker 窗格里的程序还在不在。人另开的窗格让 session 一直活着，所以派工判断「刚起的程序
+# 有没有秒退」要看 worker 窗格本身，不能只看 session 在不在。
+#   返回 0 = 活着；1 = 确定已经不在；2 = 读不到，不知道
+# 「确定不在」只认三种成功读到的证据：完整的 session 清单里没有它、完整的窗格清单里没有
+# 记录的窗格、窗格明确标着已结束。has-session 不行：查询失败和「没有」都是非 0。
+# 调用方只在 1 时才去重起 / 退休会话记录；2 一律什么都不动（PR #219 复审第 3 轮）。
+worker_session_exists() {   # <tmux_session> → 0 在 / 1 确定不在 / 2 读不到
+    local list err
+    err="$(mktemp)"
+    if list="$(tmux list-sessions -F '#{session_name}' 2>"$err")"; then
+        rm -f "$err"
+        grep -qxF -- "$1" <<<"$list" && return 0
+        return 1
+    fi
+    # 只认 tmux 自己说的「没有 server」（最后一个 session 退出后 server 就退出了）：
+    # 那时 session 当然不在。其余失败一律读不到。两种原文实测于 tmux 3.4。
+    if grep -qE '^(no server running on |error connecting to .*\(No such file or directory\))' "$err"; then
+        rm -f "$err"; return 1
+    fi
+    rm -f "$err"
+    return 2
+}
+
+worker_alive() {   # <tmux_session>
+    local st id pid dead e
+    worker_session_exists "$1"; e=$?
+    [ "$e" = 0 ] || return "$e"
+    read -r st id pid dead _ <<<"$(worker_pane_lookup "$1")"
+    case "$st" in
+        gone) return 1 ;;
+        found|single)
+            [ "$dead" = 1 ] && return 1
+            return 0 ;;
+        multi) return 0 ;;      # 认不出 worker：按原来的判据，session 在就算活着
+        *) return 2 ;;
+    esac
+}
+
+# 在 worker session 里起一条命令（GitHub#197）。
+#
+# - session 不在：照旧 `tmux new-session -d`，记下新窗格。
+# - session 在、认得出 worker 窗格（换 agent / 模型 / 角色、注入失败、续接秒退后降级）：
+#   **不删 session**，在这个窗格里换程序。删 session 会把 attach 在上面的终端一起踢出
+#   tmux——换去复审的那一刻正是人最想盯着看的时候。步骤：
+#     1. 窗格设 remain-on-exit on，旧程序退出后窗格留在原地（否则唯一的窗格一关 session 就没了）
+#     2. 按进程组 TERM → 等 → KILL 旧程序（kill_pane_pids；只发 SIGHUP 的话 claude 会变孤儿）
+#     3. respawn-pane 在同一窗格起新命令，环境参数、工作目录和 new-session 用同一份
+#     4. remain-on-exit 关回去：之后程序自然退出，窗格照旧消失，
+#        「session 不在 == worker 死了」这条 self-heal 依赖的语义不变
+#     5. 新程序在第 4 步之前就已经退出（窗格停在「已结束」）：关掉这个窗格，等价于
+#        new-session 起的程序秒退
+#   会话日志的 pipe-pane 挂在窗格上，换程序不断，接着写同一份文件。
+# - session 在、记录的 worker 窗格已经不在了（worker 退出，人另开的窗格撑着 session）：
+#   在这个 session 里新开一个窗口起 worker 并记下，人的窗格一个不动。
+# - session 在、从没记录过、又不止一个窗格（本功能上线前起的、被人分过屏的 session）：
+#   认不出哪个是 worker，不猜——按进程组停掉 session 里全部程序再删掉重建。这会像以前一样
+#   踢出 attach 的终端，但不会杀错一个、留下另一个；只发生一次，之后的 session 都有记录。
+# - 任何一次读取失败（unknown）：什么都不动，返回 1。
+#
+# 返回非 0：读不到窗格状态，或 tmux 命令本身失败。程序是否起得来由调用方用 worker_alive 判断。
+worker_session_launch() {   # <tmux_session> <cwd> <command> [tmux -e 参数…]
+    local sess="$1" cwd="$2" cmd="$3" st pane pid dead i
+    shift 3
+    if ! session_alive "$sess"; then
+        pane="$(tmux new-session -d -P -F '#{pane_id}' -s "$sess" "$@" -c "$cwd" "$cmd")" || return 1
+        worker_pane_record "$sess" "$pane" || true
+        return 0
+    fi
+    read -r st pane pid dead _ <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in
+        found|single) ;;
+        gone)
+            log "  $sess 里记录的 worker 窗格 $pane 已不在（session 由别的窗格撑着）：新开窗口起 worker"
+            pane="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" "$@" -c "$cwd" "$cmd")" || return 1
+            worker_pane_record "$sess" "$pane" || true
+            return 0 ;;
+        multi)
+            log "  ⚠️ $sess 有多个窗格且没有 worker 窗格记录（旧版本起的 session），认不出 worker：停掉全部程序后重建 session"
+            kill_session_procs "$sess"
+            tmux kill-session -t "=$sess" 2>/dev/null || true
+            pane="$(tmux new-session -d -P -F '#{pane_id}' -s "$sess" "$@" -c "$cwd" "$cmd")" || return 1
+            worker_pane_record "$sess" "$pane" || true
+            return 0 ;;
+        *)
+            # 读不到 = 不知道哪个是 worker、它还在不在：不杀、不起、不改记录，本次派工失败，
+            # 下一轮再判（调用方开着 set -e，非 0 让派工脚本在翻标签之前就退出）
+            log "  ❌ $sess 的 worker 窗格状态读不到（tmux 查询失败），本轮不换程序、不动任何窗格"
+            return 1 ;;
+    esac
+    tmux set-option -w -t "$pane" remain-on-exit on 2>/dev/null || true
+    if [ "$dead" != 1 ]; then
+        kill_pane_pids "$pid"
+        # 进程没了到 tmux 把窗格标成「已结束」之间有一点延迟
+        for ((i = 0; i < 20; i++)); do
+            [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" = 1 ] && break
+            sleep 0.1
+        done
+    fi
+    # -k：上面没等到「已结束」时兜底（此时旧进程已被 KILL，-k 只是让 tmux 放手）
+    if ! tmux respawn-pane -k -t "$pane" "$@" -c "$cwd" "$cmd"; then
+        tmux set-option -w -t "$pane" remain-on-exit off 2>/dev/null || true
+        return 1
+    fi
+    worker_pane_record "$sess" "$pane" || true
+    tmux set-option -w -t "$pane" remain-on-exit off 2>/dev/null || true
+    if [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" = 1 ]; then
+        tmux kill-pane -t "$pane" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # 返回 0 表示现有 session 已使用本次 dispatch 要求的 worker、模型和角色。老 session
 # 没有元数据时按项目默认 worker + 默认模型 + worker 角色处理，所以普通 pending/agent
 # 不会无故重启。
@@ -5231,12 +5432,15 @@ configure_tmux_session_display() {
 # 这条路径的地方——注入不经过 agent_command_new/resume）。
 # 本功能上线前起的 session 没有 @worker_role，按 worker 处理；于是升级后第一次派
 # review 会重启一次 session 切到 review 角色，属预期内的一次性重启。
-tmux_session_matches_worker() {
+tmux_session_matches_worker() {   # 返回 0 一致 / 1 不一致 / 2 读不到
     local sess="$1"
     local actual_agent actual_model actual_role
-    actual_agent="$(tmux show-options -qv -t "$sess" @worker_agent 2>/dev/null || true)"
-    actual_model="$(tmux show-options -qv -t "$sess" @worker_model 2>/dev/null || true)"
-    actual_role="$(tmux show-options -qv -t "$sess" @worker_role 2>/dev/null || true)"
+    # 读不到 ≠ 没设：没设时 -q 返回 0、输出空（老 session 走默认）；查询失败才非 0。
+    # 读不到时既不能当「一致」（会把 prompt 注入给别的角色），也不能当「不一致」（会停掉正在
+    # 干活的 worker 换程序）——返回 2，调用方本轮什么都不做（PR #219 复审第 3 轮）。
+    actual_agent="$(tmux show-options -qv -t "=$sess:" @worker_agent 2>/dev/null)" || return 2
+    actual_model="$(tmux show-options -qv -t "=$sess:" @worker_model 2>/dev/null)" || return 2
+    actual_role="$(tmux show-options -qv -t "=$sess:" @worker_role 2>/dev/null)" || return 2
     [ -n "$actual_agent" ] || actual_agent="$WORKER_AGENT_DEFAULT"
     [ -n "$actual_role" ] || actual_role="worker"
     [ "$actual_agent" = "$WORKER_AGENT" ] && [ "$actual_model" = "$WORKER_MODEL" ] && \
@@ -5251,12 +5455,19 @@ session_log_path() {
     echo "$SESSION_LOG_DIR/${sess}.log"
 }
 
-# 在指定 tmux session 上开 pipe-pane，把 pane 输出 append 到日志文件。
-# 使用 `pipe-pane -o`：已有 pipe 时不动，幂等；session 退出时 cat 见 EOF 自然结束。
-# 调用方在 `tmux new-session -d` 之后（或重新注入之前）调用。
+# 在 worker 窗格上开 pipe-pane，把 pane 输出 append 到日志文件。
+# session 退出时 cat 见 EOF 自然结束。调用方在 `tmux new-session -d` 之后（或重新注入之前）调用。
+#
+# ⚠️ 绝不用 `pipe-pane -o`：它是开关，已有 pipe 时会把它关掉、且不再开新的（tmux 手册
+# 「allowing a pipe to be toggled」，tmux 3.4 实测）。注入、原地换程序（GitHub#197）都会
+# 对活着的 session 再调这里，一次误判就把日志关了。不带 -o 时，已有 pipe 会被换成指向同一
+# 文件的新 pipe，日志继续写（实测）——所以就算状态读错，最坏也只是重开一次，不会关掉。
+# 状态（是否已开）从 worker_pane_lookup 那一次窗格清单里拿：成功读到「已开」→ 什么都不做；
+# 成功读到「没开」→ 开；读不到 / 认不出 worker 窗格 → 不碰，记一行日志，下次调用再判
+# （PR #219 复审第 3 轮：读不到曾被当成「没开」，接着 -o 把已开的日志关掉）。
 start_session_logging() {
     local sess="$1"
-    local log_path
+    local log_path st tgt pid dead pipe
     log_path="$(session_log_path "$sess")"
     [ -z "$log_path" ] && return 0
     mkdir -p "$(dirname "$log_path")"
@@ -5264,12 +5475,21 @@ start_session_logging() {
         printf '\n===== %s session=%s opened =====\n' \
             "$(date -Iseconds)" "$sess"
     } >> "$log_path"
+    # 日志挂在 worker 窗格上：人分屏后「当前窗格」可能是人的那个
+    read -r st tgt pid dead pipe <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in
+        found|single) ;;
+        *)
+            log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 $st），本次不碰会话日志"
+            return 0 ;;
+    esac
+    [ "$pipe" = 1 ] && return 0
     # pipe-pane 偶发失败几乎都是 `tmux new-session -d` 刚返回、pane 尚未就绪的 race，
     # 或 worker 进程已秒退 session 没了。先重试一次（0.3s 后），仍失败才报警——
     # 报警此时基本等价于"worker 启动即死"（详见 verify_fresh_session 的 capture）。
-    if ! tmux pipe-pane -o -t "$sess" "cat >> '$log_path'" 2>/dev/null; then
+    if ! tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null; then
         sleep 0.3
-        tmux pipe-pane -o -t "$sess" "cat >> '$log_path'" 2>/dev/null || \
+        tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null || \
             log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
     fi
 }
@@ -5753,23 +5973,39 @@ autopilot_requester_bot_section() {
     printf '%s\n' "$text"
 }
 
-# 把经验文件拼进派工说明时用（GitHub#152）：可选的「## 目录经验」段（只在某块代码会踩的坑）
-# 经项目自己的各层目录说明到达 agent，不进派工说明。从这一行切到下一个「## 」标题或文件末尾，
-# 再去掉切口留下的末尾空行。
+# 把经验文件拼进派工说明时用。两件事，规则都按行首认、不看内容：
+# ① 可选的「## 目录经验」段（只在某块代码会踩的坑，GitHub#152）经项目自己的各层目录说明到达
+#    agent，不进派工说明。从这一行切到下一个「## 」标题或文件末尾。
+# ② 计次格式的经验文件（有 `<!-- next-id: N -->` 这一行，GitHub#208）只带要照做的部分：去掉整段
+#    「## 观察中」，每条经验去掉「这样做是对的」举例和「Seen」出现记录；硬规则、待确认的编号 /
+#    规则 / 适用 / 为什么都留着（自审和复审逐条核对要用）。末尾加一句说明完整版在哪。
+#    没有这一行的文件（工具自带的通用经验、项目手写的自由文本）不做这一步：普通文本里恰好以
+#    「- Seen」开头的行不能被误删。
+# 切完再去掉切口留下的末尾空行。
 # 换行按 python 读文本的规矩认（复盘程序就是这么读、这么判断有没有这一段的）：\r\n、单独的 \r
 # 都算换行。否则 Windows 换行的文件 python 认出了这一段、这里却认不出，整段原样进了派工说明。
-# 没有这个标题的文件原样 cat、逐字节不变——awk 会给缺末尾换行的文件补一个，所以不能一律走 awk。
+# 两件事都不用做的文件原样 cat、逐字节不变——awk 会给缺末尾换行的文件补一个，所以不能一律走 awk。
 # 输出（按同样的换行规矩读回）与 scripts/retrospective_lessons.py:prompt_text 相同
 # （tests/retrospective-directory-lessons.test.sh 用同一批输入对拍两边）。
+LESSONS_PROMPT_NOTE='> 派工说明里只带上面这些：硬规则和待确认经验的编号、规则、适用、为什么。「观察中」的经验，以及每条的「这样做是对的」举例和 Seen 出现记录，只在本项目仓库的经验文件 `lessons.md` 里（项目 prompts 目录下），需要时自己去读。'
 _lessons_lf() { sed 's/\r$//' "$1" | tr '\r' '\n'; }
 lessons_for_prompt() {   # <经验文件>
+    local counted=0
     # 进程替换而不是管道：grep -q 找到就退出，sed 可能吃 SIGPIPE，pipefail 下整条管道会算失败、判反
-    if ! grep -qx '## 目录经验' < <(_lessons_lf "$1"); then cat "$1"; return; fi
-    _lessons_lf "$1" | awk '/^## 目录经验$/ { skip = 1; next }
-         /^## / { skip = 0 }
+    if grep -qxE '<!-- next-id: [0-9]+ -->' < <(_lessons_lf "$1"); then
+        counted=1
+    elif ! grep -qx '## 目录经验' < <(_lessons_lf "$1"); then
+        cat "$1"; return
+    fi
+    _lessons_lf "$1" | awk -v counted="$counted" -v note="$LESSONS_PROMPT_NOTE" '
+         /^## / { sec = substr($0, 4); entry = 0
+                  skip = (sec == "目录经验") || (counted && sec == "观察中") }
          skip { next }
+         /^### L[0-9]+$/ { entry = 1 }
+         counted && entry && /^- (这样做是对的：|Seen [0-9]+×:)/ { next }
          /^$/ { blank++; next }
-         { while (blank > 0) { print ""; blank-- } print }'
+         { while (blank > 0) { print ""; blank-- } print }
+         END { if (counted) { print ""; print note } }'
 }
 
 compose_prompt_template() {

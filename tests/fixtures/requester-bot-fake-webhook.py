@@ -7,6 +7,7 @@
   {"method", "path", "headers": {小写名: 值}, "body"}
 怎么回由 <目录>/mode 决定（每个请求现读）：
   200 / 500 / 任意三位数 = 回这个状态码；hang = 30 秒不回（测超时）；
+  delay<N> = 等 N 秒后回 200（GitHub#211：比改小的上限长、又远短于默认 10 秒，用来区分两者）；
   302 = 跳转到 /followed（测「不跟随跳转」：跟了的话 req.log 会多一行）
 """
 import json
@@ -37,6 +38,9 @@ class H(BaseHTTPRequestHandler):
             mode = "200"
         if mode == "hang":
             time.sleep(30)
+            mode = "200"
+        elif mode.startswith("delay") and mode[5:].isdigit():
+            time.sleep(int(mode[5:]))
             mode = "200"
         code = int(mode) if mode.isdigit() else 200
         self.send_response(code)

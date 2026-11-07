@@ -161,6 +161,7 @@ flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一
 - **PR 派工时 N 怎么定**：`pr_to_issue_num` 走三层 fallback——分支名匹配 `<BRANCH_PREFIX>N` → 拿数字；否则 PR body 找 `Closes/Fixes/Resolves/Refs #N` → 拿数字；否则 fallback 到 PR 编号本身。这样外部 contributor 提的 PR、手开的 meta PR（既没有 `feature/issue-N` 分支也没绑 issue）也能稳定派工。GitHub-only 假设（issue/PR 共用编号 namespace）；跨平台见 [AGENTS.md](../AGENTS.zh.md)
 - PR 评论触发：找对应 session 用 `tmux load-buffer + paste-buffer -p`（bracketed paste）把 prompt 多行注入，再 `send-keys Enter` 提交
 - **一条活有两个角色**：每次派工不是 `worker` 角色就是 `review` 角色（从 prompt 模板类型推）。tmux session 仍然只有一个，但**模型侧的对话**是分开的，见下方「会话隔离」。
+- **换程序不删 tmux session**（GitHub#197）：派工要的 agent、模型或角色和正在跑的不同（例如写代码 → 复审），或正在跑的程序不响应时，daemon 不删 session：先停掉旧程序（按进程组 TERM、超时再 KILL——tmux 发的 SIGHUP claude 不理），在 worker 自己的窗格里用 `respawn-pane` 起新程序（窗格按 daemon 建它时记下的编号认，人自己分出来的窗格一概不碰；worker 的窗格已经没了、人的窗格还撑着 session 时，新开一个窗口起 worker），再恢复「程序退出时窗格随之关闭」。attach 着的终端留在原地看着新 agent 启动，滚动历史和会话日志接着往下记。程序退出时 session 照旧随之消失，「session 没了 = worker 死了」这条不变。
 - **自动 resume**：worker session 死了（`/quit` / 重启 / crash）后又被触发，调度脚本按 `(work number, agent, 角色)` 查出登记的 session id，续的就是那一条（保留所有上下文 + 工具调用历史）；查不到才全新起。这意味着用户中途 `/quit` 不丢进度。
 
 ### 会话隔离
@@ -198,7 +199,7 @@ driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#�
 
 <sub>看不到动画？看[静态版](images/prompt-assembly.zh.static.svg)。</sub>
 
-每次派工的提示词按这个顺序叠四层：skill 自带的通用工作流模板（项目可以放自己的 `<name>.template.md` 整份替换）、skill 的通用公开经验（`prompts/lessons.md`）、项目自己的复盘经验、项目增量（`<name>.extra.md`），冲突时以最后一层为准。再填上编号、分支、工作目录等占位符。评论原文不会拼进提示词：worker 自己去 GitHub 读，每份模板都要求它把这些内容只当数据看。
+每次派工的提示词按这个顺序叠四层：skill 自带的通用工作流模板（项目可以放自己的 `<name>.template.md` 整份替换）、skill 的通用公开经验（`prompts/lessons.md`）、项目自己的复盘经验（只带硬规则和待确认的规则要点，不带举例和出现记录）、项目增量（`<name>.extra.md`），冲突时以最后一层为准。再填上编号、分支、工作目录等占位符。评论原文不会拼进提示词：worker 自己去 GitHub 读，每份模板都要求它把这些内容只当数据看。
 
 提示词再按三种方式之一送到 agent：粘贴进 worker 还活着的 tmux 会话（复审派工不会粘进写代码的会话）；按 `(工作编号, agent, 角色)` 找到原对话续上；没有可续的（或续上后几秒内就退出）就新开一条会话，提示词作为启动参数传入。详见上面的[会话隔离](#会话隔离)。
 

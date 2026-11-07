@@ -74,7 +74,8 @@ jobs:
       - name: Run shard ${{ matrix.shard }}/4
         # Results go outside the checkout: some tests scan the whole repo tree
         # (requester-bot greps it for retired wording) and would read their own logs.
-        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 --out "$RUNNER_TEMP/results"
+        # -j 2: hosted runners have 4 vCPUs; two units at a time per shard (GitHub#211).
+        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 -j 2 --out "$RUNNER_TEMP/results"
 
       - name: Upload results and logs
         if: always()
