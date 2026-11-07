@@ -694,6 +694,192 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   await app.close();
 });
 
+test('GitHub#226: the open detail follows the sync rounds — new comment without a click, draft / scroll / unfolded kept; no change no read; a failed source or read changes nothing; a change sent wins over an older read', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const w = env.fake.state.w;
+  const at = (i: number) => new Date(Date.UTC(2026, 10, 1, 0, i)).toISOString();
+  const comment = (id: string, i: number, text: string) => ({ id, url: `https://github.com/GigleAI/cavil-loop/issues/138#${id}`, createdAt: at(i), bodyHTML: `<p>${text}</p>`, author: { login: 'user-2' } });
+  w.comments.set('gigleai/cavil-loop#138', Array.from({ length: 30 }, (_, i) => comment(`C-${i}`, i, `comment ${i} ` + 'words '.repeat(40))));
+  /** GitHub changed the item: its update time moves on every copy (what the next round reads) */
+  const touchItem = (n: number) => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    const now = new Date().toISOString();
+    for (const r of c.rest) r.updated_at = now;
+    for (const g of c.gql) g.updatedAt = now;
+  };
+  const reads = (n: number) => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === n);
+  const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilViewer').length;
+  const { app, page } = await launch(env);
+  /** one sync round from the shell's beat, waited until it is over (the board's refresh button is enabled again) */
+  const round = async () => {
+    const n = rounds();
+    app.desktop.push({ kind: 'tick' });
+    await expect.poll(rounds).toBeGreaterThan(n);
+    await expect(page.getByTestId('refresh')).toBeEnabled();
+    await page.waitForTimeout(400);
+  };
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  const frameEl = page.getByTestId('timeline-frame');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes');
+  await expect(frame.locator('details.entry')).toHaveCount(31);
+
+  // ---- nothing changed on GitHub: no read, no redraw ----
+  const render0 = await frameEl.getAttribute('data-render');
+  const reads0 = reads(138).length;
+  await round();
+  expect(reads(138).length).toBe(reads0);
+  await expect(frameEl).toHaveAttribute('data-render', render0!);
+
+  // ---- a new comment arrives: shown after the next round, nothing clicked; draft, scroll and unfolded entries kept ----
+  await detail.getByTestId('reply-input').fill('MY_UNSENT_DRAFT');
+  await frame.locator('details.entry[data-entry="C-3"] > summary').click({ position: { x: 40, y: 10 } }); // unfold an older one by hand
+  await expect(frame.locator('details.entry[data-entry="C-3"]')).toHaveAttribute('open', '');
+  await frame.locator('body').evaluate(() => window.scrollTo(0, 400));
+  await page.waitForTimeout(300); // the frame reports its view
+  const scrolled = await frame.locator('body').evaluate(() => window.scrollY);
+  expect(scrolled).toBeGreaterThan(100);
+  w.comments.get('gigleai/cavil-loop#138')!.push(comment('C-AGENT', 50, 'AGENT_REPLY_226'));
+  touchItem(138);
+  await round();
+  await expect(frame.locator('details.entry[data-entry="C-AGENT"]')).toHaveCount(1);
+  await expect(frame.locator('body')).toContainText('AGENT_REPLY_226');
+  expect(reads(138).length).toBe(reads0 + 1);
+  await expect(detail.getByTestId('reply-input')).toHaveValue('MY_UNSENT_DRAFT');
+  await expect(frame.locator('details.entry[data-entry="C-3"]')).toHaveAttribute('open', '');
+  expect(await frame.locator('body').evaluate(() => window.scrollY)).toBe(scrolled);
+  await expect(page.getByTestId('detail-stale')).toHaveCount(0);
+  await expect(page.getByTestId('detail-error')).toHaveCount(0);
+  await shot(page, '226-detail-follows-round');
+
+  // ---- every source carrying the item failed this round: its cached copy is no new data, no read ----
+  env.fake.state.failProjectPage.set('org/gigleai/11', 0);
+  env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_AFTER_FAILED_ROUND</p>');
+  touchItem(138);
+  const reads1 = reads(138).length;
+  await round();
+  expect(reads(138).length).toBe(reads1);
+  env.fake.state.failProjectPage.clear();
+  env.fake.state.failRepoPage.clear();
+  // the next complete round brings it
+  await round();
+  await expect(frame.locator('body')).toContainText('BODY_AFTER_FAILED_ROUND');
+
+  // ---- the automatic read fails: what is on screen stays, small print says from when, no error banner; the next round recovers ----
+  w.failDetail.add('gigleai/cavil-loop#138');
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_WHILE_READ_FAILS</p>');
+  touchItem(138);
+  await round();
+  await expect(page.getByTestId('detail-stale')).toContainText('自动更新失败，显示的是');
+  await expect(page.getByTestId('detail-error')).toHaveCount(0);
+  await expect(frame.locator('body')).toContainText('BODY_AFTER_FAILED_ROUND');
+  await expect(frame.locator('body')).toContainText('AGENT_REPLY_226');
+  w.failDetail.delete('gigleai/cavil-loop#138');
+  await round(); // nothing new on GitHub, but the failed read left the mark: tried again
+  await expect(frame.locator('body')).toContainText('BODY_WHILE_READ_FAILS');
+  await expect(page.getByTestId('detail-stale')).toHaveCount(0);
+
+  // ---- an automatic read on its way, then a change is sent: the older read never lands ----
+  // the failing pass first: a successful change schedules one more round 5 s later, which would read the detail by itself
+  for (const ok of [false, true]) {
+    const tag = ok ? 'OK' : 'FAILS';
+    w.bodies.set('gigleai/cavil-loop#138', `<p>BODY_BEFORE_CHANGE_${tag}</p>`);
+    touchItem(138);
+    const release = holdFirst((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
+    const before = reads(138).length;
+    app.desktop.push({ kind: 'tick' });
+    await expect.poll(() => reads(138).length).toBe(before + 1); // the automatic read was asked (and is held)
+    w.bodies.set('gigleai/cavil-loop#138', `<p>BODY_AFTER_CHANGE_${tag}</p>`);
+    w.failLabel = ok ? null : 'Done';
+    // the change is held too: the old read answers while the change is still on its way
+    const releaseWrite = holdFirst((e) => e.method === 'POST' && e.path.endsWith('/issues/138/labels'));
+    await pickLabel(page, 'Done');
+    await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels') && l.status === 0)).toBe(true);
+    release();
+    await expect.poll(() => reads(138)[before]?.status).toBe(200); // the held automatic read has answered
+    await page.waitForTimeout(400);
+    await expect(frame.locator('body')).not.toContainText(`BODY_BEFORE_CHANGE_${tag}`); // it never landed
+    releaseWrite();
+    await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', ok ? 'ok' : 'error');
+    await expect(frame.locator('body')).toContainText(`BODY_AFTER_CHANGE_${tag}`); // the read after the change, both ways
+    await page.waitForTimeout(400);
+    await expect(frame.locator('body')).toContainText(`BODY_AFTER_CHANGE_${tag}`);
+    await expect(frame.locator('body')).not.toContainText(`BODY_BEFORE_CHANGE_${tag}`);
+    await expect(page.getByTestId('detail-error')).toHaveCount(0);
+  }
+  w.failLabel = null;
+  // after a failed and a successful change, rounds go on following GitHub
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_LATER_ROUND</p>');
+  touchItem(138);
+  await round();
+  await expect(frame.locator('body')).toContainText('BODY_LATER_ROUND');
+
+  // ---- a change in flight when the round comes: no automatic read; the change's own read follows ----
+  const releaseWrite = holdFirst((e) => e.method === 'POST' && e.path.endsWith('/issues/138/labels'));
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_DURING_WRITE</p>');
+  touchItem(138);
+  const detailLabelAdd = pickLabel(page, 'pending/PR');
+  await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels') && l.status === 0)).toBe(true);
+  await detailLabelAdd;
+  const reads2 = reads(138).length;
+  await round();
+  expect(reads(138).length).toBe(reads2);
+  releaseWrite();
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(frame.locator('body')).toContainText('BODY_DURING_WRITE');
+  expect(reads(138).length).toBe(reads2 + 1);
+  await app.close();
+});
+
+test('GitHub#226: an open PR whose checks are still running is read every round until they finish', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const node = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!;
+  const prN = node.content.number as number;
+  const c = findCopies(store, 'GigleAI/cavil-loop', prN)!;
+  for (const g of c.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of c.rest) Object.assign(r, { state: 'open', pull_request: { ...(r.pull_request ?? {}), merged_at: null } });
+  const pull = pullOf(store, c);
+  pull.checks = 'PENDING';
+  const reads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === prN);
+  const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilViewer').length;
+  const { app, page } = await launch(env);
+  const round = async () => {
+    const n = rounds();
+    app.desktop.push({ kind: 'tick' });
+    await expect.poll(rounds).toBeGreaterThan(n);
+    await expect(page.getByTestId('refresh')).toBeEnabled();
+    await page.waitForTimeout(400);
+  };
+  await signInWithSources(page);
+  await card(page, prN).click();
+  const detail = page.getByTestId('detail');
+  await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${prN}`);
+  await expect(detail.getByTestId('pr-status')).toContainText('检查：进行中');
+  // nothing about the PR changed (its update time is the same), but its checks were running: read every round
+  const r0 = reads().length;
+  const frameEl = page.getByTestId('timeline-frame');
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes');
+  const render0 = await frameEl.getAttribute('data-render');
+  await round();
+  expect(reads().length).toBe(r0 + 1);
+  await round();
+  expect(reads().length).toBe(r0 + 2);
+  // read twice, the same each time: the discussion was not drawn again (a text selection in it survives)
+  await expect(frameEl).toHaveAttribute('data-render', render0!);
+  pull.checks = 'SUCCESS';
+  await round();
+  expect(reads().length).toBe(r0 + 3);
+  await expect(detail.getByTestId('pr-status')).toContainText('检查：全部通过');
+  // finished: no more reads while nothing changes
+  await round();
+  await round();
+  expect(reads().length).toBe(r0 + 3);
+  await app.close();
+});
+
 // ---- sub-item #137: search, table, imported views ----
 
 const filterResults: { query: string; server: string[] }[] = JSON.parse(

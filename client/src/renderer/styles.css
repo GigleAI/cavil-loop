@@ -94,6 +94,7 @@ input, select, textarea { font: inherit; color: var(--fg); }
 input:not([type='checkbox']):not([type='radio']), select { min-height: 28px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
 input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margin: 0; }
 .muted { color: var(--muted); }
+.detail-stale { font-size: 12px; margin: 0 0 8px; }
 .small { font-size: 12px; }
 .center { margin: auto; text-align: center; padding: 40px; }
 .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
