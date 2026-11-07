@@ -1635,4 +1635,11 @@ export const MUTATIONS = [
       { file: 'src/app/controller.ts', from: '      await commentStep(c.client, item, plain.body);', to: "      const now = await this.clientForCall(true);\n      if ('error' in now) throw new ActionRefused(now.error);\n      await commentStep(now.client, item, plain.body);" },
     ],
     expect: ['never crosses a session'] },
+  // ---- GitHub#256: a fully successful notice puts itself away after 10 s ----
+  { what: '自动收起不看重读问题（合并成功但关联 issue 没读到的提示 10 秒后被收掉）', file: 'src/shared/ops.ts',
+    from: '  if (r.readProblem || r.checkProblem) return false;', to: '  if (r.checkProblem) return false;',
+    expect: ['no: merged, but the linked issues could not be re-read', 'the case tone and buttons cannot tell apart'] },
+  { what: '提示按成功语气决定是否自动收起（不走完整判据）', file: 'src/renderer/OpNotice.tsx', runner: 'e2e',
+    from: 'useAutoDismiss(opAutoDismissable(r), ', to: "useAutoDismiss(opAutoDismissable(r) || tone === 'ok', ",
+    expect: ['GitHub#256'] },
 ];

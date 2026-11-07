@@ -23,6 +23,7 @@ import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
 import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
 import { OpNotice } from './OpNotice';
+import { useAutoDismiss } from './autoDismiss';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
 const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
@@ -54,10 +55,14 @@ export function noteOf(r: WriteResult, okText: string): ResultNote {
   return { kind: 'ok', text: okText };
 }
 
-export function ResultBanner({ note, testid }: { note: ResultNote | null; testid: string }) {
+/** how long a plain success note stays when its bar opts in (GitHub#256) */
+export const NOTE_AUTO_DISMISS_MS = 10_000;
+
+export function ResultBanner({ note, testid, onExpire }: { note: ResultNote | null; testid: string; /** GitHub#256: clears a plain success note after 10 s; warnings and errors stay */ onExpire?: () => void }) {
+  const auto = useAutoDismiss(!!note && note.kind === 'ok' && !!onExpire, NOTE_AUTO_DISMISS_MS, () => onExpire?.(), note);
   if (!note) return null;
   return (
-    <div className={`banner ${note.kind === 'error' ? 'error' : note.kind === 'warn' ? 'warn' : 'info'}`} data-testid={testid} data-kind={note.kind}>
+    <div className={`banner ${note.kind === 'error' ? 'error' : note.kind === 'warn' ? 'warn' : 'info'}`} data-testid={testid} data-kind={note.kind} {...auto}>
       <Icon name={note.kind === 'ok' ? 'check' : 'warn'} />
       <span className="banner-text">{note.text}</span>
     </div>
@@ -758,7 +763,7 @@ export function DetailPanel({
           显示 {clock(fromCache)} 读到的内容{loading ? ' · 正在更新…' : ''}
         </div>
       )}
-      <ResultBanner note={note} testid="action-result" />
+      <ResultBanner note={note} testid="action-result" onExpire={() => setNote(null)} />
       {myOps
         .filter((r) => !r.dismissed)
         .map((r) => (

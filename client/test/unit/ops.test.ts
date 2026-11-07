@@ -8,6 +8,7 @@ import {
   isOpRecord,
   opAfterRestart,
   opApplyRead,
+  opAutoDismissable,
   opButtons,
   opDisposable,
   opDraftLeft,
@@ -123,6 +124,51 @@ describe('table A: notice and buttons', () => {
     expect(opTone(close('unknown', 'unsent'))).toBe('warn');
     expect(opTone(close('ok', 'refused', { readAt: 30, targetSeen: true }))).toBe('warn');
     expect(opTone(close('ok', 'ok', { readAt: 30, targetSeen: true }))).toBe('ok');
+  });
+});
+
+describe('GitHub#256: only a fully successful notice puts itself away', () => {
+  const done = { readAt: 30, targetSeen: true };
+  const closeNoComment = (extra: Partial<OpRecord> = {}) => rec('closeIssue', [step('close', 'ok')], { draft: { reason: 'completed' }, ...done, ...extra });
+  const merged = (extra: Partial<OpRecord> = {}) => rec('merge', [step('merge', 'ok')], { ...done, ...extra });
+  const handBack = (extra: Partial<OpRecord> = {}) => rec('handBack', [step('addLabel', 'ok', { label: 'pending/agent' }), step('removeLabel', 'ok', { label: 'pending/human' })], { readAt: 30, ...extra });
+  const yes: [string, OpRecord][] = [
+    ['close an issue with its comment, read back closed', close('ok', 'ok', done)],
+    ['close an issue without a comment, read back closed', closeNoComment()],
+    ['close a PR, read back closed', rec('closePr', [step('close', 'ok'), step('comment', 'ok')], done)],
+    ['merge, read back merged', merged()],
+    ['autopilot, every label step done and read', auto('ok', 'ok', 'ok', { readAt: 30 })],
+    ['hand back to the agent, every label step done and read', handBack()],
+  ];
+  for (const [name, r] of yes) it(`yes: ${name}`, () => {
+    expect(opTone(r)).toBe('ok');
+    expect(opAutoDismissable(r)).toBe(true);
+  });
+  const no: [string, OpRecord][] = [
+    ['still on its way', close('pending', 'unsent')],
+    ['created, first request not marked sent', close('unsent', 'unsent', { running: true })],
+    ['answer never came', close('unknown', 'unsent')],
+    ['waiting for the re-read', close('ok', 'ok')],
+    ['re-read still shows it open', close('ok', 'ok', { readAt: 30 })],
+    ['stuck waiting for the re-read', close('ok', 'ok', { stuck: true })],
+    ['unlocked by hand after the person checked GitHub (all steps ok)', close('ok', 'ok', { stuck: true, unlocked: true })],
+    ['unlocked by hand after an unknown step', close('unknown', 'unsent', { unlocked: true })],
+    ['main step refused', close('refused', 'unsent')],
+    ['comment refused, kept draft', close('ok', 'refused', done)],
+    ['label step refused', auto('ok', 'refused', 'unsent', { readAt: 30 })],
+    ['merged, but the linked issues could not be re-read', merged({ readProblem: '没读到这个 PR 关联的 issue（连接中断），下一轮同步会更新' })],
+    ['evidence read failed', merged({ checkProblem: '连接中断' })],
+    ['a comment draft left (comment step dropped from the record)', rec('closeIssue', [step('close', 'ok')], { draft: { reason: 'completed', comment: '留着' }, ...done })],
+    ['a reply from the kept comment on its way', closeNoComment({ replyState: 'sending' })],
+    ['a reply from the kept comment unknown', closeNoComment({ replyState: 'unknown' })],
+    ['already put away', closeNoComment({ dismissed: true })],
+  ];
+  for (const [name, r] of no) it(`no: ${name}`, () => expect(opAutoDismissable(r)).toBe(false));
+  it('the case tone and buttons cannot tell apart: an ok-toned notice with only × and a re-read problem stays', () => {
+    const r = merged({ readProblem: '没读到这个 PR 关联的 issue' });
+    expect(opTone(r)).toBe('ok');
+    expect(opButtons(r)).toEqual(['dismiss']);
+    expect(opAutoDismissable(r)).toBe(false);
   });
 });
 
