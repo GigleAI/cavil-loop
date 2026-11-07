@@ -145,19 +145,22 @@ test('browser login → board; restart skips login; sources; three column modes;
   await expect(page.getByTestId('write-entry')).toHaveAttribute('data-offline', 'no');
   await expect(page.getByTestId('offline')).toHaveCount(0);
 
-  // a source that fails mid-pagination keeps last round's data, banner says so
+  // a source that fails mid-pagination keeps last round's data; the ⚠️ next to refresh says so (GitHub#248)
   env.fake.state.failProjectPage.set('org/gigleai/11', 1);
   await page.getByTestId('refresh').click();
-  await expect(page.getByTestId('incomplete')).toBeVisible();
+  await expect(page.getByTestId('sync-trouble')).toBeVisible();
   expect(await countOf(page, 'Iteration 25')).toBe('12');
+  await page.getByTestId('sync-trouble').click();
+  await expect(page.getByTestId('sync-trouble-source')).toContainText('读取失败');
   await shot(page, '07-incomplete');
+  await page.getByTestId('sync-trouble').click();
   env.fake.state.failProjectPage.clear();
 
   // restart: no login needed
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible();
-  await expect(page.getByTestId('incomplete')).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByTestId('sync-trouble')).toHaveCount(0, { timeout: 15_000 });
   await app.close();
 
   // offline restart: content from the cache, flagged offline, writes grey
@@ -1361,7 +1364,11 @@ function projectWithView(filter: string) {
 const P11 = 'org/gigleai/11';
 const sourceErr = (page: Page, key: string) => page.locator(`[data-testid="source-row"][data-key="${key}"] .err`);
 
-test('yellow bars: × closes one bar; time passing and page switches keep it closed; another failure, recovery, or a new filter shows it again', async () => {
+/** the main process's sync state (to wait for a round's outcome without a bar on screen) */
+const syncOf = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.sync as { syncing: boolean; offline: boolean });
+const UNSUPPORTED = 'updated:>2026-01-01';
+
+test('yellow bars: × closes one bar; time passing and page switches keep it closed; recovery, or a new filter shows it again', async () => {
   const { app, page } = await launch(env);
   // fake time in the window: "1 hour later" without waiting an hour
   await page.clock.install();
@@ -1373,18 +1380,18 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
   await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
-  const key = (await page.evaluate(async () => (await (window as any).cavil.get()).state.sources[0].key)) as string;
 
-  // a source fails: two bars (the filter is on); × closes only the one clicked
-  env.fake.state.failProjectPage.set(P11, 1);
+  // offline with an unsupported word in the box: two bars; × closes only the one clicked
+  await page.getByTestId('search').fill(`-label:Done ${UNSUPPORTED}`);
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
+  env.fake.state.offline = true;
   await page.getByTestId('refresh').click();
-  await expect(page.getByTestId('incomplete')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
-  await expect(page.getByTestId('incomplete-close')).toHaveAccessibleName('关闭提示');
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('offline-close')).toHaveAccessibleName('关闭提示');
   await shot(page, '14-bars-with-close');
-  await page.getByTestId('incomplete-close').click();
-  await expect(page.getByTestId('incomplete')).toHaveCount(0);
-  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
+  await page.getByTestId('offline-close').click();
+  await expect(page.getByTestId('offline')).toHaveCount(0);
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
 
   // only time passes: the wording ("… 分钟前") changes, the problem does not → stays closed
   for (const step of ['00:15', '01:00', '59:00']) { // 15 s, 1 min, then past 1 h in all
@@ -1392,50 +1399,137 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
     await page.waitForTimeout(100);
   }
   await expect(page.getByTestId('sync-status')).toContainText('上次同步 1 小时前'); // the window's clock really moved
-  await expect(page.getByTestId('incomplete')).toHaveCount(0);
-  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
+  await expect(page.getByTestId('offline')).toHaveCount(0);
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
 
   // board → settings → board: stays closed
   await page.getByTestId('open-settings').click();
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
-  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
+  await expect(page.getByTestId('offline')).toHaveCount(0);
 
-  // "filter may be incomplete": closed → filter cleared (the bar is gone, so is the record) → filtering again → back
-  await page.getByTestId('filter-incomplete-close').click();
-  await expect(page.getByTestId('filter-incomplete')).toHaveCount(0);
-  await page.getByTestId('search').fill('label:x');
-  await expect(page.getByTestId('filter-incomplete')).toHaveCount(0); // other words, same failure: still closed
+  // "unsupported words": closed → filter cleared (the bar is gone, so is the record) → same words again → back
+  await page.getByTestId('filter-unsupported-close').click();
+  await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
   await page.getByTestId('search').fill('');
-  await page.getByTestId('search').fill('-label:Done -status:Done');
-  await expect(page.getByTestId('filter-incomplete')).toBeVisible();
-  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+  await page.getByTestId('search').fill(`-label:Done ${UNSUPPORTED}`);
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
+  await expect(page.getByTestId('offline')).toHaveCount(0);
 
-  // recovers, then fails the same way again → shows again
-  env.fake.state.failProjectPage.clear();
+  // recovers, then goes offline again → shows again
+  env.fake.state.offline = false;
   await page.getByTestId('refresh').click();
-  await expect(page.getByTestId('filter-incomplete')).toHaveCount(0, { timeout: 15_000 }); // the round really recovered
-  env.fake.state.failProjectPage.set(P11, 1);
+  await expect.poll(async () => (await syncOf(page)).offline, { timeout: 15_000 }).toBe(false); // the round really recovered
+  env.fake.state.offline = true;
   await page.getByTestId('refresh').click();
-  await expect(page.getByTestId('incomplete')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
 
-  // closed, then recovers and fails again while the settings page is up → shows again back on the board
-  await page.getByTestId('incomplete-close').click();
-  await expect(page.getByTestId('incomplete')).toHaveCount(0);
+  // closed, then recovers and goes offline again while the settings page is up → shows again back on the board
+  await page.getByTestId('offline-close').click();
+  await expect(page.getByTestId('offline')).toHaveCount(0);
   await page.getByTestId('open-settings').click();
-  await expect(sourceErr(page, key)).toBeVisible();
-  env.fake.state.failProjectPage.clear();
-  await page.getByTestId('source-input').fill('GigleAI/cavil-loop'); // adding a source starts a round
-  await page.getByTestId('source-add').click();
-  await expect(sourceErr(page, key)).toHaveCount(0, { timeout: 15_000 });
-  env.fake.state.failProjectPage.set(P11, 1);
-  await page.locator('[data-testid="source-row"][data-key="repo:gigleai/cavil-loop"] [data-testid="source-remove"]').click();
-  await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
-  await page.getByTestId('source-add').click();
-  await expect(sourceErr(page, key)).toBeVisible({ timeout: 15_000 });
+  env.fake.state.offline = false;
+  await page.evaluate(() => (window as any).cavil.restartSync());
+  await expect.poll(async () => (await syncOf(page)).offline, { timeout: 15_000 }).toBe(false);
+  env.fake.state.offline = true;
+  await page.evaluate(() => (window as any).cavil.restartSync());
+  await expect.poll(async () => (await syncOf(page)).offline, { timeout: 15_000 }).toBe(true);
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('incomplete')).toBeVisible();
+  await expect(page.getByTestId('offline')).toBeVisible();
   await shot(page, '15-bar-back-after-recovery');
+  env.fake.state.offline = false;
+  await app.close();
+});
+
+test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows the details; click again, outside or Esc puts them away; offline and recovery (GitHub#248)', async () => {
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  await expect(page.getByTestId('sync-trouble')).toHaveCount(0);
+
+  // a source fails while filtering: no full-width bar, a ⚠️ left of refresh, not opened by itself
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  const btn = page.getByTestId('sync-trouble');
+  await expect(btn).toBeVisible({ timeout: 15_000 });
+  await expect(btn).toHaveAccessibleName('同步不完整：1 个来源读取失败（点开看详情）');
+  await expect(page.getByTestId('sync-trouble-panel')).toHaveCount(0);
+  await expect(page.locator('.banner')).toHaveCount(0);
+  const order = await page.locator('.hdr-right > *').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid') ?? e.querySelector('[data-testid]')?.getAttribute('data-testid')));
+  expect(order.indexOf('sync-trouble')).toBe(order.indexOf('refresh') - 1);
+
+  // click → details: the source, its reason, how old its data is, plus the filter line
+  await btn.click();
+  const panel = page.getByTestId('sync-trouble-panel');
+  await expect(panel).toBeVisible();
+  await expect(page.getByTestId('sync-trouble-source')).toHaveCount(1);
+  await expect(page.getByTestId('sync-trouble-source')).toContainText(/读取失败（.+），显示的是 .+前的数据/);
+  await expect(page.getByTestId('sync-trouble-filter')).toContainText('筛选结果可能不全');
+  await shot(page, '16-sync-trouble-open');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, '16-sync-trouble-open-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  // a narrow window hides the "上次同步" text; the ⚠️ and its details stay on screen
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: 900, height: 700 });
+  await expect(btn).toBeInViewport({ ratio: 1 });
+  await expect(panel).toBeInViewport({ ratio: 1 });
+  await shot(page, '16-sync-trouble-open-narrow');
+  if (size) await page.setViewportSize(size);
+  // click again → away
+  await btn.click();
+  await expect(panel).toHaveCount(0);
+  // click outside → away
+  await btn.click();
+  await expect(panel).toBeVisible();
+  await page.getByTestId('match-count').click();
+  await expect(panel).toHaveCount(0);
+  // Esc → away
+  await btn.click();
+  await expect(panel).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0);
+
+  // no filter: the filter line goes, the source list stays (open while it changes)
+  await btn.click();
+  await page.getByTestId('search').fill('');
+  await expect(page.getByTestId('sync-trouble-filter')).toHaveCount(0);
+  await expect(page.getByTestId('sync-trouble-source')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+
+  // offline, not filtering: no ⚠️ (the offline bar says it); offline and filtering: ⚠️ with the filter line only
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(btn).toHaveCount(0);
+  await page.getByTestId('search').fill('label:x');
+  await expect(btn).toBeVisible();
+  await btn.click();
+  await expect(page.getByTestId('sync-trouble-filter')).toBeVisible();
+  await expect(page.getByTestId('sync-trouble-incomplete')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // back online, still failing: both parts; then it recovers with the details open → ⚠️ and details go together
+  env.fake.state.offline = false;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toHaveCount(0, { timeout: 15_000 });
+  await btn.click();
+  await expect(page.getByTestId('sync-trouble-source')).toHaveCount(1);
+  env.fake.state.failProjectPage.clear();
+  await page.getByTestId('sync-trouble-resync').click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  await expect(panel).toHaveCount(0);
+
+  // fails again: the ⚠️ comes back closed
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  await expect(btn).toBeVisible({ timeout: 15_000 });
+  await expect(panel).toHaveCount(0);
+  env.fake.state.failProjectPage.clear();
   await app.close();
 });
 

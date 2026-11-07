@@ -444,3 +444,13 @@ table.items td .cell-selects { display: inline-flex; flex-direction: column; gap
 table.items tr.group-head, table.items tr.repo-head { cursor: pointer; }
 table.items tr.group-head:hover td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
 table.items tr.repo-head:hover td { background: var(--hover); }
+/* GitHub#248: failed sources as a ⚠️ next to refresh, details in a popover (no full-width bars) */
+.trouble-anchor { position: relative; display: inline-flex; align-items: center; }
+button.icon-btn.trouble-btn, button.icon-btn.trouble-btn:hover:not(:disabled) { color: var(--warn-icon); }
+button.icon-btn.trouble-btn.on { background: var(--warn-bg); border-color: var(--warn-border); }
+.trouble-panel { position: absolute; top: calc(100% + 6px); right: 0; width: min(440px, calc(100vw - 32px)); z-index: 8; background: var(--raised); border: 1px solid var(--warn-border); border-radius: 10px; box-shadow: var(--shadow-lg); color: var(--fg); font-size: 13px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.trouble-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.trouble-head .icon { color: var(--warn-icon); }
+.trouble-panel ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.trouble-filter { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 4px 8px; }
+.trouble-foot { display: flex; justify-content: flex-end; }
