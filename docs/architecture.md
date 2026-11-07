@@ -222,7 +222,7 @@ a driver that doesn't only gets the "review always starts fresh" half.
 
 <sub>No animation? [Static version](images/prompt-assembly.en.static.svg).</sub>
 
-Every dispatch renders its prompt from four layers, in this order: the skill's base workflow template (a project may replace it wholesale with its own `<name>.template.md`), the skill's public lessons (`prompts/lessons.md`), the project's own lessons, and the project's additions (`<name>.extra.md`) — the last one wins on conflict. Placeholders such as issue number, branch and worktree are then filled in. Comment text is never pasted into the prompt; the worker reads it from GitHub itself, and every template tells it to treat that text as data.
+Every dispatch renders its prompt from four layers, in this order: the skill's base workflow template (a project may replace it wholesale with its own `<name>.template.md`), the skill's public lessons (`prompts/lessons.md`), the project's own lessons (only the hard rules and rules awaiting confirmation, without their examples and sighting records), and the project's additions (`<name>.extra.md`) — the last one wins on conflict. Placeholders such as issue number, branch and worktree are then filled in. Comment text is never pasted into the prompt; the worker reads it from GitHub itself, and every template tells it to treat that text as data.
 
 The prompt then reaches the agent one of three ways: pasted into the worker's live tmux session (a review dispatch never lands in the coding session), passed to a resumed conversation looked up by `(work number, agent, role)`, or passed as the launch argument of a fresh session when there is nothing to resume (or the resume dies within seconds). See [Session isolation](#session-isolation) above.
 

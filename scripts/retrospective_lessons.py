@@ -61,7 +61,7 @@ SECTIONS = ('硬规则', '待确认', '观察中')
 WATCH = '观察中'
 DIRS = '目录经验'
 THRESHOLD = 3
-MAX_CHARS = 24000       # everything prompt composition injects (all but 目录经验)
+MAX_CHARS = 24000       # the whole file but 目录经验 (prompts get a trimmed part of it)
 MAX_DIR_CHARS = 24000   # the 目录经验 section on its own
 FIELDS = {'规则': 'rule', '适用': 'applies', '为什么': 'why', '这样做是对的': 'example'}
 
@@ -242,15 +242,57 @@ def detach_directory_section(text):
     return rest, lambda new: new.rstrip('\n') + gap + cut
 
 
-def prompt_text(text):
-    """What prompt composition injects for this file: everything except 目录经验.
+def outside_directory_text(text):
+    """The whole file except 目录经验 — what the MAX_CHARS limit is measured on.
 
-    Must equal `lessons_for_prompt` in scripts/_lib.sh byte for byte (a file without
-    the heading is passed through untouched; otherwise trailing blank lines go)."""
+    Deliberately the full text, not the trimmed `prompt_text`: the retrospective model
+    reads and rewrites all of it, so trimming what prompts get must not loosen this."""
     if DIR_HEADING not in text.split('\n'):
         return text
     rest = split_directory_section(text)[0].rstrip('\n')
     return rest + '\n' if rest else ''
+
+
+# Appended after a trimmed counted-format file; same text as LESSONS_PROMPT_NOTE in _lib.sh.
+PROMPT_NOTE = ('> 派工说明里只带上面这些：硬规则和待确认经验的编号、规则、适用、为什么。'
+               '「观察中」的经验，以及每条的「这样做是对的」举例和 Seen 出现记录，'
+               '只在本项目仓库的经验文件 `lessons.md` 里（项目 prompts 目录下），需要时自己去读。')
+PROMPT_ENTRY = re.compile(r'^### L[0-9]+$')
+PROMPT_DROP = re.compile(r'^- (这样做是对的：|Seen [0-9]+×:)')
+
+
+def prompt_text(text):
+    """What prompt composition injects for this file (GitHub#152, #208).
+
+    Always drops 目录经验. A counted-format file (it has a `next-id` line) is also
+    trimmed to what an agent must act on: the 观察中 section goes, and inside entries
+    the 这样做是对的 / Seen lines go; then PROMPT_NOTE says where the rest lives.
+    Must equal `lessons_for_prompt` in scripts/_lib.sh byte for byte (a file needing
+    neither is passed through untouched; otherwise trailing blank lines go)."""
+    lines = text.split('\n')
+    counted = any(NEXT_ID.match(line) for line in lines)
+    if not counted and DIR_HEADING not in lines:
+        return text
+    out, blank, skip, in_entry = [], 0, False, False
+    for line in lines:
+        if line.startswith('## '):
+            section, in_entry = line[3:], False
+            skip = section == DIRS or (counted and section == WATCH)
+        if skip:
+            continue
+        if PROMPT_ENTRY.match(line):
+            in_entry = True
+        if counted and in_entry and PROMPT_DROP.match(line):
+            continue
+        if line == '':
+            blank += 1
+            continue
+        out.extend([''] * blank)
+        blank = 0
+        out.append(line)
+    if counted:
+        out += ['', PROMPT_NOTE]
+    return '\n'.join(out) + '\n' if out else ''
 
 
 def directory_problem(directory, root):
@@ -308,7 +350,7 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None, dir
     except LessonsError as error:
         return [str(error) if str(error).startswith('[') else f'[parse] {error}']
     errors = []
-    prompt_part, dir_part = prompt_text(new_text), split_directory_section(new_text)[1]
+    prompt_part, dir_part = outside_directory_text(new_text), split_directory_section(new_text)[1]
     if _on('length') and len(prompt_part) > MAX_CHARS:
         errors.append(f'[length] file has {len(prompt_part)} chars outside {DIRS}, limit {MAX_CHARS}')
     if _on('length') and len(dir_part) > MAX_DIR_CHARS:
