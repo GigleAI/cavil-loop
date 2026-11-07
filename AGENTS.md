@@ -409,7 +409,7 @@ MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what ev
 | Worker develops, hands on, reworks (local) | the part the change touches | **not run** | not run |
 | Reviewer (local) | reruns the relevant part when needed | **not run, and not asked of the worker** | not run |
 | PR CI, every push | `Tests` (all shell tests; not when only `client/` changed) + `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
-| `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | run, **arm64 only** |
+| `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | run, **arm64 only**, signed with the update key; once everything passed it is published as a development build (pre-release `client/vX.Y.(Z+1)-dev.N`, the latest 10 kept — GitHub#215) |
 | `Client` on a `client/v*` tag | quick + full tests | not run | run, arm64 and x64; a red one means no Release |
 | `Client` weekly (Sunday 16:40 UTC) | quick + full tests | not run | run, **arm64 only**, so a packaging breakage shows up within a week |
 | `Release` (weekly, or a `release/v*` tag) | — | **all of them**: every `tests/*.test.sh` with `MUTATION=1` (4 shards + autopilot split over 6 jobs) and both client sets (`test/mutation`, the real app's `test/tauri/mutations.sh`), on the one commit the tag will point at; a red one means no tag and no Release | — |

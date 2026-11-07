@@ -352,6 +352,7 @@ fn main() {
             updater::desktop_update_status,
             updater::desktop_update_check,
             updater::desktop_update_set_auto,
+            updater::desktop_update_set_channel,
             updater::desktop_update_dismiss,
             updater::desktop_update_restart
         ])

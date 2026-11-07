@@ -2923,7 +2923,7 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   await expect(page.getByTestId('update-settings')).toHaveCount(0);
   await expect(page.locator('.settings-nav a', { hasText: '更新' })).toHaveCount(0);
 
-  const base = { supported: true, current: '0.5.0', auto: true, problem: null, phase: 'idle', dismissed: null, last: null };
+  const base = { supported: true, current: '0.5.0', auto: true, channel: 'stable', devUnavailable: null, problem: null, phase: 'idle', dismissed: null, last: null };
   const at = new Date(2026, 10, 6, 14, 2).getTime();
   app.desktop.setUpdate(base);
   await expect(page.getByTestId('update-current')).toHaveText('0.5.0');
@@ -2985,6 +2985,64 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   await expect(page.getByTestId('update-line')).toHaveText('这一版没有带更新用的公钥，不能自动更新，请手动下载新版');
   await expect(page.getByTestId('update-check')).toBeDisabled();
   await expect(page.getByTestId('update-auto')).toBeDisabled();
+  await app.close();
+});
+
+test('GitHub#215: the update channel in Settings — release by default, development explains itself, refused while installing, greyed out without a development build', async () => {
+  const { app, page } = await launch(env);
+  await signInForReminders(page, []);
+  const base = { supported: true, current: '0.5.0', auto: true, channel: 'stable', devUnavailable: null, problem: null, phase: 'idle', dismissed: null, last: null };
+  app.desktop.setUpdate(base);
+  await expect(page.getByTestId('update-channel')).toHaveAttribute('data-channel', 'stable');
+  await expect(page.getByTestId('update-channel-stable')).toBeChecked();
+  await expect(page.getByTestId('update-channel-dev')).not.toBeChecked();
+  await expect(page.getByTestId('update-channel-note')).toHaveCount(0);
+
+  // choosing the development channel: one request; the picker follows what the shell then reports
+  await page.getByTestId('update-channel-dev').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'setUpdateChannel').map((r) => r.channel)).toEqual(['dev']);
+  await expect(page.getByTestId('update-channel-dev')).toBeChecked();
+  await expect(page.getByTestId('update-channel-note')).toHaveText(
+    '开发版跟着 main 走，每次合并都可能有新版，可能不稳定。切回正式版不会降级，会等下一个比当前高的正式版。',
+  );
+  await shot(page, '53-update-channel-dev');
+  // the channel already chosen: no request
+  await page.getByTestId('update-channel-dev').click();
+  await page.waitForTimeout(200);
+  expect(app.desktop.records.filter((r) => r.op === 'setUpdateChannel')).toHaveLength(1);
+
+  // a round on the development channel: its version on screen as is
+  app.desktop.setUpdate({ ...app.desktop.update, phase: 'downloading', version: '0.5.1-dev.387', got: 1_000_000, total: 8_000_000 });
+  await expect(page.getByTestId('update-line')).toHaveText('正在下载 0.5.1-dev.387（1.0 / 8.0 MB）');
+  await expect(page.getByTestId('update-channel-stable')).toBeEnabled();
+
+  // being put in place: both choices greyed out, and why
+  app.desktop.setUpdate({ ...app.desktop.update, phase: 'installing', version: '0.5.1-dev.387' });
+  await expect(page.getByTestId('update-line')).toHaveText('正在安装 0.5.1-dev.387');
+  await expect(page.getByTestId('update-channel-stable')).toBeDisabled();
+  await expect(page.getByTestId('update-channel-dev')).toBeDisabled();
+  await expect(page.getByTestId('update-channel-note')).toHaveText('正在安装 0.5.1-dev.387，装好后可以切换');
+  await expect(page.getByTestId('update-check')).toBeDisabled();
+
+  // in place: switching back is allowed and says what it means for the version already installed
+  app.desktop.setUpdate({ ...app.desktop.update, phase: 'ready', version: '0.5.1-dev.387' });
+  await expect(page.getByTestId('update-channel-stable')).toBeEnabled();
+  await expect(page.getByTestId('update-channel-ready')).toHaveText('已装好 0.5.1-dev.387，重启后生效；之后按所选渠道检查');
+  await page.getByTestId('update-channel-stable').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'setUpdateChannel').map((r) => r.channel)).toEqual(['dev', 'stable']);
+  await expect(page.getByTestId('update-channel-stable')).toBeChecked();
+  await expect(page.getByTestId('update-current')).toHaveText('0.5.0');
+
+  // a Mac without development builds: the development channel greyed out, with the reason
+  app.desktop.setUpdate({ ...base, devUnavailable: '开发版只有 Apple 芯片的包，这台 Mac 只能用正式版' });
+  await expect(page.getByTestId('update-channel-dev')).toBeDisabled();
+  await expect(page.getByTestId('update-channel-stable')).toBeChecked();
+  await expect(page.getByTestId('update-channel-note')).toHaveText('开发版只有 Apple 芯片的包，这台 Mac 只能用正式版');
+  // and a build that cannot update itself at all: nothing to choose
+  app.desktop.setUpdate({ ...base, problem: '这一版没有带更新用的公钥，不能自动更新，请手动下载新版' });
+  await expect(page.getByTestId('update-channel-stable')).toBeDisabled();
+  await expect(page.getByTestId('update-channel-dev')).toBeDisabled();
+  expect(app.desktop.records.filter((r) => r.op === 'setUpdateChannel')).toHaveLength(2);
   await app.close();
 });
 

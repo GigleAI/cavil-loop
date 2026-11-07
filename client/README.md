@@ -39,7 +39,9 @@ scripts/
   make-dmg.mjs          把 Tauri 打出的 .app 做成 dmg（dmgbuild，dmg-settings.py 是窗口布局）
   size-gate.mjs         安装包体积门槛：每个 dmg ≤ 20 MB（1 MB = 1,000,000 字节），目标 ≤ 10 MB
   mac-open-check.sh     CI 的 Mac 机器上：dmg 窗口内容 + 冒烟 + 第一次打开步骤的实测
-  mac-update-check.sh   CI 的 Mac 机器上：装在「应用程序」里的旧版真实更新到新版，被改过的更新包被拒（#184）
+  mac-update-check.sh   CI 的 Mac 机器上：装在「应用程序」里的旧版真实更新到新版，被改过的更新包被拒（#184）；旧版是开发版时在开发版渠道上更新到下一个开发版（#215）
+  dev-version.mjs       开发版的版本号 X.Y.(Z+1)-dev.N，打包前写进三处版本号（#215）
+  dev-release.mjs       把 main 上的开发版发成预发布，只留最近 10 个（#215）
   update-manifest.mjs   发版时生成 latest.json（App 读它更新）：用 App 的公钥逐个验签（minisign：包的内容 + 可信注释），缺包、验不过都拒绝；
                         也给维护者用：--set-pubkey 写入公钥，--verify 验一个签名
   release-command.mjs   放行命令只在这里定义一次；网页 / txt / 背景源文件 / 发版说明里的副本由 test/unit/dmg.test.ts 逐字对拍
@@ -289,7 +291,9 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 **谁做什么**：判断全在后台本体 `src-tauri/crates/core/src/update.rs`（App 和测试后台跑同一份）；碰到已安装 App 的部分（读更新说明、下载、验签、换掉 App 包）是外壳的 `src-tauri/src/updater.rs`，用 Tauri 官方更新插件；窗口只显示外壳报来的状态（`state.update`，设置页「更新」一节 + 看板顶部的「已下载」提示条，`src/renderer/UpdateViews.tsx`）。
 
-- **挑哪个版本**（`update::pick`）：读本仓库发版列表（不带令牌，最多 5 页），只认标签 `client/vX.Y.Z`（三段纯数字、不带前导零）、不是草稿也不是预发布、版本号比当前大的；取版本号最大的，不看发布时间。它的附件里必须有 `latest.json`，而且地址在本仓库的下载地址下，否则判失败（不退而求其次装更旧的）。
+- **挑哪个版本**（`update::pick`）：读本仓库发版列表（不带令牌，最多 10 页），只认标签 `client/vX.Y.Z`（三段纯数字、不带前导零）、不是草稿也不是预发布、版本号比当前大的；取版本号最大的，不看发布时间。它的附件里必须有 `latest.json`，而且地址在本仓库的下载地址下，否则判失败（不退而求其次装更旧的）。
+- **两个渠道**（#215，设置页「更新渠道」，存在本机设置 `update.channel`，默认正式版，看不懂的值按正式版）：**正式版**只按上一条挑；**开发版**另外认标签 `client/vX.Y.Z-dev.N`、而且标成预发布的发版（main 上每次客户端改动由 CI 发，见下面「开发版」）。两种一起比版本号：按 semver 的先后——同一个 X.Y.Z，正式版比它的开发版高；开发版之间按 N 的数值比（`dev.10` > `dev.9`）。形状不对的（`-rc.1`、`-dev.01`、标成预发布的 `X.Y.Z`、没标预发布的 `-dev.N`）两个渠道都不认。从开发版切回正式版不降级：等下一个比当前高的正式版。开发版只有 Apple 芯片的包（`update::DEV_TARGETS`，和发版说明生成器 `CHANNEL_PLATFORMS.dev` 是同一张表，测试对拍），Intel Mac 上开发版选项置灰并写明原因。
+- **切渠道遇上正在进行的一轮**：切换和「这一轮属于哪个渠道」在同一把锁下记一个代号；一轮在读列表、读更新说明、下载时看到代号变了就作废（读到的丢掉，下载停掉），随即按新渠道重来一轮；下载完、开始换 App 之前在同一把锁下再核对一次。正在换 App（「正在安装 X」）时换不了、也停不下来，这时切换被拒绝，单选置灰。已装好等重启时可以切，已换上的版本不撤回，重启前不再查。
 - **什么时候查**：启动时一次，之后每 6 小时一次；关掉「自动检查更新」后都不查，手动「立即检查」照查。一次只跑一轮：跑着时再点不会再开一轮；新版装好以后不再查（重启就是新版）。
 - **失败不等于已是最新**：发版列表或更新说明 30 秒没回应、任一页读失败、内容看不懂、下载 60 秒收不到数据（按「多久没收到数据」算，不按总时长）、中途断开、签名不符、换 App 失败，都记成失败并写明原因，下一轮再试；只有真的没有更高版本才说「已是最新」。
 - **免放行命令的依据**：macOS 只拦带「从网络下载」标记的 App，这个标记是浏览器下载时加的。更新插件用自己的网络代码下载、在进程里解包换掉 App，不加这个标记；万一换上的新版带着标记，`updater.rs` 会把新版自己身上的去掉。CI 的 Mac 上真跑更新核对（`scripts/mac-update-check.sh`）。
@@ -303,15 +307,19 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 | `test/unit/update.test.ts`（真实 Rust 后台子进程 + 本机发版服务器 + 测试拨动的时钟） | 挑版本的每条规则；一轮的每种结局（新版装好 / 已是最新 / 列表读失败 / 第二页失败 / 30 秒没回应 / 下载 60 秒没数据 / 慢但一直在下 / 中途断开 / 签名不符 / 换 App 失败 / 没有这台机器的包）；一次只跑一轮、装好后不再查；启动 + 每 6 小时、关掉后不查、开关和「关掉的提示条」重启后还在；没有公钥时从不去查 | 验签用 sha256 代替 minisign，「换 App」写一个文件 |
 | `test/e2e/app.spec.ts`（真实窗口） | 设置页每种状态的文字、按钮可不可点、失败只在设置页、提示条重启 / 关掉、关掉后新版本再提示 | 外壳的更新状态由测试给 |
 | `scripts/mac-update-check.sh`（CI 的两台 Mac） | 装在 `/Applications` 的旧版真实更新：版本号和只有新包才有的文件、没有隔离标记、签名有效、用 `open` 能启动；改过的包被拒、旧版逐字节不变 | 本机回环的「GitHub」，一次性密钥 |
-| `test/unit/update-manifest.test.ts` | 发版时生成的 `latest.json`：两个平台、本仓库下载地址；别的密钥签的包、缺包、签名绑定了别的版本、App 没公钥都拒绝 | 密钥和签名用 Tauri 自己的签名工具现生成 |
+| `test/unit/update-manifest.test.ts` | 发版时生成的 `latest.json`：两个平台、本仓库下载地址；别的密钥签的包、缺包、签名绑定了别的版本、App 没公钥都拒绝；开发版只要 Apple 芯片的包、正式版缺任一种照旧拒绝、各渠道只认自己的版本号形状；App 和生成器的开发版机器表一致 | 密钥和签名用 Tauri 自己的签名工具现生成 |
+| `test/unit/update.test.ts` 的渠道部分（#215） | 每个渠道挑哪个版本（semver 先后、`dev.10` > `dev.9`、形状不对的不认、装着开发版时）；渠道设置重启后还在、看不懂的值按正式版、没有开发版包的机器拒绝开发版；读列表 / 读更新说明 / 下载中途切渠道（作废、重来、旧版本不再回到界面上）、安装中切换被拒、来回切只装一次 | 同上 |
+| `test/unit/dev-version.test.ts`、`test/unit/dev-release.test.ts`（#215） | 开发版版本号（真 git 仓库、浅克隆拒绝、三处版本号不一致拒绝、只改版本那一行）；发布脚本真跑、`gh` 换成带状态的替身：先草稿带齐文件再发布、有更高的不发、半截的补完不重复、列表读失败一个字都不写、只留最近 10 个（按版本号）、只删开发版形状且标成预发布的 | 假 `gh`（发版和标签存在一个 JSON 里） |
 
 负对照（`MUTATION=1 npm run test:mutation`）里每条挑版本规则、超时、卡住判定、一轮一次、自动开关、提示条记忆、发版说明的每项拒绝各有一项。
 
 ## 发版
 
-改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg 和一个更新包（`tauri build --bundles app`，带 `createUpdaterArtifacts` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：dmg 和更新包每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh` 和 `scripts/mac-update-check.sh`，通过后生成 `latest.json`（`scripts/update-manifest.mjs`）并建 Release，附件是两个 dmg、两个更新包（`Cavil-Loop-<版本>-<芯片>.app.tar.gz`）和它们的签名（`.sig`）、`latest.json`（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
+**开发版**（#215）：客户端改动每次合进 main，`.github/workflows/client.yml` 在 Apple 芯片的 Mac 上打包前把版本号改成 `X.Y.(Z+1)-dev.N`（`scripts/dev-version.mjs`：X.Y.Z 是三处一致的当前版本号，N 是 main 上的提交数；只改 CI 机器上的工作区，不提交），用发版签名私钥签名（和正式版同一把，维护者在 #215 定的），快速测试、打包、体积门槛、真实更新检查都过了以后，由 `publish development build` 这一步（`scripts/dev-release.mjs`）发成预发布：先建草稿带齐文件再发布，已有更高的开发版就不发，只留版本号最高的 10 个（连标签一起删更旧的；正式版、daemon 的发版、别的形状一概不碰）。删除时逐个处理，每个分三步：先把它改成草稿（装着的 App 就看不到了；草稿上记着标签名和它来自的提交），再删它的标签，最后删草稿。每一步之前都重新读一次发版列表，按发版编号（不按标签名）找到它，用同一条规则重判它还该不该删，不该删（被改成不是预发布、同名换了一个发版、进了最新 10 个）就跳过。进度都记在 GitHub 上，不靠本机：哪一步暂时失败（读不到、删不掉、进程被杀），这个版本就停在「已发布」或「草稿」，下一次合并按同一规则接着做完；比当前最高开发版低的开发版草稿都在清理范围里。标签只在没有别的发版用它、而且仍指向草稿记下的那个提交时才删；读不到标签算暂时失败（留着草稿下次再来），确定不是它的标签（指向别的提交、别的发版在用）才放过标签、照删草稿。GitHub 没有「内容没变才删」的接口，最后一次重读和写之间的变化仍拦不住。每周定时和手动触发的打包也改成开发版号，但用一次性密钥、不发布。
 
-**更新签名密钥**（#184，维护者做一次）：公钥只放一处——`src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`：App 运行时用它验更新包，打包时打包工具用它，发版前生成 `latest.json` 那一步也用它逐个验签。发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名。发版标签上缺这个 secret、或公钥是空的，打包直接失败；更新包的签名用公钥验不过（包被改过、签名坏了、不是这把钥匙签的、绑定的版本不对），生成 `latest.json` 那一步拒绝发版。合入 main、每周定时和手动触发的打包用每次现生成的一对一次性密钥（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
+**正式版**：改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg 和一个更新包（`tauri build --bundles app`，带 `createUpdaterArtifacts` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：dmg 和更新包每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh` 和 `scripts/mac-update-check.sh`，通过后生成 `latest.json`（`scripts/update-manifest.mjs`）并建 Release，附件是两个 dmg、两个更新包（`Cavil-Loop-<版本>-<芯片>.app.tar.gz`）和它们的签名（`.sig`）、`latest.json`（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
+
+**更新签名密钥**（#184，维护者做一次）：公钥只放一处——`src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`：App 运行时用它验更新包，打包时打包工具用它，发版前生成 `latest.json` 那一步也用它逐个验签。发版标签的更新包用仓库 Actions secret `TAURI_SIGNING_PRIVATE_KEY`（有密码时再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）签名。发版标签上缺这个 secret、或公钥是空的，打包直接失败；更新包的签名用公钥验不过（包被改过、签名坏了、不是这把钥匙签的、绑定的版本不对），生成 `latest.json` 那一步拒绝发版。合入 main 的打包（开发版，#215）也用这把私钥签名，同样缺 secret 或公钥空着就失败。每周定时和手动触发的打包用每次现生成的一对一次性密钥（同样的文件、同样过体积门槛和真实更新检查，但这些包不会被发出去）。
 
 在自己的 Mac 上，进仓库的 `client/` 目录，**一条一条**跑下面的命令；任何一条报错就停下，先看下面「出错了怎么办」，不要继续上传。
 

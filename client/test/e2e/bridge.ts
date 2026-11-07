@@ -180,6 +180,9 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
         } else if (op === 'setAutoUpdate') {
           desktop.records.push({ op, on: args.on });
           desktop.setUpdate({ ...desktop.update, auto: Boolean(args.on) });
+        } else if (op === 'setUpdateChannel') {
+          desktop.records.push({ op, channel: args.channel });
+          desktop.setUpdate({ ...desktop.update, channel: args.channel });
         } else if (op === 'dismissUpdate') {
           desktop.records.push({ op, version: args.version });
           desktop.setUpdate({ ...desktop.update, dismissed: args.version });

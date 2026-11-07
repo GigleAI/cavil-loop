@@ -35,10 +35,21 @@ trap cleanup EXIT
 plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$2/Contents/Info.plist"; }
 
 old="$(plist CFBundleShortVersionString "$src_app")"
-IFS=. read -r a b c <<<"$old"
-new="$a.$b.$((c + 1))"
+# a development build (X.Y.Z-dev.N, stamped by scripts/dev-version.mjs on every build but a release
+# tag, GitHub#215) updates to the next development build, as a pre-release, on the development
+# channel; a release to the next release
+channel=stable
+prerelease=False
+if [[ "$old" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-dev\.([0-9]+)$ ]]; then
+  new="${BASH_REMATCH[1]}-dev.$((BASH_REMATCH[2] + 1))"
+  channel=dev
+  prerelease=True
+else
+  IFS=. read -r a b c <<<"$old"
+  new="$a.$b.$((c + 1))"
+fi
 case "$(uname -m)" in arm64) target=darwin-aarch64 ;; *) target=darwin-x86_64 ;; esac
-echo "== old $old → new $new ($target)"
+echo "== old $old → new $new ($target, $channel channel)"
 
 echo "== 0. a throw-away update key; the new version's package, signed with it"
 tauri="$here/../node_modules/.bin/tauri"
@@ -64,12 +75,12 @@ print(json.dumps({"version": v, "notes": "", "pub_date": "2026-11-06T00:00:00Z",
 EOF
 }
 manifest
-python3 - "$new" "$base" > "$work/srv/api/repos/GigleAI/cavil-loop/releases" <<'EOF'
+python3 - "$new" "$base" "$prerelease" > "$work/srv/api/repos/GigleAI/cavil-loop/releases" <<'EOF'
 import json, sys
-v, base = sys.argv[1:3]
+v, base, pre = sys.argv[1:4]
 tag = f"client/v{v}"
 print(json.dumps([
-  {"tag_name": tag, "draft": False, "prerelease": False,
+  {"tag_name": tag, "draft": False, "prerelease": pre == "True",
    "assets": [{"name": "latest.json", "browser_download_url": f"{base}/web/GigleAI/cavil-loop/releases/download/{tag}/latest.json"}]},
   {"tag_name": "release/v2026.11.01.1", "draft": False, "prerelease": False, "assets": []},
 ]))
@@ -90,7 +101,7 @@ run_old() {
   : > "$rec"
   env CAVIL_CLIENT_TEST_MODE=1 CAVIL_CLIENT_TEST_API="$base/api" CAVIL_CLIENT_TEST_WEB="$base/web" \
     CAVIL_CLIENT_TEST_CREDENTIAL_FILE="$work/cred" CAVIL_CLIENT_USER_DATA="$work/profile-$(basename "$rec")" \
-    CAVIL_CLIENT_TEST_ALERTS_FILE="$rec" CAVIL_CLIENT_TEST_UPDATE=1 CAVIL_CLIENT_TEST_UPDATE_PUBKEY="$pub" \
+    CAVIL_CLIENT_TEST_ALERTS_FILE="$rec" CAVIL_CLIENT_TEST_UPDATE=1 CAVIL_CLIENT_TEST_UPDATE_PUBKEY="$pub" CAVIL_CLIENT_TEST_UPDATE_CHANNEL="$channel" \
     "$installed/Contents/MacOS/Cavil Loop" --hidden >"$rec.out" 2>&1 &
   pid=$!
 }

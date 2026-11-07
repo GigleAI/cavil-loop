@@ -41,6 +41,8 @@ export interface Desktop {
   /** start a round now (returns at once; progress comes as `update` events) */
   checkUpdate(): Promise<void>;
   setAutoUpdate(on: boolean): Promise<void>;
+  /** choose the update channel (kept); a check on it starts at once */
+  setUpdateChannel(channel: 'stable' | 'dev'): Promise<void>;
   /** close the "ready" banner for `version` (kept) */
   dismissUpdate(version: string): Promise<void>;
   /** quit and start the new version (only once it is in place) */

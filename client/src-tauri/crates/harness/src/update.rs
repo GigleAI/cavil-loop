@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use cavil_core::http::{self, Endpoints, HttpRequest};
 use cavil_core::platform::Clock;
 use cavil_core::store::Store;
-use cavil_core::update::{self, Backend, Failure, Found, Timings, Updater};
+use cavil_core::update::{self, Backend, Channel, Failure, Found, Timings, Updater};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -29,8 +29,13 @@ pub struct FakeBackend {
     pub target: String,
     pub dir: PathBuf,
     pub fail_install: AtomicBool,
+    /// install waits until released (`test.update.holdInstall`): the window where switching is refused
+    pub hold_install: AtomicBool,
+    pub install_gate: tokio::sync::Notify,
+    /// installs that started (a dropped round must never reach one)
+    pub installs: Mutex<Vec<String>>,
     seq: AtomicU64,
-    found: Mutex<HashMap<u64, (String, String)>>,
+    found: Mutex<HashMap<u64, (String, String, String)>>,
 }
 
 impl FakeBackend {
@@ -41,6 +46,9 @@ impl FakeBackend {
             target: target.into(),
             dir,
             fail_install: AtomicBool::new(false),
+            hold_install: AtomicBool::new(false),
+            install_gate: tokio::sync::Notify::new(),
+            installs: Mutex::new(vec![]),
             seq: AtomicU64::new(1),
             found: Mutex::new(HashMap::new()),
         }
@@ -73,12 +81,12 @@ impl Backend for FakeBackend {
             return Err(Failure::Invalid(format!("更新说明文件里没有这台机器（{}）的更新包", self.target)));
         };
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
-        self.found.lock().unwrap().insert(id, (u.to_string(), sig.to_string()));
+        self.found.lock().unwrap().insert(id, (u.to_string(), sig.to_string(), version.clone()));
         Ok(Some(Found { version, id }))
     }
 
     async fn download(&self, found: &Found, got: Box<dyn Fn(u64, Option<u64>) + Send + Sync>) -> Result<Vec<u8>, Failure> {
-        let (url, sig) = self.found.lock().unwrap().get(&found.id).cloned().ok_or(Failure::Invalid("没有这个更新".into()))?;
+        let (url, sig, _) = self.found.lock().unwrap().get(&found.id).cloned().ok_or(Failure::Invalid("没有这个更新".into()))?;
         let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Failure> {
             let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).build().into();
             let res = agent.get(&url).call().map_err(|e| Failure::Network(e.to_string()))?;
@@ -111,7 +119,11 @@ impl Backend for FakeBackend {
         Ok(bytes)
     }
 
-    async fn install(&self, _found: &Found, bytes: Vec<u8>) -> Result<(), Failure> {
+    async fn install(&self, found: &Found, bytes: Vec<u8>) -> Result<(), Failure> {
+        self.installs.lock().unwrap().push(found.version.clone());
+        if self.hold_install.load(Ordering::SeqCst) {
+            self.install_gate.notified().await;
+        }
         if self.fail_install.load(Ordering::SeqCst) {
             return Err(Failure::Install("没有权限写入（测试要求失败）".into()));
         }
@@ -143,7 +155,8 @@ pub async fn command(
     let s = |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     if cmd == "test.update.pick" {
         let pages: Vec<Value> = a.get("pages").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        return Ok(match update::pick(&pages, &s("current"), &s("web")) {
+        let channel = Channel::parse(&s("channel")).unwrap_or(Channel::Stable);
+        return Ok(match update::pick(&pages, &s("current"), &s("web"), channel) {
             Ok(p) => json!({ "pick": p.map(|p| json!({ "version": p.version, "tag": p.tag, "manifest": p.manifest_url })) }),
             Err(m) => json!({ "error": m }),
         });
@@ -167,6 +180,15 @@ pub async fn command(
             Err(m) => json!({ "ok": false, "error": m }),
         });
     }
+    // what an earlier version (or a hand edit) left in the stored channel setting: any JSON value
+    if cmd == "test.update.storeChannel" {
+        store.set_setting(update::CHANNEL_KEY, a.get("value").unwrap_or(&Value::Null))?;
+        return Ok(Value::Null);
+    }
+    // the development build machines, as the app has them (compared with the release job's table)
+    if cmd == "test.update.devTargets" {
+        return Ok(json!(update::DEV_TARGETS));
+    }
     if cmd == "test.update.start" {
         let d = Timings::default();
         let timings = Timings {
@@ -178,7 +200,8 @@ pub async fn command(
         let current = s("current");
         let backend = Arc::new(FakeBackend::new(endpoints.clone(), &current, &s("target"), PathBuf::from(s("dir"))));
         let problem = a.get("problem").and_then(|v| v.as_str()).map(str::to_string);
-        let u = Updater::new(backend.clone(), clock.clone(), store.clone(), &current, &endpoints.web, timings, problem, Box::new(emit));
+        let dev_supported = a.get("devSupported").and_then(|v| v.as_bool()).unwrap_or(true);
+        let u = Updater::new(backend.clone(), clock.clone(), store.clone(), &current, &endpoints.web, timings, problem, dev_supported, Box::new(emit));
         if a.get("run").and_then(|v| v.as_bool()).unwrap_or(false) {
             tokio::spawn(u.clone().run());
         }
@@ -197,6 +220,26 @@ pub async fn command(
         }
         "test.update.setAuto" => u.set_auto(a.get("on").and_then(|v| v.as_bool()).unwrap_or(true)).map(|_| u.status()),
         "test.update.dismiss" => u.dismiss(&s("version")).map(|_| u.status()),
+        // like the shell's command: choose, then a check (which a running round answers by restarting itself)
+        "test.update.setChannel" => {
+            let c = Channel::parse(&s("channel")).ok_or("不认识的渠道")?;
+            match u.set_channel(c) {
+                Ok(()) => {
+                    tokio::spawn(async move { u.check_now().await });
+                    Ok(json!({ "ok": true }))
+                }
+                Err(m) => Ok(json!({ "ok": false, "error": m })),
+            }
+        }
+        "test.update.holdInstall" => {
+            backend.hold_install.store(a.get("on").and_then(|v| v.as_bool()).unwrap_or(true), Ordering::SeqCst);
+            Ok(Value::Null)
+        }
+        "test.update.releaseInstall" => {
+            backend.install_gate.notify_one();
+            Ok(Value::Null)
+        }
+        "test.update.installs" => Ok(json!(backend.installs.lock().unwrap().clone())),
         "test.update.failInstall" => {
             backend.fail_install.store(a.get("on").and_then(|v| v.as_bool()).unwrap_or(true), Ordering::SeqCst);
             Ok(Value::Null)
