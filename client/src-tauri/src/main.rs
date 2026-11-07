@@ -329,6 +329,14 @@ fn main() {
                     api.prevent_close();
                     let _ = w.hide();
                     d.record(json!({ "op": "hidden" }));
+                    // hidden is "not in front", whether or not the system also reports the focus loss
+                    desktop::set_active(w.app_handle(), false);
+                }
+            }
+            // the user switched to the window, or away from it (GitHub#185: the unread badge)
+            if let WindowEvent::Focused(focused) = ev {
+                if w.label() == "main" {
+                    desktop::set_active(w.app_handle(), *focused);
                 }
             }
         })
@@ -337,6 +345,7 @@ fn main() {
             mounted,
             desktop::desktop_notify,
             desktop::desktop_badge,
+            desktop::desktop_clear_notifications,
             desktop::desktop_login_item,
             desktop::desktop_set_login_item,
             desktop::desktop_next_event,

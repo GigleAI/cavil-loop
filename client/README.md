@@ -182,7 +182,7 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 ## `pending/human` 提醒（#139，#169 在 Tauri 上重做）
 
-「待处理」= 所有已加入来源里带「等人处理的标签」（默认 `pending/human`，不区分大小写）的条目，**不论开着还是已关闭 / 已合并**。这个标签名和「交回 agent」摘掉的是**同一个设置**（`handBack.human`），改一处两边一起变。通知、Dock 角标、启动汇总全部由 `src/data/pending.ts` 的同一个 `PendingTracker` 算出，controller 只在一轮同步收下结果后把「这一轮完整读到、且仍属于这次添加」的那些快照喂给它（和写缓存用的是同一份 `accepted`）。
+「待处理」= 所有已加入来源里带「等人处理的标签」（默认 `pending/human`，不区分大小写）的条目，**不论开着还是已关闭 / 已合并**。这个标签名和「交回 agent」摘掉的是**同一个设置**（`handBack.human`），改一处两边一起变。通知、启动汇总和设置页的待处理列表全部由 `src/data/pending.ts` 的同一个 `PendingTracker` 算出，Dock 角标是其中的未读部分（见下），controller 只在一轮同步收下结果后把「这一轮完整读到、且仍属于这次添加」的那些快照喂给它（和写缓存用的是同一份 `accepted`）。
 
 | 情况 | 结果 |
 |---|---|
@@ -191,29 +191,40 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 | 已读全过的来源里，某条目上一轮不是待处理、这一轮是 | 通知一次；摘掉再挂上算新出现 |
 | 点一条条目通知 | 窗口回到前面，App 里打开那一条的详情；它已不在看板上（比如来源刚删掉）就在浏览器打开 |
 | 同一条目在几个来源里 | 按 `仓库#编号` 只算一个、只通知一次 |
-| 删除来源 / 改标签名 | 静默重算，角标跟着变，不发通知 |
+| 删除来源 / 改标签名 | 静默重算，不发通知；不会让未读变多（只会因条目不再算待处理而变少） |
 | 退出登录 / 换账号 | 清零，下次第一次读全时重新汇总 |
-| 在 App 里改了一条（加 / 摘标签、交回 agent） | 只重读那一条进缓存，不喂给提醒；角标在下一轮同步（≤ 60 秒）时跟上。自己在 App 里打上 `pending/human` 也会在下一轮收到一次通知 |
+| 在 App 里改了一条（加 / 摘标签、交回 agent） | 只重读那一条进缓存，不喂给提醒；列表和角标在下一轮同步（≤ 60 秒）时跟上。自己在 App 里打上 `pending/human` 也会在下一轮收到一次通知（窗口在前台，所以不算未读） |
+
+**Dock 角标是未读数，设置页列出全部待处理**（#185；维护者在 PR #194 上改定：「角标变成未读数，切换到 app 后清空，同时清空之前发的 notification」）：
+
+- **未读** = 窗口不在前台时变成待处理的条目（一轮里新出现的、以及第一次读到某来源时汇总进来的），只算其中仍然待处理的。controller 记一份未读集合（`unread`），角标发 `unreadNow()` = 未读集合与当前待处理的交集条数；计数时不删记录，所以改标签名再改回来不会把没看过的条目当成看过。窗口在前台时新来的条目照样发通知，但不进未读。
+- **切到 App 就是看过**：外壳在主窗口获得焦点时发 `active`、失去焦点或关窗隐藏时发 `inactive`（`src-tauri/src/main.rs` 的 `WindowEvent::Focused` / 关窗分支，`desktop.rs` 的 `set_active`）。收到 `active`，controller 清空未读、把角标设成 0，再排队调 `desktop_clear_notifications`：macOS 上 `removeAllDeliveredNotifications` 收起本 App 留在通知中心的全部通知。点 Dock 图标、点通知都会让窗口获得焦点，走的是同一条路。退出登录清空未读。
+- 设置页显示「未读 N 条 · 现在待处理 M 条」。列表取自同一个 `PendingTracker` 的去重集合（`list()`，和 `count()` 同一份），controller 每次更新 `pendingCount` 都经 `pendingNow()` 同时更新 `pendingItems` 和 `unreadCount`，所以列表条数 = 待处理数字，同一条在几个来源里只列一行，某来源没读全时沿用上一轮。开着的（含草稿 PR）排前面，其余按更新时间新到旧。处理完了要让它离开列表，就摘掉「等人处理的标签」；不要为此点「交回 agent」——它还会加上派工标签。
+- 每行的颜色和状态文字用看板卡片、表格行、详情徽章共用的 `stateTone()` / `badgeText()`（`src/shared/stateTone.ts`）：草稿 PR、以「不计划 / 重复」关闭的 issue 是灰色，没合并就关的 PR 红，已完成的 issue 和已合并的 PR 紫，其余开着的绿。列表数据保留类型、状态、关闭原因、草稿标记的原值。
+- 点一行和点那条的系统通知走同一段处理（`openPending()` → `onDesktopEvent`）：看板上有它（不管搜索框怎么筛）就回到看板打开详情；看板上没有（它的来源没在看板上勾选）就在浏览器打开，行末标「在浏览器打开 ↗」；已不在待处理的编号什么都不做。
+- 这一节只读：不加任何批量操作，也不新增任何写 GitHub 的请求。
 
 **桌面这一侧在外壳里**（`src-tauri/src/desktop.rs`、`mac.rs`），窗口经 `src/app/desktop.ts` 的约定调用它，这些命令都不碰凭据：
 
 - **通知**：macOS 上用系统现行的通知接口（UserNotifications），第一次发之前向系统申请权限，每条的结果（成功 / 系统原话）回报给窗口；拒绝时看板顶部和设置页显示提示，下一条成功后清掉。不用 Tauri 官方通知插件：它在 macOS 上查权限一律回「已允许」、发送失败不回传（按插件仓库提交 `4356356d`、插件 2.7.0 的源码核对），「被拒要让人看见」就做不到。没打包的开发版（`npm start`）不发通知。
-- **角标**：Tauri 窗口的设角标接口（Dock 图标的数字），0 时清掉。
+- **角标**：Tauri 窗口的设角标接口（Dock 图标的数字），0 时清掉。数字是未读数（见上）。
+- **收起已发的通知**：`desktop_clear_notifications`，macOS 上 `UNUserNotificationCenter.removeAllDeliveredNotifications`，只动本 App 的通知；其他系统不做事。
+- **窗口在不在前台**：主窗口获得 / 失去焦点、关窗隐藏时，外壳发 `active` / `inactive` 事件，也写进测试记录。
 - **开机自启**：Tauri 官方开机自启插件，macOS 用登录项 LaunchAgent（`~/Library/LaunchAgents`），启动参数带 `--hidden`：不显示窗口，照常同步提醒。
 - **关窗只隐藏**（macOS）：拦下关窗请求改成隐藏，点 Dock 图标（系统的「重新打开」事件）窗口回来，⌘Q 退出。其他系统 v1 不显示通知和角标、关窗即退出，计数照常。
 - **要求 macOS 14 或更新**（`tauri.conf.json` 的 `minimumSystemVersion`，维护者在 PR #173 定的）：窗口隐藏后网页还能继续跑，靠的是网页引擎「不挂起看不见的页面」这个开关，它从 macOS 14 起才生效；11–13 上没有办法保证关窗后继续提醒，所以不再支持。窗口仍按 Safari 14 的网页引擎构建（比需要的更宽），旧引擎的界面测试照留。`scripts/mac-open-check.sh` 第 0c 步核对打出来的 App 确实要求 14。
 - **同步节拍在外壳**：外壳每 60 秒告诉窗口「该同步了」，窗口收到才同步（窗口里不再有定时器）——隐藏窗口的定时器会被网页引擎放慢。macOS 上另外声明一个「用户发起的活动」，不让系统的 App 小憩把没有窗口的 App 停掉。
 - **窗口对外壳的调用一次只发一条**：隐藏窗口里同时发出的第二条请求可能被压到下一次唤醒（实测：角标比通知晚了整整一拍，超过 2 分钟的承诺），所以 controller 把它们排成队。
 
-**测试模式**（只在 `CAVIL_CLIENT_TEST_MODE=1` 且 GitHub 指向本机回环时生效）：`CAVIL_CLIENT_TEST_ALERTS_FILE` 把每次通知 / 角标 / 节拍（带当时窗口是否可见）/ 隐藏 / 显示写成一行 JSON，不弹真通知；`CAVIL_CLIENT_TEST_NOTIFY_REFUSE=<消息>` 模拟系统拒绝；`CAVIL_CLIENT_TEST_TICK_MS` 改节拍；`CAVIL_CLIENT_TEST_HIDE_ON_CLOSE=1` 让 Linux 上也关窗只隐藏；`CAVIL_CLIENT_TEST_CONTROL_FILE` 里追加 `close`（和关窗按钮同一个请求）或 `click <通知 id>`（和点那条通知同一段处理）。
+**测试模式**（只在 `CAVIL_CLIENT_TEST_MODE=1` 且 GitHub 指向本机回环时生效）：`CAVIL_CLIENT_TEST_ALERTS_FILE` 把每次通知 / 角标 / 节拍（带当时窗口是否可见）/ 隐藏 / 显示写成一行 JSON，不弹真通知；`CAVIL_CLIENT_TEST_NOTIFY_REFUSE=<消息>` 模拟系统拒绝；`CAVIL_CLIENT_TEST_TICK_MS` 改节拍；`CAVIL_CLIENT_TEST_HIDE_ON_CLOSE=1` 让 Linux 上也关窗只隐藏；`CAVIL_CLIENT_TEST_CONTROL_FILE` 里追加 `close`（和关窗按钮同一个请求）、`click <通知 id>`（和点那条通知同一段处理）或 `activate`（和窗口获得焦点同一段处理：没有窗口管理器的测试显示上焦点事件不一定有）。
 
 **怎么验的**：
 
 | 层 | 测什么 | 判失败 |
 |---|---|---|
-| `test/unit/pending.test.ts` | 计数、去重、汇总、读失败、离线启动、删来源、改标签名、退出、被拒、节拍、点通知、开机自启（真实后台子进程 + 假 GitHub） | 是 |
-| `test/e2e/app.spec.ts` | 窗口里的提醒流程、被拒黄条（可 × 关）、点通知打开详情且回到看板后不会再打开 | 是 |
-| `test/tauri/background.spec.ts`（Linux 真 App） | 关窗后、`--hidden` 启动时，挂标签后 **120 秒内**完成新一轮同步、发出这一条的通知、角标 +1，期间窗口一直不可见；点通知窗口回来并打开那一条 | 是 |
+| `test/unit/pending.test.ts` | 计数、去重、汇总、读失败、离线启动、删来源、改标签名、退出、被拒、节拍、点通知、开机自启（真实后台子进程 + 假 GitHub）；设置页列表每轮都核对「条数 = 计数、一条一行、角标 = 未读 ≤ 待处理」，列表顺序与保留的关闭原因 / 草稿标记，点列表一行的三种结果；未读：切到窗口清零并收起通知、在前台时新来的不算、离开后重新计数、摘标签不再算、改设置不增加、退出清空（#185） | 是 |
+| `test/e2e/app.spec.ts` | 窗口里的提醒流程、被拒黄条（可 × 关）、点通知打开详情且回到看板后不会再打开；设置页列表和卡片、详情徽章、表格行同一批条目颜色 / 文字一致，点一行打开详情（搜索框筛掉了也行）或在浏览器打开，全程零写请求；切到窗口后未读 0、角标 0 后收起通知、列表不变（#185） | 是 |
+| `test/tauri/background.spec.ts`（Linux 真 App） | 关窗后、`--hidden` 启动时，挂标签后 **120 秒内**完成新一轮同步、发出这一条的通知、角标 +1，期间窗口一直不可见；点通知窗口回来并打开那一条；控制文件 `activate` 后依次记录 `active`、角标 0、收起通知（#185） | 是 |
 | `scripts/mac-open-check.sh` 第 5 步 | 打包好的 App 用 `--notify-check` 经正式路径真发一条通知，记下 macOS 的回答 | 否：CI 上没人点「允许」，只记录；能否真弹出由维护者在自己的 Mac 上确认 |
 
 120 秒的来由：#139 承诺 2 分钟内收到通知，节拍 60 秒，挂标签的时刻离下一拍最多 60 秒，剩下的留给一轮读取。

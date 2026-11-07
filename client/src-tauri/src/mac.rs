@@ -132,6 +132,15 @@ fn add_request(id: &str, title: &str, body: &str) -> tokio::sync::oneshot::Recei
     rx
 }
 
+/// Take back every notification of this app still sitting in Notification Center (GitHub#185:
+/// switching to the app clears them together with the unread badge). Only this app's own.
+pub fn clear_delivered() {
+    if !bundled() {
+        return;
+    }
+    UNUserNotificationCenter::currentNotificationCenter().removeAllDeliveredNotifications();
+}
+
 /// One notification. Resolves with what the system said: Ok once it accepted the request (that is not
 /// proof it was on screen), Err with its own words
 /// (e.g. "Notifications are not allowed for this application").

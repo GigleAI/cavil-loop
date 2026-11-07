@@ -14,7 +14,7 @@
 //   - an item that was not pending last round and is now → one notification;
 //     a label removed and put back later counts as new again.
 
-import type { Item, SourceSnapshot } from '../shared/types';
+import type { Item, PendingEntry, SourceSnapshot } from '../shared/types';
 
 export const DEFAULT_PENDING_LABEL = 'pending/human';
 
@@ -36,6 +36,8 @@ export interface PendingChange {
   appeared: Item[];
   /** a source was read for the first time: one summary instead of per-item notifications (null = none) */
   summary: PendingSummary | null;
+  /** the items that summary brought in (empty when there is no summary) */
+  brought: string[];
 }
 
 /** GitHub label names are case-insensitive. */
@@ -120,7 +122,7 @@ export class PendingTracker {
       };
     }
     if (newSources.length) this.started = true;
-    return { appeared: [...appeared.values()], summary };
+    return { appeared: [...appeared.values()], summary, brought: [...brought] };
   }
 
   /** Pending now: one entry per item, the most recently updated copy. */
@@ -130,6 +132,15 @@ export class PendingTracker {
 
   count(): number {
     return this.union().size;
+  }
+
+  /**
+   * Pending now as the settings page lists it (GitHub#185): the same de-duplicated
+   * set as `count()` (so the list is exactly what the badge counts), open first,
+   * then the most recently updated.
+   */
+  list(): PendingEntry[] {
+    return sortPending(this.pending().map(pendingEntry));
   }
 
   /** The sources that count this item as pending now (empty = not pending). */
@@ -168,6 +179,33 @@ export class PendingTracker {
     }
     return out;
   }
+}
+
+/** What the settings page keeps of one pending item: enough to colour, word and open it. */
+export function pendingEntry(it: Item): PendingEntry {
+  return {
+    key: it.key,
+    repo: it.repo,
+    number: it.number,
+    title: it.title,
+    url: it.url,
+    kind: it.kind,
+    state: it.state,
+    stateReason: it.stateReason ?? null,
+    isDraft: it.isDraft ?? null,
+    updatedAt: it.updatedAt,
+  };
+}
+
+/** Open ones first (a draft PR is open), then the most recently updated; the key breaks ties. */
+export function sortPending(list: PendingEntry[]): PendingEntry[] {
+  return [...list].sort((a, b) => {
+    const oa = a.state === 'open' ? 0 : 1;
+    const ob = b.state === 'open' ? 0 : 1;
+    if (oa !== ob) return oa - ob;
+    if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
 }
 
 /** Text of the notification for one item (shared by the app and its tests). */

@@ -1,6 +1,5 @@
-import { stateTone } from '../shared/stateTone';
+import { badgeText, stateTone } from '../shared/stateTone';
 import { UpdateReadyBar } from './UpdateViews';
-import { badgeText } from './KindBadge';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';

@@ -16,13 +16,21 @@ export type Alert =
 export type Delivery = { ok: true } | { ok: false; error: string };
 
 /** Something the shell tells the window: time for a sync round, a notification was clicked, or the updater changed. */
-export type DesktopEvent = { kind: 'tick' } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: UpdateStatus };
+export type DesktopEvent =
+  | { kind: 'tick' }
+  | { kind: 'open'; key: string; url: string }
+  | { kind: 'update'; status: UpdateStatus }
+  /** the window came to the front / left it (GitHub#185: switching to the app reads the unread items) */
+  | { kind: 'active' }
+  | { kind: 'inactive' };
 
 export interface Desktop {
   /** resolves with what the system did (macOS may refuse: not allowed in System Settings) */
   notify(a: Alert): Promise<Delivery>;
   /** 0 clears the badge */
   setBadge(count: number): Promise<void>;
+  /** take back this app's notifications still in Notification Center (GitHub#185) */
+  clearNotifications(): Promise<void>;
   /** launch at login: on / off; null = this platform cannot */
   loginItem(): Promise<boolean | null>;
   setLoginItem(on: boolean): Promise<void>;
