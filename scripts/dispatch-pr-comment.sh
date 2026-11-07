@@ -99,15 +99,21 @@ flip_label() {
     flip_to_doing "$PR" "PR #$PR pending/agent → $LABEL_AGENT_DOING" || true
 }
 
-# 标签要求的 worker/model 与现有 session 不一致时，不能走 stdin 注入；重启后由
+# 标签要求的 worker/model/角色与现有 session 不一致时，不能走 stdin 注入；由
 # Case B/C 的 new/resume 命令带上选择，conversation/worktree 仍按原 work number 续接。
-if session_alive "$TMUX_SESSION" && ! tmux_session_matches_worker "$TMUX_SESSION"; then
-    log "PR #$PR -> session worker/model 与请求不一致，重启切换为 $WORKER_AGENT/${WORKER_MODEL:-default}"
-    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+# session 本身不删：Case B 的 worker_session_launch 在原窗格里换程序，attach 着的
+# 终端不会被踢出 tmux（GitHub#197）。
+REUSE_SESSION=0
+if session_alive "$TMUX_SESSION"; then
+    if tmux_session_matches_worker "$TMUX_SESSION"; then
+        REUSE_SESSION=1
+    else
+        log "PR #$PR -> session worker/model/角色与请求不一致，原地换程序为 $WORKER_AGENT/${WORKER_MODEL:-default}（$WORKER_SESSION_ROLE）"
+    fi
 fi
 
-# Case A: 现有 worker session
-if session_alive "$TMUX_SESSION"; then
+# Case A: 现有 worker session，且是同一个 worker
+if [ "$REUSE_SESSION" = 1 ]; then
     log "PR #$PR -> 注入 $TMUX_SESSION (agent=$WORKER_AGENT)"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
@@ -115,9 +121,8 @@ if session_alive "$TMUX_SESSION"; then
         flip_label
         exit 0
     fi
-    log "PR #$PR -> 注入失败，fallback 重起 session (agent=$WORKER_AGENT)"
-    # 注入失败 = session 不响应/僵尸，要 kill 才能 new-session 同名（否则 duplicate name 报错）
-    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    log "PR #$PR -> 注入失败，fallback 在原 session 里重起程序 (agent=$WORKER_AGENT)"
+    # 注入失败 = 程序不响应/僵尸：Case B 的 worker_session_launch 会先杀掉它再原地换新
 fi
 
 # Case B: worktree 还在，session 没了 → 重起（有历史就 resume）
@@ -131,7 +136,7 @@ if [ -d "$WORKTREE" ]; then
     agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
     log "PR #$PR -> 在 $TMUX_SESSION 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（$AGENT_LAUNCH_KIND）"
-    tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+    worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 
     # resume 可能续到异常 state（之前 worker 留下的 Rewind UI 等）然后立即退出
     # → tmux session 立即关。等 2s 看是否还在，死了就降级成全新会话。
@@ -141,7 +146,7 @@ if [ -d "$WORKTREE" ]; then
             log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 PR context 仍可工作）"
             agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-            tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+            worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi
 
@@ -277,7 +282,8 @@ tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
 done < <(tmux_env_args)
-tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+# 工作目录是重建出来的，旧 session 可能还在：照样原地换程序，不删 session（GitHub#197）
+worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
 agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0
 agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"

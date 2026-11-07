@@ -1907,9 +1907,17 @@ reap_finished_workers() {
 # esbuild / vite 子进程能一起带走，不会留下新的孤儿。
 kill_session_procs() {
     local sess="$1"
-    local grace="${REAP_KILL_GRACE_SECS:-10}"
-    local pids p waited alive
+    local pids
     pids=$(tmux list-panes -t "=$sess" -F '#{pane_pid}' 2>/dev/null || true)
+    kill_pane_pids $pids
+}
+
+# 按进程组 TERM → 等最多 REAP_KILL_GRACE_SECS 秒 → 还活着就 KILL。参数是若干 pane pid。
+# kill_session_procs（回收整个 session）和 worker_session_launch（原地换程序，只杀
+# worker 那个窗格）共用这一份：claude 不理 SIGHUP 的坑两边一样。
+kill_pane_pids() {
+    local grace="${REAP_KILL_GRACE_SECS:-10}"
+    local pids="$*" p waited alive
     if [ -z "$pids" ]; then
         return 0
     fi
@@ -5222,6 +5230,63 @@ configure_tmux_session_display() {
     fi
 }
 
+# worker 所在的窗格：session 第一个窗口的第一个窗格（new-session 建出来的那个）。
+# 人自己在 session 里另开的窗口 / 窗格排在它后面，不会被当成 worker。
+worker_pane_id() {   # <tmux_session> → pane id（如 %3），session 不在就输出空
+    tmux list-panes -s -t "=$1" -F '#{pane_id}' 2>/dev/null | head -1
+}
+
+# 在 worker session 里起一条命令（GitHub#197）。
+#
+# - session 不在：照旧 `tmux new-session -d`。
+# - session 还在（换 agent / 模型 / 角色、注入失败、续接秒退后降级）：**不删 session**，
+#   在原窗格里换程序。删 session 会把 attach 在上面的终端一起踢出 tmux——换去复审的那一刻
+#   正是人最想盯着看的时候。步骤：
+#     1. 窗格设 remain-on-exit on，旧程序退出后窗格留在原地（否则唯一的窗格一关 session 就没了）
+#     2. 按进程组 TERM → 等 → KILL 旧程序（kill_pane_pids；只发 SIGHUP 的话 claude 会变孤儿）
+#     3. respawn-pane 在同一窗格起新命令，环境参数、工作目录和 new-session 用同一份
+#     4. remain-on-exit 关回去：之后程序自然退出，窗格 / session 照旧消失，
+#        「session 不在 == worker 死了」这条 self-heal 依赖的语义不变
+#     5. 新程序在第 4 步之前就已经退出（窗格停在「已结束」）：关掉这个窗格，等价于
+#        new-session 起的程序秒退——调用方原有的 session_alive 判断照常生效
+#   会话日志的 pipe-pane 挂在窗格上，换程序不断，接着写同一份文件。
+#
+# 返回非 0 只表示 tmux 命令本身失败；程序是否起得来由调用方照旧用 session_alive 判断。
+worker_session_launch() {   # <tmux_session> <cwd> <command> [tmux -e 参数…]
+    local sess="$1" cwd="$2" cmd="$3" pane pid i
+    shift 3
+    if ! session_alive "$sess"; then
+        tmux new-session -d -s "$sess" "$@" -c "$cwd" "$cmd"
+        return
+    fi
+    pane="$(worker_pane_id "$sess")"
+    if [ -z "$pane" ]; then
+        # 刚好在判活之后消失：按全新 session 起
+        tmux new-session -d -s "$sess" "$@" -c "$cwd" "$cmd"
+        return
+    fi
+    tmux set-option -w -t "$pane" remain-on-exit on 2>/dev/null || true
+    if [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" != 1 ]; then
+        pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
+        kill_pane_pids $pid
+        # 进程没了到 tmux 把窗格标成「已结束」之间有一点延迟
+        for ((i = 0; i < 20; i++)); do
+            [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" = 1 ] && break
+            sleep 0.1
+        done
+    fi
+    # -k：上面没等到「已结束」时兜底（此时旧进程已被 KILL，-k 只是让 tmux 放手）
+    if ! tmux respawn-pane -k -t "$pane" "$@" -c "$cwd" "$cmd"; then
+        tmux set-option -w -t "$pane" remain-on-exit off 2>/dev/null || true
+        return 1
+    fi
+    tmux set-option -w -t "$pane" remain-on-exit off 2>/dev/null || true
+    if [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" = 1 ]; then
+        tmux kill-pane -t "$pane" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # 返回 0 表示现有 session 已使用本次 dispatch 要求的 worker、模型和角色。老 session
 # 没有元数据时按项目默认 worker + 默认模型 + worker 角色处理，所以普通 pending/agent
 # 不会无故重启。
@@ -5252,8 +5317,11 @@ session_log_path() {
 }
 
 # 在指定 tmux session 上开 pipe-pane，把 pane 输出 append 到日志文件。
-# 使用 `pipe-pane -o`：已有 pipe 时不动，幂等；session 退出时 cat 见 EOF 自然结束。
-# 调用方在 `tmux new-session -d` 之后（或重新注入之前）调用。
+# session 退出时 cat 见 EOF 自然结束。调用方在 `tmux new-session -d` 之后（或重新注入之前）调用。
+#
+# ⚠️ `pipe-pane -o` **不是**幂等：已有 pipe 时它会把旧 pipe 关掉、且不再开新的（tmux 手册：
+# 「allowing a pipe to be toggled」）。所以往活着的 session 再调一次就等于关日志——注入、
+# 原地换程序（GitHub#197）都会走到这里。实测 tmux 3.4。先看窗格上是否已有 pipe，有就不碰。
 start_session_logging() {
     local sess="$1"
     local log_path
@@ -5264,6 +5332,9 @@ start_session_logging() {
         printf '\n===== %s session=%s opened =====\n' \
             "$(date -Iseconds)" "$sess"
     } >> "$log_path"
+    if [ "$(tmux display-message -p -t "=$sess:" '#{pane_pipe}' 2>/dev/null)" = 1 ]; then
+        return 0
+    fi
     # pipe-pane 偶发失败几乎都是 `tmux new-session -d` 刚返回、pane 尚未就绪的 race，
     # 或 worker 进程已秒退 session 没了。先重试一次（0.3s 后），仍失败才报警——
     # 报警此时基本等价于"worker 启动即死"（详见 verify_fresh_session 的 capture）。

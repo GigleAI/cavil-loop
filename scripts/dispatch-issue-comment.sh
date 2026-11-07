@@ -82,24 +82,29 @@ flip_label() {
     flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true
 }
 
-# fable 标签作用于本次实际 worker 进程；已有 session 的 worker/model 不同就不能
+# fable 标签作用于本次实际 worker 进程；已有 session 的 worker/model/角色不同就不能
 # 直接注入，需进入 Case B 用同一 cwd resume/fresh，并由 Claude driver 带上新模型。
-if session_alive "$TMUX_SESSION" && ! tmux_session_matches_worker "$TMUX_SESSION"; then
-    log "issue #$ISSUE -> session worker/model 与请求不一致，重启切换为 $WORKER_AGENT/${WORKER_MODEL:-default}"
-    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+# session 本身不删：Case B 的 worker_session_launch 在原窗格里换程序，attach 着的
+# 终端不会被踢出 tmux（GitHub#197）。
+REUSE_SESSION=0
+if session_alive "$TMUX_SESSION"; then
+    if tmux_session_matches_worker "$TMUX_SESSION"; then
+        REUSE_SESSION=1
+    else
+        log "issue #$ISSUE -> session worker/model/角色与请求不一致，原地换程序为 $WORKER_AGENT/${WORKER_MODEL:-default}（$WORKER_SESSION_ROLE）"
+    fi
 fi
 
-# Case A: session 还活着 → 注入 prompt
-if session_alive "$TMUX_SESSION"; then
+# Case A: session 还活着且是同一个 worker → 注入 prompt
+if [ "$REUSE_SESSION" = 1 ]; then
     log "issue #$ISSUE -> 注入现有 session $TMUX_SESSION (agent=$WORKER_AGENT)"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     if inject_prompt_logged "$TMUX_SESSION" "$PROMPT_FILE"; then
         flip_label
         exit 0
     fi
-    log "issue #$ISSUE -> 注入失败，fallback 重起 session (agent=$WORKER_AGENT)"
-    # 注入失败 = session 不响应/僵尸，要 kill 才能 new-session 同名（否则 duplicate name 报错）
-    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    log "issue #$ISSUE -> 注入失败，fallback 在原 session 里重起程序 (agent=$WORKER_AGENT)"
+    # 注入失败 = 程序不响应/僵尸：Case B 的 worker_session_launch 会先杀掉它再原地换新
 fi
 
 # Case B: worktree 还在，session 死了 → 重起 session（有历史就 resume）
@@ -113,7 +118,7 @@ if [ -d "$WORKTREE" ]; then
     agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
     log "issue #$ISSUE -> 在 ${TMUX_SESSION} 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（$AGENT_LAUNCH_KIND）"
-    tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+    worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 
     # B2: resume 可能续到异常 state（之前 worker 留下的 Rewind UI 等）然后立即退出
     #     → tmux session 立即关。等 2s 看是否还在，死了就降级成全新会话。
@@ -123,7 +128,7 @@ if [ -d "$WORKTREE" ]; then
             log "issue #$ISSUE -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 issue context 仍可工作）"
             agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-            tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD"
+            worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi
 
@@ -138,4 +143,9 @@ fi
 
 # Case C: worktree 也没了 → 回到 dispatch-new-issue 走全新流程
 log "issue #$ISSUE -> 无 worktree，fallback 走 dispatch-new-issue.sh"
+# 工作目录都没了，旧 session 里的程序也跑不下去；新建流程要用同名 session，先收掉它
+if session_alive "$TMUX_SESSION"; then
+    kill_session_procs "$TMUX_SESSION"
+    tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
+fi
 exec bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$ISSUE"
