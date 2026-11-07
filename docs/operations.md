@@ -931,7 +931,9 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     end line with that id to `${XDG_STATE_HOME:-~/.local/state}/cavil-loop/test-runs.jsonl`
     (`CAVIL_TEST_RUNS_LOG` overrides it). A command in the agent's session is linked to a record
     **only by the id in that command's own output** (the tool result; for a Claude background
-    command, the output file the tool result names; for codex, any output of the session) —
+    command, the output file the tool result names; for codex, that command's own item in its
+    `exec` cell's output plus what later `write_stdin` polls of the same `session_id` return —
+    never another command's output, e.g. a `cat` of some saved log) —
     never by a nearby start time: a run a human started next to it, or a second run of the same
     agent, is a different run. Linked with both lines, or with only the end line (it carries the
     start time) → measured. Only a start line → "未记到结束". Id printed but no record →
@@ -945,10 +947,16 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     measured spans (parallel tests count once; other untimed runs are listed in the details, so
     the number is a lower bound); runs seen but none measured → `unknown`; both sources read
     and nothing ran → 0.
-  - Limits: wrappers (`bash -c '…'`, an own script) are not recognised; a Claude background single
-    run and every codex single run is counted, not timed (one codex tool call may run several
-    commands and its output cannot be matched to them); when a full run's output cannot be
-    read it can be counted twice — once as "无法关联", once from its record — the seconds are not.
+  - codex: an `exec` cell's output is matched to its commands only when the cell is nothing but
+    `text(await tools.X({…}));` statements and has one output item per statement; any other
+    cell still counts its commands (a full run → "无法关联", a single run → untimed) but gives
+    its output to none of them. Standard function calls with JSON arguments (`exec_command`,
+    `shell`, `local_shell_call`) are read too. A command whose text cannot be parsed (e.g. a
+    template string) is listed as "解析不了" and makes the answer `unknown`, never 0.
+  - Limits: wrappers (`bash -c '…'`, an own script) are not recognised; a single run that went to
+    the background (Claude) or was still running when its cell returned (codex) is counted, not
+    timed; a full run whose output went to a file (`> log`) or otherwise cannot be read is counted
+    twice — once as "无法关联", once from its record — the seconds are not.
 - **AI time is an estimate** (the summary says `AI 约 …`). Per model request it counts from the
   request being sent to the last reply chunk written into the session log, and a second
   covered by several requests counts once. It includes network round-trips and queueing

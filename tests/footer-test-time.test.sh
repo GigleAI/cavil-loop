@@ -18,7 +18,8 @@
 #         并发两次；后台从输出文件读编号；后台输出文件没了；流水只读写不进；只有开始行；只有结束行；
 #         坏行；流水读不了；会话读不了；两栏都读不了
 #   单跑：前台计时；后台只计次 → 未知；引号 / here-doc 里的命令不算；并行取并集；一次都没跑 → 0
-#   codex：按会话输出里的编号认领；没印出编号的整套命令算「无法关联」
+#   codex：每条命令只认它自己的输出（含同一 session_id 的后续轮询）；JSON 参数的函数调用；单元对不上号 /
+#         写法解析不了时不归、不答 0；别的命令输出里的编号不认（#247 复审第 1 轮反例）；同一场景 claude / codex 结论一致
 #   部署前空窗：入口不存在时 footer 写「测试未知」
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -70,6 +71,58 @@ PY
 }
 cmd_json() {   # id t cmd bg rt text err → 一行 JSON
     python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps({"id":a[0],"t":float(a[1]),"cmd":a[2],"bg":a[3]=="1","rt":(float(a[4]) if a[4] else None),"text":a[5],"err":a[6]=="1"}))' "$@"
+}
+# codex 夹具（真实 rollout 形状）。cx_exec / cx_poll 产出一条语句的描述（JSON），cx_spec 追加一次工具调用：
+#   cx_spec <时刻> cell <语句>...      exec 单元：input = 每条语句一行 text(await tools.X({…}));，输出 = 头 + 每条一项
+#   cx_spec <时刻> raw <input> <输出>   原样的单元 input（不是纯 text(await …) 序列时用）
+#   cx_spec <时刻> fc <名字> <参数 JSON> <输出字符串，空 = 没有输出>
+cx_exec() {   # <cmd> <输出> <wall 秒> <exit_code，空 = 还在跑> [session_id]
+    python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps({"tool":"exec_command","cmd":a[0],"out":a[1],"wall":float(a[2]),"exit":(int(a[3]) if a[3] else None),"sid":(int(a[4]) if len(a)>4 else None)}))' "$@"
+}
+cx_poll() {   # <session_id> <输出> <exit_code，空 = 还在跑>
+    python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps({"tool":"write_stdin","sid":int(a[0]),"out":a[1],"wall":1.0,"exit":(int(a[2]) if a[2] else None)}))' "$@"
+}
+cx_spec() {
+    python3 - "$C/codex" "$WT" "$@" <<'PY'
+import json, sys, datetime, os, uuid
+root, wt, t, kind, *rest = sys.argv[1:]
+t = float(t)
+dt = datetime.datetime.fromtimestamp(t)
+d = os.path.join(root, f"{dt:%Y}", f"{dt:%m}", f"{dt:%d}"); os.makedirs(d, exist_ok=True)
+p = os.path.join(d, "rollout-x.jsonl")
+iso = lambda x: datetime.datetime.fromtimestamp(x, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+recs = [] if os.path.exists(p) else [{"timestamp": iso(t - 30), "type": "session_meta", "payload": {"cwd": wt}}]
+cid = "call_" + uuid.uuid4().hex[:12]
+if kind == "cell":
+    lines, items = [], [{"type": "input_text", "text": "Script completed\nWall time 1.0 seconds\nOutput:\n"}]
+    for st in map(json.loads, rest):
+        res = {"chunk_id": uuid.uuid4().hex[:6], "wall_time_seconds": st["wall"]}
+        if st["exit"] is None and st.get("sid") is not None:
+            res["session_id"] = st["sid"]
+        if st["exit"] is not None:
+            res["exit_code"] = st["exit"]
+        res["output"] = st["out"]
+        if st["tool"] == "exec_command":
+            lines.append("text(await tools.exec_command({cmd:%s,\"yield_time_ms\":1000,\"max_output_tokens\":2000}));" % json.dumps(st["cmd"]))
+        else:
+            lines.append("text(await tools.write_stdin({session_id:%d,chars:\"\",\"yield_time_ms\":1000}));" % st["sid"])
+        items.append({"type": "input_text", "text": json.dumps(res, ensure_ascii=False)})
+    recs.append({"timestamp": iso(t), "type": "response_item", "payload": {"type": "custom_tool_call", "call_id": cid, "name": "exec", "input": "\n".join(lines) + "\n"}})
+    recs.append({"timestamp": iso(t + 1), "type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": cid, "output": items}})
+elif kind == "raw":
+    src, out = rest
+    recs.append({"timestamp": iso(t), "type": "response_item", "payload": {"type": "custom_tool_call", "call_id": cid, "name": "exec", "input": src}})
+    recs.append({"timestamp": iso(t + 1), "type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": cid,
+                 "output": [{"type": "input_text", "text": "Script completed\nWall time 1.0 seconds\nOutput:\n"}, {"type": "input_text", "text": out}]}})
+else:
+    name, args, out = rest
+    recs.append({"timestamp": iso(t), "type": "response_item", "payload": {"type": "function_call", "name": name, "call_id": cid, "arguments": args}})
+    if out:
+        recs.append({"timestamp": iso(t + 1), "type": "response_item", "payload": {"type": "function_call_output", "call_id": cid, "output": out}})
+with open(p, "a") as f:
+    for r in recs:
+        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+PY
 }
 bg_text() { printf 'Command running in background with ID: b%s. Output is being written to: %s. You will be notified when it completes.' "$RANDOM" "$1"; }
 
@@ -250,27 +303,82 @@ run_check() {   # <scripts 目录> <run.sh>
     chk no_tests_zero '[ "$(mk test_secs)" = 0 ] && [[ "$HEAD" != *"测试"* ]] && grep -q "本轮未跑测试" "$C/footer"' \
         "实得 test_secs=[$(mk test_secs)] / $HEAD"
 
-    # 12 codex：本会话输出里印出的编号认领流水；整套命令比编号多的算「无法关联」
-    #    三条整套命令：一次记进去了、一次印了编号但没写进流水、一次的输出里没有编号
+    # 12 codex：逐条命令拿它自己的输出（含同一 session_id 的后续轮询），别处印出的编号一概不认
+    #    形状照本机真实 rollout：exec 单元 = 一串 `text(await tools.X({…}));`，输出列表首项「Script completed」头、
+    #    之后每条语句一项；exec_command 那一项是 JSON（output / wall_time_seconds / exit_code 或 session_id）
+    # 12a 一个单元三条整套命令：一次记进去了、一次印了编号但没写进流水、一次输出被截断没有编号
     new_case codex "$RS"; mkdir -p "$C/ro"; chmod 555 "$C/ro"
     t=$(now); suite 1; suite 2 CAVIL_TEST_RUNS_LOG="$C/ro/x/runs.jsonl"
-    python3 - "$C/codex" "$WT" "$t" "$(cat "$C/out.1" "$C/out.2")" <<'PY'
-import json, sys, datetime, os
-root, wt, t, out = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
-dt = datetime.datetime.fromtimestamp(t)
-d = os.path.join(root, f"{dt:%Y}", f"{dt:%m}", f"{dt:%d}"); os.makedirs(d, exist_ok=True)
-iso = lambda x: datetime.datetime.fromtimestamp(x, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-call = 'text(await tools.exec_command({cmd:"bash tests/run.sh quick -j 1","yield_time_ms":1000}));\ntext(await tools.exec_command({cmd:"env -u MUTATION bash tests/run.sh quick","max_output_tokens":800}));\ntext(await tools.exec_command({cmd:"bash tests/run.sh quick"}));\n'
-recs = [{"timestamp": iso(t - 5), "type": "session_meta", "payload": {"cwd": wt}},
-        {"timestamp": iso(t), "type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": call}},
-        {"timestamp": iso(t + 3), "type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c1",
-         "output": [{"type": "input_text", "text": "Script completed\n" + json.dumps({"exit_code": 0, "output": out})}]}}]
-with open(os.path.join(d, "rollout-x.jsonl"), "w") as f:
-    for r in recs: f.write(json.dumps(r) + "\n")
-PY
+    cx_spec "$t" cell \
+        "$(cx_exec "bash tests/run.sh quick -j 1" "$(cat "$C/out.1")" 2 0)" \
+        "$(cx_exec "env -u MUTATION bash tests/run.sh quick" "$(cat "$C/out.2")" 2 0)" \
+        "$(cx_exec "bash tests/run.sh quick" "…(truncated)" 2 0)"
     footer "$SD" codex
     chk codex_by_id '[ "$(mk suite_timed)" = 1 ] && [ "$(mk suite_unlogged)" = 1 ] && [ "$(mk suite_unlinked)" = 1 ] && [ "$(mk suite_runs)" = 3 ]' \
         "实得 runs=$(mk suite_runs) timed=$(mk suite_timed) unlogged=$(mk suite_unlogged) unlinked=$(mk suite_unlinked)"
+
+    # 12b #247 复审第 1 轮反例：甲的输出没有编号、也没写进流水；另一条 `cat` 印出人手跑的乙的编号
+    new_case codex_other "$RS"; mkdir -p "$C/ro"; chmod 555 "$C/ro"
+    t=$(now); suite 1 CAVIL_TEST_RUNS_LOG="$C/ro/x/runs.jsonl"; suite 2
+    cx_spec "$t" cell "$(cx_exec "bash tests/run.sh --quick" "(output truncated)" 2 0)"
+    cx_spec "$(python3 -c "print($t+5)")" cell "$(cx_exec "cat /tmp/human-run-output" "$(cat "$C/out.2")" 0.1 0)"
+    footer "$SD" codex
+    chk codex_other_output_not_claimed '[ "$(mk suite_runs)" = 2 ] && [ "$(mk suite_unlinked)" = 1 ] && [ "$(mk suite_timed)" = 1 ]' \
+        "期望甲无法关联、乙按流水计，实得 runs=$(mk suite_runs) unlinked=$(mk suite_unlinked) timed=$(mk suite_timed)"
+
+    # 12c 标准函数调用（arguments 是 JSON）：单跑测试照样认出、按 wall_time_seconds 计时；没有输出 → 不计时 → 未知
+    new_case codex_json "$RS"
+    SINCE=$(( $(date +%s) - 60 )); t=$(( SINCE + 5 ))
+    cx_spec "$t" fc exec_command '{"cmd":"bash tests/comment-footer.test.sh","yield_time_ms":1000}' \
+        '{"chunk_id":"a1","wall_time_seconds":2.5,"exit_code":0,"output":"ok\n"}'
+    footer "$SD" codex
+    chk codex_json_args '[ "$(mk adhoc_runs)" = 1 ] && [ "$(mk test_secs)" = 2.5 ]' "实得 adhoc=$(mk adhoc_runs) test_secs=[$(mk test_secs)]"
+    rm -rf "$C/codex"; cx_spec "$t" fc exec_command '{"cmd":"bash tests/comment-footer.test.sh"}' ""
+    footer "$SD" codex
+    chk codex_json_no_output_unknown '[ "$(mk adhoc_runs)" = 1 ] && [[ "$HEAD" == *"测试未知"* ]]' "$HEAD"
+
+    # 12d 长命令：第一项只有 session_id、没有编号；之后 write_stdin 轮询到的输出里才有 → 仍按编号认领
+    #     另一个 session 的轮询输出里印的编号不算
+    new_case codex_poll "$RS"; mkdir -p "$C/ro"; chmod 555 "$C/ro"
+    t=$(now); suite 1; suite 2 CAVIL_TEST_RUNS_LOG="$C/ro/x/runs.jsonl"
+    cx_spec "$t" cell "$(cx_exec "bash tests/run.sh quick" "" 1 "" 71)" "$(cx_exec "bash tests/run.sh quick" "" 1 "" 72)"
+    cx_spec "$(python3 -c "print($t+3)")" cell "$(cx_poll 71 "$(cat "$C/out.1")" 0)"
+    footer "$SD" codex
+    chk codex_poll_linked '[ "$(mk suite_runs)" = 2 ] && [ "$(mk suite_timed)" = 1 ] && [ "$(mk suite_unlinked)" = 1 ]' \
+        "实得 runs=$(mk suite_runs) timed=$(mk suite_timed) unlinked=$(mk suite_unlinked)"
+
+    # 12e 不是纯 text(await …) 序列的单元：命令照样认（整套记「无法关联」），输出不归给任何一条；
+    #     写法认不出来的 exec_command（模板字符串）→ 不算 0
+    new_case codex_raw "$RS"
+    t=$(now); suite 1
+    cx_spec "$t" raw 'const r = await tools.exec_command({cmd:"bash tests/run.sh quick"});
+text(r);' "$(cat "$C/out.1")"
+    footer "$SD" codex
+    chk codex_unaligned_unlinked '[ "$(mk suite_unlinked)" = 1 ] && [ "$(mk suite_runs)" = 2 ]' \
+        "实得 runs=$(mk suite_runs) unlinked=$(mk suite_unlinked)"
+    # 两条语句、只有一项输出：对不上号，哪条都不归
+    rm -rf "$C/codex"
+    cx_spec "$t" raw 'text(await tools.exec_command({cmd:"bash tests/run.sh quick"}));
+text(await tools.exec_command({cmd:"cat /tmp/x"}));' "$(cat "$C/out.1")"
+    footer "$SD" codex
+    chk codex_misaligned_unlinked '[ "$(mk suite_unlinked)" = 1 ] && [ "$(mk suite_runs)" = 2 ]' \
+        "实得 runs=$(mk suite_runs) unlinked=$(mk suite_unlinked)"
+    rm -rf "$C/codex"; : > "$LOG"
+    cx_spec "$t" raw 'text(await tools.exec_command({cmd:`bash tests/run.sh`}));' 'x'
+    footer "$SD" codex
+    chk codex_unparsed_not_zero '[ "$(mk cmd_unparsed)" = 1 ] && [ -z "$(mk test_secs)" ] && [[ "$HEAD" == *"测试未知"* ]]' \
+        "实得 unparsed=$(mk cmd_unparsed) test_secs=[$(mk test_secs)] / $HEAD"
+
+    # 12f 同一场景两种 agent 的记录：整套测试的结论必须一字不差（同一套规则，L3）
+    new_case same "$RS"; mkdir -p "$C/ro"; chmod 555 "$C/ro"
+    t=$(now); suite 1 CAVIL_TEST_RUNS_LOG="$C/ro/x/runs.jsonl"; t1=$(now); suite 2
+    add u1 "$t" "bash tests/run.sh quick" 0 "$t1" "$(cat "$C/out.1")" 0
+    add u2 "$t1" "cat /tmp/x" 0 "$t1" "$(cat "$C/out.2")" 0
+    cx_spec "$t" cell "$(cx_exec "bash tests/run.sh quick" "$(cat "$C/out.1")" 1 0)"
+    cx_spec "$t1" cell "$(cx_exec "cat /tmp/x" "$(cat "$C/out.2")" 0 0)"
+    footer "$SD" claude; a=$(printf '%s\n' "$MARK" | tr ' ' '\n' | grep '^suite_' | sort)
+    footer "$SD" codex;  b=$(printf '%s\n' "$MARK" | tr ' ' '\n' | grep '^suite_' | sort)
+    chk claude_codex_same '[ -n "$a" ] && [ "$a" = "$b" ] && printf "%s\n" "$a" | grep -qx "suite_runs=2"' "claude：$(echo $a) / codex：$(echo $b)"
 
     # 13 文档里那一行配置原样跑：部署前空窗（入口不在）→ 测试未知；装上入口 → 照常统计；清空 → 总览不提测试
     new_case gap "$RS"; printf '#!/usr/bin/env bash\nexit 0\n' > "$C/driver.sh"
@@ -330,16 +438,16 @@ neg "测试秒数逐段相加、不取并集" $TT \
     's["secs"] = union_secs(s["spans"], since, now)' 's["secs"] = sum(b - a for a, b in s["spans"])' adhoc_union
 neg "第 1 版：会话里的整套测试命令整个不看" $TT \
     '        if k["suite"]:
-            suite_cmds += 1' '        if False:
-            suite_cmds += 1' readonly_log_not_zero
+            # 只认' '        if False:
+            # 只认' readonly_log_not_zero
 neg "第 2 版：按开始时刻接近认领流水" $TT \
     'found = [i for i in RUN_MARK.findall(c["text"] or "") if i not in claimed]' \
     'found = [i for i, r in runs.items() if i not in claimed and r["t0"] is not None and c["t"] - 5 <= r["t0"] <= c["t"] + 120][:1]' \
     neighbor_not_claimed
 neg "有运行证据、一秒没计上时答 0" $TT \
-    '    elif runs > 0:
-        answer = "unknown"' '    elif runs > 0:
-        answer = "0"' start_only_unfinished
+    '    elif runs > 0 or unparsed:
+        answer = "unknown"' '    elif unparsed:
+        answer = "unknown"' start_only_unfinished
 neg "某一栏读取失败时照常给秒数" $TT \
     '    if not read_ok:
         answer = "unknown"' '    if False:
@@ -354,9 +462,18 @@ neg "后台命令不读输出文件" $TT \
     '        if u["bg"] and res:' '        if False:' bg_linked
 neg "前台超时挪到后台的命令按工具结果时刻计时" $TT \
     '        if res and not u["bg"] and MOVED_BG.match(res["text"]):' '        if False:' moved_to_bg
-neg "codex 不按编号认领" $TT \
-    '        for rid in sorted(ids_any):
-            take(rid)' '        pass' codex_by_id
+neg "#247 复审第 1 轮：本会话任意命令输出里的编号都拿来认领" $TT \
+    'found = [i for i in RUN_MARK.findall(c["text"] or "") if i not in claimed]' \
+    'found = [i for x in cmds for i in RUN_MARK.findall(x["text"] or "") if i not in claimed][:1]' \
+    codex_other_output_not_claimed
+neg "codex 标准函数调用的 JSON 参数不解析" $TT \
+    '                        fields = json.loads(pl.get("arguments") or "")' '                        fields = None' codex_json_args
+neg "codex 轮询到的后续输出不归回原命令" $TT \
+    '                c["text"] = (c["text"] or "") + body' '                pass' codex_poll_linked
+neg "codex 单元的语句数和输出项数对不上也照顺序配" $TT \
+    'and len(items) - 1 == len(stmts))' ')' codex_misaligned_unlinked
+neg "解析不了的命令不影响回答（可能答 0）" $TT \
+    '    elif runs > 0 or unparsed:' '    elif runs > 0:' codex_unparsed_not_zero
 
 echo
 mutation_summary "$0"

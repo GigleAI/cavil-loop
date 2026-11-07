@@ -12,7 +12,9 @@ CAVIL_FOOTER_START_EPOCH / CAVIL_FOOTER_WORKTREE / CAVIL_FOOTER_AGENT。输出�
 
 会话里的整套测试命令和流水**只按编号关联**：编号从这条命令自己的输出里读（前台看工具结果，
 Claude 放后台的命令去读工具结果里写明的输出文件），不按时间远近、不按目录猜——人在附近手跑的
-另一次、同一 agent 并发的另一次，时间再近也不是这一次（#244 方案复审第 2 轮）。
+另一次、同一 agent 并发的另一次，时间再近也不是这一次（#244 方案复审第 2 轮）；codex 看这条命令
+在 exec 单元输出里的那一项加同一 session_id 的后续轮询，别的命令输出里的编号不认（#247 复审第 1 轮）。
+Claude 和 codex 读出来是同一种「命令 + 它自己的输出」，汇总只有一套规则。
 
 | 证据                                   | 结果                              |
 | 编号在输出里，流水两行都在 / 只有结束行  | 按流水计时（结束行自带开始时刻）      |
@@ -26,9 +28,9 @@ Claude 放后台的命令去读工具结果里写明的输出文件），不按�
 两栏都读不到时非 0 退出（footer 写「测试未知」及原因）。
 
 已知限制（docs/operations.md 有同样的说明）：命令按写法认，自己包一层脚本、`bash -c '…'`
-认不出来；单跑测试的时间是整条命令的时间；Claude 放后台的单跑测试只计次数；codex 的单跑
-测试只计次数（codex 一次工具调用里可以跑多条命令，输出和命令对不上号）；「无法关联」时同一次
-运行可能还会按流水再算一次，次数多 1、秒数不多。
+认不出来；单跑测试的时间是整条命令的时间（codex 取 wall_time_seconds，起点按单元时刻加前面
+各条的耗时推算）；放后台 / 单元返回时还在跑的单跑只计次数；codex 单元对不上号时输出不归任何
+一条；「无法关联」时同一次运行可能还会按流水再算一次，次数多 1、秒数不多。
 
 会话目录可用 CLAUDE_PROJECTS_DIR / CODEX_SESSIONS_DIR 覆盖，流水路径可用 CAVIL_TEST_RUNS_LOG
 覆盖（都是测试用）。
@@ -38,6 +40,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -312,49 +315,232 @@ def read_claude(env, wt, since):
     return True, "", out
 
 
-CODEX_CMD = re.compile(r'\bcmd\s*:\s*("(?:[^"\\]|\\.)*")')
+# ── codex：逐条命令拿它自己的输出 ────────────────────────────────────────────
+# 跑命令的两种形状（本机 2026-09 起 1686 份 codex 会话实测只见到第一种；第二种是 codex 的通用
+# 函数调用格式，#247 复审第 1 轮要求也认）：
+#   · `exec` 单元（custom_tool_call，input 是一段 JavaScript）：一条条
+#     `text(await tools.exec_command({cmd:"…", …}));`；它的 custom_tool_call_output 是一个列表，
+#     第一项是「Script completed …」头，之后每条 `text(await …)` 按顺序各出一项。exec_command 的那一项
+#     是一段 JSON：`output`、`wall_time_seconds`，跑完了有 `exit_code`，还在跑就有 `session_id`——
+#     之后的 `tools.write_stdin({session_id:N, …})` 返回同样形状的后续输出。
+#   · 标准函数调用（function_call，arguments 是 JSON）：exec_command / write_stdin / shell，
+#     以及 local_shell_call；输出在同 call_id 的 function_call_output 里。
+# 一条命令的「自己的输出」= 它那一项 + 同一 session_id 后续轮询的输出，别处出现的编号一概不认
+# （#247 复审第 1 轮：拿本会话全部输出里的编号去抵，另一条 `cat` 印出的别人那次会顶掉没记账的这次）。
+# 单元不是「每条语句都是 text(await tools.X({…}))」、或输出项数对不上：命令照样认出来计次，
+# 但输出不归给任何一条（整套测试记「无法关联」，单跑不计时）。认不出命令文本的 exec_command
+# 记进「解析不了」，只会让结果变成未知，不会变成 0。
+
+SHELL_FUNCS = {"exec_command", "shell", "container.exec", "local_shell"}
+STMT = re.compile(r'\s*text\(\s*await\s+tools\.([A-Za-z_][\w.]*)\(')
+KV = re.compile(r'(?:"([A-Za-z_]\w*)"|([A-Za-z_]\w*))\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?)')
+
+
+def _scan_object(s, i):
+    """s[i] == '{'：返回匹配的 '}' 之后的位置（跳过字符串里的括号），找不到返回 -1。"""
+    depth, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in "\"'`":
+            j = i + 1
+            while j < n and s[j] != c:
+                j += 2 if s[j] == "\\" else 1
+            i = j + 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _object_fields(obj):
+    out = {}
+    for m in KV.finditer(obj):
+        k = m.group(1) or m.group(2)
+        try:
+            out.setdefault(k, json.loads(m.group(3)))
+        except ValueError:
+            pass
+    return out
+
+
+def parse_cell(src):
+    """→ [(工具名, 参数字段)]，单元不是纯 `text(await tools.X({…}));` 序列时返回 None。"""
+    stmts, i, n = [], 0, len(src)
+    while True:
+        while i < n and src[i] in " \t\r\n;":
+            i += 1
+        if i >= n:
+            return stmts
+        m = STMT.match(src, i)
+        if not m:
+            return None
+        j = m.end()
+        while j < n and src[j] in " \t\r\n":
+            j += 1
+        if j >= n or src[j] != "{":
+            return None
+        k = _scan_object(src, j)
+        if k < 0:
+            return None
+        rest = src[k:]
+        m2 = re.match(r'\s*\)\s*\)\s*;?', rest)
+        if not m2:
+            return None
+        stmts.append((m.group(1), _object_fields(src[j:k]), src[j:k]))
+        i = k + m2.end()
+
+
+def _chunk(text):
+    """一项输出 → (字段, 输出正文)。是 JSON 就取字段；截断提示等前缀跳过；都不是就整段当正文。"""
+    for cand in (text, text[text.find("{"):] if "{" in text else ""):
+        try:
+            d = json.loads(cand)
+        except ValueError:
+            continue
+        if isinstance(d, dict):
+            md = d.get("metadata") if isinstance(d.get("metadata"), dict) else {}
+            body = d.get("output") if isinstance(d.get("output"), str) else ""
+            return {"exit": d.get("exit_code", md.get("exit_code")),
+                    "dur": d.get("wall_time_seconds", md.get("duration_seconds")),
+                    "sid": d.get("session_id")}, body
+    return {"exit": None, "dur": None, "sid": None}, text
+
+
+def _out_items(output):
+    if isinstance(output, list):
+        return [b.get("text", "") for b in output if isinstance(b, dict) and isinstance(b.get("text"), str)]
+    return None
+
+
+def _cmd_text(fields):
+    c = fields.get("cmd", fields.get("command"))
+    if isinstance(c, list) and all(isinstance(x, str) for x in c):
+        if c[:2] in (["bash", "-lc"], ["bash", "-c"], ["sh", "-c"]) and len(c) == 3:
+            return c[2]
+        return " ".join(shlex.quote(x) for x in c)
+    return c if isinstance(c, str) else None
 
 
 def read_codex(env, wt, since):
-    """codex：一次工具调用里可以跑多条命令、输出和命令对不上号，所以只做两件事——
-    认出跑了哪些测试命令（只计次数），以及在本会话全部输出里收集运行编号。"""
+    """→ (ok, why, [命令], 解析不了的命令数)；命令形状与 read_claude 相同。"""
     root = env.get("CODEX_SESSIONS_DIR") or os.path.join(os.path.expanduser("~"), ".codex", "sessions")
     if not os.path.isdir(root):
-        return False, "没找到 codex 会话目录", [], set()
+        return False, "没找到 codex 会话目录", [], 0
     day = datetime.date.fromtimestamp(since) - datetime.timedelta(days=1)
     files = []
     while day <= datetime.date.today() + datetime.timedelta(days=1):
         files += glob.glob(os.path.join(root, f"{day:%Y}", f"{day:%m}", f"{day:%d}", "rollout-*.jsonl"))
         day += datetime.timedelta(days=1)
-    cmds, ids, mine = [], set(), 0
+    cmds, unparsed, mine = [], 0, 0
     try:
         for p in sorted(files):
             recs = list(_records(p))
             if not any(r.get("type") == "session_meta" and (r.get("payload") or {}).get("cwd") == wt for r in recs):
                 continue
             mine += 1
+            outputs = {}                         # call_id → 输出（列表或字符串）
+            for r in recs:
+                pl = r.get("payload") or {}
+                if pl.get("type") in ("custom_tool_call_output", "function_call_output") and isinstance(pl.get("call_id"), str):
+                    outputs.setdefault(pl["call_id"], pl.get("output"))
+            live = {}                            # session_id → 还在跑的那条命令
+
+            def new_cmd(t, cmd, chunk, body, offset):
+                c = {"t": t + offset, "cmd": cmd, "text": body, "exit": chunk["exit"], "bg": False, "end": None}
+                if chunk["sid"] is not None and chunk["exit"] is None:
+                    c["bg"] = True               # 还在跑：此后只靠轮询补输出，不计时
+                    live[chunk["sid"]] = c
+                elif isinstance(chunk["dur"], (int, float)) and chunk["exit"] is not None:
+                    c["end"] = c["t"] + chunk["dur"]
+                return c
+
+            def poll(fields, chunk, body):
+                c = live.get(fields.get("session_id"))
+                if c is None:
+                    return
+                c["text"] = (c["text"] or "") + body
+                if chunk["exit"] is not None:
+                    c["exit"] = chunk["exit"]
+                    live.pop(fields.get("session_id"), None)
+
             for r in recs:
                 pl = r.get("payload") or {}
                 t = _ts(r.get("timestamp"))
-                if t is None or t < since:
-                    continue
                 kind = pl.get("type")
-                if kind in ("custom_tool_call", "function_call"):
-                    src = pl.get("input") if kind == "custom_tool_call" else pl.get("arguments")
-                    for m in CODEX_CMD.finditer(src if isinstance(src, str) else ""):
-                        try:
-                            c = json.loads(m.group(1))
-                        except ValueError:
-                            continue
-                        cmds.append({"t": t, "end": None, "cmd": c, "bg": True, "text": None, "exit": None})
-                elif kind in ("custom_tool_call_output", "function_call_output"):
-                    o = pl.get("output")
-                    ids.update(RUN_MARK.findall(o if isinstance(o, str) else json.dumps(o, ensure_ascii=False)))
+                if t is None or kind not in ("custom_tool_call", "function_call", "local_shell_call"):
+                    continue
+                out = outputs.get(pl.get("call_id"))
+                if kind == "custom_tool_call":
+                    src = pl.get("input") if isinstance(pl.get("input"), str) else ""
+                    calls = src.count("exec_command(")
+                    stmts = parse_cell(src)
+                    items = _out_items(out)
+                    aligned = (stmts is not None and items is not None and items[:1] != []
+                               and items[0].startswith("Script completed") and len(items) - 1 == len(stmts))
+                    if stmts is None or not aligned:
+                        # 命令照样认，输出不归给任何一条
+                        found = []
+                        for m in re.finditer(r'(?:"cmd"|\bcmd)\s*:\s*("(?:[^"\\]|\\.)*")', src):
+                            try:
+                                found.append(json.loads(m.group(1)))
+                            except ValueError:
+                                pass
+                        unparsed += max(0, calls - len(found))
+                        if t >= since:
+                            cmds += [{"t": t, "cmd": c, "text": None, "exit": None, "bg": True, "end": None} for c in found]
+                        continue
+                    offset = 0.0
+                    for (name, fields, raw), item in zip(stmts, items[1:]):
+                        chunk, body = _chunk(item)
+                        if name.endswith("exec_command"):
+                            cmd = _cmd_text(fields)
+                            if cmd is None:
+                                unparsed += 1 if t >= since else 0
+                                continue
+                            c = new_cmd(t, cmd, chunk, body, offset)
+                            if t >= since:
+                                cmds.append(c)
+                        elif name.endswith("write_stdin"):
+                            poll(fields, chunk, body)
+                        if isinstance(chunk["dur"], (int, float)):
+                            offset += chunk["dur"]
+                    continue
+                # 标准函数调用 / local_shell_call：参数是 JSON
+                name = pl.get("name") or ""
+                if kind == "local_shell_call":
+                    fields = (pl.get("action") or {}) if isinstance(pl.get("action"), dict) else {}
+                    name = "local_shell"
+                else:
+                    try:
+                        fields = json.loads(pl.get("arguments") or "")
+                    except ValueError:
+                        fields = None
+                    if not isinstance(fields, dict):
+                        unparsed += 1 if (name in SHELL_FUNCS and t >= since) else 0
+                        continue
+                chunk, body = _chunk(out if isinstance(out, str) else "\n".join(_out_items(out) or []))
+                if name in SHELL_FUNCS:
+                    cmd = _cmd_text(fields)
+                    if cmd is None:
+                        unparsed += 1 if t >= since else 0
+                        continue
+                    if out is None:
+                        chunk, body = {"exit": None, "dur": None, "sid": None}, None
+                    c = new_cmd(t, cmd, chunk, body, 0.0)
+                    if t >= since:
+                        cmds.append(c)
+                elif name == "write_stdin":
+                    poll(fields, chunk, body)
     except OSError as e:
-        return False, f"codex 会话记录读不了（{e.strerror}）", [], set()
+        return False, f"codex 会话记录读不了（{e.strerror}）", [], 0
     if not mine:
-        return False, "没找到本 worktree 的 codex 会话", [], set()
-    return True, "", cmds, ids
+        return False, "没找到本 worktree 的 codex 会话", [], 0
+    return True, "", cmds, unparsed
 
 
 # ── 汇总 ──────────────────────────────────────────────────────────────────
@@ -385,13 +571,15 @@ def summarize(agent, wt, since, now, env):
     if not log_ok:
         s["suite_read"] = False
         s["why"].append("整套测试的流水读不了")
+    # 两个 agent 读出来的是同一种「命令 + 它自己的输出」，下面只有一套规则（L3）
+    unparsed = 0
     if agent == "claude":
         sess_ok, why, cmds = read_claude(env, wt, since)
-        ids_any = set()
     elif agent == "codex":
-        sess_ok, why, cmds, ids_any = read_codex(env, wt, since)
+        sess_ok, why, cmds, unparsed = read_codex(env, wt, since)
     else:
-        sess_ok, why, cmds, ids_any = False, f"不认识的 agent「{agent}」", [], set()
+        sess_ok, why, cmds = False, f"不认识的 agent「{agent}」", []
+    s["unparsed"] = unparsed
     if not sess_ok:
         s["adhoc_read"] = False
         s["why"].append(f"会话记录读取失败：{why}")
@@ -413,17 +601,15 @@ def summarize(agent, wt, since, now, env):
         else:
             s["suite_unfinished"] += 1
 
-    suite_cmds = 0
     for c in cmds:
         k = classify(c["cmd"])
         if k["suite"]:
-            suite_cmds += 1
-            if agent == "claude":
-                found = [i for i in RUN_MARK.findall(c["text"] or "") if i not in claimed]
-                if not found:
-                    s["suite_unlinked"] += 1
-                for rid in dict.fromkeys(found):
-                    take(rid)
+            # 只认这条命令自己的输出（codex 含它的后续轮询）里印的编号
+            found = [i for i in RUN_MARK.findall(c["text"] or "") if i not in claimed]
+            if not found:
+                s["suite_unlinked"] += 1
+            for rid in dict.fromkeys(found):
+                take(rid)
         if k["adhoc"]:
             s["adhoc_runs"] += 1
             if c["end"] is not None and not k["suite"]:
@@ -434,11 +620,6 @@ def summarize(agent, wt, since, now, env):
                     s["adhoc_failed"] += 1
             else:
                 s["adhoc_untimed"] += 1
-    if agent == "codex":
-        # 输出和命令对不上号：本会话输出里出现过的编号逐个认领；整套命令比编号多出来的算「无法关联」
-        for rid in sorted(ids_any):
-            take(rid)
-        s["suite_unlinked"] += max(0, suite_cmds - len(ids_any))
     # 流水里有、没有任何会话命令印出过它的编号（人手跑、换了写法）：单独算，按流水计
     for rid, r in sorted(runs.items()):
         if rid in claimed:
@@ -470,12 +651,13 @@ def render(s, since, now):
     suite_runs = s["suite_timed"] + s["suite_unfinished"] + s["suite_unlogged"] + s["suite_unlinked"]
     runs = suite_runs + s["adhoc_runs"]
     untimed = s["suite_unfinished"] + s["suite_unlogged"] + s["suite_unlinked"] + s["adhoc_untimed"]
+    unparsed = s.get("unparsed", 0)   # 解析不了的命令：可能是测试，不算运行，但不许据此答 0
     read_ok = s["suite_read"] and s["adhoc_read"]
     if not read_ok:
         answer = "unknown"
     elif s["secs"] > 0:
         answer = secs_text(s["secs"])
-    elif runs > 0:
+    elif runs > 0 or unparsed:
         answer = "unknown"
     else:
         answer = "0"
@@ -489,6 +671,7 @@ def render(s, since, now):
         "adhoc_runs": s["adhoc_runs"], "adhoc_timed": s["adhoc_timed"],
         "adhoc_secs": secs_text(union_secs(s["adhoc_spans"], since, now)),
         "adhoc_untimed": s["adhoc_untimed"], "adhoc_failed": s["adhoc_failed"],
+        "cmd_unparsed": unparsed,
     }
     segs = []
     if suite_runs:
@@ -509,10 +692,12 @@ def render(s, since, now):
             notes.append(f"{s['adhoc_untimed']} 次后台运行或无法单独计时、只计次数")
         timed = f"，约 {dur(union_secs(s['adhoc_spans'], since, now))}" if s["adhoc_timed"] else ""
         segs.append(f"单跑 {s['adhoc_runs']} 次{timed}（{'；'.join(notes)}）")
+    if unparsed:
+        segs.append(f"另有 {unparsed} 条命令的写法解析不了，可能含测试、未计入")
     if s["bad_lines"]:
         segs.append(f"流水里有 {s['bad_lines']} 行读不懂，已跳过")
     segs += s["why"]
-    if not runs and read_ok:
+    if not runs and read_ok and not unparsed:
         lines = ["- 本轮未跑测试"]
     elif runs:
         head = f"- 测试 {runs} 次，已计时部分共 {dur(s['secs'])}" if s["secs"] > 0 else f"- 测试 {runs} 次，耗时未知"
