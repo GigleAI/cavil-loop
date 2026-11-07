@@ -1488,6 +1488,13 @@ export const MUTATIONS = [
     from: "      const ev = read.kind === 'done' || read.kind === 'failed' ? this.evidence(cur.key, cur.field, read.issuedAt, read.own) : null;\n",
     to: "      const ev = read.kind === 'done' || read.kind === 'failed' ? this.evidence(cur.key, cur.field, 0, read.own) : null;\n",
     expect: ['3. the check read GitHub (v5) but its rows did not reach the disk', '4. a newer read\'s rows did not reach the disk', 'GitHub unreadable at the check'] },
+  // ---- PR #240 code review round 4 ----
+  { what: '单条重读两道保护都去掉：来源删了又加、新同步先落地后，删除前发出的旧读取把旧值写进新的那份',
+    edits: [
+      { file: 'src/app/controller.ts', from: ' && (this.epochs.get(k) ?? 0) === epochAtStart.get(k);', to: ';' },
+      { file: 'src/app/controller.ts', from: '        const fresher = views.filter((v) => this.readAt(v.snap.sourceKey, freshK) < issuedAt);\n', to: '        const fresher = views;\n' },
+    ],
+    expect: ['the other order: the new addition\'s sync lands first'] },
   // ---- GitHub#231: iteration picker order, folded groups kept, 托管 "不再提示", a new issue's default board, "no value" groups last ----
   { what: '迭代下拉：已结束的按开始日期正序（最早的在前）', file: 'src/shared/filter.ts',
     from: '    return ea > eb ? -1 : ea < eb ? 1 : -byStart(a, b);', to: '    return byStart(a, b);',
