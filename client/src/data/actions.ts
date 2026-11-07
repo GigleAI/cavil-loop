@@ -21,6 +21,7 @@
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
+import type { CreateBoard } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type CreatePlan, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
@@ -64,8 +65,8 @@ export interface ActionOutcome {
   /** done, but a follow-up step did not work */
   warning: string | null;
   createdKey?: string;
-  /** createIssue: keys of the Projects the new issue did not join (GitHub#229: a retry adds exactly these) */
-  missingProjects?: string[];
+  /** createIssue: the boards the new issue is not finished on (GitHub#229: missing / a field not set) */
+  boards?: CreateBoard[];
   /** createIssue: the new issue's node id, from GitHub's own answer (what a retry adds to a board) */
   createdNodeId?: string;
 }
@@ -76,6 +77,10 @@ export interface ActionOutcome {
  * not the issue is on any source yet — it is not, when joining that very board failed.
  * Returns the field error (joined, a field not set), null when everything was set.
  */
+export function createBoard(p: ProjectMeta, state: CreateBoard['state'], reason: string, entry?: { iterationId: string | null; status: string | null }): CreateBoard {
+  return { projectKey: p.key, title: p.title, state, reason, iterationId: entry?.iterationId ?? null, status: entry?.status ?? null };
+}
+
 export async function joinCreatedIssue(client: GitHubClient, p: ProjectMeta, nodeId: string, iterationId: string | null, status: string | null): Promise<unknown | null> {
   if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
   if (!p.viewerCanUpdate) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);
@@ -496,17 +501,20 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       }
       if (!created || typeof created.number !== 'number') throw new CreateUnanswered('GitHub 的回应里没有新 issue');
       const failed: string[] = [];
-      const missingProjects: string[] = [];
       const fields: string[] = [];
+      const boards: CreateBoard[] = [];
       for (const p of ctx.createInProjects) {
         const entry = plan?.projects.find((x) => x.projectKey === p.key);
         try {
           if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改它');
           const fieldError = await joinProject(client, p, created.node_id, entry?.iterationId ?? null, entry?.status ?? null);
-          if (fieldError !== null) fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+          if (fieldError !== null) {
+            fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+            boards.push(createBoard(p, 'fieldsFailed', explainError(fieldError, 'addToProject'), entry));
+          }
         } catch (e) {
           failed.push(`「${p.title}」（${explainError(e, 'addToProject')}）`);
-          missingProjects.push(p.key);
+          boards.push(createBoard(p, 'missing', explainError(e, 'addToProject'), entry));
         }
       }
       const problems = [
@@ -517,7 +525,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         touched: [[action.repo, created.number]],
         warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
         createdKey: itemKey(action.repo, created.number),
-        missingProjects,
+        boards,
         createdNodeId: created.node_id,
       };
     }

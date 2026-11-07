@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateJob, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
 import type { DetailResult, ItemDetail, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -18,7 +18,7 @@ import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, explainError, joinCreatedIssue, listRepoOptions, performAction, refusedForSure } from '../data/actions';
+import { ActionRefused, CreateUnanswered, createBoard, explainError, joinCreatedIssue, listRepoOptions, performAction, refusedForSure } from '../data/actions';
 import { fetchRawDetail, toDetail } from '../data/detail';
 import { applyFreshItem, fetchItem, freshKey, freshViews, type FreshItem } from '../data/itemRefresh';
 import { contentToItem } from '../data/fetchSources';
@@ -82,16 +82,27 @@ export const EDITS_KEY = '__edits__';
 export const DETAIL_CACHE_SIZE = 50;
 
 /**
- * GitHub#229 (code review round 2): what the notice of a created issue says after a retry
- * of its boards. null = all done (every board joined, every field set). Boards still missing
- * and fields that did not get set are both kept in the words: a joined board does not hide a
- * field that failed on it.
+ * GitHub#229: what the notice of a created issue says, from every board it is still not
+ * finished on (code review rounds 2–3: one list kept across retries; a joined board never
+ * hides a field that failed on it, a later retry of another board never drops it). null =
+ * nothing left: the notice goes.
  */
-export function retryOutcome(number: number, missing: number, error: string | null, fieldProblems: string[]): string | null {
+export function createNotice(number: number, boards: CreateBoard[]): string | null {
+  const missing = boards.filter((b) => b.state === 'missing');
+  const fields = boards.filter((b) => b.state === 'fieldsFailed');
   const parts: string[] = [];
-  if (missing > 0) parts.push(`还有 ${missing} 个看板没加进去（${error ?? '原因未知'}）`);
-  if (fieldProblems.length) parts.push(`已加入看板但字段没设上 ${fieldProblems.join('、')}，请在详情里手动设置`);
+  if (missing.length) parts.push(`没能加入看板 ${missing.map((b) => `「${b.title}」（${b.reason}）`).join('、')}`);
+  if (fields.length) parts.push(`已加入看板但字段没设上 ${fields.map((b) => `「${b.title}」（${b.reason}）`).join('、')}，请在详情里手动设置`);
   return parts.length ? `issue #${number} 已建好，但${parts.join('；')}` : null;
+}
+
+/**
+ * After a retry of the missing boards: each board the retry worked on takes its new state
+ * (joined and set → gone; joined, field refused → fieldsFailed; still refused → missing with
+ * the new reason); every other board keeps what it had.
+ */
+export function mergeRetry(boards: CreateBoard[], results: Map<string, CreateBoard | null>): CreateBoard[] {
+  return boards.flatMap((b) => (results.has(b.projectKey) ? (results.get(b.projectKey) ? [results.get(b.projectKey)!] : []) : [b]));
 }
 
 /** The four kinds of change shown before GitHub confirms them (GitHub#229). */
@@ -1233,7 +1244,7 @@ export class Controller {
     }
   }
 
-  private async actNow(action: WriteAction, onOutcome?: (o: { missingProjects?: string[]; createdNodeId?: string }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
+  private async actNow(action: WriteAction, onOutcome?: (o: { boards?: CreateBoard[]; createdNodeId?: string }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
@@ -1712,13 +1723,13 @@ export class Controller {
     const sentAt = new Date(this.now() - 60_000).toISOString();
     let r: WriteResult;
     let unanswered: string | null = null;
-    let missing: string[] = [];
+    let boards: CreateBoard[] = [];
     let nodeId = '';
     try {
       r = await this.actNow(
         action,
         (o) => {
-          missing = o.missingProjects ?? [];
+          boards = o.boards ?? [];
           nodeId = o.createdNodeId ?? '';
         },
         (e) => (unanswered = e instanceof CreateUnanswered ? e.reason : null),
@@ -1734,12 +1745,12 @@ export class Controller {
         this.setCreate({
           ...cur,
           status: 'partial',
-          message: r.warning,
+          // the boards' state words it when there is any; another warning (the re-read failed) is said as it came
+          message: createNotice(number, boards) ?? r.warning,
           createdKey: r.createdKey,
           number,
-          missingProjects: missing,
+          boards,
           createdNodeId: nodeId,
-          plan: missing.map((k) => action.plan?.projects.find((x) => x.projectKey === k) ?? { projectKey: k, iterationId: null, status: null }),
         });
       else this.setCreate(null, id);
       this.set({ focus: { key: r.createdKey, seq: ++this.focusSeq } });
@@ -1783,39 +1794,41 @@ export class Controller {
     if (!cur || cur.status !== 'partial' || !cur.createdKey) return { ok: false, error: '没有要补的看板', warning: null };
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
-    const left: string[] = [];
-    const fieldProblems: string[] = [];
-    let error: string | null = null;
-    for (const projectKey of cur.missingProjects ?? []) {
-      const p = this.allProjects().find((x) => x.key === projectKey);
-      const entry = cur.plan?.find((x) => x.projectKey === projectKey) ?? { iterationId: null, status: null };
+    const results = new Map<string, CreateBoard | null>();
+    for (const b of cur.boards ?? []) {
+      if (b.state !== 'missing') continue;
+      const p = this.allProjects().find((x) => x.key === b.projectKey);
       try {
         if (!p) throw new ActionRefused('这个看板已不在来源里');
-        const fieldError = await joinCreatedIssue(c.client, p, cur.createdNodeId ?? '', entry.iterationId, entry.status);
-        if (fieldError !== null) fieldProblems.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+        const fieldError = await joinCreatedIssue(c.client, p, cur.createdNodeId ?? '', b.iterationId, b.status);
+        results.set(b.projectKey, fieldError === null ? null : { ...b, state: 'fieldsFailed', reason: explainError(fieldError, 'addToProject') });
       } catch (e) {
         if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
-        left.push(projectKey);
-        error = explainError(e, 'addToProject');
+        results.set(b.projectKey, { ...b, reason: explainError(e, 'addToProject') });
       }
     }
     if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
     const number = Number(cur.createdKey.split('#')[1]);
-    const joined = (cur.missingProjects ?? []).length > left.length;
-    if (joined) {
+    const after = [...results.values()];
+    if (after.some((x) => x === null || x.state === 'fieldsFailed')) {
       // the boards it joined carry it now: read it once so it shows there
       await this.refreshOne(c.client, c.session, cur.repo, number);
       this.scheduleFollowUp(c.session);
     }
+    // merged into the job as it is now (it may have changed meanwhile): only the boards this retry worked on change
     const now = this.state.creates.find((j) => j.id === id);
-    const warning = fieldProblems.length ? `已加入看板，但字段没设上 ${fieldProblems.join('、')}` : null;
+    const stillMissing = after.filter((x): x is CreateBoard => x !== null && x.state === 'missing');
+    const fieldsNow = after.filter((x): x is CreateBoard => x !== null && x.state === 'fieldsFailed');
+    const error = stillMissing.length ? stillMissing.map((x) => `「${x.title}」（${x.reason}）`).join('、') : null;
+    const warning = fieldsNow.length ? `已加入看板，但字段没设上 ${fieldsNow.map((x) => `「${x.title}」（${x.reason}）`).join('、')}` : null;
     if (now) {
-      const message = retryOutcome(now.number ?? number, left.length, error, fieldProblems);
-      // the notice goes only when everything is done: a board still missing, or a field not set, stays said
+      const boards = mergeRetry(now.boards ?? [], results);
+      const message = createNotice(now.number ?? number, boards);
+      // the notice goes only when nothing is left on any board
       if (message === null) this.setCreate(null, id);
-      else this.setCreate({ ...now, missingProjects: left, plan: (now.plan ?? []).filter((x) => left.includes(x.projectKey)), message });
+      else this.setCreate({ ...now, boards, message });
     }
-    return left.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
+    return stillMissing.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
   }
 
 }

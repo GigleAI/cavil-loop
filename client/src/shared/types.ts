@@ -138,6 +138,18 @@ export interface EditMark {
  * at once, the result shows above the board. Only `failed` (nothing was created
  * for sure) gives the draft back with a create button.
  */
+/** One board a created issue is not finished on (GitHub#229). */
+export interface CreateBoard {
+  projectKey: string;
+  title: string;
+  state: 'missing' | 'fieldsFailed';
+  /** GitHub's words for what went wrong last time */
+  reason: string;
+  /** what the board was meant to carry */
+  iterationId: string | null;
+  status: string | null;
+}
+
 export interface CreateJob {
   id: number;
   repo: string;
@@ -147,11 +159,15 @@ export interface CreateJob {
   /** partial: the new issue */
   createdKey?: string;
   number?: number;
-  /** partial: Projects it did not join (a retry adds exactly these to #number) */
-  missingProjects?: string[];
-  /** partial: the new issue's node id from GitHub's create answer, and what each board was meant to carry (the retry needs neither the board data nor a search) */
+  /**
+   * partial: every board still unfinished (code review round 3: kept across retries — a retry
+   * only changes the boards it worked on). `missing` = not on the board yet (a retry adds it,
+   * then sets its fields); `fieldsFailed` = on the board, a field it was meant to carry not set
+   * (set it in the detail; a retry does not touch it). The notice goes when the list is empty.
+   */
+  boards?: CreateBoard[];
+  /** partial: the new issue's node id from GitHub's create answer (what a retry adds to a board) */
   createdNodeId?: string;
-  plan?: { projectKey: string; iterationId: string | null; status: string | null }[];
   /** unknown: same-title issues this account opened in this repository lately (links only) */
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */

@@ -21,7 +21,8 @@ import {
   type EditValue,
 } from '../../src/data/edits';
 import type { Item, ProjectMeta } from '../../src/shared/types';
-import { retryOutcome } from '../../src/app/controller';
+import { createNotice, mergeRetry } from '../../src/app/controller';
+import type { CreateBoard } from '../../src/shared/types';
 
 const KEY = 'o/r#7';
 const MS: EditField = { kind: 'milestone' };
@@ -207,13 +208,22 @@ describe('what the views see', () => {
   });
 });
 
-describe('the notice of a created issue after a retry of its boards (code review round 2)', () => {
-  it('all joined and set → gone; a board missing, a field not set, or both → said, each in its words', () => {
-    expect(retryOutcome(7, 0, null, [])).toBeNull();
-    expect(retryOutcome(7, 1, '没权限', [])).toBe('issue #7 已建好，但还有 1 个看板没加进去（没权限）');
-    expect(retryOutcome(7, 0, null, ['「A」（拒绝）'])).toBe('issue #7 已建好，但已加入看板但字段没设上 「A」（拒绝），请在详情里手动设置');
-    const both = retryOutcome(7, 1, '没权限', ['「A」（拒绝）'])!;
-    expect(both).toContain('还有 1 个看板没加进去');
+describe('the notice of a created issue: one list of unfinished boards, kept across retries (code review rounds 2–3)', () => {
+  const b = (projectKey: string, state: CreateBoard['state'], reason = 'r'): CreateBoard => ({ projectKey, title: projectKey.toUpperCase(), state, reason, iterationId: null, status: null });
+  it('nothing left → gone; a board missing, a field not set, or both → said, each in its words', () => {
+    expect(createNotice(7, [])).toBeNull();
+    expect(createNotice(7, [b('a', 'missing', '没权限')])).toBe('issue #7 已建好，但没能加入看板 「A」（没权限）');
+    expect(createNotice(7, [b('a', 'fieldsFailed', '拒绝')])).toBe('issue #7 已建好，但已加入看板但字段没设上 「A」（拒绝），请在详情里手动设置');
+    const both = createNotice(7, [b('a', 'fieldsFailed'), b('b', 'missing')])!;
+    expect(both).toContain('没能加入看板 「B」');
     expect(both).toContain('字段没设上 「A」');
+  });
+  it('a retry changes only the boards it worked on: a field failure from an earlier retry stays when another board joins later', () => {
+    const before = [b('a', 'fieldsFailed'), b('b', 'missing')];
+    const after = mergeRetry(before, new Map([['b', null]]));
+    expect(after).toEqual([b('a', 'fieldsFailed')]);
+    expect(createNotice(7, after)).toContain('字段没设上 「A」');
+    expect(mergeRetry(before, new Map([['b', b('b', 'fieldsFailed', 'x')]]))).toEqual([b('a', 'fieldsFailed'), b('b', 'fieldsFailed', 'x')]);
+    expect(mergeRetry([b('b', 'missing')], new Map([['b', null]]))).toEqual([]);
   });
 });

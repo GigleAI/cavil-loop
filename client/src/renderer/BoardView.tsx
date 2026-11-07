@@ -328,7 +328,7 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
           <button className="link" data-testid="create-open" onClick={() => job.createdKey && onOpen(job.createdKey)}>
             打开 #{job.number}
           </button>
-          {(job.missingProjects?.length ?? 0) > 0 && (
+          {(job.boards ?? []).some((b) => b.state === 'missing') && (
             <button
               className="link"
               data-testid="create-retry-projects"
