@@ -21,6 +21,7 @@
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
+import type { CreateBoard } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type CreatePlan, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
@@ -65,6 +66,58 @@ export interface ActionOutcome {
   /** done, but a follow-up step did not work */
   warning: string | null;
   createdKey?: string;
+  /** createIssue: the boards the new issue is not finished on (GitHub#229: missing / a field not set) */
+  boards?: CreateBoard[];
+  /** createIssue: the new issue's node id, from GitHub's own answer (what a retry adds to a board) */
+  createdNodeId?: string;
+}
+
+/**
+ * GitHub#229: add an issue this app just created (its node id from the create answer)
+ * to one Project, then set the iteration / status it was meant to carry. Works whether or
+ * not the issue is on any source yet — it is not, when joining that very board failed.
+ * Returns the field error (joined, a field not set), null when everything was set.
+ */
+export function createBoard(p: ProjectMeta, state: CreateBoard['state'], reason: string, entry?: { iterationId: string | null; status: string | null }): CreateBoard {
+  return { projectKey: p.key, title: p.title, state, reason, iterationId: entry?.iterationId ?? null, status: entry?.status ?? null };
+}
+
+export async function joinCreatedIssue(client: GitHubClient, p: ProjectMeta, nodeId: string, iterationId: string | null, status: string | null): Promise<unknown | null> {
+  if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
+  if (!p.viewerCanUpdate) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);
+  if (!nodeId) throw new ActionRefused('不知道新 issue 在 GitHub 上的编号，不能补加；请到网页上加进看板');
+  checkFieldValues(p, iterationId, status);
+  return joinProject(client, p, nodeId, iterationId, status);
+}
+
+/**
+ * createIssue (GitHub#229): the create request went out but no clear answer came
+ * back — a lost connection, a timeout, a server error (5xx), an answer without the
+ * new issue. GitHub may or may not have created it: it must never be sent again
+ * from the draft as if nothing had happened.
+ */
+export class CreateUnanswered extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = 'CreateUnanswered';
+  }
+}
+
+/**
+ * Did GitHub refuse for sure (nothing changed)? A refusal before sending, an
+ * answered GraphQL error, a 401, or an HTTP 4xx other than 408 (timeout) / 429
+ * (too many requests): yes. A network failure, a timeout or a 5xx: no — the
+ * request may have been carried out (GitHub#229).
+ */
+export function refusedForSure(e: unknown): boolean {
+  if (e instanceof ActionRefused) return true;
+  if (!(e instanceof GitHubError)) return false;
+  if (e.kind === 'graphql' || e.kind === 'auth') return true;
+  if (e.kind === 'http') {
+    const st = e.status ?? 0;
+    return st >= 400 && st < 500 && st !== 408 && st !== 429;
+  }
+  return false;
 }
 
 const enc = encodeURIComponent;
@@ -453,26 +506,37 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         handoffLabels = check.labels;
       }
       const labels = mergeLabels(handoffLabels, action.labels);
-      const created = await client.rest<{ number: number; node_id: string; labels?: { name: string }[] }>('POST', `${repoPath(action.repo)}/issues`, {
-        title: action.title,
-        body: action.body,
-        labels,
-        ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
-      });
-      if (!created) throw new GitHubError('http', 'GitHub 没有返回新 issue');
+      let created: { number: number; node_id: string; labels?: { name: string }[] } | null;
+      try {
+        created = await client.rest<{ number: number; node_id: string; labels?: { name: string }[] }>('POST', `${repoPath(action.repo)}/issues`, {
+          title: action.title,
+          body: action.body,
+          labels,
+          ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
+        });
+      } catch (e) {
+        if (refusedForSure(e)) throw e;
+        throw new CreateUnanswered((e as Error)?.message ?? String(e));
+      }
+      if (!created || typeof created.number !== 'number') throw new CreateUnanswered('GitHub 的回应里没有新 issue');
       // GitHub drops the labels of an account without write access to the repository, without an error: said, never silent
       const dropped = Array.isArray(created.labels) ? droppedLabels(labels, created.labels.map((l) => l.name)) : [];
       const droppedHandoff = dropped.some((n) => handoffLabels.some((h) => h.toLowerCase() === n.toLowerCase()));
       const failed: string[] = [];
       const fields: string[] = [];
+      const boards: CreateBoard[] = [];
       for (const p of ctx.createInProjects) {
         const entry = plan?.projects.find((x) => x.projectKey === p.key);
         try {
           if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改它');
           const fieldError = await joinProject(client, p, created.node_id, entry?.iterationId ?? null, entry?.status ?? null);
-          if (fieldError !== null) fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+          if (fieldError !== null) {
+            fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+            boards.push(createBoard(p, 'fieldsFailed', explainError(fieldError, 'addToProject'), entry));
+          }
         } catch (e) {
           failed.push(`「${p.title}」（${explainError(e, 'addToProject')}）`);
+          boards.push(createBoard(p, 'missing', explainError(e, 'addToProject'), entry));
         }
       }
       const problems = [
@@ -484,6 +548,8 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         touched: [[action.repo, created.number]],
         warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
         createdKey: itemKey(action.repo, created.number),
+        boards,
+        createdNodeId: created.node_id,
       };
     }
   }

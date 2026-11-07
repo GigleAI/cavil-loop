@@ -260,14 +260,21 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .detail.resizing { user-select: none; }
 .detail.resizing iframe { pointer-events: none; }
 .detail-spacer { flex: 0 0 var(--detail-space, 560px); align-self: stretch; }
-.detail-head { display: flex; gap: 10px; align-items: center; padding: 12px 16px; flex-wrap: wrap; }
+.detail-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px 4px 16px; flex-wrap: wrap; }
+/* GitHub#229: a shorter head — smaller badge, author on the first line */
+.detail-head .kind-badge { padding: 1px 9px 1px 7px; font-size: 12px; line-height: 18px; }
+.detail-head .ref { font-size: 12px; }
+.detail-head .head-people { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
+.detail-head .head-people .people { display: inline-flex; gap: 4px; }
 .detail-head .ref { color: var(--muted); }
-.detail-title { margin: 0 16px 12px; font-size: 18px; font-weight: 650; line-height: 1.35; }
+.detail-title { margin: 0 16px 8px; font-size: 16px; font-weight: 650; line-height: 1.35; }
+.detail > .detail-stale { margin: -4px 16px 6px; }
 .detail .banner { margin: 0 16px 8px; }
 .detail-fields { margin: 0 16px; border: 1px solid var(--border-muted); border-radius: 10px; }
-.field-row { display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; min-height: 38px; padding: 5px 12px; }
+.field-row { display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; min-height: 30px; padding: 2px 10px; }
+.field-row select { min-height: 24px; padding: 1px 6px; }
 .field-row + .field-row { border-top: 1px solid var(--border-muted); }
-.field-name { color: var(--muted); flex: 0 0 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field-name { color: var(--muted); flex: 0 0 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .field-row .field-name ~ .field-name { flex: none; margin-left: 8px; }
 .field-row select { max-width: 100%; }
 .pr-box { margin: 12px 16px 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
@@ -431,3 +438,18 @@ table.items td.editable:hover { box-shadow: inset 0 0 0 1px var(--border); }
 table.items td .cell-select { max-width: 100%; font: inherit; font-size: 12px; }
 table.items td[data-editing] { overflow: visible; z-index: 3; }
 table.items td .cell-selects { display: inline-flex; flex-direction: column; gap: 2px; }
+
+/* ---- GitHub#229: changes shown before GitHub confirms them ---- */
+.label.pending { border: 1px dashed var(--border) !important; }
+.label.removing { text-decoration: line-through; opacity: 0.6; }
+.saving { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.spin { display: inline-block; width: 9px; height: 9px; border: 1.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: icon-spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+.edit-issues .edit-issue { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--err-border); }
+.edit-issues .edit-issue:first-of-type { border-top: none; padding-top: 0; }
+.card .label.pending, table.items .label.pending { border-style: dashed !important; }
+.edit-flag { color: var(--err-fg); font-size: 11px; white-space: nowrap; }
+/* GitHub#229: a group / repository heading folds from anywhere on the row */
+table.items tr.group-head, table.items tr.repo-head { cursor: pointer; }
+table.items tr.group-head:hover td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+table.items tr.repo-head:hover td { background: var(--hover); }

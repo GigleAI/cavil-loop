@@ -293,8 +293,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return;
       }
       if (!authed()) return;
-      const answered = handleGraphql(store, op, body.variables ?? {});
-      if (answered) {
+      const live = handleGraphql(store, op, body.variables ?? {});
+      if (live) {
+        // frozen now (GitHub#229): a held answer carries the data of the moment it arrived
+        const answered = JSON.parse(JSON.stringify(live));
         await held();
         if (answered.httpStatus) return send(answered.httpStatus, { message: 'Server Error' });
         return send(200, answered);
@@ -309,7 +311,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         const idx = v.after ? pages.findIndex((p) => p.items.pageInfo.endCursor === v.after) + 1 : 0;
         if (idx <= 0 && v.after) return send(200, { errors: [{ message: 'bad cursor' }] });
         if (state.failProjectPage.get(key) === idx) return send(502, { message: 'Server Error' });
-        return send(200, { data: { [holder]: { projectV2: { ...pages[idx], viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } });
+        // frozen now, then held like every other read (GitHub#229)
+        const frozen = JSON.parse(JSON.stringify({ data: { [holder]: { projectV2: { ...pages[idx], viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } }));
+        await held();
+        return send(200, frozen);
       }
       return send(200, { errors: [{ message: `fake: unknown operation ${op}` }] });
     }
@@ -337,7 +342,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         req.method ?? 'GET',
         url.pathname + url.search,
         parsed,
-        (st, b) => out.push(() => send(st, b)),
+        // frozen now (GitHub#229): a held answer must not pick up a write that arrived after it
+        (st, b) => {
+          const frozen = b === undefined ? undefined : JSON.parse(JSON.stringify(b));
+          out.push(() => send(st, frozen));
+        },
         (t) =>
           out.push(() => {
             entry.status = 200;
@@ -376,8 +385,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         next.searchParams.set('page', String(page + 1));
         headers.Link = `<${next.toString()}>; rel="next"`;
       }
+      // frozen now (GitHub#229): a held answer carries the data of the moment it arrived
+      const frozen = JSON.parse(JSON.stringify(slice));
       await held();
-      return send(200, slice, headers);
+      return send(200, frozen, headers);
     }
     send(404, { message: 'Not Found' });
   });

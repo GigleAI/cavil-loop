@@ -11,7 +11,8 @@ import type { Handoff } from './handoff';
  * `key` is the item (`owner/repo#N`, see itemKey).
  */
 export type WriteAction =
-  | { kind: 'addLabel'; key: string; label: string }
+  /** `color`: the label's colour, so it can be shown before GitHub confirms (GitHub#229); optional */
+  | { kind: 'addLabel'; key: string; label: string; color?: string }
   | { kind: 'removeLabel'; key: string; label: string }
   /** title = a milestone of the item's own repository with this title; null = remove the milestone */
   | { kind: 'setMilestone'; key: string; title: string | null }
@@ -37,9 +38,9 @@ export type WriteAction =
    * set — never re-derived when writing, only checked again; absent = the plain new issue.
    * `handoff` (GitHub#245): hand the new issue to the agent / autopilot in the same request — the
    * labels come from Settings and are checked against a fresh read of the repository's labels;
-   * absent = 'none'
+   * absent = 'none'. `handoffPicked`: chosen by hand in the dialog — the app remembers it once the issue exists
    */
-  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan; handoff?: Handoff }
+  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan; handoff?: Handoff; handoffPicked?: boolean }
   /**
    * tick / untick one task-list box of a body or comment (GitHub#193): `entryId` is the
    * body's / comment's node id, `index` the box's number in it (document order),
