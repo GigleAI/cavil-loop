@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 换 worker / 换复审时不把 attach 着的终端踢出 tmux（GitHub#197）。
 #
 # 跑法：bash tests/session-switch-keeps-client.test.sh            （默认回归，约 30 秒）
@@ -16,6 +17,8 @@
 #   · 新程序秒退——session 必须消失（daemon 靠「session 不在」判 worker 死）
 #   · 新程序跑一阵自然退出——session 也必须消失（「退出后保留窗格」得关回去）
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 # 干净环境重跑自己：worker 会话里本来就带着真 GH_TOKEN / TMUX 等，漏进来会让被测脚本
 # 读到真值，或者让 tmux 命令连到外层 server。
@@ -599,4 +602,5 @@ fi
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]
