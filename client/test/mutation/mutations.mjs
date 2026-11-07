@@ -682,7 +682,7 @@ export const MUTATIONS = [
     from: `grep -qF 'xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"' "$page"`, to: `grep -qF 'xattr -dr com.apple.quarantine "/Applications/CavilLoop.app"' "$page"`,
     expect: ['scripts/mac-open-check.sh carries exactly that command'] },
   { what: 'dmg 里列了一个不存在的文件', file: 'scripts/release-command.mjs',
-    from: "export const DMG_EXTRA_FILES = ['build/复制放行命令.html',", to: "export const DMG_EXTRA_FILES = ['build/复制命令.html',",
+    from: "export const DMG_EXTRA_FILES = ['build/复制放行命令.html'];", to: "export const DMG_EXTRA_FILES = ['build/复制命令.html'];",
     expect: ['every listed file exists', 'lists the app, the Applications link and every extra file'] },
   { what: 'dmg 里的图标放到窗口看不见的下方', file: 'scripts/dmg-layout.mjs',
     from: "{ path: 'build/复制放行命令.html', x: 330, y: 368 }", to: "{ path: 'build/复制放行命令.html', x: 330, y: 440 }",
