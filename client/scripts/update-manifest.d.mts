@@ -1,5 +1,8 @@
 export declare const REPO: string;
 export declare const PLATFORMS: Record<string, string>;
+/** the machines each channel's manifest must carry (GitHub#215) */
+export declare const CHANNEL_PLATFORMS: { stable: string[]; dev: string[] };
+export declare const VERSION_SHAPE: { stable: RegExp; dev: RegExp };
 export declare function packageName(version: string, arch: string): string;
 export declare function downloadUrl(version: string, file: string): string;
 export declare function configuredPubkey(confPath: string): string;
@@ -14,4 +17,4 @@ export interface Manifest {
   pub_date: string;
   platforms: Record<string, { signature: string; url: string }>;
 }
-export declare function build(o: { version: string; dir: string; pubkey: string; notes?: string; date?: Date }): { ok: true; manifest: Manifest } | { ok: false; errors: string[] };
+export declare function build(o: { version: string; dir: string; pubkey: string; notes?: string; date?: Date; channel?: string }): { ok: true; manifest: Manifest } | { ok: false; errors: string[] };

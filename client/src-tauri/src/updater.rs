@@ -10,14 +10,15 @@
 // not test mode unless a test asks for it, not Linux (nothing is released there).
 //
 // Test builds only (cargo feature `update-test`, scripts/mac-update-check.sh): the
-// public key may come from CAVIL_CLIENT_TEST_UPDATE_PUBKEY, and a debug build may
-// update. The released app has neither.
+// public key may come from CAVIL_CLIENT_TEST_UPDATE_PUBKEY, the channel from
+// CAVIL_CLIENT_TEST_UPDATE_CHANNEL, and a debug build may update. The released app
+// has none of these.
 
 use async_trait::async_trait;
 use cavil_core::http::Endpoints;
 use cavil_core::platform::SystemClock;
 use cavil_core::store::Store;
-use cavil_core::update::{self, Backend, Failure, Found, Timings, Updater};
+use cavil_core::update::{self, Backend, Channel, Failure, Found, Timings, Updater};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -173,7 +174,22 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, store: Arc<Store>, endpoints: Endpo
         d.push(json!({ "kind": "update", "status": status }));
     });
     let current = app.package_info().version.to_string();
-    Some(Updater::new(backend, Arc::new(SystemClock), store, &current, &endpoints.web, Timings::default(), problem, changed))
+    let u = Updater::new(backend, Arc::new(SystemClock), store, &current, &endpoints.web, Timings::default(), problem, dev_supported(), changed);
+    if cfg!(feature = "update-test") {
+        if let Some(c) = env.get("CAVIL_CLIENT_TEST_UPDATE_CHANNEL").and_then(|c| Channel::parse(c)) {
+            if let Err(e) = u.set_channel(c) {
+                eprintln!("cavil: CAVIL_CLIENT_TEST_UPDATE_CHANNEL={}: {e}", c.name());
+            }
+        }
+    }
+    Some(u)
+}
+
+/// Development builds exist for this machine: the updater platform key the plugin looks this
+/// machine up by (`darwin-aarch64`, …) is one of `update::DEV_TARGETS`.
+fn dev_supported() -> bool {
+    let os = if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
+    update::DEV_TARGETS.contains(&format!("{os}-{}", std::env::consts::ARCH).as_str())
 }
 
 fn slot<R: Runtime>(app: &AppHandle<R>) -> Option<Arc<Updater>> {
@@ -198,6 +214,16 @@ pub fn desktop_update_check<R: Runtime>(app: AppHandle<R>) {
 #[tauri::command]
 pub fn desktop_update_set_auto<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
     slot(&app).ok_or("这个版本不自动更新")?.set_auto(on)
+}
+
+/// Choose the update channel ("stable" / "dev", GitHub#215), then look on it at once. A round
+/// running now drops what it found and starts over on the new channel.
+#[tauri::command]
+pub fn desktop_update_set_channel<R: Runtime>(app: AppHandle<R>, channel: String) -> Result<(), String> {
+    let u = slot(&app).ok_or("这个版本不自动更新")?;
+    u.set_channel(Channel::parse(&channel).ok_or("不认识的更新渠道")?)?;
+    tauri::async_runtime::spawn(async move { u.check_now().await });
+    Ok(())
 }
 
 #[tauri::command]

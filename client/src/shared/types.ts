@@ -13,10 +13,14 @@ export interface UpdateStatus {
   current: string;
   /** automatic checks (at start, then every 6 hours) */
   auto: boolean;
+  /** which releases it updates to (GitHub#215): the tagged releases, or also the development builds from main */
+  channel: 'stable' | 'dev';
+  /** why the development channel cannot be chosen on this machine (no development builds for it); null = it can */
+  devUnavailable: string | null;
   /** why this build cannot update itself at all (it never looks) */
   problem: string | null;
-  phase: 'idle' | 'checking' | 'downloading' | 'ready';
-  /** downloading / ready: the new version */
+  phase: 'idle' | 'checking' | 'downloading' | 'installing' | 'ready';
+  /** downloading / installing / ready: the new version */
   version?: string;
   /** downloading: bytes so far, and the total when known */
   got?: number;

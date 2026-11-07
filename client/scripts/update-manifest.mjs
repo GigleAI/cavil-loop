@@ -6,7 +6,12 @@
 // The public key is the app's own: `plugins.updater.pubkey` in src-tauri/tauri.conf.json — the
 // one place the app (at run time), the bundler (when it signs) and this script read it from.
 //
-// Refuses (exit 1, nothing written) unless, for both Apple silicon and Intel:
+// Two channels (GitHub#215): a tagged release (`--channel stable`, the default) must carry both
+// Apple silicon and Intel; a development build from main (`--channel dev`, version X.Y.Z-dev.N)
+// carries the machines in CHANNEL_PLATFORMS.dev. Which machines a channel needs is decided here
+// only, by the channel's name; nobody can pass a shorter list.
+//
+// Refuses (exit 1, nothing written) unless, for every machine the channel needs:
 //   - the package and its signature are there,
 //   - the signature verifies, as minisign: the package's bytes against the signature, and the
 //     trusted comment against the global signature, with that public key — a package any
@@ -15,7 +20,8 @@
 // An app without a public key cannot update itself at all, so an empty key is refused too.
 //
 //   node scripts/update-manifest.mjs --version 0.5.0 --dir dist-release --conf src-tauri/tauri.conf.json \
-//        --notes RELEASE_NOTES.md --out dist-release/latest.json
+//        --notes RELEASE_NOTES.md --out dist-release/latest.json [--channel stable|dev]
+//   node scripts/update-manifest.mjs --print-platforms <channel>              (the machines that channel needs, as JSON)
 //   node scripts/update-manifest.mjs --verify <file> <file.sig> [--conf …]   (exit 0 = verifies with the app's key)
 //   node scripts/update-manifest.mjs --set-pubkey <key.pub> [--conf …]      (the maintainer's step: put the key in)
 import { createHash, createPublicKey, verify } from 'node:crypto';
@@ -26,6 +32,15 @@ import { fileURLToPath } from 'node:url';
 export const REPO = 'GigleAI/cavil-loop';
 /** the updater's platform names → the arch in the package's file name */
 export const PLATFORMS = { 'darwin-aarch64': 'arm64', 'darwin-x86_64': 'x64' };
+/**
+ * The machines each channel's manifest must carry (GitHub#215). Development builds are made on
+ * the Apple silicon Mac only (the push-to-main build, .github/workflows/client.yml); the app has
+ * the same list (`DEV_TARGETS`, src-tauri/crates/core/src/update.rs) to grey the channel out on
+ * other Macs — test/unit/update-manifest.test.ts compares the two.
+ */
+export const CHANNEL_PLATFORMS = { stable: ['darwin-aarch64', 'darwin-x86_64'], dev: ['darwin-aarch64'] };
+/** the version each channel publishes */
+export const VERSION_SHAPE = { stable: /^\d+\.\d+\.\d+$/, dev: /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-dev\.(0|[1-9]\d*)$/ };
 
 export const packageName = (version, arch) => `Cavil-Loop-${version}-${arch}.app.tar.gz`;
 export const downloadUrl = (version, file) => `https://github.com/${REPO}/releases/download/client/v${version}/${file}`;
@@ -96,13 +111,15 @@ export function signedVersion(trusted) {
 }
 
 /** → { ok: true, manifest } or { ok: false, errors } */
-export function build({ version, dir, pubkey, notes, date }) {
+export function build({ version, dir, pubkey, notes, date, channel = 'stable' }) {
   const errors = [];
-  if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) errors.push(`版本号不是 X.Y.Z：${version}`);
+  if (!Object.hasOwn(CHANNEL_PLATFORMS, channel)) return { ok: false, errors: [`不认识的渠道：${channel}（只有 stable / dev）`] };
+  if (!VERSION_SHAPE[channel].test(version ?? '')) errors.push(channel === 'dev' ? `版本号不是 X.Y.Z-dev.N：${version}` : `版本号不是 X.Y.Z：${version}`);
   if (!String(pubkey ?? '').trim()) errors.push('App 里没有更新用的公钥（tauri.conf.json 的 plugins.updater.pubkey 是空的）：装好的 App 没法校验任何更新包');
   else if (!parsePubkey(pubkey)) errors.push('tauri.conf.json 的 plugins.updater.pubkey 不是 minisign 公钥');
   const platforms = {};
-  for (const [platform, arch] of Object.entries(PLATFORMS)) {
+  for (const platform of CHANNEL_PLATFORMS[channel]) {
+    const arch = PLATFORMS[platform];
     const file = packageName(version, arch);
     const sigFile = join(dir, `${file}.sig`);
     if (!existsSync(join(dir, file))) {
@@ -150,12 +167,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`✅ 已把公钥（密钥编号 ${parsePubkey(text).id}）写进 ${conf}`);
     process.exit(0);
   }
+  if (a[0] === '--print-platforms') {
+    if (!Object.hasOwn(CHANNEL_PLATFORMS, a[1] ?? '')) {
+      console.log(`❌ 不认识的渠道：${a[1]}（只有 stable / dev）`);
+      process.exit(1);
+    }
+    console.log(JSON.stringify(CHANNEL_PLATFORMS[a[1]]));
+    process.exit(0);
+  }
   if (a[0] === '--verify') {
     const v = verifySignature(readFileSync(a[1]), read(a[2]), pubkey);
     console.log(v.ok ? `✅ ${a[1]}：签名有效（${v.trusted}）` : `❌ ${a[1]}：${v.why}`);
     process.exit(v.ok ? 0 : 1);
   }
-  const r = build({ version: opt('version'), dir: opt('dir') ?? '.', pubkey, notes: read(opt('notes')) });
+  const r = build({ version: opt('version'), dir: opt('dir') ?? '.', pubkey, notes: read(opt('notes')), channel: opt('channel') ?? 'stable' });
   if (!r.ok) {
     for (const e of r.errors) console.log(`❌ ${e}`);
     process.exit(1);

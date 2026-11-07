@@ -599,6 +599,10 @@ export class Controller {
     await this.deps.desktop?.setAutoUpdate(Boolean(on)).catch(() => {});
   }
 
+  async setUpdateChannel(channel: 'stable' | 'dev'): Promise<void> {
+    await this.deps.desktop?.setUpdateChannel(channel === 'dev' ? 'dev' : 'stable').catch(() => {});
+  }
+
   async dismissUpdate(version: string): Promise<void> {
     await this.deps.desktop?.dismissUpdate(String(version)).catch(() => {});
   }

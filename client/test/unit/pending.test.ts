@@ -86,6 +86,7 @@ async function signedIn(
     updateStatus: async () => null,
     checkUpdate: async () => {},
     setAutoUpdate: async () => {},
+    setUpdateChannel: async () => {},
     dismissUpdate: async () => {},
     restartToUpdate: async () => {},
   };

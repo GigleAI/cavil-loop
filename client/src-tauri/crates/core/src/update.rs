@@ -6,10 +6,13 @@
 // bundle — is the shell's (src-tauri/src/updater.rs, Tauri's updater plugin).
 // Everything that decides is here, once, so the app and the test harness run
 // the same code:
-//   - which release: `pick` (the client's own `client/vX.Y.Z` releases only)
+//   - which release: `pick` (the client's own `client/vX.Y.Z` releases; on the development
+//     channel also the `client/vX.Y.Z-dev.N` pre-releases built from main, GitHub#215)
 //   - when: at start, then every `every_ms` while automatic checks are on, or when asked
 //   - one round at a time; a round that finds nothing / fails never reads as "up to date"
 //   - a download that receives nothing for `stall_ms` is given up
+//   - switching the channel mid-round: the round is dropped (a download is stopped) and one
+//     starts on the new channel; only while the new app is being put in place is switching refused
 //
 // No GitHub credential is used: the repository is public, the release list is
 // read without a token.
@@ -22,6 +25,7 @@ use serde_json::{json, Value};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 /// The repository the client's releases live in.
 pub const REPO: &str = "GigleAI/cavil-loop";
@@ -36,6 +40,41 @@ pub const MAX_PAGES: u32 = 10;
 /// Kept settings (the local store).
 pub const AUTO_KEY: &str = "update.auto";
 pub const DISMISSED_KEY: &str = "update.dismissed";
+pub const CHANNEL_KEY: &str = "update.channel";
+
+/// Which releases an app updates to (GitHub#215).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    /// the tagged `client/vX.Y.Z` releases (the default)
+    Stable,
+    /// also the `client/vX.Y.Z-dev.N` pre-releases CI publishes from main
+    Dev,
+}
+
+impl Channel {
+    pub fn name(self) -> &'static str {
+        match self {
+            Channel::Stable => "stable",
+            Channel::Dev => "dev",
+        }
+    }
+    /// What the store / the window says; anything else is not a channel.
+    pub fn parse(s: &str) -> Option<Channel> {
+        match s {
+            "stable" => Some(Channel::Stable),
+            "dev" => Some(Channel::Dev),
+            _ => None,
+        }
+    }
+}
+
+/// The machines development builds are published for (updater platform keys). The release job's
+/// manifest builder has the same table (scripts/update-manifest.mjs `CHANNEL_PLATFORMS.dev`);
+/// test/unit/update-manifest.test.ts compares the two.
+pub const DEV_TARGETS: &[&str] = &["darwin-aarch64"];
+
+/// Why the development channel cannot be chosen on a machine with no development builds.
+pub const NO_DEV_BUILD: &str = "开发版只有 Apple 芯片的包，这台 Mac 只能用正式版";
 
 #[derive(Clone, Copy, Debug)]
 pub struct Timings {
@@ -55,21 +94,65 @@ impl Default for Timings {
     }
 }
 
-/// `X.Y.Z`, digits only. Anything else is not a version this app installs.
-pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let mut it = s.split('.');
-    let mut n = || -> Option<u64> {
-        let p = it.next()?;
-        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) || (p.len() > 1 && p.starts_with('0')) {
-            return None;
+/// A version this app installs: `X.Y.Z` (a release) or `X.Y.Z-dev.N` (a development build).
+/// Ordered as semver orders them — what the updater plugin compares with: the same X.Y.Z with no
+/// suffix is newer than any of its development builds; development builds by N as a number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub core: (u64, u64, u64),
+    /// N of `-dev.N`; None = a release
+    pub dev: Option<u64>,
+}
+
+impl Ord for Version {
+    fn cmp(&self, o: &Version) -> std::cmp::Ordering {
+        self.core.cmp(&o.core).then_with(|| match (self.dev, o.dev) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (Some(a), Some(b)) => a.cmp(&b),
+        })
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, o: &Version) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (a, b, c) = self.core;
+        match self.dev {
+            None => write!(f, "{a}.{b}.{c}"),
+            Some(n) => write!(f, "{a}.{b}.{c}-dev.{n}"),
         }
-        p.parse().ok()
+    }
+}
+
+/// Digits only, no leading zero (`0` itself is fine).
+fn number(p: &str) -> Option<u64> {
+    if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) || (p.len() > 1 && p.starts_with('0')) {
+        return None;
+    }
+    p.parse().ok()
+}
+
+/// `X.Y.Z` or `X.Y.Z-dev.N`, digits only, no leading zeros. Anything else is not a version this app
+/// installs (`-rc.1`, `-dev.01`, `-dev.`, build metadata…).
+pub fn parse_version(s: &str) -> Option<Version> {
+    let (core, dev) = match s.split_once('-') {
+        None => (s, None),
+        Some((core, rest)) => (core, Some(number(rest.strip_prefix("dev.")?)?)),
     };
+    let mut it = core.split('.');
+    let mut n = || number(it.next()?);
     let v = (n()?, n()?, n()?);
     if it.next().is_some() {
         return None;
     }
-    Some(v)
+    Some(Version { core: v, dev })
 }
 
 /// The release to update to.
@@ -82,28 +165,40 @@ pub struct Pick {
 }
 
 /// Out of the release list (pages as GitHub returned them), the newest release of the client
-/// that is newer than `current`. Ok(None) = there is none. Err = the list cannot be read, or the
-/// newest release cannot be updated to (no manifest, a manifest outside this repository's downloads).
-pub fn pick(pages: &[Value], current: &str, web: &str) -> Result<Option<Pick>, String> {
+/// that is newer than `current`, on `channel`. Ok(None) = there is none. Err = the list cannot be
+/// read, or the newest release cannot be updated to (no manifest, a manifest outside this
+/// repository's downloads).
+///
+/// A release counts when it is not a draft and its tag is `client/v` + a version, and:
+///   - `X.Y.Z`: not marked pre-release (both channels)
+///   - `X.Y.Z-dev.N`: marked pre-release, and only on the development channel
+/// Any other mix (a pre-release on a release version, a development version not marked
+/// pre-release) is not one this app installs.
+pub fn pick(pages: &[Value], current: &str, web: &str, channel: Channel) -> Result<Option<Pick>, String> {
     let cur = parse_version(current).ok_or_else(|| format!("当前版本号看不懂：{current}"))?;
-    let mut best: Option<((u64, u64, u64), &Value)> = None;
+    let mut best: Option<(Version, &Value)> = None;
     for page in pages {
         let list = page.as_array().ok_or("GitHub 返回的发版列表看不懂")?;
         for r in list {
-            if r["draft"] != json!(false) || r["prerelease"] != json!(false) {
+            if r["draft"] != json!(false) || !r["prerelease"].is_boolean() {
                 continue;
             }
             let Some(v) = r["tag_name"].as_str().and_then(|t| t.strip_prefix(TAG_PREFIX)).and_then(parse_version) else {
                 continue;
             };
-            if v <= cur || best.is_some_and(|(b, _)| v <= b) {
+            let pre = r["prerelease"] == json!(true);
+            let wanted = match v.dev {
+                None => !pre,
+                Some(_) => pre && channel == Channel::Dev,
+            };
+            if !wanted || v <= cur || best.is_some_and(|(b, _)| v <= b) {
                 continue;
             }
             best = Some((v, r));
         }
     }
-    let Some(((a, b, c), r)) = best else { return Ok(None) };
-    let version = format!("{a}.{b}.{c}");
+    let Some((v, r)) = best else { return Ok(None) };
+    let version = v.to_string();
     let tag = r["tag_name"].as_str().unwrap_or_default().to_string();
     let assets = r["assets"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let url = assets
@@ -193,6 +288,8 @@ enum Phase {
     Idle,
     Checking,
     Downloading { version: String, got: u64, total: Option<u64> },
+    /// the new app is being put in place: cannot be stopped, so the channel cannot change now
+    Installing { version: String },
     Ready { version: String },
 }
 
@@ -206,7 +303,14 @@ struct Last {
 struct Inner {
     phase: Phase,
     last: Option<Last>,
+    /// Bumped (under this lock, together with the stored channel) whenever the channel changes.
+    /// A round remembers the one it started with; once it differs, whatever that round found is
+    /// for the other channel: dropped, never downloaded on, never installed.
+    generation: u64,
 }
+
+/// What a round that was overtaken by a channel switch returns (never shown: the round is rerun).
+const SWITCHED: &str = "渠道已切换";
 
 /// The updater: one per app.
 pub struct Updater {
@@ -219,11 +323,16 @@ pub struct Updater {
     timings: Timings,
     /// why this app cannot update itself at all (shown, never checks)
     problem: Option<String>,
+    /// development builds are published for this machine (`DEV_TARGETS`)
+    dev_supported: bool,
     inner: Mutex<Inner>,
+    /// `Inner::generation`, for the parts of a round that wait (they stop as soon as it moves)
+    generation: watch::Sender<u64>,
     changed: Box<dyn Fn(Value) + Send + Sync>,
 }
 
 impl Updater {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         backend: Arc<dyn Backend>,
         clock: Arc<dyn Clock>,
@@ -232,6 +341,7 @@ impl Updater {
         web: &str,
         timings: Timings,
         problem: Option<String>,
+        dev_supported: bool,
         changed: Box<dyn Fn(Value) + Send + Sync>,
     ) -> Arc<Updater> {
         Arc::new(Updater {
@@ -242,7 +352,9 @@ impl Updater {
             web: web.trim_end_matches('/').to_string(),
             timings,
             problem,
-            inner: Mutex::new(Inner { phase: Phase::Idle, last: None }),
+            dev_supported,
+            inner: Mutex::new(Inner { phase: Phase::Idle, last: None, generation: 0 }),
+            generation: watch::Sender::new(0),
             changed,
         })
     }
@@ -254,6 +366,41 @@ impl Updater {
 
     pub fn set_auto(&self, on: bool) -> Result<(), String> {
         self.store.set_setting(AUTO_KEY, &json!(on))?;
+        self.emit();
+        Ok(())
+    }
+
+    /// The channel in effect: what was chosen, the release channel when nothing (or nothing
+    /// readable) was, and always the release channel on a machine with no development builds.
+    pub fn channel(&self) -> Channel {
+        match self.store.get_str(CHANNEL_KEY).as_deref().and_then(Channel::parse) {
+            Some(Channel::Dev) if self.dev_supported => Channel::Dev,
+            _ => Channel::Stable,
+        }
+    }
+
+    /// Choose the channel (kept). A round running now is dropped and the caller's next check runs
+    /// on the new channel; refused while the new app is being put in place.
+    pub fn set_channel(&self, c: Channel) -> Result<(), String> {
+        if c == Channel::Dev && !self.dev_supported {
+            return Err(NO_DEV_BUILD.into());
+        }
+        {
+            let mut g = self.inner.lock().unwrap();
+            if let Phase::Installing { version } = &g.phase {
+                return Err(format!("正在安装 {version}，装好后可以切换"));
+            }
+            if self.channel() != c {
+                self.store.set_setting(CHANNEL_KEY, &json!(c.name()))?;
+                g.generation += 1;
+                self.generation.send_replace(g.generation);
+                // a round in flight is now for the other channel: what it was fetching is no longer
+                // what is shown (it starts over, on this channel)
+                if matches!(g.phase, Phase::Downloading { .. }) {
+                    g.phase = Phase::Checking;
+                }
+            }
+        }
         self.emit();
         Ok(())
     }
@@ -275,6 +422,8 @@ impl Updater {
             "supported": true,
             "current": self.current,
             "auto": self.auto(),
+            "channel": self.channel().name(),
+            "devUnavailable": if self.dev_supported { Value::Null } else { json!(NO_DEV_BUILD) },
             "problem": self.problem,
             "dismissed": self.store.get_str(DISMISSED_KEY),
             "last": last.map(|l| json!({ "at": l.at, "ok": l.ok, "message": l.message })),
@@ -287,6 +436,10 @@ impl Updater {
                 v["version"] = json!(version);
                 v["got"] = json!(got);
                 v["total"] = json!(total);
+            }
+            Phase::Installing { version } => {
+                v["phase"] = json!("installing");
+                v["version"] = json!(version);
             }
             Phase::Ready { version } => {
                 v["phase"] = json!("ready");
@@ -303,6 +456,10 @@ impl Updater {
     fn set_phase(&self, p: Phase) {
         self.inner.lock().unwrap().phase = p;
         self.emit();
+    }
+
+    fn generation_now(&self) -> u64 {
+        self.inner.lock().unwrap().generation
     }
 
     /// Start a round unless one is running or the new version is already in place.
@@ -326,45 +483,77 @@ impl Updater {
         self.emit();
     }
 
-    /// One round, now (the settings page's button, the start-up check, the timer).
-    /// Returns when it is over; a call while one runs returns at once (the running one shows its progress).
+    /// One round, now (the settings page's button, the start-up check, the timer, a channel
+    /// switch). Returns when it is over; a call while one runs returns at once (the running one
+    /// shows its progress). A round overtaken by a channel switch is dropped and run again on the
+    /// new channel, until one finishes on the channel still chosen.
     pub async fn check_now(self: &Arc<Self>) {
         if !self.begin() {
             self.emit();
             return;
         }
         self.emit();
-        match self.round().await {
-            Ok(Some(version)) => self.finish(Phase::Ready { version: version.clone() }, true, format!("新版 {version} 已下载，重启后生效")).await,
-            Ok(None) => self.finish(Phase::Idle, true, "已是最新".into()).await,
-            Err(m) => self.finish(Phase::Idle, false, m).await,
+        loop {
+            let (generation, channel) = {
+                let g = self.inner.lock().unwrap();
+                (g.generation, self.channel())
+            };
+            let r = self.round(generation, channel).await;
+            // installed = it started installing on this very generation (checked under the lock)
+            if !matches!(r, Ok(Some(_))) && self.generation_now() != generation {
+                self.set_phase(Phase::Checking);
+                continue;
+            }
+            match r {
+                Ok(Some(version)) => self.finish(Phase::Ready { version: version.clone() }, true, format!("新版 {version} 已下载，重启后生效")).await,
+                Ok(None) => self.finish(Phase::Idle, true, "已是最新".into()).await,
+                Err(m) => self.finish(Phase::Idle, false, m).await,
+            }
+            return;
         }
     }
 
     /// Ok(Some(v)) = v is in place; Ok(None) = nothing newer; Err = what to show.
-    async fn round(self: &Arc<Self>) -> Result<Option<String>, String> {
+    async fn round(self: &Arc<Self>, generation: u64, channel: Channel) -> Result<Option<String>, String> {
         let t = self.timings;
         let pages = self
-            .within(t.query_timeout_ms, self.backend.releases())
+            .unless_switched(generation, self.within(t.query_timeout_ms, self.backend.releases()))
             .await
+            .ok_or(SWITCHED)?
             .ok_or("检查失败：GitHub 没有回应")?
             .map_err(|e| format!("检查失败：{e}"))?;
-        let Some(p) = pick(&pages, &self.current, &self.web).map_err(|e| format!("检查失败：{e}"))? else {
+        let Some(p) = pick(&pages, &self.current, &self.web, channel).map_err(|e| format!("检查失败：{e}"))? else {
             return Ok(None);
         };
-        let found = match self.within(t.query_timeout_ms, self.backend.check(&p.manifest_url)).await {
+        let found = match self.unless_switched(generation, self.within(t.query_timeout_ms, self.backend.check(&p.manifest_url))).await.ok_or(SWITCHED)? {
             None => return Err("检查失败：GitHub 没有回应".into()),
             Some(Err(f)) => return Err(format!("检查失败：{}", f.message())),
             Some(Ok(None)) => return Ok(None),
             Some(Ok(Some(f))) => f,
         };
         let version = found.version.clone();
-        self.set_phase(Phase::Downloading { version: version.clone(), got: 0, total: None });
-        let bytes = match self.download_watched(&found).await {
+        {
+            let mut g = self.inner.lock().unwrap();
+            if g.generation != generation {
+                return Err(SWITCHED.into());
+            }
+            g.phase = Phase::Downloading { version: version.clone(), got: 0, total: None };
+        }
+        self.emit();
+        let bytes = match self.unless_switched(generation, self.download_watched(&found, generation)).await.ok_or(SWITCHED)? {
             Ok(b) => b,
             Err(Failure::Signature(_)) => return Err(format!("新版 {version} 签名校验失败，没有安装")),
             Err(f) => return Err(format!("下载 {version} 失败：{}", f.message())),
         };
+        // the last point a switch can stop this round: from here on the old app is being replaced
+        {
+            let mut g = self.inner.lock().unwrap();
+            if g.generation != generation {
+                return Err(SWITCHED.into());
+            }
+            g.phase = Phase::Installing { version: version.clone() };
+        }
+        self.emit();
         match self.backend.install(&found, bytes).await {
             Ok(()) => Ok(Some(version)),
             Err(Failure::Signature(_)) => Err(format!("新版 {version} 签名校验失败，没有安装")),
@@ -372,18 +561,46 @@ impl Updater {
         }
     }
 
+    /// `fut`'s result, or None as soon as the channel is switched (`fut` is dropped: a download stops).
+    async fn unless_switched<T>(&self, generation: u64, fut: impl Future<Output = T>) -> Option<T> {
+        let mut rx = self.generation.subscribe();
+        let switched = async move {
+            loop {
+                if *rx.borrow_and_update() != generation {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = switched => None,
+            r = fut => Some(r),
+        }
+    }
+
     /// The download, given up when no data arrives for `stall_ms` (a slow download that keeps
     /// receiving data is never given up).
-    async fn download_watched(self: &Arc<Self>, found: &Found) -> Result<Vec<u8>, Failure> {
+    async fn download_watched(self: &Arc<Self>, found: &Found, generation: u64) -> Result<Vec<u8>, Failure> {
         let seen = Arc::new(AtomicU64::new(0));
         let me = Arc::downgrade(self);
         let counter = seen.clone();
         let version = found.version.clone();
         let progress: Box<dyn Fn(u64, Option<u64>) + Send + Sync> = Box::new(move |got, total| {
             counter.fetch_add(1, Ordering::SeqCst);
-            if let Some(u) = me.upgrade() {
-                u.set_phase(Phase::Downloading { version: version.clone(), got, total });
+            let Some(u) = me.upgrade() else { return };
+            // a download the round has let go of (a channel switch) may still report: it must not
+            // put its version back on the screen
+            {
+                let mut g = u.inner.lock().unwrap();
+                if g.generation != generation || !matches!(g.phase, Phase::Downloading { .. }) {
+                    return;
+                }
+                g.phase = Phase::Downloading { version: version.clone(), got, total };
             }
+            u.emit();
         });
         let watchdog = async {
             let mut last_n = seen.load(Ordering::SeqCst);

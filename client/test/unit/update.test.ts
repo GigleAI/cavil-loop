@@ -68,6 +68,15 @@ class ReleaseServer {
   holdReleases = false;
   manifest: any = null;
   pkg = Buffer.alloc(0);
+  /** GitHub#215: several releases at once, each with its own manifest and package (by tag) */
+  byTag = new Map<string, { manifest: any; pkg: Buffer }>();
+  /** manifests of these tags never answer */
+  holdManifest = new Set<string>();
+  /** held release-list requests (answered by `releaseHeld`) */
+  held: (() => void)[] = [];
+  holdAndKeep = false;
+  /** packages of these tags are dripped (first 4 KB, then nothing) */
+  dripTags = new Set<string>();
   /** how the package is served */
   pkgMode: 'whole' | 'stall' | 'cut' | 'drip' = 'whole';
   dripRes: ServerResponse | null = null;
@@ -97,6 +106,22 @@ class ReleaseServer {
     this.pkg = pkg;
     this.manifest = { version: v, notes: 'n', platforms: { [TARGET]: { url: this.dl(`client/v${v}`, 'app.tar.gz'), signature: sha(pkg) } } };
   }
+  /** GitHub#215: these versions as releases (`-dev.N` ones as pre-releases), newest first in the list */
+  publishAll(versions: string[]) {
+    this.byTag.clear();
+    this.pages = [[...versions.map((v) => ({ tag: `client/v${v}`, prerelease: v.includes('-') })), { tag: 'release/v2026.11.01.1', assets: ['x.tar.gz'] }]];
+    for (const v of versions) {
+      const tag = `client/v${v}`;
+      const pkg = Buffer.from(`package ${v} `.repeat(4000));
+      this.byTag.set(tag, { pkg, manifest: { version: v, notes: 'n', platforms: { [TARGET]: { url: this.dl(tag, 'app.tar.gz'), signature: sha(pkg) } } } });
+    }
+  }
+  releaseHeld() {
+    for (const go of this.held.splice(0)) go();
+  }
+  manifestRequests() {
+    return this.log.filter((l) => l.path.endsWith('/latest.json')).map((l) => decodeURIComponent(l.path.split('/releases/download/')[1].replace(/\/latest\.json$/, '')));
+  }
   releaseRequests() {
     return this.log.filter((l) => l.path.startsWith(`/api/repos/${REPO}/releases`));
   }
@@ -121,9 +146,29 @@ class ReleaseServer {
     if (url.pathname === `/api/repos/${REPO}/releases`) {
       if (this.holdReleases) return; // never answers
       const page = Number(url.searchParams.get('page') ?? '1');
+      if (this.holdAndKeep) {
+        const body = JSON.stringify((this.pages[page - 1] ?? []).map((r) => this.rel(r)));
+        return void this.held.push(() => {
+          if (res.destroyed) return;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(body);
+        });
+      }
       if (this.failPage === page) return void res.writeHead(502).end('bad gateway');
       res.writeHead(200, { 'content-type': 'application/json' });
       return void res.end(JSON.stringify((this.pages[page - 1] ?? []).map((r) => this.rel(r))));
+    }
+    const tagged = /\/releases\/download\/(.+)\/(latest\.json|app\.tar\.gz)$/.exec(url.pathname);
+    const one = tagged && this.byTag.get(decodeURIComponent(tagged[1]));
+    if (one && tagged[2] === 'latest.json') {
+      if (this.holdManifest.has(decodeURIComponent(tagged[1]))) return; // never answers
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return void res.end(JSON.stringify(one.manifest));
+    }
+    if (one) {
+      res.writeHead(200, { 'content-length': String(one.pkg.length) });
+      if (!this.dripTags.has(decodeURIComponent(tagged![1]))) return void res.end(one.pkg);
+      return void res.write(one.pkg.subarray(0, 4096));
     }
     if (url.pathname.endsWith('/latest.json')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -180,8 +225,8 @@ async function start(b: HarnessBackend, extra: Record<string, unknown> = {}) {
 }
 const installed = () => join(dir, 'app', 'installed.bin');
 
-async function pick(pages: unknown[], current = '0.5.0', web = 'https://github.com') {
-  return (await harness().call('test.update.pick', { pages, current, web })) as { pick?: any; error?: string };
+async function pick(pages: unknown[], current = '0.5.0', web = 'https://github.com', channel = 'stable') {
+  return (await harness().call('test.update.pick', { pages, current, web, channel })) as { pick?: any; error?: string };
 }
 
 const gh = (tag: string, o: { draft?: boolean; prerelease?: boolean; manifest?: string | null } = {}) => ({
@@ -438,5 +483,220 @@ describe('when it looks (GitHub#184)', () => {
     await clock.advance(7 * HOUR);
     expect(await b.call('test.update.check')).toMatchObject({ phase: 'idle', problem: '这一版没有带更新用的公钥', last: null });
     expect(srv.releaseRequests().length).toBe(0);
+  });
+});
+
+// ---- two channels (GitHub#215) ------------------------------------------------------------
+// Release: the tagged `client/vX.Y.Z` releases only. Development: also the `client/vX.Y.Z-dev.N`
+// pre-releases CI publishes from main. Expected values below are derived from semver precedence
+// (what the updater plugin compares with), not read off the implementation.
+
+const dev = (tag: string, o: { draft?: boolean; prerelease?: boolean; manifest?: string | null } = {}) => gh(tag, { prerelease: true, ...o });
+const picked = async (pages: unknown[], current: string, channel: string) => (await pick(pages, current, 'https://github.com', channel)).pick?.version ?? null;
+
+describe('which release, per channel (GitHub#215)', () => {
+  it('the release channel never takes a development build, however high', async () => {
+    const list = [[dev('client/v0.9.1-dev.400'), gh('client/v0.5.1'), gh('release/v2026.11.01.1')]];
+    expect(await picked(list, '0.5.0', 'stable')).toBe('0.5.1');
+    expect(await picked([[dev('client/v0.9.1-dev.400')]], '0.5.0', 'stable')).toBe(null);
+  });
+
+  it('the development channel takes whichever is higher: a development build or a release', async () => {
+    expect(await picked([[dev('client/v0.5.1-dev.387'), gh('client/v0.5.0')]], '0.5.0', 'dev')).toBe('0.5.1-dev.387');
+    // 0.6.0 > 0.5.1-dev.N: the release wins
+    expect(await picked([[dev('client/v0.5.1-dev.387'), gh('client/v0.6.0')]], '0.5.0', 'dev')).toBe('0.6.0');
+    // same X.Y.Z: the release is higher than any of its development builds
+    expect(await picked([[dev('client/v0.5.1-dev.999'), gh('client/v0.5.1')]], '0.5.0', 'dev')).toBe('0.5.1');
+  });
+
+  it('development builds compare by N as a number (dev.10 > dev.9), not as text', async () => {
+    expect(await picked([[dev('client/v0.5.1-dev.9'), dev('client/v0.5.1-dev.10')]], '0.5.0', 'dev')).toBe('0.5.1-dev.10');
+    expect(await picked([[dev('client/v0.5.1-dev.10'), dev('client/v0.5.1-dev.9')]], '0.5.0', 'dev')).toBe('0.5.1-dev.10');
+  });
+
+  it('running a development build: older or equal is nothing; a newer one, or its release, is picked — on either channel for the release', async () => {
+    const cur = '0.5.1-dev.300';
+    expect(await picked([[dev('client/v0.5.1-dev.299'), dev('client/v0.5.1-dev.300'), gh('client/v0.5.0')]], cur, 'dev')).toBe(null);
+    expect(await picked([[dev('client/v0.5.1-dev.301')]], cur, 'dev')).toBe('0.5.1-dev.301');
+    expect(await picked([[gh('client/v0.5.1')]], cur, 'dev')).toBe('0.5.1');
+    // switched back to the release channel: no downgrade to 0.5.0, the next higher release is taken
+    expect(await picked([[gh('client/v0.5.0'), dev('client/v0.5.1-dev.301')]], cur, 'stable')).toBe(null);
+    expect(await picked([[gh('client/v0.5.1')]], cur, 'stable')).toBe('0.5.1');
+  });
+
+  it('only the exact shapes count: no other suffix, no leading zero, development builds must be marked pre-release and releases must not', async () => {
+    const list = [
+      [
+        dev('client/v0.9.0-rc.1'),
+        dev('client/v0.9.0-dev.01'),
+        dev('client/v0.9.0-dev.'),
+        dev('client/v0.9.0-dev'),
+        dev('client/v0.9.0-dev.1.2'),
+        dev('client/v0.9.0-dev.1+meta'),
+        dev('client/v0.9.0-DEV.1'),
+        gh('client/v0.9.0-dev.5'), // a development version not marked pre-release
+        dev('client/v0.9.0'), // a release version marked pre-release
+        dev('client/v0.9.0-dev.7', { draft: true }),
+        dev('release/v0.9.0-dev.8'),
+      ],
+    ];
+    expect(await picked(list, '0.5.0', 'dev')).toBe(null);
+    expect(await picked(list, '0.5.0', 'stable')).toBe(null);
+  });
+
+  it('an unknown channel name is the release channel', async () => {
+    expect(await picked([[dev('client/v0.5.1-dev.3')]], '0.5.0', 'nightly')).toBe(null);
+  });
+});
+
+describe('choosing the channel (GitHub#215)', () => {
+  it('defaults to the release channel; the choice outlives a restart; anything unreadable stored reads as the release channel', async () => {
+    const b = harness();
+    expect(await start(b)).toMatchObject({ channel: 'stable', devUnavailable: null });
+    expect(await b.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: true });
+    expect(await b.call('test.update.status')).toMatchObject({ channel: 'dev' });
+    await b.close();
+    open.splice(0);
+    const again = harness();
+    expect(await start(again)).toMatchObject({ channel: 'dev' });
+    for (const bad of ['nightly', 'DEV', 1, true, null, { channel: 'dev' }]) {
+      await again.call('test.update.storeChannel', { value: bad });
+      expect(await again.call('test.update.status'), JSON.stringify(bad)).toMatchObject({ channel: 'stable' });
+    }
+  });
+
+  it('a machine with no development builds: says why, refuses the development channel, and treats an earlier choice as the release channel', async () => {
+    srv.publishAll(['0.5.1-dev.9']);
+    const b = harness();
+    await start(b);
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(async () => ((await b.call('test.update.status')) as any).phase).toBe('ready');
+    await b.close();
+    open.splice(0);
+    srv.log = [];
+    const intel = harness();
+    const st: any = await start(intel, { devSupported: false, target: 'darwin-x86_64' });
+    expect(st).toMatchObject({ channel: 'stable', devUnavailable: '开发版只有 Apple 芯片的包，这台 Mac 只能用正式版' });
+    expect(await intel.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: false, error: '开发版只有 Apple 芯片的包，这台 Mac 只能用正式版' });
+    expect(await intel.call('test.update.check')).toMatchObject({ channel: 'stable', last: { ok: true, message: '已是最新' } });
+    expect(srv.manifestRequests()).toEqual([]);
+  });
+
+  it('on the development channel a round installs the development build; on the release channel the release', async () => {
+    srv.publishAll(['0.5.1-dev.387', '0.5.0']);
+    const b = harness();
+    await start(b);
+    expect(await b.call('test.update.check')).toMatchObject({ phase: 'idle', last: { ok: true, message: '已是最新' } });
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(async () => ((await b.call('test.update.status')) as any).phase).toBe('ready');
+    expect(await b.call('test.update.status')).toMatchObject({ channel: 'dev', version: '0.5.1-dev.387' });
+    expect(readFileSync(installed()).equals(srv.byTag.get('client/v0.5.1-dev.387')!.pkg)).toBe(true);
+  });
+});
+
+describe('switching the channel mid-round (GitHub#215)', () => {
+  const status = async (b: HarnessBackend) => (await b.call('test.update.status')) as any;
+  const installs = async (b: HarnessBackend) => (await b.call('test.update.installs')) as string[];
+
+  it('while reading the release list: that round is dropped, one runs on the new channel', async () => {
+    srv.publishAll(['0.5.1-dev.387', '0.5.0']);
+    srv.holdAndKeep = true;
+    const b = harness();
+    await start(b);
+    void b.call('test.update.check');
+    await expect.poll(() => srv.held.length).toBe(1);
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(() => srv.held.length).toBe(2);
+    srv.holdAndKeep = false;
+    srv.releaseHeld();
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    expect(await status(b)).toMatchObject({ channel: 'dev', version: '0.5.1-dev.387' });
+    expect(await installs(b)).toEqual(['0.5.1-dev.387']);
+  });
+
+  it('while reading the update manifest: what it read is dropped, never downloaded', async () => {
+    srv.publishAll(['0.5.2-dev.5', '0.5.1']);
+    srv.holdManifest.add('client/v0.5.1');
+    const b = harness();
+    await start(b);
+    void b.call('test.update.check');
+    await expect.poll(() => srv.manifestRequests()).toEqual(['client/v0.5.1']);
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    expect(await status(b)).toMatchObject({ channel: 'dev', version: '0.5.2-dev.5' });
+    expect(await installs(b)).toEqual(['0.5.2-dev.5']);
+    expect(srv.log.filter((l) => l.path.endsWith('/client/v0.5.1/app.tar.gz'))).toEqual([]);
+  });
+
+  it('while downloading: the download stops, the other channel\'s build is installed, the old version never comes back on screen', async () => {
+    srv.publishAll(['0.5.2-dev.5', '0.5.1']);
+    srv.dripTags.add('client/v0.5.1');
+    const b = harness();
+    await start(b);
+    void b.call('test.update.check');
+    await expect.poll(() => b.updates.some((s) => s.phase === 'downloading' && s.version === '0.5.1' && s.got > 0)).toBe(true);
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    const at = b.updates.length;
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    expect(await status(b)).toMatchObject({ channel: 'dev', version: '0.5.2-dev.5' });
+    expect(await installs(b)).toEqual(['0.5.2-dev.5']);
+    expect(b.updates.slice(at).filter((s) => s.version === '0.5.1')).toEqual([]);
+    expect(readFileSync(installed()).equals(srv.byTag.get('client/v0.5.2-dev.5')!.pkg)).toBe(true);
+  });
+
+  it('while the new app is being put in place: switching is refused, the channel and the install stay as they were', async () => {
+    srv.publishAll(['0.5.1']);
+    const b = harness();
+    await start(b);
+    await b.call('test.update.holdInstall', { on: true });
+    void b.call('test.update.check');
+    await expect.poll(async () => (await status(b)).phase).toBe('installing');
+    expect(await status(b)).toMatchObject({ version: '0.5.1', channel: 'stable' });
+    expect(await b.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: false, error: '正在安装 0.5.1，装好后可以切换' });
+    expect(await status(b)).toMatchObject({ channel: 'stable', phase: 'installing' });
+    await b.call('test.update.releaseInstall');
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    expect(await installs(b)).toEqual(['0.5.1']);
+    // once it is in place, switching is allowed again; nothing more is looked for until the restart
+    const n = srv.releaseRequests().length;
+    expect(await b.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: true });
+    await settle();
+    expect(await status(b)).toMatchObject({ channel: 'dev', phase: 'ready', version: '0.5.1' });
+    expect(srv.releaseRequests().length).toBe(n);
+  });
+
+  it('back and forth mid-round: only the last choice runs, and installs once', async () => {
+    srv.publishAll(['0.5.2-dev.5', '0.5.1']);
+    srv.holdAndKeep = true;
+    const b = harness();
+    await start(b);
+    void b.call('test.update.check');
+    await expect.poll(() => srv.held.length).toBe(1);
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(() => srv.held.length).toBe(2);
+    await b.call('test.update.setChannel', { channel: 'stable' });
+    await expect.poll(() => srv.held.length).toBe(3);
+    srv.holdAndKeep = false;
+    srv.releaseHeld();
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    expect(await status(b)).toMatchObject({ channel: 'stable', version: '0.5.1' });
+    expect(await installs(b)).toEqual(['0.5.1']);
+    expect(srv.manifestRequests()).toEqual(['client/v0.5.1']);
+  });
+
+  it('choosing the channel already chosen restarts nothing', async () => {
+    srv.publishAll(['0.5.1']);
+    srv.holdAndKeep = true;
+    const b = harness();
+    await start(b);
+    void b.call('test.update.check');
+    await expect.poll(() => srv.held.length).toBe(1);
+    await b.call('test.update.setChannel', { channel: 'stable' });
+    await settle();
+    expect(srv.held.length).toBe(1);
+    srv.holdAndKeep = false;
+    srv.releaseHeld();
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    expect(await installs(b)).toEqual(['0.5.1']);
   });
 });

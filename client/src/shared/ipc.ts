@@ -28,6 +28,7 @@ export interface CavilApi {
   /** the app updating itself (GitHub#184) */
   checkUpdate(): Promise<void>;
   setAutoUpdate(on: boolean): Promise<void>;
+  setUpdateChannel(channel: 'stable' | 'dev'): Promise<void>;
   dismissUpdate(version: string): Promise<void>;
   restartToUpdate(): Promise<void>;
   loadDetail(key: string): Promise<DetailResult>;

@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build, keyId, packageName, verifySignature } from '../../scripts/update-manifest.mjs';
+import { CHANNEL_PLATFORMS, build, keyId, packageName, verifySignature } from '../../scripts/update-manifest.mjs';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { tempDir } from './helpers';
@@ -155,5 +155,89 @@ describe('the update manifest (GitHub#184)', () => {
     expect(run(['--verify', a.file, a.sig, '--conf', conf])).toBe(1);
     expect(run(['--version', '0.5.0', '--dir', dir, '--conf', conf, '--out', join(dir, 'latest2.json')])).toBe(1);
     expect(() => readFileSync(join(dir, 'latest2.json'))).toThrow();
+  });
+});
+
+describe('per channel: which machines a manifest must carry (GitHub#215)', () => {
+  const cli = (args: string[]) => {
+    try {
+      return { code: 0, out: execFileSync('node', [join(root, 'scripts/update-manifest.mjs'), ...args], { encoding: 'utf8', stdio: 'pipe' }) };
+    } catch (e: any) {
+      return { code: e.status as number, out: String(e.stdout) };
+    }
+  };
+
+  it('a development build with only the Apple silicon package: the manifest is made, for that machine only', () => {
+    const dir = tempDir();
+    const k = key(dir, 'k');
+    pack(dir, '0.5.1-dev.387', 'arm64', k.priv);
+    const r = build({ version: '0.5.1-dev.387', dir, pubkey: k.pub, channel: 'dev' });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const m = (r as any).manifest;
+    expect(m.version).toBe('0.5.1-dev.387');
+    expect(Object.keys(m.platforms)).toEqual(['darwin-aarch64']);
+    expect(m.platforms['darwin-aarch64'].url).toBe('https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.387/Cavil-Loop-0.5.1-dev.387-arm64.app.tar.gz');
+  });
+
+  it('a release still needs both machines: missing either one is refused, whatever else is there', () => {
+    for (const only of ['arm64', 'x64']) {
+      const dir = tempDir();
+      const k = key(dir, 'k');
+      pack(dir, '0.5.1', only, k.priv);
+      const r = build({ version: '0.5.1', dir, pubkey: k.pub });
+      expect(r.ok, only).toBe(false);
+      expect((r as any).errors.join('\n')).toMatch(only === 'arm64' ? /x64：没有更新包/ : /arm64：没有更新包/);
+      expect(build({ version: '0.5.1', dir, pubkey: k.pub, channel: 'stable' }).ok).toBe(false);
+    }
+  });
+
+  it('the development channel still refuses a missing, unsigned or wrongly signed Apple silicon package', () => {
+    const dir = tempDir();
+    const k = key(dir, 'k');
+    const other = key(dir, 'o');
+    expect((build({ version: '0.5.1-dev.3', dir, pubkey: k.pub, channel: 'dev' }) as any).errors.join('\n')).toMatch(/arm64：没有更新包/);
+    pack(dir, '0.5.1-dev.3', 'arm64', other.priv);
+    expect((build({ version: '0.5.1-dev.3', dir, pubkey: k.pub, channel: 'dev' }) as any).errors.join('\n')).toMatch(/arm64：签名用的密钥/);
+    pack(dir, '0.5.1-dev.3', 'arm64', k.priv, '0.5.1-dev.2');
+    expect((build({ version: '0.5.1-dev.3', dir, pubkey: k.pub, channel: 'dev' }) as any).errors.join('\n')).toMatch(/签名绑定的版本是 0\.5\.1-dev\.2/);
+  });
+
+  it('each channel takes only its own version shape; an unknown channel is refused', () => {
+    const dir = tempDir();
+    const k = key(dir, 'k');
+    pack(dir, '0.5.1', 'arm64', k.priv);
+    pack(dir, '0.5.1', 'x64', k.priv);
+    expect((build({ version: '0.5.1', dir, pubkey: k.pub, channel: 'dev' }) as any).errors.join('\n')).toMatch(/版本号不是 X\.Y\.Z-dev\.N：0\.5\.1/);
+    for (const v of ['0.5.1-dev.01', '0.5.1-dev.', '0.5.1-rc.1', '0.5.1-dev.1.2']) {
+      expect(build({ version: v, dir, pubkey: k.pub, channel: 'dev' }).ok, v).toBe(false);
+    }
+    expect((build({ version: '0.5.1-dev.3', dir, pubkey: k.pub }) as any).errors.join('\n')).toMatch(/版本号不是 X\.Y\.Z：/);
+    expect((build({ version: '0.5.1', dir, pubkey: k.pub, channel: 'arm64' }) as any).errors.join('\n')).toMatch(/不认识的渠道/);
+    // a key that is not a channel but is a property of every object
+    expect(build({ version: '0.5.1', dir, pubkey: k.pub, channel: 'constructor' }).ok).toBe(false);
+  });
+
+  it('the command line: --channel dev makes the development manifest; --print-platforms tells each channel\'s machines', () => {
+    const dir = tempDir();
+    const k = key(dir, 'k');
+    const conf = join(dir, 'tauri.conf.json');
+    writeFileSync(conf, JSON.stringify({ plugins: { updater: { pubkey: k.pub } } }));
+    pack(dir, '0.5.1-dev.9', 'arm64', k.priv);
+    expect(cli(['--version', '0.5.1-dev.9', '--dir', dir, '--conf', conf, '--out', join(dir, 'a.json')]).code).toBe(1);
+    expect(cli(['--version', '0.5.1-dev.9', '--dir', dir, '--conf', conf, '--channel', 'dev', '--out', join(dir, 'b.json')]).code).toBe(0);
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'b.json'), 'utf8')).platforms)).toEqual(['darwin-aarch64']);
+    expect(JSON.parse(cli(['--print-platforms', 'dev']).out)).toEqual(CHANNEL_PLATFORMS.dev);
+    expect(JSON.parse(cli(['--print-platforms', 'stable']).out)).toEqual(['darwin-aarch64', 'darwin-x86_64']);
+    expect(cli(['--print-platforms', 'nightly']).code).toBe(1);
+  });
+
+  it('the app greys out the development channel on exactly the machines this table has no development build for', async () => {
+    if (!harness) {
+      const d = tempDir();
+      harness = new HarnessBackend({ db: join(d, 'c.sqlite'), endpoints: { api: 'http://127.0.0.1:9', web: 'http://127.0.0.1:9' }, credentials: new FileStore(join(d, 'cred')) });
+    }
+    const app = await harness.call('test.update.devTargets');
+    const printed = JSON.parse(cli(['--print-platforms', 'dev']).out);
+    expect(app).toEqual(printed);
   });
 });
