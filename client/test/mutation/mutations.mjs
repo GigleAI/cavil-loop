@@ -289,7 +289,8 @@ export const MUTATIONS = [
     to: "      await client.rest('PUT', `${repoPath(it.repo)}/issues/${it.number}/labels`, { labels: it.labels.map((l) => l.name).filter((n) => n !== action.label) });",
     expect: ['remove a label: DELETE of that one label'] },
   { what: '仓库里没有同名里程碑时改用别的里程碑', file: 'src/data/actions.ts',
-    from: "const pick = same.find((m) => m.state === 'open') ?? same[0];", to: "const pick = same.find((m) => m.state === 'open') ?? same[0] ?? ms[0];",
+    // since GitHub#214 the rule lives in the shared pickMilestone; the detail's call site falls back here
+    from: 'const pick = pickMilestone(ms, action.title);', to: 'const pick = pickMilestone(ms, action.title) ?? ms[0];',
     expect: ['no milestone with that title in this repository'] },
   { what: '看板不可写时照样发字段修改', file: 'src/data/actions.ts',
     from: 'if (!p.viewerCanUpdate) throw', to: 'if (false) throw',
