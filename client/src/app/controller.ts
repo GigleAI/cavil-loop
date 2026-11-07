@@ -11,6 +11,7 @@ import type { DetailResult, ItemDetail, RepoOptions, WriteAction, WriteResult } 
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { normalizeAutopilotConfirm, normalizeTableFolds, setFold } from '../shared/uiPrefs';
+import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
@@ -46,7 +47,7 @@ import {
 } from '../data/edits';
 import { GitHubError } from '../data/github';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
-import { PendingTracker, itemAlertText, summaryAlertText } from '../data/pending';
+import { PendingTracker, itemAlertText } from '../data/pending';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
@@ -89,10 +90,12 @@ export const DETAIL_CACHE_SIZE = 50;
  * hides a field that failed on it, a later retry of another board never drops it). null =
  * nothing left: the notice goes.
  */
-export function createNotice(number: number, boards: CreateBoard[]): string | null {
+export function createNotice(number: number, boards: CreateBoard[], labelsNote = ''): string | null {
   const missing = boards.filter((b) => b.state === 'missing');
   const fields = boards.filter((b) => b.state === 'fieldsFailed');
   const parts: string[] = [];
+  // GitHub#245: labels GitHub dropped come first — the issue may not be handed to the agent at all
+  if (labelsNote) parts.push(labelsNote);
   if (missing.length) parts.push(`没能加入看板 ${missing.map((b) => `「${b.title}」（${b.reason}）`).join('、')}`);
   if (fields.length) parts.push(`已加入看板但字段没设上 ${fields.map((b) => `「${b.title}」（${b.reason}）`).join('、')}，请在详情里手动设置`);
   return parts.length ? `issue #${number} 已建好，但${parts.join('；')}` : null;
@@ -132,6 +135,7 @@ const MERGE_PREFS = 'mergePrefs';
 /** GitHub#231: their own keys too, for the same reason */
 const TABLE_FOLDS = 'tableFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
+const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 
 /**
  * The settings, as the window sees them: read once at start, every change
@@ -281,8 +285,8 @@ export class Controller {
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
+      newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
-      pendingItems: [],
       unreadCount: 0,
       launchAtLogin: null,
       notifyProblem: null,
@@ -564,7 +568,7 @@ export class Controller {
     this.state = { ...this.state, editsNeedingAction: 0, creates: [] };
     this.pending.reset();
     this.unread.clear();
-    this.state = { ...this.state, pendingCount: 0, pendingItems: [], unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
     // what was queued for the shell belonged to that account: none of it goes out any more, and the
     // cleared badge does not wait behind a notification the system is still answering
     this.desktopEra++;
@@ -613,24 +617,21 @@ export class Controller {
     return this.desktopCalls.then(() => undefined);
   }
 
-  /**
-   * The count and the list the settings page shows, from the tracker's one
-   * de-duplicated set at the same moment (GitHub#185): every place that updates
-   * the count updates the list with it.
-   */
-  private pendingNow(): Pick<AppState, 'pendingCount' | 'pendingItems' | 'unreadCount'> {
-    return { pendingCount: this.pending.count(), pendingItems: this.pending.list(), unreadCount: this.unreadNow() };
+  /** The count and the unread part of it, from the tracker's one de-duplicated set at the same moment. */
+  private pendingNow(): Pick<AppState, 'pendingCount' | 'unreadCount'> {
+    return { pendingCount: this.pending.count(), unreadCount: this.unreadNow() };
   }
 
   /**
    * The unread items (GitHub#185, the Dock badge): what became pending while the window was not
    * in front, until the user switches to it. Only items still pending count — one whose label
-   * went away meanwhile needs nobody. Nothing is forgotten here: only switching to the window
-   * reads them (a label renamed and renamed back has not been seen).
+   * went away or that was closed meanwhile needs nobody. Nothing is forgotten here: only switching
+   * to the window reads them (a label renamed and renamed back has not been seen). What a first
+   * read finds is history and never unread (GitHub#251).
    */
   private unreadNow(): number {
     let n = 0;
-    for (const e of this.pending.list()) if (this.unread.has(e.key)) n++;
+    for (const k of this.unread) if (this.pending.has(k)) n++;
     return n;
   }
 
@@ -680,11 +681,6 @@ export class Controller {
     return this.liveSources(ctx).some((k) => carriers.includes(k));
   }
 
-  /** A summary still holds when every source whose first read it reports is still that addition. */
-  private summaryStillHolds(ctx: NoticeContext): boolean {
-    return this.sameContext(ctx) && this.liveSources(ctx).length === ctx.sources.length;
-  }
-
   private notify(make: () => Alert | null): void {
     const era = this.desktopEra;
     this.toDesktop((d) => {
@@ -700,21 +696,18 @@ export class Controller {
     );
   }
 
-  /** Feed the snapshots read completely this round; notify what became pending, summarise first reads. */
+  /**
+   * Feed the snapshots read completely this round; notify what became pending. A source's first
+   * read is only its baseline: no notification, no summary, nothing unread (GitHub#251).
+   */
   private observePending(fresh: SourceSnapshot[]): void {
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
     // unread (the badge): what arrived while the user was not looking at the window
-    if (!this.active) for (const k of [...change.appeared.map((i) => i.key), ...change.brought]) this.unread.add(k);
+    if (!this.active) for (const it of change.appeared) this.unread.add(it.key);
     for (const it of change.appeared) {
       const ctx = this.noticeContext(this.pending.carriers(it.key));
       const alert: Alert = { kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) };
       this.notify(() => (this.itemStillHolds(ctx, it.key) ? alert : null));
-    }
-    if (change.summary) {
-      const summary = change.summary;
-      const ctx = this.noticeContext(summary.sources);
-      // the numbers are the ones at the moment it goes out: the same count as the badge then
-      this.notify(() => (this.summaryStillHolds(ctx) ? { kind: 'summary', ...summaryAlertText({ ...summary, ...this.pending.totals() }) } : null));
     }
     this.badge();
     this.state = { ...this.state, ...this.pendingNow() };
@@ -815,16 +808,6 @@ export class Controller {
 
   stopDesktopEvents(): void {
     this.eventsRunning = false;
-  }
-
-  /**
-   * A row of the settings page's pending list was clicked (GitHub#185): exactly what a
-   * click on that item's notification does — its detail in the app when the board
-   * has it, otherwise GitHub in the browser. A key no longer pending does nothing.
-   */
-  openPending(key: string): void {
-    const entry = this.state.pendingItems.find((e) => e.key === key);
-    if (entry) this.onDesktopEvent({ kind: 'open', key: entry.key, url: entry.url });
   }
 
   /** One event from the shell (also what the tests feed). */
@@ -1251,6 +1234,13 @@ export class Controller {
     this.set({ autopilotConfirm: on });
   }
 
+  /** GitHub#245: who the next new issue is handed to by default (the dialog calls this after a create it was chosen for). Unknown values are ignored. */
+  setNewIssueHandoff(h: unknown): void {
+    if (typeof h !== 'string' || normalizeHandoff(h) !== h || h === this.state.newIssueHandoff) return;
+    this.cache.setSetting(NEW_ISSUE_HANDOFF, h);
+    this.set({ newIssueHandoff: h as Handoff });
+  }
+
   setHandBack(patch: Partial<HandBackLabels>): void {
     const next: HandBackLabels = {
       human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,
@@ -1368,7 +1358,7 @@ export class Controller {
     }
   }
 
-  private async actNow(action: WriteAction, onOutcome?: (o: { boards?: CreateBoard[]; createdNodeId?: string }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
+  private async actNow(action: WriteAction, onOutcome?: (o: { boards?: CreateBoard[]; createdNodeId?: string; labelsNote?: string }) => void, onError?: (e: unknown) => void): Promise<WriteResult> {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
@@ -1903,7 +1893,7 @@ export class Controller {
     if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改' };
     if (!action.title.trim()) return { ok: false, error: '标题不能为空' };
     const id = ++this.createSeq;
-    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [] };
+    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true };
     this.setCreate({ id, repo: action.repo, title: action.title, status: 'running', message: null, draft });
     void this.runCreate(id, action);
     return { ok: true, error: null, job: id };
@@ -1922,12 +1912,14 @@ export class Controller {
     let unanswered: string | null = null;
     let boards: CreateBoard[] = [];
     let nodeId = '';
+    let labelsNote = '';
     try {
       r = await this.actNow(
         action,
         (o) => {
           boards = o.boards ?? [];
           nodeId = o.createdNodeId ?? '';
+          labelsNote = o.labelsNote ?? '';
         },
         (e) => (unanswered = e instanceof CreateUnanswered ? e.reason : null),
       );
@@ -1937,17 +1929,20 @@ export class Controller {
     if (session !== this.session || !job()) return;
     const cur = job()!;
     if (r.ok && r.createdKey) {
+      // GitHub#245: a hand-over picked by hand in the dialog is remembered once the issue exists — never a fallback, never a failed create
+      if (action.handoffPicked === true && action.handoff) this.setNewIssueHandoff(action.handoff);
       const number = Number(r.createdKey.split('#')[1]);
       if (r.warning)
         this.setCreate({
           ...cur,
           status: 'partial',
           // the boards' state words it when there is any; another warning (the re-read failed) is said as it came
-          message: createNotice(number, boards) ?? r.warning,
+          message: createNotice(number, boards, labelsNote) ?? r.warning,
           createdKey: r.createdKey,
           number,
           boards,
           createdNodeId: nodeId,
+          ...(labelsNote ? { labelsNote } : {}),
         });
       else this.setCreate(null, id);
       this.set({ focus: { key: r.createdKey, seq: ++this.focusSeq } });
@@ -2020,8 +2015,8 @@ export class Controller {
     const warning = fieldsNow.length ? `已加入看板，但字段没设上 ${fieldsNow.map((x) => `「${x.title}」（${x.reason}）`).join('、')}` : null;
     if (now) {
       const boards = mergeRetry(now.boards ?? [], results);
-      const message = createNotice(now.number ?? number, boards);
-      // the notice goes only when nothing is left on any board
+      const message = createNotice(now.number ?? number, boards, now.labelsNote);
+      // the notice goes only when nothing is left on any board, and no dropped label is left unsaid (GitHub#245)
       if (message === null) this.setCreate(null, id);
       else this.setCreate({ ...now, boards, message });
     }

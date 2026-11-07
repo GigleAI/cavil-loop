@@ -39,6 +39,7 @@ import {
 } from './queries';
 import { flipTask } from './taskList';
 import { pickMilestone } from './groupPreset';
+import { checkHandoff, droppedLabels, handoffProblem, HANDOFFS, mergeLabels } from '../shared/handoff';
 
 /** The app refused before sending anything to GitHub. */
 export class ActionRefused extends Error {
@@ -69,6 +70,8 @@ export interface ActionOutcome {
   boards?: CreateBoard[];
   /** createIssue: the new issue's node id, from GitHub's own answer (what a retry adds to a board) */
   createdNodeId?: string;
+  /** createIssue (GitHub#245): labels GitHub dropped, as said in the notice; kept apart from the boards so neither hides the other */
+  labelsNote?: string;
 }
 
 /**
@@ -485,14 +488,32 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');
       if (!/^[^/\s]+\/[^/\s]+$/.test(action.repo)) throw new ActionRefused('请选择仓库');
+      const handoff = action.handoff ?? 'none';
+      if (!HANDOFFS.includes(handoff)) throw new ActionRefused('不知道建好后交给谁，没有新建');
       const plan = action.plan;
       if (plan) await checkCreatePlan(client, action.repo, plan, ctx.createInProjects);
-      let created: { number: number; node_id: string } | null;
+      // GitHub#245: the hand-over labels are checked against the repository's labels read right now —
+      // a label it does not have would be created by GitHub; a list that cannot be read is unknown, not "none"
+      let handoffLabels: string[] = [];
+      if (handoff !== 'none') {
+        let names: string[];
+        try {
+          names = (await client.restList<{ name: string }>(`${repoPath(action.repo)}/labels?per_page=100`)).map((l) => l.name);
+        } catch (e) {
+          if (e instanceof GitHubError && e.kind === 'auth') throw e; // the credential: handled like any other call
+          throw new ActionRefused(`读不到仓库 ${action.repo} 的标签，暂时不能确认标签在不在，没有新建：${explainError(e, 'createIssue')}`);
+        }
+        const check = checkHandoff(handoff, ctx.handBack, { state: 'ok', names });
+        if (check.state !== 'ok') throw new ActionRefused(`${handoffProblem(action.repo, check)}，没有新建`);
+        handoffLabels = check.labels;
+      }
+      const labels = mergeLabels(handoffLabels, action.labels);
+      let created: { number: number; node_id: string; labels?: { name: string }[] } | null;
       try {
-        created = await client.rest<{ number: number; node_id: string }>('POST', `${repoPath(action.repo)}/issues`, {
+        created = await client.rest<{ number: number; node_id: string; labels?: { name: string }[] }>('POST', `${repoPath(action.repo)}/issues`, {
           title: action.title,
           body: action.body,
-          labels: action.labels,
+          labels,
           ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
         });
       } catch (e) {
@@ -500,6 +521,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         throw new CreateUnanswered((e as Error)?.message ?? String(e));
       }
       if (!created || typeof created.number !== 'number') throw new CreateUnanswered('GitHub 的回应里没有新 issue');
+      // GitHub drops the labels of an account without write access to the repository, without an error: said, never silent
+      const dropped = Array.isArray(created.labels) ? droppedLabels(labels, created.labels.map((l) => l.name)) : [];
+      const droppedHandoff = dropped.some((n) => handoffLabels.some((h) => h.toLowerCase() === n.toLowerCase()));
       const failed: string[] = [];
       const fields: string[] = [];
       const boards: CreateBoard[] = [];
@@ -517,7 +541,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
           boards.push(createBoard(p, 'missing', explainError(e, 'addToProject'), entry));
         }
       }
+      const labelsNote = dropped.length ? `GitHub 没有加上标签${dropped.map((n) => `「${n}」`).join('、')}（这个账号可能没有该仓库的写权限）${droppedHandoff ? '，还没有交给 agent' : ''}` : '';
       const problems = [
+        labelsNote,
         failed.length ? `没能加入看板 ${failed.join('、')}` : '',
         fields.length ? `已加入看板但字段没设上 ${fields.join('、')}` : '',
       ].filter(Boolean);
@@ -527,6 +553,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         createdKey: itemKey(action.repo, created.number),
         boards,
         createdNodeId: created.node_id,
+        ...(labelsNote ? { labelsNote } : {}),
       };
     }
   }

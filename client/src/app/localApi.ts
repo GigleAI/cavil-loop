@@ -25,7 +25,6 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     restartSync: () => c.restartSync(),
     openExternal: (url) => backend.call('openExternal', { url: String(url) }),
     setLaunchAtLogin: (on) => c.setLaunchAtLogin(Boolean(on)),
-    openPending: async (key) => c.openPending(String(key)),
     checkUpdate: () => c.checkUpdate(),
     setAutoUpdate: (on) => c.setAutoUpdate(Boolean(on)),
     setUpdateChannel: (channel) => c.setUpdateChannel(channel === 'dev' ? 'dev' : 'stable'),
@@ -47,5 +46,6 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setMergeMethod: async (repo, method) => c.setMergeMethod(String(repo), method),
     setTableFold: async (groupBy, key, folded) => c.setTableFold(groupBy, key, folded),
     setAutopilotConfirm: async (on) => c.setAutopilotConfirm(on),
+    setNewIssueHandoff: async (h) => c.setNewIssueHandoff(h),
   };
 }
