@@ -2,7 +2,7 @@
 # 换 worker / 换复审时不把 attach 着的终端踢出 tmux（GitHub#197）。
 #
 # 跑法：bash tests/session-switch-keeps-client.test.sh            （默认回归，约 30 秒）
-#       MUTATION=1 bash tests/session-switch-keeps-client.test.sh （另跑 4 条负对照，约 2 分钟）
+#       MUTATION=1 bash tests/session-switch-keeps-client.test.sh （另跑 5 条负对照，约 2.5 分钟）
 # 依赖：tmux（3.0+）、git、jq。
 #
 # 真跑两个派工脚本（issue 评论、PR 评论），真 tmux——但开在**私有 socket** 上，绝不碰本机
@@ -64,7 +64,8 @@ esac
 echo "{}"
 SH
 # 假 agent：不在 tmux 里（driver 探版本之类）立刻退出；在 tmux 里就像 claude 一样**不理
-# SIGHUP**，打一行标记后睡 $CTL/secs 秒（默认 120）。
+# SIGHUP**，打一行标记、往 $CTL/runs 记「名字 pid 令牌」（断言读这份文件，不读屏幕——
+# 屏幕会按 80 列软换行，长行里的令牌被折成两半），然后睡 $CTL/secs 秒（默认 120）。
 for a in claude codex; do
     cat > "$FAKEBIN/$a" <<SH
 #!/usr/bin/env bash
@@ -72,7 +73,7 @@ for a in claude codex; do
 trap '' HUP
 secs=\$(cat "$CTL/secs" 2>/dev/null || echo 120)
 echo "AGENT-RUN $a pid=\$\$ cwd=\$(pwd -P) token=\${GH_TOKEN:-none}"
-echo "$a \$\$" >> "$CTL/runs"
+echo "$a \$\$ token=\${GH_TOKEN:-none}" >> "$CTL/runs"
 exec sleep "\$secs"
 SH
 done
@@ -191,8 +192,8 @@ scenario() {
         && echo "PASS session 记的是复审" || echo "FAIL session 记的是复审 :: $(T show-options -t "$SESS" 2>&1 | grep worker_ | tr '\n' ' ')"
     if [ -n "$p1" ] && pid_gone "$p1"; then echo "PASS 不理挂断信号的旧程序已不在"
     else echo "FAIL 不理挂断信号的旧程序已不在 :: pid $p1 还活着"; kill -KILL "$p1" 2>/dev/null; fi
-    grep -q "token=fake-token-for-test" <(T capture-pane -p -t "=$SESS:") \
-        && echo "PASS 新程序拿到了令牌" || echo "FAIL 新程序拿到了令牌 :: $(T capture-pane -p -t "=$SESS:" | grep AGENT-RUN | tr '\n' ' ')"
+    [ "$(awk '$1 == "codex" { t = $3 } END { print t }' "$CTL/runs")" = "token=fake-token-for-test" ] \
+        && echo "PASS 新程序拿到了令牌" || echo "FAIL 新程序拿到了令牌 :: $(tr '\n' ' ' < "$CTL/runs")"
     [ "$(readlink "/proc/$(last_pid codex)/cwd")" = "$(cd "$WT" && pwd -P)" ] \
         && echo "PASS 新程序在工作目录里" || echo "FAIL 新程序在工作目录里 :: $(readlink "/proc/$(last_pid codex)/cwd")"
 
@@ -232,21 +233,73 @@ scenario() {
     T kill-server 2>/dev/null
 }
 
+# pid 所在的窗格：沿父进程往上找，直到碰到某个窗格的首进程
+pane_of_pid() {
+    local p="$1" map
+    map="$(T list-panes -a -F '#{pane_pid} #{pane_id}')"
+    while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+        awk -v p="$p" '$1 == p { print $2; f = 1 } END { exit !f }' <<<"$map" && return 0
+        p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    done
+    return 1
+}
+
+# 人在 worker 的 session 里分屏（新窗格排在 worker 前面），再派复审；然后 worker 自己退出、
+# 人的窗格撑着 session，再派一次。$1 = skill 目录，$2 = issue|pr
+split_scenario() {
+    local R="$1" kind="$2" wpane w1 hpane hpid w2 n
+    setup_scenario "$(basename "$R").split.$kind"
+    dispatch "$R" "$kind" claude worker
+    if ! sess_alive || ! wait_runs 1; then
+        echo "FAIL 分屏·首次派工起了 session :: $(tail -5 "$D/dispatch.out" | tr '\n' ' ')"; return
+    fi
+    attach_client || { echo "FAIL 分屏·控制模式客户端挂上了"; return; }
+    w1="$(last_pid claude)"; wpane="$(pane_of_pid "$w1")"
+    # 人的程序：普通进程，在 worker 前面分出来的窗格里跑
+    hpane="$(T split-window -b -t "$wpane" -P -F '#{pane_id}' "exec sleep 600")"
+    hpid="$(T display-message -p -t "$hpane" '#{pane_pid}')"
+    [ "$(T list-panes -s -t "=$SESS" -F '#{pane_id}' | head -1)" = "$hpane" ] \
+        || { echo "FAIL 分屏·夹具：人的窗格排在第一个 :: $(T list-panes -s -t "=$SESS" -F '#{pane_id}' | tr '\n' ' ')"; return; }
+
+    dispatch "$R" "$kind" codex review
+    wait_runs 2
+    w2="$(last_pid codex)"
+    if pid_gone "$w1"; then echo "PASS 分屏·旧 worker 已不在"; else echo "FAIL 分屏·旧 worker 已不在 :: pid $w1 还活着"; kill -KILL "$w1" 2>/dev/null; fi
+    kill -0 "$hpid" 2>/dev/null && echo "PASS 分屏·人的程序还活着" || echo "FAIL 分屏·人的程序还活着 :: pid $hpid 没了"
+    [ -n "$w2" ] && [ "$(pane_of_pid "$w2")" = "$wpane" ] && echo "PASS 分屏·复审程序在原 worker 窗格里" \
+        || echo "FAIL 分屏·复审程序在原 worker 窗格里 :: 期望 $wpane，实得 $( [ -n "$w2" ] && pane_of_pid "$w2")"
+    if client_attached && ! grep -q '^%exit' "$D/client.out"; then echo "PASS 分屏·客户端还挂着"
+    else echo "FAIL 分屏·客户端还挂着"; fi
+
+    # worker 自己退出，人的窗格还撑着 session；再派一次干活
+    kill -TERM "$w2" 2>/dev/null; pid_gone "$w2"
+    for ((n = 0; n < 30; n++)); do T display-message -p -t "$wpane" x > /dev/null 2>&1 || break; sleep 0.1; done
+    dispatch "$R" "$kind" claude worker
+    wait_runs 3
+    n="$(last_pid claude)"
+    [ "$n" != "$w1" ] && kill -0 "$n" 2>/dev/null && echo "PASS 分屏·worker 窗格没了也能再起 worker" \
+        || echo "FAIL 分屏·worker 窗格没了也能再起 worker :: $(tail -5 "$D/dispatch.out" | tr '\n' ' ')"
+    kill -0 "$hpid" 2>/dev/null && echo "PASS 分屏·再起 worker 时人的程序还活着" || echo "FAIL 分屏·再起 worker 时人的程序还活着"
+    if client_attached && ! grep -q '^%exit' "$D/client.out"; then echo "PASS 分屏·再起 worker 时客户端还挂着"
+    else echo "FAIL 分屏·再起 worker 时客户端还挂着"; fi
+    T kill-server 2>/dev/null
+}
+
 # 把一份 skill 目录复制出来（不带 client/ 和 .git），改坏一处。$1 = 名字，$2 = python 替换脚本
 mutant() {
     local M="$TMP/mut-$1"
     rm -rf "$M"; mkdir -p "$M"
     (cd "$REPO_DIR" && tar --exclude=./client --exclude=./.git -cf - .) | (cd "$M" && tar -xf -)
-    if ! python3 -c "$2" "$M/scripts/_lib.sh"; then
-        echo "  ❌ 负对照 $1 准备失败：要改的原文找不到"; fail=$((fail+1)); return 1
-    fi
+    python3 -c "$2" "$M/scripts/_lib.sh" >&2 || return 1
     printf '%s' "$M"
 }
 # 跑负对照：$1 = 名字，$2 = 期望变红的检查名，$3 = python 替换脚本，$4 = issue|pr
 expect_red() {
     local M out
-    M="$(mutant "$1" "$3")" || return
-    out="$(scenario "$M" "$4")"
+    if ! M="$(mutant "$1" "$3")"; then
+        bad "负对照「$1」准备失败：要改的原文找不到"; return
+    fi
+    out="$("${5:-scenario}" "$M" "$4")"
     if grep -qx "FAIL $2.*" <<<"$out" || grep -q "^FAIL $2 ::" <<<"$out"; then
         ok "负对照「$1」：「$2」变红"
     else
@@ -269,18 +322,19 @@ judge issue < <(scenario "$REPO_DIR" issue)
 echo "── 2. PR 评论派工：干活 ⇄ 复审往返 ──"
 judge PR < <(scenario "$REPO_DIR" pr)
 
-echo "── 3. 负对照 ──"
+echo "── 3. 人在 worker 的 session 里分屏 ──"
+judge issue < <(split_scenario "$REPO_DIR" issue)
+judge PR < <(split_scenario "$REPO_DIR" pr)
+
+echo "── 4. 负对照 ──"
 if mutation_gate; then
     # 换回删 session 再新建的旧做法
     expect_red "删 session 重建" "换去复审后客户端还挂着" '
 import sys; p=sys.argv[1]; s=open(p).read()
 old="""    if ! session_alive "$sess"; then
-        tmux new-session -d -s "$sess" "$@" -c "$cwd" "$cmd"
-        return
-    fi
-"""
+        pane="$(tmux new-session"""
 assert old in s
-s=s.replace(old, old.replace("if ! session_alive \"$sess\"; then", "tmux kill-session -t \"=$sess\" 2>/dev/null || true; if ! session_alive \"$sess\"; then"))
+s=s.replace(old, old.replace("    if ! session_alive", "    tmux kill-session -t \"=$sess\" 2>/dev/null || true\n    if ! session_alive"))
 open(p,"w").write(s)' issue
 fi
 if mutation_gate; then
@@ -306,13 +360,22 @@ if mutation_gate; then
     # 会话日志不先看有没有 pipe，直接 pipe-pane -o（它是开关，会把已有日志关掉）
     expect_red "日志开关没先判断" "换程序后的两次启动都写进同一份会话日志" '
 import sys; p=sys.argv[1]; s=open(p).read()
-old="""    if [ "$(tmux display-message -p -t "=$sess:" \x27#{pane_pipe}\x27 2>/dev/null)" = 1 ]; then
+old="""    if [ "$(tmux display-message -p -t "$tgt" \x27#{pane_pipe}\x27 2>/dev/null)" = 1 ]; then
         return 0
     fi
 """
 assert old in s
 s=s.replace(old, "", 1)
 open(p,"w").write(s)' pr
+fi
+if mutation_gate; then
+    # 按排列顺序认 worker 窗格（复审第 1 轮的实现）
+    expect_red "按顺序认 worker 窗格" "分屏·人的程序还活着" '
+import sys; p=sys.argv[1]; s=open(p).read()
+start=s.index("worker_pane_id() {   # <tmux_session>\n")
+end=s.index("\n}\n", start)+3
+s=s[:start]+"worker_pane_id() {\n    tmux list-panes -s -t \"=$1\" -F \"#{pane_id}\" 2>/dev/null | head -1\n}\n"+s[end:]
+open(p,"w").write(s)' issue split_scenario
 fi
 
 echo

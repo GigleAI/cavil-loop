@@ -124,7 +124,7 @@ if [ -d "$WORKTREE" ]; then
     #     → tmux session 立即关。等 2s 看是否还在，死了就降级成全新会话。
     if [ "$AGENT_LAUNCH_KIND" != "new" ]; then
         sleep 2
-        if ! session_alive "$TMUX_SESSION"; then
+        if ! worker_alive "$TMUX_SESSION"; then
             log "issue #$ISSUE -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 issue context 仍可工作）"
             agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"

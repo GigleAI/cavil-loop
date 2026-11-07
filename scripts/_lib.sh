@@ -5204,6 +5204,15 @@ configure_tmux_session_display() {
 
     session_alive "$sess" || return 0
 
+    # 旧版本 / 新 issue 派工起的 session 没有 worker 窗格记录：只有一个窗格时它就是 worker，补记上。
+    # 不止一个窗格时不猜（见 worker_pane_id）。
+    if [ -z "$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null)" ]; then
+        local only
+        if only="$(worker_pane_id "$sess")"; then
+            worker_pane_record "$sess" "$only" || true
+        fi
+    fi
+
     if [ -n "$desc" ] && ! tmux set-option -t "$sess" @desc "$desc" 2>&1 | \
         sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @desc 失败（worker 继续运行）"
@@ -5230,40 +5239,100 @@ configure_tmux_session_display() {
     fi
 }
 
-# worker 所在的窗格：session 第一个窗口的第一个窗格（new-session 建出来的那个）。
-# 人自己在 session 里另开的窗口 / 窗格排在它后面，不会被当成 worker。
-worker_pane_id() {   # <tmux_session> → pane id（如 %3），session 不在就输出空
-    tmux list-panes -s -t "=$1" -F '#{pane_id}' 2>/dev/null | head -1
+# ── worker 所在的窗格（GitHub#197）──
+#
+# 人会在 worker 的 session 里自己分屏、开窗口（`split-window -b` 会把新窗格排在 worker
+# 前面），所以「第一个窗格」「当前窗格」都不能当 worker——按排列顺序认领，换程序时就会
+# 杀掉人的程序、留下旧 worker（PR #219 复审第 1 轮实测）。
+#
+# 唯一可靠的身份是 tmux 的 pane id（%N）：在一个 tmux server 里单调递增、不复用，
+# respawn-pane 换程序时也不变。daemon 每次建出 worker 窗格时就把它记在 session 选项
+# @worker_pane 上；读的时候再核对这个窗格仍在、仍属于这个 session。
+#
+# 本功能上线前起的 session 没有记录：只有一个窗格时它必然是 worker（configure_tmux_session_display
+# 会顺手补记）；有多个窗格时**不猜**，返回空，交给调用方按「认不出」处理。
+
+worker_pane_record() {   # <tmux_session> <pane id>
+    [ -n "$2" ] || return 1
+    tmux set-option -t "=$1:" @worker_pane "$2" 2>/dev/null
+}
+
+# 输出 worker 窗格的 pane id；认不出（没记录且不止一个窗格 / 记录的窗格已不在）输出空、返回 1。
+worker_pane_id() {   # <tmux_session>
+    local sess="$1" rec owner panes
+    rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null || true)"
+    if [ -n "$rec" ]; then
+        owner="$(tmux display-message -p -t "$rec" '#{session_name}' 2>/dev/null || true)"
+        if [ "$owner" = "$sess" ]; then
+            printf '%s\n' "$rec"
+            return 0
+        fi
+        return 1
+    fi
+    panes="$(tmux list-panes -s -t "=$sess" -F '#{pane_id}' 2>/dev/null || true)"
+    if [ -n "$panes" ] && [ "$(printf '%s\n' "$panes" | wc -l)" -eq 1 ]; then
+        printf '%s\n' "$panes"
+        return 0
+    fi
+    return 1
+}
+
+# worker 窗格里的程序还在跑。人另开的窗格让 session 一直活着，所以派工判断「刚起的程序
+# 有没有秒退」要看 worker 窗格本身，不能只看 session 在不在。
+# 只在有确凿证据时判「死了」：session 不在、记录的 worker 窗格已不在、或窗格标着已结束。
+# 认不出 worker 窗格 / 读不到窗格状态时按原来的判据（session 在就算活着），不因为读不到
+# 就去重起一个可能还在干活的 worker。
+worker_alive() {   # <tmux_session>
+    local pane rec
+    session_alive "$1" || return 1
+    if ! pane="$(worker_pane_id "$1")"; then
+        rec="$(tmux show-options -qv -t "=$1:" @worker_pane 2>/dev/null || true)"
+        [ -z "$rec" ]
+        return
+    fi
+    [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" != 1 ]
 }
 
 # 在 worker session 里起一条命令（GitHub#197）。
 #
-# - session 不在：照旧 `tmux new-session -d`。
-# - session 还在（换 agent / 模型 / 角色、注入失败、续接秒退后降级）：**不删 session**，
-#   在原窗格里换程序。删 session 会把 attach 在上面的终端一起踢出 tmux——换去复审的那一刻
-#   正是人最想盯着看的时候。步骤：
+# - session 不在：照旧 `tmux new-session -d`，记下新窗格。
+# - session 在、认得出 worker 窗格（换 agent / 模型 / 角色、注入失败、续接秒退后降级）：
+#   **不删 session**，在这个窗格里换程序。删 session 会把 attach 在上面的终端一起踢出
+#   tmux——换去复审的那一刻正是人最想盯着看的时候。步骤：
 #     1. 窗格设 remain-on-exit on，旧程序退出后窗格留在原地（否则唯一的窗格一关 session 就没了）
 #     2. 按进程组 TERM → 等 → KILL 旧程序（kill_pane_pids；只发 SIGHUP 的话 claude 会变孤儿）
 #     3. respawn-pane 在同一窗格起新命令，环境参数、工作目录和 new-session 用同一份
-#     4. remain-on-exit 关回去：之后程序自然退出，窗格 / session 照旧消失，
+#     4. remain-on-exit 关回去：之后程序自然退出，窗格照旧消失，
 #        「session 不在 == worker 死了」这条 self-heal 依赖的语义不变
 #     5. 新程序在第 4 步之前就已经退出（窗格停在「已结束」）：关掉这个窗格，等价于
-#        new-session 起的程序秒退——调用方原有的 session_alive 判断照常生效
+#        new-session 起的程序秒退
 #   会话日志的 pipe-pane 挂在窗格上，换程序不断，接着写同一份文件。
+# - session 在、记录的 worker 窗格已经不在了（worker 退出，人另开的窗格撑着 session）：
+#   在这个 session 里新开一个窗口起 worker 并记下，人的窗格一个不动。
+# - session 在、从没记录过、又不止一个窗格（本功能上线前起的、被人分过屏的 session）：
+#   认不出哪个是 worker，不猜——按进程组停掉 session 里全部程序再删掉重建。这会像以前一样
+#   踢出 attach 的终端，但不会杀错一个、留下另一个；只发生一次，之后的 session 都有记录。
 #
-# 返回非 0 只表示 tmux 命令本身失败；程序是否起得来由调用方照旧用 session_alive 判断。
+# 返回非 0 只表示 tmux 命令本身失败；程序是否起得来由调用方用 worker_alive 判断。
 worker_session_launch() {   # <tmux_session> <cwd> <command> [tmux -e 参数…]
-    local sess="$1" cwd="$2" cmd="$3" pane pid i
+    local sess="$1" cwd="$2" cmd="$3" pane pid i rec
     shift 3
-    if ! session_alive "$sess"; then
-        tmux new-session -d -s "$sess" "$@" -c "$cwd" "$cmd"
-        return
+    if session_alive "$sess" && ! pane="$(worker_pane_id "$sess")"; then
+        rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null || true)"
+        if [ -n "$rec" ]; then
+            log "  $sess 里记录的 worker 窗格 $rec 已不在（session 由别的窗格撑着）：新开窗口起 worker"
+            pane="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" "$@" -c "$cwd" "$cmd")" || return 1
+            worker_pane_record "$sess" "$pane"
+            return 0
+        fi
+        log "  ⚠️ $sess 有多个窗格且没有 worker 窗格记录（旧版本起的 session），认不出 worker：停掉全部程序后重建 session"
+        kill_session_procs "$sess"
+        tmux kill-session -t "=$sess" 2>/dev/null || true
     fi
-    pane="$(worker_pane_id "$sess")"
-    if [ -z "$pane" ]; then
-        # 刚好在判活之后消失：按全新 session 起
-        tmux new-session -d -s "$sess" "$@" -c "$cwd" "$cmd"
-        return
+    if ! session_alive "$sess"; then
+        pane="$(tmux new-session -d -P -F '#{pane_id}' -s "$sess" "$@" -c "$cwd" "$cmd")" || return 1
+        worker_pane_record "$sess" "$pane" || true
+        return 0
     fi
     tmux set-option -w -t "$pane" remain-on-exit on 2>/dev/null || true
     if [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" != 1 ]; then
@@ -5280,6 +5349,7 @@ worker_session_launch() {   # <tmux_session> <cwd> <command> [tmux -e 参数…]
         tmux set-option -w -t "$pane" remain-on-exit off 2>/dev/null || true
         return 1
     fi
+    worker_pane_record "$sess" "$pane" || true
     tmux set-option -w -t "$pane" remain-on-exit off 2>/dev/null || true
     if [ "$(tmux display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" = 1 ]; then
         tmux kill-pane -t "$pane" 2>/dev/null || true
@@ -5332,15 +5402,18 @@ start_session_logging() {
         printf '\n===== %s session=%s opened =====\n' \
             "$(date -Iseconds)" "$sess"
     } >> "$log_path"
-    if [ "$(tmux display-message -p -t "=$sess:" '#{pane_pipe}' 2>/dev/null)" = 1 ]; then
+    # 日志挂在 worker 窗格上：人分屏后「当前窗格」可能是人的那个
+    local tgt
+    tgt="$(worker_pane_id "$sess")" || tgt="=$sess:"
+    if [ "$(tmux display-message -p -t "$tgt" '#{pane_pipe}' 2>/dev/null)" = 1 ]; then
         return 0
     fi
     # pipe-pane 偶发失败几乎都是 `tmux new-session -d` 刚返回、pane 尚未就绪的 race，
     # 或 worker 进程已秒退 session 没了。先重试一次（0.3s 后），仍失败才报警——
     # 报警此时基本等价于"worker 启动即死"（详见 verify_fresh_session 的 capture）。
-    if ! tmux pipe-pane -o -t "$sess" "cat >> '$log_path'" 2>/dev/null; then
+    if ! tmux pipe-pane -o -t "$tgt" "cat >> '$log_path'" 2>/dev/null; then
         sleep 0.3
-        tmux pipe-pane -o -t "$sess" "cat >> '$log_path'" 2>/dev/null || \
+        tmux pipe-pane -o -t "$tgt" "cat >> '$log_path'" 2>/dev/null || \
             log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
     fi
 }
