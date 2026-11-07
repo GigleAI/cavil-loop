@@ -166,6 +166,9 @@ chk "列表里自己还显示 open（接口未刷新），其余全关 → 汇�
 chk "… 父 issue 翻 pending/human" "$(flipped)" "1"
 chk "… 摘掉 pending/PR" "$(grep -c "^DELETE $R/issues/50/labels/pending%2FPR" "$CALLS")" "1"
 chk "… 评论列出全部子项" "$(grep -c '#51 .*#52' "$CALLS")" "1"
+# 汇总评论是 daemon 写给人看的（GitHub#237）：写明由人决定，不用「你」「我」
+chk "… 评论写明由人决定是否关闭" "$(grep '^COMMENT 50 ' "$CALLS" | grep -c '请人决定是否关闭')" "1"
+chk "… 评论不用「你」「我」" "$(grep '^COMMENT 50 ' "$CALLS" | grep -cE '[你我]')" "0"
 chk "… 没有关闭父 issue" "$(grep -c 'state' "$CALLS")" "0"
 chk "… state 记下子项数" "$(jq -r '.split_rollups["50"]' "$STATE_DIR/state.json")" "2"
 

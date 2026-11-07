@@ -29,6 +29,11 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 BASE_COMMIT=954a294
 mkdir -p "$T/base"
 if git -C "$REPO_DIR" archive "$BASE_COMMIT" scripts prompts | tar -x -C "$T/base"; then
+    # 复盘把 prompts/ 里除 retrospective.template.md 以外的派工模板原样当数据交给模型；
+    # 对拍比的是复盘程序和它自己的说明，派工模板换成当前这份，后来改模板（如 GitHub#237）不会误红
+    for f in "$REPO_DIR"/prompts/*.template.md; do
+        [ "$(basename "$f")" = retrospective.template.md ] || cp "$f" "$T/base/prompts/"
+    done
     export BASELINE_RELEASE="$T/base"
 else
     echo "  ❌ 准备失败：取不到改动前的固定提交 $BASE_COMMIT"; fail=$((fail+1))

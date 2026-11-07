@@ -410,6 +410,9 @@ CONF
         chk "$entry：步骤里有「摘掉 pending/human」" "$(printf '%s' "$body" | grep -c '摘掉本条的 `pending/human` 标签')" 1
         chk "$entry：步骤里有「重新挂 pending/blocked」" "$(printf '%s' "$body" | grep -c '重新挂\*\* `pending/blocked`')" 1
         chk "$entry：步骤里写了成功的样子" "$(printf '%s' "$body" | grep -c '成功的样子')" 1
+        # daemon 写给人看的评论（GitHub#237）：写明「人」「daemon」，不用「你」「我」
+        chk "$entry：交人评论不用「你」「我」" "$(printf '%s' "$body" | grep -cE '[你我]')" 0
+        case "$entry" in failed-*) chk "$entry：标题写「交给人决定」" "$(printf '%s' "$body" | grep -c '^## 前置没有完成，交给人决定$')" 1 ;; esac
         sleep 1.2   # 和 daemon 摘标签不在同一秒（GitHub 的时间只到秒）
         # 照做：第 1 步（失败的那个原生关系去掉、改等 #12；或发登记评论）
         case "$entry" in
@@ -427,6 +430,9 @@ CONF
         NOW=$((T0 + 800)) tick
         chk "$entry：#12 完成 → 接力" "$(labels_of 10)" "pending/agent"
         chk "$entry：#12 完成 → 留「前置已完成」" "$(comments_with 10 'v=resume')" 1
+        body=$(jq -r '.["10"][-1].body' "$GD/comments.json")
+        chk "$entry：「前置已完成」写明本条不需要人做任何事" "$(printf '%s' "$body" | grep -c '本条不需要人做任何事')" 1
+        chk "$entry：「前置已完成」不用「你」「我」" "$(printf '%s' "$body" | grep -cE '[你我]')" 0
     done
     fi
 
