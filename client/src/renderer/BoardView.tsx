@@ -1,6 +1,6 @@
 import { badgeText, stateTone } from '../shared/stateTone';
 import { UpdateReadyBar } from './UpdateViews';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import { copyText } from './pasteImage';
 import type { RepoOptions, WriteAction } from '../shared/actions';
@@ -15,7 +15,8 @@ import { OPENS_ITEM } from './outsideClick';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
-import { isFiltering, type WarnKind } from './warnings';
+import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
+import { useLayer, useShortcuts } from './keyboard';
 import { TableView } from './TableView';
 import { localToday } from './iterationOptions';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
@@ -243,6 +244,90 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
 }
 
 /**
+ * GitHub#248: sources that failed this round, as a ⚠️ next to the refresh button instead of two
+ * full-width bars. A click opens the details (what the bars used to say); a second click, a click
+ * outside or Esc puts them away. Mounted only while there is trouble, so a later failure never
+ * opens it by itself.
+ */
+function SyncTroubleButton({ trouble, describe }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+  const n = trouble.failed.length;
+  const label = trouble.incomplete
+    ? `同步不完整：${n} 个来源读取失败（点开看详情）`
+    : '有来源这次没读全，筛选结果可能不全（点开看详情）';
+  return (
+    <span className="trouble-anchor" ref={box}>
+      <button
+        className={`icon-btn trouble-btn${open ? ' on' : ''}`}
+        data-testid="sync-trouble"
+        data-open={open ? 'yes' : 'no'}
+        aria-label={label}
+        aria-expanded={open}
+        title={label}
+        onClick={() => setOpen(!open)}
+      >
+        <Icon name="warn" />
+      </button>
+      {open && <SyncTroublePanel trouble={trouble} describe={describe} box={box} onClose={() => setOpen(false)} />}
+    </span>
+  );
+}
+
+function SyncTroublePanel({
+  trouble,
+  describe,
+  box,
+  onClose,
+}: {
+  trouble: SyncTrouble;
+  describe: (f: SyncTrouble['failed'][number]) => string;
+  box: RefObject<HTMLSpanElement | null>;
+  onClose: () => void;
+}) {
+  // on top while open: Esc is ours (the same layer the label picker uses)
+  useLayer('picker');
+  useShortcuts({ pickerClose: onClose });
+  useEffect(() => {
+    const out = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', out);
+    return () => document.removeEventListener('mousedown', out);
+  }, [box, onClose]);
+  return (
+    <div className="trouble-panel" data-testid="sync-trouble-panel" role="dialog" aria-label="同步不完整">
+      {trouble.incomplete && (
+        <>
+          <div className="trouble-head">
+            <Icon name="warn" />
+            同步不完整
+          </div>
+          <ul data-testid="sync-trouble-incomplete">
+            {trouble.failed.map((f) => (
+              <li key={f.sourceKey} data-testid="sync-trouble-source" data-key={f.sourceKey}>
+                {describe(f)}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {trouble.filterIncomplete && (
+        <div className="trouble-filter" data-testid="sync-trouble-filter">
+          有来源这次没读全，筛选结果可能不全。
+        </div>
+      )}
+      <div className="trouble-foot">
+        <button data-testid="sync-trouble-resync" onClick={() => api().restartSync()}>
+          <Icon name="refresh" />
+          重新同步
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * GitHub#229: changes that need the user (not saved / not confirmed), also the ones left
  * from the last run. Each item's own list (both values side by side) is in its detail.
  */
@@ -448,6 +533,11 @@ export function BoardView({
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   const failed = sync.sources.filter((s) => !s.ok);
+  const trouble = syncTrouble(sync, parsed);
+  const describeFailed = (f: (typeof failed)[number]) => {
+    const s = state.sources.find((x) => x.key === f.sourceKey);
+    return `${s ? sourceLabel(s, titles.get(s.key)) : f.sourceKey} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
+  };
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
   // every opening of the detail panel is its own panel instance (its React key):
   // going to another item and back is a new opening, never the old one resumed
@@ -613,6 +703,7 @@ export function BoardView({
               <span className="sync-text">上次同步 {ago(sync.lastOnlineAt, now)}</span>
             </span>
           )}
+          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} />}
           {/* never greyed out while a round runs (GitHub#217): a click starts over */}
           <button
             className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
@@ -695,9 +786,6 @@ export function BoardView({
       <WarnBar kind="filter-unsupported" warn={warn}>
         {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
       </WarnBar>
-      <WarnBar kind="filter-incomplete" warn={warn}>
-        有来源这次没读全，筛选结果可能不全（详见下方）。
-      </WarnBar>
       {hasText && <div className="small muted hint">文字只搜标题、编号和标签名，不搜正文和评论。</div>}
       {view.imported && view.imported.notes.length > 0 && (
         <div className="banner info" data-testid="import-notes">
@@ -712,15 +800,6 @@ export function BoardView({
       <UpdateReadyBar update={state.update} />
       <WarnBar kind="offline" warn={warn}>
         离线 · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'}。修改功能暂不可用。
-      </WarnBar>
-      <WarnBar kind="incomplete" warn={warn}>
-        同步不完整：
-        {failed
-          .map((f) => {
-            const s = state.sources.find((x) => x.key === f.sourceKey);
-            return `${s ? sourceLabel(s, titles.get(s.key)) : f.sourceKey} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
-          })
-          .join('；')}
       </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
         {sync.problem}
