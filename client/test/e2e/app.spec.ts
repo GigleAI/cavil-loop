@@ -2495,3 +2495,106 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   await expect(page.getByTestId('update-auto')).toBeDisabled();
   await app.close();
 });
+
+test('GitHub#214: "+ new issue" under a table group — the dialog shows what it will carry, the issue lands in that group; A → B → A never brings back a stale milestone read', async () => {
+  const PROJECT_KEY = 'project:org/gigleai/11';
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  // #138 in milestone v1.2, so a "v1.2" group exists; a second repository with nothing in it
+  env.fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 5, title: 'v1.2', state: 'open', due_on: null }]);
+  const c138 = findCopies(store, 'GigleAI/cavil-loop', 138)!;
+  for (const r of c138.rest) r.milestone = { number: 5, title: 'v1.2', due_on: null };
+  for (const g of c138.gql) g.milestone = { number: 5, title: 'v1.2', dueOn: null };
+  env.fake.state.repos.set('gigleai/second', []);
+  const nextNumber = () =>
+    1 +
+    Math.max(
+      ...env.fake.state.repos.get('gigleai/cavil-loop')!.map((r: any) => r.number),
+      ...env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes.map((n: any) => n.content?.number ?? 0)),
+    );
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('GigleAI/second');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`);
+  const dialog = page.getByTestId('confirm-dialog');
+  const line = (target: string) => page.locator(`[data-testid="new-issue-preset-line"][data-target="${target}"]`);
+
+  // ---- 1. status group: the dialog says what it sets; created, it is a row of that group ----
+  await expect(group('In progress').getByTestId('group-add')).toBeEnabled({ timeout: 15_000 });
+  await group('In progress').getByTestId('group-add').click();
+  await expect(dialog).toContainText('加到「In progress」');
+  await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
+  await expect(line(PROJECT_KEY)).toHaveAttribute('data-applies', 'yes');
+  await expect(line(PROJECT_KEY)).toContainText('状态 = In progress');
+  await page.getByTestId('new-issue-title').fill('在 In progress 组里建的');
+  await shot(page, '214-group-new-issue');
+  const n1 = nextNumber();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n1}`);
+  expect(writes().filter((w) => w[0] === 'CavilSetStatus')).toHaveLength(1);
+  await expect(group('In progress').locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n1}"]`)).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('detail-close').click();
+
+  // a folded group has no "+"
+  await group('In progress').getByTestId('group-toggle').click();
+  await expect(group('In progress').getByTestId('group-add')).toHaveCount(0);
+  await group('In progress').getByTestId('group-toggle').click();
+  await expect(group('In progress').getByTestId('group-add')).toHaveCount(1);
+
+  // ---- 2. milestone group, A → B → A: the first read of A answers last and must not land ----
+  await page.getByTestId('group-by').selectOption('milestone');
+  for (const stale of ['ok-without-v1.2', 'failed'] as const) {
+    env.fake.state.w.milestones.set('gigleai/cavil-loop', stale === 'ok-without-v1.2' ? [] : [{ number: 5, title: 'v1.2', state: 'open', due_on: null }]);
+    if (stale === 'failed') env.fake.state.w.failMilestones.add('gigleai/cavil-loop');
+    const release = holdFirst((e) => e.path.includes('/repos/GigleAI/cavil-loop/milestones'));
+    await group('v1.2').getByTestId('group-add').click();
+    await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
+    await page.getByTestId('new-issue-title').fill(`里程碑组 ${stale}`);
+    // still reading: not offered
+    await expect(page.getByTestId('new-issue-preset')).toHaveAttribute('data-blocked', 'yes');
+    await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+    // GitHub moves on: v1.2 is there and readable; the user goes to B and back to A
+    env.fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 5, title: 'v1.2', state: 'open', due_on: null }]);
+    env.fake.state.w.failMilestones.delete('gigleai/cavil-loop');
+    await page.getByTestId('new-issue-repo').selectOption('GigleAI/second');
+    await expect(line('milestone')).toHaveAttribute('data-applies', 'no');
+    await page.getByTestId('new-issue-repo').selectOption('GigleAI/cavil-loop');
+    await expect(line('milestone')).toHaveAttribute('data-applies', 'yes');
+    // now the first read of A answers
+    release();
+    await page.waitForTimeout(500);
+    await expect(line('milestone')).toHaveAttribute('data-applies', 'yes');
+    await expect(page.getByTestId('new-issue-preset')).toHaveAttribute('data-blocked', 'no');
+    await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+    const n = nextNumber();
+    await page.getByTestId('confirm-ok').click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    const created = writes().filter((w) => w[0] === 'POST' && w[1] === '/api/repos/GigleAI/cavil-loop/issues').at(-1)!;
+    expect(created[2]).toEqual({ title: `里程碑组 ${stale}`, body: '', labels: [], milestone: 5 });
+    await expect(group('v1.2').locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"]`)).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId('detail-close').click();
+  }
+
+  // ---- 3. the milestone list cannot be read: shown, creating not offered ----
+  env.fake.state.w.failMilestones.add('gigleai/cavil-loop');
+  await group('v1.2').getByTestId('group-add').click();
+  await page.getByTestId('new-issue-title').fill('读不到');
+  await expect(line('milestone')).toContainText('读不到');
+  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  await shot(page, '214-milestone-unreadable');
+  await page.getByTestId('confirm-cancel').click();
+  env.fake.state.w.failMilestones.delete('gigleai/cavil-loop');
+
+  // ---- 4. offline: every "+" greys out ----
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').press('Enter');
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('group-add').first()).toBeDisabled();
+  env.fake.state.offline = false;
+  await app.close();
+});

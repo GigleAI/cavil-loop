@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { AppState, BoardData } from '../shared/types';
-import type { RepoOptions } from '../shared/actions';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { AppState, BoardData, Item } from '../shared/types';
+import type { GroupPreset, RepoOptions } from '../shared/actions';
+import { defaultRepo, previewCreate, type MilestoneRead } from '../data/groupPreset';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
@@ -13,9 +14,28 @@ export function knownRepos(state: AppState, data: BoardData): string[] {
   return [...out.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 
-export function NewIssueDialog({ state, data, onClose, onCreated }: { state: AppState; data: BoardData; onClose: () => void; onCreated: (key: string) => void }) {
+/** A new issue from a table group's "+" (GitHub#214): the group's value, its title, the items in it. */
+export interface GroupSeed {
+  preset: GroupPreset;
+  title: string;
+  items: Item[];
+}
+
+export function NewIssueDialog({
+  state,
+  data,
+  group,
+  onClose,
+  onCreated,
+}: {
+  state: AppState;
+  data: BoardData;
+  group?: GroupSeed;
+  onClose: () => void;
+  onCreated: (key: string) => void;
+}) {
   const repos = useMemo(() => knownRepos(state, data), [state, data]);
-  const [repo, setRepo] = useState(repos[0] ?? '');
+  const [repo, setRepo] = useState(() => (group ? defaultRepo(group.preset, group.items, repos) : (repos[0] ?? '')));
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [labels, setLabels] = useState<string[]>([]);
@@ -23,23 +43,35 @@ export function NewIssueDialog({ state, data, onClose, onCreated }: { state: App
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<ResultNote | null>(null);
 
+  // every pick of a repository is a read of its own: only the latest one may land. Compared by
+  // read, not by repository name — after A → B → A the first read of A is as stale as B's.
+  const readSeq = useRef(0);
   useEffect(() => {
+    const seq = ++readSeq.current;
     setLabels([]);
     setOpts(null);
-    if (repo) api().repoOptions(repo).then(setOpts);
+    if (repo)
+      api()
+        .repoOptions(repo)
+        .then((o) => {
+          if (seq === readSeq.current) setOpts(o);
+        });
   }, [repo]);
+  const read: MilestoneRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', milestones: opts.milestones };
+  const preview = group ? previewCreate(group.preset, data.projects, repo, read) : null;
 
   return (
     <ConfirmDialog
-      title="新建 issue"
+      title={group ? `新建 issue · 加到「${group.title}」` : '新建 issue'}
       confirmLabel="创建"
       busy={busy}
-      disabled={!repo || !title.trim()}
+      disabled={!repo || !title.trim() || Boolean(preview?.blocked)}
       dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
       onConfirm={async () => {
         setBusy(true);
-        const r = await api().act({ kind: 'createIssue', repo, title, body, labels });
+        if (preview && !preview.plan) return;
+        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, ...(preview?.plan ? { plan: preview.plan } : {}) });
         setBusy(false);
         if (r.ok && r.createdKey) {
           onCreated(r.createdKey);
@@ -59,6 +91,17 @@ export function NewIssueDialog({ state, data, onClose, onCreated }: { state: App
             ))}
           </select>
         </label>
+        {preview && (
+          <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'}>
+            <div className="small muted">会带上：</div>
+            {preview.lines.map((l) => (
+              <div key={l.target} className={l.applies ? 'small' : 'small muted'} data-testid="new-issue-preset-line" data-target={l.target} data-applies={l.applies ? 'yes' : 'no'}>
+                {l.applies ? '✓ ' : '– '}
+                {l.text}
+              </div>
+            ))}
+          </div>
+        )}
         <label>
           标题
           <input data-testid="new-issue-title" value={title} onChange={(e) => setTitle(e.target.value)} />
