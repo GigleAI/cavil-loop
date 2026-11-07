@@ -30,6 +30,7 @@ import {
   ADD_PROJECT_ITEM_MUTATION,
   CLEAR_FIELD_MUTATION,
   CLOSING_ISSUES_QUERY,
+  OP_RECORDS_QUERY,
   SET_ITERATION_MUTATION,
   SET_STATUS_MUTATION,
   TASK_SOURCE_QUERY,
@@ -256,29 +257,25 @@ export async function mergeStep(client: GitHubClient, it: Item, method: MergeMet
   await client.rest('PUT', `${repoPath(it.repo)}/pulls/${it.number}/merge`, { merge_method: method, sha: headOid });
 }
 
-/**
- * Positive evidence that a comment went out (GitHub#250): this account wrote one with
- * exactly this text, no earlier than `since` (epoch ms, already allowing for clock skew).
- * Not found is not "not sent" — the caller keeps it unknown.
- */
-export async function commentFound(client: GitHubClient, repo: string, number: number, login: string, body: string, since: number): Promise<boolean> {
-  const list = await client.restList<{ body?: string; created_at?: string; user?: { login?: string } | null }>(
-    `${repoPath(repo)}/issues/${number}/comments?per_page=100&since=${enc(new Date(since).toISOString())}`,
-  );
-  return list.some((c) => c.user?.login === login && c.body === body && Date.parse(c.created_at ?? '') >= since);
+/** GitHub#250: an item's newest comments and label events (ids are GitHub's node ids). */
+export interface ItemRecords {
+  comments: { id: string; author: string | null; body: string }[];
+  labelEvents: { id: string; event: 'labeled' | 'unlabeled'; actor: string | null; label: string }[];
 }
 
-/**
- * Positive evidence that this account added / removed a label (GitHub#250), from the
- * item's events: a "labeled" / "unlabeled" event of that label by `login`, no earlier
- * than `since`. Whether the label is there now says nothing (the daemon takes the
- * "agent" label away when it picks the item up).
- */
-export async function labelEventFound(client: GitHubClient, repo: string, number: number, login: string, label: string, event: 'labeled' | 'unlabeled', since: number): Promise<boolean> {
-  const list = await client.restList<{ event?: string; created_at?: string; actor?: { login?: string } | null; label?: { name?: string } | null }>(
-    `${repoPath(repo)}/issues/${number}/events?per_page=100`,
-  );
-  return list.some((e) => e.event === event && e.label?.name === label && e.actor?.login === login && Date.parse(e.created_at ?? '') >= since);
+/** Read the item's newest 100 comments and 100 label events; throws when GitHub did not give them. */
+export async function readItemRecords(client: GitHubClient, repo: string, number: number): Promise<ItemRecords> {
+  const [owner, name] = repo.split('/');
+  type Node = { id: string; body?: string; author?: { login?: string } | null; actor?: { login?: string } | null; label?: { name?: string } | null; __typename?: string };
+  const data = await client.graphql<{ repository: { issueOrPullRequest: { comments?: { nodes: Node[] }; timelineItems?: { nodes: Node[] } } | null } | null }>(OP_RECORDS_QUERY, { owner, name, number });
+  const it = data.repository?.issueOrPullRequest;
+  if (!it || !it.comments || !it.timelineItems) throw new GitHubError('graphql', `读不到 ${repo}#${number} 的评论和标签记录`);
+  return {
+    comments: it.comments.nodes.filter((n) => n?.id).map((n) => ({ id: n.id, author: n.author?.login ?? null, body: n.body ?? '' })),
+    labelEvents: it.timelineItems.nodes
+      .filter((n) => n?.id && (n.__typename === 'LabeledEvent' || n.__typename === 'UnlabeledEvent'))
+      .map((n) => ({ id: n.id, event: n.__typename === 'LabeledEvent' ? 'labeled' : 'unlabeled', actor: n.actor?.login ?? null, label: n.label?.name ?? '' })),
+  };
 }
 
 /**

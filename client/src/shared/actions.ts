@@ -22,7 +22,8 @@ export type WriteAction =
   | { kind: 'setStatus'; key: string; projectKey: string; status: string | null }
   /** an item not on that Project yet: add it, then set the iteration (asked first in the window) */
   | { kind: 'addToProject'; key: string; projectKey: string; iterationId: string | null; status: string | null }
-  | { kind: 'comment'; key: string; body: string }
+  /** `draftOf` (GitHub#250): the reply carries the kept comment of that operation — sent = that draft is done, wherever the panel is by then */
+  | { kind: 'comment'; key: string; body: string; draftOf?: string }
   /** remove the "waiting for a human" label, add the "agent, go" one (names from Settings) */
   | { kind: 'handBack'; key: string }
   /** GitHub#205: add the autopilot label (name from Settings), then hand to the agent as above */

@@ -21,19 +21,19 @@ import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentFound, commentStep, createBoard, explainError, joinCreatedIssue, labelEventFound, listRepoOptions, mergeStep, performAction, refusedForSure, relatedIssues, removeLabel } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, refusedForSure, relatedIssues, removeLabel } from '../data/actions';
 import {
-  CLOCK_SLACK_MS,
   STUCK_MS,
   finishSteps,
   isOpKind,
   isOpRecord,
+  needsRecords,
   opAfterRestart,
   opApplyRead,
   opDisposable,
   opLockOf,
   opPhase,
-  opProveStep,
+  opProveFromRecords,
   opText,
   type OpKind,
   type OpRecord,
@@ -1392,6 +1392,7 @@ export class Controller {
     if (isFieldAction(action)) return this.actEdit(action);
     // GitHub#250: the five operations go through the one send gate; this waits for them (the window does not)
     if (isOpKind(action.kind)) return this.actOp(action as OpAction);
+    if (action.kind === 'comment' && action.draftOf) return this.actReplyFromDraft(action as Extract<WriteAction, { kind: 'comment' }> & { draftOf: string });
     if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
     if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
@@ -2198,6 +2199,21 @@ export class Controller {
     const c = given ?? (await this.clientForCall(true));
     if ('error' in c) return fail(c.error);
     if (c.session !== session || session !== this.session) return;
+    // what the item already has (code review round 1): evidence for a step whose answer never comes must be newer
+    const first = this.ops.get(id);
+    if (first && first.before === undefined && first.steps.some(needsRecords)) {
+      let before: OpRecord['before'] = null;
+      try {
+        const rec = await readItemRecords(c.client, item.repo, item.number);
+        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id) };
+      } catch {
+        // sent anyway; a step of it whose answer never comes can then only be checked by a person
+      }
+      if (session !== this.session) return;
+      const now = this.ops.get(id);
+      if (!now) return;
+      this.setOp({ ...now, before });
+    }
     let sent = false;
     for (let i = 0; ; i++) {
       let r = this.ops.get(id);
@@ -2366,29 +2382,23 @@ export class Controller {
     if (read.kind === 'failed' && read.problem) problems.push(`重读这一条失败（${read.problem}）`);
     if (c.session !== this.session) return;
     const login = this.state.viewer;
-    const r0 = this.ops.get(id);
-    if (!r0) return;
-    for (let i = 0; i < r0.steps.length; i++) {
-      const r = this.ops.get(id);
-      if (!r || c.session !== this.session) return;
-      const s = r.steps[i];
-      if (s.state !== 'unknown' || (s.name !== 'comment' && s.name !== 'addLabel' && s.name !== 'removeLabel')) continue;
-      if (!login) {
-        problems.push('不知道当前账号是谁，查不了评论和标签记录');
-        continue;
-      }
-      const since = (s.sentAt ?? r.startedAt) - CLOCK_SLACK_MS;
-      try {
-        const found =
-          s.name === 'comment'
-            ? await commentFound(c.client, r.repo, r.number, login, r.draft.comment ?? '', since)
-            : await labelEventFound(c.client, r.repo, r.number, login, s.label ?? '', s.name === 'addLabel' ? 'labeled' : 'unlabeled', since);
-        if (c.session !== this.session) return;
-        const now = this.ops.get(id);
-        if (found && now) this.setOp(opProveStep(now, i, s.name === 'comment' ? '在评论列表里找到了这条评论' : '在 GitHub 的标签记录里找到了这一步'));
-        else if (!found) problems.push(s.name === 'comment' ? '评论列表里没找到这条评论（可能还没出现）' : `标签记录里没找到「${s.label}」这一步`);
-      } catch (e) {
-        problems.push(`读${s.name === 'comment' ? '评论列表' : '标签记录'}失败（${(e as Error)?.message ?? String(e)}）`);
+    const mid = this.ops.get(id);
+    if (!mid) return;
+    if (mid.steps.some((s) => s.state === 'unknown' && needsRecords(s))) {
+      if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
+      else {
+        try {
+          const records = await readItemRecords(c.client, mid.repo, mid.number);
+          if (c.session !== this.session) return;
+          const now = this.ops.get(id);
+          if (now) {
+            const out = opProveFromRecords(now, records, login);
+            this.setOp(out.record);
+            problems.push(...out.missing);
+          }
+        } catch (e) {
+          problems.push(`读评论和标签记录失败（${(e as Error)?.message ?? String(e)}）`);
+        }
       }
     }
     if (c.session !== this.session) return;
@@ -2492,6 +2502,30 @@ export class Controller {
     this.pruneOps();
     this.opsChanged();
     void this.storeOps();
+  }
+
+  /**
+   * A reply carrying an operation's kept comment (code review round 1): the outcome lands on that
+   * record here, not in whichever panel sent it — sent = the draft is done; refused for sure (or
+   * never sent) = offered again; no clear answer = "not sure", the comment is no longer offered
+   * for the reply box. One such reply at a time per record.
+   */
+  private async actReplyFromDraft(action: Extract<WriteAction, { kind: 'comment' }> & { draftOf: string }): Promise<WriteResult> {
+    const id = action.draftOf;
+    const rec = this.ops.get(id);
+    const { draftOf: _drop, ...plain } = action;
+    if (!rec) return this.actNow(plain);
+    if (rec.replyState) return { ok: false, error: '这条附带评论已经用来发过回复（结果还没确定），没有再发', warning: null };
+    this.patchOp(id, { replyState: 'sending' });
+    let err: unknown = undefined;
+    const r = await this.actNow(plain, undefined, (e) => (err = e));
+    const now = this.ops.get(id);
+    if (now) {
+      if (r.ok) this.patchOp(id, { replyState: null, draftDropped: true });
+      else if (err === undefined || refusedForSure(err)) this.patchOp(id, { replyState: null });
+      else this.patchOp(id, { replyState: 'unknown' });
+    }
+    return r;
   }
 
   /** `act` for the five operations: started like the window does, then waited for (requests and re-reads). */

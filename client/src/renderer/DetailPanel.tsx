@@ -554,10 +554,9 @@ export function DetailPanel({
   const pickBlocked = !item || !canWrite || !opts;
   const send = async () => {
     if (!item) return;
-    const r = await run({ kind: 'comment', key: item.key, body: reply }, '评论已发出');
+    // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
+    const r = await run({ kind: 'comment', key: item.key, body: reply, ...(replyFromOp ? { draftOf: replyFromOp } : {}) }, '评论已发出');
     if (r.ok && r.here) {
-      // GitHub#250: the operation's kept comment went out with this reply
-      if (replyFromOp) void api().opDropDraft(replyFromOp);
       setReplyFromOp(null);
       setReply('');
       setPreview(null);
@@ -1071,7 +1070,11 @@ export function DetailPanel({
           disabled={!canWrite || busy}
           onChange={(e) => {
             setReply(e.target.value);
-            if (!e.target.value.trim()) setEscKept(false);
+            if (!e.target.value.trim()) {
+              setEscKept(false);
+              // emptied: what is sent next is not that operation's kept comment any more
+              setReplyFromOp(null);
+            }
             session.supersede('preview');
             setPreview(null);
           }}

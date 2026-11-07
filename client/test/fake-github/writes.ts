@@ -687,6 +687,16 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     };
   }
 
+  // GitHub#250: the newest comments and label events of an item (what proves a write whose answer was lost)
+  if (op === 'CavilOpRecords') {
+    const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
+    if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };
+    if (w.failEvents || w.failCommentList) return { httpStatus: 502 };
+    const ikey = `${c.repo.toLowerCase()}#${c.number}`;
+    const comments = (w.comments.get(ikey) ?? []).slice(-100).map((x) => ({ id: x.id, body: x.body ?? '', author: x.author }));
+    const events = (w.labelEvents.get(ikey) ?? []).slice(-100).map((e) => ({ __typename: e.event === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', id: `LE_${ikey}_${e.id}`, actor: e.actor, label: e.label }));
+    return { data: { repository: { issueOrPullRequest: { __typename: c.kind, comments: { nodes: comments }, timelineItems: { nodes: events } } } } };
+  }
   if (op === 'CavilItemRefresh' || op === 'CavilItemDetail') {
     const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
     if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };

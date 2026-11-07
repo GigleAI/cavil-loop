@@ -245,3 +245,27 @@ mutation CavilUpdatePrBody($id: ID!, $body: String!) {
   updatePullRequest(input: { pullRequestId: $id, body: $body }) { pullRequest { body } }
 }
 `;
+
+/**
+ * GitHub#250 (code review round 1): the item's newest comments and label events. Read once before
+ * an operation's first request goes out (what was there already) and again when proving a step
+ * whose answer never came: only a record that was not there before counts.
+ */
+const OP_RECORDS_FIELDS = `
+      comments(last: 100) { nodes { id body author { login } } }
+      timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+        nodes { __typename ... on LabeledEvent { id actor { login } label { name } } ... on UnlabeledEvent { id actor { login } label { name } } }
+      }`;
+export const OP_RECORDS_QUERY = `
+query CavilOpRecords($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {${OP_RECORDS_FIELDS}
+      }
+      ... on PullRequest {${OP_RECORDS_FIELDS}
+      }
+    }
+  }
+}
+`;

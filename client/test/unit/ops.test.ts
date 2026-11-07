@@ -14,7 +14,9 @@ import {
   opLockOf,
   opLocked,
   opPhase,
+  opProveFromRecords,
   opProveStep,
+  readBoundary,
   opText,
   opTone,
   type OpRecord,
@@ -212,5 +214,41 @@ describe('restart and stored shape', () => {
     expect(isOpRecord({ ...close('ok', 'ok'), kind: 'comment' })).toBe(false);
     expect(isOpRecord({ ...close('ok', 'ok'), steps: [] })).toBe(false);
     expect(isOpRecord({ ...close('ok', 'ok'), steps: [{ name: 'close', state: 'maybe' }] })).toBe(false);
+  });
+});
+
+describe('code review round 1: evidence newer than the request; restart boundary', () => {
+  const recs = (comments: [string, string, string][], events: [string, 'labeled' | 'unlabeled', string, string][]) => ({
+    comments: comments.map(([id, author, body]) => ({ id, author, body })),
+    labelEvents: events.map(([id, event, actor, label]) => ({ id, event, actor, label })),
+  });
+  it('an old comment / event that was there before the request proves nothing; a new one does', () => {
+    const r = close('ok', 'unknown', { before: { comments: ['c1'], events: [] } });
+    expect(opProveFromRecords(r, recs([['c1', 'me', '做完了']], []), 'me').record.steps[1].state).toBe('unknown');
+    expect(opProveFromRecords(r, recs([['c1', 'me', '做完了'], ['c2', 'other', '做完了'], ['c3', 'me', '别的']], []), 'me').record.steps[1].state).toBe('unknown');
+    expect(opProveFromRecords(r, recs([['c1', 'me', '做完了'], ['c2', 'me', '做完了']], []), 'me').record.steps[1].state).toBe('ok');
+    const a = auto('ok', 'unknown', 'unsent', { before: { comments: [], events: ['e1'] } });
+    expect(opProveFromRecords(a, recs([], [['e1', 'labeled', 'me', 'pending/agent']]), 'me').record.steps[1].state).toBe('unknown');
+    expect(opProveFromRecords(a, recs([], [['e1', 'labeled', 'me', 'pending/agent'], ['e2', 'unlabeled', 'me', 'pending/agent']]), 'me').record.steps[1].state).toBe('unknown');
+    expect(opProveFromRecords(a, recs([], [['e2', 'labeled', 'bot', 'pending/agent']]), 'me').record.steps[1].state).toBe('unknown');
+    expect(opProveFromRecords(a, recs([], [['e1', 'labeled', 'me', 'pending/agent'], ['e2', 'labeled', 'me', 'pending/agent']]), 'me').record.steps[1].state).toBe('ok');
+  });
+  it('no list of what was there before (the read failed, or an old record): never proven, and said so', () => {
+    for (const before of [null, undefined]) {
+      const out = opProveFromRecords(close('ok', 'unknown', { before }), recs([['c9', 'me', '做完了']], []), 'me');
+      expect(out.record.steps[1].state).toBe('unknown');
+      expect(out.missing[0]).toContain('发送前没读到');
+    }
+  });
+  it('a step whose answer never came (restart): reads count once issued after its sending, never before', () => {
+    const r = opAfterRestart(close('pending', 'unsent', { running: true }));
+    expect(r.steps[0].answeredAt).toBeNull();
+    expect(readBoundary(r)).toBe(10);
+    expect(opApplyRead(r, { issuedAt: 10, state: 'closed', labels: [] })).toBe(r);
+    const x = opApplyRead(r, { issuedAt: 11, state: 'closed', labels: [] });
+    expect(x.steps.map((s) => s.state)).toEqual(['ok', 'unsent']);
+    expect(x.steps[0].answeredAt).toBeNull();
+    expect(opPhase(x)).toBe('settled');
+    expect(opDraftLeft(x)).toEqual({ comment: '做完了' });
   });
 });

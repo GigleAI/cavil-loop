@@ -149,7 +149,8 @@ describe('nothing waits for the answer any more', () => {
     // the re-read is held now: the answers must show without it
     const holdRead = fake.holdWhen(isRead);
     holdClose();
-    await until(() => opOf(c, id).steps.every((x) => x.state === 'ok'), 'close and comment answered');
+    // answered and no longer running (code review round 1: the steps alone are set a moment before the run ends)
+    await until(() => opOf(c, id).steps.every((x) => x.state === 'ok') && opPhase(opOf(c, id)) !== 'waiting', 'close and comment answered');
     expect(opText(opOf(c, id))).toBe(`issue #${ISSUE} 已关闭（已完成），评论已发出（正在等 GitHub 的最新状态）`);
     expect(opPhase(opOf(c, id))).toBe('settling');
     expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(id);
@@ -349,9 +350,14 @@ describe('an answer that never came stays unknown: a read showing the old state 
 
   it('the comment went out but its answer was lost: "not sure", only "copy"; the comment list proves it; one comment on GitHub', async () => {
     const c = await ready();
-    fake.state.w.failCommentList = true;
     const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    // the list is unreadable once the requests went out (the read made before them worked)
+    const holdClose = fake.holdWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}`);
     const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await until(() => closes().length === 1, 'close sent (after the read of what was there)');
+    expect(opOf(c, s.id!).before).toEqual({ comments: [], events: [] });
+    fake.state.w.failCommentList = true;
+    holdClose();
     await idle(c);
     expect(lost.caught()).toBe(1);
     let r = opOf(c, s.id!);
@@ -375,10 +381,15 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
   it('autopilot: label added; agent label landed but answer lost; daemon took it; events unreadable while the item re-read works — every entry refused, then the events prove it', async () => {
     waitingForHuman();
     const c = await ready();
-    fake.state.w.failEvents = true;
     const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('pending/agent'));
+    // the events become unreadable once the first request went out (the read made before it worked)
+    const holdFirst = fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('autopilot'));
     // the daemon picks it up as soon as the label is on GitHub, before any re-read of ours
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await until(() => labelAdds('autopilot').length === 1, 'the autopilot label reached GitHub');
+    expect(opOf(c, s.id!).before).not.toBeNull();
+    fake.state.w.failEvents = true;
+    holdFirst();
     await until(() => lost.caught() === 1, 'the agent label reached GitHub');
     lost.stop();
     await daemonPicksUp();
@@ -518,24 +529,185 @@ describe('partly done: each step said, only refused label steps may be finished'
   });
 });
 
-describe('restart, sign-out', () => {
-  it('a request still waiting when the app stops is "unknown" after the restart: locked, nothing sent by itself', async () => {
+describe('evidence must be newer than the request (code review round 1)', () => {
+  it('an older comment of this account with the same text proves nothing: still unknown, the draft and the lock stay', async () => {
     const c = await ready();
-    const hold = fake.hold(`/issues/${ISSUE}`);
+    // one minute ago the same account wrote exactly this
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '做完了' })).ok).toBe(true);
+    expect(commentsOnGitHub()).toHaveLength(1);
+    const late = fake.lateWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await idle(c);
+    expect(late.caught()).toBe(1);
+    let r = opOf(c, s.id!);
+    expect(r.before?.comments).toHaveLength(1);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown']);
+    expect((await c.opRecheck(s.id!)).ok).toBe(false);
+    r = opOf(c, s.id!);
+    expect(r.steps[1].state).toBe('unknown');
+    expect(opPhase(r)).toBe('unknown');
+    expect(opDraftLeft(r)).toEqual({ comment: '做完了' });
+    expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' }).ok).toBe(false);
+    // the request lands: now a new comment is there, and it proves the step
+    late.land();
+    expect(commentsOnGitHub()).toHaveLength(2);
+    expect((await c.opRecheck(s.id!)).ok).toBe(true);
+    expect(opOf(c, s.id!).steps[1].state).toBe('ok');
+    expect(opDraftLeft(opOf(c, s.id!))).toBeNull();
+  });
+
+  it('an older "pending/agent" added by this account proves nothing: the label is gone (the daemon), still unknown, nothing re-sent', async () => {
+    waitingForHuman();
+    const c = await ready();
+    // earlier: this account handed it over, the daemon took the label
+    const h = { authorization: `Bearer ${FAKE_TOKEN}`, 'content-type': 'application/json' };
+    expect((await fetch(`${fake.api}/repos/${REPO}/issues/${ISSUE}/labels`, { method: 'POST', headers: h, body: JSON.stringify({ labels: ['pending/agent'] }) })).status).toBe(200);
+    await daemonPicksUp();
+    const late = fake.lateWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('pending/agent'));
+    const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await idle(c);
+    expect(late.caught()).toBe(1);
+    const r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['unknown', 'unsent']);
+    expect(opPhase(r)).toBe('unknown');
+    expect(c.startOp({ kind: 'handBack', key: K(ISSUE) }).ok).toBe(false);
+    expect(labelsOnGitHub()).not.toContain('pending/agent');
+    late.land();
+    expect((await c.opRecheck(s.id!)).ok).toBe(true);
+    expect(opOf(c, s.id!).steps[0].state).toBe('ok');
+  });
+
+  it('the read before sending failed: the step can never be proven automatically — only a person unlocks', async () => {
+    const c = await ready();
+    fake.state.w.failCommentList = true;
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await idle(c);
+    expect(lost.caught()).toBe(1);
+    expect(opOf(c, s.id!).before).toBeNull();
+    fake.state.w.failCommentList = false;
+    expect((await c.opRecheck(s.id!)).ok).toBe(false);
+    expect(opOf(c, s.id!).checkProblem).toContain('发送前没读到');
+    expect(opPhase(opOf(c, s.id!))).toBe('unknown');
+    c.opUnlock(s.id!);
+    expect(opPhase(opOf(c, s.id!))).toBe('unlocked');
+    expect(commentsOnGitHub()).toHaveLength(1);
+  });
+});
+
+describe('a reply built from the kept comment is finished by the controller (code review round 1)', () => {
+  async function refusedComment(c: Controller) {
+    fake.state.w.failComment = true;
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await idle(c);
+    fake.state.w.failComment = false;
+    expect(opButtons(opOf(c, s.id!))).toContain('toReply');
+    return s.id!;
+  }
+  it('sent: the draft is done even though no panel is left to say so; a second reply from it is refused while the first is on its way', async () => {
+    const c = await ready();
+    const id = await refusedComment(c);
+    const hold = fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    const p = c.act({ kind: 'comment', key: K(ISSUE), body: '做完了', draftOf: id });
+    await until(() => opOf(c, id).replyState === 'sending', 'reply on its way');
+    expect(opButtons(opOf(c, id))).not.toContain('toReply');
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '做完了', draftOf: id })).ok).toBe(false);
+    hold();
+    expect((await p).ok).toBe(true);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['做完了']);
+    expect(opDraftLeft(opOf(c, id))).toBeNull();
+  });
+  it('no answer: "not sure", copy only — never offered for the reply box again; one comment on GitHub', async () => {
+    const c = await ready();
+    const id = await refusedComment(c);
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/comments`));
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '做完了', draftOf: id })).ok).toBe(false);
+    expect(lost.caught()).toBe(1);
+    const r = opOf(c, id);
+    expect(r.replyState).toBe('unknown');
+    expect(opButtons(r)).toContain('copy');
+    expect(opButtons(r)).not.toContain('toReply');
+    expect(opText(r)).toContain('用附的评论原文发的回复不确定有没有发出');
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '做完了', draftOf: id })).ok).toBe(false);
+    expect(commentsOnGitHub()).toHaveLength(1);
+  });
+  it('refused for sure: offered again', async () => {
+    const c = await ready();
+    const id = await refusedComment(c);
+    fake.state.w.failComment = true;
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '做完了', draftOf: id })).ok).toBe(false);
+    expect(comments()).toHaveLength(2); // the refused step, then the refused reply
+    expect(opOf(c, id).replyState).toBeNull();
+    expect(opButtons(opOf(c, id))).toContain('toReply');
+  });
+});
+
+describe('restart, sign-out', () => {
+  it('restart while waiting, GitHub had carried the close out: unknown, nothing re-sent; the first read after the restart proves it, settles it, keeps the comment that never went out (code review round 1)', async () => {
+    const c = await ready();
+    // GitHub closes it at once; the answer never reaches this run
+    fake.holdWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}`);
     const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
     await until(() => closes().length === 1, 'close sent');
     await until(() => storedOps()?.find((x) => x.id === s.id)?.steps[0].state === 'pending', 'stored as sent');
+    expect(stateOnGitHub()).toBe('closed');
     c.stopTimer();
     const before = fake.writes().length;
     const c2 = await ready();
-    const r = opOf(c2, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['unknown', 'unsent']);
-    expect(opPhase(r)).toBe('unknown');
-    expect(opDraftLeft(r)).toEqual({ reason: 'completed', comment: '做完了' });
-    expect(c2.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' }).ok).toBe(false);
     await idle(c2);
+    const r = opOf(c2, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent']);
+    expect(r.steps[0].answeredAt).toBeNull(); // proven by the read, no answer made up
+    expect(opPhase(r)).toBe('settled');
+    expect(opText(r)).toContain('附的评论没有发出');
+    expect(opDraftLeft(r)).toEqual({ comment: '做完了' });
+    expect(opButtons(r)).toEqual(expect.arrayContaining(['copy', 'toReply']));
     expect(fake.writes().length).toBe(before);
+    expect(comments()).toHaveLength(0);
+  });
+
+  it('restart while waiting, the close had not landed: unknown and locked, nothing sent; once it lands the next read proves it', async () => {
+    const c = await ready();
+    const late = fake.lateWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}`);
+    const hold = fake.holdWhen((e) => e.method === 'GET' && e.path === '/never');
     hold();
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
+    await until(() => late.caught() === 1, 'close sent');
+    await idle(c);
+    c.stopTimer();
+    // what a run stopped while waiting leaves on disk
+    const kept = storedOps()!.find((x) => x.id === s.id)!;
+    expect(kept.steps[0].state).toBe('unknown');
+    const before = fake.writes().length;
+    const c2 = await ready();
+    await idle(c2);
+    expect(opOf(c2, s.id!).steps.map((x) => x.state)).toEqual(['unknown', 'unsent']);
+    expect(c2.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' }).ok).toBe(false);
+    late.land();
+    await c2.syncNow();
+    await idle(c2);
+    const r = opOf(c2, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent']);
+    expect(opPhase(r)).toBe('settled');
+    expect(fake.writes().length).toBe(before);
+  });
+
+  it('restart while a merge waited, GitHub had merged: the first read proves it and settles it, nothing re-sent', async () => {
+    const pr = openPr();
+    const c = await ready();
+    const d = await c.loadDetail(K(pr));
+    const headOid = d.ok ? d.detail.pr!.headOid : '';
+    fake.holdWhen((e) => e.method === 'PUT' && e.path.endsWith(`/pulls/${pr}/merge`));
+    const s = c.startOp({ kind: 'merge', key: K(pr), method: 'merge', headOid });
+    await until(() => merges(pr).length === 1, 'merge sent');
+    await until(() => storedOps()?.find((x) => x.id === s.id)?.steps[0].state === 'pending', 'stored as sent');
+    c.stopTimer();
+    const c2 = await ready();
+    await idle(c2);
+    const r = opOf(c2, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok']);
+    expect(opPhase(r)).toBe('settled');
+    expect(merges(pr)).toHaveLength(1);
   });
 
   it('a draft kept after settling survives the restart', async () => {
@@ -573,7 +745,7 @@ describe('a success never read back', () => {
     fake.state.w.failDetail.add('never');
     const holdRead = fake.holdWhen(isRead);
     const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' });
-    await until(() => opOf(c, s.id!).steps[0].state === 'ok', 'answered');
+    await until(() => opOf(c, s.id!).steps[0].state === 'ok' && opPhase(opOf(c, s.id!)) !== 'waiting', 'answered, no longer running');
     expect(opPhase(opOf(c, s.id!))).toBe('settling');
     expect(opButtons(opOf(c, s.id!))).not.toContain('unlock');
     await until(() => opOf(c, s.id!).stuck, 'stuck');

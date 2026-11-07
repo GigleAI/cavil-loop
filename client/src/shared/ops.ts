@@ -80,6 +80,21 @@ export interface OpRecord {
    * marked sent — a second click in between must not get through). Not kept over a restart.
    */
   running?: boolean;
+  /**
+   * Code review round 1: the item's comments and label events (GitHub node ids) read right before
+   * the first request went out. Evidence for a step whose answer never came must be a record not
+   * in here — an older comment with the same text, or an older "labeled" event of the same label,
+   * proves nothing about this request. null = that read failed: such a step can never be proven
+   * automatically (a person checks and unlocks). Absent = the operation has no step needing it.
+   */
+  before?: { comments: string[]; events: string[] } | null;
+  /**
+   * Code review round 1: a reply built from this record's kept comment ("放进回复框") is on its
+   * way ('sending') or its answer never came ('unknown'). Either way the comment may already be on
+   * GitHub: it is not offered for the reply box again (copy only). Done = the draft is dropped;
+   * refused for sure = cleared, offered again.
+   */
+  replyState?: 'sending' | 'unknown' | null;
   /** the re-read after the answers (the item, a merged / closed PR's issues) did not work in full; the next sync round catches up */
   readProblem?: string | null;
   /** this record finishes the label steps of an earlier one ("补做剩下的步骤") */
@@ -88,8 +103,6 @@ export interface OpRecord {
 
 /** how long a succeeded operation waits for a re-read before the manual unlock is offered */
 export const STUCK_MS = 120_000;
-/** GitHub's clock vs this machine's: evidence written this long before the request was sent still counts */
-export const CLOCK_SLACK_MS = 120_000;
 
 export const CLOSE_REASON_NAME: Record<IssueCloseReason, string> = { completed: '已完成', not_planned: '不计划' };
 
@@ -124,6 +137,16 @@ export function opLockOf(records: readonly OpRecord[], key: string): OpRecord | 
 /** the last answer of the record (stamp), null before the first */
 export function lastAnswer(r: OpRecord): number | null {
   const t = r.steps.map((s) => s.answeredAt).filter((x): x is number => x !== null);
+  return t.length ? Math.max(...t) : null;
+}
+
+/**
+ * The boundary a re-read must be issued after to count (code review round 1): the last answer;
+ * for a step whose answer never came at all (a request still waiting when the app stopped) its
+ * sending time — never a made-up answer. null = nothing was ever sent.
+ */
+export function readBoundary(r: OpRecord): number | null {
+  const t = r.steps.flatMap((s) => [s.answeredAt, s.state === 'unknown' ? s.sentAt : null]).filter((x): x is number => x !== null);
   return t.length ? Math.max(...t) : null;
 }
 
@@ -207,6 +230,8 @@ export function opText(r: OpRecord): string {
   if (p === 'unlocked') head = `已由人核对后解除锁定：${head}`;
   if (r.checkProblem && p === 'unknown') head += `；这次没能查证：${r.checkProblem}`;
   if (r.readProblem && p !== 'waiting') head += `；${r.readProblem}`;
+  if (r.replyState === 'sending') head += '；正在用附的评论原文发回复…';
+  if (r.replyState === 'unknown') head += '；用附的评论原文发的回复不确定有没有发出，请到 GitHub 页面核对';
   return head;
 }
 
@@ -275,7 +300,7 @@ export function opButtons(r: OpRecord): OpButton[] {
   if (left?.comment !== undefined && p !== 'waiting') {
     out.push('copy');
     const cs = commentState(r);
-    if (cs === 'refused' || cs === 'unsent') out.push('toReply');
+    if ((cs === 'refused' || cs === 'unsent') && !r.replyState) out.push('toReply');
   }
   if (left && p !== 'waiting') out.push('dropDraft');
   if (!opLocked(r)) out.push('dismiss');
@@ -304,7 +329,8 @@ export function finishSteps(r: OpRecord, labels?: readonly string[]): OpStep[] {
 
 /**
  * A re-read of the item landed (issued at `issuedAt`, reads the board data as it is
- * now). It counts only when issued after every answer: then it settles the wait, and
+ * now). It counts only when issued after every answer (and after the sending of a step
+whose answer never came, see readBoundary): then it settles the wait, and
  * is positive evidence for an unknown close / merge (read back closed / merged) and an
  * unknown label removal (the label is gone). It never turns anything into "did not
  * happen". Returns the same object when nothing changed.
@@ -312,7 +338,7 @@ export function finishSteps(r: OpRecord, labels?: readonly string[]): OpStep[] {
 export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open' | 'closed' | 'merged'; labels: readonly string[] }): OpRecord {
   if (r.unlocked) return r;
   if (r.steps.some((s) => s.state === 'pending')) return r;
-  const last = lastAnswer(r);
+  const last = readBoundary(r);
   if (last === null || read.issuedAt <= last) return r;
   let changed = false;
   const steps = r.steps.map((s) => {
@@ -335,6 +361,43 @@ export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open'
   return changed ? next : r;
 }
 
+/** steps whose result may need a comment / a label event as evidence */
+export function needsRecords(s: OpStep): boolean {
+  return s.name === 'comment' || s.name === 'addLabel' || s.name === 'removeLabel';
+}
+
+/**
+ * Positive evidence from the item's comments and label events (code review round 1): an unknown
+ * comment step is proven by a comment of `login` with exactly the draft's text, an unknown label
+ * step by a "labeled" / "unlabeled" event of that label by `login` — in both cases one whose id
+ * was not there before the operation's first request (`r.before`). Without that list nothing is
+ * proven. `missing` lists the unknown steps nothing was found for (or that cannot be proven).
+ */
+export function opProveFromRecords(
+  r: OpRecord,
+  records: { comments: { id: string; author: string | null; body: string }[]; labelEvents: { id: string; event: 'labeled' | 'unlabeled'; actor: string | null; label: string }[] },
+  login: string,
+): { record: OpRecord; missing: string[] } {
+  let record = r;
+  const missing: string[] = [];
+  r.steps.forEach((s, i) => {
+    if (s.state !== 'unknown' || !needsRecords(s)) return;
+    const what = s.name === 'comment' ? '附带评论' : `「${s.label ?? ''}」`;
+    if (!r.before) {
+      missing.push(`${what}：发送前没读到这一条原有的评论和标签记录，无法区分新旧，只能人工核对`);
+      return;
+    }
+    const before = r.before;
+    const found =
+      s.name === 'comment'
+        ? records.comments.some((c) => !before.comments.includes(c.id) && c.author === login && c.body === (r.draft.comment ?? ''))
+        : records.labelEvents.some((e) => !before.events.includes(e.id) && e.actor === login && e.label === s.label && e.event === (s.name === 'addLabel' ? 'labeled' : 'unlabeled'));
+    if (found) record = opProveStep(record, i, s.name === 'comment' ? '在评论列表里找到了这次发出的评论' : '在 GitHub 的标签记录里找到了这一步');
+    else missing.push(s.name === 'comment' ? '评论列表里没有这次发出的评论（可能还没出现）' : `标签记录里没有这次的「${s.label}」`);
+  });
+  return { record, missing };
+}
+
 /** Positive evidence for one unknown step (the comment found, the label event found). */
 export function opProveStep(r: OpRecord, index: number, how: string): OpRecord {
   const s = r.steps[index];
@@ -344,8 +407,9 @@ export function opProveStep(r: OpRecord, index: number, how: string): OpRecord {
 
 /** A record kept on disk by an earlier run: a request still waiting then has no answer now, and nothing is sent again. */
 export function opAfterRestart(r: OpRecord): OpRecord {
-  if (!r.steps.some((s) => s.state === 'pending')) return { ...r, running: false };
-  return { ...r, running: false, steps: r.steps.map((s) => (s.state === 'pending' ? { ...s, state: 'unknown' as const, reason: '客户端重启前没有收到 GitHub 的应答' } : s)) };
+  const replyState = r.replyState === 'sending' ? ('unknown' as const) : (r.replyState ?? null);
+  if (!r.steps.some((s) => s.state === 'pending')) return { ...r, running: false, replyState };
+  return { ...r, running: false, replyState, steps: r.steps.map((s) => (s.state === 'pending' ? { ...s, state: 'unknown' as const, reason: '客户端重启前没有收到 GitHub 的应答' } : s)) };
 }
 
 /** Records may be dropped once settled, put away and with no draft left. */

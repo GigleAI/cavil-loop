@@ -4033,3 +4033,46 @@ test('GitHub#245: new issue — hand to the agent / autopilot when creating; the
   await page.getByTestId('confirm-cancel').click();
   await app.close();
 });
+
+test('GitHub#250 (PR #255 code review round 1): a reply built from a kept comment, its answer arriving after the panel was put away, finishes that draft — no second copy on GitHub', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c0 = findCopies(store, 'GigleAI/cavil-loop', 137)!;
+  for (const g of c0.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+  for (const r of c0.rest) Object.assign(r, { state: 'open', state_reason: null });
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const open = async () => {
+    await page.getByTestId('search').fill('#137');
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, 137).click();
+    await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+  const notice = page.locator('[data-testid="detail"] [data-testid="op-notice"]').last();
+  // the close is refused: the comment is kept
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await open();
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('close-comment').fill('恢复原文');
+  await page.getByTestId('confirm-ok').click();
+  await expect(notice).toHaveAttribute('data-kind', 'error');
+  env.fake.state.w.readOnlyRepos.clear();
+  // into the reply box, sent; GitHub keeps it but holds the answer
+  await notice.getByTestId('op-to-reply').click();
+  await expect(page.getByTestId('reply-input')).toHaveValue('恢复原文');
+  const release = env.fake.holdWhen((e) => e.method === 'POST' && e.path === '/api/repos/GigleAI/cavil-loop/issues/137/comments');
+  await page.getByTestId('reply-send').click();
+  await expect.poll(() => (env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).length).toBe(1);
+  // the panel is put away before the answer comes
+  await page.getByTestId('detail-close').click();
+  release();
+  await expect(page.getByTestId('board-action-result')).toContainText('评论已发出');
+  // opened again: the kept comment is gone with its draft; nothing offers to send it again
+  await open();
+  await expect(page.locator('[data-testid="detail"] [data-testid="op-to-reply"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="op-draft-comment"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="op-draft-line"]')).toHaveCount(0);
+  expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['恢复原文']);
+  await app.close();
+});
