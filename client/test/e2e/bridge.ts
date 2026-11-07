@@ -211,7 +211,7 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
     const url = route.request().url();
     if (url.startsWith(`${origin}/`)) return route.continue();
     appendFileSync(env.requests, `request ${url}\n`);
-    if (/^https:\/\/((api\.)?github\.com|avatars\.githubusercontent\.com)\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
+    if (/^https:\/\/((api\.)?github\.com|(avatars|private-user-images|user-images|camo)\.githubusercontent\.com)\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
     return route.abort();
   });
   // `<a target="_blank">` in the detail view: the app's shell never opens a window for it,

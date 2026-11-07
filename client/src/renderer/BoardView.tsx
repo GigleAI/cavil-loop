@@ -584,7 +584,9 @@ export function BoardView({
           view={view}
           today={today}
           now={now}
+          canWrite={canWrite}
           onOpen={openItem}
+          onNote={setNote}
           canCreate={canWrite}
           createTitle={writesEnabled(sync) ? (state.sources.length ? '在这一组新建 issue，带上这一组的字段' : '先添加数据来源') : '离线时不能修改'}
           onNewInGroup={(g) => setNewIssue({ preset: g.preset, title: g.title, items: g.rows.map((r) => r.item) })}

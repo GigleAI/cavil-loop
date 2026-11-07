@@ -4,7 +4,11 @@ import type { GroupPreset, RepoOptions } from '../shared/actions';
 import { defaultRepo, previewCreate, type MilestoneRead } from '../data/groupPreset';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
-import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
+import { noteOf, PasteImageNotice, ResultBanner, type ResultNote } from './DetailPanel';
+import { LabelPicker } from './LabelPicker';
+import { labelStyle, useDarkMode } from './colors';
+import { Icon } from './Icons';
+import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
 
 /** Repositories a new issue can go to: the repository sources plus every repository seen on the board. */
 export function knownRepos(state: AppState, data: BoardData): string[] {
@@ -12,6 +16,20 @@ export function knownRepos(state: AppState, data: BoardData): string[] {
   for (const s of state.sources) if (s.kind === 'repo') out.set(`${s.owner}/${s.name}`.toLowerCase(), `${s.owner}/${s.name}`);
   for (const i of data.items) if (!out.has(i.repo.toLowerCase())) out.set(i.repo.toLowerCase(), i.repo);
   return [...out.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
+/**
+ * GitHub#205 (maintainer's choice C): which Projects are ticked when the dialog opens — the
+ * ones the view is narrowed to (that this account may change); none when the view shows every source
+ * (nothing ticked off at the top, or every source ticked one by one). From a table group's "+", the
+ * boards the table shows start ticked (their iteration / status is what the group carries).
+ */
+export function defaultProjects(state: AppState, data: BoardData, fromGroup = false): string[] {
+  // a table group's "+" (GitHub#214) is about the boards the table shows: those start ticked
+  if (fromGroup) return data.projects.filter((p) => p.viewerCanUpdate).map((p) => p.key);
+  const sel = state.view.selected;
+  const everything = sel === null || state.sources.every((s) => sel.includes(s.key));
+  return everything ? [] : data.projects.filter((p) => p.viewerCanUpdate).map((p) => p.key);
 }
 
 /** A new issue from a table group's "+" (GitHub#214): the group's value, its title, the items in it. */
@@ -42,6 +60,12 @@ export function NewIssueDialog({
   const [opts, setOpts] = useState<RepoOptions | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<ResultNote | null>(null);
+  const [picking, setPicking] = useState(false);
+  const allProjects = data.allProjects ?? data.projects;
+  // decided once, when the dialog opens: a sync round meanwhile does not re-tick what the user unticked
+  const [projects, setProjects] = useState<string[]>(() => defaultProjects(state, data, Boolean(group)));
+  const [pasted, setPasted] = useState<{ copied: boolean | null } | null>(null);
+  const isDark = useDarkMode();
 
   // every pick of a repository is a read of its own: only the latest one may land. Compared by
   // read, not by repository name — after A → B → A the first read of A is as stale as B's.
@@ -50,6 +74,7 @@ export function NewIssueDialog({
     const seq = ++readSeq.current;
     setLabels([]);
     setOpts(null);
+    setPicking(false);
     if (repo)
       api()
         .repoOptions(repo)
@@ -58,7 +83,12 @@ export function NewIssueDialog({
         });
   }, [repo]);
   const read: MilestoneRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', milestones: opts.milestones };
-  const preview = group ? previewCreate(group.preset, data.projects, repo, read) : null;
+  // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
+  const ticked = allProjects.filter((p) => projects.includes(p.key));
+  const preview = group ? previewCreate(group.preset, ticked, repo, read) : null;
+
+  const colorOf = (name: string) => opts?.labels.find((l) => l.name === name)?.color ?? '';
+  const toggleLabel = (name: string) => setLabels((ls) => (ls.includes(name) ? ls.filter((x) => x !== name) : [...ls, name]));
 
   return (
     <ConfirmDialog
@@ -69,9 +99,9 @@ export function NewIssueDialog({
       dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
       onConfirm={async () => {
-        setBusy(true);
         if (preview && !preview.plan) return;
-        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, ...(preview?.plan ? { plan: preview.plan } : {}) });
+        setBusy(true);
+        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), ...(preview?.plan ? { plan: preview.plan } : {}) });
         setBusy(false);
         if (r.ok && r.createdKey) {
           onCreated(r.createdKey);
@@ -108,30 +138,85 @@ export function NewIssueDialog({
         </label>
         <label>
           正文
-          <textarea data-testid="new-issue-body" value={body} onChange={(e) => setBody(e.target.value)} />
+          <textarea
+            data-testid="new-issue-body"
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            onPaste={(e) => {
+              if (!isImageOnlyPaste(e.clipboardData)) return;
+              e.preventDefault();
+              setPasted({ copied: null });
+            }}
+          />
         </label>
+        {pasted && (
+          <PasteImageNotice
+            copied={pasted.copied}
+            webLabel="到 GitHub 网页上继续新建"
+            onWeb={() => {
+              // the web page's new-issue form, filled with what was typed here
+              void api().openExternal(newIssueOnWeb('https://github.com', repo, title, body, labels));
+              setPasted({ copied: null });
+            }}
+            onDismiss={() => setPasted(null)}
+          />
+        )}
         <div>
           标签
-          <div className="labels pick">
-            {!opts && <span className="muted small">读取标签…</span>}
-            {opts?.error && <span className="err small">{opts.error}</span>}
-            {opts?.labels.map((l) => (
-              <label key={l.name} className="chip">
-                <input
-                  type="checkbox"
-                  data-testid="new-issue-label"
-                  data-label={l.name}
-                  checked={labels.includes(l.name)}
-                  onChange={(e) => setLabels(e.target.checked ? [...labels, l.name] : labels.filter((x) => x !== l.name))}
-                />
-                {l.name}
-              </label>
+          <div className="chosen-labels" data-testid="new-issue-labels">
+            {labels.map((n) => (
+              <span key={n} className="label" data-testid="new-issue-label-chip" data-label={n} style={labelStyle(colorOf(n), isDark)}>
+                {n}
+                <button className="label-x" data-testid="new-issue-label-remove" data-label={n} title={`去掉「${n}」`} onClick={() => toggleLabel(n)}>
+                  <Icon name="x" size={10} />
+                </button>
+              </span>
             ))}
+            <span className="picker-anchor">
+              <button className="label-plus" data-testid="new-issue-label-add" disabled={!opts || Boolean(opts.error)} onClick={() => setPicking(!picking)}>
+                {opts ? '+ 加标签' : '读取标签…'}
+              </button>
+              {picking && opts && (
+                <LabelPicker
+                  title="选择标签"
+                  hint={repo}
+                  testid="new-issue-label-picker"
+                  disabled={false}
+                  items={opts.labels.map((l) => ({ name: l.name, color: l.color, checked: labels.includes(l.name) }))}
+                  onToggle={(l) => toggleLabel(l.name)}
+                  onClose={() => setPicking(false)}
+                />
+              )}
+            </span>
+            {opts?.error && <span className="err small">{opts.error}</span>}
           </div>
         </div>
-        <p className="small muted" data-testid="new-issue-projects">
-          {data.projects.length ? `建好后自动加入当前勾选的看板：${data.projects.map((p) => `「${p.title}」`).join('、')}` : '当前没有勾选看板，建好后不加入任何看板'}
-        </p>
+        <div data-testid="new-issue-projects">
+          建好后加入这些看板
+          {allProjects.length ? (
+            <div className="project-picks">
+              {allProjects.map((p) => (
+                <label key={p.key}>
+                  <input
+                    type="checkbox"
+                    data-testid="new-issue-project"
+                    data-project={p.key}
+                    checked={projects.includes(p.key)}
+                    disabled={!p.viewerCanUpdate}
+                    onChange={(e) => setProjects((ps) => (e.target.checked ? [...ps, p.key] : ps.filter((x) => x !== p.key)))}
+                  />
+                  「{p.title}」
+                  {!p.viewerCanUpdate && <span className="small muted">（这个账号不能修改它）</span>}
+                </label>
+              ))}
+              <span className="small muted" data-testid="new-issue-projects-hint">
+                {projects.length ? `会加入 ${projects.length} 个看板` : '一个都不勾 = 不加入任何看板'}
+              </span>
+            </div>
+          ) : (
+            <p className="small muted">还没有添加看板来源，建好后不加入任何看板</p>
+          )}
+        </div>
         <ResultBanner note={note} testid="new-issue-result" />
       </div>
     </ConfirmDialog>

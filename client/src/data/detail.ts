@@ -165,6 +165,14 @@ export function taskEntry(html: string, source: unknown, canUpdate: unknown): Ta
   return { clickable: true, source };
 }
 
+/**
+ * GitHub#205: a body / comment can be edited only with its source read and GitHub's
+ * "you may change it" saying yes; anything not read is not editable.
+ */
+export function editSource(source: unknown, canUpdate: unknown): { editSource: string } | Record<string, never> {
+  return typeof source === 'string' && canUpdate === true ? { editSource: source } : {};
+}
+
 /** Boxes in a review or a line comment stay read-only: ticking them is left to the web page. */
 const REVIEW_TASKS: TaskEntry = { clickable: false, why: '评审意见里的勾选框只能在网页上勾' };
 
@@ -180,7 +188,7 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
   const out: TimelineEntry[] = [];
   for (const c of raw.comments) {
     const tasks = taskEntry(c.bodyHTML, c.body, c.viewerCanUpdate);
-    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML, ...(tasks ? { tasks } : {}) });
+    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(c.body, c.viewerCanUpdate) });
   }
   for (const r of raw.reviews) {
     if (r.state === 'PENDING') continue;
@@ -209,7 +217,7 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
   }
   out.sort(desc);
   const tasks = taskEntry(it.bodyHTML, it.body, it.viewerCanUpdate);
-  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML, ...(tasks ? { tasks } : {}) });
+  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(it.body, it.viewerCanUpdate) });
   return out;
 }
 

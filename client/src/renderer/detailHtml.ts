@@ -12,7 +12,7 @@
 // frame's own (TIMELINE_CSP). The reply preview frame runs no script at all.
 
 import type { ItemDetail, TimelineEntry } from '../shared/actions';
-import { AVATAR_HOST, avatarInitial, avatarUrl } from '../shared/avatar';
+import { AVATAR_HOST, GITHUB_IMAGE_HOSTS, avatarInitial, avatarUrl } from '../shared/avatar';
 import { annotateTaskBoxes } from '../data/taskList';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from './frameScript';
 
@@ -23,12 +23,12 @@ export const TIMELINE_SANDBOX = 'allow-scripts allow-popups allow-popups-to-esca
 
 /**
  * The app talks to github.com / api.github.com only (#135): images are loaded
- * from those two hosts, plus GitHub's avatar host for people's avatars
- * (#155, the maintainer's choice), and nowhere else — GitHub's image proxy and
- * attachment hosts (camo / user-images *.githubusercontent.com) stay blocked.
- * A blocked image shows its alt text; the entry says how many were not loaded.
+ * from those two hosts, GitHub's avatar host for people's avatars (#155) and
+ * GitHub's own attachment / image-proxy hosts (GitHub#205) — the maintainer's
+ * choices — and nowhere else. A blocked image shows its alt text; the entry
+ * says how many were not loaded.
  */
-export const IMAGE_HOSTS = ['https://github.com', 'https://api.github.com', AVATAR_HOST];
+export const IMAGE_HOSTS = ['https://github.com', 'https://api.github.com', AVATAR_HOST, ...GITHUB_IMAGE_HOSTS];
 
 export const FRAME_CSP = `default-src 'none'; img-src ${IMAGE_HOSTS.join(' ')} data:; media-src 'none'; style-src 'unsafe-inline'; font-src 'none'; script-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`;
 
@@ -117,9 +117,14 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean): string {
   const excerpt = plainExcerpt(e.bodyHtml) || (e.lineComments?.length ? `${e.lineComments.length} 条逐行评论` : '（没有文字）');
   const link = e.url ? ` · <a href="${escapeHtml(e.url)}">在网页上看</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
-  const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片存放在 GitHub 的图片代理或附件地址，客户端不加载这些地址；点「在网页上看」查看</div>` : '';
+  const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片不在 GitHub 的地址上，客户端不加载；点「在网页上看」查看</div>` : '';
   const tasks = bodyWithTasks(e, canTick);
-  const body = (e.bodyHtml.trim() ? `<div class="md">${tasks.html}</div>` : '') + tasks.note + note;
+  // GitHub#205: only what GitHub says this account may change, only while a change can be sent
+  const edit =
+    e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
+      ? `<div class="tools"><button type="button" class="edit" data-edit${canTick ? '' : ' disabled title="离线或有修改在途时不能编辑"'}>编辑</button></div>`
+      : '';
+  const body = (e.bodyHtml.trim() ? `<div class="md">${tasks.html}</div>` : '') + tasks.note + note + edit;
   let lines = '';
   if (e.lineComments?.length) {
     lines =
@@ -210,6 +215,9 @@ a{color:${accent}}
 .md .task-list-item-checkbox{margin:0 .3em .2em -1.5em;vertical-align:middle}
 .md .task-list-item-checkbox:not([disabled]){cursor:pointer}
 .tasknote{margin:0 12px 8px;color:${muted};font-size:12px}
+.tools{margin:0 12px 8px;text-align:right}
+.tools .edit{font:12px inherit;color:${accent};background:none;border:1px solid ${line};border-radius:6px;padding:1px 10px;cursor:pointer}
+.tools .edit[disabled]{color:${muted};cursor:default}
 </style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}">
 ${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick)).join('\n')}
 <script>${FRAME_SCRIPT}</script>

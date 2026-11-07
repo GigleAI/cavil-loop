@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { HarnessBackend } from '../support/harness';
 import { MemoryStore } from '../support/credentials';
 import { tempDir } from './helpers';
+import { GITHUB_IMAGE_HOSTS } from '../../src/shared/avatar';
 
 describe('GitHub client boundaries', () => {
   it('parses Link headers', () => {
@@ -56,6 +57,18 @@ describe('platform layer (back end)', () => {
     expect(await isAllowedExternal('http://127.0.0.1:9/web/login/device', prod)).toBe(false);
     expect(await isAllowedExternal('javascript:alert(1)', prod)).toBe(false);
     expect(await isAllowedExternal('http://127.0.0.1:9/web/x', { api: 'http://127.0.0.1:9/api', web: 'http://127.0.0.1:9/web' })).toBe(true);
+  });
+
+  it('GitHub#205: an image in the discussion (GitHub\'s own image hosts, the same list the pages load from) opens in the browser; look-alikes do not', async () => {
+    const prod = { api: 'https://api.github.com', web: 'https://github.com' };
+    for (const h of GITHUB_IMAGE_HOSTS) {
+      expect(await isAllowedExternal(`${h}/307601/a.png?jwt=x`, prod)).toBe(true);
+      expect(await isAllowedExternal(`${h.replace('https:', 'http:')}/a.png`, prod)).toBe(false);
+      expect(await isAllowedExternal(`${h}.evil.example/a.png`, prod)).toBe(false);
+    }
+    expect(await isAllowedExternal('https://raw.githubusercontent.com/o/r/main/a.png', prod)).toBe(false);
+    expect(await isAllowedExternal('https://avatars.githubusercontent.com/u/1', prod)).toBe(false);
+    expect(await isAllowedExternal('https://github-production-user-asset-6210df.s3.amazonaws.com/1/a.png', prod)).toBe(false);
   });
 
   it('a link the window asks to open that is not GitHub: refused, nothing opened', async () => {
