@@ -205,6 +205,8 @@ export interface TableSettings {
   slice: string | null;
   /** sub-issues indented under their parent */
   hierarchy: boolean;
+  /** GitHub#205: column widths dragged by hand, CSS px; a column not in here has its default width */
+  widths: Partial<Record<TableColumn, number>>;
 }
 
 /** What the last import of a saved web view brought in, and what it could not. */
@@ -216,15 +218,17 @@ export interface ImportInfo {
   notes: string[];
 }
 
-/** The two labels "hand back to the agent" swaps (follows the daemon's label names; editable in Settings). */
+/** The labels the "hand to the agent" buttons use (follows the daemon's label names; editable in Settings). */
 export interface HandBackLabels {
   /** removed: the item waits for a human */
   human: string;
   /** added: the daemon picks it up again */
   agent: string;
+  /** added by "autopilot (merge automatically)" before handing over (GitHub#205); '' = no such button */
+  autopilot: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot' };
 
 export interface ViewSettings {
   mode: ColumnMode;
@@ -288,8 +292,12 @@ export interface AppState {
   handBack: HandBackLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */
   mergePrefs: MergePrefs;
-  /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed (= the Dock badge) */
+  /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed */
   pendingCount: number;
+  /** those same items, one entry each (GitHub#185: Settings lists them); always as long as `pendingCount` */
+  pendingItems: PendingEntry[];
+  /** of those, the ones not yet seen: became pending while the window was not in front (= the Dock badge, GitHub#185) */
+  unreadCount: number;
   /** launch at login: on / off, null = this platform cannot */
   launchAtLogin: boolean | null;
   /** the system refused the latest notification (e.g. not allowed in System Settings); null = the latest one went out */
@@ -300,7 +308,28 @@ export interface AppState {
   update: UpdateStatus | null;
 }
 
+/**
+ * One item the badge counts, as the settings page lists it (GitHub#185). Kind,
+ * state, close reason and draft mark are kept as read, so its colour and words
+ * come from the same rule as the board card, the table row and the detail badge.
+ */
+export interface PendingEntry {
+  key: string;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  kind: ItemKind;
+  state: ItemState;
+  stateReason: IssueStateReason | null;
+  isDraft: boolean | null;
+  updatedAt: string;
+}
+
 export interface BoardData {
   items: Item[];
+  /** the Projects of the sources ticked in the view */
   projects: ProjectMeta[];
+  /** GitHub#205: every configured Project, ticked or not (what a new issue may join) */
+  allProjects?: ProjectMeta[];
 }

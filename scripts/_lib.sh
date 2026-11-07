@@ -3104,12 +3104,17 @@ requester_bot_item_origin() {
 # 指令）一律当配置不完整；再转义 \ 和 "。
 # -q 必须是第一个参数：不读用户的 ~/.curlrc（代理等设置会让同一份配置在不同机器表现不同）。
 # 不跟随跳转（会把密钥头带去另一个地址），只许 http / https，10 秒上限，不重试。
+# 上限可用环境变量 REQUESTER_BOT_WEBHOOK_TIMEOUT 改（GitHub#211，测试用来缩短真实等待）：只认
+# 1–600 的正整数，未设置、空、0、负数、非数字、带前导 0 等一律按 10 秒。
 # --globoff：地址按字面发。curl 默认把 [1-2]、{a,b} 当范围展开成多个请求（写在配置文本里
 # 也照样展开），一次叫醒就变成多次 POST，状态码还会拼成 200200 被误记成「连接失败」。
 REQUESTER_BOT_WEBHOOK_RESULT=""
 requester_bot_webhook_notify() {
-    local num="$1" kind="$2" mode go body conf code rc
+    local num="$1" kind="$2" mode go body conf code rc limit=10
     REQUESTER_BOT_WEBHOOK_RESULT=""
+    if [[ "${REQUESTER_BOT_WEBHOOK_TIMEOUT:-}" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$REQUESTER_BOT_WEBHOOK_TIMEOUT" -le 600 ]; then
+        limit="$REQUESTER_BOT_WEBHOOK_TIMEOUT"
+    fi
     [ -n "${REQUESTER_BOT_WEBHOOK_URL:-}" ] || return 0
     if [ -z "${REQUESTER_BOT_WEBHOOK_KEY_HEADER:-}" ] || [ -z "${REQUESTER_BOT_WEBHOOK_KEY:-}" ] \
        || ! [[ "$REQUESTER_BOT_WEBHOOK_KEY_HEADER" =~ ^[A-Za-z0-9-]+$ ]] \
@@ -3139,7 +3144,7 @@ requester_bot_webhook_notify() {
     rc=0
     code=$(printf '%s\n' "$conf" | curl -q --config - --globoff -s -o /dev/null -w '%{http_code}' \
         -X POST -H 'Content-Type: application/json' --data-binary "$body" \
-        --proto =http,https --max-redirs 0 --max-time 10 2>/dev/null) || rc=$?
+        --proto =http,https --max-redirs 0 --max-time "$limit" 2>/dev/null) || rc=$?
     if [ "$rc" -eq 0 ] && [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
         REQUESTER_BOT_WEBHOOK_RESULT="已通知 webhook（HTTP $code）"
     elif [ "$rc" -eq 0 ] && [[ "$code" =~ ^[1-9][0-9][0-9]$ ]]; then
@@ -5753,23 +5758,39 @@ autopilot_requester_bot_section() {
     printf '%s\n' "$text"
 }
 
-# 把经验文件拼进派工说明时用（GitHub#152）：可选的「## 目录经验」段（只在某块代码会踩的坑）
-# 经项目自己的各层目录说明到达 agent，不进派工说明。从这一行切到下一个「## 」标题或文件末尾，
-# 再去掉切口留下的末尾空行。
+# 把经验文件拼进派工说明时用。两件事，规则都按行首认、不看内容：
+# ① 可选的「## 目录经验」段（只在某块代码会踩的坑，GitHub#152）经项目自己的各层目录说明到达
+#    agent，不进派工说明。从这一行切到下一个「## 」标题或文件末尾。
+# ② 计次格式的经验文件（有 `<!-- next-id: N -->` 这一行，GitHub#208）只带要照做的部分：去掉整段
+#    「## 观察中」，每条经验去掉「这样做是对的」举例和「Seen」出现记录；硬规则、待确认的编号 /
+#    规则 / 适用 / 为什么都留着（自审和复审逐条核对要用）。末尾加一句说明完整版在哪。
+#    没有这一行的文件（工具自带的通用经验、项目手写的自由文本）不做这一步：普通文本里恰好以
+#    「- Seen」开头的行不能被误删。
+# 切完再去掉切口留下的末尾空行。
 # 换行按 python 读文本的规矩认（复盘程序就是这么读、这么判断有没有这一段的）：\r\n、单独的 \r
 # 都算换行。否则 Windows 换行的文件 python 认出了这一段、这里却认不出，整段原样进了派工说明。
-# 没有这个标题的文件原样 cat、逐字节不变——awk 会给缺末尾换行的文件补一个，所以不能一律走 awk。
+# 两件事都不用做的文件原样 cat、逐字节不变——awk 会给缺末尾换行的文件补一个，所以不能一律走 awk。
 # 输出（按同样的换行规矩读回）与 scripts/retrospective_lessons.py:prompt_text 相同
 # （tests/retrospective-directory-lessons.test.sh 用同一批输入对拍两边）。
+LESSONS_PROMPT_NOTE='> 派工说明里只带上面这些：硬规则和待确认经验的编号、规则、适用、为什么。「观察中」的经验，以及每条的「这样做是对的」举例和 Seen 出现记录，只在本项目仓库的经验文件 `lessons.md` 里（项目 prompts 目录下），需要时自己去读。'
 _lessons_lf() { sed 's/\r$//' "$1" | tr '\r' '\n'; }
 lessons_for_prompt() {   # <经验文件>
+    local counted=0
     # 进程替换而不是管道：grep -q 找到就退出，sed 可能吃 SIGPIPE，pipefail 下整条管道会算失败、判反
-    if ! grep -qx '## 目录经验' < <(_lessons_lf "$1"); then cat "$1"; return; fi
-    _lessons_lf "$1" | awk '/^## 目录经验$/ { skip = 1; next }
-         /^## / { skip = 0 }
+    if grep -qxE '<!-- next-id: [0-9]+ -->' < <(_lessons_lf "$1"); then
+        counted=1
+    elif ! grep -qx '## 目录经验' < <(_lessons_lf "$1"); then
+        cat "$1"; return
+    fi
+    _lessons_lf "$1" | awk -v counted="$counted" -v note="$LESSONS_PROMPT_NOTE" '
+         /^## / { sec = substr($0, 4); entry = 0
+                  skip = (sec == "目录经验") || (counted && sec == "观察中") }
          skip { next }
+         /^### L[0-9]+$/ { entry = 1 }
+         counted && entry && /^- (这样做是对的：|Seen [0-9]+×:)/ { next }
          /^$/ { blank++; next }
-         { while (blank > 0) { print ""; blank-- } print }'
+         { while (blank > 0) { print ""; blank-- } print }
+         END { if (counted) { print ""; print note } }'
 }
 
 compose_prompt_template() {

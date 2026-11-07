@@ -59,7 +59,7 @@ export interface RunningApp {
 
 /** What the window asked of the shell's desktop side, and the events the test sends it. */
 export interface FakeDesktop {
-  /** `{ op: 'notify', alert, result }` / `{ op: 'badge', count }` / `{ op: 'loginItem', on }`, in order */
+  /** `{ op: 'notify', alert, result }` / `{ op: 'badge', count }` / `{ op: 'loginItem', on }` / `{ op: 'clearNotifications' }`, in order */
   records: any[];
   /** answer every notification with this refusal (null = shown) */
   refuse: string | null;
@@ -67,7 +67,7 @@ export interface FakeDesktop {
   loginItem: boolean | null;
   /** the updater as the "shell" has it (GitHub#184; null = this build does not update itself) */
   update: any | null;
-  push(ev: { kind: 'tick' } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any }): void;
+  push(ev: { kind: 'tick' } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any } | { kind: 'active' } | { kind: 'inactive' }): void;
   /** the shell changed the updater's status: the window hears it the way it hears the real one */
   setUpdate(status: any): void;
 }
@@ -175,7 +175,7 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
           ok = await desktop.next();
         } else if (op === 'updateStatus') {
           ok = desktop.update;
-        } else if (op === 'checkUpdate' || op === 'restartToUpdate') {
+        } else if (op === 'checkUpdate' || op === 'restartToUpdate' || op === 'clearNotifications') {
           desktop.records.push({ op });
         } else if (op === 'setAutoUpdate') {
           desktop.records.push({ op, on: args.on });
@@ -211,7 +211,7 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
     const url = route.request().url();
     if (url.startsWith(`${origin}/`)) return route.continue();
     appendFileSync(env.requests, `request ${url}\n`);
-    if (/^https:\/\/((api\.)?github\.com|avatars\.githubusercontent\.com)\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
+    if (/^https:\/\/((api\.)?github\.com|(avatars|private-user-images|user-images|camo)\.githubusercontent\.com)\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
     return route.abort();
   });
   // `<a target="_blank">` in the detail view: the app's shell never opens a window for it,

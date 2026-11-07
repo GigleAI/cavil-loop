@@ -23,21 +23,54 @@ export type WriteAction =
   | { kind: 'comment'; key: string; body: string }
   /** remove the "waiting for a human" label, add the "agent, go" one (names from Settings) */
   | { kind: 'handBack'; key: string }
+  /** GitHub#205: add the autopilot label (name from Settings), then hand to the agent as above */
+  | { kind: 'autopilot'; key: string }
   /** headOid: the commit the user saw; GitHub refuses the merge if the PR moved since */
   | { kind: 'merge'; key: string; method: MergeMethod; headOid: string }
   | { kind: 'closePr'; key: string; comment: string }
   /** close an issue with GitHub's close reason; the comment (optional) is sent only once the close went through */
   | { kind: 'closeIssue'; key: string; reason: IssueCloseReason; comment: string }
-  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[] }
+  /**
+   * `projects`: the Project sources (keys) the new issue joins, ticked one by one in the dialog (GitHub#205).
+   * `plan` (GitHub#214, the "+" of a table group): exactly what the dialog showed it would
+   * set — never re-derived when writing, only checked again; absent = the plain new issue
+   */
+  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan }
   /**
    * tick / untick one task-list box of a body or comment (GitHub#193): `entryId` is the
    * body's / comment's node id, `index` the box's number in it (document order),
    * `seenSource` the markdown source the click was made on — nothing is written
    * unless GitHub still holds exactly that
    */
-  | { kind: 'toggleTask'; key: string; entryId: string; index: number; checked: boolean; seenSource: string };
+  | { kind: 'toggleTask'; key: string; entryId: string; index: number; checked: boolean; seenSource: string }
+  /**
+   * GitHub#205: replace the whole markdown of a body or comment (`entryId`, its node id) with
+   * `body` — written only while GitHub still holds `seenSource`, the text the edit started from
+   */
+  | { kind: 'editEntry'; key: string; entryId: string; body: string; seenSource: string };
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+/**
+ * The value of one table group (GitHub#214): what a new issue made from that
+ * group's "+" carries. `none` = a "no iteration / no status / no milestone" group.
+ */
+export type GroupPreset =
+  | { by: 'iteration'; title: string; startDate: string }
+  | { by: 'status'; status: string }
+  | { by: 'milestone'; title: string }
+  | { by: 'repo'; repo: string }
+  | { by: 'none' };
+
+/**
+ * What a new issue from a group's "+" sets, as confirmed in the dialog (GitHub#214).
+ * `milestone: null` = explicitly none. `projects` = every Project the issue joins
+ * (the ones ticked when the dialog showed it), each with its iteration / status or null = none.
+ */
+export interface CreatePlan {
+  milestone: { number: number; title: string } | null;
+  projects: { projectKey: string; iterationId: string | null; status: string | null }[];
+}
 
 /** The close reasons the client offers (GitHub#180). "Duplicate" needs the issue it duplicates: web only. */
 export type IssueCloseReason = 'completed' | 'not_planned';
@@ -83,6 +116,8 @@ export interface TimelineEntry {
   reviewState?: string;
   /** the task-list boxes in bodyHtml (GitHub#193); absent when it has none */
   tasks?: TaskEntry;
+  /** GitHub#205: the markdown source, present only when GitHub says this account may change it (body / comment) */
+  editSource?: string;
   /** review only: its line comments, newest first */
   lineComments?: { id: string; url: string; author: string | null; at: string; path: string; line: number | null; bodyHtml: string }[];
 }

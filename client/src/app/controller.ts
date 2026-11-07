@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type HandBackLabels, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type HandBackLabels, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
 import type { DetailResult, RepoOptions, WriteAction, WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -192,6 +192,8 @@ export class Controller {
       handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       pendingCount: 0,
+      pendingItems: [],
+      unreadCount: 0,
       launchAtLogin: null,
       notifyProblem: null,
       focus: null,
@@ -209,7 +211,12 @@ export class Controller {
     const configured = this.state.sources.map((s) => s.key);
     const snaps = [...this.snapshots.values()].filter((s) => configured.includes(s.sourceKey));
     const selected = this.state.view.selected?.filter((k) => configured.includes(k)) ?? null;
-    return mergeSnapshots(snaps, selected);
+    return { ...mergeSnapshots(snaps, selected), allProjects: this.allProjects() };
+  }
+
+  /** Every configured Project, in the order the sources were added (GitHub#205: what a new issue may join). */
+  private allProjects() {
+    return this.state.sources.map((s) => this.snapshots.get(s.key)?.project).filter((p): p is NonNullable<typeof p> => Boolean(p));
   }
 
   onChange(cb: (s: AppState) => void): () => void {
@@ -429,7 +436,8 @@ export class Controller {
   private dropMirror(): void {
     this.snapshots.clear();
     this.pending.reset();
-    this.state = { ...this.state, pendingCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.unread.clear();
+    this.state = { ...this.state, pendingCount: 0, pendingItems: [], unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
     // what was queued for the shell belonged to that account: none of it goes out any more, and the
     // cleared badge does not wait behind a notification the system is still answering
     this.desktopEra++;
@@ -451,6 +459,10 @@ export class Controller {
    * dropped before it reaches the shell, and the answer to one already handed over is ignored.
    */
   private desktopEra = 0;
+  /** items not yet seen (GitHub#185): the Dock badge */
+  private unread = new Set<string>();
+  /** the window is in front (the shell says so); while it is, new items are seen as they come */
+  private active = false;
   /** bumps when the "waiting for a human" label is renamed: a recount is silent, nothing queued before it goes out */
   private labelVersion = 0;
 
@@ -474,9 +486,38 @@ export class Controller {
     return this.desktopCalls.then(() => undefined);
   }
 
+  /**
+   * The count and the list the settings page shows, from the tracker's one
+   * de-duplicated set at the same moment (GitHub#185): every place that updates
+   * the count updates the list with it.
+   */
+  private pendingNow(): Pick<AppState, 'pendingCount' | 'pendingItems' | 'unreadCount'> {
+    return { pendingCount: this.pending.count(), pendingItems: this.pending.list(), unreadCount: this.unreadNow() };
+  }
+
+  /**
+   * The unread items (GitHub#185, the Dock badge): what became pending while the window was not
+   * in front, until the user switches to it. Only items still pending count — one whose label
+   * went away meanwhile needs nobody. Nothing is forgotten here: only switching to the window
+   * reads them (a label renamed and renamed back has not been seen).
+   */
+  private unreadNow(): number {
+    let n = 0;
+    for (const e of this.pending.list()) if (this.unread.has(e.key)) n++;
+    return n;
+  }
+
+  /** The user switched to the window: everything is read — the badge and the delivered notifications go. */
+  private markRead(): void {
+    this.unread.clear();
+    this.set({ unreadCount: 0 });
+    this.badge();
+    this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
+  }
+
   private badge(): void {
     // the count as it is when the call goes out; a badge that cannot be set must not break a sync round
-    this.toDesktop((d) => d.setBadge(this.pending.count()))?.catch(() => {});
+    this.toDesktop((d) => d.setBadge(this.unreadNow()))?.catch(() => {});
   }
 
   /**
@@ -535,6 +576,8 @@ export class Controller {
   /** Feed the snapshots read completely this round; notify what became pending, summarise first reads. */
   private observePending(fresh: SourceSnapshot[]): void {
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
+    // unread (the badge): what arrived while the user was not looking at the window
+    if (!this.active) for (const k of [...change.appeared.map((i) => i.key), ...change.brought]) this.unread.add(k);
     for (const it of change.appeared) {
       const ctx = this.noticeContext(this.pending.carriers(it.key));
       const alert: Alert = { kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) };
@@ -547,7 +590,7 @@ export class Controller {
       this.notify(() => (this.summaryStillHolds(ctx) ? { kind: 'summary', ...summaryAlertText({ ...summary, ...this.pending.totals() }) } : null));
     }
     this.badge();
-    this.state = { ...this.state, pendingCount: this.pending.count() };
+    this.state = { ...this.state, ...this.pendingNow() };
   }
 
   /**
@@ -643,8 +686,23 @@ export class Controller {
     this.eventsRunning = false;
   }
 
+  /**
+   * A row of the settings page's pending list was clicked (GitHub#185): exactly what a
+   * click on that item's notification does — its detail in the app when the board
+   * has it, otherwise GitHub in the browser. A key no longer pending does nothing.
+   */
+  openPending(key: string): void {
+    const entry = this.state.pendingItems.find((e) => e.key === key);
+    if (entry) this.onDesktopEvent({ kind: 'open', key: entry.key, url: entry.url });
+  }
+
   /** One event from the shell (also what the tests feed). */
   onDesktopEvent(ev: DesktopEvent): void {
+    if (ev.kind === 'active' || ev.kind === 'inactive') {
+      this.active = ev.kind === 'active';
+      if (this.active) this.markRead();
+      return;
+    }
     if (ev.kind === 'tick') {
       void this.syncNow();
       return;
@@ -744,7 +802,7 @@ export class Controller {
     // its own items stop counting, silently
     this.pending.prune(sources.map((s) => s.key));
     this.badge();
-    this.state = { ...this.state, pendingCount: this.pending.count() };
+    this.state = { ...this.state, ...this.pendingNow() };
     const view = this.state.view.selected ? { ...this.state.view, selected: this.state.view.selected.filter((k) => k !== key) } : this.state.view;
     this.cache.setSetting('view', view);
     this.cache.setSetting(PENDING_IMPORTS, this.pendingImports().filter((p) => p.sourceKey !== key));
@@ -969,6 +1027,8 @@ export class Controller {
     const next: HandBackLabels = {
       human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,
       agent: (patch.agent ?? this.state.handBack.agent).trim() || DEFAULT_HAND_BACK.agent,
+      // empty is a choice here: no autopilot button (a project without autopilot)
+      autopilot: typeof patch.autopilot === 'string' ? patch.autopilot.trim() : this.state.handBack.autopilot,
     };
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently
@@ -977,7 +1037,7 @@ export class Controller {
       this.labelVersion++;
       this.pending.relabel(next.human, this.snapshots);
       this.badge();
-      this.state = { ...this.state, pendingCount: this.pending.count() };
+      this.state = { ...this.state, ...this.pendingNow() };
     }
     this.set({ handBack: next });
   }
@@ -1047,9 +1107,9 @@ export class Controller {
    * item is read again from GitHub at once and the cache takes that copy.
    */
   async act(action: WriteAction): Promise<WriteResult> {
-    if (action.kind !== 'toggleTask') return this.actNow(action);
+    if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
-    if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次勾选还没完成，等它完成再点', warning: null };
+    if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
     this.tasksInFlight.add(action.entryId);
     try {
       return await this.actNow(action);
@@ -1063,11 +1123,15 @@ export class Controller {
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
     const item = 'key' in action ? (data.items.find((i) => i.key === action.key) ?? null) : null;
-    // the board data only holds the sources ticked in the view: a new issue joins exactly those Projects
-    const createInProjects = data.projects;
+    // GitHub#205: a new issue joins exactly the Projects ticked in the dialog; one the app does not know is refused before sending
+    const known = this.allProjects();
+    const wanted = action.kind === 'createIssue' ? (Array.isArray(action.projects) ? action.projects : null) : [];
+    if (wanted === null) return { ok: false, error: '不知道要加入哪些看板，没有新建', warning: null };
+    const createInProjects = wanted.map((k) => known.find((p) => p.key === k));
+    if (createInProjects.some((p) => !p)) return { ok: false, error: '勾选的看板不在当前来源里（可能刚被删掉），没有新建；请重新打开对话框', warning: null };
     let outcome;
     try {
-      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects, cached: this.cachedItems() });
+      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: createInProjects as ProjectMeta[], cached: this.cachedItems() });
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       return { ok: false, error: explainError(e, action.kind), warning: null };

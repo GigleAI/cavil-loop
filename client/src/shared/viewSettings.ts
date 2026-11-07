@@ -29,7 +29,19 @@ export const DEFAULT_TABLE: TableSettings = {
   sliceByRepo: NOT_IN_API.sliceByRepo,
   slice: null,
   hierarchy: NOT_IN_API.hierarchy,
+  widths: {},
 };
+
+/** GitHub#205: the narrowest / widest a table column can be dragged to. */
+export const COLUMN_MIN_WIDTH = 60;
+export const COLUMN_MAX_WIDTH = 2000;
+
+export function validWidths(v: unknown): v is Partial<Record<TableColumn, number>> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  return Object.entries(v).every(
+    ([k, w]) => TABLE_COLUMNS.includes(k as TableColumn) && typeof w === 'number' && Number.isFinite(w) && w >= COLUMN_MIN_WIDTH && w <= COLUMN_MAX_WIDTH,
+  );
+}
 
 export const DEFAULT_VIEW: ViewSettings = {
   mode: 'iteration',
@@ -70,7 +82,8 @@ function validTable(t: unknown): t is TableSettings {
     new Set(x.columns).size === x.columns.length &&
     typeof x.sliceByRepo === 'boolean' &&
     (x.slice === null || typeof x.slice === 'string') &&
-    typeof x.hierarchy === 'boolean'
+    typeof x.hierarchy === 'boolean' &&
+    validWidths(x.widths)
   );
 }
 
@@ -104,6 +117,7 @@ export function normalizeView(raw: unknown): ViewSettings {
     sliceByRepo: tpick('sliceByRepo', (v) => typeof v === 'boolean'),
     slice: tpick('slice', (v) => v === null || typeof v === 'string'),
     hierarchy: tpick('hierarchy', (v) => typeof v === 'boolean'),
+    widths: tpick('widths', validWidths),
   };
   return {
     mode: pick('mode', (v) => MODES.includes(v)),

@@ -21,6 +21,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/compat.sh
+source "$TEST_DIR/lib/compat.sh"
 TMP=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "TMP=$TMP" || rm -rf "$TMP"' EXIT
 
@@ -141,10 +143,15 @@ pr_flip()       { grep -m1 -oE 'flip_label <P> --add [^ `]+' "$1" | awk '{print 
 overlay_flip()  { sed -n '/^# 本项目的附加要求/,$p' "$1" | grep -m1 -oE "flip_label $2 --add [^ ]+ --remove doing/agent" | awk '{print $4}'; }
 
 run_check() { # $1 = 被测的 scripts+prompts 根；打印 PASS/FAIL <检查名> :: 细节
-    local R="$1" O="$TMP/out" o n
+    local R="$1" O="$TMP/out" o n same=0
     mkdir -p "$O"
+    # 被测的 scripts/ 与改动前逐字节相同（prompts/ 两边本来就是同一份）：对拍只能相等，不跑旧的那一遍
+    # （tests/lib/compat.sh；这里跑在管道的子 shell 里，计数交给 report 记）
+    if compat_same "$TMP/old" "$R" scripts prompts; then same=1; echo "COMPAT_SKIP 四种开关组合 + 项目追加要求下的提示词与改动前"
+    else echo "COMPAT_RAN"; fi
     # 改动前的版本（同一套项目和配置）作对照
     for v in off-noreview:"" off-review:"pending/review" on-noreview:"" ; do
+        [ "$same" = 0 ] || break
         n="${v%%:*}"; [ -d "$O/old-$n" ] || render "$TMP/old" "$PLAIN" "${v#*:}" "$( [ "${n%%-*}" = on ] && echo true || echo false )" "$O/old-$n"
     done
 
@@ -154,6 +161,7 @@ run_check() { # $1 = 被测的 scripts+prompts 根；打印 PASS/FAIL <检查名
     for pair in "a:off-noreview:没配复审、没写开关" "b:off-review:开了复审关卡、没写开关" \
                 "d:off-review:开了复审关卡、开关写 false" "c:on-noreview:开关开着但没配复审标签"; do
         IFS=: read -r cur ref what <<<"$pair"
+        [ "$same" = 0 ] || continue
         for k in new-issue issue-comment; do
             if [ ! -s "$O/$cur/$k.md" ] || [ ! -s "$O/old-$ref/$k.md" ]; then echo "FAIL same_${cur}_$k :: 没写出提示词"; continue; fi
             if cmp -s "$O/$cur/$k.md" "$O/old-$ref/$k.md"; then echo "PASS same_${cur}_$k :: $what：$k 提示词和改动前逐字节一致"
@@ -198,6 +206,7 @@ run_check() { # $1 = 被测的 scripts+prompts 根；打印 PASS/FAIL <检查名
             || echo "FAIL tutor_revise_$sw :: 追加要求写了方案交复审、开关=$sw：修订版最后生效的是 [$o]"
     done
     # 追加要求在开关关着时，和改动前拼出来的也逐字节一致
+    [ "$same" = 0 ] || return 0
     [ -d "$O/old-tutor" ] || render "$TMP/old" "$TUTOR" "pending/review" false "$O/old-tutor"
     for k in new-issue issue-comment; do
         if [ -s "$O/t-false/$k.md" ] && cmp -s "$O/t-false/$k.md" "$O/old-tutor/$k.md"; then
@@ -208,6 +217,8 @@ run_check() { # $1 = 被测的 scripts+prompts 根；打印 PASS/FAIL <检查名
 
 report() { while IFS= read -r l; do
     case "$l" in
+        COMPAT_SKIP\ *) COMPAT_SKIPPED=$((COMPAT_SKIPPED + 1)); echo "  ⏭ 同版本，对比已跳过：${l#COMPAT_SKIP }" ;;
+        COMPAT_RAN) COMPAT_RAN=$((COMPAT_RAN + 1)) ;;
         PASS\ *) n="${l#PASS }"; ok "${n#* :: }" ;;
         FAIL\ *) n="${l#FAIL }"; bad "${n%% ::*}" "${n#* :: }" ;;
     esac
@@ -256,5 +267,6 @@ neg "开关关着时连追加要求里的交复审也变成交人" scripts/_lib.
 neg "开关不认 true" scripts/_lib.sh '    true|1|yes|on)' '    1|yes|on)' on_new
 
 mutation_summary "$0"
+compat_summary
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

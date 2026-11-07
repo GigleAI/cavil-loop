@@ -210,7 +210,7 @@ describe('nothing is written on a guess', () => {
     const first = c.act({ kind: 'toggleTask', key: K(138), entryId: 'IC_q1', index: 0, checked: true, seenSource: seen(e) });
     await expect.poll(() => sourceReads()).toBe(1);
     const second = await c.act({ kind: 'toggleTask', key: K(138), entryId: 'IC_q1', index: 1, checked: true, seenSource: seen(e) });
-    expect(second).toEqual({ ok: false, error: '这一条上一次勾选还没完成，等它完成再点', warning: null });
+    expect(second).toEqual({ ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null });
     release();
     expect((await first).ok).toBe(true);
     expect(sourceReads()).toBe(1);

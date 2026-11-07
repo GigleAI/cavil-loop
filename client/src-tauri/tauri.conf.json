@@ -14,9 +14,9 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self' 'sha256-RD4DYgQi2uzXYjLy4z9EhMMYeP2mRYbYP8GEPIdqmhs='",
+        "script-src": "'self' 'sha256-BNpQXqhF68GpMl4gzToZYbHFqOlFxrj+gIBE9bW2KpU='",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data: https://github.com https://api.github.com https://avatars.githubusercontent.com",
+        "img-src": "'self' data: https://github.com https://api.github.com https://avatars.githubusercontent.com https://private-user-images.githubusercontent.com https://user-images.githubusercontent.com https://camo.githubusercontent.com",
         "connect-src": "ipc: http://ipc.localhost",
         "object-src": "'none'",
         "base-uri": "'none'",

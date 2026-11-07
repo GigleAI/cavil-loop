@@ -13,10 +13,15 @@
 //     write; it must still belong to this item, still be changeable by this
 //     account and still hold exactly the source the click was made on — else
 //     nothing is written. Exactly one character of it changes;
+//   - "hand to the agent" / "autopilot" (GitHub#205): labels added before the
+//     "waiting for a human" one is removed; autopilot adds its own label first;
+//   - editing a body / comment (GitHub#205): the same read-before-write as a
+//     task-list box — written only while GitHub still holds the text the edit
+//     started from;
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
-import { ISSUE_CLOSE_REASONS, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type CreatePlan, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -32,6 +37,7 @@ import {
   UPDATE_PR_BODY_MUTATION,
 } from './queries';
 import { flipTask } from './taskList';
+import { pickMilestone } from './groupPreset';
 
 /** The app refused before sending anything to GitHub. */
 export class ActionRefused extends Error {
@@ -138,6 +144,29 @@ async function setField(client: GitHubClient, p: ProjectMeta, itemId: string, fi
   }
 }
 
+/** The iteration / status a Project item is about to get still exist in that Project (as last synced). */
+function checkFieldValues(p: ProjectMeta, iterationId: string | null, status: string | null): void {
+  if (iterationId !== null && !p.iterations.some((i) => i.id === iterationId)) throw new ActionRefused(`看板「${p.title}」没有这个迭代`);
+  if (status !== null && !p.statusOptionIds.some((o) => o.name === status)) throw new ActionRefused(`看板「${p.title}」的状态里没有「${status}」`);
+}
+
+/**
+ * Put `contentId` on Project `p`, then set its iteration and status (null = leave unset).
+ * A refused add throws; a field that could not be set after the add is returned
+ * (the item stays on the Project), null = all set. One path for "add to board" and a new issue.
+ */
+async function joinProject(client: GitHubClient, p: ProjectMeta, contentId: string, iterationId: string | null, status: string | null): Promise<unknown | null> {
+  const r = await client.graphql<{ addProjectV2ItemById: { item: { id: string } } }>(ADD_PROJECT_ITEM_MUTATION, { projectId: p.projectId, contentId });
+  const itemId = r.addProjectV2ItemById.item.id;
+  try {
+    if (iterationId !== null) await setField(client, p, itemId, 'iteration', iterationId);
+    if (status !== null) await setField(client, p, itemId, 'status', status);
+  } catch (e) {
+    return e;
+  }
+  return null;
+}
+
 export async function addLabel(client: GitHubClient, repo: string, number: number, label: string): Promise<void> {
   await client.rest('POST', `${repoPath(repo)}/issues/${number}/labels`, { labels: [label] });
 }
@@ -191,6 +220,9 @@ export async function relatedIssues(client: GitHubClient, pr: Item, cached: Item
   return { items, problem };
 }
 
+/** What an edit is refused with when the body / comment changed on GitHub since the edit started (GitHub#205). */
+export const EDIT_CHANGED = '这一条在你编辑期间被别人改过，没有保存（你的文字还在编辑框里）；请复制留底后重新打开详情再改';
+
 /** What a ticked box is refused with when the body / comment changed since the click was made on it. */
 export const TASK_CHANGED = '这一条刚被改过（和你看到的不一样了），没有修改；已重新读取，请看过后再勾';
 
@@ -222,6 +254,32 @@ async function writeTaskSource(client: GitHubClient, kind: TaskSource['kind'], i
   return (await client.graphql<any>(UPDATE_PR_BODY_MUTATION, { id, body }))?.updatePullRequest?.pullRequest?.body;
 }
 
+/**
+ * Before a new issue from a group's "+" is created (GitHub#214): what the dialog showed must
+ * still hold. The Projects it would join are the ones it showed; each promised iteration /
+ * status still exists there; a promised milestone is read again and must still be that
+ * number with that title. Anything else — including a read that fails — refuses, and nothing
+ * has been written. A "none" in the plan stays none, whatever GitHub holds now.
+ */
+async function checkCreatePlan(client: GitHubClient, repo: string, plan: CreatePlan, joining: ProjectMeta[]): Promise<void> {
+  const shown = plan.projects.map((x) => x.projectKey).sort();
+  const now = joining.map((p) => p.key).sort();
+  if (shown.length !== now.length || shown.some((k, i) => k !== now[i])) throw new ActionRefused('勾选的看板在打开对话框后变了，没有新建；请关掉对话框重开');
+  for (const entry of plan.projects) {
+    const p = joining.find((x) => x.key === entry.projectKey)!;
+    try {
+      checkFieldValues(p, entry.iterationId, entry.status);
+    } catch (e) {
+      throw new ActionRefused(`${(e as Error).message}（打开对话框后变了），没有新建；请关掉对话框重开`);
+    }
+  }
+  if (!plan.milestone) return;
+  const want = plan.milestone;
+  const ms = await client.restList<{ number: number; title: string }>(`${repoPath(repo)}/milestones?state=all&per_page=100`);
+  if (!ms.some((m) => m.number === want.number && m.title === want.title))
+    throw new ActionRefused(`里程碑「${want.title}」已经不在仓库 ${repo} 里（或被改了名），没有新建；请关掉对话框重开`);
+}
+
 export async function performAction(client: GitHubClient, action: WriteAction, ctx: ActionContext): Promise<ActionOutcome> {
   switch (action.kind) {
     case 'addLabel': {
@@ -241,8 +299,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         const ms = await client.restList<{ number: number; title: string; state: string }>(
           `${repoPath(it.repo)}/milestones?state=all&per_page=100`,
         );
-        const same = ms.filter((m) => m.title === action.title);
-        const pick = same.find((m) => m.state === 'open') ?? same[0];
+        const pick = pickMilestone(ms, action.title);
         if (!pick) throw new ActionRefused(`仓库 ${it.repo} 没有名为「${action.title}」的里程碑；客户端不新建里程碑，没有修改`);
         number = pick.number;
       }
@@ -263,20 +320,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       const p = projectOf(ctx, action.projectKey);
       if (!it.nodeId) throw new ActionRefused('这一条的数据是旧版本缓存的，请先刷新一次');
       // check everything that can be checked before the first write
-      if (action.iterationId !== null && !p.iterations.some((i) => i.id === action.iterationId)) throw new ActionRefused(`看板「${p.title}」没有这个迭代`);
-      if (action.status !== null && !p.statusOptionIds.some((o) => o.name === action.status)) throw new ActionRefused(`看板「${p.title}」的状态里没有「${action.status}」`);
-      const r = await client.graphql<{ addProjectV2ItemById: { item: { id: string } } }>(ADD_PROJECT_ITEM_MUTATION, {
-        projectId: p.projectId,
-        contentId: it.nodeId,
-      });
-      const itemId = r.addProjectV2ItemById.item.id;
-      let warning: string | null = null;
-      try {
-        if (action.iterationId !== null) await setField(client, p, itemId, 'iteration', action.iterationId);
-        if (action.status !== null) await setField(client, p, itemId, 'status', action.status);
-      } catch (e) {
-        warning = `已加入看板「${p.title}」，但设置字段没有成功：${explainError(e, action.kind)}`;
-      }
+      checkFieldValues(p, action.iterationId, action.status);
+      const fieldError = await joinProject(client, p, it.nodeId, action.iterationId, action.status);
+      const warning = fieldError === null ? null : `已加入看板「${p.title}」，但设置字段没有成功：${explainError(fieldError, action.kind)}`;
       return { touched: [[it.repo, it.number]], warning };
     }
     case 'comment': {
@@ -285,12 +331,24 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.body });
       return { touched: [[it.repo, it.number]], warning: null };
     }
-    case 'handBack': {
+    case 'handBack':
+    case 'autopilot': {
       const it = needItem(ctx);
-      const { human, agent } = ctx.handBack;
-      if (!human.trim() || !agent.trim()) throw new ActionRefused('设置里「交回 agent」的两个标签名不能为空');
+      const { human, agent, autopilot } = ctx.handBack;
+      if (!human.trim() || !agent.trim()) throw new ActionRefused('设置里「交给 agent」的两个标签名不能为空');
+      if (action.kind === 'autopilot') {
+        if (!autopilot.trim()) throw new ActionRefused('设置里没有填托管标签，没有修改');
+        // the autopilot label first: the daemon must see it when it picks the item up
+        await addLabel(client, it.repo, it.number, autopilot);
+      }
       // add first: if the second step fails, the item is never left with neither label
-      await addLabel(client, it.repo, it.number, agent);
+      try {
+        await addLabel(client, it.repo, it.number, agent);
+      } catch (e) {
+        // the autopilot label is on GitHub already: say so, never as "nothing changed"
+        if (action.kind === 'autopilot') return { touched: [[it.repo, it.number]], warning: `已加上「${autopilot}」，但加「${agent}」没有成功，还没有交给 agent：${explainError(e, 'addLabel')}` };
+        throw e;
+      }
       let warning: string | null = null;
       // removed whatever the cached labels say (the cache may be a round behind)
       try {
@@ -358,27 +416,50 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       const warning = written === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
       return { touched: [[it.repo, it.number]], warning };
     }
+    case 'editEntry': {
+      const it = needItem(ctx);
+      if (typeof action.body !== 'string' || typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你改的是哪一条、原文是什么，请刷新详情后再改');
+      const now = await readTaskSource(client, action.entryId);
+      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
+      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
+      if (now.body !== action.seenSource) throw new ActionRefused(EDIT_CHANGED);
+      if (now.kind === 'IssueComment' && !action.body.trim()) throw new ActionRefused('评论不能改成空的，没有修改（要删掉请去网页）');
+      if (action.body === now.body) return { touched: [], warning: null };
+      const written = await writeTaskSource(client, now.kind, action.entryId, action.body);
+      const warning = written === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
+      return { touched: [[it.repo, it.number]], warning };
+    }
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');
       if (!/^[^/\s]+\/[^/\s]+$/.test(action.repo)) throw new ActionRefused('请选择仓库');
+      const plan = action.plan;
+      if (plan) await checkCreatePlan(client, action.repo, plan, ctx.createInProjects);
       const created = await client.rest<{ number: number; node_id: string }>('POST', `${repoPath(action.repo)}/issues`, {
         title: action.title,
         body: action.body,
         labels: action.labels,
+        ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
       });
       if (!created) throw new GitHubError('http', 'GitHub 没有返回新 issue');
       const failed: string[] = [];
+      const fields: string[] = [];
       for (const p of ctx.createInProjects) {
+        const entry = plan?.projects.find((x) => x.projectKey === p.key);
         try {
           if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改它');
-          await client.graphql(ADD_PROJECT_ITEM_MUTATION, { projectId: p.projectId, contentId: created.node_id });
+          const fieldError = await joinProject(client, p, created.node_id, entry?.iterationId ?? null, entry?.status ?? null);
+          if (fieldError !== null) fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
         } catch (e) {
           failed.push(`「${p.title}」（${explainError(e, 'addToProject')}）`);
         }
       }
+      const problems = [
+        failed.length ? `没能加入看板 ${failed.join('、')}` : '',
+        fields.length ? `已加入看板但字段没设上 ${fields.join('、')}` : '',
+      ].filter(Boolean);
       return {
         touched: [[action.repo, created.number]],
-        warning: failed.length ? `issue #${created.number} 已建好，但没能加入看板 ${failed.join('、')}` : null,
+        warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
         createdKey: itemKey(action.repo, created.number),
       };
     }

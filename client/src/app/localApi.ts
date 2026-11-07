@@ -25,6 +25,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     restartSync: () => c.restartSync(),
     openExternal: (url) => backend.call('openExternal', { url: String(url) }),
     setLaunchAtLogin: (on) => c.setLaunchAtLogin(Boolean(on)),
+    openPending: async (key) => c.openPending(String(key)),
     checkUpdate: () => c.checkUpdate(),
     setAutoUpdate: (on) => c.setAutoUpdate(Boolean(on)),
     dismissUpdate: (version) => c.dismissUpdate(String(version)),
