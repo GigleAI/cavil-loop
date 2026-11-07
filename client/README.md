@@ -1,6 +1,6 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外三处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；讨论里的图片从 GitHub 自己的附件地址和图片代理加载，GitHub#205；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184），和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。
+`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外三处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；讨论里的图片从 GitHub 自己的附件地址和图片代理加载，GitHub#205；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184），和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。#214 在表格每个分组底部加了「＋ 新建 issue」：对话框先列出会带上的迭代 / 状态 / 里程碑，创建时只按这份清单写，写前现读核对里程碑，对不上一条都不写。
 
 ## 目录
 
@@ -103,7 +103,7 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 - **交给 agent / 托管**（GitHub#205）：详情底部发送按钮左边，条目开着就有，不用先回复。「交给 agent」= 加 `pending/agent`、摘 `pending/human`（先加后摘：第二步失败也不会两个都没有）；「托管（自动合并）…」先弹确认框，再加托管标签（默认 `autopilot`），然后同「交给 agent」——托管标签加上了但交给 agent 失败时，结果条明说「还没有交给 agent」。三个标签名都在设置里改，要和 daemon 配置一致；托管标签留空就不显示「托管」按钮。
 - **有冲突时**（GitHub#205）：PR 和目标分支有冲突（GitHub 说 `CONFLICTING` 或 `DIRTY`）时，PR 状态框顶部一条红色提示，合并按钮变成「有冲突，不能合并」且不可点。
 - **编辑正文 / 评论**（GitHub#205）：GitHub 说这个账号能改的正文和评论下面有「编辑」（评审意见、逐行评论不能在客户端改）。点开是整段 markdown 原文，保存时和勾选框一样先现读：仍属于这一条、仍能改、原文和开始编辑时一字不差才写，否则不写、提示「被别人改过」，编辑框里的文字保留。评论不能改成空的。同一条一次只有一个修改在途。
-- **新建 issue**（GitHub#205）：标签用和详情一样的选择器（可筛选、带 GitHub 颜色），选中的显示成彩色标签；建好后加入哪些看板逐个勾选，列出全部已添加的看板（不只是顶栏当前勾着的）。打开对话框时预先勾哪些（维护者选 C）：顶栏只勾了部分来源时，预先勾其中这个账号能改的看板；顶栏看全部来源时一个都不勾。只加入勾了的看板；勾了客户端不认识的看板（比如刚被删掉）整次拒绝、什么都不建。
+- **新建 issue**（GitHub#205）：标签用和详情一样的选择器（可筛选、带 GitHub 颜色），选中的显示成彩色标签；建好后加入哪些看板逐个勾选，列出全部已添加的看板（不只是顶栏当前勾着的）；从表格分组的「＋ 新建 issue」打开时，表格当前显示的看板预先勾上，这一组的迭代 / 状态只写进勾了的看板。打开对话框时预先勾哪些（维护者选 C）：顶栏只勾了部分来源时，预先勾其中这个账号能改的看板；顶栏看全部来源时一个都不勾。只加入勾了的看板；勾了客户端不认识的看板（比如刚被删掉）整次拒绝、什么都不建。
 - **粘贴图片**（GitHub#205，维护者选 A）：GitHub 的图片上传只给网页登录状态用，没有第三方程序能调的上传接口，客户端没法把图片放到 GitHub 上。在新建 issue 正文、回复框、编辑框里粘贴只有图片的内容时，不再悄悄没反应：提示「客户端不能把图片上传到 GitHub」，按钮「到 GitHub 网页上继续写」——新建 issue 把标题、正文、标签带进网页的新建页；回复和编辑把已写的文字复制到剪贴板、打开这一条的网页。带文字的粘贴照常贴进来。
 - 被拒时界面照实显示原因（含 GitHub 的原话），GitHub 上什么都不改；测试对每种被拒情况核对假 GitHub 的 `digest()` 前后相同。
 - 缓存格式升到第 2 版（多存了写入要用的各种 id），#137 再升到第 3 版（多存了作者、父 issue、子 issue 进度、关联 PR、网页视图）：升级后第一次启动会丢掉旧缓存、重新同步一次。

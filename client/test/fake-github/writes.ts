@@ -82,6 +82,8 @@ export interface WritableState {
   failReviewCommentPages: boolean;
   /** items (`owner/repo#n` lower-cased) whose detail read answers HTTP 502 */
   failDetail: Set<string>;
+  /** repositories (`owner/repo` lower-cased) whose milestone list answers HTTP 502 (GitHub#214) */
+  failMilestones: Set<string>;
   /** clock of updated_at / createdAt written by the fake */
   clock: () => string;
   /**
@@ -111,6 +113,7 @@ export function defaultWritable(): WritableState {
     bodySources: new Map(),
     cannotUpdate: new Set(),
     failLabel: null,
+    failMilestones: new Set(),
     failTaskSource: false,
     readOnlyRepos: new Set(),
     readOnlyProjects: new Set(),
@@ -358,7 +361,10 @@ export function handleRest(store: Store, method: string, path: string, body: any
   if (!known) return false;
 
   if (method === 'GET' && rest === '/labels') return send(200, w.repoLabels.get(key) ?? []), true;
-  if (method === 'GET' && rest === '/milestones') return send(200, w.milestones.get(key) ?? []), true;
+  if (method === 'GET' && rest === '/milestones') {
+    if (w.failMilestones.has(key)) return send(502, { message: 'Server Error' }), true;
+    return send(200, w.milestones.get(key) ?? []), true;
+  }
   if (method === 'GET') return false;
 
   if (w.readOnlyRepos.has(key)) return send(403, { message: 'Resource not accessible by integration' }), true;
@@ -379,8 +385,14 @@ export function handleRest(store: Store, method: string, path: string, body: any
       updated_at: w.clock(),
       labels: (body.labels ?? []).map((n: string) => ({ name: n, color: colors.get(n) ?? 'ededed' })),
       assignees: [],
-      milestone: null,
+      milestone: null as null | { number: number; title: string; due_on: string | null },
     };
+    // GitHub#214: created with a milestone (its number); one that does not exist is refused, nothing created
+    if (body.milestone != null) {
+      const ms = (w.milestones.get(key) ?? []).find((x) => x.number === body.milestone);
+      if (!ms) return send(422, { message: 'Validation Failed: milestone does not exist' }), true;
+      issue.milestone = { number: ms.number, title: ms.title, due_on: ms.due_on };
+    }
     if (!store.repos.has(key)) store.repos.set(key, []);
     store.repos.get(key)!.push(issue);
     w.bodies.set(`${key}#${number}`, `<p>${String(body.body ?? '')}</p>`);

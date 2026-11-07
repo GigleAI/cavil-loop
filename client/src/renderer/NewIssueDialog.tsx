@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { AppState, BoardData } from '../shared/types';
-import type { RepoOptions } from '../shared/actions';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { AppState, BoardData, Item } from '../shared/types';
+import type { GroupPreset, RepoOptions } from '../shared/actions';
+import { defaultRepo, previewCreate, type MilestoneRead } from '../data/groupPreset';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { noteOf, PasteImageNotice, ResultBanner, type ResultNote } from './DetailPanel';
@@ -20,17 +21,39 @@ export function knownRepos(state: AppState, data: BoardData): string[] {
 /**
  * GitHub#205 (maintainer's choice C): which Projects are ticked when the dialog opens — the
  * ones the view is narrowed to (that this account may change); none when the view shows every source
- * (nothing ticked off at the top, or every source ticked one by one).
+ * (nothing ticked off at the top, or every source ticked one by one). From a table group's "+", the
+ * boards the table shows start ticked (their iteration / status is what the group carries).
  */
-export function defaultProjects(state: AppState, data: BoardData): string[] {
+export function defaultProjects(state: AppState, data: BoardData, fromGroup = false): string[] {
+  // a table group's "+" (GitHub#214) is about the boards the table shows: those start ticked
+  if (fromGroup) return data.projects.filter((p) => p.viewerCanUpdate).map((p) => p.key);
   const sel = state.view.selected;
   const everything = sel === null || state.sources.every((s) => sel.includes(s.key));
   return everything ? [] : data.projects.filter((p) => p.viewerCanUpdate).map((p) => p.key);
 }
 
-export function NewIssueDialog({ state, data, onClose, onCreated }: { state: AppState; data: BoardData; onClose: () => void; onCreated: (key: string) => void }) {
+/** A new issue from a table group's "+" (GitHub#214): the group's value, its title, the items in it. */
+export interface GroupSeed {
+  preset: GroupPreset;
+  title: string;
+  items: Item[];
+}
+
+export function NewIssueDialog({
+  state,
+  data,
+  group,
+  onClose,
+  onCreated,
+}: {
+  state: AppState;
+  data: BoardData;
+  group?: GroupSeed;
+  onClose: () => void;
+  onCreated: (key: string) => void;
+}) {
   const repos = useMemo(() => knownRepos(state, data), [state, data]);
-  const [repo, setRepo] = useState(repos[0] ?? '');
+  const [repo, setRepo] = useState(() => (group ? defaultRepo(group.preset, group.items, repos) : (repos[0] ?? '')));
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [labels, setLabels] = useState<string[]>([]);
@@ -40,31 +63,45 @@ export function NewIssueDialog({ state, data, onClose, onCreated }: { state: App
   const [picking, setPicking] = useState(false);
   const allProjects = data.allProjects ?? data.projects;
   // decided once, when the dialog opens: a sync round meanwhile does not re-tick what the user unticked
-  const [projects, setProjects] = useState<string[]>(() => defaultProjects(state, data));
+  const [projects, setProjects] = useState<string[]>(() => defaultProjects(state, data, Boolean(group)));
   const [pasted, setPasted] = useState<{ copied: boolean | null } | null>(null);
   const isDark = useDarkMode();
 
+  // every pick of a repository is a read of its own: only the latest one may land. Compared by
+  // read, not by repository name — after A → B → A the first read of A is as stale as B's.
+  const readSeq = useRef(0);
   useEffect(() => {
+    const seq = ++readSeq.current;
     setLabels([]);
     setOpts(null);
     setPicking(false);
-    if (repo) api().repoOptions(repo).then(setOpts);
+    if (repo)
+      api()
+        .repoOptions(repo)
+        .then((o) => {
+          if (seq === readSeq.current) setOpts(o);
+        });
   }, [repo]);
+  const read: MilestoneRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', milestones: opts.milestones };
+  // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
+  const ticked = allProjects.filter((p) => projects.includes(p.key));
+  const preview = group ? previewCreate(group.preset, ticked, repo, read) : null;
 
   const colorOf = (name: string) => opts?.labels.find((l) => l.name === name)?.color ?? '';
   const toggleLabel = (name: string) => setLabels((ls) => (ls.includes(name) ? ls.filter((x) => x !== name) : [...ls, name]));
 
   return (
     <ConfirmDialog
-      title="新建 issue"
+      title={group ? `新建 issue · 加到「${group.title}」` : '新建 issue'}
       confirmLabel="创建"
       busy={busy}
-      disabled={!repo || !title.trim()}
+      disabled={!repo || !title.trim() || Boolean(preview?.blocked)}
       dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
       onConfirm={async () => {
+        if (preview && !preview.plan) return;
         setBusy(true);
-        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, projects: allProjects.filter((p) => projects.includes(p.key)).map((p) => p.key) });
+        const r = await api().act({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), ...(preview?.plan ? { plan: preview.plan } : {}) });
         setBusy(false);
         if (r.ok && r.createdKey) {
           onCreated(r.createdKey);
@@ -84,6 +121,17 @@ export function NewIssueDialog({ state, data, onClose, onCreated }: { state: App
             ))}
           </select>
         </label>
+        {preview && (
+          <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'}>
+            <div className="small muted">会带上：</div>
+            {preview.lines.map((l) => (
+              <div key={l.target} className={l.applies ? 'small' : 'small muted'} data-testid="new-issue-preset-line" data-target={l.target} data-applies={l.applies ? 'yes' : 'no'}>
+                {l.applies ? '✓ ' : '– '}
+                {l.text}
+              </div>
+            ))}
+          </div>
+        )}
         <label>
           标题
           <input data-testid="new-issue-title" value={title} onChange={(e) => setTitle(e.target.value)} />

@@ -42,6 +42,10 @@ describe('new issue: the Projects ticked when the dialog opens (maintainer\'s ch
     // every source ticked one by one at the top is the same "everything"
     expect(defaultProjects(state(['repo:x', 'project:ro', 'project:b', 'project:a']), data([A, B, RO], [A, B, RO]))).toEqual([]);
   });
+  it('from a table group\'s "+" (GitHub#214): the boards the table shows start ticked (that this account may change), whatever the narrowing', () => {
+    expect(defaultProjects(state(null), data([A, B, RO], [A, B, RO]), true)).toEqual(['project:a', 'project:b']);
+    expect(defaultProjects(state(['project:a']), data([A], [A, B]), true)).toEqual(['project:a']);
+  });
   it('the view narrowed to some sources → the Projects among them (that this account may change)', () => {
     expect(defaultProjects(state(['project:a']), data([A], [A, B]))).toEqual(['project:a']);
     expect(defaultProjects(state(['project:a', 'project:ro', 'repo:x']), data([A, RO], [A, B, RO]))).toEqual(['project:a']);

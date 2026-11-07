@@ -21,7 +21,7 @@
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
-import { ISSUE_CLOSE_REASONS, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type CreatePlan, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -37,6 +37,7 @@ import {
   UPDATE_PR_BODY_MUTATION,
 } from './queries';
 import { flipTask } from './taskList';
+import { pickMilestone } from './groupPreset';
 
 /** The app refused before sending anything to GitHub. */
 export class ActionRefused extends Error {
@@ -143,6 +144,29 @@ async function setField(client: GitHubClient, p: ProjectMeta, itemId: string, fi
   }
 }
 
+/** The iteration / status a Project item is about to get still exist in that Project (as last synced). */
+function checkFieldValues(p: ProjectMeta, iterationId: string | null, status: string | null): void {
+  if (iterationId !== null && !p.iterations.some((i) => i.id === iterationId)) throw new ActionRefused(`看板「${p.title}」没有这个迭代`);
+  if (status !== null && !p.statusOptionIds.some((o) => o.name === status)) throw new ActionRefused(`看板「${p.title}」的状态里没有「${status}」`);
+}
+
+/**
+ * Put `contentId` on Project `p`, then set its iteration and status (null = leave unset).
+ * A refused add throws; a field that could not be set after the add is returned
+ * (the item stays on the Project), null = all set. One path for "add to board" and a new issue.
+ */
+async function joinProject(client: GitHubClient, p: ProjectMeta, contentId: string, iterationId: string | null, status: string | null): Promise<unknown | null> {
+  const r = await client.graphql<{ addProjectV2ItemById: { item: { id: string } } }>(ADD_PROJECT_ITEM_MUTATION, { projectId: p.projectId, contentId });
+  const itemId = r.addProjectV2ItemById.item.id;
+  try {
+    if (iterationId !== null) await setField(client, p, itemId, 'iteration', iterationId);
+    if (status !== null) await setField(client, p, itemId, 'status', status);
+  } catch (e) {
+    return e;
+  }
+  return null;
+}
+
 export async function addLabel(client: GitHubClient, repo: string, number: number, label: string): Promise<void> {
   await client.rest('POST', `${repoPath(repo)}/issues/${number}/labels`, { labels: [label] });
 }
@@ -230,6 +254,32 @@ async function writeTaskSource(client: GitHubClient, kind: TaskSource['kind'], i
   return (await client.graphql<any>(UPDATE_PR_BODY_MUTATION, { id, body }))?.updatePullRequest?.pullRequest?.body;
 }
 
+/**
+ * Before a new issue from a group's "+" is created (GitHub#214): what the dialog showed must
+ * still hold. The Projects it would join are the ones it showed; each promised iteration /
+ * status still exists there; a promised milestone is read again and must still be that
+ * number with that title. Anything else — including a read that fails — refuses, and nothing
+ * has been written. A "none" in the plan stays none, whatever GitHub holds now.
+ */
+async function checkCreatePlan(client: GitHubClient, repo: string, plan: CreatePlan, joining: ProjectMeta[]): Promise<void> {
+  const shown = plan.projects.map((x) => x.projectKey).sort();
+  const now = joining.map((p) => p.key).sort();
+  if (shown.length !== now.length || shown.some((k, i) => k !== now[i])) throw new ActionRefused('勾选的看板在打开对话框后变了，没有新建；请关掉对话框重开');
+  for (const entry of plan.projects) {
+    const p = joining.find((x) => x.key === entry.projectKey)!;
+    try {
+      checkFieldValues(p, entry.iterationId, entry.status);
+    } catch (e) {
+      throw new ActionRefused(`${(e as Error).message}（打开对话框后变了），没有新建；请关掉对话框重开`);
+    }
+  }
+  if (!plan.milestone) return;
+  const want = plan.milestone;
+  const ms = await client.restList<{ number: number; title: string }>(`${repoPath(repo)}/milestones?state=all&per_page=100`);
+  if (!ms.some((m) => m.number === want.number && m.title === want.title))
+    throw new ActionRefused(`里程碑「${want.title}」已经不在仓库 ${repo} 里（或被改了名），没有新建；请关掉对话框重开`);
+}
+
 export async function performAction(client: GitHubClient, action: WriteAction, ctx: ActionContext): Promise<ActionOutcome> {
   switch (action.kind) {
     case 'addLabel': {
@@ -249,8 +299,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         const ms = await client.restList<{ number: number; title: string; state: string }>(
           `${repoPath(it.repo)}/milestones?state=all&per_page=100`,
         );
-        const same = ms.filter((m) => m.title === action.title);
-        const pick = same.find((m) => m.state === 'open') ?? same[0];
+        const pick = pickMilestone(ms, action.title);
         if (!pick) throw new ActionRefused(`仓库 ${it.repo} 没有名为「${action.title}」的里程碑；客户端不新建里程碑，没有修改`);
         number = pick.number;
       }
@@ -271,20 +320,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       const p = projectOf(ctx, action.projectKey);
       if (!it.nodeId) throw new ActionRefused('这一条的数据是旧版本缓存的，请先刷新一次');
       // check everything that can be checked before the first write
-      if (action.iterationId !== null && !p.iterations.some((i) => i.id === action.iterationId)) throw new ActionRefused(`看板「${p.title}」没有这个迭代`);
-      if (action.status !== null && !p.statusOptionIds.some((o) => o.name === action.status)) throw new ActionRefused(`看板「${p.title}」的状态里没有「${action.status}」`);
-      const r = await client.graphql<{ addProjectV2ItemById: { item: { id: string } } }>(ADD_PROJECT_ITEM_MUTATION, {
-        projectId: p.projectId,
-        contentId: it.nodeId,
-      });
-      const itemId = r.addProjectV2ItemById.item.id;
-      let warning: string | null = null;
-      try {
-        if (action.iterationId !== null) await setField(client, p, itemId, 'iteration', action.iterationId);
-        if (action.status !== null) await setField(client, p, itemId, 'status', action.status);
-      } catch (e) {
-        warning = `已加入看板「${p.title}」，但设置字段没有成功：${explainError(e, action.kind)}`;
-      }
+      checkFieldValues(p, action.iterationId, action.status);
+      const fieldError = await joinProject(client, p, it.nodeId, action.iterationId, action.status);
+      const warning = fieldError === null ? null : `已加入看板「${p.title}」，但设置字段没有成功：${explainError(fieldError, action.kind)}`;
       return { touched: [[it.repo, it.number]], warning };
     }
     case 'comment': {
@@ -394,24 +432,34 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');
       if (!/^[^/\s]+\/[^/\s]+$/.test(action.repo)) throw new ActionRefused('请选择仓库');
+      const plan = action.plan;
+      if (plan) await checkCreatePlan(client, action.repo, plan, ctx.createInProjects);
       const created = await client.rest<{ number: number; node_id: string }>('POST', `${repoPath(action.repo)}/issues`, {
         title: action.title,
         body: action.body,
         labels: action.labels,
+        ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
       });
       if (!created) throw new GitHubError('http', 'GitHub 没有返回新 issue');
       const failed: string[] = [];
+      const fields: string[] = [];
       for (const p of ctx.createInProjects) {
+        const entry = plan?.projects.find((x) => x.projectKey === p.key);
         try {
           if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改它');
-          await client.graphql(ADD_PROJECT_ITEM_MUTATION, { projectId: p.projectId, contentId: created.node_id });
+          const fieldError = await joinProject(client, p, created.node_id, entry?.iterationId ?? null, entry?.status ?? null);
+          if (fieldError !== null) fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
         } catch (e) {
           failed.push(`「${p.title}」（${explainError(e, 'addToProject')}）`);
         }
       }
+      const problems = [
+        failed.length ? `没能加入看板 ${failed.join('、')}` : '',
+        fields.length ? `已加入看板但字段没设上 ${fields.join('、')}` : '',
+      ].filter(Boolean);
       return {
         touched: [[action.repo, created.number]],
-        warning: failed.length ? `issue #${created.number} 已建好，但没能加入看板 ${failed.join('、')}` : null,
+        warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
         createdKey: itemKey(action.repo, created.number),
       };
     }
