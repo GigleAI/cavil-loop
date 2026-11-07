@@ -20,9 +20,42 @@ import bymodel     # noqa: E402  目标周按模型拆分 + 自检
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))  # 报告按北京时间切周
 
+# 严格采数（GitHub#232，多仓库合并时打开）：读不到 GitHub 就整次失败，不当成「没有数据」。
+# 不打开时（单仓库周报）行为与输出和原来逐字节相同——读失败仍然打警告、按空列表继续。
+STRICT = False
+
+
+class StrictFail(Exception):
+    """严格模式下的读取失败：数据没读到，不是「本周没有」。"""
+
+
+def _strict_fail(msg):
+    raise StrictFail(msg)
+
+
 def gh(path):
-    p = subprocess.run(["gh", "api", "--paginate", path],
-                       capture_output=True, text=True, timeout=300)
+    try:
+        p = subprocess.run(["gh", "api", "--paginate", path],
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        if STRICT:
+            _strict_fail(f"gh api {path} 没跑成: {e}")
+        raise
+    if STRICT:
+        # 只有「退出 0 + 输出是 JSON 列表」才算读到了；`[]` 是合法的「真的没有」。
+        # 空输出不是 `[]`：分页读取在没有数据时会输出 `[]`，什么都不输出说明这次调用不正常。
+        if p.returncode != 0:
+            _strict_fail(f"gh api {path} 失败（退出码 {p.returncode}）: {p.stderr.strip()[:200]}")
+        txt = p.stdout.strip().replace("][", ",")
+        if not txt:
+            _strict_fail(f"gh api {path} 退出 0 但没有任何输出")
+        try:
+            v = json.loads(txt)
+        except json.JSONDecodeError as e:
+            _strict_fail(f"gh api {path} 返回无法解析: {e}")
+        if not isinstance(v, list):
+            _strict_fail(f"gh api {path} 返回的不是列表（{type(v).__name__}）: {txt[:200]}")
+        return v
     if p.returncode != 0:
         print(f"[warn] gh api {path} 失败: {p.stderr.strip()[:200]}", file=sys.stderr)
         return []
@@ -76,8 +109,21 @@ def main():
     # 给任意一天即可，内部归到那周的周一。不给就按下面 switch_week() 的保守规则推。
     ap.add_argument("--switch-week", default=None,
                     help="口径切换那一周内的任意一天 YYYY-MM-DD")
+    # 多仓库合并（GitHub#232）：读不到数据就失败退出、不写数据文件；另外多输出合并器要的
+    # 两项（每周派工原始时长、严格采数标记）。不给这个开关时输出与原来逐字节相同。
+    ap.add_argument("--strict", action="store_true",
+                    help="严格采数：GitHub / git 读取失败即非零退出，不写数据文件")
     a = ap.parse_args()
+    global STRICT
+    STRICT = a.strict
+    try:
+        _main(a)
+    except StrictFail as e:
+        print(f"[error] 严格采数失败（repo={a.repo}）：{e}", file=sys.stderr)
+        sys.exit(3)
 
+
+def _main(a):
     today = datetime.datetime.now(TZ).date()
     if a.week_of:
         target = monday(datetime.date.fromisoformat(a.week_of))
@@ -479,10 +525,15 @@ def main():
     for w in weeks:
         b = (datetime.date.fromisoformat(w) + datetime.timedelta(days=7)).isoformat()
         def git(*x):
-            return subprocess.run(
+            p = subprocess.run(
                 ["git", "log", "origin/main", f"--since={w} 00:00:00 +0800",
                  f"--until={b} 00:00:00 +0800", *x],
-                capture_output=True, text=True).stdout
+                capture_output=True, text=True)
+            if STRICT and p.returncode != 0:
+                # 主干取不到时 git log 非零退出、输出为空——不能当成「这周 0 提交 0 行」
+                _strict_fail(f"git log origin/main 失败（退出码 {p.returncode}，目录 {os.getcwd()}）: "
+                             f"{p.stderr.strip()[:200]}")
+            return p.stdout
         st[w]["commits"] = len(git("--pretty=tformat:%H").split())
         add = dele = 0
         for line in git("--pretty=tformat:", "--numstat").splitlines():
@@ -647,17 +698,24 @@ def main():
         d["secs"] += u["secs"]
     unattributed = sorted(({**d, "secs": round(d["secs"])} for d in ua.values()),
                           key=lambda u: -u["secs"])
-    json.dump({"repo": R, "generated_at": datetime.datetime.now(TZ).isoformat(),
-               "price_reference": {"source": price_table.get("reference_source"),
-                                  "policy": price_table.get("policy")},
-               "switch_week": switch_week(st),
-               "long_windows": long_windows, "long_turns": long_turns,
-               "work_unattributed": unattributed,
-               "target_week": {"start": tw, "end": tend.isoformat()},
-               "weeks": weeks, "weekly": weekly, "by_model": by_model_rows,
-               "detail": detail,
-               "loose_prs": loose},
-              open(a.out, "w"), ensure_ascii=False, indent=1)
+    out = {"repo": R, "generated_at": datetime.datetime.now(TZ).isoformat(),
+           "price_reference": {"source": price_table.get("reference_source"),
+                              "policy": price_table.get("policy")},
+           "switch_week": switch_week(st),
+           "long_windows": long_windows, "long_turns": long_turns,
+           "work_unattributed": unattributed,
+           "target_week": {"start": tw, "end": tend.isoformat()},
+           "weeks": weeks, "weekly": weekly, "by_model": by_model_rows,
+           "detail": detail,
+           "loose_prs": loose}
+    if a.strict:
+        # 合并器要的两项，只在严格模式（多仓库合并）下写——单仓库的数据文件保持原样。
+        #   durations：每周每次派工的原始总耗时（秒），合并后对拼接的列表重算中位数，
+        #              不能拿各仓库的中位数求平均
+        #   strict：   这份数据是严格采数产出的；合并器只收带这个标记的文件
+        out["durations"] = {w: list(durs[w]) for w in weeks}
+        out["strict"] = True
+    json.dump(out, open(a.out, "w"), ensure_ascii=False, indent=1)
     print(f"[ok] {a.out}: 目标周 {tw}~{tend}，{len(weeks)} 周趋势，"
           f"{len(detail)} 条 issue 明细，{len(loose)} 条无 issue 的 PR")
 
