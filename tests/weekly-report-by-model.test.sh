@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 目标周按模型拆分 + PDF 页序（GitHub#61）。
 #
 # 跑法：bash tests/weekly-report-by-model.test.sh
@@ -13,6 +14,8 @@
 #   · 自检要能真的拦住：负对照删掉一行 / 改掉一格，report.py 必须非零退出。
 #   · 版式：五个类别各起一页、10 周表紧跟图、本周行加粗、末行环比。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -247,4 +250,5 @@ chk "旧的 11 列逐周大表没了"             "$(has '| 净增代码行 | �
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

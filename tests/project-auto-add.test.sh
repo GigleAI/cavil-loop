@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 守护程序把本仓库 issue / PR 自动加进 Project 的守卫 —— GitHub#116。
 #
 # 跑法：bash tests/project-auto-add.test.sh              （默认不跑负对照，约 1 分钟）
@@ -21,6 +22,8 @@
 #   · 新加看板触发的全量读取让老看板也顺手补老条目 → 人从老看板里拿掉的卡片被塞回去。
 # 末尾的负对照（MUTATION=1）把这 16 种错误分别塞进脚本副本，断言对应场景变红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -566,4 +569,5 @@ if [ -s "$PREP_FAILED" ]; then fail=$((fail + $(wc -l < "$PREP_FAILED"))); fi
 echo
 mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

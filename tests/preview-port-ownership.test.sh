@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # preview 端口取模 + 端口归属（GigleAI/GigleTutor-Web#1009）的行为守卫。
 #
 # 跑法：bash tests/preview-port-ownership.test.sh
@@ -12,6 +13,8 @@
 #   · 没有锁 → 两个 issue 同时注册，各自「检查时没人」，后写的赢，登记和路由对不上；
 #   · 没登记也解绑 → 端口上别人的（未登记）路由被按公式拆掉。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -218,4 +221,5 @@ chk "最后一次路由操作与最终登记一致" \
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

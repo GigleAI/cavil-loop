@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 交叉 review 那一侧的用量驱动（scripts/drivers/token-usage/codex.sh）。
 #
 # 跑法：bash tests/token-usage-codex.test.sh
@@ -17,6 +18,8 @@
 # 本测试的日志刻意让 **reasoning 非零**且 `total = input + output`，覆盖 driver 的
 # 三条输出路径：人读输出 / `--kv` / 配置单价后的金额。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -444,4 +447,5 @@ done
 echo
 mutation_summary "$0"
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

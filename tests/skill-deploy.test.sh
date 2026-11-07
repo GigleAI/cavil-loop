@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
+# kind: install
 # Immutable skill releases, atomic switching and consumer leases.
 set -euo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/mutation.sh
@@ -61,7 +64,8 @@ export CAVIL_DEPLOY_BRANCH=main
 
 deploy() { bash "$REPO_DIR/scripts/skill-deploy.sh" --force "$@"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
-pass() { echo "✓ $*"; }
+PASSED=0
+pass() { echo "✓ $*"; PASSED=$((PASSED + 1)); }
 
 echo '▶ bootstrap publishes an immutable release and stable link'
 deploy --bootstrap >/dev/null
@@ -573,3 +577,5 @@ fi
 
 mutation_summary "$0"
 echo 'All skill deploy tests passed.'
+# Any failure exits on the spot (fail() above), so reaching here means none failed.
+report_counts "$PASSED" 0

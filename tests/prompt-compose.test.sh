@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # prompt 模板的「base + 项目增量」合成（`compose_prompt_template`）。
 #
 # 跑法：bash tests/prompt-compose.test.sh
@@ -11,6 +12,8 @@
 #   · 顺序反了 → base 的通用条款写在后面，把项目的覆盖条款压掉，同样无声;
 #   · 老的完全覆写行为被破坏 → 所有已有项目的模板一起失效。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -132,4 +135,5 @@ chk "空串" "$(compose_prompt_template new-issue)" ""
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

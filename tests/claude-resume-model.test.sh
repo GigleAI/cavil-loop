@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 跑法：bash tests/claude-resume-model.test.sh
 # 依赖：jq。无网络、不调真 claude（PATH 最前面放假 claude）。
 #
@@ -13,6 +14,8 @@
 #
 # 负对照：REPO_DIR=<旧版 checkout> bash tests/claude-resume-model.test.sh 应当变红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(dirname "$TEST_DIR")}"
@@ -269,4 +272,5 @@ chk "空 → 默认队列" "$(pending_label_for_model '')" "pending/agent"
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

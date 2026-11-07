@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 轮询节奏（退避闸门）的守卫 —— issue #35。
 #
 # 跑法：bash tests/poll-pace.test.sh   （本机实测约 1 分钟——端到端那几组要真的把
@@ -11,6 +12,8 @@
 # 所以每条断言都要能分辨「有这个实现」和「没有这个实现」，光断言「正确输入 → 正确
 # 输出」是不够的（AGENTS.md 那条规矩）。负对照在文件末尾说明怎么跑。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -446,4 +449,5 @@ echo "通过 $pass / 失败 $fail"
 #   · 删掉 agent-poll.sh 结尾的 `QUEUE_SORTED` 那行                    → 【10b】变红
 #   · 删掉结尾的 `list_worker_sessions` 那行                           → 【10c】变红
 # 全绿说明测试没测到点子上 —— 本文件 2026-09-22 就因为【5】写歪而漏掉过一次心跳负对照。
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

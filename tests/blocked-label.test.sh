@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 等前置标签：前置完成后自动接着干 —— GitHub#157。
 #
 # 跑法：bash tests/blocked-label.test.sh              （默认不跑末尾的负对照）
@@ -14,6 +15,8 @@
 #   · 功能关着也改了状态文件 / 提示词 → 没开这项的项目悄悄变了
 #   · 有条目在等时轮询照样退避到 30 分钟 → 「前置完成后几分钟接上」落空
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -692,4 +695,5 @@ echo "通过 $pass，失败 $fail"
 [ "$MUT_BAD" = 0 ] || echo "负对照准备失败 $MUT_BAD 项"
 mutation_summary "$0"
 compat_summary
+report_counts "$pass" "$fail"
 [ "$fail" = 0 ] && [ "$MUT_BAD" = 0 ]

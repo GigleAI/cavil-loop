@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 缺价自动抓价（GitHub#51）：驱动留标记 → daemon 抓价 → 驱动用上。
 #
 # 跑法：bash tests/price-fetch.test.sh
@@ -14,6 +15,8 @@
 # 所以每条规则都配一个「去掉它就会红」的用例（两源不一致 / 单源 / 分档歧义 / 结构不合理 /
 # 内置已有 / 显式关闭估价）。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -381,4 +384,5 @@ chk "LiteLLM 没收录日期快照 → 不用基名的价顶替，标记留着�
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

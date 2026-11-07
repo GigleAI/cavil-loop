@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: meta
 # client/test/tauri/mutations.sh prepares what its entries read (GitHub#195 review round 2): the built
 # window (dist/) and the app's icons are not in git, and the weekly release gate starts from a clean
 # checkout. The real script runs with a fake `node` that records every call and, for an entry,
@@ -7,6 +8,8 @@
 #
 #   bash tests/client-tauri-mutation-prep.test.sh
 set -euo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
@@ -69,4 +72,5 @@ case "$OUT" in *"一项真实窗口负对照都没跑"*) PASS=$((PASS + 1)); ech
 
 echo
 echo "passed $PASS, failed $FAIL"
+report_counts "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

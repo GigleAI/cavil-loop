@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 记账记录提取与派工去重（scripts/weekly-report/record.py）。
 #
 # 跑法：bash tests/weekly-report-record.test.sh
@@ -11,11 +12,14 @@
 #   · 同一次派工发多条评论，每条都带同一份记账行 → 逐条累加重复计。
 # 这两类都只让数字悄悄变大，不会有任何报错，所以必须钉住。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 
-python3 - "$REPO_DIR" <<'PY'
+COUNTS_FILE=$(mktemp)
+python3 - "$REPO_DIR" "$COUNTS_FILE" <<'PY'
 import sys, datetime
 sys.path.insert(0, sys.argv[1] + "/scripts/weekly-report")
 import record
@@ -229,5 +233,11 @@ import collect
 chk("collect 与 record 用同一个判定（不各写一份）", collect.is_bot is record.is_bot, True)
 
 print(f"\n  {ok} passed, {bad} failed")
+open(sys.argv[2], "w").write(f"{ok} {bad}\n")
 sys.exit(1 if bad else 0)
 PY
+rc=$?
+read -r pass fail < "$COUNTS_FILE" || { pass=""; fail=""; }
+rm -f "$COUNTS_FILE"
+report_counts "$pass" "$fail"
+exit "$rc"

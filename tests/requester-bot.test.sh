@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # 外部需求机器人（GitHub#95 / #97）的行为守卫。
 #
 # 跑法：bash tests/requester-bot.test.sh        （默认不跑负对照；webhook 超时只有一条实等默认的 10 秒，
@@ -28,6 +29,8 @@
 # 时两段全跑。段 1 = 1–4；段 2 = 3d、3e、3f、5、6。负对照跟着它所在的那一组走。
 # parts: 2
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -1681,4 +1684,5 @@ fi
 mutation_summary "$0"
 compat_summary
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

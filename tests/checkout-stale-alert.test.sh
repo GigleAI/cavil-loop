@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 主 checkout 长期落后的告警（`check_checkout_staleness` + `sync_project_checkout`）。
 #
 # 跑法：bash tests/checkout-stale-alert.test.sh
@@ -14,6 +15,8 @@
 # 另外守一条安全边界：告警 issue **不能带 pending label**，否则 daemon 会把自己
 # 开的 issue 捡去派工，形成回环。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -210,4 +213,5 @@ chk "fetch 失败 → 不开 issue" "$(grep -c -- '-X POST' "$GH_CALLS")" "0"
 
 echo
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

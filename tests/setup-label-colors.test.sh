@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # setup.sh 建 GitHub 标签时的默认颜色（GitHub#130，前一次同类漂移是 #52）。
 #
 # 默认配色照抄本仓库 GigleAI/cavil-loop 的 labels 页。这里真跑安装入口（隔离 HOME、
@@ -8,6 +9,8 @@
 #   bash tests/setup-label-colors.test.sh              默认回归
 #   MUTATION=1 bash tests/setup-label-colors.test.sh   另跑负对照：两处改色各退回旧值，必须变红
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/mutation.sh
@@ -138,4 +141,5 @@ neg_case "pending/PR 退回 bbbbbb" '"pending/PR|eeeeee|' '"pending/PR|bbbbbb|'
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

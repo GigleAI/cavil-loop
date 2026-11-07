@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 周报明细的入选口径（collect.py 的 detail / loose_prs）。
 #
 # 跑法：bash tests/weekly-report-detail.test.sh
@@ -15,6 +16,8 @@
 #     整行，且紧随其后第一个非空行是 `token` 行。fixture 用真实格式，别图省事写简写——
 #     写简写会让这个测试测不到真正的解析路径。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -153,4 +156,5 @@ chk "无 issue 的 PR #40 也带墙上时长" "$s40" "1200"
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

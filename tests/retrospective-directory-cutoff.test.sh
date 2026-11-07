@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 目录经验开关与「只复盘开关生效后合并的 PR」（GitHub#168）。
 #
 # 跑法：bash tests/retrospective-directory-cutoff.test.sh       （MUTATION=1 加跑负对照）
@@ -14,6 +15,8 @@
 #      推上去的经验和报告逐字节相同；
 #   2. 负对照（只在 MUTATION=1 时跑）：把 scripts/ + prompts/ + docs/ 复制一份、改坏一处，用例必须变红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$TEST_DIR/.." && pwd)"
@@ -145,4 +148,5 @@ mutant "开关值写错也照跑" $PY_ "    if value not in ('true', 'false'):" 
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

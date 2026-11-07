@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 调用认领 / 日志检验 / 合计取舍（scripts/weekly-report/attribute.py）。
 #
 # 跑法：bash tests/weekly-report-attribution.test.sh
@@ -14,6 +15,8 @@
 #   缺口用「窗口相交」推定还是用「被别人认领走的调用」这种逐条证据 /
 #   四项 token 是不是都比 / 回退值与重算值能不能直接相加 / 历史 token 的截断下界
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -221,4 +224,5 @@ print(f'{p5}/{p1}')")" "4484/5605"
 
 echo
 echo "结果：$pass passed, $fail failed"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

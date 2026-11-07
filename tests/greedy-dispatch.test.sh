@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # greedy 派工模式的挡工判据守卫（`greedy_skip_reason` / `DISPATCH_MODE` 校验）。
 #
 # 跑法：bash tests/greedy-dispatch.test.sh
@@ -10,6 +11,8 @@
 #     卡死在队列外，看板上什么都看不出来。
 # 两种都不会报错，只能靠断言拦住。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -99,4 +102,5 @@ chk "greedy 是合法值"        "$([ $? -eq 0 ] && echo yes || echo no)" "yes"
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

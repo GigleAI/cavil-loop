@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # 旧安装自动迁移（GigleAI/cavil-loop#71）的守卫。
 #
 # 跑法：bash tests/migrate-legacy.test.sh   （几秒）
@@ -11,6 +12,8 @@
 #   · 原来停用的项目被顺手启用、或者新旧两个 timer 同时开着 → 两个轮询抢同一批 issue；
 #   · 中途断了不能接着做 → 卡在半新半旧，没人发现。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -509,4 +512,5 @@ fi
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

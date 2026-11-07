@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # 按需 preview（systemd socket 激活）的端到端守卫。
 #
 # 跑法：bash tests/preview-socket-activation.test.sh
@@ -15,6 +16,8 @@
 #     而它看起来完全正常。
 # 三条都只能靠真起一遍 systemd 来断言。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -112,4 +115,5 @@ chk "二次冷启动仍然可用"  "$body2" "ok"
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

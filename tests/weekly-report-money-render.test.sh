@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 周报里**金额那几行的渲染**（scripts/weekly-report/report.py）。
 #
 # 跑法：bash tests/weekly-report-money-render.test.sh
@@ -14,6 +15,8 @@
 # ⚠️ 可信度那几条**不预填桶**：先跑真实的 `attribute.price_calls` 把桶算出来，
 #    再喂进 report。预填合计会绕开「计价 → 呈现」这一段，正是本轮出错的那一段。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -202,4 +205,5 @@ chk "来源分别披露，过期内置表也提示复核" \
 
 echo
 echo "结果：$pass passed, $fail failed"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

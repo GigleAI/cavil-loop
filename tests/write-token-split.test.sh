@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 两把 token 的分工：轮询 / 读走 GH_TOKEN，所有写走 WRITE_GH_TOKEN（issue #36）。
 #
 # 跑法：bash tests/write-token-split.test.sh
@@ -15,6 +16,8 @@
 #   · _lib.sh 里若去掉 export GH_TOKEN   → 【5】红（子进程读不到 config 里的裸赋值）
 #   · 告警 issue 若写回裸 gh             → 【2】红
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -162,4 +165,5 @@ chk "token 只在环境里、config 没写 → 不告警" \
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

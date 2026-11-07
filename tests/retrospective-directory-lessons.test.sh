@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 经验文件拼进派工说明时裁掉哪些（GitHub#152 目录经验段；GitHub#208 观察中段、举例、出现记录）。
 #
 # 跑法：bash tests/retrospective-directory-lessons.test.sh       （MUTATION=1 加跑负对照）
@@ -21,6 +22,8 @@
 #      复盘程序的解析器取，不从裁剪结果抄），举例、出现记录、观察中一条都不在。
 #   负对照：两个调用点各自退回 cat、过滤函数整体退回 cat、各条裁剪规则单独去掉，断言必须变红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -369,4 +372,5 @@ fi
 echo
 mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

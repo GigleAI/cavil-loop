@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
+# kind: unit
 # 跑法：bash tests/worker-selection.test.sh
 # 依赖：无。验证普通 worker 与 review worker 的默认值、模型覆盖彼此隔离，
 # 并守住 agent-poll 到 dispatch 的模型透传链路。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 # 在干净环境里重跑自己。worker 会话是 daemon 起的，环境里带着 DISPATCH_WORKER_MODEL_SET /
 # DISPATCH_WORKER_MODEL 等派工变量；继承下来，下面的「普通任务」就被当成带了派工覆盖
@@ -119,4 +122,5 @@ chk "greedy 队列保留 WORKER_MODEL" "$greedy_model" "1"
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

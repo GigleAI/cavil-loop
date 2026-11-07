@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # GitHub#109: `systemctl enable` resolves the template symlink to the end, so an
 # instance timer link points into one releases/<sha>/; the deployer later deletes
 # that release and the timer silently vanishes. This checks the repair
@@ -19,6 +20,8 @@
 #   bash tests/repair-unit-links.test.sh            默认（约 10 秒；MUTATION=1 约 27 秒）
 #   MUTATION=1 bash tests/repair-unit-links.test.sh 另跑负对照：把被测代码改坏一处，对应检查必须变红
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/mutation.sh
@@ -585,4 +588,5 @@ echo
 mutation_summary "$0"
 [ "$MUT_BAD" -eq 0 ] || FAIL=$((FAIL + MUT_BAD))
 echo "通过 $PASS，失败 $FAIL"
+report_counts "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

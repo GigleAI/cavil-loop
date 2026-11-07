@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: e2e
 # scripts/release.sh: the non-interactive mode the weekly Release workflow
 # runs (--auto), the Release title (--title), and the interactive mode a
 # maintainer runs by hand. Real script, real git repos (bare remote + clone).
@@ -6,6 +7,8 @@
 #   bash tests/release-auto.test.sh
 #   RELEASE_SH=/path/to/old/release.sh bash tests/release-auto.test.sh   # negative control
 set -euo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RELEASE_SH="${RELEASE_SH:-$REPO_DIR/scripts/release.sh}"
@@ -423,5 +426,7 @@ fi
 
 echo
 echo "passed $PASS, failed $FAIL${MUT_FAIL:+; 负对照失效 $MUT_FAIL}"
+# negative controls run as child processes and never touch PASS / FAIL: regression-only in every mode
+REPORT_REGRESS_ONLY=1 report_counts "$PASS" "$FAIL" "" "${MUT_FAIL:--}"
 [ "${MUT_FAIL:-0}" -eq 0 ] || exit 1
 [ "$FAIL" -eq 0 ]

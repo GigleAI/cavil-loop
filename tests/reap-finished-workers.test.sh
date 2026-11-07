@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # `reap_finished_workers` / `kill_session_procs` 的行为守卫。
 #
 # 跑法：bash tests/reap-finished-workers.test.sh
@@ -10,6 +11,8 @@
 #   · 收少了 → 回到 issue #745 现场那种「session 堆到 13 个、load 28」的状态。
 # 两种都只能靠断言真实 tmux 行为拦住，读代码看不出来。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -179,4 +182,5 @@ chk "确认 issue/PR 都已不 doing 后可回收" "$(alive reaptest-issue907)" 
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

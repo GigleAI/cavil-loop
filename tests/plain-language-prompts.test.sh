@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: guard
 # 交人拍板评论的「大白话」规矩（GitHub#63）必须同时出现在每一份会写交人评论的 prompt 里，
 # 而且是同一份文字。
 #
@@ -15,6 +16,8 @@
 # review 增量、通用 review 模板交人那一步里各一份，逐字一致；通用 review 模板那份单独对拍
 # 「别的项目没有 review 增量」的成品，否则只有本项目的复审会照这条写。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -259,4 +262,5 @@ else
 fi
 mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

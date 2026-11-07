@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # 改名前注册的预览搬到新单元（GigleAI/cavil-loop#75）的守卫。
 #
 # 跑法：bash tests/preview-legacy-adopt.test.sh   （十几秒）
@@ -16,6 +17,8 @@
 #   · 已经迁完的机器 → 轮询入口不再调迁移，坏掉的旧预览永远没人修。
 # 每个关键断言都拿改动前的代码（BASE_COMMIT）跑同一场景做负对照，必须变红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -541,4 +544,5 @@ fi
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" = 0 ]

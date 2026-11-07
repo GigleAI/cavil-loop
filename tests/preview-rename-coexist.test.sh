@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: install
 # 改名过渡期新旧预览并存（GigleAI/cavil-loop#70，PR #72 第 1 轮复审）的行为守卫。
 #
 # 跑法：bash tests/preview-rename-coexist.test.sh
@@ -15,6 +16,8 @@
 # 每条断言都拿上一版实现（205d252）跑一遍负对照，必须变红。
 # ⑤ 的期望在 #75 改过：原先是「重注册留在旧单元」，现在旧单元起不来了，改成「搬到新单元」。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -176,4 +179,5 @@ fi
 echo
 mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" = 0 ]

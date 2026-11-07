@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 跑法：bash tests/paginated-latest-id.test.sh
 # 依赖：jq。无网络、不调真 agent（PATH 最前面放假 gh / claude / codex / opencode / agent）。
 #
@@ -11,6 +12,8 @@
 #
 # 负对照：REPO_DIR=<旧版 checkout> bash tests/paginated-latest-id.test.sh 应当变红。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(dirname "$TEST_DIR")}"
@@ -116,4 +119,5 @@ done
 
 echo
 echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" = 0 ]

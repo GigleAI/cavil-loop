@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# kind: unit
 # 一次派工发多条评论时，采集器只能按最终那条累计记录入账一次。
 #
 # 跑法：bash tests/weekly-report-dispatch-dedup.test.sh
@@ -16,6 +17,8 @@
 # 本测试用**派工模板里那段 printf 原样生成 footer**（不是手写简写 fixture），
 # 再走真实 collect.py 汇总，覆盖：不同 end、跨 issue/PR、不同派工不被误合并。
 set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -182,4 +185,5 @@ chk "issue #10 的墙上时长同样只算各次派工的最终累计"      "$(q
 
 echo
 echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]
