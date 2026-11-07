@@ -17,6 +17,7 @@
 // Then the old ones go: of the published development builds (exact tag shape AND marked
 // pre-release), all but the `--keep` highest versions are deleted with their tags; and drafts of a
 // lower development version than this run's (left by an earlier run a newer push cancelled).
+// Every deletion is judged again, from a fresh read, right before it is made (see the clean-up below).
 // Releases, the daemon's weekly releases, drafts of anything else and anything not in that exact
 // shape are never touched. A
 // deletion that fails is reported (a warning on the run) and retried by the next push.
@@ -90,6 +91,35 @@ export function staleDrafts(list, version) {
     .filter((r) => r.parsed && cmp(r.parsed, mine) < 0);
 }
 
+/**
+ * What the clean-up deletes, from one read of the release list: `old` = published development
+ * builds outside the `keep` highest, `draft` = drafts of a lower development version than `version`.
+ * Each carries the release's id (it cannot change, unlike a tag name) and the tag.
+ * The same function judges the selection and, from a fresh read right before each deletion, whether
+ * that one release still qualifies (`stillToDelete`) — one rule, judged twice.
+ */
+export function pruneCandidates(list, keep, version) {
+  const byTag = new Map(list.map((r) => [r?.tag_name, r]));
+  const old = toPrune(list, keep).map((r) => ({ kind: 'old', id: byTag.get(r.tag)?.id, tag: r.tag }));
+  const drafts = staleDrafts(list, version).map((r) => ({ kind: 'draft', id: list.find((x) => x?.draft === true && x?.tag_name === r.tag)?.id, tag: r.tag }));
+  return [...old, ...drafts];
+}
+
+/**
+ * From a fresh list: is `c` (one of `pruneCandidates`) still to be deleted? Same id, same tag, same
+ * kind, still selected by the same rule — and the tag names exactly one release. Anything missing
+ * or changed → { ok: false, why }.
+ */
+export function stillToDelete(list, c, keep, version) {
+  if (!Number.isSafeInteger(c?.id)) return { ok: false, why: '读不到它的发版编号' };
+  const same = list.filter((r) => r?.id === c.id);
+  if (same.length !== 1) return { ok: false, why: '这个发版已经不在了' };
+  if (list.filter((r) => r?.tag_name === c.tag).length !== 1) return { ok: false, why: `标签 ${c.tag} 对应的发版不止一个` };
+  const now = pruneCandidates(list, keep, version).find((x) => x.id === c.id);
+  if (!now || now.tag !== c.tag || now.kind !== c.kind) return { ok: false, why: '它已经不符合清理条件（被改过）' };
+  return { ok: true, release: same[0] };
+}
+
 // ---- talking to GitHub (the gh CLI, with the workflow's token) ---------------------------
 
 function gh(args) {
@@ -101,6 +131,25 @@ export function readReleases(repo) {
   const pages = JSON.parse(gh(['api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`]));
   if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error('GitHub 返回的发版列表看不懂');
   return pages.flat();
+}
+
+/**
+ * The tag of a deleted release: only when no release names it any more (fresh read) and it still
+ * points at the commit that release recorded (`target_commitish`, the full commit id it was created
+ * with). Anything else (a read that fails, another release on it, moved, not a commit id) keeps the tag.
+ */
+function deleteTag(repo, tag, release) {
+  const keepIt = (why) => console.log(`::warning::标签 ${tag} 没删：${why}`);
+  const want = String(release?.target_commitish ?? '');
+  if (!/^[0-9a-f]{40}$/.test(want)) return keepIt('发版没记下完整的提交号');
+  try {
+    if (readReleases(repo).some((r) => r?.tag_name === tag)) return keepIt('还有发版用着它');
+    const ref = JSON.parse(gh(['api', `repos/${repo}/git/ref/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`]));
+    if (ref?.object?.type !== 'commit' || ref?.object?.sha !== want) return keepIt('它已经不指向那个发版的提交');
+    gh(['api', '-X', 'DELETE', `repos/${repo}/git/refs/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`]);
+  } catch (e) {
+    keepIt(String(e.stderr ?? e.message).trim());
+  }
 }
 
 function main() {
@@ -147,19 +196,40 @@ function main() {
     console.log(`✅ 已发布 ${tag}（预发布）：${files.join(', ')}`);
   }
 
-  const now = readReleases(repo);
-  const old = [...toPrune(now, keep).map((r) => ({ ...r, draft: false })), ...staleDrafts(now, version).map((r) => ({ ...r, draft: true }))];
+  // Each deletion is judged again from a fresh read right before it (the list can change meanwhile:
+  // someone unmarks a pre-release, a newer run publishes). The release goes by its id; its tag only
+  // when no release names it any more and it still points at the commit the release recorded.
+  // A read that fails stops the clean-up (the next push retries it); GitHub has no conditional
+  // delete, so a change between that last read and the delete itself is not caught.
+  const old = pruneCandidates(readReleases(repo), keep, version);
   let failed = 0;
-  for (const r of old) {
+  let done = 0;
+  for (const c of old) {
+    let fresh;
     try {
-      gh(['release', 'delete', r.tag, '--repo', repo, ...(r.draft ? [] : ['--cleanup-tag']), '--yes']);
-      console.log(`🗑 删掉旧开发版${r.draft ? '（没发完的草稿）' : ''} ${r.tag}`);
+      fresh = readReleases(repo);
+    } catch (e) {
+      console.log(`::warning::删旧开发版前重读发版列表失败，这次不再删（下次合并再试）：${String(e.stderr ?? e.message).trim()}`);
+      failed += old.length - done - failed;
+      break;
+    }
+    const v = stillToDelete(fresh, c, keep, version);
+    if (!v.ok) {
+      console.log(`⏭ 不删 ${c.tag}：${v.why}`);
+      done++;
+      continue;
+    }
+    try {
+      gh(['api', '-X', 'DELETE', `repos/${repo}/releases/${c.id}`]);
+      console.log(`🗑 删掉旧开发版${c.kind === 'draft' ? '（没发完的草稿）' : ''} ${c.tag}`);
+      if (c.kind === 'old') deleteTag(repo, c.tag, v.release);
+      done++;
     } catch (e) {
       failed++;
-      console.log(`::warning::删旧开发版 ${r.tag} 失败（下次合并再试）：${String(e.stderr ?? e.message).trim()}`);
+      console.log(`::warning::删旧开发版 ${c.tag} 失败（下次合并再试）：${String(e.stderr ?? e.message).trim()}`);
     }
   }
-  console.log(`保留最近 ${keep} 个开发版；这次删了 ${old.length - failed} 个${failed ? `，${failed} 个没删掉` : ''}`);
+  console.log(`保留最近 ${keep} 个开发版；这次处理了 ${done} 个${failed ? `，${failed} 个没删掉` : ''}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

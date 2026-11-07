@@ -19,8 +19,9 @@ const script = join(root, 'scripts', 'dev-release.mjs');
 const SHA = 'a'.repeat(40);
 
 // The fake gh: just the calls the script makes, with GitHub's behaviour where it matters (a draft is
-// a release whose tag does not exist yet; lists are pages of 100; a delete with --cleanup-tag takes
-// the tag too).
+// a release whose tag does not exist yet; lists are pages of 100; releases have ids; deleting a
+// release leaves its tag, which is a ref of its own). `afterDelete` changes the state right after a
+// given release is deleted — someone editing the list while the clean-up runs.
 const FAKE_GH = String.raw`#!/usr/bin/env node
 const fs = require('fs');
 const path = require('path');
@@ -39,8 +40,42 @@ const die = (m) => { save(); process.stderr.write(m + '\n'); process.exit(1); };
 // the files: what follows the tag up to the first option
 const files = (list) => { const i = list.findIndex((x) => x.startsWith('--')); return (i < 0 ? list : list.slice(0, i)).filter((x) => fs.existsSync(x)).map((x) => path.basename(x)); };
 const find = (tag) => st.releases.find((r) => r.tag_name === tag);
+const relPath = (p) => /^repos\/[^/]+\/[^/]+\/(.*)$/.exec(p)?.[1] ?? '';
+if (a[0] === 'api' && a[1] === '-X' && a[2] === 'DELETE') {
+  const p = relPath(a[3]);
+  let m;
+  if ((m = /^releases\/(\d+)$/.exec(p))) {
+    const r = st.releases.find((x) => x.id === Number(m[1]));
+    if (!r) die('HTTP 404: Not Found');
+    if (fail('delete:' + r.tag_name)) die('HTTP 500');
+    st.releases = st.releases.filter((x) => x !== r);
+    st.deleted.push(r.tag_name);
+    for (const h of st.afterDelete?.[r.tag_name] ?? []) {
+      if (h.add) st.releases.push(h.add);
+      else Object.assign(st.releases.find((x) => x.tag_name === h.tag), h.set);
+    }
+    save();
+    process.exit(0);
+  }
+  if ((m = /^git\/refs\/tags\/(.+)$/.exec(p))) {
+    if (!st.tags.includes(m[1])) die('HTTP 422: Reference does not exist');
+    st.tags = st.tags.filter((t) => t !== m[1]);
+    st.tagsDeleted.push(m[1]);
+    save();
+    process.exit(0);
+  }
+  die('fake gh: unknown delete ' + p);
+}
+if (a[0] === 'api' && /^repos\/[^/]+\/[^/]+\/git\/ref\/tags\//.test(a[1])) {
+  const t = relPath(a[1]).slice('git/ref/tags/'.length);
+  if (!st.tags.includes(t)) die('HTTP 404: Not Found');
+  save();
+  process.stdout.write(JSON.stringify({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: st.tagSha?.[t] ?? st.sha } }));
+  process.exit(0);
+}
 if (a[0] === 'api') {
-  if (fail('list')) die('HTTP 502: Bad Gateway');
+  st.lists = (st.lists ?? 0) + 1;
+  if (fail('list') || fail('list#' + st.lists)) die('HTTP 502: Bad Gateway');
   const pages = [];
   for (let i = 0; i < st.releases.length; i += 100) pages.push(st.releases.slice(i, i + 100));
   if (!pages.length) pages.push([]);
@@ -53,7 +88,7 @@ if (a[1] === 'create') {
   if (find(tag)) die('a release with this tag already exists');
   const names = files(a.slice(3));
   if (fail('create')) die('HTTP 500');
-  const r = { tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target: a[a.indexOf('--target') + 1], assets: [] };
+  const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target_commitish: a[a.indexOf('--target') + 1], assets: [] };
   st.releases.unshift(r);
   if (fail('create-partial')) { r.assets = names.slice(0, 1).map((name) => ({ name })); die('upload failed: connection reset'); }
   r.assets = names.map((name) => ({ name }));
@@ -80,19 +115,12 @@ if (a[1] === 'edit') {
   save();
   process.exit(0);
 }
-if (a[1] === 'delete') {
-  if (!find(tag)) die('release not found');
-  if (fail('delete:' + tag)) die('HTTP 500');
-  st.releases = st.releases.filter((r) => r.tag_name !== tag);
-  if (a.includes('--cleanup-tag')) st.tags = st.tags.filter((t) => t !== tag);
-  st.deleted.push(tag);
-  save();
-  process.exit(0);
-}
 die('fake gh: unknown call ' + a.join(' '));
 `;
 
 interface Rel {
+  id?: number;
+  target_commitish?: string;
   tag_name: string;
   draft: boolean;
   prerelease: boolean;
@@ -103,7 +131,8 @@ const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${
 const pub = (tag: string, o: Partial<Rel> = {}): Rel => ({ tag_name: tag, draft: false, prerelease: false, assets: [{ name: 'latest.json' }], ...o });
 const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map((name) => ({ name })), ...o });
 
-function world(releases: Rel[], fail: string[] = []) {
+function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown> = {}) {
+  const releases = input.map((r, i) => ({ id: 1000 + i, target_commitish: SHA, ...r }));
   const dir = tempDir();
   const bin = join(dir, 'bin');
   mkdirSync(bin);
@@ -111,7 +140,7 @@ function world(releases: Rel[], fail: string[] = []) {
   chmodSync(join(bin, 'gh'), 0o755);
   const state = join(dir, 'state.json');
   const tags = releases.filter((r) => !r.draft).map((r) => r.tag_name);
-  writeFileSync(state, JSON.stringify({ releases, tags, fail, calls: [], deleted: [] }));
+  writeFileSync(state, JSON.stringify({ releases, tags, fail, calls: [], deleted: [], tagsDeleted: [], nextId: 5000, sha: SHA, ...extra }));
   const out = join(dir, 'dist-release');
   mkdirSync(out);
   writeFileSync(join(dir, 'notes.md'), '开发版\n');
@@ -125,16 +154,17 @@ function world(releases: Rel[], fail: string[] = []) {
     });
     return { code: r.status, out: r.stdout + r.stderr };
   };
-  const read = () => JSON.parse(readFileSync(state, 'utf8')) as { releases: Rel[]; tags: string[]; calls: string[][]; deleted: string[]; fail: string[] };
+  const read = () => JSON.parse(readFileSync(state, 'utf8')) as { releases: Rel[]; tags: string[]; calls: string[][]; deleted: string[]; tagsDeleted: string[]; fail: string[] };
   const fail2 = (...f: string[]) => {
     const s = read();
     s.fail.push(...f);
     writeFileSync(state, JSON.stringify(s));
   };
-  return { build, run, read, fail: fail2 };
+  return { build, run, read, fail: fail2, stateFile: state };
 }
 
-const writes = (calls: string[][]) => calls.filter((c) => c[0] === 'release').map((c) => `${c[1]} ${c[2]}`);
+const writes = (calls: string[][]) =>
+  calls.filter((c) => c[0] === 'release' || (c[0] === 'api' && c[2] === 'DELETE')).map((c) => (c[0] === 'release' ? `${c[1]} ${c[2]}` : `DELETE ${c[3].replace(/^repos\/[^/]+\/[^/]+\//, '')}`));
 const published = (s: { releases: Rel[] }, tag: string) => s.releases.find((r) => r.tag_name === tag && !r.draft);
 
 describe('publishing a development build (GitHub#215)', () => {
@@ -150,8 +180,8 @@ describe('publishing a development build (GitHub#215)', () => {
     expect(s.calls.find((c) => c[1] === 'edit')).toEqual(expect.arrayContaining(['--draft=false', '--prerelease', '--latest=false']));
     expect(published(s, 'client/v0.5.1-dev.387')).toMatchObject({ prerelease: true, assets: files('0.5.1-dev.387').map((name) => ({ name })) });
     expect(s.tags).toContain('client/v0.5.1-dev.387');
-    // the list was read before writing, after publishing (check) and before pruning
-    expect(s.calls.filter((c) => c[0] === 'api').length).toBe(3);
+    // the list was read before writing, after publishing (check) and before pruning (nothing to prune here)
+    expect(s.calls.filter((c) => c[0] === 'api' && c[1] === '--paginate').length).toBe(3);
   });
 
   it('a higher development build is already out: nothing is published (an older run that finished late)', () => {
@@ -241,14 +271,18 @@ describe('keeping the latest 10 development builds (GitHub#215)', () => {
     // dev.1 … dev.11 of 0.5.1 plus the new dev.12: twelve; dev.9 / dev.10 / dev.11 sort by number;
     // the list is not in version order (dev.1 comes first), so "the 10 highest" is by version, not by position
     const devs = Array.from({ length: 11 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
-    const w = world([devs[0], ...devs.slice(1).reverse(), ...others]);
+    const order = [devs[0], ...devs.slice(1).reverse(), ...others];
+    const devIds = new Map(order.map((r, i) => [r.tag_name, 1000 + i]));
+    const w = world(order);
     w.build('0.5.1-dev.12');
     const r = w.run('0.5.1-dev.12');
     expect(r.code, r.out).toBe(0);
     const s = w.read();
     expect(s.deleted.sort()).toEqual(['client/v0.5.1-dev.1', 'client/v0.5.1-dev.2']);
-    expect(s.calls.filter((c) => c[1] === 'delete').every((c) => c.includes('--cleanup-tag'))).toBe(true);
-    expect(s.tags).not.toContain('client/v0.5.1-dev.1');
+    // by id, then the tag
+    const idOf = (t: string) => devIds.get(t);
+    expect(writes(s.calls).filter((x) => x.startsWith('DELETE'))).toEqual([`DELETE releases/${idOf('client/v0.5.1-dev.2')}`, 'DELETE git/refs/tags/client/v0.5.1-dev.2', `DELETE releases/${idOf('client/v0.5.1-dev.1')}`, 'DELETE git/refs/tags/client/v0.5.1-dev.1']);
+    expect(s.tagsDeleted.sort()).toEqual(['client/v0.5.1-dev.1', 'client/v0.5.1-dev.2']);
     const left = devsLeft(s);
     expect(left).toEqual(Array.from({ length: 10 }, (_, i) => `0.5.1-dev.${12 - i}`));
     for (const o of others) expect(s.releases.map((x) => x.tag_name)).toContain(o.tag_name);
@@ -269,8 +303,67 @@ describe('keeping the latest 10 development builds (GitHub#215)', () => {
     expect(r.code, r.out).toBe(0);
     const s = w.read();
     expect(s.deleted).toEqual(['client/v0.5.1-dev.380']);
-    expect(s.calls.find((c) => c[1] === 'delete')).not.toContain('--cleanup-tag');
+    expect(s.tagsDeleted).toEqual([]);
     expect(s.releases.map((x) => x.tag_name).sort()).toEqual(['client/v0.5.1-dev.370', 'client/v0.5.1-dev.387', 'client/v0.5.1-dev.390']);
+  });
+
+  it('changed while the clean-up runs: a build un-marked as pre-release meanwhile is neither deleted nor loses its tag (re-read before each deletion)', () => {
+    const devs = Array.from({ length: 12 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
+    // dev.2 goes first (higher of the two); while it is being deleted, dev.1 stops being a pre-release
+    const w = world([...devs].reverse(), [], { afterDelete: { 'client/v0.5.1-dev.2': [{ tag: 'client/v0.5.1-dev.1', set: { prerelease: false } }] } });
+    w.build('0.5.1-dev.12');
+    const r = w.run('0.5.1-dev.12');
+    expect(r.code, r.out).toBe(0);
+    const s = w.read();
+    // reachability: the clean-up did run and delete dev.2
+    expect(s.deleted).toEqual(['client/v0.5.1-dev.2']);
+    expect(s.tagsDeleted).toEqual(['client/v0.5.1-dev.2']);
+    expect(s.releases.find((x) => x.tag_name === 'client/v0.5.1-dev.1')).toMatchObject({ prerelease: false });
+    expect(s.tags).toContain('client/v0.5.1-dev.1');
+    expect(r.out).toContain('不删 client/v0.5.1-dev.1');
+  });
+
+  it('a release replaced under the same tag meanwhile (new id) is not deleted; a newer build published meanwhile moves nothing out of the latest 10', () => {
+    const devs = Array.from({ length: 12 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
+    const replaced = { ...devRel('0.5.1-dev.1'), id: 9999, target_commitish: SHA };
+    const w = world([...devs].reverse(), [], {
+      afterDelete: { 'client/v0.5.1-dev.2': [{ add: replaced }] },
+    });
+    // the replacement only appears once dev.2 is gone: drop the original dev.1 at the same moment
+    const st = w.read() as any;
+    st.afterDelete['client/v0.5.1-dev.2'].unshift({ tag: 'client/v0.5.1-dev.1', set: { tag_name: 'gone/x' } });
+    writeFileSync((w as any).stateFile, JSON.stringify(st));
+    w.build('0.5.1-dev.12');
+    const r = w.run('0.5.1-dev.12');
+    expect(r.code, r.out).toBe(0);
+    const s = w.read();
+    expect(s.deleted).toEqual(['client/v0.5.1-dev.2']);
+    expect(s.releases.some((x) => x.id === 9999)).toBe(true);
+  });
+
+  it('the fresh read before a deletion fails: that one and the rest are left for the next push', () => {
+    const devs = Array.from({ length: 12 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
+    // dev.12 is already published: list reads 1 to decide, 2 to select, 3 before the first delete,
+    // 4 for its tag, 5 before the second delete
+    const w = world([...devs].reverse(), ['list#5']);
+    w.build('0.5.1-dev.12');
+    const r = w.run('0.5.1-dev.12');
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain('重读发版列表失败');
+    expect(w.read().deleted).toEqual(['client/v0.5.1-dev.2']);
+  });
+
+  it('a tag that no longer points at the release\'s commit is kept (the release still goes)', () => {
+    const devs = Array.from({ length: 10 }, (_, i) => devRel(`0.5.1-dev.${i + 1}`));
+    const w = world([...devs].reverse(), [], { tagSha: { 'client/v0.5.1-dev.1': 'b'.repeat(40) } });
+    w.build('0.5.1-dev.11');
+    const r = w.run('0.5.1-dev.11');
+    expect(r.code, r.out).toBe(0);
+    const s = w.read();
+    expect(s.deleted).toEqual(['client/v0.5.1-dev.1']);
+    expect(s.tagsDeleted).toEqual([]);
+    expect(s.tags).toContain('client/v0.5.1-dev.1');
+    expect(r.out).toContain('标签 client/v0.5.1-dev.1 没删');
   });
 
   it('a deletion that fails is a warning on the run; the others still go, and the next run retries it', () => {

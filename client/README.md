@@ -302,7 +302,7 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 ## 发版
 
-**开发版**（#215）：客户端改动每次合进 main，`.github/workflows/client.yml` 在 Apple 芯片的 Mac 上打包前把版本号改成 `X.Y.(Z+1)-dev.N`（`scripts/dev-version.mjs`：X.Y.Z 是三处一致的当前版本号，N 是 main 上的提交数；只改 CI 机器上的工作区，不提交），用发版签名私钥签名（和正式版同一把，维护者在 #215 定的），快速测试、打包、体积门槛、真实更新检查都过了以后，由 `publish development build` 这一步（`scripts/dev-release.mjs`）发成预发布：先建草稿带齐文件再发布，已有更高的开发版就不发，只留版本号最高的 10 个（连标签一起删更旧的；正式版、daemon 的发版、别的形状一概不碰）。每周定时和手动触发的打包也改成开发版号，但用一次性密钥、不发布。
+**开发版**（#215）：客户端改动每次合进 main，`.github/workflows/client.yml` 在 Apple 芯片的 Mac 上打包前把版本号改成 `X.Y.(Z+1)-dev.N`（`scripts/dev-version.mjs`：X.Y.Z 是三处一致的当前版本号，N 是 main 上的提交数；只改 CI 机器上的工作区，不提交），用发版签名私钥签名（和正式版同一把，维护者在 #215 定的），快速测试、打包、体积门槛、真实更新检查都过了以后，由 `publish development build` 这一步（`scripts/dev-release.mjs`）发成预发布：先建草稿带齐文件再发布，已有更高的开发版就不发，只留版本号最高的 10 个（连标签一起删更旧的；正式版、daemon 的发版、别的形状一概不碰）。删除时逐个处理：每删一个之前重新读一次发版列表，按发版编号（不按标签名）找到它，用同一条规则重判它还该不该删，不该删（被改成不是预发布、同名换了一个发版、进了最新 10 个）就跳过；重读失败就停，剩下的留给下一次合并。标签只在没有发版再用它、而且仍指向那个发版记下的提交时才删。GitHub 没有「内容没变才删」的接口，最后一次重读和删除之间的变化仍拦不住。每周定时和手动触发的打包也改成开发版号，但用一次性密钥、不发布。
 
 **正式版**：改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 的 `version`（三处一致）→ 合入 main → 打标签 `client/vX.Y.Z` 并推送。`.github/workflows/client.yml` 会在两台 Mac 上各打一个 dmg 和一个更新包（`tauri build --bundles app`，带 `createUpdaterArtifacts` + `scripts/make-dmg.mjs`）、过体积门槛（`scripts/size-gate.mjs`：dmg 和更新包每个 ≤ 20 MB）、跑 `scripts/mac-open-check.sh` 和 `scripts/mac-update-check.sh`，通过后生成 `latest.json`（`scripts/update-manifest.mjs`）并建 Release，附件是两个 dmg、两个更新包（`Cavil-Loop-<版本>-<芯片>.app.tar.gz`）和它们的签名（`.sig`）、`latest.json`（说明取自 `RELEASE_NOTES.md`，不标成 Latest，daemon 的每周发版不受影响）。
 
