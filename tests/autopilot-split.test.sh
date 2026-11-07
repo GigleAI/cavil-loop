@@ -390,6 +390,22 @@ $SUMMARY" "$H1" "pending/merge"
     tick
     chk "恢复后 → 摘掉 pending/PR，只剩 pending/human" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/no"
     chk "  → 交接记录已清" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
+    # 复审第 2 轮：第一个写请求（加 Done）已经完成、第二个（摘 pending/PR）发出之前，维护者重开 issue、新一轮在跑
+    fresh; split_ready
+    merge_only_tick
+    jset items.json '.["51"].state = "closed" | .["51"].state_reason = "completed"'
+    printf 'cd %q && jq %q items.json > i.tmp && mv i.tmp items.json && jq %q labels.json > l.tmp && mv l.tmp labels.json\n' \
+        "$GD" '.["51"].state = "open" | del(.["51"].state_reason)' '.["51"] = ["doing/agent"]' > "$GD/hook_DELETE_issues_51_labels_1"
+    tick
+    chk "加 Done 之后、摘标签之前被重开 → 不再摘任何标签（只剩 doing/agent）" "$(labels_of 51)" "doing/agent"
+    chk "  → 到达性：Done 确实先加过、摘标签的 hook 确实跑了" "$(n_calls "^gh api -X POST $R/issues/51/labels -f labels\[\]=Done")/$(issue_state 51)" "1/open"
+    chk "  → 交接作废、下一轮也不再动" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
+    fresh; split_ready
+    merge_only_tick
+    printf 'cd %q && jq %q labels.json > l.tmp && mv l.tmp labels.json\n' "$GD" '.["51"] += ["pending/agent"]' > "$GD/hook_after_POST_issues_51_labels_1"
+    tick
+    chk "打开的 issue：加 pending/human 之后、摘 pending/PR 之前人打了 pending/agent → 后面不再写" "$(has_label 51 pending/agent)/$(has_label 51 pending/PR)" "yes/yes"
+    chk "  → 到达性：pending/human 确实先加上了" "$(has_label 51 pending/human)" yes
     fresh; split_ready
     merge_only_tick
     jset items.json '.["51"].state = "closed" | .["51"].state_reason = "completed"'
@@ -502,7 +518,7 @@ mutate unknown-as-not-split '        2) AUTOPILOT_REASON="$SPLIT_PARENT_WHY"; re
 mutate handoff-ignores-flow '            if [ -n "$rest" ]; then
                 AH_V=superseded' '            if false; then
                 AH_V=superseded'
-mutate handoff-no-reread '    if [ "$AH_V" != "$v" ] || [ "$AH_ID" != "$id" ]; then' '    if false; then'
+mutate handoff-no-reread '        if [ "$AH_V" != "$v" ] || [ "$AH_ID|$AH_NEXT" != "$id" ]; then' '        if false; then'
 mutate handoff-delete-unchecked '            printf '"'"'%s'"'"' "$out" | grep -q '"'"'HTTP 404'"'"' && continue' '            continue'
 mutate bare-number-dropped '([ $refs[] | select(.[0] == null or (.[0] | ascii_downcase) == ($R | ascii_downcase)) | .[1] | tonumber ]' '([ $refs[] | select(.[0] != null and (.[0] | ascii_downcase) == ($R | ascii_downcase)) | .[1] | tonumber ]'
 mutate foreign-not-read '        if [[ "$p" == *"#"* ]]; then prepo="${p%#*}"; pn="${p##*#}"; else prepo="$REPO"; pn="$p"; fi' '        if [[ "$p" == *"#"* ]]; then prepo="$REPO"; pn="${p##*#}"; else prepo="$REPO"; pn="$p"; fi'

@@ -23,6 +23,8 @@ F_post_comment / F_post_labels / F_delete_labels make those writes fail; F_post_
 adding just that label, F_post_label_noop_<name> answers success without adding it; F_user fails `gh api user`.
 tokens.log records the GH_TOKEN each call ran with.
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
+hook_<POST|DELETE>_issues_<n>_labels_<k> runs right before the k-th label add / remove on item n,
+hook_after_POST_issues_<n>_labels_<k> right after the k-th label add took effect;
 used to change GitHub between the daemon's check and its re-read.
 """
 import json, os, subprocess, sys, time
@@ -378,6 +380,19 @@ if method == "GET":
         emit({"state": "success", "statuses": c.get("statuses", [])})
     emit([], pages=True)
 
+# 写之前的 hook（GitHub#233）：hook_<方法>_issues_<n>_labels_<k> 在对这个条目第 k 次加 / 摘标签之前运行，
+# 用来模拟「上一个写请求已经完成、下一个还没发出时，人改了 GitHub」
+if method in ("POST", "DELETE") and len(parts) >= 3 and parts[0] == "issues" and parts[2] == "labels":
+    _wk = "%s_issues_%s_labels" % (method, parts[1])
+    _wc = p("count_" + _wk)
+    _c = int(open(_wc).read()) + 1 if os.path.exists(_wc) else 1
+    open(_wc, "w").write(str(_c))
+    _wh = p("hook_%s_%d" % (_wk, _c))
+    if os.path.exists(_wh):
+        subprocess.run(["bash", _wh], check=False, stdin=subprocess.DEVNULL, timeout=30)
+        items = load("items.json", {})
+        labels = load("labels.json", {})
+
 if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
     if os.path.exists(p("F_post_comment")):
         fail("HTTP 500: injected comment failure")
@@ -403,6 +418,11 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
             append_event(parts[1], "labeled", l)
     save("labels.json", labels)
     touch(parts[1])
+    # hook_after_POST_issues_<n>_labels_<k>：第 k 次加标签已经生效之后运行（GitHub#233）
+    _ah = p("hook_after_POST_issues_%s_labels_%d" % (parts[1], _c))
+    if os.path.exists(_ah):
+        subprocess.run(["bash", _ah], check=False, stdin=subprocess.DEVNULL, timeout=30)
+        cur = load("labels.json", {}).get(parts[1], [])
     emit([{"name": l} for l in cur])
 
 if method == "DELETE" and len(parts) == 4 and parts[0] == "issues" and parts[2] == "labels":

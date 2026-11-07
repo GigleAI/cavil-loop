@@ -4845,87 +4845,90 @@ autopilot_merged_handoff() {   # <issue> <PR>
         fi
         autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
     fi
-    # 2. 判定 → 写之前再判一次 → 写
-    autopilot_handoff_judge "$issue" "$pr"
-    v="$AH_V"; id="$AH_ID"
-    case "$v" in
-        unknown) log "  ⚠️ 托管合并交接：$AH_REASON，下轮再试"; return 1 ;;
-        finished) autopilot_state_set "$sf" 'del(.handoff[$p])' --arg p "$pr" || true; return 0 ;;
-        superseded)
-            autopilot_state_set "$sf" 'del(.handoff[$p])' --arg p "$pr" || true
-            log "  托管 PR #$pr 已合并；issue #$issue 已经挂着 $AH_REASON（新一轮已开始或已交人）→ 标签不动"
-            return 0 ;;
-    esac
-    autopilot_handoff_judge "$issue" "$pr"
-    if [ "$AH_V" != "$v" ] || [ "$AH_ID" != "$id" ]; then
-        log "  托管合并交接：issue #$issue 判定之后有变化（重判 $AH_V${AH_REASON:+：$AH_REASON}），本轮不写"; return 1
-    fi
-    case "$v" in
-        done)
-            autopilot_handoff_converge "$issue" "$LABEL_DONE" "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" \
-                "${LABEL_PENDING_AGENT_DEFAULT:-}" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "$LABEL_AGENT_DOING" || return 1
-            log "  PR #$pr → Done；托管 issue #$issue 已被关闭 → Done" ;;
-        flip)
-            # 先加 pending/human 并记下「这是 daemon 自己加的」：摘 pending/PR 失败时，下轮重判认得出这个
-            # pending/human 不是人的新动作，接着摘，而不是当成「新一轮已开始」把交接作废
-            if ! printf '%s' "$id" | grep -qF "|human-by-daemon"; then
-                run_gh "托管合并交接 issue #$issue 加 $LABEL_PENDING_HUMAN" \
-                    gh_write api -X POST "repos/$REPO/issues/$issue/labels" -f "labels[]=$LABEL_PENDING_HUMAN" >/dev/null || return 1
-                autopilot_state_set "$sf" '.handoff[$p].human_added = true' --arg p "$pr" || true
-            fi
-            autopilot_handoff_converge "$issue" "" "$LABEL_PENDING_PR" || return 1
-            log "  PR #$pr → Done；托管 issue #$issue 留给人验收 → $LABEL_PENDING_HUMAN" ;;
-        *) return 1 ;;
-    esac
-    autopilot_state_set "$sf" 'del(.handoff[$p])' --arg p "$pr" || true
-    return 0
+    # 2. 一次只写一个标签：每一步都现读判定两次（结论、依据、下一步都不变才写），写完回到循环开头重新判。
+    #    这样加完 Done / pending/human 之后、摘下一个标签之前，有人重开 issue、新一轮开工，下一圈就停手
+    local step=0 kind lab
+    while [ "$step" -lt 12 ]; do
+        step=$((step + 1))
+        autopilot_handoff_judge "$issue" "$pr"
+        v="$AH_V"; id="$AH_ID|$AH_NEXT"
+        case "$v" in
+            unknown) log "  ⚠️ 托管合并交接：$AH_REASON，下轮再试"; return 1 ;;
+            finished)
+                autopilot_state_set "$sf" 'del(.handoff[$p])' --arg p "$pr" || true
+                log "  PR #$pr → Done；托管 issue #$issue 交接完成（$( [ "$AH_STATE" = closed ] && echo "已关闭 → $LABEL_DONE" || echo "留给人验收 → $LABEL_PENDING_HUMAN")）"
+                return 0 ;;
+            superseded)
+                autopilot_state_set "$sf" 'del(.handoff[$p])' --arg p "$pr" || true
+                log "  托管 PR #$pr 已合并；issue #$issue 已经挂着 $AH_REASON（新一轮已开始或已交人）→ 标签不动"
+                return 0 ;;
+        esac
+        autopilot_handoff_judge "$issue" "$pr"
+        if [ "$AH_V" != "$v" ] || [ "$AH_ID|$AH_NEXT" != "$id" ]; then
+            log "  托管合并交接：issue #$issue 判定之后有变化（重判 $AH_V${AH_REASON:+：$AH_REASON}），本轮不写"; return 1
+        fi
+        kind="${AH_NEXT%%:*}"; lab="${AH_NEXT#*:}"
+        case "$kind" in
+            add)
+                run_gh "托管合并交接 issue #$issue 加 $lab" \
+                    gh_write api -X POST "repos/$REPO/issues/$issue/labels" -f "labels[]=$lab" >/dev/null || return 1
+                # 记下「这个 pending/human 是 daemon 自己加的」：下一圈重判认得出它不是人的新动作
+                [ "$lab" != "$LABEL_PENDING_HUMAN" ] || autopilot_state_set "$sf" '.handoff[$p].human_added = true' --arg p "$pr" || true ;;
+            del) autopilot_handoff_converge "$issue" "" "$lab" || return 1 ;;
+            *) log "  ⚠️ 托管合并交接：issue #$issue 下一步读不懂（$AH_NEXT）"; return 1 ;;
+        esac
+    done
+    log "  ⚠️ 托管合并交接：issue #$issue 收敛步数超出上限，下轮再试"
+    return 1
 }
 
 # 交接的纯判定（不写任何东西）：现读 issue，AH_V =
 #   unknown     读不到 / 缺字段 / 状态不认识
 #   finished    已经是目标状态（关闭且挂着 Done、没有要摘的；或打开、挂着 daemon 自己加的 pending/human、没有 pending/PR）
 #   superseded  打开，挂着任何流程标签（daemon 自己加的那个 pending/human 除外）→ 新一轮已开始，不动
-#   done        关闭，还没收敛到 Done
-#   flip        打开，没有流程标签（或只有 daemon 自己加的 pending/human），还没收敛
+#   done        关闭，还没收敛到 Done；flip  打开，没有流程标签（或只有 daemon 自己加的 pending/human），还没收敛
+# AH_NEXT = 下一个要写的标签（add:<标签> / del:<标签>），一次只写一个
 # AH_ID = 状态 | 排好序的标签集合 | daemon 自己加没加过 pending/human，两次判定逐字比较
 autopilot_handoff_judge() {   # <issue> <PR>
-    local issue="$1" pr="$2" sf="${STATE_FILE:-$STATE_DIR/state.json}" ij st labs mine flow rest
-    AH_V=unknown; AH_ID=""; AH_REASON=""
+    local issue="$1" pr="$2" sf="${STATE_FILE:-$STATE_DIR/state.json}" ij st labs mine rest
+    AH_V=unknown; AH_ID=""; AH_REASON=""; AH_NEXT=""; AH_STATE=""
     if ! ij=$(gh api "repos/$REPO/issues/$issue" 2>/dev/null) \
        || ! printf '%s' "$ij" | jq -e '(.state | type) == "string" and (.labels | type) == "array"' >/dev/null 2>&1; then
         AH_REASON="读不到 issue #$issue（或缺字段）"; return 0
     fi
     st=$(printf '%s' "$ij" | jq -r .state); labs=$(printf '%s' "$ij" | jq -c '[.labels[].name] | sort')
+    AH_STATE="$st"
     mine=no; [ "$(autopilot_state_get "$sf" '.handoff[$p].human_added // false' --arg p "$pr")" = true ] && mine=yes
     AH_ID="$st|$labs$( [ "$mine" = yes ] && echo '|human-by-daemon')"
+    _ah_has() { printf '%s' "$labs" | jq -e --arg L "$1" 'index($L) != null' >/dev/null 2>&1; }
     case "$st" in
         closed)
-            if printf '%s' "$labs" | jq -e --arg D "$LABEL_DONE" --argjson r "$(autopilot_handoff_done_remove)" \
-                    'index($D) != null and ([.[] | select(. as $l | $r | index($l))] | length) == 0' >/dev/null 2>&1; then
-                AH_V=finished
+            AH_V=done
+            if ! _ah_has "$LABEL_DONE"; then AH_NEXT="add:$LABEL_DONE"
             else
-                AH_V=done
+                AH_NEXT=$(printf '%s' "$labs" | jq -r --argjson r "$(autopilot_handoff_done_remove)" \
+                    'first(.[] | select(. as $l | $r | index($l))) // ""' 2>/dev/null)
+                if [ -n "$AH_NEXT" ]; then AH_NEXT="del:$AH_NEXT"; else AH_V=finished; fi
             fi ;;
         open)
-            flow=$(printf '%s' "$labs" | jq -r --argjson f "$(autopilot_handoff_flow_labels)" '[.[] | select(. as $l | $f | index($l))] | join(",")')
-            rest="$flow"
-            if [ "$mine" = yes ]; then
-                rest=$(printf '%s' "$labs" | jq -r --argjson f "$(autopilot_handoff_flow_labels)" --arg H "$LABEL_PENDING_HUMAN" \
-                    '[.[] | select(. != $H) | select(. as $l | $f | index($l))] | join(",")')
-            fi
+            # 流程标签（daemon 自己加的那个 pending/human 不算）：有就说明新一轮已开始或已交人
+            rest=$(printf '%s' "$labs" | jq -r --argjson f "$(autopilot_handoff_flow_labels)" --arg H "$LABEL_PENDING_HUMAN" --arg m "$mine" \
+                '[.[] | select($m != "yes" or . != $H) | select(. as $l | $f | index($l))] | join(",")')
             if [ -n "$rest" ]; then
                 AH_V=superseded; AH_REASON="$rest"
-            elif [ "$mine" = yes ] && ! printf '%s' "$labs" | jq -e --arg P "$LABEL_PENDING_PR" 'index($P) != null' >/dev/null 2>&1 \
-                 && printf '%s' "$labs" | jq -e --arg H "$LABEL_PENDING_HUMAN" 'index($H) != null' >/dev/null 2>&1; then
-                AH_V=finished
-            elif [ "$mine" = yes ] && ! printf '%s' "$labs" | jq -e --arg H "$LABEL_PENDING_HUMAN" 'index($H) != null' >/dev/null 2>&1; then
+            elif [ "$mine" = yes ] && ! _ah_has "$LABEL_PENDING_HUMAN"; then
                 # daemon 加过 pending/human，现在却没了：人摘的，算人接过了这件事
                 AH_V=superseded; AH_REASON="（人已摘掉 daemon 加的 $LABEL_PENDING_HUMAN）"
+            elif [ "$mine" != yes ]; then
+                AH_V=flip; AH_NEXT="add:$LABEL_PENDING_HUMAN"
+            elif _ah_has "$LABEL_PENDING_PR"; then
+                AH_V=flip; AH_NEXT="del:$LABEL_PENDING_PR"
             else
-                AH_V=flip
+                AH_V=finished
             fi ;;
         *) AH_REASON="issue #$issue 状态异常（'$st'）" ;;
     esac
+    unset -f _ah_has
 }
 
 # 关闭的托管 issue 收敛到 Done 时要摘的标签（JSON 数组）
