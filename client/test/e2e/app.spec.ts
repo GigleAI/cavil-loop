@@ -1635,7 +1635,9 @@ test('pending/human: start-up summary, one notification per new label at the nex
   await expect.poll(() => notes().length).toBeGreaterThan(0);
   expect(notes().filter((a) => a.kind === 'item')).toEqual([]);
   expect(notes().filter((a) => a.kind === 'summary').map((a) => a.title)).toContain(`${N} 条待处理`);
-  expect(badge()).toBe(N);
+  // the shell gets the summary first and the badge right after (one call at a time): the
+  // notification having arrived does not mean the badge has (PR #254 review round 1)
+  await expect.poll(badge).toBe(N);
   await expect(page.getByTestId('launch-at-login')).not.toBeChecked();
   // the box follows what the system says, not the click: it turns on once the system answered
   await page.getByTestId('launch-at-login').click();
