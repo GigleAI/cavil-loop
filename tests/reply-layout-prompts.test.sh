@@ -298,8 +298,8 @@ case "$1" in has-session) exit 1 ;; esac
 exit 0
 SH
 chmod +x "$DSB/bin/gh" "$DSB/bin/tmux"
-# 编号取得很大，避免撞上本机真实派工写在 /tmp 下的 prompt
-N_NEW=987811; N_CMT=987812; N_PR=987813
+# 编号取得很大，避免撞上本机真实派工写在 /tmp 下的 prompt；按进程号错开，两份本测试同时跑也不会互相覆盖
+N_NEW=$((900000000 + ($$ % 1000000) * 3)); N_CMT=$((N_NEW + 1)); N_PR=$((N_NEW + 2))
 dispatch_render() {   # $1 = 出图地址（可空）；$2 = 输出目录
     local url="$1" out="$2" w="$2.work" kind f
     rm -rf "$w" "$out"; mkdir -p "$w/state" "$w/wt" "$out"
@@ -403,6 +403,10 @@ fi
 if neg_sandbox; then
     sed -i '/^## 交人评论必须带上人工问题的最终回答/,/^## /{s/链接不能代替答案。/链接可以代替答案。/}' "$P/issue-comment.template.md"
     expect_red "issue-comment 本轮问答的规则条目改了一句" "issue-comment: 本轮问答的规则条目和 pr-comment 不一致"
+fi
+if neg_sandbox; then
+    drop_section "$P/pr-comment.template.md" "$QA_H"
+    expect_red "pr-comment 少了本轮问题与回答（issue 侧原样）" "pr-comment: 没有本轮问题与回答"
 fi
 if neg_sandbox; then
     sed -i '/^2L\. \*\*worker 交人评论的版式/d' "$P/review.template.md"
