@@ -26,6 +26,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/compat.sh
+source "$TEST_DIR/lib/compat.sh"
 FAKE="$TEST_DIR/fixtures/requester-bot-fake-gh.py"
 REF="$TEST_DIR/fixtures/requester-bot-ref-consumer.py"
 FOOTER_FILE="$TEST_DIR/fixtures/requester-bot-real-footer.md"   # 本仓库一条真实评论的用量 footer 原样
@@ -39,11 +41,7 @@ cleanup() { [ -z "$HOOK_PID" ] || kill "$HOOK_PID" 2>/dev/null; [ -n "${KEEP_SAN
 trap cleanup EXIT
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 export HOME="$SANDBOX/home"
-cat > "$SANDBOX/bin/gh" <<EOF
-#!/usr/bin/env bash
-exec python3 -I "$FAKE" "\$@"
-EOF
-chmod +x "$SANDBOX/bin/gh"
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 -I "$FAKE"
 
 pass=0; fail=0; QUIET=0
 PREP_FAILED="$SANDBOX/prep-failed"; : > "$PREP_FAILED"
@@ -202,14 +200,20 @@ footer_intact() {   # 评论正文末尾就是 footer 原样（评论经 $( ) �
 echo "── 1. 开关关：和改动前逐字节一致 ──"
 # ─────────────────────────────────────────────────────────────────────────
 off_suite() {   # <scripts 副本>
-    local S="$1" n
+    local S="$1" n same=0 old_out old_rc
+    compat_skip "开关关 · 叫醒脚本的退出码、输出、GitHub 调用与改动前" "$OLD" "$S" scripts prompts && same=1
     for n in 80 81 82; do
-        fresh false; wake "$OLD" $n; local old_out="$OUT" old_rc=$RC; cp "$RW/gh/calls.log" "$SANDBOX/calls-old"
+        if [ "$same" = 0 ]; then
+            fresh false; wake "$OLD" $n; old_out="$OUT" old_rc=$RC; cp "$RW/gh/calls.log" "$SANDBOX/calls-old"
+        fi
         fresh false; wake "$S" $n
+        [ "$same" = 0 ] || old_rc=$RC   # 同版本：只剩「退出码是 2」这一半
         chk "开关关 · #$n：退出码 2（和改动前一样）" "$RC|$old_rc" "2|2"
         chk "开关关 · #$n：零写请求" "$(writes)" 0
+        if [ "$same" = 0 ]; then
         chk "开关关 · #$n：输出和改动前逐字节相同" "$([ "$OUT" = "$old_out" ] && echo same || echo diff)" same
         chk "开关关 · #$n：GitHub 调用和改动前逐条相同" "$(cmp -s "$SANDBOX/calls-old" "$RW/gh/calls.log" && echo same || echo diff)" same
+        fi
         chk "开关关 · #$n：交接评论没动" "$(body_of $n "$(eval echo \$C$n)" | grep -c 'wake-event')" 0
     done
     # 到达性：同一环境里机器人提的条目照常叫醒（上面的拒绝不是因为脚本根本跑不起来）
@@ -226,14 +230,17 @@ compose_out() {   # <scripts 副本> <kind>
 OLD_P="$SANDBOX/old-scripts-new-prompts"; copy_tree "$SANDBOX/old-src" "$OLD_P"
 rm -rf "$OLD_P/prompts"; cp -r "$REPO_DIR/prompts" "$OLD_P/prompts"
 off_prompt_suite() {   # <scripts 副本>
-    local S="$1" kind
+    local S="$1" kind same=0
     new_env false
+    compat_skip "开关关 · 四类提示词与改动前的拼装" "$OLD_P" "$S" scripts prompts && same=1
     for kind in new-issue issue-comment pr-comment review; do
         # 叫醒命令里带着各自副本的路径，换成同一个占位再比
-        compose_out "$OLD_P" $kind | sed "s|$OLD_P/|<副本>/|g" > "$SANDBOX/p-old-$kind.md"
         compose_out "$S" $kind | sed "s|$S/|<副本>/|g" > "$SANDBOX/p-new-$kind.md"
+        if [ "$same" = 0 ]; then
+        compose_out "$OLD_P" $kind | sed "s|$OLD_P/|<副本>/|g" > "$SANDBOX/p-old-$kind.md"
         chk "开关关 · 提示词 $kind 和改动前的拼装逐字节一致" \
             "$(cmp -s "$SANDBOX/p-old-$kind.md" "$SANDBOX/p-new-$kind.md" && [ -s "$SANDBOX/p-new-$kind.md" ] && echo same || echo diff)" same
+        fi
         chk "开关关 · 提示词 $kind 确实带着交接规则（对拍不是两边都没有）" \
             "$(grep -c '^# 外部需求机器人交接规则' "$SANDBOX/p-new-$kind.md")" 1
     done
@@ -251,16 +258,20 @@ origin_rows() {   # <scripts 副本>
         done' _ "$1"
 }
 origin_suite() {   # <scripts 副本>
-    local S="$1" any
+    local S="$1" any same=0
+    compat_skip "来源判定 · 返回值 / 来源 / 原因与改动前" "$OLD" "$S" scripts prompts && same=1
     for any in false true; do
         fresh $any
         add_item 60 pr "" worker-bot "" feature/issue-50
         add_item 83 pr "" worker-bot $'Closes\n#80' chore/amb
         add_item 84 pr "" worker-bot "" feature/issue-82
         add_item 86 pr "" worker-bot "Closes #85" chore/missing
-        origin_rows "$OLD" > "$SANDBOX/o-old" 2>/dev/null; origin_rows "$S" > "$SANDBOX/o-new" 2>/dev/null
+        origin_rows "$S" > "$SANDBOX/o-new" 2>/dev/null
+        if [ "$same" = 0 ]; then
+        origin_rows "$OLD" > "$SANDBOX/o-old" 2>/dev/null
         chk "来源判定 · 开关 $any：8 个条目的返回值 / 来源 / 原因和改动前逐条相同" \
             "$(cmp -s "$SANDBOX/o-old" "$SANDBOX/o-new" && echo same || echo diff)" same
+        fi
         chk "来源判定 · 开关 $any：对拍不是两边都空（#50 判成机器人提的）" "$(grep -c '^50 rc=0 origin=50 ' "$SANDBOX/o-new")" 1
     done
 }
@@ -661,5 +672,6 @@ if [ -s "$PREP_FAILED" ]; then
     fail=$((fail + $(wc -l < "$PREP_FAILED")))
 fi
 mutation_summary "$0"
+compat_summary
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

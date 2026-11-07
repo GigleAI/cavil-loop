@@ -20,6 +20,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/compat.sh
+source "$TEST_DIR/lib/compat.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -30,7 +32,7 @@ export TZ=UTC
 unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN
 export FAKE_GH_LISTS=1 FAKE_GH_REPO="example/cd"
 
-printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$TEST_DIR/lib/fake_github.py" > "$SANDBOX/bin/gh"
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
 # 假 tmux：$FAKE_TMUX_BUSY 存在时，任何 session 都「在」且杀不掉 → cleanup-issue.sh 失败
 cat > "$SANDBOX/bin/tmux" <<'SH'
 #!/usr/bin/env bash
@@ -342,17 +344,23 @@ Closes #30" "pending/human,pending/merge"
         mkissue 32 "pending/PR" open
         mkmerged 33 feature/issue-32 "Refs #32" "pending/review"
     }
+    local old_labels old_state csame=0
+    compat_skip "合并路径的调用、最终标签、state.json 与改动前" "$SANDBOX/old" "$(dirname "$SCRIPTS")" scripts prompts && csame=1
+    if [ "$csame" = 0 ]; then
     merged_scene
     : > "$CALLS"; env CODING_AGENT_CONFIG="$CONF" bash "$SANDBOX/old/scripts/agent-poll.sh" >/dev/null 2>&1
     old_calls=$(grep -v -- '--jq .*state_reason' "$CALLS")
-    local old_labels; old_labels=$(jq -cS . "$GD/labels.json")
-    local old_state; old_state=$(jq -cS 'del(.closed_done_queue)' "$STATE")
+    old_labels=$(jq -cS . "$GD/labels.json")
+    old_state=$(jq -cS 'del(.closed_done_queue)' "$STATE")
+    fi
     merged_scene
     tick
     new_calls=$(grep -v -- '--jq .*state_reason' "$CALLS")
+    if [ "$csame" = 0 ]; then
     chk "调用记录（去掉新队列的重读）逐条一致" "$([ "$old_calls" = "$new_calls" ] && echo same || diff <(echo "$old_calls") <(echo "$new_calls") | head -5 | tr '\n' ' ')" same
     chk "最终标签一致" "$(jq -cS . "$GD/labels.json")" "$old_labels"
     chk "state.json（去掉新队列字段）一致" "$(jq -cS 'del(.closed_done_queue)' "$STATE")" "$old_state"
+    fi
     chk "到达性 · 合并路径真的给 PR 打了 Done" "$(labels_of 31)" "Done"
     chk "到达性 · 被带关的 issue 打了 Done、autopilot 保留" "$(labels_of 30)" "Done,autopilot"
     chk "带关的 issue 也进了新队列、重读一次后零写入出队" "$(reread 30)/$(queued 30)" "1/无"
@@ -424,5 +432,6 @@ mutate no-cap _lib.sh '        if [ "$tries" -ge "$cap" ]; then
 echo
 echo "正向：$POS_PASS 通过 / $POS_FAIL 失败"
 mutation_summary "$0"
+compat_summary
 if mutation_on; then echo "负对照：$mut_ran 项中 $mut_fail 项没能变红或准备失败"; fi
 [ "$POS_FAIL" -eq 0 ] && [ "$mut_fail" -eq 0 ]
