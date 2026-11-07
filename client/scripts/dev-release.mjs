@@ -26,13 +26,13 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { VERSION_SHAPE } from './update-manifest.mjs';
 
 export const TAG_PREFIX = 'client/v';
-const DEV = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-dev\.(0|[1-9]\d*)$/;
 
-/** `X.Y.Z-dev.N` → [X, Y, Z, N]; anything else → null. */
+/** `X.Y.Z-dev.N` (the manifest builder's shape, one rule for both scripts) → [X, Y, Z, N]; anything else → null. */
 export function parseDev(v) {
-  const m = DEV.exec(String(v ?? ''));
+  const m = VERSION_SHAPE.dev.exec(String(v ?? ''));
   return m ? m.slice(1).map(Number) : null;
 }
 

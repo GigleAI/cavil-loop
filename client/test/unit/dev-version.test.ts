@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { devVersion, readVersions, stamp } from '../../scripts/dev-version.mjs';
 import { VERSION_SHAPE } from '../../scripts/update-manifest.mjs';
+import { parseDev } from '../../scripts/dev-release.mjs';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { tempDir } from './helpers';
@@ -108,5 +109,29 @@ describe('the development build\'s version (GitHub#215)', () => {
     expect(await pick([[rel('client/v0.5.1', false)]], v)).toBe('0.5.1');
     expect(await pick([[rel('client/v0.6.0', false)]], v)).toBe('0.6.0');
     expect(await pick([[rel(`client/v${devVersion('0.5.0', 388)}`, true)]], v)).toBe('0.5.1-dev.388');
+  });
+
+  it('one list of candidate versions: the app, the manifest builder and the publisher take exactly the same ones as development versions', async () => {
+    if (!harness) {
+      const d = tempDir();
+      harness = new HarnessBackend({ db: join(d, 'c.sqlite'), endpoints: { api: 'http://127.0.0.1:9', web: 'http://127.0.0.1:9' }, credentials: new FileStore(join(d, 'cred')) });
+    }
+    const candidates = ['0.5.1-dev.387', '0.5.1-dev.0', '1.0.0-dev.1', '0.5.1-dev.01', '0.5.1-dev.', '0.5.1-dev', '0.5.1-rc.1', '0.5.1-dev.1.2', '05.1.1-dev.1', '0.5.1', '0.5.1-DEV.1', '0.5.1-dev.1+b', ' 0.5.1-dev.1', '0.5.1-dev.-1'];
+    const app: string[] = [];
+    for (const c of candidates) {
+      const tag = `client/v${c}`;
+      const r = (await harness.call('test.update.pick', {
+        pages: [[{ tag_name: tag, draft: false, prerelease: true, assets: [{ name: 'latest.json', browser_download_url: `https://github.com/GigleAI/cavil-loop/releases/download/${tag}/latest.json` }] }]],
+        current: '0.0.1',
+        web: 'https://github.com',
+        channel: 'dev',
+      })) as any;
+      if (r.pick) app.push(c);
+    }
+    const builder = candidates.filter((c) => VERSION_SHAPE.dev.test(c));
+    const publisher = candidates.filter((c) => parseDev(c) !== null);
+    expect(app).toEqual(['0.5.1-dev.387', '0.5.1-dev.0', '1.0.0-dev.1']);
+    expect(builder).toEqual(app);
+    expect(publisher).toEqual(app);
   });
 });
