@@ -386,7 +386,8 @@ button.primary > kbd { background: transparent; color: #fff; border-color: rgba(
 .modal .banner { margin: 8px 0 0; }
 .chosen-labels { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 4px; }
 .project-picks { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
-.project-picks label { display: flex; gap: 6px; align-items: center; font-weight: normal; }
+.form .project-picks label { flex-direction: row; gap: 6px; align-items: center; justify-content: flex-start; font-weight: normal; }
+.form .project-picks input[type=checkbox] { width: auto; margin: 0; }
 /* the table: group heads stand out and stay in view while their rows scroll (sticky under the column heads) */
 table.items .group-head td { position: sticky; top: 33px; z-index: 1; background: color-mix(in srgb, var(--accent) 9%, var(--surface)); box-shadow: inset 4px 0 0 var(--accent); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 9px 12px 9px 14px; font-size: 14px; color: var(--fg); }
 table.items .group-head td b { font-size: 14px; }
