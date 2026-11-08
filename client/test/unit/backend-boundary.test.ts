@@ -143,4 +143,30 @@ describe('the back end only signs requests for the GitHub API', () => {
     expect(Object.keys(init.settings)).not.toContain('cacheCredential');
     expect(Object.keys(init.settings).length).toBeGreaterThan(0);
   });
+
+  // GitHub#266: the account's login is the back end's to write (under the session check), the window's to read
+  it('the account name: readable by the window, never writable by it; adopting it checks the session', async () => {
+    const { b, session } = await signedIn();
+    const viewer = async () => (await b.call<{ settings: Record<string, unknown> }>('init')).settings.viewer;
+    const who = await viewer();
+    // "something did happen": the sign-in wrote a login, and the window is told it
+    expect(typeof who).toBe('string');
+    expect(who).not.toBe('');
+    await expect(b.call('setSetting', { key: 'viewer', value: 'someone-else' })).rejects.toThrow(/只能由登录流程写/);
+    expect(await viewer()).toBe(who);
+    // same account, current session: written (again) with the binding
+    expect(await b.call('adoptViewer', { session, login: who })).toEqual({ wiped: false });
+    expect(await viewer()).toBe(who);
+    // a session that is over: refused, nothing written
+    expect(await b.call('adoptViewer', { session: session + 1, login: 'user-x' })).toEqual({ stale: true });
+    expect(await viewer()).toBe(who);
+    // another account, current session: its login comes with the new owner, in one step
+    expect(await b.call('adoptViewer', { session, login: 'user-y' })).toEqual({ wiped: true });
+    expect(await viewer()).toBe('user-y');
+    // signed out: cleared, and a late adopt of the old session cannot put it back
+    await b.call('logout', { reason: null });
+    expect(await viewer()).toBeNull();
+    expect(await b.call('adoptViewer', { session, login: 'user-y' })).toEqual({ stale: true });
+    expect(await viewer()).toBeNull();
+  });
 });

@@ -7,6 +7,7 @@ import { Controller, REASON_REVOKED } from '../../src/app/controller';
 import { Cache } from '../support/cache';
 import { FileStore, MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
+import type { Backend } from '../../src/backend/backend';
 import { writesEnabled } from '../../src/data/board';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } from './helpers';
@@ -21,7 +22,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown> } = {}) {
+async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown>; wrap?: (b: Backend) => Backend } = {}) {
   // a restart reads the files: every earlier app of this test has finished writing its settings
   // (they reach the back end asynchronously — as when the app is quit, not killed)
   await Promise.all(controllers.map((c) => c.settled()));
@@ -49,7 +50,8 @@ async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: 
   });
   backends.push(backend);
   const c = await Controller.create({
-    backend,
+    // a test may stand between the window and the real back end (hold a command, say)
+    backend: opts.wrap ? opts.wrap(backend) : backend,
     endpoints,
     now: () => clock.t,
     // no built-in Client ID unless a test asks for one (the real built-in one is GitHub's, not the fake's)
@@ -539,10 +541,10 @@ async function requestsSeen(fragment: string, n: number) {
 }
 
 describe('the cache belongs to one account', () => {
-  async function accountA() {
+  async function accountA(wrap?: (b: Backend) => Backend) {
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    const h = await make({ credentials });
+    const h = await make({ credentials, ...(wrap ? { wrap } : {}) });
     h.c.addSource(REPO);
     await h.c.start();
     await h.c.syncNow();
@@ -567,6 +569,69 @@ describe('the cache belongs to one account', () => {
     expect(st.error).toContain('404');
     expect(c.getBoardData().items).toHaveLength(0);
     expect(cache.loadSnapshots().size).toBe(0);
+  });
+
+  // GitHub#266: the window used to queue "viewer = user-1" at the end of a round without waiting,
+  // with no session on it, while a sign-out goes to the back end directly: when the queued write
+  // arrived second, the name the sign-out had just cleared came back. Make that order certain: any
+  // window write of the account name is answered at once (the window's queue moves on, as it does
+  // when the back end is merely slow) but reaches the real back end only on `deliver()`.
+  function delayViewerWrites() {
+    let b: Backend | null = null;
+    const held: Record<string, unknown>[] = [];
+    const wrap = (inner: Backend): Backend => {
+      b = inner;
+      return {
+        call: async (cmd, args) => {
+          if (cmd === 'setSetting' && args?.key === 'viewer') {
+            held.push(args);
+            return null as never;
+          }
+          return inner.call(cmd, args);
+        },
+      };
+    };
+    /** deliver the first `n` held writes (all by default), in order; the rest never arrive */
+    const deliver = async (n = held.length) => {
+      for (const args of held.splice(0).slice(0, n)) await b!.call('setSetting', args).catch(() => undefined);
+    };
+    return { wrap, deliver, held };
+  }
+
+  it('GitHub#266: a write of the account name from the round cannot land after the sign-out', async () => {
+    accountB();
+    const h = delayViewerWrites();
+    const { c, cache, backend } = await accountA(h.wrap);
+    // "something did happen": the round adopted user-1, and the name is on disk before the sign-out
+    expect(backend.sent.some((x) => x.cmd === 'adoptViewer' && (x.args as { login?: string }).login === 'user-1')).toBe(true);
+    expect(c.getState().viewer).toBe('user-1');
+    expect(cache.getSetting('viewer', 'x')).toBe('user-1');
+    await c.logout();
+    await c.settled();
+    const late = h.held.length;
+    await h.deliver();
+    expect(cache.getSetting('viewer', 'x')).toBeNull();
+    expect(c.getState().viewer).toBeNull();
+    // nothing of the account name is the window's to write any more
+    expect(late).toBe(0);
+  });
+
+  it('GitHub#266: a late write of the old account name cannot replace the next account\'s', async () => {
+    accountB();
+    const h = delayViewerWrites();
+    const { c, cache } = await accountA(h.wrap);
+    await c.logout();
+    // only what the first account's rounds sent arrives late, after the second account signed in
+    const late = h.held.length;
+    await loginViaBrowser(c, TOKEN_B);
+    expect(c.getState().viewer).toBe('user-2');
+    await c.settled();
+    expect(cache.getSetting('viewer', 'x')).toBe('user-2');
+    await h.deliver(late);
+    expect(cache.getSetting('viewer', 'x')).toBe('user-2');
+    expect(c.getState().viewer).toBe('user-2');
+    // nothing of the account name is the window's to write any more
+    expect(late).toBe(0);
   });
 
   it('credential replaced outside the app: not trusted, so not used — login page, nothing cached shown, nothing sent', async () => {

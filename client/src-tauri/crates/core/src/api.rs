@@ -6,7 +6,7 @@
 
 use crate::engine::{BeginOut, Engine, FinishOut, RequestError, StartOut};
 use crate::http::HttpRequest;
-use crate::store::SECRET_KEYS;
+use crate::store::{BACKEND_ONLY_KEYS, SECRET_KEYS};
 use crate::zoom;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -109,7 +109,7 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         }
         "setSetting" => {
             let k = s(&a, "key")?;
-            if SECRET_KEYS.contains(&k) {
+            if SECRET_KEYS.contains(&k) || BACKEND_ONLY_KEYS.contains(&k) {
                 return Err(format!("这个设置只能由登录流程写：{k}"));
             }
             e.store().set_setting(k, a.get("value").unwrap_or(&Value::Null))?;
