@@ -185,9 +185,10 @@ It only decides whether a tick runs, and can only bring a round forward, never
 delay one; whether the woken round counts as activity is still the fingerprint's
 call (an unrelated change elsewhere costs one round and leaves the tier alone).
 It sees changes that bump an item's updated time (measured: adding / removing a
-label, a new comment, close / merge do; a line-by-line review comment and being
-cross-referenced do **not**). It does not see those two, nor new commits on the
-base branch or CI results — those wait for a full poll, so while the probe is on
+label, a new comment, a line-by-line review comment, a push and close / merge
+all do — the review comment shows up about 10 s late on GitHub's side; being
+cross-referenced does **not**). It does not see new commits on the base branch
+or CI results — those wait for a full poll, so while the probe is on
 full polls are additionally capped at `POLL_IDLE_PROBE_MAX_SECS` (default 600 s:
 the 7-day tier goes from 30 to 10 minutes).
 
