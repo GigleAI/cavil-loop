@@ -440,6 +440,28 @@ export function opAfterRestart(r: OpRecord): OpRecord {
   return { ...r, running: false, replyState, steps: r.steps.map((s) => (s.state === 'pending' ? { ...s, state: 'unknown' as const, reason: '客户端重启前没有收到 GitHub 的应答' } : s)) };
 }
 
+/** How long a fully successful notice stays before it puts itself away (GitHub#256). */
+export const AUTO_DISMISS_MS = 10_000;
+
+/**
+ * GitHub#256: a notice that may put itself away after AUTO_DISMISS_MS. Judged on the record's
+ * whole state, never on its tone or buttons (a merge whose linked issues could not be re-read
+ * still reads "ok" with only the × — it must stay). Every condition must hold:
+ * settled (not waiting / unknown / settling, and not unlocked by hand), every step ok, a
+ * close / merge read back closed / merged, no re-read or evidence problem, not stuck, no draft
+ * left, no reply on its way or unknown, not put away already.
+ */
+export function opAutoDismissable(r: OpRecord): boolean {
+  if (r.dismissed || r.unlocked || r.stuck) return false;
+  if (opPhase(r) !== 'settled') return false;
+  if (!r.steps.every((s) => s.state === 'ok')) return false;
+  if (needsTarget(r) && !r.targetSeen) return false;
+  if (r.readAt === null) return false;
+  if (r.readProblem || r.checkProblem) return false;
+  if (r.replyState) return false;
+  return opDraftLeft(r) === null;
+}
+
 /** Records may be dropped once settled, put away and with no draft left. */
 export function opDisposable(r: OpRecord): boolean {
   return !opLocked(r) && r.dismissed && opDraftLeft(r) === null;

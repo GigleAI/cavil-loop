@@ -829,7 +829,7 @@ export function BoardView({
       <WarnBar kind="board-notify-problem" warn={warn}>
         macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。
       </WarnBar>
-      <ResultBanner note={note} testid="board-action-result" />
+      <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} />
       <EditsBar state={state} data={data} onOpen={openItem} />
       {state.ops
         .filter((r) => !r.dismissed && r.key !== opened?.key)

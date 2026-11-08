@@ -3,7 +3,8 @@
 // send gate uses), in the panel and above the board alike.
 
 import { useState } from 'react';
-import { opButtons, opDraftLeft, opPhase, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
+import { AUTO_DISMISS_MS, opAutoDismissable, opButtons, opDraftLeft, opPhase, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
+import { useAutoDismiss } from './autoDismiss';
 import { api } from './api';
 import { Icon } from './Icons';
 import { copyText } from './pasteImage';
@@ -47,6 +48,8 @@ export function OpNotice({
   const left = opDraftLeft(r);
   const has = (b: OpButton) => buttons.includes(b);
   const cls = tone === 'error' ? 'error' : tone === 'warn' ? 'warn' : 'info';
+  // GitHub#256: a fully successful notice puts itself away after 10 s, exactly like the ×
+  const auto = useAutoDismiss(opAutoDismissable(r), AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
   const run = async (f: () => Promise<{ ok: boolean; error: string | null } | void>) => {
     setWorking(true);
     setProblem(null);
@@ -58,7 +61,7 @@ export function OpNotice({
     }
   };
   return (
-    <div className={`banner ${cls} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key}>
+    <div className={`banner ${cls} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key} {...auto}>
       {tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name={tone === 'ok' ? 'check' : 'warn'} />}
       <span className="banner-text">
         {prefix && <b>{prefix}</b>}

@@ -1635,6 +1635,17 @@ export const MUTATIONS = [
       { file: 'src/app/controller.ts', from: '      await commentStep(c.client, item, plain.body);', to: "      const now = await this.clientForCall(true);\n      if ('error' in now) throw new ActionRefused(now.error);\n      await commentStep(now.client, item, plain.body);" },
     ],
     expect: ['never crosses a session'] },
+  // ---- GitHub#256: a fully successful notice puts itself away after 10 s ----
+  { what: '自动收起不看重读问题（合并成功但关联 issue 没读到的提示 10 秒后被收掉）', file: 'src/shared/ops.ts',
+    from: '  if (r.readProblem || r.checkProblem) return false;', to: '  if (r.checkProblem) return false;',
+    expect: ['no: merged, but the linked issues could not be re-read', 'the case tone and buttons cannot tell apart'] },
+  { what: '每条新提示都以为窗口在前台（PR #259 复审第 1 轮：先失焦、后出现的提示照样倒计时）', file: 'src/renderer/autoDismiss.ts', runner: 'e2e',
+    from: '  return useSyncExternalStore(windowState.subscribe, windowState.active);',
+    to: '  const [a, setA] = useState(true);\n  useEffect(() => windowState.subscribe(() => setA(windowState.active())), []);\n  return a;',
+    expect: ['GitHub#256'] },
+  { what: '提示按成功语气决定是否自动收起（不走完整判据）', file: 'src/renderer/OpNotice.tsx', runner: 'e2e',
+    from: 'useAutoDismiss(opAutoDismissable(r), ', to: "useAutoDismiss(opAutoDismissable(r) || tone === 'ok', ",
+    expect: ['GitHub#256'] },
   // ---- GitHub#258: a board not ticked that takes the new issue in by itself ----
   { what: '自动收进看板后（GitHub#258）：已有别的值也自动覆盖', file: 'src/data/autoJoin.ts',
     from: "  if (cur === null) return 'write';\n  return 'human';", to: "  return 'write';",
