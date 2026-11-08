@@ -20,7 +20,7 @@ use crate::device::{self, DeviceCode, Failure};
 use crate::grant::{decode_grant, encode_grant, TokenGrant};
 use crate::http::{self, Endpoints, HttpRequest};
 use crate::platform::{Clock, CredentialStore, Opener};
-use crate::store::{Store, CACHE_CREDENTIAL, CACHE_OWNER, GRANT_CLIENT_ID, SECRET_KEYS, TRUSTED};
+use crate::store::{Store, CACHE_CREDENTIAL, CACHE_OWNER, GRANT_CLIENT_ID, SECRET_KEYS, TRUSTED, VIEWER};
 use futures::future::{BoxFuture, FutureExt, Shared};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -230,13 +230,20 @@ impl Engine {
             (Some(_), Some(t)) => Value::String(credential_tag(t)),
             _ => Value::Null,
         };
+        // GitHub#266: a known account's login is written here, under the caller's state lock and
+        // session check, in the same transaction as the binding — never by the window
+        let viewer = login.map(|l| (VIEWER, Value::String(l.to_string())));
         if login.is_some() && login.map(str::to_string) == st.owner {
-            self.d.store.set_setting(CACHE_CREDENTIAL, &tag)?;
+            let mut w = vec![(CACHE_CREDENTIAL, tag)];
+            w.extend(viewer);
+            self.d.store.write_all(&w, false)?;
             return Ok(false);
         }
         let owner = login.map(|l| Value::String(l.to_string())).unwrap_or(Value::Null);
         // one transaction: the old account's data goes, the new owner and credential binding come
-        self.d.store.write_all(&[(CACHE_OWNER, owner), (CACHE_CREDENTIAL, tag)], true)?;
+        let mut w = vec![(CACHE_OWNER, owner), (CACHE_CREDENTIAL, tag)];
+        w.extend(viewer);
+        self.d.store.write_all(&w, true)?;
         st.owner = login.map(str::to_string);
         Ok(true)
     }
@@ -420,7 +427,7 @@ impl Engine {
                             (GRANT_CLIENT_ID, Value::String(client_id.clone())),
                             (CACHE_OWNER, owner),
                             (CACHE_CREDENTIAL, if login.is_some() { tag } else { Value::Null }),
-                            ("viewer", viewer),
+                            (VIEWER, viewer),
                         ],
                         !same_owner,
                     ) {
@@ -512,7 +519,7 @@ impl Engine {
             // read with that account — in the same transaction.
             let write = || {
                 self.d.store.write_all(
-                    &[(TRUSTED, Value::Array(vec![])), (CACHE_OWNER, Value::Null), (CACHE_CREDENTIAL, Value::Null), ("viewer", Value::Null)],
+                    &[(TRUSTED, Value::Array(vec![])), (CACHE_OWNER, Value::Null), (CACHE_CREDENTIAL, Value::Null), (VIEWER, Value::Null)],
                     true,
                 )
             };

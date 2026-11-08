@@ -74,7 +74,7 @@ export const MUTATIONS = [
   // ---- review round 1 of PR #140 ----
   { what: '退出登录不清缓存',
     edits: [
-      { file: 'src-tauri/crates/core/src/engine.rs', from: '("viewer", Value::Null)],\n                    true,', to: '("viewer", Value::Null)],\n                    false,' },
+      { file: 'src-tauri/crates/core/src/engine.rs', from: '(VIEWER, Value::Null)],\n                    true,', to: '(VIEWER, Value::Null)],\n                    false,' },
       { file: 'src/app/controller.ts', from: '    this.dropMirror();\n    this.cache.mirror(\'viewer\', null);', to: '    this.cache.mirror(\'viewer\', null);' },
     ],
     expect: ['sign out → another account signs in'] },
@@ -1700,4 +1700,17 @@ export const MUTATIONS = [
   { what: '自动收进看板后（GitHub#258，PR #263 复审第 2 轮）：按钮在第一次等待之后才占住（同时点两次写两次）', file: 'src/app/controller.ts',
     from: "    // taken before the first wait (code review round 2): a second click meanwhile is refused above\n    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));\n", to: "    await Promise.resolve();\n",
     expect: ['code review round 2: two clicks at once (the read held)'] },
+  // ---- GitHub#266 ----
+  { what: '账号名（GitHub#266）：同步轮末尾又由窗口写账号名（不带会话，迟到时把退出前的账号名写回）',
+    edits: [
+      { file: 'src/app/controller.ts', from: "if (round.viewer) this.cache.mirror('viewer', round.viewer);", to: "if (round.viewer) this.cache.setSetting('viewer', round.viewer);" },
+      { file: 'src-tauri/crates/core/src/api.rs', from: 'if SECRET_KEYS.contains(&k) || BACKEND_ONLY_KEYS.contains(&k) {', to: 'if SECRET_KEYS.contains(&k) {' },
+    ],
+    expect: ['GitHub#266: a write of the account name from the round cannot land after the sign-out', "GitHub#266: a late write of the old account name cannot replace the next account's"] },
+  { what: '账号名（GitHub#266）：后端认定账号时不写账号名', file: 'src-tauri/crates/core/src/engine.rs',
+    from: 'let viewer = login.map(|l| (VIEWER, Value::String(l.to_string())));', to: 'let viewer: Option<(&str, Value)> = None;',
+    expect: ['GitHub#266: a write of the account name from the round cannot land after the sign-out', 'the account name: readable by the window, never writable by it'] },
+  { what: '账号名（GitHub#266）：窗口能通过通用设置接口写账号名', file: 'src-tauri/crates/core/src/api.rs',
+    from: 'if SECRET_KEYS.contains(&k) || BACKEND_ONLY_KEYS.contains(&k) {', to: 'if SECRET_KEYS.contains(&k) {',
+    expect: ['the account name: readable by the window, never writable by it'] },
 ];

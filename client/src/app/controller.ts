@@ -1237,7 +1237,9 @@ export class Controller {
     this.applyImports(accepted);
     // Only what was read completely this round (and still belongs here) is compared.
     this.observePending(accepted);
-    if (round.viewer) this.cache.setSetting('viewer', round.viewer);
+    // GitHub#266: the back end wrote it when it adopted the viewer, under the session check;
+    // a write from here could land after a sign-out and put the old name back
+    if (round.viewer) this.cache.mirror('viewer', round.viewer);
     const status = round.status
       .filter((st) => current(st.sourceKey))
       .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }));
