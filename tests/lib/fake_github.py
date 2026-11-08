@@ -12,6 +12,10 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   checks.json     {"<sha>": {"check_runs": [...], "statuses": [...]}}
   edits.json      {"<pr>": [ {editedAt, deletedAt, diff} ]}  PR 正文修改历史，倒序（GraphQL userContentEdits）
   blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
+  foreign.json    {"<owner/repo>": {"<n>": {kind: issue|pr, state, state_reason?, merged?}}}  别的仓库的条目，只读
+                  （GitHub#243）。只接 GET repos/<owner/repo>/issues/<n>；不在表里 = HTTP 404。
+                  注入：F404_ / F403_ / F403rl_（限流）/ F502_ + key（key = 路径的 '/' 换成 '_'，
+                  例 F403_repos_other_repo_issues_5）；count_ / hook_ 同本仓库
   calls.log       one line per call: "gh <argv...>"
   me              login of the token (default loop-bot)
 
@@ -239,6 +243,39 @@ if path == "graphql":
     cursor = str(start + size) if more and not os.path.exists(p("F_graphql_nocursor_" + n)) else None
     emit({"data": {"repository": {"pullRequest": {"userContentEdits": {
         "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": nodes}}}}})
+
+# 别的仓库的条目（GitHub#243）：只读 issues/<n>
+if path is not None and method == "GET" and path.startswith("repos/") \
+        and not path.lower().startswith("repos/" + REPO.lower() + "/"):
+    seg = path.split("?")[0].split("/")
+    if len(seg) == 5 and seg[3] == "issues" and seg[4].isdigit():
+        fkey = "_".join(seg)
+        cnt_file = p("count_" + fkey)
+        c = int(open(cnt_file).read()) + 1 if os.path.exists(cnt_file) else 1
+        open(cnt_file, "w").write(str(c))
+        hook = p("hook_%s_%d" % (fkey, c))
+        if os.path.exists(hook):
+            subprocess.run(["bash", hook], check=False, stdin=subprocess.DEVNULL, timeout=30)
+        for pre, msg in (("F404_", "gh: Not Found (HTTP 404)"),
+                         ("F403_", "gh: Resource not accessible by personal access token (HTTP 403)"),
+                         ("F403rl_", "gh: API rate limit exceeded for user ID 1. (HTTP 403)"),
+                         ("F502_", "gh: HTTP 502: Bad Gateway")):
+            if os.path.exists(p(pre + fkey)):
+                fail(msg)
+        other = (seg[1] + "/" + seg[2]).lower()
+        fi = load("foreign.json", {}).get(other, {}).get(seg[4])
+        if fi is None:
+            fail("gh: Not Found (HTTP 404)")
+        out = {"number": int(seg[4]), "state": fi.get("state", "open"), "title": "t", "labels": [],
+               "repository_url": "https://api.github.com/repos/" + other, "pull_request": None}
+        if "state_reason" in fi:
+            out["state_reason"] = fi["state_reason"]
+        if fi.get("kind") == "pr":
+            merged = bool(fi.get("merged"))
+            out["pull_request"] = {"url": "x", "merged_at": "2026-01-01T00:00:00Z" if merged else None}
+            if merged:
+                out["state"] = "closed"
+        emit(out)
 
 if path is None or not path.startswith("repos/" + REPO):
     emit([])

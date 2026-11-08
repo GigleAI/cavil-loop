@@ -837,22 +837,26 @@ still carrying it is back on autopilot** — remove them if that is not what you
 ## Waiting on another item: `pending/blocked` (GitHub#157)
 
 Set `LABEL_PENDING_BLOCKED` (the example config uses `pending/blocked`) and a worker whose work is blocked on **another
-issue / PR of this repo** — not on a human decision — records the prerequisites and puts that label on instead of
+issue / PR** — of this repo or of another one (GitHub#243) — and not on a human decision, records the prerequisites and puts that label on instead of
 `pending/human`. Every poll round the daemon looks at items carrying it:
 
 | Prerequisites | Daemon does |
 |---|---|
 | all done (issue closed as *completed*, PR merged) | one comment, removes the label, adds back the trigger label the marker names (default `pending/agent`) — the next round dispatches it |
 | one ended otherwise (closed *not planned* / *duplicate* / no reason, PR closed unmerged, unreadable 404) | comment naming it, `pending/human` |
-| none can be found, or one lives in another repo | comment, `pending/human` |
+| one in another repo cannot be read: 404 / 410 (does not exist, deleted, or a private repo the polling token may not read — GitHub answers 404 for that too) or a 403 that is not a rate limit | comment naming it and saying how to grant read access, `pending/human` |
+| none can be found | comment, `pending/human` |
 | some still open | nothing |
-| GitHub cannot be read (error, missing field) | nothing; looks again next round — never treated as done |
+| GitHub cannot be read (error, missing field; for another repo also a rate limit, network error or 5xx) | nothing; looks again next round — never treated as done |
 
 **Where the prerequisites come from** (union): the issue's native *Blocked by* relationship (sidebar → Relationships;
 measured: GitHub accepts only issues as the blocker, a PR returns 422 "Target issue may only be an issue"), and the
-latest hidden marker `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->` posted by the loop's write account or a
+latest hidden marker `<!-- agent-blocked-by: #12 OWNER/REPO#34 resume=pending/agent -->` posted by the loop's write account or a
 maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) strictly after the label was last removed — GitHub timestamps are whole
-seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. Free
+seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. `#12` means this repo; `OWNER/REPO#34`
+another repo (this repo's own full name counts as `#12`). *Blocked by* entries from another repo are prerequisites too.
+Another repo is only ever read, with the polling identity — the daemon never writes there; reading a private repo needs
+that token to have read access to it. Free
 text such as "waiting on #12" is never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
 
 **Recovering after a hand-off**: the daemon's comment lists the steps — fix the prerequisites (remove the failed one from
@@ -873,7 +877,9 @@ write does not post the comment twice; after `BLOCKED_MAX_TRIES` failed attempts
 prerequisite is usually picked up within about 7 minutes. *Noticing* a newly labelled item still follows the idle backoff —
 in a project that has been quiet for a week a hand-added label can take up to ~30 minutes to be seen (the worker's own
 label is seen within a minute, the project having just been active). `rm poll-pace.json` brings polling back to full speed.
-Not supported: prerequisites in other repos, cycle detection (two items waiting on each other both stay waiting).
+"Merged" is not "deployed here": when the prerequisite is a change to this
+loop itself, the resumed worker checks the locally deployed version before relying on it. Not supported: prerequisites on
+other hosts than github.com, cycle detection (two items waiting on each other both stay waiting).
 
 ## External requester bot (optional, **off by default**)
 

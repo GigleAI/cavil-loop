@@ -691,20 +691,23 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 
 ## 等前置：`pending/blocked`（GitHub#157）
 
-配了 `LABEL_PENDING_BLOCKED`（示例配置写的是 `pending/blocked`）后，worker 的活卡在**本仓库别的 issue / PR** 上
-（不是卡在要人拍板）时，登记前置、挂这个标签，不再翻 `pending/human`。daemon 每轮看挂着它的条目：
+配了 `LABEL_PENDING_BLOCKED`（示例配置写的是 `pending/blocked`）后，worker 的活卡在**别的 issue / PR** 上——本仓库的或别的仓库的都行（GitHub#243）
+——而不是卡在要人拍板时，登记前置、挂这个标签，不再翻 `pending/human`。daemon 每轮看挂着它的条目：
 
 | 前置的情况 | daemon 做什么 |
 |---|---|
 | 全部完成（issue 以「已完成」关闭、PR 已合并） | 留一条说明，摘标签，加回标记里写的触发标签（默认 `pending/agent`），下一轮派工 |
 | 有一个以别的方式收场（关成不做 / 重复 / 没写原因、PR 没合就关、读到 404） | 评论写明是哪个，翻 `pending/human` |
-| 找不到前置，或前置在别的仓库 | 评论说明，翻 `pending/human` |
+| 别的仓库的前置读不到：404 / 410（不存在、已删除，或私有仓库轮询令牌无权读——GitHub 对后者也回 404），或不是限流的 403 | 评论写明是哪个、怎么给令牌加读权限，翻 `pending/human` |
+| 找不到前置 | 评论说明，翻 `pending/human` |
 | 还有没完成的 | 什么都不做 |
-| 读不到 GitHub（报错、缺字段） | 什么都不做，下一轮再看——绝不当成「已完成」 |
+| 读不到 GitHub（报错、缺字段；别的仓库还包括限流、网络失败、5xx） | 什么都不做，下一轮再看——绝不当成「已完成」 |
 
 **前置从哪来**（两处取并集）：issue 侧栏 Relationships 里的「Blocked by」（实测：GitHub 只接受 issue 当前置，
 设 PR 报 422「Target issue may only be an issue」），以及最近一次摘掉这个标签之后、由 loop 写入账号或维护者
-（`OWNER` / `MEMBER` / `COLLABORATOR`）发的最新一条隐藏标记 `<!-- agent-blocked-by: #12 #34 resume=pending/agent -->`。
+（`OWNER` / `MEMBER` / `COLLABORATOR`）发的最新一条隐藏标记 `<!-- agent-blocked-by: #12 OWNER/REPO#34 resume=pending/agent -->`。
+`#12` 是本仓库，`OWNER/REPO#34` 是别的仓库（写成本仓库自己的全名等同 `#12`）；「Blocked by」里别的仓库的 issue 同样算前置。
+别的仓库只用轮询身份读、daemon 从不往那边写；读私有仓库要轮询令牌有那个仓库的读权限。
 「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认。
 「等 #12」这种普通文字不认。`resume=` 必须是本项目配置的触发标签之一，否则用默认那个。
 
@@ -720,7 +723,8 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 
 **时间**：有条目在等时，轮询间隔最长 `BLOCKED_RECHECK_SECS`（300 秒），前置完成后通常 7 分钟内接上。**第一次发现**
 新挂上的条目仍按空闲退避：项目安静了一周时，手动挂上的标签最长约 30 分钟才被看到（worker 自己挂的，项目刚活跃过，
-1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。不支持：别的仓库的前置、环形依赖检测（互相等的两条都一直等）。
+1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。「已合并」不等于「本机已部署」：前置是 loop 自身的改动时，
+被叫回来的 worker 先核对本机部署版本再用。不支持：github.com 以外的前置、环形依赖检测（互相等的两条都一直等）。
 
 ## 外部需求机器人（可选，**默认关闭**）
 
