@@ -265,8 +265,18 @@ function NoticesLayer({ box, onClose }: { box: React.RefObject<HTMLSpanElement |
     const out = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) onClose();
     };
+    // a click into the isolated discussion never reaches this document (another origin): the window
+    // loses focus to the frame instead — that is a click outside too (PR #269 review round 1)
+    const blur = () =>
+      setTimeout(() => {
+        if (document.activeElement instanceof HTMLIFrameElement) onClose();
+      }, 0);
     document.addEventListener('mousedown', out);
-    return () => document.removeEventListener('mousedown', out);
+    window.addEventListener('blur', blur);
+    return () => {
+      document.removeEventListener('mousedown', out);
+      window.removeEventListener('blur', blur);
+    };
   }, [box, onClose]);
   return null;
 }
@@ -828,6 +838,7 @@ export function DetailPanel({
     <>
       <div className="detail-head">
         {/* a detail shown from this run's memory (GitHub#229) is older than the board: the board's draft mark wins until it is read again */}
+        <span className="head-info">
         <KindBadge kind={item.kind} state={item.state} reason={item.stateReason} isDraft={detail?.pr && fromCache === null ? detail.pr.isDraft : (item.isDraft ?? detail?.pr?.isDraft ?? null)} />
         <span className="ref">
           {item.repo} #{item.number}
@@ -851,7 +862,9 @@ export function DetailPanel({
         {headOps.map((r) => (
           <HeadOp key={r.id} r={r} />
         ))}
-        <div className="spacer" />
+        </span>
+        {/* GitHub#260: the buttons stay together; on a narrow panel they move to a line of their own instead of running off the edge */}
+        <span className="head-actions">
         <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
           <Icon name="ext" />
         </button>
@@ -905,6 +918,7 @@ export function DetailPanel({
         <button className="ghost" onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
           {HIDE_LABEL}
         </button>
+        </span>
       </div>
       <h3 className="detail-title">{item.title}</h3>
       {fromCache !== null && !loadError && autoFailed === null && (

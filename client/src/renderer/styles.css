@@ -486,16 +486,21 @@ button.icon-btn.notices-btn.tone-warn, button.icon-btn.notices-btn.tone-warn:hov
 button.icon-btn.notices-btn.tone-ok, button.icon-btn.notices-btn.tone-ok:hover:not(:disabled) { color: var(--state-open-fg); }
 button.icon-btn.notices-btn.on { background: var(--hover); border-color: var(--border); }
 .notices-count { font-size: 12px; font-weight: 600; line-height: 1; }
-.notices-panel { width: min(460px, calc(var(--detail-space, 560px) - 32px)); border-color: var(--border); }
+.notices-panel { border-color: var(--border); }
 .notices-panel[hidden] { display: none; }
 .detail .notices-panel .banner, .detail .notices-panel .op-draft-line { margin: 0; }
 button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
-/* GitHub#260: the head stays one line: people and the success line give way first */
-.detail-head { flex-wrap: nowrap; }
-.detail-head > * { flex-shrink: 0; }
-.detail-head .head-people { flex-shrink: 1; overflow: hidden; white-space: nowrap; }
-.detail-head .head-note { flex-shrink: 1; }
-.detail-head .ref { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* GitHub#260: the head is two groups. The facts (badge, number, people, success line) give way first and
+   are cut short; the buttons never shrink, and on a panel too narrow for both they take a line of their own */
+.detail-head { position: relative; flex-wrap: wrap; row-gap: 4px; }
+.detail-head .head-info { display: flex; align-items: center; gap: 8px; flex: 1 1 180px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.detail-head .head-info > * { flex-shrink: 0; }
+.detail-head .head-info .head-people, .detail-head .head-info .head-note { flex-shrink: 1; min-width: 0; overflow: hidden; }
+.detail-head .head-info .ref { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.detail-head .head-actions { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
+/* the notices open under the head, inside the panel whatever its width */
+.detail-head .notices-anchor { position: static; }
+.detail-head .notices-panel { top: calc(100% + 2px); right: 12px; width: min(460px, calc(100% - 24px)); }
 /* GitHub#260: fields side by side while there is room (labels + milestone on one line, each board on the next) */
 .detail-fields { display: flex; flex-wrap: wrap; align-items: center; column-gap: 14px; padding: 2px 0; }
 .detail-fields .field-row { flex: 0 1 auto; max-width: 100%; }

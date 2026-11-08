@@ -4540,6 +4540,34 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(detail.getByTestId('detail-notices')).toBeVisible();
   await detail.getByTestId('reply-input').click();
   await expect(detail.getByTestId('detail-notices')).toBeHidden();
+  // a click into the discussion (an isolated frame: its clicks never reach the window) puts them away too (PR #269 review round 1)
+  await toggle.click();
+  await expect(detail.getByTestId('detail-notices')).toBeVisible();
+  await page.frameLocator('[data-testid="timeline-frame"]').locator('body').click({ position: { x: 20, y: 60 } });
+  await expect(detail.getByTestId('detail-notices')).toBeHidden();
+  // the narrowest panel (360 px): every head button and the open notices stay inside it, nothing scrolls sideways
+  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 360 }));
+  await expect(detail).toHaveAttribute('data-width', '360');
+  await toggle.click();
+  await expect(detail.getByTestId('detail-notices')).toBeVisible();
+  const panel = (await detail.boundingBox())!;
+  for (const id of ['detail-open-web', 'fields-toggle', 'detail-notices-toggle', 'detail-refresh', 'detail-close', 'detail-notices']) {
+    const b = (await detail.getByTestId(id).boundingBox())!;
+    expect(b.x, id).toBeGreaterThanOrEqual(panel.x);
+    expect(b.x + b.width, id).toBeLessThanOrEqual(panel.x + panel.width);
+  }
+  expect(await detail.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  await shot(page, '260-02b-narrow-notices');
+  // the buttons in it still work at that width
+  await expect(detail.getByTestId('edit-resend')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(detail.getByTestId('detail-notices')).toBeHidden();
+  // the close button really is reachable: a click puts the panel away
+  await detail.getByTestId('detail-close').click();
+  await expect(detail).toHaveCount(0);
+  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
+  await card(page, prN).click();
+  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
   // sent again once GitHub accepts: the kept change goes, the count follows
   env.fake.state.w.failLabel = null;
   await toggle.click();
