@@ -93,6 +93,8 @@ export interface ControllerDeps {
    * every source in full). Default FULL_READ_EVERY_MS.
    */
   fullReadEveryMs?: number;
+  /** tests only: a round's read is in and its change-check records were dealt with (`dropped`: the round had been given up on) */
+  afterRoundRead?: (dropped: boolean) => void;
   /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
   defaultClientId?: string;
   /** built-in GitHub App Client ID ('' = none, which is production today) */
@@ -1231,6 +1233,8 @@ export class Controller {
       this.checks.clear();
       this.checksSession = session;
     }
+    // the very record objects this round starts from: at its end it may only drop those (PR #272 review round 2)
+    const held = new Map(this.checks);
     const recorded = new Map<string, SourceCheck>();
     // refresh by hand: no record is offered, so every source is read in full (and new tags are taken)
     const byHand = this.fullReadNext;
@@ -1242,8 +1246,11 @@ export class Controller {
     // not tell, 10 minutes were up, or the refresh was by hand). Its old record goes now, before anything
     // can fail: until a new one lands with the read, the next round reads it in full again — a read that
     // never landed (dropped round, failed or refused save, another account) is retried, never skipped
-    // (PR #272 review round 1). Only this session's records of the very additions this round read.
-    this.dropChecks(session, sources.filter((src) => !round.unchanged.includes(src.key)), epochAtStart);
+    // (PR #272 review round 1). Only a record that is still the one this round started from: a round
+    // dropped by a refresh by hand finishes in the background, possibly after the newer round saved its
+    // own record — that one is not this round's to drop (review round 2).
+    this.dropChecks(sources.filter((src) => !round.unchanged.includes(src.key)), held);
+    this.deps.afterRoundRead?.(run.signal.aborted);
     // dropped meanwhile: a newer round owns the state now, nothing of this one may land
     if (run.signal.aborted) return;
     const over = () => {
@@ -1328,12 +1335,15 @@ export class Controller {
     }
   }
 
-  /** GitHub#261: forget the records of `sources` — this session's, of the same addition only. */
-  private dropChecks(session: number, sources: SourceConfig[], epochAtStart: Map<string, number>): void {
-    if (session !== this.session || this.checksSession !== session) return;
+  /**
+   * GitHub#261: forget the records of `sources` — each only while it is still the record object the
+   * round started from (`held`). A record written since (a newer round's, another session's after a
+   * clear) is someone else's; one cleared meanwhile stays cleared.
+   */
+  private dropChecks(sources: SourceConfig[], held: Map<string, { epoch: number; check: SourceCheck }>): void {
     for (const src of sources) {
       const c = this.checks.get(src.key);
-      if (c && c.epoch === (epochAtStart.get(src.key) ?? 0)) this.checks.delete(src.key);
+      if (c && c === held.get(src.key)) this.checks.delete(src.key);
     }
   }
 

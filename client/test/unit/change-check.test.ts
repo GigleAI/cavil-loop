@@ -45,7 +45,7 @@ afterEach(async () => {
 
 type Intercept = (cmd: string, args: any, next: (cmd: string, args: any) => Promise<unknown>) => unknown;
 
-async function ready(opts: { sources?: string[]; intercept?: Intercept; fullReadEveryMs?: number } = {}) {
+async function ready(opts: { sources?: string[]; intercept?: Intercept; fullReadEveryMs?: number; afterRoundRead?: (dropped: boolean) => void } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -63,6 +63,7 @@ async function ready(opts: { sources?: string[]; intercept?: Intercept; fullRead
     defaultClientId: '',
     followUpSyncMs: 600_000,
     ...(opts.fullReadEveryMs !== undefined ? { fullReadEveryMs: opts.fullReadEveryMs } : {}),
+    ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}),
   });
   controllers.push(c);
   for (const s of opts.sources ?? [PROJECT_URL, REPO]) c.addSource(s);
@@ -381,22 +382,34 @@ describe('a record vouches only for the snapshot it was taken for', () => {
     });
   }
 
-  it('a round dropped by a refresh by hand while it read: the new round reads in full, and so does nothing that never landed', async () => {
-    const { c, clock } = await ready({ sources: [PROJECT_URL] });
+  it('a round dropped by a refresh by hand, finishing after the new round saved: it drops none of the new records (PR #272 review round 2)', async () => {
+    let droppedDone!: () => void;
+    const droppedFinished = new Promise<void>((r) => (droppedDone = r));
+    const { c, clock } = await ready({ sources: [PROJECT_URL], afterRoundRead: (dropped) => dropped && droppedDone() });
     clock.t += 60_000;
     statusOnBoard(22, 'In progress');
-    // the automatic round's full read is held; a refresh by hand drops it and reads again
-    let held = true;
-    const release = fake.holdWhen((e) => held && e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === null);
+    // the automatic round's full read is held (its first page)
+    let holding = true;
+    const release = fake.holdWhen((e) => holding && e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === null);
+    const n = fake.log.length;
     const auto = c.syncNow();
-    for (let i = 0; i < 500 && !fake.log.some((e) => e.operation === 'CavilProjectItems' && e.status === 0); i++) await new Promise((res) => setTimeout(res, 10));
-    held = false;
+    for (let i = 0; i < 500 && !since(n).some((e) => e.operation === 'CavilProjectItems' && e.status === 0); i++) await new Promise((res) => setTimeout(res, 10));
+    expect(since(n).some((e) => e.operation === 'CavilProjectItems' && e.status === 0)).toBe(true);
+    // a refresh by hand drops it, reads in full and saves its record
+    holding = false;
+    clock.t += 60_000;
     await c.restartSync();
+    expect(statusOf(c, 22)).toBe('In progress');
+    // only now does the dropped round's answer come, and that round finishes in the background
     release();
     await auto;
-    expect(statusOf(c, 22)).toBe('In progress');
+    await droppedFinished;
+    // nothing changed since the refresh: the record the refresh saved is still there
     clock.t += 60_000;
-    expect(boardReads(await round(c))).toBe(0);
+    const next = await round(c);
+    expect(boardReads(next)).toBe(0);
+    expect(checks(next).filter((e) => e.method === 'HEAD').every((e) => e.status === 304)).toBe(true);
+    expect(statusOf(c, 22)).toBe('In progress');
   });
 
   it('signed out and in again: the first round reads in full although nothing changed', async () => {

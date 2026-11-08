@@ -1773,9 +1773,12 @@ export const MUTATIONS = [
     from: '    this.fullReadNext = true;\n', to: '',
     expect: ['refresh by hand reads every source in full at once (a view edited on github.com shows right away)'] },
   { what: '变化检查（PR #272 复审第 1 轮）：整读没落地时不作废旧记录（手动整读存失败后，下一轮按旧记录跳过）', file: 'src/app/controller.ts',
-    from: '    this.dropChecks(session, sources.filter((src) => !round.unchanged.includes(src.key)), epochAtStart);\n', to: '',
+    from: '    this.dropChecks(sources.filter((src) => !round.unchanged.includes(src.key)), held);\n', to: '',
     expect: ['a refresh by hand whose save fails (the save throws): the next automatic round reads in full again', 'a refresh by hand whose save fails (the save is refused): the next automatic round reads in full again'] },
   { what: '变化检查（PR #272 复审第 1 轮）：没有版本标记的 304 也当「没变」', file: 'src/data/github.ts',
     from: '    if ((res.status === 304 || res.status === 200) && !tag) throw', to: '    if (res.status === 200 && !tag) throw',
     expect: ['the field list answers 304 without a version tag', 'an item page answers 304 without a version tag', 'the repository answers 304 without a version tag'] },
+  { what: '变化检查（PR #272 复审第 2 轮）：被放弃的旧轮次结束时，删掉新轮次刚记下的记录（不核对还是不是本轮开始时那一条）', file: 'src/app/controller.ts',
+    from: '      if (c && c === held.get(src.key)) this.checks.delete(src.key);', to: '      if (c) this.checks.delete(src.key);',
+    expect: ['a round dropped by a refresh by hand, finishing after the new round saved: it drops none of the new records (PR #272 review round 2)'] },
 ];

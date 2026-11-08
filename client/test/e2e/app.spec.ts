@@ -4509,6 +4509,11 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await page.getByTestId('search').fill('');
   await card(page, prN).click();
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  // opened again, the panel first shows this run's cached copy with a one-line "read at HH:MM" note above
+  // the discussion until the fresh read lands (GitHub#229); t0 was taken with no note (first opening).
+  // Compare like with like: wait for the fresh read (PR #272 review round 2 — measured before it landed,
+  // the discussion sat one note lower: 234 → 253 px, reproduced by holding the read)
+  await expect(page.getByTestId('detail-cached')).toHaveCount(0, { timeout: 15_000 });
   expect(await discussionTop()).toBe(t0);
 
   // ---- 2. a change made here: the success is a short line in the head, the discussion does not move ----
