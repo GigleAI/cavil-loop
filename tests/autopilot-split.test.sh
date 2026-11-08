@@ -460,7 +460,8 @@ $SUMMARY" "$H1" "pending/merge"
     fresh 'LABEL_PENDING_BLOCKED="pending/blocked"'; blocked_ready "other/tutor#9"
     jset other/items.json '.["9"].state = "closed" | .["9"].state_reason = "completed"'
     tick
-    chk "没配互通名单：标记照旧按 #9（本仓库）读 → 本仓库 #9 还开着，继续等" "$(has_label 90 pending/blocked)" yes
+    # GitHub#243：没配名单时 other/tutor#9 不再丢掉仓库名按本仓库 #9 去判，而是名单外 → 交人
+    chk "没配互通名单：other/tutor#9 不当成本仓库 #9，名单外 → 交人" "$(has_label 90 pending/human)/$(has_label 90 pending/blocked)" "yes/no"
     fresh 'LABEL_PENDING_BLOCKED="pending/blocked"' 'TRUSTED_REPOS="x/y"'; blocked_ready "other/tutor#9"
     tick
     chk "前置所在仓库不在名单里 → 交人" "$(has_label 90 pending/human)/$(has_label 90 pending/blocked)" "yes/no"
@@ -522,8 +523,8 @@ mutate handoff-ignores-flow '            if [ -n "$rest" ]; then
                 AH_V=superseded'
 mutate handoff-no-reread '        if [ "$AH_V" != "$v" ] || [ "$AH_ID|$AH_NEXT" != "$id" ]; then' '        if false; then'
 mutate handoff-delete-unchecked '            printf '"'"'%s'"'"' "$out" | grep -q '"'"'HTTP 404'"'"' && continue' '            continue'
-mutate bare-number-dropped '([ $refs[] | select(.[0] == null or (.[0] | ascii_downcase) == ($R | ascii_downcase)) | .[1] | tonumber ]' '([ $refs[] | select(.[0] != null and (.[0] | ascii_downcase) == ($R | ascii_downcase)) | .[1] | tonumber ]'
-mutate foreign-not-read '        if [[ "$p" == *"#"* ]]; then prepo="${p%#*}"; pn="${p##*#}"; else prepo="$REPO"; pn="$p"; fi' '        if [[ "$p" == *"#"* ]]; then prepo="$REPO"; pn="${p##*#}"; else prepo="$REPO"; pn="$p"; fi'
+mutate bare-number-dropped '| {r: ((.[0] // "") | ascii_downcase' '| select(.[0] != null) | {r: ((.[0] // "") | ascii_downcase'
+mutate foreign-not-read 'gh api "repos/${pr:-$REPO}/issues/$p"' 'gh api "repos/$REPO/issues/$p"'
 mutate close-bounce-off 'if [ "$AP_KIND" = issue ] && printf '"'"'%s'"'"' "$AP_BODY" | autopilot_body_has_close; then' 'if false; then'
 mutate refs-binding-off '       && [ "$(printf '"'"'%s\n'"'"' "$body" | autopilot_body_refs)" = "$n" ]; then' '       && false; then'
 mutate discover-off '    [ -s "${TICK_DIR:-/nonexistent}/issues.json" ] || return 0' '    return 0'

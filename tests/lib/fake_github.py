@@ -17,7 +17,8 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   calls.log       one line per call: "gh <argv...>"
   me              login of the token (default loop-bot)
 
-Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (key = path with
+Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (F403_<key>: a
+permission 403, F403rl_<key>: a rate-limit 403 — GitHub#243) (key = path with
 '/' -> '_', e.g. F_issues_7_events).  F_merge_<code> makes the merge endpoint fail with that code;
 F_post_comment / F_post_labels / F_delete_labels make those writes fail; F_post_label_<name> fails
 adding just that label, F_post_label_noop_<name> answers success without adding it; F_user fails `gh api user`.
@@ -305,6 +306,11 @@ key = key_of(path.split("?")[0])
 if method == "GET":
     if os.path.exists(p("F_" + key)):
         fail("HTTP 502: injected failure (" + key + ")")
+    # GitHub#243：F403_<key> = 无权读（不是限流）；F403rl_<key> = 限流的 403
+    if os.path.exists(p("F403_" + key)):
+        fail("gh: Resource not accessible by personal access token (HTTP 403)")
+    if os.path.exists(p("F403rl_" + key)):
+        fail("gh: API rate limit exceeded for user ID 1. (HTTP 403)")
     cnt_file = p("count_" + key)
     c = int(open(cnt_file).read()) + 1 if os.path.exists(cnt_file) else 1
     open(cnt_file, "w").write(str(c))
