@@ -108,7 +108,7 @@ describe('GitHub#258: the dialog — boards not ticked get a line and a watch en
 });
 
 describe('GitHub#258: the notice words', () => {
-  const w = (state: CreateWatch['state'], extra: Partial<CreateWatch> = {}): CreateWatch => ({ projectKey: 'pa', title: 'A', iterationId: null, status: 'In progress', label: 'In progress', state, writes: 0, ...extra });
+  const w = (state: CreateWatch['state'], extra: Partial<CreateWatch> = {}): CreateWatch => ({ projectKey: 'pa', title: 'A', iterationId: null, status: 'In progress', label: 'In progress', state, writes: 0, epoch: 0, ...extra });
   it('a person decides / refused / not confirmed / not readable each say so; still running says nothing', () => {
     expect(watchProblem(w('human', { seen: 'Todo' }))).toBe('看板「A」自动收进了这条，状态是「Todo」，没有自动改成「In progress」');
     expect(watchProblem(w('failed', { reason: '没有权限' }))).toContain('没能把状态设成「In progress」（没有权限）');

@@ -1045,6 +1045,8 @@ export class Controller {
   removeSource(key: string): void {
     const sources = this.state.sources.filter((s) => s.key !== key);
     this.bumpEpoch(key);
+    // GitHub#258: its watches and their buttons end with it (adding it again does not bring them back)
+    for (const j of this.state.creates) if (j.watch?.some((w) => w.projectKey === key)) this.patchWatch(j.id, key, () => null);
     this.cache.setSetting('sources', sources);
     this.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
@@ -2066,7 +2068,7 @@ export class Controller {
       const p = known.find((x) => x.key === w.projectKey);
       if (!p || ticked.has(w.projectKey) || out.some((x) => x.projectKey === w.projectKey)) continue;
       if ((w.iterationId === null) === (w.status === null)) continue;
-      out.push({ projectKey: w.projectKey, title: p.title, iterationId: w.iterationId, status: w.status, label: String(w.label ?? w.status ?? ''), state: 'looking', writes: 0 });
+      out.push({ projectKey: w.projectKey, title: p.title, iterationId: w.iterationId, status: w.status, label: String(w.label ?? w.status ?? ''), state: 'looking', writes: 0, epoch: this.epochs.get(w.projectKey) ?? 0 });
     }
     return out;
   }
@@ -2093,13 +2095,17 @@ export class Controller {
     });
   }
 
-  /** The job's entry for `key`, while the session and that board's source are the same ones the watch began with. */
-  private watchEntry(id: number, key: string, session: number, epochs: Map<string, number>): CreateWatch | null {
+  /**
+   * The job's entry for `key`, while the session and that board's source are still the very
+   * ones the entry was made for (`w.epoch`, recorded at creation — never re-read at a later
+   * call: a source removed and added again is another addition, its old watch and button are over).
+   */
+  private watchEntry(id: number, key: string, session: number): CreateWatch | null {
     if (session !== this.session) return null;
     const job = this.state.creates.find((j) => j.id === id);
     const w = job?.watch?.find((x) => x.projectKey === key) ?? null;
     if (!w) return null;
-    if (!this.state.sources.some((s) => s.key === key) || (this.epochs.get(key) ?? 0) !== epochs.get(key)) {
+    if (!this.state.sources.some((s) => s.key === key) || (this.epochs.get(key) ?? 0) !== w.epoch) {
       // the source was removed (or removed and added again): this watch is over
       this.patchWatch(id, key, () => null);
       return null;
@@ -2108,50 +2114,59 @@ export class Controller {
   }
 
   private async runWatch(id: number, session: number, nodeId: string): Promise<void> {
+    let why = '留意中断';
+    try {
+      why = await this.runLooks(id, session, nodeId);
+    } finally {
+      // every way out of the looks settles what is still being looked for: nothing stays
+      // "looking" without a timer (code review round 1) — unknown is said, never dropped
+      if (session === this.session)
+        for (const w of this.state.creates.find((j) => j.id === id)?.watch ?? [])
+          if (w.state === 'looking') this.patchWatch(id, w.projectKey, (x) => ({ ...x, state: 'unread', reason: why }));
+    }
+  }
+
+  /** The scheduled looks. Returns why the last one could not tell (for whatever is left looking). */
+  private async runLooks(id: number, session: number, nodeId: string): Promise<string> {
     const looks = this.deps.watchLooksMs ?? WATCH_LOOKS_MS;
     const start = this.state.creates.find((j) => j.id === id)?.watch ?? [];
-    const epochs = new Map(start.map((w) => [w.projectKey, this.epochs.get(w.projectKey) ?? 0]));
-    // a board whose auto-add is surely off never takes it in: not watched
+    // a board whose auto-add is surely off never takes it in: not watched (no client now: all watched)
     const c0 = await this.clientForCall(false);
-    if ('error' in c0 || c0.session !== session) return;
-    for (const w of start) {
-      const p = this.allProjects().find((x) => x.key === w.projectKey);
-      if (p && (await autoAddSurelyOff(c0.client, p))) this.patchWatch(id, w.projectKey, () => null);
-    }
-    const readOk = new Set<string>();
-    const lastError = new Map<string, string>();
+    if (!('error' in c0) && c0.session === session)
+      for (const w of start) {
+        const p = this.allProjects().find((x) => x.key === w.projectKey);
+        if (p && (await autoAddSurelyOff(c0.client, p))) this.patchWatch(id, w.projectKey, () => null);
+      }
+    let why = '读不到';
     let at = 0;
     for (let i = 0; i < looks.length; i++) {
       await this.watchSleep(looks[i] - at);
       at = looks[i];
       const last = i === looks.length - 1;
+      if (session !== this.session) return why;
       const keys = (this.state.creates.find((j) => j.id === id)?.watch ?? []).filter((w) => w.state === 'looking').map((w) => w.projectKey);
-      const live = keys.filter((k) => this.watchEntry(id, k, session, epochs));
-      if (session !== this.session) return;
-      if (!live.length) {
-        if (!this.state.creates.some((j) => j.id === id)) return;
-        continue;
-      }
+      const live = keys.filter((k) => this.watchEntry(id, k, session));
+      if (!live.length) continue;
       const seen = await this.readWatched(id, session, nodeId, live);
-      if (seen === 'ended') return;
+      if (seen === 'ended') return why;
       for (const k of live) {
-        const w = this.watchEntry(id, k, session, epochs);
+        const w = this.watchEntry(id, k, session);
         if (!w || w.state !== 'looking') continue;
         const s = typeof seen === 'string' ? null : seen.get(k);
         if (!s || s.state === 'unknown') {
-          lastError.set(k, typeof seen === 'string' ? seen : 'GitHub 的回应没有列全这条所在的看板');
-          // every look failed: unknown, never "not taken in"
-          if (last && !readOk.has(k)) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: lastError.get(k) }));
+          // the latest look decides: an earlier "not there" says nothing about now
+          why = typeof seen === 'string' ? seen : 'GitHub 的回应没有列全这条所在的看板';
+          if (last) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: why }));
           continue;
         }
-        readOk.add(k);
         if (s.state === 'absent') {
           if (last) this.patchWatch(id, k, () => null);
           continue;
         }
-        await this.actOnSighting(id, k, session, epochs, s, true);
+        await this.actOnSighting(id, k, session, s, true);
       }
     }
+    return why;
   }
 
   /** One read for the watched boards `keys`: the sightings, or why it failed ('ended': the session is over). */
@@ -2170,13 +2185,13 @@ export class Controller {
   }
 
   /** A board holds the issue: write (empty, only automatically once), finish, or leave it to a person. */
-  private async actOnSighting(id: number, key: string, session: number, epochs: Map<string, number>, s: Extract<BoardSighting, { state: 'on' }>, auto: boolean): Promise<void> {
-    const w = this.watchEntry(id, key, session, epochs);
+  private async actOnSighting(id: number, key: string, session: number, s: Extract<BoardSighting, { state: 'on' }>, auto: boolean): Promise<void> {
+    const w = this.watchEntry(id, key, session);
     if (!w) return;
     const verdict = judgeWatch(w, s.membership);
     if (verdict === 'done') return this.patchWatch(id, key, () => null);
     if (verdict === 'human' || (auto && w.writes >= 1)) return this.patchWatch(id, key, (x) => ({ ...x, state: 'human', seen: watchedValue(x, s.membership).text, busy: false }));
-    await this.writeWatched(id, key, session, epochs, s.itemId, auto);
+    await this.writeWatched(id, key, session, s.itemId, auto);
   }
 
   /**
@@ -2184,9 +2199,9 @@ export class Controller {
    * being checked). Automatic: a refusal is said in the notice. By the button: the board stays as
    * the person saw it (button still there), the reason goes back to the click.
    */
-  private async writeWatched(id: number, key: string, session: number, epochs: Map<string, number>, itemId: string, auto: boolean): Promise<string | null> {
+  private async writeWatched(id: number, key: string, session: number, itemId: string, auto: boolean): Promise<string | null> {
     const c = await this.clientForCall(true);
-    const w = this.watchEntry(id, key, session, epochs);
+    const w = this.watchEntry(id, key, session);
     if (!w) return '这个看板已不在来源里，没有修改';
     const p = this.allProjects().find((x) => x.key === key);
     const refused = (reason: string) => {
@@ -2202,21 +2217,30 @@ export class Controller {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       return refused(explainError(e, w.iterationId !== null ? 'setIteration' : 'setStatus'));
     }
-    if (!this.watchEntry(id, key, session, epochs)) return null;
+    if (!this.watchEntry(id, key, session)) return null;
     this.patchWatch(id, key, (x) => ({ ...x, state: 'written', busy: false }));
-    void this.verifyWatched(id, key, session, epochs).catch(() => {});
+    void this.verifyWatched(id, key, session).catch(() => {});
     return null;
   }
 
   /** After a write: read it back (a few tries); only seeing the value there counts as done. */
-  private async verifyWatched(id: number, key: string, session: number, epochs: Map<string, number>): Promise<void> {
+  private async verifyWatched(id: number, key: string, session: number): Promise<void> {
+    try {
+      await this.verifyLoop(id, key, session);
+    } finally {
+      const w = session === this.session ? this.state.creates.find((j) => j.id === id)?.watch?.find((x) => x.projectKey === key) : undefined;
+      if (w?.state === 'written') this.patchWatch(id, key, (x) => ({ ...x, state: 'unverified', reason: x.reason ?? '核对中断' }));
+    }
+  }
+
+  private async verifyLoop(id: number, key: string, session: number): Promise<void> {
     const job = this.state.creates.find((j) => j.id === id);
     const nodeId = job?.createdNodeId ?? '';
     const ms = this.deps.watchVerifyMs ?? WATCH_VERIFY_MS;
     let reason = '';
     for (let i = 0; i < WATCH_VERIFY_TRIES; i++) {
       await this.watchSleep(ms);
-      const w = this.watchEntry(id, key, session, epochs);
+      const w = this.watchEntry(id, key, session);
       if (!w || w.state !== 'written') return;
       const seen = await this.readWatched(id, session, nodeId, [key]);
       if (seen === 'ended') return;
@@ -2258,7 +2282,6 @@ export class Controller {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const session = c.session;
-    const epochs = new Map([[key, this.epochs.get(key) ?? 0]]);
     this.patchWatch(id, key, (x) => ({ ...x, busy: true }));
     const unbusy = (error: string): WriteResult => {
       this.patchWatch(id, key, (x) => ({ ...x, busy: false }));
@@ -2272,7 +2295,7 @@ export class Controller {
       this.patchWatch(id, key, () => null);
       return { ok: false, error: '这条已经不在这个看板上，没有修改', warning: null };
     }
-    const cur = this.watchEntry(id, key, session, epochs);
+    const cur = this.watchEntry(id, key, session);
     if (!cur) return { ok: false, error: '这个看板已不在来源里，没有修改', warning: null };
     if (judgeWatch(cur, s.membership) === 'done') {
       this.patchWatch(id, key, () => null);
@@ -2283,7 +2306,7 @@ export class Controller {
       this.patchWatch(id, key, (x) => ({ ...x, seen: now, busy: false }));
       return { ok: false, error: `看板上现在是「${now ?? '空'}」，和提示里的不一样，没有修改；看过后再决定`, warning: null };
     }
-    const error = await this.writeWatched(id, key, session, epochs, s.itemId, false);
+    const error = await this.writeWatched(id, key, session, s.itemId, false);
     return error === null ? { ok: true, error: null, warning: null } : { ok: false, error, warning: null };
   }
 

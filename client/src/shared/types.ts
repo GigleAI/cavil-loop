@@ -179,6 +179,8 @@ export interface CreateWatch {
   writes: number;
   /** a button click is being carried out */
   busy?: boolean;
+  /** which addition of that board's source this watch belongs to (removed / added again → over) */
+  epoch: number;
 }
 
 export interface CreateJob {

@@ -357,6 +357,60 @@ describe('GitHub#258: what is not watched, and when watching stops', () => {
     expect(fieldWrites()).toHaveLength(0);
   });
 
+  it('code review round 1: a first look reads "not there", every later one fails — said as unknown, nothing left watching silently', async () => {
+    const c = await ready();
+    const n = await createInGroup(c, 'absent then unreadable');
+    await until(() => reads() === 1, 'first look (complete, not there)');
+    fake.state.w.failCreatedBoards = 999;
+    githubAdds(n);
+    await until(() => jobOf(c)?.status === 'partial', 'notice');
+    expect(jobOf(c)!.watch).toMatchObject([{ state: 'unread' }]);
+    expect(jobOf(c)!.message).toContain('读不到这条在不在看板「cavil project」上');
+    expect(reads()).toBe(LOOKS.length);
+    expect(fieldWrites()).toHaveLength(0);
+  });
+
+  it('code review round 1 (sibling): "not there" first, then it reads again at the last look — set as usual', async () => {
+    const c = await ready();
+    const n = await createInGroup(c, 'absent then readable');
+    await until(() => reads() === 1, 'first look');
+    fake.state.w.failCreatedBoards = 1;
+    githubAdds(n);
+    await until(() => c.getState().creates.length === 0, 'settled');
+    expect(fieldWrites()).toHaveLength(1);
+    expect(statusOnGitHub(n)).toBe('In progress');
+  });
+
+  it('code review round 1: a button left from before the source was removed and added again writes nothing', async () => {
+    const c = await ready();
+    const n = await createInGroup(c, 'source readded');
+    githubAdds(n, 'Backlog');
+    await until(() => jobOf(c)?.status === 'partial', 'notice');
+    const id = jobOf(c)!.id;
+    await sleep(LOOKS[2] + VERIFY);
+    c.removeSource(PROJECT_KEY);
+    // the button goes with the source
+    expect(c.getState().creates.find((j) => j.id === id)?.watch ?? []).toEqual([]);
+    c.addSource(PROJECT_URL);
+    await c.syncNow();
+    const r = await c.applyCreateWatch(id, PROJECT_KEY);
+    expect(r.ok).toBe(false);
+    expect(fieldWrites()).toHaveLength(0);
+    expect(statusOnGitHub(n)).toBe('Backlog');
+  });
+
+  it('code review round 1 (sibling): the same button, source never removed, after the looks have ended — writes', async () => {
+    const c = await ready();
+    const n = await createInGroup(c, 'button after looks');
+    githubAdds(n, 'Backlog');
+    await until(() => jobOf(c)?.status === 'partial', 'notice');
+    await sleep(LOOKS[2] + VERIFY);
+    expect((await c.applyCreateWatch(jobOf(c)!.id, PROJECT_KEY)).ok).toBe(true);
+    expect(fieldWrites()).toHaveLength(1);
+    await until(() => c.getState().creates.length === 0, 'checked');
+    expect(statusOnGitHub(n)).toBe('In progress');
+  });
+
   it('the source removed mid-watch: the watch ends', async () => {
     const c = await ready();
     const n = await createInGroup(c, 'source removed');
