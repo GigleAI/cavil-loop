@@ -6403,7 +6403,7 @@ blocked_handoff_section() {   # [sub-issue]
     local trusted
     trusted=$(blocked_trusted_json 2>/dev/null | jq -r 'map("`" + . + "`") | join("、")' 2>/dev/null) || trusted=""
     if [ -n "$trusted" ]; then
-        trusted="daemon 只查本项目互通名单里的仓库：${trusted}；名单外的仓库 daemon 不查、会直接交人，等名单外的仓库就照上文翻 \`${LABEL_PENDING_HUMAN}\`："
+        trusted="daemon 只查本项目互通名单里的仓库：${trusted}；名单外的仓库 daemon 不查、会直接交人，等名单外的仓库照上文翻 \`${LABEL_PENDING_HUMAN}\`。名单里的这样写："
     else
         trusted="本项目没有配互通名单，daemon 不查任何别的仓库——等别的仓库的前置照上文翻 \`${LABEL_PENDING_HUMAN}\` 交人，下面这种写法只在配了名单之后才有用："
     fi

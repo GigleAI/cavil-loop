@@ -555,7 +555,7 @@ CONF
         chk "名单 $tl：名单外的 other/repo#5 → 交人" "$(labels_of 10)" "pending/human"
         chk "名单 $tl：没按本仓库已完成的 #5 开工" "$(comments_with 10 'v=resume')" 0
         chk "名单 $tl：评论写明怎么加进名单" "$(comments_with 10 'TRUSTED_REPOS')" 1
-        chk "名单 $tl：评论点名 other/repo#5" "$(comments_with 10 'other/repo#5')" 1
+        chk "名单 $tl：daemon 的评论点名 other/repo#5" "$(jq -r '.["10"][-1].body' "$GD/comments.json" | grep -c '（other/repo#5）')" 1
         chk "名单 $tl：不去读名单外的仓库" "$(grep -c "repos/other/" "$CALLS" || true)" 0
         chk "到达性 · 名单 $tl：这一轮读了 #10 的评论" "$(yes_if_pos "$(n_calls "^gh api --paginate --slurp $R/issues/10/comments")")" yes
     done
@@ -760,6 +760,8 @@ run_prompt_checks() {
         chk "提示词 · 开启：$k 带等前置规则" "$(grep -c '^# 等前置规则（本项目开启了等前置标签 `pending/blocked`）' "$O/on/$k.md" || true)" 1
         chk "提示词 · 开启：$k 没有没换掉的占位" "$(grep -cE '@@[A-Z_]+@@|\$\{LABEL_PENDING_AGENT\}' "$O/on/$k.md" || true)" 0
     done
+    chk "提示词 · 开启：没配互通名单时写明别的仓库照常交人（GitHub#243）" "$(grep -c '本项目没有配互通名单，daemon 不查任何别的仓库' "$O/on/issue-comment.md" || true)" 1
+    chk "提示词 · 开启：带仓库名的登记写法" "$(grep -c 'agent-blocked-by: #12 GigleAI/cavil-loop#238 resume=pending/agent -->' "$O/on/issue-comment.md" || true)" 1
     chk "提示词 · 开启：标记里的恢复标签渲染成派你来的标签" "$(grep -c 'agent-blocked-by: #12 #34 resume=pending/agent -->' "$O/on/issue-comment.md" || true)" 1
     chk "提示词 · 开启：拆分改成「有前置 → 挂等前置标签」" "$(grep -c '再挂 `pending/blocked`；前置合并后 daemon 会自动' "$O/on/issue-comment.md" || true)" 1
     # 子项那份：覆盖「前置还没合并 → 交人」的那一段必须排在子项说明之后（后文覆盖前文）
