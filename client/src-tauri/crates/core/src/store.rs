@@ -20,6 +20,12 @@ pub const CACHE_CREDENTIAL: &str = "cacheCredential";
 pub const CACHE_OWNER: &str = "cacheOwner";
 pub const GRANT_CLIENT_ID: &str = "grantClientId";
 pub const SECRET_KEYS: [&str; 4] = [TRUSTED, CACHE_CREDENTIAL, CACHE_OWNER, GRANT_CLIENT_ID];
+/// The signed-in account's login (GitHub#266): the window reads it, only the back end writes it,
+/// and only under the session check — a window write could arrive after a sign-out and put the
+/// previous account's name back.
+pub const VIEWER: &str = "viewer";
+/// Settings the window may read but never write.
+pub const BACKEND_ONLY_KEYS: [&str; 1] = [VIEWER];
 
 pub struct Store {
     db: Mutex<Connection>,
