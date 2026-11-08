@@ -102,7 +102,8 @@ export function NewIssueDialog({
   const fellBack = handoff !== wanted ? handoffProblem(repo, wantedCheck) : '';
   // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
   const ticked = allProjects.filter((p) => projects.includes(p.key));
-  const preview = group ? previewCreate(group.preset, ticked, repo, read) : null;
+  // GitHub#258: the boards left unticked are watched for taking the issue in by themselves
+  const preview = group ? previewCreate(group.preset, ticked, repo, read, allProjects.filter((p) => !projects.includes(p.key))) : null;
   // GitHub#231: what an iteration / status group sets is about the boards: said right under their boxes
   const boardPreview = group?.preset.by === 'iteration' || group?.preset.by === 'status';
   const previewBox = preview && (

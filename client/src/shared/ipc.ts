@@ -48,6 +48,8 @@ export interface CavilApi {
   startCreate(action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<{ ok: boolean; error: string | null; job?: number }>;
   dismissCreate(id: number): Promise<void>;
   retryCreateProjects(id: number): Promise<WriteResult>;
+  /** GitHub#258: a board that took the new issue in by itself holds another value: set the group's value there (read again first) */
+  applyCreateWatch(id: number, projectKey: string): Promise<WriteResult>;
   /**
    * GitHub#250: close an issue / PR, merge, autopilot, hand to the agent — started in the background
    * (the dialog closes); refused at once, nothing sent, when it cannot go out (offline, or the item
