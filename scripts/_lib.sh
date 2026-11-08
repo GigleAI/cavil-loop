@@ -1257,7 +1257,7 @@ pace_should_poll() {
     PACE_SKIP_MSG=""
     [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 0
 
-    local now next_due last_poll last_active fail_streak fingerprint waited remain
+    local now next_due last_poll last_active fail_streak fingerprint waited remain pcap
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
 
@@ -1309,6 +1309,14 @@ pace_should_poll() {
     # 不问——读不到 GitHub 的时候每分钟再问一次，正是故障阶梯要避免的事。
     # 只有明确拿到 304 才继续跳过；变了、读不到、回了看不懂的东西，一律跑。
     if pace_probe_on; then
+        # 封顶在**读**这一侧也要生效，不能只在写下一轮时夹：状态是按写入那一刻的配置算的。
+        # 封顶被调小、或者关着检查时退到 30 分钟档后又打开，文件里的 next_due 还是旧的那个
+        # 更远的期限；只看它会照旧等满，「开着时最长 POLL_IDLE_PROBE_MAX_SECS」就落空了
+        # （代码复审第 1 轮实测：旧档 600、新封顶 60、已等 120 秒仍跳过）。用同一个
+        # pace_probe_cap，按跟 next_due 一样的抖动余量算到期。
+        if pcap=$(pace_probe_cap quiet) && [ $((now + POLL_DUE_SLACK_SECS)) -ge $((last_poll + pcap)) ]; then
+            return 0
+        fi
         if ! pace_probe; then
             log "轻量检查：$PACE_PROBE_REASON → 提前跑一轮（原定还差 $(pace_human_secs "$remain")）"
             return 0
@@ -1344,11 +1352,13 @@ pace_probe_on() {
 # 开着时完整检查的最长间隔。合法 = 1 到心跳值之间的整数秒；不合法打一行警告、
 # 返回非 0（= 不封顶，按原阶梯走，阶梯本身已被心跳夹住）。0 不算合法：那等于关掉退避，
 # 该用阶梯留空来表达，而不是让一个写错的封顶值悄悄变成每 tick 都跑。
+# 第 1 个参数写 quiet = 不打警告：闸门每个 tick 都调，警告只在每轮记账时打一次就够。
 pace_probe_cap() {
     local v
     if v=$(pace_num "${POLL_IDLE_PROBE_MAX_SECS:-}" 9) && [ "$v" -ge 1 ] && [ "$v" -le "$POLL_FORCE_SYNC_SECS" ]; then
         printf '%s' "$v"; return 0
     fi
+    [ "${1:-}" = quiet ] && return 1
     log "⚠️ POLL_IDLE_PROBE_MAX_SECS='${POLL_IDLE_PROBE_MAX_SECS:-}' 不是 1 到心跳 ${POLL_FORCE_SYNC_SECS} 之间的秒数，本轮不封顶（按原阶梯，最长心跳值）"
     return 1
 }

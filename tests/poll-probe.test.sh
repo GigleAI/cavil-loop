@@ -5,7 +5,7 @@
 # 完整检查的最长间隔封顶 POLL_IDLE_PROBE_MAX_SECS（默认 600 秒）。
 #
 # 跑法：bash tests/poll-probe.test.sh          （本机空闲时约 40 秒，负载高时 3 分钟以上：真的把 agent-poll.sh 起几百次）
-#       MUTATION=1 bash tests/poll-probe.test.sh  另跑 6 份故意改坏的副本，每份必须变红（约 8 分钟）
+#       MUTATION=1 bash tests/poll-probe.test.sh  另跑 7 份故意改坏的副本，每份必须变红（约 8 分钟）
 # 依赖：jq、git、python3。不碰网络、不碰真 tmux session，HOME 指向临时目录。
 #
 # 两个方向都不报错，所以每条都要能分出对错实现：
@@ -224,6 +224,31 @@ scenarios() {   # <scripts 根>
     chk "一次都没问" "$(probes)" "0"
     chk "不留标记文件" "$(ls "$STATE" | grep -c poll-probe || true)" "0"
     export POLL_IDLE_PROBE=true
+
+    say "【10】状态按旧配置写的，配置换了：新封顶当场生效，不等旧期限（代码复审第 1 轮）"
+    # 10a：封顶从 600 调成 60。quiet_8d 收尾那一轮按 600 写了 next_due；换成 60 之后，
+    #      距上一轮满 60 秒的那个 tick 就该跑，而不是等满 10 分钟。仓库没变、标记已转正，
+    #      所以能让它跑的只有「读这一侧也看封顶」这一条。
+    reset_state
+    N=$(quiet_8d "$R")
+    chk "前提：旧状态按 600 秒写的" "$(jq -r '.next_due - .last_poll' "$PACE")" "600"
+    export POLL_IDLE_PROBE_MAX_SECS=60
+    chk "封顶改成 60 秒后，接下来 3 个 tick 每个都真跑" "$(run_ticks "$R" "$N" $((N + 120)))" "3"
+    chk "跑完按新封顶写下一档" "$(jq -r '.next_due - .last_poll' "$PACE")" "60"
+    unset POLL_IDLE_PROBE_MAX_SECS
+    # 10b：关着检查时退到 30 分钟档，再打开（默认封顶 600）。标记还在、仓库没变 → 检查回
+    #      304；旧 next_due 还差 20 分钟，但距上一轮已满 10 分钟，必须跑。
+    reset_state; export POLL_IDLE_PROBE=false
+    run_ticks "$R" $T0 $T0 >/dev/null
+    S=$((T0 + 8 * DAY)); run_ticks "$R" "$S" "$S" >/dev/null
+    chk "前提：关着时写的是 30 分钟档" "$(jq -r '.next_due - .last_poll' "$PACE")" "1800"
+    printf '%s\n' 'W/"v1"' > "$ETAG_FILE"
+    export POLL_IDLE_PROBE=true
+    : > "$PROBE_COUNT"
+    chk "重新打开后头 9 个 tick 检查回 304、跳过" "$(run_ticks "$R" $((S + 60)) $((S + 540)))" "0"
+    chk "这 9 个 tick 各问了一次" "$(probes)" "9"
+    chk "距上一轮满 10 分钟就跑（不等旧的 30 分钟）" "$(run_ticks "$R" $((S + 600)) $((S + 600)))" "1"
+    chk "跑完按 600 秒写下一档" "$(jq -r '.next_due - .last_poll' "$PACE")" "600"
 }
 
 say "═══ 当前实现 ═══"
@@ -298,6 +323,11 @@ try_mutant "开着时不封顶" no-cap \
 try_mutant "关掉时仍封顶" cap-when-off \
     '    if [ "$iv" -gt 0 ] && pace_probe_on && pcap=$(pace_probe_cap) && [ "$iv" -gt "$pcap" ]; then iv="$pcap"; fi' \
     '    if [ "$iv" -gt 600 ]; then iv=600; fi'
+try_mutant "封顶只在写下一轮时生效，读旧状态时不看" cap-write-only \
+    '        if pcap=$(pace_probe_cap quiet) && [ $((now + POLL_DUE_SLACK_SECS)) -ge $((last_poll + pcap)) ]; then
+            return 0
+        fi' \
+    ':'
 try_mutant "坏标记照样进请求头" etag-unchecked \
     '    if pace_etag_ok "$e"; then printf '"'"'%s'"'"' "$e"; fi' \
     '    printf '"'"'%s'"'"' "$e"'
