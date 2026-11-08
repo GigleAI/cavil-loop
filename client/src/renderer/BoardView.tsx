@@ -394,6 +394,8 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
       <Icon name="x" />
     </button>
   );
+  // GitHub#258: created, only boards not ticked still being watched: nothing to say
+  if (job.status === 'watching') return null;
   if (job.status === 'running')
     return (
       <div className="banner info" data-testid="create-bar" data-status="running">
@@ -424,6 +426,25 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
               再试加入看板
             </button>
           )}
+          {(job.watch ?? [])
+            .filter((w) => w.state === 'human')
+            .map((w) => (
+              <button
+                key={w.projectKey}
+                className="link"
+                data-testid="create-watch-apply"
+                data-project={w.projectKey}
+                disabled={w.busy}
+                onClick={() => {
+                  setRetryError(null);
+                  void api()
+                    .applyCreateWatch(job.id, w.projectKey)
+                    .then((r) => setRetryError(r.ok ? null : r.error));
+                }}
+              >
+                在「{w.title}」改成「{w.label}」
+              </button>
+            ))}
           {retryError && (
             <span className="small err" data-testid="create-retry-error">
               {' '}

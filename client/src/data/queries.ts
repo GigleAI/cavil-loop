@@ -114,6 +114,47 @@ query CavilItemRefresh($owner: String!, $name: String!, $number: Int!) {
 `;
 
 /**
+ * GitHub#258: which Projects a just-created issue (its node id) is on and its field values
+ * there — to see whether a board took it in by itself. `totalCount`s tell a complete answer
+ * from one cut short (cut short = unknown, never "not there" / "empty").
+ */
+export const CREATED_ITEM_BOARDS_QUERY = `
+query CavilCreatedItemBoards($id: ID!) {
+  node(id: $id) {
+    ... on Issue {
+      projectItems(first: 50) {
+        totalCount
+        nodes {
+          id isArchived project { id }
+          fieldValues(first: 100) {
+            totalCount
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldIterationValue {
+                iterationId title startDate duration
+                field { ... on ProjectV2IterationField { id name } }
+              }
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                optionId name
+                field { ... on ProjectV2SingleSelectField { id name } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`;
+
+/** GitHub#258: a Project's workflows (name + on / off), read on its own so a refusal never fails the board read. */
+export const PROJECT_WORKFLOWS_QUERY = `
+query CavilProjectWorkflows($id: ID!) {
+  node(id: $id) { ... on ProjectV2 { workflows(first: 50) { totalCount nodes { name enabled } } } }
+}
+`;
+
+/**
  * The issues a pull request closes (GitHub's "closing issues references"),
  * one page at a time: after a merge / close they are read again too
  * (GigleAI/cavil-loop#177). Read to the last page — the list has no upper bound.

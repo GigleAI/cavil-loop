@@ -76,6 +76,11 @@ export type GroupPreset =
 export interface CreatePlan {
   milestone: { number: number; title: string } | null;
   projects: { projectKey: string; iterationId: string | null; status: string | null }[];
+  /**
+   * GitHub#258: boards NOT ticked whose field is set only if GitHub's own auto-add puts the
+   * issue there and the field is still empty (`label`: the group's value as shown)
+   */
+  watch?: { projectKey: string; iterationId: string | null; status: string | null; label: string }[];
 }
 
 /** The close reasons the client offers (GitHub#180). "Duplicate" needs the issue it duplicates: web only. */

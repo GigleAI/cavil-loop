@@ -40,6 +40,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     startCreate: (action) => c.startCreate(action),
     dismissCreate: async (id) => c.dismissCreate(Number(id)),
     retryCreateProjects: (id) => c.retryCreateProjects(Number(id)),
+    applyCreateWatch: (id, key) => c.applyCreateWatch(Number(id), String(key)),
     startOp: async (action, from) => c.startOp(action, from === undefined ? {} : { from: String(from) }),
     opRecheck: (id) => c.opRecheck(String(id)),
     opFinish: (id) => c.opFinish(String(id)),
