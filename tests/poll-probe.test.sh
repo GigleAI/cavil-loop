@@ -4,8 +4,8 @@
 # 「仓库最近更新的那一条变了没有」，没变（304）照旧跳过、变了提前完整跑一轮；开着时
 # 完整检查的最长间隔封顶 POLL_IDLE_PROBE_MAX_SECS（默认 600 秒）。
 #
-# 跑法：bash tests/poll-probe.test.sh          （约 30 秒：真的把 agent-poll.sh 起几百次）
-#       MUTATION=1 bash tests/poll-probe.test.sh  另跑 6 份故意改坏的副本，每份必须变红
+# 跑法：bash tests/poll-probe.test.sh          （本机空闲时约 40 秒，负载高时 3 分钟以上：真的把 agent-poll.sh 起几百次）
+#       MUTATION=1 bash tests/poll-probe.test.sh  另跑 6 份故意改坏的副本，每份必须变红（约 8 分钟）
 # 依赖：jq、git、python3。不碰网络、不碰真 tmux session，HOME 指向临时目录。
 #
 # 两个方向都不报错，所以每条都要能分出对错实现：

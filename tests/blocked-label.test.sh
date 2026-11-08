@@ -439,7 +439,9 @@ CONF
     # ── 【10】轮询节奏 ──
     if want pace; then
     section "【10】轮询节奏：首次发现按原退避；发现后最长 5 分钟一查；不在等时回到原阶梯"
-    on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"'
+    # 这一组测的是等前置的封顶和原阶梯本身；空闲轻量检查（GitHub#252）会让「首次发现」提前到
+    # 下一个 tick、并把 30 分钟档封到 10 分钟，那一套由 tests/poll-probe.test.sh 测，这里关掉。
+    on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"' 'POLL_IDLE_PROBE=false'
     mkissue 10 ""; mkissue 11 ""
     NOW=$T0 tick
     local fp; fp=$(jq -r .fingerprint "$W/state/poll-pace.json")
@@ -464,7 +466,7 @@ CONF
     # 11c：没有在等的条目时节奏和原阶梯一样；挂着 pending/human 的等前置条目不加快
     local case_
     for case_ in none stopped; do
-        on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"'
+        on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"' 'POLL_IDLE_PROBE=false'
         mkissue 10 ""
         [ "$case_" = stopped ] && { jset labels.json '.["10"] = ["pending/blocked","pending/human"]'; ev 10 labeled pending/blocked; }
         NOW=$T0 tick

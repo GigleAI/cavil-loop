@@ -34,7 +34,7 @@ paginated-latest-id 1
 pending-human-conflict 7
 plain-language-prompts 1
 poll-pace 46
-poll-probe 60
+poll-probe 40
 preview-legacy-adopt 6
 preview-port-ownership 3
 preview-rename-coexist 1
