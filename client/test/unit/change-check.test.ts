@@ -270,6 +270,10 @@ describe('an answer that is not a clear "not modified" reads in full', () => {
     ['a later item page answers 200 without a version tag', (e) => (e.path.includes('/items') && e.path.includes('after=') ? 'no-etag' : null), 'board'],
     ['the repository answers 500', (e) => (e.path.includes('/repos/') ? { status: 500 } : null), 'repo'],
     ['the repository answers 200 without a version tag', (e) => (e.path.includes('/repos/') ? 'no-etag' : null), 'repo'],
+    // PR #272 review round 1: "not modified" without a version tag is no answer either, at each of the three calls
+    ['the field list answers 304 without a version tag', (e) => (e.path.includes('/fields') ? { status: 304 } : null), 'board'],
+    ['an item page answers 304 without a version tag', (e) => (e.path.includes('/items') ? { status: 304 } : null), 'board'],
+    ['the repository answers 304 without a version tag', (e) => (e.path.includes('/repos/') ? { status: 304 } : null), 'repo'],
   ];
   for (const [what, f, hit] of cases) {
     it(what, async () => {
@@ -344,6 +348,55 @@ describe('a record vouches only for the snapshot it was taken for', () => {
     const sent = await round(c);
     expect(boardReads(sent)).toBe(1);
     expect(statusOf(c, 22)).toBe('In progress');
+  });
+
+  // PR #272 review round 1: a full read the check could not have asked for (a view edited, read by
+  // hand) whose save fails must be read again by the next round — the old record must not skip it
+  for (const how of ['the save throws', 'the save is refused'] as const) {
+    it(`a refresh by hand whose save fails (${how}): the next automatic round reads in full again`, async () => {
+      let failSave = false;
+      const { c, clock } = await ready({
+        sources: [PROJECT_URL],
+        intercept: (cmd) =>
+          cmd === 'replaceSnapshots' && failSave ? (how === 'the save throws' ? Promise.reject(new Error('disk full')) : Promise.resolve({ written: false })) : undefined,
+      });
+      clock.t += 60_000;
+      expect(boardReads(await round(c))).toBe(0);
+      for (const pg of pages()) pg.views = { nodes: pg.views!.nodes.map((v: any) => (v.number === 1 ? { ...v, name: 'Renamed view' } : v)) };
+      failSave = true;
+      clock.t += 60_000;
+      const n = fake.log.length;
+      await c.restartSync();
+      expect(boardReads(since(n))).toBe(1);
+      expect(c.getBoardData().projects[0].views.find((v) => v.number === 1)!.name).not.toBe('Renamed view');
+      failSave = false;
+      clock.t += 60_000;
+      const sent = await round(c);
+      expect(boardReads(sent)).toBe(1);
+      expect(c.getBoardData().projects[0].views.find((v) => v.number === 1)!.name).toBe('Renamed view');
+      expect(c.getState().sync.sources.find((st) => st.sourceKey === PROJECT_KEY)).toMatchObject({ ok: true, dataFrom: clock.t });
+      // and quiet again once that read has landed
+      clock.t += 60_000;
+      expect(boardReads(await round(c))).toBe(0);
+    });
+  }
+
+  it('a round dropped by a refresh by hand while it read: the new round reads in full, and so does nothing that never landed', async () => {
+    const { c, clock } = await ready({ sources: [PROJECT_URL] });
+    clock.t += 60_000;
+    statusOnBoard(22, 'In progress');
+    // the automatic round's full read is held; a refresh by hand drops it and reads again
+    let held = true;
+    const release = fake.holdWhen((e) => held && e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === null);
+    const auto = c.syncNow();
+    for (let i = 0; i < 500 && !fake.log.some((e) => e.operation === 'CavilProjectItems' && e.status === 0); i++) await new Promise((res) => setTimeout(res, 10));
+    held = false;
+    await c.restartSync();
+    release();
+    await auto;
+    expect(statusOf(c, 22)).toBe('In progress');
+    clock.t += 60_000;
+    expect(boardReads(await round(c))).toBe(0);
   });
 
   it('signed out and in again: the first round reads in full although nothing changed', async () => {

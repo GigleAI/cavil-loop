@@ -61,11 +61,6 @@ function boardBase(src: Board): string {
   return `/${src.ownerType === 'org' ? 'orgs' : 'users'}/${encodeURIComponent(src.owner)}/projectsV2/${src.number}`;
 }
 
-function requireTag(etag: string | null, what: string): string {
-  if (!etag) throw new GitHubError('http', `变化检查：${what}没有版本标记`);
-  return etag;
-}
-
 async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | null, count: number | null): Promise<CheckResult> {
   // the field list: its ids go into the item list's URL (REST lists only the fields asked for)
   const fieldsUrl = `${boardBase(src)}/fields?per_page=100`;
@@ -87,7 +82,7 @@ async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | n
     const ids = (fa.body as { id?: unknown }[]).map((f) => f.id).filter((id): id is number | string => typeof id === 'number' || typeof id === 'string');
     if (ids.length === 0) throw new GitHubError('http', '变化检查：字段列表为空');
     fieldIds = ids.join(',');
-    fields = { url: fieldsUrl, etag: requireTag(fa.etag, '字段列表') };
+    fields = { url: fieldsUrl, etag: fa.etag };
     changed = true;
   }
 
@@ -104,7 +99,7 @@ async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | n
       // a 304 has no "next" link: the same page leads to the same next page as last time
       url = old!.pages[i + 1]?.url ?? null;
     } else {
-      pages.push({ url, etag: requireTag(a.etag, '条目列表') });
+      pages.push({ url, etag: a.etag });
       changed = true;
       url = a.next;
     }
@@ -121,7 +116,7 @@ async function checkRepo(client: GitHubClient, src: Repo, old: SourceCheck | nul
     if (!prior) throw new GitHubError('http', '变化检查：仓库回了 304，但没有上一次的记录');
     return { unchanged: true, record: { pages: [prior], fields: null, count: null } };
   }
-  return { unchanged: false, record: { pages: [{ url, etag: requireTag(a.etag, '仓库') }], fields: null, count: null } };
+  return { unchanged: false, record: { pages: [{ url, etag: a.etag }], fields: null, count: null } };
 }
 
 /** Check one source against what was recorded (`old`, null = nothing usable: tags are taken, never "unchanged"). */

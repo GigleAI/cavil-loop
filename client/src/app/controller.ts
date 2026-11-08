@@ -1238,6 +1238,12 @@ export class Controller {
     if (!byHand) for (const [key, c] of this.checks) if (c.epoch === epochAtStart.get(key)) recorded.set(key, c.check);
     const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, this.now(), recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS);
     run.reading = false;
+    // Every source this round did not confirm unchanged needed a full read (it changed, the check could
+    // not tell, 10 minutes were up, or the refresh was by hand). Its old record goes now, before anything
+    // can fail: until a new one lands with the read, the next round reads it in full again — a read that
+    // never landed (dropped round, failed or refused save, another account) is retried, never skipped
+    // (PR #272 review round 1). Only this session's records of the very additions this round read.
+    this.dropChecks(session, sources.filter((src) => !round.unchanged.includes(src.key)), epochAtStart);
     // dropped meanwhile: a newer round owns the state now, nothing of this one may land
     if (run.signal.aborted) return;
     const over = () => {
@@ -1319,6 +1325,15 @@ export class Controller {
         this.snapshots.get(src.key)?.fetchedAt === c.snapshotAt;
       if (holds) this.checks.set(src.key, { epoch, check: c });
       else this.checks.delete(src.key);
+    }
+  }
+
+  /** GitHub#261: forget the records of `sources` — this session's, of the same addition only. */
+  private dropChecks(session: number, sources: SourceConfig[], epochAtStart: Map<string, number>): void {
+    if (session !== this.session || this.checksSession !== session) return;
+    for (const src of sources) {
+      const c = this.checks.get(src.key);
+      if (c && c.epoch === (epochAtStart.get(src.key) ?? 0)) this.checks.delete(src.key);
     }
   }
 

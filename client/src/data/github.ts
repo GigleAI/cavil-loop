@@ -134,7 +134,8 @@ export class GitHubClient {
   /**
    * GitHub#261: one conditional request of the change check. `etag` from an earlier answer
    * goes out as If-None-Match; GitHub answers 304 (nothing changed, not counted against the
-   * quota) or 200 with the current version tag. Any other answer throws, like every request.
+   * quota) or 200 with the current version tag. Any other answer throws, like every request —
+   * and so does a 200 or 304 without a version tag (nothing to compare with: not "unchanged").
    * HEAD reads headers only; GET also returns the parsed body (null for HEAD / 304).
    * `pathOrUrl` is an API path or a full URL from an earlier `next` (same API origin only).
    */
@@ -144,7 +145,9 @@ export class GitHubClient {
     const res = await this.send(url, { method, ...(etag ? { headers: { 'If-None-Match': etag } } : {}) }, true);
     const tag = res.headers.get('etag');
     const next = nextLink(res.headers.get('link'));
-    if (res.status === 304) return { status: 304, etag: tag, next, body: null };
+    // an answer without a version tag says nothing checkable — "not modified" included (PR #272 review round 1)
+    if ((res.status === 304 || res.status === 200) && !tag) throw new GitHubError('http', `变化检查：HTTP ${res.status} 的回答没有版本标记`, res.status);
+    if (res.status === 304) return { status: 304, etag: tag!, next, body: null };
     // only a plain 200 says "this is the current version"; any other success is not checkable
     if (res.status !== 200) throw new GitHubError('http', `变化检查收到意外的 HTTP ${res.status}`, res.status);
     let body: unknown = null;
@@ -155,7 +158,7 @@ export class GitHubClient {
         throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
       }
     }
-    return { status: 200, etag: tag, next, body };
+    return { status: 200, etag: tag!, next, body };
   }
 
   /** GET a REST list endpoint and follow every `Link: rel="next"` page. */
@@ -182,8 +185,8 @@ export class GitHubClient {
 
 export interface ConditionalAnswer {
   status: 200 | 304;
-  /** the version tag GitHub sent (null: none — the caller must not treat the answer as checkable) */
-  etag: string | null;
+  /** the version tag GitHub sent (an answer without one throws: it is not checkable) */
+  etag: string;
   /** `Link: rel="next"` (GitHub sends none with a 304) */
   next: string | null;
   body: unknown;
