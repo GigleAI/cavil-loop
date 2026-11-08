@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -21,7 +21,8 @@ import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, refusedForSure, relatedIssues, removeLabel } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
+import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
   STUCK_MS,
   finishSteps,
@@ -96,6 +97,9 @@ export interface ControllerDeps {
   observeFirstMs?: number;
   /** GitHub#250: how long a succeeded operation waits for its re-read before the manual unlock is offered (tests shorten it) */
   opStuckMs?: number;
+  /** GitHub#258: when the boards not ticked are looked at after a create (ms after it), and the check after a write (tests shorten them) */
+  watchLooksMs?: number[];
+  watchVerifyMs?: number;
 }
 
 /** GitHub#229: the row of the snapshot table that holds the changes not yet confirmed (not a source). */
@@ -113,7 +117,7 @@ export const DETAIL_CACHE_SIZE = 50;
  * hides a field that failed on it, a later retry of another board never drops it). null =
  * nothing left: the notice goes.
  */
-export function createNotice(number: number, boards: CreateBoard[], labelsNote = ''): string | null {
+export function createNotice(number: number, boards: CreateBoard[], labelsNote = '', watch: CreateWatch[] = []): string | null {
   const missing = boards.filter((b) => b.state === 'missing');
   const fields = boards.filter((b) => b.state === 'fieldsFailed');
   const parts: string[] = [];
@@ -121,6 +125,11 @@ export function createNotice(number: number, boards: CreateBoard[], labelsNote =
   if (labelsNote) parts.push(labelsNote);
   if (missing.length) parts.push(`没能加入看板 ${missing.map((b) => `「${b.title}」（${b.reason}）`).join('、')}`);
   if (fields.length) parts.push(`已加入看板但字段没设上 ${fields.map((b) => `「${b.title}」（${b.reason}）`).join('、')}，请在详情里手动设置`);
+  // GitHub#258: boards not ticked that took it in by themselves and were not (surely) set
+  for (const w of watch) {
+    const t = watchProblem(w);
+    if (t) parts.push(t);
+  }
   return parts.length ? `issue #${number} 已建好，但${parts.join('；')}` : null;
 }
 
@@ -260,6 +269,8 @@ export class Controller {
   private itemQueues = new Map<string, Promise<unknown>>();
   /** the watch re-reads of a record (cleared when it ends) */
   private editTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
+  /** GitHub#258: the waits of the watched boards of new issues */
+  private watchTimers = new Set<ReturnType<typeof setTimeout>>();
   /** details read in this run, newest last (re-opening shows the last one while the new read is on its way) */
   private detailCache = new Map<string, ItemDetail>();
   /** labels / milestones per repository, only reads that worked */
@@ -414,7 +425,8 @@ export class Controller {
   }
 
   startTimer(): void {
-    this.stopTimer();
+    if (this.timer) clearInterval(this.timer);
+    this.cancelFollowUp();
     this.timer = setInterval(() => void this.syncNow(), this.deps.syncIntervalMs ?? SYNC_INTERVAL_MS);
   }
 
@@ -422,6 +434,9 @@ export class Controller {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.cancelFollowUp();
+    // GitHub#258: and the watches of new issues (they only end here or with the session)
+    for (const t of this.watchTimers) clearTimeout(t);
+    this.watchTimers.clear();
   }
 
   /**
@@ -607,6 +622,9 @@ export class Controller {
     this.ops.clear();
     this.opsStored = false;
     this.opPreparing.clear();
+    // GitHub#258: the watches of that account's new issues end with it
+    for (const t of this.watchTimers) clearTimeout(t);
+    this.watchTimers.clear();
     this.state = { ...this.state, editsNeedingAction: 0, creates: [], ops: [] };
     this.pending.reset();
     this.unread.clear();
@@ -1027,6 +1045,8 @@ export class Controller {
   removeSource(key: string): void {
     const sources = this.state.sources.filter((s) => s.key !== key);
     this.bumpEpoch(key);
+    // GitHub#258: its watches and their buttons end with it (adding it again does not bring them back)
+    for (const j of this.state.creates) if (j.watch?.some((w) => w.projectKey === key)) this.patchWatch(j.id, key, () => null);
     this.cache.setSetting('sources', sources);
     this.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
@@ -1953,6 +1973,9 @@ export class Controller {
 
   private async runCreate(id: number, action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<void> {
     const session = this.session;
+    // GitHub#258 (code review round 2): which addition of each source the watches belong to, taken
+    // before anything is sent — a source removed / added again while the create is on its way is another one
+    const epochs = new Map((action.plan?.watch ?? []).map((w) => [w.projectKey, this.epochs.get(w.projectKey) ?? 0]));
     const job = () => this.state.creates.find((j) => j.id === id);
     const sentAt = new Date(this.now() - 60_000).toISOString();
     let r: WriteResult;
@@ -1979,20 +2002,13 @@ export class Controller {
       // GitHub#245: a hand-over picked by hand in the dialog is remembered once the issue exists — never a fallback, never a failed create
       if (action.handoffPicked === true && action.handoff) this.setNewIssueHandoff(action.handoff);
       const number = Number(r.createdKey.split('#')[1]);
-      if (r.warning)
-        this.setCreate({
-          ...cur,
-          status: 'partial',
-          // the boards' state words it when there is any; another warning (the re-read failed) is said as it came
-          message: createNotice(number, boards, labelsNote) ?? r.warning,
-          createdKey: r.createdKey,
-          number,
-          boards,
-          createdNodeId: nodeId,
-          ...(labelsNote ? { labelsNote } : {}),
-        });
-      else this.setCreate(null, id);
+      // GitHub#258: boards left unticked that may take it in by themselves
+      const watch = nodeId ? this.watchEntries(action, epochs) : [];
+      const done: CreateJob = { ...cur, createdKey: r.createdKey, number, boards, createdNodeId: nodeId, ...(labelsNote ? { labelsNote } : {}), ...(watch.length ? { watch } : {}) };
+      // the boards' state words it when there is any; another warning (the re-read failed) is said as it came
+      this.settleCreate(done, r.warning);
       this.set({ focus: { key: r.createdKey, seq: ++this.focusSeq } });
+      if (watch.length) void this.runWatch(id, session, nodeId).catch(() => {});
       return;
     }
     if (unanswered === null) {
@@ -2020,7 +2036,284 @@ export class Controller {
   }
 
   dismissCreate(id: number): void {
-    this.setCreate(null, id);
+    // GitHub#258: boards still being watched keep being watched (without a notice); what was shown is gone
+    const job = this.state.creates.find((j) => j.id === id);
+    const active = (job?.watch ?? []).filter(watchActive);
+    if (job && active.length && job.createdKey) this.setCreate({ ...job, status: 'watching', message: null, boards: [], labelsNote: undefined, watch: active });
+    else this.setCreate(null, id);
+  }
+
+  /**
+   * A created job's notice from all it still holds: something to say → `partial`; only boards
+   * still watched → `watching` (no notice); nothing → gone. `extra`: a warning said only when
+   * nothing else is (the re-read right after creating failed).
+   */
+  private settleCreate(job: CreateJob, extra: string | null = null): void {
+    const watch = job.watch ?? [];
+    const message = createNotice(job.number ?? 0, job.boards ?? [], job.labelsNote, watch) ?? extra;
+    if (message) this.setCreate({ ...job, status: 'partial', message });
+    else if (watch.some(watchActive)) this.setCreate({ ...job, status: 'watching', message: null });
+    else this.setCreate(null, job.id);
+  }
+
+  // ---- GitHub#258: boards not ticked that take a new issue in by themselves --------
+  //
+  // data/autoJoin.ts holds the rules (what is written, what is left to a person, what is
+  // unknown). This part schedules the looks and the checks, and feeds their results into
+  // the job: one entry per board, patched in place on the job as it is at that moment.
+
+  /** The plan's watched boards that are still sources, not ticked, and known to the app. */
+  private watchEntries(action: Extract<WriteAction, { kind: 'createIssue' }>, epochs: Map<string, number>): CreateWatch[] {
+    const ticked = new Set(Array.isArray(action.projects) ? action.projects : []);
+    const known = this.allProjects();
+    const out: CreateWatch[] = [];
+    for (const w of action.plan?.watch ?? []) {
+      const p = known.find((x) => x.key === w.projectKey);
+      if (!p || ticked.has(w.projectKey) || out.some((x) => x.projectKey === w.projectKey)) continue;
+      if ((w.iterationId === null) === (w.status === null)) continue;
+      // removed (or removed and added again) while the create was on its way: not watched
+      if (!epochs.has(w.projectKey) || (this.epochs.get(w.projectKey) ?? 0) !== epochs.get(w.projectKey)) continue;
+      out.push({ projectKey: w.projectKey, title: p.title, iterationId: w.iterationId, status: w.status, label: String(w.label ?? w.status ?? ''), state: 'looking', writes: 0, epoch: epochs.get(w.projectKey) ?? -1 });
+    }
+    return out;
+  }
+
+  /** One entry of a job, changed by `f` (null = dropped), then the job settled again. */
+  private patchWatch(id: number, key: string, f: (w: CreateWatch) => CreateWatch | null): void {
+    const job = this.state.creates.find((j) => j.id === id);
+    if (!job?.watch?.some((w) => w.projectKey === key)) return;
+    const watch = job.watch.flatMap((w) => {
+      if (w.projectKey !== key) return [w];
+      const n = f(w);
+      return n ? [n] : [];
+    });
+    this.settleCreate({ ...job, watch });
+  }
+
+  private watchSleep(ms: number): Promise<void> {
+    return new Promise((r) => {
+      const t = setTimeout(() => {
+        this.watchTimers.delete(t);
+        r();
+      }, Math.max(0, ms));
+      this.watchTimers.add(t);
+    });
+  }
+
+  /**
+   * The job's entry for `key`, while the session and that board's source are still the very
+   * ones the entry was made for (`w.epoch`, recorded at creation — never re-read at a later
+   * call: a source removed and added again is another addition, its old watch and button are over).
+   */
+  private watchEntry(id: number, key: string, session: number): CreateWatch | null {
+    if (session !== this.session) return null;
+    const job = this.state.creates.find((j) => j.id === id);
+    const w = job?.watch?.find((x) => x.projectKey === key) ?? null;
+    if (!w) return null;
+    if (!this.state.sources.some((s) => s.key === key) || (this.epochs.get(key) ?? 0) !== w.epoch) {
+      // the source was removed (or removed and added again): this watch is over
+      this.patchWatch(id, key, () => null);
+      return null;
+    }
+    return w;
+  }
+
+  private async runWatch(id: number, session: number, nodeId: string): Promise<void> {
+    let why = '留意中断';
+    try {
+      why = await this.runLooks(id, session, nodeId);
+    } finally {
+      // every way out of the looks settles what is still being looked for: nothing stays
+      // "looking" without a timer (code review round 1) — unknown is said, never dropped
+      if (session === this.session)
+        for (const w of this.state.creates.find((j) => j.id === id)?.watch ?? [])
+          if (w.state === 'looking') this.patchWatch(id, w.projectKey, (x) => ({ ...x, state: 'unread', reason: why }));
+    }
+  }
+
+  /** The scheduled looks. Returns why the last one could not tell (for whatever is left looking). */
+  private async runLooks(id: number, session: number, nodeId: string): Promise<string> {
+    const looks = this.deps.watchLooksMs ?? WATCH_LOOKS_MS;
+    const start = this.state.creates.find((j) => j.id === id)?.watch ?? [];
+    // a board whose auto-add is surely off never takes it in: not watched (no client now: all watched)
+    const c0 = await this.clientForCall(false);
+    if (!('error' in c0) && c0.session === session)
+      for (const w of start) {
+        const p = this.allProjects().find((x) => x.key === w.projectKey);
+        if (p && (await autoAddSurelyOff(c0.client, p))) this.patchWatch(id, w.projectKey, () => null);
+      }
+    let why = '读不到';
+    let at = 0;
+    for (let i = 0; i < looks.length; i++) {
+      await this.watchSleep(looks[i] - at);
+      at = looks[i];
+      const last = i === looks.length - 1;
+      if (session !== this.session) return why;
+      const keys = (this.state.creates.find((j) => j.id === id)?.watch ?? []).filter((w) => w.state === 'looking').map((w) => w.projectKey);
+      const live = keys.filter((k) => this.watchEntry(id, k, session));
+      if (!live.length) continue;
+      const seen = await this.readWatched(id, session, nodeId, live);
+      if (seen === 'ended') return why;
+      for (const k of live) {
+        const w = this.watchEntry(id, k, session);
+        if (!w || w.state !== 'looking') continue;
+        const s = typeof seen === 'string' ? null : seen.get(k);
+        if (!s || s.state === 'unknown') {
+          // the latest look decides: an earlier "not there" says nothing about now
+          why = typeof seen === 'string' ? seen : 'GitHub 的回应没有列全这条所在的看板';
+          if (last) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: why }));
+          continue;
+        }
+        if (s.state === 'absent') {
+          if (last) this.patchWatch(id, k, () => null);
+          continue;
+        }
+        await this.actOnSighting(id, k, session, s, true);
+      }
+    }
+    return why;
+  }
+
+  /** One read for the watched boards `keys`: the sightings, or why it failed ('ended': the session is over). */
+  private async readWatched(id: number, session: number, nodeId: string, keys: string[]): Promise<Map<string, BoardSighting> | string | 'ended'> {
+    const c = await this.clientForCall(false);
+    if (session !== this.session) return 'ended';
+    if ('error' in c) return c.error;
+    if (c.session !== session) return 'ended';
+    const metas = this.allProjects().filter((p) => keys.includes(p.key));
+    try {
+      return await readCreatedBoards(c.client, nodeId, metas);
+    } catch (e) {
+      this.noteAuthFailure(e);
+      return (e as Error)?.message ?? String(e);
+    }
+  }
+
+  /** A board holds the issue: write (empty, only automatically once), finish, or leave it to a person. */
+  private async actOnSighting(id: number, key: string, session: number, s: Extract<BoardSighting, { state: 'on' }>, auto: boolean): Promise<void> {
+    const w = this.watchEntry(id, key, session);
+    if (!w) return;
+    const verdict = judgeWatch(w, s.membership);
+    if (verdict === 'done') return this.patchWatch(id, key, () => null);
+    if (verdict === 'human' || (auto && w.writes >= 1)) return this.patchWatch(id, key, (x) => ({ ...x, state: 'human', seen: watchedValue(x, s.membership).text, busy: false }));
+    await this.writeWatched(id, key, session, s.itemId, auto);
+  }
+
+  /**
+   * Write the group's value on that board. Returns why it was not written (null = written, now
+   * being checked). Automatic: a refusal is said in the notice. By the button: the board stays as
+   * the person saw it (button still there), the reason goes back to the click.
+   */
+  private async writeWatched(id: number, key: string, session: number, itemId: string, auto: boolean): Promise<string | null> {
+    const c = await this.clientForCall(true);
+    const w = this.watchEntry(id, key, session);
+    if (!w) return '这个看板已不在来源里，没有修改';
+    const p = this.allProjects().find((x) => x.key === key);
+    const refused = (reason: string) => {
+      this.patchWatch(id, key, (x) => (auto ? { ...x, state: 'failed', reason, busy: false } : { ...x, busy: false }));
+      return reason;
+    };
+    if ('error' in c) return refused(c.error);
+    if (c.session !== session || !p) return refused('账号已切换');
+    if (auto) this.patchWatch(id, key, (x) => ({ ...x, writes: x.writes + 1 }));
+    try {
+      await setCreatedField(c.client, p, itemId, w.iterationId, w.status);
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      return refused(explainError(e, w.iterationId !== null ? 'setIteration' : 'setStatus'));
+    }
+    if (!this.watchEntry(id, key, session)) return null;
+    this.patchWatch(id, key, (x) => ({ ...x, state: 'written', busy: false }));
+    void this.verifyWatched(id, key, session).catch(() => {});
+    return null;
+  }
+
+  /** After a write: read it back (a few tries); only seeing the value there counts as done. */
+  private async verifyWatched(id: number, key: string, session: number): Promise<void> {
+    try {
+      await this.verifyLoop(id, key, session);
+    } finally {
+      const w = session === this.session ? this.state.creates.find((j) => j.id === id)?.watch?.find((x) => x.projectKey === key) : undefined;
+      if (w?.state === 'written') this.patchWatch(id, key, (x) => ({ ...x, state: 'unverified', reason: x.reason ?? '核对中断' }));
+    }
+  }
+
+  private async verifyLoop(id: number, key: string, session: number): Promise<void> {
+    const job = this.state.creates.find((j) => j.id === id);
+    const nodeId = job?.createdNodeId ?? '';
+    const ms = this.deps.watchVerifyMs ?? WATCH_VERIFY_MS;
+    let reason = '';
+    for (let i = 0; i < WATCH_VERIFY_TRIES; i++) {
+      await this.watchSleep(ms);
+      const w = this.watchEntry(id, key, session);
+      if (!w || w.state !== 'written') return;
+      const seen = await this.readWatched(id, session, nodeId, [key]);
+      if (seen === 'ended') return;
+      const s = typeof seen === 'string' ? null : seen.get(key);
+      if (!s || s.state === 'unknown') {
+        reason = typeof seen === 'string' ? seen : 'GitHub 的回应没有列全这条所在的看板';
+        continue;
+      }
+      // taken off the board meanwhile: nothing left to do there
+      if (s.state === 'absent') return this.patchWatch(id, key, () => null);
+      const verdict = judgeWatch(w, s.membership);
+      if (verdict === 'done') {
+        this.patchWatch(id, key, () => null);
+        // the board shows it in that group now
+        const c = await this.clientForCall(false);
+        const cur = this.state.creates.find((j) => j.id === id) ?? job;
+        if (!('error' in c) && c.session === session && cur?.createdKey) {
+          const [repo, n] = [cur.repo, Number(cur.createdKey.split('#')[1])];
+          await this.refreshOne(c.client, session, repo, n);
+        }
+        return;
+      }
+      // changed (or emptied) after the write: never written again automatically
+      return this.patchWatch(id, key, (x) => ({ ...x, state: 'human', seen: watchedValue(x, s.membership).text }));
+    }
+    this.patchWatch(id, key, (x) => ({ ...x, state: 'unverified', reason }));
+  }
+
+  /**
+   * GitHub#258: the notice's "change it to …" for a board that holds another value. Read again
+   * first: written only while the board still holds exactly the value the notice showed (what the
+   * person decided on); otherwise the notice shows the new value and nothing is written.
+   */
+  async applyCreateWatch(id: number, key: string): Promise<WriteResult> {
+    const job = this.state.creates.find((j) => j.id === id);
+    const w = job?.watch?.find((x) => x.projectKey === key);
+    if (!job || !w || w.state !== 'human' || !job.createdNodeId) return { ok: false, error: '没有要改的看板', warning: null };
+    if (w.busy) return { ok: false, error: '上一次修改还没完成', warning: null };
+    // taken before the first wait (code review round 2): a second click meanwhile is refused above
+    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));
+    const unbusy = (error: string): WriteResult => {
+      this.patchWatch(id, key, (x) => ({ ...x, busy: false }));
+      return { ok: false, error, warning: null };
+    };
+    const c = await this.clientForCall(true);
+    if ('error' in c) return unbusy(c.error);
+    const session = c.session;
+    const seen = await this.readWatched(id, session, job.createdNodeId, [key]);
+    if (seen === 'ended') return { ok: false, error: '账号已切换', warning: null };
+    const s = typeof seen === 'string' ? null : seen.get(key);
+    if (!s || s.state === 'unknown') return unbusy(`读不到这条在看板上的当前值（${typeof seen === 'string' ? seen : '回应不完整'}），没有修改`);
+    if (s.state === 'absent') {
+      this.patchWatch(id, key, () => null);
+      return { ok: false, error: '这条已经不在这个看板上，没有修改', warning: null };
+    }
+    const cur = this.watchEntry(id, key, session);
+    if (!cur) return { ok: false, error: '这个看板已不在来源里，没有修改', warning: null };
+    if (judgeWatch(cur, s.membership) === 'done') {
+      this.patchWatch(id, key, () => null);
+      return { ok: true, error: null, warning: null };
+    }
+    const now = watchedValue(cur, s.membership).text;
+    if (now !== (cur.seen ?? null)) {
+      this.patchWatch(id, key, (x) => ({ ...x, seen: now, busy: false }));
+      return { ok: false, error: `看板上现在是「${now ?? '空'}」，和提示里的不一样，没有修改；看过后再决定`, warning: null };
+    }
+    const error = await this.writeWatched(id, key, session, s.itemId, false);
+    return error === null ? { ok: true, error: null, warning: null } : { ok: false, error, warning: null };
   }
 
   /**
@@ -2062,10 +2355,9 @@ export class Controller {
     const warning = fieldsNow.length ? `已加入看板，但字段没设上 ${fieldsNow.map((x) => `「${x.title}」（${x.reason}）`).join('、')}` : null;
     if (now) {
       const boards = mergeRetry(now.boards ?? [], results);
-      const message = createNotice(now.number ?? number, boards, now.labelsNote);
-      // the notice goes only when nothing is left on any board, and no dropped label is left unsaid (GitHub#245)
-      if (message === null) this.setCreate(null, id);
-      else this.setCreate({ ...now, boards, message });
+      // the notice goes only when nothing is left on any board, and no dropped label is left unsaid (GitHub#245);
+      // boards still watched keep the job (GitHub#258)
+      this.settleCreate({ ...now, number: now.number ?? number, boards });
     }
     return stillMissing.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
   }

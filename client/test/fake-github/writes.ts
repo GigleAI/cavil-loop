@@ -113,6 +113,10 @@ export interface WritableState {
   failEvents: boolean;
   /** GitHub#250: answer the item comments list with HTTP 502 */
   failCommentList: boolean;
+  /** GitHub#258: Project key (`org/owner/n`) -> its workflows; a Project not listed answers the read with an error */
+  workflows: Map<string, { name: string; enabled: boolean }[]>;
+  /** GitHub#258: answer this many reads of "which boards is this new issue on" with HTTP 502 */
+  failCreatedBoards: number;
 }
 
 export function defaultWritable(): WritableState {
@@ -147,6 +151,8 @@ export function defaultWritable(): WritableState {
     failComment: false,
     failEvents: false,
     failCommentList: false,
+    workflows: new Map(),
+    failCreatedBoards: 0,
   };
 }
 
@@ -685,6 +691,29 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
         },
       },
     };
+  }
+
+  // GitHub#258: which boards a (new) issue is on, by its node id, with every field value there
+  if (op === 'CavilCreatedItemBoards') {
+    if (w.failCreatedBoards > 0) {
+      w.failCreatedBoards--;
+      return { httpStatus: 502 };
+    }
+    const c = findByNodeId(store, v.id);
+    if (!c) return { data: { node: null }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${v.id}'` }] };
+    const nodes: any[] = [];
+    for (const pages of store.projects.values())
+      for (const p of pages)
+        for (const n of p.items.nodes)
+          if (n.content?.repository?.nameWithOwner?.toLowerCase() === c.repo.toLowerCase() && n.content.number === c.number)
+            nodes.push({ id: n.id, isArchived: n.isArchived, project: { id: pages[0].id }, fieldValues: { totalCount: n.fieldValues.nodes.length, nodes: n.fieldValues.nodes } });
+    return { data: { node: { projectItems: { totalCount: nodes.length, nodes } } } };
+  }
+  if (op === 'CavilProjectWorkflows') {
+    const proj = projectByNodeId(store, v.id);
+    const list = proj ? w.workflows.get(proj.key) : undefined;
+    if (!list) return err('Resource not accessible by integration', 'FORBIDDEN');
+    return { data: { node: { workflows: { totalCount: list.length, nodes: list } } } };
   }
 
   // GitHub#250: the newest comments and label events of an item (what proves a write whose answer was lost)

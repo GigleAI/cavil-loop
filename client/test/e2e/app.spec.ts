@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
-import { findCopies, pullOf } from '../fake-github/writes';
+import { findCopies, handleGraphql, pullOf } from '../fake-github/writes';
 import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -4116,5 +4116,56 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   await expect(page.getByTestId('close-reason-completed')).toBeChecked();
   await page.getByTestId('confirm-cancel').click();
   expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['未知回复再次关闭']);
+  await app.close();
+});
+
+test('GitHub#258: a status group\'s "+" with the board left unticked — the board takes it in by itself; empty would be set, a value already there is only offered as a button', async () => {
+  const PROJECT_KEY = 'project:org/gigleai/11';
+  const PROJECT_NODE = 'PVT_fixture_435fd6e043de';
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`);
+  const line = (target: string) => page.locator(`[data-testid="new-issue-preset-line"][data-target="${target}"]`);
+
+  await expect(group('In progress').getByTestId('group-add')).toBeEnabled({ timeout: 15_000 });
+  await group('In progress').getByTestId('group-add').click();
+  const box = page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`);
+  await expect(box).toBeChecked();
+  await box.uncheck();
+  // left unticked: said what happens if GitHub takes it in by itself
+  await expect(line(PROJECT_KEY)).toHaveAttribute('data-applies', 'yes');
+  await expect(line(PROJECT_KEY)).toContainText('如果 GitHub 按它的自动加入规则收进这条、状态还空着，会补设 状态 = In progress');
+  await page.getByTestId('new-issue-title').fill('没勾看板，GitHub 自己收进去');
+  await shot(page, '258-01-unticked-board');
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  const key = await page.getByTestId('detail').getAttribute('data-key');
+  const n = Number(String(key).split('#')[1]);
+  await page.getByTestId('detail-close').click();
+  // not added by the client
+  expect(writes().filter((w) => w[0] === 'CavilAddProjectItem')).toHaveLength(0);
+
+  // GitHub's auto-add puts it on the board, and a board rule (or a person) sets Backlog
+  const nodeId = env.fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === n)!.node_id;
+  handleGraphql(store, 'CavilAddProjectItem', { projectId: PROJECT_NODE, contentId: nodeId });
+  const f = env.fake.state.projects.get('org/gigleai/11')![0].fields.nodes.find((x: any) => x.name === 'Status') as any;
+  const item = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((x: any) => x.content?.number === n && x.content?.repository?.nameWithOwner?.toLowerCase() === 'gigleai/cavil-loop') as any;
+  handleGraphql(store, 'CavilSetStatus', { projectId: PROJECT_NODE, itemId: item.id, fieldId: f.id, optionId: f.options.find((o: any) => o.name === 'Backlog').id });
+
+  // the first look (5 s after creating) sees Backlog: not overwritten, a button offered
+  const bar = page.locator('[data-testid="create-bar"][data-status="partial"]');
+  await expect(bar).toContainText('状态是「Backlog」，没有自动改成「In progress」', { timeout: 20_000 });
+  expect(writes().filter((w) => w[0] === 'CavilSetStatus')).toHaveLength(0);
+  await shot(page, '258-02-button');
+  await bar.getByTestId('create-watch-apply').click();
+  await expect.poll(() => writes().filter((w) => w[0] === 'CavilSetStatus').length).toBe(1);
+  // read back after the write, then the notice goes and the row is in that group
+  await expect(page.getByTestId('create-bar')).toHaveCount(0, { timeout: 30_000 });
+  await page.getByTestId('refresh').press('Enter');
+  await expect(group('In progress').locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"]`)).toBeVisible({ timeout: 15_000 });
   await app.close();
 });
