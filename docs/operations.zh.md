@@ -1380,7 +1380,7 @@ rm ~/.local/state/cavil-loop/<key>/poll-pace.json     # 立刻回最快档
 空闲轻量检查开着时（`POLL_IDLE_PROBE`，GitHub#252），跳过那行末尾带「；轻量检查：无变化」；
 被它叫醒的那个 tick 记一行「轻量检查：仓库有变化 → 提前跑一轮」，或者写明为什么说不准
 （「读不到 GitHub」「GitHub 回了 HTTP <n>」），说不准时同样照跑。打标签、评论、编辑、
-关闭 / 合并大约一个 tick 内就能看到；主干新提交、CI 结果看不到，等下一次完整检查（最长
+关闭 / 合并大约一个 tick 内就能看到；代码行内评论、主干新提交、CI 结果看不到，等下一次完整检查（最长
 `POLL_IDLE_PROBE_MAX_SECS`，默认 10 分钟）。删 `~/.local/state/cavil-loop/<key>/poll-probe.etag`
 同样安全：下一次检查只是多跑一轮。
 

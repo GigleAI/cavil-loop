@@ -1647,7 +1647,7 @@ With the idle probe on (`POLL_IDLE_PROBE`, GitHub#252) a skip line ends with
 `轻量检查：仓库有变化 → 提前跑一轮` ("repo changed → polling now") — or the reason it
 could not tell (`读不到 GitHub` = could not reach GitHub, `GitHub 回了 HTTP <n>`),
 which also polls. Labels, comments, edits and close / merge are seen within about
-a tick; new commits on the base branch and CI results are not, and wait for the
+a tick; line-by-line review comments, new commits on the base branch and CI results are not, and wait for the
 next full poll (at most `POLL_IDLE_PROBE_MAX_SECS`, default 10 min).
 `rm ~/.local/state/cavil-loop/<key>/poll-probe.etag` is safe too: the next probe
 just polls once more.

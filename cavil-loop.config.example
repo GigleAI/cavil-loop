@@ -1100,7 +1100,7 @@ POLL_FORCE_SYNC_SECS=1800
 # else (changed, unreadable, unexpected status) → run a full poll now. Not sent
 # while not backed off, nor during failure backoff. Seen: labels, comments,
 # edits, close / merge — anything that bumps an item's updated time. Not seen:
-# new commits on the base branch, CI results; those wait for the next full poll,
+# line-by-line review comments (measured), new commits on the base branch, CI results; those wait for the next full poll,
 # which is capped at POLL_IDLE_PROBE_MAX_SECS while the probe is on.
 # Cost: one request per tick while backed off (free when 304); a change anywhere
 # in the repo, related or not, triggers one full poll (counts against quota).
@@ -1111,7 +1111,7 @@ POLL_FORCE_SYNC_SECS=1800
 # 不占主调用额度。退避中、本来要跳过的每个 tick，先问一次「仓库里最近更新的那一条变了
 # 没有」：304 → 照旧跳过；其余（变了、读不到、状态码不认识）→ 立刻完整跑一轮。没在
 # 退避、或在故障退避中时不问。看得到的：打标签、评论、编辑、关闭 / 合并——凡是会刷新
-# 条目更新时间的。看不到的：主干新提交、CI 结果，等下一次完整检查；开着时完整检查最长
+# 条目更新时间的。看不到的：代码行内评论（实测）、主干新提交、CI 结果，等下一次完整检查；开着时完整检查最长
 # 间隔封顶 POLL_IDLE_PROBE_MAX_SECS。
 # 代价：退避中每 tick 一次请求（回 304 时不占主额度）；仓库里任何条目一变（不管跟本机
 # 有没有关系）都会提前完整跑一轮，那一轮照常占额度。
