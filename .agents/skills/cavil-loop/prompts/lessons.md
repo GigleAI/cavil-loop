@@ -318,6 +318,6 @@
 ### L67
 - 规则：重构把某段被负对照（mutations.mjs）当作替换原文的代码抽成共享函数或删除时，在同一提交里把对应变异改指向新调用点，并在交付前跑 `node test/mutation/run.mjs --check`；不得靠删掉该条保护消除检查错误。
 - 适用：client/test/mutation/ 的负对照清单与被它引用的 client/src/ 代码一起被重构时。
-- 为什么：PR #222 抽出共享的里程碑选择函数后，一条旧负对照仍寻找已删除的内联代码，静态检查退出码 1；默认 `npm test` 只跳过负对照，578 条单元测试全绿也发现不了，会让每周发版门禁因准备失败变红。
-- 这样做是对的：PR #222 返工后把变异改到详情里的真实调用点，保留「无同名里程碑则拒绝」的覆盖，静态检查 317 项原文都在（https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699647411）。
-- Seen 1×: #222 https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699572556 [client/test/mutation/]
+- 为什么：PR #222 抽出共享的里程碑选择函数后，一条旧负对照仍寻找已删除的内联代码，静态检查退出码 1；默认 `npm test` 只跳过负对照，578 条单元测试全绿也发现不了，会让每周发版门禁因准备失败变红。PR #268 改了后端账号名写入的源码结构，两条旧负对照（第 20、89 项）同样失去替换原文，由复审实跑静态检查发现。
+- 这样做是对的：PR #222 返工后把变异改到详情里的真实调用点，保留「无同名里程碑则拒绝」的覆盖，静态检查 317 项原文都在（https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699647411）。PR #268 返工后两条变异改指向新代码、故障含义不变，静态检查 498 项原文都在，并用 `cargo check` 确认变异后能编译（https://github.com/GigleAI/cavil-loop/pull/268#issuecomment-6715870629）。
+- Seen 2×: #222 https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699572556 [client/test/mutation/] · #268 https://github.com/GigleAI/cavil-loop/pull/268#issuecomment-6715849560 [client/test/mutation/]
