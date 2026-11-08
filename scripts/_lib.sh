@@ -985,6 +985,12 @@ POLL_BACKOFF_LADDER="${POLL_BACKOFF_LADDER-86400:300,259200:600,604800:1800}"
 POLL_FORCE_SYNC_SECS="${POLL_FORCE_SYNC_SECS:-1800}"
 POLL_FAIL_BACKOFF_MAX_SECS="${POLL_FAIL_BACKOFF_MAX_SECS:-1800}"
 POLL_DUE_SLACK_SECS="${POLL_DUE_SLACK_SECS:-10}"
+# 空闲时的轻量检查（GitHub#252）：退避判定「本轮跳过」时，先用一次条件请求问 GitHub
+# 「仓库里最近更新的那一条变了没有」——没变回 304（正确认证时不占主调用额度）照旧跳过，
+# 变了就提前完整跑一轮。开着时完整检查的最长间隔另封顶 POLL_IDLE_PROBE_MAX_SECS。
+# 只认 "true" / "false"；其他写法一律按默认 true（打开），见 pace_probe_on。
+POLL_IDLE_PROBE="${POLL_IDLE_PROBE:-true}"
+POLL_IDLE_PROBE_MAX_SECS="${POLL_IDLE_PROBE_MAX_SECS:-600}"
 
 # ── 数值闸：进任何算术之前先验一遍 ──
 #
@@ -1026,6 +1032,10 @@ done
 unset _pv _pk _pd
 
 PACE_FILE="${PACE_FILE:-$STATE_DIR/poll-pace.json}"
+# 轻量检查的版本标记（ETag）。跟节奏状态分开：删掉它只会让下一次检查回 200、多跑一轮。
+#   PROBE_ETAG_FILE          已确认的标记：拿到它之后有一整轮成功读过 GitHub
+#   PROBE_ETAG_FILE.pending  检查回 200 时拿到的新标记，等这一轮成功读完才转正
+PROBE_ETAG_FILE="${PROBE_ETAG_FILE:-$STATE_DIR/poll-probe.etag}"
 # 跳过本轮时留给调用方打进 poll.log 的那行；真跑时为空。
 PACE_SKIP_MSG=""
 
@@ -1247,7 +1257,7 @@ pace_should_poll() {
     PACE_SKIP_MSG=""
     [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 0
 
-    local now next_due last_poll last_active fail_streak fingerprint waited remain
+    local now next_due last_poll last_active fail_streak fingerprint waited remain pcap
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
 
@@ -1293,10 +1303,133 @@ pace_should_poll() {
     remain=$((next_due - now))
     if [ "$fail_streak" -gt 0 ]; then
         PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
-    else
-        PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")）"
+        return 1
     fi
+    # 空闲退避、本来要跳过：先问一次「仓库变没变」（GitHub#252）。故障退避（上面那条）
+    # 不问——读不到 GitHub 的时候每分钟再问一次，正是故障阶梯要避免的事。
+    # 只有明确拿到 304 才继续跳过；变了、读不到、回了看不懂的东西，一律跑。
+    if pace_probe_on; then
+        # 封顶在**读**这一侧也要生效，不能只在写下一轮时夹：状态是按写入那一刻的配置算的。
+        # 封顶被调小、或者关着检查时退到 30 分钟档后又打开，文件里的 next_due 还是旧的那个
+        # 更远的期限；只看它会照旧等满，「开着时最长 POLL_IDLE_PROBE_MAX_SECS」就落空了
+        # （代码复审第 1 轮实测：旧档 600、新封顶 60、已等 120 秒仍跳过）。用同一个
+        # pace_probe_cap，按跟 next_due 一样的抖动余量算到期。
+        if pcap=$(pace_probe_cap quiet) && [ $((now + POLL_DUE_SLACK_SECS)) -ge $((last_poll + pcap)) ]; then
+            return 0
+        fi
+        if ! pace_probe; then
+            log "轻量检查：$PACE_PROBE_REASON → 提前跑一轮（原定还差 $(pace_human_secs "$remain")）"
+            return 0
+        fi
+        PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")；轻量检查：无变化）"
+        return 1
+    fi
+    PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")）"
     return 1
+}
+
+# ── 空闲时的轻量检查（GitHub#252）──
+#
+# GitHub 没有给本机进程用的订阅接口（没有 WebSocket / SSE，GraphQL 没有 subscription；
+# webhook 要公网接收端 + 仓库设置），能用的是 REST 的条件请求：带上次拿到的 ETag 再问，
+# 没变化回 304，正确认证时不占主调用额度。问的是「整个仓库最近更新的那一条」：
+# `issues?state=all&sort=updated&direction=desc&per_page=1`，issue 和 PR 都在里面，
+# 任一条目的更新时间一变，它排到第一，ETag 跟着变。用 state=all 而不是 open：关掉一条
+# 不在第一位的 open 条目，在 open 列表第一页上看不出来。
+#
+# 它**看不到**的：主干有新提交、CI 结果（都不是条目的更新），以及不刷新条目更新时间的
+# 事件（实测：被别的条目引用不刷新；打标签、评论、行内评论、推送、关闭 / 合并都刷新）。这些靠完整检查兜底，开着时完整检查最长间隔封顶 POLL_IDLE_PROBE_MAX_SECS。
+#
+# 和节奏状态一样，它只决定「这一轮跑不跑」，不决定跑的时候做什么；而且只会让一轮
+# 提前，不会让任何一轮推迟。
+
+# 开关：只有写成 "false" 才关；阶梯留空（整个退避关掉）时它也无事可做。
+pace_probe_on() {
+    [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 1
+    [ "${POLL_IDLE_PROBE:-true}" != "false" ]
+}
+
+# 开着时完整检查的最长间隔。合法 = 1 到心跳值之间的整数秒；不合法打一行警告、
+# 返回非 0（= 不封顶，按原阶梯走，阶梯本身已被心跳夹住）。0 不算合法：那等于关掉退避，
+# 该用阶梯留空来表达，而不是让一个写错的封顶值悄悄变成每 tick 都跑。
+# 第 1 个参数写 quiet = 不打警告：闸门每个 tick 都调，警告只在每轮记账时打一次就够。
+pace_probe_cap() {
+    local v
+    if v=$(pace_num "${POLL_IDLE_PROBE_MAX_SECS:-}" 9) && [ "$v" -ge 1 ] && [ "$v" -le "$POLL_FORCE_SYNC_SECS" ]; then
+        printf '%s' "$v"; return 0
+    fi
+    [ "${1:-}" = quiet ] && return 1
+    log "⚠️ POLL_IDLE_PROBE_MAX_SECS='${POLL_IDLE_PROBE_MAX_SECS:-}' 不是 1 到心跳 ${POLL_FORCE_SYNC_SECS} 之间的秒数，本轮不封顶（按原阶梯，最长心跳值）"
+    return 1
+}
+
+# ETag 的合法形状：可选 W/ 前缀 + 双引号括起来的一串字母数字及少量符号。拿它进 -H 之前必须验，
+# 文件被写坏（多行、带控制字符）时宁可不带标记（= 回 200 = 多跑一轮），也不拼出一个
+# 奇怪的请求头。
+pace_etag_ok() {
+    # 字符集写死、不用区间：`[!#-~]` 这类区间在非 C locale 下实测一个都匹配不上。
+    # GitHub 的 ETag 是十六进制摘要，这个集合足够宽。
+    local re='^(W/)?"[A-Za-z0-9._:+/=-]+"$'
+    [[ "$1" =~ $re ]]
+}
+
+pace_probe_etag_read() {   # <文件> → 合法的 ETag 或空
+    local e=""
+    [ -f "$1" ] && IFS= read -r e < "$1" 2>/dev/null
+    if pace_etag_ok "$e"; then printf '%s' "$e"; fi
+}
+
+pace_probe_etag_write() {  # <文件> <ETag>
+    local tmp
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    tmp=$(mktemp "$STATE_DIR/.poll-probe.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s\n' "$2" > "$tmp" 2>/dev/null && mv "$tmp" "$1" 2>/dev/null; then return 0; fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# 返回 0 = 确定没变化（304）；非 0 = 变了或说不准，PACE_PROBE_REASON 写着原因。
+#
+# 状态码从 `gh api -i` 的第一行读，不看退出码：gh 对 304 也以 1 退出（实测，并在 stderr
+# 打一行 "gh: HTTP 304"），对 200 以 0 退出；只认这两个状态码，其余一律「说不准」。
+# 回 200 时把新 ETag 存成 pending，**不**直接转正：转正在 pace_record_ok（这一轮完整读过
+# GitHub 之后）。要是先转正、这一轮又半路失败，下一次检查就回 304，这次变化要等完整
+# 检查才被看到。304 响应里 GitHub 给回的 ETag 去掉了 W/ 前缀（实测），所以 304 时沿用
+# 已存的，不覆盖。
+pace_probe() {
+    local etag out status new_etag
+    PACE_PROBE_REASON=""
+    etag=$(pace_probe_etag_read "$PROBE_ETAG_FILE")
+    local -a cmd=(gh api -i --method GET)
+    if [ -n "$etag" ]; then cmd+=(-H "If-None-Match: $etag"); fi
+    cmd+=("repos/$REPO/issues" -f state=all -f sort=updated -f direction=desc -f per_page=1)
+    if command -v timeout >/dev/null 2>&1; then cmd=(timeout 30 "${cmd[@]}"); fi
+    out=$("${cmd[@]}" 2>/dev/null) || true
+    status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r' | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+    case "$status" in
+        304)
+            if [ -n "$etag" ]; then return 0; fi
+            PACE_PROBE_REASON="没带版本标记却回了 304，按说不准处理"; return 1 ;;
+        200)
+            new_etag=$(printf '%s\n' "$out" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | head -n1)
+            if pace_etag_ok "$new_etag"; then
+                pace_probe_etag_write "$PROBE_ETAG_FILE.pending" "$new_etag" || true
+            fi
+            if [ -z "$etag" ]; then PACE_PROBE_REASON="还没有版本标记（第一次检查，或标记文件丢失 / 损坏）"
+            else PACE_PROBE_REASON="仓库有变化"; fi
+            return 1 ;;
+        "") PACE_PROBE_REASON="读不到 GitHub"; return 1 ;;
+        *)  PACE_PROBE_REASON="GitHub 回了 HTTP $status"; return 1 ;;
+    esac
+}
+
+# 这一轮完整读过 GitHub：把检查时拿到的新标记转正（没有就什么都不做）。
+pace_probe_commit() {
+    local e
+    [ -f "$PROBE_ETAG_FILE.pending" ] || return 0
+    e=$(pace_probe_etag_read "$PROBE_ETAG_FILE.pending")
+    if [ -n "$e" ]; then pace_probe_etag_write "$PROBE_ETAG_FILE" "$e" || true; fi
+    rm -f "$PROBE_ETAG_FILE.pending" 2>/dev/null || true
 }
 
 # 一轮真跑完、且这一轮**读到了** GitHub 时调用。
@@ -1304,7 +1437,7 @@ pace_should_poll() {
 #   fp       本轮指纹；空串 = 没算出来 → 保守当作「有动静」，并保留上一轮的指纹不覆盖
 pace_record_ok() {
     local acted="$1" fp="$2" cap="${3:-}"
-    local now next_due last_poll last_active fail_streak prev_fp active quiet iv
+    local now next_due last_poll last_active fail_streak prev_fp active quiet iv pcap
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak prev_fp < <(pace_read) || true
 
@@ -1326,6 +1459,10 @@ pace_record_ok() {
     iv=$(pace_interval_for_quiet "$quiet")
     # 第 3 个参数：本轮另有理由要求「最晚这么久后再来一轮」（有条目在等前置，GitHub#157）。只往短里夹
     if [ -n "$cap" ] && cap=$(pace_num "$cap" 9) && [ "$iv" -gt "$cap" ]; then iv="$cap"; fi
+    # 轻量检查开着：看得到的变化每个 tick 都能提前叫醒，看不到的（主干提交、CI 结果……）
+    # 只能靠完整检查，所以完整检查的最长间隔另封顶（GitHub#252）。同样只往短里夹。
+    if [ "$iv" -gt 0 ] && pace_probe_on && pcap=$(pace_probe_cap) && [ "$iv" -gt "$pcap" ]; then iv="$pcap"; fi
+    if pace_probe_on; then pace_probe_commit; fi
     PACE_TIER_SECS="$iv"; PACE_QUIET_SECS="$quiet"
     pace_write "$((now + iv))" "$now" "$last_active" 0 "$fp" \
         || log "⚠️ 节奏状态写入失败（不影响本轮；下一轮会照常跑）"
@@ -1345,6 +1482,8 @@ pace_record_fail() {
     last_active=$(pace_num "$last_active") || last_active="$now"
     if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
     iv=$(pace_fail_interval "$fail_streak")
+    # 这一轮没读完 GitHub：检查拿到的新标记作废，下一次检查仍对照旧标记（GitHub#252）
+    rm -f "$PROBE_ETAG_FILE.pending" 2>/dev/null || true
     PACE_TIER_SECS="$iv"
     pace_write "$((now + iv))" "$now" "$last_active" "$fail_streak" "$fp" || true
     log "GitHub 读取连续失败 ${fail_streak} 次 → 下一轮 $(pace_human_secs "$iv") 后重试"
