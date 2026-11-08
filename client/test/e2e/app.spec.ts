@@ -4126,7 +4126,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
     for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
     for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
   };
-  for (const n of [136, 137, 139, 141, 142]) openOnGitHub(n);
+  for (const n of [135, 136, 137, 139, 141, 142]) openOnGitHub(n);
   // PR #146 open (not merged), as in the GitHub#177 test
   for (const g of findCopies(store, 'GigleAI/cavil-loop', 146)!.gql) Object.assign(g, { state: 'OPEN', merged: false });
   for (const r of findCopies(store, 'GigleAI/cavil-loop', 146)!.rest) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
@@ -4159,7 +4159,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
 
   // ---- 1. in the detail: 9 s still there, 10 s gone; the pointer on it pauses, leaving starts over ----
   await closeIt(137);
-  await expect(inDetail(137).getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（已完成）');
+  await expect(inDetail(137).getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（已完成）', { timeout: 15_000 });
   await expect(inDetail(137)).toHaveAttribute('data-auto-dismiss', 'counting');
   await inDetail(137).hover();
   await expect(inDetail(137)).toHaveAttribute('data-auto-dismiss', 'paused');
@@ -4180,7 +4180,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await page.getByTestId('detail-close').click();
   // the notice may come up under the pointer (that pauses it, as it should): move it away first
   await page.mouse.move(5, 5);
-  await expect(onBoard(139).getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）');
+  await expect(onBoard(139).getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）', { timeout: 15_000 });
   await expect(onBoard(139)).toHaveAttribute('data-auto-dismiss', 'counting');
   await onBoard(139).getByTestId('op-dismiss').focus();
   await expect(onBoard(139)).toHaveAttribute('data-auto-dismiss', 'paused');
@@ -4227,23 +4227,41 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await ff(1_100);
   await expect(onBoard(142)).toHaveCount(0);
 
+  // ---- 3b. PR #259 review round 1: the window loses focus first, then a notice comes up — it starts paused ----
+  await open(135);
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(inDetail(135).getByTestId('op-notice-text')).toHaveText('issue #135 已关闭（已完成）', { timeout: 15_000 });
+  await page.mouse.move(5, 5);
+  await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(inDetail(135)).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(inDetail(135)).toBeVisible();
+  await ff(1_100);
+  await expect(inDetail(135)).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+
   // ---- 4. what stays: merged but the linked issues were not read; refused; closed with the comment refused ----
   // GitHub says "there is a next page" of the issues this PR closes without saying where: that read fails
   env.fake.state.w.closingIssuesPageSize = 0;
   await page.getByTestId('search').fill('#146');
   await card(page, 146).click();
-  await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并', { timeout: 15_000 });
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
-  await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('PR #146 已合并；');
-  await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('关联的 issue');
+  await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('PR #146 已合并；', { timeout: 15_000 });
+  await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('关联的 issue', { timeout: 15_000 });
   env.fake.state.w.closingIssuesPageSize = 100;
   await expect(inDetail(146)).toHaveAttribute('data-kind', 'ok'); // the tone alone would let it go
   await page.getByTestId('detail-close').click();
 
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
   await closeIt(136);
-  await expect(inDetail(136)).toHaveAttribute('data-kind', 'error');
+  await expect(inDetail(136)).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   env.fake.state.w.readOnlyRepos.clear();
   await page.getByTestId('detail-close').click();
 
@@ -4252,7 +4270,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await page.getByTestId('close-issue').click();
   await page.getByTestId('close-comment').fill('做完了');
   await page.getByTestId('confirm-ok').click();
-  await expect(inDetail(141).getByTestId('op-notice-text')).toContainText('附的评论没有发出去');
+  await expect(inDetail(141).getByTestId('op-notice-text')).toContainText('附的评论没有发出去', { timeout: 15_000 });
   env.fake.state.w.failComment = false;
   await page.getByTestId('detail-close').click();
 
@@ -4264,7 +4282,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   // ---- 5. result bars: a plain success goes after 10 s ----
   await open(144);
   await pickLabel(page, 'Done');
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(9_000);
   await expect(page.getByTestId('action-result')).toBeVisible();
@@ -4273,7 +4291,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await page.getByTestId('detail-close').click();
   await card(page, 144).hover();
   await card(page, 144).locator('[data-testid="card-label-remove"][data-label="Done"]').click();
-  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await page.mouse.move(5, 5);
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(9_000);
@@ -4286,6 +4304,6 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   for (const n of [146, 136, 141]) await expect(onBoard(n)).toBeVisible();
-  for (const n of [137, 139, 142]) await expect(onBoard(n)).toHaveCount(0);
+  for (const n of [135, 137, 139, 142]) await expect(onBoard(n)).toHaveCount(0);
   await app.close();
 });

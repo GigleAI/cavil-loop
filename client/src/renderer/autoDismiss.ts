@@ -6,26 +6,36 @@
 // Whether a notice may go at all is decided elsewhere (shared/ops.ts for operation notices, the
 // note's kind for result bars); this only counts.
 
-import { useEffect, useRef, useState, type FocusEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FocusEvent } from 'react';
 
-/** whether the app window is in the foreground and visible; starts as "yes" (a blur / hide event says otherwise) */
+/**
+ * Whether the app window is in the foreground and visible — one store for the whole window, so a
+ * notice that mounts while the window is already in the background starts paused like the ones
+ * already shown (PR #259 review round 1: each notice used to start out believing it had focus).
+ * It starts from the window's real state (`document.hasFocus()`, `document.hidden`) and follows
+ * the blur / focus / visibilitychange events from then on.
+ */
+const windowState = (() => {
+  let focused = typeof document === 'undefined' ? true : document.hasFocus();
+  let hidden = typeof document === 'undefined' ? false : document.hidden;
+  const listeners = new Set<() => void>();
+  const emit = () => listeners.forEach((f) => f());
+  if (typeof window !== 'undefined') {
+    window.addEventListener('blur', () => ((focused = false), emit()));
+    window.addEventListener('focus', () => ((focused = true), emit()));
+    document.addEventListener('visibilitychange', () => ((hidden = document.hidden), emit()));
+  }
+  return {
+    subscribe(f: () => void) {
+      listeners.add(f);
+      return () => void listeners.delete(f);
+    },
+    active: () => focused && !hidden,
+  };
+})();
+
 function useWindowActive(): boolean {
-  const [active, setActive] = useState(() => typeof document === 'undefined' || !document.hidden);
-  useEffect(() => {
-    let focused = true;
-    const update = () => setActive(focused && !document.hidden);
-    const onBlur = () => ((focused = false), update());
-    const onFocus = () => ((focused = true), update());
-    window.addEventListener('blur', onBlur);
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', update);
-    return () => {
-      window.removeEventListener('blur', onBlur);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', update);
-    };
-  }, []);
-  return active;
+  return useSyncExternalStore(windowState.subscribe, windowState.active);
 }
 
 /**
