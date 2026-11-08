@@ -40,7 +40,13 @@ export interface CreatePreview {
   blocked: string | null;
 }
 
-export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo: string, read: MilestoneRead): CreatePreview {
+/**
+ * `others` (GitHub#258): the configured boards NOT ticked. For an iteration / status group each
+ * one that could carry the value is watched after creating: if GitHub's own auto-add puts the
+ * issue there and the field is still empty, the value is set (never added by the client, never
+ * overwriting a value already there). They go into `plan.watch` and get a line of their own.
+ */
+export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo: string, read: MilestoneRead, others: ProjectMeta[] = []): CreatePreview {
   const lines: PreviewLine[] = [];
   const entries: CreatePlan['projects'] = projects.map((p) => ({ projectKey: p.key, iterationId: null, status: null }));
   if (preset.by === 'iteration' || preset.by === 'status') {
@@ -61,7 +67,8 @@ export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo
       }
       lines.push({ target: p.key, text: `${head}：${what} = ${value}`, applies: true });
     });
-    return { plan: { milestone: null, projects: entries }, lines, blocked: null };
+    const watch = watchEntries(preset, projects, others, lines);
+    return { plan: { milestone: null, projects: entries, ...(watch.length ? { watch } : {}) }, lines, blocked: null };
   }
   if (preset.by === 'milestone') {
     if (read.state === 'loading') {
@@ -83,6 +90,37 @@ export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo
   if (preset.by === 'repo') lines.push({ target: 'group', text: `仓库 = ${preset.repo}（已在上面预选）`, applies: true });
   if (preset.by === 'none') lines.push({ target: 'group', text: '这一组没有值，不设字段', applies: false });
   return { plan: { milestone: null, projects: entries }, lines, blocked: null };
+}
+
+/** The boards not ticked that are watched after creating (GitHub#258), each with its line. */
+function watchEntries(preset: Extract<GroupPreset, { by: 'iteration' | 'status' }>, ticked: ProjectMeta[], others: ProjectMeta[], lines: PreviewLine[]): NonNullable<CreatePlan['watch']> {
+  const out: NonNullable<CreatePlan['watch']> = [];
+  const what = preset.by === 'iteration' ? '迭代' : '状态';
+  const value = preset.by === 'iteration' ? preset.title : preset.status;
+  for (const p of others) {
+    if (ticked.some((t) => t.key === p.key)) continue;
+    const head = `看板「${p.title}」没勾`;
+    if (!p.viewerCanUpdate) {
+      lines.push({ target: p.key, text: `${head}：这个账号不能修改它，GitHub 自动收进这条也不会补设${what}`, applies: false });
+      continue;
+    }
+    if (preset.by === 'iteration') {
+      const it = p.hasIterationField && p.iterationFieldId ? p.iterations.find((x) => x.title === preset.title && x.startDate === preset.startDate) : undefined;
+      if (!it) {
+        lines.push({ target: p.key, text: `${head}：没有这个迭代，GitHub 自动收进这条也不会补设迭代`, applies: false });
+        continue;
+      }
+      out.push({ projectKey: p.key, iterationId: it.id, status: null, label: value });
+    } else {
+      if (!(p.statusFieldId && p.statusOptionIds.some((o) => o.name === preset.status))) {
+        lines.push({ target: p.key, text: `${head}：没有这个状态，GitHub 自动收进这条也不会补设状态`, applies: false });
+        continue;
+      }
+      out.push({ projectKey: p.key, iterationId: null, status: preset.status, label: value });
+    }
+    lines.push({ target: p.key, text: `${head}：如果 GitHub 按它的自动加入规则收进这条、${what}还空着，会补设 ${what} = ${value}（已有别的值不改，提示里可一键改）`, applies: true });
+  }
+  return out;
 }
 
 /**

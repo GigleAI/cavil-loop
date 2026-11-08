@@ -94,6 +94,19 @@ export async function joinCreatedIssue(client: GitHubClient, p: ProjectMeta, nod
 }
 
 /**
+ * GitHub#258: set the group's iteration or status on a board that took a new issue in by itself
+ * (`itemId`: its item there). Refused before sending when the board cannot take it now.
+ */
+export async function setCreatedField(client: GitHubClient, p: ProjectMeta, itemId: string, iterationId: string | null, status: string | null): Promise<void> {
+  if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
+  if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改这个看板');
+  checkFieldValues(p, iterationId, status);
+  if (iterationId !== null) await setField(client, p, itemId, 'iteration', iterationId);
+  else if (status !== null) await setField(client, p, itemId, 'status', status);
+  else throw new ActionRefused('不知道要设哪个字段');
+}
+
+/**
  * createIssue (GitHub#229): the create request went out but no clear answer came
  * back — a lost connection, a timeout, a server error (5xx), an answer without the
  * new issue. GitHub may or may not have created it: it must never be sent again

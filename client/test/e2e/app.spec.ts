@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
-import { findCopies, pullOf } from '../fake-github/writes';
+import { findCopies, handleGraphql, pullOf } from '../fake-github/writes';
 import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -2492,8 +2492,9 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await rowTitle(138).click();
   await stays(138);
   await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
-  // a table cell that is not a title is outside too
-  await page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#139"] [data-testid="row-state"]').first().click();
+  // a spot of the table page outside the title cells is outside too: the repository list's heading on the left
+  // (the panel covers every other column; the title cell itself opens, GitHub#257)
+  await page.locator('[data-testid="slices"] > .small.muted').click();
   await expect(detail).toHaveCount(0);
 
   expect(env.fake.writes()).toEqual([]);
@@ -2505,6 +2506,90 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
 const MOD = 'ControlOrMeta';
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 const lastOnline = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.sync.lastOnlineAt as number | null);
+
+test('GitHub#257: the whole title cell of a table row opens the detail — icon, number, blank space, a nested PR\'s indent; switches without hiding; other cells unchanged', async () => {
+  // two entries on #138, so its detail has the "unfold all" switch
+  env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C-257', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>a comment</p>', author: { login: 'user-2' } },
+  ]);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  // PRs right under their issue need a grouping the recorded pairs share
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  await page.getByTestId('open-view-panel').click();
+  const rowOf = (k: string) => page.locator(`[data-testid="row"][data-key="${k}"]`).first();
+  const cellOf = (k: string) => rowOf(k).getByTestId('title-cell');
+  const [a, b, c] = [137, 139, 138].map((n) => `gigleai/cavil-loop#${n}`);
+  const opened = async (k: string) => {
+    await expect(detail).toHaveAttribute('data-key', k);
+    await expect(frame.locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+
+  // the hand cursor on the whole cell, not only on the words
+  expect(await cellOf(a).evaluate((el) => getComputedStyle(el).cursor)).toBe('pointer');
+
+  // 1. the blank right end of the cell
+  const box = (await cellOf(a).boundingBox())!;
+  const words = (await rowOf(a).getByTestId('row-title').boundingBox())!;
+  const num = (await rowOf(a).locator('.title-cell .muted.small').boundingBox())!;
+  expect(box.x + box.width - 4).toBeGreaterThan(Math.max(words.x + words.width, num.x + num.width));
+  await cellOf(a).click({ position: { x: box.width - 4, y: box.height / 2 } });
+  await opened(a);
+
+  // 2. the state icon and the "repo #number" text of another row: switches, never hides first
+  await rowOf(b).getByTestId('row-state').click();
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', b);
+  await rowOf(c).locator('.title-cell .muted.small').click();
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', c);
+
+  // 3. the same cell again keeps this opening (its unfold state survives)
+  await opened(c);
+  const unfold = page.getByTestId('unfold-toggle');
+  await expect(unfold).toHaveCount(1);
+  await unfold.click();
+  await expect(unfold).toHaveAttribute('data-unfold', 'all');
+  await cellOf(c).click({ position: { x: (await cellOf(c).boundingBox())!.width - 4, y: 6 } });
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', c);
+  await expect(unfold).toHaveAttribute('data-unfold', 'all');
+
+  // 4. a PR nested under its issue: the indent left of the ↳ mark opens the PR
+  const nested = page.locator('[data-testid="row"][data-under]').first();
+  const prKey = (await nested.getAttribute('data-key'))!;
+  const nb = (await nested.getByTestId('title-cell').boundingBox())!;
+  const mark = (await nested.locator('.nest-mark').boundingBox())!;
+  expect(mark.x - nb.x).toBeGreaterThan(16);
+  await nested.getByTestId('title-cell').click({ position: { x: 6, y: nb.height / 2 } });
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveAttribute('data-key', prKey);
+
+  // 5. the title link still works from the keyboard: focus it, Enter opens that row
+  await rowOf(a).getByTestId('row-title').focus();
+  await page.keyboard.press('Enter');
+  await opened(a);
+
+  // 6. outside the title cells (the repository list's heading; the panel covers the other columns) puts it away
+  await page.locator('[data-testid="slices"] > .small.muted').click();
+  await expect(detail).toHaveCount(0);
+  // with the panel away: a cell that cannot be edited opens nothing; an editable one still edits in place
+  await rowOf(b).locator('[data-testid="cell"][data-col="updated"]').click();
+  await page.waitForTimeout(200);
+  await expect(detail).toHaveCount(0);
+  const labels = rowOf(b).locator('[data-testid="cell"][data-col="labels"]');
+  await labels.click();
+  await expect(labels).toHaveAttribute('data-editing', 'yes');
+  await expect(detail).toHaveCount(0);
+  await shot(page, '257-title-cell');
+
+  expect(env.fake.writes()).toEqual([]);
+  await app.close();
+});
 
 test('GitHub#192: shortcuts — nothing before sign-in; global keys on every signed-in page; a board request runs once', async () => {
   const { app, page } = await launch(env);
@@ -4116,5 +4201,245 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   await expect(page.getByTestId('close-reason-completed')).toBeChecked();
   await page.getByTestId('confirm-cancel').click();
   expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['未知回复再次关闭']);
+  await app.close();
+});
+
+test('GitHub#256: a fully successful notice puts itself away after 10 s (detail, board, after a switch); pointer, focus, a background window pause it; warnings, errors and kept drafts stay', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const openOnGitHub = (n: number) => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  };
+  for (const n of [135, 136, 137, 139, 141, 142]) openOnGitHub(n);
+  // PR #146 open (not merged), as in the GitHub#177 test
+  for (const g of findCopies(store, 'GigleAI/cavil-loop', 146)!.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of findCopies(store, 'GigleAI/cavil-loop', 146)!.rest) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+  let { app, page } = await launch(env);
+  // fake time in the window: "10 s later" without waiting
+  await page.clock.install();
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const open = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+  };
+  const closeIt = async (n: number) => {
+    await open(n);
+    await page.getByTestId('close-issue').click();
+    await page.getByTestId('confirm-ok').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  };
+  const inDetail = (n: number) => page.locator(`[data-testid="detail"] [data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
+  const onBoard = (n: number) => page.locator(`[data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
+  const ff = async (ms: number) => {
+    await page.clock.fastForward(ms);
+    await page.waitForTimeout(100);
+  };
+
+  // ---- 1. in the detail: 9 s still there, 10 s gone; the pointer on it pauses, leaving starts over ----
+  await closeIt(137);
+  await expect(inDetail(137).getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（已完成）', { timeout: 15_000 });
+  await expect(inDetail(137)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await inDetail(137).hover();
+  await expect(inDetail(137)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(inDetail(137)).toBeVisible();
+  await page.mouse.move(5, 5);
+  await expect(inDetail(137)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(inDetail(137)).toBeVisible();
+  await ff(1_100);
+  await expect(inDetail(137)).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+  // put away for good: not above the board either
+  await expect(onBoard(137)).toHaveCount(0);
+
+  // ---- 2. above the board: keyboard focus inside pauses it ----
+  await closeIt(139);
+  await page.getByTestId('detail-close').click();
+  // the notice may come up under the pointer (that pauses it, as it should): move it away first
+  await page.mouse.move(5, 5);
+  await expect(onBoard(139).getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）', { timeout: 15_000 });
+  await expect(onBoard(139)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await onBoard(139).getByTestId('op-dismiss').focus();
+  await expect(onBoard(139)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(onBoard(139)).toBeVisible();
+  await page.getByTestId('search').focus();
+  await expect(onBoard(139)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(onBoard(139)).toBeVisible();
+  await ff(1_100);
+  await expect(onBoard(139)).toHaveCount(0);
+
+  // ---- 3. counted 5 s in the detail, then the panel is put away: the board starts from zero; a window in the background or hidden pauses ----
+  await closeIt(142);
+  await expect(inDetail(142)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(5_000);
+  await page.getByTestId('detail-close').click();
+  await page.mouse.move(5, 5);
+  await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(onBoard(142)).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(onBoard(142)).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(onBoard(142)).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(onBoard(142)).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(onBoard(142)).toBeVisible();
+  await ff(1_100);
+  await expect(onBoard(142)).toHaveCount(0);
+
+  // ---- 3b. PR #259 review round 1: the window loses focus first, then a notice comes up — it starts paused ----
+  await open(135);
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(inDetail(135).getByTestId('op-notice-text')).toHaveText('issue #135 已关闭（已完成）', { timeout: 15_000 });
+  await page.mouse.move(5, 5);
+  await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(inDetail(135)).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(inDetail(135)).toBeVisible();
+  await ff(1_100);
+  await expect(inDetail(135)).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+
+  // ---- 4. what stays: merged but the linked issues were not read; refused; closed with the comment refused ----
+  // GitHub says "there is a next page" of the issues this PR closes without saying where: that read fails
+  env.fake.state.w.closingIssuesPageSize = 0;
+  await page.getByTestId('search').fill('#146');
+  await card(page, 146).click();
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并', { timeout: 15_000 });
+  await page.getByTestId('merge').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('PR #146 已合并；', { timeout: 15_000 });
+  await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('关联的 issue', { timeout: 15_000 });
+  env.fake.state.w.closingIssuesPageSize = 100;
+  await expect(inDetail(146)).toHaveAttribute('data-kind', 'ok'); // the tone alone would let it go
+  await page.getByTestId('detail-close').click();
+
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await closeIt(136);
+  await expect(inDetail(136)).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  env.fake.state.w.readOnlyRepos.clear();
+  await page.getByTestId('detail-close').click();
+
+  env.fake.state.w.failComment = true;
+  await open(141);
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('close-comment').fill('做完了');
+  await page.getByTestId('confirm-ok').click();
+  await expect(inDetail(141).getByTestId('op-notice-text')).toContainText('附的评论没有发出去', { timeout: 15_000 });
+  env.fake.state.w.failComment = false;
+  await page.getByTestId('detail-close').click();
+
+  for (const n of [146, 136, 141]) await expect(onBoard(n)).not.toHaveAttribute('data-auto-dismiss', /./);
+  await ff(60_000);
+  for (const n of [146, 136, 141]) await expect(onBoard(n)).toBeVisible();
+  await shot(page, '256-01-kept-notices');
+
+  // ---- 5. result bars: a plain success goes after 10 s ----
+  await open(144);
+  await pickLabel(page, 'Done');
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
+  await expect(page.getByTestId('action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(page.getByTestId('action-result')).toBeVisible();
+  await ff(1_100);
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+  await card(page, 144).hover();
+  await card(page, 144).locator('[data-testid="card-label-remove"][data-label="Done"]').click();
+  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
+  await page.mouse.move(5, 5);
+  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(9_000);
+  await expect(page.getByTestId('board-action-result')).toBeVisible();
+  await ff(1_100);
+  await expect(page.getByTestId('board-action-result')).toHaveCount(0);
+
+  // ---- 6. restart: what went away stays away, what stayed is still there ----
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  for (const n of [146, 136, 141]) await expect(onBoard(n)).toBeVisible();
+  for (const n of [135, 137, 139, 142]) await expect(onBoard(n)).toHaveCount(0);
+  await app.close();
+});
+
+test('GitHub#258: a status group\'s "+" with the board left unticked — the board takes it in by itself; empty would be set, a value already there is only offered as a button', async () => {
+  const PROJECT_KEY = 'project:org/gigleai/11';
+  const PROJECT_NODE = 'PVT_fixture_435fd6e043de';
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('status');
+  const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`);
+  const line = (target: string) => page.locator(`[data-testid="new-issue-preset-line"][data-target="${target}"]`);
+
+  await expect(group('In progress').getByTestId('group-add')).toBeEnabled({ timeout: 15_000 });
+  await group('In progress').getByTestId('group-add').click();
+  const box = page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`);
+  await expect(box).toBeChecked();
+  await box.uncheck();
+  // left unticked: said what happens if GitHub takes it in by itself
+  await expect(line(PROJECT_KEY)).toHaveAttribute('data-applies', 'yes');
+  await expect(line(PROJECT_KEY)).toContainText('如果 GitHub 按它的自动加入规则收进这条、状态还空着，会补设 状态 = In progress');
+  await page.getByTestId('new-issue-title').fill('没勾看板，GitHub 自己收进去');
+  await shot(page, '258-01-unticked-board');
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  const key = await page.getByTestId('detail').getAttribute('data-key');
+  const n = Number(String(key).split('#')[1]);
+  await page.getByTestId('detail-close').click();
+  // not added by the client
+  expect(writes().filter((w) => w[0] === 'CavilAddProjectItem')).toHaveLength(0);
+
+  // GitHub's auto-add puts it on the board, and a board rule (or a person) sets Backlog
+  const nodeId = env.fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === n)!.node_id;
+  handleGraphql(store, 'CavilAddProjectItem', { projectId: PROJECT_NODE, contentId: nodeId });
+  const f = env.fake.state.projects.get('org/gigleai/11')![0].fields.nodes.find((x: any) => x.name === 'Status') as any;
+  const item = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((x: any) => x.content?.number === n && x.content?.repository?.nameWithOwner?.toLowerCase() === 'gigleai/cavil-loop') as any;
+  handleGraphql(store, 'CavilSetStatus', { projectId: PROJECT_NODE, itemId: item.id, fieldId: f.id, optionId: f.options.find((o: any) => o.name === 'Backlog').id });
+
+  // the first look (5 s after creating) sees Backlog: not overwritten, a button offered
+  const bar = page.locator('[data-testid="create-bar"][data-status="partial"]');
+  await expect(bar).toContainText('状态是「Backlog」，没有自动改成「In progress」', { timeout: 20_000 });
+  expect(writes().filter((w) => w[0] === 'CavilSetStatus')).toHaveLength(0);
+  await shot(page, '258-02-button');
+  await bar.getByTestId('create-watch-apply').click();
+  await expect.poll(() => writes().filter((w) => w[0] === 'CavilSetStatus').length).toBe(1);
+  // read back after the write, then the notice goes and the row is in that group
+  await expect(page.getByTestId('create-bar')).toHaveCount(0, { timeout: 30_000 });
+  await page.getByTestId('refresh').press('Enter');
+  await expect(group('In progress').locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"]`)).toBeVisible({ timeout: 15_000 });
   await app.close();
 });

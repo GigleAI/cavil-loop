@@ -244,7 +244,7 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close 
 }
 
 /**
- * `onOpen`: a row's title opens the item's detail panel, the same as clicking a card on the board.
+ * `onOpen`: a click anywhere in a row's title cell opens the item's detail panel, the same as clicking a card on the board (GitHub#257).
  * `onNewInGroup`: a group's "+" (GitHub#214); `canCreate` false greys it (offline, no sources).
  */
 export function TableView({
@@ -380,7 +380,13 @@ export function TableView({
       {!folded.has(g.key) &&
         g.rows.map((r) => (
           <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth} data-under={r.under ?? undefined}>
-            <td className="title-cell" style={{ paddingLeft: 8 + r.depth * 20 }}>
+            <td
+              className="title-cell"
+              data-testid="title-cell"
+              style={{ paddingLeft: 8 + r.depth * 20 }}
+              {...{ [OPENS_ITEM]: '' }}
+              onClick={() => onOpen(r.item.key)}
+            >
               {r.under && (
                 <span className="nest-mark" title="关联到上面这个 issue 的 PR">
                   ↳{' '}
@@ -392,11 +398,8 @@ export function TableView({
               <a
                 href={r.item.url}
                 data-testid="row-title"
-                {...{ [OPENS_ITEM]: '' }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  onOpen(r.item.key);
-                }}
+                // the link only stops the jump to GitHub; the click goes on to the cell, which opens (GitHub#257)
+                onClick={(e) => e.preventDefault()}
               >
                 {r.item.title}
               </a>{' '}

@@ -62,6 +62,10 @@ exit 0
 GHEOF
 chmod +x "$SANDBOX/bin/gh"
 export GH_COUNT SNAP_ISSUES SNAP_PULLS GH_FAIL
+# 本文件测的是退避阶梯本身（没有空闲轻量检查时的行为）。轻量检查默认开着，开着时 7 天档
+# 被封顶到 10 分钟、跳过前还要多问一次 GitHub——那一套由 tests/poll-probe.test.sh 测
+# （GitHub#252）。这里关掉，下面每一组的期望值才是阶梯自己的。
+export POLL_IDLE_PROBE=false
 export HOME="$SANDBOX/home"
 export PATH="$SANDBOX/bin:$PATH"
 export CODING_AGENT_CONFIG="$TMP_CONF"

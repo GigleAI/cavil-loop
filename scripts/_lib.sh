@@ -304,7 +304,8 @@ requester_bot_wait_hold() {   # <编号>
 }
 
 # ── 等前置标签（GitHub#157，可选，默认关闭）──
-# 一条活卡在「本仓库别的 issue / PR 还没完成」上（不是卡在要人拍板）时，worker 挂这个标签并登记
+# 一条活卡在「别的 issue / PR 还没完成」上（不是卡在要人拍板；前置可以在本仓库，也可以在别的仓库，
+# GitHub#243）时，worker 挂这个标签并登记
 # 前置；daemon 定期检查（blocked_tick），前置全部成功完成 → 留一条说明、翻回原触发标签接着干；
 # 有前置以失败收场 / 读全了却找不到前置 → 交人。留空 = 功能关闭，行为和以前一样。
 #
@@ -394,7 +395,7 @@ AUTOPILOT_UNKNOWN_MAX="${AUTOPILOT_UNKNOWN_MAX:-10}"
 # 互通仓库名单（GitHub#233）：逗号 / 空格分隔的 owner/repo。名单里的仓库 ① 可以当拆分子项的父 issue 所在仓库
 # （父 issue 上维护者亲手打的托管标签，授权本仓库的子项；打标签的人在两个仓库都要有写权限）；② 可以当
 # 等前置的前置所在仓库（`<!-- agent-blocked-by: owner/repo#N -->`、「Blocked by」里那个仓库的条目）。
-# 留空 = 只认本仓库，行为和以前一样。
+# 留空 = 不认任何别的仓库：拆分父 issue 只认本仓库；写了别的仓库的前置标记交人（GitHub#243 起不再按本仓库同号误读）。
 TRUSTED_REPOS="${TRUSTED_REPOS:-}"
 # 并发满时的取工顺序 —— 第一排序键：优先级 label，列表里越靠前越优先，
 # **没打优先级标签的条目等同最后一档**（所以平时什么都不用打，只在真着急时挂一个
@@ -985,6 +986,12 @@ POLL_BACKOFF_LADDER="${POLL_BACKOFF_LADDER-86400:300,259200:600,604800:1800}"
 POLL_FORCE_SYNC_SECS="${POLL_FORCE_SYNC_SECS:-1800}"
 POLL_FAIL_BACKOFF_MAX_SECS="${POLL_FAIL_BACKOFF_MAX_SECS:-1800}"
 POLL_DUE_SLACK_SECS="${POLL_DUE_SLACK_SECS:-10}"
+# 空闲时的轻量检查（GitHub#252）：退避判定「本轮跳过」时，先用一次条件请求问 GitHub
+# 「仓库里最近更新的那一条变了没有」——没变回 304（正确认证时不占主调用额度）照旧跳过，
+# 变了就提前完整跑一轮。开着时完整检查的最长间隔另封顶 POLL_IDLE_PROBE_MAX_SECS。
+# 只认 "true" / "false"；其他写法一律按默认 true（打开），见 pace_probe_on。
+POLL_IDLE_PROBE="${POLL_IDLE_PROBE:-true}"
+POLL_IDLE_PROBE_MAX_SECS="${POLL_IDLE_PROBE_MAX_SECS:-600}"
 
 # ── 数值闸：进任何算术之前先验一遍 ──
 #
@@ -1026,6 +1033,10 @@ done
 unset _pv _pk _pd
 
 PACE_FILE="${PACE_FILE:-$STATE_DIR/poll-pace.json}"
+# 轻量检查的版本标记（ETag）。跟节奏状态分开：删掉它只会让下一次检查回 200、多跑一轮。
+#   PROBE_ETAG_FILE          已确认的标记：拿到它之后有一整轮成功读过 GitHub
+#   PROBE_ETAG_FILE.pending  检查回 200 时拿到的新标记，等这一轮成功读完才转正
+PROBE_ETAG_FILE="${PROBE_ETAG_FILE:-$STATE_DIR/poll-probe.etag}"
 # 跳过本轮时留给调用方打进 poll.log 的那行；真跑时为空。
 PACE_SKIP_MSG=""
 
@@ -1247,7 +1258,7 @@ pace_should_poll() {
     PACE_SKIP_MSG=""
     [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 0
 
-    local now next_due last_poll last_active fail_streak fingerprint waited remain
+    local now next_due last_poll last_active fail_streak fingerprint waited remain pcap
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak fingerprint < <(pace_read) || true
 
@@ -1293,10 +1304,133 @@ pace_should_poll() {
     remain=$((next_due - now))
     if [ "$fail_streak" -gt 0 ]; then
         PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
-    else
-        PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")）"
+        return 1
     fi
+    # 空闲退避、本来要跳过：先问一次「仓库变没变」（GitHub#252）。故障退避（上面那条）
+    # 不问——读不到 GitHub 的时候每分钟再问一次，正是故障阶梯要避免的事。
+    # 只有明确拿到 304 才继续跳过；变了、读不到、回了看不懂的东西，一律跑。
+    if pace_probe_on; then
+        # 封顶在**读**这一侧也要生效，不能只在写下一轮时夹：状态是按写入那一刻的配置算的。
+        # 封顶被调小、或者关着检查时退到 30 分钟档后又打开，文件里的 next_due 还是旧的那个
+        # 更远的期限；只看它会照旧等满，「开着时最长 POLL_IDLE_PROBE_MAX_SECS」就落空了
+        # （代码复审第 1 轮实测：旧档 600、新封顶 60、已等 120 秒仍跳过）。用同一个
+        # pace_probe_cap，按跟 next_due 一样的抖动余量算到期。
+        if pcap=$(pace_probe_cap quiet) && [ $((now + POLL_DUE_SLACK_SECS)) -ge $((last_poll + pcap)) ]; then
+            return 0
+        fi
+        if ! pace_probe; then
+            log "轻量检查：$PACE_PROBE_REASON → 提前跑一轮（原定还差 $(pace_human_secs "$remain")）"
+            return 0
+        fi
+        PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")；轻量检查：无变化）"
+        return 1
+    fi
+    PACE_SKIP_MSG="本轮跳过（已安静 $(pace_human_secs $((now - last_active)))，当前档位 $(pace_human_secs $((next_due - last_poll)))，还差 $(pace_human_secs "$remain")）"
     return 1
+}
+
+# ── 空闲时的轻量检查（GitHub#252）──
+#
+# GitHub 没有给本机进程用的订阅接口（没有 WebSocket / SSE，GraphQL 没有 subscription；
+# webhook 要公网接收端 + 仓库设置），能用的是 REST 的条件请求：带上次拿到的 ETag 再问，
+# 没变化回 304，正确认证时不占主调用额度。问的是「整个仓库最近更新的那一条」：
+# `issues?state=all&sort=updated&direction=desc&per_page=1`，issue 和 PR 都在里面，
+# 任一条目的更新时间一变，它排到第一，ETag 跟着变。用 state=all 而不是 open：关掉一条
+# 不在第一位的 open 条目，在 open 列表第一页上看不出来。
+#
+# 它**看不到**的：主干有新提交、CI 结果（都不是条目的更新），以及不刷新条目更新时间的
+# 事件（实测：被别的条目引用不刷新；打标签、评论、行内评论、推送、关闭 / 合并都刷新）。这些靠完整检查兜底，开着时完整检查最长间隔封顶 POLL_IDLE_PROBE_MAX_SECS。
+#
+# 和节奏状态一样，它只决定「这一轮跑不跑」，不决定跑的时候做什么；而且只会让一轮
+# 提前，不会让任何一轮推迟。
+
+# 开关：只有写成 "false" 才关；阶梯留空（整个退避关掉）时它也无事可做。
+pace_probe_on() {
+    [ -n "${POLL_BACKOFF_LADDER:-}" ] || return 1
+    [ "${POLL_IDLE_PROBE:-true}" != "false" ]
+}
+
+# 开着时完整检查的最长间隔。合法 = 1 到心跳值之间的整数秒；不合法打一行警告、
+# 返回非 0（= 不封顶，按原阶梯走，阶梯本身已被心跳夹住）。0 不算合法：那等于关掉退避，
+# 该用阶梯留空来表达，而不是让一个写错的封顶值悄悄变成每 tick 都跑。
+# 第 1 个参数写 quiet = 不打警告：闸门每个 tick 都调，警告只在每轮记账时打一次就够。
+pace_probe_cap() {
+    local v
+    if v=$(pace_num "${POLL_IDLE_PROBE_MAX_SECS:-}" 9) && [ "$v" -ge 1 ] && [ "$v" -le "$POLL_FORCE_SYNC_SECS" ]; then
+        printf '%s' "$v"; return 0
+    fi
+    [ "${1:-}" = quiet ] && return 1
+    log "⚠️ POLL_IDLE_PROBE_MAX_SECS='${POLL_IDLE_PROBE_MAX_SECS:-}' 不是 1 到心跳 ${POLL_FORCE_SYNC_SECS} 之间的秒数，本轮不封顶（按原阶梯，最长心跳值）"
+    return 1
+}
+
+# ETag 的合法形状：可选 W/ 前缀 + 双引号括起来的一串字母数字及少量符号。拿它进 -H 之前必须验，
+# 文件被写坏（多行、带控制字符）时宁可不带标记（= 回 200 = 多跑一轮），也不拼出一个
+# 奇怪的请求头。
+pace_etag_ok() {
+    # 字符集写死、不用区间：`[!#-~]` 这类区间在非 C locale 下实测一个都匹配不上。
+    # GitHub 的 ETag 是十六进制摘要，这个集合足够宽。
+    local re='^(W/)?"[A-Za-z0-9._:+/=-]+"$'
+    [[ "$1" =~ $re ]]
+}
+
+pace_probe_etag_read() {   # <文件> → 合法的 ETag 或空
+    local e=""
+    [ -f "$1" ] && IFS= read -r e < "$1" 2>/dev/null
+    if pace_etag_ok "$e"; then printf '%s' "$e"; fi
+}
+
+pace_probe_etag_write() {  # <文件> <ETag>
+    local tmp
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    tmp=$(mktemp "$STATE_DIR/.poll-probe.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s\n' "$2" > "$tmp" 2>/dev/null && mv "$tmp" "$1" 2>/dev/null; then return 0; fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# 返回 0 = 确定没变化（304）；非 0 = 变了或说不准，PACE_PROBE_REASON 写着原因。
+#
+# 状态码从 `gh api -i` 的第一行读，不看退出码：gh 对 304 也以 1 退出（实测，并在 stderr
+# 打一行 "gh: HTTP 304"），对 200 以 0 退出；只认这两个状态码，其余一律「说不准」。
+# 回 200 时把新 ETag 存成 pending，**不**直接转正：转正在 pace_record_ok（这一轮完整读过
+# GitHub 之后）。要是先转正、这一轮又半路失败，下一次检查就回 304，这次变化要等完整
+# 检查才被看到。304 响应里 GitHub 给回的 ETag 去掉了 W/ 前缀（实测），所以 304 时沿用
+# 已存的，不覆盖。
+pace_probe() {
+    local etag out status new_etag
+    PACE_PROBE_REASON=""
+    etag=$(pace_probe_etag_read "$PROBE_ETAG_FILE")
+    local -a cmd=(gh api -i --method GET)
+    if [ -n "$etag" ]; then cmd+=(-H "If-None-Match: $etag"); fi
+    cmd+=("repos/$REPO/issues" -f state=all -f sort=updated -f direction=desc -f per_page=1)
+    if command -v timeout >/dev/null 2>&1; then cmd=(timeout 30 "${cmd[@]}"); fi
+    out=$("${cmd[@]}" 2>/dev/null) || true
+    status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r' | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+    case "$status" in
+        304)
+            if [ -n "$etag" ]; then return 0; fi
+            PACE_PROBE_REASON="没带版本标记却回了 304，按说不准处理"; return 1 ;;
+        200)
+            new_etag=$(printf '%s\n' "$out" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | head -n1)
+            if pace_etag_ok "$new_etag"; then
+                pace_probe_etag_write "$PROBE_ETAG_FILE.pending" "$new_etag" || true
+            fi
+            if [ -z "$etag" ]; then PACE_PROBE_REASON="还没有版本标记（第一次检查，或标记文件丢失 / 损坏）"
+            else PACE_PROBE_REASON="仓库有变化"; fi
+            return 1 ;;
+        "") PACE_PROBE_REASON="读不到 GitHub"; return 1 ;;
+        *)  PACE_PROBE_REASON="GitHub 回了 HTTP $status"; return 1 ;;
+    esac
+}
+
+# 这一轮完整读过 GitHub：把检查时拿到的新标记转正（没有就什么都不做）。
+pace_probe_commit() {
+    local e
+    [ -f "$PROBE_ETAG_FILE.pending" ] || return 0
+    e=$(pace_probe_etag_read "$PROBE_ETAG_FILE.pending")
+    if [ -n "$e" ]; then pace_probe_etag_write "$PROBE_ETAG_FILE" "$e" || true; fi
+    rm -f "$PROBE_ETAG_FILE.pending" 2>/dev/null || true
 }
 
 # 一轮真跑完、且这一轮**读到了** GitHub 时调用。
@@ -1304,7 +1438,7 @@ pace_should_poll() {
 #   fp       本轮指纹；空串 = 没算出来 → 保守当作「有动静」，并保留上一轮的指纹不覆盖
 pace_record_ok() {
     local acted="$1" fp="$2" cap="${3:-}"
-    local now next_due last_poll last_active fail_streak prev_fp active quiet iv
+    local now next_due last_poll last_active fail_streak prev_fp active quiet iv pcap
     now=$(pace_now)
     IFS=$'\t' read -r next_due last_poll last_active fail_streak prev_fp < <(pace_read) || true
 
@@ -1326,6 +1460,10 @@ pace_record_ok() {
     iv=$(pace_interval_for_quiet "$quiet")
     # 第 3 个参数：本轮另有理由要求「最晚这么久后再来一轮」（有条目在等前置，GitHub#157）。只往短里夹
     if [ -n "$cap" ] && cap=$(pace_num "$cap" 9) && [ "$iv" -gt "$cap" ]; then iv="$cap"; fi
+    # 轻量检查开着：看得到的变化每个 tick 都能提前叫醒，看不到的（主干提交、CI 结果……）
+    # 只能靠完整检查，所以完整检查的最长间隔另封顶（GitHub#252）。同样只往短里夹。
+    if [ "$iv" -gt 0 ] && pace_probe_on && pcap=$(pace_probe_cap) && [ "$iv" -gt "$pcap" ]; then iv="$pcap"; fi
+    if pace_probe_on; then pace_probe_commit; fi
     PACE_TIER_SECS="$iv"; PACE_QUIET_SECS="$quiet"
     pace_write "$((now + iv))" "$now" "$last_active" 0 "$fp" \
         || log "⚠️ 节奏状态写入失败（不影响本轮；下一轮会照常跑）"
@@ -1345,6 +1483,8 @@ pace_record_fail() {
     last_active=$(pace_num "$last_active") || last_active="$now"
     if [ "$last_active" -gt "$now" ]; then last_active="$now"; fi
     iv=$(pace_fail_interval "$fail_streak")
+    # 这一轮没读完 GitHub：检查拿到的新标记作废，下一次检查仍对照旧标记（GitHub#252）
+    rm -f "$PROBE_ETAG_FILE.pending" 2>/dev/null || true
     PACE_TIER_SECS="$iv"
     pace_write "$((now + iv))" "$now" "$last_active" "$fail_streak" "$fp" || true
     log "GitHub 读取连续失败 ${fail_streak} 次 → 下一轮 $(pace_human_secs "$iv") 后重试"
@@ -2737,7 +2877,8 @@ sub_issue_rollup_drain() {
 #   · GitHub 原生「Blocked by」关系（issue 侧栏 Relationships；有写权限的人才改得了）。
 #     实测（2026-11-06，GigleAI/cavil-loop）：前置只能是 issue，把 PR 设成前置报 422
 #     「Target issue may only be an issue」；PR 本身的这个列表读得到（200，空）
-#   · 评论里的隐藏标记 `<!-- agent-blocked-by: #12 #34 resume=<触发标签> -->`：只认 loop 的写入账号
+#   · 评论里的隐藏标记 `<!-- agent-blocked-by: #12 OWNER/REPO#34 resume=<触发标签> -->`（`#12` 是本仓库，
+#     `OWNER/REPO#34` 是别的仓库，GitHub#243；写成本仓库自己的全名等同 `#12`）：只认 loop 的写入账号
 #     或仓库维护者（OWNER / MEMBER / COLLABORATOR）发的，而且发在「最近一次摘掉等前置标签」之后
 #     （属于这一轮等待）；多条取最新一条。等 PR、或被挡的本身是 PR，都靠它。
 #     「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认
@@ -2747,6 +2888,13 @@ sub_issue_rollup_drain() {
 #
 # 完成的口径：issue 以 completed 关闭；PR 已合并。其余关闭（not planned / duplicate / 没写原因 /
 # PR 没合就关 / 读到 404）都是「失败收场」→ 交人。
+#
+# 别的仓库的前置（GitHub#243）：标记里的 OWNER/REPO#N 和侧栏「Blocked by」里别的仓库的 issue 都当前置，
+# 但只认互通名单 TRUSTED_REPOS 里的仓库（GitHub#233），名单外的不读、交人（v=foreign）。名单内的用轮询身份只读 repos/OWNER/REPO/issues/N，结局判法和本仓库同一段代码。读不到分三种：
+# 404 / 410（不存在、已删除，或私有仓库令牌无权读——GitHub 对后者也回 404）和不是限流的 403（无权读）
+# 等多久都不会自己好 → 结局记「读不到」，算失败收场交人、写明原因；其余失败（网络、限流、5xx）→ 判不了。
+# 本仓库的前置读到 403 仍是判不了（和以前一样）。daemon 从不往别的仓库写任何东西。
+# 前置在判定里是 {r, n}：r 空 = 本仓库，否则是小写的 owner/repo（GitHub 仓库名不分大小写）。
 #
 # 一个判定函数（blocked_decide）判两次：第一次决定要不要动手，要写之前**全部重新读**再判一次，
 # 两次的完整结论（打标签那次事件、前置集合、恢复标签、每个前置的结局）一字不差才写。判完之后
@@ -2776,13 +2924,14 @@ _bfail() { BLOCKED_REASON="$1"; printf '%s\n' "$1"; }
 
 # 互通名单（小写 JSON 数组，不含本仓库）
 blocked_trusted_json() {
-    printf '%s' "${TRUSTED_REPOS:-}" | tr ',' ' ' | tr '[:upper:]' '[:lower:]' | jq -Rc 'split(" ") | map(select(. != ""))'
+    # -s：名单为空时也要输出 []（-R 逐行读，空输入一行都没有、什么都不输出——GitHub#243 起名单为空也要用它）
+    printf '%s' "${TRUSTED_REPOS:-}" | tr ',' ' ' | tr '[:upper:]' '[:lower:]' | jq -Rsc '[splits("[ \t\n]+")] | map(select(. != ""))'
 }
 
 # 判定。stdout 一行 JSON（键固定顺序，两次判定直接按字符串比）：
-#   {v, event, set, resume, pre:[{n,o}], why}
-#   v = resume（全部完成）/ failed（有前置失败收场）/ none（读全了却没有前置）/ foreign（有别的仓库的前置）
-#       / wait（还有没完成的）/ skip（不归这里管：关了、标签没了、人叫停或在别的流程里）
+#   {v, event, set:[{r,n}], resume, pre:[{r,n,o}], why}
+#   v = resume（全部完成）/ failed（有前置失败收场）/ none（读全了却没有前置）
+#       / foreign（有不在互通名单里的别的仓库的前置）/ wait（还有没完成的）/ skip（不归这里管：关了、标签没了、人叫停或在别的流程里）
 # return 0 = 判得出；2 = 判不了（原因在 stdout）
 blocked_decide() {   # <编号>
     local num="$1" item labels_csv stop ev ep comments me deps self_set mark pre_json p pj o out resume
@@ -2824,7 +2973,7 @@ blocked_decide() {   # <编号>
     if ! comments=$(gh api --paginate --slurp "repos/$REPO/issues/$num/comments" 2>/dev/null) || [ -z "$comments" ]; then
         _bfail "读不到 #$num 的评论"; return 2
     fi
-    if ! mark=$(printf '%s' "$comments" | jq -c --arg M "$BLOCKED_MARK" --arg me "$me" --arg since "$(printf '%s' "$ep" | jq -r .since)" '
+    if ! mark=$(printf '%s' "$comments" | jq -c --arg M "$BLOCKED_MARK" --arg me "$me" --arg self "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" --arg since "$(printf '%s' "$ep" | jq -r .since)" '
         [ .[][]? | select((.body // "") | contains($M))
           | select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)
                    or ((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)))
@@ -2833,51 +2982,20 @@ blocked_decide() {   # <编号>
         | sort_by(.created_at // "", .id // 0) | last
         | if . == null then {set: [], resume: ""} else
             (.body | [ match("<!-- agent-blocked-by:([^>]*)-->"; "g") ] | last | .captures[0].string // "") as $m
-            | { set: ([ $m | scan("#([0-9]+)") | .[0] | tonumber ] | unique),
+            | { set: ([ $m | scan("(?<![A-Za-z0-9_./-])([A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9_.-]*)?#([0-9]+)")
+                          | {r: ((.[0] // "") | ascii_downcase | if . == $self then "" else . end), n: (.[1] | tonumber)} ] | unique),
                 resume: (first($m | capture("resume=(?<r>[^ ]+)") | .r) // "") } end' 2>/dev/null) || [ -z "$mark" ]; then
         _bfail "读不懂 #$num 评论里的前置标记"; return 2
     fi
-    # 互通名单（GitHub#233）：标记里带仓库名的 `owner/repo#N` 按仓库分开认——本仓库的当 #N，名单里的仓库记成
-    # "owner/repo#N"（下面照样读它的状态），名单外的当别的仓库的前置（交人）。名单为空时上面的读法一字不变
-    if [ -n "${TRUSTED_REPOS:-}" ]; then
-        if ! mark=$(printf '%s' "$comments" | jq -c --arg M "$BLOCKED_MARK" --arg me "$me" --arg since "$(printf '%s' "$ep" | jq -r .since)" \
-                --arg R "$REPO" --argjson T "$(blocked_trusted_json)" '
-            [ .[][]? | select((.body // "") | contains($M))
-              | select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)
-                       or ((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)))
-              | select((.body | contains("<!-- agent-blocked-resolved")) | not)
-              | select($since == "" or (.created_at // "") > $since) ]
-            | sort_by(.created_at // "", .id // 0) | last
-            | if . == null then {set: [], resume: "", foreign: []} else
-                (.body | [ match("<!-- agent-blocked-by:([^>]*)-->"; "g") ] | last | .captures[0].string // "") as $m
-                | [ $m | scan("(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([0-9]+)") ] as $refs
-                | { set: ([ $refs[] | select(.[0] == null or (.[0] | ascii_downcase) == ($R | ascii_downcase)) | .[1] | tonumber ]
-                          + [ $refs[] | select(.[0] != null and (.[0] | ascii_downcase) != ($R | ascii_downcase)
-                                               and ((.[0] | ascii_downcase) as $o | $T | index($o))) | "\(.[0])#\(.[1])" ] | unique),
-                    resume: (first($m | capture("resume=(?<r>[^ ]+)") | .r) // ""),
-                    foreign: [ $refs[] | select(.[0] != null and (.[0] | ascii_downcase) != ($R | ascii_downcase)
-                                                and (((.[0] | ascii_downcase) as $o | $T | index($o)) | not)) | "\(.[0])#\(.[1])" ] } end' 2>/dev/null) \
-           || [ -z "$mark" ]; then
-            _bfail "读不懂 #$num 评论里的前置标记"; return 2
-        fi
-    fi
-
     if ! deps=$(gh api --paginate --slurp "repos/$REPO/issues/$num/dependencies/blocked_by" 2>/dev/null) || [ -z "$deps" ]; then
         _bfail "读不到 #$num 的「Blocked by」关系"; return 2
     fi
-    if ! self_set=$(printf '%s' "$deps" | jq -c --arg R "https://api.github.com/repos/$REPO" '
-        [ .[][]? ] | { local: [ .[] | select((.repository_url // "" | ascii_downcase) == ($R | ascii_downcase)) | .number ],
-                       foreign: [ .[] | select((.repository_url // "" | ascii_downcase) != ($R | ascii_downcase))
-                                  | (.html_url // .url // "?") ] }' 2>/dev/null) || [ -z "$self_set" ]; then
-        _bfail "读不懂 #$num 的「Blocked by」关系"; return 2
-    fi
-    if [ -n "${TRUSTED_REPOS:-}" ] && ! self_set=$(printf '%s' "$deps" | jq -c --arg R "https://api.github.com/repos/$REPO" --argjson T "$(blocked_trusted_json)" '
-        [ .[][]? ] | map(. + {_r: ((.repository_url // "") | ascii_downcase | ltrimstr("https://api.github.com/repos/"))})
-        | { local: ([ .[] | select((.repository_url // "" | ascii_downcase) == ($R | ascii_downcase)) | .number ]
-                    + [ .[] | select((.repository_url // "" | ascii_downcase) != ($R | ascii_downcase) and (._r as $o | $T | index($o)))
-                        | "\(.repository_url | ltrimstr("https://api.github.com/repos/"))#\(.number)" ]),
-            foreign: [ .[] | select((.repository_url // "" | ascii_downcase) != ($R | ascii_downcase) and ((._r as $o | $T | index($o)) | not))
-                       | (.html_url // .url // "?") ] }' 2>/dev/null); then
+    # 侧栏关系按条目所属仓库归类（repository_url 的末两段）；仓库或编号读不出来 → 判不了
+    if ! self_set=$(printf '%s' "$deps" | jq -c --arg self "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" '
+        [ .[][]? | { r: ((.repository_url // "") | ascii_downcase
+                         | (capture("/repos/(?<x>[^/]+/[^/]+)$").x // "?") | if . == $self then "" else . end),
+                     n: .number } ]
+        | if any(.[]; .r == "?" or (.n | type) != "number") then error("bad") else . end' 2>/dev/null) || [ -z "$self_set" ]; then
         _bfail "读不懂 #$num 的「Blocked by」关系"; return 2
     fi
 
@@ -2890,7 +3008,13 @@ blocked_decide() {   # <编号>
 
     local base
     base=$(jq -cn --argjson e "$(printf '%s' "$ep" | jq .id)" --argjson a "$mark" --argjson b "$self_set" --arg r "$resume" --argjson me "$num" \
-        '{event: $e, set: (($a.set + $b.local) | unique | map(select(. != $me))), resume: $r, foreign: ($b.foreign + ($a.foreign // []))}')
+        '{event: $e, set: (($a.set + $b) | unique | map(select(.r != "" or .n != $me))), resume: $r}')
+    # 别的仓库只认互通名单里的（GitHub#233 的维护者决定：没有名单就限定不了读哪些仓库）；名单外的一律
+    # 不读、交人。名单为空时别的仓库的前置都走这里——不再像以前那样丢掉仓库名、按本仓库同号去判（GitHub#243）
+    if ! base=$(printf '%s' "$base" | jq -c --argjson T "$(blocked_trusted_json)" \
+            '. + {foreign: [ .set[] | select(.r != "" and (.r as $o | $T | index($o) | not)) | "\(.r)#\(.n)" ]}') || [ -z "$base" ]; then
+        _bfail "读不懂互通名单"; return 2
+    fi
     if [ "$(printf '%s' "$base" | jq '.foreign | length')" -gt 0 ]; then
         printf '%s' "$base" | jq -c '{v:"foreign", event, set, resume, pre:[], why:(.foreign | join(" "))}'; return 0
     fi
@@ -2899,15 +3023,20 @@ blocked_decide() {   # <编号>
     fi
 
     pre_json='[]'
-    local prepo pn
-    for p in $(printf '%s' "$base" | jq -r '.set[]'); do
-        # 名单里别的仓库的前置写作 owner/repo#N（GitHub#233），本仓库的就是编号
-        if [[ "$p" == *"#"* ]]; then prepo="${p%#*}"; pn="${p##*#}"; else prepo="$REPO"; pn="$p"; fi
-        if ! pj=$(gh api "repos/$prepo/issues/$pn" 2>&1); then
-            if printf '%s' "$pj" | grep -q 'HTTP 404'; then
+    local pr name
+    # 分隔符不能用制表符：本仓库的 r 是空串，IFS 里的空白会把开头的空字段吞掉
+    while IFS='|' read -r pr p; do
+        [ -n "$p" ] || continue
+        name=$(blocked_pre_name "$pr" "$p")
+        if ! pj=$(gh api "repos/${pr:-$REPO}/issues/$p" 2>&1); then
+            if [ -z "$pr" ] && printf '%s' "$pj" | grep -q 'HTTP 404'; then
                 o=missing
+            elif [ -n "$pr" ] && printf '%s' "$pj" | grep -qE 'HTTP 404|HTTP 410'; then
+                o=unreadable
+            elif [ -n "$pr" ] && printf '%s' "$pj" | grep -q 'HTTP 403' && ! printf '%s' "$pj" | grep -qiE 'rate limit|abuse'; then
+                o=forbidden
             else
-                _bfail "读不到前置 #$p"; return 2
+                _bfail "读不到前置 $name"; return 2
             fi
         elif ! o=$(printf '%s' "$pj" | jq -r '
             if (.state // "") == "" then "?"
@@ -2918,16 +3047,21 @@ blocked_decide() {   # <编号>
             elif .state == "open" then "open"
             elif .state_reason == "completed" then "completed"
             else "closed-" + (.state_reason // "no-reason") end' 2>/dev/null) || [ "$o" = "?" ] || [ -z "$o" ]; then
-            _bfail "前置 #$p 的状态缺字段"; return 2
+            _bfail "前置 $name 的状态缺字段"; return 2
         fi
-        pre_json=$(printf '%s' "$pre_json" | jq -c --arg n "$p" --arg o "$o" '. + [{n: (if ($n | test("^[0-9]+$")) then ($n | tonumber) else $n end), o: $o}]')
-    done
+        pre_json=$(printf '%s' "$pre_json" | jq -c --arg r "$pr" --argjson n "$p" --arg o "$o" '. + [{r: $r, n: $n, o: $o}]')
+    done < <(printf '%s' "$base" | jq -r '.set[] | "\(.r)|\(.n)"')
     out=$(printf '%s' "$base" | jq -c --argjson pre "$pre_json" '
-        ($pre | map(.o)) as $os
-        | {v: (if any($os[]; . == "missing" or startswith("closed-")) then "failed"
+        del(.foreign) | ($pre | map(.o)) as $os
+        | {v: (if any($os[]; . == "missing" or . == "unreadable" or . == "forbidden" or startswith("closed-")) then "failed"
                elif any($os[]; . == "open") then "wait" else "resume" end),
            event, set, resume, pre: $pre, why: ""}')
     printf '%s\n' "$out"
+}
+
+# 前置在评论 / 日志里的写法：本仓库 #12，别的仓库 owner/repo#12
+blocked_pre_name() {   # <r> <n>
+    if [ -n "$1" ]; then printf '%s#%s' "$1" "$2"; else printf '#%s' "$2"; fi
 }
 
 blocked_outcome_text() {   # <o>
@@ -2940,6 +3074,8 @@ blocked_outcome_text() {   # <o>
         closed-duplicate) printf '关闭为「重复」' ;;
         closed-no-reason) printf '已关闭，但没写关闭原因（不算完成）' ;;
         missing) printf '读不到（不存在或已转走）' ;;
+        unreadable) printf '读不到（不存在、已删除，或轮询用的令牌无权读这个仓库）' ;;
+        forbidden) printf '读不到（轮询用的令牌无权读这个仓库）' ;;
         closed-*) printf '已关闭（%s，不算完成）' "${1#closed-}" ;;
         *) printf '%s' "$1" ;;
     esac
@@ -2998,7 +3134,7 @@ blocked_apply() {   # <state_file> <编号> <判定 JSON>
     if [ "$ok" = 1 ]; then
         blocked_state_set "$sf" 'del(.blocked_resume[$n])' --arg n "$num" || true
         case "$v" in
-            resume) log "等前置：#$num 的前置全部完成（$(printf '%s' "$d" | jq -r '.set | map("#" + tostring) | join(" ")')）→ $target，下一轮派工" ;;
+            resume) log "等前置：#$num 的前置全部完成（$(printf '%s' "$d" | jq -r '.set | map(.r + "#" + (.n | tostring)) | join(" ")')）→ $target，下一轮派工" ;;
             *) log "等前置：#$num 交人（$v）→ $LABEL_PENDING_HUMAN" ;;
         esac
         return 0
@@ -3025,18 +3161,19 @@ blocked_recovery_steps() {   # <failed|none>
     else
         fix="1. **登记前置**：要等的 issue 在本条侧栏 Relationships 里用「Add blocked by」加上（只能加 issue）"
     fi
-    printf '**接着等别的前置**（按顺序做）：\n\n%s；要等的是 PR，就在本条发一条评论，单独一行写 `<!-- agent-blocked-by: #编号 -->`（多个编号用空格隔开；以前的登记不用删，daemon 只认这次之后的）\n2. **解除人工等待**：摘掉本条的 `%s` 标签\n3. **重新挂** `%s`\n\n成功的样子：前置还没完成时，本条一直只挂着 `%s`，daemon 不留言；前置完成后几分钟内，daemon 留一条「前置已完成，自动继续」并改挂 `%s`。如果又出现一条「找不到在等谁」，说明第 1 步的登记没被认出（登记评论要由有写权限的人发）。\n\n**不需要再等**：摘掉 `%s`，打 `%s` 接着干。\n' \
+    printf '**接着等别的前置**（按顺序做）：\n\n%s；要等的是 PR，就在本条发一条评论，单独一行写 `<!-- agent-blocked-by: #编号 -->`（多个编号用空格隔开；别的仓库的写成 `OWNER/REPO#编号`，那个仓库要在本项目的互通名单里；以前的登记不用删，daemon 只认这次之后的）\n2. **解除人工等待**：摘掉本条的 `%s` 标签\n3. **重新挂** `%s`\n\n成功的样子：前置还没完成时，本条一直只挂着 `%s`，daemon 不留言；前置完成后几分钟内，daemon 留一条「前置已完成，自动继续」并改挂 `%s`。如果又出现一条「找不到在等谁」，说明第 1 步的登记没被认出（登记评论要由有写权限的人发）。\n\n**不需要再等**：摘掉 `%s`，打 `%s` 接着干。\n' \
         "$fix" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT"
 }
 
 blocked_comment_body() {   # <判定 JSON>
-    local d="$1" v list n o
+    local d="$1" v list r n o access=""
     v=$(printf '%s' "$d" | jq -r .v)
     list=""
-    while IFS=$'\t' read -r n o; do
+    while IFS='|' read -r r n o; do
         [ -n "$n" ] || continue
-        if [[ "$n" == *"#"* ]]; then list+="- $n：$(blocked_outcome_text "$o")"$'\n'; else list+="- #$n：$(blocked_outcome_text "$o")"$'\n'; fi
-    done < <(printf '%s' "$d" | jq -r '.pre[] | "\(.n)\t\(.o)"')
+        list+="- $(blocked_pre_name "$r" "$n")：$(blocked_outcome_text "$o")"$'\n'
+        case "$o" in unreadable|forbidden) access=1 ;; esac
+    done < <(printf '%s' "$d" | jq -r '.pre[] | "\(.r)|\(.n)|\(.o)"')
     case "$v" in
         resume)
             printf '## 前置已完成，自动继续\n\n本条在等的前置都已完成：\n\n%s\n已摘掉 `%s`、改挂 `%s`，daemon 下一轮派工接着干。本条不需要人做任何事；想先拦住，给本条加 `%s`。\n' \
@@ -3044,14 +3181,17 @@ blocked_comment_body() {   # <判定 JSON>
         failed)
             printf '## 前置没有完成，交给人决定\n\n本条在等的前置里有以失败收场的，daemon 不会自动继续：\n\n%s\n已摘掉 `%s`、改挂 `%s`。\n\n' \
                 "$list" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN"
+            [ -z "$access" ] || printf '「读不到」的是别的仓库的条目：GitHub 对不存在和私有仓库无权读取都回 404，daemon 分不出是哪种。先在浏览器里打开它确认编号和仓库名写对了；条目在私有仓库的，给 daemon 轮询用的令牌加上那个仓库的读权限，再照下面的步骤重新挂。\n\n' 
             blocked_recovery_steps failed ;;
         none)
             printf '## 挂了等前置标签，但找不到在等谁\n\n本条挂着 `%s`，可是侧栏 Relationships 的「Blocked by」是空的，这一轮等待里也没有可信的前置登记，daemon 不知道该等谁，已摘掉 `%s`、改挂 `%s`。\n\n' \
                 "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN"
             blocked_recovery_steps none ;;
         foreign)
-            printf '## 前置在别的仓库，daemon 判不了\n\n本条的「Blocked by」里有别的仓库的条目（%s），等前置标签只支持本仓库的前置，已改挂 `%s`。等它完成后请手动打 `%s`。\n' \
-                "$(printf '%s' "$d" | jq -r .why)" "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" ;;
+            printf '## 前置在互通名单以外的仓库，daemon 不去查\n\n本条登记的前置里有别的仓库的条目（%s），这个仓库不在本项目的互通名单里，daemon 不读它的状态，已摘掉 `%s`、改挂 `%s`。\n\n' \
+                "$(printf '%s' "$d" | jq -r .why)" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_HUMAN"
+            printf '**要 daemon 自动等它**：维护者在本项目轮询用的配置文件里，把这个仓库（`owner/repo` 形式）加进 `TRUSTED_REPOS`（逗号分隔），再照下面的步骤重新挂。不加名单，就等它完成后照最后一条「不需要再等」手动接着干。\n\n'
+            blocked_recovery_steps none ;;
     esac
     printf '\n<!-- agent-blocked-resolved event=%s v=%s -->\n%s\n' "$(printf '%s' "$d" | jq -r .event)" "$v" "$(autopilot_daemon_sig)"
 }
@@ -3099,7 +3239,7 @@ blocked_tick() {   # <state_file>
         case "$v" in
             skip) continue ;;
             wait)
-                log_debug "等前置：#$num 还在等（$(printf '%s' "$d1" | jq -r '[.pre[] | select(.o == "open") | (if (.n | type) == "string" then .n else "#" + (.n | tostring) end)] | join(" ")')）"
+                log_debug "等前置：#$num 还在等（$(printf '%s' "$d1" | jq -r '[.pre[] | select(.o == "open") | .r + "#" + (.n | tostring)] | join(" ")')）"
                 blocked_state_set "$sf" '.blocked_resume[$n] = (((.blocked_resume // {})[$n] // {}) + {checked_at: $t})' --arg n "$num" --argjson t "$now" || true
                 continue ;;
         esac
@@ -6398,6 +6538,15 @@ blocked_handoff_section() {   # [sub-issue]
 上文拆分步骤里「有前置 → 挂 \`${LABEL_PENDING_HUMAN}\`；前置合并后由人打 \`${LABEL_PENDING_AGENT}\`」改成：有前置的子项建好后，在子项上照上面「怎么挂」登记前置（标记里写前置子项的编号，\`resume=${LABEL_PENDING_AGENT_DEFAULT}\`），再挂 \`$LABEL_PENDING_BLOCKED\`；前置合并后 daemon 会自动把它翻成 \`${LABEL_PENDING_AGENT_DEFAULT}\` 开工。交人评论的子项表里，这类子项的「当前状态」写「等前置 #X 合并后自动开工」。没有前置的子项照旧直接打派工标签。"
     text="${text//@@LABEL_PENDING_BLOCKED@@/"$LABEL_PENDING_BLOCKED"}"
     text="${text//@@BLOCKED_SPLIT_RULE@@/"$rule"}"
+    # 别的仓库的前置只认互通名单里的（GitHub#233 / #243）：把本项目的名单写进说明，worker 才知道该挂还是该交人
+    local trusted
+    trusted=$(blocked_trusted_json 2>/dev/null | jq -r 'map("`" + . + "`") | join("、")' 2>/dev/null) || trusted=""
+    if [ -n "$trusted" ]; then
+        trusted="daemon 只查本项目互通名单里的仓库：${trusted}；名单外的仓库 daemon 不查、会直接交人，等名单外的仓库照上文翻 \`${LABEL_PENDING_HUMAN}\`。名单里的这样写："
+    else
+        trusted="本项目没有配互通名单，daemon 不查任何别的仓库——等别的仓库的前置照上文翻 \`${LABEL_PENDING_HUMAN}\` 交人，下面这种写法只在配了名单之后才有用："
+    fi
+    text="${text//@@BLOCKED_TRUSTED_REPOS@@/"$trusted"}"
     printf '%s\n' "$text"
 }
 

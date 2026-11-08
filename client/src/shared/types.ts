@@ -153,11 +153,42 @@ export interface CreateBoard {
   status: string | null;
 }
 
+/**
+ * GitHub#258: a board not ticked in the dialog that may take the new issue in by itself
+ * (its auto-add workflow), and what came of it so far.
+ *   looking    — not seen there yet; looked at again on a schedule
+ *   written    — the empty field was set; checked again shortly
+ *   human      — the field holds another value (`seen`): never overwritten automatically, the notice offers a button
+ *   failed     — the write was refused (`reason`)
+ *   unverified — written, but the check could not read it back
+ *   unread     — every look failed: whether it is there is unknown
+ * A board that never took the issue in, or one done, is dropped from the list.
+ */
+export interface CreateWatch {
+  projectKey: string;
+  title: string;
+  iterationId: string | null;
+  status: string | null;
+  /** the group's value, as the notice names it */
+  label: string;
+  state: 'looking' | 'written' | 'human' | 'failed' | 'unverified' | 'unread';
+  /** human: the value the board holds, as last read (what the button overwrites) */
+  seen?: string | null;
+  reason?: string;
+  /** automatic writes made so far (at most one) */
+  writes: number;
+  /** a button click is being carried out */
+  busy?: boolean;
+  /** which addition of that board's source this watch belongs to (removed / added again → over) */
+  epoch: number;
+}
+
 export interface CreateJob {
   id: number;
   repo: string;
   title: string;
-  status: 'running' | 'partial' | 'unknown' | 'failed';
+  /** `watching` (GitHub#258): created, nothing to say; boards not ticked are still being watched — no notice */
+  status: 'running' | 'partial' | 'unknown' | 'failed' | 'watching';
   message: string | null;
   /** partial: the new issue */
   createdKey?: string;
@@ -173,6 +204,8 @@ export interface CreateJob {
   createdNodeId?: string;
   /** partial (GitHub#245): labels GitHub dropped from the new issue — stays in the notice until dismissed; a board retry never clears it */
   labelsNote?: string;
+  /** GitHub#258: boards not ticked that are watched for taking the issue in by themselves */
+  watch?: CreateWatch[];
   /** unknown: same-title issues this account opened in this repository lately (links only) */
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */

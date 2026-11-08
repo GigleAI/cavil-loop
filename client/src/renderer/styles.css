@@ -240,7 +240,9 @@ table.items .repo-head .link { color: var(--muted); }
 table.items tbody.in-repo .group-head td { padding-left: 32px; }
 table.items tbody.in-repo tr.group-add td { padding-left: 32px; }
 table.items .title-cell a { color: var(--fg); text-decoration: none; font-weight: 500; }
-table.items .title-cell a:hover { color: var(--accent); }
+/* the whole title cell opens the item (GitHub#257) */
+table.items .title-cell { cursor: pointer; }
+table.items .title-cell:hover a { color: var(--accent); }
 table.items .title-cell .state { margin-right: 6px; vertical-align: -3px; }
 .state { display: inline-flex; align-items: center; }
 .current { margin-left: 6px; font-size: 12px; color: var(--fg); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; }

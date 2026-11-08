@@ -117,6 +117,14 @@ CONF
             --arg n "$1" --arg s "$st"
         jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$2"
     }
+    # 别的仓库的条目（GitHub#243）：假 GitHub 的 repos/<owner>__<repo>/ 目录是那个仓库的同一套状态（GitHub#233）
+    odir() { local d="$GD/repos/${1%%/*}__${1#*/}"; mkdir -p "$d"; [ -s "$d/items.json" ] || echo '{}' > "$d/items.json"; [ -s "$d/labels.json" ] || echo '{}' > "$d/labels.json"; printf '%s' "$d"; }
+    mkforeign() {   # <owner/repo> <n> <issue|pr> <open|closed|merged> [state_reason]
+        local d; d=$(odir "$1")
+        jq --arg n "$2" --arg k "$3" --arg s "$4" --arg sr "${5:-}" \
+            '.[$n] = ({kind:$k, state:(if $s == "merged" then "closed" else $s end), merged:($s == "merged"), title:"t"}
+                      + (if $sr == "" then {} else {state_reason:$sr} end))' "$d/items.json" > "$d/items.json.tmp" && mv "$d/items.json.tmp" "$d/items.json"
+    }
     set_state() { jset items.json '.[$n].state = $s | if $r == "" then del(.[$n].state_reason) else .[$n].state_reason = $r end' --arg n "$1" --arg s "$2" --arg r "${3:-}"; }
     ev() {   # <n> <labeled|unlabeled> <标签> [操作人]
         EVN=$((EVN + 1))
@@ -226,14 +234,13 @@ CONF
     if want failed; then
     section "【3】前置失败收场 → 交人，写明哪个前置怎么收场"
     local c
-    for c in "pr-unmerged:PR 没合并就关了" "not_planned:关闭为「不做」" "no-reason:没写关闭原因" "missing:读不到（不存在" "foreign:别的仓库"; do
+    for c in "pr-unmerged:PR 没合并就关了" "not_planned:关闭为「不做」" "no-reason:没写关闭原因" "missing:读不到（不存在"; do
         on
         case "${c%%:*}" in
             pr-unmerged) waiting "#31"; mkpr 31 "" closed ;;
             not_planned) waiting; mkissue 11 "" closed not_planned ;;
             no-reason) waiting; mkissue 11 "" closed ;;
             missing) waiting "#99" ;;
-            foreign) waiting; mkissue 11 "" closed completed; jset blocked_by.json '.["10"] = ["other/repo#5"]' ;;
         esac
         NOW=$T0 tick
         chk "${c%%:*} → 交人" "$(labels_of 10)" "pending/human"
@@ -392,10 +399,13 @@ CONF
     section "【9b】失败收场 / 找不到前置交人后，照 daemon 评论的步骤重新等别的前置 → 先等着，完成后接力"
     # 人在 GitHub 上动手：都走假 GitHub 的接口（时间是现在，和真接口一样晚于 daemon 的写入）
     as_human() { echo maint > "$GD/me"; env FAKE_GH_DIR="$GD" "$SANDBOX/bin/gh" "$@" >/dev/null 2>&1; echo loop-bot > "$GD/me"; }
-    local entry kind
-    for entry in failed-marker failed-native none; do
-        on; mkissue 12 ""
+    local entry kind nxt
+    for entry in failed-marker failed-native none failed-foreign; do
+        if [ "$entry" = failed-foreign ]; then on 'TRUSTED_REPOS="other/repo"'; else on; fi
+        mkissue 12 ""; nxt="#12"
         case "$entry" in
+            failed-foreign) waiting "other/repo#5"; mkforeign other/repo 5 issue closed not_planned
+                            mkforeign other/repo 7 issue open; nxt="other/repo#7" ;;
             failed-marker) waiting "#11"; mkissue 11 "" closed not_planned ;;
             failed-native) mkissue 10 "pending/blocked"; ev 10 labeled pending/blocked maint
                            mkissue 11 "" closed not_planned; jset blocked_by.json '.["10"] = [11]' ;;
@@ -407,6 +417,7 @@ CONF
         # 评论里的步骤（人只看这条评论）：改前置、摘 pending/human、重新挂 pending/blocked、成功的样子
         chk "$entry：步骤里有「Blocked by」怎么改" "$(printf '%s' "$body" | grep -c 'Add blocked by')" 1
         chk "$entry：步骤里有等 PR 时的登记写法" "$(printf '%s' "$body" | grep -c '<!-- agent-blocked-by: #编号 -->')" 1
+        chk "$entry：步骤里有别的仓库的登记写法" "$(printf '%s' "$body" | grep -c '别的仓库的写成 `OWNER/REPO#编号`，那个仓库要在本项目的互通名单里')" 1
         chk "$entry：步骤里有「摘掉 pending/human」" "$(printf '%s' "$body" | grep -c '摘掉本条的 `pending/human` 标签')" 1
         chk "$entry：步骤里有「重新挂 pending/blocked」" "$(printf '%s' "$body" | grep -c '重新挂\*\* `pending/blocked`')" 1
         chk "$entry：步骤里写了成功的样子" "$(printf '%s' "$body" | grep -c '成功的样子')" 1
@@ -417,29 +428,158 @@ CONF
         # 照做：第 1 步（失败的那个原生关系去掉、改等 #12；或发登记评论）
         case "$entry" in
             failed-native) jset blocked_by.json '.["10"] = [12]' ;;
-            *) as_human api -X POST "repos/example/ap/issues/10/comments" -f "body=改等 #12
-<!-- agent-blocked-by: #12 -->" ;;
+            *) as_human api -X POST "repos/example/ap/issues/10/comments" -f "body=改等 $nxt
+<!-- agent-blocked-by: $nxt -->" ;;
         esac
         as_human api -X DELETE "repos/example/ap/issues/10/labels/pending%2Fhuman"   # 第 2 步
         as_human api -X POST "repos/example/ap/issues/10/labels" -f "labels[]=pending/blocked"   # 第 3 步
         NOW=$((T0 + 400)) tick
-        chk "$entry：照做后、#12 还开着 → 只挂着等前置标签" "$(labels_of 10)" "pending/blocked"
-        chk "$entry：照做后、#12 还开着 → daemon 不留言" "$(writes)" 0
+        chk "$entry：照做后、$nxt 还开着 → 只挂着等前置标签" "$(labels_of 10)" "pending/blocked"
+        chk "$entry：照做后、$nxt 还开着 → daemon 不留言" "$(writes)" 0
         chk "到达性 · $entry：照做后那一轮确实细查了它" "$(yes_if_pos "$(read_deps 10)")" yes
-        set_state 12 closed completed
+        if [ "$nxt" = "#12" ]; then set_state 12 closed completed; else mkforeign other/repo 7 issue closed completed; fi
         NOW=$((T0 + 800)) tick
-        chk "$entry：#12 完成 → 接力" "$(labels_of 10)" "pending/agent"
-        chk "$entry：#12 完成 → 留「前置已完成」" "$(comments_with 10 'v=resume')" 1
+        chk "$entry：$nxt 完成 → 接力" "$(labels_of 10)" "pending/agent"
+        chk "$entry：$nxt 完成 → 留「前置已完成」" "$(comments_with 10 'v=resume')" 1
         body=$(jq -r '.["10"][-1].body' "$GD/comments.json")
         chk "$entry：「前置已完成」写明本条不需要人做任何事" "$(printf '%s' "$body" | grep -c '本条不需要人做任何事')" 1
         chk "$entry：「前置已完成」不用「你」「我」" "$(printf '%s' "$body" | grep -cE '[你我]')" 0
     done
     fi
 
+    # ── 【9c】别的仓库的前置（GitHub#243）──
+    if want cross; then
+    section "【9c】别的仓库的前置：带仓库名的登记、侧栏跨仓库 issue、读不到、同号陷阱、旧写法不变"
+    local FR="repos/other/repo/issues" OD="$W/gh/repos/other__repo"
+    onx() { on 'TRUSTED_REPOS="other/repo"' "$@"; }
+    # 带仓库名的登记，前置是别的仓库的 PR；本仓库同号 #5 是已合并的 PR（等错对象就会误开工）
+    onx; waiting "other/repo#5"; mkpr 5 "" merged; mkforeign other/repo 5 pr open
+    NOW=$T0 tick
+    chk "跨仓库 PR 还开着 → 不写" "$(writes)" 0
+    chk "跨仓库 PR 还开着 → 标签不动" "$(labels_of 10)" "pending/blocked"
+    chk "到达性 · 读的是 other/repo 的 #5" "$(yes_if_pos "$(n_calls "^gh api $FR/5\$")")" yes
+    chk "同号陷阱 · 没去读本仓库的 #5" "$(n_calls "^gh api $R/issues/5\$")" 0
+    mkforeign other/repo 5 pr merged
+    NOW=$((T0 + 301)) tick
+    chk "跨仓库 PR 合并 → 翻回 pending/agent" "$(labels_of 10)" "pending/agent"
+    chk "跨仓库 PR 合并 → 评论清单带仓库名" "$(comments_with 10 '- other/repo#5：已合并')" 1
+    chk "跨仓库 PR 合并 → 留一条接力评论" "$(comments_with 10 'v=resume')" 1
+
+    # 侧栏「Blocked by」填别的仓库的 issue（没有标记）
+    onx; mkissue 10 "pending/blocked"; ev 10 labeled pending/blocked maint
+    jset blocked_by.json '.["10"] = ["Other/Repo#6"]'; mkforeign other/repo 6 issue open
+    NOW=$T0 tick
+    chk "侧栏跨仓库 issue 还开着 → 不交人、不写" "$(writes)" 0
+    chk "到达性 · 侧栏跨仓库 issue 确实读了" "$(yes_if_pos "$(n_calls "^gh api $FR/6\$")")" yes
+    mkforeign other/repo 6 issue closed completed
+    NOW=$((T0 + 301)) tick
+    chk "侧栏跨仓库 issue 以「已完成」关闭 → 接力" "$(labels_of 10)" "pending/agent"
+    chk "侧栏跨仓库 issue → 评论清单带仓库名" "$(comments_with 10 '- other/repo#6：已完成并关闭')" 1
+    # 侧栏跨仓库 issue 关成「不做」→ 交人
+    onx; mkissue 10 "pending/blocked"; ev 10 labeled pending/blocked maint
+    jset blocked_by.json '.["10"] = ["other/repo#6"]'; mkforeign other/repo 6 issue closed not_planned
+    NOW=$T0 tick
+    chk "侧栏跨仓库 issue 关成「不做」→ 交人" "$(labels_of 10)" "pending/human"
+    chk "侧栏跨仓库 issue 关成「不做」→ 评论写明" "$(comments_with 10 '- other/repo#6：关闭为「不做」')" 1
+
+    # 同号陷阱（反过来）：本仓库 #5 还开着、别的仓库 #5 已合并，登记 #5（不带仓库名）→ 仍等本仓库的
+    onx; waiting "#5"; mkpr 5 ""; mkforeign other/repo 5 pr merged
+    NOW=$T0 tick
+    chk "不带仓库名的 #5 仍按本仓库判 → 继续等" "$(writes)" 0
+    chk "不带仓库名的 #5 → 没去读别的仓库" "$(grep -c "repos/other/" "$CALLS" || true)" 0
+
+    # 读不到：404 / 无权限 403 → 交人写明原因；限流 403 / 502 → 不写，恢复后接力
+    local fc
+    for fc in "404:读不到（不存在、已删除，或轮询用的令牌无权读这个仓库）" "403:读不到（轮询用的令牌无权读这个仓库）"; do
+        onx; waiting "other/repo#9"; mkissue 9 "" closed completed; odir other/repo >/dev/null
+        [ "${fc%%:*}" = 403 ] && { mkforeign other/repo 9 issue closed completed; : > "$OD/F403_issues_9"; }
+        NOW=$T0 tick
+        chk "跨仓库 ${fc%%:*} → 交人" "$(labels_of 10)" "pending/human"
+        chk "跨仓库 ${fc%%:*} → 没翻回派工标签" "$(has_label 10 pending/agent)" no
+        chk "跨仓库 ${fc%%:*} → 评论写明读不到的原因" "$(comments_with 10 "- other/repo#9：${fc#*:}")" 1
+        chk "跨仓库 ${fc%%:*} → 评论写明怎么给令牌加读权限" "$(comments_with 10 '令牌加上那个仓库的读权限')" 1
+    done
+    local ff   # F403rl = 限流的 403，F = 502
+    for ff in F403rl F; do
+        onx; waiting "other/repo#9"; mkforeign other/repo 9 issue closed completed
+        : > "$OD/${ff}_issues_9"
+        NOW=$T0 tick
+        chk "跨仓库 $ff → 不写" "$(writes)" 0
+        chk "跨仓库 $ff → 标签不动" "$(labels_of 10)" "pending/blocked"
+        chk "到达性 · 跨仓库 $ff 那一轮确实读了 other/repo#9" "$(yes_if_pos "$(n_calls "^gh api $FR/9\$")")" yes
+        rm -f "$OD/${ff}_issues_9"
+        NOW=$((T0 + 301)) tick
+        chk "跨仓库 $ff 恢复后 → 接力" "$(labels_of 10)" "pending/agent"
+    done
+    # 本仓库自己的全名（大小写不论）等同 #N，不重复
+    onx; waiting "Example/AP#11 #11"; mkissue 11 "" closed completed
+    NOW=$T0 tick
+    chk "本仓库全名 → 接力" "$(labels_of 10)" "pending/agent"
+    chk "本仓库全名 → 清单只列一次 #11" "$(jq -r '.["10"][-1].body' "$GD/comments.json" | grep -c '^- ')" 1
+    chk "本仓库全名 → 清单写成 #11（不带仓库名）" "$(comments_with 10 '- #11：已完成并关闭')" 1
+    chk "本仓库全名 → 没按原样大小写当成别的仓库去读" "$(grep -c "Example/AP" "$CALLS" || true)" 0
+
+    # 本仓库 + 别的仓库混在一起：都完成才接力
+    onx; waiting "#11 other/repo#5"; mkissue 11 "" closed completed; mkforeign other/repo 5 pr open
+    NOW=$T0 tick
+    chk "混合：别的仓库没完成 → 不写" "$(writes)" 0
+    mkforeign other/repo 5 pr merged
+    NOW=$((T0 + 301)) tick
+    chk "混合：都完成 → 接力" "$(labels_of 10)" "pending/agent"
+    chk "混合：清单两条都在" "$(jq -r '.["10"][-1].body' "$GD/comments.json" | grep -cE '^- (#11|other/repo#5)：')" 2
+
+    # 旧写法（只有本仓库的前置）：评论正文、标签和改动前的脚本逐字节一致
+    local side oc
+    for oc in completed not_planned; do
+        for side in old new; do
+            on; waiting "#11 #12"; mkissue 11 "" closed completed; mkissue 12 "" closed "$oc"
+            : > "$CALLS"; env POLL_FAKE_NOW=$T0 CODING_AGENT_CONFIG="$CONF" \
+                bash "$( [ "$side" = old ] && echo "$SANDBOX/old" || echo "$ROOT")/scripts/agent-poll.sh" >/dev/null 2>&1
+            # 恢复步骤里新加的那一句（别的仓库的登记写法）是本次有意加的，去掉后其余必须一字不差
+            jq -r '.["10"][-1].body' "$GD/comments.json" | sed 's/别的仓库的写成 `OWNER\/REPO#编号`，那个仓库要在本项目的互通名单里；//' > "$SANDBOX/legacy-$oc-$side.body"
+            labels_of 10 > "$SANDBOX/legacy-$oc-$side.labels"
+        done
+        chk "旧写法（#12 $oc）：daemon 评论和改动前逐字节一致（除恢复步骤新加的一句）" \
+            "$(cmp -s "$SANDBOX/legacy-$oc-old.body" "$SANDBOX/legacy-$oc-new.body" && echo same || echo diff)" same
+        chk "旧写法（#12 $oc）：标签结果和改动前一致" \
+            "$(cmp -s "$SANDBOX/legacy-$oc-old.labels" "$SANDBOX/legacy-$oc-new.labels" && echo same || echo diff)" same
+        chk "到达性 · 旧写法（#12 $oc）：确实留了评论" "$(grep -c 'agent-blocked-resolved' "$SANDBOX/legacy-$oc-new.body")" 1
+    done
+
+    # 互通名单（GitHub#233）：名单外的仓库不读、交人；名单为空时同样交人，不再丢掉仓库名按本仓库同号去判
+    local tl
+    for tl in empty other; do
+        if [ "$tl" = empty ]; then on; else on 'TRUSTED_REPOS="x/y"'; fi
+        waiting "other/repo#5"; mkissue 5 "" closed completed; mkforeign other/repo 5 pr open
+        NOW=$T0 tick
+        chk "名单 $tl：名单外的 other/repo#5 → 交人" "$(labels_of 10)" "pending/human"
+        chk "名单 $tl：没按本仓库已完成的 #5 开工" "$(comments_with 10 'v=resume')" 0
+        chk "名单 $tl：评论写明怎么加进名单" "$(comments_with 10 'TRUSTED_REPOS')" 1
+        chk "名单 $tl：daemon 的评论点名 other/repo#5" "$(jq -r '.["10"][-1].body' "$GD/comments.json" | grep -c '（other/repo#5）')" 1
+        chk "名单 $tl：不去读名单外的仓库" "$(grep -c "repos/other/" "$CALLS" || true)" 0
+        chk "到达性 · 名单 $tl：这一轮读了 #10 的评论" "$(yes_if_pos "$(n_calls "^gh api --paginate --slurp $R/issues/10/comments")")" yes
+    done
+    # 侧栏里名单外的别的仓库 → 交人（名单为空）
+    on; mkissue 10 "pending/blocked"; ev 10 labeled pending/blocked maint
+    jset blocked_by.json '.["10"] = ["other/repo#6"]'; mkforeign other/repo 6 issue closed completed
+    NOW=$T0 tick
+    chk "名单为空：侧栏里别的仓库的 issue → 交人" "$(labels_of 10)" "pending/human"
+    chk "名单为空：侧栏里别的仓库的 issue → 评论写明" "$(comments_with 10 '## 前置在互通名单以外的仓库')" 1
+
+    # 写之前重读：别的仓库的前置被重开 → 本轮不写
+    onx; waiting "other/repo#5"; mkforeign other/repo 5 issue closed completed
+    printf '#!/usr/bin/env bash\nD=%q\njq %q "$D/items.json" > "$D/x" && mv "$D/x" "$D/items.json"\n' "$OD" '.["5"].state = "open" | del(.["5"].state_reason)' > "$OD/hook_issues_5_2"
+    NOW=$T0 tick
+    chk "写前重读时别的仓库的前置被重开 → 不写" "$(writes)" 0
+    chk "到达性 · 别的仓库的前置读了两次" "$(cat "$OD/count_issues_5" 2>/dev/null)" 2
+    fi
+
     # ── 【10】轮询节奏 ──
     if want pace; then
     section "【10】轮询节奏：首次发现按原退避；发现后最长 5 分钟一查；不在等时回到原阶梯"
-    on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"'
+    # 这一组测的是等前置的封顶和原阶梯本身；空闲轻量检查（GitHub#252）会让「首次发现」提前到
+    # 下一个 tick、并把 30 分钟档封到 10 分钟，那一套由 tests/poll-probe.test.sh 测，这里关掉。
+    on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"' 'POLL_IDLE_PROBE=false'
     mkissue 10 ""; mkissue 11 ""
     NOW=$T0 tick
     local fp; fp=$(jq -r .fingerprint "$W/state/poll-pace.json")
@@ -464,7 +604,7 @@ CONF
     # 11c：没有在等的条目时节奏和原阶梯一样；挂着 pending/human 的等前置条目不加快
     local case_
     for case_ in none stopped; do
-        on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"'
+        on 'POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"' 'POLL_IDLE_PROBE=false'
         mkissue 10 ""
         [ "$case_" = stopped ] && { jset labels.json '.["10"] = ["pending/blocked","pending/human"]'; ev 10 labeled pending/blocked; }
         NOW=$T0 tick
@@ -622,6 +762,8 @@ run_prompt_checks() {
         chk "提示词 · 开启：$k 带等前置规则" "$(grep -c '^# 等前置规则（本项目开启了等前置标签 `pending/blocked`）' "$O/on/$k.md" || true)" 1
         chk "提示词 · 开启：$k 没有没换掉的占位" "$(grep -cE '@@[A-Z_]+@@|\$\{LABEL_PENDING_AGENT\}' "$O/on/$k.md" || true)" 0
     done
+    chk "提示词 · 开启：没配互通名单时写明别的仓库照常交人（GitHub#243）" "$(grep -c '本项目没有配互通名单，daemon 不查任何别的仓库' "$O/on/issue-comment.md" || true)" 1
+    chk "提示词 · 开启：带仓库名的登记写法" "$(grep -c 'agent-blocked-by: #12 GigleAI/cavil-loop#238 resume=pending/agent -->' "$O/on/issue-comment.md" || true)" 1
     chk "提示词 · 开启：标记里的恢复标签渲染成派你来的标签" "$(grep -c 'agent-blocked-by: #12 #34 resume=pending/agent -->' "$O/on/issue-comment.md" || true)" 1
     chk "提示词 · 开启：拆分改成「有前置 → 挂等前置标签」" "$(grep -c '再挂 `pending/blocked`；前置合并后 daemon 会自动' "$O/on/issue-comment.md" || true)" 1
     # 子项那份：覆盖「前置还没合并 → 交人」的那一段必须排在子项说明之后（后文覆盖前文）
@@ -667,7 +809,7 @@ PY
     else echo "  ❌ 负对照「$name」：改坏了却全绿"; fail=$((fail + 1)); fi
 }
 mutant "issue 关成「不做」也算完成" scripts/_lib.sh 'elif .state_reason == "completed" then "completed"' 'elif .state == "closed" then "completed"' failed
-mutant "读不到前置当成已完成" scripts/_lib.sh '                _bfail "读不到前置 #$p"; return 2' '                o=completed' wait
+mutant "读不到前置当成已完成" scripts/_lib.sh '                _bfail "读不到前置 $name"; return 2' '                o=completed' wait
 mutant "写前不重判" scripts/_lib.sh 'if [ "$rc" != 0 ] || [ "$d2" != "$d1" ]; then' 'if false; then' race
 mutant "标记不核对作者" scripts/_lib.sh '| select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)' '| select(true or ((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)' trust
 mutant "旧标记也认" scripts/_lib.sh '| select($since == "" or (.created_at // "") > $since) ]' '| select(true) ]' trust
@@ -695,6 +837,16 @@ mutant "子项不追加覆盖段" scripts/dispatch-new-issue.sh 'if blocked_enab
 mutant "功能关着也加规则" scripts/_lib.sh '        if blocked_enabled; then
             printf' '        if true; then
             printf' prompt
+# 别的仓库的前置（GitHub#243）：每条新规则各一份
+mutant "标记丢掉仓库名（退回只认 #数字）" scripts/_lib.sh '{r: ((.[0] // "") | ascii_downcase' '{r: (("") | ascii_downcase' cross
+mutant "侧栏别的仓库的条目丢掉" scripts/_lib.sh 'set: (($a.set + $b) | unique' 'set: (($a.set + ($b | map(select(.r == "")))) | unique' cross
+mutant "读前置时丢掉仓库名、改查本仓库" scripts/_lib.sh 'gh api "repos/${pr:-$REPO}/issues/$p"' 'gh api "repos/$REPO/issues/$p"' cross
+mutant "别的仓库读到 404 当成已完成" scripts/_lib.sh '                o=unreadable' '                o=completed' cross
+mutant "限流的 403 当成无权读、交人" scripts/_lib.sh "&& ! printf '%s' \"\$pj\" | grep -qiE 'rate limit|abuse'; then" '; then' cross
+mutant "读不到不算失败收场" scripts/_lib.sh '. == "missing" or . == "unreadable" or . == "forbidden" or' '. == "missing" or' cross
+mutant "本仓库全名不归成 #N" scripts/_lib.sh '| if . == $self then "" else . end), n: (.[1] | tonumber)}' '), n: (.[1] | tonumber)}' cross
+mutant "读不到时不写权限说明" scripts/_lib.sh '[ -z "$access" ] ||' 'true ||' cross
+mutant "不看互通名单" scripts/_lib.sh '| select(.r != "" and (.r as $o | $T | index($o) | not))' '| select(false)' cross
 
 echo
 echo "通过 $pass，失败 $fail"
