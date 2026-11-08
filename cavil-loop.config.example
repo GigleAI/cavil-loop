@@ -220,14 +220,15 @@ AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
 # Trusted repos (GitHub#233), comma-separated owner/repo. A listed repo may hold the parent issue of a split
 # sub-issue (its maintainer-added autopilot label authorizes the sub-issue here; whoever added it needs write
 # access in both repos), and may hold prerequisites for pending/blocked (`<!-- agent-blocked-by: owner/repo#N -->`).
-# Empty = only this repo, exactly as before.
+# Empty = no other repo is trusted: a blocked marker naming another repo goes to a human (GitHub#243).
 # 互通名单（GitHub#233），逗号分隔的 owner/repo。名单里的仓库可以当拆分子项的父 issue 所在仓库（父 issue 上维护者
 # 亲手打的托管标签授权本仓库的子项，打标签的人两个仓库都要有写权限），也可以当等前置的前置所在仓库
-# （`<!-- agent-blocked-by: owner/repo#N -->`）。留空 = 只认本仓库，和以前一样。
+# （`<!-- agent-blocked-by: owner/repo#N -->`）。留空 = 不认任何别的仓库：写了别的仓库的前置标记交人（GitHub#243）。
 TRUSTED_REPOS=""
 
 # ── Waiting on another item / 等前置标签（GitHub#157）──
-# When the work is blocked on ANOTHER issue / PR of this repo (not on a human decision), the worker
+# When the work is blocked on ANOTHER issue / PR — of this repo, or of a repo on TRUSTED_REPOS above
+# (GitHub#243) — and not on a human decision, the worker
 # records the prerequisites and puts this label on instead of pending/human. The daemon checks it:
 #   · all prerequisites done (issue closed as completed / PR merged) → one comment, the item goes
 #     back to the trigger label it came from (default pending/agent) and is dispatched as usual
@@ -236,21 +237,22 @@ TRUSTED_REPOS=""
 #   · cannot read GitHub → does nothing, looks again next round (never treated as "done")
 # Prerequisites come from the issue's native "Blocked by" relationship (sidebar → Relationships;
 # GitHub only accepts issues there) plus a hidden marker comment written by the loop account or a
-# maintainer: <!-- agent-blocked-by: #12 #34 resume=pending/agent -->. Free text like "waiting on
+# maintainer: <!-- agent-blocked-by: #12 owner/repo#34 resume=pending/agent -->. Free text like "waiting on
 # #12" is never read. Adding pending/human stops it. While an item is waiting, the poll interval is
 # capped at BLOCKED_RECHECK_SECS; noticing a NEWLY labelled item still follows the idle backoff.
-# Only this repo's items count. Leave LABEL_PENDING_BLOCKED empty to keep the previous behaviour
+# Another repo counts only when it is on TRUSTED_REPOS (read-only; unreadable → pending/human with
+# the reason); any other repo goes to a human. Leave LABEL_PENDING_BLOCKED empty to keep the previous behaviour
 # exactly (no extra calls, no state.json field, prompts unchanged). setup.sh creates the label.
 #
-# 一条活卡在**本仓库别的 issue / PR 还没完成**上（不是卡在要人拍板）时，worker 登记前置、挂这个标签，
+# 一条活卡在**别的 issue / PR 还没完成**上（本仓库的，或上面 TRUSTED_REPOS 里别的仓库的，GitHub#243；不是卡在要人拍板）时，worker 登记前置、挂这个标签，
 # 不再翻 pending/human。daemon 定期检查：
 #   · 前置全部完成（issue 以「已完成」关闭 / PR 已合并）→ 留一条说明，翻回原来的触发标签（默认 pending/agent），照常派工
 #   · 有前置以别的方式收场（关成不做 / 重复、PR 没合就关），或找不到前置 → 翻 pending/human 并写明是哪个、为什么
 #   · 读不到 GitHub → 什么都不做，下一轮再看（绝不当成「已完成」）
 # 前置从两处取：issue 侧栏 Relationships 里的「Blocked by」（GitHub 只接受 issue），以及 loop 写入账号或维护者
-# 发的隐藏标记评论 <!-- agent-blocked-by: #12 #34 resume=pending/agent -->。「等 #12」这种普通文字不认。
+# 发的隐藏标记评论 <!-- agent-blocked-by: #12 owner/repo#34 resume=pending/agent -->。「等 #12」这种普通文字不认。
 # 加 pending/human 即可叫停。有条目在等时轮询间隔最长 BLOCKED_RECHECK_SECS；新挂上的那一次仍按空闲退避才发现。
-# 只认本仓库的条目。LABEL_PENDING_BLOCKED 留空 = 关闭，行为和以前逐字节一样（不多发调用、不写 state.json、
+# 别的仓库只认 TRUSTED_REPOS 里的（只读；读不到 → 写明原因交人），其余别的仓库交人。LABEL_PENDING_BLOCKED 留空 = 关闭，行为和以前逐字节一样（不多发调用、不写 state.json、
 # 提示词不变）。setup.sh 会按这个名字建标签。
 LABEL_PENDING_BLOCKED="pending/blocked"
 # 同一个等待条目两次细查的最短间隔，也是「有条目在等」时轮询间隔的上限（秒）
