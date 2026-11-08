@@ -6399,6 +6399,15 @@ blocked_handoff_section() {   # [sub-issue]
 上文拆分步骤里「有前置 → 挂 \`${LABEL_PENDING_HUMAN}\`；前置合并后由人打 \`${LABEL_PENDING_AGENT}\`」改成：有前置的子项建好后，在子项上照上面「怎么挂」登记前置（标记里写前置子项的编号，\`resume=${LABEL_PENDING_AGENT_DEFAULT}\`），再挂 \`$LABEL_PENDING_BLOCKED\`；前置合并后 daemon 会自动把它翻成 \`${LABEL_PENDING_AGENT_DEFAULT}\` 开工。交人评论的子项表里，这类子项的「当前状态」写「等前置 #X 合并后自动开工」。没有前置的子项照旧直接打派工标签。"
     text="${text//@@LABEL_PENDING_BLOCKED@@/"$LABEL_PENDING_BLOCKED"}"
     text="${text//@@BLOCKED_SPLIT_RULE@@/"$rule"}"
+    # 别的仓库的前置只认互通名单里的（GitHub#233 / #243）：把本项目的名单写进说明，worker 才知道该挂还是该交人
+    local trusted
+    trusted=$(blocked_trusted_json 2>/dev/null | jq -r 'map("`" + . + "`") | join("、")' 2>/dev/null) || trusted=""
+    if [ -n "$trusted" ]; then
+        trusted="daemon 只查本项目互通名单里的仓库：${trusted}；名单外的仓库 daemon 不查、会直接交人，等名单外的仓库就照上文翻 \`${LABEL_PENDING_HUMAN}\`："
+    else
+        trusted="本项目没有配互通名单，daemon 不查任何别的仓库——等别的仓库的前置照上文翻 \`${LABEL_PENDING_HUMAN}\` 交人，下面这种写法只在配了名单之后才有用："
+    fi
+    text="${text//@@BLOCKED_TRUSTED_REPOS@@/"$trusted"}"
     printf '%s\n' "$text"
 }
 

@@ -13,15 +13,15 @@
    ```
    <!-- agent-blocked-by: #12 #34 resume=${LABEL_PENDING_AGENT} -->
    ```
-   别的仓库的前置写成 `OWNER/REPO#编号`（不带仓库名的 `#编号` 一律指本仓库），可以和本仓库的混写：
+   别的仓库的前置写成 `OWNER/REPO#编号`（不带仓库名的 `#编号` 一律指本仓库），可以和本仓库的混写。@@BLOCKED_TRUSTED_REPOS@@
    ```
    <!-- agent-blocked-by: #12 GigleAI/cavil-loop#238 resume=${LABEL_PENDING_AGENT} -->
    ```
-   前置变了就再发一条新标记（daemon 只认这一轮等待里最新的一条，所以每次都写全）。前置是 issue 时也可以同时在本条侧栏 Relationships 设「Blocked by」——daemon 两处都认，别的仓库的 issue 也行；**PR 不能设成「Blocked by」**（GitHub 只接受 issue），等 PR 只能靠标记
+   前置变了就再发一条新标记（daemon 只认这一轮等待里最新的一条，所以每次都写全）。前置是 issue 时也可以同时在本条侧栏 Relationships 设「Blocked by」——daemon 两处都认，别的仓库的 issue 也行（同样只认互通名单里的仓库）；**PR 不能设成「Blocked by」**（GitHub 只接受 issue），等 PR 只能靠标记
 2. **翻标签**（编号是本条 issue / PR）：`flip_label <编号> --add @@LABEL_PENDING_BLOCKED@@ --remove ${LABEL_AGENT_DOING}`
 3. 停 idle
 
-daemon 的处理：前置全部完成（issue 以「已完成」关闭、PR 已合并）→ 留一条带 `<!-- agent-blocked-resolved ... v=resume -->` 的评论并翻回 `resume=` 的标签；有前置以失败收场（issue 关成不做 / 重复、PR 没合并就关）、别的仓库的前置读不到（不存在或轮询令牌无权读那个仓库）、或找不到前置 → 翻 `${LABEL_PENDING_HUMAN}` 交人。临时读不到 GitHub（网络、限流）时它什么都不做，下一轮再看。
+daemon 的处理：前置全部完成（issue 以「已完成」关闭、PR 已合并）→ 留一条带 `<!-- agent-blocked-resolved ... v=resume -->` 的评论并翻回 `resume=` 的标签；有前置以失败收场（issue 关成不做 / 重复、PR 没合并就关）、前置在互通名单以外的仓库、名单里别的仓库的前置读不到（不存在或轮询令牌无权读那个仓库）、或找不到前置 → 翻 `${LABEL_PENDING_HUMAN}` 交人。临时读不到 GitHub（网络、限流）时它什么都不做，下一轮再看。
 
 ## 被叫回来时
 
