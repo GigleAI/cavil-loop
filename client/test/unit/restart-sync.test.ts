@@ -62,7 +62,9 @@ async function ready(intercept?: (cmd: string, args: any, harness: HarnessBacken
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
   const backend: Backend = { call: async (cmd, args) => ((await intercept?.(cmd, args, harness)) as any) ?? harness.call(cmd, args) };
-  const c = await Controller.create({ backend, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 600_000 });
+  // GitHub#261: no change check — these rounds change GitHub's data behind its back (no update time
+  // moves) and count full reads; the check's own interplay with a dropped round is in change-check.test.ts
+  const c = await Controller.create({ backend, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
   controllers.push(c);
   c.addSource(REPO);
   await c.start();

@@ -22,7 +22,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown>; wrap?: (b: Backend) => Backend } = {}) {
+async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: number }; defaultClientId?: string; defaultGithubAppClientId?: string; seed?: Record<string, unknown>; wrap?: (b: Backend) => Backend; fullReadEveryMs?: number } = {}) {
   // a restart reads the files: every earlier app of this test has finished writing its settings
   // (they reach the back end asynchronously — as when the app is quit, not killed)
   await Promise.all(controllers.map((c) => c.settled()));
@@ -57,6 +57,8 @@ async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: 
     // no built-in Client ID unless a test asks for one (the real built-in one is GitHub's, not the fake's)
     defaultClientId: opts.defaultClientId ?? '',
     ...(opts.defaultGithubAppClientId !== undefined ? { defaultGithubAppClientId: opts.defaultGithubAppClientId } : {}),
+    // GitHub#261: 0 = no change check, every round reads in full (tests of a round in flight need one that reads)
+    ...(opts.fullReadEveryMs !== undefined ? { fullReadEveryMs: opts.fullReadEveryMs } : {}),
   });
   controllers.push(c);
   return { c, credentials, opened, clock, cache, backend };
@@ -203,10 +205,10 @@ describe('login (OAuth device flow)', () => {
 });
 
 describe('sync and cache', () => {
-  async function loggedIn(clock?: { t: number }) {
+  async function loggedIn(clock?: { t: number }, fullReadEveryMs?: number) {
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    return await make({ credentials, clock });
+    return await make({ credentials, clock, fullReadEveryMs });
   }
 
   it('Project + repository: items de-duplicated, both sources ok', async () => {
@@ -319,7 +321,8 @@ describe('sync and cache', () => {
   });
 
   it('the import happens once: a later change of the saved view on GitHub does not override the client', async () => {
-    const { c } = await loggedIn();
+    // GitHub#261: a saved view is not in what the change check sees: with it on, the edit shows at the next full read
+    const { c } = await loggedIn(undefined, 0);
     c.addSource(`${PROJECT_URL}/views/1`);
     await c.start();
     await c.syncNow();
@@ -687,7 +690,8 @@ describe('the cache belongs to one account', () => {
     fake.state.tokenViewers.set(TOKEN_B, 'user-2');
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    const { c, cache } = await make({ credentials });
+    // GitHub#261: no change check — the round in flight must read even though nothing changed
+    const { c, cache } = await make({ credentials, fullReadEveryMs: 0 });
     c.addSource(REPO);
     await c.start();
     const release = fake.hold('/repos/GigleAI/cavil-loop/issues');
@@ -727,7 +731,8 @@ describe('sources removed while a round is in flight', () => {
   async function started() {
     const credentials = new FileStore(join(dir, 'cred'));
     await credentials.set(FAKE_TOKEN);
-    const h = await make({ credentials });
+    // GitHub#261: no change check — the round in flight must read even though nothing changed
+    const h = await make({ credentials, fullReadEveryMs: 0 });
     h.c.addSource(PROJECT_URL);
     h.c.addSource(REPO);
     await h.c.start();

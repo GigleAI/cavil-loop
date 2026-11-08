@@ -851,7 +851,8 @@ impl Engine {
             return Err(RequestError::Refused(format!("拒绝发往 GitHub 接口以外的请求：{}", req.url)));
         }
         let method = req.method.to_ascii_uppercase();
-        if !matches!(method.as_str(), "GET" | "POST" | "PATCH" | "PUT" | "DELETE") {
+        // HEAD: the change check before a sync read (GitHub#261) asks for headers only
+        if !matches!(method.as_str(), "GET" | "HEAD" | "POST" | "PATCH" | "PUT" | "DELETE") {
             return Err(RequestError::Refused(format!("不支持的请求方法：{method}")));
         }
         let extra: Vec<(String, String)> = req
