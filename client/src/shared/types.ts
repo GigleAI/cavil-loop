@@ -353,6 +353,8 @@ export interface ViewSettings {
   prsUnderIssues: boolean;
   /** width of the floating detail panel, CSS px (GitHub#155) */
   detailWidth: number;
+  /** labels / milestone / board fields shown in the detail panel; false = folded away (GitHub#260) */
+  detailFields: boolean;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';

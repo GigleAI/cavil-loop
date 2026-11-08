@@ -14,30 +14,19 @@ import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
-import { useShortcuts } from './keyboard';
+import { useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
 import { Keys } from './ShortcutHelp';
 import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
-import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
+import { AUTO_DISMISS_MS, opAutoDismissable, opDraftLeft, opLockOf, opReusableDraft, opText, opTone, type OpRecord } from '../shared/ops';
 import { OpNotice } from './OpNotice';
 import { useAutoDismiss } from './autoDismiss';
+import { prStatusIcons, type PrTone } from './prStatus';
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
-const MERGEABLE: Record<string, string> = { MERGEABLE: '没有冲突', CONFLICTING: '有冲突', UNKNOWN: 'GitHub 还在计算能否合并' };
-const MERGE_STATE: Record<string, string> = {
-  CLEAN: '可以合并',
-  BLOCKED: '被分支保护规则挡住（缺评审或必需检查没过）',
-  BEHIND: '落后目标分支，规则要求先更新',
-  DIRTY: '有冲突，合不了',
-  UNSTABLE: '能合并，但有检查没通过',
-  HAS_HOOKS: '可以合并（有合并前钩子）',
-  DRAFT: '草稿 PR，不能合并',
-  UNKNOWN: 'GitHub 还在计算',
-};
-const CHECKS: Record<string, string> = { SUCCESS: '全部通过', FAILURE: '有失败', ERROR: '出错', PENDING: '进行中', EXPECTED: '等待中' };
 const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
   completed: { name: '已完成', hint: '做完了 / 问题已解决' },
   not_planned: { name: '不计划', hint: '不做了、不是问题' },
@@ -45,7 +34,6 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
 /** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
 const HIDE_LABEL = '收起 ›';
 const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
-const REVIEW: Record<string, string> = { APPROVED: '已批准', CHANGES_REQUESTED: '要求修改', REVIEW_REQUIRED: '需要评审' };
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
 
@@ -198,6 +186,102 @@ export function PasteImageNotice({
         知道了
       </button>
     </div>
+  );
+}
+
+/** GitHub#260: a plain success note, a short line in the panel's head that goes away by itself (never a row above the discussion). */
+function HeadNote({ note, onExpire }: { note: ResultNote; onExpire: () => void }) {
+  const auto = useAutoDismiss(true, NOTE_AUTO_DISMISS_MS, onExpire, note);
+  return (
+    <span className="head-note" data-testid="action-result" data-kind={note.kind} title={note.text} role="status" {...auto}>
+      <Icon name="check" size={13} />
+      <span className="head-note-text">{note.text}</span>
+    </span>
+  );
+}
+
+/**
+ * GitHub#260: an operation that fully succeeded (the one rule, opAutoDismissable) is said in the head like a
+ * plain success, and puts itself away after 10 s exactly like its × (GitHub#256) — never hidden behind the
+ * notices button, where it would count down and go without being seen.
+ */
+function HeadOp({ r }: { r: OpRecord }) {
+  const auto = useAutoDismiss(true, AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
+  return (
+    <span className="head-note" data-testid="op-notice" data-kind={opTone(r)} data-op={r.id} data-key={r.key} title={opText(r)} role="status" {...auto}>
+      <Icon name="check" size={13} />
+      <span className="head-note-text" data-testid="op-notice-text">
+        {opText(r)}
+      </span>
+      <button className="banner-close" aria-label="关掉提示" title="关掉提示" data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
+        <Icon name="x" size={12} />
+      </button>
+    </span>
+  );
+}
+
+export type NoticeTone = 'busy' | 'error' | 'warn' | 'ok';
+
+/**
+ * GitHub#260: everything the panel has to say that is not a plain success — failed changes,
+ * operations and their drafts, a failed read — behind one button in the head with a count. A
+ * click opens them (the same notices, the same buttons as before); a second click, a click
+ * outside or Esc puts them away. The notices stay mounted while closed, so an operation's own
+ * timers and records carry on; a new one never opens the list by itself.
+ */
+function DetailNotices({ count, tone, children }: { count: number; tone: NoticeTone; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+  const label = tone === 'busy' ? `${count} 条提示，有操作正在进行（点开看）` : `${count} 条提示（点开看）`;
+  return (
+    <span className="trouble-anchor notices-anchor" ref={box}>
+      <button
+        className={`icon-btn notices-btn tone-${tone}${open ? ' on' : ''}`}
+        data-testid="detail-notices-toggle"
+        data-count={count}
+        data-tone={tone}
+        data-open={open ? 'yes' : 'no'}
+        aria-label={label}
+        aria-expanded={open}
+        title={label}
+        onClick={() => setOpen(!open)}
+      >
+        {tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name={tone === 'ok' ? 'check' : 'warn'} />}
+        <span className="notices-count">{count}</span>
+      </button>
+      {open && <NoticesLayer box={box} onClose={() => setOpen(false)} />}
+      <div className="trouble-panel notices-panel" data-testid="detail-notices" role="dialog" aria-label="提示" hidden={!open}>
+        {children}
+      </div>
+    </span>
+  );
+}
+
+/** While the notices are open: Esc and a click outside put them away (the same rules as the board's ⚠️). */
+function NoticesLayer({ box, onClose }: { box: React.RefObject<HTMLSpanElement | null>; onClose: () => void }) {
+  useLayer('picker');
+  useShortcuts({ pickerClose: onClose });
+  useEffect(() => {
+    const out = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', out);
+    return () => document.removeEventListener('mousedown', out);
+  }, [box, onClose]);
+  return null;
+}
+
+/** GitHub#260: one icon per PR state; the words show when the pointer rests on it. */
+function PrToneIcon({ tone }: { tone: PrTone }) {
+  return (
+    <svg className={`pr-dot tone-${tone}`} viewBox="0 0 16 16" width={15} height={15} aria-hidden="true">
+      {tone === 'none' ? <circle cx="8" cy="8" r="6.3" fill="none" stroke="currentColor" strokeWidth="1.5" /> : <circle cx="8" cy="8" r="7" fill="currentColor" />}
+      {tone === 'ok' && <path d="M4.6 8.3l2.2 2.2 4.6-4.8" stroke="#fff" strokeWidth="1.7" fill="none" strokeLinecap="round" strokeLinejoin="round" />}
+      {tone === 'bad' && <path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />}
+      {tone === 'warn' && <path d="M8 4.3v4.4M8 11.3v.2" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />}
+      {tone === 'pending' && <path d="M4.8 8h.1M8 8h.1M11.2 8h.1" stroke="#fff" strokeWidth="2" strokeLinecap="round" />}
+      {tone === 'none' && <path d="M5.3 8h5.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />}
+    </svg>
   );
 }
 
@@ -549,6 +633,12 @@ export function DetailPanel({
     return () => window.removeEventListener('message', on);
   }, []);
   const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
+  // GitHub#260: the labels / milestone / board fields can be folded away; remembered like the width
+  const [fieldsShown, setFieldsShown] = useState(state.view.detailFields);
+  const showFields = (v: boolean) => {
+    setFieldsShown(v);
+    void Promise.resolve(api().setView({ detailFields: v })).catch(() => undefined);
+  };
   // the board leaves this much room to scroll past the panel (BoardView's spacer)
   useEffect(() => {
     document.documentElement.style.setProperty('--detail-space', `${width}px`);
@@ -579,11 +669,16 @@ export function DetailPanel({
     setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? '预览失败')}</p>`);
   };
   useShortcuts({
+    // folded fields come back first: the picker opens next to them (GitHub#260)
     labels: () => {
-      if (!pickBlocked) setPicker('labels');
+      if (pickBlocked) return;
+      if (!fieldsShown) showFields(true);
+      setPicker('labels');
     },
     milestone: () => {
-      if (!pickBlocked) setPicker('milestone');
+      if (pickBlocked) return;
+      if (!fieldsShown) showFields(true);
+      setPicker('milestone');
     },
     reply: () => replyBox.current?.focus(),
     // Esc puts the panel away — never while the reply box holds unsent text: a key never drops a draft.
@@ -711,6 +806,23 @@ export function DetailPanel({
   const hb = state.handBack;
     const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
+  // GitHub#260: what goes behind the notices button in the head (see DetailNotices)
+  const headOps = myOps.filter((r) => opAutoDismissable(r));
+  const liveOps = myOps.filter((r) => !r.dismissed && !opAutoDismissable(r));
+  const draftOps = myOps.filter((r) => r.dismissed && opDraftLeft(r));
+  const openMarks = marks.filter((m) => m.status === 'failed' || m.status === 'unconfirmed');
+  const noteIn = note !== null && note.kind !== 'ok';
+  const loadErrIn = Boolean(loadError && detail);
+  const noticeCount = liveOps.length + draftOps.length + openMarks.length + (noteIn ? 1 : 0) + (loadErrIn ? 1 : 0);
+  const opTones = liveOps.map((r) => opTone(r));
+  const noticeTone: NoticeTone = opTones.includes('busy')
+    ? 'busy'
+    : opTones.includes('error') || openMarks.length > 0 || loadErrIn || note?.kind === 'error'
+      ? 'error'
+      : opTones.includes('warn') || note?.kind === 'warn' || draftOps.length > 0
+        ? 'warn'
+        : 'ok';
+
   return shell(
     item.key,
     <>
@@ -735,10 +847,47 @@ export function DetailPanel({
             </>
           )}
         </span>
+        {note?.kind === 'ok' && <HeadNote note={note} onExpire={() => setNote(null)} />}
+        {headOps.map((r) => (
+          <HeadOp key={r.id} r={r} />
+        ))}
         <div className="spacer" />
         <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
           <Icon name="ext" />
         </button>
+        <button
+          className={`icon-btn fields-btn${fieldsShown ? ' on' : ''}`}
+          data-testid="fields-toggle"
+          data-shown={fieldsShown ? 'yes' : 'no'}
+          aria-pressed={fieldsShown}
+          aria-label={fieldsShown ? '收起标签、里程碑、看板字段' : '显示标签、里程碑、看板字段'}
+          title={fieldsShown ? '收起标签、里程碑、看板字段' : '显示标签、里程碑、看板字段'}
+          onClick={() => showFields(!fieldsShown)}
+        >
+          <Icon name="sliders" />
+        </button>
+        {noticeCount > 0 && (
+          <DetailNotices count={noticeCount} tone={noticeTone}>
+            {note && note.kind !== 'ok' && <ResultBanner note={note} testid="action-result" />}
+            {loadError && detail && (
+              <div className="banner error" data-testid="detail-error">
+                <Icon name="warn" />
+                <span className="banner-text">{loadError}</span>
+              </div>
+            )}
+            {liveOps.map((r) => (
+              <OpNotice key={r.id} r={r} onRetry={retryOp} onToReply={toReply} />
+            ))}
+            {draftOps.map((r) => (
+              <div key={r.id} className="detail-stale small op-draft-line">
+                <button className="link" data-testid="op-draft-line" onClick={() => void api().opDismiss(r.id, false)}>
+                  {opDraftLeft(r)?.comment !== undefined ? '有一条没发出的附带评论' : '有一次没完成的操作的草稿'}，点这里找回
+                </button>
+              </div>
+            ))}
+            <EditIssues marks={marks} canWrite={canWrite} />
+          </DetailNotices>
+        )}
         {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}
         <button
           className={`icon-btn${loading ? ' spinning' : ''}`}
@@ -763,22 +912,8 @@ export function DetailPanel({
           显示 {clock(fromCache)} 读到的内容{loading ? ' · 正在更新…' : ''}
         </div>
       )}
-      <ResultBanner note={note} testid="action-result" onExpire={() => setNote(null)} />
-      {myOps
-        .filter((r) => !r.dismissed)
-        .map((r) => (
-          <OpNotice key={r.id} r={r} onRetry={retryOp} onToReply={toReply} />
-        ))}
-      {myOps
-        .filter((r) => r.dismissed && opDraftLeft(r))
-        .map((r) => (
-          <div key={r.id} className="detail-stale small op-draft-line">
-            <button className="link" data-testid="op-draft-line" onClick={() => void api().opDismiss(r.id, false)}>
-              {opDraftLeft(r)?.comment !== undefined ? '有一条没发出的附带评论' : '有一次没完成的操作的草稿'}，点这里找回
-            </button>
-          </div>
-        ))}
-      {loadError && (
+      {/* nothing read yet: the failure takes the discussion's place, in the open */}
+      {loadError && !detail && (
         <div className="banner error" data-testid="detail-error">
           <Icon name="warn" />
           <span className="banner-text">{loadError}</span>
@@ -789,9 +924,9 @@ export function DetailPanel({
           自动更新失败，显示的是 {clock(autoFailed)} 的内容
         </div>
       )}
-      <EditIssues marks={marks} canWrite={canWrite} />
 
-      <section className="detail-fields">
+      {fieldsShown && (
+      <section className="detail-fields" data-testid="detail-fields">
         <div className="field-row">
           <span className="field-name">标签</span>
           <div className="labels">
@@ -924,7 +1059,7 @@ export function DetailPanel({
           const ro = !p.viewerCanUpdate;
           const why = offlineWhy ?? (ro ? `你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它），迭代和状态只能看` : undefined);
           return (
-            <div className="field-row" key={m.projectKey} data-testid="project-fields" data-project={m.projectKey}>
+            <div className="field-row project-row" key={m.projectKey} data-testid="project-fields" data-project={m.projectKey}>
               <span className="field-name">{p.title}</span>
               {p.hasIterationField && (
                 <select
@@ -972,70 +1107,6 @@ export function DetailPanel({
           );
         })}
       </section>
-
-      {item.kind === 'pr' && pr && (
-        <section className={`pr-box${prOpen && pr.mergeStateStatus === 'CLEAN' ? ' mergeable' : ''}${conflict ? ' conflict' : ''}`} data-testid="pr-box">
-          {conflict && (
-            <div className="banner error" data-testid="pr-conflict">
-              <Icon name="warn" />
-              <span className="banner-text">
-                <b>有冲突</b>：这个 PR 和目标分支 <code>{pr.baseRef}</code> 有冲突，GitHub 不能合并。先在分支上解决冲突（或在网页上点「Resolve conflicts」），再回来合并。
-              </span>
-            </div>
-          )}
-          <div data-testid="pr-status">
-            {pr.merged ? (
-              <span className="kind done">
-                <Icon name="pr-merged" />
-                已合并
-              </span>
-            ) : (
-              <>
-                <b>合并：{MERGE_STATE[pr.mergeStateStatus] ?? pr.mergeStateStatus}</b>
-                <span>冲突：{MERGEABLE[pr.mergeable] ?? pr.mergeable}</span>
-                <span>检查：{pr.checks ? (CHECKS[pr.checks] ?? pr.checks) : '没有检查'}</span>
-                <span>评审：{pr.reviewDecision ? (REVIEW[pr.reviewDecision] ?? pr.reviewDecision) : '无要求'}</span>
-                <span className="branch">
-                  {pr.headRef} → {pr.baseRef} · 提交 {pr.headOid.slice(0, 7)}
-                </span>
-              </>
-            )}
-          </div>
-          {prOpen && (
-            <div className="row">
-              <select
-                data-testid="merge-method"
-                value={method}
-                onChange={(e) => {
-                  const m = e.target.value as MergeMethod;
-                  setPicked(m);
-                  void Promise.resolve(api().setMergeMethod(item.repo, m)).catch(() => undefined);
-                }}
-                disabled={!canWrite || busy}
-              >
-                {pr.mergeMethods.map((m) => (
-                  <option key={m} value={m}>
-                    {METHOD_LABEL[m]}
-                  </option>
-                ))}
-              </select>
-              <button
-                className={conflict ? 'danger' : 'primary'}
-                data-testid="merge"
-                data-conflict={conflict ? 'yes' : 'no'}
-                disabled={!canWrite || busy || !method || conflict || Boolean(lock)}
-                title={offlineWhy ?? lockWhy ?? (conflict ? conflictWhy : undefined)}
-                onClick={() => openAsk('merge')}
-              >
-                {conflict ? '有冲突，不能合并' : '合并…'}
-              </button>
-              <button className="danger" data-testid="close-pr" disabled={!canWrite || busy || Boolean(lock)} title={offlineWhy ?? lockWhy} onClick={() => openAsk('close')}>
-                关闭 PR…
-              </button>
-            </div>
-          )}
-          {prOpen && pr.mergeMethods.length === 0 && <div className="small err pr-note">这个仓库没有开启任何合并方式</div>}
-        </section>
       )}
 
       {detail && detail.timeline.length > 1 && (
@@ -1114,6 +1185,82 @@ export function DetailPanel({
             sandbox={FRAME_SANDBOX}
             srcDoc={`<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(FRAME_CSP)}"><base target="_blank"><body style="font:13px/1.5 sans-serif;margin:6px;color:${isDark ? '#e6edf3' : '#1f2328'};background:${isDark ? '#151b23' : '#ffffff'}">${preview}</body>`}
           />
+        )}
+        {item.kind === 'pr' && pr && (
+          <div className={`pr-bar${prOpen && pr.mergeStateStatus === 'CLEAN' ? ' mergeable' : ''}${conflict ? ' conflict' : ''}`} data-testid="pr-box" data-conflict={conflict ? 'yes' : 'no'}>
+            {conflict && (
+              <div className="banner error" data-testid="pr-conflict">
+                <Icon name="warn" />
+                <span className="banner-text">
+                  <b>有冲突</b>：这个 PR 和目标分支 <code>{pr.baseRef}</code> 有冲突，GitHub 不能合并。先在分支上解决冲突（或在网页上点「Resolve conflicts」），再回来合并。
+                </span>
+              </div>
+            )}
+            <div className="pr-line">
+              {/* GitHub#260: one icon per state, its words on hover (and for screen readers); the colour comes from prStatus.ts alone */}
+              <span className="pr-status" data-testid="pr-status">
+                {pr.merged ? (
+                  <span className="kind done">
+                    <Icon name="pr-merged" />
+                    已合并
+                  </span>
+                ) : (
+                  <>
+                    {prStatusIcons(pr).map((x) => (
+                      <span key={x.key} className="pr-icon" data-testid="pr-icon" data-key={x.key} data-tone={x.tone} title={x.text} tabIndex={0}>
+                        <PrToneIcon tone={x.tone} />
+                        <span className="pr-icon-name" aria-hidden="true">
+                          {x.name}
+                        </span>
+                        <span className="sr-only">{x.text}</span>
+                      </span>
+                    ))}
+                    <span className="branch" data-testid="pr-branch" title={`${pr.headRef} → ${pr.baseRef} · 提交 ${pr.headOid.slice(0, 7)}`} tabIndex={0}>
+                      <span aria-hidden="true">→ {pr.baseRef}</span>
+                      <span className="sr-only">
+                        {pr.headRef} → {pr.baseRef} · 提交 {pr.headOid.slice(0, 7)}
+                      </span>
+                    </span>
+                  </>
+                )}
+              </span>
+              {prOpen && (
+                <span className="pr-actions">
+                  <select
+                    data-testid="merge-method"
+                    value={method}
+                    onChange={(e) => {
+                      const m = e.target.value as MergeMethod;
+                      setPicked(m);
+                      void Promise.resolve(api().setMergeMethod(item.repo, m)).catch(() => undefined);
+                    }}
+                    disabled={!canWrite || busy}
+                    title={method ? METHOD_LABEL[method] : undefined}
+                  >
+                    {pr.mergeMethods.map((m) => (
+                      <option key={m} value={m}>
+                        {METHOD_LABEL[m]}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className={conflict ? 'danger' : 'primary'}
+                    data-testid="merge"
+                    data-conflict={conflict ? 'yes' : 'no'}
+                    disabled={!canWrite || busy || !method || conflict || Boolean(lock)}
+                    title={offlineWhy ?? lockWhy ?? (conflict ? conflictWhy : undefined)}
+                    onClick={() => openAsk('merge')}
+                  >
+                    {conflict ? '有冲突，不能合并' : '合并…'}
+                  </button>
+                  <button className="danger" data-testid="close-pr" disabled={!canWrite || busy || Boolean(lock)} title={offlineWhy ?? lockWhy} onClick={() => openAsk('close')}>
+                    关闭 PR…
+                  </button>
+                </span>
+              )}
+            </div>
+            {prOpen && pr.mergeMethods.length === 0 && <div className="small err pr-note">这个仓库没有开启任何合并方式</div>}
+          </div>
         )}
         <div className="row end">
           {issueOpen && (

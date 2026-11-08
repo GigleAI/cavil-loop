@@ -805,6 +805,10 @@ export function BoardView({
           快捷键 <kbd>?</kbd>
         </button>
       </div>
+      {/* GitHub#260: everything under the view bar. The detail panel floats from its top, so bars never push it
+          down; while it is open the bars keep to the left of it (the board itself keeps its width, #155) */}
+      <div className="below-bar">
+      <div className={`board-bars${opened ? ' beside-detail' : ''}`} data-testid="board-bars">
       <WarnBar kind="filter-unsupported" warn={warn}>
         {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
       </WarnBar>
@@ -857,6 +861,7 @@ export function BoardView({
         </div>
       )}
 
+      </div>
       <div className="board-area">
       {view.layout === 'table' ? (
         <TableView
@@ -885,6 +890,7 @@ export function BoardView({
           : renderRow(null)}
       </div>
       )}
+      </div>
       {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} intent={opened.intent ?? null} />}
       </div>
       {newIssue && (

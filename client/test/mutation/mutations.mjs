@@ -1700,4 +1700,11 @@ export const MUTATIONS = [
   { what: '自动收进看板后（GitHub#258，PR #263 复审第 2 轮）：按钮在第一次等待之后才占住（同时点两次写两次）', file: 'src/app/controller.ts',
     from: "    // taken before the first wait (code review round 2): a second click meanwhile is refused above\n    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));\n", to: "    await Promise.resolve();\n",
     expect: ['code review round 2: two clicks at once (the read held)'] },
+  // ---- GitHub#260 ----
+  { what: 'PR 状态图标（GitHub#260）：没列出的值（还在计算、新值）显示成绿色「没问题」', file: 'src/renderer/prStatus.ts',
+    from: "Object.prototype.hasOwnProperty.call(table, v) ? table[v] : 'pending');", to: "Object.prototype.hasOwnProperty.call(table, v) ? table[v] : 'ok');",
+    expect: ['still computing, waiting or a value never seen before is "pending", never ok'] },
+  { what: 'PR 状态图标（GitHub#260）：没有检查 / 不要求评审也显示成绿色', file: 'src/renderer/prStatus.ts',
+    from: ": { key: 'checks', name: '检查', text: '检查：没有检查', tone: 'none' },", to: ": { key: 'checks', name: '检查', text: '检查：没有检查', tone: 'ok' },",
+    expect: ['no checks / no review required is its own grey, not ok'] },
 ];
