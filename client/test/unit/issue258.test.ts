@@ -411,6 +411,65 @@ describe('GitHub#258: what is not watched, and when watching stops', () => {
     expect(statusOnGitHub(n)).toBe('In progress');
   });
 
+  it('code review round 2: the source removed and added again while the create request is on its way — no watch, no write', async () => {
+    const c = await ready();
+    const release = fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/repos/GigleAI/cavil-loop/issues'));
+    const title = 'source replaced during create';
+    const r = await c.startCreate({ kind: 'createIssue', repo: REPO, title, body: '', labels: [], projects: [], plan: { milestone: null, projects: [], watch: [WATCH_STATUS] } });
+    expect(r.ok).toBe(true);
+    const created = () => fake.state.repos.get('gigleai/cavil-loop')!.find((x: any) => x.title === title);
+    await until(() => Boolean(created()), 'created on GitHub, answer held');
+    const n = created()!.number as number;
+    c.removeSource(PROJECT_KEY);
+    c.addSource(PROJECT_URL);
+    await c.syncNow();
+    githubAdds(n);
+    release();
+    await until(() => c.getState().focus !== null, 'answer landed');
+    await sleep(LOOKS[2] + VERIFY * 2);
+    expect(fieldWrites()).toHaveLength(0);
+    expect(reads()).toBe(0);
+    expect(statusOnGitHub(n)).toBeNull();
+  });
+
+  it('code review round 2 (sibling): the create answer held, the source left alone — set as usual', async () => {
+    const c = await ready();
+    const release = fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/repos/GigleAI/cavil-loop/issues'));
+    const title = 'held answer, same source';
+    await c.startCreate({ kind: 'createIssue', repo: REPO, title, body: '', labels: [], projects: [], plan: { milestone: null, projects: [], watch: [WATCH_STATUS] } });
+    const created = () => fake.state.repos.get('gigleai/cavil-loop')!.find((x: any) => x.title === title);
+    await until(() => Boolean(created()), 'created on GitHub, answer held');
+    const n = created()!.number as number;
+    githubAdds(n);
+    release();
+    await until(() => c.getState().focus !== null, 'answer landed');
+    await until(() => c.getState().creates.length === 0, 'settled');
+    expect(fieldWrites()).toHaveLength(1);
+    expect(statusOnGitHub(n)).toBe('In progress');
+  });
+
+  it('code review round 2: two clicks at once (the read held) — one write; the second is refused', async () => {
+    const c = await ready();
+    const n = await createInGroup(c, 'double click');
+    githubAdds(n, 'Backlog');
+    await until(() => jobOf(c)?.status === 'partial', 'notice');
+    await sleep(LOOKS[2] + VERIFY);
+    const id = jobOf(c)!.id;
+    const r0 = reads();
+    const release = fake.holdWhen((e) => e.operation === 'CavilCreatedItemBoards');
+    const a = c.applyCreateWatch(id, PROJECT_KEY);
+    const b = c.applyCreateWatch(id, PROJECT_KEY);
+    await until(() => reads() > r0, 'the button read went out');
+    await sleep(100);
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect([ra.ok, rb.ok].sort()).toEqual([false, true]);
+    expect([ra, rb].find((x) => !x.ok)!.error).toContain('还没完成');
+    expect(fieldWrites()).toHaveLength(1);
+    await until(() => c.getState().creates.length === 0, 'checked');
+    expect(statusOnGitHub(n)).toBe('In progress');
+  });
+
   it('the source removed mid-watch: the watch ends', async () => {
     const c = await ready();
     const n = await createInGroup(c, 'source removed');

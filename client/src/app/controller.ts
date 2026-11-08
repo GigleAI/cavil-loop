@@ -1973,6 +1973,9 @@ export class Controller {
 
   private async runCreate(id: number, action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<void> {
     const session = this.session;
+    // GitHub#258 (code review round 2): which addition of each source the watches belong to, taken
+    // before anything is sent — a source removed / added again while the create is on its way is another one
+    const epochs = new Map((action.plan?.watch ?? []).map((w) => [w.projectKey, this.epochs.get(w.projectKey) ?? 0]));
     const job = () => this.state.creates.find((j) => j.id === id);
     const sentAt = new Date(this.now() - 60_000).toISOString();
     let r: WriteResult;
@@ -2000,7 +2003,7 @@ export class Controller {
       if (action.handoffPicked === true && action.handoff) this.setNewIssueHandoff(action.handoff);
       const number = Number(r.createdKey.split('#')[1]);
       // GitHub#258: boards left unticked that may take it in by themselves
-      const watch = nodeId ? this.watchEntries(action) : [];
+      const watch = nodeId ? this.watchEntries(action, epochs) : [];
       const done: CreateJob = { ...cur, createdKey: r.createdKey, number, boards, createdNodeId: nodeId, ...(labelsNote ? { labelsNote } : {}), ...(watch.length ? { watch } : {}) };
       // the boards' state words it when there is any; another warning (the re-read failed) is said as it came
       this.settleCreate(done, r.warning);
@@ -2060,7 +2063,7 @@ export class Controller {
   // the job: one entry per board, patched in place on the job as it is at that moment.
 
   /** The plan's watched boards that are still sources, not ticked, and known to the app. */
-  private watchEntries(action: Extract<WriteAction, { kind: 'createIssue' }>): CreateWatch[] {
+  private watchEntries(action: Extract<WriteAction, { kind: 'createIssue' }>, epochs: Map<string, number>): CreateWatch[] {
     const ticked = new Set(Array.isArray(action.projects) ? action.projects : []);
     const known = this.allProjects();
     const out: CreateWatch[] = [];
@@ -2068,7 +2071,9 @@ export class Controller {
       const p = known.find((x) => x.key === w.projectKey);
       if (!p || ticked.has(w.projectKey) || out.some((x) => x.projectKey === w.projectKey)) continue;
       if ((w.iterationId === null) === (w.status === null)) continue;
-      out.push({ projectKey: w.projectKey, title: p.title, iterationId: w.iterationId, status: w.status, label: String(w.label ?? w.status ?? ''), state: 'looking', writes: 0, epoch: this.epochs.get(w.projectKey) ?? 0 });
+      // removed (or removed and added again) while the create was on its way: not watched
+      if (!epochs.has(w.projectKey) || (this.epochs.get(w.projectKey) ?? 0) !== epochs.get(w.projectKey)) continue;
+      out.push({ projectKey: w.projectKey, title: p.title, iterationId: w.iterationId, status: w.status, label: String(w.label ?? w.status ?? ''), state: 'looking', writes: 0, epoch: epochs.get(w.projectKey) ?? -1 });
     }
     return out;
   }
@@ -2279,14 +2284,15 @@ export class Controller {
     const w = job?.watch?.find((x) => x.projectKey === key);
     if (!job || !w || w.state !== 'human' || !job.createdNodeId) return { ok: false, error: '没有要改的看板', warning: null };
     if (w.busy) return { ok: false, error: '上一次修改还没完成', warning: null };
-    const c = await this.clientForCall(true);
-    if ('error' in c) return { ok: false, error: c.error, warning: null };
-    const session = c.session;
+    // taken before the first wait (code review round 2): a second click meanwhile is refused above
     this.patchWatch(id, key, (x) => ({ ...x, busy: true }));
     const unbusy = (error: string): WriteResult => {
       this.patchWatch(id, key, (x) => ({ ...x, busy: false }));
       return { ok: false, error, warning: null };
     };
+    const c = await this.clientForCall(true);
+    if ('error' in c) return unbusy(c.error);
+    const session = c.session;
     const seen = await this.readWatched(id, session, job.createdNodeId, [key]);
     if (seen === 'ended') return { ok: false, error: '账号已切换', warning: null };
     const s = typeof seen === 'string' ? null : seen.get(key);

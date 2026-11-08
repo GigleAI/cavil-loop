@@ -1676,4 +1676,14 @@ export const MUTATIONS = [
       { file: 'src/app/controller.ts', from: "    for (const j of this.state.creates) if (j.watch?.some((w) => w.projectKey === key)) this.patchWatch(j.id, key, () => null);\n", to: '' },
     ],
     expect: ['code review round 1: a button left from before the source was removed and added again writes nothing'] },
+  // ---- GitHub#258, PR #263 code review round 2 ----
+  { what: '自动收进看板后（GitHub#258，PR #263 复审第 2 轮）：来源代次在新建请求回来之后才取（新建途中删了又加的来源照样被写）',
+    edits: [
+      { file: 'src/app/controller.ts', from: "      if (!epochs.has(w.projectKey) || (this.epochs.get(w.projectKey) ?? 0) !== epochs.get(w.projectKey)) continue;\n", to: '' },
+      { file: 'src/app/controller.ts', from: "writes: 0, epoch: epochs.get(w.projectKey) ?? -1 });", to: "writes: 0, epoch: this.epochs.get(w.projectKey) ?? 0 });" },
+    ],
+    expect: ['code review round 2: the source removed and added again while the create request is on its way'] },
+  { what: '自动收进看板后（GitHub#258，PR #263 复审第 2 轮）：按钮在第一次等待之后才占住（同时点两次写两次）', file: 'src/app/controller.ts',
+    from: "    // taken before the first wait (code review round 2): a second click meanwhile is refused above\n    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));\n", to: "    await Promise.resolve();\n",
+    expect: ['code review round 2: two clicks at once (the read held)'] },
 ];
