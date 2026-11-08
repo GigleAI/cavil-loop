@@ -51,7 +51,7 @@ export class GitHubClient {
     private readonly cancelled?: AbortSignal,
   ) {}
 
-  private async send(url: string, init: RequestInit): Promise<Response> {
+  private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {
     if (this.cancelled?.aborted) throw new GitHubError('network', '已放弃这一轮同步');
     let res: Response;
     try {
@@ -70,6 +70,7 @@ export class GitHubClient {
       throw new GitHubError('network', `无法连接 GitHub：${(e as Error).message}`);
     }
     if (res.status === 401) throw new GitHubError('auth', 'GitHub 凭据无效（可能已被撤销或过期）', 401);
+    if (notModifiedOk && res.status === 304) return res;
     if (!res.ok) {
       let detail = '';
       try {
@@ -130,6 +131,33 @@ export class GitHubClient {
     return res.text();
   }
 
+  /**
+   * GitHub#261: one conditional request of the change check. `etag` from an earlier answer
+   * goes out as If-None-Match; GitHub answers 304 (nothing changed, not counted against the
+   * quota) or 200 with the current version tag. Any other answer throws, like every request.
+   * HEAD reads headers only; GET also returns the parsed body (null for HEAD / 304).
+   * `pathOrUrl` is an API path or a full URL from an earlier `next` (same API origin only).
+   */
+  async conditional(method: 'GET' | 'HEAD', pathOrUrl: string, etag: string | null): Promise<ConditionalAnswer> {
+    const url = /^https?:/.test(pathOrUrl) ? pathOrUrl : `${this.endpoints.api}${pathOrUrl}`;
+    if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw new GitHubError('http', `拒绝跟随指向其他主机的链接：${url}`);
+    const res = await this.send(url, { method, ...(etag ? { headers: { 'If-None-Match': etag } } : {}) }, true);
+    const tag = res.headers.get('etag');
+    const next = nextLink(res.headers.get('link'));
+    if (res.status === 304) return { status: 304, etag: tag, next, body: null };
+    // only a plain 200 says "this is the current version"; any other success is not checkable
+    if (res.status !== 200) throw new GitHubError('http', `变化检查收到意外的 HTTP ${res.status}`, res.status);
+    let body: unknown = null;
+    if (method === 'GET') {
+      try {
+        body = await res.json();
+      } catch (e) {
+        throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
+      }
+    }
+    return { status: 200, etag: tag, next, body };
+  }
+
   /** GET a REST list endpoint and follow every `Link: rel="next"` page. */
   async restList<T>(path: string): Promise<T[]> {
     const out: T[] = [];
@@ -150,6 +178,15 @@ export class GitHubClient {
     }
     return out;
   }
+}
+
+export interface ConditionalAnswer {
+  status: 200 | 304;
+  /** the version tag GitHub sent (null: none — the caller must not treat the answer as checkable) */
+  etag: string | null;
+  /** `Link: rel="next"` (GitHub sends none with a 304) */
+  next: string | null;
+  body: unknown;
 }
 
 export function nextLink(header: string | null): string | null {

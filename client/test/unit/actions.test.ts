@@ -750,7 +750,8 @@ describe('offline: nothing is sent, nothing queued', () => {
     const r = await c.act({ kind: 'addLabel', key: K(138), label: 'bug' });
     expect(r.ok).toBe(false);
     expect(r.error).toContain('离线');
-    expect(fake.log.filter((l) => l.method !== 'GET' && l.path !== '/api/graphql')).toEqual([]);
+    // HEAD = the change check before a sync read (GitHub#261): a read, not a change
+    expect(fake.log.filter((l) => l.method !== 'GET' && l.method !== 'HEAD' && l.path !== '/api/graphql')).toEqual([]);
     expect(fake.digest()).toBe(before);
     await c.syncNow();
     expect((await c.act({ kind: 'addLabel', key: K(138), label: 'bug' })).ok).toBe(true);

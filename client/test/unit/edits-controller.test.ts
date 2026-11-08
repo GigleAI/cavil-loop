@@ -27,7 +27,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function ready(opts: { intercept?: (cmd: string, args: any, next: (cmd: string, args: any) => Promise<unknown>) => unknown; observeMs?: number; observeFirstMs?: number; keepFake?: boolean; repo?: boolean } = {}) {
+async function ready(opts: { intercept?: (cmd: string, args: any, next: (cmd: string, args: any) => Promise<unknown>) => unknown; observeMs?: number; observeFirstMs?: number; keepFake?: boolean; repo?: boolean; fullReadEveryMs?: number } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -38,7 +38,16 @@ async function ready(opts: { intercept?: (cmd: string, args: any, next: (cmd: st
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
   const backend: Backend = opts.intercept ? { call: async (cmd, args) => (opts.intercept!(cmd, args, (c2, a2) => harness.call(c2, a2)) as any) ?? harness.call(cmd, args) } : harness;
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', observeMs: opts.observeMs ?? 60_000, observeFirstMs: opts.observeFirstMs ?? 60_000 });
+  const c = await Controller.create({
+    backend,
+    endpoints,
+    now: () => clock.t,
+    defaultClientId: '',
+    observeMs: opts.observeMs ?? 60_000,
+    observeFirstMs: opts.observeFirstMs ?? 60_000,
+    // GitHub#261: 0 = no change check (a test that needs a round reading while nothing changed)
+    ...(opts.fullReadEveryMs !== undefined ? { fullReadEveryMs: opts.fullReadEveryMs } : {}),
+  });
   controllers.push(c);
   if (!opts.keepFake) {
     fake.state.w.milestones.set('gigleai/cavil-loop', [
@@ -198,7 +207,8 @@ describe('Q1 = A: a resend reads GitHub first; changed by somebody (or unreadabl
 
 describe('which reads count (路径丙 / 乙 / 甲 against the fake GitHub)', () => {
   it('路径丙: a sync that read GitHub before the write was accepted lands afterwards with the old value — the new value stays, the next read ends it', async () => {
-    const { c } = await ready();
+  // GitHub#261: no change check — this round must read although nothing changed since the last one
+    const { c } = await ready({ fullReadEveryMs: 0 });
     await milestoneBy(3);
     await c.syncNow();
     const releaseSync = fake.holdWhen((e) => (e.method === 'GET' && /\/issues\?/.test(e.path)) || e.operation === 'CavilProjectItems');
@@ -448,7 +458,9 @@ describe('a read that comes back after a newer one does not put the older value 
   it('a round that comes back while a re-read is still on its way to the disk is built on that re-read (the disk keeps it)', async () => {
     let gate: (() => void) | null = null;
     let gated = 0;
+    // GitHub#261: no change check — this round must read although nothing changed since the last one
     const { c } = await ready({
+      fullReadEveryMs: 0,
       intercept: (cmd, args, next) => {
         // the re-read's write of the Project row (#N with "bug") waits until the round's answer is in
         const row = (args?.snapshots ?? []).find((x: any) => x.sourceKey === PROJECT_KEY);
@@ -484,7 +496,8 @@ describe('a read that comes back after a newer one does not put the older value 
   });
 
   it('a sync round that read GitHub before a re-read lands after it: the re-read\'s copy stays (board and disk)', async () => {
-    const { c } = await ready();
+  // GitHub#261: no change check — this round must read although nothing changed since the last one
+    const { c } = await ready({ fullReadEveryMs: 0 });
     const reads = () => fake.log.filter((e) => e.operation === 'CavilProjectItems' && e.variables?.after === 'cursor-1').length;
     const before = reads();
     // the round's Project page carrying #138 (the second) is held, its answer frozen without

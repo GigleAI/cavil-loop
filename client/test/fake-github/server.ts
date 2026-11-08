@@ -5,6 +5,7 @@
 
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { AddressInfo, Socket } from 'node:net';
@@ -93,7 +94,15 @@ export interface FakeState {
   tokenAnswers: { kind: 'refresh' | 'poll'; status: number; body?: unknown; raw?: string }[];
   /** the writable side (labels, milestones, comments, PRs, …), see writes.ts */
   w: WritableState;
+  /** GitHub#261: answer matching change-check requests (board field / item lists, repo HEAD) this way; null = honestly */
+  checkFault: ((e: LoggedRequest) => CheckFault | null) | null;
 }
+
+/**
+ * GitHub#261: how the fake answers one change-check request instead of honestly: an HTTP error,
+ * a 200 without a version tag, or 304 whatever changed (a GitHub that lags behind its own data).
+ */
+export type CheckFault = { status: number } | 'no-etag' | 'not-modified';
 
 export interface LoggedRequest {
   method: string;
@@ -142,6 +151,38 @@ function json(res: ServerResponse, status: number, body: unknown, headers: Recor
   res.end(JSON.stringify(body));
 }
 
+/** GitHub#261: a version tag over exactly what the answer carries (GitHub's are a hash of the body too). */
+export function etagOf(body: unknown): string {
+  return `"${createHash('sha256').update(JSON.stringify(body)).digest('hex')}"`;
+}
+
+/**
+ * GitHub#261: a REST list answer the way GitHub sends it to a conditional request — the tag
+ * matches If-None-Match: 304, no body, no Link header (GitHub sends none with a 304, measured);
+ * otherwise 200 with ETag (and the body unless HEAD).
+ */
+function conditional(req: IncomingMessage, res: ServerResponse, entry: LoggedRequest, body: unknown, headers: Record<string, string> = {}, fault: CheckFault | null = null) {
+  const tag = etagOf(body);
+  if (fault && typeof fault === 'object') {
+    entry.status = fault.status;
+    res.writeHead(fault.status, { 'Content-Type': 'application/json' });
+    return res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ message: 'fault' }));
+  }
+  if (fault === 'no-etag') {
+    entry.status = 200;
+    res.writeHead(200, { 'Content-Type': 'application/json', ...headers });
+    return res.end(req.method === 'HEAD' ? undefined : JSON.stringify(body));
+  }
+  if (fault === 'not-modified' || req.headers['if-none-match'] === tag) {
+    entry.status = 304;
+    res.writeHead(304, { ETag: tag });
+    return res.end();
+  }
+  entry.status = 200;
+  res.writeHead(200, { 'Content-Type': 'application/json', ETag: tag, ...headers });
+  res.end(req.method === 'HEAD' ? undefined : JSON.stringify(body));
+}
+
 export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<FakeGitHub> {
   const state: FakeState = {
     viewer: 'user-1',
@@ -170,6 +211,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     refreshSeq: 0,
     tokenAnswers: [],
     w: defaultWritable(),
+    checkFault: null,
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -183,7 +225,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       req.socket.destroy();
       return;
     }
-    if (state.w.dropWrites && req.method !== 'GET' && (req.url ?? '').startsWith('/api/') && req.url !== '/api/graphql') {
+    if (state.w.dropWrites && req.method !== 'GET' && req.method !== 'HEAD' && (req.url ?? '').startsWith('/api/') && req.url !== '/api/graphql') {
       req.socket.destroy();
       return;
     }
@@ -313,6 +355,24 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return send(200, answered);
       }
       if (op === 'CavilViewer') return send(200, { data: { viewer: { login: login() } } });
+      if (op === 'CavilProjectCounts') {
+        // GitHub#261: p<i>: organization|user(login: $o<i>) { projectV2(number: $n<i>) { items { totalCount } } }
+        const v = body.variables ?? {};
+        const data: Record<string, unknown> = {};
+        const errors: { type: string; message: string }[] = [];
+        for (const m of body.query.matchAll(/p(\d+): (organization|user)\(login: \$o\d+\)/g)) {
+          const i = m[1];
+          const key = `${m[2] === 'organization' ? 'org' : 'user'}/${String(v[`o${i}`]).toLowerCase()}/${v[`n${i}`]}`;
+          const pages = state.projects.get(key);
+          if (!pages) {
+            data[`p${i}`] = { projectV2: null };
+            errors.push({ type: 'NOT_FOUND', message: `Could not resolve to a ProjectV2 with the number ${v[`n${i}`]}.` });
+          } else data[`p${i}`] = { projectV2: { items: { totalCount: pages.reduce((n, p) => n + p.items.nodes.length, 0) } } };
+        }
+        const frozen = JSON.parse(JSON.stringify(errors.length ? { data, errors } : { data }));
+        await held();
+        return send(200, frozen);
+      }
       if (op === 'CavilProjectItems') {
         const v = body.variables;
         const key = `${v.isOrg ? 'org' : 'user'}/${String(v.owner).toLowerCase()}/${v.number}`;
@@ -330,8 +390,42 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       return send(200, { errors: [{ message: `fake: unknown operation ${op}` }] });
     }
 
+    // ---- GitHub#261: a board's REST field list and item list (what the change check reads) ----
+    const pm = url.pathname.match(/^\/api\/(orgs|users)\/([^/]+)\/projectsV2\/(\d+)\/(fields|items)$/);
+    if ((req.method === 'GET' || req.method === 'HEAD') && pm) {
+      if (!authed()) return;
+      const key = `${pm[1] === 'orgs' ? 'org' : 'user'}/${decodeURIComponent(pm[2]).toLowerCase()}/${pm[3]}`;
+      const pages = state.projects.get(key);
+      if (!pages) return send(404, { message: 'Not Found' });
+      if (state.failProjectPage.has(key)) return send(502, { message: 'Server Error' });
+      // the fields as REST lists them: numeric ids (1, 2, …), each with everything the board read shows of it
+      const fields = (pages[0]?.fields.nodes ?? []).map((f: any, i: number) => ({ id: i + 1, ...f }));
+      const fault = state.checkFault?.(entry) ?? null;
+      if (pm[4] === 'fields') {
+        const frozen = JSON.parse(JSON.stringify(fields));
+        await held();
+        return conditional(req, res, entry, frozen, {}, fault);
+      }
+      // items: every node of every page, 100 a page, cursor = offset; the body carries each item
+      // whole (content + field values) and the field ids asked for, as GitHub's does
+      const per = Math.min(Number(url.searchParams.get('per_page') ?? 30), 100);
+      const at = Number(url.searchParams.get('after') ?? 0);
+      const all = pages.flatMap((p) => p.items.nodes);
+      const slice = all.slice(at, at + per);
+      const headers: Record<string, string> = {};
+      if (at + per < all.length) {
+        const next = new URL(`${fake.api}${url.pathname.replace(/^\/api/, '')}`);
+        url.searchParams.forEach((val, k) => next.searchParams.set(k, val));
+        next.searchParams.set('after', String(at + per));
+        headers.Link = `<${next.toString()}>; rel="next"`;
+      }
+      const frozen = JSON.parse(JSON.stringify({ fields: url.searchParams.get('fields') ?? '', items: slice }));
+      await held();
+      return conditional(req, res, entry, frozen, headers, fault);
+    }
+
     // ---- REST writes of #138, labels / milestones lists, markdown ----
-    if (url.pathname.startsWith('/api/') && (req.method !== 'GET' || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname))) {
+    if (url.pathname.startsWith('/api/') && ((req.method !== 'GET' && req.method !== 'HEAD') || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname))) {
       const raw = req.method === 'GET' ? '' : await readBody(req);
       let parsed: any = undefined;
       try {
@@ -395,7 +489,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
 
     // ---- REST issue list ----
     const m = url.pathname.match(/^\/api\/repos\/([^/]+)\/([^/]+)\/issues$/);
-    if (req.method === 'GET' && m) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && m) {
       if (!authed()) return;
       const key = `${m[1]}/${m[2]}`.toLowerCase();
       const issues = state.repos.get(key);
@@ -405,6 +499,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       const per = Math.min(Number(url.searchParams.get('per_page') ?? 30), state.restPageSize);
       const page = Number(url.searchParams.get('page') ?? 1);
       if (state.failRepoPage.get(key) === page) return send(502, { message: 'Server Error' });
+      // GitHub#261: a repository set to fail fails its change check too (the round then reads it in full, and fails there)
+      if (req.method === 'HEAD' && state.failRepoPage.has(key)) return send(502, { message: 'Server Error' });
       const all = issues
         .filter((i) => st === 'all' || i.state === st)
         .filter((i) => !since || i.updated_at >= since)
@@ -420,7 +516,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       // frozen now (GitHub#229): a held answer carries the data of the moment it arrived
       const frozen = JSON.parse(JSON.stringify(slice));
       await held();
-      return send(200, frozen, headers);
+      // GitHub#261: with a version tag, answered 304 when it still matches
+      return conditional(req, res, entry, frozen, headers, req.method === 'HEAD' ? (state.checkFault?.(entry) ?? null) : null);
     }
     send(404, { message: 'Not Found' });
   });
@@ -483,7 +580,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     writes: () =>
       log.filter(
         (l) =>
-          (l.path.startsWith('/api/') && l.path !== '/api/graphql' && l.path !== '/api/markdown' && l.method !== 'GET') ||
+          (l.path.startsWith('/api/') && l.path !== '/api/graphql' && l.path !== '/api/markdown' && l.method !== 'GET' && l.method !== 'HEAD') ||
           (l.path === '/api/graphql' && /^Cavil(AddProjectItem|SetIteration|SetStatus|ClearField|UpdateComment|UpdateIssueBody|UpdatePrBody)$/.test(l.operation ?? '')),
       ),
     close: () =>

@@ -20,6 +20,7 @@ import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_M
 import { Endpoints, GitHubClient } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
+import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
 import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
@@ -86,6 +87,12 @@ export interface ControllerDeps {
   syncIntervalMs?: number;
   /** how long after the last successful change one more sync round runs (tests shorten / lengthen it) */
   followUpSyncMs?: number;
+  /**
+   * GitHub#261: each source is read in full at least this often; in between, a round whose change
+   * check finds nothing changed keeps the previous snapshot. 0 = no change check (every round reads
+   * every source in full). Default FULL_READ_EVERY_MS.
+   */
+  fullReadEveryMs?: number;
   /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
   defaultClientId?: string;
   /** built-in GitHub App Client ID ('' = none, which is production today) */
@@ -219,6 +226,15 @@ interface SyncRun {
 export class Controller {
   private state: AppState;
   private snapshots = new Map<string, SourceSnapshot>();
+  /**
+   * GitHub#261: the change check's records, per source, valid for one sign-in session and one
+   * addition of the source (`epoch`); each vouches only for the snapshot whose fetchedAt is its
+   * `snapshotAt`. Memory only: a restart, sign-out or another account starts with full reads.
+   */
+  private checks = new Map<string, { epoch: number; check: SourceCheck }>();
+  private checksSession: number | null = null;
+  /** GitHub#261: refresh by hand asked for a full read: the next round to start ignores the records */
+  private fullReadNext = false;
   /** signed in, as the back end last said (it holds the credential, this side never does) */
   private signedIn = false;
   private listeners = new Set<(s: AppState) => void>();
@@ -607,6 +623,7 @@ export class Controller {
   /** The back end dropped every snapshot (sign-out / another account): forget them here too, and what was pending with them. */
   private dropMirror(): void {
     this.snapshots.clear();
+    this.checks.clear();
     // GitHub#229: the changes, cached details and candidates belonged to that account too (the back end dropped the stored changes in the same step)
     for (const t of this.editTimers.values()) t.forEach(clearTimeout);
     this.editTimers.clear();
@@ -1050,6 +1067,7 @@ export class Controller {
     this.cache.setSetting('sources', sources);
     this.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
+    this.checks.delete(key);
     // GitHub#229: the read times of that addition go with it
     this.sourceReadAt.delete(key);
     for (const k of [...this.itemReadAt.keys()]) if (k.startsWith(`${key}\n`)) this.itemReadAt.delete(k);
@@ -1153,9 +1171,12 @@ export class Controller {
    * read is not cut there (a half-done renewal can lose the sign-in, a half-done save
    * would race the new round's): it finishes, then the new round starts right after.
    * The timer and every other automatic caller keep queueing (`syncNow`): automatic
-   * rounds never cut each other short.
+   * rounds never cut each other short. GitHub#261: the round started by hand reads every
+   * source in full (the change check's "nothing changed" is not taken for it).
    */
   restartSync(): Promise<void> {
+    // GitHub#261: by hand = read every source in full now, whatever the change check would say
+    this.fullReadNext = true;
     if (this.round?.reading) this.round.drop();
     return this.syncNow();
   }
@@ -1205,7 +1226,17 @@ export class Controller {
     run.reading = true;
     // GitHub#229: every read of this round went out after this stamp (a lower bound is what the check of a change needs)
     const issuedAt = this.stamp();
-    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, this.now());
+    // GitHub#261: only records of this session and of the very addition of each source
+    if (this.checksSession !== session) {
+      this.checks.clear();
+      this.checksSession = session;
+    }
+    const recorded = new Map<string, SourceCheck>();
+    // refresh by hand: no record is offered, so every source is read in full (and new tags are taken)
+    const byHand = this.fullReadNext;
+    this.fullReadNext = false;
+    if (!byHand) for (const [key, c] of this.checks) if (c.epoch === epochAtStart.get(key)) recorded.set(key, c.check);
+    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, this.now(), recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS);
     run.reading = false;
     // dropped meanwhile: a newer round owns the state now, nothing of this one may land
     if (run.signal.aborted) return;
@@ -1232,6 +1263,7 @@ export class Controller {
     // a source removed while the write was on its way: not shown either
     if (landing.kind !== 'landed') return over();
     const accepted = landing.rows;
+    this.keepChecks(session, round.checks, sources, epochAtStart);
     this.feedSnapshots(accepted, issuedAt);
     for (const key of new Set([...this.ops.values()].map((r) => r.key))) if (accepted.some((snap) => snap.items.some((i) => i.key === key))) this.feedOps(key, issuedAt);
     this.applyImports(accepted);
@@ -1265,6 +1297,28 @@ export class Controller {
         if (r !== 'changed') return; // 'failed': kept signed in with the problem shown; 'ended': already signed out
       }
       if (session === this.session && this.signedIn) await this.logout(REASON_REVOKED);
+    }
+  }
+
+  /**
+   * GitHub#261: after a round landed, keep each source's new change-check record only if the
+   * snapshot in memory is the one it vouches for (same fetchedAt), the source is still the same
+   * addition and the session is the round's. Every other source of the round loses its record:
+   * its next round is a full read.
+   */
+  private keepChecks(session: number, fresh: Map<string, SourceCheck>, sources: SourceConfig[], epochAtStart: Map<string, number>): void {
+    for (const src of sources) {
+      const c = fresh.get(src.key);
+      const epoch = epochAtStart.get(src.key) ?? 0;
+      const holds =
+        c &&
+        session === this.session &&
+        this.checksSession === session &&
+        (this.epochs.get(src.key) ?? 0) === epoch &&
+        this.state.sources.some((s) => s.key === src.key) &&
+        this.snapshots.get(src.key)?.fetchedAt === c.snapshotAt;
+      if (holds) this.checks.set(src.key, { epoch, check: c });
+      else this.checks.delete(src.key);
     }
   }
 
