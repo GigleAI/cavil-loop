@@ -455,8 +455,24 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   绑 issue 的 PR **没挂这个标签就不合并**：算一轮判不了，连续 `AUTOPILOT_UNKNOWN_MAX` 轮补不上就交人。只管本机负责的 PR
   （和合并那一步同一条规则）。关掉托管之后，已经补到 PR 上的标签不清理（不起任何作用，想摘就手动摘）。
 - **方案**：照常写、照常发到 issue，选择题按默认项，一律送复审（不管 `REVIEW_DESIGN_PROPOSALS`）。
-  方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。拆成子 issue **不在托管范围**：
-  worker 把拆分计划交人。
+  方案复审通过后 issue 翻回 `pending/agent`，worker 直接开干。
+- **拆成子 issue 也托管**（GitHub#233）：拆分计划和方案一样只过复审，复审通过后 worker 直接建子项。复审额外审
+  「真需要拆吗」和「父 issue 还留着子项以外的活吗」（托管时收尾也要落成子项）。本工具拆出来的子项——GitHub 上真挂在
+  父 issue 下、正文带指向父 issue 的拆分标记、由 loop 的写入账号建——**继承父 issue 的托管**：子项和它的 PR 上都不用挂
+  托管标签，派工、接手、PR 补标签、合并前许可都把父 issue 当作第三处，和 issue / PR 两处用同一条判据（停止线取三处
+  所有「摘掉」里最晚的一次，授权来自晚于停止线、维护者亲手打的那一次）。父 issue 摘标签、打 `pending/human`、关闭，
+  整组子项一起停；只停一个子项就在那个子项上打 `pending/human`。读不到父 issue / 它的标签记录 = 判不了：本轮不派工、
+  不写任何东西，下轮再判（不按普通流程派出去）。子项全部关闭后父 issue 翻 `pending/human`，由人关闭。
+- **合并后 issue 留给人关**（GitHub#233）：托管 PR 的正文只写 `Refs #N`、不写关闭关键词，GitHub 合并时不会关 issue。
+  合并后 daemon 在 issue 上发一条说明——外面一句话结论和「要人做什么」，背景 / 采用的方案 / 排除的方案和原因照搬
+  worker 写在 PR 正文里的总结段（`<!-- autopilot-summary:begin -->` 到 `<!-- autopilot-summary:end -->`），合并依据折叠在
+  最后——然后把 issue 翻 `pending/human`、摘 `pending/PR`。人看过满意就关闭（关成「已完成」照常自动打 `Done`），要返工就打
+  `pending/agent`。合并之后、交接之前 issue 上已经挂了任何流程标签（派工、进行中、复审、等前置、等人……），说明新一轮已经
+  开始，交接一个标签都不动、只补说明。交接每次写之前现读 issue，状态或标签集合变了本轮不写；读不到下轮再试，说明按标记去重。
+  ⚠️ 正文还带关闭关键词的托管 PR（包括以前开的 `Closes #N` 写法）合并前会被交回 worker，只把那一处改成 `Refs #N`。
+- **互通名单**（`TRUSTED_REPOS`，GitHub#233，默认空）：逗号分隔的 `owner/repo`。名单里的仓库 ① 可以当拆分子项的父 issue
+  所在仓库：父 issue 上维护者亲手打的托管标签授权本仓库的子项，打标签的人在**两个仓库**都要有写权限；② 可以当等前置的
+  前置所在仓库（见下面「等前置」）。跨仓库读不到（父 issue、标签记录、权限）一律判不了，本轮不写。名单外的仓库照旧不认。
 - **在 PR 上打也行**（GitHub#128）：已经开好的 PR，维护者直接在 **PR** 上打托管标签，daemon 就接手——
   PR 除托管标签外只挂着 `pending/human`（且授权打在它之后），或一个流程标签都没有、PR 自己挂着托管标签时，
   翻到 `pending/review` 并在 PR 上说一句，之后走下面同样的复审 → 合并。PR 上的托管只管「复审 → 合并」这一段，
@@ -497,7 +513,8 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 
 | 检查 | 不成立 → |
 |---|---|
-| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`、正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
+| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`，正文只引用一个 `Refs #N`、没有关闭关键词；或正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
+| 绑 issue 的 PR 正文里没有会让 GitHub 合并时关掉本仓库 issue 的关键词（GitHub#233：合并后 issue 留给人关） | 交回 worker 改成 `Refs #N` |
 | 以 PR 为准时：授权只看 PR（下一行去掉 issue 那一处），而且打标签那一刻的 PR 正文（修改历史里那一版）也合上一行的条件 | `pending/human` |
 | 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
 | PR 自己挂着托管标签（绑 issue 的 PR 由 daemon 从 issue 复制过来，见上文；GitHub#190） | 本轮判不了（连续 `AUTOPILOT_UNKNOWN_MAX` 轮 → `pending/human`） |
@@ -691,25 +708,31 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 
 ## 等前置：`pending/blocked`（GitHub#157）
 
-配了 `LABEL_PENDING_BLOCKED`（示例配置写的是 `pending/blocked`）后，worker 的活卡在**别的 issue / PR** 上——本仓库的或别的仓库的都行（GitHub#243）
+配了 `LABEL_PENDING_BLOCKED`（示例配置写的是 `pending/blocked`）后，worker 的活卡在**别的 issue / PR** 上——本仓库的，或互通名单里别的仓库的（GitHub#233 / #243）
 ——而不是卡在要人拍板时，登记前置、挂这个标签，不再翻 `pending/human`。daemon 每轮看挂着它的条目：
 
 | 前置的情况 | daemon 做什么 |
 |---|---|
 | 全部完成（issue 以「已完成」关闭、PR 已合并） | 留一条说明，摘标签，加回标记里写的触发标签（默认 `pending/agent`），下一轮派工 |
 | 有一个以别的方式收场（关成不做 / 重复 / 没写原因、PR 没合就关、读到 404） | 评论写明是哪个，翻 `pending/human` |
-| 别的仓库的前置读不到：404 / 410（不存在、已删除，或私有仓库轮询令牌无权读——GitHub 对后者也回 404），或不是限流的 403 | 评论写明是哪个、怎么给令牌加读权限，翻 `pending/human` |
-| 找不到前置 | 评论说明，翻 `pending/human` |
+| 互通名单里别的仓库的前置读不到：404 / 410（不存在、已删除，或私有仓库轮询令牌无权读——GitHub 对后者也回 404），或不是限流的 403 | 评论写明是哪个、怎么给令牌加读权限，翻 `pending/human` |
+| 找不到前置，或前置在互通名单（`TRUSTED_REPOS`）外的别的仓库 | 评论说明（含怎么把仓库加进名单），翻 `pending/human` |
 | 还有没完成的 | 什么都不做 |
 | 读不到 GitHub（报错、缺字段；别的仓库还包括限流、网络失败、5xx） | 什么都不做，下一轮再看——绝不当成「已完成」 |
 
 **前置从哪来**（两处取并集）：issue 侧栏 Relationships 里的「Blocked by」（实测：GitHub 只接受 issue 当前置，
 设 PR 报 422「Target issue may only be an issue」），以及最近一次摘掉这个标签之后、由 loop 写入账号或维护者
 （`OWNER` / `MEMBER` / `COLLABORATOR`）发的最新一条隐藏标记 `<!-- agent-blocked-by: #12 OWNER/REPO#34 resume=pending/agent -->`。
-`#12` 是本仓库，`OWNER/REPO#34` 是别的仓库（写成本仓库自己的全名等同 `#12`）；「Blocked by」里别的仓库的 issue 同样算前置。
-别的仓库只用轮询身份读、daemon 从不往那边写；读私有仓库要轮询令牌有那个仓库的读权限。
+`#12` 是本仓库，`OWNER/REPO#34` 是别的仓库，见下文（写成本仓库自己的全名、不论大小写，等同 `#12`）。
 「之后」是严格晚于：GitHub 的时间只到秒，和摘标签同一秒的登记分不出先后，按上一轮的算、不认。
 「等 #12」这种普通文字不认。`resume=` 必须是本项目配置的触发标签之一，否则用默认那个。
+
+**别的仓库的前置**（GitHub#233）：配了互通名单 `TRUSTED_REPOS` 时，标记里可以写 `owner/repo#N`，「Blocked by」里那个仓库的
+条目也认；daemon 读那个仓库里的状态，完成口径和本仓库一样。裸 `#N` 永远指本仓库，本仓库同号的条目不会触发它。名单外的
+仓库交人，评论写明怎么把它加进名单——名单为空时所有 `owner/repo#N` 都走这条（GitHub#243 之前，名单外的 `owner/repo#N`
+会被误读成本仓库的 `#N`）。别的仓库只用轮询身份读、daemon 从不往那边写；私有仓库要轮询令牌有读权限，否则它回 404，
+条目交人、评论写明是哪个前置、令牌缺什么权限。⚠️ 托管合并后 issue 留给人关，所以等一个托管 issue 实际等的是**人验收
+关闭它**；想在代码合并时就接着做，前置写那个 PR。
 
 **交人之后怎么恢复等待**：daemon 的评论里写了步骤——改前置（「Blocked by」里去掉失败的那个、加上新的，等 PR 就发一条新登记），
 **摘掉 `pending/human`**，重新挂 `pending/blocked`。`pending/human` 还在时 daemon 按叫停处理，永远不会自动继续。
@@ -761,6 +784,34 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   或命令失败、超时、第一行不对，这几种原因写在细节里）。命令回答 0 表示确认这轮没跑测试：总览
   不提测试，和没配命令的项目一样；机器记录照写 `test_secs=0`，周报仍分得清两者。拿不准有没有跑的
   命令要回答 `unknown`，不能回答 0。
+- **skill 自带一个测试耗时命令**（GitHub#244）：`scripts/drivers/token-usage/test-time.sh`，和
+  footer 脚本一样有长期入口，跑的永远是已合并、已部署的版本，worktree 里正在改的那份不会被执行。
+  在本机配置里打开（带存在判断：合并到部署之间那几分钟入口还不在，footer 照样不报错）：
+  ```bash
+  COMMENT_FOOTER_EXTRA_CMD='f="$HOME/.agents/releases/cavil-loop/entrypoints/drivers/token-usage/test-time.sh"; if [ -e "$f" ]; then bash "$f"; else printf "test_secs=unknown\n- 测试统计命令尚未部署\n"; fi'
+  ```
+  检查：下一条交人评论的总览里出现 `测试 …`（或 `测试未知`，细节里写原因）。退回：把这一行清空。两栏：
+  - **整套测试**——`tests/run.sh` 每次运行生成一个编号，在自己的输出里印 `cavil-test-run id=<编号>`
+    （记账没写进去时后面加 ` log=failed`），并往 `${XDG_STATE_HOME:-~/.local/state}/cavil-loop/test-runs.jsonl`
+    （`CAVIL_TEST_RUNS_LOG` 可改）追加带同一编号的开始行、结束行。会话里的命令和记录**只按这条命令
+    自己输出里的编号**关联（前台看工具结果；Claude 放后台的命令看工具结果里写明的输出文件；codex
+    看这条命令在它那个 `exec` 单元输出里的那一项，加上之后同一 `session_id` 的 `write_stdin` 轮询返回的输出——
+    别的命令的输出一概不算，例如 `cat` 一份存下的日志），不按开始时刻接近——人在旁边手跑的、同一 agent 并发的另一次，都是另一次。
+    两行都在、或只有结束行（结束行自带开始时刻）→ 实测计时；只有开始行 →「未记到结束」；印了编号
+    但没有记录 →「没有记账」；读不到编号 →「无法关联」；记录里有、没有任何会话命令印出过 → 单独
+    算一次、实测计时。嵌套运行（测试里再跑 `tests/run.sh`）不记账。
+  - **单跑测试**——从 agent 自己的会话里认出的测试命令（`bash tests/<名字>.test.sh`、
+    `bash test/tauri/mutations.sh`、`npm test` / `npm run test…`、`npx vitest`、`npx playwright test`、
+    `cargo test`；引号和 here-doc 里的文字不算），按工具调用到工具结果计时，是整条命令的估算。
+  - 回答：任何一栏读不了 → `unknown`；有实测部分 → 各段时间的并集（并行的同一秒只算一次；另有未计时的
+    写进细节，所以是下限）；看到了运行、一秒都没计上 → `unknown`；两栏都读到、一次都没跑 → 0。
+  - codex：`exec` 单元只有在通篇都是 `text(await tools.X({…}));` 语句、且每条语句恰好一项输出时，
+    才把输出逐项配给命令；别的单元命令照样计（整套记「无法关联」、单跑不计时），输出不配给任何一条。
+    带 JSON 参数的标准函数调用（`exec_command`、`shell`、`local_shell_call`）也认。命令文本解析不了
+   （例如模板字符串）记「解析不了」，回答变 `unknown`，不会是 0。
+  - 限制：包一层（`bash -c '…'`、自己的脚本）认不出来；放后台（Claude）或单元返回时还在跑（codex）的
+    单跑只计次数；整套测试的输出写进了文件（`> log`）或别的原因读不到时，同一次可能算两遍——一次
+    「无法关联」、一次按记录——次数多 1，秒数不多。
 - **AI 时间是估算**（总览写「AI 约 …」）。每次模型请求从发出请求算到最后一段回复写进会话记录，
   几次请求同时覆盖的那一秒只算一次。偏差来源：含网络往返和排队等首字的时间；会话记录是写盘
   时刻，与真实收发差几毫秒到几秒；AI 在想的时候后台命令可能也在跑。这段说明不在每条评论里重复；
@@ -814,7 +865,7 @@ project/.agents/skills/cavil-loop/prompts/
 | `${DESIGN_REVIEW_NOTE}` | 开了方案复审时是一句「复审先审方案、打回是改方案」的说明，否则为空——关着时渲染结果和以前逐字一样 |
 | `${LABEL_REVIEW_OR_HUMAN}` | **产出后该翻到哪**：启用 review 关卡时 = `pending/review`，未启用时自动退化成 `pending/human`。模板一律用它，别直接写 `${LABEL_PENDING_REVIEW}`——没配置时那个渲染成空串，活会丢掉 `doing/agent` 又拿不到任何 pending 标签，从看板上彻底消失 |
 | `${PREVIEW_URL_HOST}` | 本机对外提供 PR 预览的主机名。**别在模板里硬写主机名**——同一份模板会在所有盯这个仓库的机器上跑，写死的主机会把审阅者指到一台根本没有这些文件的机器 |
-| `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL（funnel 那个 path），取自 `WEEKLY_REPORT_ASSET_ROOT_URL`。同理：截图落在哪台机器上，URL 就得指哪台 |
+| `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL（funnel 那个 path），取自 `WEEKLY_REPORT_ASSET_ROOT_URL`。同理：截图落在哪台机器上，URL 就得指哪台。工具自带的三份 worker 模板和复审模板也用它判断「本项目有没有配出图地址」：为空时，界面 / 样式选择题改用文字描述候选差异（GitHub#238） |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | 默认的 `pending/agent`。review 模板打回时必须用它——`${LABEL_PENDING_AGENT}` 是**触发**标签，在 review 关卡里拿它打回等于打回自己，死循环 |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `cavil-loop.config` 读，默认 `en`） |
 | `${COMMENT_FOOTER_CMD}` | 生成评论用量 footer 的完整命令（已带 agent、用量驱动、项目配置），模板只需再补 `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`。输出整段 footer，原样接在评论末尾；项目测试耗时的接口见配置样例的 `COMMENT_FOOTER_EXTRA_CMD` |

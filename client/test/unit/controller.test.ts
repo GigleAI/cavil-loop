@@ -408,6 +408,88 @@ describe('sync and cache', () => {
     expect(broken.c.getState().mergePrefs).toEqual({ byRepo: {}, last: null });
   });
 
+  it('GitHub#231: folded table groups (per "group by") and "托管不再提示" survive a restart and a Project import; broken saved values read as defaults', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().tableFolds).toEqual({});
+    expect(first.c.getState().autopilotConfirm).toBe(true);
+    first.c.setTableFold('iteration', 'none', true);
+    first.c.setTableFold('status', 'status:Todo', true);
+    first.c.setTableFold('status', 'status:Done', true);
+    first.c.setTableFold('status', 'status:Todo', false);
+    first.c.setTableFold('priority', 'x', true); // unknown grouping: ignored
+    first.c.setAutopilotConfirm(false);
+    first.c.setAutopilotConfirm('no' as any); // not a boolean: ignored
+    const kept = { iteration: ['none'], status: ['status:Done'] };
+    expect(first.c.getState().tableFolds).toEqual(kept);
+    expect(first.c.getState().autopilotConfirm).toBe(false);
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().tableFolds).toEqual(kept); // …and left both alone
+    expect(first.c.getState().autopilotConfirm).toBe(false);
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().tableFolds).toEqual(kept);
+    expect(second.c.getState().autopilotConfirm).toBe(false);
+    // ticked back in the settings
+    second.c.setAutopilotConfirm(true);
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().autopilotConfirm).toBe(true);
+
+    const broken = await make({ seed: { tableFolds: { iteration: 'none', status: [3, 'status:Todo', 'status:Todo'], nope: ['x'] }, autopilotConfirm: 'off' } });
+    expect(broken.c.getState().tableFolds).toEqual({ status: ['status:Todo'] });
+    expect(broken.c.getState().autopilotConfirm).toBe(true);
+  });
+
+  it('GitHub#245: the new-issue hand-over is kept on this machine — a restart and a Project import keep it; anything unknown is ignored or read as "none"', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().newIssueHandoff).toBe('none');
+    first.c.setNewIssueHandoff('autopilot');
+    first.c.setNewIssueHandoff('everything'); // unknown: ignored
+    first.c.setNewIssueHandoff(3 as any);
+    expect(first.c.getState().newIssueHandoff).toBe('autopilot');
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().newIssueHandoff).toBe('autopilot'); // …and left it alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().newIssueHandoff).toBe('autopilot');
+    second.c.setNewIssueHandoff('agent');
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().newIssueHandoff).toBe('agent');
+
+    for (const bad of ['Autopilot', 1, true, null, { h: 'agent' }]) {
+      const broken = await make({ seed: { newIssueHandoff: bad } });
+      expect(broken.c.getState().newIssueHandoff).toBe('none');
+    }
+  });
+
+  it('GitHub#231: every configured Project is counted per repository for a new issue\'s default board, whatever the top filter shows; never read = unknown', async () => {
+    const { c } = await loggedIn();
+    c.addSource(PROJECT_URL);
+    c.addSource(REPO);
+    // before any read: the Project is listed as unknown, not as "holds none"
+    expect(c.getBoardData().boardRepos).toEqual([{ key: expect.any(String), title: expect.any(String), repos: null }]);
+    await c.start();
+    await c.syncNow();
+    const project = c.getState().sources.find((s) => s.kind === 'project')!;
+    const repoSrc = c.getState().sources.find((s) => s.kind === 'repo')!;
+    const all = c.getBoardData();
+    const onBoard = all.items.filter((i) => i.projects.some((m) => m.projectKey === project.key) && i.repo.toLowerCase() === 'gigleai/cavil-loop').length;
+    expect(onBoard).toBeGreaterThan(0);
+    expect(all.boardRepos).toEqual([{ key: project.key, title: 'cavil project', repos: expect.objectContaining({ 'gigleai/cavil-loop': onBoard }) }]);
+    // the top filter narrowed to the repository: the view has no Project, the count is still there
+    c.setView({ selected: [repoSrc.key] });
+    const narrowed = c.getBoardData();
+    expect(narrowed.projects).toEqual([]);
+    expect(narrowed.boardRepos).toEqual(all.boardRepos);
+  });
+
   it('removing a source drops its cached data', async () => {
     const { c, cache } = await loggedIn();
     c.addSource(PROJECT_URL);

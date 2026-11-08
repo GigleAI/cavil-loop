@@ -3,7 +3,6 @@ import type { AppState, BoardData } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
-import { badgeText, stateTone } from '../shared/stateTone';
 import { UpdateSection } from './UpdateViews';
 import { Icon, type IconName } from './Icons';
 
@@ -21,9 +20,6 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
-  // what the badge counts (GitHub#185); a row the board does not have opens on GitHub instead
-  const boardKeys = new Set(data.items.map((i) => i.key));
-  const openCount = state.pendingItems.filter((e) => e.state === 'open').length;
 
   const add = async () => {
     const r = await api().addSource(input);
@@ -127,64 +123,26 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
             <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
           </label>
         </div>
+        <label className="row small">
+          <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
+          「托管」前先弹确认框（在确认框里勾过「不再提示」会关掉这一项，在这里勾回来）
+        </label>
       </section>
 
       <section id="set-pending" data-testid="pending-settings">
         <h3>提醒</h3>
         <p className="muted small">
-          带「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）的条目算「待处理」：不论开着、已关闭还是已合并。新挂上就发一次系统通知。
+          开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
         </p>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
             <Icon name="warn" />
-            macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标和这里的数字不受影响。
+            macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标不受影响。
           </div>
         )}
         <p className="note small" data-testid="pending-how-to-clear">
-          Dock 角标是「未读数」：窗口不在前台时新来的待处理条目会让它加一；切到 App 就清零，已经弹出的系统通知也一并收起。下面列的是现在全部待处理的条目，看过也还在；处理完了就在详情的「标签」里删掉 <b>{state.handBack.human}</b>（或直接去 GitHub 上摘），下一轮同步后它就不再列出。
+          Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零，已经弹出的系统通知也一并收起。还没看就被摘掉标签或关掉的那条，不再算未读。
         </p>
-        <p className="small">
-          未读：<b data-testid="unread-count">{state.unreadCount}</b> 条 · 现在待处理：<b data-testid="pending-count">{state.pendingCount}</b> 条
-          {state.pendingItems.length > 0 && (
-            <span className="muted" data-testid="pending-breakdown">
-              （开着 {openCount} · 已关闭 / 已合并 {state.pendingItems.length - openCount}）
-            </span>
-          )}
-        </p>
-        {state.pendingItems.length > 0 && (
-          <ul className="pending-list" data-testid="pending-list">
-            {state.pendingItems.map((e) => {
-              const onBoard = boardKeys.has(e.key);
-              // the one state rule the card, the table row and the detail badge use
-              const tone = stateTone(e.kind, e.state, e.stateReason, e.isDraft);
-              return (
-                <li key={e.key}>
-                  <button
-                    className="pending-row"
-                    data-testid="pending-item"
-                    data-key={e.key}
-                    data-tone={tone}
-                    title={onBoard ? '在 App 里打开详情' : '看板上没有这一条（它的来源没在看板上勾选），在浏览器打开'}
-                    onClick={() => api().openPending(e.key)}
-                  >
-                    <span className={`state ${tone}`} data-testid="pending-item-state">
-                      ● {badgeText(e.kind, e.state, e.stateReason, e.isDraft)}
-                    </span>
-                    <span className="muted pending-ref">
-                      {e.repo}#{e.number}
-                    </span>
-                    <span className="pending-title">{e.title}</span>
-                    {!onBoard && (
-                      <span className="muted small pending-ext" data-testid="pending-item-external">
-                        看板上没勾这个来源 · 在浏览器打开 ↗
-                      </span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
         {state.launchAtLogin !== null && (
           <label className="row small">
             <input

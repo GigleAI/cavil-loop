@@ -2,6 +2,9 @@
 // Nothing in here may import Node or Electron: the renderer bundles it.
 
 import type { MergePrefs } from './mergePrefs';
+import type { TableFolds } from './uiPrefs';
+import type { OpRecord } from './ops';
+import type { Handoff } from './handoff';
 
 /**
  * The app updating itself (GitHub#184), as the shell reports it (src-tauri/crates/core/src/update.rs
@@ -105,6 +108,75 @@ export interface Item {
   projects: ProjectMembership[];
   /** keys of the sources this item came from (filled when sources are merged) */
   sources: string[];
+  /** GitHub#229: changes of this item not yet confirmed by GitHub (only on board data, never in the cache) */
+  edits?: EditMark[];
+}
+
+/**
+ * One change shown before GitHub confirmed it (GitHub#229), as the views see it.
+ * saving / verifying / observing: the item already shows the new value;
+ * unconfirmed / failed: the item shows GitHub's value, the view shows this one beside it.
+ */
+export interface EditMark {
+  id: string;
+  field: 'label' | 'milestone' | 'status' | 'iteration';
+  label?: string;
+  color?: string;
+  projectKey?: string;
+  status: 'saving' | 'verifying' | 'observing' | 'unconfirmed' | 'failed';
+  /** what the user wants, in words ("加上「x」", a milestone title, "（无状态）", …) */
+  targetText: string;
+  /** GitHub's value as last read (words + when), or why it could not be read; null = not read since */
+  github: { text: string; at: number } | { unreadable: string; at: number } | null;
+  /** GitHub's value (as last read) differs from the value before the first click */
+  changedByOthers: boolean;
+  /** why it is not saved: GitHub's refusal, or "read a value an earlier unanswered change wrote" */
+  failure: string | null;
+  /** a resend held back (GitHub changed meanwhile / could not be read): what the button asks to confirm */
+  hold: { kind: 'changed' | 'unreadable'; text: string } | null;
+}
+
+/**
+ * A new issue being created, or what came of it (GitHub#229): the dialog closes
+ * at once, the result shows above the board. Only `failed` (nothing was created
+ * for sure) gives the draft back with a create button.
+ */
+/** One board a created issue is not finished on (GitHub#229). */
+export interface CreateBoard {
+  projectKey: string;
+  title: string;
+  state: 'missing' | 'fieldsFailed';
+  /** GitHub's words for what went wrong last time */
+  reason: string;
+  /** what the board was meant to carry */
+  iterationId: string | null;
+  status: string | null;
+}
+
+export interface CreateJob {
+  id: number;
+  repo: string;
+  title: string;
+  status: 'running' | 'partial' | 'unknown' | 'failed';
+  message: string | null;
+  /** partial: the new issue */
+  createdKey?: string;
+  number?: number;
+  /**
+   * partial: every board still unfinished (code review round 3: kept across retries — a retry
+   * only changes the boards it worked on). `missing` = not on the board yet (a retry adds it,
+   * then sets its fields); `fieldsFailed` = on the board, a field it was meant to carry not set
+   * (set it in the detail; a retry does not touch it). The notice goes when the list is empty.
+   */
+  boards?: CreateBoard[];
+  /** partial: the new issue's node id from GitHub's create answer (what a retry adds to a board) */
+  createdNodeId?: string;
+  /** partial (GitHub#245): labels GitHub dropped from the new issue — stays in the notice until dismissed; a board retry never clears it */
+  labelsNote?: string;
+  /** unknown: same-title issues this account opened in this repository lately (links only) */
+  candidates?: { number: number; url: string; createdAt: string }[];
+  /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */
+  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean };
 }
 
 export interface FieldOption {
@@ -296,10 +368,14 @@ export interface AppState {
   handBack: HandBackLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */
   mergePrefs: MergePrefs;
-  /** items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far, open or closed */
+  /** which table groups are folded, per "group by" (GitHub#231; kept on this machine) */
+  tableFolds: TableFolds;
+  /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
+  autopilotConfirm: boolean;
+  /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */
+  newIssueHandoff: Handoff;
+  /** open items carrying the "waiting for a human" label (`handBack.human`) in every source read completely so far (not shown since GitHub#251) */
   pendingCount: number;
-  /** those same items, one entry each (GitHub#185: Settings lists them); always as long as `pendingCount` */
-  pendingItems: PendingEntry[];
   /** of those, the ones not yet seen: became pending while the window was not in front (= the Dock badge, GitHub#185) */
   unreadCount: number;
   /** launch at login: on / off, null = this platform cannot */
@@ -310,24 +386,25 @@ export interface AppState {
   focus: { key: string; seq: number } | null;
   /** the app updating itself (GitHub#184); null = this build does not */
   update: UpdateStatus | null;
+  /** GitHub#229: changes not saved (refused) or not confirmed (no answer): the ones that need the user */
+  editsNeedingAction: number;
+  /** GitHub#229: new issues being created, and their outcome until dismissed */
+  creates: CreateJob[];
+  /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */
+  ops: OpRecord[];
 }
 
-/**
- * One item the badge counts, as the settings page lists it (GitHub#185). Kind,
- * state, close reason and draft mark are kept as read, so its colour and words
- * come from the same rule as the board card, the table row and the detail badge.
- */
-export interface PendingEntry {
+/** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */
+export interface BoardRepoCount {
+  /** the source key (= ProjectMeta.key once synced) */
   key: string;
-  repo: string;
-  number: number;
+  /** what the dialog calls it */
   title: string;
-  url: string;
-  kind: ItemKind;
-  state: ItemState;
-  stateReason: IssueStateReason | null;
-  isDraft: boolean | null;
-  updatedAt: string;
+  /**
+   * items on the board per lower-cased `owner/repo`, from its last complete read;
+   * null = never read completely yet (unknown — not "none of this repository's items")
+   */
+  repos: Record<string, number> | null;
 }
 
 export interface BoardData {
@@ -336,4 +413,6 @@ export interface BoardData {
   projects: ProjectMeta[];
   /** GitHub#205: every configured Project, ticked or not (what a new issue may join) */
   allProjects?: ProjectMeta[];
+  /** GitHub#231: every configured Project's items per repository (null = never read completely), whatever the view shows */
+  boardRepos?: BoardRepoCount[];
 }

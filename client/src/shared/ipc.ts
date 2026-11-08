@@ -1,9 +1,10 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, HandBackLabels } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './types';
 import type { ViewPatch } from './viewSettings';
-import type { DetailResult, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { Handoff } from './handoff';
 
 export interface Snapshot {
   state: AppState;
@@ -27,8 +28,6 @@ export interface CavilApi {
   restartSync(): Promise<void>;
   openExternal(url: string): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;
-  /** a row of the settings page's pending list: open it the way a click on its notification does */
-  openPending(key: string): Promise<void>;
   /** the app updating itself (GitHub#184) */
   checkUpdate(): Promise<void>;
   setAutoUpdate(on: boolean): Promise<void>;
@@ -36,10 +35,42 @@ export interface CavilApi {
   dismissUpdate(version: string): Promise<void>;
   restartToUpdate(): Promise<void>;
   loadDetail(key: string): Promise<DetailResult>;
-  repoOptions(repo: string): Promise<RepoOptions>;
+  /** GitHub#229: the detail read last in this run, shown at once on re-opening; null = none */
+  cachedDetail(key: string): Promise<ItemDetail | null>;
+  /** `fresh`: read again even when a read of this run worked (the detail's refresh button) */
+  repoOptions(repo: string, fresh?: boolean): Promise<RepoOptions>;
+  /** GitHub#229: send a change not saved / not confirmed again (read GitHub first unless `force`), or give it up */
+  resendEdit(id: string, force?: boolean): Promise<WriteResult>;
+  abandonEdit(id: string): Promise<void>;
+  resendAllEdits(): Promise<WriteResult>;
+  abandonAllEdits(): Promise<void>;
+  /** GitHub#229: create in the background (the dialog closes); refused at once when it cannot go out at all */
+  startCreate(action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<{ ok: boolean; error: string | null; job?: number }>;
+  dismissCreate(id: number): Promise<void>;
+  retryCreateProjects(id: number): Promise<WriteResult>;
+  /**
+   * GitHub#250: close an issue / PR, merge, autopilot, hand to the agent — started in the background
+   * (the dialog closes); refused at once, nothing sent, when it cannot go out (offline, or the item
+   * still has an operation that is not settled). Its progress is `state.ops`.
+   */
+  startOp(action: Extract<WriteAction, { kind: 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' }>, from?: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
+  /** read the evidence of an operation whose answer never came again (reads only) */
+  opRecheck(id: string): Promise<WriteResult>;
+  /** "补做剩下的步骤" (re-reads first) */
+  opFinish(id: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
+  /** "已核对，解除锁定": local only */
+  opUnlock(id: string): Promise<void>;
+  opDismiss(id: string, dismissed: boolean): Promise<void>;
+  opDropDraft(id: string): Promise<void>;
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
   /** remember the merge method chosen for a PR in `repo` */
   setMergeMethod(repo: string, method: MergeMethod): Promise<void>;
+  /** fold / unfold one table group under one "group by" (GitHub#231) */
+  setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
+  /** whether "托管" asks first (GitHub#231) */
+  setAutopilotConfirm(on: boolean): Promise<void>;
+  /** who a new issue is handed to by default, as last chosen in the dialog (GitHub#245) */
+  setNewIssueHandoff(h: Handoff): Promise<void>;
 }

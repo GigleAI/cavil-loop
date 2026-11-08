@@ -13,10 +13,10 @@
 // showing, so a recovery that happens while the settings page is open is not
 // missed.
 
-import type { SyncState } from '../shared/types';
+import type { SourceStatus, SyncState } from '../shared/types';
 import type { ParsedFilter } from '../shared/filter';
 
-export const WARN_KINDS = ['filter-unsupported', 'filter-incomplete', 'offline', 'incomplete', 'sync-problem', 'board-notify-problem'] as const;
+export const WARN_KINDS = ['filter-unsupported', 'offline', 'sync-problem', 'board-notify-problem'] as const;
 export type WarnKind = (typeof WARN_KINDS)[number];
 
 /** kind -> fault id of every bar that is up; a kind that is absent is not up */
@@ -37,13 +37,35 @@ const sorted = (xs: string[]) => JSON.stringify([...xs].sort());
  */
 export function warningIds(sync: SyncState, parsed: ParsedFilter): WarnIds {
   const out: WarnIds = {};
-  const failed = sync.sources.filter((s) => !s.ok);
   if (parsed.unsupported.length > 0) out['filter-unsupported'] = sorted(parsed.unsupported);
-  if (isFiltering(parsed) && failed.length > 0) out['filter-incomplete'] = sorted(failed.map((f) => f.sourceKey));
   if (sync.offline) out.offline = 'offline';
-  if (!sync.offline && failed.length > 0) out.incomplete = sorted(failed.map((f) => JSON.stringify([f.sourceKey, f.error ?? ''])));
   if (sync.problem) out['sync-problem'] = sync.problem;
   return out;
+}
+
+/**
+ * Sources that failed this round (GitHub#248). They used to be two full-width
+ * bars ("filter may be incomplete", "sync incomplete"); now they are one ⚠️
+ * next to the refresh button whose popover holds both parts, each shown on the
+ * condition its bar had:
+ *  - `incomplete`: some source failed and the app is not offline (the offline
+ *    bar already says how old the data is)
+ *  - `filterIncomplete`: some source failed while the search box narrows the board
+ *    (offline or not)
+ * null = neither part is up, so there is no ⚠️ at all.
+ */
+export interface SyncTrouble {
+  failed: SourceStatus[];
+  incomplete: boolean;
+  filterIncomplete: boolean;
+}
+
+export function syncTrouble(sync: SyncState, parsed: ParsedFilter): SyncTrouble | null {
+  const failed = sync.sources.filter((s) => !s.ok);
+  if (failed.length === 0) return null;
+  const incomplete = !sync.offline;
+  const filterIncomplete = isFiltering(parsed);
+  return incomplete || filterIncomplete ? { failed, incomplete, filterIncomplete } : null;
 }
 
 /**

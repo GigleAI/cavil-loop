@@ -419,7 +419,11 @@ dispatch_failed() {
 AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
 autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
     AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
-    if autopilot_for_item "$STATE_FILE" "$1" "$2"; then
+    local rc=0
+    autopilot_for_item "$STATE_FILE" "$1" "$2" || rc=$?
+    # 2 = 托管的拆分子项判不了（GitHub#233）：本轮不派，触发标签留着下轮再判
+    [ "$rc" != 2 ] || return 1
+    if [ "$rc" = 0 ]; then
         AP_FLAG=1; AP_ISSUE="$AUTOPILOT_ISSUE"; AP_PR="$AUTOPILOT_PR"; AP_WHERE="$(autopilot_auth_where)"
         log "托管：$1 #$2 是托管条目（授权在 $AP_WHERE，$AUTOPILOT_ACTOR 打的），拼入托管规则"
         if [ "$1" = pr ] && [ "$3" = review ]; then
@@ -451,7 +455,7 @@ dispatch_one_issue() {
             return 0
         fi
         log "dispatch issue-comment for #$num (agent=${worker_agent:-default}, model=${model:-default})"
-        autopilot_dispatch_flags issue "$num" "$prompt_kind"
+        autopilot_dispatch_flags issue "$num" "$prompt_kind" || return 0
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
@@ -475,7 +479,7 @@ dispatch_one_issue() {
         return 0
     fi
     log "dispatch new issue #$num: $title (agent=${worker_agent:-default}, model=${model:-default})"
-    autopilot_dispatch_flags issue "$num" "$prompt_kind"
+    autopilot_dispatch_flags issue "$num" "$prompt_kind" || return 0
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
@@ -532,7 +536,7 @@ dispatch_one_pr() {
     log "dispatch PR #$prnum comment (agent=${worker_agent:-default}, model=${model:-default})"
     # 透传最大的 ID 给 dispatch（仅用于 prompt 文件命名去重，不参与语义）
     kick_id=$(printf '%s\n%s\n%s\n' "$latest_conv" "$latest_inline" "$latest_review" | sort -rn | head -1)
-    autopilot_dispatch_flags pr "$prnum" "$prompt_kind"
+    autopilot_dispatch_flags pr "$prnum" "$prompt_kind" || return 0
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
@@ -804,6 +808,8 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
     # 重试队列：合并后 issue 标签没定下来的 + 父 issue 汇总没做成的（#43）
     merged_label_drain "$STATE_FILE" || true
     sub_issue_rollup_drain "$STATE_FILE" || true
+    # 子项留给人关 / 子项在别的仓库时，由父 issue 这一侧发现「子项全部完成」（GitHub#233）
+    sub_issue_rollup_discover "$STATE_FILE" || true
 
     # ── 3b. merge 钩子：新 merge → 刷新常驻「最新站」（GigleTutor-Web#516，Q1=A）──
     # 项目 config 里 LATEST_SITE_REFRESH=true 才启用；脚本自身幂等（HEAD 没变且

@@ -429,6 +429,7 @@ describe('closing an issue (GitHub#180)', () => {
     expect(itemOf(c, ISSUE).state).toBe('open');
   });
 
+  // GitHub#250: a comment whose answer never came is "not sure", never "not sent" (it may have gone out)
   it('the comment fails: closed stands, told so, the close is not sent again', async () => {
     let commentTries = 0;
     const { c } = await ready({
@@ -443,7 +444,7 @@ describe('closing an issue (GitHub#180)', () => {
     const r = await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
     expect(commentTries).toBe(1);
     expect(r.ok).toBe(true);
-    expect(r.warning).toContain('issue 已关闭，但附的评论没有发出去');
+    expect(r.warning).toContain('issue #138 已关闭（已完成），附的评论不确定有没有发出');
     expect(fake.writes().map((w) => [w.method, w.path])).toEqual([['PATCH', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}`]]);
     expect(itemOf(c, ISSUE).state).toBe('closed');
   });
@@ -520,6 +521,93 @@ describe('new issue', () => {
     expect(r2.ok).toBe(false);
     expect(fake.writes()).toEqual([]);
     expect(fake.digest()).toBe(before);
+  });
+});
+
+describe('GitHub#245: a new issue handed to the agent / autopilot in the same request', () => {
+  const setRepoLabels = (names: string[]) => fake.state.w.repoLabels.set('gigleai/cavil-loop', names.map((name) => ({ name, color: 'ededed' })));
+  const posts = () => fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues');
+
+  it('autopilot: one create request carrying the autopilot and the agent label, then the picked ones; nothing else written', async () => {
+    const { c } = await ready();
+    setRepoLabels(['bug', 'AutoPilot', 'pending/agent', 'pending/human']);
+    const next = nextNumber();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: '托管', body: '', labels: ['bug', 'pending/agent'], projects: [], handoff: 'autopilot' });
+    expect(r).toMatchObject({ ok: true, warning: null, createdKey: K(next) });
+    // the repository's spelling, hand-over first, no duplicate
+    expect(fake.writes().map((w) => [w.method, w.path, w.body])).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues', { title: '托管', body: '', labels: ['AutoPilot', 'pending/agent', 'bug'] }]]);
+    expect(itemOf(c, next).labels.map((l) => l.name)).toEqual(['AutoPilot', 'pending/agent', 'bug']);
+  });
+
+  it('agent: only the agent label; none / absent: the request is exactly as before', async () => {
+    const { c } = await ready();
+    setRepoLabels(['bug', 'autopilot', 'pending/agent']);
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'a', body: '', labels: [], projects: [], handoff: 'agent' })).ok).toBe(true);
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'b', body: '', labels: ['bug'], projects: [], handoff: 'none' })).ok).toBe(true);
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'c', body: '', labels: ['bug'], projects: [] })).ok).toBe(true);
+    expect(posts().map((w) => w.body)).toEqual([
+      { title: 'a', body: '', labels: ['pending/agent'] },
+      { title: 'b', body: '', labels: ['bug'] },
+      { title: 'c', body: '', labels: ['bug'] },
+    ]);
+  });
+
+  it('the label list cannot be read: refused, nothing created, and never called "the repository has no label"', async () => {
+    const { c } = await ready();
+    setRepoLabels(['autopilot', 'pending/agent']);
+    fake.state.w.failLabels.add('gigleai/cavil-loop');
+    const before = fake.digest();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], projects: [], handoff: 'agent' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('读不到');
+    expect(r.error).toContain('没有新建');
+    expect(r.error).not.toContain('没有标签');
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
+    // "none" does not need the list: still created
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'y', body: '', labels: [], projects: [], handoff: 'none' })).ok).toBe(true);
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('a label the repository does not have: refused before sending (GitHub would create it); no autopilot label in Settings: refused', async () => {
+    const { c } = await ready();
+    setRepoLabels(['pending/agent']);
+    const before = fake.digest();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], projects: [], handoff: 'autopilot' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('没有标签「autopilot」');
+    expect(fake.digest()).toBe(before);
+    c.setHandBack({ autopilot: '' });
+    setRepoLabels(['autopilot', 'pending/agent']);
+    const before2 = fake.digest();
+    const r2 = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], projects: [], handoff: 'autopilot' });
+    expect(r2.ok).toBe(false);
+    expect(r2.error).toContain('没有填托管标签');
+    const r3 = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: [], projects: [], handoff: 'everyone' as any });
+    expect(r3.ok).toBe(false);
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before2);
+    // the normal case right after really writes
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'ok', body: '', labels: [], projects: [], handoff: 'agent' })).ok).toBe(true);
+    expect(posts().map((w) => w.body)).toEqual([{ title: 'ok', body: '', labels: ['pending/agent'] }]);
+  });
+
+  it('GitHub drops the labels silently (no write access): created, and the warning names them and says it was not handed over', async () => {
+    const { c } = await ready();
+    setRepoLabels(['bug', 'autopilot', 'pending/agent']);
+    fake.state.w.dropIssueLabels.add('gigleai/cavil-loop');
+    const next = nextNumber();
+    const r = await c.act({ kind: 'createIssue', repo: REPO, title: 'x', body: '', labels: ['bug'], projects: [], handoff: 'autopilot' });
+    expect(r).toMatchObject({ ok: true, createdKey: K(next) });
+    expect(r.warning).toContain(`issue #${next} 已建好`);
+    expect(r.warning).toContain('「autopilot」、「pending/agent」、「bug」');
+    expect(r.warning).toContain('还没有交给 agent');
+    // only hand-picked labels dropped: said, without "not handed over"
+    const r2 = await c.act({ kind: 'createIssue', repo: REPO, title: 'y', body: '', labels: ['bug'], projects: [] });
+    expect(r2.warning).toContain('「bug」');
+    expect(r2.warning).not.toContain('交给 agent');
+    fake.state.w.dropIssueLabels.clear();
+    expect((await c.act({ kind: 'createIssue', repo: REPO, title: 'z', body: '', labels: ['bug'], projects: [] })).warning).toBeNull();
   });
 });
 
@@ -675,7 +763,10 @@ describe('offline: nothing is sent, nothing queued', () => {
     const before = fake.digest();
     const r = await c.act({ kind: 'addLabel', key: K(138), label: 'bug' });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain('连不上 GitHub，没有修改');
+    // GitHub#229: a dropped connection is no answer — the change may or may not have landed, it stays "not confirmed"
+    expect(r.error).toContain('没收到 GitHub 的明确答复');
+    expect(r.error).toContain('不确定改没改上');
+    expect(itemOf(c, 138).edits?.find((m) => m.field === 'label')?.status).toBe('unconfirmed');
     expect(fake.digest()).toBe(before);
   });
 });

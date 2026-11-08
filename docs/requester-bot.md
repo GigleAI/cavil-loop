@@ -136,7 +136,7 @@ With `REQUESTER_BOT_REPORT_FIRST="true"`:
 | 6. Build, open PR | agent | issue `pending/PR`; the PR is reviewed first if the review gate is on | the PR |
 | 7. Report the result | agent / reviewer | PR `pending/requester-bot` | result report (names the commit) |
 | 8. Pass on, requester approves | grokbot | PR still `pending/requester-bot` after passing on, `pending/agent` when bringing the approval back | on the PR (not the source issue): "sent to X"; the verbatim approval |
-| 9. Hand to the maintainer | agent | PR `pending/human` | handoff comment |
+| 9. Hand to the maintainer | agent | PR `pending/human` | merge note (one screen: a line of context + what changed / how / why + what to do after merging) + handoff comment |
 | 10. Merge | maintainer | PR `Done`; issue gets `pending/requester-bot` | daemon posts "request done" |
 | 11. Wrap up | grokbot | removes `pending/requester-bot` from the issue | — |
 

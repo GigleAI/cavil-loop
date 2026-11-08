@@ -3,6 +3,7 @@
 // renderer: no Node, no Electron in here.
 
 import type { Label } from './types';
+import type { Handoff } from './handoff';
 
 /**
  * Every write the client can make. Each one is sent to GitHub as it is; the
@@ -10,7 +11,8 @@ import type { Label } from './types';
  * `key` is the item (`owner/repo#N`, see itemKey).
  */
 export type WriteAction =
-  | { kind: 'addLabel'; key: string; label: string }
+  /** `color`: the label's colour, so it can be shown before GitHub confirms (GitHub#229); optional */
+  | { kind: 'addLabel'; key: string; label: string; color?: string }
   | { kind: 'removeLabel'; key: string; label: string }
   /** title = a milestone of the item's own repository with this title; null = remove the milestone */
   | { kind: 'setMilestone'; key: string; title: string | null }
@@ -20,7 +22,8 @@ export type WriteAction =
   | { kind: 'setStatus'; key: string; projectKey: string; status: string | null }
   /** an item not on that Project yet: add it, then set the iteration (asked first in the window) */
   | { kind: 'addToProject'; key: string; projectKey: string; iterationId: string | null; status: string | null }
-  | { kind: 'comment'; key: string; body: string }
+  /** `draftOf` (GitHub#250): the reply carries the kept comment of that operation — sent = that draft is done, wherever the panel is by then */
+  | { kind: 'comment'; key: string; body: string; draftOf?: string }
   /** remove the "waiting for a human" label, add the "agent, go" one (names from Settings) */
   | { kind: 'handBack'; key: string }
   /** GitHub#205: add the autopilot label (name from Settings), then hand to the agent as above */
@@ -33,9 +36,12 @@ export type WriteAction =
   /**
    * `projects`: the Project sources (keys) the new issue joins, ticked one by one in the dialog (GitHub#205).
    * `plan` (GitHub#214, the "+" of a table group): exactly what the dialog showed it would
-   * set — never re-derived when writing, only checked again; absent = the plain new issue
+   * set — never re-derived when writing, only checked again; absent = the plain new issue.
+   * `handoff` (GitHub#245): hand the new issue to the agent / autopilot in the same request — the
+   * labels come from Settings and are checked against a fresh read of the repository's labels;
+   * absent = 'none'. `handoffPicked`: chosen by hand in the dialog — the app remembers it once the issue exists
    */
-  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan }
+  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan; handoff?: Handoff; handoffPicked?: boolean }
   /**
    * tick / untick one task-list box of a body or comment (GitHub#193): `entryId` is the
    * body's / comment's node id, `index` the box's number in it (document order),

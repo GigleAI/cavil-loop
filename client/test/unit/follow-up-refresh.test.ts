@@ -271,14 +271,58 @@ describe('merge / close a PR: the issues it links are read again at once', () =>
     const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && (e.variables as any)?.number === ISSUE);
     const p = mergeIt(c);
     await waitFor(() => fake.log.some((l) => l.operation === 'CavilItemRefresh' && (l.variables as any)?.number === ISSUE), 'issue re-read sent');
+    // adding the source again starts a sync of its own (it may land that addition, legitimately):
+    // its Project read is held until the old read is through, so what is checked first is the old read alone
+    const projectReads = () => fake.log.filter((l) => l.operation === 'CavilProjectItems').length;
+    const before = projectReads();
+    let armed = true;
+    const releaseNew = fake.holdWhen((e) => armed && e.operation === 'CavilProjectItems');
     c.removeSource(PROJECT_KEY);
     c.addSource(PROJECT_URL);
+    await waitFor(() => projectReads() > before, 'the new addition\'s sync read the Project (held)');
     release();
     expect((await p).ok).toBe(true);
     await c.settled();
-    const cache = new Cache(join(dir, 'cache.sqlite'));
-    caches.push(cache);
-    expect(cache.loadSnapshots().has(PROJECT_KEY)).toBe(false);
+    const cached = () => {
+      const cache = new Cache(join(dir, 'cache.sqlite'));
+      caches.push(cache);
+      return cache.loadSnapshots().get(PROJECT_KEY) ?? null;
+    };
+    // the old read came back (this did happen) and wrote nothing into the new addition
+    expect(fake.log.filter((l) => l.operation === 'CavilItemRefresh' && (l.variables as any)?.number === ISSUE).length).toBeGreaterThan(0);
+    expect(cached()).toBeNull();
+    // the new addition's own sync lands as usual
+    armed = false;
+    releaseNew();
+    await c.syncNow();
+    await c.settled();
+    expect(cached()?.items.length).toBeGreaterThan(0);
+  });
+
+  it('the other order: the new addition\'s sync lands first, then the old read comes back — the newer copy stays (memory and disk)', async () => {
+    openPair();
+    const { c } = await ready({ repo: false });
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && (e.variables as any)?.number === ISSUE);
+    const p = mergeIt(c);
+    await waitFor(() => fake.log.some((l) => l.operation === 'CavilItemRefresh' && (l.variables as any)?.number === ISSUE), 'issue re-read sent (held, its answer frozen)');
+    // GitHub changes after the old read was answered: only the new addition's sync can know
+    const r = await fetch(`${fake.api}/repos/${REPO}/issues/${ISSUE}/labels`, { method: 'POST', headers: { authorization: `Bearer ${FAKE_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ labels: ['late'] }) });
+    expect(r.status).toBe(200);
+    c.removeSource(PROJECT_KEY);
+    c.addSource(PROJECT_URL);
+    await c.syncNow();
+    await c.settled();
+    const labelsOnDisk = () => {
+      const cache = new Cache(join(dir, 'cache.sqlite'));
+      caches.push(cache);
+      return (cache.loadSnapshots().get(PROJECT_KEY)?.items.find((i) => i.key === K(ISSUE))?.labels ?? []).map((l) => l.name);
+    };
+    expect(labelsOnDisk()).toContain('late');
+    release();
+    expect((await p).ok).toBe(true);
+    await c.settled();
+    expect(itemOf(c, ISSUE).labels.map((l) => l.name)).toContain('late');
+    expect(labelsOnDisk()).toContain('late');
   });
 });
 

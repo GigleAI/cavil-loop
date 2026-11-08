@@ -21,7 +21,8 @@
 //   - a refusal found before sending (ActionRefused) means nothing was sent.
 // Nothing is retried or queued: one request, its answer is the result.
 
-import { ISSUE_CLOSE_REASONS, type CreatePlan, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
+import type { CreateBoard } from '../shared/types';
+import { ISSUE_CLOSE_REASONS, type CreatePlan, type IssueCloseReason, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -29,6 +30,7 @@ import {
   ADD_PROJECT_ITEM_MUTATION,
   CLEAR_FIELD_MUTATION,
   CLOSING_ISSUES_QUERY,
+  OP_RECORDS_QUERY,
   SET_ITERATION_MUTATION,
   SET_STATUS_MUTATION,
   TASK_SOURCE_QUERY,
@@ -38,6 +40,7 @@ import {
 } from './queries';
 import { flipTask } from './taskList';
 import { pickMilestone } from './groupPreset';
+import { checkHandoff, droppedLabels, handoffProblem, HANDOFFS, mergeLabels } from '../shared/handoff';
 
 /** The app refused before sending anything to GitHub. */
 export class ActionRefused extends Error {
@@ -64,6 +67,60 @@ export interface ActionOutcome {
   /** done, but a follow-up step did not work */
   warning: string | null;
   createdKey?: string;
+  /** createIssue: the boards the new issue is not finished on (GitHub#229: missing / a field not set) */
+  boards?: CreateBoard[];
+  /** createIssue: the new issue's node id, from GitHub's own answer (what a retry adds to a board) */
+  createdNodeId?: string;
+  /** createIssue (GitHub#245): labels GitHub dropped, as said in the notice; kept apart from the boards so neither hides the other */
+  labelsNote?: string;
+}
+
+/**
+ * GitHub#229: add an issue this app just created (its node id from the create answer)
+ * to one Project, then set the iteration / status it was meant to carry. Works whether or
+ * not the issue is on any source yet — it is not, when joining that very board failed.
+ * Returns the field error (joined, a field not set), null when everything was set.
+ */
+export function createBoard(p: ProjectMeta, state: CreateBoard['state'], reason: string, entry?: { iterationId: string | null; status: string | null }): CreateBoard {
+  return { projectKey: p.key, title: p.title, state, reason, iterationId: entry?.iterationId ?? null, status: entry?.status ?? null };
+}
+
+export async function joinCreatedIssue(client: GitHubClient, p: ProjectMeta, nodeId: string, iterationId: string | null, status: string | null): Promise<unknown | null> {
+  if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
+  if (!p.viewerCanUpdate) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);
+  if (!nodeId) throw new ActionRefused('不知道新 issue 在 GitHub 上的编号，不能补加；请到网页上加进看板');
+  checkFieldValues(p, iterationId, status);
+  return joinProject(client, p, nodeId, iterationId, status);
+}
+
+/**
+ * createIssue (GitHub#229): the create request went out but no clear answer came
+ * back — a lost connection, a timeout, a server error (5xx), an answer without the
+ * new issue. GitHub may or may not have created it: it must never be sent again
+ * from the draft as if nothing had happened.
+ */
+export class CreateUnanswered extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = 'CreateUnanswered';
+  }
+}
+
+/**
+ * Did GitHub refuse for sure (nothing changed)? A refusal before sending, an
+ * answered GraphQL error, a 401, or an HTTP 4xx other than 408 (timeout) / 429
+ * (too many requests): yes. A network failure, a timeout or a 5xx: no — the
+ * request may have been carried out (GitHub#229).
+ */
+export function refusedForSure(e: unknown): boolean {
+  if (e instanceof ActionRefused) return true;
+  if (!(e instanceof GitHubError)) return false;
+  if (e.kind === 'graphql' || e.kind === 'auth') return true;
+  if (e.kind === 'http') {
+    const st = e.status ?? 0;
+    return st >= 400 && st < 500 && st !== 408 && st !== 429;
+  }
+  return false;
 }
 
 const enc = encodeURIComponent;
@@ -173,6 +230,52 @@ export async function addLabel(client: GitHubClient, repo: string, number: numbe
 
 export async function removeLabel(client: GitHubClient, repo: string, number: number, label: string): Promise<void> {
   await client.rest('DELETE', `${repoPath(repo)}/issues/${number}/labels/${enc(label)}`);
+}
+
+// ---- GitHub#250: the steps of a close / merge / autopilot / hand-back, one request each ----
+// The controller runs them one after the other (data/../shared/ops.ts decides what a result
+// means); every check that can be made before sending is made by the caller first.
+
+/** Close an issue (with its reason) or a PR. */
+export async function closeStep(client: GitHubClient, it: Item, reason: IssueCloseReason | undefined): Promise<void> {
+  if (it.kind === 'issue') {
+    if (!reason || !ISSUE_CLOSE_REASONS.includes(reason)) throw new ActionRefused('未知的关闭原因');
+    await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { state: 'closed', state_reason: reason });
+  } else {
+    await client.rest('PATCH', `${repoPath(it.repo)}/pulls/${it.number}`, { state: 'closed' });
+  }
+}
+
+export async function commentStep(client: GitHubClient, it: Item, body: string): Promise<void> {
+  await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body });
+}
+
+/** Merge exactly the commit the user saw (GitHub refuses when the PR moved). */
+export async function mergeStep(client: GitHubClient, it: Item, method: MergeMethod, headOid: string): Promise<void> {
+  if (!/^[0-9a-f]{40}$/.test(headOid)) throw new ActionRefused('不知道你看到的是哪个提交，请刷新详情后再合并');
+  if (!(['merge', 'squash', 'rebase'] as MergeMethod[]).includes(method)) throw new ActionRefused('未知的合并方式');
+  await client.rest('PUT', `${repoPath(it.repo)}/pulls/${it.number}/merge`, { merge_method: method, sha: headOid });
+}
+
+/** GitHub#250: an item's newest comments and label events (ids are GitHub's node ids). */
+export interface ItemRecords {
+  comments: { id: string; author: string | null; body: string }[];
+  labelEvents: { id: string; event: 'labeled' | 'unlabeled'; actor: string | null; label: string }[];
+}
+
+/** Read the item's newest 100 comments and 100 label events; throws when GitHub did not give them. */
+export async function readItemRecords(client: GitHubClient, repo: string, number: number): Promise<ItemRecords> {
+  const [owner, name] = repo.split('/');
+  type Node = { id: string; body?: string; author?: { login?: string } | null; actor?: { login?: string } | null; label?: { name?: string } | null; __typename?: string };
+  const data = await client.graphql<{ repository: { issueOrPullRequest: { comments?: { nodes: Node[] }; timelineItems?: { nodes: Node[] } } | null } | null }>(OP_RECORDS_QUERY, { owner, name, number });
+  const it = data.repository?.issueOrPullRequest;
+  if (!it || !it.comments || !it.timelineItems) throw new GitHubError('graphql', `读不到 ${repo}#${number} 的评论和标签记录`);
+  return {
+    comments: it.comments.nodes.filter((n) => n?.id).map((n) => ({ id: n.id, author: n.author?.login ?? null, body: n.body ?? '' })),
+    labelEvents: it.timelineItems.nodes
+      .filter((n) => n?.id && (n.__typename === 'LabeledEvent' || n.__typename === 'UnlabeledEvent'))
+      .map((n) => ({ id: n.id, event: n.__typename === 'LabeledEvent' ? 'labeled' : 'unlabeled', actor: n.actor?.login ?? null, label: n.label?.name ?? '' })),
+  };
 }
 
 /**
@@ -332,76 +435,12 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       return { touched: [[it.repo, it.number]], warning: null };
     }
     case 'handBack':
-    case 'autopilot': {
-      const it = needItem(ctx);
-      const { human, agent, autopilot } = ctx.handBack;
-      if (!human.trim() || !agent.trim()) throw new ActionRefused('设置里「交给 agent」的两个标签名不能为空');
-      if (action.kind === 'autopilot') {
-        if (!autopilot.trim()) throw new ActionRefused('设置里没有填托管标签，没有修改');
-        // the autopilot label first: the daemon must see it when it picks the item up
-        await addLabel(client, it.repo, it.number, autopilot);
-      }
-      // add first: if the second step fails, the item is never left with neither label
-      try {
-        await addLabel(client, it.repo, it.number, agent);
-      } catch (e) {
-        // the autopilot label is on GitHub already: say so, never as "nothing changed"
-        if (action.kind === 'autopilot') return { touched: [[it.repo, it.number]], warning: `已加上「${autopilot}」，但加「${agent}」没有成功，还没有交给 agent：${explainError(e, 'addLabel')}` };
-        throw e;
-      }
-      let warning: string | null = null;
-      // removed whatever the cached labels say (the cache may be a round behind)
-      try {
-        await removeLabel(client, it.repo, it.number, human);
-      } catch (e) {
-        // 404 = the label is not on it (any more): that is the state we wanted
-        if (!(e instanceof GitHubError && e.status === 404)) warning = `已加上「${agent}」，但摘「${human}」没有成功：${explainError(e, 'removeLabel')}`;
-      }
-      return { touched: [[it.repo, it.number]], warning };
-    }
-    case 'merge': {
-      const it = needItem(ctx);
-      if (it.kind !== 'pr') throw new ActionRefused('这一条不是 PR');
-      if (!/^[0-9a-f]{40}$/.test(action.headOid)) throw new ActionRefused('不知道你看到的是哪个提交，请刷新详情后再合并');
-      if (!(['merge', 'squash', 'rebase'] as MergeMethod[]).includes(action.method)) throw new ActionRefused('未知的合并方式');
-      await client.rest('PUT', `${repoPath(it.repo)}/pulls/${it.number}/merge`, { merge_method: action.method, sha: action.headOid });
-      // merging closes the issues it links: they are read again right away too
-      const related = await relatedIssues(client, it, ctx.cached);
-      return { touched: [[it.repo, it.number], ...related.items], warning: related.problem };
-    }
-    case 'closePr': {
-      const it = needItem(ctx);
-      if (it.kind !== 'pr') throw new ActionRefused('这一条不是 PR');
-      // close first: a refused close leaves no orphan comment behind
-      await client.rest('PATCH', `${repoPath(it.repo)}/pulls/${it.number}`, { state: 'closed' });
-      let warning: string | null = null;
-      if (action.comment.trim()) {
-        try {
-          await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.comment });
-        } catch (e) {
-          warning = `PR 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;
-        }
-      }
-      // the linked issues show this PR's state: they are read again right away too
-      const related = await relatedIssues(client, it, ctx.cached);
-      return { touched: [[it.repo, it.number], ...related.items], warning: [warning, related.problem].filter(Boolean).join('；') || null };
-    }
-    case 'closeIssue': {
-      const it = needItem(ctx);
-      if (it.kind !== 'issue') throw new ActionRefused('这一条不是 issue');
-      if (!ISSUE_CLOSE_REASONS.includes(action.reason)) throw new ActionRefused('未知的关闭原因');
-      // close first: a refused close leaves no orphan comment behind; a failed comment never re-sends the close
-      await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { state: 'closed', state_reason: action.reason });
-      let warning: string | null = null;
-      if (action.comment.trim()) {
-        try {
-          await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.comment });
-        } catch (e) {
-          warning = `issue 已关闭，但附的评论没有发出去：${explainError(e, 'comment')}`;
-        }
-      }
-      return { touched: [[it.repo, it.number]], warning };
-    }
+    case 'autopilot':
+    case 'merge':
+    case 'closePr':
+    case 'closeIssue':
+      // GitHub#250: these run step by step in the controller (closeStep / commentStep / mergeStep / labels), never here
+      throw new ActionRefused('这类操作走后台的逐步执行，不在这里发送');
     case 'toggleTask': {
       const it = needItem(ctx);
       if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused('不知道点的是哪一个勾选框，没有修改');
@@ -432,28 +471,62 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');
       if (!/^[^/\s]+\/[^/\s]+$/.test(action.repo)) throw new ActionRefused('请选择仓库');
+      const handoff = action.handoff ?? 'none';
+      if (!HANDOFFS.includes(handoff)) throw new ActionRefused('不知道建好后交给谁，没有新建');
       const plan = action.plan;
       if (plan) await checkCreatePlan(client, action.repo, plan, ctx.createInProjects);
-      const created = await client.rest<{ number: number; node_id: string }>('POST', `${repoPath(action.repo)}/issues`, {
-        title: action.title,
-        body: action.body,
-        labels: action.labels,
-        ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
-      });
-      if (!created) throw new GitHubError('http', 'GitHub 没有返回新 issue');
+      // GitHub#245: the hand-over labels are checked against the repository's labels read right now —
+      // a label it does not have would be created by GitHub; a list that cannot be read is unknown, not "none"
+      let handoffLabels: string[] = [];
+      if (handoff !== 'none') {
+        let names: string[];
+        try {
+          names = (await client.restList<{ name: string }>(`${repoPath(action.repo)}/labels?per_page=100`)).map((l) => l.name);
+        } catch (e) {
+          if (e instanceof GitHubError && e.kind === 'auth') throw e; // the credential: handled like any other call
+          throw new ActionRefused(`读不到仓库 ${action.repo} 的标签，暂时不能确认标签在不在，没有新建：${explainError(e, 'createIssue')}`);
+        }
+        const check = checkHandoff(handoff, ctx.handBack, { state: 'ok', names });
+        if (check.state !== 'ok') throw new ActionRefused(`${handoffProblem(action.repo, check)}，没有新建`);
+        handoffLabels = check.labels;
+      }
+      const labels = mergeLabels(handoffLabels, action.labels);
+      let created: { number: number; node_id: string; labels?: { name: string }[] } | null;
+      try {
+        created = await client.rest<{ number: number; node_id: string; labels?: { name: string }[] }>('POST', `${repoPath(action.repo)}/issues`, {
+          title: action.title,
+          body: action.body,
+          labels,
+          ...(plan?.milestone ? { milestone: plan.milestone.number } : {}),
+        });
+      } catch (e) {
+        if (refusedForSure(e)) throw e;
+        throw new CreateUnanswered((e as Error)?.message ?? String(e));
+      }
+      if (!created || typeof created.number !== 'number') throw new CreateUnanswered('GitHub 的回应里没有新 issue');
+      // GitHub drops the labels of an account without write access to the repository, without an error: said, never silent
+      const dropped = Array.isArray(created.labels) ? droppedLabels(labels, created.labels.map((l) => l.name)) : [];
+      const droppedHandoff = dropped.some((n) => handoffLabels.some((h) => h.toLowerCase() === n.toLowerCase()));
       const failed: string[] = [];
       const fields: string[] = [];
+      const boards: CreateBoard[] = [];
       for (const p of ctx.createInProjects) {
         const entry = plan?.projects.find((x) => x.projectKey === p.key);
         try {
           if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改它');
           const fieldError = await joinProject(client, p, created.node_id, entry?.iterationId ?? null, entry?.status ?? null);
-          if (fieldError !== null) fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+          if (fieldError !== null) {
+            fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+            boards.push(createBoard(p, 'fieldsFailed', explainError(fieldError, 'addToProject'), entry));
+          }
         } catch (e) {
           failed.push(`「${p.title}」（${explainError(e, 'addToProject')}）`);
+          boards.push(createBoard(p, 'missing', explainError(e, 'addToProject'), entry));
         }
       }
+      const labelsNote = dropped.length ? `GitHub 没有加上标签${dropped.map((n) => `「${n}」`).join('、')}（这个账号可能没有该仓库的写权限）${droppedHandoff ? '，还没有交给 agent' : ''}` : '';
       const problems = [
+        labelsNote,
         failed.length ? `没能加入看板 ${failed.join('、')}` : '',
         fields.length ? `已加入看板但字段没设上 ${fields.join('、')}` : '',
       ].filter(Boolean);
@@ -461,6 +534,9 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         touched: [[action.repo, created.number]],
         warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
         createdKey: itemKey(action.repo, created.number),
+        boards,
+        createdNodeId: created.node_id,
+        ...(labelsNote ? { labelsNote } : {}),
       };
     }
   }

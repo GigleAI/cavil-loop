@@ -11,6 +11,8 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import { LabelPicker } from './LabelPicker';
 import { noteOf, type ResultNote } from './DetailPanel';
+import { IterationOptions } from './iterationOptions';
+import type { TableFolds } from '../shared/uiPrefs';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -66,7 +68,7 @@ function Cell({ col, item, now, dark }: { col: TableColumn; item: Item; now: num
       return (
         <span className="labels">
           {item.labels.map((l) => (
-            <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+            <span key={l.name} className={`label${item.edits?.some((m) => m.label === l.name && ['saving', 'verifying', 'observing'].includes(m.status)) ? ' pending' : ''}`} style={labelStyle(l.color, dark)}>
               {l.name}
             </span>
           ))}
@@ -123,12 +125,14 @@ type Editor = {
   projects: ProjectMeta[];
   options: RepoOptions | null;
   disabled: boolean;
+  /** YYYY-MM-DD: which iteration is current (GitHub#231) */
+  today: string;
   act: (a: WriteAction, okText: string) => void;
   close: () => void;
 };
 
 /** The open editor of one cell: a picker for labels, one dropdown per Project for iteration / status, a dropdown for the milestone. */
-function CellEditor({ item, col, projects, options, disabled, act, close }: Editor) {
+function CellEditor({ item, col, projects, options, disabled, today, act, close }: Editor) {
   const box = useRef<HTMLSpanElement>(null);
   // a click outside the editor puts it away (the label picker has its own)
   useEffect(() => {
@@ -223,15 +227,7 @@ function CellEditor({ item, col, projects, options, disabled, act, close }: Edit
           >
             <option value="">{field === 'iteration' ? '（无迭代）' : '（无状态）'}</option>
             {field === 'iteration' ? (
-              <>
-                {m.iteration && !p.iterations.some((i) => i.id === m.iteration!.id) && <option value={m.iteration.id}>{m.iteration.title}</option>}
-                {p.iterations.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {rows.length > 1 ? `${p.title}：` : ''}
-                    {i.title}
-                  </option>
-                ))}
-              </>
+              <IterationOptions iterations={p.iterations} chosen={m.iteration} today={today} label={(i) => `${rows.length > 1 ? `${p.title}：` : ''}${i.title}`} />
             ) : (
               p.statusOptions.map((o) => (
                 <option key={o} value={o}>
@@ -263,6 +259,7 @@ export function TableView({
   onNewInGroup,
   canCreate = false,
   createTitle = '',
+  folds = {},
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -277,18 +274,15 @@ export function TableView({
   onNewInGroup?: (g: Group) => void;
   canCreate?: boolean;
   createTitle?: string;
+  /** folded groups, per "group by" — kept on this machine, so switching to the board and back, or a restart, keeps them (GitHub#231) */
+  folds?: TableFolds;
 }) {
-  const [folded, setFolded] = useState<Set<string>>(new Set());
   const dark = useDarkMode();
   const t = view.table;
   const table = buildTable(items, projects, t, today, view.prsUnderIssues);
   const cols = t.columns.filter((c) => c !== 'title');
-  const toggle = (k: string) => {
-    const next = new Set(folded);
-    if (next.has(k)) next.delete(k);
-    else next.add(k);
-    setFolded(next);
-  };
+  const folded = new Set(folds[t.groupBy] ?? []);
+  const toggle = (k: string) => void Promise.resolve(api().setTableFold(t.groupBy, k, !folded.has(k))).catch(() => undefined);
 
   // ---- editing a cell (GitHub#205) ----
   // which cell is open: the table row (item + group: an item can show in two groups, PR #220 review round 1) and column
@@ -371,9 +365,10 @@ export function TableView({
   const groupBody = (g: Group, inRepo: boolean) => (
     <tbody key={g.key} className={inRepo ? 'in-repo' : undefined} data-testid="group" data-key={g.key} data-title={g.title}>
       {t.groupBy !== 'none' && (
-        <tr className="group-head" data-testid="group-head">
+        // GitHub#229: the whole row folds; the arrow stays a button (Tab reaches it) and its click is this same one
+        <tr className="group-head" data-testid="group-head" onClick={() => toggle(g.key)} title={folded.has(g.key) ? '点一下展开这一组' : '点一下收起这一组'}>
           <td colSpan={cols.length + 1}>
-            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'} onClick={() => toggle(g.key)}>
+            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'}>
               {folded.has(g.key) ? '▸' : '▾'}
             </button>{' '}
             <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
@@ -429,6 +424,7 @@ export function TableView({
                       projects={projects}
                       options={options[r.item.repo] ?? null}
                       disabled={!canWrite || busy.has(r.item.key)}
+                      today={today}
                       act={(a, ok) => void act(r.item)(a, ok)}
                       close={() => setEditing(null)}
                     />
@@ -492,9 +488,9 @@ export function TableView({
             ? table.repos.map((r) => (
                 <Fragment key={r.key}>
                   <tbody data-testid="repo-group" data-key={r.key} data-title={r.title}>
-                    <tr className="repo-head">
+                    <tr className="repo-head" data-testid="repo-head" onClick={() => toggle(r.key)} title={folded.has(r.key) ? '点一下展开这个仓库' : '点一下收起这个仓库'}>
                       <td colSpan={cols.length + 1}>
-                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'} onClick={() => toggle(r.key)}>
+                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'}>
                           {folded.has(r.key) ? '▸' : '▾'}
                         </button>{' '}
                         <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>

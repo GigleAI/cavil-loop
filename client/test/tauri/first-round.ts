@@ -1,48 +1,38 @@
-// When has the app's first complete sync round of this start been taken (GitHub#186)?
+// When may the background tests put a label on GitHub (GitHub#186, reworked in #251)?
 //
-// The background tests (test/tauri/background.spec.ts) put a label
-// on GitHub and require that item's own notification and the badge +1. That only holds for a
-// label put on *after* the first complete read of the source: what that read already finds is
-// the baseline (GitHub#139) and goes into one summary notification, never one per item. A badge
-// record is no proof of that read — the app clears the badge to 0 when it starts, before any
-// sync (arm64 CI lost that race on every run: the label went into the summary, the test timed
-// out). So the tests put one item on the label before starting the app, and wait for what only
-// the first complete round produces: the summary notification, and the badge set after it (the
-// shell records the notification before it answers; the badge is the next call, so for a moment
-// the summary is there and the badge is not).
+// The background tests (test/tauri/background.spec.ts) put a label on GitHub and require that
+// item's own notification and the badge +1. That only holds for a label put on *after* the first
+// complete read of the source this start: what that read already finds is the reminders'
+// baseline — history, never notified, never unread (GitHub#251).
 //
-// `records` = the shell's test record (one parsed JSON line each); `from` = the first record of
-// this start (an earlier start's summary does not count). Returns the badge set after this start's
-// first summary, or null while the round is not complete.
-export function firstRoundBadge(records: any[], from = 0): number | null {
-  let summary = -1;
-  for (let i = from; i < records.length; i++) {
-    const r = records[i];
-    if (r?.op === 'notify' && r.alert?.kind === 'summary') {
-      summary = i;
-      break;
-    }
-  }
-  if (summary < 0) return null;
-  for (let i = summary + 1; i < records.length; i++) {
-    const r = records[i];
-    if (r?.op === 'badge' && typeof r.count === 'number') return r.count;
-  }
-  return null;
+// Until #251 the first round ended in a start-up summary notification, and the tests waited for
+// it. That summary is gone, and the shell records nothing else that only the first round
+// produces (the badge is cleared to 0 when the app starts, before any sync — arm64 CI once lost
+// that race). So the proof is read where the data comes from: the fake GitHub's request log. A
+// repository source reads two lists at once (every open item; everything updated in the last 14
+// days). Once both have been answered after this start, the first complete read has its data —
+// frozen at that moment, without a label put on later — so a label put on from then on is new to
+// the baseline, whenever the app gets round to processing that read.
+//
+// `log` = the fake GitHub's request log; `from` = its length when this start began (an earlier
+// start's reads do not count); `repo` = `owner/name` as the app requests it.
+export interface LoggedRead {
+  method: string;
+  path: string;
+  status: number;
 }
 
-// Since GitHub#185 the badge is the unread count: an item that becomes pending while the window is
-// in front is read at once. So the base the first round leaves depends on whether the window was in
-// front when it came in — the shell records `active` / `inactive` as the window gains and loses the
-// front. Returns whether it was in front at this start's first summary (null while there is none):
-// the last of those records before the summary, within this start; none at all = not in front.
-export function inFrontAtFirstRound(records: any[], from = 0): boolean | null {
-  let front = false;
-  for (let i = from; i < records.length; i++) {
-    const r = records[i];
-    if (r?.op === 'active') front = true;
-    else if (r?.op === 'inactive') front = false;
-    else if (r?.op === 'notify' && r.alert?.kind === 'summary') return front;
+export function firstReadDone(log: LoggedRead[], from: number, repo: string): boolean {
+  const base = `/api/repos/${repo}/issues?`;
+  let open = false;
+  let recent = false;
+  for (let i = from; i < log.length; i++) {
+    const r = log[i];
+    if (r.method !== 'GET' || r.status !== 200 || !r.path.toLowerCase().startsWith(base.toLowerCase())) continue;
+    const q = new URLSearchParams(r.path.slice(r.path.indexOf('?') + 1));
+    if (q.get('page') && q.get('page') !== '1') continue;
+    if (q.get('state') === 'open') open = true;
+    else if (q.get('state') === 'all' && q.get('since')) recent = true;
   }
-  return null;
+  return open && recent;
 }

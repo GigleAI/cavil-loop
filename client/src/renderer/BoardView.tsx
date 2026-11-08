@@ -1,7 +1,8 @@
 import { badgeText, stateTone } from '../shared/stateTone';
 import { UpdateReadyBar } from './UpdateViews';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { AppState, BoardData, ColumnMode, Layout } from '../shared/types';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
+import { copyText } from './pasteImage';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
 import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropPlan } from '../data/board';
@@ -12,10 +13,13 @@ import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
+import { OpNotice } from './OpNotice';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
-import { isFiltering, type WarnKind } from './warnings';
+import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
+import { useLayer, useShortcuts } from './keyboard';
 import { TableView } from './TableView';
+import { localToday } from './iterationOptions';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
 import { Avatar } from './Avatar';
 import type { BoardRequest } from './App';
@@ -37,11 +41,6 @@ export function ago(from: number, now: number): string {
   const h = Math.floor(mins / 60);
   if (h < 24) return `${h} 小时前`;
   return `${Math.floor(h / 24)} 天前`;
-}
-
-function localToday(now: number): string {
-  const d = new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
@@ -93,6 +92,11 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
           {it.repo} #{it.number}
         </span>
         <span className="spacer" />
+        {it.edits?.some((m) => m.status === 'failed' || m.status === 'unconfirmed') && (
+          <span className="edit-flag" data-testid="card-edit-flag" title="有修改没保存上或没确认，打开看详情">
+            <Icon name="warn" size={12} /> 修改未保存
+          </span>
+        )}
         <span className="card-author" data-testid="card-author" title={`作者 ${it.author ?? "（已删除的账号）"}`}>
           <Avatar login={it.author} size={20} />
         </span>
@@ -110,7 +114,7 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
       </a>
       <div className="labels" onClick={(e) => e.stopPropagation()}>
         {it.labels.map((l) => (
-          <span key={l.name} className="label" style={labelStyle(l.color, ops.dark)}>
+          <span key={l.name} className={`label${it.edits?.some((m) => m.label === l.name && ['saving', 'verifying', 'observing'].includes(m.status)) ? ' pending' : ''}`} style={labelStyle(l.color, ops.dark)}>
             {l.name}
             {ops.canWrite && (
               <button
@@ -240,6 +244,251 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
   );
 }
 
+/**
+ * GitHub#248: sources that failed this round, as a ⚠️ next to the refresh button instead of two
+ * full-width bars. A click opens the details (what the bars used to say); a second click, a click
+ * outside or Esc puts them away. Mounted only while there is trouble, so a later failure never
+ * opens it by itself.
+ */
+function SyncTroubleButton({ trouble, describe }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+  const n = trouble.failed.length;
+  const label = trouble.incomplete
+    ? `同步不完整：${n} 个来源读取失败（点开看详情）`
+    : '有来源这次没读全，筛选结果可能不全（点开看详情）';
+  return (
+    <span className="trouble-anchor" ref={box}>
+      <button
+        className={`icon-btn trouble-btn${open ? ' on' : ''}`}
+        data-testid="sync-trouble"
+        data-open={open ? 'yes' : 'no'}
+        aria-label={label}
+        aria-expanded={open}
+        title={label}
+        onClick={() => setOpen(!open)}
+      >
+        <Icon name="warn" />
+      </button>
+      {open && <SyncTroublePanel trouble={trouble} describe={describe} box={box} onClose={() => setOpen(false)} />}
+    </span>
+  );
+}
+
+function SyncTroublePanel({
+  trouble,
+  describe,
+  box,
+  onClose,
+}: {
+  trouble: SyncTrouble;
+  describe: (f: SyncTrouble['failed'][number]) => string;
+  box: RefObject<HTMLSpanElement | null>;
+  onClose: () => void;
+}) {
+  // on top while open: Esc is ours (the same layer the label picker uses)
+  useLayer('picker');
+  useShortcuts({ pickerClose: onClose });
+  useEffect(() => {
+    const out = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', out);
+    return () => document.removeEventListener('mousedown', out);
+  }, [box, onClose]);
+  return (
+    <div className="trouble-panel" data-testid="sync-trouble-panel" role="dialog" aria-label="同步不完整">
+      {trouble.incomplete && (
+        <>
+          <div className="trouble-head">
+            <Icon name="warn" />
+            同步不完整
+          </div>
+          <ul data-testid="sync-trouble-incomplete">
+            {trouble.failed.map((f) => (
+              <li key={f.sourceKey} data-testid="sync-trouble-source" data-key={f.sourceKey}>
+                {describe(f)}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {trouble.filterIncomplete && (
+        <div className="trouble-filter" data-testid="sync-trouble-filter">
+          有来源这次没读全，筛选结果可能不全。
+        </div>
+      )}
+      <div className="trouble-foot">
+        <button data-testid="sync-trouble-resync" onClick={() => void api().restartSync()}>
+          <Icon name="refresh" />
+          重新同步
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * GitHub#229: changes that need the user (not saved / not confirmed), also the ones left
+ * from the last run. Each item's own list (both values side by side) is in its detail.
+ */
+function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; onOpen: (key: string) => void }) {
+  const [working, setWorking] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  if (!state.editsNeedingAction) return null;
+  const items = data.items.filter((i) => i.edits?.some((m) => m.status === 'failed' || m.status === 'unconfirmed'));
+  const go = async (fn: () => Promise<{ ok: boolean; error: string | null } | void>) => {
+    setWorking(true);
+    setResult(null);
+    try {
+      const r = await fn();
+      if (r && !r.ok) setResult(r.error);
+    } finally {
+      setWorking(false);
+    }
+  };
+  return (
+    <div className="banner error" data-testid="edits-bar" data-count={state.editsNeedingAction}>
+      <Icon name="warn" />
+      <span className="banner-text">
+        有 {state.editsNeedingAction} 处修改没保存上或没确认保存到 GitHub
+        {items.length > 0 && (
+          <>
+            （
+            {items.map((i, n) => (
+              <span key={i.key}>
+                {n > 0 && '、'}
+                <button className="link" data-testid="edits-bar-item" onClick={() => onOpen(i.key)}>
+                  {i.repo.split('/')[1]} #{i.number}
+                </button>
+              </span>
+            ))}
+            ；打开可逐条看两边的值）
+          </>
+        )}
+        。{' '}
+        <button className="link" data-testid="edits-resend-all" disabled={working || !writesEnabled(state.sync)} onClick={() => void go(() => api().resendAllEdits())}>
+          全部重新发送
+        </button>
+        <button className="link" data-testid="edits-abandon-all" disabled={working} onClick={() => void go(() => api().abandonAllEdits())}>
+          全部放弃
+        </button>
+        {result && (
+          <span className="small" data-testid="edits-bar-result">
+            {' '}
+            {result}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/** GitHub#229: one new issue on its way, or what came of it. Only "surely nothing was created" gives the draft back. */
+function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: string) => void; onDraft: (d: CreateJob['draft']) => void }) {
+  const [copied, setCopied] = useState(false);
+  /** a retry that could not run at all (offline, signed out): said here; its outcome otherwise lives in the notice itself */
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const close = (
+    <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
+      <Icon name="x" />
+    </button>
+  );
+  if (job.status === 'running')
+    return (
+      <div className="banner info" data-testid="create-bar" data-status="running">
+        <span className="spin" aria-hidden="true" />
+        <span className="banner-text">正在新建「{job.title}」… 建好后自动打开它</span>
+      </div>
+    );
+  if (job.status === 'partial')
+    return (
+      <div className="banner warn closable" data-testid="create-bar" data-status="partial">
+        <Icon name="warn" />
+        <span className="banner-text">
+          <b>#{job.number} 已建好</b>，{job.message?.replace(/^issue #\d+ 已建好，但/, '但') ?? ''}{' '}
+          <button className="link" data-testid="create-open" onClick={() => job.createdKey && onOpen(job.createdKey)}>
+            打开 #{job.number}
+          </button>
+          {(job.boards ?? []).some((b) => b.state === 'missing') && (
+            <button
+              className="link"
+              data-testid="create-retry-projects"
+              onClick={() => {
+                setRetryError(null);
+                void api()
+                  .retryCreateProjects(job.id)
+                  .then((r) => setRetryError(r.ok ? null : r.error));
+              }}
+            >
+              再试加入看板
+            </button>
+          )}
+          {retryError && (
+            <span className="small err" data-testid="create-retry-error">
+              {' '}
+              {retryError}
+            </span>
+          )}
+        </span>
+        {close}
+      </div>
+    );
+  if (job.status === 'unknown')
+    return (
+      <div className="banner warn closable" data-testid="create-bar" data-status="unknown">
+        <Icon name="warn" />
+        <span className="banner-text">
+          <b>不确定「{job.title}」有没有建好</b>：{job.message}。GitHub 可能稍后才建出来，请先去看一眼再决定要不要重建。{' '}
+          <button className="link" data-testid="create-web" onClick={() => void api().openExternal(`https://github.com/${job.repo}/issues?q=${encodeURIComponent('is:issue author:@me sort:created-desc')}`)}>
+            在网页上看我最近建的 issue
+          </button>
+          <button
+            className="link"
+            data-testid="create-copy"
+            onClick={() => void copyText(`${job.draft.title}\n\n${job.draft.body}`).then((ok) => setCopied(Boolean(ok)))}
+          >
+            {copied ? '已复制' : '复制草稿内容'}
+          </button>
+          {job.candidates && (
+            <span className="small muted" data-testid="create-candidates">
+              {' '}
+              {job.candidates.length
+                ? '最近 10 分钟你在这个仓库建的同标题 issue（仅供查看）：'
+                : '没找到最近 10 分钟你在这个仓库建的同标题 issue（原请求仍可能稍后完成）'}
+              {job.candidates.map((c) => (
+                <a key={c.number} href={c.url} data-testid="create-candidate" onClick={(e) => (e.preventDefault(), void api().openExternal(c.url))}>
+                  {' '}
+                  #{c.number}
+                </a>
+              ))}
+            </span>
+          )}
+        </span>
+        {close}
+      </div>
+    );
+  return (
+    <div className="banner error closable" data-testid="create-bar" data-status="failed">
+      <Icon name="warn" />
+      <span className="banner-text">
+        没能新建「{job.title}」：{job.message}。{' '}
+        <button
+          className="link"
+          data-testid="create-reopen"
+          onClick={() => {
+            onDraft(job.draft);
+            void api().dismissCreate(job.id);
+          }}
+        >
+          重新打开草稿
+        </button>
+      </span>
+      {close}
+    </div>
+  );
+}
+
 export function BoardView({
   state,
   data,
@@ -285,10 +534,15 @@ export function BoardView({
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   const failed = sync.sources.filter((s) => !s.ok);
+  const trouble = syncTrouble(sync, parsed);
+  const describeFailed = (f: (typeof failed)[number]) => {
+    const s = state.sources.find((x) => x.key === f.sourceKey);
+    return `${s ? sourceLabel(s, titles.get(s.key)) : f.sourceKey} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
+  };
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
   // every opening of the detail panel is its own panel instance (its React key):
   // going to another item and back is a new opening, never the old one resumed
-  const [opened, setOpened] = useState<{ key: string; n: number } | null>(null);
+  const [opened, setOpened] = useState<{ key: string; n: number; intent?: { opId: string; what: 'retry' | 'toReply' } } | null>(null);
   const openSeq = useRef(0);
   const openItem = (key: string) => setOpened((cur) => (cur?.key === key ? cur : { key, n: ++openSeq.current }));
   // a clicked notification (GitHub#169): every click opens that item, as a new opening
@@ -298,7 +552,7 @@ export function BoardView({
     onFocusTaken?.();
   }, [focus?.seq]);
   // false = closed; true = the plain dialog; a seed = from a table group's "+" (GitHub#214)
-  const [newIssue, setNewIssue] = useState<boolean | GroupSeed>(false);
+  const [newIssue, setNewIssue] = useState<boolean | GroupSeed | { draft: CreateJob['draft'] }>(false);
   const searchBox = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [busy, setBusy] = useState(false);
@@ -337,7 +591,8 @@ export function BoardView({
     setNote(noteOf({ ok: true, error: null, warning: warn.join('；') || null }, okText));
   };
   const ops: CardOps = {
-    canWrite: canWrite && !busy,
+    // GitHub#229: a change shows on the card at once; the board does not wait for GitHub's answer
+    canWrite,
     open: openItem,
     act: (a, okText) => runAll([a], okText),
     labelsOf: (repo) => {
@@ -449,6 +704,7 @@ export function BoardView({
               <span className="sync-text">上次同步 {ago(sync.lastOnlineAt, now)}</span>
             </span>
           )}
+          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} />}
           {/* never greyed out while a round runs (GitHub#217): a click starts over */}
           <button
             className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
@@ -531,9 +787,6 @@ export function BoardView({
       <WarnBar kind="filter-unsupported" warn={warn}>
         {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
       </WarnBar>
-      <WarnBar kind="filter-incomplete" warn={warn}>
-        有来源这次没读全，筛选结果可能不全（详见下方）。
-      </WarnBar>
       {hasText && <div className="small muted hint">文字只搜标题、编号和标签名，不搜正文和评论。</div>}
       {view.imported && view.imported.notes.length > 0 && (
         <div className="banner info" data-testid="import-notes">
@@ -549,15 +802,6 @@ export function BoardView({
       <WarnBar kind="offline" warn={warn}>
         离线 · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'}。修改功能暂不可用。
       </WarnBar>
-      <WarnBar kind="incomplete" warn={warn}>
-        同步不完整：
-        {failed
-          .map((f) => {
-            const s = state.sources.find((x) => x.key === f.sourceKey);
-            return `${s ? sourceLabel(s, titles.get(s.key)) : f.sourceKey} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
-          })
-          .join('；')}
-      </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
         {sync.problem}
       </WarnBar>
@@ -565,6 +809,22 @@ export function BoardView({
         macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。
       </WarnBar>
       <ResultBanner note={note} testid="board-action-result" />
+      <EditsBar state={state} data={data} onOpen={openItem} />
+      {state.ops
+        .filter((r) => !r.dismissed && r.key !== opened?.key)
+        .map((r) => (
+          <OpNotice
+            key={r.id}
+            r={r}
+            prefix={`${r.repo}#${r.number}：`}
+            onOpen={openItem}
+            onRetry={(x) => setOpened({ key: x.key, n: ++openSeq.current, intent: { opId: x.id, what: 'retry' } })}
+            onToReply={(x) => setOpened({ key: x.key, n: ++openSeq.current, intent: { opId: x.id, what: 'toReply' } })}
+          />
+        ))}
+      {state.creates.map((j) => (
+        <CreateBar key={j.id} job={j} onOpen={openItem} onDraft={(d) => setNewIssue({ draft: d })} />
+      ))}
       {view.layout === 'board' && board.notice && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}
@@ -590,6 +850,7 @@ export function BoardView({
           canCreate={canWrite}
           createTitle={writesEnabled(sync) ? (state.sources.length ? '在这一组新建 issue，带上这一组的字段' : '先添加数据来源') : '离线时不能修改'}
           onNewInGroup={(g) => setNewIssue({ preset: g.preset, title: g.title, items: g.rows.map((r) => r.item) })}
+          folds={state.tableFolds}
         />
       ) : (
       <div className="board">
@@ -603,10 +864,16 @@ export function BoardView({
           : renderRow(null)}
       </div>
       )}
-      {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} />}
+      {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} intent={opened.intent ?? null} />}
       </div>
       {newIssue && (
-        <NewIssueDialog state={state} data={data} group={newIssue === true ? undefined : newIssue} onClose={() => setNewIssue(false)} onCreated={openItem} />
+        <NewIssueDialog
+          state={state}
+          data={data}
+          group={newIssue === true || 'draft' in newIssue ? undefined : newIssue}
+          draft={newIssue !== true && 'draft' in newIssue ? newIssue.draft : undefined}
+          onClose={() => setNewIssue(false)}
+        />
       )}
       {confirm && (
         <ConfirmDialog

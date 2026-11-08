@@ -16,13 +16,13 @@
 // same handler macOS runs. The Dock-icon reopen is macOS-only and has no automated check
 // (the packaged-app background check was dropped, GitHub#209).
 //
-// The label goes on only once this start's first complete round has been taken (GitHub#186):
-// what that round already finds is the reminders' baseline and goes into one summary, never
-// one notification per item. One item carries the label before the app starts (SEEDED), so the
-// first round always ends in that summary and the badge after it (first-round.ts). A badge
-// record alone is no proof: a fresh profile clears the badge before it syncs (the order arm64 CI
-// once lost on the packaged macOS app). Here the restart keeps its profile, so no such badge
-// comes first — the same wait still applies, one rule for both.
+// The label goes on only once this start's first complete read has been answered (GitHub#186,
+// first-round.ts): what that read already finds is the reminders' baseline — history, never
+// notified, never unread (GitHub#251). One item carries the label before the app starts (SEEDED):
+// it must stay silent and the badge must stay 0 — no start-up summary, no history in the badge.
+// A badge record alone is no proof of that read: a fresh profile clears the badge before it syncs
+// (the order arm64 CI once lost on the packaged macOS app). The restart keeps its profile; the
+// same wait applies, one rule for both.
 
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -32,7 +32,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { WebDriver, until } from './webdriver';
-import { firstRoundBadge, inFrontAtFirstRound } from './first-round';
+import { firstReadDone } from './first-round';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const APP = process.env.CAVIL_TAURI_APP ?? join(root, 'src-tauri', 'target', 'debug', 'cavil-loop-client');
@@ -46,7 +46,7 @@ let wd: WebDriver;
 let dir: string;
 let record: string;
 let control: string;
-/** carries the label from before the app starts: the first round ends in a summary of 1 */
+/** carries the label from before the app starts: history, never notified (GitHub#251) */
 let SEEDED: number;
 
 /** the shell's record, whole lines only (the last one may still be being written) */
@@ -140,10 +140,15 @@ function label(number: number) {
   i.updated_at = new Date().toISOString();
 }
 
-/** Wait for this start's first complete round (from = its first record); the badge it set. */
-async function firstRound(from: number, ms: number): Promise<number> {
-  await until(() => firstRoundBadge(records(), from) !== null, 'first complete round: the summary and the badge after it', ms);
-  return firstRoundBadge(records(), from)!;
+/** Wait for this start's first complete read (from = the fake GitHub's log length when it began). */
+async function firstRound(from: number, ms: number): Promise<void> {
+  await until(() => firstReadDone(fake.log, from, REPO), 'first complete read: both lists of the repository answered', ms);
+}
+
+/** Nothing about the history: no notification other than for `key`s given, no summary of any kind. */
+function onlyNotified(keys: string[], from = 0) {
+  const notes = records().slice(from).filter((r) => r.op === 'notify');
+  expect(notes.map((r) => (r.alert?.kind === 'item' ? r.alert.key : `${r.alert?.kind}`))).toEqual(keys);
 }
 
 async function signInWithRepo() {
@@ -160,7 +165,7 @@ async function signInWithRepo() {
   await wd.click('[data-testid="back"]');
   // the first complete read is on the board (the reminders' baseline is taken in the same round)
   await wd.find('[data-testid="card"]', 30_000);
-  return firstRound(0, 30_000);
+  await firstRound(0, 30_000);
 }
 
 test.beforeEach(async () => {
@@ -186,20 +191,22 @@ test.afterEach(async () => {
 test('window closed: hidden, still syncing and reminding within 120 s; a click on the notification brings it back on that item', async () => {
   test.setTimeout(GATE_MS + 120_000);
   await startApp();
-  const badgeBefore = await signInWithRepo();
-  // the badge is the unread count (GitHub#185): the seeded item is unread unless the window was in front
-  expect(badgeBefore).toBe(inFrontAtFirstRound(records()) ? 0 : 1);
+  await signInWithRepo();
 
   // the close button's request: hidden, not quit
   appendFileSync(control, 'close\n');
   await until(() => records().some((r) => r.op === 'hidden'), 'window hidden, app still running', 10_000);
   const hiddenAt = records().length;
+  // the seeded item is history (GitHub#251): never notified, never in the badge
+  onlyNotified([]);
+  expect(lastBadge() ?? 0).toBe(0);
 
   const n = unlabelled();
   label(n);
   const key = `${REPO}#${n}`;
   const t0 = Date.now();
-  await until(() => notified(key) && lastBadge() === badgeBefore + 1, 'synced while hidden: the new item notified, badge +1', GATE_MS);
+  await until(() => notified(key) && lastBadge() === 1, 'synced while hidden: the new item notified, badge 1', GATE_MS);
+  onlyNotified([key]);
   const after = records().slice(hiddenAt);
   // the window really stayed hidden: every beat since says so, and nothing showed it
   expect(after.filter((r) => r.op === 'tick').length).toBeGreaterThan(0);
@@ -222,21 +229,23 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   await signInWithRepo();
   await stopApp();
   const before = records().length;
+  const logBefore = fake.log.length;
 
   // started the way launch at login starts it
   await startApp(['--hidden']);
   await until(() => records().slice(before).some((r) => r.op === 'start' && r.hidden === true), 'started hidden', 15_000);
   // nothing of the first run wrote after it quit: this start is the first record since
   expect(records()[before]).toMatchObject({ op: 'start', hidden: true });
-  // its own first round (signed in from the stored credential): a new start takes a new baseline
-  const badgeBefore = await firstRound(before, 30_000);
-  // started hidden: never in front, so the seeded item is unread (GitHub#185)
-  expect(inFrontAtFirstRound(records(), before)).toBe(false);
-  expect(badgeBefore).toBe(1);
+  // its own first read (signed in from the stored credential): a new start takes a new baseline
+  await firstRound(logBefore, 30_000);
+  // started hidden, never in front, and still the seeded item is history: not notified, not unread (GitHub#251)
+  onlyNotified([], before);
+  expect(records().slice(before).some((r) => r.op === 'active')).toBe(false);
   const n = unlabelled();
   label(n);
   const key = `${REPO}#${n}`;
-  await until(() => notified(key) && lastBadge() === badgeBefore + 1, 'synced while started hidden: the new item notified, badge +1', GATE_MS);
+  await until(() => notified(key) && lastBadge() === 1, 'synced while started hidden: the new item notified, badge 1', GATE_MS);
+  onlyNotified([key], before);
   const since = records().slice(before);
   expect(since.filter((r) => r.op === 'tick').length).toBeGreaterThan(0);
   expect(since.filter((r) => r.op === 'tick').every((r) => r.visible === false)).toBe(true);

@@ -80,6 +80,12 @@ export interface FakeState {
   deniedRepos: Map<string, Set<string>>;
   /** responses of matching paths wait for `release()` (after the response is computed) */
   holds: { match: (path: string, entry: LoggedRequest) => boolean; gate: Promise<void> }[];
+  /**
+   * GitHub#250: REST writes whose connection is dropped. `apply: 'now'` = carried out, then the
+   * answer is lost; `apply: 'later'` = the client sees the connection drop at once, the write is
+   * carried out only when `land()` of `lateWhen` is called (it arrived and lands late).
+   */
+  lost: { match: (entry: LoggedRequest) => boolean; apply: 'now' | 'later'; pending: (() => void)[]; caught: number }[];
   /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
   refreshTokens: Map<string, string>;
   refreshSeq: number;
@@ -112,6 +118,10 @@ export interface FakeGitHub {
   hold(fragment: string): () => void;
   /** hold responses of requests matching `pred` (GraphQL: operation + variables are filled) until released */
   holdWhen(pred: (entry: LoggedRequest) => boolean): () => void;
+  /** GitHub#250: matching REST writes are carried out, then their connection is dropped (the answer is lost) */
+  dropAnswerWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; stop: () => void };
+  /** GitHub#250: matching REST writes see the connection drop at once and are carried out only on `land()` */
+  lateWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; land: () => void; stop: () => void };
   /** everything writable, serialised: equal before / after = GitHub changed nothing */
   digest(): string;
   /** requests that ask GitHub to change something (REST non-GET except the markdown renderer, GraphQL mutations) */
@@ -155,6 +165,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     tokenViewers: new Map(),
     deniedRepos: new Map(),
     holds: [],
+    lost: [],
     refreshTokens: new Map(),
     refreshSeq: 0,
     tokenAnswers: [],
@@ -293,8 +304,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return;
       }
       if (!authed()) return;
-      const answered = handleGraphql(store, op, body.variables ?? {});
-      if (answered) {
+      const live = handleGraphql(store, op, body.variables ?? {});
+      if (live) {
+        // frozen now (GitHub#229): a held answer carries the data of the moment it arrived
+        const answered = JSON.parse(JSON.stringify(live));
         await held();
         if (answered.httpStatus) return send(answered.httpStatus, { message: 'Server Error' });
         return send(200, answered);
@@ -309,13 +322,16 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         const idx = v.after ? pages.findIndex((p) => p.items.pageInfo.endCursor === v.after) + 1 : 0;
         if (idx <= 0 && v.after) return send(200, { errors: [{ message: 'bad cursor' }] });
         if (state.failProjectPage.get(key) === idx) return send(502, { message: 'Server Error' });
-        return send(200, { data: { [holder]: { projectV2: { ...pages[idx], viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } });
+        // frozen now, then held like every other read (GitHub#229)
+        const frozen = JSON.parse(JSON.stringify({ data: { [holder]: { projectV2: { ...pages[idx], viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } }));
+        await held();
+        return send(200, frozen);
       }
       return send(200, { errors: [{ message: `fake: unknown operation ${op}` }] });
     }
 
     // ---- REST writes of #138, labels / milestones lists, markdown ----
-    if (url.pathname.startsWith('/api/') && (req.method !== 'GET' || /\/(labels|milestones)$/.test(url.pathname))) {
+    if (url.pathname.startsWith('/api/') && (req.method !== 'GET' || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname))) {
       const raw = req.method === 'GET' ? '' : await readBody(req);
       let parsed: any = undefined;
       try {
@@ -329,6 +345,26 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         req.socket.destroy();
         return;
       }
+      // GitHub#250: a write whose answer is lost (carried out now or later)
+      const lost = req.method !== 'GET' ? state.lost.find((l) => l.match(entry)) : undefined;
+      if (lost) {
+        lost.caught++;
+        const run = () =>
+          handleRest(
+            store,
+            req.method ?? 'GET',
+            url.pathname + url.search,
+            parsed,
+            () => {},
+            () => {},
+            login(),
+          );
+        if (lost.apply === 'now') run();
+        else lost.pending.push(run);
+        entry.status = -1;
+        req.socket.destroy();
+        return;
+      }
       // the answer is computed (and a write applied) first, then held: a held
       // request carries the data of the moment it arrived, like a slow network
       const out: (() => void)[] = [];
@@ -337,13 +373,18 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         req.method ?? 'GET',
         url.pathname + url.search,
         parsed,
-        (st, b) => out.push(() => send(st, b)),
+        // frozen now (GitHub#229): a held answer must not pick up a write that arrived after it
+        (st, b) => {
+          const frozen = b === undefined ? undefined : JSON.parse(JSON.stringify(b));
+          out.push(() => send(st, frozen));
+        },
         (t) =>
           out.push(() => {
             entry.status = 200;
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(t);
           }),
+        login(),
       );
       if (handled) {
         await held();
@@ -376,8 +417,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         next.searchParams.set('page', String(page + 1));
         headers.Link = `<${next.toString()}>; rel="next"`;
       }
+      // frozen now (GitHub#229): a held answer carries the data of the moment it arrived
+      const frozen = JSON.parse(JSON.stringify(slice));
       await held();
-      return send(200, slice, headers);
+      return send(200, frozen, headers);
     }
     send(404, { message: 'Not Found' });
   });
@@ -418,6 +461,22 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       return () => {
         state.holds = state.holds.filter((x) => x !== h);
         release();
+      };
+    },
+    dropAnswerWhen(pred) {
+      const l = { match: pred, apply: 'now' as const, pending: [], caught: 0 };
+      state.lost.push(l);
+      return { caught: () => l.caught, stop: () => void (state.lost = state.lost.filter((x) => x !== l)) };
+    },
+    lateWhen(pred) {
+      const l = { match: pred, apply: 'later' as const, pending: [] as (() => void)[], caught: 0 };
+      state.lost.push(l);
+      return {
+        caught: () => l.caught,
+        land: () => {
+          for (const f of l.pending.splice(0)) f();
+        },
+        stop: () => void (state.lost = state.lost.filter((x) => x !== l)),
       };
     },
     digest: () => digest(store),

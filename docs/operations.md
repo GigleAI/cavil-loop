@@ -542,7 +542,34 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 - **Design**: still written and posted on the issue, multiple-choice questions use their
   defaults, and it always goes to review (whatever `REVIEW_DESIGN_PROPOSALS` says). A passing
   design review flips the issue back to `pending/agent` and the worker starts building.
-  Splitting into sub-issues is *not* covered: the worker hands that plan to a human.
+- **Splitting into sub-issues is covered too** (GitHub#233): the split plan goes through review like any
+  design, and once it passes the worker creates the sub-issues directly. The reviewer also checks "does this really
+  need splitting" and "is any work left on the parent outside the sub-issues" (on autopilot the wrap-up becomes a
+  sub-issue too). A sub-issue this tool created — really attached to the parent on GitHub, carrying the split marker
+  that points at the parent, created by the loop's write account — **inherits the parent's autopilot**: neither the
+  sub-issue nor its PR needs the label. Dispatch, takeover, adding the label to the PR and the merge permit all treat
+  the parent as a third place under the same rule as issue + PR (the stop line is the latest removal across all
+  three; the authorization is a maintainer's own add after it). Removing the label from the parent, adding
+  `pending/human` to it or closing it stops every sub-issue; to stop just one, add `pending/human` to that sub-issue.
+  The parent or its label history unreadable = undecidable: not dispatched this round, nothing written (never
+  dispatched as a normal item). Once every sub-issue is closed the parent goes to `pending/human` for a human to close.
+- **The issue stays open after the merge** (GitHub#233): an autopilot PR body says only `Refs #N` and no closing
+  keyword, so GitHub does not close the issue on merge. After merging, the daemon comments on the issue — one visible
+  line of conclusion plus what the human needs to do; background / chosen approach / ruled-out approaches and why
+  copied verbatim from the summary section the worker wrote in the PR body (`<!-- autopilot-summary:begin -->` to
+  `<!-- autopilot-summary:end -->`), the merge evidence folded at the end — and flips the issue to `pending/human`,
+  removing `pending/PR`. The human closes it when satisfied (closing as *completed* adds `Done` as usual) or adds
+  `pending/agent` for rework. If any flow label (dispatch, in progress, review, waiting, pending/human…) is already on
+  the issue by the time of the hand-over, a new round has started: no label is touched, only the comment is posted if
+  missing. Every write re-reads the issue first and writes nothing if its state or label set changed; unreadable =
+  retried next round; the comment is de-duplicated by its marker. ⚠️ A bound autopilot PR whose body still has a
+  closing keyword (including older `Closes #N` PRs) is handed back to the worker before merging, to change just that
+  line to `Refs #N`.
+- **Trusted repos** (`TRUSTED_REPOS`, GitHub#233, empty by default): comma-separated `owner/repo`. A listed repo
+  ① may hold the parent of a split sub-issue: a maintainer's own autopilot label on that parent authorizes this
+  repo's sub-issue, and whoever added it needs write access in **both** repos; ② may hold a prerequisite for
+  "waiting on another item" (see below). Anything unreadable across repos (parent, label history, permission) is
+  undecidable and nothing is written. Repos not on the list are not trusted, as before.
 - **On the PR works too** (GitHub#128): for a PR that already exists, a maintainer can put the
   autopilot label on the **PR** itself and the daemon takes it over — when, besides the
   autopilot label, the PR carries only `pending/human` (and the authorization came after it),
@@ -612,7 +639,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 
 | Check | Fails → |
 |---|---|
-| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly and the body closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
+| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly, and the body references only one `Refs #N` with no closing keyword, or closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
+| A bound PR's body has no keyword that would make GitHub close an issue of this repo on merge (GitHub#233: the issue stays open for a human) | handed back to the worker to change it to `Refs #N` |
 | PR-only: authorization comes from the PR alone (drop the issue side of the next row), and the PR description at label time (that revision in the edit history) also meets the previous row | `pending/human` |
 | Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
 | The PR itself carries the autopilot label (for a bound PR the daemon copies it from the issue, see above; GitHub#190) | undecidable this round (→ `pending/human` after `AUTOPILOT_UNKNOWN_MAX` rounds) |
@@ -837,15 +865,15 @@ still carrying it is back on autopilot** — remove them if that is not what you
 ## Waiting on another item: `pending/blocked` (GitHub#157)
 
 Set `LABEL_PENDING_BLOCKED` (the example config uses `pending/blocked`) and a worker whose work is blocked on **another
-issue / PR** — of this repo or of another one (GitHub#243) — and not on a human decision, records the prerequisites and puts that label on instead of
+issue / PR** — of this repo, or of a repo on the trusted list (GitHub#233 / #243) — and not on a human decision, records the prerequisites and puts that label on instead of
 `pending/human`. Every poll round the daemon looks at items carrying it:
 
 | Prerequisites | Daemon does |
 |---|---|
 | all done (issue closed as *completed*, PR merged) | one comment, removes the label, adds back the trigger label the marker names (default `pending/agent`) — the next round dispatches it |
 | one ended otherwise (closed *not planned* / *duplicate* / no reason, PR closed unmerged, unreadable 404) | comment naming it, `pending/human` |
-| one in another repo cannot be read: 404 / 410 (does not exist, deleted, or a private repo the polling token may not read — GitHub answers 404 for that too) or a 403 that is not a rate limit | comment naming it and saying how to grant read access, `pending/human` |
-| none can be found | comment, `pending/human` |
+| one in a trusted repo cannot be read: 404 / 410 (does not exist, deleted, or a private repo the polling token may not read — GitHub answers 404 for that too) or a 403 that is not a rate limit | comment naming it and saying how to grant read access, `pending/human` |
+| none can be found, or one lives in another repo that is not on the trusted list (`TRUSTED_REPOS`) | comment (how to add the repo to the list), `pending/human` |
 | some still open | nothing |
 | GitHub cannot be read (error, missing field; for another repo also a rate limit, network error or 5xx) | nothing; looks again next round — never treated as done |
 
@@ -854,10 +882,18 @@ measured: GitHub accepts only issues as the blocker, a PR returns 422 "Target is
 latest hidden marker `<!-- agent-blocked-by: #12 OWNER/REPO#34 resume=pending/agent -->` posted by the loop's write account or a
 maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) strictly after the label was last removed — GitHub timestamps are whole
 seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. `#12` means this repo; `OWNER/REPO#34`
-another repo (this repo's own full name counts as `#12`). *Blocked by* entries from another repo are prerequisites too.
-Another repo is only ever read, with the polling identity — the daemon never writes there; reading a private repo needs
-that token to have read access to it. Free
+another repo, see below (this repo's own full name, any case, counts as `#12`). Free
 text such as "waiting on #12" is never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+
+**Prerequisites in another repo** (GitHub#233): with `TRUSTED_REPOS` set, the marker may say `owner/repo#N` and that
+repo's *Blocked by* entries count too; the daemon reads their state there, with the same notion of done. A bare `#N`
+always means this repo, so an item here with the same number never triggers it. Repos not on the list go to a
+human with a comment saying how to add them — with the list empty that is every `owner/repo#N` (until GitHub#243 an
+unlisted `owner/repo#N` was misread as this repo's `#N`). Another repo is only ever read, with the polling identity — the
+daemon never writes there; a private repo needs that token to have read access, otherwise it answers 404 and the item is
+handed to a human naming the prerequisite and the token's missing access. ⚠️ After an autopilot merge the issue stays open for a
+human, so waiting on an autopilot issue really waits for **a human to close it**; to continue as soon as the code is
+merged, name the PR as the prerequisite.
 
 **Recovering after a hand-off**: the daemon's comment lists the steps — fix the prerequisites (remove the failed one from
 *Blocked by*, add the new one, or post a new marker for a PR), **remove `pending/human`**, put `pending/blocked` back. While
@@ -922,6 +958,47 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
   the summary then leaves tests out, as for a project without the command, while the
   machine record keeps `test_secs=0` so the weekly report can still tell the two apart. A
   command that cannot tell whether anything ran must answer `unknown`, never 0.
+- **A built-in test-time command ships with the skill** (GitHub#244):
+  `scripts/drivers/token-usage/test-time.sh`, which gets a durable entry point like the footer
+  script, so it always runs the merged and deployed version — never the copy a worktree is
+  editing. Turn it on in the local config (the guard keeps the footer working in the minutes
+  between merge and deployment):
+  ```bash
+  COMMENT_FOOTER_EXTRA_CMD='f="$HOME/.agents/releases/cavil-loop/entrypoints/drivers/token-usage/test-time.sh"; if [ -e "$f" ]; then bash "$f"; else printf "test_secs=unknown\n- 测试统计命令尚未部署\n"; fi'
+  ```
+  Check: the next hand-off comment's summary line shows `测试 …` (or `测试未知` with a reason in
+  the details). Undo: empty the line again. Two sources:
+  - **Full runs** — `tests/run.sh` gives each run an id, prints `cavil-test-run id=<id>` in its own
+    output (with ` log=failed` when the record could not be written) and appends a start and an
+    end line with that id to `${XDG_STATE_HOME:-~/.local/state}/cavil-loop/test-runs.jsonl`
+    (`CAVIL_TEST_RUNS_LOG` overrides it). A command in the agent's session is linked to a record
+    **only by the id in that command's own output** (the tool result; for a Claude background
+    command, the output file the tool result names; for codex, that command's own item in its
+    `exec` cell's output plus what later `write_stdin` polls of the same `session_id` return —
+    never another command's output, e.g. a `cat` of some saved log) —
+    never by a nearby start time: a run a human started next to it, or a second run of the same
+    agent, is a different run. Linked with both lines, or with only the end line (it carries the
+    start time) → measured. Only a start line → "未记到结束". Id printed but no record →
+    "没有记账". No id readable → "无法关联". A record no session command printed → counted on
+    its own, measured. Nested runs (a test running `tests/run.sh` again) record nothing.
+  - **Single runs** — test commands recognised in the agent's own session (`bash tests/<x>.test.sh`,
+    `bash test/tauri/mutations.sh`, `npm test` / `npm run test…`, `npx vitest`,
+    `npx playwright test`, `cargo test`; text inside quotes and here-docs does not count), timed
+    from tool call to tool result — an estimate of the whole command.
+  - The answer: a source that cannot be read → `unknown`; anything measured → the union of the
+    measured spans (parallel tests count once; other untimed runs are listed in the details, so
+    the number is a lower bound); runs seen but none measured → `unknown`; both sources read
+    and nothing ran → 0.
+  - codex: an `exec` cell's output is matched to its commands only when the cell is nothing but
+    `text(await tools.X({…}));` statements and has one output item per statement; any other
+    cell still counts its commands (a full run → "无法关联", a single run → untimed) but gives
+    its output to none of them. Standard function calls with JSON arguments (`exec_command`,
+    `shell`, `local_shell_call`) are read too. A command whose text cannot be parsed (e.g. a
+    template string) is listed as "解析不了" and makes the answer `unknown`, never 0.
+  - Limits: wrappers (`bash -c '…'`, an own script) are not recognised; a single run that went to
+    the background (Claude) or was still running when its cell returned (codex) is counted, not
+    timed; a full run whose output went to a file (`> log`) or otherwise cannot be read is counted
+    twice — once as "无法关联", once from its record — the seconds are not.
 - **AI time is an estimate** (the summary says `AI 约 …`). Per model request it counts from the
   request being sent to the last reply chunk written into the session log, and a second
   covered by several requests counts once. It includes network round-trips and queueing
@@ -982,7 +1059,7 @@ Available placeholders (`sed`-rendered):
 | `${DESIGN_REVIEW_NOTE}` | With design review on, a one-line note ("the reviewer checks the proposal first; a bounce means revise it"); otherwise empty, so the rendered prompt is byte-for-byte what it was |
 | `${LABEL_REVIEW_OR_HUMAN}` | **where output goes next**: `pending/review` when the gate is on, automatically degrading to `pending/human` when it is off. Always use this in templates rather than `${LABEL_PENDING_REVIEW}` — the latter renders empty when unconfigured, so the work loses `doing/agent` without gaining any pending label and vanishes from the board |
 | `${PREVIEW_URL_HOST}` | the host serving this machine's PR previews. Use it instead of hard-coding a hostname — the same template runs on every machine that polls the repo, and a baked-in host sends reviewers to a box that has none of the files |
-| `${REVIEW_ASSET_BASE_URL}` | public base URL for review screenshots (funnel path), from `WEEKLY_REPORT_ASSET_ROOT_URL`. Same reasoning: shots are written to the machine that took them, so the URL has to name that machine |
+| `${REVIEW_ASSET_BASE_URL}` | public base URL for review screenshots (funnel path), from `WEEKLY_REPORT_ASSET_ROOT_URL`. Same reasoning: shots are written to the machine that took them, so the URL has to name that machine. The built-in worker templates and the review template also use it to tell whether the project has an image host: when empty, a UI / style choice is described in words instead of mock-up images (GitHub#238) |
 | `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review gate it would bounce work back to the reviewer itself: an infinite loop |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `cavil-loop.config`, default `en`) |
 | `${COMMENT_FOOTER_CMD}` | full command that generates the comment usage footer (agent, usage driver and project config already filled in); templates only add `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`. It prints the whole footer, appended to the comment as-is; for the project test-time hook see `COMMENT_FOOTER_EXTRA_CMD` in the config example |

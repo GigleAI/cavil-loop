@@ -4,9 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_VIEW, isValidView, normalizeView, validWidths } from '../../src/shared/viewSettings';
-import { defaultProjects } from '../../src/renderer/NewIssueDialog';
 import { isImageOnlyPaste, newIssueOnWeb } from '../../src/renderer/pasteImage';
-import type { AppState, BoardData, ProjectMeta } from '../../src/shared/types';
 
 describe('table column widths', () => {
   it('kept per column; only known columns, finite, 60–2000 px', () => {
@@ -29,29 +27,7 @@ describe('table column widths', () => {
   });
 });
 
-describe('new issue: the Projects ticked when the dialog opens (maintainer\'s choice C)', () => {
-  const meta = (key: string, viewerCanUpdate = true) => ({ key, title: key, viewerCanUpdate }) as ProjectMeta;
-  const sources = ['project:a', 'project:b', 'project:ro', 'repo:x'].map((key) => ({ key }));
-  const state = (selected: string[] | null) => ({ view: { ...DEFAULT_VIEW, selected }, sources }) as unknown as AppState;
-  const data = (projects: ProjectMeta[], all: ProjectMeta[]): BoardData => ({ items: [], projects, allProjects: all });
-  const A = meta('project:a');
-  const B = meta('project:b');
-  const RO = meta('project:ro', false);
-  it('every source shown → none ticked', () => {
-    expect(defaultProjects(state(null), data([A, B], [A, B]))).toEqual([]);
-    // every source ticked one by one at the top is the same "everything"
-    expect(defaultProjects(state(['repo:x', 'project:ro', 'project:b', 'project:a']), data([A, B, RO], [A, B, RO]))).toEqual([]);
-  });
-  it('from a table group\'s "+" (GitHub#214): the boards the table shows start ticked (that this account may change), whatever the narrowing', () => {
-    expect(defaultProjects(state(null), data([A, B, RO], [A, B, RO]), true)).toEqual(['project:a', 'project:b']);
-    expect(defaultProjects(state(['project:a']), data([A], [A, B]), true)).toEqual(['project:a']);
-  });
-  it('the view narrowed to some sources → the Projects among them (that this account may change)', () => {
-    expect(defaultProjects(state(['project:a']), data([A], [A, B]))).toEqual(['project:a']);
-    expect(defaultProjects(state(['project:a', 'project:ro', 'repo:x']), data([A, RO], [A, B, RO]))).toEqual(['project:a']);
-    expect(defaultProjects(state(['repo:x']), data([], [A, B]))).toEqual([]);
-  });
-});
+// which Projects a new issue starts ticked on: replaced by GitHub#231, see issue231.test.ts
 
 describe('pasting an image', () => {
   const clip = (types: string[], files: string[]) => ({ types, items: files.map((type) => ({ kind: 'file', type })) as unknown as DataTransferItemList });
