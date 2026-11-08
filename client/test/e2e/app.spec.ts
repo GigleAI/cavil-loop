@@ -1255,7 +1255,7 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
-  await detail.getByTestId('reply-input').click();
+  await detail.locator('.detail-title').click();
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
   await card(page, 138).click();
@@ -2266,7 +2266,7 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
-  await detail.getByTestId('reply-input').click();
+  await detail.locator('.detail-title').click();
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
   expect(env.fake.writes()).toEqual([]);
@@ -2414,7 +2414,7 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
 
   // ---- 3. inside the panel; a selection dragged from inside to outside ----
-  await detail.getByTestId('reply-input').click();
+  await detail.locator('.detail-title').click();
   await detail.locator('.detail-head').click({ position: { x: 4, y: 4 } });
   await stays(138);
   const title = await detail.locator('.detail-title').boundingBox();
@@ -2476,7 +2476,7 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
 
   // ---- 6b. the shortcut list (?) is a dialog too: its backdrop closes it, not the panel ----
   await open(137);
-  await detail.getByTestId('reply-input').click();
+  await detail.locator('.detail-title').click();
   await page.keyboard.press('?');
   const help = page.getByTestId('shortcut-help');
   await expect(help).toBeVisible();
