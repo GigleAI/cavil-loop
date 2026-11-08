@@ -164,6 +164,10 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 /* ---- board ---- */
 .board-page { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
 .board-area { flex: 1; display: flex; min-height: 0; position: relative; }
+/* GitHub#260: the detail floats from the top of everything under the view bar; the bars keep to its left */
+.below-bar { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+.board-bars { flex: none; min-width: 0; }
+.board-bars.beside-detail { margin-right: var(--detail-space, 560px); }
 .board { flex: 1; min-width: 0; overflow: auto; padding: 4px 16px 16px; }
 .board-area > .board { flex: 1; min-width: 0; }
 .columns { display: flex; gap: 12px; align-items: flex-start; }
@@ -279,12 +283,22 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .field-name { color: var(--muted); flex: 0 0 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .field-row .field-name ~ .field-name { flex: none; margin-left: 8px; }
 .field-row select { max-width: 100%; }
-.pr-box { margin: 12px 16px 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.pr-box [data-testid='pr-status'] { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 12px; }
-.pr-box [data-testid='pr-status'] .branch { font: 12px var(--mono); color: var(--muted); }
-.pr-box .row { margin: 0; padding: 10px 12px; background: var(--canvas); border-top: 1px solid var(--border-muted); }
-.pr-box .pr-note { padding: 0 12px 10px; }
-.pr-box.mergeable { border-color: var(--state-open-bg); }
+/* GitHub#260: the PR's state and merge buttons sit in the reply box, above send; states are icons, words on hover */
+.pr-bar { border-top: 1px solid var(--border-muted); background: var(--canvas); }
+.pr-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 10px; }
+.pr-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.pr-icon { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); cursor: default; border-radius: 4px; }
+.pr-icon:focus-visible, .pr-bar .branch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pr-dot { flex: none; display: block; }
+.pr-dot.tone-ok { color: var(--state-open-fg); }
+.pr-dot.tone-bad { color: var(--err-fg); }
+.pr-dot.tone-warn { color: var(--warn-icon); }
+.pr-dot.tone-pending, .pr-dot.tone-none { color: var(--muted); }
+.pr-bar .branch { font: 12px var(--mono); color: var(--muted); white-space: nowrap; cursor: default; }
+.pr-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+.pr-actions select { max-width: 170px; }
+.pr-bar .pr-note { padding: 0 10px 8px; }
+.pr-bar.mergeable { box-shadow: inset 3px 0 0 var(--state-open-fg); }
 .timeline-tools { display: flex; align-items: center; gap: 8px; margin: 14px 16px 6px; }
 .timeline-tools b { font-size: 13px; }
 .timeline { flex: 1; min-height: 320px; display: flex; padding: 0 16px; }
@@ -404,8 +418,8 @@ button.primary > kbd { background: transparent; color: #fff; border-color: rgba(
 @media (max-width: 760px) { .shortcut-groups { grid-template-columns: 1fr; } }
 
 /* GitHub#205 */
-.pr-box.conflict { border-color: var(--err-border); border-width: 2px; }
-.pr-box .banner[data-testid='pr-conflict'] { margin: 0; border-radius: 0; border-width: 0 0 1px; }
+.pr-bar.conflict { box-shadow: inset 3px 0 0 var(--err-fg); }
+.pr-bar .banner[data-testid='pr-conflict'] { margin: 0; border-radius: 0; border-width: 0 0 1px; }
 .quick-actions { display: inline-flex; gap: 6px; padding-right: 6px; margin-right: 2px; border-right: 1px solid var(--border-muted); }
 .reply .banner.paste-image, .modal .banner.paste-image { margin: 6px 10px; align-items: center; }
 .modal textarea.edit-box { width: 100%; min-height: 220px; font: 13px/1.5 var(--mono); padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); resize: vertical; }
@@ -461,3 +475,36 @@ button.icon-btn.trouble-btn.on { background: var(--warn-bg); border-color: var(-
 .trouble-panel ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .trouble-filter { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 4px 8px; }
 .trouble-foot { display: flex; justify-content: flex-end; }
+
+/* GitHub#260: the panel's notices behind one button in its head; a plain success is a short line there */
+.detail-head .head-note { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 240px; font-size: 12px; color: var(--state-open-fg); }
+.detail-head .head-note .icon { flex: none; }
+.detail-head .head-note-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.icon-btn.notices-btn { width: auto; min-width: 28px; padding: 0 6px; gap: 4px; display: inline-flex; align-items: center; }
+button.icon-btn.notices-btn.tone-error, button.icon-btn.notices-btn.tone-error:hover:not(:disabled) { color: var(--err-fg); }
+button.icon-btn.notices-btn.tone-warn, button.icon-btn.notices-btn.tone-warn:hover:not(:disabled) { color: var(--warn-icon); }
+button.icon-btn.notices-btn.tone-ok, button.icon-btn.notices-btn.tone-ok:hover:not(:disabled) { color: var(--state-open-fg); }
+button.icon-btn.notices-btn.on { background: var(--hover); border-color: var(--border); }
+.notices-count { font-size: 12px; font-weight: 600; line-height: 1; }
+.notices-panel { border-color: var(--border); }
+.notices-panel[hidden] { display: none; }
+.detail .notices-panel .banner, .detail .notices-panel .op-draft-line { margin: 0; }
+button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
+/* GitHub#260: the head is two groups. The facts (badge, number, people, success line) give way first and
+   are cut short; the buttons never shrink, and on a panel too narrow for both they take a line of their own */
+.detail-head { position: relative; flex-wrap: wrap; row-gap: 4px; }
+.detail-head .head-info { display: flex; align-items: center; gap: 8px; flex: 1 1 180px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.detail-head .head-info > * { flex-shrink: 0; }
+.detail-head .head-info .head-people, .detail-head .head-info .head-note { flex-shrink: 1; min-width: 0; overflow: hidden; }
+.detail-head .head-info .ref { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.detail-head .head-actions { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
+/* the notices open under the head, inside the panel whatever its width */
+.detail-head .notices-anchor { position: static; }
+.detail-head .notices-panel { top: calc(100% + 2px); right: 12px; width: min(460px, calc(100% - 24px)); }
+/* GitHub#260: fields side by side while there is room (labels + milestone on one line, each board on the next) */
+.detail-fields { display: flex; flex-wrap: wrap; align-items: center; column-gap: 14px; padding: 2px 0; }
+.detail-fields .field-row { flex: 0 1 auto; max-width: 100%; }
+.detail-fields .field-row + .field-row { border-top: none; }
+.detail-fields .field-row:first-child { flex-grow: 0; }
+.detail-fields .field-name { flex: 0 0 auto; max-width: 140px; }
+.detail-fields .project-row { flex-basis: 100%; }
