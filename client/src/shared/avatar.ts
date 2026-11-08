@@ -12,7 +12,8 @@ export const AVATAR_HOST = 'https://avatars.githubusercontent.com';
  * maintainer's choice): pasted attachments (`private-user-images` — what
  * GitHub's rendered HTML points at today, a signed address that needs no
  * credential; `user-images` — attachments from before 2023) and GitHub's image
- * proxy (`camo`, which fetches external images on the reader's behalf). Exact
+ * proxy (`camo`, which fetches external images on the reader's behalf), and
+ * since GitHub#267 a repo's raw files (`raw`). Exact
  * hosts only, never `*.githubusercontent.com`. The window's policy
  * (src-tauri/tauri.conf.json) and the "open in the browser" rule
  * (src-tauri/crates/core/src/engine.rs) carry the same list; tests check both.
@@ -21,6 +22,11 @@ export const GITHUB_IMAGE_HOSTS = [
   'https://private-user-images.githubusercontent.com',
   'https://user-images.githubusercontent.com',
   'https://camo.githubusercontent.com',
+  // GitHub#267 (the maintainer's choice): files committed to a repo, as GitHub
+  // serves them raw — where an agent's design images live when a project has
+  // no public image host. GitHub's web page loads them directly; so does the
+  // client now. Public repos only: no credential is ever sent.
+  'https://raw.githubusercontent.com',
 ];
 
 /** Avatar of a GitHub login, `px` CSS pixels square (fetched at twice that for sharp screens). */

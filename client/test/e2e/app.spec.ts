@@ -524,6 +524,7 @@ test('a slow answer for the item you left never lands on the one you are looking
     '<p><img alt="on github" src="https://github.com/GigleAI/cavil-loop/raw/main/probe.png"></p>',
     '<p><img alt="look-alike" src="https://camo.githubusercontent.com.evil.example/probe.png"></p>',
     '<p><img alt="raw" src="https://raw.githubusercontent.com/o/r/main/probe.png"></p>',
+    '<p><img alt="raw look-alike" src="https://raw.githubusercontent.com.evil.example/o/r/main/probe.png"></p>',
     '<p><img alt="s3" src="https://github-production-user-asset-6210df.s3.amazonaws.com/probe.png"></p>',
   ].join(''));
   const { app, page } = await launch(env);
@@ -544,7 +545,8 @@ test('a slow answer for the item you left never lands on the one you are looking
   await expect(frame.locator('body')).toContainText('BODY_137');
   await expect(frame.locator('body')).not.toContainText('BODY_138');
 
-  // 2. images (GitHub#205): GitHub's own hosts are requested (and shown); the others are not even tried, and the entry says so
+  // 2. images (GitHub#205, a repo's raw files since GitHub#267): GitHub's own hosts are requested (and shown);
+  //    the others are not even tried, and the entry says so
   await expect(frame.locator('[data-blocked]')).toHaveAttribute('data-blocked', '3');
   // (every request the window made outside its own bridge; the app's page policy is what stops the rest)
   const reqs = () => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '');
@@ -553,16 +555,16 @@ test('a slow answer for the item you left never lands on the one you are looking
     'https://camo.githubusercontent.com/probe-138',
     'https://private-user-images.githubusercontent.com/probe.png?jwt=x',
     'https://user-images.githubusercontent.com/probe-old.png',
+    'https://raw.githubusercontent.com/o/r/main/probe.png',
   ])
     await expect.poll(reqs).toContain(`request ${u}\n`);
-  for (const alt of ['via proxy', 'attachment', 'old attachment', 'on github'])
+  for (const alt of ['via proxy', 'attachment', 'old attachment', 'on github', 'raw'])
     await expect.poll(() => frame.locator(`img[alt="${alt}"]`).evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth > 0)).toBe(true);
   const seen = reqs();
-  // look-alikes, raw files, the storage behind attachments: never even asked
+  // look-alikes (of the raw host too), the storage behind attachments: never even asked
   expect(seen).not.toContain('evil.example');
-  expect(seen).not.toContain('raw.githubusercontent.com');
   expect(seen).not.toContain('amazonaws.com');
-  expect(seen.split('\n').filter((l) => l && !/^request https:\/\/((api\.)?github\.com|(avatars|private-user-images|user-images|camo)\.githubusercontent\.com)\//.test(l))).toEqual([]);
+  expect(seen.split('\n').filter((l) => l && !/^request https:\/\/((api\.)?github\.com|(avatars|private-user-images|user-images|camo|raw)\.githubusercontent\.com)\//.test(l))).toEqual([]);
   await shot(page, '28-images-github-only');
 
   // 3. a change still in flight when another item is opened: its result goes to the board, not into the new item
