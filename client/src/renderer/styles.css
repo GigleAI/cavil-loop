@@ -175,7 +175,6 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .lane .column { max-height: none; }
 .column.drop-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* GitHub#294: a table row dragged to another group; the group under the pointer lights up */
-table.items tr[draggable='true'] td.title-cell { cursor: grab; }
 table.items tr.dragging { opacity: 0.5; }
 table.items tbody.drop-over td, table.items tbody.drop-over .group-head td { background-color: var(--accent-subtle); }
 table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outline-offset: 1px; border-radius: 4px; }
