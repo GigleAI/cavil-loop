@@ -14,7 +14,9 @@
 # 覆盖：
 #   【1】#286 的形状：后台循环等 Release 运行、结束通知收尾 → 总览「远端 CI 约 1h 50m 30s」、各段相加 = 总耗时
 #   【2】认法：前台 gh run watch、前台 gh pr checks --watch、Monitor 循环（中途事件不算结束）、前台超时挪到后台、
-#        写在双引号里的 $( … )；不该认的单次查询 / 触发运行 / 轮询评论 / 引号里的文字
+#        写在双引号里的 $( … )；不该认的单次查询 / 触发运行 / 轮询评论 / 引号里的文字；
+#        只是打印出来的命令文字（单引号里的 $( … )、echo 的参数、循环里 echo 的查询）不算，
+#        混写时编号取真正在等的那条（代码复审第 1 轮的反例）
 #   【3】两条等待部分重叠、期间 AI 在工作：逐条时长各自完整，合计按并集再扣 AI
 #   【4】没记到结束：部分 → 合计是下限；全部 → 「远端 CI 未知」、不写秒数字段
 #   【5】上一轮派工的等待不算
@@ -225,6 +227,24 @@ has kinds_moved_quoted "$out" "  - 等 Actions 运行 333：$(at 400) → $(at 6
 has kinds_summary "$(summary "$out")" "远端 CI 约 7m 0s"
 eq kinds_sums "$(sums_ok "$out")" yes
 hasnt kinds_not_single_query "$out" "运行 999"
+
+# 代码复审第 1 轮的反例：只是打印出来的文字不算等待；混写时编号取真正在等的那条命令。
+#   每条前台命令都跑 60 秒、不和 AI 重叠，认错了就会多出条数和秒数
+case_setup texts claude 700 <<EOF
+$(j k '"bash"' id '"e1"' t 10 cmd "$(qj "printf '%s\n' '\$(gh run watch 123)'")" rt 70)
+$(j k '"bash"' id '"e2"' t 100 cmd "$(qj 'echo gh run watch 123')" rt 160)
+$(j k '"bash"' id '"e3"' t 200 cmd "$(qj 'for n in 1 2; do echo "gh run view 123"; sleep 30; done')" rt 260)
+$(j k '"bash"' id '"e4"' t 300 cmd "$(qj 'echo "gh run watch 999"; gh run watch 124')" rt 360)
+$(j k '"bash"' id '"e5"' t 400 cmd "$(qj 'gh run view 998 --log-failed; gh run watch 125')" rt 460)
+$(j k '"bash"' id '"e6"' t 500 cmd "$(qj 'gh run view 997 --log-failed; for i in 1 2; do sleep 5; done')" rt 560)
+$(j k '"ai"' a 600 b 605)
+EOF
+out=$(footer claude)
+eq texts_count "$(field "$out" ci_waits)" 2
+eq texts_secs "$(field "$out" ci_wait_secs)" "120.000"
+has texts_target_after_echo "$out" "  - 等 Actions 运行 124：$(at 300) → $(at 360)，1m 0s"
+has texts_target_after_query "$out" "  - 等 Actions 运行 125：$(at 400) → $(at 460)，1m 0s"
+for id in 123 999 998 997; do hasnt "texts_not_$id" "$out" "运行 $id"; done
 
 echo "【3】两条等待部分重叠、期间 AI 在工作"
 case_setup overlap claude 800 <<EOF

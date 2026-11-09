@@ -829,13 +829,14 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 认哪些命令（Claude 的 Bash、Monitor 调用；codex 的 `exec` 命令）：本身阻塞到运行结束的 `gh run watch …`、
     `gh pr checks … --watch`；或一个 `for` / `while` / `until` 循环，里面同时有 `sleep` 和远端 CI 状态查询
     （`gh run view` / `gh run list` / `gh pr checks`，或 `gh api` 访问 `…/actions/runs…`、`…/check-runs`、
-    `…/check-suites`、`…/commits/<sha>/status`）。单次查询、`gh workflow run`、轮询 PR 评论 / 标签、引号里的
-    文字都不算。
+    `…/check-suites`、`…/commits/<sha>/status`）。只认真正会执行的命令：按 shell 规则拆开，单引号里是文字，
+    双引号和不带引号处的 `$( … )` / 反引号会执行；`echo gh run watch 1` 这种打印出来的文字、循环里 echo 的
+    查询都不算。单次查询、`gh workflow run`、轮询 PR 评论 / 标签也不算。
   - 起止：开始 = 工具调用写进会话的时刻；结束 = 前台命令的工具结果、后台命令和 Monitor 的「后台任务结束」
     通知（Monitor 运行中的事件通知不算）、codex 命令自报的耗时或报出退出码那次轮询。
   - 合计 = 各条等待时段的并集，再扣掉与 AI 请求重合的部分（后台在等、agent 同时在干活的那段算 AI），所以
-    不和 AI 重叠。细节逐条列出等的是哪个运行（`gh run …` / `actions/runs/<编号>`，命令里用变量时找同一条
-    命令里的赋值）或哪个 PR 的检查、起止和这一条自己的时长（不扣 AI，可以和 Actions 页面对），并写明几条
+    不和 AI 重叠。细节逐条列出等的是哪个运行（只从认定为等待的那条 gh 命令里取，`gh run …` /
+    `actions/runs/<编号>`，命令里用变量时找同一条命令里的赋值）或哪个 PR 的检查、起止和这一条自己的时长（不扣 AI，可以和 Actions 页面对），并写明几条
     重叠、扣了多少 AI 时间。
   - 没记到结束的（后台任务还没结束、通知缺失、codex 一直没报退出码）只计条数，合计注明是下限；一条都没
     计上时总览写「远端 CI 未知」。上一轮派工里开始的等待不算。

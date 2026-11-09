@@ -24,8 +24,11 @@
   1. 本身阻塞到运行结束：`gh run watch …`、`gh pr checks … --watch`
   2. 一个 for / while / until 循环，里面同时有 sleep 和远端 CI 状态查询：`gh run view` / `gh run list` /
      `gh pr checks`，或 `gh api` 访问 …/actions/runs…、…/check-runs、…/check-suites、…/commits/<sha>/status
-  不算：单次查询、`gh workflow run`、轮询 PR 评论 / 标签、引号里的文字（`echo "gh run watch"`）。
-  命令切分（去 heredoc、去引号）用测试统计（test_time.py）那一套；写在双引号里的 `$( … )` 照样认。
+  只认处在命令位置、真正会执行的 gh 调用（按 shell 规则拆：单引号里是文字，双引号和不带引号处的
+  `$( … )` / 反引号会执行、递归拆开；`echo gh run watch 1` 里的只是参数）。循环那一条要求 sleep 和
+  查询都在循环体（含条件）里。不算：单次查询、`gh workflow run`、轮询 PR 评论 / 标签、打印出来的文字。
+  编号只从认定为等待的那条命令里取（阻塞命令优先），命令里用变量时找同一条命令里的数字赋值。
+  heredoc 内容先去掉（用测试统计 test_time.py 的那一份），那是数据不是命令。
   已知限制：把等待包进脚本文件、或 `bash -c '…'` 包一层，认不出来。
 
 起止：开始 = 工具调用写进会话的时刻（codex：单元时刻 + 前面各条耗时）；结束 = 前台命令的工具结果时刻 /
@@ -42,104 +45,281 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ai_time      # noqa: E402
 import test_time    # noqa: E402
 
-GH = r'\bgh\s+(?:(?:-R|--repo)\s+\S+\s+)?'
-WATCH = re.compile(GH + r'run\s+watch\b')
-CHECKS = re.compile(GH + r'pr\s+checks\b')
-WATCH_FLAG = re.compile(r'(?:^|\s)--watch\b')
-QUERY = re.compile(GH + r'(?:run\s+(?:view|list)\b|pr\s+checks\b|api\b[^\n;&|]*?'
-                   r'(?:/actions/runs\b|/check-runs\b|/check-suites\b|/commits/[^\s/]+/status\b))')
-LOOP = re.compile(r'(?:^|[\s;&|(])(?:for|while|until)\s')
-SLEEP = re.compile(r'(?:^|[\s;&|(])sleep\s+\S')
 VALUE_FLAGS = {"-i", "--interval", "--attempt", "-R", "--repo", "--json", "--jq", "-q", "-t", "--template",
-               "-j", "--job", "-w", "--workflow", "-b", "--branch"}
+               "-j", "--job", "-w", "--workflow", "-b", "--branch", "-L", "--limit", "-u", "--user", "-e", "--event",
+               "-s", "--status", "-c", "--commit"}
 
 
-def _subst_bodies(text):
-    """所有 `$( … )` 的内容（括号配对），双引号里的也取出来。"""
-    out, i = [], 0
-    while True:
-        j = text.find("$(", i)
-        if j < 0:
-            return out
-        depth, k = 0, j + 1
-        while k < len(text):
-            if text[k] == "(":
-                depth += 1
-            elif text[k] == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-            k += 1
-        out.append(text[j + 2:k])
-        i = j + 2
+# ── 认命令：按 shell 的执行位置拆出「真正会执行的简单命令」（GitHub#293 代码复审第 1 轮）────────────
+# 只认真正处在命令位置的 gh 调用：`echo gh run watch 1`、`printf '%s' '$(gh run watch 1)'`、
+# `echo "gh run view 1"` 里的都只是参数或文字。单引号里一律是文字；双引号和不带引号处的 `$( … )` /
+# 反引号是会执行的命令替换，递归拆开。每条简单命令带一个「是否在 for / while / until 循环里」的标记。
+# 判等待和取编号都只看这一份拆分结果（analyze），不再各自扫原文。
+
+LOOP_KW = {"for", "while", "until", "select"}
+PREFIX_KW = {"do", "then", "else", "elif", "if", "!", "{", "}", "time", "fi", "esac", "in"}
+WRAPPERS = {"env", "nohup", "command", "exec", "nice", "time", "builtin", "xargs"}
+ASSIGN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', re.S)
+SUB_MARK = "\x00"      # 词里命令替换所在的位置（替换本身另行拆开）
 
 
-def _plain(cmd):
-    """去 heredoc、去引号内文字，再把各处 `$( … )` 的内容（同样去引号）接在后面。"""
-    h = test_time.strip_heredocs(cmd)
-    return "\n".join([test_time.strip_quotes(h)] + [test_time.strip_quotes(b) for b in _subst_bodies(h)])
+def _balanced(s, i, open_ch="(", close_ch=")"):
+    """s[i] 紧跟在开括号之后：返回 (里面的文字, 配对的闭括号之后的位置)；引号里的括号不算。"""
+    depth, j, n = 1, i, len(s)
+    while j < n:
+        c = s[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "'":
+            k = s.find("'", j + 1)
+            j = n if k < 0 else k + 1
+            continue
+        if c == '"':
+            k = j + 1
+            while k < n and s[k] != '"':
+                k += 2 if s[k] == "\\" else 1
+            j = k + 1
+            continue
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+            if depth == 0:
+                return s[i:j], j + 1
+        j += 1
+    return s[i:], n
 
 
-def is_wait(cmd):
-    text = _plain(cmd)
-    for seg in re.split(r'&&|\|\||[;|&\n()]', text):
-        if WATCH.search(seg) or (CHECKS.search(seg) and WATCH_FLAG.search(seg)):
-            return True
-    # 查询的路径常写在引号里（`gh api "repos/…/actions/runs/1"`），所以在只去了 heredoc 的原文里找；
-    # 循环和 sleep 必须在引号外（`echo "while … sleep …"` 不是循环）
-    return bool(LOOP.search(text) and SLEEP.search(text) and QUERY.search(test_time.strip_heredocs(cmd)))
+def _backtick(s, i):
+    j, n = i, len(s)
+    while j < n and s[j] != "`":
+        j += 2 if s[j] == "\\" else 1
+    return s[i:j], min(j + 1, n)
 
 
-def _resolve(tok, text):
-    v = tok.strip("\"'")
-    if re.fullmatch(r'\d+', v):
-        return v
-    m = re.fullmatch(r'\$\{?([A-Za-z_]\w*)\}?', v)
-    if m:
-        vals = set(re.findall(r'(?:^|[\s;&|(])' + m.group(1) + r'=["\']?(\d+)["\']?(?=[\s;&|)]|$)', text))
-        if len(vals) == 1:
-            return vals.pop()
+def _tokenize(s):
+    """→ [(词列表, [替换里的文字...])...]，每项一条简单命令；分隔符 ; & | && || 换行 ( ) 都切开。"""
+    cmds, words, subs = [], [], []
+    cur, has_cur, skip_next = [], False, False
+    i, n = 0, len(s)
+
+    def end_word():
+        nonlocal cur, has_cur, skip_next
+        if has_cur:
+            w = "".join(cur)
+            if skip_next:
+                skip_next = False
+            else:
+                words.append(w)
+        cur, has_cur = [], False
+
+    def end_cmd():
+        nonlocal words, subs
+        end_word()
+        if words or subs:
+            cmds.append((words, subs))
+        words, subs = [], []
+
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            if i + 1 < n and s[i + 1] != "\n":
+                cur.append(s[i + 1]); has_cur = True
+            i += 2
+        elif c == "'":
+            k = s.find("'", i + 1)
+            k = n if k < 0 else k
+            cur.append(s[i + 1:k]); has_cur = True
+            i = k + 1
+        elif c == '"':
+            has_cur = True
+            j = i + 1
+            while j < n and s[j] != '"':
+                if s[j] == "\\" and j + 1 < n:
+                    cur.append(s[j + 1]); j += 2
+                elif s.startswith("$(", j) and not s.startswith("$((", j):
+                    body, j = _balanced(s, j + 2)
+                    subs.append(body); cur.append(SUB_MARK)
+                elif s[j] == "`":
+                    body, j = _backtick(s, j + 1)
+                    subs.append(body); cur.append(SUB_MARK)
+                else:
+                    cur.append(s[j]); j += 1
+            i = j + 1
+        elif s.startswith("$((", i):
+            body, i = _balanced(s, i + 3)
+            if i < n and s[i] == ")":
+                i += 1
+            cur.append("0"); has_cur = True
+        elif s.startswith("$(", i):
+            body, i = _balanced(s, i + 2)
+            subs.append(body); cur.append(SUB_MARK); has_cur = True
+        elif c == "`":
+            body, i = _backtick(s, i + 1)
+            subs.append(body); cur.append(SUB_MARK); has_cur = True
+        elif s.startswith("${", i):
+            body, i = _balanced(s, i + 2, "{", "}")
+            cur.append("${" + body + "}"); has_cur = True
+        elif c == "#" and not has_cur:
+            k = s.find("\n", i)
+            i = n if k < 0 else k
+        elif c in " \t":
+            end_word(); i += 1
+        elif c in "\n;&|()":
+            end_cmd()
+            i += 1
+        elif c in "<>":
+            if has_cur and "".join(cur).isdigit():      # 2>/dev/null 的 2
+                cur, has_cur = [], False
+            end_word()
+            while i < n and s[i] in "<>&":
+                i += 1
+            if i < n and s[i] == "-":                    # >&- 关闭描述符
+                i += 1
+            elif not (i < n and s[i].isdigit() and s[i - 1] == "&"):
+                skip_next = True                         # 重定向目标不是参数
+            else:
+                while i < n and s[i].isdigit():
+                    i += 1
+        else:
+            cur.append(c); has_cur = True; i += 1
+    end_cmd()
+    return cmds
+
+
+def simple_commands(cmd, in_loop=False, depth=0, assigns=None):
+    """→ ([{"argv": [...], "loop": bool}], 赋值表)。递归拆开命令替换；heredoc 内容先去掉（那是数据）。"""
+    assigns = {} if assigns is None else assigns
+    out = []
+    loop = 1 if in_loop else 0
+    text = test_time.strip_heredocs(cmd) if depth == 0 else cmd
+    for words, subs in _tokenize(text):
+        argv, starts_loop = [], False
+        k = 0
+        while k < len(words):                     # 跳过关键字、赋值前缀、包一层的命令
+            w = words[k]
+            if w in LOOP_KW:
+                starts_loop = True
+                k += 1
+                if w in ("for", "select"):        # for 头部 `i in …` 不是命令
+                    k = len(words)
+                continue
+            if w == "done":
+                loop = max(0, loop - 1)
+                k += 1
+                continue
+            if w in PREFIX_KW:
+                k += 1
+                continue
+            m = ASSIGN.match(w)
+            if m:
+                if re.fullmatch(r'\d+', m.group(2)):
+                    assigns.setdefault(m.group(1), set()).add(m.group(2))
+                k += 1
+                continue
+            if w in WRAPPERS or w == "timeout":
+                k += 1
+                while k < len(words) and (words[k].startswith("-") or (w == "env" and "=" in words[k])):
+                    k += 1
+                if w == "timeout" and k < len(words):
+                    k += 1                        # 时长
+                continue
+            break
+        if starts_loop:
+            loop += 1
+        argv = words[k:]
+        here = loop > 0
+        if argv:
+            out.append({"argv": argv, "loop": here})
+        if depth < 8:
+            for body in subs:
+                sub, _ = simple_commands(body, here, depth + 1, assigns)
+                out += sub
+    return out, assigns
+
+
+def _gh(argv):
+    """gh 调用 → 去掉全局 -R / --repo 之后的参数；不是 gh 返回 None。"""
+    if not argv or os.path.basename(argv[0]) != "gh":
+        return None
+    a, k = argv[1:], 0
+    while k < len(a) and a[k] in ("-R", "--repo"):
+        k += 2
+    return a[k:]
+
+
+RUNS_PATH = re.compile(r'/actions/runs(?:/|$|\?)|/check-runs\b|/check-suites\b|/commits/[^/\s]+/status\b')
+
+
+def _kind(argv):
+    """一条简单命令 → 'block'（本身阻塞到运行结束）/ 'query'（远端 CI 状态查询）/ None。"""
+    a = _gh(argv)
+    if a is None:
+        if argv and argv[0] == "sleep":
+            return "sleep"
+        return None
+    if a[:2] == ["run", "watch"] or (a[:2] == ["pr", "checks"] and "--watch" in a):
+        return "block"
+    if a[:2] in (["run", "view"], ["run", "list"], ["pr", "checks"]):
+        return "query"
+    if a[:1] == ["api"] and any(RUNS_PATH.search(x) for x in a[1:] if not x.startswith("-")):
+        return "query"
+    return None
+
+
+def _resolve(tok, assigns):
+    if re.fullmatch(r'\d+', tok):
+        return tok
+    m = re.fullmatch(r'\$\{?([A-Za-z_]\w*)\}?', tok)
+    if m and len(assigns.get(m.group(1), ())) == 1:
+        return next(iter(assigns[m.group(1)]))
     return ""
 
 
-def _first_id(rest, text):
-    toks = re.split(r'[\s]+', rest.strip())
+def _target(argv, assigns):
+    """这一条 gh 命令自己的等待对象 → (what, id)。"""
+    a = _gh(argv)
+    if a[:1] == ["api"]:
+        for x in a[1:]:
+            m = re.search(r'/actions/runs/([^/?\s]+)', x)
+            if m:
+                return "run", _resolve(m.group(1), assigns)
+        return "run", ""
+    what = "pr" if a[:1] == ["pr"] else "run"
     skip = False
-    for t in toks:
-        if not t or re.match(r'[;&|)<>]', t):
-            break
+    for x in a[2:]:
         if skip:
             skip = False
             continue
-        if t.startswith("-"):
-            skip = t in VALUE_FLAGS
+        if x.startswith("-"):
+            skip = x in VALUE_FLAGS
             continue
-        v = _resolve(t, text)
+        v = _resolve(x, assigns)
         if v:
-            return v
-    return ""
+            return what, v
+    return what, ""
 
 
-def target(cmd):
-    """→ (what, id)：等的是哪个运行 / 哪个 PR 的检查；编号读不出为空串。"""
-    h = test_time.strip_heredocs(cmd)
-    for m in re.finditer(GH + r'run\s+(?:watch|view)\b([^\n;&|]*)', h):
-        v = _first_id(m.group(1), h)
-        if v:
-            return "run", v
-    for m in re.finditer(r'/actions/runs/([^/\s\'"?]+)', h):
-        v = _resolve(m.group(1), h)
-        if v:
-            return "run", v
-    for m in re.finditer(GH + r'pr\s+checks\b([^\n;&|]*)', h):
-        v = _first_id(m.group(1), h)
-        if v:
-            return "pr", v
-    if re.search(GH + r'run\b', h) or "/actions/runs" in h:
-        return "run", ""
-    if CHECKS.search(h):
-        return "pr", ""
-    return "", ""
+def analyze(cmd):
+    """→ None（不是在等远端 CI）| (what, id)。
+
+    等待 = 有一条真正执行的阻塞等待命令；或者在同一个循环里既有 sleep、又有远端 CI 状态查询。
+    编号只从认定为等待的那一条命令里取：阻塞命令优先，否则取循环里第一条读得出编号的查询。
+    """
+    cmds, assigns = simple_commands(cmd)
+    kinds = [(c, _kind(c["argv"])) for c in cmds]
+    for c, k in kinds:
+        if k == "block":
+            return _target(c["argv"], assigns)
+    queries = [c for c, k in kinds if k == "query" and c["loop"]]
+    if queries and any(k == "sleep" and c["loop"] for c, k in kinds):
+        for c in queries:
+            what, wid = _target(c["argv"], assigns)
+            if wid:
+                return what, wid
+        return _target(queries[0]["argv"], assigns)
+    return None
 
 
 # ── 时间段（毫秒整数，免得浮点相减凭空多出零头）────────────────────────────────
@@ -180,11 +360,12 @@ def summarize(cmds, ai_spans_ms, since, now, unparsed=0):
     lo, hi = _ms(since), _ms(now)
     waits, timed = [], []
     for c in sorted(cmds, key=lambda c: c["t"]):
-        if not is_wait(c["cmd"]) or _ms(c["t"]) > hi:
+        found = analyze(c["cmd"])
+        if found is None or _ms(c["t"]) > hi:
             continue
         end = c["end"] if c.get("end") is not None else c.get("done")
         a = max(_ms(c["t"]), lo)
-        what, wid = target(c["cmd"])
+        what, wid = found
         w = {"what": what, "id": wid, "start": a / 1000, "end": None, "secs": None}
         if end is not None:
             b = max(a, min(_ms(end), hi))

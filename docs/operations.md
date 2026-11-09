@@ -1024,16 +1024,19 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     until the run ends — `gh run watch …`, `gh pr checks … --watch` — or a `for` / `while` /
     `until` loop containing both `sleep` and a remote CI status query (`gh run view` /
     `gh run list` / `gh pr checks`, or `gh api` on `…/actions/runs…`, `…/check-runs`,
-    `…/check-suites`, `…/commits/<sha>/status`). A single query, `gh workflow run`, polling PR
-    comments / labels and text inside quotes do not.
+    `…/check-suites`, `…/commits/<sha>/status`). Only commands that actually run count: the
+    command is split the way the shell does it — single quotes are text, `$( … )` / backticks
+    unquoted or in double quotes run — so printed text such as `echo gh run watch 1`, or a query a
+    loop only echoes, does not. Nor do a single query, `gh workflow run`, or polling PR comments /
+    labels.
   - Start = when the tool call was written to the session; end = the foreground command's tool
     result, the "background task finished" notification for background commands and Monitor
     (Monitor's per-event notifications do not end it), or codex's own reported duration / the poll
     that reported the exit code.
   - The total is the union of all wait spans minus the part overlapping AI requests (time the
     agent worked while a background wait ran counts as AI), so it never overlaps AI. The details
-    list each wait: which run (`gh run …` / `actions/runs/<id>`; a variable is resolved from an
-    assignment in the same command) or which PR's checks, start / end, and that wait's own length
+    list each wait: which run (taken only from the gh command recognised as the wait —
+    `gh run …` / `actions/runs/<id>`; a variable is resolved from an assignment in the same command) or which PR's checks, start / end, and that wait's own length
     (AI not subtracted, so it matches the Actions page), plus notes on overlaps and the AI time
     taken out.
   - Waits with no end on record (background task still running, notification missing, codex never
