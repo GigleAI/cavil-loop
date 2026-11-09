@@ -25,6 +25,7 @@ const PATHS = {
   bell: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3z" /><path d="M6.5 14.5h3" /></>,
   back: <path d="M10 3L5 8l5 5" />,
   chevron: <path d="M4 6l4 4 4-4" />,
+  pencil: <><path d="M10.5 2.5l3 3-8 8H2.5v-3z" /><path d="M9 4l3 3" /></>,
   // item states (same shapes as GitHub's: circle + dot, circle + tick, circle + slash, branch, merge)
   'issue-open': <><circle cx="8" cy="8" r="6.25" /><circle cx="8" cy="8" r="1.3" fill="currentColor" /></>,
   'issue-done': <><circle cx="8" cy="8" r="6.25" /><path d="M5.4 8.2l1.8 1.8 3.4-3.6" /></>,

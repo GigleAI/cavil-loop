@@ -66,6 +66,12 @@ export interface WritableState {
   cannotUpdate: Set<string>;
   /** answer the re-read of a body / comment source (CavilTaskSource) with HTTP 502 */
   failTaskSource: boolean;
+  /** GitHub#299: answer the re-read of a title (CavilTitleSource) with HTTP 502 */
+  failTitleSource: boolean;
+  /** GitHub#299: a field the re-read of a title leaves out of its answer (a GitHub that answers short) */
+  titleSourceDrop: 'title' | 'viewerCanUpdate' | null;
+  /** GitHub#299: what GitHub keeps of a title written by PATCH (null = exactly what was sent) */
+  titleKept: ((sent: string) => string) | null;
   /** adding this label answers HTTP 422 (GitHub#205: a step of "autopilot" that fails) */
   failLabel: string | null;
   /** repositories where every write answers 403 (the account has read access only) */
@@ -137,6 +143,9 @@ export function defaultWritable(): WritableState {
     failLabels: new Set(),
     dropIssueLabels: new Set(),
     failTaskSource: false,
+    failTitleSource: false,
+    titleSourceDrop: null,
+    titleKept: null,
     readOnlyRepos: new Set(),
     readOnlyProjects: new Set(),
     dropWrites: false,
@@ -487,6 +496,15 @@ export function handleRest(store: Store, method: string, path: string, body: any
     return send(200, gqlContent(c).labels.nodes), true;
   }
   if (im[1] === 'issues' && method === 'PATCH' && sub === '') {
+    // GitHub#299: the title of an issue or a PR (GitHub's issues endpoint takes both)
+    let title: string | undefined;
+    if (body && 'title' in body) {
+      if (typeof body.title !== 'string' || !body.title.trim()) return send(422, { message: 'Validation Failed: title cannot be blank' }), true;
+      if (w.cannotUpdate.has(gqlContent(c).id)) return send(403, { message: 'Must have admin rights to Repository.' }), true;
+      title = w.titleKept ? w.titleKept(body.title) : body.title;
+      for (const r of c.rest) r.title = title;
+      for (const g of c.gql) g.title = title;
+    }
     if (body && 'milestone' in body) {
       const ms = body.milestone === null ? null : (w.milestones.get(key) ?? []).find((x) => x.number === body.milestone);
       if (body.milestone !== null && !ms) return send(422, { message: 'Validation Failed: milestone does not exist' }), true;
@@ -503,7 +521,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
         if (g.state !== 'MERGED') Object.assign(g, { state: body.state === 'open' ? 'OPEN' : 'CLOSED', ...(c.kind === 'Issue' ? { stateReason: reason.toUpperCase() } : {}) });
     }
     touch(store, c);
-    return send(200, { number: c.number }), true;
+    return send(200, { number: c.number, ...(title !== undefined ? { title } : {}) }), true;
   }
   if (im[1] === 'issues' && method === 'POST' && sub === '/comments') {
     if (w.failComment) return send(422, { message: 'Validation Failed: body is too long' }), true;
@@ -641,6 +659,21 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
         },
       },
     };
+  }
+  // ---- GitHub#299: re-read one item's title ----
+  if (op === 'CavilTitleSource') {
+    if (w.failTitleSource) return { httpStatus: 502 };
+    const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
+    if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };
+    const content = gqlContent(c);
+    const node: Record<string, unknown> = {
+      __typename: c.kind,
+      title: content.title,
+      viewerCanUpdate: !w.cannotUpdate.has(content.id) && !w.readOnlyRepos.has(c.repo.toLowerCase()),
+      number: c.number,
+    };
+    if (w.titleSourceDrop) delete node[w.titleSourceDrop];
+    return { data: { repository: { issueOrPullRequest: node } } };
   }
   if (op === 'CavilUpdateComment' || op === 'CavilUpdateIssueBody' || op === 'CavilUpdatePrBody') {
     const text = String(v.body ?? '');
