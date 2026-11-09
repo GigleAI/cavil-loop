@@ -199,7 +199,33 @@ test('real app (GitHub#193): a ticked box reaches GitHub as one changed characte
   await wd.frame(null);
   await until(() => fake.writes().length > 0, 'the change reached GitHub', 30_000);
   expect(fake.writes().map((w) => [w.operation, w.variables])).toEqual([['CavilUpdateComment', { id: 'C_Q', body: QUESTION.replace('- [ ] **A.**', '- [x] **A.**') }]]);
-  await until(async () => (await wd.text('[data-testid="action-result"]')).includes('已勾上'), 'told it is done');
+  // GitHub#260 made a plain success a short line in the detail head that ends in "…" when it
+  // does not fit; WebDriver's visible-text answer drops a clipped line entirely (it said "" while
+  // the window showed "已勾上，Gi…"). So: WebDriver says the note is displayed, and the words the
+  // person must read are drawn in full inside the line's visible box. WebKit squeezes characters
+  // hidden behind the "…" to nothing, so "in full" = as wide as the same words laid out unclipped.
+  const NOTE = '[data-testid="action-result"][data-kind="ok"]';
+  const wordsSeen = (words: string) =>
+    wd.exec<boolean>(
+      `const n = document.querySelector(${JSON.stringify(NOTE + ' .head-note-text')});
+       const t = n && n.firstChild;
+       if (!t || t.nodeType !== 3) return false;
+       const i = t.textContent.indexOf(arguments[0]);
+       if (i < 0) return false;
+       const r = document.createRange();
+       r.setStart(t, i);
+       r.setEnd(t, i + arguments[0].length);
+       const w = r.getBoundingClientRect(), box = n.getBoundingClientRect();
+       const probe = document.createElement('span');
+       probe.style.cssText = 'position:fixed;left:-9999px;top:0;white-space:nowrap;font:' + getComputedStyle(n).font;
+       probe.textContent = arguments[0];
+       document.body.appendChild(probe);
+       const full = probe.getBoundingClientRect().width;
+       probe.remove();
+       return full > 0 && w.width >= full - 0.5 && w.left >= box.left - 0.5 && w.right <= box.right + 0.5 && w.top >= box.top - 1 && w.bottom <= box.bottom + 1;`,
+      [words],
+    );
+  await until(async () => (await wd.count(NOTE)) > 0 && (await wd.displayed(NOTE)) && (await wordsSeen('已勾上')), 'told it is done');
   // nothing injected ran; the frame's fetch above never reached the fake
   const msgs = await wd.exec<string[]>('return window.__msgs');
   expect(msgs).toContain('ready');

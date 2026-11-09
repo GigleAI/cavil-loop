@@ -30,6 +30,8 @@ export interface FreshOut {
   /** absent: leave the shown problem; null: clear it */
   problem?: string | null;
   signedOut?: { session: number; reason: string };
+  /** GitHub#270: with 'unreachable' only — why GitHub could not be used for the refresh */
+  reason?: string;
 }
 
 export interface GrantInfo {

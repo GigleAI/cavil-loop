@@ -825,7 +825,7 @@ export function BoardView({
 
       <UpdateReadyBar update={state.update} />
       <WarnBar kind="offline" warn={warn}>
-        离线 · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'}。修改功能暂不可用。
+        {sync.offlineReason ? `离线：${sync.offlineReason}` : '离线'} · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。
       </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
         {sync.problem}
