@@ -6447,13 +6447,30 @@ config_notice_issue_body() {   # <KEY>...
     printf -- '---\n这条 issue 由 daemon 自动开。不想再收到这类提示：在配置里写 `CONFIG_NOTICE_ISSUE=false`（之后只写轮询日志）。\n'
 }
 
-# 重读提示 issue：open / closed / foreign（不是本功能开的、或是 PR）；读不到 → 返回 1
+# 重读提示 issue，判定能不能动它（评论 / 关闭之前各读一次，L41）。输出：
+#   ours     开着、正文带本功能标记、不是 PR，且标签正好是 daemon 开它时挂的那个保护标签
+#            （pending/human 在、没有任何别的流程标签）——只有这时才可以评论或关闭
+#   closed   已关（人手动关掉）
+#   foreign  不是本功能开的 issue，或是 PR
+#   handed   开着，但保护标签被摘、或挂上了别的流程标签（人把它转进了别的流程，如派给 worker）
+# 读不到、字段缺失、状态词不认识 → 返回 1（未知：本轮不写、不记）。
 config_notice_issue_state() {   # <号>
-    local out
+    local out st pr mk labels flow l
     out=$(run_gh_capture "读配置提示 issue #$1" gh api "repos/$REPO/issues/$1" \
-        --jq "if .pull_request != null or ((.body // \"\") | contains(\"$CONFIG_NOTICE_MARKER\") | not) then \"foreign\" else .state end") \
+        --jq "[.state // \"\", (.pull_request != null | tostring), ((.body // \"\") | contains(\"$CONFIG_NOTICE_MARKER\") | tostring), (if (.labels | type) == \"array\" then ([.labels[].name] | join(\"\\n\")) + \"\\n\" | @base64 else \"-\" end)] | join(\" \")") \
         || return 1
-    case "$out" in open|closed|foreign) printf '%s\n' "$out" ;; *) return 1 ;; esac
+    read -r st pr mk labels <<<"$out"
+    case "$pr/$mk" in true/*|false/false) printf 'foreign\n'; return 0 ;; false/true) ;; *) return 1 ;; esac
+    case "$st" in open) ;; closed) printf 'closed\n'; return 0 ;; *) return 1 ;; esac
+    [ -n "$labels" ] && [ "$labels" != - ] || return 1
+    labels=$(printf '%s' "$labels" | base64 -d 2>/dev/null) || return 1
+    printf '%s\n' "$labels" | grep -qxF -- "${LABEL_PENDING_HUMAN:-pending/human}" || { printf 'handed\n'; return 0; }
+    flow=$({ closed_done_flow_labels; printf '%s\n' "${LABEL_DONE:-}"; } | grep -vxF -- "${LABEL_PENDING_HUMAN:-pending/human}" | awk 'NF')
+    while IFS= read -r l; do
+        [ -n "$l" ] || continue
+        if printf '%s\n' "$flow" | grep -qxF -- "$l"; then printf 'handed\n'; return 0; fi
+    done <<<"$labels"
+    printf 'ours\n'
 }
 
 config_notice_tick() {
@@ -6489,7 +6506,7 @@ config_notice_tick() {
                 state=unknown
             fi
             case "$state" in
-                open)
+                ours)
                     if [ "$missing" = '[]' ]; then
                         if run_gh "关闭配置提示 issue #$issue" gh_write api -X PATCH "repos/$REPO/issues/$issue" \
                                 -f state=closed -f state_reason=completed; then
@@ -6507,8 +6524,10 @@ config_notice_tick() {
                         fi
                     fi
                     ;;
-                closed|foreign)
-                    # 人已经关掉（或这个号已不是本功能的 issue）：不再碰它。仍有新缺项时下面开新的
+                closed|foreign|handed)
+                    # 人已经关掉、这个号已不是本功能的 issue、或人把它转进了别的流程：不评论、不关闭，
+                    # 从此不再跟踪它（否则每轮都要重读）。仍有新缺项时下面开一条新的
+                    [ "$state" = handed ] && log "配置提示：提示 issue #$issue 已被转进别的流程（保护标签变了），不再碰它"
                     issue=""; changed=1
                     ;;
                 *)  # 读不到：什么都不写、不记，下一轮再看

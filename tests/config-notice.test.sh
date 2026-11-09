@@ -157,12 +157,50 @@ conf_set 'LABEL_PENDING_BLOCKED="pending/blocked"'
 tick
 chk "关掉提示 issue" "$(item 1 .state)" "closed"
 
-echo "【2c】由 systemd 环境文件给的值也算已设置"
+echo "【2c】由 systemd 环境文件给的值也算已设置（三轮输入只差这一个环境变量，都走调度路径）"
+env_tick() {   # <环境变量赋值，空 = 不设>
+    fresh
+    : > "$CALLS"
+    env ${1:+"$1"} CODING_AGENT_RELEASE_ROOT="$NEW" CODING_AGENT_CONFIG="$CONF" CAVIL_SCHEDULED_POLL=1 \
+        bash "$NEW/scripts/agent-poll.sh" >/dev/null 2>&1
+}
+env_tick ""
+chk "环境里没有这一行：开提示 issue（证明这一组确实走进了比对）" "$(creates)/$(nst .issue)" "1/1"
+env_tick 'LABEL_PENDING_BLOCKED='
+chk "环境里给空值：不开、不写状态文件" "$(creates)/$(nst .)" "0/无"
+chk "（这一轮确实跑到了 GitHub）" "$([ -s "$CALLS" ] && echo yes || echo no)" yes
+env_tick 'LABEL_PENDING_BLOCKED=pending/blocked'
+chk "环境里给开启值：不开、不写状态文件" "$(creates)/$(nst .)" "0/无"
+
+echo "【2d】人把提示 issue 转进别的流程（摘了 pending/human、改打派工标签）：不关、不评论，不再跟踪"
+set_labels() { jq --arg n "$1" --arg l "$2" '.[$n] = ($l | split(",") | map(select(. != "")))' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"; }
 fresh
-: > "$CALLS"
-env LABEL_PENDING_BLOCKED="" CODING_AGENT_RELEASE_ROOT="$NEW" CODING_AGENT_CONFIG="$CONF" \
-    bash "$NEW/scripts/agent-poll.sh" >/dev/null 2>&1
-chk "不开 issue、不写状态文件" "$(creates)/$(nst .)" "0/无"
+tick
+set_labels 1 "pending/agent"
+conf_set 'LABEL_PENDING_BLOCKED=""'
+tick
+chk "关闭路径：重读过，但没关" "$(n_calls "^gh api $R/issues/1 --jq")/$(n_calls "^gh api -X PATCH ")/$(item 1 .state)" "1/0/open"
+chk "标签原样留着" "$(labels_of 1)" "pending/agent"
+chk "不再跟踪它" "$(nst .issue)" "null"
+tick
+chk "下一轮不再读它" "$(on_issue 1)" 0
+fresh
+tick
+set_labels 1 "doing/agent,pending/human"
+tick "$NEW2"
+chk "评论路径：保护标签还在但多了别的流程标签 → 不评论，另开一条" "$(comments_on 1)/$(creates)/$(item 1 .state)" "0/1/open"
+fresh
+tick
+set_labels 1 ""
+conf_set 'LABEL_PENDING_BLOCKED=""'
+tick
+chk "保护标签被摘光：不关" "$(n_calls "^gh api -X PATCH ")/$(item 1 .state)" "0/open"
+fresh
+tick
+set_labels 1 "pending/human,bug"
+conf_set 'LABEL_PENDING_BLOCKED=""'
+tick
+chk "只多了非流程标签（bug）：照常关" "$(item 1 .state)" "closed"
 
 echo "【3】人手动关掉提示 issue：同一批不重开、不再读它；出现新缺项才开新的一条（列全部缺项）"
 fresh
@@ -356,6 +394,35 @@ chk "分类与公共库的默认值一致" "$mism" ""
 chk "核对确实覆盖到了 notice 项（不写时是空、模板里开）" \
     "$(awk -F'\t' '$1 == "LABEL_PENDING_BLOCKED" { print $3 }' "$SANDBOX/cls/a")|$(awk -F'\t' '$1 == "LABEL_PENDING_BLOCKED" { print $3 }' "$SANDBOX/cls/b")" "|pending/blocked"
 chk "核对覆盖的 quiet 项不止几个" "$([ "$(awk -F'\t' '$2 == "quiet" && $3 != "<unset>"' "$SANDBOX/cls/a" | wc -l)" -ge 30 ] && echo yes || echo no)" yes
+
+echo "【14】运维文档里的查看步骤：中英文两份一字不差，在干净 shell 里按原样执行"
+ops_block() {   # <文档> → 标记之间 ```bash 代码块的内容
+    awk '/<!-- config-notice-ops:begin -->/{on=1; next} /<!-- config-notice-ops:end -->/{on=0}
+         on && /^```bash$/{inb=1; next} on && /^```$/{inb=0; next} inb' "$1"
+}
+OPS_EN=$(ops_block "$REPO_DIR/docs/operations.md"); OPS_ZH=$(ops_block "$REPO_DIR/docs/operations.zh.md")
+chk "两份文档都有这段" "$([ -n "$OPS_EN" ] && [ -n "$OPS_ZH" ] && echo yes || echo no)" yes
+chk "两份一字不差" "$([ "$OPS_EN" = "$OPS_ZH" ] && echo same || echo diff)" same
+# 维护者要填的只有 KEY 那一行；别的照抄。HOME 是一台装好了这个项目的「机器」，环境里什么都不预设。
+OPS_HOME="$SANDBOX/ops-home"; mkdir -p "$OPS_HOME/.config/cavil-loop"
+run_ops() {
+    printf '%s\n' "$OPS_EN" | sed 's/^KEY=myproject /KEY=cntest /' > "$SANDBOX/ops.sh"
+    env -i HOME="$OPS_HOME" PATH=/usr/local/bin:/usr/bin:/bin bash "$SANDBOX/ops.sh" 2>&1
+}
+fresh
+printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\nGH_TOKEN=x\n' "$W/project" "$CONF" > "$OPS_HOME/.config/cavil-loop/cntest.conf"
+rm -f "$W/state/config-notice.json"
+out=$(run_ops)
+chk "还没跑过：找到了配置和状态目录" "$(grep -cxF "config: $CONF" <<<"$out")/$(grep -cxF "state:  $W/state" <<<"$out")" "1/1"
+chk "还没跑过：说明没有状态文件，不报错" "$(grep -c '^no config-notice.json' <<<"$out")/$(grep -c 'No such file' <<<"$out")" "1/0"
+tick
+out=$(run_ops)
+chk "跑过一轮：列出缺项和 issue 号" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c '[.issue, .logged]')" '[1,["LABEL_PENDING_BLOCKED"]]'
+chk "跑过一轮：日志里那一行也列出来" "$(grep -c '配置提示：本项目配置里没有 LABEL_PENDING_BLOCKED' <<<"$out")" 1
+conf_set 'LABEL_PENDING_BLOCKED=""'
+tick
+out=$(run_ops)
+chk "补上配置后：缺项清空、issue 回到 null，issue 已关" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c '[.issue, .logged, .issued]')/$(item 1 .state)" '[null,[],[]]/closed'
 
 echo
 echo "结果：$pass 通过 / $fail 失败"

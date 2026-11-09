@@ -1172,12 +1172,27 @@ daemon 每轮把这些项和配置（加上 systemd 环境文件）实际设置�
 
 人手动关掉这条 issue = 这一批不再提示，只有之后新出现的缺项才开新的。daemon 从不改配置。读不到这条 issue 或写失败时什么都不发，下一轮重来，「读不到」从不当成「已关」。只在调度器经 `poll-entry.sh` 起的轮询里运行：手动直接跑 `agent-poll.sh` 试跑、或在 worker 会话里跑，都不会开 issue。`CONFIG_NOTICE_ISSUE=false` 只留日志，不发任何 GitHub 调用。状态在 `$STATE_DIR/config-notice.json`，删掉它只意味着「重新判断一次」（最坏多开一条）。
 
-不等 issue、直接看一个项目缺什么：
+不等 issue、直接看一个项目缺什么，在任意 shell 里跑（先改 `KEY`，别的什么都不用设）：
 
+<!-- config-notice-ops:begin -->
 ```bash
-jq . "$STATE_DIR/config-notice.json"     # {"issue": <号|null>, "logged": [...], "issued": [...]}
-grep '配置提示' "$STATE_DIR/poll.log" | tail
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+echo "config: $CONF"
+echo "state:  $STATE_DIR"
+if [ -f "$STATE_DIR/config-notice.json" ]; then
+    jq . "$STATE_DIR/config-notice.json"
+else
+    echo "no config-notice.json: nothing missing, or no scheduled poll of this version yet / 没有缺项，或新版本还没被调度器跑过"
+fi
+grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 ```
+<!-- config-notice-ops:end -->
+
+怎么看：`logged` 是当前缺的项（每项在 `poll.log` 写过一次），`issued` 是已经写进提示 issue 的项，`issue` 是那条 issue 的号（`null` = 没有开着的）。把某一项写进配置后，下一轮调度轮询就把它从两个列表里去掉；全都补上后 `issue` 回到 `null`，那条 issue 被关掉。如果有人把提示 issue 转进了别的流程（摘掉 `pending/human`、或打上派工标签），daemon 就不再碰它、也不再跟踪（`poll.log` 里有一行 `已被转进别的流程`）。
 
 往 `cavil-loop.config.example` 里加配置项时，要在同一个改动里登记进 `scripts/config-notices.txt`，否则 `tests/config-notice.test.sh` 红。只有「不写就关、模板里开」的才登记成 `notice`。
 
