@@ -7,6 +7,8 @@
 # .github/workflows/release.yml 的发版门禁把 shell 测试和客户端的负对照全跑一遍，有红不发版。
 # 其余时候（worker、复审、PR 与主干的 CI）不跑；维护者点名时仍可手动打开。
 #
+# 不再新增负对照（GitHub#234）：已有的留着照跑，新改动只写普通测试。
+#
 #   bash tests/<name>.test.sh              默认：负对照一条都不准备、不跑，只计数
 #   MUTATION=1 bash tests/<name>.test.sh   打开：和改动前一样全部跑
 #

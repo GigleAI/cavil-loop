@@ -4,6 +4,9 @@
 //
 // One entry: `what` (one line, what is broken), the edit (`file` / `from` / `to`, or `edits: [...]`,
 // or `fromGit`), `expect` (the test names that must go red) and optionally `runner: 'e2e'`.
+//
+// No new entries (GitHub#234): changes are covered by ordinary tests. An existing entry whose code
+// moved is pointed at the new code in the same change.
 export const MUTATIONS = [
   { what: '去重失效：同一条目按来源各算一张', file: 'src/data/merge.ts',
     from: "byKey.set(it.key, { ...it, projects: [...it.projects], sources: [...it.sources] });",
