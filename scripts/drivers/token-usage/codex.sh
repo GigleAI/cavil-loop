@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Token usage driver: codex
 #
-# 用法: bash codex.sh <start_epoch> [--kv]
+# 用法: bash codex.sh <start_epoch> [--kv | --ci-wait]
 #
 # 交叉 review 那一侧的用量。原来没有这个 driver，所以 review 评论既不带 token
 # 也不带金额——上周 589 条 review 评论里只有 2 条有记账行，那一侧的开销在周报里
@@ -61,6 +61,7 @@
 # `--kv` 另输出 `models=`（实际产生非零用量的模型 ID，稳定排序）和
 # `model_unknown=yes|no`。unknown 是归属状态，不塞进模型 ID 列表。
 # 还另附 `ai_secs=` / `ai_requests=`：AI 时间估算（ai_time.py，GitHub#88），认不出请求就不附。
+# `--ci-wait`（GitHub#293）改为输出一行 JSON：本轮 agent 等远端 CI 的逐条明细与汇总（见 ci_wait.py）。
 #
 # ⚠️ 同一份模型信息**人读那一行也要出**（GitHub#29）：评论 footer 的 `token …` 行是
 #   「整行原样用脚本输出」的，只写进 --kv 的隐藏标记等于评论上看不到用的是哪个模型。
@@ -112,6 +113,13 @@ while IFS= read -r f; do
     [ "${c:-0}" -gt 0 ] && MINE="$MINE$f"$'\n'
 done <<< "$FILES"
 [ -z "$MINE" ] && exit 0
+
+# --ci-wait：远端 CI 等待（ci_wait.py，GitHub#293）。同一批 rollout、同一个窗口；输出一行 JSON
+if [ "$MODE" = "--ci-wait" ]; then
+    mapfile -t MINE_FILES < <(printf '%s' "$MINE")
+    python3 "$SELF_DIR/ci_wait.py" codex "$START_EPOCH" now "${MINE_FILES[@]}"
+    exit $?
+fi
 
 PI="${CODEX_PRICE_IN_PER_M:-}"
 PC="${CODEX_PRICE_CACHED_IN_PER_M:-}"

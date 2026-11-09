@@ -27,6 +27,7 @@ design-review-gate 51
 dispatch-backoff 1
 doc-diagrams 1
 fake-gh-server 5
+footer-ci-wait 5
 footer-test-time 20
 greedy-dispatch 1
 migrate-legacy 11

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Token usage driver: Claude
 #
-# 用法: bash claude.sh <start_epoch> [--kv]
+# 用法: bash claude.sh <start_epoch> [--kv | --ci-wait]
 #
 # 读 claude 本地 transcript jsonl，统计 [start_epoch, 现在) 这段里的用量与金额。
 # 默认输出跟 claude CLI 的 /usage 命令接近的一行人话：
@@ -58,6 +58,9 @@
 #   ai_secs / ai_requests  AI 时间估算（秒，毫秒精度）与参与估算的请求数（ai_time.py，
 #                        GitHub#88）；一个请求都认不出时这两个字段不出现
 #
+# `--ci-wait`（GitHub#293）输出另一种东西：一行 JSON，本轮 agent 等远端 CI 的逐条明细与汇总
+#   （格式见 ci_wait.py 文件头）。人读行和 --kv 行都不变；找不到会话文件时同样什么也不输出。
+#
 # 缺价（GitHub#51）：某个认得出的模型有用量却取不到价时，留一个本机缺价标记
 #   （_price_cache.sh，不联网）；daemon 下一轮联网补价，补来的价在价目表里状态是
 #   fetched，人读行注明「含自动联网获取的单价」。
@@ -106,6 +109,13 @@ shopt -s nullglob
 FILES=("$PROJ"/*.jsonl)
 shopt -u nullglob
 [ ${#FILES[@]} -eq 0 ] && exit 0
+
+# --ci-wait：远端 CI 等待（ci_wait.py，GitHub#293）。同一批会话文件、同一个窗口；输出一行 JSON，
+# footer 据此排总览、逐条明细和机器记录。不需要价目表，所以在读价之前就走
+if [ "$MODE" = "--ci-wait" ]; then
+    python3 "$HERE/ci_wait.py" claude "$START_EPOCH" now "${FILES[@]}"
+    exit $?
+fi
 
 PRICES=$(python3 "$SOLVER" --table 2>/dev/null)
 [ -z "$PRICES" ] && PRICES='{"models":{},"fast":{}}'

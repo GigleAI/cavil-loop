@@ -957,9 +957,10 @@ With `COMMENT_FOOTER="on"`, the hand-off comment ends with a footer generated wh
 `scripts/drivers/token-usage/comment-footer.sh`: one summary line (it is the `<details>`
 toggle) and a hidden `agent-metrics` record on the last line for the weekly report.
 
-- **The summary line splits total wall time into AI / test / other, in that order.** "Other" is
-  total − test − AI in displayed whole seconds, floored at 0; when test and AI overlap
-  (tests running in the background while the AI works) it is 0 and the details say so.
+- **The summary line splits total wall time into AI / test / remote CI / other, in that order.**
+  "Other" is total − AI − test − remote CI in displayed whole seconds, floored at 0; when tests
+  overlap another part (tests running in the background while the AI works or while waiting on
+  remote CI) it is 0 and the details say so.
 - **The test part only exists when `COMMENT_FOOTER_EXTRA_CMD` is set and has something to
   say.** It shows `测试 4m 51s` (more than 0 s) or `测试未知` (the command answered
   `test_secs=unknown` because tests ran but their time is unknown — e.g. only background or
@@ -1016,6 +1017,37 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
   send / receive; background commands may run while the AI thinks. This is not repeated in
   every comment; when it cannot be computed the summary says `AI 时间未知` and the details
   give the reason.
+- **Remote CI is the time the agent spent waiting for GitHub Actions** (GitHub#293; the summary
+  says `远端 CI 约 …`). It is read from the agent's own session log, not from GitHub, and needs
+  no configuration.
+  - Which commands count (Claude Bash and Monitor calls, codex `exec` commands): ones that block
+    until the run ends — `gh run watch …`, `gh pr checks … --watch` — or a `for` / `while` /
+    `until` loop containing both `sleep` and a remote CI status query (`gh run view` /
+    `gh run list` / `gh pr checks`, or `gh api` on `…/actions/runs…`, `…/check-runs`,
+    `…/check-suites`, `…/commits/<sha>/status`). A single query, `gh workflow run`, polling PR
+    comments / labels and text inside quotes do not.
+  - Start = when the tool call was written to the session; end = the foreground command's tool
+    result, the "background task finished" notification for background commands and Monitor
+    (Monitor's per-event notifications do not end it), or codex's own reported duration / the poll
+    that reported the exit code.
+  - The total is the union of all wait spans minus the part overlapping AI requests (time the
+    agent worked while a background wait ran counts as AI), so it never overlaps AI. The details
+    list each wait: which run (`gh run …` / `actions/runs/<id>`; a variable is resolved from an
+    assignment in the same command) or which PR's checks, start / end, and that wait's own length
+    (AI not subtracted, so it matches the Actions page), plus notes on overlaps and the AI time
+    taken out.
+  - Waits with no end on record (background task still running, notification missing, codex never
+    reported an exit code) are counted but not timed and the total is marked a lower bound; when
+    none could be timed the summary says `远端 CI 未知`. Waits that started in an earlier dispatch
+    round are ignored.
+  - Machine record: `ci_wait_secs` (total, millisecond precision), `ci_waits` (count),
+    `ci_wait_untimed` (count with no end); with no waits it writes `ci_wait_secs=0.000 ci_waits=0
+    ci_wait_untimed=0`, and leaves out `ci_wait_secs` when none could be timed. When it cannot be
+    computed (session unreadable, the tally failed) none of the three is written and the details
+    say `远端 CI 等待没统计到` with the reason. The weekly report does not parse these fields yet.
+  - Limits: a wait wrapped in a script file or `bash -c '…'` is not recognised and stays in
+    "other"; overlap with local tests cannot be taken out (tests only report a total) — see the
+    "other is 0" rule above.
 
 ## Prompt templates
 
