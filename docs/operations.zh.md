@@ -1200,11 +1200,16 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 
 每轮迭代结束发一个版本（GitHub#80）。迭代按 cavil project 看板的 Iteration 字段：每轮 7 天、周一开始，和自然周对齐，所以不读看板，直接按日历触发：
 
-- **何时**：`.github/workflows/release.yml` 的定时触发，每周一 00:10 北京时间（周日 16:10 UTC）。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
-- **发什么**：main 最新提交，tag 用 `scripts/release.sh --auto` 算出的 `release/vYYYY.MM.DD.N`（UTC 日期，周日那天打的就是迭代最后一天）。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。
-- **没新提交不发**：main 最新提交已经有 `release/v*` tag **且该 tag 已有 Release 页面**时，运行照常成功，日志写「本轮无新提交」，不生成 Release。
-- **上次只推了 tag 也能补**：tag 已推但 Release 页面创建失败时，下一次运行（重跑或下周定时）沿用这个 tag 补建页面，不打新 tag。生成说明的起点是最近一个**有 Release 页面**的 tag，一直没补上页面的 tag 会被跳过，它的改动算进下一个 Release。查不到 Release 列表时整次运行失败，不猜。
-- **手动发版**：Actions 页面 → Release → Run workflow（选 main），效果与定时触发相同；或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——它不判断是否已发过）。
+- **何时**：`.github/workflows/release.yml` 的定时触发，**每天** 00:10 北京时间（16:10 UTC，GitHub#309）。周一那次发刚结束的那一周；其余六天发现这一周已发布，十几秒就结束——周一门禁没过时，修复合进 main 之后的第一次每天检查把这一周补发出来，名字和标题仍归那一周。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
+- **发哪一周**：「刚结束的那一周」= 运行开始时按北京时间算、最近一个已经过完的周日 D（北京时间周日 23:59 还是上一周，周一 00:00 起是这一周）。计划那步只算一次，门禁和打标签都用它定下的周、提交和 tag，跨过零点也不变。只补最近这一周：连续漏发两周以上时更早的周不单独出版本，它们的提交算进补发的这一版。
+- **发什么**：tag 是 `release/vD.N`。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。计划那步（`scripts/release.sh --plan`）按顺序判断，命中第一条即定：
+  1. main 最新提交上有 `release/v*` tag 还没有 Release 页面 → 门禁测这个提交，给这个 tag 补建页面，不打新 tag
+  2. 刚结束那一周的 tag 里有没有页面的（取序号最大的那个）→ 门禁测**这个 tag 自己的提交**，给它补建页面，不打新 tag
+  3. main 最新提交上的 tag 都有页面 → 不发，日志写「本轮无新提交」
+  4. 这一周已有发布过的 tag：定时运行不发；手动发版给 main 最新提交打这一周的下一个序号
+  5. 其余 → 给 main 最新提交打 `release/vD.1`
+- **上次只推了 tag 也能补**：tag 已推但 Release 页面创建失败时，下一次运行（定时或手动发版）先补这个页面（上面第 1、2 条），排在「这一周已发布」之前。生成说明的起点是最近一个**有 Release 页面**的 tag，一直没补上页面的 tag（例如更早一周的）会被跳过，它的改动算进下一个 Release。查不到 Release 列表时整次运行失败，不猜。
+- **手动发版**：Actions 页面 → Release → Run workflow（选 main，不勾 `gate_only`），按上面同一张表走，只差第 4 条；勾 `gate_only` 只跑门禁，永远测 main 最新提交，不看这一周发没发，不打 tag 不建页面。或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——用当天 UTC 日期，它不判断是否已发过）。
 - **同一次运行里完成**：流程用内置令牌推的 tag 不会再触发流程，所以定时 / 手动运行在同一个 job 里接着生成 Release；人手推的 tag 仍由 tag 触发走后半段。不需要额外 secret。
 
 Release 只是 changelog 和 `npx skills add` 的落点，**和受管安装的升级无关**：受管 Linux 跟的是 base 分支最新提交（见上一节）。

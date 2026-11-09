@@ -141,9 +141,9 @@ step "Gate passed" > "$TMP/guard.sh"
 # The `needs` context a job sees in Actions: exactly the jobs its `needs:` declares, each with a
 # result (and the plan's outputs). <job> <space-separated job=result overrides>; default success.
 needs_json() {
-    python3 - "$WORKFLOW" "$1" "$2" "${PLAN_SHA:-}" "${PLAN_WORK:-}" <<'PY3'
+    python3 - "$WORKFLOW" "$1" "$2" "${PLAN_SHA:-}" "${PLAN_WORK:-}" "${PLAN_TAG:-}" "${PLAN_ACTION:-}" <<'PY3'
 import json, sys, yaml
-wf, job, over, sha, work = sys.argv[1:6]
+wf, job, over, sha, work, tag, action = sys.argv[1:8]
 needs = yaml.safe_load(open(wf))["jobs"][job].get("needs", [])
 needs = [needs] if isinstance(needs, str) else needs
 res = dict(kv.split("=", 1) for kv in over.split())
@@ -151,7 +151,7 @@ out = {}
 for j in needs:
     out[j] = {"result": res.get(j, "success"), "outputs": {}}
     if j == "plan":
-        out[j]["outputs"] = {"sha": sha, "work": work}
+        out[j]["outputs"] = {"sha": sha, "work": work, "tag": tag, "action": action}
 print(json.dumps(out))
 PY3
 }
@@ -170,8 +170,8 @@ runstep() {  # runstep <script> → $RC, GITHUB_ENV content in $TMP/env, GITHUB_
     : > "$TMP/env"; : > "$TMP/output"; rm -f "$TMP/gh-args"
     set +e
     (cd "$WORK" && GITHUB_ENV="$TMP/env" GITHUB_OUTPUT="$TMP/output" EVENT="${EVENT:-schedule}" GITHUB_REF="${GITHUB_REF:-}" \
-        NEEDS="${NEEDS:-}" GATE_ONLY="${GATE_ONLY:-}" \
-        RELEASE_SHA="${RELEASE_SHA:-}" PATH="$TMP/bin:$PATH" bash -e "$1") >"$TMP/out" 2>"$TMP/err"
+        NEEDS="${NEEDS:-}" GATE_ONLY="${GATE_ONLY:-}" PLAN_TAG="${PLAN_TAG:-}" PLAN_ACTION="${PLAN_ACTION:-}" \
+        CAVIL_RELEASE_NOW="${CAVIL_RELEASE_NOW:-}" RELEASE_SHA="${RELEASE_SHA:-}" PATH="$TMP/bin:$PATH" bash -e "$1") >"$TMP/out" 2>"$TMP/err"
     RC=$?
     set -e
 }
@@ -196,6 +196,11 @@ SH
 chmod +x "$TMP/bin/gh"
 export GH_ARGS="$TMP/gh-args" GH_RELEASES="$TMP/releases" GITHUB_REPOSITORY=o/r
 git -C "$REMOTE" tag -l 'release/v*' > "$GH_RELEASES"   # .1–.5 from above all have their page
+# The plan step names the week that just ended (GitHub#309): pin the clock to Tuesday
+# 2030-01-08 12:00 UTC, so that week ends Sunday 2030-01-06 and the tags above (dated today)
+# are in another week. These runs are manual releases unless a case says otherwise.
+export CAVIL_RELEASE_NOW=1894104000 EVENT=workflow_dispatch
+W=2030.01.06
 released() { grep -qxF "$1" "$GH_RELEASES"; }
 title_arg() { awk 'prev == "--title" { print; exit } { prev = $0 }' "$TMP/gh-args"; }
 # One whole run: plan → (gate, not run here) → cut → notes → create, stopping where
@@ -204,6 +209,7 @@ title_arg() { awk 'prev == "--title" { print; exit } { prev = $0 }' "$TMP/gh-arg
 fullrun() {
     fresh; runstep "$TMP/plan.sh"; PLAN_RC=$RC; CUT_OUT="$(cat "$TMP/out")"
     PLAN_SHA="$(sed -n 's/^sha=//p' "$TMP/output")"; PLAN_WORK="$(sed -n 's/^work=//p' "$TMP/output")"
+    PLAN_TAG="$(sed -n 's/^tag=//p' "$TMP/output")"; PLAN_ACTION="$(sed -n 's/^action=//p' "$TMP/output")"
     tag=""; export tag; NOTES=""; CREATE_RC=""; CUT_RC=$PLAN_RC
     SUMMARY_RC=""; GUARD_RC=""
     [ "$PLAN_RC" = 0 ] && [ "$PLAN_WORK" = true ] || return 0
@@ -213,7 +219,9 @@ fullrun() {
     NEEDS="$(needs_json release "gate-summary=$summary")" runstep "$TMP/guard.sh"; GUARD_RC=$RC
     [ "$GUARD_RC" = 0 ] || return 0
     if [ -n "${MOVE_MAIN:-}" ]; then commit "$MOVE_MAIN"; fi
-    fresh; RELEASE_SHA="$PLAN_SHA" runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$CUT_OUT
+    # CUT_NOW: the clock when the release job runs, if it differs from the plan's (a run that
+    # crosses midnight). The cut step must not care: it only uses what the plan decided.
+    fresh; CAVIL_RELEASE_NOW="${CUT_NOW:-${CAVIL_RELEASE_NOW:-}}" RELEASE_SHA="$PLAN_SHA" runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$CUT_OUT
 $(cat "$TMP/out")"
     tag="$(sed -n 's/^tag=//p' "$TMP/env")"; export tag
     [ "$CUT_RC" = 0 ] && [ -n "$tag" ] || return 0
@@ -228,14 +236,14 @@ echo "-- new commits → tag, notes, Release"
 # .1–.5 are taken above (the second interactive run re-tagged HEAD as .5).
 fullrun
 check "cut step succeeds" "$CUT_RC" 0
-check "exports the new tag" "$tag" "release/v$TODAY.6"
-check "tag pushed" "$(git -C "$REMOTE" tag -l "release/v$TODAY.6")" "release/v$TODAY.6"
+check "exports the new tag" "$tag" "release/v$W.1"
+check "tag pushed" "$(git -C "$REMOTE" tag -l "release/v$W.1")" "release/v$W.1"
 # .4 and .5 sit on the same commit, so either may head the notes; what matters is the range.
 has "- add release.sh (" "$NOTES" "notes list the new commit"
 lacks "- four (" "$NOTES" "notes start after the previous release"
 check "Release created" "$CREATE_RC" 0
-released "release/v$TODAY.6" && ok "Release page exists" || bad "Release page exists"
-check "Release title carries the iteration" "$(title_arg)" "$(bash "$RELEASE_SH" --title "release/v$TODAY.6")"
+released "release/v$W.1" && ok "Release page exists" || bad "Release page exists"
+check "Release title carries the iteration" "$(title_arg)" "$(bash "$RELEASE_SH" --title "release/v$W.1")"
 
 echo "-- nothing new and already released → nothing to do"
 fullrun
@@ -243,68 +251,71 @@ check "plan step succeeds" "$PLAN_RC" 0
 check "plan says no work (gate and release jobs skip)" "$PLAN_WORK" false
 check "no tag exported (later steps skip)" "$tag" ""
 has '本轮无新提交' "$CUT_OUT" "says so in the run log"
-check "no duplicate Release" "$(grep -cxF "release/v$TODAY.6" "$GH_RELEASES")" 1
+check "no duplicate Release" "$(grep -cxF "release/v$W.1" "$GH_RELEASES")" 1
 
 echo "-- tag pushed, Release creation failed → the next run creates it"
 commit seven
 GH_FAIL_CREATE=1 fullrun
-check "first run: tag exported" "$tag" "release/v$TODAY.7"
+check "first run: tag exported" "$tag" "release/v$W.2"
 [ "$CREATE_RC" != 0 ] && ok "first run: create fails" || bad "first run: create fails"
-released "release/v$TODAY.7" && bad "first run: no Release page" || ok "first run: no Release page"
+released "release/v$W.2" && bad "first run: no Release page" || ok "first run: no Release page"
 fullrun
 check "rerun: plan asks for the gate before the missing page" "$PLAN_WORK" true
 check "rerun: cut step succeeds" "$CUT_RC" 0
-check "rerun: exports the existing tag" "$tag" "release/v$TODAY.7"
+check "rerun: exports the existing tag" "$tag" "release/v$W.2"
 has '补建' "$CUT_OUT" "rerun: says it is creating the missing page"
-check "rerun: no new tag" "$(git -C "$REMOTE" tag -l "release/v$TODAY.8")" ""
-has "Changes since \`release/v$TODAY.6\`" "$NOTES" "rerun: notes start at the previous release"
+check "rerun: no new tag" "$(git -C "$REMOTE" tag -l "release/v$W.3")" ""
+has "Changes since \`release/v$W.1\`" "$NOTES" "rerun: notes start at the previous release"
 has "- seven (" "$NOTES" "rerun: notes list the tagged commit"
 check "rerun: Release created" "$CREATE_RC" 0
-released "release/v$TODAY.7" && ok "rerun: Release page exists" || bad "rerun: Release page exists"
+released "release/v$W.2" && ok "rerun: Release page exists" || bad "rerun: Release page exists"
 fullrun
 check "third run: nothing to do" "$tag" ""
-check "third run: no duplicate Release" "$(grep -cxF "release/v$TODAY.7" "$GH_RELEASES")" 1
+check "third run: no duplicate Release" "$(grep -cxF "release/v$W.2" "$GH_RELEASES")" 1
 
 echo "-- Release lookup fails → the run fails, never guesses"
 commit seven-b
-git -C "$REMOTE" tag "release/v$TODAY.7b" main   # tagged, page unknown
+git -C "$REMOTE" tag "release/v$W.90" main   # tagged, page unknown
 GH_FAIL_API=1 fullrun
 [ "$PLAN_RC" != 0 ] && ok "plan step fails" || bad "plan step fails"
 check "plan writes no decision" "$PLAN_WORK" ""
 check "no tag exported" "$tag" ""
-fresh; GH_FAIL_API=1 RELEASE_SHA="$(git -C "$WORK" rev-parse HEAD)" runstep "$TMP/cut.sh"
+fresh; GH_FAIL_API=1 RELEASE_SHA="$(git -C "$WORK" rev-parse HEAD)" PLAN_TAG="release/v$W.90" PLAN_ACTION=page runstep "$TMP/cut.sh"
 [ "$RC" != 0 ] && ok "cut step: lookup failure fails too" || bad "cut step: lookup failure fails too"
-git -C "$REMOTE" tag -d "release/v$TODAY.7b" >/dev/null
+git -C "$REMOTE" tag -d "release/v$W.90" >/dev/null
 
 echo "-- a tag that never got its page is skipped as the notes' starting point"
+# The orphan is from an earlier week: the plan only goes back for missing pages of the
+# week that just ended, so this one stays without a page and the notes must skip it.
 commit eight
-GH_FAIL_CREATE=1 fullrun
-check "orphan tag .8 pushed" "$tag" "release/v$TODAY.8"
-released "release/v$TODAY.8" && bad "orphan has no page" || ok "orphan has no page"
+OLDW=2029.12.30
+CAVIL_RELEASE_NOW=$((CAVIL_RELEASE_NOW - 7 * 86400)) GH_FAIL_CREATE=1 fullrun
+check "orphan tag pushed, named after the earlier week" "$tag" "release/v$OLDW.1"
+released "release/v$OLDW.1" && bad "orphan has no page" || ok "orphan has no page"
 commit nine
 fullrun
-check "next run tags .9" "$tag" "release/v$TODAY.9"
-has "Changes since \`release/v$TODAY.7\`" "$NOTES" "notes start at the last tag with a page"
+check "next run tags the next number of this week" "$tag" "release/v$W.3"
+has "Changes since \`release/v$W.2\`" "$NOTES" "notes start at the last tag with a page"
 has "- eight (" "$NOTES" "the orphan's commit is in these notes"
 has "- nine (" "$NOTES" "the new commit is in these notes"
 lacks "- seven (" "$NOTES" "already-released commits are not repeated"
 check "Release created" "$CREATE_RC" 0
-fresh; export tag="release/v$TODAY.9"
+fresh; export tag="release/v$W.3"
 GH_FAIL_API=1 runstep "$TMP/notes.sh"
 [ "$RC" != 0 ] && ok "notes: lookup failure fails the step" || bad "notes: lookup failure fails the step"
 
 echo "-- main moves while the gate runs → the tag goes on the tested commit"
 commit ten
 MOVE_MAIN=eleven fullrun
-check "tag .10 exported" "$tag" "release/v$TODAY.10"
-check ".10 points at the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.10^{commit}")" "$PLAN_SHA"
+check "tag .10 exported" "$tag" "release/v$W.4"
+check ".10 points at the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$W.4^{commit}")" "$PLAN_SHA"
 [ "$PLAN_SHA" != "$(git -C "$REMOTE" rev-parse main)" ] && ok "… which is not main's newer tip" || bad "… which is not main's newer tip"
 has "- ten (" "$NOTES" "notes list the tested commit"
 lacks "- eleven (" "$NOTES" "notes leave out the commit that landed during the gate"
 check "Release created" "$CREATE_RC" 0
 fullrun
 check "next run plans the newer commit" "$PLAN_SHA" "$(git -C "$REMOTE" rev-parse main)"
-check "… and tags it .11" "$tag" "release/v$TODAY.11"
+check "… and tags it .11" "$tag" "release/v$W.5"
 
 echo "-- the gate did not pass → no tag, no Release (GitHub#195)"
 commit twelve
@@ -324,8 +335,8 @@ check "gate-only run: no tag" "$(remote_tags_all)" "$TAGS_BEFORE"
 check "gate-only run: no Release page" "$(wc -l < "$GH_RELEASES")" "$PAGES_BEFORE"
 fullrun
 check "gate passes → the release job's check passes" "$GUARD_RC" 0
-check "… and the planned commit is released" "$tag" "release/v$TODAY.12"
-check "… on the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.12^{commit}")" "$PLAN_SHA"
+check "… and the planned commit is released" "$tag" "release/v$W.6"
+check "… on the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$W.6^{commit}")" "$PLAN_SHA"
 check "… with its page" "$CREATE_RC" 0
 
 echo "-- a pushed tag: the plan step gates that tag's commit"
@@ -391,6 +402,157 @@ run --dry-run --at "$PLANNED"
 check "--dry-run takes no --at → exit 2" "$RC" 2
 run --auto
 check "plain --auto still tags HEAD" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.2^{commit}")" "$(git -C "$WORK" rev-parse HEAD)"
+
+echo "== catching up a missed week (GitHub#309: --plan, --cut, the daily schedule)"
+check "the schedule fires every day" "$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))[True]["schedule"][0]["cron"])' "$WORKFLOW")" "10 16 * * *"
+REMOTE="$TMP/remote3.git"; WORK="$TMP/work3"
+git init -q --bare "$REMOTE"; git clone -q "$REMOTE" "$WORK" 2>/dev/null
+mkdir -p "$WORK/scripts"; cp "$RELEASE_SH" "$WORK/scripts/release.sh"
+git -C "$WORK" add scripts; git -C "$WORK" commit -qm "a0 with release.sh"; git -C "$WORK" push -q origin main
+A0="$(git -C "$WORK" rev-parse HEAD)"
+git -C "$REMOTE" tag release/v2026.11.01.1 "$A0"
+echo release/v2026.11.01.1 > "$GH_RELEASES"          # last week's release, with its page
+at() { date -u -d "$1" +%s; }                          # UTC time → epoch seconds
+tip() { git -C "$REMOTE" rev-parse main; }
+tag_at() { git -C "$REMOTE" rev-parse -q --verify "refs/tags/$1^{commit}" 2>/dev/null || echo none; }
+pages() { grep -cxF "$1" "$GH_RELEASES" || true; }
+
+echo "-- the week that just ended, at the boundaries (Beijing time, Monday–Sunday)"
+plan_week() { CAVIL_RELEASE_NOW="$1" run --plan --trigger manual --released "$GH_RELEASES"; sed -n 's/^week=//p' "$TMP/out"; }
+check "Sunday 15:59 UTC (Sunday 23:59 Beijing) → the previous week" "$(plan_week "$(at '2026-11-08 15:59')")" 2026.11.01
+check "Sunday 16:10 UTC (Monday 00:10 Beijing) → the week just ended" "$(plan_week "$(at '2026-11-08 16:10')")" 2026.11.08
+check "Monday 01:00 UTC → the same week" "$(plan_week "$(at '2026-11-09 01:00')")" 2026.11.08
+check "Sunday 23:59 Beijing a week later → still 11-08" "$(plan_week "$(at '2026-11-15 15:59')")" 2026.11.08
+check "across the new year" "$(plan_week "$(at '2026-12-31 20:00')")" 2026.12.27
+CAVIL_RELEASE_NOW=yesterday run --plan --trigger manual --released "$GH_RELEASES"
+check "a clock that is not epoch seconds → exit 2" "$RC" 2
+run --plan --trigger manual --released "$TMP/no-such-file"
+check "an unreadable Release list → exit 1, no plan" "$RC:$(cat "$TMP/out")" "1:"
+run --plan --trigger weekly --released "$GH_RELEASES"
+check "an unknown trigger → usage, exit 2" "$RC" 2
+run --cut v1.0 --at "$A0"
+check "--cut a name that is not a release tag → exit 2" "$RC" 2
+run --cut release/v2026.11.01.1 --at "$A0"
+check "--cut a tag already on that commit → exit 3" "$RC:$(cat "$TMP/out")" "3:release/v2026.11.01.1"
+run --cut release/v2026.11.08.1 --at "$A0" --page
+check "--cut --page when the tag does not exist → exit 1" "$RC" 1
+check "… and tags nothing" "$(tag_at release/v2026.11.08.1)" none
+
+echo "-- row 3: main's tip is released → nothing, on either trigger"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-08 15:59')" fullrun
+check "plan: no work" "$PLAN_WORK:$PLAN_ACTION" "false:none"
+has '本轮无新提交' "$CUT_OUT" "says so in the run log"
+EVENT=workflow_dispatch CAVIL_RELEASE_NOW="$(at '2026-11-08 15:59')" fullrun
+check "manual: no work either" "$PLAN_WORK:$PLAN_ACTION" "false:none"
+
+echo "-- row 4 (scheduled): the week is released, main has moved → nothing"
+git -C "$WORK" pull -q; commit b-sunday
+B="$(tip)"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-08 15:59')" fullrun
+check "plan: no work, no gate" "$PLAN_WORK" false
+has '已发布' "$CUT_OUT" "names the released week"
+
+echo "-- the Sunday run's gate is red → no tag; Monday's run plans the same week again"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-08 16:10')" GATE="gate=failure" fullrun
+check "Sunday: row 5, new tag for the week just ended" "$PLAN_ACTION:$PLAN_TAG" "new:release/v2026.11.08.1"
+check "Sunday: the gate tests main's tip" "$PLAN_SHA" "$B"
+[ "$GUARD_RC" != 0 ] && ok "Sunday: release job refuses" || bad "Sunday: release job refuses"
+check "Sunday: no tag" "$(tag_at release/v2026.11.08.1)" none
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-09 01:00')" GATE="gate-client=failure" fullrun
+check "Monday 01:00: still the 11-08 week" "$PLAN_TAG" "release/v2026.11.08.1"
+check "Monday: no tag" "$(tag_at release/v2026.11.08.1)" none
+
+echo "-- the fix lands on Tuesday → that day's run releases the missed week"
+commit c-fix
+C="$(tip)"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-10 16:30')" fullrun
+check "plan: new, on the fix" "$PLAN_ACTION:$PLAN_SHA" "new:$C"
+check "tag named after the missed week" "$tag" "release/v2026.11.08.1"
+check "… on the tested commit" "$(tag_at release/v2026.11.08.1)" "$C"
+check "page created" "$CREATE_RC:$(pages release/v2026.11.08.1)" "0:1"
+check "title is the missed iteration" "$(title_arg)" "release/v2026.11.08.1 · 迭代 2026-11-02 ~ 11-08"
+has "Changes since \`release/v2026.11.01.1\`" "$NOTES" "notes start at last week's release"
+has "- b-sunday (" "$NOTES" "notes list the commits of the missed week"
+has "- c-fix (" "$NOTES" "… and the fix"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-11 16:30')" fullrun
+check "Wednesday: nothing (row 3)" "$PLAN_WORK" false
+
+echo "-- row 4: the week is released, main has a new commit"
+commit d
+D="$(tip)"; TAGS_BEFORE="$(remote_tags_all)"; PAGES_BEFORE="$(wc -l < "$GH_RELEASES")"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-11 16:30')" fullrun
+check "scheduled: no work, no gate" "$PLAN_WORK" false
+check "scheduled: no tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+EVENT=workflow_dispatch GATE_ONLY=true CAVIL_RELEASE_NOW="$(at '2026-11-11 16:30')" fullrun
+check "gate-only: the gate runs" "$PLAN_WORK:$PLAN_ACTION" "true:verify"
+check "gate-only: on main's tip" "$PLAN_SHA" "$D"
+check "gate-only: release gate green" "$SUMMARY_RC" 0
+[ "$GUARD_RC" != 0 ] && ok "gate-only: release job refuses" || bad "gate-only: release job refuses"
+check "gate-only: no tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+check "gate-only: no page" "$(wc -l < "$GH_RELEASES")" "$PAGES_BEFORE"
+
+echo "-- the whole life of a second release in the week whose page fails"
+EVENT=workflow_dispatch CAVIL_RELEASE_NOW="$(at '2026-11-11 16:30')" GH_FAIL_CREATE=1 fullrun
+check "1st manual run: next number of the week" "$PLAN_ACTION:$tag" "new:release/v2026.11.08.2"
+check "1st: on D" "$(tag_at release/v2026.11.08.2)" "$D"
+[ "$CREATE_RC" != 0 ] && ok "1st: page creation fails" || bad "1st: page creation fails"
+check "1st: no page" "$(pages release/v2026.11.08.2)" 0
+TAGS_BEFORE="$(remote_tags_all)"
+EVENT=workflow_dispatch CAVIL_RELEASE_NOW="$(at '2026-11-11 16:30')" fullrun
+check "2nd: row 1, the missing page first" "$PLAN_ACTION:$PLAN_TAG" "page:release/v2026.11.08.2"
+check "2nd: the gate tests D" "$PLAN_SHA" "$D"
+has '补建' "$CUT_OUT" "2nd: says it is creating the missing page"
+check "2nd: no new tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+check "2nd: page created" "$CREATE_RC:$(pages release/v2026.11.08.2)" "0:1"
+EVENT=workflow_dispatch CAVIL_RELEASE_NOW="$(at '2026-11-11 16:30')" fullrun
+check "3rd: nothing to do" "$PLAN_WORK" false
+check "3rd: no new tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+check "3rd: no duplicate page" "$(pages release/v2026.11.08.2)" 1
+
+echo "-- the same, finished by the daily schedule instead"
+commit e
+E="$(tip)"
+EVENT=workflow_dispatch CAVIL_RELEASE_NOW="$(at '2026-11-12 16:30')" GH_FAIL_CREATE=1 fullrun
+check "manual run: .3 on E, page fails" "$tag:$(tag_at release/v2026.11.08.3):$(pages release/v2026.11.08.3)" "release/v2026.11.08.3:$E:0"
+TAGS_BEFORE="$(remote_tags_all)"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-12 16:30')" fullrun
+check "scheduled run: row 1, page for .3 on E" "$PLAN_ACTION:$PLAN_TAG:$PLAN_SHA" "page:release/v2026.11.08.3:$E"
+check "… no new tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+check "… page created" "$(pages release/v2026.11.08.3)" 1
+
+echo "-- row 2: the week's tag without a page is on an older commit than main's tip"
+commit f
+F="$(tip)"
+EVENT=workflow_dispatch CAVIL_RELEASE_NOW="$(at '2026-11-13 16:30')" GH_FAIL_CREATE=1 fullrun
+check "manual run: .4 on F, page fails" "$(tag_at release/v2026.11.08.4):$(pages release/v2026.11.08.4)" "$F:0"
+commit g
+TAGS_BEFORE="$(remote_tags_all)"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-13 16:30')" fullrun
+check "plan: page for .4" "$PLAN_ACTION:$PLAN_TAG" "page:release/v2026.11.08.4"
+check "the gate tests the tag's own commit F, not main's tip" "$PLAN_SHA" "$F"
+check "… no new tag" "$(remote_tags_all)" "$TAGS_BEFORE"
+check "… page created for .4" "$CREATE_RC:$(pages release/v2026.11.08.4)" "0:1"
+check "… the tag still on F" "$(tag_at release/v2026.11.08.4)" "$F"
+git -C "$REMOTE" tag release/v2026.11.08.5 "$F"
+git -C "$REMOTE" tag -f release/v2026.11.08.5 "$(git -C "$REMOTE" rev-parse "$F^")" >/dev/null
+fresh; CAVIL_RELEASE_NOW="$(at '2026-11-13 16:30')" RELEASE_SHA="$F" PLAN_TAG=release/v2026.11.08.5 PLAN_ACTION=page runstep "$TMP/cut.sh"
+check "cut: a planned page whose tag moved to another commit → fails" "$RC:$(cat "$TMP/env")" "1:"
+git -C "$REMOTE" tag -d release/v2026.11.08.5 >/dev/null
+
+echo "-- a run that starts on Sunday night and tags on Monday keeps the week it planned"
+commit h
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-22 15:59')" CUT_NOW="$(at '2026-11-22 18:00')" fullrun
+check "plan at Sunday 23:59 Beijing: the 11-15 week" "$PLAN_TAG" "release/v2026.11.15.1"
+check "tag cut at Monday 02:00 Beijing is still 11-15" "$tag" "release/v2026.11.15.1"
+check "no tag for the 11-22 week" "$(tag_at release/v2026.11.22.1)" none
+check "title is the planned iteration" "$(title_arg)" "release/v2026.11.15.1 · 迭代 2026-11-09 ~ 11-15"
+
+echo "-- the Release list cannot be read → the scheduled run fails, nothing written"
+commit i
+TAGS_BEFORE="$(remote_tags_all)"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-23 16:30')" GH_FAIL_API=1 fullrun
+[ "$PLAN_RC" != 0 ] && ok "plan step fails" || bad "plan step fails"
+check "no decision, no tag" "$PLAN_WORK:$(remote_tags_all)" ":$TAGS_BEFORE"
 
 echo "== release failure → issue (GitHub#285: the report-failure job, scripts/release_failure_report.py)"
 REPORT_PY="$REPO_DIR/scripts/release_failure_report.py"
@@ -720,7 +882,7 @@ PY4
     wf_mutant summary-accepts-skipped '[ "$r" = success ] ||' '[ "$r" = success ] || [ "$r" = skipped ] ||'
     wf_mutant release-without-gate 'needs: [plan, gate-summary]' 'needs: [plan]'
     wf_mutant summary-without-client 'needs: [plan, gate, gate-autopilot, gate-client]' 'needs: [plan, gate, gate-autopilot]'
-    wf_mutant cut-tags-head 'release.sh --auto --at "$RELEASE_SHA")' 'release.sh --auto)'
+    wf_mutant cut-tags-head 'release.sh --cut "$PLAN_TAG" --at "$RELEASE_SHA" $page)' 'release.sh --cut "$PLAN_TAG" --at "$(git rev-parse HEAD)" $page)'
     echo
     mutation_summary "$0"
 fi

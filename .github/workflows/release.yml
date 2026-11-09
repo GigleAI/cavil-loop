@@ -4,10 +4,13 @@ on:
   push:
     tags:
       - 'release/v*'
-  # One release per iteration. Iterations run Monday–Sunday, so fire at
-  # Monday 00:10 Beijing time (= Sunday 16:10 UTC), right after one ends.
+  # One release per iteration. Iterations run Monday–Sunday (Beijing time). Fire
+  # every day at 00:10 Beijing time (= 16:10 UTC): Monday's run releases the week
+  # that just ended; the other six find it released and stop within seconds — or,
+  # when Monday's gate was red, release that same week once the fix is on main
+  # (GitHub#309). The plan step decides which, once, for the whole run.
   schedule:
-    - cron: '10 16 * * 0'
+    - cron: '10 16 * * *'
   workflow_dispatch:
     inputs:
       gate_only:
@@ -41,49 +44,59 @@ jobs:
     outputs:
       sha: ${{ steps.decide.outputs.sha }}
       work: ${{ steps.decide.outputs.work }}
+      tag: ${{ steps.decide.outputs.tag }}
+      action: ${{ steps.decide.outputs.action }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Same question the cut step asks, without tagging: a new tag would be cut
-      # (exit 0), or the commit is tagged already (exit 3) and only work if its
-      # Release page is missing. Anything that ends in a Release page goes
-      # through the gate — a hand-pushed tag whose gate failed included.
-      # A failed lookup fails the run rather than guessing either way.
+      # What this run does, decided once (GitHub#309) and handed to every later job:
+      # the commit the gate tests, the tag the release step uses, and the action —
+      #   push   a tag pushed by a person: gate its commit, create its page
+      #   verify a manual gate-only run: gate main's tip, release nothing
+      #   new / page / none  scheduled run or manual release: scripts/release.sh --plan
+      #          (the week that just ended; a tag without its page is always finished first)
+      # Nothing later reads the clock or picks a commit again. A failed lookup fails the
+      # run rather than guessing either way.
       - name: Decide what this run does
         id: decide
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT: ${{ github.event_name }}
+          GATE_ONLY: ${{ inputs.gate_only && 'true' || '' }}
         run: |
           if [ "$EVENT" = push ]; then
             sha="$(git rev-parse "${GITHUB_REF}^{commit}")"
-            work=true
-          else
+            tag="${GITHUB_REF#refs/tags/}"
+            action=push
+          elif [ -n "$GATE_ONLY" ]; then
             sha="$(git rev-parse HEAD)"
-            set +e
-            tag="$(bash scripts/release.sh --pending --at "$sha")"
-            rc=$?
-            set -e
-            if [ "$rc" -eq 0 ]; then
-              echo "将发新版 $tag（$sha），先跑发版门禁"
-              work=true
-            elif [ "$rc" -eq 3 ]; then
-              released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
-              if grep -qxF -- "$tag" <<<"$released"; then
-                echo "本轮无新提交，不发版（$tag 已发布）"
-                work=false
-              else
-                echo "$tag 已有 tag 但还没有 Release 页面，先跑发版门禁再补建"
-                work=true
-              fi
-            else
-              exit "$rc"
-            fi
+            tag=""
+            action=verify
+            echo "只跑门禁：验证 $sha，不打标签、不发版"
+          else
+            trigger=manual
+            [ "$EVENT" = schedule ] && trigger=schedule
+            released_file="$(mktemp)"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > "$released_file"
+            plan="$(bash scripts/release.sh --plan --trigger "$trigger" --released "$released_file")"
+            action="$(sed -n 's/^action=//p' <<<"$plan")"
+            sha="$(sed -n 's/^sha=//p' <<<"$plan")"
+            tag="$(sed -n 's/^tag=//p' <<<"$plan")"
+            sed -n 's/^reason=//p' <<<"$plan"
+            case "$action" in
+              new|page) [ -n "$sha" ] && [ -n "$tag" ] || { echo "::error::plan without a commit or tag: $plan"; exit 1; } ;;
+              none) ;;
+              *) echo "::error::unknown plan: $plan"; exit 1 ;;
+            esac
           fi
+          work=true
+          [ "$action" = none ] && work=false
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "work=$work" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
 
   gate:
     name: gate ${{ matrix.shard }}/4
@@ -302,27 +315,32 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Scheduled / manual runs cut the tag themselves, on the commit the gate
-      # tested (RELEASE_SHA) even if main has moved on since. A tag pushed with
-      # GITHUB_TOKEN does not trigger another workflow run, so the rest of
-      # this job (not a second run) turns it into a Release.
-      # "Already tagged" is not "already released": if the Release step of an
-      # earlier run failed after the push, this run creates the missing page.
+      # Scheduled / manual runs cut the tag themselves: exactly the planned tag
+      # (PLAN_TAG, named after the week the plan step chose) on the commit the gate
+      # tested (RELEASE_SHA), even if main or the date has moved on since. A tag
+      # pushed with GITHUB_TOKEN does not trigger another workflow run, so the rest
+      # of this job (not a second run) turns it into a Release.
+      # "Already tagged" is not "already released": a plan of "page" re-checks that
+      # the tag still points at the tested commit and creates the missing page.
       # A failed lookup fails the run rather than guessing either way.
       - name: Cut tag (scheduled / manual)
         if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+          PLAN_TAG: ${{ needs.plan.outputs.tag }}
+          PLAN_ACTION: ${{ needs.plan.outputs.action }}
         run: |
+          page=""
+          [ "$PLAN_ACTION" = page ] && page=--page
           set +e
-          tag="$(bash scripts/release.sh --auto --at "$RELEASE_SHA")"
+          tag="$(bash scripts/release.sh --cut "$PLAN_TAG" --at "$RELEASE_SHA" $page)"
           rc=$?
           set -e
           if [ "$rc" -eq 3 ]; then
             released="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
             if grep -qxF -- "$tag" <<<"$released"; then
-              echo "本轮无新提交，不发版（$tag 已发布）"
+              echo "$tag 已有 Release 页面，不重复创建"
               exit 0
             fi
             echo "$tag 已有 tag 但还没有 Release 页面，补建"
