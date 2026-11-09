@@ -243,6 +243,15 @@ fn main() {
                 // CI Macs). WebKit honours this from macOS 14 on, which is why the app requires
                 // macOS 14 (maintainer's choice on PR #173): on 11–13 nothing keeps a hidden page running.
                 .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+                // The board drags cards with the page's own HTML5 drag and drop (BoardView.tsx).
+                // Tauri's native drag-drop handler (on by default, it turns dropped files into
+                // window events) answers "handled" for every drag; on macOS that keeps WebKit from
+                // ever giving the page dragover / drop, so cards lifted but never landed
+                // (GitHub#295; tauri-runtime-wry 2.12 / wry 0.57, wkwebview/drag_drop.rs). Nothing
+                // in the app uses dropped files, so it is off on every platform (Windows needs the
+                // same for HTML5 drag and drop; Linux never blocked it). A dropped file still
+                // cannot navigate the window: on_navigation below refuses non-app URLs.
+                .disable_drag_drop_handler()
                 // Links never navigate the app window; GitHub links go to the system browser.
                 .on_navigation(move |url| {
                     if is_app_url(url) {

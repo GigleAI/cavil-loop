@@ -12,6 +12,7 @@ import { writesEnabled } from '../../src/data/board';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } from './helpers';
 import type { AppState } from '../../src/shared/types';
+import { DEFAULT_QUERY } from '../../src/shared/viewSettings';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -292,7 +293,7 @@ describe('sync and cache', () => {
 
   it('adding a Project imports its saved web view (/views/N, else the first) after the first complete read', async () => {
     const { c } = await loggedIn();
-    expect(c.getState().view).toMatchObject({ layout: 'board', query: '', imported: null });
+    expect(c.getState().view).toMatchObject({ layout: 'board', query: DEFAULT_QUERY, imported: null });
     c.addSource(`${PROJECT_URL}/views/2`);
     // nothing is imported before the Project was read
     expect(c.getState().view.imported).toBeNull();
@@ -379,6 +380,90 @@ describe('sync and cache', () => {
     expect(v.table).toMatchObject({ groupBy: 'repo', sort: { field: 'updated', dir: 'desc' } });
   });
 
+  describe('GitHub#298: the default search text', () => {
+    // the recorded Project's views all carry a filter: give view 1 none, as a Project whose web view filters nothing
+    function emptyFilterOnView1() {
+      const pages = fake.state.projects.get('org/gigleai/11')!;
+      fake.state.projects.set(
+        'org/gigleai/11',
+        pages.map((p: any) => ({ ...p, views: { nodes: p.views.nodes.map((v: any) => (v.number === 1 ? { ...v, filter: null } : v)) } })),
+      );
+    }
+
+    it('a new install starts with it, keeps it through an import of a view without a filter, and an emptied box stays empty after a restart', async () => {
+      emptyFilterOnView1();
+      const first = await loggedIn();
+      expect(first.c.getState().view.query).toBe(DEFAULT_QUERY);
+      first.c.addSource(`${PROJECT_URL}/views/1`);
+      await first.c.start();
+      await first.c.syncNow();
+      // the import did run (layout / view taken from the web view), the default text stayed
+      expect(first.c.getState().view).toMatchObject({ layout: 'table', query: DEFAULT_QUERY, imported: { viewNumber: 1, viewName: 'Pending' } });
+      first.c.stopTimer();
+
+      const second = await make({ credentials: first.credentials });
+      expect(second.c.getState().view.query).toBe(DEFAULT_QUERY);
+      second.c.setView({ query: '' });
+      second.c.stopTimer();
+
+      const third = await make({ credentials: first.credentials });
+      await third.c.start();
+      await third.c.syncNow();
+      expect(third.c.getState().view.query).toBe('');
+    });
+
+    it('a saved search text is kept as it is on start, the empty one included', async () => {
+      const base = { mode: 'iteration', swimlanes: false, selected: null };
+      const empty = await make({ seed: { view: { ...base, query: '' } } });
+      expect(empty.c.getState().view.query).toBe('');
+      const own = await make({ seed: { view: { ...base, query: 'is:open' } } });
+      expect(own.c.getState().view.query).toBe('is:open');
+      const broken = await make({ seed: { view: { ...base, query: 7 } } });
+      expect(broken.c.getState().view.query).toBe(DEFAULT_QUERY);
+    });
+
+    it('a view without a filter still empties any other search text: an earlier import, an own text, an empty box', async () => {
+      const { c } = await loggedIn();
+      await c.start();
+      // an earlier import brought '-label:nightly-failure'
+      c.addSource(`${PROJECT_URL}/views/2`);
+      await c.syncNow();
+      expect(c.getState().view.query).toBe('-label:nightly-failure');
+      emptyFilterOnView1();
+      c.removeSource('project:org/gigleai/11');
+      c.addSource(`${PROJECT_URL}/views/1`);
+      await c.syncNow();
+      expect(c.getState().view).toMatchObject({ layout: 'table', query: '', imported: { viewNumber: 1 } });
+
+      // an own text typed before the Project was added (nothing waiting to import then)
+      c.removeSource('project:org/gigleai/11');
+      c.setView({ query: 'label:bug' });
+      c.addSource(`${PROJECT_URL}/views/1`);
+      await c.syncNow();
+      expect(c.getState().view).toMatchObject({ query: '', imported: { viewNumber: 1 } });
+
+      // an empty box stays empty
+      c.removeSource('project:org/gigleai/11');
+      c.addSource(`${PROJECT_URL}/views/1`);
+      await c.syncNow();
+      expect(c.getState().view).toMatchObject({ query: '', imported: { viewNumber: 1 } });
+    });
+
+    it('two imports of views without a filter in a row keep the default text', async () => {
+      emptyFilterOnView1();
+      const { c } = await loggedIn();
+      await c.start();
+      c.addSource(`${PROJECT_URL}/views/1`);
+      await c.syncNow();
+      expect(c.getState().view).toMatchObject({ query: DEFAULT_QUERY, imported: { viewNumber: 1 } });
+      c.setView({ layout: 'board' }); // tells the second import apart from the first
+      c.removeSource('project:org/gigleai/11');
+      c.addSource(`${PROJECT_URL}/views/1`);
+      await c.syncNow();
+      expect(c.getState().view).toMatchObject({ layout: 'table', query: DEFAULT_QUERY, imported: { viewNumber: 1 } });
+    });
+  });
+
   it('invalid view changes are refused whole; settings saved by an older build are read with defaults', async () => {
     const { c } = await loggedIn();
     const before = c.getState().view;
@@ -387,7 +472,7 @@ describe('sync and cache', () => {
     c.setView({ table: { columns: [] } });
     expect(c.getState().view).toEqual(before);
     const old = await make({ seed: { view: { mode: 'status', swimlanes: true, selected: null } } });
-    expect(old.c.getState().view).toMatchObject({ mode: 'status', swimlanes: true, layout: 'board', query: '', imported: null });
+    expect(old.c.getState().view).toMatchObject({ mode: 'status', swimlanes: true, layout: 'board', query: DEFAULT_QUERY, imported: null });
     expect(old.c.getState().view.table.groupBy).toBe('iteration');
   });
 
@@ -446,6 +531,35 @@ describe('sync and cache', () => {
     const broken = await make({ seed: { tableFolds: { iteration: 'none', status: [3, 'status:Todo', 'status:Todo'], nope: ['x'] }, autopilotConfirm: 'off' } });
     expect(broken.c.getState().tableFolds).toEqual({ status: ['status:Todo'] });
     expect(broken.c.getState().autopilotConfirm).toBe(true);
+  });
+
+  it('GitHub#297: folded board swimlanes survive a restart and a Project import, apart from the table folds; a broken saved value reads as nothing folded', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().laneFolds).toEqual([]);
+    first.c.setLaneFold('GigleAI/cavil-loop', true);
+    first.c.setLaneFold('GigleAI/zeta', true);
+    first.c.setLaneFold('GigleAI/zeta', false);
+    first.c.setLaneFold('', true); // unknown: ignored
+    first.c.setLaneFold('GigleAI/x', 'yes' as any); // not a boolean: ignored
+    expect(first.c.getState().laneFolds).toEqual(['GigleAI/cavil-loop']);
+    expect(first.c.getState().tableFolds).toEqual({}); // the table's own folds are left alone
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().laneFolds).toEqual(['GigleAI/cavil-loop']); // …and left the folds alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().laneFolds).toEqual(['GigleAI/cavil-loop']);
+    second.c.setLaneFold('GigleAI/cavil-loop', false);
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().laneFolds).toEqual([]);
+
+    const broken = await make({ seed: { laneFolds: ['o/r', 3, 'o/r', ''] } });
+    expect(broken.c.getState().laneFolds).toEqual(['o/r']);
+    const notAList = await make({ seed: { laneFolds: { 'o/r': true } } });
+    expect(notAList.c.getState().laneFolds).toEqual([]);
   });
 
   it('GitHub#245: the new-issue hand-over is kept on this machine — a restart and a Project import keep it; anything unknown is ignored or read as "none"', async () => {

@@ -10,7 +10,7 @@ import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardDa
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
-import { normalizeAutopilotConfirm, normalizeTableFolds, setFold } from '../shared/uiPrefs';
+import { normalizeAutopilotConfirm, normalizeLaneFolds, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
@@ -185,6 +185,8 @@ const PENDING_IMPORTS = 'pendingImports';
 const MERGE_PREFS = 'mergePrefs';
 /** GitHub#231: their own keys too, for the same reason */
 const TABLE_FOLDS = 'tableFolds';
+/** GitHub#297: folded board swimlanes, its own key for the same reason */
+const LANE_FOLDS = 'laneFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 
@@ -360,6 +362,7 @@ export class Controller {
       handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
+      laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -1388,6 +1391,14 @@ export class Controller {
     if (next === this.state.tableFolds) return;
     this.cache.setSetting(TABLE_FOLDS, next);
     this.set({ tableFolds: next });
+  }
+
+  /** GitHub#297: a board swimlane (repository) folded or unfolded. Unknown input is ignored. */
+  setLaneFold(lane: unknown, folded: unknown): void {
+    const next = setLaneFold(this.state.laneFolds, lane, folded);
+    if (next === this.state.laneFolds) return;
+    this.cache.setSetting(LANE_FOLDS, next);
+    this.set({ laneFolds: next });
   }
 
   /** GitHub#231: "托管" asks first (true) or not ("不再提示", false). Anything but a boolean is ignored. */

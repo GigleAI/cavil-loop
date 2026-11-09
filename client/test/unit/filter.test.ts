@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { applyFilter, parseFilter, type FilterContext } from '../../src/shared/filter';
+import { DEFAULT_QUERY } from '../../src/shared/viewSettings';
 import type { Item } from '../../src/shared/types';
 import { item, iter, member, project } from './helpers';
 
@@ -28,6 +29,22 @@ const ctx: FilterContext = { viewer: 'alice', today: TODAY, projects: [A, B] };
 const nums = (q: string, c: FilterContext = ctx) => applyFilter(ITEMS, parseFilter(q), c).map((i) => i.number);
 
 describe('filter syntax', () => {
+  it('GitHub#298: the default search text hides status Done (any case) and the Done label, keeps the rest, needs no yellow bar', () => {
+    expect(DEFAULT_QUERY).toBe('-Status:done -label:Done');
+    expect(parseFilter(DEFAULT_QUERY).unsupported).toEqual([]);
+    const done: Item[] = [
+      item('x/d', 10, { title: 'status Done' }, [member(A, null, 'Done')]),
+      item('x/d', 11, { title: 'label Done', labels: L('Done') }, [member(A, null, 'Todo')]),
+      item('x/d', 12, { title: 'label done lower-case', labels: L('done') }, []),
+      item('x/d', 13, { title: 'no status, no label' }, [member(A, null, null)]),
+      item('x/d', 14, { title: 'repository only' }, []),
+      item('x/d', 15, { title: 'Done in one Project only' }, [member(A, null, 'Todo'), member(B, null, 'Done')]),
+    ];
+    const kept = applyFilter([...ITEMS, ...done], parseFilter(DEFAULT_QUERY), ctx).map((i) => i.number);
+    // 2 is Done on Alpha, 3 is Done on Beta; 10 / 15 Done somewhere, 11 / 12 carry the label (names compare case-insensitively)
+    expect(kept).toEqual([1, 4, 5, 13, 14]);
+  });
+
   it('empty query keeps everything', () => {
     expect(nums('')).toEqual([1, 2, 3, 4, 5]);
     expect(nums('   ')).toEqual([1, 2, 3, 4, 5]);
