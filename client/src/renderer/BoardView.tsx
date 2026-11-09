@@ -1,6 +1,6 @@
 import { badgeText, stateTone } from '../shared/stateTone';
 import { UpdateReadyBar } from './UpdateViews';
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import { copyText } from './pasteImage';
 import type { RepoOptions, WriteAction } from '../shared/actions';
@@ -653,6 +653,25 @@ export function BoardView({
 
   const ended = board.columns.filter((c) => c.ended);
   const shown = board.columns.filter((c) => !c.ended);
+  // GitHub#297: with swimlanes, a column is at most half of the board's visible height (never under
+  // 160 px), so the next repository's head stays within reach whatever the window size and the bars above
+  const laneFolded = new Set(state.laneFolds);
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [laneMax, setLaneMax] = useState<number | null>(null);
+  const withLanes = view.layout !== 'table' && board.lanes !== null;
+  useLayoutEffect(() => {
+    const el = boardRef.current;
+    if (!withLanes || !el) return;
+    const measure = () => setLaneMax(Math.max(160, Math.floor(el.clientHeight / 2)));
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [withLanes]);
   const renderRow = (lane: string | null) => {
     const pick = (c: Column) => (lane ? c.cards.filter((x) => x.lane === lane) : c.cards);
     return (
@@ -879,14 +898,34 @@ export function BoardView({
           folds={state.tableFolds}
         />
       ) : (
-      <div className="board">
+      <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>
         {board.lanes
-          ? board.lanes.map((lane) => (
-              <div className="lane" key={lane} data-testid="lane" data-lane={lane}>
-                <div className="lane-head">{lane}</div>
-                {renderRow(lane)}
-              </div>
-            ))
+          ? board.lanes.map((lane) => {
+              // GitHub#297: each repository scrolls on its own (sideways in the row, up and down in each column) and folds to its head
+              const isFolded = laneFolded.has(lane);
+              const count = board.columns.reduce((n, c) => n + c.cards.filter((x) => x.lane === lane).length, 0);
+              return (
+                <div className={`lane${isFolded ? ' folded' : ''}`} key={lane} data-testid="lane" data-lane={lane} data-folded={isFolded ? '' : undefined}>
+                  <button
+                    className="lane-head"
+                    data-testid="lane-toggle"
+                    aria-expanded={!isFolded}
+                    title={isFolded ? '点一下展开这个仓库' : '点一下收起这个仓库'}
+                    onClick={() => void Promise.resolve(api().setLaneFold(lane, !isFolded)).catch(() => undefined)}
+                  >
+                    <span className="lane-mark" aria-hidden="true">
+                      {isFolded ? '▸' : '▾'}
+                    </span>
+                    <Icon name="repo" size={14} />
+                    <span className="lane-name">{lane}</span>
+                    <span className="count" data-testid="lane-count">
+                      {count}
+                    </span>
+                  </button>
+                  {!isFolded && renderRow(lane)}
+                </div>
+              );
+            })
           : renderRow(null)}
       </div>
       )}
