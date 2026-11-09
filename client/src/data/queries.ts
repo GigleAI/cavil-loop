@@ -270,6 +270,22 @@ query CavilTaskSource($id: ID!) {
 }
 `;
 
+/**
+ * The title of one issue / PR, read again right before changing it (GitHub#299): what it says
+ * now and whether this account may change it. The same question for both kinds.
+ */
+export const TITLE_SOURCE_QUERY = `
+query CavilTitleSource($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue { title viewerCanUpdate number }
+      ... on PullRequest { title viewerCanUpdate number }
+    }
+  }
+}
+`;
+
 /** Write a whole body back (GitHub has no "change one box"): one per kind of entry. */
 export const UPDATE_COMMENT_MUTATION = `
 mutation CavilUpdateComment($id: ID!, $body: String!) {

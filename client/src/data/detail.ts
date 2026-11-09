@@ -251,5 +251,6 @@ export function toDetail(repo: string, raw: RawDetail, fetchedAt: number): ItemD
     pr,
     fetchedAt,
     labels: it.labels.nodes.map((l) => ({ name: l.name, color: l.color })),
+    canEdit: it.viewerCanUpdate === true,
   };
 }

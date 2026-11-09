@@ -53,7 +53,12 @@ export type WriteAction =
    * GitHub#205: replace the whole markdown of a body or comment (`entryId`, its node id) with
    * `body` — written only while GitHub still holds `seenSource`, the text the edit started from
    */
-  | { kind: 'editEntry'; key: string; entryId: string; body: string; seenSource: string };
+  | { kind: 'editEntry'; key: string; entryId: string; body: string; seenSource: string }
+  /**
+   * GitHub#299: change the title of an issue / PR to `title` — written only while GitHub still
+   * holds `seenTitle`, the title shown when the edit started
+   */
+  | { kind: 'editTitle'; key: string; title: string; seenTitle: string };
 
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 
@@ -167,6 +172,11 @@ export interface ItemDetail {
   /** epoch ms the detail was read */
   fetchedAt: number;
   labels: Label[];
+  /**
+   * GitHub#299: GitHub says this account may change the item itself (its title, its opening post).
+   * Absent (a detail cached by an older version) = not known: no edit button until it is read again
+   */
+  canEdit?: boolean;
 }
 
 export type DetailResult = { ok: true; detail: ItemDetail } | { ok: false; error: string };

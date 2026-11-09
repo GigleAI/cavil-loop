@@ -1547,14 +1547,16 @@ export class Controller {
     // GitHub#250: the five operations go through the one send gate; this waits for them (the window does not)
     if (isOpKind(action.kind)) return this.actOp(action as OpAction);
     if (action.kind === 'comment' && action.draftOf) return this.actReplyFromDraft(action as Extract<WriteAction, { kind: 'comment' }> & { draftOf: string });
-    if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);
+    if (action.kind !== 'toggleTask' && action.kind !== 'editEntry' && action.kind !== 'editTitle') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
-    if (this.tasksInFlight.has(action.entryId)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
-    this.tasksInFlight.add(action.entryId);
+    // (GitHub#299: a title the same way, by its item)
+    const slot = action.kind === 'editTitle' ? `title:${action.key}` : action.entryId;
+    if (this.tasksInFlight.has(slot)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
+    this.tasksInFlight.add(slot);
     try {
       return await this.actNow(action);
     } finally {
-      this.tasksInFlight.delete(action.entryId);
+      this.tasksInFlight.delete(slot);
     }
   }
 

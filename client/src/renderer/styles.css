@@ -290,7 +290,9 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .detail-head .head-people { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
 .detail-head .head-people .people { display: inline-flex; gap: 4px; }
 .detail-head .ref { color: var(--muted); }
-.detail-title { margin: 0 16px 8px; font-size: 16px; font-weight: 650; line-height: 1.35; }
+.detail-title-row { display: flex; align-items: flex-start; gap: 4px; margin: 0 16px 8px; }
+.detail-title { margin: 0; flex: 1; min-width: 0; font-size: 16px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.detail-title-row .icon-btn { flex: none; margin-top: -2px; }
 .detail > .detail-stale { margin: -4px 16px 6px; }
 .detail .banner { margin: 0 16px 8px; }
 .detail-fields { margin: 0 16px; border: 1px solid var(--border-muted); border-radius: 10px; }
@@ -439,6 +441,7 @@ button.primary > kbd { background: transparent; color: #fff; border-color: rgba(
 .pr-bar .banner[data-testid='pr-conflict'] { margin: 0; border-radius: 0; border-width: 0 0 1px; }
 .quick-actions { display: inline-flex; gap: 6px; padding-right: 6px; margin-right: 2px; border-right: 1px solid var(--border-muted); }
 .reply .banner.paste-image, .modal .banner.paste-image { margin: 6px 10px; align-items: center; }
+.modal input.title-box { width: 100%; box-sizing: border-box; font-size: 14px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); }
 .modal textarea.edit-box { width: 100%; min-height: 220px; font: 13px/1.5 var(--mono); padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); resize: vertical; }
 .modal .banner { margin: 8px 0 0; }
 .chosen-labels { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 4px; }

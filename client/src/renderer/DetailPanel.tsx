@@ -342,6 +342,15 @@ export function DetailPanel({
   /** GitHub#205: the body / comment being edited (its source when the edit started), and the text so far */
   const [editing, setEditing] = useState<{ entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null>(null);
   const [editNote, setEditNote] = useState<ResultNote | null>(null);
+  /** GitHub#299: the title being edited (the title shown when the edit started), and the text so far */
+  const [titleEdit, setTitleEdit] = useState<{ seen: string; text: string } | null>(null);
+  const [titleNote, setTitleNote] = useState<ResultNote | null>(null);
+  const titleInput = useRef<HTMLInputElement>(null);
+  const titleOpen = titleEdit !== null;
+  // runs after the dialog's own effect (which focuses the dialog box): the caret goes into the field, the title selected
+  useEffect(() => {
+    if (titleOpen) titleInput.current?.select();
+  }, [titleOpen]);
   /** GitHub#205: an image was pasted into the reply / edit box (it cannot be uploaded from here) */
   const [pasted, setPasted] = useState<{ where: 'reply' | 'edit'; copied: boolean | null } | null>(null);
   /** the method picked by hand in this opening; null = none yet */
@@ -804,6 +813,9 @@ export function DetailPanel({
   }
 
   const metaOf = (k: string) => data.projects.find((p) => p.key === k);
+  // GitHub#299: the title as this opening last read it from GitHub, else the board's copy (which may
+  // be a round behind — e.g. right after a title change was refused because someone else changed it)
+  const shownTitle = detail && fromCache === null ? detail.title : item.title;
   const pr = detail?.pr ?? null;
   const prOpen = item.kind === 'pr' && detail?.state === 'open';
   // only once the detail read says it is open: the board's copy may be a round behind
@@ -920,7 +932,25 @@ export function DetailPanel({
         </button>
         </span>
       </div>
-      <h3 className="detail-title">{item.title}</h3>
+      <div className="detail-title-row">
+        <h3 className="detail-title" data-testid="detail-title">{shownTitle}</h3>
+        {/* GitHub#299: only where GitHub said this account may change the item */}
+        {detail?.canEdit === true && (
+          <button
+            className="icon-btn"
+            data-testid="detail-edit-title"
+            aria-label="编辑标题"
+            title={canWrite && !busy && !editing ? '编辑标题' : (offlineWhy ?? '有修改在途时不能编辑')}
+            disabled={!canWrite || busy || !!editing}
+            onClick={() => {
+              setTitleNote(null);
+              setTitleEdit({ seen: shownTitle, text: shownTitle });
+            }}
+          >
+            <Icon name="pencil" />
+          </button>
+        )}
+      </div>
       {fromCache !== null && !loadError && autoFailed === null && (
         <div className="detail-stale muted" data-testid="detail-cached" role="status">
           显示 {clock(fromCache)} 读到的内容{loading ? ' · 正在更新…' : ''}
@@ -1414,6 +1444,35 @@ export function DetailPanel({
             />
           )}
           <ResultBanner note={editNote} testid="edit-result" />
+        </ConfirmDialog>
+      )}
+      {titleEdit && (
+        <ConfirmDialog
+          title="编辑标题"
+          confirmLabel="保存到 GitHub"
+          busy={busy}
+          disabled={!titleEdit.text.trim() || titleEdit.text.trim() === titleEdit.seen}
+          dirty={titleEdit.text !== titleEdit.seen}
+          onCancel={() => setTitleEdit(null)}
+          onConfirm={async () => {
+            const r = await run({ kind: 'editTitle', key: item.key, title: titleEdit.text, seenTitle: titleEdit.seen }, '标题已保存');
+            if (!r.here) return;
+            if (r.ok) {
+              setTitleEdit(null);
+              setTitleNote(null);
+            } else setTitleNote(noteOf(r, ''));
+          }}
+        >
+          {/* not in a form: a plain Enter submits nothing — only the button or ⌘↩ (as in every dialog) */}
+          <input
+            ref={titleInput}
+            className="title-box"
+            data-testid="edit-title-input"
+            aria-label="标题"
+            value={titleEdit.text}
+            onChange={(e) => setTitleEdit({ ...titleEdit, text: e.target.value })}
+          />
+          <ResultBanner note={titleNote} testid="edit-title-result" />
         </ConfirmDialog>
       )}
       {ask === 'close' && (

@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
-import { findCopies, handleGraphql, pullOf } from '../fake-github/writes';
+import { findCopies, gqlContent, handleGraphql, pullOf } from '../fake-github/writes';
 import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -5058,6 +5058,114 @@ test('GitHub#276: a new issue gets the current iteration of the ticked board —
   await expect.poll(() => writes().filter((w) => w[0] === 'CavilAddProjectItem').length).toBe(4);
   await page.waitForTimeout(500);
   expect(iterationWrites().length).toBe(it1);
+  await app.close();
+});
+
+test('GitHub#299: the title of an issue / PR is edited from the detail; a plain Enter saves nothing; changed meanwhile = refused', async () => {
+  const fake = env.fake;
+  const copies = (n: number) => findCopies(fake.state, 'GigleAI/cavil-loop', n)!;
+  const onGitHub = (n: number) => gqlContent(copies(n)).title as string;
+  const retitle = (n: number, t: string) => {
+    for (const r of copies(n).rest) r.title = t;
+    for (const g of copies(n).gql) g.title = t;
+  };
+  fake.state.w.cannotUpdate.add(gqlContent(copies(137)).id);
+  // #146 is a merged PR in the recording: open it, so it is an ordinary open PR on the board
+  for (const r of copies(146).rest) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+  for (const g of copies(146).gql) Object.assign(g, { state: 'OPEN', merged: false });
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const input = page.getByTestId('edit-title-input');
+
+  // ---- 1. no permission on GitHub: no button ----
+  await card(page, 137).click();
+  await expect(detail.getByTestId('detail-title')).toBeVisible();
+  await expect(detail.getByTestId('detail-refresh')).toHaveAttribute('data-loading', 'no', { timeout: 15_000 });
+  await expect(detail.getByTestId('detail-edit-title')).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+
+  // ---- 2. an issue it may change: the dialog holds the title; a plain Enter, or ⌘↩ while composing, sends nothing ----
+  await card(page, 138).click();
+  const old = onGitHub(138);
+  await detail.getByTestId('detail-edit-title').click();
+  await expect(input).toHaveValue(old);
+  await expect(input).toBeFocused();
+  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  await input.fill('   ');
+  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  await input.fill('客户端能改标题了');
+  await input.press('Enter');
+  await input.evaluate((el) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, metaKey: true, isComposing: true, bubbles: true, cancelable: true })));
+  await page.waitForTimeout(500);
+  expect(fake.writes()).toEqual([]);
+  await expect(input).toHaveValue('客户端能改标题了');
+  // Esc with a changed title: kept, said
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('dialog-esc-hint')).toBeVisible();
+  await expect(input).toHaveValue('客户端能改标题了');
+  await shot(page, '299-01-edit-title');
+
+  // ---- 3. ⌘↩ saves (the button's own action): one PATCH, the detail, the card and the table row show it ----
+  await input.press(`${MOD}+Enter`);
+  await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  expect(writes()).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/138', { title: '客户端能改标题了' }]]);
+  expect(onGitHub(138)).toBe('客户端能改标题了');
+  await expect(detail.getByTestId('detail-title')).toHaveText('客户端能改标题了');
+  await expect(card(page, 138)).toContainText('客户端能改标题了');
+  // the plain success note puts itself away (5 s, as every other one)
+  await page.mouse.move(2, 2);
+  await expect(page.getByTestId('action-result')).toHaveCount(0, { timeout: 9_000 });
+
+  // ---- 4. changed on the web while being edited: refused, the dialog stays with the typed text, theirs on GitHub ----
+  await detail.getByTestId('detail-edit-title').click();
+  retitle(138, '别人刚改的标题');
+  await input.fill('又一版');
+  const digest = fake.digest();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('edit-title-result')).toContainText('被别人改过');
+  await expect(input).toHaveValue('又一版');
+  expect(fake.digest()).toBe(digest);
+  expect(onGitHub(138)).toBe('别人刚改的标题');
+  await page.getByTestId('confirm-cancel').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  // the refusal read the detail again: it shows their title, and an edit started from it is saved
+  await expect(detail.getByTestId('detail-title')).toHaveText('别人刚改的标题');
+  await detail.getByTestId('detail-edit-title').click();
+  await expect(input).toHaveValue('别人刚改的标题');
+  await input.fill('又一版');
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
+  expect(onGitHub(138)).toBe('又一版');
+  await page.getByTestId('detail-close').click();
+
+  // ---- 5. a PR, saved with the button, shown in the table ----
+  await page.getByTestId('mode').selectOption('status');
+  await card(page, 146).click();
+  await detail.getByTestId('detail-edit-title').click();
+  await input.fill('PR 的新标题');
+  const b5 = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
+  expect(writes().slice(b5)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/146', { title: 'PR 的新标题' }]]);
+  await page.getByTestId('detail-close').click();
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('search').fill('');
+  await expect(page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#146"] [data-testid="row-title"]').first()).toContainText('PR 的新标题');
+  await expect(page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#138"] [data-testid="row-title"]').first()).toContainText('又一版');
+
+  // ---- 6. offline: the button greys out, nothing is sent ----
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await card(page, 138).click();
+  await expect(detail.getByTestId('detail-edit-title')).toBeEnabled();
+  fake.state.offline = true;
+  await page.getByTestId('refresh').press('Enter');
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(detail.getByTestId('detail-edit-title')).toBeDisabled();
+  await expect(detail.getByTestId('detail-edit-title')).toHaveAttribute('title', '离线时不能修改');
+  fake.state.offline = false;
   await app.close();
 });
 

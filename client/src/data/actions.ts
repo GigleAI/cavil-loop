@@ -34,6 +34,7 @@ import {
   SET_ITERATION_MUTATION,
   SET_STATUS_MUTATION,
   TASK_SOURCE_QUERY,
+  TITLE_SOURCE_QUERY,
   UPDATE_COMMENT_MUTATION,
   UPDATE_ISSUE_BODY_MUTATION,
   UPDATE_PR_BODY_MUTATION,
@@ -339,6 +340,9 @@ export async function relatedIssues(client: GitHubClient, pr: Item, cached: Item
 /** What an edit is refused with when the body / comment changed on GitHub since the edit started (GitHub#205). */
 export const EDIT_CHANGED = '这一条在你编辑期间被别人改过，没有保存（你的文字还在编辑框里）；请复制留底后重新打开详情再改';
 
+/** What a title change is refused with when the title changed on GitHub since the edit started (GitHub#299). */
+export const TITLE_CHANGED = '标题在你编辑期间被别人改过，没有保存（你的文字还在输入框里）；请复制留底后重新打开详情再改';
+
 /** What a ticked box is refused with when the body / comment changed since the click was made on it. */
 export const TASK_CHANGED = '这一条刚被改过（和你看到的不一样了），没有修改；已重新读取，请看过后再勾';
 
@@ -362,6 +366,20 @@ async function readTaskSource(client: GitHubClient, id: string): Promise<TaskSou
   if (typeof n.body !== 'string' || typeof n.viewerCanUpdate !== 'boolean' || typeof ref?.number !== 'number' || typeof ref.repository?.nameWithOwner !== 'string')
     throw new GitHubError('graphql', 'GitHub 的回应缺少原文、权限或所属条目，没有修改');
   return { kind, body: n.body, canUpdate: n.viewerCanUpdate, repo: ref.repository.nameWithOwner, number: ref.number };
+}
+
+/** An item's title as GitHub holds it now (GitHub#299). Anything missing from the answer is an error, never "empty". */
+async function readTitle(client: GitHubClient, repo: string, number: number): Promise<{ title: string; canUpdate: boolean }> {
+  const [owner, name] = repo.split('/');
+  const d = await client.graphql<{ repository: { issueOrPullRequest: { __typename?: string; title?: unknown; viewerCanUpdate?: unknown; number?: unknown } | null } | null }>(
+    TITLE_SOURCE_QUERY,
+    { owner, name, number },
+  );
+  const n = d.repository?.issueOrPullRequest;
+  if (!n) throw new ActionRefused('GitHub 上找不到这一条（可能已被删除或转移），没有修改');
+  if ((n.__typename !== 'Issue' && n.__typename !== 'PullRequest') || n.number !== number || typeof n.title !== 'string' || typeof n.viewerCanUpdate !== 'boolean')
+    throw new GitHubError('graphql', 'GitHub 的回应缺少标题或权限，没有修改');
+  return { title: n.title, canUpdate: n.viewerCanUpdate };
 }
 
 async function writeTaskSource(client: GitHubClient, kind: TaskSource['kind'], id: string, body: string): Promise<unknown> {
@@ -479,6 +497,20 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       if (action.body === now.body) return { touched: [], warning: null };
       const written = await writeTaskSource(client, now.kind, action.entryId, action.body);
       const warning = written === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
+      return { touched: [[it.repo, it.number]], warning };
+    }
+    case 'editTitle': {
+      const it = needItem(ctx);
+      if (typeof action.title !== 'string' || typeof action.seenTitle !== 'string') throw new ActionRefused('不知道你改的标题、原来的标题是什么，请刷新详情后再改');
+      // GitHub keeps a title without its outer spaces: what is sent is what it will hold
+      const title = action.title.trim();
+      if (!title) throw new ActionRefused('标题不能为空，没有修改');
+      const now = await readTitle(client, it.repo, it.number);
+      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
+      if (now.title !== action.seenTitle) throw new ActionRefused(TITLE_CHANGED);
+      if (title === now.title) return { touched: [], warning: null };
+      const written = await client.rest<{ title?: unknown }>('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { title });
+      const warning = written?.title === title ? null : 'GitHub 返回的标题和要写的不一致，请刷新详情核对';
       return { touched: [[it.repo, it.number]], warning };
     }
     case 'createIssue': {
