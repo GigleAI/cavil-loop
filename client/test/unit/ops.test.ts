@@ -169,6 +169,19 @@ describe('GitHub#256: only a fully successful notice puts itself away', () => {
     expect(opButtons(r)).toEqual(['dismiss']);
     expect(opAutoDismissable(r)).toBe(false);
   });
+  // PR #282 code review round 1: a read that settles the record ends "stuck"; one that does not keeps it
+  it('a counting read that settles a stuck record clears stuck; a read that leaves it settling keeps it', () => {
+    const stuckClose = close('ok', 'ok', { stuck: true });
+    const open = opApplyRead(stuckClose, { issuedAt: 40, state: 'open', labels: [] });
+    expect(opPhase(open)).toBe('settling');
+    expect(open.stuck).toBe(true);
+    const shut = opApplyRead(stuckClose, { issuedAt: 40, state: 'closed', labels: [] });
+    expect(opPhase(shut)).toBe('settled');
+    expect(shut.stuck).toBe(false);
+    expect(opAutoDismissable(shut)).toBe(true);
+    // too old to count: nothing changes
+    expect(opApplyRead(stuckClose, { issuedAt: 1, state: 'closed', labels: [] })).toBe(stuckClose);
+  });
   // GitHub#279: every step worked but the re-read did not — a warning, not a success (it used to read "ok")
   const reread: [string, OpRecord][] = [
     ['merged, linked issues not re-read', merged({ readProblem: '没读到这个 PR 关联的 issue' })],

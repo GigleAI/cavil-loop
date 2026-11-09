@@ -1081,6 +1081,57 @@ describe('a re-read that failed is caught up by the next round that reaches GitH
     expect(refreshes()).toBe(n);
   });
 
+  it('re-reads and the sync fail past the wait (stuck); once both work again the notice is settled, no longer stuck, and puts itself away (PR #282 code review round 1)', async () => {
+    waitingForHuman();
+    const c = await ready({ opStuckMs: 30, followUpSyncMs: 30 });
+    fake.state.w.failRefresh.add(ITEM);
+    fake.state.failProjectPage.set('org/gigleai/11', 0);
+    fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    await until(() => opOf(c, s.id!).stuck, 'stuck');
+    await idle(c);
+    expect(opPhase(opOf(c, s.id!))).toBe('settling');
+    expect(opOf(c, s.id!).readProblem).toContain('重读这一条失败');
+    expect(opAutoDismissable(opOf(c, s.id!))).toBe(false);
+    fake.state.w.failRefresh.delete(ITEM);
+    fake.state.failProjectPage.clear();
+    fake.state.failRepoPage.clear();
+    const n = refreshes();
+    await c.syncNow();
+    await idle(c);
+    expect(refreshes()).toBeGreaterThan(n);
+    const r = opOf(c, s.id!);
+    expect(r.readProblem ?? null).toBeNull();
+    expect(opPhase(r)).toBe('settled');
+    expect(r.stuck).toBe(false);
+    expect(opAutoDismissable(r)).toBe(true);
+  });
+
+  it('a close stuck waiting: a read still showing it open keeps it stuck; the read showing it closed ends that', async () => {
+    const c = await ready({ opStuckMs: 30, followUpSyncMs: 30 });
+    // GitHub carries out the close, but every read of the item still shows it open
+    const holdClose = fake.holdWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}` && e.auth === `Bearer ${FAKE_TOKEN}`);
+    const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' });
+    await until(() => closes().length === 1, 'close sent');
+    await reopen();
+    holdClose();
+    await idle(c);
+    await until(() => opOf(c, s.id!).stuck, 'stuck');
+    await c.syncNow();
+    await idle(c);
+    expect(opPhase(opOf(c, s.id!))).toBe('settling');
+    expect(opOf(c, s.id!).stuck).toBe(true);
+    // closed on GitHub now: the next read shows it
+    await fetch(`${fake.api}/repos/${REPO}/issues/${ISSUE}`, { method: 'PATCH', headers: { authorization: `Bearer ${DAEMON_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ state: 'closed' }) });
+    await c.syncNow();
+    await idle(c);
+    const r = opOf(c, s.id!);
+    expect(opPhase(r)).toBe('settled');
+    expect(r.stuck).toBe(false);
+    expect(opAutoDismissable(r)).toBe(true);
+  });
+
   it('kept over a restart: the first round after it re-reads and clears the problem', async () => {
     const { c, id } = await failedReread();
     c.stopTimer();

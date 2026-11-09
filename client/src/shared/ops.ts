@@ -383,6 +383,12 @@ export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open'
     next.targetSeen = true;
     changed = true;
   }
+  // PR #282 code review round 1: "stuck" only says the wait for this re-read ran long; once a read
+  // that counts has settled the record, it is over (it would keep the notice from ever putting itself away)
+  if (next.stuck && opPhase(next) === 'settled') {
+    next.stuck = false;
+    changed = true;
+  }
   return changed ? next : r;
 }
 
