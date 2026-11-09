@@ -65,6 +65,9 @@ const scrubQueryLogins = (q) =>
     `${f}:${v.split(',').map((x) => (x.startsWith('@') || !x ? x : scrubLogin(x.replace(/"/g, '')))).join(',')}`,
   );
 
+/** only the "Closes / Fixes / Resolves / Refs #N" words of a private description (GitHub#275) */
+const scrubBody = (b) => (b.match(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:[\w.-]+\/[\w.-]+)?#\d+\b/gi) ?? []).join('\n');
+
 function scrubContent(c) {
   if (!c) return c;
   if (c.__typename === 'DraftIssue') return { ...c, title: 'Draft fixture' };
@@ -74,6 +77,8 @@ function scrubContent(c) {
     title: isPublic(c.repository.nameWithOwner) ? c.title : scrubTitle(c.number, c.__typename),
     assignees: { nodes: c.assignees.nodes.map((a) => ({ login: scrubLogin(a.login) })) },
     author: c.author ? { login: scrubLogin(c.author.login) } : c.author,
+    // GitHub#275: a PR's description says which issues it names; private repositories keep only those words
+    ...(typeof c.body === 'string' ? { body: isPublic(c.repository.nameWithOwner) ? c.body : scrubBody(c.body) } : {}),
   };
 }
 
@@ -147,7 +152,7 @@ const keep = (x) => ({
   user: x.user ? { login: scrubLogin(x.user.login) } : null,
   parent_issue_url: x.parent_issue_url ?? null,
   sub_issues_summary: x.sub_issues_summary ?? null,
-  ...(x.pull_request ? { pull_request: { html_url: x.pull_request.html_url, merged_at: x.pull_request.merged_at } } : {}),
+  ...(x.pull_request ? { pull_request: { html_url: x.pull_request.html_url, merged_at: x.pull_request.merged_at }, body: x.body ?? null } : {}),
 });
 writeFileSync(
   join(here, 'cavil-loop.issues.json'),

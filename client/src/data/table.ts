@@ -8,7 +8,7 @@ import type { GroupPreset } from '../shared/actions';
 import { isCurrentIteration } from '../shared/filter';
 import { iterationColumnKey } from './board';
 import { itemSorter } from './sort';
-import { nestPrs, orderUnits, prHosts, PR_ORDER, unitUpdated } from './prNest';
+import { listHosts, nestPrs, orderUnits, prFollow, PR_ORDER, unitUpdated } from './prNest';
 
 export const GROUP_NONE_KEY = 'none';
 
@@ -164,14 +164,22 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
  * issue it is linked to (GitHub#155, the same rule as the board's columns),
  * before that issue's sub-issues.
  */
-function arrange(items: Item[], groupKey: string, sortSetting: TableSettings['sort'], sort: (a: Item, b: Item) => number, hierarchy: boolean, prs: boolean): Row[] {
+function arrange(
+  items: Item[],
+  groupKey: string,
+  sortSetting: TableSettings['sort'],
+  sort: (a: Item, b: Item) => number,
+  hierarchy: boolean,
+  prs: boolean,
+  follow: Map<string, string> | undefined,
+): Row[] {
   const sorted = [...items].sort(sort);
   if (!hierarchy) {
     if (!prs) return sorted.map((item) => ({ id: `${item.key}@${groupKey}`, item, depth: 0, under: null }));
-    return nestPrs(sorted, (it) => it, sortSetting).map(({ entry, under }) => ({ id: `${entry.key}@${groupKey}`, item: entry, depth: under ? 1 : 0, under }));
+    return nestPrs(sorted, (it) => it, sortSetting, follow).map(({ entry, under }) => ({ id: `${entry.key}@${groupKey}`, item: entry, depth: under ? 1 : 0, under }));
   }
   const here = new Map(sorted.map((it) => [it.key, it]));
-  const hosts = prs ? prHosts(sorted) : new Map<string, string>();
+  const hosts = prs ? listHosts(sorted, follow) : new Map<string, string>();
   // parent inside this group, and no cycle on the way up
   const parentOf = (it: Item): string | null => {
     if (!it.parent || it.parent === it.key || !here.has(it.parent)) return null;
@@ -229,16 +237,27 @@ export function buildTable(
 
   const sort = itemSorter(settings.sort, projects, items);
   const byKey = new Map(projects.map((p) => [p.key, p]));
-  const group = (list: Item[], prefix: string) => groupItems(list, prefix, settings, byKey, today, sort, prsUnderIssues);
+  // GitHub#275: a PR goes to the group(s) of the issue it is shown under, never by its own value then.
+  // An issue on none of the selected Projects (iteration / status grouping) does not pull its PRs into "no value".
+  const boardGrouping = settings.groupBy === 'iteration' || settings.groupBy === 'status';
+  const follow = prsUnderIssues
+    ? prFollow([...picked].sort(sort), (it) => !boardGrouping || it.projects.some((m) => byKey.has(m.projectKey)))
+    : new Map<string, string>();
+  const pickedByKey = new Map(picked.map((it) => [it.key, it]));
+  /** whose value decides where an item goes: its own, or the issue it follows */
+  const placedBy = (it: Item) => pickedByKey.get(follow.get(it.key) ?? '') ?? it;
+  const group = (list: Item[], prefix: string) => groupItems(list, prefix, settings, byKey, today, sort, prsUnderIssues, follow, placedBy);
 
   // "all repositories" picked in the slice list: repository first, then the chosen grouping inside it (GitHub#213)
   if (settings.sliceByRepo && !settings.slice && settings.groupBy !== 'repo') {
     const byRepo = new Map<string, { title: string; items: Item[] }>();
     for (const it of picked) {
-      const k = repoKey(it.repo);
+      // a PR from another repository follows its issue into the issue's repository (as on the board's swimlanes)
+      const home = placedBy(it).repo;
+      const k = repoKey(home);
       const cur = byRepo.get(k);
       if (cur) cur.items.push(it);
-      else byRepo.set(k, { title: it.repo, items: [it] });
+      else byRepo.set(k, { title: home, items: [it] });
     }
     const repos = [...byRepo]
       .sort(([a], [b]) => compareRepo(a, b))
@@ -261,18 +280,49 @@ function groupItems(
   today: string,
   sort: (a: Item, b: Item) => number,
   prs: boolean,
+  follow: Map<string, string>,
+  placedBy: (it: Item) => Item,
 ): Group[] {
   if (settings.groupBy === 'none') {
     const key = `${prefix}all`;
-    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, rows: arrange(items, key, settings.sort, sort, settings.hierarchy, prs) }];
+    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, rows: arrange(items, key, settings.sort, sort, settings.hierarchy, prs, follow) }];
   }
   const seeds = new Map<string, Seed>();
-  for (const it of items) for (const g of groupsOf(it, settings.groupBy, byKey, today, seeds)) seeds.get(g)!.items.push(it);
+  for (const it of items) for (const g of groupsOf(placedBy(it), settings.groupBy, byKey, today, seeds)) seeds.get(g)!.items.push(it);
   return [...seeds.values()]
     .filter((s) => s.items.length > 0)
     .sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.key < b.key ? -1 : 1))
     .map((s) => {
       const key = `${prefix}${s.key}`;
-      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, preset: s.preset, rows: arrange(s.items, key, settings.sort, sort, settings.hierarchy, prs) };
+      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, preset: s.preset, rows: arrange(s.items, key, settings.sort, sort, settings.hierarchy, prs, follow) };
     });
+}
+
+/** One block of a list of groups as drawn (GitHub#275): a group, or two or more folded groups next to each other shown as one line. */
+export type GroupRun = { kind: 'group'; group: Group } | { kind: 'folded'; groups: Group[]; key: string };
+
+/**
+ * Consecutive folded groups (in display order) as one run (GitHub#275). An
+ * unfolded group breaks a run; a single folded group stays a group. Callers
+ * pass one repository's groups at a time, so a run never crosses repositories,
+ * and only groups that are shown: one emptied by a filter is not in the list
+ * and does not break a run. Display only — what is folded is not changed.
+ */
+export function foldRuns(groups: Group[], folded: ReadonlySet<string>): GroupRun[] {
+  const out: GroupRun[] = [];
+  let run: Group[] = [];
+  const flush = () => {
+    if (run.length === 1) out.push({ kind: 'group', group: run[0] });
+    else if (run.length > 1) out.push({ kind: 'folded', groups: run, key: `folded:${run[0].key}` });
+    run = [];
+  };
+  for (const g of groups) {
+    if (folded.has(g.key)) run.push(g);
+    else {
+      flush();
+      out.push({ kind: 'group', group: g });
+    }
+  }
+  flush();
+  return out;
 }

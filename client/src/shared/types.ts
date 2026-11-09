@@ -105,6 +105,14 @@ export interface Item {
   subIssues: { total: number; completed: number } | null;
   /** pull requests linked to an issue (GitHub's "Linked pull requests"); null = not known for this source (repository lists do not carry them) */
   linkedPrs: LinkedPr[] | null;
+  /**
+   * PRs only (GitHub#275): keys of the issues the PR's description names with
+   * Closes / Fixes / Resolves / Refs #N. GitHub lists only the closing ones as
+   * linked, and an autopilot PR writes only `Refs #N`. Absent = none (or a cache
+   * written before #275). Used to place a PR under its issue, never to decide
+   * which issues a merge closes.
+   */
+  refIssues?: string[];
   projects: ProjectMembership[];
   /** keys of the sources this item came from (filled when sources are merged) */
   sources: string[];

@@ -220,7 +220,7 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .columns-pick { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 
 /* ---- table ---- */
-.table-layout { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 4px 16px 16px; }
+.table-layout { flex: 1; min-height: 0; min-width: 0; /* GitHub#275: the table scrolls inside, never widens the page */ display: flex; gap: 12px; padding: 4px 16px 16px; }
 .slices { flex: 0 0 196px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .slices > .small { margin: 4px 8px 6px; font-weight: 600; }
 .slice { justify-content: space-between; border: none; background: transparent; padding: 0 8px; min-height: 30px; font-weight: 400; }
@@ -230,7 +230,7 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 table.items { border-collapse: collapse; width: 100%; }
 table.items th { position: sticky; top: 0; z-index: 1; background: var(--surface); text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border-muted); padding: 8px 12px; white-space: nowrap; }
 table.items td { border-bottom: 1px solid var(--border-muted); padding: 7px 12px; vertical-align: middle; }
-table.items tr:not(.group-head):not(.repo-head):hover td { background: var(--hover); }
+table.items tr:not(.group-head):not(.repo-head):hover td { background-color: var(--hover); }
 table.items .group-head td { background: var(--canvas); padding: 6px 12px; }
 table.items .group-head .link { color: var(--muted); }
 /* a group's "+ new issue" row (GitHub#214) */
@@ -240,7 +240,11 @@ table.items tr.group-add .link:hover:not(:disabled) { color: var(--fg); }
 table.items tr.group-add .link:disabled { opacity: 0.5; cursor: default; }
 .form .preset { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
 /* "all repositories": a repository heading above its groups (GitHub#213) */
-table.items .repo-head td { background: var(--canvas); padding: 9px 12px; font-size: 15px; border-bottom: 1px solid var(--border); }
+/* GitHub#275: the repository is the strongest heading and stays in view while its groups scroll under it */
+/* (a pinned cell leaves a collapsed table's borders behind, and rows show through them: the lines are inset shadows) */
+table.items .repo-head td { position: sticky; top: 33px; z-index: 1; height: 42px; box-sizing: border-box; background: var(--canvas); padding: 9px 12px; font-size: 16px; color: var(--fg); border: none; box-shadow: inset 0 1px 0 var(--border), inset 0 -2px 0 var(--border); }
+table.items .repo-head td b { font-size: 16px; font-weight: 700; }
+table.items .repo-head .icon { vertical-align: -3px; color: var(--muted); }
 table.items .repo-head .link { color: var(--muted); }
 table.items tbody.in-repo .group-head td { padding-left: 32px; }
 table.items tbody.in-repo tr.group-add td { padding-left: 32px; }
@@ -433,11 +437,23 @@ button.primary > kbd { background: transparent; color: #fff; border-color: rgba(
 .form .handoff-picks label { flex-direction: row; gap: 6px; align-items: center; justify-content: flex-start; font-weight: normal; }
 .form .handoff-picks input[type=radio] { width: auto; margin: 0; }
 /* the table: group heads stand out and stay in view while their rows scroll (sticky under the column heads) */
-table.items .group-head td { position: sticky; top: 33px; z-index: 1; background: color-mix(in srgb, var(--accent) 9%, var(--surface)); box-shadow: inset 4px 0 0 var(--accent); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 9px 12px 9px 14px; font-size: 14px; color: var(--fg); }
-table.items .group-head td b { font-size: 14px; }
-table.items .group-head .count { margin-left: 4px; padding: 0 7px; border-radius: 999px; background: var(--border-muted); color: var(--fg); font-size: 12px; }
+/* GitHub#275: a group heading is lighter than the repository's — no tint, no bar — and stays in view under it */
+table.items .group-head td { position: sticky; top: 33px; z-index: 1; height: 34px; box-sizing: border-box; background: var(--surface); border: none; box-shadow: inset 0 -1px 0 var(--border-muted); padding: 7px 12px 7px 14px; font-size: 13px; color: var(--fg); }
+table.items tbody.in-repo .group-head td { top: 75px; }
+table.items .group-head td b { font-size: 13px; font-weight: 600; }
+table.items .group-head .count { margin-left: 4px; padding: 0 7px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: 12px; }
+/* a grouped row hangs under its group: its title starts under the group's title, a thin line on its left (GitHub#275) */
+table.items tbody.grouped td.title-cell { background-image: linear-gradient(var(--border), var(--border)); background-size: 1px 100%; background-position: 20px 0; background-repeat: no-repeat; }
+table.items tbody.grouped.in-repo td.title-cell { background-position: 38px 0; }
+/* two or more folded groups next to each other: one line (GitHub#275) */
+table.items tr.group-head.fold-run { cursor: default; }
+table.items tr.group-head.fold-run td { color: var(--muted); line-height: 24px; }
+table.items .fold-run-title { margin-right: 10px; }
+table.items .group-head .fold-run-group { color: var(--fg); margin-right: 12px; white-space: nowrap; }
+table.items .group-head .fold-run-group:hover { color: var(--accent); }
+table.items .group-head .fold-run-all { color: var(--accent); white-space: nowrap; }
 table.items.sized { table-layout: fixed; }
-table.items th { z-index: 2; }
+table.items th { z-index: 2; border-bottom: none; box-shadow: inset 0 -1px 0 var(--border-muted); } /* GitHub#275: a pinned cell's collapsed border lets rows show through */
 table.items th .col-resize { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 2; }
 table.items th .col-resize:hover, table.items th .col-resize.on { background: var(--accent); opacity: .5; }
 table.items.sized td { overflow: hidden; text-overflow: ellipsis; }
@@ -459,7 +475,7 @@ table.items td .cell-selects { display: inline-flex; flex-direction: column; gap
 .edit-flag { color: var(--err-fg); font-size: 11px; white-space: nowrap; }
 /* GitHub#229: a group / repository heading folds from anywhere on the row */
 table.items tr.group-head, table.items tr.repo-head { cursor: pointer; }
-table.items tr.group-head:hover td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+table.items tr.group-head:not(.fold-run):hover td { background: var(--hover); }
 table.items tr.repo-head:hover td { background: var(--hover); }
 
 /* GitHub#250: the notice of a close / merge / autopilot / hand-back operation */
