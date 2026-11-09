@@ -17,6 +17,8 @@
 // The artwork is not otherwise touched: no recolouring, no re-drawing.
 //
 //   node scripts/icon.mjs build                      write build/icon.png
+//   node scripts/icon.mjs docs                       write the docs logo images
+//        (docs/logo/logo.png, docs/logo/social-preview.png — GitHub#310)
 //   node scripts/icon.mjs check-app <App.app> <png>  (macOS CI) the packaged app
 //        really carries <png> as its icon — exit 1 otherwise, including when
 //        anything cannot be read: "can't tell" never counts as a pass.
@@ -24,7 +26,7 @@
 // No dependencies: PNG decode / encode and .icns reading are below, so the same
 // code runs in the unit tests (Linux), by hand, and on the macOS CI runner.
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { inflateSync, deflateSync } from 'node:zlib';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -147,18 +149,28 @@ export function insideSource(x, y, r = SRC_RECT) {
   return dx * dx + dy * dy <= r.radius * r.radius;
 }
 
-/** Where the body lands on the canvas (uniform scale, centred). */
-export function bodyBox(r = SRC_RECT) {
-  const scale = BODY / (r.bottom - r.top);
-  const w = (r.right - r.left) * scale, h = BODY;
-  return { scale, x: (CANVAS - w) / 2, y: (CANVAS - h) / 2, w, h };
+/** Where the body lands on a canvas (uniform scale, centred). Defaults: the app icon's grid. */
+export function bodyBox(r = SRC_RECT, { width = CANVAS, height = CANVAS, body = BODY } = {}) {
+  const scale = body / (r.bottom - r.top);
+  const w = (r.right - r.left) * scale, h = body;
+  return { scale, x: (width - w) / 2, y: (height - h) / 2, w, h };
 }
 
 /** source RGB(A) image → 1024x1024 RGBA icon pixels. Pure and deterministic. */
 export function renderIcon(src) {
+  return renderBody(src, { width: CANVAS, height: CANVAS, body: BODY, sub: SUB });
+}
+
+/**
+ * The rounded square cut out of the source, scaled to `body` px tall and
+ * centred on a transparent width×height canvas; `sub`×`sub` samples per output
+ * pixel (coverage + colour). Pure and deterministic. The app icon, the README
+ * logo and the social preview card are all drawn by this one function.
+ */
+export function renderBody(src, { width, height, body, sub = SUB }) {
   const { width: sw, height: sh, channels: ch, data: sd } = src;
-  const box = bodyBox();
-  const out = new Uint8Array(CANVAS * CANVAS * 4);
+  const box = bodyBox(SRC_RECT, { width, height, body });
+  const out = new Uint8Array(width * height * 4);
   const sample = (x, y, k) => { // bilinear, pixel centres at +0.5
     const fx = Math.min(Math.max(x - 0.5, 0), sw - 1), fy = Math.min(Math.max(y - 0.5, 0), sh - 1);
     const x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = Math.min(x0 + 1, sw - 1), y1 = Math.min(y0 + 1, sh - 1);
@@ -170,22 +182,57 @@ export function renderIcon(src) {
   for (let ty = y0; ty < y1; ty++) {
     for (let tx = x0; tx < x1; tx++) {
       let n = 0, rs = 0, gs = 0, bs = 0;
-      for (let j = 0; j < SUB; j++) {
-        for (let i = 0; i < SUB; i++) {
-          const sx = SRC_RECT.left + (tx + (i + 0.5) / SUB - box.x) / box.scale;
-          const sy = SRC_RECT.top + (ty + (j + 0.5) / SUB - box.y) / box.scale;
+      for (let j = 0; j < sub; j++) {
+        for (let i = 0; i < sub; i++) {
+          const sx = SRC_RECT.left + (tx + (i + 0.5) / sub - box.x) / box.scale;
+          const sy = SRC_RECT.top + (ty + (j + 0.5) / sub - box.y) / box.scale;
           if (!insideSource(sx, sy)) continue;
           n++; rs += sample(sx, sy, 0); gs += sample(sx, sy, 1); bs += sample(sx, sy, 2);
         }
       }
       if (!n) continue;
-      const o = (ty * CANVAS + tx) * 4;
+      const o = (ty * width + tx) * 4;
       out[o] = Math.round(rs / n); out[o + 1] = Math.round(gs / n); out[o + 2] = Math.round(bs / n);
-      out[o + 3] = Math.round((255 * n) / (SUB * SUB));
+      out[o + 3] = Math.round((255 * n) / (sub * sub));
     }
   }
-  return { width: CANVAS, height: CANVAS, channels: 4, data: out };
+  return { width, height, channels: 4, data: out };
 }
+
+// ---------- the logo in the docs (GitHub#310) ----------
+//
+//   docs/logo/logo.png            README logo: the rounded square alone, 256 px
+//                                 tall, transparent corners (shown at 128 px).
+//   docs/logo/social-preview.png  GitHub's social preview card (1280x640, the
+//                                 size GitHub recommends): the logo 400 px tall,
+//                                 centred on an opaque dark background, no text
+//                                 (the card GitHub builds already carries the
+//                                 repository's name and description).
+// Both come from build/icon-source.png through renderBody, like the app icon;
+// `node scripts/icon.mjs docs` writes them — never edit them by hand.
+
+export const DOCS_LOGO_DIR = join(BUILD_DIR, '..', '..', 'docs', 'logo');
+export const LOGO_PNG = join(DOCS_LOGO_DIR, 'logo.png');
+export const SOCIAL_PNG = join(DOCS_LOGO_DIR, 'social-preview.png');
+export const LOGO = { width: 256, height: 256, body: 256, sub: 8 };
+export const SOCIAL = { width: 1280, height: 640, body: 400, sub: 8 };
+export const SOCIAL_BG = [13, 17, 23]; // GitHub's dark theme page background
+
+/** Composite an RGBA image over an opaque colour → opaque RGBA. */
+export function flatten(img, [r, g, b]) {
+  const out = new Uint8Array(img.width * img.height * 4);
+  for (let i = 0; i < out.length; i += 4) {
+    const a = img.data[i + 3] / 255;
+    out[i] = Math.round(img.data[i] * a + r * (1 - a));
+    out[i + 1] = Math.round(img.data[i + 1] * a + g * (1 - a));
+    out[i + 2] = Math.round(img.data[i + 2] * a + b * (1 - a));
+    out[i + 3] = 255;
+  }
+  return { width: img.width, height: img.height, channels: 4, data: out };
+}
+
+export function renderLogo(src) { return renderBody(src, LOGO); }
+export function renderSocial(src) { return flatten(renderBody(src, SOCIAL), SOCIAL_BG); }
 
 // ---------- comparing / reading the packaged icon ----------
 
@@ -279,6 +326,14 @@ function cli(cmd, args) {
     console.log(`wrote ${ICON_PNG}`);
     return 0;
   }
+  if (cmd === 'docs') {
+    const src = decodePng(readFileSync(SOURCE_PNG));
+    mkdirSync(DOCS_LOGO_DIR, { recursive: true });
+    writeFileSync(LOGO_PNG, encodePng(renderLogo(src)));
+    writeFileSync(SOCIAL_PNG, encodePng(renderSocial(src)));
+    console.log(`wrote ${LOGO_PNG}\nwrote ${SOCIAL_PNG}`);
+    return 0;
+  }
   if (cmd === 'check-app' && args.length >= 2) {
     const r = checkApp(args[0], args[1]);
     console.log(`app icon: ${r.icon}, largest image ${r.entry} ${r.size}, distance to ${args[1]} = ${r.distance.toFixed(2)} (pass ≤ ${SAME_ICON_MAX_DISTANCE})`);
@@ -287,7 +342,7 @@ function cli(cmd, args) {
     console.log('✅ the packaged app icon is build/icon.png');
     return 0;
   }
-  console.error('usage: icon.mjs build | icon.mjs check-app <App.app> <expected.png> [extracted-out.png]');
+  console.error('usage: icon.mjs build | icon.mjs docs | icon.mjs check-app <App.app> <expected.png> [extracted-out.png]');
   return 2;
 }
 

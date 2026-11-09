@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo/logo.png" width="128" height="128" alt="cavil-loop logo"></p>
+
 # cavil-loop
 
 > [English](README.md) · **中文**
