@@ -48,7 +48,7 @@ export function OpNotice({
   const left = opDraftLeft(r);
   const has = (b: OpButton) => buttons.includes(b);
   const cls = tone === 'error' ? 'error' : tone === 'warn' ? 'warn' : 'info';
-  // GitHub#256: a fully successful notice puts itself away after 10 s, exactly like the ×
+  // GitHub#256: a fully successful notice puts itself away after 5 s, exactly like the ×
   const auto = useAutoDismiss(opAutoDismissable(r), AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
   const run = async (f: () => Promise<{ ok: boolean; error: string | null } | void>) => {
     setWorking(true);

@@ -250,6 +250,10 @@ export function opTone(r: OpRecord): OpTone {
   const m = main(r);
   if (m.state === 'refused' || m.state === 'unsent') return 'error';
   if (r.steps.some((s) => s.state !== 'ok')) return 'warn';
+  // GitHub#279: every step worked, but the re-read after it did not (its notice says so): not a plain
+  // success — it reads as a warning until a later re-read clears it. (A check problem only shows while
+  // a step is unknown, which is a warning already.)
+  if (r.readProblem) return 'warn';
   if (p === 'settling') return r.stuck ? 'warn' : 'ok';
   return 'ok';
 }
@@ -379,6 +383,12 @@ export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open'
     next.targetSeen = true;
     changed = true;
   }
+  // PR #282 code review round 1: "stuck" only says the wait for this re-read ran long; once a read
+  // that counts has settled the record, it is over (it would keep the notice from ever putting itself away)
+  if (next.stuck && opPhase(next) === 'settled') {
+    next.stuck = false;
+    changed = true;
+  }
   return changed ? next : r;
 }
 
@@ -440,8 +450,8 @@ export function opAfterRestart(r: OpRecord): OpRecord {
   return { ...r, running: false, replyState, steps: r.steps.map((s) => (s.state === 'pending' ? { ...s, state: 'unknown' as const, reason: '客户端重启前没有收到 GitHub 的应答' } : s)) };
 }
 
-/** How long a fully successful notice stays before it puts itself away (GitHub#256). */
-export const AUTO_DISMISS_MS = 10_000;
+/** How long a fully successful notice stays before it puts itself away (GitHub#256; 5 s since GitHub#279). */
+export const AUTO_DISMISS_MS = 5_000;
 
 /**
  * GitHub#256: a notice that may put itself away after AUTO_DISMISS_MS. Judged on the record's

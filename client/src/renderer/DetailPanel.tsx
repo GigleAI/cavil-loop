@@ -43,10 +43,10 @@ export function noteOf(r: WriteResult, okText: string): ResultNote {
   return { kind: 'ok', text: okText };
 }
 
-/** how long a plain success note stays when its bar opts in (GitHub#256) */
-export const NOTE_AUTO_DISMISS_MS = 10_000;
+/** how long a plain success note stays when its bar opts in (GitHub#256; 5 s since GitHub#279) */
+export const NOTE_AUTO_DISMISS_MS = 5_000;
 
-export function ResultBanner({ note, testid, onExpire }: { note: ResultNote | null; testid: string; /** GitHub#256: clears a plain success note after 10 s; warnings and errors stay */ onExpire?: () => void }) {
+export function ResultBanner({ note, testid, onExpire }: { note: ResultNote | null; testid: string; /** GitHub#256: clears a plain success note after 5 s; warnings and errors stay */ onExpire?: () => void }) {
   const auto = useAutoDismiss(!!note && note.kind === 'ok' && !!onExpire, NOTE_AUTO_DISMISS_MS, () => onExpire?.(), note);
   if (!note) return null;
   return (
@@ -202,7 +202,7 @@ function HeadNote({ note, onExpire }: { note: ResultNote; onExpire: () => void }
 
 /**
  * GitHub#260: an operation that fully succeeded (the one rule, opAutoDismissable) is said in the head like a
- * plain success, and puts itself away after 10 s exactly like its × (GitHub#256) — never hidden behind the
+ * plain success, and puts itself away after 5 s exactly like its × (GitHub#256) — never hidden behind the
  * notices button, where it would count down and go without being seen.
  */
 function HeadOp({ r }: { r: OpRecord }) {
