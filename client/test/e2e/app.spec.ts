@@ -483,7 +483,8 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   expect(writes().filter((w) => w[0] === 'POST' && w[1] === '/api/repos/GigleAI/cavil-loop/issues')).toEqual([
     ['POST', '/api/repos/GigleAI/cavil-loop/issues', { title: '客户端里建的 issue', body: '正文', labels: ['pending/human'] }],
   ]);
-  expect(writes().at(-1)?.[0]).toBe('CavilAddProjectItem');
+  // joined the ticked board (and, GitHub#276, set its current iteration when today is in one — pinned in its own test below)
+  await expect.poll(() => writes().some((w) => w[0] === 'CavilAddProjectItem')).toBe(true);
   await expect(card(page, next)).toBeVisible();
 
   // ---- offline: every change entry greys out, nothing is sent ----
@@ -4789,4 +4790,99 @@ test('GitHub#275: repository heading kept in view, lighter groups, rows under th
   await expect(again.page.locator(`[data-testid="group"][data-key^="${C}|"][data-title="${a.title}"] [data-testid="row"]`).first()).toBeVisible({ timeout: 15_000 });
   await expect(again.page.getByTestId('fold-run')).toHaveCount(0);
   await again.app.close();
+});
+
+// ---- GitHub#276: a new issue lands in the current iteration of every ticked board ----
+
+test('GitHub#276: a new issue gets the current iteration of the ticked board — nothing said when it lands; a "no iteration" group keeps none; two current at once is said, never guessed', async () => {
+  const PROJECT_KEY = 'project:org/gigleai/11';
+  const CURRENT = '0edf1752'; // Iteration 26: 2026-11-09 … 11-15 in the recorded board
+  const newNumber = () =>
+    1 +
+    Math.max(
+      ...env.fake.state.repos.get('gigleai/cavil-loop')!.map((r: any) => r.number),
+      ...env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes.map((n: any) => n.content?.number ?? 0)),
+    );
+  const { app, page } = await launch(env);
+  // the window's clock on a day inside Iteration 26 (local noon: the same date in any timezone the runner has)
+  const noon = new Date(2026, 10, 11, 12, 0, 0);
+  await page.clock.setFixedTime(noon);
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signInWithSources(page);
+  const dialog = page.getByTestId('confirm-dialog');
+  const iterationWrites = () => writes().filter((w) => w[0] === 'CavilSetIteration');
+
+  // ---- 1. the plain "新建": joined and put in Iteration 26; the dialog says nothing about it ----
+  await page.getByTestId('write-entry').click();
+  await expect(page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`)).toBeChecked();
+  await page.getByTestId('new-issue-title').fill('默认进当前迭代');
+  await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
+  await shot(page, '276-01-plain-new');
+  const n1 = newNumber();
+  const before1 = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n1}`);
+  await expect.poll(() => writes().slice(before1).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem', 'CavilSetIteration']);
+  expect((writes().slice(before1)[2][2] as any).iterationId).toBe(CURRENT);
+  const node1 = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((x: any) => x.content?.number === n1) as any;
+  expect(node1.fieldValues.nodes.find((v: any) => v.__typename === 'ProjectV2ItemFieldIterationValue')?.title).toBe('Iteration 26');
+  await page.getByTestId('detail-close').click();
+
+  // ---- 2. a "no iteration" group's "+": joined, no iteration; a "no status" group's "+": the current one ----
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('iteration');
+  const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`);
+  await expect(group('无迭代').getByTestId('group-add')).toBeEnabled({ timeout: 15_000 });
+  await group('无迭代').getByTestId('group-add').click();
+  await page.getByTestId('new-issue-title').fill('无迭代组里建的');
+  await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
+  const it0 = iterationWrites().length;
+  const n2 = newNumber();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n2}`);
+  await expect.poll(() => writes().filter((w) => w[0] === 'CavilAddProjectItem').length).toBe(2);
+  await page.waitForTimeout(500);
+  expect(iterationWrites().length).toBe(it0);
+  await page.getByTestId('detail-close').click();
+  await page.getByTestId('group-by').selectOption('status');
+  await expect(group('无状态').getByTestId('group-add')).toBeEnabled({ timeout: 15_000 });
+  await group('无状态').getByTestId('group-add').click();
+  await page.getByTestId('new-issue-title').fill('无状态组里建的');
+  const n3 = newNumber();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n3}`);
+  await expect.poll(() => iterationWrites().length).toBe(it0 + 1);
+  expect((iterationWrites().at(-1)![2] as any).iterationId).toBe(CURRENT);
+  await page.getByTestId('detail-close').click();
+
+  // ---- 3. two iterations current at once (dates overlap): said under the boards, nothing guessed ----
+  const field = env.fake.state.projects.get('org/gigleai/11')![0].fields.nodes.find((f: any) => f.__typename === 'ProjectV2IterationField') as any;
+  for (const pg of env.fake.state.projects.get('org/gigleai/11')!) {
+    const f = pg.fields.nodes.find((x: any) => x.__typename === 'ProjectV2IterationField') as any;
+    if (f && !f.configuration.iterations.some((x: any) => x.id === 'hotfix')) f.configuration.iterations.push({ id: 'hotfix', title: 'Hotfix', startDate: '2026-11-10', duration: 3 });
+  }
+  expect(field.configuration.iterations.some((x: any) => x.id === 'hotfix')).toBe(true);
+  await page.getByTestId('refresh').press('Enter');
+  await expect.poll(async () => {
+    await page.getByTestId('write-entry').click();
+    const n = await page.locator(`[data-testid="new-issue-preset-line"][data-target="${PROJECT_KEY}:iteration"]`).count();
+    if (n === 0) await page.getByTestId('confirm-cancel').click();
+    return n;
+  }, { timeout: 20_000 }).toBe(1);
+  const overlap = page.locator(`[data-testid="new-issue-preset-line"][data-target="${PROJECT_KEY}:iteration"]`);
+  await expect(overlap).toContainText('同时有 2 个当前迭代');
+  await expect(page.getByTestId('new-issue-projects').getByTestId('new-issue-preset')).toHaveAttribute('data-place', 'boards');
+  await shot(page, '276-02-overlap');
+  await page.getByTestId('new-issue-title').fill('重叠时不猜');
+  const it1 = iterationWrites().length;
+  const n4 = newNumber();
+  await page.getByTestId('confirm-ok').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n4}`);
+  await expect.poll(() => writes().filter((w) => w[0] === 'CavilAddProjectItem').length).toBe(4);
+  await page.waitForTimeout(500);
+  expect(iterationWrites().length).toBe(it1);
+  await app.close();
 });

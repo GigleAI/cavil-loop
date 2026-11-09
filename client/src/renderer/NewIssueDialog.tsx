@@ -10,6 +10,7 @@ import { LabelPicker } from './LabelPicker';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
+import { localToday } from './iterationOptions';
 import { checkHandoff, handoffProblem, handoffSummary, mergeLabels, type Handoff, type HandoffCheck, type LabelRead } from '../shared/handoff';
 
 const HANDOFF_TITLES: Record<Handoff, string> = { none: '只建 issue', agent: '交给 agent', autopilot: '托管（自动合并）' };
@@ -103,20 +104,29 @@ export function NewIssueDialog({
   // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
   const ticked = allProjects.filter((p) => projects.includes(p.key));
   // GitHub#258: the boards left unticked are watched for taking the issue in by themselves
-  const preview = group ? previewCreate(group.preset, ticked, repo, read, allProjects.filter((p) => !projects.includes(p.key))) : null;
+  // GitHub#276: the plain "新建" is the whole table's "+": a plan too, so the ticked boards get the current
+  // iteration. "Today" is fixed when the dialog opens: what it would set never changes behind the dialog.
+  const [today] = useState(() => localToday(Date.now()));
+  const preset: GroupPreset = group?.preset ?? { by: 'none' };
+  const preview = previewCreate(preset, ticked, repo, read, allProjects.filter((p) => !projects.includes(p.key)), today);
   // GitHub#231: what an iteration / status group sets is about the boards: said right under their boxes
-  const boardPreview = group?.preset.by === 'iteration' || group?.preset.by === 'status';
-  // GitHub#270: only what will not happen as the group says; the rest is in the title (nothing to say = no box)
-  const notes = preview ? shownLines(preview) : [];
-  const previewBox = preview && notes.length > 0 && (
-    <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'} data-place={boardPreview ? 'boards' : 'repo'}>
-      {notes.map((l) => (
+  const boardPreview = preset.by === 'iteration' || preset.by === 'status';
+  // GitHub#270: only what will not happen as the group says; the rest is in the title (nothing to say = no box).
+  // GitHub#276: a line about one board (the current iteration not set) goes under the boards whatever the group.
+  const notes = shownLines(preview);
+  const aboutBoard = (target: string) => boardPreview || allProjects.some((p) => target === p.key || target === `${p.key}:iteration`);
+  const box = (place: 'boards' | 'repo') => {
+    const here = notes.filter((l) => aboutBoard(l.target) === (place === 'boards'));
+    return here.length > 0 && (
+    <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'} data-place={place}>
+      {here.map((l) => (
         <div key={l.target} className="small muted" data-testid="new-issue-preset-line" data-target={l.target} data-applies="no">
           {l.text}
         </div>
       ))}
     </div>
-  );
+    );
+  };
 
   const colorOf = (name: string) => opts?.labels.find((l) => l.name === name)?.color ?? '';
   const toggleLabel = (name: string) => setLabels((ls) => (ls.includes(name) ? ls.filter((x) => x !== name) : [...ls, name]));
@@ -126,17 +136,17 @@ export function NewIssueDialog({
       title={group ? `新建 issue · 加到「${group.title}」` : '新建 issue'}
       confirmLabel="创建"
       busy={busy}
-      disabled={!repo || !title.trim() || Boolean(preview?.blocked) || handoffWaits}
+      disabled={!repo || !title.trim() || Boolean(preview.blocked) || handoffWaits}
       dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
       onConfirm={async () => {
-        if (preview && !preview.plan) return;
+        if (!preview.plan) return;
         // GitHub#229: the dialog does not wait for GitHub — the outcome shows above the board,
         // the new issue opens once it exists; only a refusal before anything went out keeps it open
         setBusy(true);
         const used = handoff;
         // remembered by the app once the issue exists, and only when picked by hand here (GitHub#245)
-        const r = await api().startCreate({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), handoff: used, handoffPicked: picked !== null && picked === used, ...(preview?.plan ? { plan: preview.plan } : {}) });
+        const r = await api().startCreate({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), handoff: used, handoffPicked: picked !== null && picked === used, plan: preview.plan });
         setBusy(false);
         if (r.ok) return onClose();
         setNote(noteOf({ ok: false, error: r.error, warning: null }, ''));
@@ -153,7 +163,7 @@ export function NewIssueDialog({
             ))}
           </select>
         </label>
-        {preview && !boardPreview && previewBox}
+        {box('repo')}
         <label>
           标题
           <input data-testid="new-issue-title" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -298,7 +308,7 @@ export function NewIssueDialog({
                 看板「{b.title}」还没同步完，默认勾选没把它算进去
               </div>
             ))}
-          {preview && boardPreview && previewBox}
+          {box('boards')}
         </div>
         <ResultBanner note={note} testid="new-issue-result" />
       </div>

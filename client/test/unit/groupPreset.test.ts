@@ -123,9 +123,9 @@ describe('the table hands each group its value', () => {
   const presets = (groupBy: 'iteration' | 'status' | 'milestone' | 'repo') =>
     Object.fromEntries(buildTable(items, [A], { ...DEFAULT_TABLE, groupBy }, FIXTURE_TODAY).groups.map((g) => [g.title, g.preset]));
   it('iteration / status / milestone / repository, and the "no value" groups', () => {
-    expect(presets('iteration')).toEqual({ 'Iteration 25': { by: 'iteration', title: 'Iteration 25', startDate: '2026-11-02' }, 无迭代: { by: 'none' } });
-    expect(presets('status')).toEqual({ 'In progress': { by: 'status', status: 'In progress' }, 无状态: { by: 'none' } });
-    expect(presets('milestone')).toEqual({ 'v1.2': { by: 'milestone', title: 'v1.2' }, 无里程碑: { by: 'none' } });
+    expect(presets('iteration')).toEqual({ 'Iteration 25': { by: 'iteration', title: 'Iteration 25', startDate: '2026-11-02' }, 无迭代: { by: 'none', field: 'iteration' } });
+    expect(presets('status')).toEqual({ 'In progress': { by: 'status', status: 'In progress' }, 无状态: { by: 'none', field: 'status' } });
+    expect(presets('milestone')).toEqual({ 'v1.2': { by: 'milestone', title: 'v1.2' }, 无里程碑: { by: 'none', field: 'milestone' } });
     expect(presets('repo')).toEqual({ 'o/r': { by: 'repo', repo: 'o/r' } });
   });
   it('an iteration group\'s value finds that iteration on the Project again', () => {
@@ -170,5 +170,80 @@ describe('GitHub#270: what the dialog shows of a preview', () => {
   it('repository and "no value" groups: nothing shown', () => {
     expect(shown(previewCreate({ by: 'repo', repo: 'o/r' }, [A], 'o/r', { state: 'loading' }))).toEqual([]);
     expect(shown(previewCreate({ by: 'none' }, [A], 'o/r', { state: 'loading' }))).toEqual([]);
+  });
+});
+
+// GitHub#276: a new issue gets, on every ticked board whose iteration is still empty, the iteration
+// today falls in (start day included, start + duration excluded — the table's "当前" rule). Expected
+// values are written from that rule: a set value says nothing, a board without one says nothing,
+// two current at once is never guessed and is said; iteration / "no iteration" groups keep theirs;
+// the unticked boards are never touched.
+describe('GitHub#276: the current iteration on the ticked boards', () => {
+  const TODAY = '2026-11-10';
+  const cur = iter('Sprint 23', '2026-11-09', 14); // 11-09 … 11-22
+  const past = iter('Sprint 22', '2026-10-26', 14); // ended 11-08
+  const next = iter('Sprint 24', '2026-11-23', 14);
+  const T = project('pt', 'Tutor', [past, cur, next], ['Todo', 'In progress']);
+  const OVER = project('po', 'Over', [cur, iter('Hotfix', '2026-11-10', 3)]);
+  const NONE_NOW = project('pn', 'Later', [next]);
+  const plan = (preset: GroupPreset, projects: typeof T[], today: string | null = TODAY, read: MilestoneRead = { state: 'loading' }, others: typeof T[] = []) =>
+    previewCreate(preset, projects, 'o/r', read, others, today);
+  const ids = (p: ReturnType<typeof previewCreate>) => p.plan?.projects.map((e) => [e.projectKey, e.iterationId, e.status]);
+  const shown = (p: ReturnType<typeof previewCreate>) => shownLines(p).map((l) => l.target);
+
+  it('the plain "新建" (whole table): the one current iteration, nothing shown', () => {
+    const p = plan({ by: 'none' }, [T]);
+    expect(ids(p)).toEqual([['pt', cur.id, null]]);
+    expect(shown(p)).toEqual([]);
+  });
+  it('the day boundaries: the start day counts, the day after the last day does not', () => {
+    expect(ids(plan({ by: 'none' }, [T], '2026-11-09'))).toEqual([['pt', cur.id, null]]);
+    expect(ids(plan({ by: 'none' }, [T], '2026-11-22'))).toEqual([['pt', cur.id, null]]);
+    expect(ids(plan({ by: 'none' }, [T], '2026-11-23'))).toEqual([['pt', next.id, null]]);
+    expect(ids(plan({ by: 'none' }, [project('px', 'X', [past])], '2026-11-09'))).toEqual([['px', null, null]]);
+  });
+  it('no iteration field, no current iteration, or a board this account cannot change: left empty, nothing shown', () => {
+    const p = plan({ by: 'none' }, [NO_IT, NONE_NOW, { ...T, viewerCanUpdate: false }]);
+    expect(ids(p)).toEqual([['pc', null, null], ['pn', null, null], ['pt', null, null]]);
+    expect(shown(p)).toEqual([]);
+  });
+  it('two current at once: not guessed, that board said once', () => {
+    const p = plan({ by: 'none' }, [T, OVER]);
+    expect(ids(p)).toEqual([['pt', cur.id, null], ['po', null, null]]);
+    expect(shown(p)).toEqual(['po:iteration']);
+    expect(shownLines(p)[0].text).toContain('Over');
+  });
+  it('status / milestone / repository / "no status" / "no milestone" groups: their value plus the current iteration', () => {
+    expect(ids(plan({ by: 'status', status: 'In progress' }, [T]))).toEqual([['pt', cur.id, 'In progress']]);
+    const m = plan({ by: 'milestone', title: 'v1' }, [T], TODAY, ok([{ number: 1, title: 'v1', state: 'open' }]));
+    expect(m.plan).toEqual({ milestone: { number: 1, title: 'v1' }, projects: [{ projectKey: 'pt', iterationId: cur.id, status: null }] });
+    expect(ids(plan({ by: 'repo', repo: 'o/r' }, [T]))).toEqual([['pt', cur.id, null]]);
+    expect(ids(plan({ by: 'none', field: 'status' }, [T]))).toEqual([['pt', cur.id, null]]);
+    expect(ids(plan({ by: 'none', field: 'milestone' }, [T]))).toEqual([['pt', cur.id, null]]);
+  });
+  it('a status group on a board without that status: still the current iteration (only the status line shown)', () => {
+    const p = plan({ by: 'status', status: 'Done' }, [T]);
+    expect(ids(p)).toEqual([['pt', cur.id, null]]);
+    expect(shown(p)).toEqual(['pt']);
+  });
+  it('an iteration group keeps its own; a "no iteration" group stays empty', () => {
+    expect(ids(plan({ by: 'iteration', title: 'Sprint 24', startDate: '2026-11-23' }, [T]))).toEqual([['pt', next.id, null]]);
+    // the group's iteration is not on this board: only joins (as before), never the current one instead
+    expect(ids(plan({ by: 'iteration', title: 'Iteration 25', startDate: '2026-11-02' }, [T]))).toEqual([['pt', null, null]]);
+    expect(ids(plan({ by: 'none', field: 'iteration' }, [T]))).toEqual([['pt', null, null]]);
+  });
+  it('a milestone list still being read: no plan at all, as before (nothing filled into nothing)', () => {
+    expect(plan({ by: 'milestone', title: 'v1' }, [T]).plan).toBeNull();
+  });
+  it('the unticked boards: the watch is exactly what it was without this rule', () => {
+    for (const preset of [{ by: 'status', status: 'In progress' }, { by: 'iteration', title: 'Sprint 23', startDate: '2026-11-09' }, { by: 'none' }] as GroupPreset[]) {
+      const others = [T, OVER, NONE_NOW, NO_IT];
+      const withRule = plan(preset, [A], TODAY, { state: 'loading' }, others);
+      const without = plan(preset, [A], null, { state: 'loading' }, others);
+      expect(withRule.plan?.watch).toEqual(without.plan?.watch);
+      expect(withRule.lines.filter((l) => others.some((o) => l.target.startsWith(o.key)))).toEqual(without.lines.filter((l) => others.some((o) => l.target.startsWith(o.key))));
+    }
+    // the plain "新建" still watches nothing
+    expect(plan({ by: 'none' }, [], TODAY, { state: 'loading' }, [T]).plan?.watch).toBeUndefined();
   });
 });

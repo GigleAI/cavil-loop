@@ -59,14 +59,16 @@ export type MergeMethod = 'merge' | 'squash' | 'rebase';
 
 /**
  * The value of one table group (GitHub#214): what a new issue made from that
- * group's "+" carries. `none` = a "no iteration / no status / no milestone" group.
+ * group's "+" carries. `none` = a "no iteration / no status / no milestone" group
+ * (`field`: which one, GitHub#276), or the whole table when it is not grouped / the
+ * plain "新建" button (no `field`).
  */
 export type GroupPreset =
   | { by: 'iteration'; title: string; startDate: string }
   | { by: 'status'; status: string }
   | { by: 'milestone'; title: string }
   | { by: 'repo'; repo: string }
-  | { by: 'none' };
+  | { by: 'none'; field?: 'iteration' | 'status' | 'milestone' };
 
 /**
  * What a new issue from a group's "+" sets, as confirmed in the dialog (GitHub#214).
