@@ -30,35 +30,93 @@ export interface Nested<T> {
 /** Closes / Fixes / Resolves / Refs (and their -s / -d / -es / -ed forms), then `#N` or `owner/repo#N`. */
 const REF_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:([A-Za-z0-9][\w.-]*\/[\w.-]+))?#(\d+)\b/gi;
 
-/** Markdown nodes whose text GitHub does not read keywords in: code (fenced, indented, inline) and HTML comments. */
 type MdNode = { type: string; value?: string; position?: { start: { offset?: number }; end: { offset?: number } }; children?: MdNode[] };
-const HIDDEN = (n: MdNode) => n.type === 'code' || n.type === 'inlineCode' || (n.type === 'html' && /^\s*<!--/.test(n.value ?? ''));
 
-/** `body` with every code / HTML-comment span blanked (line breaks kept), as CommonMark reads it (GitHub#275, PR #278 review round 1). */
-function readableText(body: string): string {
+/**
+ * Raw HTML elements whose content reads as code: their text never names an issue. (`<script>`,
+ * `<style>`, `<textarea>` are not here: GitHub's Markdown filters those tags and shows them as text.)
+ */
+const CODE_ELEMENTS = new Set(['code', 'pre', 'kbd', 'samp']);
+
+/**
+ * The parts of `body` a reader does not see as prose (GitHub#275, PR #278 review rounds 1–2), as
+ * [start, end) offsets — one rule, decided once:
+ *  - Markdown code: fenced and indented blocks, inline spans (found by the Markdown parser, so a
+ *    fence is closed only by a fence of its own kind and length);
+ *  - inside raw HTML (every `html` node, in document order): comments (`<!-->` and `<!--->` are
+ *    empty ones; a comment never closed hides the rest of the body, as a browser reads it),
+ *    the tags themselves (attribute values too), and everything from an opening code-like element
+ *    (CODE_ELEMENTS) to its matching close — across nodes, so the prose between `<code>` and
+ *    `</code>` in two raw HTML pieces is hidden too; never closed = to the end of the body.
+ * Text of other elements (`<div>`, a folded `<details>`) is prose: shown, so it counts.
+ */
+export function hiddenSpans(body: string): [number, number][] {
   const spans: [number, number][] = [];
+  const html: { at: number; value: string }[] = [];
   const walk = (n: MdNode) => {
     const a = n.position?.start.offset;
     const b = n.position?.end.offset;
-    if (HIDDEN(n) && a !== undefined && b !== undefined) spans.push([a, b]);
+    if ((n.type === 'code' || n.type === 'inlineCode') && a !== undefined && b !== undefined) spans.push([a, b]);
+    else if (n.type === 'html' && a !== undefined) html.push({ at: a, value: body.slice(a, b ?? body.length) });
     else n.children?.forEach(walk);
   };
   walk(fromMarkdown(body) as MdNode);
+  html.sort((x, y) => x.at - y.at);
+  let open: { name: string; at: number; depth: number } | null = null;
+  for (const { at, value } of html) {
+    let i = 0;
+    while (i < value.length) {
+      const lt = value.indexOf('<', i);
+      if (lt < 0) break;
+      const rest = value.slice(lt);
+      let end: number;
+      if (rest.startsWith('<!--')) {
+        const short = /^<!--->?|^<!-->/.exec(rest);
+        const close = short ? -1 : value.indexOf('-->', lt + 4);
+        if (short) end = lt + short[0].length;
+        else if (close < 0) {
+          // never closed: everything after is inside the comment
+          spans.push([at + lt, body.length]);
+          return spans.sort((x, y) => x[0] - y[0]);
+        } else end = close + 3;
+        if (!open) spans.push([at + lt, at + end]);
+        i = end;
+        continue;
+      }
+      const tag = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)(?:[^>"']|"[^"]*"|'[^']*')*>/.exec(rest) ?? /^<[!?][^>]*>/.exec(rest);
+      if (!tag) {
+        i = lt + 1;
+        continue;
+      }
+      end = lt + tag[0].length;
+      const name = (tag[2] ?? '').toLowerCase();
+      const closing = tag[1] === '/';
+      const selfClosed = /\/>$/.test(tag[0]);
+      if (open) {
+        if (name === open.name && !closing && !selfClosed) open.depth++;
+        else if (name === open.name && closing && --open.depth === 0) {
+          spans.push([open.at, at + end]);
+          open = null;
+        }
+      } else if (CODE_ELEMENTS.has(name) && !closing && !selfClosed) {
+        open = { name, at: at + lt, depth: 1 };
+      } else spans.push([at + lt, at + end]);
+      i = end;
+    }
+  }
+  if (open) spans.push([open.at, body.length]);
+  return spans.sort((x, y) => x[0] - y[0]);
+}
+
+/** `body` with every hidden part (hiddenSpans) blanked, line breaks kept: the prose keywords are read in. */
+export function proseText(body: string): string {
   let out = body;
-  for (const [a, b] of spans) out = out.slice(0, a) + out.slice(a, b).replace(/[^\n]/g, ' ') + out.slice(b);
+  for (const [a, b] of hiddenSpans(body)) out = out.slice(0, a) + out.slice(a, b).replace(/[^\n]/g, ' ') + out.slice(b);
   return out;
 }
 
-/**
- * The issues a PR's description names (GitHub#275), as item keys, in the order
- * written, each once. Code (fenced or indented blocks, inline spans) and HTML
- * comments are left out, decided by a Markdown parser (the same one the task
- * lists use) rather than by patterns: GitHub does not read keywords there
- * either. `#N` alone means this repository; the PR itself is never one of them.
- */
-export function bodyIssueRefs(body: string | null | undefined, repo: string, self: number | null | undefined): string[] {
-  if (!body) return [];
-  const text = readableText(body);
+/** The issue keys `text` names, in order, each once, never `self`. Shared by the parser and its browser cross-check. */
+export function namedIn(text: string, repo: string, self: number | null | undefined): string[] {
   const own = itemKey(repo, self ?? -1);
   const out: string[] = [];
   for (const m of text.matchAll(REF_RE)) {
@@ -66,6 +124,16 @@ export function bodyIssueRefs(body: string | null | undefined, repo: string, sel
     if (key !== own && !out.includes(key)) out.push(key);
   }
   return out;
+}
+
+/**
+ * The issues a PR's description names (GitHub#275), as item keys, in the order
+ * written, each once — read in its prose only (hiddenSpans says what is not
+ * prose; the Markdown parser is the one the task lists use). `#N` alone means
+ * this repository; the PR itself is never one of them.
+ */
+export function bodyIssueRefs(body: string | null | undefined, repo: string, self: number | null | undefined): string[] {
+  return body ? namedIn(proseText(body), repo, self) : [];
 }
 
 /** Per issue: the keys of the PRs linked to it, GitHub's links first, then the PRs (of `items`, in order) whose description names it. */

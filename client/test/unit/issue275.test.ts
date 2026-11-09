@@ -16,7 +16,9 @@ import { buildBoard, COL_NO_STATUS } from '../../src/data/board';
 import { buildTable, foldRuns, type Group } from '../../src/data/table';
 import { bodyIssueRefs, issuePrLinks } from '../../src/data/prNest';
 import { relatedIssues } from '../../src/data/actions';
-import { fetchProject, fetchRepo } from '../../src/data/fetchSources';
+import { contentToItem, fetchProject, fetchRepo, type GqlContent } from '../../src/data/fetchSources';
+import { freshViews } from '../../src/data/itemRefresh';
+import { OTHER_REPO_CASE, REF_CASES } from '../fixtures/pr-ref-bodies';
 import { GitHubClient } from '../../src/data/github';
 import { mergeSnapshots } from '../../src/data/merge';
 import { parseSource } from '../../src/shared/sources';
@@ -54,45 +56,61 @@ function views(items: Item[], groupBy: 'iteration' | 'status' = 'iteration', tab
   return { board, table: t, b, g };
 }
 
-describe('which issues a PR description names (GitHub#275)', () => {
-  const refs = (body: string, self = 99) => bodyIssueRefs(body, 'GigleAI/Cavil-Loop', self);
+describe('which issues a PR description names: one list of inputs, every path (GitHub#275, PR #278 review rounds 1–2)', () => {
+  const keys = (refs: number[]) => refs.map((n) => `o/r#${n}`);
 
-  it('every keyword form, this repository and another, in order, each once', () => {
-    expect(refs('Refs #273')).toEqual(['gigleai/cavil-loop#273']);
-    expect(refs('closes #1\nFixed #2 and RESOLVES #3; ref #4\nfixes   #5 resolved #6 close #7 refs #1')).toEqual(
-      [1, 2, 3, 4, 5, 6, 7].map((n) => `gigleai/cavil-loop#${n}`),
-    );
-    expect(refs('Refs Other/Repo#12, closes x.y/z-w#3')).toEqual(['other/repo#12', 'x.y/z-w#3']);
+  it.each(REF_CASES.map((c) => [c.why, c] as const))('the parser: %s', (_why, c) => {
+    expect(bodyIssueRefs(c.body, 'o/r', 99)).toEqual(keys(c.refs));
   });
 
-  it('no keyword, a word that only ends in one, code, comments and the PR itself: none', () => {
-    expect(refs('see #5, follow-ups to #47')).toEqual([]);
-    expect(refs('prefs #3 hotfixes #4 unrefs #5')).toEqual([]);
-    expect(refs('`Refs #5` and\n```\nCloses #6\n```\n~~~md\nfixes #7\n~~~\n<!-- closes #8 -->')).toEqual([]);
-    expect(refs('Refs #99', 99)).toEqual([]);
-    expect(refs('Refs #5 #6')).toEqual(['gigleai/cavil-loop#5']);
-    expect(bodyIssueRefs(null, R, 1)).toEqual([]);
+  it('another repository is named by its full name; a repository name in any case is the same one', () => {
+    expect(bodyIssueRefs(OTHER_REPO_CASE.body, 'o/r', 99)).toEqual(OTHER_REPO_CASE.keys);
+    expect(bodyIssueRefs('Refs #273', 'GigleAI/Cavil-Loop', 1)).toEqual(['gigleai/cavil-loop#273']);
+    expect(bodyIssueRefs(null, 'o/r', 1)).toEqual([]);
   });
 
-  it('an unclosed code fence hides the rest, as GitHub renders it', () => {
-    expect(refs('Refs #1\n```\nRefs #2')).toEqual(['gigleai/cavil-loop#1']);
+  it('every way an item is built gives the same answer, kept through a merge of both sources and a second refresh', async () => {
+    // each PR is #100 + i; the list's "#99" means the PR itself
+    const prs = REF_CASES.map((c, i) => ({ n: 100 + i, c: { ...c, body: c.body.replace(/#99\b/g, `#${100 + i}`) } }));
+    // 1. Project page / single re-read: the GraphQL shape
+    const gql = (n: number, body: string): GqlContent => ({ __typename: 'PullRequest', id: `PR_${n}`, number: n, title: `t${n}`, url: `u${n}`, state: 'OPEN', merged: false, isDraft: false, updatedAt: '2026-11-02T00:00:00Z', repository: { nameWithOwner: 'o/r' }, labels: { nodes: [] }, assignees: { nodes: [] }, milestone: null, author: null, body });
+    // 2. repository list: the REST shape, through the real fetchRepo against the fake GitHub
+    const rest = prs.map(({ n, c }) => ({ number: n, node_id: `PR_${n}`, title: `t${n}`, state: 'open', html_url: `u${n}`, updated_at: '2026-11-02T00:00:00Z', labels: [], assignees: [], milestone: null, user: null, pull_request: { merged_at: null }, body: c.body }));
+    const fake = await startFakeGitHub({ repos: new Map([['o/r', rest]]) });
+    try {
+      const client = new GitHubClient({ api: fake.api, web: fake.web }, FAKE_TOKEN);
+      const repoSnap = await fetchRepo(client, parseSource('https://github.com/o/r') as any, FIXTURE_NOW);
+      const projSnap = { sourceKey: 'p', fetchedAt: FIXTURE_NOW, project: P, items: prs.map(({ n, c }) => contentToItem(gql(n, c.body), [member(P, S1)], ['p'])!) };
+      const merged = mergeSnapshots([projSnap, repoSnap], null).items;
+      // 3. single re-read after a change: what the cache gets for each source
+      const reread = prs.map(({ n, c }) => freshViews([projSnap, repoSnap], { content: gql(n, c.body), projectItems: [] }));
+      for (const { n, c } of prs) {
+        const want = keys(c.refs);
+        const at = (list: Item[]) => list.find((x) => x.number === n)!.refIssues;
+        expect([at(projSnap.items), at(repoSnap.items), at(merged)], c.why).toEqual([want, want, want]);
+        for (const v of reread[n - 100]) if (v.item) expect(v.item.refIssues, `${c.why} (re-read into ${v.snap.sourceKey})`).toEqual(want);
+      }
+      // a second refresh of the merged copy gives the same again
+      const again = mergeSnapshots([{ ...projSnap, items: projSnap.items.map((x) => ({ ...x })) }, repoSnap], null).items;
+      expect(again.map((x) => x.refIssues)).toEqual(merged.map((x) => x.refIssues));
+    } finally {
+      await fake.close();
+    }
   });
 
-  it('code as Markdown reads it, not as a pattern guesses it (PR #278 review round 1)', () => {
-    const t = '`';
-    // an indented code block
-    expect(refs('    Refs #5')).toEqual([]);
-    expect(refs('Intro\n\n    Refs #5\n\nRefs #6')).toEqual(['gigleai/cavil-loop#6']);
-    // a four-backtick fence holding a three-backtick line: the inner line does not close it
-    expect(refs([t.repeat(4) + 'md', t.repeat(3), 'Refs #5', t.repeat(4), 'Refs #6'].join('\n'))).toEqual(['gigleai/cavil-loop#6']);
-    // a double-backtick span holding a backtick
-    expect(refs(`${t}${t}a ${t} Refs #5${t}${t} Refs #6`)).toEqual(['gigleai/cavil-loop#6']);
-    // an HTML comment over several lines, and one inside a sentence
-    expect(refs('<!--\nRefs #5\n-->\nRefs #6 and <!-- closes #7 --> fixes #8')).toEqual(['gigleai/cavil-loop#6', 'gigleai/cavil-loop#8']);
-    // a list item and a quote are prose: they count
-    expect(refs('- Refs #5\n> closes #6')).toEqual(['gigleai/cavil-loop#5', 'gigleai/cavil-loop#6']);
-    // the autopilot summary's folds are prose too
-    expect(refs('<!-- autopilot-summary:begin -->\n<details><summary>背景</summary>\n\nRefs #5\n\n</details>')).toEqual(['gigleai/cavil-loop#5']);
+  it('what the views do with it: a PR goes under exactly the issues its prose names, on the board, in the table and in the linked-PR column', () => {
+    const issues = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => issue(n));
+    for (const c of REF_CASES) {
+      const p = pr(99, { refIssues: bodyIssueRefs(c.body, 'o/r', 99) });
+      const items = [...issues, p];
+      const host = c.refs.find((n) => n <= 8) ?? null;
+      const board = buildBoard(items, [P], 'iteration', false, TODAY, UPDATED, true);
+      const card = board.columns.flatMap((x) => x.cards).find((x) => x.item.number === 99)!;
+      const t = buildTable(items, [P], { ...DEFAULT_TABLE, groupBy: 'iteration', sort: UPDATED, hierarchy: false }, TODAY, true);
+      const row = t.groups.flatMap((g) => g.rows).find((r) => r.item.number === 99)!;
+      expect([num(card.under), num(row.under)], c.why).toEqual([host, host]);
+      expect(issues.filter((i) => issuePrLinks(i, items)!.some((l) => l.number === 99)).map((i) => i.number), c.why).toEqual(c.refs.filter((n) => n <= 8));
+    }
   });
 });
 
