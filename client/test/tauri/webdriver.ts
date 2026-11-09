@@ -71,6 +71,11 @@ export class WebDriver {
     return this.cmd('GET', this.s(`/element/${await this.find(css)}/text`));
   }
 
+  /** WebDriver's own "is this element displayed" answer. */
+  async displayed(css: string): Promise<boolean> {
+    return this.cmd('GET', this.s(`/element/${await this.find(css)}/displayed`));
+  }
+
   async url(): Promise<string> {
     return this.cmd('GET', this.s('/url'));
   }
