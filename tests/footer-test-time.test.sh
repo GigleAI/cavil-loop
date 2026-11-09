@@ -129,7 +129,7 @@ bg_text() { printf 'Command running in background with ID: b%s. Output is being 
 
 # 一个场景的沙盘：真 git worktree + run.sh 副本 + 会话目录 + 流水
 new_case() {   # <名字> <run.sh 来源>
-    C="$TMP/c/$1"; rm -rf "$C"; mkdir -p "$C"
+    C="$TMP/c/$1"; rm -rf "$C"; mkdir -p "$C"; FOOTER_DIAG=""
     git init -q "$C/repo" && git -C "$C/repo" commit -q --allow-empty -m init
     git -C "$C/repo" worktree add -q "$C/wt/proj-issue-9" -b feature >/dev/null 2>&1
     WT="$C/wt/proj-issue-9"
@@ -160,8 +160,45 @@ now() { python3 -c 'import time; print(f"{time.time():.3f}")'; }
 add() { cmd_json "$@" >> "$C/cmds"; }   # 记一条会话命令
 
 # 出 footer：真实 comment-footer.sh + 配置里的项目命令；读出总览和机器记录
+# 出 footer 之前：Python 读到的当前时刻必须已过流水里最晚的时刻。统计按「本轮开始」到「统计那一刻」裁剪，
+# 时钟若一时落后于 run.sh 记下的时刻（CI 上 shell 的 date 与 Python 的时钟），已结束的运行会被截掉一截，
+# 两次 footer 得出不同秒数（GitHub#291，推断、未证实）。最多等 5 秒；真等了就印一行，CI 日志里留证据。
+# 每次出 footer 的时刻记进 FOOTER_DIAG，检查失败时连同流水一起打印。
+FOOTER_DIAG=""
+log_latest() { python3 - "$LOG" <<'PY'
+import json, sys, time
+hi = None
+try:
+    for line in open(sys.argv[1]):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        for k in ("t", "t0"):
+            v = d.get(k) if isinstance(d, dict) else None
+            if isinstance(v, (int, float)):
+                hi = v if hi is None else max(hi, v)
+except OSError:
+    pass
+now = time.time()
+if hi is not None and now <= hi:
+    end = now + 5
+    while time.time() <= hi and time.time() < end:
+        time.sleep(0.02)
+    print(f"waited={time.time() - now:.3f} latest={hi:.3f} py_before={now:.3f}")
+else:
+    print(f"waited=0 latest={hi} py_before={now:.3f}")
+PY
+}
+footer_diag() {   # 失败时附在检查名后面的诊断：本轮开始、流水各行、每次出 footer 时的时刻
+    printf '诊断：since=%s 流水=[%s] footer=[%s]' "$SINCE" \
+        "$(jq -rc '[.ev, .id[0:8], .t0, .t] | map(tostring) | join(" ")' "$LOG" 2>/dev/null | paste -sd ';' -)" "$FOOTER_DIAG"
+}
 footer() {   # <scripts 目录> [agent]
-    local sd="$1" agent="${2:-claude}"
+    local sd="$1" agent="${2:-claude}" w
+    w=$(log_latest)
+    case "$w" in waited=0\ *) ;; *) echo "  ⏱ 出 footer 前 Python 时钟落后于流水，已等待：$w" >&2 ;; esac
+    FOOTER_DIAG+="${FOOTER_DIAG:+; }$agent $w"
     [ -s "$C/cmds" ] && { rm -rf "$CPROJ"; mk_claude "$CPROJ" "$WT" "$C/cmds"; }
     printf '#!/usr/bin/env bash\nexit 0\n' > "$C/driver.sh"
     printf "COMMENT_FOOTER_EXTRA_CMD=%q\n" "bash '$sd/drivers/token-usage/test-time.sh'" > "$C/config"
@@ -185,9 +222,10 @@ run_check() {   # <scripts 目录> <run.sh>
     chk id_printed '[ -n "$a" ] && [ "$(rec "$a" start .id)" = "$a" ]' "输出里没有编号或流水里没有开始行：$(head -2 "$C/out.1")"
     add u1 "$t" "bash tests/run.sh quick -j 1" 0 "$t1" "$(cat "$C/out.1")" 0
     footer "$SD"
-    x=$(python3 -c "print(round($(rec "$a" end .t) - $(rec "$a" end .t0), 3))")
-    chk fg_timed '[ "$(mk suite_timed)" = 1 ] && python3 -c "import sys; sys.exit(abs(float(\"$(mk test_secs)\") - $x) > 0.002)" && [[ "$HEAD" == *"测试 "* ]] && [[ "$HEAD" != *"测试未知"* ]]' \
-        "期望按流水计 $x 秒，实得 [$(mk test_secs)] / $HEAD"
+    # 流水缺字段（负对照改坏记账时）就留空，检查照样判红，不在输出里留 Python 报错
+    x=$(python3 -c "print(round($(rec "$a" end .t) - $(rec "$a" end .t0), 3))" 2>/dev/null)
+    chk fg_timed '[ -n "$x" ] && [ "$(mk suite_timed)" = 1 ] && python3 -c "import sys; sys.exit(abs(float(\"$(mk test_secs)\") - $x) > 0.002)" 2>/dev/null && [[ "$HEAD" == *"测试 "* ]] && [[ "$HEAD" != *"测试未知"* ]]' \
+        "期望按流水计 [$x] 秒，实得 [$(mk test_secs)] / $HEAD / $(footer_diag)"
 
     # 2 复审第 2 轮反例：agent 的甲没写进流水；人 10 秒后（这里紧接着）手跑的乙有完整流水、不在会话里
     new_case neighbor "$RS"; mkdir -p "$C/ro"; chmod 555 "$C/ro"
@@ -415,7 +453,7 @@ text(await tools.exec_command({cmd:"cat /tmp/x"}));' "$(cat "$C/out.1")"
     cx_spec "$t1" cell "$(cx_exec "cat /tmp/x" "$(cat "$C/out.2")" 0 0)"
     footer "$SD" claude; a=$(printf '%s\n' "$MARK" | tr ' ' '\n' | grep '^suite_' | sort)
     footer "$SD" codex;  b=$(printf '%s\n' "$MARK" | tr ' ' '\n' | grep '^suite_' | sort)
-    chk claude_codex_same '[ -n "$a" ] && [ "$a" = "$b" ] && printf "%s\n" "$a" | grep -qx "suite_runs=2"' "claude：$(echo $a) / codex：$(echo $b)"
+    chk claude_codex_same '[ -n "$a" ] && [ "$a" = "$b" ] && printf "%s\n" "$a" | grep -qx "suite_runs=2"' "claude：$(echo $a) / codex：$(echo $b) / $(footer_diag)"
 
     # 13 文档里那一行配置原样跑：部署前空窗（入口不在）→ 测试未知；装上入口 → 照常统计；清空 → 总览不提测试
     new_case gap "$RS"; printf '#!/usr/bin/env bash\nexit 0\n' > "$C/driver.sh"
