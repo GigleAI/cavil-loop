@@ -624,7 +624,8 @@ export const MUTATIONS = [
     to: "  if (typeof source !== 'string') return { clickable: false, why: '没读到这一条的原文或修改权限，勾选框只读' };\n  if (canUpdate === false)",
     expect: ['whether an entry may be clicked: only with source and permission both read, and agreeing'] },
   { what: '勾选：同一条评论的两次勾选不互斥', file: 'src/app/controller.ts',
-    from: '    if (this.tasksInFlight.has(action.entryId)) return', to: '    if (false) return',
+    // GitHub#299: the in-flight key is `slot` (a comment's node id here, the item for a title)
+    from: '    if (this.tasksInFlight.has(slot)) return', to: '    if (false) return',
     expect: ['two clicks on one comment at once: the second is refused at once, one read-change-write reaches GitHub'] },
   { what: '勾选：主窗口策略不放行框内脚本', file: 'src-tauri/tauri.conf.json', runner: 'e2e',
     from: '"script-src": "\'self\' \'sha256-BNpQXqhF68GpMl4gzToZYbHFqOlFxrj+gIBE9bW2KpU=\'",', to: '"script-src": "\'self\'",',
@@ -912,7 +913,8 @@ export const MUTATIONS = [
     from: "  return typeof source === 'string' && canUpdate === true ? { editSource: source } : {};", to: "  return typeof source === 'string' ? { editSource: source } : {};",
     expect: ['the detail carries the source only where GitHub says the account may change it'] },
   { what: '编辑：同一条评论的两次保存不互斥', file: 'src/app/controller.ts',
-    from: "    if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);", to: "    if (action.kind !== 'toggleTask') return this.actNow(action);",
+    // GitHub#299: a title change goes the same way; only the comment save is taken out of it
+    from: "    if (action.kind !== 'toggleTask' && action.kind !== 'editEntry' && action.kind !== 'editTitle') return this.actNow(action);", to: "    if (action.kind !== 'toggleTask' && action.kind !== 'editTitle') return this.actNow(action);",
     expect: ['two saves of one comment at once'] },
   { what: '新建 issue：不看对话框里勾的看板，照旧加进视图里勾选的全部看板', file: 'src/app/controller.ts',
     from: '    const createInProjects = wanted.map((k) => known.find((p) => p.key === k));', to: '    const createInProjects = data.projects;',
