@@ -19,6 +19,7 @@
 
 import type { Item, LinkedPr, TableSettings } from '../shared/types';
 import { itemKey } from '../shared/sources';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 
 export interface Nested<T> {
   entry: T;
@@ -29,18 +30,35 @@ export interface Nested<T> {
 /** Closes / Fixes / Resolves / Refs (and their -s / -d / -es / -ed forms), then `#N` or `owner/repo#N`. */
 const REF_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:([A-Za-z0-9][\w.-]*\/[\w.-]+))?#(\d+)\b/gi;
 
+/** Markdown nodes whose text GitHub does not read keywords in: code (fenced, indented, inline) and HTML comments. */
+type MdNode = { type: string; value?: string; position?: { start: { offset?: number }; end: { offset?: number } }; children?: MdNode[] };
+const HIDDEN = (n: MdNode) => n.type === 'code' || n.type === 'inlineCode' || (n.type === 'html' && /^\s*<!--/.test(n.value ?? ''));
+
+/** `body` with every code / HTML-comment span blanked (line breaks kept), as CommonMark reads it (GitHub#275, PR #278 review round 1). */
+function readableText(body: string): string {
+  const spans: [number, number][] = [];
+  const walk = (n: MdNode) => {
+    const a = n.position?.start.offset;
+    const b = n.position?.end.offset;
+    if (HIDDEN(n) && a !== undefined && b !== undefined) spans.push([a, b]);
+    else n.children?.forEach(walk);
+  };
+  walk(fromMarkdown(body) as MdNode);
+  let out = body;
+  for (const [a, b] of spans) out = out.slice(0, a) + out.slice(a, b).replace(/[^\n]/g, ' ') + out.slice(b);
+  return out;
+}
+
 /**
  * The issues a PR's description names (GitHub#275), as item keys, in the order
- * written, each once. Code (fenced blocks, inline spans) and HTML comments are
- * left out: GitHub does not read keywords there either. `#N` alone means this
- * repository; the PR itself is never one of them.
+ * written, each once. Code (fenced or indented blocks, inline spans) and HTML
+ * comments are left out, decided by a Markdown parser (the same one the task
+ * lists use) rather than by patterns: GitHub does not read keywords there
+ * either. `#N` alone means this repository; the PR itself is never one of them.
  */
 export function bodyIssueRefs(body: string | null | undefined, repo: string, self: number | null | undefined): string[] {
   if (!body) return [];
-  const text = body
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/^ {0,3}(```|~~~)[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|(?![\s\S]))/gm, ' ')
-    .replace(/`[^`\n]*`/g, ' ');
+  const text = readableText(body);
   const own = itemKey(repo, self ?? -1);
   const out: string[] = [];
   for (const m of text.matchAll(REF_RE)) {

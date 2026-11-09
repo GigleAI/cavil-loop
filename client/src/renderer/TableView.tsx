@@ -129,6 +129,16 @@ export const EDITABLE_COLUMNS: readonly TableColumn[] = ['labels', 'iteration', 
 
 /** A column's width when none was dragged (fixed layout only, once any column has been dragged). */
 const DEFAULT_WIDTH: Partial<Record<TableColumn, number>> = { title: 360, labels: 200, assignees: 120, linkedPrs: 120, author: 120 };
+/**
+ * What a row says after its title (GitHub#275): just "#N" under a heading of
+ * its own repository; the full "owner/repo #N" otherwise — also for a PR of
+ * another repository that followed its issue into this heading's section
+ * (PR #278 review round 1: two "#7" from two repositories side by side).
+ */
+export function rowRef(item: Item, sectionRepo: string | null): string {
+  return sectionRepo !== null && item.repo.toLowerCase() === sectionRepo.toLowerCase() ? `#${item.number}` : `${item.repo} #${item.number}`;
+}
+
 /** GitHub#275: a grouped row's title starts under its group's title (the guide line runs 10px left of it); inside a repository one step further in */
 const ROW_BASE = 34;
 const REPO_ROW_BASE = 52;
@@ -377,7 +387,10 @@ export function TableView({
     </th>
   );
 
-  const groupBody = (g: Group, inRepo: boolean) => (
+  /** `repo`: the repository heading this group sits under ("all repositories"); null = no repository layer */
+  const groupBody = (g: Group, repo: string | null) => {
+    const inRepo = repo !== null;
+    return (
     <tbody key={g.key} className={[inRepo ? 'in-repo' : '', t.groupBy !== 'none' ? 'grouped' : ''].filter(Boolean).join(' ') || undefined} data-testid="group" data-key={g.key} data-title={g.title}>
       {t.groupBy !== 'none' && (
         // GitHub#229: the whole row folds; the arrow stays a button (Tab reaches it) and its click is this same one
@@ -420,7 +433,7 @@ export function TableView({
               </a>{' '}
               {/* under a repository heading the repository is already said (GitHub#275) */}
               <span className="muted small" data-testid="row-ref">
-                {inRepo ? `#${r.item.number}` : `${r.item.repo} #${r.item.number}`}
+                {rowRef(r.item, repo)}
               </span>
             </td>
             {cols.map((c) => {
@@ -466,6 +479,7 @@ export function TableView({
       )}
     </tbody>
   );
+  };
 
   // GitHub#275: two or more folded groups next to each other are one line: each group's name opens just it,
   // "全部展开" opens them all; a click elsewhere on the line does nothing (no unfolding a whole stretch by accident)
@@ -499,10 +513,10 @@ export function TableView({
       </tr>
     </tbody>
   );
-  const groupList = (groups: Group[], inRepo: boolean) =>
+  const groupList = (groups: Group[], repo: string | null) =>
     t.groupBy === 'none'
-      ? groups.map((g) => groupBody(g, inRepo))
-      : foldRuns(groups, folded).map((run) => (run.kind === 'group' ? groupBody(run.group, inRepo) : foldedRun(run.key, run.groups, inRepo)));
+      ? groups.map((g) => groupBody(g, repo))
+      : foldRuns(groups, folded).map((run) => (run.kind === 'group' ? groupBody(run.group, repo) : foldedRun(run.key, run.groups, repo !== null)));
 
   return (
     <div className="table-layout" data-testid="table">
@@ -553,10 +567,10 @@ export function TableView({
                       </td>
                     </tr>
                   </tbody>
-                  {!folded.has(r.key) && groupList(r.groups, true)}
+                  {!folded.has(r.key) && groupList(r.groups, r.title)}
                 </Fragment>
               ))
-            : groupList(table.groups, false)}
+            : groupList(table.groups, null)}
         </table>
         {table.itemCount === 0 && <div className="center muted" data-testid="table-empty">没有符合条件的条目</div>}
       </div>

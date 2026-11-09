@@ -20,7 +20,10 @@ import { fetchProject, fetchRepo } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
 import { mergeSnapshots } from '../../src/data/merge';
 import { parseSource } from '../../src/shared/sources';
-import { DEFAULT_TABLE } from '../../src/shared/viewSettings';
+import { DEFAULT_TABLE, DEFAULT_VIEW } from '../../src/shared/viewSettings';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { TableView } from '../../src/renderer/TableView';
 import type { Item, LinkedPr, TableSettings } from '../../src/shared/types';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -73,6 +76,23 @@ describe('which issues a PR description names (GitHub#275)', () => {
 
   it('an unclosed code fence hides the rest, as GitHub renders it', () => {
     expect(refs('Refs #1\n```\nRefs #2')).toEqual(['gigleai/cavil-loop#1']);
+  });
+
+  it('code as Markdown reads it, not as a pattern guesses it (PR #278 review round 1)', () => {
+    const t = '`';
+    // an indented code block
+    expect(refs('    Refs #5')).toEqual([]);
+    expect(refs('Intro\n\n    Refs #5\n\nRefs #6')).toEqual(['gigleai/cavil-loop#6']);
+    // a four-backtick fence holding a three-backtick line: the inner line does not close it
+    expect(refs([t.repeat(4) + 'md', t.repeat(3), 'Refs #5', t.repeat(4), 'Refs #6'].join('\n'))).toEqual(['gigleai/cavil-loop#6']);
+    // a double-backtick span holding a backtick
+    expect(refs(`${t}${t}a ${t} Refs #5${t}${t} Refs #6`)).toEqual(['gigleai/cavil-loop#6']);
+    // an HTML comment over several lines, and one inside a sentence
+    expect(refs('<!--\nRefs #5\n-->\nRefs #6 and <!-- closes #7 --> fixes #8')).toEqual(['gigleai/cavil-loop#6', 'gigleai/cavil-loop#8']);
+    // a list item and a quote are prose: they count
+    expect(refs('- Refs #5\n> closes #6')).toEqual(['gigleai/cavil-loop#5', 'gigleai/cavil-loop#6']);
+    // the autopilot summary's folds are prose too
+    expect(refs('<!-- autopilot-summary:begin -->\n<details><summary>背景</summary>\n\nRefs #5\n\n</details>')).toEqual(['gigleai/cavil-loop#5']);
   });
 });
 
@@ -264,7 +284,50 @@ describe('a PR follows its issue into the issue\'s column / group (GitHub#275, m
   });
 });
 
+/**
+ * Answer like GitHub: a pull request carries `body` only when the query selects it on
+ * PullRequest (the fake GitHub replays recorded pages whatever the query asks for).
+ */
+function selectsOn(query: string, type: string, field: string): boolean {
+  for (const m of query.matchAll(new RegExp(`\\.\\.\\.\\s*on\\s+${type}\\s*\\{`, 'g'))) {
+    let depth = 0;
+    let top = '';
+    for (let i = m.index! + m[0].length - 1; i < query.length; i++) {
+      const ch = query[i];
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) break;
+      else if (depth === 1) top += ch;
+      else if (depth === 2 && ch !== '{') top += ' ';
+    }
+    if (new RegExp(`(^|\\s)${field}(\\s|$)`).test(top)) return true;
+  }
+  return false;
+}
+function askedFieldsOnly(client: GitHubClient): GitHubClient {
+  const real = client.graphql.bind(client);
+  (client as any).graphql = async (query: string, vars: unknown) => {
+    const data = await real(query, vars as any);
+    if (!selectsOn(query, 'PullRequest', 'body')) {
+      const strip = (x: any): void => {
+        if (Array.isArray(x)) x.forEach(strip);
+        else if (x && typeof x === 'object') {
+          if (x.__typename === 'PullRequest') delete x.body;
+          Object.values(x).forEach(strip);
+        }
+      };
+      strip(data);
+    }
+    return data;
+  };
+  return client;
+}
+
 describe('the description is read from both kinds of source (GitHub#275)', () => {
+  it('the answer-like-GitHub helper itself: it tells a selected field from one that is not', () => {
+    expect(selectsOn('... on Issue { body } ... on PullRequest { id number body }', 'PullRequest', 'body')).toBe(true);
+    expect(selectsOn('... on Issue { body } ... on PullRequest { id number labels(first: 5) { nodes { body } } }', 'PullRequest', 'body')).toBe(false);
+  });
+
   const pagesFile = join(here, '../fixtures/cavil-project-11.pages.json');
   const issuesFile = join(here, '../fixtures/cavil-loop.issues.json');
 
@@ -278,7 +341,7 @@ describe('the description is read from both kinds of source (GitHub#275)', () =>
     loose.content.body = `## 改了什么\n\nRefs #${host.content.number}\n`;
     const fake = await startFakeGitHub({ projects: new Map([['org/gigleai/11', pages]]) });
     try {
-      const client = new GitHubClient({ api: fake.api, web: fake.web }, FAKE_TOKEN);
+      const client = askedFieldsOnly(new GitHubClient({ api: fake.api, web: fake.web }, FAKE_TOKEN));
       const snap = await fetchProject(client, parseSource('https://github.com/orgs/GigleAI/projects/11') as any, FIXTURE_NOW);
       const data = mergeSnapshots([snap], null);
       const prKey = `gigleai/cavil-loop#${loose.content.number}`;
@@ -336,5 +399,23 @@ describe('folded groups next to each other are one line (GitHub#275)', () => {
     const t = buildTable(items, [P], { ...DEFAULT_TABLE, groupBy: 'iteration', sort: UPDATED, sliceByRepo: true, slice: null }, TODAY, true);
     const folded = new Set(t.groups.map((x) => x.key));
     expect(t.repos!.map((r) => foldRuns(r.groups, folded).map((x) => x.kind))).toEqual([['folded'], ['group']]);
+  });
+});
+
+describe('what a row says after its title under a repository heading (GitHub#275, PR #278 review round 1)', () => {
+  it('rendered: "#N" for its own repository, the full name for a PR that followed its issue in from another', () => {
+    const host = item('o/host', 10, { milestone: { title: 'M', dueOn: null } });
+    const sameNo = item('o/host', 7, { milestone: { title: 'M', dueOn: null } });
+    const guest = item('o/other', 7, { kind: 'pr', linkedPrs: [], refIssues: [host.key], milestone: { title: 'M', dueOn: null } });
+    const view = { ...DEFAULT_VIEW, prsUnderIssues: true, table: { ...DEFAULT_TABLE, groupBy: 'milestone' as const, sliceByRepo: true, slice: null, hierarchy: false, columns: ['title' as const] } };
+    const html = renderToStaticMarkup(createElement(TableView, { items: [host, guest, sameNo], projects: [P], view, today: TODAY, now: Date.parse('2026-11-03T00:00:00Z'), onOpen: () => {} }));
+    const rows = [...html.matchAll(/data-testid="row" data-key="([^"]+)"[\s\S]*?data-testid="row-ref">([^<]*)</g)].map((m) => [m[1], m[2]]);
+    expect(rows.sort()).toEqual([
+      ['o/host#10', '#10'],
+      ['o/host#7', '#7'],
+      ['o/other#7', 'o/other #7'],
+    ]);
+    // all three really are under the o/host heading (the guest followed its issue there)
+    expect([...html.matchAll(/data-testid="repo-group" data-key="([^"]+)"/g)].map((m) => m[1])).toEqual(['repo:o/host']);
   });
 });
