@@ -317,6 +317,8 @@ export class Controller {
   private opSeq = 0;
   /** an operation's requests and re-reads, while they run */
   private opJobs = new Map<string, Promise<void>>();
+  /** GitHub#279: records being re-read after a round (one at a time per record) */
+  private catchingUp = new Set<string>();
   /** items a "finish the remaining steps" is preparing for (it re-reads first): the send gate counts them */
   private opPreparing = new Set<string>();
   /** the wait of a succeeded operation for its re-read: offers the manual unlock when it runs out */
@@ -1314,6 +1316,8 @@ export class Controller {
         problem: this.state.sync.problem,
       },
     });
+    // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
+    if (!round.offline && !round.authFailed && status.some((st) => st.ok)) await this.catchUpReads(session);
     if (round.authFailed) {
       // A GitHub App token can be refreshed once before the credential is declared dead —
       // the token this round used, not one that changed meanwhile.
@@ -1572,7 +1576,7 @@ export class Controller {
     session: number,
     repo: string,
     number: number,
-    opts: { final?: boolean } = {},
+    opts: { final?: boolean; quiet?: boolean } = {},
   ): Promise<{ kind: 'done' | 'failed' | 'ended'; problem: string | null; issuedAt: number; own: Item | null }> {
     const sources = this.state.sources;
     const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
@@ -1580,7 +1584,8 @@ export class Controller {
     const key = itemKey(repo, number);
     const failed = (reason: string) => {
       if (session === this.session) this.feedReadFailure(key, reason, issuedAt);
-      void this.syncNow();
+      // GitHub#279: a quiet re-read (the catch-up at the end of a round) never asks for another round
+      if (!opts.quiet) void this.syncNow();
       return { kind: 'failed' as const, problem: `修改已生效，但重读这一条失败（${reason}），下一轮同步会更新`, issuedAt, own: null };
     };
     let fresh;
@@ -1624,7 +1629,7 @@ export class Controller {
     // the checks of the changes read what the board data holds now (this read, or a newer one)
     this.feedEvidence(freshK ?? key, issuedAt, own, opts.final);
     this.feedOps(freshK ?? key, issuedAt, own);
-    if (this.syncing) void this.syncNow();
+    if (this.syncing && !opts.quiet) void this.syncNow();
     return { kind: 'done', problem: null, issuedAt, own };
   }
 
@@ -2681,8 +2686,12 @@ export class Controller {
     }
   }
 
-  /** The item, and what a merge / close of a PR also changed, read again; their landing feeds the records. */
-  private async opReread(id: string, item: Item, c: { client: GitHubClient; session: number }): Promise<void> {
+  /**
+   * The item, and what a merge / close of a PR also changed, read again; their landing feeds the records.
+   * GitHub#279: `quiet` (the catch-up after a sync round) asks for no sync round at all — not when a
+   * read fails, not when one lands while a round runs, not a follow-up one.
+   */
+  private async opReread(id: string, item: Item, c: { client: GitHubClient; session: number }, quiet = false): Promise<void> {
     const r = this.ops.get(id);
     if (!r) return;
     const touched: [string, number][] = [[r.repo, r.number]];
@@ -2700,13 +2709,38 @@ export class Controller {
     }
     for (const [repo, number] of touched) {
       if (c.session !== this.session) return;
-      const read = await this.refreshOne(c.client, c.session, repo, number);
+      const read = await this.refreshOne(c.client, c.session, repo, number, { quiet });
       if (read.problem) problems.push(read.problem);
     }
     if (c.session !== this.session) return;
-    this.scheduleFollowUp(c.session);
+    if (!quiet) this.scheduleFollowUp(c.session);
     const now = this.ops.get(id);
     if (now && (problems.length || now.readProblem)) this.patchOp(id, { readProblem: problems.length ? problems.join('；') : null });
+  }
+
+  /**
+   * GitHub#279: after a sync round that reached GitHub, every record whose re-read did not work in full
+   * ("修改已生效，但重读这一条失败…，下一轮同步会更新") is re-read once more with the same re-read, quietly
+   * (no further round is asked for, so an unreachable item never loops). Only a re-read that works clears
+   * the problem; one that fails puts its own reason there. A round that found nothing changed does not
+   * prove the item was read, so it is never taken for that. Skipped: a record put away, one whose own
+   * requests / re-reads still run, one already being caught up.
+   */
+  private async catchUpReads(session: number): Promise<void> {
+    const due = [...this.ops.values()].filter((r) => r.readProblem && !r.dismissed && !r.running && !this.opJobs.has(r.id) && !this.catchingUp.has(r.id) && opPhase(r) !== 'waiting');
+    for (const r of due) {
+      if (session !== this.session || !this.signedIn) return;
+      this.catchingUp.add(r.id);
+      try {
+        // the merged / closed PR itself is what its linked issues are asked for (the cache may no longer carry it)
+        const item = this.cachedItems().find((i) => i.key === r.key) ?? ({ key: r.key, repo: r.repo, number: r.number, kind: 'pr' } as Item);
+        await this.opReread(r.id, item, { client: this.client(session), session }, true);
+      } catch {
+        // a re-read never throws on GitHub's account; anything else: the next round tries again
+      } finally {
+        this.catchingUp.delete(r.id);
+      }
+    }
   }
 
   /**

@@ -164,12 +164,22 @@ describe('GitHub#256: only a fully successful notice puts itself away', () => {
     ['already put away', closeNoComment({ dismissed: true })],
   ];
   for (const [name, r] of no) it(`no: ${name}`, () => expect(opAutoDismissable(r)).toBe(false));
-  it('the case tone and buttons cannot tell apart: an ok-toned notice with only × and a re-read problem stays', () => {
+  it('a notice with only × and a re-read problem stays', () => {
     const r = merged({ readProblem: '没读到这个 PR 关联的 issue' });
-    expect(opTone(r)).toBe('ok');
     expect(opButtons(r)).toEqual(['dismiss']);
     expect(opAutoDismissable(r)).toBe(false);
   });
+  // GitHub#279: every step worked but the re-read did not — a warning, not a success (it used to read "ok")
+  const reread: [string, OpRecord][] = [
+    ['merged, linked issues not re-read', merged({ readProblem: '没读到这个 PR 关联的 issue' })],
+    ['autopilot, the item not re-read', auto('ok', 'ok', 'ok', { readAt: 30, readProblem: '修改已生效，但重读这一条失败（连接中断），下一轮同步会更新' })],
+    ['close, the item not re-read (still waiting for a re-read)', close('ok', 'ok', { readProblem: '修改已生效，但重读这一条失败（连接中断），下一轮同步会更新' })],
+  ];
+  for (const [name, r] of reread)
+    it(`GitHub#279 warn: ${name}; the same record without the problem is not a warning`, () => {
+      expect(opTone(r)).toBe('warn');
+      expect(opTone({ ...r, readProblem: null })).not.toBe('warn');
+    });
 });
 
 describe('table E: the draft goes only when its own step is done, or by hand', () => {

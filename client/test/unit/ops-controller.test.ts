@@ -11,7 +11,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
-import { opButtons, opDraftLeft, opLockOf, opPhase, opReusableDraft, opText, type OpRecord } from '../../src/shared/ops';
+import { opAutoDismissable, opButtons, opDraftLeft, opLockOf, opPhase, opReusableDraft, opText, opTone, type OpRecord } from '../../src/shared/ops';
 import type { Item } from '../../src/shared/types';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
@@ -26,7 +26,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function ready(opts: { opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown } = {}) {
+async function ready(opts: { opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown; followUpSyncMs?: number; afterRoundRead?: (dropped: boolean) => void } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -36,7 +36,9 @@ async function ready(opts: { opStuckMs?: number; fresh?: boolean; intercept?: (c
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
   const backend = opts.intercept ? { call: async (cmd: string, args?: any) => ((await opts.intercept!(cmd, args)) as any) ?? harness.call(cmd, args) } : harness;
-  const c = await Controller.create({ backend: backend as any, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000 });
+  const c = await Controller.create({ backend: backend as any, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000,
+    ...(opts.followUpSyncMs !== undefined ? { followUpSyncMs: opts.followUpSyncMs } : {}),
+    ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}) });
   controllers.push(c);
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
@@ -929,5 +931,165 @@ describe('a success never read back', () => {
     expect(itemOf(c, ISSUE).state).toBe('open');
     expect(opPhase(r)).toBe('settling');
     expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' }).ok).toBe(false);
+  });
+});
+
+// GitHub#279: "修改已生效，但重读这一条失败…，下一轮同步会更新" — the next round that reaches GitHub
+// really re-reads it, and only a re-read that works clears it. The re-read after a round never asks
+// for a round of its own. Every "no more rounds / no re-read" has a "this did happen" sibling.
+describe('a re-read that failed is caught up by the next round that reaches GitHub (GitHub#279)', () => {
+  const ITEM = `gigleai/cavil-loop#${ISSUE}`;
+  const refreshes = () => fake.log.filter((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === ISSUE).length;
+  /** what a round sent that reads data in full (a confirmed-unchanged round sends only version checks) */
+  const fullReads = (from: number) => fake.log.slice(from).filter((e) => e.operation === 'CavilProjectItems' || (e.method === 'GET' && /\/repos\/[^/]+\/[^/]+\/issues(\?|$)/.test(e.path)));
+  let rounds = 0;
+  /** an autopilot whose every step worked, and whose re-read right after failed; every round it asked for is through */
+  async function failedReread() {
+    rounds = 0;
+    waitingForHuman();
+    const c = await ready({ followUpSyncMs: 30, afterRoundRead: () => rounds++ });
+    fake.state.w.failRefresh.add(ITEM);
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    await quiet(c);
+    const r = opOf(c, s.id!);
+    expect(r.steps.every((x) => x.state === 'ok')).toBe(true);
+    expect(r.readProblem).toContain('重读这一条失败');
+    return { c, id: s.id! };
+  }
+  /** no round runs and none is due (the follow-up a re-read asks for has fired) */
+  async function quiet(c: Controller) {
+    for (let i = 0; i < 20; i++) {
+      const before = rounds;
+      await new Promise((r) => setTimeout(r, 120));
+      await c.syncNow();
+      await idle(c);
+      // syncNow above is one round of its own; nothing else came in while waiting
+      if (rounds === before + 1) return;
+    }
+    throw new Error('rounds keep coming by themselves');
+  }
+
+  it('the notice is a warning while the problem stands, not a success; it never puts itself away', async () => {
+    const { c, id } = await failedReread();
+    const r = opOf(c, id);
+    expect(opTone(r)).toBe('warn');
+    expect(opAutoDismissable(r)).toBe(false);
+  });
+
+  it('a round that reads the data, the item answers again: the re-read went out, the problem is gone, the notice is a success that puts itself away', async () => {
+    const { c, id } = await failedReread();
+    fake.state.w.failRefresh.delete(ITEM);
+    // something changed on GitHub: the round reads in full
+    await daemonPicksUp();
+    const from = fake.log.length;
+    const n = refreshes();
+    await c.syncNow();
+    await idle(c);
+    expect(fullReads(from).length).toBeGreaterThan(0);
+    expect(refreshes()).toBe(n + 1);
+    const r = opOf(c, id);
+    expect(r.readProblem ?? null).toBeNull();
+    expect(opTone(r)).toBe('ok');
+    expect(opAutoDismissable(r)).toBe(true);
+    expect(storedOps()!.find((x) => x.id === id)!.readProblem ?? null).toBeNull();
+  });
+
+  it('a round that only confirms nothing changed still re-reads; "unchanged" alone clears nothing, the re-read working does', async () => {
+    const { c, id } = await failedReread();
+    // still failing: a confirmed-unchanged round re-reads, the problem stays (with this re-read's reason)
+    let from = fake.log.length;
+    let n = refreshes();
+    await c.syncNow();
+    await idle(c);
+    expect(fullReads(from)).toHaveLength(0);
+    expect(fake.log.slice(from).some((e) => e.method === 'HEAD')).toBe(true);
+    expect(refreshes()).toBe(n + 1);
+    expect(opOf(c, id).readProblem).toContain('重读这一条失败');
+    expect(opTone(opOf(c, id))).toBe('warn');
+    // the item answers again; the round still finds nothing changed
+    fake.state.w.failRefresh.delete(ITEM);
+    from = fake.log.length;
+    n = refreshes();
+    await c.syncNow();
+    await idle(c);
+    expect(fullReads(from)).toHaveLength(0);
+    expect(refreshes()).toBe(n + 1);
+    expect(opOf(c, id).readProblem ?? null).toBeNull();
+    expect(opAutoDismissable(opOf(c, id))).toBe(true);
+  });
+
+  it('a re-read after a round asks for no round: failing (three rounds = three re-reads, no more rounds), or working while the round still runs', async () => {
+    const { c, id } = await failedReread();
+    const n = refreshes();
+    const r0 = rounds;
+    for (let i = 0; i < 3; i++) {
+      await c.syncNow();
+      await idle(c);
+    }
+    await new Promise((r) => setTimeout(r, 200)); // a follow-up round would be due after 30 ms
+    await idle(c);
+    expect(refreshes()).toBe(n + 3);
+    expect(rounds).toBe(r0 + 3);
+    expect(opOf(c, id).readProblem).toContain('重读这一条失败');
+    // working: it lands while its round is still on (the round waits for it) — no round is queued after it
+    fake.state.w.failRefresh.delete(ITEM);
+    await c.syncNow();
+    await new Promise((r) => setTimeout(r, 200));
+    await idle(c);
+    expect(refreshes()).toBe(n + 4);
+    expect(rounds).toBe(r0 + 4);
+    expect(opOf(c, id).readProblem ?? null).toBeNull();
+  });
+
+  it('a round that cannot reach GitHub, or reads no source, re-reads nothing (the round did run); a notice put away is not re-read', async () => {
+    const { c, id } = await failedReread();
+    fake.state.w.failRefresh.delete(ITEM);
+    let n = refreshes();
+    let r0 = rounds;
+    fake.state.offline = true;
+    await c.syncNow();
+    await idle(c);
+    expect(c.getState().sync.offline).toBe(true);
+    expect(rounds).toBe(r0 + 1);
+    expect(refreshes()).toBe(n);
+    expect(opOf(c, id).readProblem).toContain('重读这一条失败');
+    // GitHub answers, but every source of the round fails: the round did not reach the data — no re-read either
+    fake.state.offline = false;
+    fake.state.failProjectPage.set('org/gigleai/11', 0);
+    fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
+    n = refreshes();
+    r0 = rounds;
+    const from = fake.log.length;
+    await c.syncNow();
+    await idle(c);
+    expect(rounds).toBe(r0 + 1);
+    expect(fake.log.slice(from).some((e) => e.status === 502)).toBe(true);
+    expect(c.getState().sync.sources.every((st) => !st.ok)).toBe(true);
+    expect(refreshes()).toBe(n);
+    expect(opOf(c, id).readProblem).toContain('重读这一条失败');
+    fake.state.failProjectPage.clear();
+    fake.state.failRepoPage.clear();
+    // back online, but the notice was put away by hand: nothing to catch up
+    fake.state.offline = false;
+    c.opDismiss(id, true);
+    n = refreshes();
+    r0 = rounds;
+    await c.syncNow();
+    await idle(c);
+    expect(rounds).toBe(r0 + 1);
+    expect(refreshes()).toBe(n);
+  });
+
+  it('kept over a restart: the first round after it re-reads and clears the problem', async () => {
+    const { c, id } = await failedReread();
+    c.stopTimer();
+    await c.settled();
+    fake.state.w.failRefresh.delete(ITEM);
+    const n = refreshes();
+    const c2 = await ready({ followUpSyncMs: 30 });
+    await idle(c2);
+    expect(refreshes()).toBeGreaterThan(n);
+    expect(opOf(c2, id).readProblem ?? null).toBeNull();
   });
 });

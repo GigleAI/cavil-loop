@@ -82,6 +82,8 @@ export interface WritableState {
   failReviewCommentPages: boolean;
   /** items (`owner/repo#n` lower-cased) whose detail read answers HTTP 502 */
   failDetail: Set<string>;
+  /** GitHub#279: items (`owner/repo#n` lower-cased) whose one-item re-read answers HTTP 502 */
+  failRefresh: Set<string>;
   /** repositories (`owner/repo` lower-cased) whose milestone list answers HTTP 502 (GitHub#214) */
   failMilestones: Set<string>;
   /** repositories whose label list answers HTTP 502 (GitHub#245: "cannot read" is not "has none") */
@@ -142,6 +144,7 @@ export function defaultWritable(): WritableState {
     reviewCommentPageSize: 100,
     failReviewCommentPages: false,
     failDetail: new Set(),
+    failRefresh: new Set(),
     clock: () => new Date().toISOString(),
     closingIssues: new Map(),
     closingIssuesPageSize: 100,
@@ -731,6 +734,7 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };
     const content = gqlContent(c);
     const ikey = `${c.repo.toLowerCase()}#${c.number}`;
+    if (op === 'CavilItemRefresh' && w.failRefresh.has(ikey)) return { httpStatus: 502 };
     if (op === 'CavilItemRefresh') {
       const projectItems: any[] = [];
       for (const pages of store.projects.values())

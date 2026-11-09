@@ -4229,7 +4229,7 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   await app.close();
 });
 
-test('GitHub#256: a fully successful notice puts itself away after 10 s (detail, board, after a switch); pointer, focus, a background window pause it; warnings, errors and kept drafts stay', async () => {
+test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#279; 10 s before) (detail, board, after a switch); pointer, focus, a background window pause it; warnings, errors and kept drafts stay', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const openOnGitHub = (n: number) => {
     const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
@@ -4241,7 +4241,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   for (const g of findCopies(store, 'GigleAI/cavil-loop', 146)!.gql) Object.assign(g, { state: 'OPEN', merged: false });
   for (const r of findCopies(store, 'GigleAI/cavil-loop', 146)!.rest) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
   let { app, page } = await launch(env);
-  // fake time in the window: "10 s later" without waiting
+  // fake time in the window: "5 s later" without waiting
   await page.clock.install();
   await page.reload();
   await page.waitForSelector('[data-testid="app-root"]');
@@ -4267,7 +4267,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
     await page.waitForTimeout(100);
   };
 
-  // ---- 1. in the detail: 9 s still there, 10 s gone; the pointer on it pauses, leaving starts over ----
+  // ---- 1. in the detail: 4 s still there, 5 s gone; the pointer on it pauses, leaving starts over ----
   await closeIt(137);
   await expect(inDetail(137).getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（已完成）', { timeout: 15_000 });
   await expect(inDetail(137)).toHaveAttribute('data-auto-dismiss', 'counting');
@@ -4277,7 +4277,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await expect(inDetail(137)).toBeVisible();
   await page.mouse.move(5, 5);
   await expect(inDetail(137)).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(inDetail(137)).toBeVisible();
   await ff(1_100);
   await expect(inDetail(137)).toHaveCount(0);
@@ -4298,19 +4298,19 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await expect(onBoard(139)).toBeVisible();
   await page.getByTestId('search').focus();
   await expect(onBoard(139)).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(onBoard(139)).toBeVisible();
   await ff(1_100);
   await expect(onBoard(139)).toHaveCount(0);
 
-  // ---- 3. counted 5 s in the detail, then the panel is put away: the board starts from zero; a window in the background or hidden pauses ----
+  // ---- 3. counted 3 s in the detail, then the panel is put away: the board starts from zero; a window in the background or hidden pauses ----
   await closeIt(142);
   await expect(inDetail(142)).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(5_000);
+  await ff(3_000);
   await page.getByTestId('detail-close').click();
   await page.mouse.move(5, 5);
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(onBoard(142)).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new Event('blur')));
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'paused');
@@ -4318,7 +4318,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await expect(onBoard(142)).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(onBoard(142)).toBeVisible();
   await page.evaluate(() => {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
@@ -4332,7 +4332,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(onBoard(142)).toBeVisible();
   await ff(1_100);
   await expect(onBoard(142)).toHaveCount(0);
@@ -4349,7 +4349,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await expect(inDetail(135)).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(inDetail(135)).toBeVisible();
   await ff(1_100);
   await expect(inDetail(135)).toHaveCount(0);
@@ -4365,8 +4365,9 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await page.getByTestId('confirm-ok').click();
   await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('PR #146 已合并；', { timeout: 15_000 });
   await expect(inDetail(146).getByTestId('op-notice-text')).toContainText('关联的 issue', { timeout: 15_000 });
-  env.fake.state.w.closingIssuesPageSize = 100;
-  await expect(inDetail(146)).toHaveAttribute('data-kind', 'ok'); // the tone alone would let it go
+  // GitHub#279: every step worked but the linked issues were not read — a warning (it used to read "ok"); the
+  // linked issues stay unreadable to the end of this test, so every round's re-read keeps the problem
+  await expect(inDetail(146)).toHaveAttribute('data-kind', 'warn');
   await page.getByTestId('detail-close').click();
 
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
@@ -4389,12 +4390,12 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   for (const n of [146, 136, 141]) await expect(onBoard(n)).toBeVisible();
   await shot(page, '256-01-kept-notices');
 
-  // ---- 5. result bars: a plain success goes after 10 s ----
+  // ---- 5. result bars: a plain success goes after 5 s ----
   await open(144);
   await pickLabel(page, 'Done');
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(page.getByTestId('action-result')).toBeVisible();
   await ff(1_100);
   await expect(page.getByTestId('action-result')).toHaveCount(0);
@@ -4404,7 +4405,7 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await page.mouse.move(5, 5);
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
-  await ff(9_000);
+  await ff(4_000);
   await expect(page.getByTestId('board-action-result')).toBeVisible();
   await ff(1_100);
   await expect(page.getByTestId('board-action-result')).toHaveCount(0);
@@ -4415,6 +4416,59 @@ test('GitHub#256: a fully successful notice puts itself away after 10 s (detail,
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   for (const n of [146, 136, 141]) await expect(onBoard(n)).toBeVisible();
   for (const n of [135, 137, 139, 142]) await expect(onBoard(n)).toHaveCount(0);
+  await app.close();
+  env.fake.state.w.closingIssuesPageSize = 100;
+});
+
+test('GitHub#279: the close worked but the re-read right after it failed — a yellow warning that stays; the next sync re-reads it, the notice turns into a success and goes after 5 s', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const N = 138;
+  const ITEM = `gigleai/cavil-loop#${N}`;
+  const c0 = findCopies(store, 'GigleAI/cavil-loop', N)!;
+  for (const g of c0.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+  for (const r of c0.rest) Object.assign(r, { state: 'open', state_reason: null });
+  const { app, page } = await launch(env);
+  await page.clock.install();
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signInWithSources(page);
+  const ff = async (ms: number) => {
+    await page.clock.fastForward(ms);
+    await page.waitForTimeout(100);
+  };
+  const refreshes = () => env.fake.log.filter((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === N).length;
+  // the close goes through; only the one-item re-read after it fails
+  env.fake.state.w.failRefresh.add(ITEM);
+  await page.getByTestId('search').fill(`#${N}`);
+  await card(page, N).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', ITEM);
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+  const notice = page.locator(`[data-testid="op-notice"][data-key="${ITEM}"]`);
+  await expect(notice.getByTestId('op-notice-text')).toContainText('重读这一条失败', { timeout: 15_000 });
+  expect(refreshes()).toBeGreaterThan(0);
+  // yellow, the warning icon, never counting down
+  await expect(notice).toHaveAttribute('data-kind', 'warn');
+  await expect(notice).toHaveClass(/\bwarn\b/);
+  await expect(notice).not.toHaveAttribute('data-auto-dismiss', /./);
+  await page.mouse.move(5, 5);
+  await ff(30_000);
+  await expect(notice).toBeVisible();
+  await shot(page, '279-01-reread-failed-warn');
+  // GitHub answers again: the next round re-reads it
+  env.fake.state.w.failRefresh.delete(ITEM);
+  const n = refreshes();
+  await page.getByTestId('refresh').click();
+  await expect(notice.getByTestId('op-notice-text')).toHaveText(`issue #${N} 已关闭（已完成）`, { timeout: 15_000 });
+  expect(refreshes()).toBeGreaterThan(n);
+  await expect(notice).toHaveAttribute('data-kind', 'ok');
+  await expect(notice).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(4_000);
+  await expect(notice).toBeVisible();
+  await ff(1_100);
+  await expect(notice).toHaveCount(0);
   await app.close();
 });
 
