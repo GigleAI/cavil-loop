@@ -11,6 +11,7 @@ import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptio
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { normalizeAutopilotConfirm, normalizeLaneFolds, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
+import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
@@ -188,6 +189,7 @@ const TABLE_FOLDS = 'tableFolds';
 /** GitHub#297: folded board swimlanes, its own key for the same reason */
 const LANE_FOLDS = 'laneFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
+const REPO_ORDER = 'repoOrder';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 
 /**
@@ -364,6 +366,7 @@ export class Controller {
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
+      repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
       unreadCount: 0,
@@ -1406,6 +1409,26 @@ export class Controller {
     if (typeof on !== 'boolean' || on === this.state.autopilotConfirm) return;
     this.cache.setSetting(AUTOPILOT_CONFIRM, on);
     this.set({ autopilotConfirm: on });
+  }
+
+  /**
+   * GitHub#304: a repository dragged. `shown` = the list on screen before the drag (the search may hide
+   * others), `next` = the same repositories in the new order; merged into the order saved now, so the
+   * hidden ones keep their places. Anything else (not two lists of the same repositories) is ignored.
+   */
+  reorderRepos(shown: unknown, next: unknown): void {
+    if (!Array.isArray(shown) || !Array.isArray(next)) return;
+    const out = reorderRepos(this.state.repoOrder, shown, next);
+    if (!out) return;
+    this.cache.setSetting(REPO_ORDER, out);
+    this.set({ repoOrder: out });
+  }
+
+  /** GitHub#304: "按名称排序" — back to alphabetical. */
+  resetRepoOrder(): void {
+    if (this.state.repoOrder.length === 0) return;
+    this.cache.setSetting(REPO_ORDER, []);
+    this.set({ repoOrder: [] });
   }
 
   /** GitHub#245: who the next new issue is handed to by default (the dialog calls this after a create it was chosen for). Unknown values are ignored. */

@@ -5,6 +5,7 @@ import type { ColumnMode, Item, Iteration, ProjectMeta, TableSettings } from '..
 import type { WriteAction } from '../shared/actions';
 import { itemSorter } from './sort';
 import { nestPrs, prFollow } from './prNest';
+import { repoComparator } from '../shared/repoOrder';
 
 export const COL_UNBOARDED = 'unboarded';
 export const COL_NO_ITERATION = 'iteration:none';
@@ -40,7 +41,7 @@ export interface Board {
   mode: ColumnMode;
   notice: string | null;
   columns: Column[];
-  /** repositories, sorted, when swimlanes are on; null otherwise */
+  /** repositories, in the saved repository order (GitHub#304), when swimlanes are on; null otherwise */
   lanes: string[] | null;
 }
 
@@ -223,6 +224,8 @@ export function buildBoard(
   sort?: TableSettings['sort'],
   /** PRs right under the issue they are linked to, in the same column (GitHub#155) */
   prsUnderIssues = false,
+  /** the saved repository order (GitHub#304): the swimlanes' order; empty = alphabetical */
+  repoOrder: readonly string[] = [],
 ): Board {
   const cardOrder = sort ? itemSorter(sort, projects, items) : BY_REPO_NUMBER;
   const nest: Nest = { on: prsUnderIssues, sort };
@@ -357,7 +360,7 @@ export function buildBoard(
   columns = columns.filter(
     (c) => c.cards.length > 0 || (standing.has(c.key) && ![COL_NO_ITERATION, COL_NO_STATUS, COL_NO_MILESTONE, COL_UNBOARDED].includes(c.key)),
   );
-  const lanes = swimlanes ? [...new Set(columns.flatMap((c) => c.cards.map((x) => x.lane)))].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())) : null;
+  const lanes = swimlanes ? [...new Set(columns.flatMap((c) => c.cards.map((x) => x.lane)))].sort(repoComparator(repoOrder)) : null;
   return { mode, notice, columns, lanes };
 }
 

@@ -24,6 +24,7 @@ import { ViewSettingsPanel } from './ViewSettingsPanel';
 import { Avatar } from './Avatar';
 import type { BoardRequest } from './App';
 import { keyText } from './shortcuts';
+import { useRepoDrag } from './repoDrag';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -571,8 +572,8 @@ export function BoardView({
     [data, parsed, state.viewer, today],
   );
   const board = useMemo(
-    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues),
-    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues],
+    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder),
+    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
@@ -612,6 +613,8 @@ export function BoardView({
   const [confirm, setConfirm] = useState<Extract<DropPlan, { kind: 'confirm' }> | null>(null);
   const [choice, setChoice] = useState(0);
   const dragging = useRef<{ card: Card; from: string } | null>(null);
+  // GitHub#304: a swimlane's head drags the repository to another place; a card drag that never landed is forgotten first
+  const laneDrag = useRepoDrag(board.lanes ?? [], () => (dragging.current = null));
   const labelCache = useRef(new Map<string, Promise<RepoOptions>>());
   const dark = useDarkMode();
   const pickedProjects = state.sources.filter((s) => s.kind === 'project' && selected.has(s.key)).length;
@@ -924,6 +927,7 @@ export function BoardView({
           onNewInGroup={(g) => setNewIssue({ preset: g.preset, title: g.title, items: g.rows.map((r) => r.item) })}
           folds={state.tableFolds}
           onDropPlan={applyPlan}
+          repoOrder={state.repoOrder}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>
@@ -938,8 +942,9 @@ export function BoardView({
                     className="lane-head"
                     data-testid="lane-toggle"
                     aria-expanded={!isFolded}
-                    title={isFolded ? '点一下展开这个仓库' : '点一下收起这个仓库'}
+                    title={`${isFolded ? '点一下展开这个仓库' : '点一下收起这个仓库'}；拖动调整仓库顺序`}
                     onClick={() => void Promise.resolve(api().setLaneFold(lane, !isFolded)).catch(() => undefined)}
+                    {...laneDrag.props(lane)}
                   >
                     <span className="lane-mark" aria-hidden="true">
                       {isFolded ? '▸' : '▾'}

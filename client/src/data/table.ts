@@ -8,6 +8,7 @@ import type { GroupPreset } from '../shared/actions';
 import { isCurrentIteration } from '../shared/filter';
 import { COL_NO_ITERATION, COL_NO_MILESTONE, COL_NO_STATUS, dragScope, dropPlan, iterationColumnKey, type DropPlan } from './board';
 import { itemSorter } from './sort';
+import { repoComparator } from '../shared/repoOrder';
 import { listHosts, nestPrs, orderUnits, prFollow, PR_ORDER, unitUpdated } from './prNest';
 
 export const GROUP_NONE_KEY = 'none';
@@ -228,7 +229,10 @@ export function buildTable(
   today: string,
   /** PRs right under the issue they are linked to (GitHub#155) */
   prsUnderIssues = false,
+  /** the saved repository order (GitHub#304): slices, sections and "group by repository" go by it; empty = alphabetical */
+  repoOrder: readonly string[] = [],
 ): Table {
+  const compareRepo = repoComparator(repoOrder);
   let slices: Slice[] | null = null;
   let slice: string | null = null;
   let picked = items;
@@ -253,7 +257,7 @@ export function buildTable(
   const pickedByKey = new Map(picked.map((it) => [it.key, it]));
   /** whose value decides where an item goes: its own, or the issue it follows */
   const placedBy = (it: Item) => pickedByKey.get(follow.get(it.key) ?? '') ?? it;
-  const group = (list: Item[], prefix: string, section: string | null) => groupItems(list, prefix, section, settings, byKey, today, sort, prsUnderIssues, follow, placedBy);
+  const group = (list: Item[], prefix: string, section: string | null) => groupItems(list, prefix, section, settings, byKey, today, sort, prsUnderIssues, follow, placedBy, compareRepo);
 
   // "all repositories" picked in the slice list: repository first, then the chosen grouping inside it (GitHub#213)
   if (settings.sliceByRepo && !settings.slice && settings.groupBy !== 'repo') {
@@ -267,7 +271,7 @@ export function buildTable(
       else byRepo.set(k, { title: home, items: [it] });
     }
     const repos = [...byRepo]
-      .sort(([a], [b]) => compareRepo(a, b))
+      .sort(([, a], [, b]) => compareRepo(a.title, b.title))
       .map(([key, r]) => ({ key, title: r.title, itemCount: r.items.length, groups: group(r.items, `${key}|`, key) }));
     return { groups: repos.flatMap((r) => r.groups), repos, slices, slice, itemCount: picked.length };
   }
@@ -275,8 +279,6 @@ export function buildTable(
 }
 
 const repoKey = (repo: string) => `repo:${repo.toLowerCase()}`;
-/** the slice list's order: case-insensitive, alphabetical */
-const compareRepo = (a: string, b: string) => a.toLowerCase().localeCompare(b.toLowerCase());
 
 /** Group `items` by the table's grouping and arrange each group; `prefix` keeps group keys apart across repositories. */
 function groupItems(
@@ -290,6 +292,7 @@ function groupItems(
   prs: boolean,
   follow: Map<string, string>,
   placedBy: (it: Item) => Item,
+  compareRepo: (a: string, b: string) => number,
 ): Group[] {
   if (settings.groupBy === 'none') {
     const key = `${prefix}all`;
@@ -303,7 +306,8 @@ function groupItems(
   for (const it of items) for (const g of groupsOf(placedBy(it), settings.groupBy, byKey, today, seeds)) seeds.get(g)!.items.push(it);
   return [...seeds.values()]
     .filter((s) => s.items.length > 0)
-    .sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.key < b.key ? -1 : 1))
+    // grouped by repository: the saved repository order (GitHub#304); every other grouping by its own order
+    .sort(settings.groupBy === 'repo' ? (a, b) => compareRepo(a.title, b.title) : (a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.key < b.key ? -1 : 1))
     .map((s) => {
       const key = `${prefix}${s.key}`;
       const column = groupColumn(settings.groupBy, s.key);

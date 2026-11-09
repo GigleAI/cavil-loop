@@ -562,6 +562,42 @@ describe('sync and cache', () => {
     expect(notAList.c.getState().laneFolds).toEqual([]);
   });
 
+  it('GitHub#304: the dragged repository order is kept on this machine — merged into the saved one, survives a restart and a Project import; "按名称排序" clears it; anything else is ignored', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().repoOrder).toEqual([]);
+    // nothing saved: the list showed a, b, c; c dragged to the top
+    first.c.reorderRepos(['Org/A', 'org/b', 'org/c'], ['org/c', 'Org/A', 'org/b']);
+    expect(first.c.getState().repoOrder).toEqual(['org/c', 'org/a', 'org/b']);
+    // the search hides a: the list shows c, b; b dragged before c — a keeps its place
+    first.c.reorderRepos(['org/c', 'org/b'], ['org/b', 'org/c']);
+    const kept = ['org/b', 'org/a', 'org/c'];
+    expect(first.c.getState().repoOrder).toEqual(kept);
+    // not the same repositories / not lists: ignored, nothing written
+    first.c.reorderRepos(['org/b', 'org/c'], ['org/c']);
+    first.c.reorderRepos(['org/b', 'org/c'], ['org/c', 'org/x']);
+    first.c.reorderRepos('org/b' as any, ['org/b'] as any);
+    first.c.reorderRepos(['org/b', 'org/c'], null as any);
+    expect(first.c.getState().repoOrder).toEqual(kept);
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().repoOrder).toEqual(kept); // …and left the order alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().repoOrder).toEqual(kept);
+    second.c.resetRepoOrder();
+    expect(second.c.getState().repoOrder).toEqual([]);
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().repoOrder).toEqual([]);
+
+    const broken = await make({ seed: { repoOrder: { 0: 'org/a' } } });
+    expect(broken.c.getState().repoOrder).toEqual([]);
+    const messy = await make({ seed: { repoOrder: ['Org/B', 3, 'org/b', ' org/a '] } });
+    expect(messy.c.getState().repoOrder).toEqual(['org/b', 'org/a']);
+  });
+
   it('GitHub#245: the new-issue hand-over is kept on this machine — a restart and a Project import keep it; anything unknown is ignored or read as "none"', async () => {
     const first = await loggedIn();
     expect(first.c.getState().newIssueHandoff).toBe('none');

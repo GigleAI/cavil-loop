@@ -5316,3 +5316,151 @@ test('GitHub#294: drag a table row to another group — the board\'s drop: set, 
   expect(await page.locator('[data-testid="row"][draggable="true"]').count()).toBe(0);
   await app.close();
 });
+
+/**
+ * A repository dragged by hand (GitHub#304), the same way as a row (GitHub#294): press, a first move
+ * (the drag starts), then onto the upper (or lower) part of the target.
+ */
+async function dragRepo(src: Locator, target: Locator, after = false) {
+  const page = src.page();
+  await src.evaluate((el: Element) => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const a = (await src.boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + a.width / 2 + 6, a.y + a.height / 2 + 6, { steps: 4 });
+  await target.evaluate((el: Element) => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const b = (await target.boundingBox())!;
+  const y = after ? b.y + b.height * 0.8 : b.y + b.height * 0.2;
+  await page.mouse.move(b.x + Math.min(30, b.width / 2), y, { steps: 6 });
+  await page.mouse.move(b.x + Math.min(30, b.width / 2) + 4, y, { steps: 2 });
+  await expect(target).toHaveAttribute('data-drop-at', after ? 'after' : 'before'); // the drag started and reached the target
+  await page.mouse.up();
+  await expect(page.locator('[data-drop-at]')).toHaveCount(0);
+}
+
+test('GitHub#304: drag repositories in the table\'s list and by the board\'s swimlane heads — one order everywhere; a drag while the search hides one leaves it in its place; kept across a restart; "按名称排序"; cards and repositories do not drop on each other', async () => {
+  // three repositories, one open issue each; the search "kept" hides alpha (GigleAI/aaa)
+  const issue = (repo: string, n: number, title: string) => ({ number: n, node_id: `I_fixture_${repo}${n}`, title, state: 'open', html_url: `https://github.com/GigleAI/${repo}/issues/${n}`, updated_at: '2026-11-04T00:00:00Z', labels: [], assignees: [], milestone: null, user: { login: 'user-1' }, parent_issue_url: null, sub_issues_summary: null });
+  env.fake.state.repos.set('gigleai/aaa', [issue('aaa', 1, 'alpha hidden')]);
+  env.fake.state.repos.set('gigleai/bbb', [issue('bbb', 1, 'beta kept')]);
+  env.fake.state.repos.set('gigleai/ccc', [issue('ccc', 1, 'gamma kept')]);
+  const [A, B, C] = ['GigleAI/aaa', 'GigleAI/bbb', 'GigleAI/ccc'];
+
+  let { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  for (const r of [A, B, C]) {
+    await page.getByTestId('source-input').fill(r);
+    await page.getByTestId('source-add').click();
+  }
+  await page.getByTestId('back').click();
+  const search = page.getByTestId('search');
+  await search.fill('');
+  const layout = (l: 'board' | 'table') => page.locator(`[data-testid="layout"] button[data-value="${l}"]`).click();
+  const slice = (r: string) => page.locator(`[data-testid="slice"][data-value="${r}"]`);
+  const lane = (r: string) => page.locator(`[data-testid="lane"][data-lane="${r}"] [data-testid="lane-toggle"]`);
+  const slices = () => page.$$eval('[data-testid="slice"]', (s) => s.map((x) => x.getAttribute('data-value')).filter((v) => v));
+  const lanes = () => page.$$eval('[data-testid="lane"]', (s) => s.map((x) => x.getAttribute('data-lane')));
+  const heads = async () => (await repoHeads(page)).map(([t]) => t);
+  const saved = () => page.evaluate(async () => (await (window as any).cavil.get()).state.repoOrder as string[]);
+  /** the order on screen in the table (the slice list and the "all repositories" sections) and on the board (the swimlanes) */
+  async function everywhere(want: string[]) {
+    await layout('table');
+    await expect.poll(slices, { timeout: 15_000 }).toEqual(want);
+    await expect.poll(heads).toEqual(want);
+    await layout('board');
+    await expect.poll(lanes, { timeout: 15_000 }).toEqual(want);
+  }
+
+  // ---- 1. alphabetical to start with; the board's swimlanes on ----
+  await layout('board');
+  await page.getByTestId('swimlanes').check();
+  await everywhere([A, B, C]);
+  await layout('table');
+  await expect(page.getByTestId('repo-order-reset')).toHaveCount(0);
+
+  // ---- 2. table: c dragged to the top → c, a, b (not alphabetical); everywhere ----
+  await dragRepo(slice(C), slice(A));
+  await everywhere([C, A, B]);
+  expect(await saved()).toEqual(['gigleai/ccc', 'gigleai/aaa', 'gigleai/bbb']);
+
+  // ---- 3. table: the search hides a; b dragged before c; the search cleared → b, a, c (a kept its place) ----
+  await layout('table');
+  await search.fill('kept');
+  await expect.poll(slices).toEqual([C, B]);
+  await dragRepo(slice(B), slice(C));
+  await expect.poll(slices).toEqual([B, C]);
+  await search.fill('');
+  await everywhere([B, A, C]);
+
+  // ---- 4. a restart keeps it ----
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('search').fill('');
+  await everywhere([B, A, C]);
+  await shot(page, '304-01-lanes-after-restart');
+
+  // ---- 5. "按名称排序" → alphabetical again, the link goes away ----
+  await layout('table');
+  await page.getByTestId('repo-order-reset').click();
+  await expect(page.getByTestId('repo-order-reset')).toHaveCount(0);
+  await everywhere([A, B, C]);
+
+  // ---- 6. the same round trip by the board's swimlane heads ----
+  await dragRepo(lane(C), lane(A));
+  await everywhere([C, A, B]);
+  await page.getByTestId('search').fill('kept');
+  await expect.poll(lanes).toEqual([C, B]);
+  await dragRepo(lane(B), lane(C));
+  await expect.poll(lanes).toEqual([B, C]);
+  await page.getByTestId('search').fill('');
+  await everywhere([B, A, C]);
+  // dropped on the lower half: after the target
+  await dragRepo(lane(B), lane(C), true);
+  await everywhere([A, C, B]);
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('search').fill('');
+  await everywhere([A, C, B]);
+
+  // ---- 7. a card dragged onto a swimlane head, a swimlane dragged onto a column: nothing changes, nothing is written ----
+  const w0 = writes().length;
+  const card = page.locator(`[data-testid="lane"][data-lane="${B}"] [data-testid="card"]`).first();
+  const column = page.locator(`[data-testid="lane"][data-lane="${A}"] [data-testid="column"]`).first();
+  {
+    const a = (await card.boundingBox())!;
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(a.x + a.width / 2 + 6, a.y + a.height / 2 + 6, { steps: 4 });
+    const c = (await column.boundingBox())!;
+    await page.mouse.move(c.x + c.width / 2, c.y + 40, { steps: 6 });
+    await page.mouse.move(c.x + c.width / 2 + 4, c.y + 44, { steps: 2 });
+    await expect(column).toHaveClass(/drop-over/); // the card drag started and reached a column…
+    const h = (await lane(A).boundingBox())!;
+    await page.mouse.move(h.x + 30, h.y + h.height / 2, { steps: 6 });
+    await page.mouse.move(h.x + 34, h.y + h.height / 2, { steps: 2 });
+    await expect(lane(A)).not.toHaveAttribute('data-drop-at', /.*/); // …and the swimlane head does not take it
+    await page.mouse.up();
+  }
+  {
+    const h = (await lane(C).boundingBox())!;
+    await page.mouse.move(h.x + 30, h.y + h.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(h.x + 36, h.y + h.height / 2 + 6, { steps: 4 });
+    const t = (await lane(B).boundingBox())!;
+    await page.mouse.move(t.x + 30, t.y + t.height * 0.2, { steps: 6 });
+    await page.mouse.move(t.x + 34, t.y + t.height * 0.2, { steps: 2 });
+    await expect(lane(B)).toHaveAttribute('data-drop-at', 'before'); // the swimlane drag started…
+    const c = (await column.boundingBox())!;
+    await page.mouse.move(c.x + c.width / 2, c.y + 40, { steps: 6 });
+    await page.mouse.move(c.x + c.width / 2 + 4, c.y + 44, { steps: 2 });
+    await page.mouse.up(); // …and ended on a column
+  }
+  await page.waitForTimeout(500);
+  expect(writes().slice(w0)).toEqual([]);
+  await everywhere([A, C, B]);
+  await expect(page.locator(`[data-testid="lane"][data-lane="${B}"] [data-testid="card"]`)).toHaveCount(1);
+  await app.close();
+});
