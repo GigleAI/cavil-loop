@@ -22,6 +22,19 @@
 #   bash scripts/release.sh --title <tag>
 #                                      # print the Release title: the tag plus the
 #                                      # Monday–Sunday iteration its date falls in
+#   bash scripts/release.sh --plan --trigger schedule|manual --released <file>
+#                                      # the Release workflow's plan step (GitHub#309):
+#                                      # decides, once, what this run does for the week
+#                                      # that just ended. <file> = every tag that has a
+#                                      # Release page, one per line (read by the caller;
+#                                      # a failed read must fail the caller). stdout =
+#                                      # action= (new | page | none), sha=, tag=, week=, reason=
+#   bash scripts/release.sh --cut <tag> --at <sha> [--page]
+#                                      # the release step: tag <sha> as <tag> exactly as
+#                                      # planned (stdout = the tag). Exit 3 = <tag> already
+#                                      # points at <sha> (its page may still be missing);
+#                                      # <tag> on another commit → exit 1. --page: the plan
+#                                      # said "create the missing page" — never tags.
 set -euo pipefail
 
 # Iterations run Monday–Sunday (GitHub Project "cavil project", 7 days, start
@@ -41,10 +54,44 @@ release_title() {
     printf '%s · 迭代 %s ~ %s\n' "$tag" "$start" "$end"
 }
 
-usage() { echo "usage: $0 [--dry-run | --auto [--at <sha>] | --pending [--at <sha>] | --title <tag>]" >&2; exit 2; }
+# The iteration that just ended (GitHub#309): iterations run Monday–Sunday in Beijing time
+# (UTC+8), so at any moment the latest finished one is the one whose Sunday is the Beijing
+# date minus its ISO weekday (Sunday 23:59 → the previous Sunday; Monday 00:10 → yesterday).
+# Prints YYYY.MM.DD. CAVIL_RELEASE_NOW (epoch seconds) stands in for the clock in tests.
+week_end() {
+    local now="${CAVIL_RELEASE_NOW:-}" bj dow
+    if [ -z "$now" ]; then now="$(date -u +%s)" || return 2; fi
+    [[ "$now" =~ ^[0-9]+$ ]] || { echo "❌ CAVIL_RELEASE_NOW is not epoch seconds: $now" >&2; return 2; }
+    bj=$((now + 8 * 3600))
+    dow="$(date -u -d "@$bj" +%u)" || return 2
+    date -u -d "@$((bj - dow * 86400))" +%Y.%m.%d
+}
+TAG_SHAPE='^release/v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$'
+
+# The release tags as the remote has them right now: "<tag> <commit>" per line, annotated tags
+# peeled to their commit. --plan and --cut decide from this, never from local tags — a plain
+# `git fetch --tags` keeps a local tag the remote has since deleted (GitHub#309 review). A
+# failed listing returns 1; the caller must stop, never read it as "no tags".
+remote_release_tags() {
+    local raw
+    if ! raw="$(git ls-remote --tags origin 'refs/tags/release/v*')"; then
+        echo "❌ cannot list the remote's release tags" >&2
+        return 1
+    fi
+    awk '{ n = $2; sub(/^refs\/tags\//, "", n)
+           if (n ~ /\^\{\}$/) { sub(/\^\{\}$/, "", n); peeled[n] = $1 } else plain[n] = $1 }
+         END { for (n in plain) print n, ((n in peeled) ? peeled[n] : plain[n]) }' <<<"$raw"
+}
+
+usage() { echo "usage: $0 [--dry-run | --auto [--at <sha>] | --pending [--at <sha>] | --title <tag> | --plan --trigger schedule|manual --released <file> | --cut <tag> --at <sha> [--page]]" >&2; exit 2; }
 DRY_RUN=false
 AUTO=false
 PENDING=false
+PLAN=false
+CUT=""
+PAGE=false
+TRIGGER=""
+RELEASED_FILE=""
 AT=""
 case "${1:-}" in
     --dry-run) DRY_RUN=true; [ $# -eq 1 ] || usage ;;
@@ -61,12 +108,34 @@ case "${1:-}" in
         release_title "$2"
         exit
         ;;
+    --plan)
+        PLAN=true; shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --trigger) [ $# -ge 2 ] || usage; TRIGGER="$2"; shift 2 ;;
+                --released) [ $# -ge 2 ] || usage; RELEASED_FILE="$2"; shift 2 ;;
+                *) usage ;;
+            esac
+        done
+        case "$TRIGGER" in schedule|manual) ;; *) usage ;; esac
+        [ -n "$RELEASED_FILE" ] || usage
+        ;;
+    --cut)
+        [ $# -ge 4 ] && [ -n "$2" ] && [ "$3" = --at ] && [ -n "$4" ] || usage
+        CUT="$2"; AT="$4"
+        case $# in
+            4) ;;
+            5) [ "$5" = --page ] || usage; PAGE=true ;;
+            *) usage ;;
+        esac
+        [[ "$CUT" =~ $TAG_SHAPE ]] || { echo "❌ not a release tag: $CUT" >&2; exit 2; }
+        ;;
     "" ) ;;
     * ) usage ;;
 esac
 
-# --auto / --pending keep stdout for the tag name alone, so the workflow can capture it.
-if $AUTO || $PENDING; then exec 3>&1 1>&2; fi
+# Every non-interactive mode keeps stdout for its answer alone, so the workflow can capture it.
+if $AUTO || $PENDING || $PLAN || [ -n "$CUT" ]; then exec 3>&1 1>&2; fi
 
 branch="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$branch" != "main" ]; then
@@ -102,6 +171,99 @@ if [ -n "$AT" ]; then
         echo "❌ --at $target is not on main (origin/main = $remote_sha)" >&2
         exit 1
     fi
+fi
+
+if [ -n "$CUT" ]; then
+    # Exactly the planned tag on exactly the planned commit — no date or number is worked
+    # out here, so a run that started on Sunday night and tags on Monday still names the
+    # week it planned for. Checked right before writing: the tag must not exist yet, or
+    # (for a page the plan said is missing) must still point at the planned commit.
+    tags_now="$(remote_release_tags)" || exit 1
+    existing="$(awk -v t="$CUT" '$1 == t { print $2 }' <<<"$tags_now")"
+    if [ -n "$existing" ]; then
+        if [ "$existing" = "$target" ]; then
+            echo "$CUT already points at $target — no new tag"
+            echo "$CUT" >&3
+            exit 3
+        fi
+        echo "❌ $CUT already exists on $existing, not on the planned $target" >&2
+        exit 1
+    fi
+    if $PAGE; then
+        echo "❌ $CUT was planned as a tag without its Release page, but the remote no longer has it" >&2
+        exit 1
+    fi
+    if git rev-parse -q --verify "refs/tags/$CUT" >/dev/null; then
+        echo "❌ $CUT exists here but not on the remote — not guessing which is right" >&2
+        exit 1
+    fi
+    git tag "$CUT" "$target"
+    git push origin "$CUT"
+    echo "✓ pushed $CUT → $target"
+    echo "$CUT" >&3
+    exit 0
+fi
+
+if $PLAN; then
+    # One decision for the scheduled run and a manual release (GitHub#309), first match wins:
+    #   1. a tag on main's tip has no Release page  → page: that tag, its commit
+    #   2. a tag of the week that just ended has none → page: the highest such tag, its commit
+    #   3. main's tip is tagged and every tag on it has its page → none
+    #   4. the week already has a released tag: schedule → none; manual → new, next number
+    #   5. otherwise → new: release/v<week>.<next number> on main's tip
+    # A missing page always comes first, so a tag whose page failed is never stranded by
+    # "this week is already released". Anything unreadable fails the run, never guesses.
+    [ -f "$RELEASED_FILE" ] && [ -r "$RELEASED_FILE" ] || { echo "❌ cannot read the Release list $RELEASED_FILE" >&2; exit 1; }
+    week="$(week_end)" || exit 2
+    has_page() {  # 0 = has a page, 1 = has none; a read error stops the run
+        local rc=0
+        grep -qxF -- "$1" "$RELEASED_FILE" || rc=$?
+        case "$rc" in
+            0|1) return "$rc" ;;
+            *) echo "❌ cannot read the Release list $RELEASED_FILE" >&2; exit 1 ;;
+        esac
+    }
+    emit() {  # <action> <sha> <tag> <reason>
+        echo "$4"
+        printf 'action=%s\nsha=%s\ntag=%s\nweek=%s\nreason=%s\n' "$1" "$2" "$3" "$week" "$4" >&3
+        exit 0
+    }
+    # Every read below is checked: a failed tag listing, Release list or ancestry check stops
+    # the run with no plan — never "no tags", "no page" or "not on main".
+    tags_now="$(remote_release_tags)" || exit 1
+    head_tags=(); week_tags=()
+    while read -r t c; do
+        [[ "$t" =~ $TAG_SHAPE ]] || continue
+        [ "$c" = "$target" ] && head_tags+=("$t")
+        [[ "$t" == "release/v${week}."* ]] && week_tags+=("$t $c")
+    done <<<"$tags_now"
+    if [ "${#head_tags[@]}" -gt 0 ]; then mapfile -t head_tags < <(printf '%s\n' "${head_tags[@]}" | sort -rV); fi
+    if [ "${#week_tags[@]}" -gt 0 ]; then mapfile -t week_tags < <(printf '%s\n' "${week_tags[@]}" | sort -rV); fi
+    for t in "${head_tags[@]}"; do
+        has_page "$t" || emit page "$target" "$t" "$t 已有 tag 但还没有 Release 页面，先跑发版门禁再补建"
+    done
+    for tc in "${week_tags[@]}"; do
+        t="${tc% *}"; c="${tc#* }"
+        if ! has_page "$t"; then
+            rc=0; git merge-base --is-ancestor "$c" "$remote_sha" || rc=$?
+            case "$rc" in
+                0) ;;
+                1) echo "❌ $t points at $c, which is not on main" >&2; exit 1 ;;
+                *) echo "❌ cannot tell whether $t ($c) is on main" >&2; exit 1 ;;
+            esac
+            emit page "$c" "$t" "$t（$c）已有 tag 但还没有 Release 页面，先跑发版门禁再补建"
+        fi
+    done
+    if [ "${#head_tags[@]}" -gt 0 ]; then
+        emit none "$target" "" "本轮无新提交，不发版（${head_tags[0]} 已发布）"
+    fi
+    max_n=0
+    for tc in "${week_tags[@]}"; do t="${tc% *}"; n="${t##*.}"; [ "$n" -gt "$max_n" ] && max_n="$n"; done
+    if [ "$max_n" -gt 0 ] && [ "$TRIGGER" = schedule ]; then
+        emit none "$target" "" "迭代 $week 已发布（${week_tags[0]% *}），本轮不发版"
+    fi
+    tag="release/v${week}.$((max_n + 1))"
+    emit new "$target" "$tag" "将发新版 $tag（$target），先跑发版门禁"
 fi
 
 # A tag is not a published release: the Release page may have failed after the
