@@ -190,6 +190,28 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
   );
 }
 
+/** GitHub#297: below this a swimlane's columns stop shrinking (one card's head still shows) */
+export const LANE_COL_MIN = 48;
+
+/**
+ * GitHub#297: the tallest a column in a swimlane may be on this board: half the board's visible height,
+ * and no more than what is left once this lane's head, its row's padding and scrollbar, the gap and
+ * the next lane's head are taken out — all measured from the page, not assumed.
+ */
+function laneColumnMax(board: HTMLElement): number {
+  const cs = getComputedStyle(board);
+  const h = board.clientHeight - parseFloat(cs.paddingTop || '0') - parseFloat(cs.paddingBottom || '0');
+  const head = board.querySelector<HTMLElement>('.lane-head');
+  const headH = head ? head.offsetHeight + parseFloat(getComputedStyle(head).marginBottom || '0') : 36;
+  const lane = board.querySelector<HTMLElement>('.lane');
+  const gap = lane ? parseFloat(getComputedStyle(lane).marginBottom || '0') : 16;
+  let row = 6;
+  for (const r of board.querySelectorAll<HTMLElement>('.lane > .columns'))
+    row = Math.max(row, parseFloat(getComputedStyle(r).paddingBottom || '0') + (r.offsetHeight - r.clientHeight));
+  const room = Math.floor(h - 2 * headH - row - gap - 2);
+  return Math.max(LANE_COL_MIN, Math.min(Math.floor(h / 2), room));
+}
+
 function ColumnView({ col, cards, mode, ops, onDrop }: { col: Column; cards: Card[]; mode: ColumnMode; ops: CardOps; onDrop: (col: Column) => void }) {
   const [over, setOver] = useState(false);
   return (
@@ -653,16 +675,18 @@ export function BoardView({
 
   const ended = board.columns.filter((c) => c.ended);
   const shown = board.columns.filter((c) => !c.ended);
-  // GitHub#297: with swimlanes, a column is at most half of the board's visible height (never under
-  // 160 px), so the next repository's head stays within reach whatever the window size and the bars above
+  // GitHub#297: with swimlanes, a column is at most half of the board's visible height, and never so tall
+  // that this lane's head plus the next lane's head stop fitting in what is left of the board (the window
+  // size and every bar above count, as they shrink the board); only below LANE_COL_MIN does it stop shrinking
   const laneFolded = new Set(state.laneFolds);
   const boardRef = useRef<HTMLDivElement>(null);
   const [laneMax, setLaneMax] = useState<number | null>(null);
   const withLanes = view.layout !== 'table' && board.lanes !== null;
+  const laneShape = board.lanes ? `${board.lanes.join('\n')}\u0000${state.laneFolds.join('\n')}` : '';
   useLayoutEffect(() => {
     const el = boardRef.current;
     if (!withLanes || !el) return;
-    const measure = () => setLaneMax(Math.max(160, Math.floor(el.clientHeight / 2)));
+    const measure = () => setLaneMax(laneColumnMax(el));
     measure();
     if (typeof ResizeObserver === 'undefined') {
       window.addEventListener('resize', measure);
@@ -671,7 +695,7 @@ export function BoardView({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [withLanes]);
+  }, [withLanes, laneShape]);
   const renderRow = (lane: string | null) => {
     const pick = (c: Column) => (lane ? c.cards.filter((x) => x.lane === lane) : c.cards);
     return (

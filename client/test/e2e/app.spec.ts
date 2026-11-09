@@ -4998,7 +4998,7 @@ test('GitHub#297: swimlanes — each repository scrolls sideways on its own, eac
     await page.setViewportSize(size);
     await doneCol.scrollIntoViewIfNeeded();
     await page.locator('.board').evaluate((el) => (el.scrollTop = 0));
-    await expect.poll(async () => (await shape()).col <= Math.max(160, Math.floor((await shape()).board / 2)) + 1).toBe(true);
+    await expect.poll(async () => (await shape()).col <= Math.floor((await shape()).board / 2) + 1).toBe(true);
     const s = await shape();
     expect(s.body[0]).toBeGreaterThan(s.body[1]); // more cards than fit: the column scrolls inside
     expect(s.nextHeadVisible).toBe(true); // the next repository's head is on screen without scrolling the board
@@ -5052,5 +5052,34 @@ test('GitHub#297: swimlanes — each repository scrolls sideways on its own, eac
   await expect(page.getByTestId('lane')).toHaveCount(0);
   await expect(page.getByTestId('lane-toggle')).toHaveCount(0);
   expect((await columnCounts(page))['Done']).toBe(done);
+
+  // PR #300 review round 1: the smallest window with three bars above the board (update ready,
+  // unsupported words, offline) — the columns shrink further, the next repository's head still shows
+  await page.getByTestId('swimlanes').click();
+  await page.setViewportSize({ width: 720, height: 480 });
+  app.desktop.setUpdate({ supported: true, current: '0.5.0', auto: true, channel: 'stable', devUnavailable: null, problem: null, phase: 'ready', version: '0.5.1', dismissed: null, last: null });
+  await expect(page.getByTestId('update-ready')).toBeVisible();
+  await page.getByTestId('search').fill('updated:>2026-01-01');
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.board').evaluate((el) => (el.scrollTop = 0));
+  const doneCol2 = page.locator('[data-testid="lane"][data-lane="GigleAI/cavil-loop"] [data-testid="column"][data-title="Done"]');
+  const tight = () =>
+    doneCol2.evaluate((col) => {
+      const board = document.querySelector('.board') as HTMLElement;
+      const b = board.getBoundingClientRect();
+      const z = document.querySelector('[data-testid="lane"][data-lane="GigleAI/zeta"] [data-testid="lane-toggle"]')!.getBoundingClientRect();
+      const body = col.querySelector('.column-body') as HTMLElement;
+      return { board: board.clientHeight, col: col.getBoundingClientRect().height, nextTop: z.top, nextBottom: z.bottom, top: b.top, bottom: b.bottom, body: [body.scrollHeight, body.clientHeight] };
+    });
+  await expect.poll(async () => { const t = await tight(); return t.nextTop >= t.top && t.nextBottom <= t.bottom; }).toBe(true);
+  const t = await tight();
+  expect(t.board).toBeLessThan(260); // the bars really took the room (round 1 measured 191 px)
+  expect(t.col).toBeLessThan(160); // so the column went below the old 160 px floor
+  expect(t.col).toBeGreaterThanOrEqual(48);
+  expect(t.body[0]).toBeGreaterThan(t.body[1]); // and still scrolls inside
+  await shot(page, '297-03-small-window-three-bars');
   await app.close();
 });

@@ -174,7 +174,7 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .column { flex: 0 0 288px; background: var(--col); border: 1px solid var(--border-muted); border-radius: 12px; display: flex; flex-direction: column; max-height: calc(100vh - 140px); }
 /* GitHub#297: with swimlanes each repository's row scrolls sideways on its own, each column up and down on its own */
 .lane > .columns { overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
-.lane .column { max-height: var(--lane-col-max, max(160px, 40vh)); }
+.lane .column { max-height: var(--lane-col-max, 40vh); }
 .column.drop-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
 .column-head { padding: 10px 12px 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .column-head b { font-weight: 600; }
