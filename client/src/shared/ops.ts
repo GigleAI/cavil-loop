@@ -458,8 +458,10 @@ export const AUTO_DISMISS_MS = 5_000;
  * whole state, never on its tone or buttons (a merge whose linked issues could not be re-read
  * still reads "ok" with only the × — it must stay). Every condition must hold:
  * settled (not waiting / unknown / settling, and not unlocked by hand), every step ok, a
- * close / merge read back closed / merged, no re-read or evidence problem, not stuck, no draft
- * left, no reply on its way or unknown, not put away already.
+ * close / merge read back closed / merged, no re-read problem, not stuck, no draft left, no
+ * reply on its way or unknown, not put away already. (An evidence problem only stands while a
+ * step is unknown, and "stuck" only while settling, so neither reaches a kept settled record:
+ * GitHub#296, opWithoutStale.)
  */
 export function opAutoDismissable(r: OpRecord): boolean {
   if (r.dismissed || r.unlocked || r.stuck) return false;
@@ -467,9 +469,28 @@ export function opAutoDismissable(r: OpRecord): boolean {
   if (!r.steps.every((s) => s.state === 'ok')) return false;
   if (needsTarget(r) && !r.targetSeen) return false;
   if (r.readAt === null) return false;
-  if (r.readProblem || r.checkProblem) return false;
+  // GitHub#296: a check problem is only said while a step is unknown (opText) and only stands then
+  // (opWithoutStale): a settled record is never kept by one the notice no longer shows
+  if (r.readProblem) return false;
   if (r.replyState) return false;
   return opDraftLeft(r) === null;
+}
+
+/**
+ * GitHub#296: two marks only stand in the phase they are about, and only there does the notice
+ * say them: what an evidence read could not do ("这次没能查证：…") is about the steps still
+ * unknown, "stuck" about a wait for the re-read (settling). Out of that phase — proven by a later
+ * read or by records, unlocked by hand — they are dropped. Every record the controller keeps goes
+ * through this (its one setOp), so a sync read, the end of a recheck and a record loaded from an
+ * earlier run all drop them the same way: a notice must never be kept on screen by a problem it
+ * does not show. Returns the same object when nothing changes.
+ */
+export function opWithoutStale(r: OpRecord): OpRecord {
+  const p = opPhase(r);
+  const check = !!r.checkProblem && p !== 'unknown';
+  const stuck = r.stuck && p !== 'settling';
+  if (!check && !stuck) return r;
+  return { ...r, ...(check ? { checkProblem: null } : {}), ...(stuck ? { stuck: false } : {}) };
 }
 
 /** Records may be dropped once settled, put away and with no draft left. */

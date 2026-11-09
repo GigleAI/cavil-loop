@@ -3,10 +3,10 @@
 // -> sorted rows, sub-issues indented under their parent. Pure (callers pass
 // `today`), shared by the renderer and the tests.
 
-import type { GroupBy, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
+import type { ColumnMode, GroupBy, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
 import type { GroupPreset } from '../shared/actions';
 import { isCurrentIteration } from '../shared/filter';
-import { iterationColumnKey } from './board';
+import { COL_NO_ITERATION, COL_NO_MILESTONE, COL_NO_STATUS, dragScope, dropPlan, iterationColumnKey, type DropPlan } from './board';
 import { itemSorter } from './sort';
 import { listHosts, nestPrs, orderUnits, prFollow, PR_ORDER, unitUpdated } from './prNest';
 
@@ -20,6 +20,9 @@ export interface Row {
   depth: number;
   /** a PR shown right under the issue it is linked to: that issue's key (GitHub#155); null otherwise */
   under: string | null;
+  /** what dragging this row to another group changes: the same as the board card in that column (GitHub#294) */
+  projectKeys: string[];
+  projectTitles: string[];
 }
 
 export interface Group {
@@ -33,6 +36,10 @@ export interface Group {
   empty: boolean;
   /** the group's value: what a new issue from its "+" carries (GitHub#214) */
   preset: GroupPreset;
+  /** the board column with the same value: where a row dropped here goes (GitHub#294); null = rows cannot be dropped here (repository / no grouping) */
+  column: string | null;
+  /** the repository section it sits in ("all repositories"); null = no repository layer */
+  section: string | null;
   rows: Row[];
 }
 
@@ -175,8 +182,8 @@ function arrange(
 ): Row[] {
   const sorted = [...items].sort(sort);
   if (!hierarchy) {
-    if (!prs) return sorted.map((item) => ({ id: `${item.key}@${groupKey}`, item, depth: 0, under: null }));
-    return nestPrs(sorted, (it) => it, sortSetting, follow).map(({ entry, under }) => ({ id: `${entry.key}@${groupKey}`, item: entry, depth: under ? 1 : 0, under }));
+    if (!prs) return sorted.map((item) => ({ id: `${item.key}@${groupKey}`, item, depth: 0, under: null, projectKeys: [], projectTitles: [] }));
+    return nestPrs(sorted, (it) => it, sortSetting, follow).map(({ entry, under }) => ({ id: `${entry.key}@${groupKey}`, item: entry, depth: under ? 1 : 0, under, projectKeys: [], projectTitles: [] }));
   }
   const here = new Map(sorted.map((it) => [it.key, it]));
   const hosts = prs ? listHosts(sorted, follow) : new Map<string, string>();
@@ -206,8 +213,8 @@ function arrange(
   const place = (list: Item[]) => orderUnits(list, (it) => unitUpdated(it, guests.get(it.key) ?? []), sortSetting);
   const out: Row[] = [];
   const walk = (it: Item, depth: number) => {
-    out.push({ id: `${it.key}@${groupKey}`, item: it, depth, under: null });
-    for (const pr of guests.get(it.key) ?? []) out.push({ id: `${pr.key}@${groupKey}`, item: pr, depth: depth + 1, under: it.key });
+    out.push({ id: `${it.key}@${groupKey}`, item: it, depth, under: null, projectKeys: [], projectTitles: [] });
+    for (const pr of guests.get(it.key) ?? []) out.push({ id: `${pr.key}@${groupKey}`, item: pr, depth: depth + 1, under: it.key, projectKeys: [], projectTitles: [] });
     for (const c of place(children.get(it.key) ?? [])) walk(c, depth + 1);
   };
   for (const it of place(top)) walk(it, 0);
@@ -246,7 +253,7 @@ export function buildTable(
   const pickedByKey = new Map(picked.map((it) => [it.key, it]));
   /** whose value decides where an item goes: its own, or the issue it follows */
   const placedBy = (it: Item) => pickedByKey.get(follow.get(it.key) ?? '') ?? it;
-  const group = (list: Item[], prefix: string) => groupItems(list, prefix, settings, byKey, today, sort, prsUnderIssues, follow, placedBy);
+  const group = (list: Item[], prefix: string, section: string | null) => groupItems(list, prefix, section, settings, byKey, today, sort, prsUnderIssues, follow, placedBy);
 
   // "all repositories" picked in the slice list: repository first, then the chosen grouping inside it (GitHub#213)
   if (settings.sliceByRepo && !settings.slice && settings.groupBy !== 'repo') {
@@ -261,10 +268,10 @@ export function buildTable(
     }
     const repos = [...byRepo]
       .sort(([a], [b]) => compareRepo(a, b))
-      .map(([key, r]) => ({ key, title: r.title, itemCount: r.items.length, groups: group(r.items, `${key}|`) }));
+      .map(([key, r]) => ({ key, title: r.title, itemCount: r.items.length, groups: group(r.items, `${key}|`, key) }));
     return { groups: repos.flatMap((r) => r.groups), repos, slices, slice, itemCount: picked.length };
   }
-  return { groups: group(picked, ''), repos: null, slices, slice, itemCount: picked.length };
+  return { groups: group(picked, '', null), repos: null, slices, slice, itemCount: picked.length };
 }
 
 const repoKey = (repo: string) => `repo:${repo.toLowerCase()}`;
@@ -275,6 +282,7 @@ const compareRepo = (a: string, b: string) => a.toLowerCase().localeCompare(b.to
 function groupItems(
   items: Item[],
   prefix: string,
+  section: string | null,
   settings: TableSettings,
   byKey: Map<string, ProjectMeta>,
   today: string,
@@ -285,8 +293,12 @@ function groupItems(
 ): Group[] {
   if (settings.groupBy === 'none') {
     const key = `${prefix}all`;
-    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, rows: arrange(items, key, settings.sort, sort, settings.hierarchy, prs, follow) }];
+    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, column: null, section, rows: arrange(items, key, settings.sort, sort, settings.hierarchy, prs, follow) }];
   }
+  const mode = boardMode(settings.groupBy);
+  // GitHub#294: each row carries what a drag changes, by the board's own rule for that column
+  const scoped = (rows: Row[], column: string | null): Row[] =>
+    !mode || !column ? rows : rows.map((r) => ({ ...r, ...dragScope(r.item, column, mode, byKey, placedBy(r.item) !== r.item) }));
   const seeds = new Map<string, Seed>();
   for (const it of items) for (const g of groupsOf(placedBy(it), settings.groupBy, byKey, today, seeds)) seeds.get(g)!.items.push(it);
   return [...seeds.values()]
@@ -294,8 +306,36 @@ function groupItems(
     .sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : a.key < b.key ? -1 : 1))
     .map((s) => {
       const key = `${prefix}${s.key}`;
-      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, preset: s.preset, rows: arrange(s.items, key, settings.sort, sort, settings.hierarchy, prs, follow) };
+      const column = groupColumn(settings.groupBy, s.key);
+      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, preset: s.preset, column, section, rows: scoped(arrange(s.items, key, settings.sort, sort, settings.hierarchy, prs, follow), column) };
     });
+}
+
+/** The board's column mode a grouping stands for; null = rows cannot be dragged between its groups (GitHub#294). */
+export function boardMode(by: GroupBy): ColumnMode | null {
+  return by === 'iteration' || by === 'status' || by === 'milestone' ? by : null;
+}
+
+/** A group's board column: the same key for a value, the board's "no value" column for the group without one. */
+function groupColumn(by: GroupBy, seedKey: string): string | null {
+  if (!boardMode(by)) return null;
+  if (seedKey !== GROUP_NONE_KEY) return seedKey;
+  return by === 'iteration' ? COL_NO_ITERATION : by === 'status' ? COL_NO_STATUS : COL_NO_MILESTONE;
+}
+
+export const REFUSE_OTHER_REPO = '只能拖到同一个仓库下的分组';
+
+/**
+ * Dropping a table row on a group (GitHub#294): the board's drop rule, with
+ * the row standing for the card and the groups for their columns. Nothing
+ * when the grouping has no board column; refused across repository sections
+ * (the row would not show up in the other repository's section).
+ */
+export function tableDropPlan(row: Row, from: Group, to: Group, by: GroupBy, projects: ProjectMeta[]): DropPlan {
+  const mode = boardMode(by);
+  if (!mode || !from.column || !to.column || from.key === to.key) return { kind: 'none' };
+  if (from.section !== to.section) return { kind: 'refuse', reason: REFUSE_OTHER_REPO };
+  return dropPlan(row, from.column, { key: to.column }, mode, projects);
 }
 
 /** One block of a list of groups as drawn (GitHub#275): a group, or two or more folded groups next to each other shown as one line. */

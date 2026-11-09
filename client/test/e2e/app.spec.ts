@@ -3,7 +3,7 @@
 // bridge, talking to the local fake GitHub over loopback (test/e2e/bridge.ts).
 // Screenshots of each step land in test-results/screens/ (uploaded by CI).
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { mkdtempSync, readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -4249,6 +4249,21 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   await app.close();
 });
 
+/**
+ * The window going to the background / coming back as the app sees it: document.hasFocus() says so
+ * (a paused notice looks at it once a second, GitHub#296) and the event is sent. `event: false`
+ * changes only what hasFocus() says — the event that should come with it is missed.
+ */
+async function windowFocus(page: Page, focused: boolean, event = true) {
+  await page.evaluate(
+    ([f, e]) => {
+      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => f });
+      if (e) window.dispatchEvent(new Event(f ? 'focus' : 'blur'));
+    },
+    [focused, event] as const,
+  );
+}
+
 test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#279; 10 s before) (detail, board, after a switch); pointer, focus, a background window pause it; warnings, errors and kept drafts stay', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const openOnGitHub = (n: number) => {
@@ -4332,11 +4347,11 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(onBoard(142)).toBeVisible();
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await windowFocus(page, false);
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'paused');
   await ff(20_000);
   await expect(onBoard(142)).toBeVisible();
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await windowFocus(page, true);
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(onBoard(142)).toBeVisible();
@@ -4359,7 +4374,7 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
 
   // ---- 3b. PR #259 review round 1: the window loses focus first, then a notice comes up — it starts paused ----
   await open(135);
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await windowFocus(page, false);
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
   await expect(inDetail(135).getByTestId('op-notice-text')).toHaveText('issue #135 已关闭（已完成）', { timeout: 15_000 });
@@ -4367,7 +4382,7 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'paused');
   await ff(20_000);
   await expect(inDetail(135)).toBeVisible();
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await windowFocus(page, true);
   await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(inDetail(135)).toBeVisible();
@@ -4438,6 +4453,109 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   for (const n of [135, 137, 139, 142]) await expect(onBoard(n)).toHaveCount(0);
   await app.close();
   env.fake.state.w.closingIssuesPageSize = 100;
+});
+
+test('GitHub#296: a missed "pointer left" / "focus left" / "window back" never keeps a successful notice paused; a real pointer, focus or background window still does', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  for (const n of [137, 139]) {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  }
+  const { app, page } = await launch(env);
+  await page.clock.install();
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signInWithSources(page);
+  const ff = async (ms: number) => {
+    await page.clock.fastForward(ms);
+    await page.waitForTimeout(100);
+  };
+  const onBoard = (n: number) => page.locator(`[data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
+  const closeOnBoard = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    await page.getByTestId('close-issue').click();
+    await page.getByTestId('confirm-ok').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+    await page.getByTestId('detail-close').click();
+    await page.mouse.move(5, 5);
+    await expect(onBoard(n).getByTestId('op-notice-text')).toHaveText(`issue #${n} 已关闭（已完成）`, { timeout: 15_000 });
+    await expect(onBoard(n)).toHaveAttribute('data-auto-dismiss', 'counting');
+  };
+  // the app never hears of the pointer / the focus leaving (what happens when it leaves while the window is in the background)
+  const missLeaves = (on: boolean) =>
+    page.evaluate((v) => {
+      const w = window as unknown as { __miss?: (e: Event) => void };
+      const types = ['mouseout', 'mouseover', 'pointerout', 'pointerover', 'focusout', 'focusin'];
+      if (v && !w.__miss) {
+        w.__miss = (e: Event) => e.stopImmediatePropagation();
+        for (const t of types) window.addEventListener(t, w.__miss, true);
+      } else if (!v && w.__miss) {
+        for (const t of types) window.removeEventListener(t, w.__miss, true);
+        delete w.__miss;
+      }
+    }, on);
+
+  await closeOnBoard(137);
+  const n137 = onBoard(137);
+  // ---- 1. a real pointer on it keeps it paused, the once-a-second look included ----
+  await n137.hover();
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'paused');
+  // ---- 2. the pointer leaves, the app does not hear it: within a second it counts again, 5 s later it is gone ----
+  await missLeaves(true);
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(100);
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(1_100);
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'counting');
+  await missLeaves(false);
+  await ff(4_000);
+  await expect(n137).toBeVisible();
+  await ff(1_100);
+  await expect(n137).toHaveCount(0);
+
+  await closeOnBoard(139);
+  const n139 = onBoard(139);
+  // ---- 3. pointer on it, window to the background, pointer moved away unheard, window back: counts again ----
+  await n139.hover();
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await windowFocus(page, false);
+  await missLeaves(true);
+  await page.mouse.move(5, 5);
+  await ff(20_000);
+  // a window really in the background keeps it paused, the once-a-second look included
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await windowFocus(page, true);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'counting');
+  await missLeaves(false);
+  // ---- 4. the window comes back but the app is not told: within a second it counts again ----
+  await windowFocus(page, false);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await windowFocus(page, true, false);
+  await ff(1_100);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'counting');
+  // ---- 5. the focus really in it keeps it paused; the focus leaves unheard: counts again ----
+  await n139.getByTestId('op-dismiss').focus();
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await missLeaves(true);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.waitForTimeout(100);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(1_100);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'counting');
+  await missLeaves(false);
+  await ff(4_000);
+  await expect(n139).toBeVisible();
+  await ff(1_100);
+  await expect(n139).toHaveCount(0);
+  await app.close();
 });
 
 test('GitHub#279: the close worked but the re-read right after it failed — a yellow warning that stays; the next sync re-reads it, the notice turns into a success and goes after 5 s', async () => {
@@ -5046,5 +5164,118 @@ test('GitHub#299: the title of an issue / PR is edited from the detail; a plain 
   await expect(detail.getByTestId('detail-edit-title')).toBeDisabled();
   await expect(detail.getByTestId('detail-edit-title')).toHaveAttribute('title', '离线时不能修改');
   fake.state.offline = false;
+  await app.close();
+});
+
+/**
+ * A row dragged onto a target by hand (GitHub#294): press, a first move (the drag starts), then the
+ * target brought into view and moved onto. Playwright's dragTo scrolls to the target before the drag
+ * has started, and a long table then never starts one.
+ */
+async function dragRow(src: Locator, target: Locator) {
+  const page = src.page();
+  // in the middle of the view: a pointer near the edge makes the browser scroll the table while dragging
+  await src.evaluate((el: Element) => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const a = (await src.boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + a.width / 2 + 8, a.y + a.height / 2 + 8, { steps: 4 });
+  // a group head: its group's body, not the (sticky) head itself: scrolling to a sticky row can leave it under the next group's head
+  await target.evaluate((el: Element) => ((el.closest('.group-head') && el.closest('tbody')) || el).scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const b = (await target.boundingBox())!;
+  await page.mouse.move(b.x + Math.min(20, b.width / 2), b.y + b.height / 2, { steps: 6 });
+  await page.mouse.up();
+}
+
+test('GitHub#294: drag a table row to another group — the board\'s drop: set, clear, onto folded groups, "add to the board?" first; not when grouped by repository or offline', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  // an item on no board, read from the board's own column before switching
+  const lone = (await page.locator('[data-testid="column"][data-title="未加入看板"] [data-testid="card"]').first().getAttribute('data-key'))!;
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await expect(page.getByTestId('table')).toBeVisible();
+  const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`).first();
+  const rowIn = (title: string, key: string) => group(title).locator(`[data-testid="row"][data-key="${key}"]`);
+  const K = 'gigleai/cavil-loop#137';
+  const from = (await page.locator(`[data-testid="row"][data-key="${K}"]`).first().locator('xpath=ancestor::tbody[1]').getAttribute('data-title'))!;
+  // the table shows only groups that hold something: pick an iteration group that is there
+  const T = 'Iteration 24';
+  expect(from).not.toBe(T);
+  await expect(group(T)).toBeVisible();
+  const row = rowIn(from, K);
+  await expect(row).toHaveAttribute('draggable', 'true');
+
+  // ---- 1. onto another iteration's group: one iteration write, the row moves there ----
+  const b1 = writes().length;
+  await dragRow(row.locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
+  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${T}」`);
+  await expect(rowIn(T, K)).toBeVisible();
+  await expect(rowIn(from, K)).toHaveCount(0);
+  await expect.poll(() => writes().slice(b1).map((w) => w[0])).toEqual(['CavilSetIteration']);
+  expect((writes()[b1][2] as any).iterationId).toBeTruthy();
+  // nothing stays lit once it is dropped
+  await expect(page.locator('[data-drop-over]')).toHaveCount(0);
+  await shot(page, '294-01-row-dropped');
+
+  // ---- 2. onto 无迭代: cleared ----
+  const b2 = writes().length;
+  await dragRow(rowIn(T, K).locator('[data-testid="row-ref"]'), group('无迭代').locator('[data-testid="row"]').first());
+  await expect(rowIn('无迭代', K)).toBeVisible();
+  await expect.poll(() => writes().slice(b2).map((w) => w[0])).toEqual(['CavilClearField']);
+
+  // ---- 3. onto a folded group's head, and onto a name in "已收起 N 组" ----
+  await group(T).getByTestId('group-toggle').click();
+  await dragRow(rowIn('无迭代', K).locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
+  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${T}」`);
+  await expect.poll(async () => (await rowIn('无迭代', K).count())).toBe(0);
+  await group(T).getByTestId('group-toggle').click();
+  await expect(rowIn(T, K)).toBeVisible();
+  // fold two groups next to each other, then drop on the second one's name in the joined line
+  const titles = await page.locator('[data-testid="group"]').evaluateAll((gs) => gs.map((g) => g.getAttribute('data-title') ?? ''));
+  const i = titles.findIndex((t, n) => t.startsWith('Iteration') && titles[n + 1]?.startsWith('Iteration') && t !== T && titles[n + 1] !== T && t !== from && titles[n + 1] !== from);
+  expect(i).toBeGreaterThanOrEqual(0);
+  const [g1, g2] = [titles[i], titles[i + 1]];
+  await group(g1).getByTestId('group-toggle').click();
+  await group(g2).getByTestId('group-toggle').click();
+  const run = page.getByTestId('fold-run').first();
+  await expect(run).toBeVisible();
+  const target = run.locator(`[data-testid="fold-run-group"]`, { hasText: g2 });
+  const b3 = writes().length;
+  await dragRow(rowIn(T, K).locator('[data-testid="row-ref"]'), target);
+  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${g2}」`);
+  await expect.poll(() => writes().slice(b3).map((w) => w[0])).toEqual(['CavilSetIteration']);
+  await expect(rowIn(T, K)).toHaveCount(0);
+  await target.click();
+  await expect(rowIn(g2, K)).toBeVisible();
+
+  // ---- 4. an item on no board: "加入看板？" first; cancelled, nothing sent ----
+  const loneFrom = (await page.locator(`[data-testid="row"][data-key="${lone}"]`).first().locator('xpath=ancestor::tbody[1]').getAttribute('data-title'))!;
+  expect(loneFrom).toBe('无迭代');
+  const b4 = writes().length;
+  await dragRow(rowIn('无迭代', lone).locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
+  await expect(page.getByTestId('confirm-question')).toContainText('还没加入看板');
+  await shot(page, '294-02-add-to-board');
+  await page.getByTestId('confirm-cancel').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  expect(writes().slice(b4)).toEqual([]);
+
+  // ---- 5. grouped by repository: rows do not drag ----
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('repo');
+  await page.getByTestId('open-view-panel').click();
+  await expect(page.locator('[data-testid="row"]').first()).toBeVisible();
+  expect(await page.locator('[data-testid="row"][draggable="true"]').count()).toBe(0);
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('iteration');
+  await page.getByTestId('open-view-panel').click();
+  await expect(page.locator('[data-testid="row"][draggable="true"]').first()).toBeVisible();
+
+  // ---- 6. offline: rows do not drag ----
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('[data-testid="row"]').first()).toBeVisible();
+  expect(await page.locator('[data-testid="row"][draggable="true"]').count()).toBe(0);
   await app.close();
 });

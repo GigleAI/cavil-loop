@@ -633,7 +633,10 @@ export function BoardView({
     const d = dragging.current;
     dragging.current = null;
     if (!d || !canWrite) return;
-    const plan = dropPlan(d.card, d.from, col, board.mode, data.projects);
+    applyPlan(dropPlan(d.card, d.from, col, board.mode, data.projects));
+  };
+  /** what a drop decided, for a card on the board and a row in the table alike (GitHub#294) */
+  const applyPlan = (plan: DropPlan) => {
     if (plan.kind === 'refuse') setNote({ kind: 'error', text: `没有修改：${plan.reason}` });
     else if (plan.kind === 'do') void runAll(plan.actions, plan.summary);
     else if (plan.kind === 'confirm') {
@@ -877,6 +880,7 @@ export function BoardView({
           createTitle={writesEnabled(sync) ? (state.sources.length ? '在这一组新建 issue，带上这一组的字段' : '先添加数据来源') : '离线时不能修改'}
           onNewInGroup={(g) => setNewIssue({ preset: g.preset, title: g.title, items: g.rows.map((r) => r.item) })}
           folds={state.tableFolds}
+          onDropPlan={applyPlan}
         />
       ) : (
       <div className="board">

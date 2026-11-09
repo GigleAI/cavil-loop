@@ -37,6 +37,7 @@ import {
   opPhase,
   opProveFromRecords,
   opText,
+  opWithoutStale,
   type OpKind,
   type OpRecord,
   type OpStep,
@@ -3017,7 +3018,9 @@ export class Controller {
     return { ok: true, error: null, warning: r.steps.every((x) => x.state === 'ok') && !r.readProblem ? null : opText(r) };
   }
 
-  private setOp(r: OpRecord): void {
+  private setOp(rec: OpRecord): void {
+    // GitHub#296: the one way into this.ops — a check problem / "stuck" that no longer stands goes here
+    const r = opWithoutStale(rec);
     this.ops.set(r.id, r);
     // a succeeded record waiting for its re-read: the manual unlock is offered when the wait runs out
     const settling = opPhase(r) === 'settling' && !r.stuck;
