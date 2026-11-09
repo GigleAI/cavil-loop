@@ -261,10 +261,28 @@ test('a daemon too old for the status script on a branch that still has none: pu
   await expect(res).toContainText('没有状态脚本');
   await expect(res).not.toContainText('没有更新');
   await expect(res).not.toContainText('已更新');
+  await expect(res).not.toContainText('换到');
   // checked again by itself: still unreadable, never shown as a working daemon
   await expect(page.getByTestId('daemon-summary')).toHaveAttribute('data-state', 'unreadable');
   await expect(page.getByTestId('daemon-version')).toHaveCount(0);
   await shot(page, '12-outdated-still-old');
+});
+
+test('a daemon too old for the status script, already on main whose origin is old too: pulled, still unreadable, no advice to switch to main', async () => {
+  const old = installOld(w, 'main', { originOld: true });
+  const { page } = await openSection('Darwin', pathFor(w));
+  await page.getByTestId('daemon-update-run').click();
+  const res = page.getByTestId('daemon-update-result');
+  await expect(res).toHaveAttribute('data-result', 'still_old', { timeout: 30_000 });
+  await expect(page.getByTestId('daemon-update-branch')).toHaveText('main');
+  await expect(res).toContainText('已拉取');
+  await expect(res).toContainText(old.slice(0, 12));
+  await expect(res).toContainText('Fast-forward');
+  await expect(res).not.toContainText('换到');
+  await expect(page.getByTestId('daemon-summary')).toHaveAttribute('data-state', 'unreadable');
+  // the checkout really moved
+  const { execFileSync } = await import('node:child_process');
+  expect(execFileSync('git', ['-C', w.skill, 'rev-parse', 'HEAD']).toString().trim()).not.toBe(old);
 });
 
 test('a daemon too old for the status script, not a checkout: no button; managed does not guess why, a plain folder promises no waiting', async () => {

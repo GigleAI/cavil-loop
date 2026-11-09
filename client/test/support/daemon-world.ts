@@ -192,16 +192,17 @@ export const originOf = (dir: string) => git(dir, 'config', '--get', 'remote.ori
  * The daemon as installed before scripts/install-status.sh existed: origin gets a commit without the
  * script and then one that brings it back; the install is a clone reset to the first, so it follows
  * origin/main one fast-forward behind. `branch`: put both commits on that branch instead (origin/main
- * keeps the script) and make the install follow it. Returns the old commit.
+ * keeps the script) and make the install follow it. `originOld`: on main, origin's main itself stays
+ * without the script (an old fork that never caught up). Returns the old commit.
  */
-export function installOld(w: DaemonWorld, branch = 'main'): string {
+export function installOld(w: DaemonWorld, branch = 'main', o: { originOld?: boolean } = {}): string {
   const tmp = join(w.dir, `old-${++pathSeq}`);
   git(w.dir, 'clone', '-q', w.origin, tmp);
   if (branch !== 'main') git(tmp, 'checkout', '-q', '-b', branch);
   git(tmp, 'rm', '-q', 'scripts/install-status.sh');
   git(tmp, 'commit', '-qm', 'before the status script');
   const old = git(tmp, 'rev-parse', 'HEAD').trim();
-  if (branch === 'main') git(tmp, 'revert', '--no-edit', 'HEAD');
+  if (branch === 'main' && !o.originOld) git(tmp, 'revert', '--no-edit', 'HEAD');
   else git(tmp, 'commit', '-q', '--allow-empty', '-m', 'still without it');
   git(tmp, 'push', '-q', 'origin', branch);
   installByHand(w);

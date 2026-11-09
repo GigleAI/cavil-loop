@@ -371,7 +371,7 @@ function UpdateResult({ result }: { result: DaemonUpdate }) {
             : result.result === 'still_old'
               ? // pulled, yet still no status script: the branch it follows has none (GitHub#320)
                 <>
-                  已拉取（{result.before?.slice(0, 12)} → {result.after?.slice(0, 12)}），但仍读不到 daemon 的状态：这份代码当前在分支 <b data-testid="daemon-update-branch">{result.branch}</b>，它跟踪的分支上还没有状态脚本，拉到最新也不会有。需要维护者把它换到主干（main）后再更新。
+                  已拉取（{result.before?.slice(0, 12)} → {result.after?.slice(0, 12)}），但仍读不到 daemon 的状态：这份代码当前在分支 <b data-testid="daemon-update-branch">{result.branch}</b>，它跟踪的远端分支拉到最新后仍没有状态脚本。
                 </>
             : result.result === 'blocked'
               ? `没有更新：${result.step}`
