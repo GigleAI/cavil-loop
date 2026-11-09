@@ -8,7 +8,7 @@
 
     - 开始 2026-10-27 08:48:16 · 完工 08:56:16
     - <项目命令给的分条文字，原样>
-    - 远端 CI 约 40s（等待 1 条，按会话记录识别）：
+    - 远端 CI 约 40s（等待 1 条，按命令推断，可能偏多）：
       - 等 Actions 运行 123：08:50:01 → 08:50:41，40s
     - token 明细：<用量驱动的人读行，原样>
 
@@ -25,7 +25,9 @@
   · 远端 CI（GitHub#293）：用量驱动 --ci-wait 给一行 JSON（ci_wait.py）。等待时段的并集已扣掉与 AI 重合的
     部分，所以不和 AI 重叠；和测试的重叠扣不掉（测试只给总数），同样按「其他」记 0 处理。总览只在
     合计至少 1 秒、或有等待但一条都没记到结束（「远端 CI 未知」）时出现；细节逐条列出，并写明重叠、
-    扣掉的 AI 时间、没记到结束的条数。没有等待时 footer 可见部分与以前一字不差，机器记录写
+    扣掉的 AI 时间、没记到结束的条数。数字是按会话里的命令推断的，可能偏多（PR #302 维护者选定：
+    一条命令里只要认出等待，整条命令的时长都算；分支没走、等待之外还有别的耗时操作时会多算），
+    细节标题写明「按命令推断，可能偏多」。没有等待时 footer 可见部分与以前一字不差，机器记录写
     ci_wait_secs=0.000 ci_waits=0 ci_wait_untimed=0。统计不出来时三个字段都不写，细节写原因。
   · AI 时间算不出来就写「AI 时间未知」，不写 0、也不算「其他」。AI 时间的估算口径写在
     docs/operations.md，不在每条评论里重复一大段说明。
@@ -183,11 +185,11 @@ def ci_wait_parts(ci, wall, start_dt):
     if waits:
         if secs is None:
             seg = "远端 CI 未知"
-            lines.append(f"- 远端 CI：等待 {len(waits)} 条，都没记到结束，时长未知（按会话记录识别）：")
+            lines.append(f"- 远端 CI：等待 {len(waits)} 条，都没记到结束，时长未知（按命令推断）：")
         else:
             ci_int = min(int(round(secs)), wall)
             seg = f"远端 CI 约 {fmt_dur(ci_int)}" if ci_int > 0 else None
-            lines.append(f"- 远端 CI 约 {fmt_dur(ci_int)}（等待 {len(waits)} 条，按会话记录识别）：")
+            lines.append(f"- 远端 CI 约 {fmt_dur(ci_int)}（等待 {len(waits)} 条，按命令推断，可能偏多）：")
         for w in waits:
             if w["end"] is None:
                 lines.append(f"  - {wait_label(w)}：{at(w['start'])} 起，结束未记到")
@@ -198,7 +200,7 @@ def ci_wait_parts(ci, wall, start_dt):
         if int(round(ci["ai_cut"])) > 0:
             lines.append(f"  - 等待期间 AI 也在工作，这 {fmt_dur(round(ci['ai_cut']))} 算进 AI，不重复算进远端 CI")
         if untimed and secs is not None:
-            lines.append(f"  - 另有 {untimed} 条没记到结束，合计是下限")
+            lines.append(f"  - 另有 {untimed} 条没记到结束，没算进合计")
     if _num(ci.get("unparsed")) and ci["unparsed"]:
         lines.append(f"- 另有 {int(ci['unparsed'])} 条命令的写法解析不了，可能含远端 CI 等待，未计入")
     return seg, ci_int, lines, kv

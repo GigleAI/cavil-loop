@@ -1040,7 +1040,7 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     (AI not subtracted, so it matches the Actions page), plus notes on overlaps and the AI time
     taken out.
   - Waits with no end on record (background task still running, notification missing, codex never
-    reported an exit code) are counted but not timed and the total is marked a lower bound; when
+    reported an exit code) are counted but not timed and left out of the total (the details say so); when
     none could be timed the summary says `远端 CI 未知`. Waits that started in an earlier dispatch
     round are ignored.
   - Machine record: `ci_wait_secs` (total, millisecond precision), `ci_waits` (count),
@@ -1054,10 +1054,19 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     commands inside a function definition (defining is not calling, and calls are not followed);
     a command sent to the background (`… &`); anything handed over as a string to `bash -c` /
     `sh -c` / `eval` / `xargs` / `ssh` / `sudo`, or inside a script file of the agent's own.
+  - **The number is inferred from the commands and may run high** (the footer's details heading
+    says `按命令推断，可能偏多`; on PR #302 the maintainer chose to keep the inference rather than
+    switch to a dedicated wait command that records its own time). Known over-counts: once a
+    command is recognised as a wait, the whole command's duration goes into remote CI, including
+    any other slow work in the same command; a wait in a branch that did not run
+    (`if false; then gh run watch 1; fi; sleep 60`, `false && gh run watch 1; sleep 60`) still
+    brings the rest of the command's time in; a quoted `}` inside a function body
+    (`f() { echo '}'; gh run watch 1; }`) makes the body look executed. How much it over-counts
+    depends on what else the command does, so there is no upper bound.
   - Limits: a real wait written in one of those not-counted forms stays in "other"; a wait inside
-    an `&&` / `||` / `if` / `case` branch is counted as run (whether the branch ran cannot be told,
-    and a branch that did not run takes almost no time); overlap with local tests cannot be taken
-    out (tests only report a total) — see the "other is 0" rule above.
+    an `&&` / `||` / `if` / `case` branch is counted as run (whether the branch ran cannot be
+    told); waits with no end on record are left out of the total; overlap with local tests cannot
+    be taken out (tests only report a total) — see the "other is 0" rule above.
 
 ## Prompt templates
 

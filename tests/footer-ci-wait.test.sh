@@ -18,9 +18,10 @@
 #        只是打印出来的命令文字（单引号里的 $( … )、echo 的参数、循环里 echo 的查询）不算，
 #        混写时编号取真正在等的那条（代码复审第 1 轮的反例）；
 #        查询和 sleep 分属两个循环、函数体（定义不等于调用）、整条放后台、交给 bash -c / eval / xargs、
-#        for 头部的查询都不算；&& / ||、进程替换、花括号组、嵌套循环里的照样算（第 2 轮起按结构逐项列清）
+#        for 头部的查询都不算；&& / ||、进程替换、花括号组、嵌套循环里的照样算（第 2 轮起按结构逐项列清）；
+#        第 3 轮的三种已知多算写法照样计入、细节标明「可能偏多」（维护者在 PR #302 选 C）
 #   【3】两条等待部分重叠、期间 AI 在工作：逐条时长各自完整，合计按并集再扣 AI
-#   【4】没记到结束：部分 → 合计是下限；全部 → 「远端 CI 未知」、不写秒数字段
+#   【4】没记到结束：部分 → 不算进合计、细节注明；全部 → 「远端 CI 未知」、不写秒数字段
 #   【5】上一轮派工的等待不算
 #   【6】统计不出来（输出读不懂 / 脚本退出非 0 / 会话读不了）：footer 照常出，三个字段都不写，细节写原因
 #   【7】codex：exec 单元里跑完的、靠轮询才结束的；同一场景 Claude 与 codex 两份夹具结论一致
@@ -196,7 +197,7 @@ EOF
 out=$(footer claude)
 eq c286_summary "$(summary "$out" | sed 's/｜.*//')" "⏱️ 耗时：1h 51m 40s（AI 约 15s · 远端 CI 约 1h 50m 30s · 其他 55s）"
 eq c286_sums "$(sums_ok "$out")" yes
-has c286_detail_head "$out" "- 远端 CI 约 1h 50m 30s（等待 1 条，按会话记录识别）："
+has c286_detail_head "$out" "- 远端 CI 约 1h 50m 30s（等待 1 条，按命令推断，可能偏多）："
 has c286_detail_line "$out" "  - 等 Actions 运行 42565983194：$(at 10) → $(at 6640)，1h 50m 30s"
 eq c286_kv "$(marker "$out" | grep -o 'ci_wait_secs=[^ ]* ci_waits=[^ ]* ci_wait_untimed=[^ ]*')" \
     "ci_wait_secs=6630.245 ci_waits=1 ci_wait_untimed=0"
@@ -273,6 +274,19 @@ for id in 301 302 303 304 305; do has "structs_counted_$id" "$out" "  - 等 Acti
 for id in 201 202 203 204 205 206 207 208 209; do hasnt "structs_not_$id" "$out" "运行 $id"; done
 hasnt structs_no_bare_run "$out" "等 Actions 运行（编号没读出来）"
 
+# 已知会多算、维护者在 PR #302 选定保留推断（选项 C）的几种：照样计入，细节标题写明「可能偏多」。
+# 钉住的是选定的行为：以后有人改了识别规则，这里会提醒同步改文档里的「已知会多算」清单
+case_setup overcount claude 400 <<EOF
+$(j k '"bash"' id '"g1"' t 10 cmd "$(qj "check_ci() { echo '}'; gh run watch 401; }; sleep 60")" rt 70)
+$(j k '"bash"' id '"g2"' t 100 cmd "$(qj 'if false; then gh run watch 402; fi; sleep 60')" rt 160)
+$(j k '"bash"' id '"g3"' t 200 cmd "$(qj 'false && gh run watch 403; sleep 60')" rt 260)
+$(j k '"ai"' a 300 b 305)
+EOF
+out=$(footer claude)
+eq overcount_count "$(field "$out" ci_waits)" 3
+eq overcount_secs "$(field "$out" ci_wait_secs)" "180.000"
+has overcount_head "$out" "- 远端 CI 约 3m 0s（等待 3 条，按命令推断，可能偏多）："
+
 echo "【3】两条等待部分重叠、期间 AI 在工作"
 case_setup overlap claude 800 <<EOF
 $(j k '"bash"' id '"o1"' t 100 cmd "$(qj 'until gh run view 501 --json status --jq .status | grep -q completed; do sleep 30; done')" bg true rt 100.03 text "$(qj "$BGTEXT")")
@@ -302,7 +316,7 @@ out=$(footer claude)
 eq partial_kv "$(marker "$out" | grep -o 'ci_wait_secs=[^ ]* ci_waits=[^ ]* ci_wait_untimed=[^ ]*')" \
     "ci_wait_secs=30.000 ci_waits=2 ci_wait_untimed=1"
 has partial_open "$out" "  - 等 Actions 运行 601：$(at 50) 起，结束未记到"
-has partial_note "$out" "  - 另有 1 条没记到结束，合计是下限"
+has partial_note "$out" "  - 另有 1 条没记到结束，没算进合计"
 case_setup none_done claude 300 <<EOF
 $(j k '"bash"' id '"q1"' t 50 cmd "$(qj 'gh run watch 601 --repo o/r')" bg true rt 50.02 text "$(qj "$BGTEXT")")
 $(j k '"ai"' a 200 b 210)
@@ -311,7 +325,7 @@ out=$(footer claude)
 eq unknown_summary "$(summary "$out" | sed 's/｜.*//')" "⏱️ 耗时：5m 0s（AI 约 10s · 远端 CI 未知 · 其他 4m 50s）"
 eq unknown_no_secs "$(field "$out" ci_wait_secs)" ""
 eq unknown_counts "$(marker "$out" | grep -o 'ci_waits=[^ ]* ci_wait_untimed=[^ ]*')" "ci_waits=1 ci_wait_untimed=1"
-has unknown_head "$out" "- 远端 CI：等待 1 条，都没记到结束，时长未知（按会话记录识别）："
+has unknown_head "$out" "- 远端 CI：等待 1 条，都没记到结束，时长未知（按命令推断）："
 
 echo "【5】上一轮派工的等待不算"
 case_setup prev claude 300 <<EOF

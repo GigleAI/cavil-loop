@@ -66,7 +66,13 @@ VALUE_FLAGS = {"-i", "--interval", "--attempt", "-R", "--repo", "--json", "--jq"
 #   不展开的  `bash -c '…'` / `sh -c` / `eval` / `xargs` / `ssh` / `sudo` 等把命令当字符串交给别人的写法、
 #            自己的脚本文件：里面的命令认不出来（文档写明的限制）
 #   条件     `&&` / `||` / if / case 分支里的命令按执行算：等待常写成 `cd x && gh run watch 1`、
-#            `gh run watch 1 || true`，看不出分支有没有走；没走的分支几乎不花时间，影响很小（文档写明）
+#            `gh run watch 1 || true`，看不出分支有没有走
+#
+# 已知会多算（PR #302 代码复审第 3 轮实测；维护者选定保留推断、在 footer 上注明「可能偏多」，
+# 不再为这几种补规则）：
+#   · 一条命令里只要认出等待，整条工具调用的起止都算进远端 CI——等待之外的其他耗时操作一起算进去
+#   · 等待写在没走的分支里（`if false; then gh run watch 1; fi; sleep 60`、`false && gh run watch 1; sleep 60`）
+#   · 函数体里出现引号中的 `}`（`f() { echo '}'; gh run watch 1; }`）会让函数体被当成已执行
 #
 # 判等待和取编号都只看这一份拆分结果（analyze），不各自扫原文。
 
