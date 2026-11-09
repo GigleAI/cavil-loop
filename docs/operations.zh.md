@@ -114,7 +114,7 @@ SELFHEAL_MAX_RETRIES=3
 CHECKOUT_STALE_ALERT_COMMITS=0
 
 # 本配置缺某个「不写就关、模板里开着」的新功能那一行时，开一条挂 pending/human 的提示 issue，
-# 写明要加哪一行；false = 只写轮询日志（GitHub#289，见下文「升级不会替你补的新配置」）
+# 写明要加哪一行；false = 只写轮询日志（GitHub#289，见下文「升级不会自动补上的新配置」）
 CONFIG_NOTICE_ISSUE=true
 
 # 1 = PR 分支被本项目自己的主 checkout 占着、且它干净、没有进行中的操作、与 PR 最新提交
@@ -1158,7 +1158,7 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 只有受管 Linux 会自动取得纯脚本更新。
 
-### 升级不会替你补的新配置
+### 升级不会自动补上的新配置
 
 升级换的是代码，不动项目自己的 `cavil-loop.config`。新功能若是**配置里不写就关**、而 `cavil-loop.config.example` 里是开的（新装项目因此默认就有），老项目上它就一直关着，没有任何提示（GitHub#289：等前置标签 `pending/blocked` 在老项目上一直没开，维护者以为早已生效）。这类配置项在 [`scripts/config-notices.txt`](../scripts/config-notices.txt) 里登记为 `notice`；模板里其余每一项都登记为 `quiet` 并写明原因（不写时行为相同、必填项、示例值、权限参数）。
 
