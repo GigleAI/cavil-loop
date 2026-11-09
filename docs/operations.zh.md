@@ -1096,6 +1096,49 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 - **flock**：macOS 不自带，先 `brew install flock` 再跑 `setup.sh`。
 - **登出 / 合盖**：user LaunchAgent 登录后常驻（即使锁屏也跑）；想"无登录、开机即跑"要装到 `/Library/LaunchDaemons/` —— `setup.sh` 故意不进这里（要 `sudo`，且和 Linux `--user` systemd 对称）。
 
+## 用脚本安装、查状态、断开（GitHub#313）
+
+下面四个入口给程序（桌面客户端，或人自己写的脚本）一个稳定的接口，调用方不用自己重写安装逻辑。都在 skill 目录里，对改名前的旧安装同样有效（新旧名字统一由 `scripts/_names.sh` 挑）。
+
+| 脚本 | 做什么 | 会写东西吗 |
+|---|---|---|
+| `setup.sh --yes <host> [key]` | 和 `setup.sh` 一样，但最后不问 y/N，直接启用并启动后台任务。不带 `--yes` 时与从前逐字节一致 | 会（同 `setup.sh`） |
+| `scripts/install-status.sh [--agent <名字>]` | 输出一个 JSON 对象，本机状态一次读全 | 不会 |
+| `scripts/disconnect-project.sh <key>` | 停掉一个项目的后台任务、撤掉登记；保留项目配置和状态 | 会 |
+| `scripts/launchd-refresh.sh <key>` | 只用于 macOS：模板变了之后换新一个项目的 launchd plist，先备份、失败就恢复 | 会 |
+
+<!-- install-scripts-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+git init -q "$HOME/github/myproject"
+bash "$SKILL/setup.sh" --yes "$HOME/github/myproject"
+bash "$SKILL/scripts/install-status.sh" | jq -r '.projects[] | "\(.key) \(.repo) \(.scheduler.state) deps=\(.deps.state)"'
+bash "$SKILL/scripts/install-status.sh" --agent codex | jq -c '.agent_check | {agent, state, missing}'
+bash "$SKILL/scripts/disconnect-project.sh" myproject
+```
+<!-- install-scripts-ops:end -->
+
+上面几行依次是：不经 y/N 提问接上一个项目；列出每个已接项目的后台任务状态和依赖结论；接一个用 `codex` 的新项目前先查缺什么；再把它断开。`myproject` 是实例名（默认是目录名，即状态输出里的 `.projects[].key`）。
+
+**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`agent_check`（带 `--agent` 才有）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
+
+- `agents[]` 列出 worker agent、复审 agent（只在配了 `LABEL_PENDING_REVIEW` 时）和按标签选模型时用的 agent（`role: fable`，`required: false`——只有有人给条目打了那个标签才会起，所以没装 claude 的 codex 项目不会被报成缺依赖）。每项有 `bin`、`state`（`ok` / `missing` / `no_driver`）和 `missing`，用的是 `setup.sh` 同一个函数，两边结论不会不一致。`deps` 汇总必需的那几项：`ok` / `missing` / `unknown`（配置读不出或找不到 driver）。
+- `scheduler.state` 是 `running` / `stopped` / `unknown`。只认已知状态词：读失败、空输出、不认识的词一律 `unknown`，绝不报 `stopped`；`raw` 是读到的原文。
+- `last_poll` 取最近一次真读了 GitHub 的轮询（`poll-pace.json`），没有就取 `poll.log` 的修改时间；都没有为 `null`。
+
+**断开**照[卸载某个 project](#卸载某个-project) 的步骤做：先读后台任务状态，读不到就什么都不动（退出 2）；停完读回确认（Linux 上还确认不再开机自启），确认不了就保留登记（退出 3）。退出 0 = 已断开，1 = 没有这个实例。最后一行固定是 `RESULT=<disconnected|not_found|unknown|failed>`。worker 的 tmux 会话不动。
+
+**换新 launchd plist（macOS）。** plist 是生成的、不是软链，重跑 `setup.sh` 看到已存在就跳过。daemon 更新、模板变了之后，每个项目跑一次：
+
+<!-- install-scripts-mac-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/launchd-refresh.sh" myproject
+```
+<!-- install-scripts-mac-ops:end -->
+
+它用 `setup.sh` 同一个函数生成新 plist，`plutil -lint` 校验，和现有文件逐字比对——一样就 `RESULT=unchanged`。不一样：读任务状态（读不到就停，什么都不动）；已加载的先拿该项目的轮询锁（等当前这一轮结束，最多 `CAVIL_REFRESH_LOCK_WAIT` 秒，默认 300），bootout 并确认已卸载；把旧文件备份到 `$STATE_DIR/launchd-backup/`；原子换上新文件；原来已加载的就重新加载，并读回确认加载的是这个文件。加载失败就用备份恢复原文件和原状态。最后一行 `RESULT=` 是 `replaced` / `unchanged`（退出 0）、`unknown` / `lint_failed` / `lock_timeout`（退出 2，什么都没动）、`not_found` / `not_macos`（退出 1）、`failed`（退出 3，原文件和原状态已恢复）、`needs_human`（退出 4：恢复也失败——输出里有两次的报错原文、备份位置和手动恢复的两条命令，备份保留）。Linux 上单元文件是指向模板的软链，部署器自己重新加载，不适用这个脚本。
+
 ## 多 project 共存
 
 skill 装一次，调度器模板装一次。每个 project 跑：
@@ -1714,6 +1757,8 @@ tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-sessi
 ```
 
 ### 卸载某个 project
+
+`bash ~/.agents/skills/cavil-loop/scripts/disconnect-project.sh <key>` 按系统做完下面的必做步骤（改名前的旧安装同样适用），后台任务状态读不到时什么都不删——见[用脚本安装、查状态、断开](#用脚本安装查状态断开github313)。手动做：
 
 **Linux**：
 

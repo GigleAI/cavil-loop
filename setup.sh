@@ -16,6 +16,9 @@
 # 例：
 #   bash setup.sh ~/github/myproject
 #   bash setup.sh ~/github/myproject acme       # 自定义 instance key
+#   bash setup.sh --yes ~/github/myproject      # 无人值守（GitHub#313）：不问 y/N，直接启用并启动后台任务
+#
+# --yes 可以放在任何位置；不带它时行为与从前逐字节一致（最后一步照旧问 y/N）。
 #
 # 新旧名字：新装的项目一律用 cavil-loop 命名（~/.config/cavil-loop/、cavil-loop-poll@
 # 等）。对改名前装好的项目（~/.config/coding-agent-work-loop/<key>.conf 已存在）重跑
@@ -23,8 +26,17 @@
 # 继续沿用旧名字——绝不给同一个项目再装一套新的后台任务，两套轮询会抢同一批 issue。
 set -euo pipefail
 
-HOST="${1:-}"
-KEY="${2:-}"
+# --yes：无人值守。只影响最后「现在启用并启动？」那一问，其余步骤与不带时完全相同。
+SETUP_YES=0
+SETUP_ARGS=()
+for setup_arg in "$@"; do
+    case "$setup_arg" in
+        --yes) SETUP_YES=1 ;;
+        *) SETUP_ARGS+=("$setup_arg") ;;
+    esac
+done
+HOST="${SETUP_ARGS[0]:-}"
+KEY="${SETUP_ARGS[1]:-}"
 
 if [ -z "$HOST" ]; then
     cat <<EOF
@@ -59,6 +71,8 @@ fi
 # ── 新装还是改名前的旧安装 ──
 # shellcheck source=scripts/_names.sh
 source "$SKILL_DIR/scripts/_names.sh"
+# shellcheck source=scripts/_install.sh
+source "$SKILL_DIR/scripts/_install.sh"
 set_layout() {
     LAYOUT="$1"
     if [ "$LAYOUT" = legacy ]; then
@@ -67,16 +81,16 @@ set_layout() {
         SLICE_UNIT="$CAVIL_LEGACY_SLICE"
         SKILL_LINK="$CAVIL_LEGACY_SKILL_HOME"
         STATE_ROOT="$CAVIL_LEGACY_STATE_HOME"
-        LAUNCHD_LABEL="dev.luosky.coding-agent-work-loop.$KEY"
-        LAUNCHD_LOG_DIR="$HOME/Library/Logs/coding-agent-work-loop"
+        LAUNCHD_LABEL="$(cavil_launchd_label legacy "$KEY")"
+        LAUNCHD_LOG_DIR="$(cavil_launchd_log_dir legacy)"
     else
         conf_dir="$CAVIL_CONFIG_HOME"
         UNIT_PREFIX="$CAVIL_UNIT_PREFIX"
         SLICE_UNIT="$CAVIL_SLICE"
         SKILL_LINK="$CAVIL_SKILL_HOME"
         STATE_ROOT="$CAVIL_STATE_HOME"
-        LAUNCHD_LABEL="dev.luosky.cavil-loop.$KEY"
-        LAUNCHD_LOG_DIR="$HOME/Library/Logs/cavil-loop"
+        LAUNCHD_LABEL="$(cavil_launchd_label new "$KEY")"
+        LAUNCHD_LOG_DIR="$(cavil_launchd_log_dir new)"
     fi
 }
 if [ ! -e "$CAVIL_CONFIG_HOME/$KEY.conf" ] && [ -e "$CAVIL_LEGACY_CONFIG_HOME/$KEY.conf" ]; then
@@ -124,13 +138,7 @@ case "$OS" in
 esac
 
 # ── 检测最佳 bash（macOS 自带 bash 3.2 不支持 associative array，优先 homebrew bash）──
-if [ "$OS" = "Darwin" ] && [ -x /opt/homebrew/bin/bash ]; then
-    BASH_BIN="/opt/homebrew/bin/bash"
-elif command -v bash >/dev/null 2>&1; then
-    BASH_BIN="$(command -v bash)"
-else
-    BASH_BIN="/bin/bash"
-fi
+BASH_BIN="$(cavil_bash_bin "$OS")"
 
 echo "── cavil-loop setup ──"
 echo "  host project: $HOST"
@@ -149,30 +157,22 @@ echo
 #  二次 setup 时该字段已写进 config，下面那段会 skip 重写。）
 WORKER_AGENT_PICK="${WORKER_AGENT:-claude}"
 
-# 加载 driver 以拿到 worker 二进制名
+# 加载 driver 以拿到 worker 二进制名，并拼出依赖清单。
+# 加载、取程序名、拼清单是 scripts/_install.sh 的 cavil_agent_deps——状态检查（install-status.sh）
+# 调的是同一个函数，两边对「缺什么」的结论一致。
 # shellcheck source=scripts/drivers/_common.sh
 source "$SKILL_DIR/scripts/drivers/_common.sh"
-PROJECT_ROOT="$HOST" source_driver "$WORKER_AGENT_PICK" || {
+cavil_agent_deps "$SKILL_DIR" "$HOST" "$WORKER_AGENT_PICK" "$OS" || {
     echo "❌ 找不到 driver '$WORKER_AGENT_PICK'。内置：claude / opencode / codex / cursor。"
     exit 1
 }
-WORKER_BIN="$(agent_bin)"
+WORKER_BIN="$CAVIL_AGENT_BIN"
 echo "  worker agent: $WORKER_AGENT_PICK  (binary: $WORKER_BIN)"
 
 # ── 依赖检查 ──
-# 通用依赖；调度器二进制按 OS 走下面的分支。macOS 上 flock 默认不自带，需要 `brew install flock`
-common_cmds=(git gh tmux jq flock "$WORKER_BIN")
+# 通用依赖 + worker 程序 + 调度器（按 OS）。macOS 上 flock 默认不自带，需要 `brew install flock`
 missing=()
-for cmd in "${common_cmds[@]}"; do
-    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
-done
-case "$SCHEDULER" in
-    systemd)
-        command -v systemctl >/dev/null 2>&1 || missing+=("systemctl")
-        command -v timeout >/dev/null 2>&1 || missing+=("timeout")
-        ;;
-    launchd) command -v launchctl >/dev/null 2>&1 || missing+=("launchctl") ;;
-esac
+[ ${#CAVIL_DEPS_MISSING[@]} -gt 0 ] && missing=("${CAVIL_DEPS_MISSING[@]}")
 
 if [ ${#missing[@]} -gt 0 ]; then
     echo "❌ 缺少依赖：${missing[*]}"
@@ -353,11 +353,7 @@ echo "── 4. 安装 $SCHEDULER unit ──"
 
 # 从 project config 里取一个标量配置（没有 / 取不到就用默认值）。
 # 用 grep 而不是 source：setup.sh 不该把别人的整份配置拉进自己的进程。
-config_get() {
-    local key="$1" def="$2" v
-    v=$(grep -E "^[[:space:]]*$key=" "$config" 2>/dev/null | tail -1 | sed -e 's/^[^=]*=//' -e 's/[^0-9]//g')
-    case "$v" in ''|*[!0-9]*) printf '%s' "$def" ;; *) printf '%s' "$v" ;; esac
-}
+config_get() { cavil_config_int "$config" "$@"; }
 POLL_SECS=$(config_get POLL_INTERVAL_SECS 60)
 
 install_systemd() {
@@ -451,16 +447,9 @@ install_launchd() {
     else
         # 写到 tempfile 再 mv，避免半成品 plist 留在 LaunchAgents/
         local tmp; tmp=$(mktemp)
-        sed \
-            -e "s|{{LABEL}}|$label|g" \
-            -e "s|{{KEY}}|$KEY|g" \
-            -e "s|{{HOME}}|$HOME|g" \
-            -e "s|{{SKILL_DIR}}|$SKILL_DIR|g" \
-            -e "s|{{ENV_FILE}}|$env_file|g" \
-            -e "s|{{LOG_DIR}}|$log_dir|g" \
-            -e "s|{{BASH_BIN}}|$BASH_BIN|g" \
-            -e "s|{{POLL_INTERVAL}}|$POLL_SECS|g" \
-            "$template" > "$tmp"
+        # 生成规则在 scripts/_install.sh：换新脚本（launchd-refresh.sh）用同一个函数生成来比对
+        cavil_render_plist "$template" "$label" "$KEY" "$SKILL_DIR" "$env_file" "$log_dir" \
+            "$BASH_BIN" "$POLL_SECS" > "$tmp"
         mv "$tmp" "$plist"
         # plutil 校验
         if command -v plutil >/dev/null 2>&1; then
@@ -537,7 +526,11 @@ echo "── 7. 启动 daemon ──"
 
 enable_systemd() {
     local timer="${UNIT_PREFIX}-poll@$KEY.timer"
-    read -rp "现在 enable & start ${timer}？[y/N] " yn
+    if [ "$SETUP_YES" = 1 ]; then
+        echo "现在 enable & start ${timer}：--yes，直接启用"; yn=y
+    else
+        read -rp "现在 enable & start ${timer}？[y/N] " yn
+    fi
     case "$yn" in
         y|Y|yes)
             systemctl --user daemon-reload
@@ -563,7 +556,11 @@ enable_launchd() {
     local label="$LAUNCHD_LABEL"
     local plist="$HOME/Library/LaunchAgents/$label.plist"
     local log_dir="$LAUNCHD_LOG_DIR"
-    read -rp "现在 bootstrap & start ${label}？[y/N] " yn
+    if [ "$SETUP_YES" = 1 ]; then
+        echo "现在 bootstrap & start ${label}：--yes，直接启动"; yn=y
+    else
+        read -rp "现在 bootstrap & start ${label}？[y/N] " yn
+    fi
     case "$yn" in
         y|Y|yes)
             # 已加载的话先 bootout 再 bootstrap，达到幂等 reload

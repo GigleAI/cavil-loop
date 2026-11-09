@@ -1316,6 +1316,49 @@ so and leaves it alone.
 - **flock**: not bundled with macOS. `brew install flock` once before running `setup.sh`.
 - **Logout / lid-close**: a user LaunchAgent runs when you're logged in (even with screen locked). For "run even when no user is logged in," you'd need a `/Library/LaunchDaemons/` install — `setup.sh` deliberately doesn't go there (requires `sudo`, breaks symmetry with Linux's `--user` systemd).
 
+## Scripted install, status and disconnect (GitHub#313)
+
+Four entry points give a program (the desktop client, or a script of your own) a stable interface, so it never re-implements the install logic. All of them live in the skill directory and work for installations from before the rename too (old names are picked through `scripts/_names.sh`).
+
+| Script | What it does | Writes anything? |
+|---|---|---|
+| `setup.sh --yes <host> [key]` | Same as `setup.sh`, but does not ask the final y/N: enables and starts the poller right away. Without `--yes` the run is byte-for-byte what it always was | yes (as `setup.sh`) |
+| `scripts/install-status.sh [--agent <name>]` | Prints one JSON object with the whole local state | no |
+| `scripts/disconnect-project.sh <key>` | Stops one project's poller and removes its registration; keeps the project config and state | yes |
+| `scripts/launchd-refresh.sh <key>` | macOS only: replaces one project's launchd plist after the template changed, with backup and rollback | yes |
+
+<!-- install-scripts-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+git init -q "$HOME/github/myproject"
+bash "$SKILL/setup.sh" --yes "$HOME/github/myproject"
+bash "$SKILL/scripts/install-status.sh" | jq -r '.projects[] | "\(.key) \(.repo) \(.scheduler.state) deps=\(.deps.state)"'
+bash "$SKILL/scripts/install-status.sh" --agent codex | jq -c '.agent_check | {agent, state, missing}'
+bash "$SKILL/scripts/disconnect-project.sh" myproject
+```
+<!-- install-scripts-ops:end -->
+
+The lines above, in order: connect a project without the y/N question; list every connected project with its scheduler state and dependency verdict; check what is missing before connecting a new project with `codex`; disconnect it again. `myproject` is the instance key (by default the directory name; `.projects[].key` in the status output).
+
+**Status output** (`version: 1`). Top level: `os`, `scheduler` (`systemd` / `launchd`), `daemon` (`entry` — the stable skill link, `target` — where it resolves, `form` — `managed` release / `checkout` git directory / `directory` / `missing` / `dangling`, `version` — release sha or the checkout's `HEAD`), `gh` (`installed`, `logged_in`), `base_deps.missing` (tools every project needs), `agent_check` (only with `--agent`), and `projects[]`. Each project: `key`, `layout` (`new` / `legacy` = installed before the rename), `env_file`, `host`, `config`, `config_state` (`ok` / `unreadable`), `repo`, `state_dir`, `agents[]`, `deps`, `scheduler`, `last_poll`.
+
+- `agents[]` lists the worker agent, the review agent (only while `LABEL_PENDING_REVIEW` is set) and the agent the model-selecting label uses (`role: fable`, `required: false` — it starts only when someone puts that label on an item, so a codex project without claude is not reported as missing a dependency). Each has `bin`, `state` (`ok` / `missing` / `no_driver`) and `missing`, computed by the same function `setup.sh` uses — the two cannot disagree. `deps` sums up the required ones: `ok` / `missing` / `unknown` (config unreadable or no driver).
+- `scheduler.state` is `running` / `stopped` / `unknown`. Only known state words count: a failed read, empty output or an unfamiliar word is `unknown`, never `stopped`. `raw` carries what was read.
+- `last_poll` is the last poll that actually read GitHub (`poll-pace.json`), else the modification time of `poll.log`; `null` when neither exists.
+
+**Disconnect** follows [Uninstall one project](#uninstall-one-project): it reads the scheduler state first and touches nothing when that read fails (exit 2); after stopping it reads the state back (on Linux also "not enabled at boot") and keeps the registration when it cannot confirm (exit 3). Exit 0 = disconnected, 1 = no such instance. The last line is always `RESULT=<disconnected|not_found|unknown|failed>`. Worker tmux sessions are left alone.
+
+**Refreshing a launchd plist (macOS).** The plist is generated, not a symlink, and re-running `setup.sh` skips an existing one. After a daemon update that changed the template, run it once per project:
+
+<!-- install-scripts-mac-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/launchd-refresh.sh" myproject
+```
+<!-- install-scripts-mac-ops:end -->
+
+It renders the new plist with the same function `setup.sh` uses, checks it with `plutil -lint`, and compares it with the current file — identical means `RESULT=unchanged`. Otherwise it reads the job state (unreadable → stop, nothing touched); if the job is loaded it takes the project's poll lock (waits for the current poll to end, at most `CAVIL_REFRESH_LOCK_WAIT` seconds, default 300), boots it out and confirms it is gone; copies the old file to `$STATE_DIR/launchd-backup/`; swaps the new one in atomically; and loads it again if it was loaded before, reading back that it is loaded from that file. If loading fails it restores the backup and the previous state. The last line is `RESULT=` one of `replaced` / `unchanged` (exit 0), `unknown` / `lint_failed` / `lock_timeout` (exit 2, nothing touched), `not_found` / `not_macos` (exit 1), `failed` (exit 3, old file and state restored), `needs_human` (exit 4: the restore failed too — the output shows both error texts, the backup path, and the two commands to restore by hand; the backup is kept). On Linux the unit files are symlinks to the templates and the deployer reloads them, so this script does not apply there.
+
 ## Running multiple projects
 
 Skill installed once, scheduler template installed once. For each project:
@@ -2141,6 +2184,8 @@ tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-sessi
 ```
 
 ### Uninstall one project
+
+`bash ~/.agents/skills/cavil-loop/scripts/disconnect-project.sh <key>` does the required steps below for either OS (and for installations from before the rename), refusing to delete anything when the scheduler state cannot be read — see [Scripted install, status and disconnect](#scripted-install-status-and-disconnect-github313). By hand:
 
 **Linux**:
 
