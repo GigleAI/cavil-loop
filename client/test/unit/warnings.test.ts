@@ -48,13 +48,20 @@ describe('fault ids of the yellow bars', () => {
     expect(warningIds(sync(), parseFilter('priority:Low'))['filter-unsupported']).not.toBe(a['filter-unsupported']);
   });
 
-  it('offline: the reason changing is not a new fault (GitHub#270)', () => {
+  it('offline: the reason changing is not a new fault; a new offline after recovery shows again (GitHub#270)', () => {
+    const off = (reason: string) => warningIds(sync({ offline: true, offlineReason: reason }), none);
     const r = replay([
-      { state: warningIds(sync({ offline: true, offlineReason: '无法连接 GitHub：timeout' }), none) },
+      { state: off('无法连接 GitHub：timeout') },
       { close: 'offline' },
-      { state: warningIds(sync({ offline: true, offlineReason: 'GitHub 暂时不可用（HTTP 503）' }), none) },
+      { state: off('GitHub 暂时不可用（HTTP 503）') },
+      { state: warningIds(sync(), none) },
+      { state: off('GitHub 回应不完整：Unexpected token') },
     ]);
-    expect(r[2].shown).not.toContain('offline');
+    expect(r[0].shown).toContain('offline'); // shown with a reason
+    expect(r[1].shown).not.toContain('offline'); // closed
+    expect(r[2].shown).not.toContain('offline'); // another reason: still closed
+    expect(r[3].shown).not.toContain('offline'); // recovered
+    expect(r[4].shown).toContain('offline'); // offline again: shown again
   });
 
   it('offline: one fixed id', () => {
