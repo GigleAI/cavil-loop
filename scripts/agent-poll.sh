@@ -7,6 +7,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 这一轮是不是调度器经 poll-entry.sh 起的（GitHub#289）。收进不导出的变量后立刻 unset：
+# 派出去的 worker（tmux server）会继承环境，留着它，worker 里手动跑一次轮询也会被当成调度器。
+POLL_SCHEDULED="${CAVIL_SCHEDULED_POLL:-}"
+unset CAVIL_SCHEDULED_POLL
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
@@ -967,6 +971,10 @@ fi
 # ── 3e. 把本仓库的 issue / PR 补进配置的 Project（GitHub#116）──
 # 放在派工和清理全部做完之后；AUTO_ADD_PROJECTS 留空时一次 GitHub 调用都不发。
 project_auto_add_tick
+
+# ── 3g. 配置缺新功能的设置 → 提示维护者（GitHub#289）──
+# 纯本地比对；缺项集合不变时一次 GitHub 调用都不发。只在调度器起的轮询里运行。
+config_notice_tick || true
 
 # ── 4. 缺价自动抓价（GitHub#51）──
 # 只动本机缓存、不碰 GitHub，所以不标 PACE_ACTED；没有缺价标记时就是一次 ls。

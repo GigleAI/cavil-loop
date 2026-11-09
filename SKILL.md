@@ -43,6 +43,7 @@ User wants the state. Steps:
 3. For each registered `~/.config/cavil-loop/*.conf`:
    - `tail -20 $STATE_DIR/poll.log` (read `STATE_DIR` from the conf)
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
+   - `jq . $STATE_DIR/config-notice.json` (if present) — new optional settings this project's config lacks, so the feature is off here while new installs have it on (GitHub#289; see [docs/operations.md](docs/operations.md#new-settings-an-upgrade-does-not-add-to-your-config)). List each missing key with the line that turns it on
 4. Summarize for the user
 
 Projects installed before the rename still run under the old names: `coding-agent-poll@*` timers and `~/.config/coding-agent-work-loop/*.conf`. Check both sets so an old project is not reported as missing; an idle old project is migrated automatically, and `~/.local/state/cavil-loop/migrate.log` says what moved or why it is waiting (see [docs/operations.md](docs/operations.md#installations-from-before-the-rename)).

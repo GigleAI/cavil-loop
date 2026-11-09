@@ -43,6 +43,7 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 3. 对每个已注册的 `~/.config/cavil-loop/*.conf`：
    - `tail -20 $STATE_DIR/poll.log`（从 conf 读 STATE_DIR）
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
+   - `jq . $STATE_DIR/config-notice.json`（有这个文件时）——本项目配置里缺的新功能设置：这些功能在本项目上是关着的，新装项目却是开的（GitHub#289，见 [docs/operations.zh.md](docs/operations.zh.md#升级不会替你补的新配置)）。逐项列出缺的配置项和要开时写的那一行
 4. 汇总报告给用户
 
 改名前装的项目仍用旧名字运行：`coding-agent-poll@*` 定时任务、`~/.config/coding-agent-work-loop/*.conf`。两套都查，别把旧项目报成「没装」；空闲的旧项目会被自动迁走，搬了什么、为什么还在等，看 `~/.local/state/cavil-loop/migrate.log`（见 [docs/operations.zh.md](docs/operations.zh.md#改名前的安装)）。
