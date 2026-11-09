@@ -18,7 +18,7 @@ import { bodyIssueRefs, issuePrLinks } from '../../src/data/prNest';
 import { relatedIssues } from '../../src/data/actions';
 import { contentToItem, fetchProject, fetchRepo, type GqlContent } from '../../src/data/fetchSources';
 import { freshViews } from '../../src/data/itemRefresh';
-import { OTHER_REPO_CASE, REF_CASES } from '../fixtures/pr-ref-bodies';
+import { REF_CASES, refKeys } from '../fixtures/pr-ref-bodies';
 import { GitHubClient } from '../../src/data/github';
 import { mergeSnapshots } from '../../src/data/merge';
 import { parseSource } from '../../src/shared/sources';
@@ -57,14 +57,12 @@ function views(items: Item[], groupBy: 'iteration' | 'status' = 'iteration', tab
 }
 
 describe('which issues a PR description names: one list of inputs, every path (GitHub#275, PR #278 review rounds 1–2)', () => {
-  const keys = (refs: number[]) => refs.map((n) => `o/r#${n}`);
 
   it.each(REF_CASES.map((c) => [c.why, c] as const))('the parser: %s', (_why, c) => {
-    expect(bodyIssueRefs(c.body, 'o/r', 99)).toEqual(keys(c.refs));
+    expect(bodyIssueRefs(c.body, 'o/r', 99)).toEqual(refKeys(c));
   });
 
-  it('another repository is named by its full name; a repository name in any case is the same one', () => {
-    expect(bodyIssueRefs(OTHER_REPO_CASE.body, 'o/r', 99)).toEqual(OTHER_REPO_CASE.keys);
+  it('a repository name in any case is the same one; no description names nothing', () => {
     expect(bodyIssueRefs('Refs #273', 'GigleAI/Cavil-Loop', 1)).toEqual(['gigleai/cavil-loop#273']);
     expect(bodyIssueRefs(null, 'o/r', 1)).toEqual([]);
   });
@@ -85,7 +83,7 @@ describe('which issues a PR description names: one list of inputs, every path (G
       // 3. single re-read after a change: what the cache gets for each source
       const reread = prs.map(({ n, c }) => freshViews([projSnap, repoSnap], { content: gql(n, c.body), projectItems: [] }));
       for (const { n, c } of prs) {
-        const want = keys(c.refs);
+        const want = refKeys(c);
         const at = (list: Item[]) => list.find((x) => x.number === n)!.refIssues;
         expect([at(projSnap.items), at(repoSnap.items), at(merged)], c.why).toEqual([want, want, want]);
         for (const v of reread[n - 100]) if (v.item) expect(v.item.refIssues, `${c.why} (re-read into ${v.snap.sourceKey})`).toEqual(want);
@@ -103,13 +101,14 @@ describe('which issues a PR description names: one list of inputs, every path (G
     for (const c of REF_CASES) {
       const p = pr(99, { refIssues: bodyIssueRefs(c.body, 'o/r', 99) });
       const items = [...issues, p];
-      const host = c.refs.find((n) => n <= 8) ?? null;
+      const local = c.refs.filter((n): n is number => typeof n === 'number' && n <= 8);
+      const host = local[0] ?? null;
       const board = buildBoard(items, [P], 'iteration', false, TODAY, UPDATED, true);
       const card = board.columns.flatMap((x) => x.cards).find((x) => x.item.number === 99)!;
       const t = buildTable(items, [P], { ...DEFAULT_TABLE, groupBy: 'iteration', sort: UPDATED, hierarchy: false }, TODAY, true);
       const row = t.groups.flatMap((g) => g.rows).find((r) => r.item.number === 99)!;
       expect([num(card.under), num(row.under)], c.why).toEqual([host, host]);
-      expect(issues.filter((i) => issuePrLinks(i, items)!.some((l) => l.number === 99)).map((i) => i.number), c.why).toEqual(c.refs.filter((n) => n <= 8));
+      expect(issues.filter((i) => issuePrLinks(i, items)!.some((l) => l.number === 99)).map((i) => i.number), c.why).toEqual(local);
     }
   });
 });

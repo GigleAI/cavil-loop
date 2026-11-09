@@ -19,7 +19,9 @@
 
 import type { Item, LinkedPr, TableSettings } from '../shared/types';
 import { itemKey } from '../shared/sources';
-import { fromMarkdown } from 'mdast-util-from-markdown';
+import { micromark } from 'micromark';
+import { gfm, gfmHtml } from 'micromark-extension-gfm';
+import { parseFragment, type DefaultTreeAdapterMap } from 'parse5';
 
 export interface Nested<T> {
   entry: T;
@@ -30,88 +32,32 @@ export interface Nested<T> {
 /** Closes / Fixes / Resolves / Refs (and their -s / -d / -es / -ed forms), then `#N` or `owner/repo#N`. */
 const REF_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:([A-Za-z0-9][\w.-]*\/[\w.-]+))?#(\d+)\b/gi;
 
-type MdNode = { type: string; value?: string; position?: { start: { offset?: number }; end: { offset?: number } }; children?: MdNode[] };
-
-/**
- * Raw HTML elements whose content reads as code: their text never names an issue. (`<script>`,
- * `<style>`, `<textarea>` are not here: GitHub's Markdown filters those tags and shows them as text.)
- */
+/** Raw HTML elements whose content reads as code: their text never names an issue (Markdown code renders to these too). */
 const CODE_ELEMENTS = new Set(['code', 'pre', 'kbd', 'samp']);
 
-/**
- * The parts of `body` a reader does not see as prose (GitHub#275, PR #278 review rounds 1–2), as
- * [start, end) offsets — one rule, decided once:
- *  - Markdown code: fenced and indented blocks, inline spans (found by the Markdown parser, so a
- *    fence is closed only by a fence of its own kind and length);
- *  - inside raw HTML (every `html` node, in document order): comments (`<!-->` and `<!--->` are
- *    empty ones; a comment never closed hides the rest of the body, as a browser reads it),
- *    the tags themselves (attribute values too), and everything from an opening code-like element
- *    (CODE_ELEMENTS) to its matching close — across nodes, so the prose between `<code>` and
- *    `</code>` in two raw HTML pieces is hidden too; never closed = to the end of the body.
- * Text of other elements (`<div>`, a folded `<details>`) is prose: shown, so it counts.
- */
-export function hiddenSpans(body: string): [number, number][] {
-  const spans: [number, number][] = [];
-  const html: { at: number; value: string }[] = [];
-  const walk = (n: MdNode) => {
-    const a = n.position?.start.offset;
-    const b = n.position?.end.offset;
-    if ((n.type === 'code' || n.type === 'inlineCode') && a !== undefined && b !== undefined) spans.push([a, b]);
-    else if (n.type === 'html' && a !== undefined) html.push({ at: a, value: body.slice(a, b ?? body.length) });
-    else n.children?.forEach(walk);
-  };
-  walk(fromMarkdown(body) as MdNode);
-  html.sort((x, y) => x.at - y.at);
-  let open: { name: string; at: number; depth: number } | null = null;
-  for (const { at, value } of html) {
-    let i = 0;
-    while (i < value.length) {
-      const lt = value.indexOf('<', i);
-      if (lt < 0) break;
-      const rest = value.slice(lt);
-      let end: number;
-      if (rest.startsWith('<!--')) {
-        const short = /^<!--->?|^<!-->/.exec(rest);
-        const close = short ? -1 : value.indexOf('-->', lt + 4);
-        if (short) end = lt + short[0].length;
-        else if (close < 0) {
-          // never closed: everything after is inside the comment
-          spans.push([at + lt, body.length]);
-          return spans.sort((x, y) => x[0] - y[0]);
-        } else end = close + 3;
-        if (!open) spans.push([at + lt, at + end]);
-        i = end;
-        continue;
-      }
-      const tag = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)(?:[^>"']|"[^"]*"|'[^']*')*>/.exec(rest) ?? /^<[!?][^>]*>/.exec(rest);
-      if (!tag) {
-        i = lt + 1;
-        continue;
-      }
-      end = lt + tag[0].length;
-      const name = (tag[2] ?? '').toLowerCase();
-      const closing = tag[1] === '/';
-      const selfClosed = /\/>$/.test(tag[0]);
-      if (open) {
-        if (name === open.name && !closing && !selfClosed) open.depth++;
-        else if (name === open.name && closing && --open.depth === 0) {
-          spans.push([open.at, at + end]);
-          open = null;
-        }
-      } else if (CODE_ELEMENTS.has(name) && !closing && !selfClosed) {
-        open = { name, at: at + lt, depth: 1 };
-      } else spans.push([at + lt, at + end]);
-      i = end;
-    }
-  }
-  if (open) spans.push([open.at, body.length]);
-  return spans.sort((x, y) => x[0] - y[0]);
-}
+type HtmlNode = { nodeName: string; tagName?: string; value?: string; childNodes?: HtmlNode[] };
+let fragmentContext: DefaultTreeAdapterMap['element'] | null = null;
 
-/** `body` with every hidden part (hiddenSpans) blanked, line breaks kept: the prose keywords are read in. */
+/**
+ * The prose of a PR description (GitHub#275, PR #278 review rounds 1–3): what a reader sees, minus
+ * code. Not guessed piece by piece: the Markdown is rendered the way GitHub renders it (CommonMark +
+ * GFM, raw HTML kept, GFM's tag filter on — micromark), the HTML is parsed by the HTML standard's
+ * own algorithm (parse5, what browsers implement: `<code/>` still opens a code element, entities
+ * decode, an unclosed comment runs to the end), and the text is read the way a browser's
+ * `textContent` reads it — comments and a template's content are not text, adjacent pieces join
+ * without a space — leaving out every code / pre / kbd / samp element. The browser cross-check
+ * (test/e2e/pr-ref-prose.spec.ts) reads the same list of descriptions with a real browser.
+ */
 export function proseText(body: string): string {
-  let out = body;
-  for (const [a, b] of hiddenSpans(body)) out = out.slice(0, a) + out.slice(a, b).replace(/[^\n]/g, ' ') + out.slice(b);
+  const html = micromark(body, { allowDangerousHtml: true, extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+  fragmentContext ??= parseFragment('<div></div>').childNodes[0] as DefaultTreeAdapterMap['element'];
+  let out = '';
+  const walk = (n: HtmlNode) => {
+    if (n.nodeName === '#text') out += n.value ?? '';
+    else if (n.tagName && (CODE_ELEMENTS.has(n.tagName) || n.tagName === 'template')) return;
+    else n.childNodes?.forEach(walk);
+  };
+  walk(parseFragment(fragmentContext, html, {}) as unknown as HtmlNode);
   return out;
 }
 
@@ -128,8 +74,7 @@ export function namedIn(text: string, repo: string, self: number | null | undefi
 
 /**
  * The issues a PR's description names (GitHub#275), as item keys, in the order
- * written, each once — read in its prose only (hiddenSpans says what is not
- * prose; the Markdown parser is the one the task lists use). `#N` alone means
+ * written, each once — read in its prose only (proseText). `#N` alone means
  * this repository; the PR itself is never one of them.
  */
 export function bodyIssueRefs(body: string | null | undefined, repo: string, self: number | null | undefined): string[] {

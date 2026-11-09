@@ -8,7 +8,7 @@ import { test, expect, chromium, webkit, type Browser } from '@playwright/test';
 import { micromark } from 'micromark';
 import { gfm, gfmHtml } from 'micromark-extension-gfm';
 import { bodyIssueRefs, namedIn } from '../../src/data/prNest';
-import { REF_CASES } from '../fixtures/pr-ref-bodies';
+import { REF_CASES, refKeys } from '../fixtures/pr-ref-bodies';
 
 let browser: Browser;
 test.beforeAll(async () => {
@@ -30,7 +30,7 @@ test('GitHub#275: the issues a description names in its prose are the ones a bro
       for (const el of out.querySelectorAll('code, pre, kbd, samp')) el.remove();
       return out.textContent ?? '';
     }, html);
-    const want = c.refs.map((n) => `o/r#${n}`);
+    const want = refKeys(c);
     expect(namedIn(prose, 'o/r', 99), `browser: ${c.why}\n${html}`).toEqual(want);
     expect(bodyIssueRefs(c.body, 'o/r', 99), `parser: ${c.why}`).toEqual(want);
     seen.push(c.why);

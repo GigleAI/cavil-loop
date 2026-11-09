@@ -2,15 +2,19 @@
 // one list for every check of that rule — the parser's unit tests, the three ways an item is
 // built (Project page, repository list, single re-read), and the browser cross-check that
 // renders each description and reads only what a reader sees (test/e2e/pr-ref-prose.spec.ts).
-// `refs`: issue numbers of the repository `o/r`, in order; the PR itself is #99.
+// `refs`: what the description names, in order — a number is an issue of the repository `o/r`,
+// a string is a full key in another repository. The PR itself is o/r#99.
 
 const T = '`';
 
 export interface RefCase {
   why: string;
   body: string;
-  refs: number[];
+  refs: (number | string)[];
 }
+
+/** a case's answer as item keys */
+export const refKeys = (c: RefCase): string[] => c.refs.map((r) => (typeof r === 'number' ? `o/r#${r}` : r));
 
 export const REF_CASES: RefCase[] = [
   { why: 'plain prose', body: 'Refs #6', refs: [6] },
@@ -38,7 +42,15 @@ export const REF_CASES: RefCase[] = [
   { why: 'raw inline code', body: 'a <code>Refs #5</code> b <kbd>fixes #7</kbd> Refs #6', refs: [6] },
   { why: 'raw code opened and closed across paragraphs', body: '<div><code>\n\nRefs #5\n\n</code></div>\n\nRefs #6', refs: [6] },
   { why: 'list items and quotes are prose', body: '- Refs #5\n> closes #6', refs: [5, 6] },
+  { why: 'another repository, by its full name', body: 'Refs Other/Repo#12, closes x.y/z-w#3', refs: ['other/repo#12', 'x.y/z-w#3'] },
+  // PR #278 review round 3: HTML as the standard parses it, text as a browser joins it
+  { why: 'a self-closing slash does not close a code element (and an open code goes on into the next paragraph)', body: '<code/>Refs #5\n\nRefs #6', refs: [] },
+  { why: 'a code element closed in the same paragraph ends there', body: '<code/>Refs #5</code>\n\nRefs #6', refs: [6] },
+  { why: 'a self-closing slash does not close a pre element', body: '<pre/>Refs #5', refs: [] },
+  { why: 'a character entity shows as #', body: 'Refs &#35;5 and fixes &#x23;6', refs: [5, 6] },
+  { why: 'a tag between keyword and number without a space joins them', body: 'Refs<span>#5</span> refs <b>#6</b>', refs: [6] },
+  { why: 'a no-break space counts as a space', body: 'Refs&nbsp;#5', refs: [5] },
+  { why: 'a template\'s content is not shown', body: '<template>Refs #5</template>\n\nRefs #6', refs: [6] },
+  { why: 'markdown emphasis around the keyword', body: '**Refs** #5 and _closes_ #6', refs: [5, 6] },
+  { why: 'a link text', body: '[Refs #5](https://example.invalid/x) and [see](https://example.invalid/refs%20#6)', refs: [5] },
 ];
-
-/** the keys another-repository case names (kept apart: `refs` are numbers of o/r) */
-export const OTHER_REPO_CASE = { body: 'Refs Other/Repo#12, closes x.y/z-w#3', keys: ['other/repo#12', 'x.y/z-w#3'] };
