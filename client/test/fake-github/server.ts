@@ -92,6 +92,8 @@ export interface FakeState {
   refreshSeq: number;
   /** canned answers for the token endpoint, used once each, in order: `refresh` = refresh requests, `poll` = device-flow polls */
   tokenAnswers: { kind: 'refresh' | 'poll'; status: number; body?: unknown; raw?: string }[];
+  /** GitHub#270: canned answers for the identity query (CavilViewer), used once each, in order; `raw` = sent as is */
+  viewerAnswers: { status: number; body?: unknown; raw?: string }[];
   /** the writable side (labels, milestones, comments, PRs, …), see writes.ts */
   w: WritableState;
   /** GitHub#261: answer matching change-check requests (board field / item lists, repo HEAD) this way; null = honestly */
@@ -210,6 +212,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     refreshTokens: new Map(),
     refreshSeq: 0,
     tokenAnswers: [],
+    viewerAnswers: [],
     w: defaultWritable(),
     checkFault: null,
     ...init,
@@ -354,7 +357,16 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         if (answered.httpStatus) return send(answered.httpStatus, { message: 'Server Error' });
         return send(200, answered);
       }
-      if (op === 'CavilViewer') return send(200, { data: { viewer: { login: login() } } });
+      if (op === 'CavilViewer') {
+        const canned = state.viewerAnswers.shift();
+        if (canned?.raw !== undefined) {
+          entry.status = canned.status;
+          res.writeHead(canned.status, { 'Content-Type': 'application/json' });
+          return res.end(canned.raw);
+        }
+        if (canned) return send(canned.status, canned.body ?? {});
+        return send(200, { data: { viewer: { login: login() } } });
+      }
       if (op === 'CavilProjectCounts') {
         // GitHub#261: p<i>: organization|user(login: $o<i>) { projectV2(number: $n<i>) { items { totalCount } } }
         const v = body.variables ?? {};

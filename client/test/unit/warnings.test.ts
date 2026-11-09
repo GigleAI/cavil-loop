@@ -7,7 +7,7 @@ const T0 = Date.parse('2026-11-06T00:00:00Z');
 const ok = (sourceKey: string): SourceStatus => ({ sourceKey, ok: true, error: null, dataFrom: T0 });
 const bad = (sourceKey: string, error = 'GitHub 返回 HTTP 502', dataFrom: number | null = T0): SourceStatus => ({ sourceKey, ok: false, error, dataFrom });
 function sync(p: Partial<SyncState> = {}): SyncState {
-  return { syncing: false, offline: false, lastOnlineAt: T0, dataFrom: T0, sources: [], problem: null, ...p };
+  return { syncing: false, offline: false, offlineReason: null, lastOnlineAt: T0, dataFrom: T0, sources: [], problem: null, ...p };
 }
 const none = parseFilter('');
 
@@ -46,6 +46,22 @@ describe('fault ids of the yellow bars', () => {
     expect(a['filter-unsupported']).toBeDefined();
     expect(a['filter-unsupported']).toBe(b['filter-unsupported']);
     expect(warningIds(sync(), parseFilter('priority:Low'))['filter-unsupported']).not.toBe(a['filter-unsupported']);
+  });
+
+  it('offline: the reason changing is not a new fault; a new offline after recovery shows again (GitHub#270)', () => {
+    const off = (reason: string) => warningIds(sync({ offline: true, offlineReason: reason }), none);
+    const r = replay([
+      { state: off('无法连接 GitHub：timeout') },
+      { close: 'offline' },
+      { state: off('GitHub 暂时不可用（HTTP 503）') },
+      { state: warningIds(sync(), none) },
+      { state: off('GitHub 回应不完整：Unexpected token') },
+    ]);
+    expect(r[0].shown).toContain('offline'); // shown with a reason
+    expect(r[1].shown).not.toContain('offline'); // closed
+    expect(r[2].shown).not.toContain('offline'); // another reason: still closed
+    expect(r[3].shown).not.toContain('offline'); // recovered
+    expect(r[4].shown).toContain('offline'); // offline again: shown again
   });
 
   it('offline: one fixed id', () => {

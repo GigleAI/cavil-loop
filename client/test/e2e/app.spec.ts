@@ -193,7 +193,10 @@ test('browser login → board; restart skips login; sources; three column modes;
   // offline restart: content from the cache, flagged offline, writes grey
   env.fake.state.offline = true;
   ({ app, page } = await launch(env));
-  await expect(page.getByTestId('offline')).toContainText('离线 · 数据截至', { timeout: 15_000 });
+  // GitHub#270: why, and when it is tried again
+  await expect(page.getByTestId('offline')).toContainText('离线：无法连接 GitHub', { timeout: 15_000 });
+  await expect(page.getByTestId('offline')).toContainText('· 数据截至');
+  await expect(page.getByTestId('offline')).toContainText('每分钟自动重试，点刷新可立刻重试');
   expect(await countOf(page, 'Iteration 25')).toBe('13');
   await expect(page.getByTestId('write-entry')).toBeDisabled();
   await expect(page.getByTestId('write-entry')).toHaveAttribute('data-offline', 'yes');
@@ -3521,10 +3524,16 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
   await group('In progress').getByTestId('group-add').click();
   await expect(dialog).toContainText('加到「In progress」');
   await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
-  await expect(line(PROJECT_KEY)).toHaveAttribute('data-applies', 'yes');
-  await expect(line(PROJECT_KEY)).toContainText('状态 = In progress');
-  // what a status group sets is said right under the board boxes (GitHub#231)
+  // GitHub#270: everything lands as the title says — no "will carry" box at all
+  await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
+  // a value that would not land is said, right under the board boxes (GitHub#231): here, no board ticked
+  const board = page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`);
+  await board.uncheck();
+  await expect(line('group')).toContainText('当前没有勾选看板，不会设置状态');
+  await expect(line(PROJECT_KEY)).toHaveCount(0);
   await expect(page.getByTestId('new-issue-projects').getByTestId('new-issue-preset')).toHaveAttribute('data-place', 'boards');
+  await board.check();
+  await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
   await page.getByTestId('new-issue-title').fill('在 In progress 组里建的');
   await shot(page, '214-group-new-issue');
   const n1 = nextNumber();
@@ -3561,12 +3570,13 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
     await page.getByTestId('new-issue-repo').selectOption('GigleAI/second');
     await expect(line('milestone')).toHaveAttribute('data-applies', 'no');
     await page.getByTestId('new-issue-repo').selectOption('GigleAI/cavil-loop');
-    await expect(line('milestone')).toHaveAttribute('data-applies', 'yes');
+    // GitHub#270: it lands — nothing to say
+    await expect(line('milestone')).toHaveCount(0);
     // now the first read of A answers
     release();
     await page.waitForTimeout(500);
-    await expect(line('milestone')).toHaveAttribute('data-applies', 'yes');
-    await expect(page.getByTestId('new-issue-preset')).toHaveAttribute('data-blocked', 'no');
+    await expect(line('milestone')).toHaveCount(0);
+    await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
     await expect(page.getByTestId('confirm-ok')).toBeEnabled();
     const n = nextNumber();
     await page.getByTestId('confirm-ok').click();
@@ -4444,9 +4454,9 @@ test('GitHub#258: a status group\'s "+" with the board left unticked — the boa
   const box = page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`);
   await expect(box).toBeChecked();
   await box.uncheck();
-  // left unticked: said what happens if GitHub takes it in by itself
-  await expect(line(PROJECT_KEY)).toHaveAttribute('data-applies', 'yes');
-  await expect(line(PROJECT_KEY)).toContainText('如果 GitHub 按它的自动加入规则收进这条、状态还空着，会补设 状态 = In progress');
+  // left unticked: watched (below), but never announced in the dialog (GitHub#270); only that no ticked board takes the status
+  await expect(line(PROJECT_KEY)).toHaveCount(0);
+  await expect(line('group')).toContainText('当前没有勾选看板，不会设置状态');
   await page.getByTestId('new-issue-title').fill('没勾看板，GitHub 自己收进去');
   await shot(page, '258-01-unticked-board');
   await page.getByTestId('confirm-ok').click();

@@ -200,8 +200,9 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .nest-mark { color: var(--muted); font-weight: 400; }
 .labels { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .label { display: inline-flex; align-items: center; gap: 2px; height: 20px; padding: 0 8px; border-radius: 999px; border: 1px solid transparent; font-size: 12px; font-weight: 500; white-space: nowrap; }
-.label-x { border: none; background: transparent !important; color: inherit; padding: 0 0 0 2px; min-height: 0; font-size: 12px; line-height: 1; opacity: 0.7; }
-.label-x:hover:not(:disabled) { opacity: 1; }
+/* full strength: the chip's text colour is chosen to be readable at 4.5:1, any fading breaks that (0.7 gave 4.33:1 on a dark chip, GitHub#270) */
+.label-x { border: none; background: transparent !important; color: inherit; padding: 0 0 0 2px; min-height: 0; font-size: 12px; line-height: 1; }
+.label-x:hover:not(:disabled) { text-decoration: underline; }
 .card .label-x, .card .label-plus { visibility: hidden; }
 .card:hover .label-x, .card:hover .label-plus, .card:focus-within .label-x, .card:focus-within .label-plus { visibility: visible; }
 .label-plus { min-height: 20px; height: 20px; padding: 0 7px; border-radius: 999px; border: 1px dashed var(--border); background: transparent; color: var(--muted); font-size: 12px; }

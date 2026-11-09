@@ -6,7 +6,7 @@
 // not copied from the implementation's output.
 
 import { describe, expect, it } from 'vitest';
-import { defaultRepo, pickMilestone, previewCreate, type MilestoneRead } from '../../src/data/groupPreset';
+import { defaultRepo, pickMilestone, previewCreate, shownLines, type MilestoneRead } from '../../src/data/groupPreset';
 import { buildTable } from '../../src/data/table';
 import { DEFAULT_TABLE } from '../../src/shared/viewSettings';
 import type { GroupPreset } from '../../src/shared/actions';
@@ -131,5 +131,44 @@ describe('the table hands each group its value', () => {
   it('an iteration group\'s value finds that iteration on the Project again', () => {
     const g = buildTable(items, [A], { ...DEFAULT_TABLE, groupBy: 'iteration' }, FIXTURE_TODAY).groups.find((x) => x.title === 'Iteration 25')!;
     expect(previewCreate(g.preset, [A], 'o/r', { state: 'loading' }).plan!.projects).toEqual([{ projectKey: 'pa', iterationId: it25.id, status: null }]);
+  });
+});
+
+// GitHub#270: the dialog shows only what will NOT happen as the group says — expected texts are
+// written from that rule (every case where a value lands says nothing; every value of a ticked
+// board / the repository that cannot land is said; unticked boards are never announced).
+describe('GitHub#270: what the dialog shows of a preview', () => {
+  const shown = (p: ReturnType<typeof previewCreate>) => shownLines(p).map((l) => l.target);
+  const S = { by: 'status', status: 'In progress' } as const;
+  const IT = { by: 'iteration', title: 'Iteration 25', startDate: '2026-11-02' } as const;
+  it('every ticked board takes the value: nothing shown (the title already says it)', () => {
+    expect(shown(previewCreate(S, [A], 'o/r', { state: 'loading' }))).toEqual([]);
+    expect(shown(previewCreate(IT, [A, { ...A, key: 'pa2', title: 'A2' }], 'o/r', { state: 'loading' }))).toEqual([]);
+  });
+  it('a ticked board without the value, or one this account cannot change: that board only', () => {
+    expect(shown(previewCreate(S, [A, B], 'o/r', { state: 'loading' }))).toEqual(['pb']);
+    expect(shown(previewCreate(IT, [A, NO_IT], 'o/r', { state: 'loading' }))).toEqual(['pc']);
+    expect(shown(previewCreate(S, [{ ...A, viewerCanUpdate: false }], 'o/r', { state: 'loading' }))).toEqual(['pa']);
+  });
+  it('no board ticked: said once (the value goes nowhere)', () => {
+    expect(shown(previewCreate(S, [], 'o/r', { state: 'loading' }))).toEqual(['group']);
+  });
+  it('unticked boards are never shown, whatever their line says; the plan still watches them', () => {
+    const p = previewCreate(S, [A], 'o/r', { state: 'loading' }, [B, { ...A, key: 'pw', title: 'W' }, { ...A, key: 'ro', title: 'RO', viewerCanUpdate: false }]);
+    expect(p.lines.filter((l) => l.target !== 'pa').length).toBe(3);
+    expect(shown(p)).toEqual([]);
+    expect(p.plan?.watch?.map((w) => w.projectKey)).toEqual(['pw']);
+  });
+  it('milestone: there → nothing; missing / still reading / unreadable → that line', () => {
+    expect(shown(previewCreate({ by: 'milestone', title: 'v1' }, [], 'o/r', ok([{ number: 1, title: 'v1', state: 'open' }])))).toEqual([]);
+    expect(shown(previewCreate({ by: 'milestone', title: 'v1' }, [], 'o/r', ok([])))).toEqual(['milestone']);
+    const reading = previewCreate({ by: 'milestone', title: 'v1' }, [], 'o/r', { state: 'loading' });
+    expect(shown(reading)).toEqual(['milestone']);
+    expect(reading.blocked).not.toBeNull();
+    expect(shown(previewCreate({ by: 'milestone', title: 'v1' }, [], 'o/r', { state: 'error', error: 'HTTP 502' }))).toEqual(['milestone']);
+  });
+  it('repository and "no value" groups: nothing shown', () => {
+    expect(shown(previewCreate({ by: 'repo', repo: 'o/r' }, [A], 'o/r', { state: 'loading' }))).toEqual([]);
+    expect(shown(previewCreate({ by: 'none' }, [A], 'o/r', { state: 'loading' }))).toEqual([]);
   });
 });

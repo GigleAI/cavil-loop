@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData, CreateJob, Item } from '../shared/types';
 import type { GroupPreset, RepoOptions } from '../shared/actions';
-import { defaultRepo, previewCreate, type MilestoneRead } from '../data/groupPreset';
+import { defaultRepo, previewCreate, shownLines, type MilestoneRead } from '../data/groupPreset';
 import { defaultBoards } from '../data/newIssueBoards';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -106,12 +106,12 @@ export function NewIssueDialog({
   const preview = group ? previewCreate(group.preset, ticked, repo, read, allProjects.filter((p) => !projects.includes(p.key))) : null;
   // GitHub#231: what an iteration / status group sets is about the boards: said right under their boxes
   const boardPreview = group?.preset.by === 'iteration' || group?.preset.by === 'status';
-  const previewBox = preview && (
+  // GitHub#270: only what will not happen as the group says; the rest is in the title (nothing to say = no box)
+  const notes = preview ? shownLines(preview) : [];
+  const previewBox = preview && notes.length > 0 && (
     <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'} data-place={boardPreview ? 'boards' : 'repo'}>
-      <div className="small muted">会带上：</div>
-      {preview.lines.map((l) => (
-        <div key={l.target} className={l.applies ? 'small' : 'small muted'} data-testid="new-issue-preset-line" data-target={l.target} data-applies={l.applies ? 'yes' : 'no'}>
-          {l.applies ? '✓ ' : '– '}
+      {notes.map((l) => (
+        <div key={l.target} className="small muted" data-testid="new-issue-preset-line" data-target={l.target} data-applies="no">
           {l.text}
         </div>
       ))}
