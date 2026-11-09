@@ -10,7 +10,8 @@
 #   · 调度器状态只认已知状态词，读失败 / 空输出一律是 "unknown"（读不到），绝不报 "stopped"；
 #   · 依赖清单和 setup.sh 是同一个函数（scripts/_install.sh 的 cavil_agent_deps），结论一致；
 #   · 新旧两套名字都看（scripts/_names.sh），改名前的旧安装同样列出，同一个实例名两边都有时新的赢。
-# 退出码：0 = 输出了 JSON；1 = 用法错误或缺 jq（JSON 都拼不出来）。
+# 退出码：0 = 输出了 JSON；1 = 用法错误；3 = 缺 jq，只输出了通用工具的预检
+#   （{version:1, precheck:true, os, base_deps:{missing}}，其余状态读不到）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -28,7 +29,6 @@ while [ $# -gt 0 ]; do
         *) echo "不认识的参数：$1" >&2; exit 1 ;;
     esac
 done
-command -v jq >/dev/null 2>&1 || { echo "缺 jq，拼不出 JSON" >&2; exit 1; }
 
 OS="$(uname -s 2>/dev/null || true)"
 case "$OS" in
@@ -36,6 +36,22 @@ case "$OS" in
     Darwin) SCHEDULER=launchd ;;
     *)      SCHEDULER="" ;;
 esac
+
+# 缺 jq：完整状态拼不出来，只做不依赖 jq 的那一部分——通用工具缺哪些（和下面同一个清单函数），
+# 手写一个最小 JSON 给调用方列缺项、给安装命令，退出 3。项目、后台任务状态这时一概读不到，
+# 所以退出码不是 0：调用方不能把它当成完整状态，更不能据此停 / 启。
+if ! command -v jq >/dev/null 2>&1; then
+    pre_missing=""
+    while IFS= read -r c; do
+        command -v "$c" >/dev/null 2>&1 && continue
+        case "$c" in *[!A-Za-z0-9_.+-]*) continue ;; esac   # 清单里都是固定的程序名；保险起见不拼怪字符
+        pre_missing="$pre_missing${pre_missing:+,}\"$c\""
+    done < <(cavil_required_cmds "$OS")
+    printf '{"version":1,"precheck":true,"os":"%s","base_deps":{"missing":[%s]}}\n' \
+        "$(printf '%s' "$OS" | tr -cd 'A-Za-z0-9_.-')" "$pre_missing"
+    echo "缺 jq，拼不出完整状态：只检查了通用工具，项目和后台任务状态读不到" >&2
+    exit 3
+fi
 
 # JSON 数组：jq -n '$ARGS.positional' --args ...（空数组也成立）
 json_list() { jq -cn '$ARGS.positional' --args "$@"; }

@@ -12,7 +12,7 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { copyText } from './pasteImage';
-import { ago, checklist, refreshOk, refreshWord, schedWord, type DaemonProject, type DaemonResult, type DaemonStatus, type DaemonUpdate, type LocalStatus } from '../shared/daemon';
+import { ago, checklist, toolRows, refreshOk, refreshWord, schedWord, type DaemonProject, type DaemonResult, type DaemonStatus, type DaemonUpdate, type LocalStatus, type CheckRow } from '../shared/daemon';
 
 type Ask = { kind: 'stop' | 'start' | 'disconnect'; p: DaemonProject };
 
@@ -158,6 +158,13 @@ function Summary({ status, checking, busy, onCheck, onInstall }: { status: Daemo
             读不到本机 daemon 的状态：<span data-testid="daemon-reason">{status.reason}</span>
           </span>
         </div>
+        {status.precheck && (
+          // only the common tools could be checked (the status script lacks jq): list what is missing
+          <>
+            <p className="small">缺下面的工具时完整状态读不出来；装好后点「重新检查」。</p>
+            <CheckList rows={toolRows(status.precheck.base_deps.missing, status.precheck.os)} />
+          </>
+        )}
         <div className="row">{again}</div>
       </div>
     );
@@ -175,7 +182,10 @@ function Summary({ status, checking, busy, onCheck, onInstall }: { status: Daemo
 }
 
 function Checks({ st }: { st: LocalStatus }) {
-  const rows = checklist(st);
+  return <CheckList rows={checklist(st)} />;
+}
+
+function CheckList({ rows }: { rows: CheckRow[] }) {
   return (
     <ul className="daemon-checks" data-testid="daemon-checks">
       {rows.map((r) => (

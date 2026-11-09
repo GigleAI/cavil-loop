@@ -145,6 +145,26 @@ impl Out {
         }
         tail(&t, OUTPUT_LIMIT)
     }
+    /// The outcome of a GitHub#313 script that ends with `RESULT=<word>`. No such line (killed,
+    /// timed out, failed half-way) is "unconfirmed": what it changed is not known, so it is never
+    /// mapped onto one of the script's own words — "failed" there means "restored", which nobody checked.
+    fn outcome(&self) -> (String, String) {
+        match self.result_word() {
+            Some(w) => (w, self.text()),
+            None => (
+                "unconfirmed".into(),
+                format!(
+                    "脚本没有给出最终结果（{}），中途可能已经改动了文件或后台任务，没有确认恢复。脚本输出：\n{}",
+                    match self.code {
+                        Some(c) => format!("退出码 {c}"),
+                        None => "没有正常结束".into(),
+                    },
+                    self.text()
+                ),
+            ),
+        }
+    }
+
     /// the `RESULT=<word>` last line the GitHub#313 scripts print
     fn result_word(&self) -> Option<String> {
         let line = self.stdout.lines().rev().find(|l| !l.trim().is_empty())?;
@@ -330,7 +350,15 @@ impl Daemon {
         let out = self.script(&path, "install-status.sh", &[], T_STATUS).await;
         match parse_status(&out) {
             Ok(st) => json!({ "state": "ok", "entry": e, "status": st }),
-            Err(reason) => json!({ "state": "unreadable", "reason": reason, "entry": e }),
+            Err(reason) => match parse_precheck(&out) {
+                // the status script could only check the common tools (jq missing): show those, still unreadable
+                Some(pre) => {
+                    let said = out.stderr.trim();
+                    let reason = if said.is_empty() { reason } else { tail(said, 2000) };
+                    json!({ "state": "unreadable", "reason": reason, "entry": e, "precheck": pre })
+                }
+                None => json!({ "state": "unreadable", "reason": reason, "entry": e }),
+            },
         }
     }
 
@@ -475,7 +503,8 @@ impl Daemon {
             Err(m) => return refused(&m),
         };
         let out = self.script(&path, "disconnect-project.sh", &[key], T_SHORT).await;
-        json!({ "result": out.result_word().unwrap_or_else(|| "failed".into()), "code": out.code, "output": out.text() })
+        let (result, output) = out.outcome();
+        json!({ "result": result, "code": out.code, "output": output })
     }
 
     /// `what`: "log" (the project's poll.log) | "config" (its config file), both from the status script
@@ -578,7 +607,8 @@ impl Daemon {
                     }
                     let Some(key) = p["key"].as_str().filter(|k| valid_key(k)) else { continue };
                     let out = self.script(&path, "launchd-refresh.sh", &[key], T_REFRESH).await;
-                    refresh.push(json!({ "key": key, "result": out.result_word().unwrap_or_else(|| "failed".into()), "code": out.code, "output": out.text() }));
+                    let (result, output) = out.outcome();
+                    refresh.push(json!({ "key": key, "result": result, "code": out.code, "output": output }));
                 }
             }
             Err(m) => refresh.push(json!({ "key": Value::Null, "result": "unknown", "code": Value::Null, "output": m })),
@@ -608,6 +638,19 @@ fn parse_status(out: &Out) -> Result<Value, String> {
         Ok(v) => Err(format!("状态脚本输出的格式认不出（version = {}），客户端可能需要更新", v["version"])),
         Err(e) => Err(format!("状态脚本输出的不是 JSON（{e}）：{}", tail(out.stdout.trim(), 2000))),
     }
+}
+
+/// install-status.sh without jq (exit 3): `{version: 1, precheck: true, os, base_deps: {missing}}` only.
+fn parse_precheck(out: &Out) -> Option<Value> {
+    if out.code != Some(3) {
+        return None;
+    }
+    let v: Value = serde_json::from_str(out.stdout.trim()).ok()?;
+    let missing = v["base_deps"]["missing"].as_array()?;
+    if v["version"] != 1 || v["precheck"] != true || !v["os"].is_string() || !missing.iter().all(|m| m.is_string()) {
+        return None;
+    }
+    Some(json!({ "os": v["os"], "base_deps": { "missing": missing } }))
 }
 
 fn find_project<'a>(st: &'a Value, key: &str) -> Option<&'a Value> {
@@ -683,6 +726,12 @@ mod tests {
         assert_eq!(o("RESULT=replaced\nmore\n").result_word(), None);
         assert_eq!(o("RESULT=Bad Word").result_word(), None);
         assert_eq!(o("").result_word(), None);
+        // no final line: never one of the script's own words
+        let half = Out { code: Some(1), stdout: "6. 加载失败\n".into(), stderr: "mktemp: No space left on device".into() };
+        let (w, text) = half.outcome();
+        assert_eq!(w, "unconfirmed");
+        assert!(text.contains("退出码 1") && text.contains("No space left"));
+        assert_eq!(o("RESULT=failed\n").outcome().0, "failed");
     }
 
     #[test]

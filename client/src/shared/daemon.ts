@@ -41,9 +41,15 @@ export interface LocalStatus {
   projects: DaemonProject[];
 }
 
+export interface Precheck {
+  os: string;
+  base_deps: { missing: string[] };
+}
+
 export type DaemonStatus =
   | { state: 'missing'; entry: string }
-  | { state: 'unreadable'; reason: string; entry: string | null }
+  /** `precheck`: the status script could check only the common tools (no jq) — those are still listed */
+  | { state: 'unreadable'; reason: string; entry: string | null; precheck?: Precheck }
   | { state: 'ok'; entry: string; status: LocalStatus };
 
 /** `refused`: the back end did not run anything (the reason is `output`) */
@@ -94,13 +100,15 @@ export interface CheckRow {
   command: string | null;
 }
 
+/** One row per common tool the status script found missing (or one "齐全" row). */
+export function toolRows(missing: string[], os: string): CheckRow[] {
+  if (missing.length === 0) return [{ id: 'tools', ok: true, text: '通用工具齐全', command: null }];
+  return missing.map((m) => ({ id: `tool:${m}`, ok: false, text: `缺 ${m}`, command: installCommand(m, os) }));
+}
+
 /** The checklist: what the status script found missing, gh's sign-in, the poller's bash. */
 export function checklist(st: LocalStatus): CheckRow[] {
-  const rows: CheckRow[] = [];
-  for (const m of st.base_deps.missing) {
-    rows.push({ id: `tool:${m}`, ok: false, text: `缺 ${m}`, command: installCommand(m, st.os) ?? null });
-  }
-  if (st.base_deps.missing.length === 0) rows.push({ id: 'tools', ok: true, text: '通用工具齐全', command: null });
+  const rows: CheckRow[] = toolRows(st.base_deps.missing, st.os);
   if (st.gh.installed) {
     if (st.gh.logged_in) rows.push({ id: 'gh', ok: true, text: 'gh 已登录（daemon 用它读写 GitHub）', command: null });
     else rows.push({ id: 'gh', ok: false, text: 'gh 没有登录：daemon 要用 gh 自己的登录读写 GitHub（客户端的登录不交给它）', command: 'gh auth login' });
@@ -137,6 +145,8 @@ export function refreshWord(r: string): string {
       not_macos: '不是 macOS，不需要',
       failed: '没换成，已恢复原样',
       needs_human: '没换成，恢复也失败：需要人处理',
+      // no final result from the script (killed, timed out, stopped half-way): nothing is confirmed
+      unconfirmed: '脚本中途退出，没有最终结果：配置文件和后台任务可能已经改动、没有确认恢复，需要人处理',
     } as Record<string, string>
   )[r] ?? `没换成（${r}）`;
 }

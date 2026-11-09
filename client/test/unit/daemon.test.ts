@@ -8,7 +8,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { appendLine, connect, daemonEnv, daemonWorld, headOf, installByHand, pathFor, pushDaemonChange, type DaemonWorld, type Os } from '../support/daemon-world';
+import { appendLine, connect, daemonEnv, daemonWorld, headOf, installByHand, pathFor, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 import { tempDir } from './helpers';
 
 const open: HarnessBackend[] = [];
@@ -61,11 +61,23 @@ describe('status', () => {
     expect(s.status.gh).toEqual({ installed: true, logged_in: false });
   });
 
-  it('the status script failing is "unreadable" with its words, never "not installed" or "fine"', async () => {
+  it('jq missing: still "unreadable" (no projects, no states), but the common tools are checked and listed', async () => {
     installByHand(w);
-    const s = await backend('Darwin', pathFor(w, { missing: ['jq'] })).call('daemonStatus');
+    const s = await backend('Darwin', pathFor(w, { missing: ['jq', 'tmux'] })).call('daemonStatus');
     expect(s.state).toBe('unreadable');
     expect(s.reason).toContain('缺 jq');
+    expect(s.precheck).toEqual({ os: 'Darwin', base_deps: { missing: ['tmux', 'jq'] } });
+    expect(s.status).toBeUndefined();
+  });
+
+  it('the status script failing otherwise is "unreadable" with its words and no checklist, never "not installed" or "fine"', async () => {
+    installByHand(w);
+    writeFileSync(join(w.skill, 'scripts', 'install-status.sh'), '#!/usr/bin/env bash\necho "boom" >&2\nexit 5\n');
+    const s = await backend('Darwin', pathFor(w)).call('daemonStatus');
+    expect(s.state).toBe('unreadable');
+    expect(s.reason).toContain('退出码 5');
+    expect(s.reason).toContain('boom');
+    expect(s.precheck).toBeUndefined();
   });
 
   it('a daemon from before the status script: unreadable, with what to do', async () => {
@@ -239,6 +251,25 @@ describe('update (a git checkout on macOS)', () => {
     // widgetb is back as it was, and loaded
     expect(readFileSync(plist('widgetb'), 'utf8')).toBe(oldB);
     expect(sched(await b.call('daemonStatus'), 'widgetb')).toBe('running');
+  });
+
+  it('a refresh that stops half-way (no final result) is "unconfirmed" with its words, never "restored"', async () => {
+    installByHand(w);
+    const path = pathFor(w);
+    connect(w, 'widgeta', 'Darwin', path);
+    pushDaemonChange(w, (d) => appendLine(join(d, 'launchd', 'dev.luosky.cavil-loop.plist.template'), '<dict>', '    <!-- v2 {{KEY}} -->'));
+    // launchd refuses the new file, then the restore cannot even make its temporary file
+    wrapTool(path, 'mktemp', 'case "$*" in *.restore.*) echo "mktemp: recovery file: No space left on device" >&2; exit 1;; esac\nexec "$REAL" "$@"');
+    const b = backend('Darwin', path, { FAKE_LD_REJECT: 'v2 widgeta' });
+    const r = await b.call('daemonUpdate');
+    expect(r.result).toBe('updated');
+    expect(r.refresh).toHaveLength(1);
+    expect(r.refresh[0].result).toBe('unconfirmed');
+    expect(r.refresh[0].output).toContain('没有给出最终结果');
+    expect(r.refresh[0].output).toContain('No space left on device');
+    expect(r.refresh[0].output).toContain('Bootstrap failed');
+    // and indeed: the job is not back, the new file is still there — which "failed" (= restored) would have hidden
+    expect(sched(await b.call('daemonStatus'), 'widgeta')).toBe('stopped');
   });
 
   it('local changes or a diverged branch stop it with git\'s words; nothing moves', async () => {

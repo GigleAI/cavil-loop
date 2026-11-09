@@ -59,9 +59,13 @@ describe('daemon checklist', () => {
   });
 
   it('every RESULT word of the refresh script has its own words; an unknown one says what it was', () => {
-    for (const w of ['replaced', 'unchanged', 'unknown', 'lint_failed', 'lock_timeout', 'not_found', 'not_macos', 'failed', 'needs_human']) {
+    for (const w of ['replaced', 'unchanged', 'unknown', 'lint_failed', 'lock_timeout', 'not_found', 'not_macos', 'failed', 'needs_human', 'unconfirmed']) {
       expect(refreshWord(w)).not.toContain(w);
     }
     expect(refreshWord('weird')).toContain('weird');
+    // "failed" is the script's own "not done, restored"; a run with no final result never reads like that
+    expect(refreshWord('failed')).toContain('已恢复原样');
+    expect(refreshWord('unconfirmed')).not.toContain('已恢复');
+    expect(refreshWord('unconfirmed')).toContain('需要人处理');
   });
 });

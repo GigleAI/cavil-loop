@@ -240,6 +240,14 @@ chmod +x "$FK/agents-oldbash/bash"
 chk "macOS：只有 3.x 的 bash → ok=false，给出路径" "$(status Darwin claude,oldbash | jq -c '.bash')" "{\"path\":\"$FK/agents-oldbash/bash\",\"major\":3,\"ok\":false}"
 rm -f "$FAKE_LD"/dev.luosky.cavil-loop.widget.*
 chk "macOS：未加载 → 已停" "$(status Darwin claude | jq -r '.projects[0].scheduler.state')" stopped
+# 缺 jq：只输出通用工具的预检（不靠 jq 拼），退出 3
+NOJQ="$SANDBOX/nojq"; rm -rf "$NOJQ"; mkdir -p "$NOJQ"
+for d in "$FK/bin" "$FK/agents-claude" /usr/bin /bin; do
+    for f in "$d"/*; do n="${f##*/}"; [ "$n" = jq ] || [ "$n" = tmux ] || [ -e "$NOJQ/$n" ] || ln -s "$f" "$NOJQ/$n"; done
+done
+rc=0; out="$(env -i HOME="$H" PATH="$NOJQ" FAKE_UNAME=Darwin FAKE_LD="$FAKE_LD" bash "$SKILL/scripts/install-status.sh" 2>/dev/null)" || rc=$?
+chk "缺 jq：退出 3" "$rc" 3
+chk "缺 jq：预检 JSON 列出缺的通用工具（jq、tmux），不给项目" "$(jq -c . <<< "$out")" '{"version":1,"precheck":true,"os":"Darwin","base_deps":{"missing":["tmux","jq"]}}'
 fresh_world
 chk "什么都没装：daemon 形态 missing、项目列表为空" "$(status Linux claude | jq -c '[.daemon.form, .projects]')" '["missing",[]]'
 

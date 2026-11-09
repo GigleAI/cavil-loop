@@ -9,7 +9,7 @@
 // tool away ("缺 tmux") even when the machine has it.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -128,4 +128,24 @@ export function appendLine(file: string, after: string, line: string): void {
   const t = readFileSync(file, 'utf8');
   if (!t.includes(after)) throw new Error(`${file}: no "${after}"`);
   writeFileSync(file, t.replace(after, `${after}\n${line}`));
+}
+
+/** Put a wrapper in front of one tool of a `pathFor` folder; `$REAL` in the script is the real tool. */
+export function wrapTool(pathDir: string, name: string, script: string): void {
+  const link = join(pathDir, name);
+  const real = realpathSync(link);
+  rmSync(link);
+  writeFileSync(link, `#!/bin/bash\nREAL=${JSON.stringify(real)}\n${script}\n`);
+  chmodSync(link, 0o755);
+}
+
+/** Give a `pathFor` folder a tool back (as the person installing it would). */
+export function addTool(pathDir: string, name: string, from: string): void {
+  symlinkSync(from, join(pathDir, name));
+}
+
+/** The machine's real copy of a tool. */
+export function systemTool(name: string): string {
+  for (const d of ['/usr/bin', '/bin', '/usr/local/bin']) if (existsSync(join(d, name))) return join(d, name);
+  throw new Error(`no ${name} on this machine`);
 }
