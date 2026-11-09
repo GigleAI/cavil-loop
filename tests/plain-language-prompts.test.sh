@@ -9,8 +9,8 @@
 # 为什么要有这个文件：同一段规矩抄在 4 个地方（新 issue / issue 回复 / PR 回复三份 worker
 # 模板 + 本项目给 review 的增量），review 模板另有一条打回依据。只改其中一处不会报错，
 # 只会让别的环节照样发出读不懂的拍板评论——#62 的自审表就是这样只接到了返工入口。
-# 所以这里按成品对拍：骨架、禁用规则、拍板格式在每份成品里都在，且逐字一致；
-# 再对每个改动点各造一个负对照，确认少了哪一处这里都会红。
+# 所以这里按成品对拍：骨架、禁用规则、拍板格式在每份成品里都在，且逐字一致。
+# （原来每个改动点各一份的负对照已按 GitHub#234 删去。）
 #
 # 交人评论「自包含，链接只当出处」（GitHub#74）同理：同一句话在三份 worker 模板、本项目的
 # review 增量、通用 review 模板交人那一步里各一份，逐字一致；通用 review 模板那份单独对拍
@@ -26,8 +26,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -198,161 +196,6 @@ make_sandbox
 out=$(check_prompts)
 if [ -z "$out" ]; then ok "全部满足"; else bad "仓库现状不满足："; sed 's/^/       /' <<<"$out"; fi
 
-# 负对照：每个改动点单独拿掉 / 改一个字，check_prompts 必须报出对应那条
-expect_red() {   # <说明> <期望出现的报错片段>
-    out=$(check_prompts)
-    if grep -qF -- "$2" <<<"$out"; then ok "负对照：$1 → 被拦下"
-    else bad "负对照：$1 → 没被拦下（输出：${out:-空}）"; fi
-}
-
-mutation_on && echo "── 负对照 ──"
-# 每项负对照的开关判断在建沙盘、改模板之前：关着时只计数，一个沙盘都不建、一处模板都不改
-# （GitHub#103 复审第 1 轮：判断放在 expect_red 里时，准备步骤默认模式照跑）
-neg_sandbox() { mutation_gate || return 1; make_sandbox; }
-SANDBOXES_BEFORE_NEG=$SANDBOXES
-if neg_sandbox; then
-sed -i '/^### 评论里有要人拍板的问题时/,/^反面（读不懂的那版/d' "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment 没有骨架" "pr-comment: 没有拍板评论骨架"
-fi
-
-if neg_sandbox; then
-sed -i 's/最多三四行/最多五六行/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 骨架改了一个词" "issue-comment: 骨架和 new-issue 不一致"
-fi
-
-if neg_sandbox; then
-sed -i '/^### 评论里有要人拍板的问题时/,/^反面（读不懂的那版/d' "$TMP/project/.agents/skills/cavil-loop/prompts/review.extra.md"
-expect_red "review 增量没有骨架" "review: 没有拍板评论骨架"
-fi
-
-if neg_sandbox; then
-python3 - "$SKILL_DIR/prompts/new-issue.template.md" <<'PY'
-import sys
-p = sys.argv[1]; lines = open(p).read().split("\n")
-# 只删拍板规则第 3 条下面那行禁用规则，骨架里那处保留
-i = next(k for k, l in enumerate(lines) if l.startswith("  3. **讲人话**"))
-assert "不许出现代码里的名字" in lines[i + 1]
-del lines[i + 1]
-open(p, "w").write("\n".join(lines))
-PY
-expect_red "new-issue 拍板规则里少了禁用规则" "new-issue: 拍板问题规则里没有禁用规则"
-fi
-
-if neg_sandbox; then
-sed -i 's/  不勾会怎样：按 A 走——<一句话>//; s/。选项列完后补一行「不勾会怎样」：按默认项走会发生什么//' "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment 拍板格式少了「不勾会怎样」" "pr-comment: 拍板格式缺「不勾会怎样」"
-fi
-
-if neg_sandbox; then
-sed -i '/^2Q\. /d' "$SKILL_DIR/prompts/review.template.md"
-expect_red "review 模板没有打回依据" "review: 打回依据里没有禁用规则"
-fi
-
-if neg_sandbox; then
-sed -i 's/测试编号、复盘经验编号/测试编号/' "$SKILL_DIR/prompts/review.template.md"
-expect_red "review 打回依据里的禁用规则跟 worker 不是同一份文字" "review: 禁用规则有不同写法"
-fi
-
-# 自包含规则（GitHub#74）：每个写入点单独拿掉 / 改一个字
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i '/^8\. \*\*自包含，链接只当出处\*\*/d' "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 交人评论那段少了自包含规则" "$name: 没有自包含规则"
-done
-
-if neg_sandbox; then
-sed -i '/^8\. \*\*自包含，链接只当出处\*\*/d' "$TMP/project/.agents/skills/cavil-loop/prompts/review.extra.md"
-expect_red "review 增量少了自包含规则" "review: 自包含规则只出现 1 处"
-fi
-
-if neg_sandbox; then
-sed -i '/^交人评论（通过，或轮次已尽交人）同样要/d' "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 模板交人那一步少了自包含规则" "review（无项目增量）: 通用模板交人那一步没有自包含规则"
-fi
-
-if neg_sandbox; then
-sed -i '/^8\. \*\*自包含/s/出错怎么退回/出错找人/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 自包含规则改了一个词" "issue-comment: 自包含规则和 new-issue 不一致"
-fi
-
-if neg_sandbox; then
-sed -i '/^交人评论（通过，或轮次已尽交人）同样要/s/见 worker 上一条/见上上条/' "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 模板那份跟增量不是同一份文字" "review: 自包含规则有不同写法"
-fi
-
-if neg_sandbox; then
-sed -i 's/\*\*只读这一条评论、不点任何链接，能不能知道发生了什么、要做哪几步？\*\* 不能就重写。//' "$SKILL_DIR/prompts/new-issue.template.md"
-expect_red "new-issue 自包含规则少了自查句" "new-issue: 自包含规则缺不点链接的自查句"
-fi
-
-if neg_sandbox; then
-sed -i '/链接不能代替步骤和结论/d' "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment「链接不能代替答案」没扩范围" "pr-comment: 「链接不能代替答案」没扩到步骤和复审结论"
-fi
-
-# 人称规则（GitHub#237）：每个写入点单独拿掉 / 改一个字，范例句改回「你」「我」
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i '/^10\. \*\*写明是人还是 agent/d' "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 交人评论那段少了人称规则" "$name: 没有人称规则"
-done
-
-if neg_sandbox; then
-sed -i '/^10\. \*\*写明是人还是 agent/d' "$TMP/project/.agents/skills/cavil-loop/prompts/review.extra.md"
-expect_red "review 增量少了人称规则" "review: 人称规则只出现 1 处"
-fi
-
-if neg_sandbox; then
-sed -i '/^review 评论（不论通过与否，交人的那条尤其）同样要/d' "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 模板少了人称规则" "review（无项目增量）: 通用模板没有人称规则"
-fi
-
-if neg_sandbox; then
-sed -i '/^10\. \*\*写明是人还是 agent/s/「维护者」「提出者」/「维护者」/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 人称规则改了一个词" "issue-comment: 人称规则和 new-issue 不一致"
-fi
-
-if neg_sandbox; then
-sed -i '/^2R\. /d' "$SKILL_DIR/prompts/review.template.md"
-expect_red "review 模板没有人称打回依据" "review: 打回依据里没有人称规则"
-fi
-
-if neg_sandbox; then
-sed -i 's/，agent 继续开干。`/ 我继续开干。`/' "$SKILL_DIR/prompts/new-issue.template.md"
-expect_red "new-issue 方案结尾改回「我继续开干」" "new-issue: 范例句带「你」「我」"
-fi
-
-if neg_sandbox; then
-sed -i 's/，agent 开干。`/ 我开干。`/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 修订版结尾改回「我开干」" "issue-comment: 范例句带「你」「我」"
-fi
-
-if neg_sandbox; then
-sed -i 's/或者等人点/或者等你点/; s/or 等人点/or 等你点/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 拆分交人评论改回「等你点」" "issue-comment: 范例句带「你」「我」"
-fi
-
-if neg_sandbox; then
-sed -i 's/就直说「本条不需要人做任何事」/就直说「本条不需要你做任何事」/' "$TMP/project/.agents/skills/cavil-loop/prompts/review.extra.md"
-expect_red "review 增量范例改回「不需要你做任何事」" "review: 交人评论那段的范例带「你」「我」"
-fi
-
-if neg_sandbox; then
-sed -i 's/要人选：中文编号/要你选：中文编号/' "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment 骨架范例改回「要你选」" "pr-comment: 交人评论那段的范例带「你」「我」"
-fi
-
-echo
-# 开关真的挡在准备之前：默认模式负对照区一个沙盘都没建；打开时确实建了
-neg_sandboxes=$((SANDBOXES - SANDBOXES_BEFORE_NEG))
-if mutation_on; then
-    if [ "$neg_sandboxes" -gt 0 ]; then ok "开关打开：负对照区建了 $neg_sandboxes 个沙盘"
-    else bad "开关打开：负对照区一个沙盘都没建（负对照没真跑）"; fi
-else
-    if [ "$neg_sandboxes" -eq 0 ]; then ok "默认模式：负对照区一个沙盘都没建、没改模板"
-    else bad "默认模式：负对照区仍建了 $neg_sandboxes 个沙盘（开关放在准备之后）"; fi
-fi
-mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

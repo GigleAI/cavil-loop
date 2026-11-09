@@ -2,8 +2,7 @@
 # kind: e2e
 # 评论用量 footer（GitHub#88 / #90）：一行总览（就是折叠标题）+ 折叠细节 + AI 时间估算 + 项目测试耗时接口。
 #
-# 跑法：bash tests/comment-footer.test.sh              （默认不跑【6】负对照）
-#       MUTATION=1 bash tests/comment-footer.test.sh   （连【6】一起跑；见 tests/lib/mutation.sh）
+# 跑法：bash tests/comment-footer.test.sh
 # 依赖：python3、jq。不碰网络、不读本机真实会话（HOME 指到临时目录）。
 #
 # 覆盖（全部跑真实脚本，不断言源码文本）：
@@ -16,15 +15,13 @@
 #   【4】周报读法：footer 末行是机器记录；去掉机器记录后从可见部分读出的时长 / token / 金额
 #        与机器记录一致；旧格式评论照旧能读
 #   【5】四份模板拼装后的 footer 段：走生产拼装函数，把成品里的命令原样跑一遍
-#   【6】负对照：把上面每一条要守住的规矩逐个改坏（沙盘副本），对应检查必须变红（只在 MUTATION=1 时跑）
+#   （原来的【6】负对照已按 GitHub#234 删去）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 TMP=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "TMP=$TMP" || rm -rf "$TMP"' EXIT
 export TZ=Asia/Shanghai     # 周报按 +08:00 读可见时刻；footer 按本机时区写。两边对齐
@@ -119,7 +116,6 @@ say driver_human_no_ai "$(printf '%s' "$human" | grep -c ai_secs)" "0"
 # 时钟钉死：开始时间按「现在 − 秒数」算，生成器结束时又读一次现在；两次之间跨过一秒，
 # 总耗时就从 8m 0s 变成 8m 1s，精确断言偶发变红（PR #160 的 CI 撞上过）。所以给生成器的
 # python 进程放一个 sitecustomize，把 time.time() 钉在算开始时间用的那一刻；生产代码不动。
-# FOOTER_TEST_NO_CLOCK_PIN=1 关掉它（只给负对照用，证明 clock_pinned 那条真靠钉时钟才绿）。
 CLOCK="$TMP/clock-pin"
 mkdir -p "$CLOCK"
 cat > "$CLOCK/sitecustomize.py" <<'PY'
@@ -133,7 +129,6 @@ foot() { # $1 = 总耗时秒数；其余是 env 赋值
     local now; now=$(date +%s)
     local st; st=$(date -d "@$(( now - secs ))" '+%Y-%m-%d %H:%M:%S')
     local pin=(FOOTER_TEST_NOW="$now" PYTHONPATH="$CLOCK${PYTHONPATH:+:$PYTHONPATH}")
-    [ -n "${FOOTER_TEST_NO_CLOCK_PIN:-}" ] && pin=()
     (cd "$WT" && env HOME="$TMP/home" "${pin[@]}" "$@" bash "$D/comment-footer.sh" --agent claude --driver "$FAKE" \
         --config "$CFG" --start "$st" --wt 7)
 }
@@ -488,124 +483,6 @@ while IFS= read -r l; do
     esac
 done <<< "$(dispatch_check "$REPO_DIR/scripts")"
 
-# 【6】负对照：沙盘副本逐个改坏，对应检查必须变红
-echo "【6】负对照（改坏一处，对应检查必须变红）"
-neg() { # $1 = 说明；$2 = 文件（相对 scripts/）；$3 = python 替换表达式 old；$4 = new；$5 = 期望变红的检查名
-    mutation_gate || return 0
-    local sb="$TMP/neg/$5"
-    rm -rf "$sb"; mkdir -p "$sb"; cp -r "$REPO_DIR/scripts" "$sb/scripts"
-    python3 - "$sb/scripts/$2" "$3" "$4" <<'PY' || { bad "$1：改坏失败（原文没找到）"; return; }
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if old not in s:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new, 1))
-PY
-    run_check "$sb/scripts" > "$sb/check.out"
-    if grep -q "^FAIL $5 " "$sb/check.out"; then ok "$1 → $5 变红"
-    else bad "$1 → $5 没变红（这条检查拦不住这种改坏）"; fi
-}
-if mutation_gate; then
-    # 不钉时钟（修之前的写法）：clock_pinned 必然变红，说明它真靠钉时钟才绿
-    FOOTER_TEST_NO_CLOCK_PIN=1 run_check "$REPO_DIR/scripts" > "$TMP/nopin.out"
-    if grep -q "^FAIL clock_pinned " "$TMP/nopin.out"; then ok "不钉时钟 → clock_pinned 变红"
-    else bad "不钉时钟 → clock_pinned 没变红（钉时钟的检查拦不住跨秒）"; fi
-fi
-neg "AI 时间不取并集、逐段相加" drivers/token-usage/ai_time.py \
-    "return union_ms(spans, start_ms, end_ms), len(spans)" \
-    "return sum(min(b, end_ms) - max(a, start_ms) for a, b in spans), len(spans)" ai_claude
-neg "claude 不以工具结果为请求起点（工具时间算进 AI）" drivers/token-usage/ai_time.py \
-    '        elif t == "user":
-            ready = ts' '        elif t == "user":
-            pass' ai_claude
-neg "codex 本轮结束后不清起点（轮间空闲算进 AI）" drivers/token-usage/ai_time.py \
-    '            ready = None' '            pass' ai_codex
-neg "子代理记录也算进 claude 的 AI 时间" drivers/token-usage/ai_time.py \
-    '        if r.get("isSidechain"):
-            continue' '' ai_claude
-neg "claude 驱动不附 AI 时间" drivers/token-usage/claude.sh \
-    '[ -z "$AI" ] || LINE="$LINE $AI"' ':' driver_claude
-neg "codex 驱动不附 AI 时间" drivers/token-usage/codex.sh \
-    '[ -z "$AI" ] || LINE="$LINE $AI"' ':' driver_codex
-neg "「其他」不封底为 0" drivers/token-usage/comment_footer.py \
-    'segs.append(f"其他 {fmt_dur(max(0, other))}")' 'segs.append(f"其他 {other}s")' overlap_other_zero
-neg "AI 秒数不按显示值相减" drivers/token-usage/comment_footer.py \
-    'other = wall - (test or 0) - ai' 'other = wall - (test or 0) - float(kv["ai_secs"])' sum_equals_total
-neg "机器记录里的测试秒数按 :g 格式化（只留六位有效数字）" drivers/token-usage/comment_footer.py \
-    'marker.append(f"test_secs={extra[0]}")' 'marker.append(f"test_secs={float(extra[0]):g}")' test_secs_exact
-neg "项目字段可以覆盖核心字段" drivers/token-usage/comment_footer.py \
-    'and k not in reserved' '' kv_collision_kept_core
-neg "超时不杀子进程组" drivers/token-usage/comment_footer.py \
-    'os.killpg(p.pid, signal.SIGKILL)' 'p.kill()' cmd_timeout_not_hung
-neg "周报不认新排版" weekly-report/record.py \
-    '(_legacy_footer(lines), _new_footer(lines))' '(_legacy_footer(lines),)' weekly_new_visible
-neg "新排版不核对开始 / 完工的位置" weekly-report/record.py \
-    'head = RE_NEW_HEAD.match(rest[0]) if rest else None' 'head = next((h for h in map(RE_NEW_HEAD.match, rest) if h), None)' weekly_new_needs_shape
-neg "#88 那一版不核对「细节」折叠头" weekly-report/record.py \
-    'if not rest or not RE_NEW_DETAILS.match(rest[0]):
-                continue
-            rest = rest[1:]' 'rest = [l for l in rest if not RE_NEW_DETAILS.match(l)]' weekly_new_needs_shape
-neg "周报不认 #88 那一版" weekly-report/record.py \
-    'RE_NEW_FOLD.match(l.strip()) or RE_NEW_SUM.match(l.strip())' 'RE_NEW_FOLD.match(l.strip())' weekly_v88_visible
-neg "总览不转义就进 <summary>" drivers/token-usage/comment_footer.py \
-    'html.escape(head, quote=False)' 'head' summary_escaped
-neg "总览不做折叠标题（退回 #88 的两行）" drivers/token-usage/comment_footer.py \
-    'f"<details><summary>{html.escape(head, quote=False)}</summary>"' 'head, "<details><summary>细节</summary>"' overview_is_summary
-
-neg "统计失败时总览不写「测试未知」" drivers/token-usage/comment_footer.py \
-    'test_seg = "测试未知"' 'test_seg = None' cmd_fail_overview
-neg "命令确认没跑测试时总览仍写「未跑测试」（#93 之前）" drivers/token-usage/comment_footer.py \
-    'if test is not None else None' 'if test is not None else "未跑测试"' zero_test_overview
-neg "没配命令的项目也写测试段" drivers/token-usage/comment_footer.py \
-    'test_seg = None     #' 'test_seg = "测试未知"     #' no_cmd_overview_no_test
-neg "总览测试段排在 AI 前面（#93 之前的顺序）" drivers/token-usage/comment_footer.py \
-    '        segs = [f"AI 约 {fmt_dur(ai)}"]
-        if test_seg:
-            segs.append(test_seg)' '        segs = ([test_seg] if test_seg else []) + [f"AI 约 {fmt_dur(ai)}"]' overview_order
-neg "AI 算不出来时测试段排在前面" drivers/token-usage/comment_footer.py \
-    'segs = ["AI 时间未知"] + ([test_seg] if test_seg else [])' 'segs = ([test_seg] if test_seg else []) + ["AI 时间未知"]' ai_unknown_test_after
-neg "AI 估算长说明又放回每条评论" drivers/token-usage/comment_footer.py \
-    '    if ai is None:' '    details.append("- AI 时间是估算：偏差来源……") if ai is not None else None
-    if ai is None:' ai_note_gone
-
-neg "项目回答 unknown 时当成 0 秒（写成「未跑测试」）" drivers/token-usage/comment_footer.py \
-    'if test_text == TEST_UNKNOWN:
-                test_seg = "测试未知"
-            else:' 'if test_text == TEST_UNKNOWN:
-                test_text = "0"
-            if True:' unknown_test_overview
-
-# 模板：每份单独去掉 footer 段里调脚本那一行，只有那一份变红
-for name in new-issue issue-comment pr-comment review; do
-    mutation_gate || continue
-    sk="$TMP/neg/tpl-$name"; rm -rf "$sk"; mkdir -p "$sk"; cp -r "$REPO_DIR/prompts" "$sk/prompts"
-    sed -i '/COMMENT_FOOTER_CMD/d' "$sk/prompts/$name.template.md"
-    out=$(template_check "$sk")
-    if printf '%s\n' "$out" | grep -q "^FAIL tpl_$name " \
-       && [ "$(printf '%s\n' "$out" | grep -c '^FAIL tpl_[a-z-]* ')" = 1 ]; then
-        ok "$name 模板去掉 footer 命令 → 只有 tpl_$name 变红"
-    else
-        bad "$name 模板去掉 footer 命令 → 没有恰好变红 tpl_$name" "$(printf '%s\n' "$out" | grep '^FAIL' | head -3)"
-    fi
-done
-# 派工脚本：每个单独去掉渲染这个占位的那一行，只有它写出的 prompt 变红
-for kind in new-issue issue-comment pr-comment; do
-    mutation_gate || continue
-    sb="$TMP/neg/dispatch-$kind"; rm -rf "$sb"; mkdir -p "$sb"
-    cp -r "$REPO_DIR/scripts" "$sb/scripts"; cp -r "$REPO_DIR/prompts" "$sb/prompts"
-    sed -i '/COMMENT_FOOTER_CMD/d' "$sb/scripts/dispatch-$kind.sh"
-    out=$(dispatch_check "$sb/scripts")
-    if printf '%s\n' "$out" | grep -q "^FAIL dispatch_$kind " \
-       && [ "$(printf '%s\n' "$out" | grep -c '^FAIL')" = 1 ]; then
-        ok "dispatch-$kind.sh 不渲染占位 → 只有 dispatch_$kind 变红"
-    else
-        bad "dispatch-$kind.sh 不渲染占位 → 没有恰好变红 dispatch_$kind" "$(printf '%s\n' "$out" | head -3)"
-    fi
-done
-
-echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

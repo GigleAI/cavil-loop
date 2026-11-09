@@ -2,7 +2,7 @@
 # kind: guard
 # 评论版式规矩：外面只放要人看的、其余折叠；❌ / ✅ / ⚠️ 默认不标，只标要人看的那几条。
 #
-# 跑法：bash tests/comment-layout-prompts.test.sh（MUTATION=1 连负对照一起跑）
+# 跑法：bash tests/comment-layout-prompts.test.sh
 # 依赖：无。用仓库自带的真实模板，走 daemon 真正拼 prompt 的 compose_prompt_template。
 #
 # 为什么要有这个文件：以前默认模板对版式只有一句「过程留痕折叠」，没说哪些放外面、
@@ -16,17 +16,14 @@
 # 的事，✅ 只给「本该做、做了、人得知道做对了」的事。复审打回依据 ⑧ 用同一判据的反面——打回条件
 # 一旦退化成「没有要人处理的事」（只看动作），就会误伤「无需动手但影响判断」的真实限制，这里专门拦。
 # 两份 worker 模板的硬规则核对表也要求整张折叠。
-# 所以按拼好的成品对拍：每处都在、逐字一致；旧的「测试结果写进正文」说法已改掉；
-# 再对每个写入点各造一个负对照（含第 8 条新说法、修订记录折叠、打回依据 ⑧ 的每个条件，
-# 以及「通用 review 模板那份还在、增量自己的第 9 条没了」），确认少了哪一处这里都会红。
+# 所以按拼好的成品对拍：每处都在、逐字一致；旧的「测试结果写进正文」说法已改掉。
+# （原来每个写入点各一份的负对照已按 GitHub#234 删去。）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -207,205 +204,6 @@ make_sandbox
 out=$(check_prompts)
 if [ -z "$out" ]; then ok "全部满足"; else bad "仓库现状不满足："; sed 's/^/       /' <<<"$out"; fi
 
-expect_red() {   # <说明> <期望出现的报错片段>
-    out=$(check_prompts)
-    if grep -qF -- "$2" <<<"$out"; then ok "负对照：$1 → 被拦下"
-    else bad "负对照：$1 → 没被拦下（输出：${out:-空}）"; fi
-}
-
-mutation_on && echo "── 负对照 ──"
-neg_sandbox() { mutation_gate || return 1; make_sandbox; }
-SANDBOXES_BEFORE_NEG=$SANDBOXES
-
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i '/^7\. \*\*外面只放要人看的，其余折叠\*\*/c 7. **过程留痕折叠**。历史轮次、长命令输出、逐条日志放进 `<details>`，主文只留当前结论。' "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 第 7 条退回旧的一句话" "$name: 没有折叠规则"
-done
-
-if neg_sandbox; then
-sed -i '/^7\. \*\*外面只放要人看的/s/判据是内容性质不是长度/判据是长度/' "$TMP/project/$EXTRA_REL"
-expect_red "review 增量第 7 条改了一个词" "review: 折叠规则缺判据"
-fi
-
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i '/^9\. \*\*❌ \/ ✅ \/ ⚠️ 默认不标/d' "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 少了标识规则" "$name: 没有标识规则"
-done
-
-if neg_sandbox; then
-sed -i '/^9\. \*\*❌ \/ ✅ \/ ⚠️ 默认不标/d' "$TMP/project/$EXTRA_REL"
-expect_red "review 增量少了第 9 条标识规则（通用模板那份仍在）" "review: 标识规则不在交人评论那段的第 9 条"
-fi
-
-if neg_sandbox; then
-sed -i '/\*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/没跑过、没核对的一律不标 ✅/没跑过的尽量不标 ✅/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 标识规则放宽 ✅" "issue-comment: 标识规则没限定 ✅ 只给有证据的结论"
-fi
-
-if neg_sandbox; then
-sed -i '/\*\*❌ \/ ✅ \/ ⚠️ 默认不标/d' "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 模板少了标识规则" "review（无项目增量）: 没有标识规则"
-fi
-
-for name in new-issue issue-comment; do
-    neg_sandbox || continue
-    sed -i '/\*\*方案评论版式（外面只放要人看的，其余折叠）\*\*/d' "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 少了方案评论版式" "$name: 没有方案评论版式"
-done
-
-if neg_sandbox; then
-sed -i '/\*\*方案评论版式（外面只放要人看的，其余折叠）\*\*/s/、验收标准//' "$SKILL_DIR/prompts/new-issue.template.md"
-expect_red "new-issue 方案版式不折叠验收标准" "new-issue: 方案评论版式没把验收标准折叠"
-fi
-
-if neg_sandbox; then
-sed -i '/修订版里「这一版比上一版改了什么」同样是过程/d' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 方案迭代少了修订记录折叠" "issue-comment: 方案迭代没要求把修订记录折叠"
-fi
-
-if neg_sandbox; then
-sed -i '/\*\*评论版式（外面只放要人看的，其余折叠）\*\*/s/、硬规则逐条核对//' "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 评论版式不折叠硬规则核对" "review（无项目增量）: 评论版式没把硬规则核对折叠"
-fi
-
-if neg_sandbox; then
-sed -i '/\*\*评论版式（外面只放要人看的，其余折叠）\*\*/d' "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 模板少了评论版式" "review（无项目增量）: 第 3 步没有评论版式"
-fi
-
-if neg_sandbox; then
-sed -i '/^2B\. /s/、✅ 标在没有证据的结论上//' "$SKILL_DIR/prompts/review.template.md"
-expect_red "打回依据 ⑧ 没管到标识" "review（无项目增量）: 打回依据 ⑧ 没管到版式和标识"
-fi
-
-if neg_sandbox; then
-sed -i '/^2B\. /s/缺开头那句说明、//' "$SKILL_DIR/prompts/review.template.md"
-expect_red "打回依据 ⑧ 不管开头说明" "review（无项目增量）: 打回依据 ⑧ 没管到开头说明"
-fi
-
-if neg_sandbox; then
-sed -i '/^2B\. /s/外面混进过程叙述（试了哪些写法、怎么一步步推导的、版本之间改了什么）、//' "$SKILL_DIR/prompts/review.template.md"
-expect_red "打回依据 ⑧ 不管外面混进过程" "review（无项目增量）: 打回依据 ⑧ 没管到外面混进过程"
-fi
-
-if neg_sandbox; then   # 复审给的退化：两项具体条件合成一句含糊的「其他版式问题」
-sed -i '/^2B\. /s/缺开头那句说明、外面混进过程叙述（试了哪些写法、怎么一步步推导的、版本之间改了什么）/其他版式问题/' "$SKILL_DIR/prompts/review.template.md"
-expect_red "打回依据 ⑧ 退化成「其他版式问题」" "review（无项目增量）: 打回依据 ⑧ 没管到开头说明"
-fi
-
-if neg_sandbox; then
-sed -i 's/也写进这条交人评论/也写进交人评论正文/' "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment 退回「写进正文」" "pr-comment: 还留着「也写进交人评论正文」"
-fi
-
-if neg_sandbox; then
-sed -i '/^8\. \*\*自包含/s/测试结果整理进这一条（[^）]*）/测试结果整理进来/' "$SKILL_DIR/prompts/new-issue.template.md"
-expect_red "new-issue 第 8 条退回「整理进来」" "new-issue: 还留着「测试结果整理进来」"
-fi
-
-# 第 8 条新说法：每个写入点各删一次（整句删掉，旧说法检查拦不住）
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i "/^8\. \*\*自包含/s/$ITEM8_NEW//" "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 第 8 条丢了测试证据放折叠块" "$name: 第 8 条没写测试证据放折叠块"
-done
-
-if neg_sandbox; then
-sed -i "/^8\. \*\*自包含/s/$ITEM8_NEW//" "$TMP/project/$EXTRA_REL"
-expect_red "review 增量第 8 条丢了测试证据放折叠块" "review: 第 8 条没写测试证据放折叠块"
-fi
-
-if neg_sandbox; then
-sed -i "/^交人评论（通过，或轮次已尽交人）/s/$ITEM8_NEW//" "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 交人评论丢了测试证据放折叠块" "review（无项目增量）: 交人评论自包含没写测试证据放折叠块"
-fi
-
-# ── GitHub#125：默认不标 ──
-# 每个写入点各自退回旧的「每节都标」
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i "/^9\. \*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/$MARK_DEFAULT/$OLD_MARK_EVERY/" "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 标识规则退回「每节都标」" "$name: 标识规则还要求每条 / 每节都标"
-done
-if neg_sandbox; then
-sed -i "/^9\. \*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/$MARK_DEFAULT/$OLD_MARK_EVERY/" "$TMP/project/$EXTRA_REL"
-expect_red "review 增量标识规则退回「每节都标」" "review: 标识规则还要求每条 / 每节都标"
-fi
-if neg_sandbox; then
-sed -i "/\*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/$MARK_DEFAULT/$OLD_MARK_EVERY/" "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 标识规则退回「每节都标」" "review（无项目增量）: 标识规则还要求每条 / 每节都标"
-fi
-if neg_sandbox; then   # 整行换回旧版（旧标题 + 旧正文）
-OLD_LINE='9. **用 ❌ / ✅ / ⚠️ 标出每条结论**。❌ = 有问题（打回的点、测试红、做不到或被拦住的项）；✅ = 没问题，只用在有实际证据的结论上（跑过的测试、核对过的事实），没跑过、没核对的一律不标 ✅；⚠️ = 要人注意（已知限制、风险、尚未验证、要人确认或动手的事）。标在每条结论、每节标题或验收项的开头，一处一个，人扫一眼就分得出重点；正文叙述里不乱撒。'
-python3 -c '
-import sys; p, old = sys.argv[1], sys.argv[2]
-L = open(p).read().split("\n")
-L = [old if l.startswith("9. **❌ / ✅ / ⚠️ 默认不标") else l for l in L]
-open(p, "w").write("\n".join(L))
-' "$SKILL_DIR/prompts/pr-comment.template.md" "$OLD_LINE"
-expect_red "pr-comment 整条换回旧标识规则" "pr-comment: 标识规则还要求每条 / 每节都标"
-fi
-# 各判据从一个写入点改坏
-if neg_sandbox; then
-sed -i "/^9\. \*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/$WARN_ALLOW/⚠️ = 要人注意/" "$SKILL_DIR/prompts/new-issue.template.md"
-expect_red "new-issue ⚠️ 退回「要人注意」" "new-issue: 标识规则没写 ⚠️ 只标两类事"
-fi
-if neg_sandbox; then
-sed -i "/^9\. \*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/$WARN_EMPTY/X/" "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 丢了无事项说明不标" "issue-comment: 标识规则没写没有事项的说明不标"
-fi
-if neg_sandbox; then
-sed -i "/^9\. \*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/$OK_ONLY/✅ = 没问题/" "$TMP/project/$EXTRA_REL"
-expect_red "review 增量 ✅ 退回「没问题」（与通用那份不再一致）" "review: 标识规则有不同写法"
-fi
-if neg_sandbox; then
-sed -i "/\*\*❌ \/ ✅ \/ ⚠️ 默认不标/s/$TITLE_EXEMPT//" "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 丢了标题 ✅ / ❌ 例外" "review（无项目增量）: 标识规则和 worker 不一致"
-fi
-if neg_sandbox; then
-sed -i 's/\*\*结论评论的标题以 ✅ \/ ❌ 开头\*\*/结论评论的标题随意/' "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 丢了结论标题约定" "review（无项目增量）: 结论标题 ✅ / ❌ 的约定没了"
-fi
-# 打回依据 ⑧
-if neg_sandbox; then   # 退化成只看有没有动作（方案第 1 轮复审指出的矛盾）
-sed -i "/^2B\. /s/$WARN_REJECT/⚠️ 标在$WARN_REJECT_ACTION_ONLY上/" "$SKILL_DIR/prompts/review.template.md"
-expect_red "打回依据 ⑧ 退化成只看动作" "review（无项目增量）: 打回依据 ⑧ 只看有没有动作，会误伤影响判断的限制"
-fi
-if neg_sandbox; then
-sed -i "/^2B\. /s/、或 $WARN_REJECT//" "$SKILL_DIR/prompts/review.template.md"
-expect_red "打回依据 ⑧ 不管乱标 ⚠️" "review（无项目增量）: 打回依据 ⑧ 没管到乱标 ⚠️"
-fi
-if neg_sandbox; then
-sed -i "/^2B\. /s/、$OK_REJECT//" "$SKILL_DIR/prompts/review.template.md"
-expect_red "打回依据 ⑧ 不管乱撒 ✅" "review（无项目增量）: 打回依据 ⑧ 没管到乱撒 ✅"
-fi
-if neg_sandbox; then
-sed -i "/\*\*评论版式（外面只放要人看的，其余折叠）\*\*/s/$REVIEW_OMIT//" "$SKILL_DIR/prompts/review.template.md"
-expect_red "通用 review 版式丢了「没有就整节省掉」" "review（无项目增量）: 评论版式没写无提醒事项时省掉那一节"
-fi
-# 硬规则核对表折叠
-for name in issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i "/$HR_FOLD/d" "$SKILL_DIR/prompts/$name.template.md"
-    expect_red "$name 硬规则核对表不再要求折叠" "$name: 硬规则核对表没要求整张折叠"
-done
-if neg_sandbox; then
-sed -i "/$HR_FOLD/s/，不加任何标识//" "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment「暂无硬规则」折叠但没说不标" "pr-comment: 没写「本项目暂无硬规则」也折叠、不标"
-fi
-
-echo
-neg_sandboxes=$((SANDBOXES - SANDBOXES_BEFORE_NEG))
-if mutation_on; then
-    if [ "$neg_sandboxes" -gt 0 ]; then ok "开关打开：负对照区建了 $neg_sandboxes 个沙盘"
-    else bad "开关打开：负对照区一个沙盘都没建（负对照没真跑）"; fi
-else
-    if [ "$neg_sandboxes" -eq 0 ]; then ok "默认模式：负对照区一个沙盘都没建、没改模板"
-    else bad "默认模式：负对照区仍建了 $neg_sandboxes 个沙盘（开关放在准备之后）"; fi
-fi
-mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]
