@@ -103,6 +103,7 @@ function followIssues(
   placements: Map<string, Card[]>,
   canHost: (issue: Item) => boolean,
   selectedProjects: Map<string, ProjectMeta>,
+  mode: ColumnMode,
 ): Map<string, string> {
   const follow = prFollow([...items].sort(order), canHost);
   if (follow.size === 0) return follow;
@@ -118,10 +119,9 @@ function followIssues(
   const byKey = new Map(items.map((it) => [it.key, it]));
   for (const [prKey, host] of follow) {
     const pr = byKey.get(prKey)!;
-    const keys = pr.projects.filter((m) => selectedProjects.has(m.projectKey)).map((m) => m.projectKey);
     for (const col of hostCols.get(host) ?? []) {
       const mine = own.get(`${prKey}@${col}`);
-      placements.get(col)!.push(mine ?? { id: `${prKey}@${col}`, item: pr, projectTitles: [], projectKeys: keys, lane: pr.repo, under: null });
+      placements.get(col)!.push(mine ?? { id: `${prKey}@${col}`, item: pr, ...dragScope(pr, col, mode, selectedProjects, true), lane: pr.repo, under: null });
     }
   }
   return follow;
@@ -151,6 +151,34 @@ function place(placements: Map<string, Card[]>, col: string, item: Item, project
   placements.set(col, list);
 }
 
+/** The column one Project membership puts an item in (iteration / status columns; the table's groups use the same keys). */
+export function memberColumn(m: Item['projects'][number], p: ProjectMeta, mode: 'iteration' | 'status'): string {
+  if (mode === 'iteration') return !p.hasIterationField || !m.iteration ? COL_NO_ITERATION : iterationColumnKey(m.iteration);
+  return m.status ? `status:${m.status}` : COL_NO_STATUS;
+}
+
+/**
+ * What a drag of `item`, shown in column `col`, changes: the selected Projects
+ * whose own value put it there (GitHub#294: one rule for the board's cards and
+ * the table's rows). `following` = a PR shown there only because its issue is
+ * (GitHub#275): when none of its own values put it there either, a drag changes
+ * it on every selected Project it is on. Milestones belong to the repository:
+ * no Project is involved.
+ */
+export function dragScope(
+  item: Item,
+  col: string,
+  mode: ColumnMode,
+  selectedProjects: Map<string, ProjectMeta>,
+  following: boolean,
+): { projectKeys: string[]; projectTitles: string[] } {
+  if (mode === 'milestone') return { projectKeys: [], projectTitles: [] };
+  const members = item.projects.filter((m) => selectedProjects.has(m.projectKey));
+  const own = members.filter((m) => memberColumn(m, selectedProjects.get(m.projectKey)!, mode) === col);
+  if (own.length || !following) return { projectKeys: own.map((m) => m.projectKey), projectTitles: own.map((m) => m.projectTitle) };
+  return { projectKeys: members.map((m) => m.projectKey), projectTitles: [] };
+}
+
 /**
  * Group the item's memberships (in selected Projects) by column; one card per
  * distinct column. An item whose two Projects disagree shows up in both
@@ -162,23 +190,23 @@ function placeByMembership(
   columnOf: (m: Item['projects'][number], p: ProjectMeta) => string,
   placements: Map<string, Card[]>,
   seeds: Map<string, ColumnSeed>,
+  mode: 'iteration' | 'status',
 ) {
   const memberships = item.projects.filter((m) => selectedProjects.has(m.projectKey));
   if (memberships.length === 0) {
     place(placements, COL_UNBOARDED, item, []);
     return;
   }
-  const byCol = new Map<string, string[]>();
-  const keysByCol = new Map<string, string[]>();
+  const cols = new Set<string>();
   for (const m of memberships) {
     const col = columnOf(m, selectedProjects.get(m.projectKey)!);
-    const titles = byCol.get(col) ?? [];
-    titles.push(m.projectTitle);
-    byCol.set(col, titles);
-    keysByCol.set(col, [...(keysByCol.get(col) ?? []), m.projectKey]);
+    cols.add(col);
     if (!seeds.has(col)) throw new Error(`internal: column ${col} has no seed`);
   }
-  for (const [col, titles] of byCol) place(placements, col, item, titles, keysByCol.get(col));
+  for (const col of cols) {
+    const { projectTitles, projectKeys } = dragScope(item, col, mode, selectedProjects, false);
+    place(placements, col, item, projectTitles, projectKeys);
+  }
 }
 
 const RANK_REGULAR = 1;
@@ -216,7 +244,7 @@ export function buildBoard(
   let standing = new Set<string>();
   const onBoard = (it: Item) => it.projects.some((m) => selectedProjects.has(m.projectKey));
   const settle = (canHost: (issue: Item) => boolean) => {
-    if (nest.on) nest.follow = followIssues(items, cardOrder, placements, canHost, selectedProjects);
+    if (nest.on) nest.follow = followIssues(items, cardOrder, placements, canHost, selectedProjects, mode);
   };
   const hasUnboarded = items.some((it) => !it.projects.some((m) => selectedProjects.has(m.projectKey)));
   if (mode !== 'milestone' && hasUnboarded) {
@@ -241,8 +269,8 @@ export function buildBoard(
         item,
         selectedProjects,
         (m, p) => {
-          if (!p.hasIterationField || !m.iteration) return COL_NO_ITERATION;
-          const key = iterationColumnKey(m.iteration);
+          const key = memberColumn(m, p, 'iteration');
+          if (key === COL_NO_ITERATION || !m.iteration) return key;
           seed(
             {
               key,
@@ -257,6 +285,7 @@ export function buildBoard(
         },
         placements,
         seeds,
+        'iteration',
       );
     }
     // A title shared by columns that did NOT merge (different start dates)
@@ -284,14 +313,15 @@ export function buildBoard(
       placeByMembership(
         item,
         selectedProjects,
-        (m) => {
-          if (!m.status) return COL_NO_STATUS;
-          const key = `status:${m.status}`;
+        (m, p) => {
+          const key = memberColumn(m, p, 'status');
+          if (key === COL_NO_STATUS || !m.status) return key;
           if (!seeds.has(key)) seed({ key, title: m.status, sort: String(order++).padStart(6, '0'), rank: RANK_REGULAR, ended: false });
           return key;
         },
         placements,
         seeds,
+        'status',
       );
     }
     settle(onBoard);
@@ -356,7 +386,7 @@ function iterationOfColumn(key: string): { title: string; startDate: string } | 
  * Project's own iteration / option). Milestones belong to the repository: the
  * item's repository's milestone with the column's title (checked when sent).
  */
-export function dropPlan(card: Card, from: string, to: Column, mode: ColumnMode, projects: ProjectMeta[]): DropPlan {
+export function dropPlan(card: Pick<Card, 'item' | 'projectKeys' | 'projectTitles'>, from: string, to: Pick<Column, 'key'>, mode: ColumnMode, projects: ProjectMeta[]): DropPlan {
   if (from === to.key) return { kind: 'none' };
   const it = card.item;
   const meta = (k: string) => projects.find((p) => p.key === k);

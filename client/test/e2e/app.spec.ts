@@ -3,7 +3,7 @@
 // bridge, talking to the local fake GitHub over loopback (test/e2e/bridge.ts).
 // Screenshots of each step land in test-results/screens/ (uploaded by CI).
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { mkdtempSync, readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -4938,5 +4938,118 @@ test('GitHub#276: a new issue gets the current iteration of the ticked board —
   await expect.poll(() => writes().filter((w) => w[0] === 'CavilAddProjectItem').length).toBe(4);
   await page.waitForTimeout(500);
   expect(iterationWrites().length).toBe(it1);
+  await app.close();
+});
+
+/**
+ * A row dragged onto a target by hand (GitHub#294): press, a first move (the drag starts), then the
+ * target brought into view and moved onto. Playwright's dragTo scrolls to the target before the drag
+ * has started, and a long table then never starts one.
+ */
+async function dragRow(src: Locator, target: Locator) {
+  const page = src.page();
+  // in the middle of the view: a pointer near the edge makes the browser scroll the table while dragging
+  await src.evaluate((el: Element) => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const a = (await src.boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + a.width / 2 + 8, a.y + a.height / 2 + 8, { steps: 4 });
+  // a group head: its group's body, not the (sticky) head itself: scrolling to a sticky row can leave it under the next group's head
+  await target.evaluate((el: Element) => ((el.closest('.group-head') && el.closest('tbody')) || el).scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const b = (await target.boundingBox())!;
+  await page.mouse.move(b.x + Math.min(20, b.width / 2), b.y + b.height / 2, { steps: 6 });
+  await page.mouse.up();
+}
+
+test('GitHub#294: drag a table row to another group — the board\'s drop: set, clear, onto folded groups, "add to the board?" first; not when grouped by repository or offline', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  // an item on no board, read from the board's own column before switching
+  const lone = (await page.locator('[data-testid="column"][data-title="未加入看板"] [data-testid="card"]').first().getAttribute('data-key'))!;
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await expect(page.getByTestId('table')).toBeVisible();
+  const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`).first();
+  const rowIn = (title: string, key: string) => group(title).locator(`[data-testid="row"][data-key="${key}"]`);
+  const K = 'gigleai/cavil-loop#137';
+  const from = (await page.locator(`[data-testid="row"][data-key="${K}"]`).first().locator('xpath=ancestor::tbody[1]').getAttribute('data-title'))!;
+  // the table shows only groups that hold something: pick an iteration group that is there
+  const T = 'Iteration 24';
+  expect(from).not.toBe(T);
+  await expect(group(T)).toBeVisible();
+  const row = rowIn(from, K);
+  await expect(row).toHaveAttribute('draggable', 'true');
+
+  // ---- 1. onto another iteration's group: one iteration write, the row moves there ----
+  const b1 = writes().length;
+  await dragRow(row.locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
+  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${T}」`);
+  await expect(rowIn(T, K)).toBeVisible();
+  await expect(rowIn(from, K)).toHaveCount(0);
+  await expect.poll(() => writes().slice(b1).map((w) => w[0])).toEqual(['CavilSetIteration']);
+  expect((writes()[b1][2] as any).iterationId).toBeTruthy();
+  // nothing stays lit once it is dropped
+  await expect(page.locator('[data-drop-over]')).toHaveCount(0);
+  await shot(page, '294-01-row-dropped');
+
+  // ---- 2. onto 无迭代: cleared ----
+  const b2 = writes().length;
+  await dragRow(rowIn(T, K).locator('[data-testid="row-ref"]'), group('无迭代').locator('[data-testid="row"]').first());
+  await expect(rowIn('无迭代', K)).toBeVisible();
+  await expect.poll(() => writes().slice(b2).map((w) => w[0])).toEqual(['CavilClearField']);
+
+  // ---- 3. onto a folded group's head, and onto a name in "已收起 N 组" ----
+  await group(T).getByTestId('group-toggle').click();
+  await dragRow(rowIn('无迭代', K).locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
+  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${T}」`);
+  await expect.poll(async () => (await rowIn('无迭代', K).count())).toBe(0);
+  await group(T).getByTestId('group-toggle').click();
+  await expect(rowIn(T, K)).toBeVisible();
+  // fold two groups next to each other, then drop on the second one's name in the joined line
+  const titles = await page.locator('[data-testid="group"]').evaluateAll((gs) => gs.map((g) => g.getAttribute('data-title') ?? ''));
+  const i = titles.findIndex((t, n) => t.startsWith('Iteration') && titles[n + 1]?.startsWith('Iteration') && t !== T && titles[n + 1] !== T && t !== from && titles[n + 1] !== from);
+  expect(i).toBeGreaterThanOrEqual(0);
+  const [g1, g2] = [titles[i], titles[i + 1]];
+  await group(g1).getByTestId('group-toggle').click();
+  await group(g2).getByTestId('group-toggle').click();
+  const run = page.getByTestId('fold-run').first();
+  await expect(run).toBeVisible();
+  const target = run.locator(`[data-testid="fold-run-group"]`, { hasText: g2 });
+  const b3 = writes().length;
+  await dragRow(rowIn(T, K).locator('[data-testid="row-ref"]'), target);
+  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${g2}」`);
+  await expect.poll(() => writes().slice(b3).map((w) => w[0])).toEqual(['CavilSetIteration']);
+  await expect(rowIn(T, K)).toHaveCount(0);
+  await target.click();
+  await expect(rowIn(g2, K)).toBeVisible();
+
+  // ---- 4. an item on no board: "加入看板？" first; cancelled, nothing sent ----
+  const loneFrom = (await page.locator(`[data-testid="row"][data-key="${lone}"]`).first().locator('xpath=ancestor::tbody[1]').getAttribute('data-title'))!;
+  expect(loneFrom).toBe('无迭代');
+  const b4 = writes().length;
+  await dragRow(rowIn('无迭代', lone).locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
+  await expect(page.getByTestId('confirm-question')).toContainText('还没加入看板');
+  await shot(page, '294-02-add-to-board');
+  await page.getByTestId('confirm-cancel').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  expect(writes().slice(b4)).toEqual([]);
+
+  // ---- 5. grouped by repository: rows do not drag ----
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('repo');
+  await page.getByTestId('open-view-panel').click();
+  await expect(page.locator('[data-testid="row"]').first()).toBeVisible();
+  expect(await page.locator('[data-testid="row"][draggable="true"]').count()).toBe(0);
+  await page.getByTestId('open-view-panel').click();
+  await page.getByTestId('group-by').selectOption('iteration');
+  await page.getByTestId('open-view-panel').click();
+  await expect(page.locator('[data-testid="row"][draggable="true"]').first()).toBeVisible();
+
+  // ---- 6. offline: rows do not drag ----
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('[data-testid="row"]').first()).toBeVisible();
+  expect(await page.locator('[data-testid="row"][draggable="true"]').count()).toBe(0);
   await app.close();
 });
