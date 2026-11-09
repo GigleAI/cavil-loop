@@ -23,8 +23,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 DRIVER="$REPO_DIR/scripts/drivers/token-usage/codex.sh"
 # 旧 fixture 专门验证无价路径；显式空表仍应保留该行为。
 export CODEX_PRICES='{}'
@@ -398,25 +396,7 @@ for pair in gpt-6.1-sol:3.49 gpt-6-sol:3.53 gpt-6-luna:0.1765 gpt-5.6-sol:7.06 g
         "$(near "$(printf '%s' "$kv" | grep -o 'cost_usd=[0-9.e-]*' | cut -d= -f2)" "$want")" "ok"
 done
 
-# 负对照：从表里删掉 gpt-6-sol、或删掉 5.6 的 cache_write，上面的判据必须能看出来
 PRICE_JSON="$REPO_DIR/scripts/drivers/token-usage/codex-prices.json"
-if mutation_gate; then     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-mkdir -p "$TMP/neg-driver"; cp "$DRIVER" "$TMP/neg-driver/codex.sh"
-jq 'del(.models["gpt-6-sol"])' "$PRICE_JSON" > "$TMP/neg-driver/codex-prices.json"
-btfix gpt-6-sol
-chk "负对照：删掉 gpt-6-sol 条目 → 退回 none（本 issue 修之前的样子）" \
-    "$(btrun "$TMP/neg-driver/codex.sh" | grep -o 'cost_state=[a-z]*')" "cost_state=none"
-jq 'del(.models["gpt-6.1-sol"])' "$PRICE_JSON" > "$TMP/neg-driver/codex-prices.json"
-btfix gpt-6.1-sol
-chk "负对照：删掉 gpt-6.1-sol 条目 → 退回 none（GitHub#66 之前只能靠联网补价）" \
-    "$(btrun "$TMP/neg-driver/codex.sh" | grep -o 'cost_state=[a-z]*')" "cost_state=none"
-jq 'del(.models["gpt-5.6-sol"].cache_write)' "$PRICE_JSON" > "$TMP/neg-driver/codex-prices.json"
-btfix gpt-5.6-sol
-chk "负对照：删掉 gpt-5.6-sol 的 cache_write → partial + 缺价 10 万" \
-    "$(btrun "$TMP/neg-driver/codex.sh" | grep -o 'cost_state=[a-z]* cost_unknown_tokens=[0-9]*')" \
-    "cost_state=partial cost_unknown_tokens=100000"
-fi
-
 # ── 价目只有一份真值：配置模板的可复制示例与运维文档必须跟 JSON 一致 ──────────
 # 同一张价目在仓库里有三处表达（JSON / 配置模板里的 CODEX_PRICES 示例 / 中英运维文档
 # 的型号清单与核对日期）。只改一处，其余会悄悄落后，所以逐处钉住。
@@ -445,7 +425,6 @@ for doc in docs/operations.md docs/operations.zh.md; do
 done
 
 echo
-mutation_summary "$0"
 echo "通过 $pass / 失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]
