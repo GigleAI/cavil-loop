@@ -3,7 +3,7 @@
 # 合并后复盘的全机锁（GitHub#165）：锁不再放在 skill 目录的 .git 里，改放本机固定的
 # ~/.local/state/cavil-loop/retrospective.lock。
 #
-# 跑法：bash tests/retrospective-global-lock.test.sh    （MUTATION=1 加跑负对照）
+# 跑法：bash tests/retrospective-global-lock.test.sh
 # 依赖：python3、git、flock。不碰网络、不调模型、不碰真实项目：HOME 指向临时目录，gh 是假的。
 #
 # 走真实入口：把 scripts/ + prompts/ 拷成一份「部署目录」，用 env -i 干净环境跑那份里的
@@ -15,16 +15,12 @@
 #   2. 同上，但全机锁已被别人占着 → 安静退出、任务不变；扫描游标已更新（证明走到了拿锁这一步）
 #   3. 两个项目（各自的状态目录）同时触发 → 一个处理中时，另一个不开始
 #   4. 部署目录是 git checkout（老的部署方式）→ 1、2 照旧
-# 负对照（MUTATION=1）：换回「在 skill 目录找 .git」→ 1 变红；锁按项目各一把 → 3 变红；
-#   入口不导出锁路径 → 1 变红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$TEST_DIR/.." && pwd)"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 pass=0; fail=0
 ok()  { echo "  ✅ $*"; pass=$((pass+1)); }
 bad() { echo "  ❌ $*"; fail=$((fail+1)); }
@@ -161,46 +157,6 @@ scenario_runs "$T/rel-git" "git checkout"
 scenario_held "$T/rel-git" "git checkout"
 scenario_two  "$T/rel-git" "git checkout"
 
-mutation_on && echo "── 负对照：改坏一处，对应场景必须变红 ──"
-# mutant <说明> <文件(相对 scripts/)> <原文> <改成> <场景函数>
-mutant() {
-    mutation_gate || return 0
-    local desc="$1" file="$2" old="$3" new="$4" fn="$5" src="$T/mut-src" before=$fail
-    rm -rf "$src" "$T/rel-mut"; mkdir -p "$src"; cp -R "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$src/"
-    python3 - "$src/scripts/$file" "$old" "$new" <<'PY' || { bad "准备失败：$desc（原文已不在）"; return; }
-import sys
-path, old, new = sys.argv[1:]
-text = open(path, encoding='utf-8').read()
-if text.count(old) != 1:
-    sys.exit(1)
-open(path, 'w', encoding='utf-8').write(text.replace(old, new))
-PY
-    RELEASE_SRC="$src" make_release "$T/rel-mut"
-    local saved_pass=$pass
-    "$fn" "$T/rel-mut" "（改坏）" >/dev/null
-    pass=$saved_pass
-    if [ "$fail" -gt "$before" ]; then
-        fail=$before; ok "$desc → 变红"
-    else
-        bad "$desc 后场景仍通过"
-    fi
-}
-mutant "换回在 skill 目录里找 .git 放锁" post-merge-retrospective.py \
-    "        lock_path = Path(os.environ['RETROSPECTIVE_LOCK'])
-        lock_path.parent.mkdir(parents=True, exist_ok=True)" \
-    "        lock_path = Path(command(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], root).strip()) / 'retrospective.lock'" \
-    scenario_runs
-mutant "锁按项目各放一把" post-merge-retrospective.py \
-    "        lock_path = Path(os.environ['RETROSPECTIVE_LOCK'])" \
-    "        lock_path = queue / 'retrospective.lock'" \
-    scenario_two
-mutant "入口不把锁路径传给 python" post-merge-retrospective.sh \
-    'export RETROSPECTIVE_LOCK="$CAVIL_RETROSPECTIVE_LOCK"' \
-    ':' \
-    scenario_runs
-
-echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

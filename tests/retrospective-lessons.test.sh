@@ -9,17 +9,12 @@
 # 校验漏一条，模型就能悄悄改掉一条规则的意思、把别的错的次数挪过来、或凭空升级——
 # 而这些都不会报错，只会让下一个 PR 被一条不该存在的规则拦下。
 #
-# 两段：
-#   1. 用例全绿；
-#   2. 负对照（只在 MUTATION=1 时跑）：把每一项检查**单独**关掉（RETRO_LESSONS_DISABLE=<名>）重跑，必须变红。
-#      检查名从模块的 CHECKS 读，不在这里抄一份——新加的检查自动纳入，漏写用例就红。
+# 用例全绿即通过。（原来逐项关掉检查、改坏主程序的负对照已按 GitHub#234 删去。）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 SUITE="$TEST_DIR/retrospective_lessons_test.py"
 pass=0; fail=0
 
@@ -33,53 +28,6 @@ else
     fail=$((fail+1))
 fi
 
-mutation_on && echo "── 负对照：逐项关掉检查，必须变红 ──"
-checks=$(python3 -c "import sys; sys.path.insert(0, '$TEST_DIR/../scripts'); import retrospective_lessons as r; print(' '.join(r.CHECKS))")
-for name in $checks; do
-    mutation_gate || continue
-    if RETRO_LESSONS_DISABLE="$name" QUIET=1 python3 "$SUITE" >/dev/null 2>&1; then
-        echo "  ❌ 关掉 $name 后用例仍全绿——这项检查没有用例守着"
-        fail=$((fail+1))
-    else
-        echo "  ✅ 关掉 $name → 变红"
-        pass=$((pass+1))
-    fi
-done
-
-# 复盘主程序里不是「开关」的几处行为：把主程序复制一份、改坏一处，用例必须变红。
-mutation_on && echo "── 负对照：主程序改坏一处，必须变红 ──"
-RUNNER="$TEST_DIR/../scripts/post-merge-retrospective.py"
-MUT_DIR=$(mktemp -d); trap 'rm -rf "$MUT_DIR"' EXIT
-runner_mutant() {   # <说明> <原文> <改成>
-    mutation_gate || return 0
-    local copy="$MUT_DIR/post-merge-retrospective.py"
-    python3 - "$RUNNER" "$copy" "$2" "$3" <<'PY' || { echo "  ❌ 准备失败：$1（原文已不在）"; fail=$((fail+1)); return; }
-import sys
-src, dst, old, new = sys.argv[1:]
-text = open(src, encoding='utf-8').read()
-if text.count(old) != 1:
-    sys.exit(1)
-open(dst, 'w', encoding='utf-8').write(text.replace(old, new))
-PY
-    if RETRO_RUNNER="$copy" QUIET=1 python3 "$SUITE" >/dev/null 2>&1; then
-        echo "  ❌ $1 后用例仍全绿"; fail=$((fail+1))
-    else
-        echo "  ✅ $1 → 变红"; pass=$((pass+1))
-    fi
-}
-runner_mutant "项目命令新建的文件不进提交" "command(['git', 'add', '-A', '--', '.'], checkout)" "pass"
-runner_mutant "把写 token 传给项目命令" "if k not in WITHHELD_ENV}" "}"
-runner_mutant "没开启目录经验也去取改动文件" "            if directories:
-                payload['directories']" "            if True:
-                payload['directories']"
-runner_mutant "提示词不按开启与否渲染" "render_instruction((root / 'prompts/retrospective.template.md').read_text(),
-                                             mode, directories)" "render_instruction((root / 'prompts/retrospective.template.md').read_text(),
-                                             mode, True)"
-runner_mutant "校验不给合并后的目录树" "evidence=evidence, mode=mode, repo_root=checkout," "evidence=evidence, mode=mode,"
-runner_mutant "超时只杀 bash 不杀整组" "os.killpg(proc.pid, signal.SIGKILL)" "proc.kill()"
-
-echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

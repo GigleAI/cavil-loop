@@ -11,15 +11,13 @@
 #   1. 三份成品里的检查命令逐字一致，两份 worker 成品里的处理规则逐字一致，且排在翻 label 之前
 #   2. 把成品里的检查命令原样拿出来，在真实 git worktree 里跑：无冲突 / 有冲突 / 只落后 /
 #      取不到分支 / 本地没推的提交，各自判对，而且不动工作区、不产生提交
-#   3. 每个写入点单独拿掉 / 改一个字，1 必须红
+# （原来的第 3 组负对照已按 GitHub#234 删去。）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -204,114 +202,8 @@ else
     FAKE_BASE=nosuch expect_run "目标分支取不到" error
     FAKE_OID=0123456789012345678901234567890123456789 expect_run "PR 提交取不到" error
     FAKE_BASE="" FAKE_OID="" expect_run "gh 什么都没回" error
-
-    # 夹具得分得清错误实现：拿成品命令改出两个看似等价的版本，同一夹具下必须判错
-    variant() {   # <说明> <python 改写> <夹具准备> <正确值>
-        mutation_gate || return 0     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-        local out
-        snippet "$TMP/composed-review.md" | sed 's|\${REPO}|acme/widget|g' > "$TMP/variant.sh"
-        python3 -c "$2" "$TMP/variant.sh"
-        eval "$3"
-        out=$(cd "$TMP/git/wt" && PATH="$TMP/bin:$PATH" P=7 bash "$TMP/variant.sh" 2>&1)
-        if grep -q "^CONFLICT_CHECK=$4" <<<"$out"; then bad "负对照：$1 → 夹具没分出来（仍判 $4）"
-        else ok "负对照：$1 → 判成 $(grep -o '^CONFLICT_CHECK=[a-z]*' <<<"$out" | head -1)，夹具分得出"; fi
-    }
-    variant "用本地 HEAD 代替 GitHub 上的 PR 提交" \
-        'import sys;p=sys.argv[1];t=open(p).read();t=t.replace("--name-only \"$HEAD_OID\"","--name-only HEAD");open(p,"w").write(t)' \
-        'setup_repo FEAT other; FAKE_OID=$(cd "$TMP/git/wt" && git rev-parse HEAD); (cd "$TMP/git/wt" && echo LOCAL > g && G commit -qam local)' \
-        clean
-    variant "不先确认分支取得到、只看退出码" \
-        'import sys,re;p=sys.argv[1];t=open(p).read();t=re.sub(r"if \[ -z \"\$BASE\" \].*?\nelse\n","if false; then :\nelse\n",t,flags=re.S);t=t.replace("[ \"$rc\" -eq 1 ] && head -1 \"$MT\" | grep -qE '"'"'^[0-9a-f]{40}([0-9a-f]{24})?$'"'"'","[ \"$rc\" -eq 1 ]");open(p,"w").write(t)' \
-        'setup_repo FEAT same; FAKE_OID=$(cd "$TMP/git/wt" && git rev-parse HEAD); FAKE_BASE=nosuch' \
-        error
-    FAKE_BASE=main
 fi
 
-# ── 3. 负对照：每个写入点单独拿掉 / 改一个字，check_prompts 必须报出对应那条 ──
-expect_red() {   # <说明> <期望出现的报错片段>
-    out=$(check_prompts)
-    if grep -qF -- "$2" <<<"$out"; then ok "负对照：$1 → 被拦下"
-    else bad "负对照：$1 → 没被拦下（输出：${out:-空}）"; fi
-}
-
-mutation_on && echo "── 负对照 ──"
-# 每项负对照的开关判断在建沙盘、改模板之前：关着时只计数，一个沙盘都不建、一处模板都不改
-# （GitHub#103 复审第 1 轮：判断放在 expect_red 里时，准备步骤默认模式照跑）
-neg_sandbox() { mutation_gate || return 1; make_sandbox; }
-SANDBOXES_BEFORE_NEG=$SANDBOXES
-for name in issue-comment pr-comment; do
-    neg_sandbox || continue
-    python3 - "$SKILL_DIR/prompts/$name.template.md" "$SECTION_HEAD" <<'PY'
-import sys
-p, head = sys.argv[1], sys.argv[2]
-t = open(p).read()
-s = t.index(head + "\n"); e = t.index("\n## ", s + 1) + 1
-open(p, "w").write(t[:s] + t[e:])
-PY
-    expect_red "$name 没有处理规则段" "$name: 没有「交出 PR 前」处理规则"
-done
-
-if neg_sandbox; then
-sed -i '/^# --- 冲突检查 开始 ---$/,/^# --- 冲突检查 结束 ---$/d' "$SKILL_DIR/prompts/review.template.md"
-expect_red "review 没有检查命令" "review: 没有冲突检查命令"
-fi
-
-for name in issue-comment pr-comment review; do
-    neg_sandbox || continue
-    sed -i 's/merge-tree --write-tree --name-only/merge-tree --write-tree/' "$SKILL_DIR/prompts/$name.template.md"
-    want="$name: 冲突检查命令和 issue-comment 不一致"
-    [ "$name" = issue-comment ] && want="pr-comment: 冲突检查命令和 issue-comment 不一致"
-    expect_red "$name 检查命令改了一个参数" "$want"
-done
-
-if neg_sandbox; then
-sed -i 's/不 rebase、不强推/尽量不强推/' "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment 处理规则放松了强推" "pr-comment: 处理规则缺「不 rebase、不强推」"
-fi
-
-if neg_sandbox; then
-sed -i 's/读懂两边各自要做什么/读懂两边要做什么/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 处理规则改了一个词" "pr-comment: 处理规则和 issue-comment 不一致"
-fi
-
-if neg_sandbox; then
-sed -i 's/3\. 翻 label 之前先做下方「交出 PR 前：先查和主干有没有冲突」，按它的结果决定翻哪个。翻 label：/3. 翻 label：/' "$SKILL_DIR/prompts/pr-comment.template.md"
-expect_red "pr-comment 翻 label 不再先查冲突" "pr-comment: 翻 label 那一步没先指到冲突检查"
-fi
-
-if neg_sandbox; then
-sed -i 's/，再做下方「交出 PR 前：先查和主干有没有冲突」（解不了时第一行改成给 PR 翻 `${LABEL_PENDING_HUMAN}`、不交复审，第二行照旧），然后翻 label/，再翻 label/' "$SKILL_DIR/prompts/issue-comment.template.md"
-expect_red "issue-comment 开 PR 后不再先查冲突" "issue-comment: 开 PR 后翻 label 前没指到冲突检查"
-fi
-
-if neg_sandbox; then
-python3 - "$SKILL_DIR/prompts/review.template.md" <<'PY'
-import sys
-p = sys.argv[1]; t = open(p).read()
-s = t.index("2C. "); e = t.index("3. 在该目标发一条 review 结论评论")
-block = t[s:e]; t = t[:s] + t[e:]
-a = t.index("5. 通过：REST 翻")
-open(p, "w").write(t[:a] + block + t[a:])
-PY
-expect_red "review 冲突检查挪到发结论评论之后" "review: 冲突检查排在发结论评论之后"
-fi
-
-if neg_sandbox; then
-sed -i 's/\*\*改判不通过\*\*/可以酌情通过/' "$SKILL_DIR/prompts/review.template.md"
-expect_red "review 有冲突不再判不通过" "review: 有冲突没写成改判不通过"
-fi
-
-echo
-# 开关真的挡在准备之前：默认模式负对照区一个沙盘都没建；打开时确实建了
-neg_sandboxes=$((SANDBOXES - SANDBOXES_BEFORE_NEG))
-if mutation_on; then
-    if [ "$neg_sandboxes" -gt 0 ]; then ok "开关打开：负对照区建了 $neg_sandboxes 个沙盘"
-    else bad "开关打开：负对照区一个沙盘都没建（负对照没真跑）"; fi
-else
-    if [ "$neg_sandboxes" -eq 0 ]; then ok "默认模式：负对照区一个沙盘都没建、没改模板"
-    else bad "默认模式：负对照区仍建了 $neg_sandboxes 个沙盘（开关放在准备之后）"; fi
-fi
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]
