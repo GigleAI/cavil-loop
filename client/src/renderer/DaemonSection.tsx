@@ -12,7 +12,7 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { copyText } from './pasteImage';
-import { ago, checklist, toolRows, refreshOk, refreshWord, schedWord, type DaemonProject, type DaemonResult, type DaemonStatus, type DaemonUpdate, type LocalStatus, type CheckRow } from '../shared/daemon';
+import { ago, checklist, toolRows, refreshOk, refreshWord, schedWord, type DaemonProject, type DaemonResult, type DaemonStatus, type DaemonUpdate, type LocalStatus, type Outdated, type CheckRow } from '../shared/daemon';
 
 type Ask = { kind: 'stop' | 'start' | 'disconnect'; p: DaemonProject };
 
@@ -111,7 +111,7 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
       <p className="muted small">
         daemon 是在这台电脑上替人处理 issue / PR 的后台程序（cavil-loop）。这里检查它装没装、缺什么、接了哪些项目、在不在跑。客户端只在本机跑 daemon 自带的脚本，不替人装系统软件，也不把客户端的 GitHub 登录交给它。
       </p>
-      <Summary status={status} checking={checking} busy={busy} onCheck={check} onInstall={() => run('install', () => api().daemonInstall(), (r) => r.result === 'installed' || r.result === 'existing', (r) => r.output ?? '已安装')} />
+      <Summary status={status} checking={checking} busy={busy} update={update} onUpdate={doUpdate} onCheck={check} onInstall={() => run('install', () => api().daemonInstall(), (r) => r.result === 'installed' || r.result === 'existing', (r) => r.output ?? '已安装')} />
       {notes.install && <Note id="install" note={notes.install} />}
       {status?.state === 'ok' && (
         <>
@@ -141,7 +141,7 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
   );
 }
 
-function Summary({ status, checking, busy, onCheck, onInstall }: { status: DaemonStatus | null; checking: boolean; busy: string | null; onCheck: () => void; onInstall: () => void }) {
+function Summary({ status, checking, busy, update, onUpdate, onCheck, onInstall }: { status: DaemonStatus | null; checking: boolean; busy: string | null; update: DaemonUpdate | null; onUpdate: () => void; onCheck: () => void; onInstall: () => void }) {
   const again = (
     <button className="ghost" data-testid="daemon-recheck" disabled={checking || !!busy} onClick={onCheck}>
       <Icon name="refresh" />
@@ -186,6 +186,7 @@ function Summary({ status, checking, busy, onCheck, onInstall }: { status: Daemo
             <CheckList rows={toolRows(status.precheck.base_deps.missing, status.precheck.os)} />
           </>
         )}
+        {status.outdated && <OutdatedDaemon o={status.outdated} busy={busy} result={update} onUpdate={onUpdate} />}
         <div className="row">{again}</div>
       </div>
     );
@@ -353,35 +354,79 @@ function Update({ st, busy, result, onUpdate }: { st: LocalStatus; busy: string 
           {busy === 'update' ? '正在更新…' : '更新 daemon'}
         </button>
       </div>
-      {result && (
-        <div data-testid="daemon-update-result" data-result={result.result}>
-          <p className={`small${result.result === 'blocked' || result.result === 'refused' ? ' err' : ''}`}>
-            {result.result === 'updated'
-              ? `已更新：${result.before?.slice(0, 12)} → ${result.after?.slice(0, 12)}`
-              : result.result === 'current'
-                ? '已经是最新'
-                : result.result === 'blocked'
-                  ? `没有更新：${result.step}`
-                  : result.result === 'managed'
-                    ? result.output
-                    : `没有更新：${result.output}`}
-          </p>
-          {result.result === 'blocked' && result.output && <pre className="daemon-output small err">{result.output}</pre>}
-          {(result.refresh ?? []).length > 0 && (
-            <ul className="daemon-refresh">
-              {result.refresh!.map((r, i) => (
-                <li key={r.key ?? i} data-testid="daemon-refresh" data-key={r.key ?? ''} data-result={r.result}>
-                  <span className={refreshOk(r.result) ? 'ok-mark' : 'err'}>
-                    <Icon name={refreshOk(r.result) ? 'check' : 'warn'} />
-                  </span>
-                  <b>{r.key ?? '后台任务配置'}</b>：{refreshWord(r.result)}
-                  {!refreshOk(r.result) && <pre className="daemon-output small err">{r.output}</pre>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      {result && <UpdateResult result={result} />}
+    </div>
+  );
+}
+
+/** What one update did: the commits, git's words when it stopped, each Mac project's refresh. */
+function UpdateResult({ result }: { result: DaemonUpdate }) {
+  return (
+    <div data-testid="daemon-update-result" data-result={result.result}>
+      <p className={`small${result.result === 'blocked' || result.result === 'refused' ? ' err' : ''}`}>
+        {result.result === 'updated'
+          ? `已更新：${result.before?.slice(0, 12)} → ${result.after?.slice(0, 12)}`
+          : result.result === 'current'
+            ? '已经是最新'
+            : result.result === 'blocked'
+              ? `没有更新：${result.step}`
+              : result.result === 'managed'
+                ? result.output
+                : `没有更新：${result.output}`}
+      </p>
+      {result.result === 'blocked' && result.output && <pre className="daemon-output small err">{result.output}</pre>}
+      {(result.refresh ?? []).length > 0 && (
+        <ul className="daemon-refresh">
+          {result.refresh!.map((r, i) => (
+            <li key={r.key ?? i} data-testid="daemon-refresh" data-key={r.key ?? ''} data-result={r.result}>
+              <span className={refreshOk(r.result) ? 'ok-mark' : 'err'}>
+                <Icon name={refreshOk(r.result) ? 'check' : 'warn'} />
+              </span>
+              <b>{r.key ?? '后台任务配置'}</b>：{refreshWord(r.result)}
+              {!refreshOk(r.result) && <pre className="daemon-output small err">{r.output}</pre>}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * A daemon from before the status script (GitHub#320). A checkout gets the same fast-forward as the
+ * update below; the others only get what is known — no promise that waiting helps, no manual steps.
+ */
+function OutdatedDaemon({ o, busy, result, onUpdate }: { o: Outdated; busy: string | null; result: DaemonUpdate | null; onUpdate: () => void }) {
+  if (o.form === 'checkout') {
+    return (
+      <div data-testid="daemon-outdated" data-form="checkout">
+        <p className="small">
+          这份 daemon 是 git 代码目录 <code>{o.target}</code>，可以在这里更新到带状态脚本的新版本。「更新 daemon」只做快进拉取：代码目录里有没提交的改动、或有自己的提交分叉时停下，原样显示 git 的输出，不覆盖。更新后自动重新检查。
+        </p>
+        <div className="row">
+          <button className="primary" data-testid="daemon-update-run" disabled={!!busy} onClick={onUpdate}>
+            {busy === 'update' ? '正在更新…' : '更新 daemon'}
+          </button>
+        </div>
+        {result && <UpdateResult result={result} />}
+      </div>
+    );
+  }
+  return (
+    <p className="small" data-testid="daemon-outdated" data-form={o.form}>
+      {o.form === 'managed' ? (
+        <>
+          这份 daemon 是受管安装（<code>{o.target}</code>），按设计会在主干合入后自动换到新版本。它现在仍是旧版本，原因客户端判断不了（可能是定时任务没在跑、拉取失败或换版本失败）。可以稍后点「重新检查」；一直不变时需要人查看 daemon 的运行日志。
+        </>
+      ) : o.form === 'directory' ? (
+        <>
+          这份 daemon（<code>{o.target}</code>）不是 git 代码目录，也不是受管安装：客户端更新不了它，它也不会自己更新，需要维护者自行处理这份安装。
+        </>
+      ) : (
+        <>
+          读不出这份 daemon 是哪种安装，没有提供更新：<span data-testid="daemon-outdated-error">{o.form === 'unknown' ? o.error : ''}</span>
+        </>
+      )}
+    </p>
   );
 }

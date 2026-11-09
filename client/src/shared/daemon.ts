@@ -46,10 +46,18 @@ export interface Precheck {
   base_deps: { missing: string[] };
 }
 
+/**
+ * A daemon from before the status script (GitHub#320), as the back end judged it on its own: a git checkout
+ * (can be updated from here), a managed release, a plain folder, or not known (`error` says why).
+ */
+export type Outdated =
+  | { form: 'checkout' | 'managed' | 'directory'; target: string }
+  | { form: 'unknown'; error: string };
+
 export type DaemonStatus =
   | { state: 'missing'; entry: string }
   /** `precheck`: the status script could check only the common tools (no jq) — those are still listed */
-  | { state: 'unreadable'; reason: string; entry: string | null; precheck?: Precheck }
+  | { state: 'unreadable'; reason: string; entry: string | null; precheck?: Precheck; outdated?: Outdated }
   | { state: 'ok'; entry: string; status: LocalStatus };
 
 /** `refused`: the back end did not run anything (the reason is `output`) */
@@ -69,8 +77,10 @@ export interface DaemonRefresh {
 }
 
 export interface DaemonUpdate extends DaemonResult {
-  result: 'updated' | 'current' | 'blocked' | 'managed' | 'refused';
+  /** `still_old`: pulled, but what the checkout follows still has no status script (GitHub#320) */
+  result: 'updated' | 'current' | 'blocked' | 'managed' | 'refused' | 'still_old';
   step?: string;
+  branch?: string;
   before?: string;
   after?: string;
   version?: string | null;

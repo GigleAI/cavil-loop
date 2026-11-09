@@ -12,7 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
-import { addTool, appendLine, connect, daemonEnv, daemonWorld, installByHand, pathFor, pushDaemonChange, systemTool, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { addTool, appendLine, connect, daemonEnv, daemonWorld, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, systemTool, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -228,4 +228,54 @@ test('a job whose state cannot be read: "读不到", and neither stop nor start 
   await expect(row.getByTestId('daemon-stop')).toHaveCount(0);
   await expect(row.getByTestId('daemon-start')).toHaveCount(0);
   await shot(page, '6-job-unknown');
+});
+
+// GitHub#320: a daemon from before the status script.
+test('a daemon too old for the status script: a checkout gets "更新 daemon", and after it the section shows the daemon', async () => {
+  installOld(w);
+  const { page } = await openSection('Darwin', pathFor(w));
+  const sum = page.getByTestId('daemon-summary');
+  await expect(sum).toHaveAttribute('data-state', 'unreadable');
+  await expect(page.getByTestId('daemon-reason')).toContainText('版本太旧');
+  await expect(page.getByTestId('daemon-reason')).not.toContainText('git -C');
+  await expect(page.getByTestId('daemon-outdated')).toHaveAttribute('data-form', 'checkout');
+  await shot(page, '8-outdated-checkout');
+  await page.getByTestId('daemon-update-run').click();
+  // checked again by itself: the daemon is read now, and the result stays visible under it
+  await expect(sum).toHaveAttribute('data-state', 'ok', { timeout: 30_000 });
+  await expect(page.getByTestId('daemon-update-result')).toHaveAttribute('data-result', 'updated');
+  await expect(page.getByTestId('daemon-version')).not.toHaveText('读不出');
+  await shot(page, '9-outdated-updated');
+});
+
+test('a daemon too old for the status script, not a checkout: no button; managed does not guess why, a plain folder promises no waiting', async () => {
+  // managed release
+  const rel = plainOldCopy(w, join(w.home, '.agents', 'releases', 'cavil-loop', 'releases', 'abc123'));
+  mkdirSync(dirname(w.skill), { recursive: true });
+  const { symlinkSync, rmSync } = await import('node:fs');
+  symlinkSync(rel, w.skill);
+  const { page } = await openSection('Linux', pathFor(w));
+  const box = page.getByTestId('daemon-outdated');
+  await expect(box).toHaveAttribute('data-form', 'managed');
+  await expect(box).toContainText('原因客户端判断不了');
+  await expect(box).not.toContainText('说明 daemon 的定时任务没在跑');
+  await expect(page.getByTestId('daemon-update-run')).toHaveCount(0);
+  await shot(page, '10-outdated-managed');
+
+  // a plain folder, through a link
+  rmSync(w.skill);
+  symlinkSync(plainOldCopy(w, join(w.dir, 'plain', 'daemon')), w.skill);
+  await page.getByTestId('daemon-recheck').click();
+  await expect(box).toHaveAttribute('data-form', 'directory');
+  await expect(box).toContainText('不会自己更新');
+  for (const promise of ['重新检查', '等几分钟', '稍后', '重新安装', '点「安装」', '点『安装』', '移走']) await expect(box).not.toContainText(promise);
+  await expect(page.getByTestId('daemon-update-run')).toHaveCount(0);
+  await shot(page, '11-outdated-directory');
+
+  // cannot tell: a .git that git does not confirm
+  mkdirSync(join(w.dir, 'plain', 'daemon', '.git'));
+  await page.getByTestId('daemon-recheck').click();
+  await expect(box).toHaveAttribute('data-form', 'unknown');
+  await expect(page.getByTestId('daemon-outdated-error')).toContainText('git 没有确认');
+  await expect(page.getByTestId('daemon-update-run')).toHaveCount(0);
 });
