@@ -393,7 +393,7 @@ describe('the description is read from both kinds of source (GitHub#275)', () =>
 });
 
 describe('folded groups next to each other are one line (GitHub#275)', () => {
-  const g = (key: string): Group => ({ key, title: key, subtitle: null, current: false, empty: false, preset: { by: 'none' }, rows: [] });
+  const g = (key: string): Group => ({ key, title: key, subtitle: null, current: false, empty: false, preset: { by: 'none' }, column: null, section: null, rows: [] });
   const shape = (groups: Group[], folded: string[]) =>
     foldRuns(groups, new Set(folded)).map((r) => (r.kind === 'group' ? `${folded.includes(r.group.key) ? '▸' : '▾'}${r.group.key}` : `[${r.groups.map((x) => x.key).join(' ')}]`));
 

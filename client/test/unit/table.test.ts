@@ -232,7 +232,7 @@ describe('"all repositories": repository first, then the chosen grouping inside 
   const ALL = (patch: Partial<TableSettings> = {}) => T({ sliceByRepo: true, slice: null, ...patch });
   const nested = (t: Table) => t.repos!.map((r) => [r.title, r.itemCount, r.groups.map((g) => [g.title, g.rows.map((x) => `${'  '.repeat(x.depth)}${x.item.number}`)])]);
   /** what a group shows, without its key (keys carry the repository prefix) */
-  const shown = (gs: Group[]) => gs.map((g) => ({ ...g, key: undefined, rows: g.rows.map((r) => [r.item.key, r.depth, r.under]) }));
+  const shown = (gs: Group[]) => gs.map((g) => ({ ...g, key: undefined, section: undefined, rows: g.rows.map((r) => [r.item.key, r.depth, r.under]) }));
 
   it('grouped by iteration: one section per repository, alphabetical, each with only its own iterations; an item in two iterations shows twice and counts once', () => {
     const t = buildTable([...items()].reverse(), [A, B], ALL(), TODAY);

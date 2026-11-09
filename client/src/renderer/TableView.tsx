@@ -3,7 +3,8 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
-import { buildTable, foldRuns, type Group } from '../data/table';
+import { boardMode, buildTable, foldRuns, tableDropPlan, type Group, type Row } from '../data/table';
+import type { DropPlan } from '../data/board';
 import { issuePrLinks } from '../data/prNest';
 import { api } from './api';
 import { Person } from './Avatar';
@@ -285,6 +286,7 @@ export function TableView({
   canCreate = false,
   createTitle = '',
   folds = {},
+  onDropPlan,
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -301,6 +303,8 @@ export function TableView({
   createTitle?: string;
   /** folded groups, per "group by" — kept on this machine, so switching to the board and back, or a restart, keeps them (GitHub#231) */
   folds?: TableFolds;
+  /** a row dropped on another group (GitHub#294): the board's drop rule decided, the board runs it (change / refuse / ask) */
+  onDropPlan?: (plan: DropPlan) => void;
 }) {
   const dark = useDarkMode();
   const t = view.table;
@@ -308,6 +312,42 @@ export function TableView({
   const cols = t.columns.filter((c) => c !== 'title');
   const folded = new Set(folds[t.groupBy] ?? []);
   const toggle = (k: string) => void Promise.resolve(api().setTableFold(t.groupBy, k, !folded.has(k))).catch(() => undefined);
+
+  // ---- dragging a row to another group (GitHub#294): the board's drag, rows for cards, groups for columns ----
+  const canDrag = canWrite && Boolean(onDropPlan) && boardMode(t.groupBy) !== null;
+  const dragging = useRef<{ row: Row; from: Group } | null>(null);
+  const [dragRow, setDragRow] = useState<string | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+  const endDrag = () => {
+    dragging.current = null;
+    setDragRow(null);
+    setOver(null);
+  };
+  /** the handlers that make an element take a row dropped on group `g` */
+  const dropTarget = (g: Group) =>
+    canDrag && g.column
+      ? {
+          onDragOver: (e: React.DragEvent) => {
+            if (!dragging.current) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (over !== g.key) setOver(g.key);
+          },
+          onDragLeave: (e: React.DragEvent) => {
+            const to = e.relatedTarget as Node | null;
+            if (!to || !(e.currentTarget as Node).contains(to)) setOver((k) => (k === g.key ? null : k));
+          },
+          onDrop: (e: React.DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const d = dragging.current;
+            endDrag();
+            if (!d || !canWrite) return;
+            const plan = tableDropPlan(d.row, d.from, g, t.groupBy, projects);
+            if (plan.kind !== 'none') onDropPlan?.(plan);
+          },
+        }
+      : {};
 
   // ---- editing a cell (GitHub#205) ----
   // which cell is open: the table row (item + group: an item can show in two groups, PR #220 review round 1) and column
@@ -391,7 +431,15 @@ export function TableView({
   const groupBody = (g: Group, repo: string | null) => {
     const inRepo = repo !== null;
     return (
-    <tbody key={g.key} className={[inRepo ? 'in-repo' : '', t.groupBy !== 'none' ? 'grouped' : ''].filter(Boolean).join(' ') || undefined} data-testid="group" data-key={g.key} data-title={g.title}>
+    <tbody
+      key={g.key}
+      className={[inRepo ? 'in-repo' : '', t.groupBy !== 'none' ? 'grouped' : '', over === g.key ? 'drop-over' : ''].filter(Boolean).join(' ') || undefined}
+      data-testid="group"
+      data-key={g.key}
+      data-title={g.title}
+      data-drop-over={over === g.key ? 'yes' : undefined}
+      {...dropTarget(g)}
+    >
       {t.groupBy !== 'none' && (
         // GitHub#229: the whole row folds; the arrow stays a button (Tab reaches it) and its click is this same one
         <tr className="group-head" data-testid="group-head" onClick={() => toggle(g.key)} title={folded.has(g.key) ? '点一下展开这一组' : '点一下收起这一组'}>
@@ -407,7 +455,24 @@ export function TableView({
       )}
       {!folded.has(g.key) &&
         g.rows.map((r) => (
-          <tr key={r.id} data-testid="row" data-key={r.item.key} data-depth={r.depth} data-under={r.under ?? undefined}>
+          <tr
+            key={r.id}
+            data-testid="row"
+            data-key={r.item.key}
+            data-depth={r.depth}
+            data-under={r.under ?? undefined}
+            className={dragRow === r.id ? 'dragging' : undefined}
+            // an open cell editor keeps its text box / dropdowns usable: that row does not drag
+            draggable={canDrag && editing?.row !== r.id}
+            onDragStart={(e) => {
+              if (!canDrag || editing?.row === r.id) return;
+              e.dataTransfer.setData('text/plain', r.item.key);
+              e.dataTransfer.effectAllowed = 'move';
+              dragging.current = { row: r, from: g };
+              setDragRow(r.id);
+            }}
+            onDragEnd={endDrag}
+          >
             <td
               className="title-cell"
               data-testid="title-cell"
@@ -496,9 +561,11 @@ export function TableView({
           {groups.map((g) => (
             <button
               key={g.key}
-              className="link fold-run-group"
+              className={`link fold-run-group${over === g.key ? ' drop-over' : ''}`}
               data-testid="fold-run-group"
               data-key={g.key}
+              data-drop-over={over === g.key ? 'yes' : undefined}
+              {...dropTarget(g)}
               title={`展开「${g.title}」`}
               onClick={() => toggle(g.key)}
             >
