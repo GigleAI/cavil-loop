@@ -407,15 +407,29 @@ jobs:
           } > release-notes.md
           cat release-notes.md
 
+      # Right before the page is created, the remote's tag must still point at the commit the
+      # gate tested (deleted, moved or unreadable → no page), and --verify-tag stops gh from
+      # creating a missing tag on the default branch's tip, a commit the gate never saw
+      # (GitHub#309 review). Inline, not via scripts/release.sh: a tag pushed by hand checks
+      # out that tag's own, possibly older, script.
       - name: Create GitHub Release
         if: env.tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
         run: |
+          set -o pipefail
+          refs="$(git ls-remote --tags origin 'refs/tags/release/v*')"
+          now="$(awk -v t="refs/tags/$tag" '$2 == t { p = $1 } $2 == t "^{}" { q = $1 } END { print (q != "" ? q : p) }' <<<"$refs")"
+          if [ -z "$RELEASE_SHA" ] || [ "$now" != "$RELEASE_SHA" ]; then
+            echo "::error::the remote's $tag is at '${now:-nothing}', not the tested ${RELEASE_SHA:-?} — no Release page"
+            exit 1
+          fi
           # A tag pushed by hand on a commit older than --title falls back to the bare tag.
           title="$(bash scripts/release.sh --title "$tag" || echo "$tag")"
           gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
             --title "$title" \
             --notes-file release-notes.md
 

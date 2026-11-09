@@ -221,13 +221,16 @@ fullrun() {
     if [ -n "${MOVE_MAIN:-}" ]; then commit "$MOVE_MAIN"; fi
     # CUT_NOW: the clock when the release job runs, if it differs from the plan's (a run that
     # crosses midnight). The cut step must not care: it only uses what the plan decided.
-    fresh; CAVIL_RELEASE_NOW="${CUT_NOW:-${CAVIL_RELEASE_NOW:-}}" RELEASE_SHA="$PLAN_SHA" runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$CUT_OUT
+    # AFTER_CHECKOUT: run once the release job has its checkout, before it cuts (a tag deleted
+    # or moved on the remote meanwhile).
+    fresh; if [ -n "${AFTER_CHECKOUT:-}" ]; then eval "$AFTER_CHECKOUT"; fi
+    CAVIL_RELEASE_NOW="${CUT_NOW:-${CAVIL_RELEASE_NOW:-}}" RELEASE_SHA="$PLAN_SHA" runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$CUT_OUT
 $(cat "$TMP/out")"
     tag="$(sed -n 's/^tag=//p' "$TMP/env")"; export tag
     [ "$CUT_RC" = 0 ] && [ -n "$tag" ] || return 0
     runstep "$TMP/notes.sh"; NOTES_RC=$RC; NOTES="$(cat "$WORK/release-notes.md" 2>/dev/null || true)"
     [ "$NOTES_RC" = 0 ] || return 0
-    runstep "$TMP/create.sh"; CREATE_RC=$RC
+    RELEASE_SHA="$PLAN_SHA" runstep "$TMP/create.sh"; CREATE_RC=$RC
 }
 has() { case "$2" in *"$1"*) ok "$3" ;; *) bad "$3 (missing [$1])" ;; esac; }
 lacks() { case "$2" in *"$1"*) bad "$3 (unexpected [$1])" ;; *) ok "$3" ;; esac; }
@@ -353,10 +356,11 @@ RELEASE_SHA="$(git -C "$WORK" rev-parse HEAD)" runstep "$TMP/cut.sh"
 check "no tag exported" "$(cat "$TMP/env")" ""
 
 echo "-- a tag pushed by hand on a commit from before --title existed"
+git -C "$REMOTE" tag release/v2026.10.25.1 main
 fresh
 printf '#!/usr/bin/env bash\necho "usage: $0 [--dry-run]" >&2; exit 2\n' > "$WORK/scripts/release.sh"
 export tag=release/v2026.10.25.1
-runstep "$TMP/create.sh"
+RELEASE_SHA="$(git -C "$REMOTE" rev-parse main)" runstep "$TMP/create.sh"
 check "release still created" "$RC" 0
 check "title falls back to the bare tag" "$(title_arg)" "release/v2026.10.25.1"
 
@@ -553,6 +557,52 @@ TAGS_BEFORE="$(remote_tags_all)"
 EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-23 16:30')" GH_FAIL_API=1 fullrun
 [ "$PLAN_RC" != 0 ] && ok "plan step fails" || bad "plan step fails"
 check "no decision, no tag" "$PLAN_WORK:$(remote_tags_all)" ":$TAGS_BEFORE"
+
+echo "-- every read the decision needs is checked (code review round 1)"
+# A git that fails only the remote tag listing; everything else is the real git.
+mkdir -p "$TMP/gitfail"; REAL_GIT="$(command -v git)"
+printf '#!/usr/bin/env bash\n[ "$1" = ls-remote ] && { echo "fatal: injected" >&2; exit 128; }\nexec %q "$@"\n' "$REAL_GIT" > "$TMP/gitfail/git"
+chmod +x "$TMP/gitfail/git"
+git -C "$WORK" pull -q; commit j
+J="$(tip)"
+git -C "$REMOTE" tag release/v2026.11.22.1 "$J"         # a tag of the 11-22 week, no page
+commit k
+git -C "$WORK" fetch -q --tags
+CAVIL_RELEASE_NOW="$(at '2026-11-24 16:30')" run --plan --trigger schedule --released "$GH_RELEASES"
+check "listing works: plan the missing page on its own commit" "$RC:$(sed -n 's/^action=//p;s/^sha=//p;s/^tag=//p' "$TMP/out" | tr '\n' ' ')" "0:page $J release/v2026.11.22.1 "
+PATH="$TMP/gitfail:$PATH" CAVIL_RELEASE_NOW="$(at '2026-11-24 16:30')" run --plan --trigger schedule --released "$GH_RELEASES"
+check "listing fails: plan fails, writes no plan" "$RC:$(cat "$TMP/out")" "1:"
+PATH="$TMP/gitfail:$PATH" run --cut release/v2026.11.22.1 --at "$J" --page
+check "listing fails: --cut fails too" "$RC:$(cat "$TMP/out")" "1:"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-24 16:30')" fullrun
+check "workflow: page for the 11-22 tag on J" "$PLAN_ACTION:$PLAN_SHA:$CREATE_RC" "page:$J:0"
+grep -qxF -- --verify-tag "$TMP/gh-args" && ok "gh release create is told never to make the tag" || bad "gh release create is told never to make the tag"
+
+echo "-- the planned tag is deleted on the remote after the release job checked out"
+commit l
+L="$(tip)"
+EVENT=workflow_dispatch CAVIL_RELEASE_NOW="$(at '2026-11-24 16:30')" GH_FAIL_CREATE=1 fullrun
+check "a second tag of the week without its page" "$tag:$(tag_at release/v2026.11.22.2)" "release/v2026.11.22.2:$L"
+commit m
+PAGES_BEFORE="$(wc -l < "$GH_RELEASES")"
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-24 16:30')" AFTER_CHECKOUT='git -C "$REMOTE" tag -d release/v2026.11.22.2 >/dev/null' fullrun
+check "plan: page for it, on L" "$PLAN_ACTION:$PLAN_TAG:$PLAN_SHA" "page:release/v2026.11.22.2:$L"
+check "the release job's checkout still has it locally" "$(git -C "$WORK" rev-parse -q --verify 'refs/tags/release/v2026.11.22.2^{commit}')" "$L"
+[ "$CUT_RC" != 0 ] && ok "cut step fails" || bad "cut step fails"
+check "no tag exported, no page" "$tag:$(wc -l < "$GH_RELEASES")" ":$PAGES_BEFORE"
+check "no tag recreated on the remote" "$(tag_at release/v2026.11.22.2)" none
+
+echo "-- the tag moves on the remote between the cut step and the page"
+commit n
+N="$(tip)"; git -C "$REMOTE" tag release/v2026.11.22.3 "$N"
+fresh; export tag=release/v2026.11.22.3
+git -C "$REMOTE" tag -f release/v2026.11.22.3 "$L" >/dev/null
+PAGES_BEFORE="$(wc -l < "$GH_RELEASES")"
+RELEASE_SHA="$N" runstep "$TMP/create.sh"
+check "create step: tag no longer on the tested commit → fails, no page" "$([ "$RC" != 0 ] && echo red):$(wc -l < "$GH_RELEASES")" "red:$PAGES_BEFORE"
+git -C "$REMOTE" tag -d release/v2026.11.22.3 >/dev/null
+RELEASE_SHA="$N" runstep "$TMP/create.sh"
+check "create step: tag gone → fails, no page" "$([ "$RC" != 0 ] && echo red):$(wc -l < "$GH_RELEASES")" "red:$PAGES_BEFORE"
 
 echo "== release failure → issue (GitHub#285: the report-failure job, scripts/release_failure_report.py)"
 REPORT_PY="$REPO_DIR/scripts/release_failure_report.py"
