@@ -4,6 +4,7 @@
 # 用法：
 #   bash scripts/install-status.sh                 # 本机全部状态
 #   bash scripts/install-status.sh --agent codex   # 另外按 codex 判断依赖缺项（接新项目前的预检）
+#   bash scripts/install-status.sh --project <目录> # 另外读这个目录里已有的项目配置（接上前核对，GitHub#315）
 #
 # 不写任何文件、不改任何后台任务；可以随时跑。输出字段见 docs/operations.md
 # 「Machine-readable status」一节。几条硬规则：
@@ -22,10 +23,12 @@ source "$SCRIPT_DIR/_names.sh"
 source "$SCRIPT_DIR/_install.sh"
 
 CHECK_AGENT=""
+CHECK_PROJECT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --agent) CHECK_AGENT="${2:-}"; [ -n "$CHECK_AGENT" ] || { echo "--agent 后面要跟 agent 名" >&2; exit 1; }; shift 2 ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        --project) CHECK_PROJECT="${2:-}"; [ -n "$CHECK_PROJECT" ] || { echo "--project 后面要跟目录" >&2; exit 1; }; shift 2 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "不认识的参数：$1" >&2; exit 1 ;;
     esac
 done
@@ -237,8 +240,32 @@ else
     projects_json='[]'
 fi
 
+# ── --project：一个还没接上（或要重新接上）的目录里已有的项目配置 ──
+# setup.sh 遇到已有配置会原样保留，之后 daemon 用的是配置里的仓库和 agent，不是接上时选的。
+# 用上面同一个 read_config 读（和 daemon、setup.sh 同一种 shell 读法），调用方据此核对。
+#   config_state: none = 没有配置（setup.sh 会新建）/ ok / unreadable（source 失败）
+project_check_json=null
+if [ -n "$CHECK_PROJECT" ]; then
+    pc_config="$(cavil_project_config "$CHECK_PROJECT")"
+    pc_vals=()
+    if [ ! -e "$pc_config" ]; then
+        project_check_json="$(jq -cn --arg dir "$CHECK_PROJECT" '{dir:$dir, config:null, config_state:"none", repo:null, worker_agent:null}')"
+    else
+        if [ -f "$pc_config" ] && [ -r "$pc_config" ]; then
+            while IFS= read -r -d '' v; do pc_vals+=("$v"); done < <(read_config "$pc_config" "$CHECK_PROJECT" || true)
+        fi
+        if [ ${#pc_vals[@]} -eq 7 ]; then
+            project_check_json="$(jq -cn --arg dir "$CHECK_PROJECT" --arg config "$pc_config" --arg repo "${pc_vals[0]}" --arg agent "${pc_vals[2]}" \
+                '{dir:$dir, config:$config, config_state:"ok", repo:$repo, worker_agent:$agent}')"
+        else
+            project_check_json="$(jq -cn --arg dir "$CHECK_PROJECT" --arg config "$pc_config" '{dir:$dir, config:$config, config_state:"unreadable", repo:null, worker_agent:null}')"
+        fi
+    fi
+fi
+
 jq -n --arg os "$OS" --argjson scheduler "$(json_str_or_null "$SCHEDULER")" \
     --argjson daemon "$daemon_json" --argjson gh "$gh_json" --argjson base "$base_json" --argjson bash "$bash_json" \
-    --argjson agent_check "$agent_check_json" --argjson projects "$projects_json" '
+    --argjson agent_check "$agent_check_json" --argjson projects "$projects_json" --argjson project_check "$project_check_json" '
     {version:1, os:$os, scheduler:$scheduler, daemon:$daemon, gh:$gh,
-     base_deps:{missing:$base}, bash:$bash, agent_check:$agent_check, projects:$projects}'
+     base_deps:{missing:$base}, bash:$bash, agent_check:$agent_check, projects:$projects}
+    + (if $project_check == null then {} else {project_check:$project_check} end)'

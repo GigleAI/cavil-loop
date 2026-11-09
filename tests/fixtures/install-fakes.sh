@@ -3,7 +3,8 @@
 #
 # install_fakes <目录>：在 <目录> 下写出
 #   uname      -s 报 $FAKE_UNAME（默认 Linux），其余参数交给真 uname
-#   gh         auth status 的退出码 = $FAKE_GH_AUTH（默认 0）；建标签、列 issue / PR 都成功、返回空
+#   gh         auth status 的退出码 = $FAKE_GH_AUTH（默认 0）；repo view 报 $FAKE_GH_REPO（默认 acme/widget）；
+#              建标签、列 issue / PR 都成功、返回空
 #   systemctl  有状态：$FAKE_SD/<unit>.active / .enabled。FAKE_SD_MODE=fail → 连不上（stderr + 退出 1）；
 #              =empty → 什么都不输出、退出 0；FAKE_SD_STUCK=1 → disable / stop 不生效
 #   launchctl  有状态：$FAKE_LD/<label>.path（加载的是哪个文件）+ .content（加载那一刻的内容）。
@@ -27,7 +28,7 @@ EOF
 case "$*" in
     "auth status"*) exit "${FAKE_GH_AUTH:-0}" ;;
     "label create"*) exit 0 ;;
-    "repo view"*) echo "acme/widget"; exit 0 ;;
+    "repo view"*) echo "${FAKE_GH_REPO:-acme/widget}"; exit 0 ;;
     *"pr list"*|*"issue list"*) echo ""; exit 0 ;;
 esac
 echo '[]'

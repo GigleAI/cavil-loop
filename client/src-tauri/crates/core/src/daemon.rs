@@ -34,11 +34,11 @@ const EXTRA_PATH: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 /// Environment variables a child keeps (everything else is dropped).
 const KEEP_ENV: [&str; 9] = ["USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"];
 /// Kept output per command, from the end (the last lines say what went wrong).
-const OUTPUT_LIMIT: usize = 20_000;
+pub(crate) const OUTPUT_LIMIT: usize = 20_000;
 
-const T_STATUS: Duration = Duration::from_secs(90);
-const T_SHORT: Duration = Duration::from_secs(60);
-const T_NET: Duration = Duration::from_secs(300);
+pub(crate) const T_STATUS: Duration = Duration::from_secs(90);
+pub(crate) const T_SHORT: Duration = Duration::from_secs(60);
+pub(crate) const T_NET: Duration = Duration::from_secs(300);
 /// launchd-refresh.sh waits up to 300 s for the project's poll lock
 const T_REFRESH: Duration = Duration::from_secs(420);
 
@@ -130,11 +130,11 @@ pub struct Out {
 }
 
 impl Out {
-    fn ok(&self) -> bool {
+    pub(crate) fn ok(&self) -> bool {
         self.code == Some(0)
     }
     /// stdout then stderr, the end kept
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         let mut t = self.stdout.trim_end().to_string();
         let e = self.stderr.trim_end();
         if !e.is_empty() {
@@ -173,7 +173,7 @@ impl Out {
     }
 }
 
-fn tail(s: &str, n: usize) -> String {
+pub(crate) fn tail(s: &str, n: usize) -> String {
     if s.len() <= n {
         return s.to_string();
     }
@@ -221,25 +221,41 @@ pub fn github_remote(url: &str, extra: &[String]) -> bool {
 }
 
 pub struct Daemon {
-    cfg: Config,
+    pub(crate) cfg: Config,
     opener: Arc<dyn FileOpener>,
-    /// one changing operation at a time (install, stop / start, disconnect, update)
-    busy: tokio::sync::Mutex<()>,
+    /// the system's folder picker (GitHub#315: "接上 daemon"); None: the dialog only takes a typed path
+    pub(crate) picker: Option<Arc<dyn FolderPicker>>,
+    /// one changing operation at a time (install, stop / start, disconnect, update, connect)
+    pub(crate) busy: Arc<tokio::sync::Mutex<()>>,
+    /// "接上 daemon" runs in the background; the window reads its output as it comes (GitHub#315)
+    pub(crate) jobs: std::sync::Mutex<crate::daemon_connect::Jobs>,
 }
 
-const BUSY: &str = "另一个 daemon 操作还没结束，等它结束再试";
+/// Lets the person choose a folder (the app: Tauri's dialog plugin; the harness: the test).
+#[async_trait]
+pub trait FolderPicker: Send + Sync {
+    /// None: the person cancelled
+    async fn pick_folder(&self, start: Option<String>) -> Result<Option<String>, String>;
+}
+
+pub(crate) const BUSY: &str = "另一个 daemon 操作还没结束，等它结束再试";
 
 impl Daemon {
     pub fn new(cfg: Config, opener: Arc<dyn FileOpener>) -> Daemon {
-        Daemon { cfg, opener, busy: tokio::sync::Mutex::new(()) }
+        Daemon { cfg, opener, picker: None, busy: Arc::new(tokio::sync::Mutex::new(())), jobs: std::sync::Mutex::new(Default::default()) }
     }
 
-    fn home(&self) -> Result<&Path, String> {
+    pub fn with_picker(mut self, picker: Arc<dyn FolderPicker>) -> Daemon {
+        self.picker = Some(picker);
+        self
+    }
+
+    pub(crate) fn home(&self) -> Result<&Path, String> {
         self.cfg.home.as_deref().ok_or_else(|| "读不到本机用户目录（HOME），无法检查 daemon".to_string())
     }
 
     /// The stable skill entry: the new name, else the one from before the rename (scripts/_names.sh cavil_pick).
-    fn entry(&self) -> Result<PathBuf, String> {
+    pub(crate) fn entry(&self) -> Result<PathBuf, String> {
         let h = self.home()?;
         let new = h.join(".agents/skills/cavil-loop");
         let old = h.join(".agents/skills/coding-agent-work-loop");
@@ -247,7 +263,7 @@ impl Daemon {
         Ok(if there(&new) || !there(&old) { new } else { old })
     }
 
-    async fn path(&self) -> Result<String, String> {
+    pub(crate) async fn path(&self) -> Result<String, String> {
         let home = self.home()?.to_path_buf();
         Ok(match &self.cfg.path {
             PathSource::Fixed(p) => p.clone(),
@@ -279,7 +295,7 @@ impl Daemon {
     }
 
     /// The child's whole environment: the allow-list, HOME, PATH, no prompts.
-    fn prepare(&self, c: &mut tokio::process::Command, home: &Path, path: &str) {
+    pub(crate) fn prepare(&self, c: &mut tokio::process::Command, home: &Path, path: &str) {
         c.env_clear();
         for k in KEEP_ENV {
             if let Ok(v) = std::env::var(k) {
@@ -293,7 +309,7 @@ impl Daemon {
         c.kill_on_drop(true);
     }
 
-    async fn run(&self, path: &str, program: &str, args: &[&str], limit: Duration) -> Out {
+    pub(crate) async fn run(&self, path: &str, program: &str, args: &[&str], limit: Duration) -> Out {
         let home = match self.home() {
             Ok(h) => h.to_path_buf(),
             Err(e) => return Out { code: None, stdout: String::new(), stderr: e },
@@ -312,7 +328,7 @@ impl Daemon {
     }
 
     /// One of the daemon's own scripts, by its fixed path under the skill entry.
-    async fn script(&self, path: &str, name: &str, args: &[&str], limit: Duration) -> Out {
+    pub(crate) async fn script(&self, path: &str, name: &str, args: &[&str], limit: Duration) -> Out {
         let file = match self.entry() {
             Ok(e) => e.join("scripts").join(name),
             Err(m) => return Out { code: None, stdout: String::new(), stderr: m },
@@ -362,7 +378,7 @@ impl Daemon {
         }
     }
 
-    async fn status_ok(&self, path: &str) -> Result<Value, String> {
+    pub(crate) async fn status_ok(&self, path: &str) -> Result<Value, String> {
         let out = self.script(path, "install-status.sh", &[], T_STATUS).await;
         parse_status(&out).map_err(|r| format!("读不到本机 daemon 状态，没有执行：{r}"))
     }
@@ -624,11 +640,11 @@ impl Daemon {
     }
 }
 
-fn refused(m: &str) -> Value {
+pub(crate) fn refused(m: &str) -> Value {
     json!({ "result": "refused", "output": m })
 }
 
-fn parse_status(out: &Out) -> Result<Value, String> {
+pub(crate) fn parse_status(out: &Out) -> Result<Value, String> {
     if !out.ok() {
         let t = out.text();
         return Err(format!("状态脚本{}：{}", match out.code { Some(c) => format!("退出码 {c}"), None => "没有正常结束".into() }, if t.is_empty() { "没有输出".into() } else { t }));
@@ -653,11 +669,11 @@ fn parse_precheck(out: &Out) -> Option<Value> {
     Some(json!({ "os": v["os"], "base_deps": { "missing": missing } }))
 }
 
-fn find_project<'a>(st: &'a Value, key: &str) -> Option<&'a Value> {
+pub(crate) fn find_project<'a>(st: &'a Value, key: &str) -> Option<&'a Value> {
     st["projects"].as_array()?.iter().find(|p| p["key"].as_str() == Some(key))
 }
 
-fn which(program: &str, path: &str) -> Option<PathBuf> {
+pub(crate) fn which(program: &str, path: &str) -> Option<PathBuf> {
     if program.contains('/') {
         return Some(PathBuf::from(program));
     }
@@ -675,11 +691,11 @@ fn is_executable(p: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+pub(crate) fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 #[cfg(not(unix))]
-fn symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
+pub(crate) fn symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "只支持 macOS / Linux"))
 }
 

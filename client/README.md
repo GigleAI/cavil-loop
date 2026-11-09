@@ -1,6 +1,6 @@
 # Cavil Loop 客户端
 
-`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外三处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；讨论里的图片从 GitHub 自己的附件地址和图片代理加载，GitHub#205，以及仓库文件地址 `raw.githubusercontent.com`，GitHub#267；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184），和 daemon 没有任何交互，也不读 daemon 的配置。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。#214 在表格每个分组底部加了「＋ 新建 issue」：创建时只按这一组算出的清单（迭代 / 状态 / 里程碑）写，写前现读核对里程碑，对不上一条都不写。#304 让仓库顺序可以拖动：表格左侧的仓库列表、看板的泳道标题都能拖，表格分区、按仓库分组、新建 issue 的仓库列表跟着同一份顺序（`shared/repoOrder.ts`）；顺序只存在本机，不进视图设置，导入网页视图不会动它。搜索藏掉一部分仓库时拖动，只重排看得见的那几个仓库的位置，看不见的留在原位；看得见的全部记住，看不见的最多记 500 个。
+`client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外三处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；讨论里的图片从 GitHub 自己的附件地址和图片代理加载，GitHub#205，以及仓库文件地址 `raw.githubusercontent.com`，GitHub#267；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184）。设置页可以检查、安装本机的 cavil-loop daemon，并从仓库列表把仓库接上它（#314 / #315）：这时客户端在本机代跑 daemon 自带的脚本（状态检查、`setup.sh --yes`、断开项目、换新 Mac 后台任务配置）和固定的 `git` / `systemctl` / `launchctl` 命令，并读 daemon 的项目登记和项目配置里的 agent。窗口只能发几种固定请求，命令全在 Rust 后台执行、参数逐个校验（仓库名、agent 必须是 daemon 自带的、目录必须是 origin 指向所选仓库的 git 仓库）；子进程的环境按白名单给，客户端自己的 GitHub 凭据不交给这些脚本，daemon 用 `gh` 自己的登录；为此碰到的网络只有从 github.com 克隆 / 拉取 daemon 和要接上的仓库（`setup.sh` 建标签时经 `gh` 访问 GitHub）。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。#214 在表格每个分组底部加了「＋ 新建 issue」：创建时只按这一组算出的清单（迭代 / 状态 / 里程碑）写，写前现读核对里程碑，对不上一条都不写。#304 让仓库顺序可以拖动：表格左侧的仓库列表、看板的泳道标题都能拖，表格分区、按仓库分组、新建 issue 的仓库列表跟着同一份顺序（`shared/repoOrder.ts`）；顺序只存在本机，不进视图设置，导入网页视图不会动它。搜索藏掉一部分仓库时拖动，只重排看得见的那几个仓库的位置，看不见的留在原位；看得见的全部记住，看不见的最多记 500 个。
 
 ## 目录
 
@@ -22,6 +22,7 @@ src-tauri/   Tauri 外壳（Rust）
                         本地存储（store.rs，SQLite，表结构和 Electron 版相同）、代发请求只放行 GitHub 接口（http.rs）、命令表（api.rs）、
                         自动更新的判断（update.rs：挑哪个版本、什么时候查、一次只跑一轮、超时、失败怎么说，#184）
                         本机 daemon（daemon.rs，#314：设置页「本机 daemon」的检查 / 安装 / 停启 / 断开 / 更新；只跑 daemon 自带的脚本和固定的 git / systemctl / launchctl 命令，子进程环境按白名单给）
+                        接上 daemon（daemon_connect.rs，#315：来源列表里仓库的「接上 daemon」——找本机已有的同仓库目录、克隆、选 agent、按 agent 预检、代跑 setup.sh 并把输出边跑边交给窗口；选目录用 Tauri 官方 dialog 插件，只由后台调用）
   crates/harness/       测试专用：把后台本体接到 stdin/stdout，单元测试和界面测试都驱动它（发布的 App 里没有）
   tauri.conf.json       窗口的 Content-Security-Policy、打包设置；plugins.updater.pubkey 是更新包签名公钥（#184，空着时 App 不能自我更新、发版拒绝）
 test/

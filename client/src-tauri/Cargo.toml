@@ -28,6 +28,8 @@ async-trait.workspace = true
 url = "2"
 tokio.workspace = true
 tauri-plugin-updater = "2"
+# the folder picker of "接上 daemon" (GitHub#315), called from the back end only
+tauri-plugin-dialog = "2"
 
 # The desktop side (GitHub#169): notifications through the system's current
 # notification API, launch at login, keeping a hidden window's process awake.

@@ -163,6 +163,18 @@ p="$(proj "$st" widget)"
 chk "A 状态（已接项目）：worker 是 codex 且齐全" "$(jq -c '[.agents[] | select(.role=="worker") | .agent, .state]' <<< "$p")" '["codex","ok"]'
 chk "A 状态（已接项目）：项目依赖齐全，不报缺 claude" "$(jq -c '.deps' <<< "$p")" '{"state":"ok","missing":[]}'
 chk "A 状态：按标签选模型的 agent 列出但不算必需" "$(jq -c '[.agents[] | select(.role=="fable") | .agent, .required]' <<< "$p")" '["claude",false]'
+# --project（GitHub#315）：目录里已有配置时 daemon 读到的仓库和 agent，和已接项目那一行同一种读法、同一个结论
+chk "A 状态：不带 --project 时没有 project_check" "$(jq -c 'has("project_check")' <<< "$st")" false
+pc="$(status Darwin codex --project "$HOST")"
+chk "A --project：读到配置里的仓库和 worker agent" "$(jq -c '.project_check | [.config_state, .repo, .worker_agent]' <<< "$pc")" '["ok","acme/widget","codex"]'
+chk "A --project：与已接项目那一行的 agent 一致" "$(jq -r '.project_check.worker_agent' <<< "$pc")" "$(jq -r '.agents[] | select(.role=="worker") | .agent' <<< "$(proj "$pc" widget)")"
+sed -i.bak 's/^WORKER_AGENT=.*/export WORKER_AGENT="claude"/' "$HOST/cavil-loop.config"
+chk "A --project：export 写法照 shell 读出" "$(status Darwin codex --project "$HOST" | jq -r '.project_check.worker_agent')" claude
+printf 'return 7\n' >> "$HOST/cavil-loop.config"
+chk "A --project：source 失败 = unreadable，不当成没有配置" "$(status Darwin codex --project "$HOST" | jq -c '.project_check | [.config_state, .repo]')" '["unreadable",null]'
+mv "$HOST/cavil-loop.config.bak" "$HOST/cavil-loop.config"
+mkdir -p "$SANDBOX/empty-project"
+chk "A --project：没有配置 = none" "$(status Darwin codex --project "$SANDBOX/empty-project" | jq -c '.project_check | [.config_state, .config]')" '["none",null]'
 # 场景 B：项目选 codex，本机只有 claude
 fresh_world; run_setup "$SKILL" Darwin --yes codex claude
 chk "B 安装：选 codex、只装了 claude → 退出 1" "$(cat "$SANDBOX/setup.rc")" 1
