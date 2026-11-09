@@ -134,12 +134,21 @@ describe('signing out when the database refuses to clear the trust list', () => 
     let release!: () => void;
     store.clearGate = new Promise<void>((r) => (release = r));
     const out = c.logout();
-    await until(c, (s) => s.phase === 'login', 'login page');
-    // "something did happen": the delete really is still pending
-    expect(store.clearStarted).toBe(true);
-    expect(c.getState().loginReason).toContain('本地数据库写入失败');
-    release();
-    await out;
+    try {
+      // The back end answers the sign-out first and asks the keychain to delete after that
+      // (controller.ts applySignedOut), through a separate call into this process — so the
+      // login page can be up a moment before clear() is entered. Wait for both (GitHub#295
+      // code review round 1: asserting clearStarted right after the page switch was flaky).
+      await until(c, (s) => s.phase === 'login', 'login page');
+      for (let i = 0; i < 1500 && !store.clearStarted; i++) await new Promise((r) => setTimeout(r, 10));
+      // "something did happen": the delete really started, and is still held by the gate
+      expect(store.clearStarted).toBe(true);
+      expect(c.getState().phase).toBe('login');
+      expect(c.getState().loginReason).toContain('本地数据库写入失败');
+    } finally {
+      release();
+      await out;
+    }
   });
 
   it('once the database works again: the leftover is deleted, the marker goes, a new sign-in sticks across a restart', async () => {
