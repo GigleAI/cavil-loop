@@ -1144,3 +1144,106 @@ describe('a re-read that failed is caught up by the next round that reaches GitH
     expect(opOf(c2, id).readProblem ?? null).toBeNull();
   });
 });
+
+// GitHub#296: a successful autopilot notice stayed for hours. An evidence read that could not be done
+// ("这次没能查证：…") was kept after the step was proven; the notice no longer said it, yet it never put
+// itself away. The controller keeps every record through one setOp, which drops such a mark; each way
+// a record comes in — a sync read, the end of a recheck, a record left by an earlier run — is run here.
+describe('GitHub#296: a check problem that no longer stands never keeps a successful notice', () => {
+  const removal = () => fake.lateWhen((e) => e.method === 'DELETE' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/labels/${encodeURIComponent('pending/human')}`);
+
+  /** autopilot whose "pending/human" removal reached GitHub late; the evidence read failed: unknown, with a check problem */
+  async function unknownWithProblem() {
+    waitingForHuman();
+    const c = await ready();
+    const late = removal();
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    expect(late.caught()).toBe(1);
+    fake.state.w.failEvents = true;
+    expect((await c.opRecheck(s.id!)).ok).toBe(false);
+    const r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unknown']);
+    expect(opPhase(r)).toBe('unknown');
+    expect(r.checkProblem).toBeTruthy();
+    expect(opText(r)).toContain('这次没能查证');
+    return { c, id: s.id!, late };
+  }
+
+  it('a sync read proves the removal: the notice reads as a plain success and goes by itself; stored without the problem', async () => {
+    const { c, id, late } = await unknownWithProblem();
+    late.land();
+    expect(labelsOnGitHub()).not.toContain('pending/human');
+    await c.syncNow();
+    await idle(c);
+    const r = opOf(c, id);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(opPhase(r)).toBe('settled');
+    expect(opText(r)).toBe('已托管：已加上「autopilot」、已加上「pending/agent」、已摘掉「pending/human」');
+    expect(opTone(r)).toBe('ok');
+    expect(opButtons(r)).toEqual(['dismiss']);
+    expect(r.checkProblem).toBeNull();
+    expect(opAutoDismissable(r)).toBe(true);
+    expect(storedOps()!.find((x) => x.id === id)!.checkProblem).toBeNull();
+  });
+
+  it('the end of a recheck: the records prove the step but the item itself could not be re-read — settled, no problem kept', async () => {
+    const { c, id, late } = await unknownWithProblem();
+    late.land();
+    fake.state.w.failEvents = false;
+    fake.state.w.failRefresh.add(K(ISSUE));
+    const out = await c.opRecheck(id);
+    expect(out.ok).toBe(true);
+    await idle(c);
+    // the recheck did read the item (and that failed): the problem it found is about no unknown step any more
+    const r = opOf(c, id);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(opPhase(r)).toBe('settled');
+    expect(r.checkProblem).toBeNull();
+    expect(opAutoDismissable(r)).toBe(true);
+    fake.state.w.failRefresh.delete(K(ISSUE));
+  });
+
+  it('while the step stays unknown the problem stays (the notice says it) — and the person still has to check', async () => {
+    const { c, id } = await unknownWithProblem();
+    await c.syncNow();
+    await idle(c);
+    const r = opOf(c, id);
+    expect(opPhase(r)).toBe('unknown');
+    expect(r.checkProblem).toBeTruthy();
+    expect(opText(r)).toContain('这次没能查证');
+    expect(opAutoDismissable(r)).toBe(false);
+  });
+
+  it('unlocked by hand: the problem goes with the unknown phase, yet the notice still never goes by itself', async () => {
+    const { c, id } = await unknownWithProblem();
+    c.opUnlock(id);
+    const r = opOf(c, id);
+    expect(opPhase(r)).toBe('unlocked');
+    expect(r.checkProblem).toBeNull();
+    expect(opAutoDismissable(r)).toBe(false);
+  });
+
+  it('a record an earlier version left on disk settled with the problem still on: loaded without it, it goes by itself', async () => {
+    waitingForHuman();
+    const c = await ready();
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    expect(opAutoDismissable(opOf(c, s.id!))).toBe(true);
+    c.stopTimer();
+    await c.settled();
+    // what the earlier version could leave: settled, every step ok, the old problem still on
+    const cache = new Cache(join(dir, 'cache.sqlite'));
+    caches.push(cache);
+    const row = cache.loadSnapshots().get(OPS_KEY) as any;
+    row.ops = row.ops.map((x: OpRecord) => (x.id === s.id ? { ...x, checkProblem: '读评论和标签记录失败（连接中断）' } : x));
+    cache.replaceSnapshots([row]);
+    expect(storedOps()!.find((x) => x.id === s.id)!.checkProblem).toBeTruthy();
+    const c2 = await ready();
+    await idle(c2);
+    const r = opOf(c2, s.id!);
+    expect(opPhase(r)).toBe('settled');
+    expect(r.checkProblem).toBeNull();
+    expect(opAutoDismissable(r)).toBe(true);
+  });
+});

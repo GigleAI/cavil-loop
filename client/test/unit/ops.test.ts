@@ -21,6 +21,7 @@ import {
   readBoundary,
   opText,
   opTone,
+  opWithoutStale,
   type OpRecord,
   type OpStep,
   type OpStepState,
@@ -157,7 +158,7 @@ describe('GitHub#256: only a fully successful notice puts itself away', () => {
     ['comment refused, kept draft', close('ok', 'refused', done)],
     ['label step refused', auto('ok', 'refused', 'unsent', { readAt: 30 })],
     ['merged, but the linked issues could not be re-read', merged({ readProblem: '没读到这个 PR 关联的 issue（连接中断），下一轮同步会更新' })],
-    ['evidence read failed', merged({ checkProblem: '连接中断' })],
+    ['evidence read failed (the step is still unknown)', auto('ok', 'unknown', 'unsent', { readAt: 30, checkProblem: '连接中断' })],
     ['a comment draft left (comment step dropped from the record)', rec('closeIssue', [step('close', 'ok')], { draft: { reason: 'completed', comment: '留着' }, ...done })],
     ['a reply from the kept comment on its way', closeNoComment({ replyState: 'sending' })],
     ['a reply from the kept comment unknown', closeNoComment({ replyState: 'unknown' })],
@@ -347,5 +348,83 @@ describe('code review round 2: a reply made from the kept comment', () => {
     expect(ok.replyState).toBeNull();
     expect(opDraftLeft(ok)).toEqual({ reason: 'completed' });
     expect(opProveFromRecords({ ...u, reply: { body: '做完了', before: null } }, recs([['c2', 'me']]), 'me').record.replyState).toBe('unknown');
+  });
+});
+
+// GitHub#296: a successful autopilot notice stayed on the board for hours: an evidence read that
+// could not be done ("这次没能查证：…") was kept after a later read proved the step, the notice no
+// longer said it, yet it still kept the notice from putting itself away.
+describe('GitHub#296: a check problem only stands while a step is unknown', () => {
+  const unknownRemoval = () => auto('ok', 'ok', 'unknown', { readAt: 30, checkProblem: '读评论和标签记录失败（连接中断）' });
+
+  it('the record of the issue: proven by a later read, it reads as a plain success — and now goes', () => {
+    const before = unknownRemoval();
+    expect(opPhase(before)).toBe('unknown');
+    expect(opText(before)).toContain('这次没能查证');
+    const read = opApplyRead(before, { issuedAt: 40, state: 'open', labels: ['autopilot'] });
+    expect(opPhase(read)).toBe('settled');
+    expect(opTone(read)).toBe('ok');
+    expect(opButtons(read)).toEqual(['dismiss']);
+    expect(opText(read)).toBe('已托管：已加上「autopilot」、已加上「pending/agent」、已摘掉「pending/human」');
+    expect(opAutoDismissable(read)).toBe(true);
+    expect(opWithoutStale(read).checkProblem).toBeNull();
+  });
+
+  it('kept while a step is still unknown (the notice says it); dropped once settled, proven by records or unlocked by hand', () => {
+    const still = unknownRemoval();
+    expect(opWithoutStale(still)).toBe(still);
+    const proven = opProveStep(still, 2, '标签记录里有这次摘掉的记录');
+    expect(opPhase(proven)).toBe('settled');
+    expect(opWithoutStale(proven).checkProblem).toBeNull();
+    const unlocked = { ...still, unlocked: true };
+    expect(opWithoutStale(unlocked).checkProblem).toBeNull();
+    // nothing to drop: the same object
+    const clean = auto('ok', 'ok', 'ok', { readAt: 30 });
+    expect(opWithoutStale(clean)).toBe(clean);
+  });
+
+  it('unlocked by hand still never goes by itself, whatever it reads like', () => {
+    const r = opWithoutStale({ ...auto('ok', 'ok', 'ok', { readAt: 30 }), unlocked: true });
+    expect(opAutoDismissable(r)).toBe(false);
+    const s = opWithoutStale(close('ok', 'ok', { stuck: true, unlocked: true }));
+    expect(opAutoDismissable(s)).toBe(false);
+  });
+
+  // Every settled record not unlocked and not put away: it goes by itself exactly when its notice
+  // reads as a plain success — the success tone (no re-read problem), only the ×, no draft left. A
+  // field that keeps a notice on screen without the notice showing it turns this red.
+  it('settled, not unlocked, not put away: goes by itself ⇔ reads as a plain success', () => {
+    const states: OpStepState[] = ['unsent', 'pending', 'ok', 'refused', 'unknown'];
+    const kinds: [OpRecord['kind'], OpStep[][]][] = [];
+    const combos = (n: number): OpStepState[][] => (n === 0 ? [[]] : combos(n - 1).flatMap((c) => states.map((x) => [...c, x])));
+    kinds.push(['closeIssue', combos(2).map(([a, b]) => [step('close', a), step('comment', b)])]);
+    kinds.push(['closeIssue', combos(1).map(([a]) => [step('close', a)])]);
+    kinds.push(['closePr', combos(2).map(([a, b]) => [step('close', a), step('comment', b)])]);
+    kinds.push(['merge', combos(1).map(([a]) => [step('merge', a)])]);
+    kinds.push(['autopilot', combos(3).map(([a, b, c]) => [step('addLabel', a, { label: 'autopilot' }), step('addLabel', b, { label: 'pending/agent' }), step('removeLabel', c, { label: 'pending/human' })])]);
+    kinds.push(['handBack', combos(2).map(([a, b]) => [step('addLabel', a, { label: 'pending/agent' }), step('removeLabel', b, { label: 'pending/human' })])]);
+    const extras: Partial<OpRecord>[] = [];
+    for (const readAt of [null, 30])
+      for (const targetSeen of [false, true])
+        for (const readProblem of [null, '重读这一条失败（连接中断）'])
+          for (const checkProblem of [null, '连接中断'])
+            for (const stuck of [false, true])
+              for (const draftDropped of [false, true])
+                for (const commentUsed of [false, true]) extras.push({ readAt, targetSeen, readProblem, checkProblem, stuck, draftDropped, commentUsed });
+    let checked = 0;
+    let goes = 0;
+    for (const [kind, stepSets] of kinds)
+      for (const steps of stepSets)
+        for (const extra of extras) {
+          // what the controller keeps (its one setOp)
+          const r = opWithoutStale(rec(kind, steps, extra));
+          if (opPhase(r) !== 'settled' || r.unlocked || r.dismissed) continue;
+          checked++;
+          const plain = opTone(r) === 'ok' && opButtons(r).join() === 'dismiss' && opDraftLeft(r) === null;
+          if (opAutoDismissable(r) !== plain) throw new Error(`${kind} ${JSON.stringify(steps.map((x) => x.state))} ${JSON.stringify(extra)}: goes by itself ${opAutoDismissable(r)}, reads as a plain success ${plain} — ${opText(r)}`);
+          if (plain) goes++;
+        }
+    expect(checked).toBeGreaterThan(1000);
+    expect(goes).toBeGreaterThan(0);
   });
 });

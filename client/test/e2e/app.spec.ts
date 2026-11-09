@@ -4249,6 +4249,21 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   await app.close();
 });
 
+/**
+ * The window going to the background / coming back as the app sees it: document.hasFocus() says so
+ * (a paused notice looks at it once a second, GitHub#296) and the event is sent. `event: false`
+ * changes only what hasFocus() says — the event that should come with it is missed.
+ */
+async function windowFocus(page: Page, focused: boolean, event = true) {
+  await page.evaluate(
+    ([f, e]) => {
+      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => f });
+      if (e) window.dispatchEvent(new Event(f ? 'focus' : 'blur'));
+    },
+    [focused, event] as const,
+  );
+}
+
 test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#279; 10 s before) (detail, board, after a switch); pointer, focus, a background window pause it; warnings, errors and kept drafts stay', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const openOnGitHub = (n: number) => {
@@ -4332,11 +4347,11 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(onBoard(142)).toBeVisible();
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await windowFocus(page, false);
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'paused');
   await ff(20_000);
   await expect(onBoard(142)).toBeVisible();
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await windowFocus(page, true);
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(onBoard(142)).toBeVisible();
@@ -4359,7 +4374,7 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
 
   // ---- 3b. PR #259 review round 1: the window loses focus first, then a notice comes up — it starts paused ----
   await open(135);
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await windowFocus(page, false);
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
   await expect(inDetail(135).getByTestId('op-notice-text')).toHaveText('issue #135 已关闭（已完成）', { timeout: 15_000 });
@@ -4367,7 +4382,7 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'paused');
   await ff(20_000);
   await expect(inDetail(135)).toBeVisible();
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await windowFocus(page, true);
   await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(inDetail(135)).toBeVisible();
@@ -4438,6 +4453,109 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   for (const n of [135, 137, 139, 142]) await expect(onBoard(n)).toHaveCount(0);
   await app.close();
   env.fake.state.w.closingIssuesPageSize = 100;
+});
+
+test('GitHub#296: a missed "pointer left" / "focus left" / "window back" never keeps a successful notice paused; a real pointer, focus or background window still does', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  for (const n of [137, 139]) {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  }
+  const { app, page } = await launch(env);
+  await page.clock.install();
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signInWithSources(page);
+  const ff = async (ms: number) => {
+    await page.clock.fastForward(ms);
+    await page.waitForTimeout(100);
+  };
+  const onBoard = (n: number) => page.locator(`[data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
+  const closeOnBoard = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    await page.getByTestId('close-issue').click();
+    await page.getByTestId('confirm-ok').click();
+    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+    await page.getByTestId('detail-close').click();
+    await page.mouse.move(5, 5);
+    await expect(onBoard(n).getByTestId('op-notice-text')).toHaveText(`issue #${n} 已关闭（已完成）`, { timeout: 15_000 });
+    await expect(onBoard(n)).toHaveAttribute('data-auto-dismiss', 'counting');
+  };
+  // the app never hears of the pointer / the focus leaving (what happens when it leaves while the window is in the background)
+  const missLeaves = (on: boolean) =>
+    page.evaluate((v) => {
+      const w = window as unknown as { __miss?: (e: Event) => void };
+      const types = ['mouseout', 'mouseover', 'pointerout', 'pointerover', 'focusout', 'focusin'];
+      if (v && !w.__miss) {
+        w.__miss = (e: Event) => e.stopImmediatePropagation();
+        for (const t of types) window.addEventListener(t, w.__miss, true);
+      } else if (!v && w.__miss) {
+        for (const t of types) window.removeEventListener(t, w.__miss, true);
+        delete w.__miss;
+      }
+    }, on);
+
+  await closeOnBoard(137);
+  const n137 = onBoard(137);
+  // ---- 1. a real pointer on it keeps it paused, the once-a-second look included ----
+  await n137.hover();
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'paused');
+  // ---- 2. the pointer leaves, the app does not hear it: within a second it counts again, 5 s later it is gone ----
+  await missLeaves(true);
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(100);
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(1_100);
+  await expect(n137).toHaveAttribute('data-auto-dismiss', 'counting');
+  await missLeaves(false);
+  await ff(4_000);
+  await expect(n137).toBeVisible();
+  await ff(1_100);
+  await expect(n137).toHaveCount(0);
+
+  await closeOnBoard(139);
+  const n139 = onBoard(139);
+  // ---- 3. pointer on it, window to the background, pointer moved away unheard, window back: counts again ----
+  await n139.hover();
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await windowFocus(page, false);
+  await missLeaves(true);
+  await page.mouse.move(5, 5);
+  await ff(20_000);
+  // a window really in the background keeps it paused, the once-a-second look included
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await windowFocus(page, true);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'counting');
+  await missLeaves(false);
+  // ---- 4. the window comes back but the app is not told: within a second it counts again ----
+  await windowFocus(page, false);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await windowFocus(page, true, false);
+  await ff(1_100);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'counting');
+  // ---- 5. the focus really in it keeps it paused; the focus leaves unheard: counts again ----
+  await n139.getByTestId('op-dismiss').focus();
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(20_000);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await missLeaves(true);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.waitForTimeout(100);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'paused');
+  await ff(1_100);
+  await expect(n139).toHaveAttribute('data-auto-dismiss', 'counting');
+  await missLeaves(false);
+  await ff(4_000);
+  await expect(n139).toBeVisible();
+  await ff(1_100);
+  await expect(n139).toHaveCount(0);
+  await app.close();
 });
 
 test('GitHub#279: the close worked but the re-read right after it failed — a yellow warning that stays; the next sync re-reads it, the notice turns into a success and goes after 5 s', async () => {
