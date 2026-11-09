@@ -10,9 +10,15 @@
 //   - milestone belongs to the repository: the one with that title, an open one
 //     first (the same rule as changing it in the detail, `pickMilestone`);
 //   - the milestone list not read yet, or not readable: no plan at all — "could
-//     not read" is never taken for "there is none".
+//     not read" is never taken for "there is none";
+//   - GitHub#276: every ticked Project whose iteration is still empty after that
+//     gets the iteration `today` falls in (the table's "当前" rule), unless the
+//     group is an iteration or a "no iteration" one. Nothing to say when it is set
+//     or when there is none; only two at once (overlapping dates) is said, and
+//     then nothing is guessed. The unticked boards are never touched by this.
 
 import type { CreatePlan, GroupPreset, RepoOptions } from '../shared/actions';
+import { isCurrentIteration } from '../shared/filter';
 import type { Item, ProjectMeta } from '../shared/types';
 
 /** The repository's milestone with this title: an open one first. One rule for the detail and for a new issue. */
@@ -52,7 +58,38 @@ export interface CreatePreview {
  * issue there and the field is still empty, the value is set (never added by the client, never
  * overwriting a value already there). They go into `plan.watch` and get a line of their own.
  */
-export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo: string, read: MilestoneRead, others: ProjectMeta[] = []): CreatePreview {
+export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo: string, read: MilestoneRead, others: ProjectMeta[] = [], today: string | null = null): CreatePreview {
+  const out = previewGroup(preset, projects, repo, read, others);
+  if (out.plan && today !== null && fillsCurrentIteration(preset)) fillCurrentIteration(out.plan, projects, today, out.lines);
+  return out;
+}
+
+/** GitHub#276: does a new issue from this group get the current iteration where its own value leaves it empty? */
+export function fillsCurrentIteration(preset: GroupPreset): boolean {
+  if (preset.by === 'iteration') return false;
+  if (preset.by === 'none' && preset.field === 'iteration') return false;
+  return true;
+}
+
+/**
+ * GitHub#276: the iteration `today` falls in, for each ticked Project the plan leaves without one.
+ * A Project this account cannot change, or without an iteration field, or with no current one:
+ * left as it is, said nowhere (the iteration was not asked for). Two or more current at once:
+ * not guessed, one line saying so.
+ */
+function fillCurrentIteration(plan: CreatePlan, projects: ProjectMeta[], today: string, lines: PreviewLine[]): void {
+  for (const entry of plan.projects) {
+    if (entry.iterationId !== null) continue;
+    const p = projects.find((x) => x.key === entry.projectKey);
+    if (!p || !p.viewerCanUpdate || !p.hasIterationField || !p.iterationFieldId) continue;
+    const current = p.iterations.filter((it) => isCurrentIteration(it, today));
+    if (current.length === 1) entry.iterationId = current[0].id;
+    else if (current.length > 1)
+      lines.push({ target: `${p.key}:iteration`, text: `看板「${p.title}」同时有 ${current.length} 个当前迭代（日期重叠），没有自动设迭代`, applies: false });
+  }
+}
+
+function previewGroup(preset: GroupPreset, projects: ProjectMeta[], repo: string, read: MilestoneRead, others: ProjectMeta[]): CreatePreview {
   const lines: PreviewLine[] = [];
   const entries: CreatePlan['projects'] = projects.map((p) => ({ projectKey: p.key, iterationId: null, status: null }));
   if (preset.by === 'iteration' || preset.by === 'status') {
