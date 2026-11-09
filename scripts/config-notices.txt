@@ -1,0 +1,112 @@
+# 配置模板（cavil-loop.config.example）里每个配置项的「老项目缺这一行时要不要提示」登记表（GitHub#289）。
+# Every key assigned in cavil-loop.config.example, and whether a project whose config lacks
+# that line is told about it (GitHub#289).
+#
+# 为什么要有：自动升级把新代码带到老项目，却不会改项目自己的配置。新功能若是「配置里不写就关」、
+# 模板里却是开的，老项目就一直关着，没有任何地方说一声（例：等前置标签，arkknights-tool#38）。
+# daemon 每轮把本项目配置加载完后仍「未设置」的 notice 项列出来，写轮询日志，并按 CONFIG_NOTICE_ISSUE
+# 在本项目仓库开一条提示 issue。写成空值（KEY=""）= 已决定不开，不算缺。
+#
+# 格式（| 分隔，两侧空白忽略；# 开头和空行跳过）：
+#   KEY | notice | 出处 | 不开时写的值 | 给维护者看的一段说明（一行）
+#   KEY | quiet  | 为什么不提示
+#
+# 判据：只有「模板里开、不写这一行就关」的功能项登记成 notice。不写时和模板值一样的、必填项、
+# 示例值、权限参数一律 quiet。往模板里加新配置项时必须在这里登记，否则 tests/config-notice.test.sh 红。
+#
+REPO | quiet | 必填项，每个项目自己的值
+PROJECT_ROOT | quiet | 必填项，每个项目自己的值
+WORKTREE_BASE | quiet | 必填项，每个项目自己的值
+STATE_DIR | quiet | 必填项，每个项目自己的值
+LOG_LEVEL | quiet | 不写这一行时的行为和模板里的值相同
+TMUX_PREFIX | quiet | 必填项，每个项目自己的值
+BRANCH_PREFIX | quiet | 必填项，每个项目自己的值
+SESSION_NAME_PREFIX | quiet | 必填项，每个项目自己的值
+LABEL_PENDING_AGENT | quiet | 必填项，每个项目自己的值
+LABEL_PENDING_AGENT_FABLE | quiet | 不写这一行时的行为和模板里的值相同
+FABLE_WORKER_AGENT | quiet | 不写这一行时的行为和模板里的值相同
+FABLE_MODEL | quiet | 不写这一行时的行为和模板里的值相同
+SELFHEAL_ONLY_OWN_WORKERS | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_PENDING_AGENT_EXTRA | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_PENDING_REVIEW | quiet | 不写这一行时的行为和模板里的值相同
+REVIEW_WORKER_AGENT | quiet | 不写这一行时的行为和模板里的值相同
+REVIEW_MODEL | quiet | 不写这一行时的行为和模板里的值相同
+REVIEW_MAX_ROUNDS | quiet | 不写这一行时的行为和模板里的值相同
+REVIEW_DESIGN_PROPOSALS | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_AUTOPILOT | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_PENDING_MERGE | quiet | 不写这一行时的行为和模板里的值相同
+AUTOPILOT_MERGE_METHOD | quiet | 不写这一行时的行为和模板里的值相同
+AUTOPILOT_CHECKS_TIMEOUT_HOURS | quiet | 不写这一行时的行为和模板里的值相同
+TRUSTED_REPOS | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_PENDING_BLOCKED | notice | GigleAI/cavil-loop#157 | "" | 等前置标签：worker 遇到「要等别的 issue / PR 先完成」时挂上它等着，前置全部完成后 daemon 自动把条目翻回派工标签接着干；关着时 worker 只能翻 `pending/human`，前置完成后要人手动重新打派工标签。开的话还要在仓库建好 `pending/blocked` 标签（在仓库的 Labels 页面新建，或把这一行写进配置后重跑 setup.sh，它会按配置建标签）。要等别的仓库的条目，再加一行 `TRUSTED_REPOS="owner/repo"`（逗号分隔，只填信得过的仓库），否则写了别的仓库的前置会交人。
+BLOCKED_RECHECK_SECS | quiet | 不写这一行时的行为和模板里的值相同
+BLOCKED_MAX_TRIES | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_PENDING_REQUESTER_BOT | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_ACCOUNT | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_ALLOWED_ACTORS | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_ORIGIN_MARKER | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_REPORT_FIRST | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_WAKE_ANY_ITEM | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_WEBHOOK_URL | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_WEBHOOK_KEY_HEADER | quiet | 不写这一行时的行为和模板里的值相同
+REQUESTER_BOT_WEBHOOK_KEY | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_AGENT_DOING | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_PENDING_HUMAN | quiet | 必填项，每个项目自己的值
+LABEL_PENDING_PR | quiet | 不写这一行时的行为和模板里的值相同
+LABEL_DONE | quiet | 不写这一行时的行为和模板里的值相同
+OUTPUT_LANGUAGE | quiet | 不写这一行时的行为和模板里的值相同
+COMMENT_FOOTER | quiet | 不写这一行时的行为和模板里的值相同
+COMMENT_FOOTER_EXTRA_CMD | quiet | 不写这一行时的行为和模板里的值相同
+WORKTREE_SETUP_CMD | quiet | 模板里的值只是示例，项目按需填
+COPY_TO_WORKTREE | quiet | 模板里的值只是示例，项目按需填
+WORKTREE_GIT_USER_NAME | quiet | 不写这一行时的行为和模板里的值相同
+WORKTREE_GIT_USER_EMAIL | quiet | 不写这一行时的行为和模板里的值相同
+WORKER_AGENT | quiet | 不写这一行时的行为和模板里的值相同
+WORKER_MODEL | quiet | 不写这一行时的行为和模板里的值相同
+CLAUDE_EXTRA_FLAGS | quiet | 权限参数：要不要跳过权限确认由维护者自己定，不提示
+CODEX_EXTRA_FLAGS | quiet | 权限参数：要不要跳过权限确认由维护者自己定，不提示
+WORKER_PASS_ENV | quiet | 不写这一行时的行为和模板里的值相同
+WORKER_SECRET_ENV | quiet | 不写这一行时的行为和模板里的值相同
+AUTO_CLEANUP_ON_MERGE | quiet | 不写这一行时的行为和模板里的值相同
+PENDING_HUMAN_CONFLICT_CHECK | quiet | 不写这一行时的行为和模板里的值相同
+PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | quiet | 不写这一行时的行为和模板里的值相同
+PENDING_HUMAN_CONFLICT_MAX_TRIES | quiet | 不写这一行时的行为和模板里的值相同
+POST_MERGE_RETROSPECTIVE | quiet | 不写这一行时的行为和模板里的值相同
+RETROSPECTIVE_MODEL | quiet | 不写这一行时的行为和模板里的值相同
+RETROSPECTIVE_PROMOTION | quiet | 不写这一行时的行为和模板里的值相同
+RETROSPECTIVE_DIRECTORY_LESSONS | quiet | 不写这一行时的行为和模板里的值相同
+POST_RETROSPECTIVE_PROJECT_CMD | quiet | 不写这一行时的行为和模板里的值相同
+CLEANUP_HOOK | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_EXEC | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_PORT_BASE | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_PORT_MODULO | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_BACKEND_OFFSET | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_IDLE | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_READY_TIMEOUT | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_TAILSCALE_SERVE | quiet | 不写这一行时的行为和模板里的值相同
+PREVIEW_URL_HOST | quiet | 不写这一行时的行为和模板里的值相同
+PR_CREATED_HOOK | quiet | 不写这一行时的行为和模板里的值相同
+MAX_CONCURRENT_WORKERS | quiet | 不写这一行时的行为和模板里的值相同
+DISPATCH_MODE | quiet | 不写这一行时的行为和模板里的值相同
+GREEDY_SKIP_LABELS | quiet | 不写这一行时的行为和模板里的值相同
+GREEDY_SCAN_LIMIT | quiet | 不写这一行时的行为和模板里的值相同
+DISPATCH_MAX_RETRIES | quiet | 不写这一行时的行为和模板里的值相同
+SELFHEAL_MAX_RETRIES | quiet | 不写这一行时的行为和模板里的值相同
+PRIORITY_LABELS | quiet | 不写这一行时的行为和模板里的值相同
+PRIORITY_SOURCE | quiet | 不写这一行时的行为和模板里的值相同
+PROJECT_NUMBER | quiet | 不写这一行时的行为和模板里的值相同
+PROJECT_OWNER | quiet | 不写这一行时的行为和模板里的值相同
+PROJECT_PRIORITY_FIELD | quiet | 不写这一行时的行为和模板里的值相同
+PROJECT_GH_TOKEN | quiet | 不写这一行时的行为和模板里的值相同
+AUTO_ADD_PROJECTS | quiet | 不写这一行时的行为和模板里的值相同
+POLL_INTERVAL_SECS | quiet | 不写这一行时的行为和模板里的值相同
+POLL_BACKOFF_LADDER | quiet | 不写这一行时的行为和模板里的值相同
+POLL_FORCE_SYNC_SECS | quiet | 不写这一行时的行为和模板里的值相同
+POLL_IDLE_PROBE | quiet | 不写这一行时的行为和模板里的值相同
+POLL_IDLE_PROBE_MAX_SECS | quiet | 不写这一行时的行为和模板里的值相同
+POLL_FAIL_BACKOFF_MAX_SECS | quiet | 不写这一行时的行为和模板里的值相同
+POLL_DUE_SLACK_SECS | quiet | 不写这一行时的行为和模板里的值相同
+CHECKOUT_STALE_ALERT_COMMITS | quiet | 不写这一行时的行为和模板里的值相同
+CONFIG_NOTICE_ISSUE | quiet | 不写这一行时的行为和模板里的值相同
+AUTO_RELEASE_MAIN_CHECKOUT | quiet | 不写这一行时的行为和模板里的值相同
+LATEST_SITE_REFRESH | quiet | 不写这一行时的行为和模板里的值相同

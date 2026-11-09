@@ -89,4 +89,7 @@ if [ -n "${CODING_AGENT_CONFIG:-}" ]; then
         fi
     done
 fi
-exec bash "$CODING_AGENT_RELEASE_ROOT/scripts/agent-poll.sh" "$@"
+# 告诉主轮询「这一轮是调度器起的」（GitHub#289：配置缺项的提示 issue 只在这时开）。只给 exec 的这一个进程；
+# agent-poll.sh 一开头就收起并 unset，派出去的 worker 拿不到——CODING_AGENT_RELEASE_ROOT 会被 worker
+# 继承，不能拿它当这个判据。
+CAVIL_SCHEDULED_POLL=1 exec bash "$CODING_AGENT_RELEASE_ROOT/scripts/agent-poll.sh" "$@"

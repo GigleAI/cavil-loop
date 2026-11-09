@@ -37,7 +37,7 @@
    - **动机**：解决什么 / 修什么。链上相关 issue 用 `Closes #N` / `Refs #N`
    - **改动**：1-2 段或 bullet 列表，不要让 reviewer 自己读 diff 找
    - **验证**：你自己怎么试过的（跑了哪条命令 / 在哪个项目接入跑过 / 改了哪个 prompt 后用什么场景验证）。每个 PR 还会在 GitHub Actions 上跑 `tests/`，**测试** 这条检查必须是绿的；交之前先在本机跑 `bash tests/run.sh`（或覆盖你改动的那几个文件）
-   - **影响面**：如果改了 `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口
+   - **影响面**：如果改了 `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口。往 `cavil-loop.config.example` 里加配置项，还要登记进 `scripts/config-notices.txt`（「不写就关、模板里开」的登记成 `notice`，老项目会收到提示；其余登记成 `quiet` 并写原因），否则 `tests/config-notice.test.sh` 红
 5. **保持小**：一个 PR 一个焦点。改 daemon + 顺手重命名 + 加新功能塞一个 PR 里基本会被要求拆
 6. **Style**：跟现有代码风格走（shell `set -euo pipefail` + `log()` helper + 用 `_lib.sh` 里的函数；markdown 用现有中文/英文混排习惯）
 

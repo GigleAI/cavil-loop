@@ -386,6 +386,30 @@ if method == "GET":
         emit({"state": "success", "statuses": c.get("statuses", [])})
     emit([], pages=True)
 
+# 开 issue / 改 issue 状态（GitHub#289：配置提示 issue）。F_post_issue / F_patch_issue 让这两种写失败。
+if method == "POST" and parts == ["issues"]:
+    if os.path.exists(p("F_post_issue")):
+        fail("HTTP 500: injected issue create failure")
+    n = str(max([int(k) for k in items] + [0]) + 1)
+    items[n] = {"kind": "issue", "state": "open", "state_reason": None, "title": fields.get("title", ""),
+                "body": fields.get("body", ""), "user": {"login": me()}, "updated_at": now_iso()}
+    save("items.json", items)
+    labels[n] = list(labels_add)
+    save("labels.json", labels)
+    emit({"number": int(n), "html_url": "https://github.com/%s/issues/%s" % (REPO, n)})
+
+if method == "PATCH" and len(parts) == 2 and parts[0] == "issues":
+    if os.path.exists(p("F_patch_issue")):
+        fail("HTTP 500: injected issue update failure")
+    if parts[1] not in items:
+        fail("HTTP 404: Not Found")
+    for k in ("state", "state_reason", "title", "body"):
+        if k in fields:
+            items[parts[1]][k] = fields[k]
+    items[parts[1]]["updated_at"] = now_iso()
+    save("items.json", items)
+    emit(as_issue(parts[1]))
+
 # 写之前的 hook（GitHub#233）：hook_<方法>_issues_<n>_labels_<k> 在对这个条目第 k 次加 / 摘标签之前运行，
 # 用来模拟「上一个写请求已经完成、下一个还没发出时，人改了 GitHub」
 if method in ("POST", "DELETE") and len(parts) >= 3 and parts[0] == "issues" and parts[2] == "labels":
