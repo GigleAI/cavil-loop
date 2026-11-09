@@ -16,7 +16,9 @@
 #   【2】认法：前台 gh run watch、前台 gh pr checks --watch、Monitor 循环（中途事件不算结束）、前台超时挪到后台、
 #        写在双引号里的 $( … )；不该认的单次查询 / 触发运行 / 轮询评论 / 引号里的文字；
 #        只是打印出来的命令文字（单引号里的 $( … )、echo 的参数、循环里 echo 的查询）不算，
-#        混写时编号取真正在等的那条（代码复审第 1 轮的反例）
+#        混写时编号取真正在等的那条（代码复审第 1 轮的反例）；
+#        查询和 sleep 分属两个循环、函数体（定义不等于调用）、整条放后台、交给 bash -c / eval / xargs、
+#        for 头部的查询都不算；&& / ||、进程替换、花括号组、嵌套循环里的照样算（第 2 轮起按结构逐项列清）
 #   【3】两条等待部分重叠、期间 AI 在工作：逐条时长各自完整，合计按并集再扣 AI
 #   【4】没记到结束：部分 → 合计是下限；全部 → 「远端 CI 未知」、不写秒数字段
 #   【5】上一轮派工的等待不算
@@ -245,6 +247,31 @@ eq texts_secs "$(field "$out" ci_wait_secs)" "120.000"
 has texts_target_after_echo "$out" "  - 等 Actions 运行 124：$(at 300) → $(at 360)，1m 0s"
 has texts_target_after_query "$out" "  - 等 Actions 运行 125：$(at 400) → $(at 460)，1m 0s"
 for id in 123 999 998 997; do hasnt "texts_not_$id" "$out" "运行 $id"; done
+
+# 结构逐项（代码复审第 2 轮起按 L1 一次列清，见 ci_wait.py「认命令」一段）：不一定执行、或查询和 sleep
+# 不在同一个循环里的都不算；真正执行的几种写法照样算。每条前台命令跑 60 秒，不和 AI 重叠
+case_setup structs claude 1800 <<EOF
+$(j k '"bash"' id '"f1"' t 10 cmd "$(qj 'for i in 1; do gh run view 201 --log-failed; done; for j in 1 2; do sleep 30; done')" rt 70)
+$(j k '"bash"' id '"f2"' t 100 cmd "$(qj 'check_ci() { gh run watch 202; }; sleep 60')" rt 160)
+$(j k '"bash"' id '"f3"' t 200 cmd "$(qj 'function check_ci { gh run watch 203; }; sleep 60')" rt 260)
+$(j k '"bash"' id '"f4"' t 300 cmd "$(qj $'f() {\n  while true; do gh run view 204; sleep 5; done\n}\nsleep 60')" rt 360)
+$(j k '"bash"' id '"f5"' t 400 cmd "$(qj $'gh run watch 205 > /tmp/w.log 2>&1 &\nsleep 60')" rt 460)
+$(j k '"bash"' id '"f6"' t 500 cmd "$(qj 'bash -c "gh run watch 206"; eval '"'"'gh run watch 207'"'"'; echo 208 | xargs gh run watch')" rt 560)
+$(j k '"bash"' id '"f7"' t 600 cmd "$(qj 'for r in $(gh run list --json databaseId --jq ".[].databaseId"); do sleep 1; done')" rt 660)
+$(j k '"bash"' id '"f8"' t 700 cmd "$(qj 'gh run view 209; while true; do sleep 1; done')" rt 760)
+$(j k '"bash"' id '"p1"' t 800 cmd "$(qj 'cd /x && gh run watch 301 || true')" rt 860)
+$(j k '"bash"' id '"p2"' t 900 cmd "$(qj 'while true; do gh run view 302; for i in 1; do sleep 1; done; done')" rt 960)
+$(j k '"bash"' id '"p3"' t 1000 cmd "$(qj 'diff <(gh run watch 303) /dev/null')" rt 1060)
+$(j k '"bash"' id '"p4"' t 1100 cmd "$(qj '{ gh run watch 304; } 2>&1 | tail -3')" rt 1160)
+$(j k '"bash"' id '"p5"' t 1200 cmd "$(qj 'for i in 1 2; do gh run view 305; sleep 30; done')" rt 1260)
+$(j k '"ai"' a 1700 b 1705)
+EOF
+out=$(footer claude)
+eq structs_count "$(field "$out" ci_waits)" 5
+eq structs_secs "$(field "$out" ci_wait_secs)" "300.000"
+for id in 301 302 303 304 305; do has "structs_counted_$id" "$out" "  - 等 Actions 运行 $id："; done
+for id in 201 202 203 204 205 206 207 208 209; do hasnt "structs_not_$id" "$out" "运行 $id"; done
+hasnt structs_no_bare_run "$out" "等 Actions 运行（编号没读出来）"
 
 echo "【3】两条等待部分重叠、期间 AI 在工作"
 case_setup overlap claude 800 <<EOF

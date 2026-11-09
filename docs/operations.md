@@ -1048,9 +1048,16 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     ci_wait_untimed=0`, and leaves out `ci_wait_secs` when none could be timed. When it cannot be
     computed (session unreadable, the tally failed) none of the three is written and the details
     say `远端 CI 等待没统计到` with the reason. The weekly report does not parse these fields yet.
-  - Limits: a wait wrapped in a script file or `bash -c '…'` is not recognised and stays in
-    "other"; overlap with local tests cannot be taken out (tests only report a total) — see the
-    "other is 0" rule above.
+  - For the loop form the query and the `sleep` must sit in the **same** loop (an enclosing loop
+    counts); a query in a `for` header runs once and is not polling.
+  - Not counted (when unsure the time stays in "other" rather than being moved into remote CI):
+    commands inside a function definition (defining is not calling, and calls are not followed);
+    a command sent to the background (`… &`); anything handed over as a string to `bash -c` /
+    `sh -c` / `eval` / `xargs` / `ssh` / `sudo`, or inside a script file of the agent's own.
+  - Limits: a real wait written in one of those not-counted forms stays in "other"; a wait inside
+    an `&&` / `||` / `if` / `case` branch is counted as run (whether the branch ran cannot be told,
+    and a branch that did not run takes almost no time); overlap with local tests cannot be taken
+    out (tests only report a total) — see the "other is 0" rule above.
 
 ## Prompt templates
 
