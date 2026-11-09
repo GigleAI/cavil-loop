@@ -1120,11 +1120,12 @@ bash "$SKILL/scripts/disconnect-project.sh" myproject
 
 上面几行依次是：不经 y/N 提问接上一个项目；列出每个已接项目的后台任务状态和依赖结论；接一个用 `codex` 的新项目前先查缺什么；再把它断开。`myproject` 是实例名（默认是目录名，即状态输出里的 `.projects[].key`）。
 
-**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`agent_check`（带 `--agent` 才有）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
+**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`bash`（`path` 轮询会用的 bash，和 `setup.sh` 同一个挑选函数；`major` 主版本；`ok` —— 4 及以上为 `true`，macOS 自带的 3.2 为 `false`，跑不了 daemon，要 `brew install bash`；读不出版本为 `null`）、`agent_check`（带 `--agent` 才有）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
 
 - `agents[]` 列出 worker agent、复审 agent（只在配了 `LABEL_PENDING_REVIEW` 时）和按标签选模型时用的 agent（`role: fable`，`required: false`——只有有人给条目打了那个标签才会起，所以没装 claude 的 codex 项目不会被报成缺依赖）。每项有 `bin`、`state`（`ok` / `missing` / `no_driver`）和 `missing`，用的是 `setup.sh` 同一个函数，两边结论不会不一致。`deps` 汇总必需的那几项：`ok` / `missing` / `unknown`（配置读不出或找不到 driver）。
 - `scheduler.state` 是 `running` / `stopped` / `unknown`。只认已知状态词：读失败、空输出、不认识的词一律 `unknown`，绝不报 `stopped`；`raw` 是读到的原文。
 - `last_poll` 取最近一次真读了 GitHub 的轮询（`poll-pace.json`），没有就取 `poll.log` 的修改时间；都没有为 `null`。
+- 没有 `jq` 时拼不出完整状态：脚本只输出 `{version: 1, precheck: true, os, base_deps: {missing}}`（不靠 `jq` 查的通用工具），退出码 3；这时项目和后台任务状态一概读不到。
 
 **断开**照[卸载某个 project](#卸载某个-project) 的步骤做：先读后台任务状态，读不到就什么都不动（退出 2）；停完读回确认（Linux 上还确认不再开机自启），确认不了就保留登记（退出 3）。退出 0 = 已断开，1 = 没有这个实例。最后一行固定是 `RESULT=<disconnected|not_found|unknown|failed>`。worker 的 tmux 会话不动。
 
@@ -1137,7 +1138,7 @@ bash "$SKILL/scripts/launchd-refresh.sh" myproject
 ```
 <!-- install-scripts-mac-ops:end -->
 
-它用 `setup.sh` 同一个函数生成新 plist，`plutil -lint` 校验，和现有文件逐字比对——一样就 `RESULT=unchanged`。不一样：读任务状态（读不到就停，什么都不动）；已加载的先拿该项目的轮询锁（等当前这一轮结束，最多 `CAVIL_REFRESH_LOCK_WAIT` 秒，默认 300），bootout 并确认已卸载；把旧文件备份到 `$STATE_DIR/launchd-backup/`；原子换上新文件；原来已加载的就重新加载，并读回确认加载的是这个文件。加载失败就用备份恢复原文件和原状态。最后一行 `RESULT=` 是 `replaced` / `unchanged`（退出 0）、`unknown` / `lint_failed` / `lock_timeout`（退出 2，什么都没动）、`not_found` / `not_macos`（退出 1）、`failed`（退出 3，原文件和原状态已恢复）、`needs_human`（退出 4：恢复也失败——输出里有两次的报错原文、备份位置和手动恢复的两条命令，备份保留）。Linux 上单元文件是指向模板的软链，部署器自己重新加载，不适用这个脚本。
+它用 `setup.sh` 同一个函数生成新 plist，`plutil -lint` 校验，和现有文件逐字比对——一样就 `RESULT=unchanged`。不一样：读任务状态（读不到就停，什么都不动）；已加载的先拿该项目的轮询锁（等当前这一轮结束，最多 `CAVIL_REFRESH_LOCK_WAIT` 秒，默认 300），bootout 并确认已卸载；把旧文件备份到 `$STATE_DIR/launchd-backup/`；原子换上新文件；原来已加载的就重新加载，并读回确认加载的是这个文件。加载失败就用备份恢复原文件和原状态。最后一行 `RESULT=` 是 `replaced` / `unchanged`（退出 0）、`unknown` / `lint_failed` / `lock_timeout`（退出 2，什么都没动）、`not_found` / `not_macos`（退出 1）、`failed`（退出 3，原文件和原状态已恢复——两者都读回确认过才报它）、`needs_human`（退出 4：恢复失败或确认不了——输出里有报错原文、原文件位置和手动恢复的命令，做过备份的话备份保留）。Linux 上单元文件是指向模板的软链，部署器自己重新加载，不适用这个脚本。
 
 ## 多 project 共存
 

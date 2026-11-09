@@ -25,7 +25,7 @@
 #   unknown      状态读不到，什么都没动（2） lint_failed  新文件校验不过，什么都没动（2）
 #   lock_timeout 等不到这一轮轮询结束，什么都没动（2）
 #   not_found    没有这个实例 / 没有 plist（1）  not_macos   不是 macOS，不适用（1）
-#   failed       没换成，原文件和原状态已恢复（3）
+#   failed       没换成，原文件和原状态已读回确认（3）——只有确认过才报它，确认不了一律 needs_human
 #   needs_human  没换成，恢复也失败——看输出里的原文和备份位置（4）
 set -euo pipefail
 
@@ -137,10 +137,20 @@ if [ "$orig_state" = loaded ]; then
     if [ "$CAVIL_SCHED_STATE" != unloaded ]; then
         echo "4. 卸载后读回不是「未加载」（$CAVIL_SCHED_STATE），原文件未动："
         printf '%s\n' "$bootout_out" "$CAVIL_SCHED_RAW" | indent
-        if [ "$CAVIL_SCHED_STATE" != loaded ]; then
-            launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || true
+        # 「原样」要读回确认：仍是原来那份在跑，或者按原状态重新加载原文件后读回确认。
+        # 读不到 / 加载失败都不能报 failed（failed = 已确认恢复），只能交人。
+        if [ "$CAVIL_SCHED_STATE" = loaded ] && [ "$CAVIL_SCHED_PATH" = "$plist" ]; then
+            echo "   任务仍是原来那份、仍已加载"
+            result failed 3
         fi
-        result failed 3
+        if load_back "$plist"; then
+            echo "   已按原状态重新加载原文件，并读回确认"
+            result failed 3
+        fi
+        echo "   重新加载原文件没有确认成功——需要人处理："
+        printf '%s\n' "${LOAD_BACK_OUT:-}" "$CAVIL_SCHED_RAW" | indent
+        echo "   原文件未动：$plist；原来的状态：$orig_state；手动恢复：launchctl bootstrap $domain \"$plist\""
+        result needs_human 4
     fi
     echo "4. 已卸载（拿着轮询锁，期间不会有新一轮开始）"
 fi
@@ -157,8 +167,8 @@ if ! { mkdir -p "$backup_dir" && cp -p "$plist" "$backup" && cmp -s "$plist" "$b
 fi
 echo "5. 已备份：$backup"
 if ! mv -f "$new" "$plist"; then
-    echo "5. 替换失败，原文件未动；按原状态重新加载原文件"
-    if load_back "$plist"; then result failed 3; fi
+    echo "5. 替换失败；按原状态重新加载原文件"
+    if cmp -s "$backup" "$plist" && load_back "$plist"; then echo "   原文件未变，已读回确认原状态"; result failed 3; fi
     printf '%s\n' "$LOAD_BACK_OUT" "$CAVIL_SCHED_RAW" | indent
     result needs_human 4
 fi

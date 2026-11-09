@@ -4,6 +4,7 @@ import { sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
 import { UpdateSection } from './UpdateViews';
+import { DaemonSection } from './DaemonSection';
 import { Icon, type IconName } from './Icons';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
@@ -12,6 +13,8 @@ const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-pending', icon: 'bell', title: '提醒' },
   // only in a build that updates itself (GitHub#184); the section is not there otherwise
   { id: 'set-update', icon: 'refresh', title: '更新' },
+  // the local cavil-loop daemon (GitHub#314)
+  { id: 'set-daemon', icon: 'gear', title: '本机 daemon' },
   { id: 'set-account', icon: 'user', title: '账号' },
   { id: 'set-login', icon: 'key', title: '登录方式' },
 ];
@@ -161,6 +164,8 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
       </section>
 
       <UpdateSection update={state.update} />
+
+      <DaemonSection />
 
       <section id="set-account">
         <h3>账号</h3>

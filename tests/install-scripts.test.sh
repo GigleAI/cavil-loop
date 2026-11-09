@@ -232,8 +232,22 @@ chk "macOS：普通代码目录，版本 = 它的 HEAD" "$(jq -r '[.daemon.form,
 for mode in fail empty; do
     chk "macOS：launchctl ${mode} → 读不到（不是已停）" "$(FAKE_LD_PRINT=$mode status Darwin claude | jq -r '.projects[0].scheduler.state')" unknown
 done
+chk "macOS：后台任务用的 bash 够新 → ok" "$(jq -c '.bash | [.major >= 4, .ok]' <<< "$st")" '[true,true]'
+# 只有系统自带的旧 bash（3.x）：用和 setup.sh 同一个挑选函数，报出来
+mkdir -p "$FK/agents-oldbash"
+printf '#!/bin/bash\nif [ "$#" = 2 ] && [ "$1" = -c ] && [ "$2" = '"'"'echo "${BASH_VERSINFO[0]}"'"'"' ]; then echo 3; exit 0; fi\nexec /bin/bash "$@"\n' > "$FK/agents-oldbash/bash"
+chmod +x "$FK/agents-oldbash/bash"
+chk "macOS：只有 3.x 的 bash → ok=false，给出路径" "$(status Darwin claude,oldbash | jq -c '.bash')" "{\"path\":\"$FK/agents-oldbash/bash\",\"major\":3,\"ok\":false}"
 rm -f "$FAKE_LD"/dev.luosky.cavil-loop.widget.*
 chk "macOS：未加载 → 已停" "$(status Darwin claude | jq -r '.projects[0].scheduler.state')" stopped
+# 缺 jq：只输出通用工具的预检（不靠 jq 拼），退出 3
+NOJQ="$SANDBOX/nojq"; rm -rf "$NOJQ"; mkdir -p "$NOJQ"
+for d in "$FK/bin" "$FK/agents-claude" /usr/bin /bin; do
+    for f in "$d"/*; do n="${f##*/}"; [ "$n" = jq ] || [ "$n" = tmux ] || [ -e "$NOJQ/$n" ] || ln -s "$f" "$NOJQ/$n"; done
+done
+rc=0; out="$(env -i HOME="$H" PATH="$NOJQ" FAKE_UNAME=Darwin FAKE_LD="$FAKE_LD" bash "$SKILL/scripts/install-status.sh" 2>/dev/null)" || rc=$?
+chk "缺 jq：退出 3" "$rc" 3
+chk "缺 jq：预检 JSON 列出缺的通用工具（jq、tmux），不给项目" "$(jq -c . <<< "$out")" '{"version":1,"precheck":true,"os":"Darwin","base_deps":{"missing":["tmux","jq"]}}'
 fresh_world
 chk "什么都没装：daemon 形态 missing、项目列表为空" "$(status Linux claude | jq -c '[.daemon.form, .projects]')" '["missing",[]]'
 
@@ -324,6 +338,35 @@ chk_has "⑤ 输出第二次的原文" "$out" "第二次（恢复原文件）的
 chk_has "⑤ 输出里有 launchctl 的报错原文" "$out" "Bootstrap failed: 5: Input/output error"
 chk_has "⑤ 输出备份位置" "$out" "原文件备份：$b"
 chk "⑤ 备份仍在、内容是原文件" "$(cmp -s "$b" "$SANDBOX/plist.orig" && echo same)" same
+# 场景 6 / 7：卸载成功后读不到状态（GitHub#314 复审第 2 轮）。launchctl 外面套一层：卸载之后的 print 失败
+cp "$FK/bin/launchctl" "$FK/launchctl.real"
+cat > "$FK/bin/launchctl" <<'WRAP'
+#!/usr/bin/env bash
+if [ "${1:-}" = print ] && [ -f "$FAKE_LD/after-bootout" ]; then
+    n="$(cat "$FAKE_LD/print-fails" 2>/dev/null || echo 0)"
+    if [ "${FLAKY_PRINT_FAILS:-always}" = always ] || [ "$n" -lt "$FLAKY_PRINT_FAILS" ]; then
+        echo $((n + 1)) > "$FAKE_LD/print-fails"
+        echo "launchctl: connection unavailable" >&2; exit 1
+    fi
+fi
+[ "${1:-}" = bootout ] && touch "$FAKE_LD/after-bootout"
+exec "$(dirname "$0")/../launchctl.real" "$@"
+WRAP
+chmod +x "$FK/bin/launchctl"
+# ⑥ 之后一直读不到、重新加载也失败 → 不能报「已恢复」，只能 needs_human
+setup_mac; change_template; rm -f "$FAKE_LD/after-bootout" "$FAKE_LD/print-fails"   # 安装时的卸载不算
+rc=0; out="$(FAKE_LD_BOOTSTRAP=fail refresh widget)" || rc=$?
+chk "⑥ 卸载后读不到、重新加载失败：退出 4、RESULT=needs_human（不是 failed）" "$rc $(tail -1 <<< "$out")" "4 RESULT=needs_human"
+chk_has "⑥ 输出读不到的原文" "$out" "connection unavailable"
+chk "⑥ 原文件未动、没有备份" "$(cmp -s "$plist" "$SANDBOX/plist.orig" && echo same) [$(backups)]" "same []"
+chk "⑥ 任务确实没在跑（直接问假调度器）" "$([ -f "$FAKE_LD/dev.luosky.cavil-loop.widget.path" ] && echo loaded || echo gone)" gone
+# ⑦ 只读不到一次、重新加载成功并读回确认 → failed（已确认恢复），任务加载的是原文件
+setup_mac; change_template; rm -f "$FAKE_LD/after-bootout" "$FAKE_LD/print-fails"
+rc=0; out="$(FLAKY_PRINT_FAILS=1 refresh widget)" || rc=$?
+chk "⑦ 卸载后读不到一次、重新加载并读回确认：退出 3、RESULT=failed" "$rc $(tail -1 <<< "$out")" "3 RESULT=failed"
+chk "⑦ 原文件未动、任务加载的是原内容" \
+    "$(cmp -s "$plist" "$SANDBOX/plist.orig" && echo file) $(cmp -s "$FAKE_LD/dev.luosky.cavil-loop.widget.content" "$SANDBOX/plist.orig" && echo loaded)" "file loaded"
+mv -f "$FK/launchctl.real" "$FK/bin/launchctl"
 # 其余：校验不过、等不到锁、原来未加载
 setup_mac; change_template
 rc=0; out="$(FAKE_PLUTIL_FAIL=1 refresh widget)" || rc=$?

@@ -165,6 +165,8 @@ fn main() {
     let notify_check = notify_check();
     let hidden = hidden_start();
     let hooks = TestHooks::from_env(selection.test_mode, &env);
+    // test mode: files the daemon section asked the system to open (GitHub#314)
+    let daemon_opened = if selection.test_mode { env.get("CAVIL_CLIENT_TEST_DAEMON_OPENED_FILE").map(PathBuf::from) } else { None };
 
     let mut builder = tauri::Builder::default().manage(Desktop::new(hooks)).plugin(tauri_plugin_updater::Builder::new().build());
     // one app instance per profile: a second launch brings the first window forward
@@ -226,6 +228,10 @@ fn main() {
                 clock: Arc::new(SystemClock),
                 opener: Arc::new(SystemOpener { record: selection.opened_file.clone() }),
                 endpoints: endpoints.clone(),
+                daemon: Arc::new(cavil_core::daemon::Daemon::new(
+                    cavil_core::daemon::Config::from_env(selection.test_mode, &env),
+                    Arc::new(cavil_core::daemon::SystemFileOpener { record: daemon_opened.clone() }),
+                )),
             });
             app.manage(AppState { engine: engine.clone() });
 

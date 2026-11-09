@@ -50,6 +50,8 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     pub opener: Arc<dyn Opener>,
     pub endpoints: Endpoints,
+    /// the local cavil-loop daemon (GitHub#314)
+    pub daemon: Arc<crate::daemon::Daemon>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +178,10 @@ impl Engine {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.st.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn daemon(&self) -> &crate::daemon::Daemon {
+        &self.d.daemon
     }
 
     pub fn endpoints(&self) -> &Endpoints {

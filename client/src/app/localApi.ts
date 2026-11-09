@@ -57,5 +57,12 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     reorderRepos: async (shown, next) => c.reorderRepos(shown, next),
     resetRepoOrder: async () => c.resetRepoOrder(),
     setNewIssueHandoff: async (h) => c.setNewIssueHandoff(h),
+    // GitHub#314: straight to the back end, which runs every command (the controller has no part in it)
+    daemonStatus: () => backend.call('daemonStatus'),
+    daemonInstall: () => backend.call('daemonInstall'),
+    daemonService: (key, action) => backend.call('daemonService', { key: String(key), action: action === 'start' ? 'start' : 'stop' }),
+    daemonDisconnect: (key) => backend.call('daemonDisconnect', { key: String(key) }),
+    daemonOpen: (key, what) => backend.call('daemonOpen', { key: String(key), what: what === 'config' ? 'config' : 'log' }),
+    daemonUpdate: () => backend.call('daemonUpdate'),
   };
 }
