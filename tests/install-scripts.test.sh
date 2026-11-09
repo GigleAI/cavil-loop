@@ -232,6 +232,12 @@ chk "macOS：普通代码目录，版本 = 它的 HEAD" "$(jq -r '[.daemon.form,
 for mode in fail empty; do
     chk "macOS：launchctl ${mode} → 读不到（不是已停）" "$(FAKE_LD_PRINT=$mode status Darwin claude | jq -r '.projects[0].scheduler.state')" unknown
 done
+chk "macOS：后台任务用的 bash 够新 → ok" "$(jq -c '.bash | [.major >= 4, .ok]' <<< "$st")" '[true,true]'
+# 只有系统自带的旧 bash（3.x）：用和 setup.sh 同一个挑选函数，报出来
+mkdir -p "$FK/agents-oldbash"
+printf '#!/bin/bash\nif [ "$#" = 2 ] && [ "$1" = -c ] && [ "$2" = '"'"'echo "${BASH_VERSINFO[0]}"'"'"' ]; then echo 3; exit 0; fi\nexec /bin/bash "$@"\n' > "$FK/agents-oldbash/bash"
+chmod +x "$FK/agents-oldbash/bash"
+chk "macOS：只有 3.x 的 bash → ok=false，给出路径" "$(status Darwin claude,oldbash | jq -c '.bash')" "{\"path\":\"$FK/agents-oldbash/bash\",\"major\":3,\"ok\":false}"
 rm -f "$FAKE_LD"/dev.luosky.cavil-loop.widget.*
 chk "macOS：未加载 → 已停" "$(status Darwin claude | jq -r '.projects[0].scheduler.state')" stopped
 fresh_world

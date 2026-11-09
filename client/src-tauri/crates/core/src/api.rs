@@ -137,6 +137,13 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             let (percent, kept) = zoom::apply(e.store(), step);
             Ok(json!({ "percent": percent, "kept": kept.err() }))
         }
+        // the local daemon (GitHub#314): fixed requests, the back end decides every path and command
+        "daemonStatus" => Ok(e.daemon().status().await),
+        "daemonInstall" => Ok(e.daemon().install().await),
+        "daemonService" => Ok(e.daemon().service(s(&a, "key")?, s(&a, "action")?).await),
+        "daemonDisconnect" => Ok(e.daemon().disconnect(s(&a, "key")?).await),
+        "daemonOpen" => Ok(e.daemon().open(s(&a, "key")?, s(&a, "what")?).await),
+        "daemonUpdate" => Ok(e.daemon().update().await),
         other => Err(format!("未知命令：{other}")),
     }
 }

@@ -21,6 +21,7 @@ src-tauri/   Tauri 外壳（Rust）
   crates/core/          后台本体：登录（设备授权）、续期、凭据队列、可信名单、退出（engine.rs）、钥匙串（platform.rs）、
                         本地存储（store.rs，SQLite，表结构和 Electron 版相同）、代发请求只放行 GitHub 接口（http.rs）、命令表（api.rs）、
                         自动更新的判断（update.rs：挑哪个版本、什么时候查、一次只跑一轮、超时、失败怎么说，#184）
+                        本机 daemon（daemon.rs，#314：设置页「本机 daemon」的检查 / 安装 / 停启 / 断开 / 更新；只跑 daemon 自带的脚本和固定的 git / systemctl / launchctl 命令，子进程环境按白名单给）
   crates/harness/       测试专用：把后台本体接到 stdin/stdout，单元测试和界面测试都驱动它（发布的 App 里没有）
   tauri.conf.json       窗口的 Content-Security-Policy、打包设置；plugins.updater.pubkey 是更新包签名公钥（#184，空着时 App 不能自我更新、发版拒绝）
 test/

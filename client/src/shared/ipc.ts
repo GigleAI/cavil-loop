@@ -5,6 +5,7 @@ import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './ty
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { Handoff } from './handoff';
+import type { DaemonResult, DaemonStatus, DaemonUpdate } from './daemon';
 
 export interface Snapshot {
   state: AppState;
@@ -81,4 +82,14 @@ export interface CavilApi {
   resetRepoOrder(): Promise<void>;
   /** who a new issue is handed to by default, as last chosen in the dialog (GitHub#245) */
   setNewIssueHandoff(h: Handoff): Promise<void>;
+  /**
+   * The local cavil-loop daemon (GitHub#314). Fixed requests only: the back end reads the daemon's
+   * status script again before acting and decides every path, unit and command itself.
+   */
+  daemonStatus(): Promise<DaemonStatus>;
+  daemonInstall(): Promise<DaemonResult>;
+  daemonService(key: string, action: 'stop' | 'start'): Promise<DaemonResult>;
+  daemonDisconnect(key: string): Promise<DaemonResult>;
+  daemonOpen(key: string, what: 'log' | 'config'): Promise<DaemonResult>;
+  daemonUpdate(): Promise<DaemonUpdate>;
 }

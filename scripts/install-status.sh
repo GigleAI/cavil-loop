@@ -84,6 +84,16 @@ while IFS= read -r c; do
 done < <(cavil_required_cmds "$OS")
 base_json="$(json_list ${base_missing[@]+"${base_missing[@]}"})"
 
+# ── 后台任务会用哪个 bash（和 setup.sh 写进后台任务的是同一个函数）──
+# 低于 4 的（macOS 自带的 3.2）没有 associative array，daemon 跑不起来；macOS 上要 `brew install bash`。
+# 读不出版本 = ok 为 null（读不到），不当成「够用」。
+bash_bin="$(cavil_bash_bin "$OS")"
+bash_major="$("$bash_bin" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || true)"
+case "$bash_major" in ''|*[!0-9]*) bash_major="" ;; esac
+bash_json="$(jq -cn --arg path "$bash_bin" --arg m "$bash_major" \
+    '{path:$path, major:(if $m == "" then null else ($m|tonumber) end),
+      ok:(if $m == "" then null else (($m|tonumber) >= 4) end)}')"
+
 # agent_json <角色> <agent> <项目根> <是否必需 true|false> <何时需要>
 agent_json() {
     local role="$1" agent="$2" root="$3" required="$4" when="$5" state
@@ -212,7 +222,7 @@ else
 fi
 
 jq -n --arg os "$OS" --argjson scheduler "$(json_str_or_null "$SCHEDULER")" \
-    --argjson daemon "$daemon_json" --argjson gh "$gh_json" --argjson base "$base_json" \
+    --argjson daemon "$daemon_json" --argjson gh "$gh_json" --argjson base "$base_json" --argjson bash "$bash_json" \
     --argjson agent_check "$agent_check_json" --argjson projects "$projects_json" '
     {version:1, os:$os, scheduler:$scheduler, daemon:$daemon, gh:$gh,
-     base_deps:{missing:$base}, agent_check:$agent_check, projects:$projects}'
+     base_deps:{missing:$base}, bash:$bash, agent_check:$agent_check, projects:$projects}'

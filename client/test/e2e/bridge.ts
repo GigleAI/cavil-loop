@@ -124,13 +124,15 @@ export const NOT_IN_SAFARI_14 = [
   'Crypto.prototype.randomUUID', 'Set.prototype.union', 'Set.prototype.intersection', 'Set.prototype.difference',
 ];
 
-export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {}): Promise<RunningApp> {
+export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string> } = {}): Promise<RunningApp> {
   const opened: string[] = [];
   const desktop = fakeDesktop();
   const backend = new HarnessBackend({
     db: join(env.userData, 'cache.sqlite'),
     endpoints: { api: env.fake.api, web: env.fake.web },
     credentials: new FileStore(env.cred),
+    // GitHub#314: the local-daemon switches (fake HOME, PATH, scheduler) for the settings section
+    ...(opts.backendEnv ? { env: opts.backendEnv } : {}),
     opened: new Proxy(opened, {
       get(t, k) {
         if (k === 'push') return (u: string) => (appendFileSync(env.opened, `${u}\n`), t.push(u));
