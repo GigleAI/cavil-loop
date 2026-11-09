@@ -181,12 +181,32 @@ jobs:
       # The same environment as client.yml's tests, Playwright's WebKit included: the
       # runner starts a UI baseline before the first broken copy.
       - uses: ./.github/actions/client-setup
+      # Both runners' output is kept (tee) so a failure can name the entries that did not go red.
       - name: Negative controls (vitest / back end / UI)
-        run: MUTATION=1 npm run test:mutation
+        run: |
+          set -o pipefail
+          MUTATION=1 npm run test:mutation 2>&1 | tee "$RUNNER_TEMP/client-mutation.log"
       # It builds the window (dist/) and the app's icons itself before its first entry: this
       # checkout is clean, and neither is in git (tests/client-tauri-mutation-prep.test.sh).
       - name: Negative controls for the app shell (each rebuilds the real app)
-        run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
+        run: |
+          set -o pipefail
+          xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh 2>&1 | tee "$RUNNER_TEMP/client-tauri-mutation.log"
+      # The "did not go red" lines, for the failure report (GitHub#285); a small file, not the logs.
+      - name: Keep the list of entries that did not go red
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/client-failures"
+          cat "$RUNNER_TEMP"/client-*mutation.log 2>/dev/null | grep '^❌' > "$RUNNER_TEMP/client-failures/not-red.txt" || true
+          cat "$RUNNER_TEMP/client-failures/not-red.txt"
+      - name: Upload the list
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-client-failures
+          path: ${{ runner.temp }}/client-failures/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -219,10 +239,12 @@ jobs:
         with:
           pattern: gate-autopilot-*
           path: results-autopilot
+      # Both summaries are also saved for the failure report (GitHub#285: its list of failed units).
       - name: Every shell shard passed exactly once
         run: |
-          mkdir -p results
-          bash tests/run.sh --ci --verify results
+          set -o pipefail
+          mkdir -p results "$RUNNER_TEMP/gate-summary"
+          bash tests/run.sh --ci --verify results | tee "$RUNNER_TEMP/gate-summary/verify.md"
       # Reports only (exit 0): how many negative controls ran across the shell shards and the six
       # autopilot jobs, how many did not go red, and which units failed (GitHub#212). The verdict is
       # the step above and the next one. "Skipped" adds up overlapping slices (each autopilot job
@@ -230,8 +252,9 @@ jobs:
       - name: Negative-control totals
         if: always()
         run: |
-          mkdir -p results results-autopilot
-          bash tests/run.sh --tally results results-autopilot
+          set -o pipefail
+          mkdir -p results results-autopilot "$RUNNER_TEMP/gate-summary"
+          bash tests/run.sh --tally results results-autopilot | tee "$RUNNER_TEMP/gate-summary/tally.md"
       - name: Every gate job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -243,6 +266,14 @@ jobs:
             [ "$r" = success ] || { echo "::error::gate job $j ended with '$r'"; rc=1; }
           done
           exit "$rc"
+      - name: Upload the summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-summary-report
+          path: ${{ runner.temp }}/gate-summary/
+          if-no-files-found: ignore
+          retention-days: 14
 
   release:
     needs: [plan, gate-summary]
@@ -369,3 +400,42 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$title" \
             --notes-file release-notes.md
+
+  # Any job above failed → open an issue labelled for the daemon, or comment on the open one of the
+  # same kind (GitHub#285). Every kind of run, gate-only included; never on a cancelled run. It only
+  # creates or comments, never changes an existing issue's labels: scripts/release_failure_report.py.
+  # Turned off by the repository variable RELEASE_FAILURE_REPORT=off (docs/operations.md, Release cadence).
+  report-failure:
+    name: report failure
+    needs: [plan, gate, gate-autopilot, gate-client, gate-summary, release]
+    if: ${{ !cancelled() && contains(needs.*.result, 'failure') && vars.RELEASE_FAILURE_REPORT != 'off' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The only job that may write issues or read the run's job list; contents: read for the checkout.
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gate-summary-report
+          path: ${{ runner.temp }}/gate-summary
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gate-client-failures
+          path: ${{ runner.temp }}/client-failures
+      - name: Open or comment on the release-failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          GATE_ONLY: ${{ inputs.gate_only && 'true' || '' }}
+          # Must match this repo's dispatch label (LABEL_PENDING_AGENT in the daemon's config).
+          DISPATCH_LABEL: ${{ vars.RELEASE_FAILURE_LABEL || 'pending/agent' }}
+          SUMMARY_DIR: ${{ runner.temp }}/gate-summary
+          CLIENT_DIR: ${{ runner.temp }}/client-failures
+        run: python3 scripts/release_failure_report.py

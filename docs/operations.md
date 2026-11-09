@@ -1386,6 +1386,37 @@ One release per iteration (GitHub#80). Iterations follow the cavil project board
 
 A Release is a changelog and an `npx skills add` landing point; it **has nothing to do with how managed installs upgrade** — managed Linux follows the base branch tip (previous section).
 
+### A failed run opens an issue (GitHub#285)
+
+Whenever a job of a Release run fails — scheduled, tag push, manual release or manual gate-only (marked "诊断运行", diagnostic) — the last job, `report failure`, writes to an issue so the failure is not seen only by whoever opens the Actions page. A cancelled run reports nothing.
+
+- **No open one of the same kind**: it creates an issue titled `Release 工作流运行失败（自动报告）`, labelled `pending/agent`, so the daemon dispatches it like any other. "Same kind" = this repo, open, created by `github-actions[bot]`, body carrying `<!-- cavil-release-failure -->`, not a PR.
+- **One is open**: it adds a comment to the lowest-numbered one and **never touches its labels** — whatever state it is in (being worked on, waiting for a human, waiting on a prerequisite), it stays there. Close it once the failure is dealt with; the next failure opens a new one.
+- **What it says**: the run link, how the run was started, the tested commit, every job's result with its failed steps, the shell units the gate summary did not pass, and the client entries that did not go red. When the gate passed and only the release job failed, it names the step.
+- **When it cannot tell** (a page of the issue list or one of its items cannot be read whole, the issue changed between the lookup and the write) it writes nothing and the `report failure` job goes red. Look at that job's log.
+- The label it puts on a new issue is the repository variable `RELEASE_FAILURE_LABEL` (default `pending/agent`); it must match this repo's dispatch label.
+
+<!-- release-failure-ops:begin -->
+**The job is red with "issue #N 已建、派工标签没打上" (created, the dispatch label is not on it)**: the issue exists but the daemon will not pick it up. Later runs only comment on it, they never add the label. Put the label on by hand, with N being the number in that message:
+
+```bash
+N=123
+gh api -X POST "repos/GigleAI/cavil-loop/issues/$N/labels" -f 'labels[]=pending/agent'
+gh api "repos/GigleAI/cavil-loop/issues/$N" --jq '[.labels[].name]'
+```
+
+Success: the list printed last contains `pending/agent`. If the first command answers 404 for the label, the repo has no such label: create it first (`setup.sh` does), or set `RELEASE_FAILURE_LABEL` to the repo's dispatch label. Nothing to roll back: removing the label again (Labels on the issue page) puts it back as it was.
+
+**Turning it off** (the job is then skipped on every run) and **back on**:
+
+```bash
+gh variable set RELEASE_FAILURE_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
+```
+
+Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `RELEASE_FAILURE_REPORT off` while it is off, and nothing of that name once it is on again.
+<!-- release-failure-ops:end -->
+
 ## Installations from before the rename
 
 The project used to be called `coding-agent-work-loop`. New installations use `cavil-loop`

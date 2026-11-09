@@ -392,6 +392,307 @@ check "--dry-run takes no --at → exit 2" "$RC" 2
 run --auto
 check "plain --auto still tags HEAD" "$(git -C "$REMOTE" rev-parse "release/v$TODAY.2^{commit}")" "$(git -C "$WORK" rev-parse HEAD)"
 
+echo "== release failure → issue (GitHub#285: the report-failure job, scripts/release_failure_report.py)"
+REPORT_PY="$REPO_DIR/scripts/release_failure_report.py"
+FAKE_RF="$REPO_DIR/tests/fixtures/release-failure-fake-gh.py"
+mkdir -p "$TMP/rfbin"
+printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$FAKE_RF" > "$TMP/rfbin/gh"; chmod +x "$TMP/rfbin/gh"
+RF_SHA=0123456789abcdef0123456789abcdef01234567
+RF=""
+rf_repo() {  # a fresh fake repo: the dispatch label exists, no issues
+    RF="$TMP/rf$((CLONES += 1))"; mkdir -p "$RF"
+    echo '["pending/agent","doing/agent","pending/human","pending/blocked","needs-maintainer"]' > "$RF/repo_labels.json"
+    echo '[]' > "$RF/issues.json"
+}
+# The run's job list: every job of release.yml by its display name, success unless overridden.
+# rf_jobs "<display name>=<conclusion>[:<failed step>]" …
+rf_jobs() {
+    python3 - "$@" > "$RF/jobs.json" <<'PYJ'
+import json, sys
+names = ["plan"] + [f"gate {k}/4" for k in range(1, 5)] + [f"gate autopilot {k}/6" for k in range(1, 7)] \
+    + ["gate client", "release gate", "release"]
+over = {}
+for a in sys.argv[1:]:
+    n, _, v = a.partition("=")
+    c, _, s = v.partition(":")
+    over[n] = (c, s)
+jobs = []
+for i, n in enumerate(names):
+    c, s = over.get(n, ("success", ""))
+    steps = [{"name": "Set up job", "conclusion": "success"}]
+    if s:
+        steps.append({"name": s, "conclusion": "failure"})
+    jobs.append({"name": n, "status": "completed", "conclusion": c, "steps": steps,
+                 "html_url": f"https://github.com/o/r/actions/runs/777/job/{i + 1}"})
+jobs.append({"name": "report failure", "status": "in_progress", "conclusion": None, "steps": []})
+print(json.dumps({"total_count": len(jobs), "jobs": jobs}))
+PYJ
+}
+# run_report "<job=result …>" → $RC, stdout+stderr in $TMP/rf-out; the fake's calls in $RF/calls.log
+run_report() {
+    : > "$RF/calls.log"
+    [ -f "$RF/jobs.json" ] || rf_jobs
+    local needs; needs="$(PLAN_SHA="${RF_PLAN_SHA-$RF_SHA}" PLAN_WORK=true needs_json report-failure "$1")"
+    set +e
+    env -u GITHUB_STEP_SUMMARY PATH="$TMP/rfbin:$PATH" FAKE_GH_DIR="$RF" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=777 \
+        GITHUB_RUN_ATTEMPT=1 GITHUB_SERVER_URL=https://github.com GITHUB_SHA=feedfacefeedfacefeedfacefeedfacefeedface \
+        GITHUB_REF_NAME="${RF_REF_NAME:-main}" EVENT="${RF_EVENT:-schedule}" GATE_ONLY="${RF_GATE_ONLY:-}" \
+        NEEDS="$needs" SUMMARY_DIR="${RF_SUMMARY_DIR:-}" CLIENT_DIR="${RF_CLIENT_DIR:-}" \
+        python3 "$REPORT_PY" > "$TMP/rf-out" 2>&1
+    RC=$?
+    set -e
+}
+rf_q() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))" "$@"; }
+n_issues() { rf_q "$RF/issues.json" 'len(d)'; }
+n_open() { rf_q "$RF/issues.json" 'len([i for i in d if i["state"]=="open"])'; }
+labels_of() { rf_q "$RF/issues.json" "' '.join(sorted(l['name'] for l in next(i for i in d if i['number']==$1)['labels'])) or '-'"; }
+body_of() { rf_q "$RF/issues.json" "next(i for i in d if i['number']==$1)['body']"; }
+n_comments() { rf_q "$RF/comments.json" "len(d.get('$1', []))" 2>/dev/null || echo 0; }
+last_comment() { rf_q "$RF/comments.json" "d['$1'][-1]"; }
+set_issue() { python3 - "$RF/issues.json" "$1" "$2" <<'PYS'
+import json, sys
+f, n, patch = sys.argv[1], int(sys.argv[2]), json.loads(sys.argv[3])
+d = json.load(open(f)); next(i for i in d if i["number"] == n).update(patch); json.dump(d, open(f, "w"))
+PYS
+}
+writes() { grep -cE '^(POST|PATCH|PUT|DELETE) ' "$RF/calls.log" || true; }
+label_writes() { grep -cE '^(POST|PUT|DELETE|PATCH) .*(/labels|issues/[0-9]+$)' "$RF/calls.log" || true; }
+gets_of() { grep -cxF "GET repos/o/r/issues/$1" "$RF/calls.log" || true; }
+RUN_LINK="https://github.com/o/r/actions/runs/777"
+
+echo "-- the job itself: runs after every other job, on any failure, never on a cancelled run"
+python3 - "$WORKFLOW" > "$TMP/rf-static" <<'PYW'
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+r = jobs["report-failure"]
+needs = r["needs"] if isinstance(r["needs"], list) else [r["needs"]]
+print("needs-all", sorted(needs) == sorted(j for j in jobs if j != "report-failure"))
+print("if", r["if"])
+print("perms", sorted(f"{k}={v}" for k, v in r["permissions"].items()))
+print("others", sorted(j for j, v in jobs.items() if j != "report-failure" and "permissions" in v))
+print("script", any("release_failure_report.py" in (s.get("run") or "") for s in r["steps"]))
+print("name", r["name"])
+PYW
+has "needs-all True" "$(cat "$TMP/rf-static")" "depends on every other job"
+has "!cancelled()" "$(grep '^if' "$TMP/rf-static")" "not on a cancelled run"
+has "contains(needs.*.result, 'failure')" "$(grep '^if' "$TMP/rf-static")" "on any failed job, whatever the trigger"
+lacks "event_name" "$(grep '^if' "$TMP/rf-static")" "no trigger is excluded"
+check "only this job gets issue write + run read" "$(grep '^perms' "$TMP/rf-static")" "perms ['actions=read', 'contents=read', 'issues=write']"
+check "no other job gets its own permissions" "$(grep '^others' "$TMP/rf-static")" "others []"
+has "script True" "$(cat "$TMP/rf-static")" "runs the report script"
+check "the display name the script leaves out of its job table" "$(grep '^name' "$TMP/rf-static")" "name report failure"
+
+echo "-- several runs on one repo: create once, then only comments whatever the labels became, then a new one after close"
+rf_repo
+rf_jobs "gate 3/4=failure:Negative controls, shard 3/4" "release gate=failure:Every shell shard passed exactly once"
+run_report "gate=failure gate-summary=failure release=skipped"
+check "run 1: green" "$RC" 0
+check "run 1: one issue" "$(n_issues)" 1
+check "run 1: it carries the dispatch label" "$(labels_of 1)" "pending/agent"
+grep -qxF "POST repos/o/r/issues" "$RF/calls.log" && ok "run 1: the fake received the create" || bad "run 1: the fake received the create"
+B="$(body_of 1)"
+has "<!-- cavil-release-failure -->" "$B" "run 1: body has the marker"
+has "$RUN_LINK" "$B" "run 1: body has the run link"
+has "$RF_SHA" "$B" "run 1: body has the tested commit"
+has "gate 3/4](" "$B" "run 1: names the failed job"
+has "「Negative controls, shard 3/4」" "$B" "run 1: names the failed step"
+lacks "report failure" "$B" "run 1: leaves its own job out"
+check "run 1: GitHub had to make no label" "$(rf_q "$RF/repo_labels.json" 'len(d)')" 5
+k=0
+for L in '[{"name":"doing/agent"}]' '[{"name":"pending/human"}]' '[{"name":"pending/blocked"}]' '[{"name":"needs-maintainer"}]' '[]'; do
+    k=$((k + 1))
+    set_issue 1 "{\"labels\": $L}"
+    before="$(labels_of 1)"
+    run_report "gate-client=failure gate-summary=failure release=skipped"
+    check "run $((k + 1)) ($before): green" "$RC" 0
+    check "run $((k + 1)) ($before): still one issue" "$(n_issues)" 1
+    check "run $((k + 1)) ($before): one more comment" "$(n_comments 1)" "$k"
+    check "run $((k + 1)) ($before): no label write" "$(label_writes)" 0
+    check "run $((k + 1)) ($before): labels unchanged" "$(labels_of 1)" "$before"
+    check "run $((k + 1)) ($before): re-read right before writing" "$(gets_of 1)" 1
+done
+has "$RUN_LINK" "$(last_comment 1)" "comment has the run link"
+has "gate client](" "$(last_comment 1)" "comment names the failed job"
+set_issue 1 '{"state": "closed"}'
+run_report "release=failure"
+check "after close: a second issue" "$(n_issues)" 2
+check "after close: it carries the dispatch label" "$(labels_of 2)" "pending/agent"
+check "after close: nothing written to the closed one" "$(n_comments 1)" 5
+
+echo "-- one run each: the body names what actually failed"
+rf_repo; rf_jobs "gate 2/4=failure:Negative controls, shard 2/4" "release gate=failure:Every shell shard passed exactly once"
+mkdir -p "$RF/sum"
+printf '## ❌ 1 of 60 tests did not pass\n\n- ❌ run.test: fail\n\n| x |\n' > "$RF/sum/verify.md"
+printf '## 负对照汇总\n\n| x |\n\n没通过的单位：\n- ❌ `run.test (fail)`\n' > "$RF/sum/tally.md"
+RF_SUMMARY_DIR="$RF/sum" run_report "gate=failure gate-summary=failure release=skipped"
+B="$(body_of 1)"
+has "gate 2/4](" "$B" "shell only: names the shard"
+has "- ❌ run.test: fail" "$B" "shell only: lists the unit the summary did not pass"
+has '`run.test (fail)`' "$B" "shell only: and the tally's failed unit"
+lacks "### 客户端负对照" "$B" "shell only: no client section"
+has "$RF_SHA" "$B" "shell only: tested commit"
+
+rf_repo; rf_jobs "gate client=failure:Negative controls (vitest / back end / UI)" "release gate=failure:Every gate job passed"
+mkdir -p "$RF/cl"; printf '❌ 没变红：看板不可写时照样发修改\n' > "$RF/cl/not-red.txt"
+RF_CLIENT_DIR="$RF/cl" run_report "gate-client=failure gate-summary=failure release=skipped"
+B="$(body_of 1)"
+has "gate client](" "$B" "client only: names the job"
+has "- ❌ 没变红：看板不可写时照样发修改" "$B" "client only: lists the entry that did not go red"
+lacks "### shell 测试单位" "$B" "client only: no shell section without a summary"
+rf_repo; rf_jobs "gate client=failure:Negative controls (vitest / back end / UI)"
+run_report "gate-client=failure gate-summary=failure release=skipped"
+has "客户端没留下条目清单，见该任务日志（[任务日志](https://github.com/o/r/actions/runs/777/job/12)）" "$(body_of 1)" "client, no list: says so and links the job"
+
+rf_repo; rf_jobs "release=failure:Create GitHub Release"
+run_report "release=failure"
+B="$(body_of 1)"
+has "门禁已通过，发版在『Create GitHub Release』失败" "$B" "release only: gate passed, names the step"
+has "$RUN_LINK" "$B" "release only: run link"
+
+rf_repo; rf_jobs "plan=failure:Decide what this run does" "gate 1/4=skipped" "release=skipped"
+RF_PLAN_SHA="" run_report "plan=failure gate=skipped gate-autopilot=skipped gate-client=skipped gate-summary=skipped release=skipped"
+B="$(body_of 1)"
+check "plan failed (no summary): still reported" "$(n_issues)" 1
+has "「Decide what this run does」" "$B" "plan failed: names the step"
+has "feedfacefeedfacefeedfacefeedfacefeedface" "$B" "plan failed: falls back to the run's commit, and says so"
+has "计划任务没给出受测提交" "$B" "plan failed: … says so"
+
+rf_repo; rf_jobs "release=failure:Cut tag (scheduled / manual)"
+RF_EVENT=workflow_dispatch run_report "release=failure"
+B="$(body_of 1)"
+has "手动发版" "$B" "manual release failed: says how it was started"
+has "『Cut tag (scheduled / manual)』" "$B" "manual release failed: names the step"
+lacks "诊断运行" "$B" "manual release: not called diagnostic"
+
+rf_repo; rf_jobs "gate autopilot 2/6=failure:autopilot negative controls, part 2/6" "release gate=failure:Every gate job passed" "release=skipped"
+RF_EVENT=workflow_dispatch RF_GATE_ONLY=true run_report "gate-autopilot=failure gate-summary=failure release=skipped"
+B="$(body_of 1)"
+has "手动只跑门禁" "$B" "gate-only failed: says how it was started"
+has "诊断运行" "$B" "gate-only failed: marked diagnostic"
+has "gate autopilot 2/6](" "$B" "gate-only failed: names the job"
+has "$RF_SHA" "$B" "gate-only failed: tested commit"
+
+rf_repo; RF_EVENT=push RF_REF_NAME=release/v2026.11.08.1 run_report "gate=failure gate-summary=failure release=skipped"
+has 'tag 推送（`release/v2026.11.08.1`）' "$(body_of 1)" "tag push failed: names the tag"
+
+rf_repo; run_report ""
+check "all passed: exit 0" "$RC" 0
+check "all passed: no call at all" "$(wc -l < "$RF/calls.log")" 0
+run_report "gate=cancelled gate-autopilot=cancelled gate-client=cancelled gate-summary=skipped release=skipped"
+check "cancelled: exit 0" "$RC" 0
+check "cancelled: no call at all" "$(wc -l < "$RF/calls.log")" 0
+
+echo "-- reads that fail or come back incomplete"
+rf_repo
+python3 - "$RF/issues.json" <<'PYF'
+import json, sys
+json.dump([{"number": n, "title": "x", "state": "open", "user": {"login": "github-actions[bot]"}, "body": "other",
+            "html_url": f"https://github.com/o/r/issues/{n}", "labels": []} for n in range(1, 131)], open(sys.argv[1], "w"))
+PYF
+touch "$RF/F_list_2"
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "list page 2 fails: red" || bad "list page 2 fails: red"
+grep -q "^GET repos/o/r/issues?.*page=2" "$RF/calls.log" && ok "list page 2 fails: page 2 was asked for" || bad "list page 2 fails: page 2 was asked for"
+check "list page 2 fails: no write" "$(writes)" 0
+rm "$RF/F_list_2"
+run_report "gate=failure"
+check "130 issues over two pages, none ours: creates" "$(n_issues)" 131
+check "… green" "$RC" 0
+
+rf_repo; run_report "gate=failure"; set_issue 1 '{"labels": []}'
+python3 - "$RF/issues.json" <<'PYF'
+import json, sys
+d = json.load(open(sys.argv[1])); d.append({"number": 2, "state": "open", "user": {"login": "github-actions[bot]"},
+    "html_url": "https://github.com/o/r/issues/2", "labels": []}); json.dump(d, open(sys.argv[1], "w"))
+PYF
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "an item without a body: red" || bad "an item without a body: red"
+check "an item without a body: no write" "$(writes)" 0
+has "缺字段：body" "$(cat "$TMP/rf-out")" "an item without a body: says which field"
+
+rf_repo
+echo '[{"number": 1, "title": "x", "state": "open", "user": {"login": "github-actions[bot]"}, "body": "<!-- cavil-release-failure -->", "html_url": "https://github.com/o/r/pull/1", "pull_request": {}, "labels": []}]' > "$RF/issues.json"
+run_report "gate=failure"
+check "a PR carrying the marker is not of the same kind: no comment on it" "$(n_comments 1)" 0
+check "… a new issue instead" "$(n_issues)" 2
+
+rf_repo; run_report "gate=failure"
+echo '{"state": "closed"}' > "$RF/hook_get_1"
+run_report "gate=failure"
+check "closed between the list and the re-read: no comment on it" "$(n_comments 1)" 0
+check "… found again, none left: a new issue" "$(n_issues)" 2
+check "… green" "$RC" 0
+
+rf_repo; run_report "gate=failure"
+echo '{"body": "edited by someone"}' > "$RF/getpatch_1"
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "marker gone on the re-read, still gone after finding again: red" || bad "marker gone on the re-read, still gone after finding again: red"
+check "… no write" "$(writes)" 0
+check "… re-read twice (once more after finding again)" "$(gets_of 1)" 2
+check "… nothing created" "$(n_issues)" 1
+
+rf_repo; echo '["doing/agent"]' > "$RF/repo_labels.json"
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "dispatch label missing (404): red" || bad "dispatch label missing (404): red"
+check "… created anyway" "$(n_issues)" 1
+check "… without a label" "$(labels_of 1)" "-"
+check "… and GitHub made no label of that name" "$(cat "$RF/repo_labels.json")" '["doing/agent"]'
+has "需维护者手动打 pending/agent" "$(cat "$TMP/rf-out")" "… says what to do"
+
+rf_repo; touch "$RF/F_label"
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "label read fails (not 404): red" || bad "label read fails (not 404): red"
+check "… no write" "$(writes)" 0
+
+rf_repo; touch "$RF/F_create_nolabel"
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "created, read back without the label: red" || bad "created, read back without the label: red"
+has "issue #1 已建、派工标签没打上，需维护者手动打 pending/agent" "$(cat "$TMP/rf-out")" "… names the issue and what to do"
+check "… not patched up afterwards" "$(label_writes)" 0
+check "… one write (the create)" "$(writes)" 1
+
+rf_repo; touch "$RF/F_readback"
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "created, read back fails: red" || bad "created, read back fails: red"
+check "… no further write" "$(writes)" 1
+
+rf_repo; touch "$RF/F_create"
+run_report "gate=failure"
+[ "$RC" != 0 ] && ok "create fails: red" || bad "create fails: red"
+check "… not retried" "$(grep -cxF 'POST repos/o/r/issues' "$RF/calls.log")" 1
+
+rf_repo; touch "$RF/F_jobs"
+run_report "gate=failure gate-summary=failure release=skipped"
+check "job list unreadable: still reported" "$(n_issues)" 1
+has "步骤明细读不到" "$(body_of 1)" "… and says the step detail is missing"
+has '`gate` | failure' "$(body_of 1)" "… falling back to the jobs' results"
+
+echo "-- docs: the steps for a missing label and for turning it off, run as written"
+for f in operations.md operations.zh.md; do
+    sed -n '/<!-- release-failure-ops:begin -->/,/<!-- release-failure-ops:end -->/p' "$REPO_DIR/docs/$f" \
+        | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/rf-ops-$f.sh"
+done
+check "both docs carry the same steps" "$(cmp -s "$TMP/rf-ops-operations.md.sh" "$TMP/rf-ops-operations.zh.md.sh" && echo same)" same
+[ -s "$TMP/rf-ops-operations.md.sh" ] && ok "the steps were found" || bad "the steps were found"
+mkdir -p "$TMP/opsbin"
+cat > "$TMP/opsbin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$OPS_LOG"
+case "$*" in
+    *"--jq"*) echo '["pending/agent"]' ;;
+esac
+SH
+chmod +x "$TMP/opsbin/gh"
+export OPS_LOG="$TMP/ops.log"; : > "$OPS_LOG"
+set +e; (PATH="$TMP/opsbin:$PATH" bash -e "$TMP/rf-ops-operations.md.sh") > "$TMP/ops.out" 2>&1; RC=$?; set -e
+check "the steps run" "$RC" 0
+has "api -X POST repos/GigleAI/cavil-loop/issues/123/labels -f labels[]=pending/agent" "$(cat "$OPS_LOG")" "adds the label to the named issue"
+has "api repos/GigleAI/cavil-loop/issues/123 --jq" "$(cat "$OPS_LOG")" "reads it back"
+has "variable set RELEASE_FAILURE_REPORT --body off --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it off with the variable the job reads"
+has "variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it back on"
+has "vars.RELEASE_FAILURE_REPORT != 'off'" "$(grep '^if' "$TMP/rf-static")" "the job reads that variable"
+
+
 # ── negative controls (MUTATION=1): a broken copy of release.yml must turn this file red ──
 # The whole file reruns against the broken copy (WORKFLOW=…) and must exit non-zero.
 if [ -z "${RELEASE_AUTO_NESTED:-}" ]; then
