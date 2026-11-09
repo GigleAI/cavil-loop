@@ -38,10 +38,10 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 
 用户要看状态。你的步骤：
 
-1. `systemctl --user list-timers 'cavil-loop-poll@*' --no-pager` — 看 timer 健康
-2. `systemctl --user list-units 'cavil-loop-poll@*.service' --no-pager` — 看最近一次执行
-3. 对每个已注册的 `~/.config/cavil-loop/*.conf`：
-   - `tail -20 $STATE_DIR/poll.log`（从 conf 读 STATE_DIR）
+1. `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/install-status.sh"` — 一个 JSON 对象（只读）：daemon 装在哪、哪个版本、`gh` 是否登录、每个已接项目（新旧名字都列）的后台任务状态（`running` / `stopped` / `unknown`——`unknown` 是读不到，不要报成已停）、上次轮询时间、配置里用的 agent 缺哪些依赖。字段说明见 [docs/operations.zh.md](docs/operations.zh.md#用脚本安装查状态断开github313)
+2. 只有第 1 步出现 `unknown` 或要看更多细节时：`systemctl --user list-timers 'cavil-loop-poll@*' --no-pager` / `systemctl --user list-units 'cavil-loop-poll@*.service' --no-pager`（macOS：`launchctl print gui/$UID/dev.luosky.cavil-loop.<key>`）
+3. 对第 1 步 `projects[]` 里的每个项目：
+   - `tail -20 $STATE_DIR/poll.log`（第 1 步输出里的 `state_dir`）
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
    - `jq . $STATE_DIR/config-notice.json`（有这个文件时）——本项目配置里缺的新功能设置：这些功能在本项目上是关着的，新装项目却是开的（GitHub#289，见 [docs/operations.zh.md](docs/operations.zh.md#升级不会自动补上的新配置)）。逐项列出缺的配置项和要开时写的那一行
 4. 汇总报告给用户
@@ -70,13 +70,9 @@ cleanup-issue.sh 做的事：
 
 用户要停某项目。你的步骤：
 
-1. 确认 instance 名（`systemctl --user list-timers 'cavil-loop-poll@*'`）
-2. `systemctl --user disable --now cavil-loop-poll@<key>.timer`
-3. 可选：删除 `~/.config/systemd/user/cavil-loop-poll@<key>.{service,timer}` 实例符号链接（如果是真单元文件不动）
-4. 可选：删除 `~/.config/cavil-loop/<key>.conf`
-5. 报告
-
-改名前装的项目，第 1–4 步换成旧名字（`coding-agent-poll@<key>`、`~/.config/coding-agent-work-loop/<key>.conf`）。
+1. 确认 instance 名（`status` 脚本输出里的 `.projects[].key`）
+2. `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/disconnect-project.sh" <key>` — 停掉后台任务（Linux 定时器或 macOS LaunchAgent，改名前的旧安装用旧名字），确认已停后撤掉登记；项目配置和状态保留。退出 2（`RESULT=unknown`）= 读不到后台任务状态，什么都没动；退出 3（`RESULT=failed`）= 停不下来，登记保留——把输出转告用户，不要自己手删文件
+3. 报告（说明项目配置和状态都保留着，重跑 `setup.sh` 就能接回）
 
 ## 项目内不需要的文件
 
