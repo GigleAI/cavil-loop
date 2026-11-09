@@ -529,3 +529,14 @@ button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
 .detail-fields .field-row:first-child { flex-grow: 0; }
 .detail-fields .field-name { flex: 0 0 auto; max-width: 140px; }
 .detail-fields .project-row { flex-basis: 100%; }
+
+/* GitHub#304: dragging a repository to another place (the table's slices, the board's swimlane heads) */
+.slice[draggable='true'], .lane-head[draggable='true'] { cursor: grab; }
+[data-repo-drag='yes'] { opacity: 0.5; }
+.slice[data-drop-at], .lane-head[data-drop-at] { position: relative; }
+.slice[data-drop-at]::after, .lane-head[data-drop-at]::after {
+  content: ''; position: absolute; left: 4px; right: 4px; height: 2px; background: var(--accent); border-radius: 1px; pointer-events: none;
+}
+.slice[data-drop-at='before']::after, .lane-head[data-drop-at='before']::after { top: -1px; }
+.slice[data-drop-at='after']::after, .lane-head[data-drop-at='after']::after { bottom: -1px; }
+.slice-reset { align-self: flex-start; margin: 6px 8px 0; }

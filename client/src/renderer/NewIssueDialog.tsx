@@ -11,16 +11,17 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
 import { localToday } from './iterationOptions';
+import { sortRepos } from '../shared/repoOrder';
 import { checkHandoff, handoffProblem, handoffSummary, mergeLabels, type Handoff, type HandoffCheck, type LabelRead } from '../shared/handoff';
 
 const HANDOFF_TITLES: Record<Handoff, string> = { none: '只建 issue', agent: '交给 agent', autopilot: '托管（自动合并）' };
 
-/** Repositories a new issue can go to: the repository sources plus every repository seen on the board. */
+/** Repositories a new issue can go to: the repository sources plus every repository seen on the board, in the saved repository order (GitHub#304). */
 export function knownRepos(state: AppState, data: BoardData): string[] {
   const out = new Map<string, string>();
   for (const s of state.sources) if (s.kind === 'repo') out.set(`${s.owner}/${s.name}`.toLowerCase(), `${s.owner}/${s.name}`);
   for (const i of data.items) if (!out.has(i.repo.toLowerCase())) out.set(i.repo.toLowerCase(), i.repo);
-  return [...out.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  return sortRepos([...out.values()], state.repoOrder);
 }
 
 /** A new issue from a table group's "+" (GitHub#214): the group's value, its title, the items in it. */

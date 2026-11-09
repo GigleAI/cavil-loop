@@ -73,6 +73,10 @@ export interface CavilApi {
   setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
+  /** a repository dragged (GitHub#304): `shown` = the list on screen before the drag, `next` = the same repositories in the new order */
+  reorderRepos(shown: string[], next: string[]): Promise<void>;
+  /** "按名称排序": forget the dragged order (GitHub#304) */
+  resetRepoOrder(): Promise<void>;
   /** who a new issue is handed to by default, as last chosen in the dialog (GitHub#245) */
   setNewIssueHandoff(h: Handoff): Promise<void>;
 }

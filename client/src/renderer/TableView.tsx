@@ -15,6 +15,7 @@ import { LabelPicker } from './LabelPicker';
 import { noteOf, type ResultNote } from './DetailPanel';
 import { IterationOptions } from './iterationOptions';
 import type { TableFolds } from '../shared/uiPrefs';
+import { useRepoDrag } from './repoDrag';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -287,6 +288,7 @@ export function TableView({
   createTitle = '',
   folds = {},
   onDropPlan,
+  repoOrder = [],
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -305,10 +307,14 @@ export function TableView({
   folds?: TableFolds;
   /** a row dropped on another group (GitHub#294): the board's drop rule decided, the board runs it (change / refuse / ask) */
   onDropPlan?: (plan: DropPlan) => void;
+  /** the saved repository order (GitHub#304; kept on this machine); empty = alphabetical */
+  repoOrder?: string[];
 }) {
   const dark = useDarkMode();
   const t = view.table;
-  const table = buildTable(items, projects, t, today, view.prsUnderIssues);
+  const table = buildTable(items, projects, t, today, view.prsUnderIssues, repoOrder);
+  // GitHub#304: a repository in the slice list drags to another place; the order is the one every repository list uses
+  const repoDrag = useRepoDrag(table.slices?.map((s) => s.value) ?? []);
   const cols = t.columns.filter((c) => c !== 'title');
   const folded = new Set(folds[t.groupBy] ?? []);
   const toggle = (k: string) => void Promise.resolve(api().setTableFold(t.groupBy, k, !folded.has(k))).catch(() => undefined);
@@ -599,11 +605,18 @@ export function TableView({
               className={table.slice?.toLowerCase() === s.value.toLowerCase() ? 'slice on' : 'slice'}
               data-testid="slice"
               data-value={s.value}
+              title="点一下只看这个仓库；拖动调整仓库顺序"
               onClick={() => api().setView({ table: { slice: s.value } })}
+              {...repoDrag.props(s.value)}
             >
               {s.value} <span className="count" data-testid="slice-count">{s.count}</span>
             </button>
           ))}
+          {repoOrder.length > 0 && (
+            <button className="link small slice-reset" data-testid="repo-order-reset" title="不再用拖出来的顺序，仓库回到按名称排" onClick={() => void Promise.resolve(api().resetRepoOrder()).catch(() => undefined)}>
+              按名称排序
+            </button>
+          )}
         </nav>
       )}
       <div className="table-scroll">
