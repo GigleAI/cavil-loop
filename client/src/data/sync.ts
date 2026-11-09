@@ -12,6 +12,8 @@ export interface SyncRound {
   status: SourceStatus[];
   /** GitHub could not be reached at all this round */
   offline: boolean;
+  /** GitHub#270: why (the error as raised); null when not offline */
+  offlineReason: string | null;
   /** the credential was rejected (401): the caller must log out */
   authFailed: boolean;
   viewer: string | null;
@@ -56,7 +58,7 @@ export async function syncRound(
     const err = e as GitHubError;
     const authFailed = err instanceof GitHubError && err.kind === 'auth';
     const offline = !(err instanceof GitHubError) || err.kind === 'network';
-    return { snapshots: keep(), replaced: [], status: unchangedStatus(err.message), offline, authFailed, viewer: null, checks: new Map(), unchanged: [] };
+    return { snapshots: keep(), replaced: [], status: unchangedStatus(err.message), offline, offlineReason: offline ? err.message || null : null, authFailed, viewer: null, checks: new Map(), unchanged: [] };
   }
 
   const snapshots = keep();
@@ -112,5 +114,5 @@ export async function syncRound(
       status.push({ sourceKey: src.key, ok: false, error: err.message, dataFrom: previous.get(src.key)?.fetchedAt ?? null });
     }
   });
-  return { snapshots, replaced, status, offline: false, authFailed, viewer, checks, unchanged };
+  return { snapshots, replaced, status, offline: false, offlineReason: null, authFailed, viewer, checks, unchanged };
 }

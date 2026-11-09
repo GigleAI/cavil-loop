@@ -79,11 +79,13 @@ pub struct FreshOut {
     pub problem: Option<Option<String>>,
     /// the refresh ended the sign-in (session after the sign-out, reason)
     pub signed_out: Option<(u64, String)>,
+    /// why GitHub could not be used (set with `Unreachable` only): shown with "offline" (GitHub#270)
+    pub reason: Option<String>,
 }
 
 impl FreshOut {
     fn of(result: Fresh) -> FreshOut {
-        FreshOut { result, problem: None, signed_out: None }
+        FreshOut { result, problem: None, signed_out: None, reason: None }
     }
 }
 
@@ -664,13 +666,14 @@ impl Engine {
             Err(e) => {
                 return match e.reason {
                     Failure::Expired => self.sign_out_from_refresh(current(&self)),
-                    Failure::Unreachable => FreshOut::of(Fresh::Unreachable),
+                    Failure::Unreachable => FreshOut { reason: Some(e.message), ..FreshOut::of(Fresh::Unreachable) },
                     _ => FreshOut {
                         result: Fresh::Failed,
                         problem: current(&self).then(|| {
                             Some(format!("登录续期没有成功（{}），会在下一轮自动重试；一直失败的话请退出后重新登录", e.message))
                         }),
                         signed_out: None,
+                        reason: None,
                     },
                 };
             }
@@ -725,7 +728,7 @@ impl Engine {
             } else {
                 db_problem.map(db_problem_message)
             };
-            FreshOut { result: Fresh::Ok, problem: Some(problem), signed_out: None }
+            FreshOut { result: Fresh::Ok, problem: Some(problem), signed_out: None, reason: None }
         };
         self.serial(job.boxed()).await
     }
@@ -735,7 +738,7 @@ impl Engine {
             return FreshOut::of(Fresh::Ended);
         }
         let (session, message) = self.logout(Some(REASON_REFRESH_ENDED));
-        FreshOut { result: Fresh::Ended, problem: None, signed_out: Some((session, message.unwrap_or_else(|| REASON_REFRESH_ENDED.into()))) }
+        FreshOut { result: Fresh::Ended, problem: None, signed_out: Some((session, message.unwrap_or_else(|| REASON_REFRESH_ENDED.into()))), reason: None }
     }
 
     /// A refreshed grant that could not be stored: try again (same queue and session rules as any credential write).
@@ -954,6 +957,9 @@ impl FreshOut {
         }
         if let Some((s, r)) = &self.signed_out {
             m.insert("signedOut".into(), json!({ "session": s, "reason": r }));
+        }
+        if let Some(r) = &self.reason {
+            m.insert("reason".into(), Value::String(r.clone()));
         }
         Value::Object(m)
     }

@@ -368,8 +368,10 @@ export interface LoginState {
 
 export interface SyncState {
   syncing: boolean;
-  /** the latest round could not reach GitHub at all */
+  /** the latest round could not use GitHub at all (see `offlineFields` for every way in and out) */
   offline: boolean;
+  /** GitHub#270: why, as GitHub / the connection said it; null whenever `offline` is false, or when no reason is known */
+  offlineReason: string | null;
   /** epoch ms of the latest round that reached GitHub */
   lastOnlineAt: number | null;
   /** epoch ms of the oldest snapshot currently shown (for "数据截至") */

@@ -7,7 +7,7 @@ const T0 = Date.parse('2026-11-06T00:00:00Z');
 const ok = (sourceKey: string): SourceStatus => ({ sourceKey, ok: true, error: null, dataFrom: T0 });
 const bad = (sourceKey: string, error = 'GitHub 返回 HTTP 502', dataFrom: number | null = T0): SourceStatus => ({ sourceKey, ok: false, error, dataFrom });
 function sync(p: Partial<SyncState> = {}): SyncState {
-  return { syncing: false, offline: false, lastOnlineAt: T0, dataFrom: T0, sources: [], problem: null, ...p };
+  return { syncing: false, offline: false, offlineReason: null, lastOnlineAt: T0, dataFrom: T0, sources: [], problem: null, ...p };
 }
 const none = parseFilter('');
 
@@ -46,6 +46,15 @@ describe('fault ids of the yellow bars', () => {
     expect(a['filter-unsupported']).toBeDefined();
     expect(a['filter-unsupported']).toBe(b['filter-unsupported']);
     expect(warningIds(sync(), parseFilter('priority:Low'))['filter-unsupported']).not.toBe(a['filter-unsupported']);
+  });
+
+  it('offline: the reason changing is not a new fault (GitHub#270)', () => {
+    const r = replay([
+      { state: warningIds(sync({ offline: true, offlineReason: '无法连接 GitHub：timeout' }), none) },
+      { close: 'offline' },
+      { state: warningIds(sync({ offline: true, offlineReason: 'GitHub 暂时不可用（HTTP 503）' }), none) },
+    ]);
+    expect(r[2].shown).not.toContain('offline');
   });
 
   it('offline: one fixed id', () => {

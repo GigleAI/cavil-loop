@@ -72,6 +72,15 @@ import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './des
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
 export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
 /** the back end refreshes this long before the access token expires (src-tauri/crates/core/src/engine.rs) */
+/**
+ * GitHub#270: the one way the offline flag is written. The flag and its reason travel together,
+ * and "not offline" never keeps a reason — whichever way the round left offline (GitHub answered
+ * with an error, the refresh failed for another reason, everything worked).
+ */
+export function offlineFields(offline: boolean, reason: string | null): { offline: boolean; offlineReason: string | null } {
+  return { offline, offlineReason: offline ? reason || null : null };
+}
+
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 
 /** What a queued notification was decided on (see Controller.noticeContext). */
@@ -343,7 +352,7 @@ export class Controller {
       viewer: this.cache.getSetting<string | null>('viewer', null),
       sources: this.cache.getSetting<SourceConfig[]>('sources', []),
       view: normalizeView(this.cache.getSetting<unknown>('view', {})),
-      sync: { syncing: false, offline: false, lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
+      sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
@@ -600,16 +609,21 @@ export class Controller {
 
   /** The back end refreshes when due (single flight); this side shows what came of it. */
   private async fresh(force = false, gen?: number): Promise<FreshResult> {
+    return (await this.freshOut(force, gen)).result;
+  }
+
+  /** `fresh`, with why GitHub could not be used when the answer is 'unreachable' (GitHub#270) */
+  private async freshOut(force = false, gen?: number): Promise<{ result: FreshResult; reason: string | null }> {
     let r: FreshOut;
     try {
       r = await this.backend.call<FreshOut>('ensureFresh', { session: this.session, force, clientId: this.state.clientId, ...(gen !== undefined ? { gen } : {}) });
     } catch (e) {
       this.setProblem(`登录续期出错（${(e as Error).message}），会在下一轮自动重试`);
-      return 'failed';
+      return { result: 'failed', reason: null };
     }
     if (r.signedOut) await this.applySignedOut(r.signedOut.session, r.signedOut.reason);
     if (r.problem !== undefined && this.signedIn) this.setProblem(r.problem);
-    return r.result;
+    return { result: r.result, reason: typeof r.reason === 'string' ? r.reason : null };
   }
 
   /** A refreshed grant that could not be stored: the back end tries again. */
@@ -1209,7 +1223,7 @@ export class Controller {
 
   private async runRound(run: SyncRun, retried = false): Promise<void> {
     if (!this.signedIn) return;
-    const fresh = await this.fresh();
+    const { result: fresh, reason: freshReason } = await this.freshOut();
     if (fresh === 'ended' || !this.signedIn) return;
     await this.saveUnsaved();
     const info = await this.backend.call<GrantInfo>('grantInfo');
@@ -1217,7 +1231,7 @@ export class Controller {
     if (fresh !== 'ok' && info.expired) {
       // expired and no new token (GitHub unreachable, or the refresh failed for a reason
       // that does not prove the credential dead): keep everything, the cache stays
-      this.set({ sync: { ...this.state.sync, syncing: false, offline: fresh === 'unreachable' } });
+      this.set({ sync: { ...this.state.sync, syncing: false, ...offlineFields(fresh === 'unreachable', freshReason) } });
       return;
     }
     const session = this.session;
@@ -1293,7 +1307,7 @@ export class Controller {
       viewer: round.viewer ?? this.state.viewer,
       sync: {
         syncing: false,
-        offline: round.offline,
+        ...offlineFields(round.offline, round.offlineReason),
         lastOnlineAt: round.offline ? this.state.sync.lastOnlineAt : this.now(),
         dataFrom: this.state.sync.dataFrom,
         sources: [...status, ...untouched],
@@ -1304,9 +1318,9 @@ export class Controller {
       // A GitHub App token can be refreshed once before the credential is declared dead —
       // the token this round used, not one that changed meanwhile.
       if (!retried && session === this.session && info.canRefresh) {
-        const r = await this.fresh(true, info.gen);
+        const { result: r, reason } = await this.freshOut(true, info.gen);
         if (r === 'ok') return this.runRound(run, true);
-        if (r === 'unreachable') this.set({ sync: { ...this.state.sync, offline: true } });
+        if (r === 'unreachable') this.set({ sync: { ...this.state.sync, ...offlineFields(true, reason) } });
         if (r !== 'changed') return; // 'failed': kept signed in with the problem shown; 'ended': already signed out
       }
       if (session === this.session && this.signedIn) await this.logout(REASON_REVOKED);

@@ -28,8 +28,14 @@ export interface PreviewLine {
   /** a Project key, or `milestone` / `group` */
   target: string;
   text: string;
-  /** false = shown as "will not be set" */
+  /** false = "will not be set" */
   applies: boolean;
+  /**
+   * GitHub#270: never shown in the dialog even when `applies` is false — not a value of the
+   * ticked boards / repository that fails to land: the unticked boards (GitHub#258) and a group
+   * with no value. The plan is the same with or without it.
+   */
+  quiet?: true;
 }
 
 export interface CreatePreview {
@@ -88,8 +94,18 @@ export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo
     return { plan: { milestone: m ? { number: m.number, title: m.title } : null, projects: entries }, lines, blocked: null };
   }
   if (preset.by === 'repo') lines.push({ target: 'group', text: `仓库 = ${preset.repo}（已在上面预选）`, applies: true });
-  if (preset.by === 'none') lines.push({ target: 'group', text: '这一组没有值，不设字段', applies: false });
+  if (preset.by === 'none') lines.push({ target: 'group', text: '这一组没有值，不设字段', applies: false, quiet: true });
   return { plan: { milestone: null, projects: entries }, lines, blocked: null };
+}
+
+/**
+ * GitHub#270: what the dialog shows of a preview — only what will NOT happen as the group
+ * says (a value the ticked boards / repository cannot take, a milestone list still being read
+ * or unreadable). Everything that will be set is already in the dialog title, and the unticked
+ * boards are never announced; nothing to show = no box at all.
+ */
+export function shownLines(preview: CreatePreview): PreviewLine[] {
+  return preview.lines.filter((l) => !l.applies && !l.quiet);
 }
 
 /** The boards not ticked that are watched after creating (GitHub#258), each with its line. */
@@ -101,24 +117,24 @@ function watchEntries(preset: Extract<GroupPreset, { by: 'iteration' | 'status' 
     if (ticked.some((t) => t.key === p.key)) continue;
     const head = `看板「${p.title}」没勾`;
     if (!p.viewerCanUpdate) {
-      lines.push({ target: p.key, text: `${head}：这个账号不能修改它，GitHub 自动收进这条也不会补设${what}`, applies: false });
+      lines.push({ target: p.key, text: `${head}：这个账号不能修改它，GitHub 自动收进这条也不会补设${what}`, applies: false, quiet: true });
       continue;
     }
     if (preset.by === 'iteration') {
       const it = p.hasIterationField && p.iterationFieldId ? p.iterations.find((x) => x.title === preset.title && x.startDate === preset.startDate) : undefined;
       if (!it) {
-        lines.push({ target: p.key, text: `${head}：没有这个迭代，GitHub 自动收进这条也不会补设迭代`, applies: false });
+        lines.push({ target: p.key, text: `${head}：没有这个迭代，GitHub 自动收进这条也不会补设迭代`, applies: false, quiet: true });
         continue;
       }
       out.push({ projectKey: p.key, iterationId: it.id, status: null, label: value });
     } else {
       if (!(p.statusFieldId && p.statusOptionIds.some((o) => o.name === preset.status))) {
-        lines.push({ target: p.key, text: `${head}：没有这个状态，GitHub 自动收进这条也不会补设状态`, applies: false });
+        lines.push({ target: p.key, text: `${head}：没有这个状态，GitHub 自动收进这条也不会补设状态`, applies: false, quiet: true });
         continue;
       }
       out.push({ projectKey: p.key, iterationId: null, status: preset.status, label: value });
     }
-    lines.push({ target: p.key, text: `${head}：如果 GitHub 按它的自动加入规则收进这条、${what}还空着，会补设 ${what} = ${value}（已有别的值不改，提示里可一键改）`, applies: true });
+    lines.push({ target: p.key, text: `${head}：如果 GitHub 按它的自动加入规则收进这条、${what}还空着，会补设 ${what} = ${value}（已有别的值不改，提示里可一键改）`, applies: true, quiet: true });
   }
   return out;
 }
