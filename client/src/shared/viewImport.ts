@@ -2,11 +2,19 @@
 // settings. Pure. Whatever the view uses that this client cannot reproduce
 // (a custom field as grouping / sort / column, the roadmap layout, …) is
 // named in `notes` — never silently dropped. The filter text is taken as-is:
-// words the search box does not understand get the usual yellow bar.
+// words the search box does not understand get the usual yellow bar. One
+// exception (GitHub#298): an empty filter keeps the default search text.
 
 import type { GroupBy, ImportInfo, ProjectMeta, SavedView, SortField, TableColumn, ViewField, ViewSettings } from './types';
 
 export const DEFAULT_TABLE_COLUMNS: TableColumn[] = ['title', 'assignees', 'labels', 'linkedPrs', 'subIssues', 'updated', 'iteration'];
+
+/**
+ * GitHub#298: the search text a client starts with — items whose Project
+ * status is Done, or that carry the `Done` label, are hidden. Only settings
+ * that never saved a search text get it; a saved one (even empty) is kept.
+ */
+export const DEFAULT_QUERY = '-Status:done -label:Done';
 
 export const STATUS_FIELD = 'Status';
 
@@ -131,5 +139,8 @@ export function importView(view: SavedView, project: ProjectMeta, current: ViewS
   if (skipped.length) notes.push(`这些列本客户端不支持，未显示：${skipped.join('、')}`);
 
   const imported: ImportInfo = { sourceKey: project.key, viewNumber: view.number, viewName: view.name, notes };
-  return { layout, query: view.filter, mode, swimlanes, table, imported };
+  // GitHub#298: a view with no filter does not wipe the default search text
+  // (only that exact text — any other search text is replaced as before)
+  const query = view.filter.trim() === '' && current.query === DEFAULT_QUERY ? DEFAULT_QUERY : view.filter;
+  return { layout, query, mode, swimlanes, table, imported };
 }
