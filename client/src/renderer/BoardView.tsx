@@ -1,6 +1,6 @@
 import { badgeText, stateTone } from '../shared/stateTone';
 import { UpdateReadyBar } from './UpdateViews';
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import { copyText } from './pasteImage';
 import type { RepoOptions, WriteAction } from '../shared/actions';
@@ -188,6 +188,28 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
       </div>
     </div>
   );
+}
+
+/** GitHub#297: below this a swimlane's columns stop shrinking (one card's head still shows) */
+export const LANE_COL_MIN = 48;
+
+/**
+ * GitHub#297: the tallest a column in a swimlane may be on this board: half the board's visible height,
+ * and no more than what is left once this lane's head, its row's padding and scrollbar, the gap and
+ * the next lane's head are taken out — all measured from the page, not assumed.
+ */
+function laneColumnMax(board: HTMLElement): number {
+  const cs = getComputedStyle(board);
+  const h = board.clientHeight - parseFloat(cs.paddingTop || '0') - parseFloat(cs.paddingBottom || '0');
+  const head = board.querySelector<HTMLElement>('.lane-head');
+  const headH = head ? head.offsetHeight + parseFloat(getComputedStyle(head).marginBottom || '0') : 36;
+  const lane = board.querySelector<HTMLElement>('.lane');
+  const gap = lane ? parseFloat(getComputedStyle(lane).marginBottom || '0') : 16;
+  let row = 6;
+  for (const r of board.querySelectorAll<HTMLElement>('.lane > .columns'))
+    row = Math.max(row, parseFloat(getComputedStyle(r).paddingBottom || '0') + (r.offsetHeight - r.clientHeight));
+  const room = Math.floor(h - 2 * headH - row - gap - 2);
+  return Math.max(LANE_COL_MIN, Math.min(Math.floor(h / 2), room));
 }
 
 function ColumnView({ col, cards, mode, ops, onDrop }: { col: Column; cards: Card[]; mode: ColumnMode; ops: CardOps; onDrop: (col: Column) => void }) {
@@ -656,6 +678,27 @@ export function BoardView({
 
   const ended = board.columns.filter((c) => c.ended);
   const shown = board.columns.filter((c) => !c.ended);
+  // GitHub#297: with swimlanes, a column is at most half of the board's visible height, and never so tall
+  // that this lane's head plus the next lane's head stop fitting in what is left of the board (the window
+  // size and every bar above count, as they shrink the board); only below LANE_COL_MIN does it stop shrinking
+  const laneFolded = new Set(state.laneFolds);
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [laneMax, setLaneMax] = useState<number | null>(null);
+  const withLanes = view.layout !== 'table' && board.lanes !== null;
+  const laneShape = board.lanes ? `${board.lanes.join('\n')}\u0000${state.laneFolds.join('\n')}` : '';
+  useLayoutEffect(() => {
+    const el = boardRef.current;
+    if (!withLanes || !el) return;
+    const measure = () => setLaneMax(laneColumnMax(el));
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [withLanes, laneShape]);
   const renderRow = (lane: string | null) => {
     const pick = (c: Column) => (lane ? c.cards.filter((x) => x.lane === lane) : c.cards);
     return (
@@ -883,14 +926,34 @@ export function BoardView({
           onDropPlan={applyPlan}
         />
       ) : (
-      <div className="board">
+      <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>
         {board.lanes
-          ? board.lanes.map((lane) => (
-              <div className="lane" key={lane} data-testid="lane" data-lane={lane}>
-                <div className="lane-head">{lane}</div>
-                {renderRow(lane)}
-              </div>
-            ))
+          ? board.lanes.map((lane) => {
+              // GitHub#297: each repository scrolls on its own (sideways in the row, up and down in each column) and folds to its head
+              const isFolded = laneFolded.has(lane);
+              const count = board.columns.reduce((n, c) => n + c.cards.filter((x) => x.lane === lane).length, 0);
+              return (
+                <div className={`lane${isFolded ? ' folded' : ''}`} key={lane} data-testid="lane" data-lane={lane} data-folded={isFolded ? '' : undefined}>
+                  <button
+                    className="lane-head"
+                    data-testid="lane-toggle"
+                    aria-expanded={!isFolded}
+                    title={isFolded ? '点一下展开这个仓库' : '点一下收起这个仓库'}
+                    onClick={() => void Promise.resolve(api().setLaneFold(lane, !isFolded)).catch(() => undefined)}
+                  >
+                    <span className="lane-mark" aria-hidden="true">
+                      {isFolded ? '▸' : '▾'}
+                    </span>
+                    <Icon name="repo" size={14} />
+                    <span className="lane-name">{lane}</span>
+                    <span className="count" data-testid="lane-count">
+                      {count}
+                    </span>
+                  </button>
+                  {!isFolded && renderRow(lane)}
+                </div>
+              );
+            })
           : renderRow(null)}
       </div>
       )}

@@ -533,6 +533,35 @@ describe('sync and cache', () => {
     expect(broken.c.getState().autopilotConfirm).toBe(true);
   });
 
+  it('GitHub#297: folded board swimlanes survive a restart and a Project import, apart from the table folds; a broken saved value reads as nothing folded', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().laneFolds).toEqual([]);
+    first.c.setLaneFold('GigleAI/cavil-loop', true);
+    first.c.setLaneFold('GigleAI/zeta', true);
+    first.c.setLaneFold('GigleAI/zeta', false);
+    first.c.setLaneFold('', true); // unknown: ignored
+    first.c.setLaneFold('GigleAI/x', 'yes' as any); // not a boolean: ignored
+    expect(first.c.getState().laneFolds).toEqual(['GigleAI/cavil-loop']);
+    expect(first.c.getState().tableFolds).toEqual({}); // the table's own folds are left alone
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().laneFolds).toEqual(['GigleAI/cavil-loop']); // …and left the folds alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().laneFolds).toEqual(['GigleAI/cavil-loop']);
+    second.c.setLaneFold('GigleAI/cavil-loop', false);
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().laneFolds).toEqual([]);
+
+    const broken = await make({ seed: { laneFolds: ['o/r', 3, 'o/r', ''] } });
+    expect(broken.c.getState().laneFolds).toEqual(['o/r']);
+    const notAList = await make({ seed: { laneFolds: { 'o/r': true } } });
+    expect(notAList.c.getState().laneFolds).toEqual([]);
+  });
+
   it('GitHub#245: the new-issue hand-over is kept on this machine — a restart and a Project import keep it; anything unknown is ignored or read as "none"', async () => {
     const first = await loggedIn();
     expect(first.c.getState().newIssueHandoff).toBe('none');
