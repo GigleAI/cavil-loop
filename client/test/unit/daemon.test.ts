@@ -272,6 +272,21 @@ describe('update (a git checkout on macOS)', () => {
     expect(sched(await b.call('daemonStatus'), 'widgeta')).toBe('stopped');
   });
 
+  it('the job cannot be read after unloading and loading it back fails: "needs a person", never "restored"', async () => {
+    installByHand(w);
+    const path = pathFor(w);
+    connect(w, 'widgeta', 'Darwin', path);
+    pushDaemonChange(w, (d) => appendLine(join(d, 'launchd', 'dev.luosky.cavil-loop.plist.template'), '<dict>', '    <!-- v2 {{KEY}} -->'));
+    wrapTool(path, 'launchctl', 'if [ "${1:-}" = print ] && [ -f "$FAKE_LD/after-bootout" ]; then echo "launchctl: connection unavailable" >&2; exit 1; fi\n[ "${1:-}" = bootout ] && touch "$FAKE_LD/after-bootout"\nexec "$REAL" "$@"');
+    const b = backend('Darwin', path, { FAKE_LD_BOOTSTRAP: 'fail' });
+    const r = await b.call('daemonUpdate');
+    expect(r.refresh).toHaveLength(1);
+    expect(r.refresh[0].result).toBe('needs_human');
+    expect(r.refresh[0].output).toContain('connection unavailable');
+    // the job really is gone (asked of the fake scheduler directly)
+    expect(existsSync(join(w.ld, 'dev.luosky.cavil-loop.widgeta.path'))).toBe(false);
+  });
+
   it('local changes or a diverged branch stop it with git\'s words; nothing moves', async () => {
     installByHand(w);
     const b = backend('Darwin', pathFor(w));

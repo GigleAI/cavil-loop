@@ -143,7 +143,8 @@ export function refreshWord(r: string): string {
       lock_timeout: '等不到这一轮轮询结束，什么都没动',
       not_found: '找不到这个项目的后台任务配置',
       not_macos: '不是 macOS，不需要',
-      failed: '没换成，已恢复原样',
+      // the script reports it only after reading back both the file and the job (launchd-refresh.sh)
+      failed: '没换成，已恢复原样（原文件和任务状态都读回确认过）',
       needs_human: '没换成，恢复也失败：需要人处理',
       // no final result from the script (killed, timed out, stopped half-way): nothing is confirmed
       unconfirmed: '脚本中途退出，没有最终结果：配置文件和后台任务可能已经改动、没有确认恢复，需要人处理',

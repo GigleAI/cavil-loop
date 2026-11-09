@@ -65,6 +65,7 @@ describe('daemon checklist', () => {
     expect(refreshWord('weird')).toContain('weird');
     // "failed" is the script's own "not done, restored"; a run with no final result never reads like that
     expect(refreshWord('failed')).toContain('已恢复原样');
+    expect(refreshWord('needs_human')).not.toContain('已恢复');
     expect(refreshWord('unconfirmed')).not.toContain('已恢复');
     expect(refreshWord('unconfirmed')).toContain('需要人处理');
   });

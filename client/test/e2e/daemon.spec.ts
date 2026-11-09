@@ -200,6 +200,23 @@ test('update: a project refresh that stops half-way says "没有确认恢复", n
   await shot(page, '7-update-unconfirmed');
 });
 
+test('update: the job cannot be read after unloading and loading back fails — the row says a person is needed, not "已恢复原样"', async () => {
+  installByHand(w);
+  const path = pathFor(w);
+  connect(w, 'widgeta', 'Darwin', path);
+  pushDaemonChange(w, (d) => appendLine(join(d, 'launchd', 'dev.luosky.cavil-loop.plist.template'), '<dict>', '    <!-- v2 {{KEY}} -->'));
+  wrapTool(path, 'launchctl', 'if [ "${1:-}" = print ] && [ -f "$FAKE_LD/after-bootout" ]; then echo "launchctl: connection unavailable" >&2; exit 1; fi\n[ "${1:-}" = bootout ] && touch "$FAKE_LD/after-bootout"\nexec "$REAL" "$@"');
+  const { page } = await openSection('Darwin', path, { FAKE_LD_BOOTSTRAP: 'fail' });
+  await page.getByTestId('daemon-update-run').click();
+  await expect(page.getByTestId('daemon-update-result')).toHaveAttribute('data-result', 'updated', { timeout: 30_000 });
+  const a = page.locator('[data-testid=daemon-refresh][data-key=widgeta]');
+  await expect(a).toHaveAttribute('data-result', 'needs_human');
+  await expect(a).toContainText('需要人处理');
+  await expect(a).not.toContainText('已恢复原样');
+  await expect(a).toContainText('connection unavailable');
+  await shot(page, '8-update-needs-human');
+});
+
 test('a job whose state cannot be read: "读不到", and neither stop nor start is offered', async () => {
   installByHand(w);
   const path = pathFor(w);
