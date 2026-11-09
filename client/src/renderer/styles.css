@@ -172,7 +172,9 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .board-area > .board { flex: 1; min-width: 0; }
 .columns { display: flex; gap: 12px; align-items: flex-start; }
 .column { flex: 0 0 288px; background: var(--col); border: 1px solid var(--border-muted); border-radius: 12px; display: flex; flex-direction: column; max-height: calc(100vh - 140px); }
-.lane .column { max-height: none; }
+/* GitHub#297: with swimlanes each repository's row scrolls sideways on its own, each column up and down on its own */
+.lane > .columns { overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
+.lane .column { max-height: var(--lane-col-max, 40vh); }
 .column.drop-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* GitHub#294: a table row dragged to another group; the group under the pointer lights up */
 table.items tr.dragging { opacity: 0.5; }
@@ -185,7 +187,13 @@ table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outli
 .empty-note { border: 1px dashed var(--border); border-radius: 8px; padding: 14px; color: var(--muted); text-align: center; font-size: 12px; }
 .ended-group { flex: 0 0 168px; text-align: left; flex-direction: column; align-items: flex-start; justify-content: flex-start; padding: 12px; min-height: 0; white-space: normal; border-radius: 12px; background: var(--col); border: 1px dashed var(--border); color: var(--fg); }
 .lane { margin-bottom: 16px; }
-.lane-head { font-weight: 600; margin: 4px 0 8px; }
+.lane.folded { margin-bottom: 4px; }
+/* the head stays in view while the board scrolls through a lane; a click folds the lane to this line */
+.lane-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; min-height: 0; margin: 0 0 4px; padding: 6px 4px; border: none; border-radius: 0; background: var(--canvas); color: var(--fg); font-weight: 600; text-align: left; cursor: pointer; }
+.lane-head:hover:not(:disabled) { background: var(--canvas); color: var(--accent); }
+.lane-head .lane-mark { width: 12px; color: var(--muted); }
+.lane-head .icon { color: var(--muted); }
+.lane-head .lane-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .card { background: var(--raised); border: 1px solid var(--border-muted); border-radius: 8px; padding: 10px 12px; box-shadow: var(--shadow-sm); cursor: pointer; }
 .card:hover { border-color: var(--border); }
 .card[draggable='true'] { cursor: grab; }
@@ -533,7 +541,7 @@ button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
 /* GitHub#304: dragging a repository to another place (the table's slices, the board's swimlane heads) */
 .slice[draggable='true'], .lane-head[draggable='true'] { cursor: grab; }
 [data-repo-drag='yes'] { opacity: 0.5; }
-.slice[data-drop-at], .lane-head[data-drop-at] { position: relative; }
+.slice[data-drop-at] { position: relative; } /* a swimlane head is already sticky (GitHub#297), which positions its line too */
 .slice[data-drop-at]::after, .lane-head[data-drop-at]::after {
   content: ''; position: absolute; left: 4px; right: 4px; height: 2px; background: var(--accent); border-radius: 1px; pointer-events: none;
 }

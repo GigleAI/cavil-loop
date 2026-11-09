@@ -71,6 +71,8 @@ export interface CavilApi {
   setMergeMethod(repo: string, method: MergeMethod): Promise<void>;
   /** fold / unfold one table group under one "group by" (GitHub#231) */
   setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
+  /** fold / unfold one board swimlane, by repository (GitHub#297) */
+  setLaneFold(lane: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
   /** a repository dragged (GitHub#304): `shown` = the list on screen before the drag, `next` = the same repositories in the new order */

@@ -40,6 +40,31 @@ export function setFold(folds: TableFolds, by: unknown, key: unknown, folded: un
   return out;
 }
 
+/**
+ * GitHub#297: which board swimlanes (one per repository, `owner/name` as shown) are folded to their
+ * head line. Kept on this machine like the table folds, apart from them (folding a repository on the
+ * board does not fold it in the table). Oldest first.
+ */
+export type LaneFolds = string[];
+
+/** At most this many folded swimlanes are kept; past that the oldest one is dropped. */
+export const MAX_LANE_FOLDS = 200;
+
+/** Whatever was saved: strings, no repeats, the newest 200; anything else reads as "nothing folded". */
+export function normalizeLaneFolds(raw: unknown): LaneFolds {
+  if (!Array.isArray(raw)) return [];
+  const keys = [...new Set(raw.filter((k): k is string => typeof k === 'string' && k !== ''))];
+  return keys.slice(-MAX_LANE_FOLDS);
+}
+
+/** Fold (`folded` true) or unfold one swimlane. A fold goes to the end (newest); unknown input changes nothing. */
+export function setLaneFold(folds: LaneFolds, lane: unknown, folded: unknown): LaneFolds {
+  if (typeof lane !== 'string' || lane === '' || typeof folded !== 'boolean') return folds;
+  if (!folded && !folds.includes(lane)) return folds;
+  const rest = folds.filter((k) => k !== lane);
+  return folded ? [...rest, lane].slice(-MAX_LANE_FOLDS) : rest;
+}
+
 /** "托管" asks first unless the user ticked "不再提示" (GitHub#231); anything but an explicit `false` asks. */
 export function normalizeAutopilotConfirm(raw: unknown): boolean {
   return raw !== false;

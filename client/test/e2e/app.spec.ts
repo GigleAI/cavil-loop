@@ -5061,6 +5061,149 @@ test('GitHub#276: a new issue gets the current iteration of the ticked board —
   await app.close();
 });
 
+// ---- GitHub#297: each repository's swimlane scrolls on its own and folds to its head ----
+
+test('GitHub#297: swimlanes — each repository scrolls sideways on its own, each column up and down within half the board; a lane folds to its head with its count, kept after a restart; filtering updates a folded count', async () => {
+  // a second repository with three open issues (no Project): its lane is short
+  const zeta = (n: number) => ({ number: n, node_id: `I_fixture_zeta${n}`, title: `zeta issue ${n}`, state: 'open', html_url: `https://github.com/GigleAI/zeta/issues/${n}`, updated_at: '2026-11-04T00:00:00Z', labels: [], assignees: [], milestone: null, user: { login: 'user-1' }, parent_issue_url: null, sub_issues_summary: null });
+  env.fake.state.repos.set('gigleai/zeta', [zeta(1), zeta(2), zeta(3)]);
+  let { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  for (const s of [PROJECT_URL, 'GigleAI/cavil-loop', 'GigleAI/zeta']) {
+    await page.getByTestId('source-input').fill(s);
+    await page.getByTestId('source-add').click();
+  }
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await page.getByTestId('search').fill('');
+  await page.getByTestId('mode').selectOption('status');
+  const done = rawCountFollowing('Status', 'name')['Done'];
+  await expect.poll(async () => (await columnCounts(page))['Done'], { timeout: 15_000 }).toBe(done);
+  await page.getByTestId('swimlanes').click();
+  await expect(page.getByTestId('lane')).toHaveCount(2);
+  const lane = (repo: string) => page.locator(`[data-testid="lane"][data-lane="${repo}"]`);
+  const loop = lane('GigleAI/cavil-loop');
+  const z = lane('GigleAI/zeta');
+  await expect(z.locator('[data-testid="column"]').first()).toBeVisible();
+
+  /** sideways scroll of each lane's row of columns, and of the whole board */
+  const lefts = () =>
+    page.evaluate(() => ({
+      rows: Object.fromEntries([...document.querySelectorAll('[data-testid="lane"]')].map((l) => [l.getAttribute('data-lane'), (l.querySelector('.columns') as HTMLElement).scrollLeft])),
+      board: (document.querySelector('.board') as HTMLElement).scrollLeft,
+    }));
+  // the rows are wider than the window (one column per status in every lane): each can scroll on its own
+  const widths = await loop.locator('.columns').evaluate((el) => [el.scrollWidth, el.clientWidth]);
+  expect(widths[0]).toBeGreaterThan(widths[1]);
+  const box = (await loop.locator('[data-testid="column"]').first().boundingBox())!;
+  await page.mouse.move(box.x + 40, box.y + 20);
+  await page.mouse.wheel(600, 0);
+  await expect.poll(async () => (await lefts()).rows['GigleAI/cavil-loop']).toBeGreaterThan(0);
+  expect(await lefts()).toMatchObject({ rows: { 'GigleAI/zeta': 0 }, board: 0 });
+  await shot(page, '297-01-lanes-scrolled-apart');
+
+  /** the "Done" column of cavil-loop: its height against the board's, and whether its cards scroll inside it */
+  const doneCol = loop.locator('[data-testid="column"][data-title="Done"]');
+  const shape = () =>
+    doneCol.evaluate((col) => {
+      const board = document.querySelector('.board') as HTMLElement;
+      const body = col.querySelector('.column-body') as HTMLElement;
+      const zHead = document.querySelector('[data-testid="lane"][data-lane="GigleAI/zeta"] [data-testid="lane-toggle"]')!.getBoundingClientRect();
+      const b = board.getBoundingClientRect();
+      return { col: col.getBoundingClientRect().height, board: board.clientHeight, body: [body.scrollHeight, body.clientHeight], nextHeadVisible: zHead.top >= b.top && zHead.bottom <= b.bottom };
+    });
+  for (const size of [{ width: 1280, height: 800 }, { width: 720, height: 480 }]) {
+    await page.setViewportSize(size);
+    await doneCol.scrollIntoViewIfNeeded();
+    await page.locator('.board').evaluate((el) => (el.scrollTop = 0));
+    await expect.poll(async () => (await shape()).col <= Math.floor((await shape()).board / 2) + 1).toBe(true);
+    const s = await shape();
+    expect(s.body[0]).toBeGreaterThan(s.body[1]); // more cards than fit: the column scrolls inside
+    expect(s.nextHeadVisible).toBe(true); // the next repository's head is on screen without scrolling the board
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // the wheel over that column scrolls the column, not the board
+  const dbox = (await doneCol.locator('.column-body').boundingBox())!;
+  await page.mouse.move(dbox.x + 40, dbox.y + 40);
+  await page.mouse.wheel(0, 200);
+  await expect.poll(() => doneCol.locator('.column-body').evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  expect(await page.locator('.board').evaluate((el) => el.scrollTop)).toBe(0);
+
+  // fold cavil-loop: only its head is left, with the number of cards it holds; zeta is untouched
+  const loopCards = async () => (await loop.locator('[data-testid="column-count"]').allTextContents()).reduce((n, t) => n + Number(t), 0);
+  const before = await loopCards();
+  expect(before).toBeGreaterThan(done - 1);
+  await expect(loop.getByTestId('lane-count')).toHaveText(String(before));
+  await loop.getByTestId('lane-toggle').click();
+  await expect(loop).toHaveAttribute('data-folded', '');
+  await expect(loop.locator('[data-testid="column"]')).toHaveCount(0);
+  await expect(loop.getByTestId('lane-count')).toHaveText(String(before));
+  await expect(loop.getByTestId('lane-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(z.locator('[data-testid="column"]').first()).toBeVisible();
+  await expect(z.getByTestId('lane-count')).toHaveText('3');
+  await shot(page, '297-02-lane-folded');
+
+  // a filter changes the folded lane's count; it stays folded
+  await page.getByTestId('search').fill('is:pr');
+  await expect.poll(async () => Number(await loop.getByTestId('lane-count').textContent())).toBeLessThan(before);
+  const prs = Number(await loop.getByTestId('lane-count').textContent());
+  expect(prs).toBeGreaterThan(0);
+  await expect(loop.locator('[data-testid="column"]')).toHaveCount(0);
+  await expect(z).toHaveCount(0); // zeta has no PRs: no lane
+  await page.getByTestId('search').fill('');
+  await expect(z).toHaveCount(1);
+  await expect(loop.getByTestId('lane-count')).toHaveText(String(before));
+
+  // restart: still folded
+  await app.close();
+  ({ app, page } = await launch(env));
+  const loop2 = page.locator('[data-testid="lane"][data-lane="GigleAI/cavil-loop"]');
+  await expect(loop2).toHaveAttribute('data-folded', '', { timeout: 15_000 });
+  await expect(loop2.locator('[data-testid="column"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="lane"][data-lane="GigleAI/zeta"] [data-testid="column"]').first()).toBeVisible();
+  // unfold: its columns are back, the count matches them
+  await loop2.getByTestId('lane-toggle').click();
+  await expect(loop2).not.toHaveAttribute('data-folded', '');
+  await expect.poll(async () => (await loop2.locator('[data-testid="column-count"]').allTextContents()).reduce((n, t) => n + Number(t), 0)).toBe(before);
+  // swimlanes off: one row, no lane heads, as before
+  await page.getByTestId('swimlanes').click();
+  await expect(page.getByTestId('lane')).toHaveCount(0);
+  await expect(page.getByTestId('lane-toggle')).toHaveCount(0);
+  expect((await columnCounts(page))['Done']).toBe(done);
+
+  // PR #300 review round 1: the smallest window with three bars above the board (update ready,
+  // unsupported words, offline) — the columns shrink further, the next repository's head still shows
+  await page.getByTestId('swimlanes').click();
+  await page.setViewportSize({ width: 720, height: 480 });
+  app.desktop.setUpdate({ supported: true, current: '0.5.0', auto: true, channel: 'stable', devUnavailable: null, problem: null, phase: 'ready', version: '0.5.1', dismissed: null, last: null });
+  await expect(page.getByTestId('update-ready')).toBeVisible();
+  await page.getByTestId('search').fill('updated:>2026-01-01');
+  await expect(page.getByTestId('filter-unsupported')).toBeVisible();
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').click();
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.board').evaluate((el) => (el.scrollTop = 0));
+  const doneCol2 = page.locator('[data-testid="lane"][data-lane="GigleAI/cavil-loop"] [data-testid="column"][data-title="Done"]');
+  const tight = () =>
+    doneCol2.evaluate((col) => {
+      const board = document.querySelector('.board') as HTMLElement;
+      const b = board.getBoundingClientRect();
+      const z = document.querySelector('[data-testid="lane"][data-lane="GigleAI/zeta"] [data-testid="lane-toggle"]')!.getBoundingClientRect();
+      const body = col.querySelector('.column-body') as HTMLElement;
+      return { board: board.clientHeight, col: col.getBoundingClientRect().height, nextTop: z.top, nextBottom: z.bottom, top: b.top, bottom: b.bottom, body: [body.scrollHeight, body.clientHeight] };
+    });
+  await expect.poll(async () => { const t = await tight(); return t.nextTop >= t.top && t.nextBottom <= t.bottom; }).toBe(true);
+  const t = await tight();
+  expect(t.board).toBeLessThan(260); // the bars really took the room (round 1 measured 191 px)
+  expect(t.col).toBeLessThan(160); // so the column went below the old 160 px floor
+  expect(t.col).toBeGreaterThanOrEqual(48);
+  expect(t.body[0]).toBeGreaterThan(t.body[1]); // and still scrolls inside
+  await shot(page, '297-03-small-window-three-bars');
+  await app.close();
+});
+
 /**
  * A row dragged onto a target by hand (GitHub#294): press, a first move (the drag starts), then the
  * target brought into view and moved onto. Playwright's dragTo scrolls to the target before the drag
@@ -5215,7 +5358,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await search.fill('');
   const layout = (l: 'board' | 'table') => page.locator(`[data-testid="layout"] button[data-value="${l}"]`).click();
   const slice = (r: string) => page.locator(`[data-testid="slice"][data-value="${r}"]`);
-  const lane = (r: string) => page.locator(`[data-testid="lane"][data-lane="${r}"] [data-testid="lane-head"]`);
+  const lane = (r: string) => page.locator(`[data-testid="lane"][data-lane="${r}"] [data-testid="lane-toggle"]`);
   const slices = () => page.$$eval('[data-testid="slice"]', (s) => s.map((x) => x.getAttribute('data-value')).filter((v) => v));
   const lanes = () => page.$$eval('[data-testid="lane"]', (s) => s.map((x) => x.getAttribute('data-lane')));
   const heads = async () => (await repoHeads(page)).map(([t]) => t);

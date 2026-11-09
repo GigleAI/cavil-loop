@@ -2,7 +2,7 @@
 // Nothing in here may import Node or Electron: the renderer bundles it.
 
 import type { MergePrefs } from './mergePrefs';
-import type { TableFolds } from './uiPrefs';
+import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { OpRecord } from './ops';
 import type { Handoff } from './handoff';
 
@@ -415,6 +415,8 @@ export interface AppState {
   mergePrefs: MergePrefs;
   /** which table groups are folded, per "group by" (GitHub#231; kept on this machine) */
   tableFolds: TableFolds;
+  /** folded board swimlanes (repositories), kept on this machine (GitHub#297) */
+  laneFolds: LaneFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
   /** the repository order set by dragging (GitHub#304; lower-cased `owner/name`, kept on this machine); empty = alphabetical */
