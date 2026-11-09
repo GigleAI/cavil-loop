@@ -130,10 +130,16 @@ def union_ms(spans, lo, hi):
     return total
 
 
+def request_spans(agent, start_epoch, paths):
+    """本轮全部模型请求的时间段 [(发出, 结束)]（毫秒，未裁剪）。远端 CI 等待（ci_wait.py）拿它扣掉 AI 时间。"""
+    start_ms = int(start_epoch * 1000)
+    reader = claude_requests if agent == "claude" else codex_requests
+    return [s for p in paths for s in reader(p, start_ms)]
+
+
 def estimate(agent, start_epoch, end_epoch, paths):
     start_ms, end_ms = int(start_epoch * 1000), int(end_epoch * 1000)
-    reader = claude_requests if agent == "claude" else codex_requests
-    spans = [s for p in paths for s in reader(p, start_ms)]
+    spans = request_spans(agent, start_epoch, paths)
     return union_ms(spans, start_ms, end_ms), len(spans)
 
 

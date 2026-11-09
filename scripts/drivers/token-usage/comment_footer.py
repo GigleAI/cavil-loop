@@ -4,22 +4,31 @@
 形状（数字示意）：
 
     ---
-    <details><summary>⏱️ 耗时：8m 0s（AI 约 2m 30s · 测试 4m 51s · 其他 39s）｜模型：claude-opus-5-5 · 8.6m token · 约 $2.48</summary>
+    <details><summary>⏱️ 耗时：8m 0s（AI 约 2m 30s · 测试 4m 51s · 远端 CI 约 40s · 其他 0s）｜模型：claude-opus-5-5 · 8.6m token · 约 $2.48</summary>
 
     - 开始 2026-10-27 08:48:16 · 完工 08:56:16
     - <项目命令给的分条文字，原样>
+    - 远端 CI 约 40s（等待 1 条，按命令推断，可能偏多）：
+      - 等 Actions 运行 123：08:50:01 → 08:50:41，40s
     - token 明细：<用量驱动的人读行，原样>
 
     </details>
-    <!-- agent-metrics agent=… wt=… start=… end=… wall_secs=… <驱动 --kv 原样> test_secs=… <项目字段> -->
+    <!-- agent-metrics agent=… wt=… start=… end=… wall_secs=… <驱动 --kv 原样> ci_wait_secs=… ci_waits=… ci_wait_untimed=… test_secs=… <项目字段> -->
 
 规矩：
   · 机器记录是最后一个非空行（周报采集器只认这一行）。
   · 总览就是折叠块的标题（GitHub#90）：收起时只剩这一行，展开箭头在行首。总览按 HTML
     转义后放进 <summary>，某个模型名带了尖括号也弄不坏折叠块。
-  · 总览里的三段按 AI、测试、其他的顺序排（GitHub#93），按**显示出来的整秒**相减：
-    「其他」= 总 − 测试 − AI，最小 0。三段不重叠时
+  · 总览里的各段按 AI、测试、远端 CI、其他的顺序排（GitHub#93 / #293），按**显示出来的整秒**相减：
+    「其他」= 总 − AI − 测试 − 远端 CI，最小 0。各段不重叠时
     相加恰好等于总耗时；测试和 AI 有重叠（AI 在想、测试在后台跑）时「其他」记 0，细节里说明。
+  · 远端 CI（GitHub#293）：用量驱动 --ci-wait 给一行 JSON（ci_wait.py）。等待时段的并集已扣掉与 AI 重合的
+    部分，所以不和 AI 重叠；和测试的重叠扣不掉（测试只给总数），同样按「其他」记 0 处理。总览只在
+    合计至少 1 秒、或有等待但一条都没记到结束（「远端 CI 未知」）时出现；细节逐条列出，并写明重叠、
+    扣掉的 AI 时间、没记到结束的条数。数字是按会话里的命令推断的，可能偏多（PR #302 维护者选定：
+    一条命令里只要认出等待，整条命令的时长都算；分支没走、等待之外还有别的耗时操作时会多算），
+    细节标题写明「按命令推断，可能偏多」。没有等待时 footer 可见部分与以前一字不差，机器记录写
+    ci_wait_secs=0.000 ci_waits=0 ci_wait_untimed=0。统计不出来时三个字段都不写，细节写原因。
   · AI 时间算不出来就写「AI 时间未知」，不写 0、也不算「其他」。AI 时间的估算口径写在
     docs/operations.md，不在每条评论里重复一大段说明。
   · token 明细整行用驱动的人读输出，金额措辞、价目提醒、模型说明都在里面，这里不重写；
@@ -33,6 +42,7 @@
 import argparse
 import datetime
 import html
+import json
 import math
 import os
 import re
@@ -93,6 +103,107 @@ def run_driver(driver, start_epoch, kv):
     except (OSError, subprocess.SubprocessError):
         return ""
     return (r.stdout or "").strip().splitlines()[0] if (r.stdout or "").strip() else ""
+
+
+def run_ci_wait(driver, start_epoch):
+    """用量驱动的 --ci-wait → None（没有会话文件，什么也不说）| 失败原因 str | 结果 dict。"""
+    try:
+        r = subprocess.run(["bash", driver, str(start_epoch), "--ci-wait"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "统计没跑完"
+    out = (r.stdout or "").strip()
+    if r.returncode != 0:
+        return f"统计脚本出错（退出码 {r.returncode}）"
+    if not out:
+        return None
+    return parse_ci_wait(out.splitlines()[0])
+
+
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x >= 0
+
+
+def parse_ci_wait(line):
+    """校验 ci_wait.py 那一行 JSON；形状不对一律当「读不懂」，不当「没等过」。"""
+    bad = "统计输出读不懂"
+    try:
+        d = json.loads(line)
+    except ValueError:
+        return bad
+    if not isinstance(d, dict) or d.get("v") != 1 or not isinstance(d.get("read"), bool):
+        return bad
+    if not d["read"]:
+        why = d.get("why")
+        return why if isinstance(why, str) and why else "会话记录读不了"
+    waits = d.get("waits")
+    if not isinstance(waits, list) or not _num(d.get("untimed")) or not _num(d.get("ai_cut")):
+        return bad
+    if not (d.get("secs") is None or _num(d["secs"])) or (waits and d.get("secs") is None and d["untimed"] != len(waits)):
+        return bad
+    for w in waits:
+        if (not isinstance(w, dict) or w.get("what") not in ("run", "pr", "") or not isinstance(w.get("id"), str)
+                or not _num(w.get("start")) or not (w.get("end") is None or _num(w.get("end")))
+                or (w.get("end") is None) != (w.get("secs") is None)
+                or not (w.get("secs") is None or _num(w["secs"]))):
+            return bad
+    if not waits and d.get("secs") is None:
+        return bad
+    return d
+
+
+def secs_ms(x):
+    """机器字段：毫秒精度原样写（与 ai_secs 同一写法），不舍入到整秒。"""
+    ms = int(round(x * 1000))
+    return f"{ms // 1000}.{ms % 1000:03d}"
+
+
+def wait_label(w):
+    what, wid = w["what"], w["id"]
+    if what == "run":
+        return f"等 Actions 运行 {wid}" if wid else "等 Actions 运行（编号没读出来）"
+    if what == "pr":
+        return f"等 PR #{wid} 的检查" if wid else "等 PR 的检查（编号没读出来）"
+    return "等远端 CI"
+
+
+def ci_wait_parts(ci, wall, start_dt):
+    """→ (总览那一段 | None, 计入减法的整秒 | None, 细节行, 机器字段)。"""
+    if ci is None:
+        return None, None, [], []
+    if isinstance(ci, str):
+        return None, None, [f"- 远端 CI 等待没统计到：{ci}"], []
+    waits, secs, untimed = ci["waits"], ci["secs"], int(ci["untimed"])
+    kv = ([f"ci_wait_secs={secs_ms(secs)}"] if secs is not None else []) + [
+        f"ci_waits={len(waits)}", f"ci_wait_untimed={untimed}"]
+    seg, ci_int, lines = None, None, []
+
+    def at(t):
+        dt = datetime.datetime.fromtimestamp(t).astimezone()
+        return dt.strftime("%H:%M:%S") if dt.date() == start_dt.date() else dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    if waits:
+        if secs is None:
+            seg = "远端 CI 未知"
+            lines.append(f"- 远端 CI：等待 {len(waits)} 条，都没记到结束，时长未知（按命令推断）：")
+        else:
+            ci_int = min(int(round(secs)), wall)
+            seg = f"远端 CI 约 {fmt_dur(ci_int)}" if ci_int > 0 else None
+            lines.append(f"- 远端 CI 约 {fmt_dur(ci_int)}（等待 {len(waits)} 条，按命令推断，可能偏多）：")
+        for w in waits:
+            if w["end"] is None:
+                lines.append(f"  - {wait_label(w)}：{at(w['start'])} 起，结束未记到")
+            else:
+                lines.append(f"  - {wait_label(w)}：{at(w['start'])} → {at(w['end'])}，{fmt_dur(round(w['secs']))}")
+        if ci.get("overlap"):
+            lines.append("  - 几条等待时间上有重叠，合计按并集算、同一段只算一次")
+        if int(round(ci["ai_cut"])) > 0:
+            lines.append(f"  - 等待期间 AI 也在工作，这 {fmt_dur(round(ci['ai_cut']))} 算进 AI，不重复算进远端 CI")
+        if untimed and secs is not None:
+            lines.append(f"  - 另有 {untimed} 条没记到结束，没算进合计")
+    if _num(ci.get("unparsed")) and ci["unparsed"]:
+        lines.append(f"- 另有 {int(ci['unparsed'])} 条命令的写法解析不了，可能含远端 CI 等待，未计入")
+    return seg, ci_int, lines, kv
 
 
 def extra_cmd_from_config(config):
@@ -186,12 +297,14 @@ def cost_text(kv):
     return "金额未知"
 
 
-def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
+def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra, ci=None):
     """纯函数：所有外部输入都已取好，只管排版。测试直接调它。"""
     kv_pairs = parse_kv(kv_line)
     kv = dict(kv_pairs)
     wall = max(0, int(end_epoch - start_epoch))
     notes = []
+    start_dt = datetime.datetime.fromtimestamp(start_epoch).astimezone()
+    ci_seg, ci_int, ci_details, ci_kv = ci_wait_parts(ci, wall, start_dt)
 
     test = None
     test_seg = None     # 总览里测试那一段；没配命令、或命令确认没跑测试时不提
@@ -215,17 +328,21 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     except (KeyError, ValueError):
         pass
 
-    # 顺序：AI、测试、其他（GitHub#93）
+    # 顺序：AI、测试、远端 CI、其他（GitHub#93 / #293）
     if ai is not None:
-        other = wall - (test or 0) - ai
+        other = wall - (test or 0) - ai - (ci_int or 0)
         segs = [f"AI 约 {fmt_dur(ai)}"]
         if test_seg:
             segs.append(test_seg)
+        if ci_seg:
+            segs.append(ci_seg)
         segs.append(f"其他 {fmt_dur(max(0, other))}")
-        if other < 0:
+        if other < 0 and ci_int:
+            notes.append("- 各段时间有重叠（AI 工作或等远端 CI 时测试也在跑），相加超过总耗时，「其他」记为 0")
+        elif other < 0:
             notes.append("- 测试和 AI 时间有重叠（AI 工作时测试也在跑），两段相加超过总耗时，「其他」记为 0")
     else:
-        segs = ["AI 时间未知"] + ([test_seg] if test_seg else [])
+        segs = ["AI 时间未知"] + ([test_seg] if test_seg else []) + ([ci_seg] if ci_seg else [])
 
     usage = "token 未知"
     if kv_pairs:
@@ -237,23 +354,25 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra):
     head = (f"⏱️ 耗时：{fmt_dur(wall)}（{' · '.join(segs)}）"
             f"｜{models_text(kv) if kv_pairs else '模型未知'} · {usage}")
 
-    start_dt = datetime.datetime.fromtimestamp(start_epoch).astimezone()
     end_dt = datetime.datetime.fromtimestamp(end_epoch).astimezone()
     details = [f"- 开始 {start_ts} · 完工 {end_dt.strftime('%H:%M:%S')}"]
     details += extra_details
+    details += ci_details
     details.append(f"- token 明细：{human}" if human else "- token 明细：未知（没找到本次的会话记录）")
     # AI 时间怎么估写在运维文档里，不每条评论重复（总览的「AI 约」已表明是估算）；算不出来才说明原因
     if ai is None:
         details.append("- AI 时间没算出来：没找到本次的会话记录，或记录里认不出模型请求")
     details += notes
 
-    reserved = {"agent", "wt", "start", "end", "wall_secs", "test_secs"} | set(kv)
+    reserved = {"agent", "wt", "start", "end", "wall_secs", "test_secs",
+                "ci_wait_secs", "ci_waits", "ci_wait_untimed"} | set(kv)
     marker = [f"agent={agent}", f"wt={wt}",
               f"start={start_dt.isoformat(timespec='seconds')}",
               f"end={end_dt.isoformat(timespec='seconds')}",
               f"wall_secs={wall}"]
     if kv_line.strip():
         marker.append(kv_line.strip())
+    marker += [f for f in ci_kv if f.split("=", 1)[0] not in kv]
     if extra is not None and not isinstance(extra, str):
         if extra[0] != TEST_UNKNOWN:    # 机器记录只写数字；说不出耗时就不写这个字段
             marker.append(f"test_secs={extra[0]}")
@@ -282,6 +401,7 @@ def main(argv):
     start_epoch = int(start_epoch)
     human = run_driver(a.driver, start_epoch, False)
     kv_line = run_driver(a.driver, start_epoch, True)
+    ci = run_ci_wait(a.driver, start_epoch)
 
     extra = None
     cmd = extra_cmd_from_config(a.config)
@@ -297,7 +417,7 @@ def main(argv):
             if extra is None:
                 extra = "的输出第一行不是「test_secs=秒数」"
 
-    print(render(a.start, start_epoch, time.time(), a.agent, a.wt, human, kv_line, extra))
+    print(render(a.start, start_epoch, time.time(), a.agent, a.wt, human, kv_line, extra, ci))
     return 0
 
 

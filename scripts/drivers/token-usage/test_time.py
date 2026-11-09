@@ -258,11 +258,37 @@ def read_claude(env, wt, since):
     files = sorted(glob.glob(os.path.join(d, "*.jsonl")))
     if not files:
         return False, "Claude 会话目录里没有会话文件", []
-    uses, results = {}, {}
+    return claude_commands(files, since)
+
+
+# 后台任务（后台 Bash、Monitor）结束时 CLI 写进会话的通知：带着起它的那次工具调用的编号。
+# Monitor 运行中每个事件也发通知，但那些不带 tool-use-id，不会被当成结束（本机会话核对过）。
+TASK_DONE = re.compile(r'<task-notification>(?:(?!</task-notification>).)*?<tool-use-id>([^<\s]+)</tool-use-id>', re.S)
+
+
+def claude_commands(files, since, tools=("Bash",)):
+    """一批 Claude 会话文件里的命令 → (ok, why, [命令])；只看主线程、开始之后的。
+
+    命令 = {"t", "end", "cmd", "bg", "text", "exit", "tool", "done"}：
+      end   前台命令的工具结果时刻（后台、没有结果时为 None）
+      done  后台命令（含前台超时挪到后台、Monitor）的「后台任务结束」通知时刻，没有为 None。
+            同一编号有排队记录和进对话记录时取最早的那条（排队时刻 = 任务真正结束的时刻）
+    tools 是要认的工具名；测试统计只认 Bash（GitHub#244），远端 CI 等待还认 Monitor（GitHub#293）。
+    Monitor 一律按后台算：它的工具结果是「Monitor started」，不是结束。
+    """
+    uses, results, done = {}, {}, {}
     try:
         for p in files:
             for r in _records(p):
-                if r.get("type") not in ("assistant", "user") or r.get("isSidechain"):
+                rt = r.get("type")
+                if rt == "queue-operation" or (rt == "user" and isinstance((r.get("message") or {}).get("content"), str)):
+                    raw = r.get("content") if rt == "queue-operation" else r["message"]["content"]
+                    t = _ts(r.get("timestamp"))
+                    if isinstance(raw, str) and t is not None and not r.get("isSidechain"):
+                        for m in TASK_DONE.finditer(raw):
+                            done[m.group(1)] = min(t, done.get(m.group(1), t))
+                    continue
+                if rt not in ("assistant", "user") or r.get("isSidechain"):
                     continue    # api-request-blob 等记录重复带着工具调用、没有时刻，不看
                 t = _ts(r.get("timestamp"))
                 content = (r.get("message") or {}).get("content")
@@ -271,11 +297,13 @@ def read_claude(env, wt, since):
                 for b in content:
                     if not isinstance(b, dict):
                         continue
-                    if r["type"] == "assistant" and b.get("type") == "tool_use" and b.get("name") == "Bash":
-                        cmd = (b.get("input") or {}).get("command")
+                    if rt == "assistant" and b.get("type") == "tool_use" and b.get("name") in tools:
+                        inp = b.get("input") or {}
+                        cmd = inp.get("command")
                         if isinstance(b.get("id"), str) and isinstance(cmd, str) and b["id"] not in uses:
-                            uses[b["id"]] = {"t": t, "cmd": cmd, "bg": bool((b.get("input") or {}).get("run_in_background"))}
-                    elif r["type"] == "user" and b.get("type") == "tool_result":
+                            uses[b["id"]] = {"t": t, "cmd": cmd, "tool": b["name"],
+                                             "bg": b["name"] == "Monitor" or bool(inp.get("run_in_background"))}
+                    elif rt == "user" and b.get("type") == "tool_result":
                         tid = b.get("tool_use_id")
                         if isinstance(tid, str) and tid not in results:
                             tur = r.get("toolUseResult") if isinstance(r.get("toolUseResult"), dict) else {}
@@ -311,7 +339,8 @@ def read_claude(env, wt, since):
                 except OSError:
                     text = None
         out.append({"t": u["t"], "end": None if (u["bg"] or not res) else res["t"], "cmd": u["cmd"],
-                    "bg": u["bg"], "text": text, "exit": None if u["bg"] or not res else res["exit"]})
+                    "bg": u["bg"], "text": text, "exit": None if u["bg"] or not res else res["exit"],
+                    "tool": u["tool"], "done": done.get(tid) if u["bg"] else None})
     return True, "", out
 
 
@@ -436,6 +465,16 @@ def read_codex(env, wt, since):
     while day <= datetime.date.today() + datetime.timedelta(days=1):
         files += glob.glob(os.path.join(root, f"{day:%Y}", f"{day:%m}", f"{day:%d}", "rollout-*.jsonl"))
         day += datetime.timedelta(days=1)
+    return codex_commands(sorted(files), since, wt)
+
+
+def codex_commands(files, since, wt=None):
+    """一批 codex rollout 里的命令 → (ok, why, [命令], 解析不了的命令数)。
+
+    wt 给了就只认 session_meta 的 cwd 等于它的文件（测试统计自己找文件时用）；调用方已经按
+    worktree 挑好文件（用量驱动）时传 None。命令比 read_claude 多一个 "done"：单元返回时还在跑、
+    靠后续轮询才报出退出码的那条，报出退出码那次轮询的结束时刻（GitHub#293）；测试统计不用它。
+    """
     # 「属于本轮」只在函数末尾判一次（#247 复审第 2 轮：有一处解析失败计数漏了时间判断，旧调用让本轮
     # 变成「测试未知」）。这里先把所有调用连同发出时刻都记下来——旧命令的 session_id 还要用来认后续轮询——
     # 最后按同一条件（调用发出时刻 ≥ 本轮开始）一起筛命令和解析失败。
@@ -443,7 +482,8 @@ def read_codex(env, wt, since):
     try:
         for p in sorted(files):
             recs = list(_records(p))
-            if not any(r.get("type") == "session_meta" and (r.get("payload") or {}).get("cwd") == wt for r in recs):
+            if wt is not None and not any(r.get("type") == "session_meta" and (r.get("payload") or {}).get("cwd") == wt
+                                          for r in recs):
                 continue
             mine += 1
             outputs = {}                         # call_id → 输出（列表或字符串）
@@ -454,7 +494,8 @@ def read_codex(env, wt, since):
             live = {}                            # session_id → 还在跑的那条命令
 
             def new_cmd(t, cmd, chunk, body, offset):
-                c = {"t": t + offset, "call_t": t, "cmd": cmd, "text": body, "exit": chunk["exit"], "bg": False, "end": None}
+                c = {"t": t + offset, "call_t": t, "cmd": cmd, "text": body, "exit": chunk["exit"], "bg": False, "end": None,
+                     "done": None}
                 if chunk["sid"] is not None and chunk["exit"] is None:
                     c["bg"] = True               # 还在跑：此后只靠轮询补输出，不计时
                     live[chunk["sid"]] = c
@@ -462,13 +503,15 @@ def read_codex(env, wt, since):
                     c["end"] = c["t"] + chunk["dur"]
                 return c
 
-            def poll(fields, chunk, body):
+            def poll(fields, chunk, body, at):
                 c = live.get(fields.get("session_id"))
                 if c is None:
                     return
                 c["text"] = (c["text"] or "") + body
                 if chunk["exit"] is not None:
                     c["exit"] = chunk["exit"]
+                    if isinstance(chunk["dur"], (int, float)):
+                        c["done"] = at + chunk["dur"]
                     live.pop(fields.get("session_id"), None)
 
             for r in recs:
@@ -494,8 +537,8 @@ def read_codex(env, wt, since):
                             except ValueError:
                                 pass
                         bad += [t] * max(0, calls - len(found))
-                        cmds += [{"t": t, "call_t": t, "cmd": c, "text": None, "exit": None, "bg": True, "end": None}
-                                 for c in found]
+                        cmds += [{"t": t, "call_t": t, "cmd": c, "text": None, "exit": None, "bg": True, "end": None,
+                                  "done": None} for c in found]
                         continue
                     offset = 0.0
                     for (name, fields, raw), item in zip(stmts, items[1:]):
@@ -507,7 +550,7 @@ def read_codex(env, wt, since):
                                 continue
                             cmds.append(new_cmd(t, cmd, chunk, body, offset))
                         elif name.endswith("write_stdin"):
-                            poll(fields, chunk, body)
+                            poll(fields, chunk, body, t + offset)
                         if isinstance(chunk["dur"], (int, float)):
                             offset += chunk["dur"]
                     continue
@@ -535,7 +578,7 @@ def read_codex(env, wt, since):
                         chunk, body = {"exit": None, "dur": None, "sid": None}, None
                     cmds.append(new_cmd(t, cmd, chunk, body, 0.0))
                 elif name == "write_stdin":
-                    poll(fields, chunk, body)
+                    poll(fields, chunk, body, t)
     except OSError as e:
         return False, f"codex 会话记录读不了（{e.strerror}）", [], 0
     if not mine:
