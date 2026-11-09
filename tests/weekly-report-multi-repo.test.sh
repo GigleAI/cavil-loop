@@ -399,7 +399,10 @@ chk "那一份报告里 beta 一行全是 0" \
     "$(grep -F '| acme/beta |' "$TMP/body.md" | grep -qF '| acme/beta | 0 | 0 | 0 |' && echo yes || echo no)" "yes"
 
 echo "── 5. 不配附加项目：与合并基线逐字节一致（含单项目读失败的旧行为）──"
-norm() { sed -E 's/wk-[0-9]{8}-[0-9]+/wk-REV/g; s/(数据生成时间\*\*：)[0-9: -]+/\1T/' "$1"; }
+# 正文开头那段写给 agent 的派工说明（到第一条 `---` 为止）不在对拍范围：它是 run.sh 里的固定文字，
+# 别的 issue 改它是有意为之（GitHub#273 补了出 PDF 用矢量图的说明），和「配不配附加项目」无关；
+# 数据部分、退出码、GitHub 调用仍逐字节对拍。
+norm() { sed -E '1,/^---$/d' "$1" | sed -E 's/wk-[0-9]{8}-[0-9]+/wk-REV/g; s/(数据生成时间\*\*：)[0-9: -]+/\1T/'; }
 if ! compat_skip "不配附加项目：开出的 issue 正文与改动前" "$TMP/old" "$TMP/new" scripts/weekly-report scripts/_names.sh; then
     for variant in normal fail; do
         for side in old new; do

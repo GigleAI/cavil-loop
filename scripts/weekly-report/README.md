@@ -11,14 +11,14 @@
 | 文件 | 干什么 |
 |---|---|
 | `collect.py` | 采数 + 聚合。只跑 3 次列表型 `gh api --paginate`，**不做 per-issue 循环**——请求数不随 issue 数膨胀 |
-| `render.py` | 把数据渲染成四张趋势图的 HTML：**交付面** 2 块面板（PR 数 vs 净增行 / 待办存量）、**投入面** 2 块面板（讨论轮数 / AI 投入时间）、**成本** 1 块面板（花销 vs 每千行成本）、**token 用量** 2 块面板（输入 + 缓存写入 + 输出 / 缓存读取）。极简配色 + Libre Baskerville |
+| `render.py` | 把数据渲染成四张趋势图的 HTML：**交付面** 2 块面板（PR 数 vs 净增行 / 待办存量）、**投入面** 2 块面板（讨论轮数 / AI 投入时间）、**成本** 1 块面板（花销 vs 每千行成本）、**token 用量** 2 块面板（输入 + 缓存写入 + 输出 / 缓存读取）。极简配色 + Libre Baskerville。每张图出两份：`<名字>.html` 截 PNG 用，`<名字>.chart.html` 是给 PDF 的矢量版（同一张图，字体内嵌、不带本机路径） |
 | `shot.mjs` | HTML → 1280px 单倍像素 PNG（GitHub 评论配图标准） |
 | `report.py` | 出周报 markdown（数据部分），已按 PDF 页序排好：交付 / 投入 / 成本 / token 各一页「图 + 最近 10 周表」、按模型拆分、逐 issue 明细、口径说明 |
 | `merge.py` | 多个项目合并（GitHub#232）：把各仓库**各自**采好的数据按逐字段声明的方式合成一份，合并后自检（相加字段 = 各份之和、中位数重算、按模型拆分对得上总数）；遇到没声明合并方式的字段直接报错 |
 | `bymodel.py` | 目标周按模型拆分的归属规则 + 自检（各模型之和 = 总数），采集与出报告共用一份 |
-| `topdf.mjs` | 周报 markdown → A4 PDF（极简版式、中文字体、页码）。自带 md 子集渲染器，不引第三方 md 库 |
+| `topdf.mjs` | 周报 markdown → A4 PDF（极简版式、中文字体、页码）。趋势图自动换成同名矢量版（GitHub#273），取不到就报错。自带 md 子集渲染器，不引第三方 md 库 |
 | `publish-asset.sh` | 把 PDF / 附件发到 funnel 公网目录，自动加 `rev` 并校验 HTTP 200，打印 URL |
-| `run.sh` | 串起来：采数 → 出图 → 传图（校验公网 200）→ 开 issue → 打 `pending/agent` |
+| `run.sh` | 串起来：采数 → 出图 → 传图（PNG 和矢量版同名同戳，各自校验公网 200）→ 开 issue → 打 `pending/agent` |
 
 ## 用法
 
@@ -128,6 +128,24 @@ URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev + 校验
 ```
 
 `topdf.mjs` 从 `<项目目录>/node_modules` 解析 playwright（同 `shot.mjs`）。
+
+**趋势图在 PDF 里是矢量**（GitHub#273）。报告里的四张图是 1280 宽单倍 PNG——那是 GitHub 评论配图的
+标准，压进 A4 只剩约 180 像素/英寸，放大就糊。所以：
+
+- `run.sh` 出图时在 PNG 旁边留一份**同名同戳的矢量版** `<名字>-<rev>.chart.html`（`render.py` 用同一组
+  面板生成，字体内嵌成 data URI，不带本机路径），和 PNG 一起放进资产目录、一起校验公网 200。
+- `topdf.mjs` 见到地址形如 `…/(delivery|effort|cost|token)-<rev>.png` 的图，就把 `.png` 换成
+  `.chart.html` 取矢量版，整张嵌进 PDF（放进独立的样式作用域，字体声明提到页面顶层，按版心宽度等比
+  缩放）。其他图片原样不动。**写周报的 agent 用的命令不变**，报告里的 PNG 链接也原样保留。
+- 取不到矢量版（404、网络错、内容不像趋势图）→ 逐张列出、退出码 1、不出 PDF。悄悄退回 PNG 等于
+  又出一份糊的，没人会发现。明知接受位图时加 `--allow-raster`：退回 PNG 并逐张列出。
+- **旧期没有矢量版**（这个改动之前发的周报只留了 PNG）。要重出某一期带矢量图的 PDF：
+  `bash run.sh <project-key> --dry-run --week-of <那周周一>`（不开 issue，报告在
+  `~/weekly-report-dryrun.md`，引用的是这一轮新发布的 PNG 与矢量版），再照上面出 PDF。试跑会**重新采数**，
+  本机日志清理过的话，个别数字可能和原 issue 不完全一样。
+- 自查：`pdfimages -list report.pdf` 里不该再有趋势图那几张 1280 宽的位图。
+  测试：`tests/weekly-report-pdf-vector.test.sh`（真出 PDF 那一组要
+  `WEEKLY_REPORT_TEST_PLAYWRIGHT_DIR=<装了 @playwright/test 的项目目录>`，否则只跳过那一组）。
 markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 / 图片 / 行内强调 / `<sub>` 等原样 HTML。
 表格里**整列都是数字**的会自动右对齐 + 等宽数字。
 

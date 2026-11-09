@@ -194,10 +194,17 @@ for d in "$ASSET_DIR" "$ASSET_DIR/.."; do
     [ -e "$d/index.html" ] || printf '<!doctype html><title>404</title>Not found.\n' > "$d/index.html"
 done
 cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
+# 矢量版（GitHub#273）：和 PNG 同名同戳，topdf.mjs 出 PDF 时按 PNG 地址找到它、代替 PNG。
+# 临时目录随退出删掉，所以必须在这里留一份；字体已内嵌，不带本机路径。
 for n in delivery effort cost token; do
-    code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$n-$REV.png")
-    [ "$code" = "200" ] || { echo "配图公网不可达（$n → HTTP $code），中止" >&2; exit 1; }
-    echo "   $ASSET_URL/$n-$REV.png → 200"
+    cp "$WORK/$n.chart.html" "$ASSET_DIR/$n-$REV.chart.html"
+done
+for n in delivery effort cost token; do
+    for f in "$n-$REV.png" "$n-$REV.chart.html"; do
+        code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$f")
+        [ "$code" = "200" ] || { echo "配图公网不可达（$f → HTTP $code），中止" >&2; exit 1; }
+        echo "   $ASSET_URL/$f → 200"
+    done
 done
 
 echo "== 4/4 出报告"
@@ -251,6 +258,10 @@ BODY="$WORK/body.md"
 > URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev + 校验公网 200
 > ```
 > 评论里把 `$URL` 作为下载链接给出来。
+> 报告里的四张趋势图**原样保留 PNG 链接**，命令也不用改：`topdf.mjs` 会按每张 PNG 的地址
+> 取同名的矢量版（`…-<戳>.chart.html`）放进 PDF，图放大也清楚。取不到矢量版它会报错退出、
+> 列出是哪张——不要删图、不要换图，把报错原样写进 issue 评论、翻 `pending/human`；
+> 只有维护者同意接受位图时，才在命令末尾加 `--allow-raster`。
 
 ---
 
