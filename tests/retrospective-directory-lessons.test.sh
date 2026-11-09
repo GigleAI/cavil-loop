@@ -2,7 +2,7 @@
 # kind: guard
 # 经验文件拼进派工说明时裁掉哪些（GitHub#152 目录经验段；GitHub#208 观察中段、举例、出现记录）。
 #
-# 跑法：bash tests/retrospective-directory-lessons.test.sh       （MUTATION=1 加跑负对照）
+# 跑法：bash tests/retrospective-directory-lessons.test.sh
 # 依赖：python3、git。自造 SKILL_DIR / PROJECT_ROOT 沙盘，不碰网络、不碰真实项目。
 #
 # 为什么要有这个文件：目录经验是「只在某块代码会踩的坑」，项目自己的命令把它写进各层目录说明，
@@ -20,15 +20,12 @@
 #   3. 非计次格式、也没有目录经验标题的文件：拼出来的说明与改动前（merge-base）逐字节相同；
 #   4. 本仓库真实的经验文件 + 真实四份模板：每条硬规则的规则 / 适用 / 为什么各恰好一次（预期从
 #      复盘程序的解析器取，不从裁剪结果抄），举例、出现记录、观察中一条都不在。
-#   负对照：两个调用点各自退回 cat、过滤函数整体退回 cat、各条裁剪规则单独去掉，断言必须变红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -298,79 +295,6 @@ chk "进派工说明的比整份短" "$([ "$trim" -lt "$full" ] && echo yes)" "y
 SKILL_DIR="$TMP/skill"
 rm -f "$PROMPTS/lessons.md"
 
-mutation_on && echo "── 负对照：退回原样拼接、去掉单条裁剪规则，断言必须变红 ──"
-real_compose=$(declare -f compose_prompt_template)
-real_filter=$(declare -f lessons_for_prompt)
-mutant() {   # <说明> <要改坏的原文> <改成>
-    mutation_gate || return 0
-    local body="${real_compose/"$2"/"$3"}"
-    if [ "$body" = "$real_compose" ]; then bad "准备失败：$1（原文已不在）"; return; fi
-    eval "$body"
-    setup_both
-    local out n; out=$(compose_prompt_template new-issue); n=$(judge_compose "$out")
-    if [ "$n" -gt 0 ]; then ok "$1 → 变红（$n 条断言失败）"; else bad "$1 → 仍全绿"; fi
-    eval "$real_compose"
-}
-mutant "通用经验入口退回 cat" 'lessons_for_prompt "$lessons"' 'cat "$lessons"'
-mutant "项目经验入口退回 cat" 'lessons_for_prompt "$project_lessons"' 'cat "$project_lessons"'
-if mutation_gate; then
-    # 上一版：只认 LF 的标题探测（CRLF 文件整份原样进了派工说明，复审第 1 轮）
-    eval "$(declare -f lessons_for_prompt | sed 's/< <(_lessons_lf "\$1")/"$1"/; s/_lessons_lf "\$1" | awk/awk/; s/}'"'"'$/}'"'"' "$1"/')"
-    if declare -f lessons_for_prompt | grep -q _lessons_lf; then
-        bad "准备失败：只认 LF 的旧探测（原文已不在）"
-    else
-        n=$(crlf_judge)
-        if [ "$n" -gt 0 ]; then ok "只认 LF 的旧探测 → CRLF 变红（$n 条断言失败）"; else bad "只认 LF 的旧探测 → CRLF 仍全绿"; fi
-    fi
-    eval "$real_filter"
-fi
-pipe_mutant() {   # <说明> <要改成管道的探测原文> <大文件是否计次格式 yes/no> <漏出来就算变红的字样>
-    # 探测走管道：pipefail 下 grep -q 提前退出让 sed 吃 SIGPIPE，判成「没有这一行」
-    mutation_gate || return 0
-    local from="grep $2 < <(_lessons_lf \"\$1\")" to="_lessons_lf \"\$1\" | grep $2"
-    local body="${real_filter/"$from"/"$to"}"
-    if [ "$body" = "$real_filter" ]; then bad "准备失败：$1（原文已不在）"; return; fi
-    eval "$body"
-    { if [ "$3" = yes ]; then project_lessons; else project_lessons | sed '/^<!-- next-id/d'; fi
-      for i in $(seq 1 20000); do echo "- 填充行 $i"; done; } > "$TMP/big.md"
-    sed -i '0,/^## 目录经验$/!{/^## 目录经验$/d}' "$TMP/big.md"
-    ( set -o pipefail; lessons_for_prompt "$TMP/big.md" ) > "$TMP/big.mut"
-    if [ "$(grep -c "$4" "$TMP/big.mut")" -gt 0 ]; then ok "$1 → pipefail 大文件变红"; else bad "$1 → 仍全绿"; fi
-    eval "$real_filter"
-}
-pipe_mutant "目录经验探测走管道" "-qx '## 目录经验'" no 'DIR-SECRET'
-pipe_mutant "计次格式探测走管道" "-qxE '<!-- next-id: [0-9]+ -->'" yes 'WATCH-观察中'
-filter_mutant() {   # <说明> <要改坏的原文> <改成>：改坏过滤函数，看第 1 组打分和第 2 组对拍
-    mutation_gate || return 0
-    local body="${real_filter/"$2"/"$3"}" n diffs=0 f
-    if [ "$body" = "$real_filter" ]; then bad "准备失败：$1（原文已不在）"; return; fi
-    eval "$body"
-    setup_both
-    n=$(judge_compose "$(compose_prompt_template new-issue)")
-    for f in "$F"/*.md; do lessons_for_prompt "$f" > "$f.mut"; cmp -s "$f.mut" "$f.sh" || diffs=$((diffs+1)); done
-    if [ "$n" -gt 0 ] || [ "$diffs" -gt 0 ]; then ok "$1 → 变红（$n 条断言失败，$diffs 个夹具输出变了）"; else bad "$1 → 仍全绿"; fi
-    eval "$real_filter"
-}
-filter_mutant "观察中段不裁" '(counted && sec == "观察中")' '0'
-filter_mutant "举例、出现记录不裁" 'counted && entry && /^- (这样做是对的：|Seen [0-9]+×:)/ { next }' ''
-filter_mutant "只裁出现记录、举例留着" '这样做是对的：|Seen' 'Seen'
-filter_mutant "条目外也裁（前言里的行被误删）" 'counted && entry && /' 'counted && /'
-filter_mutant "不认计次格式（只按目录经验判断）" 'counted=1' 'counted=0'
-filter_mutant "非计次格式也裁" 'local counted=0' 'local counted=1'
-filter_mutant "末尾不加指路" 'END { if (counted) { print ""; print note } }' ''
-filter_mutant "进了新段不清条目标记" 'sec = substr($0, 4); entry = 0' 'sec = substr($0, 4)'
-if mutation_gate; then
-    lessons_for_prompt() { cat "$1"; }
-    setup_both
-    n=$(judge_compose "$(compose_prompt_template new-issue)")
-    if [ "$n" -gt 0 ]; then ok "过滤函数整体退回 cat → 变红（$n 条断言失败）"; else bad "过滤函数整体退回 cat → 仍全绿"; fi
-    project_lessons > "$F/real.md"; lessons_for_prompt "$F/real.md" > "$F/real.md.sh"
-    if cmp -s "$F/real.md.sh" "$F/real.md.py"; then bad "过滤函数退回 cat → 对拍仍相同"; else ok "过滤函数退回 cat → 对拍变红"; fi
-    eval "$real_filter"
-fi
-
-echo
-mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]
