@@ -45,7 +45,7 @@ project-auto-add 41
 project-priority 1
 prompt-compose 1
 reap-finished-workers 10
-release-auto 4
+release-auto 11
 repair-unit-links 9
 requester-bot:1/2 53
 requester-bot:2/2 86

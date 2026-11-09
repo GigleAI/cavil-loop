@@ -1167,6 +1167,37 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 Release 只是 changelog 和 `npx skills add` 的落点，**和受管安装的升级无关**：受管 Linux 跟的是 base 分支最新提交（见上一节）。
 
+### 发版运行失败会自动开 issue（GitHub#285）
+
+Release 的任何一次运行——定时、tag 推送、手动发版、手动「只跑门禁」（正文标「诊断运行」）——只要有任务失败，最后一个任务 `report failure` 就会写到一条 issue 上，失败不再只有打开 Actions 页面的人才看得到。被取消的运行不报告。
+
+- **没有未关闭的同类 issue**：新建一条，标题 `Release 工作流运行失败（自动报告）`，带 `pending/agent`，daemon 照常派工。「同类」= 本仓库、未关闭、创建者 `github-actions[bot]`、正文含 `<!-- cavil-release-failure -->`、不是 PR。
+- **已有一条未关闭**：在编号最小的那条下追加评论，**从不改它的标签**——它正在处理、等人、等前置，都原样保持。处理完就关掉它；下次失败会新建一条。
+- **写了什么**：运行链接、触发方式、受测提交、每个任务的结果和失败步骤、门禁汇总里没通过的 shell 单位、客户端没按预期变红的条目。门禁通过、只有发版任务失败时写明失败在哪一步。
+- **判断不了时**（issue 列表某一页或其中某一条读不全、查到之后到写入之间那条 issue 变了）一律不写，`report failure` 任务标红，看该任务日志。
+- 新 issue 打的标签是仓库变量 `RELEASE_FAILURE_LABEL`（默认 `pending/agent`），必须和本仓库的派工标签一致。
+
+<!-- release-failure-ops:begin -->
+**任务标红并写着「issue #N 已建、派工标签没打上」**：issue 建好了，但 daemon 不会派工。之后的运行只会评论，不会补标签。手动打上，N 换成那句提示里的编号：
+
+```bash
+N=123
+gh api -X POST "repos/GigleAI/cavil-loop/issues/$N/labels" -f 'labels[]=pending/agent'
+gh api "repos/GigleAI/cavil-loop/issues/$N" --jq '[.labels[].name]'
+```
+
+看到最后一条命令打印的列表里有 `pending/agent` 即成功。第一条命令对标签报 404，说明仓库里没有这个标签：先建（`setup.sh` 会建），或者把 `RELEASE_FAILURE_LABEL` 设成本仓库的派工标签。无需回退：在 issue 页面的 Labels 里再摘掉，就恢复原样。
+
+**停用**（之后每次运行都跳过这个任务）与**恢复**：
+
+```bash
+gh variable set RELEASE_FAILURE_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
+```
+
+停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `RELEASE_FAILURE_REPORT off`，恢复后没有这一项。
+<!-- release-failure-ops:end -->
+
 ## 改名前的安装
 
 本项目原名 `coding-agent-work-loop`。新安装一律用 `cavil-loop`；改名前装好的机器在迁移之前
