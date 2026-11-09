@@ -248,6 +248,25 @@ test('a daemon too old for the status script: a checkout gets "更新 daemon", a
   await shot(page, '9-outdated-updated');
 });
 
+test('a daemon too old for the status script on a branch that still has none: pulled, says why with the branch, still unreadable', async () => {
+  const old = installOld(w, 'oldline');
+  const { page } = await openSection('Darwin', pathFor(w));
+  await expect(page.getByTestId('daemon-outdated')).toHaveAttribute('data-form', 'checkout');
+  await page.getByTestId('daemon-update-run').click();
+  const res = page.getByTestId('daemon-update-result');
+  await expect(res).toHaveAttribute('data-result', 'still_old', { timeout: 30_000 });
+  await expect(page.getByTestId('daemon-update-branch')).toHaveText('oldline');
+  await expect(res).toContainText('已拉取');
+  await expect(res).toContainText(old.slice(0, 12));
+  await expect(res).toContainText('没有状态脚本');
+  await expect(res).not.toContainText('没有更新');
+  await expect(res).not.toContainText('已更新');
+  // checked again by itself: still unreadable, never shown as a working daemon
+  await expect(page.getByTestId('daemon-summary')).toHaveAttribute('data-state', 'unreadable');
+  await expect(page.getByTestId('daemon-version')).toHaveCount(0);
+  await shot(page, '12-outdated-still-old');
+});
+
 test('a daemon too old for the status script, not a checkout: no button; managed does not guess why, a plain folder promises no waiting', async () => {
   // managed release
   const rel = plainOldCopy(w, join(w.home, '.agents', 'releases', 'cavil-loop', 'releases', 'abc123'));

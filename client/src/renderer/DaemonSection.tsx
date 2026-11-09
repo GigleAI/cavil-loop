@@ -363,18 +363,23 @@ function Update({ st, busy, result, onUpdate }: { st: LocalStatus; busy: string 
 function UpdateResult({ result }: { result: DaemonUpdate }) {
   return (
     <div data-testid="daemon-update-result" data-result={result.result}>
-      <p className={`small${result.result === 'blocked' || result.result === 'refused' ? ' err' : ''}`}>
+      <p className={`small${result.result === 'blocked' || result.result === 'refused' || result.result === 'still_old' ? ' err' : ''}`}>
         {result.result === 'updated'
           ? `已更新：${result.before?.slice(0, 12)} → ${result.after?.slice(0, 12)}`
           : result.result === 'current'
             ? '已经是最新'
+            : result.result === 'still_old'
+              ? // pulled, yet still no status script: the branch it follows has none (GitHub#320)
+                <>
+                  已拉取（{result.before?.slice(0, 12)} → {result.after?.slice(0, 12)}），但仍读不到 daemon 的状态：这份代码当前在分支 <b data-testid="daemon-update-branch">{result.branch}</b>，它跟踪的分支上还没有状态脚本，拉到最新也不会有。需要维护者把它换到主干（main）后再更新。
+                </>
             : result.result === 'blocked'
               ? `没有更新：${result.step}`
               : result.result === 'managed'
                 ? result.output
                 : `没有更新：${result.output}`}
       </p>
-      {result.result === 'blocked' && result.output && <pre className="daemon-output small err">{result.output}</pre>}
+      {(result.result === 'blocked' || result.result === 'still_old') && result.output && <pre className="daemon-output small err">{result.output}</pre>}
       {(result.refresh ?? []).length > 0 && (
         <ul className="daemon-refresh">
           {result.refresh!.map((r, i) => (
