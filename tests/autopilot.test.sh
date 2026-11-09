@@ -2059,11 +2059,11 @@ mutate req-deny-issue-origin _lib.sh '    local ip pp
     autopilot_place_read "$num" "$ij" "issue #$num" || return 2'
 mutate req-deny-pr-only _lib.sh '    autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
     autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
     if [ -n "$AUTOPILOT_PR_COPY" ]; then' '    if [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.user.login'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ] || printf '"'"'%s'"'"' "$pj" | jq -e '"'"'.body | test("#58")'"'"' >/dev/null || [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.head.ref'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ]; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
     autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
     autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
     if [ -n "$AUTOPILOT_PR_COPY" ]; then'
 mutate po-dispatch-site _lib.sh '                    0) AUTOPILOT_PR="$num"; return 0 ;;' '                    0) return 1 ;;'
 mutate po-merge-note-issue _lib.sh '        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '        if false; then n="$pr"; where="本 PR 上"'
@@ -2087,19 +2087,18 @@ mutate mirror-rm-istate _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || istate=x
 mutate mirror-rm-copy _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || copy=x; AM_ID="$state|'
 mutate mirror-rm-one-evidence _lib.sh '        if [ -n "$AUTOPILOT_PR_COPY_READ" ] && [ "$AUTOPILOT_PR_COPY" != "$copy" ]; then' '        if false; then'
 mutate mirror-rm-maint _lib.sh '        if [ -z "$AUTOPILOT_PLACE_COPY" ]; then AM_V=none; return 0; fi' '        :'
-mutate mirror-rm-unknown _lib.sh '            *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
+mutate mirror-rm-unknown _lib.sh '            1) ;;
+            *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
         esac
-    fi
-    AM_ID=' '            *) AM_V=remove ;;
+        # 授权判定自己又读了' '            *) ;;
         esac
-    fi
-    AM_ID='
+        # 授权判定自己又读了'
 mutate mirror-cache-unknown _lib.sh '        *) log "托管：PR #$pr 要不要补 / 收回托管标签判不了' '        *) autopilot_state_set "$sf" '"'"'.mirror[$p] = $k'"'"' --arg p "$pr" --arg k "$key"; log "托管：PR #$pr 要不要补 / 收回托管标签判不了'
 mutate mirror-add-plain-gh _lib.sh '            gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_AUTOPILOT"' '            gh api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_AUTOPILOT"'
 mutate mirror-rm-plain-gh _lib.sh '    if out=$(gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" 2>&1); then' '    if out=$(gh api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" 2>&1); then'
 mutate copy-auth-no-strip _lib.sh '    autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"
-    # 两处' '    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY=""
+    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
+    # 两处' '    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=1
     # 两处'
 mutate copy-pr-only-no-strip _lib.sh '    if [ -n "$AUTOPILOT_PR_COPY" ]; then
         AUTOPILOT_DENY=no-label' '    if false; then

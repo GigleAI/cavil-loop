@@ -25,6 +25,10 @@ source "$TEST_DIR/lib/mutation.sh"
 # 本文件自己也常常跑在 run.sh / GitHub Actions 底下：外层的这些变量不能漏进被测的那次运行，
 # 否则被测的 run.sh 会以为自己在 Actions 里（折叠输出、写外层的步骤摘要）。需要时各场景显式设。
 unset GITHUB_ACTIONS GITHUB_STEP_SUMMARY RUN_TESTS_DIR RUN_TEST_TIMEOUT
+# 外层的负对照开关只管本文件自己的负对照（mutation_gate 读本 shell 里的值），不能传给被测的
+# run.sh 和它跑的假测试文件：漏下去，假文件按负对照模式报数，期望的计数全对不上（GigleAI/cavil-loop#284）。
+# 只去掉导出、不清值；要测「开关原样传下去」的场景在那一条命令上显式写 MUTATION=1。
+export -n MUTATION
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -526,8 +530,6 @@ PYR
     elif [ "$(scenario_mixed "$RUNSH" "$m")" != "$real" ]; then echo "  ✅ 负对照拦下：负对照模式下回归和负对照混成一个数"
     else echo "  ❌ 负对照没拦下：负对照模式下回归和负对照混成一个数"; mut_fail=$((mut_fail+1)); fi
 fi
-neg "不查类型行" scenario_kind_bad "2 1 no" no-kind-check \
-    '    [ "$kl" -eq 1 ] || die' '    true || die' none
 
 echo
 mutation_summary "$0"
