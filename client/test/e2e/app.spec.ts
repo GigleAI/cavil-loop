@@ -43,6 +43,32 @@ function rawCount(field: string, key: 'title' | 'name') {
   return out;
 }
 
+/**
+ * GitHub#275: like rawCount, but a PR counts where the issue that links it is (a PR follows its issue
+ * into the issue's column / group). Written from the recording, not from the client's code: the first
+ * issue (in recording order) that lists the PR as linked; the recording has no PR descriptions, so
+ * GitHub's links are the only ones here (no recorded PR is linked by two issues with different values).
+ */
+function rawCountFollowing(field: string, key: 'title' | 'name', none = '(none)') {
+  const nodes = loadCavilProjectPages().flatMap((p) => p.items.nodes);
+  const val = (n: any) => {
+    const v = n.fieldValues.nodes.find((x: any) => x.field?.name === field);
+    return v ? v[key] : none;
+  };
+  const byNum = new Map(nodes.map((n: any) => [n.content.number, n]));
+  const host = new Map<number, any>();
+  for (const n of nodes)
+    if (n.content.__typename === 'Issue')
+      for (const pr of n.content.closedByPullRequestsReferences?.nodes ?? [])
+        if (byNum.get(pr.number)?.content.__typename === 'PullRequest' && !host.has(pr.number)) host.set(pr.number, n);
+  const out: Record<string, number> = {};
+  for (const n of nodes) {
+    const k = val(host.get(n.content.number) ?? n);
+    out[k] = (out[k] ?? 0) + 1;
+  }
+  return out;
+}
+
 async function columnCounts(page: Page): Promise<Record<string, number>> {
   return page.$$eval('[data-testid="column"]', (cols) =>
     Object.fromEntries(cols.map((c) => [c.getAttribute('data-title'), Number(c.querySelector('[data-testid="column-count"]')!.textContent)])),
@@ -108,9 +134,10 @@ test('browser login → board; restart skips login; sources; three column modes;
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   await page.getByTestId('search').fill('');
 
-  // iteration (default): each iteration column holds what the Project says
-  await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe('12');
-  const iter = rawCount('Iteration', 'title');
+  // iteration (default): each iteration column holds what the Project says, a PR counted where its issue is (GitHub#275)
+  // 12 items say Iteration 25; PR #129 (no iteration) is shown under its issue there (GitHub#275)
+  await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe('13');
+  const iter = rawCountFollowing('Iteration', 'title');
   if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
   await expect(page.locator('[data-testid="column"][data-title="Iteration 24"]')).toBeVisible();
   const got = await columnCounts(page);
@@ -125,7 +152,7 @@ test('browser login → board; restart skips login; sources; three column modes;
   await shot(page, '04-by-iteration');
 
   await page.getByTestId('mode').selectOption('status');
-  const status = rawCount('Status', 'name');
+  const status = rawCountFollowing('Status', 'name');
   await expect.poll(async () => (await columnCounts(page))['Done']).toBe(status['Done']);
   expect((await columnCounts(page))['Backlog']).toBe(status['Backlog']);
   await shot(page, '05-by-status');
@@ -149,7 +176,7 @@ test('browser login → board; restart skips login; sources; three column modes;
   env.fake.state.failProjectPage.set('org/gigleai/11', 1);
   await page.getByTestId('refresh').click();
   await expect(page.getByTestId('sync-trouble')).toBeVisible();
-  expect(await countOf(page, 'Iteration 25')).toBe('12');
+  expect(await countOf(page, 'Iteration 25')).toBe('13');
   await page.getByTestId('sync-trouble').click();
   await expect(page.getByTestId('sync-trouble-source')).toContainText('读取失败');
   await shot(page, '07-incomplete');
@@ -167,7 +194,7 @@ test('browser login → board; restart skips login; sources; three column modes;
   env.fake.state.offline = true;
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('offline')).toContainText('离线 · 数据截至', { timeout: 15_000 });
-  expect(await countOf(page, 'Iteration 25')).toBe('12');
+  expect(await countOf(page, 'Iteration 25')).toBe('13');
   await expect(page.getByTestId('write-entry')).toBeDisabled();
   await expect(page.getByTestId('write-entry')).toHaveAttribute('data-offline', 'yes');
   await shot(page, '08-offline');
@@ -254,7 +281,7 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
 
 // ---- sub-item #138: viewing and changing items, in the real window ----
 
-async function signInWithSources(page: Page) {
+async function signInWithSources(page: Page, iteration25 = '13') {
   pinLabels();
   await page.getByTestId('oauth-settings-toggle').click();
   await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
@@ -274,7 +301,8 @@ async function signInWithSources(page: Page) {
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   await page.getByTestId('search').fill('');
-  await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe('12');
+  // 12 items say Iteration 25; PR #129 (no iteration) is shown under its issue there (GitHub#275)
+  await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe(iteration25);
 }
 
 /**
@@ -1031,7 +1059,7 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   await expect(page.locator('[data-testid="columns-pick"] input[data-col="labels"]')).not.toBeChecked();
   await expect(page.getByTestId('slice-count')).toHaveText([String(rawIteration().size)]);
   await page.locator('[data-testid="slice"][data-value="GigleAI/cavil-loop"]').click();
-  await expect.poll(() => groupCounts(page)).toEqual(Object.fromEntries(Object.entries(rawCountByStatus())));
+  await expect.poll(() => groupCounts(page)).toEqual(rawCountFollowing('Status', 'name', '无状态'));
   await shot(page, '12-table-custom');
   await page.waitForTimeout(500); // the search box saves 300 ms after typing stops
   await app.close();
@@ -1039,7 +1067,7 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('search')).toHaveValue('');
-  await expect.poll(() => groupCounts(page)).toEqual(Object.fromEntries(Object.entries(rawCountByStatus())));
+  await expect.poll(() => groupCounts(page)).toEqual(rawCountFollowing('Status', 'name', '无状态'));
   await expect(page.getByTestId('slices')).toBeVisible();
   await expect(page.locator('table.items th')).not.toContainText(['标签']);
   await app.close();
@@ -1113,7 +1141,8 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   const cavRows = cav.flatMap((g) => g.rows);
   const heads = Object.fromEntries(await repoHeads(page));
   expect(heads['GigleAI/cavil-loop']).toBe(new Set(cavRows).size);
-  expect(heads['GigleAI/cavil-loop']).toBe(cavRows.length - 1);
+  // two rows counted once each: #22 itself, and PR #23 that follows #22 into both of its groups (GitHub#275)
+  expect(heads['GigleAI/cavil-loop']).toBe(cavRows.length - 2);
   expect(heads['GigleAI/zeta']).toBe(2);
   await shot(page, '213-table-by-repository');
 
@@ -1137,17 +1166,6 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   await expect.poll(async () => (await tableShape(page)).map((g) => ({ ...g, rows: [...g.rows].sort() }))).toEqual([{ key: 'none', title: '无迭代', rows: ['gigleai/zeta#1', 'gigleai/zeta#2'] }]);
   await app.close();
 });
-
-function rawCountByStatus(): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const p of loadCavilProjectPages())
-    for (const n of p.items.nodes) {
-      const v = n.fieldValues.nodes.find((x: any) => x.field?.name === 'Status');
-      const k = v ? v.name : '无状态';
-      out[k] = (out[k] ?? 0) + 1;
-    }
-  return out;
-}
 
 test('a saved board view sorted by update time: the board shows each column newest first', async () => {
   const { app, page } = await launch(env);
@@ -3210,10 +3228,11 @@ test('GitHub#205: table cells change labels / status in place; columns can be re
   const row = page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#138"]').first();
   await expect(row).toBeVisible({ timeout: 15_000 });
 
-  // group heads: kept in view while their rows scroll, tinted, with a bar in front
+  // group heads: kept in view while their rows scroll; lighter than the repository heading, no bar in front (GitHub#275)
   const head = page.getByTestId('group-head').first().locator('td');
   expect(await head.evaluate((td) => getComputedStyle(td).position)).toBe('sticky');
-  expect(await head.evaluate((td) => getComputedStyle(td).boxShadow)).toContain('inset');
+  expect(await head.evaluate((td) => getComputedStyle(td).boxShadow)).not.toContain('4px 0px 0px 0px');
+  expect(await head.evaluate((td) => getComputedStyle(td).backgroundColor)).toBe(await page.locator('.table-scroll').evaluate((el) => getComputedStyle(el).backgroundColor));
   await shot(page, '205-01-table-groups');
 
   // labels: a click on the cell opens the picker; one click = one add, sent at once
@@ -4643,4 +4662,121 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(icon('checks')).toHaveAttribute('data-tone', 'pending');
   await expect(d.getByTestId('pr-status')).toContainText('检查：进行中');
   await app.close();
+});
+
+// ---- GitHub#275: the repository is the strongest heading; groups lighter; rows hang under their group;
+// folded neighbours are one line; a PR that only names its issue (`Refs #N`) goes under it ----
+test('GitHub#275: repository heading kept in view, lighter groups, rows under their group; folded neighbours are one line; a `Refs #N` PR goes under its issue', async () => {
+  // a recorded PR GitHub does not link to any issue gets `Refs #<an Iteration 25 issue>` in its description
+  const nodes = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p: any) => p.items.nodes);
+  const linked = new Set(nodes.flatMap((n: any) => (n.content?.closedByPullRequestsReferences?.nodes ?? []).map((x: any) => x.number)));
+  const iterOf = (n: any) => n.fieldValues.nodes.find((v: any) => v.field?.name === 'Iteration')?.title ?? null;
+  const loose = nodes.find((n: any) => n.content?.__typename === 'PullRequest' && !linked.has(n.content.number) && iterOf(n) !== 'Iteration 25');
+  const host = nodes.find((n: any) => n.content?.__typename === 'Issue' && iterOf(n) === 'Iteration 25');
+  loose.content.body = `## 背景\n\nRefs #${host.content.number}\n\n\`Refs #1\` 只是举例`;
+  const prKey = `gigleai/cavil-loop#${loose.content.number}`;
+  const hostKey = `gigleai/cavil-loop#${host.content.number}`;
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page, '14'); // the PR named one more Iteration 25 issue
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await expect(page.getByTestId('table')).toBeVisible();
+  await page.getByTestId('search').fill('');
+  const C = 'repo:gigleai/cavil-loop';
+  const group = (title: string) => page.locator(`[data-testid="group"][data-key^="${C}|"][data-title="${title}"]`);
+  await expect(group('Iteration 25').getByTestId('row').first()).toBeVisible({ timeout: 15_000 });
+
+  // the PR left its own group and sits right under the issue it names, one level in
+  const pr = group('Iteration 25').locator(`[data-testid="row"][data-key="${prKey}"]`);
+  await expect(pr).toHaveAttribute('data-under', hostKey);
+  // right under it: between the two only other PRs of the same issue (the issue's PRs go newest first)
+  const rows = await group('Iteration 25').getByTestId('row').evaluateAll((rs) => rs.map((r) => [r.getAttribute('data-key'), r.getAttribute('data-under')]));
+  const at = rows.findIndex(([k]) => k === hostKey);
+  const to = rows.findIndex(([k]) => k === prKey);
+  expect(to).toBeGreaterThan(at);
+  expect(rows.slice(at + 1, to).every(([, u]) => u === hostKey)).toBe(true);
+  await expect(page.locator(`[data-testid="row"][data-key="${prKey}"]`)).toHaveCount(1);
+  // the linked-PR column lists it, marked as named by the description
+  const linkedCol = page.locator('[data-testid="columns-pick"] input[data-col="linkedPrs"]');
+  await page.getByTestId('open-view-panel').click();
+  if (!(await linkedCol.isChecked())) await linkedCol.check();
+  await page.getByTestId('open-view-panel').click();
+  const hostRow = group('Iteration 25').locator(`[data-testid="row"][data-key="${hostKey}"]`);
+  await expect(hostRow.locator(`[data-testid="linked-pr"][data-via="body"]`)).toHaveText(`#${loose.content.number}`);
+
+  // headings: the repository is the strongest and stays under the column heads; a group is lighter and stays under it
+  const repoTd = page.getByTestId('repo-head').first().locator('td');
+  const headTd = group('Iteration 25').getByTestId('group-head').locator('td');
+  const css = (td: typeof repoTd) =>
+    td.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { position: s.position, top: s.top, fontSize: parseFloat(s.fontSize), bar: s.boxShadow.includes('4px 0px 0px 0px'), bg: s.backgroundColor };
+    });
+  const repo = await css(repoTd);
+  const head = await css(headTd);
+  const surface = await page.locator('.table-scroll').evaluate((el) => getComputedStyle(el).backgroundColor);
+  // no tint, no bar in front of a group any more
+  expect([repo.position, repo.top, head.position, head.top, head.bar, head.bg]).toEqual(['sticky', '33px', 'sticky', '75px', false, surface]);
+  expect(repo.fontSize).toBeGreaterThan(head.fontSize);
+  // a row's title starts under its group's title; under a repository heading the row says only "#N"
+  const row = group('Iteration 25').locator(`[data-testid="row"][data-key="${hostKey}"]`);
+  await expect(row.getByTestId('row-ref')).toHaveText(`#${host.content.number}`);
+  const titleX = await row.getByTestId('row-state').evaluate((el) => el.getBoundingClientRect().left);
+  const groupTitleX = await headTd.locator('b').evaluate((el) => el.getBoundingClientRect().left);
+  expect(Math.abs(titleX - groupTitleX)).toBeLessThanOrEqual(4);
+  // scrolled to the middle: both headings are still in view, the group's right under the repository's
+  await page.locator('.table-scroll').evaluate((el) => (el.scrollTop = el.scrollHeight / 2));
+  await expect
+    .poll(async () => {
+      const r = (await page.getByTestId('repo-head').first().boundingBox())!;
+      const t = (await page.locator('.table-scroll').boundingBox())!;
+      return Math.round(r.y - t.y);
+    })
+    .toBeLessThanOrEqual(35);
+  // the pinned headings follow one another with no gap: column heads, then the repository, then the group
+  const edges = await page.evaluate(() => {
+    const r = (q: string) => document.querySelector(q)!.getBoundingClientRect();
+    return { th: r('table.items th').bottom, repoTop: r('[data-testid="repo-head"] td').top, repoBottom: r('[data-testid="repo-head"] td').bottom, groupTop: r('tbody.in-repo .group-head td').top };
+  });
+  expect(edges.repoTop).toBeLessThanOrEqual(edges.th);
+  expect(edges.groupTop).toBeLessThanOrEqual(edges.repoBottom);
+  await shot(page, '275-01-table-headings');
+  await page.locator('.table-scroll').evaluate((el) => (el.scrollTop = 0));
+
+  // fold the first two groups: one line naming both, with their counts
+  const shape = (await tableShape(page)).filter((g) => g.key.startsWith(`${C}|`));
+  const [a, b] = shape;
+  await group(a.title).getByTestId('group-toggle').click();
+  await group(b.title).getByTestId('group-toggle').click();
+  const run = page.getByTestId('fold-run');
+  await expect(run).toHaveCount(1);
+  await expect(run).toHaveAttribute('data-keys', `${a.key} ${b.key}`);
+  await expect(run.getByTestId('fold-run-title')).toHaveText(`已收起 2 组 · 共 ${a.rows.length + b.rows.length} 条`);
+  await expect(run.getByTestId('fold-run-group')).toHaveText([`${a.title} ${a.rows.length}`, new RegExp(`^${b.title} ${b.rows.length}`)]);
+  await expect(group(a.title)).toHaveCount(0);
+  await shot(page, '275-02-table-folded-run');
+  // a click on the line itself opens nothing
+  const box = (await run.locator('td').boundingBox())!;
+  await page.mouse.click(box.x + box.width - 20, box.y + box.height / 2);
+  await expect(run).toHaveCount(1);
+  // the second name opens just that group; the first is back to a single folded group
+  // (a group key holds a NUL between title and start date: no attribute selector for it, pick by position)
+  await expect(run.getByTestId('fold-run-group').nth(1)).toHaveAttribute('data-key', b.key);
+  await run.getByTestId('fold-run-group').nth(1).click();
+  await expect(run).toHaveCount(0);
+  await expect(group(b.title).getByTestId('row').first()).toBeVisible();
+  await expect(group(a.title).getByTestId('row')).toHaveCount(0);
+  // folded again, then "全部展开": both open, and still open after a restart
+  await group(b.title).getByTestId('group-toggle').click();
+  await expect(run).toHaveCount(1);
+  await run.getByTestId('fold-run-expand').click();
+  await expect(run).toHaveCount(0);
+  await expect(group(a.title).getByTestId('row').first()).toBeVisible();
+  await expect(group(b.title).getByTestId('row').first()).toBeVisible();
+  await app.close();
+  const again = await launch(env);
+  await expect(again.page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(again.page.locator(`[data-testid="group"][data-key^="${C}|"][data-title="${a.title}"] [data-testid="row"]`).first()).toBeVisible({ timeout: 15_000 });
+  await expect(again.page.getByTestId('fold-run')).toHaveCount(0);
+  await again.app.close();
 });

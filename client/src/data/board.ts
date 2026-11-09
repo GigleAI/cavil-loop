@@ -4,7 +4,7 @@
 import type { ColumnMode, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
 import type { WriteAction } from '../shared/actions';
 import { itemSorter } from './sort';
-import { nestPrs } from './prNest';
+import { nestPrs, prFollow } from './prNest';
 
 export const COL_UNBOARDED = 'unboarded';
 export const COL_NO_ITERATION = 'iteration:none';
@@ -78,7 +78,7 @@ function arrangeCards(cards: Card[], order: (a: Item, b: Item) => number, nest: 
   const sorted = cards.sort((a, b) => order(a.item, b.item));
   if (!nest.on) return sorted;
   const lanes = new Map(sorted.map((c) => [c.item.key, c.lane]));
-  return nestPrs(sorted, (c) => c.item, nest.sort).map(({ entry, under }) =>
+  return nestPrs(sorted, (c) => c.item, nest.sort, nest.follow).map(({ entry, under }) =>
     under ? { ...entry, under, lane: lanes.get(under) ?? entry.lane } : entry,
   );
 }
@@ -86,6 +86,45 @@ function arrangeCards(cards: Card[], order: (a: Item, b: Item) => number, nest: 
 interface Nest {
   on: boolean;
   sort: TableSettings['sort'] | undefined;
+  /** PR key -> the issue whose column(s) it is shown in (GitHub#275) */
+  follow?: Map<string, string>;
+}
+
+/**
+ * GitHub#275: a PR whose issue is on the board is shown in the issue's
+ * column(s), under it, and nowhere else — whatever the PR's own value. A card
+ * moved there keeps what a drag changes when the PR's own value also put it in
+ * that column; otherwise a drag changes the PR on every selected Project it is
+ * on. Returns PR key -> issue key for the PRs moved.
+ */
+function followIssues(
+  items: Item[],
+  order: (a: Item, b: Item) => number,
+  placements: Map<string, Card[]>,
+  canHost: (issue: Item) => boolean,
+  selectedProjects: Map<string, ProjectMeta>,
+): Map<string, string> {
+  const follow = prFollow([...items].sort(order), canHost);
+  if (follow.size === 0) return follow;
+  const hostCols = new Map<string, string[]>();
+  const own = new Map<string, Card>();
+  for (const [col, cards] of placements) {
+    for (const c of cards) {
+      hostCols.set(c.item.key, [...(hostCols.get(c.item.key) ?? []), col]);
+      if (follow.has(c.item.key)) own.set(`${c.item.key}@${col}`, c);
+    }
+  }
+  for (const [col, cards] of placements) placements.set(col, cards.filter((c) => !follow.has(c.item.key)));
+  const byKey = new Map(items.map((it) => [it.key, it]));
+  for (const [prKey, host] of follow) {
+    const pr = byKey.get(prKey)!;
+    const keys = pr.projects.filter((m) => selectedProjects.has(m.projectKey)).map((m) => m.projectKey);
+    for (const col of hostCols.get(host) ?? []) {
+      const mine = own.get(`${prKey}@${col}`);
+      placements.get(col)!.push(mine ?? { id: `${prKey}@${col}`, item: pr, projectTitles: [], projectKeys: keys, lane: pr.repo, under: null });
+    }
+  }
+  return follow;
 }
 
 function finish(
@@ -173,6 +212,12 @@ export function buildBoard(
     if (project) cur.projects.add(project);
     seeds.set(s.key, cur);
   };
+  // columns that stand without a card (filled just before the items are placed)
+  let standing = new Set<string>();
+  const onBoard = (it: Item) => it.projects.some((m) => selectedProjects.has(m.projectKey));
+  const settle = (canHost: (issue: Item) => boolean) => {
+    if (nest.on) nest.follow = followIssues(items, cardOrder, placements, canHost, selectedProjects);
+  };
   const hasUnboarded = items.some((it) => !it.projects.some((m) => selectedProjects.has(m.projectKey)));
   if (mode !== 'milestone' && hasUnboarded) {
     seed({ key: COL_UNBOARDED, title: '未加入看板', sort: '', rank: RANK_UNBOARDED, ended: false });
@@ -190,6 +235,7 @@ export function buildBoard(
       }
     }
     seed({ key: COL_NO_ITERATION, title: '无迭代', sort: '', rank: RANK_NONE, ended: false });
+    standing = new Set(seeds.keys());
     for (const item of items) {
       placeByMembership(
         item,
@@ -217,6 +263,7 @@ export function buildBoard(
     // gets the Project names underneath so the two can be told apart.
     const titleCount = new Map<string, number>();
     for (const s of seeds.values()) if (s.rank === RANK_REGULAR) titleCount.set(s.title, (titleCount.get(s.title) ?? 0) + 1);
+    settle(onBoard);
     columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
       const range = `${s.sort} 起`;
@@ -232,6 +279,7 @@ export function buildBoard(
       }
     }
     seed({ key: COL_NO_STATUS, title: '无状态', sort: '', rank: RANK_NONE, ended: false });
+    standing = new Set(seeds.keys());
     for (const item of items) {
       placeByMembership(
         item,
@@ -246,10 +294,12 @@ export function buildBoard(
         seeds,
       );
     }
+    settle(onBoard);
     columns = finish(seeds, placements, cardOrder, () => null, nest);
   } else {
     // Milestones belong to repositories: same title across repositories = one column.
     seed({ key: COL_NO_MILESTONE, title: '无里程碑', sort: '', rank: RANK_NONE, ended: false });
+    standing = new Set(seeds.keys());
     for (const item of items) {
       if (!item.milestone) {
         place(placements, COL_NO_MILESTONE, item, []);
@@ -264,14 +314,18 @@ export function buildBoard(
       else if (sort < cur.sort) cur.sort = sort;
       place(placements, key, item, []);
     }
+    // milestones belong to the repository, not to a board: any issue takes its PRs along
+    settle(() => true);
     columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
       return s.sort.startsWith('0') ? `截止 ${s.sort.slice(1, 11)}` : '无截止日期';
     }, nest);
   }
-  // keep the "none" columns only when they hold something
+  // keep the "none" columns only when they hold something; a column that only
+  // appeared for a card (an ended iteration, a milestone, an unknown status) goes
+  // when that card followed its issue elsewhere (GitHub#275)
   columns = columns.filter(
-    (c) => c.cards.length > 0 || ![COL_NO_ITERATION, COL_NO_STATUS, COL_NO_MILESTONE, COL_UNBOARDED].includes(c.key),
+    (c) => c.cards.length > 0 || (standing.has(c.key) && ![COL_NO_ITERATION, COL_NO_STATUS, COL_NO_MILESTONE, COL_UNBOARDED].includes(c.key)),
   );
   const lanes = swimlanes ? [...new Set(columns.flatMap((c) => c.cards.map((x) => x.lane)))].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())) : null;
   return { mode, notice, columns, lanes };

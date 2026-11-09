@@ -7,6 +7,7 @@ import type { Item, ItemState, Iteration, LinkedPr, ProjectMembership, ProjectMe
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
 import { PROJECT_ITEMS_QUERY } from './queries';
+import { bodyIssueRefs } from './prNest';
 
 export const STATUS_FIELD_NAME = 'Status';
 export const REPO_RECENT_DAYS = 14;
@@ -53,6 +54,8 @@ export interface GqlContent {
   author?: { login: string } | null;
   parent?: { number: number; repository: { nameWithOwner: string } } | null;
   subIssuesSummary?: { total: number; completed: number } | null;
+  /** pull requests only: the description (GitHub#275: which issues it names) */
+  body?: string | null;
   closedByPullRequestsReferences?: {
     nodes: { number: number; url: string; state: string; merged: boolean; repository: { nameWithOwner: string } }[];
   } | null;
@@ -163,6 +166,7 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
     subIssues: subIssues(c.subIssuesSummary),
     // a pull request has no "linked pull requests" of its own: known-empty, not unknown
     linkedPrs: c.__typename === 'Issue' ? linkedPrs(c) : [],
+    ...(c.__typename === 'PullRequest' ? { refIssues: bodyIssueRefs(c.body, repo, c.number) } : {}),
     projects,
     sources,
   };
@@ -245,6 +249,7 @@ interface RestIssue {
   user?: { login: string } | null;
   parent_issue_url?: string | null;
   sub_issues_summary?: { total: number; completed: number } | null;
+  body?: string | null;
 }
 
 /** `https://api.github.com/repos/<o>/<r>/issues/<n>` -> item key */
@@ -275,6 +280,7 @@ function restToItem(repo: string, r: RestIssue, srcKey: string): Item {
     subIssues: subIssues(r.sub_issues_summary),
     // the REST issue list does not say which pull requests are linked
     linkedPrs: r.pull_request ? [] : null,
+    ...(r.pull_request ? { refIssues: bodyIssueRefs(r.body, repo, r.number) } : {}),
     projects: [],
     sources: [srcKey],
   };

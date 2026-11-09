@@ -17,7 +17,7 @@ const CONTENT_FIELDS = `
     }
   }
   ... on PullRequest {
-    id number title url state merged isDraft updatedAt
+    id number title url state merged isDraft updatedAt body
     repository { nameWithOwner }
     labels(first: 50) { nodes { name color } }
     assignees(first: 20) { nodes { login } }

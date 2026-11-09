@@ -85,15 +85,18 @@ describe('PRs under their issue (GitHub#155)', () => {
     expect(t).toEqual(b);
   });
 
-  it('PR and issue in different columns: neither moves', () => {
+  it('PR and issue in different columns: the PR follows the issue into its column, and is gone from its own (GitHub#275)', () => {
     const p41 = pr(41, '2026-11-05T00:00:00Z', later);
     const i40 = issue(40, '2026-11-01T00:00:00Z', [p41]);
-    const { b, board } = both([i40, p41, i20], UPDATED);
+    const { b, t, board, table } = both([i40, p41, i20], UPDATED);
     expect(b).toEqual([
-      [20, null],
       [40, null],
+      [41, 40],
+      [20, null],
     ]);
-    expect(board.columns.find((c) => c.title === 'S2')!.cards.map((c) => [c.item.number, c.under])).toEqual([[41, null]]);
+    expect(t).toEqual(b);
+    expect(board.columns.find((c) => c.title === 'S2')!.cards).toEqual([]);
+    expect(table.groups.map((g) => g.title)).toEqual(['S1']);
   });
 
   it('a PR linked to two issues of the column goes under the first of them only, once', () => {

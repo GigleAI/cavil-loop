@@ -3,7 +3,8 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
-import { buildTable, type Group } from '../data/table';
+import { buildTable, foldRuns, type Group } from '../data/table';
+import { issuePrLinks } from '../data/prNest';
 import { api } from './api';
 import { Person } from './Avatar';
 import { OPENS_ITEM } from './outsideClick';
@@ -54,7 +55,7 @@ function toneOf(it: Item) {
   return stateTone(it.kind, it.state, it.stateReason, it.isDraft ?? null);
 }
 
-function Cell({ col, item, now, dark }: { col: TableColumn; item: Item; now: number; dark: boolean }) {
+function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all: Item[]; now: number; dark: boolean }) {
   switch (col) {
     case 'assignees':
       return (
@@ -74,17 +75,28 @@ function Cell({ col, item, now, dark }: { col: TableColumn; item: Item; now: num
           ))}
         </span>
       );
-    case 'linkedPrs':
-      if (item.linkedPrs === null) return <span className="muted small" title="仓库来源读不到关联 PR">—</span>;
+    case 'linkedPrs': {
+      // GitHub's links, plus the PRs whose description names this issue (GitHub#275)
+      const links = issuePrLinks(item, all);
+      if (links === null) return <span className="muted small" title="仓库来源读不到关联 PR">—</span>;
       return (
         <>
-          {item.linkedPrs.map((p) => (
-            <a key={p.key} href={p.url} className={`pr-link ${p.state}`} onClick={open(p.url)} data-testid="linked-pr">
-              <Icon name={itemIcon('pr', p.state, null)} size={14} title={`PR ${STATE_TEXT[p.state]}`} />#{p.number}
+          {links.map((p) => (
+            <a
+              key={p.key}
+              href={p.url}
+              className={`pr-link ${p.state}`}
+              onClick={open(p.url)}
+              data-testid="linked-pr"
+              data-via={p.via}
+              title={`PR ${STATE_TEXT[p.state]}（${p.via === 'github' ? 'GitHub 关联' : 'PR 正文引用'}）`}
+            >
+              <Icon name={itemIcon('pr', p.state, null)} size={14} />#{p.number}
             </a>
           ))}
         </>
       );
+    }
     case 'subIssues':
       if (!item.subIssues) return null;
       return (
@@ -117,6 +129,9 @@ export const EDITABLE_COLUMNS: readonly TableColumn[] = ['labels', 'iteration', 
 
 /** A column's width when none was dragged (fixed layout only, once any column has been dragged). */
 const DEFAULT_WIDTH: Partial<Record<TableColumn, number>> = { title: 360, labels: 200, assignees: 120, linkedPrs: 120, author: 120 };
+/** GitHub#275: a grouped row's title starts under its group's title (the guide line runs 10px left of it); inside a repository one step further in */
+const ROW_BASE = 34;
+const REPO_ROW_BASE = 52;
 const widthOf = (c: TableColumn, widths: Partial<Record<TableColumn, number>>) => widths[c] ?? DEFAULT_WIDTH[c] ?? 140;
 
 type Editor = {
@@ -363,7 +378,7 @@ export function TableView({
   );
 
   const groupBody = (g: Group, inRepo: boolean) => (
-    <tbody key={g.key} className={inRepo ? 'in-repo' : undefined} data-testid="group" data-key={g.key} data-title={g.title}>
+    <tbody key={g.key} className={[inRepo ? 'in-repo' : '', t.groupBy !== 'none' ? 'grouped' : ''].filter(Boolean).join(' ') || undefined} data-testid="group" data-key={g.key} data-title={g.title}>
       {t.groupBy !== 'none' && (
         // GitHub#229: the whole row folds; the arrow stays a button (Tab reaches it) and its click is this same one
         <tr className="group-head" data-testid="group-head" onClick={() => toggle(g.key)} title={folded.has(g.key) ? '点一下展开这一组' : '点一下收起这一组'}>
@@ -383,7 +398,7 @@ export function TableView({
             <td
               className="title-cell"
               data-testid="title-cell"
-              style={{ paddingLeft: 8 + r.depth * 20 }}
+              style={{ paddingLeft: (t.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}
               {...{ [OPENS_ITEM]: '' }}
               onClick={() => onOpen(r.item.key)}
             >
@@ -403,8 +418,9 @@ export function TableView({
               >
                 {r.item.title}
               </a>{' '}
-              <span className="muted small">
-                {r.item.repo} #{r.item.number}
+              {/* under a repository heading the repository is already said (GitHub#275) */}
+              <span className="muted small" data-testid="row-ref">
+                {inRepo ? `#${r.item.number}` : `${r.item.repo} #${r.item.number}`}
               </span>
             </td>
             {cols.map((c) => {
@@ -432,7 +448,7 @@ export function TableView({
                       close={() => setEditing(null)}
                     />
                   ) : (
-                    <Cell col={c} item={r.item} now={now} dark={dark} />
+                    <Cell col={c} item={r.item} all={items} now={now} dark={dark} />
                   )}
                 </td>
               );
@@ -450,6 +466,43 @@ export function TableView({
       )}
     </tbody>
   );
+
+  // GitHub#275: two or more folded groups next to each other are one line: each group's name opens just it,
+  // "全部展开" opens them all; a click elsewhere on the line does nothing (no unfolding a whole stretch by accident)
+  const foldedRun = (key: string, groups: Group[], inRepo: boolean) => (
+    <tbody key={key} className={inRepo ? 'in-repo grouped' : 'grouped'} data-testid="fold-run" data-keys={groups.map((g) => g.key).join(' ')}>
+      <tr className="group-head fold-run">
+        <td colSpan={cols.length + 1}>
+          <span className="fold-run-mark" aria-hidden="true">
+            ▸
+          </span>{' '}
+          <span className="fold-run-title" data-testid="fold-run-title">
+            已收起 {groups.length} 组 · 共 {groups.reduce((n, g) => n + g.rows.length, 0)} 条
+          </span>
+          {groups.map((g) => (
+            <button
+              key={g.key}
+              className="link fold-run-group"
+              data-testid="fold-run-group"
+              data-key={g.key}
+              title={`展开「${g.title}」`}
+              onClick={() => toggle(g.key)}
+            >
+              {g.title} <span className="count">{g.rows.length}</span>
+              {g.current && <span className="current">当前</span>}
+            </button>
+          ))}
+          <button className="link fold-run-all" data-testid="fold-run-expand" onClick={() => groups.forEach((g) => toggle(g.key))}>
+            全部展开
+          </button>
+        </td>
+      </tr>
+    </tbody>
+  );
+  const groupList = (groups: Group[], inRepo: boolean) =>
+    t.groupBy === 'none'
+      ? groups.map((g) => groupBody(g, inRepo))
+      : foldRuns(groups, folded).map((run) => (run.kind === 'group' ? groupBody(run.group, inRepo) : foldedRun(run.key, run.groups, inRepo)));
 
   return (
     <div className="table-layout" data-testid="table">
@@ -496,14 +549,14 @@ export function TableView({
                         <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'}>
                           {folded.has(r.key) ? '▸' : '▾'}
                         </button>{' '}
-                        <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
+                        <Icon name="repo" size={16} /> <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
                       </td>
                     </tr>
                   </tbody>
-                  {!folded.has(r.key) && r.groups.map((g) => groupBody(g, true))}
+                  {!folded.has(r.key) && groupList(r.groups, true)}
                 </Fragment>
               ))
-            : table.groups.map((g) => groupBody(g, false))}
+            : groupList(table.groups, false)}
         </table>
         {table.itemCount === 0 && <div className="center muted" data-testid="table-empty">没有符合条件的条目</div>}
       </div>
