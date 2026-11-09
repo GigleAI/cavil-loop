@@ -310,3 +310,21 @@ query CavilOpRecords($owner: String!, $name: String!, $number: Int!) {
   }
 }
 `;
+
+/**
+ * GitHub#261: the item count of every board, one query (one point). The change check needs it:
+ * GitHub's "nothing changed" answer carries no next-page link, so an item added after a full
+ * last page would otherwise go unseen. `p<i>` is the i-th board.
+ */
+export function projectCountsQuery(boards: { owner: string; number: number; isOrg: boolean }[]): { query: string; variables: Record<string, unknown> } {
+  const params: string[] = [];
+  const parts: string[] = [];
+  const variables: Record<string, unknown> = {};
+  boards.forEach((b, i) => {
+    params.push(`$o${i}: String!`, `$n${i}: Int!`);
+    variables[`o${i}`] = b.owner;
+    variables[`n${i}`] = b.number;
+    parts.push(`p${i}: ${b.isOrg ? 'organization' : 'user'}(login: $o${i}) { projectV2(number: $n${i}) { items(first: 0) { totalCount } } }`);
+  });
+  return { query: `query CavilProjectCounts(${params.join(', ')}) {\n  ${parts.join('\n  ')}\n}`, variables };
+}

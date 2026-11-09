@@ -105,4 +105,39 @@ mod tests {
         assert!(!under("https://api.github.com", "http://api.github.com/x"));
         assert!(!under("https://api.github.com", "https://github.com/x"));
     }
+
+    /// GitHub#261: GitHub answers a HEAD with the length of the body it did not send (measured:
+    /// `content-length: 2089761` on a board's item page). The answer must come back at once,
+    /// headers intact — not wait for 2 MB that never arrive — and a 304 the same way. (ureq
+    /// already knows neither has a body; this pins it for the change check.)
+    #[test]
+    fn head_with_a_content_length_and_no_body_returns_at_once() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for status in ["200 OK", "304 Not Modified"] {
+                let (mut s, _) = listener.accept().unwrap();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf);
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: 2089761\r\netag: \"abc\"\r\nlink: <http://127.0.0.1:{port}/next>; rel=\"next\"\r\n\r\n"
+                    );
+                    s.write_all(head.as_bytes()).unwrap();
+                    // the connection stays open, as a keep-alive server's would
+                    std::thread::sleep(Duration::from_secs(5));
+                });
+            }
+        });
+        for want in [200u16, 304] {
+            let t = std::time::Instant::now();
+            let r = send_blocking(HttpRequest { method: "HEAD".into(), url: format!("http://127.0.0.1:{port}/x"), headers: vec![], body: None }).unwrap();
+            assert!(t.elapsed() < Duration::from_secs(3), "HEAD waited {:?} for a body", t.elapsed());
+            assert_eq!(r.status, want);
+            assert_eq!(r.body, "");
+            assert!(r.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("etag") && v == "\"abc\""));
+        }
+        drop(server);
+    }
 }

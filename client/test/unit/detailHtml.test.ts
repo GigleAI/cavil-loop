@@ -68,7 +68,8 @@ describe('isolated detail view', () => {
       blockedImages(
         img('https://private-user-images.githubusercontent.com/307601/698127950-cb2c.png?jwt=eyJ0eXAi.x.y') +
           img('https://user-images.githubusercontent.com/1/a.png') +
-          img('https://camo.githubusercontent.com/abc/def'),
+          img('https://camo.githubusercontent.com/abc/def') +
+          img('https://raw.githubusercontent.com/GigleAI/cavil-loop/5e5abdf/docs/design/a.png'),
       ),
     ).toBe(0);
     expect(
@@ -78,14 +79,15 @@ describe('isolated detail view', () => {
           img('http://private-user-images.githubusercontent.com/a.png') +
           img('https://private-user-images.githubusercontent.com.evil.example/a.png') +
           img('https://camo.githubusercontent.com.evil.example/a') +
-          img('https://raw.githubusercontent.com/o/r/main/a.png') +
+          img('https://raw.githubusercontent.com.evil.example/o/r/main/a.png') +
+          img('http://raw.githubusercontent.com/o/r/main/a.png') +
           img('https://github-production-user-asset-6210df.s3.amazonaws.com/1/a.png') +
           img('https://example.com/a.png') +
           img('https://avatars.githubusercontent.com.evil.example/a'),
       ),
-    ).toBe(9);
+    ).toBe(10);
     expect(FRAME_CSP).toMatch(
-      /img-src https:\/\/github\.com https:\/\/api\.github\.com https:\/\/avatars\.githubusercontent\.com https:\/\/private-user-images\.githubusercontent\.com https:\/\/user-images\.githubusercontent\.com https:\/\/camo\.githubusercontent\.com data:;/,
+      /img-src https:\/\/github\.com https:\/\/api\.github\.com https:\/\/avatars\.githubusercontent\.com https:\/\/private-user-images\.githubusercontent\.com https:\/\/user-images\.githubusercontent\.com https:\/\/camo\.githubusercontent\.com https:\/\/raw\.githubusercontent\.com data:;/,
     );
     expect(FRAME_CSP).not.toMatch(/\*/);
     expect(FRAME_CSP).not.toMatch(/(img|media|default)-src[^;]*https:(?!\/\/)/);

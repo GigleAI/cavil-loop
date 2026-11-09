@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 // 把周报 markdown 渲染成 A4 PDF（极简版式，中文字体，页码）。
 //
-// 用法: topdf.mjs <node-project-dir> <in.md> <out.pdf> [--title T] [--subtitle S]
+// 用法: topdf.mjs <node-project-dir> <in.md> <out.pdf> [--title T] [--subtitle S] [--allow-raster]
+//
+// 趋势图（GitHub#273）：报告里那四张 `<名字>-<戳>.png` 是给 GitHub 看的单倍截图，压进 A4
+// 只剩约 180 像素/英寸、放大就糊。run.sh 在 PNG 旁边留了同名的矢量版 `<名字>-<戳>.chart.html`
+// （同一份图表源、字体内嵌），这里按 PNG 的地址取它、整张嵌进 PDF，图保持矢量。
+// 取不到就报错退出、列出是哪张：悄悄退回 PNG 等于又出一份糊的，没人会发现。
+// 明知是旧期、接受位图时加 --allow-raster，退回 PNG 并逐张列出。
 //
 // 只依赖 playwright（从项目 node_modules 解析，同 shot.mjs）。markdown 用自带的
 // 子集渲染器：周报只用到标题 / 表格 / 列表 / 引用 / 图片 / 行内强调这几种，
@@ -10,13 +16,25 @@ import { createRequire } from 'module';
 import fs from 'fs';
 
 const args = process.argv.slice(2);
-const [projectDir, src, out] = args.filter((x) => !x.startsWith('--'));
+const FLAGS = ['--allow-raster'];
+const VALUED = ['--title', '--subtitle'];
+const pos = [];
+for (let i = 0; i < args.length; i++) {
+  if (VALUED.includes(args[i])) i++;
+  else if (FLAGS.includes(args[i])) continue;
+  else if (args[i].startsWith('--')) {
+    console.error(`未知参数: ${args[i]}`);
+    process.exit(2);
+  } else pos.push(args[i]);
+}
+const [projectDir, src, out] = pos;
 const opt = (k) => {
   const i = args.indexOf('--' + k);
   return i < 0 ? '' : args[i + 1];
 };
+const allowRaster = args.includes('--allow-raster');
 if (!projectDir || !src || !out) {
-  console.error('用法: topdf.mjs <node-project-dir> <in.md> <out.pdf> [--title T] [--subtitle S]');
+  console.error('用法: topdf.mjs <node-project-dir> <in.md> <out.pdf> [--title T] [--subtitle S] [--allow-raster]');
   process.exit(2);
 }
 
@@ -171,6 +189,7 @@ blockquote{margin:8pt 0;padding:8pt 11pt;background:var(--soft);
 blockquote p:last-child{margin-bottom:0}
 hr{border:0;border-top:1px solid var(--line);margin:14pt 0}
 img{max-width:100%;border:1px solid var(--line);margin:6pt 0;page-break-inside:avoid}
+.vchart{border:1px solid var(--line);margin:6pt 0;page-break-inside:avoid;break-inside:avoid;overflow:hidden}
 code{font-family:"DejaVu Sans Mono",monospace;font-size:8.8pt;background:var(--soft);padding:.5pt 3pt}
 a{color:var(--info);text-decoration:none}
 sub{display:block;margin-top:12pt;font-size:8.4pt;color:var(--mute);line-height:1.5}
@@ -178,14 +197,96 @@ sub{display:block;margin-top:12pt;font-size:8.4pt;color:var(--mute);line-height:
 .hd .sub{color:var(--mute);font-size:9.5pt}
 `;
 
+// ── 趋势图换成矢量版（GitHub#273）──
+// 只认 report.py 写进报告的那四类图：地址末尾是 <名字>-<戳>.png；其他图片原样不动。
+const CHART_RE = /\/(delivery|effort|cost|token)-[^/?#"]+\.png$/;
+// 图表源是 1280px 宽的网页；版心 = A4 宽 210mm - 左右页边距 2×14mm = 182mm（与下方 @page
+// 和 p.pdf 的 margin 一致），减去 1px 边框两侧，整体等比缩到版心宽。
+const PX_PER_MM = 96 / 25.4;
+const CHART_ZOOM = ((210 - 2 * 14) * PX_PER_MM - 2) / 1280;
+
+async function readChart(url, base) {
+  const vurl = url.replace(/\.png$/, '.chart.html');
+  if (/^https?:\/\//.test(vurl)) {
+    let r;
+    try {
+      r = await fetch(vurl, { signal: AbortSignal.timeout(30000) });
+    } catch (e) {
+      throw new Error(`${vurl}：取不到（${e.cause?.code || e.message}）`);
+    }
+    if (!r.ok) throw new Error(`${vurl}：HTTP ${r.status}`);
+    return { vurl, text: await r.text() };
+  }
+  const path = vurl.startsWith('file://') ? decodeURIComponent(vurl.slice(7)) : new URL(vurl, 'file://' + base + '/').pathname;
+  try {
+    return { vurl, text: fs.readFileSync(path, 'utf8') };
+  } catch (e) {
+    throw new Error(`${vurl}：读不到本地文件（${e.code || e.message}）`);
+  }
+}
+
+// 把一份图表网页拆成「字体声明」和「放进独立样式作用域的内容」。
+// 图表自己的样式（*{margin:0}、h1、.sub …）会和 PDF 正文串，所以放进 shadow root；
+// 但 shadow root 里的 @font-face 浏览器不认（实测会退成默认字体），字体声明要提到页面顶层。
+function splitChart(text, vurl) {
+  const st = text.match(/<style>([\s\S]*?)<\/style>/);
+  const body = text.match(/<body>([\s\S]*)<\/body>/);
+  if (!st || !body || !body[1].includes('<div class="wrap">') || !/<svg[\s>]/.test(body[1])) {
+    throw new Error(`${vurl}：内容不像周报趋势图（缺 <style> / .wrap / <svg>）`);
+  }
+  const faces = st[1].match(/@font-face\{[^}]*\}/g) || [];
+  let css = st[1].replace(/@font-face\{[^}]*\}\n?/g, '');
+  // 图表页的 body 样式（底色、字体、1280 宽）挪到作用域内的根元素上
+  css = css.replace(/(^|\n)body\{/, '$1.cv{');
+  const shadow =
+    `<template shadowrootmode="open"><style>${css}\n.cv{zoom:${CHART_ZOOM.toFixed(5)}}</style>` +
+    `<div class="cv">${body[1]}</div></template>`;
+  return { faces, html: `<div class="vchart">${shadow}</div>` };
+}
+
+async function vectorize(html, base) {
+  // 单独一行的图会被包成 <p><img></p>；块级的图放进 <p> 会被浏览器拆出一个空段落，连 <p> 一起换
+  const imgs = [...html.matchAll(/(<p>)?(<img alt="[^"]*" src="([^"]+)">)(<\/p>)?/g)]
+    .map((m) => [m[1] && m[4] ? m[0] : m[2], m[3]])
+    .filter((m) => CHART_RE.test(m[1]));
+  const faces = new Set();
+  const fail = [];
+  let done = 0;
+  let outHtml = html;
+  for (const m of imgs) {
+    try {
+      const { vurl, text } = await readChart(m[1], base);
+      const c = splitChart(text, vurl);
+      c.faces.forEach((f) => faces.add(f));
+      outHtml = outHtml.replace(m[0], () => c.html);
+      done++;
+    } catch (e) {
+      fail.push(`${m[1]} → ${e.message}`);
+    }
+  }
+  return { html: outHtml, faces: [...faces], done, fail };
+}
+
 const title = opt('title') || 'Weekly Report';
 const subtitle = opt('subtitle') || '';
+const srcDir = fs.realpathSync(src).replace(/\/[^/]*$/, '');
+const vec = await vectorize(render(fs.readFileSync(src, 'utf8')), srcDir);
+if (vec.fail.length) {
+  console.error(`[${allowRaster ? 'warn' : 'error'}] 下面 ${vec.fail.length} 张趋势图取不到矢量版：`);
+  vec.fail.forEach((f) => console.error('   ' + f));
+  if (!allowRaster) {
+    console.error('   PDF 没有生成。矢量版由 run.sh 和 PNG 一起发布（同名，.png 换成 .chart.html）；');
+    console.error('   旧期没有矢量版，可用 run.sh 对那一周 --dry-run 重出。明知接受位图时加 --allow-raster。');
+    process.exit(1);
+  }
+  console.error('   --allow-raster：这几张按 PNG 位图放进 PDF');
+}
 const html =
-  `<meta charset="utf-8"><title>${esc(title)}</title><style>${CSS}</style>\n` +
+  `<meta charset="utf-8"><title>${esc(title)}</title><style>${vec.faces.join('\n')}\n${CSS}</style>\n` +
   `<div class="hd"><h1>${esc(title)}</h1>` +
   (subtitle ? `<div class="sub">${esc(subtitle)}</div>` : '') +
   `</div>\n` +
-  render(fs.readFileSync(src, 'utf8'));
+  vec.html;
 
 const tmp = out.replace(/\.pdf$/, '') + '.html';
 fs.writeFileSync(tmp, html);
@@ -211,4 +312,4 @@ await p.pdf({
   margin: { top: '16mm', bottom: '16mm', left: '14mm', right: '14mm' },
 });
 await b.close();
-console.log(`[ok] ${out} (${(fs.statSync(out).size / 1024).toFixed(0)} KB)`);
+console.log(`[ok] ${out} (${(fs.statSync(out).size / 1024).toFixed(0)} KB；趋势图矢量 ${vec.done} 张、位图 ${vec.fail.length} 张)`);

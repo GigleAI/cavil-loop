@@ -7,12 +7,14 @@
 
 产物：OUT/delivery.html、effort.html、cost.html、token.html
 （PNG 由 shot.mjs 截成 <名字>-<rev>.png；本脚本只出 HTML，截图由 run.sh 串起来。
+ 每张图另有一份 <名字>.chart.html：同样的图表、字体内嵌，run.sh 把它作为
+ <名字>-<rev>.chart.html 和 PNG 放在一起，topdf.mjs 出 PDF 时用它代替 PNG，图保持矢量，GitHub#273。
  周报 markdown 由 report.py 出。）
 
 PDF 里每个类别各占一页、页上是「该类的图 + 它的最近 10 周表」（GitHub#61），
 所以成本单独一张图，不再和讨论 / 时长挤在投入图里。
 """
-import argparse, datetime, json, os
+import argparse, base64, datetime, json, os
 
 INK="#232830"; MUT="#8a8580"; BG="#faf7f2"; GRID="#e6e0d6"
 BLUE="#2a78d6"; ORANGE="#eb6834"; AQUA="#1baf7a"; GOLD="#c99332"; RED="#e34948"; VIO="#4a3aa7"
@@ -145,7 +147,14 @@ def legw(t):
     return sum(11.5 if ord(c) > 0x2E80 else 6.3 for c in t)
 
 
-def page(title_html, panels, H, fonts):
+def page(title_html, panels, H, fonts, embed=False):
+    """一张图的网页源。
+
+    embed=False：截 PNG 用的那份，字体按本机路径引用（GitHub 配图就是对它截图，
+    这条分支的输出必须和以前逐字节相同，配图才不变）。
+    embed=True：给 PDF 用的矢量版（GitHub#273），内容相同，只是字体内嵌成 data URI——
+    这份会和 PNG 一起放进公网资产目录，不能带本机路径；换台机器出 PDF 也拿得到原设计字体。
+    """
     ff=""
     if fonts and os.path.isdir(fonts):
         for fam,f,wt in (("LB","libre-baskerville-400-normal-latin.woff2",400),
@@ -154,7 +163,12 @@ def page(title_html, panels, H, fonts):
                          ("SG","space-grotesk-700-normal-latin.woff2",700)):
             p=os.path.join(fonts,f)
             if os.path.exists(p):
-                ff+=f"@font-face{{font-family:'{fam}';src:url('file://{p}') format('woff2');font-weight:{wt}}}\n"
+                if embed:
+                    with open(p,"rb") as fh:
+                        src="data:font/woff2;base64,"+base64.b64encode(fh.read()).decode("ascii")
+                else:
+                    src=f"file://{p}"
+                ff+=f"@font-face{{font-family:'{fam}';src:url('{src}') format('woff2');font-weight:{wt}}}\n"
     css=ff+f"""
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{background:{BG};font-family:'SG','PingFang SC','Noto Sans SC',sans-serif;color:{INK};width:1280px}}
@@ -175,6 +189,14 @@ svg{{display:block;margin-top:14px}}
             f'<body><div class="wrap">{title_html}'
             f'<svg width="1212" height="{H}" viewBox="0 0 1212 {H}">{"".join(panels)}</svg>'
             f'</div></body></html>')
+
+def write_chart(a, name, title_html, panels, H):
+    """写一张图的两份网页源：<名字>.html 截 PNG（GitHub 配图），<名字>.chart.html 是
+    给 PDF 的矢量版（字体内嵌）。两份由同一组面板生成，图表内容不会分叉。"""
+    with open(os.path.join(a.out_dir,f"{name}.html"),"w") as f:
+        f.write(page(title_html,panels,H,a.fonts_dir))
+    with open(os.path.join(a.out_dir,f"{name}.chart.html"),"w") as f:
+        f.write(page(title_html,panels,H,a.fonts_dir,embed=True))
 
 def main():
     ap=argparse.ArgumentParser()
@@ -203,7 +225,7 @@ def main():
         [{"type":"bar","data":g("backlog"),"color":VIO,"label":"周末未关闭存量","axis":"l"},
          {"type":"line","data":g("iss_open"),"color":GOLD,"label":"新提 issue","axis":"l"},
          {"type":"line","data":g("iss_closed"),"color":AQUA,"label":"关闭 issue","axis":"l"}])
-    open(os.path.join(a.out_dir,"delivery.html"),"w").write(page(t1,[p1,p2],680,a.fonts_dir))
+    write_chart(a,"delivery",t1,[p1,p2],680)
     hp=(tot("human")/tot("comments")*100) if tot("comments") else 0
     t2=(f'<h1>最近 {len(W)} 周趋势 · 投入面（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
         f'<div class="lede">{len(W)} 周合计：来回讨论 <b>{tot("comments"):.0f}</b> 条（其中你发了 <b>{tot("human"):.0f}</b> 条，占 {hp:.0f}%），'
@@ -248,7 +270,7 @@ def main():
         + ("同轴折线＝其中 AI 每一轮从开始到结束的处理时长（不含轮与轮之间的等待，轮内等待照算；算不出的周断开）；" if has_work else "")
         + "右轴折线＝平均每小时（按总耗时算）写出多少行净增代码。",
         time_series,note=sw)
-    open(os.path.join(a.out_dir,"effort.html"),"w").write(page(t2,[p3,p_time],680,a.fonts_dir))
+    write_chart(a,"effort",t2,[p3,p_time],680)
     # 金额一律美元：标题 / 副标题 / 两条图例都写出来。图会被单独贴进周报、脱离正文，
     # 只写 `$` 读图的人分不清是美元还是人民币（GigleTutor-Web#931）。
     t4=(f'<h1>最近 {len(W)} 周趋势 · 成本（{lab(W[0])} ~ {lab(D["target_week"]["end"])}）</h1>'
@@ -258,7 +280,7 @@ def main():
         "柱＝当周总成本（美元，按 API 标价折算，非订阅真实账单，左轴）；折线＝每写出 1000 行净增代码花多少美元（右轴）。",
         [{"type":"bar","data":g("cost"),"color":ORANGE,"label":"当周成本（美元）","axis":"l"},
          {"type":"line","data":kloc,"color":VIO,"label":"美元 / 千行代码","axis":"r"}],note=sw)
-    open(os.path.join(a.out_dir,"cost.html"),"w").write(page(t4,[p4],340,a.fonts_dir))
+    write_chart(a,"cost",t4,[p4],340)
     # token 用量：单独一张图、两块面板，**每块各用一条纵轴，不用双轴**（GigleTutor-Web#1023）。
     #   · 双轴（缓存读取走右轴折线）：两条轴刻度差几十倍，读图的人拿高度一比，把「读取是写入的
     #     几十倍」读成了「读取反而很少」；
@@ -287,8 +309,8 @@ def main():
         "柱＝当周缓存读取量。它比上一块的三项大几十倍，单独一条纵轴，别拿高度跟上一块比。"
         "M＝百万、B＝十亿，以刻度和柱顶数字的后缀为准。" + est,
         [{"type":"bar","data":M("tok_cache_r"),"color":VIO,"label":"缓存读取","axis":"l","fmt":fmt_m}],note=sw)
-    open(os.path.join(a.out_dir,"token.html"),"w").write(page(t3,[p_tok,p_cr],680,a.fonts_dir))
-    print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html, cost.html, token.html")
+    write_chart(a,"token",t3,[p_tok,p_cr],680)
+    print(f"[ok] HTML 已出：{a.out_dir}/delivery.html, effort.html, cost.html, token.html（各带一份 .chart.html 矢量版，给 PDF 用）")
 
 if __name__=="__main__":
     main()

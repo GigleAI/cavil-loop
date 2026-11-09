@@ -209,12 +209,14 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean } = {})
   const context: BrowserContext = await (await engine()).newContext({ viewport: { width: 1280, height: 800 } });
   // Nothing leaves the machine. Every request the window makes outside the bridge is recorded;
   // the hosts the app may load images from (github.com / api.github.com, and GitHub's avatar
-  // host since #155) get a 1×1 PNG, anything else is refused.
+  // host since #155, its image hosts since #205, a repo's raw files since #267) get a 1×1 PNG,
+  // anything else is refused. (No redirects: Playwright routes only the first address of a redirect,
+  // so the target would go out to the real network.)
   await context.route('**/*', async (route) => {
     const url = route.request().url();
     if (url.startsWith(`${origin}/`)) return route.continue();
     appendFileSync(env.requests, `request ${url}\n`);
-    if (/^https:\/\/((api\.)?github\.com|(avatars|private-user-images|user-images|camo)\.githubusercontent\.com)\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
+    if (/^https:\/\/((api\.)?github\.com|(avatars|private-user-images|user-images|camo|raw)\.githubusercontent\.com)\//.test(url)) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG });
     return route.abort();
   });
   // `<a target="_blank">` in the detail view: the app's shell never opens a window for it,

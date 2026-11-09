@@ -66,7 +66,11 @@ describe('platform layer (back end)', () => {
       expect(await isAllowedExternal(`${h.replace('https:', 'http:')}/a.png`, prod)).toBe(false);
       expect(await isAllowedExternal(`${h}.evil.example/a.png`, prod)).toBe(false);
     }
-    expect(await isAllowedExternal('https://raw.githubusercontent.com/o/r/main/a.png', prod)).toBe(false);
+    // GitHub#267: a repo's raw file (a design image committed to the repo) is on the list; its look-alikes are not
+    expect(await isAllowedExternal('https://raw.githubusercontent.com/GigleAI/cavil-loop/5e5abdf/docs/design/a.png', prod)).toBe(true);
+    expect(await isAllowedExternal('https://raw.githubusercontent.com.evil.example/o/r/main/a.png', prod)).toBe(false);
+    expect(await isAllowedExternal('https://evilraw.githubusercontent.com/o/r/main/a.png', prod)).toBe(false);
+    expect(await isAllowedExternal('https://media.githubusercontent.com/media/o/r/main/a.png', prod)).toBe(false);
     expect(await isAllowedExternal('https://avatars.githubusercontent.com/u/1', prod)).toBe(false);
     expect(await isAllowedExternal('https://github-production-user-asset-6210df.s3.amazonaws.com/1/a.png', prod)).toBe(false);
   });
