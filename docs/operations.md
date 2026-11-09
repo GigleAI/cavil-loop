@@ -957,9 +957,10 @@ With `COMMENT_FOOTER="on"`, the hand-off comment ends with a footer generated wh
 `scripts/drivers/token-usage/comment-footer.sh`: one summary line (it is the `<details>`
 toggle) and a hidden `agent-metrics` record on the last line for the weekly report.
 
-- **The summary line splits total wall time into AI / test / other, in that order.** "Other" is
-  total − test − AI in displayed whole seconds, floored at 0; when test and AI overlap
-  (tests running in the background while the AI works) it is 0 and the details say so.
+- **The summary line splits total wall time into AI / test / remote CI / other, in that order.**
+  "Other" is total − AI − test − remote CI in displayed whole seconds, floored at 0; when tests
+  overlap another part (tests running in the background while the AI works or while waiting on
+  remote CI) it is 0 and the details say so.
 - **The test part only exists when `COMMENT_FOOTER_EXTRA_CMD` is set and has something to
   say.** It shows `测试 4m 51s` (more than 0 s) or `测试未知` (the command answered
   `test_secs=unknown` because tests ran but their time is unknown — e.g. only background or
@@ -1016,6 +1017,56 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
   send / receive; background commands may run while the AI thinks. This is not repeated in
   every comment; when it cannot be computed the summary says `AI 时间未知` and the details
   give the reason.
+- **Remote CI is the time the agent spent waiting for GitHub Actions** (GitHub#293; the summary
+  says `远端 CI 约 …`). It is read from the agent's own session log, not from GitHub, and needs
+  no configuration.
+  - Which commands count (Claude Bash and Monitor calls, codex `exec` commands): ones that block
+    until the run ends — `gh run watch …`, `gh pr checks … --watch` — or a `for` / `while` /
+    `until` loop containing both `sleep` and a remote CI status query (`gh run view` /
+    `gh run list` / `gh pr checks`, or `gh api` on `…/actions/runs…`, `…/check-runs`,
+    `…/check-suites`, `…/commits/<sha>/status`). Only commands that actually run count: the
+    command is split the way the shell does it — single quotes are text, `$( … )` / backticks
+    unquoted or in double quotes run — so printed text such as `echo gh run watch 1`, or a query a
+    loop only echoes, does not. Nor do a single query, `gh workflow run`, or polling PR comments /
+    labels.
+  - Start = when the tool call was written to the session; end = the foreground command's tool
+    result, the "background task finished" notification for background commands and Monitor
+    (Monitor's per-event notifications do not end it), or codex's own reported duration / the poll
+    that reported the exit code.
+  - The total is the union of all wait spans minus the part overlapping AI requests (time the
+    agent worked while a background wait ran counts as AI), so it never overlaps AI. The details
+    list each wait: which run (taken only from the gh command recognised as the wait —
+    `gh run …` / `actions/runs/<id>`; a variable is resolved from an assignment in the same command) or which PR's checks, start / end, and that wait's own length
+    (AI not subtracted, so it matches the Actions page), plus notes on overlaps and the AI time
+    taken out.
+  - Waits with no end on record (background task still running, notification missing, codex never
+    reported an exit code) are counted but not timed and left out of the total (the details say so); when
+    none could be timed the summary says `远端 CI 未知`. Waits that started in an earlier dispatch
+    round are ignored.
+  - Machine record: `ci_wait_secs` (total, millisecond precision), `ci_waits` (count),
+    `ci_wait_untimed` (count with no end); with no waits it writes `ci_wait_secs=0.000 ci_waits=0
+    ci_wait_untimed=0`, and leaves out `ci_wait_secs` when none could be timed. When it cannot be
+    computed (session unreadable, the tally failed) none of the three is written and the details
+    say `远端 CI 等待没统计到` with the reason. The weekly report does not parse these fields yet.
+  - For the loop form the query and the `sleep` must sit in the **same** loop (an enclosing loop
+    counts); a query in a `for` header runs once and is not polling.
+  - Not counted (when unsure the time stays in "other" rather than being moved into remote CI):
+    commands inside a function definition (defining is not calling, and calls are not followed);
+    a command sent to the background (`… &`); anything handed over as a string to `bash -c` /
+    `sh -c` / `eval` / `xargs` / `ssh` / `sudo`, or inside a script file of the agent's own.
+  - **The number is inferred from the commands and may run high** (the footer's details heading
+    says `按命令推断，可能偏多`; on PR #302 the maintainer chose to keep the inference rather than
+    switch to a dedicated wait command that records its own time). Known over-counts: once a
+    command is recognised as a wait, the whole command's duration goes into remote CI, including
+    any other slow work in the same command; a wait in a branch that did not run
+    (`if false; then gh run watch 1; fi; sleep 60`, `false && gh run watch 1; sleep 60`) still
+    brings the rest of the command's time in; a quoted `}` inside a function body
+    (`f() { echo '}'; gh run watch 1; }`) makes the body look executed. How much it over-counts
+    depends on what else the command does, so there is no upper bound.
+  - Limits: a real wait written in one of those not-counted forms stays in "other"; a wait inside
+    an `&&` / `||` / `if` / `case` branch is counted as run (whether the branch ran cannot be
+    told); waits with no end on record are left out of the total; overlap with local tests cannot
+    be taken out (tests only report a total) — see the "other is 0" rule above.
 
 ## Prompt templates
 
@@ -1315,6 +1366,50 @@ so and leaves it alone.
 - **Logs**: stdout/stderr → `~/Library/Logs/cavil-loop/<key>.{out,err}.log`. The deeper poll log still lives at `$STATE_DIR/poll.log`.
 - **flock**: not bundled with macOS. `brew install flock` once before running `setup.sh`.
 - **Logout / lid-close**: a user LaunchAgent runs when you're logged in (even with screen locked). For "run even when no user is logged in," you'd need a `/Library/LaunchDaemons/` install — `setup.sh` deliberately doesn't go there (requires `sudo`, breaks symmetry with Linux's `--user` systemd).
+
+## Scripted install, status and disconnect (GitHub#313)
+
+Four entry points give a program (the desktop client, or a script of your own) a stable interface, so it never re-implements the install logic. All of them live in the skill directory and work for installations from before the rename too (old names are picked through `scripts/_names.sh`).
+
+| Script | What it does | Writes anything? |
+|---|---|---|
+| `setup.sh --yes <host> [key]` | Same as `setup.sh`, but does not ask the final y/N: enables and starts the poller right away. Without `--yes` the run is byte-for-byte what it always was | yes (as `setup.sh`) |
+| `scripts/install-status.sh [--agent <name>] [--project <dir>]` | Prints one JSON object with the whole local state | no |
+| `scripts/disconnect-project.sh <key>` | Stops one project's poller and removes its registration; keeps the project config and state | yes |
+| `scripts/launchd-refresh.sh <key>` | macOS only: replaces one project's launchd plist after the template changed, with backup and rollback | yes |
+
+<!-- install-scripts-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+git init -q "$HOME/github/myproject"
+bash "$SKILL/setup.sh" --yes "$HOME/github/myproject"
+bash "$SKILL/scripts/install-status.sh" | jq -r '.projects[] | "\(.key) \(.repo) \(.scheduler.state) deps=\(.deps.state)"'
+bash "$SKILL/scripts/install-status.sh" --agent codex | jq -c '.agent_check | {agent, state, missing}'
+bash "$SKILL/scripts/disconnect-project.sh" myproject
+```
+<!-- install-scripts-ops:end -->
+
+The lines above, in order: connect a project without the y/N question; list every connected project with its scheduler state and dependency verdict; check what is missing before connecting a new project with `codex`; disconnect it again. `myproject` is the instance key (by default the directory name; `.projects[].key` in the status output).
+
+**Status output** (`version: 1`). Top level: `os`, `scheduler` (`systemd` / `launchd`), `daemon` (`entry` — the stable skill link, `target` — where it resolves, `form` — `managed` release / `checkout` git directory / `directory` / `missing` / `dangling`, `version` — release sha or the checkout's `HEAD`), `gh` (`installed`, `logged_in`), `base_deps.missing` (tools every project needs), `bash` (`path` — the bash the poller will run with, picked by the same function `setup.sh` uses; `major`; `ok` — `true` for 4 or later, `false` for the bash 3.2 macOS ships, which cannot run the daemon (`brew install bash`), `null` when the version could not be read), `agent_check` (only with `--agent`), `project_check` (only with `--project <dir>`: the project config already in that directory, read the way the poller reads it — `config_state` `none` / `ok` / `unreadable`, `config`, `repo`, `worker_agent`; `setup.sh` keeps such a config, so these are what the project will run with), and `projects[]`. Each project: `key`, `layout` (`new` / `legacy` = installed before the rename), `env_file`, `host`, `config`, `config_state` (`ok` / `unreadable`), `repo`, `state_dir`, `agents[]`, `deps`, `scheduler`, `last_poll`.
+
+- `agents[]` lists the worker agent, the review agent (only while `LABEL_PENDING_REVIEW` is set) and the agent the model-selecting label uses (`role: fable`, `required: false` — it starts only when someone puts that label on an item, so a codex project without claude is not reported as missing a dependency). Each has `bin`, `state` (`ok` / `missing` / `no_driver`) and `missing`, computed by the same function `setup.sh` uses — the two cannot disagree. `deps` sums up the required ones: `ok` / `missing` / `unknown` (config unreadable or no driver).
+- `scheduler.state` is `running` / `stopped` / `unknown`. Only known state words count: a failed read, empty output or an unfamiliar word is `unknown`, never `stopped`. `raw` carries what was read.
+- `last_poll` is the last poll that actually read GitHub (`poll-pace.json`), else the modification time of `poll.log`; `null` when neither exists.
+- Without `jq` the full status cannot be built: the script then prints only `{version: 1, precheck: true, os, base_deps: {missing}}` (the common tools, checked without `jq`) and exits 3. Projects and scheduler states are unknown in that case.
+
+**Disconnect** follows [Uninstall one project](#uninstall-one-project): it reads the scheduler state first and touches nothing when that read fails (exit 2); after stopping it reads the state back (on Linux also "not enabled at boot") and keeps the registration when it cannot confirm (exit 3). Exit 0 = disconnected, 1 = no such instance. The last line is always `RESULT=<disconnected|not_found|unknown|failed>`. Worker tmux sessions are left alone.
+
+**Refreshing a launchd plist (macOS).** The plist is generated, not a symlink, and re-running `setup.sh` skips an existing one. After a daemon update that changed the template, run it once per project:
+
+<!-- install-scripts-mac-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/launchd-refresh.sh" myproject
+```
+<!-- install-scripts-mac-ops:end -->
+
+It renders the new plist with the same function `setup.sh` uses, checks it with `plutil -lint`, and compares it with the current file — identical means `RESULT=unchanged`. Otherwise it reads the job state (unreadable → stop, nothing touched); if the job is loaded it takes the project's poll lock (waits for the current poll to end, at most `CAVIL_REFRESH_LOCK_WAIT` seconds, default 300), boots it out and confirms it is gone; copies the old file to `$STATE_DIR/launchd-backup/`; swaps the new one in atomically; and loads it again if it was loaded before, reading back that it is loaded from that file. If loading fails it restores the backup and the previous state. The last line is `RESULT=` one of `replaced` / `unchanged` (exit 0), `unknown` / `lint_failed` / `lock_timeout` (exit 2, nothing touched), `not_found` / `not_macos` (exit 1), `failed` (exit 3, old file and state restored — only after reading both back), `needs_human` (exit 4: the restore failed or could not be confirmed — the output shows the error texts, where the original file is, and how to restore it by hand; a backup, if one was made, is kept). On Linux the unit files are symlinks to the templates and the deployer reloads them, so this script does not apply there.
 
 ## Running multiple projects
 
@@ -2146,6 +2241,8 @@ tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-sessi
 ```
 
 ### Uninstall one project
+
+`bash ~/.agents/skills/cavil-loop/scripts/disconnect-project.sh <key>` does the required steps below for either OS (and for installations from before the rename), refusing to delete anything when the scheduler state cannot be read — see [Scripted install, status and disconnect](#scripted-install-status-and-disconnect-github313). By hand:
 
 **Linux**:
 

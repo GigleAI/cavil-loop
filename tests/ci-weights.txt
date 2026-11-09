@@ -20,6 +20,7 @@ client-tauri-mutation-prep 1
 closed-issue-done 14
 comment-footer 11
 comment-layout-prompts 1
+install-scripts 27
 reply-layout-prompts 12
 config-notice 34
 conflict-check-prompts 1
@@ -27,6 +28,7 @@ design-review-gate 51
 dispatch-backoff 1
 doc-diagrams 1
 fake-gh-server 5
+footer-ci-wait 5
 footer-test-time 20
 greedy-dispatch 1
 migrate-legacy 11

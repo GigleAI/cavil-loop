@@ -785,8 +785,8 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
 整段生成的 footer：一行总览（它就是 `<details>` 的折叠标题）+ 最后一行给周报读的隐藏
 `agent-metrics` 机器记录。
 
-- **总览把总耗时按 AI / 测试 / 其他的顺序拆开。**「其他」= 总 − 测试 − AI，按显示出来的整秒相减，最小 0；
-  测试和 AI 有重叠（AI 在想、测试在后台跑）时记 0，细节里说明。
+- **总览把总耗时按 AI / 测试 / 远端 CI / 其他的顺序拆开。**「其他」= 总 − AI − 测试 − 远端 CI，按显示出来的
+  整秒相减，最小 0；测试和别的段有重叠（AI 在想、或在等远端 CI 时测试在后台跑）时记 0，细节里说明。
 - **测试那段只在配了 `COMMENT_FOOTER_EXTRA_CMD` 且有话可说时出现**：`测试 4m 51s`（大于 0 秒），
   或 `测试未知`（命令回答 `test_secs=unknown`——跑过但说不出耗时，例如只有后台 / 未完成的运行；
   或命令失败、超时、第一行不对，这几种原因写在细节里）。命令回答 0 表示确认这轮没跑测试：总览
@@ -824,6 +824,37 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   几次请求同时覆盖的那一秒只算一次。偏差来源：含网络往返和排队等首字的时间；会话记录是写盘
   时刻，与真实收发差几毫秒到几秒；AI 在想的时候后台命令可能也在跑。这段说明不在每条评论里重复；
   算不出来时总览写「AI 时间未知」，细节里写原因。
+- **远端 CI 是 agent 等 GitHub Actions 跑完的时间**（GitHub#293，总览写「远端 CI 约 …」），从 agent 自己的会话
+  记录里认，不查 GitHub。不需要配置。
+  - 认哪些命令（Claude 的 Bash、Monitor 调用；codex 的 `exec` 命令）：本身阻塞到运行结束的 `gh run watch …`、
+    `gh pr checks … --watch`；或一个 `for` / `while` / `until` 循环，里面同时有 `sleep` 和远端 CI 状态查询
+    （`gh run view` / `gh run list` / `gh pr checks`，或 `gh api` 访问 `…/actions/runs…`、`…/check-runs`、
+    `…/check-suites`、`…/commits/<sha>/status`）。只认真正会执行的命令：按 shell 规则拆开，单引号里是文字，
+    双引号和不带引号处的 `$( … )` / 反引号会执行；`echo gh run watch 1` 这种打印出来的文字、循环里 echo 的
+    查询都不算。单次查询、`gh workflow run`、轮询 PR 评论 / 标签也不算。
+  - 起止：开始 = 工具调用写进会话的时刻；结束 = 前台命令的工具结果、后台命令和 Monitor 的「后台任务结束」
+    通知（Monitor 运行中的事件通知不算）、codex 命令自报的耗时或报出退出码那次轮询。
+  - 合计 = 各条等待时段的并集，再扣掉与 AI 请求重合的部分（后台在等、agent 同时在干活的那段算 AI），所以
+    不和 AI 重叠。细节逐条列出等的是哪个运行（只从认定为等待的那条 gh 命令里取，`gh run …` /
+    `actions/runs/<编号>`，命令里用变量时找同一条命令里的赋值）或哪个 PR 的检查、起止和这一条自己的时长（不扣 AI，可以和 Actions 页面对），并写明几条
+    重叠、扣了多少 AI 时间。
+  - 没记到结束的（后台任务还没结束、通知缺失、codex 一直没报退出码）只计条数、不算进合计（细节里注明）；一条都没
+    计上时总览写「远端 CI 未知」。上一轮派工里开始的等待不算。
+  - 机器记录：`ci_wait_secs`（合计，毫秒精度）、`ci_waits`（条数）、`ci_wait_untimed`（没记到结束的条数）；
+    没有等待时写 `ci_wait_secs=0.000 ci_waits=0 ci_wait_untimed=0`，一条都没计上时不写 `ci_wait_secs`。统计
+    不出来（会话读不了、统计出错）时三个都不写，细节写「远端 CI 等待没统计到」和原因。周报目前不解析这三个
+    字段。
+  - 循环那一条要求查询和 `sleep` 在**同一个**循环里（外层循环里的也算）；`for` 头部的查询只执行一次，不算轮询。
+  - 不算（拿不准时宁可留在「其他」，不把别的时间挪进「远端 CI」）：函数定义里的命令（定义不等于调用，调用也不去
+    追）；整条放后台（`… &`）的命令；交给 `bash -c` / `sh -c` / `eval` / `xargs` / `ssh` / `sudo` 当字符串执行的、
+    自己的脚本文件里的。
+  - **数字是按命令推断的，可能偏多**（footer 细节标题写「按命令推断，可能偏多」；PR #302 维护者选定保留推断，
+    不改用专用等待命令实测）。已知会多算的几种：一条命令里只要认出等待，整条命令的时长都算进远端 CI，等待之外
+    的其他耗时操作一起算进去；等待写在没走的分支里（`if false; then gh run watch 1; fi; sleep 60`、
+    `false && gh run watch 1; sleep 60`）时，后面那段时间也算进去；函数体里出现引号中的 `}`（`f() { echo '}';
+    gh run watch 1; }`）会让函数体被当成已执行。多算多少取决于命令里掺了多少别的耗时操作，说不出上限。
+  - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
+    分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
 ## Prompt 模板
 
@@ -1095,6 +1126,50 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 - **日志**：stdout/stderr → `~/Library/Logs/cavil-loop/<key>.{out,err}.log`。更深的 poll 日志仍在 `$STATE_DIR/poll.log`。
 - **flock**：macOS 不自带，先 `brew install flock` 再跑 `setup.sh`。
 - **登出 / 合盖**：user LaunchAgent 登录后常驻（即使锁屏也跑）；想"无登录、开机即跑"要装到 `/Library/LaunchDaemons/` —— `setup.sh` 故意不进这里（要 `sudo`，且和 Linux `--user` systemd 对称）。
+
+## 用脚本安装、查状态、断开（GitHub#313）
+
+下面四个入口给程序（桌面客户端，或人自己写的脚本）一个稳定的接口，调用方不用自己重写安装逻辑。都在 skill 目录里，对改名前的旧安装同样有效（新旧名字统一由 `scripts/_names.sh` 挑）。
+
+| 脚本 | 做什么 | 会写东西吗 |
+|---|---|---|
+| `setup.sh --yes <host> [key]` | 和 `setup.sh` 一样，但最后不问 y/N，直接启用并启动后台任务。不带 `--yes` 时与从前逐字节一致 | 会（同 `setup.sh`） |
+| `scripts/install-status.sh [--agent <名字>] [--project <目录>]` | 输出一个 JSON 对象，本机状态一次读全 | 不会 |
+| `scripts/disconnect-project.sh <key>` | 停掉一个项目的后台任务、撤掉登记；保留项目配置和状态 | 会 |
+| `scripts/launchd-refresh.sh <key>` | 只用于 macOS：模板变了之后换新一个项目的 launchd plist，先备份、失败就恢复 | 会 |
+
+<!-- install-scripts-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+git init -q "$HOME/github/myproject"
+bash "$SKILL/setup.sh" --yes "$HOME/github/myproject"
+bash "$SKILL/scripts/install-status.sh" | jq -r '.projects[] | "\(.key) \(.repo) \(.scheduler.state) deps=\(.deps.state)"'
+bash "$SKILL/scripts/install-status.sh" --agent codex | jq -c '.agent_check | {agent, state, missing}'
+bash "$SKILL/scripts/disconnect-project.sh" myproject
+```
+<!-- install-scripts-ops:end -->
+
+上面几行依次是：不经 y/N 提问接上一个项目；列出每个已接项目的后台任务状态和依赖结论；接一个用 `codex` 的新项目前先查缺什么；再把它断开。`myproject` 是实例名（默认是目录名，即状态输出里的 `.projects[].key`）。
+
+**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`bash`（`path` 轮询会用的 bash，和 `setup.sh` 同一个挑选函数；`major` 主版本；`ok` —— 4 及以上为 `true`，macOS 自带的 3.2 为 `false`，跑不了 daemon，要 `brew install bash`；读不出版本为 `null`）、`agent_check`（带 `--agent` 才有）、`project_check`（带 `--project <目录>` 才有：那个目录里已有的项目配置，按轮询一样的读法读——`config_state` 为 `none` / `ok` / `unreadable`，以及 `config`、`repo`、`worker_agent`；`setup.sh` 会沿用这份配置，所以接上后实际用的就是这两项）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
+
+- `agents[]` 列出 worker agent、复审 agent（只在配了 `LABEL_PENDING_REVIEW` 时）和按标签选模型时用的 agent（`role: fable`，`required: false`——只有有人给条目打了那个标签才会起，所以没装 claude 的 codex 项目不会被报成缺依赖）。每项有 `bin`、`state`（`ok` / `missing` / `no_driver`）和 `missing`，用的是 `setup.sh` 同一个函数，两边结论不会不一致。`deps` 汇总必需的那几项：`ok` / `missing` / `unknown`（配置读不出或找不到 driver）。
+- `scheduler.state` 是 `running` / `stopped` / `unknown`。只认已知状态词：读失败、空输出、不认识的词一律 `unknown`，绝不报 `stopped`；`raw` 是读到的原文。
+- `last_poll` 取最近一次真读了 GitHub 的轮询（`poll-pace.json`），没有就取 `poll.log` 的修改时间；都没有为 `null`。
+- 没有 `jq` 时拼不出完整状态：脚本只输出 `{version: 1, precheck: true, os, base_deps: {missing}}`（不靠 `jq` 查的通用工具），退出码 3；这时项目和后台任务状态一概读不到。
+
+**断开**照[卸载某个 project](#卸载某个-project) 的步骤做：先读后台任务状态，读不到就什么都不动（退出 2）；停完读回确认（Linux 上还确认不再开机自启），确认不了就保留登记（退出 3）。退出 0 = 已断开，1 = 没有这个实例。最后一行固定是 `RESULT=<disconnected|not_found|unknown|failed>`。worker 的 tmux 会话不动。
+
+**换新 launchd plist（macOS）。** plist 是生成的、不是软链，重跑 `setup.sh` 看到已存在就跳过。daemon 更新、模板变了之后，每个项目跑一次：
+
+<!-- install-scripts-mac-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/launchd-refresh.sh" myproject
+```
+<!-- install-scripts-mac-ops:end -->
+
+它用 `setup.sh` 同一个函数生成新 plist，`plutil -lint` 校验，和现有文件逐字比对——一样就 `RESULT=unchanged`。不一样：读任务状态（读不到就停，什么都不动）；已加载的先拿该项目的轮询锁（等当前这一轮结束，最多 `CAVIL_REFRESH_LOCK_WAIT` 秒，默认 300），bootout 并确认已卸载；把旧文件备份到 `$STATE_DIR/launchd-backup/`；原子换上新文件；原来已加载的就重新加载，并读回确认加载的是这个文件。加载失败就用备份恢复原文件和原状态。最后一行 `RESULT=` 是 `replaced` / `unchanged`（退出 0）、`unknown` / `lint_failed` / `lock_timeout`（退出 2，什么都没动）、`not_found` / `not_macos`（退出 1）、`failed`（退出 3，原文件和原状态已恢复——两者都读回确认过才报它）、`needs_human`（退出 4：恢复失败或确认不了——输出里有报错原文、原文件位置和手动恢复的命令，做过备份的话备份保留）。Linux 上单元文件是指向模板的软链，部署器自己重新加载，不适用这个脚本。
 
 ## 多 project 共存
 
@@ -1719,6 +1794,8 @@ tmux ls | grep "^<project>-issue[0-9]" | cut -d: -f1 | xargs -n1 tmux kill-sessi
 ```
 
 ### 卸载某个 project
+
+`bash ~/.agents/skills/cavil-loop/scripts/disconnect-project.sh <key>` 按系统做完下面的必做步骤（改名前的旧安装同样适用），后台任务状态读不到时什么都不删——见[用脚本安装、查状态、断开](#用脚本安装查状态断开github313)。手动做：
 
 **Linux**：
 

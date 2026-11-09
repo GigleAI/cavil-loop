@@ -37,6 +37,10 @@ export interface HarnessOptions {
   opened?: string[];
   /** use the real macOS keychain store with this stand-in for /usr/bin/security (ignores `credentials`) */
   keychainBin?: string;
+  /** extra environment for the back end (GitHub#314: the CAVIL_CLIENT_TEST_DAEMON_* switches) */
+  env?: Record<string, string>;
+  /** GitHub#315: the folder picker of "接上 daemon" — the test answers (a path, or null = cancelled) */
+  pickFolder?: (start: string | null) => string | null | Promise<string | null>;
 }
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
@@ -58,7 +62,7 @@ export class HarnessBackend implements Backend {
     const args = ['--db', o.db, '--api', o.endpoints.api, '--web', o.endpoints.web];
     if (!o.credentials.persistent) args.push('--memory-credentials');
     if (o.keychainBin) args.push('--keychain-bin', o.keychainBin);
-    this.p = spawn(harnessBin(), args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.p = spawn(harnessBin(), args, { stdio: ['pipe', 'pipe', 'pipe'], ...(o.env ? { env: { ...process.env, ...o.env } } : {}) });
     let stderr = '';
     this.p.stderr.on('data', (d) => (stderr += String(d)));
     this.exited = new Promise((r) => this.p.on('exit', (code) => r(code)));
@@ -117,6 +121,13 @@ export class HarnessBackend implements Backend {
         return (this.o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(Number(args.ms));
       case 'open':
         this.o.opened?.push(String(args.url));
+        return null;
+      case 'pickFolder':
+        if (!this.o.pickFolder) throw new Error('no folder picker in this test');
+        return await this.o.pickFolder(args.start == null ? null : String(args.start));
+      case 'openFile':
+        // GitHub#314: a file the daemon section handed to the system
+        this.o.opened?.push(`file:${String(args.what)}:${String(args.path)}`);
         return null;
       default:
         throw new Error(`unknown callback ${op}`);

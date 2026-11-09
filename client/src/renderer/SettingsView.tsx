@@ -4,6 +4,8 @@ import { sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
 import { UpdateSection } from './UpdateViews';
+import { DaemonSection, useDaemonStatus } from './DaemonSection';
+import { ConnectButton } from './ConnectDialog';
 import { Icon, type IconName } from './Icons';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
@@ -12,6 +14,8 @@ const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-pending', icon: 'bell', title: '提醒' },
   // only in a build that updates itself (GitHub#184); the section is not there otherwise
   { id: 'set-update', icon: 'refresh', title: '更新' },
+  // the local cavil-loop daemon (GitHub#314)
+  { id: 'set-daemon', icon: 'gear', title: '本机 daemon' },
   { id: 'set-account', icon: 'user', title: '账号' },
   { id: 'set-login', icon: 'key', title: '登录方式' },
 ];
@@ -20,6 +24,8 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
+  // the local daemon's status: the daemon section and the repositories' "接上 daemon" share it (GitHub#315)
+  const daemon = useDaemonStatus();
 
   const add = async () => {
     const r = await api().addSource(input);
@@ -94,6 +100,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
                   </span>
                 </span>
                 {st && !st.ok && <span className="err small">读取失败：{st.error}</span>}
+                {s.kind === 'repo' && <ConnectButton repo={`${s.owner}/${s.name}`} daemon={daemon} />}
                 <button className="ghost" data-testid="source-remove" onClick={() => api().removeSource(s.key)}>
                   删除
                 </button>
@@ -161,6 +168,8 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
       </section>
 
       <UpdateSection update={state.update} />
+
+      <DaemonSection daemon={daemon} />
 
       <section id="set-account">
         <h3>账号</h3>

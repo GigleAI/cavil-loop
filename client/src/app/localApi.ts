@@ -57,5 +57,19 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     reorderRepos: async (shown, next) => c.reorderRepos(shown, next),
     resetRepoOrder: async () => c.resetRepoOrder(),
     setNewIssueHandoff: async (h) => c.setNewIssueHandoff(h),
+    // GitHub#314: straight to the back end, which runs every command (the controller has no part in it)
+    daemonStatus: () => backend.call('daemonStatus'),
+    daemonInstall: () => backend.call('daemonInstall'),
+    daemonService: (key, action) => backend.call('daemonService', { key: String(key), action: action === 'start' ? 'start' : 'stop' }),
+    daemonDisconnect: (key) => backend.call('daemonDisconnect', { key: String(key) }),
+    daemonOpen: (key, what) => backend.call('daemonOpen', { key: String(key), what: what === 'config' ? 'config' : 'log' }),
+    daemonUpdate: () => backend.call('daemonUpdate'),
+    daemonConnectInfo: (repo) => backend.call('daemonConnectInfo', { repo: String(repo) }),
+    daemonPrecheck: (agent) => backend.call('daemonPrecheck', { agent: String(agent) }),
+    daemonCheckDir: (repo, dir) => backend.call('daemonCheckDir', { repo: String(repo), dir: String(dir) }),
+    daemonPickFolder: (start) => backend.call('daemonPickFolder', start ? { start: String(start) } : {}),
+    daemonConnect: (o) =>
+      backend.call('daemonConnect', { repo: String(o.repo), agent: String(o.agent), ...(o.dir ? { dir: String(o.dir) } : {}), ...(o.cloneInto ? { cloneInto: String(o.cloneInto) } : {}) }),
+    daemonConnectPoll: (job, from) => backend.call('daemonConnectPoll', { job: Number(job), from: Number(from) }),
   };
 }

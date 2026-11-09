@@ -165,8 +165,12 @@ fn main() {
     let notify_check = notify_check();
     let hidden = hidden_start();
     let hooks = TestHooks::from_env(selection.test_mode, &env);
+    // test mode: files the daemon section asked the system to open (GitHub#314)
+    let daemon_opened = if selection.test_mode { env.get("CAVIL_CLIENT_TEST_DAEMON_OPENED_FILE").map(PathBuf::from) } else { None };
 
-    let mut builder = tauri::Builder::default().manage(Desktop::new(hooks)).plugin(tauri_plugin_updater::Builder::new().build());
+    let mut builder = tauri::Builder::default().manage(Desktop::new(hooks)).plugin(tauri_plugin_updater::Builder::new().build())
+        // the folder picker of "接上 daemon" (GitHub#315); used from the back end only (DialogPicker)
+        .plugin(tauri_plugin_dialog::init());
     // one app instance per profile: a second launch brings the first window forward
     // (not in the smoke test or test mode: each run has its own throw-away profile, and
     // the plugin needs a desktop session bus a CI machine may not have)
@@ -226,6 +230,11 @@ fn main() {
                 clock: Arc::new(SystemClock),
                 opener: Arc::new(SystemOpener { record: selection.opened_file.clone() }),
                 endpoints: endpoints.clone(),
+                daemon: Arc::new(cavil_core::daemon::Daemon::new(
+                    cavil_core::daemon::Config::from_env(selection.test_mode, &env),
+                    Arc::new(cavil_core::daemon::SystemFileOpener { record: daemon_opened.clone() }),
+                )
+                .with_picker(Arc::new(DialogPicker(app.handle().clone())))),
             });
             app.manage(AppState { engine: engine.clone() });
 
@@ -374,6 +383,30 @@ fn main() {
             desktop::show_main(_app, "reopen");
         }
     });
+}
+
+/// The folder picker of "接上 daemon" (GitHub#315): Tauri's dialog plugin, called from here — the
+/// window has no access to the plugin itself, it only asks the back end.
+struct DialogPicker(tauri::AppHandle);
+
+#[async_trait::async_trait]
+impl cavil_core::daemon::FolderPicker for DialogPicker {
+    async fn pick_folder(&self, start: Option<String>) -> Result<Option<String>, String> {
+        use tauri_plugin_dialog::DialogExt;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut d = self.0.dialog().file().set_title("选本地目录");
+        if let Some(s) = start {
+            d = d.set_directory(s);
+        }
+        d.pick_folder(move |p| {
+            let _ = tx.send(p);
+        });
+        match rx.await {
+            Ok(Some(p)) => p.into_path().map(|p| Some(p.to_string_lossy().to_string())).map_err(|e| format!("选中的位置读不出路径：{e}")),
+            Ok(None) => Ok(None),
+            Err(_) => Err("选择框没有给出结果".into()),
+        }
+    }
 }
 
 async fn tokio_sleep(ms: u64) {

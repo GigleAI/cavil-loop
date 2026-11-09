@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo/logo.png" width="128" height="128" alt="cavil-loop logo"></p>
+
 # cavil-loop
 
 > [English](README.md) · **中文**
@@ -211,7 +213,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 ## 客户端（桌面看板，预览版）
 
-`client/` 是一个可选的本地 macOS App，把多个 GitHub Project 和仓库合进一个看板：按迭代（默认）/ 状态 / 里程碑分列，可按仓库分泳道；断网时照样能看上次同步的内容。登录走浏览器授权（GitHub OAuth 设备授权），凭据存进 macOS 钥匙串。它只和 GitHub 通信，不和 daemon 打交道，daemon 也不依赖它。
+`client/` 是一个可选的本地 macOS App，把多个 GitHub Project 和仓库合进一个看板：按迭代（默认）/ 状态 / 里程碑分列，可按仓库分泳道；断网时照样能看上次同步的内容。登录走浏览器授权（GitHub OAuth 设备授权），凭据存进 macOS 钥匙串。它只和 GitHub 通信，daemon 也不依赖它。设置页还能检查、安装本机 daemon，并从来源列表把仓库接上它（「接上 daemon」：找到或克隆本地目录、选 agent、预检缺什么，再代跑 daemon 自带的 `setup.sh --yes`，输出边跑边显示）。为此客户端会在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
 
 v0.1 只读；搜索筛选、修改操作（标签、迭代、合并 PR、回复评论）和 `pending/human` 提醒在 GigleAI/cavil-loop#135 的后续几块。安装包挂在 `client/v*` 的 Release 上（Apple 芯片和 Intel 各一个；没有苹果签名，第一次怎么打开写在 Release 说明里）。开发说明：[client/README.md](client/README.md)。
 

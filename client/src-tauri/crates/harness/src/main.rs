@@ -10,6 +10,11 @@
 // The credential store, the clock and the browser are the test's: it can hold
 // a keychain write, fail it, move time, or record which page was opened.
 //
+// Callback "openFile" {path, what}: a file the daemon section hands to the system (GitHub#314).
+// Callback "pickFolder" {start}: the folder picker of "接上 daemon" (GitHub#315); the answer is a path or null.
+// The daemon section runs only when the test sets CAVIL_CLIENT_TEST_DAEMON_HOME / _PATH (and
+// optionally _ENV, _CLONE) in the harness's environment; otherwise it is off.
+//
 //   cavil-harness --db <file> --api <loopback url> --web <loopback url> [--memory-credentials] [--keychain-bin <stand-in for /usr/bin/security>]
 //
 // With --keychain-bin the back end uses its real macOS keychain store (against the
@@ -87,6 +92,25 @@ impl Opener for RemoteOpener {
     }
 }
 
+struct RemoteFileOpener(Arc<Link>);
+
+#[async_trait]
+impl cavil_core::daemon::FileOpener for RemoteFileOpener {
+    async fn open_file(&self, path: &str, what: &str) -> Result<(), String> {
+        self.0.call("openFile", json!({ "path": path, "what": what })).await.map(|_| ())
+    }
+}
+
+struct RemoteFolderPicker(Arc<Link>);
+
+#[async_trait]
+impl cavil_core::daemon::FolderPicker for RemoteFolderPicker {
+    async fn pick_folder(&self, start: Option<String>) -> Result<Option<String>, String> {
+        let v = self.0.call("pickFolder", json!({ "start": start })).await?;
+        Ok(v.as_str().map(str::to_string))
+    }
+}
+
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
@@ -131,6 +155,12 @@ async fn main() {
         clock: clock.clone(),
         opener: Arc::new(RemoteOpener(link.clone())),
         endpoints: Endpoints { api: api.trim_end_matches('/').into(), web: web.trim_end_matches('/').into() },
+        // the local daemon (GitHub#314): off unless the test set up a fake HOME (CAVIL_CLIENT_TEST_DAEMON_*)
+        daemon: Arc::new(cavil_core::daemon::Daemon::new(
+            cavil_core::daemon::Config::from_env(true, &std::env::vars().collect()),
+            Arc::new(RemoteFileOpener(link.clone())),
+        )
+        .with_picker(Arc::new(RemoteFolderPicker(link.clone())))),
     });
 
     let writer = tokio::spawn(async move {

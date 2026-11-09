@@ -83,11 +83,16 @@ ev() { printf '{"type":"event_msg","timestamp":"%s","payload":{"type":"%s"}}\n' 
     ev 30 task_started; cu 33
 } > "$CSESS/rollout-x.jsonl"
 
-# 假用量驱动：footer 生成器只关心它的两种输出，内容由环境变量给
+# 假用量驱动：footer 生成器只关心它的三种输出，内容由环境变量给（--ci-wait 默认什么也不输出 =
+# 没有会话文件，GitHub#293；远端 CI 那一段由 tests/footer-ci-wait.test.sh 跑真实驱动来测）
 FAKE="$TMP/fake-driver.sh"
 cat > "$FAKE" <<'SH'
 #!/usr/bin/env bash
-if [ "${2:-}" = --kv ]; then printf '%s\n' "${FAKE_KV-}"; else printf '%s\n' "${FAKE_HUMAN-}"; fi
+case "${2:-}" in
+    --kv) printf '%s\n' "${FAKE_KV-}" ;;
+    --ci-wait) [ -z "${FAKE_CI-}" ] || printf '%s\n' "$FAKE_CI" ;;
+    *) printf '%s\n' "${FAKE_HUMAN-}" ;;
+esac
 SH
 KV_FULL="in=24 out=15600 cache_r=8500000 cache_w=58700 cost_usd=2.4812 cost_state=full cost_unknown_tokens=0 price_source=solved models=claude-opus-5-5 model_unknown=no ai_secs=150.400 ai_requests=12"
 HUMAN_FULL="24 input, 15.6k output, 8.5m cache read, 58.7k cache write (\$2.48)（模型：claude-opus-5-5）"
@@ -390,7 +395,7 @@ for name in new-issue issue-comment pr-comment review; do
     (cd "$WT" && HOME="$TMP/home" CLAUDE_PROJECTS_DIR="$TMP/home/.claude/projects" bash -c "$rendered") 2>/dev/null
     got="$TMP/body-$name.md.footer"
     if [ -s "$got" ] && head -1 "$got" | grep -q '^## 正文$' \
-       && grep -v '^$' "$got" | tail -1 | grep -q '^<!-- agent-metrics agent=claude wt=7 .* ai_secs=31.000 ai_requests=5 test_secs=12 -->$' \
+       && grep -v '^$' "$got" | tail -1 | grep -q '^<!-- agent-metrics agent=claude wt=7 .* ai_secs=31.000 ai_requests=5 ci_wait_secs=0.000 ci_waits=0 ci_wait_untimed=0 test_secs=12 -->$' \
        && grep -qE '^<details><summary>⏱️ 耗时：1h [0-9]+m [0-9]+s（AI 约 31s · 测试 12s · 其他 ' "$got"; then
         echo "PASS tpl_$name"
     else

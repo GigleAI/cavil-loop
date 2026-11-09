@@ -2,6 +2,8 @@
 //! touches the GitHub credential. The window (TypeScript) never sees it.
 
 pub mod api;
+pub mod daemon;
+pub mod daemon_connect;
 pub mod device;
 pub mod engine;
 pub mod grant;
