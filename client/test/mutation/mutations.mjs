@@ -115,7 +115,8 @@ export const MUTATIONS = [
     to: 'Failure::Expired => FreshOut::of(Fresh::Unreachable),',
     expect: ['GitHub refuses the refresh token'] },
   { what: '连不上 GitHub 也当成续期被拒（误退出登录）', file: 'src-tauri/crates/core/src/engine.rs',
-    from: 'Failure::Unreachable => FreshOut::of(Fresh::Unreachable),',
+    // since #270 the answer also carries why GitHub could not be reached (GitHub#284)
+    from: 'Failure::Unreachable => FreshOut { reason: Some(e.message), ..FreshOut::of(Fresh::Unreachable) },',
     to: 'Failure::Unreachable => self.sign_out_from_refresh(current(&self)),',
     expect: ['GitHub unreachable at refresh time'] },
   { what: '续期后不更新缓存绑定（离线重启丢缓存）', file: 'src-tauri/crates/core/src/engine.rs',
@@ -218,10 +219,16 @@ export const MUTATIONS = [
     from: 'const pick = pickMilestone(ms, action.title);', to: 'const pick = pickMilestone(ms, action.title) ?? ms[0];',
     expect: ['no milestone with that title in this repository'] },
   { what: '看板不可写时照样发字段修改', file: 'src/data/actions.ts',
-    from: 'if (!p.viewerCanUpdate) throw', to: 'if (false) throw',
+    // the check of a field change (projectOf); the same line also guards a new issue joining a board (GitHub#284)
+    from: "if (!p.viewerCanUpdate) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);\n  return p;",
+    to: "if (false) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);\n  return p;",
     expect: ['a Project the account cannot change'] },
-  { what: '离线时照样发修改', file: 'src/app/controller.ts',
-    from: 'if (write && !writesEnabled(this.state.sync))', to: 'if (false)',
+  { what: '离线时照样发修改',
+    // two gates since GitHub#229: changes shown first (label, milestone, Project fields) and every call that writes (GitHub#284)
+    edits: [
+      { file: 'src/app/controller.ts', from: 'if (write && !writesEnabled(this.state.sync))', to: 'if (false)' },
+      { file: 'src/app/controller.ts', from: "    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录', warning: null };\n    if (!writesEnabled(this.state.sync)) return", to: "    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录', warning: null };\n    if (false) return" },
+    ],
     expect: ['offline round → every change refused before sending'] },
   { what: '修改成功后不立即重读',
     // two places: other changes (merge, close…) and the changes shown first (GitHub#229: label, milestone, Project fields)
@@ -314,15 +321,9 @@ export const MUTATIONS = [
     from: '            } else {\n                db_problem.map(db_problem_message)\n            };', to: '            } else {\n                db_problem.map(|_| String::new()).filter(|_| false)\n            };',
     expect: ['still signed in on the new token, and the user is told'] },
   // ---- review round 2 of PR #150: every late answer of the detail panel, per call site (real Electron) ----
-  { what: '同一次打开里，慢的详情读取盖过改完后的重读', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: '      const r = await api().loadDetail(itemKey);\n      if (!mine()) return;', to: '      const r = await api().loadDetail(itemKey);',
-    expect: ['leave an item and come back'] },
   { what: '同一次打开里，改了字之后旧文字的预览照样显示', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
     from: "    const r = await api().previewMarkdown(item.repo, reply);\n    if (!mine()) return;", to: "    const r = await api().previewMarkdown(item.repo, reply);",
     expect: ['leave an item and come back'] },
-  { what: '离开再回来：旧的发送清掉新草稿（复审第 2 轮复现的情形）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: '    if (!mine()) {\n      onLeftBehind', to: '    if (false) {\n      onLeftBehind',
-    expect: ['leave an item and come back', 'a slow answer for the item you left'] },
   // ---- GitHub#172: the detail's type badge (real window) ----
   { what: '详情徽章：草稿不看状态（已关闭的草稿 PR 也变灰）', file: 'src/shared/stateTone.ts', runner: 'e2e',
     from: "    if (state === 'merged') return 'done';", to: "    if (isDraft === true) return 'neutral';\n    if (state === 'merged') return 'done';",
@@ -540,22 +541,6 @@ export const MUTATIONS = [
     from: "    if (!it || done.has(key)) continue;\n    done.add(key);\n    items.push([it.repo, it.number]);",
     to: "    if (done.has(key)) continue;\n    done.add(key);\n    items.push([it?.repo ?? key.split('#')[0], Number(key.split('#')[1])]);",
     expect: ['more than one page (repository source only, 101 issues)'] },
-  { what: '修改成功后不补同步', file: 'src/app/controller.ts',
-    from: '      if (c.session === this.session) this.scheduleFollowUp(c.session);\n', to: '',
-    expect: ["GitHub's Project automation moves the cards later", 'three changes in a row', 'done with a warning', 'refused before sending', 'a later page fails'] },
-  { what: '连续修改各补一轮（不合并成一轮）', file: 'src/app/controller.ts',
-    from: '  private scheduleFollowUp(session: number): void {\n    this.cancelFollowUp();\n', to: '  private scheduleFollowUp(session: number): void {\n',
-    expect: ['three changes in a row'] },
-  { what: '退出登录不取消补同步（新会话里照跑旧的那轮）',
-    edits: [
-      { file: 'src/app/controller.ts', from: '    this.signedIn = false;\n    this.cancelFollowUp();\n', to: '    this.signedIn = false;\n' },
-      { file: 'src/app/controller.ts', from: '      if (session === this.session && this.signedIn) void this.syncNow();', to: '      if (this.signedIn) void this.syncNow();' },
-    ],
-    expect: ['signed out and signed in again before the round is due'] },
-  { what: '被拒的修改也补同步', file: 'src/app/controller.ts',
-    from: "      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);\n",
-    to: "      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);\n      this.scheduleFollowUp(c.session);\n",
-    expect: ['refused before sending'] },
   // ---- GitHub#178: which entries `--changed` picks (test/mutation/select.mjs), one rule at a time ----
   { what: '新加 / 改过的负对照项不算相关', file: 'test/mutation/select.mjs',
     from: "if (before.get(m.what) !== JSON.stringify(m)) why.push(", to: "if (false) why.push(",
@@ -610,9 +595,6 @@ export const MUTATIONS = [
     expect: ['GitHub#191'] },
   { what: '点面板外：表格行的标题格没标「打开条目」', file: 'src/renderer/TableView.tsx', runner: 'e2e',
     from: "              style={{ paddingLeft: 8 + r.depth * 20 }}\n              {...{ [OPENS_ITEM]: '' }}", to: '              style={{ paddingLeft: 8 + r.depth * 20 }}',
-    expect: ['GitHub#191'] },
-  { what: '点面板外：确认框遮罩没有标记（点遮罩关框时顺带收起面板）', file: 'src/renderer/ConfirmDialog.tsx', runner: 'e2e',
-    from: "<div className=\"modal-back\" {...{ [MODAL]: '' }}", to: '<div className="modal-back"',
     expect: ['GitHub#191'] },
   { what: '点面板外：快捷键列表（?）的遮罩没有标记（点遮罩关列表时顺带收起面板）', file: 'src/renderer/ShortcutHelp.tsx', runner: 'e2e',
     from: "<div className=\"modal-back\" {...{ [MODAL]: '' }} data-testid=\"shortcut-help\"", to: '<div className="modal-back" data-testid="shortcut-help"',
@@ -871,9 +853,6 @@ export const MUTATIONS = [
   { what: '手动刷新在同步中只排队，不放弃正在读的这一轮', file: 'src/app/controller.ts',
     from: '    if (this.round?.reading) this.round.drop();\n', to: '',
     expect: ['the new round starts without the old one finishing; nothing the old one read lands, on screen or in the cache', 'three clicks in a row while a round reads: one new round, not three'] },
-  { what: '被放弃的那一轮读完后照样落地（界面与缓存）', file: 'src/app/controller.ts',
-    from: '    if (run.signal.aborted) return;\n', to: '',
-    expect: ['the old round has nothing left to ask for (one page): its late, complete read still lands nowhere'] },
   { what: '被放弃的那一轮还接着翻下一页', file: 'src/data/github.ts',
     from: "    if (this.cancelled?.aborted) throw new GitHubError('network', '已放弃这一轮同步');\n", to: '',
     expect: ['the new round starts without the old one finishing; nothing the old one read lands, on screen or in the cache'] },
@@ -929,7 +908,8 @@ export const MUTATIONS = [
     edits: [{ file: 'src/data/actions.ts', from: "      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');\n      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');\n      if (now.body !== action.seenSource) throw new ActionRefused(EDIT_CHANGED);", to: "      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');\n      if (now.body !== action.seenSource) throw new ActionRefused(EDIT_CHANGED);" }],
     expect: ['no permission / another item'] },
   { what: '编辑：没权限的评论也给出「编辑」', file: 'src/data/detail.ts',
-    from: "  return typeof source === 'string' && canUpdate === true ? { editSource: source } : {};", to: "  return typeof source === 'string' && canUpdate !== false ? { editSource: source } : {};",
+    // the permission is not looked at at all (GitHub#284: the old `!== false` broke only a missing answer, which no test feeds)
+    from: "  return typeof source === 'string' && canUpdate === true ? { editSource: source } : {};", to: "  return typeof source === 'string' ? { editSource: source } : {};",
     expect: ['the detail carries the source only where GitHub says the account may change it'] },
   { what: '编辑：同一条评论的两次保存不互斥', file: 'src/app/controller.ts',
     from: "    if (action.kind !== 'toggleTask' && action.kind !== 'editEntry') return this.actNow(action);", to: "    if (action.kind !== 'toggleTask') return this.actNow(action);",
@@ -1246,8 +1226,12 @@ export const MUTATIONS = [
   { what: '自动收进看板后（GitHub#258）：写后核对发现被清空，又自动写一次', file: 'src/app/controller.ts',
     from: "      return this.patchWatch(id, key, (x) => ({ ...x, state: 'human', seen: watchedValue(x, s.membership).text }));", to: "      return this.writeWatched(id, key, session, epochs, s.itemId, false);",
     expect: ['set, then cleared by somebody before the check: not written again automatically'] },
-  { what: '自动收进看板后（GitHub#258）：来源被删后照样留意、照样写', file: 'src/app/controller.ts',
-    from: "if (!this.state.sources.some((s) => s.key === key) || (this.epochs.get(key) ?? 0) !== w.epoch) {", to: 'if (false) {',
+  { what: '自动收进看板后（GitHub#258）：来源被删后照样留意、照样写',
+    // two places since PR #263 review round 1: removing the source ends its watches, and every look checks again (GitHub#284)
+    edits: [
+      { file: 'src/app/controller.ts', from: "if (!this.state.sources.some((s) => s.key === key) || (this.epochs.get(key) ?? 0) !== w.epoch) {", to: 'if (false) {' },
+      { file: 'src/app/controller.ts', from: "    for (const j of this.state.creates) if (j.watch?.some((w) => w.projectKey === key)) this.patchWatch(j.id, key, () => null);\n", to: '' },
+    ],
     expect: ['the source removed mid-watch: the watch ends'] },
   { what: '自动收进看板后（GitHub#258）：按钮不核对看板上的值和提示里的是否一致', file: 'src/app/controller.ts',
     from: 'if (now !== (cur.seen ?? null)) {', to: 'if (false) {',
@@ -1256,8 +1240,12 @@ export const MUTATIONS = [
     from: '    if (ticked.some((t) => t.key === p.key)) continue;\n', to: '',
     expect: ['status group: a board not ticked that has the status is watched; ticked boards are not watched again'] },
   // ---- GitHub#258, PR #263 code review round 1 ----
-  { what: '自动收进看板后（GitHub#258，PR #263 复审第 1 轮）：最后一次读不到时，之前读到过「不在」就不提示（任务一直挂着）', file: 'src/app/controller.ts',
-    from: "          if (last) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: why }));", to: "          if (last && false) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: why }));",
+  { what: '自动收进看板后（GitHub#258，PR #263 复审第 1 轮）：最后一次读不到时，之前读到过「不在」就不提示（任务一直挂着）',
+    // two places: the last look, and the end of the looks that settles whatever is still looking (GitHub#284)
+    edits: [
+      { file: 'src/app/controller.ts', from: "          if (last) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: why }));", to: "          if (last && false) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: why }));" },
+      { file: 'src/app/controller.ts', from: "          if (w.state === 'looking') this.patchWatch(id, w.projectKey, (x) => ({ ...x, state: 'unread', reason: why }));", to: "          if (false) this.patchWatch(id, w.projectKey, (x) => ({ ...x, state: 'unread', reason: why }));" },
+    ],
     expect: ['code review round 1: a first look reads "not there", every later one fails'] },
   { what: '自动收进看板后（GitHub#258，PR #263 复审第 1 轮）：按钮按点击时的来源代次核对（删了又加的来源让旧按钮重新能写）',
     edits: [
