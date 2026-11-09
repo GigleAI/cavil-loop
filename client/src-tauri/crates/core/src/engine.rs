@@ -184,6 +184,11 @@ impl Engine {
         &self.d.daemon
     }
 
+    /// the same, for work that outlives one request ("接上 daemon" runs in the background, GitHub#315)
+    pub fn daemon_arc(&self) -> Arc<crate::daemon::Daemon> {
+        self.d.daemon.clone()
+    }
+
     pub fn endpoints(&self) -> &Endpoints {
         &self.d.endpoints
     }

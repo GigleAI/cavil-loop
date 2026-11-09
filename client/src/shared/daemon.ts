@@ -166,3 +166,66 @@ export function ago(epochSec: number, nowMs: number): string {
 
 /** what the window may ask; the back end checks every argument again */
 export const KEY_RE = /^[A-Za-z0-9_.-]+$/;
+
+// ── "接上 daemon" from the repository list (GitHub#315) ──
+
+export interface ConnectInfo extends DaemonResult {
+  result: 'ok' | 'refused';
+  repo?: string;
+  /** the daemon's own agents (scripts/drivers), its default first */
+  agents?: string[];
+  /** projects already connected for this repository */
+  connected?: { key: string; host: string | null; state: SchedState }[];
+  /** local copies found (git repositories whose origin is this repository) */
+  candidates?: string[];
+  /** where a clone goes by default (~/github when there is one) */
+  clone_parent?: string;
+}
+
+export interface Precheck2 extends DaemonResult {
+  result: 'ok' | 'unreadable' | 'refused';
+  agent?: string;
+  ready?: boolean;
+  missing?: string[];
+  gh_logged_in?: boolean | null;
+  os?: string;
+}
+
+export interface DirCheck extends DaemonResult {
+  result: 'ok' | 'refused';
+  dir?: string;
+  /** a project config already in the folder: setup.sh keeps it, and its agent (null: not readable) */
+  config?: { path: string; agent: string | null } | null;
+}
+
+export interface ConnectOutcome {
+  result: 'connected' | 'failed' | 'blocked';
+  output: string;
+  key?: string;
+  state?: SchedState;
+  already?: boolean;
+  dir?: string;
+}
+
+export interface ConnectPoll extends DaemonResult {
+  output?: string;
+  next?: number;
+  done?: boolean;
+  outcome?: ConnectOutcome | null;
+}
+
+/** The precheck as checklist rows: each missing program with a command, and gh's sign-in. */
+export function precheckRows(p: Precheck2): CheckRow[] {
+  if (p.result !== 'ok') return [{ id: 'unreadable', ok: null, text: `读不到本机缺什么：${p.output ?? p.result}`, command: null }];
+  const os = p.os ?? '';
+  const rows: CheckRow[] = (p.missing ?? []).map((m) => ({ id: `tool:${m}`, ok: false, text: `缺 ${m}`, command: installCommand(m, os) }));
+  if (rows.length === 0) rows.push({ id: 'tools', ok: true, text: `${p.agent} 需要的程序都在`, command: null });
+  if (p.gh_logged_in === false) rows.push({ id: 'gh', ok: false, text: 'gh 没有登录：daemon 要用 gh 自己的登录读写 GitHub', command: 'gh auth login' });
+  return rows;
+}
+
+/** Projects the status script lists for one repository (`owner/name`, any case). */
+export function projectsFor(st: LocalStatus, repo: string): DaemonProject[] {
+  const r = repo.toLowerCase();
+  return st.projects.filter((p) => (p.repo ?? '').toLowerCase() === r);
+}

@@ -11,6 +11,7 @@
 // a keychain write, fail it, move time, or record which page was opened.
 //
 // Callback "openFile" {path, what}: a file the daemon section hands to the system (GitHub#314).
+// Callback "pickFolder" {start}: the folder picker of "接上 daemon" (GitHub#315); the answer is a path or null.
 // The daemon section runs only when the test sets CAVIL_CLIENT_TEST_DAEMON_HOME / _PATH (and
 // optionally _ENV, _CLONE) in the harness's environment; otherwise it is off.
 //
@@ -100,6 +101,16 @@ impl cavil_core::daemon::FileOpener for RemoteFileOpener {
     }
 }
 
+struct RemoteFolderPicker(Arc<Link>);
+
+#[async_trait]
+impl cavil_core::daemon::FolderPicker for RemoteFolderPicker {
+    async fn pick_folder(&self, start: Option<String>) -> Result<Option<String>, String> {
+        let v = self.0.call("pickFolder", json!({ "start": start })).await?;
+        Ok(v.as_str().map(str::to_string))
+    }
+}
+
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
@@ -148,7 +159,8 @@ async fn main() {
         daemon: Arc::new(cavil_core::daemon::Daemon::new(
             cavil_core::daemon::Config::from_env(true, &std::env::vars().collect()),
             Arc::new(RemoteFileOpener(link.clone())),
-        )),
+        )
+        .with_picker(Arc::new(RemoteFolderPicker(link.clone())))),
     });
 
     let writer = tokio::spawn(async move {

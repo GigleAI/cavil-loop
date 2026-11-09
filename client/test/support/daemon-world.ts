@@ -149,3 +149,39 @@ export function systemTool(name: string): string {
   for (const d of ['/usr/bin', '/bin', '/usr/local/bin']) if (existsSync(join(d, name))) return join(d, name);
   throw new Error(`no ${name} on this machine`);
 }
+
+// ── "接上 daemon" (GitHub#315) ──
+
+/**
+ * A repository "on github.com" for this machine: a bare repository under `<dir>/gh/<owner>/<name>.git`,
+ * reached through git's own `url.<base>.insteadOf = https://github.com/` — so the back end clones the
+ * real address (https://github.com/<owner>/<name>.git, which stays the clone's origin) and nothing
+ * reaches the network. Returns the environment that does the rewrite (for `daemonEnv`'s `extra`).
+ */
+export function githubRepo(w: DaemonWorld, repo: string): Record<string, string> {
+  const base = join(w.dir, 'gh');
+  const src = join(w.dir, `seed-${repo.replace('/', '-')}`);
+  mkdirSync(src, { recursive: true });
+  git(src, 'init', '-q', '-b', 'main');
+  writeFileSync(join(src, 'README.md'), `# ${repo}\n`);
+  git(src, 'add', '-A');
+  git(src, 'commit', '-qm', 'init');
+  mkdirSync(join(base, repo.split('/')[0]), { recursive: true });
+  git(w.dir, 'clone', '-q', '--bare', src, join(base, `${repo}.git`));
+  return githubRewrite(w);
+}
+
+export function githubRewrite(w: DaemonWorld): Record<string, string> {
+  return { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.file://${join(w.dir, 'gh')}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/' };
+}
+
+/** A local copy at `dir` whose origin (as written in its config) is `origin`. */
+export function localCopy(dir: string, origin: string | null): string {
+  mkdirSync(dir, { recursive: true });
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'commit', '-q', '--allow-empty', '-m', 'init');
+  if (origin) git(dir, 'remote', 'add', 'origin', origin);
+  return realpathSync(dir);
+}
+
+export const originOf = (dir: string) => git(dir, 'config', '--get', 'remote.origin.url').trim();

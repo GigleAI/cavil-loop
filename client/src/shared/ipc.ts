@@ -5,7 +5,7 @@ import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './ty
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { Handoff } from './handoff';
-import type { DaemonResult, DaemonStatus, DaemonUpdate } from './daemon';
+import type { ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 
 export interface Snapshot {
   state: AppState;
@@ -92,4 +92,11 @@ export interface CavilApi {
   daemonDisconnect(key: string): Promise<DaemonResult>;
   daemonOpen(key: string, what: 'log' | 'config'): Promise<DaemonResult>;
   daemonUpdate(): Promise<DaemonUpdate>;
+  /** "接上 daemon" (GitHub#315): the back end checks repository, agent and folder again before running setup.sh */
+  daemonConnectInfo(repo: string): Promise<ConnectInfo>;
+  daemonPrecheck(agent: string): Promise<Precheck2>;
+  daemonCheckDir(repo: string, dir: string): Promise<DirCheck>;
+  daemonPickFolder(start?: string): Promise<{ result: string; path?: string | null; output?: string }>;
+  daemonConnect(o: { repo: string; agent: string; dir?: string; cloneInto?: string }): Promise<DaemonResult & { job?: number }>;
+  daemonConnectPoll(job: number, from: number): Promise<ConnectPoll>;
 }

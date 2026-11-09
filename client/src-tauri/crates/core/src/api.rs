@@ -144,6 +144,14 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "daemonDisconnect" => Ok(e.daemon().disconnect(s(&a, "key")?).await),
         "daemonOpen" => Ok(e.daemon().open(s(&a, "key")?, s(&a, "what")?).await),
         "daemonUpdate" => Ok(e.daemon().update().await),
+        // "接上 daemon" from the repository list (GitHub#315): the window names a repository, an agent and a folder;
+        // the back end checks each of them again and runs the daemon's own setup.sh
+        "daemonConnectInfo" => Ok(e.daemon().connect_info(s(&a, "repo")?).await),
+        "daemonPrecheck" => Ok(e.daemon().precheck(s(&a, "agent")?).await),
+        "daemonCheckDir" => Ok(e.daemon().check_dir_request(s(&a, "repo")?, s(&a, "dir")?).await),
+        "daemonPickFolder" => Ok(e.daemon().pick_folder(a.get("start").and_then(|v| v.as_str()).map(str::to_string)).await),
+        "daemonConnect" => Ok(e.daemon_arc().connect(s(&a, "repo")?, s(&a, "agent")?, a.get("dir").and_then(|v| v.as_str()), a.get("cloneInto").and_then(|v| v.as_str())).await),
+        "daemonConnectPoll" => Ok(e.daemon().connect_poll(a.get("job").and_then(|v| v.as_u64()).ok_or_else(|| "缺参数 job".to_string())?, a.get("from").and_then(|v| v.as_u64()).unwrap_or(0) as usize)),
         other => Err(format!("未知命令：{other}")),
     }
 }

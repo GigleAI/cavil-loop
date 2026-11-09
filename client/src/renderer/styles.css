@@ -566,3 +566,13 @@ table.daemon-projects td { border-bottom: 1px solid var(--border-muted); padding
 .daemon-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: var(--canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 6px 8px; margin: 4px 0; font: 12px var(--mono); white-space: pre-wrap; }
 .daemon-refresh { list-style: none; padding: 0; margin: 6px 0; }
 .daemon-refresh li { margin: 4px 0; }
+/* "接上 daemon" (GitHub#315) */
+.modal.connect { width: 640px; }
+.connect-form { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.connect-mode { display: flex; gap: 16px; }
+.modal.connect label, .settings-main .modal.connect label { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 6px; font-size: 13px; text-align: left; min-width: 0; flex: none; }
+.modal.connect .connect-candidate { margin: 2px 0; }
+.connect-candidate code { overflow-wrap: anywhere; }
+.connect-agent { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.modal.connect .row input.title-box { flex: 1; min-width: 0; }
+.modal.connect .daemon-output { max-height: 280px; }

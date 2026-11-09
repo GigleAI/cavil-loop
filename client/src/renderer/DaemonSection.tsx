@@ -16,16 +16,20 @@ import { ago, checklist, toolRows, refreshOk, refreshWord, schedWord, type Daemo
 
 type Ask = { kind: 'stop' | 'start' | 'disconnect'; p: DaemonProject };
 
-export function DaemonSection() {
+export interface DaemonState {
+  status: DaemonStatus | null;
+  checking: boolean;
+  check: () => Promise<void>;
+}
+
+/**
+ * The daemon's status, read once when settings open and again on request. Shared by this section
+ * and the repository list's "接上 daemon" (GitHub#315), so both show the same answer.
+ */
+export function useDaemonStatus(): DaemonState {
   const [status, setStatus] = useState<DaemonStatus | null>(null);
   const [checking, setChecking] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [ask, setAsk] = useState<Ask | null>(null);
-  /** the last answer per project (or "install"), shown under it */
-  const [notes, setNotes] = useState<Record<string, { ok: boolean; text: string }>>({});
-  const [update, setUpdate] = useState<DaemonUpdate | null>(null);
   const alive = useRef(true);
-
   const check = async () => {
     setChecking(true);
     try {
@@ -40,6 +44,23 @@ export function DaemonSection() {
   useEffect(() => {
     alive.current = true;
     void check();
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  return { status, checking, check };
+}
+
+export function DaemonSection({ daemon }: { daemon: DaemonState }) {
+  const { status, checking, check } = daemon;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [ask, setAsk] = useState<Ask | null>(null);
+  /** the last answer per project (or "install"), shown under it */
+  const [notes, setNotes] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [update, setUpdate] = useState<DaemonUpdate | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
     return () => {
       alive.current = false;
     };
