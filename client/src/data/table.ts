@@ -105,7 +105,7 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
     return s.key;
   };
   // the group without a value goes after every group with one, as on the web Project's table (GitHub#231)
-  const none = () => seed({ key: GROUP_NONE_KEY, title: NONE_TITLE[by as Exclude<GroupBy, 'none'>], subtitle: null, current: false, empty: true, order: NONE_LAST, preset: { by: 'none' } });
+  const none = () => seed({ key: GROUP_NONE_KEY, title: NONE_TITLE[by as Exclude<GroupBy, 'none'>], subtitle: null, current: false, empty: true, order: NONE_LAST, preset: { by: 'none', field: by as Exclude<GroupBy, 'none' | 'repo'> } });
   if (by === 'repo')
     return [seed({ key: `repo:${item.repo.toLowerCase()}`, title: item.repo, subtitle: null, current: false, empty: false, order: `1${item.repo.toLowerCase()}`, preset: { by: 'repo', repo: item.repo } })];
   if (by === 'milestone') {
