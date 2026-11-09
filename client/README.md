@@ -46,7 +46,7 @@ scripts/
                         也给维护者用：--set-pubkey 写入公钥，--verify 验一个签名
   release-command.mjs   放行命令只在这里定义一次；网页 / 背景源文件 / 发版说明里的副本由 test/unit/dmg.test.ts 逐字对拍
   render-dmg-background.cjs  把 build/dmg-background.html 渲染成 dmg 窗口背景图（改了 HTML 后手动重跑，产物入库）
-  icon.mjs              App 图标：`node scripts/icon.mjs build` 从 build/icon-source.png 生成 build/icon.png；`check-app` 在 CI 的 Mac 机器上核对打出的 App 用的确实是它
+  icon.mjs              App 图标：`node scripts/icon.mjs build` 从 build/icon-source.png 生成 build/icon.png；`check-app` 在 CI 的 Mac 机器上核对打出的 App 用的确实是它；`node scripts/icon.mjs docs` 用同一张原图生成仓库文档用的 logo（../docs/logo/logo.png，README 顶部）和 GitHub 仓库分享卡片（../docs/logo/social-preview.png，#310），同样是生成物，不要手改
 build/
   dmg-background.html / background.png / background@2x.png   dmg 窗口背景（写着两种放行办法）
   复制放行命令.html      dmg 里唯一的说明文件（#228）：双击用浏览器打开，点「复制」拿到放行命令，也写着「系统设置 → 仍要打开」的完整步骤（纯静态、无外部资源）

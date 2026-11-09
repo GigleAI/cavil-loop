@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   ICON_PNG, SOURCE_PNG, SRC_RECT, CANVAS, BODY, SAME_ICON_MAX_DISTANCE,
-  decodePng, encodePng, renderIcon, bodyBox, checkApp, imageDistance, type Image,
+  LOGO_PNG, SOCIAL_PNG, DOCS_LOGO_DIR, SOCIAL_BG,
+  decodePng, encodePng, renderIcon, renderLogo, renderSocial, bodyBox, checkApp, imageDistance, type Image,
 } from '../../scripts/icon.mjs';
 
 const source = decodePng(readFileSync(SOURCE_PNG));
@@ -160,5 +161,90 @@ describe('packaged-app icon check (runs on the macOS CI runner)', () => {
       expect(x.status).toBe(1);
       expect(x.stderr).toContain('does not exist');
     } finally { good.cleanup(); bad.cleanup(); broken.cleanup(); }
+  });
+});
+
+// The logo in the docs (GitHub#310): docs/logo/logo.png at the top of both
+// READMEs and docs/logo/social-preview.png for the repository's social preview
+// card, drawn from the same artwork by the same function as the app icon.
+describe('docs/logo', () => {
+  const logo = decodePng(readFileSync(LOGO_PNG));
+  const social = decodePng(readFileSync(SOCIAL_PNG));
+  const sameBytes = (a: Image, b: Image) => {
+    expect([a.width, a.height, a.channels]).toEqual([b.width, b.height, b.channels]);
+    let diff = 0;
+    for (let i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) diff++;
+    return diff;
+  };
+
+  it('both images are exactly what the generator makes from build/icon-source.png (regenerated, compared pixel by pixel)', () => {
+    expect(sameBytes(renderLogo(source), logo)).toBe(0);
+    expect(sameBytes(renderSocial(source), social)).toBe(0);
+  });
+
+  it('`node scripts/icon.mjs docs` writes those same files (real CLI, into a copy of the layout)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cavil-logo-'));
+    try {
+      mkdirSync(join(tmp, 'client', 'scripts'), { recursive: true });
+      mkdirSync(join(tmp, 'client', 'build'), { recursive: true });
+      writeFileSync(join(tmp, 'client', 'scripts', 'icon.mjs'), readFileSync(join(DOCS_LOGO_DIR, '..', '..', 'client', 'scripts', 'icon.mjs')));
+      writeFileSync(join(tmp, 'client', 'build', 'icon-source.png'), readFileSync(SOURCE_PNG));
+      const r = spawnSync(process.execPath, [join(tmp, 'client', 'scripts', 'icon.mjs'), 'docs'], { encoding: 'utf8' });
+      expect(r.status, r.stderr).toBe(0);
+      expect(readFileSync(join(tmp, 'docs', 'logo', 'logo.png')).equals(readFileSync(LOGO_PNG))).toBe(true);
+      expect(readFileSync(join(tmp, 'docs', 'logo', 'social-preview.png')).equals(readFileSync(SOCIAL_PNG))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('README logo: 256 x 256, the rounded square fills the height, transparent corners, no black margin at the rim', () => {
+    expect([logo.width, logo.height, logo.channels]).toEqual([256, 256, 4]);
+    const rowMaxAlpha = (y: number) => { let m = 0; for (let x = 0; x < 256; x++) m = Math.max(m, logo.data[(y * 256 + x) * 4 + 3]); return m; };
+    expect(rowMaxAlpha(0)).toBe(255);
+    expect(rowMaxAlpha(255)).toBe(255);
+    for (const [x, y] of [[0, 0], [255, 0], [0, 255], [255, 255]]) expect(px(logo, x, y)[3]).toBe(0);
+    expect(px(logo, 128, 128)[3]).toBe(255);
+    // the source's body is a little narrower than tall: the side columns stay transparent
+    const box = bodyBox(SRC_RECT, { width: 256, height: 256, body: 256 });
+    expect(px(logo, Math.floor(box.x) - 1, 128)[3]).toBe(0);
+    for (const [x, y] of [[Math.ceil(box.x), 128], [Math.floor(box.x + box.w) - 1, 128], [128, 0], [128, 255]]) {
+      const p = px(logo, x, y);
+      if (p[3] > 0) expect(Math.max(p[0], p[1], p[2])).toBeGreaterThan(120);
+    }
+    // the same picture as the app icon: the icon's 824 px body square, cropped out of its padding, matches.
+    // Bound 8, not the packaged-app 4: 824 px does not split into whole 64x64 comparison cells (measured 4.25);
+    // the uncropped artwork with its black margin measures 26.8, the dmg background 117.8.
+    const off = (CANVAS - BODY) / 2, crop = new Uint8Array(BODY * BODY * 4);
+    for (let y = 0; y < BODY; y++) crop.set(icon.data.subarray(((y + off) * CANVAS + off) * 4, ((y + off) * CANVAS + off + BODY) * 4), y * BODY * 4);
+    expect(imageDistance(logo, { width: BODY, height: BODY, channels: 4, data: crop })).toBeLessThanOrEqual(8);
+    // …while the artwork with its black margin left in does not
+    expect(imageDistance(logo, source)).toBeGreaterThan(8);
+  });
+
+  it('social preview card: 1280 x 640, fully opaque, dark corners, the logo centred and 400 px tall', () => {
+    expect([social.width, social.height, social.channels]).toEqual([1280, 640, 4]);
+    let notOpaque = 0;
+    for (let i = 3; i < social.data.length; i += 4) if (social.data[i] !== 255) notOpaque++;
+    expect(notOpaque).toBe(0);
+    for (const [x, y] of [[0, 0], [1279, 0], [0, 639], [1279, 639], [400, 320], [880, 320]]) expect(px(social, x, y).slice(0, 3)).toEqual(SOCIAL_BG);
+    // centre: the bright star of the artwork
+    expect(bright(social, 640, 320)).toBeGreaterThan(200);
+    // the body spans rows 120..519: orange rim inside, background just outside
+    const isBg = (x: number, y: number) => px(social, x, y).slice(0, 3).join() === SOCIAL_BG.join();
+    expect(isBg(640, 119)).toBe(true);
+    expect(isBg(640, 520)).toBe(true);
+    expect(bright(social, 640, 121)).toBeGreaterThan(150);
+    expect(bright(social, 640, 518)).toBeGreaterThan(150);
+  });
+
+  it('both READMEs show docs/logo/logo.png before the title, and the file exists', () => {
+    for (const name of ['README.md', 'README.zh.md']) {
+      const readme = readFileSync(join(DOCS_LOGO_DIR, '..', '..', name), 'utf8');
+      const m = /^<p align="center"><img src="([^"]+)"[^>]*><\/p>\n\n# cavil-loop\n/.exec(readme);
+      expect(m, name).not.toBeNull();
+      expect(m![1]).toBe('docs/logo/logo.png');
+      expect(readFileSync(join(DOCS_LOGO_DIR, '..', '..', m![1])).equals(readFileSync(LOGO_PNG))).toBe(true);
+    }
   });
 });
