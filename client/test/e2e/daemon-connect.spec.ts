@@ -9,7 +9,7 @@
 //     repository, keeps "开始" off and nothing is sent.
 
 import { test, expect, type Page } from '@playwright/test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -168,4 +168,32 @@ test('a folder of another repository is refused with the reason; no copy found o
   await expect(dlg.getByTestId('connect-start')).toBeDisabled();
   await dlg.getByTestId('connect-close').click();
   expect(sent(app, 'daemonConnect')).toEqual([]);
+});
+
+test('a project config left in the folder: another repository blocks "开始"; its agent (as the daemon reads it) is the one shown', async () => {
+  installByHand(w);
+  const host = copy();
+  const cfg = (repo: string, agentLine: string) =>
+    writeFileSync(
+      join(host, 'cavil-loop.config'),
+      readFileSync(join(w.skill, 'cavil-loop.config.example'), 'utf8').replace('myorg/myrepo', repo).replace(/^WORKER_AGENT="claude"$/m, agentLine),
+    );
+  cfg('acme/other', 'WORKER_AGENT="claude"');
+  const { app, page } = await openSettings('Linux', pathFor(w, { agents: ['claude', 'codex'] }));
+  await page.locator(`[data-testid=source-row][data-key="repo:gigleai/cavil-loop"]`).getByTestId('connect-open').click();
+  const dlg = page.getByTestId('connect-dialog');
+  const check = dlg.getByTestId('connect-dir-check');
+  await expect(check).toHaveAttribute('data-ok', 'false');
+  await expect(check).toContainText('里面的仓库是 acme/other');
+  await expect(dlg.getByTestId('connect-start')).toBeDisabled();
+  await dlg.getByTestId('connect-close').click();
+  expect(sent(app, 'daemonConnect')).toEqual([]);
+
+  // the same folder, its config now naming this repository with `export WORKER_AGENT="codex"`
+  cfg(REPO, 'export WORKER_AGENT="codex"');
+  await page.locator(`[data-testid=source-row][data-key="repo:gigleai/cavil-loop"]`).getByTestId('connect-open').click();
+  await expect(dlg.getByTestId('connect-dir-check')).toHaveAttribute('data-ok', 'true');
+  await expect(dlg.getByTestId('connect-agent')).toHaveValue('codex');
+  await expect(dlg.getByTestId('connect-agent')).toBeDisabled();
+  await expect(dlg.getByTestId('connect-config-note')).toContainText('codex');
 });

@@ -10,7 +10,7 @@
 // whole way: install → connect → running → stop → disconnect.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -226,16 +226,97 @@ describe('connecting (Linux, systemd)', () => {
     expect(existsSync(conf('widget'))).toBe(false);
   });
 
-  it('a folder with a project config already keeps that config\'s agent', async () => {
+  /** A whole project config as setup.sh writes one (from the daemon's own template), left in `host`. */
+  function oldConfig(host: string, repo: string, agentLine: string) {
+    const t = readFileSync(join(w.skill, 'cavil-loop.config.example'), 'utf8')
+      .replace('myorg/myrepo', repo)
+      .replace('$HOME/github/myproject', host)
+      .replace(/^WORKER_AGENT="claude"$/m, agentLine);
+    if (!t.includes(agentLine)) throw new Error('template changed: no WORKER_AGENT line');
+    writeFileSync(join(host, 'cavil-loop.config'), t);
+  }
+
+  it('a config left in the folder that names another repository: refused at the check and at the start, nothing registered', async () => {
     installByHand(w);
     const host = localCopy(join(w.home, 'github', 'widget'), 'https://github.com/acme/widget.git');
-    const { writeFileSync } = await import('node:fs');
-    writeFileSync(join(host, 'cavil-loop.config'), 'REPO="acme/widget"\nWORKER_AGENT="codex"\n');
-    const b = backend('Linux', pathFor(w, { agents: ['claude', 'codex'] }));
-    expect((await b.call('daemonCheckDir', { repo: REPO, dir: host })).config).toEqual({ path: join(host, 'cavil-loop.config'), agent: 'codex' });
+    oldConfig(host, 'acme/other', 'WORKER_AGENT="claude"');
+    const b = backend('Linux', pathFor(w));
+    const c = await b.call('daemonCheckDir', { repo: REPO, dir: host });
+    expect(c.result).toBe('refused');
+    expect(c.output).toContain('里面的仓库是 acme/other，不是 acme/widget');
     const r = await connectAndWait(b, { repo: REPO, agent: 'claude', dir: host });
     expect(r.outcome.result).toBe('failed');
-    expect(r.outcome.output).toContain('里面的 agent 是 codex');
+    expect(r.outcome.output).toContain('acme/other');
+    expect(r.output).not.toContain('cavil-loop setup');
+    expect(existsSync(conf('widget'))).toBe(false);
+    const s = await b.call('daemonStatus');
+    expect(s.status.projects).toEqual([]);
+    expect(existsSync(join(w.sd, 'calls'))).toBe(false);
+  });
+
+  it('a folder registered for another repository already: not reported as connected, nothing runs again', async () => {
+    installByHand(w);
+    const host = localCopy(join(w.home, 'github', 'widget'), 'https://github.com/acme/widget.git');
+    const path = pathFor(w);
+    // registered by hand while its config said acme/other; the config was later edited to acme/widget
+    oldConfig(host, 'acme/other', 'WORKER_AGENT="claude"');
+    const { spawnSync } = await import('node:child_process');
+    const by = spawnSync('bash', [join(w.skill, 'setup.sh'), '--yes', host], { env: { HOME: w.home, PATH: path, FAKE_UNAME: 'Linux', FAKE_SD: w.sd, FAKE_LD: w.ld } });
+    expect(by.status).toBe(0);
+    const b = backend('Linux', path);
+    expect(project(await b.call('daemonStatus'), 'widget').repo).toBe('acme/other');
+    oldConfig(host, 'acme/widget', 'WORKER_AGENT="claude"');
+    // the status now reads acme/widget from the edited config: that is the daemon's own answer, so it counts as connected
+    const r = await connectAndWait(b, { repo: REPO, agent: 'claude', dir: host });
+    expect(r.outcome).toMatchObject({ result: 'connected', already: true });
+    // but while the config still says acme/other, a connect of acme/widget is refused
+    oldConfig(host, 'acme/other', 'WORKER_AGENT="claude"');
+    const r2 = await connectAndWait(b, { repo: REPO, agent: 'claude', dir: host });
+    expect(r2.outcome.result).toBe('failed');
+    expect(r2.outcome.output).toContain('acme/other');
+  });
+
+  for (const line of ['export WORKER_AGENT="codex"', 'WORKER_AGENT=codex', 'WORKER_AGENT="${MINE:-codex}"']) {
+    it(`a config's agent is what the daemon reads (${line}): the dialog is told codex; claude is refused, codex connects`, async () => {
+      installByHand(w);
+      const host = localCopy(join(w.home, 'github', 'widget'), 'https://github.com/acme/widget.git');
+      oldConfig(host, 'acme/widget', line);
+      const b = backend('Linux', pathFor(w, { agents: ['claude', 'codex'] }));
+      expect((await b.call('daemonCheckDir', { repo: REPO, dir: host })).config).toEqual({ path: join(host, 'cavil-loop.config'), agent: 'codex' });
+      const r = await connectAndWait(b, { repo: REPO, agent: 'claude', dir: host });
+      expect(r.outcome.result).toBe('failed');
+      expect(r.outcome.output).toContain('agent 是 codex');
+      expect(existsSync(conf('widget'))).toBe(false);
+      const ok = await connectAndWait(b, { repo: REPO, agent: 'codex', dir: host });
+      expect(ok.outcome).toMatchObject({ result: 'connected', key: 'widget', already: false });
+      // the daemon runs it with codex, the same as the dialog said
+      const p = project(await b.call('daemonStatus'), 'widget');
+      expect(p.repo).toBe(REPO);
+      expect(p.agents.find((a: any) => a.role === 'worker').agent).toBe('codex');
+    });
+  }
+
+  it('a config that names this repository and the chosen agent: connects as usual', async () => {
+    installByHand(w);
+    const host = localCopy(join(w.home, 'github', 'widget'), 'https://github.com/acme/widget.git');
+    oldConfig(host, 'acme/widget', 'WORKER_AGENT="claude"');
+    const b = backend('Linux', pathFor(w));
+    expect((await b.call('daemonCheckDir', { repo: REPO, dir: host })).config).toEqual({ path: join(host, 'cavil-loop.config'), agent: 'claude' });
+    const r = await connectAndWait(b, { repo: REPO, agent: 'claude', dir: host });
+    expect(r.outcome).toMatchObject({ result: 'connected', key: 'widget' });
+    expect(project(await b.call('daemonStatus'), 'widget')).toMatchObject({ repo: REPO, host });
+  });
+
+  it('a config the daemon cannot read: refused, nothing registered', async () => {
+    installByHand(w);
+    const host = localCopy(join(w.home, 'github', 'widget'), 'https://github.com/acme/widget.git');
+    writeFileSync(join(host, 'cavil-loop.config'), 'REPO="acme/widget"\nreturn 7\n');
+    const b = backend('Linux', pathFor(w));
+    const c = await b.call('daemonCheckDir', { repo: REPO, dir: host });
+    expect(c.result).toBe('refused');
+    expect(c.output).toContain('daemon 读不出');
+    const r = await connectAndWait(b, { repo: REPO, agent: 'claude', dir: host });
+    expect(r.outcome.result).toBe('failed');
     expect(existsSync(conf('widget'))).toBe(false);
   });
 });

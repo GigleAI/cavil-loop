@@ -103,31 +103,49 @@ fn origin_in_config(text: &str) -> Option<String> {
     None
 }
 
-/// The project config setup.sh would reuse in this folder (scripts/_names.sh cavil_project_config).
+/// The project config already in a folder, as the daemon reads it (`install-status.sh --project`:
+/// the same shell reading setup.sh and the poller use). setup.sh keeps such a config as it is, so its
+/// repository and worker agent — not the dialog's choice — are what the daemon will run with.
 #[derive(Debug, PartialEq)]
 pub enum ExistingConfig {
+    /// no config: setup.sh writes a new one
     None,
-    /// the worker agent it names (no WORKER_AGENT line: the daemon's default, claude)
-    Agent(PathBuf, String),
-    /// WORKER_AGENT is set to something not readable without running the file
-    Unreadable(PathBuf),
+    Read { path: String, repo: String, agent: String },
+    /// there is one, but sourcing it failed
+    Unreadable(String),
 }
 
-pub fn existing_config(dir: &Path) -> ExistingConfig {
-    let new = dir.join("cavil-loop.config");
-    let old = dir.join("coding-agent.config");
-    let file = if new.exists() || !old.exists() { new } else { old };
-    let Ok(text) = std::fs::read_to_string(&file) else {
-        return if file.exists() { ExistingConfig::Unreadable(file) } else { ExistingConfig::None };
-    };
-    let line = text.lines().filter(|l| l.trim_start().starts_with("WORKER_AGENT=")).last();
-    let Some(line) = line else { return ExistingConfig::Agent(file, "claude".into()) };
-    let v = line.trim_start().trim_start_matches("WORKER_AGENT=").trim();
-    let v = v.split('#').next().unwrap_or("").trim().trim_matches('"').trim_matches('\'');
-    if !v.is_empty() && v.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-') {
-        ExistingConfig::Agent(file, v.to_string())
-    } else {
-        ExistingConfig::Unreadable(file)
+/// `project_check` of the status script's output, for `dir`; anything else is an error (never "no config").
+pub fn parse_project_check(st: &Value, dir: &str) -> Result<ExistingConfig, String> {
+    let pc = &st["project_check"];
+    if pc["dir"].as_str() != Some(dir) {
+        return Err("状态脚本没有给出这个目录的项目配置（daemon 可能早于 GitHub#315，请先更新 daemon）".into());
+    }
+    let path = pc["config"].as_str().unwrap_or("").to_string();
+    match pc["config_state"].as_str() {
+        Some("none") => Ok(ExistingConfig::None),
+        Some("ok") => match (pc["repo"].as_str(), pc["worker_agent"].as_str()) {
+            (Some(r), Some(a)) if !path.is_empty() => Ok(ExistingConfig::Read { path, repo: r.to_string(), agent: a.to_string() }),
+            _ => Err("状态脚本给出的项目配置缺字段".into()),
+        },
+        Some("unreadable") => Ok(ExistingConfig::Unreadable(path)),
+        _ => Err("状态脚本给出的项目配置状态认不出".into()),
+    }
+}
+
+/// Whether an existing config fits the chosen repository. Ok(Some((path, agent))): it does, and the
+/// daemon will use that agent; Ok(None): no config; Err: it names another repository, or cannot be read.
+pub fn config_verdict(c: &ExistingConfig, owner: &str, name: &str) -> Result<Option<(String, String)>, String> {
+    match c {
+        ExistingConfig::None => Ok(None),
+        ExistingConfig::Unreadable(p) => Err(format!("{p} 已有项目配置，但 daemon 读不出它，没有接上；请先修好这个文件")),
+        ExistingConfig::Read { path, repo, agent } => {
+            if repo.to_lowercase() != format!("{}/{}", owner.to_lowercase(), name.to_lowercase()) {
+                let shown = if repo.is_empty() { "（没写）".to_string() } else { repo.clone() };
+                return Err(format!("{path} 已有项目配置，里面的仓库是 {shown}，不是 {owner}/{name}；setup.sh 会沿用这份配置，接上的会是那个仓库，所以没有接上。请先改那个文件里的 REPO，或换一个目录"));
+            }
+            Ok(Some((path.clone(), agent.clone())))
+        }
     }
 }
 
@@ -256,10 +274,22 @@ impl Daemon {
             Ok(p) => p,
             Err(m) => return refused(&m),
         };
-        match self.check_dir(&path, &owner, &name, dir).await {
-            Ok(d) => json!({ "result": "ok", "dir": d.to_string_lossy(), "config": config_json(&existing_config(&d)) }),
+        let d = match self.check_dir(&path, &owner, &name, dir).await {
+            Ok(d) => d,
+            Err(m) => return refused(&m),
+        };
+        match self.project_config(&path, &d).await.and_then(|c| config_verdict(&c, &owner, &name)) {
+            Ok(c) => json!({ "result": "ok", "dir": d.to_string_lossy(), "config": c.map(|(p, a)| json!({ "path": p, "agent": a })) }),
             Err(m) => refused(&m),
         }
+    }
+
+    /// The daemon's reading of the project config in `dir` (`install-status.sh --project`).
+    pub(crate) async fn project_config(&self, path: &str, dir: &Path) -> Result<ExistingConfig, String> {
+        let d = dir.to_string_lossy().to_string();
+        let out = self.script(path, "install-status.sh", &["--project", &d], T_STATUS).await;
+        let st = parse_status(&out).map_err(|r| format!("读不到这个目录里的项目配置：{r}"))?;
+        parse_project_check(&st, &d)
     }
 
     /// An existing git repository's top level whose origin is github.com/<owner>/<name>.
@@ -443,15 +473,13 @@ impl Daemon {
                 }
             }
         };
-        // 2. a config already in the folder keeps its agent (setup.sh does not rewrite it)
-        match existing_config(&dir) {
-            ExistingConfig::Agent(f, a) if a != agent => {
-                return failed(format!("{} 已有项目配置，里面的 agent 是 {a}，和这次选的 {agent} 不一样；setup.sh 不会改它。要换 agent 请先改那个文件，或这次选 {a}", f.display()));
+        // 2. a config already in the folder is kept by setup.sh: its repository and agent must be the chosen ones
+        match self.project_config(path, &dir).await.and_then(|c| config_verdict(&c, owner, name)) {
+            Err(m) => return failed(m),
+            Ok(Some((f, a))) if a != agent => {
+                return failed(format!("{f} 已有项目配置，daemon 读到里面的 agent 是 {a}，和这次选的 {agent} 不一样；setup.sh 不会改它。要换 agent 请先改那个文件，或这次选 {a}"));
             }
-            ExistingConfig::Unreadable(f) => {
-                return failed(format!("{} 已有项目配置，但读不出里面用的 agent，没有接上；请在终端里跑 setup.sh", f.display()));
-            }
-            _ => {}
+            Ok(_) => {}
         }
         // 3. what is missing, asked again now
         self.line(job, &format!("检查 {agent} 需要的程序…"));
@@ -479,7 +507,12 @@ impl Daemon {
         };
         let here = dir.to_string_lossy().to_string();
         let projects: Vec<&Value> = st["projects"].as_array().into_iter().flatten().collect();
+        let want = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
+        let same_repo = |p: &Value| p["repo"].as_str().map(str::to_lowercase).as_deref() == Some(want.as_str());
         if let Some(p) = projects.iter().find(|p| p["host"].as_str() == Some(here.as_str())) {
+            if !same_repo(p) {
+                return failed(format!("这个目录已经作为 {}（仓库 {}）接上了，不是 {owner}/{name}，什么都没动", p["key"].as_str().unwrap_or(""), p["repo"].as_str().unwrap_or("读不出")));
+            }
             return json!({ "result": "connected", "already": true, "key": p["key"], "state": p["scheduler"]["state"], "dir": here, "output": format!("这个目录已经接上了（{}），什么都没动", p["key"].as_str().unwrap_or("")) });
         }
         let taken: Vec<(String, Option<String>)> =
@@ -508,6 +541,7 @@ impl Daemon {
             Err(m) => return failed(format!("setup.sh 跑完了，但{m}")),
         };
         match find_project(&after, &key).filter(|p| p["host"].as_str() == Some(here.as_str())) {
+            Some(p) if !same_repo(p) => failed(format!("setup.sh 跑完了，但 daemon 登记的 {key} 是仓库 {}，不是 {owner}/{name}；没有确认接上，请在下面「本机 daemon」里断开它", p["repo"].as_str().unwrap_or("读不出"))),
             Some(p) => json!({ "result": "connected", "already": false, "key": key, "state": p["scheduler"]["state"], "dir": here, "output": format!("已接上：{key}") }),
             None => failed(format!("setup.sh 跑完了，但本机状态里找不到 {key}（{here}），没有确认接上")),
         }
@@ -591,14 +625,6 @@ fn code_word(o: &Out) -> String {
     match o.code {
         Some(c) => format!("退出码 {c}"),
         None => "没有正常结束".into(),
-    }
-}
-
-fn config_json(c: &ExistingConfig) -> Value {
-    match c {
-        ExistingConfig::None => Value::Null,
-        ExistingConfig::Agent(f, a) => json!({ "path": f.to_string_lossy(), "agent": a }),
-        ExistingConfig::Unreadable(f) => json!({ "path": f.to_string_lossy(), "agent": Value::Null }),
     }
 }
 
@@ -721,17 +747,22 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_config_keeps_its_agent() {
-        let d = std::env::temp_dir().join(format!("cavil-cfg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        assert_eq!(existing_config(&d), ExistingConfig::None);
-        std::fs::write(d.join("cavil-loop.config"), "REPO=\"a/b\"\n").unwrap();
-        assert_eq!(existing_config(&d), ExistingConfig::Agent(d.join("cavil-loop.config"), "claude".into()));
-        std::fs::write(d.join("cavil-loop.config"), "WORKER_AGENT=\"claude\"\nWORKER_AGENT=\"codex\"   # mine\n").unwrap();
-        assert_eq!(existing_config(&d), ExistingConfig::Agent(d.join("cavil-loop.config"), "codex".into()));
-        std::fs::write(d.join("cavil-loop.config"), "WORKER_AGENT=\"${MINE:-codex}\"\n").unwrap();
-        assert_eq!(existing_config(&d), ExistingConfig::Unreadable(d.join("cavil-loop.config")));
-        let _ = std::fs::remove_dir_all(&d);
+    fn an_existing_config_must_name_the_chosen_repository() {
+        let st = |pc: Value| json!({ "project_check": pc });
+        let d = "/h/github/widget";
+        let read = |repo: &str, agent: &str| st(json!({ "dir": d, "config": "/h/github/widget/cavil-loop.config", "config_state": "ok", "repo": repo, "worker_agent": agent }));
+        assert_eq!(parse_project_check(&st(json!({ "dir": d, "config": null, "config_state": "none" })), d), Ok(ExistingConfig::None));
+        let c = parse_project_check(&read("Acme/Widget", "codex"), d).unwrap();
+        assert_eq!(config_verdict(&c, "acme", "widget"), Ok(Some(("/h/github/widget/cavil-loop.config".into(), "codex".into()))));
+        let other = parse_project_check(&read("acme/other", "claude"), d).unwrap();
+        assert!(config_verdict(&other, "acme", "widget").unwrap_err().contains("acme/other"));
+        let empty = parse_project_check(&read("", "claude"), d).unwrap();
+        assert!(config_verdict(&empty, "acme", "widget").unwrap_err().contains("没写"));
+        let bad = parse_project_check(&st(json!({ "dir": d, "config": "/x", "config_state": "unreadable" })), d).unwrap();
+        assert!(config_verdict(&bad, "acme", "widget").is_err());
+        // no answer for this folder (an older daemon, or another folder) is never "no config"
+        assert!(parse_project_check(&json!({}), d).is_err());
+        assert!(parse_project_check(&st(json!({ "dir": "/elsewhere", "config_state": "none" })), d).is_err());
+        assert!(parse_project_check(&st(json!({ "dir": d, "config_state": "maybe" })), d).is_err());
     }
 }

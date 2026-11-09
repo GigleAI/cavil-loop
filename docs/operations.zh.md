@@ -1103,7 +1103,7 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 | 脚本 | 做什么 | 会写东西吗 |
 |---|---|---|
 | `setup.sh --yes <host> [key]` | 和 `setup.sh` 一样，但最后不问 y/N，直接启用并启动后台任务。不带 `--yes` 时与从前逐字节一致 | 会（同 `setup.sh`） |
-| `scripts/install-status.sh [--agent <名字>]` | 输出一个 JSON 对象，本机状态一次读全 | 不会 |
+| `scripts/install-status.sh [--agent <名字>] [--project <目录>]` | 输出一个 JSON 对象，本机状态一次读全 | 不会 |
 | `scripts/disconnect-project.sh <key>` | 停掉一个项目的后台任务、撤掉登记；保留项目配置和状态 | 会 |
 | `scripts/launchd-refresh.sh <key>` | 只用于 macOS：模板变了之后换新一个项目的 launchd plist，先备份、失败就恢复 | 会 |
 
@@ -1120,7 +1120,7 @@ bash "$SKILL/scripts/disconnect-project.sh" myproject
 
 上面几行依次是：不经 y/N 提问接上一个项目；列出每个已接项目的后台任务状态和依赖结论；接一个用 `codex` 的新项目前先查缺什么；再把它断开。`myproject` 是实例名（默认是目录名，即状态输出里的 `.projects[].key`）。
 
-**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`bash`（`path` 轮询会用的 bash，和 `setup.sh` 同一个挑选函数；`major` 主版本；`ok` —— 4 及以上为 `true`，macOS 自带的 3.2 为 `false`，跑不了 daemon，要 `brew install bash`；读不出版本为 `null`）、`agent_check`（带 `--agent` 才有）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
+**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`bash`（`path` 轮询会用的 bash，和 `setup.sh` 同一个挑选函数；`major` 主版本；`ok` —— 4 及以上为 `true`，macOS 自带的 3.2 为 `false`，跑不了 daemon，要 `brew install bash`；读不出版本为 `null`）、`agent_check`（带 `--agent` 才有）、`project_check`（带 `--project <目录>` 才有：那个目录里已有的项目配置，按轮询一样的读法读——`config_state` 为 `none` / `ok` / `unreadable`，以及 `config`、`repo`、`worker_agent`；`setup.sh` 会沿用这份配置，所以接上后实际用的就是这两项）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
 
 - `agents[]` 列出 worker agent、复审 agent（只在配了 `LABEL_PENDING_REVIEW` 时）和按标签选模型时用的 agent（`role: fable`，`required: false`——只有有人给条目打了那个标签才会起，所以没装 claude 的 codex 项目不会被报成缺依赖）。每项有 `bin`、`state`（`ok` / `missing` / `no_driver`）和 `missing`，用的是 `setup.sh` 同一个函数，两边结论不会不一致。`deps` 汇总必需的那几项：`ok` / `missing` / `unknown`（配置读不出或找不到 driver）。
 - `scheduler.state` 是 `running` / `stopped` / `unknown`。只认已知状态词：读失败、空输出、不认识的词一律 `unknown`，绝不报 `stopped`；`raw` 是读到的原文。
