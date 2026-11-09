@@ -2,7 +2,9 @@
 // Pure; shared by the controller and the renderer.
 
 import type { ColumnMode, GroupBy, Layout, SortField, TableColumn, TableSettings, ViewSettings } from './types';
-import { DEFAULT_TABLE_COLUMNS, NOT_IN_API } from './viewImport';
+import { DEFAULT_QUERY, DEFAULT_TABLE_COLUMNS, NOT_IN_API } from './viewImport';
+
+export { DEFAULT_QUERY };
 
 export const MODES: readonly ColumnMode[] = ['iteration', 'status', 'milestone'];
 export const LAYOUTS: readonly Layout[] = ['board', 'table'];
@@ -48,7 +50,7 @@ export const DEFAULT_VIEW: ViewSettings = {
   swimlanes: false,
   selected: null,
   layout: 'board',
-  query: '',
+  query: DEFAULT_QUERY,
   table: DEFAULT_TABLE,
   imported: null,
   prsUnderIssues: true,

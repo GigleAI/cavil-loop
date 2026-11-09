@@ -16,7 +16,7 @@ import { mergeSnapshots } from '../../src/data/merge';
 import { applyFilter, parseFilter } from '../../src/shared/filter';
 import { parseSource } from '../../src/shared/sources';
 import { importView, pickView } from '../../src/shared/viewImport';
-import { DEFAULT_TABLE, DEFAULT_VIEW } from '../../src/shared/viewSettings';
+import { DEFAULT_QUERY, DEFAULT_TABLE, DEFAULT_VIEW } from '../../src/shared/viewSettings';
 import type { BoardData, Item, TableSettings } from '../../src/shared/types';
 import { FakeGitHub, loadCavilProjectPages, startFakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, FIXTURE_TODAY, item, iter, member, project } from './helpers';
@@ -362,6 +362,18 @@ describe('importing saved views', () => {
     expect(r.table.columns).toEqual(['title', 'assignees']);
     const notes = r.imported!.notes.join('\n');
     for (const word of ['路线图', 'Priority', 'Estimate', '2 级排序', 'Start date']) expect(notes).toContain(word);
+  });
+
+  it('GitHub#298: an empty filter keeps the default search text only; anything else is replaced as before', () => {
+    const at = (query: string) => ({ ...DEFAULT_VIEW, query });
+    expect(importView(view({ filter: '' }), P, at(DEFAULT_QUERY), null).query).toBe(DEFAULT_QUERY);
+    expect(importView(view({ filter: '   ' }), P, at(DEFAULT_QUERY), null).query).toBe(DEFAULT_QUERY);
+    expect(importView(view({ filter: 'label:bug' }), P, at(DEFAULT_QUERY), null).query).toBe('label:bug');
+    expect(importView(view({ filter: '' }), P, at('label:bug'), null).query).toBe('');
+    expect(importView(view({ filter: '' }), P, at(''), null).query).toBe('');
+    // only that exact text: a hand-edited variant is an ordinary search text
+    expect(importView(view({ filter: '' }), P, at('-status:done -label:done'), null).query).toBe('');
+    expect(importView(view({ filter: '' }), P, at(`${DEFAULT_QUERY} `), null).query).toBe('');
   });
 
   it('a view without sort = the Project order; slices and hierarchy (not in the API) go back to on, the picked slice is reset', () => {

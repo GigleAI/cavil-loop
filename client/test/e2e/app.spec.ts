@@ -113,6 +113,8 @@ test('browser login → board; restart skips login; sources; three column modes;
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   expect(readFileSync(env.cred, 'utf8')).toMatch(/^gho_/);
+  // GitHub#298: a new install starts with the default search text
+  await expect(page.getByTestId('search')).toHaveValue('-Status:done -label:Done');
 
   // add a Project and a repository
   await page.getByTestId('open-settings').click();
