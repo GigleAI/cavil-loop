@@ -836,15 +836,23 @@ describe('every decision on GitHub\'s value reads landed reads only (PR #240 pla
   }
   /** fail the next write of board rows (not the changes' own row) — `gate` holds it first when given */
   function failingDisk() {
-    const st = { armed: false, failed: 0, gate: null as Promise<void> | null };
+    /** inFlight: board-row writes (not the edits record) sent and not answered yet */
+    const st = { armed: false, failed: 0, gate: null as Promise<void> | null, inFlight: 0 };
     const intercept = async (cmd: string, args: any, next: (cmd: string, args: any) => Promise<unknown>) => {
-      if (cmd === 'replaceSnapshots' && st.armed && (args?.snapshots ?? []).some((x: any) => x.sourceKey !== EDITS_KEY)) {
+      const rows = cmd === 'replaceSnapshots' && (args?.snapshots ?? []).some((x: any) => x.sourceKey !== EDITS_KEY);
+      if (rows && st.armed) {
         st.armed = false;
         if (st.gate) await st.gate;
         st.failed++;
         throw new Error('disk full');
       }
-      return next(cmd, args);
+      if (!rows) return next(cmd, args);
+      st.inFlight++;
+      try {
+        return await next(cmd, args);
+      } finally {
+        st.inFlight--;
+      }
     };
     return { st, intercept };
   }
@@ -1021,11 +1029,20 @@ describe('every decision on GitHub\'s value reads landed reads only (PR #240 pla
     expect((await c.act({ kind: 'setMilestone', key: K(N), title: 'v3' })).ok).toBe(true);
     expect(markOf(c, 'milestone')!.status).toBe('observing');
     const reads = refreshes();
-    // the first watch re-read goes through; the next write of board rows (the last re-read's) fails
-    await until(() => refreshes() > reads, 'the first watch re-read');
-    await c.settled();
+    // the first watch re-read goes through; the next write of board rows (the last re-read's) fails.
+    // The last re-read is held at the fake GitHub until every earlier write of board rows has
+    // landed: armed any earlier, the failure could hit the first re-read's still-running write
+    // instead, and the last re-read would then end the watch on its own (GitHub#291).
+    let seen = 0;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && ++seen === 2);
+    await until(() => refreshes() >= reads + 2, 'the last watch re-read went out (held)');
+    await until(() => disk.st.inFlight === 0, 'the first watch re-read\'s rows landed');
     disk.st.armed = true;
+    release();
     await until(() => disk.st.failed === 1, 'the last re-read\'s rows failed to reach the disk');
+    expect(refreshes()).toBe(reads + 2);
+    // a failed last re-read does not end the watch: it is read once more
+    await until(() => refreshes() > reads + 2, 'the last re-read was sent again after its rows failed');
     await until(() => markOf(c, 'milestone') === null, 'the watch ended after the retry');
     expect(itemOf(c).milestone?.title).toBe('v3');
   });

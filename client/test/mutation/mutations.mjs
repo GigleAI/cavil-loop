@@ -138,7 +138,7 @@ export const MUTATIONS = [
     expect: ['an unknown refresh error', 'HTTP 400 {"error":"temporarily_unavailable"} → error'] },
   { what: '续期后写钥匙串失败就整次作废（继续用已被 GitHub 作废的旧续期令牌）', file: 'src-tauri/crates/core/src/engine.rs',
     from: '                Err(e) => {\n                    me.lock().unsaved_problem = Some(e);\n                    false\n                }',
-    to: '                Err(e) => return FreshOut { result: Fresh::Failed, problem: Some(Some(e)), signed_out: None },',
+    to: '                Err(e) => return FreshOut { result: Fresh::Failed, problem: Some(Some(e)), signed_out: None, reason: None },',
     expect: ['refreshed but the keychain refuses the write'] },
   { what: '没存进钥匙串的凭据之后不再重试保存', file: 'src/app/controller.ts',
     from: '    await this.saveUnsaved();\n',
