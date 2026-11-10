@@ -47,7 +47,7 @@ async function ready() {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: 600_000, watchLooksMs: LOOKS, watchVerifyMs: 200, followUpSyncMs: 60_000 });
+  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: 600_000, opCheckDelaysMs: [], watchLooksMs: LOOKS, watchVerifyMs: 200, followUpSyncMs: 60_000 });
   controllers.push(c);
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
@@ -109,8 +109,11 @@ afterEach(async () => {
   await fake.close();
 });
 
-describe('an answer that never came: checking is blue, a check that failed is red, the next check is blue again', () => {
-  it('lost answer → the automatic check runs (blue) → it fails (red, "这次没能查证") → "重新查证据" runs (blue, the old failure gone) → proven closed (green, goes by itself)', async () => {
+// GitHub#359: a check that could not read is no longer a dead end waiting for a click — every sync round checks
+// again — so it is yellow (the app keeps at it), not red; there is no "重新查证据" button, `opRecheck` is the
+// same check made now.
+describe('an answer that never came: checking is blue, a check that could not read is yellow (checked again by every round), the next check is blue again', () => {
+  it('lost answer → the app\'s own check runs (blue) → it cannot read (yellow, "这次没能查证") → a check now runs (blue, the old failure gone) → proven closed (green, goes by itself)', async () => {
     const c = await ready();
     const late = fake.lateWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}`);
     // the reads after the lost answer are held, and will fail once released
@@ -134,10 +137,11 @@ describe('an answer that never came: checking is blue, a check that failed is re
     r = opOf(c, s.id!);
     expect(r.checking).toBe(false);
     expect(opPhase(r)).toBe('unknown');
-    expect(opTone(r)).toBe('error');
+    expect(opTone(r)).toBe('warn');
     expect(opText(r)).toContain('；这次没能查证：重读这一条失败');
+    expect(opText(r)).toContain('之后每次同步还会再核对');
     expect(opText(r)).not.toContain('正在查证');
-    expect(opButtons(r)).toContain('recheck');
+    expect(opButtons(r)).toEqual(['unlock', 'dropDraft']);
     // 3. the person checks again: running, and the failure before it is no longer said
     const again = holding(isRefresh);
     const p = c.opRecheck(s.id!);
@@ -155,7 +159,7 @@ describe('an answer that never came: checking is blue, a check that failed is re
     // (the fake answers a held request with what it held when the request arrived: this one fails too)
     again.release();
     expect((await p).ok).toBe(false);
-    expect(opTone(opOf(c, s.id!))).toBe('error');
+    expect(opTone(opOf(c, s.id!))).toBe('warn');
     // 4. GitHub answers again, and the close has landed: the next check proves it
     fake.state.w.failRefresh.delete(ITEM);
     late.land();

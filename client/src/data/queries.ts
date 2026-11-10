@@ -1,6 +1,8 @@
 // GraphQL documents used by the sync layer. The fake GitHub used in tests
 // dispatches on the operation name, so keep the names stable.
 
+import { ITEM_LABELS_FIRST } from '../shared/ops';
+
 /**
  * GitHub#349: the other end of a relation, as read with the item that names it (no request to its repository).
  */
@@ -25,7 +27,7 @@ const CONTENT_FIELDS = `
   ... on Issue {
     id number title url state stateReason updatedAt
     repository { nameWithOwner }
-    labels(first: 50) { nodes { name color } }
+    labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
     author { login }
@@ -38,7 +40,7 @@ ${RELATION_FIELDS}
   ... on PullRequest {
     id number title url state merged isDraft updatedAt body
     repository { nameWithOwner }
-    labels(first: 50) { nodes { name color } }
+    labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
     author { login }
@@ -254,13 +256,13 @@ query CavilItemDetail($owner: String!, $name: String!, $number: Int!, $commentsA
       ... on Issue {
         id number title url state createdAt bodyHTML body viewerCanUpdate
         author { login }
-        labels(first: 50) { nodes { name color } }
+        labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
         ${DETAIL_COMMENTS}
       }
       ... on PullRequest {
         id number title url state merged isDraft createdAt bodyHTML body viewerCanUpdate
         author { login }
-        labels(first: 50) { nodes { name color } }
+        labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
         mergeable mergeStateStatus reviewDecision headRefOid baseRefName headRefName
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
         ${DETAIL_COMMENTS}
@@ -362,6 +364,33 @@ const OP_RECORDS_FIELDS = `
       timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
         nodes { __typename ... on LabeledEvent { id actor { login } label { name } } ... on UnlabeledEvent { id actor { login } label { name } } }
       }`;
+/**
+ * GitHub#359: one read for a check of an operation / right before a send nobody clicked: the item's
+ * state, its labels, its newest comments and one page of its label events (newest first page;
+ * `$before` walks back). `labels.totalCount` and `pageInfo` say whether what came is everything.
+ */
+const OP_SNAPSHOT_FIELDS = `
+      state
+      labels(first: 100) { totalCount nodes { name } }
+      comments(last: 100) { nodes { id body author { login } } }
+      timelineItems(last: 100, before: $before, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+        pageInfo { hasPreviousPage startCursor }
+        nodes { __typename ... on LabeledEvent { id actor { login } label { name } } ... on UnlabeledEvent { id actor { login } label { name } } }
+      }`;
+export const OP_SNAPSHOT_QUERY = `
+query CavilOpSnapshot($owner: String!, $name: String!, $number: Int!, $before: String) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {${OP_SNAPSHOT_FIELDS}
+      }
+      ... on PullRequest {
+        merged${OP_SNAPSHOT_FIELDS}
+      }
+    }
+  }
+}
+`;
 export const OP_RECORDS_QUERY = `
 query CavilOpRecords($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
