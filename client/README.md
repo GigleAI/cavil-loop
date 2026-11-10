@@ -8,12 +8,7 @@
 
 1. **先装 daemon 要用的程序**（客户端只检查缺什么，不替人装）：`git`、`gh`、`tmux`、`jq`、`flock`、4 以上的 `bash`（macOS 自带的是 3.2），以及要用的 agent 程序（如 `claude`）。用 Homebrew：`brew install gh tmux jq flock bash`。然后在终端里跑一次 `gh auth login`——daemon 用 `gh` 的登录，不用客户端的。
 2. **下载客户端**：打开本仓库的 [Releases](https://github.com/GigleAI/cavil-loop/releases) 页，找标签以 `client/v` 开头的最新一条，下载里面的 `.dmg`。目前只有开发版（标签 `client/vX.Y.Z-dev.N`，标着 Pre-release，只有 Apple 芯片的包）；还没有正式版，Intel 的 Mac 暂时没有安装包（要用只能照下面「开发」自己构建）。
-3. **安装并放行**：把 App 拖进「应用程序」。安装包没有苹果签名，第一次打开前在终端跑一次：
-
-   ```bash
-   xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"
-   ```
-
+3. **安装**：打开 dmg，把 App 拖进「应用程序」；第一次打开照 dmg 窗口里写的办法做。
 4. **登录**：打开 App，点「用 GitHub 登录」，在浏览器里输入 App 显示的短码并同意授权。
 5. **添加仓库**：设置 →「数据来源」，填 `owner/repo`（或仓库网址）。这时看板上已经能看到这个仓库开着的 issue / PR。
 6. **安装 daemon**：设置 →「本机 daemon」→「安装」。它从 github.com 克隆 GigleAI/cavil-loop 到 `~/.agents/skills/cavil-loop`，并给 Claude Code 建同名软链；下面的检查清单列出还缺哪些程序，装好后点「重新检查」。
