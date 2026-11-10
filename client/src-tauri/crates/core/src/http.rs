@@ -703,10 +703,8 @@ mod tests {
 
     #[test]
     fn a_failed_connect_elsewhere_does_not_make_a_write_look_unsent() {
-        let closed = {
-            let l = TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
+        // port 1: nobody listens there and no test can take it (a freed port could be taken by the fake below)
+        let closed = 1u16;
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let st = stop.clone();
         let noise = std::thread::spawn(move || {
