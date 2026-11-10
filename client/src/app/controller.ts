@@ -23,9 +23,11 @@ import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, readItemSnapshot, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
+  OP_AUTO_MS,
+  OP_CHECK_DELAYS_MS,
   STUCK_MS,
   finishSteps,
   isOpKind,
@@ -33,14 +35,20 @@ import {
   needsRecords,
   opAfterRestart,
   opApplyRead,
+  opCheckSteps,
   opDisposable,
   opLockOf,
+  opNextAuto,
+  opPermit,
   opPhase,
   opProveFromRecords,
+  opProveFromSnapshot,
+  opResendStep,
   opText,
   opWithoutStale,
   type OpKind,
   type OpRecord,
+  type OpSnapshot,
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
@@ -139,6 +147,10 @@ export interface ControllerDeps {
   observeFirstMs?: number;
   /** GitHub#250: how long a succeeded operation waits for its re-read before the manual unlock is offered (tests shorten it) */
   opStuckMs?: number;
+  /** GitHub#359: the automatic checks of a step whose answer never came, after the one made at once (tests shorten them; [] = that one only) */
+  opCheckDelaysMs?: readonly number[];
+  /** GitHub#359: how long after its start an operation may still send its remaining steps by itself (tests shorten it) */
+  opAutoMs?: number;
   /** GitHub#258: when the boards not ticked are looked at after a create (ms after it), and the check after a write (tests shorten them) */
   watchLooksMs?: number[];
   watchVerifyMs?: number;
@@ -381,6 +393,8 @@ export class Controller {
   private opPreparing = new Set<string>();
   /** the wait of a succeeded operation for its re-read: offers the manual unlock when it runs out */
   private opTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** GitHub#359: the waits between the automatic checks (ended early, as "do not go on", when the session ends) */
+  private opWaits = new Map<ReturnType<typeof setTimeout>, (go: boolean) => void>();
 
   /** Read what the back end has (settings, cached snapshots), then build the controller. */
   static async create(deps: ControllerDeps): Promise<Controller> {
@@ -549,6 +563,7 @@ export class Controller {
     // GitHub#258: and the watches of new issues (they only end here or with the session)
     for (const t of this.watchTimers) clearTimeout(t);
     this.watchTimers.clear();
+    this.endOpWaits();
   }
 
   /**
@@ -743,6 +758,7 @@ export class Controller {
     this.itemReadAt.clear();
     for (const t of this.opTimers.values()) clearTimeout(t);
     this.opTimers.clear();
+    this.endOpWaits();
     this.ops.clear();
     this.opsStored = false;
     this.opPreparing.clear();
@@ -1544,7 +1560,11 @@ export class Controller {
       },
     });
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
-    if (!round.offline && !round.authFailed && status.some((st) => st.ok)) await this.catchUpReads(session);
+    if (!round.offline && !round.authFailed && status.some((st) => st.ok)) {
+      await this.catchUpReads(session);
+      // GitHub#359: and check again what an operation's answer that never came left open
+      this.catchUpChecks(session);
+    }
     if (round.authFailed) {
       // A GitHub App token can be refreshed once before the credential is declared dead —
       // the token this round used, not one that changed meanwhile.
@@ -2750,7 +2770,7 @@ export class Controller {
     if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
     const blocked = this.opBlocked(item.key);
     if (blocked) return refuse(blocked);
-    const step = (name: OpStep['name'], label?: string): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null });
+    const step = (name: OpStep['name'], label?: string, role?: OpStep['role']): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null, ...(role ? { role } : {}) });
     let steps: OpStep[];
     let draft: OpRecord['draft'] = {};
     switch (action.kind) {
@@ -2783,7 +2803,7 @@ export class Controller {
         if (!human.trim() || !agent.trim()) return refuse('设置里「交给 agent」的两个标签名不能为空');
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');
         // the autopilot label first (the daemon must see it when it picks the item up); add before remove
-        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot)] : []), step('addLabel', agent), step('removeLabel', human)];
+        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []), step('addLabel', agent, 'agent'), step('removeLabel', human, 'human')];
         break;
       }
     }
@@ -2820,6 +2840,9 @@ export class Controller {
   private opBlocked(key: string): string | null {
     const lock = opLockOf([...this.ops.values()], key);
     if (lock) return `上一次操作还没结清，没有发送：${opText(lock)}`;
+    // GitHub#359: a record that is going on by itself right now (reading before its next step) is not finished
+    // or started over from elsewhere in between
+    if ([...this.ops.values()].some((r) => r.key === key && this.opJobs.has(r.id))) return '上一次操作还在自动处理剩下的步骤，没有发送';
     if (this.opPreparing.has(key)) return '正在准备补做上一次操作剩下的步骤，没有发送';
     return null;
   }
@@ -2865,8 +2888,9 @@ export class Controller {
     if (first && first.before === undefined && first.steps.some(needsRecords)) {
       let before: OpRecord['before'] = null;
       try {
-        const rec = await readItemRecords(c.client, item.repo, item.number);
-        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id) };
+        // GitHub#359: the labels too — the label records made later must add up to the labels read then
+        const rec = await readItemSnapshot(c.client, item.repo, item.number, null);
+        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id), labels: rec.labels };
       } catch {
         // sent anyway; a step of it whose answer never comes can then only be checked by a person
       }
@@ -2875,18 +2899,83 @@ export class Controller {
       if (!now) return;
       this.setOp({ ...now, before });
     }
+    const sent = await this.sendSteps(id, item, c, {});
+    if (!sent || session !== this.session) return;
+    await this.opReread(id, item, c);
+    await this.settleOp(id, item, c, true);
+  }
+
+  /**
+   * GitHub#359: resolved when a record's own run has nothing more to do right away — its requests, re-reads
+   * and the check made at once are through and only the later checks (seconds apart) are left. `act` waits
+   * for this, not for those.
+   */
+  private opFirst = new Map<string, () => void>();
+
+  /**
+   * The requests of a record, one after the other, stopping at the first that is not done. GitHub#359:
+   * `gated` — these sends were not asked for by a click at this moment (the steps left after an unknown
+   * one was proven; a step a person sends again, `resend`): each goes out only after opPermit allowed it
+   * on a read made right before it. Returns whether a request went out.
+   */
+  private async sendSteps(id: string, item: Item, c: { client: GitHubClient; session: number }, opts: { gated?: boolean; resend?: number; decided?: OpSnapshot | null }): Promise<boolean> {
+    const session = this.session;
     let sent = false;
+    let decided = opts.decided;
+    const start = this.ops.get(id);
+    if (start && !start.running) {
+      this.setOp({ ...start, running: true });
+      this.opsChanged();
+    }
     for (let i = 0; ; i++) {
       let r = this.ops.get(id);
       if (!r || session !== this.session || i >= r.steps.length) break;
-      if (r.steps[i].state !== 'unsent') continue;
+      const again = opts.resend === i && r.steps[i].state === 'unknown';
+      if (r.steps[i].state !== 'unsent' && !again) continue;
       if (i > 0 && r.steps[i - 1].state !== 'ok') break;
-      this.setOp((r = { ...r, steps: r.steps.map((s, j) => (j === i ? { ...s, state: 'pending' as const, reason: null, sentAt: this.stamp() } : s)) }));
+      if (opts.gated) {
+        const mode = again ? ('resend' as const) : ('auto' as const);
+        // judged twice: on the read the decision was made on (when there is one), and on one made right now
+        const snaps: (OpSnapshot | null)[] = decided !== undefined ? [decided] : [];
+        decided = undefined;
+        snaps.push(await this.readOpSnapshot(c.client, r));
+        if (session !== this.session) return sent;
+        const now = this.ops.get(id);
+        if (!now) return sent;
+        r = now;
+        const verdicts = snaps.map((snap) => opPermit(now, i, snap, { mode, now: this.stamp(), autoMs: this.deps.opAutoMs ?? OP_AUTO_MS }));
+        const no = verdicts.find((v) => !v.ok);
+        if (no && !no.ok) {
+          const last = verdicts[verdicts.length - 1];
+          if (!last.ok && last.why === 'satisfied' && verdicts.every((v) => v.ok || v.why === 'satisfied')) {
+            // the wanted state is already there: done without a send
+            this.setOp({ ...now, steps: now.steps.map((x, j) => (j === i ? { ...x, state: 'ok' as const, reason: last.text, answeredAt: this.stamp() } : x)) });
+            this.opsChanged();
+            await this.storeOps();
+            continue;
+          }
+          // could not be read: nothing is sent now, the next check / round judges again. Anything else ends "by
+          // itself" for the steps left; a step a person wanted sent again just stays "not sure" (its verdict says why)
+          const halt = no.why === 'unread' ? (again ? { checkProblem: no.text } : {}) : again ? {} : { halt: { text: no.text, redo: no.redo === true }, auto: false };
+          this.setOp(opCheckSteps({ ...now, ...halt }, snaps[snaps.length - 1]));
+          this.opsChanged();
+          await this.storeOps();
+          break;
+        }
+      }
+      this.setOp(
+        (r = {
+          ...r,
+          ...(again ? { halt: null, auto: true, autoSince: this.stamp() } : {}),
+          steps: r.steps.map((s, j) => (j === i ? { ...(({ check: _c, ...rest }) => rest)(s), state: 'pending' as const, reason: null, sentAt: this.stamp(), ...(again ? { resent: (s.resent ?? 0) + 1 } : {}) } : s)),
+        }),
+      );
       this.opsChanged();
       if (!(await this.storeOps())) {
         const now = this.ops.get(id);
         if (now && session === this.session) {
-          this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? { ...s, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null } : s)) });
+          // not stored = not sent: a step sent again goes back to "not sure" (its first request stands)
+          this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? (again ? { ...s, state: 'unknown' as const, reason: '没能存到本机，没有重发' } : { ...s, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null }) : s)) });
           this.opsChanged();
         }
         break;
@@ -2911,10 +3000,13 @@ export class Controller {
         }
         if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       }
-      if (session !== this.session) return;
+      if (session !== this.session) return sent;
       const now = this.ops.get(id);
-      if (!now) return;
-      this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? { ...s, state, reason, answeredAt: this.stamp() } : s)) });
+      if (!now) return sent;
+      // GitHub#359: the sending stops at a label step whose answer never came — once that step is proven
+      // (by a check, or by any read) what is left may go out by itself, in this run of the app
+      const goOn = state === 'unknown' && (now.kind === 'autopilot' || now.kind === 'handBack') && !now.auto ? { auto: true, autoSince: now.autoSince ?? now.startedAt } : {};
+      this.setOp({ ...now, ...goOn, steps: now.steps.map((s, j) => (j === i ? { ...s, state, reason, answeredAt: this.stamp() } : s)) });
       this.opsChanged();
       await this.storeOps();
       if (state !== 'ok') break;
@@ -2925,10 +3017,203 @@ export class Controller {
       this.setOp({ ...done, running: false });
       this.opsChanged();
     }
-    if (!sent || session !== this.session) return;
-    await this.opReread(id, item, c);
+    return sent;
+  }
+
+  /** GitHub#359: the item as one snapshot (state, labels, label records back to what the record saw before it started); null = not read. */
+  private async readOpSnapshot(client: GitHubClient, r: OpRecord): Promise<OpSnapshot | null> {
+    try {
+      const snap = await readItemSnapshot(client, r.repo, r.number, r.before?.events ?? null);
+      return { complete: snap.complete, state: snap.state, labels: snap.labels, events: snap.labelEvents };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * GitHub#359: what a record does by itself after its requests: while a step's answer never came it is
+   * checked (at once when `first`, then after each of the waits — reads only); once nothing is unknown the
+   * steps not sent yet go out (sendSteps, gated), and if one of those is not answered either the checks
+   * start again. Ends when nothing is left to do by itself: a person takes over from the notice.
+   */
+  private async settleOp(
+    id: string,
+    item: Item,
+    c: { client: GitHubClient; session: number },
+    first: boolean,
+    waits: readonly number[] = this.deps.opCheckDelaysMs ?? OP_CHECK_DELAYS_MS,
+    /** the snapshot of a check the caller made just now */
+    checked?: OpSnapshot | null,
+  ): Promise<void> {
+    const session = c.session;
+    const mine = () => session === this.session && this.ops.get(id) !== undefined;
+    for (let pass = 0; pass < 8; pass++) {
+      // the snapshot of the check that proved the step in this pass (never an older one: it would judge a state long gone)
+      let decided: OpSnapshot | null | undefined = pass === 0 ? checked : undefined;
+      const r = this.ops.get(id);
+      if (!r || !mine()) return;
+      if (opPhase(r) === 'unknown') {
+        const delays = [...(first || pass > 0 ? [0] : []), ...waits];
+        if (!delays.length) return;
+        this.setOp({ ...r, checking: true });
+        this.opsChanged();
+        try {
+          for (const ms of delays) {
+            if (ms > 0) this.opFirst.get(id)?.();
+            if (ms > 0 && !(await this.opWait(ms))) return;
+            const cur = this.ops.get(id);
+            if (!cur || !mine()) return;
+            if (opPhase(cur) !== 'unknown') break;
+            const cc = ms > 0 ? await this.clientForCall(false) : c;
+            if ('error' in cc) {
+              this.patchOp(id, { checkProblem: cc.error });
+              continue;
+            }
+            if (cc.session !== session) return;
+            decided = await this.recheckWith(id, cc, true);
+            if (!mine()) return;
+          }
+        } finally {
+          const end = this.ops.get(id);
+          if (end?.checking && session === this.session) {
+            this.setOp({ ...end, checking: false });
+            this.opsChanged();
+            void this.storeOps();
+          }
+        }
+      }
+      const now = this.ops.get(id);
+      if (!now || !mine() || opNextAuto(now) < 0) return;
+      const cw = await this.clientForCall(true);
+      if ('error' in cw || cw.session !== session) return;
+      // the first of the two judgements: the read of the check that proved the step, or (proven by another read) one made now
+      if (decided === undefined) decided = await this.readOpSnapshot(cw.client, now);
+      if (!mine()) return;
+      const sent = await this.sendSteps(id, item, cw, { gated: true, decided });
+      if (!sent || !mine()) return;
+      await this.opReread(id, item, cw);
+    }
+  }
+
+  /** a wait between two automatic checks; false = the session ended meanwhile (do not go on) */
+  private opWait(ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => {
+        this.opWaits.delete(t);
+        resolve(true);
+      }, ms);
+      this.opWaits.set(t, resolve);
+    });
+  }
+
+  private endOpWaits(): void {
+    for (const [t, resolve] of this.opWaits) {
+      clearTimeout(t);
+      resolve(false);
+    }
+    this.opWaits.clear();
+  }
+
+  /**
+   * GitHub#359: after a sync round that reached GitHub, every record with a step still unknown is checked
+   * once more (reads only), and a record whose unknown step a read proved meanwhile goes on with the steps
+   * it has left — both only when nothing of that record runs already.
+   */
+  private catchUpChecks(session: number): void {
+    for (const r of [...this.ops.values()]) {
+      if (session !== this.session || !this.signedIn) return;
+      if (r.running || r.checking || this.opJobs.has(r.id) || this.opPreparing.has(r.key)) continue;
+      const unknown = opPhase(r) === 'unknown';
+      if (!unknown && opNextAuto(r) < 0) continue;
+      const item = this.findItem(r.key);
+      if (!item) continue;
+      this.launchJob(r.id, this.settleOp(r.id, item, { client: this.client(session), session }, unknown, []));
+    }
+  }
+
+  /** A job of a record that is not its first run: kept in opJobs so nothing else of it starts meanwhile. */
+  private launchJob(id: string, run: Promise<void>): void {
+    const job = run.catch(() => undefined).then(() => {
+      const r = this.ops.get(id);
+      if (r?.running) {
+        this.setOp({ ...r, running: false });
+        this.opsChanged();
+      }
+      void this.storeOps();
+    });
+    this.opJobs.set(id, job);
+    void job.then(() => {
+      if (this.opJobs.get(id) === job) this.opJobs.delete(id);
+    });
+  }
+
+  /**
+   * Check a record with a step whose answer never came now (reads only), as every sync round does
+   * (GitHub#359: the window no longer has a button for it); a step this proves lets the record go on.
+   */
+  async opRecheck(id: string): Promise<WriteResult> {
+    const r = this.ops.get(id);
+    if (!r || opPhase(r) !== 'unknown') return { ok: false, error: '这次操作没有需要查证的步骤', warning: null };
+    if (this.opJobs.has(id)) return { ok: false, error: '这次操作正在自动核对', warning: null };
+    const c = await this.clientForCall(false);
+    if ('error' in c) {
+      this.patchOp(id, { checkProblem: c.error });
+      return { ok: false, error: c.error, warning: null };
+    }
+    const item = this.findItem(r.key);
+    const run = this.recheckWith(id, c).then((snap) => (item ? this.settleOp(id, item, c, false, [], snap) : undefined));
+    this.launchJob(id, run);
+    await this.opJobs.get(id);
     const after = this.ops.get(id);
-    if (after && opPhase(after) === 'unknown') await this.recheckWith(id, c);
+    return after && opPhase(after) === 'unknown' ? { ok: false, error: after.checkProblem ?? '还是查不到这一步的结果', warning: null } : { ok: true, error: null, warning: null };
+  }
+
+  /**
+   * GitHub#359, "仍要重发…": a person, told what it can cause, sends a label step again whose answer never
+   * came and that a full read did not find. Checked once more first (a step proven by that check is not
+   * sent: the record just goes on); the send itself is judged again on a read made right before it.
+   */
+  async opResend(id: string): Promise<WriteResult> {
+    const refuse = (error: string): WriteResult => ({ ok: false, error, warning: null });
+    const r = this.ops.get(id);
+    if (!r) return refuse('这次操作已经不在了');
+    const i = opResendStep(r);
+    if (i < 0 || this.opJobs.has(id)) return refuse('这一步现在不能重发');
+    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    if (this.opPreparing.has(r.key)) return refuse('这一条正在准备别的操作，没有发送');
+    const item = this.findItem(r.key);
+    if (!item) return refuse('看板上找不到这一条，请刷新后再试');
+    this.opPreparing.add(r.key);
+    try {
+      const c = await this.clientForCall(true);
+      if ('error' in c) return refuse(c.error);
+      const decided = await this.recheckWith(id, c);
+      if (c.session !== this.session) return refuse('账号已切换');
+      const now = this.ops.get(id);
+      if (!now) return refuse('这次操作已经不在了');
+      if (now.steps[i].state !== 'unknown') {
+        // the check found it done after all: nothing is sent again; the person is here, so what is left goes on
+        this.setOp({ ...now, auto: now.kind === 'autopilot' || now.kind === 'handBack', autoSince: this.stamp(), halt: null });
+        this.opsChanged();
+        this.launchJob(id, this.settleOp(id, item, c, false, [], decided));
+        return { ok: true, error: null, warning: '核对时发现上一次请求已经生效，没有重发' };
+      }
+      if (opResendStep(now) !== i) return refuse(`没有重发：${opText(now)}`);
+      const permit = opPermit(now, i, decided ?? null, { mode: 'resend', now: this.stamp() });
+      if (!permit.ok) return refuse(`没有重发：${permit.text}`);
+      this.launchJob(
+        id,
+        (async () => {
+          const sent = await this.sendSteps(id, item, c, { gated: true, resend: i, decided: decided ?? null });
+          if (!sent || c.session !== this.session) return;
+          await this.opReread(id, item, c);
+          await this.settleOp(id, item, c, true);
+        })(),
+      );
+      return { ok: true, error: null, warning: null };
+    } finally {
+      this.opPreparing.delete(r.key);
+    }
   }
 
   private stepKind(r: OpRecord, i: number): WriteAction['kind'] {
@@ -3032,6 +3317,17 @@ export class Controller {
     if (changed) {
       this.opsChanged();
       void this.storeOps();
+      this.goOnAfterRead(key);
+    }
+  }
+
+  /** GitHub#359: a read proved an unknown step outside the record's own job: the steps it has left go on (gated). */
+  private goOnAfterRead(key: string): void {
+    for (const r of [...this.ops.values()]) {
+      if (r.key !== key || opNextAuto(r) < 0 || this.opJobs.has(r.id) || this.opPreparing.has(r.key)) continue;
+      const item = this.findItem(r.key);
+      if (!item || !this.signedIn) continue;
+      this.launchJob(r.id, this.settleOp(r.id, item, { client: this.client(this.session), session: this.session }, false, []));
     }
   }
 
@@ -3049,54 +3345,57 @@ export class Controller {
     return it ? { state: it.state, labels: it.labels.map((l) => l.name) } : null;
   }
 
-  /** "重新查证据": reads only — the item again, the comments, the label events. */
-  async opRecheck(id: string): Promise<WriteResult> {
-    const r = this.ops.get(id);
-    if (!r || opPhase(r) !== 'unknown') return { ok: false, error: '这次操作没有需要查证的步骤', warning: null };
-    const c = await this.clientForCall(false);
-    if ('error' in c) {
-      this.patchOp(id, { checkProblem: c.error });
-      return { ok: false, error: c.error, warning: null };
-    }
-    await this.recheckWith(id, c);
-    const after = this.ops.get(id);
-    return after && opPhase(after) === 'unknown' ? { ok: false, error: after.checkProblem ?? '还是查不到这一步的结果', warning: null } : { ok: true, error: null, warning: null };
-  }
-
-  private async recheckWith(id: string, c: { client: GitHubClient; session: number }): Promise<void> {
+  /**
+   * One check of a record with a step whose answer never came (reads only): the item again (an unknown
+   * close / merge read back closed / merged, a label read back on / off), then one snapshot — the comments
+   * and label records as positive evidence, and (GitHub#359) for every label step still unknown what this
+   * read found: not read / read in full and not there / touched by somebody. Never "it did not happen".
+   */
+  private async recheckWith(id: string, c: { client: GitHubClient; session: number }, quiet = false): Promise<OpSnapshot | null | undefined> {
     const start = this.ops.get(id);
-    if (!start) return;
+    if (!start) return undefined;
+    /** the snapshot this check read (null = it could not be read); undefined = this check needed none */
+    let seen: OpSnapshot | null | undefined;
     const problems: string[] = [];
-    // the item itself: an unknown close / merge read back closed / merged, a label read back gone
-    const read = await this.refreshOne(c.client, c.session, start.repo, start.number);
+    const read = await this.refreshOne(c.client, c.session, start.repo, start.number, { quiet });
     if (read.kind === 'failed' && read.problem) problems.push(`重读这一条失败（${read.problem}）`);
-    if (c.session !== this.session) return;
+    if (c.session !== this.session) return undefined;
     const login = this.state.viewer;
     const mid = this.ops.get(id);
-    if (!mid) return;
+    if (!mid) return undefined;
     if (mid.replyState === 'unknown' || mid.steps.some((s) => s.state === 'unknown' && needsRecords(s))) {
-      if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
-      else {
-        try {
-          const records = await readItemRecords(c.client, mid.repo, mid.number);
-          if (c.session !== this.session) return;
-          const now = this.ops.get(id);
-          if (now) {
-            const out = opProveFromRecords(now, records, login);
-            this.setOp(out.record);
+      let snap: Awaited<ReturnType<typeof readItemSnapshot>> | null = null;
+      try {
+        snap = await readItemSnapshot(c.client, mid.repo, mid.number, mid.before?.events ?? null);
+      } catch (e) {
+        problems.push(`读评论和标签记录失败（${(e as Error)?.message ?? String(e)}）`);
+      }
+      if (c.session !== this.session) return undefined;
+      const view: OpSnapshot | null = snap ? { complete: snap.complete, state: snap.state, labels: snap.labels, events: snap.labelEvents } : null;
+      let now = this.ops.get(id);
+      if (now) {
+        if (snap) {
+          if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
+          else {
+            const out = opProveFromRecords(now, snap, login);
+            now = out.record;
             problems.push(...out.missing);
           }
-        } catch (e) {
-          problems.push(`读评论和标签记录失败（${(e as Error)?.message ?? String(e)}）`);
+          now = opProveFromSnapshot(now, view);
         }
+        now = opCheckSteps(now, view);
+        if (snap && !problems.length && now.steps.some((s) => s.state === 'unknown' && s.check === 'unread')) problems.push('没能完整读到这一条的标签记录');
+        this.setOp(now);
+        seen = view;
       }
     }
-    if (c.session !== this.session) return;
+    if (c.session !== this.session) return undefined;
     const end = this.ops.get(id);
-    if (!end) return;
-    this.setOp({ ...end, checkProblem: problems.length ? problems.join('；') : null });
+    if (!end) return undefined;
+    this.setOp({ ...end, checks: (end.checks ?? 0) + 1, checkProblem: problems.length ? problems.join('；') : null });
     this.opsChanged();
     await this.storeOps();
+    return seen;
   }
 
   /** "补做剩下的步骤": the item is read first; only the label steps still missing on GitHub go out, as a new record. */
@@ -3276,7 +3575,10 @@ export class Controller {
   private async actOp(action: OpAction): Promise<WriteResult> {
     const s = this.startOp(action);
     if (!s.ok || !s.id) return { ok: false, error: s.error, warning: null };
-    await this.opJobs.get(s.id);
+    // the requests, the re-reads and the check made at once — not the later checks of a step whose answer never came
+    const id = s.id;
+    await Promise.race([this.opJobs.get(id), new Promise<void>((resolve) => this.opFirst.set(id, resolve))]);
+    this.opFirst.delete(id);
     const r = this.ops.get(s.id);
     if (!r) return { ok: false, error: '这次操作已经不在了', warning: null };
     const m = r.steps[0];

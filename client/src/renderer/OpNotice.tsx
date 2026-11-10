@@ -3,7 +3,8 @@
 // send gate uses), in the panel and above the board alike.
 
 import { useState } from 'react';
-import { AUTO_DISMISS_MS, opAutoDismissable, opButtons, opDraftLeft, opPhase, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
+import { AUTO_DISMISS_MS, opAutoDismissable, opButtons, opDraftLeft, opPhase, opResendConfirm, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useAutoDismiss } from './autoDismiss';
 import { api } from './api';
 import { Icon } from './Icons';
@@ -42,6 +43,9 @@ export function OpNotice({
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean | null>(null);
   const [working, setWorking] = useState(false);
+  // GitHub#359: "仍要重发…" asks first, saying what a second send can cause
+  const [asking, setAsking] = useState(false);
+  const confirm = opResendConfirm(r);
   const tone = opTone(r);
   const phase = opPhase(r);
   const buttons = opButtons(r);
@@ -77,9 +81,9 @@ export function OpNotice({
               打开
             </button>
           )}
-          {has('recheck') && (
-            <button className="link" data-testid="op-recheck" disabled={working} onClick={() => void run(() => api().opRecheck(r.id))}>
-              重新查证据
+          {has('resend') && (
+            <button className="link" data-testid="op-resend" disabled={working} onClick={() => setAsking(true)}>
+              仍要重发…
             </button>
           )}
           {has('openWeb') && (
@@ -132,6 +136,25 @@ export function OpNotice({
           </span>
         )}
       </span>
+      {asking && confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          confirmLabel="仍要重发"
+          busy={working}
+          onCancel={() => setAsking(false)}
+          onConfirm={() => {
+            setAsking(false);
+            void run(() => api().opResend(r.id));
+          }}
+        >
+          <div data-testid="op-resend-confirm">
+            {confirm.lines.map((line, i) => (
+              <p key={i}>{line}</p>
+            ))}
+            {confirm.after && <p className="small">{confirm.after}</p>}
+          </div>
+        </ConfirmDialog>
+      )}
       {has('dismiss') && (
         <button className="banner-close" aria-label="关掉提示" title={left ? '关掉提示（草稿还留着，可以从这一条的详情里找回）' : '关掉提示'} data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
           <Icon name="x" />

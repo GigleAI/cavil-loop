@@ -11,7 +11,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
-import { opAutoDismissable, opButtons, opDraftLeft, opLockOf, opPhase, opReusableDraft, opText, opTone, type OpRecord } from '../../src/shared/ops';
+import { opAutoDismissable, opButtons, opDraftLeft, opLockOf, opPhase, opResendConfirm, opReusableDraft, opText, opTone, type OpRecord } from '../../src/shared/ops';
 import type { Item } from '../../src/shared/types';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
@@ -26,7 +26,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function ready(opts: { opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown; followUpSyncMs?: number; afterRoundRead?: (dropped: boolean) => void } = {}) {
+async function ready(opts: { opCheckDelaysMs?: number[]; opAutoMs?: number; opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown; followUpSyncMs?: number; afterRoundRead?: (dropped: boolean) => void } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -37,6 +37,9 @@ async function ready(opts: { opStuckMs?: number; fresh?: boolean; intercept?: (c
   backends.push(harness);
   const backend = opts.intercept ? { call: async (cmd: string, args?: any) => ((await opts.intercept!(cmd, args)) as any) ?? harness.call(cmd, args) } : harness;
   const c = await Controller.create({ backend: backend as any, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000,
+    // GitHub#359: only the check made at once, unless a test asks for the later ones
+    opCheckDelaysMs: opts.opCheckDelaysMs ?? [],
+    ...(opts.opAutoMs !== undefined ? { opAutoMs: opts.opAutoMs } : {}),
     ...(opts.followUpSyncMs !== undefined ? { followUpSyncMs: opts.followUpSyncMs } : {}),
     ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}) });
   controllers.push(c);
@@ -86,6 +89,11 @@ const commentsOnGitHub = (n = ISSUE) => fake.state.w.comments.get(`gigleai/cavil
 const labelsOnGitHub = (n = ISSUE): string[] => (fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === n)?.labels ?? []).map((l: any) => l.name);
 const stateOnGitHub = (n = ISSUE): string => fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === n)?.state;
 /** the daemon (another account) picks the item up: takes "pending/agent" away, puts "doing/agent" on */
+/** the same, in the very moment the write it follows was carried out (GitHub#359: before any read of the app can arrive) */
+function daemonPicksUpNow(n = ISSUE) {
+  fake.actAs('loop-bot', 'DELETE', `/repos/${REPO}/issues/${n}/labels/${encodeURIComponent('pending/agent')}`);
+  fake.actAs('loop-bot', 'POST', `/repos/${REPO}/issues/${n}/labels`, { labels: ['doing/agent'] });
+}
 async function daemonPicksUp(n = ISSUE) {
   const h = { authorization: `Bearer ${DAEMON_TOKEN}`, 'content-type': 'application/json' };
   expect((await fetch(`${fake.api}/repos/${REPO}/issues/${n}/labels/${encodeURIComponent('pending/agent')}`, { method: 'DELETE', headers: h })).status).toBe(200);
@@ -310,7 +318,9 @@ describe('an answer that never came stays unknown: a read showing the old state 
     // the re-read (and the evidence check) saw it open: still unknown, still locked
     expect(itemOf(c, ISSUE).state).toBe('open');
     expect(opPhase(r)).toBe('unknown');
-    expect(opButtons(r)).toEqual(expect.arrayContaining(['recheck', 'openWeb', 'unlock', 'copy', 'toReply']));
+    expect(opButtons(r)).toEqual(expect.arrayContaining(['unlock', 'copy', 'toReply']));
+    // GitHub#359: a close is only checked, never offered for a second send
+    expect(opButtons(r)).not.toContain('resend');
     expect(opButtons(r)).not.toContain('retry');
     expect(c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' }).ok).toBe(false);
     expect((await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' })).ok).toBe(false);
@@ -358,7 +368,7 @@ describe('an answer that never came stays unknown: a read showing the old state 
     const holdClose = fake.holdWhen((e) => e.method === 'PATCH' && e.path === `/api/repos/${REPO}/issues/${ISSUE}`);
     const s = c.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '做完了' });
     await until(() => closes().length === 1, 'close sent (after the read of what was there)');
-    expect(opOf(c, s.id!).before).toEqual({ comments: [], events: [] });
+    expect(opOf(c, s.id!).before).toMatchObject({ comments: [], events: [] });
     fake.state.w.failCommentList = true;
     holdClose();
     await idle(c);
@@ -384,7 +394,8 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
   it('autopilot: label added; agent label landed but answer lost; daemon took it; events unreadable while the item re-read works — every entry refused, then the events prove it', async () => {
     waitingForHuman();
     const c = await ready();
-    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('pending/agent'));
+    // GitHub#359: a read showing the label on would prove the step — here the daemon is faster than every read of ours
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('pending/agent'), () => daemonPicksUpNow());
     // the events become unreadable once the first request went out (the read made before it worked)
     const holdFirst = fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('autopilot'));
     // the daemon picks it up as soon as the label is on GitHub, before any re-read of ours
@@ -395,7 +406,6 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
     holdFirst();
     await until(() => lost.caught() === 1, 'the agent label reached GitHub');
     lost.stop();
-    await daemonPicksUp();
     await idle(c);
     // it happened: the first add went out, the daemon took the label and put its own on
     expect(labelAdds('pending/agent')).toHaveLength(1);
@@ -422,6 +432,10 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
     r = opOf(c, s.id!);
     expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent']);
     expect(opPhase(r)).toBe('settled');
+    // GitHub#359: proven, but the label was taken away again (the daemon, or a person taking it back — the app
+    // cannot tell): the step left is not sent by itself, and the notice says why
+    expect(opText(r)).toContain('这期间「pending/agent」被摘掉了，没有接着往下做');
+    expect(labelRemoves('pending/human')).toHaveLength(0);
     // "finish" only takes "pending/human" off; the agent label is never sent again
     expect(opButtons(r)).toContain('finish');
     const f = await c.opFinish(s.id!);
@@ -451,14 +465,20 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
   it('unknown and no evidence at all: only the person unlocks; then a new hand-back may go out', async () => {
     waitingForHuman();
     const c = await ready();
-    fake.state.w.failEvents = true;
-    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`));
+    // GitHub#359: the daemon is faster than every read of ours (a read showing the label on would prove the step),
+    // and from then on the label records cannot be read
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`), () => {
+      daemonPicksUpNow();
+      fake.state.w.failEvents = true;
+    });
     const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
-    await idle(c);
-    expect(lost.caught()).toBe(1);
+    await until(() => lost.caught() === 1, 'the agent label reached GitHub');
     lost.stop();
-    await daemonPicksUp();
+    await idle(c);
+    expect(labelsOnGitHub()).toContain('doing/agent');
     expect((await c.opRecheck(s.id!)).ok).toBe(false);
+    // not read is not "not there": nothing to send again
+    expect(opButtons(opOf(c, s.id!))).toEqual(['unlock']);
     expect(c.startOp({ kind: 'handBack', key: K(ISSUE) }).ok).toBe(false);
     expect(labelAdds('pending/agent')).toHaveLength(1);
     c.opUnlock(s.id!);
@@ -743,7 +763,10 @@ describe('a reply made from the kept comment is part of the lock (code review ro
     await until(() => comments().length === 1, 'reply sent');
     await until(() => storedOps()?.find((x) => x.id === id)?.replyState === 'sending', 'stored as sending');
     c.stopTimer();
+    // GitHub#359: the first round after the restart checks by itself — here the comment list cannot be read yet
+    fake.state.w.failCommentList = true;
     const c2 = await ready();
+    await idle(c2);
     const r = opOf(c2, id);
     expect(r.replyState).toBe('unknown');
     expect(opPhase(r)).toBe('unknown');
@@ -751,6 +774,7 @@ describe('a reply made from the kept comment is part of the lock (code review ro
     expect(opButtons(r)).not.toContain('retry');
     expect((await c2.act({ kind: 'comment', key: K(ISSUE), body: '恢复评论', draftOf: id })).ok).toBe(false);
     expect(c2.startOp({ kind: 'closeIssue', key: K(ISSUE), reason: 'not_planned', comment: '' }).ok).toBe(false);
+    fake.state.w.failCommentList = false;
     expect((await c2.opRecheck(id)).ok).toBe(true);
     expect(opOf(c2, id).replyState).toBeNull();
     expect(comments()).toHaveLength(1);
@@ -1245,5 +1269,486 @@ describe('GitHub#296: a check problem that no longer stands never keeps a succes
     expect(opPhase(r)).toBe('settled');
     expect(r.checkProblem).toBeNull();
     expect(opAutoDismissable(r)).toBe(true);
+  });
+});
+
+// GitHub#359: a step whose answer never came is checked by the app itself; proven = the steps left go out by
+// themselves (each judged on a fresh read first); not found = still "not sure", locked, and only a person —
+// told what it can cause — sends it again. Every "nothing was sent" has a "the check did read" sibling.
+describe('GitHub#359: checked by itself, finished by itself, sent again only by a person', () => {
+  const addOf = (label: string) => (e: LoggedRequest) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes(label);
+  const removeOf = (label: string) => (e: LoggedRequest) => e.method === 'DELETE' && e.path.endsWith(`/issues/${ISSUE}/labels/${encodeURIComponent(label)}`);
+  const snapshots = () => fake.log.filter((e) => e.operation === 'CavilOpSnapshot').length;
+  const eventsOnGitHub = (label: string) => (fake.state.w.labelEvents.get(K(ISSUE)) ?? []).filter((e) => e.label.name === label).map((e) => `${e.event} by ${e.actor.login}`);
+  const me = (method: string, path: string, body?: unknown) => fake.actAs('user-1', method, `/repos/${REPO}/issues/${ISSUE}${path}`, body);
+  /** #n as a fresh item waiting for a person: "pending/human" on, no hand-over label, no label records */
+  function fresh() {
+    openIssue(ISSUE);
+    for (const p of fake.state.projects.get('org/gigleai/11')!)
+      for (const node of p.items.nodes) if (node.content?.number === ISSUE) node.content.labels.nodes = node.content.labels.nodes.filter((l: any) => !['autopilot', 'pending/agent', 'doing/agent'].includes(l.name));
+    for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === ISSUE) r.labels = r.labels.filter((l: any) => !['autopilot', 'pending/agent', 'doing/agent'].includes(l.name));
+    fake.state.w.labelEvents.delete(K(ISSUE));
+    waitingForHuman();
+  }
+  /** autopilot whose first request never reaches GitHub until `late.land()`; the check made at once is through */
+  async function autopilotNotLanded(opts: Parameters<typeof ready>[0] = {}) {
+    fresh();
+    const c = await ready(opts);
+    const late = fake.lateWhen(addOf('autopilot'));
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    expect(late.caught()).toBe(1);
+    return { c, late, id: s.id! };
+  }
+
+  it('read in full and not found is still "not sure": locked, the notice says it may yet land, nothing is sent again; once it lands the next round finishes all three steps', async () => {
+    const { c, late, id } = await autopilotNotLanded();
+    let r = opOf(c, id);
+    // the check did read (and read everything)
+    expect(snapshots()).toBeGreaterThanOrEqual(2);
+    expect(r.steps.map((x) => x.state)).toEqual(['unknown', 'unsent', 'unsent']);
+    expect(r.steps[0].check).toBe('unseen');
+    expect(opPhase(r)).toBe('unknown');
+    expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(id);
+    expect(opText(r)).toContain('「autopilot」不确定有没有加上（已核对 1 次，到现在还没查到；原来那次请求仍可能稍后生效；还会继续自动核对）');
+    // never "it was not added": only "not sure"
+    expect(opText(r).replace(/不确定有没有加上/g, '')).not.toContain('没有加上');
+    expect(opTone(r)).toBe('warn');
+    expect(opButtons(r)).toEqual(['resend', 'unlock']);
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    // a round that finds nothing new: checked again, still not sure, still nothing sent
+    const before = snapshots();
+    await c.syncNow();
+    await idle(c);
+    expect(snapshots()).toBeGreaterThan(before);
+    expect(opOf(c, id).steps[0]).toMatchObject({ state: 'unknown', check: 'unseen' });
+    expect(opOf(c, id).checks).toBe(2);
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    // the first request lands late: the next round's check proves it, the offer to send again is gone, the rest goes out
+    late.land();
+    late.stop();
+    await c.syncNow();
+    await idle(c);
+    r = opOf(c, id);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(opButtons(r)).not.toContain('resend');
+    expect(opText(r)).toContain('已托管');
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+    expect(eventsOnGitHub('autopilot')).toEqual(['labeled by user-1']);
+    expect(eventsOnGitHub('pending/agent')).toEqual(['labeled by user-1']);
+    expect(labelsOnGitHub()).toEqual(expect.arrayContaining(['autopilot', 'pending/agent']));
+    expect(labelsOnGitHub()).not.toContain('pending/human');
+  });
+
+  it('a person sends it again: read first, then sent, the rest follows; the first request landing afterwards changes nothing more', async () => {
+    const { c, late, id } = await autopilotNotLanded();
+    expect(opResendConfirm(opOf(c, id))).toMatchObject({ title: '再发一次「加上 autopilot」？', after: '发出后会接着加「pending/agent」、摘「pending/human」。' });
+    expect(opResendConfirm(opOf(c, id))!.lines.join('')).toContain('仍可能稍后生效');
+    expect(opResendConfirm(opOf(c, id))!.lines.join('')).toContain('托管被恢复');
+    late.stop();
+    const reads = snapshots();
+    const out = await c.opResend(id);
+    expect(out).toMatchObject({ ok: true, warning: null });
+    await idle(c);
+    // judged on the check's read and again on one made right before the send
+    expect(snapshots() - reads).toBeGreaterThanOrEqual(2);
+    let r = opOf(c, id);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.steps[0].resent).toBe(1);
+    expect(labelAdds('autopilot')).toHaveLength(2);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+    // the first request lands now: the label was on already, GitHub records nothing new
+    late.land();
+    await c.syncNow();
+    await idle(c);
+    r = opOf(c, id);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(eventsOnGitHub('autopilot')).toEqual(['labeled by user-1']);
+    expect(labelsOnGitHub()).toContain('autopilot');
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+  });
+
+  it('asked to send again, but the check made first finds the first request landed: nothing is sent a second time, the rest goes on', async () => {
+    const { c, late, id } = await autopilotNotLanded();
+    late.land();
+    late.stop();
+    const reads = snapshots();
+    const out = await c.opResend(id);
+    expect(out).toMatchObject({ ok: true, warning: '核对时发现上一次请求已经生效，没有重发' });
+    await idle(c);
+    expect(snapshots()).toBeGreaterThan(reads);
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(opOf(c, id).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(opOf(c, id).steps[0].resent).toBeUndefined();
+  });
+
+  it('asked to send again after the item was closed, or after somebody touched the label: refused, nothing sent; the read did happen', async () => {
+    for (const what of ['closed', 'touched'] as const) {
+      dir = tempDir();
+      const { c, late, id } = await autopilotNotLanded();
+      late.stop();
+      if (what === 'closed') fake.actAs('loop-bot', 'PATCH', `/repos/${REPO}/issues/${ISSUE}`, { state: 'closed' });
+      else {
+        // another account put the label on and took it off again
+        fake.actAs('loop-bot', 'POST', `/repos/${REPO}/issues/${ISSUE}/labels`, { labels: ['autopilot'] });
+        fake.actAs('loop-bot', 'DELETE', `/repos/${REPO}/issues/${ISSUE}/labels/autopilot`);
+      }
+      const reads = snapshots();
+      const sent = labelAdds('autopilot').length;
+      const out = await c.opResend(id);
+      await idle(c);
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain(what === 'closed' ? '这一条已经关闭' : '这期间这个标签被人动过');
+      expect(snapshots()).toBeGreaterThan(reads);
+      expect(labelAdds('autopilot')).toHaveLength(sent);
+      expect(labelAdds('pending/agent')).toHaveLength(0);
+      const r = opOf(c, id);
+      expect(r.steps[0].state).toBe('unknown');
+      if (what === 'touched') {
+        expect(r.steps[0].check).toBe('touched');
+        expect(opButtons(r)).toEqual(['unlock']);
+      }
+      c.stopTimer();
+    }
+  });
+
+  it('the agent label and the "human" label: each says its own consequence, and is sent again the same way', async () => {
+    // hand-back, the agent label never arrived
+    fresh();
+    let c = await ready();
+    let late = fake.lateWhen(addOf('pending/agent'));
+    let s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await idle(c);
+    let r = opOf(c, s.id!);
+    expect(r.steps[0]).toMatchObject({ state: 'unknown', check: 'unseen', role: 'agent' });
+    expect(opText(r)).toContain('「pending/agent」不确定有没有加上（已核对 1 次，到现在还没查到；原来那次请求仍可能稍后生效');
+    expect(opResendConfirm(r)!.lines.join('')).toContain('这一条会被派两次工');
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    late.stop();
+    expect((await c.opResend(s.id!)).ok).toBe(true);
+    await idle(c);
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok']);
+    expect(labelAdds('pending/agent')).toHaveLength(2);
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+    c.stopTimer();
+    // hand-back, the agent label went on, taking "pending/human" off never arrived
+    fresh();
+    dir = tempDir();
+    c = await ready();
+    late = fake.lateWhen(removeOf('pending/human'));
+    const removesBefore = labelRemoves('pending/human').length;
+    s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await idle(c);
+    r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown']);
+    expect(r.steps[1]).toMatchObject({ check: 'unseen', role: 'human' });
+    expect(opText(r)).toContain('「pending/human」不确定有没有摘掉（已核对 1 次，到现在还没查到');
+    expect(opResendConfirm(r)).toMatchObject({ title: '再发一次「摘掉 pending/human」？', after: null });
+    expect(opResendConfirm(r)!.lines.join('')).toContain('可能被当成待派工');
+    late.stop();
+    expect((await c.opResend(s.id!)).ok).toBe(true);
+    await idle(c);
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok']);
+    expect(labelRemoves('pending/human').length - removesBefore).toBe(2);
+    expect(labelsOnGitHub()).not.toContain('pending/human');
+  });
+
+  it('proven, and nobody touched anything: the rest goes out by itself — the same start with the label taken off again by the same account, or the item closed: it stops', async () => {
+    for (const what of ['untouched', 'revoked', 'closed'] as const) {
+      fresh();
+      dir = tempDir();
+      const c = await ready();
+      const agents = labelAdds('pending/agent').length;
+      const removes = labelRemoves('pending/human').length;
+      // the label lands, its answer is lost — and what happens next on GitHub happens before any read of the app
+      const lost = fake.dropAnswerWhen(addOf('autopilot'), () => {
+        if (what === 'revoked') me('DELETE', '/labels/autopilot');
+        if (what === 'closed') me('PATCH', '', { state: 'closed' });
+      });
+      const reads = snapshots();
+      const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+      await idle(c);
+      lost.stop();
+      expect(lost.caught()).toBe(1);
+      expect(snapshots()).toBeGreaterThan(reads);
+      const r = opOf(c, s.id!);
+      // done either way: this account's "labeled" record is there
+      expect(r.steps[0].state).toBe('ok');
+      if (what === 'untouched') {
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+        expect(labelAdds('pending/agent').length - agents).toBe(1);
+        expect(labelRemoves('pending/human').length - removes).toBe(1);
+      } else {
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+        expect(labelAdds('pending/agent').length - agents).toBe(0);
+        expect(labelRemoves('pending/human').length - removes).toBe(0);
+        expect(opText(r)).toContain(what === 'revoked' ? '这期间「autopilot」被摘掉了，没有接着往下做' : '这一条已经关闭，没有接着往下做');
+        expect(opPhase(r)).toBe('settled');
+        expect(opButtons(r)).toContain('retry');
+        expect(opButtons(r)).not.toContain('finish');
+        expect(opButtons(r)).not.toContain('resend');
+      }
+      c.stopTimer();
+    }
+  });
+
+  it('the agent label is on, and the same account put "pending/human" on again meanwhile: it is not taken off; untouched: it is', async () => {
+    for (const handedBack of [false, true]) {
+      fresh();
+      dir = tempDir();
+      const c = await ready();
+      const removes = labelRemoves('pending/human').length;
+      const lost = fake.dropAnswerWhen(addOf('pending/agent'), () => {
+        if (!handedBack) return;
+        me('DELETE', `/labels/${encodeURIComponent('pending/human')}`);
+        me('POST', '/labels', { labels: ['pending/human'] });
+      });
+      const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+      await idle(c);
+      lost.stop();
+      const r = opOf(c, s.id!);
+      expect(r.steps[0].state).toBe('ok');
+      expect(snapshots()).toBeGreaterThan(0);
+      if (handedBack) {
+        expect(r.steps[1].state).toBe('unsent');
+        expect(labelRemoves('pending/human').length - removes).toBe(0);
+        expect(labelsOnGitHub()).toContain('pending/human');
+        expect(opText(r)).toContain('这期间「pending/human」被人动过，没有接着往下做');
+        expect(opButtons(r)).toContain('finish');
+      } else {
+        expect(r.steps[1].state).toBe('ok');
+        expect(labelRemoves('pending/human').length - removes).toBe(1);
+      }
+      c.stopTimer();
+    }
+  });
+
+  it('judged twice: allowed on the check\'s read, the label taken off before the read made right before the send — not sent', async () => {
+    fresh();
+    let seen = 0;
+    let armed = false;
+    const meanwhile: { ok: boolean; error: string | null }[] = [];
+    const c: Controller = await ready({
+      intercept: (cmd, args) => {
+        if (!armed || !JSON.stringify(args ?? '').includes('CavilOpSnapshot')) return undefined;
+        seen++;
+        // while the record reads before its next step, nothing else of this item starts: not a new hand-over, not "finish"
+        if (seen === 1 && id) {
+          meanwhile.push(c.startOp({ kind: 'handBack', key: K(ISSUE) }));
+          void c.opFinish(id).then((x) => meanwhile.push(x));
+        }
+        if (seen === 2) me('DELETE', '/labels/autopilot');
+        return undefined;
+      },
+    });
+    let id = '';
+    // armed once the request is out: the check's snapshot is the 1st, the one right before the next send the 2nd
+    const lost = fake.dropAnswerWhen(addOf('autopilot'), () => (armed = true));
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    id = s.id!;
+    await idle(c);
+    lost.stop();
+    expect(seen).toBeGreaterThanOrEqual(2);
+    expect(meanwhile).toHaveLength(2);
+    expect(meanwhile.every((x) => !x.ok)).toBe(true);
+    expect(meanwhile[0].error).toContain('还在自动处理剩下的步骤');
+    const r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    expect(opText(r)).toContain('这期间「autopilot」被摘掉了，没有接着往下做');
+  });
+
+  it('label records over several pages are read back to what was there before; a page that fails, or labels that do not add up: not read — nothing sent, nothing offered', async () => {
+    for (const what of ['paged', 'page fails', 'does not add up'] as const) {
+      fresh();
+      // history from before the operation
+      fake.actAs('loop-bot', 'POST', `/repos/${REPO}/issues/${ISSUE}/labels`, { labels: ['old'] });
+      fake.actAs('loop-bot', 'DELETE', `/repos/${REPO}/issues/${ISSUE}/labels/old`);
+      fake.state.w.eventPage = 2;
+      fake.state.w.failEventPages = false;
+      fake.state.w.staleSnapshotLabels = null;
+      dir = tempDir();
+      const c = await ready();
+      const agents = labelAdds('pending/agent').length;
+      const lost = fake.dropAnswerWhen(addOf('autopilot'), () => {
+        // other labels come and go meanwhile: more new records than one page holds
+        for (const l of ['x', 'y']) {
+          fake.actAs('loop-bot', 'POST', `/repos/${REPO}/issues/${ISSUE}/labels`, { labels: [l] });
+          fake.actAs('loop-bot', 'DELETE', `/repos/${REPO}/issues/${ISSUE}/labels/${l}`);
+        }
+        if (what === 'page fails') fake.state.w.failEventPages = true;
+        if (what === 'does not add up') fake.state.w.staleSnapshotLabels = [{ name: 'pending/human' }, { name: 'autopilot' }, { name: 'from-nowhere' }];
+      });
+      const pagesBefore = fake.log.filter((e) => e.operation === 'CavilOpSnapshot' && (e.variables as any)?.before).length;
+      const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+      await idle(c);
+      lost.stop();
+      // older pages were asked for
+      expect(fake.log.filter((e) => e.operation === 'CavilOpSnapshot' && (e.variables as any)?.before).length).toBeGreaterThan(pagesBefore);
+      const r = opOf(c, s.id!);
+      if (what === 'paged') {
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+        expect(labelAdds('pending/agent').length - agents).toBe(1);
+      } else {
+        // the label itself is read on / its record found on the newest page: that step is done; whether the rest may go out could not be read
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+        expect(labelAdds('pending/agent').length - agents).toBe(0);
+        expect(opButtons(r)).not.toContain('resend');
+        expect(r.halt ?? null).toBeNull();
+        // the next round reads again; once it adds up the rest goes out
+        fake.state.w.failEventPages = false;
+        fake.state.w.staleSnapshotLabels = null;
+        await c.syncNow();
+        await idle(c);
+        expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+        expect(labelAdds('pending/agent').length - agents).toBe(1);
+      }
+      c.stopTimer();
+    }
+    fake.state.w.eventPage = 0;
+  });
+
+  it('not read in full is never "not found": no offer to send again, the notice says the read failed', async () => {
+    fresh();
+    const c = await ready();
+    const late = fake.lateWhen(addOf('autopilot'));
+    fake.state.w.eventPage = 1;
+    // one label record from before, then the older page cannot be read
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await until(() => late.caught() === 1, 'the request went out');
+    fake.actAs('loop-bot', 'POST', `/repos/${REPO}/issues/${ISSUE}/labels`, { labels: ['x'] });
+    fake.actAs('loop-bot', 'POST', `/repos/${REPO}/issues/${ISSUE}/labels`, { labels: ['y'] });
+    fake.state.w.failEventPages = true;
+    await idle(c);
+    await c.opRecheck(s.id!);
+    const r = opOf(c, s.id!);
+    expect(r.steps[0]).toMatchObject({ state: 'unknown', check: 'unread' });
+    expect(opButtons(r)).toEqual(['unlock']);
+    expect(opText(r)).toContain('这次没能查证');
+    expect(opText(r)).not.toContain('到现在还没查到');
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect((await c.opResend(s.id!)).ok).toBe(false);
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    fake.state.w.eventPage = 0;
+    fake.state.w.failEventPages = false;
+  });
+
+  it('the read before the first request failed: checked, never offered for a second send, nothing goes on by itself', async () => {
+    fresh();
+    const c = await ready();
+    fake.state.w.failEvents = true;
+    const late = fake.lateWhen(addOf('autopilot'));
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await until(() => late.caught() === 1, 'the request went out');
+    fake.state.w.failEvents = false;
+    await idle(c);
+    expect(opOf(c, s.id!).before).toBeNull();
+    const reads = snapshots();
+    await c.opRecheck(s.id!);
+    expect(snapshots()).toBeGreaterThan(reads);
+    let r = opOf(c, s.id!);
+    expect(r.steps[0]).toMatchObject({ state: 'unknown', check: 'unread' });
+    expect(opButtons(r)).toEqual(['unlock']);
+    // it lands: the label being on proves the step, but what was there before is not known — the rest waits for a person
+    late.land();
+    late.stop();
+    await c.syncNow();
+    await idle(c);
+    r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    expect(opButtons(r)).toContain('finish');
+  });
+
+  it('after a restart, and past the time limit: checked and proven, but the rest is not sent by itself', async () => {
+    // restart
+    let { c, late, id } = await autopilotNotLanded();
+    c.stopTimer();
+    late.land();
+    late.stop();
+    const c2 = await ready();
+    await idle(c2);
+    let r = opOf(c2, id);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    expect(opButtons(r)).toContain('finish');
+    c2.stopTimer();
+    // past the limit (here: 0 ms)
+    dir = tempDir();
+    ({ c, late, id } = await autopilotNotLanded({ opAutoMs: 0 }));
+    const adds = labelAdds('pending/agent').length;
+    late.land();
+    late.stop();
+    await c.syncNow();
+    await idle(c);
+    r = opOf(c, id);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    expect(labelAdds('pending/agent').length).toBe(adds);
+    expect(opText(r)).toContain('离发起已经超过 10 分钟，剩下的步骤不再自动发，没有接着往下做');
+    expect(opButtons(r)).toContain('finish');
+  });
+
+  it('the later checks run by themselves: busy and nothing to choose while they run; the request landing in between is found and the rest goes out without a click', async () => {
+    fresh();
+    const c = await ready({ opCheckDelaysMs: [150, 150, 150] });
+    const late = fake.lateWhen(addOf('autopilot'));
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await until(() => (opOf(c, s.id!).checks ?? 0) >= 1 && opOf(c, s.id!).steps[0].state === 'unknown', 'the check made at once is through');
+    let r = opOf(c, s.id!);
+    expect(r.checking).toBe(true);
+    expect(opTone(r)).toBe('busy');
+    expect(opButtons(r)).toEqual([]);
+    expect(opText(r)).toBe('正在托管…「autopilot」发出后没有收到 GitHub 的应答，正在自动核对有没有加上（第 2 次）');
+    expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(s.id);
+    late.land();
+    late.stop();
+    await idle(c);
+    r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.checking).toBeFalsy();
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+  });
+
+  it('signing out while the later checks wait: they end there — the request landing afterwards is neither checked nor followed by anything', async () => {
+    fresh();
+    const c = await ready({ opCheckDelaysMs: [150, 150, 150] });
+    const late = fake.lateWhen(addOf('autopilot'));
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await until(() => (opOf(c, s.id!).checks ?? 0) >= 1 && opOf(c, s.id!).checking === true, 'the check made at once is through, the later ones wait');
+    await c.logout();
+    late.land();
+    late.stop();
+    const reads = snapshots();
+    await idle(c);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(c.getState().ops).toHaveLength(0);
+    expect(snapshots()).toBe(reads);
+    expect(labelsOnGitHub()).toContain('autopilot');
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    expect(labelRemoves('pending/human')).toHaveLength(0);
+  });
+
+  it('the later checks run out: the notice turns into the warning with the two choices, still locked, nothing sent', async () => {
+    fresh();
+    const c = await ready({ opCheckDelaysMs: [20, 20, 20] });
+    const late = fake.lateWhen(addOf('autopilot'));
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await idle(c);
+    const r = opOf(c, s.id!);
+    expect(late.caught()).toBe(1);
+    expect(r.checks).toBe(4);
+    expect(r.checking).toBeFalsy();
+    expect(opTone(r)).toBe('warn');
+    expect(opButtons(r)).toEqual(['resend', 'unlock']);
+    expect(opText(r)).toContain('已核对 4 次，到现在还没查到');
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(storedOps()?.find((x) => x.id === s.id)?.checking).toBeFalsy();
   });
 });

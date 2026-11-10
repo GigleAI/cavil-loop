@@ -4557,14 +4557,69 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   await expect(notice.getByTestId('op-copy')).toBeVisible();
   await expect(page.getByTestId('close-issue')).toBeDisabled();
   await shot(page, '250-04-reply-unknown');
-  // "重新查证据": the comment list shows a new comment with that text — the comment is done, "重新关闭" comes back without it
-  await notice.getByTestId('op-recheck').click();
+  // GitHub#359: there is no "check again" button — the next sync round checks by itself: the comment list shows a
+  // new comment with that text — the comment is done, "重新关闭" comes back without it
+  await expect(notice.getByTestId('op-recheck')).toHaveCount(0);
+  await page.getByTestId('refresh').click();
+  await openNotices(page);
   await expect(notice.getByTestId('op-retry')).toBeVisible();
   await notice.getByTestId('op-retry').click();
   await expect(page.getByTestId('close-comment')).toHaveValue('');
   await expect(page.getByTestId('close-reason-completed')).toBeChecked();
   await page.getByTestId('confirm-cancel').click();
   expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['未知回复再次关闭']);
+  await app.close();
+});
+
+test('GitHub#359: a hand-back whose request never got an answer — the notice checks by itself and stays "not sure"; "仍要重发…" asks first (cancel sends nothing), confirm sends it and the rest follows', async () => {
+  pinLabels();
+  // an open item: nothing is sent again, or by itself, for one that was closed meanwhile
+  const copies = findCopies({ projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w }, 'GigleAI/cavil-loop', 138)!;
+  for (const g of copies.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+  for (const r of copies.rest) Object.assign(r, { state: 'open', state_reason: null });
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.getByTestId('search').fill('#138');
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  await expect(detail.getByTestId('hand-back')).toBeVisible({ timeout: 15_000 });
+  const adds = () => env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues/138/labels' && ((w.body as any)?.labels ?? []).includes('pending/agent')).length;
+  const labels = () => (env.fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === 138)?.labels ?? []).map((l: any) => l.name);
+  // the request leaves the app, GitHub never carries it out (until `land`), the connection drops
+  const late = env.fake.lateWhen((e) => e.method === 'POST' && e.path === '/api/repos/GigleAI/cavil-loop/issues/138/labels');
+  await detail.getByTestId('hand-back').click();
+  const notice = page.locator('[data-testid="detail"] [data-testid="op-notice"]').last();
+  await openNotices(page);
+  // checked by itself (at once, then three more times): in the end still "not sure", never "it was not added"
+  await expect(notice.getByTestId('op-resend')).toBeVisible({ timeout: 60_000 });
+  await expect(notice).toHaveAttribute('data-phase', 'unknown');
+  await expect(notice.getByTestId('op-notice-text')).toContainText('「pending/agent」不确定有没有加上');
+  await expect(notice.getByTestId('op-notice-text')).toContainText('到现在还没查到；原来那次请求仍可能稍后生效');
+  await expect(notice.getByTestId('op-unlock')).toBeVisible();
+  await expect(notice.getByTestId('op-recheck')).toHaveCount(0);
+  await expect(notice.getByTestId('op-open-web')).toHaveCount(0);
+  await expect(detail.getByTestId('hand-back')).toBeDisabled();
+  expect(late.caught()).toBe(1);
+  expect(adds()).toBe(1);
+  await shot(page, '359-01-not-sure');
+  // the dialog says what a second send can cause; cancel sends nothing
+  late.stop();
+  await notice.getByTestId('op-resend').click();
+  const dialog = page.getByTestId('confirm-dialog');
+  await expect(dialog).toContainText('再发一次「加上 pending/agent」？');
+  await expect(dialog.getByTestId('op-resend-confirm')).toContainText('仍可能稍后生效');
+  await expect(dialog.getByTestId('op-resend-confirm')).toContainText('这一条会被派两次工');
+  await expect(dialog.getByTestId('op-resend-confirm')).toContainText('发出后会接着摘「pending/human」');
+  await shot(page, '359-02-confirm');
+  await dialog.getByTestId('confirm-cancel').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(notice.getByTestId('op-resend')).toBeVisible();
+  expect(adds()).toBe(1);
+  // confirm: sent again, and the step left goes out by itself
+  await notice.getByTestId('op-resend').click();
+  await page.getByTestId('confirm-dialog').getByTestId('confirm-ok').click();
+  await expect.poll(() => adds()).toBe(2);
+  await expect.poll(() => labels()).toEqual(['pending/agent']);
   await app.close();
 });
 

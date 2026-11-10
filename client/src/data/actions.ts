@@ -30,7 +30,7 @@ import {
   ADD_PROJECT_ITEM_MUTATION,
   CLEAR_FIELD_MUTATION,
   CLOSING_ISSUES_QUERY,
-  OP_RECORDS_QUERY,
+  OP_RECORDS_QUERY, OP_SNAPSHOT_QUERY,
   SET_ITERATION_MUTATION,
   SET_STATUS_MUTATION,
   TASK_SOURCE_QUERY,
@@ -289,6 +289,63 @@ export async function readItemRecords(client: GitHubClient, repo: string, number
     labelEvents: it.timelineItems.nodes
       .filter((n) => n?.id && (n.__typename === 'LabeledEvent' || n.__typename === 'UnlabeledEvent'))
       .map((n) => ({ id: n.id, event: n.__typename === 'LabeledEvent' ? 'labeled' : 'unlabeled', actor: n.actor?.login ?? null, label: n.label?.name ?? '' })),
+  };
+}
+
+/** GitHub#359: how many pages of label events a snapshot walks back at most (100 events each) */
+const SNAPSHOT_PAGES = 20;
+
+/**
+ * GitHub#359: the item's state, labels, newest comments and label events in one read (further
+ * pages of label events only when needed). `known`: the ids of label events seen before the
+ * operation started — the events are read back until one of them shows up, or to the first event
+ * ever; null = the newest page only. `complete` is false when that could not be done (more pages
+ * than SNAPSHOT_PAGES, a page without a way back, more labels than one page): such a read must
+ * never be taken for "nothing happened". Throws when GitHub did not answer.
+ */
+export async function readItemSnapshot(client: GitHubClient, repo: string, number: number, known: readonly string[] | null): Promise<ItemRecords & { complete: boolean; state: 'open' | 'closed' | 'merged'; labels: string[] }> {
+  const [owner, name] = repo.split('/');
+  type Node = { id: string; body?: string; author?: { login?: string } | null; actor?: { login?: string } | null; label?: { name?: string } | null; __typename?: string };
+  type It = {
+    state?: string;
+    merged?: boolean;
+    labels?: { totalCount?: number; nodes: { name: string }[] };
+    comments?: { nodes: Node[] };
+    timelineItems?: { pageInfo?: { hasPreviousPage?: boolean; startCursor?: string | null }; nodes: Node[] };
+  };
+  const seen = new Set(known ?? []);
+  let first: It | null = null;
+  let events: ItemRecords['labelEvents'] = [];
+  let before: string | null = null;
+  let complete = false;
+  for (let page = 0; page < SNAPSHOT_PAGES; page++) {
+    const data: { repository: { issueOrPullRequest: It | null } | null } = await client.graphql(OP_SNAPSHOT_QUERY, { owner, name, number, before });
+    const it: It | null | undefined = data.repository?.issueOrPullRequest;
+    if (!it || !it.comments || !it.timelineItems || !it.labels || typeof it.state !== 'string') throw new GitHubError('graphql', `读不到 ${repo}#${number} 的状态、标签和标签记录`);
+    if (!first) first = it;
+    const nodes = it.timelineItems.nodes
+      .filter((n) => n?.id && (n.__typename === 'LabeledEvent' || n.__typename === 'UnlabeledEvent'))
+      .map((n) => ({ id: n.id, event: n.__typename === 'LabeledEvent' ? ('labeled' as const) : ('unlabeled' as const), actor: n.actor?.login ?? null, label: n.label?.name ?? '' }));
+    events = [...nodes, ...events];
+    const more = it.timelineItems.pageInfo?.hasPreviousPage === true;
+    if (!more || known === null || nodes.some((e) => seen.has(e.id))) {
+      // the newest page alone is everything only when there is nothing before it
+      complete = !more || (known !== null && nodes.some((e) => seen.has(e.id)));
+      break;
+    }
+    before = it.timelineItems.pageInfo?.startCursor ?? null;
+    if (!before) break;
+  }
+  const it = first!;
+  const labels = it.labels!.nodes.map((l) => l.name);
+  if ((it.labels!.totalCount ?? labels.length) !== labels.length) complete = false;
+  const st = String(it.state).toLowerCase();
+  return {
+    complete,
+    state: it.merged === true || st === 'merged' ? 'merged' : st === 'open' ? 'open' : 'closed',
+    labels,
+    comments: it.comments!.nodes.filter((n) => n?.id).map((n) => ({ id: n.id, author: n.author?.login ?? null, body: n.body ?? '' })),
+    labelEvents: events,
   };
 }
 

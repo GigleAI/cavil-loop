@@ -95,7 +95,7 @@ export interface FakeState {
    * answer is lost; `apply: 'later'` = the client sees the connection drop at once, the write is
    * carried out only when `land()` of `lateWhen` is called (it arrived and lands late).
    */
-  lost: { match: (entry: LoggedRequest) => boolean; apply: 'now' | 'later'; pending: (() => void)[]; caught: number }[];
+  lost: { match: (entry: LoggedRequest) => boolean; apply: 'now' | 'later'; pending: (() => void)[]; caught: number; then?: () => void }[];
   /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
   refreshTokens: Map<string, string>;
   refreshSeq: number;
@@ -139,9 +139,14 @@ export interface FakeGitHub {
   /** hold responses of requests matching `pred` (GraphQL: operation + variables are filled) until released */
   holdWhen(pred: (entry: LoggedRequest) => boolean): () => void;
   /** GitHub#250: matching REST writes are carried out, then their connection is dropped (the answer is lost) */
-  dropAnswerWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; stop: () => void };
+  dropAnswerWhen(pred: (entry: LoggedRequest) => boolean, then?: () => void): { caught: () => number; stop: () => void };
   /** GitHub#250: matching REST writes see the connection drop at once and are carried out only on `land()` */
   lateWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; land: () => void; stop: () => void };
+  /**
+   * GitHub#359: a REST write by another account carried out at once, without a request (so it can be
+   * done from inside `dropAnswerWhen`'s `then`, in the same moment as the write it follows).
+   */
+  actAs(login: string, method: string, path: string, body?: unknown): void;
   /** everything writable, serialised: equal before / after = GitHub changed nothing */
   digest(): string;
   /** requests that ask GitHub to change something (REST non-GET except the markdown renderer, GraphQL mutations) */
@@ -476,8 +481,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
             () => {},
             login(),
           );
-        if (lost.apply === 'now') run();
-        else lost.pending.push(run);
+        if (lost.apply === 'now') {
+          run();
+          // what happens on GitHub right after it, before any read of the client can arrive
+          lost.then?.();
+        } else lost.pending.push(run);
         entry.status = -1;
         req.socket.destroy();
         return;
@@ -583,8 +591,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         release();
       };
     },
-    dropAnswerWhen(pred) {
-      const l = { match: pred, apply: 'now' as const, pending: [], caught: 0 };
+    actAs(login, method, path, body) {
+      handleRest(store, method, `/api${path}`, body, () => {}, () => {}, login);
+    },
+    dropAnswerWhen(pred, then) {
+      const l = { match: pred, apply: 'now' as const, pending: [], caught: 0, ...(then ? { then } : {}) };
       state.lost.push(l);
       return { caught: () => l.caught, stop: () => void (state.lost = state.lost.filter((x) => x !== l)) };
     },

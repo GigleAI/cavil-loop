@@ -10,6 +10,14 @@ import {
   opApplyRead,
   opAutoDismissable,
   opButtons,
+  opCheckSteps,
+  opNextAuto,
+  opPermit,
+  opProveFromSnapshot,
+  opResendConfirm,
+  opResendStep,
+  type OpCheck,
+  type OpSnapshot,
   opDisposable,
   opDraftLeft,
   opLockOf,
@@ -73,10 +81,12 @@ describe('table A: phase / lock', () => {
 });
 
 describe('table A: notice and buttons', () => {
-  it('unknown: re-check, the web page, the manual unlock — never a one-click re-send', () => {
+  it('unknown: the manual unlock — never a one-click re-send, and (GitHub#359) no "check again": the checks run by themselves', () => {
     for (const r of [close('unknown', 'unsent'), auto('ok', 'unknown', 'unsent', { readAt: 30 }), rec('merge', [step('merge', 'unknown')])]) {
       const b = opButtons(r);
-      expect(b).toEqual(expect.arrayContaining(['recheck', 'openWeb', 'unlock']));
+      expect(b).toContain('unlock');
+      expect(b).not.toContain('resend');
+      expect(b).not.toContain('recheck');
       expect(b).not.toContain('retry');
       expect(b).not.toContain('finish');
       expect(b).not.toContain('dismiss');
@@ -233,13 +243,17 @@ describe('reads never turn "unknown" into "did not happen"', () => {
     expect(closed.steps.map((s) => s.state)).toEqual(['ok', 'unsent']);
     expect(opPhase(closed)).toBe('settled');
   });
-  it('an unknown "agent" label is never proven or denied by the labels on the item (the daemon takes it away)', () => {
+  it('an unknown "agent" label is never denied by the labels on the item (the daemon takes it away); GitHub#359: the label being on is the wanted state — done', () => {
     const r = auto('ok', 'unknown', 'unsent');
-    for (const labels of [[], ['pending/agent'], ['doing/agent']]) {
+    for (const labels of [[], ['doing/agent']]) {
       const x = opApplyRead(r, { issuedAt: 30, state: 'open', labels });
       expect(x.steps[1].state).toBe('unknown');
       expect(opPhase(x)).toBe('unknown');
     }
+    const on = opApplyRead(r, { issuedAt: 30, state: 'open', labels: ['pending/agent'] });
+    expect(on.steps[1]).toMatchObject({ state: 'ok', reason: '重读时这个标签已在' });
+    // a read issued before the request says nothing
+    expect(opApplyRead(r, { issuedAt: 5, state: 'open', labels: ['pending/agent'] }).steps[1].state).toBe('unknown');
   });
   it('an unknown label removal is proven by the label being gone, never denied by it being there', () => {
     const r = rec('handBack', [step('addLabel', 'ok', { label: 'pending/agent' }), step('removeLabel', 'unknown', { label: 'pending/human' })]);
@@ -331,7 +345,7 @@ describe('code review round 2: a reply made from the kept comment', () => {
     const u = { ...base(), replyState: 'unknown' as const, reply: { body: '做完了', before: [] } };
     expect(opPhase(u)).toBe('unknown');
     expect(opLocked(u)).toBe(true);
-    expect(opButtons(u)).toEqual(['recheck', 'openWeb', 'unlock', 'copy', 'dropDraft']);
+    expect(opButtons(u)).toEqual(['unlock', 'copy', 'dropDraft']);
   });
   it('the dialog of a retry never gets that comment back; unlocked by hand neither', () => {
     const u = { ...base(), replyState: 'unknown' as const };
@@ -426,5 +440,161 @@ describe('GitHub#296: a check problem only stands while a step is unknown', () =
         }
     expect(checked).toBeGreaterThan(1000);
     expect(goes).toBeGreaterThan(0);
+  });
+});
+
+// GitHub#359: one check verdict, one permit, and the notice / buttons / lock / dialog all read the same record.
+describe('GitHub#359: the check of an unknown label step never says "it did not happen"', () => {
+  const role = { autopilot: 'autopilot', 'pending/agent': 'agent', 'pending/human': 'human' } as const;
+  const withRoles = (r: OpRecord): OpRecord => ({ ...r, steps: r.steps.map((s) => (s.label ? { ...s, role: role[s.label as keyof typeof role] } : s)) });
+  const before = { comments: [], events: ['e0'], labels: ['pending/human'] };
+  const ev = (id: string, event: 'labeled' | 'unlabeled', label: string, actor = 'me') => ({ id, event, actor, label });
+  const old = ev('e0', 'labeled', 'pending/human', 'bot');
+  const snap = (labels: string[], events = [old], extra: Partial<OpSnapshot> = {}): OpSnapshot => ({ complete: true, state: 'open', labels, events, ...extra });
+  const unknown = (extra: Partial<OpRecord> = {}) => withRoles(auto('unknown', 'unsent', 'unsent', { before, checks: 1, ...extra }));
+  const proven = (extra: Partial<OpRecord> = {}) => withRoles(auto('ok', 'unsent', 'unsent', { before, auto: true, readAt: 30, ...extra }));
+
+  describe('the four verdicts', () => {
+    const cases: [string, OpSnapshot | null, Partial<OpRecord>, string][] = [
+      ['the read failed', null, {}, 'unread'],
+      ['the label records were not read back to the start', snap(['pending/human'], [old], { complete: false }), {}, 'unread'],
+      ['nothing from before the first request', snap(['pending/human']), { before: null }, 'unread'],
+      ['a record from an older version: no labels from before', snap(['pending/human']), { before: { comments: [], events: ['e0'] } }, 'unread'],
+      ['the new records do not add up to the labels read', snap(['pending/human', 'x']), {}, 'unread'],
+      ['read in full: the label is not on, nobody touched it', snap(['pending/human']), {}, 'unseen'],
+      ['read in full: other labels came and went, this one untouched', snap(['pending/human'], [old, ev('e1', 'labeled', 'x', 'bot'), ev('e2', 'unlabeled', 'x', 'bot')]), {}, 'unseen'],
+      ['read in full: somebody else put it on and took it off', snap(['pending/human'], [old, ev('e1', 'labeled', 'autopilot', 'bot'), ev('e2', 'unlabeled', 'autopilot', 'bot')]), {}, 'touched'],
+    ];
+    for (const [name, s, extra, want] of cases)
+      it(name, () => {
+        const r = opCheckSteps(unknown(extra), s);
+        expect(r.steps[0].check).toBe(want);
+        // whatever the verdict: still unknown, still locked
+        expect(r.steps[0].state).toBe('unknown');
+        expect(opLocked(r)).toBe(true);
+        // and never a sentence saying it was not added
+        expect(opText(r).replace(/不确定有没有加上/g, '')).not.toContain('没有加上');
+      });
+    it('the wanted state there is positive evidence (the step is done), not a verdict', () => {
+      const r = opProveFromSnapshot(unknown(), snap(['pending/human', 'autopilot'], [old, ev('e1', 'labeled', 'autopilot')]));
+      expect(r.steps[0]).toMatchObject({ state: 'ok', reason: '重读时这个标签已在' });
+    });
+  });
+
+  it('one record, four readers: the notice, the buttons, the lock and the dialog agree for every verdict', () => {
+    const base = unknown();
+    const rows: [OpCheck | undefined, string, string[], boolean][] = [
+      [undefined, '「autopilot」不确定有没有加上；还没加', ['unlock'], false],
+      ['unread', '「autopilot」不确定有没有加上；还没加', ['unlock'], false],
+      ['unseen', '到现在还没查到；原来那次请求仍可能稍后生效', ['resend', 'unlock'], true],
+      ['touched', '这期间这个标签被人动过', ['unlock'], false],
+    ];
+    for (const [check, text, buttons, dialog] of rows) {
+      const r: OpRecord = { ...base, steps: base.steps.map((s, i) => (i === 0 && check ? { ...s, check } : s)) };
+      expect(opText(r)).toContain(text);
+      expect(opButtons(r)).toEqual(buttons);
+      expect(opLocked(r)).toBe(true);
+      expect(opResendConfirm(r) !== null).toBe(dialog);
+      expect(opResendStep(r)).toBe(dialog ? 0 : -1);
+    }
+    // while the checks still run: busy, nothing to choose, no dialog — and still locked
+    const busy: OpRecord = { ...base, checking: true, steps: base.steps.map((s, i) => (i === 0 ? { ...s, check: 'unseen' as const } : s)) };
+    expect(opTone(busy)).toBe('busy');
+    expect(opButtons(busy)).toEqual([]);
+    expect(opResendConfirm(busy)).toBeNull();
+    expect(opLocked(busy)).toBe(true);
+    expect(opText(busy)).toBe('正在托管…「autopilot」发出后没有收到 GitHub 的应答，正在自动核对有没有加上（第 2 次）');
+  });
+
+  it('the dialog says what a second send of each label can cause', () => {
+    const one = (r: OpRecord) => opResendConfirm({ ...r, steps: r.steps.map((s) => (s.state === 'unknown' ? { ...s, check: 'unseen' as const } : s)) })!;
+    const a = one(unknown());
+    expect(a.title).toBe('再发一次「加上 autopilot」？');
+    expect(a.lines[0]).toContain('仍可能稍后生效');
+    expect(a.lines[1]).toContain('托管被恢复');
+    expect(a.lines[2]).toContain('就不发');
+    expect(a.after).toBe('发出后会接着加「pending/agent」、摘「pending/human」。');
+    const b = one(withRoles(auto('ok', 'unknown', 'unsent', { before })));
+    expect(b.lines[1]).toContain('派两次工');
+    const c = one(withRoles(auto('ok', 'ok', 'unknown', { before })));
+    expect(c.title).toBe('再发一次「摘掉 pending/human」？');
+    expect(c.lines[1]).toContain('可能被当成待派工');
+    expect(c.after).toBeNull();
+    // not a label step, or more than one thing unknown: nothing to send again
+    expect(opResendConfirm(close('unknown', 'unsent'))).toBeNull();
+    expect(opResendConfirm({ ...unknown(), replyState: 'unknown' })).toBeNull();
+  });
+
+  describe('the permit of a send nobody clicked right now', () => {
+    const now = 100;
+    const ok = snap(['pending/human', 'autopilot'], [old, ev('e1', 'labeled', 'autopilot')]);
+    it('everything holds: allowed', () => {
+      expect(opPermit(proven(), 1, ok, { mode: 'auto', now })).toEqual({ ok: true });
+    });
+    const no: [string, OpRecord, OpSnapshot | null, string, string][] = [
+      ['not read', proven(), null, 'unread', '没能完整读到'],
+      ['not read in full', proven(), { ...ok, complete: false }, 'unread', '没能完整读到'],
+      ['closed', proven(), { ...ok, state: 'closed' }, 'halt', '这一条已经关闭'],
+      ['merged', proven(), { ...ok, state: 'merged' }, 'halt', '这一条已经关闭'],
+      ['a step done no longer stands (same account took the label off)', proven(), snap(['pending/human'], [old, ev('e1', 'labeled', 'autopilot'), ev('e2', 'unlabeled', 'autopilot')]), 'halt', '这期间「autopilot」被摘掉了'],
+      ['the label still stands but was taken off and put on again in between', proven(), snap(['pending/human', 'autopilot'], [old, ev('e1', 'labeled', 'autopilot'), ev('e2', 'unlabeled', 'autopilot'), ev('e3', 'labeled', 'autopilot')]), 'halt', '这期间「autopilot」被人动过'],
+      ['the label of the step itself has a record already', proven(), snap(['pending/human', 'autopilot'], [old, ev('e1', 'labeled', 'autopilot'), ev('e2', 'labeled', 'pending/agent', 'bot'), ev('e3', 'unlabeled', 'pending/agent', 'bot')]), 'halt', '这期间「pending/agent」被人动过'],
+      ['"pending/human" was put on again (handed back to a person)', proven(), snap(['pending/human', 'autopilot'], [old, ev('e1', 'labeled', 'autopilot'), ev('e2', 'unlabeled', 'pending/human'), ev('e3', 'labeled', 'pending/human')]), 'halt', '这期间「pending/human」被人动过'],
+      ['the wanted state is there already', proven(), snap(['pending/human', 'autopilot', 'pending/agent'], [old, ev('e1', 'labeled', 'autopilot'), ev('e2', 'labeled', 'pending/agent')]), 'halt', '被人动过'],
+      ['after a restart', proven({ auto: false }), ok, 'halt', '客户端重启过'],
+      ['past the time limit', proven({ startedAt: 1 }), ok, 'halt', '超过 10 分钟'],
+    ];
+    for (const [name, r, s, why, text] of no)
+      it(`${name}: not allowed`, () => {
+        const p = opPermit(r, 1, s, { mode: 'auto', now: name === 'past the time limit' ? 1 + 600_001 : now });
+        expect(p.ok).toBe(false);
+        if (!p.ok) {
+          expect(p.why).toBe(why);
+          expect(p.text).toContain(text);
+        }
+      });
+    it('the label was on before the operation started and nothing was recorded: done without a send', () => {
+      const r = withRoles(auto('ok', 'unsent', 'unsent', { before: { comments: [], events: ['e0'], labels: ['pending/human', 'pending/agent'] }, auto: true }));
+      const p = opPermit(r, 1, snap(['pending/human', 'pending/agent', 'autopilot'], [old, ev('e1', 'labeled', 'autopilot')]), { mode: 'auto', now });
+      expect(p).toMatchObject({ ok: false, why: 'satisfied' });
+    });
+    it('a second send a person confirmed: no time limit and no "same run", everything else the same', () => {
+      const r = unknown({ auto: false, startedAt: 1 });
+      expect(opPermit(r, 0, snap(['pending/human']), { mode: 'resend', now: 9_999_999 })).toEqual({ ok: true });
+      expect(opPermit(r, 0, snap(['pending/human'], [old], { state: 'closed' }), { mode: 'resend', now }).ok).toBe(false);
+      expect(opPermit(r, 0, snap(['pending/human'], [old, ev('e1', 'labeled', 'autopilot', 'bot'), ev('e2', 'unlabeled', 'autopilot', 'bot')]), { mode: 'resend', now }).ok).toBe(false);
+      expect(opPermit(r, 0, null, { mode: 'resend', now })).toMatchObject({ ok: false, why: 'unread' });
+    });
+    it('which label was undone decides the way on: the autopilot label = start over; the agent label taken (the daemon, or a person) = finish by hand', () => {
+      const a = opPermit(proven(), 1, snap(['pending/human'], [old, ev('e1', 'labeled', 'autopilot'), ev('e2', 'unlabeled', 'autopilot')]), { mode: 'auto', now });
+      expect(a).toMatchObject({ ok: false, redo: true });
+      const r = withRoles(auto('ok', 'ok', 'unsent', { before, auto: true }));
+      const b = opPermit(r, 2, snap(['pending/human', 'autopilot', 'doing/agent'], [old, ev('e1', 'labeled', 'autopilot'), ev('e2', 'labeled', 'pending/agent'), ev('e3', 'unlabeled', 'pending/agent', 'bot'), ev('e4', 'labeled', 'doing/agent', 'bot')]), { mode: 'auto', now });
+      expect(b).toMatchObject({ ok: false, why: 'halt', redo: false });
+      const halted: OpRecord = { ...r, auto: false, readAt: 30, halt: { text: '这期间「pending/agent」被摘掉了', redo: false } };
+      expect(opButtons(halted)).toContain('finish');
+      expect(opButtons({ ...proven(), auto: false, halt: { text: '这期间「autopilot」被摘掉了', redo: true } })).toContain('retry');
+      expect(opText(halted)).toContain('这期间「pending/agent」被摘掉了，没有接着往下做');
+    });
+  });
+
+  it('what goes on by itself: only steps never sent, after steps all done, in the run that may', () => {
+    expect(opNextAuto(proven())).toBe(1);
+    expect(opNextAuto(proven({ auto: false }))).toBe(-1);
+    expect(opNextAuto(proven({ halt: { text: 'x', redo: false } }))).toBe(-1);
+    expect(opNextAuto(proven({ unlocked: true }))).toBe(-1);
+    expect(opNextAuto(unknown({ auto: true }))).toBe(-1);
+    expect(opNextAuto(withRoles(auto('ok', 'refused', 'unsent', { auto: true })))).toBe(-1);
+    expect(opNextAuto(withRoles(auto('ok', 'ok', 'ok', { auto: true })))).toBe(-1);
+    expect(opNextAuto({ ...close('ok', 'unsent'), auto: true })).toBe(-1);
+  });
+
+  it('a restart ends "checking" and "goes on by itself"; a verdict goes with the unknown step it was about', () => {
+    const r = opAfterRestart({ ...unknown({ auto: true, checking: true }) });
+    expect(r.checking).toBe(false);
+    expect(r.auto).toBe(false);
+    const done = opWithoutStale({ ...proven(), checking: true, steps: proven().steps.map((s, i) => (i === 0 ? { ...s, check: 'unseen' as const } : s)) });
+    expect(done.checking).toBe(false);
+    expect(done.steps[0].check).toBeUndefined();
   });
 });

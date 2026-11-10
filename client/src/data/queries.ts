@@ -362,6 +362,33 @@ const OP_RECORDS_FIELDS = `
       timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
         nodes { __typename ... on LabeledEvent { id actor { login } label { name } } ... on UnlabeledEvent { id actor { login } label { name } } }
       }`;
+/**
+ * GitHub#359: one read for a check of an operation / right before a send nobody clicked: the item's
+ * state, its labels, its newest comments and one page of its label events (newest first page;
+ * `$before` walks back). `labels.totalCount` and `pageInfo` say whether what came is everything.
+ */
+const OP_SNAPSHOT_FIELDS = `
+      state
+      labels(first: 100) { totalCount nodes { name } }
+      comments(last: 100) { nodes { id body author { login } } }
+      timelineItems(last: 100, before: $before, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+        pageInfo { hasPreviousPage startCursor }
+        nodes { __typename ... on LabeledEvent { id actor { login } label { name } } ... on UnlabeledEvent { id actor { login } label { name } } }
+      }`;
+export const OP_SNAPSHOT_QUERY = `
+query CavilOpSnapshot($owner: String!, $name: String!, $number: Int!, $before: String) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {${OP_SNAPSHOT_FIELDS}
+      }
+      ... on PullRequest {
+        merged${OP_SNAPSHOT_FIELDS}
+      }
+    }
+  }
+}
+`;
 export const OP_RECORDS_QUERY = `
 query CavilOpRecords($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {

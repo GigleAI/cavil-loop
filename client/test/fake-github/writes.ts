@@ -121,6 +121,10 @@ export interface WritableState {
   failEvents: boolean;
   /** GitHub#250: answer the item comments list with HTTP 502 */
   failCommentList: boolean;
+  /** GitHub#359: label events per page of a snapshot (0 = 100); an older page fails; the labels a snapshot reports instead of the real ones */
+  eventPage: number;
+  failEventPages: boolean;
+  staleSnapshotLabels: { name: string }[] | null;
   /** GitHub#258: Project key (`org/owner/n`) -> its workflows; a Project not listed answers the read with an error */
   workflows: Map<string, { name: string; enabled: boolean }[]>;
   /** GitHub#258: answer this many reads of "which boards is this new issue on" with HTTP 502 */
@@ -192,6 +196,9 @@ export function defaultWritable(): WritableState {
     failComment: false,
     failEvents: false,
     failCommentList: false,
+    eventPage: 0,
+    failEventPages: false,
+    staleSnapshotLabels: null,
     workflows: new Map(),
     failCreatedBoards: 0,
     relations: new Map(),
@@ -881,6 +888,35 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     const comments = (w.comments.get(ikey) ?? []).slice(-100).map((x) => ({ id: x.id, body: x.body ?? '', author: x.author }));
     const events = (w.labelEvents.get(ikey) ?? []).slice(-100).map((e) => ({ __typename: e.event === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', id: `LE_${ikey}_${e.id}`, actor: e.actor, label: e.label }));
     return { data: { repository: { issueOrPullRequest: { __typename: c.kind, comments: { nodes: comments }, timelineItems: { nodes: events } } } } };
+  }
+  // GitHub#359: state, labels, comments and one page of label events (walked back with `before`)
+  if (op === 'CavilOpSnapshot') {
+    const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
+    if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };
+    if (w.failEvents || w.failCommentList) return { httpStatus: 502 };
+    // an older page of the label events cannot be read (the newest one can)
+    if (w.failEventPages && v.before) return { httpStatus: 502 };
+    const ikey = `${c.repo.toLowerCase()}#${c.number}`;
+    const content = gqlContent(c);
+    const comments = (w.comments.get(ikey) ?? []).slice(-100).map((x) => ({ id: x.id, body: x.body ?? '', author: x.author }));
+    const all = (w.labelEvents.get(ikey) ?? []).map((e) => ({ __typename: e.event === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', id: `LE_${ikey}_${e.id}`, actor: e.actor, label: e.label }));
+    const end = v.before ? Number(String(v.before).replace(/^ev:/, '')) : all.length;
+    const from = Math.max(0, end - (w.eventPage || 100));
+    const labels = w.staleSnapshotLabels ?? (content.labels?.nodes ?? []).map((l: any) => ({ name: l.name }));
+    return {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: c.kind,
+            state: content.state,
+            ...(c.kind === 'PullRequest' ? { merged: content.merged === true } : {}),
+            labels: { totalCount: labels.length, nodes: labels },
+            comments: { nodes: comments },
+            timelineItems: { pageInfo: { hasPreviousPage: from > 0, startCursor: from > 0 ? `ev:${from}` : null }, nodes: all.slice(from, end) },
+          },
+        },
+      },
+    };
   }
   if (op === 'CavilIssueRelations') {
     const c = findByNodeId(store, v.id);
