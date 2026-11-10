@@ -130,6 +130,24 @@ for kind in "ghp""_$filler" "-----BEGIN OPENSSH PRIVATE"" KEY-----" \
     [ "$r" = 1 ] || deny_all="$deny_all [${kind:0:12}→$r]"
 done
 chk "令牌 / 私钥 / 带密码的连接串 / service role / JWT 样式都拦" "$deny_all" ""
+# 大文件、跨读取块边界：没有「太大就不扫」这回事（曾经超过 32MiB 的文件跳过检查、照样报拿得到）。
+BIG="$TMP/big"; mkdir -p "$BIG"
+secret_json="{\"refresh_token\": \"$FAKE_SECRET\"}"
+mkbig() {   # <文件> <凭证前的填充字节数> <凭证后的填充字节数>：合法 PNG 开头 + 填充 + 假凭证 + 填充
+    printf '\x89PNG\r\n\x1a\n' > "$1"; head -c "$2" /dev/zero >> "$1"; printf '%s' "$secret_json" >> "$1"; head -c "$3" /dev/zero >> "$1"
+}
+mkbig "$BIG/tail.png" $((33 * 1024 * 1024)) 0
+out="$(node "$CHECK" "$BIG/tail.png" 2>&1)"; rc=$?
+chk "33MiB 的图、凭证在末尾：退出码 1 并点名" "$rc/$(printf '%s' "$out" | grep -c 'tail\.png — 内容里有凭证样式')" "1/1"
+mkbig "$BIG/straddle.png" $((1024 * 1024 - 8 - 20)) 4096
+out="$(node "$CHECK" "$BIG/straddle.png" 2>&1)"; rc=$?
+chk "凭证正好跨在两个读取块的边界上：照样拦" "$rc" "1"
+mkbig "$BIG/straddle2.png" $((5 * 1024 * 1024 - 8 - 3)) $((40 * 1024 * 1024))
+out="$(node "$CHECK" "$BIG/straddle2.png" 2>&1)"; rc=$?
+chk "45MiB 的图、凭证跨在第 5 个块的边界上：照样拦" "$rc" "1"
+printf '\x89PNG\r\n\x1a\n' > "$BIG/clean.png"; head -c $((33 * 1024 * 1024)) /dev/zero >> "$BIG/clean.png"
+out="$(node "$CHECK" "$BIG/clean.png" 2>&1)"; rc=$?
+chk "33MiB 的干净图：退出码 0，报拿得到" "$rc/$(printf '%s\n' "$out" | grep -c '^拿得到 ')" "0/1"
 chk "不给参数：退出码 2" "$(node "$CHECK" >/dev/null 2>&1; echo $?)" "2"
 
 echo "③ publish-asset.sh"
@@ -162,6 +180,8 @@ chk "被拒的文件哪儿都没进" "$(find "$TMP/pub" "$TMP/priv" -name 'state
 chk "拒绝信息里没有凭证的值" "$(printf '%s' "$err" | grep -c "$FAKE_SECRET")" "0"
 err="$(pub p "$ROOT/pr-1/renamed.png" 2>&1 >/dev/null)"; rc=$?
 chk "改名成 .png 的凭证文件：同样拒绝" "$rc" "1"
+err="$(pub p "$BIG/tail.png" shots 2>&1 >/dev/null)"; rc=$?
+chk "33MiB、末尾带凭证的合法图片：拒绝发布，没进公网目录" "$rc/$(find "$TMP/pub" "$TMP/priv" -name 'tail*' | wc -l | tr -d ' ')" "1/0"
 
 echo "④ review-screenshot.mjs：登录状态副本"
 PJ="$TMP/proj"; mkdir -p "$PJ/node_modules/@playwright/test" "$PJ/e2e/.auth" "$PJ/tracked" "$TMP/shots"

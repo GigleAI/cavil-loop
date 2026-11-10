@@ -39,6 +39,34 @@ export function findSecrets(text) {
   return kinds;
 }
 
+// 整个文件扫一遍凭证样式，不论多大：按块读，相邻两块之间留一段重叠，跨块边界的凭证也认得出。
+// 重叠 4KB 远大于任何一条样式认出凭证所需的最短长度（最长的也就一百多字节）。
+// 没有大小上限、也没有「太大就跳过」：没扫过的文件不能当成没有凭证。
+export const SCAN_CHUNK_BYTES = 1024 * 1024;
+export const SCAN_OVERLAP_BYTES = 4096;
+
+export function findSecretsInFile(file) {
+  const kinds = new Set();
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(SCAN_OVERLAP_BYTES + SCAN_CHUNK_BYTES);
+    let carry = 0;
+    let pos = 0;
+    for (;;) {
+      const n = fs.readSync(fd, buf, carry, SCAN_CHUNK_BYTES, pos);
+      if (n <= 0) break;
+      pos += n;
+      const len = carry + n;
+      for (const k of findSecrets(buf.toString('latin1', 0, len))) kinds.add(k);
+      carry = Math.min(SCAN_OVERLAP_BYTES, len);
+      buf.copy(buf, 0, len - carry, len);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return [...kinds];
+}
+
 const ascii = (buf, start, end) => buf.subarray(start, end).toString('latin1');
 
 // 文件开头的字节是不是这个扩展名该有的格式。只看开头：目的是挡住「把别的东西改个名字」，
