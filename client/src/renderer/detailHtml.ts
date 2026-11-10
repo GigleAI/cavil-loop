@@ -13,7 +13,7 @@
 
 import type { ItemDetail, TimelineEntry } from '../shared/actions';
 import { AVATAR_HOST, GITHUB_IMAGE_HOSTS, avatarInitial, avatarUrl } from '../shared/avatar';
-import { annotateTaskBoxes } from '../data/taskList';
+import { annotateTaskBoxes, type PendingTick } from '../data/taskList';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from './frameScript';
 
 /** the reply preview: no scripts at all */
@@ -91,6 +91,9 @@ export function plainExcerpt(html: string, max = 80): string {
   return chars.length > max ? `${chars.slice(0, max).join('')}…` : text;
 }
 
+/** the white tick drawn in a ticked box (a data: image — the frame's img-src allows those, nothing is fetched) */
+const TICK = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
+
 /** Which entries are unfolded: the newest only (the default), all, or none (GitHub#155). */
 export type Unfold = 'latest' | 'all' | 'none';
 
@@ -99,14 +102,14 @@ export type Unfold = 'latest' | 'all' | 'none';
  * can be clicked only when the entry allows it (GitHub#193) and `canTick` (online,
  * no change in flight). A read-only entry says why under its text.
  */
-function bodyWithTasks(e: TimelineEntry, canTick: boolean): { html: string; note: string } {
+function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick | null): { html: string; note: string } {
   const t = e.tasks;
-  const html = annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true);
+  const html = annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true, pending);
   const note = t && !t.clickable ? `<div class="tasknote" data-testid="task-readonly">${escapeHtml(t.why)}</div>` : '';
   return { html, note };
 }
 
-function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean): string {
+function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null): string {
   const who = escapeHtml(e.author ?? '（已删除的账号）');
   const head =
     e.kind === 'body'
@@ -118,7 +121,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean): string {
   const link = e.url ? ` · <a href="${escapeHtml(e.url)}">在网页上看</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
   const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片不在 GitHub 的地址上，客户端不加载；点「在网页上看」查看</div>` : '';
-  const tasks = bodyWithTasks(e, canTick);
+  const tasks = bodyWithTasks(e, canTick, pending);
   // GitHub#205: only what GitHub says this account may change, only while a change can be sent
   const edit =
     e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
@@ -163,11 +166,16 @@ export interface TimelineOptions {
   render?: string;
   /** boxes of clickable entries can be ticked (online, no change in flight) */
   canTick?: boolean;
+  /**
+   * GitHub#358: the click still on its way — that box of that entry shows what was asked for, in
+   * grey, until GitHub confirmed it and the detail was read again. Only a body / comment entry.
+   */
+  pending?: (PendingTick & { entryId: string }) | null;
   view?: FrameView | null;
 }
 
 export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfold = 'latest', opts: TimelineOptions = {}): string {
-  const { render = '', canTick = false, view = null } = opts;
+  const { render = '', canTick = false, view = null, pending = null } = opts;
   const known = new Set(view?.known ?? []);
   const opened = new Set(view?.open ?? []);
   const isOpen = (e: TimelineEntry, i: number) => (known.has(e.id) ? opened.has(e.id) : isUnfolded(i, unfold));
@@ -181,6 +189,9 @@ export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfo
   const line = dark ? '#2a313c' : '#e3e8ed';
   const canvas = dark ? '#0d1117' : '#f6f8fa';
   const code = dark ? '#212830' : '#eef1f4';
+  // GitHub#358: a box waiting for GitHub — grey, between "not ticked" and the accent of a confirmed tick
+  const wait = dark ? '#656c76' : '#8c959f';
+  const waitBg = dark ? '#262c36' : '#eaeef2';
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${TIMELINE_CSP}">
 <base target="_blank">
@@ -212,14 +223,20 @@ a{color:${accent}}
 .md .contains-task-list{padding-left:2em}
 .md .task-list-item{list-style-type:none}
 .md .task-list-item+.task-list-item{margin-top:2px}
-.md .task-list-item-checkbox{margin:0 .3em .2em -1.5em;vertical-align:middle}
+.md .task-list-item-checkbox{-webkit-appearance:none;appearance:none;box-sizing:border-box;width:14px;height:14px;border:1.5px solid ${muted};border-radius:3px;background:${bg} center/11px no-repeat;margin:0 .3em .2em -1.5em;vertical-align:middle}
+.md .task-list-item-checkbox:checked{background-color:${accent};background-image:${TICK};border-color:${accent}}
 .md .task-list-item-checkbox:not([disabled]){cursor:pointer}
+.md .task-list-item-checkbox:focus-visible{outline:2px solid ${accent};outline-offset:1px}
+.md .task-list-item-checkbox[disabled]:not(:checked){border-color:${border};background-color:${canvas}}
+.md .task-list-item-checkbox[disabled]:checked{opacity:.5}
+.md .task-list-item-checkbox[data-pending]{opacity:1;border-color:${wait};background-color:${waitBg}}
+.md .task-list-item-checkbox[data-pending]:checked{opacity:1;background-color:${wait}}
 .tasknote{margin:0 12px 8px;color:${muted};font-size:12px}
 .tools{margin:0 12px 8px;text-align:right}
 .tools .edit{font:12px inherit;color:${accent};background:none;border:1px solid ${line};border-radius:6px;padding:1px 10px;cursor:pointer}
 .tools .edit[disabled]{color:${muted};cursor:default}
 </style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}">
-${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick)).join('\n')}
+${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null)).join('\n')}
 <script>${FRAME_SCRIPT}</script>
 </body></html>`;
 }

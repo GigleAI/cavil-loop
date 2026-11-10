@@ -6,7 +6,8 @@
 // frame's <body data-…> attributes and is read from there.
 //
 // It only reports to the window: a ticked box (which entry, which box, ticked
-// or not), a click on an entry's "edit" button (GitHub#205: which entry),
+// or not — GitHub#358: the box turns grey at once and every box of the frame
+// stops taking clicks, until the window renders the frame again), a click on an entry's "edit" button (GitHub#205: which entry),
 // which entries are unfolded / how far the frame is scrolled, so a re-read can
 // put both back, and a bare R key (GitHub#322: "go to the reply box" — the one
 // key it passes on; every other key stays in the frame, PR #171). It has no way to change anything on GitHub by
@@ -35,7 +36,8 @@ export const FRAME_SCRIPT = `(function () {
     if (!t || !t.hasAttribute || !t.hasAttribute('data-task')) return;
     var entry = t.closest('details.entry');
     if (!entry) return;
-    var all = entry.querySelectorAll('input[data-task]');
+    t.setAttribute('data-pending', '');
+    var all = document.querySelectorAll('input[data-task]');
     for (var i = 0; i < all.length; i++) all[i].disabled = true;
     send({ cavil: 'task', entry: entry.getAttribute('data-entry'), index: Number(t.getAttribute('data-task')), checked: t.checked });
   });
@@ -61,4 +63,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-mk51mfto0tZ8zU3iA56qvUJB9Nv9XyA1vlGfFHGeD+Y='";
+export const FRAME_SCRIPT_HASH = "'sha256-N4YFKrGnzIafhKpNE1dd1jVWCVGQ3+dyefogZuY5/58='";
