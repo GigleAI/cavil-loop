@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { AddressInfo, Socket } from 'node:net';
-import { defaultWritable, digest, enrich, handleGraphql, handleRest, type Store, type WritableState } from './writes';
+import { defaultWritable, digest, enrich, handleGraphql, handleRest, withRelationFields, type Store, type WritableState } from './writes';
 
 export type { WritableState } from './writes';
 
@@ -29,6 +29,15 @@ export function loadCavilProjectPages(): FixtureProjectPage[] {
 }
 export function loadCavilRepoIssues(): any[] {
   return JSON.parse(readFileSync(join(here, '../fixtures/cavil-loop.issues.json'), 'utf8')).issues;
+}
+
+/** GitHub#349: the board issues that have relations, recorded with them (see record.mjs) */
+export function loadRelationPages(): FixtureProjectPage[] {
+  return JSON.parse(readFileSync(join(here, '../fixtures/cavil-project-11.relations.json'), 'utf8')).pages;
+}
+/** GitHub#349: the repository's issues with their relation counts and relations (see record.mjs) */
+export function loadRelationIssues(): any[] {
+  return JSON.parse(readFileSync(join(here, '../fixtures/cavil-loop.relations.json'), 'utf8')).issues;
 }
 
 export interface DeviceGrant {
@@ -395,7 +404,9 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         if (idx <= 0 && v.after) return send(200, { errors: [{ message: 'bad cursor' }] });
         if (state.failProjectPage.get(key) === idx) return send(502, { message: 'Server Error' });
         // frozen now, then held like every other read (GitHub#229)
-        const frozen = JSON.parse(JSON.stringify({ data: { [holder]: { projectV2: { ...pages[idx], viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } }));
+        // GitHub#349: each issue with its relations as they are now (first page of each list)
+        const page = { ...pages[idx], items: { ...pages[idx].items, nodes: pages[idx].items.nodes.map((n: any) => ({ ...n, content: withRelationFields(store, n.content) })) } };
+        const frozen = JSON.parse(JSON.stringify({ data: { [holder]: { projectV2: { ...page, viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } }));
         await held();
         return send(200, frozen);
       }

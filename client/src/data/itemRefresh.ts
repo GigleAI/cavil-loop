@@ -5,7 +5,7 @@
 
 import type { Item, ProjectMeta, SourceSnapshot } from '../shared/types';
 import { GitHubClient, GitHubError } from './github';
-import { contentToItem, readMembership, type GqlContent, type GqlFieldValue } from './fetchSources';
+import { contentToItem, readMembership, withRelations, type GqlContent, type GqlFieldValue } from './fetchSources';
 import { ITEM_REFRESH_QUERY } from './queries';
 
 interface GqlProjectItem {
@@ -28,7 +28,9 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
   );
   const c = data.repository?.issueOrPullRequest;
   if (!c) throw new GitHubError('graphql', `找不到 ${repo}#${number}`);
-  return { content: c, projectItems: c.projectItems?.nodes ?? [] };
+  // GitHub#349: the same relation fields as a full read, read to the last page the same way —
+  // a re-read that cannot finish them fails as a whole (the item keeps what the cache holds)
+  return { content: await withRelations(client, c), projectItems: c.projectItems?.nodes ?? [] };
 }
 
 /**

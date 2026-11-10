@@ -3,7 +3,15 @@
 // (GigleAI Project #11) and the GigleAI/cavil-loop repository, then scrub
 // them. Run by hand with a logged-in `gh`:
 //
-//   node test/fixtures/record.mjs
+//   node test/fixtures/record.mjs               # everything
+//   node test/fixtures/record.mjs --relations   # only the two relation files (GitHub#349)
+//
+// The first three files are what most suites pin items of (numbers, labels, states): a full
+// re-record moves all of that, so re-record them only together with those suites. The relation
+// files (cavil-project-11.relations.json, cavil-loop.relations.json) are recorded by the same
+// queries from the same board, kept apart so they can be re-recorded on their own: the board
+// items that have a parent, sub-issues or a blocking relation, and the issues of the repository
+// list with their relations.
 //
 // What is kept: the exact response *shape* (field names, nesting, typenames,
 // pagination, iteration configuration, label names, open/closed/merged state,
@@ -18,17 +26,15 @@
 // be compared item by item against what GitHub returned for the same data
 // (cavil-project-11.filters.json).
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, readFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(join(here, '../../src/data/queries.ts'), 'utf8');
-const contentFields = src.match(/const CONTENT_FIELDS = `([\s\S]*?)`;/)[1];
-const query = src
-  .match(/PROJECT_ITEMS_QUERY = `([\s\S]*?)\n`;/)[1]
-  .replace('${CONTENT_FIELDS}', contentFields);
+const relationsOnly = process.argv.includes('--relations');
+// the client's own query documents (Node reads the .ts file directly: it has no imports, types are stripped)
+const { PROJECT_ITEMS_QUERY: query, ISSUE_RELATIONS_QUERY, ISSUE_RELATIONS_BATCH_QUERY } = await import('../../src/data/queries.ts');
 
 function gh(args) {
   return JSON.parse(execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 64 << 20 }));
@@ -68,11 +74,41 @@ const scrubQueryLogins = (q) =>
 /** only the "Closes / Fixes / Resolves / Refs #N" words of a private description (GitHub#275) */
 const scrubBody = (b) => (b.match(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:[\w.-]+\/[\w.-]+)?#\d+\b/gi) ?? []).join('\n');
 
+// ---- GitHub#349: relations (parent, sub-issues, blocked-by, blocking) ----
+const RELATION_LISTS = ['subIssues', 'blockedBy', 'blocking'];
+/** the other end of a relation: same rule as an item — the title is kept only for a public repository */
+const scrubRelated = (n) => (n ? { ...n, title: isPublic(n.repository.nameWithOwner) ? n.title : scrubTitle(n.number, 'Issue') } : n);
+/**
+ * Read the rest of an issue's relation lists (the client's own follow-up query) so the fixture
+ * holds every list whole; the fake GitHub cuts them into pages again when it answers.
+ */
+function wholeRelations(c, id) {
+  const out = { ...c };
+  for (;;) {
+    const want = RELATION_LISTS.filter((name) => out[name]?.pageInfo?.hasNextPage);
+    if (!want.length) return out;
+    const args = ['api', 'graphql', '-f', `query=${ISSUE_RELATIONS_QUERY}`, '-f', `id=${id}`];
+    for (const name of RELATION_LISTS) {
+      args.push('-F', `${name}=${want.includes(name)}`);
+      if (want.includes(name)) args.push('-f', `${name}After=${out[name].pageInfo.endCursor}`);
+    }
+    const r = gh(args);
+    if (r.errors) throw new Error(JSON.stringify(r.errors));
+    for (const name of want) out[name] = { pageInfo: r.data.node[name].pageInfo, nodes: [...out[name].nodes, ...r.data.node[name].nodes] };
+  }
+}
+function scrubRelations(c) {
+  const out = { parent: scrubRelated(c.parent ?? null) };
+  for (const name of RELATION_LISTS) out[name] = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: c[name].nodes.filter(Boolean).map(scrubRelated) };
+  return out;
+}
+
 function scrubContent(c) {
   if (!c) return c;
   if (c.__typename === 'DraftIssue') return { ...c, title: 'Draft fixture' };
   return {
     ...c,
+    ...(c.__typename === 'Issue' ? scrubRelations(wholeRelations(c, c.id)) : {}),
     ...(c.id ? { id: scrubId(c.__typename === 'PullRequest' ? 'PR' : 'I', c.id) } : {}),
     title: isPublic(c.repository.nameWithOwner) ? c.title : scrubTitle(c.number, c.__typename),
     assignees: { nodes: c.assignees.nodes.map((a) => ({ login: scrubLogin(a.login) })) },
@@ -122,7 +158,7 @@ const scrubbedPages = pages.map((p, i) => ({
   },
 }));
 
-writeFileSync(
+if (!relationsOnly) writeFileSync(
   join(here, 'cavil-project-11.pages.json'),
   JSON.stringify(
     {
@@ -136,9 +172,42 @@ writeFileSync(
   ) + '\n',
 );
 
+// GitHub#349: the same pages, only the issues that have a relation (a parent, sub-issues,
+// blocked-by or blocking) — `totalCount` stays what GitHub said for the whole board.
+const hasRelation = (c) => c?.__typename === 'Issue' && Boolean(c.parent || c.subIssues.nodes.length || c.blockedBy.nodes.length || c.blocking.nodes.length);
+writeFileSync(
+  join(here, 'cavil-project-11.relations.json'),
+  JSON.stringify(
+    {
+      _note:
+        'Recorded from GigleAI Project #11 ("cavil project") with test/fixtures/record.mjs, by the client\'s own board query; scrubbed like cavil-project-11.pages.json. Only the issues that have a relation (parent, sub-issues, blocked-by, blocking) are kept; every relation list is whole (the recorder read the follow-up pages), the fake GitHub cuts them into pages again.',
+      recordedAt,
+      pages: scrubbedPages.map((p) => ({ ...p, items: { ...p.items, nodes: p.items.nodes.filter((it) => !it.isArchived && hasRelation(it.content)) } })),
+    },
+    null,
+    1,
+  ) + '\n',
+);
+
 // REST: a slice of the repository issue list (state=all, sorted by update) —
 // enough to pin the shape the repo source reads (pull_request.merged_at etc.).
 const rest = gh(['api', 'repos/GigleAI/cavil-loop/issues?state=all&per_page=40&sort=updated&direction=desc']);
+// GitHub#349: the list carries only the counts; the relations of the issues that have any are
+// read the way the client reads them (its batch query, by node id) and kept beside the issue
+// under `_relations` — not a field of GitHub's answer: the fake GitHub takes it out and serves
+// it through the same batch query.
+const related = rest.filter((x) => !x.pull_request && (x.issue_dependencies_summary?.total_blocked_by || x.issue_dependencies_summary?.total_blocking || x.sub_issues_summary?.total || x.parent_issue_url));
+const restRelations = new Map();
+if (related.length) {
+  const args = ['api', 'graphql', '-f', `query=${ISSUE_RELATIONS_BATCH_QUERY}`];
+  for (const x of related) args.push('-f', `ids[]=${x.node_id}`);
+  const r = gh(args);
+  if (r.errors) throw new Error(JSON.stringify(r.errors));
+  r.data.nodes.forEach((n, i) => {
+    if (!n || n.__typename !== 'Issue') throw new Error(`no relations read for #${related[i].number}`);
+    restRelations.set(related[i].number, scrubRelations(wholeRelations(n, related[i].node_id)));
+  });
+}
 const keep = (x) => ({
   number: x.number,
   node_id: scrubId(x.pull_request ? 'PR' : 'I', x.node_id),
@@ -154,7 +223,12 @@ const keep = (x) => ({
   sub_issues_summary: x.sub_issues_summary ?? null,
   ...(x.pull_request ? { pull_request: { html_url: x.pull_request.html_url, merged_at: x.pull_request.merged_at }, body: x.body ?? null } : {}),
 });
-writeFileSync(
+const keepWithRelations = (x) => ({
+  ...keep(x),
+  issue_dependencies_summary: x.issue_dependencies_summary ?? null,
+  ...(restRelations.has(x.number) ? { _relations: restRelations.get(x.number) } : {}),
+});
+if (!relationsOnly) writeFileSync(
   join(here, 'cavil-loop.issues.json'),
   JSON.stringify(
     {
@@ -167,6 +241,24 @@ writeFileSync(
     1,
   ) + '\n',
 );
+// GitHub#349: the issues of that list (pull requests have no relations) with theirs
+writeFileSync(
+  join(here, 'cavil-loop.relations.json'),
+  JSON.stringify(
+    {
+      _note:
+        'Recorded from GET /repos/GigleAI/cavil-loop/issues?state=all&sort=updated with test/fixtures/record.mjs: the issues (no pull requests), fields as in cavil-loop.issues.json plus the relation counts. `_relations` is not part of that answer: it is what the client\'s batch query (CavilIssueRelationsBatch) returned for the issues whose counts say they have relations; the fake GitHub takes it out and serves it through the same query.',
+      recordedAt,
+      issues: rest.filter((x) => !x.pull_request).map(keepWithRelations),
+    },
+    null,
+    1,
+  ) + '\n',
+);
+if (relationsOnly) {
+  console.log(`relations only — board issues with relations: ${scrubbedPages.reduce((n, p) => n + p.items.nodes.filter((it) => !it.isArchived && hasRelation(it.content)).length, 0)}, repository issues: ${rest.filter((x) => !x.pull_request).length}, of them with relations: ${related.length}`);
+  process.exit(0);
+}
 // ---- GitHub's server-side filter on the same board, same run --------------
 // Values that depend on the data (an iteration title, a login) are picked
 // from the pages just read so the queries keep meaning something after a
@@ -271,4 +363,4 @@ writeFileSync(
   ) + '\n',
 );
 
-console.log(`project pages: ${pages.length}, items: ${pages.reduce((n, p) => n + p.items.nodes.length, 0)}, rest issues: ${rest.length}`);
+console.log(`project pages: ${pages.length}, items: ${pages.reduce((n, p) => n + p.items.nodes.length, 0)}, rest issues: ${rest.length}, of them with relations: ${related.length}`);

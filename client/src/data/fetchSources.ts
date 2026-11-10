@@ -8,6 +8,7 @@ import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
 import { PROJECT_ITEMS_QUERY } from './queries';
 import { bodyIssueRefs } from './prNest';
+import { completeRelations, fetchRelationsBatch, noRelations, readRelations, type GqlRelationFields } from './relations';
 
 export const STATUS_FIELD_NAME = 'Status';
 export const REPO_RECENT_DAYS = 14;
@@ -36,9 +37,8 @@ export interface GqlFieldValue {
   name?: string;
   field?: { id?: string; name?: string };
 }
-export interface GqlContent {
+export interface GqlContent extends GqlRelationFields {
   __typename: 'Issue' | 'PullRequest' | 'DraftIssue';
-  id?: string;
   number?: number;
   title?: string;
   url?: string;
@@ -52,7 +52,6 @@ export interface GqlContent {
   assignees?: { nodes: { login: string }[] };
   milestone?: { number: number; title: string; dueOn: string | null } | null;
   author?: { login: string } | null;
-  parent?: { number: number; repository: { nameWithOwner: string } } | null;
   subIssuesSummary?: { total: number; completed: number } | null;
   /** pull requests only: the description (GitHub#275: which issues it names) */
   body?: string | null;
@@ -142,10 +141,16 @@ export function readMembership(
   return { projectKey: meta.key, projectTitle: meta.title, itemId, iteration, status };
 }
 
-/** An issue / PR as GraphQL returns it → the board's item (memberships filled by the caller). */
+/**
+ * An issue / PR as GraphQL returns it → the board's item (memberships filled by the caller).
+ * Relations (GitHub#349) are taken only when `c` carries them whole — see `readRelations`; the
+ * readers below call `completeRelations` first, and a source read refuses an issue without them.
+ */
 export function contentToItem(c: GqlContent, projects: ProjectMembership[], sources: string[]): Item | null {
   if (c.__typename === 'DraftIssue' || !c.repository || c.number == null) return null;
   const repo = c.repository.nameWithOwner;
+  // a pull request has no parent, sub-issues or blocking relations on GitHub: known-empty
+  const relations = c.__typename === 'PullRequest' ? noRelations() : readRelations(c);
   return {
     key: itemKey(repo, c.number),
     nodeId: c.id ?? '',
@@ -167,9 +172,19 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
     // a pull request has no "linked pull requests" of its own: known-empty, not unknown
     linkedPrs: c.__typename === 'Issue' ? linkedPrs(c) : [],
     ...(c.__typename === 'PullRequest' ? { refIssues: bodyIssueRefs(c.body, repo, c.number) } : {}),
+    ...(relations ? { relations } : {}),
     projects,
     sources,
   };
+}
+
+/**
+ * GitHub#349: `c` with its relation lists read to the last page (no request when none is cut),
+ * for every reader of GraphQL content. Throws when a later page cannot be read.
+ */
+export function withRelations(client: GitHubClient, c: GqlContent): Promise<GqlContent> {
+  if (c.__typename !== 'Issue' || !c.repository || c.number == null) return Promise.resolve(c);
+  return completeRelations(client, c, `${c.repository.nameWithOwner}#${c.number}`);
 }
 
 export async function fetchProject(
@@ -220,9 +235,12 @@ export async function fetchProject(
       };
     }
     for (const node of p.items.nodes) {
-      const c = node.content;
-      if (node.isArchived || !c) continue;
+      if (node.isArchived || !node.content) continue;
+      // GitHub#349: the relations belong to the same snapshot — a list that cannot be read to
+      // its end fails this source's read (the previous snapshot stays), it is never stored short
+      const c = await withRelations(client, node.content);
       const it = contentToItem(c, [readMembership(meta, node.id, node.fieldValues.nodes)], [src.key]);
+      if (it && !it.relations) throw new GitHubError('graphql', `${it.repo}#${it.number} 的关系没有读全`);
       if (it) items.set(it.key, it);
     }
     if (!p.items.pageInfo.hasNextPage) break;
@@ -249,7 +267,21 @@ interface RestIssue {
   user?: { login: string } | null;
   parent_issue_url?: string | null;
   sub_issues_summary?: { total: number; completed: number } | null;
+  /** how many issues block this one / it blocks (open ones and all of them) */
+  issue_dependencies_summary?: { total_blocked_by?: number; total_blocking?: number } | null;
   body?: string | null;
+}
+
+/**
+ * GitHub#349: does this issue of the list have any relation to read? The list itself carries
+ * the counts and the parent's address. An issue without the blocking counts in its answer is
+ * read too: a count that is not there is not a zero.
+ */
+function hasRelations(r: RestIssue): boolean {
+  if (r.pull_request) return false;
+  const d = r.issue_dependencies_summary;
+  if (!d || typeof d.total_blocked_by !== 'number' || typeof d.total_blocking !== 'number') return true;
+  return d.total_blocked_by > 0 || d.total_blocking > 0 || (r.sub_issues_summary?.total ?? 0) > 0 || Boolean(r.parent_issue_url);
 }
 
 /** `https://api.github.com/repos/<o>/<r>/issues/<n>` -> item key */
@@ -300,11 +332,22 @@ export async function fetchRepo(
     client.restList<RestIssue>(`${base}?state=all&since=${encodeURIComponent(since)}&per_page=100`),
   ]);
   const items = new Map<string, Item>();
+  const related = new Map<string, boolean>();
   for (const r of [...open, ...recent]) {
     const it = restToItem(repo, r, src.key);
     const prev = items.get(it.key);
-    if (!prev || prev.updatedAt < it.updatedAt) items.set(it.key, it);
+    if (!prev || prev.updatedAt < it.updatedAt) {
+      items.set(it.key, it);
+      related.set(it.key, hasRelations(r));
+    }
   }
+  // GitHub#349: the list says only how many relations an issue has; the ones that have any are
+  // read by node id, 100 a request. Part of the same read: a failure here fails the source.
+  const wanted = [...items.values()].filter((it) => related.get(it.key));
+  const missingId = wanted.find((it) => !it.nodeId);
+  if (missingId) throw new GitHubError('http', `${repo}#${missingId.number} 缺少读关系要用的 id`);
+  const relations = await fetchRelationsBatch(client, wanted.map((it) => ({ nodeId: it.nodeId, what: `${repo}#${it.number}` })));
+  for (const it of items.values()) it.relations = related.get(it.key) ? relations.get(it.nodeId)! : noRelations();
   return { sourceKey: src.key, fetchedAt: now, items: [...items.values()] };
 }
 

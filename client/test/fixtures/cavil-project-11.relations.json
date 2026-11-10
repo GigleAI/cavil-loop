@@ -1,0 +1,5129 @@
+{
+ "_note": "Recorded from GigleAI Project #11 (\"cavil project\") with test/fixtures/record.mjs, by the client's own board query; scrubbed like cavil-project-11.pages.json. Only the issues that have a relation (parent, sub-issues, blocked-by, blocking) are kept; every relation list is whole (the recorder read the follow-up pages), the fake GitHub cuts them into pages again.",
+ "recordedAt": "2026-11-10T10:51:42.907Z",
+ "pages": [
+  {
+   "id": "PVT_fixture_435fd6e043de",
+   "title": "cavil project",
+   "url": "https://github.com/orgs/GigleAI/projects/11",
+   "viewerCanUpdate": true,
+   "fields": {
+    "nodes": [
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2SingleSelectField",
+      "id": "PVTF_fixture_c5fef67be389",
+      "name": "Status",
+      "options": [
+       {
+        "id": "f75ad846",
+        "name": "Backlog"
+       },
+       {
+        "id": "61e4505c",
+        "name": "Preparing"
+       },
+       {
+        "id": "47fc9ee4",
+        "name": "In progress"
+       },
+       {
+        "id": "df73e18b",
+        "name": "In review"
+       },
+       {
+        "id": "98236657",
+        "name": "Done"
+       }
+      ]
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2IterationField",
+      "id": "PVTF_fixture_c418626aa793",
+      "name": "Iteration",
+      "configuration": {
+       "iterations": [
+        {
+         "id": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7
+        },
+        {
+         "id": "3d96a307",
+         "title": "Iteration 27",
+         "startDate": "2026-11-16",
+         "duration": 7
+        }
+       ],
+       "completedIterations": [
+        {
+         "id": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7
+        },
+        {
+         "id": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7
+        },
+        {
+         "id": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7
+        },
+        {
+         "id": "74c4ff86",
+         "title": "Iteration 22",
+         "startDate": "2026-10-12",
+         "duration": 7
+        },
+        {
+         "id": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7
+        },
+        {
+         "id": "6336d658",
+         "title": "Iteration 20",
+         "startDate": "2026-09-28",
+         "duration": 7
+        },
+        {
+         "id": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7
+        },
+        {
+         "id": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7
+        },
+        {
+         "id": "43117234",
+         "title": "Iteration 17",
+         "startDate": "2026-09-07",
+         "duration": 7
+        },
+        {
+         "id": "4b7b7c56",
+         "title": "Iteration 16",
+         "startDate": "2026-08-31",
+         "duration": 7
+        },
+        {
+         "id": "39d50550",
+         "title": "Iteration 15",
+         "startDate": "2026-08-24",
+         "duration": 7
+        },
+        {
+         "id": "5d38d2fd",
+         "title": "Iteration 14",
+         "startDate": "2026-08-17",
+         "duration": 7
+        },
+        {
+         "id": "6db4501a",
+         "title": "Iteration 13",
+         "startDate": "2026-08-10",
+         "duration": 7
+        },
+        {
+         "id": "ea3041bd",
+         "title": "Iteration 12",
+         "startDate": "2026-08-03",
+         "duration": 7
+        },
+        {
+         "id": "742c7f27",
+         "title": "Iteration 11",
+         "startDate": "2026-07-27",
+         "duration": 7
+        },
+        {
+         "id": "6dae581f",
+         "title": "Iteration 10",
+         "startDate": "2026-07-20",
+         "duration": 7
+        },
+        {
+         "id": "eb6cb6a2",
+         "title": "Iteration 9",
+         "startDate": "2026-07-13",
+         "duration": 7
+        },
+        {
+         "id": "5cc2e456",
+         "title": "Iteration 8",
+         "startDate": "2026-07-06",
+         "duration": 7
+        },
+        {
+         "id": "2b608756",
+         "title": "Iteration 7",
+         "startDate": "2026-06-29",
+         "duration": 7
+        },
+        {
+         "id": "3ee282ed",
+         "title": "Iteration 6",
+         "startDate": "2026-06-22",
+         "duration": 7
+        },
+        {
+         "id": "b7b3cc41",
+         "title": "Iteration 5",
+         "startDate": "2026-06-15",
+         "duration": 7
+        },
+        {
+         "id": "612409b2",
+         "title": "Iteration 4",
+         "startDate": "2026-06-08",
+         "duration": 7
+        },
+        {
+         "id": "1c5af022",
+         "title": "Iteration 3",
+         "startDate": "2026-06-01",
+         "duration": 7
+        },
+        {
+         "id": "d5912ebb",
+         "title": "Iteration 2",
+         "startDate": "2026-05-25",
+         "duration": 7
+        },
+        {
+         "id": "d77dd21c",
+         "title": "Iteration 1",
+         "startDate": "2026-05-18",
+         "duration": 7
+        }
+       ]
+      }
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     }
+    ]
+   },
+   "views": {
+    "nodes": [
+     {
+      "number": 1,
+      "name": "Pending",
+      "layout": "TABLE_LAYOUT",
+      "filter": "-label:Done -status:Done",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Updated",
+         "dataType": "UPDATED"
+        },
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      }
+     },
+     {
+      "number": 2,
+      "name": "迭代统计",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Milestone",
+         "dataType": "MILESTONE"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 3,
+      "name": "迭代规划",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-status:Done -iteration:\"Iteration 1\",\"Iteration 2\",\"Iteration 3\",\"Iteration 4\",\"Iteration 5\",\"Iteration 6\",\"Iteration 7\",\"Iteration 8\",\"Iteration 9\" -label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 4,
+      "name": "Roadmap",
+      "layout": "ROADMAP_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      }
+     },
+     {
+      "number": 5,
+      "name": "My items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "assignee:@me",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 6,
+      "name": "Team items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Project Start date",
+         "dataType": "DATE"
+        },
+        {
+         "name": "Project Target date",
+         "dataType": "DATE"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "items": {
+    "totalCount": 350,
+    "pageInfo": {
+     "hasNextPage": true,
+     "endCursor": "cursor-1"
+    },
+    "nodes": [
+     {
+      "id": "PVTI_fixture_f784ba85427f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_efdba320db7c",
+       "number": 67,
+       "title": "更新下文档",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/67",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-10-20T16:13:42Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 70,
+          "title": "新安装全部改用 cavil-loop 命名（代码同时认旧名）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/70",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 71,
+          "title": "旧安装自动检测并迁移到 cavil-loop 命名",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/71",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 2,
+        "completed": 2
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 69,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/69",
+          "state": "CLOSED",
+          "merged": false,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_e198e69f43a0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_d3d5c548ab94",
+       "number": 70,
+       "title": "新安装全部改用 cavil-loop 命名（代码同时认旧名）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/70",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-10-20T05:32:22Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 67,
+        "title": "更新下文档",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/67",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 72,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/72",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_07c77e96eabe",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_3d1d879c48c0",
+       "number": 71,
+       "title": "旧安装自动检测并迁移到 cavil-loop 命名",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/71",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-10-20T14:59:13Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 67,
+        "title": "更新下文档",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/67",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 73,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/73",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "PVT_fixture_435fd6e043de",
+   "title": "cavil project",
+   "url": "https://github.com/orgs/GigleAI/projects/11",
+   "viewerCanUpdate": true,
+   "fields": {
+    "nodes": [
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2SingleSelectField",
+      "id": "PVTF_fixture_c5fef67be389",
+      "name": "Status",
+      "options": [
+       {
+        "id": "f75ad846",
+        "name": "Backlog"
+       },
+       {
+        "id": "61e4505c",
+        "name": "Preparing"
+       },
+       {
+        "id": "47fc9ee4",
+        "name": "In progress"
+       },
+       {
+        "id": "df73e18b",
+        "name": "In review"
+       },
+       {
+        "id": "98236657",
+        "name": "Done"
+       }
+      ]
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2IterationField",
+      "id": "PVTF_fixture_c418626aa793",
+      "name": "Iteration",
+      "configuration": {
+       "iterations": [
+        {
+         "id": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7
+        },
+        {
+         "id": "3d96a307",
+         "title": "Iteration 27",
+         "startDate": "2026-11-16",
+         "duration": 7
+        }
+       ],
+       "completedIterations": [
+        {
+         "id": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7
+        },
+        {
+         "id": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7
+        },
+        {
+         "id": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7
+        },
+        {
+         "id": "74c4ff86",
+         "title": "Iteration 22",
+         "startDate": "2026-10-12",
+         "duration": 7
+        },
+        {
+         "id": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7
+        },
+        {
+         "id": "6336d658",
+         "title": "Iteration 20",
+         "startDate": "2026-09-28",
+         "duration": 7
+        },
+        {
+         "id": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7
+        },
+        {
+         "id": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7
+        },
+        {
+         "id": "43117234",
+         "title": "Iteration 17",
+         "startDate": "2026-09-07",
+         "duration": 7
+        },
+        {
+         "id": "4b7b7c56",
+         "title": "Iteration 16",
+         "startDate": "2026-08-31",
+         "duration": 7
+        },
+        {
+         "id": "39d50550",
+         "title": "Iteration 15",
+         "startDate": "2026-08-24",
+         "duration": 7
+        },
+        {
+         "id": "5d38d2fd",
+         "title": "Iteration 14",
+         "startDate": "2026-08-17",
+         "duration": 7
+        },
+        {
+         "id": "6db4501a",
+         "title": "Iteration 13",
+         "startDate": "2026-08-10",
+         "duration": 7
+        },
+        {
+         "id": "ea3041bd",
+         "title": "Iteration 12",
+         "startDate": "2026-08-03",
+         "duration": 7
+        },
+        {
+         "id": "742c7f27",
+         "title": "Iteration 11",
+         "startDate": "2026-07-27",
+         "duration": 7
+        },
+        {
+         "id": "6dae581f",
+         "title": "Iteration 10",
+         "startDate": "2026-07-20",
+         "duration": 7
+        },
+        {
+         "id": "eb6cb6a2",
+         "title": "Iteration 9",
+         "startDate": "2026-07-13",
+         "duration": 7
+        },
+        {
+         "id": "5cc2e456",
+         "title": "Iteration 8",
+         "startDate": "2026-07-06",
+         "duration": 7
+        },
+        {
+         "id": "2b608756",
+         "title": "Iteration 7",
+         "startDate": "2026-06-29",
+         "duration": 7
+        },
+        {
+         "id": "3ee282ed",
+         "title": "Iteration 6",
+         "startDate": "2026-06-22",
+         "duration": 7
+        },
+        {
+         "id": "b7b3cc41",
+         "title": "Iteration 5",
+         "startDate": "2026-06-15",
+         "duration": 7
+        },
+        {
+         "id": "612409b2",
+         "title": "Iteration 4",
+         "startDate": "2026-06-08",
+         "duration": 7
+        },
+        {
+         "id": "1c5af022",
+         "title": "Iteration 3",
+         "startDate": "2026-06-01",
+         "duration": 7
+        },
+        {
+         "id": "d5912ebb",
+         "title": "Iteration 2",
+         "startDate": "2026-05-25",
+         "duration": 7
+        },
+        {
+         "id": "d77dd21c",
+         "title": "Iteration 1",
+         "startDate": "2026-05-18",
+         "duration": 7
+        }
+       ]
+      }
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     }
+    ]
+   },
+   "views": {
+    "nodes": [
+     {
+      "number": 1,
+      "name": "Pending",
+      "layout": "TABLE_LAYOUT",
+      "filter": "-label:Done -status:Done",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Updated",
+         "dataType": "UPDATED"
+        },
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      }
+     },
+     {
+      "number": 2,
+      "name": "迭代统计",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Milestone",
+         "dataType": "MILESTONE"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 3,
+      "name": "迭代规划",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-status:Done -iteration:\"Iteration 1\",\"Iteration 2\",\"Iteration 3\",\"Iteration 4\",\"Iteration 5\",\"Iteration 6\",\"Iteration 7\",\"Iteration 8\",\"Iteration 9\" -label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 4,
+      "name": "Roadmap",
+      "layout": "ROADMAP_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      }
+     },
+     {
+      "number": 5,
+      "name": "My items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "assignee:@me",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 6,
+      "name": "Team items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Project Start date",
+         "dataType": "DATE"
+        },
+        {
+         "name": "Project Target date",
+         "dataType": "DATE"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "items": {
+    "totalCount": 350,
+    "pageInfo": {
+     "hasNextPage": true,
+     "endCursor": "cursor-2"
+    },
+    "nodes": [
+     {
+      "id": "PVTI_fixture_a6754a01539f",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_c3b35f94e3c9",
+       "number": 135,
+       "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/135",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-05T21:47:32Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/PR",
+          "color": "EEEEEE"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 136,
+          "title": "Cavil Loop Client：客户端骨架——浏览器授权登录、多 Project / 多仓库同步与本地缓存、只读看板、macOS 打包",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/136",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 137,
+          "title": "Cavil Loop Client：搜索与筛选 + 表格视图（本地执行，沿用 GitHub 网页写法，默认导入网页视图设置）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/137",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 138,
+          "title": "Cavil Loop Client：查看与操作——评论倒序、改标签 / 迭代 / 里程碑、新建 issue、回复评论、合并与关闭 PR",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/138",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 139,
+          "title": "Cavil Loop Client：pending/human 提醒、Dock 角标与后台常驻",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/139",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 1453,
+          "title": "示例 issue 1453：fixture title",
+          "url": "https://github.com/GigleAI/GigleTutor-Web/issues/1453",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/GigleTutor-Web"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 5,
+        "completed": 5
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_493eb030f9f0",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_ced76f7b6caa",
+       "number": 136,
+       "title": "Cavil Loop Client：客户端骨架——浏览器授权登录、多 Project / 多仓库同步与本地缓存、只读看板、macOS 打包",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/136",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-05T14:52:15Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/135",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 140,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/140",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_17e6b75a9068",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_bc55cbe1aab4",
+       "number": 137,
+       "title": "Cavil Loop Client：搜索与筛选 + 表格视图（本地执行，沿用 GitHub 网页写法，默认导入网页视图设置）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/137",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-05T17:33:18Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/135",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 148,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/148",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_98ebe4fb8e4c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_79f494f383d0",
+       "number": 138,
+       "title": "Cavil Loop Client：查看与操作——评论倒序、改标签 / 迭代 / 里程碑、新建 issue、回复评论、合并与关闭 PR",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/138",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-05T16:32:05Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/135",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 150,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/150",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_c3dc96a8cb18",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_e24ba0b4bfd5",
+       "number": 139,
+       "title": "Cavil Loop Client：pending/human 提醒、Dock 角标与后台常驻",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/139",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-06T03:09:47Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 135,
+        "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/135",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 146,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/146",
+          "state": "CLOSED",
+          "merged": false,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_841550a3e89e",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_9ec05f693fce",
+       "number": 1453,
+       "title": "示例 issue 1453：fixture title",
+       "url": "https://github.com/GigleAI/GigleTutor-Web/issues/1453",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-05T21:37:22Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/GigleTutor-Web"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/human",
+          "color": "fbca04"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": {
+        "number": 135,
+        "title": "Cavil Loop Client v1：本地 GitHub Project 看板客户端",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/135",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_e6d6b1dd2c3c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_9aa65b2fb461",
+       "number": 169,
+       "title": "目前 main 分支上的客户端有消息推送没？",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/169",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-06T06:58:27Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 181,
+          "title": "页面 UI/UX设计一下，目前丑的一逼",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/181",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 173,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/173",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_4cf4eebf3fec",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_d1edcd48056b",
+       "number": 181,
+       "title": "页面 UI/UX设计一下，目前丑的一逼",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/181",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-06T13:41:39Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 169,
+          "title": "目前 main 分支上的客户端有消息推送没？",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/169",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 188,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/188",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "PVT_fixture_435fd6e043de",
+   "title": "cavil project",
+   "url": "https://github.com/orgs/GigleAI/projects/11",
+   "viewerCanUpdate": true,
+   "fields": {
+    "nodes": [
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2SingleSelectField",
+      "id": "PVTF_fixture_c5fef67be389",
+      "name": "Status",
+      "options": [
+       {
+        "id": "f75ad846",
+        "name": "Backlog"
+       },
+       {
+        "id": "61e4505c",
+        "name": "Preparing"
+       },
+       {
+        "id": "47fc9ee4",
+        "name": "In progress"
+       },
+       {
+        "id": "df73e18b",
+        "name": "In review"
+       },
+       {
+        "id": "98236657",
+        "name": "Done"
+       }
+      ]
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2IterationField",
+      "id": "PVTF_fixture_c418626aa793",
+      "name": "Iteration",
+      "configuration": {
+       "iterations": [
+        {
+         "id": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7
+        },
+        {
+         "id": "3d96a307",
+         "title": "Iteration 27",
+         "startDate": "2026-11-16",
+         "duration": 7
+        }
+       ],
+       "completedIterations": [
+        {
+         "id": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7
+        },
+        {
+         "id": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7
+        },
+        {
+         "id": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7
+        },
+        {
+         "id": "74c4ff86",
+         "title": "Iteration 22",
+         "startDate": "2026-10-12",
+         "duration": 7
+        },
+        {
+         "id": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7
+        },
+        {
+         "id": "6336d658",
+         "title": "Iteration 20",
+         "startDate": "2026-09-28",
+         "duration": 7
+        },
+        {
+         "id": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7
+        },
+        {
+         "id": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7
+        },
+        {
+         "id": "43117234",
+         "title": "Iteration 17",
+         "startDate": "2026-09-07",
+         "duration": 7
+        },
+        {
+         "id": "4b7b7c56",
+         "title": "Iteration 16",
+         "startDate": "2026-08-31",
+         "duration": 7
+        },
+        {
+         "id": "39d50550",
+         "title": "Iteration 15",
+         "startDate": "2026-08-24",
+         "duration": 7
+        },
+        {
+         "id": "5d38d2fd",
+         "title": "Iteration 14",
+         "startDate": "2026-08-17",
+         "duration": 7
+        },
+        {
+         "id": "6db4501a",
+         "title": "Iteration 13",
+         "startDate": "2026-08-10",
+         "duration": 7
+        },
+        {
+         "id": "ea3041bd",
+         "title": "Iteration 12",
+         "startDate": "2026-08-03",
+         "duration": 7
+        },
+        {
+         "id": "742c7f27",
+         "title": "Iteration 11",
+         "startDate": "2026-07-27",
+         "duration": 7
+        },
+        {
+         "id": "6dae581f",
+         "title": "Iteration 10",
+         "startDate": "2026-07-20",
+         "duration": 7
+        },
+        {
+         "id": "eb6cb6a2",
+         "title": "Iteration 9",
+         "startDate": "2026-07-13",
+         "duration": 7
+        },
+        {
+         "id": "5cc2e456",
+         "title": "Iteration 8",
+         "startDate": "2026-07-06",
+         "duration": 7
+        },
+        {
+         "id": "2b608756",
+         "title": "Iteration 7",
+         "startDate": "2026-06-29",
+         "duration": 7
+        },
+        {
+         "id": "3ee282ed",
+         "title": "Iteration 6",
+         "startDate": "2026-06-22",
+         "duration": 7
+        },
+        {
+         "id": "b7b3cc41",
+         "title": "Iteration 5",
+         "startDate": "2026-06-15",
+         "duration": 7
+        },
+        {
+         "id": "612409b2",
+         "title": "Iteration 4",
+         "startDate": "2026-06-08",
+         "duration": 7
+        },
+        {
+         "id": "1c5af022",
+         "title": "Iteration 3",
+         "startDate": "2026-06-01",
+         "duration": 7
+        },
+        {
+         "id": "d5912ebb",
+         "title": "Iteration 2",
+         "startDate": "2026-05-25",
+         "duration": 7
+        },
+        {
+         "id": "d77dd21c",
+         "title": "Iteration 1",
+         "startDate": "2026-05-18",
+         "duration": 7
+        }
+       ]
+      }
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     }
+    ]
+   },
+   "views": {
+    "nodes": [
+     {
+      "number": 1,
+      "name": "Pending",
+      "layout": "TABLE_LAYOUT",
+      "filter": "-label:Done -status:Done",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Updated",
+         "dataType": "UPDATED"
+        },
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      }
+     },
+     {
+      "number": 2,
+      "name": "迭代统计",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Milestone",
+         "dataType": "MILESTONE"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 3,
+      "name": "迭代规划",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-status:Done -iteration:\"Iteration 1\",\"Iteration 2\",\"Iteration 3\",\"Iteration 4\",\"Iteration 5\",\"Iteration 6\",\"Iteration 7\",\"Iteration 8\",\"Iteration 9\" -label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 4,
+      "name": "Roadmap",
+      "layout": "ROADMAP_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      }
+     },
+     {
+      "number": 5,
+      "name": "My items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "assignee:@me",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 6,
+      "name": "Team items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Project Start date",
+         "dataType": "DATE"
+        },
+        {
+         "name": "Project Target date",
+         "dataType": "DATE"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "items": {
+    "totalCount": 350,
+    "pageInfo": {
+     "hasNextPage": true,
+     "endCursor": "cursor-3"
+    },
+    "nodes": [
+     {
+      "id": "PVTI_fixture_92d28391e7b3",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_7296540d675d",
+       "number": 207,
+       "title": "测试提速，并把负对照 / 变异测试和回归、冒烟等测试分开",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/207",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-07T06:54:22Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 211,
+          "title": "测试提速：常驻假 GitHub、拆段并行、改动前对拍同版本跳过、webhook 超时可配（#207 子项 ①）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/211",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 212,
+          "title": "测试分类与分栏计数：文件标类型、按类型挑选、回归 / 兼容对比 / 负对照分开汇报、shell 冒烟测试（#207 子项 ②）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/212",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 2,
+        "completed": 2
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_76df0da289f7",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_cdd0f6d72dc8",
+       "number": 211,
+       "title": "测试提速：常驻假 GitHub、拆段并行、改动前对拍同版本跳过、webhook 超时可配（#207 子项 ①）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/211",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-07T02:05:31Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 207,
+        "title": "测试提速，并把负对照 / 变异测试和回归、冒烟等测试分开",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/207",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 221,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/221",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_6f25ae1ad376",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_b1f5f2344af5",
+       "number": 212,
+       "title": "测试分类与分栏计数：文件标类型、按类型挑选、回归 / 兼容对比 / 负对照分开汇报、shell 冒烟测试（#207 子项 ②）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/212",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-07T05:00:36Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 207,
+        "title": "测试提速，并把负对照 / 变异测试和回归、冒烟等测试分开",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/207",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 225,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/225",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_2458f2ac91ea",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldPullRequestValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_20ba4aa54c50",
+       "number": 232,
+       "title": "周报支持把多个项目合并成一份：各仓库独立采数，结果层合并（同号不串账）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/232",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-07T08:07:36Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 1458,
+        "title": "示例 issue 1458：fixture title",
+        "url": "https://github.com/GigleAI/GigleTutor-Web/issues/1458",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/GigleTutor-Web"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": [
+         {
+          "number": 235,
+          "url": "https://github.com/GigleAI/cavil-loop/pull/235",
+          "state": "MERGED",
+          "merged": true,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_91c05ed82ff9",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_7fbda45748f7",
+       "number": 281,
+       "title": "每周的 release 报错",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/281",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-09T10:53:30Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 284,
+          "title": "修好每周发版门禁里失效的负对照（按值不值得留逐条修或删）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/284",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 285,
+          "title": "发版运行失败时自动开 issue 或在同类 issue 下评论",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/285",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 286,
+          "title": "发版修复合并后跑一次只跑门禁验证到全绿，并收尾关闭 #281",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/286",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 3,
+        "completed": 3
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_29726fca99f4",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_e46558ea2d28",
+       "number": 284,
+       "title": "修好每周发版门禁里失效的负对照（按值不值得留逐条修或删）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/284",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-09T05:21:51Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 281,
+        "title": "每周的 release 报错",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/281",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_7bcac4fd9337",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_6c816276a0e1",
+       "number": 285,
+       "title": "发版运行失败时自动开 issue 或在同类 issue 下评论",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/285",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-09T05:27:38Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 281,
+        "title": "每周的 release 报错",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/281",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_67da0af8cceb",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_f193e126d554",
+       "number": 286,
+       "title": "发版修复合并后跑一次只跑门禁验证到全绿，并收尾关闭 #281",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/286",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-09T10:53:27Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 281,
+        "title": "每周的 release 报错",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/281",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "PVT_fixture_435fd6e043de",
+   "title": "cavil project",
+   "url": "https://github.com/orgs/GigleAI/projects/11",
+   "viewerCanUpdate": true,
+   "fields": {
+    "nodes": [
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2SingleSelectField",
+      "id": "PVTF_fixture_c5fef67be389",
+      "name": "Status",
+      "options": [
+       {
+        "id": "f75ad846",
+        "name": "Backlog"
+       },
+       {
+        "id": "61e4505c",
+        "name": "Preparing"
+       },
+       {
+        "id": "47fc9ee4",
+        "name": "In progress"
+       },
+       {
+        "id": "df73e18b",
+        "name": "In review"
+       },
+       {
+        "id": "98236657",
+        "name": "Done"
+       }
+      ]
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2IterationField",
+      "id": "PVTF_fixture_c418626aa793",
+      "name": "Iteration",
+      "configuration": {
+       "iterations": [
+        {
+         "id": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7
+        },
+        {
+         "id": "3d96a307",
+         "title": "Iteration 27",
+         "startDate": "2026-11-16",
+         "duration": 7
+        }
+       ],
+       "completedIterations": [
+        {
+         "id": "1892455e",
+         "title": "Iteration 25",
+         "startDate": "2026-11-02",
+         "duration": 7
+        },
+        {
+         "id": "a0e1b507",
+         "title": "Iteration 24",
+         "startDate": "2026-10-26",
+         "duration": 7
+        },
+        {
+         "id": "00cea661",
+         "title": "Iteration 23",
+         "startDate": "2026-10-19",
+         "duration": 7
+        },
+        {
+         "id": "74c4ff86",
+         "title": "Iteration 22",
+         "startDate": "2026-10-12",
+         "duration": 7
+        },
+        {
+         "id": "51bd64a2",
+         "title": "Iteration 21",
+         "startDate": "2026-10-05",
+         "duration": 7
+        },
+        {
+         "id": "6336d658",
+         "title": "Iteration 20",
+         "startDate": "2026-09-28",
+         "duration": 7
+        },
+        {
+         "id": "e79a83b4",
+         "title": "Iteration 19",
+         "startDate": "2026-09-21",
+         "duration": 7
+        },
+        {
+         "id": "f258a41c",
+         "title": "Iteration 18",
+         "startDate": "2026-09-14",
+         "duration": 7
+        },
+        {
+         "id": "43117234",
+         "title": "Iteration 17",
+         "startDate": "2026-09-07",
+         "duration": 7
+        },
+        {
+         "id": "4b7b7c56",
+         "title": "Iteration 16",
+         "startDate": "2026-08-31",
+         "duration": 7
+        },
+        {
+         "id": "39d50550",
+         "title": "Iteration 15",
+         "startDate": "2026-08-24",
+         "duration": 7
+        },
+        {
+         "id": "5d38d2fd",
+         "title": "Iteration 14",
+         "startDate": "2026-08-17",
+         "duration": 7
+        },
+        {
+         "id": "6db4501a",
+         "title": "Iteration 13",
+         "startDate": "2026-08-10",
+         "duration": 7
+        },
+        {
+         "id": "ea3041bd",
+         "title": "Iteration 12",
+         "startDate": "2026-08-03",
+         "duration": 7
+        },
+        {
+         "id": "742c7f27",
+         "title": "Iteration 11",
+         "startDate": "2026-07-27",
+         "duration": 7
+        },
+        {
+         "id": "6dae581f",
+         "title": "Iteration 10",
+         "startDate": "2026-07-20",
+         "duration": 7
+        },
+        {
+         "id": "eb6cb6a2",
+         "title": "Iteration 9",
+         "startDate": "2026-07-13",
+         "duration": 7
+        },
+        {
+         "id": "5cc2e456",
+         "title": "Iteration 8",
+         "startDate": "2026-07-06",
+         "duration": 7
+        },
+        {
+         "id": "2b608756",
+         "title": "Iteration 7",
+         "startDate": "2026-06-29",
+         "duration": 7
+        },
+        {
+         "id": "3ee282ed",
+         "title": "Iteration 6",
+         "startDate": "2026-06-22",
+         "duration": 7
+        },
+        {
+         "id": "b7b3cc41",
+         "title": "Iteration 5",
+         "startDate": "2026-06-15",
+         "duration": 7
+        },
+        {
+         "id": "612409b2",
+         "title": "Iteration 4",
+         "startDate": "2026-06-08",
+         "duration": 7
+        },
+        {
+         "id": "1c5af022",
+         "title": "Iteration 3",
+         "startDate": "2026-06-01",
+         "duration": 7
+        },
+        {
+         "id": "d5912ebb",
+         "title": "Iteration 2",
+         "startDate": "2026-05-25",
+         "duration": 7
+        },
+        {
+         "id": "d77dd21c",
+         "title": "Iteration 1",
+         "startDate": "2026-05-18",
+         "duration": 7
+        }
+       ]
+      }
+     },
+     {
+      "__typename": "ProjectV2Field"
+     },
+     {
+      "__typename": "ProjectV2Field"
+     }
+    ]
+   },
+   "views": {
+    "nodes": [
+     {
+      "number": 1,
+      "name": "Pending",
+      "layout": "TABLE_LAYOUT",
+      "filter": "-label:Done -status:Done",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Updated",
+         "dataType": "UPDATED"
+        },
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      }
+     },
+     {
+      "number": 2,
+      "name": "迭代统计",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Milestone",
+         "dataType": "MILESTONE"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 3,
+      "name": "迭代规划",
+      "layout": "BOARD_LAYOUT",
+      "filter": "-status:Done -iteration:\"Iteration 1\",\"Iteration 2\",\"Iteration 3\",\"Iteration 4\",\"Iteration 5\",\"Iteration 6\",\"Iteration 7\",\"Iteration 8\",\"Iteration 9\" -label:nightly-failure",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "sortByFields": {
+       "nodes": [
+        {
+         "direction": "DESC",
+         "field": {
+          "name": "Updated",
+          "dataType": "UPDATED"
+         }
+        }
+       ]
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Labels",
+         "dataType": "LABELS"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 4,
+      "name": "Roadmap",
+      "layout": "ROADMAP_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Iteration",
+         "dataType": "ITERATION"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Assignees",
+         "dataType": "ASSIGNEES"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      }
+     },
+     {
+      "number": 5,
+      "name": "My items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "assignee:@me",
+      "groupByFields": {
+       "nodes": []
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        }
+       ]
+      }
+     },
+     {
+      "number": 6,
+      "name": "Team items",
+      "layout": "TABLE_LAYOUT",
+      "filter": "",
+      "groupByFields": {
+       "nodes": [
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        }
+       ]
+      },
+      "verticalGroupByFields": {
+       "nodes": []
+      },
+      "sortByFields": {
+       "nodes": []
+      },
+      "fields": {
+       "nodes": [
+        {
+         "name": "Title",
+         "dataType": "TITLE"
+        },
+        {
+         "name": "Status",
+         "dataType": "SINGLE_SELECT"
+        },
+        {
+         "name": "Linked pull requests",
+         "dataType": "LINKED_PULL_REQUESTS"
+        },
+        {
+         "name": "Sub-issues progress",
+         "dataType": "SUB_ISSUES_PROGRESS"
+        },
+        {
+         "name": "Project Start date",
+         "dataType": "DATE"
+        },
+        {
+         "name": "Project Target date",
+         "dataType": "DATE"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "items": {
+    "totalCount": 350,
+    "pageInfo": {
+     "hasNextPage": false,
+     "endCursor": "cursor-4"
+    },
+    "nodes": [
+     {
+      "id": "PVTI_fixture_aa7fc92887ad",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_260d98c1e375",
+       "number": 311,
+       "title": "客户端增加安装cavil-loop daemon 和配置使用项目的功能",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/311",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-10T02:05:20Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-1"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 313,
+          "title": "daemon 侧：安装脚本可无人值守 + 本机状态一次读全 + 断开项目 + 换新 Mac 后台任务配置",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/313",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 314,
+          "title": "客户端：设置页「本机 daemon」——检查、安装、已接项目列表与启停、更新",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/314",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 315,
+          "title": "客户端：从仓库列表接上 daemon（选目录 / 克隆 / 选 agent）+ 文档与端到端收尾",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/315",
+          "state": "CLOSED",
+          "stateReason": "COMPLETED",
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 3,
+        "completed": 3
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_4d8132356976",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_5b93ce650641",
+       "number": 313,
+       "title": "daemon 侧：安装脚本可无人值守 + 本机状态一次读全 + 断开项目 + 换新 Mac 后台任务配置",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/313",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-09T13:19:18Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 311,
+        "title": "客户端增加安装cavil-loop daemon 和配置使用项目的功能",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/311",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_11e8cabde962",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_e5e7c8fd7903",
+       "number": 314,
+       "title": "客户端：设置页「本机 daemon」——检查、安装、已接项目列表与启停、更新",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/314",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-09T14:34:43Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 311,
+        "title": "客户端增加安装cavil-loop daemon 和配置使用项目的功能",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/311",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_328a0301013d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "98236657",
+         "name": "Done",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        },
+        {
+         "__typename": "ProjectV2ItemFieldIterationValue",
+         "iterationId": "0edf1752",
+         "title": "Iteration 26",
+         "startDate": "2026-11-09",
+         "duration": 7,
+         "field": {
+          "id": "PVTF_fixture_c418626aa793",
+          "name": "Iteration"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_0f7c9b008b53",
+       "number": 315,
+       "title": "客户端：从仓库列表接上 daemon（选目录 / 克隆 / 选 agent）+ 文档与端到端收尾",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/315",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "updatedAt": "2026-11-09T22:52:39Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "Done",
+          "color": "586069"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 311,
+        "title": "客户端增加安装cavil-loop daemon 和配置使用项目的功能",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/311",
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_5012af341256",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_8b80992e6beb",
+       "number": 346,
+       "title": "客户端：新增依赖图视图，显示子 issue 和阻塞关系",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/346",
+       "state": "OPEN",
+       "stateReason": null,
+       "updatedAt": "2026-11-10T10:40:09Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/PR",
+          "color": "EEEEEE"
+         },
+         {
+          "name": "autopilot",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": null,
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 349,
+          "title": "客户端同步：读取子 issue 列表和阻塞关系并入缓存（#346 子项 ①）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/349",
+          "state": "OPEN",
+          "stateReason": null,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         },
+         {
+          "number": 350,
+          "title": "客户端：依赖图视图——父子框、阻塞箭头、平移缩放与小地图（#346 子项 ②）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/350",
+          "state": "OPEN",
+          "stateReason": null,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 2,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_34c0de1bc78d",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_8c665cf005c9",
+       "number": 349,
+       "title": "客户端同步：读取子 issue 列表和阻塞关系并入缓存（#346 子项 ①）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/349",
+       "state": "OPEN",
+       "stateReason": null,
+       "updatedAt": "2026-11-10T10:40:04Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "doing/agent",
+          "color": "c2e0c6"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 346,
+        "title": "客户端：新增依赖图视图，显示子 issue 和阻塞关系",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/346",
+        "state": "OPEN",
+        "stateReason": null,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 350,
+          "title": "客户端：依赖图视图——父子框、阻塞箭头、平移缩放与小地图（#346 子项 ②）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/350",
+          "state": "OPEN",
+          "stateReason": null,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     },
+     {
+      "id": "PVTI_fixture_b43b5100633c",
+      "isArchived": false,
+      "fieldValues": {
+       "nodes": [
+        {
+         "__typename": "ProjectV2ItemFieldRepositoryValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldLabelValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldTextValue"
+        },
+        {
+         "__typename": "ProjectV2ItemFieldSingleSelectValue",
+         "optionId": "f75ad846",
+         "name": "Backlog",
+         "field": {
+          "id": "PVTF_fixture_c5fef67be389",
+          "name": "Status"
+         }
+        }
+       ]
+      },
+      "content": {
+       "__typename": "Issue",
+       "id": "I_fixture_62167a1bd6a6",
+       "number": 350,
+       "title": "客户端：依赖图视图——父子框、阻塞箭头、平移缩放与小地图（#346 子项 ②）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/350",
+       "state": "OPEN",
+       "stateReason": null,
+       "updatedAt": "2026-11-10T10:39:21Z",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       },
+       "labels": {
+        "nodes": [
+         {
+          "name": "pending/blocked",
+          "color": "c5def5"
+         }
+        ]
+       },
+       "assignees": {
+        "nodes": []
+       },
+       "milestone": null,
+       "author": {
+        "login": "user-6"
+       },
+       "parent": {
+        "number": 346,
+        "title": "客户端：新增依赖图视图，显示子 issue 和阻塞关系",
+        "url": "https://github.com/GigleAI/cavil-loop/issues/346",
+        "state": "OPEN",
+        "stateReason": null,
+        "repository": {
+         "nameWithOwner": "GigleAI/cavil-loop"
+        }
+       },
+       "subIssues": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "blockedBy": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": [
+         {
+          "number": 349,
+          "title": "客户端同步：读取子 issue 列表和阻塞关系并入缓存（#346 子项 ①）",
+          "url": "https://github.com/GigleAI/cavil-loop/issues/349",
+          "state": "OPEN",
+          "stateReason": null,
+          "repository": {
+           "nameWithOwner": "GigleAI/cavil-loop"
+          }
+         }
+        ]
+       },
+       "blocking": {
+        "pageInfo": {
+         "hasNextPage": false,
+         "endCursor": null
+        },
+        "nodes": []
+       },
+       "subIssuesSummary": {
+        "total": 0,
+        "completed": 0
+       },
+       "closedByPullRequestsReferences": {
+        "nodes": []
+       }
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

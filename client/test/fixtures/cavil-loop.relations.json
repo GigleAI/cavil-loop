@@ -1,0 +1,1100 @@
+{
+ "_note": "Recorded from GET /repos/GigleAI/cavil-loop/issues?state=all&sort=updated with test/fixtures/record.mjs: the issues (no pull requests), fields as in cavil-loop.issues.json plus the relation counts. `_relations` is not part of that answer: it is what the client's batch query (CavilIssueRelationsBatch) returned for the issues whose counts say they have relations; the fake GitHub takes it out and serves it through the same query.",
+ "recordedAt": "2026-11-10T10:51:42.907Z",
+ "issues": [
+  {
+   "number": 348,
+   "node_id": "I_fixture_81ded905e402",
+   "title": "更新时，列下更新的内容",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/348",
+   "updated_at": "2026-11-10T10:45:08Z",
+   "labels": [
+    {
+     "name": "doing/agent",
+     "color": "c2e0c6"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 346,
+   "node_id": "I_fixture_8b80992e6beb",
+   "title": "客户端：新增依赖图视图，显示子 issue 和阻塞关系",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/346",
+   "updated_at": "2026-11-10T10:40:09Z",
+   "labels": [
+    {
+     "name": "pending/PR",
+     "color": "EEEEEE"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 2,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   },
+   "_relations": {
+    "parent": null,
+    "subIssues": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": [
+      {
+       "number": 349,
+       "title": "客户端同步：读取子 issue 列表和阻塞关系并入缓存（#346 子项 ①）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/349",
+       "state": "OPEN",
+       "stateReason": null,
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       }
+      },
+      {
+       "number": 350,
+       "title": "客户端：依赖图视图——父子框、阻塞箭头、平移缩放与小地图（#346 子项 ②）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/350",
+       "state": "OPEN",
+       "stateReason": null,
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       }
+      }
+     ]
+    },
+    "blockedBy": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blocking": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    }
+   }
+  },
+  {
+   "number": 349,
+   "node_id": "I_fixture_8c665cf005c9",
+   "title": "客户端同步：读取子 issue 列表和阻塞关系并入缓存（#346 子项 ①）",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/349",
+   "updated_at": "2026-11-10T10:40:04Z",
+   "labels": [
+    {
+     "name": "doing/agent",
+     "color": "c2e0c6"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": "https://api.github.com/repos/GigleAI/cavil-loop/issues/346",
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 1,
+    "total_blocking": 1
+   },
+   "_relations": {
+    "parent": {
+     "number": 346,
+     "title": "客户端：新增依赖图视图，显示子 issue 和阻塞关系",
+     "url": "https://github.com/GigleAI/cavil-loop/issues/346",
+     "state": "OPEN",
+     "stateReason": null,
+     "repository": {
+      "nameWithOwner": "GigleAI/cavil-loop"
+     }
+    },
+    "subIssues": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blockedBy": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blocking": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": [
+      {
+       "number": 350,
+       "title": "客户端：依赖图视图——父子框、阻塞箭头、平移缩放与小地图（#346 子项 ②）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/350",
+       "state": "OPEN",
+       "stateReason": null,
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "number": 350,
+   "node_id": "I_fixture_62167a1bd6a6",
+   "title": "客户端：依赖图视图——父子框、阻塞箭头、平移缩放与小地图（#346 子项 ②）",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/350",
+   "updated_at": "2026-11-10T10:39:21Z",
+   "labels": [
+    {
+     "name": "pending/blocked",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": "https://api.github.com/repos/GigleAI/cavil-loop/issues/346",
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 1,
+    "total_blocked_by": 1,
+    "blocking": 0,
+    "total_blocking": 0
+   },
+   "_relations": {
+    "parent": {
+     "number": 346,
+     "title": "客户端：新增依赖图视图，显示子 issue 和阻塞关系",
+     "url": "https://github.com/GigleAI/cavil-loop/issues/346",
+     "state": "OPEN",
+     "stateReason": null,
+     "repository": {
+      "nameWithOwner": "GigleAI/cavil-loop"
+     }
+    },
+    "subIssues": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blockedBy": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": [
+      {
+       "number": 349,
+       "title": "客户端同步：读取子 issue 列表和阻塞关系并入缓存（#346 子项 ①）",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/349",
+       "state": "OPEN",
+       "stateReason": null,
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       }
+      }
+     ]
+    },
+    "blocking": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    }
+   }
+  },
+  {
+   "number": 340,
+   "node_id": "I_fixture_9ed81c5493bc",
+   "title": "派工时告诉 worker 当前还有哪些条目在进行、各自改了哪些文件",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/340",
+   "updated_at": "2026-11-10T10:36:43Z",
+   "labels": [
+    {
+     "name": "doing/agent",
+     "color": "c2e0c6"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 339,
+   "node_id": "I_fixture_50d9040649e6",
+   "title": "条目卡在 doing/agent 且无人处理时，daemon 按阶梯自动推进",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/339",
+   "updated_at": "2026-11-10T10:36:09Z",
+   "labels": [
+    {
+     "name": "doing/agent",
+     "color": "c2e0c6"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 338,
+   "node_id": "I_fixture_deec703d231f",
+   "title": "目前新用户是不是并不需要有建立一个 github project 就可以用？",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/338",
+   "updated_at": "2026-11-10T10:26:01Z",
+   "labels": [
+    {
+     "name": "pending/human",
+     "color": "fbca04"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 345,
+   "node_id": "I_fixture_05277edf318c",
+   "title": "base 分支测试工作流失败时自动开 issue 报告（可选自动派工）",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/345",
+   "updated_at": "2026-11-10T08:36:52Z",
+   "labels": [],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 344,
+   "node_id": "I_fixture_61c4d00f7c1a",
+   "title": "给 poller 加一份滚动的运行记录，出异常时自动留快照",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/344",
+   "updated_at": "2026-11-10T08:36:51Z",
+   "labels": [],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 343,
+   "node_id": "I_fixture_a8621d6ff805",
+   "title": "重测试整机串行，worker 结束时清理它留下的测试进程",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/343",
+   "updated_at": "2026-11-10T08:36:50Z",
+   "labels": [],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 342,
+   "node_id": "I_fixture_3f623267ddcd",
+   "title": "窗格历史、poll.log 和会话记录里的令牌落盘前脱敏",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/342",
+   "updated_at": "2026-11-10T08:36:49Z",
+   "labels": [],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 341,
+   "node_id": "I_fixture_7c16ce1b7509",
+   "title": "agent 撞到用量上限时暂停派工到解除，而不是反复重派或交人",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/341",
+   "updated_at": "2026-11-10T08:36:47Z",
+   "labels": [],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 337,
+   "node_id": "I_fixture_6d8674476594",
+   "title": "托管合并：改动命中「会在之后执行代码」的路径时交给人",
+   "state": "open",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/337",
+   "updated_at": "2026-11-10T08:36:44Z",
+   "labels": [],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 335,
+   "node_id": "I_fixture_345cb63c509a",
+   "title": "方案只要改变界面外观就必须附设计稿（不限于有选择题时）",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/335",
+   "updated_at": "2026-11-10T06:05:29Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 322,
+   "node_id": "I_fixture_1263fe02b8ad",
+   "title": "回复框优化",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/322",
+   "updated_at": "2026-11-10T04:57:04Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 333,
+   "node_id": "I_fixture_e77550a0f51a",
+   "title": "重启后恢复之前的窗口大小",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/333",
+   "updated_at": "2026-11-10T04:40:58Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 311,
+   "node_id": "I_fixture_260d98c1e375",
+   "title": "客户端增加安装cavil-loop daemon 和配置使用项目的功能",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/311",
+   "updated_at": "2026-11-10T02:05:20Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 3,
+    "completed": 3,
+    "percent_completed": 100
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   },
+   "_relations": {
+    "parent": null,
+    "subIssues": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": [
+      {
+       "number": 313,
+       "title": "daemon 侧：安装脚本可无人值守 + 本机状态一次读全 + 断开项目 + 换新 Mac 后台任务配置",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/313",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       }
+      },
+      {
+       "number": 314,
+       "title": "客户端：设置页「本机 daemon」——检查、安装、已接项目列表与启停、更新",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/314",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       }
+      },
+      {
+       "number": 315,
+       "title": "客户端：从仓库列表接上 daemon（选目录 / 克隆 / 选 agent）+ 文档与端到端收尾",
+       "url": "https://github.com/GigleAI/cavil-loop/issues/315",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "repository": {
+        "nameWithOwner": "GigleAI/cavil-loop"
+       }
+      }
+     ]
+    },
+    "blockedBy": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blocking": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    }
+   }
+  },
+  {
+   "number": 329,
+   "node_id": "I_fixture_8d070c82decd",
+   "title": "Release 工作流运行失败（自动报告）",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/329",
+   "updated_at": "2026-11-10T02:05:18Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-9"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 328,
+   "node_id": "I_fixture_479cee50f716",
+   "title": "push 通知过来时，预拉取对应的 issue/pr 的 detail 数据",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/328",
+   "updated_at": "2026-11-10T01:39:40Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 324,
+   "node_id": "I_fixture_0243a32fc095",
+   "title": "哪个数据是准确的",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/324",
+   "updated_at": "2026-11-10T01:08:12Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 323,
+   "node_id": "I_fixture_e4d144d1106c",
+   "title": "红色通知无法去除",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/323",
+   "updated_at": "2026-11-10T01:07:31Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 309,
+   "node_id": "I_fixture_55bcb0dc61bc",
+   "title": "为什么 release 里没有最新的正式版",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/309",
+   "updated_at": "2026-11-10T00:32:57Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 320,
+   "node_id": "I_fixture_d01a2784986f",
+   "title": "旧版的 daemon 应该能够进行更新",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/320",
+   "updated_at": "2026-11-10T00:21:03Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-1"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 293,
+   "node_id": "I_fixture_28e823d146f6",
+   "title": "用量 footer：等远端 CI 运行的时间单独成一段，不再算进「其他」",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/293",
+   "updated_at": "2026-11-09T23:38:51Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    },
+    {
+     "name": "autopilot",
+     "color": "c5def5"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": null,
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   }
+  },
+  {
+   "number": 315,
+   "node_id": "I_fixture_0f7c9b008b53",
+   "title": "客户端：从仓库列表接上 daemon（选目录 / 克隆 / 选 agent）+ 文档与端到端收尾",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/315",
+   "updated_at": "2026-11-09T22:52:39Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": "https://api.github.com/repos/GigleAI/cavil-loop/issues/311",
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   },
+   "_relations": {
+    "parent": {
+     "number": 311,
+     "title": "客户端增加安装cavil-loop daemon 和配置使用项目的功能",
+     "url": "https://github.com/GigleAI/cavil-loop/issues/311",
+     "state": "CLOSED",
+     "stateReason": "COMPLETED",
+     "repository": {
+      "nameWithOwner": "GigleAI/cavil-loop"
+     }
+    },
+    "subIssues": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blockedBy": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blocking": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    }
+   }
+  },
+  {
+   "number": 314,
+   "node_id": "I_fixture_e5e7c8fd7903",
+   "title": "客户端：设置页「本机 daemon」——检查、安装、已接项目列表与启停、更新",
+   "state": "closed",
+   "html_url": "https://github.com/GigleAI/cavil-loop/issues/314",
+   "updated_at": "2026-11-09T14:34:43Z",
+   "labels": [
+    {
+     "name": "Done",
+     "color": "586069"
+    }
+   ],
+   "assignees": [],
+   "milestone": null,
+   "user": {
+    "login": "user-6"
+   },
+   "parent_issue_url": "https://api.github.com/repos/GigleAI/cavil-loop/issues/311",
+   "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+   },
+   "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+   },
+   "_relations": {
+    "parent": {
+     "number": 311,
+     "title": "客户端增加安装cavil-loop daemon 和配置使用项目的功能",
+     "url": "https://github.com/GigleAI/cavil-loop/issues/311",
+     "state": "CLOSED",
+     "stateReason": "COMPLETED",
+     "repository": {
+      "nameWithOwner": "GigleAI/cavil-loop"
+     }
+    },
+    "subIssues": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blockedBy": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    },
+    "blocking": {
+     "pageInfo": {
+      "hasNextPage": false,
+      "endCursor": null
+     },
+     "nodes": []
+    }
+   }
+  }
+ ]
+}
