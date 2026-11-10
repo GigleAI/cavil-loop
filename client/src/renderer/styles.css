@@ -322,8 +322,12 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .timeline-tools b { font-size: 13px; }
 .timeline { flex: 1; min-height: 320px; display: flex; padding: 0 16px; }
 .timeline iframe { flex: 1; width: 100%; min-height: 320px; border: none; background: var(--surface); }
-.reply { margin: 8px 16px 14px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface); }
-.reply textarea { display: block; width: 100%; min-height: 64px; font: inherit; padding: 10px 12px; border: none; background: var(--surface); color: var(--fg); resize: vertical; outline: none; }
+/* GitHub#322: the whole card takes a click into the box (DetailPanel.tsx); it shows where the keyboard is */
+.reply { margin: 8px 16px 14px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface); cursor: text; }
+.reply:has(> textarea:focus) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
+.reply button, .reply select, .reply a, .reply [tabindex] { cursor: revert; }
+/* about four lines (REPLY_MIN_PX in DetailPanel.tsx); the height follows the text from there; long words wrap, never a sideways scroll */
+.reply textarea { display: block; width: 100%; min-height: 96px; font: inherit; padding: 10px 12px; border: none; background: var(--surface); color: var(--fg); resize: vertical; outline: none; overflow-x: hidden; overflow-wrap: anywhere; word-break: break-word; }
 .reply iframe.preview { display: block; width: 100%; height: 140px; border: none; border-top: 1px dashed var(--border); }
 .reply .row.end { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border-muted); background: var(--canvas); }
 
