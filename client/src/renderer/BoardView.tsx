@@ -14,6 +14,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { OpNotice } from './OpNotice';
+import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
@@ -598,7 +599,19 @@ export function BoardView({
   // false = closed; true = the plain dialog; a seed = from a table group's "+" (GitHub#214)
   const [newIssue, setNewIssue] = useState<boolean | GroupSeed | { draft: CreateJob['draft'] }>(false);
   const searchBox = useRef<HTMLInputElement>(null);
-  const [note, setNote] = useState<ResultNote | null>(null);
+  // GitHub#323: the bar's note, and the field change a failed one is about (it goes once that change is over)
+  const [shownNote, setShownNote] = useState<{ note: ResultNote; watch: NoteEdit[] } | null>(null);
+  const note = shownNote?.note ?? null;
+  const setNote = (n: ResultNote | null, about?: WriteAction) => {
+    const e = n?.kind === 'error' && about ? noteEditOf(about) : null;
+    setShownNote(n ? { note: n, watch: e ? [e] : [] } : null);
+  };
+  useEffect(() => {
+    if (!shownNote?.watch.length) return;
+    const step = stepNoteEdits(shownNote.watch, data.items);
+    if (step.over) setShownNote((cur) => (cur === shownNote ? null : cur));
+    else if (step.watch !== shownNote.watch) setShownNote((cur) => (cur === shownNote ? { ...cur, watch: step.watch } : cur));
+  }, [shownNote, data.items]);
   const [busy, setBusy] = useState(false);
   // a shortcut pressed on any page (GitHub#192): done once here, then dropped by App so coming
   // back to the board later never repeats it. "New issue" only when its button would work.
@@ -628,7 +641,7 @@ export function BoardView({
       if (!r.ok) {
         setBusy(false);
         const done = actions.indexOf(a);
-        setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` });
+        setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` }, a);
         return;
       }
       if (r.warning) warn.push(r.warning);
@@ -882,7 +895,7 @@ export function BoardView({
       <WarnBar kind="board-notify-problem" warn={warn}>
         macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。
       </WarnBar>
-      <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} />
+      <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} onClose={() => setNote(null)} />
       <EditsBar state={state} data={data} onOpen={openItem} />
       {state.ops
         .filter((r) => !r.dismissed && r.key !== opened?.key)

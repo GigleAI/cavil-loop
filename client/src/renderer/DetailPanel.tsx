@@ -46,13 +46,30 @@ export function noteOf(r: WriteResult, okText: string): ResultNote {
 /** how long a plain success note stays when its bar opts in (GitHub#256; 5 s since GitHub#279) */
 export const NOTE_AUTO_DISMISS_MS = 5_000;
 
-export function ResultBanner({ note, testid, onExpire }: { note: ResultNote | null; testid: string; /** GitHub#256: clears a plain success note after 5 s; warnings and errors stay */ onExpire?: () => void }) {
+export function ResultBanner({
+  note,
+  testid,
+  onExpire,
+  onClose,
+}: {
+  note: ResultNote | null;
+  testid: string;
+  /** GitHub#256: clears a plain success note after 5 s; warnings and errors stay */
+  onExpire?: () => void;
+  /** GitHub#323: an × that puts the note away, whatever its kind (only closes the bar: nothing is sent or abandoned) */
+  onClose?: () => void;
+}) {
   const auto = useAutoDismiss(!!note && note.kind === 'ok' && !!onExpire, NOTE_AUTO_DISMISS_MS, () => onExpire?.(), note);
   if (!note) return null;
   return (
     <div className={`banner ${note.kind === 'error' ? 'error' : note.kind === 'warn' ? 'warn' : 'info'}`} data-testid={testid} data-kind={note.kind} {...auto}>
       <Icon name={note.kind === 'ok' ? 'check' : 'warn'} />
       <span className="banner-text">{note.text}</span>
+      {onClose && (
+        <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid={`${testid}-close`} onClick={onClose}>
+          <Icon name="x" />
+        </button>
+      )}
     </div>
   );
 }

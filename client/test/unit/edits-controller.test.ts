@@ -14,6 +14,8 @@ import type { Backend } from '../../src/backend/backend';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { EditMark, Item } from '../../src/shared/types';
+import type { WriteAction } from '../../src/shared/actions';
+import { noteEditOf, stepNoteEdits } from '../../src/renderer/noteEdits';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -1125,5 +1127,43 @@ describe('every decision on GitHub\'s value reads landed reads only (PR #240 pla
     expect(refreshes()).toBe(reads + 1);
     expect(r.error).toMatch(/有人改过/);
     expect(milestoneWrites().length).toBe(before);
+  });
+});
+
+// GitHub#323: the board's red bar follows the change it is about through the item's list of
+// changes. The id it looks for is worked out in the window, the list is written by the controller:
+// both must name the same change for every kind of field change.
+describe('GitHub#323: a red bar finds its change in the list the controller keeps', () => {
+  it('for each field change with no answer from GitHub: listed under the id the window works out, seen waiting, and over once abandoned', async () => {
+    const { c } = await ready();
+    const pm = c.getBoardData().projects.find((p) => p.key === PROJECT_KEY)!;
+    expect(pm.iterations?.length).toBeGreaterThan(0);
+    const actions: Extract<WriteAction, { kind: 'addLabel' | 'removeLabel' | 'setMilestone' | 'setStatus' | 'setIteration' }>[] = [
+      { kind: 'addLabel', key: K(N), label: 'bug', color: 'd73a4a' },
+      { kind: 'removeLabel', key: K(137), label: itemOf(c, 137).labels[0]?.name ?? 'pending/agent' },
+      { kind: 'setMilestone', key: K(N), title: 'v2' },
+      { kind: 'setStatus', key: K(N), projectKey: PROJECT_KEY, status: 'Done' },
+      { kind: 'setIteration', key: K(N), projectKey: PROJECT_KEY, iterationId: pm.iterations![0].id },
+    ];
+    for (const a of actions) {
+      fake.state.w.dropWrites = true;
+      const r = await c.act(a);
+      fake.state.w.dropWrites = false;
+      // the write went out and was cut off: "not sure", which only a sent request can be
+      expect(r.ok, a.kind).toBe(false);
+      expect(r.error, a.kind).toContain('不确定改没改上');
+      const e = noteEditOf(a)!;
+      expect(e, a.kind).not.toBeNull();
+      const mark = itemOf(c, a.key === K(N) ? N : 137).edits?.find((m) => m.id === e.id);
+      expect(mark?.status, a.kind).toBe('unconfirmed');
+      const step = stepNoteEdits([e], c.getBoardData().items);
+      expect(step.over, a.kind).toBe(false);
+      expect(step.watch[0].seen, a.kind).toBe(true);
+      await c.abandonAllEdits();
+      expect(itemOf(c, a.key === K(N) ? N : 137).edits ?? [], a.kind).toEqual([]);
+      expect(stepNoteEdits(step.watch, c.getBoardData().items).over, a.kind).toBe(true);
+    }
+    // writes that are not field changes have no entry in that list
+    expect(noteEditOf({ kind: 'comment', key: K(N), body: 'x' } as WriteAction)).toBeNull();
   });
 });

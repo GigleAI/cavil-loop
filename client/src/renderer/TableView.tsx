@@ -299,7 +299,8 @@ export function TableView({
   canWrite?: boolean;
   onOpen: (key: string) => void;
   /** the result of a change made from a cell (shown on top of the board) */
-  onNote?: (note: ResultNote) => void;
+  /** `about`: the write the note reports on (GitHub#323: a failed field change's note goes once that change is over) */
+  onNote?: (note: ResultNote, about?: WriteAction) => void;
   onNewInGroup?: (g: Group) => void;
   canCreate?: boolean;
   createTitle?: string;
@@ -385,7 +386,7 @@ export function TableView({
       n.delete(item.key);
       return n;
     });
-    onNote?.(noteOf(r, `${item.repo}#${item.number}：${okText}`));
+    onNote?.(noteOf(r, `${item.repo}#${item.number}：${okText}`), a);
   };
 
   // ---- column widths (GitHub#205): dragged on the head's right edge, kept in the view settings; double-click = default ----

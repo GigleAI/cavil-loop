@@ -5572,3 +5572,99 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await expect(page.locator(`[data-testid="lane"][data-lane="${B}"] [data-testid="card"]`)).toHaveCount(1);
   await app.close();
 });
+
+test('GitHub#323: the red result bar above the board has an × and goes by itself once the field change it is about is over (resent, abandoned, seen on GitHub); a newer bar is not taken away by an older change', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  const row = (n: number) => page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"]`).first();
+  await expect(row(138)).toBeVisible({ timeout: 15_000 });
+  const bar = page.getByTestId('board-action-result');
+  const editsBar = page.getByTestId('edits-bar');
+  const addLabel = async (n: number, label: string) => {
+    await row(n).locator('[data-testid="cell"][data-col="labels"]').click();
+    await row(n).locator(`[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="${label}"]`).click();
+    await page.keyboard.press('Escape');
+  };
+  const labelOnGitHub = (n: number, name: string) => {
+    const c = findCopies(env.fake.state as any, 'GigleAI/cavil-loop', n)!;
+    const now = new Date().toISOString();
+    for (const g of c.gql) if (!g.labels.nodes.some((l: any) => l.name === name)) (g.labels.nodes.push({ name, color: 'ededed' }), (g.updatedAt = now));
+    for (const r of c.rest) if (!r.labels.some((l: any) => (l.name ?? l) === name)) (r.labels.push({ name, color: 'ededed' }), (r.updated_at = now));
+  };
+  const unsure = async (n: number, label: string) => {
+    env.fake.state.w.dropWrites = true;
+    await addLabel(n, label);
+    await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+    await expect(bar).toContainText('不确定改没改上');
+    await expect(editsBar).toBeVisible();
+    env.fake.state.w.dropWrites = false;
+  };
+
+  // 1. no answer from GitHub: a red bar with an ×; the × only puts the bar away — the change stays in the list
+  await unsure(138, 'Done');
+  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
+  await shot(page, '323-01-red-bar-with-close');
+  const w0 = env.fake.writes().length;
+  await bar.getByTestId('board-action-result-close').click();
+  await expect(bar).toHaveCount(0);
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  expect(env.fake.writes().length).toBe(w0);
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+
+  // 2. resent and accepted: the bar goes by itself
+  await unsure(138, 'Done');
+  await editsBar.getByTestId('edits-resend-all').click();
+  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await expect(bar).toHaveCount(0);
+  await expect(row(138).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
+
+  // 3. abandoned: the bar goes by itself
+  await unsure(138, 'pending/PR');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
+
+  // 4. the change turns out to be on GitHub (a refresh reads it): the bar goes by itself
+  await unsure(137, 'Done');
+  labelOnGitHub(137, 'Done');
+  await page.getByTestId('refresh').click();
+  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await expect(bar).toHaveCount(0);
+
+  // 5. refused for sure: red, closable; abandoned → gone by itself
+  env.fake.state.w.failLabel = 'pending/PR';
+  await addLabel(137, 'pending/PR');
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
+
+  // 6. a newer bar is about another change: the older change being over leaves it alone
+  // (the refusal is by label name, so #144's change uses another label and goes through when resent)
+  await unsure(144, 'Done');
+  await addLabel(137, 'pending/PR'); // still refused: this bar replaces the one about #144
+  await expect(bar).not.toContainText('不确定改没改上', { timeout: 15_000 });
+  await expect(bar).toHaveAttribute('data-kind', 'error');
+  await expect(editsBar).toHaveAttribute('data-count', '2');
+  const barText = await bar.textContent();
+  await editsBar.getByTestId('edits-resend-all').click(); // #144 goes through, #137 is refused again
+  await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+  await expect(row(144).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(bar).toHaveText(barText ?? '');
+  env.fake.state.w.failLabel = null;
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(bar).toHaveCount(0);
+
+  // 7. a plain success still goes after 5 s on its own, and has an × too
+  await addLabel(144, 'pending/PR');
+  await expect(bar).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
+  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
+  await bar.getByTestId('board-action-result-close').click();
+  await expect(bar).toHaveCount(0);
+  await app.close();
+});
