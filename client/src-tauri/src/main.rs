@@ -7,6 +7,7 @@
 //   - the desktop side (desktop.rs, mac.rs): notifications, Dock badge, launch at
 //     login, closing the window hides it, the sync beat (GitHub#169)
 //   - page zoom (GitHub#155): the 显示 menu's ⌘+ / ⌘- / ⌘0 (macOS), level kept by crates/core/src/zoom.rs
+//   - the window's size and place kept across restarts (GitHub#333, window.rs; rules: crates/core/src/window_state.rs)
 //   - updating itself (GitHub#184, updater.rs): Tauri's updater plugin; when and which release: crates/core/src/update.rs
 //
 // The GitHub credential exists only in crates/core. Nothing here returns it.
@@ -14,6 +15,7 @@
 
 mod desktop;
 mod updater;
+mod window;
 #[cfg(target_os = "macos")]
 mod mac;
 
@@ -218,6 +220,9 @@ fn main() {
             };
             let store = Arc::new(Store::open(&profile.join("cache.sqlite")).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?);
             let update_store = store.clone();
+            // the size and place the window was left at (GitHub#333)
+            let (place, place_kept) = window::placement(app.handle(), &store);
+            app.manage(window::Keeper::new(store.clone()));
             let credentials: Arc<dyn cavil_core::platform::CredentialStore> = match &selection.store {
                 StoreKind::Keychain => Arc::new(MacKeychainStore::default()),
                 StoreKind::File(p) => Arc::new(FileStore(p.clone())),
@@ -241,10 +246,11 @@ fn main() {
             let open_ep = endpoints.clone();
             let open_engine = engine.clone();
             let handle = app.handle().clone();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Cavil Loop")
-                .inner_size(1280.0, 820.0)
-                .min_inner_size(720.0, 480.0)
+                .inner_size(place.w, place.h)
+                .min_inner_size(cavil_core::window_state::MIN_W, cavil_core::window_state::MIN_H)
+                .maximized(place.maximized)
                 .visible(!smoke && !notify_check && !hidden)
                 // The window does the syncing; hidden (closed, or started at login) it must keep
                 // running. By default macOS's WebKit suspends a page that is not on screen — at once
@@ -287,8 +293,14 @@ fn main() {
                         }
                     });
                     NewWindowResponse::Deny
-                })
-                .build()?;
+                });
+            // where it was; a kept place that is no longer on any screen: centred; nothing kept: the system's choice, as before
+            let win = match place.pos {
+                Some((x, y)) => win.position(x, y),
+                None if place_kept => win.center(),
+                None => win,
+            };
+            win.build()?;
             // the zoom level kept from the last run
             zoom(&handle, None);
             let desk = app.state::<Desktop>();
@@ -341,6 +353,15 @@ fn main() {
         })
         // closing the window hides it where the app keeps running (macOS; tests may ask for it elsewhere)
         .on_window_event(|w, ev| {
+            // the window's size and place, kept for the next start (GitHub#333)
+            if w.label() == "main" {
+                match ev {
+                    WindowEvent::Resized(_) | WindowEvent::Moved(_) => window::changed(w.app_handle()),
+                    // before it is hidden or destroyed
+                    WindowEvent::CloseRequested { .. } => window::look(w.app_handle()),
+                    _ => {}
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = ev {
                 let d = w.state::<Desktop>();
                 if w.label() == "main" && d.hide_on_close() {
@@ -377,6 +398,10 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building the app");
     app.run(|_app, _ev: RunEvent| {
+        // quitting: the last resize / move may still be waiting for the window to be still
+        if matches!(_ev, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            window::look(_app);
+        }
         // the Dock icon clicked while the window is hidden: it comes back
         #[cfg(target_os = "macos")]
         if let RunEvent::Reopen { .. } = _ev {

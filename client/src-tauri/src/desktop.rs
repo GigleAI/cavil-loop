@@ -17,7 +17,8 @@
 //   CAVIL_CLIENT_TEST_HIDE_ON_CLOSE  "1": closing the window hides it on this OS too (normally macOS only)
 //   CAVIL_CLIENT_TEST_CONTROL_FILE   lines the test appends: "close" (closes the window the way the
 //                                    close button does) or "click <notification id>" (what a click on
-//                                    that notification does)
+//                                    that notification does) or "resize <width> <height>" (the window
+//                                    takes that size, GitHub#333)
 
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -196,6 +197,12 @@ pub fn spawn_background<R: Runtime>(app: AppHandle<R>) {
                         }
                     } else if let Some(id) = line.strip_prefix("click ") {
                         on_click(&app, id);
+                    } else if let Some(size) = line.strip_prefix("resize ") {
+                        // the window resized the way the system does it for a user dragging its edge
+                        let n: Vec<f64> = size.split(' ').filter_map(|v| v.parse().ok()).collect();
+                        if let (Some(w), [width, height]) = (app.get_webview_window("main"), n.as_slice()) {
+                            let _ = w.set_size(tauri::LogicalSize::new(*width, *height));
+                        }
                     } else if line == "activate" {
                         // the same handler the window's focus runs (a headless test display may never focus it)
                         set_active(&app, true);

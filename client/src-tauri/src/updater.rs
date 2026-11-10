@@ -239,6 +239,8 @@ pub fn desktop_update_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
         return Err("新版还没装好".into());
     }
     app.state::<crate::desktop::Desktop>().record(json!({ "op": "restart" }));
+    // the restart comes back at the window's size and place of this moment (GitHub#333)
+    crate::window::look(&app);
     app.restart()
 }
 
