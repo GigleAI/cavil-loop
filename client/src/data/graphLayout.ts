@@ -219,6 +219,12 @@ export interface Viewport {
   tx: number;
   ty: number;
   scale: number;
+  /**
+   * the smallest scale zooming may reach in this view; absent = MIN_SCALE. A "fit" of a graph that needs
+   * less than MIN_SCALE sets it to that fit's scale and it stays put while zooming in and out from there
+   * (PR #367 review round 2: taking the current scale as the floor made "+" then "-" a one-way trip)
+   */
+  floor?: number;
 }
 export const MIN_SCALE = 0.2;
 export const MAX_SCALE = 2;
@@ -239,7 +245,9 @@ export function fitView(layout: Pick<GraphLayout, 'width' | 'height'>, vw: numbe
   const raw = Math.min(vw / layout.width, vh / layout.height, 1);
   // the scale the whole graph needs, even below the manual zoom's floor: "fit" means every edge is in the window
   const scale = raw;
-  return { view: { scale, tx: (vw - layout.width * scale) / 2, ty: (vh - layout.height * scale) / 2 }, tooBig: raw < READABLE_SCALE };
+  const view: Viewport = { scale, tx: (vw - layout.width * scale) / 2, ty: (vh - layout.height * scale) / 2 };
+  if (scale < MIN_SCALE) view.floor = scale;
+  return { view, tooBig: raw < READABLE_SCALE };
 }
 
 /** The open part: the first group holding an open issue (they are placed first), at a readable size. */
@@ -256,10 +264,10 @@ export function focusOpen(layout: GraphLayout, vw: number, vh: number): Viewport
 
 /** Zoom by `factor` keeping the world point under (px, py) where it is on screen. */
 export function zoomAt(v: Viewport, factor: number, px: number, py: number): Viewport {
-  // a view already below the floor (a fit of a very wide graph) zooms from there, it never jumps up to the floor
-  const scale = clampScale(v.scale * factor, v.scale);
+  // the view's own floor (a fit below MIN_SCALE): zooming out stops there, it never jumps up to MIN_SCALE
+  const scale = clampScale(v.scale * factor, v.floor ?? MIN_SCALE);
   const k = scale / v.scale;
-  return { scale, tx: px - (px - v.tx) * k, ty: py - (py - v.ty) * k };
+  return { ...v, scale, tx: px - (px - v.tx) * k, ty: py - (py - v.ty) * k };
 }
 
 /**
@@ -292,5 +300,5 @@ export function keepAnchor(before: Map<string, Rect>, after: Map<string, Rect>, 
   if (best === null) return null;
   const a = before.get(best)!;
   const b = after.get(best)!;
-  return { scale: v.scale, tx: v.tx + (a.x - b.x) * v.scale, ty: v.ty + (a.y - b.y) * v.scale };
+  return { ...v, tx: v.tx + (a.x - b.x) * v.scale, ty: v.ty + (a.y - b.y) * v.scale };
 }

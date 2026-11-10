@@ -548,5 +548,27 @@ test('GitHub#350: a graph too big to read at one screen opens on the open part, 
   expect(await clickable(pop.getByTestId('graph-summary-close'))).toBe(true);
   expect(await clickable(page.getByTestId('graph-fit'))).toBe(true);
   await shot(page, 'graph-10-summary-short');
+
+  // PR #367 review round 2: fit below 20% here; zoom in a little, then out — back to the fit, by button, key and wheel
+  await page.getByTestId('graph-summary-close').click();
+  await page.getByTestId('graph-fit').click();
+  const scaleNow = async () => Number(await page.getByTestId('graph-world').getAttribute('data-scale'));
+  const fitScale = await scaleNow();
+  expect(fitScale).toBeLessThan(0.2);
+  await page.getByTestId('graph-zoom-in').click();
+  expect(await scaleNow()).toBeGreaterThan(fitScale);
+  await page.getByTestId('graph-zoom-out').click();
+  expect(await scaleNow()).toBeCloseTo(fitScale, 2);
+  await page.getByTestId('graph-canvas').click({ position: await emptySpot(page) });
+  await page.keyboard.press('=');
+  expect(await scaleNow()).toBeGreaterThan(fitScale);
+  await page.keyboard.press('-');
+  expect(await scaleNow()).toBeCloseTo(fitScale, 2);
+  const c3 = (await page.getByTestId('graph-canvas').boundingBox())!;
+  await page.mouse.move(c3.x + c3.width / 2, c3.y + c3.height / 2);
+  await page.mouse.wheel(0, -100);
+  await expect.poll(scaleNow).toBeGreaterThan(fitScale);
+  await page.mouse.wheel(0, 400);
+  await expect.poll(scaleNow).toBeCloseTo(fitScale, 2);
   await app.close();
 });

@@ -614,7 +614,7 @@ function Minimap({ layout, model, view, size, setView }: { layout: GraphLayout; 
     const r = ref.current!.getBoundingClientRect();
     const wx = (clientX - r.left) / k;
     const wy = (clientY - r.top) / k;
-    setView({ scale: view.scale, tx: size.w / 2 - wx * view.scale, ty: size.h / 2 - wy * view.scale });
+    setView({ ...view, tx: size.w / 2 - wx * view.scale, ty: size.h / 2 - wy * view.scale });
   };
   const latest = useRef(centreOn);
   latest.current = centreOn;

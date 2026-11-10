@@ -318,8 +318,28 @@ describe('the view', () => {
     // from there: "-" stays put (not up to the floor), "+" zooms in
     expect(zoomAt(view, 1 / 1.2, 450, 250).scale).toBeCloseTo(view.scale);
     expect(zoomAt(view, 1.2, 450, 250).scale).toBeCloseTo(view.scale * 1.2);
+    // one after another (PR #367 review round 2): "+" then "-" comes back to the fit, and "-" again stays there
+    const step = (v: typeof view, f: number) => zoomAt(v, f, 450, 250);
+    const inOut = step(step(view, 1.2), 1 / 1.2);
+    expect(inOut.scale).toBeCloseTo(view.scale);
+    expect(inOut.tx).toBeCloseTo(view.tx);
+    expect(step(inOut, 1 / 1.2).scale).toBeCloseTo(view.scale);
+    // a few steps in, then out further than back: stops at the fit, never below it, never jumps to 20%
+    let v = view;
+    for (const f of [1.2, 1.2, 1.2, 1 / 1.2, 1 / 1.2, 1 / 1.2, 1 / 1.2, 1 / 1.2]) v = step(v, f);
+    expect(v.scale).toBeCloseTo(view.scale);
+    // up past 20% and back down: still reaches the fit again
+    for (let i = 0; i < 12; i++) v = step(v, 1.2);
+    expect(v.scale).toBeGreaterThan(MIN_SCALE);
+    for (let i = 0; i < 20; i++) v = step(v, 1 / 1.2);
+    expect(v.scale).toBeCloseTo(view.scale);
     // control: a graph that fits above the floor is not taken below it by zooming out
     expect(zoomAt({ tx: 0, ty: 0, scale: 0.21 }, 0.5, 0, 0).scale).toBe(MIN_SCALE);
+    const roomy = fitView({ width: 1000, height: 500 }, 900, 500).view;
+    expect(roomy.floor).toBeUndefined();
+    let r = roomy;
+    for (let i = 0; i < 20; i++) r = zoomAt(r, 1 / 1.2, 0, 0);
+    expect(r.scale).toBe(MIN_SCALE);
   });
 
   it('zoom keeps the point under the pointer still', () => {
