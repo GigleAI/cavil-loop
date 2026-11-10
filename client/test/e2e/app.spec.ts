@@ -3044,6 +3044,122 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   await app.close();
 });
 
+// ---- GitHub#358: a ticked box is grey until GitHub confirmed it ----
+
+test('GitHub#358: a clicked box shows grey at once and blue once GitHub confirmed; meanwhile no box of the discussion takes a click; a refused click is taken back', async () => {
+  const w = env.fake.state.w;
+  const url = (id: string) => `https://github.com/GigleAI/cavil-loop/issues/138#${id}`;
+  w.comments.set('gigleai/cavil-loop#138', [
+    { id: 'C_OLD', url: url('C_OLD'), createdAt: '2026-11-03T01:00:00Z', bodyHTML: '', author: { login: 'user-3' }, body: QUESTION193 },
+    { id: 'C_Q', url: url('C_Q'), createdAt: '2026-11-04T01:00:00Z', bodyHTML: '', author: { login: 'user-4' }, body: QUESTION193.replace('- [ ] **B.', '- [x] **B.') },
+  ]);
+  const source = (id: string) => w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === id)!.body;
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const iframe = page.getByTestId('timeline-frame');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  await page.getByTestId('unfold-toggle').click();
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  const box = (entry: string, i: number) => frame.locator(`details.entry[data-entry="${entry}"] input[data-task="${i}"]`);
+  const fill = (entry: string, i: number) => box(entry, i).evaluate((el) => getComputedStyle(el).backgroundColor);
+  const waiting = () => frame.locator('input[data-pending]');
+  await expect(box('C_Q', 0)).toBeEnabled();
+  await expect(box('C_OLD', 0)).toBeEnabled();
+  await expect(waiting()).toHaveCount(0);
+  // a confirmed tick is the accent colour; an empty box is the page's background
+  const blue = await fill('C_Q', 1);
+  const empty = await fill('C_Q', 0);
+  expect(blue).not.toBe(empty);
+
+  // ---- 1. tick A while GitHub does not answer: grey tick at once, every box of both comments stops taking clicks ----
+  let release = env.fake.holdWhen((e) => e.operation === 'CavilUpdateComment');
+  await box('C_Q', 0).click();
+  await expect(waiting()).toHaveCount(1);
+  await expect(box('C_Q', 0)).toHaveAttribute('data-pending', '');
+  await expect(box('C_Q', 0)).toBeChecked();
+  // the window rendered the frame again with the click still on its way (not only the frame's own mark)
+  await expect.poll(async () => (await iframe.getAttribute('data-ready')) === 'yes' && (await waiting().count()) === 1 && (await box('C_Q', 0).isChecked())).toBe(true);
+  await page.waitForTimeout(600);
+  await expect(box('C_Q', 0)).toBeChecked();
+  await expect(waiting()).toHaveCount(1);
+  const grey = await fill('C_Q', 0);
+  expect(grey).not.toBe(blue);
+  expect(grey).not.toBe(empty);
+  for (const [e, i] of [['C_Q', 0], ['C_Q', 1], ['C_OLD', 0], ['C_OLD', 1]] as const) await expect(box(e, i)).toBeDisabled();
+  // the other boxes keep what GitHub holds
+  await expect(box('C_Q', 1)).toBeChecked();
+  await expect(box('C_OLD', 0)).not.toBeChecked();
+  await expect(box('C_OLD', 1)).not.toBeChecked();
+  await shot(page, '62-task-waiting');
+  // a click forced on the other comment meanwhile sends nothing
+  await box('C_OLD', 0).click({ force: true });
+  await page.waitForTimeout(400);
+  await expect(box('C_OLD', 0)).not.toBeChecked();
+  const before = source('C_Q')!;
+  release();
+  await expect(page.getByTestId('action-result')).toHaveText('已勾上，GitHub 上已更新');
+  // confirmed and read again: blue, nothing waiting, every box takes clicks again; GitHub got that one write, one character
+  await expect(waiting()).toHaveCount(0);
+  await expect(box('C_Q', 0)).toBeChecked();
+  await expect(box('C_Q', 0)).toBeEnabled();
+  await expect(box('C_OLD', 0)).toBeEnabled();
+  expect(await fill('C_Q', 0)).toBe(blue);
+  expect(writes()).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_Q', body: before.replace('- [ ] **A.', '- [x] **A.') }]]);
+  expect(source('C_OLD')).toBe(QUESTION193);
+  await shot(page, '63-task-confirmed');
+
+  // ---- 2. untick B while GitHub does not answer: an empty grey box, B of the other comment untouched ----
+  release = env.fake.holdWhen((e) => e.operation === 'CavilUpdateComment');
+  await box('C_Q', 1).click();
+  await expect.poll(async () => (await iframe.getAttribute('data-ready')) === 'yes' && (await waiting().count()) === 1).toBe(true);
+  await page.waitForTimeout(600);
+  await expect(box('C_Q', 1)).toHaveAttribute('data-pending', '');
+  await expect(box('C_Q', 1)).not.toBeChecked();
+  await expect(box('C_Q', 0)).toBeChecked();
+  const greyEmpty = await fill('C_Q', 1);
+  expect(greyEmpty).not.toBe(empty);
+  expect(greyEmpty).not.toBe(blue);
+  await expect(box('C_OLD', 1)).toBeDisabled();
+  release();
+  await expect(page.getByTestId('action-result')).toHaveText('已取消勾选，GitHub 上已更新');
+  await expect(waiting()).toHaveCount(0);
+  await expect(box('C_Q', 1)).not.toBeChecked();
+  await expect(box('C_Q', 1)).toBeEnabled();
+  expect(await fill('C_Q', 1)).toBe(empty);
+  expect(env.fake.writes()).toHaveLength(2);
+
+  // ---- 3. refused (somebody changed the comment meanwhile): the grey tick is taken back, the reason is said ----
+  const theirs = source('C_OLD')!.replace('— 自动', '— 自动（改过）');
+  w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === 'C_OLD')!.body = theirs;
+  await box('C_OLD', 0).click();
+  await expect(page.getByTestId('action-result')).toHaveText(TASK_CHANGED193);
+  await expect(frame.locator('details.entry[data-entry="C_OLD"] .md')).toContainText('自动（改过）');
+  await expect(waiting()).toHaveCount(0);
+  await expect(box('C_OLD', 0)).not.toBeChecked();
+  await expect(box('C_OLD', 0)).toBeEnabled();
+  expect(env.fake.writes()).toHaveLength(2);
+  expect(source('C_OLD')).toBe(theirs);
+
+  // ---- 4. the answer arrives after the panel moved to another item: nothing waits on the new opening, the write landed once ----
+  release = env.fake.holdWhen((e) => e.operation === 'CavilUpdateComment');
+  await box('C_OLD', 0).click();
+  await expect(waiting()).toHaveCount(1);
+  await page.getByTestId('detail-close').click();
+  await expect(page.getByTestId('timeline-frame')).toHaveCount(0);
+  release();
+  await expect.poll(() => env.fake.writes().length).toBe(3);
+  await card(page, 138).click();
+  await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  await page.getByTestId('unfold-toggle').click();
+  await expect(box('C_OLD', 0)).toBeChecked();
+  await expect(waiting()).toHaveCount(0);
+  await expect(box('C_OLD', 0)).toBeEnabled();
+  expect(source('C_OLD')).toBe(theirs.replace('- [ ] **A.', '- [x] **A.'));
+  await app.close();
+});
+
 // ---- the app updating itself (GitHub#184) -----------------------------------------------
 // The shell's updater is played by the bridge (app.desktop.update / setUpdate); what each state
 // says and which requests the buttons send is the window's part, checked here.
