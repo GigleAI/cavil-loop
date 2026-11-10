@@ -178,6 +178,7 @@ PROJECT_ROOT=$fx/src
 WEEKLY_REPORT_REPO=acme/p
 WEEKLY_REPORT_ASSET_URL=https://example.invalid/wr
 WEEKLY_REPORT_ASSET_DIR=$fx/assets
+WEEKLY_REPORT_VECTOR_DIR=$fx/vector
 WEEKLY_REPORT_FONTS_DIR=$FONTS
 EOF
     # 假 gh：仓库里什么都没有；假 node：截图出占位 PNG；假 curl：记下核对过的地址，按 $FAKE_404 回 404
@@ -197,20 +198,22 @@ SH
     local rev; rev=$(ls "$fx/assets" | sed -nE 's/^delivery-(wk-[0-9]+-[0-9]+)\.png$/\1/p')
     chk "GitHub 配图照旧：四张 <名字>-wk-<日期>-<戳>.png 进资产目录" \
         "$(for n in $CHARTS; do [ -s "$fx/assets/$n-$rev.png" ] && echo -n y; done)" "yyyy"
-    chk "矢量版和 PNG 同名同戳进资产目录" \
-        "$(for n in $CHARTS; do [ -s "$fx/assets/$n-$rev.chart.html" ] && echo -n y; done)" "yyyy"
-    chk "资产目录里的矢量版不带本机路径" \
-        "$(cat "$fx/assets/"*.chart.html 2>/dev/null | grep -c 'file://')" "0"
-    chk "公网地址两样都核对过：4 张 PNG + 4 份矢量版" \
-        "$(grep -cE "^https://example.invalid/wr/(delivery|effort|cost|token)-$rev\.(png|chart\.html)$" "$fx/curl.log" 2>/dev/null)" "8"
+    chk "矢量版和 PNG 同名同戳，留在本机矢量版目录" \
+        "$(for n in $CHARTS; do [ -s "$fx/vector/$n-$rev.chart.html" ] && echo -n y; done)" "yyyy"
+    chk "矢量版不进公网资产目录（公网只放行图片和视频），也不再造 index.html" \
+        "$(ls "$fx/assets" | grep -cE '\.html$')" "0"
+    chk "矢量版不带本机路径" \
+        "$(cat "$fx/vector/"*.chart.html 2>/dev/null | grep -c 'file://')" "0"
+    chk "公网地址只核对 4 张 PNG" \
+        "$(grep -cE "^https://example.invalid/wr/(delivery|effort|cost|token)-$rev\.png$" "$fx/curl.log" 2>/dev/null)/$(grep -c 'chart\.html' "$fx/curl.log" 2>/dev/null)" "4/0"
     chk "派工说明写了：命令不变、自动用矢量版、取不到怎么办" \
         "$(grep -cE 'chart\.html|--allow-raster' "$HOME/weekly-report-dryrun.md" 2>/dev/null | awk '{print ($1>=2)?"yes":"no"}')" "yes"
     rm -f "$fx/curl.log" "$HOME/weekly-report-dryrun.md"
-    ( cd "$fx" && PATH="$fx/bin:$REAL_PATH" FAKE_CURL_LOG="$fx/curl.log" FAKE_404=".chart.html" \
+    ( cd "$fx" && PATH="$fx/bin:$REAL_PATH" FAKE_CURL_LOG="$fx/curl.log" FAKE_404=".png" \
         bash "$root/scripts/weekly-report/run.sh" p --dry-run --week-of 2025-02-03 ) >"$fx/out" 2>&1; rc=$?
-    chk "矢量版公网不可达 → run.sh 中止（不出报告）" \
+    chk "配图公网不可达 → run.sh 中止（不出报告）" \
         "$rc/$([ -e "$HOME/weekly-report-dryrun.md" ] && echo 出了 || echo 没出)" "1/没出"
-    chk "中止的这一轮确实查到了矢量版那一步" "$(grep -c '\.chart\.html$' "$fx/curl.log" 2>/dev/null)" "1"
+    chk "中止的这一轮确实查到了核对配图那一步" "$(grep -c '\.png$' "$fx/curl.log" 2>/dev/null)" "1"
 }
 
 check_topdf() {   # $1 根目录
@@ -256,6 +259,17 @@ print("width:1280px" in s.split("<template", 1)[0])' "$seen" 2>/dev/null)" "Fals
         "$rc/$([ -e "$d/old.pdf" ] && echo 出了 || echo 没出)/$([ -e "$FAKE_PW_LOG" ] && echo 启动了 || echo 没启动)" "1/没出/没启动"
     chk "报错逐张列出取不到的矢量版地址" \
         "$(grep -cE "$BASE_URL/old/(delivery|effort|cost|token)-$rev\.chart\.html：HTTP 404" "$d/o")" "4"
+
+    # 现行做法：矢量版不公开，留在本机目录；按 PNG 的文件名在本机找，不靠那个地址取得到。
+    mkdir -p "$d/vec"
+    for n in $CHARTS; do cp "$d/$n.chart.html" "$d/vec/$n-$rev.chart.html" 2>/dev/null; done
+    rm -f "$FAKE_PW_LOG" "$d/old.pdf" "$d/old.pdf.seen.html"
+    WEEKLY_REPORT_VECTOR_DIR="$d/vec" node "$root/scripts/weekly-report/topdf.mjs" "$FAKEPW" "$d/old.md" "$d/old.pdf" --title T >"$d/o" 2>&1; rc=$?
+    chk "矢量版只在本机目录里（那个地址上取不到）：topdf 成功，四张都是矢量" \
+        "$rc/$(python3 -c '
+import re, sys
+s = open(sys.argv[1]).read()
+print(len(re.findall(r"<template shadowrootmode=\"open\">(?:(?!</template>).)*<svg ", s, re.S)))' "$d/old.pdf.seen.html" 2>/dev/null)" "0/4"
 
     rm -f "$FAKE_PW_LOG"
     node "$root/scripts/weekly-report/topdf.mjs" "$FAKEPW" "$d/old.md" "$d/old.pdf" --title T --allow-raster >"$d/o" 2>&1; rc=$?
@@ -343,8 +357,8 @@ mut no-swap "topdf 不换矢量（照旧放 PNG）" scripts/weekly-report/topdf.
     'outHtml = outHtml.replace(m[0], () => c.html);' 'void c;' check_topdf
 mut silent-fallback "取不到矢量版时悄悄退回 PNG" scripts/weekly-report/topdf.mjs \
     'if (!allowRaster) {' 'if (false) {' check_topdf
-mut no-publish "run.sh 不把矢量版放进资产目录" scripts/weekly-report/run.sh \
-    'cp "$WORK/$n.chart.html" "$ASSET_DIR/$n-$REV.chart.html"' ':' check_runsh
+mut no-publish "run.sh 不把矢量版留在本机矢量版目录" scripts/weekly-report/run.sh \
+    'cp "$WORK/$n.chart.html" "$VECTOR_DIR/$n-$REV.chart.html"' ':' check_runsh
 mut local-path "矢量版仍按本机路径引用字体" scripts/weekly-report/render.py \
     'if embed:' 'if False:' check_render
 pass=$REAL_PASS; fail=$REAL_FAIL

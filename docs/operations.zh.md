@@ -1498,6 +1498,41 @@ macOS 上迁到一半时重跑 `setup.sh` 会接着迁完；这种状态下 setu
 
 **Claude Code `/loop` skill**：起一个长 session 跑 `/loop 60s bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh`。优点：调度逻辑也能上下文感知；缺点：贵 + session 死了就停。
 
+## 评论配图的公网入口：只放行图片和视频
+
+评论配图要能被 GitHub 抓到，所以资产目录（`review-shots`）要经公网隧道对外。**不要把这个目录直接交给静态文件服务器**（例如把隧道直接指到目录）：它会列出每个子目录里的文件名，也会把目录里的任何文件原样交出去——worker 顺手放进去的日志、测试报告、登录状态文件就等于公开了。往每个目录里放一个 `index.html` 挡列表也不可靠：新建的子目录会漏，而且挡不住文件类型。
+
+用自带的小服务（`scripts/public-assets/serve.mjs`）挡在隧道后面：
+
+- 只监听 `127.0.0.1`；只响应 GET / HEAD
+- 只交出扩展名是图片 / 视频（`png jpg jpeg gif webp avif svg mp4 webm mov`）、**而且开头的字节确实是那种格式**的文件；`svg` 另查内容像 SVG 且不含凭证样式
+- 任何目录、其他类型、改了扩展名的文件、路径里有 `.` 开头的段、符号链接指到目录外：一律同一个 404，不带原因；原因在本机日志里（`journalctl --user -u cavil-loop-public-assets`）
+- 支持分段请求（视频拖动需要）
+
+启用（整机一份，不分项目）：
+
+```bash
+# 1. 写配置（端口自己挑一个没人用的）
+cat > ~/.config/cavil-loop/public-assets.conf <<CONF
+PUBLIC_ASSETS_ROOT=$HOME/.local/state/cavil-loop/review-shots
+PUBLIC_ASSETS_PORT=<port>
+PUBLIC_ASSETS_NODE=$(command -v node)
+CONF
+# 2. 装单元并起服务（这个单元 setup.sh 不装：它是按需启用的，整机一份）
+ln -sfn ~/.agents/skills/cavil-loop/systemd/cavil-loop-public-assets.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-public-assets.service
+# 3. 把公网入口从「挂目录」改成「转发到这个端口」，对外路径保持不变，例如 tailscale：
+#    tailscale serve --bg --https=<公网端口> --set-path /review-assets/ http://127.0.0.1:<port>
+```
+
+`PUBLIC_ASSETS_ROOT` 填实际在用的资产目录（旧安装是 `~/.local/state/coding-agent-poll/review-shots`）。对外路径前缀不是 `/review-assets/` 时加一行 `PUBLIC_ASSETS_PREFIX=`。
+
+发图前自查用 `node scripts/public-assets/check.mjs <目录或文件>`：逐个报公网拿不拿得到，任何文件里有令牌 / 密钥样式就点名并以退出码 1 结束（三份工作说明模板里已写这一步，`publish-asset.sh` 发布前也会跑）。
+
+不是图片 / 视频的附件（周报 PDF 等）不公开发布：`publish-asset.sh` 把它放进不公开的目录，项目配置里设了 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL`（只在内网可达的地址前缀，对应目录由 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT` 指定，默认资产目录旁的 `private-assets/`）就给那个地址，没设就给本机路径。周报趋势图的矢量版留在本机（`WEEKLY_REPORT_VECTOR_DIR`，默认资产目录旁的 `weekly-report-vector/`），`topdf.mjs` 从本机读。
+
+截图要带登录状态时，`scripts/review-screenshot.mjs --auth <文件>` 要求登录状态文件在被 git 忽略的路径里、且不在截图输出目录内，否则报错不截图；它改端口用的副本写在原件旁边（权限 600），结束、出错、被中断都会删掉。
+
 ## 升级到 webhook（即时触发）
 
 轮询有最坏 1 分钟延迟。要即时：

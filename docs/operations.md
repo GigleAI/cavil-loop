@@ -1783,6 +1783,41 @@ The schedulers above aren't required; `agent-poll.sh` is stateless and any sched
 
 **Claude Code `/loop` skill**: open a long-running session that calls `/loop 60s bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh`. Upside: the scheduling logic can be context-aware. Downside: expensive + the session dying stops everything.
 
+## Public entry for comment images: images and videos only
+
+Comment images must be fetchable by GitHub, so the asset directory (`review-shots`) is exposed through a public tunnel. **Do not hand that directory straight to a static file server** (for example by pointing the tunnel at the directory): it lists the file names in every subdirectory and serves any file as is — a log, a test report or a login-state file a worker dropped there becomes public. Putting an `index.html` in each directory to hide the listing is not reliable either: new subdirectories are missed, and it does nothing about file types.
+
+Put the bundled server (`scripts/public-assets/serve.mjs`) behind the tunnel instead:
+
+- listens on `127.0.0.1` only; answers GET / HEAD only
+- serves a file only when its extension is an image / video (`png jpg jpeg gif webp avif svg mp4 webm mov`) **and its first bytes really are that format**; an `svg` must also look like SVG and contain no credential-like text
+- any directory, any other type, a renamed file, a path segment starting with `.`, a symlink pointing outside: the same 404 with no reason; the reason is in the local journal (`journalctl --user -u cavil-loop-public-assets`)
+- range requests are supported (needed for video seeking)
+
+Enable it (one per machine, not per project):
+
+```bash
+# 1. write the config (pick a free port)
+cat > ~/.config/cavil-loop/public-assets.conf <<CONF
+PUBLIC_ASSETS_ROOT=$HOME/.local/state/cavil-loop/review-shots
+PUBLIC_ASSETS_PORT=<port>
+PUBLIC_ASSETS_NODE=$(command -v node)
+CONF
+# 2. install the unit and start the service (setup.sh does not install this one: it is opt-in, one per machine)
+ln -sfn ~/.agents/skills/cavil-loop/systemd/cavil-loop-public-assets.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-public-assets.service
+# 3. change the public entry from "serve the directory" to "forward to this port", same public path, e.g. tailscale:
+#    tailscale serve --bg --https=<public port> --set-path /review-assets/ http://127.0.0.1:<port>
+```
+
+Set `PUBLIC_ASSETS_ROOT` to the asset directory actually in use (`~/.local/state/coding-agent-poll/review-shots` on a pre-rename install). Add `PUBLIC_ASSETS_PREFIX=` when the public path prefix is not `/review-assets/`.
+
+Before posting images, run `node scripts/public-assets/check.mjs <dir or file>`: it reports per file whether the public can fetch it, and names any file containing a token / key pattern and exits 1 (the three worker prompt templates include this step, and `publish-asset.sh` runs it before publishing).
+
+Attachments that are not images / videos (the weekly-report PDF, …) are not published publicly: `publish-asset.sh` puts them in a non-public directory and prints an internal-only URL when the project config sets `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL` (the directory is `WEEKLY_REPORT_PRIVATE_ASSET_ROOT`, default `private-assets/` next to the asset directory), otherwise the local path. The vector versions of the weekly-report charts stay on the machine (`WEEKLY_REPORT_VECTOR_DIR`, default `weekly-report-vector/` next to the asset directory); `topdf.mjs` reads them locally.
+
+For screenshots that need a login state, `scripts/review-screenshot.mjs --auth <file>` requires the file to be in a git-ignored path and outside the screenshot output directory, and refuses otherwise; the per-port copy it makes is written next to the original (mode 600) and removed on normal exit, on error and on interruption.
+
 ## Upgrading to webhooks (instant trigger)
 
 Polling has up to 1 minute of latency. For instant:

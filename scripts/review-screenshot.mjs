@@ -9,6 +9,9 @@
  *  2. 登录态失效：e2e auth storageState 的 origin 绑在 localhost:3000，worktree 预览端口
  *     不匹配 → localStorage 不注入，截出未登录页。
  *     → 传 AUTH_FILE 时自动把每个 origin 克隆一份到目标端口。
+ *     登录状态文件里是真的登录令牌，副本只许待在原件旁边：原件必须在被 git 忽略的路径里、
+ *     且不在截图输出目录内，否则直接报错不截图；副本权限 600，正常结束 / 出错 / 被中断都删掉。
+ *     （截图输出目录通常就是公网资产目录，副本写进去就等于公开。）
  *  3. camo 缓存钉死旧图：由调用方传入唯一 REV（commit SHA + 纳秒），文件名自动带上。
  *
  * 用法：
@@ -22,9 +25,9 @@
  * 依赖：调用方 cwd 下能 resolve @playwright/test（Tutor 等前端 repo 都有）。
  */
 import { createRequire } from 'module';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, realpathSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { join, dirname, relative, isAbsolute } from 'path';
 
 const require = createRequire(join(process.cwd(), 'package.json'));
 const { chromium } = require('@playwright/test');
@@ -49,12 +52,49 @@ mkdirSync(OUT, { recursive: true });
 let storageState;
 let tmpAuth;
 if (args.auth && existsSync(args.auth)) {
-  const d = JSON.parse(readFileSync(args.auth, 'utf8'));
+  const authReal = realpathSync(args.auth);
+  const authDir = dirname(authReal);
+  const outReal = realpathSync(OUT);
+  const inside = (dir, p) => {
+    const rel = relative(dir, p);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  };
+  if (inside(outReal, authReal)) {
+    console.error(`拒绝：登录状态文件 ${args.auth} 在截图输出目录里。它含登录令牌，不能和要公开的截图放在一起；挪到项目里被 git 忽略的目录（如 e2e/.auth/）再来。`);
+    process.exit(3);
+  }
+  let ignored = false;
+  try {
+    execFileSync('git', ['-C', authDir, 'check-ignore', '-q', authReal], { stdio: 'ignore' });
+    ignored = true;
+  } catch {
+    ignored = false;
+  }
+  if (!ignored) {
+    console.error(`拒绝：登录状态文件 ${args.auth} 不在被 git 忽略的路径里（git check-ignore 没认）。它含登录令牌，放在这里容易被提交；挪到被忽略的目录（如 e2e/.auth/）再来。`);
+    process.exit(3);
+  }
+  const d = JSON.parse(readFileSync(authReal, 'utf8'));
   const extra = (d.origins || []).map((o) => ({ ...o, origin: `http://127.0.0.1:${PORT}` }));
   d.origins = [...(d.origins || []), ...extra];
-  tmpAuth = join(tmpdir(), `review-auth-${PORT}-${Date.now()}.json`);
-  writeFileSync(tmpAuth, JSON.stringify(d));
+  tmpAuth = join(authDir, `.review-clone-${PORT}-${Date.now()}-${process.pid}.json`);
+  writeFileSync(tmpAuth, JSON.stringify(d), { mode: 0o600 });
   storageState = tmpAuth;
+}
+const dropClone = () => {
+  if (tmpAuth) rmSync(tmpAuth, { force: true });
+};
+process.on('exit', dropClone);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    dropClone();
+    process.exit(130);
+  });
+}
+// 测试用：副本写好后停在这里等信号，用来验证被中断时副本会被删掉。
+if (process.env.REVIEW_SHOT_TEST_HOLD === '1') {
+  console.log(`hold: ${tmpAuth || '(no clone)'}`);
+  await new Promise(() => setInterval(() => {}, 1000));
 }
 
 setTimeout(() => { console.log('overall timeout, force exit'); process.exit(2); }, 240000).unref();
@@ -103,6 +143,6 @@ try {
   console.log('setup failed:', e.message);
 } finally {
   if (browser) await browser.close().catch(() => {});
-  if (tmpAuth) rmSync(tmpAuth, { force: true });
+  dropClone();
   process.exit(0);
 }

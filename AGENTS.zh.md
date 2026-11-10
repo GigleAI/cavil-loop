@@ -46,6 +46,7 @@
 │   ├── release_failure_report.py  ← 发版运行失败时开 issue，或在未关闭的同类 issue 下评论（GitHub#285）
 │   ├── config-notices.txt         ← 模板里每个配置项：老项目缺这一行时提示（notice）还是不提示（quiet，写明原因）（GitHub#289）
 │   ├── weekly-report/         ← 每周一自动周报（采数 / 出图 / 出 PDF / 发布）
+│   ├── public-assets/         ← 评论配图的公网入口：只放行图片 / 视频的对外服务（serve.mjs）+ 发图前自查（check.mjs），规则共用 rules.mjs
 │   └── doc-diagrams/          ← docs/images/ 里那几张动图的生成脚本 + 检查脚本
 ├── prompts/
 │   ├── new-issue.template.md  ← 新 issue 派工时的 prompt
@@ -105,7 +106,7 @@
 - **PDF 顺序固定，不要改**（GitHub#61）：① 第 1 页总体结论与注意事项，**要精简**（3~5 条，每条一句话结论 + 一句话解释）② 交付 ③ 投入 ④ 成本 ⑤ token ⑥ 按模型拆分 ⑦ 按分组详细展开 ⑧ 末尾附数据口径。②~⑥ 每类各起一页、「图 + 最近 10 周表」（本周行加粗、末行环比），由 `report.py` 连同分页标记排好，agent 只写 ① 和 ⑦
 - **按模型拆分必须对得上总数**：派工次数、两种时长、金额、四项 token 的各模型之和等于总数，`bymodel.check()` 在采集写出前和报告渲染前各跑一遍，对不上就报错退出。多模型派工的时长整次记到「多模型派工」行，不按 token 比例拆；沿用原值又说不清模型的整条记「未记录模型 / 多模型」，不去猜
 - **PDF 里不写周报工具自身的元信息**（口径修正、数据遗漏、复核过程）——那些留在 issue 评论里说。PDF 是给人看「这周干了什么」的
-- 出 PDF 与发布：`node topdf.mjs <项目目录> report.md report.pdf --title T --subtitle S`，然后 `URL=$(bash publish-asset.sh <project-key> report.pdf)`（自动加 `rev` + 校验公网 200）
+- 出 PDF 与发布：`node topdf.mjs <项目目录> report.md report.pdf --title T --subtitle S`，然后 `URL=$(bash publish-asset.sh <project-key> report.pdf)`（自动加 `rev`；PDF 不是图片，不公开发布——给内网地址或本机路径，见 docs/operations.zh.md「评论配图的公网入口」）
 - **明细不能只看 issue 侧活跃度** —— 很多 issue 定完方案就没人再回 issue 页，整周讨论全在 PR 上。入选条件是三选一：issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭。没有关联 issue 的 PR 用 `loose_prs` 单列一组
 - **处理时长按「轮」算，每一轮只归一个派工**（GigleTutor-Web#933）。一轮 = 主会话里共用同一个 `promptId` 的一段记录，**不能按「非 meta 的用户记录」切**：工具结果也是 `type=user`、没有 `isMeta`，按它切会丢掉中间全部工具执行时间。轮的**开始时刻**交给 `attribute.owner()`（与 token 认领同一个函数），而且要在**全部**去重后的窗口上统一认领——逐窗口各自挑「开始落在本窗口里」的轮，窗口重叠时同一轮会算两遍。认领到的派工拿整轮、不封顶，所以处理时长可能超过总耗时，报告里那张清单是披露、不是错配告警。两个坑：`model=<synthetic>` 的 assistant 记录（「No response requested.」）是上一轮被中断后、新指令到来时 CLI 补写的，时间戳是补写时刻，拿它延长上一轮会把几分钟变成 41h / 75h / 522h，一周合计翻三倍；CLI 会删旧会话日志，所以每次采集把轮并进本地台账（`<缓存目录>/worktime-turns.jsonl`，`flock` + 原子替换，结束时刻只往后推，「已结束」只能从否变是）。**不能把这个指标写成「不含等待」**：轮内等待（权限确认、重试退避、进程挂起）照算
 

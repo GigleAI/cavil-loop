@@ -4,8 +4,10 @@
 // 用法: topdf.mjs <node-project-dir> <in.md> <out.pdf> [--title T] [--subtitle S] [--allow-raster]
 //
 // 趋势图（GitHub#273）：报告里那四张 `<名字>-<戳>.png` 是给 GitHub 看的单倍截图，压进 A4
-// 只剩约 180 像素/英寸、放大就糊。run.sh 在 PNG 旁边留了同名的矢量版 `<名字>-<戳>.chart.html`
-// （同一份图表源、字体内嵌），这里按 PNG 的地址取它、整张嵌进 PDF，图保持矢量。
+// 只剩约 180 像素/英寸、放大就糊。run.sh 另留了同名的矢量版 `<名字>-<戳>.chart.html`
+// （同一份图表源、字体内嵌），这里按 PNG 的文件名取它、整张嵌进 PDF，图保持矢量。
+// 矢量版是网页不是图片，公网资产目录不放行它：先在本机的矢量版目录里找（vectorDirs），
+// 找不到再按 PNG 的地址去取（旧期的矢量版当时是和 PNG 一起发布的）。
 // 取不到就报错退出、列出是哪张：悄悄退回 PNG 等于又出一份糊的，没人会发现。
 // 明知是旧期、接受位图时加 --allow-raster，退回 PNG 并逐张列出。
 //
@@ -14,6 +16,8 @@
 // 不引第三方 md 库 —— marked 只是项目的传递依赖，哪天被提上去就断了。
 import { createRequire } from 'module';
 import fs from 'fs';
+import os from 'os';
+import nodePath from 'path';
 
 const args = process.argv.slice(2);
 const FLAGS = ['--allow-raster'];
@@ -205,9 +209,25 @@ const CHART_RE = /\/(delivery|effort|cost|token)-[^/?#"]+\.png$/;
 const PX_PER_MM = 96 / 25.4;
 const CHART_ZOOM = ((210 - 2 * 14) * PX_PER_MM - 2) / 1280;
 
+// 本机矢量版目录，按顺序找：显式指定的 → 现行状态目录 → 改名前的状态目录。
+// 与 run.sh 的 VECTOR_DIR 是同一条规则（它用 scripts/_names.sh 的新旧目录挑选）。
+function vectorDirs() {
+  const dirs = [];
+  if (process.env.WEEKLY_REPORT_VECTOR_DIR) dirs.push(process.env.WEEKLY_REPORT_VECTOR_DIR);
+  const home = os.homedir();
+  dirs.push(nodePath.join(home, '.local/state/cavil-loop/weekly-report-vector'));
+  dirs.push(nodePath.join(home, '.local/state/coding-agent-poll/weekly-report-vector'));
+  return dirs;
+}
+
 async function readChart(url, base) {
   const vurl = url.replace(/\.png$/, '.chart.html');
   if (/^https?:\/\//.test(vurl)) {
+    const name = decodeURIComponent(new URL(vurl).pathname.split('/').pop());
+    for (const dir of vectorDirs()) {
+      const local = nodePath.join(dir, name);
+      if (fs.existsSync(local)) return { vurl: local, text: fs.readFileSync(local, 'utf8') };
+    }
     let r;
     try {
       r = await fetch(vurl, { signal: AbortSignal.timeout(30000) });

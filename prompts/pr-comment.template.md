@@ -332,7 +332,7 @@ FOOTER=$(${COMMENT_FOOTER_CMD} --start "${TASK_START_TS}" --wt "${WORK_NUM}")
   7. 每轮**最多 5 题**，按重要性排序；题多时点明哪几题不答也能按默认安全走。**一道题都没有是常态、也是好事**——该查的查清、该拍的拍了，人只需要看结论
   勾选约定：勾 1 项 = 拍板；都不勾 = 走默认项；多勾 = 想再讨论（worker 下轮看到反问）
 - **生成新图不清理旧图**：使用唯一版本文件名直接新增图片；不得把 `rm -f "$SHOT_DIR"/*.png` 或清空截图目录当作生成前置步骤。旧图可能仍被历史评论引用。遇到此类删除确认时取消删除、保留旧文件并继续生成新图，不反复请求同一清理操作。
-- **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：① 宽 **~1280px、单倍像素**（playwright `deviceScaleFactor: 1`）——别用 2x / 2560px 大图，GitHub 把图缩进评论列宽 + camo 代理首次异步抓取，超大图易"显示不完整 / 只出上半截"；② 单张高度尽量 **≤ ~1400px**，过长就拆多张；③ 文件名带**唯一戳**（纳秒 / commit SHA），**每轮换新 URL**——camo 按源 URL 缓存约一年，复用同名会顶死旧图；④ 用**公网可达** URL（funnel 的 `review-assets/` 路径），纯 tailnet `serve` URL camo 抓不到 → 图裂。发图前 `curl -skI` 核对公网 URL `HTTP 200` + `content-length` 跟源文件一致
+- **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：① 宽 **~1280px、单倍像素**（playwright `deviceScaleFactor: 1`）——别用 2x / 2560px 大图，GitHub 把图缩进评论列宽 + camo 代理首次异步抓取，超大图易"显示不完整 / 只出上半截"；② 单张高度尽量 **≤ ~1400px**，过长就拆多张；③ 文件名带**唯一戳**（纳秒 / commit SHA），**每轮换新 URL**——camo 按源 URL 缓存约一年，复用同名会顶死旧图；④ 用**公网可达** URL（funnel 的 `review-assets/` 路径），纯 tailnet `serve` URL camo 抓不到 → 图裂。⑤ 公网只放行**图片和视频**：登录状态文件（Playwright storageState）、日志、测试报告、证据压缩包、HTML / PDF 一律不放进截图目录——登录状态只待在项目里被 git 忽略的目录（如 `e2e/.auth/`），其余留在 worktree 或贴进评论折叠块。发图前先跑本工具自带的 `node scripts/public-assets/check.mjs <截图目录>`：它逐个报公网拿不拿得到，文件里有令牌 / 密钥样式会点名并以非零退出，照它说的把文件移出去再发。再 `curl -skI` 核对公网 URL `HTTP 200` + `content-length` 跟源文件一致
 - 不改 repo settings / secrets / actions / webhooks
 - 不 push 到非 ${BRANCH} 的分支
 - 不读取 PR 主题外的本机敏感文件

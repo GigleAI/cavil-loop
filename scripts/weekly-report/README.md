@@ -17,8 +17,8 @@
 | `merge.py` | 多个项目合并（GitHub#232）：把各仓库**各自**采好的数据按逐字段声明的方式合成一份，合并后自检（相加字段 = 各份之和、中位数重算、按模型拆分对得上总数）；遇到没声明合并方式的字段直接报错 |
 | `bymodel.py` | 目标周按模型拆分的归属规则 + 自检（各模型之和 = 总数），采集与出报告共用一份 |
 | `topdf.mjs` | 周报 markdown → A4 PDF（极简版式、中文字体、页码）。趋势图自动换成同名矢量版（GitHub#273），取不到就报错。自带 md 子集渲染器，不引第三方 md 库 |
-| `publish-asset.sh` | 把 PDF / 附件发到 funnel 公网目录，自动加 `rev` 并校验 HTTP 200，打印 URL |
-| `run.sh` | 串起来：采数 → 出图 → 传图（PNG 和矢量版同名同戳，各自校验公网 200）→ 开 issue → 打 `pending/agent` |
+| `publish-asset.sh` | 发布一个文件并打印地址，自动加 `rev`：图片 / 视频进公网资产目录（校验 HTTP 200）；PDF 等其他类型不公开，进不公开的目录，给内网地址或本机路径。发布前过凭证自查 |
+| `run.sh` | 串起来：采数 → 出图 → 传图（PNG 进公网资产目录并校验公网 200；同名同戳的矢量版留在本机不公开的目录）→ 开 issue → 打 `pending/agent` |
 
 ## 用法
 
@@ -53,6 +53,9 @@ systemctl --user enable --now cavil-loop-weekly-report@<project>.timer
 | `WEEKLY_REPORT_ASSET_URL` | **必填，无默认** | 配图公网 URL 前缀。GitHub 要能抓到，必须公网可达；主机名属于部署环境，不写在本仓库里 |
 | `WEEKLY_REPORT_ASSET_ROOT_URL` | **必填，无默认** | `publish-asset.sh` 用的公网 URL 根（配图前缀去掉末段） |
 | `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/cavil-loop/review-shots` | `publish-asset.sh` 的落盘根目录 |
+| `WEEKLY_REPORT_PRIVATE_ASSET_ROOT` | 资产目录旁的 `private-assets/` | `publish-asset.sh` 放非图片 / 视频附件（PDF 等）的目录，不公开 |
+| `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL` | 空 | 上面那个目录对应的、只在内网可达的 URL 根；空 = `publish-asset.sh` 只给本机路径 |
+| `WEEKLY_REPORT_VECTOR_DIR` | 资产目录旁的 `weekly-report-vector/` | 趋势图矢量版的落盘目录，不公开；`topdf.mjs` 从这里读 |
 | `WEEKLY_REPORT_FONTS_DIR` | `$PROJECT_ROOT/public/fonts` | 自托管 woff2；目录不在就回落系统字体 |
 | `WEEKLY_REPORT_SUBSCRIPTION_MONTHLY` | 没配就显示「未配置」 | 订阅月费，**必须以美元填**（一个数，或多份订阅相加的 JSON 列表）。报告按天摊到每一周。填人民币不会报错，会被原样当成美元印出去 |
 | `WEEKLY_REPORT_BOT_LOGINS` | 空 | 名字**不以** `-bot` / `[bot]` 结尾的机器人账号，逗号或空白分隔、整名匹配（不按前缀放宽；和 GitHub 一样不区分大小写）。漏配的后果：它发的评论算进「你发的」，它的记账行被丢弃、AI 用量显示 0 |
@@ -124,7 +127,7 @@ issue 开在主项目仓库里。
 
 ```bash
 node topdf.mjs <项目目录> report.md report.pdf --title "标题" --subtitle "副标题"
-URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev + 校验公网 200
+URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev；PDF 不公开，给内网地址或本机路径
 ```
 
 `topdf.mjs` 从 `<项目目录>/node_modules` 解析 playwright（同 `shot.mjs`）。
@@ -133,9 +136,10 @@ URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev + 校验
 标准，压进 A4 只剩约 180 像素/英寸，放大就糊。所以：
 
 - `run.sh` 出图时在 PNG 旁边留一份**同名同戳的矢量版** `<名字>-<rev>.chart.html`（`render.py` 用同一组
-  面板生成，字体内嵌成 data URI，不带本机路径），和 PNG 一起放进资产目录、一起校验公网 200。
+  面板生成，字体内嵌成 data URI，不带本机路径）。它是网页不是图片，公网资产目录只放行图片和视频，
+  所以留在本机不公开的目录（`WEEKLY_REPORT_VECTOR_DIR`）。
 - `topdf.mjs` 见到地址形如 `…/(delivery|effort|cost|token)-<rev>.png` 的图，就把 `.png` 换成
-  `.chart.html` 取矢量版，整张嵌进 PDF（放进独立的样式作用域，字体声明提到页面顶层，按版心宽度等比
+  `.chart.html`、先在本机矢量版目录里按文件名找，找不到再按地址去取（旧期），拿到矢量版后整张嵌进 PDF（放进独立的样式作用域，字体声明提到页面顶层，按版心宽度等比
   缩放）。其他图片原样不动。**写周报的 agent 用的命令不变**，报告里的 PNG 链接也原样保留。
 - 取不到矢量版（404、网络错、内容不像趋势图）→ 逐张列出、退出码 1、不出 PDF。悄悄退回 PNG 等于
   又出一份糊的，没人会发现。明知接受位图时加 `--allow-raster`：退回 PNG 并逐张列出。

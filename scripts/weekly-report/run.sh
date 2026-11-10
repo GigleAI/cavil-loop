@@ -57,6 +57,8 @@ ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-}"
     echo "在 $CONF 里设，例如：WEEKLY_REPORT_ASSET_URL=\"https://<你的公网主机>/review-assets/weekly-report\"" >&2
     exit 1
 }
+# 矢量版图表放哪：本机、不公开。topdf.mjs 按同一条规则找（见该文件 vectorDirs）。
+VECTOR_DIR="${WEEKLY_REPORT_VECTOR_DIR:-$(dirname "$(cavil_review_shots)")/weekly-report-vector}"
 FONTS_DIR="${WEEKLY_REPORT_FONTS_DIR:-$PROJECT_ROOT/public/fonts}"
 LABEL="${WEEKLY_REPORT_LABEL:-pending/agent}"
 
@@ -187,24 +189,20 @@ done
 
 echo "== 3/4 传图"
 mkdir -p "$ASSET_DIR"
-# 资产目录挡住目录列表：静态文件服务器（tailscale serve 的 path handler 等）
-# 见到目录就会吐出可点击的文件清单，等于把历来所有截图的索引公开。放一个
-# index.html，服务器就改吐它而不是清单；直链不受影响。
-for d in "$ASSET_DIR" "$ASSET_DIR/.."; do
-    [ -e "$d/index.html" ] || printf '<!doctype html><title>404</title>Not found.\n' > "$d/index.html"
-done
+# 目录列表由对外服务（scripts/public-assets/serve.mjs）挡，不再往目录里放 index.html。
 cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
-# 矢量版（GitHub#273）：和 PNG 同名同戳，topdf.mjs 出 PDF 时按 PNG 地址找到它、代替 PNG。
+# 矢量版（GitHub#273）：和 PNG 同名同戳，topdf.mjs 出 PDF 时按 PNG 的文件名找到它、代替 PNG。
 # 临时目录随退出删掉，所以必须在这里留一份；字体已内嵌，不带本机路径。
+# 它是网页不是图片，公网资产目录只放行图片和视频，所以留在本机不公开的目录里，topdf.mjs 从本机读。
+mkdir -p "$VECTOR_DIR"
 for n in delivery effort cost token; do
-    cp "$WORK/$n.chart.html" "$ASSET_DIR/$n-$REV.chart.html"
+    cp "$WORK/$n.chart.html" "$VECTOR_DIR/$n-$REV.chart.html"
 done
 for n in delivery effort cost token; do
-    for f in "$n-$REV.png" "$n-$REV.chart.html"; do
-        code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$f")
-        [ "$code" = "200" ] || { echo "配图公网不可达（$f → HTTP $code），中止" >&2; exit 1; }
-        echo "   $ASSET_URL/$f → 200"
-    done
+    f="$n-$REV.png"
+    code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$f")
+    [ "$code" = "200" ] || { echo "配图公网不可达（$f → HTTP $code），中止" >&2; exit 1; }
+    echo "   $ASSET_URL/$f → 200"
 done
 
 echo "== 4/4 出报告"
@@ -255,10 +253,11 @@ BODY="$WORK/body.md"
 > **出 PDF 与发布**（脚本在 `scripts/weekly-report/`，别自己造）
 > ```bash
 > node topdf.mjs <项目目录> report.md report.pdf --title "标题" --subtitle "副标题"
-> URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev + 校验公网 200
+> URL=$(bash publish-asset.sh <project-key> report.pdf)   # 自动加 rev；PDF 不公开发布
 > ```
-> 评论里把 `$URL` 作为下载链接给出来。
-> 报告里的四张趋势图**原样保留 PNG 链接**，命令也不用改：`topdf.mjs` 会按每张 PNG 的地址
+> PDF 不是图片，不进公网资产目录。`$URL` 以 `http` 开头时是只在内网可达的下载地址，评论里给出来并
+> 写明「需在内网打开」；否则它是本机路径，评论里写明「PDF 在运行 daemon 的那台机器上：<路径>」。
+> 报告里的四张趋势图**原样保留 PNG 链接**，命令也不用改：`topdf.mjs` 会按每张 PNG 的文件名在本机
 > 取同名的矢量版（`…-<戳>.chart.html`）放进 PDF，图放大也清楚。取不到矢量版它会报错退出、
 > 列出是哪张——不要删图、不要换图，把报错原样写进 issue 评论、翻 `pending/human`；
 > 只有维护者同意接受位图时，才在命令末尾加 `--allow-raster`。

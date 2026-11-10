@@ -1,0 +1,15 @@
+[Unit]
+Description=cavil-loop public assets (images and videos only)
+Documentation=https://github.com/GigleAI/cavil-loop
+
+[Service]
+Type=exec
+# PUBLIC_ASSETS_ROOT=<资产目录> PUBLIC_ASSETS_PORT=<本机端口>，可选 PUBLIC_ASSETS_PREFIX / PUBLIC_ASSETS_NODE。
+# 没有这个文件服务就起不来——这是有意的：装着不配等于没开。
+EnvironmentFile=%h/.config/cavil-loop/public-assets.conf
+ExecStart=/usr/bin/env bash %h/.agents/skills/cavil-loop/scripts/public-assets/run.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
