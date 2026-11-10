@@ -622,13 +622,26 @@ export function DetailPanel({
   // bumped to render the frame again as it was (e.g. a click on a box that was not sent): the box shows its real state
   const [redraw, setRedraw] = useState(0);
   const renderSeq = useRef(0);
-  const canTick = canWrite && !busy;
+  /**
+   * GitHub#358: the box click still on its way. From the click until the re-read after it ended, that
+   * box shows what was asked for in grey and no box takes a click; a refused / failed write takes it
+   * back at once. `written`: GitHub answered yes — only the re-read is still awaited.
+   */
+  const [pendingTick, setPendingTick] = useState<{ entryId: string; index: number; checked: boolean; written: boolean } | null>(null);
+  // the re-read ended (landed or failed) and no other change is in flight: the frame shows what GitHub holds
+  // again — decided while rendering, so the read that lands draws the frame once, not grey first and then again
+  const tickOver = Boolean(pendingTick?.written) && !loading && !busy;
+  const waitingTick = tickOver ? null : pendingTick;
+  useEffect(() => {
+    if (tickOver) setPendingTick(null);
+  }, [tickOver]);
+  const canTick = canWrite && !busy && !waitingTick;
   const frame = useMemo(() => {
     if (!detail) return { doc: '', render: '' };
     const render = `r${++renderSeq.current}`;
-    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current }), render };
+    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick }), render };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, unfold, isDark, canTick, redraw]);
+  }, [detail, unfold, isDark, canTick, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked]);
   const doc = frame.doc;
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   /** the rendering whose script reported in: the frame's script ran (tests wait on it) */
@@ -639,17 +652,24 @@ export function DetailPanel({
     const e = detail?.timeline.find((x) => x.id === entryId && (x.kind === 'body' || x.kind === 'comment'));
     const t = e?.tasks;
     const count = e ? renderedTaskBoxes(e.bodyHtml).length : 0;
-    if (!item || !e || !t?.clickable || typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= count || typeof checked !== 'boolean' || !canWrite || busy) {
+    if (!item || !e || !t?.clickable || typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= count || typeof checked !== 'boolean' || !canWrite || busy || waitingTick) {
       setRedraw((n) => n + 1);
       return;
     }
+    setPendingTick({ entryId: e.id, index, checked, written: false });
     const r = await run(
       { kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source },
       checked ? '已勾上，GitHub 上已更新' : '已取消勾选，GitHub 上已更新',
     );
+    if (!r.here) return;
     // refused or failed: the box goes back to what is on screen at once, and `run` reads again, so it
     // ends up showing what GitHub holds now (a re-read with the same content does not redraw by itself)
-    if (r.here && !r.ok) setRedraw((n) => n + 1);
+    if (!r.ok) {
+      setPendingTick(null);
+      setRedraw((n) => n + 1);
+    }
+    // written: the grey stays until the re-read `run` started has ended (the effect above)
+    else setPendingTick((p) => (p ? { ...p, written: true } : p));
   };
   // What the listener below reads: the latest values of this render, set before the frame can load.
   /** GitHub#205: "edit" was clicked in the frame. Opened only for an entry GitHub said this account may change. */

@@ -6854,7 +6854,7 @@ lessons_for_prompt() {   # <经验文件>
 #   · 标题、文件名是别人写的数据：标题压成一行、去掉控制字符和反引号、截到 80 字；分支名只认安全字符，
 #     不认的不拿去喂 git。清单在 dispatch 的 sed 全部跑完之后才填进去，里面的 ${...}、|、& 不会再被渲染。
 #   · 任何失败都不挡派工。
-CONCURRENT_WORK_HINT="${CONCURRENT_WORK_HINT:-}"
+ENABLE_CONCURRENT_WORK_HINT="${ENABLE_CONCURRENT_WORK_HINT:-}"
 CONCURRENT_WORK_MAX_ITEMS=20
 CONCURRENT_WORK_MAX_FILES=30
 CONCURRENT_WORK_DEFAULT_BASE="main"
@@ -6862,7 +6862,7 @@ CONCURRENT_WORK_PLACEHOLDER='${CONCURRENT_WORK}'
 CONCURRENT_WORK_UNREAD="未能读取当前进行中的其他工作（不代表没有）；交接前照常做冲突检查。"
 
 concurrent_work_enabled() {
-    case "$(printf '%s' "${CONCURRENT_WORK_HINT:-}" | tr '[:upper:]' '[:lower:]')" in
+    case "$(printf '%s' "${ENABLE_CONCURRENT_WORK_HINT:-}" | tr '[:upper:]' '[:lower:]')" in
         true|1|yes|on) return 0 ;;
     esac
     return 1

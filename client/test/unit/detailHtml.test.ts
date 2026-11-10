@@ -164,3 +164,56 @@ describe('detail: folded entries (GitHub#155)', () => {
     expect(doc).toContain('data-avatar=""><span>?</span></span>');
   });
 });
+
+// GitHub#358: the box whose click is on its way is grey with the state asked for; nothing else changes
+describe('detail: a box click waiting for GitHub (GitHub#358)', () => {
+  const list = (a: boolean, b: boolean) =>
+    `<ul class="contains-task-list"><li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox"${a ? ' checked=""' : ''}> A</li>` +
+    `<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox"${b ? ' checked=""' : ''}> B</li></ul>`;
+  const tasks = { clickable: true as const, source: '- [ ] A\n- [x] B\n' };
+  const timeline: TimelineEntry[] = [
+    { ...entry('C2', 'comment', '2026-11-03T00:00:00Z', list(false, true)), tasks },
+    { ...entry('C1', 'comment', '2026-11-02T00:00:00Z', list(false, true)), tasks },
+    { ...entry('R', 'review', '2026-11-01T12:00:00Z', list(false, true)) },
+  ];
+  /** entry id -> its boxes as [checked, waiting, disabled] */
+  function boxes(doc: string): Record<string, [boolean, boolean, boolean][]> {
+    const out: Record<string, [boolean, boolean, boolean][]> = {};
+    for (const part of doc.split('<details class="entry').slice(1)) {
+      const id = /data-entry="([^"]+)"/.exec(part)![1];
+      out[id] = (part.match(/<input\b[^>]*task-list-item-checkbox[^>]*>/g) ?? []).map((t) => [/\schecked(=|\s|>)/.test(t), /\sdata-pending(=|\s|>)/.test(t), /\sdisabled(=|\s|>)/.test(t)]);
+    }
+    return out;
+  }
+  const d = withTimeline(timeline);
+
+  it('no click on its way: boxes of clickable entries take clicks, nothing is marked waiting', () => {
+    expect(boxes(timelineDocument(d, false, 'all', { canTick: true }))).toEqual({
+      C2: [[false, false, false], [true, false, false]],
+      C1: [[false, false, false], [true, false, false]],
+      R: [[false, false, true], [true, false, true]],
+    });
+  });
+
+  it('ticking box 0 of C1: it alone is ticked + waiting; every box of every entry is disabled; the other values stay', () => {
+    expect(boxes(timelineDocument(d, false, 'all', { canTick: false, pending: { entryId: 'C1', index: 0, checked: true } }))).toEqual({
+      C2: [[false, false, true], [true, false, true]],
+      C1: [[true, true, true], [true, false, true]],
+      R: [[false, false, true], [true, false, true]],
+    });
+  });
+
+  it('unticking box 1 of C2: it alone is unticked + waiting', () => {
+    expect(boxes(timelineDocument(d, false, 'all', { canTick: false, pending: { entryId: 'C2', index: 1, checked: false } }))).toEqual({
+      C2: [[false, false, true], [false, true, true]],
+      C1: [[false, false, true], [true, false, true]],
+      R: [[false, false, true], [true, false, true]],
+    });
+  });
+
+  it('a click on an entry that is not there, or on a review: nothing is marked', () => {
+    const plain = boxes(timelineDocument(d, false, 'all', { canTick: false }));
+    expect(boxes(timelineDocument(d, false, 'all', { canTick: false, pending: { entryId: 'GONE', index: 0, checked: true } }))).toEqual(plain);
+    expect(boxes(timelineDocument(d, false, 'all', { canTick: false, pending: { entryId: 'R', index: 0, checked: true } }))).toEqual(plain);
+  });
+});

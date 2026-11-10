@@ -64,16 +64,31 @@ export function renderedTaskBoxes(html: string): boolean[] {
   return [...html.matchAll(HTML_BOX)].map((m) => /\schecked(?:=|\s|>|$)/.test(m[0]));
 }
 
+/** A click on its way to GitHub (GitHub#358): box `index` of one entry, and what the user asked for. */
+export interface PendingTick {
+  index: number;
+  checked: boolean;
+}
+
 /**
  * GitHub's HTML with each rendered box numbered (`data-task="i"`, the same
  * order `renderedTaskBoxes` counts) and, when `clickable`, its `disabled`
  * dropped. The frame's script reports the number it finds on the clicked box.
+ *
+ * `pending` (GitHub#358): that box is drawn the way the user asked for it —
+ * ticked or not — and marked `data-pending` (grey: GitHub has not confirmed
+ * it yet). Every other box keeps what GitHub rendered.
  */
-export function annotateTaskBoxes(html: string, clickable: boolean): string {
+export function annotateTaskBoxes(html: string, clickable: boolean, pending: PendingTick | null = null): string {
   let i = 0;
   return html.replace(HTML_BOX, (tag) => {
-    let t = tag.replace(/^<input\b/, `<input data-task="${i++}"`);
+    const n = i++;
+    let t = tag.replace(/^<input\b/, `<input data-task="${n}"`);
     if (clickable) t = t.replace(/\sdisabled(?:="[^"]*")?/, '');
+    if (pending && pending.index === n) {
+      t = t.replace(/\schecked(?:="[^"]*")?(?=\s|\/?>)/, '');
+      t = t.replace(/^<input\b/, `<input data-pending=""${pending.checked ? ' checked=""' : ''}`);
+    }
     return t;
   });
 }
