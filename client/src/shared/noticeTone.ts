@@ -14,6 +14,9 @@
 // A background loop (the offline retry, the catch-up re-read of every sync round, the timed looks
 // at a board) is rule 4, never rule 1: it waits most of the time, and counting it as "running"
 // would show a notice with a problem as busy for minutes.
+// GitHub#359: the app's own checks right after an operation's answer never came (one at once, a
+// few more seconds apart, under a minute in all) are rule 1 as one burst; the check every later
+// sync round makes is this background loop — rule 4, also after a check that could not read.
 
 import type { CreateJob, CreateWatch } from './types';
 

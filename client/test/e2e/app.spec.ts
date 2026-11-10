@@ -6368,7 +6368,8 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await expect(onBoard(146)).toHaveCount(0);
   expect(env.fake.writes().filter((w) => w.method === 'PUT' && w.path.endsWith('/pulls/146/merge'))).toHaveLength(1);
 
-  // ---- 2. a close whose answer never came: being checked (blue, "正在查证") → the check failed (red, "这次没能查证") → checked again (blue, the failure gone) → proven (green) ----
+  // ---- 2. a close whose answer never came: being checked (blue, "正在查证") → the app's own checks could not read (GitHub#359: yellow,
+  //         "这次没能查证" — every sync round checks again, there is no button for it) → the next round's check proves it (green) ----
   const late = env.fake.lateWhen((e) => e.method === 'PATCH' && e.path === '/api/repos/GigleAI/cavil-loop/issues/138');
   env.fake.state.w.failRefresh.add(KEY(138));
   let checkReads = 0;
@@ -6387,22 +6388,21 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await looks(onBoard(138), 'busy', 'spin');
   await shot(page, '357-03-checking-blue');
   releaseCheck();
-  await expect(onBoard(138).getByTestId('op-notice-text')).toContainText('；这次没能查证：重读这一条失败', { timeout: 15_000 });
-  await looks(onBoard(138), 'error', 'warn');
-  expect(await bg(onBoard(138))).toBe('rgb(255, 235, 233)');
+  // the check made at once and the three after it (3 s, 10 s, 30 s apart) all fail: blue until the last one is through
+  await expect(onBoard(138).getByTestId('op-notice-text')).toContainText('；这次没能查证：重读这一条失败', { timeout: 75_000 });
+  await expect(onBoard(138).getByTestId('op-notice-text')).toContainText('之后每次同步还会再核对');
+  await looks(onBoard(138), 'warn', 'warn');
+  expect(await bg(onBoard(138))).toBe('rgb(255, 248, 197)');
   expect(checkReads).toBeGreaterThan(0);
-  await shot(page, '357-04-check-failed-red');
-  // again: GitHub answers now, and the close has landed; its read is held for a moment
+  // (the hold above only counted until it was released) the later checks did read again
+  expect(env.fake.log.filter((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === 138).length).toBeGreaterThan(2);
+  await expect(onBoard(138).getByTestId('op-recheck')).toHaveCount(0);
+  await expect(onBoard(138).getByTestId('op-unlock')).toBeVisible();
+  await shot(page, '357-04-check-could-not-read-yellow');
+  // GitHub answers now, and the close has landed: the next round checks by itself and proves it (and catches up
+  // the re-read that failed earlier); then it is a plain success
   env.fake.state.w.failRefresh.delete(KEY(138));
   late.land();
-  const releaseAgain = holdFirst((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === 138);
-  await onBoard(138).getByTestId('op-recheck').click();
-  await expect(onBoard(138).getByTestId('op-notice-text')).toContainText('；正在查证…');
-  await expect(onBoard(138).getByTestId('op-notice-text')).not.toContainText('这次没能查证');
-  await looks(onBoard(138), 'busy', 'spin');
-  releaseAgain();
-  await expect(onBoard(138).getByTestId('op-notice-text')).not.toContainText('查证', { timeout: 15_000 });
-  // the re-read that failed earlier is caught up by a round; then it is a plain success
   await page.getByTestId('refresh').click();
   await expect(onBoard(138).getByTestId('op-notice-text')).toHaveText('issue #138 已关闭（已完成）', { timeout: 15_000 });
   await looks(onBoard(138), 'ok', 'check');
