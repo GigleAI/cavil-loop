@@ -37,9 +37,9 @@
 // CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS), CLIENT_MUT_BASELINE_FILES
 // (comma-separated test files the baseline runs instead of the whole suite).
 
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { changedFiles, baseEntries, selectEntries, editedFiles, unmappedNames } from './select.mjs';
@@ -55,8 +55,16 @@ const STATE = process.env.CLIENT_MUT_STATE;
 const statePath = (f) => (STATE ? join(STATE, f) : null);
 const readState = (f) => (STATE && existsSync(join(STATE, f)) ? JSON.parse(readFileSync(join(STATE, f), 'utf8')) : null);
 
+// The copy sits at <tmp>/client, with every other top-level entry of the repository linked
+// beside it (not .git: the copy is not a checkout), so tests that read the repository through
+// "client/.." — docs/logo, tests/fixtures, setup.sh — see the real files, as they do outside
+// the gate (GitHub#309: the gate's baseline went red on exactly those). rmSync(dirname(work)).
 function sandbox() {
-  const work = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
+  const top = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
+  const repo = join(root, '..');
+  for (const e of readdirSync(repo)) if (e !== 'client' && e !== '.git') symlinkSync(join(repo, e), join(top, e));
+  const work = join(top, 'client');
+  mkdirSync(work);
   for (const d of ['src', 'test', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
   // the Rust back end's sources (not its build output: a mutated copy is built into MUT_TARGET)
   cpSync(join(root, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
@@ -180,7 +188,7 @@ async function runE2e(work, grep, m = null) {
       const cmd = `node scripts/build.mjs --test-bridge >/dev/null && node node_modules/@playwright/test/cli.js test --reporter=json -g ${JSON.stringify(grep)}`;
       child = spawn('bash', ['-c', cmd], {
         cwd: work,
-        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: out, CAVIL_HARNESS: be.bin },
+        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: out, CLIENT_MUT_REPO: process.env.CLIENT_MUT_REPO ?? root, CAVIL_HARNESS: be.bin },
         stdio: ['ignore', 'ignore', 'pipe'],
         detached: true,
       });
@@ -281,7 +289,7 @@ async function baseline() {
     console.log(`✅ 基线：未改动的副本 ${passed} 条全过（另 ${all.length - passed} 条是负对照执行器的自检，子进程里不跑）`);
     return 0;
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    rmSync(dirname(work), { recursive: true, force: true });
   }
 }
 
@@ -299,7 +307,7 @@ async function baselineE2e(indices) {
     console.log(`✅ 界面基线：未改动的副本 ${got.length} 条界面测试全过`);
     return 0;
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    rmSync(dirname(work), { recursive: true, force: true });
   }
 }
 
@@ -359,6 +367,9 @@ function changes() {
   return 0;
 }
 
+/** `file` (relative to the copy) does not lead into the copy's own client/ (absolute, or ".." out of it). */
+const outside = (work, file) => isAbsolute(file) || relative(work, join(work, file)).split(/[\\/]/)[0] === '..';
+
 async function one(i) {
   const m = list[i];
   if (!m) return fail(`没有第 ${i} 项`);
@@ -371,10 +382,13 @@ async function one(i) {
       } catch (e) {
         return fail(`准备失败（取不到 ${m.fromGit}）：${m.what}`);
       }
+      if (outside(work, m.file)) return fail(`准备失败（${m.file} 不在 client/ 里）：${m.what}`);
       writeFileSync(join(work, m.file), old);
     } else {
       // one edit (`file` / `from` / `to`) or several (`edits`), applied in order
       for (const ed of m.edits ?? [{ file: m.file, from: m.from, to: m.to }]) {
+        // the copy's neighbours are links to the real repository: never write through them
+        if (outside(work, ed.file)) return fail(`准备失败（${ed.file} 不在 client/ 里）：${m.what}`);
         const target = join(work, ed.file);
         const text = readFileSync(target, 'utf8');
         if (!text.includes(ed.from)) return fail(`准备失败（原文不在 ${ed.file}）：${m.what}`);
@@ -396,7 +410,7 @@ async function one(i) {
     console.log(`✅ 变红（${m.expect.length} 条预期断言失败${how}）：${m.what}`);
     return 0;
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    rmSync(dirname(work), { recursive: true, force: true });
   }
 }
 

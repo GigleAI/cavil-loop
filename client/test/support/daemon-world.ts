@@ -13,7 +13,10 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, wri
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+// The repository root. Inside a negative-control copy (client/test/mutation/run.mjs copies
+// client/ into a temp folder) "three folders up" is the temp dir's parent, so the copy is told
+// where the real client/ is through CLIENT_MUT_REPO, as the other tests that need it read it.
+export const REPO = join(process.env.CLIENT_MUT_REPO ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..'), '..');
 
 export type Os = 'Linux' | 'Darwin';
 
