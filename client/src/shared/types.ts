@@ -225,6 +225,13 @@ export interface CreateBoard {
   /** what the board was meant to carry */
   iterationId: string | null;
   status: string | null;
+  /**
+   * GitHub#357: a "再试加入看板" worked on this board and left it unfinished (still not joined, or
+   * joined with its field refused). It stays with the board until a later retry works on this very
+   * board again — another board's success never clears it. Absent: left by the create itself,
+   * nobody tried again yet.
+   */
+  retryFailed?: boolean;
 }
 
 /**
@@ -253,6 +260,11 @@ export interface CreateWatch {
   writes: number;
   /** a button click is being carried out */
   busy?: boolean;
+  /**
+   * GitHub#357: why the last click of this board's "改成…" did not do it. Cleared when the next
+   * click on this board starts; nothing done on another board touches it.
+   */
+  clickError?: string | null;
   /** which addition of that board's source this watch belongs to (removed / added again → over) */
   epoch: number;
 }
@@ -284,6 +296,20 @@ export interface CreateJob {
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */
   draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean };
+  /** GitHub#357: "再试加入看板" is being carried out (set before its first wait, cleared on every way out) */
+  retrying?: boolean;
+  /**
+   * GitHub#357: why the last "再试加入看板" could not start at all (offline, not signed in) — no
+   * board was worked on. Cleared when the next retry starts. What a retry or a click left
+   * unfinished on one board is kept on that board (`CreateBoard.retryFailed`,
+   * `CreateWatch.clickError`): the notice's colour is taken from every part still there, never
+   * from the last attempt alone. All of it lives on the job, not in the bar that was clicked.
+   */
+  retryError?: string | null;
+  /** GitHub#357: unknown — the look for same-title issues is running */
+  looking?: boolean;
+  /** GitHub#357: unknown — why that look could not be done */
+  lookError?: string | null;
 }
 
 export interface FieldOption {
@@ -528,6 +554,8 @@ export interface AppState {
   update: UpdateStatus | null;
   /** GitHub#229: changes not saved (refused) or not confirmed (no answer): the ones that need the user */
   editsNeedingAction: number;
+  /** GitHub#357: ids of the changes a "重新发送" a person asked for is working on right now (their notices read as running) */
+  editsResending: string[];
   /** GitHub#229: new issues being created, and their outcome until dismissed */
   creates: CreateJob[];
   /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */

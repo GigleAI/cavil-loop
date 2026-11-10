@@ -28,6 +28,7 @@
 // person drops it. Settling never deletes a draft.
 
 import type { IssueCloseReason, MergeMethod } from './actions';
+import { noticeTone, type NoticeFacts, type NoticeTone } from './noticeTone';
 
 export type OpKind = 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack';
 export const OP_KINDS: readonly OpKind[] = ['closeIssue', 'closePr', 'merge', 'autopilot', 'handBack'];
@@ -112,13 +113,10 @@ export interface OpRecord {
    */
   before?: { comments: string[]; events: string[]; labels?: string[] } | null;
   /**
-   * GitHub#359, this run of the app only (never kept over a restart):
-   * `checking` — the automatic checks of an unknown step are still on their way: the notice reads
-   * as busy and offers nothing; `auto` — the steps not sent yet may go out by themselves once the
-   * unknown one is proven (set when the sending stopped at an unknown step, or when a person sent
-   * a step again), within OP_AUTO_MS of `autoSince`.
+   * GitHub#359, this run of the app only (never kept over a restart): the steps not sent yet may go
+   * out by themselves once the unknown one is proven (set when the sending stopped at an unknown
+   * step, or when a person sent a step again), within OP_AUTO_MS of `autoSince`.
    */
-  checking?: boolean;
   auto?: boolean;
   autoSince?: number;
   /** GitHub#359: how many checks were made */
@@ -143,6 +141,19 @@ export interface OpRecord {
   readProblem?: string | null;
   /** this record finishes the label steps of an earlier one ("补做剩下的步骤") */
   finishOf?: string;
+  /**
+   * GitHub#357: an evidence read is running in this run of the app. Only the notice reads it (blue,
+   * "正在查证…"): the lock, the phase and the draft are as before. Not kept over a restart.
+   * GitHub#359: it stands for the whole burst of the app's own checks right after a lost answer (the
+   * one made at once and the few after it, seconds apart) and for the check before a second send a
+   * person asked for; while it stands the notice offers nothing. The check of every later sync round
+   * is a background loop and never sets it.
+   */
+  checking?: boolean;
+  /** GitHub#357: "补做剩下的步骤" is being prepared (the item is read first) in this run of the app. Not kept over a restart. */
+  finishing?: boolean;
+  /** GitHub#357: why the last "补做剩下的步骤" did nothing; cleared when the next one starts, and once nothing is left to finish */
+  finishProblem?: string | null;
 }
 
 /** how long a succeeded operation waits for a re-read before the manual unlock is offered */
@@ -286,32 +297,51 @@ export function opText(r: OpRecord): string {
   }
   const p = opPhase(r);
   const labelOp = r.kind === 'autopilot' || r.kind === 'handBack';
-  if (r.checking && p === 'unknown' && !labelOp) head += `；正在自动核对（第 ${(r.checks ?? 0) + 1} 次）`;
   if (r.halt && p !== 'waiting' && !r.steps.every((s) => s.state === 'ok')) head += `。${r.halt.text}，没有接着往下做`;
   if (p === 'settling') head += r.stuck ? '（一直没读到 GitHub 上的最新状态，请到 GitHub 页面核对）' : '（正在等 GitHub 的最新状态）';
   if (p === 'unlocked') head = `已由人核对后解除锁定：${head}`;
-  if (r.checkProblem && p === 'unknown' && !r.checking) head += `；这次没能查证：${r.checkProblem}；之后每次同步还会再核对`;
+  // GitHub#357: a read that is running says so; what the one before could not do is gone by then.
+  // GitHub#359: a hand-over says it in its own sentence above; the checks go on with every sync round
+  if (r.checking && p === 'unknown') head += labelOp ? '' : '；正在查证…';
+  else if (r.checkProblem && p === 'unknown') head += `；这次没能查证：${r.checkProblem}；之后每次同步还会再核对`;
+  if (r.finishing) head += '；正在补做…';
+  else if (r.finishProblem) head += `；这次没能补做：${r.finishProblem}`;
   if (r.readProblem && p !== 'waiting') head += `；${r.readProblem}`;
   if (r.replyState === 'sending') head += '；正在用附的评论原文发回复…';
   if (r.replyState === 'unknown') head += '；用附的评论原文发的回复不确定有没有发出，请到 GitHub 页面核对';
   return head;
 }
 
-export type OpTone = 'busy' | 'ok' | 'warn' | 'error';
-export function opTone(r: OpRecord): OpTone {
+export type OpTone = NoticeTone;
+
+/**
+ * GitHub#357: what a record says about itself, for the one colour rule (noticeTone.ts).
+ *  - busy: a request, the wait for the re-read after it, an evidence read, the preparation of
+ *    "补做剩下的步骤". A wait that ran long (`stuck`) or whose re-read failed is no longer this
+ *    record's own request: the sync rounds catch up (retrying).
+ *  - done: exactly the records that put themselves away (opFullyDone) — green never stays.
+ *  - failed: the main step refused / never sent; a "补做" that did nothing. A missing answer alone is
+ *    never a failure — nor, since GitHub#359, a check that could not read ("这次没能查证"): the app
+ *    checks again with every sync round (retrying).
+ *  - rest: a step not done that nobody is working on is yellow as it always was; otherwise the
+ *    plain blue (unlocked by hand, a draft still kept).
+ */
+export function opFacts(r: OpRecord): NoticeFacts {
   const p = opPhase(r);
-  if (p === 'waiting') return 'busy';
-  // GitHub#359: the automatic checks of an unknown step are still on their way
-  if (p === 'unknown' && r.checking) return 'busy';
   const m = main(r);
-  if (m.state === 'refused' || m.state === 'unsent') return 'error';
-  if (r.steps.some((s) => s.state !== 'ok')) return 'warn';
-  // GitHub#279: every step worked, but the re-read after it did not (its notice says so): not a plain
-  // success — it reads as a warning until a later re-read clears it. (A check problem only shows while
-  // a step is unknown, which is a warning already.)
-  if (r.readProblem) return 'warn';
-  if (p === 'settling') return r.stuck ? 'warn' : 'ok';
-  return 'ok';
+  return {
+    busy: p === 'waiting' || (p === 'unknown' && r.checking === true) || r.finishing === true || (p === 'settling' && !r.stuck && !r.readProblem),
+    done: opFullyDone(r),
+    failed: m.state === 'refused' || m.state === 'unsent' || !!r.finishProblem,
+    // GitHub#359: a step whose answer never came is checked again with every sync round — also after a
+    // check that could not read ("这次没能查证"): the app keeps at it, so it is yellow, not a dead end
+    retrying: !!r.readProblem || (p === 'settling' && r.stuck) || (p === 'unknown' && !r.checking),
+    rest: r.steps.some((s) => s.state !== 'ok') ? 'warn' : 'info',
+  };
+}
+
+export function opTone(r: OpRecord): OpTone {
+  return noticeTone(opFacts(r));
 }
 
 /** What the draft still holds (table E), null = nothing kept. */
@@ -369,7 +399,7 @@ export type OpButton =
 export function opButtons(r: OpRecord): OpButton[] {
   const p = opPhase(r);
   const out: OpButton[] = [];
-  // GitHub#359: while the automatic checks run there is nothing to choose; after them the checks go on
+  // GitHub#359: while the app's own checks run there is nothing to choose; after them the checks go on
   // with every sync round, so there is no "check again" — only the second send (when a full read did not
   // find the step) and the unlock by hand
   if (p === 'unknown' && !r.checking) {
@@ -380,7 +410,7 @@ export function opButtons(r: OpRecord): OpButton[] {
   if (p === 'settled') {
     const m = main(r);
     if (m.state === 'refused' || m.state === 'unsent' || (r.halt?.redo && !r.steps.every((s) => s.state === 'ok'))) out.push('retry');
-    else if (finishSteps(r).length) out.push('finish');
+    else if (finishSteps(r).length && !r.finishing) out.push('finish');
   }
   const left = opDraftLeft(r);
   // while a step is still on its way the comment may yet go out with it: nothing to recover yet
@@ -390,7 +420,7 @@ export function opButtons(r: OpRecord): OpButton[] {
     if ((cs === 'refused' || cs === 'unsent') && !r.replyState) out.push('toReply');
   }
   if (left && p !== 'waiting') out.push('dropDraft');
-  if (!opLocked(r)) out.push('dismiss');
+  if (!opLocked(r) && !r.finishing) out.push('dismiss');
   return out;
 }
 
@@ -509,10 +539,11 @@ export function opProveStep(r: OpRecord, index: number, how: string): OpRecord {
 }
 
 /** A record kept on disk by an earlier run: a request still waiting then has no answer now, and nothing is sent again. */
-export function opAfterRestart(r: OpRecord): OpRecord {
+export function opAfterRestart(r0: OpRecord): OpRecord {
+  // GitHub#357: what was running then is not running now. GitHub#359: nor does a record go on by itself
+  // in another run of the app than the one that started it
+  const r: OpRecord = { ...r0, checking: false, finishing: false, auto: false };
   const replyState = r.replyState === 'sending' ? ('unknown' as const) : (r.replyState ?? null);
-  // GitHub#359: the automatic checks and the "go on by itself" belong to the run that started them
-  r = { ...r, checking: false, auto: false };
   if (!r.steps.some((s) => s.state === 'pending')) return { ...r, running: false, replyState };
   return { ...r, running: false, replyState, steps: r.steps.map((s) => (s.state === 'pending' ? { ...s, state: 'unknown' as const, reason: '客户端重启前没有收到 GitHub 的应答' } : s)) };
 }
@@ -531,7 +562,15 @@ export const AUTO_DISMISS_MS = 5_000;
  * GitHub#296, opWithoutStale.)
  */
 export function opAutoDismissable(r: OpRecord): boolean {
-  if (r.dismissed || r.unlocked || r.stuck) return false;
+  return !r.dismissed && opFullyDone(r);
+}
+
+/**
+ * GitHub#357: everything went through — the one condition behind both "the notice is green" (opFacts)
+ * and "the notice puts itself away" (opAutoDismissable), so a green notice never stays on screen.
+ */
+export function opFullyDone(r: OpRecord): boolean {
+  if (r.unlocked || r.stuck || r.finishing || r.finishProblem) return false;
   if (opPhase(r) !== 'settled') return false;
   if (!r.steps.every((s) => s.state === 'ok')) return false;
   if (needsTarget(r) && !r.targetSeen) return false;
@@ -556,14 +595,17 @@ export function opWithoutStale(r: OpRecord): OpRecord {
   const p = opPhase(r);
   const check = !!r.checkProblem && p !== 'unknown';
   const stuck = r.stuck && p !== 'settling';
+  // GitHub#357: the same for "这次没能补做": it is about steps that can still be finished
+  const finish = !!r.finishProblem && !r.finishing && finishSteps(r).length === 0;
   // GitHub#359: "still checking" and a check's verdict are about an unknown step only
   const checking = !!r.checking && p !== 'unknown';
   const verdict = r.steps.some((s) => s.check !== undefined && s.state !== 'unknown');
-  if (!check && !stuck && !checking && !verdict) return r;
+  if (!check && !stuck && !finish && !checking && !verdict) return r;
   return {
     ...r,
     ...(check ? { checkProblem: null } : {}),
     ...(stuck ? { stuck: false } : {}),
+    ...(finish ? { finishProblem: null } : {}),
     ...(checking ? { checking: false } : {}),
     ...(verdict ? { steps: r.steps.map((s) => (s.check !== undefined && s.state !== 'unknown' ? (({ check: _c, ...rest }) => rest)(s) : s)) } : {}),
   };

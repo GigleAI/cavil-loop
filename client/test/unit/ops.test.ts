@@ -27,6 +27,8 @@ import {
   opReusableDraft,
   opProveStep,
   readBoundary,
+  opFacts,
+  opFullyDone,
   opText,
   opTone,
   opWithoutStale,
@@ -129,7 +131,7 @@ describe('table A: notice and buttons', () => {
     expect(opText(close('unknown', 'unsent', { unlocked: true }))).toMatch(/^已由人核对后解除锁定：/);
     expect(opText(rec('merge', [step('merge', 'ok')], { readAt: 30, targetSeen: true }))).toBe('PR #5 已合并');
   });
-  it('tone: refused first step is an error; anything not plainly done is a warning', () => {
+  it('tone: refused first step is an error; a step not done that nobody is working on is a warning; all done and read back is a success', () => {
     expect(opTone(close('pending', 'unsent'))).toBe('busy');
     expect(opTone(close('refused', 'unsent'))).toBe('error');
     expect(opTone(close('unknown', 'unsent'))).toBe('warn');
@@ -440,6 +442,130 @@ describe('GitHub#296: a check problem only stands while a step is unknown', () =
         }
     expect(checked).toBeGreaterThan(1000);
     expect(goes).toBeGreaterThan(0);
+  });
+});
+
+// GitHub#357: the colour follows what is going on with the record (shared/noticeTone.ts), one row
+// per state of the approved table. `was` = the colour before the change, for the rows that keep it.
+describe('GitHub#357: the colour of an operation notice, state by state', () => {
+  const done = { readAt: 30, targetSeen: true };
+  const partial = (extra: Partial<OpRecord> = {}) => auto('ok', 'refused', 'unsent', { readAt: 30, ...extra });
+  const rows: [string, OpRecord, string][] = [
+    ['a request on its way', close('pending', 'unsent'), 'busy'],
+    ['created, its first request not marked sent', close('unsent', 'unsent', { running: true }), 'busy'],
+    ['a reply from the kept comment on its way', close('refused', 'unsent', { replyState: 'sending' }), 'busy'],
+    ['succeeded, waiting for the re-read', close('ok', 'ok'), 'busy'],
+    ['succeeded, the re-read still shows it open', close('ok', 'ok', { readAt: 30 }), 'busy'],
+    ['answer lost, an evidence read running', close('unknown', 'unsent', { checking: true }), 'busy'],
+    ['answer lost, a second evidence read running (the first one\'s failure is not shown with it)', close('unknown', 'unsent', { checking: true, checkProblem: '连接中断' }), 'busy'],
+    ['"补做" being prepared', partial({ finishing: true }), 'busy'],
+    ['"补做" being prepared again after a failed one', partial({ finishing: true, finishProblem: '重读这一条失败' }), 'busy'],
+    ['every step done and read back', close('ok', 'ok', done), 'ok'],
+    ['labels: every step done and read', auto('ok', 'ok', 'ok', { readAt: 30 }), 'ok'],
+    ['main step refused', close('refused', 'unsent'), 'error'],
+    ['main step never sent', rec('merge', [step('merge', 'unsent')]), 'error'],
+    ['"补做" did nothing', partial({ finishProblem: '重读这一条失败，什么都没发' }), 'error'],
+    ['succeeded, the re-read failed (the next round reads again)', auto('ok', 'ok', 'ok', { readAt: 30, readProblem: '重读这一条失败' }), 'warn'],
+    ['succeeded, the re-read failed while still waiting for one', close('ok', 'ok', { readProblem: '重读这一条失败' }), 'warn'],
+    ['succeeded, waited too long for the re-read', close('ok', 'ok', { stuck: true }), 'warn'],
+    ['answer lost, never checked (after a restart)', close('unknown', 'unsent'), 'warn'],
+    // GitHub#359: a check that could not read is tried again with every sync round — the app keeps at it: yellow, not red
+    ['answer lost, the evidence read ended without an answer', close('unknown', 'unsent', { checkProblem: '读评论和标签记录失败（连接中断）' }), 'warn'],
+    ['a later step unknown, the evidence read failed', auto('ok', 'unknown', 'unsent', { readAt: 30, checkProblem: '连接中断' }), 'warn'],
+    ['a label step read in full and not found (still not sure)', rec('autopilot', [step('addLabel', 'unknown', { label: 'autopilot', check: 'unseen' }), step('addLabel', 'unsent', { label: 'pending/agent' }), step('removeLabel', 'unsent', { label: 'pending/human' })]), 'warn'],
+    ['partly done, nobody tried to finish it', partial(), 'warn'],
+    ['comment refused, the close done', close('ok', 'refused', done), 'warn'],
+    ['unlocked by hand, a step unknown', close('unknown', 'unsent', { unlocked: true }), 'warn'],
+    ['unlocked by hand, every step done', close('ok', 'ok', { stuck: true, unlocked: true }), 'info'],
+    ['every step done, a comment draft still kept (it never goes by itself)', rec('closeIssue', [step('close', 'ok')], { draft: { reason: 'completed', comment: '留着' }, ...done }), 'info'],
+  ];
+  for (const [name, r0, tone] of rows)
+    it(`${tone}: ${name}`, () => {
+      // what the controller keeps (its one setOp)
+      const r = opWithoutStale(r0);
+      expect(opTone(r)).toBe(tone);
+    });
+
+  it('a missing answer is never a failure — nor (GitHub#359) a check that could not read: both are checked again by every sync round', () => {
+    const lost = close('unknown', 'unsent');
+    expect(opFacts(lost).failed).toBe(false);
+    expect(opFacts(lost).retrying).toBe(true);
+    expect(opFacts({ ...lost, checkProblem: '连接中断' }).failed).toBe(false);
+    expect(opFacts({ ...lost, checkProblem: '连接中断' }).retrying).toBe(true);
+    // while the app's own checks run it is that, not a retry in the background
+    expect(opFacts({ ...lost, checking: true })).toMatchObject({ busy: true, retrying: false });
+    // out of the unknown phase the problem no longer stands (GitHub#296): not red because of it
+    const proven = opWithoutStale(auto('ok', 'ok', 'ok', { readAt: 30, checkProblem: '连接中断' }));
+    expect(opTone(proven)).toBe('ok');
+  });
+
+  it('running and the failure before it are never said together; the notice says which one', () => {
+    const failed = close('unknown', 'unsent', { checkProblem: '连接中断' });
+    expect(opText(failed)).toContain('；这次没能查证：连接中断');
+    expect(opText(failed)).not.toContain('正在查证');
+    const again = { ...failed, checking: true };
+    expect(opText(again)).toContain('；正在查证…');
+    expect(opText(again)).not.toContain('这次没能查证');
+    const partialFailed = partial({ finishProblem: '离线' });
+    expect(opText(partialFailed)).toContain('；这次没能补做：离线');
+    const finishing = partial({ finishing: true, finishProblem: '离线' });
+    expect(opText(finishing)).toContain('；正在补做…');
+    expect(opText(finishing)).not.toContain('这次没能补做');
+  });
+
+  it('while a read / a "补做" runs its button is not offered a second time; a finishing notice is not put away', () => {
+    // GitHub#359: while the app's own checks run nothing is offered at all (the kept comment can still be copied);
+    // after them the unlock by hand — the checks go on by themselves, there is no button for one
+    expect(opButtons(close('unknown', 'unsent', { checking: true }))).toEqual(['copy', 'toReply', 'dropDraft']);
+    expect(opButtons(close('unknown', 'unsent'))).toEqual(['unlock', 'copy', 'toReply', 'dropDraft']);
+    expect(opButtons(partial({ finishing: true }))).toEqual([]);
+    expect(opButtons(partial({ finishProblem: '离线' }))).toEqual(['finish', 'dismiss']);
+  });
+
+  it('"这次没能补做" only stands while something can still be finished', () => {
+    expect(opWithoutStale(partial({ finishProblem: '离线' })).finishProblem).toBe('离线');
+    expect(opWithoutStale(auto('ok', 'ok', 'ok', { readAt: 30, finishProblem: '离线' })).finishProblem).toBeNull();
+    expect(opWithoutStale(partial({ finishing: true, finishProblem: '离线' })).finishProblem).toBe('离线');
+  });
+
+  it('what was running when the app stopped is not running after the restart', () => {
+    const r = opAfterRestart(close('unknown', 'unsent', { checking: true, finishing: true }));
+    expect(r.checking).toBe(false);
+    expect(r.finishing).toBe(false);
+    expect(opTone(r)).toBe('warn');
+  });
+
+  // green never stays, and nothing else goes by itself: over every combination of step results and marks
+  it('green ⇔ the notice puts itself away, on every record', () => {
+    const states: OpStepState[] = ['unsent', 'pending', 'ok', 'refused', 'unknown'];
+    const recs: OpRecord[] = [];
+    const marks: Partial<OpRecord>[] = [];
+    for (const readAt of [null, 30])
+      for (const targetSeen of [false, true])
+        for (const readProblem of [null, '重读失败'])
+          for (const checkProblem of [null, '连接中断'])
+            for (const stuck of [false, true])
+              for (const unlocked of [false, true])
+                for (const flags of [{}, { checking: true }, { finishing: true }, { finishProblem: '离线' }, { running: true }, { replyState: 'sending' as const }, { replyState: 'unknown' as const }, { draftDropped: true }])
+                  marks.push({ readAt, targetSeen, readProblem, checkProblem, stuck, unlocked, ...flags });
+    for (const a of states)
+      for (const b of states)
+        for (const m of marks) {
+          recs.push(close(a, b, m));
+          recs.push(rec('merge', [step('merge', a)], m));
+          recs.push(rec('handBack', [step('addLabel', a, { label: 'pending/agent' }), step('removeLabel', b, { label: 'pending/human' })], m));
+        }
+    let green = 0;
+    for (const r0 of recs) {
+      const r = opWithoutStale(r0);
+      const isGreen = opTone(r) === 'ok';
+      if (isGreen !== opAutoDismissable(r) || isGreen !== opFullyDone(r)) throw new Error(`${r.kind} ${JSON.stringify(r.steps.map((x) => x.state))}: tone ${opTone(r)}, goes by itself ${opAutoDismissable(r)} — ${opText(r)}`);
+      if (isGreen) green++;
+    }
+    expect(recs.length).toBeGreaterThan(10_000);
+    expect(green).toBeGreaterThan(0);
+    // put away by hand: no longer counted down, whatever it was
+    expect(opAutoDismissable(close('ok', 'ok', { ...done, dismissed: true }))).toBe(false);
   });
 });
 

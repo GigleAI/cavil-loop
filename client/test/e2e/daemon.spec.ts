@@ -179,6 +179,26 @@ test('unreadable for another reason: its words and "重新检查", no checklist'
   await expect(page.getByTestId('daemon-recheck')).toBeVisible();
 });
 
+test('GitHub#357: "cannot read the daemon" is red; while "重新检查" reads again it is that read running (blue, spinner), red again when it fails too', async () => {
+  installByHand(w);
+  const { writeFileSync } = await import('node:fs');
+  // slow enough to look at the bar while the read runs
+  writeFileSync(join(w.skill, 'scripts', 'install-status.sh'), '#!/usr/bin/env bash\nsleep 2\necho boom >&2\nexit 5\n');
+  const { page } = await openSection('Darwin', pathFor(w));
+  const bar = page.getByTestId('daemon-unreadable');
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(bar).toHaveClass(/\berror\b/);
+  await expect(bar.locator('.spin')).toHaveCount(0);
+  await page.getByTestId('daemon-recheck').click();
+  await expect(bar).toHaveAttribute('data-kind', 'busy');
+  await expect(bar).toHaveClass(/\bbusy\b/);
+  await expect(bar.locator('.spin')).toHaveCount(1);
+  await expect(bar).toContainText('正在重新检查');
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(bar).not.toContainText('正在重新检查');
+  await expect(page.getByTestId('daemon-reason')).toContainText('boom');
+});
+
 test('update: a project refresh that stops half-way says "没有确认恢复", never "已恢复原样"; one that worked says so', async () => {
   installByHand(w);
   const path = pathFor(w);

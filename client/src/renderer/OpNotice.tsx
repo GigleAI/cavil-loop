@@ -51,7 +51,7 @@ export function OpNotice({
   const buttons = opButtons(r);
   const left = opDraftLeft(r);
   const has = (b: OpButton) => buttons.includes(b);
-  const cls = tone === 'error' ? 'error' : tone === 'warn' ? 'warn' : 'info';
+  // GitHub#357: the tone is the class (styles.css), decided by shared/noticeTone.ts alone
   // GitHub#256: a fully successful notice puts itself away after 5 s, exactly like the ×
   const auto = useAutoDismiss(opAutoDismissable(r), AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
   const run = async (f: () => Promise<{ ok: boolean; error: string | null } | void>) => {
@@ -65,8 +65,8 @@ export function OpNotice({
     }
   };
   return (
-    <div className={`banner ${cls} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key} {...auto}>
-      {tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name={tone === 'ok' ? 'check' : 'warn'} />}
+    <div className={`banner ${tone} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key} {...auto}>
+      {tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name={tone === 'ok' || tone === 'info' ? 'check' : 'warn'} />}
       <span className="banner-text">
         {prefix && <b>{prefix}</b>}
         <span data-testid="op-notice-text">{opText(r)}</span>
@@ -129,7 +129,8 @@ export function OpNotice({
             </button>
           )}
         </span>
-        {problem && (
+        {/* GitHub#357: what the record itself says ("这次没能查证 / 补做：…") is not said twice */}
+        {problem && !opText(r).includes(problem) && (
           <span className="small err" data-testid="op-problem">
             {' '}
             {problem}
