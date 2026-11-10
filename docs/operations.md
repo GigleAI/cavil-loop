@@ -2222,10 +2222,14 @@ Every check is a script comparison, never a model call:
   and the clock restarts.
 - **Unreadable means hands off**: if tmux or GitHub cannot be read, the round neither advances
   nor resets.
-- **A step that failed half-way** (the label swap or the comment did not go through) is checked
-  against the same evidence next round and only continued when nothing changed; an agent that is
-  busy again, or anyone touching the item or its bound item, drops it. So do 10 rounds in a row
-  without finishing.
+- **A step that failed half-way** (a label or the comment did not go through) is checked against
+  the same evidence next round and only continued when the item is exactly what the daemon has on
+  record; an agent that is busy again, or anyone touching the item or its bound item (even just
+  adding `pending/human` themselves), drops it. The daemon counts a label change as its own only
+  when the event log says so.
+- **A step that never finishes**: after 10 failed attempts on one item the daemon stops handling
+  it (one log line says so) until it leaves `doing/agent` (handed on, relabeled by a human) or is
+  dispatched again.
 
 Never handled (each reason is logged once):
 

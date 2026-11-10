@@ -629,6 +629,12 @@ chk "交人待办 · agent 又在忙了 · 到达性：续做前抓了工作窗�
 chk "交人待办 · agent 又在忙了：标签仍是 doing/agent" "$(labels_of "$N")" "doing/agent"
 drop_case "重派待办 · 绑定的 issue 被人挂上 pending/human" restart pr eval 'set_labels "$N" pending/PR pending/human'
 chk "重派待办 · 绑定 issue 暂停：PR 没被加回复审标签" "$(labels_of "$P" | grep -c 'pending/review')" "0"
+# 复审第 2 轮的复现：评论还没发成、标签一次都没写过，人自己加上了 pending/human（doing/agent 还在）
+drop_case "交人待办 · 人自己加上了 pending/human（daemon 还没加过）" human issue eval 'set_labels "$N" doing/agent pending/human'
+chk "交人待办 · 人自己加上了 pending/human：doing/agent 没被摘掉" "$(labels_of "$N")" "doing/agent,pending/human"
+# 标签净结果没变，但事件记录里多了不是 daemon 做的动作（人加了又摘了一个标签）
+add_event() { jset "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: $id, event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' --arg n "$1" --arg ev "$2" --arg l "$3" --arg who "$4" --argjson id "$5"; }
+drop_case "重派待办 · 人加了又摘了一个标签（净结果没变）" restart issue eval 'add_event "$N" labeled bug maint 900001; add_event "$N" unlabeled bug maint 900002'
 # 其余组合
 drop_case "重派待办 · agent 又在忙了" restart issue eval 'screen "$N" "$BUSY_CLAUDE"'
 drop_case "重派待办 · 目标被人挂上 pending/human" restart issue eval 'set_labels "$N" doing/agent pending/human'
@@ -675,15 +681,29 @@ chk "下一轮收敛：pending/human，评论仍只有一条，记录清掉" "$(
 fi
 
 if want 9 || want 9e; then
-# 9e 一直做不完：有上限，不会每轮重试到天荒地老
+# 9e 一直做不完：次数按条目累计，用完就停手，不会换一个空闲周期又重来（复审第 2 轮）
 scn retry5; N=$SEQ
 mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
 tick 0; tick 60; tick 50
 touch "$GD/F_post_labels"
 tick 60
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tick 5; done
-chk "加标签连续失败：试 10 次后放弃待办，会话和标签都没动" \
-    "$(cnt '卡住重派.*失败' "$W/state/poll.log")/$(efield "$N" '.pending')/$(alive "$N")/$(labels_of "$N")" "10//yes/doing/agent"
+chk "加标签一直失败：试 10 次后停手，会话和标签都没动" \
+    "$(writes_on "$N")/$(efield "$N" '.pending')/$(efield "$N" '.exhausted')/$(alive "$N")/$(labels_of "$N")" "10//true/yes/doing/agent"
+tick 0; tick 110; tick 0; tick 110; tick 60
+chk "之后又过了两个空闲周期：不再重试（写请求数没变）、没有再催" "$(writes_on "$N")/$(plog '发催促')" "10/1"
+chk "到达性 · 这几轮轮询确实跑了" "$([ "$(plog 'poll done')" -ge 20 ] && echo yes || echo no)" "yes"
+# 有证据表明被重新派工（新的「打上 doing/agent」事件）→ 从头算
+rm -f "$GD/F_post_labels"
+jset "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: 40001, event: "labeled", label: {name: "doing/agent"}, actor: {login: "loop-bot", type: "User"}}])' --arg n "$N"
+touch_item "$N" 09
+tick 10
+chk "重新派工后：停手记录清掉" "$(entry "$N")" "{}"
+G0=$(nudges "$N")
+tick 0; tick 60; tick 50
+chk "重新派工后又卡住：从催促重新开始" "$([ "$(nudges "$N")" -gt "$G0" ] && echo yes || echo no)" "yes"
+tick 60
+chk "这一次写得上：正常重派" "$(labels_of "$N")/$(efield "$N" '.restarts')" "pending/agent/1"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
