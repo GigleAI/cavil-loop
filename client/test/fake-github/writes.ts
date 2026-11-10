@@ -125,7 +125,36 @@ export interface WritableState {
   workflows: Map<string, { name: string; enabled: boolean }[]>;
   /** GitHub#258: answer this many reads of "which boards is this new issue on" with HTTP 502 */
   failCreatedBoards: number;
+  /**
+   * GitHub#349: `owner/repo#n` lower-cased -> the issue's relations as recorded (the nodes of
+   * each list, whole). Filled by `enrich` from the fixtures; an issue not listed has none.
+   * Answers are built from here every time, with each related issue's title / state taken
+   * live from the fake when it knows that issue (reopen a blocker and its arrows follow).
+   */
+  relations: Map<string, FakeRelations>;
+  /** GitHub#349: how many of each list a read carries (GitHub: what the query asks for); `more` = the follow-up pages */
+  relationPage: { subIssues: number; blockedBy: number; blocking: number; more: number };
+  /** GitHub#349: `owner/repo#n` lower-cased -> a follow-up page of this issue's relations (CavilIssueRelations) answers HTTP 502 */
+  failRelationPages: Set<string>;
+  /** GitHub#349: the batch read of relations (CavilIssueRelationsBatch) answers HTTP 502 */
+  failRelationsBatch: boolean;
 }
+
+export interface FakeRelated {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  stateReason: string | null;
+  repository: { nameWithOwner: string };
+}
+export interface FakeRelations {
+  parent: FakeRelated | null;
+  subIssues: FakeRelated[];
+  blockedBy: FakeRelated[];
+  blocking: FakeRelated[];
+}
+const RELATION_LISTS = ['subIssues', 'blockedBy', 'blocking'] as const;
 
 export function defaultWritable(): WritableState {
   return {
@@ -165,6 +194,10 @@ export function defaultWritable(): WritableState {
     failCommentList: false,
     workflows: new Map(),
     failCreatedBoards: 0,
+    relations: new Map(),
+    relationPage: { subIssues: 50, blockedBy: 20, blocking: 20, more: 100 },
+    failRelationPages: new Set(),
+    failRelationsBatch: false,
   };
 }
 
@@ -201,6 +234,59 @@ export function enrich(store: Store): void {
       }
   for (const [repo, list] of store.repos)
     for (const r of list) if (!r.node_id) r.node_id = nodeIdOf(r.pull_request ? 'PullRequest' : 'Issue', repo, r.number);
+  // GitHub#349: the relations as recorded — on a board item they sit in its content, for a
+  // repository issue the recorder keeps them beside it under `_relations` (not part of
+  // GitHub's REST answer: taken out here)
+  const rels = store.w.relations;
+  const recorded = (ikey: string, x: any) => {
+    if (!x || rels.has(ikey)) return;
+    rels.set(ikey, {
+      parent: x.parent ?? null,
+      subIssues: (x.subIssues?.nodes ?? []).filter(Boolean),
+      blockedBy: (x.blockedBy?.nodes ?? []).filter(Boolean),
+      blocking: (x.blocking?.nodes ?? []).filter(Boolean),
+    });
+  };
+  // a recording older than #349 knows only each issue's parent: its relations are derived from
+  // that (the parent, and for the parent the children the fixture holds) — never hand-written
+  const related = (repo: string, number: number): FakeRelated => ({ number, title: '', url: `https://github.com/${repo}/issues/${number}`, state: 'OPEN', stateReason: null, repository: { nameWithOwner: repo } });
+  const legacy: { ikey: string; self: FakeRelated; parent: FakeRelated | null }[] = [];
+  for (const pages of store.projects.values())
+    for (const p of pages)
+      for (const n of p.items.nodes) {
+        const c = n.content;
+        if (c?.__typename !== 'Issue') continue;
+        const ikey = `${c.repository.nameWithOwner.toLowerCase()}#${c.number}`;
+        if (c.subIssues || c.blockedBy || c.blocking) recorded(ikey, c);
+        else legacy.push({ ikey, self: related(c.repository.nameWithOwner, c.number), parent: c.parent ? related(c.parent.repository.nameWithOwner, c.parent.number) : null });
+      }
+  for (const [repo, list] of store.repos)
+    for (const r of list) {
+      if (r.pull_request) continue;
+      const ikey = `${repo}#${r.number}`;
+      if (r._relations) recorded(ikey, r._relations);
+      else {
+        const m = String(r.parent_issue_url ?? '').match(/\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/);
+        const name = String(r.html_url ?? '').match(/github\.com\/([^/]+\/[^/]+)\//)?.[1] ?? repo;
+        legacy.push({ ikey, self: related(name, r.number), parent: m ? related(m[1], Number(m[2])) : null });
+      }
+      delete r._relations;
+    }
+  const keyOf = (x: FakeRelated) => `${x.repository.nameWithOwner.toLowerCase()}#${x.number}`;
+  for (const l of legacy) {
+    if (rels.has(l.ikey)) continue;
+    const kids = legacy.filter((x, i) => x.parent && keyOf(x.parent) === l.ikey && legacy.findIndex((y) => y.ikey === x.ikey) === i).map((x) => x.self);
+    if (l.parent || kids.length) rels.set(l.ikey, { parent: l.parent, subIssues: kids, blockedBy: [], blocking: [] });
+  }
+  for (const [repo, list] of store.repos)
+    for (const r of list) {
+      // a hand-built issue without the counts: derived from its relations (none = zeros), as GitHub always sends them
+      if (!r.pull_request && !r.issue_dependencies_summary) {
+        const rel = rels.get(`${repo}#${r.number}`);
+        const open = (xs: FakeRelated[]) => xs.filter((x) => x.state === 'OPEN').length;
+        r.issue_dependencies_summary = { blocked_by: open(rel?.blockedBy ?? []), blocking: open(rel?.blocking ?? []), total_blocked_by: rel?.blockedBy.length ?? 0, total_blocking: rel?.blocking.length ?? 0 };
+      }
+    }
   // the repository's labels: every label any of its items carries
   for (const [repo, list] of store.repos) {
     if (store.w.repoLabels.has(repo)) continue;
@@ -244,6 +330,40 @@ function findByNodeId(store: Store, id: string): Copies | null {
     for (const p of pages)
       for (const n of p.items.nodes) if (n.content?.id === id) return findCopies(store, n.content.repository.nameWithOwner, n.content.number);
   return null;
+}
+
+/** GitHub#349: a related issue as the fake knows it now (its own copy when it has one), else as recorded. */
+function liveRelated(store: Store, x: FakeRelated): FakeRelated {
+  const c = findCopies(store, x.repository.nameWithOwner, x.number);
+  if (!c) return x;
+  if (c.gql.length) return { ...x, title: c.gql[0].title, state: c.gql[0].state === 'OPEN' ? 'OPEN' : 'CLOSED', stateReason: c.gql[0].stateReason ?? null };
+  const r = c.rest[0];
+  return { ...x, title: r.title, state: r.state === 'open' ? 'OPEN' : 'CLOSED', stateReason: r.state_reason ? String(r.state_reason).toUpperCase() : null };
+}
+
+function relationSlice(store: Store, list: FakeRelated[], after: string | null | undefined, size: number) {
+  const start = after ? Number(String(after).replace(/^rel-/, '')) : 0;
+  const nodes = list.slice(start, start + size).map((x) => liveRelated(store, x));
+  const end = start + nodes.length;
+  return { pageInfo: { hasNextPage: end < list.length, endCursor: nodes.length ? `rel-${end}` : null }, nodes };
+}
+
+/** GitHub#349: the relation fields of one issue as a read carries them (first page of each list). */
+export function relationFields(store: Store, repo: string, number: number): any {
+  const rel = store.w.relations.get(`${repo.toLowerCase()}#${number}`);
+  const size = store.w.relationPage;
+  return {
+    parent: rel?.parent ? liveRelated(store, rel.parent) : null,
+    subIssues: relationSlice(store, rel?.subIssues ?? [], null, size.subIssues),
+    blockedBy: relationSlice(store, rel?.blockedBy ?? [], null, size.blockedBy),
+    blocking: relationSlice(store, rel?.blocking ?? [], null, size.blocking),
+  };
+}
+
+/** GitHub#349: content as a read answers it: an issue with its relations as they are now. */
+export function withRelationFields(store: Store, content: any): any {
+  if (!content || content.__typename !== 'Issue') return content;
+  return { ...content, ...relationFields(store, content.repository.nameWithOwner, content.number) };
 }
 
 /** The GraphQL shape of an item (from a Project copy if there is one, else built from the REST copy). */
@@ -762,6 +882,26 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     const events = (w.labelEvents.get(ikey) ?? []).slice(-100).map((e) => ({ __typename: e.event === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', id: `LE_${ikey}_${e.id}`, actor: e.actor, label: e.label }));
     return { data: { repository: { issueOrPullRequest: { __typename: c.kind, comments: { nodes: comments }, timelineItems: { nodes: events } } } } };
   }
+  if (op === 'CavilIssueRelations') {
+    const c = findByNodeId(store, v.id);
+    if (!c || c.kind !== 'Issue') return { data: { node: null }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${v.id}'` }] };
+    const ikey = `${c.repo.toLowerCase()}#${c.number}`;
+    if (w.failRelationPages.has(ikey)) return { httpStatus: 502 };
+    const rel = w.relations.get(ikey);
+    const node: any = { __typename: 'Issue' };
+    for (const name of RELATION_LISTS) if (v[name]) node[name] = relationSlice(store, rel?.[name] ?? [], v[`${name}After`], w.relationPage.more);
+    return { data: { node } };
+  }
+  if (op === 'CavilIssueRelationsBatch') {
+    if (w.failRelationsBatch) return { httpStatus: 502 };
+    const nodes = (v.ids as string[]).map((id) => {
+      const c = findByNodeId(store, id);
+      if (!c) return null;
+      if (c.kind !== 'Issue') return { __typename: c.kind };
+      return { __typename: 'Issue', id, ...relationFields(store, c.repo, c.number) };
+    });
+    return { data: { nodes } };
+  }
   if (op === 'CavilItemRefresh' || op === 'CavilItemDetail') {
     const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
     if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };
@@ -775,7 +915,7 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
           for (const n of p.items.nodes)
             if (n.content?.repository?.nameWithOwner?.toLowerCase() === c.repo.toLowerCase() && n.content.number === c.number)
               projectItems.push({ id: n.id, isArchived: n.isArchived, project: { id: p.id }, fieldValues: n.fieldValues });
-      return { data: { repository: { issueOrPullRequest: { ...content, projectItems: { nodes: projectItems } } } } };
+      return { data: { repository: { issueOrPullRequest: { ...withRelationFields(store, content), projectItems: { nodes: projectItems } } } } };
     }
     if (w.failDetail.has(ikey)) return { httpStatus: 502 };
     const size = w.detailPageSize;

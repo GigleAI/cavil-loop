@@ -101,6 +101,37 @@ export interface LinkedPr {
   state: ItemState;
 }
 
+/**
+ * The other end of a relation (GitHub#349): what GitHub says about it while reading *this*
+ * item's relations — enough to draw it even when it is in no configured source. No request
+ * ever goes to its repository for it.
+ */
+export interface RelatedIssue {
+  /** `owner/repo#N`, lower-cased owner/repo (same identity as Item.key) */
+  key: string;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  state: ItemState;
+  stateReason: IssueStateReason | null;
+}
+
+/**
+ * One issue's relations as GitHub records them (GitHub#349): every list read to its last page.
+ * A pull request has none (GitHub keeps these for issues only): all empty.
+ */
+export interface ItemRelations {
+  /** the parent issue with its title and state; null = none */
+  parent: RelatedIssue | null;
+  /** the sub-issues, in GitHub's order */
+  subIssues: RelatedIssue[];
+  /** issues this one waits for ("Blocked by") */
+  blockedBy: RelatedIssue[];
+  /** issues waiting for this one ("Blocking") */
+  blocking: RelatedIssue[];
+}
+
 export interface Item {
   /** `owner/repo#N`, lower-cased owner/repo: the identity used for de-duplication. */
   key: string;
@@ -136,6 +167,18 @@ export interface Item {
    * which issues a merge closes.
    */
   refIssues?: string[];
+  /**
+   * GitHub#349: parent, sub-issues, blocked-by and blocking, read whole with the item. Absent =
+   * unknown — a cache written before #349 — and never "no relations" (that is four empty fields).
+   */
+  relations?: ItemRelations;
+  /**
+   * GitHub#349: epoch ms of the read that brought `relations` — the full read of the source, or
+   * the one-item re-read (which leaves the snapshot's own time alone). The other end of a relation
+   * changes without this item's `updatedAt` moving (a blocker is closed), so when two sources hold
+   * the item, this — never `updatedAt` — says whose relations are newer.
+   */
+  relationsAt?: number;
   projects: ProjectMembership[];
   /** keys of the sources this item came from (filled when sources are merged) */
   sources: string[];
@@ -512,4 +555,9 @@ export interface BoardData {
   allProjects?: ProjectMeta[];
   /** GitHub#231: every configured Project's items per repository (null = never read completely), whatever the view shows */
   boardRepos?: BoardRepoCount[];
+  /**
+   * GitHub#349: keys of the ticked sources whose relations are unknown (their snapshot was cached
+   * before relations were read, and no full read succeeded since). Not "these have no relations".
+   */
+  relationsUnknown?: string[];
 }

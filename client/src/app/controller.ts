@@ -1859,7 +1859,7 @@ export class Controller {
     };
     let fresh;
     try {
-      fresh = await fetchItem(client, repo, number);
+      fresh = await fetchItem(client, repo, number, this.now());
     } catch (e) {
       return failed((e as Error).message);
     }

@@ -81,7 +81,7 @@ describe('which issues a PR description names: one list of inputs, every path (G
       const projSnap = { sourceKey: 'p', fetchedAt: FIXTURE_NOW, project: P, items: prs.map(({ n, c }) => contentToItem(gql(n, c.body), [member(P, S1)], ['p'])!) };
       const merged = mergeSnapshots([projSnap, repoSnap], null).items;
       // 3. single re-read after a change: what the cache gets for each source
-      const reread = prs.map(({ n, c }) => freshViews([projSnap, repoSnap], { content: gql(n, c.body), projectItems: [] }));
+      const reread = prs.map(({ n, c }) => freshViews([projSnap, repoSnap], { readAt: FIXTURE_NOW, content: gql(n, c.body), projectItems: [] }));
       for (const { n, c } of prs) {
         const want = refKeys(c);
         const at = (list: Item[]) => list.find((x) => x.number === n)!.refIssues;

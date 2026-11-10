@@ -1,6 +1,25 @@
 // GraphQL documents used by the sync layer. The fake GitHub used in tests
 // dispatches on the operation name, so keep the names stable.
 
+/**
+ * GitHub#349: the other end of a relation, as read with the item that names it (no request to its repository).
+ */
+const RELATED_ISSUE = 'number title url state stateReason repository { nameWithOwner }';
+const relationList = (name: string, args: string, directive = '') =>
+  `${name}(${args})${directive} { pageInfo { hasNextPage endCursor } nodes { ${RELATED_ISSUE} } }`;
+
+/**
+ * GitHub#349: one issue's relations — parent, sub-issues, blocked-by, blocking. The one piece
+ * every read of an issue carries (the board read, the one-item re-read, the repository batch),
+ * so they cannot ask for different things. A list longer than its first page is read on with
+ * ISSUE_RELATIONS_QUERY.
+ */
+export const RELATION_FIELDS = `
+    parent { ${RELATED_ISSUE} }
+    ${relationList('subIssues', 'first: 50')}
+    ${relationList('blockedBy', 'first: 20')}
+    ${relationList('blocking', 'first: 20')}`;
+
 const CONTENT_FIELDS = `
   __typename
   ... on Issue {
@@ -10,7 +29,7 @@ const CONTENT_FIELDS = `
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
     author { login }
-    parent { number repository { nameWithOwner } }
+${RELATION_FIELDS}
     subIssuesSummary { total completed }
     closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
       nodes { number url state merged repository { nameWithOwner } }
@@ -109,6 +128,36 @@ query CavilItemRefresh($owner: String!, $name: String!, $number: Int!) {
       ... on Issue { projectItems(first: 50) { nodes { id isArchived project { id } ${ITEM_FIELD_VALUES} } } }
       ... on PullRequest { projectItems(first: 50) { nodes { id isArchived project { id } ${ITEM_FIELD_VALUES} } } }
     }
+  }
+}
+`;
+
+/**
+ * GitHub#349: the rest of one issue's relation lists, a page at a time; only the lists that
+ * still have more are asked for (the @include switches).
+ */
+export const ISSUE_RELATIONS_QUERY = `
+query CavilIssueRelations($id: ID!, $subIssues: Boolean!, $subIssuesAfter: String, $blockedBy: Boolean!, $blockedByAfter: String, $blocking: Boolean!, $blockingAfter: String) {
+  node(id: $id) {
+    __typename
+    ... on Issue {
+      ${relationList('subIssues', 'first: 100, after: $subIssuesAfter', ' @include(if: $subIssues)')}
+      ${relationList('blockedBy', 'first: 100, after: $blockedByAfter', ' @include(if: $blockedBy)')}
+      ${relationList('blocking', 'first: 100, after: $blockingAfter', ' @include(if: $blocking)')}
+    }
+  }
+}
+`;
+
+/**
+ * GitHub#349: the relations of up to 100 issues of a repository source, by node id, in one
+ * request. (The REST issue list says only *how many* relations an issue has.)
+ */
+export const ISSUE_RELATIONS_BATCH_QUERY = `
+query CavilIssueRelationsBatch($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    __typename
+    ... on Issue { id ${RELATION_FIELDS} }
   }
 }
 `;
