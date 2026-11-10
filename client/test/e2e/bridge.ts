@@ -190,6 +190,9 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
         } else if (op === 'dismissUpdate') {
           desktop.records.push({ op, version: args.version });
           desktop.setUpdate({ ...desktop.update, dismissed: args.version });
+        } else if (op === 'dismissInstalledUpdate') {
+          desktop.records.push({ op, version: args.version });
+          desktop.setUpdate({ ...desktop.update, installed: desktop.update?.installed ? { ...desktop.update.installed, dismissed: true } : null });
         }
         if (res.destroyed) return;
         res.writeHead(200, { 'Content-Type': 'application/json' });

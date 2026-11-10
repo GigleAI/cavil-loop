@@ -50,6 +50,8 @@ export interface Desktop {
   setUpdateChannel(channel: 'stable' | 'dev'): Promise<void>;
   /** close the "ready" banner for `version` (kept) */
   dismissUpdate(version: string): Promise<void>;
+  /** the "updated to `version`" notice was closed (kept) */
+  dismissInstalledUpdate(version: string): Promise<void>;
   /** quit and start the new version (only once it is in place) */
   restartToUpdate(): Promise<void>;
 }

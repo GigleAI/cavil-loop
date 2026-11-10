@@ -25,8 +25,10 @@
 //   node scripts/dev-release.mjs --version 0.5.1-dev.387 --sha <commit> --dir dist-release \
 //        --notes-file notes.md [--keep 10] [--repo GigleAI/cavil-loop]
 import { execFileSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { VERSION_SHAPE } from './update-manifest.mjs';
 
 export const TAG_PREFIX = 'client/v';
@@ -121,6 +123,55 @@ export function stillToDelete(list, c, keep, version, kind = c?.kind) {
   const now = pruneCandidates(list, keep, version).find((x) => x.id === c.id);
   if (!now || now.tag !== c.tag || now.kind !== kind) return { ok: false, why: '它已经不符合清理条件（被改过）' };
   return { ok: true, release: same[0] };
+}
+
+// ---- what this build changed, on its release page (GitHub#348) ----------------------------
+//
+// Installed apps list what every version between theirs and the new one changed, read out of the
+// release pages (src-tauri/crates/core/src/update.rs `notes`). So each development build's page
+// carries, under `NOTES_HEADING`, the lines its commits added to RELEASE_NOTES.md since the
+// previous published development build. Nothing added, or the previous build's commit cannot be
+// told or read → no section (the app then shows the commit title in the page's first line).
+
+/** The heading the app looks for (update.rs `NOTES_HEADING`; test/unit/update-notes.test.ts holds both to one fixture). */
+export const NOTES_HEADING = '### 更新内容';
+
+/** The client directory (where RELEASE_NOTES.md is). */
+const CLIENT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The commit of the published development build right below `version`, when the release recorded
+ * a full commit id; null when there is none (or it recorded a branch name).
+ */
+export function previousBuildCommit(list, version) {
+  const mine = parseDev(version);
+  if (!mine) return null;
+  const prev = devReleases(list).find((r) => cmp(r.parsed, mine) < 0);
+  const sha = prev && list.find((r) => r?.tag_name === prev.tag && r?.draft === false)?.target_commitish;
+  return typeof sha === 'string' && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+}
+
+/**
+ * The note lines (`- …`) RELEASE_NOTES.md gained between two commits, in the file's order.
+ * null = could not be told (a commit that is not in this clone, git failing).
+ */
+export function addedNotes(base, head, root = CLIENT_ROOT) {
+  let diff;
+  try {
+    diff = execFileSync('git', ['diff', '--no-color', '--no-ext-diff', '-U0', base, head, '--', 'RELEASE_NOTES.md'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch {
+    return null;
+  }
+  return diff
+    .split('\n')
+    .filter((l) => l.startsWith('+- '))
+    .map((l) => l.slice(1).trimEnd());
+}
+
+/** The release page's text: `notes` as given, then the added note lines under the heading (none → `notes` unchanged). */
+export function composeBody(notes, added) {
+  if (!added?.length) return notes;
+  return `${notes.replace(/\s+$/, '')}\n\n${NOTES_HEADING}\n\n${added.join('\n')}\n`;
 }
 
 // ---- talking to GitHub (the gh CLI, with the workflow's token) ---------------------------
@@ -242,7 +293,8 @@ function main() {
   const files = paths.map((p) => basename(p));
   if (!files.includes('latest.json') || files.length < 2) throw new Error(`${dir} 里没有 ${version} 的包和 latest.json：${files.join(', ') || '（空）'}`);
 
-  const d = decide(readReleases(repo), version, files);
+  const before = readReleases(repo);
+  const d = decide(before, version, files);
   if (d.action === 'skip') {
     console.log(`⏭ 不发 ${version}：${d.why}`);
   } else if (d.action === 'done') {
@@ -250,7 +302,12 @@ function main() {
   } else {
     const title = `Cavil Loop 客户端 ${version}（开发版，${sha.slice(0, 7)}）`;
     if (d.action === 'create') {
-      gh(['release', 'create', tag, ...paths, '--repo', repo, '--draft', '--prerelease', '--latest=false', '--target', sha, '--title', title, '--notes-file', notes]);
+      const base = previousBuildCommit(before, version);
+      const added = base ? addedNotes(base, sha) : null;
+      console.log(added?.length ? `发版页带上 ${added.length} 条更新说明（相对 ${base.slice(0, 7)}）` : `发版页不带更新说明：${!base ? '找不到上一个开发版的提交' : added ? '发版说明没有新增条目' : '比不出发版说明的变化'}`);
+      const body = join(mkdtempSync(join(tmpdir(), 'cavil-dev-release-')), 'notes.md');
+      writeFileSync(body, composeBody(readFileSync(notes, 'utf8'), added));
+      gh(['release', 'create', tag, ...paths, '--repo', repo, '--draft', '--prerelease', '--latest=false', '--target', sha, '--title', title, '--notes-file', body]);
     } else {
       gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
     }

@@ -58,6 +58,9 @@ interface Rel {
   prerelease?: boolean;
   /** asset names (latest.json gets its download URL under the server's web base) */
   assets?: string[];
+  /** the release page's text and when it was published (GitHub#348); left out = GitHub's fields are not there */
+  body?: string;
+  published_at?: string;
 }
 
 class ReleaseServer {
@@ -98,6 +101,8 @@ class ReleaseServer {
       draft: r.draft ?? false,
       prerelease: r.prerelease ?? false,
       assets: (r.assets ?? ['latest.json']).map((name) => ({ name, browser_download_url: this.dl(r.tag, name) })),
+      ...(r.body === undefined ? {} : { body: r.body }),
+      ...(r.published_at === undefined ? {} : { published_at: r.published_at }),
     };
   }
   /** one client release `v` with a manifest and a package (sha256 "signature") */
@@ -698,5 +703,131 @@ describe('switching the channel mid-round (GitHub#215)', () => {
     srv.releaseHeld();
     await expect.poll(async () => (await status(b)).phase).toBe('ready');
     expect(await installs(b)).toEqual(['0.5.1']);
+  });
+});
+
+// ---- what the versions in between changed (GitHub#348) ---------------------------------
+// The list itself is checked on GitHub's real release list in update-notes.test.ts; here: a whole
+// round carries it, the restarted app still has it, and it never gets in the way of the update.
+
+describe('what the update changes, through a whole round (GitHub#348)', () => {
+  const status = async (b: HarnessBackend) => (await b.call('test.update.status')) as any;
+  const page = (v: string, title: string) => `开发版 ${v}，构建自 main 的 ${'a'.repeat(40)}：${title}\n\n只有开发渠道会装它。`;
+  /** these development builds (newest first) with release pages, plus the running release */
+  const publish = (versions: string[], bodies = true) => {
+    srv.publishAll([...versions, '0.5.0']);
+    if (bodies) for (const r of srv.pages[0]) if (r.tag.includes('-dev.')) Object.assign(r, { body: page(r.tag.slice('client/v'.length), `change ${r.tag.split('.').pop()}`), published_at: '2026-11-10T01:00:00Z' });
+  };
+  const versions = (n: any) => n.entries.map((e: any) => [e.version, e.items.map((i: any) => i.title)]);
+
+  it('downloading, installing and ready all show the same list; idle and checking show none; no request beyond the round\'s own', async () => {
+    publish(['0.5.1-dev.9', '0.5.1-dev.7', '0.5.1-dev.3']);
+    const b = harness();
+    expect(await start(b)).toMatchObject({ phase: 'idle', notes: null, installed: null });
+    await b.call('test.update.holdInstall', { on: true });
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(async () => (await status(b)).phase).toBe('installing');
+    const want = [
+      ['0.5.1-dev.9', ['change 9']],
+      ['0.5.1-dev.7', ['change 7']],
+      ['0.5.1-dev.3', ['change 3']],
+    ];
+    expect(versions((await status(b)).notes)).toEqual(want);
+    await b.call('test.update.releaseInstall');
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    const ready = await status(b);
+    expect(ready.notes).toMatchObject({ from: '0.5.0', to: '0.5.1-dev.9', complete: true, more: 0 });
+    expect(versions(ready.notes)).toEqual(want);
+    // every status sent to the window: a list only together with a version on screen, and always this one
+    const seen = b.updates.filter((s) => s.notes);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((s) => ['downloading', 'installing', 'ready'].includes(s.phase) && s.version === '0.5.1-dev.9' && s.notes.to === '0.5.1-dev.9')).toBe(true);
+    expect(b.updates.filter((s) => s.phase === 'downloading').every((s) => s.notes?.entries.length === 3)).toBe(true);
+    expect(b.updates.filter((s) => s.phase === 'idle' || s.phase === 'checking').every((s) => s.notes === null)).toBe(true);
+    // the round's own requests only: the release list, one manifest, one package — nothing more for the list, no credential
+    const other = srv.log.filter((l) => !l.path.startsWith(`/api/repos/${REPO}/releases`) && !l.path.endsWith('/latest.json') && !l.path.endsWith('/app.tar.gz'));
+    expect(other).toEqual([]);
+    expect(srv.manifestRequests()).toEqual(['client/v0.5.1-dev.9']);
+    expect(srv.log.every((l) => l.auth === undefined)).toBe(true);
+  });
+
+  it('after the restart into the new version: the list is still there, with its notice open; closing it stays closed; another version shows nothing', async () => {
+    publish(['0.5.1-dev.9', '0.5.1-dev.7']);
+    const b = harness();
+    await start(b);
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    // still the old app: nothing "installed" to show yet
+    expect((await status(b)).installed).toBeNull();
+    await b.close();
+    open.splice(0);
+    // the new app starts
+    const next = harness();
+    const st = (await start(next, { current: '0.5.1-dev.9' })) as any;
+    expect(st).toMatchObject({ phase: 'idle', notes: null, installed: { from: '0.5.0', to: '0.5.1-dev.9', dismissed: false, complete: true } });
+    expect(versions(st.installed)).toEqual([
+      ['0.5.1-dev.9', ['change 9']],
+      ['0.5.1-dev.7', ['change 7']],
+    ]);
+    // closing a notice of another version is not this one's
+    expect(((await next.call('test.update.dismissInstalled', { version: '0.5.1-dev.7' })) as any).installed.dismissed).toBe(false);
+    expect(((await next.call('test.update.dismissInstalled', { version: '0.5.1-dev.9' })) as any).installed.dismissed).toBe(true);
+    await next.close();
+    open.splice(0);
+    const again = harness();
+    expect(((await start(again, { current: '0.5.1-dev.9' })) as any).installed).toMatchObject({ dismissed: true, to: '0.5.1-dev.9' });
+    await again.close();
+    open.splice(0);
+    // an app of any other version (installed by hand, an older one put back): nothing kept is its own
+    expect(((await start(harness(), { current: '0.5.1-dev.7' })) as any).installed).toBeNull();
+  });
+
+  it('release pages that say nothing (no text at all, as an older GitHub answer): the update goes through all the same, the versions are listed without items', async () => {
+    publish(['0.5.1-dev.9', '0.5.1-dev.7'], false);
+    const b = harness();
+    await start(b);
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(async () => (await status(b)).phase).toBe('ready');
+    expect(readFileSync(installed()).equals(srv.byTag.get('client/v0.5.1-dev.9')!.pkg)).toBe(true);
+    const n = (await status(b)).notes;
+    expect(n.entries.map((e: any) => [e.version, e.items, e.at])).toEqual([
+      ['0.5.1-dev.9', [], null],
+      ['0.5.1-dev.7', [], null],
+    ]);
+  });
+
+  it('an install that fails keeps nothing for a restart; a download on the other channel dropped by a switch leaves none of its list behind', async () => {
+    publish(['0.5.1-dev.9']);
+    const b = harness();
+    await start(b);
+    await b.call('test.update.failInstall', { on: true });
+    await b.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(async () => (await status(b)).last?.ok).toBe(false);
+    expect(await status(b)).toMatchObject({ phase: 'idle', notes: null });
+    await b.close();
+    open.splice(0);
+    expect(((await start(harness(), { current: '0.5.1-dev.9' })) as any).installed).toBeNull();
+
+    // the development build is dripping in; switching back to the release channel drops that round
+    srv.dripTags.add('client/v0.5.1-dev.9');
+    const c = harness();
+    await start(c);
+    await c.call('test.update.setChannel', { channel: 'dev' });
+    await expect.poll(() => c.updates.some((s) => s.phase === 'downloading' && s.got > 0 && s.notes?.to === '0.5.1-dev.9')).toBe(true);
+    const at = c.updates.length;
+    await c.call('test.update.setChannel', { channel: 'stable' });
+    await expect.poll(async () => (await status(c)).phase).toBe('idle');
+    expect(c.updates.slice(at).every((s) => s.notes === null)).toBe(true);
+    expect(await status(c)).toMatchObject({ channel: 'stable', notes: null, last: { ok: true, message: '已是最新' } });
+  });
+
+  it('kept notes that cannot be read (a hand edit, another shape) are nothing to show, never an error', async () => {
+    const b = harness();
+    for (const value of ['text', 7, null, { to: '0.5.0' }, { to: '0.5.0', entries: 'x' }, { to: '0.4.0', entries: [] }]) {
+      await b.call('test.update.storeInstalled', { value });
+      expect(((await start(b)) as any).installed, JSON.stringify(value)).toBeNull();
+    }
+    await b.call('test.update.storeInstalled', { value: { from: '0.4.0', to: '0.5.0', complete: true, more: 0, entries: [] } });
+    expect(((await start(b)) as any).installed).toMatchObject({ to: '0.5.0', dismissed: false });
   });
 });

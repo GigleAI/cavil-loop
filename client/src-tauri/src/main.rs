@@ -394,6 +394,7 @@ fn main() {
             updater::desktop_update_set_auto,
             updater::desktop_update_set_channel,
             updater::desktop_update_dismiss,
+            updater::desktop_update_dismiss_installed,
             updater::desktop_update_restart
         ])
         .build(tauri::generate_context!())

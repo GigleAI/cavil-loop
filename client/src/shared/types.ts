@@ -32,6 +32,29 @@ export interface UpdateStatus {
   dismissed: string | null;
   /** the last finished round: when, and what it ended with (a failure never reads as "up to date") */
   last: { at: number; ok: boolean; message: string } | null;
+  /** downloading / installing / ready: what every version up to the new one changed (GitHub#348); null = nothing to list */
+  notes?: UpdateNotes | null;
+  /** what the update this app was started from changed, and whether its notice was closed; null = nothing kept for this version */
+  installed?: (UpdateNotes & { dismissed: boolean }) | null;
+}
+
+/** What the versions from `from` (not included) up to `to` changed, newest first — read by the shell out of the release list. */
+export interface UpdateNotes {
+  from: string;
+  to: string;
+  /** false = the running version's own release page is gone from GitHub, so older versions may be missing */
+  complete: boolean;
+  /** versions left out (more than the list holds) */
+  more: number;
+  entries: {
+    version: string;
+    /** when it was published (ISO), when GitHub said */
+    at: string | null;
+    /** plain text; `more` = the description behind the title. Empty = that release page says nothing readable */
+    items: { title: string; more: string | null }[];
+    /** items left out */
+    more: number;
+  }[];
 }
 
 

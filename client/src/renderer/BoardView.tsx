@@ -1,5 +1,5 @@
 import { badgeText, stateTone } from '../shared/stateTone';
-import { UpdateReadyBar } from './UpdateViews';
+import { UpdateInstalledBar, UpdateReadyBar } from './UpdateViews';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import { copyText } from './pasteImage';
@@ -882,6 +882,7 @@ export function BoardView({
       {panel && <ViewSettingsPanel view={view} />}
 
       <UpdateReadyBar update={state.update} />
+      <UpdateInstalledBar update={state.update} />
       <WarnBar kind="offline" warn={warn}>
         {sync.offlineReason ? `离线：${sync.offlineReason}` : '离线'} · {offlineDataText(sync, now)} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。
       </WarnBar>

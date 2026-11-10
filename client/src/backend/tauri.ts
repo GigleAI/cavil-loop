@@ -25,6 +25,7 @@ export const tauriDesktop: Desktop = {
   setAutoUpdate: (on) => invoke('desktop_update_set_auto', { on }),
   setUpdateChannel: (channel) => invoke('desktop_update_set_channel', { channel }),
   dismissUpdate: (version) => invoke('desktop_update_dismiss', { version }),
+  dismissInstalledUpdate: (version) => invoke('desktop_update_dismiss_installed', { version }),
   restartToUpdate: () => invoke('desktop_update_restart'),
 };
 

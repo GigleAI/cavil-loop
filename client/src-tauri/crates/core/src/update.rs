@@ -41,6 +41,11 @@ pub const MAX_PAGES: u32 = 10;
 pub const AUTO_KEY: &str = "update.auto";
 pub const DISMISSED_KEY: &str = "update.dismissed";
 pub const CHANNEL_KEY: &str = "update.channel";
+/// What the last installed update changed (GitHub#348): the notes of that round, kept at the moment
+/// the new app is in place so the restarted app can still show them.
+pub const INSTALLED_KEY: &str = "update.installed";
+/// The "updated to X" notice was closed for this version.
+pub const INSTALLED_SEEN_KEY: &str = "update.installedSeen";
 
 /// Which releases an app updates to (GitHub#215).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +169,27 @@ pub struct Pick {
     pub manifest_url: String,
 }
 
+/// The version a release's tag names, when it is one of the client's (`client/v` + a version).
+fn tagged_version(r: &Value) -> Option<Version> {
+    r["tag_name"].as_str().and_then(|t| t.strip_prefix(TAG_PREFIX)).and_then(parse_version)
+}
+
+/// The version of one entry of the release list, when it is a release this app installs on
+/// `channel` (the rule in `pick`'s comment). One rule for choosing the release to update to and for
+/// listing what the versions in between changed (`notes`).
+fn installable(r: &Value, channel: Channel) -> Option<Version> {
+    if r["draft"] != json!(false) || !r["prerelease"].is_boolean() {
+        return None;
+    }
+    let v = tagged_version(r)?;
+    let pre = r["prerelease"] == json!(true);
+    let wanted = match v.dev {
+        None => !pre,
+        Some(_) => pre && channel == Channel::Dev,
+    };
+    wanted.then_some(v)
+}
+
 /// Out of the release list (pages as GitHub returned them), the newest release of the client
 /// that is newer than `current`, on `channel`. Ok(None) = there is none. Err = the list cannot be
 /// read, or the newest release cannot be updated to (no manifest, a manifest outside this
@@ -180,18 +206,8 @@ pub fn pick(pages: &[Value], current: &str, web: &str, channel: Channel) -> Resu
     for page in pages {
         let list = page.as_array().ok_or("GitHub 返回的发版列表看不懂")?;
         for r in list {
-            if r["draft"] != json!(false) || !r["prerelease"].is_boolean() {
-                continue;
-            }
-            let Some(v) = r["tag_name"].as_str().and_then(|t| t.strip_prefix(TAG_PREFIX)).and_then(parse_version) else {
-                continue;
-            };
-            let pre = r["prerelease"] == json!(true);
-            let wanted = match v.dev {
-                None => !pre,
-                Some(_) => pre && channel == Channel::Dev,
-            };
-            if !wanted || v <= cur || best.is_some_and(|(b, _)| v <= b) {
+            let Some(v) = installable(r, channel) else { continue };
+            if v <= cur || best.is_some_and(|(b, _)| v <= b) {
                 continue;
             }
             best = Some((v, r));
@@ -211,6 +227,137 @@ pub fn pick(pages: &[Value], current: &str, web: &str, channel: Channel) -> Resu
         return Err(format!("新版 {version} 的更新说明文件不在本仓库的下载地址下：{url}"));
     }
     Ok(Some(Pick { version, tag, manifest_url: url.to_string() }))
+}
+
+// ---- what the versions in between changed (GitHub#348) ---------------------------------
+//
+// Read out of the release list the round already has: no further request, no credential. Every
+// installable release above the running version and up to the one being installed is listed, each
+// with what its release page says. Nothing here can fail a round: a page that says nothing readable
+// is listed with no items.
+
+/// The heading the development build's publisher puts above the notes it adds to a release page
+/// (scripts/dev-release.mjs `NOTES_HEADING`; test/fixtures/update-notes/dev-body.md is written by
+/// that script and read by this parser).
+pub const NOTES_HEADING: &str = "### 更新内容";
+/// The heading of the current version's part of the release notes (RELEASE_NOTES.md), which is the
+/// whole body of a tagged release's page.
+pub const RELEASE_HEADING_PREFIX: &str = "### 这一版";
+/// Versions listed at most (the newest ones); the rest is counted in `more`.
+pub const MAX_NOTE_VERSIONS: usize = 30;
+/// Items listed per version at most; the rest is counted in that version's `more`.
+pub const MAX_NOTE_ITEMS: usize = 20;
+/// Characters kept of an item's title, and of its description.
+pub const MAX_NOTE_CHARS: usize = 2000;
+
+/// The first `max` characters, with an ellipsis when something was cut.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
+/// Shown as plain text: the markdown marks the release notes use are taken off, nothing is rendered.
+fn plain(s: &str) -> String {
+    s.replace("**", "").replace('`', "").trim().to_string()
+}
+
+/// One `- ` line of release notes → { title, more }. `- **title**（GitHub#N）：description` gives the
+/// bold part (with the bracket right behind it) as the title and the rest as the description;
+/// any other line is a title alone.
+fn note_item(line: &str) -> Value {
+    let text = line.trim();
+    let split = text.strip_prefix("**").and_then(|rest| rest.find("**").map(|i| (&rest[..i], &rest[i + 2..])));
+    let (title, more) = match split {
+        Some((bold, rest)) if !bold.trim().is_empty() => {
+            let mut title = bold.to_string();
+            let mut rest = rest;
+            if rest.starts_with('（') {
+                if let Some(i) = rest.find('）') {
+                    let end = i + '）'.len_utf8();
+                    title.push_str(&rest[..end]);
+                    rest = &rest[end..];
+                }
+            }
+            let rest = rest.trim_start().trim_start_matches(['：', ':']).trim();
+            (title, (!rest.is_empty()).then(|| rest.to_string()))
+        }
+        _ => (text.to_string(), None),
+    };
+    json!({ "title": clip(&plain(&title), MAX_NOTE_CHARS), "more": more.map(|m| clip(&plain(&m), MAX_NOTE_CHARS)) })
+}
+
+/// The `- ` lines under the first heading line `is_heading` accepts, up to the next heading.
+fn section_items<'a>(body: &'a str, is_heading: impl Fn(&str) -> bool) -> Option<Vec<&'a str>> {
+    let mut lines = body.lines().map(|l| l.trim_end_matches('\r'));
+    lines.by_ref().find(|l| is_heading(l.trim()))?;
+    Some(lines.take_while(|l| !l.starts_with('#')).filter_map(|l| l.strip_prefix("- ")).filter(|l| !l.trim().is_empty()).collect())
+}
+
+/// What one release page says changed, as raw note lines (without the `- `):
+///   1. the notes the publisher added under `NOTES_HEADING`, when there are any
+///   2. a tagged release: the current version's part of the release notes
+///   3. a development build: the commit title its first line ends with
+///      (`开发版 X，构建自 main 的 <commit>：<title>`)
+/// Nothing readable → no lines.
+fn body_lines(body: &str, dev: bool) -> Vec<String> {
+    if let Some(items) = section_items(body, |l| l == NOTES_HEADING).filter(|i| !i.is_empty()) {
+        return items.into_iter().map(str::to_string).collect();
+    }
+    if !dev {
+        return section_items(body, |l| l.starts_with(RELEASE_HEADING_PREFIX)).unwrap_or_default().into_iter().map(str::to_string).collect();
+    }
+    let first = body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    match first.strip_prefix("开发版 ").and_then(|l| l.split_once('：')) {
+        Some((_, title)) if !title.trim().is_empty() => vec![title.trim().to_string()],
+        _ => vec![],
+    }
+}
+
+/// What every version above `current` and up to `to` changed, on `channel`, newest first:
+/// `{ from, to, complete, more, entries: [{ version, at, items: [{ title, more }], more }] }`.
+/// Null when no release in that range is in the list (or a version cannot be read).
+///
+/// `complete` = the running version's own release page is still in the list, so nothing between it
+/// and `to` can have been cleaned away (only the newest development builds are kept). When it is
+/// not, older versions may be missing and the window says so.
+///
+/// A note line that an older version in the range already carries, or that the running version's
+/// page carries, is not repeated (a tagged release's page holds the whole notes of its series).
+pub fn notes(pages: &[Value], current: &str, to: &str, channel: Channel) -> Value {
+    let (Some(cur), Some(top)) = (parse_version(current), parse_version(to)) else { return Value::Null };
+    let mut found: Vec<(Version, &Value)> = vec![];
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    let mut complete = false;
+    for r in pages.iter().filter_map(Value::as_array).flatten() {
+        if tagged_version(r) == Some(cur) && r["draft"] == json!(false) {
+            complete = true;
+            seen.extend(r["body"].as_str().unwrap_or("").lines().filter_map(|l| l.trim_end_matches('\r').strip_prefix("- ")).map(str::to_string));
+        }
+        let Some(v) = installable(r, channel) else { continue };
+        if v > cur && v <= top && !found.iter().any(|(f, _)| *f == v) {
+            found.push((v, r));
+        }
+    }
+    if found.is_empty() {
+        return Value::Null;
+    }
+    // oldest first, so a repeated line stays with the version that brought it
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut entries: Vec<Value> = vec![];
+    for (v, r) in found {
+        let lines: Vec<String> = body_lines(r["body"].as_str().unwrap_or(""), v.dev.is_some()).into_iter().filter(|l| seen.insert(l.clone())).collect();
+        let more = lines.len().saturating_sub(MAX_NOTE_ITEMS);
+        let items: Vec<Value> = lines.iter().take(MAX_NOTE_ITEMS).map(|l| note_item(l)).collect();
+        entries.push(json!({ "version": v.to_string(), "at": r["published_at"].as_str(), "items": items, "more": more }));
+    }
+    entries.reverse();
+    let more = entries.len().saturating_sub(MAX_NOTE_VERSIONS);
+    entries.truncate(MAX_NOTE_VERSIONS);
+    json!({ "from": cur.to_string(), "to": top.to_string(), "complete": complete, "more": more, "entries": entries })
 }
 
 /// The whole release list, page by page, until a page has fewer than 100 entries. No credential.
@@ -307,6 +454,9 @@ struct Inner {
     /// A round remembers the one it started with; once it differs, whatever that round found is
     /// for the other channel: dropped, never downloaded on, never installed.
     generation: u64,
+    /// What the versions up to the one this round found changed (`notes`); shown while that
+    /// version downloads, installs and waits for the restart, gone with the round otherwise.
+    notes: Value,
 }
 
 /// What a round that was overtaken by a channel switch returns (never shown: the round is rerun).
@@ -353,7 +503,7 @@ impl Updater {
             timings,
             problem,
             dev_supported,
-            inner: Mutex::new(Inner { phase: Phase::Idle, last: None, generation: 0 }),
+            inner: Mutex::new(Inner { phase: Phase::Idle, last: None, generation: 0, notes: Value::Null }),
             generation: watch::Sender::new(0),
             changed,
         })
@@ -412,11 +562,30 @@ impl Updater {
         Ok(())
     }
 
+    /// The "updated to `version`" notice was closed: not shown again for that version (the notes
+    /// stay readable from Settings).
+    pub fn dismiss_installed(&self, version: &str) -> Result<(), String> {
+        self.store.set_setting(INSTALLED_SEEN_KEY, &json!(version))?;
+        self.emit();
+        Ok(())
+    }
+
+    /// What the update this app was started from changed: the notes kept when it was installed,
+    /// only when they are for the version running now (anything else — nothing kept, kept for
+    /// another version, unreadable — is nothing to show).
+    fn installed(&self) -> Value {
+        let Some(mut v) = self.store.get_setting(INSTALLED_KEY).filter(|v| v["to"].as_str() == Some(self.current.as_str()) && v["entries"].is_array()) else {
+            return Value::Null;
+        };
+        v["dismissed"] = json!(self.store.get_str(INSTALLED_SEEN_KEY).as_deref() == Some(self.current.as_str()));
+        v
+    }
+
     /// What the window shows.
     pub fn status(&self) -> Value {
-        let (phase, last) = {
+        let (phase, last, notes) = {
             let g = self.inner.lock().unwrap();
-            (g.phase.clone(), g.last.clone())
+            (g.phase.clone(), g.last.clone(), g.notes.clone())
         };
         let mut v = json!({
             "supported": true,
@@ -427,7 +596,10 @@ impl Updater {
             "problem": self.problem,
             "dismissed": self.store.get_str(DISMISSED_KEY),
             "last": last.map(|l| json!({ "at": l.at, "ok": l.ok, "message": l.message })),
+            "installed": self.installed(),
         });
+        // the notes belong to the version on the screen: none while idle or checking
+        v["notes"] = if matches!(phase, Phase::Idle | Phase::Checking) { Value::Null } else { notes };
         match phase {
             Phase::Idle => v["phase"] = json!("idle"),
             Phase::Checking => v["phase"] = json!("checking"),
@@ -532,12 +704,14 @@ impl Updater {
             Some(Ok(Some(f))) => f,
         };
         let version = found.version.clone();
+        let changes = notes(&pages, &self.current, &version, channel);
         {
             let mut g = self.inner.lock().unwrap();
             if g.generation != generation {
                 return Err(SWITCHED.into());
             }
             g.phase = Phase::Downloading { version: version.clone(), got: 0, total: None };
+            g.notes = changes.clone();
         }
         self.emit();
         let bytes = match self.unless_switched(generation, self.download_watched(&found, generation)).await.ok_or(SWITCHED)? {
@@ -555,7 +729,13 @@ impl Updater {
         }
         self.emit();
         match self.backend.install(&found, bytes).await {
-            Ok(()) => Ok(Some(version)),
+            Ok(()) => {
+                // for the restarted app; not kept = that app shows nothing, the update is done all the same
+                if !changes.is_null() {
+                    let _ = self.store.set_setting(INSTALLED_KEY, &changes);
+                }
+                Ok(Some(version))
+            }
             Err(Failure::Signature(_)) => Err(format!("新版 {version} 签名校验失败，没有安装")),
             Err(f) => Err(format!("安装 {version} 失败：{}", f.message())),
         }

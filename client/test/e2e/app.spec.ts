@@ -3121,6 +3121,139 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   await app.close();
 });
 
+// GitHub#348: what the update changes. The list comes whole from the shell (state.update.notes /
+// .installed, played by the bridge); the window shows it as plain text and opens it from three places.
+test('GitHub#348: what the update changes — one list opened from the board notice, from Settings and after the restart; nothing to list shows nothing new', async () => {
+  const { app, page } = await launch(env);
+  await signInForReminders(page, []);
+  const at = new Date(2026, 10, 10, 11, 40).getTime();
+  const CUR = '0.5.1-dev.444';
+  const NEW = '0.5.1-dev.462';
+  const notes = {
+    from: CUR,
+    to: NEW,
+    complete: true,
+    more: 0,
+    entries: [
+      { version: NEW, at: new Date(2026, 10, 10, 11, 27).toISOString(), more: 0, items: [{ title: '重启后窗口回到原来的大小和位置（GitHub#333）', more: '关掉 App 再打开，窗口还在原来的位置。<b>不是标签</b>' }] },
+      { version: '0.5.1-dev.456', at: null, more: 2, items: [{ title: "feat(client): read a notified item's detail ahead of the click (#328) (#331)", more: null }] },
+      { version: '0.5.1-dev.455', at: 'not a time', more: 0, items: [] },
+    ],
+  };
+  const base = { supported: true, current: CUR, auto: true, channel: 'dev', devUnavailable: null, problem: null, phase: 'idle', dismissed: null, last: null, notes: null, installed: null };
+  const ready = { ...base, phase: 'ready', version: NEW, last: { at, ok: true, message: `新版 ${NEW} 已下载，重启后生效` } };
+  const restarts = () => app.desktop.records.filter((r) => r.op === 'restartToUpdate').length;
+  const dialog = page.getByTestId('update-notes');
+  const entries = () =>
+    dialog.getByTestId('update-notes-entry').evaluateAll((els) => els.map((e) => [e.getAttribute('data-version'), e.querySelector('.when')!.textContent, [...e.querySelectorAll('[data-testid="update-notes-item"]')].map((i) => (i.querySelector('summary') ?? i).textContent)]));
+
+  // nothing to list: the ready state is exactly what it was — no new button anywhere
+  app.desktop.setUpdate(ready);
+  await expect(page.getByTestId('update-restart')).toBeVisible();
+  await expect(page.getByTestId('update-notes-open')).toHaveCount(0);
+  await expect(page.getByTestId('update-installed-line')).toHaveCount(0);
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('update-ready')).toContainText(`新版 ${NEW} 已下载，重启后生效`);
+  await expect(page.getByTestId('update-ready-notes')).toHaveCount(0);
+  await expect(page.getByTestId('update-installed')).toHaveCount(0);
+  // a list with no version in it is nothing to list either
+  app.desktop.setUpdate({ ...ready, notes: { ...notes, entries: [] } });
+  await expect(page.getByTestId('update-ready')).toBeVisible();
+  await expect(page.getByTestId('update-ready-notes')).toHaveCount(0);
+
+  // the board notice: the count, then the list
+  app.desktop.setUpdate({ ...ready, notes });
+  await expect(page.getByTestId('update-ready-notes')).toHaveText('更新内容（3 个版本）');
+  await shot(page, '53-update-ready-board-notes');
+  await page.getByTestId('update-ready-notes').click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('update-notes-range')).toHaveText(`${CUR} → ${NEW}，共 3 个版本`);
+  expect(await entries()).toEqual([
+    [NEW, '11-10 11:27', ['重启后窗口回到原来的大小和位置（GitHub#333）']],
+    ['0.5.1-dev.456', '', ["feat(client): read a notified item's detail ahead of the click (#328) (#331)"]],
+    ['0.5.1-dev.455', '', []],
+  ]);
+  await expect(dialog.locator('[data-version="0.5.1-dev.456"]')).toContainText('还有 2 条，在 GitHub 上看');
+  await expect(dialog.locator('[data-version="0.5.1-dev.455"]').getByTestId('update-notes-none')).toHaveText('这一版没有写更新说明');
+  // the description is folded until asked for, and is text: nothing in it becomes an element
+  const more = dialog.locator(`[data-version="${NEW}"] .more`);
+  await expect(more).toBeHidden();
+  await dialog.locator(`[data-version="${NEW}"] summary`).click();
+  await expect(more).toHaveText('关掉 App 再打开，窗口还在原来的位置。<b>不是标签</b>');
+  expect(await more.locator('b').count()).toBe(0);
+  await expect(dialog.getByTestId('update-notes-foot')).not.toContainText('可能不全');
+  await shot(page, '54-update-notes-dialog');
+  // the one link is the repository's releases page
+  await dialog.getByTestId('update-notes-web').click();
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('https://github.com/GigleAI/cavil-loop/releases\n');
+  // restart from the list
+  expect(restarts()).toBe(0);
+  await dialog.getByTestId('update-notes-restart').click();
+  await expect.poll(restarts).toBe(1);
+  // Esc closes the list and nothing else: the board and its notice are still there
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('update-ready')).toBeVisible();
+  // a click outside the list closes it too
+  await page.getByTestId('update-ready-notes').click();
+  await expect(dialog).toBeVisible();
+  await dialog.click({ position: { x: 5, y: 5 } });
+  await expect(dialog).toHaveCount(0);
+
+  // older versions cleaned away / more versions than listed: said in the list, counted in the buttons
+  app.desktop.setUpdate({ ...ready, notes: { ...notes, complete: false, more: 4 } });
+  await expect(page.getByTestId('update-ready-notes')).toHaveText('更新内容（7 个版本）');
+  await page.getByTestId('update-ready-notes').click();
+  await expect(dialog.getByTestId('update-notes-range')).toHaveText(`${CUR} → ${NEW}，共 7 个版本`);
+  await expect(dialog.getByTestId('update-notes-foot')).toContainText('还有 4 个更早的版本没有列出');
+  await expect(dialog.getByTestId('update-notes-foot')).toContainText('这里可能不全');
+  await dialog.getByTestId('update-notes-close').click();
+  await expect(dialog).toHaveCount(0);
+
+  // Settings: the same list from a button next to "restart"; also while it downloads (no restart offered then)
+  app.desktop.setUpdate({ ...ready, notes });
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('update-notes-open')).toHaveText('查看更新内容（3 个版本）');
+  await page.getByTestId('update-notes-open').scrollIntoViewIfNeeded();
+  await shot(page, '55-update-ready-settings-notes');
+  await page.getByTestId('update-notes-open').click();
+  expect((await entries()).map((e) => e[0])).toEqual([NEW, '0.5.1-dev.456', '0.5.1-dev.455']);
+  await expect(dialog.getByTestId('update-notes-restart')).toBeVisible();
+  await dialog.getByTestId('update-notes-close').click();
+  app.desktop.setUpdate({ ...base, phase: 'downloading', version: NEW, got: 1_000_000, total: 8_000_000, notes });
+  await page.getByTestId('update-notes-open').click();
+  await expect(dialog.getByTestId('update-notes-entry')).toHaveCount(3);
+  await expect(dialog.getByTestId('update-notes-restart')).toHaveCount(0);
+  await dialog.getByTestId('update-notes-close').click();
+  // idle again (the round failed): the button goes with the list
+  app.desktop.setUpdate({ ...base, last: { at, ok: false, message: `下载 ${NEW} 失败：60 秒没有收到数据` } });
+  await expect(page.getByTestId('update-line')).toContainText('失败');
+  await expect(page.getByTestId('update-notes-open')).toHaveCount(0);
+
+  // after the restart into the new version: a notice on the board, the list without "restart", closed for good
+  app.desktop.setUpdate({ ...base, current: NEW, installed: { ...notes, dismissed: false } });
+  await expect(page.getByTestId('update-installed-line')).toContainText(`上次更新：${CUR} → ${NEW}`);
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('update-installed')).toContainText(`已从 ${CUR} 更新到 ${NEW}。`);
+  await expect(page.getByTestId('update-installed-notes')).toHaveText('看更新了什么（3 个版本）');
+  await expect(page.getByTestId('update-ready')).toHaveCount(0);
+  await shot(page, '56-update-installed-board');
+  await page.getByTestId('update-installed-notes').click();
+  expect((await entries()).map((e) => e[0])).toEqual([NEW, '0.5.1-dev.456', '0.5.1-dev.455']);
+  await expect(dialog.getByTestId('update-notes-restart')).toHaveCount(0);
+  await dialog.getByTestId('update-notes-close').click();
+  await page.getByTestId('update-installed-close').click();
+  await expect.poll(() => app.desktop.records.filter((r) => r.op === 'dismissInstalledUpdate').map((r) => r.version)).toEqual([NEW]);
+  await expect(page.getByTestId('update-installed')).toHaveCount(0);
+  // still readable from Settings
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('update-installed-open').click();
+  await expect(dialog.getByTestId('update-notes-range')).toHaveText(`${CUR} → ${NEW}，共 3 个版本`);
+  await dialog.getByTestId('update-notes-close').click();
+  expect(restarts()).toBe(1);
+  await app.close();
+});
+
 test('GitHub#215: the update channel in Settings — release by default, development explains itself, refused while installing, greyed out without a development build', async () => {
   const { app, page } = await launch(env);
   await signInForReminders(page, []);

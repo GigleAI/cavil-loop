@@ -10,3 +10,7 @@ export declare function decide(list: unknown[], version: string, files: string[]
 export declare function toPrune(list: unknown[], keep: number): DevRelease[];
 export declare function staleDrafts(list: unknown[], version: string): { tag: string; parsed: [number, number, number, number] }[];
 export declare function readReleases(repo: string): unknown[];
+export declare const NOTES_HEADING: string;
+export declare function previousBuildCommit(list: unknown[], version: string): string | null;
+export declare function addedNotes(base: string, head: string, root?: string): string[] | null;
+export declare function composeBody(notes: string, added: string[] | null | undefined): string;
