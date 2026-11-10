@@ -34,6 +34,8 @@ export interface CavilApi {
   setAutoUpdate(on: boolean): Promise<void>;
   setUpdateChannel(channel: 'stable' | 'dev'): Promise<void>;
   dismissUpdate(version: string): Promise<void>;
+  /** the "updated to `version`" notice was closed (GitHub#348) */
+  dismissInstalledUpdate(version: string): Promise<void>;
   restartToUpdate(): Promise<void>;
   loadDetail(key: string): Promise<DetailResult>;
   /** GitHub#229: the detail read last in this run, shown at once on re-opening; null = none */

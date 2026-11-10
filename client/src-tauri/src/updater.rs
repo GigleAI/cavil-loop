@@ -231,6 +231,12 @@ pub fn desktop_update_dismiss<R: Runtime>(app: AppHandle<R>, version: String) ->
     slot(&app).ok_or("这个版本不自动更新")?.dismiss(&version)
 }
 
+/// The "updated to `version`" notice was closed (GitHub#348).
+#[tauri::command]
+pub fn desktop_update_dismiss_installed<R: Runtime>(app: AppHandle<R>, version: String) -> Result<(), String> {
+    slot(&app).ok_or("这个版本不自动更新")?.dismiss_installed(&version)
+}
+
 /// Quit and start the new version (only once it is in place).
 #[tauri::command]
 pub fn desktop_update_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {

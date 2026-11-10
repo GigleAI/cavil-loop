@@ -29,6 +29,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setAutoUpdate: (on) => c.setAutoUpdate(Boolean(on)),
     setUpdateChannel: (channel) => c.setUpdateChannel(channel === 'dev' ? 'dev' : 'stable'),
     dismissUpdate: (version) => c.dismissUpdate(String(version)),
+    dismissInstalledUpdate: (version) => c.dismissInstalledUpdate(String(version)),
     restartToUpdate: () => c.restartToUpdate(),
     loadDetail: (key) => c.loadDetail(String(key)),
     cachedDetail: async (key) => c.cachedDetail(String(key)),

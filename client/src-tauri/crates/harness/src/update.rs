@@ -161,6 +161,12 @@ pub async fn command(
             Err(m) => json!({ "error": m }),
         });
     }
+    // what the versions in between changed (GitHub#348), from a release list the test hands over
+    if cmd == "test.update.notes" {
+        let pages: Vec<Value> = a.get("pages").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let channel = Channel::parse(&s("channel")).unwrap_or(Channel::Stable);
+        return Ok(update::notes(&pages, &s("current"), &s("to"), channel));
+    }
     // the update plugin's own signature check (same library, same decoding), on bytes the test hands over
     if cmd == "test.update.verify" {
         use base64::Engine;
@@ -183,6 +189,11 @@ pub async fn command(
     // what an earlier version (or a hand edit) left in the stored channel setting: any JSON value
     if cmd == "test.update.storeChannel" {
         store.set_setting(update::CHANNEL_KEY, a.get("value").unwrap_or(&Value::Null))?;
+        return Ok(Value::Null);
+    }
+    // what an earlier run (or a hand edit) left as the kept notes of the last installed update
+    if cmd == "test.update.storeInstalled" {
+        store.set_setting(update::INSTALLED_KEY, a.get("value").unwrap_or(&Value::Null))?;
         return Ok(Value::Null);
     }
     // the development build machines, as the app has them (compared with the release job's table)
@@ -220,6 +231,7 @@ pub async fn command(
         }
         "test.update.setAuto" => u.set_auto(a.get("on").and_then(|v| v.as_bool()).unwrap_or(true)).map(|_| u.status()),
         "test.update.dismiss" => u.dismiss(&s("version")).map(|_| u.status()),
+        "test.update.dismissInstalled" => u.dismiss_installed(&s("version")).map(|_| u.status()),
         // like the shell's command: choose, then a check (which a running round answers by restarting itself)
         "test.update.setChannel" => {
             let c = Channel::parse(&s("channel")).ok_or("不认识的渠道")?;

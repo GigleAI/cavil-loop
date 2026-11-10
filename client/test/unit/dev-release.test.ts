@@ -8,15 +8,16 @@
 // a list that cannot be read stops everything.
 
 import { describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const script = join(root, 'scripts', 'dev-release.mjs');
-const SHA = 'a'.repeat(40);
+const SCRIPT = join(root, 'scripts', 'dev-release.mjs');
+const DEFAULT_SHA = 'a'.repeat(40);
+const SHA = DEFAULT_SHA;
 
 // The fake gh: just the calls the script makes, with GitHub's behaviour where it matters (a draft is
 // a release whose tag does not exist yet; lists are pages of 100; releases have ids; deleting a
@@ -99,7 +100,7 @@ if (a[1] === 'create') {
   if (find(tag)) die('a release with this tag already exists');
   const names = files(a.slice(3));
   if (fail('create')) die('HTTP 500');
-  const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target_commitish: a[a.indexOf('--target') + 1], assets: [] };
+  const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target_commitish: a[a.indexOf('--target') + 1], assets: [], body: fs.readFileSync(a[a.indexOf('--notes-file') + 1], 'utf8') };
   st.releases.unshift(r);
   if (fail('create-partial')) { r.assets = names.slice(0, 1).map((name) => ({ name })); die('upload failed: connection reset'); }
   r.assets = names.map((name) => ({ name }));
@@ -136,13 +137,16 @@ interface Rel {
   draft: boolean;
   prerelease: boolean;
   assets: { name: string }[];
+  body?: string;
 }
 
 const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, 'latest.json'];
 const pub = (tag: string, o: Partial<Rel> = {}): Rel => ({ tag_name: tag, draft: false, prerelease: false, assets: [{ name: 'latest.json' }], ...o });
 const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map((name) => ({ name })), ...o });
 
-function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown> = {}) {
+function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown> = {}, at: { script?: string; sha?: string } = {}) {
+  const script = at.script ?? SCRIPT;
+  const SHA = at.sha ?? DEFAULT_SHA;
   const releases = input.map((r, i) => ({ id: 1000 + i, target_commitish: SHA, ...r }));
   const dir = tempDir();
   const bin = join(dir, 'bin');
@@ -437,3 +441,65 @@ function devsLeft(s: { releases: Rel[] }) {
     .map((r) => r.tag_name.slice('client/v'.length))
     .sort((a, b) => Number(b.split('.').pop()) - Number(a.split('.').pop()));
 }
+
+// ---- GitHub#348: the release page says what the build changed -----------------------------
+// The real script, copied into a real git repository (it reads RELEASE_NOTES.md's history next to
+// itself), publishing against the fake gh; the page it created is what the fake gh was handed.
+
+describe('the release page carries what the build changed (GitHub#348)', () => {
+  const git = (cwd: string, ...a: string[]) =>
+    execFileSync('git', a, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid' } }).trim();
+
+  /** a repository whose client/ holds the real scripts and a RELEASE_NOTES.md that gains a line per commit */
+  function repo() {
+    const top = tempDir();
+    const scripts = join(top, 'client', 'scripts');
+    mkdirSync(scripts, { recursive: true });
+    for (const f of ['dev-release.mjs', 'update-manifest.mjs']) copyFileSync(join(root, 'scripts', f), join(scripts, f));
+    git(top, 'init', '-q', '-b', 'main');
+    const lines: string[] = [];
+    const commit = (line: string | null) => {
+      if (line) lines.unshift(line);
+      writeFileSync(join(top, 'client', 'RELEASE_NOTES.md'), `### 这一版（0.5）\n\n${lines.join('\n')}\n`);
+      writeFileSync(join(top, 'client', 'n.txt'), String(Math.random()));
+      git(top, 'add', '-A');
+      git(top, 'commit', '-q', '-m', 'c');
+      return git(top, 'rev-parse', 'HEAD');
+    };
+    return { script: join(scripts, 'dev-release.mjs'), commit };
+  }
+  const page = (w: ReturnType<typeof world>, v: string) => published(w.read(), `client/v${v}`)!.body;
+
+  it('the lines RELEASE_NOTES.md gained since the previous published build go under the heading, after the text it was given', () => {
+    const r = repo();
+    const a = r.commit('- **甲**（GitHub#1）：一');
+    r.commit('- **乙**（GitHub#2）：二');
+    const c = r.commit('- **丙**（GitHub#3）：三');
+    const w = world([devRel('0.5.1-dev.380', { target_commitish: a }), devRel('0.5.1-dev.370', { target_commitish: 'e'.repeat(40) }), pub('client/v0.5.0')], [], {}, { script: r.script, sha: c });
+    w.build('0.5.1-dev.387');
+    const run = w.run('0.5.1-dev.387');
+    expect(run.code, run.out).toBe(0);
+    expect(page(w, '0.5.1-dev.387')).toBe('开发版\n\n### 更新内容\n\n- **丙**（GitHub#3）：三\n- **乙**（GitHub#2）：二\n');
+    expect(run.out).toContain('发版页带上 2 条更新说明');
+  });
+
+  it('nothing gained, no previous build, or a previous build whose commit is not in this clone: the page is the text it was given, and the build is published all the same', () => {
+    const r = repo();
+    const a = r.commit('- **甲**：一');
+    const b = r.commit(null);
+    for (const [before, why] of [
+      [[devRel('0.5.1-dev.380', { target_commitish: a })], '发版说明没有新增条目'],
+      [[pub('client/v0.5.0')], '找不到上一个开发版的提交'],
+      [[devRel('0.5.1-dev.380', { target_commitish: 'e'.repeat(40) })], '比不出发版说明的变化'],
+      [[devRel('0.5.1-dev.380', { target_commitish: 'main' })], '找不到上一个开发版的提交'],
+    ] as [Rel[], string][]) {
+      const w = world(before, [], {}, { script: r.script, sha: b });
+      w.build('0.5.1-dev.387');
+      const run = w.run('0.5.1-dev.387');
+      expect(run.code, run.out).toBe(0);
+      expect(page(w, '0.5.1-dev.387'), why).toBe('开发版\n');
+      expect(run.out).toContain(`发版页不带更新说明：${why}`);
+      expect(published(w.read(), 'client/v0.5.1-dev.387')).toMatchObject({ prerelease: true });
+    }
+  });
+});
