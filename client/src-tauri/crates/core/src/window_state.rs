@@ -146,28 +146,10 @@ fn reach(pos: (f64, f64), w: f64, s: &Screen) -> (f64, f64) {
     (ow.max(0.0), oh.max(0.0))
 }
 
-/// What this start builds the window with. `screens`: the screens there are now, the primary
-/// one first; empty when they could not be read.
-pub fn placement(saved: Option<&Saved>, screens: &[Screen]) -> Placement {
-    let Some(s) = saved else {
-        return fit(DEFAULT_W, DEFAULT_H, None, false, screens.first());
-    };
-    // the screen the kept position is on: the one holding most of the title strip
-    let home = s.pos.and_then(|p| {
-        screens
-            .iter()
-            .map(|sc| (reach(p, s.w, sc), sc))
-            .filter(|((ow, oh), _)| *ow >= REACH_W.min(s.w) && *oh >= REACH_H)
-            .max_by(|a, b| (a.0 .0 * a.0 .1).total_cmp(&(b.0 .0 * b.0 .1)))
-            .map(|(_, sc)| sc)
-    });
-    match home {
-        Some(sc) => fit(s.w, s.h, s.pos, s.maximized, Some(sc)),
-        None => fit(s.w, s.h, None, s.maximized, screens.first()),
-    }
-}
-
-fn fit(w: f64, h: f64, pos: Option<(f64, f64)>, maximized: bool, screen: Option<&Screen>) -> Placement {
+/// The size the window gets on `screen` (None: screens unreadable): never above the screen,
+/// never below the minimum — the minimum wins over a screen smaller than it, the window is
+/// built with that minimum anyway.
+fn fit_size(w: f64, h: f64, screen: Option<&Screen>) -> (f64, f64) {
     let (mut w, mut h) = (w, h);
     if let Some(sc) = screen {
         if sc.w > 0.0 && sc.h > 0.0 {
@@ -175,8 +157,39 @@ fn fit(w: f64, h: f64, pos: Option<(f64, f64)>, maximized: bool, screen: Option<
             h = h.min(sc.h);
         }
     }
-    // the minimum wins over a screen smaller than it: the window is built with that minimum anyway
-    Placement { w: w.max(MIN_W), h: h.max(MIN_H), pos, maximized }
+    (w.max(MIN_W), h.max(MIN_H))
+}
+
+/// What this start builds the window with. `screens`: the screens there are now, the primary
+/// one first; empty when they could not be read.
+///
+/// The place is judged with the size the window will really have on that screen, not the kept
+/// one: a wide window reaching in from the left is cut down to the screen's width, and what is
+/// left of it may lie wholly outside (review of PR #334).
+pub fn placement(saved: Option<&Saved>, screens: &[Screen]) -> Placement {
+    let Some(s) = saved else {
+        let (w, h) = fit_size(DEFAULT_W, DEFAULT_H, screens.first());
+        return Placement { w, h, pos: None, maximized: false };
+    };
+    // the screen the kept position is on: the one holding most of the title strip of the window as it will be built there
+    let home = s.pos.and_then(|p| {
+        screens
+            .iter()
+            .map(|sc| {
+                let (w, h) = fit_size(s.w, s.h, Some(sc));
+                (reach(p, w, sc), (w, h))
+            })
+            .filter(|((ow, oh), (w, _))| *ow >= REACH_W.min(*w) && *oh >= REACH_H)
+            .max_by(|a, b| (a.0 .0 * a.0 .1).total_cmp(&(b.0 .0 * b.0 .1)))
+            .map(|(_, size)| size)
+    });
+    match home {
+        Some((w, h)) => Placement { w, h, pos: s.pos, maximized: s.maximized },
+        None => {
+            let (w, h) = fit_size(s.w, s.h, screens.first());
+            Placement { w, h, pos: None, maximized: s.maximized }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +301,36 @@ mod tests {
         assert_eq!(pos(at(100.0, 1075.0)), None);
         // bottom of the window off screen, title bar on it: kept
         assert_eq!(pos(at(100.0, 900.0)), Some((100.0, 900.0)));
+    }
+
+    #[test]
+    fn a_window_cut_down_to_the_screen_is_placed_by_what_is_left_of_it() {
+        // 3000 wide, reaching 200 px into the screen from the left: reachable as kept, but cut down
+        // to the screen's 1920 its right edge would be at -880 — wholly off screen. Centred instead.
+        let wide = Saved { w: 3000.0, h: 900.0, pos: Some((-2800.0, 100.0)), maximized: false };
+        assert_eq!(placement(Some(&wide), &[MAIN]), Placement { w: 1920.0, h: 900.0, pos: None, maximized: false });
+        // the same window where the cut-down one still reaches the screen: the place is kept
+        let near = Saved { w: 3000.0, h: 900.0, pos: Some((-1700.0, 100.0)), maximized: false };
+        assert_eq!(placement(Some(&near), &[MAIN]), Placement { w: 1920.0, h: 900.0, pos: Some((-1700.0, 100.0)), maximized: false });
+        // with the screen it was sized for still there (to the left), nothing is cut and it stays
+        let left = Screen { x: -3840.0, y: 0.0, w: 3840.0, h: 2160.0 };
+        assert_eq!(placement(Some(&wide), &[MAIN, left]), Placement { w: 3000.0, h: 900.0, pos: Some((-2800.0, 100.0)), maximized: false });
+        // whatever comes out with a place has its title bar on one of the screens, for a sweep of kept places
+        for x in (-4000..4000).step_by(130) {
+            for y in (-200..1300).step_by(90) {
+                let s = Saved { w: 3000.0, h: 2000.0, pos: Some((f64::from(x), f64::from(y))), maximized: false };
+                let p = placement(Some(&s), &[MAIN]);
+                assert_eq!((p.w, p.h), (1920.0, 1080.0));
+                if let Some((px, py)) = p.pos {
+                    let on_x = (px + p.w).min(MAIN.w) - px.max(0.0);
+                    let on_y = (py + 28.0).min(MAIN.h) - py.max(0.0);
+                    assert!(on_x >= 100.0 && on_y >= 14.0, "kept ({x},{y}) came out at ({px},{py}) with {on_x}x{on_y} of the title bar on screen");
+                }
+            }
+        }
+        // and the sweep is not vacuous: some places are kept, some are dropped
+        let kept = |x: f64| placement(Some(&Saved { w: 3000.0, h: 2000.0, pos: Some((x, 50.0)), maximized: false }), &[MAIN]).pos.is_some();
+        assert!(kept(0.0) && kept(-1000.0) && !kept(-1900.0) && !kept(1900.0));
     }
 
     #[test]

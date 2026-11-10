@@ -96,6 +96,9 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   await wd.type('[data-testid="source-input"]', 'GigleAI/cavil-loop');
   await wd.click('[data-testid="source-add"]');
   await wd.click('[data-testid="back"]');
+  // #138 is closed and carries Done: a new install's search text (-Status:done -label:Done, GitHub#298) hides it
+  await wd.find('[data-testid="card"]', 30_000);
+  await wd.type('[data-testid="search"]', '138');
   await wd.find(card(138), 30_000);
   expect(fake.log.some((l) => l.path.startsWith('/api/') && l.auth?.startsWith('Bearer gho_'))).toBe(true);
 
@@ -170,6 +173,9 @@ test('real app (GitHub#193): a ticked box reaches GitHub as one changed characte
   await wd.type('[data-testid="source-input"]', 'GigleAI/cavil-loop');
   await wd.click('[data-testid="source-add"]');
   await wd.click('[data-testid="back"]');
+  // #138 is closed and carries Done: a new install's search text (-Status:done -label:Done, GitHub#298) hides it
+  await wd.find('[data-testid="card"]', 30_000);
+  await wd.type('[data-testid="search"]', '138');
   await wd.find(card(138), 30_000);
   await wd.click(card(138));
   // the frame's own script ran under the shipped policies (it reports "ready")

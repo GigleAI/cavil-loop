@@ -238,9 +238,14 @@ pub fn desktop_update_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
     if u.status()["phase"] != "ready" {
         return Err("新版还没装好".into());
     }
+    restart_now(&app)
+}
+
+/// Quit and start again. The window's size and place are kept first (GitHub#333): called on the
+/// main thread, Tauri's restart skips the exit events the app otherwise keeps them on.
+pub fn restart_now<R: Runtime>(app: &AppHandle<R>) -> ! {
     app.state::<crate::desktop::Desktop>().record(json!({ "op": "restart" }));
-    // the restart comes back at the window's size and place of this moment (GitHub#333)
-    crate::window::look(&app);
+    crate::window::look(app);
     app.restart()
 }
 

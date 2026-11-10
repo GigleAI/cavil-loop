@@ -92,8 +92,9 @@ pub fn changed<R: Runtime>(app: &AppHandle<R>) {
     let Some(k) = app.try_state::<Keeper>() else { return };
     let mine = k.changes.fetch_add(1, Ordering::SeqCst) + 1;
     let app = app.clone();
+    let still_ms = app.state::<Desktop>().hooks.window_still_ms.unwrap_or(STILL_MS);
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(STILL_MS)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(still_ms)).await;
         let still = app.try_state::<Keeper>().is_some_and(|k| k.changes.load(Ordering::SeqCst) == mine);
         if still {
             look(&app);

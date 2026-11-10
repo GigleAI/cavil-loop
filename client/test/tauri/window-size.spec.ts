@@ -12,6 +12,12 @@
 // The app is quit by ending the WebDriver session, which gives it no chance to save on the
 // way out — so what comes back is what was kept while the window was changing.
 //
+// The other three moments the size is kept — the window is closed, the app quits, the app
+// restarts itself for an update — each have a test of their own below. There the "window has
+// been still" wait is set far longer than the test (CAVIL_CLIENT_TEST_WINDOW_STILL_MS), so
+// nothing is kept by the resize itself: what the next start comes back at was kept by that
+// moment alone, and each test first checks nothing had been kept before it.
+//
 // Not covered here: where the window is (a headless display has no window manager to place
 // it), maximized, several screens. Their rules are tested in crates/core/src/window_state.rs.
 
@@ -42,7 +48,11 @@ const records = (): any[] => {
   return text.slice(0, text.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map((l) => JSON.parse(l));
 };
 
-async function startApp(args: string[] = []) {
+let starts = 0;
+
+async function startApp(args: string[] = [], env: Record<string, string> = {}) {
+  // a control file of its own for every start, so no start can act on what an earlier one was told
+  control = join(dir, `control-${++starts}.txt`);
   driver = spawn(DRIVER, [], {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: {
@@ -55,6 +65,7 @@ async function startApp(args: string[] = []) {
       CAVIL_CLIENT_USER_DATA: join(dir, 'profile'),
       CAVIL_CLIENT_TEST_ALERTS_FILE: record,
       CAVIL_CLIENT_TEST_CONTROL_FILE: control,
+      ...env,
     },
   });
   wd = new WebDriver();
@@ -110,7 +121,6 @@ test.beforeEach(async () => {
   fake = await startFakeGitHub();
   dir = mkdtempSync(join(tmpdir(), 'cavil-tauri-win-'));
   record = join(dir, 'desktop.jsonl');
-  control = join(dir, 'control.txt');
 });
 
 test.afterEach(async () => {
@@ -162,4 +172,72 @@ test('real app (GitHub#333): a restart comes back at the window size it was left
   await new Promise((r) => setTimeout(r, 1500));
   expect(await size()).toEqual([1111, 707]);
   expect(records().slice(from).filter((r) => r.op === 'windowKept' && (r.w !== 1111 || r.h !== 707))).toEqual([]);
+});
+
+/** the resize itself keeps nothing for the length of a test: only the moment under test does */
+const NEVER_STILL = { CAVIL_CLIENT_TEST_WINDOW_STILL_MS: '600000' };
+const kept = (from = 0) => records().slice(from).filter((r) => r.op === 'windowKept');
+
+/** Start, resize to 1011×677, and check the real window has that size while nothing was kept. */
+async function resizedButNotKept(env: Record<string, string> = {}) {
+  await startApp([], { ...NEVER_STILL, ...env });
+  await wd.find('[data-testid="start-login"], [data-testid="oauth-settings-toggle"]');
+  await until(sizeIs(1280, 820), 'default size on screen');
+  appendFileSync(control, 'resize 1011 677\n');
+  await until(sizeIs(1011, 677), 'resized on screen');
+  // well past the product's own wait (0.4 s): with the wait set long, the resize kept nothing
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(kept()).toEqual([]);
+}
+
+/** A plain start afterwards (the product's own timing): built with 1011×677, and the real window has it. */
+async function comesBackResized() {
+  const from = records().length;
+  await startApp();
+  await wd.find('[data-testid="start-login"], [data-testid="oauth-settings-toggle"]');
+  expect(records().slice(from).find((r) => r.op === 'window')).toMatchObject({ kept: true, w: 1011, h: 677, maximized: false });
+  await until(sizeIs(1011, 677), 'kept size on screen after the restart');
+}
+
+test('real app (GitHub#333): closing the window keeps its size, before it is hidden', async () => {
+  // closing hides the window, as on macOS
+  await resizedButNotKept({ CAVIL_CLIENT_TEST_HIDE_ON_CLOSE: '1' });
+  appendFileSync(control, 'close\n');
+  await until(() => records().some((r) => r.op === 'hidden'), 'window hidden', 10_000);
+  const ops = records().map((r) => r.op);
+  expect(kept()).toMatchObject([{ ok: true, w: 1011, h: 677, maximized: false }]);
+  // kept while it was still on screen: a hidden window is never looked at
+  expect(ops.indexOf('windowKept')).toBeLessThan(ops.indexOf('hidden'));
+  await stopApp();
+  await comesBackResized();
+});
+
+test('real app (GitHub#333): quitting the app keeps the window size', async () => {
+  await resizedButNotKept();
+  appendFileSync(control, 'quit\n');
+  await until(() => kept().length > 0, 'kept on the way out', 10_000);
+  expect(kept()).toMatchObject([{ ok: true, w: 1011, h: 677, maximized: false }]);
+  // it really quit by itself: nothing of it is left once the driver is gone too
+  await wd.stop();
+  driver?.kill();
+  driver = null;
+  await until(() => running().length === 0, 'the app quit by itself', 10_000);
+  await comesBackResized();
+});
+
+test('real app (GitHub#333): the restart an installed update asks for keeps the window size, and the new start has it', async () => {
+  await resizedButNotKept();
+  const from = records().length;
+  appendFileSync(control, 'restart\n');
+  // kept before the old process went away …
+  await until(() => kept().length > 0, 'kept before the restart', 10_000);
+  expect(kept()).toMatchObject([{ ok: true, w: 1011, h: 677, maximized: false }]);
+  const ops = records().slice(from).map((r) => r.op);
+  expect(ops.indexOf('restart')).toBeGreaterThanOrEqual(0);
+  // … and the app's own new start (not one this test made) is built with it
+  await until(() => records().slice(from).some((r) => r.op === 'window'), 'the app started again by itself', 60_000);
+  expect(records().slice(from).find((r) => r.op === 'window')).toMatchObject({ kept: true, w: 1011, h: 677, maximized: false });
+  // a start made by the test afterwards: the real window has the size
+  await stopApp();
+  await comesBackResized();
 });
