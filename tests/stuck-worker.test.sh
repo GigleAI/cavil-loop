@@ -2,7 +2,7 @@
 # kind: e2e
 # 条目卡在 doing/agent、会话还在却没人干活 → daemon 催一次 / 重派 / 交人（GitHub#339）。
 #
-# 跑法：bash tests/stuck-worker.test.sh        （约 5 分钟；没有负对照）
+# 跑法：bash tests/stuck-worker.test.sh        （约 8 分钟；没有负对照）
 # 依赖：tmux（3.0+）、git、jq、python3。
 #
 # 真跑 agent-poll.sh（连带真的派工脚本），配有状态的假 GitHub（tests/lib/fake_github.py）和
@@ -589,11 +589,12 @@ tick 60
 chk "摘 doing/agent 失败：两个标签都在，会话不动，待办留着" \
     "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.pending')" "doing/agent,pending/agent/yes/restart"
 rm -f "$GD/F_delete_labels"
-R0=$(runs "$N"); P0=$(cat "$CTL/runs.issue-$N" | tail -1)
+R0=$(runs "$N")
 tick 10
-# 这一轮开头的快照里触发标签已经在，所以同一轮里摘掉 doing/agent、结束旧会话之后紧接着就重派了
-chk "下一轮收敛：记一次重派、待办清掉，旧会话结束、同一轮里重新派工起了新的 agent 进程" \
-    "$(efield "$N" '.restarts')/$(efield "$N" '.pending')/$(plog '已翻回 pending/agent，结束会话')/$([ "$(runs "$N")" -gt "$R0" ] && echo yes || echo no)/$(labels_of "$N")" "1//1/yes/doing/agent"
+chk "下一轮收敛：摘掉 doing/agent、结束旧会话、记一次重派；当轮不派工（队列手里是这一轮开头的旧快照）" \
+    "$(efield "$N" '.restarts')/$(efield "$N" '.pending')/$(labels_of "$N")/$(alive "$N")/$(runs "$N")" "1//pending/agent/no/$R0"
+tick 10
+chk "再下一轮：照常重派，起了新的 agent 进程" "$(labels_of "$N")/$([ "$(runs "$N")" -gt "$R0" ] && echo yes || echo no)" "doing/agent/yes"
 # 9b 待办留着时各种变化 → 放弃，不补写。每种一套场景；最后一列是这一轮对目标的写请求数
 drop_case() {   # <名字> <restart|human> <pr|issue> <变化命令…>
     local name="$1" step="$2" shape="$3"; shift 3
@@ -767,8 +768,38 @@ tick 60
 jset "$GD/events.json" '.[$n] += [{id: 60001, event: "unlabeled", label: {name: "pending/review"}, actor: {login: "maint", type: "User"}}, {id: 60002, event: "labeled", label: {name: "pending/review"}, actor: {login: "maint", type: "User"}}]' --arg n "$P"
 rm -f "$GD/F_delete_labels"
 tick 10
-chk "13a3 人重新打过标签：daemon 放手、没去摘它，同一轮就照常派工了" \
-    "$(efield "$N" '.own')/$(plog '之后有人动过')/$(plog '已摘回')/$([ "$(plog "dispatch PR #$P")" -ge 1 ] && echo yes || echo no)" "null/1/0/yes"
+chk "13a3 人重新打过标签：daemon 放手、没去摘它" \
+    "$(efield "$N" '.own')/$(plog '之后有人动过')/$(plog '已摘回')/$(labels_of "$P")" "null/1/0/doing/agent,pending/review"
+tick 10
+chk "13a3 下一轮照常派工" "$([ "$(plog "dispatch PR #$P")" -ge 1 ] && echo yes || echo no)" "yes"
+# 13a4 复审第 5 轮：复审标签加上了，但核实它的那次标签记录读取失败，而且之后一直读不到
+pr_scn mid1d
+hook_after_add "$P" touch "$GD/F_issues_${P}_events"
+tick 60
+chk "13a4 夹具：标签已经加上，这次写入还没核实" "$(hook_ran)/$(labels_of "$P")/$(efield "$N" '.claim.label')/$(efield "$N" '.own')" "yes/doing/agent,pending/review/pending/review/null"
+g0=$(cnt '' "$CTL/got.issue-$N"); w0=$(writes_on "$P")
+tick 10; tick 10; tick 60
+chk "13a4 读不到的三轮：没有派工、会话没收到新输入、PR 上没有新的写入" \
+    "$(plog "dispatch PR #$P")/$(( $(cnt '' "$CTL/got.issue-$N") - g0 ))/$(( $(writes_on "$P") - w0 ))/$(labels_of "$P")" "0/0/0/doing/agent,pending/review"
+chk "13a4 到达性：派工队列确实看到了这条并跳过" "$([ "$(plog '是卡住检测没做完的一步里加的')" -ge 1 ] && echo yes || echo no)" "yes"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tick 5; done
+chk "13a4 一直读不到、累计到停手之后：仍然不派工，那次没核实的写入还记着" \
+    "$(plog "dispatch PR #$P")/$(efield "$N" '.exhausted')/$(efield "$N" '.claim.label')" "0/true/pending/review"
+rm -f "$GD/F_issues_${P}_events"
+tick 10
+chk "13a4 读得到之后：核实是 daemon 加的，摘回去，PR 回到只挂 doing/agent，没有派工" \
+    "$(labels_of "$P")/$(efield "$N" '.claim')/$(efield "$N" '.own')/$(plog "dispatch PR #$P")" "doing/agent/null/null/0"
+tick 10; tick 10
+chk "13a4 之后两轮：也没有派工" "$(plog "dispatch PR #$P")/$(labels_of "$P")" "0/doing/agent"
+# 13a5 同样是核实读取失败，但下一轮就读得到 → 核实后照原路把这一步做完
+pr_scn mid1e
+hook_after_add "$P" touch "$GD/F_issues_${P}_events"
+tick 60
+rm -f "$GD/F_issues_${P}_events"
+tick 10
+chk "13a5 下一轮读得到、什么都没变：重派做完（当轮不派工）" "$(efield "$N" '.restarts')/$(labels_of "$P")/$(alive "$N")/$(plog "dispatch PR #$P")" "1/pending/review/no/0"
+tick 10
+chk "13a5 再下一轮：照常派工" "$([ "$(plog "dispatch PR #$P")" -ge 1 ] && echo yes || echo no)" "yes"
 # 13b 重派：摘掉 doing/agent 之后、结束会话之前，绑定的 issue 被暂停
 pr_scn mid2
 # 这一轮对 PR 标签事件的读取依次是：动手前核对、核实加标签、摘标签前核对、核实摘标签、结束会话前核对
@@ -779,6 +810,35 @@ chk "13b 暂停之后不结束会话、不记重派；标签还原成这一步�
     "$(alive "$N")/$(efield "$N" '.restarts // 0')/$(plog '已翻回')/$(labels_of "$P")/$(efield "$N" '.own')/$(efield "$N" '.took')" "yes/0/0/doing/agent/null/null"
 tick 10; tick 60
 chk "13b 之后两轮：没有派工" "$(plog "dispatch PR #$P")/$(labels_of "$P")" "0/doing/agent"
+# 13b2 复审第 5 轮：摘掉 doing/agent 之后被暂停，还原时「加回 doing/agent」失败，而且之后一直失败
+pr_scn mid2b
+hook_at "issues_${P}_events" 4 bash -c "'$FAKEBIN/jset' '$GD/labels.json' '.[\$n] = [\"pending/PR\", \"pending/human\"]' --arg n '$N'; touch '$GD/F_post_labels'"
+tick 60
+chk "13b2 夹具：doing/agent 已摘、没加回去，两份归属记录都在" \
+    "$(hook_ran)/$(labels_of "$P")/$(efield "$N" '.own.label')/$(efield "$N" '.took.label')/$(alive "$N")" "yes/pending/review/pending/review/doing/agent/yes"
+g0=$(cnt '' "$CTL/got.issue-$N")
+tick 10; tick 10; tick 60
+chk "13b2 加回一直失败的三轮：记录还在、标签没丢、没有派工、会话没收到新输入" \
+    "$(efield "$N" '.own.label')/$(efield "$N" '.took.label')/$(labels_of "$P")/$(plog "dispatch PR #$P")/$(( $(cnt '' "$CTL/got.issue-$N") - g0 ))" \
+    "pending/review/doing/agent/pending/review/0/0"
+chk "13b2 到达性：这三轮确实又试过加回" "$([ "$(plog '没加回去')" -ge 2 ] && echo yes || echo no)" "yes"
+rm -f "$GD/F_post_labels"
+tick 10
+chk "13b2 服务恢复后：doing/agent 加回、复审标签摘回，记录了结，没有派工" \
+    "$(labels_of "$P")/$(efield "$N" '.own')/$(efield "$N" '.took')/$(plog "dispatch PR #$P")/$(alive "$N")" "doing/agent/null/null/0/yes"
+tick 10; tick 10
+chk "13b2 之后两轮：也没有派工" "$(plog "dispatch PR #$P")/$(labels_of "$P")" "0/doing/agent"
+# 13b3 对照：还原失败期间，人把这条接过去了（摘掉复审标签、挂上 pending/human）→ daemon 放手，什么都不写
+pr_scn mid2c
+hook_at "issues_${P}_events" 4 bash -c "'$FAKEBIN/jset' '$GD/labels.json' '.[\$n] = [\"pending/PR\", \"pending/human\"]' --arg n '$N'; touch '$GD/F_post_labels'"
+tick 60
+rm -f "$GD/F_post_labels"
+jset "$GD/labels.json" '.[$n] = ["pending/human"]' --arg n "$P"
+jset "$GD/events.json" '.[$n] += [{id: 60011, event: "unlabeled", label: {name: "pending/review"}, actor: {login: "maint", type: "User"}}, {id: 60012, event: "labeled", label: {name: "pending/human"}, actor: {login: "maint", type: "User"}}]' --arg n "$P"
+w0=$(writes_on "$P")
+tick 10; tick 10
+chk "13b3 人接手之后：daemon 放手，PR 上 0 次写入，标签是人设的样子" \
+    "$(( $(writes_on "$P") - w0 ))/$(labels_of "$P")/$(plog '之后有人动过')" "0/pending/human/1"
 # 13c 重派：加上触发标签之后，agent 又忙了
 pr_scn mid3
 hook_after_add "$P" bash -c "printf '%s\n' 'Working (3s • esc to interrupt)' > '$CTL/screen.issue-$N'; sleep 0.8"

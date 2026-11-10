@@ -67,7 +67,7 @@ session-isolation 24
 setup-label-colors 1
 skill-deploy 6
 smoke 6
-stuck-worker 410
+stuck-worker 480
 sub-issue-split 3
 token-usage-claude 3
 token-usage-codex 3
