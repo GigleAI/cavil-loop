@@ -130,6 +130,8 @@ export const OPS_KEY = '__ops__';
 export type OpAction = Extract<WriteAction, { kind: OpKind }>;
 /** GitHub#229: how many item details are kept for a fast re-open (this run only, never on disk). */
 export const DETAIL_CACHE_SIZE = 50;
+/** GitHub#328: how many of one round's newly pending items have their detail read ahead (the rest is read when opened). */
+export const PREFETCH_PER_ROUND = 10;
 
 /**
  * GitHub#229: what the notice of a created issue says, from every board it is still not
@@ -304,7 +306,15 @@ export class Controller {
   /** GitHub#258: the waits of the watched boards of new issues */
   private watchTimers = new Set<ReturnType<typeof setTimeout>>();
   /** details read in this run, newest last (re-opening shows the last one while the new read is on its way) */
-  private detailCache = new Map<string, ItemDetail>();
+  private detailCache = new Map<string, { detail: ItemDetail; read: number }>();
+  /** every detail read takes the next number when it starts: a read that lands after a later-started one of its item is not kept */
+  private detailReads = 0;
+  /**
+   * GitHub#328: newly pending items whose detail is read ahead, so a clicked notification shows
+   * it at once. Each with what its notification was decided on and the session it was queued in.
+   */
+  private prefetchQueue: { key: string; ctx: NoticeContext; session: number }[] = [];
+  private prefetching = false;
   /** labels / milestones per repository, only reads that worked */
   private optionsCache = new Map<string, RepoOptions>();
   private createSeq = 0;
@@ -656,6 +666,7 @@ export class Controller {
     this.editsStored = false;
     this.itemQueues.clear();
     this.detailCache.clear();
+    this.prefetchQueue = [];
     this.optionsCache.clear();
     this.sourceReadAt.clear();
     this.itemReadAt.clear();
@@ -812,7 +823,49 @@ export class Controller {
       this.notify(() => (this.itemStillHolds(ctx, it.key) ? alert : null));
     }
     this.badge();
+    this.prefetchAppeared(change.appeared);
     this.state = { ...this.state, ...this.pendingNow() };
+  }
+
+  /**
+   * GitHub#328: read the details of the items just notified ahead of the click, at most
+   * PREFETCH_PER_ROUND a round. The reads start only once this round's notifications and badge
+   * have been handed to the shell (a hidden window may hold back a request sent next to another
+   * one — see desktopCalls), and go one at a time. Without a shell nothing is notified, so
+   * nothing is read ahead.
+   */
+  private prefetchAppeared(appeared: Item[]): void {
+    if (!this.deps.desktop || !appeared.length) return;
+    const session = this.session;
+    for (const it of appeared.slice(0, PREFETCH_PER_ROUND)) {
+      if (this.prefetchQueue.some((q) => q.key === it.key)) continue;
+      this.prefetchQueue.push({ key: it.key, ctx: this.noticeContext(this.pending.carriers(it.key)), session });
+    }
+    void this.desktopCalls.then(() => this.runPrefetch());
+  }
+
+  /**
+   * One read at a time, each decided right before it goes out by the rule its notification goes
+   * out by (still pending through a source it came from, same account). A failed read is nobody's
+   * problem: nothing is shown or retried, the panel reads when the item is opened.
+   */
+  private async runPrefetch(): Promise<void> {
+    if (this.prefetching) return;
+    this.prefetching = true;
+    try {
+      for (let q = this.prefetchQueue.shift(); q; q = this.prefetchQueue.shift()) {
+        if (q.session !== this.session || !this.itemStillHolds(q.ctx, q.key)) continue;
+        await this.readDetail(q.key).catch(() => undefined);
+      }
+    } finally {
+      this.prefetching = false;
+    }
+  }
+
+  /** Every detail read ahead so far has ended (the tests wait on this). */
+  async prefetchSettled(): Promise<void> {
+    await this.desktopSettled();
+    while (this.prefetching || this.prefetchQueue.length) await new Promise((r) => setTimeout(r, 5));
   }
 
   /**
@@ -1477,18 +1530,30 @@ export class Controller {
   }
 
   /** The whole detail of one item, read from GitHub now (not cached). */
-  async loadDetail(key: string): Promise<DetailResult> {
+  loadDetail(key: string): Promise<DetailResult> {
+    return this.readDetail(key);
+  }
+
+  /**
+   * The one detail read: the panel's (loadDetail) and the read ahead of a notification's click
+   * (GitHub#328) both go through here, so what may enter the cache is decided once — only a read
+   * of this session, and never over one of the same item that started later.
+   */
+  private async readDetail(key: string): Promise<DetailResult> {
     const item = this.findItem(key);
     if (!item) return { ok: false, error: '看板上找不到这一条，请刷新后再试' };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error };
+    const read = ++this.detailReads;
     try {
       const raw = await fetchRawDetail(c.client, item.repo, item.number);
       if (c.session !== this.session) return { ok: false, error: '账号已切换' };
       const detail = toDetail(item.repo, raw, this.now());
-      this.detailCache.delete(key);
-      this.detailCache.set(key, detail);
-      while (this.detailCache.size > DETAIL_CACHE_SIZE) this.detailCache.delete(this.detailCache.keys().next().value!);
+      if ((this.detailCache.get(key)?.read ?? 0) < read) {
+        this.detailCache.delete(key);
+        this.detailCache.set(key, { detail, read });
+        while (this.detailCache.size > DETAIL_CACHE_SIZE) this.detailCache.delete(this.detailCache.keys().next().value!);
+      }
       return { ok: true, detail };
     } catch (e) {
       this.noteAuthFailure(e);
@@ -1499,7 +1564,7 @@ export class Controller {
 
   /** GitHub#229: the detail read last in this run (shown at once on re-opening, while it is read again); null = none. */
   cachedDetail(key: string): ItemDetail | null {
-    return this.detailCache.get(key) ?? null;
+    return this.detailCache.get(key)?.detail ?? null;
   }
 
   /**

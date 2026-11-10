@@ -1726,12 +1726,25 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.waitForTimeout(800);
   expect(notes()).toHaveLength(1);
 
-  // a click on that notification opens the item in the app (also from the settings page)
+  // GitHub#328: the notified item's detail was read ahead, once, with nobody opening it (and none for the merged PR)
+  const detailReads = (n: number) => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === n);
+  await expect.poll(() => detailReads(fresh).filter((l) => l.status === 200).length).toBe(1);
+  expect(detailReads(mergedPr)).toHaveLength(0);
+
+  // a click on that notification opens the item in the app (also from the settings page):
+  // what was read ahead shows at once, while the panel's own read is still held
+  const releaseDetail = env.fake.holdWhen((e) => e.operation === 'CavilItemDetail' && e.variables?.number === fresh);
   await page.getByTestId('open-settings').click();
   app.desktop.push({ kind: 'open', key: itemNote.key, url: itemNote.url });
   await expect(page.getByTestId('detail')).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId('detail')).toContainText(`#${fresh}`);
+  await expect(page.getByTestId('detail').getByTestId('detail-cached')).toContainText('正在更新');
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible();
+  // "did happen": the panel's read went out and has no answer yet
+  expect(detailReads(fresh).map((l) => l.status)).toEqual([200, 0]);
   await shot(page, '22-notification-click');
+  releaseDetail();
+  await expect(page.getByTestId('detail').getByTestId('detail-cached')).toHaveCount(0);
   // closed, then the settings page and back: an old click never reopens it
   await page.getByTestId('detail-close').click();
   await expect(page.getByTestId('detail')).toHaveCount(0);
