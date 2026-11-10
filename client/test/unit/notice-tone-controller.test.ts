@@ -18,7 +18,7 @@ import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/
 import { handleGraphql, type Store } from '../fake-github/writes';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { opAutoDismissable, opButtons, opPhase, opText, opTone, type OpRecord } from '../../src/shared/ops';
-import { createTone, editsTone } from '../../src/shared/noticeTone';
+import { createFailures, createTone, editsTone } from '../../src/shared/noticeTone';
 import type { CreateJob, EditMark } from '../../src/shared/types';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
@@ -325,7 +325,7 @@ describe('a new issue that missed its board: "再试加入看板"', () => {
     const c = await ready();
     const job = await missed(c, 'retry life');
     expect(createTone(job)).toBe('warn');
-    expect(job.actionError ?? null).toBeNull();
+    expect(createFailures(job)).toEqual([]);
     const joinsBefore = fake.log.filter(isJoin).length;
     // 1. held
     const first = holding(isJoin);
@@ -343,8 +343,8 @@ describe('a new issue that missed its board: "再试加入看板"', () => {
     const out1 = await p1;
     expect(out1.ok).toBe(false);
     expect(jobOf(c)!.retrying).toBe(false);
-    expect(jobOf(c)!.actionError).toBe(out1.error);
-    expect(jobOf(c)!.actionError).toMatch(/cavil project/);
+    expect(jobOf(c)!.boards).toMatchObject([{ projectKey: PROJECT_KEY, state: 'missing', retryFailed: true }]);
+    expect(createFailures(jobOf(c)!).join()).toMatch(/再试后「cavil project」仍没加入/);
     expect(createTone(jobOf(c)!)).toBe('error');
     // 3. once more (the board takes it now): running, the reason of the attempt before is gone the moment it starts
     fake.state.w.readOnlyProjects.delete('org/gigleai/11');
@@ -352,7 +352,6 @@ describe('a new issue that missed its board: "再试加入看板"', () => {
     const p2 = c.retryCreateProjects(job.id);
     await until(() => second.caught() === 1, 'the second retry reached GitHub');
     expect(jobOf(c)!.retrying).toBe(true);
-    expect(jobOf(c)!.actionError ?? null).toBeNull();
     expect(createTone(jobOf(c)!)).toBe('busy');
     // 4. it joined
     second.release();
@@ -403,7 +402,191 @@ describe('a new issue that missed its board: "再试加入看板"', () => {
     const r = await p;
     expect(r.warning).toMatch(/字段没设上/);
     expect(jobOf(c)!.retrying).toBe(false);
-    expect(jobOf(c)!.actionError).toMatch(/字段没设上/);
+    expect(jobOf(c)!.boards).toMatchObject([{ projectKey: PROJECT_KEY, state: 'fieldsFailed', retryFailed: true }]);
+    expect(createFailures(jobOf(c)!).join()).toMatch(/已加入但字段没设上/);
+    expect(createTone(jobOf(c)!)).toBe('error');
+  });
+
+  it('a retry that cannot start (offline) says so on the notice: red; the next retry starts over', async () => {
+    const c = await ready();
+    const job = await missed(c, 'offline retry');
+    const joins0 = fake.log.filter(isJoin).length;
+    (c as any).set({ sync: { ...c.getState().sync, offline: true } });
+    const out = await c.retryCreateProjects(job.id);
+    expect(out.ok).toBe(false);
+    expect(fake.log.filter(isJoin).length).toBe(joins0);
+    expect(jobOf(c)).toMatchObject({ retrying: false, retryError: out.error });
+    // no board was worked on: none is marked
+    expect(jobOf(c)!.boards!.some((b) => b.retryFailed)).toBe(false);
+    expect(createTone(jobOf(c)!)).toBe('error');
+    (c as any).set({ sync: { ...c.getState().sync, offline: false } });
+    fake.state.w.readOnlyProjects.delete('org/gigleai/11');
+    const held = holding(isJoin);
+    const p = c.retryCreateProjects(job.id);
+    await until(() => held.caught() === 1, 'the retry reached GitHub');
+    expect(jobOf(c)!.retryError ?? null).toBeNull();
+    expect(createTone(jobOf(c)!)).toBe('busy');
+    held.release();
+    expect((await p).ok).toBe(true);
+    expect(c.getState().creates).toEqual([]);
+  });
+});
+
+// PR #361 code review round 1: the colour is taken from every part the notice still holds — what
+// one attempt left unfinished on a board stays until that very board is dealt with again.
+describe('several boards on one notice: a success on one never hides what failed on another', () => {
+  const B = 'project:org/gigleai/12';
+  const NODE_A = 'PVT_fixture_435fd6e043de';
+  const NODE_B = 'PVT_fixture_second';
+  const joinOf = (node: string) => (e: LoggedRequest) => e.operation === 'CavilAddProjectItem' && e.variables?.projectId === node;
+  /** a second Project (B) on the fake GitHub: the recorded one under another number and node id */
+  async function twoBoards() {
+    const pagesB = JSON.parse(JSON.stringify(fake.state.projects.get('org/gigleai/11')));
+    for (const pg of pagesB) {
+      pg.id = NODE_B;
+      pg.title = 'second board';
+      pg.url = 'https://github.com/orgs/GigleAI/projects/12';
+    }
+    fake.state.projects.set('org/gigleai/12', pagesB);
+    const c = await ready();
+    c.addSource('https://github.com/orgs/GigleAI/projects/12');
+    await c.syncNow();
+    return c;
+  }
+  const boardsOf = (c: Controller) => (jobOf(c)?.boards ?? []).map((b) => [b.projectKey, b.state, b.retryFailed === true]);
+
+  it('A joined on a retry but its field was refused, B still refused (red) → the next retry only joins B: A is still unfinished, the notice is still red and still says A', async () => {
+    const c = await twoBoards();
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    fake.state.w.readOnlyProjects.add('org/gigleai/12');
+    await c.startCreate({ kind: 'createIssue', repo: REPO, title: 'two boards', body: '', labels: [], projects: [PROJECT_KEY, B], plan: { milestone: null, projects: [{ projectKey: PROJECT_KEY, iterationId: null, status: 'In progress' }, { projectKey: B, iterationId: null, status: null }] } });
+    await until(() => jobOf(c)?.status === 'partial', 'partial');
+    const id = jobOf(c)!.id;
+    // left by the create itself, nobody tried again: yellow
+    expect(boardsOf(c)).toEqual([[PROJECT_KEY, 'missing', false], [B, 'missing', false]]);
+    expect(createTone(jobOf(c)!)).toBe('warn');
+    // retry 1: A joins (answer held while A turns read-only again, so its status write is refused); B still refused
+    fake.state.w.readOnlyProjects.delete('org/gigleai/11');
+    const heldA = holding(joinOf(NODE_A));
+    const p1 = c.retryCreateProjects(id);
+    await until(() => heldA.caught() === 1, 'A\'s join went out');
+    expect(createTone(jobOf(c)!)).toBe('busy');
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    heldA.release();
+    expect((await p1).ok).toBe(false);
+    expect(boardsOf(c)).toEqual([[PROJECT_KEY, 'fieldsFailed', true], [B, 'missing', true]]);
+    expect(createTone(jobOf(c)!)).toBe('error');
+    // retry 2: only B is worked on, and it joins — held first: running
+    fake.state.w.readOnlyProjects.delete('org/gigleai/12');
+    const statusWrites = () => fake.log.filter((e) => e.operation === 'CavilSetStatus').length;
+    const s0 = statusWrites();
+    const heldB = holding(joinOf(NODE_B));
+    const p2 = c.retryCreateProjects(id);
+    await until(() => heldB.caught() === 1, 'B\'s join went out');
+    expect(createTone(jobOf(c)!)).toBe('busy');
+    heldB.release();
+    expect((await p2).ok).toBe(true);
+    // B is done and gone; A was not touched by this retry (no status write) and is still what the first retry left
+    expect(statusWrites()).toBe(s0);
+    expect(boardsOf(c)).toEqual([[PROJECT_KEY, 'fieldsFailed', true]]);
+    expect(createFailures(jobOf(c)!)).toHaveLength(1);
+    expect(createFailures(jobOf(c)!)[0]).toMatch(/再试后「cavil project」已加入但字段没设上/);
+    expect(createTone(jobOf(c)!)).toBe('error');
+    // a retry with nothing left to join sends nothing and changes nothing: still red
+    const w0 = fake.writes().length;
+    await c.retryCreateProjects(id);
+    expect(fake.writes().length).toBe(w0);
+    expect(createTone(jobOf(c)!)).toBe('error');
+  });
+
+  it('a field refused by the create itself (never retried) stays yellow when another board\'s retry works; a board the retry failed on turns the notice red while that one stays unmarked', async () => {
+    const c = await twoBoards();
+    // A: joined at creation, its status refused there (the join's answer held while A turns read-only); B: refused
+    fake.state.w.readOnlyProjects.add('org/gigleai/12');
+    const heldA = holding(joinOf(NODE_A));
+    await c.startCreate({ kind: 'createIssue', repo: REPO, title: 'field at create', body: '', labels: [], projects: [PROJECT_KEY, B], plan: { milestone: null, projects: [{ projectKey: PROJECT_KEY, iterationId: null, status: 'In progress' }, { projectKey: B, iterationId: null, status: null }] } });
+    await until(() => heldA.caught() === 1, 'A\'s join went out');
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    heldA.release();
+    await until(() => jobOf(c)?.status === 'partial', 'partial');
+    const id = jobOf(c)!.id;
+    expect(boardsOf(c)).toEqual([[PROJECT_KEY, 'fieldsFailed', false], [B, 'missing', false]]);
+    expect(createTone(jobOf(c)!)).toBe('warn');
+    // the retry fails on B: red because of B; A is not worked on and not marked
+    expect((await c.retryCreateProjects(id)).ok).toBe(false);
+    expect(boardsOf(c)).toEqual([[PROJECT_KEY, 'fieldsFailed', false], [B, 'missing', true]]);
+    expect(createTone(jobOf(c)!)).toBe('error');
+    // the next retry joins B: nothing an attempt failed on is left — A's field from the create is yellow as before
+    fake.state.w.readOnlyProjects.delete('org/gigleai/12');
+    expect((await c.retryCreateProjects(id)).ok).toBe(true);
+    expect(boardsOf(c)).toEqual([[PROJECT_KEY, 'fieldsFailed', false]]);
+    expect(createFailures(jobOf(c)!)).toEqual([]);
+    expect(createTone(jobOf(c)!)).toBe('warn');
+  });
+
+  // the two entries on one notice: "改成…" on a board that took the issue in by itself (A, not ticked),
+  // "再试加入看板" on a ticked board that refused it (B)
+  async function clickAndRetry() {
+    const c = await twoBoards();
+    fake.state.w.readOnlyProjects.add('org/gigleai/12');
+    const r = await c.startCreate({ kind: 'createIssue', repo: REPO, title: 'click and retry', body: '', labels: [], projects: [B], plan: { milestone: null, projects: [{ projectKey: B, iterationId: null, status: null }], watch: [{ projectKey: PROJECT_KEY, iterationId: null, status: 'In progress', label: 'In progress' }] } });
+    expect(r.ok).toBe(true);
+    await until(() => c.getState().focus !== null, 'created');
+    const n = Number(c.getState().focus!.key.split('#')[1]);
+    // GitHub's own auto-add puts it on A with another status: a person has to decide
+    const store: Store = { projects: fake.state.projects, repos: fake.state.repos, w: fake.state.w };
+    const nodeId = fake.state.repos.get('gigleai/cavil-loop')!.find((x: any) => x.number === n)!.node_id as string;
+    expect((handleGraphql(store, 'CavilAddProjectItem', { projectId: NODE_A, contentId: nodeId }) as any).data?.addProjectV2ItemById?.item?.id).toBeTruthy();
+    const field = fake.state.projects.get('org/gigleai/11')![0].fields.nodes.find((f: any) => f.name === 'Status') as any;
+    const item = fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((x: any) => x.content?.number === n && x.content?.repository?.nameWithOwner?.toLowerCase() === 'gigleai/cavil-loop') as any;
+    expect((handleGraphql(store, 'CavilSetStatus', { projectId: NODE_A, itemId: item.id, fieldId: field.id, optionId: field.options.find((o: any) => o.name === 'Backlog').id }) as any).errors).toBeUndefined();
+    const watchA = () => jobOf(c)?.watch?.find((w) => w.projectKey === PROJECT_KEY);
+    await until(() => watchA()?.state === 'human', 'A waits for a person');
+    await new Promise((res) => setTimeout(res, LOOKS[2] + 300));
+    expect(boardsOf(c)).toEqual([[B, 'missing', false]]);
+    expect(createTone(jobOf(c)!)).toBe('warn');
+    return { c, id: jobOf(c)!.id, watchA };
+  }
+
+  it('the click on A was refused (red) → the retry joins B: A\'s refused click is still there, still red; a click on A that works clears it', async () => {
+    const { c, id, watchA } = await clickAndRetry();
+    fake.state.w.readOnlyProjects.add('org/gigleai/11');
+    const out = await c.applyCreateWatch(id, PROJECT_KEY);
+    expect(out.ok).toBe(false);
+    // the write did go out and was refused
+    expect(fake.log.filter((e) => e.operation === 'CavilSetStatus' && e.variables?.projectId === NODE_A).length).toBe(1);
+    expect(watchA()!.clickError).toBe(out.error);
+    expect(createTone(jobOf(c)!)).toBe('error');
+    // the other entry works on the other board
+    fake.state.w.readOnlyProjects.delete('org/gigleai/12');
+    expect((await c.retryCreateProjects(id)).ok).toBe(true);
+    expect(boardsOf(c)).toEqual([]);
+    expect(watchA()).toMatchObject({ state: 'human', clickError: out.error });
+    expect(createFailures(jobOf(c)!)).toEqual([`「cavil project」：${out.error}`]);
+    expect(createTone(jobOf(c)!)).toBe('error');
+    // A dealt with again, and it works: nothing failed is left
+    fake.state.w.readOnlyProjects.delete('org/gigleai/11');
+    expect((await c.applyCreateWatch(id, PROJECT_KEY)).ok).toBe(true);
+    const after = jobOf(c);
+    expect(after === undefined || createFailures(after).length === 0).toBe(true);
+    expect(after === undefined || createTone(after) !== 'error').toBe(true);
+  });
+
+  it('the retry failed on B (red) → the click on A works: B is still what the retry left, still red; while the click runs the notice is busy', async () => {
+    const { c, id, watchA } = await clickAndRetry();
+    expect((await c.retryCreateProjects(id)).ok).toBe(false);
+    expect(boardsOf(c)).toEqual([[B, 'missing', true]]);
+    expect(createTone(jobOf(c)!)).toBe('error');
+    const held = holding((e) => e.operation === 'CavilCreatedItemBoards');
+    const p = c.applyCreateWatch(id, PROJECT_KEY);
+    await until(() => held.caught() === 1, 'the read before writing reached GitHub');
+    expect(watchA()!.busy).toBe(true);
+    expect(createTone(jobOf(c)!)).toBe('busy');
+    held.release();
+    expect((await p).ok).toBe(true);
+    expect(fake.log.filter((e) => e.operation === 'CavilSetStatus' && e.variables?.projectId === NODE_A).length).toBe(1);
+    // B was not touched by the click
+    expect(boardsOf(c)).toEqual([[B, 'missing', true]]);
     expect(createTone(jobOf(c)!)).toBe('error');
   });
 });
@@ -458,8 +641,8 @@ describe('a board that took the new issue in by itself: "在某看板改成…" 
     // the write did go out and was refused
     expect(fake.log.filter((e) => e.operation === 'CavilSetStatus').length).toBe(1);
     expect(watchOf(c)!.busy).toBe(false);
-    expect(jobOf(c)!.actionError).toBe(out1.error);
-    expect(jobOf(c)!.actionError).toMatch(/权限/);
+    expect(watchOf(c)!.clickError).toBe(out1.error);
+    expect(watchOf(c)!.clickError).toMatch(/权限/);
     expect(createTone(jobOf(c)!)).toBe('error');
     // 2. again (GitHub accepts the write now): running, the reason of the attempt before is gone
     fake.state.w.readOnlyProjects.delete('org/gigleai/11');
@@ -467,7 +650,7 @@ describe('a board that took the new issue in by itself: "在某看板改成…" 
     const p2 = c.applyCreateWatch(id, PROJECT_KEY);
     await until(() => second.caught() === 1, 'the second read reached GitHub');
     expect(watchOf(c)!.busy).toBe(true);
-    expect(jobOf(c)!.actionError ?? null).toBeNull();
+    expect(watchOf(c)!.clickError ?? null).toBeNull();
     expect(createTone(jobOf(c)!)).toBe('busy');
     second.release();
     expect((await p2).ok).toBe(true);
@@ -488,7 +671,7 @@ describe('a board that took the new issue in by itself: "在某看板改成…" 
     const out = await c.applyCreateWatch(jobOf(c)!.id, PROJECT_KEY);
     expect(out.ok).toBe(false);
     expect(watchOf(c)).toMatchObject({ state: 'human', seen: 'Done', busy: false });
-    expect(jobOf(c)!.actionError).toContain('「Done」');
+    expect(watchOf(c)!.clickError).toContain('「Done」');
     expect(createTone(jobOf(c)!)).toBe('error');
   });
 

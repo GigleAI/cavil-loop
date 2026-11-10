@@ -1157,7 +1157,7 @@ export const MUTATIONS = [
     from: '  if (labelsNote) parts.push(labelsNote);\n', to: '',
     expect: ['dropped labels and a refused board are both said'] },
   { what: '交接（GitHub#245，PR #249 复审第 1 轮）：补加入看板后把标签缺失的提示一起抹掉', file: 'src/app/controller.ts',
-    from: '      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, actionError: error ?? warning });', to: '      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, actionError: error ?? warning, labelsNote: undefined });',
+    from: '      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, retryError: null });', to: '      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, retryError: null, labelsNote: undefined });',
     expect: ['dropped labels and a refused board are both said'] },
   // ---- GitHub#250, PR #255 code review round 1 ----
   { what: '证据不排除发送前已有的评论（一分钟前同内容的旧评论被认成这次发出的）', file: 'src/shared/ops.ts',
@@ -1263,7 +1263,7 @@ export const MUTATIONS = [
     ],
     expect: ['code review round 2: the source removed and added again while the create request is on its way'] },
   { what: '自动收进看板后（GitHub#258，PR #263 复审第 2 轮）：按钮在第一次等待之后才占住（同时点两次写两次）', file: 'src/app/controller.ts',
-    from: "    this.patchCreate(id, { actionError: null });\n    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));\n", to: "    await Promise.resolve();\n",
+    from: "    this.patchWatch(id, key, (x) => ({ ...x, busy: true, clickError: null }));\n", to: "    await Promise.resolve();\n",
     expect: ['code review round 2: two clicks at once (the read held)'] },
   // ---- GitHub#260 ----
   { what: 'PR 状态图标（GitHub#260）：没列出的值（还在计算、新值）显示成绿色「没问题」', file: 'src/renderer/prStatus.ts',

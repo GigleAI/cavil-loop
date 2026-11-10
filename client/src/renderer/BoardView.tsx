@@ -13,7 +13,7 @@ import { Icon, itemIcon } from './Icons';
 import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
-import { createTone, editsTone } from '../shared/noticeTone';
+import { createFailures, createTone, editsTone } from '../shared/noticeTone';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { OpNotice } from './OpNotice';
 import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
@@ -413,6 +413,7 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
   const tone = createTone(job);
   const mark = tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />;
   const working = job.retrying === true || (job.watch ?? []).some((w) => w.busy === true);
+  const failures = createFailures(job);
   const close = (
     <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
       <Icon name="x" />
@@ -461,10 +462,10 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
                 在「{w.title}」改成「{w.label}」
               </button>
             ))}
-          {job.actionError && !working && (
+          {failures.length > 0 && !working && (
             <span className="small err" data-testid="create-retry-error">
               {' '}
-              {job.actionError}
+              {failures.join('；')}
             </span>
           )}
         </span>

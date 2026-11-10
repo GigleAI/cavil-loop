@@ -3,7 +3,7 @@
 // ops.test.ts, the controller's writes of these facts in notice-tone-controller.test.ts.
 
 import { describe, expect, it } from 'vitest';
-import { createFacts, createTone, editsTone, noticeTone, resultTone, watchFailed, type NoticeFacts } from '../../src/shared/noticeTone';
+import { createFacts, createFailures, createTone, editsTone, noticeTone, resultTone, watchFailed, type NoticeFacts } from '../../src/shared/noticeTone';
 import type { CreateJob, CreateWatch } from '../../src/shared/types';
 
 describe('the rule, over every combination of the four facts', () => {
@@ -25,16 +25,25 @@ describe('the rule, over every combination of the four facts', () => {
 });
 
 const job = (extra: Partial<CreateJob> = {}): CreateJob => ({ id: 1, repo: 'o/r', title: 't', status: 'partial', message: 'issue #9 已建好，但…', createdKey: 'o/r#9', number: 9, draft: { repo: 'o/r', title: 't', body: '', labels: [], projects: [] }, ...extra });
+const board = (state: 'missing' | 'fieldsFailed', retryFailed = false, projectKey = 'p') => ({ projectKey, title: 'P', state, reason: 'HTTP 502', iterationId: null, status: null, ...(retryFailed ? { retryFailed } : {}) });
 const watch = (state: CreateWatch['state'], extra: Partial<CreateWatch> = {}): CreateWatch => ({ projectKey: 'p', title: 'P', iterationId: null, status: 's', label: 'Todo', state, writes: 0, epoch: 0, ...extra });
 
 describe('a new issue\'s notice', () => {
   const rows: [string, CreateJob, string][] = [
     ['being created', job({ status: 'running', message: null }), 'busy'],
     ['could not be created', job({ status: 'failed', message: '没有权限' }), 'error'],
-    ['not on a board, nobody tried again', job({ boards: [{ projectKey: 'p', title: 'P', state: 'missing', reason: 'HTTP 502', iterationId: null, status: null } as any] }), 'warn'],
+    ['not on a board, nobody tried again', job({ boards: [board('missing')] }), 'warn'],
     ['"再试加入看板" running', job({ retrying: true }), 'busy'],
-    ['"再试加入看板" running again: the failure before it does not show', job({ retrying: true, actionError: 'HTTP 502' }), 'busy'],
-    ['the last "再试" / "改成…" failed', job({ actionError: 'HTTP 502' }), 'error'],
+    ['"再试加入看板" running again: what the one before left does not show', job({ retrying: true, retryError: '离线', boards: [board('missing', true)] }), 'busy'],
+    ['the last "再试" could not start', job({ retryError: '离线时不能修改' }), 'error'],
+    ['a retry left a board not joined', job({ boards: [board('missing', true)] }), 'error'],
+    ['a retry joined a board but its field was refused', job({ boards: [board('fieldsFailed', true)] }), 'error'],
+    ['a field refused by the create itself, nobody tried again', job({ boards: [board('fieldsFailed')] }), 'warn'],
+    ['two boards: one a retry failed on, the other finished and gone', job({ boards: [board('fieldsFailed', true)], retryError: null }), 'error'],
+    ['two boards: one left by the create, one a retry failed on', job({ boards: [board('fieldsFailed'), board('missing', true, 'q')] }), 'error'],
+    ['a board\'s "改成…" click failed', job({ watch: [watch('human', { clickError: '没有权限' })] }), 'error'],
+    ['a click failed on one board; a retry then worked elsewhere (nothing else left)', job({ boards: [], watch: [watch('human', { clickError: '没有权限' })] }), 'error'],
+    ['a click running on one board while another board\'s click had failed', job({ watch: [watch('human', { clickError: '没有权限' }), watch('human', { projectKey: 'q', busy: true })] }), 'busy'],
     ['a board holds another value, a person decides', job({ watch: [watch('human')] }), 'warn'],
     ['"改成…" running on a board', job({ watch: [watch('human', { busy: true })] }), 'busy'],
     ['the automatic write was refused', job({ watch: [watch('failed', { reason: 'HTTP 403' })] }), 'error'],
@@ -53,6 +62,11 @@ describe('a new issue\'s notice', () => {
       expect(createFacts(j).done).toBe(false);
       expect(createFacts(j).retrying).toBe(false);
     }
+  });
+  it('every part an attempt failed on is said, one line each; parts nobody tried again are not', () => {
+    const j = job({ retryError: '离线', boards: [board('missing', true), board('fieldsFailed', false, 'q')], watch: [watch('human', { clickError: '没有权限' }), watch('human', { projectKey: 'q' })] });
+    expect(createFailures(j)).toEqual(['离线', '再试后「P」仍没加入（HTTP 502）', '「P」：没有权限']);
+    expect(createFailures(job({ boards: [board('missing'), board('fieldsFailed', false, 'q')], watch: [watch('human')] }))).toEqual([]);
   });
   it('which board states are failures', () => {
     expect((['looking', 'written', 'human', 'failed', 'unverified', 'unread'] as const).filter((s) => watchFailed(watch(s)))).toEqual(['failed', 'unverified', 'unread']);

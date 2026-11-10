@@ -2693,14 +2693,13 @@ export class Controller {
     if (!job || !w || w.state !== 'human' || !job.createdNodeId) return { ok: false, error: '没有要改的看板', warning: null };
     if (w.busy) return { ok: false, error: '上一次修改还没完成', warning: null };
     // taken before the first wait (code review round 2): a second click meanwhile is refused above.
-    // GitHub#357: the failure of the attempt before goes at the same moment
-    this.patchCreate(id, { actionError: null });
-    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));
+    // GitHub#357: the failure of this board's click before goes at the same moment (only this board's)
+    this.patchWatch(id, key, (x) => ({ ...x, busy: true, clickError: null }));
     const start = this.session;
     try {
       const out = await this.applyCreateWatchNow(id, key, job);
       // why it did not do it stays on the notice (the account changed: that notice is gone)
-      if (!out.ok && start === this.session) this.patchCreate(id, { actionError: out.error });
+      if (!out.ok && start === this.session) this.patchWatch(id, key, (x) => ({ ...x, clickError: out.error }));
       return out;
     } finally {
       // no way out leaves the board marked as being worked on
@@ -2751,7 +2750,7 @@ export class Controller {
     if (cur.retrying) return { ok: false, error: '上一次再试还没完成', warning: null };
     // GitHub#357: running from before the first wait, the failure of the attempt before gone
     const session = this.session;
-    this.patchCreate(id, { retrying: true, actionError: null });
+    this.patchCreate(id, { retrying: true, retryError: null });
     try {
       return await this.retryCreateProjectsNow(id, { ...cur, createdKey: created });
     } finally {
@@ -2768,7 +2767,7 @@ export class Controller {
 
   private async retryCreateProjectsNow(id: number, cur: CreateJob & { createdKey: string }): Promise<WriteResult> {
     const fail = (error: string): WriteResult => {
-      this.patchCreate(id, { retrying: false, actionError: error });
+      this.patchCreate(id, { retrying: false, retryError: error });
       return { ok: false, error, warning: null };
     };
     const c = await this.clientForCall(true);
@@ -2780,10 +2779,10 @@ export class Controller {
       try {
         if (!p) throw new ActionRefused('这个看板已不在来源里');
         const fieldError = await joinCreatedIssue(c.client, p, cur.createdNodeId ?? '', b.iterationId, b.status);
-        results.set(b.projectKey, fieldError === null ? null : { ...b, state: 'fieldsFailed', reason: explainError(fieldError, 'addToProject') });
+        results.set(b.projectKey, fieldError === null ? null : { ...b, state: 'fieldsFailed', reason: explainError(fieldError, 'addToProject'), retryFailed: true });
       } catch (e) {
         if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
-        results.set(b.projectKey, { ...b, reason: explainError(e, 'addToProject') });
+        results.set(b.projectKey, { ...b, reason: explainError(e, 'addToProject'), retryFailed: true });
       }
     }
     if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
@@ -2804,7 +2803,8 @@ export class Controller {
       const boards = mergeRetry(now.boards ?? [], results);
       // the notice goes only when nothing is left on any board, and no dropped label is left unsaid (GitHub#245);
       // boards still watched keep the job (GitHub#258)
-      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, actionError: error ?? warning });
+      // GitHub#357: what this retry left unfinished is marked on those boards (above); the boards it did not work on keep theirs
+      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, retryError: null });
     }
     return stillMissing.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
   }

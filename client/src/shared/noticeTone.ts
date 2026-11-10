@@ -46,13 +46,27 @@ export function watchFailed(w: CreateWatch): boolean {
   return w.state === 'failed' || w.state === 'unverified' || w.state === 'unread';
 }
 
+/**
+ * What a new issue's notice still holds that an attempt to deal with it failed on, one line per
+ * part (the words the notice shows): a retry that could not start, every board a retry left
+ * unfinished, every board whose "改成…" click failed. Each part is cleared only by a later attempt
+ * on that very part — a success elsewhere never hides it (PR #361 code review round 1).
+ */
+export function createFailures(job: CreateJob): string[] {
+  const out: string[] = [];
+  if (job.retryError) out.push(job.retryError);
+  for (const b of job.boards ?? []) if (b.retryFailed) out.push(`再试后「${b.title}」${b.state === 'missing' ? '仍没加入' : '已加入但字段没设上'}（${b.reason}）`);
+  for (const w of job.watch ?? []) if (w.clickError) out.push(`「${w.title}」：${w.clickError}`);
+  return out;
+}
+
 /** The facts of a new issue's notice (GitHub#229 / #258). A `watching` job has no notice. */
 export function createFacts(job: CreateJob): NoticeFacts {
   const watch = job.watch ?? [];
   return {
     busy: job.status === 'running' || job.retrying === true || job.looking === true || watch.some((w) => w.busy === true),
     done: false,
-    failed: job.status === 'failed' || !!job.actionError || !!job.lookError || watch.some(watchFailed),
+    failed: job.status === 'failed' || createFailures(job).length > 0 || !!job.lookError || watch.some(watchFailed),
     retrying: false,
     rest: 'warn',
   };

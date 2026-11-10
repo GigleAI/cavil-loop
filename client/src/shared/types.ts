@@ -225,6 +225,13 @@ export interface CreateBoard {
   /** what the board was meant to carry */
   iterationId: string | null;
   status: string | null;
+  /**
+   * GitHub#357: a "再试加入看板" worked on this board and left it unfinished (still not joined, or
+   * joined with its field refused). It stays with the board until a later retry works on this very
+   * board again — another board's success never clears it. Absent: left by the create itself,
+   * nobody tried again yet.
+   */
+  retryFailed?: boolean;
 }
 
 /**
@@ -253,6 +260,11 @@ export interface CreateWatch {
   writes: number;
   /** a button click is being carried out */
   busy?: boolean;
+  /**
+   * GitHub#357: why the last click of this board's "改成…" did not do it. Cleared when the next
+   * click on this board starts; nothing done on another board touches it.
+   */
+  clickError?: string | null;
   /** which addition of that board's source this watch belongs to (removed / added again → over) */
   epoch: number;
 }
@@ -287,12 +299,13 @@ export interface CreateJob {
   /** GitHub#357: "再试加入看板" is being carried out (set before its first wait, cleared on every way out) */
   retrying?: boolean;
   /**
-   * GitHub#357: why the last "再试加入看板" / "在某看板改成…" did not do it (or could not start).
-   * Cleared the moment the next one starts, so a notice never shows "running" and the failure
-   * before it together. It lives on the job, not in the bar that was clicked: every view of the
-   * notice shows the same.
+   * GitHub#357: why the last "再试加入看板" could not start at all (offline, not signed in) — no
+   * board was worked on. Cleared when the next retry starts. What a retry or a click left
+   * unfinished on one board is kept on that board (`CreateBoard.retryFailed`,
+   * `CreateWatch.clickError`): the notice's colour is taken from every part still there, never
+   * from the last attempt alone. All of it lives on the job, not in the bar that was clicked.
    */
-  actionError?: string | null;
+  retryError?: string | null;
   /** GitHub#357: unknown — the look for same-title issues is running */
   looking?: boolean;
   /** GitHub#357: unknown — why that look could not be done */
