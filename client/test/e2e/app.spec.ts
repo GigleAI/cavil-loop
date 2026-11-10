@@ -3225,6 +3225,54 @@ test('GitHub#348: what the update changes — one list opened from the board not
   await expect(dialog.getByTestId('update-notes-entry')).toHaveCount(3);
   await expect(dialog.getByTestId('update-notes-restart')).toHaveCount(0);
   await dialog.getByTestId('update-notes-close').click();
+  // GitHub#348 (PR #351 review round 1): "open" belongs to the list it was opened on. While that
+  // download reports progress the list stays open; once the round is over — it failed, the channel
+  // was switched — it is closed for good: the next round's list never opens without a click.
+  const downloading = (o: Record<string, unknown> = {}) => ({ ...base, phase: 'downloading', version: NEW, got: 1_000_000, total: 8_000_000, notes, ...o });
+  const opened = () => dialog.count();
+  await page.getByTestId('update-notes-open').click();
+  await expect(dialog).toBeVisible();
+  app.desktop.setUpdate(downloading({ got: 5_000_000, notes: JSON.parse(JSON.stringify(notes)) }));
+  await expect(page.getByTestId('update-line')).toContainText('5.0 / 8.0 MB');
+  expect(await opened()).toBe(1);
+  app.desktop.setUpdate({ ...base, phase: 'installing', version: NEW, notes });
+  await expect(page.getByTestId('update-line')).toHaveText(`正在安装 ${NEW}`);
+  expect(await opened()).toBe(1);
+  // the round fails; the next one finds another version
+  app.desktop.setUpdate({ ...base, last: { at, ok: false, message: `安装 ${NEW} 失败` } });
+  await expect(dialog).toHaveCount(0);
+  const other = { ...notes, to: '0.5.1-dev.470', entries: [{ version: '0.5.1-dev.470', at: null, more: 0, items: [{ title: '另一轮', more: null }] }, ...notes.entries] };
+  app.desktop.setUpdate(downloading({ version: '0.5.1-dev.470', notes: other }));
+  await expect(page.getByTestId('update-notes-open')).toHaveText('查看更新内容（4 个版本）');
+  await page.waitForTimeout(300);
+  expect(await opened()).toBe(0);
+  // … and the same version again after a failed round does not reopen it either
+  await page.getByTestId('update-notes-open').click();
+  await expect(dialog.getByTestId('update-notes-range')).toContainText('0.5.1-dev.470');
+  app.desktop.setUpdate({ ...base, phase: 'checking' });
+  await expect(dialog).toHaveCount(0);
+  app.desktop.setUpdate(downloading({ version: '0.5.1-dev.470', notes: other }));
+  await expect(page.getByTestId('update-notes-open')).toBeVisible();
+  await page.waitForTimeout(300);
+  expect(await opened()).toBe(0);
+  // a channel switch mid-download: the round starts over on the other channel with another list
+  await page.getByTestId('update-notes-open').click();
+  await expect(dialog).toBeVisible();
+  app.desktop.setUpdate({ ...base, channel: 'stable', phase: 'checking' });
+  await expect(dialog).toHaveCount(0);
+  app.desktop.setUpdate({ ...base, channel: 'stable', phase: 'downloading', version: '0.5.1', got: 1, total: 2, notes: { ...notes, to: '0.5.1', entries: [{ version: '0.5.1', at: null, more: 0, items: [] }] } });
+  await expect(page.getByTestId('update-notes-open')).toHaveText('查看更新内容（1 个版本）');
+  await page.waitForTimeout(300);
+  expect(await opened()).toBe(0);
+  // the board notice holds the same rule: opened there, the list replaced by another version's closes it
+  app.desktop.setUpdate({ ...ready, notes });
+  await page.getByTestId('back').click();
+  await page.getByTestId('update-ready-notes').click();
+  await expect(dialog).toBeVisible();
+  app.desktop.setUpdate({ ...ready, version: '0.5.1-dev.470', notes: other });
+  await expect(page.getByTestId('update-ready-notes')).toHaveText('更新内容（4 个版本）');
+  await expect(dialog).toHaveCount(0);
+  await page.getByTestId('open-settings').click();
   // idle again (the round failed): the button goes with the list
   app.desktop.setUpdate({ ...base, last: { at, ok: false, message: `下载 ${NEW} 失败：60 秒没有收到数据` } });
   await expect(page.getByTestId('update-line')).toContainText('失败');

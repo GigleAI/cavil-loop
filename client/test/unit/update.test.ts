@@ -821,13 +821,58 @@ describe('what the update changes, through a whole round (GitHub#348)', () => {
     expect(await status(c)).toMatchObject({ channel: 'stable', notes: null, last: { ok: true, message: '已是最新' } });
   });
 
-  it('kept notes that cannot be read (a hand edit, another shape) are nothing to show, never an error', async () => {
+  it('kept notes that cannot be read (a hand edit, another shape, a broken entry deep inside) are nothing to show, never an error; what a real round kept is shown whole', async () => {
+    const good = { from: '0.4.0', to: '0.5.0', complete: true, more: 0, entries: [{ version: '0.5.0', at: null, more: 0, items: [{ title: 't', more: null }] }] };
+    const entry = (o: Record<string, unknown>) => ({ ...good, entries: [{ ...good.entries[0], ...o }] });
+    const without = (o: Record<string, unknown>, k: string) => Object.fromEntries(Object.entries(o).filter(([x]) => x !== k));
+    const bad: unknown[] = [
+      'text',
+      7,
+      null,
+      [],
+      { to: '0.5.0' },
+      { to: '0.5.0', entries: 'x' },
+      { ...good, to: '0.4.0' },
+      { to: '0.5.0', entries: [] },
+      { ...good, from: 4 },
+      { ...good, complete: 'yes' },
+      { ...good, more: -1 },
+      { ...good, more: '0' },
+      without(good, 'more'),
+      { ...good, entries: [null] },
+      { ...good, entries: ['0.5.0'] },
+      { ...good, entries: [good.entries[0], 3] },
+      entry({ items: null }),
+      entry({ items: 'x' }),
+      entry({ items: [null] }),
+      entry({ items: [{ title: 5, more: null }] }),
+      entry({ items: [{ more: null }] }),
+      entry({ items: [{ title: 't', more: 9 }] }),
+      entry({ items: [{ title: 't', more: null }, 't2'] }),
+      entry({ version: 1 }),
+      entry({ at: 5 }),
+      entry({ more: null }),
+      entry({ more: 1.5 }),
+    ];
     const b = harness();
-    for (const value of ['text', 7, null, { to: '0.5.0' }, { to: '0.5.0', entries: 'x' }, { to: '0.4.0', entries: [] }]) {
+    for (const value of bad) {
       await b.call('test.update.storeInstalled', { value });
       expect(((await start(b)) as any).installed, JSON.stringify(value)).toBeNull();
     }
-    await b.call('test.update.storeInstalled', { value: { from: '0.4.0', to: '0.5.0', complete: true, more: 0, entries: [] } });
-    expect(((await start(b)) as any).installed).toMatchObject({ to: '0.5.0', dismissed: false });
+    // the same shapes, well formed, are shown — whole
+    for (const value of [good, { ...good, entries: [] }, entry({ at: '2026-11-10T01:00:00Z', more: 3, items: [{ title: 't', more: 'm' }, { title: 'u', more: null }] })]) {
+      await b.call('test.update.storeInstalled', { value });
+      expect(((await start(b)) as any).installed, JSON.stringify(value)).toEqual({ ...value, dismissed: false });
+    }
+    // what a real round keeps passes the same check (the round's test above reads it back after a restart)
+    srv.publishAll(['0.5.1']);
+    Object.assign(srv.pages[0][0], { body: '### 这一版（0.5）\n\n- **甲**：一\n', published_at: '2026-11-10T01:00:00Z' });
+    const c = harness();
+    await start(c);
+    await c.call('test.update.check');
+    expect((await status(c)).phase).toBe('ready');
+    await c.close();
+    open.splice(0);
+    expect(((await start(harness(), { current: '0.5.1' })) as any).installed).toMatchObject({ to: '0.5.1', entries: [{ version: '0.5.1', items: [{ title: '甲', more: '一' }] }] });
   });
 });

@@ -119,16 +119,27 @@ export function UpdateNotesDialog({ notes, restart, onClose }: { notes: UpdateNo
   );
 }
 
-/** The button that opens the list; nothing when there is nothing to list. */
+/**
+ * The button that opens the list; nothing when there is nothing to list.
+ *
+ * "Open" belongs to the list it was opened on (which versions, from → to): once that list is gone —
+ * the round failed, the channel was switched, another version is found — the dialog is closed for
+ * good, and a list that arrives later never opens by itself. The same list arriving again with
+ * every progress report of one download keeps it open.
+ */
 function NotesButton({ notes, restart, label, link, testid }: { notes: UpdateNotes | null | undefined; restart: boolean; label: string; link?: boolean; testid: string }) {
-  const [open, setOpen] = useState(false);
+  const key = listed(notes) ? `${notes.from}\n${notes.to}` : null;
+  const [openOn, setOpenOn] = useState<string | null>(null);
+  useEffect(() => {
+    setOpenOn((was) => (was !== null && was !== key ? null : was));
+  }, [key]);
   if (!listed(notes)) return null;
   return (
     <>
-      <button className={link ? 'link' : undefined} data-testid={testid} onClick={() => setOpen(true)}>
+      <button className={link ? 'link' : undefined} data-testid={testid} onClick={() => setOpenOn(key)}>
         {label}（{notes.entries.length + notes.more} 个版本）
       </button>
-      {open && <UpdateNotesDialog notes={notes} restart={restart} onClose={() => setOpen(false)} />}
+      {openOn !== null && openOn === key && <UpdateNotesDialog notes={notes} restart={restart} onClose={() => setOpenOn(null)} />}
     </>
   );
 }

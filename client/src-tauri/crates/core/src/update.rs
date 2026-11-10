@@ -360,6 +360,18 @@ pub fn notes(pages: &[Value], current: &str, to: &str, channel: Channel) -> Valu
     json!({ "from": cur.to_string(), "to": top.to_string(), "complete": complete, "more": more, "entries": entries })
 }
 
+/// Is `v` exactly the shape `notes` produces (what the window draws without checking)? Used on
+/// what was kept in the local store: a hand edit or another version's shape is not shown at all.
+pub fn well_formed_notes(v: &Value) -> bool {
+    let text = |x: &Value| x.is_string();
+    let text_or_none = |x: &Value| x.is_null() || x.is_string();
+    let item = |i: &Value| i.is_object() && text(&i["title"]) && text_or_none(&i["more"]);
+    let entry = |e: &Value| {
+        e.is_object() && text(&e["version"]) && text_or_none(&e["at"]) && e["more"].is_u64() && e["items"].as_array().is_some_and(|items| items.iter().all(item))
+    };
+    v.is_object() && text(&v["from"]) && text(&v["to"]) && v["complete"].is_boolean() && v["more"].is_u64() && v["entries"].as_array().is_some_and(|es| es.iter().all(entry))
+}
+
 /// The whole release list, page by page, until a page has fewer than 100 entries. No credential.
 /// Any page that fails fails the whole read; so does a list longer than MAX_PAGES pages (its end
 /// was never seen, so "nothing newer" could not be told).
@@ -574,7 +586,7 @@ impl Updater {
     /// only when they are for the version running now (anything else — nothing kept, kept for
     /// another version, unreadable — is nothing to show).
     fn installed(&self) -> Value {
-        let Some(mut v) = self.store.get_setting(INSTALLED_KEY).filter(|v| v["to"].as_str() == Some(self.current.as_str()) && v["entries"].is_array()) else {
+        let Some(mut v) = self.store.get_setting(INSTALLED_KEY).filter(|v| v["to"].as_str() == Some(self.current.as_str()) && well_formed_notes(v)) else {
             return Value::Null;
         };
         v["dismissed"] = json!(self.store.get_str(INSTALLED_SEEN_KEY).as_deref() == Some(self.current.as_str()));
