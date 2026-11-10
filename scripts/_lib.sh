@@ -6892,7 +6892,9 @@ _concurrent_work_log_file() {   # <说明> <文件>
 concurrent_work_text() {   # <本次工作分支> <本次工作编号>...
     local tmp
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/cavil-concurrent.XXXXXX" 2>/dev/null) || { printf '%s\n' "$CONCURRENT_WORK_UNREAD"; return 0; }
-    _concurrent_work_text_in "$tmp" "$@" || printf '%s\n' "$CONCURRENT_WORK_UNREAD"
+    # 先写进临时文件：中途失败时不把已经写出的半截清单和「未能读取」拼在一起
+    if _concurrent_work_text_in "$tmp" "$@" > "$tmp/out" && [ -s "$tmp/out" ]; then cat "$tmp/out"
+    else printf '%s\n' "$CONCURRENT_WORK_UNREAD"; fi
     rm -rf "$tmp"
     return 0
 }
@@ -6936,7 +6938,8 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
         def clean: (. // "") | tostring
             | gsub("[\\p{Cc}\\p{Zl}\\p{Zp}\\s]+"; " ") | gsub("`"; "") | gsub("「"; "『") | gsub("」"; "』")
             | sub("^ +"; "") | sub(" +$"; "")
-            | if length > 80 then .[0:80] + "…" else . end;
+            | if length > 80 then .[0:80] + "…" else . end
+            | if . == "" then "（无标题）" else . end;
         def safe: type == "string" and length > 0 and length <= 200
             and test("^[A-Za-z0-9._/-]+$") and (test("\\.\\.|//|^[-/.]|[/.]$|\\.lock$|/\\.") | not);
         def shape: type == "object" and (.number | type == "number") and (.number == (.number | floor)) and .number > 0;
@@ -6977,19 +6980,23 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
         | map(if .kind == "ok" and (((.head | safe) and (.base == "" or (.base | safe))) | not)
               then .kind = "badbranch" | .head = "" | .base = "" else . end)
         | sort_by(.sort)
-        | "TOTAL\t\(length)",
+        | "TOTAL\u001f\(length)",
           (.[0:$max][]
            | [ (if .issue != null and .pr != null then "#\(.issue)（PR #\(.pr)，\(.state)）"
                 elif .issue != null then "#\(.issue)（\(.state)）"
                 else "PR #\(.pr)（\(.state)）" end),
-               .title, .kind, .head, .base ] | join("\t"))
+               .title, .kind, .head, .base ] | join("\u001f"))
         ' > "$tmp/rows" 2> "$tmp/err"; then
         _concurrent_work_log_file "同时进行的其他工作：GitHub 返回的条目不是预期的形状，本次写「未能读取」" "$tmp/err"
         return 1
     fi
 
+    # 字段之间用 US（0x1f）隔开，不用制表符：制表符是 IFS 的「空白」分隔符，read 会把连续的几个并成一个，
+    # 中间一列为空（没有 PR 的条目目标分支是空的、fork 的分支是空的）后面的列就整体前移——标题清理成空串时
+    # 分支被读成目标分支、已推送的改动被写成「还没有推送」（PR #352 复审第 1 轮）。US 不是空白，空列原样保留；
+    # 标题里的控制字符在上面已经清掉，分支名只认安全字符，字段里不会出现它。
     local total=0 shown=0 tag disp title kind head base
-    IFS=$'\t' read -r tag total < "$tmp/rows" || return 1
+    IFS=$'\x1f' read -r tag total < "$tmp/rows" || return 1
     [ "$tag" = TOTAL ] && [[ "$total" =~ ^[0-9]+$ ]] || return 1
     if [ "$total" -eq 0 ]; then
         printf '目前没有其他进行中的条目。\n'
@@ -6999,8 +7006,8 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
     # 4. 远端分支的当前提交（一次 ls-remote）+ 把它们拉进主 checkout 的对象库（一次 fetch，不写任何引用）
     local git_ok=1 b sha ref
     local -A need=() tips=()
-    while IFS=$'\t' read -r disp title kind head base; do
-        [ "$kind" = ok ] || continue
+    while IFS=$'\x1f' read -r disp title kind head base; do
+        [ "$kind" = ok ] && [ -n "$head" ] || continue
         need["$head"]=1; need["${base:-$CONCURRENT_WORK_DEFAULT_BASE}"]=1
     done < <(tail -n +2 "$tmp/rows")
     if [ "${#need[@]}" -gt 0 ]; then
@@ -7026,12 +7033,14 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
 
     # 5. 逐行输出
     local eb against n files more
-    while IFS=$'\t' read -r disp title kind head base; do
+    while IFS=$'\x1f' read -r disp title kind head base; do
         shown=$((shown + 1))
         case "$kind" in
             fork)      printf -- '- %s「%s」：来自 fork，改动文件未读取\n' "$disp" "$title"; continue ;;
             nopr)      printf -- '- %s「%s」：PR 信息未能读取，改动文件未能读取\n' "$disp" "$title"; continue ;;
             badbranch) printf -- '- %s「%s」：分支名异常，未列出\n' "$disp" "$title"; continue ;;
+            ok)        [ -n "$head" ] || return 1 ;;
+            *)         return 1 ;;   # 行的形状不对：宁可整段「未能读取」，也不按错位的字段往下写
         esac
         eb="${base:-$CONCURRENT_WORK_DEFAULT_BASE}"
         if [ -n "$base" ]; then against=" → \`$eb\`"; else against="（相对 \`$eb\`）"; fi
@@ -7072,7 +7081,11 @@ concurrent_work_fill() {   # <prompt 文件> <本次工作分支> <本次工作�
     local t
     t=$(mktemp "${TMPDIR:-/tmp}/cavil-concurrent-fill.XXXXXX" 2>/dev/null) || t=""
     if [ -n "$t" ]; then
-        if concurrent_work_enabled; then concurrent_work_text "$@" > "$t" || true
+        if concurrent_work_enabled; then
+            # 放在子 shell 里跑：dispatch 脚本开着 set -eu，清单生成里任何一个致命错误（数组下标为空、
+            # 变量没定义……）在当前 shell 里会直接结束整个派工。子 shell 里出事只丢这一段：非 0 退出或
+            # 没有输出一律写「未能读取」，不留半截清单。
+            ( concurrent_work_text "$@" ) > "$t" 2>/dev/null || : > "$t"
         else printf '（本项目没有开启这项提示。）\n' > "$t"; fi
         [ -s "$t" ] || printf '%s\n' "$CONCURRENT_WORK_UNREAD" > "$t"
         if awk -v ph="$CONCURRENT_WORK_PLACEHOLDER" -v src="$t" '

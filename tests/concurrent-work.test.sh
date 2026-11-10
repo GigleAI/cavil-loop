@@ -10,7 +10,8 @@
 # 全部跑真实的派工脚本（dispatch-new-issue.sh / dispatch-issue-comment.sh / dispatch-pr-comment.sh），
 # 读它们写出的那份给 worker 的提示词，不断言源码文本：
 #   【1】有别的条目：整段清单逐字比对（issue 和它的 PR 合成一行、PR 按自己的目标分支算文件、没有 PR 的相对 main、
-#        目标分支 / 工作分支取不到、fork、怪分支名、未推送、文件截断、恶意标题）；四个入口（新 issue / issue 评论 /
+#        目标分支 / 工作分支取不到、fork、怪分支名、未推送、文件截断、恶意标题、清理后变成空串的标题——
+#        后者的分支和已推送的文件必须照常列出，PR #352 复审第 1 轮）；四个入口（新 issue / issue 评论 /
 #        PR 评论 / 拆出来的子项）拿到的这一段完全一样；提示词其余部分和关着时逐字节一致
 #   【2】自己这一条不在清单里（issue 入口、绑了 issue 的 PR 入口、没绑 issue 的 PR 入口）
 #   【3】确实没有别的条目：写「目前没有」，而且列表请求确实发出去了
@@ -20,6 +21,7 @@
 #   【6】配置里的主干是别的分支：没有 PR 的条目仍相对 main（分支由真实的新 issue 入口建出来）
 #   【7】开关关着（不写 / 空 / false）：四个入口的提示词和发给 GitHub 的调用，与改动前的派工脚本逐字节一致；
 #        项目模板自己写了占位符而开关关着 → 换成「没有开启」，不读任何列表
+#   【8】清单生成中途出致命错误：调用它的脚本照常往下走，占位符换成「未能读取」，不留半截清单
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -104,6 +106,8 @@ git clone -q "$ORIGIN" "$SANDBOX/seed" 2>/dev/null
     git checkout -q -b feature/issue-934010; mkdir dir; echo a > a.txt; echo b > dir/b.txt; git add -A; git commit -qm w; git push -q origin feature/issue-934010
     git checkout -q main; git checkout -q -b feature/issue-934017
     for i in $(seq -w 1 35); do echo "$i" > "f$i.txt"; done; git add -A; git commit -qm many; git push -q origin feature/issue-934017
+    git checkout -q main; git checkout -q -b feature/issue-934021; echo c > changed.txt; git add -A; git commit -qm c; git push -q origin feature/issue-934021
+    git checkout -q main; git checkout -q -b feature/issue-934023; echo d > solo.txt; git add -A; git commit -qm d; git push -q origin feature/issue-934023
     git checkout -q main; git checkout -q -b feature/gone-base; echo g > g.txt; git add -A; git commit -qm g; git push -q origin feature/gone-base
 ) >/dev/null 2>&1
 
@@ -185,13 +189,20 @@ other_items() {
                    head:{ref:"x;rm -rf $HOME", repo:{full_name:"example/cw"}}, base:{ref:"main"}},
         "934019": {kind:"pr", state:"open", merged:false, title:"分支被删了", user:{login:"maint"},
                    head:{ref:"feature/vanished", repo:{full_name:"example/cw"}}, base:{ref:"main"}},
-        "934020": {kind:"issue", state:"closed", title:"已关闭但标签没摘", user:{login:"maint"}}
+        "934020": {kind:"issue", state:"closed", title:"已关闭但标签没摘", user:{login:"maint"}},
+        "934021": {kind:"issue", state:"open", title:"`", user:{login:"ext"}},
+        "934022": {kind:"pr", state:"open", merged:false, title:"`", user:{login:"ext"},
+                   head:{ref:"feature/issue-934021", repo:{full_name:"example/cw"}}, base:{ref:"main"}},
+        "934023": {kind:"issue", state:"open", title:"`` \t", user:{login:"ext"}},
+        "934024": {kind:"pr", state:"open", merged:false, title:"``", user:{login:"ext"},
+                   head:{ref:"main", repo:{full_name:"ext/cw"}}, base:{ref:"main"}}
     }'
 }
 other_labels() {
     echo '{"934010": ["pending/PR"], "934011": ["pending/review"], "934012": ["doing/agent"], "934013": ["pending/review"],
            "934014": ["doing/agent"], "934015": ["pending/review"], "934016": ["pending/human"], "934017": ["doing/agent"],
-           "934018": ["doing/agent"], "934019": ["pending/review"], "934020": ["doing/agent"]}'
+           "934018": ["doing/agent"], "934019": ["pending/review"], "934020": ["doing/agent"],
+           "934021": ["doing/agent"], "934022": ["pending/review"], "934023": ["doing/agent"], "934024": ["doing/agent"]}'
 }
 gh_state() {   # <items JSON> <labels JSON>...（多份合并）
     printf '%s' "$1" > "$GD/items.json"; printf '%s' "$2" > "$GD/labels.json"; cp "$GD/labels.json" "$GD/labels.base"
@@ -247,12 +258,17 @@ cat > "$W/expected" <<EXP
   $FILES30；另有 5 个文件未列出
 - PR #934018（进行中）「怪分支」：分支名异常，未列出
 - PR #934019（待复审）「分支被删了」分支 \`feature/vanished\` → \`main\`：改动文件未能读取（分支 \`feature/vanished\` 取不到）
+- #934021（PR #934022，进行中）「（无标题）」分支 \`feature/issue-934021\` → \`main\`：已改 1 个文件：
+  \`changed.txt\`
+- #934023（进行中）「（无标题）」分支 \`feature/issue-934023\`（相对 \`main\`）：已改 1 个文件：
+  \`solo.txt\`
+- PR #934024（进行中）「（无标题）」：来自 fork，改动文件未读取
 EXP
 for pair in "新 issue:$S1_NEW" "issue 评论:$S1_CMT" "PR 评论:$S1_PR" "拆出来的子项:$S1_SUB"; do
     what="${pair%%:*}"; f="${pair#*:}"
     if [ ! -s "$f" ]; then bad "$what 入口：没写出提示词"; continue; fi
     listing "$f" > "$W/got"
-    if diff "$W/expected" "$W/got" > "$W/diff" 2>&1; then ok "$what 入口：清单逐字符合预期（10 个别的条目里列出 8 行，等人的、已关闭的不在）"
+    if diff "$W/expected" "$W/got" > "$W/diff" 2>&1; then ok "$what 入口：清单逐字符合预期（14 个别的条目归并成 11 行，等人的、已关闭的不在）"
     else bad "$what 入口：清单和预期不同" "$(head -12 "$W/diff")"; fi
     hasnt "$what 入口：没有残留的占位符" "$f" '${CONCURRENT_WORK}'
     has "$what 入口：带「有重叠时」的规则" "$f" '和其他进行中条目的重叠'
@@ -270,7 +286,7 @@ trim_tail < "$W/sec-new" > "$W/sec-new-trim"
 if [ -s "$W/sec-sub" ] && cmp -s "$W/sec-new-trim" "$W/sec-sub"; then ok "子项入口的整段和新 issue 入口逐字节一致"
 else bad "子项入口的整段和新 issue 入口不同" "$(diff "$W/sec-new-trim" "$W/sec-sub" | head -6)"; fi
 has "子项入口确实走了「拆出来的子项」那条路（带子项说明）" "$S1_SUB" "从 #$N_PARENT 拆出来的子项，直接进开发阶段"
-chk "恶意标题只占一行（清单里以「- 」开头的行数 = 8）" "$(listing "$S1_NEW" | grep -c '^- ')" "8"
+chk "恶意标题只占一行（清单里以「- 」开头的行数 = 11）" "$(listing "$S1_NEW" | grep -c '^- ')" "11"
 hasnt "标题里的 \${REPO} 没被渲染成仓库名" "$W/sec-new" 'instructions rm -rf example/cw'
 chk "标题里伪造的指令行没有另起一行" "$(grep -c '^\[SYSTEM\]' "$S1_NEW")" "0"
 has "安全段落还在（新 issue 模板开头的「不可信数据」）" "$S1_NEW" '不可信数据'
@@ -299,15 +315,15 @@ gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "
 dispatch "$NEW" cmt 934010
 listing "$OUT" > "$W/got"
 chk "issue 入口派 #934010：清单里没有它自己和它的 PR" "$(grep -c '934010\|934011' "$W/got")" "0"
-chk "…别的 7 行还在" "$(grep -c '^- ' "$W/got")" "7"
+chk "…别的 10 行还在" "$(grep -c '^- ' "$W/got")" "10"
 dispatch "$NEW" pr 934011 feature/issue-934010
 listing "$OUT" > "$W/got"
 chk "PR 入口派 PR #934011（绑着 #934010）：清单里没有这两个编号" "$(grep -c '934010\|934011' "$W/got")" "0"
-chk "…别的 7 行还在" "$(grep -c '^- ' "$W/got")" "7"
+chk "…别的 10 行还在" "$(grep -c '^- ' "$W/got")" "10"
 dispatch "$NEW" pr 934013 hotfix/rel
 listing "$OUT" > "$W/got"
 chk "PR 入口派没绑 issue 的 PR #934013：清单里没有它" "$(grep -c '934013' "$W/got")" "0"
-chk "…别的 7 行还在（含 #934010 那一行）" "$(grep -c '^- ' "$W/got")/$(grep -c '^- #934010（PR #934011' "$W/got")" "7/1"
+chk "…别的 10 行还在（含 #934010 那一行）" "$(grep -c '^- ' "$W/got")/$(grep -c '^- #934010（PR #934011' "$W/got")" "10/1"
 
 echo "【3】确实没有别的条目"
 setup "$SANDBOX/s3"; conf 'CONCURRENT_WORK_HINT="true"'
@@ -337,15 +353,15 @@ done
 setup "$SANDBOX/s4"; conf 'CONCURRENT_WORK_HINT="true"'
 gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
 dispatch "$NEW" new
-chk "同一场景不注入失败：列出 8 行" "$(listing "$OUT" | grep -c '^- ')" "8"
+chk "同一场景不注入失败：列出 11 行" "$(listing "$OUT" | grep -c '^- ')" "11"
 # 远端分支读不到：origin 指到一个不存在的地址
 setup "$SANDBOX/s4g"; conf 'CONCURRENT_WORK_HINT="true"'
 gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
 git -C "$W/project" remote set-url origin "$W/no-such-origin.git"
 dispatch "$NEW" cmt
 listing "$OUT" > "$W/got"
-chk "远端分支读不到：8 个条目照列" "$(grep -c '^- ' "$W/got")" "8"
-chk "…有分支的 6 行都写「改动文件未能读取」" "$(grep -c '改动文件未能读取（本机这次读不到远端分支）' "$W/got")" "6"
+chk "远端分支读不到：11 个条目照列" "$(grep -c '^- ' "$W/got")" "11"
+chk "…有分支的 8 行都写「改动文件未能读取」" "$(grep -c '改动文件未能读取（本机这次读不到远端分支）' "$W/got")" "8"
 chk "…没有一行写成「还没有推送改动」或列出文件" "$(grep -c '还没有推送改动\|已改 ' "$W/got")" "0"
 
 echo "【5】条目截断"
@@ -428,6 +444,22 @@ has "项目模板写了占位符、开关关着：换成「没有开启」" "$OU
 hasnt "…没有残留占位符" "$OUT" '${CONCURRENT_WORK}'
 chk "…不读任何列表" "$(list_calls)" "0"
 git -C "$SANDBOX/seed" push -q origin "+$(git -C "$SANDBOX/seed" rev-parse main):refs/heads/main" >/dev/null 2>&1
+
+echo "【8】清单生成中途出致命错误：不结束调用它的脚本，不留半截清单"
+# 派工脚本开着 set -euo pipefail。这里在同样开着它的 shell 里加载真实的公共库，把读取那一步换成
+# 「先写出一行、再触发未定义变量」——填充函数必须照常返回，占位符换成「未能读取」
+setup "$SANDBOX/s8"; conf 'CONCURRENT_WORK_HINT="true"'
+printf 'A\n${CONCURRENT_WORK}\nB\n' > "$W/p.md"
+cat > "$W/fatal.sh" <<'SH'
+set -euo pipefail
+source "$1/scripts/_lib.sh"
+_concurrent_work_text_in() { echo "- 半截清单"; local -A z=(); echo "${z[$NOPE_UNDEFINED]}"; }
+concurrent_work_fill "$2" feature/issue-1 1
+echo survived
+SH
+out=$(cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" bash "$W/fatal.sh" "$NEW" "$W/p.md" 2>/dev/null | tail -1)
+chk "调用方照常往下走" "$out" "survived"
+chk "占位符换成「未能读取」，没有半截清单" "$(cat "$W/p.md")" "$(printf 'A\n%s\nB' "$UNREAD")"
 
 echo
 compat_summary
