@@ -197,7 +197,14 @@ test('browser login → board; restart skips login; sources; three column modes;
   ({ app, page } = await launch(env));
   // GitHub#270: why, and when it is tried again
   await expect(page.getByTestId('offline')).toContainText('离线：无法连接 GitHub', { timeout: 15_000 });
-  await expect(page.getByTestId('offline')).toContainText('· 数据截至');
+  // GitHub#324: the bar says when the data was read in full; the header says when it was last checked,
+  // and its hover lists every source's two times, the connection and what a check cannot see
+  await expect(page.getByTestId('offline')).toContainText('· 数据整份读取：');
+  await expect(page.getByTestId('sync-status')).toContainText('上次检查 ');
+  const hover = (await page.getByTestId('sync-status').getAttribute('title')) ?? '';
+  expect(hover).toMatch(/：整份读取 .+前 · 上次检查 .+前/);
+  expect(hover).toContain('最后连上 GitHub：这次打开后还没有连上过');
+  expect(hover).toContain('「检查」看不到');
   await expect(page.getByTestId('offline')).toContainText('每分钟自动重试，点刷新可立刻重试');
   expect(await countOf(page, 'Iteration 25')).toBe('13');
   await expect(page.getByTestId('write-entry')).toBeDisabled();
@@ -1431,7 +1438,7 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
     await page.clock.fastForward(step);
     await page.waitForTimeout(100);
   }
-  await expect(page.getByTestId('sync-status')).toContainText('上次同步 1 小时前'); // the window's clock really moved
+  await expect(page.getByTestId('sync-status')).toContainText('上次检查 1 小时前'); // the window's clock really moved
   await expect(page.getByTestId('offline')).toHaveCount(0);
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
 
@@ -1506,7 +1513,7 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   await page.emulateMedia({ colorScheme: 'dark' });
   await shot(page, '16-sync-trouble-open-dark');
   await page.emulateMedia({ colorScheme: 'light' });
-  // a narrow window hides the "上次同步" text; the ⚠️ and its details stay on screen
+  // a narrow window hides the "上次检查" text; the ⚠️ and its details stay on screen
   const size = page.viewportSize();
   await page.setViewportSize({ width: 900, height: 700 });
   await expect(btn).toBeInViewport({ ratio: 1 });

@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceTimes, type ViewSettings } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -91,11 +91,33 @@ interface NoticeContext {
   sources: (readonly [string, number])[];
 }
 
+/** GitHub#324: what the sync beat and its alarm need of a clock */
+export interface SyncTimers {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+  setInterval(fn: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+const REAL_TIMERS: SyncTimers = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  setInterval: (fn, ms) => setInterval(fn, ms),
+  clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+};
+
 export interface ControllerDeps {
   backend: Backend;
   endpoints: Endpoints;
   now?: () => number;
   syncIntervalMs?: number;
+  /**
+   * GitHub#324: after a stretch of syncing that ran over a beat, a timed round starts no sooner
+   * than this long after it ended. Default: the beat's own interval (what the shell says with its beat, else `syncIntervalMs`).
+   */
+  syncGapMs?: number;
+  /** GitHub#324: the timers behind the window's beat and the alarm of a timed round (tests: a clock moved by hand) */
+  timers?: SyncTimers;
   /** how long after the last successful change one more sync round runs (tests shorten / lengthen it) */
   followUpSyncMs?: number;
   /**
@@ -267,7 +289,24 @@ export class Controller {
   private loginCancels: Promise<unknown> = Promise.resolve();
   /** the back end's number for the sign-in attempt in progress (a cancel names it) */
   private pendingRun: number | null = null;
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private timer: unknown = null;
+  // ---- GitHub#324: timed rounds keep a gap ----
+  // Three things are remembered, and only `timedSync`, `syncNow` and `resetTimed` touch them:
+  /** a beat came while syncing ran: that stretch outlasted the beat, so a gap follows it */
+  private timedSwallowed = false;
+  /** the earliest moment a timed round may start: when such a stretch went idle + the gap; null = at once */
+  private timedDueAt: number | null = null;
+  /** at most one: set for `timedDueAt`, in the session it was set in */
+  private alarm: { handle: unknown; at: number; session: number } | null = null;
+  /** the gap, as last told (a beat of the shell carries its interval) */
+  private timedGapMs: number;
+  private readonly timers: SyncTimers;
+  /**
+   * GitHub#324: per source, the latest round that read it in full or was told by GitHub's change
+   * check that nothing changed. Never before the snapshot's own time; a failed round leaves it.
+   * Not stored: after a restart it is the snapshot's time again (older, never newer, than the truth).
+   */
+  private checkedAt = new Map<string, number>();
   /** the one sync round queued after the last successful change (GigleAI/cavil-loop#177) */
   private followUp: ReturnType<typeof setTimeout> | null = null;
   /** bodies / comments with a box being ticked right now: one read-change-write each at a time (GitHub#193) */
@@ -346,6 +385,8 @@ export class Controller {
       'github-app': deps.defaultGithubAppClientId ?? DEFAULT_GITHUB_APP_CLIENT_ID,
     };
     this.now = deps.now ?? Date.now;
+    this.timers = deps.timers ?? REAL_TIMERS;
+    this.timedGapMs = deps.syncGapMs ?? deps.syncIntervalMs ?? SYNC_INTERVAL_MS;
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
@@ -359,7 +400,7 @@ export class Controller {
       viewer: this.cache.getSetting<string | null>('viewer', null),
       sources: this.cache.getSetting<SourceConfig[]>('sources', []),
       view: normalizeView(this.cache.getSetting<unknown>('view', {})),
-      sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, sources: [], problem: null },
+      sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, checkedFrom: null, times: [], progress: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
@@ -439,10 +480,29 @@ export class Controller {
     for (const l of this.listeners) l(this.state);
   }
 
+  /**
+   * GitHub#324: the two times of every source and the two board-wide ones come from here alone
+   * (the header, the offline bar and the hover all read this one result): the oldest full read and
+   * the oldest check among the sources that have data. A source never read has neither.
+   */
   private refreshDerived() {
-    const times = this.state.sources.map((s) => this.snapshots.get(s.key)?.fetchedAt).filter((t): t is number => t != null);
-    const dataFrom = times.length ? Math.min(...times) : null;
-    if (dataFrom !== this.state.sync.dataFrom) this.state = { ...this.state, sync: { ...this.state.sync, dataFrom } };
+    const cur = this.state.sync;
+    const times: SourceTimes[] = this.state.sources.map((s) => {
+      const readAt = this.snapshots.get(s.key)?.fetchedAt ?? null;
+      return { sourceKey: s.key, readAt, checkedAt: readAt === null ? null : Math.max(readAt, this.checkedAt.get(s.key) ?? readAt) };
+    });
+    const oldest = (xs: (number | null)[]) => {
+      const have = xs.filter((t): t is number => t !== null);
+      return have.length ? Math.min(...have) : null;
+    };
+    const dataFrom = oldest(times.map((t) => t.readAt));
+    const checkedFrom = oldest(times.map((t) => t.checkedAt));
+    const sameTimes = times.length === cur.times.length && times.every((t, i) => t.sourceKey === cur.times[i].sourceKey && t.readAt === cur.times[i].readAt && t.checkedAt === cur.times[i].checkedAt);
+    // the progress of a round ends with the round, whichever way it ended
+    const progress = cur.syncing ? cur.progress : null;
+    if (dataFrom !== cur.dataFrom || checkedFrom !== cur.checkedFrom || !sameTimes || progress !== cur.progress) {
+      this.state = { ...this.state, sync: { ...cur, dataFrom, checkedFrom, times: sameTimes ? cur.times : times, progress } };
+    }
   }
 
   async start(): Promise<void> {
@@ -455,20 +515,22 @@ export class Controller {
       return;
     }
     this.session = r.session!;
+    this.resetTimed();
     this.signedIn = true;
     this.set({ phase: 'ready' });
     await this.syncNow();
   }
 
   startTimer(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer !== null) this.timers.clearInterval(this.timer);
     this.cancelFollowUp();
-    this.timer = setInterval(() => void this.syncNow(), this.deps.syncIntervalMs ?? SYNC_INTERVAL_MS);
+    this.timer = this.timers.setInterval(() => this.timedSync(), this.deps.syncIntervalMs ?? SYNC_INTERVAL_MS);
   }
 
   stopTimer(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer !== null) this.timers.clearInterval(this.timer);
     this.timer = null;
+    this.resetTimed();
     this.cancelFollowUp();
     // GitHub#258: and the watches of new issues (they only end here or with the session)
     for (const t of this.watchTimers) clearTimeout(t);
@@ -546,6 +608,7 @@ export class Controller {
       }
       this.pendingRun = null;
       this.session = done.session!;
+      this.resetTimed();
       this.signedIn = true;
       if (done.wiped) this.dropMirror();
       this.cache.mirror('viewer', done.viewer ?? null);
@@ -601,6 +664,7 @@ export class Controller {
     this.signedOutAt = session;
     this.session = session;
     this.signedIn = false;
+    this.resetTimed();
     this.cancelFollowUp();
     this.dropMirror();
     this.cache.mirror('viewer', null);
@@ -649,6 +713,7 @@ export class Controller {
   private dropMirror(): void {
     this.snapshots.clear();
     this.checks.clear();
+    this.checkedAt.clear();
     // GitHub#229: the changes, cached details and candidates belonged to that account too (the back end dropped the stored changes in the same step)
     for (const t of this.editTimers.values()) t.forEach(clearTimeout);
     this.editTimers.clear();
@@ -920,7 +985,7 @@ export class Controller {
       return;
     }
     if (ev.kind === 'tick') {
-      void this.syncNow();
+      this.timedSync(ev.everyMs);
       return;
     }
     if (ev.kind === 'update') {
@@ -1093,6 +1158,7 @@ export class Controller {
     this.cache.deleteSnapshot(key);
     this.snapshots.delete(key);
     this.checks.delete(key);
+    this.checkedAt.delete(key);
     // GitHub#229: the read times of that addition go with it
     this.sourceReadAt.delete(key);
     for (const k of [...this.itemReadAt.keys()]) if (k.startsWith(`${key}\n`)) this.itemReadAt.delete(k);
@@ -1168,6 +1234,8 @@ export class Controller {
       this.resync = true;
       return this.syncing;
     }
+    // GitHub#324: this round is the sync a waiting timed round was for — no alarm outlives its start
+    this.cancelAlarm();
     this.syncing = (async () => {
       try {
         do {
@@ -1181,11 +1249,77 @@ export class Controller {
         } while (this.resync && this.signedIn);
       } finally {
         this.syncing = null;
+        // GitHub#324: the one place the earliest timed round is written — syncing went idle,
+        // however it ended. (A round dropped by a refresh by hand ends outside this loop.)
+        // Only a stretch that ran over a beat is followed by the gap: one that fits between two
+        // beats keeps the beat's own pace, with no alarm to depend on (a hidden window's timers
+        // are slowed down, the shell's beat is not — GitHub#169, and the 2 minutes of GitHub#139).
+        this.timedDueAt = this.timedSwallowed ? this.now() + this.timedGapMs : null;
+        this.timedSwallowed = false;
         // no round runs any more: a dropped round set "syncing" and the next one may have ended early
         if (this.state.sync.syncing) this.set({ sync: { ...this.state.sync, syncing: false } });
       }
     })();
     return this.syncing;
+  }
+
+  /**
+   * GitHub#324: a timed round is due — the window's timer, the shell's beat and the alarm all end
+   * here, and nowhere else decides it. Operations and the refresh by hand call `syncNow` /
+   * `restartSync` as before and are never held back.
+   *   syncing            no round is queued behind it; only "a beat came meanwhile" is noted, which
+   *                      makes the gap follow this stretch (the beat never stops, so the next one
+   *                      arrives within its interval after syncing goes idle — it sets the alarm)
+   *   idle, too early    the one alarm is set for the earliest moment (kept if it is already that)
+   *   idle, due          a round starts (`syncNow` clears the alarm)
+   *   not signed in      no round; the alarm goes
+   * `everyMs`: the beat's own interval, when its keeper says it — the gap from then on.
+   */
+  private timedSync(everyMs?: unknown): void {
+    if (typeof everyMs === 'number' && Number.isFinite(everyMs) && everyMs >= 0) this.timedGapMs = everyMs;
+    if (!this.signedIn) return this.cancelAlarm();
+    if (this.syncing) {
+      this.timedSwallowed = true;
+      return;
+    }
+    const wait = this.timedWait();
+    if (wait <= 0) {
+      void this.syncNow();
+      return;
+    }
+    const at = this.timedDueAt!;
+    const session = this.session;
+    if (this.alarm && this.alarm.at === at && this.alarm.session === session) return;
+    this.cancelAlarm();
+    const handle = this.timers.setTimeout(() => {
+      // replaced or cancelled meanwhile: not this one's turn any more
+      if (this.alarm?.handle !== handle) return;
+      this.alarm = null;
+      // set in a session that is over: it starts nothing in the next one
+      if (session !== this.session) return;
+      this.timedSync();
+    }, wait);
+    this.alarm = { handle, at, session };
+  }
+
+  /** ms until a timed round may start (<= 0: now). A clock that went back never makes it wait longer than the gap. */
+  private timedWait(): number {
+    if (this.timedDueAt === null) return 0;
+    const wait = this.timedDueAt - this.now();
+    return wait > this.timedGapMs ? 0 : wait;
+  }
+
+  private cancelAlarm(): void {
+    if (!this.alarm) return;
+    this.timers.clearTimeout(this.alarm.handle);
+    this.alarm = null;
+  }
+
+  /** The beat stopped, or the session changed: no alarm, and the next timed round is not held back. */
+  private resetTimed(): void {
+    this.cancelAlarm();
+    this.timedDueAt = null;
+    this.timedSwallowed = false;
   }
 
   /**
@@ -1263,7 +1397,19 @@ export class Controller {
     const byHand = this.fullReadNext;
     this.fullReadNext = false;
     if (!byHand) for (const [key, c] of this.checks) if (c.epoch === epochAtStart.get(key)) recorded.set(key, c.check);
-    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, this.now(), recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS);
+    // GitHub#324: how far the round is, for the hover of the header (a dropped round reports nothing more)
+    const total = sources.length;
+    let done = 0;
+    const startedAt = this.now();
+    const progress = () => {
+      if (this.round !== run || run.signal.aborted || !this.state.sync.syncing) return;
+      this.set({ sync: { ...this.state.sync, progress: { startedAt, done, total } } });
+    };
+    progress();
+    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, startedAt, recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS, () => {
+      done++;
+      progress();
+    });
     run.reading = false;
     // Every source this round did not confirm unchanged needed a full read (it changed, the check could
     // not tell, 10 minutes were up, or the refresh was by hand). Its old record goes now, before anything
@@ -1312,15 +1458,17 @@ export class Controller {
       .filter((st) => current(st.sourceKey))
       .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }));
     const untouched = this.state.sync.sources.filter((st) => !status.some((x) => x.sourceKey === st.sourceKey) && this.state.sources.some((x) => x.key === st.sourceKey));
+    // GitHub#324: read in full or confirmed unchanged this round — and only then: a source that
+    // failed keeps the time it had
+    for (const st of status) if (st.ok && st.dataFrom !== null) this.checkedAt.set(st.sourceKey, Math.max(st.dataFrom, this.checkedAt.get(st.sourceKey) ?? 0));
     this.set({
       viewer: round.viewer ?? this.state.viewer,
       sync: {
+        ...this.state.sync,
         syncing: false,
         ...offlineFields(round.offline, round.offlineReason),
         lastOnlineAt: round.offline ? this.state.sync.lastOnlineAt : this.now(),
-        dataFrom: this.state.sync.dataFrom,
         sources: [...status, ...untouched],
-        problem: this.state.sync.problem,
       },
     });
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed

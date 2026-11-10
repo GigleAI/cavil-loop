@@ -286,6 +286,21 @@ export interface SourceSnapshot {
   project?: ProjectMeta;
 }
 
+export interface SourceTimes {
+  sourceKey: string;
+  /** epoch ms of the full read whose data is shown */
+  readAt: number | null;
+  /** epoch ms of the latest full read or "nothing changed" answer; never before `readAt` */
+  checkedAt: number | null;
+}
+
+export interface SyncProgress {
+  startedAt: number;
+  /** sources this round is through with (read, confirmed unchanged or failed) */
+  done: number;
+  total: number;
+}
+
 export interface SourceStatus {
   sourceKey: string;
   /** did the latest attempt read the whole source? */
@@ -382,8 +397,18 @@ export interface SyncState {
   offlineReason: string | null;
   /** epoch ms of the latest round that reached GitHub */
   lastOnlineAt: number | null;
-  /** epoch ms of the oldest snapshot currently shown (for "数据截至") */
+  /** epoch ms of the oldest full read among the sources that have data ("整份读取") */
   dataFrom: number | null;
+  /**
+   * GitHub#324: epoch ms of the oldest check among the sources that have data ("上次检查"). A check =
+   * the source was read in full, or GitHub's change check found nothing changed — which does not see
+   * everything (changeCheck.ts), so this is never shown as "the data is current as of".
+   */
+  checkedFrom: number | null;
+  /** GitHub#324: the two times of every configured source, in their order (both null: never read) */
+  times: SourceTimes[];
+  /** GitHub#324: the round reading GitHub right now; null whenever none is */
+  progress: SyncProgress | null;
   sources: SourceStatus[];
   /** something the user should know that is not "offline" (e.g. a refresh that failed, a credential not saved); null = none */
   problem: string | null;

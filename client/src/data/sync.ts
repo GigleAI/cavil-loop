@@ -46,6 +46,8 @@ export async function syncRound(
   recorded: Map<string, SourceCheck> = new Map(),
   /** GitHub#261: a source is read in full at least this often; 0 = no change check at all (every round reads every source in full, as before) */
   fullReadEveryMs: number = FULL_READ_EVERY_MS,
+  /** GitHub#324: one source is over — read, confirmed unchanged or failed (the round's progress) */
+  onSourceDone: () => void = () => {},
 ): Promise<SyncRound> {
   const keep = () => new Map([...previous].filter(([k]) => sources.some((s) => s.key === k)));
   const unchangedStatus = (error: string): SourceStatus[] =>
@@ -95,7 +97,7 @@ export async function syncRound(
     if (checked) checks.set(src.key, { ...checked.record, snapshotAt: snap.fetchedAt, fullAt: now });
     return { kind: 'read', snap };
   };
-  const results = await Promise.allSettled(sources.map(readOne));
+  const results = await Promise.allSettled(sources.map((src) => readOne(src).finally(onSourceDone)));
   results.forEach((r, i) => {
     const src = sources[i];
     if (r.status === 'fulfilled' && r.value.kind === 'unchanged') {

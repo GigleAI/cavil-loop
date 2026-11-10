@@ -167,7 +167,8 @@ pub fn spawn_background<R: Runtime>(app: AppHandle<R>) {
             every.tick().await;
             let d = beat.state::<Desktop>();
             d.record(json!({ "op": "tick", "visible": main_visible(&beat) }));
-            d.push(json!({ "kind": "tick" }));
+            // GitHub#324: the beat says its own interval — the window keeps that gap between timed rounds
+            d.push(json!({ "kind": "tick", "everyMs": ms }));
         }
     });
     let control = app.state::<Desktop>().hooks.control.clone();

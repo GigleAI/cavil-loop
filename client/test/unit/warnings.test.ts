@@ -7,7 +7,7 @@ const T0 = Date.parse('2026-11-06T00:00:00Z');
 const ok = (sourceKey: string): SourceStatus => ({ sourceKey, ok: true, error: null, dataFrom: T0 });
 const bad = (sourceKey: string, error = 'GitHub 返回 HTTP 502', dataFrom: number | null = T0): SourceStatus => ({ sourceKey, ok: false, error, dataFrom });
 function sync(p: Partial<SyncState> = {}): SyncState {
-  return { syncing: false, offline: false, offlineReason: null, lastOnlineAt: T0, dataFrom: T0, sources: [], problem: null, ...p };
+  return { syncing: false, offline: false, offlineReason: null, lastOnlineAt: T0, dataFrom: T0, checkedFrom: T0, times: [], progress: null, sources: [], problem: null, ...p };
 }
 const none = parseFilter('');
 

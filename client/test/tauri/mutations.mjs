@@ -40,8 +40,8 @@ const MUTATIONS = [
   {
     what: '窗口隐藏后外壳不再发同步节拍',
     file: 'src-tauri/src/desktop.rs',
-    from: '            d.push(json!({ "kind": "tick" }));\n        }\n    });',
-    to: '            if main_visible(&beat) {\n                d.push(json!({ "kind": "tick" }));\n            }\n        }\n    });',
+    from: '            d.push(json!({ "kind": "tick", "everyMs": ms }));\n        }\n    });',
+    to: '            if main_visible(&beat) {\n                d.push(json!({ "kind": "tick", "everyMs": ms }));\n            }\n        }\n    });',
     expect: 'synced while hidden',
   },
   {
