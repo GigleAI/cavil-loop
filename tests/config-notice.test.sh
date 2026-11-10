@@ -31,7 +31,7 @@ export HOME="$SANDBOX/home"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export TZ=UTC
 unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN \
-    LABEL_PENDING_BLOCKED CONFIG_NOTICE_ISSUE DEMO_NEW_FEATURE CONCURRENT_WORK_HINT
+    LABEL_PENDING_BLOCKED CONFIG_NOTICE_ISSUE DEMO_NEW_FEATURE ENABLE_CONCURRENT_WORK_HINT CONCURRENT_WORK_HINT
 export FAKE_GH_REPO="example/cn"
 
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
@@ -96,6 +96,8 @@ PRICE_AUTO_FETCH=0
 MAX_CONCURRENT_WORKERS=0
 # 这份「老项目配置」对别的 notice 项都已经拿过主意（写成空值 = 决定不开），只剩等前置标签那一项没写：
 # 下面每一组都以「恰好缺 LABEL_PENDING_BLOCKED 一项」为起点
+ENABLE_CONCURRENT_WORK_HINT=""
+# 这一项改名前的名字（GitHub#356）：当前代码不认它，只有对拍用的改动前那份代码还读它
 CONCURRENT_WORK_HINT=""
 PATH="$SANDBOX/bin:\$PATH"
 GH_TOKEN="fake-token-for-test"
@@ -234,6 +236,37 @@ conf_set 'DEMO_NEW_FEATURE=""'
 conf_set 'LABEL_PENDING_BLOCKED=""'
 tick "$NEW2"
 chk "两项都写进配置后关掉" "$(item 1 .state)" "closed"
+
+echo "【4b】改了名的设置（GitHub#356）：配置里只写着旧名字 = 没写，照常提示新名字；旧提示记录不拦这一次"
+OLD_KEY="CONCURRENT_WORK_HINT"; NEW_KEY="ENABLE_CONCURRENT_WORK_HINT"
+only_old_name() { sed -i "/^$NEW_KEY=/d; /^$OLD_KEY=/d" "$CONF"; conf_set "$OLD_KEY=\"true\""; }
+fresh 'LABEL_PENDING_BLOCKED=""'
+only_old_name
+tick
+chk "只写旧名字：开一条提示 issue" "$(creates)/$(n_items)" "1/1"
+body=$(item 1 .body)
+chk "正文点名新名字、给出模板里新名字那一行" "$(grep -c "\`$NEW_KEY\`" <<<"$body")/$(grep -cx "$NEW_KEY=\"true\"" <<<"$body")" "1/1"
+chk "正文说明旧名字已不再生效" "$(grep -c "原来叫 \`$OLD_KEY\`，那个名字已不再生效" <<<"$body")" 1
+chk "记下的是新名字" "$(nst '.issued')" "[\"$NEW_KEY\"]"
+conf_set "$NEW_KEY=\"true\""
+tick
+chk "补上新名字那一行后关掉" "$(item 1 .state)" "closed"
+# 旧版本留下的提示记录：提示 issue 开着，记录里是旧名字
+fresh
+tick
+jq --arg k "$OLD_KEY" '.logged += [$k] | .issued += [$k]' "$NSTATE" > "$NSTATE.tmp" && mv "$NSTATE.tmp" "$NSTATE"
+sed -i "/^$NEW_KEY=/d; /^$OLD_KEY=/d" "$CONF"
+tick
+chk "旧记录 + 两个名字都没写：零创建、原 issue 上一条评论" "$(creates)/$(comments_on 1)" "0/1"
+cbody=$(jq -r '.["1"][0].body' "$GD/comments.json")
+chk "评论给出新名字那一行" "$(grep -cx "$NEW_KEY=\"true\"" <<<"$cbody")" 1
+chk "记录里只剩现在登记着的名字" "$(nst '.issued')" "[\"$NEW_KEY\",\"LABEL_PENDING_BLOCKED\"]"
+tick
+chk "再下一轮：不重复评论" "$(comments_on 1)/$(on_issue 1)" "1/0"
+conf_set "$NEW_KEY=\"\""
+conf_set 'LABEL_PENDING_BLOCKED=""'
+tick
+chk "都写进配置后关掉" "$(item 1 .state)" "closed"
 
 echo "【5】读不到提示 issue：什么都不写、不记，恢复后补上"
 fresh
