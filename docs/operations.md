@@ -2227,6 +2227,11 @@ Every check is a script comparison, never a model call:
   record; an agent that is busy again, or anyone touching the item or its bound item (even just
   adding `pending/human` themselves), drops it. The daemon counts a label change as its own only
   when the event log says so.
+- **A step stopped half-way** (someone paused the bound item, the agent is busy again, …): the
+  rest is not done and the daemon puts the labels it changed in that step back as they were
+  (`doing/agent` back on, the label it added off); a hand-over comment already posted stays.
+  Until that is done, the dispatch label the daemon added is not taken as a dispatch signal;
+  remove it or add it again yourself and it is handled as yours.
 - **A step that never finishes**: after 10 failed attempts on one item the daemon stops handling
   it (one log line says so) until it leaves `doing/agent` (handed on, relabeled by a human) or is
   dispatched again.

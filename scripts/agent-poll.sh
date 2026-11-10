@@ -373,6 +373,12 @@ collect_queue_rows() {
                     continue ;;
             esac
         fi
+        # 卡住检测的重派做到一半（GitHub#339）：这个触发标签是 daemon 自己刚加的半成品，整步做完
+        # 之前不是派工信号。不配置卡住检测时这个函数第一行就返回，不读任何东西。
+        if stuck_dispatch_hold "$kind" "$num" "$trigger_label"; then
+            log "${kind} #${num} 的 $trigger_label 是卡住检测没做完的一步里加的，本轮不派工"
+            continue
+        fi
         # 等外部需求机器人期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
         # doing/agent 时一并摘掉等待标签（_lib.sh flip_to_doing 的 REQUESTER_BOT_DISPATCH_CLEAR）。
         if labels_have_requester_bot_wait "$labels_csv"; then

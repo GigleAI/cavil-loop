@@ -7545,7 +7545,8 @@ stuck_nudge() {   # <工作编号> <kind> <num> <取样目标串>
 # 一步 = 按固定顺序的几次写入：
 #   重派：加触发标签 → 摘 doing/agent → 结束会话
 #   交人：发评论 → 加 pending/human → 摘 doing/agent        （会话保留，方便人查）
-# 标签先加后摘：中途停下时条目不会变成一个流程标签都没有。会话最后才结束：之前任何一次写入
+# 标签先加后摘：中途停下时条目不会变成一个流程标签都没有。先加上去的那个标签在整步做完之前
+# 只是半成品：派工队列不认它（stuck_dispatch_hold），这一步作废时摘回去（stuck_own_retract）。会话最后才结束：之前任何一次写入
 # 没成，都还没做不可逆的事，也不会留下「doing/agent 还在、会话没了」让 self-heal 不看保护标签就接手。
 #
 # 记录里的 .id 是「此刻条目应该是什么样」：空闲周期开始时存下，之后**只在 daemon 的某次写入有
@@ -7585,6 +7586,70 @@ stuck_step_drop() {   # <工作编号> <kind> <num> <原因>
     log "卡住检测：$2 #$3 没做完的这一步作废：$4"
     # 评论编号一并清掉：以后再卡住是新的一次，交人时要重新说明
     stuck_entry_set "$1" '.pending = "" | .claim = null | .comment_id = 0 | .since = 0 | .id = "" | .fp = ""' || true
+    # 这一步里 daemon 自己加上去的标签摘回去：留着的话，它会被下一轮的派工队列当成「有人要派工」
+    stuck_own_retract "$1" "$2" "$3"
+}
+# daemon 在没做完 / 已作废的一步里自己加上的标签（.own），在这一步做完之前**不是派工信号**。
+# 派工队列入队前问这里：0 = 这个触发标签是 daemon 的半成品，别派。纯本地判断，不发请求；
+# 功能关着、没有这种记录时恒为 1。
+# 人明确要恢复时不受它挡：人把这个标签摘掉或重新打一次，事件记录里就有了不是 daemon 那次的
+# 动作，stuck_own_retract 下一轮读到后放弃归属（.own 清掉），之后照常派工。
+# （代码复审第 4 轮：一步中途停下后留在条目上的触发标签，被下一轮普通派工当真派了出去。）
+stuck_dispatch_hold() {   # <issue|pr> <编号> <触发标签>
+    stuck_enabled || return 1
+    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
+    [ "$(jq -r --arg k "$1" --arg n "$2" --arg l "$3" \
+        '[(.stuck_workers // {})[] | select(.kind == $k and (.num | tostring) == $n and (.own.label // "") == $l)] | length > 0' \
+        "$STATE_FILE" 2>/dev/null)" = true ]
+}
+# 一步作废后把 daemon 在这一步里做过的标签改动还原，顺序和做的时候相反：先把摘掉的（.took，
+# 也就是 doing/agent）加回去，再把加上的（.own）摘回去——任何时刻条目都不会一个流程标签都没有，
+# 还原完就是这一步开始之前的样子。每一项只在事件记录能证明「那之后没有别人动过这个标签」时才动：
+# 有人动过就是人在管它了，放弃这一项、不碰。动完同样按事件核实；没成 / 读不到 → 记录留着
+# （.own 还在，派工继续被挡），下一轮再试。
+stuck_own_retract() {   # <工作编号> <kind> <num>
+    local n="$1" kind="$2" num="$3" e me field label ev rows want verb
+    me=$(write_identity_login)
+    for field in took own; do
+        e=$(stuck_entry "$n")
+        label=$(printf '%s' "$e" | jq -r --arg f "$field" '.[$f].label // ""')
+        ev=$(printf '%s' "$e" | jq -r --arg f "$field" '.[$f].event // ""')
+        [ -n "$label" ] || continue
+        if ! [[ "$ev" =~ ^[0-9]+$ ]]; then stuck_entry_set "$n" '.[$f] = null' --arg f "$field" || true; continue; fi
+        if [ "$field" = took ]; then want=labeled; verb="加回"; else want=unlabeled; verb="摘回"; fi
+        if [ -z "$me" ] || ! rows=$(stuck_label_events_after "$num" "$ev"); then
+            log "卡住检测：$kind #$num 读不到标签记录，这一轮先不还原 $label（派工继续不认 daemon 加的标签）"
+            return 0
+        fi
+        if printf '%s\n' "$rows" | awk -F'\t' -v l="$label" '$3 == l { f = 1 } END { exit !f }'; then
+            log "卡住检测：$kind #$num 的 $label 之后有人动过 → 不再当成 daemon 的半成品，这一项不还原"
+            stuck_entry_set "$n" '.[$f] = null' --arg f "$field" || true
+            continue
+        fi
+        # 累计做不完、已经停手的条目不再反复去写（上面「有人动过就放手」的检查照做）
+        [ "$(printf '%s' "$e" | jq -r '.exhausted // false')" != true ] || return 0
+        if ! stuck_entry_set "$n" '.own_tries = ((.own_tries // 0) + 1)' \
+           || [ "$(jq -r --arg k "$n" '.stuck_workers[$k].own_tries // 0' "$STATE_FILE" 2>/dev/null)" -gt "$STUCK_STEP_MAX_FAILS" ]; then
+            return 0
+        fi
+        STUCK_ACTED=1
+        if [ "$field" = took ]; then
+            run_gh "卡住检测：$kind #$num 加回 $label" \
+                gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$label" || true
+        else
+            run_gh "卡住检测：$kind #$num 摘回 daemon 加的 $label" \
+                gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$label" | jq -sRr @uri)" || true
+        fi
+        if rows=$(stuck_label_events_after "$num" "$ev") \
+           && printf '%s\n' "$rows" | awk -F'\t' -v l="$label" -v me="$me" -v w="$want" '$2 == w && $3 == l && $4 == me { f = 1 } END { exit !f }'; then
+            log "卡住检测：$kind #$num 已${verb} $label（还原作废的那一步）"
+            stuck_entry_set "$n" '.[$f] = null' --arg f "$field" || true
+        else
+            log "⚠️ 卡住检测：$kind #$num 的 $label 没${verb}成 → 派工继续不认 daemon 加的标签，下一轮再试"
+            return 0
+        fi
+    done
+    return 0
 }
 # 这一步这一轮没做完（写入失败 / 核实不了）。累计到上限 → 这一条不再自动处理。
 stuck_step_fail() {   # <工作编号> <kind> <num>
@@ -7613,9 +7678,13 @@ stuck_claim_settle() {   # <工作编号> <编号>
     hit=$(printf '%s\n' "$rows" | awk -F'\t' -v op="$op" -v l="$label" -v me="$me" \
         'NR == 1 && $2 == op && $3 == l && $4 == me { id = $1 } END { if (NR == 1 && id != "") print id }')
     [ -n "$hit" ] || return 2
+    # 加上去的标签记成「daemon 自己的」（.own：标签名 + 那次事件的编号）：这一步做完之前，它不是
+    # 给派工队列看的信号（stuck_dispatch_hold）；摘掉的标签记在 .took。这一步作废时由
+    # stuck_own_retract 按相反的顺序还原：先把摘掉的加回去，再把加上的摘回去。
     stuck_entry_set "$n" '.claim = null | .id = (.id | fromjson
             | .target.labels = (if $op == "labeled" then (.target.labels + [$l]) else (.target.labels - [$l]) end | unique)
-            | .target.event = $ev | tojson)' \
+            | .target.event = $ev | tojson)
+            | (if $op == "labeled" then .own = {label: $l, event: $ev} else .took = {label: $l, event: $ev} end)' \
         --arg op "$op" --arg l "$label" --argjson ev "$hit" || return 3
     return 0
 }
@@ -7729,7 +7798,8 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
     ex=0; worker_session_exists "$sess" || ex=$?
     [ "$ex" = 1 ] || log "⚠️ 卡住检测：$kind #$num 会话 $sess 没能确认已结束（下一轮派工会照常处理还活着的会话）"
     now=$(pace_now)
-    stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .claim = null | .since = 0 | .id = "" | .fp = ""' \
+    # 整步做完：触发标签从这一刻起才是给派工队列的信号
+    stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .claim = null | .own = null | .took = null | .since = 0 | .id = "" | .fp = ""' \
         --argjson now "$now" || true
     return 0
 }
@@ -7790,6 +7860,10 @@ stuck_tick() {
             handled[$n]=1
             stuck_resume "$n" "$e"
             continue
+        fi
+        # 作废的一步里 daemon 加的标签上一轮没摘回去 → 接着摘
+        if [ "$(printf '%s' "$e" | jq -r '.own != null or .took != null')" = true ]; then
+            stuck_own_retract "$n" "$(printf '%s' "$e" | jq -r '.kind // ""')" "$(printf '%s' "$e" | jq -r '.num // ""')"
         fi
         [ -z "${doing[$n]:-}" ] || continue
         # 不挂 doing/agent 了。daemon 自己翻回去、还在等重派的（挂着记下的触发标签）留着；
