@@ -107,6 +107,12 @@ export interface FakeState {
   w: WritableState;
   /** GitHub#261: answer matching change-check requests (board field / item lists, repo HEAD) this way; null = honestly */
   checkFault: ((e: LoggedRequest) => CheckFault | null) | null;
+  /**
+   * GitHub#364: break the answer of a request after it was read (and acted on): `close` = the
+   * connection drops before a byte of answer; `cut` = the head and half the body go out, then
+   * the connection drops. Asked once per answer; null = answer honestly.
+   */
+  breakAnswer: ((e: LoggedRequest) => 'close' | 'cut' | null) | null;
 }
 
 /**
@@ -124,6 +130,8 @@ export interface LoggedRequest {
   status: number;
   /** parsed JSON body of a REST request that has one */
   body?: unknown;
+  /** GitHub#364: how `breakAnswer` broke this request's answer */
+  broken?: 'close' | 'cut';
 }
 
 export interface FakeGitHub {
@@ -224,6 +232,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     viewerAnswers: [],
     w: defaultWritable(),
     checkFault: null,
+    breakAnswer: null,
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -245,6 +254,25 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     const auth = (req.headers.authorization as string | undefined) ?? null;
     const entry: LoggedRequest = { method: req.method ?? 'GET', path: url.pathname + url.search, auth, status: 0 };
     log.push(entry);
+    // GitHub#364: every answer leaves through res.end — that is where it is broken on purpose
+    const end = res.end.bind(res) as (...a: unknown[]) => ServerResponse;
+    res.end = ((...a: unknown[]) => {
+      if (!entry.status) entry.status = res.statusCode;
+      const how = state.breakAnswer?.(entry) ?? null;
+      const chunk = typeof a[0] === 'string' || Buffer.isBuffer(a[0]) ? Buffer.from(a[0] as string) : null;
+      if (how === 'close' || (how === 'cut' && (!chunk || chunk.length < 2))) {
+        entry.broken = 'close';
+        req.socket.destroy();
+        return res;
+      }
+      if (how === 'cut' && chunk) {
+        entry.broken = 'cut';
+        if (!res.headersSent) res.setHeader('Content-Length', String(chunk.length));
+        res.write(chunk.subarray(0, Math.floor(chunk.length / 2)), () => req.socket.destroy());
+        return res;
+      }
+      return end(...a);
+    }) as typeof res.end;
     const send = (status: number, body: unknown, headers?: Record<string, string>) => {
       entry.status = status;
       json(res, status, body, headers);
@@ -358,7 +386,13 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return;
       }
       if (!authed()) return;
-      const live = handleGraphql(store, op, body.variables ?? {});
+      let live: ReturnType<typeof handleGraphql>;
+      try {
+        live = handleGraphql(store, op, body.variables ?? {});
+      } catch (e) {
+        // variables the fake cannot work with: answered as GitHub would, with an error (not left hanging)
+        return send(200, { errors: [{ message: `fake: ${(e as Error).message}` }] });
+      }
       if (live) {
         // frozen now (GitHub#229): a held answer carries the data of the moment it arrived
         const answered = JSON.parse(JSON.stringify(live));
