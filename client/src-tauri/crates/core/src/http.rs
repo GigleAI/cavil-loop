@@ -6,8 +6,8 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use ureq::unversioned::resolver::DefaultResolver;
-use ureq::unversioned::transport::{ConnectionDetails, Connector, DefaultConnector, Transport};
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 use url::Url;
 
 #[derive(Clone, Debug)]
@@ -84,7 +84,8 @@ pub async fn send(req: HttpRequest) -> Result<HttpResponse, String> {
 /// Where an attempt broke. Only `Connect` proves that not one byte of the request was written.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
-    /// name lookup, TCP connect or TLS handshake of a new connection failed
+    /// name lookup (always before any connection, pooled or new), or the TCP connect or TLS
+    /// handshake of a new connection, failed
     Connect,
     /// the request may have been written; no response head arrived
     BeforeHead,
@@ -108,16 +109,22 @@ struct Broke {
 /// | ③ head arrived, body cut off        | again, in full  | no            |
 /// | ④ complete answer (any status)      | returned as is  | returned as is|
 ///
-/// A failure on a pooled connection is ② or ③, never ①: it cannot be shown the request was not
-/// written. The budget wins over the count: an attempt only gets the time that is left, and when
+/// ① is known only from the resolver and the connector themselves (they note it as they fail),
+/// never from the error's kind or wording: a lookup failure and a reset after sending are both
+/// `Io`. A failure on a pooled connection is ② or ③, never ①: it cannot be shown the request
+/// was not written. The budget wins over the count: an attempt only gets the time that is left, and when
 /// less time is left than the next wait, the request stops with the tries it made.
 pub fn send_with(req: &HttpRequest, policy: &Policy) -> Result<HttpResponse, String> {
+    send_on(agent(), req, policy)
+}
+
+fn send_on(agent: &ureq::Agent, req: &HttpRequest, policy: &Policy) -> Result<HttpResponse, String> {
     let started = Instant::now();
     let read = is_read(req);
     let mut retries = 0usize;
     loop {
         let left = policy.budget.saturating_sub(started.elapsed());
-        let broke = match attempt(req, left) {
+        let broke = match attempt(agent, req, left) {
             Ok(r) => return Ok(r),
             Err(b) => b,
         };
@@ -261,43 +268,59 @@ fn graphql_only_queries(doc: &str) -> bool {
 }
 
 thread_local! {
-    /// set by the connector when this thread's attempt failed while making a new connection;
-    /// thread-local because ureq connects on the calling thread, so it never mixes requests up
-    static CONNECT_FAILED: Cell<bool> = const { Cell::new(false) };
+    /// set by the resolver or the connector when this thread's attempt failed before a connection
+    /// existed; thread-local because ureq resolves and connects on the calling thread, so it never
+    /// mixes requests up
+    static UNSENT: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The default connector chain, noting a failure to connect (the only proof nothing was written).
+fn note_unsent<T>(r: Result<T, ureq::Error>) -> Result<T, ureq::Error> {
+    if r.is_err() {
+        UNSENT.with(|f| f.set(true));
+    }
+    r
+}
+
+/// The default connector chain, noting a failure to connect (proof nothing was written).
 #[derive(Debug)]
 struct NoteConnectFailure(DefaultConnector);
 
 impl Connector<()> for NoteConnectFailure {
     type Out = Box<dyn Transport>;
     fn connect(&self, details: &ConnectionDetails, chained: Option<()>) -> Result<Option<Self::Out>, ureq::Error> {
-        let r = self.0.connect(details, chained);
-        if r.is_err() {
-            CONNECT_FAILED.with(|f| f.set(true));
-        }
-        r
+        note_unsent(self.0.connect(details, chained))
     }
+}
+
+/// A resolver noting a failed lookup. ureq looks the name up before it takes a connection from the
+/// pool or makes one (`run.rs`: resolve, then `pool.connect`), so a failed lookup is always unsent.
+#[derive(Debug)]
+struct NoteLookupFailure<R: Resolver>(R);
+
+impl<R: Resolver> Resolver for NoteLookupFailure<R> {
+    fn resolve(&self, uri: &ureq::http::Uri, config: &ureq::config::Config, timeout: NextTimeout) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        note_unsent(self.0.resolve(uri, config, timeout))
+    }
+}
+
+fn build_agent(resolver: impl Resolver) -> ureq::Agent {
+    let config = ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).build();
+    ureq::Agent::with_parts(config, NoteConnectFailure(DefaultConnector::default()), NoteLookupFailure(resolver))
 }
 
 /// One agent for the whole process: its pool is what lets requests share connections.
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        let config = ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).build();
-        ureq::Agent::with_parts(config, NoteConnectFailure(DefaultConnector::default()), DefaultResolver::default())
-    })
+    AGENT.get_or_init(|| build_agent(DefaultResolver::default()))
 }
 
-fn attempt(req: &HttpRequest, left: Duration) -> Result<HttpResponse, Broke> {
+fn attempt(a: &ureq::Agent, req: &HttpRequest, left: Duration) -> Result<HttpResponse, Broke> {
     let local = |message: String| Broke { phase: Phase::Connect, network: false, message };
     let mut b = ureq::http::Request::builder().method(req.method.as_str()).uri(req.url.as_str());
     for (k, v) in &req.headers {
         b = b.header(k.as_str(), v.as_str());
     }
-    let a = agent();
-    CONNECT_FAILED.with(|f| f.set(false));
+    UNSENT.with(|f| f.set(false));
     let res = match &req.body {
         Some(body) => {
             let r = b.body(body.clone()).map_err(|e| local(e.to_string()))?;
@@ -309,7 +332,7 @@ fn attempt(req: &HttpRequest, left: Duration) -> Result<HttpResponse, Broke> {
         }
     };
     let mut res = res.map_err(|e| {
-        let phase = if CONNECT_FAILED.with(|f| f.get()) || matches!(e, ureq::Error::HostNotFound) { Phase::Connect } else { Phase::BeforeHead };
+        let phase = if UNSENT.with(|f| f.get()) { Phase::Connect } else { Phase::BeforeHead };
         Broke { phase, network: is_network(&e), message: e.to_string() }
     })?;
     let status = res.status().as_u16();
@@ -615,6 +638,57 @@ mod tests {
             assert_eq!(r.status, st);
             assert_eq!(f.reqs().len(), 1, "{method} {st}");
         }
+    }
+
+    /// The system resolver, except that its first `fail` lookups fail the way a temporary DNS
+    /// failure does (`EAI_AGAIN` comes back from ureq as `Io`, not `HostNotFound`).
+    #[derive(Debug)]
+    struct FlakyLookup {
+        fail: usize,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Resolver for FlakyLookup {
+        fn resolve(&self, uri: &ureq::http::Uri, config: &ureq::config::Config, timeout: NextTimeout) -> Result<ResolvedSocketAddrs, ureq::Error> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.fail {
+                return Err(ureq::Error::Io(std::io::Error::other("failed to lookup address information: Temporary failure in name resolution")));
+            }
+            DefaultResolver::default().resolve(uri, config, timeout)
+        }
+    }
+
+    #[test]
+    fn a_failed_lookup_is_retried_even_for_a_write() {
+        for method in ["POST", "PATCH", "DELETE", "GET"] {
+            let f = fake(vec![]);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let a = build_agent(FlakyLookup { fail: 1, calls: calls.clone() });
+            let r = send_on(&a, &req(method, f.url("/api/repos/o/r/issues"), Some("{}")), &quick()).unwrap();
+            assert_eq!(r.status, 200, "{method}");
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "{method}: looked up again");
+            assert_eq!(f.reqs(), vec![format!("{method} /api/repos/o/r/issues")], "{method}: reached the server exactly once");
+        }
+        // every lookup failing: a write is still tried the full five times, and says so
+        let f = fake(vec![]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let a = build_agent(FlakyLookup { fail: usize::MAX, calls: calls.clone() });
+        let e = send_on(&a, &req("POST", f.url("/x"), Some("{}")), &quick()).unwrap_err();
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        assert!(f.reqs().is_empty());
+        assert!(e.ends_with("（已自动重试 4 次）"), "{e}");
+    }
+
+    #[test]
+    fn a_lookup_failure_does_not_leak_into_the_next_request() {
+        // one agent: a failed lookup on one request, then a write cut after it was sent
+        let f = fake(vec![Act::Close]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let a = build_agent(FlakyLookup { fail: 1, calls: calls.clone() });
+        assert!(send_on(&a, &req("POST", f.url("/w"), Some("{}")), &Policy { budget: Duration::from_secs(5), delays: vec![] }).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(f.reqs().is_empty(), "no retry allowed: nothing sent");
+        assert!(send_on(&a, &req("POST", f.url("/w"), Some("{}")), &quick()).is_err());
+        assert_eq!(f.reqs(), vec!["POST /w".to_string()], "the cut write is not sent again");
     }
 
     #[test]
