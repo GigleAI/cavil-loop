@@ -2920,7 +2920,7 @@ export class Controller {
     if (lock) return `上一次操作还没结清，没有发送：${opText(lock)}`;
     // GitHub#359: a record that is going on by itself right now (reading before its next step) is not finished
     // or started over from elsewhere in between
-    if ([...this.ops.values()].some((r) => r.key === key && this.opJobs.has(r.id))) return '上一次操作还在自动处理剩下的步骤，没有发送';
+    if ([...this.ops.values()].some((r) => r.key === key && this.opJobs.has(r.id) && opNextAuto(r) >= 0)) return '上一次操作还在自动处理剩下的步骤，没有发送';
     if (this.opPreparing.has(key)) return '正在准备补做上一次操作剩下的步骤，没有发送';
     return null;
   }
