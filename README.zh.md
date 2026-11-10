@@ -14,7 +14,7 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 ## 它是什么
 
-![在 github project 里给 Agent 建 issue，review PR](./docs/github_project.png)
+![在 GitHub 上给 Agent 建 issue，review PR](./docs/github_project.png)
 
 一个用 GitHub label 驱动的 **AI coding agent 工作流**（支持 Claude Code / OpenCode / Codex / 你自己的 driver）。以 [Agent Skill](https://agentskills.io/home) 形式安装在你本机——后台每 60 秒轮询一次 GitHub，看到约定的标签触发，就在独立 git worktree 里起一个本机 AI worker，让它做设计 / 写代码 / review 的活，过程和结果通过 GitHub 评论和 PR commit 留痕。
 
@@ -23,6 +23,8 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 - **本机跑，不是云服务**：AI worker 就是你本机的 `claude`（或其他支持的 coding CLI）
 - **GitHub 当 UI**：所有触发靠 label 标签（`pending/agent` / `pending/human` / `doing/agent`），没有要学的新 web UI
 - **你掌控权**：所有改动都通过 PR review 由你签字才合入；除非你给某个 issue 打了托管标签（默认关闭），工具不会自己合并任何东西
+
+**只要一个 GitHub 仓库就能用，不需要建 GitHub Project。** 派工只看 issue / PR 上的标签。GitHub Project 只在三个可选功能里用到，不用就不必建：按 Project 的 Priority 字段排队（默认按 `priority/p*` 标签）、把多个仓库的 issue / PR 自动汇进一个 Project（默认关）、客户端里按「迭代」「状态」分列（这两个值存在 Project 里）。
 
 ## 它好在哪
 
@@ -167,6 +169,18 @@ sudo loginctl enable-linger $USER
 
 Linux 默认你登出就停所有后台服务，这条让它在你不在的时候也跑。
 
+### 也可以从桌面客户端开始（macOS）
+
+不想敲上面的命令，可以先装[桌面客户端](#客户端桌面看板预览版)，在它的设置页里完成第 1、2 步：
+
+1. 先装好[依赖](#依赖)并 `gh auth login`——客户端只检查缺什么，不替人装系统软件。
+2. 下载安装客户端，用 GitHub 账号登录（浏览器里输入短码授权）。
+3. 设置 →「数据来源」：填 `owner/repo` 添加仓库（不需要 Project）。
+4. 设置 →「本机 daemon」：点「安装」（等于上面第 1 步的手动安装）。
+5. 回到「数据来源」，在仓库那一行点「接上 daemon」：选本机已有的目录或让它克隆一份、选 agent、预检通过后点「开始」（等于上面第 2 步的 `setup.sh`）。
+
+之后给 issue 打 `pending/agent` 就会被接走。下载地址、第一次打开的放行命令和每一步的细节见 [client/README.md](client/README.md#第一次用从安装到接上第一个仓库)。
+
 ## 依赖
 
 - `git`
@@ -215,7 +229,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 `client/` 是一个可选的本地 macOS App，把多个 GitHub Project 和仓库合进一个看板：按迭代（默认）/ 状态 / 里程碑分列，可按仓库分泳道；断网时照样能看上次同步的内容。登录走浏览器授权（GitHub OAuth 设备授权），凭据存进 macOS 钥匙串。它只和 GitHub 通信，daemon 也不依赖它。设置页还能检查、安装本机 daemon，并从来源列表把仓库接上它（「接上 daemon」：找到或克隆本地目录、选 agent、预检缺什么，再代跑 daemon 自带的 `setup.sh --yes`，输出边跑边显示）。为此客户端会在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
 
-v0.1 只读；搜索筛选、修改操作（标签、迭代、合并 PR、回复评论）和 `pending/human` 提醒在 GigleAI/cavil-loop#135 的后续几块。安装包挂在 `client/v*` 的 Release 上（Apple 芯片和 Intel 各一个；没有苹果签名，第一次怎么打开写在 Release 说明里）。开发说明：[client/README.md](client/README.md)。
+看板上可以搜索筛选、改标签 / 迭代 / 状态 / 里程碑、新建 issue、回复评论、合并 PR，`pending/human` 有新条目时发系统通知。只加仓库、不加 Project 也能用（没有迭代 / 状态，见 client/README.md）。安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：目前只有开发版（标签 `client/vX.Y.Z-dev.N`，标着 Pre-release，只有 Apple 芯片的 dmg），还没有正式版，也没有 Intel 的包；没有苹果签名，第一次打开要先跑一条放行命令。安装和初始流程：[client/README.md](client/README.md#第一次用从安装到接上第一个仓库)。
 
 ---
 

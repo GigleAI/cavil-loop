@@ -2,6 +2,28 @@
 
 `client/` 是一个本地桌面客户端（Tauri：界面 TypeScript + React，后台 Rust），把多个 GitHub Project 看板和仓库合进一个视图。它只和 `api.github.com` / `github.com` 通信（例外三处：头像图片从 GitHub 的头像地址 `avatars.githubusercontent.com` 加载，#155；讨论里的图片从 GitHub 自己的附件地址和图片代理加载，GitHub#205，以及仓库文件地址 `raw.githubusercontent.com`，GitHub#267；自动更新下载更新包时跟着 GitHub 的跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`，只有外壳的更新插件访问它们，窗口的 Content-Security-Policy 不放开，#184）。设置页可以检查、安装本机的 cavil-loop daemon，并从仓库列表把仓库接上它（#314 / #315）：这时客户端在本机代跑 daemon 自带的脚本（状态检查、`setup.sh --yes`、断开项目、换新 Mac 后台任务配置）和固定的 `git` / `systemctl` / `launchctl` 命令，并读 daemon 的项目登记和项目配置里的 agent。窗口只能发几种固定请求，命令全在 Rust 后台执行、参数逐个校验（仓库名、agent 必须是 daemon 自带的、目录必须是 origin 指向所选仓库的 git 仓库）；子进程的环境按白名单给，客户端自己的 GitHub 凭据不交给这些脚本，daemon 用 `gh` 自己的登录；为此碰到的网络只有从 github.com 克隆 / 拉取 daemon 和要接上的仓库（`setup.sh` 建标签时经 `gh` 访问 GitHub）。设计与拆分见 GigleAI/cavil-loop#135，本目录的第一块是 #136（骨架），#138 加上了查看与修改，#137 加上了搜索筛选与表格视图，#151 把外壳从 Electron 换成 Tauri（安装包从 134 / 139.5 MB 降下来），并把 GitHub 凭据整段收进 Rust 后台，#155 加上了头像、详情折叠与浮动、PR 跟在关联 issue 下面、⌘+ / ⌘- 缩放。#214 在表格每个分组底部加了「＋ 新建 issue」：创建时只按这一组算出的清单（迭代 / 状态 / 里程碑）写，写前现读核对里程碑，对不上一条都不写。#304 让仓库顺序可以拖动：表格左侧的仓库列表、看板的泳道标题都能拖，表格分区、按仓库分组、新建 issue 的仓库列表跟着同一份顺序（`shared/repoOrder.ts`）；顺序只存在本机，不进视图设置，导入网页视图不会动它。搜索藏掉一部分仓库时拖动，只重排看得见的那几个仓库的位置，看不见的留在原位；看得见的全部记住，看不见的最多记 500 个。
 
+## 第一次用：从安装到接上第一个仓库
+
+只要一个 GitHub 仓库，不需要 GitHub Project。全程在 macOS 上。
+
+1. **先装 daemon 要用的程序**（客户端只检查缺什么，不替人装）：`git`、`gh`、`tmux`、`jq`、`flock`、4 以上的 `bash`（macOS 自带的是 3.2），以及要用的 agent 程序（如 `claude`）。用 Homebrew：`brew install gh tmux jq flock bash`。然后在终端里跑一次 `gh auth login`——daemon 用 `gh` 的登录，不用客户端的。
+2. **下载客户端**：打开本仓库的 [Releases](https://github.com/GigleAI/cavil-loop/releases) 页，找标签以 `client/v` 开头的最新一条，下载里面的 `.dmg`。目前只有开发版（标签 `client/vX.Y.Z-dev.N`，标着 Pre-release，只有 Apple 芯片的包）；还没有正式版，Intel 的 Mac 暂时没有安装包（要用只能照下面「开发」自己构建）。
+3. **安装并放行**：把 App 拖进「应用程序」。安装包没有苹果签名，第一次打开前在终端跑一次：
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Cavil Loop.app"
+   ```
+
+4. **登录**：打开 App，点「用 GitHub 登录」，在浏览器里输入 App 显示的短码并同意授权。
+5. **添加仓库**：设置 →「数据来源」，填 `owner/repo`（或仓库网址）。这时看板上已经能看到这个仓库开着的 issue / PR。
+6. **安装 daemon**：设置 →「本机 daemon」→「安装」。它从 github.com 克隆 GigleAI/cavil-loop 到 `~/.agents/skills/cavil-loop`，并给 Claude Code 建同名软链；下面的检查清单列出还缺哪些程序，装好后点「重新检查」。
+7. **把仓库接上 daemon**：回到「数据来源」，在仓库那一行点「接上 daemon」：选本机已有的同仓库目录或让它克隆一份、选 agent；预检通过后点「开始」，它代跑 daemon 自带的 `setup.sh --yes`（建项目配置、在仓库里建 `pending/agent` 等标签、登记并启动后台轮询），输出边跑边显示。
+8. **派第一个活**：在看板上新建一个 issue（按 `C`），给它加标签 `pending/agent`。daemon 在下一轮轮询（约一分钟）接走，标签变成 `doing/agent`；做完后翻成 `pending/human`，客户端发系统通知。
+
+**只加仓库、不加 Project 时**：迭代和状态这两个值存在 Project 里，仓库本身没有。默认的「按迭代分列」下，所有卡片都在「未加入看板」一列；想要有区分度，在视图设置里改成按里程碑分列，或切到表格视图按仓库 / 里程碑分组（仓库没建里程碑时，按里程碑也只有一组）。以后建了 Project，再在「数据来源」里把它加进来即可。
+
+这样装的 daemon 是一份普通的代码目录，不会自己更新：要更新时在设置 →「本机 daemon」里点「更新 daemon」。
+
 ## 目录
 
 ```

@@ -24,6 +24,8 @@ Three things you should know up front:
 - **GitHub is the interface**: labels (`pending/agent` / `pending/human` / `doing/agent`) drive everything; no web UI to learn
 - **You stay in control**: every change goes through a PR review you sign off on; the tool merges nothing on its own unless you hand a specific issue over with the autopilot label (off by default)
 
+**One GitHub repository is all you need — no GitHub Project required.** Dispatch looks only at the labels on issues / PRs. A GitHub Project is used by three optional features only, so skip it unless you want one of them: queueing by the Project's Priority field (the default is `priority/p*` labels), collecting several repositories' issues / PRs into one Project (off by default), and the client's columns by iteration or status (both values live in a Project).
+
 ## Why use it
 
 Working with AI on code is normally **serial**: prompt → wait → read → respond → wait → read… You can't walk away, the AI's history is locked in some chat UI.
@@ -161,6 +163,18 @@ sudo loginctl enable-linger $USER
 
 Linux stops user services on logout by default; this keeps the poller alive when you're away.
 
+### Or start from the desktop client (macOS)
+
+Instead of the commands above, install the [desktop client](#client-desktop-board-preview) and do steps 1 and 2 from its Settings page:
+
+1. Install the [dependencies](#dependencies) and run `gh auth login` first — the client only checks what is missing, it does not install system software.
+2. Download and install the client, then sign in with your GitHub account (enter the short code in the browser).
+3. Settings → "数据来源" (sources): type `owner/repo` to add the repository (no Project needed).
+4. Settings → "本机 daemon" (local daemon): click "安装" (install) — the same as the manual install in step 1 above.
+5. Back in the sources list, click "接上 daemon" (connect) on the repository's row: pick an existing local copy or let it clone one, pick the agent, and click "开始" (start) once the pre-check passes — the same as `setup.sh` in step 2 above.
+
+From then on, an issue labeled `pending/agent` gets picked up. Where to download, the command for the first launch and the details of each step are in [client/README.md](client/README.md) (Chinese; the client's interface is Chinese too).
+
 ## Dependencies
 
 `git`, `gh` (run `gh auth login` first), `tmux`, `jq`, `flock`, `claude` (Pro/Max plan). `setup.sh` auto-detects the OS: Linux uses the built-in `systemd` user timer; macOS uses a `launchd` LaunchAgent (see [docs/operations.md → Scheduler by OS](docs/operations.md#scheduler-by-os)). Tested on Ubuntu 22.04 / 24.04; macOS supported, community testing welcome.
@@ -202,7 +216,7 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 
 `client/` is an optional local macOS app that puts several GitHub Projects and repositories into one board: columns by iteration (default) / status / milestone, optional swimlanes per repository, and the last synced data stays readable offline. You sign in through the browser (GitHub OAuth device flow); the credential goes into the macOS keychain. It talks only to GitHub, and the daemon does not need it. Settings can also check and install the local daemon and connect a repository from the source list ("接上 daemon": find or clone the local copy, pick the agent, check what is missing, then run the daemon's own `setup.sh --yes` and show its output live). For that the client runs the daemon's own scripts on this machine and a few fixed `git` / `systemctl` / `launchctl` commands; the window can send only fixed requests, the back end checks every argument, and the client's own GitHub credential is never handed to the daemon — it keeps using `gh`'s own sign-in.
 
-v0.1 is read-only; search / filters, editing (labels, iterations, merging PRs, replying) and `pending/human` notifications come in the next pieces of GigleAI/cavil-loop#135. Packages are attached to the `client/v*` Releases (Apple silicon and Intel; not Apple-signed — the release notes say how to open it the first time). Development: [client/README.md](client/README.md).
+The board has search and filters, editing (labels, iteration, status, milestone), new issues, replies, merging PRs, and a system notification when something new lands on `pending/human`. It works with repositories alone, without any Project (no iteration / status then — see client/README.md). Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: for now only development builds (tags `client/vX.Y.Z-dev.N`, marked Pre-release, Apple-silicon dmg only) — no stable release and no Intel package yet; they are not Apple-signed, so the first launch needs one command. Install and first run: [client/README.md](client/README.md).
 
 ---
 
