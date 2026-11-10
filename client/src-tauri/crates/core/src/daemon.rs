@@ -351,18 +351,19 @@ impl Daemon {
         if !entry.exists() && entry.symlink_metadata().is_err() {
             return json!({ "state": "missing", "entry": e });
         }
-        if !entry.join("scripts/install-status.sh").is_file() {
-            let reason = if !entry.exists() {
-                format!("{e} 是一个指向不存在位置的链接")
-            } else {
-                format!("{e} 里没有状态脚本 scripts/install-status.sh：这份 daemon 早于 GitHub#313，请在终端里更新它（git -C {e} pull --ff-only）后重新检查")
-            };
-            return json!({ "state": "unreadable", "reason": reason, "entry": e });
+        if !entry.exists() {
+            return json!({ "state": "unreadable", "reason": format!("{e} 是一个指向不存在位置的链接"), "entry": e });
         }
         let path = match self.path().await {
             Ok(p) => p,
             Err(m) => return json!({ "state": "unreadable", "reason": m, "entry": e }),
         };
+        if !has_status_script(&entry) {
+            // a daemon from before GitHub#313: say what kind of install it is, so a checkout can be updated from here (GitHub#320)
+            let form = self.outdated_form(&entry, &path).await;
+            let reason = format!("{e} 里没有状态脚本 scripts/install-status.sh：这份 daemon 版本太旧（早于 GitHub#313），客户端读不出它的状态");
+            return json!({ "state": "unreadable", "reason": reason, "entry": e, "outdated": form.to_json() });
+        }
         let out = self.script(&path, "install-status.sh", &[], T_STATUS).await;
         match parse_status(&out) {
             Ok(st) => json!({ "state": "ok", "entry": e, "status": st }),
@@ -560,6 +561,30 @@ impl Daemon {
             Ok(p) => p,
             Err(m) => return refused(&m),
         };
+        let entry = match self.entry() {
+            Ok(e) => e,
+            Err(m) => return refused(&m),
+        };
+        // a daemon from before the status script (GitHub#320): judged again here, never taken from the window
+        if entry.exists() && !has_status_script(&entry) {
+            let dir = match self.outdated_form(&entry, &path).await {
+                Form::Checkout(dir) => dir,
+                other => return refused(&other.refusal()),
+            };
+            let d = dir.to_string_lossy().to_string();
+            let (before, after, output) = match self.fast_forward(&path, &d).await {
+                Ok(r) => r,
+                Err(blocked) => return blocked,
+            };
+            if !has_status_script(&entry) {
+                // pulled, but what it follows still has no status script (another branch, an old fork)
+                let branch = self.run(&path, "git", &["-C", &d, "rev-parse", "--abbrev-ref", "HEAD"], T_SHORT).await;
+                let branch = if branch.ok() { branch.stdout.trim().to_string() } else { format!("读不出（{}）", branch.text()) };
+                return json!({ "result": "still_old", "before": before, "after": after, "branch": branch, "output": output, "refresh": [] });
+            }
+            let refresh = self.refresh_mac(&path).await;
+            return json!({ "result": if before == after { "current" } else { "updated" }, "before": before, "after": after, "output": output, "refresh": refresh });
+        }
         let st = match self.status_ok(&path).await {
             Ok(s) => s,
             Err(m) => return refused(&m),
@@ -573,63 +598,11 @@ impl Daemon {
             return refused("这份 daemon 不是 git 代码目录，不能在这里更新");
         }
         let Some(dir) = d["target"].as_str().filter(|t| Path::new(t).is_absolute()) else { return refused("状态脚本没有给出 daemon 的位置") };
-        let git = |args: Vec<&str>| {
-            let mut all = vec!["-C", dir];
-            all.extend(args);
-            all.into_iter().map(str::to_string).collect::<Vec<_>>()
+        let (before, after, output) = match self.fast_forward(&path, dir).await {
+            Ok(r) => r,
+            Err(blocked) => return blocked,
         };
-        let run_git = |args: Vec<String>, limit: Duration| {
-            let path = path.clone();
-            async move {
-                let a: Vec<&str> = args.iter().map(String::as_str).collect();
-                self.run(&path, "git", &a, limit).await
-            }
-        };
-        let blocked = |step: &str, out: &Out| json!({ "result": "blocked", "step": step, "output": out.text() });
-
-        let dirty = run_git(git(vec!["status", "--porcelain", "--untracked-files=no"]), T_SHORT).await;
-        if !dirty.ok() {
-            return blocked("读不到代码目录的状态", &dirty);
-        }
-        if !dirty.stdout.trim().is_empty() {
-            return blocked("代码目录里有没提交的改动，没有更新", &dirty);
-        }
-        let upstream = run_git(git(vec!["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]), T_SHORT).await;
-        if !upstream.ok() || !upstream.stdout.trim().starts_with("origin/") {
-            return blocked("当前分支没有跟踪 origin 上的分支，没有更新", &upstream);
-        }
-        let remote = run_git(git(vec!["remote", "get-url", "origin"]), T_SHORT).await;
-        if !remote.ok() || !github_remote(remote.stdout.trim(), &self.cfg.extra_remotes) {
-            return blocked("origin 不是 github.com 上的仓库，客户端只从 github.com 拉取，没有更新", &remote);
-        }
-        let before = run_git(git(vec!["rev-parse", "HEAD"]), T_SHORT).await.stdout.trim().to_string();
-        let fetch = run_git(git(vec!["fetch", "--quiet", "origin"]), T_NET).await;
-        if !fetch.ok() {
-            return blocked("拉取失败", &fetch);
-        }
-        let merge = run_git(git(vec!["merge", "--ff-only", "@{upstream}"]), T_SHORT).await;
-        if !merge.ok() {
-            return blocked("不能快进（本地有分叉的提交，或会覆盖本地文件），没有更新", &merge);
-        }
-        let after = run_git(git(vec!["rev-parse", "HEAD"]), T_SHORT).await.stdout.trim().to_string();
-
-        // every macOS project's launchd plist, one after another; one failing does not stop the rest
-        let mut refresh = vec![];
-        match self.status_ok(&path).await {
-            Ok(st2) => {
-                for p in st2["projects"].as_array().into_iter().flatten() {
-                    if p["scheduler"]["kind"].as_str() != Some("launchd") {
-                        continue;
-                    }
-                    let Some(key) = p["key"].as_str().filter(|k| valid_key(k)) else { continue };
-                    let out = self.script(&path, "launchd-refresh.sh", &[key], T_REFRESH).await;
-                    let (result, output) = out.outcome();
-                    refresh.push(json!({ "key": key, "result": result, "code": out.code, "output": output }));
-                }
-            }
-            Err(m) => refresh.push(json!({ "key": Value::Null, "result": "unknown", "code": Value::Null, "output": m })),
-        }
-        let output = [fetch.text(), merge.text()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+        let refresh = self.refresh_mac(&path).await;
         json!({
             "result": if before == after { "current" } else { "updated" },
             "before": before,
@@ -638,6 +611,158 @@ impl Daemon {
             "refresh": refresh,
         })
     }
+
+    /// The one fast-forward both update paths use: no local changes, an origin branch upstream, origin on
+    /// github.com, fetch, `merge --ff-only`. Ok: (HEAD before, HEAD after, git's words); Err: the "blocked" result.
+    async fn fast_forward(&self, path: &str, dir: &str) -> Result<(String, String, String), Value> {
+        let run_git = |args: Vec<&str>, limit: Duration| {
+            let mut all = vec!["-C", dir];
+            all.extend(args);
+            let all: Vec<String> = all.into_iter().map(str::to_string).collect();
+            async move {
+                let a: Vec<&str> = all.iter().map(String::as_str).collect();
+                self.run(path, "git", &a, limit).await
+            }
+        };
+        let blocked = |step: &str, out: &Out| json!({ "result": "blocked", "step": step, "output": out.text() });
+
+        let dirty = run_git(vec!["status", "--porcelain", "--untracked-files=no"], T_SHORT).await;
+        if !dirty.ok() {
+            return Err(blocked("读不到代码目录的状态", &dirty));
+        }
+        if !dirty.stdout.trim().is_empty() {
+            return Err(blocked("代码目录里有没提交的改动，没有更新", &dirty));
+        }
+        let upstream = run_git(vec!["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], T_SHORT).await;
+        if !upstream.ok() || !upstream.stdout.trim().starts_with("origin/") {
+            return Err(blocked("当前分支没有跟踪 origin 上的分支，没有更新", &upstream));
+        }
+        let remote = run_git(vec!["remote", "get-url", "origin"], T_SHORT).await;
+        if !remote.ok() || !github_remote(remote.stdout.trim(), &self.cfg.extra_remotes) {
+            return Err(blocked("origin 不是 github.com 上的仓库，客户端只从 github.com 拉取，没有更新", &remote));
+        }
+        let before = run_git(vec!["rev-parse", "HEAD"], T_SHORT).await.stdout.trim().to_string();
+        let fetch = run_git(vec!["fetch", "--quiet", "origin"], T_NET).await;
+        if !fetch.ok() {
+            return Err(blocked("拉取失败", &fetch));
+        }
+        let merge = run_git(vec!["merge", "--ff-only", "@{upstream}"], T_SHORT).await;
+        if !merge.ok() {
+            return Err(blocked("不能快进（本地有分叉的提交，或会覆盖本地文件），没有更新", &merge));
+        }
+        let after = run_git(vec!["rev-parse", "HEAD"], T_SHORT).await.stdout.trim().to_string();
+        let output = [fetch.text(), merge.text()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+        Ok((before, after, output))
+    }
+
+    /// Every macOS project's launchd plist, one after another; one failing does not stop the rest.
+    async fn refresh_mac(&self, path: &str) -> Vec<Value> {
+        let mut refresh = vec![];
+        match self.status_ok(path).await {
+            Ok(st2) => {
+                for p in st2["projects"].as_array().into_iter().flatten() {
+                    if p["scheduler"]["kind"].as_str() != Some("launchd") {
+                        continue;
+                    }
+                    let Some(key) = p["key"].as_str().filter(|k| valid_key(k)) else { continue };
+                    let out = self.script(path, "launchd-refresh.sh", &[key], T_REFRESH).await;
+                    let (result, output) = out.outcome();
+                    refresh.push(json!({ "key": key, "result": result, "code": out.code, "output": output }));
+                }
+            }
+            Err(m) => refresh.push(json!({ "key": Value::Null, "result": "unknown", "code": Value::Null, "output": m })),
+        }
+        refresh
+    }
+
+    // ── a daemon from before the status script (GitHub#320) ──
+
+    /// The managed releases folder, as scripts/install-status.sh names it.
+    fn releases_root(&self) -> Option<PathBuf> {
+        let root = match self.cfg.env.iter().find(|(k, _)| k == "CAVIL_DEPLOY_ROOT") {
+            Some((_, v)) => PathBuf::from(v),
+            None => self.home().ok()?.join(".agents/releases/cavil-loop"),
+        };
+        Some(root.join("releases"))
+    }
+
+    /// What kind of install `entry` is, judged without the status script. The order is the status
+    /// script's (managed releases folder, then a git work tree, else a plain folder), but "not a git
+    /// work tree" needs positive evidence: no `.git` in the folder or any folder above it, every one of
+    /// them readable. A `.git` that git then does not confirm, a folder that cannot be read, git missing
+    /// or failing — all "unknown", which offers nothing (the status script would say "directory" there).
+    pub(crate) async fn outdated_form(&self, entry: &Path, path: &str) -> Form {
+        let target = match std::fs::canonicalize(entry) {
+            Ok(t) => t,
+            Err(e) => return Form::Unknown(format!("解析不了 {} 指向的位置：{e}", entry.display())),
+        };
+        match std::fs::metadata(&target) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return Form::Unknown(format!("{} 不是目录", target.display())),
+            Err(e) => return Form::Unknown(format!("读不了 {}：{e}", target.display())),
+        }
+        if let Some(rel) = self.releases_root() {
+            let canon = std::fs::canonicalize(&rel).ok();
+            if target.starts_with(&rel) || canon.is_some_and(|c| target.starts_with(c)) {
+                return Form::Managed(target);
+            }
+        }
+        let mut marked = false;
+        for dir in target.ancestors() {
+            match std::fs::symlink_metadata(dir.join(".git")) {
+                Ok(_) => {
+                    marked = true;
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Form::Unknown(format!("读不了 {}：{e}", dir.join(".git").display())),
+            }
+        }
+        if !marked {
+            return Form::Directory(target);
+        }
+        let t = target.to_string_lossy().to_string();
+        let out = self.run(path, "git", &["-C", &t, "rev-parse", "--is-inside-work-tree"], T_SHORT).await;
+        if out.ok() && out.stdout.trim() == "true" {
+            Form::Checkout(target)
+        } else {
+            let said = out.text();
+            Form::Unknown(format!("{} 里有 git 的标记，但 git 没有确认它是代码目录：{}", t, if said.is_empty() { "没有输出".into() } else { said }))
+        }
+    }
+}
+
+/// The kind of an install without the status script (GitHub#320).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Form {
+    Checkout(PathBuf),
+    Managed(PathBuf),
+    Directory(PathBuf),
+    Unknown(String),
+}
+
+impl Form {
+    fn to_json(&self) -> Value {
+        match self {
+            Form::Checkout(t) => json!({ "form": "checkout", "target": t.to_string_lossy() }),
+            Form::Managed(t) => json!({ "form": "managed", "target": t.to_string_lossy() }),
+            Form::Directory(t) => json!({ "form": "directory", "target": t.to_string_lossy() }),
+            Form::Unknown(e) => json!({ "form": "unknown", "error": e }),
+        }
+    }
+
+    fn refusal(&self) -> String {
+        match self {
+            Form::Checkout(_) => String::new(),
+            Form::Managed(_) => "这份 daemon 是受管安装，不能在这里更新".into(),
+            Form::Directory(_) => "这份 daemon 不是 git 代码目录，也不是受管安装，客户端更新不了它".into(),
+            Form::Unknown(e) => format!("读不出这份 daemon 是哪种安装，没有更新：{e}"),
+        }
+    }
+}
+
+fn has_status_script(entry: &Path) -> bool {
+    entry.join("scripts/install-status.sh").is_file()
 }
 
 pub(crate) fn refused(m: &str) -> Value {

@@ -185,3 +185,37 @@ export function localCopy(dir: string, origin: string | null): string {
 }
 
 export const originOf = (dir: string) => git(dir, 'config', '--get', 'remote.origin.url').trim();
+
+// ── a daemon from before the status script (GitHub#320) ──
+
+/**
+ * The daemon as installed before scripts/install-status.sh existed: origin gets a commit without the
+ * script and then one that brings it back; the install is a clone reset to the first, so it follows
+ * origin/main one fast-forward behind. `branch`: put both commits on that branch instead (origin/main
+ * keeps the script) and make the install follow it. `originOld`: on main, origin's main itself stays
+ * without the script (an old fork that never caught up). Returns the old commit.
+ */
+export function installOld(w: DaemonWorld, branch = 'main', o: { originOld?: boolean } = {}): string {
+  const tmp = join(w.dir, `old-${++pathSeq}`);
+  git(w.dir, 'clone', '-q', w.origin, tmp);
+  if (branch !== 'main') git(tmp, 'checkout', '-q', '-b', branch);
+  git(tmp, 'rm', '-q', 'scripts/install-status.sh');
+  git(tmp, 'commit', '-qm', 'before the status script');
+  const old = git(tmp, 'rev-parse', 'HEAD').trim();
+  if (branch === 'main' && !o.originOld) git(tmp, 'revert', '--no-edit', 'HEAD');
+  else git(tmp, 'commit', '-q', '--allow-empty', '-m', 'still without it');
+  git(tmp, 'push', '-q', 'origin', branch);
+  installByHand(w);
+  if (branch !== 'main') git(w.skill, 'checkout', '-q', '-b', branch, '--track', `origin/${branch}`);
+  git(w.skill, 'reset', '-q', '--hard', old);
+  return old;
+}
+
+/** A copy of the daemon's files without git and without the status script, at `dir`. */
+export function plainOldCopy(w: DaemonWorld, dir: string): string {
+  mkdirSync(dirname(dir), { recursive: true });
+  git(w.dir, 'clone', '-q', w.origin, dir);
+  rmSync(join(dir, '.git'), { recursive: true, force: true });
+  rmSync(join(dir, 'scripts', 'install-status.sh'));
+  return realpathSync(dir);
+}
