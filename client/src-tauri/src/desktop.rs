@@ -15,9 +15,16 @@
 //   CAVIL_CLIENT_TEST_NOTIFY_REFUSE  answer every notification with this refusal
 //   CAVIL_CLIENT_TEST_TICK_MS        the sync beat (default: the app's 60 s)
 //   CAVIL_CLIENT_TEST_HIDE_ON_CLOSE  "1": closing the window hides it on this OS too (normally macOS only)
-//   CAVIL_CLIENT_TEST_CONTROL_FILE   lines the test appends: "close" (closes the window the way the
+//   CAVIL_CLIENT_TEST_CONTROL_FILE   lines the test appends after the app started (what is already in
+//                                    the file at start is not read): "close" (closes the window the way the
 //                                    close button does) or "click <notification id>" (what a click on
-//                                    that notification does)
+//                                    that notification does) or "resize <width> <height>" (the window
+//                                    takes that size, GitHub#333), "quit" (the app quits the way its
+//                                    Quit menu item does) or "restart" (the restart an installed
+//                                    update asks for, updater::restart_now)
+//   CAVIL_CLIENT_TEST_WINDOW_STILL_MS  how long the window has to be still before a resize / move is
+//                                    kept (default: window.rs STILL_MS) — a test of what closing,
+//                                    quitting and restarting keep sets it longer than the test
 
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -37,6 +44,7 @@ pub struct TestHooks {
     pub tick_ms: Option<u64>,
     pub hide_on_close: bool,
     pub control: Option<PathBuf>,
+    pub window_still_ms: Option<u64>,
 }
 
 impl TestHooks {
@@ -51,6 +59,7 @@ impl TestHooks {
             tick_ms: get("CAVIL_CLIENT_TEST_TICK_MS").and_then(|v| v.parse().ok()).filter(|v| *v > 0),
             hide_on_close: get("CAVIL_CLIENT_TEST_HIDE_ON_CLOSE").as_deref() == Some("1"),
             control: get("CAVIL_CLIENT_TEST_CONTROL_FILE").map(PathBuf::from),
+            window_still_ms: get("CAVIL_CLIENT_TEST_WINDOW_STILL_MS").and_then(|v| v.parse().ok()),
         }
     }
 }
@@ -174,7 +183,9 @@ pub fn spawn_background<R: Runtime>(app: AppHandle<R>) {
     let control = app.state::<Desktop>().hooks.control.clone();
     if let Some(path) = control {
         tauri::async_runtime::spawn(async move {
-            let mut offset = 0u64;
+            // only lines appended after this start: a file left by an earlier start (the same test's
+            // previous run of the app, or the app before it restarted itself) is not replayed
+            let mut offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             let mut rest = String::new();
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -196,6 +207,16 @@ pub fn spawn_background<R: Runtime>(app: AppHandle<R>) {
                         }
                     } else if let Some(id) = line.strip_prefix("click ") {
                         on_click(&app, id);
+                    } else if let Some(size) = line.strip_prefix("resize ") {
+                        // the window resized the way the system does it for a user dragging its edge
+                        let n: Vec<f64> = size.split(' ').filter_map(|v| v.parse().ok()).collect();
+                        if let (Some(w), [width, height]) = (app.get_webview_window("main"), n.as_slice()) {
+                            let _ = w.set_size(tauri::LogicalSize::new(*width, *height));
+                        }
+                    } else if line == "quit" {
+                        app.exit(0);
+                    } else if line == "restart" {
+                        crate::updater::restart_now(&app);
                     } else if line == "activate" {
                         // the same handler the window's focus runs (a headless test display may never focus it)
                         set_active(&app, true);
