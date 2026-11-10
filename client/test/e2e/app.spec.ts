@@ -5572,3 +5572,180 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await expect(page.locator(`[data-testid="lane"][data-lane="${B}"] [data-testid="card"]`)).toHaveCount(1);
   await app.close();
 });
+
+// ---- GitHub#322: the reply card is easy to hit — a click on its free space goes into the box; R works
+// after a click in the discussion too (only R: every other key stays in the isolated frame, PR #171) ----
+test('GitHub#322: a click on the reply card\'s free space types into the box; R from inside the discussion; the box grows with its text; buttons, selections, dialogs and offline keep their own way', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const node = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!;
+  const prN = node.content.number as number;
+  const c = findCopies(store, 'GigleAI/cavil-loop', prN)!;
+  for (const g of c.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of c.rest) Object.assign(r, { state: 'open', pull_request: { ...(r.pull_request ?? {}), merged_at: null } });
+  Object.assign(pullOf(store, c), { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: 'SUCCESS', reviewDecision: null });
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
+  await card(page, prN).click();
+  const detail = page.getByTestId('detail');
+  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  const reply = detail.getByTestId('reply-input');
+  const box = detail.getByTestId('reply');
+  const focused = () => reply.evaluate((el) => el === document.activeElement);
+  const ring = () => box.evaluate((el) => getComputedStyle(el).boxShadow);
+  /** a click on the bottom row's free space: left of the "按 ⌘↩ 发送" hint, at the row's middle */
+  const clickRowSpace = async () => {
+    const row = (await detail.locator('.reply .row.end').boundingBox())!;
+    const hintBox = (await detail.locator('.reply .keys-hint').boundingBox())!;
+    expect(hintBox.x - row.x).toBeGreaterThan(40);
+    await page.mouse.click(row.x + (hintBox.x - row.x) / 2, row.y + row.height / 2);
+  };
+
+  // ---- 1. the box says how to get there; about four lines tall ----
+  await expect(reply).toHaveAttribute('placeholder', '回复（支持 markdown）· 按 R 随时跳到这里');
+  expect(await reply.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(96);
+
+  // ---- 2. free space of the PR line and of the button row: into the box, the card lights up ----
+  await blur(page);
+  expect(await ring()).toBe('none');
+  const status = (await detail.getByTestId('pr-status').boundingBox())!;
+  const actions = (await detail.locator('.pr-actions').boundingBox())!;
+  expect(actions.x - (status.x + status.width)).toBeGreaterThan(20); // there is free space between them
+  await page.mouse.click((status.x + status.width + actions.x) / 2, status.y + status.height / 2);
+  await expect(reply).toBeFocused();
+  expect(await ring()).not.toBe('none');
+  await blur(page);
+  await clickRowSpace();
+  await expect(reply).toBeFocused();
+  await blur(page);
+  await detail.locator('.reply .keys-hint').click();
+  await expect(reply).toBeFocused();
+
+  // ---- 3. buttons and lists do their own thing, the box does not take the focus ----
+  await blur(page);
+  await detail.getByTestId('merge-method').click();
+  expect(await focused()).toBe(false);
+  await page.keyboard.press('Escape'); // the list's own Esc
+  await reply.fill('看过了');
+  await blur(page);
+  await detail.getByTestId('reply-preview-toggle').click();
+  await expect(detail.getByTestId('reply-preview')).toBeVisible();
+  expect(await focused()).toBe(false);
+  await detail.getByTestId('reply-preview-toggle').click();
+  await reply.fill('');
+
+  // ---- 4. dragging over the card's words to copy them: the selection stays, the box does not jump in ----
+  await blur(page);
+  const hint = (await detail.locator('.reply .keys-hint').boundingBox())!;
+  await page.mouse.move(hint.x + 1, hint.y + hint.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(hint.x + hint.width - 1, hint.y + hint.height / 2, { steps: 5 });
+  await page.mouse.up();
+  expect(await page.evaluate(() => String(window.getSelection()))).not.toBe('');
+  expect(await focused()).toBe(false);
+
+  // ---- 5. inside the discussion: R goes to the reply box ----
+  const summary = frame.locator('details.entry > summary').first();
+  await summary.click({ position: { x: 40, y: 10 } });
+  expect(await focused()).toBe(false);
+  await page.keyboard.press('r');
+  await expect(reply).toBeFocused();
+  await page.keyboard.type('x');
+  await expect(reply).toHaveValue('x'); // the R itself was not typed into the box
+  await reply.fill('');
+  // Esc still stays in the discussion (PR #171), so do the other keys
+  await summary.click({ position: { x: 40, y: 10 } });
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('l');
+  await page.waitForTimeout(300);
+  await expect(detail).toBeVisible();
+  await expect(detail.getByTestId('label-picker')).toHaveCount(0);
+  // R with Shift / Alt, or while an input method composes: not ours
+  await page.keyboard.press('Shift+R');
+  await page.keyboard.press('Alt+r');
+  const frameKeydown = (o: { key: string; isComposing?: boolean }) =>
+    frame.locator('body').evaluate((_b, o) => document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: o.key, isComposing: Boolean(o.isComposing) })), o);
+  await frameKeydown({ key: 'r', isComposing: true });
+  await page.waitForTimeout(300);
+  expect(await focused()).toBe(false);
+  await frameKeydown({ key: 'r' }); // the same event without composing does go through
+  await expect(reply).toBeFocused();
+
+  // ---- 6. a dialog on top takes the keys: R from the discussion does nothing ----
+  await blur(page);
+  await detail.getByTestId('close-pr').click();
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await frameKeydown({ key: 'r' });
+  await page.waitForTimeout(300);
+  expect(await focused()).toBe(false);
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+
+  // ---- 7. the box grows with its text up to 40% of the panel, then scrolls; a long word wraps ----
+  const h0 = await reply.evaluate((el) => el.getBoundingClientRect().height);
+  await reply.fill(Array.from({ length: 10 }, (_, i) => `第 ${i + 1} 行`).join('\n'));
+  const h10 = await reply.evaluate((el) => el.getBoundingClientRect().height);
+  expect(h10).toBeGreaterThan(h0);
+  expect(await reply.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true); // all ten lines show
+  await reply.fill(Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行`).join('\n'));
+  const panelH = await detail.evaluate((el) => el.clientHeight);
+  const hMax = await reply.evaluate((el) => el.getBoundingClientRect().height);
+  expect(hMax).toBeLessThanOrEqual(Math.round(panelH * 0.4) + 1);
+  expect(await reply.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  await reply.fill(`https://example.com/${'a'.repeat(600)}`);
+  expect(await reply.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await reply.fill('');
+  expect(await reply.evaluate((el) => el.getBoundingClientRect().height)).toBeCloseTo(h0, 0);
+
+  // ---- 7b. a smaller window: the limit follows the panel as it is now (PR #325 review round 1); a dragged height stays ----
+  const height = () => reply.evaluate((el) => Math.round(el.getBoundingClientRect().height));
+  const cap = async () => Math.round((await detail.evaluate((el) => el.clientHeight)) * 0.4);
+  const size0 = page.viewportSize()!;
+  await reply.fill(Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行`).join('\n'));
+  const tall = await height();
+  expect(tall).toBeGreaterThan(200); // it did grow to the limit of the big window
+  await page.setViewportSize({ width: size0.width, height: 500 });
+  await expect.poll(async () => (await height()) <= (await cap()) + 1).toBe(true);
+  expect(await height()).toBeLessThan(tall);
+  expect(await height()).toBeGreaterThanOrEqual(96);
+  await page.setViewportSize(size0);
+  await expect.poll(height).toBe(tall); // and back up with the window
+  // a narrower panel wraps more lines: the height is worked out again without typing
+  await reply.fill('字'.repeat(300));
+  const wide = await height();
+  await page.setViewportSize({ width: 700, height: size0.height });
+  await expect.poll(height).toBeGreaterThan(wide);
+  await page.setViewportSize(size0);
+  await expect.poll(height).toBe(wide);
+  // dragging the box's own corner: that height is the least it goes back to, typing does not undo it
+  await reply.fill('');
+  const small = await height();
+  const rb = (await reply.boundingBox())!;
+  await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4);
+  await page.mouse.down();
+  await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4 + 80, { steps: 8 });
+  await page.mouse.up();
+  const draggedH = await height();
+  expect(draggedH).toBeGreaterThan(small + 40);
+  await reply.fill('一行\n两行');
+  expect(await height()).toBe(draggedH);
+  await reply.fill('');
+  expect(await height()).toBe(draggedH);
+  await reply.fill(Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行`).join('\n'));
+  expect(await height()).toBe(tall); // more text still grows it to the limit
+  await reply.fill('');
+  expect(await height()).toBe(draggedH);
+
+  // ---- 8. offline: the box cannot take text, a click on the card does nothing ----
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').press('Enter');
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(reply).toBeDisabled();
+  await expect(reply).toHaveAttribute('placeholder', '离线时不能回复');
+  await blur(page);
+  await clickRowSpace();
+  expect(await focused()).toBe(false);
+  await expect(detail).toBeVisible();
+  await app.close();
+});

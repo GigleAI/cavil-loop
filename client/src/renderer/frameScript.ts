@@ -6,9 +6,10 @@
 // frame's <body data-…> attributes and is read from there.
 //
 // It only reports to the window: a ticked box (which entry, which box, ticked
-// or not), a click on an entry's "edit" button (GitHub#205: which entry), and
+// or not), a click on an entry's "edit" button (GitHub#205: which entry),
 // which entries are unfolded / how far the frame is scrolled, so a re-read can
-// put both back. It has no way to change anything on GitHub by
+// put both back, and a bare R key (GitHub#322: "go to the reply box" — the one
+// key it passes on; every other key stays in the frame, PR #171). It has no way to change anything on GitHub by
 // itself: the window decides, and the frame cannot reach the window's objects
 // (no allow-same-origin) nor the network (connect-src 'none').
 //
@@ -44,6 +45,12 @@ export const FRAME_SCRIPT = `(function () {
     var entry = t.closest('details.entry');
     if (entry) send({ cavil: 'edit', entry: entry.getAttribute('data-entry') });
   });
+  document.addEventListener('keydown', function (e) {
+    if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    if (e.key !== 'r' && e.key !== 'R') return;
+    e.preventDefault();
+    send({ cavil: 'key', key: 'r' });
+  });
   document.addEventListener('toggle', function () { send({ cavil: 'view' }); }, true);
   var timer = 0;
   window.addEventListener('scroll', function () {
@@ -54,4 +61,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-BNpQXqhF68GpMl4gzToZYbHFqOlFxrj+gIBE9bW2KpU='";
+export const FRAME_SCRIPT_HASH = "'sha256-mk51mfto0tZ8zU3iA56qvUJB9Nv9XyA1vlGfFHGeD+Y='";

@@ -1,7 +1,7 @@
 // The React side of the shortcuts (GitHub#192): who handles a shortcut, and which layer is on top.
 // The decision itself is `resolve` in shortcuts.ts; the single keydown listener is `useKeyboard` (App).
 import { useEffect, useRef } from 'react';
-import { resolve, typingOf, type Layer, type ShortcutId } from './shortcuts';
+import { resolve, typingOf, type KeyLike, type Layer, type ShortcutId, type Typing } from './shortcuts';
 
 /**
  * A handler returns false when the key did nothing it should keep from the page (it is then left
@@ -51,19 +51,39 @@ export function topLayer(): Layer {
   return layers.length ? layers[layers.length - 1].kind : 'none';
 }
 
+/** whether a shortcut may act at all: set by the window's listener (App), read by forwarded keys too */
+let signedInNow = false;
+
+/**
+ * One key press, decided by `resolve` and run by the mounted handler: the id that acted, or null.
+ * Both the window's own keydown listener and a key forwarded by the discussion frame go through here.
+ */
+function press(e: KeyLike, typing: Typing, only?: ShortcutId): ShortcutId | null {
+  const id = resolve(e, { signedIn: signedInNow, layer: topLayer(), typing });
+  if (!id || (only && id !== only)) return null;
+  const list = handlers.get(id);
+  const h = list?.[list.length - 1];
+  if (!h) return null;
+  return h() !== false ? id : null;
+}
+
+/**
+ * A key the isolated discussion frame reported (GitHub#322). The frame only reports a bare R; it is
+ * judged exactly like a key pressed outside any text field, and only "go to the reply box" may act —
+ * every other key stays inside the frame (PR #171: the maintainer chose to keep it isolated).
+ */
+export function frameKey(key: string): boolean {
+  if (typeof key !== 'string' || key.length !== 1) return false;
+  return press({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false }, 'none', 'reply') !== null;
+}
+
 /** The one keydown listener of the window. `signedIn` decides whether any shortcut acts at all. */
 export function useKeyboard(signedIn: boolean): void {
-  const on = useRef(signedIn);
-  on.current = signedIn;
+  signedInNow = signedIn;
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
-      const id = resolve(e, { signedIn: on.current, layer: topLayer(), typing: typingOf(document.activeElement) });
-      if (!id) return;
-      const list = handlers.get(id);
-      const h = list?.[list.length - 1];
-      if (!h) return;
-      if (h() !== false) e.preventDefault();
+      if (press(e, typingOf(document.activeElement))) e.preventDefault();
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
