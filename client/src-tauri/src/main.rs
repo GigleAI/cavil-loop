@@ -305,6 +305,7 @@ fn main() {
             zoom(&handle, None);
             let desk = app.state::<Desktop>();
             desk.record(json!({ "op": "start", "hidden": hidden }));
+            window::record_start(&handle, &place, place_kept);
             #[cfg(target_os = "macos")]
             {
                 let h = handle.clone();

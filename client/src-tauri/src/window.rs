@@ -50,12 +50,15 @@ fn screens<R: Runtime>(app: &AppHandle<R>) -> Vec<Screen> {
 /// What this start builds the window with, and whether there was a kept record behind it.
 pub fn placement<R: Runtime>(app: &AppHandle<R>, store: &Store) -> (Placement, bool) {
     let saved = ws::saved(store);
-    let place = ws::placement(saved.as_ref(), &screens(app));
+    (ws::placement(saved.as_ref(), &screens(app)), saved.is_some())
+}
+
+/// Test mode: what this start built the window with (after the "start" record: a start's first record is "start").
+pub fn record_start<R: Runtime>(app: &AppHandle<R>, place: &Placement, kept: bool) {
     app.state::<Desktop>().record(json!({
-        "op": "window", "kept": saved.is_some(), "w": place.w, "h": place.h,
+        "op": "window", "kept": kept, "w": place.w, "h": place.h,
         "x": place.pos.map(|p| p.0), "y": place.pos.map(|p| p.1), "maximized": place.maximized,
     }));
-    (place, saved.is_some())
 }
 
 /// Look at the window now and keep what changed.
