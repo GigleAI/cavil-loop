@@ -429,6 +429,23 @@ button.primary > kbd { background: transparent; color: #fff; border-color: rgba(
 .picker li.disabled { opacity: 0.5; cursor: not-allowed; }
 .picker-foot { border-top: 1px solid var(--border); padding: 5px 10px; display: flex; gap: 10px; flex-wrap: wrap; }
 .modal.shortcuts { width: 720px; }
+.modal.update-notes { width: 640px; }
+.update-installed-line { margin: 8px 0; }
+.modal.update-notes { font-size: 13px; color: var(--fg); text-align: left; }
+.modal.update-notes h3 .sub { font-weight: 400; color: var(--muted); font-size: 13px; }
+.update-notes .un-ver { display: flex; align-items: baseline; gap: 8px; margin: 12px 0 2px; font-weight: 600; font-size: 13px; }
+.update-notes .un-ver .when { font-weight: 400; color: var(--muted); font-size: 12px; }
+.update-notes .un-items { margin: 0 0 0 2px; padding-left: 18px; }
+.update-notes .un-items li { margin: 2px 0; line-height: 1.5; overflow-wrap: anywhere; }
+.update-notes .un-items summary { cursor: pointer; list-style: none; }
+.update-notes .un-items summary::-webkit-details-marker { display: none; }
+.update-notes .un-items summary::after { content: ' 展开说明'; color: var(--accent); font-size: 12px; }
+.update-notes .un-items details[open] summary::after { content: ' 收起'; }
+.update-notes .un-items .more { color: var(--muted); font-size: 12px; margin: 2px 0 6px; white-space: pre-wrap; }
+.update-notes .un-none { margin: 2px 0 0 2px; }
+.update-notes .un-note { color: var(--muted); font-size: 12px; margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--border-muted); }
+.update-notes .un-foot { margin: 14px 0 0; }
+.update-notes .un-foot .spacer { flex: 1; }
 .modal:focus { outline: none; }
 .shortcut-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
 .shortcut-groups h4 { margin: 12px 0 4px; font-size: 12px; color: var(--muted); }

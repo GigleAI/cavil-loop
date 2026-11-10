@@ -3,6 +3,7 @@ import { GitHubClient, GitHubError } from './github';
 import { fetchSource } from './fetchSources';
 import { boardCounts, checkSource, FULL_READ_EVERY_MS, type CheckResult, type SourceCheck } from './changeCheck';
 import { VIEWER_QUERY } from './queries';
+import { relationsKnown } from './relations';
 
 export interface SyncRound {
   /** snapshot per source key: fresh where the read completed, previous otherwise */
@@ -76,8 +77,10 @@ export async function syncRound(
   const readOne = async (src: SourceConfig): Promise<Outcome> => {
     const prev = previous.get(src.key);
     const old = recorded.get(src.key);
-    // a record vouches only for the very snapshot it was taken for
-    const usable = prev && old && old.snapshotAt === prev.fetchedAt ? old : null;
+    // a record vouches only for the very snapshot it was taken for — and never for one whose
+    // relations are unknown (GitHub#349: cached before they were read): "nothing changed" must
+    // not keep that snapshot, only a full read can fill them in
+    const usable = prev && old && old.snapshotAt === prev.fetchedAt && relationsKnown(prev.items) ? old : null;
     let checked: CheckResult | null = null;
     if (checking) {
       try {

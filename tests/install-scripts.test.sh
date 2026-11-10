@@ -56,6 +56,9 @@ make_skill() {   # <目录> <worktree|提交>
             | (cd "$REPO_DIR" && xargs -0 -I{} cp --parents -P {} "$d/" 2>/dev/null)
     else
         git -C "$REPO_DIR" archive "$src" | tar -x -C "$d"
+        # 配置模板是 setup.sh 的输入（原样抄成项目配置），不是它的行为：改前的副本也用当前的模板，
+        # 否则任何只往模板里加配置项的改动都会让「落盘文件与改前一致」变红（GitHub#340 就撞上了）
+        cp "$REPO_DIR/cavil-loop.config.example" "$d/cavil-loop.config.example"
     fi
     git -C "$d" init -q -b main
     git -C "$d" add -A >/dev/null

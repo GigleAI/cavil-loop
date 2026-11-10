@@ -1,0 +1,266 @@
+{
+  "recorded_at": "2026-11-10T10:48:24Z",
+  "command": "gh api repos/GigleAI/cavil-loop/releases?per_page=100 | jq (client/ tags only; fields tag_name, draft, prerelease, published_at, target_commitish, body, assets[].name / browser_download_url; values untouched)",
+  "releases": [
+    {
+      "tag_name": "client/v0.5.1-dev.465",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T10:37:33Z",
+      "target_commitish": "4692928a252aca05944e1f827ce3d25ad8e74b4c",
+      "body": "开发版 0.5.1-dev.465，构建自 main 的 4692928a252aca05944e1f827ce3d25ad8e74b4c：docs: no GitHub Project needed; first run from the desktop client (#347)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.465-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.465/Cavil-Loop-0.5.1-dev.465-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.465-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.465/Cavil-Loop-0.5.1-dev.465-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.465-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.465/Cavil-Loop-0.5.1-dev.465-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.465/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.462",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T03:27:46Z",
+      "target_commitish": "eeabff4f6940f66e50471cc2ba5df86652842cb8",
+      "body": "开发版 0.5.1-dev.462，构建自 main 的 eeabff4f6940f66e50471cc2ba5df86652842cb8：feat(client): a restart comes back at the window's size and place (#333) (#334)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.462-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.462/Cavil-Loop-0.5.1-dev.462-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.462-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.462/Cavil-Loop-0.5.1-dev.462-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.462-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.462/Cavil-Loop-0.5.1-dev.462-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.462/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.456",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T01:35:45Z",
+      "target_commitish": "1af65115b066925f0ff41c689c5519837566d73c",
+      "body": "开发版 0.5.1-dev.456，构建自 main 的 1af65115b066925f0ff41c689c5519837566d73c：feat(client): read a notified item's detail ahead of the click (#328) (#331)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.456-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.456/Cavil-Loop-0.5.1-dev.456-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.456-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.456/Cavil-Loop-0.5.1-dev.456-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.456-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.456/Cavil-Loop-0.5.1-dev.456-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.456/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.455",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T01:10:39Z",
+      "target_commitish": "36dfb455eeae92abd9cdcae641c3dada2e0c9c6f",
+      "body": "开发版 0.5.1-dev.455，构建自 main 的 36dfb455eeae92abd9cdcae641c3dada2e0c9c6f：fix(client): show full-read and last-check times apart; no timed round right behind a slow one (#324) (#330)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.455-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.455/Cavil-Loop-0.5.1-dev.455-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.455-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.455/Cavil-Loop-0.5.1-dev.455-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.455-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.455/Cavil-Loop-0.5.1-dev.455-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.455/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.454",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T01:05:21Z",
+      "target_commitish": "cd9f62949c995ab7db9906065e99805d0811ef90",
+      "body": "开发版 0.5.1-dev.454，构建自 main 的 cd9f62949c995ab7db9906065e99805d0811ef90：feat(client): the board's red result bar can be closed and goes once its change is over (#323) (#327)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.454-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.454/Cavil-Loop-0.5.1-dev.454-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.454-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.454/Cavil-Loop-0.5.1-dev.454-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.454-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.454/Cavil-Loop-0.5.1-dev.454-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.454/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.453",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T00:36:53Z",
+      "target_commitish": "770e1947edf85563d0f7eb623362e58a2cb32b72",
+      "body": "开发版 0.5.1-dev.453，构建自 main 的 770e1947edf85563d0f7eb623362e58a2cb32b72：feat(client): reply card takes a click anywhere into the box; R works from inside the discussion (#322) (#325)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.453-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.453/Cavil-Loop-0.5.1-dev.453-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.453-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.453/Cavil-Loop-0.5.1-dev.453-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.453-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.453/Cavil-Loop-0.5.1-dev.453-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.453/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.452",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T00:30:04Z",
+      "target_commitish": "3bbc6e1a406fea5a8685f5c9cbbda21da7d46ab6",
+      "body": "开发版 0.5.1-dev.452，构建自 main 的 3bbc6e1a406fea5a8685f5c9cbbda21da7d46ab6：fix(client): the release gate's test copy sees the rest of the repository (#309) (#326)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.452-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.452/Cavil-Loop-0.5.1-dev.452-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.452-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.452/Cavil-Loop-0.5.1-dev.452-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.452-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.452/Cavil-Loop-0.5.1-dev.452-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.452/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.451",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-10T00:16:45Z",
+      "target_commitish": "d86d26f9426966c7deb0e3492238a2b3c1bfe03a",
+      "body": "开发版 0.5.1-dev.451，构建自 main 的 d86d26f9426966c7deb0e3492238a2b3c1bfe03a：feat(client): update a daemon from before the status script from settings (#320) (#321)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.451-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.451/Cavil-Loop-0.5.1-dev.451-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.451-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.451/Cavil-Loop-0.5.1-dev.451-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.451-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.451/Cavil-Loop-0.5.1-dev.451-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.451/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.449",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-09T15:46:41Z",
+      "target_commitish": "ecd1b3789f23c3377019b245ca1092ea78e38a4c",
+      "body": "开发版 0.5.1-dev.449，构建自 main 的 ecd1b3789f23c3377019b245ca1092ea78e38a4c：feat(client): connect a repository to the local daemon from the source list (#315) (#319)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.449-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.449/Cavil-Loop-0.5.1-dev.449-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.449-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.449/Cavil-Loop-0.5.1-dev.449-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.449-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.449/Cavil-Loop-0.5.1-dev.449-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.449/latest.json"
+        }
+      ]
+    },
+    {
+      "tag_name": "client/v0.5.1-dev.448",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-11-09T14:35:26Z",
+      "target_commitish": "59f341d1c90b72123aaea89f2aed77ebe4dad7e3",
+      "body": "开发版 0.5.1-dev.448，构建自 main 的 59f341d1c90b72123aaea89f2aed77ebe4dad7e3：feat(client): settings \"本机 daemon\" — check, install, projects, stop / start / disconnect, update (#314) (#318)\n\n只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。\n",
+      "assets": [
+        {
+          "name": "Cavil-Loop-0.5.1-dev.448-arm64.app.tar.gz",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.448/Cavil-Loop-0.5.1-dev.448-arm64.app.tar.gz"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.448-arm64.app.tar.gz.sig",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.448/Cavil-Loop-0.5.1-dev.448-arm64.app.tar.gz.sig"
+        },
+        {
+          "name": "Cavil-Loop-0.5.1-dev.448-arm64.dmg",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.448/Cavil-Loop-0.5.1-dev.448-arm64.dmg"
+        },
+        {
+          "name": "latest.json",
+          "browser_download_url": "https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.448/latest.json"
+        }
+      ]
+    }
+  ]
+}

@@ -260,6 +260,29 @@ BLOCKED_RECHECK_SECS=300
 # 判定已定、写 GitHub 连续失败多少次就放弃（留在等前置标签上、记日志，要人处理）
 BLOCKED_MAX_TRIES=10
 
+# ── Tell the worker what else is in progress / 派工时告诉 worker 还有哪些条目在进行（GitHub#340）──
+# With "true", every worker dispatch (new issue, issue comment, PR comment, split sub-issue) gets one more
+# section: the other open items labelled doing/agent, the review label (when set) or pending/PR — number,
+# title, branch — and the files each branch has changed. A PR's files are relative to that PR's own base
+# branch; an item with no PR yet is compared with `main` (the branch this tool cuts work branches from) and
+# says so. The worker must name any overlap (which item, which files) in its proposal or hand-off comment;
+# a human decides the order. It is a snapshot taken at dispatch, of pushed commits only — the conflict check
+# before hand-off still runs. Read only at dispatch (one issue list per label + one PR list, polling
+# identity; files come from a local `git fetch` + diff), never during polling. A list that cannot be read is
+# written as "could not read", never as "nothing else". At most 20 items and 30 files per item are listed,
+# with the real remainder stated. Reviews do not get the section. Empty / "false" / line missing = off:
+# prompts and GitHub calls are byte-identical to before.
+#
+# 设成 "true" 时，worker 的每次派工（新 issue、issue 评论、PR 评论、拆出来的子项）提示词里多一段：其他带
+# doing/agent、复审标签（配了才算）、pending/PR 的打开条目——编号、标题、分支——以及各分支已经改了哪些文件。
+# 已有 PR 的按那个 PR 自己的目标分支算；还没有 PR 的固定和 `main` 比（本工具建工作分支就是从它切的），行内写明。
+# worker 的方案或改动和它们有文件重叠时，必须在方案或交接评论里写出「和哪个条目、哪些文件」，由人决定先后。
+# 这是派工那一刻的快照，只含已推送的提交，不替代交接前的冲突检查。只在派工时读（每个标签一次条目列表 +
+# 一次 PR 列表，轮询身份；文件靠本地 git fetch + diff），轮询不多一次调用。读不到写「未能读取」，绝不写成
+# 「没有」。最多列 20 个条目、每个条目 30 个文件，超出写明真实剩余数。复审不带这一段。
+# 留空 / "false" / 不写这一行 = 关闭，提示词和 GitHub 调用与以前逐字节一样。
+CONCURRENT_WORK_HINT="true"
+
 # ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97 / #100）──
 # For projects where another AI assistant with its own GitHub account (the "requester bot")
 # files requests directly. The loop closes in two places:

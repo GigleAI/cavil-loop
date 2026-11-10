@@ -34,6 +34,7 @@ export function bridgeDesktop(): Desktop {
     setAutoUpdate: (on) => d('setAutoUpdate', { on }),
     setUpdateChannel: (channel) => d('setUpdateChannel', { channel }),
     dismissUpdate: (version) => d('dismissUpdate', { version }),
+    dismissInstalledUpdate: (version) => d('dismissInstalledUpdate', { version }),
     restartToUpdate: () => d('restartToUpdate'),
   };
 }

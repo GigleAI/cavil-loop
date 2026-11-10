@@ -1016,6 +1016,10 @@ export class Controller {
     await this.deps.desktop?.dismissUpdate(String(version)).catch(() => {});
   }
 
+  async dismissInstalledUpdate(version: string): Promise<void> {
+    await this.deps.desktop?.dismissInstalledUpdate(String(version)).catch(() => {});
+  }
+
   async restartToUpdate(): Promise<void> {
     await this.deps.desktop?.restartToUpdate().catch(() => {});
   }
@@ -1855,7 +1859,7 @@ export class Controller {
     };
     let fresh;
     try {
-      fresh = await fetchItem(client, repo, number);
+      fresh = await fetchItem(client, repo, number, this.now());
     } catch (e) {
       return failed((e as Error).message);
     }

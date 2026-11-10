@@ -97,6 +97,7 @@ async function signedIn(
     setAutoUpdate: async () => {},
     setUpdateChannel: async () => {},
     dismissUpdate: async () => {},
+    dismissInstalledUpdate: async () => {},
     restartToUpdate: async () => {},
   };
   const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
