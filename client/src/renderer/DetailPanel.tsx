@@ -709,20 +709,42 @@ export function DetailPanel({
     if (sel && !sel.isCollapsed && sel.toString()) return;
     focusReply();
   };
-  // GitHub#322: the box grows with its text up to 40% of the panel, then scrolls; a height the person
-  // dragged it to stays the least it shrinks back to
+  // GitHub#322: the box grows with its text up to 40% of the panel as it is now, then scrolls. The height
+  // is worked out again whenever the text, the item or the panel's size changes (a smaller window, a
+  // narrower panel that wraps more). Only a real drag of the box's own corner — a press on the box whose
+  // release leaves it at another height — is kept, as the least it shrinks back to.
   const replyAuto = useRef<{ set: number; dragged: number }>({ set: 0, dragged: 0 });
-  useLayoutEffect(() => {
+  const fitReply = () => {
     const el = replyBox.current;
     if (!el) return;
     const a = replyAuto.current;
-    if (a.set && Math.abs(el.offsetHeight - a.set) > 1) a.dragged = el.offsetHeight;
     el.style.height = 'auto';
     const max = Math.max(REPLY_MIN_PX, Math.round((panelRef.current?.clientHeight ?? 0) * 0.4));
     const want = Math.min(Math.max(el.scrollHeight, a.dragged, REPLY_MIN_PX), Math.max(max, a.dragged));
     el.style.height = `${want}px`;
     a.set = el.offsetHeight;
-  }, [reply, item?.key]);
+  };
+  const fitRef = useRef(fitReply);
+  fitRef.current = fitReply;
+  useLayoutEffect(fitReply, [reply, item?.key]);
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => fitRef.current());
+    ro.observe(panel);
+    return () => ro.disconnect();
+  }, []);
+  const replyPress = () => {
+    const done = () => {
+      window.removeEventListener('mouseup', done, true);
+      const el = replyBox.current;
+      const a = replyAuto.current;
+      if (!el || Math.abs(el.offsetHeight - a.set) <= 1) return;
+      a.dragged = el.offsetHeight;
+      a.set = el.offsetHeight;
+    };
+    window.addEventListener('mouseup', done, true);
+  };
   useShortcuts({
     // folded fields come back first: the picker opens next to them (GitHub#260)
     labels: () => {
@@ -1222,6 +1244,7 @@ export function DetailPanel({
           data-testid="reply-input"
           data-keys="reply"
           ref={replyBox}
+          onMouseDown={replyPress}
           value={reply}
           placeholder={canWrite ? `回复（支持 markdown）· 按 ${keyText('reply')} 随时跳到这里` : '离线时不能回复'}
           disabled={!canWrite || busy}

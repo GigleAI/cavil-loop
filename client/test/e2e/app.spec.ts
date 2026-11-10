@@ -5698,6 +5698,45 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   await reply.fill('');
   expect(await reply.evaluate((el) => el.getBoundingClientRect().height)).toBeCloseTo(h0, 0);
 
+  // ---- 7b. a smaller window: the limit follows the panel as it is now (PR #325 review round 1); a dragged height stays ----
+  const height = () => reply.evaluate((el) => Math.round(el.getBoundingClientRect().height));
+  const cap = async () => Math.round((await detail.evaluate((el) => el.clientHeight)) * 0.4);
+  const size0 = page.viewportSize()!;
+  await reply.fill(Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行`).join('\n'));
+  const tall = await height();
+  expect(tall).toBeGreaterThan(200); // it did grow to the limit of the big window
+  await page.setViewportSize({ width: size0.width, height: 500 });
+  await expect.poll(async () => (await height()) <= (await cap()) + 1).toBe(true);
+  expect(await height()).toBeLessThan(tall);
+  expect(await height()).toBeGreaterThanOrEqual(96);
+  await page.setViewportSize(size0);
+  await expect.poll(height).toBe(tall); // and back up with the window
+  // a narrower panel wraps more lines: the height is worked out again without typing
+  await reply.fill('字'.repeat(300));
+  const wide = await height();
+  await page.setViewportSize({ width: 700, height: size0.height });
+  await expect.poll(height).toBeGreaterThan(wide);
+  await page.setViewportSize(size0);
+  await expect.poll(height).toBe(wide);
+  // dragging the box's own corner: that height is the least it goes back to, typing does not undo it
+  await reply.fill('');
+  const small = await height();
+  const rb = (await reply.boundingBox())!;
+  await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4);
+  await page.mouse.down();
+  await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4 + 80, { steps: 8 });
+  await page.mouse.up();
+  const draggedH = await height();
+  expect(draggedH).toBeGreaterThan(small + 40);
+  await reply.fill('一行\n两行');
+  expect(await height()).toBe(draggedH);
+  await reply.fill('');
+  expect(await height()).toBe(draggedH);
+  await reply.fill(Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行`).join('\n'));
+  expect(await height()).toBe(tall); // more text still grows it to the limit
+  await reply.fill('');
+  expect(await height()).toBe(draggedH);
+
   // ---- 8. offline: the box cannot take text, a click on the card does nothing ----
   env.fake.state.offline = true;
   await page.getByTestId('refresh').press('Enter');
