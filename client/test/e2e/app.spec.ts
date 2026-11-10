@@ -5668,3 +5668,85 @@ test('GitHub#323: the red result bar above the board has an × and goes by itsel
   await expect(bar).toHaveCount(0);
   await app.close();
 });
+
+test('GitHub#323 (PR #327 review round 1): a field change made in the detail and answered after the detail was closed or moved on — its red bar on the board goes with the change too; a failed comment left behind is not taken away by an unrelated change', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const bar = page.getByTestId('board-action-result');
+  const editsBar = page.getByTestId('edits-bar');
+  const labelPosts = (n: number) => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith(`/issues/${n}/labels`)).length;
+  /** in #n's detail: add `label`, GitHub holds the answer; returns the release */
+  const addHeld = async (n: number, label: string) => {
+    await card(page, n).getByTestId('card-title').click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    const p0 = labelPosts(n);
+    const release = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${n}/labels`));
+    await pickLabel(page, label);
+    await expect.poll(() => labelPosts(n)).toBe(p0 + 1);
+    return release;
+  };
+
+  /** a click on the board's bars may already have put the detail away */
+  const putAway = async () => {
+    if (await page.getByTestId('detail').count()) await page.getByTestId('detail-close').click();
+    await expect(page.getByTestId('detail')).toHaveCount(0);
+  };
+
+  // 1. the detail is closed before GitHub refuses: the red bar lands on the board; abandoned → it goes by itself
+  env.fake.state.w.failLabel = 'pending/PR';
+  let release = await addHeld(139, 'pending/PR');
+  await page.getByTestId('detail-close').click();
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  release();
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
+
+  // 2. another item is opened before GitHub refuses: the same; resent and accepted → it goes by itself
+  release = await addHeld(139, 'pending/PR');
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  release();
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  env.fake.state.w.failLabel = null;
+  await editsBar.getByTestId('edits-resend-all').click();
+  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await expect(bar).toHaveCount(0);
+  await expect(card(page, 139).locator('.label', { hasText: 'pending/PR' })).toBeVisible();
+  await putAway();
+
+  // 3. a comment that failed after its detail was closed is not a field change: a field change of the
+  //    same item coming and going leaves its bar alone; the × puts it away
+  env.fake.state.w.failComment = true;
+  await card(page, 137).getByTestId('card-title').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  const c0 = env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith('/issues/137/comments')).length;
+  release = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/137/comments'));
+  await page.getByTestId('reply-input').fill('留在看板上的失败评论');
+  await page.getByTestId('reply-send').click();
+  await expect.poll(() => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith('/issues/137/comments')).length).toBe(c0 + 1);
+  await page.getByTestId('detail-close').click();
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  release();
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  env.fake.state.w.failComment = false;
+  const kept = await bar.textContent();
+  // a field change of #137 made and answered inside its detail (its note stays in the panel), then abandoned
+  await card(page, 137).getByTestId('card-title').click();
+  env.fake.state.w.dropWrites = true;
+  await pickLabel(page, 'Done');
+  await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+  env.fake.state.w.dropWrites = false;
+  await expect(bar).toHaveText(kept ?? '');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await putAway();
+  await page.waitForTimeout(500);
+  await expect(bar).toHaveText(kept ?? '');
+  await bar.getByTestId('board-action-result-close').click();
+  await expect(bar).toHaveCount(0);
+  await app.close();
+});

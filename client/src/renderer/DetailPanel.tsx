@@ -333,7 +333,8 @@ export function DetailPanel({
   /** GitHub#250: opened from a notice above the board to do this with one of the item's operations */
   intent?: { opId: string; what: 'retry' | 'toReply' } | null;
   /** a change made on an item the panel has since left: its result goes to the board instead */
-  onLeftBehind: (note: ResultNote) => void;
+  /** `about`: the write the note reports on (GitHub#323: the board's bar follows a failed field change) */
+  onLeftBehind: (note: ResultNote, about?: WriteAction) => void;
 }) {
   const item = data.items.find((i) => i.key === itemKey) ?? null;
   // One panel instance = one opening (the board gives every opening its own
@@ -555,7 +556,7 @@ export function DetailPanel({
     setBusy(true);
     const r = await api().act(action);
     if (!mine()) {
-      onLeftBehind(noteOf(r, `${label}：${okText}`));
+      onLeftBehind(noteOf(r, `${label}：${okText}`), action);
       return { ...r, here: false };
     }
     setBusy(false);
@@ -584,7 +585,7 @@ export function DetailPanel({
       setChanging((n) => n - 1);
     }
     if (!session.current()) {
-      onLeftBehind(noteOf(r, `${label}：${okText}`));
+      onLeftBehind(noteOf(r, `${label}：${okText}`), action);
       return r;
     }
     setNote(noteOf(r, okText));
