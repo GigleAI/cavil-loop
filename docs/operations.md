@@ -2198,7 +2198,7 @@ start with "卡住检测：":
 | When | What the daemon does |
 |---|---|
 | agent idle, nothing new on GitHub or the local branch, for `STUCK_WORKER_QUIET_SECS` in a row | pastes a fixed reminder into the worker pane (no GitHub write) |
-| still nothing `STUCK_WORKER_STEP_GAP_SECS` after the reminder | ends the session, flips `doing/agent` back to the label that triggered the dispatch, redispatches next round; at most `STUCK_WORKER_MAX_RESTARTS` times |
+| still nothing `STUCK_WORKER_STEP_GAP_SECS` after the reminder | swaps `doing/agent` for the label that triggered the dispatch, ends the session once the swap is confirmed, redispatches next round; at most `STUCK_WORKER_MAX_RESTARTS` times |
 | stuck again for `STUCK_WORKER_QUIET_SECS` after the redispatch | posts a comment (how long, what was tried, how to continue), flips to `pending/human`; the session is kept |
 
 Every check is a script comparison, never a model call:
@@ -2221,6 +2221,10 @@ Every check is a script comparison, never a model call:
   and the clock restarts.
 - **Unreadable means hands off**: if tmux or GitHub cannot be read, the round neither advances
   nor resets.
+- **A step that failed half-way** (the label swap or the comment did not go through) is checked
+  against the same evidence next round and only continued when nothing changed; an agent that is
+  busy again, or anyone touching the item or its bound item, drops it. So do 10 rounds in a row
+  without finishing.
 
 Never handled (each reason is logged once):
 

@@ -6927,7 +6927,7 @@ compose_prompt_template() {
 #   · 任何一项读不出 / 认不出 = 未知：不推进、不清零、不动手（硬规则 L36）。
 #   · ②③ 动手前把目标、绑定条目、本地会话**全部重读**，和这个空闲周期开始时记下的身份串
 #     整串比对，结论也要再判一次（stuck_doc + stuck_verdict，两处同一份）；不一致就不写、
-#     不结束会话、不记完成（硬规则 L41）。上一轮没做完的待办（stuck_resume）同样先重读。
+#     不结束会话、不记完成（硬规则 L41）。上一轮没做完的待办（stuck_resume）过同一道核对。
 #   · 阶梯进度只进不退，直到条目离开 doing/agent 且不是 daemon 自己翻回去等重派的状态。
 #
 # 进度在 state.json 的 stuck_workers（只在功能动作时才写，故意不进开头的补字段循环）。
@@ -7232,10 +7232,15 @@ stuck_verdict() {   # <身份串 JSON>
 stuck_fmt_time() {   # <epoch 秒>
     date -d "@$1" '+%m-%d %H:%M' 2>/dev/null || date -r "$1" '+%m-%d %H:%M' 2>/dev/null || printf '%s' "$1"
 }
-# 翻标签并读回确认。0 = 确认 add 在、doing/agent 不在；1 = 没翻成或读不回来。
-stuck_flip_confirm() {   # <编号> <要加的标签> <日志描述>
-    local num="$1" add="$2" back
-    run_gh "$3" gh_label_flip "$num" --add "$add" --remove "$LABEL_AGENT_DOING" || return 1
+# 把 doing/agent 换成另一个标签：**先加后摘**（中途失败时条目不会变成一个流程标签都没有），
+# 最后读回确认。0 = 确认新标签在、doing/agent 不在；1 = 没换成或读不回来（待办留着，下一轮
+# stuck_resume 重读核对后接着做）。
+stuck_label_swap() {   # <编号> <要加的标签> <日志描述>
+    local num="$1" add="$2" back enc
+    run_gh "$3（加 $add）" gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$add" || return 1
+    enc=$(printf '%s' "$LABEL_AGENT_DOING" | jq -sRr @uri)
+    # 摘不掉（含已经不在的 404）不在这里判，统一看读回的结果
+    gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$enc" >/dev/null 2>&1 || true
     back=$(gh api "repos/$REPO/issues/$num" --jq '[.labels[].name] | join(",")' 2>/dev/null) || return 1
     case ",$back," in *",$LABEL_AGENT_DOING,"*) return 1 ;; esac
     case ",$back," in *",$add,"*) return 0 ;; esac
@@ -7281,41 +7286,38 @@ stuck_nudge() {   # <工作编号> <kind> <num> <取样目标串>
     esac
     stuck_entry_set "$n" '.nudged_at = $now | .nudge_rc = $rc' --argjson now "$now" --argjson rc "$rc" || true
 }
-# ② 重派的后半段：会话确定不在之后，翻回触发标签。stuck_restart 和 stuck_resume 共用。
-stuck_restart_finish() {   # <工作编号> <kind> <num> <触发标签>
-    local n="$1" kind="$2" num="$3" trig="$4" now
-    now=$(pace_now)
-    if stuck_flip_confirm "$num" "$trig" "label 翻转 (卡住重派 $kind #$num $LABEL_AGENT_DOING → $trig)"; then
-        stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .since = 0 | .id = "" | .fp = ""' \
-            --argjson now "$now" || true
-        log "🔁 卡住检测：$kind #$num 已结束会话并翻回 $trig，等下一轮重派"
+# ② 重派：先把标签换回触发标签（读回确认），再结束会话。顺序是有意的：标签没换成之前什么
+# 不可逆的事都没做——会话还在，下一轮 stuck_resume 可以照原来的依据重新核对；也不会留下
+# 「doing/agent 还在、会话没了」让 self-heal 不看保护标签就接手。标签换成之后会话没能确认结束
+# 也算完成：下一轮派工遇到还活着的会话会照常处理（注入或原地换程序）。
+# 首次动手（stuck_tick_one 核对过）和续做（stuck_resume 核对过）都走这里。
+stuck_restart() {   # <工作编号> <kind> <num> <触发标签>
+    local n="$1" kind="$2" num="$3" trig="$4" sess e=0 now
+    sess="$(tmux_session_name "$n")"
+    stuck_entry_set "$n" '.pending = "restart" | .trigger = $t | .ptries = ((.ptries // 0) + 1)' --arg t "$trig" || return 0
+    STUCK_ACTED=1
+    if ! stuck_label_swap "$num" "$trig" "label 翻转 (卡住重派 $kind #$num $LABEL_AGENT_DOING → $trig)"; then
+        log "⚠️ 卡住检测：$kind #$num 该重派了，但标签没换成 → 会话不动，待办留着，下一轮重新核对后接着做"
         return 0
     fi
-    log "⚠️ 卡住检测：$kind #$num 会话已结束，但标签没翻成 → 待办留着，下一轮接着做"
-    return 1
-}
-stuck_restart() {   # <工作编号> <kind> <num> <触发标签>
-    local n="$1" kind="$2" num="$3" trig="$4" sess e=0
-    sess="$(tmux_session_name "$n")"
-    stuck_entry_set "$n" '.pending = "restart" | .trigger = $t' --arg t "$trig" || return 0
-    STUCK_ACTED=1
-    log "🔁 卡住检测：$kind #$num 催过仍无动静 → 结束会话 $sess，翻回 $trig 重派"
+    log "🔁 卡住检测：$kind #$num 催过仍无动静 → 已翻回 $trig，结束会话 $sess，等下一轮重派"
     kill_session_procs "$sess"
     tmux kill-session -t "=$sess" 2>/dev/null || true
     worker_session_exists "$sess" || e=$?
-    if [ "$e" != 1 ]; then
-        log "⚠️ 卡住检测：$kind #$num 会话 $sess 没能确认已结束 → 待办留着，下一轮接着做"
-        return 0
-    fi
-    stuck_restart_finish "$n" "$kind" "$num" "$trig" || true
+    [ "$e" = 1 ] || log "⚠️ 卡住检测：$kind #$num 会话 $sess 没能确认已结束（下一轮派工会照常处理还活着的会话）"
+    now=$(pace_now)
+    stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .ptries = 0 | .since = 0 | .id = "" | .fp = ""' \
+        --argjson now "$now" || true
+    return 0
 }
-# ③ 交人：先评论、再翻标签；评论发成了就记下，重试时不发第二条。会话保留不杀，方便人查。
+# ③ 交人：先评论（记下这条评论的编号，重试时不发第二条，核对时也认得它是 daemon 自己发的），
+# 再把标签换成 pending/human。会话保留不杀，方便人查。首次动手和续做都走这里。
 stuck_handoff() {   # <工作编号> <kind> <num> <触发标签>
-    local n="$1" kind="$2" num="$3" trig="$4" e steps nudged restarted restarts since now mins body
-    stuck_entry_set "$n" '.pending = "human" | .trigger = $t' --arg t "$trig" || return 0
+    local n="$1" kind="$2" num="$3" trig="$4" e steps nudged restarted restarts since now mins body cid
+    stuck_entry_set "$n" '.pending = "human" | .trigger = $t | .ptries = ((.ptries // 0) + 1)' --arg t "$trig" || return 0
     STUCK_ACTED=1
     e=$(stuck_entry "$n")
-    if [ "$(printf '%s' "$e" | jq -r '.commented // false')" != true ]; then
+    if [ "$(printf '%s' "$e" | jq -r '(.comment_id // 0) > 0')" != true ]; then
         nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
         restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
         restarts=$(printf '%s' "$e" | jq -r '.restarts // 0')
@@ -7329,106 +7331,77 @@ stuck_handoff() {   # <工作编号> <kind> <num> <触发标签>
         body="$(bounced_to_human_body \
             "这条一直挂着 \`$LABEL_AGENT_DOING\`，但 worker 会话已经连续约 ${mins} 分钟停着不动：agent 不在忙，GitHub 上和本地分支都没有新的评论、提交或标签变化。daemon 已经试过：${steps}之后仍然没有动静。" \
             "在 daemon 机器上用 \`session-log.sh $n\` 看终端历史（会话 \`$(tmux_session_name "$n")\` 还留着，可以直接 attach 看现场）；处理后把标签改回 \`$trig\` 继续。")"
-        if ! run_gh "卡住交人说明评论 ($kind #$num)" \
-            gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body"; then
-            log "⚠️ 卡住检测：$kind #$num 交人说明没发出去 → 待办留着，下一轮接着做"
+        if ! cid=$(run_gh_capture "卡住交人说明评论 ($kind #$num)" \
+                gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" --jq '.id') \
+           || ! [[ "$cid" =~ ^[0-9]+$ ]]; then
+            log "⚠️ 卡住检测：$kind #$num 交人说明没发出去 → 待办留着，下一轮重新核对后接着做"
             return 0
         fi
-        stuck_entry_set "$n" '.commented = true' || true
+        stuck_entry_set "$n" '.comment_id = $c' --argjson c "$cid" || true
     fi
-    if stuck_flip_confirm "$num" "$LABEL_PENDING_HUMAN" "label 翻转 (卡住交人 $kind #$num $LABEL_AGENT_DOING → $LABEL_PENDING_HUMAN)"; then
+    if stuck_label_swap "$num" "$LABEL_PENDING_HUMAN" "label 翻转 (卡住交人 $kind #$num $LABEL_AGENT_DOING → $LABEL_PENDING_HUMAN)"; then
         log "🙋 卡住检测：$kind #$num 重派后仍然卡住 → 已留言并转人工 $LABEL_PENDING_HUMAN"
         stuck_entry_del "$n" || true
     else
-        log "⚠️ 卡住检测：$kind #$num 交人说明已发，但标签没翻成 → 待办留着，下一轮接着做"
+        log "⚠️ 卡住检测：$kind #$num 交人说明已发，但标签没换成 → 待办留着，下一轮重新核对后接着做"
     fi
     return 0
 }
-# 上一轮决定了、没做完的那一步。照样先把条目和绑定条目重读一遍：人已经接手（关了、合并了、
-# 标签变了、挂上了保护标签）就放弃待办，不补写。读不到 → 待办原样留着。
-# 「doing/agent 已经摘掉、要加的标签还没加上」是这条待办自己做到一半（gh_label_flip 先摘后加）：
-# 条目上一个流程标签都没有时接着把它做完，否则条目就成了没人管的孤儿。
+# 上一轮决定了、没做完的那一步（标签没换成 / 评论没发出去）。续做前和首次动手**用同一份依据
+# 再核对一遍**：stuck_doc 把目标、绑定条目、本地会话全部重读，和动手时存下的身份串整串比。
+# 两份之间只允许 daemon 自己有记录的那几处不同，其余任何变化（agent 又忙了、窗格或进程换了、
+# 绑定条目挂上了保护标签、多了评论、关了、合并了、目标分支或提交变了……）都算人或 worker 已经
+# 接手：放弃待办，不补写。
+#   · 目标的标签：两边都按「加上要加的标签、去掉 doing/agent」换算后再比——标签换到一半的
+#     中间状态（先加后摘）和没开始的状态都对得上，多出或少了别的标签对不上
+#   · 目标的最新评论：交人评论已发时，存下的那份换成 daemon 记下的那条评论的编号
+#   · 目标的最新标签事件编号：不比（daemon 自己加 / 摘标签会产生新事件，编号预先不知道）；
+#     标签的净变化由上面那条管
+# 读不全、会话状态读不出 → 待办原样留着，下一轮再核对。连续 STUCK_RESUME_MAX_TRIES 轮做不完 → 放弃。
+STUCK_RESUME_MAX_TRIES=10
 stuck_resume() {   # <工作编号> <记录 JSON>
-    local n="$1" e="$2" kind num trig pend g tl sess has_doing=0 other g2
+    local n="$1" e="$2" kind num trig pend add saved doc cid a b
     kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
     trig=$(printf '%s' "$e" | jq -r '.trigger // ""'); pend=$(printf '%s' "$e" | jq -r '.pending // ""')
-    if [ -z "$kind" ] || [ -z "$num" ] || [ -z "$trig" ]; then stuck_entry_del "$n" || true; return 0; fi
-    case "$pend" in restart|human) ;; *) stuck_entry_set "$n" '.pending = ""' || true; return 0 ;; esac
-    if ! g=$(stuck_gather "$kind" "$num"); then
-        log "卡住检测：$kind #$num 有没做完的待办（$pend），但这一轮读不全条目 → 下一轮再做"
+    saved=$(printf '%s' "$e" | jq -r '.id // ""'); cid=$(printf '%s' "$e" | jq -r '.comment_id // 0')
+    stuck_resume_drop() {   # <原因>
+        log "卡住检测：$kind #$num 的待办（$pend）作废：$1"
+        # 评论编号一并清掉：以后再卡住是新的一次，交人时要重新说明
+        stuck_entry_set "$n" '.pending = "" | .ptries = 0 | .comment_id = 0 | .since = 0 | .id = "" | .fp = ""' || true
+    }
+    case "$pend" in
+        restart) add="$trig" ;;
+        human) add="$LABEL_PENDING_HUMAN" ;;
+        *) stuck_entry_set "$n" '.pending = ""' || true; return 0 ;;
+    esac
+    if [ -z "$kind" ] || [ -z "$num" ] || [ -z "$trig" ] || [ -z "$saved" ]; then
+        stuck_resume_drop "记录不全"; return 0
+    fi
+    if [ "$(printf '%s' "$e" | jq -r '.ptries // 0')" -ge "$STUCK_RESUME_MAX_TRIES" ]; then
+        stuck_resume_drop "连续 $STUCK_RESUME_MAX_TRIES 轮没做完"; return 0
+    fi
+    if ! doc=$(stuck_doc "$kind" "$num" "$n"); then
+        log "卡住检测：$kind #$num 有没做完的待办（$pend），但这一轮读不全条目 → 下一轮再核对"
         return 0
     fi
-    if [ "$(printf '%s' "$g" | jq -r '.target.state')" != open ] \
-       || [ "$(printf '%s' "$g" | jq -r '.target.merged // false')" != false ]; then
-        log "卡住检测：$kind #$num 的待办（$pend）作废：条目已关闭 / 已合并"
-        stuck_entry_del "$n" || true; return 0
+    case "$(printf '%s' "$doc" | jq -r '.sample.state')" in
+        idle|busy|absent) ;;
+        *) log "卡住检测：$kind #$num 有没做完的待办（$pend），但会话状态读不出（$(printf '%s' "$doc" | jq -r '.sample.why')）→ 下一轮再核对"
+           return 0 ;;
+    esac
+    a=$(printf '%s' "$saved" | jq -cS --arg add "$add" --arg d "$LABEL_AGENT_DOING" --argjson c "$cid" \
+        '.target.labels = ((.target.labels + [$add]) - [$d] | unique) | .target.event = 0
+         | (if $c > 0 then .target.comment = $c else . end)' 2>/dev/null) || a=""
+    b=$(printf '%s' "$doc" | jq -cS --arg add "$add" --arg d "$LABEL_AGENT_DOING" \
+        '.target.labels = ((.target.labels + [$add]) - [$d] | unique) | .target.event = 0' 2>/dev/null) || b=""
+    if [ -z "$a" ] || [ "$a" != "$b" ]; then
+        stuck_resume_drop "和决定动手时不一样了（agent、会话、条目或绑定条目有变化）"; return 0
     fi
-    tl=$(printf '%s' "$g" | jq -r '.target.labels | join(",")')
-    case ",$tl," in *",$LABEL_AGENT_DOING,"*) has_doing=1 ;; esac
-    sess="$(tmux_session_name "$n")"
     if [ "$pend" = restart ]; then
-        if [ "$has_doing" = 0 ]; then
-            case ",$tl," in *",$trig,"*)
-                # 别处（self-heal、人）已经替 daemon 翻回去了
-                stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .since = 0 | .id = "" | .fp = ""' \
-                    --argjson now "$(pace_now)" || true
-                log "卡住检测：$kind #$num 的重派待办已完成（标签已是 $trig）"
-                return 0 ;;
-            esac
-            if other=$(stuck_labels_protect target "$tl"); then
-                log "卡住检测：$kind #$num 的重派待办作废：条目已挂上 $other"
-                stuck_entry_del "$n" || true; return 0
-            fi
-            STUCK_ACTED=1
-            stuck_restart_finish "$n" "$kind" "$num" "$trig" || true
-            return 0
-        fi
-        stuck_verdict_items "$g"
-        if [ "$STUCK_V" != stuck ]; then
-            log "卡住检测：$kind #$num 的重派待办作废：$STUCK_V_WHY"
-            stuck_entry_set "$n" '.pending = "" | .since = 0 | .id = "" | .fp = ""' || true; return 0
-        fi
-        stuck_sample "$sess"
-        case "$STUCK_S_STATE" in
-            absent) ;;
-            idle)
-                kill_session_procs "$sess"
-                tmux kill-session -t "=$sess" 2>/dev/null || true
-                stuck_sample "$sess"
-                if [ "$STUCK_S_STATE" != absent ]; then
-                    log "⚠️ 卡住检测：$kind #$num 会话 $sess 仍没能结束 → 下一轮再做"; return 0
-                fi ;;
-            busy)
-                log "卡住检测：$kind #$num 的重派待办作废：agent 又在忙了"
-                stuck_entry_set "$n" '.pending = "" | .since = 0 | .id = "" | .fp = ""' || true; return 0 ;;
-            *)  log "卡住检测：$kind #$num 有重派待办，但会话状态读不出（$STUCK_S_WHY）→ 下一轮再做"; return 0 ;;
-        esac
-        STUCK_ACTED=1
-        stuck_restart_finish "$n" "$kind" "$num" "$trig" || true
-        return 0
-    fi
-    # pend = human
-    if [ "$has_doing" = 0 ]; then
-        case ",$tl," in *",$LABEL_PENDING_HUMAN,"*)
-            log "卡住检测：$kind #$num 的交人待办已完成（标签已是 $LABEL_PENDING_HUMAN）"
-            stuck_entry_del "$n" || true; return 0 ;;
-        esac
-        if other=$(stuck_labels_protect target "$tl"); then
-            log "卡住检测：$kind #$num 的交人待办作废：条目已挂上 $other"
-            stuck_entry_del "$n" || true; return 0
-        fi
+        stuck_restart "$n" "$kind" "$num" "$trig"
+    else
         stuck_handoff "$n" "$kind" "$num" "$trig"
-        return 0
     fi
-    # 还挂着 doing/agent。目标上的 pending/human 是这条待办自己上一轮加的（doing/agent 没摘成），
-    # 不算人接手；除它以外，目标或绑定条目上出现任何保护标签都算。
-    g2=$(printf '%s' "$g" | jq -c --arg h "$LABEL_PENDING_HUMAN" '.target.labels -= [$h]') || return 0
-    stuck_verdict_items "$g2"
-    if [ "$STUCK_V" != stuck ]; then
-        log "卡住检测：$kind #$num 的交人待办作废：$STUCK_V_WHY"
-        stuck_entry_set "$n" '.pending = "" | .since = 0 | .id = "" | .fp = ""' || true; return 0
-    fi
-    stuck_handoff "$n" "$kind" "$num" "$trig"
     return 0
 }
 

@@ -2,7 +2,7 @@
 # kind: e2e
 # 条目卡在 doing/agent、会话还在却没人干活 → daemon 催一次 / 重派 / 交人（GitHub#339）。
 #
-# 跑法：bash tests/stuck-worker.test.sh        （约 3 分钟；没有负对照）
+# 跑法：bash tests/stuck-worker.test.sh        （约 5 分钟；没有负对照）
 # 依赖：tmux（3.0+）、git、jq、python3。
 #
 # 真跑 agent-poll.sh（连带真的派工脚本），配有状态的假 GitHub（tests/lib/fake_github.py）和
@@ -564,40 +564,96 @@ fi
 
 # ════════════════════════════════════════════════════════════════════════════
 if want 9; then
-echo "【9】动手到一半失败 → 下一轮收敛；期间人已接手 → 放弃待办"
-# 9a 重派：会话结束了，加触发标签失败
+echo "【9】动手到一半失败 → 下一轮照原来的依据重新核对：没变就做完，变了就放弃"
+# 9a 重派：加触发标签失败 → 什么不可逆的事都没做；下一轮收敛
 scn retry1; N=$SEQ
 mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
 tick 0; tick 60; tick 50
 touch "$GD/F_post_labels"
 tick 60
-chk "加标签失败：会话已结束，待办留着、没记成已重派" "$(alive "$N")/$(efield "$N" '.pending')/$(efield "$N" '.restarts // 0')" "no/restart/0"
+chk "加标签失败：会话不动、标签不动，待办留着、没记成已重派" \
+    "$(alive "$N")/$(labels_of "$N")/$(efield "$N" '.pending')/$(efield "$N" '.restarts // 0')" "yes/doing/agent/restart/0"
 rm -f "$GD/F_post_labels"
+: > "$CTL/tmux.log"
 tick 10
-chk "下一轮收敛：标签是触发标签，记一次重派，待办清掉" "$(labels_of "$N")/$(efield "$N" '.restarts')/$(efield "$N" '.pending')" "pending/agent/1/"
+chk "到达性 · 续做前重新抓了工作窗格的画面" "$([ "$(captured "%1")" -ge 1 ] && echo yes || echo no)" "yes"
+chk "下一轮收敛：标签是触发标签、会话结束、记一次重派、待办清掉" \
+    "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.restarts')/$(efield "$N" '.pending')" "pending/agent/no/1/"
 chk "没有重复催促、没有评论" "$(plog '发催促')/$(comments_on "$N")" "1/0"
-# 9b 重派待办留着时，人已经接手
-scn retry2; N=$SEQ
+# 9a2 重派：标签加上了、doing/agent 没摘掉 → 下一轮接着摘
+scn retry1b; N=$SEQ
 mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
 tick 0; tick 60; tick 50
-touch "$GD/F_post_labels"
+touch "$GD/F_delete_labels"
 tick 60
-rm -f "$GD/F_post_labels"
-chk "夹具 · 待办留着" "$(efield "$N" '.pending')" "restart"
-jset "$GD/labels.json" '.[$n] = ["pending/human"]' --arg n "$N"
-w0=$(writes_on "$N"); G0=$(cnt "repos/example/sw/issues/$N\$" "$CALLS")
+chk "摘 doing/agent 失败：两个标签都在，会话不动，待办留着" \
+    "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.pending')" "doing/agent,pending/agent/yes/restart"
+rm -f "$GD/F_delete_labels"
+R0=$(runs "$N"); P0=$(cat "$CTL/runs.issue-$N" | tail -1)
 tick 10
-chk "到达性 · 这一轮重读了这条 issue" "$([ "$(cnt "repos/example/sw/issues/$N\$" "$CALLS")" -gt "$G0" ] && echo yes || echo no)" "yes"
-chk "人已挂上 pending/human：放弃待办，不补写" "$(( $(writes_on "$N") - w0 ))/$(labels_of "$N")/$(entry "$N")" "0/pending/human/{}"
-# 9c 重派待办留着时条目被关闭
+# 这一轮开头的快照里触发标签已经在，所以同一轮里摘掉 doing/agent、结束旧会话之后紧接着就重派了
+chk "下一轮收敛：记一次重派、待办清掉，旧会话结束、同一轮里重新派工起了新的 agent 进程" \
+    "$(efield "$N" '.restarts')/$(efield "$N" '.pending')/$(plog '已翻回 pending/agent，结束会话')/$([ "$(runs "$N")" -gt "$R0" ] && echo yes || echo no)/$(labels_of "$N")" "1//1/yes/doing/agent"
+# 9b 待办留着时各种变化 → 放弃，不补写。每种一套场景；最后一列是这一轮对目标的写请求数
+drop_case() {   # <名字> <restart|human> <pr|issue> <变化命令…>
+    local name="$1" step="$2" shape="$3"; shift 3
+    local extra=(); [ "$step" = human ] && extra=('STUCK_WORKER_MAX_RESTARTS=0')
+    scn "drop$((++DROPN))" ${extra[@]+"${extra[@]}"}; N=$SEQ; P=$((SEQ + 1)); TGT=$N
+    if [ "$shape" = pr ]; then
+        mk_issue "$N" pending/PR; mk_pr "$P" "feature/issue-$N" "Refs #$N" doing/agent; TGT=$P
+        own "$N" pending/review
+    else
+        mk_issue "$N" doing/agent; own "$N" pending/agent
+    fi
+    mk_wt "$N"; mk_sess "$N" claude worker
+    tick 0; tick 60; tick 50
+    if [ "$step" = human ]; then touch "$GD/F_post_comment"; else touch "$GD/F_post_labels"; fi
+    tick 60
+    rm -f "$GD/F_post_comment" "$GD/F_post_labels"
+    chk "$name · 夹具：待办留着" "$(efield "$N" '.pending')" "$step"
+    "$@"
+    local w0 c0 g0; w0=$(writes_on "$TGT"); c0=$(comments_on "$TGT"); g0=$(cnt "repos/example/sw/issues/$TGT\$" "$CALLS")
+    : > "$CTL/tmux.log"
+    tick 10
+    chk "$name · 到达性：这一轮重读了目标条目" "$([ "$(cnt "repos/example/sw/issues/$TGT\$" "$CALLS")" -gt "$g0" ] && echo yes || echo no)" "yes"
+    # 条目被关闭时，轮询里的收尾流程会自己清掉会话，那不是卡住检测动的手：那一例不看会话
+    local al; al=$(alive "$N"); [ "${DROP_SKIP_ALIVE:-0}" = 1 ] && al=yes
+    chk "$name：放弃待办，目标上没有写入、没有新评论、卡住检测没结束会话" \
+        "$(( $(writes_on "$TGT") - w0 ))/$(( $(comments_on "$TGT") - c0 ))/$al/$(plog '结束会话')/$(efield "$N" '.pending // ""')/$(efield "$N" '.restarts // 0')" "0/0/yes/0//0"
+}
+DROPN=0
+set_labels() { jset "$GD/labels.json" '.[$n] = $ARGS.positional' --arg n "$1" --args "${@:2}"; }
+# 复审第 1 轮的两个复现
+drop_case "交人待办 · agent 又在忙了" human issue eval 'screen "$N" "$BUSY_CLAUDE"'
+chk "交人待办 · agent 又在忙了 · 到达性：续做前抓了工作窗格的画面" "$([ "$(captured "$(pane_of "$N")")" -ge 1 ] && echo yes || echo no)" "yes"
+chk "交人待办 · agent 又在忙了：标签仍是 doing/agent" "$(labels_of "$N")" "doing/agent"
+drop_case "重派待办 · 绑定的 issue 被人挂上 pending/human" restart pr eval 'set_labels "$N" pending/PR pending/human'
+chk "重派待办 · 绑定 issue 暂停：PR 没被加回复审标签" "$(labels_of "$P" | grep -c 'pending/review')" "0"
+# 其余组合
+drop_case "重派待办 · agent 又在忙了" restart issue eval 'screen "$N" "$BUSY_CLAUDE"'
+drop_case "重派待办 · 目标被人挂上 pending/human" restart issue eval 'set_labels "$N" doing/agent pending/human'
+drop_case "重派待办 · 目标被人换成 pending/human" restart issue eval 'set_labels "$N" pending/human'
+drop_case "重派待办 · 目标多了一条评论" restart issue eval 'add_comment "$N"'
+DROP_SKIP_ALIVE=1 drop_case "重派待办 · 目标被关闭" restart issue eval 'jset "$GD/items.json" ".[\$n].state = \"closed\"" --arg n "$N"'
+drop_case "重派待办 · 工作窗格里的进程换了" restart issue eval 'T respawn-pane -k -t "$(pane_of "$N")" "$FAKEBIN/claude"; sleep 1'
+drop_case "重派待办 · PR 远端多了新提交" restart pr eval 'jset "$GD/items.json" ".[\$n].head.sha = \"3333333333333333333333333333333333333333\"" --arg n "$P"'
+drop_case "交人待办 · 绑定的 issue 被人挂上等前置标签" human pr eval 'set_labels "$N" pending/PR pending/blocked'
+drop_case "交人待办 · 目标多了一条评论" human issue eval 'add_comment "$N"'
+drop_case "交人待办 · 本地有新提交" human issue eval '(cd "$W/wt/issue-$N" && echo y > g && gq add g && gq commit -qm work)'
+# 9c 续做时读不出 → 待办原样留着；读得出之后做完
 scn retry3; N=$SEQ
 mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
 tick 0; tick 60; tick 50
 touch "$GD/F_post_labels"; tick 60; rm -f "$GD/F_post_labels"
-jset "$GD/items.json" '.[$n].state = "closed"' --arg n "$N"
-w0=$(writes_on "$N")
+printf '%s\n' 'capture-pane*' > "$CTL/fault"; w0=$(writes_on "$N")
 tick 10
-chk "条目已关闭：放弃待办，不补写" "$(( $(writes_on "$N") - w0 ))/$(entry "$N")" "0/{}"
+chk "续做时画面抓不到：不写、不放弃，待办留着" "$(( $(writes_on "$N") - w0 ))/$(efield "$N" '.pending')/$(alive "$N")" "0/restart/yes"
+rm -f "$CTL/fault"; touch "$GD/F_issues_${N}_comments"
+tick 10
+chk "续做时条目读不全：不写、不放弃，待办留着" "$(( $(writes_on "$N") - w0 ))/$(efield "$N" '.pending')/$(alive "$N")" "0/restart/yes"
+rm -f "$GD/F_issues_${N}_comments"
+tick 10
+chk "读得出之后：做完" "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.restarts')" "pending/agent/no/1"
 # 9d 交人：评论失败 → 下一轮补；加标签失败 → 下一轮补，评论不重复
 scn retry4 'STUCK_WORKER_MAX_RESTARTS=0'; N=$SEQ
 mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
@@ -609,10 +665,25 @@ chk "最多重派 0 次：催完直接交人，不结束会话" "$(alive "$N")/$
 chk "评论没发出去：标签不动" "$(labels_of "$N")/$(comments_on "$N")" "doing/agent/0"
 rm -f "$GD/F_post_comment"; touch "$GD/F_post_labels"
 tick 10
-chk "评论补发了；加标签失败，待办仍留着" "$(comments_on "$N")/$(efield "$N" '.pending')" "1/human"
-rm -f "$GD/F_post_labels"
+chk "评论补发了；加标签失败，待办仍留着、标签不动" "$(comments_on "$N")/$(efield "$N" '.pending')/$(labels_of "$N")" "1/human/doing/agent"
+rm -f "$GD/F_post_labels"; touch "$GD/F_delete_labels"
+tick 10
+chk "标签加上了、doing/agent 没摘掉：待办仍留着，评论仍只有一条" "$(labels_of "$N")/$(efield "$N" '.pending')/$(comments_on "$N")" "doing/agent,pending/human/human/1"
+rm -f "$GD/F_delete_labels"
 tick 10
 chk "下一轮收敛：pending/human，评论仍只有一条，记录清掉" "$(labels_of "$N")/$(comments_on "$N")/$(entry "$N")" "pending/human/1/{}"
+fi
+
+if want 9 || want 9e; then
+# 9e 一直做不完：有上限，不会每轮重试到天荒地老
+scn retry5; N=$SEQ
+mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
+tick 0; tick 60; tick 50
+touch "$GD/F_post_labels"
+tick 60
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tick 5; done
+chk "加标签连续失败：试 10 次后放弃待办，会话和标签都没动" \
+    "$(cnt '卡住重派.*失败' "$W/state/poll.log")/$(efield "$N" '.pending')/$(alive "$N")/$(labels_of "$N")" "10//yes/doing/agent"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
