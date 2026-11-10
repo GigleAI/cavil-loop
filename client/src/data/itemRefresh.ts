@@ -16,11 +16,13 @@ interface GqlProjectItem {
 }
 
 export interface FreshItem {
+  /** GitHub#349: epoch ms taken before the read went out (when its relations are from) */
+  readAt: number;
   content: GqlContent;
   projectItems: GqlProjectItem[];
 }
 
-export async function fetchItem(client: GitHubClient, repo: string, number: number): Promise<FreshItem> {
+export async function fetchItem(client: GitHubClient, repo: string, number: number, now: number = Date.now()): Promise<FreshItem> {
   const [owner, name] = repo.split('/');
   const data = await client.graphql<{ repository: { issueOrPullRequest: (GqlContent & { projectItems?: { nodes: GqlProjectItem[] } }) | null } | null }>(
     ITEM_REFRESH_QUERY,
@@ -30,7 +32,7 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
   if (!c) throw new GitHubError('graphql', `找不到 ${repo}#${number}`);
   // GitHub#349: the same relation fields as a full read, read to the last page the same way —
   // a re-read that cannot finish them fails as a whole (the item keeps what the cache holds)
-  return { content: await withRelations(client, c), projectItems: c.projectItems?.nodes ?? [] };
+  return { readAt: now, content: await withRelations(client, c), projectItems: c.projectItems?.nodes ?? [] };
 }
 
 /**
@@ -41,7 +43,7 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
  * (GitHub#229) read the re-read through.
  */
 export function freshViews(snapshots: SourceSnapshot[], fresh: FreshItem): { snap: SourceSnapshot; item: Item | null }[] {
-  const base = contentToItem(fresh.content, [], []);
+  const base = contentToItem(fresh.content, [], [], fresh.readAt);
   if (!base) return [];
   const out: { snap: SourceSnapshot; item: Item | null }[] = [];
   for (const snap of snapshots) {

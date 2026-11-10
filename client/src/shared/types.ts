@@ -149,6 +149,13 @@ export interface Item {
    * unknown — a cache written before #349 — and never "no relations" (that is four empty fields).
    */
   relations?: ItemRelations;
+  /**
+   * GitHub#349: epoch ms of the read that brought `relations` — the full read of the source, or
+   * the one-item re-read (which leaves the snapshot's own time alone). The other end of a relation
+   * changes without this item's `updatedAt` moving (a blocker is closed), so when two sources hold
+   * the item, this — never `updatedAt` — says whose relations are newer.
+   */
+  relationsAt?: number;
   projects: ProjectMembership[];
   /** keys of the sources this item came from (filled when sources are merged) */
   sources: string[];

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
 import { GitHubClient } from '../../src/data/github';
 import { contentToItem, fetchProject, fetchRepo } from '../../src/data/fetchSources';
-import { fetchItem } from '../../src/data/itemRefresh';
+import { applyFreshItem, fetchItem } from '../../src/data/itemRefresh';
 import { mergeSnapshots } from '../../src/data/merge';
 import { fetchRelationsBatch, readRelations, relationsKnown } from '../../src/data/relations';
 import { syncRound } from '../../src/data/sync';
@@ -76,7 +76,7 @@ async function setState(n: number, state: 'open' | 'closed') {
   expect(r.status).toBe(200);
 }
 /** a snapshot as a client before #349 cached it: the same items, no relations */
-const preRelations = (snap: SourceSnapshot): SourceSnapshot => ({ ...snap, items: snap.items.map(({ relations: _r, ...rest }) => rest as Item) });
+const preRelations = (snap: SourceSnapshot): SourceSnapshot => ({ ...snap, items: snap.items.map(({ relations: _r, relationsAt: _t, ...rest }) => rest as Item) });
 
 describe('what is read', () => {
   it('board: parent with title and state, sub-issues, blocked-by and blocking — and no request beyond the board pages', async () => {
@@ -267,6 +267,61 @@ describe('merging sources', () => {
     // an issue only the old snapshot holds stays unknown — not "no relations"
     const only = mergeSnapshots([old], null).items.find((i) => i.key === K(WIDE))!;
     expect(only.relations).toBeUndefined();
+  });
+});
+
+describe('two sources hold the issue, only one of them is read again (PR #353 review round 1)', () => {
+  // the blocked issue's own update time never moves in these: only its blocker is closed
+  const blockerIn = (snaps: Iterable<SourceSnapshot>) => mergeSnapshots([...snaps], null).items.find((i) => i.key === K(BLOCKED))!.relations!.blockedBy[0].state;
+  const cases = [
+    { order: 'board first', fails: 'the board', srcs: () => [boardSrc(), repoSrc()], fail: () => void fake.state.failProjectPage.set(BOARD, 0), failed: PROJECT_KEY },
+    { order: 'board first', fails: 'the repository', srcs: () => [boardSrc(), repoSrc()], fail: () => void (fake.state.w.failRelationsBatch = true), failed: REPO_KEY },
+    { order: 'repository first', fails: 'the board', srcs: () => [repoSrc(), boardSrc()], fail: () => void fake.state.failProjectPage.set(BOARD, 0), failed: PROJECT_KEY },
+    { order: 'repository first', fails: 'the repository', srcs: () => [repoSrc(), boardSrc()], fail: () => void (fake.state.w.failRelationsBatch = true), failed: REPO_KEY },
+  ];
+  for (const k of cases) {
+    it(`${k.order}, ${k.fails} fails after the blocker was closed: the merged issue shows what the source that was read says`, async () => {
+      const first = await syncRound(client(), k.srcs(), new Map(), NOW, new Map(), 0);
+      expect(first.status.map((s) => s.ok)).toEqual([true, true]);
+      expect(blockerIn(first.snapshots.values())).toBe('open');
+      const stamp = (snaps: Map<string, SourceSnapshot>) => [PROJECT_KEY, REPO_KEY].map((key) => of(snaps.get(key)!, BLOCKED).updatedAt);
+      await setState(BLOCKER, 'closed');
+      k.fail();
+      const second = await syncRound(client(), k.srcs(), first.snapshots, NOW + 60_000, new Map(), 0);
+      // one source failed and kept its snapshot (blocker still open in it), the other was read
+      expect(second.status.filter((s) => !s.ok).map((s) => s.sourceKey)).toEqual([k.failed]);
+      expect(second.replaced).toHaveLength(1);
+      expect(of(second.snapshots.get(k.failed)!, BLOCKED).relations!.blockedBy[0].state).toBe('open');
+      // the blocked issue itself did not change, in either copy
+      expect(stamp(second.snapshots)).toEqual(stamp(first.snapshots));
+      expect(new Set(stamp(second.snapshots)).size).toBe(1);
+      expect(blockerIn(second.snapshots.values())).toBe('closed');
+      // and it stays so however long the one source keeps failing; reopened: follows again
+      const third = await syncRound(client(), k.srcs(), second.snapshots, NOW + 120_000, new Map(), 0);
+      expect(blockerIn(third.snapshots.values())).toBe('closed');
+      await setState(BLOCKER, 'open');
+      const fourth = await syncRound(client(), k.srcs(), third.snapshots, NOW + 180_000, new Map(), 0);
+      expect(blockerIn(fourth.snapshots.values())).toBe('open');
+    });
+  }
+
+  it('a one-item re-read that reaches only one of the two snapshots: its relations are the newer ones, the snapshot keeps its own time', async () => {
+    for (const srcs of [[boardSrc(), repoSrc()], [repoSrc(), boardSrc()]]) {
+      await setState(BLOCKER, 'open');
+      const first = await syncRound(client(), srcs, new Map(), NOW, new Map(), 0);
+      await setState(BLOCKER, 'closed');
+      const fresh = await fetchItem(client(), REPO, BLOCKED, NOW + 30_000);
+      for (const key of [PROJECT_KEY, REPO_KEY]) {
+        const other = key === PROJECT_KEY ? REPO_KEY : PROJECT_KEY;
+        const [changed] = applyFreshItem([first.snapshots.get(key)!], fresh);
+        expect(changed.fetchedAt).toBe(NOW);
+        expect(of(changed, BLOCKED).relationsAt).toBe(NOW + 30_000);
+        const snaps = srcs.map((s) => (s.key === key ? changed : first.snapshots.get(other)!));
+        expect(blockerIn(snaps), `${srcs[0].key} first, re-read into ${key}`).toBe('closed');
+      }
+      // a full read that started before that re-read does not put the older relations back
+      expect(of(first.snapshots.get(PROJECT_KEY)!, BLOCKED).relationsAt).toBe(NOW);
+    }
   });
 });
 

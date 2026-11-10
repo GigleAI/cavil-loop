@@ -146,7 +146,7 @@ export function readMembership(
  * Relations (GitHub#349) are taken only when `c` carries them whole — see `readRelations`; the
  * readers below call `completeRelations` first, and a source read refuses an issue without them.
  */
-export function contentToItem(c: GqlContent, projects: ProjectMembership[], sources: string[]): Item | null {
+export function contentToItem(c: GqlContent, projects: ProjectMembership[], sources: string[], readAt?: number): Item | null {
   if (c.__typename === 'DraftIssue' || !c.repository || c.number == null) return null;
   const repo = c.repository.nameWithOwner;
   // a pull request has no parent, sub-issues or blocking relations on GitHub: known-empty
@@ -172,7 +172,7 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
     // a pull request has no "linked pull requests" of its own: known-empty, not unknown
     linkedPrs: c.__typename === 'Issue' ? linkedPrs(c) : [],
     ...(c.__typename === 'PullRequest' ? { refIssues: bodyIssueRefs(c.body, repo, c.number) } : {}),
-    ...(relations ? { relations } : {}),
+    ...(relations ? { relations, ...(readAt !== undefined ? { relationsAt: readAt } : {}) } : {}),
     projects,
     sources,
   };
@@ -239,7 +239,7 @@ export async function fetchProject(
       // GitHub#349: the relations belong to the same snapshot — a list that cannot be read to
       // its end fails this source's read (the previous snapshot stays), it is never stored short
       const c = await withRelations(client, node.content);
-      const it = contentToItem(c, [readMembership(meta, node.id, node.fieldValues.nodes)], [src.key]);
+      const it = contentToItem(c, [readMembership(meta, node.id, node.fieldValues.nodes)], [src.key], now);
       if (it && !it.relations) throw new GitHubError('graphql', `${it.repo}#${it.number} 的关系没有读全`);
       if (it) items.set(it.key, it);
     }
@@ -347,7 +347,10 @@ export async function fetchRepo(
   const missingId = wanted.find((it) => !it.nodeId);
   if (missingId) throw new GitHubError('http', `${repo}#${missingId.number} 缺少读关系要用的 id`);
   const relations = await fetchRelationsBatch(client, wanted.map((it) => ({ nodeId: it.nodeId, what: `${repo}#${it.number}` })));
-  for (const it of items.values()) it.relations = related.get(it.key) ? relations.get(it.nodeId)! : noRelations();
+  for (const it of items.values()) {
+    it.relations = related.get(it.key) ? relations.get(it.nodeId)! : noRelations();
+    it.relationsAt = now;
+  }
   return { sourceKey: src.key, fetchedAt: now, items: [...items.values()] };
 }
 
