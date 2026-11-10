@@ -21,7 +21,8 @@ export type Delivery = { ok: true } | { ok: false; error: string };
 
 /** Something the shell tells the window: time for a sync round, a notification was clicked, or the updater changed. */
 export type DesktopEvent =
-  | { kind: 'tick' }
+  /** `everyMs` (GitHub#324): the beat's own interval, when its keeper says it — timed rounds keep that gap */
+  | { kind: 'tick'; everyMs?: number }
   | { kind: 'open'; key: string; url: string }
   | { kind: 'update'; status: UpdateStatus }
   /** the window came to the front / left it (GitHub#185: switching to the app reads the unread items) */

@@ -410,7 +410,7 @@ export const MUTATIONS = [
     from: '      this.pending.relabel(next.human, this.snapshots);\n', to: '',
     expect: ['another label name: recounted silently'] },
   { what: '外壳的同步节拍不触发同步', file: 'src/app/controller.ts',
-    from: "    if (ev.kind === 'tick') {\n      void this.syncNow();\n      return;", to: "    if (ev.kind === 'tick') {\n      return;",
+    from: "    if (ev.kind === 'tick') {\n      this.timedSync(ev.everyMs);\n      return;", to: "    if (ev.kind === 'tick') {\n      return;",
     expect: ['a sync beat from the shell runs a round'] },
   { what: '点通知不打开那一条', file: 'src/app/controller.ts',
     from: '      this.set({ focus: { key: ev.key, seq: ++this.focusSeq } });', to: '      void ev;',

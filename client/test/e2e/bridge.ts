@@ -67,7 +67,8 @@ export interface FakeDesktop {
   loginItem: boolean | null;
   /** the updater as the "shell" has it (GitHub#184; null = this build does not update itself) */
   update: any | null;
-  push(ev: { kind: 'tick' } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any } | { kind: 'active' } | { kind: 'inactive' }): void;
+  /** a beat sent without `everyMs` is sent with 0: no gap after a round that ran over a beat (GitHub#324 — the test keeps the time; the gap itself is in test/unit/timed-sync.test.ts) */
+  push(ev: { kind: 'tick'; everyMs?: number } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any } | { kind: 'active' } | { kind: 'inactive' }): void;
   /** the shell changed the updater's status: the window hears it the way it hears the real one */
   setUpdate(status: any): void;
 }
@@ -84,7 +85,8 @@ function fakeDesktop(): FakeDesktop & { next(): Promise<unknown>; stop(): void }
       this.update = status;
       this.push({ kind: 'update', status });
     },
-    push(ev) {
+    push(sent) {
+      const ev = sent.kind === 'tick' && sent.everyMs === undefined ? { ...sent, everyMs: 0 } : sent;
       const w = waiters.shift();
       if (w) w(ev);
       else queue.push(ev);

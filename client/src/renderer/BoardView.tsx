@@ -5,6 +5,7 @@ import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shar
 import { copyText } from './pasteImage';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
+import { ago, headerText, hoverLines, offlineDataText } from './syncTimes';
 import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropPlan } from '../data/board';
 import { api } from './api';
 import { labelStyle, useDarkMode } from './colors';
@@ -34,15 +35,6 @@ function useNow(ms = 15_000) {
     return () => clearInterval(t);
   }, [ms]);
   return now;
-}
-
-export function ago(from: number, now: number): string {
-  const mins = Math.max(0, Math.floor((now - from) / 60_000));
-  if (mins < 1) return '不到 1 分钟前';
-  if (mins < 60) return `${mins} 分钟前`;
-  const h = Math.floor(mins / 60);
-  if (h < 24) return `${h} 小时前`;
-  return `${Math.floor(h / 24)} 天前`;
 }
 
 const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
@@ -580,9 +572,12 @@ export function BoardView({
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   const failed = sync.sources.filter((s) => !s.ok);
   const trouble = syncTrouble(sync, parsed);
+  const labelOf = (sourceKey: string) => {
+    const s = state.sources.find((x) => x.key === sourceKey);
+    return s ? sourceLabel(s, titles.get(s.key)) : sourceKey;
+  };
   const describeFailed = (f: (typeof failed)[number]) => {
-    const s = state.sources.find((x) => x.key === f.sourceKey);
-    return `${s ? sourceLabel(s, titles.get(s.key)) : f.sourceKey} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
+    return `${labelOf(f.sourceKey)} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
   };
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
   // every opening of the detail panel is its own panel instance (its React key):
@@ -777,14 +772,15 @@ export function BoardView({
           />
         </div>
         <div className="hdr-right">
-          {sync.lastOnlineAt && (
+          {/* GitHub#324: the oldest check, not "GitHub answered"; the hover has every source's two times */}
+          {headerText(sync, now) !== null && (
             <span
               className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}`}
               data-testid="sync-status"
-              title={`上次同步 ${ago(sync.lastOnlineAt, now)}`}
+              title={hoverLines(sync, labelOf, now).join('\n')}
             >
               <span className="dot" />
-              <span className="sync-text">上次同步 {ago(sync.lastOnlineAt, now)}</span>
+              <span className="sync-text">{headerText(sync, now)}</span>
             </span>
           )}
           {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} />}
@@ -887,7 +883,7 @@ export function BoardView({
 
       <UpdateReadyBar update={state.update} />
       <WarnBar kind="offline" warn={warn}>
-        {sync.offlineReason ? `离线：${sync.offlineReason}` : '离线'} · 数据截至 {sync.dataFrom ? ago(sync.dataFrom, now) : '（还没有同步过）'} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。
+        {sync.offlineReason ? `离线：${sync.offlineReason}` : '离线'} · {offlineDataText(sync, now)} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。
       </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
         {sync.problem}
