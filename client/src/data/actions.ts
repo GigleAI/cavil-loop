@@ -303,7 +303,7 @@ const SNAPSHOT_PAGES = 20;
  * than SNAPSHOT_PAGES, a page without a way back, more labels than one page): such a read must
  * never be taken for "nothing happened". Throws when GitHub did not answer.
  */
-export async function readItemSnapshot(client: GitHubClient, repo: string, number: number, known: readonly string[] | null): Promise<ItemRecords & { complete: boolean; state: 'open' | 'closed' | 'merged'; labels: string[] }> {
+export async function readItemSnapshot(client: GitHubClient, repo: string, number: number, known: readonly string[] | null): Promise<ItemRecords & { complete: boolean; labelsComplete: boolean; state: 'open' | 'closed' | 'merged'; labels: string[] }> {
   const [owner, name] = repo.split('/');
   type Node = { id: string; body?: string; author?: { login?: string } | null; actor?: { login?: string } | null; label?: { name?: string } | null; __typename?: string };
   type It = {
@@ -338,10 +338,13 @@ export async function readItemSnapshot(client: GitHubClient, repo: string, numbe
   }
   const it = first!;
   const labels = it.labels!.nodes.map((l) => l.name);
-  if ((it.labels!.totalCount ?? labels.length) !== labels.length) complete = false;
+  // GitHub's count of the item's labels: a missing count is "cannot tell", never "complete"
+  const labelsComplete = typeof it.labels!.totalCount === 'number' && it.labels!.totalCount === labels.length;
+  if (!labelsComplete) complete = false;
   const st = String(it.state).toLowerCase();
   return {
     complete,
+    labelsComplete,
     state: it.merged === true || st === 'merged' ? 'merged' : st === 'open' ? 'open' : 'closed',
     labels,
     comments: it.comments!.nodes.filter((n) => n?.id).map((n) => ({ id: n.id, author: n.author?.login ?? null, body: n.body ?? '' })),

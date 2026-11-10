@@ -156,6 +156,12 @@ export interface OpRecord {
   finishProblem?: string | null;
 }
 
+/**
+ * How many labels the board's reads of an item ask for (`labels(first: …)` in data/queries.ts). A read that came back
+ * with this many may have left labels out: a label missing from it proves nothing (PR #365 code review round 1).
+ */
+export const ITEM_LABELS_FIRST = 50;
+
 /** how long a succeeded operation waits for a re-read before the manual unlock is offered */
 export const STUCK_MS = 120_000;
 /** GitHub#359: the automatic checks after the first one (made at once) */
@@ -462,7 +468,8 @@ export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open'
     if (s.state !== 'unknown') return s;
     if (s.name === 'close' && (read.state === 'closed' || read.state === 'merged')) return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时已是关闭状态' });
     if (s.name === 'merge' && read.state === 'merged') return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时已是合并状态' });
-    if (s.name === 'removeLabel' && !read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时这个标签已不在' });
+    // a label missing proves the removal only when the read cannot have left labels out (PR #365 code review round 1)
+    if (s.name === 'removeLabel' && read.labels.length < ITEM_LABELS_FIRST && !read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时这个标签已不在' });
     // GitHub#359: the wanted state is there in a read issued after the request — the step is done, whoever did it
     if (s.name === 'addLabel' && read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时这个标签已在' });
     return s;
@@ -615,8 +622,13 @@ export function opWithoutStale(r: OpRecord): OpRecord {
 
 /** One read of the item for a check / before a send: state, labels and label records, with whether it was read in full. */
 export interface OpSnapshot {
-  /** false = the label records could not be read back to what was there before the operation (or the labels not in full) */
+  /** false = the label records could not be read back to what was there before the operation, or the labels not in full */
   complete: boolean;
+  /**
+   * PR #365 code review round 1: the label list alone was read in full (GitHub's count of the item's labels equals
+   * what came back). Only then may a label's absence prove anything; a label seen in it proves its presence either way.
+   */
+  labelsComplete: boolean;
   state: 'open' | 'closed' | 'merged';
   labels: string[];
   /** the label records read, oldest first */
@@ -660,7 +672,10 @@ export function opProveFromSnapshot(r: OpRecord, snap: OpSnapshot | null): OpRec
   if (!snap) return r;
   let record = r;
   r.steps.forEach((s, i) => {
-    if (s.state === 'unknown' && isLabelStep(s) && reached(s, snap.labels)) record = opProveStep(record, i, s.name === 'addLabel' ? '重读时这个标签已在' : '重读时这个标签已不在');
+    if (s.state !== 'unknown' || !isLabelStep(s)) return;
+    // a label seen is on; a label not seen is off only when the list came back whole (PR #365 code review round 1)
+    if (s.name === 'addLabel' ? snap.labels.includes(s.label ?? '') : snap.labelsComplete && !snap.labels.includes(s.label ?? ''))
+      record = opProveStep(record, i, s.name === 'addLabel' ? '重读时这个标签已在' : '重读时这个标签已不在');
   });
   return record;
 }

@@ -1735,6 +1735,44 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     expect(labelRemoves('pending/human')).toHaveLength(0);
   });
 
+  it('PR #365 code review round 1: GitHub sends part of the label list and the "human" label is not in it — not taken for removed; the record of the removal proves it once it lands', async () => {
+    fresh();
+    // 100 other labels ahead of "pending/human": every read that asks for the first 100 (or 50) leaves it out
+    const fillers = Array.from({ length: 100 }, (_, i) => ({ name: `zz-${i}`, color: 'ededed' }));
+    for (const p of fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === ISSUE) node.content.labels.nodes = [...fillers, ...node.content.labels.nodes];
+    for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === ISSUE) r.labels = [...fillers, ...r.labels];
+    const c = await ready();
+    const late = fake.lateWhen(removeOf('pending/human'));
+    const reads = snapshots();
+    const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
+    await idle(c);
+    expect(late.caught()).toBe(1);
+    // the check did read, and the read left "pending/human" out
+    expect(snapshots()).toBeGreaterThan(reads);
+    expect(labelsOnGitHub()).toContain('pending/human');
+    let r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown']);
+    expect(r.steps[1].check).toBe('unread');
+    expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(s.id);
+    expect(opText(r)).toContain('「pending/human」不确定有没有摘掉');
+    expect(opText(r)).not.toContain('已交给 agent：');
+    expect(opButtons(r)).not.toContain('resend');
+    // a sync round does not take it for removed either
+    await c.syncNow();
+    await idle(c);
+    expect(opOf(c, s.id!).steps[1].state).toBe('unknown');
+    // the removal lands: its "unlabeled" record by this account proves it
+    late.land();
+    late.stop();
+    expect(labelsOnGitHub()).not.toContain('pending/human');
+    await c.syncNow();
+    await idle(c);
+    r = opOf(c, s.id!);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok']);
+    expect(r.steps[1].reason).toBe('在 GitHub 的标签记录里找到了这一步');
+    expect(labelRemoves('pending/human')).toHaveLength(1);
+  });
+
   it('the later checks run out: the notice turns into the warning with the two choices, still locked, nothing sent', async () => {
     fresh();
     const c = await ready({ opCheckDelaysMs: [20, 20, 20] });

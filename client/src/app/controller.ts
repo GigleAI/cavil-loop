@@ -3118,7 +3118,7 @@ export class Controller {
   private async readOpSnapshot(client: GitHubClient, r: OpRecord): Promise<OpSnapshot | null> {
     try {
       const snap = await readItemSnapshot(client, r.repo, r.number, r.before?.events ?? null);
-      return { complete: snap.complete, state: snap.state, labels: snap.labels, events: snap.labelEvents };
+      return { complete: snap.complete, labelsComplete: snap.labelsComplete, state: snap.state, labels: snap.labels, events: snap.labelEvents };
     } catch {
       return null;
     }
@@ -3499,7 +3499,7 @@ export class Controller {
         problems.push(`读评论和标签记录失败（${(e as Error)?.message ?? String(e)}）`);
       }
       if (c.session !== this.session) return undefined;
-      const view: OpSnapshot | null = snap ? { complete: snap.complete, state: snap.state, labels: snap.labels, events: snap.labelEvents } : null;
+      const view: OpSnapshot | null = snap ? { complete: snap.complete, labelsComplete: snap.labelsComplete, state: snap.state, labels: snap.labels, events: snap.labelEvents } : null;
       let now = this.ops.get(id);
       if (now) {
         if (snap) {

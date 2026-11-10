@@ -11,6 +11,7 @@ import {
   opAutoDismissable,
   opButtons,
   opCheckSteps,
+  ITEM_LABELS_FIRST,
   opNextAuto,
   opPermit,
   opProveFromSnapshot,
@@ -261,6 +262,16 @@ describe('reads never turn "unknown" into "did not happen"', () => {
     const r = rec('handBack', [step('addLabel', 'ok', { label: 'pending/agent' }), step('removeLabel', 'unknown', { label: 'pending/human' })]);
     expect(opApplyRead(r, { issuedAt: 30, state: 'open', labels: ['pending/human'] }).steps[1].state).toBe('unknown');
     expect(opApplyRead(r, { issuedAt: 30, state: 'open', labels: [] }).steps[1].state).toBe('ok');
+  });
+  it('PR #365 code review round 1: a read that came back with as many labels as it asked for may have left the label out — no proof', () => {
+    const r = rec('handBack', [step('addLabel', 'ok', { label: 'pending/agent' }), step('removeLabel', 'unknown', { label: 'pending/human' })]);
+    const many = (n: number) => Array.from({ length: n }, (_, i) => `x${i}`);
+    expect(opApplyRead(r, { issuedAt: 30, state: 'open', labels: many(ITEM_LABELS_FIRST) }).steps[1].state).toBe('unknown');
+    expect(opApplyRead(r, { issuedAt: 30, state: 'open', labels: many(ITEM_LABELS_FIRST + 3) }).steps[1].state).toBe('unknown');
+    expect(opApplyRead(r, { issuedAt: 30, state: 'open', labels: many(ITEM_LABELS_FIRST - 1) }).steps[1].state).toBe('ok');
+    // an add is proven by the label seen, however many came back
+    const a = rec('handBack', [step('addLabel', 'unknown', { label: 'pending/agent' }), step('removeLabel', 'unsent', { label: 'pending/human' })]);
+    expect(opApplyRead(a, { issuedAt: 30, state: 'open', labels: ['pending/agent', ...many(ITEM_LABELS_FIRST)] }).steps[0].state).toBe('ok');
   });
   it('evidence proves only an unknown step', () => {
     const r = auto('ok', 'unknown', 'unsent');
@@ -576,7 +587,7 @@ describe('GitHub#359: the check of an unknown label step never says "it did not 
   const before = { comments: [], events: ['e0'], labels: ['pending/human'] };
   const ev = (id: string, event: 'labeled' | 'unlabeled', label: string, actor = 'me') => ({ id, event, actor, label });
   const old = ev('e0', 'labeled', 'pending/human', 'bot');
-  const snap = (labels: string[], events = [old], extra: Partial<OpSnapshot> = {}): OpSnapshot => ({ complete: true, state: 'open', labels, events, ...extra });
+  const snap = (labels: string[], events = [old], extra: Partial<OpSnapshot> = {}): OpSnapshot => ({ complete: true, labelsComplete: true, state: 'open', labels, events, ...extra });
   const unknown = (extra: Partial<OpRecord> = {}) => withRoles(auto('unknown', 'unsent', 'unsent', { before, checks: 1, ...extra }));
   const proven = (extra: Partial<OpRecord> = {}) => withRoles(auto('ok', 'unsent', 'unsent', { before, auto: true, readAt: 30, ...extra }));
 
@@ -604,6 +615,21 @@ describe('GitHub#359: the check of an unknown label step never says "it did not 
     it('the wanted state there is positive evidence (the step is done), not a verdict', () => {
       const r = opProveFromSnapshot(unknown(), snap(['pending/human', 'autopilot'], [old, ev('e1', 'labeled', 'autopilot')]));
       expect(r.steps[0]).toMatchObject({ state: 'ok', reason: '重读时这个标签已在' });
+    });
+    // PR #365 code review round 1: GitHub sent only part of the label list
+    it('a label list not read in full: a label missing from it proves no removal; a label seen in it still proves an add', () => {
+      const removing = withRoles(auto('ok', 'ok', 'unknown', { before }));
+      const partial = { complete: false, labelsComplete: false };
+      // the removed label not among what came back: still not sure, still locked
+      const r1 = opProveFromSnapshot(removing, snap(['autopilot', 'pending/agent'], [old], partial));
+      expect(r1.steps[2].state).toBe('unknown');
+      expect(opLocked(r1)).toBe(true);
+      expect(opText(r1)).toContain('「pending/human」不确定有没有摘掉');
+      expect(opCheckSteps(r1, snap(['autopilot', 'pending/agent'], [old], partial)).steps[2].check).toBe('unread');
+      // the whole list, without it: removed
+      expect(opProveFromSnapshot(removing, snap(['autopilot', 'pending/agent'], [old])).steps[2].state).toBe('ok');
+      // part of the list, the added label in it: added
+      expect(opProveFromSnapshot(unknown(), snap(['pending/human', 'autopilot'], [old], partial)).steps[0].state).toBe('ok');
     });
   });
 

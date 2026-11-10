@@ -902,7 +902,9 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     const all = (w.labelEvents.get(ikey) ?? []).map((e) => ({ __typename: e.event === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', id: `LE_${ikey}_${e.id}`, actor: e.actor, label: e.label }));
     const end = v.before ? Number(String(v.before).replace(/^ev:/, '')) : all.length;
     const from = Math.max(0, end - (w.eventPage || 100));
-    const labels = w.staleSnapshotLabels ?? (content.labels?.nodes ?? []).map((l: any) => ({ name: l.name }));
+    // like GitHub: the first 100 labels of the item, and how many it has (PR #365 code review round 1)
+    const allLabels = w.staleSnapshotLabels ?? (content.labels?.nodes ?? []).map((l: any) => ({ name: l.name }));
+    const labels = allLabels.slice(0, 100);
     return {
       data: {
         repository: {
@@ -910,7 +912,7 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
             __typename: c.kind,
             state: content.state,
             ...(c.kind === 'PullRequest' ? { merged: content.merged === true } : {}),
-            labels: { totalCount: labels.length, nodes: labels },
+            labels: { totalCount: allLabels.length, nodes: labels },
             comments: { nodes: comments },
             timelineItems: { pageInfo: { hasPreviousPage: from > 0, startCursor: from > 0 ? `ev:${from}` : null }, nodes: all.slice(from, end) },
           },
@@ -951,7 +953,9 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
           for (const n of p.items.nodes)
             if (n.content?.repository?.nameWithOwner?.toLowerCase() === c.repo.toLowerCase() && n.content.number === c.number)
               projectItems.push({ id: n.id, isArchived: n.isArchived, project: { id: p.id }, fieldValues: n.fieldValues });
-      return { data: { repository: { issueOrPullRequest: { ...withRelationFields(store, content), projectItems: { nodes: projectItems } } } } };
+      // like GitHub: the first ITEM_LABELS_FIRST labels the query asks for (PR #365 code review round 1)
+      const asked = { ...content, ...(content.labels ? { labels: { ...content.labels, nodes: content.labels.nodes.slice(0, 50) } } : {}) };
+      return { data: { repository: { issueOrPullRequest: { ...withRelationFields(store, asked), projectItems: { nodes: projectItems } } } } };
     }
     if (w.failDetail.has(ikey)) return { httpStatus: 502 };
     const size = w.detailPageSize;
