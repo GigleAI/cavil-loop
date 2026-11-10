@@ -18,7 +18,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { Controller } from '../../src/app/controller';
+import { Controller, PREFETCH_PER_ROUND } from '../../src/app/controller';
 import type { Alert, Desktop, DesktopEvent } from '../../src/app/desktop';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -239,6 +239,8 @@ it('the recording still has what these tests need', () => {
 });
 afterEach(async () => {
   for (const c of controllers) c.stopTimer();
+  // a detail still being read ahead (GitHub#328) ends before its back end goes
+  await Promise.all(controllers.map((c) => c.prefetchSettled()));
   await Promise.all(backends.map((b) => b.close()));
   for (const c of caches) c.close();
   caches = [];
@@ -919,5 +921,339 @@ describe('one rule for every queued notification, across context changes (PR #17
     await h.c.syncNow();
     await release(h, held);
     expect(keysOf(held.calls).sort()).toEqual([key(OPEN_NEW), key(OPEN_NEW2)].sort());
+  });
+});
+
+// GitHub#328: the detail of an item just notified is read ahead, so a click on the notification
+// shows it at once. Same layers as above: real sync rounds against the fake GitHub, the detail
+// requests counted in the fake's own log.
+describe('details read ahead of the click (GitHub#328)', () => {
+  const detailReads = () => fake.log.filter((e) => e.operation === 'CavilItemDetail');
+  const readNumbers = () => detailReads().map((e) => e.variables?.number as number);
+  /** issues on the board without the label (the test opens the closed ones first): enough of them for "more than one round reads ahead" */
+  const MANY = rawProject
+    .filter((x: any) => x.content.__typename === 'Issue' && !projPending(x) && x.content.repository.nameWithOwner === REPO && x.content.number !== SEEDED)
+    .map((x: any) => x.content.number as number)
+    .filter((n, i, a) => a.indexOf(n) === i)
+    .slice(0, PREFETCH_PER_ROUND + 2);
+  const until = async (cond: () => boolean, what: string) => {
+    for (let i = 0; i < 400; i++) {
+      if (cond()) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  };
+  /** A round one minute later; its notifications are out and every read ahead has ended. */
+  async function round(h: Harness) {
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await h.c.prefetchSettled();
+  }
+
+  it('a newly pending item: its detail is in the cache without anyone opening it; what a first read finds is not read ahead', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    // the first read is history: no detail request, though the round did read the board (the seeded item is pending)
+    expect(h.c.getState().pendingCount).toBeGreaterThan(0);
+    expect(labelledOnBoard(h, SEEDED)).toBe(true);
+    expect(detailReads()).toEqual([]);
+    expect(h.c.cachedDetail(key(SEEDED))).toBeNull();
+
+    setLabel(OPEN_NEW, true, h.clock);
+    await round(h);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(readNumbers()).toEqual([OPEN_NEW]);
+    expect(detailReads()[0].status).toBe(200);
+    const kept = h.c.cachedDetail(key(OPEN_NEW));
+    expect(kept?.number).toBe(OPEN_NEW);
+    expect(kept?.fetchedAt).toBe(h.clock.t);
+    // a round with nothing new reads nothing ahead
+    await round(h);
+    expect(readNumbers()).toEqual([OPEN_NEW]);
+  });
+
+  it(`more new items than ${PREFETCH_PER_ROUND} in one round: only the first ${PREFETCH_PER_ROUND} notified are read, one request at a time`, async () => {
+    expect(MANY).toHaveLength(PREFETCH_PER_ROUND + 2);
+    for (const n of MANY) setOpen(n, true, { t: FIXTURE_NOW - 3_600_000 });
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    for (const n of MANY) setLabel(n, true, h.clock);
+    let most = 0;
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    // watch the log while the queue drains: requests sent minus requests answered
+    const watch = setInterval(() => (most = Math.max(most, detailReads().filter((e) => e.status === 0).length)), 1);
+    await h.c.prefetchSettled();
+    clearInterval(watch);
+    expect(h.items()).toHaveLength(MANY.length);
+    expect(readNumbers()).toHaveLength(PREFETCH_PER_ROUND);
+    expect(readNumbers().map(key)).toEqual(h.items().slice(0, PREFETCH_PER_ROUND));
+    expect(most).toBeLessThanOrEqual(1);
+  });
+
+  it('one request at a time: while the first answer is held, no second detail request is sent', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemDetail');
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await until(() => detailReads().length === 1, 'the first read ahead');
+    await settle();
+    await settle();
+    expect(detailReads()).toHaveLength(1);
+    release();
+    await h.c.prefetchSettled();
+    expect(readNumbers().sort()).toEqual([OPEN_NEW, OPEN_NEW2].sort());
+  });
+
+  it('the reads start only after the notifications and the badge were handed to the shell', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    const d = (h.c as any).deps.desktop as Desktop;
+    const order: string[] = [];
+    let releaseNote: () => void = () => {};
+    d.notify = async (a) => {
+      order.push(`notify, ${detailReads().length} detail reads so far`);
+      h.alerts.push(a);
+      await new Promise<void>((r) => (releaseNote = r));
+      return { ok: true };
+    };
+    const badge = d.setBadge;
+    d.setBadge = async (n) => {
+      order.push(`badge ${n}, ${detailReads().length} detail reads so far`);
+      await badge(n);
+    };
+    setLabel(OPEN_NEW, true, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    // the system has not answered the notification yet: nothing is read ahead meanwhile
+    expect(order).toEqual(['notify, 0 detail reads so far']);
+    expect(detailReads()).toEqual([]);
+    releaseNote();
+    await h.c.prefetchSettled();
+    expect(order).toEqual(['notify, 0 detail reads so far', 'badge 1, 0 detail reads so far']);
+    expect(readNumbers()).toEqual([OPEN_NEW]);
+  });
+
+  it('a later round while an earlier read is on its way: its items still wait for their own notification and badge (PR #331 review round 1)', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    const releaseDetail = fake.holdWhen((e) => e.operation === 'CavilItemDetail' && e.variables?.number === OPEN_NEW);
+    let releaseNote: () => void = () => {};
+    try {
+      // round one: its read ahead is on its way, held by GitHub
+      setLabel(OPEN_NEW, true, h.clock);
+      h.clock.t += 60_000;
+      await h.c.syncNow();
+      await h.c.desktopSettled();
+      await until(() => detailReads().length === 1, 'the first read ahead');
+      expect(readNumbers()).toEqual([OPEN_NEW]);
+      // round two: its notification is with the system, unanswered; its badge waits behind it
+      const d = (h.c as any).deps.desktop as Desktop;
+      d.notify = async (a) => {
+        h.alerts.push(a);
+        await new Promise<void>((r) => (releaseNote = r));
+        return { ok: true };
+      };
+      setLabel(OPEN_NEW2, true, h.clock);
+      h.clock.t += 60_000;
+      await h.c.syncNow();
+      await settle();
+      expect(h.items()).toEqual([key(OPEN_NEW), key(OPEN_NEW2)]);
+      const badgesBefore = h.badges.length;
+      // round one's read ends: round two's is not sent, its badge is still not out
+      releaseDetail();
+      await until(() => detailReads()[0].status === 200, 'the first answer');
+      for (let i = 0; i < 10; i++) await settle();
+      expect(h.c.cachedDetail(key(OPEN_NEW))?.number).toBe(OPEN_NEW);
+      expect(readNumbers()).toEqual([OPEN_NEW]);
+      expect(h.badges).toHaveLength(badgesBefore);
+      // the system answers: the badge goes out, and only then round two's read — which did happen
+      const setBadge = d.setBadge;
+      const readsAtBadge: number[] = [];
+      d.setBadge = async (n) => {
+        readsAtBadge.push(detailReads().length);
+        await setBadge(n);
+      };
+      releaseNote();
+      await h.c.prefetchSettled();
+      expect(readsAtBadge).toEqual([1]);
+      expect(h.badges).toHaveLength(badgesBefore + 1);
+      expect(readNumbers()).toEqual([OPEN_NEW, OPEN_NEW2]);
+      expect(h.c.cachedDetail(key(OPEN_NEW2))?.number).toBe(OPEN_NEW2);
+    } finally {
+      releaseDetail();
+      releaseNote();
+      await h.c.prefetchSettled();
+    }
+  });
+
+  it('signed out while a queued read waits for a notification the system never answers: the next account still reads ahead', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    const d = (h.c as any).deps.desktop as Desktop;
+    const notify = d.notify;
+    d.notify = () => new Promise(() => {});
+    setLabel(OPEN_NEW, true, h.clock);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await settle();
+    expect(detailReads()).toEqual([]);
+    await h.c.logout();
+    d.notify = notify;
+    fake.state.nextGrant = { token: FAKE_TOKEN };
+    h.c.setClientId(fake.state.oauthClientId);
+    const login = h.c.startLogin();
+    for (let i = 0; i < 500 && h.c.getState().login.status !== 'waiting'; i++) await new Promise((r) => setTimeout(r, 10));
+    fake.resolveGrant('approved');
+    await login;
+    await h.c.prefetchSettled();
+    // the first read of the new sign-in is history: still nothing read ahead
+    expect(detailReads()).toEqual([]);
+    setLabel(OPEN_NEW2, true, h.clock);
+    await round(h);
+    expect(h.c.getState().phase).toBe('ready');
+    expect(readNumbers()).toEqual([OPEN_NEW2]);
+    expect(h.c.cachedDetail(key(OPEN_NEW2))?.number).toBe(OPEN_NEW2);
+  });
+
+  it('a read ahead that fails shows nothing and breaks nothing; opening the item reads as before', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    fake.state.w.failDetail.add(key(OPEN_NEW));
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
+    await round(h);
+    // "did happen": the request went out and failed; the one after it was still read
+    expect(detailReads().some((e) => e.variables?.number === OPEN_NEW && e.status === 502)).toBe(true);
+    expect(h.c.cachedDetail(key(OPEN_NEW))).toBeNull();
+    expect(h.c.cachedDetail(key(OPEN_NEW2))?.number).toBe(OPEN_NEW2);
+    expect(h.items().sort()).toEqual([key(OPEN_NEW), key(OPEN_NEW2)].sort());
+    const st = h.c.getState();
+    expect(st.sync.problem).toBeNull();
+    expect(st.notifyProblem).toBeNull();
+    expect(st.sync.offline).toBe(false);
+    // the next round is an ordinary one, and nothing is tried again
+    const before = detailReads().length;
+    await round(h);
+    expect(detailReads()).toHaveLength(before);
+    expect(h.c.getState().sync.problem).toBeNull();
+    fake.state.w.failDetail.clear();
+    const r = await h.c.loadDetail(key(OPEN_NEW));
+    expect(r.ok).toBe(true);
+    expect(h.c.cachedDetail(key(OPEN_NEW))?.number).toBe(OPEN_NEW);
+  });
+
+  it('offline when the read ahead goes out: no detail, no message; the notification was sent', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    const d = (h.c as any).deps.desktop as Desktop;
+    const notify = d.notify;
+    // the connection goes right after the round, before the read ahead
+    d.notify = async (a) => {
+      fake.state.offline = true;
+      return notify(a);
+    };
+    setLabel(OPEN_NEW, true, h.clock);
+    const problem = h.c.getState().sync.problem;
+    await round(h);
+    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.c.cachedDetail(key(OPEN_NEW))).toBeNull();
+    expect(h.c.getState().sync.problem).toBe(problem);
+    expect(h.c.getState().notifyProblem).toBeNull();
+    fake.state.offline = false;
+    expect((await h.c.loadDetail(key(OPEN_NEW))).ok).toBe(true);
+  });
+
+  it('signed out while a read ahead is on its way: its answer is not kept, the queued one is never sent', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemDetail');
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await until(() => detailReads().length === 1, 'the first read ahead');
+    const first = readNumbers()[0];
+    await h.c.logout();
+    release();
+    await until(() => detailReads()[0].status === 200, 'the held answer');
+    await h.c.prefetchSettled();
+    await settle();
+    expect(detailReads()).toHaveLength(1);
+    expect(h.c.cachedDetail(key(first))).toBeNull();
+    expect(h.c.cachedDetail(key(OPEN_NEW))).toBeNull();
+    expect(h.c.cachedDetail(key(OPEN_NEW2))).toBeNull();
+    expect(h.c.getState().phase).toBe('login');
+  });
+
+  it('the item opened and read while its read ahead is on its way: the later read stays in the cache', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.prefetchSettled();
+    setLabel(OPEN_NEW, true, h.clock);
+    let first: unknown = null;
+    const release = fake.holdWhen((e) => e.operation === 'CavilItemDetail' && (first ??= e) === e);
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await until(() => detailReads().length === 1, 'the read ahead');
+    const queuedAt = h.clock.t;
+    h.clock.t += 5_000;
+    const mine = await h.c.loadDetail(key(OPEN_NEW));
+    expect(mine.ok).toBe(true);
+    expect(h.c.cachedDetail(key(OPEN_NEW))?.fetchedAt).toBe(queuedAt + 5_000);
+    // the read ahead answers last, with a later clock: by start order it is still the older read
+    h.clock.t += 5_000;
+    release();
+    await h.c.prefetchSettled();
+    expect(detailReads()).toHaveLength(2);
+    expect(detailReads().every((e) => e.status === 200)).toBe(true);
+    expect(h.c.cachedDetail(key(OPEN_NEW))?.fetchedAt).toBe(queuedAt + 5_000);
+  });
+
+  for (const change of ['label', 'source'] as const) {
+    it(`no longer pending when its turn comes (${change === 'label' ? 'label renamed' : 'source removed'} meanwhile): not read`, async () => {
+      const from = 0;
+      const h = await signedIn({ sources: [PROJECT_URL] });
+      await h.c.start();
+      await h.c.prefetchSettled();
+      setLabel(OPEN_NEW, true, h.clock);
+      setLabel(OPEN_NEW2, true, h.clock);
+      const release = fake.holdWhen((e) => e.operation === 'CavilItemDetail');
+      h.clock.t += 60_000;
+      await h.c.syncNow();
+      // "did happen": two were queued, the first is on its way
+      await until(() => detailReads().length === from + 1, 'the first read ahead');
+      expect(h.items()).toHaveLength(2);
+      if (change === 'label') h.c.setHandBack({ human: 'some-other-label' });
+      else h.c.removeSource(PROJECT_KEY);
+      release();
+      await h.c.prefetchSettled();
+      await settle();
+      expect(detailReads()).toHaveLength(from + 1);
+    });
+  }
+
+  it('without a shell nothing is notified, so nothing is read ahead', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    (h.c as any).deps.desktop = undefined;
+    await h.c.start();
+    setLabel(OPEN_NEW, true, h.clock);
+    await round(h);
+    expect(labelledOnBoard(h, OPEN_NEW)).toBe(true);
+    expect(detailReads()).toEqual([]);
   });
 });
