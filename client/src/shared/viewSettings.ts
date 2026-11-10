@@ -7,7 +7,7 @@ import { DEFAULT_QUERY, DEFAULT_TABLE_COLUMNS, NOT_IN_API } from './viewImport';
 export { DEFAULT_QUERY };
 
 export const MODES: readonly ColumnMode[] = ['iteration', 'status', 'milestone'];
-export const LAYOUTS: readonly Layout[] = ['board', 'table'];
+export const LAYOUTS: readonly Layout[] = ['board', 'table', 'graph'];
 export const GROUP_BYS: readonly GroupBy[] = ['iteration', 'status', 'milestone', 'repo', 'none'];
 export const SORT_FIELDS: readonly SortField[] = ['manual', 'updated', 'title', 'number', 'repo', 'iteration', 'status', 'milestone'];
 export const TABLE_COLUMNS: readonly TableColumn[] = [

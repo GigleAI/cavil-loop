@@ -403,7 +403,8 @@ export interface SourceStatus {
 }
 
 export type ColumnMode = 'iteration' | 'status' | 'milestone';
-export type Layout = 'board' | 'table';
+/** GitHub#350: 'graph' = the dependency graph */
+export type Layout = 'board' | 'table' | 'graph';
 export type GroupBy = 'iteration' | 'status' | 'milestone' | 'repo' | 'none';
 export type SortField = 'manual' | 'updated' | 'title' | 'number' | 'repo' | 'iteration' | 'status' | 'milestone';
 export type TableColumn =

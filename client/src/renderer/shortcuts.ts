@@ -10,7 +10,7 @@
 // A shortcut only presses a button for you: every handler is the button's own
 // handler, behind the same "is it enabled" condition (see the call sites).
 
-export type Scope = 'global' | 'detail' | 'reply' | 'dialog' | 'picker' | 'help';
+export type Scope = 'global' | 'detail' | 'graph' | 'reply' | 'dialog' | 'picker' | 'help';
 
 /** `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere) */
 export type KeySpec = { key: string; mod?: boolean; shift?: boolean };
@@ -34,13 +34,17 @@ export type ShortcutId =
   | 'pickerDown'
   | 'pickerToggle'
   | 'pickerClose'
-  | 'helpClose';
+  | 'helpClose'
+  | 'graphFit'
+  | 'graphZoomIn'
+  | 'graphZoomOut';
 
 export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: string };
 
 export const SCOPE_TITLE: Record<Scope, string> = {
   global: '已登录的任何页面',
   detail: '详情面板（光标不在输入框里时）',
+  graph: '依赖图（光标不在输入框里时；拖动空白处平移，滚轮缩放）',
   reply: '回复框里',
   dialog: '对话框里',
   picker: '标签 / 里程碑选择框',
@@ -57,6 +61,9 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
   { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
   { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '收起面板（回复框里有没发出的文字时不收起）' },
+  { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: '适应窗口（整张图放进窗口）' },
+  { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: '放大' },
+  { id: 'graphZoomOut', scope: 'graph', keys: [{ key: '-' }], label: '缩小' },
   { id: 'send', scope: 'reply', keys: [{ key: 'Enter', mod: true }], label: '发送评论' },
   { id: 'preview', scope: 'reply', keys: [{ key: 'p', mod: true, shift: true }], label: '预览 / 继续编辑' },
   { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: '离开回复框（文字保留）' },
@@ -106,8 +113,8 @@ const hasMod = (s: Shortcut) => s.keys.some((k) => k.mod);
  * Who gets this key press: the id of the shortcut to run, or null (leave the key alone).
  * The only rules, in order: never while composing; nothing before sign-in; a layer on top
  * takes every key and only its own shortcuts act; while typing, single keys are typing
- * (only the reply box's own keys and the ⌘ / Ctrl shortcuts act); otherwise the global
- * and detail-panel keys.
+ * (only the reply box's own keys and the ⌘ / Ctrl shortcuts act); otherwise the global,
+ * detail-panel and graph keys (a graph key has no handler unless the graph is showing).
  */
 export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
   if (composing(e)) return null;
@@ -116,7 +123,7 @@ export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
     if (ctx.layer !== 'none') return s.scope === ctx.layer;
     if (ctx.typing === 'reply') return s.scope === 'reply' || (s.scope === 'global' && hasMod(s));
     if (ctx.typing === 'other') return s.scope === 'global' && hasMod(s);
-    return s.scope === 'global' || s.scope === 'detail';
+    return s.scope === 'global' || s.scope === 'detail' || s.scope === 'graph';
   };
   for (const s of SHORTCUTS) if (allowed(s) && s.keys.some((k) => matches(k, e))) return s.id;
   return null;

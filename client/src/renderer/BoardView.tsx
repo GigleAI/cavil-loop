@@ -22,6 +22,8 @@ import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
 import { useLayer, useShortcuts } from './keyboard';
 import { TableView } from './TableView';
+import { GraphView, type GraphSourceInfo } from './GraphView';
+import { buildGraph } from '../data/graph';
 import { localToday } from './iterationOptions';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
 import { Avatar } from './Avatar';
@@ -39,6 +41,7 @@ function useNow(ms = 15_000) {
 }
 
 const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
+const LAYOUT_LABEL: Record<Layout, string> = { board: '看板', table: '表格', graph: '依赖图' };
 
 interface CardOps {
   canWrite: boolean;
@@ -573,6 +576,8 @@ export function BoardView({
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
+  // GitHub#350: the dependency graph of what the sources and search picked
+  const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items) : null), [view.layout, data.items, items]);
   const failed = sync.sources.filter((s) => !s.ok);
   const trouble = syncTrouble(sync, parsed);
   const labelOf = (sourceKey: string) => {
@@ -698,7 +703,7 @@ export function BoardView({
   const laneFolded = new Set(state.laneFolds);
   const boardRef = useRef<HTMLDivElement>(null);
   const [laneMax, setLaneMax] = useState<number | null>(null);
-  const withLanes = view.layout !== 'table' && board.lanes !== null;
+  const withLanes = view.layout === 'board' && board.lanes !== null;
   const laneShape = board.lanes ? `${board.lanes.join('\n')}\u0000${state.laneFolds.join('\n')}` : '';
   useLayoutEffect(() => {
     const el = boardRef.current;
@@ -823,10 +828,10 @@ export function BoardView({
       {/* second row: how this view is laid out */}
       <div className="vbar">
         <div className="seg" data-testid="layout">
-          {(['board', 'table'] as Layout[]).map((l) => (
+          {(['board', 'table', 'graph'] as Layout[]).map((l) => (
             <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} onClick={() => api().setView({ layout: l })}>
-              <Icon name={l === 'board' ? 'board' : 'table'} />
-              {l === 'board' ? '看板' : '表格'}
+              <Icon name={l} />
+              {LAYOUT_LABEL[l]}
             </button>
           ))}
         </div>
@@ -848,17 +853,23 @@ export function BoardView({
             </label>
           </>
         )}
-        <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
-          <Icon name="sliders" />
-          视图设置
-        </button>
+        {view.layout !== 'graph' && (
+          <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
+            <Icon name="sliders" />
+            视图设置
+          </button>
+        )}
         <span className="vbar-count">
-          {filtering ? (
+          {graph ? (
+            <span data-testid="graph-count">
+              显示 {graph.entries} 个有关系的条目 · 共 {data.items.length} 个条目
+            </span>
+          ) : filtering ? (
             <span data-testid="match-count">
               显示 {items.length} / {data.items.length} 条
             </span>
           ) : null}
-          <span data-testid="item-total" className={filtering ? 'sr-only' : undefined}>
+          <span data-testid="item-total" className={filtering || graph ? 'sr-only' : undefined}>
             {data.items.length} 个条目
           </span>
         </span>
@@ -882,7 +893,7 @@ export function BoardView({
           </button>
         </div>
       )}
-      {panel && <ViewSettingsPanel view={view} />}
+      {panel && view.layout !== 'graph' && <ViewSettingsPanel view={view} />}
 
       <UpdateReadyBar update={state.update} />
       <UpdateInstalledBar update={state.update} />
@@ -925,7 +936,24 @@ export function BoardView({
 
       </div>
       <div className="board-area">
-      {view.layout === 'table' ? (
+      {graph ? (
+        <GraphView
+          model={graph}
+          sources={state.sources
+            .filter((s) => selected.has(s.key))
+            .map((s): GraphSourceInfo => ({
+              key: s.key,
+              label: labelOf(s.key),
+              status: sync.sources.find((x) => x.sourceKey === s.key) ?? null,
+              unknown: (data.relationsUnknown ?? []).includes(s.key),
+              unknownItems: data.items.filter((i) => i.relations === undefined && i.sources.includes(s.key)).length,
+            }))}
+          syncing={sync.syncing}
+          now={now}
+          dark={dark}
+          onOpen={openItem}
+        />
+      ) : view.layout === 'table' ? (
         <TableView
           items={items}
           projects={data.projects}

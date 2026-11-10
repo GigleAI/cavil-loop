@@ -15,7 +15,7 @@ const eventOf = (spec: KeySpec, mod: 'meta' | 'ctrl' = 'meta'): KeyLike =>
   });
 /** a context in which a scope's shortcuts are the ones meant to act */
 const ctxFor = (scope: Scope): KeyContext =>
-  scope === 'global' || scope === 'detail' ? idle : scope === 'reply' ? { ...idle, typing: 'reply' } : { ...idle, layer: scope };
+  scope === 'global' || scope === 'detail' || scope === 'graph' ? idle : scope === 'reply' ? { ...idle, typing: 'reply' } : { ...idle, layer: scope };
 
 describe('the shortcut table', () => {
   it('every key of every shortcut reaches that shortcut in its own place, with ⌘ and with Ctrl', () => {
