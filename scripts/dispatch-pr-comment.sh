@@ -78,6 +78,8 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${WORKER_AGENT}|$WORKER_AGENT|g" \
         -e "s|\${WORK_NUM}|$ISSUE_N|g" \
         "$TEMPLATE" > "$PROMPT_FILE"
+    # 同时在进行的其他工作（GitHub#340）：清单是多行的、含别人写的标题，放在 sed 之后单独填
+    concurrent_work_fill "$PROMPT_FILE" "$BRANCH" "$ISSUE_N" "$PR" || true
 else
     cat > "$PROMPT_FILE" <<EOF
 PR #$PR 有新评论。三类反馈来源都要读（inline 行评论 \`gh pr view\` 看不到，必须单独拉，最易漏）：

@@ -1124,6 +1124,7 @@ Available placeholders (`sed`-rendered):
 | `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review gate it would bounce work back to the reviewer itself: an infinite loop |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `cavil-loop.config`, default `en`) |
 | `${COMMENT_FOOTER_CMD}` | full command that generates the comment usage footer (agent, usage driver and project config already filled in); templates only add `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`. It prints the whole footer, appended to the comment as-is; for the project test-time hook see `COMMENT_FOOTER_EXTRA_CMD` in the config example |
+| `${CONCURRENT_WORK}` | the list of other items in progress and the files their branches changed (GitHub#340). Filled in **after** every other placeholder, by `concurrent_work_fill`, and only where the placeholder is a whole line by itself — the list is multi-line and carries titles other people wrote, so it never goes through the `sed` pass. With `CONCURRENT_WORK_HINT` on, the tool appends its own section (`prompts/concurrent-work.md`: the list plus the "name any overlap" rule) to the three worker templates, so a project template does not need to write it. Written in a project template with the switch off, it renders as "not enabled" and nothing is read. Unreadable lists render as "could not read", never as "nothing else" |
 
 ## Cleanup hook (`CLEANUP_HOOK`)
 
