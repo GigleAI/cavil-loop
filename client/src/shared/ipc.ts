@@ -59,8 +59,8 @@ export interface CavilApi {
    * still has an operation that is not settled). Its progress is `state.ops`.
    */
   startOp(action: Extract<WriteAction, { kind: 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' }>, from?: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
-  /** read the evidence of an operation whose answer never came again (reads only) */
-  opRecheck(id: string): Promise<WriteResult>;
+  /** GitHub#359, "仍要重发…": send a label step again whose answer never came (checked first; judged again right before the send) */
+  opResend(id: string): Promise<WriteResult>;
   /** "补做剩下的步骤" (re-reads first) */
   opFinish(id: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
   /** "已核对，解除锁定": local only */
