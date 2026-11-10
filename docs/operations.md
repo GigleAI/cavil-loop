@@ -117,6 +117,16 @@ DISPATCH_MAX_RETRIES=3
 # be auto-redispatched before the item goes to pending/human instead.
 SELFHEAL_MAX_RETRIES=3
 
+# An item on doing/agent whose session is alive but nobody is working (GitHub#339): the agent
+# is idle and nothing changed on GitHub or the local branch for this many seconds in a row →
+# nudge the session once; still nothing STEP_GAP seconds later → end the session, put the
+# trigger label back and redispatch (at most MAX_RESTARTS times); stuck again → comment and
+# hand to pending/human. Script checks only, no model call. Empty or 0 = off; so is a config
+# without this line.
+STUCK_WORKER_QUIET_SECS=1800
+STUCK_WORKER_STEP_GAP_SECS=900
+STUCK_WORKER_MAX_RESTARTS=1
+
 # Open an issue when the local base falls this many commits behind origin
 # (auto-closed once it catches up). Off by default — only a checkout people
 # actually work in gets stuck this way. 20 is a good value when you want it.
@@ -2174,6 +2184,56 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
 
 If the worker finishes without leaving any comment, state.json's comment ID doesn't advance and the same comment gets treated as new next time. Prompts should require the worker to leave at least one reply.
+
+### An item stays on `doing/agent`, the session is alive, nobody is working
+
+The worker stopped without commenting or flipping the label (decided "not mine" and quit, got an
+empty prompt, crashed before the flip) while its tmux session is still alive. Self-heal only acts
+when the session is gone and the reaper skips anything labeled `doing/agent`, so the item keeps its
+concurrency slot.
+
+With `STUCK_WORKER_QUIET_SECS` set (GitHub#339) the daemon handles it; its `poll.log` lines all
+start with "卡住检测：":
+
+| When | What the daemon does |
+|---|---|
+| agent idle, nothing new on GitHub or the local branch, for `STUCK_WORKER_QUIET_SECS` in a row | pastes a fixed reminder into the worker pane (no GitHub write) |
+| still nothing `STUCK_WORKER_STEP_GAP_SECS` after the reminder | ends the session, flips `doing/agent` back to the label that triggered the dispatch, redispatches next round; at most `STUCK_WORKER_MAX_RESTARTS` times |
+| stuck again for `STUCK_WORKER_QUIET_SECS` after the redispatch | posts a comment (how long, what was tried, how to continue), flips to `pending/human`; the session is kept |
+
+Every check is a script comparison, never a model call:
+
+- **Busy or not** is read off the recorded worker pane, with the rules of the agent that session
+  actually runs (the review agent and the development agent show "busy" differently). Compacting
+  counts as busy; sitting on a dialog counts as idle.
+- **Activity**: labels, comments and commits on the item and on the item bound to it (the issue
+  behind a PR, the PRs of an issue), plus the local work branch's head. Any change, or one round
+  that sees the agent busy, resets the clock.
+- **Protecting labels**: nothing happens while the item itself also carries `pending/human`, the
+  blocked label, the requester-bot waiting label, any dispatch label, `pending/merge` or
+  `pending/PR`, or while the bound item carries `pending/human`, the blocked label or the
+  requester-bot waiting label. `pending/PR` on the issue behind a PR is the normal state after
+  the PR was opened and does not protect.
+- **Everything is re-read before acting**: before ending a session, flipping a label or
+  commenting, the item, the bound item and the local session are read again and must be exactly
+  what they were when the clock started (open / merged, base branch, head commit, source, labels,
+  latest comment and label event, worker pane and agent); otherwise nothing is done this round
+  and the clock restarts.
+- **Unreadable means hands off**: if tmux or GitHub cannot be read, the round neither advances
+  nor resets.
+
+Never handled (each reason is logged once):
+
+- not dispatched by this machine (`worker_hosts` in `state.json` names another host)
+- the session has no recorded agent / role, or has several panes and no recorded worker pane
+- an issue and a PR of the same work number both carry `doing/agent` (one shared session; no way
+  to tell which one it is working for)
+- the session is gone (that is self-heal's job)
+
+"Idle" is read off the screen: an agent that pushed work to the background and waits looks idle
+too. Hence the 30-minute default and the harmless first step. Progress lives in `stuck_workers`
+in `state.json`, so a daemon restart continues where it was; it is cleared once the item is
+handed on normally (leaves `doing/agent`). To turn it off, write `STUCK_WORKER_QUIET_SECS=""`.
 
 ### Dispatch fails every round for the same item
 

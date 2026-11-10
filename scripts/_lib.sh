@@ -1783,6 +1783,14 @@ pr_to_issue_num() {
     echo "$pr"
 }
 
+# 同一条规则的「手上已有分支名和正文关联编号」版本：不发请求。活跃 worker 列表
+# （list_active_workers）和卡住检测（stuck_*，GitHub#339）都用它，两边算出的工作编号一致。
+pr_work_num_local() {   # <PR 编号> <分支> <正文里的关联编号，没有传空>
+    local n
+    n="$(branch_to_issue_num "$2")"
+    printf '%s\n' "${n:-${3:-$1}}"
+}
+
 # 列出本项目的所有 worker session 名字（不含 dev server 或别的同前缀 session）。
 # tmux ls 格式 "name: 1 windows ..."，awk -F: 取 field 1 后用 ^...$ 严格匹配。
 list_worker_sessions() {
@@ -1925,8 +1933,7 @@ list_active_workers() {
     # URL 指向 worker 当前主战场——PR 阶段就指 PR、纯 issue 阶段就指 issue。
     if [ -n "$pr_data" ]; then
         while IFS=$'\t' read -r pr branch body_n; do
-            n=$(branch_to_issue_num "$branch")
-            n="${n:-${body_n:-$pr}}"
+            n=$(pr_work_num_local "$pr" "$branch" "$body_n")
             if [ "$scope" != "all" ]; then worker_is_ours "$n" || continue; fi
             if [ "$n" = "$pr" ]; then
                 # standalone：fallback 到 PR 编号本身（无关联 issue / 外部 PR）
@@ -6275,10 +6282,14 @@ gh_label_flip() {
 # 后一秒被翻回 pending/human，页面上零解释）。
 # 用法：notify_bounced_to_human <num> <原因（一句话，可含 markdown）> <怎么继续>
 # 评论失败只记日志、不挡后面的 label 翻转：说明丢了是体验问题，label 不翻会重新热循环。
+# 评论正文单独一个函数：需要知道评论发没发成的调用方（卡住检测的交人，GitHub#339）自己发。
+bounced_to_human_body() {   # <原因> <怎么继续>
+    printf '⚠️ **自动处理已暂停，转人工（`%s`）**\n\n**原因**：%s\n\n**怎么继续**：%s\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>' \
+        "$LABEL_PENDING_HUMAN" "$1" "$2" "$(hostname -s 2>/dev/null || hostname)"
+}
 notify_bounced_to_human() {
     local num="$1" reason="$2" next="$3" body
-    body="$(printf '⚠️ **自动处理已暂停，转人工（`%s`）**\n\n**原因**：%s\n\n**怎么继续**：%s\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>' \
-        "$LABEL_PENDING_HUMAN" "$reason" "$next" "$(hostname -s 2>/dev/null || hostname)")"
+    body="$(bounced_to_human_body "$reason" "$next")"
     run_gh "转人工说明评论 (#$num)" \
         gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" || true
 }
@@ -6894,6 +6905,707 @@ compose_prompt_template() {
     } > "$out"
     log "prompt: base=$(basename "$base_tpl") + 增量=$(basename "$overlay")（合成 $(wc -l < "$out") 行）" 2>/dev/null || true
     echo "$out"
+}
+
+# ── 卡在 doing/agent 没人管 → 催一次 / 重派 / 交人（GitHub#339）──
+#
+# 现场（tutor #963/#964、#1150）：worker 没发评论、没翻标签就停下了，会话还活着。三道兜底都
+# 够不着——self-heal 只救「会话不在」的，回收看到 doing/agent 就跳过，闲置宽限看的 tmux 活动
+# 时间在 codex 界面上永远不旧——条目就一直占着并发名额，等人手工 kill-session + 翻标签。
+#
+# 这里每轮看一遍挂着 doing/agent 的条目。**判断全是脚本比对，不调用大模型**：标签、GitHub
+# 上的固定字段、工作窗格画面里的固定特征字、提交号。
+#
+#   卡住 = 条目挂 doing/agent（没有保护标签）+ 本机派的 + 工作窗格画面是「闲」
+#          + 身份串没变，**连续** STUCK_WORKER_QUIET_SECS 秒
+#   阶梯 = ① 往工作窗格里催一次 → ② 隔 STUCK_WORKER_STEP_GAP_SECS 仍卡住：结束会话、
+#          翻回原触发标签重派（最多 STUCK_WORKER_MAX_RESTARTS 次）→ ③ 再卡住：交人
+#
+# 几条不能松的：
+#   · 忙不忙按**这条会话实际跑的 agent** 的规则、在**登记的工作窗格**上看（stuck_sample）。
+#     主轮询进程只加载了默认开发 agent 的规则，复审可以是另一个 agent；人还会在会话里分屏。
+#   · 任何一项读不出 / 认不出 = 未知：不推进、不清零、不动手（硬规则 L36）。
+#   · ②③ 动手前把目标、绑定条目、本地会话**全部重读**，和这个空闲周期开始时记下的身份串
+#     整串比对，结论也要再判一次（stuck_doc + stuck_verdict，两处同一份）；不一致就不写、
+#     不结束会话、不记完成（硬规则 L41）。上一轮没做完的待办（stuck_resume）同样先重读。
+#   · 阶梯进度只进不退，直到条目离开 doing/agent 且不是 daemon 自己翻回去等重派的状态。
+#
+# 进度在 state.json 的 stuck_workers（只在功能动作时才写，故意不进开头的补字段循环）。
+# 不配置 STUCK_WORKER_QUIET_SECS（或写 0 / 空）= 功能关闭，stuck_tick 第一行就返回。
+STUCK_WORKER_QUIET_SECS="${STUCK_WORKER_QUIET_SECS:-}"
+STUCK_WORKER_STEP_GAP_SECS="${STUCK_WORKER_STEP_GAP_SECS:-900}"
+STUCK_WORKER_MAX_RESTARTS="${STUCK_WORKER_MAX_RESTARTS:-1}"
+# 两次观察之间最多隔多久还算「连续」：daemon 停过、或一轮轮询拖得很长时，不把没看到的那段
+# 时间算成空闲。
+STUCK_WORKER_MAX_GAP_SECS="${STUCK_WORKER_MAX_GAP_SECS:-900}"
+case "$STUCK_WORKER_STEP_GAP_SECS" in ''|*[!0-9]*) STUCK_WORKER_STEP_GAP_SECS=900 ;; esac
+case "$STUCK_WORKER_MAX_RESTARTS" in ''|*[!0-9]*) STUCK_WORKER_MAX_RESTARTS=1 ;; esac
+case "$STUCK_WORKER_MAX_GAP_SECS" in ''|*[!0-9]*) STUCK_WORKER_MAX_GAP_SECS=900 ;; esac
+STUCK_ACTED=0
+
+stuck_enabled() {
+    case "$STUCK_WORKER_QUIET_SECS" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$STUCK_WORKER_QUIET_SECS" -gt 0 ]
+}
+
+# ── 进度记录 ──
+stuck_entry() {   # <工作编号> → 这条的记录（没有 = {}）
+    jq -c --arg k "$1" '.stuck_workers[$k] // {}' "$STATE_FILE" 2>/dev/null || echo '{}'
+}
+# 用法：stuck_entry_set <工作编号> '<对这条记录的 jq 表达式>' [--arg / --argjson …]
+stuck_entry_set() {
+    local n="$1" f="$2" tmp
+    shift 2
+    tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
+    if jq --arg k "$n" "$@" \
+        '.stuck_workers = (.stuck_workers // {}) | .stuck_workers[$k] = ((.stuck_workers[$k] // {}) | '"$f"')' \
+        "$STATE_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$STATE_FILE"
+    else
+        rm -f "$tmp"; return 1
+    fi
+}
+stuck_entry_del() {   # <工作编号>
+    local tmp
+    [ "$(jq -r --arg k "$1" '(.stuck_workers // {}) | has($k)' "$STATE_FILE" 2>/dev/null)" = true ] || return 0
+    tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
+    if jq --arg k "$1" 'del(.stuck_workers[$k])' "$STATE_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$STATE_FILE"
+    else
+        rm -f "$tmp"; return 1
+    fi
+}
+# 空闲计时清零（阶梯进度保留）。没有记录、或本来就没在计时 → 不写文件。
+stuck_quiet_reset() {   # <工作编号>
+    [ "$(jq -r --arg k "$1" '(.stuck_workers[$k].since // 0) > 0' "$STATE_FILE" 2>/dev/null)" = true ] || return 0
+    stuck_entry_set "$1" '.since = 0 | .id = "" | .fp = ""' || true
+}
+# 「认不出 / 读不出」每种原因只记一次日志，免得每轮刷屏。
+stuck_warn() {   # <工作编号> <kind> <num> <原因>
+    [ "$(jq -r --arg k "$1" '.stuck_workers[$k].warned // ""' "$STATE_FILE" 2>/dev/null)" = "$4" ] && return 0
+    log "卡住检测：$2 #$3（工作编号 $1）本轮不判 —— $4"
+    stuck_entry_set "$1" '.kind = $kind | .num = $num | .warned = $w' \
+        --arg kind "$2" --arg num "$3" --arg w "$4" || true
+}
+
+# ── 保护标签：带了就不自动推进 ──
+# 目标条目（和 doing/agent 同时挂着的）和绑定条目（PR 对应的 issue / issue 对应的 PR）分开列。
+# 绑定 issue 上的 pending/PR **不保护**：那是开 PR 后 issue 的正常状态，不代表 PR 要暂停。
+# 命中时输出那个标签并返回 0。每轮的快照预判和 stuck_verdict 用的都是这一份。
+stuck_labels_protect() {   # <target|bound> <labels_csv>
+    local where="$1" csv=",$2," L
+    local -a list=("$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_REQUESTER_BOT" "$LABEL_PENDING_HUMAN")
+    if [ "$where" = target ]; then
+        # 交接到一半，或下一轮就会被派工 / 合并：状态自己会变，不插手
+        [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+        list+=("${TRIGGER_LABELS_ALL[@]}" "$LABEL_PENDING_MERGE" "$LABEL_PENDING_PR")
+    fi
+    for L in "${list[@]}"; do
+        [ -n "$L" ] || continue
+        case "$csv" in *",$L,"*) printf '%s\n' "$L"; return 0 ;; esac
+    done
+    return 1
+}
+
+# ── 取样：这条会话的 agent 现在忙不忙 ──
+# 结果放在 STUCK_S_*：STATE = busy / idle / absent（会话确定不在，归 self-heal 管）/ unknown
+# （原因在 STUCK_S_WHY），外加取样目标 PANE / PID / AGENT / ROLE。每轮判断、催促前、动手前
+# 复查都调这一个；催促也只往这里认出的窗格注入。
+#   ① 会话在不在：三态读取（worker_session_exists）
+#   ② 实际 agent 和角色：daemon 起会话时记在会话选项上的 @worker_agent / @worker_role
+#   ③ 工作窗格：worker_pane_lookup，只认 found / single
+#   ④ 画面：按**窗格编号**抓（按会话名抓到的是人切过去的当前窗格）
+#   ⑤ 判定：子 shell 里加载第 ② 步那个 agent 的 driver，用和注入同一份的四态判据
+# 压缩等待算忙；停在弹窗上算闲（它确实没在干活）。
+stuck_sample() {   # <tmux_session>
+    local sess="$1" e=0 st id pid dead pipe shot verdict
+    STUCK_S_STATE=unknown; STUCK_S_PANE=""; STUCK_S_PID=""; STUCK_S_AGENT=""; STUCK_S_ROLE=""; STUCK_S_WHY=""
+    worker_session_exists "$sess" || e=$?
+    if [ "$e" = 1 ]; then STUCK_S_STATE=absent; return 0; fi
+    if [ "$e" != 0 ]; then STUCK_S_WHY="读不到 tmux 会话清单"; return 0; fi
+    if ! STUCK_S_AGENT=$(tmux show-options -qv -t "=$sess:" @worker_agent 2>/dev/null) \
+       || ! STUCK_S_ROLE=$(tmux show-options -qv -t "=$sess:" @worker_role 2>/dev/null); then
+        STUCK_S_WHY="读不到会话上记的 agent / 角色"; return 0
+    fi
+    if ! [[ "$STUCK_S_AGENT" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        STUCK_S_WHY="会话上没有记录它跑的是哪个 agent"; return 0
+    fi
+    case "$STUCK_S_ROLE" in
+        worker|review) ;;
+        *) STUCK_S_WHY="会话上没有记录角色（worker / 复审）"; return 0 ;;
+    esac
+    read -r st id pid dead pipe <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in
+        found|single) ;;
+        multi) STUCK_S_WHY="会话里有多个窗格、没有登记工作窗格"; return 0 ;;
+        gone) STUCK_S_WHY="登记的工作窗格已经不在"; return 0 ;;
+        *) STUCK_S_WHY="读不到会话的窗格清单"; return 0 ;;
+    esac
+    STUCK_S_PANE="$id"; STUCK_S_PID="$pid"
+    if [ "$dead" != 0 ]; then STUCK_S_WHY="工作窗格里的程序已经结束"; return 0; fi
+    shot=$(mktemp) || { STUCK_S_WHY="建不出临时文件"; return 0; }
+    if ! tmux capture-pane -t "$id" -p > "$shot" 2>/dev/null; then
+        rm -f "$shot"; STUCK_S_WHY="抓不到工作窗格的画面"; return 0
+    fi
+    if verdict=$(
+            agent_screen_rules_reset
+            unset -f agent_inject_prompt agent_is_busy
+            source_driver "$STUCK_S_AGENT" >/dev/null 2>&1 || exit 3
+            tail -"$AGENT_BUSY_TAIL" "$shot" | agent_screen_state
+        ); then
+        rm -f "$shot"
+    else
+        rm -f "$shot"; STUCK_S_WHY="加载不了 agent「$STUCK_S_AGENT」的画面规则"; return 0
+    fi
+    case "$verdict" in
+        busy|wait) STUCK_S_STATE=busy ;;
+        idle|modal) STUCK_S_STATE=idle ;;
+        *) STUCK_S_WHY="画面判不出状态" ;;
+    esac
+    return 0
+}
+stuck_sample_key() { printf '%s|%s|%s|%s' "$STUCK_S_PANE" "$STUCK_S_PID" "$STUCK_S_AGENT" "$STUCK_S_ROLE"; }
+
+# ── 本轮快照里的行（零额外请求）──
+# issue：编号 / updated_at / 标签串（空 = "-"，read 按 tab 拆时连续的 tab 会并成一个）
+stuck_issue_rows() {
+    local pages
+    pages=$(open_snapshot issues) || return 1
+    printf '%s' "$pages" | jq -er '
+        if type != "array" or any(.[]; type != "array") then error("invalid issue pages")
+        else [ .[][] | select(.pull_request == null)
+               | [ (.number | tostring), (.updated_at // "-"),
+                   (([.labels[]?.name] | join(",")) | if . == "" then "-" else . end) ] | @tsv ] | join("\n") end'
+}
+# PR：编号 / 工作编号 / updated_at / 标签串 / 最新提交。工作编号的算法和活跃 worker 列表
+# （list_active_workers）是同一条：分支名 → 正文里的关联编号 → PR 自己的编号。fresh 非空 = 重读。
+stuck_pr_rows() {   # [fresh]
+    local pages rows pr branch upd labels sha body_n
+    pages=$(open_snapshot pulls "${1:-}") || return 1
+    rows=$(printf '%s' "$pages" | jq -er --arg re "$PR_BODY_LINK_JQ_RE" '
+        if type != "array" or any(.[]; type != "array") then error("invalid PR pages")
+        else [ .[][] | [ (.number | tostring), .head.ref, (.updated_at // "-"),
+                (([.labels[]?.name] | join(",")) | if . == "" then "-" else . end),
+                (.head.sha // "-"),
+                (((.body // "" | try capture($re).n catch "") // "") | if . == "" then "-" else . end) ] | @tsv ]
+             | join("\n") end') || return 1
+    while IFS=$'\t' read -r pr branch upd labels sha body_n; do
+        [ -n "$pr" ] || continue
+        [ "$body_n" = "-" ] && body_n=""
+        printf '%s\t%s\t%s\t%s\t%s\n' "$pr" "$(pr_work_num_local "$pr" "$branch" "$body_n")" "$upd" "$labels" "$sha"
+    done <<< "$rows"
+    return 0
+}
+
+# ── 重读（动手前、空闲周期开始时）──
+stuck_gh_obj() {   # <repos/<本仓库>/ 下的路径> → 一个 JSON 对象；读不到 / 不成形 → 1
+    local out
+    out=$(gh api "repos/$REPO/$1" 2>/dev/null) || return 1
+    printf '%s' "$out" | jq -ce 'if type == "object" then . else error("not an object") end' 2>/dev/null
+}
+# 列表里最大的编号（没有条目 = 0）。读不到、或有条目缺编号 → 1。--paginate 下 --jq 逐页跑，
+# 所以每页只输出编号，最大值在这边取。
+stuck_max_id() {   # <路径> [逐页 jq：每行输出一个编号]
+    local rows
+    rows=$(gh api --paginate "repos/$REPO/$1" --jq "${2:-.[] | .id}" 2>/dev/null) || return 1
+    rows=$(printf '%s\n' "$rows" | awk 'NF')
+    if [ -z "$rows" ]; then echo 0; return 0; fi
+    if printf '%s\n' "$rows" | grep -qvE '^[0-9]+$'; then return 1; fi
+    printf '%s\n' "$rows" | sort -n | tail -1
+}
+# 一个条目判定用得上的全部字段。任何一个读不到、缺字段 → 1。第二个参数 event = 连最新的
+# 标签事件编号一起读（只有目标条目要）。
+stuck_item_json() {   # <编号> [event]
+    local n="$1" ij c e=0 out pj rc rv
+    ij=$(stuck_gh_obj "issues/$n") || return 1
+    c=$(stuck_max_id "issues/$n/comments") || return 1
+    if [ "${2:-}" = event ]; then
+        e=$(stuck_max_id "issues/$n/events" '.[] | select(.event == "labeled" or .event == "unlabeled") | .id') || return 1
+    fi
+    out=$(printf '%s' "$ij" | jq -ce --argjson c "$c" --argjson e "$e" '
+        if (.number | type) == "number" and (.state | type) == "string" and (.labels | type) == "array"
+        then {n: .number, pr: (.pull_request != null), state: .state,
+              labels: ([.labels[].name] | sort), comment: $c, event: $e}
+        else error("missing fields") end' 2>/dev/null) || return 1
+    if [ "$(printf '%s' "$out" | jq -r '.pr')" = true ]; then
+        pj=$(stuck_gh_obj "pulls/$n") || return 1
+        rc=$(stuck_max_id "pulls/$n/comments") || return 1
+        rv=$(stuck_max_id "pulls/$n/reviews") || return 1
+        out=$(printf '%s' "$pj" | jq -ce --argjson o "$out" --argjson rc "$rc" --argjson rv "$rv" \
+                --arg re "$PR_BODY_LINK_JQ_RE" '
+            if (.merged | type) == "boolean" and (.base.ref | type) == "string"
+               and (.head.sha | type) == "string" and (.head.ref | type) == "string"
+               and (.head.repo.full_name | type) == "string"
+            then $o + {merged: .merged, base: .base.ref, head: .head.sha, ref: .head.ref,
+                       src: .head.repo.full_name, rcomment: $rc, review: $rv,
+                       body_n: ((.body // "" | try capture($re).n catch "") // "")}
+            else error("missing PR fields") end' 2>/dev/null) || return 1
+    fi
+    printf '%s\n' "$out"
+}
+# 目标条目 + 绑定条目，全部重读。「确实没有绑定条目」是合法结果（bound = []）；找的过程里
+# 任何一次读取失败 → 1。
+stuck_gather() {   # <issue|pr> <编号>
+    local kind="$1" num="$2" t wn b bound="[]" rows pr w _rest
+    t=$(stuck_item_json "$num" event) || return 1
+    if [ "$kind" = pr ]; then
+        [ "$(printf '%s' "$t" | jq -r '.pr')" = true ] || return 1
+        wn=$(pr_work_num_local "$num" "$(printf '%s' "$t" | jq -r '.ref')" "$(printf '%s' "$t" | jq -r '.body_n')")
+        if [ "$wn" != "$num" ]; then
+            b=$(stuck_item_json "$wn") || return 1
+            bound="[$b]"
+        fi
+    else
+        [ "$(printf '%s' "$t" | jq -r '.pr')" = false ] || return 1
+        wn="$num"
+        rows=$(stuck_pr_rows fresh) || return 1
+        while IFS=$'\t' read -r pr w _rest; do
+            [ -n "$pr" ] || continue
+            [ "$w" = "$num" ] || continue
+            b=$(stuck_item_json "$pr") || return 1
+            bound=$(jq -cn --argjson a "$bound" --argjson b "$b" '$a + [$b]') || return 1
+        done <<< "$rows"
+    fi
+    jq -cn --arg kind "$kind" --arg work "$wn" --argjson t "$t" --argjson b "$bound" \
+        '{kind: $kind, work: $work, target: $t, bound: $b}'
+}
+# 判定要用的全部输入拼成一份（键排序、紧凑），它本身就是身份串：空闲周期开始时存一份，
+# 动手前再生成一份，两份整串比。return 1 = GitHub 侧读不全（本地侧读不出时照样生成，
+# 由 stuck_verdict 判成未知）。调用前不必先取样，这里自己取。
+stuck_doc() {   # <issue|pr> <编号> <工作编号>
+    local kind="$1" num="$2" n="$3" g owner trig head
+    g=$(stuck_gather "$kind" "$num") || return 1
+    stuck_sample "$(tmux_session_name "$n")"
+    owner=$(jq -r --arg k "$n" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null) || owner=""
+    trig=$(worker_requeue_label "$n" 2>/dev/null) || trig=""
+    head=$(git -C "$(worktree_path "$n")" rev-parse --verify -q HEAD 2>/dev/null) || head=""
+    jq -cnS --argjson g "$g" --arg owner "$owner" --arg host "$SELFHEAL_HOST_ID" --arg trig "$trig" \
+        --arg head "$head" --arg st "$STUCK_S_STATE" --arg why "$STUCK_S_WHY" --arg pane "$STUCK_S_PANE" \
+        --arg pid "$STUCK_S_PID" --arg agent "$STUCK_S_AGENT" --arg role "$STUCK_S_ROLE" --arg n "$n" \
+        '$g + {n: $n, owner: $owner, host: $host, trigger: $trig, local_head: $head,
+               sample: {state: $st, why: $why, pane: $pane, pid: $pid, agent: $agent, role: $role}}'
+}
+# 条目这一侧的结论：目标还开着、没合并、还挂着 doing/agent、没有保护标签；绑定条目没有保护
+# 标签、没有同时挂 doing/agent。stuck_verdict 和待办重试（stuck_resume）共用。
+# STUCK_V = stuck / no（原因在 STUCK_V_WHY）
+stuck_verdict_items() {   # <身份串 JSON>
+    local doc="$1" tl p b bn
+    STUCK_V=no; STUCK_V_WHY=""
+    if [ "$(printf '%s' "$doc" | jq -r '.target.state')" != open ]; then STUCK_V_WHY="条目已经关闭"; return 0; fi
+    if [ "$(printf '%s' "$doc" | jq -r '.target.merged // false')" != false ]; then STUCK_V_WHY="PR 已经合并"; return 0; fi
+    tl=$(printf '%s' "$doc" | jq -r '.target.labels | join(",")')
+    case ",$tl," in *",$LABEL_AGENT_DOING,"*) ;; *) STUCK_V_WHY="已经不挂 $LABEL_AGENT_DOING"; return 0 ;; esac
+    if p=$(stuck_labels_protect target "$tl"); then STUCK_V_WHY="条目上挂着 $p"; return 0; fi
+    while IFS=$'\t' read -r bn b; do
+        [ -n "$bn" ] || continue
+        [ "$b" = "-" ] && b=""
+        case ",$b," in *",$LABEL_AGENT_DOING,"*)
+            STUCK_V_WHY="绑定的 #$bn 也挂着 $LABEL_AGENT_DOING，两条共用一个会话，分不清会话在给哪一条干活"; return 0 ;;
+        esac
+        if p=$(stuck_labels_protect bound "$b"); then STUCK_V_WHY="绑定的 #$bn 挂着 $p"; return 0; fi
+    done < <(printf '%s' "$doc" | jq -r '.bound[] | select(.state == "open")
+                | [(.n | tostring), ((.labels | join(",")) | if . == "" then "-" else . end)] | @tsv')
+    STUCK_V=stuck
+    return 0
+}
+# 完整结论。STUCK_V = stuck / no / unknown（原因在 STUCK_V_WHY）
+stuck_verdict() {   # <身份串 JSON>
+    local doc="$1" st
+    STUCK_V=unknown; STUCK_V_WHY=""
+    st=$(printf '%s' "$doc" | jq -r '.sample.state' 2>/dev/null) || { STUCK_V_WHY="身份串不成形"; return 0; }
+    case "$st" in
+        idle) ;;
+        busy) STUCK_V=no; STUCK_V_WHY="agent 在忙"; return 0 ;;
+        absent) STUCK_V=no; STUCK_V_WHY="会话已经不在"; return 0 ;;
+        *) STUCK_V_WHY="$(printf '%s' "$doc" | jq -r '.sample.why')"; return 0 ;;
+    esac
+    if [ "$(printf '%s' "$doc" | jq -r '.owner == .host and .owner != ""')" != true ]; then
+        STUCK_V=no; STUCK_V_WHY="不是本机派的"; return 0
+    fi
+    if [ "$(printf '%s' "$doc" | jq -r '.trigger')" = "" ]; then STUCK_V_WHY="不知道该翻回哪个触发标签"; return 0; fi
+    if [ "$(printf '%s' "$doc" | jq -r '.local_head')" = "" ]; then STUCK_V_WHY="读不到本地工作分支的提交号"; return 0; fi
+    stuck_verdict_items "$doc"
+    return 0
+}
+
+# ── 动手 ──
+stuck_fmt_time() {   # <epoch 秒>
+    date -d "@$1" '+%m-%d %H:%M' 2>/dev/null || date -r "$1" '+%m-%d %H:%M' 2>/dev/null || printf '%s' "$1"
+}
+# 翻标签并读回确认。0 = 确认 add 在、doing/agent 不在；1 = 没翻成或读不回来。
+stuck_flip_confirm() {   # <编号> <要加的标签> <日志描述>
+    local num="$1" add="$2" back
+    run_gh "$3" gh_label_flip "$num" --add "$add" --remove "$LABEL_AGENT_DOING" || return 1
+    back=$(gh api "repos/$REPO/issues/$num" --jq '[.labels[].name] | join(",")' 2>/dev/null) || return 1
+    case ",$back," in *",$LABEL_AGENT_DOING,"*) return 1 ;; esac
+    case ",$back," in *",$add,"*) return 0 ;; esac
+    return 1
+}
+# ① 催促：只需要取样复查（不写 GitHub）。注入失败照样记为「催过」——阶梯不因为催不进去而停。
+stuck_nudge() {   # <工作编号> <kind> <num> <取样目标串>
+    local n="$1" kind="$2" num="$3" key="$4" sess tpl text file rc=0 now
+    sess="$(tmux_session_name "$n")"
+    stuck_sample "$sess"
+    if [ "$STUCK_S_STATE" != idle ] || [ "$(stuck_sample_key)" != "$key" ]; then
+        log "卡住检测：$kind #$num 催促前复查变了（${STUCK_S_STATE}${STUCK_S_WHY:+：$STUCK_S_WHY}）→ 不催，重新计时"
+        stuck_quiet_reset "$n"; return 0
+    fi
+    tpl="$(find_project_prompt_file "stuck-nudge.md" nudge)"
+    [ -n "$tpl" ] || tpl="$SKILL_DIR/prompts/stuck-nudge.md"
+    now=$(pace_now)
+    if ! text=$(cat "$tpl" 2>/dev/null) || [ -z "$text" ]; then
+        log "卡住检测：$kind #$num 找不到催促文字模板 $tpl → 这一步记为催过"
+        rc=8
+    else
+        text=${text//'${NUM}'/$num}
+        text=${text//'${REPO}'/$REPO}
+        text=${text//'${LABEL_AGENT_DOING}'/$LABEL_AGENT_DOING}
+        text=${text//'${LABEL_PENDING_HUMAN}'/$LABEL_PENDING_HUMAN}
+        file=$(mktemp) || return 0
+        printf '%s\n' "$text" > "$file"
+        (
+            agent_screen_rules_reset
+            unset -f agent_inject_prompt agent_is_busy
+            source_driver "$STUCK_S_AGENT" >/dev/null 2>&1 || exit 3
+            # driver 自己覆盖了注入（不支持往跑着的会话里送字）→ 不催
+            [ "$AGENT_INJECT_DEFAULT" = 1 ] || exit 9
+            inject_prompt_logged "$STUCK_S_PANE" "$file"
+        ) || rc=$?
+        rm -f "$file"
+    fi
+    STUCK_ACTED=1
+    case "$rc" in
+        0) log "⏰ 卡住检测：$kind #$num 会话 $sess 空闲且无动静 → 已往工作窗格 $STUCK_S_PANE 发催促（agent=$STUCK_S_AGENT）" ;;
+        9) log "⏰ 卡住检测：$kind #$num agent「$STUCK_S_AGENT」不支持往跑着的会话里送字 → 跳过催促，按催过记" ;;
+        *) log "⏰ 卡住检测：$kind #$num 催促没送进去（退出码 $rc）→ 按催过记，间隔期满后进下一级" ;;
+    esac
+    stuck_entry_set "$n" '.nudged_at = $now | .nudge_rc = $rc' --argjson now "$now" --argjson rc "$rc" || true
+}
+# ② 重派的后半段：会话确定不在之后，翻回触发标签。stuck_restart 和 stuck_resume 共用。
+stuck_restart_finish() {   # <工作编号> <kind> <num> <触发标签>
+    local n="$1" kind="$2" num="$3" trig="$4" now
+    now=$(pace_now)
+    if stuck_flip_confirm "$num" "$trig" "label 翻转 (卡住重派 $kind #$num $LABEL_AGENT_DOING → $trig)"; then
+        stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .since = 0 | .id = "" | .fp = ""' \
+            --argjson now "$now" || true
+        log "🔁 卡住检测：$kind #$num 已结束会话并翻回 $trig，等下一轮重派"
+        return 0
+    fi
+    log "⚠️ 卡住检测：$kind #$num 会话已结束，但标签没翻成 → 待办留着，下一轮接着做"
+    return 1
+}
+stuck_restart() {   # <工作编号> <kind> <num> <触发标签>
+    local n="$1" kind="$2" num="$3" trig="$4" sess e=0
+    sess="$(tmux_session_name "$n")"
+    stuck_entry_set "$n" '.pending = "restart" | .trigger = $t' --arg t "$trig" || return 0
+    STUCK_ACTED=1
+    log "🔁 卡住检测：$kind #$num 催过仍无动静 → 结束会话 $sess，翻回 $trig 重派"
+    kill_session_procs "$sess"
+    tmux kill-session -t "=$sess" 2>/dev/null || true
+    worker_session_exists "$sess" || e=$?
+    if [ "$e" != 1 ]; then
+        log "⚠️ 卡住检测：$kind #$num 会话 $sess 没能确认已结束 → 待办留着，下一轮接着做"
+        return 0
+    fi
+    stuck_restart_finish "$n" "$kind" "$num" "$trig" || true
+}
+# ③ 交人：先评论、再翻标签；评论发成了就记下，重试时不发第二条。会话保留不杀，方便人查。
+stuck_handoff() {   # <工作编号> <kind> <num> <触发标签>
+    local n="$1" kind="$2" num="$3" trig="$4" e steps nudged restarted restarts since now mins body
+    stuck_entry_set "$n" '.pending = "human" | .trigger = $t' --arg t "$trig" || return 0
+    STUCK_ACTED=1
+    e=$(stuck_entry "$n")
+    if [ "$(printf '%s' "$e" | jq -r '.commented // false')" != true ]; then
+        nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
+        restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
+        restarts=$(printf '%s' "$e" | jq -r '.restarts // 0')
+        since=$(printf '%s' "$e" | jq -r '.since // 0')
+        now=$(pace_now); mins=0
+        [ "$since" -gt 0 ] && mins=$(( (now - since) / 60 ))
+        steps=""
+        [ "$nudged" -gt 0 ] && steps="${steps}$(stuck_fmt_time "$nudged") 往会话里发过一次催促；"
+        [ "$restarts" -gt 0 ] && steps="${steps}$(stuck_fmt_time "$restarted") 结束会话并重新派工（共 $restarts 次）；"
+        [ -n "$steps" ] || steps="没有可用的自动步骤；"
+        body="$(bounced_to_human_body \
+            "这条一直挂着 \`$LABEL_AGENT_DOING\`，但 worker 会话已经连续约 ${mins} 分钟停着不动：agent 不在忙，GitHub 上和本地分支都没有新的评论、提交或标签变化。daemon 已经试过：${steps}之后仍然没有动静。" \
+            "在 daemon 机器上用 \`session-log.sh $n\` 看终端历史（会话 \`$(tmux_session_name "$n")\` 还留着，可以直接 attach 看现场）；处理后把标签改回 \`$trig\` 继续。")"
+        if ! run_gh "卡住交人说明评论 ($kind #$num)" \
+            gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body"; then
+            log "⚠️ 卡住检测：$kind #$num 交人说明没发出去 → 待办留着，下一轮接着做"
+            return 0
+        fi
+        stuck_entry_set "$n" '.commented = true' || true
+    fi
+    if stuck_flip_confirm "$num" "$LABEL_PENDING_HUMAN" "label 翻转 (卡住交人 $kind #$num $LABEL_AGENT_DOING → $LABEL_PENDING_HUMAN)"; then
+        log "🙋 卡住检测：$kind #$num 重派后仍然卡住 → 已留言并转人工 $LABEL_PENDING_HUMAN"
+        stuck_entry_del "$n" || true
+    else
+        log "⚠️ 卡住检测：$kind #$num 交人说明已发，但标签没翻成 → 待办留着，下一轮接着做"
+    fi
+    return 0
+}
+# 上一轮决定了、没做完的那一步。照样先把条目和绑定条目重读一遍：人已经接手（关了、合并了、
+# 标签变了、挂上了保护标签）就放弃待办，不补写。读不到 → 待办原样留着。
+# 「doing/agent 已经摘掉、要加的标签还没加上」是这条待办自己做到一半（gh_label_flip 先摘后加）：
+# 条目上一个流程标签都没有时接着把它做完，否则条目就成了没人管的孤儿。
+stuck_resume() {   # <工作编号> <记录 JSON>
+    local n="$1" e="$2" kind num trig pend g tl sess has_doing=0 other g2
+    kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
+    trig=$(printf '%s' "$e" | jq -r '.trigger // ""'); pend=$(printf '%s' "$e" | jq -r '.pending // ""')
+    if [ -z "$kind" ] || [ -z "$num" ] || [ -z "$trig" ]; then stuck_entry_del "$n" || true; return 0; fi
+    case "$pend" in restart|human) ;; *) stuck_entry_set "$n" '.pending = ""' || true; return 0 ;; esac
+    if ! g=$(stuck_gather "$kind" "$num"); then
+        log "卡住检测：$kind #$num 有没做完的待办（$pend），但这一轮读不全条目 → 下一轮再做"
+        return 0
+    fi
+    if [ "$(printf '%s' "$g" | jq -r '.target.state')" != open ] \
+       || [ "$(printf '%s' "$g" | jq -r '.target.merged // false')" != false ]; then
+        log "卡住检测：$kind #$num 的待办（$pend）作废：条目已关闭 / 已合并"
+        stuck_entry_del "$n" || true; return 0
+    fi
+    tl=$(printf '%s' "$g" | jq -r '.target.labels | join(",")')
+    case ",$tl," in *",$LABEL_AGENT_DOING,"*) has_doing=1 ;; esac
+    sess="$(tmux_session_name "$n")"
+    if [ "$pend" = restart ]; then
+        if [ "$has_doing" = 0 ]; then
+            case ",$tl," in *",$trig,"*)
+                # 别处（self-heal、人）已经替 daemon 翻回去了
+                stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .since = 0 | .id = "" | .fp = ""' \
+                    --argjson now "$(pace_now)" || true
+                log "卡住检测：$kind #$num 的重派待办已完成（标签已是 $trig）"
+                return 0 ;;
+            esac
+            if other=$(stuck_labels_protect target "$tl"); then
+                log "卡住检测：$kind #$num 的重派待办作废：条目已挂上 $other"
+                stuck_entry_del "$n" || true; return 0
+            fi
+            STUCK_ACTED=1
+            stuck_restart_finish "$n" "$kind" "$num" "$trig" || true
+            return 0
+        fi
+        stuck_verdict_items "$g"
+        if [ "$STUCK_V" != stuck ]; then
+            log "卡住检测：$kind #$num 的重派待办作废：$STUCK_V_WHY"
+            stuck_entry_set "$n" '.pending = "" | .since = 0 | .id = "" | .fp = ""' || true; return 0
+        fi
+        stuck_sample "$sess"
+        case "$STUCK_S_STATE" in
+            absent) ;;
+            idle)
+                kill_session_procs "$sess"
+                tmux kill-session -t "=$sess" 2>/dev/null || true
+                stuck_sample "$sess"
+                if [ "$STUCK_S_STATE" != absent ]; then
+                    log "⚠️ 卡住检测：$kind #$num 会话 $sess 仍没能结束 → 下一轮再做"; return 0
+                fi ;;
+            busy)
+                log "卡住检测：$kind #$num 的重派待办作废：agent 又在忙了"
+                stuck_entry_set "$n" '.pending = "" | .since = 0 | .id = "" | .fp = ""' || true; return 0 ;;
+            *)  log "卡住检测：$kind #$num 有重派待办，但会话状态读不出（$STUCK_S_WHY）→ 下一轮再做"; return 0 ;;
+        esac
+        STUCK_ACTED=1
+        stuck_restart_finish "$n" "$kind" "$num" "$trig" || true
+        return 0
+    fi
+    # pend = human
+    if [ "$has_doing" = 0 ]; then
+        case ",$tl," in *",$LABEL_PENDING_HUMAN,"*)
+            log "卡住检测：$kind #$num 的交人待办已完成（标签已是 $LABEL_PENDING_HUMAN）"
+            stuck_entry_del "$n" || true; return 0 ;;
+        esac
+        if other=$(stuck_labels_protect target "$tl"); then
+            log "卡住检测：$kind #$num 的交人待办作废：条目已挂上 $other"
+            stuck_entry_del "$n" || true; return 0
+        fi
+        stuck_handoff "$n" "$kind" "$num" "$trig"
+        return 0
+    fi
+    # 还挂着 doing/agent。目标上的 pending/human 是这条待办自己上一轮加的（doing/agent 没摘成），
+    # 不算人接手；除它以外，目标或绑定条目上出现任何保护标签都算。
+    g2=$(printf '%s' "$g" | jq -c --arg h "$LABEL_PENDING_HUMAN" '.target.labels -= [$h]') || return 0
+    stuck_verdict_items "$g2"
+    if [ "$STUCK_V" != stuck ]; then
+        log "卡住检测：$kind #$num 的交人待办作废：$STUCK_V_WHY"
+        stuck_entry_set "$n" '.pending = "" | .since = 0 | .id = "" | .fp = ""' || true; return 0
+    fi
+    stuck_handoff "$n" "$kind" "$num" "$trig"
+    return 0
+}
+
+# ── 每轮入口 ──
+stuck_tick() {
+    stuck_enabled || return 0
+    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 0
+    local now irows prows n kind num upd labels wn sha e pend
+    local -A irow=() prow=() prs_of=() doing=() handled=()
+    now=$(pace_now)
+    if ! irows=$(stuck_issue_rows) || ! prows=$(stuck_pr_rows); then
+        log "卡住检测：读不到本轮的条目快照，本轮不判"
+        return 0
+    fi
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    while IFS=$'\t' read -r num upd labels; do
+        [ -n "$num" ] || continue
+        irow[$num]="$upd"$'\t'"$labels"
+        [ "$labels" = "-" ] && labels=""
+        case ",$labels," in *",$LABEL_AGENT_DOING,"*) doing[$num]="${doing[$num]:-} issue:$num" ;; esac
+    done <<< "$irows"
+    while IFS=$'\t' read -r num wn upd labels sha; do
+        [ -n "$num" ] || continue
+        prow[$num]="$upd"$'\t'"$labels"$'\t'"$sha"
+        [ "$labels" = "-" ] && labels=""
+        prs_of[$wn]="${prs_of[$wn]:-} $num"
+        case ",$labels," in *",$LABEL_AGENT_DOING,"*) doing[$wn]="${doing[$wn]:-} pr:$num" ;; esac
+    done <<< "$prows"
+
+    # 1. 已有记录的：先做完上一轮的待办；条目正常交接走了的清掉记录
+    while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        e=$(stuck_entry "$n")
+        pend=$(printf '%s' "$e" | jq -r '.pending // ""')
+        if [ -n "$pend" ]; then
+            handled[$n]=1
+            stuck_resume "$n" "$e"
+            continue
+        fi
+        [ -z "${doing[$n]:-}" ] || continue
+        # 不挂 doing/agent 了。daemon 自己翻回去、还在等重派的（挂着记下的触发标签）留着；
+        # 其余都是 worker 正常交接了、或条目关了 → 阶梯从头算
+        kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
+        labels=""
+        if [ "$kind" = issue ] && [ -n "${irow[$num]:-}" ]; then
+            IFS=$'\t' read -r _ labels <<< "${irow[$num]}"
+        elif [ "$kind" = pr ] && [ -n "${prow[$num]:-}" ]; then
+            IFS=$'\t' read -r _ labels _ <<< "${prow[$num]}"
+        fi
+        [ "$labels" = "-" ] && labels=""
+        if [ "$(printf '%s' "$e" | jq -r '(.restarts // 0) > 0')" = true ]; then
+            case ",$labels," in *",$(printf '%s' "$e" | jq -r '.trigger // "?"'),"*) continue ;; esac
+        fi
+        stuck_entry_del "$n" || true
+    done < <(jq -r '(.stuck_workers // {}) | keys[]' "$STATE_FILE" 2>/dev/null)
+
+    # 2. 挂着 doing/agent 的
+    for n in "${!doing[@]}"; do
+        [ -z "${handled[$n]:-}" ] || continue
+        stuck_tick_one "$n" ${doing[$n]} || true
+    done
+    return 0
+}
+# 一个工作编号这一轮的判断。参数：工作编号 + 挂着 doing/agent 的条目（"issue:N" / "pr:N"）。
+# 用到 stuck_tick 里的 irow / prow / prs_of / now（bash 动态作用域）。
+stuck_tick_one() {
+    local n="$1"; shift
+    local kind num upd labels sha p b bupd blabels bparts="" sess head fp e since seen efp doc
+    local restarts nudged restarted step due trig
+    if [ "$#" -ne 1 ]; then
+        kind="${1%%:*}"; num="${1#*:}"
+        stuck_warn "$n" "$kind" "$num" "同一个工作编号下有 $# 条都挂着 $LABEL_AGENT_DOING（$*），它们共用一个会话，分不清会话在给哪一条干活"
+        stuck_quiet_reset "$n"; return 0
+    fi
+    kind="${1%%:*}"; num="${1#*:}"
+    # 只管本机派的（派工时无条件记了归属）；别的机器的、没记录的不碰，也不写任何状态
+    [ "$(jq -r --arg k "$n" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null)" = "$SELFHEAL_HOST_ID" ] || return 0
+    if [ "$kind" = issue ]; then
+        IFS=$'\t' read -r upd labels <<< "${irow[$num]}"
+    else
+        IFS=$'\t' read -r upd labels sha <<< "${prow[$num]}"
+    fi
+    [ "$labels" = "-" ] && labels=""
+    if p=$(stuck_labels_protect target "$labels"); then stuck_quiet_reset "$n"; return 0; fi
+    # 绑定条目（快照预判；动手前 stuck_doc 会重读）
+    if [ "$kind" = pr ]; then
+        if [ "$n" != "$num" ] && [ -n "${irow[$n]:-}" ]; then
+            IFS=$'\t' read -r bupd blabels <<< "${irow[$n]}"
+            [ "$blabels" = "-" ] && blabels=""
+            if p=$(stuck_labels_protect bound "$blabels"); then stuck_quiet_reset "$n"; return 0; fi
+            bparts="i$n@$bupd@$blabels"
+        fi
+    else
+        for b in ${prs_of[$n]:-}; do
+            IFS=$'\t' read -r bupd blabels _ <<< "${prow[$b]}"
+            [ "$blabels" = "-" ] && blabels=""
+            if p=$(stuck_labels_protect bound "$blabels"); then stuck_quiet_reset "$n"; return 0; fi
+            bparts="$bparts p$b@$bupd@$blabels"
+        done
+    fi
+    sess="$(tmux_session_name "$n")"
+    stuck_sample "$sess"
+    case "$STUCK_S_STATE" in
+        absent) return 0 ;;                       # 会话不在：self-heal 的事
+        busy) stuck_quiet_reset "$n"; return 0 ;;
+        idle) ;;
+        *) stuck_warn "$n" "$kind" "$num" "$STUCK_S_WHY"; return 0 ;;   # 未知：不推进、不清零
+    esac
+    if ! head=$(git -C "$(worktree_path "$n")" rev-parse --verify -q HEAD 2>/dev/null) || [ -z "$head" ]; then
+        stuck_warn "$n" "$kind" "$num" "读不到本地工作分支的提交号"; return 0
+    fi
+    # 每轮零请求的变化线索。updated_at 只到秒，所以它只负责「发现变了就重新计时」；
+    # 真正动手前比的是身份串（评论 / 事件编号、提交号…）
+    fp="$kind:$num|$upd|$labels|${sha:-}|$bparts|$head|$(stuck_sample_key)"
+    e=$(stuck_entry "$n")
+    since=$(printf '%s' "$e" | jq -r '.since // 0'); seen=$(printf '%s' "$e" | jq -r '.seen // 0')
+    efp=$(printf '%s' "$e" | jq -r '.fp // ""')
+    if [ "$since" -le 0 ] || [ "$efp" != "$fp" ] || [ $((now - seen)) -gt "$STUCK_WORKER_MAX_GAP_SECS" ]; then
+        # 新的空闲周期：全部重读一遍，存下身份串
+        if ! doc=$(stuck_doc "$kind" "$num" "$n"); then
+            stuck_warn "$n" "$kind" "$num" "读不全条目或绑定条目"; stuck_quiet_reset "$n"; return 0
+        fi
+        stuck_verdict "$doc"
+        case "$STUCK_V" in
+            stuck)
+                stuck_entry_set "$n" '.kind = $kind | .num = $num | .fp = $fp | .id = $id | .since = $now | .seen = $now | .warned = ""' \
+                    --arg kind "$kind" --arg num "$num" --arg fp "$fp" --arg id "$doc" --argjson now "$now" || true
+                log_debug "卡住检测：$kind #$num 空闲且无动静，开始计时" ;;
+            no)
+                case "$STUCK_V_WHY" in
+                    *共用一个会话*) stuck_warn "$n" "$kind" "$num" "$STUCK_V_WHY" ;;
+                esac
+                stuck_quiet_reset "$n" ;;
+            *) stuck_warn "$n" "$kind" "$num" "$STUCK_V_WHY"; stuck_quiet_reset "$n" ;;
+        esac
+        return 0
+    fi
+    stuck_entry_set "$n" '.seen = $now' --argjson now "$now" || return 0
+
+    restarts=$(printf '%s' "$e" | jq -r '.restarts // 0'); nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
+    restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
+    due=0
+    if [ "$restarts" -eq 0 ] && [ "$nudged" -eq 0 ]; then
+        step=nudge
+        [ $((now - since)) -ge "$STUCK_WORKER_QUIET_SECS" ] && due=1
+    else
+        if [ "$restarts" -lt "$STUCK_WORKER_MAX_RESTARTS" ]; then step=restart; else step=human; fi
+        if [ "$nudged" -gt "$restarted" ] && [ "$since" -le "$nudged" ]; then
+            # 这次派工里催过、催完一直没动静：从催促那一刻起算间隔
+            [ $((now - nudged)) -ge "$STUCK_WORKER_STEP_GAP_SECS" ] && due=1
+        else
+            [ $((now - since)) -ge "$STUCK_WORKER_QUIET_SECS" ] && due=1
+        fi
+    fi
+    [ "$due" = 1 ] || return 0
+
+    if [ "$step" = nudge ]; then
+        stuck_nudge "$n" "$kind" "$num" "$(stuck_sample_key)"
+        return 0
+    fi
+    # ②③ 会结束会话 / 写 GitHub：全部重读，结论和身份串都要和周期开始时一样
+    if ! doc=$(stuck_doc "$kind" "$num" "$n"); then
+        log "卡住检测：$kind #$num 动手前重读不全 → 不动手，重新计时"
+        stuck_quiet_reset "$n"; return 0
+    fi
+    stuck_verdict "$doc"
+    if [ "$STUCK_V" != stuck ] || [ "$doc" != "$(printf '%s' "$e" | jq -r '.id // ""')" ]; then
+        log "卡住检测：$kind #$num 动手前复查和开始计时时不一样（${STUCK_V}${STUCK_V_WHY:+：$STUCK_V_WHY}）→ 不动手，重新计时"
+        stuck_quiet_reset "$n"; return 0
+    fi
+    trig=$(printf '%s' "$doc" | jq -r '.trigger')
+    if [ "$step" = restart ]; then
+        stuck_restart "$n" "$kind" "$num" "$trig"
+    else
+        stuck_handoff "$n" "$kind" "$num" "$trig"
+    fi
+    return 0
 }
 
 # ── 加载 driver（按 WORKER_AGENT）──

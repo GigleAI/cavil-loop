@@ -77,6 +77,16 @@ pending_label_for_model() {
     esac
 }
 
+# worker 没干完、要送回队列时该翻回哪个标签：优先用派工时记下的触发 label（review 关卡靠它
+# 才能送回 review 队列而不是打回 claude）；老条目没有这个字段时回落到按 model 反推。
+# self-heal 和卡住检测（stuck_*，GitHub#339）用的是这一份。
+worker_requeue_label() {   # <工作编号>
+    local label
+    label=$(jq -r --arg key "$1" '.worker_trigger_labels[$key] // ""' "$STATE_FILE")
+    [ -n "$label" ] || label="$(pending_label_for_model "$(jq -r --arg key "$1" '.worker_models[$key] // ""' "$STATE_FILE")")"
+    printf '%s\n' "$label"
+}
+
 remember_worker_model() {
     local issue_n="$1"
     local model="$2"
@@ -167,10 +177,7 @@ self_heal_one() {
     local tries cap=${SELFHEAL_MAX_RETRIES:-3}
     local model pending_label
     model=$(jq -r --arg key "$issue_n" '.worker_models[$key] // ""' "$STATE_FILE")
-    # 优先用派工时记下的触发 label（review 关卡靠它才能送回 review 队列而不是打回 claude）；
-    # 老条目没有这个字段时回落到按 model 反推。
-    pending_label=$(jq -r --arg key "$issue_n" '.worker_trigger_labels[$key] // ""' "$STATE_FILE")
-    [ -n "$pending_label" ] || pending_label="$(pending_label_for_model "$model")"
+    pending_label="$(worker_requeue_label "$issue_n")"
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
         log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → $pending_label）"
@@ -270,6 +277,13 @@ fi
 # 放在 active_keys 算完之后，直接复用同一份 label 真值——口径跟并发闸门一致，也不多
 # 打 gh API。被回收的 session 本来就不在 active_keys 里，所以不影响本轮并发计数。
 reap_finished_workers active_keys
+
+# ── 0c. 卡在 doing/agent 没人管的 worker（GitHub#339）──
+# §0 管「label 在、session 没了」，§0b 管「session 在、label 没了」；这里管剩下的那种：
+# label 和 session 都在，agent 却空手停着。不配置 STUCK_WORKER_QUIET_SECS 时第一行就返回。
+# 这一轮翻回触发标签的条目下一轮才重派（本轮的派工队列读的是轮询开头的快照）。
+stuck_tick || true
+if [ "${STUCK_ACTED:-0}" = 1 ]; then pace_mark_acted; fi
 
 # ── 1 & 2. 派工队列（issue + PR 合成一个池，排序后统一取工）──
 # 待派工的条目常多于 MAX_CONCURRENT_WORKERS。以前是「按 label 分六趟扫，每趟内按

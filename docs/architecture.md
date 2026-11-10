@@ -93,7 +93,11 @@ and model. Sort keys (priority label → stage → waiting time) are identical i
 In greedy mode the loop closes itself through the worker: dispatch flips
 `doing/agent` (blocked), finishing flips `pending/human` (blocked) — so the same item
 is never re-opened in a loop. If a worker dies before flipping, self-heal returns it
-to the `pending/agent` queue.
+to the `pending/agent` queue. A worker that stopped empty-handed (no comment, no flip) while
+its session is still alive is out of reach for both self-heal and the reaper; with
+`STUCK_WORKER_QUIET_SECS` set the stuck-worker check handles it: one nudge → end the session
+and redispatch → `pending/human` (GitHub#339, see
+[operations.md](operations.md#an-item-stays-on-doingagent-the-session-is-alive-nobody-is-working)).
 
 > ⚠️ Under greedy, **anyone opening an issue immediately spends a worker's tokens** —
 > anonymous outside users included on a public repo. Only enable it where "filed here

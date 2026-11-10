@@ -109,6 +109,14 @@ DISPATCH_MAX_RETRIES=3
 # self-heal 那边同理：tmux session 死掉的 worker 最多自动重派几次，超了转 pending/human。
 SELFHEAL_MAX_RETRIES=3
 
+# 条目挂着 doing/agent、会话还在却没人干活（GitHub#339）：agent 空闲、GitHub 和本地分支都没有
+# 新动静，连续这么多秒算卡住 → 先往会话里催一次；再过 STEP_GAP 秒仍没动静 → 结束会话、翻回
+# 原触发标签重派（最多 MAX_RESTARTS 次）；再卡住 → 留言并转 pending/human。
+# 全程脚本判断，不调用大模型。留空或 0 = 关闭；配置里没有这一行也是关闭。
+STUCK_WORKER_QUIET_SECS=1800
+STUCK_WORKER_STEP_GAP_SECS=900
+STUCK_WORKER_MAX_RESTARTS=1
+
 # 本地 base 落后 origin 这么多 commit 就开 issue 提醒（跟上后自动关）；默认 0 = 关
 # 只有人真的上手干活的那个 checkout 才会卡住，所以是 opt-in；要开推荐设 20
 CHECKOUT_STALE_ALERT_COMMITS=0
@@ -1736,6 +1744,45 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
 
 如果 worker 没回任何 comment 就完事，state.json 的 comment ID 不会推进，下次又会被当新评论。Prompt 应强制 worker 至少回一句评论。
+
+### 条目一直停在 `doing/agent`，会话还在却没人干活
+
+worker 没发评论、没翻标签就停下了（自己判断「不该我做」后空手结束、拿到空 prompt 干等、崩在
+翻标签之前），tmux 会话却还活着。self-heal 只救「会话不在」的，回收看到 `doing/agent` 就跳过，
+所以这条会一直占着并发名额。
+
+配了 `STUCK_WORKER_QUIET_SECS`（GitHub#339）时 daemon 自己处理，`poll.log` 里都以「卡住检测：」开头：
+
+| 什么时候 | daemon 做什么 |
+|---|---|
+| agent 空闲、GitHub 和本地分支都没动静，连续 `STUCK_WORKER_QUIET_SECS` 秒 | 往工作窗格里发一段固定的催促文字（不写 GitHub） |
+| 催完再过 `STUCK_WORKER_STEP_GAP_SECS` 秒仍没动静 | 结束会话，把 `doing/agent` 翻回派工时的触发标签，下一轮重派；最多 `STUCK_WORKER_MAX_RESTARTS` 次 |
+| 重派后又卡住 `STUCK_WORKER_QUIET_SECS` 秒 | 留一条评论（卡了多久、试过哪几步、怎么继续），翻 `pending/human`；会话保留 |
+
+判断只用脚本比对，不调用大模型：
+
+- **忙不忙**看的是登记的工作窗格的画面，按这条会话实际跑的那个 agent 的规则判（复审 agent 和开发
+  agent 的忙碌特征字不一样）。压缩上下文算忙，停在弹窗上算闲。
+- **有没有动静**：条目和它绑定的条目（PR 对应的 issue、issue 对应的 PR）的标签、评论、提交，
+  加上本地工作分支的最新提交。任何一项变了，或任何一轮看到 agent 在忙，计时清零。
+- **保护标签**：条目自己同时挂着 `pending/human`、等前置、等外部需求机器人、任一派工标签、
+  `pending/merge`、`pending/PR`，或绑定条目挂着 `pending/human`、等前置、等外部需求机器人，就不
+  推进。PR 对应的 issue 挂着 `pending/PR` 是开 PR 后的正常状态，不算保护。
+- **动手前全部重读**：结束会话、翻标签、留言之前，把条目、绑定条目和本地会话重新读一遍，必须和
+  开始计时时完全一样（是否打开 / 已合并、目标分支、最新提交、来源、标签、最新评论与标签事件、
+  工作窗格和 agent），否则这一轮不动手、重新计时。
+- **读不出就不动**：tmux 或 GitHub 有任何一项读不出，这一轮不推进、不清零。
+
+不会被处理的几种（日志里每种原因只提示一次）：
+
+- 不是本机派的（`state.json` 的 `worker_hosts` 里记的不是本机）
+- 会话上没有记录 agent / 角色，或会话里有多个窗格又没有登记工作窗格
+- 同一个工作编号下 issue 和 PR 同时挂着 `doing/agent`（共用一个会话，分不清在给哪条干活）
+- 会话已经不在了（那是 self-heal 的事）
+
+「空闲」是看屏幕判断的：agent 把活放到后台再等结果时，看起来也是空闲。所以默认要连续 30 分钟，
+第一步也只是催促。阶梯进度记在 `state.json` 的 `stuck_workers` 里，daemon 重启后接着走；条目正常
+交接（离开 `doing/agent`）后清零。关掉：配置里写 `STUCK_WORKER_QUIET_SECS=""`。
 
 ### 同一条活每轮派工都失败
 

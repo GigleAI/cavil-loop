@@ -126,6 +126,34 @@ AGENT_BUSY_TAIL="${AGENT_BUSY_TAIL:-5}"
 # 在 modal 里 paste 会灌进它的筛选框、Enter 的语义是「确认执行」而不是「提交 prompt」。
 AGENT_MODAL_RE="${AGENT_MODAL_RE:-Esc to cancel|Enter to continue}"
 
+# 上面三个判据在加载任何 driver 之前的取值。同一进程里换 driver 判画面时（卡住检测按
+# 会话实际跑的 agent 取样，GitHub#339）先复位到这里：driver 只覆盖它关心的那几个，
+# 不复位的话上一个 driver 放宽的窗口（claude 的 20 行）会留给下一个（codex 该是 5 行）。
+_AGENT_BUSY_RE_BASE="$AGENT_BUSY_RE"
+_AGENT_BUSY_TAIL_BASE="$AGENT_BUSY_TAIL"
+_AGENT_MODAL_RE_BASE="$AGENT_MODAL_RE"
+agent_screen_rules_reset() {
+    AGENT_BUSY_RE="$_AGENT_BUSY_RE_BASE"
+    AGENT_BUSY_TAIL="$_AGENT_BUSY_TAIL_BASE"
+    AGENT_MODAL_RE="$_AGENT_MODAL_RE_BASE"
+}
+
+# 画面四态判据，单一来源：注入（default_inject_prompt）和卡住检测（stuck_sample）都用它。
+# 画面文本从 stdin 读（调用方已按 AGENT_BUSY_TAIL 截好），输出 modal / wait / busy / idle：
+#   modal = 有模态框挡着（**绝不能 paste / Enter**）；wait = compaction / stop hook 等
+#   分钟级中间态（别打扰）；busy = turn 在跑；idle = 真闲着。
+agent_screen_state() {
+    local t
+    t=$(cat)
+    # modal 判在最前：它比其余三种都更危险，误判成 idle 就会往弹窗里敲 Enter。
+    if grep -qiE "$AGENT_MODAL_RE" <<<"$t"; then echo modal
+    # wait 先于 busy 判：compaction 期间 spinner 同样在转，若先判 busy 会把
+    # 「还在压缩、prompt 只是排队」误当成注入成功（c84e235 要修的正是这个）。
+    elif grep -qiE "compacting|running stop hook" <<<"$t"; then echo wait
+    elif grep -qiE "$AGENT_BUSY_RE" <<<"$t"; then echo busy
+    else echo idle; fi
+}
+
 agent_pane_tail() {
     tmux capture-pane -t "$1" -p 2>/dev/null | tail -"${AGENT_BUSY_TAIL}"
 }
@@ -162,16 +190,9 @@ default_inject_prompt() {
     # pane 四态：modal = 有模态框挡着（**绝不能 paste / Enter**）；busy = turn 在跑
     # （成功判据）；wait = compaction / stop hook 等分钟级中间态（别打扰）；
     # idle = 真闲着，可以清输入框然后灌 prompt。
+    # 判据见 agent_screen_state（和卡住检测共用一份）。
     _inject_pane_state() {
-        local t
-        t=$(agent_pane_tail "$sess")
-        # modal 判在最前：它比其余三种都更危险，误判成 idle 就会往弹窗里敲 Enter。
-        if grep -qiE "$AGENT_MODAL_RE" <<<"$t"; then echo modal
-        # wait 先于 busy 判：compaction 期间 spinner 同样在转，若先判 busy 会把
-        # 「还在压缩、prompt 只是排队」误当成注入成功（c84e235 要修的正是这个）。
-        elif grep -qiE "compacting|running stop hook" <<<"$t"; then echo wait
-        elif grep -qiE "$AGENT_BUSY_RE" <<<"$t"; then echo busy
-        else echo idle; fi
+        agent_pane_tail "$sess" | agent_screen_state
     }
 
     # 0. 若正处 compaction/stop-hook 中间态，先等它结束（默认最多 180s，可配）
@@ -301,6 +322,9 @@ source_driver() {
     # 能力标志复位：同一进程里换 driver 时不能留着上一个 driver 的声明
     AGENT_SESSION_ISOLATION=0
     AGENT_SESSION_PROOF=0
+    # 注入用的是不是默认实现（往窗格里 paste）。driver 自己覆盖了注入（例如 cursor：
+    # 不支持中途注入，直接删 session）时为 0，卡住检测据此不往这种会话里催促。
+    AGENT_INJECT_DEFAULT=0
     # 目录信任是可选能力：上一个 driver 留下的实现会让新 driver 往别人的配置文件里写
     unset -f agent_trust_key agent_trust_paths 2>/dev/null || true
     AGENT_TRUST_PROMPT_TITLE=""; AGENT_TRUST_PROMPT_OPTION_RE=""; AGENT_TRUST_PROMPT_FOOTER_RE=""
@@ -311,6 +335,7 @@ source_driver() {
             # driver 没自己 override 注入 → 用默认
             if ! declare -f agent_inject_prompt > /dev/null; then
                 agent_inject_prompt() { default_inject_prompt "$@"; }
+                AGENT_INJECT_DEFAULT=1
             fi
             # 会话隔离的默认实现：什么都不知道。AGENT_SESSION_ISOLATION 保持 0，
             # daemon 于是只保证「review 角色起全新会话」，不做按 id 的续接。

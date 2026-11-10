@@ -921,6 +921,48 @@ DISPATCH_MAX_RETRIES=3
 # 成功了，worker 起来之后立刻死。计数文件在 $STATE_DIR/selfheal/。
 SELFHEAL_MAX_RETRIES=3
 
+# ── Stuck workers / 卡在 doing/agent 没人管的条目（GitHub#339）──
+# An item can sit on doing/agent forever: the worker stopped without commenting or
+# flipping the label (decided "not mine" and quit, got an empty prompt, crashed before
+# the flip) while its tmux session is still alive. Self-heal only acts when the session
+# is gone, and the reaper skips anything still labeled doing/agent, so the item keeps
+# its concurrency slot until someone notices.
+#
+# With this on, the daemon checks every doing/agent item it dispatched itself, by script
+# only (no model call): the worker pane shows the agent idle (judged with the rules of the
+# agent that session actually runs), and nothing changed on GitHub or the local branch,
+# for STUCK_WORKER_QUIET_SECS in a row. Then, one step at a time:
+#   1. nudge the session once (a fixed reminder to comment and flip the label)
+#   2. still nothing STUCK_WORKER_STEP_GAP_SECS later: end the session, put the trigger
+#      label back, let the next round redispatch (at most STUCK_WORKER_MAX_RESTARTS times)
+#   3. stuck again: comment and hand to pending/human (the session is kept for inspection)
+# A busy agent, any new activity, or anything the daemon cannot read resets or holds the
+# clock; before step 2 / 3 everything is re-read and must be unchanged.
+# Limits: "idle" is read off the screen, so an agent waiting on a background job looks
+# idle too (hence the long default and the harmless first step); a session with no agent
+# record, or with several panes and no recorded worker pane, is never touched.
+# Empty or 0 = off (the behaviour before this existed). A config without this line is off.
+#
+# 条目可能永远停在 doing/agent：worker 没发评论、没翻标签就停下了（自己判断「不该我做」
+# 后空手结束、拿到空 prompt 干等、崩在翻标签之前），而 tmux 会话还活着。self-heal 只在
+# 会话不存在时才救，回收看到 doing/agent 就跳过，于是它一直占着并发名额，等人发现。
+#
+# 开着时，daemon 每轮检查本机派出去的 doing/agent 条目，全程脚本判断、不调用大模型：
+# 工作窗格的画面显示 agent 空闲（按这条会话实际跑的那个 agent 的规则判），GitHub 和本地
+# 分支都没有新动静，连续 STUCK_WORKER_QUIET_SECS 秒。之后一级一级来：
+#   1. 往会话里催一次（固定的提醒文字：必须发评论并翻标签）
+#   2. 再过 STUCK_WORKER_STEP_GAP_SECS 秒仍没动静：结束会话，翻回原触发标签，下一轮重派
+#      （最多 STUCK_WORKER_MAX_RESTARTS 次）
+#   3. 再卡住：留言并转 pending/human（会话保留，方便查看）
+# agent 在忙、有任何新动静、或 daemon 有读不出的东西，都会清零或暂停计时；第 2、3 步动手前
+# 全部重读一遍，必须和开始计时时一样。
+# 限制：「空闲」是看屏幕判断的，agent 把活放到后台等结果时看起来也是空闲（所以默认值给得
+# 长、第一步也无害）；会话上没有 agent 记录、或有多个窗格又没登记工作窗格的，一律不处理。
+# 留空或 0 = 关闭（和没有这个功能时一样）。配置里没有这一行也是关闭。
+STUCK_WORKER_QUIET_SECS=1800
+STUCK_WORKER_STEP_GAP_SECS=900
+STUCK_WORKER_MAX_RESTARTS=1
+
 # ── Queue order when full / 并发满时的取工顺序 ──
 
 # When more items carry a pending label than there are free slots, the daemon
