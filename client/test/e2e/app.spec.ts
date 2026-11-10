@@ -5573,6 +5573,184 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await app.close();
 });
 
+test('GitHub#323: the red result bar above the board has an × and goes by itself once the field change it is about is over (resent, abandoned, seen on GitHub); a newer bar is not taken away by an older change', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  const row = (n: number) => page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"]`).first();
+  await expect(row(138)).toBeVisible({ timeout: 15_000 });
+  const bar = page.getByTestId('board-action-result');
+  const editsBar = page.getByTestId('edits-bar');
+  const addLabel = async (n: number, label: string) => {
+    await row(n).locator('[data-testid="cell"][data-col="labels"]').click();
+    await row(n).locator(`[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="${label}"]`).click();
+    await page.keyboard.press('Escape');
+  };
+  const labelOnGitHub = (n: number, name: string) => {
+    const c = findCopies(env.fake.state as any, 'GigleAI/cavil-loop', n)!;
+    const now = new Date().toISOString();
+    for (const g of c.gql) if (!g.labels.nodes.some((l: any) => l.name === name)) (g.labels.nodes.push({ name, color: 'ededed' }), (g.updatedAt = now));
+    for (const r of c.rest) if (!r.labels.some((l: any) => (l.name ?? l) === name)) (r.labels.push({ name, color: 'ededed' }), (r.updated_at = now));
+  };
+  const unsure = async (n: number, label: string) => {
+    env.fake.state.w.dropWrites = true;
+    await addLabel(n, label);
+    await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+    await expect(bar).toContainText('不确定改没改上');
+    await expect(editsBar).toBeVisible();
+    env.fake.state.w.dropWrites = false;
+  };
+
+  // 1. no answer from GitHub: a red bar with an ×; the × only puts the bar away — the change stays in the list
+  await unsure(138, 'Done');
+  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
+  await shot(page, '323-01-red-bar-with-close');
+  const w0 = env.fake.writes().length;
+  await bar.getByTestId('board-action-result-close').click();
+  await expect(bar).toHaveCount(0);
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  expect(env.fake.writes().length).toBe(w0);
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+
+  // 2. resent and accepted: the bar goes by itself
+  await unsure(138, 'Done');
+  await editsBar.getByTestId('edits-resend-all').click();
+  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await expect(bar).toHaveCount(0);
+  await expect(row(138).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
+
+  // 3. abandoned: the bar goes by itself
+  await unsure(138, 'pending/PR');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
+
+  // 4. the change turns out to be on GitHub (a refresh reads it): the bar goes by itself
+  await unsure(137, 'Done');
+  labelOnGitHub(137, 'Done');
+  await page.getByTestId('refresh').click();
+  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await expect(bar).toHaveCount(0);
+
+  // 5. refused for sure: red, closable; abandoned → gone by itself
+  env.fake.state.w.failLabel = 'pending/PR';
+  await addLabel(137, 'pending/PR');
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
+
+  // 6. a newer bar is about another change: the older change being over leaves it alone
+  // (the refusal is by label name, so #144's change uses another label and goes through when resent)
+  await unsure(144, 'Done');
+  await addLabel(137, 'pending/PR'); // still refused: this bar replaces the one about #144
+  await expect(bar).not.toContainText('不确定改没改上', { timeout: 15_000 });
+  await expect(bar).toHaveAttribute('data-kind', 'error');
+  await expect(editsBar).toHaveAttribute('data-count', '2');
+  const barText = await bar.textContent();
+  await editsBar.getByTestId('edits-resend-all').click(); // #144 goes through, #137 is refused again
+  await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+  await expect(row(144).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(bar).toHaveText(barText ?? '');
+  env.fake.state.w.failLabel = null;
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(bar).toHaveCount(0);
+
+  // 7. a plain success still goes after 5 s on its own, and has an × too
+  await addLabel(144, 'pending/PR');
+  await expect(bar).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
+  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
+  await bar.getByTestId('board-action-result-close').click();
+  await expect(bar).toHaveCount(0);
+  await app.close();
+});
+
+test('GitHub#323 (PR #327 review round 1): a field change made in the detail and answered after the detail was closed or moved on — its red bar on the board goes with the change too; a failed comment left behind is not taken away by an unrelated change', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const bar = page.getByTestId('board-action-result');
+  const editsBar = page.getByTestId('edits-bar');
+  const labelPosts = (n: number) => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith(`/issues/${n}/labels`)).length;
+  /** in #n's detail: add `label`, GitHub holds the answer; returns the release */
+  const addHeld = async (n: number, label: string) => {
+    await card(page, n).getByTestId('card-title').click();
+    await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    const p0 = labelPosts(n);
+    const release = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${n}/labels`));
+    await pickLabel(page, label);
+    await expect.poll(() => labelPosts(n)).toBe(p0 + 1);
+    return release;
+  };
+
+  /** a click on the board's bars may already have put the detail away */
+  const putAway = async () => {
+    if (await page.getByTestId('detail').count()) await page.getByTestId('detail-close').click();
+    await expect(page.getByTestId('detail')).toHaveCount(0);
+  };
+
+  // 1. the detail is closed before GitHub refuses: the red bar lands on the board; abandoned → it goes by itself
+  env.fake.state.w.failLabel = 'pending/PR';
+  let release = await addHeld(139, 'pending/PR');
+  await page.getByTestId('detail-close').click();
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  release();
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
+
+  // 2. another item is opened before GitHub refuses: the same; resent and accepted → it goes by itself
+  release = await addHeld(139, 'pending/PR');
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  release();
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(editsBar).toHaveAttribute('data-count', '1');
+  env.fake.state.w.failLabel = null;
+  await editsBar.getByTestId('edits-resend-all').click();
+  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await expect(bar).toHaveCount(0);
+  await expect(card(page, 139).locator('.label', { hasText: 'pending/PR' })).toBeVisible();
+  await putAway();
+
+  // 3. a comment that failed after its detail was closed is not a field change: a field change of the
+  //    same item coming and going leaves its bar alone; the × puts it away
+  env.fake.state.w.failComment = true;
+  await card(page, 137).getByTestId('card-title').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  const c0 = env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith('/issues/137/comments')).length;
+  release = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/137/comments'));
+  await page.getByTestId('reply-input').fill('留在看板上的失败评论');
+  await page.getByTestId('reply-send').click();
+  await expect.poll(() => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith('/issues/137/comments')).length).toBe(c0 + 1);
+  await page.getByTestId('detail-close').click();
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  release();
+  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  env.fake.state.w.failComment = false;
+  const kept = await bar.textContent();
+  // a field change of #137 made and answered inside its detail (its note stays in the panel), then abandoned
+  await card(page, 137).getByTestId('card-title').click();
+  env.fake.state.w.dropWrites = true;
+  await pickLabel(page, 'Done');
+  await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+  env.fake.state.w.dropWrites = false;
+  await expect(bar).toHaveText(kept ?? '');
+  await editsBar.getByTestId('edits-abandon-all').click();
+  await expect(editsBar).toHaveCount(0);
+  await putAway();
+  await page.waitForTimeout(500);
+  await expect(bar).toHaveText(kept ?? '');
+  await bar.getByTestId('board-action-result-close').click();
+  await expect(bar).toHaveCount(0);
+  await app.close();
+});
+
 // ---- GitHub#322: the reply card is easy to hit — a click on its free space goes into the box; R works
 // after a click in the discussion too (only R: every other key stays in the isolated frame, PR #171) ----
 test('GitHub#322: a click on the reply card\'s free space types into the box; R from inside the discussion; the box grows with its text; buttons, selections, dialogs and offline keep their own way', async () => {
