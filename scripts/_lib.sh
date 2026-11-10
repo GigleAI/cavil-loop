@@ -6838,6 +6838,255 @@ lessons_for_prompt() {   # <经验文件>
          END { if (counted) { print ""; print note } }'
 }
 
+# ── 同时在进行的其他工作（GitHub#340）──
+# 派工时告诉 worker：此刻还有哪些条目在进行（doing / 待复审 / 已转 PR）、各自的分支已经改了哪些文件，
+# 让文件重叠在开工时就被看见，而不是等交接时的冲突检查或对方合并之后。
+#
+#   · 只在派工那一刻读（三个 dispatch 脚本写完 prompt 之后调 concurrent_work_fill），轮询本身不多一次调用；
+#     开关关着、prompt 里又没有占位符时什么都不读，拼出来的 prompt 逐字节不变。
+#   · GitHub 调用数不随条目数增长：每个状态标签一次打开条目列表 + 一次打开 PR 列表（满 100 条才翻页），
+#     轮询身份只读。文件清单不走 API：一次 ls-remote + 一次 fetch，本地 `git diff --name-only 基准...分支`。
+#   · 比较基准：已有 PR → 那个 PR 的实际目标分支；没有 PR → 固定 CONCURRENT_WORK_DEFAULT_BASE（main）。
+#     这是新 issue 入口建工作分支时传的固定值（dispatch-new-issue.sh 调 create-worktree.sh "$ISSUE" main），
+#     不是配置里的 BASE_BRANCH——那一项只用于同步主 checkout。基准取不到就写「未能读取」，不退回别的分支。
+#   · 「读不到」绝不写成「没有」：任何一次列表调用失败、形状不对 → 整段「未能读取」；ls-remote / fetch 失败 →
+#     条目照列、每行「改动文件未能读取」；只有 ls-remote 成功且远端确实没有这个分支，才写「还没有推送改动」。
+#   · 标题、文件名是别人写的数据：标题压成一行、去掉控制字符和反引号、截到 80 字；分支名只认安全字符，
+#     不认的不拿去喂 git。清单在 dispatch 的 sed 全部跑完之后才填进去，里面的 ${...}、|、& 不会再被渲染。
+#   · 任何失败都不挡派工。
+CONCURRENT_WORK_HINT="${CONCURRENT_WORK_HINT:-}"
+CONCURRENT_WORK_MAX_ITEMS=20
+CONCURRENT_WORK_MAX_FILES=30
+CONCURRENT_WORK_DEFAULT_BASE="main"
+CONCURRENT_WORK_PLACEHOLDER='${CONCURRENT_WORK}'
+CONCURRENT_WORK_UNREAD="未能读取当前进行中的其他工作（不代表没有）；交接前照常做冲突检查。"
+
+concurrent_work_enabled() {
+    case "$(printf '%s' "${CONCURRENT_WORK_HINT:-}" | tr '[:upper:]' '[:lower:]')" in
+        true|1|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# 这份模板要不要追加这一段：只给 worker 的三种派工（子项走 issue-comment 打底，也在内）；复审不加。
+concurrent_work_section_active() {   # <模板名>
+    concurrent_work_enabled || return 1
+    case "$1" in new-issue|issue-comment|pr-comment) return 0 ;; esac
+    return 1
+}
+
+concurrent_work_section() {
+    local f="$SKILL_DIR/prompts/concurrent-work.md"
+    [ -s "$f" ] || { log "⚠️ 同时进行的其他工作说明文件缺失：$f" 2>/dev/null || true; return 0; }
+    cat "$f"
+}
+
+_concurrent_work_log_file() {   # <说明> <文件>
+    local line
+    log "  ⚠️ $1"
+    while IFS= read -r line; do [ -n "$line" ] && log "    $line"; done < "$2"
+    return 0
+}
+
+# 清单正文（不含标题和规则）。永远 return 0、永远有输出。
+concurrent_work_text() {   # <本次工作分支> <本次工作编号>...
+    local tmp
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/cavil-concurrent.XXXXXX" 2>/dev/null) || { printf '%s\n' "$CONCURRENT_WORK_UNREAD"; return 0; }
+    _concurrent_work_text_in "$tmp" "$@" || printf '%s\n' "$CONCURRENT_WORK_UNREAD"
+    rm -rf "$tmp"
+    return 0
+}
+
+# 返回非 0 = 条目读不到（调用方输出「未能读取」）；这时自己不输出任何东西。
+_concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工作编号>...
+    local tmp="$1" self_branch="$2"; shift 2
+    local L enc self_json
+    local -a wanted=("$LABEL_AGENT_DOING")
+    [ -z "${LABEL_PENDING_REVIEW:-}" ] || wanted+=("$LABEL_PENDING_REVIEW")
+    wanted+=("$LABEL_PENDING_PR")
+    self_json=$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(test("^[0-9]+$")) | tonumber)') || return 1
+
+    # 1. 各状态标签下的打开条目（issue 和 PR 都在 issues 接口里）
+    : > "$tmp/issues"
+    for L in "${wanted[@]}"; do
+        [ -n "$L" ] || continue
+        enc=$(printf '%s' "$L" | jq -sRr @uri) || return 1
+        if ! gh api --paginate "repos/$REPO/issues?state=open&labels=$enc&per_page=100" \
+                --jq '.[] | {number, title, pr: (.pull_request != null), labels: [.labels[]?.name]}' \
+                >> "$tmp/issues" 2> "$tmp/err"; then
+            _concurrent_work_log_file "同时进行的其他工作：读取带 $L 标签的条目失败，本次写「未能读取」" "$tmp/err"
+            return 1
+        fi
+    done
+    # 2. 打开的 PR：工作分支、目标分支、是不是本仓库的分支
+    if ! gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+            --jq '.[] | {number, title, head: .head.ref, base: .base.ref, head_repo: (.head.repo.full_name // "")}' \
+            > "$tmp/pulls" 2> "$tmp/err"; then
+        _concurrent_work_log_file "同时进行的其他工作：读取打开的 PR 列表失败，本次写「未能读取」" "$tmp/err"
+        return 1
+    fi
+
+    # 3. 归并成行：同一分支上的 issue 和它的 PR 合成一行；自己这一条排除
+    if ! jq -rn \
+            --slurpfile issues "$tmp/issues" --slurpfile pulls "$tmp/pulls" \
+            --arg repo "$REPO" --arg prefix "$BRANCH_PREFIX" --arg self_branch "$self_branch" \
+            --argjson self "$self_json" \
+            --arg doing "$LABEL_AGENT_DOING" --arg review "${LABEL_PENDING_REVIEW:-}" --arg ppr "$LABEL_PENDING_PR" \
+            --argjson max "$CONCURRENT_WORK_MAX_ITEMS" '
+        def clean: (. // "") | tostring
+            | gsub("[\\p{Cc}\\p{Zl}\\p{Zp}\\s]+"; " ") | gsub("`"; "") | gsub("「"; "『") | gsub("」"; "』")
+            | sub("^ +"; "") | sub(" +$"; "")
+            | if length > 80 then .[0:80] + "…" else . end;
+        def safe: type == "string" and length > 0 and length <= 200
+            and test("^[A-Za-z0-9._/-]+$") and (test("\\.\\.|//|^[-/.]|[/.]$|\\.lock$|/\\.") | not);
+        def shape: type == "object" and (.number | type == "number") and (.number == (.number | floor)) and .number > 0;
+        if (($issues + $pulls) | all(shape)) | not then error("unexpected shape") else . end
+        | ([$doing, $review, $ppr] | map(select(. != ""))) as $want
+        | ($repo | ascii_downcase) as $r
+        | ($pulls | unique_by(.number)) as $prs
+        | ($prs | map(select((.head_repo | tostring | ascii_downcase) == $r))) as $own
+        | [ $issues | unique_by(.number)[]
+            | select(.labels as $l | $want | any(. as $w | $l | index($w) != null))
+            | . as $it
+            | if $it.pr then
+                  ($prs | map(select(.number == $it.number)) | first) as $p
+                  | if $p == null then {key: "nopr:\($it.number)", kind: "nopr", pr: $it.number, it: $it}
+                    elif (($p.head_repo | tostring | ascii_downcase) != $r) then {key: "fork:\($it.number)", kind: "fork", pr: $it.number, it: $it}
+                    else {key: "b:\($p.head)", kind: "ok", head: $p.head, base: $p.base, pr: $it.number, it: $it} end
+              else
+                  ($prefix + ($it.number | tostring)) as $b
+                  | ($own | map(select(.head == $b)) | first) as $p
+                  | {key: "b:\($b)", kind: "ok", head: $b, base: ($p.base // null), pr: ($p.number // null), issue: $it.number, it: $it}
+              end ]
+        | group_by(.key)
+        | map(
+            . as $g
+            | ($g | map(select(.issue != null)) | first) as $i
+            | ($g | map(select(.pr != null)) | first) as $pp
+            | ($g | map(.it.labels[]) | unique) as $labs
+            | { nums: ($g | map(.issue, .pr) | map(select(. != null)) | unique),
+                sort: (($i.issue) // ($pp.pr)),
+                issue: ($i.issue // null), pr: ($pp.pr // null),
+                title: ((($i // $g[0]).it.title) | clean),
+                state: (if ($labs | index($doing)) != null then "进行中"
+                        elif $review != "" and ($labs | index($review)) != null then "待复审"
+                        else "已转 PR" end),
+                kind: $g[0].kind, head: ($g[0].head // ""),
+                base: (($g | map(select(.base != null)) | first | .base) // "") } )
+        | map(select((.kind != "ok" or .head != $self_branch) and ((.nums - $self) == .nums)))
+        | map(if .kind == "ok" and (((.head | safe) and (.base == "" or (.base | safe))) | not)
+              then .kind = "badbranch" | .head = "" | .base = "" else . end)
+        | sort_by(.sort)
+        | "TOTAL\t\(length)",
+          (.[0:$max][]
+           | [ (if .issue != null and .pr != null then "#\(.issue)（PR #\(.pr)，\(.state)）"
+                elif .issue != null then "#\(.issue)（\(.state)）"
+                else "PR #\(.pr)（\(.state)）" end),
+               .title, .kind, .head, .base ] | join("\t"))
+        ' > "$tmp/rows" 2> "$tmp/err"; then
+        _concurrent_work_log_file "同时进行的其他工作：GitHub 返回的条目不是预期的形状，本次写「未能读取」" "$tmp/err"
+        return 1
+    fi
+
+    local total=0 shown=0 tag disp title kind head base
+    IFS=$'\t' read -r tag total < "$tmp/rows" || return 1
+    [ "$tag" = TOTAL ] && [[ "$total" =~ ^[0-9]+$ ]] || return 1
+    if [ "$total" -eq 0 ]; then
+        printf '目前没有其他进行中的条目。\n'
+        return 0
+    fi
+
+    # 4. 远端分支的当前提交（一次 ls-remote）+ 把它们拉进主 checkout 的对象库（一次 fetch，不写任何引用）
+    local git_ok=1 b sha ref
+    local -A need=() tips=()
+    while IFS=$'\t' read -r disp title kind head base; do
+        [ "$kind" = ok ] || continue
+        need["$head"]=1; need["${base:-$CONCURRENT_WORK_DEFAULT_BASE}"]=1
+    done < <(tail -n +2 "$tmp/rows")
+    if [ "${#need[@]}" -gt 0 ]; then
+        local -a pats=() have=()
+        for b in "${!need[@]}"; do pats+=("refs/heads/$b"); done
+        if git -C "$PROJECT_ROOT" ls-remote origin "${pats[@]}" > "$tmp/ls" 2> "$tmp/err"; then
+            # ls-remote 的模式按尾部匹配（refs/heads/x/main 也会被 main 匹配上），只认整名
+            while IFS=$'\t' read -r sha ref; do
+                b="${ref#refs/heads/}"
+                [ "$ref" = "refs/heads/$b" ] && [ -n "${need[$b]:-}" ] && [[ "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || continue
+                tips["$b"]="$sha"; have+=("refs/heads/$b")
+            done < "$tmp/ls"
+            # --refmap= ：不顺手挪动主 checkout 的 origin/<分支>
+            if [ "${#have[@]}" -gt 0 ] && ! git -C "$PROJECT_ROOT" fetch -q --no-write-fetch-head --refmap= origin "${have[@]}" > "$tmp/err" 2>&1; then
+                git_ok=0
+                _concurrent_work_log_file "同时进行的其他工作：拉取各分支失败，改动文件写「未能读取」" "$tmp/err"
+            fi
+        else
+            git_ok=0
+            _concurrent_work_log_file "同时进行的其他工作：读取远端分支失败（git ls-remote），改动文件写「未能读取」" "$tmp/err"
+        fi
+    fi
+
+    # 5. 逐行输出
+    local eb against n files more
+    while IFS=$'\t' read -r disp title kind head base; do
+        shown=$((shown + 1))
+        case "$kind" in
+            fork)      printf -- '- %s「%s」：来自 fork，改动文件未读取\n' "$disp" "$title"; continue ;;
+            nopr)      printf -- '- %s「%s」：PR 信息未能读取，改动文件未能读取\n' "$disp" "$title"; continue ;;
+            badbranch) printf -- '- %s「%s」：分支名异常，未列出\n' "$disp" "$title"; continue ;;
+        esac
+        eb="${base:-$CONCURRENT_WORK_DEFAULT_BASE}"
+        if [ -n "$base" ]; then against=" → \`$eb\`"; else against="（相对 \`$eb\`）"; fi
+        printf -- '- %s「%s」分支 `%s`%s：' "$disp" "$title" "$head" "$against"
+        if [ "$git_ok" != 1 ]; then
+            printf '改动文件未能读取（本机这次读不到远端分支）\n'
+        elif [ -z "${tips[$head]:-}" ]; then
+            if [ -z "$base" ]; then printf '还没有推送改动\n'
+            else printf '改动文件未能读取（分支 `%s` 取不到）\n' "$head"; fi
+        elif [ -z "${tips[$eb]:-}" ]; then
+            printf '改动文件未能读取（目标分支 `%s` 取不到）\n' "$eb"
+        elif ! git -C "$PROJECT_ROOT" -c core.quotePath=true diff --name-only "${tips[$eb]}...${tips[$head]}" > "$tmp/files.raw" 2> "$tmp/err"; then
+            printf '改动文件未能读取（算不出和 `%s` 的差异）\n' "$eb"
+            _concurrent_work_log_file "同时进行的其他工作：$head 相对 $eb 的差异算不出来" "$tmp/err"
+        else
+            LC_ALL=C tr -d '`\000-\010\013-\037\177' < "$tmp/files.raw" | awk 'NF' > "$tmp/files"
+            n=$(wc -l < "$tmp/files" | tr -d ' ')
+            if [ "$n" -eq 0 ]; then
+                printf '相对 `%s` 没有改动文件\n' "$eb"
+            else
+                files=$(head -n "$CONCURRENT_WORK_MAX_FILES" "$tmp/files" | awk '{ printf "%s`%s`", (NR > 1 ? "、" : ""), $0 }')
+                more=""
+                [ "$n" -le "$CONCURRENT_WORK_MAX_FILES" ] || more="；另有 $((n - CONCURRENT_WORK_MAX_FILES)) 个文件未列出"
+                printf '已改 %s 个文件：\n  %s%s\n' "$n" "$files" "$more"
+            fi
+        fi
+    done < <(tail -n +2 "$tmp/rows")
+    [ "$total" -le "$shown" ] || printf '另有 %s 个条目未列出。\n' "$((total - shown))"
+    return 0
+}
+
+# 把 prompt 里独占一行的 ${CONCURRENT_WORK} 换成清单。放在 dispatch 的 sed **之后**：清单是多行的，
+# 里面的标题、文件名是别人写的，不能再过一遍占位符替换。没有占位符 → 什么都不读、文件不动。
+# 永远 return 0：这一步出什么事都不能挡派工。
+concurrent_work_fill() {   # <prompt 文件> <本次工作分支> <本次工作编号>...
+    local f="$1"; shift
+    [ -f "$f" ] && grep -qxF -- "$CONCURRENT_WORK_PLACEHOLDER" "$f" || return 0
+    local t
+    t=$(mktemp "${TMPDIR:-/tmp}/cavil-concurrent-fill.XXXXXX" 2>/dev/null) || t=""
+    if [ -n "$t" ]; then
+        if concurrent_work_enabled; then concurrent_work_text "$@" > "$t" || true
+        else printf '（本项目没有开启这项提示。）\n' > "$t"; fi
+        [ -s "$t" ] || printf '%s\n' "$CONCURRENT_WORK_UNREAD" > "$t"
+        if awk -v ph="$CONCURRENT_WORK_PLACEHOLDER" -v src="$t" '
+                $0 == ph { while ((getline line < src) > 0) print line; close(src); next }
+                { print }' "$f" > "$t.out" && [ -s "$t.out" ]; then
+            cat "$t.out" > "$f" || true
+        else
+            log "  ⚠️ 同时进行的其他工作：填充 prompt 失败（$f），占位符原样留着" 2>/dev/null || true
+        fi
+        rm -f "$t" "$t.out"
+    fi
+    return 0
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -6851,7 +7100,7 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active; then echo "$base_tpl"; return; fi
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name"; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -6869,6 +7118,12 @@ compose_prompt_template() {
         printf '# 本项目的附加要求（覆盖上面与之冲突的部分）\n\n'
         printf '> 上面是通用工作流，这一段是 %s 特有的。两者冲突时**以这一段为准**。\n\n' "${REPO:-本仓库}"
         cat "$overlay"
+        fi
+        # 同时在进行的其他工作（GitHub#340）：追加在这里，整份替换了模板的项目也收得到。清单本身是
+        # 占位符 ${CONCURRENT_WORK}，由 dispatch 在 sed 之后填（concurrent_work_fill）。功能关着什么都不加。
+        if concurrent_work_section_active "$name"; then
+            printf '\n\n---\n\n'
+            concurrent_work_section
         fi
         # 外部需求机器人交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
         # 工具自带模板时也收得到；写进工具模板里的话，那种项目就漏了。功能关着什么都不加。
