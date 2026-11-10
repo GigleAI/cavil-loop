@@ -13,7 +13,10 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, wri
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+// The repository root. Inside a negative-control copy (client/test/mutation/run.mjs copies
+// client/ into a temp folder) "three folders up" is the temp dir's parent, so the copy is told
+// where the real client/ is through CLIENT_MUT_REPO, as the other tests that need it read it.
+export const REPO = join(process.env.CLIENT_MUT_REPO ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..'), '..');
 
 export type Os = 'Linux' | 'Darwin';
 
@@ -185,3 +188,37 @@ export function localCopy(dir: string, origin: string | null): string {
 }
 
 export const originOf = (dir: string) => git(dir, 'config', '--get', 'remote.origin.url').trim();
+
+// ── a daemon from before the status script (GitHub#320) ──
+
+/**
+ * The daemon as installed before scripts/install-status.sh existed: origin gets a commit without the
+ * script and then one that brings it back; the install is a clone reset to the first, so it follows
+ * origin/main one fast-forward behind. `branch`: put both commits on that branch instead (origin/main
+ * keeps the script) and make the install follow it. `originOld`: on main, origin's main itself stays
+ * without the script (an old fork that never caught up). Returns the old commit.
+ */
+export function installOld(w: DaemonWorld, branch = 'main', o: { originOld?: boolean } = {}): string {
+  const tmp = join(w.dir, `old-${++pathSeq}`);
+  git(w.dir, 'clone', '-q', w.origin, tmp);
+  if (branch !== 'main') git(tmp, 'checkout', '-q', '-b', branch);
+  git(tmp, 'rm', '-q', 'scripts/install-status.sh');
+  git(tmp, 'commit', '-qm', 'before the status script');
+  const old = git(tmp, 'rev-parse', 'HEAD').trim();
+  if (branch === 'main' && !o.originOld) git(tmp, 'revert', '--no-edit', 'HEAD');
+  else git(tmp, 'commit', '-q', '--allow-empty', '-m', 'still without it');
+  git(tmp, 'push', '-q', 'origin', branch);
+  installByHand(w);
+  if (branch !== 'main') git(w.skill, 'checkout', '-q', '-b', branch, '--track', `origin/${branch}`);
+  git(w.skill, 'reset', '-q', '--hard', old);
+  return old;
+}
+
+/** A copy of the daemon's files without git and without the status script, at `dir`. */
+export function plainOldCopy(w: DaemonWorld, dir: string): string {
+  mkdirSync(dirname(dir), { recursive: true });
+  git(w.dir, 'clone', '-q', w.origin, dir);
+  rmSync(join(dir, '.git'), { recursive: true, force: true });
+  rmSync(join(dir, 'scripts', 'install-status.sh'));
+  return realpathSync(dir);
+}

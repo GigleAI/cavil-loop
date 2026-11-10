@@ -14,7 +14,7 @@ import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
-import { useLayer, useShortcuts } from './keyboard';
+import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
 import { Keys } from './ShortcutHelp';
 import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
@@ -33,6 +33,10 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
 };
 /** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
 const HIDE_LABEL = '收起 ›';
+/** GitHub#322: clicks on these in the reply card do their own thing; a click anywhere else there goes to the reply box */
+const CARD_OWN_CLICK = 'button, select, a, input, textarea, label, summary, iframe, [tabindex], [contenteditable]';
+/** the reply box's least height: about four lines (also in styles.css, .reply textarea) */
+const REPLY_MIN_PX = 96;
 const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
@@ -656,7 +660,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -665,6 +669,8 @@ export function DetailPanel({
       if (m.cavil === 'ready') setReadyRender(now.render);
       else if (m.cavil === 'task') void now.tick(m.entry, m.index, m.checked);
       else if (m.cavil === 'edit') now.edit(m.entry);
+      // GitHub#322: the frame passes on a bare R only; the window's own rules decide, and only "go to the reply box" may act
+      else if (m.cavil === 'key' && typeof m.key === 'string') frameKey(m.key);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
@@ -705,6 +711,58 @@ export function DetailPanel({
     if (!mine()) return;
     setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? '预览失败')}</p>`);
   };
+  /** R and a click on the reply card's free space (GitHub#322): the reply box, when it can take text */
+  const focusReply = () => {
+    if (!item || !canWrite || busy) return;
+    replyBox.current?.focus();
+  };
+  /** a click on the reply card that hit nothing of its own (no button, list, link, field…) and selected no text */
+  const replyCardClick = (e: React.MouseEvent) => {
+    const t = e.target as Element | null;
+    if (!t || typeof t.closest !== 'function') return;
+    // only inside the card: the panel around it is focusable too
+    const own = t.closest(CARD_OWN_CLICK);
+    if (own && e.currentTarget.contains(own)) return;
+    const sel = window.getSelection?.();
+    if (sel && !sel.isCollapsed && sel.toString()) return;
+    focusReply();
+  };
+  // GitHub#322: the box grows with its text up to 40% of the panel as it is now, then scrolls. The height
+  // is worked out again whenever the text, the item or the panel's size changes (a smaller window, a
+  // narrower panel that wraps more). Only a real drag of the box's own corner — a press on the box whose
+  // release leaves it at another height — is kept, as the least it shrinks back to.
+  const replyAuto = useRef<{ set: number; dragged: number }>({ set: 0, dragged: 0 });
+  const fitReply = () => {
+    const el = replyBox.current;
+    if (!el) return;
+    const a = replyAuto.current;
+    el.style.height = 'auto';
+    const max = Math.max(REPLY_MIN_PX, Math.round((panelRef.current?.clientHeight ?? 0) * 0.4));
+    const want = Math.min(Math.max(el.scrollHeight, a.dragged, REPLY_MIN_PX), Math.max(max, a.dragged));
+    el.style.height = `${want}px`;
+    a.set = el.offsetHeight;
+  };
+  const fitRef = useRef(fitReply);
+  fitRef.current = fitReply;
+  useLayoutEffect(fitReply, [reply, item?.key]);
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => fitRef.current());
+    ro.observe(panel);
+    return () => ro.disconnect();
+  }, []);
+  const replyPress = () => {
+    const done = () => {
+      window.removeEventListener('mouseup', done, true);
+      const el = replyBox.current;
+      const a = replyAuto.current;
+      if (!el || Math.abs(el.offsetHeight - a.set) <= 1) return;
+      a.dragged = el.offsetHeight;
+      a.set = el.offsetHeight;
+    };
+    window.addEventListener('mouseup', done, true);
+  };
   useShortcuts({
     // folded fields come back first: the picker opens next to them (GitHub#260)
     labels: () => {
@@ -717,11 +775,11 @@ export function DetailPanel({
       if (!fieldsShown) showFields(true);
       setPicker('milestone');
     },
-    reply: () => replyBox.current?.focus(),
+    reply: focusReply,
     // Esc puts the panel away — never while the reply box holds unsent text: a key never drops a draft.
     // (Dialogs and pickers are layers: their Esc never gets here. Neither does a key pressed inside the
-    // isolated discussion frame — PR #171, the maintainer chose to keep it isolated; its one script since
-    // GitHub#193 reports ticked boxes and the view, never keys.)
+    // isolated discussion frame — PR #171, the maintainer chose to keep it isolated; its one script
+    // reports ticked boxes and the view (GitHub#193) and a bare R (GitHub#322), never any other key.)
     hide: () => {
       if (reply.trim()) {
         setEscKept(true);
@@ -1199,13 +1257,14 @@ export function DetailPanel({
         )}
       </div>
 
-      <section className="reply" data-testid="reply">
+      <section className="reply" data-testid="reply" onClick={replyCardClick}>
         <textarea
           data-testid="reply-input"
           data-keys="reply"
           ref={replyBox}
+          onMouseDown={replyPress}
           value={reply}
-          placeholder={canWrite ? '回复（支持 markdown）' : '离线时不能回复'}
+          placeholder={canWrite ? `回复（支持 markdown）· 按 ${keyText('reply')} 随时跳到这里` : '离线时不能回复'}
           disabled={!canWrite || busy}
           onChange={(e) => {
             setReply(e.target.value);

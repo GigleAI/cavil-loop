@@ -4,11 +4,12 @@
 // back from the machine (files, scheduler state), not from the back end's word.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { appendLine, connect, daemonEnv, daemonWorld, headOf, installByHand, pathFor, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { appendLine, connect, daemonEnv, daemonWorld, headOf, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 import { tempDir } from './helpers';
 
 const open: HarnessBackend[] = [];
@@ -80,13 +81,12 @@ describe('status', () => {
     expect(s.precheck).toBeUndefined();
   });
 
-  it('a daemon from before the status script: unreadable, with what to do', async () => {
-    installByHand(w);
-    const { rmSync } = await import('node:fs');
-    rmSync(join(w.skill, 'scripts', 'install-status.sh'));
+  it('a daemon from before the status script: unreadable, says it is too old, and what kind of install it is', async () => {
+    installOld(w);
     const s = await backend('Darwin', pathFor(w)).call('daemonStatus');
     expect(s.state).toBe('unreadable');
-    expect(s.reason).toContain('git -C');
+    expect(s.reason).toContain('版本太旧');
+    expect(s.outdated).toEqual({ form: 'checkout', target: realpathSync(w.skill) });
   });
 
   it('the scripts never see the environment of the client', async () => {
@@ -320,5 +320,222 @@ describe('update (a git checkout on macOS)', () => {
     const r = await b.call('daemonUpdate');
     expect(r.result).toBe('blocked');
     expect(r.step).toContain('github.com');
+  });
+});
+
+// GitHub#320: a daemon from before the status script. The back end judges the kind of install on its
+// own; only a git checkout is updated, with the same fast-forward as above.
+describe('a daemon from before the status script', () => {
+  const git = (dir: string, ...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.email=t@x', '-c', 'user.name=t', ...a]).toString().trim();
+  /** everything under `dir`, names and contents, to show nothing was touched */
+  const snapshot = (dir: string): string => {
+    const out: string[] = [];
+    const walk = (d: string) => {
+      for (const n of readdirSync(d).sort()) {
+        const p = join(d, n);
+        const st = lstatSync(p);
+        if (st.isDirectory()) walk(p);
+        else out.push(`${p}:${st.isSymbolicLink() ? readlinkSync(p) : readFileSync(p, 'utf8').length}`);
+      }
+    };
+    walk(dir);
+    return out.join('\n');
+  };
+
+  it('a checkout: "更新 daemon" fast-forwards it to a version with the status script, then the status reads and Mac projects are refreshed', async () => {
+    installByHand(w);
+    const path = pathFor(w);
+    connect(w, 'widgeta', 'Darwin', path);
+    const old = (() => {
+      // the install goes back to before the script, origin keeps a newer main with it
+      rmSync(w.skill, { recursive: true, force: true });
+      return installOld(w);
+    })();
+    const head = git(w.origin, 'rev-parse', 'main');
+    const b = backend('Darwin', path);
+    expect((await b.call('daemonStatus')).outdated.form).toBe('checkout');
+    const r = await b.call('daemonUpdate');
+    expect(r.result).toBe('updated');
+    expect(r.before).toBe(old);
+    expect(r.after).toBe(head);
+    expect(headOf(w.skill)).toBe(head);
+    expect(existsSync(join(w.skill, 'scripts', 'install-status.sh'))).toBe(true);
+    // the Mac project's plist went through the daemon's own refresh, as in a normal update
+    expect(r.refresh.map((x: any) => x.key)).toEqual(['widgeta']);
+    expect(r.refresh[0].result).not.toBe('unconfirmed');
+    const s = await b.call('daemonStatus');
+    expect(s.state).toBe('ok');
+    expect(s.status.daemon.version).toBe(head);
+    expect(s.status.projects.map((p: any) => p.key)).toEqual(['widgeta']);
+  });
+
+  it('a checkout with local changes, a diverged commit or a remote not on github.com: stopped with git\'s words, nothing moves', async () => {
+    const old = installOld(w);
+    const b = backend('Darwin', pathFor(w));
+    writeFileSync(join(w.skill, 'setup.sh'), readFileSync(join(w.skill, 'setup.sh'), 'utf8') + '\n# mine\n');
+    let r = await b.call('daemonUpdate');
+    expect(r.result).toBe('blocked');
+    expect(r.output).toContain('setup.sh');
+    expect(headOf(w.skill)).toBe(old);
+    git(w.skill, 'commit', '-qam', 'mine');
+    const mine = headOf(w.skill);
+    r = await b.call('daemonUpdate');
+    expect(r.result).toBe('blocked');
+    expect(r.step).toContain('不能快进');
+    expect(headOf(w.skill)).toBe(mine);
+    expect(existsSync(join(w.skill, 'scripts', 'install-status.sh'))).toBe(false);
+
+    const b2 = new HarnessBackend({
+      db: join(w.dir, 'c2.sqlite'),
+      endpoints: { api: 'http://127.0.0.1:9', web: 'http://127.0.0.1:9' },
+      credentials: new MemoryStore(),
+      env: { ...daemonEnv(w, { os: 'Darwin', path: pathFor(w) }), CAVIL_CLIENT_TEST_DAEMON_CLONE: join(w.dir, 'elsewhere.git') },
+    });
+    open.push(b2);
+    git(w.skill, 'reset', '-q', '--hard', old);
+    r = await b2.call('daemonUpdate');
+    expect(r.result).toBe('blocked');
+    expect(r.step).toContain('github.com');
+    expect(headOf(w.skill)).toBe(old);
+  });
+
+  it('pulled, but the branch it follows still has no status script: says so with the branch, never "updated"', async () => {
+    const old = installOld(w, 'oldline');
+    const b = backend('Darwin', pathFor(w));
+    const r = await b.call('daemonUpdate');
+    expect(r.result).toBe('still_old');
+    expect(r.branch).toBe('oldline');
+    expect(r.before).toBe(old);
+    expect(r.after).not.toBe(old);
+    expect(r.refresh).toEqual([]);
+    expect((await b.call('daemonStatus')).state).toBe('unreadable');
+  });
+
+  it('a plain folder, directly or through a link: "directory"; update is refused and touches nothing', async () => {
+    plainOldCopy(w, w.skill);
+    const b = backend('Darwin', pathFor(w));
+    let s = await b.call('daemonStatus');
+    expect(s.outdated).toEqual({ form: 'directory', target: realpathSync(w.skill) });
+    let before = snapshot(w.skill);
+    let r = await b.call('daemonUpdate');
+    expect(r.result).toBe('refused');
+    expect(r.output).toContain('更新不了');
+    expect(snapshot(w.skill)).toBe(before);
+
+    rmSync(w.skill, { recursive: true, force: true });
+    const target = plainOldCopy(w, join(w.dir, 'elsewhere', 'daemon'));
+    symlinkSync(target, w.skill);
+    s = await b.call('daemonStatus');
+    expect(s.outdated).toEqual({ form: 'directory', target });
+    before = snapshot(target);
+    r = await b.call('daemonUpdate');
+    expect(r.result).toBe('refused');
+    expect(snapshot(target)).toBe(before);
+  });
+
+  it('a managed release: "managed"; update is refused and touches nothing', async () => {
+    const rel = plainOldCopy(w, join(w.home, '.agents', 'releases', 'cavil-loop', 'releases', 'abc123'));
+    mkdirSync(dirname(w.skill), { recursive: true });
+    symlinkSync(rel, w.skill);
+    const b = backend('Linux', pathFor(w));
+    expect((await b.call('daemonStatus')).outdated).toEqual({ form: 'managed', target: rel });
+    const before = snapshot(rel);
+    const r = await b.call('daemonUpdate');
+    expect(r.result).toBe('refused');
+    expect(r.output).toContain('受管安装');
+    expect(snapshot(rel)).toBe(before);
+  });
+
+  it('cannot tell: git missing, git failing, the folder unreadable — "unknown" with the error; update runs nothing', async () => {
+    const old = installOld(w);
+    // git missing (the folder has .git, so git has to confirm it)
+    let b = backend('Darwin', pathFor(w, { missing: ['git'] }));
+    let s = await b.call('daemonStatus');
+    expect(s.outdated.form).toBe('unknown');
+    expect(s.outdated.error).toContain('找不到 git');
+    let r = await b.call('daemonUpdate');
+    expect(r.result).toBe('refused');
+    expect(r.output).toContain('找不到 git');
+
+    // git failing: every call is recorded, so "runs nothing" is shown by the record
+    const path = pathFor(w);
+    const calls = join(w.dir, 'git-calls');
+    wrapTool(path, 'git', `echo "$*" >> ${JSON.stringify(calls)}\necho "fatal: simulated failure" >&2\nexit 128`);
+    b = backend('Darwin', path);
+    s = await b.call('daemonStatus');
+    expect(s.outdated.form).toBe('unknown');
+    expect(s.outdated.error).toContain('simulated failure');
+    r = await b.call('daemonUpdate');
+    expect(r.result).toBe('refused');
+    // the only git calls were the two judgements (status, update), no status / fetch / merge
+    expect(readFileSync(calls, 'utf8').trim().split('\n')).toEqual([`-C ${realpathSync(w.skill)} rev-parse --is-inside-work-tree`, `-C ${realpathSync(w.skill)} rev-parse --is-inside-work-tree`]);
+    expect(headOf(w.skill)).toBe(old);
+
+    // the folder itself cannot be read: whether a .git is in it is not known
+    rmSync(w.skill, { recursive: true, force: true });
+    plainOldCopy(w, w.skill);
+    b = backend('Darwin', pathFor(w));
+    chmodSync(w.skill, 0o000);
+    try {
+      s = await b.call('daemonStatus');
+      expect(s.outdated.form).toBe('unknown');
+      expect(s.outdated.error).toContain('.git');
+      r = await b.call('daemonUpdate');
+      expect(r.result).toBe('refused');
+    } finally {
+      chmodSync(w.skill, 0o755);
+    }
+  });
+
+  it('on a normal install the back end\'s own judgement matches the status script\'s (checkout, worktree, managed, plain folder)', async () => {
+    const b = backend('Linux', pathFor(w));
+    const both = async (): Promise<[string, string]> => {
+      const s = await b.call('daemonStatus');
+      expect(s.state).toBe('ok');
+      const script = s.status.daemon.form;
+      const target = s.status.daemon.target ?? w.skill;
+      rmSync(join(target, 'scripts', 'install-status.sh'));
+      const t = await b.call('daemonStatus');
+      return [script, t.outdated.form];
+    };
+    const forms: string[] = [];
+    const reset = () => rmSync(w.skill, { recursive: true, force: true });
+
+    installByHand(w);
+    let [a, o] = await both();
+    expect(o).toBe(a);
+    forms.push(a);
+
+    reset();
+    const main = join(w.dir, 'wt-main');
+    execFileSync('git', ['clone', '-q', w.origin, main]);
+    git(main, 'worktree', 'add', '-q', '-b', 'wt', join(w.dir, 'wt'));
+    mkdirSync(dirname(w.skill), { recursive: true });
+    symlinkSync(join(w.dir, 'wt'), w.skill);
+    [a, o] = await both();
+    expect(o).toBe(a);
+    forms.push(a);
+
+    reset();
+    const rel = join(w.home, '.agents', 'releases', 'cavil-loop', 'releases', 'def456');
+    mkdirSync(dirname(rel), { recursive: true });
+    execFileSync('git', ['clone', '-q', w.origin, rel]);
+    rmSync(join(rel, '.git'), { recursive: true, force: true });
+    symlinkSync(rel, w.skill);
+    [a, o] = await both();
+    expect(o).toBe(a);
+    forms.push(a);
+
+    reset();
+    const plain = join(w.dir, 'plain');
+    execFileSync('git', ['clone', '-q', w.origin, plain]);
+    rmSync(join(plain, '.git'), { recursive: true, force: true });
+    symlinkSync(plain, w.skill);
+    [a, o] = await both();
+    expect(o).toBe(a);
+    forms.push(a);
+
+    // each kind really was covered
+    expect(forms).toEqual(['checkout', 'checkout', 'managed', 'directory']);
   });
 });
