@@ -7,6 +7,7 @@
 // when the status script read the job's state: an unreadable state offers nothing
 // that could register the job twice.
 
+import { noticeTone } from '../shared/noticeTone';
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon } from './Icons';
@@ -141,6 +142,9 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
   );
 }
 
+/** GitHub#357: the "cannot read the daemon" bar — a failed read, or the next read running */
+const daemonReadTone = (checking: boolean) => noticeTone({ busy: checking, done: false, failed: true, retrying: false, rest: 'error' });
+
 function Summary({ status, checking, busy, update, onUpdate, onCheck, onInstall }: { status: DaemonStatus | null; checking: boolean; busy: string | null; update: DaemonUpdate | null; onUpdate: () => void; onCheck: () => void; onInstall: () => void }) {
   const again = (
     <button className="ghost" data-testid="daemon-recheck" disabled={checking || !!busy} onClick={onCheck}>
@@ -173,10 +177,12 @@ function Summary({ status, checking, busy, update, onUpdate, onCheck, onInstall 
   if (status.state === 'unreadable') {
     return (
       <div data-testid="daemon-summary" data-state="unreadable">
-        <div className="banner error">
-          <Icon name="warn" />
+        {/* GitHub#357: red = the last read failed; while "重新检查" reads again it is that read running */}
+        <div className={`banner ${daemonReadTone(checking)}`} data-testid="daemon-unreadable" data-kind={daemonReadTone(checking)}>
+          {checking ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
           <span className="banner-text">
             读不到本机 daemon 的状态：<span data-testid="daemon-reason">{status.reason}</span>
+            {checking && '；正在重新检查…'}
           </span>
         </div>
         {status.precheck && (

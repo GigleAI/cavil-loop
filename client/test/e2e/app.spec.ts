@@ -6128,3 +6128,191 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   await expect(detail).toBeVisible();
   await app.close();
 });
+
+test('GitHub#357: a notice\'s colour follows what is going on — blue with a spinner while its own request runs, green then gone after 5 s, red when the last attempt failed; the same on the board and in the detail', async () => {
+  // PR #146 open and mergeable, issue #138 open, in every copy
+  for (const r of env.fake.state.repos.get('gigleai/cavil-loop')!) {
+    if (r.number === 146) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+    if (r.number === 138) Object.assign(r, { state: 'open', state_reason: null });
+  }
+  for (const p of env.fake.state.projects.get('org/gigleai/11')!)
+    for (const n of p.items.nodes) {
+      if (n.content?.number === 146) Object.assign(n.content, { state: 'OPEN', merged: false });
+      if (n.content?.number === 138) Object.assign(n.content, { state: 'OPEN', stateReason: null });
+    }
+  const { app, page } = await launch(env);
+  await page.clock.install();
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signInWithSources(page);
+  const ff = async (ms: number) => {
+    await page.clock.fastForward(ms);
+    await page.waitForTimeout(100);
+  };
+  const KEY = (n: number) => `gigleai/cavil-loop#${n}`;
+  const onBoard = (n: number) => page.locator(`[data-testid="board-bars"] [data-testid="op-notice"][data-key="${KEY(n)}"]`);
+  const inDetail = (n: number) => page.locator(`[data-testid="detail"] [data-testid="op-notice"][data-key="${KEY(n)}"]`);
+  const bg = (l: Locator) => l.evaluate((el) => getComputedStyle(el).backgroundColor);
+  /** what the bar shows left of its words: the spinner, or which icon */
+  const mark = (l: Locator) => l.evaluate((el) => (el.querySelector(':scope > .spin') ? 'spin' : (el.querySelector(':scope > svg.icon')?.getAttribute('data-icon') ?? 'none')));
+  const looks = async (l: Locator, tone: string, icon: string) => {
+    await expect(l).toHaveAttribute('data-kind', tone);
+    await expect(l).toHaveClass(new RegExp(`\\b${tone}\\b`));
+    expect(await mark(l)).toBe(icon);
+  };
+
+  // ---- 1. merge: on its way (blue, spinner) → accepted, waiting for GitHub's state (still blue, spinner, no tick) → read back (green, tick) → gone after 5 s ----
+  const releaseMerge = env.fake.holdWhen((e) => e.method === 'PUT' && e.path === '/api/repos/GigleAI/cavil-loop/pulls/146/merge');
+  await card(page, 146).click();
+  await expect(page.getByTestId('pr-status')).toContainText('可以合并');
+  await page.getByTestId('merge').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(inDetail(146).getByTestId('op-notice-text')).toHaveText('正在合并 PR #146…');
+  await looks(inDetail(146), 'busy', 'spin');
+  await expect(page.getByTestId('detail').getByTestId('detail-notices-toggle')).toHaveAttribute('data-tone', 'busy');
+  // the re-reads after the answer are held: the merge is accepted, its result not read back yet
+  const releaseReads = env.fake.holdWhen((e) => e.operation === 'CavilItemRefresh');
+  releaseMerge();
+  await expect(inDetail(146).getByTestId('op-notice-text')).toHaveText('PR #146 已合并（正在等 GitHub 的最新状态）');
+  await looks(inDetail(146), 'busy', 'spin');
+  // the same notice above the board says the same
+  await page.getByTestId('detail-close').click();
+  await expect(onBoard(146).getByTestId('op-notice-text')).toHaveText('PR #146 已合并（正在等 GitHub 的最新状态）');
+  await looks(onBoard(146), 'busy', 'spin');
+  const blue = await bg(onBoard(146));
+  await expect(onBoard(146)).not.toHaveAttribute('data-auto-dismiss', /./);
+  await shot(page, '357-01-merged-waiting-blue');
+  releaseReads();
+  await expect(onBoard(146).getByTestId('op-notice-text')).toHaveText('PR #146 已合并', { timeout: 15_000 });
+  await looks(onBoard(146), 'ok', 'check');
+  const green = await bg(onBoard(146));
+  expect(green).not.toBe(blue);
+  expect(green).toBe('rgb(218, 251, 225)');
+  await expect(onBoard(146)).toHaveAttribute('data-auto-dismiss', /counting|paused/);
+  await shot(page, '357-02-merged-green');
+  await page.mouse.move(5, 5);
+  await ff(4_000);
+  await expect(onBoard(146)).toBeVisible();
+  await ff(1_200);
+  await expect(onBoard(146)).toHaveCount(0);
+  expect(env.fake.writes().filter((w) => w.method === 'PUT' && w.path.endsWith('/pulls/146/merge'))).toHaveLength(1);
+
+  // ---- 2. a close whose answer never came: being checked (blue, "正在查证") → the check failed (red, "这次没能查证") → checked again (blue, the failure gone) → proven (green) ----
+  const late = env.fake.lateWhen((e) => e.method === 'PATCH' && e.path === '/api/repos/GigleAI/cavil-loop/issues/138');
+  env.fake.state.w.failRefresh.add(KEY(138));
+  let checkReads = 0;
+  const releaseCheck = env.fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === 138 && ++checkReads > 0);
+  await page.getByTestId('search').fill('#138');
+  await card(page, 138).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', KEY(138));
+  await page.getByTestId('close-issue').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  await expect.poll(() => late.caught()).toBe(1);
+  await expect(inDetail(138).getByTestId('op-notice-text')).toContainText('；正在查证…');
+  await looks(inDetail(138), 'busy', 'spin');
+  await expect(inDetail(138).getByTestId('op-recheck')).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+  await looks(onBoard(138), 'busy', 'spin');
+  await shot(page, '357-03-checking-blue');
+  releaseCheck();
+  await expect(onBoard(138).getByTestId('op-notice-text')).toContainText('；这次没能查证：重读这一条失败', { timeout: 15_000 });
+  await looks(onBoard(138), 'error', 'warn');
+  expect(await bg(onBoard(138))).toBe('rgb(255, 235, 233)');
+  expect(checkReads).toBeGreaterThan(0);
+  await shot(page, '357-04-check-failed-red');
+  // again: GitHub answers now, and the close has landed; its read is held for a moment
+  env.fake.state.w.failRefresh.delete(KEY(138));
+  late.land();
+  const releaseAgain = holdFirst((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === 138);
+  await onBoard(138).getByTestId('op-recheck').click();
+  await expect(onBoard(138).getByTestId('op-notice-text')).toContainText('；正在查证…');
+  await expect(onBoard(138).getByTestId('op-notice-text')).not.toContainText('这次没能查证');
+  await looks(onBoard(138), 'busy', 'spin');
+  releaseAgain();
+  await expect(onBoard(138).getByTestId('op-notice-text')).not.toContainText('查证', { timeout: 15_000 });
+  // the re-read that failed earlier is caught up by a round; then it is a plain success
+  await page.getByTestId('refresh').click();
+  await expect(onBoard(138).getByTestId('op-notice-text')).toHaveText('issue #138 已关闭（已完成）', { timeout: 15_000 });
+  await looks(onBoard(138), 'ok', 'check');
+  expect(env.fake.writes().filter((w) => w.method === 'PATCH' && w.path === '/api/repos/GigleAI/cavil-loop/issues/138')).toHaveLength(1);
+  // the pointer was on it for the click: away, then the 5 s start over
+  await page.mouse.move(5, 5);
+  await expect(onBoard(138)).toHaveAttribute('data-auto-dismiss', 'counting');
+  await ff(5_200);
+  await expect(onBoard(138)).toHaveCount(0);
+  await page.getByTestId('search').fill('');
+
+  // ---- 3. a new issue its board refused: never retried (yellow) → "再试加入看板" on its way (blue, no button to click twice) → refused again (red, why) → on its way again (blue, the reason gone) → joined (gone) ----
+  env.fake.state.w.readOnlyProjects.add('org/gigleai/11');
+  await page.getByTestId('write-entry').click();
+  await expect(page.getByTestId('new-issue-project')).toBeChecked();
+  await page.getByTestId('new-issue-title').fill('RETRY_357');
+  await page.getByTestId('confirm-ok').click();
+  const bar = page.locator('[data-testid="create-bar"][data-status="partial"]');
+  await expect(bar).toContainText('没能加入看板', { timeout: 15_000 });
+  // the new issue opened in the detail: put it away
+  await page.getByTestId('detail-close').click();
+  await looks(bar, 'warn', 'warn');
+  const joins = () => env.fake.log.filter((e) => e.operation === 'CavilAddProjectItem').length;
+  const j0 = joins();
+  const releaseJoin = holdFirst((e) => e.operation === 'CavilAddProjectItem');
+  await bar.getByTestId('create-retry-projects').click();
+  await expect(bar.getByTestId('create-retrying')).toBeVisible();
+  await expect(bar.getByTestId('create-retry-projects')).toHaveCount(0);
+  await looks(bar, 'busy', 'spin');
+  await expect.poll(joins).toBe(j0 + 1);
+  await shot(page, '357-05-retry-blue');
+  await schemeSettled(page, 'dark', 'retry running');
+  await shot(page, '357-05-retry-blue-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  releaseJoin();
+  await expect(bar.getByTestId('create-retry-error')).toContainText('cavil project', { timeout: 15_000 });
+  await looks(bar, 'error', 'warn');
+  await shot(page, '357-06-retry-failed-red');
+  await schemeSettled(page, 'dark', 'retry failed');
+  await shot(page, '357-06-retry-failed-red-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  // once more, the board takes it now
+  env.fake.state.w.readOnlyProjects.delete('org/gigleai/11');
+  const releaseJoin2 = holdFirst((e) => e.operation === 'CavilAddProjectItem');
+  await bar.getByTestId('create-retry-projects').click();
+  await expect(bar.getByTestId('create-retrying')).toBeVisible();
+  await expect(bar.getByTestId('create-retry-error')).toHaveCount(0);
+  await looks(bar, 'busy', 'spin');
+  releaseJoin2();
+  await expect(page.getByTestId('create-bar')).toHaveCount(0, { timeout: 15_000 });
+  expect(joins()).toBe(j0 + 2);
+
+  // ---- 4. the green of a result bar, in both schemes: readable, and green in dark too ----
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  const row = page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"]').first();
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  // the labels column may be switched off in the imported view
+  await page.getByTestId('open-view-panel').click();
+  const labelsCol = page.locator('[data-testid="columns-pick"] input[data-col="labels"]');
+  if (!(await labelsCol.isChecked())) await labelsCol.check();
+  await page.getByTestId('open-view-panel').click();
+  await row.locator('[data-testid="cell"][data-col="labels"]').click();
+  await row.locator('[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="Done"]').click();
+  await page.keyboard.press('Escape');
+  const result = page.getByTestId('board-action-result');
+  await expect(result).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
+  await expect(result).toHaveClass(/\bok\b/);
+  expect(await mark(result)).toBe('check');
+  await page.mouse.move(5, 5);
+  // (the pointer rests on the bar while it is looked at, so it does not go meanwhile)
+  await result.hover();
+  for (const scheme of ['light', 'dark'] as const) {
+    await schemeSettled(page, scheme, 'green result bar');
+    const r = await lowContrast(page);
+    expect(r.bad, `green result bar (${scheme})`).toEqual([]);
+    expect(await bg(result)).toBe(scheme === 'light' ? 'rgb(218, 251, 225)' : 'rgb(18, 38, 30)');
+    await shot(page, `357-07-result-green-${scheme}`);
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.mouse.move(5, 5);
+  await ff(5_200);
+  await expect(result).toHaveCount(0);
+  await app.close();
+});

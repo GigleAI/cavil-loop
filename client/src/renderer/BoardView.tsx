@@ -13,6 +13,7 @@ import { Icon, itemIcon } from './Icons';
 import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
+import { createTone, editsTone } from '../shared/noticeTone';
 import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { OpNotice } from './OpNotice';
 import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
@@ -363,11 +364,15 @@ function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; o
       setWorking(false);
     }
   };
+  // GitHub#357: blue while a resend a person asked for is running (the controller's fact, the same one the detail reads)
+  const sending = state.editsResending.length > 0;
+  const tone = editsTone(sending);
   return (
-    <div className="banner error" data-testid="edits-bar" data-count={state.editsNeedingAction}>
-      <Icon name="warn" />
+    <div className={`banner ${tone}`} data-testid="edits-bar" data-count={state.editsNeedingAction} data-kind={tone}>
+      {sending ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
       <span className="banner-text">
         有 {state.editsNeedingAction} 处修改没保存上或没确认保存到 GitHub
+        {sending && <span data-testid="edits-bar-sending">；正在重新发送…</span>}
         {items.length > 0 && (
           <>
             （
@@ -383,7 +388,7 @@ function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; o
           </>
         )}
         。{' '}
-        <button className="link" data-testid="edits-resend-all" disabled={working || !writesEnabled(state.sync)} onClick={() => void go(() => api().resendAllEdits())}>
+        <button className="link" data-testid="edits-resend-all" disabled={working || sending || !writesEnabled(state.sync)} onClick={() => void go(() => api().resendAllEdits())}>
           全部重新发送
         </button>
         <button className="link" data-testid="edits-abandon-all" disabled={working} onClick={() => void go(() => api().abandonAllEdits())}>
@@ -403,8 +408,11 @@ function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; o
 /** GitHub#229: one new issue on its way, or what came of it. Only "surely nothing was created" gives the draft back. */
 function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: string) => void; onDraft: (d: CreateJob['draft']) => void }) {
   const [copied, setCopied] = useState(false);
-  /** a retry that could not run at all (offline, signed out): said here; its outcome otherwise lives in the notice itself */
-  const [retryError, setRetryError] = useState<string | null>(null);
+  // GitHub#357: the colour, "running" and why the last attempt failed all come from the job itself
+  // (shared/noticeTone.ts), never from this bar's own memory of a click
+  const tone = createTone(job);
+  const mark = tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />;
+  const working = job.retrying === true || (job.watch ?? []).some((w) => w.busy === true);
   const close = (
     <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
       <Icon name="x" />
@@ -414,34 +422,31 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
   if (job.status === 'watching') return null;
   if (job.status === 'running')
     return (
-      <div className="banner info" data-testid="create-bar" data-status="running">
+      <div className={`banner ${tone}`} data-testid="create-bar" data-status="running" data-kind={tone}>
         <span className="spin" aria-hidden="true" />
         <span className="banner-text">正在新建「{job.title}」… 建好后自动打开它</span>
       </div>
     );
   if (job.status === 'partial')
     return (
-      <div className="banner warn closable" data-testid="create-bar" data-status="partial">
-        <Icon name="warn" />
+      <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="partial" data-kind={tone}>
+        {mark}
         <span className="banner-text">
           <b>#{job.number} 已建好</b>，{job.message?.replace(/^issue #\d+ 已建好，但/, '但') ?? ''}{' '}
           <button className="link" data-testid="create-open" onClick={() => job.createdKey && onOpen(job.createdKey)}>
             打开 #{job.number}
           </button>
-          {(job.boards ?? []).some((b) => b.state === 'missing') && (
-            <button
-              className="link"
-              data-testid="create-retry-projects"
-              onClick={() => {
-                setRetryError(null);
-                void api()
-                  .retryCreateProjects(job.id)
-                  .then((r) => setRetryError(r.ok ? null : r.error));
-              }}
-            >
-              再试加入看板
-            </button>
-          )}
+          {(job.boards ?? []).some((b) => b.state === 'missing') &&
+            (job.retrying ? (
+              <span className="small muted" data-testid="create-retrying">
+                {' '}
+                正在再试加入看板…
+              </span>
+            ) : (
+              <button className="link" data-testid="create-retry-projects" disabled={working} onClick={() => void api().retryCreateProjects(job.id)}>
+                再试加入看板
+              </button>
+            ))}
           {(job.watch ?? [])
             .filter((w) => w.state === 'human')
             .map((w) => (
@@ -450,21 +455,16 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
                 className="link"
                 data-testid="create-watch-apply"
                 data-project={w.projectKey}
-                disabled={w.busy}
-                onClick={() => {
-                  setRetryError(null);
-                  void api()
-                    .applyCreateWatch(job.id, w.projectKey)
-                    .then((r) => setRetryError(r.ok ? null : r.error));
-                }}
+                disabled={working}
+                onClick={() => void api().applyCreateWatch(job.id, w.projectKey)}
               >
                 在「{w.title}」改成「{w.label}」
               </button>
             ))}
-          {retryError && (
+          {job.actionError && !working && (
             <span className="small err" data-testid="create-retry-error">
               {' '}
-              {retryError}
+              {job.actionError}
             </span>
           )}
         </span>
@@ -473,10 +473,12 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
     );
   if (job.status === 'unknown')
     return (
-      <div className="banner warn closable" data-testid="create-bar" data-status="unknown">
-        <Icon name="warn" />
+      <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="unknown" data-kind={tone}>
+        {mark}
         <span className="banner-text">
-          <b>不确定「{job.title}」有没有建好</b>：{job.message}。GitHub 可能稍后才建出来，请先去看一眼再决定要不要重建。{' '}
+          <b>不确定「{job.title}」有没有建好</b>：{job.message}。GitHub 可能稍后才建出来，请先去看一眼再决定要不要重建。
+          {job.looking && <span data-testid="create-looking">正在查最近建的同标题 issue…</span>}
+          {job.lookError && !job.looking && <span data-testid="create-look-error">没能查到最近建的 issue：{job.lookError}。</span>}{' '}
           <button className="link" data-testid="create-web" onClick={() => void api().openExternal(`https://github.com/${job.repo}/issues?q=${encodeURIComponent('is:issue author:@me sort:created-desc')}`)}>
             在网页上看我最近建的 issue
           </button>
@@ -506,7 +508,7 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
       </div>
     );
   return (
-    <div className="banner error closable" data-testid="create-bar" data-status="failed">
+    <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="failed" data-kind={tone}>
       <Icon name="warn" />
       <span className="banner-text">
         没能新建「{job.title}」：{job.message}。{' '}

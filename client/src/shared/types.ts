@@ -284,6 +284,19 @@ export interface CreateJob {
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */
   draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean };
+  /** GitHub#357: "再试加入看板" is being carried out (set before its first wait, cleared on every way out) */
+  retrying?: boolean;
+  /**
+   * GitHub#357: why the last "再试加入看板" / "在某看板改成…" did not do it (or could not start).
+   * Cleared the moment the next one starts, so a notice never shows "running" and the failure
+   * before it together. It lives on the job, not in the bar that was clicked: every view of the
+   * notice shows the same.
+   */
+  actionError?: string | null;
+  /** GitHub#357: unknown — the look for same-title issues is running */
+  looking?: boolean;
+  /** GitHub#357: unknown — why that look could not be done */
+  lookError?: string | null;
 }
 
 export interface FieldOption {
@@ -528,6 +541,8 @@ export interface AppState {
   update: UpdateStatus | null;
   /** GitHub#229: changes not saved (refused) or not confirmed (no answer): the ones that need the user */
   editsNeedingAction: number;
+  /** GitHub#357: ids of the changes a "重新发送" a person asked for is working on right now (their notices read as running) */
+  editsResending: string[];
   /** GitHub#229: new issues being created, and their outcome until dismissed */
   creates: CreateJob[];
   /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */

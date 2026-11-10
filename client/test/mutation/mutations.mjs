@@ -1019,7 +1019,7 @@ export const MUTATIONS = [
     from: "    if (message) this.setCreate({ ...job, status: 'partial', message });", to: "    if (message) this.setCreate({ ...job, status: 'failed', message });",
     expect: ['created but a board refused it'] },
   { what: '新建：没答复时按同标题自动认领候选', file: 'src/app/controller.ts',
-    from: "      if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, candidates });", to: "      if (now && now.status === 'unknown' && session === this.session) this.setCreate(candidates.length ? { ...now, status: 'partial', createdKey: `${action.repo.toLowerCase()}#${candidates[0].number}`, number: candidates[0].number, missingProjects: [] } : { ...now, status: 'failed' });",
+    from: "      if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, candidates, looking: false, lookError: null });", to: "      if (now && now.status === 'unknown' && session === this.session) this.setCreate(candidates.length ? { ...now, status: 'partial', createdKey: `${action.repo.toLowerCase()}#${candidates[0].number}`, number: candidates[0].number, missingProjects: [] } : { ...now, status: 'failed' });",
     expect: ['no answer: "not sure"'] },
   { what: '标签 / 里程碑列表：读失败的结果也记住（之后一直报错）', file: 'src/app/controller.ts',
     from: '        this.noteAuthFailure(e);\n        return { labels: [], milestones: [], error: `读取 ${repo} 的标签 / 里程碑失败：${(e as Error).message}` };', to: '        this.noteAuthFailure(e);\n        const bad = { labels: [], milestones: [], error: `读取 ${repo} 的标签 / 里程碑失败：${(e as Error).message}` };\n        this.optionsCache.set(repo, bad);\n        return bad;',
@@ -1157,7 +1157,7 @@ export const MUTATIONS = [
     from: '  if (labelsNote) parts.push(labelsNote);\n', to: '',
     expect: ['dropped labels and a refused board are both said'] },
   { what: '交接（GitHub#245，PR #249 复审第 1 轮）：补加入看板后把标签缺失的提示一起抹掉', file: 'src/app/controller.ts',
-    from: '      this.settleCreate({ ...now, number: now.number ?? number, boards });', to: '      this.settleCreate({ ...now, number: now.number ?? number, boards, labelsNote: undefined });',
+    from: '      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, actionError: error ?? warning });', to: '      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, actionError: error ?? warning, labelsNote: undefined });',
     expect: ['dropped labels and a refused board are both said'] },
   // ---- GitHub#250, PR #255 code review round 1 ----
   { what: '证据不排除发送前已有的评论（一分钟前同内容的旧评论被认成这次发出的）', file: 'src/shared/ops.ts',
@@ -1263,7 +1263,7 @@ export const MUTATIONS = [
     ],
     expect: ['code review round 2: the source removed and added again while the create request is on its way'] },
   { what: '自动收进看板后（GitHub#258，PR #263 复审第 2 轮）：按钮在第一次等待之后才占住（同时点两次写两次）', file: 'src/app/controller.ts',
-    from: "    // taken before the first wait (code review round 2): a second click meanwhile is refused above\n    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));\n", to: "    await Promise.resolve();\n",
+    from: "    this.patchCreate(id, { actionError: null });\n    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));\n", to: "    await Promise.resolve();\n",
     expect: ['code review round 2: two clicks at once (the read held)'] },
   // ---- GitHub#260 ----
   { what: 'PR 状态图标（GitHub#260）：没列出的值（还在计算、新值）显示成绿色「没问题」', file: 'src/renderer/prStatus.ts',
