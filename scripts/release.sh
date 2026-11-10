@@ -29,6 +29,10 @@
 #                                      # Release page, one per line (read by the caller;
 #                                      # a failed read must fail the caller). stdout =
 #                                      # action= (new | page | none), sha=, tag=, week=, reason=
+#                                      # "main's tip" is origin/main as fetched here; the
+#                                      # checkout may be behind it (GitHub#329: a queued run
+#                                      # is checked out on the commit that triggered it), and
+#                                      # the same goes for --cut. A checkout beside main is refused.
 #   bash scripts/release.sh --cut <tag> --at <sha> [--page]
 #                                      # the release step: tag <sha> as <tag> exactly as
 #                                      # planned (stdout = the tag). Exit 3 = <tag> already
@@ -152,16 +156,33 @@ git fetch origin main --tags --quiet
 
 local_sha="$(git rev-parse HEAD)"
 remote_sha="$(git rev-parse origin/main)"
-if [ "$local_sha" != "$remote_sha" ]; then
+if $PLAN || [ -n "$CUT" ]; then
+    # The Release workflow's two steps (GitHub#329). An Actions job checks out the commit
+    # the run was triggered on, and main moves on while the run waits in the queue or the
+    # gate runs for hours — so here the checkout may be behind main, never beside it.
+    # main's tip is read once, by the fetch above; everything below uses that one value.
+    rc=0; git merge-base --is-ancestor "$local_sha" "$remote_sha" || rc=$?
+    case "$rc" in
+        0) ;;
+        1)  echo "❌ this checkout is not on origin/main's history" >&2
+            echo "   local:  $local_sha" >&2
+            echo "   remote: $remote_sha" >&2
+            exit 1 ;;
+        *)  echo "❌ cannot tell whether this checkout ($local_sha) is on origin/main ($remote_sha)" >&2
+            exit 1 ;;
+    esac
+elif [ "$local_sha" != "$remote_sha" ]; then
     echo "❌ local main not in sync with origin/main" >&2
     echo "   local:  $local_sha" >&2
     echo "   remote: $remote_sha" >&2
     exit 1
 fi
 
-# What gets tagged: HEAD, or with --at the commit the release gate tested. That
-# commit has to be on main (its tip or an ancestor); anything else is refused.
+# What gets tagged: HEAD — for --plan main's tip as just read, which the checkout may be
+# behind — or with --at the commit the release gate tested. That commit has to be on main
+# (its tip or an ancestor); anything else is refused.
 target="$local_sha"
+if $PLAN; then target="$remote_sha"; fi
 if [ -n "$AT" ]; then
     if ! target="$(git rev-parse -q --verify "${AT}^{commit}")"; then
         echo "❌ --at $AT is not a commit here" >&2

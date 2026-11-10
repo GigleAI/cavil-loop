@@ -409,7 +409,15 @@ EOF
 for agent in claude; do
     new=$(footer "$agent"); old=$(footer "$agent" "" "$TMP/old/scripts")
     eq quiet_visible_same "$(printf '%s\n' "$new" | sed '$d')" "$(printf '%s\n' "$old" | sed '$d')"
-    eq quiet_marker "$(marker "$new")" "$(marker "$old" | sed 's/ -->$/ ci_wait_secs=0.000 ci_waits=0 ci_wait_untimed=0 -->/')"
+    # The merge-base copy has no CI fields only until this feature is on main; from then on it
+    # prints them itself and the two markers must simply be equal (GitHub#329: the unconditional
+    # append made this red on every branch cut after the merge).
+    want=$(marker "$old")
+    case "$want" in
+        *" ci_wait_secs="*) ;;
+        *) want=$(printf '%s\n' "$want" | sed 's/ -->$/ ci_wait_secs=0.000 ci_waits=0 ci_wait_untimed=0 -->/') ;;
+    esac
+    eq quiet_marker "$(marker "$new")" "$want"
 done
 for mode in "" --kv; do
     for agent in claude codex; do
