@@ -7560,8 +7560,8 @@ stuck_nudge() {   # <工作编号> <kind> <num> <取样目标串>
 # 「打算加的标签出现在条目上」本身不算证据：人自己挂上 pending/human 和 daemon 加的长得一样，
 # 只有事件记录分得清（代码复审第 2 轮）。
 #
-# 每一次动手——首次（stuck_tick_one）和续做（stuck_resume）——之前，都是同一道核对：stuck_doc
-# 全部重读，和 .id **整串相同**才继续，不做任何换算、不跳过任何字段。
+# **每一次副作用**之前——发评论、加标签、摘标签、结束会话，首次和续做都一样——都是同一道核对
+# （stuck_step_gate）：stuck_doc 全部重读，和 .id **整串相同**才继续，不做任何换算、不跳过任何字段。
 #
 # 做不完的次数按条目累计（.fails），不随空闲周期清零：到 STUCK_STEP_MAX_FAILS 就标 .exhausted，
 # 这一条从此不再自动处理，直到它离开 doing/agent（正常交接、人改了标签）或有证据表明被重新派工
@@ -7635,15 +7635,45 @@ stuck_label_write() {   # <工作编号> <kind> <num> <labeled|unlabeled> <标�
     stuck_claim_settle "$n" "$num" || rc=$?
     return "$rc"
 }
-# 把一步从它停下的地方做下去。调用前必须已经过了「stuck_doc 与 .id 整串相同」那道核对。
-stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签>
-    local n="$1" kind="$2" num="$3" step="$4" trig="$5" add e labels sess ex=0 now cid
+# 每一次副作用（发评论、加标签、摘标签、结束会话）之前的同一道核对：stuck_doc 全部重读，和 .id
+# 整串相同才放行。上一次写入由事件记录证明是 daemon 做的，只说明**那一次写入**没问题，说明不了
+# 此刻绑定条目没被人暂停、agent 没有重新忙起来、提交没变——所以一步里面的每一次动手前都要再过
+# 一遍，不只是整步开始时过一次（代码复审第 3 轮）。
+#   0 = 一样，放行；1 = 不一样了（这一步已作废）；2 = 读不全 / 会话状态读不出（这一步留着，下一轮再核对）
+stuck_step_gate() {   # <工作编号> <kind> <num> <接下来要做的事，写日志用>
+    local n="$1" kind="$2" num="$3" doc saved
+    if ! doc=$(stuck_doc "$kind" "$num" "$n"); then
+        log "卡住检测：$kind #$num 「$4」之前读不全条目 → 先不做，下一轮再核对"
+        return 2
+    fi
+    case "$(printf '%s' "$doc" | jq -r '.sample.state')" in
+        idle|busy|absent) ;;
+        *) log "卡住检测：$kind #$num 「$4」之前会话状态读不出（$(printf '%s' "$doc" | jq -r '.sample.why')）→ 先不做，下一轮再核对"
+           return 2 ;;
+    esac
+    saved=$(jq -r --arg k "$n" '.stuck_workers[$k].id // ""' "$STATE_FILE" 2>/dev/null | jq -cS . 2>/dev/null) || saved=""
+    if [ -z "$saved" ] || [ "$saved" != "$(printf '%s' "$doc" | jq -cS .)" ]; then
+        stuck_step_drop "$n" "$kind" "$num" "「$4」之前复查，和 daemon 记下的样子不一样了（agent、会话、条目或绑定条目有变化）"
+        return 1
+    fi
+    return 0
+}
+# 把一步从它停下的地方做下去。第 6 个参数 checked = 调用方刚刚做过同样的整串核对（首次动手时
+# stuck_tick_one 做的），第一次副作用前不必重复读；之后的每一次副作用照样各过一遍。
+stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签> [checked]
+    local n="$1" kind="$2" num="$3" step="$4" trig="$5" fresh="${6:-}" add e labels sess ex=0 now cid
+    # 用法：_gate <要做的事> || return 0
+    _stuck_gate_once() {
+        if [ "$fresh" = checked ]; then fresh=""; return 0; fi
+        stuck_step_gate "$n" "$kind" "$num" "$1"
+    }
     local steps nudged restarted restarts since mins body
     add="$trig"; [ "$step" = human ] && add="$LABEL_PENDING_HUMAN"
     stuck_entry_set "$n" '.pending = $s | .trigger = $t' --arg s "$step" --arg t "$trig" || return 0
     STUCK_ACTED=1
     e=$(stuck_entry "$n")
     if [ "$step" = human ] && [ "$(printf '%s' "$e" | jq -r '(.comment_id // 0) > 0')" != true ]; then
+        _stuck_gate_once "发交人评论" || return 0
         nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
         restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
         restarts=$(printf '%s' "$e" | jq -r '.restarts // 0')
@@ -7675,6 +7705,7 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
             lab="$LABEL_AGENT_DOING"
             case ",$labels," in *",$lab,"*) ;; *) continue ;; esac
         fi
+        _stuck_gate_once "$([ "$op" = labeled ] && echo 加标签 || echo 摘标签) $lab" || return 0
         ex=0; stuck_label_write "$n" "$kind" "$num" "$op" "$lab" || ex=$?
         case "$ex" in
             0) ;;
@@ -7690,6 +7721,7 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
         stuck_entry_del "$n" || true
         return 0
     fi
+    _stuck_gate_once "结束会话" || return 0
     sess="$(tmux_session_name "$n")"
     log "🔁 卡住检测：$kind #$num 催过仍无动静 → 已翻回 $trig，结束会话 $sess，等下一轮重派"
     kill_session_procs "$sess"
@@ -7703,7 +7735,7 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
 }
 # 上一轮没做完的那一步：先核实登记着的那次写入，再过和首次动手同一道核对，然后接着做。
 stuck_resume() {   # <工作编号> <记录 JSON>
-    local n="$1" e="$2" kind num trig pend saved doc rc=0
+    local n="$1" e="$2" kind num trig pend rc=0
     kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
     trig=$(printf '%s' "$e" | jq -r '.trigger // ""'); pend=$(printf '%s' "$e" | jq -r '.pending // ""')
     case "$pend" in restart|human) ;; *) stuck_entry_set "$n" '.pending = "" | .claim = null' || true; return 0 ;; esac
@@ -7718,19 +7750,6 @@ stuck_resume() {   # <工作编号> <记录 JSON>
             *) log "卡住检测：$kind #$num 上一轮的标签写入还核实不了 → 下一轮再核实"
                stuck_step_fail "$n" "$kind" "$num"; return 0 ;;
         esac
-    fi
-    if ! doc=$(stuck_doc "$kind" "$num" "$n"); then
-        log "卡住检测：$kind #$num 有没做完的一步（$pend），但这一轮读不全条目 → 下一轮再核对"
-        return 0
-    fi
-    case "$(printf '%s' "$doc" | jq -r '.sample.state')" in
-        idle|busy|absent) ;;
-        *) log "卡住检测：$kind #$num 有没做完的一步（$pend），但会话状态读不出（$(printf '%s' "$doc" | jq -r '.sample.why')）→ 下一轮再核对"
-           return 0 ;;
-    esac
-    saved=$(jq -r --arg k "$n" '.stuck_workers[$k].id // ""' "$STATE_FILE" 2>/dev/null | jq -cS . 2>/dev/null) || saved=""
-    if [ -z "$saved" ] || [ "$saved" != "$(printf '%s' "$doc" | jq -cS .)" ]; then
-        stuck_step_drop "$n" "$kind" "$num" "和 daemon 记下的样子不一样了（agent、会话、条目或绑定条目有变化）"; return 0
     fi
     stuck_step_run "$n" "$kind" "$num" "$pend" "$trig"
     return 0
@@ -7918,7 +7937,7 @@ stuck_tick_one() {
         log "卡住检测：$kind #$num 动手前复查和开始计时时不一样（${STUCK_V}${STUCK_V_WHY:+：$STUCK_V_WHY}）→ 不动手，重新计时"
         stuck_quiet_reset "$n"; return 0
     fi
-    stuck_step_run "$n" "$kind" "$num" "$step" "$(printf '%s' "$doc" | jq -r '.trigger')"
+    stuck_step_run "$n" "$kind" "$num" "$step" "$(printf '%s' "$doc" | jq -r '.trigger')" checked
     return 0
 }
 

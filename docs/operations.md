@@ -2215,8 +2215,8 @@ Every check is a script comparison, never a model call:
   `pending/PR`, or while the bound item carries `pending/human`, the blocked label or the
   requester-bot waiting label. `pending/PR` on the issue behind a PR is the normal state after
   the PR was opened and does not protect.
-- **Everything is re-read before acting**: before ending a session, flipping a label or
-  commenting, the item, the bound item and the local session are read again and must be exactly
+- **Everything is re-read before each action**: before the comment, before each label write
+  and before ending the session, the item, the bound item and the local session are read again and must be exactly
   what they were when the clock started (open / merged, base branch, head commit, source, labels,
   latest comment and label event, worker pane and agent); otherwise nothing is done this round
   and the clock restarts.

@@ -489,7 +489,7 @@ tick 0; tick 60; tick 50
 chk "夹具 · 已经催过" "$([ "$(nudges "$N")" -ge 1 ] && echo yes || echo no)" "yes"
 I="$GD/items.json"
 # 卡住检测自己动手的次数（结束会话 / 翻回触发标签 / 转人工）
-acted() { cnt '卡住检测：.*\(结束会话\|转人工\)' "$W/state/poll.log"; }
+acted() { cnt '卡住检测：.*\(已翻回\|转人工\)' "$W/state/poll.log"; }
 # pre_case <名字> <钩子 key> <还原命令…> -- <改动命令…>
 # 改动挂在「这一轮动手前第一次重读 PR」之前：这一轮开头的快照还是旧的，只有重读看得到。
 pre_case() {
@@ -515,13 +515,13 @@ pre_case "PR 换了来源仓库" "issues_$P" jset "$I" '.[$n].head.repo.full_nam
 pre_case "PR 缺字段（来源读不到）" "issues_$P" jset "$I" '.[$n].head.repo = {full_name: "example/sw"}' --arg n "$P" -- \
                                    jset "$I" '.[$n].head.repo = null' --arg n "$P"
 pre_case "PR 多了一条评论（同一秒，updated_at 没变）" "issues_$P" true -- \
-                                   jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 77001, body: "等一下", user: {login: "maint"}}])' --arg n "$P"
+                                   jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 901, body: "等一下", user: {login: "maint"}}])' --arg n "$P"
 pre_case "PR 标签变了" "issues_$P" jset "$GD/labels.json" '.[$n] = ["doing/agent"]' --arg n "$P" -- \
                                    jset "$GD/labels.json" '.[$n] = ["doing/agent", "bug"]' --arg n "$P"
 pre_case "绑定的 issue 挂上 pending/human" "issues_$P" jset "$GD/labels.json" '.[$n] = ["pending/PR"]' --arg n "$N" -- \
                                    jset "$GD/labels.json" '.[$n] = ["pending/PR", "pending/human"]' --arg n "$N"
 pre_case "绑定的 issue 多了一条评论" "issues_$P" true -- \
-                                   jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 77003, body: "先别动", user: {login: "maint"}}])' --arg n "$N"
+                                   jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 903, body: "先别动", user: {login: "maint"}}])' --arg n "$N"
 pre_case "重读失败（PR 的评论读不到）" "issues_$P" rm -f "$GD/F_issues_${P}_comments" -- \
                                    touch "$GD/F_issues_${P}_comments"
 pre_case "重读失败（PR 的标签事件读不到）" "issues_$P" rm -f "$GD/F_issues_${P}_events" -- \
@@ -535,7 +535,7 @@ chk "对照 · 什么都没变：到点真的结束会话、翻回触发标签" 
 tick 10; sleep 1; tick 10
 chk "夹具 · 已重派" "$(labels_of "$P")/$(alive "$N")" "doing/agent/yes"
 tick 0
-hook_next "issues_$P" jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 77002, body: "我来看", user: {login: "maint"}}])' --arg n "$P"
+hook_next "issues_$P" jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 902, body: "我来看", user: {login: "maint"}}])' --arg n "$P"
 C0=$(comments_on "$P"); w0=$(writes_on "$P")
 tick 110
 chk "交人前复查 · 到达性" "$(hook_ran)" "yes"
@@ -619,7 +619,7 @@ drop_case() {   # <名字> <restart|human> <pr|issue> <变化命令…>
     # 条目被关闭时，轮询里的收尾流程会自己清掉会话，那不是卡住检测动的手：那一例不看会话
     local al; al=$(alive "$N"); [ "${DROP_SKIP_ALIVE:-0}" = 1 ] && al=yes
     chk "$name：放弃待办，目标上没有写入、没有新评论、卡住检测没结束会话" \
-        "$(( $(writes_on "$TGT") - w0 ))/$(( $(comments_on "$TGT") - c0 ))/$al/$(plog '结束会话')/$(efield "$N" '.pending // ""')/$(efield "$N" '.restarts // 0')" "0/0/yes/0//0"
+        "$(( $(writes_on "$TGT") - w0 ))/$(( $(comments_on "$TGT") - c0 ))/$al/$(plog '已翻回')/$(efield "$N" '.pending // ""')/$(efield "$N" '.restarts // 0')" "0/0/yes/0//0"
 }
 DROPN=0
 set_labels() { jset "$GD/labels.json" '.[$n] = $ARGS.positional' --arg n "$1" --args "${@:2}"; }
@@ -704,6 +704,82 @@ tick 0; tick 60; tick 50
 chk "重新派工后又卡住：从催促重新开始" "$([ "$(nudges "$N")" -gt "$G0" ] && echo yes || echo no)" "yes"
 tick 60
 chk "这一次写得上：正常重派" "$(labels_of "$N")/$(efield "$N" '.restarts')" "pending/agent/1"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+if want 13; then
+echo "【13】一步里面的每次动手之前都重新核对：两次写入之间有人暂停 / agent 又忙了 → 后面的不做"
+# 从现在数第 <k> 次 GET 这个路径之前执行一条命令
+hook_at() {   # <key> <第几次> <命令…>
+    local key="$1" off="$2" k; shift 2
+    k=$(( $(cat "$GD/count_$key" 2>/dev/null || echo 0) + off ))
+    rm -f "$GD/hook.ran"
+    { printf '%q ' "$@"; printf '\n'; printf 'touch %q\n' "$GD/hook.ran"; } > "$GD/hook_${key}_$k"
+}
+# 第 <k> 次给这个条目加标签**生效之后**执行一条命令（假 GitHub 自带的钩子）
+hook_after_add() {   # <编号> <命令…>
+    local n="$1" k; shift
+    k=$(( $(cat "$GD/count_POST_issues_${n}_labels" 2>/dev/null || echo 0) + 1 ))
+    rm -f "$GD/hook.ran"
+    { printf '%q ' "$@"; printf '\n'; printf 'touch %q\n' "$GD/hook.ran"; } > "$GD/hook_after_POST_issues_${n}_labels_$k"
+}
+pr_scn() {   # <名字> [配置行…]：PR 挂 doing/agent、issue 挂 pending/PR，已催过、间隔将满
+    scn "$@"; N=$SEQ; P=$((SEQ + 1))
+    mk_issue "$N" pending/PR; mk_pr "$P" "feature/issue-$N" "Refs #$N" doing/agent
+    mk_wt "$N"; own "$N" pending/review; mk_sess "$N" codex review
+    tick 0; tick 60; tick 50
+}
+# 13a 重派：加上触发标签之后、摘 doing/agent 之前，绑定的 issue 被人挂上 pending/human（复审第 3 轮的复现）
+pr_scn mid1
+hook_after_add "$P" "$FAKEBIN/jset" "$GD/labels.json" '.[$n] = ["pending/PR", "pending/human"]' --arg n "$N"
+tick 60
+chk "13a 到达性：暂停发生在加标签生效之后" "$(hook_ran)" "yes"
+chk "13a 暂停之后不再摘 doing/agent、不结束会话、不记重派" \
+    "$(labels_of "$P")/$(cnt "-X DELETE repos/example/sw/issues/$P/labels" "$CALLS")/$(alive "$N")/$(efield "$N" '.restarts // 0')/$(efield "$N" '.pending // ""')" \
+    "doing/agent,pending/review/0/yes/0/"
+# 13b 重派：摘掉 doing/agent 之后、结束会话之前，绑定的 issue 被暂停
+pr_scn mid2
+# 这一轮对 PR 标签事件的读取依次是：动手前核对、核实加标签、摘标签前核对、核实摘标签、结束会话前核对
+hook_at "issues_${P}_events" 4 "$FAKEBIN/jset" "$GD/labels.json" '.[$n] = ["pending/PR", "pending/human"]' --arg n "$N"
+tick 60
+chk "13b 到达性：暂停发生在摘标签之后" "$(hook_ran)/$(labels_of "$P")" "yes/pending/review"
+chk "13b 暂停之后不结束会话、不记重派" "$(alive "$N")/$(efield "$N" '.restarts // 0')/$(plog '已翻回')" "yes/0/0"
+# 13c 重派：加上触发标签之后，agent 又忙了
+pr_scn mid3
+hook_after_add "$P" bash -c "printf '%s\n' 'Working (3s • esc to interrupt)' > '$CTL/screen.issue-$N'; sleep 0.8"
+tick 60
+chk "13c 到达性" "$(hook_ran)" "yes"
+chk "13c agent 又忙了：不再摘 doing/agent、不结束会话" \
+    "$(labels_of "$P")/$(alive "$N")/$(efield "$N" '.restarts // 0')" "doing/agent,pending/review/yes/0"
+# 13d 重派：加上触发标签之后，绑定的 issue 读不到 → 这一步留着；读得到之后做完
+pr_scn mid4
+hook_after_add "$P" touch "$GD/F_issues_$N"
+tick 60
+chk "13d 读不全：后面的先不做，这一步留着" \
+    "$(hook_ran)/$(labels_of "$P")/$(alive "$N")/$(efield "$N" '.pending')" "yes/doing/agent,pending/review/yes/restart"
+rm -f "$GD/F_issues_$N"
+tick 10
+chk "13d 读得到之后：摘掉 doing/agent、结束会话、记一次重派" \
+    "$(efield "$N" '.restarts')/$(efield "$N" '.pending')/$(plog '已翻回')" "1//1"
+# 13e 交人：评论发出之后、加 pending/human 之前，绑定的 issue 被挂上等前置标签
+pr_scn mid5 'STUCK_WORKER_MAX_RESTARTS=0'
+# 这一轮对 PR 标签事件的读取：动手前核对（评论前不再重复读）、加标签前核对
+hook_at "issues_${P}_events" 2 "$FAKEBIN/jset" "$GD/labels.json" '.[$n] = ["pending/PR", "pending/blocked"]' --arg n "$N"
+tick 60
+chk "13e 到达性：变化发生在评论发出之后" "$(hook_ran)/$(comments_on "$P")" "yes/1"
+chk "13e 之后不加 pending/human、不摘 doing/agent" "$(labels_of "$P")/$(efield "$N" '.pending // ""')" "doing/agent/"
+# 13f 交人：加上 pending/human 之后、摘 doing/agent 之前，agent 又忙了
+pr_scn mid6 'STUCK_WORKER_MAX_RESTARTS=0'
+hook_after_add "$P" bash -c "printf '%s\n' 'Working (3s • esc to interrupt)' > '$CTL/screen.issue-$N'; sleep 0.8"
+tick 60
+chk "13f agent 又忙了：doing/agent 留着" "$(hook_ran)/$(labels_of "$P")" "yes/doing/agent,pending/human"
+# 对照：同样的节奏、中间什么都没变 → 两种步骤都做完
+pr_scn mid7
+tick 60
+chk "对照 · 重派：标签换好、会话结束、记一次重派" "$(labels_of "$P")/$(alive "$N")/$(efield "$N" '.restarts')" "pending/review/no/1"
+pr_scn mid8 'STUCK_WORKER_MAX_RESTARTS=0'
+tick 60
+chk "对照 · 交人：评论一条、标签换成 pending/human、会话保留" "$(comments_on "$P")/$(labels_of "$P")/$(alive "$N")" "1/pending/human/yes"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
