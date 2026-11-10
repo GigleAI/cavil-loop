@@ -281,7 +281,7 @@ BLOCKED_MAX_TRIES=10
 # 一次 PR 列表，轮询身份；文件靠本地 git fetch + diff），轮询不多一次调用。读不到写「未能读取」，绝不写成
 # 「没有」。最多列 20 个条目、每个条目 30 个文件，超出写明真实剩余数。复审不带这一段。
 # 留空 / "false" / 不写这一行 = 关闭，提示词和 GitHub 调用与以前逐字节一样。
-CONCURRENT_WORK_HINT="true"
+ENABLE_CONCURRENT_WORK_HINT="true"
 
 # ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97 / #100）──
 # For projects where another AI assistant with its own GitHub account (the "requester bot")

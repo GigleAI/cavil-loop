@@ -126,6 +126,27 @@ describe('the boxes in the frame', () => {
     expect((off.match(/<input[^>]*disabled=""/g) ?? []).length).toBe(3);
     expect([...off.matchAll(/data-task="(\d+)"/g)].length).toBe(3);
   });
+
+  it('GitHub#358: a click on its way — that one box shows what was asked for and is marked waiting; the others keep GitHub\'s state; nothing can be clicked', () => {
+    const was = renderedTaskBoxes(html);
+    for (let k = 0; k < was.length; k++) {
+      for (const want of [true, false]) {
+        const out = annotateTaskBoxes(html, false, { index: k, checked: want });
+        const tags = out.match(/<input\b[^>]*>/g)!;
+        expect(tags).toHaveLength(was.length);
+        // the waiting mark is on box k alone, and it sits on the box numbered k
+        expect(tags.map((t) => /\sdata-pending(=|\s|>)/.test(t))).toEqual(was.map((_, i) => i === k));
+        expect(tags[k]).toContain(`data-task="${k}"`);
+        expect(renderedTaskBoxes(out)).toEqual(was.map((c, i) => (i === k ? want : c)));
+        expect(tags.every((t) => /\sdisabled(=|\s|>)/.test(t))).toBe(true);
+      }
+    }
+    // no click on its way: no mark anywhere, with or without the argument
+    expect(annotateTaskBoxes(html, true, null)).toBe(annotateTaskBoxes(html, true));
+    expect(annotateTaskBoxes(html, false)).not.toContain('data-pending');
+    // a box that is not there marks nothing
+    expect(annotateTaskBoxes(html, false, { index: was.length, checked: true })).toBe(annotateTaskBoxes(html, false));
+  });
 });
 
 describe('the frame script and the two policies (GitHub#193)', () => {

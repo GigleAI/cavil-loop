@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # kind: e2e
-# 派工时告诉 worker「同时在进行的其他工作」（GitHub#340：CONCURRENT_WORK_HINT、_lib.sh 的 concurrent_work_*、
+# 派工时告诉 worker「同时在进行的其他工作」（GitHub#340：ENABLE_CONCURRENT_WORK_HINT、_lib.sh 的 concurrent_work_*、
 # prompts/concurrent-work.md、三个 dispatch 脚本里 sed 之后的 concurrent_work_fill）。
 #
 # 跑法：bash tests/concurrent-work.test.sh        （约 1 分钟）
@@ -38,7 +38,7 @@ export HOME="$SANDBOX/home"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TZ=UTC
 unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT LABEL_PENDING_BLOCKED GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN
 unset DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE DISPATCH_AUTOPILOT_PR DISPATCH_PROMPT_KIND DISPATCH_PENDING_AGENT_LABEL
-unset CONCURRENT_WORK_HINT BASE_BRANCH LABEL_PENDING_REVIEW TRUSTED_REPOS
+unset ENABLE_CONCURRENT_WORK_HINT CONCURRENT_WORK_HINT BASE_BRANCH LABEL_PENDING_REVIEW TRUSTED_REPOS
 export FAKE_GH_REPO="example/cw"
 
 pass=0; fail=0
@@ -239,7 +239,7 @@ without_section() { awk '/^# 同时在进行的其他工作/ { exit } { print }'
 list_calls() { grep -c 'issues?state=open&labels=\|pulls?state=open' "$CALLS" 2>/dev/null || true; }
 
 echo "【1】有别的条目：整段清单、四个入口一致、其余部分不变"
-setup "$SANDBOX/s1"; conf 'CONCURRENT_WORK_HINT="true"'
+setup "$SANDBOX/s1"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
 gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
 dispatch "$NEW" new; S1_NEW="$OUT"; S1_RC="$DISPATCH_RC"; S1_CALLS="$(list_calls)"
 dispatch "$NEW" cmt; S1_CMT="$OUT"
@@ -310,7 +310,7 @@ for trio in "新 issue:$S1_NEW:$OFF_NEW" "issue 评论:$S1_CMT:$OFF_CMT" "PR 评
 done
 
 echo "【2】自己这一条不在清单里"
-setup "$SANDBOX/s2"; conf 'CONCURRENT_WORK_HINT="true"'
+setup "$SANDBOX/s2"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
 gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
 dispatch "$NEW" cmt 934010
 listing "$OUT" > "$W/got"
@@ -326,7 +326,7 @@ chk "PR 入口派没绑 issue 的 PR #934013：清单里没有它" "$(grep -c '9
 chk "…别的 10 行还在（含 #934010 那一行）" "$(grep -c '^- ' "$W/got")/$(grep -c '^- #934010（PR #934011' "$W/got")" "10/1"
 
 echo "【3】确实没有别的条目"
-setup "$SANDBOX/s3"; conf 'CONCURRENT_WORK_HINT="true"'
+setup "$SANDBOX/s3"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
 gh_state "$(merge "$(self_items)" '{"934016": {"kind":"issue","state":"open","title":"等人的条目"}, "934020": {"kind":"issue","state":"closed","title":"已关闭"}}')" \
          "$(merge "$(self_labels)" '{"934016": ["pending/human"], "934020": ["doing/agent"]}')"
 dispatch "$NEW" new
@@ -338,7 +338,7 @@ chk "PR 入口同样" "$(listing "$OUT")" "目前没有其他进行中的条目�
 echo "【4】读不到 ≠ 没有"
 UNREAD="未能读取当前进行中的其他工作（不代表没有）；交接前照常做冲突检查。"
 for how in "条目列表失败:F_issues" "PR 列表失败:F_pulls" "条目列表读到一半失败:partial_issues"; do
-    setup "$SANDBOX/s4"; conf 'CONCURRENT_WORK_HINT="true"'
+    setup "$SANDBOX/s4"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
     gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
     : > "$GD/${how#*:}"
     dispatch "$NEW" new
@@ -350,12 +350,12 @@ for how in "条目列表失败:F_issues" "PR 列表失败:F_pulls" "条目列表
     chk "${how%%:*}：列表请求确实发出去了" "$([ "$(list_calls)" -gt 0 ] && echo yes)" "yes"
 done
 # 没有失败注入时同一个场景能读到（上面三条不是因为夹具本身读不到）
-setup "$SANDBOX/s4"; conf 'CONCURRENT_WORK_HINT="true"'
+setup "$SANDBOX/s4"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
 gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
 dispatch "$NEW" new
 chk "同一场景不注入失败：列出 11 行" "$(listing "$OUT" | grep -c '^- ')" "11"
 # 远端分支读不到：origin 指到一个不存在的地址
-setup "$SANDBOX/s4g"; conf 'CONCURRENT_WORK_HINT="true"'
+setup "$SANDBOX/s4g"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
 gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
 git -C "$W/project" remote set-url origin "$W/no-such-origin.git"
 dispatch "$NEW" cmt
@@ -365,7 +365,7 @@ chk "…有分支的 8 行都写「改动文件未能读取」" "$(grep -c '改�
 chk "…没有一行写成「还没有推送改动」或列出文件" "$(grep -c '还没有推送改动\|已改 ' "$W/got")" "0"
 
 echo "【5】条目截断"
-setup "$SANDBOX/s5"; conf 'CONCURRENT_WORK_HINT="true"'
+setup "$SANDBOX/s5"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
 many_items=$(for i in $(seq 1 25); do printf '{"%d": {"kind":"issue","state":"open","title":"条目 %d"}}\n' $((934100 + i)) "$i"; done | jq -s 'add')
 many_labels=$(for i in $(seq 1 25); do printf '{"%d": ["doing/agent"]}\n' $((934100 + i)); done | jq -s 'add')
 gh_state "$(merge "$(self_items)" "$many_items")" "$(merge "$(self_labels)" "$many_labels")"
@@ -375,7 +375,7 @@ chk "25 个条目：列出 20 个（编号最小的 20 个）" "$(grep -c '^- ' 
 chk "…并写明真实剩余数" "$(tail -1 "$W/got")" "另有 5 个条目未列出。"
 
 echo "【6】配置里的主干是别的分支：没有 PR 的条目仍相对 main"
-setup "$SANDBOX/s6"; conf 'CONCURRENT_WORK_HINT="true"' 'BASE_BRANCH="release/1.2"'
+setup "$SANDBOX/s6"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"' 'BASE_BRANCH="release/1.2"'
 gh_state "$(self_items)" "$(self_labels)"
 # 真实的新 issue 入口给 N_NEW 建工作分支；在里面提交一个文件并推上去
 dispatch "$NEW" new
@@ -413,7 +413,7 @@ run_off() {   # <根> <输出目录> <多出来的配置行...>
 }
 if ! compat_skip "开关关着时四个入口的提示词和 GitHub 调用与改动前" "$OLD" "$NEW" scripts prompts; then
     run_off "$OLD" "$SANDBOX/off-old"
-    for v in "不写这一行:" "写成空值:CONCURRENT_WORK_HINT=\"\"" "写成 false:CONCURRENT_WORK_HINT=\"false\""; do
+    for v in "不写这一行:" "写成空值:ENABLE_CONCURRENT_WORK_HINT=\"\"" "写成 false:ENABLE_CONCURRENT_WORK_HINT=\"false\""; do
         what="${v%%:*}"; line="${v#*:}"
         if [ -n "$line" ]; then run_off "$NEW" "$SANDBOX/off-new" "$line"; else run_off "$NEW" "$SANDBOX/off-new"; fi
         for k in new cmt pr sub; do
@@ -430,6 +430,15 @@ chk "关着时不读任何列表" "$(grep -c 'issues?state=open&labels=\|pulls?s
 chk "…而派工确实跑了（四份提示词都写出来了，也确实调过 GitHub）" \
     "$(ls "$SANDBOX/off-new" | grep -c '\.md$')/$([ "$(wc -l < "$SANDBOX/off-new/calls.log")" -gt 0 ] && echo yes)" "4/yes"
 chk "关着时提示词里没有这一段" "$(cat "$SANDBOX"/off-new/*.md | grep -c '同时在进行的其他工作')" "0"
+# 改名前的名字（GitHub#356）不再认：配置里只写着它，和关着逐字节一样
+rm -rf "$SANDBOX/off-ref"; cp -r "$SANDBOX/off-new" "$SANDBOX/off-ref"
+run_off "$NEW" "$SANDBOX/off-new" 'CONCURRENT_WORK_HINT="true"'
+for k in new cmt pr sub; do
+    if [ ! -s "$SANDBOX/off-new/$k.md" ]; then bad "只写旧名字：$k 入口没写出提示词"; continue; fi
+    if cmp -s "$SANDBOX/off-ref/$k.md" "$SANDBOX/off-new/$k.md"; then ok "只写旧名字：$k 入口的提示词和关着时逐字节一致"
+    else bad "只写旧名字：$k 入口的提示词和关着时不同" "$(diff "$SANDBOX/off-ref/$k.md" "$SANDBOX/off-new/$k.md" | head -6)"; fi
+done
+chk "只写旧名字：不读任何列表" "$(grep -c 'issues?state=open&labels=\|pulls?state=open' "$SANDBOX/off-new/calls.log" || true)" "0"
 # 项目模板自己写了占位符、开关关着
 setup "$SANDBOX/s7p"; conf
 gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
@@ -448,7 +457,7 @@ git -C "$SANDBOX/seed" push -q origin "+$(git -C "$SANDBOX/seed" rev-parse main)
 echo "【8】清单生成中途出致命错误：不结束调用它的脚本，不留半截清单"
 # 派工脚本开着 set -euo pipefail。这里在同样开着它的 shell 里加载真实的公共库，把读取那一步换成
 # 「先写出一行、再触发未定义变量」——填充函数必须照常返回，占位符换成「未能读取」
-setup "$SANDBOX/s8"; conf 'CONCURRENT_WORK_HINT="true"'
+setup "$SANDBOX/s8"; conf 'ENABLE_CONCURRENT_WORK_HINT="true"'
 printf 'A\n${CONCURRENT_WORK}\nB\n' > "$W/p.md"
 cat > "$W/fatal.sh" <<'SH'
 set -euo pipefail
