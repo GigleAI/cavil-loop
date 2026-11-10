@@ -16,6 +16,7 @@ import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { EditMark, Item } from '../../src/shared/types';
 import type { WriteAction } from '../../src/shared/actions';
 import { noteEditOf, stepNoteEdits } from '../../src/renderer/noteEdits';
+import { createTone } from '../../src/shared/noticeTone';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -749,6 +750,8 @@ describe('a new issue does not hold the dialog: four outcomes', () => {
     expect(now.boards?.map((b) => [b.projectKey, b.state])).toEqual([[PROJECT_KEY, 'fieldsFailed']]);
     expect(now.message).toMatch(/字段没设上 「cavil project」/);
     expect(now.message).not.toMatch(/second board/);
+    // PR #361 code review round 1: B's success does not hide what the first retry left on A — still red
+    expect(createTone(now)).toBe('error');
     // nothing left to retry on A: the notice stays until the person closes it
     expect(c.getState().creates.find((j) => j.id === job.id)!.boards!.some((b) => b.state === 'missing')).toBe(false);
     c.dismissCreate(job.id);

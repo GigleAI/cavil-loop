@@ -24,6 +24,9 @@
   --err-fg: #d1242f;
   --info-bg: #ddf4ff;
   --info-border: #54aeff;
+  --ok-bg: #dafbe1;
+  --ok-border: #4ac26b;
+  --ok-icon: #1a7f37;
   --shadow-sm: 0 1px 0 rgba(31, 35, 40, 0.04), 0 1px 2px rgba(31, 35, 40, 0.06);
   --shadow-lg: 0 12px 32px rgba(31, 35, 40, 0.14), 0 0 0 1px rgba(31, 35, 40, 0.06);
   --overlay: rgba(31, 35, 40, 0.35);
@@ -59,6 +62,9 @@
     --err-fg: #f85149;
     --info-bg: #0f2645;
     --info-border: #1f6feb;
+    --ok-bg: #12261e;
+    --ok-border: #238636;
+    --ok-icon: #3fb950;
     --shadow-sm: 0 0 0 1px rgba(255, 255, 255, 0.02);
     --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px #3d444d;
     --overlay: rgba(1, 4, 9, 0.6);
@@ -110,14 +116,20 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .count { display: inline-block; color: var(--muted); background: var(--hover); border-radius: 999px; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-/* ---- notice bars: one shape for yellow (warn), red (error), blue (info) ---- */
+/* ---- notice bars: one shape for every colour. GitHub#357: which one a notice gets is decided in
+   src/shared/noticeTone.ts alone — busy (blue, spinner): something of its own is running; ok (green): all
+   went through, goes after 5 s; warn (yellow): the app keeps retrying; error (red): refused, or the last
+   attempt failed; info (blue, no spinner): a plain remark ---- */
 .banner { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border: 1px solid; border-radius: 8px; margin: 0 16px 8px; color: var(--fg); }
 .banner > .icon { margin-top: 2px; }
 .banner.warn { background: var(--warn-bg); border-color: var(--warn-border); }
 .banner.warn > .icon { color: var(--warn-icon); }
 .banner.error { background: var(--err-bg); border-color: var(--err-border); }
 .banner.error > .icon { color: var(--err-fg); }
-.banner.info { background: var(--info-bg); border-color: var(--info-border); }
+.banner.info, .banner.busy { background: var(--info-bg); border-color: var(--info-border); }
+.banner.ok { background: var(--ok-bg); border-color: var(--ok-border); }
+.banner.ok > .icon { color: var(--ok-icon); }
+.banner > .spin { flex: none; margin-top: 4px; }
 .banner .banner-text { flex: 1; min-width: 0; }
 .banner-close { flex: none; border: none; background: transparent; color: var(--muted); padding: 0 2px; min-height: 0; cursor: pointer; }
 .banner-close:hover:not(:disabled), .banner-close:focus-visible { color: var(--fg); background: transparent; }

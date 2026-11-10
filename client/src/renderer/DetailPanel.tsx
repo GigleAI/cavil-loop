@@ -23,6 +23,7 @@ import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
 import { AUTO_DISMISS_MS, opAutoDismissable, opDraftLeft, opLockOf, opReusableDraft, opText, opTone, type OpRecord } from '../shared/ops';
 import { OpNotice } from './OpNotice';
+import { editsTone, resultTone } from '../shared/noticeTone';
 import { useAutoDismiss } from './autoDismiss';
 import { prStatusIcons, type PrTone } from './prStatus';
 
@@ -65,8 +66,9 @@ export function ResultBanner({
 }) {
   const auto = useAutoDismiss(!!note && note.kind === 'ok' && !!onExpire, NOTE_AUTO_DISMISS_MS, () => onExpire?.(), note);
   if (!note) return null;
+  // GitHub#357: green when it went through (and then it goes by itself: every caller passes onExpire)
   return (
-    <div className={`banner ${note.kind === 'error' ? 'error' : note.kind === 'warn' ? 'warn' : 'info'}`} data-testid={testid} data-kind={note.kind} {...auto}>
+    <div className={`banner ${resultTone(note.kind)}`} data-testid={testid} data-kind={note.kind} {...auto}>
       <Icon name={note.kind === 'ok' ? 'check' : 'warn'} />
       <span className="banner-text">{note.text}</span>
       {onClose && (
@@ -110,10 +112,13 @@ function at(ms: number): string {
  * reads GitHub first and is held back when somebody changed it (or it could not be read):
  * then only an explicit "overwrite anyway" / "send anyway" sends it.
  */
-export function EditIssues({ marks, canWrite }: { marks: EditMark[]; canWrite: boolean }) {
+export function EditIssues({ marks, canWrite, resending }: { marks: EditMark[]; canWrite: boolean; resending: readonly string[] }) {
   const [working, setWorking] = useState<string | null>(null);
   const open = marks.filter((m) => m.status === 'failed' || m.status === 'unconfirmed');
   if (!open.length) return null;
+  // GitHub#357: blue while a resend of one of them is running (the fact is the controller's, so the board's bar agrees)
+  const sending = open.some((m) => resending.includes(m.id));
+  const tone = editsTone(sending);
   const go = async (id: string, fn: () => Promise<unknown>) => {
     setWorking(id);
     try {
@@ -123,10 +128,11 @@ export function EditIssues({ marks, canWrite }: { marks: EditMark[]; canWrite: b
     }
   };
   return (
-    <div className="banner error edit-issues" data-testid="edit-issues">
-      <Icon name="warn" />
+    <div className={`banner ${tone} edit-issues`} data-testid="edit-issues" data-kind={tone}>
+      {sending ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
       <div className="banner-text">
         <b>{open.length} 处修改{open.some((m) => m.status === 'failed') ? '没保存上' : '没确认'}</b>
+        {sending && <span data-testid="edit-issues-sending">；正在重新发送…</span>}
         {open.map((m) => (
           <div key={m.id} className="edit-issue" data-testid="edit-issue" data-id={m.id} data-edit={m.status} data-field={m.field}>
             <div>
@@ -152,11 +158,11 @@ export function EditIssues({ marks, canWrite }: { marks: EditMark[]; canWrite: b
             )}
             <div className="row" style={{ margin: '2px 0 0' }}>
               {m.hold ? (
-                <button className="link" data-testid="edit-force" disabled={!canWrite || working !== null} onClick={() => void go(m.id, () => api().resendEdit(m.id, true))}>
+                <button className="link" data-testid="edit-force" disabled={!canWrite || working !== null || sending} onClick={() => void go(m.id, () => api().resendEdit(m.id, true))}>
                   {m.hold.kind === 'changed' ? '仍然覆盖' : '仍然发送'}
                 </button>
               ) : (
-                <button className="link" data-testid="edit-resend" disabled={!canWrite || working !== null} onClick={() => void go(m.id, () => api().resendEdit(m.id))}>
+                <button className="link" data-testid="edit-resend" disabled={!canWrite || working !== null || sending} onClick={() => void go(m.id, () => api().resendEdit(m.id))}>
                   重新发送
                 </button>
               )}
@@ -241,6 +247,7 @@ function HeadOp({ r }: { r: OpRecord }) {
   );
 }
 
+/** the notices button: the plain blue of a remark shows as the quiet check it always was */
 export type NoticeTone = 'busy' | 'error' | 'warn' | 'ok';
 
 /**
@@ -420,6 +427,8 @@ export function DetailPanel({
       const mine = session.begin('detail');
       const seen = itemRef.current?.updatedAt ?? null;
       setLoading(true);
+      // GitHub#357: a read a person asked for starts over — the failure of the one before is not shown while it runs
+      if (!quiet) setLoadError(null);
       const r = await api().loadDetail(itemKey);
       if (!mine()) return;
       setLoading(false);
@@ -933,7 +942,8 @@ export function DetailPanel({
   const loadErrIn = Boolean(loadError && detail);
   const noticeCount = liveOps.length + draftOps.length + openMarks.length + (noteIn ? 1 : 0) + (loadErrIn ? 1 : 0);
   const opTones = liveOps.map((r) => opTone(r));
-  const noticeTone: NoticeTone = opTones.includes('busy')
+  // GitHub#357: the button follows the same facts as the notices behind it
+  const noticeTone: NoticeTone = opTones.includes('busy') || openMarks.some((m) => state.editsResending.includes(m.id))
     ? 'busy'
     : opTones.includes('error') || openMarks.length > 0 || loadErrIn || note?.kind === 'error'
       ? 'error'
@@ -1006,7 +1016,7 @@ export function DetailPanel({
                 </button>
               </div>
             ))}
-            <EditIssues marks={marks} canWrite={canWrite} />
+            <EditIssues marks={marks} canWrite={canWrite} resending={state.editsResending} />
           </DetailNotices>
         )}
         {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}
