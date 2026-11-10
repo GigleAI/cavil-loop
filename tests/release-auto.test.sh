@@ -31,6 +31,8 @@ git init -q --bare "$REMOTE"
 git clone -q "$REMOTE" "$WORK" 2>/dev/null
 
 commit() {
+    # The clone may be a workflow checkout left on an older commit (see fresh): catch up first.
+    git -C "$WORK" pull -q --ff-only origin main 2>/dev/null || true
     echo "$1" >> "$WORK/file"
     git -C "$WORK" add file
     git -C "$WORK" commit -qm "$1"
@@ -162,9 +164,13 @@ step "Create GitHub Release" > "$TMP/create.sh"
 mkdir -p "$WORK/scripts"; cp "$RELEASE_SH" "$WORK/scripts/release.sh"
 git -C "$WORK" add scripts; git -C "$WORK" commit -qm "add release.sh"; git -C "$WORK" push -q origin main
 CLONES=0
-fresh() {  # a new checkout of the remote, like every Actions run gets
+# A new checkout, like every Actions job gets. With a commit: the checkout a job of a run
+# triggered on that commit gets — local main on that commit, origin/main wherever the remote
+# is by now (actions/checkout checks out github.sha, not the branch tip; GitHub#329).
+fresh() {
     CLONES=$((CLONES + 1)); WORK="$TMP/run$CLONES"
     git clone -q "$REMOTE" "$WORK" 2>/dev/null
+    if [ -n "${1:-}" ]; then git -C "$WORK" reset -q --hard "$1"; fi
 }
 runstep() {  # runstep <script> → $RC, GITHUB_ENV content in $TMP/env, GITHUB_OUTPUT in $TMP/output
     : > "$TMP/env"; : > "$TMP/output"; rm -f "$TMP/gh-args"
@@ -205,9 +211,15 @@ released() { grep -qxF "$1" "$GH_RELEASES"; }
 title_arg() { awk 'prev == "--title" { print; exit } { prev = $0 }' "$TMP/gh-args"; }
 # One whole run: plan → (gate, not run here) → cut → notes → create, stopping where
 # Actions would. MOVE_MAIN=<msg> pushes a new commit to main between plan and cut,
-# like a merge landing while the gate runs; the release job's fresh checkout sees it.
+# like a merge landing while the gate runs. MOVE_BEFORE_PLAN="<msg> …" pushes commits after
+# the run was triggered and before its plan job starts, like merges landing while the run
+# waits in the queue (GitHub#329). Every job of the run checks out the commit it was
+# triggered on (TRIGGER_SHA), whatever main did since.
 fullrun() {
-    fresh; runstep "$TMP/plan.sh"; PLAN_RC=$RC; CUT_OUT="$(cat "$TMP/out")"
+    local m
+    TRIGGER_SHA="$(git -C "$REMOTE" rev-parse main)"
+    for m in ${MOVE_BEFORE_PLAN:-}; do commit "$m"; done
+    fresh "$TRIGGER_SHA"; runstep "$TMP/plan.sh"; PLAN_RC=$RC; CUT_OUT="$(cat "$TMP/out")"
     PLAN_SHA="$(sed -n 's/^sha=//p' "$TMP/output")"; PLAN_WORK="$(sed -n 's/^work=//p' "$TMP/output")"
     PLAN_TAG="$(sed -n 's/^tag=//p' "$TMP/output")"; PLAN_ACTION="$(sed -n 's/^action=//p' "$TMP/output")"
     tag=""; export tag; NOTES=""; CREATE_RC=""; CUT_RC=$PLAN_RC
@@ -223,7 +235,7 @@ fullrun() {
     # crosses midnight). The cut step must not care: it only uses what the plan decided.
     # AFTER_CHECKOUT: run once the release job has its checkout, before it cuts (a tag deleted
     # or moved on the remote meanwhile).
-    fresh; if [ -n "${AFTER_CHECKOUT:-}" ]; then eval "$AFTER_CHECKOUT"; fi
+    fresh "$TRIGGER_SHA"; if [ -n "${AFTER_CHECKOUT:-}" ]; then eval "$AFTER_CHECKOUT"; fi
     CAVIL_RELEASE_NOW="${CUT_NOW:-${CAVIL_RELEASE_NOW:-}}" RELEASE_SHA="$PLAN_SHA" runstep "$TMP/cut.sh"; CUT_RC=$RC; CUT_OUT="$CUT_OUT
 $(cat "$TMP/out")"
     tag="$(sed -n 's/^tag=//p' "$TMP/env")"; export tag
@@ -341,6 +353,71 @@ check "gate passes → the release job's check passes" "$GUARD_RC" 0
 check "… and the planned commit is released" "$tag" "release/v$W.6"
 check "… on the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$W.6^{commit}")" "$PLAN_SHA"
 check "… with its page" "$CREATE_RC" 0
+
+echo "-- main moves while the run waits in the queue → the plan takes main's tip (GitHub#329)"
+commit q1
+Q1="$(git -C "$REMOTE" rev-parse main)"
+MOVE_BEFORE_PLAN="q2 q3" fullrun
+check "the run's checkouts are on the commit it was triggered on" "$TRIGGER_SHA:$(git -C "$WORK" rev-parse HEAD)" "$Q1:$Q1"
+check "plan succeeds" "$PLAN_RC:$PLAN_WORK:$PLAN_ACTION" "0:true:new"
+check "plan: main's tip, two commits past the trigger" "$PLAN_SHA" "$(git -C "$REMOTE" rev-parse main)"
+[ "$PLAN_SHA" != "$Q1" ] && ok "… which is not the triggering commit" || bad "… which is not the triggering commit"
+check "tag exported" "$tag" "release/v$W.7"
+check "tag on the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$W.7^{commit}")" "$PLAN_SHA"
+has "- q3 (" "$NOTES" "notes list the commits that landed in the queue"
+check "Release created" "$CREATE_RC" 0
+released "release/v$W.7" && ok "Release page exists" || bad "Release page exists"
+
+echo "-- … and again while the gate runs → still the planned commit"
+commit q4
+Q4="$(git -C "$REMOTE" rev-parse main)"
+MOVE_BEFORE_PLAN=q5 MOVE_MAIN=q6 fullrun
+check "tag exported" "$tag" "release/v$W.8"
+check "tag on the planned commit" "$(git -C "$REMOTE" rev-parse "release/v$W.8^{commit}")" "$PLAN_SHA"
+check "planned commit = main when the plan ran (q5)" "$(git -C "$REMOTE" log -1 --format=%s "$PLAN_SHA")" q5
+check "main has moved past it (q6)" "$(git -C "$REMOTE" log -1 --format=%s main)" q6
+check "the release job's checkout was the triggering commit (q4)" "$(git -C "$WORK" rev-parse HEAD)" "$Q4"
+has "- q5 (" "$NOTES" "notes list the tested commit"
+lacks "- q6 (" "$NOTES" "notes leave out the commit that landed during the gate"
+check "Release created" "$CREATE_RC" 0
+
+echo "-- a checkout beside main (not behind it) → plan and cut refuse"
+TAGS_BEFORE="$(remote_tags_all)"; PAGES_BEFORE="$(wc -l < "$GH_RELEASES")"
+MAIN_NOW="$(git -C "$REMOTE" rev-parse main)"
+fresh "$Q4"; echo beside >> "$WORK/file"; git -C "$WORK" commit -qam beside
+runstep "$TMP/plan.sh"
+check "plan step fails, writes no decision" "$RC:$(cat "$TMP/output")" "1:"
+has "not on origin/main's history" "$(cat "$TMP/err")" "plan says why"
+RELEASE_SHA="$MAIN_NOW" PLAN_TAG="release/v$W.9" PLAN_ACTION=new runstep "$TMP/cut.sh"
+check "cut step fails, exports no tag" "$RC:$(cat "$TMP/env")" "1:"
+has "not on origin/main's history" "$(cat "$TMP/err")" "cut says why"
+check "no tag, no page" "$(remote_tags_all):$(wc -l < "$GH_RELEASES")" "$TAGS_BEFORE:$PAGES_BEFORE"
+
+echo "-- cannot tell whether the checkout is on main → fail, never guess"
+mkdir -p "$TMP/gitmb"
+printf '#!/usr/bin/env bash\n[ "$1" = merge-base ] && { echo "fatal: injected" >&2; exit 128; }\nexec %q "$@"\n' "$(command -v git)" > "$TMP/gitmb/git"
+chmod +x "$TMP/gitmb/git"
+fresh "$Q4"
+PATH="$TMP/gitmb:$PATH" run --plan --trigger manual --released "$GH_RELEASES"
+check "plan fails, writes no plan" "$RC:$(cat "$TMP/out")" "1:"
+has "cannot tell whether this checkout" "$(cat "$TMP/err")" "plan says the read failed"
+PATH="$TMP/gitmb:$PATH" run --cut "release/v$W.9" --at "$MAIN_NOW"
+check "cut fails, prints no tag" "$RC:$(cat "$TMP/out")" "1:"
+check "no tag, no page" "$(remote_tags_all):$(wc -l < "$GH_RELEASES")" "$TAGS_BEFORE:$PAGES_BEFORE"
+run --plan --trigger manual --released "$GH_RELEASES"
+check "same checkout, reads work: plan main's tip (q6)" "$RC:$(sed -n 's/^action=//p;s/^sha=//p;s/^tag=//p' "$TMP/out" | tr '\n' ' ')" "0:new $MAIN_NOW release/v$W.9 "
+
+echo "-- by hand, behind main → refused as before (only --plan / --cut may be behind)"
+printf '%s\n' "❌ local main not in sync with origin/main" "   local:  $Q4" "   remote: $MAIN_NOW" > "$TMP/want-err"
+for mode in --dry-run --auto --pending "--auto --at $Q4" ""; do
+    # shellcheck disable=SC2086
+    STDIN="$TMP/yes" run $mode
+    check "[${mode:-interactive}] exit 1, nothing on stdout" "$RC:$(cat "$TMP/out")" "1:"
+    check "[${mode:-interactive}] the same message" "$(cat "$TMP/err")" "$(cat "$TMP/want-err")"
+done
+check "no tag, no page" "$(remote_tags_all):$(wc -l < "$GH_RELEASES")" "$TAGS_BEFORE:$PAGES_BEFORE"
+fullrun
+check "a run on main's tip still releases it" "$tag:$(git -C "$REMOTE" rev-parse "release/v$W.9^{commit}"):$CREATE_RC" "release/v$W.9:$MAIN_NOW:0"
 
 echo "-- a pushed tag: the plan step gates that tag's commit"
 fresh; git -C "$WORK" tag "release/v$TODAY.99" HEAD~1
