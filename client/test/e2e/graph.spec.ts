@@ -151,6 +151,12 @@ test('GitHub#350: boxes, arrows and their colours, the three kinds of "not in th
   // control: a child is not inside another parent's box
   expect(await inside(boxOf(page, K(311)), nodeOf(page, K(350)))).toBe(false);
   await expect(boxOf(page, K(311)).getByTestId('graph-box-progress')).toHaveText('3 / 3 子项完成');
+  // a parent shows its labels like any node (PR #367 review round 1): the box of #346, and a plain node, both from the items' labels
+  const labelsOf = async (n: number) => (await items(page)).find((i) => i.key === K(n))!.labels.map((l) => l.name);
+  const parentLabels = await labelsOf(346);
+  expect(parentLabels.length).toBeGreaterThan(0);
+  expect(await boxOf(page, K(346)).locator('.gbox-head .label').allTextContents()).toEqual(parentLabels);
+  expect(await nodeOf(page, K(350)).locator('.label').allTextContents()).toEqual(await labelsOf(350));
 
   // ---- arrows: from the blocker to the blocked; open = amber and bold, closed = grey and thin ----
   const open = edgeOf(page, 349, 350);
@@ -357,6 +363,13 @@ test('GitHub#350: pan, zoom, fit, the minimap; an item gone keeps the view where
 
   // look at #315, then items with relations go (#346 and its sub-issues leave the board): a new layout, #315 stays put
   await page.getByTestId('graph-fit').click();
+  // drag #315 to the middle of the canvas: the node nearest the middle is the one kept in place
+  const n315 = (await nodeOf(page, K(315)).boundingBox())!;
+  await page.mouse.move(n315.x + n315.width / 2, n315.y + n315.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.getByTestId('graph-summary')).toHaveCount(0);
   const at = (await nodeOf(page, K(315)).boundingBox())!;
   /** where the layout put #315 (graph coordinates, before pan / zoom) */
   const placed = () => nodeOf(page, K(315)).evaluate((e) => [(e as HTMLElement).style.left, (e as HTMLElement).style.top].join(' '));
@@ -491,5 +504,49 @@ test('GitHub#350: a graph too big to read at one screen opens on the open part, 
   await page.getByTestId('graph-show-all').click();
   await expect(page.getByTestId('graph-big')).toHaveCount(0);
   expect(parseInt((await page.getByTestId('graph-zoom').textContent())!)).toBeLessThan(60);
+
+  // PR #367 review round 1: a node near the bottom of the canvas — its summary moves up and its buttons can be clicked
+  await page.getByTestId('graph-focus').click();
+  const c = (await page.getByTestId('graph-canvas').boundingBox())!;
+  const spot = await emptySpot(page);
+  await page.mouse.move(c.x + spot.x, c.y + spot.y);
+  await page.mouse.down();
+  await page.mouse.move(c.x + spot.x, c.y + spot.y + 200, { steps: 5 });
+  await page.mouse.up();
+  const node = (await nodeOf(page, K(350)).boundingBox())!;
+  expect(node.y + node.height).toBeGreaterThan(c.y + c.height - 200);
+  await nodeOf(page, K(350)).click();
+  const pop = page.getByTestId('graph-summary');
+  await expect(pop).toHaveAttribute('data-key', K(350));
+  const p = (await pop.boundingBox())!;
+  expect(p.y + p.height).toBeLessThanOrEqual(c.y + c.height);
+  /** is this button what a click at its centre lands on */
+  const clickable = (l: Locator) =>
+    l.evaluate((e) => {
+      const r = e.getBoundingClientRect();
+      return e.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    });
+  expect(await clickable(pop.getByTestId('graph-summary-open'))).toBe(true);
+  expect(await clickable(pop.getByTestId('graph-summary-web'))).toBe(true);
+  await shot(page, 'graph-09-summary-bottom');
+  await pop.getByTestId('graph-summary-open').click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', K(350));
+  await page.keyboard.press('Escape');
+
+  // a canvas lower than the summary's content: capped at the canvas, its middle scrolls, the buttons stay in view
+  await page.setViewportSize({ width: 900, height: 340 });
+  await page.getByTestId('graph-focus').click();
+  await nodeOf(page, K(350)).click();
+  const c2 = (await page.getByTestId('graph-canvas').boundingBox())!;
+  const p2 = (await pop.boundingBox())!;
+  expect(p2.y).toBeGreaterThanOrEqual(c2.y);
+  expect(p2.y + p2.height).toBeLessThanOrEqual(c2.y + c2.height);
+  const body = pop.getByTestId('graph-summary-body');
+  expect(await body.evaluate((e) => e.scrollHeight > e.clientHeight)).toBe(true);
+  expect(await clickable(pop.getByTestId('graph-summary-open'))).toBe(true);
+  expect(await clickable(pop.getByTestId('graph-summary-web'))).toBe(true);
+  expect(await clickable(pop.getByTestId('graph-summary-close'))).toBe(true);
+  expect(await clickable(page.getByTestId('graph-fit'))).toBe(true);
+  await shot(page, 'graph-10-summary-short');
   await app.close();
 });

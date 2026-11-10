@@ -15,7 +15,8 @@ import type { GraphModel } from './graph';
 
 export const NODE_W = 236;
 export const NODE_H = 84;
-export const BOX_HEAD = 40;
+/** a box's head: the title row and the labels row (GitHub#350 review round 1: a parent shows its labels too) */
+export const BOX_HEAD = 62;
 export const BOX_PAD = 14;
 export const BOX_MIN_W = 320;
 export const GAP_X = 64;
@@ -226,13 +227,18 @@ export const READABLE_SCALE = 0.6;
 /** where a too-big graph opens: below 100%, still readable */
 export const FOCUS_SCALE = 0.85;
 
-export const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+/**
+ * Keep a zoom within bounds. `floor` lowers the bottom bound below MIN_SCALE: "fit" may need less than
+ * MIN_SCALE to put a very wide graph in the window, and zooming from there must not jump back up.
+ */
+export const clampScale = (s: number, floor: number = MIN_SCALE) => Math.min(MAX_SCALE, Math.max(Math.min(MIN_SCALE, floor), s));
 
 /** The whole graph in the window (never above 100%), and whether that is too small to read. */
 export function fitView(layout: Pick<GraphLayout, 'width' | 'height'>, vw: number, vh: number): { view: Viewport; tooBig: boolean } {
   if (!layout.width || !layout.height || vw <= 0 || vh <= 0) return { view: { tx: 0, ty: 0, scale: 1 }, tooBig: false };
   const raw = Math.min(vw / layout.width, vh / layout.height, 1);
-  const scale = clampScale(raw);
+  // the scale the whole graph needs, even below the manual zoom's floor: "fit" means every edge is in the window
+  const scale = raw;
   return { view: { scale, tx: (vw - layout.width * scale) / 2, ty: (vh - layout.height * scale) / 2 }, tooBig: raw < READABLE_SCALE };
 }
 
@@ -250,7 +256,8 @@ export function focusOpen(layout: GraphLayout, vw: number, vh: number): Viewport
 
 /** Zoom by `factor` keeping the world point under (px, py) where it is on screen. */
 export function zoomAt(v: Viewport, factor: number, px: number, py: number): Viewport {
-  const scale = clampScale(v.scale * factor);
+  // a view already below the floor (a fit of a very wide graph) zooms from there, it never jumps up to the floor
+  const scale = clampScale(v.scale * factor, v.scale);
   const k = scale / v.scale;
   return { scale, tx: px - (px - v.tx) * k, ty: py - (py - v.ty) * k };
 }

@@ -7,7 +7,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSPr
 import { badgeText, stateTone } from '../shared/stateTone';
 import type { SourceStatus } from '../shared/types';
 import { boxProgress, type GraphModel, type GraphNode } from '../data/graph';
-import { clampScale, edgePath, fitView, focusOpen, keepAnchor, layoutGraph, zoomAt, BOX_HEAD, type GraphLayout, type Rect, type Viewport } from '../data/graphLayout';
+import { edgePath, fitView, focusOpen, keepAnchor, layoutGraph, zoomAt, BOX_HEAD, type GraphLayout, type Rect, type Viewport } from '../data/graphLayout';
 import { api } from './api';
 import { labelStyle } from './colors';
 import { Icon, itemIcon } from './Icons';
@@ -233,7 +233,7 @@ export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow 
         {layout && view && model.nodes.size > 0 && (
           <div className="graph-world" data-testid="graph-world" data-scale={view.scale.toFixed(3)} style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})` }}>
             {boxes.map((n) => (
-              <BoxView key={n.key} n={n} r={layout.rects.get(n.key)!} progress={boxProgress(model, n.key)} refText={refOf(n)} selected={sel === n.key} onPick={pick} onOpen={onOpen} />
+              <BoxView key={n.key} n={n} r={layout.rects.get(n.key)!} dark={dark} progress={boxProgress(model, n.key)} refText={refOf(n)} selected={sel === n.key} onPick={pick} onOpen={onOpen} />
             ))}
             <svg className="graph-edges" width={layout.width} height={layout.height} data-testid="graph-edges">
               <defs>
@@ -445,10 +445,11 @@ const NodeView = memo(
 const sameRect = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 
 const BoxView = memo(
-  function BoxView({ n, r, refText, progress, selected, onPick, onOpen }: NodeProps & { progress: { completed: number; total: number } | null }) {
+  function BoxView({ n, r, refText, progress, dark, selected, onPick, onOpen }: NodeProps & { dark: boolean; progress: { completed: number; total: number } | null }) {
     return (
       <div className={`gbox${n.dim ? ' dim' : ''}${n.item ? '' : ' outside'}`} style={place(r)} data-testid="graph-box" data-key={n.key}>
         <div className={`gbox-head${selected ? ' selected' : ''}`} style={{ height: BOX_HEAD }} {...nodeAttrs(n, selected, onPick, onOpen)}>
+          <div className="gbox-row">
           <StateMark n={n} />
           <span className="ref" title={`${n.repo} #${n.number}`}>
             {refText}
@@ -458,17 +459,26 @@ const BoxView = memo(
           </span>
           <span className="spacer" />
           <Badges n={n} />
-          {!n.item && OUTSIDE}
           {progress && (
             <span className="gprogress" data-testid="graph-box-progress">
               {progress.completed} / {progress.total} 子项完成
             </span>
           )}
+          </div>
+          {/* the same labels row as a plain node: a parent's flow label is on the graph, not only in its summary */}
+          <div className="labels gnode-labels">
+            {n.item?.labels.map((l) => (
+              <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+                {l.name}
+              </span>
+            ))}
+            {!n.item && OUTSIDE}
+          </div>
         </div>
       </div>
     );
   },
-  (a, b) => a.n.look === b.n.look && a.n.key === b.n.key && sameRect(a.r, b.r) && a.refText === b.refText && a.selected === b.selected && a.progress?.completed === b.progress?.completed && a.progress?.total === b.progress?.total && a.onOpen === b.onOpen,
+  (a, b) => a.n.look === b.n.look && a.n.key === b.n.key && sameRect(a.r, b.r) && a.refText === b.refText && a.dark === b.dark && a.selected === b.selected && a.progress?.completed === b.progress?.completed && a.progress?.total === b.progress?.total && a.onOpen === b.onOpen,
 );
 
 function Summary({
@@ -496,13 +506,30 @@ function Summary({
   const right = (r.x + r.w) * view.scale + view.tx + 10;
   const left = r.x * view.scale + view.tx - W - 10;
   const x = right + W <= size.w || left < 0 ? Math.max(8, Math.min(right, size.w - W - 8)) : left;
-  const y = Math.max(8, Math.min(r.y * view.scale + view.ty, size.h - 120));
+  // its real height (GitHub#350 review round 1): it is moved up as far as it needs to stay whole in the
+  // canvas; taller than the canvas, it is capped (CSS) and its middle scrolls, the buttons stay in view
+  const pop = useRef<HTMLDivElement>(null);
+  const [h, setH] = useState(0);
+  useLayoutEffect(() => {
+    const el = pop.current;
+    if (!el) return;
+    const measure = () => setH(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [n.key]);
+  // and below the legend / zoom row, which stays on top (its buttons must stay reachable while a summary is open)
+  const TOP_ROW = 48;
+  const maxH = Math.max(120, size.h - TOP_ROW - 8);
+  const y = Math.max(Math.min(TOP_ROW, size.h - maxH - 8), Math.min(r.y * view.scale + view.ty, size.h - Math.min(h, maxH) - 8));
   const blockers = model.edges.filter((e) => e.to === n.key).map((e) => ({ n: model.nodes.get(e.from)!, open: e.open }));
   const blocked = model.edges.filter((e) => e.from === n.key).map((e) => model.nodes.get(e.to)!);
   const parent = n.parent ? model.nodes.get(n.parent)! : (n.item?.relations?.parent ?? null);
   const line = (x: { repo: string; number: number; title: string }) => `${refOf(x as GraphNode)} ${x.title}`;
   return (
-    <div className="gpop" data-testid="graph-summary" data-key={n.key} style={{ left: x, top: y, width: W }} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+    <div className="gpop" ref={pop} data-testid="graph-summary" data-key={n.key} style={{ left: x, top: y, width: W, maxHeight: maxH }} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
       <div className="gpop-head">
         <StateMark n={n} />
         <span className="ref">
@@ -513,6 +540,7 @@ function Summary({
           <Icon name="x" />
         </button>
       </div>
+      <div className="gpop-body" data-testid="graph-summary-body">
       <div className="gpop-title" data-testid="graph-summary-title">
         {n.title}
       </div>
@@ -557,6 +585,7 @@ function Summary({
           )}
         </>
       )}
+      </div>
       <div className="row gpop-actions">
         {n.item && (
           <button className="primary" data-testid="graph-summary-open" {...{ [OPENS_ITEM]: '' }} onClick={() => onOpen(n.key)}>
@@ -585,7 +614,7 @@ function Minimap({ layout, model, view, size, setView }: { layout: GraphLayout; 
     const r = ref.current!.getBoundingClientRect();
     const wx = (clientX - r.left) / k;
     const wy = (clientY - r.top) / k;
-    setView({ scale: clampScale(view.scale), tx: size.w / 2 - wx * view.scale, ty: size.h / 2 - wy * view.scale });
+    setView({ scale: view.scale, tx: size.w / 2 - wx * view.scale, ty: size.h / 2 - wy * view.scale });
   };
   const latest = useRef(centreOn);
   latest.current = centreOn;

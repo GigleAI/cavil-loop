@@ -9,7 +9,7 @@ import { GitHubClient } from '../../src/data/github';
 import { fetchProject, fetchRepo } from '../../src/data/fetchSources';
 import { mergeSnapshots } from '../../src/data/merge';
 import { buildGraph, boxProgress, type GraphModel } from '../../src/data/graph';
-import { BOX_HEAD, BOX_PAD, edgePath, fitView, focusOpen, keepAnchor, layoutGraph, READABLE_SCALE, zoomAt, type Rect } from '../../src/data/graphLayout';
+import { BOX_HEAD, BOX_PAD, MIN_SCALE, edgePath, fitView, focusOpen, keepAnchor, layoutGraph, READABLE_SCALE, zoomAt, type Rect } from '../../src/data/graphLayout';
 import { applyFilter, parseFilter } from '../../src/shared/filter';
 import { parseSource } from '../../src/shared/sources';
 import type { Item, SourceConfig, SourceSnapshot } from '../../src/shared/types';
@@ -303,6 +303,23 @@ describe('the view', () => {
     const g = l.groups[0].rect;
     expect(g.x * f.scale + f.tx).toBeGreaterThanOrEqual(0);
     expect(g.y * f.scale + f.ty).toBeGreaterThanOrEqual(0);
+  });
+
+  it('fit puts every edge of a very wide graph in the window, even below the manual zoom floor; zooming out from there does not jump back up (PR #367 review round 1)', () => {
+    const l = { width: 10000, height: 1000 };
+    const { view } = fitView(l, 900, 500);
+    expect(view.scale).toBeCloseTo(0.09);
+    expect(view.scale).toBeLessThan(MIN_SCALE);
+    // the four edges on screen are inside the 900 × 500 canvas
+    expect(view.tx).toBeGreaterThanOrEqual(-1e-9);
+    expect(view.tx + l.width * view.scale).toBeLessThanOrEqual(900 + 1e-9);
+    expect(view.ty).toBeGreaterThanOrEqual(-1e-9);
+    expect(view.ty + l.height * view.scale).toBeLessThanOrEqual(500 + 1e-9);
+    // from there: "-" stays put (not up to the floor), "+" zooms in
+    expect(zoomAt(view, 1 / 1.2, 450, 250).scale).toBeCloseTo(view.scale);
+    expect(zoomAt(view, 1.2, 450, 250).scale).toBeCloseTo(view.scale * 1.2);
+    // control: a graph that fits above the floor is not taken below it by zooming out
+    expect(zoomAt({ tx: 0, ty: 0, scale: 0.21 }, 0.5, 0, 0).scale).toBe(MIN_SCALE);
   });
 
   it('zoom keeps the point under the pointer still', () => {
