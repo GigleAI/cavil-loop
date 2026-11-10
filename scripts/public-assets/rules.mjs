@@ -20,17 +20,33 @@ export const MEDIA_TYPES = {
   webm: 'video/webm',
 };
 
-// 凭证样式。名字只用于报告「命中了哪一类」，值从不输出。
+// 凭证样式：[名字, 完整样式, 「还没读完」样式]。名字只用于报告「命中了哪一类」，值从不输出。
+// 第三项给分块扫描用（见 findSecretsInFile）：它匹配「一条可能的凭证从某处开始、一直延伸到
+// 当前已读内容的末尾、还差后半截」的情形，必须以 $ 结尾。完整样式里凡是「一段不限长的内容
+// 后面还要跟别的东西才算数」的（JWT 的三段、带引号的字段值、连接串的密码……），都要配这一项；
+// 靠固定长度就能认出来的（开头几十个字符就够）不用配，由固定重叠兜住。
 export const SECRET_PATTERNS = [
   ['github-token', /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}/],
-  ['jwt', /eyJ[A-Za-z0-9_-]{15,}\.eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/],
-  ['token-field', /["']?(?:refresh_token|access_token)["']?\s*[:=]\s*["'][^"']{12,}["']/],
-  ['auth-token-key', /sb-[a-z0-9]+-auth-token/],
+  [
+    'jwt',
+    /eyJ[A-Za-z0-9_-]{15,}\.eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/,
+    /eyJ[A-Za-z0-9_-]{15,}(?:\.(?:e(?:y(?:J[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]{0,9})?)?)?)?)?$/,
+  ],
+  [
+    'token-field',
+    /["']?(?:refresh_token|access_token)["']?\s*[:=]\s*["'][^"']{12,}["']/,
+    /(?:refresh_token|access_token)["']?\s*(?:[:=]\s*(?:["'][^"']*)?)?$/,
+  ],
+  ['auth-token-key', /sb-[a-z0-9]+-auth-token/, /sb-[a-z0-9]+(?:-[a-z-]{0,10})?$/],
   ['service-role', /service_role|SERVICE_ROLE_KEY/],
   ['api-key', /\bsk-[A-Za-z0-9_-]{24,}|sb_secret_[A-Za-z0-9_-]{10,}|\bAKIA[0-9A-Z]{16}\b/],
-  ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY/],
-  ['db-url-password', /postgres(?:ql)?:\/\/[^\s:/@]+:[^\s@/]{4,}@/],
-  ['bearer', /Bearer\s+[A-Za-z0-9._-]{30,}/],
+  ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY/, /-----BEGIN [A-Z ]*$/],
+  [
+    'db-url-password',
+    /postgres(?:ql)?:\/\/[^\s:/@]+:[^\s@/]{4,}@/,
+    /postgres(?:ql)?:\/\/[^\s:/@]*(?::[^\s@/]*)?$/,
+  ],
+  ['bearer', /Bearer\s+[A-Za-z0-9._-]{30,}/, /Bearer\s+[A-Za-z0-9._-]{0,29}$/],
 ];
 
 export function findSecrets(text) {
@@ -39,27 +55,46 @@ export function findSecrets(text) {
   return kinds;
 }
 
-// 整个文件扫一遍凭证样式，不论多大：按块读，相邻两块之间留一段重叠，跨块边界的凭证也认得出。
-// 重叠 4KB 远大于任何一条样式认出凭证所需的最短长度（最长的也就一百多字节）。
-// 没有大小上限、也没有「太大就跳过」：没扫过的文件不能当成没有凭证。
+// 整个文件扫一遍凭证样式，不论多大，结果不随凭证在文件里的位置变。
+//
+// 按块读。每读完一块，除了找完整的凭证，还要看块尾有没有「开了头、还没读完」的凭证
+// （上表第三项）：有，就从它开头的地方起整段留下，和下一块接起来再判——不是只留固定的几 KB。
+// 固定留几 KB 是不够的：一条 8KB 的 JWT 起点落在块尾前 5KB 时，前一块还没读到第三段、
+// 后一块已经丢了开头，两边都认不出来。
+// 另外总是至少留 SCAN_MIN_OVERLAP_BYTES，兜住被块边界切开的固定前缀（如 refresh_tok|en）。
+//
+// 留下的部分有上限（SCAN_MAX_PENDING_BYTES）。一条疑似凭证延伸超过这个长度还没读完时，
+// 不当成「没命中」——报 UNRESOLVED_KIND，调用方按含凭证处理（拒绝发布）。
+// 没有大小上限、也没有「太大就跳过」：没判清的文件不能当成没有凭证。
 export const SCAN_CHUNK_BYTES = 1024 * 1024;
-export const SCAN_OVERLAP_BYTES = 4096;
+export const SCAN_MIN_OVERLAP_BYTES = 256;
+export const SCAN_MAX_PENDING_BYTES = 1024 * 1024;
+export const UNRESOLVED_KIND = '疑似凭证超过 1MiB 仍未读完，无法判定';
 
 export function findSecretsInFile(file) {
   const kinds = new Set();
   const fd = fs.openSync(file, 'r');
   try {
-    const buf = Buffer.alloc(SCAN_OVERLAP_BYTES + SCAN_CHUNK_BYTES);
-    let carry = 0;
+    const buf = Buffer.alloc(SCAN_CHUNK_BYTES);
+    let pending = '';
     let pos = 0;
     for (;;) {
-      const n = fs.readSync(fd, buf, carry, SCAN_CHUNK_BYTES, pos);
+      const n = fs.readSync(fd, buf, 0, SCAN_CHUNK_BYTES, pos);
       if (n <= 0) break;
       pos += n;
-      const len = carry + n;
-      for (const k of findSecrets(buf.toString('latin1', 0, len))) kinds.add(k);
-      carry = Math.min(SCAN_OVERLAP_BYTES, len);
-      buf.copy(buf, 0, len - carry, len);
+      const text = pending + buf.toString('latin1', 0, n);
+      for (const k of findSecrets(text)) kinds.add(k);
+      let keepFrom = Math.max(0, text.length - SCAN_MIN_OVERLAP_BYTES);
+      for (const [, , open] of SECRET_PATTERNS) {
+        if (!open) continue;
+        const m = open.exec(text);
+        if (m && m.index < keepFrom) keepFrom = m.index;
+      }
+      if (text.length - keepFrom > SCAN_MAX_PENDING_BYTES) {
+        kinds.add(UNRESOLVED_KIND);
+        keepFrom = text.length - SCAN_MIN_OVERLAP_BYTES;
+      }
+      pending = text.slice(keepFrom);
     }
   } finally {
     fs.closeSync(fd);

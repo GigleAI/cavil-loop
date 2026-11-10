@@ -148,6 +148,23 @@ chk "45MiB 的图、凭证跨在第 5 个块的边界上：照样拦" "$rc" "1"
 printf '\x89PNG\r\n\x1a\n' > "$BIG/clean.png"; head -c $((33 * 1024 * 1024)) /dev/zero >> "$BIG/clean.png"
 out="$(node "$CHECK" "$BIG/clean.png" 2>&1)"; rc=$?
 chk "33MiB 的干净图：退出码 0，报拿得到" "$rc/$(printf '%s\n' "$out" | grep -c '^拿得到 ')" "0/1"
+# 结论不随凭证在文件里的位置变：长 JWT / 长字段值 / 长连接串，起点放在读取块边界前后的各个位置，
+# 分块扫描都要和「整份一次判」一样判为含凭证（曾经只留 4KB 重叠：8KB 的 JWT 起点在块尾前 5KB 时漏掉）。
+mkdir -p "$TMP/pos"
+node "$TEST_DIR/fixtures/public-assets-position-probe.mjs" "$REPO_DIR" "$TMP/pos" > "$TMP/pos.out" 2>&1
+chk "位置探针跑完了：3 种长凭证 × 8 个位置 + 4 个边界场景" "$(grep -c ' whole=' "$TMP/pos.out")" "28"
+chk "长凭证在每个位置上：分块扫描都判为含凭证，和整份一次判一致" \
+    "$(grep -E '^(jwt8k|field10k|dburl9k)@' "$TMP/pos.out" | grep -vc 'whole=1 stream=1')" "0"
+chk "比上限还长的疑似凭证（3MiB 的 JWT）：不当成没命中，以「超过上限无法判定」拒绝" \
+    "$(grep -c '^jwt-longer-than-limit whole=1 stream=1 unresolved=1' "$TMP/pos.out")" "1"
+chk "没超上限的长凭证不走「无法判定」这条路（是真的认出来了）" \
+    "$(grep -E '^(jwt8k|field10k|dburl9k)@' "$TMP/pos.out" | grep -c 'unresolved=1')" "0"
+chk "只是长得像开头的内容（eyJ 开头的一段、文中提到字段名、不带密码的连接串）：不误拦" \
+    "$(grep -E '^clean-' "$TMP/pos.out" | grep -vc 'whole=0 stream=0')" "0"
+printf '\x89PNG\r\n\x1a\n' > "$BIG/longjwt.png"; head -c $((1024 * 1024 - 5000 - 8)) /dev/zero | tr '\0' ' ' >> "$BIG/longjwt.png"
+node -e 'const b=o=>Buffer.from(JSON.stringify(o)).toString("base64url");process.stdout.write([b({alg:"HS256",typ:"JWT"}),b({sub:"fake",claim:"A".repeat(8000)}),"A".repeat(43)].join("."))' >> "$BIG/longjwt.png"
+out="$(node "$CHECK" "$BIG/longjwt.png" 2>&1)"; rc=$?
+chk "自查命令：8KB 的 JWT 起点在块尾前 5KB 的合法图片，退出码 1 并说是 jwt" "$rc/$(printf '%s' "$out" | grep -c '凭证样式（jwt）')" "1/1"
 chk "不给参数：退出码 2" "$(node "$CHECK" >/dev/null 2>&1; echo $?)" "2"
 
 echo "③ publish-asset.sh"
@@ -180,6 +197,8 @@ chk "被拒的文件哪儿都没进" "$(find "$TMP/pub" "$TMP/priv" -name 'state
 chk "拒绝信息里没有凭证的值" "$(printf '%s' "$err" | grep -c "$FAKE_SECRET")" "0"
 err="$(pub p "$ROOT/pr-1/renamed.png" 2>&1 >/dev/null)"; rc=$?
 chk "改名成 .png 的凭证文件：同样拒绝" "$rc" "1"
+err="$(pub p "$BIG/longjwt.png" shots 2>&1 >/dev/null)"; rc=$?
+chk "带跨块长 JWT 的合法图片：拒绝发布，没进公网目录" "$rc/$(find "$TMP/pub" "$TMP/priv" -name 'longjwt*' | wc -l | tr -d ' ')" "1/0"
 err="$(pub p "$BIG/tail.png" shots 2>&1 >/dev/null)"; rc=$?
 chk "33MiB、末尾带凭证的合法图片：拒绝发布，没进公网目录" "$rc/$(find "$TMP/pub" "$TMP/priv" -name 'tail*' | wc -l | tr -d ' ')" "1/0"
 
