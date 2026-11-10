@@ -311,10 +311,14 @@ export class Controller {
   private detailReads = 0;
   /**
    * GitHub#328: newly pending items whose detail is read ahead, so a clicked notification shows
-   * it at once. Each with what its notification was decided on and the session it was queued in.
+   * it at once. Each with what its notification was decided on, the session it was queued in, and
+   * `after`: the calls to the shell of its own round (its notification, that round's badge) —
+   * its read never goes out before they were answered.
    */
-  private prefetchQueue: { key: string; ctx: NoticeContext; session: number }[] = [];
+  private prefetchQueue: { key: string; ctx: NoticeContext; session: number; after: Promise<unknown> }[] = [];
   private prefetching = false;
+  /** bumps on sign-out / another account: the loop of the earlier account ends at its next step, a new one may start */
+  private prefetchGen = 0;
   /** labels / milestones per repository, only reads that worked */
   private optionsCache = new Map<string, RepoOptions>();
   private createSeq = 0;
@@ -667,6 +671,8 @@ export class Controller {
     this.itemQueues.clear();
     this.detailCache.clear();
     this.prefetchQueue = [];
+    this.prefetchGen++;
+    this.prefetching = false;
     this.optionsCache.clear();
     this.sourceReadAt.clear();
     this.itemReadAt.clear();
@@ -829,37 +835,46 @@ export class Controller {
 
   /**
    * GitHub#328: read the details of the items just notified ahead of the click, at most
-   * PREFETCH_PER_ROUND a round. The reads start only once this round's notifications and badge
-   * have been handed to the shell (a hidden window may hold back a request sent next to another
-   * one — see desktopCalls), and go one at a time. Without a shell nothing is notified, so
-   * nothing is read ahead.
+   * PREFETCH_PER_ROUND a round. An item's read goes out only once the notifications and the badge
+   * of its own round have been handed to the shell and answered (a hidden window may hold back a
+   * request sent next to another one — see desktopCalls): every queued item carries that wait
+   * itself, so a loop still busy with an earlier round cannot send it early (PR #331 review
+   * round 1). Without a shell nothing is notified, so nothing is read ahead.
    */
   private prefetchAppeared(appeared: Item[]): void {
     if (!this.deps.desktop || !appeared.length) return;
     const session = this.session;
+    // everything this round queued for the shell so far: observePending calls this last
+    const after = this.desktopCalls;
     for (const it of appeared.slice(0, PREFETCH_PER_ROUND)) {
       if (this.prefetchQueue.some((q) => q.key === it.key)) continue;
-      this.prefetchQueue.push({ key: it.key, ctx: this.noticeContext(this.pending.carriers(it.key)), session });
+      this.prefetchQueue.push({ key: it.key, ctx: this.noticeContext(this.pending.carriers(it.key)), session, after });
     }
-    void this.desktopCalls.then(() => this.runPrefetch());
+    void this.runPrefetch();
   }
 
   /**
-   * One read at a time, each decided right before it goes out by the rule its notification goes
-   * out by (still pending through a source it came from, same account). A failed read is nobody's
-   * problem: nothing is shown or retried, the panel reads when the item is opened.
+   * The one loop that sends the reads, one at a time, in the order queued. Each waits for its
+   * round's calls to the shell, and is then decided right before it goes out by the rule its
+   * notification goes out by (still pending through a source it came from, same account). A
+   * failed read is nobody's problem: nothing is shown or retried, the panel reads when the item
+   * is opened.
    */
   private async runPrefetch(): Promise<void> {
     if (this.prefetching) return;
     this.prefetching = true;
-    try {
-      for (let q = this.prefetchQueue.shift(); q; q = this.prefetchQueue.shift()) {
-        if (q.session !== this.session || !this.itemStillHolds(q.ctx, q.key)) continue;
-        await this.readDetail(q.key).catch(() => undefined);
-      }
-    } finally {
-      this.prefetching = false;
+    const gen = this.prefetchGen;
+    for (;;) {
+      const q = this.prefetchQueue.shift();
+      if (!q) break;
+      await q.after;
+      // signed out meanwhile: the queue and the flag belong to whoever came after
+      if (gen !== this.prefetchGen) return;
+      if (q.session !== this.session || !this.itemStillHolds(q.ctx, q.key)) continue;
+      await this.readDetail(q.key).catch(() => undefined);
+      if (gen !== this.prefetchGen) return;
     }
+    this.prefetching = false;
   }
 
   /** Every detail read ahead so far has ended (the tests wait on this). */
