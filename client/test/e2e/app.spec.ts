@@ -1708,8 +1708,10 @@ test('pending/human: nothing about the history at start, one notification per ne
   // GitHub#369: the back button names its key
   await expect(page.getByTestId('back-key')).toHaveText('Esc');
   // GitHub#369: switching to the app keeps the notifications; a click takes back only that one; the box is off
-  await expect(page.getByTestId('pending-how-to-clear')).toContainText('点哪条通知，就只收起被点的那一条');
   await expect(page.getByTestId('clear-all-on-activate')).not.toBeChecked();
+  await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。');
+  await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
+  await shot(page, '20b-pending-settings-unticked');
   await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的不提醒');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   for (const gone of ['pending-list', 'pending-item', 'pending-count', 'unread-count', 'pending-breakdown']) await expect(page.getByTestId(gone)).toHaveCount(0);
@@ -1783,13 +1785,28 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect.poll(() => opsSince(before)).toEqual(['badge 0']);
   await page.waitForTimeout(500);
   expect(opsSince(before)).toEqual(['badge 0']);
-  // ticked in Settings: the next switch takes them back again, after the badge
+  // ticked in Settings: the next switch takes them back again, after the badge — and the page says so,
+  // including what a click leaves behind then (PR #370 review round 1: never "the rest stay" while ticked)
   await page.getByTestId('clear-all-on-activate').click();
   await expect(page.getByTestId('clear-all-on-activate')).toBeChecked();
+  await expect(page.getByTestId('notification-keep-rule')).toHaveText('已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。');
+  await expect(page.getByTestId('pending-how-to-clear')).not.toContainText('其余留在通知中心');
+  await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
+  await shot(page, '21-pending-settings-ticked');
   app.desktop.push({ kind: 'inactive' });
   before = app.desktop.records.length;
   app.desktop.push({ kind: 'active' });
   await expect.poll(() => opsSince(before)).toEqual(['badge 0', 'clearNotifications']);
+  // unticked again: the page goes back to "the rest stay", and so does the next switch
+  await page.getByTestId('clear-all-on-activate').click();
+  await expect(page.getByTestId('clear-all-on-activate')).not.toBeChecked();
+  await expect(page.getByTestId('notification-keep-rule')).toContainText('其余留在通知中心');
+  app.desktop.push({ kind: 'inactive' });
+  before = app.desktop.records.length;
+  app.desktop.push({ kind: 'active' });
+  await expect.poll(() => opsSince(before)).toEqual(['badge 0']);
+  await page.waitForTimeout(500);
+  expect(opsSince(before)).toEqual(['badge 0']);
   await app.close();
 });
 

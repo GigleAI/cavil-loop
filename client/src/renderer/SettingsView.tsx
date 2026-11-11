@@ -162,7 +162,12 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         <p className="note small" data-testid="pending-how-to-clear">
           Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。
           <br />
-          系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。
+          {/* GitHub#369 (PR #370 review round 1): what a click leaves behind depends on the box below */}
+          <span data-testid="notification-keep-rule">
+            {state.clearAllOnActivate
+              ? '已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。'
+              : '系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。'}
+          </span>
         </p>
         <label className="row small">
           <input
@@ -171,7 +176,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
             checked={state.clearAllOnActivate}
             onChange={(e) => api().setClearAllOnActivate(e.target.checked)}
           />
-          切到 App 时收起全部系统通知（不勾 = 切到 App 时通知都留着；点通知时只收起被点的那一条，与这一项无关）
+          切到 App 时收起全部系统通知（勾上后，点一条通知时其余也会一起收起）
         </label>
         {state.launchAtLogin !== null && (
           <label className="row small">
