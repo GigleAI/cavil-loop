@@ -400,6 +400,22 @@ export interface SourceStatus {
   error: string | null;
   /** epoch ms of the snapshot currently shown for this source (null: never synced) */
   dataFrom: number | null;
+  /** GitHub#374: the failure was GitHub's rate limit (or the read gate it closed) */
+  rateLimited?: boolean;
+  /** GitHub#374: a failed source's failures in a row and when it is read again (set by the controller) */
+  retry?: SourceRetry;
+}
+
+/** GitHub#374: what the ⚠ says about a source that keeps failing */
+export interface SourceRetry {
+  /** failures in a row (rate limits not counted: they say nothing about the source) */
+  count: number;
+  /** epoch ms of the first of them */
+  since: number;
+  /** epoch ms of the next automatic read; null = the next round */
+  nextAt: number | null;
+  /** rate limited: no read before this (epoch ms); null = not rate limited */
+  limitedUntil: number | null;
 }
 
 export type ColumnMode = 'iteration' | 'status' | 'milestone';

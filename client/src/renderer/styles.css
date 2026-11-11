@@ -545,6 +545,8 @@ button.icon-btn.trouble-btn.on { background: var(--warn-bg); border-color: var(-
 .trouble-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .trouble-head .icon { color: var(--warn-icon); }
 .trouble-panel ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.trouble-retry { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.trouble-note { color: var(--muted); font-size: 12px; }
 .trouble-filter { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 4px 8px; }
 .trouble-foot { display: flex; justify-content: flex-end; }
 

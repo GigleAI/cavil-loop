@@ -177,10 +177,14 @@ test('browser login → board; restart skips login; sources; three column modes;
   // a source that fails mid-pagination keeps last round's data; the ⚠️ next to refresh says so (GitHub#248)
   env.fake.state.failProjectPage.set('org/gigleai/11', 1);
   await page.getByTestId('refresh').click();
-  await expect(page.getByTestId('sync-trouble')).toBeVisible();
+  // GitHub#374: the failing page is asked twice more (after 1 s and 3 s) before the board counts as failed
+  await expect(page.getByTestId('sync-trouble')).toBeVisible({ timeout: 15_000 });
   expect(await countOf(page, 'Iteration 25')).toBe('13');
   await page.getByTestId('sync-trouble').click();
   await expect(page.getByTestId('sync-trouble-source')).toContainText('读取失败');
+  // GitHub#374: how many failures in a row, and when it is tried again; a refresh by hand does not wait for it
+  await expect(page.getByTestId('sync-trouble-retry')).toContainText('起连续失败 1 次 · 下次自动重试');
+  await expect(page.getByTestId('sync-trouble-by-hand')).toContainText('重新同步');
   await shot(page, '07-incomplete');
   await page.getByTestId('sync-trouble').click();
   env.fake.state.failProjectPage.clear();

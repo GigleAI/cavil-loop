@@ -113,6 +113,18 @@ export interface FakeState {
    * the connection drops. Asked once per answer; null = answer honestly.
    */
   breakAnswer: ((e: LoggedRequest) => 'close' | 'cut' | null) | null;
+  /**
+   * GitHub#374: answer an API request (GraphQL: operation + variables filled) this way instead of
+   * honestly — a 5xx, a rate limit with its headers, …; null = honestly. Asked once per request.
+   */
+  answerOverride: ((e: LoggedRequest) => CannedAnswer | null) | null;
+}
+
+/** GitHub#374: one answer as sent: status, JSON body, extra headers */
+export interface CannedAnswer {
+  status: number;
+  body?: unknown;
+  headers?: Record<string, string>;
 }
 
 /**
@@ -238,6 +250,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     w: defaultWritable(),
     checkFault: null,
     breakAnswer: null,
+    answerOverride: null,
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -391,6 +404,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return;
       }
       if (!authed()) return;
+      const canned = state.answerOverride?.(entry) ?? null;
+      if (canned) return send(canned.status, canned.body ?? {}, canned.headers);
       let live: ReturnType<typeof handleGraphql>;
       try {
         live = handleGraphql(store, op, body.variables ?? {});
@@ -450,6 +465,14 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return send(200, frozen);
       }
       return send(200, { errors: [{ message: `fake: unknown operation ${op}` }] });
+    }
+
+    if (url.pathname.startsWith('/api/')) {
+      const canned = state.answerOverride?.(entry) ?? null;
+      if (canned) {
+        if (!authed()) return;
+        return send(canned.status, canned.body ?? {}, canned.headers);
+      }
     }
 
     // ---- GitHub#261: a board's REST field list and item list (what the change check reads) ----

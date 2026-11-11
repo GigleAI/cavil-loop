@@ -20,6 +20,8 @@ export class GitHubError extends Error {
     readonly kind: GitHubErrorKind,
     message: string,
     readonly status?: number,
+    /** GitHub#374: a GraphQL error GitHub calls temporary ("something went wrong", a timeout) */
+    readonly transient = false,
   ) {
     super(message);
     this.name = 'GitHubError';
@@ -27,6 +29,119 @@ export class GitHubError extends Error {
 }
 
 const USER_AGENT = 'cavil-loop-client';
+
+/**
+ * GitHub#374: GitHub said this account may not ask for more right now (its hourly quota is used
+ * up, or a secondary limit). `resetAt` = when GitHub says it may ask again (epoch ms, from
+ * x-ratelimit-reset), `retryAfterMs` = the same said as a wait (retry-after); both null = it did
+ * not say. `sent` = false when the sync's read gate refused before anything went out.
+ */
+export class RateLimitError extends GitHubError {
+  constructor(
+    message: string,
+    status: number | undefined,
+    readonly resetAt: number | null,
+    readonly retryAfterMs: number | null,
+    readonly sent: boolean,
+  ) {
+    super('http', message, status);
+    this.name = 'RateLimitError';
+  }
+}
+
+export const RATE_LIMIT_MESSAGE = 'GitHub 限流（这个账号的查询额度暂时用完了）';
+
+/** A rate-limit answer, or null: 403 / 429 with the quota at 0, a retry-after, or GitHub's own words for it. */
+export function rateLimitOf(res: Response, detail: string): RateLimitError | null {
+  if (res.status !== 403 && res.status !== 429) return null;
+  const remaining = res.headers.get('x-ratelimit-remaining');
+  const after = res.headers.get('retry-after');
+  if (remaining !== '0' && after === null && !/rate limit/i.test(detail) && res.status !== 429) return null;
+  return limitError(res, res.status);
+}
+
+function limitError(res: Response, status: number | undefined): RateLimitError {
+  const reset = Number(res.headers.get('x-ratelimit-reset'));
+  const after = Number(res.headers.get('retry-after'));
+  const resetAt = Number.isFinite(reset) && reset > 0 ? reset * 1000 : null;
+  const retryAfterMs = res.headers.get('retry-after') !== null && Number.isFinite(after) && after >= 0 ? after * 1000 : null;
+  return new RateLimitError(RATE_LIMIT_MESSAGE, status, resetAt, retryAfterMs, true);
+}
+
+/** GitHub's GraphQL error words for "something broke on our side, ask again" (not a wrong query). */
+const TRANSIENT_GRAPHQL = /something went wrong|timed? ?out|try (again|later)|temporarily|service unavailable/i;
+
+/**
+ * GitHub#374: an answer worth asking for once more, the same request: GitHub's own server
+ * errors and its GraphQL "something went wrong / timed out". Never a rate limit (asking again
+ * makes it worse), a refused credential, a missing board or a wrong query. A broken connection
+ * is already asked again by the back end where that is safe (GitHub#364).
+ */
+export function isTransient(e: unknown): boolean {
+  if (!(e instanceof GitHubError) || e instanceof RateLimitError) return false;
+  if (e.kind === 'http') return e.status !== undefined && e.status >= 500 && e.status <= 599;
+  if (e.kind === 'graphql') return e.transient;
+  return false;
+}
+
+/**
+ * GitHub#374: the sync's reads, all through one gate. Once any of them is told "rate limited",
+ * no further read goes out until GitHub's reset time — the rest of the round, and every round
+ * after, until then. Only the sync's own client carries it: writes and the detail panel are
+ * not held back (they say GitHub's answer as before).
+ */
+export class ReadGate {
+  /** no read goes out before this (epoch ms); null = open */
+  until: number | null = null;
+  /** limits in a row that did not say when to ask again (each waits longer) */
+  private blind = 0;
+
+  constructor(private readonly now: () => number) {}
+
+  /** throws the "rate limited" error, without sending, while closed */
+  check(): void {
+    if (this.until !== null && this.now() < this.until) throw new RateLimitError(RATE_LIMIT_MESSAGE, undefined, this.until, null, false);
+  }
+
+  /** a rate-limit answer arrived: closed until GitHub's time, or 1, 2, 4, 8, 10 min when it gave none (never past an hour) */
+  hit(e: RateLimitError): void {
+    const now = this.now();
+    let at = e.retryAfterMs !== null ? now + e.retryAfterMs : e.resetAt;
+    if (at === null || at <= now) at = now + backoffStep(++this.blind);
+    else this.blind = 0;
+    at = Math.min(at, now + MAX_LIMIT_WAIT_MS);
+    this.until = Math.max(this.until ?? 0, at);
+  }
+
+  /** an answer that was not a limit arrived while open: the next limit without a time starts at 1 minute again */
+  answered(): void {
+    if (this.until === null || this.now() >= this.until) this.blind = 0;
+  }
+
+  /** a refresh by hand, or another account: open again */
+  clear(): void {
+    this.until = null;
+    this.blind = 0;
+  }
+}
+
+/** a reset time further away than this is not believed (GitHub's hourly window, with room) */
+export const MAX_LIMIT_WAIT_MS = 65 * 60_000;
+
+/** GitHub#374: the wait after the n-th failure in a row (n >= 1): 1, 2, 4, 8, then 10 minutes */
+export function backoffStep(n: number): number {
+  return Math.min(60_000 * 2 ** Math.max(0, n - 1), 10 * 60_000);
+}
+
+/** GitHub#374: the sync's reads — the gate, and the waits before asking a failed page again */
+export interface ReadOptions {
+  gate: ReadGate;
+  /** each entry = one more try of the same request after that many ms */
+  retryDelaysMs: number[];
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export const READ_RETRY_DELAYS_MS = [1000, 3000];
 
 /**
  * A signal that aborts after `ms`. Not `AbortSignal.timeout`: this code now runs in
@@ -49,10 +164,30 @@ export class GitHubClient {
     private readonly fetchImpl: FetchLike = fetch,
     /** aborted: this client's work was given up on (a dropped sync round, GitHub#217) — send nothing more */
     private readonly cancelled?: AbortSignal,
+    /** GitHub#374: the sync's client only — the read gate and asking a failed read again */
+    private readonly reads?: ReadOptions,
   ) {}
 
-  private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {
+  /**
+   * GitHub#374: one read, asked again after each of `retryDelaysMs` while the answer is a
+   * temporary failure (only for the sync's client; everything else is one try, as before).
+   */
+  private async again<T>(read: () => Promise<T>): Promise<T> {
+    const delays = this.reads?.retryDelaysMs ?? [];
+    for (let i = 0; ; i++) {
+      try {
+        return await read();
+      } catch (e) {
+        if (i >= delays.length || !isTransient(e) || this.cancelled?.aborted) throw e;
+        await (this.reads?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(delays[i]);
+      }
+    }
+  }
+
+  /** `whole`: this answer is all there is to judge (GraphQL looks into its body for a limit first) */
+  private async send(url: string, init: RequestInit, notModifiedOk = false, whole = true): Promise<Response> {
     if (this.cancelled?.aborted) throw new GitHubError('network', '已放弃这一轮同步');
+    this.reads?.gate.check();
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
@@ -78,17 +213,28 @@ export class GitHubClient {
       } catch {
         /* body not JSON */
       }
+      const limited = rateLimitOf(res, detail);
+      if (limited) {
+        this.reads?.gate.hit(limited);
+        throw limited;
+      }
       throw new GitHubError('http', `GitHub 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status);
     }
+    if (whole) this.reads?.gate.answered();
     return res;
   }
 
   async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    // a write is never asked twice (the first may have landed)
+    return /^\s*mutation\b/.test(query) ? this.graphqlOnce<T>(query, variables) : this.again(() => this.graphqlOnce<T>(query, variables));
+  }
+
+  private async graphqlOnce<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     const res = await this.send(`${this.endpoints.api}/graphql`, {
       method: 'POST',
       body: JSON.stringify({ query, variables }),
       headers: { 'Content-Type': 'application/json' },
-    });
+    }, false, false);
     let body: { data?: T; errors?: { message: string; type?: string }[] };
     try {
       body = (await res.json()) as typeof body;
@@ -96,8 +242,15 @@ export class GitHubClient {
       throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
     }
     if (body.errors && body.errors.length) {
-      throw new GitHubError('graphql', body.errors.map((e) => e.message).join('；'));
+      if (body.errors.some((e) => e.type === 'RATE_LIMITED')) {
+        const limited = limitError(res, res.status);
+        this.reads?.gate.hit(limited);
+        throw limited;
+      }
+      const transient = body.errors.every((e) => !e.type && TRANSIENT_GRAPHQL.test(e.message));
+      throw new GitHubError('graphql', body.errors.map((e) => e.message).join('；'), undefined, transient);
     }
+    this.reads?.gate.answered();
     if (!body.data) throw new GitHubError('graphql', 'GitHub 回应缺少 data');
     return body.data;
   }
@@ -142,7 +295,7 @@ export class GitHubClient {
   async conditional(method: 'GET' | 'HEAD', pathOrUrl: string, etag: string | null): Promise<ConditionalAnswer> {
     const url = /^https?:/.test(pathOrUrl) ? pathOrUrl : `${this.endpoints.api}${pathOrUrl}`;
     if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw new GitHubError('http', `拒绝跟随指向其他主机的链接：${url}`);
-    const res = await this.send(url, { method, ...(etag ? { headers: { 'If-None-Match': etag } } : {}) }, true);
+    const res = await this.again(() => this.send(url, { method, ...(etag ? { headers: { 'If-None-Match': etag } } : {}) }, true));
     const tag = res.headers.get('etag');
     const next = nextLink(res.headers.get('link'));
     // an answer without a version tag says nothing checkable — "not modified" included (PR #272 review round 1)
@@ -168,7 +321,8 @@ export class GitHubClient {
     const origin = new URL(this.endpoints.api).origin;
     while (url) {
       if (new URL(url).origin !== origin) throw new GitHubError('http', `拒绝跟随指向其他主机的分页链接：${url}`);
-      const res = await this.send(url, { method: 'GET' });
+      const at: string = url;
+      const res = await this.again(() => this.send(at, { method: 'GET' }));
       let page: unknown;
       try {
         page = await res.json();

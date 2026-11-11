@@ -5,7 +5,7 @@ import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shar
 import { copyText } from './pasteImage';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
-import { ago, headerText, hoverLines, offlineDataText } from './syncTimes';
+import { RETRY_BY_HAND, ago, headerText, hoverLines, offlineDataText, retryText } from './syncTimes';
 import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropPlan } from '../data/board';
 import { api } from './api';
 import { labelStyle, useDarkMode } from './colors';
@@ -271,7 +271,7 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
  * outside or Esc puts them away. Mounted only while there is trouble, so a later failure never
  * opens it by itself.
  */
-function SyncTroubleButton({ trouble, describe }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string }) {
+function SyncTroubleButton({ trouble, describe, retryOf }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
   const n = trouble.failed.length;
@@ -291,7 +291,7 @@ function SyncTroubleButton({ trouble, describe }: { trouble: SyncTrouble; descri
       >
         <Icon name="warn" />
       </button>
-      {open && <SyncTroublePanel trouble={trouble} describe={describe} box={box} onClose={() => setOpen(false)} />}
+      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} box={box} onClose={() => setOpen(false)} />}
     </span>
   );
 }
@@ -299,11 +299,13 @@ function SyncTroubleButton({ trouble, describe }: { trouble: SyncTrouble; descri
 function SyncTroublePanel({
   trouble,
   describe,
+  retryOf,
   box,
   onClose,
 }: {
   trouble: SyncTrouble;
   describe: (f: SyncTrouble['failed'][number]) => string;
+  retryOf: (f: SyncTrouble['failed'][number]) => string | null;
   box: RefObject<HTMLSpanElement | null>;
   onClose: () => void;
 }) {
@@ -329,9 +331,19 @@ function SyncTroublePanel({
             {trouble.failed.map((f) => (
               <li key={f.sourceKey} data-testid="sync-trouble-source" data-key={f.sourceKey}>
                 {describe(f)}
+                {retryOf(f) && (
+                  <small className="trouble-retry" data-testid="sync-trouble-retry">
+                    {retryOf(f)}
+                  </small>
+                )}
               </li>
             ))}
           </ul>
+          {trouble.failed.some((f) => retryOf(f) !== null) && (
+            <div className="trouble-note" data-testid="sync-trouble-by-hand">
+              {RETRY_BY_HAND}
+            </div>
+          )}
         </>
       )}
       {trouble.filterIncomplete && (
@@ -591,7 +603,9 @@ export function BoardView({
     return s ? sourceLabel(s, titles.get(s.key)) : sourceKey;
   };
   const describeFailed = (f: (typeof failed)[number]) => {
-    return `${labelOf(f.sourceKey)} 读取失败（${f.error}），显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
+    const shown = `显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
+    // GitHub#374: the rate limit's own words already carry their brackets
+    return f.rateLimited ? `${labelOf(f.sourceKey)} 读取失败：${f.error}，${shown}` : `${labelOf(f.sourceKey)} 读取失败（${f.error}），${shown}`;
   };
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
   // every opening of the detail panel is its own panel instance (its React key):
@@ -797,7 +811,7 @@ export function BoardView({
               <span className="sync-text">{headerText(sync, now)}</span>
             </span>
           )}
-          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} />}
+          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} />}
           {/* never greyed out while a round runs (GitHub#217): a click starts over */}
           <button
             className={`icon-btn${sync.syncing ? ' spinning' : ''}`}

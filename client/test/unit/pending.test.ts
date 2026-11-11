@@ -355,7 +355,9 @@ describe('pending reminders against the fake GitHub', () => {
     await tick(h);
     expect(h.items()).toEqual([]);
     // recovers: the real change shows — the newly labelled one is new, the removed one just drops out
+    // (GitHub#374: after two failures in a row the board waits 2 minutes for its next read — one more minute)
     fake.state.failProjectPage.delete('org/gigleai/11');
+    h.clock.t += 60_000;
     await tick(h);
     expect(h.items()).toEqual([key(OPEN_NEW)]);
     expect(h.badge()).toBe(1);
