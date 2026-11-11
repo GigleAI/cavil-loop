@@ -821,8 +821,15 @@ test('GitHub#226: the open detail follows the sync rounds — new comment withou
   expect(reads(138).length).toBe(reads1);
   env.fake.state.failProjectPage.clear();
   env.fake.state.failRepoPage.clear();
-  // the next complete round brings it
-  await round();
+  // the next complete round brings it — GitHub#374: sources that just failed wait a minute for the
+  // next automatic read, so this round is the refresh by hand (which never waits)
+  {
+    const n = rounds();
+    await page.getByTestId('refresh').click();
+    await expect.poll(rounds).toBeGreaterThan(n);
+    await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no');
+    await page.waitForTimeout(400);
+  }
   await expect(frame.locator('body')).toContainText('BODY_AFTER_FAILED_ROUND');
 
   // ---- the automatic read fails: what is on screen stays, small print says from when, no error banner; the next round recovers ----
@@ -4301,7 +4308,8 @@ test('GitHub#231 (PR #241 review round 1): new issue while boards are not read y
 
   // ---- 3. the read succeeds while the dialog is open (nothing ticked by hand): the board shows up ticked ----
   env.fake.state.failProjectPage.delete(P11);
-  await page.evaluate(() => (window as any).cavil.syncNow());
+  // GitHub#374: a board whose read just failed waits a minute for the next automatic read; the refresh by hand does not
+  await page.evaluate(() => (window as any).cavil.restartSync());
   await expect(page.getByTestId('new-issue-project')).toHaveCount(1, { timeout: 15_000 });
   await expect(page.getByTestId('new-issue-project')).toBeChecked();
   await expect(unsynced).toHaveCount(0);
