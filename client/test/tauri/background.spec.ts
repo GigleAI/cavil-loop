@@ -216,17 +216,40 @@ test('window closed: hidden, still syncing and reminding within 120 s; a click o
 
   // a click on that notification: the window comes back with the item's detail open
   const note = after.find((r) => r.op === 'notify' && r.alert?.key === key);
+  const clickAt = records().length;
   appendFileSync(control, `click ${note.id}\n`);
   await until(() => records().some((r) => r.op === 'shown' && r.why === 'click'), 'shown after the click', 10_000);
   await wd.find(`[data-testid="detail"][data-key="${key}"]`, 15_000);
-  // "click opened the item"
+  // "click opened the item" — and GitHub#369: the shell took back exactly that one notification, by its whole id
+  const taken = records().slice(clickAt).filter((r) => r.op === 'clearNotification');
+  expect(taken.map((r) => r.id)).toEqual([note.id]);
+
+  // GitHub#369: the user switches to the app (the handler the window's focus runs): the badge goes to 0,
+  // the delivered notifications stay (the setting is off by default)
+  const at = records().length;
+  appendFileSync(control, 'activate\n');
+  await until(() => records().slice(at).some((r) => r.op === 'badge' && r.count === 0), 'switched: badge 0', 15_000);
+  const ops = records().slice(at).filter((r) => ['active', 'badge', 'clearNotifications'].includes(r.op)).map((r) => (r.op === 'badge' ? `badge ${r.count}` : r.op));
+  expect(ops.slice(0, 2)).toEqual(['active', 'badge 0']);
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(records().slice(at).filter((r) => r.op === 'clearNotifications' || r.op === 'clearNotification')).toEqual([]);
 });
 
 test('started hidden (launch at login): no window, still syncing and reminding within 120 s', async () => {
   test.setTimeout(GATE_MS + 150_000);
-  // a first run signs in and adds the source, then quits
+  // a first run signs in and adds the source, ticks "切到 App 时收起全部系统通知" (GitHub#369), is told
+  // about one new item, then quits
   await startApp();
   await signInWithRepo();
+  await wd.click('[data-testid="open-settings"]');
+  await wd.click('[data-testid="clear-all-on-activate"]');
+  await until(async () => (await wd.count('[data-testid="clear-all-on-activate"]:checked')) === 1, 'the box is ticked', 10_000);
+  await wd.click('[data-testid="back"]');
+  const first = unlabelled();
+  label(first);
+  const firstKey = `${REPO}#${first}`;
+  await until(() => notified(firstKey), 'first run: the new item notified', GATE_MS);
+  const firstId = JSON.parse(records().find((r) => r.op === 'notify' && r.alert?.key === firstKey).id);
   await stopApp();
   const before = records().length;
   const logBefore = fake.log.length;
@@ -241,18 +264,24 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   // started hidden, never in front, and still the seeded item is history: not notified, not unread (GitHub#251)
   onlyNotified([], before);
   expect(records().slice(before).some((r) => r.op === 'active')).toBe(false);
-  const n = unlabelled();
+  const n = unlabelled([first]);
   label(n);
   const key = `${REPO}#${n}`;
   await until(() => notified(key) && lastBadge() === 1, 'synced while started hidden: the new item notified, badge 1', GATE_MS);
   onlyNotified([key], before);
+  // GitHub#369: each start counts its notifications from 0 again; the id still differs, by the start
+  const secondId = JSON.parse(records().slice(before).find((r) => r.op === 'notify' && r.alert?.key === key).id);
+  expect(secondId.n).toBe(firstId.n);
+  expect(typeof secondId.run).toBe('string');
+  expect(secondId.run).not.toBe(firstId.run);
   const since = records().slice(before);
   expect(since.filter((r) => r.op === 'tick').length).toBeGreaterThan(0);
   expect(since.filter((r) => r.op === 'tick').every((r) => r.visible === false)).toBe(true);
   expect(since.some((r) => r.op === 'shown')).toBe(false);
 
   // the user switches to the app (GitHub#185): the same handler the window's focus runs, through the
-  // real shell — everything is read: the badge goes to 0, then the delivered notifications are taken back
+  // real shell — everything is read: the badge goes to 0, then, ticked in the first run and kept
+  // over the restart (GitHub#369), the delivered notifications are taken back
   const at = records().length;
   appendFileSync(control, 'activate\n');
   await until(() => records().slice(at).some((r) => r.op === 'clearNotifications'), 'notifications taken back', 15_000);

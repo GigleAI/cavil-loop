@@ -69,3 +69,11 @@ export function setLaneFold(folds: LaneFolds, lane: unknown, folded: unknown): L
 export function normalizeAutopilotConfirm(raw: unknown): boolean {
   return raw !== false;
 }
+
+/**
+ * GitHub#369: switching to the window takes back every delivered notification only when the user
+ * ticked it in Settings; anything but an explicit `true` keeps them (a click still takes back the one clicked).
+ */
+export function normalizeClearAllOnActivate(raw: unknown): boolean {
+  return raw === true;
+}

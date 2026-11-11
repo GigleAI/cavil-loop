@@ -518,7 +518,7 @@ describe('pending reminders against the fake GitHub', () => {
 });
 
 describe('the badge is only the unread count (GitHub#185, #251)', () => {
-  it('switching to the window clears the badge and takes back the notifications; what comes while it is in front is not unread; leaving it counts anew', async () => {
+  it('switching to the window clears the badge and keeps the notifications (GitHub#369); what comes while it is in front is not unread; leaving it counts anew', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
@@ -528,11 +528,15 @@ describe('the badge is only the unread count (GitHub#185, #251)', () => {
     await tick(h);
     expect(h.badge()).toBe(1);
     expect(h.cleared).toEqual([]);
-    // the user switches to the window: badge 0, the delivered notifications are taken back, nothing else changes
+    // the user switches to the window: badge 0; the delivered notifications stay (GitHub#369), nothing else changes
+    expect(h.c.getState().clearAllOnActivate).toBe(false);
+    const badgesBefore = h.badges.length;
     h.c.onDesktopEvent({ kind: 'active' });
     await h.c.desktopSettled();
+    // "did happen": the switch was taken — a new badge call went out, and it is 0
+    expect(h.badges.length).toBeGreaterThan(badgesBefore);
     expect(h.badge()).toBe(0);
-    expect(h.cleared).toHaveLength(1);
+    expect(h.cleared).toEqual([]);
     expect(h.c.getState().unreadCount).toBe(0);
     expect(h.c.getState().pendingCount).toBe(P + 1);
     // a new label while the window is in front: notified as before, but already seen
@@ -555,13 +559,40 @@ describe('the badge is only the unread count (GitHub#185, #251)', () => {
     setLabel(CLOSED_ISSUE, true, h.clock);
     await tick(h);
     expect(h.badge()).toBe(1);
-    // back to the window: read; the notifications are taken back once more
+    // back to the window: read; the notifications still stay
     h.c.onDesktopEvent({ kind: 'active' });
     await h.c.desktopSettled();
     expect(h.badge()).toBe(0);
-    expect(h.cleared).toHaveLength(2);
+    expect(h.cleared).toEqual([]);
+  });
+
+  it('GitHub#369: ticked in Settings, switching to the window takes back every notification again (after the badge goes to 0); unticked, they stay again', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    h.c.onDesktopEvent({ kind: 'inactive' });
+    setLabel(OPEN_NEW, true, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(1);
+    h.c.setClearAllOnActivate(true);
+    h.c.setClearAllOnActivate('yes' as any); // not a boolean: ignored
+    expect(h.c.getState().clearAllOnActivate).toBe(true);
+    h.c.onDesktopEvent({ kind: 'active' });
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(0);
+    expect(h.cleared).toHaveLength(1);
     // the take-back went out after the badge set to 0 by the same switch
-    expect(h.badges[h.cleared[1] - 1]).toBe(0);
+    expect(h.badges[h.cleared[0] - 1]).toBe(0);
+    // unticked: the next switch keeps them
+    h.c.setClearAllOnActivate(false);
+    h.c.onDesktopEvent({ kind: 'inactive' });
+    setLabel(OPEN_NEW2, true, h.clock);
+    await tick(h);
+    expect(h.badge()).toBe(1);
+    h.c.onDesktopEvent({ kind: 'active' });
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(0);
+    expect(h.cleared).toHaveLength(1);
   });
 
   it('a settings change brings no unread item; renaming the label and back keeps what was unread', async () => {

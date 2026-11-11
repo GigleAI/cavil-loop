@@ -10,7 +10,7 @@
 // A shortcut only presses a button for you: every handler is the button's own
 // handler, behind the same "is it enabled" condition (see the call sites).
 
-export type Scope = 'global' | 'detail' | 'graph' | 'reply' | 'dialog' | 'picker' | 'help';
+export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dialog' | 'picker' | 'help';
 
 /** `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere) */
 export type KeySpec = { key: string; mod?: boolean; shift?: boolean };
@@ -37,7 +37,8 @@ export type ShortcutId =
   | 'helpClose'
   | 'graphFit'
   | 'graphZoomIn'
-  | 'graphZoomOut';
+  | 'graphZoomOut'
+  | 'settingsBack';
 
 export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: string };
 
@@ -45,6 +46,7 @@ export const SCOPE_TITLE: Record<Scope, string> = {
   global: '已登录的任何页面',
   detail: '详情面板（光标不在输入框里时）',
   graph: '依赖图（光标不在输入框里时；拖动空白处平移，滚轮缩放）',
+  settings: '设置页',
   reply: '回复框里',
   dialog: '对话框里',
   picker: '标签 / 里程碑选择框',
@@ -64,6 +66,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: '适应窗口（整张图放进窗口）' },
   { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: '放大' },
   { id: 'graphZoomOut', scope: 'graph', keys: [{ key: '-' }], label: '缩小' },
+  { id: 'settingsBack', scope: 'settings', keys: [{ key: 'Escape' }], label: '回到看板（光标在输入框里时，先离开输入框并保存）' },
   { id: 'send', scope: 'reply', keys: [{ key: 'Enter', mod: true }], label: '发送评论' },
   { id: 'preview', scope: 'reply', keys: [{ key: 'p', mod: true, shift: true }], label: '预览 / 继续编辑' },
   { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: '离开回复框（文字保留）' },
@@ -91,7 +94,9 @@ export type KeyLike = {
 export type Layer = 'none' | 'dialog' | 'picker' | 'help';
 /** where the keyboard is: the reply box, another text field / select, or nowhere that takes text */
 export type Typing = 'none' | 'reply' | 'other';
-export type KeyContext = { signedIn: boolean; layer: Layer; typing: Typing };
+/** which page is showing (GitHub#369): the settings page has its own Esc; anything else is the board's keys */
+export type Page = 'board' | 'settings';
+export type KeyContext = { signedIn: boolean; layer: Layer; typing: Typing; page?: Page };
 
 /** an input method is building a character: its keys (Enter to pick, Esc to drop) are never ours */
 export function composing(e: KeyLike): boolean {
@@ -115,6 +120,8 @@ const hasMod = (s: Shortcut) => s.keys.some((k) => k.mod);
  * takes every key and only its own shortcuts act; while typing, single keys are typing
  * (only the reply box's own keys and the ⌘ / Ctrl shortcuts act); otherwise the global,
  * detail-panel and graph keys (a graph key has no handler unless the graph is showing).
+ * On the settings page (GitHub#369) its Esc takes the place of the board's keys, also while
+ * typing in one of its fields (the first Esc leaves the field, see SettingsView).
  */
 export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
   if (composing(e)) return null;
@@ -122,7 +129,9 @@ export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
   const allowed = (s: Shortcut): boolean => {
     if (ctx.layer !== 'none') return s.scope === ctx.layer;
     if (ctx.typing === 'reply') return s.scope === 'reply' || (s.scope === 'global' && hasMod(s));
-    if (ctx.typing === 'other') return s.scope === 'global' && hasMod(s);
+    const settings = ctx.page === 'settings';
+    if (ctx.typing === 'other') return (s.scope === 'global' && hasMod(s)) || (settings && s.scope === 'settings');
+    if (settings) return s.scope === 'global' || s.scope === 'settings';
     return s.scope === 'global' || s.scope === 'detail' || s.scope === 'graph';
   };
   for (const s of SHORTCUTS) if (allowed(s) && s.keys.some((k) => matches(k, e))) return s.id;

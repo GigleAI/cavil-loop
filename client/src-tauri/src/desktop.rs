@@ -68,12 +68,27 @@ pub struct Desktop {
     queue: Mutex<VecDeque<Value>>,
     wake: tokio::sync::Notify,
     seq: AtomicU64,
+    /// GitHub#369: this start of the app, in every notification id. `seq` starts at 0 on every start,
+    /// and a notification from an earlier start may still sit in Notification Center: without this the
+    /// same item's n-th notification of two starts would get one id, and a click would take back both.
+    run: String,
     pub hooks: TestHooks,
+}
+
+/// A value no other start of the app gets: the process id, the time, and the standard library's
+/// per-process random hash keys (no extra dependency for one id).
+fn run_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u32(std::process::id());
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    h.write_u128(nanos);
+    format!("{:016x}", h.finish())
 }
 
 impl Desktop {
     pub fn new(hooks: TestHooks) -> Desktop {
-        Desktop { queue: Mutex::new(VecDeque::new()), wake: tokio::sync::Notify::new(), seq: AtomicU64::new(0), hooks }
+        Desktop { queue: Mutex::new(VecDeque::new()), wake: tokio::sync::Notify::new(), seq: AtomicU64::new(0), run: run_token(), hooks }
     }
 
     /// Closing the window hides it (the app keeps syncing and reminding): macOS, or a test that asks for it.
@@ -125,16 +140,19 @@ impl Desktop {
     pub fn notification_id(&self, alert: &Value) -> String {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         match alert["kind"].as_str() {
-            Some("item") => json!({ "key": alert["key"], "url": alert["url"], "n": n }).to_string(),
-            _ => json!({ "summary": n }).to_string(),
+            Some("item") => json!({ "key": alert["key"], "url": alert["url"], "run": self.run, "n": n }).to_string(),
+            _ => json!({ "summary": n, "run": self.run }).to_string(),
         }
     }
 }
 
 /// What a click on a notification does, whoever reports it (the system, or a test's control file):
-/// the window comes forward; an item notification opens that item.
+/// that one notification is taken back (GitHub#369: only it, by its whole id — the others stay, other
+/// notifications about the same item too), the window comes forward, an item notification opens that
+/// item. A notification without an item (the packaging check's) is taken back the same way.
 pub fn on_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
     let d = app.state::<Desktop>();
+    clear_one(app, id);
     show_main(app, "click");
     if let Ok(v) = serde_json::from_str::<Value>(id) {
         if let (Some(key), Some(url)) = (v["key"].as_str(), v["url"].as_str()) {
@@ -143,8 +161,19 @@ pub fn on_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 }
 
+/// Take back one delivered notification by its id (GitHub#369). v1: macOS only; test mode records it instead.
+fn clear_one<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    let d = app.state::<Desktop>();
+    d.record(json!({ "op": "clearNotification", "id": id }));
+    #[cfg(target_os = "macos")]
+    if d.hooks.record.is_none() {
+        crate::mac::clear_delivered_one(id);
+    }
+}
+
 /// The window came to the front (focused) or left it (lost focus, hidden) — GitHub#185: the
-/// window clears the unread badge and the delivered notifications when the user switches to it.
+/// window clears the unread badge when the user switches to it (and, only when ticked in Settings,
+/// the delivered notifications too — GitHub#369).
 pub fn set_active<R: Runtime>(app: &AppHandle<R>, active: bool) {
     let d = app.state::<Desktop>();
     d.record(json!({ "op": if active { "active" } else { "inactive" } }));
@@ -378,6 +407,31 @@ mod tests {
         assert_eq!(v["url"], "https://github.com/o/r/issues/1");
         let s: Value = serde_json::from_str(&d.notification_id(&json!({ "kind": "summary" }))).unwrap();
         assert!(s.get("key").is_none());
+    }
+
+    /// GitHub#369: a restart counts from 0 again, while a notification of the earlier start may still
+    /// be in Notification Center — the same item's first notification of two starts must not share an id
+    /// (a click takes back exactly the id it brings, so a shared one would take back both).
+    #[test]
+    fn notification_ids_differ_across_starts_of_the_app() {
+        let item = json!({ "kind": "item", "key": "o/r#1", "url": "https://github.com/o/r/issues/1" });
+        let first = Desktop::new(TestHooks::default());
+        let second = Desktop::new(TestHooks::default());
+        let a = first.notification_id(&item);
+        let b = second.notification_id(&item);
+        let (va, vb): (Value, Value) = (serde_json::from_str(&a).unwrap(), serde_json::from_str(&b).unwrap());
+        // "did happen": both are the first notification of their start, about the same item
+        assert_eq!(va["n"], 0);
+        assert_eq!(vb["n"], 0);
+        assert_eq!(va["key"], vb["key"]);
+        assert_ne!(va["run"], vb["run"]);
+        assert_ne!(a, b);
+        // within one start the run stays the same; the packaging check's notification carries it too
+        let c: Value = serde_json::from_str(&first.notification_id(&item)).unwrap();
+        assert_eq!(c["run"], va["run"]);
+        let s: Value = serde_json::from_str(&second.notification_id(&json!({ "kind": "summary" }))).unwrap();
+        assert_eq!(s["run"], vb["run"]);
+        assert_ne!(first.notification_id(&json!({ "kind": "summary" })), second.notification_id(&json!({ "kind": "summary" })));
     }
 
     #[test]

@@ -7,6 +7,8 @@ import { UpdateSection } from './UpdateViews';
 import { DaemonSection, useDaemonStatus } from './DaemonSection';
 import { ConnectButton } from './ConnectDialog';
 import { Icon, type IconName } from './Icons';
+import { useShortcuts } from './keyboard';
+import { keyText, typingOf } from './shortcuts';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-sources', icon: 'project', title: '数据来源' },
@@ -26,6 +28,15 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // the local daemon's status: the daemon section and the repositories' "接上 daemon" share it (GitHub#315)
   const daemon = useDaemonStatus();
+  // GitHub#369: Esc goes back to the board, like the "返回看板" button. In a text field the first Esc
+  // only leaves it (the label fields save when left), so a half-typed value is never carried away.
+  useShortcuts({
+    settingsBack: () => {
+      const el = document.activeElement;
+      if (typingOf(el) !== 'none') (el as HTMLElement).blur();
+      else onBack();
+    },
+  });
 
   const add = async () => {
     const r = await api().addSource(input);
@@ -38,9 +49,10 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
   return (
     <div className="settings" data-testid="settings">
       <div className="toolbar">
-        <button className="ghost" onClick={onBack} data-testid="back">
+        <button className="ghost" onClick={onBack} data-testid="back" title={`返回看板（${keyText('settingsBack')}）`}>
           <Icon name="back" />
           返回看板
+          <kbd data-testid="back-key">{keyText('settingsBack')}</kbd>
         </button>
         <h2>设置</h2>
         <span className="muted small">只保存在这台电脑上</span>
@@ -148,8 +160,24 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           </div>
         )}
         <p className="note small" data-testid="pending-how-to-clear">
-          Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零，已经弹出的系统通知也一并收起。还没看就被摘掉标签或关掉的那条，不再算未读。
+          Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。
+          <br />
+          {/* GitHub#369 (PR #370 review round 1): what a click leaves behind depends on the box below */}
+          <span data-testid="notification-keep-rule">
+            {state.clearAllOnActivate
+              ? '已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。'
+              : '系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。'}
+          </span>
         </p>
+        <label className="row small">
+          <input
+            type="checkbox"
+            data-testid="clear-all-on-activate"
+            checked={state.clearAllOnActivate}
+            onChange={(e) => api().setClearAllOnActivate(e.target.checked)}
+          />
+          切到 App 时收起全部系统通知（勾上后，点一条通知时其余也会一起收起）
+        </label>
         {state.launchAtLogin !== null && (
           <label className="row small">
             <input
