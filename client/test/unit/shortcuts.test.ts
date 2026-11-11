@@ -15,7 +15,13 @@ const eventOf = (spec: KeySpec, mod: 'meta' | 'ctrl' = 'meta'): KeyLike =>
   });
 /** a context in which a scope's shortcuts are the ones meant to act */
 const ctxFor = (scope: Scope): KeyContext =>
-  scope === 'global' || scope === 'detail' || scope === 'graph' ? idle : scope === 'reply' ? { ...idle, typing: 'reply' } : { ...idle, layer: scope };
+  scope === 'global' || scope === 'detail' || scope === 'graph'
+    ? idle
+    : scope === 'settings'
+      ? { ...idle, page: 'settings' }
+      : scope === 'reply'
+        ? { ...idle, typing: 'reply' }
+        : { ...idle, layer: scope };
 
 describe('the shortcut table', () => {
   it('every key of every shortcut reaches that shortcut in its own place, with ⌘ and with Ctrl', () => {
@@ -71,6 +77,27 @@ describe('resolve: who gets the key', () => {
     // a plain Enter in a dialog is nobody's: only ⌘↩ confirms
     expect(resolve(key('Enter'), { ...idle, layer: 'dialog' })).toBeNull();
     expect(resolve(key('Enter', { metaKey: true }), { ...idle, layer: 'dialog', typing: 'reply' })).toBe('confirm');
+  });
+  it('GitHub#369: on the settings page Esc is its own (also in a field, where it first leaves the field); the board keeps its Esc; a layer still comes first', () => {
+    const settings: KeyContext = { ...idle, page: 'settings' };
+    expect(resolve(key('Escape'), settings)).toBe('settingsBack');
+    expect(resolve(key('Escape'), { ...settings, typing: 'other' })).toBe('settingsBack');
+    // the board's own keys are not the settings page's
+    for (const k of ['l', 'm', 'r', 'f', '=']) expect(resolve(key(k), settings), k).toBeNull();
+    // the globals still act there
+    expect(resolve(key('/'), settings)).toBe('search');
+    expect(resolve(key(',', { metaKey: true }), settings)).toBe('settings');
+    expect(resolve(key('?', { shiftKey: true }), settings)).toBe('help');
+    // typing in a settings field: letters are text
+    for (const k of ['/', 'c', '?']) expect(resolve(key(k, { shiftKey: k === '?' }), { ...settings, typing: 'other' }), k).toBeNull();
+    // a layer on top (the shortcut list, a dialog) takes Esc first
+    expect(resolve(key('Escape'), { ...settings, layer: 'help' })).toBe('helpClose');
+    expect(resolve(key('Escape'), { ...settings, layer: 'dialog' })).toBe('cancel');
+    // never while composing
+    expect(resolve(key('Escape', { isComposing: true }), settings)).toBeNull();
+    // the board (no page, or 'board'): Esc is still the detail panel's, and typing in a field still keeps it
+    expect(resolve(key('Escape'), { ...idle, page: 'board' })).toBe('hide');
+    expect(resolve(key('Escape'), { ...idle, page: 'board', typing: 'other' })).toBeNull();
   });
   it('nothing typed, no layer: global and detail keys; extra modifiers never match', () => {
     expect(resolve(key('/'), idle)).toBe('search');

@@ -1705,6 +1705,11 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('open-settings').click();
   await expect(page.getByTestId('pending-how-to-clear')).toContainText('「未读数」');
   await expect(page.getByTestId('pending-how-to-clear')).toContainText('切到 App 就清零');
+  // GitHub#369: the back button names its key
+  await expect(page.getByTestId('back-key')).toHaveText('Esc');
+  // GitHub#369: switching to the app keeps the notifications; a click takes back only that one; the box is off
+  await expect(page.getByTestId('pending-how-to-clear')).toContainText('点哪条通知，就只收起被点的那一条');
+  await expect(page.getByTestId('clear-all-on-activate')).not.toBeChecked();
   await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的不提醒');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   for (const gone of ['pending-list', 'pending-item', 'pending-count', 'unread-count', 'pending-breakdown']) await expect(page.getByTestId(gone)).toHaveCount(0);
@@ -1770,11 +1775,21 @@ test('pending/human: nothing about the history at start, one notification per ne
   expect(badge()).toBeLessThanOrEqual(1);
   expect(notes()).toHaveLength(1);
 
-  // the user switches to the window (the shell reports the focus): the badge cleared, then the
-  // delivered notifications taken back
-  const before = app.desktop.records.length;
+  // the user switches to the window (the shell reports the focus): the badge cleared; the delivered
+  // notifications stay (GitHub#369)
+  const opsSince = (from: number) => app.desktop.records.slice(from).map((r) => (r.op === 'badge' ? `badge ${r.count}` : r.op));
+  let before = app.desktop.records.length;
   app.desktop.push({ kind: 'active' });
-  await expect.poll(() => app.desktop.records.slice(before).map((r) => (r.op === 'badge' ? `badge ${r.count}` : r.op))).toEqual(['badge 0', 'clearNotifications']);
+  await expect.poll(() => opsSince(before)).toEqual(['badge 0']);
+  await page.waitForTimeout(500);
+  expect(opsSince(before)).toEqual(['badge 0']);
+  // ticked in Settings: the next switch takes them back again, after the badge
+  await page.getByTestId('clear-all-on-activate').click();
+  await expect(page.getByTestId('clear-all-on-activate')).toBeChecked();
+  app.desktop.push({ kind: 'inactive' });
+  before = app.desktop.records.length;
+  app.desktop.push({ kind: 'active' });
+  await expect.poll(() => opsSince(before)).toEqual(['badge 0', 'clearNotifications']);
   await app.close();
 });
 
@@ -2667,7 +2682,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await expect(help).toBeVisible();
   expect(await help.getByTestId('shortcut-row').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-id')))).toEqual([
     'search', 'newIssue', 'sync', 'settings', 'help', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'hide',
-    'graphFit', 'graphZoomIn', 'graphZoomOut', 'send', 'preview', 'leaveReply', 'pickerUp', 'pickerDown', 'pickerToggle', 'pickerClose', 'helpClose',
+    'graphFit', 'graphZoomIn', 'graphZoomOut', 'settingsBack', 'send', 'preview', 'leaveReply', 'pickerUp', 'pickerDown', 'pickerToggle', 'pickerClose', 'helpClose',
   ]);
   await shot(page, '60-shortcut-list');
   // the list takes every key while it is up: "/" does not reach the search box
@@ -2748,9 +2763,35 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await expect(settings).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(help).toHaveCount(0);
+  // GitHub#369: the list took that Esc — the settings page is still up
+  await expect(settings).toBeVisible();
   await shot(page, '61-settings-after-keys');
-  // the earlier "/" and "C" were done once: back on the board (by the button), nothing repeats
+  // GitHub#369: in a text field the first Esc only leaves the field (which saves it), the second goes back
+  const agentLabel = page.getByTestId('hand-back-agent');
+  const originalAgent = await agentLabel.inputValue();
+  expect(originalAgent).not.toBe('');
+  await agentLabel.click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('X');
+  await page.keyboard.press('Escape');
+  await expect(agentLabel).not.toBeFocused();
+  await expect(settings).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(settings).toHaveCount(0);
+  // saved when the field was left: reopened, the settings show it; then it is put back the same way
+  await page.keyboard.press(`${MOD}+,`);
+  await expect(settings).toBeVisible();
+  await expect(page.getByTestId('hand-back-agent')).toHaveValue(`${originalAgent}X`);
+  await page.getByTestId('hand-back-agent').fill(originalAgent);
+  await page.getByTestId('hand-back-agent').blur();
   await page.getByTestId('back').click();
+  await page.keyboard.press(`${MOD}+,`);
+  await expect(page.getByTestId('hand-back-agent')).toHaveValue(originalAgent);
+  // nothing focused: one Esc goes back to the board
+  await blur(page);
+  await page.keyboard.press('Escape');
+  // the earlier "/" and "C" were done once: back on the board, nothing repeats
   await expect(page.getByTestId('board')).toBeVisible();
   await page.waitForTimeout(300);
   await expect(dialog).toHaveCount(0);

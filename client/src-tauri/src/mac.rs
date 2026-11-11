@@ -13,7 +13,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread};
-use objc2_foundation::{NSActivityOptions, NSBundle, NSError, NSProcessInfo, NSString};
+use objc2_foundation::{NSActivityOptions, NSArray, NSBundle, NSError, NSProcessInfo, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationPresentationOptions, UNNotificationRequest,
     UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
@@ -139,6 +139,17 @@ pub fn clear_delivered() {
         return;
     }
     UNUserNotificationCenter::currentNotificationCenter().removeAllDeliveredNotifications();
+}
+
+/// GitHub#369: take back the one notification with this id (the one clicked) from Notification
+/// Center; every other notification of this app stays, including others about the same item.
+pub fn clear_delivered_one(id: &str) {
+    if !bundled() {
+        return;
+    }
+    let id = NSString::from_str(id);
+    let ids = NSArray::from_slice(&[&*id]);
+    UNUserNotificationCenter::currentNotificationCenter().removeDeliveredNotificationsWithIdentifiers(&ids);
 }
 
 /// One notification. Resolves with what the system said: Ok once it accepted the request (that is not

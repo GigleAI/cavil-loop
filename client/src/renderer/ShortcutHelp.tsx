@@ -4,7 +4,7 @@ import { SCOPE_TITLE, SHORTCUTS, isMac, keyParts, type Scope } from './shortcuts
 import { useLayer, useShortcuts } from './keyboard';
 import { MODAL } from './outsideClick';
 
-const ORDER: Scope[] = ['global', 'dialog', 'detail', 'graph', 'reply', 'picker', 'help'];
+const ORDER: Scope[] = ['global', 'dialog', 'detail', 'graph', 'settings', 'reply', 'picker', 'help'];
 
 export function Keys({ parts }: { parts: string[] }) {
   return (

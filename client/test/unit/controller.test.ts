@@ -533,6 +533,23 @@ describe('sync and cache', () => {
     expect(broken.c.getState().autopilotConfirm).toBe(true);
   });
 
+  it('GitHub#369: "切到 App 时收起全部系统通知" is off by default, survives a restart, and a broken saved value reads as off', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().clearAllOnActivate).toBe(false);
+    first.c.setClearAllOnActivate(true);
+    first.c.setClearAllOnActivate(1 as any); // not a boolean: ignored
+    expect(first.c.getState().clearAllOnActivate).toBe(true);
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().clearAllOnActivate).toBe(true);
+    second.c.setClearAllOnActivate(false);
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().clearAllOnActivate).toBe(false);
+    for (const v of ['true', 1, null, {}]) {
+      const broken = await make({ seed: { clearAllOnActivate: v } });
+      expect(broken.c.getState().clearAllOnActivate, String(v)).toBe(false);
+    }
+  });
+
   it('GitHub#297: folded board swimlanes survive a restart and a Project import, apart from the table folds; a broken saved value reads as nothing folded', async () => {
     const first = await loggedIn();
     expect(first.c.getState().laneFolds).toEqual([]);

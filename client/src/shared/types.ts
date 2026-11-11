@@ -537,6 +537,8 @@ export interface AppState {
   laneFolds: LaneFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
+  /** GitHub#369: switching to the window takes back every delivered notification; false (default) = they stay, a click takes back only that one */
+  clearAllOnActivate: boolean;
   /** the repository order set by dragging (GitHub#304; lower-cased `owner/name`, kept on this machine); empty = alphabetical */
   repoOrder: string[];
   /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */

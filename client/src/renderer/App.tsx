@@ -52,7 +52,9 @@ export function App() {
   // board go back to it first and hand it a request, taken once (like a clicked notification).
   const signedIn = snap?.state.phase === 'ready';
   const keysOn = signedIn;
-  useKeyboard(keysOn);
+  // GitHub#369: the settings page has its own Esc (back to the board), only while it is the page showing
+  const onSettings = signedIn && !help && page === 'settings';
+  useKeyboard(keysOn, onSettings ? 'settings' : 'board');
   const [keysHelp, setKeysHelp] = useState(false);
   const [boardReq, setBoardReq] = useState<BoardRequest | null>(null);
   const reqSeq = useRef(0);

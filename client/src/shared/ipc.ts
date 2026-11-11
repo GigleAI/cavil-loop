@@ -78,6 +78,8 @@ export interface CavilApi {
   setLaneFold(lane: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
+  /** whether switching to the window takes back every delivered notification (GitHub#369) */
+  setClearAllOnActivate(on: boolean): Promise<void>;
   /** a repository dragged (GitHub#304): `shown` = the list on screen before the drag, `next` = the same repositories in the new order */
   reorderRepos(shown: string[], next: string[]): Promise<void>;
   /** "按名称排序": forget the dragged order (GitHub#304) */

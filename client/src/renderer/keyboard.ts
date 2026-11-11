@@ -1,7 +1,7 @@
 // The React side of the shortcuts (GitHub#192): who handles a shortcut, and which layer is on top.
 // The decision itself is `resolve` in shortcuts.ts; the single keydown listener is `useKeyboard` (App).
 import { useEffect, useRef } from 'react';
-import { resolve, typingOf, type KeyLike, type Layer, type ShortcutId, type Typing } from './shortcuts';
+import { resolve, typingOf, type KeyLike, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
 
 /**
  * A handler returns false when the key did nothing it should keep from the page (it is then left
@@ -53,13 +53,15 @@ export function topLayer(): Layer {
 
 /** whether a shortcut may act at all: set by the window's listener (App), read by forwarded keys too */
 let signedInNow = false;
+/** the page showing (GitHub#369): set by App together with signedInNow */
+let pageNow: Page = 'board';
 
 /**
  * One key press, decided by `resolve` and run by the mounted handler: the id that acted, or null.
  * Both the window's own keydown listener and a key forwarded by the discussion frame go through here.
  */
 function press(e: KeyLike, typing: Typing, only?: ShortcutId): ShortcutId | null {
-  const id = resolve(e, { signedIn: signedInNow, layer: topLayer(), typing });
+  const id = resolve(e, { signedIn: signedInNow, layer: topLayer(), typing, page: pageNow });
   if (!id || (only && id !== only)) return null;
   const list = handlers.get(id);
   const h = list?.[list.length - 1];
@@ -77,9 +79,13 @@ export function frameKey(key: string): boolean {
   return press({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false }, 'none', 'reply') !== null;
 }
 
-/** The one keydown listener of the window. `signedIn` decides whether any shortcut acts at all. */
-export function useKeyboard(signedIn: boolean): void {
+/**
+ * The one keydown listener of the window. `signedIn` decides whether any shortcut acts at all;
+ * `page` which page's own keys act (GitHub#369: the settings page's Esc).
+ */
+export function useKeyboard(signedIn: boolean, page: Page = 'board'): void {
   signedInNow = signedIn;
+  pageNow = page;
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;

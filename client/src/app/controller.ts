@@ -10,7 +10,7 @@ import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardDa
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
-import { normalizeAutopilotConfirm, normalizeLaneFolds, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
+import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
@@ -225,6 +225,7 @@ const TABLE_FOLDS = 'tableFolds';
 /** GitHub#297: folded board swimlanes, its own key for the same reason */
 const LANE_FOLDS = 'laneFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
+const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
 const REPO_ORDER = 'repoOrder';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 
@@ -435,6 +436,7 @@ export class Controller {
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
+      clearAllOnActivate: normalizeClearAllOnActivate(this.cache.getSetting<unknown>(CLEAR_ALL_ON_ACTIVATE, false)),
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -838,12 +840,16 @@ export class Controller {
     return n;
   }
 
-  /** The user switched to the window: everything is read — the badge and the delivered notifications go. */
+  /**
+   * The user switched to the window: everything is read — the badge goes. The delivered
+   * notifications stay in Notification Center (GitHub#369: a click takes back only the one clicked,
+   * in the shell), unless the user ticked "切到 App 时收起全部系统通知" in Settings.
+   */
   private markRead(): void {
     this.unread.clear();
     this.set({ unreadCount: 0 });
     this.badge();
-    this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
+    if (this.state.clearAllOnActivate) this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
   }
 
   private badge(): void {
@@ -1645,6 +1651,13 @@ export class Controller {
     if (next === this.state.laneFolds) return;
     this.cache.setSetting(LANE_FOLDS, next);
     this.set({ laneFolds: next });
+  }
+
+  /** GitHub#369: switching to the window takes back every delivered notification (true) or none (false, the default). Anything but a boolean is ignored. */
+  setClearAllOnActivate(on: unknown): void {
+    if (typeof on !== 'boolean' || on === this.state.clearAllOnActivate) return;
+    this.cache.setSetting(CLEAR_ALL_ON_ACTIVATE, on);
+    this.set({ clearAllOnActivate: on });
   }
 
   /** GitHub#231: "托管" asks first (true) or not ("不再提示", false). Anything but a boolean is ignored. */
