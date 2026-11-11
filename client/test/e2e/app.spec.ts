@@ -995,6 +995,17 @@ function rawIteration(): Map<string, string> {
   return out;
 }
 
+/** per group, the rows that matched the search (not the sub-issues added under them, GitHub#368) */
+async function matchedGroupCounts(page: Page): Promise<Record<string, number>> {
+  return page.$$eval('[data-testid="group"]', (gs) =>
+    Object.fromEntries(gs.map((g) => [g.getAttribute('data-title'), g.querySelectorAll('[data-testid="row"]:not([data-pulled])').length])),
+  );
+}
+/** per group, every row it shows */
+async function shownGroupRows(page: Page): Promise<Record<string, number>> {
+  return page.$$eval('[data-testid="group"]', (gs) => Object.fromEntries(gs.map((g) => [g.getAttribute('data-title'), g.querySelectorAll('[data-testid="row"]').length])));
+}
+
 async function groupCounts(page: Page): Promise<Record<string, number>> {
   return page.$$eval('[data-testid="group"]', (gs) =>
     Object.fromEntries(gs.map((g) => [g.getAttribute('data-title'), Number(g.querySelector('[data-testid="group-count"]')!.textContent)])),
@@ -1025,9 +1036,12 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   const iter = rawIteration();
   const want: Record<string, number> = {};
   for (const k of server) want[iter.get(k)!] = (want[iter.get(k)!] ?? 0) + 1;
-  await expect.poll(() => groupCounts(page)).toEqual(want);
-  const rows = await page.$$eval('[data-testid="row"]', (rs) => rs.map((r) => r.getAttribute('data-key')!));
+  // GitHub#368: with "show hierarchy" on, sub-issues of a matched issue are added under it, faded
+  // ("pulled"); what matched is exactly GitHub's own result, and each group's count is the rows it shows
+  await expect.poll(() => matchedGroupCounts(page)).toEqual(want);
+  const rows = await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.map((r) => r.getAttribute('data-key')!));
   expect([...rows].sort()).toEqual(server);
+  expect(await groupCounts(page)).toEqual(await shownGroupRows(page));
   await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
   await shot(page, '10-table-imported');
   // a row's title opens the same detail panel as a card on the board (#138)
@@ -1038,11 +1052,11 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
 
   // search: GitHub syntax, and Chinese in the middle of a word
   await page.getByTestId('search').fill('label:pending/human');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
   await page.getByTestId('search').fill('客户端');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBeGreaterThan(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBeGreaterThan(
     filterResults.find((r) => r.query === '客户端')!.server.length,
   );
 
@@ -1050,14 +1064,14 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   await page.getByTestId('search').fill('label:pending/human updated:>2026-01-01 priority:High');
   await expect(page.getByTestId('filter-unsupported')).toContainText('updated:>2026-01-01');
   await expect(page.getByTestId('filter-unsupported')).toContainText('priority:High');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
   await shot(page, '11-unsupported-words');
   // a Chinese custom field is named and ignored too, not searched as text
   await page.getByTestId('search').fill('优先级:高 label:pending/human');
   await expect(page.getByTestId('filter-unsupported')).toContainText('优先级:高');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]', (rs) => rs.length))).toBe(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
 
@@ -1526,7 +1540,9 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   // click outside → away
   await btn.click();
   await expect(panel).toBeVisible();
-  await page.getByTestId('match-count').click();
+  // its right end: since GitHub#368 the count can go on ("· 另有 N 个子 issue 随父 issue 显示") to the left, under the open panel
+  const mc = (await page.getByTestId('match-count').boundingBox())!;
+  await page.getByTestId('match-count').click({ position: { x: mc.width - 4, y: mc.height / 2 } });
   await expect(panel).toHaveCount(0);
   // Esc → away
   await btn.click();

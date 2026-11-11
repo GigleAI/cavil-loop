@@ -22,6 +22,7 @@ import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
 import { useLayer, useShortcuts } from './keyboard';
 import { TableView } from './TableView';
+import { buildTable } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
 import { buildGraph } from '../data/graph';
 import { localToday } from './iterationOptions';
@@ -574,6 +575,11 @@ export function BoardView({
     () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder),
     [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder],
   );
+  // GitHub#368: built once here, so the view bar's counts and the table come from the same result
+  const table = useMemo(
+    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items) : null),
+    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items],
+  );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // GitHub#350: the dependency graph of what the sources and search picked
@@ -866,7 +872,8 @@ export function BoardView({
             </span>
           ) : filtering ? (
             <span data-testid="match-count">
-              显示 {items.length} / {data.items.length} 条
+              显示 {table?.matchCount ?? items.length} / {data.items.length} 条
+              {table && table.pulledCount > 0 && <span data-testid="pulled-count"> · 另有 {table.pulledCount} 个子 issue 随父 issue 显示</span>}
             </span>
           ) : null}
           <span data-testid="item-total" className={filtering || graph ? 'sr-only' : undefined}>
@@ -969,6 +976,7 @@ export function BoardView({
           folds={state.tableFolds}
           onDropPlan={applyPlan}
           repoOrder={state.repoOrder}
+          table={table ?? undefined}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>

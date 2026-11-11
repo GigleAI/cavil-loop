@@ -3,7 +3,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
-import { boardMode, buildTable, foldRuns, tableDropPlan, type Group, type Row } from '../data/table';
+import { boardMode, buildTable, foldRuns, tableDropPlan, type Group, type Row, type Table } from '../data/table';
 import type { DropPlan } from '../data/board';
 import { issuePrLinks } from '../data/prNest';
 import { api } from './api';
@@ -56,6 +56,9 @@ function open(url: string) {
 function toneOf(it: Item) {
   return stateTone(it.kind, it.state, it.stateReason, it.isDraft ?? null);
 }
+
+/** GitHub#368: the hover text of a pulled row — right for a sub-issue and for a sub-issue's sub-issue alike */
+export const PULLED_TITLE = '此条目不符合搜索条件；因上层有命中的 issue 而显示';
 
 function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all: Item[]; now: number; dark: boolean }) {
   switch (col) {
@@ -289,6 +292,7 @@ export function TableView({
   folds = {},
   onDropPlan,
   repoOrder = [],
+  table: built,
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -310,10 +314,12 @@ export function TableView({
   onDropPlan?: (plan: DropPlan) => void;
   /** the saved repository order (GitHub#304; kept on this machine); empty = alphabetical */
   repoOrder?: string[];
+  /** the table as built by the board (GitHub#368: its counts feed the view bar too); left out = built here from `items` */
+  table?: Table;
 }) {
   const dark = useDarkMode();
   const t = view.table;
-  const table = buildTable(items, projects, t, today, view.prsUnderIssues, repoOrder);
+  const table = built ?? buildTable(items, projects, t, today, view.prsUnderIssues, repoOrder);
   // GitHub#304: a repository in the slice list drags to another place; the order is the one every repository list uses
   const repoDrag = useRepoDrag(table.slices?.map((s) => s.value) ?? []);
   const cols = t.columns.filter((c) => c !== 'title');
@@ -468,11 +474,14 @@ export function TableView({
             data-key={r.item.key}
             data-depth={r.depth}
             data-under={r.under ?? undefined}
-            className={dragRow === r.id ? 'dragging' : undefined}
-            // an open cell editor keeps its text box / dropdowns usable: that row does not drag
-            draggable={canDrag && editing?.row !== r.id}
+            data-pulled={r.pulled ? '' : undefined}
+            className={[dragRow === r.id ? 'dragging' : '', r.pulled ? 'pulled' : ''].filter(Boolean).join(' ') || undefined}
+            // GitHub#368: a row shown only because an issue above it matched the search
+            title={r.pulled ? PULLED_TITLE : undefined}
+            // an open cell editor keeps its text box / dropdowns usable: that row does not drag; nor does a pulled row (it sits in its parent's group, not its own)
+            draggable={canDrag && !r.pulled && editing?.row !== r.id}
             onDragStart={(e) => {
-              if (!canDrag || editing?.row === r.id) return;
+              if (!canDrag || r.pulled || editing?.row === r.id) return;
               e.dataTransfer.setData('text/plain', r.item.key);
               e.dataTransfer.effectAllowed = 'move';
               dragging.current = { row: r, from: g };
