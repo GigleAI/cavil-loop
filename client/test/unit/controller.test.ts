@@ -365,7 +365,8 @@ describe('sync and cache', () => {
   });
 
   it('a change made before the Project was first read wins over the import; a failed read imports later', async () => {
-    const { c } = await loggedIn();
+    const clock = { t: FIXTURE_NOW };
+    const { c } = await loggedIn(clock);
     fake.state.failProjectPage.set('org/gigleai/11', 1);
     c.addSource(`${PROJECT_URL}/views/1`);
     await c.start();
@@ -373,6 +374,7 @@ describe('sync and cache', () => {
     expect(c.getState().view.imported).toBeNull(); // read failed on page 2: nothing imported yet
     c.setView({ table: { groupBy: 'repo' }, query: 'is:pr' });
     fake.state.failProjectPage.delete('org/gigleai/11');
+    clock.t += 60_000; // GitHub#374: a board that failed is read again a minute later
     await c.syncNow();
     const v = c.getState().view;
     expect(v.imported).toMatchObject({ viewNumber: 1 });

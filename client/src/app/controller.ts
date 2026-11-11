@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceTimes, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -18,7 +18,7 @@ import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
-import { Endpoints, GitHubClient } from '../data/github';
+import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
@@ -92,6 +92,8 @@ export function offlineFields(offline: boolean, reason: string | null): { offlin
 }
 
 export const REFRESH_MARGIN_MS = 5 * 60_000;
+/** GitHub#374: a source waiting to be read again is read by a round that starts at most this much before its time */
+export const RETRY_SLACK_MS = 10_000;
 
 /** What a queued notification was decided on (see Controller.noticeContext). */
 interface NoticeContext {
@@ -134,6 +136,11 @@ export interface ControllerDeps {
    * every source in full). Default FULL_READ_EVERY_MS.
    */
   fullReadEveryMs?: number;
+  /**
+   * GitHub#374: the sync asks a read that failed for a temporary reason again after each of these
+   * waits (default READ_RETRY_DELAYS_MS); [] = never. Tests shorten them.
+   */
+  readRetryDelaysMs?: number[];
   /** tests only: a round's read is in and its change-check records were dealt with (`dropped`: the round had been given up on) */
   afterRoundRead?: (dropped: boolean) => void;
   /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
@@ -286,6 +293,15 @@ export class Controller {
    */
   private checks = new Map<string, { epoch: number; check: SourceCheck }>();
   private checksSession: number | null = null;
+  /**
+   * GitHub#374: the sync's reads go through this gate — rate limited = no read until GitHub's
+   * reset time, across rounds. Of one session: another account starts with it open.
+   */
+  private readGate: ReadGate;
+  /** GitHub#374: per source (as the addition `epoch`), its failures in a row and when it is read again automatically */
+  private failures = new Map<string, { count: number; since: number; nextAt: number | null; epoch: number }>();
+  /** the session the gate and the failures belong to */
+  private readsSession: number | null = null;
   /** GitHub#261: refresh by hand asked for a full read: the next round to start ignores the records */
   private fullReadNext = false;
   /** signed in, as the back end last said (it holds the credential, this side never does) */
@@ -416,6 +432,7 @@ export class Controller {
     this.now = deps.now ?? Date.now;
     this.timers = deps.timers ?? REAL_TIMERS;
     this.timedGapMs = deps.syncGapMs ?? deps.syncIntervalMs ?? SYNC_INTERVAL_MS;
+    this.readGate = new ReadGate(this.now);
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
@@ -1433,6 +1450,9 @@ export class Controller {
   restartSync(): Promise<void> {
     // GitHub#261: by hand = read every source in full now, whatever the change check would say
     this.fullReadNext = true;
+    // GitHub#374: and now — not after a rate limit's reset time (if GitHub still says no, the new gate closes again).
+    // A new gate, not the old one opened: a dropped round's late answer can only reach the gate it was sent through.
+    this.readGate = new ReadGate(this.now);
     if (this.round?.reading) this.round.drop();
     return this.syncNow();
   }
@@ -1475,8 +1495,14 @@ export class Controller {
       return;
     }
     const session = this.session;
-    const sources = this.state.sources;
-    const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
+    // GitHub#374: the gate and the failures in a row are of one session
+    if (this.readsSession !== session) {
+      this.readGate = new ReadGate(this.now);
+      this.failures.clear();
+      this.readsSession = session;
+    }
+    const configured = this.state.sources;
+    const epochAtStart = new Map(configured.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
     this.set({ sync: { ...this.state.sync, syncing: true } });
     // the one stretch a restart may cut: reading GitHub (GitHub#217)
     run.reading = true;
@@ -1493,17 +1519,22 @@ export class Controller {
     // refresh by hand: no record is offered, so every source is read in full (and new tags are taken)
     const byHand = this.fullReadNext;
     this.fullReadNext = false;
+    // GitHub#374: a source that keeps failing waits its turn (1, 2, 4, 8, 10 min); by hand, nobody waits.
+    // The ones left out keep their status (failure and next try) as it is.
+    const startedAt = this.now();
+    const sources = byHand ? configured : configured.filter((src) => !this.waiting(src.key, epochAtStart.get(src.key) ?? 0, startedAt));
     if (!byHand) for (const [key, c] of this.checks) if (c.epoch === epochAtStart.get(key)) recorded.set(key, c.check);
     // GitHub#324: how far the round is, for the hover of the header (a dropped round reports nothing more)
     const total = sources.length;
     let done = 0;
-    const startedAt = this.now();
     const progress = () => {
       if (this.round !== run || run.signal.aborted || !this.state.sync.syncing) return;
       this.set({ sync: { ...this.state.sync, progress: { startedAt, done, total } } });
     };
     progress();
-    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, startedAt, recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS, () => {
+    const gate = this.readGate;
+    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS };
+    const round = await syncRound(this.client(session, run.signal, reads), sources, this.snapshots, startedAt, recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS, () => {
       done++;
       progress();
     });
@@ -1553,7 +1584,12 @@ export class Controller {
     if (round.viewer) this.cache.mirror('viewer', round.viewer);
     const status = round.status
       .filter((st) => current(st.sourceKey))
-      .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }));
+      .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }))
+      // GitHub#374: a round that could not use GitHub at all, or whose credential was refused, says
+      // nothing about any source: no count moves
+      .map((st) => (round.offline || round.authFailed ? st : this.noteResult(st, startedAt, epochAtStart.get(st.sourceKey) ?? 0, gate)));
+    // GitHub#374: a round that reached GitHub and heard no limit anywhere ends a run of limits
+    if (!round.offline && !round.held && !round.status.some((st) => st.rateLimited)) gate.roundClean();
     const untouched = this.state.sync.sources.filter((st) => !status.some((x) => x.sourceKey === st.sourceKey) && this.state.sources.some((x) => x.key === st.sourceKey));
     // GitHub#324: read in full or confirmed unchanged this round — and only then: a source that
     // failed keeps the time it had
@@ -1564,7 +1600,8 @@ export class Controller {
         ...this.state.sync,
         syncing: false,
         ...offlineFields(round.offline, round.offlineReason),
-        lastOnlineAt: round.offline ? this.state.sync.lastOnlineAt : this.now(),
+        // GitHub#374: a round the closed gate kept at home did not reach GitHub either
+        lastOnlineAt: round.offline || round.held ? this.state.sync.lastOnlineAt : this.now(),
         sources: [...status, ...untouched],
       },
     });
@@ -1621,9 +1658,43 @@ export class Controller {
     }
   }
 
-  /** A GitHub client whose requests the back end signs for `session`. */
-  private client(session: number, signal?: AbortSignal): GitHubClient {
-    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal);
+  /** A GitHub client whose requests the back end signs for `session`; `reads`: the sync's own (GitHub#374). */
+  private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4]): GitHubClient {
+    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal, reads);
+  }
+
+  /**
+   * GitHub#374: is this source (as the addition `epoch`) still waiting for its next automatic read?
+   * A little early counts as due: the beat that should read it starts just before the time set.
+   */
+  private waiting(key: string, epoch: number, now: number): boolean {
+    const f = this.failures.get(key);
+    return !!f && f.epoch === epoch && f.nextAt !== null && now < f.nextAt - RETRY_SLACK_MS;
+  }
+
+  /**
+   * GitHub#374: one source's result of a round into its failures in a row — the one place they
+   * change. Read = forgotten. Failed = one more, the next automatic read 1, 2, 4, 8, 10 min after
+   * this round started. Rate limited = not counted (it says nothing about the source); the next
+   * read is when the gate opens.
+   */
+  private noteResult(st: SourceStatus, at: number, epoch: number, gate: ReadGate): SourceStatus {
+    if (st.ok) {
+      this.failures.delete(st.sourceKey);
+      return st;
+    }
+    const prev = this.failures.get(st.sourceKey);
+    const old = prev && prev.epoch === epoch ? prev : null;
+    if (st.rateLimited) {
+      const until = gate.until;
+      const f = { count: old?.count ?? 0, since: old?.since ?? at, nextAt: null, epoch };
+      this.failures.set(st.sourceKey, f);
+      return { ...st, retry: { count: f.count, since: f.since, nextAt: until, limitedUntil: until } };
+    }
+    const count = (old?.count ?? 0) + 1;
+    const f = { count, since: old?.since ?? at, nextAt: at + backoffStep(count), epoch };
+    this.failures.set(st.sourceKey, f);
+    return { ...st, retry: { count, since: f.since, nextAt: f.nextAt, limitedUntil: null } };
   }
 
   // ---- view & change one item ---------------------------------------------

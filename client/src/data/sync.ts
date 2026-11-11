@@ -1,5 +1,5 @@
 import type { SourceConfig, SourceSnapshot, SourceStatus } from '../shared/types';
-import { GitHubClient, GitHubError } from './github';
+import { GitHubClient, GitHubError, RateLimitError } from './github';
 import { fetchSource } from './fetchSources';
 import { boardCounts, checkSource, FULL_READ_EVERY_MS, type CheckResult, type SourceCheck } from './changeCheck';
 import { VIEWER_QUERY } from './queries';
@@ -26,6 +26,8 @@ export interface SyncRound {
   checks: Map<string, SourceCheck>;
   /** sources the check confirmed unchanged: their previous snapshot stays as it is (not in `replaced`) */
   unchanged: string[];
+  /** GitHub#374: no request of this round went out (the read gate was closed from the start) */
+  held: boolean;
 }
 
 /**
@@ -61,7 +63,19 @@ export async function syncRound(
     const err = e as GitHubError;
     const authFailed = err instanceof GitHubError && err.kind === 'auth';
     const offline = !(err instanceof GitHubError) || err.kind === 'network';
-    return { snapshots: keep(), replaced: [], status: unchangedStatus(err.message), offline, offlineReason: offline ? err.message || null : null, authFailed, viewer: null, checks: new Map(), unchanged: [] };
+    const limited = err instanceof RateLimitError;
+    return {
+      snapshots: keep(),
+      replaced: [],
+      status: unchangedStatus(err.message).map((st) => ({ ...st, rateLimited: limited })),
+      offline,
+      offlineReason: offline ? err.message || null : null,
+      authFailed,
+      viewer: null,
+      checks: new Map(),
+      unchanged: [],
+      held: limited && !err.sent,
+    };
   }
 
   const snapshots = keep();
@@ -72,7 +86,13 @@ export async function syncRound(
   const unchanged: string[] = [];
   // GitHub#261: one count query for every board, then each source checks before it reads
   const checking = fullReadEveryMs > 0;
-  const counts = checking ? await boardCounts(client, sources) : new Map<string, number>();
+  // GitHub#374: a rate limit here closed the read gate — every source below then fails at its first read, sending nothing
+  const counts = checking
+    ? await boardCounts(client, sources).catch((e) => {
+        if (e instanceof RateLimitError) return new Map<string, number>();
+        throw e;
+      })
+    : new Map<string, number>();
   type Outcome = { kind: 'read'; snap: SourceSnapshot } | { kind: 'unchanged' };
   const readOne = async (src: SourceConfig): Promise<Outcome> => {
     const prev = previous.get(src.key);
@@ -85,7 +105,9 @@ export async function syncRound(
     if (checking) {
       try {
         checked = await checkSource(client, src, usable, counts);
-      } catch {
+      } catch (e) {
+        // GitHub#374: rate limited — no full read now (it would be refused, or spend what is left)
+        if (e instanceof RateLimitError) throw e;
         checked = null; // could not tell: read in full, keep no record
       }
     }
@@ -116,8 +138,8 @@ export async function syncRound(
       checks.delete(src.key);
       const err = r.reason as Error;
       if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;
-      status.push({ sourceKey: src.key, ok: false, error: err.message, dataFrom: previous.get(src.key)?.fetchedAt ?? null });
+      status.push({ sourceKey: src.key, ok: false, error: err.message, dataFrom: previous.get(src.key)?.fetchedAt ?? null, rateLimited: err instanceof RateLimitError });
     }
   });
-  return { snapshots, replaced, status, offline: false, offlineReason: null, authFailed, viewer, checks, unchanged };
+  return { snapshots, replaced, status, offline: false, offlineReason: null, authFailed, viewer, checks, unchanged, held: false };
 }

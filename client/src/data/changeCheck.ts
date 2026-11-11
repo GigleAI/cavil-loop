@@ -18,7 +18,7 @@
 // source is read in full at least every FULL_READ_EVERY_MS regardless.
 
 import type { SourceConfig } from '../shared/types';
-import { GitHubClient, GitHubError } from './github';
+import { GitHubClient, GitHubError, RateLimitError } from './github';
 import { projectCountsQuery } from './queries';
 
 /** A source is read in full at least this often, whatever the check says. */
@@ -126,7 +126,9 @@ export function checkSource(client: GitHubClient, src: SourceConfig, old: Source
 
 /**
  * Every board's item count, in one GraphQL query. Any failure (a board gone, no access,
- * GitHub unreachable) = no counts at all: those boards are then read in full this round.
+ * GitHub unreachable) = no counts at all: those boards are then read in full this round —
+ * except a rate limit (GitHub#374), which is thrown: reading in full is exactly what must not
+ * happen then.
  */
 export async function boardCounts(client: GitHubClient, sources: SourceConfig[]): Promise<Map<string, number>> {
   const boards = sources.filter((s): s is Board => s.kind === 'project');
@@ -139,7 +141,8 @@ export async function boardCounts(client: GitHubClient, sources: SourceConfig[])
       const n = data[`p${i}`]?.projectV2?.items?.totalCount;
       if (typeof n === 'number' && Number.isInteger(n) && n >= 0) out.set(b.key, n);
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof RateLimitError) throw e;
     out.clear();
   }
   return out;

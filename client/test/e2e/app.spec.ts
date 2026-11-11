@@ -177,10 +177,14 @@ test('browser login → board; restart skips login; sources; three column modes;
   // a source that fails mid-pagination keeps last round's data; the ⚠️ next to refresh says so (GitHub#248)
   env.fake.state.failProjectPage.set('org/gigleai/11', 1);
   await page.getByTestId('refresh').click();
-  await expect(page.getByTestId('sync-trouble')).toBeVisible();
+  // GitHub#374: the failing page is asked twice more (after 1 s and 3 s) before the board counts as failed
+  await expect(page.getByTestId('sync-trouble')).toBeVisible({ timeout: 15_000 });
   expect(await countOf(page, 'Iteration 25')).toBe('13');
   await page.getByTestId('sync-trouble').click();
   await expect(page.getByTestId('sync-trouble-source')).toContainText('读取失败');
+  // GitHub#374: how many failures in a row, and when it is tried again; a refresh by hand does not wait for it
+  await expect(page.getByTestId('sync-trouble-retry')).toContainText('起连续失败 1 次 · 下次自动重试');
+  await expect(page.getByTestId('sync-trouble-by-hand')).toContainText('重新同步');
   await shot(page, '07-incomplete');
   await page.getByTestId('sync-trouble').click();
   env.fake.state.failProjectPage.clear();
@@ -817,8 +821,15 @@ test('GitHub#226: the open detail follows the sync rounds — new comment withou
   expect(reads(138).length).toBe(reads1);
   env.fake.state.failProjectPage.clear();
   env.fake.state.failRepoPage.clear();
-  // the next complete round brings it
-  await round();
+  // the next complete round brings it — GitHub#374: sources that just failed wait a minute for the
+  // next automatic read, so this round is the refresh by hand (which never waits)
+  {
+    const n = rounds();
+    await page.getByTestId('refresh').click();
+    await expect.poll(rounds).toBeGreaterThan(n);
+    await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no');
+    await page.waitForTimeout(400);
+  }
   await expect(frame.locator('body')).toContainText('BODY_AFTER_FAILED_ROUND');
 
   // ---- the automatic read fails: what is on screen stays, small print says from when, no error banner; the next round recovers ----
@@ -4297,7 +4308,8 @@ test('GitHub#231 (PR #241 review round 1): new issue while boards are not read y
 
   // ---- 3. the read succeeds while the dialog is open (nothing ticked by hand): the board shows up ticked ----
   env.fake.state.failProjectPage.delete(P11);
-  await page.evaluate(() => (window as any).cavil.syncNow());
+  // GitHub#374: a board whose read just failed waits a minute for the next automatic read; the refresh by hand does not
+  await page.evaluate(() => (window as any).cavil.restartSync());
   await expect(page.getByTestId('new-issue-project')).toHaveCount(1, { timeout: 15_000 });
   await expect(page.getByTestId('new-issue-project')).toBeChecked();
   await expect(unsynced).toHaveCount(0);
