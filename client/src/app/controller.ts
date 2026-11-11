@@ -2464,7 +2464,7 @@ export class Controller {
     if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改' };
     if (!action.title.trim()) return { ok: false, error: '标题不能为空' };
     const id = ++this.createSeq;
-    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true };
+    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true, ...(action.picks ? { picks: action.picks } : {}) };
     this.setCreate({ id, repo: action.repo, title: action.title, status: 'running', message: null, draft });
     void this.runCreate(id, action);
     return { ok: true, error: null, job: id };

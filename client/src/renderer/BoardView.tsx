@@ -29,7 +29,7 @@ import { localToday } from './iterationOptions';
 import { ViewSettingsPanel } from './ViewSettingsPanel';
 import { Avatar } from './Avatar';
 import type { BoardRequest } from './App';
-import { keyText } from './shortcuts';
+import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 
 function useNow(ms = 15_000) {
@@ -41,6 +41,8 @@ function useNow(ms = 15_000) {
   return now;
 }
 
+/** GitHub#372: each layout button's shortcut (the same action, see App) */
+const LAYOUT_KEY: Record<Layout, ShortcutId> = { board: 'viewBoard', table: 'viewTable', graph: 'viewGraph' };
 const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
 const LAYOUT_LABEL: Record<Layout, string> = { board: '看板', table: '表格', graph: '依赖图' };
 
@@ -849,7 +851,7 @@ export function BoardView({
       <div className="vbar">
         <div className="seg" data-testid="layout">
           {(['board', 'table', 'graph'] as Layout[]).map((l) => (
-            <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} onClick={() => api().setView({ layout: l })}>
+            <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} title={`${LAYOUT_LABEL[l]}（${keyText(LAYOUT_KEY[l])}）`} onClick={() => api().setView({ layout: l })}>
               <Icon name={l} />
               {LAYOUT_LABEL[l]}
             </button>

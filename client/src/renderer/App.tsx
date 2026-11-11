@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Snapshot } from '../shared/ipc';
+import type { Layout } from '../shared/types';
 import { parseFilter } from '../shared/filter';
 import { api } from './api';
 import { LoginView } from './LoginView';
@@ -63,9 +64,18 @@ export function App() {
     setPage('board');
     setBoardReq({ kind, seq: ++reqSeq.current });
   };
+  const toLayout = (layout: Layout) => {
+    setHelp(false);
+    setPage('board');
+    void api().setView({ layout });
+  };
   useShortcuts({
     search: () => toBoard('search'),
     newIssue: () => toBoard('newIssue'),
+    // GitHub#372: the layout buttons' own action (the choice is kept like a click), on the board page
+    viewBoard: () => toLayout('board'),
+    viewTable: () => toLayout('table'),
+    viewGraph: () => toLayout('graph'),
     // also while a round runs: starts over, like the button (GitHub#217)
     sync: () => void api().restartSync(),
     settings: () => {
