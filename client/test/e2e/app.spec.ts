@@ -2725,7 +2725,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await page.keyboard.press('?');
   await expect(help).toBeVisible();
   expect(await help.getByTestId('shortcut-row').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-id')))).toEqual([
-    'search', 'newIssue', 'sync', 'settings', 'help', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'hide',
+    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'hide',
     'graphFit', 'graphZoomIn', 'graphZoomOut', 'settingsBack', 'send', 'preview', 'leaveReply', 'pickerUp', 'pickerDown', 'pickerToggle', 'pickerClose', 'helpClose',
   ]);
   await shot(page, '60-shortcut-list');
@@ -6571,5 +6571,173 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await page.mouse.move(5, 5);
   await ff(5_200);
   await expect(result).toHaveCount(0);
+  await app.close();
+});
+
+test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from anywhere — a C typed into a field stays a letter; the dialog starts in the title; an iteration and a milestone picked there land on GitHub, and a draft given back keeps them', async () => {
+  const PROJECT_KEY = 'project:org/gigleai/11';
+  const NEXT = '3d96a307'; // Iteration 27: 2026-11-16 … 11-22 in the recorded board
+  env.fake.state.w.milestones.set('gigleai/cavil-loop', [
+    { number: 5, title: 'v1.2', state: 'open', due_on: null },
+    { number: 4, title: 'v0.9', state: 'closed', due_on: null },
+  ]);
+  const { app, page } = await launch(env);
+  // a day inside Iteration 26: 25 is over, 27 not started yet
+  await page.clock.setFixedTime(new Date(2026, 10, 11, 12, 0, 0));
+  await page.reload();
+  await page.waitForSelector('[data-testid="app-root"]');
+  await signInWithSources(page);
+  await blur(page);
+  const dialog = page.getByTestId('confirm-dialog');
+  const search = page.getByTestId('search');
+  const title = page.getByTestId('new-issue-title');
+  const layoutNow = () => page.locator('[data-testid="layout"] button.on').getAttribute('data-value');
+
+  // ---- 1. ⌘2 / ⌘3 / ⌘1: the layout buttons' own action; the buttons say their keys ----
+  await page.keyboard.press(`${MOD}+2`);
+  await expect(page.getByTestId('table')).toBeVisible();
+  await page.keyboard.press(`${MOD}+3`);
+  await expect(page.getByTestId('graph')).toBeVisible();
+  await page.keyboard.press(`${MOD}+1`);
+  await expect(page.getByTestId('board')).toBeVisible();
+  expect(await layoutNow()).toBe('board');
+  await expect(page.locator('[data-testid="layout"] button[data-value="graph"]')).toHaveAttribute('title', /依赖图（(⌘|Ctrl\+)3）/);
+  // the shortcut list has the new rows, in the table's order
+  await page.keyboard.press('?');
+  expect(await page.getByTestId('shortcut-help').getByTestId('shortcut-row').evaluateAll((rows) => rows.slice(0, 8).map((r) => r.getAttribute('data-id')))).toEqual([
+    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph',
+  ]);
+  await shot(page, '372-01-shortcut-list');
+  await page.keyboard.press('Escape');
+
+  // ---- 2. typing in the search box: "cache" is text (its C opens nothing); ⌘2 and ⌘N still act ----
+  await page.keyboard.press('/');
+  await expect(search).toBeFocused();
+  await page.keyboard.type('cache');
+  await expect(search).toHaveValue('cache');
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  await page.keyboard.press(`${MOD}+2`);
+  await expect(page.getByTestId('table')).toBeVisible();
+  await search.fill('');
+  await search.focus();
+  await page.keyboard.press(`${MOD}+n`);
+  await expect(dialog).toBeVisible();
+  // the keyboard starts in the title: typing goes straight there
+  await expect(title).toBeFocused();
+  await page.keyboard.type('KEYS_372');
+  await expect(title).toHaveValue('KEYS_372');
+  await expect(search).toHaveValue('');
+  // a layer on top takes ⌘1: the layout stays
+  await page.keyboard.press(`${MOD}+1`);
+  expect(await layoutNow()).toBe('table');
+  await title.fill('');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+
+  // ---- 3. the reply box: a C is a letter; ⌘N opens the dialog and the typed reply stays ----
+  await page.keyboard.press(`${MOD}+1`);
+  await card(page, 138).click();
+  const reply = page.getByTestId('reply-input');
+  await reply.click();
+  await page.keyboard.type('cc');
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  await expect(reply).toHaveValue('cc');
+  await page.keyboard.press(`${MOD}+n`);
+  await expect(dialog).toBeVisible();
+  await expect(title).toBeFocused();
+  await page.getByTestId('confirm-cancel').click();
+  await expect(reply).toHaveValue('cc');
+  await reply.fill('');
+  await page.getByTestId('detail-close').click();
+
+  // ---- 4. a settings field: a C is a letter; ⌘N goes back to the board with the dialog; ⌘3 from settings shows the graph ----
+  await page.keyboard.press(`${MOD}+,`);
+  await expect(page.getByTestId('settings')).toBeVisible();
+  const sourceInput = page.getByTestId('source-input');
+  await sourceInput.click();
+  await page.keyboard.type('cache');
+  await expect(sourceInput).toHaveValue('cache');
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await page.keyboard.press(`${MOD}+n`);
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(title).toBeFocused();
+  await page.getByTestId('confirm-cancel').click();
+  await page.keyboard.press(`${MOD}+,`);
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await blur(page);
+  await page.keyboard.press(`${MOD}+3`);
+  await expect(page.getByTestId('graph')).toBeVisible();
+  await page.keyboard.press(`${MOD}+1`);
+  await expect(page.getByTestId('board')).toBeVisible();
+
+  // ---- 5. the pickers: untouched they show what the plain "新建" gives; only open milestones and current / upcoming iterations ----
+  await blur(page);
+  await page.keyboard.press(`${MOD}+n`);
+  const ms = page.getByTestId('new-issue-milestone');
+  const it = page.getByTestId('new-issue-iteration');
+  await expect(ms).toBeEnabled();
+  await expect(ms).toHaveValue('');
+  expect(await ms.locator('option').evaluateAll((o) => o.map((x) => x.textContent))).toEqual(['不设里程碑', 'v1.2']);
+  await expect(it).toHaveValue('auto');
+  expect(await it.locator('option').evaluateAll((o) => o.map((x) => x.textContent))).toEqual(['当前迭代（Iteration 26）', '不设迭代', 'Iteration 26（2026-11-09 起）（当前）', 'Iteration 27（2026-11-16 起）']);
+  await title.fill('选了迭代和里程碑');
+  await ms.selectOption('v1.2');
+  await it.selectOption({ label: 'Iteration 27（2026-11-16 起）' });
+  await shot(page, '372-02-new-issue-picked');
+  const before = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => writes().slice(before).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem', 'CavilSetIteration']);
+  expect(writes().slice(before)[0][2]).toEqual({ title: '选了迭代和里程碑', body: '', labels: [], milestone: 5 });
+  expect((writes().slice(before)[2][2] as any).iterationId).toBe(NEXT);
+  await page.getByTestId('detail-close').click();
+
+  // ---- 6. "不设迭代": joined, no iteration written ----
+  await page.getByTestId('write-entry').click();
+  await expect(title).toBeFocused();
+  await title.fill('不设迭代');
+  await it.selectOption('none');
+  const before2 = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => writes().slice(before2).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem']);
+  await page.waitForTimeout(500);
+  expect(writes().slice(before2).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem']);
+  expect(writes().slice(before2)[0][2]).toEqual({ title: '不设迭代', body: '', labels: [] });
+  await page.getByTestId('detail-close').click();
+
+  // ---- 7. the milestone list cannot be read: the picker is off, a plain issue is still created ----
+  env.fake.state.w.failMilestones.add('gigleai/cavil-loop');
+  await page.getByTestId('write-entry').click();
+  await expect(ms).toHaveAttribute('data-read', 'error');
+  await expect(ms).toBeDisabled();
+  await title.fill('读不到里程碑也能建');
+  await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+  const before3 = writes().length;
+  await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => writes().slice(before3)[0]?.[2]).toEqual({ title: '读不到里程碑也能建', body: '', labels: [] });
+  await page.getByTestId('detail-close').click();
+  env.fake.state.w.failMilestones.delete('gigleai/cavil-loop');
+
+  // ---- 8. refused for sure: the draft comes back with the title focused (caret at its end) and both picks kept ----
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await page.getByTestId('write-entry').click();
+  await title.fill('REFUSED_372');
+  await ms.selectOption('v1.2');
+  await it.selectOption({ label: 'Iteration 27（2026-11-16 起）' });
+  await page.getByTestId('confirm-ok').click();
+  const refused = page.locator('[data-testid="create-bar"][data-status="failed"]');
+  await expect(refused).toContainText('没能新建「REFUSED_372」');
+  await refused.getByTestId('create-reopen').click();
+  await expect(title).toHaveValue('REFUSED_372');
+  await expect(title).toBeFocused();
+  expect(await title.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd])).toEqual([11, 11]);
+  await expect(ms).toHaveValue('v1.2');
+  await expect(it).toHaveValue(/Iteration 27/);
+  await expect(page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`)).toBeChecked();
   await app.close();
 });

@@ -109,6 +109,36 @@ describe('resolve: who gets the key', () => {
     expect(resolve(key('c', { metaKey: true }), idle)).toBeNull(); // ⌘C stays copy
     expect(resolve(key('Enter', { metaKey: true }), idle)).toBeNull();
   });
+  it('GitHub#372: 新建 has C and ⌘N — while typing only the key actually pressed counts, so a typed C stays a letter', () => {
+    const places: [string, KeyContext][] = [
+      ['a field (search box)', { ...idle, typing: 'other' }],
+      ['the reply box', { ...idle, typing: 'reply' }],
+      ['a settings field', { ...idle, page: 'settings', typing: 'other' }],
+    ];
+    for (const [where, ctx] of places) {
+      for (const ch of ['c', 'C', 'a', 'h', 'e']) expect(resolve(key(ch), ctx), `${where}: ${ch}`).toBeNull();
+      expect(resolve(key('n', { metaKey: true }), ctx), `${where}: ⌘N`).toBe('newIssue');
+      expect(resolve(key('n', { ctrlKey: true }), ctx), `${where}: Ctrl+N`).toBe('newIssue');
+      for (const [d, id] of [['1', 'viewBoard'], ['2', 'viewTable'], ['3', 'viewGraph']] as const) {
+        expect(resolve(key(d, { metaKey: true }), ctx), `${where}: ⌘${d}`).toBe(id);
+        expect(resolve(key(d), ctx), `${where}: ${d}`).toBeNull();
+      }
+    }
+    // nothing typed: both keys of 新建 act; on the settings page too
+    expect(resolve(key('c'), idle)).toBe('newIssue');
+    expect(resolve(key('n', { metaKey: true }), idle)).toBe('newIssue');
+    expect(resolve(key('c'), { ...idle, page: 'settings' })).toBe('newIssue');
+    expect(resolve(key('2', { ctrlKey: true }), { ...idle, page: 'settings' })).toBe('viewTable');
+    // a bare N or digit is nobody's; ⌘N / ⌘1 with Shift or Alt neither
+    for (const k of ['n', '1', '2', '3']) expect(resolve(key(k), idle), k).toBeNull();
+    expect(resolve(key('N', { metaKey: true, shiftKey: true }), idle)).toBeNull();
+    expect(resolve(key('1', { metaKey: true, altKey: true }), idle)).toBeNull();
+    // a layer on top (dialog, picker, shortcut list) takes them
+    for (const layer of ['dialog', 'picker', 'help'] as const) {
+      expect(resolve(key('n', { metaKey: true }), { ...idle, layer }), layer).toBeNull();
+      expect(resolve(key('1', { metaKey: true }), { ...idle, layer }), layer).toBeNull();
+    }
+  });
   it('matches: ⌘ and Ctrl both count as the modifier', () => {
     expect(matches({ key: 'r', mod: true }, key('r', { ctrlKey: true }))).toBe(true);
     expect(matches({ key: 'r', mod: true }, key('r', { metaKey: true }))).toBe(true);
@@ -125,5 +155,8 @@ describe('keys on screen', () => {
     expect(keyText('send', false)).toBe('Ctrl+↩');
     expect(keyText('labels', true)).toBe('L');
     expect(keyText('helpClose', true)).toBe('Esc / ?');
+    expect(keyText('newIssue', true)).toBe('C / ⌘N');
+    expect(keyText('newIssue', false)).toBe('C / Ctrl+N');
+    expect(keyText('viewGraph', true)).toBe('⌘3');
   });
 });

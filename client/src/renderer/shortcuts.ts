@@ -18,6 +18,9 @@ export type KeySpec = { key: string; mod?: boolean; shift?: boolean };
 export type ShortcutId =
   | 'search'
   | 'newIssue'
+  | 'viewBoard'
+  | 'viewTable'
+  | 'viewGraph'
   | 'sync'
   | 'settings'
   | 'help'
@@ -55,10 +58,14 @@ export const SCOPE_TITLE: Record<Scope, string> = {
 
 export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'search', scope: 'global', keys: [{ key: '/' }], label: '跳到搜索框（在别的页面会先回到看板）' },
-  { id: 'newIssue', scope: 'global', keys: [{ key: 'c' }], label: '新建 issue（在别的页面会先回到看板）' },
+  { id: 'newIssue', scope: 'global', keys: [{ key: 'c' }, { key: 'n', mod: true }], label: '新建 issue（在别的页面会先回到看板）' },
   { id: 'sync', scope: 'global', keys: [{ key: 'r', mod: true }], label: '立即同步' },
   { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: '打开设置' },
   { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: '快捷键一览' },
+  // GitHub#372: the three layout buttons
+  { id: 'viewBoard', scope: 'global', keys: [{ key: '1', mod: true }], label: '切到看板（在别的页面会先回到看板）' },
+  { id: 'viewTable', scope: 'global', keys: [{ key: '2', mod: true }], label: '切到表格（在别的页面会先回到看板）' },
+  { id: 'viewGraph', scope: 'global', keys: [{ key: '3', mod: true }], label: '切到依赖图（在别的页面会先回到看板）' },
   { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: '设置标签' },
   { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
   { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
@@ -112,13 +119,13 @@ export function matches(spec: KeySpec, e: KeyLike): boolean {
   return spec.key.length === 1 ? e.key.toLowerCase() === spec.key : e.key === spec.key;
 }
 
-const hasMod = (s: Shortcut) => s.keys.some((k) => k.mod);
-
 /**
  * Who gets this key press: the id of the shortcut to run, or null (leave the key alone).
  * The only rules, in order: never while composing; nothing before sign-in; a layer on top
  * takes every key and only its own shortcuts act; while typing, single keys are typing
- * (only the reply box's own keys and the ⌘ / Ctrl shortcuts act); otherwise the global,
+ * (only the reply box's own keys and the ⌘ / Ctrl shortcuts act — judged on the key that
+ * matched, not on the shortcut: GitHub#372 gave 新建 both C and ⌘N, and a C typed into a
+ * field must stay a letter); otherwise the global,
  * detail-panel and graph keys (a graph key has no handler unless the graph is showing).
  * On the settings page (GitHub#369) its Esc takes the place of the board's keys, also while
  * typing in one of its fields (the first Esc leaves the field, see SettingsView).
@@ -126,15 +133,16 @@ const hasMod = (s: Shortcut) => s.keys.some((k) => k.mod);
 export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
   if (composing(e)) return null;
   if (!ctx.signedIn) return null;
-  const allowed = (s: Shortcut): boolean => {
+  const allowed = (s: Shortcut, k: KeySpec): boolean => {
     if (ctx.layer !== 'none') return s.scope === ctx.layer;
-    if (ctx.typing === 'reply') return s.scope === 'reply' || (s.scope === 'global' && hasMod(s));
+    const modGlobal = s.scope === 'global' && Boolean(k.mod);
+    if (ctx.typing === 'reply') return s.scope === 'reply' || modGlobal;
     const settings = ctx.page === 'settings';
-    if (ctx.typing === 'other') return (s.scope === 'global' && hasMod(s)) || (settings && s.scope === 'settings');
+    if (ctx.typing === 'other') return modGlobal || (settings && s.scope === 'settings');
     if (settings) return s.scope === 'global' || s.scope === 'settings';
     return s.scope === 'global' || s.scope === 'detail' || s.scope === 'graph';
   };
-  for (const s of SHORTCUTS) if (allowed(s) && s.keys.some((k) => matches(k, e))) return s.id;
+  for (const s of SHORTCUTS) if (s.keys.some((k) => allowed(s, k) && matches(k, e))) return s.id;
   return null;
 }
 

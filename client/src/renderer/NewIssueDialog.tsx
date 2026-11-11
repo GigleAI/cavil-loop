@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData, CreateJob, Item } from '../shared/types';
 import type { GroupPreset, RepoOptions } from '../shared/actions';
-import { defaultRepo, previewCreate, shownLines, type MilestoneRead } from '../data/groupPreset';
+import {
+  canPickIteration,
+  defaultIterationPick,
+  defaultMilestonePick,
+  defaultRepo,
+  iterationChoices,
+  iterationKey,
+  milestoneChoices,
+  previewCreateWith,
+  shownLines,
+  type IterationPick,
+  type MilestonePick,
+  type MilestoneRead,
+} from '../data/groupPreset';
 import { defaultBoards } from '../data/newIssueBoards';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -10,7 +23,8 @@ import { LabelPicker } from './LabelPicker';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
-import { localToday } from './iterationOptions';
+import { IterationOptions, localToday } from './iterationOptions';
+import { isCurrentIteration } from '../shared/filter';
 import { sortRepos } from '../shared/repoOrder';
 import { checkHandoff, handoffProblem, handoffSummary, mergeLabels, type Handoff, type HandoffCheck, type LabelRead } from '../shared/handoff';
 
@@ -54,6 +68,19 @@ export function NewIssueDialog({
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<ResultNote | null>(null);
   const [picking, setPicking] = useState(false);
+  // GitHub#372: the iteration / milestone picked here; null = not touched (what the group gives)
+  // a draft given back after a failed create keeps what was picked for it
+  const [itPick, setItPick] = useState<IterationPick | null>(draft?.picks?.iteration ?? null);
+  const [msPick, setMsPick] = useState<MilestonePick | null>(draft?.picks?.milestone ?? null);
+  // GitHub#372: the keyboard starts in the title (after the dialog took it, see ConfirmDialog);
+  // a draft given back keeps its title, the caret at its end. Only once, when the dialog opens.
+  const titleBox = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const t = titleBox.current;
+    if (!t) return;
+    t.focus();
+    t.setSelectionRange(t.value.length, t.value.length);
+  }, []);
   const allProjects = data.allProjects ?? data.projects;
   // GitHub#231: the same rule for both ways in (the "新建" button and a table group's "+"): the board
   // holding the most of this repository's items, judged on every configured board whatever the view
@@ -83,6 +110,8 @@ export function NewIssueDialog({
     if (!(draft && seq === 1 && repo === draft.repo)) setLabels([]);
     setOpts(null);
     setPicking(false);
+    // the milestone belongs to the repository: another repository starts from the default again
+    if (!(seq === 1 && (!draft || repo === draft.repo))) setMsPick(null);
     // read now, never from this run's earlier read (GitHub#214: the milestone it will carry must be GitHub's current one)
     if (repo)
       api()
@@ -109,19 +138,31 @@ export function NewIssueDialog({
   // iteration. "Today" is fixed when the dialog opens: what it would set never changes behind the dialog.
   const [today] = useState(() => localToday(Date.now()));
   const preset: GroupPreset = group?.preset ?? { by: 'none' };
-  const preview = previewCreate(preset, ticked, repo, read, allProjects.filter((p) => !projects.includes(p.key)), today);
+  // GitHub#372: the iteration picker only shows while a ticked board can take one; hidden, it is not touched
+  const showIt = canPickIteration(ticked);
+  const preview = previewCreateWith(preset, { iteration: showIt ? itPick : null, milestone: msPick }, ticked, repo, read, allProjects.filter((p) => !projects.includes(p.key)), today);
+  const itNow = (showIt ? itPick : null) ?? defaultIterationPick(preset);
+  const msNow = msPick ?? defaultMilestonePick(preset);
+  const itChoices = iterationChoices(ticked, today);
+  const itValue = itNow.kind === 'set' ? iterationKey(itNow) : itNow.kind;
+  // the one the picker holds when it is not one of the offered (an ended iteration a group gave)
+  const itKept = itNow.kind === 'set' && !itChoices.some((i) => i.id === itValue) ? { id: itValue, title: itNow.title, startDate: itNow.startDate, duration: 0 } : null;
+  // what "当前迭代" means here: the one name when every ticked board agrees, else per board
+  const currents = [...new Set(ticked.filter((p) => p.viewerCanUpdate && p.hasIterationField && p.iterationFieldId).flatMap((p) => p.iterations.filter((i) => isCurrentIteration(i, today)).map((i) => i.title)))];
+  const msChoices = milestoneChoices(read);
+  const msValue = msNow.kind === 'set' ? msNow.title : '';
   // GitHub#231: what an iteration / status group sets is about the boards: said right under their boxes
   const boardPreview = preset.by === 'iteration' || preset.by === 'status';
   // GitHub#270: only what will not happen as the group says; the rest is in the title (nothing to say = no box).
   // GitHub#276: a line about one board (the current iteration not set) goes under the boards whatever the group.
   const notes = shownLines(preview);
-  const aboutBoard = (target: string) => boardPreview || allProjects.some((p) => target === p.key || target === `${p.key}:iteration`);
+  const aboutBoard = (target: string) => target !== 'milestone' && (boardPreview || allProjects.some((p) => target === p.key || target === `${p.key}:iteration`));
   const box = (place: 'boards' | 'repo') => {
     const here = notes.filter((l) => aboutBoard(l.target) === (place === 'boards'));
     return here.length > 0 && (
     <div className="preset" data-testid="new-issue-preset" data-blocked={preview.blocked ? 'yes' : 'no'} data-place={place}>
       {here.map((l) => (
-        <div key={l.target} className="small muted" data-testid="new-issue-preset-line" data-target={l.target} data-applies="no">
+        <div key={`${l.target}:${l.text}`} className="small muted" data-testid="new-issue-preset-line" data-target={l.target} data-applies="no">
           {l.text}
         </div>
       ))}
@@ -147,7 +188,7 @@ export function NewIssueDialog({
         setBusy(true);
         const used = handoff;
         // remembered by the app once the issue exists, and only when picked by hand here (GitHub#245)
-        const r = await api().startCreate({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), handoff: used, handoffPicked: picked !== null && picked === used, plan: preview.plan });
+        const r = await api().startCreate({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), handoff: used, handoffPicked: picked !== null && picked === used, plan: preview.plan, picks: { iteration: showIt ? itPick : null, milestone: msPick } });
         setBusy(false);
         if (r.ok) return onClose();
         setNote(noteOf({ ok: false, error: r.error, warning: null }, ''));
@@ -167,7 +208,7 @@ export function NewIssueDialog({
         {box('repo')}
         <label>
           标题
-          <input data-testid="new-issue-title" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <input data-testid="new-issue-title" ref={titleBox} value={title} onChange={(e) => setTitle(e.target.value)} />
         </label>
         <label>
           正文
@@ -227,6 +268,31 @@ export function NewIssueDialog({
             {opts?.error && <span className="err small">{opts.error}</span>}
           </div>
         </div>
+        <label>
+          里程碑
+          <select
+            data-testid="new-issue-milestone"
+            data-read={read.state}
+            value={read.state === 'loading' ? '' : msValue}
+            disabled={busy || read.state !== 'ok'}
+            title={read.state === 'error' ? `读不到仓库 ${repo} 的里程碑（${read.error}）` : undefined}
+            onChange={(e) => setMsPick(e.target.value ? { kind: 'set', title: e.target.value } : { kind: 'none' })}
+          >
+            {read.state === 'loading' ? (
+              <option value="">读取里程碑…</option>
+            ) : (
+              <>
+                <option value="">不设里程碑</option>
+                {msValue && !msChoices.includes(msValue) && <option value={msValue}>{msValue}</option>}
+                {msChoices.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </>
+            )}
+          </select>
+        </label>
         <div data-testid="new-issue-handoff" data-handoff={handoff} data-wanted={wanted}>
           建好后
           <div className="handoff-picks">
@@ -311,6 +377,26 @@ export function NewIssueDialog({
             ))}
           {box('boards')}
         </div>
+        {showIt && (
+          <label>
+            迭代（加到勾选的看板上）
+            <select
+              data-testid="new-issue-iteration"
+              value={itValue}
+              disabled={busy}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === 'auto' || v === 'none') return setItPick({ kind: v });
+                const it = itChoices.find((i) => i.id === v) ?? itKept;
+                if (it) setItPick({ kind: 'set', title: it.title, startDate: it.startDate });
+              }}
+            >
+              <option value="auto">当前迭代{currents.length === 1 ? `（${currents[0]}）` : '（按各看板）'}</option>
+              <option value="none">不设迭代</option>
+              <IterationOptions iterations={itChoices} chosen={itKept} today={today} label={(i) => `${i.title}（${i.startDate} 起）`} />
+            </select>
+          </label>
+        )}
         <ResultBanner note={note} testid="new-issue-result" />
       </div>
     </ConfirmDialog>
