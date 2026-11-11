@@ -1450,8 +1450,9 @@ export class Controller {
   restartSync(): Promise<void> {
     // GitHub#261: by hand = read every source in full now, whatever the change check would say
     this.fullReadNext = true;
-    // GitHub#374: and now — not after a rate limit's reset time (if GitHub still says no, the gate closes again)
-    this.readGate.clear();
+    // GitHub#374: and now — not after a rate limit's reset time (if GitHub still says no, the new gate closes again).
+    // A new gate, not the old one opened: a dropped round's late answer can only reach the gate it was sent through.
+    this.readGate = new ReadGate(this.now);
     if (this.round?.reading) this.round.drop();
     return this.syncNow();
   }
@@ -1496,7 +1497,7 @@ export class Controller {
     const session = this.session;
     // GitHub#374: the gate and the failures in a row are of one session
     if (this.readsSession !== session) {
-      this.readGate.clear();
+      this.readGate = new ReadGate(this.now);
       this.failures.clear();
       this.readsSession = session;
     }
@@ -1531,7 +1532,8 @@ export class Controller {
       this.set({ sync: { ...this.state.sync, progress: { startedAt, done, total } } });
     };
     progress();
-    const reads = { gate: this.readGate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS };
+    const gate = this.readGate;
+    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS };
     const round = await syncRound(this.client(session, run.signal, reads), sources, this.snapshots, startedAt, recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS, () => {
       done++;
       progress();
@@ -1585,7 +1587,9 @@ export class Controller {
       .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }))
       // GitHub#374: a round that could not use GitHub at all, or whose credential was refused, says
       // nothing about any source: no count moves
-      .map((st) => (round.offline || round.authFailed ? st : this.noteResult(st, startedAt, epochAtStart.get(st.sourceKey) ?? 0)));
+      .map((st) => (round.offline || round.authFailed ? st : this.noteResult(st, startedAt, epochAtStart.get(st.sourceKey) ?? 0, gate)));
+    // GitHub#374: a round that reached GitHub and heard no limit anywhere ends a run of limits
+    if (!round.offline && !round.held && !round.status.some((st) => st.rateLimited)) gate.roundClean();
     const untouched = this.state.sync.sources.filter((st) => !status.some((x) => x.sourceKey === st.sourceKey) && this.state.sources.some((x) => x.key === st.sourceKey));
     // GitHub#324: read in full or confirmed unchanged this round — and only then: a source that
     // failed keeps the time it had
@@ -1674,7 +1678,7 @@ export class Controller {
    * this round started. Rate limited = not counted (it says nothing about the source); the next
    * read is when the gate opens.
    */
-  private noteResult(st: SourceStatus, at: number, epoch: number): SourceStatus {
+  private noteResult(st: SourceStatus, at: number, epoch: number, gate: ReadGate): SourceStatus {
     if (st.ok) {
       this.failures.delete(st.sourceKey);
       return st;
@@ -1682,7 +1686,7 @@ export class Controller {
     const prev = this.failures.get(st.sourceKey);
     const old = prev && prev.epoch === epoch ? prev : null;
     if (st.rateLimited) {
-      const until = this.readGate.until;
+      const until = gate.until;
       const f = { count: old?.count ?? 0, since: old?.since ?? at, nextAt: null, epoch };
       this.failures.set(st.sourceKey, f);
       return { ...st, retry: { count: f.count, since: f.since, nextAt: until, limitedUntil: until } };

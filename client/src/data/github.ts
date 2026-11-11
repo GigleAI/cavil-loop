@@ -89,6 +89,11 @@ export function isTransient(e: unknown): boolean {
  * no further read goes out until GitHub's reset time — the rest of the round, and every round
  * after, until then. Only the sync's own client carries it: writes and the detail panel are
  * not held back (they say GitHub's answer as before).
+ *
+ * One gate belongs to one account and one stretch of rounds: another account, or a refresh by
+ * hand, gets a new gate object (the controller swaps it), so an answer that arrives late for a
+ * round given up on can only ever close the gate it was sent through — never the new one
+ * (PR #375 review round 1). A client whose round was given up on writes to no gate at all.
  */
 export class ReadGate {
   /** no read goes out before this (epoch ms); null = open */
@@ -108,20 +113,17 @@ export class ReadGate {
     const now = this.now();
     let at = e.retryAfterMs !== null ? now + e.retryAfterMs : e.resetAt;
     if (at === null || at <= now) at = now + backoffStep(++this.blind);
-    else this.blind = 0;
     at = Math.min(at, now + MAX_LIMIT_WAIT_MS);
     this.until = Math.max(this.until ?? 0, at);
   }
 
-  /** an answer that was not a limit arrived while open: the next limit without a time starts at 1 minute again */
-  answered(): void {
+  /**
+   * A whole round heard no limit at all: the limits in a row are over, the next one without a
+   * time waits 1 minute again. Never one request's success — "who am I" answering says nothing
+   * about the board count that keeps being refused after it (PR #375 review round 1).
+   */
+  roundClean(): void {
     if (this.until === null || this.now() >= this.until) this.blind = 0;
-  }
-
-  /** a refresh by hand, or another account: open again */
-  clear(): void {
-    this.until = null;
-    this.blind = 0;
   }
 }
 
@@ -184,8 +186,12 @@ export class GitHubClient {
     }
   }
 
-  /** `whole`: this answer is all there is to judge (GraphQL looks into its body for a limit first) */
-  private async send(url: string, init: RequestInit, notModifiedOk = false, whole = true): Promise<Response> {
+  /** a rate limit heard: closes this client's gate — unless its round was given up on meanwhile */
+  private limitHeard(e: RateLimitError): void {
+    if (!this.cancelled?.aborted) this.reads?.gate.hit(e);
+  }
+
+  private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {
     if (this.cancelled?.aborted) throw new GitHubError('network', '已放弃这一轮同步');
     this.reads?.gate.check();
     let res: Response;
@@ -215,12 +221,11 @@ export class GitHubClient {
       }
       const limited = rateLimitOf(res, detail);
       if (limited) {
-        this.reads?.gate.hit(limited);
+        this.limitHeard(limited);
         throw limited;
       }
       throw new GitHubError('http', `GitHub 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status);
     }
-    if (whole) this.reads?.gate.answered();
     return res;
   }
 
@@ -234,7 +239,7 @@ export class GitHubClient {
       method: 'POST',
       body: JSON.stringify({ query, variables }),
       headers: { 'Content-Type': 'application/json' },
-    }, false, false);
+    });
     let body: { data?: T; errors?: { message: string; type?: string }[] };
     try {
       body = (await res.json()) as typeof body;
@@ -244,13 +249,12 @@ export class GitHubClient {
     if (body.errors && body.errors.length) {
       if (body.errors.some((e) => e.type === 'RATE_LIMITED')) {
         const limited = limitError(res, res.status);
-        this.reads?.gate.hit(limited);
+        this.limitHeard(limited);
         throw limited;
       }
       const transient = body.errors.every((e) => !e.type && TRANSIENT_GRAPHQL.test(e.message));
       throw new GitHubError('graphql', body.errors.map((e) => e.message).join('；'), undefined, transient);
     }
-    this.reads?.gate.answered();
     if (!body.data) throw new GitHubError('graphql', 'GitHub 回应缺少 data');
     return body.data;
   }

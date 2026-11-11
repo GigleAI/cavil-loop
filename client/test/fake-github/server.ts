@@ -405,7 +405,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       }
       if (!authed()) return;
       const canned = state.answerOverride?.(entry) ?? null;
-      if (canned) return send(canned.status, canned.body ?? {}, canned.headers);
+      if (canned) {
+        await held();
+        return send(canned.status, canned.body ?? {}, canned.headers);
+      }
       let live: ReturnType<typeof handleGraphql>;
       try {
         live = handleGraphql(store, op, body.variables ?? {});
@@ -471,6 +474,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       const canned = state.answerOverride?.(entry) ?? null;
       if (canned) {
         if (!authed()) return;
+        await held();
         return send(canned.status, canned.body ?? {}, canned.headers);
       }
     }

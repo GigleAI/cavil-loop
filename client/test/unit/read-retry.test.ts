@@ -62,7 +62,17 @@ async function boot(opts: { sources?: string[]; retryDelaysMs?: number[] } = {})
   await credentials.set(FAKE_TOKEN);
   const clock = { t: FIXTURE_NOW };
   const endpoints = { api: fake.api, web: fake.web };
-  const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
+  // device-flow polling (a sign-in): moves the clock instead of waiting
+  const harness = new HarnessBackend({
+    db: join(dir, 'cache.sqlite'),
+    endpoints,
+    credentials,
+    now: () => clock.t,
+    sleep: async (ms) => {
+      clock.t += ms;
+      await new Promise((r) => setTimeout(r, 5));
+    },
+  });
   backends.push(harness);
   const c = await Controller.create({
     backend: harness,
@@ -94,6 +104,14 @@ const boardReads = (l: LoggedRequest[]) => l.filter((e) => isBoardPage(e) && (e.
 const isRepoList = (e: LoggedRequest) => e.method === 'GET' && e.path.startsWith('/api/repos/GigleAI/cavil-loop/issues?') && e.path.includes('state=open');
 const repoReads = (l: LoggedRequest[]) => l.filter((e) => isRepoList(e) && !/[?&]page=/.test(e.path)).length;
 const fullReads = (l: LoggedRequest[]) => boardReads(l) + repoReads(l);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
+  for (const end = Date.now() + ms; Date.now() < end; ) {
+    if (pred()) return;
+    await sleep(10);
+  }
+  throw new Error(`timeout: ${what}`);
+}
 const status = (c: Controller, key: string) => c.getState().sync.sources.find((s) => s.sourceKey === key)!;
 const label = (k: string) => (k === PROJECT_KEY ? '看板' : '仓库');
 
@@ -391,5 +409,136 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     const r = await c.act({ kind: 'addLabel', key: 'gigleai/cavil-loop#138', label: 'bug' });
     expect(fake.log.slice(n).some((e) => e.method === 'POST' && /\/labels$/.test(e.path))).toBe(true);
     expect(r.ok).toBe(true);
+  });
+
+  // PR #375 review round 1: a limit without a reset time heard *after* "who am I" answered — the
+  // one request that succeeds first must not end the run of limits
+  const entries: { what: string; hits: (e: LoggedRequest) => boolean; setup?: () => void }[] = [
+    { what: 'the board count', hits: (e) => e.operation === 'CavilProjectCounts' },
+    { what: 'the change check', hits: (e) => /\/projectsV2\/11\/fields/.test(e.path) },
+    {
+      what: 'the first page of a full read',
+      hits: (e) => isBoardPage(e) && (e.variables?.after ?? null) === null,
+      // the board's check cannot tell (5xx): every round reads it in full
+      setup: () => (fake.state.checkFault = (e) => (/\/projectsV2\/11\//.test(e.path) ? { status: 502 } : null)),
+    },
+  ];
+  for (const { what, hits, setup } of entries) {
+    it(`no reset time, heard at ${what} after "who am I" answered: 1, 2, 4 minutes; one clean round and it starts at 1 again`, async () => {
+      const { c, at } = await boot();
+      setup?.();
+      const noTime: CannedAnswer = { status: 403, body: { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' } };
+      let on = true;
+      fake.state.answerOverride = (e) => (on && hits(e) ? noTime : null);
+      const until = () => status(c, PROJECT_KEY).retry?.limitedUntil;
+      const limitedAt = (m: number) => FIXTURE_NOW + m * MIN;
+      let sent = await at(1);
+      expect(sent.some((e) => e.operation === 'CavilViewer' && e.status === 200)).toBe(true); // who am I did answer
+      expect(sent.some((e) => hits(e) && e.status === 403)).toBe(true);
+      expect(until()).toBe(limitedAt(2));
+      sent = await at(2);
+      expect(sent.some((e) => e.operation === 'CavilViewer' && e.status === 200)).toBe(true);
+      expect(until()).toBe(limitedAt(4));
+      expect(await at(3)).toEqual([]);
+      sent = await at(4);
+      expect(sent.length).toBeGreaterThan(0); // asked again at its time
+      expect(until()).toBe(limitedAt(8));
+      for (const m of [5, 6, 7]) expect(await at(m)).toEqual([]);
+      // GitHub lets it through: a clean round, then the next limit waits 1 minute again
+      on = false;
+      fake.state.checkFault = null;
+      await at(8);
+      expect(c.getState().sync.sources.every((s) => s.ok)).toBe(true);
+      on = true;
+      setup?.();
+      await c.restartSync(); // reaches every entry (the full reads included)
+      expect(status(c, PROJECT_KEY).rateLimited).toBe(true);
+      expect(until()).toBe(limitedAt(9));
+    });
+  }
+
+  it('a refresh by hand gives up on a round whose limit answers late: that answer closes nothing — the new round and the ones after it read', async () => {
+    const { c, clock, at } = await boot();
+    clock.t = FIXTURE_NOW + MIN;
+    // the old round's page 2 is answered "limited for 30 minutes" — but only after the new round is over
+    let first = true;
+    const isOld = (e: LoggedRequest) => isBoardPage(e) && !!e.variables?.after;
+    fake.state.answerOverride = (e) => {
+      if (!isOld(e) || !first) return null;
+      first = false;
+      return limited(resetIn(clock, 30));
+    };
+    let taken = false;
+    const release = fake.holdWhen((e) => {
+      if (taken || !isOld(e)) return false;
+      taken = true;
+      return true;
+    });
+    const old = c.restartSync();
+    await waitFor(() => taken, 'the old round sent page 2');
+    const n = fake.log.length;
+    await c.restartSync(); // gives the old one up and reads again, at once
+    expect(fullReads(fake.log.slice(n))).toBe(2);
+    expect(c.getState().sync.sources.every((s) => s.ok)).toBe(true);
+    // now the old answer arrives: a limit
+    release();
+    await old;
+    await waitFor(() => fake.log.some((e) => isOld(e) && e.status === 403), 'the late limit was answered');
+    await sleep(100);
+    // the rounds after it still go out and read
+    const later = await at(2);
+    expect(later.some((e) => e.operation === 'CavilViewer')).toBe(true);
+    expect(c.getState().sync.sources.every((s) => s.ok && !s.rateLimited)).toBe(true);
+    const byHand = fake.log.length;
+    await c.restartSync();
+    expect(fullReads(fake.log.slice(byHand))).toBe(2);
+  });
+
+  it('another account: a limit answered late for the old one closes nothing for the new one', async () => {
+    const { c, clock, at } = await boot({ sources: [REPO] });
+    clock.t = FIXTURE_NOW + MIN;
+    // the old account's list read is answered "limited for 30 minutes" — after it signed out
+    let first = true;
+    fake.state.answerOverride = (e) => {
+      if (!isRepoList(e) || !first) return null;
+      first = false;
+      return limited(resetIn(clock, 30));
+    };
+    let taken = false;
+    const release = fake.holdWhen((e) => {
+      if (taken || !isRepoList(e)) return false;
+      taken = true;
+      return true;
+    });
+    const old = c.restartSync();
+    await waitFor(() => taken, 'the old account sent its read');
+    await c.logout();
+    // the old account's answer arrives now, signed out: a limit (rounds run one at a time, so the
+    // old round has to be over before the new account's first one can start)
+    release();
+    await old;
+    await waitFor(() => fake.log.some((e) => isRepoList(e) && e.status === 403), 'the late limit was answered');
+    // the new account signs in through the browser
+    const TOKEN_B = 'gho_faketokenB000000000000000000000000';
+    fake.state.tokenViewers.set(TOKEN_B, 'user-2');
+    fake.state.nextGrant = { token: TOKEN_B };
+    c.setClientId(fake.state.oauthClientId);
+    const login = c.startLogin();
+    await waitFor(() => c.getState().login.status === 'waiting', 'waiting for the browser');
+    fake.resolveGrant('approved');
+    await login;
+    await waitFor(() => c.getState().phase === 'ready', 'signed in as the new account');
+    c.addSource(REPO);
+    await c.settled();
+    await c.syncNow();
+    expect(status(c, REPO_KEY).ok).toBe(true);
+    // the new account's rounds still go out and read
+    const later = await at(2);
+    expect(later.some((e) => e.operation === 'CavilViewer' && e.auth === `Bearer ${TOKEN_B}`)).toBe(true);
+    expect(status(c, REPO_KEY)).toMatchObject({ ok: true });
+    expect(status(c, REPO_KEY).rateLimited).toBeFalsy();
+    const n = fake.log.length;
+    await c.restartSync();
+    expect(fake.log.slice(n).some((e) => isRepoList(e) && e.auth === `Bearer ${TOKEN_B}` && e.status === 200)).toBe(true);
   });
 });
