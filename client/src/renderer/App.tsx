@@ -26,10 +26,11 @@ import type { SettingsIntent } from './EmptyGuide';
 const FLOAT = '\u0000float';
 
 /**
- * GitHub#447: where a close (issue or PR) was started — a tab, or one opening of the floating panel
- * (`n`: that opening; the panel showing another item, or opened again, is another place)
+ * GitHub#447: where a close (issue or PR) was started — one life of a tab (`life`: closed and opened
+ * again, the same item is another tab), or one opening of the floating panel (`n`: the panel showing
+ * another item, or opened again, is another place)
  */
-type CloseOrigin = { where: 'tab'; key: string } | { where: 'float'; key: string; n: number };
+type CloseOrigin = { where: 'tab'; key: string; life: number } | { where: 'float'; key: string; n: number };
 
 /** a shortcut that needs the board (GitHub#192): taken once by the board, then dropped */
 export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number };
@@ -75,6 +76,13 @@ export function App() {
   frontRef.current = front;
   const keysRef = useRef(tabKeys);
   keysRef.current = tabKeys;
+  // GitHub#447 (PR #454 code review round 1): every tab gets a life of its own when it shows up; closed and
+  // opened again — by any way — it is another life, so a close started in the old tab never puts away the new one
+  const tabLife = useRef(new Map<string, number>());
+  const lifeSeq = useRef(0);
+  for (const k of [...tabLife.current.keys()]) if (!tabKeys.includes(k)) tabLife.current.delete(k);
+  for (const k of tabKeys) if (!tabLife.current.has(k)) tabLife.current.set(k, ++lifeSeq.current);
+  const lifeOf = (k: string) => tabLife.current.get(k) ?? -1;
   /** every time a tab comes to the front is its own opening of the detail (its React key) */
   const [opening, setOpening] = useState<{ n: number; intent: OpenIntent | null }>({ n: 0, intent: null });
   const drafts = useRef(new Map<string, TabDraft>());
@@ -187,6 +195,9 @@ export function App() {
     if (key === FLOAT) return closeFloatNow();
     drafts.current.delete(key);
     setHeld((h) => (h.some((x) => x.where === 'tab' && x.key === key) ? h.filter((x) => !(x.where === 'tab' && x.key === key)) : h));
+    // this tab's life ends here: a close it started can no longer put anything away (the snapshot may still list the key a moment)
+    for (const [id, o] of closeOrigins.current) if (o.where === 'tab' && o.key === key) closeOrigins.current.delete(id);
+    tabLife.current.delete(key);
     setActive(afterClose(keysRef.current, key, frontRef.current));
     void api().closeTab(key);
   };
@@ -201,7 +212,7 @@ export function App() {
       const f = floatRef.current;
       const place =
         o.where === 'tab'
-          ? { present: keysRef.current.includes(o.key), dirty: draftDirty(drafts.current.get(o.key)) }
+          ? { present: keysRef.current.includes(o.key) && tabLife.current.get(o.key) === o.life, dirty: draftDirty(drafts.current.get(o.key)) }
           : { present: f !== null && f.key === o.key && f.n === o.n, dirty: floatDraft.current?.key === o.key && draftDirty(floatDraft.current.draft) };
       const v = autoCloseVerdict(ops.find((r) => r.id === id), place);
       if (v === 'wait') continue;
@@ -455,8 +466,8 @@ export function App() {
                 onHome={() => show(HOME)}
                 onLeftBehind={(note, about) => setLeftNote((cur) => ({ note, about, seq: (cur?.seq ?? 0) + 1 }))}
                 intent={opening.intent}
-                onCloseStarted={closeStarted(gen, { where: 'tab', key: front })}
-                autoCloseHeld={heldFor(held, { where: 'tab', key: front }, setHeld)}
+                onCloseStarted={closeStarted(gen, { where: 'tab', key: front, life: lifeOf(front) })}
+                autoCloseHeld={heldFor(held, { where: 'tab', key: front, life: lifeOf(front) }, setHeld)}
                 key={`${gen}:${front}:${opening.n}`}
                 draft={drafts.current.get(front) ?? null}
                 onDraft={(d) => {
@@ -499,7 +510,7 @@ function heldFor(
   o: CloseOrigin,
   setHeld: (f: (h: ({ id: string } & CloseOrigin)[]) => ({ id: string } & CloseOrigin)[]) => void,
 ): { onDismiss: () => void } | null {
-  const same = (x: CloseOrigin) => x.where === o.where && x.key === o.key && (x.where === 'tab' || (o.where === 'float' && x.n === o.n));
+  const same = (x: CloseOrigin) => x.where === o.where && x.key === o.key && (x.where === 'tab' ? o.where === 'tab' && x.life === o.life : o.where === 'float' && x.n === o.n);
   if (!held.some(same)) return null;
   return { onDismiss: () => setHeld((h) => h.filter((x) => !same(x))) };
 }

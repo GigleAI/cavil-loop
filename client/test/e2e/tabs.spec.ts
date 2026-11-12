@@ -1031,6 +1031,49 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   await app.close();
 });
 
+test('GitHub#447 (PR #454 code review round 1): a tab closed by hand while its close waits, then the item opened again — the late answer leaves the new tab alone, with or without text in it', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+
+  // ---- 1. the new tab is empty: it stays, the close itself went through ----
+  await row(page, A).click({ modifiers: ['Control'] });
+  let release = holdClose('issues', A);
+  await closeIssueHere(page);
+  await tab(page, A).getByTestId('tab-close').click();
+  await expect(tab(page, A)).toHaveCount(0);
+  await row(page, A).click({ modifiers: ['Control'] });
+  await expect(tab(page, A)).toHaveCount(1);
+  release();
+  await expect.poll(() => closes('issues', A), { timeout: 15_000 }).toEqual([200]);
+  // the answer is in (its notice says so: the item is shown in front, so it is the detail's) — and the new tab is still there
+  await expect(detail(page).getByTestId('detail-kind')).toHaveAttribute('data-tone', 'done', { timeout: 15_000 });
+  await page.waitForTimeout(1_000);
+  await expect(tab(page, A)).toHaveCount(1);
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(held(page)).toHaveCount(0);
+  await expect(inStrip(page, A)).toHaveCount(0);
+
+  // ---- 2. the new tab holds text: no "kept because of unsent text" line from the old tab's close either ----
+  await home(page).click();
+  await row(page, B).click({ modifiers: ['Control'] });
+  release = holdClose('issues', B);
+  await closeIssueHere(page);
+  await tab(page, B).getByTestId('tab-close').click();
+  await expect(tab(page, B)).toHaveCount(0);
+  await home(page).click();
+  await row(page, B).click({ modifiers: ['Control'] });
+  await detail(page).getByTestId('reply-input').fill('half a reply');
+  release();
+  await expect.poll(() => closes('issues', B), { timeout: 15_000 }).toEqual([200]);
+  await expect(detail(page).getByTestId('detail-kind')).toHaveAttribute('data-tone', 'done', { timeout: 15_000 });
+  await page.waitForTimeout(1_000);
+  await expect(tab(page, B)).toHaveCount(1);
+  await expect(held(page)).toHaveCount(0);
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('half a reply');
+  await app.close();
+});
+
 function store() {
   return { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
 }
