@@ -4,8 +4,8 @@
 #
 # 为什么要有：自动升级把新代码带到老项目，却不会改项目自己的配置。新功能若是「配置里不写就关」、
 # 模板里却是开的，老项目就一直关着，没有任何地方说一声（例：等前置标签，arkknights-tool#38）。
-# daemon 每轮把本项目配置加载完后仍「未设置」的 notice 项列出来，写轮询日志，并按 CONFIG_NOTICE_ISSUE
-# 在本项目仓库开一条提示 issue。写成空值（KEY=""）= 已决定不开，不算缺。
+# daemon 每轮把本项目配置加载完后仍「未设置」的 notice 项列出来，写轮询日志（GitHub#428 起只写日志，
+# 不再开提示 issue）。写成空值（KEY=""）= 已决定不开，不算缺。
 #
 # 格式（| 分隔，两侧空白忽略；# 开头和空行跳过）：
 #   KEY | notice | 出处 | 不开时写的值 | 给维护者看的一段说明（一行）
@@ -128,6 +128,5 @@ POLL_RUN_LOG_SLOW_SECS | quiet | 不写这一行时的行为和模板里的值�
 POLL_FAIL_BACKOFF_MAX_SECS | quiet | 不写这一行时的行为和模板里的值相同
 POLL_DUE_SLACK_SECS | quiet | 不写这一行时的行为和模板里的值相同
 CHECKOUT_STALE_ALERT_COMMITS | quiet | 不写这一行时的行为和模板里的值相同
-CONFIG_NOTICE_ISSUE | quiet | 不写这一行时的行为和模板里的值相同
 AUTO_RELEASE_MAIN_CHECKOUT | quiet | 不写这一行时的行为和模板里的值相同
 LATEST_SITE_REFRESH | quiet | 不写这一行时的行为和模板里的值相同

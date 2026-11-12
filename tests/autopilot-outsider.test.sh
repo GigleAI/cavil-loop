@@ -75,13 +75,12 @@ BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C 
 mkdir -p "$SANDBOX/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$SANDBOX/old"
 rm -rf "$SANDBOX/old/prompts"; cp -r "$REPO_DIR/prompts" "$SANDBOX/old/prompts"
-# 【19】的三处「改动前读不全 / 判不了」要的是 GitHub#426 修复之前的脚本，不是「和 main 的分叉点」：
-# 一个把 main（已含 #426 的修复）合进来的分支，分叉点里已经修好了，那三处必然红（PR #437 的 CI）。
-# 所以固定在 #426 合并（016c29e）之前的提交上；其余「和改动前逐字相同」的对拍照旧用分叉点。
+# 「改动前还读不全」的三组对拍要的是 GitHub#426 修复之前的代码，固定在它合入前的主干提交。
+# 用 merge-base 的话，分支一跟上主干，merge-base 就已经带着修复，这三组就红了（PR #430）。
 PRE426_REV=5043ad0e00edb2b0f70876605114ee7162a414e9
 mkdir -p "$SANDBOX/pre426"
-git -C "$REPO_DIR" archive "$PRE426_REV" scripts | tar -x -C "$SANDBOX/pre426"
-cp -r "$REPO_DIR/prompts" "$SANDBOX/pre426/prompts"
+git -C "$REPO_DIR" archive "$PRE426_REV" scripts prompts | tar -x -C "$SANDBOX/pre426"
+rm -rf "$SANDBOX/pre426/prompts"; cp -r "$REPO_DIR/prompts" "$SANDBOX/pre426/prompts"
 
 H1=1111111111111111111111111111111111111111
 R="repos/example/ap"
@@ -817,6 +816,7 @@ prompt_files_clear "$REPO_DIR" "$DW/state"
     bash "$SCRIPTS/dispatch-new-issue.sh" "$N") >/dev/null 2>&1
 # 提示词写在项目自己的状态目录里（GitHub#396），经 tests/lib/prompt-files.sh 找，不拼路径
 PF=$(prompt_file_of "$REPO_DIR" "$DW/state" new "$N")
+chk "派工脚本确实写出了提示词" "$([ -s "$PF" ] && echo yes || echo no)" yes
 chk "派工脚本写出的提示词带外部内容规则、编号和派工前结论" \
     "$(grep -c '^# 外部账号的内容' "$PF" 2>/dev/null || echo 0)/$(grep -cF "' $N" "$PF" 2>/dev/null || echo 0)/$(grep -c '本条有 3 条外部账号写的内容' "$PF" 2>/dev/null || echo 0)" "1/1/1"
 chk "新起的会话登记为「在保护开着时起的」" "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null | grep -c . || echo 0)/$([ "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null)" = "$(cat "$DW/state/agent-sessions/$N.claude.worker" 2>/dev/null)" ] && echo same || echo differ)" "1/same"
