@@ -41,10 +41,48 @@ stable_skill() {
     if [ -f "$link/scripts/remote-access/remote_access.py" ]; then printf '%s\n' "$link"; else (cd "$SCRIPT_DIR/.." && pwd -P); fi
 }
 
-port() {
-    local p=""
-    [ -f "$STATE/port" ] && p="$(tr -cd '0-9' < "$STATE/port" 2>/dev/null || true)"
-    printf '%s\n' "${p:-$CAVIL_REMOTE_ACCESS_PORT}"
+# ── 本功能自己的两份记录：三态读取 ──
+# 「没有这份文件」和「文件在但读不了 / 读不懂」是两回事：前者是明确的「没有」，后者是「不知道」。
+# 不知道本功能登记过哪些转发时，不能确认关闭、不能判断一条转发归谁、也不能覆盖这份记录——
+# 所以每个命令先 state_load，bad 就停下（state_require），什么都不动。
+#   $STATE/ports  本功能登记过转发的端口，一行一个（清单）。LEDGER=none|ok|bad，OWNED=(端口…)
+#   $STATE/port   常驻服务现在用的端口，恰好一行。        PORT_STATE=none|ok|bad，CUR_PORT
+valid_port() { [[ "$1" =~ ^[0-9]{4,5}$ ]] && [ "$1" -ge 1024 ] && [ "$1" -le 65535 ]; }
+
+state_load() {
+    local line content
+    LEDGER=none; OWNED=()
+    if [ -e "$STATE/ports" ] || [ -L "$STATE/ports" ]; then
+        if content="$(cat "$STATE/ports" 2>/dev/null)"; then
+            LEDGER=ok
+            while IFS= read -r line; do
+                if valid_port "$line"; then OWNED+=("$line"); else LEDGER=bad; fi
+            done < <(printf '%s\n' "$content" | sed '/^$/d')
+        else
+            LEDGER=bad
+        fi
+        [ "$LEDGER" = ok ] || OWNED=()
+    fi
+    PORT_STATE=none; CUR_PORT="$CAVIL_REMOTE_ACCESS_PORT"
+    if [ -e "$STATE/port" ] || [ -L "$STATE/port" ]; then
+        if content="$(cat "$STATE/port" 2>/dev/null)" && valid_port "$content"; then
+            PORT_STATE=ok; CUR_PORT="$content"
+        else
+            PORT_STATE=bad
+        fi
+    fi
+}
+
+state_bad_message() {
+    [ "$LEDGER" = bad ] && echo "读不懂本功能登记过哪些端口的记录：$STATE/ports（读不了，或有一行不是端口号）。"
+    [ "$PORT_STATE" = bad ] && echo "读不懂常驻服务当前端口的记录：$STATE/port（读不了，或不是一个端口号）。"
+    echo "不知道哪些转发是本功能的，所以什么都没动。处理办法：用 tailscale serve status 核对后，"
+    echo "把 $STATE/ports 改成每行一个本功能登记过的端口（一个都没有就删掉这个文件），"
+    echo "把 $STATE/port 改成当前端口（不确定就删掉，下次打开用默认端口或 --port 指定），再重跑。"
+}
+
+state_require() {   # 两份记录有一份读不懂就停下
+    if [ "$LEDGER" = bad ] || [ "$PORT_STATE" = bad ]; then state_bad_message; result state_unknown 2; fi
 }
 
 need_cmds() {
@@ -82,6 +120,7 @@ ts_identity() {
 #          （$STATE/ports）。只看形状不够：按需预览登记的转发也是「端口 → 本机同一端口」，认错了
 #          就会在关闭时撤掉别人的转发
 #   absent 这个端口上没有转发
+# 调用前必须已经 state_load 且清单不是 bad（归属要查清单）。
 #   other  这个端口上有别的转发（不是本功能的）
 #   funnel 这个端口开着公网入口
 #   unknown 读不到 / 读不懂
@@ -106,10 +145,20 @@ ts_mapping() {
 # ── 本功能登记过哪些端口的转发（$STATE/ports，一行一个）──
 # 登记转发**之前**先记下，撤掉并读回确认之后才划掉：中途被打断时宁可多记一个（下次再核对），
 # 不漏记一个（那条转发就没人撤了）。换端口、关闭都按这份清单收尾。
-owned_ports() { [ -f "$STATE/ports" ] && grep -E '^[0-9]{4,5}$' "$STATE/ports" | sort -u || true; }
-owns_port()   { owned_ports | grep -qx "$1"; }
-own_add()     { mkdir -p "$STATE"; chmod 700 "$STATE"; { owned_ports; echo "$1"; } | sort -u > "$STATE/ports.tmp" && mv "$STATE/ports.tmp" "$STATE/ports"; }
-own_drop()    { owned_ports | grep -vx "$1" > "$STATE/ports.tmp" || true; mv "$STATE/ports.tmp" "$STATE/ports"; }
+owns_port() { local q; for q in ${OWNED[@]+"${OWNED[@]}"}; do [ "$q" = "$1" ] && return 0; done; return 1; }
+ledger_write() {   # 把 OWNED 原子地写回去；写不进去返回非 0（内存里的 OWNED 这时仍是想写的内容）
+    mkdir -p "$STATE" 2>/dev/null && chmod 700 "$STATE" 2>/dev/null || return 1
+    { [ ${#OWNED[@]} -eq 0 ] || printf '%s\n' "${OWNED[@]}"; } > "$STATE/ports.tmp" 2>/dev/null || return 1
+    mv "$STATE/ports.tmp" "$STATE/ports" 2>/dev/null
+}
+own_add() { owns_port "$1" && return 0; OWNED+=("$1"); ledger_write; }
+own_drop() {   # 划掉一个端口；写不进去记一笔 LEDGER_UNSAVED，由调用方在最后报「没做完」
+    local q keep=()
+    for q in ${OWNED[@]+"${OWNED[@]}"}; do [ "$q" = "$1" ] || keep+=("$q"); done
+    OWNED=(${keep[@]+"${keep[@]}"})
+    ledger_write || LEDGER_UNSAVED=1
+}
+LEDGER_UNSAVED=0
 
 # release_port <端口>：撤掉本功能在这个端口上的转发。写 REL=
 #   gone     已撤掉并读回确认（或本来就没有了），从清单划掉
@@ -234,7 +283,10 @@ svc_stop_and_remove() {
     return 0
 }
 
-device_count() { python3 "$PY" list --state "$STATE" 2>/dev/null | grep -c . || true; }
+device_count() {   # 「N 台」或「读不到」——清单读不懂时不报 0 台
+    local rows
+    if rows="$(python3 "$PY" list --state "$STATE" 2>/dev/null)"; then echo "$(printf '%s' "$rows" | grep -c . || true) 台"; else echo "读不到"; fi
+}
 
 cmd_enable() {
     local p="" 
@@ -246,11 +298,15 @@ cmd_enable() {
     done
     case "$OS" in Linux|Darwin) ;; *) echo "不支持的系统：${OS:-读不到}，什么都没动"; result unsupported 2 ;; esac
     need_cmds
+    state_load
     if [ -n "$p" ]; then
-        if ! [[ "$p" =~ ^[0-9]{2,5}$ ]] || [ "$p" -lt 1024 ] || [ "$p" -gt 65535 ]; then echo "端口要在 1024–65535 之间"; result bad_port 1; fi
+        if ! valid_port "$p"; then echo "端口要在 1024–65535 之间"; result bad_port 1; fi
+        # 明说了端口：当前端口那份记录读不懂也不碍事（下面会重写它）；清单读不懂仍然不行
+        [ "$PORT_STATE" = bad ] && PORT_STATE=none
     else
-        p="$(port)"
+        p="$CUR_PORT"
     fi
+    state_require
     ts_identity
     svc_probe
     if [ "$SVC_STATE" = unknown ]; then
@@ -265,7 +321,10 @@ cmd_enable() {
                  echo "换一个端口：bash $0 enable --port <端口>"; result funnel 2 ;;
         other)   echo "端口 $p 上已经有别的 Tailscale 转发，什么都没动。换一个端口：bash $0 enable --port <端口>"; result port_taken 2 ;;
         absent)
-            own_add "$p"
+            if ! own_add "$p"; then
+                echo "记不下本功能要登记的端口（$STATE/ports 写不进去），所以没有登记转发，什么都没动"
+                result state_unwritable 2
+            fi
             if ! ts_serve "$p" on; then
                 # 端口留在清单里：下面请人用管理员权限登记的，就是本功能的这一条，重跑时要认得它
                 echo "登记 Tailscale 转发失败（需要管理员权限），入口没有打开。Tailscale 的原话："
@@ -284,8 +343,11 @@ cmd_enable() {
             echo "✓ 已登记转发：https://$TS_HOST:$p → 127.0.0.1:$p（仅本 Tailscale 网络）" ;;
         ours) echo "✓ 转发已在：https://$TS_HOST:$p → 127.0.0.1:$p（仅本 Tailscale 网络）" ;;
     esac
-    mkdir -p "$STATE"; chmod 700 "$STATE"
-    printf '%s\n' "$p" > "$STATE/port"; printf '%s\n' "$TS_HOST" > "$STATE/host"
+    if ! { mkdir -p "$STATE" && chmod 700 "$STATE" && printf '%s\n' "$p" > "$STATE/port.tmp" && mv "$STATE/port.tmp" "$STATE/port"; } 2>/dev/null; then
+        echo "记不下当前端口（$STATE/port 写不进去），入口没有打开。转发已登记并记在清单里，修好后重跑本命令，或用 disable 撤掉。"
+        result failed 3
+    fi
+    printf '%s\n' "$TS_HOST" > "$STATE/host" 2>/dev/null || true
     svc_install_and_start "$p"
     svc_probe
     if [ "$SVC_STATE" != running ]; then
@@ -296,7 +358,7 @@ cmd_enable() {
     echo "✓ 常驻服务已启动"
     # 换过端口：把本功能以前登记的其他端口的转发撤掉
     local q left=""
-    for q in $(owned_ports); do
+    for q in ${OWNED[@]+"${OWNED[@]}"}; do
         [ "$q" = "$p" ] && continue
         release_port "$q"
         case "$REL" in
@@ -306,6 +368,7 @@ cmd_enable() {
         esac
     done
     echo "远程入口已打开：$TS_HOST（端口 $p）。生成配对码：bash $0 pair"
+    if [ "$LEDGER_UNSAVED" = 1 ]; then echo "端口清单没能写回（$STATE/ports），里面可能多记着已经撤掉的端口；修好权限后重跑本命令"; left="$left 清单"; fi
     if [ -n "$left" ]; then result partial 3; fi
     result enabled 0
 }
@@ -313,7 +376,10 @@ cmd_enable() {
 cmd_disable() {
     case "$OS" in Linux|Darwin) ;; *) echo "不支持的系统：${OS:-读不到}，什么都没动"; result unsupported 2 ;; esac
     need_cmds
-    local p; p="$(port)"
+    # 先把要用的都读到：清单读不懂就不知道该撤哪些转发，这时不能停服务、不能报「已关闭」
+    state_load
+    [ "$PORT_STATE" = bad ] && PORT_STATE=none   # 关闭用不着当前端口那份记录
+    state_require
     ts_identity
     svc_probe
     if [ "$SVC_STATE" = unknown ]; then
@@ -321,7 +387,7 @@ cmd_disable() {
         printf '%s\n' "$CAVIL_SCHED_RAW" | sed 's/^/  /'
         result unknown 2
     fi
-    ts_mapping "$p"
+    ts_mapping "$CAVIL_REMOTE_ACCESS_PORT"   # 只为确认转发设置读得到
     if [ "$TS_MAP" = unknown ]; then echo "读不到 Tailscale 现有的转发设置，什么都没动"; result tailscale_unknown 2; fi
     local left=0 q released=0
     if ! svc_stop_and_remove; then
@@ -332,7 +398,7 @@ cmd_disable() {
         echo "✓ 常驻服务已停止并移除"
     fi
     # 本功能登记过的每一个端口（换过端口时不止一个）都撤掉
-    for q in $(owned_ports); do
+    for q in ${OWNED[@]+"${OWNED[@]}"}; do
         release_port "$q"
         case "$REL" in
             gone)    echo "✓ 已撤掉转发（端口 $q）"; released=1 ;;
@@ -342,32 +408,34 @@ cmd_disable() {
     done
     [ "$released" = 1 ] || [ "$left" = 1 ] || echo "没有本功能登记的转发，没有动 Tailscale 的设置"
     rm -f "$STATE/pairing.json"
+    if [ "$LEDGER_UNSAVED" = 1 ]; then echo "端口清单没能写回（$STATE/ports），里面还记着已经撤掉的端口；修好权限后重跑本命令"; left=1; fi
     if [ "$left" = 1 ]; then result partial 3; fi
-    echo "远程入口已关闭。已配对设备清单保留（$(device_count) 台）；要一并清掉：逐台 bash $0 revoke <设备名>"
+    echo "远程入口已关闭。已配对设备清单保留（$(device_count)）；要一并清掉：逐台 bash $0 revoke <设备名>"
     result disabled 0
 }
 
-is_open() {   # 入口是不是完整开着（服务在跑 + 转发是本功能的）；读不到算没开着，但不据此改任何东西
-    local p; p="$(port)"
+is_open() {   # 入口是不是完整开着（服务在跑 + 转发是本功能的）。调用前已 state_load 且不是 bad
     svc_probe
     [ "$SVC_STATE" = running ] || return 1
-    ts_mapping "$p"
+    ts_mapping "$CUR_PORT"
     [ "$TS_MAP" = ours ]
 }
 
 cmd_pair() {
     need_cmds
+    state_load; state_require
     ts_identity
     if ! is_open; then
         echo "远程入口还没有打开，先打开："
         ( cmd_enable ) || exit $?
         ts_identity
+        state_load; state_require
     fi
     local code
     code="$(python3 "$PY" pair-code --state "$STATE")"
     echo
     echo "在客户端「设置 → 远程 daemon → 添加远程 daemon」里填："
-    echo "  机器名：$TS_HOST$( [ "$(port)" = "$CAVIL_REMOTE_ACCESS_PORT" ] || printf ':%s' "$(port)" )"
+    echo "  机器名：$TS_HOST$( [ "$CUR_PORT" = "$CAVIL_REMOTE_ACCESS_PORT" ] || printf ':%s' "$CUR_PORT" )"
     echo "  配对码：${code:0:4} ${code:4:4}"
     echo "配对码 10 分钟内有效，只能用一次；连续输错 5 次作废。"
     result code 0
@@ -375,9 +443,15 @@ cmd_pair() {
 
 cmd_status() {
     need_cmds
-    local p; p="$(port)"
+    state_load
     svc_probe
     echo "常驻服务：$SVC_STATE"
+    if [ "$LEDGER" = bad ] || [ "$PORT_STATE" = bad ]; then
+        state_bad_message
+        echo "已配对设备：$(device_count)"
+        result unknown 0
+    fi
+    local p="$CUR_PORT"
     local js host=""
     if js="$(tailscale status --json 2>/dev/null)"; then host="$(jq -r '(.CertDomains // [])[0] // ""' <<<"$js" 2>/dev/null || true)"; fi
     if [ -n "$host" ]; then
@@ -388,9 +462,18 @@ cmd_status() {
         TS_MAP=unknown
         echo "Tailscale：读不到机器名（没连上，或没开 HTTPS 证书功能）"
     fi
-    echo "已配对设备：$(device_count) 台"
+    echo "已配对设备：$(device_count)"
+    [ ${#OWNED[@]} -eq 0 ] || echo "本功能登记过转发的端口：${OWNED[*]}"
     if [ "$SVC_STATE" = running ] && [ "$TS_MAP" = ours ]; then result open 0; fi
     if [ "$SVC_STATE" = unknown ] || [ "$TS_MAP" = unknown ]; then result unknown 0; fi
+    # 清单里还有别的端口没撤（换端口或关闭没做完）就不算关干净
+    local q
+    for q in ${OWNED[@]+"${OWNED[@]}"}; do
+        [ "$q" = "$p" ] && continue
+        ts_mapping "$q"
+        case "$TS_MAP" in ours) echo "端口 $q 上还留着本功能的转发"; result partial 0 ;; unknown) result unknown 0 ;; esac
+    done
+    ts_mapping "$p"
     if [ "$SVC_STATE" = stopped ] && [ "$TS_MAP" = absent ]; then result closed 0; fi
     result partial 0
 }
@@ -398,7 +481,7 @@ cmd_status() {
 cmd_list() {
     command -v python3 >/dev/null 2>&1 || { echo "缺少程序：python3"; exit 2; }
     local rows
-    rows="$(python3 "$PY" list --state "$STATE")"
+    if ! rows="$(python3 "$PY" list --state "$STATE")"; then echo "读不到已配对设备清单（$STATE/devices.json），不是「没有设备」"; exit 2; fi
     if [ -z "$rows" ]; then echo "还没有配对过的设备"; return 0; fi
     printf '%s\t%s\t%s\t%s\n' 编号 设备名 Tailscale设备 配对时间
     printf '%s\n' "$rows"
@@ -407,13 +490,13 @@ cmd_list() {
 cmd_revoke() {
     [ $# -eq 1 ] && [ -n "$1" ] || usage
     command -v python3 >/dev/null 2>&1 || { echo "缺少程序：python3"; exit 2; }
-    local gone
-    if gone="$(python3 "$PY" revoke --state "$STATE" --target "$1")"; then
-        printf '%s\n' "$gone" | while IFS=$'\t' read -r id name; do echo "✓ 已撤销：$name（$id），它的钥匙从现在起无效"; done
-    else
-        echo "没有叫「$1」的已配对设备。现有设备：bash $0 list"
-        exit 1
-    fi
+    local gone rc=0
+    gone="$(python3 "$PY" revoke --state "$STATE" --target "$1")" || rc=$?
+    case "$rc" in
+        0) printf '%s\n' "$gone" | while IFS=$'\t' read -r id name; do echo "✓ 已撤销：$name（$id），它的钥匙从现在起无效"; done ;;
+        1) echo "没有叫「$1」的已配对设备。现有设备：bash $0 list"; exit 1 ;;
+        *) echo "读不到已配对设备清单（$STATE/devices.json），没有撤销任何设备"; exit 2 ;;
+    esac
 }
 
 sub="${1:-}"; [ $# -gt 0 ] && shift

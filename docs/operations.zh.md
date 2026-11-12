@@ -1304,7 +1304,7 @@ bash "$RA" disable
 
 **边界**：
 
-- 常驻服务只监听 `127.0.0.1`；对外只有 `tailscale serve` 那一条 HTTPS 转发。`enable` 不开公网入口（funnel），发现这个端口上开着就拒绝。本功能登记过哪些端口记在 `~/.local/state/cavil-loop/remote-access/ports`（登记前先记、撤掉并读回确认后才划掉），关闭和换端口都按它收尾；Tailscale 的转发设置读不到（查询失败，或退出 0 却没有输出）时什么都不动。
+- 常驻服务只监听 `127.0.0.1`；对外只有 `tailscale serve` 那一条 HTTPS 转发。`enable` 不开公网入口（funnel），发现这个端口上开着就拒绝。本功能登记过哪些端口记在 `~/.local/state/cavil-loop/remote-access/ports`（登记前先记、撤掉并读回确认后才划掉），关闭和换端口都按它收尾；Tailscale 的转发设置读不到（查询失败，或退出 0 却没有输出）时什么都不动。这份清单和记着当前端口的 `port` 文件本身也分「没有 / 读得懂 / 读不懂」三种：读不了、或有一行不是端口号，就是「不知道哪些转发是本功能的」——`enable`、`pair`、`disable` 退出 2（`RESULT=state_unknown`）、什么都不动、不覆盖这份文件，`status` 报 `unknown`；按提示用 `tailscale serve status` 核对后把 `ports` 改成每行一个本功能登记过的端口（一个都没有就删掉文件）再重跑。清单写不进去时：登记之前发现的，不登记（`state_unwritable`，退出 2）；撤掉转发之后才发现的，报 `partial`（退出 3），修好后重跑。已配对设备清单读不懂时，`status` 写「读不到」、`list` / `revoke` 退出 2，不报「0 台」。
 - 每个请求先确认来访者：转发层给出的来访地址必须是一个 Tailscale 地址，且本机 `tailscale whois` 查得到它是哪台设备。查不到、查询失败、带公网入口标记，一律拒绝。
 - 配对之后钥匙不再传输：每个请求带「时间 + 一次性随机数 + 请求内容」的签名，回复也带签名；来访设备的 Tailscale 身份必须等于配对时那台，钥匙拷到别的设备上用会被拒。
 - 能做的只有：读状态（`install-status.sh` 的输出原样）、停 / 启一个项目（`scripts/project-service.sh <key> stop|start`——只在「在跑 → 停」「已停 → 启」时执行，状态读不到既不停也不启，执行后读回）、读一个项目 `poll.log` 的最后 200 行、撤销自己。不能断开项目、不能更新 daemon、不能接新项目、不能执行任意命令。

@@ -412,6 +412,101 @@ chk "关闭后：已配对设备清单保留" "$(jq -r '.[0].name' "$RA_STATE/de
 ra Linux -- status
 chk "关闭后状态：closed" "$(tail -1 <<<"$out")" "RESULT=closed"
 
+echo "── 9b. 本功能自己的记录读不懂：不是「没有」，每个命令都停下、什么都不动 ──"
+# 起点：默认端口打开过、换到 47999（清单里只剩 47999），旁边有一条别的功能的转发
+ledger_world() {
+    fresh_world
+    jq -n '{TCP:{"3000":{HTTPS:true}}, Web:{"box.tailnet.ts.net:3000":{Handlers:{"/":{Proxy:"http://127.0.0.1:3000"}}}}}' > "$FAKE_TS/serve.json"
+    ra Linux -- enable; ra Linux -- enable --port 47999
+    : > "$FAKE_TS/calls"
+}
+web_keys() { jq -r '.Web // {} | keys | join(",")' "$FAKE_TS/serve.json"; }
+writes() { ts_calls '^serve --(bg|https)'; }
+BOTH="box.tailnet.ts.net:3000,box.tailnet.ts.net:47999"
+ledger_world
+chk "起点：清单里是 47999，转发是它和别的功能那条" "$(cat "$RA_STATE/ports") $(web_keys)" "47999 $BOTH"
+# 两种读不懂：内容不是端口号；位置上是个目录（谁都读不了，不依赖运行测试的账号有没有权限）
+break_ledger() {   # <corrupt|unreadable|mixed>
+    rm -rf "$RA_STATE/ports"
+    case "$1" in
+        corrupt)    echo corrupted > "$RA_STATE/ports" ;;
+        unreadable) mkdir "$RA_STATE/ports" ;;
+        mixed)      printf '47999\nnot-a-port\n' > "$RA_STATE/ports" ;;   # 有一行认得、有一行不认得：整份都不算数
+    esac
+}
+ledger_sig() { if [ -d "$RA_STATE/ports" ]; then echo DIR; else cat "$RA_STATE/ports"; fi; }
+for kind in corrupt unreadable mixed; do
+    break_ledger "$kind"; before="$(ledger_sig)"; : > "$FAKE_TS/calls"
+    for cmd in "disable" "enable" "enable --port 48222" "pair"; do
+        # shellcheck disable=SC2086
+        ra Linux -- $cmd
+        chk "清单读不懂（$kind）时 $cmd：退出 2，RESULT=state_unknown" "$rc $(tail -1 <<<"$out")" "2 RESULT=state_unknown"
+    done
+    chk "…（$kind）四个命令之后：服务还在跑、转发原样、没有任何登记 / 撤销、清单没被覆盖" \
+        "$(cat "$FAKE_SD/$UNIT.active") $(web_keys) $(writes) $(ledger_sig)" "active $BOTH 0 $before"
+    chk_has "…（$kind）说明是哪份记录、怎么处理" "$out" "$RA_STATE/ports"
+    ra Linux -- status
+    chk "…（$kind）状态：unknown，不报 closed 也不报 open" "$rc $(tail -1 <<<"$out")" "0 RESULT=unknown"
+done
+# 修好清单后重新关闭：成功，本功能的转发撤掉，别的功能的还在
+rm -rf "$RA_STATE/ports"; echo 47999 > "$RA_STATE/ports"
+ra Linux -- disable
+chk "清单修好后再关闭：成功，本功能的转发撤掉，别的功能的转发还在" "$rc $(tail -1 <<<"$out") $(web_keys)" "0 RESULT=disabled box.tailnet.ts.net:3000"
+ra Linux -- status
+chk "…状态：closed" "$(tail -1 <<<"$out")" "RESULT=closed"
+
+# 明确的「没有记录」和「空清单」是另一回事：照常关闭，不动别人的转发
+ledger_world; ra Linux -- disable
+: > "$RA_STATE/ports"
+ra Linux -- disable
+chk "空清单：照常关闭（没有本功能的转发要撤），不动别的转发" "$rc $(tail -1 <<<"$out") $(web_keys)" "0 RESULT=disabled box.tailnet.ts.net:3000"
+rm -f "$RA_STATE/ports"
+ra Linux -- disable
+chk "没有清单文件：同上" "$rc $(tail -1 <<<"$out") $(web_keys)" "0 RESULT=disabled box.tailnet.ts.net:3000"
+ra Linux -- enable
+chk "…之后照常能打开" "$rc $(tail -1 <<<"$out") $(cat "$RA_STATE/ports")" "0 RESULT=enabled 47999"
+
+# 当前端口那份记录读不懂：不带 --port 的打开和生成配对码停下；带 --port 的打开、关闭不受影响
+ledger_world
+echo garbage > "$RA_STATE/port"; : > "$FAKE_TS/calls"
+ra Linux -- enable
+chk "当前端口记录读不懂时 enable（没说端口）：退出 2，不退回默认端口去登记" "$rc $(tail -1 <<<"$out") $(writes)" "2 RESULT=state_unknown 0"
+ra Linux -- pair
+chk "…pair：退出 2，不给配对码" "$rc $(tail -1 <<<"$out") $(grep -c '配对码：' <<<"$out")" "2 RESULT=state_unknown 0"
+ra Linux -- status
+chk "…status：unknown" "$(tail -1 <<<"$out")" "RESULT=unknown"
+ra Linux -- enable --port 47999
+chk "…enable --port（明说端口）：成功，记录重写" "$rc $(tail -1 <<<"$out") $(cat "$RA_STATE/port")" "0 RESULT=enabled 47999"
+echo garbage > "$RA_STATE/port"
+ra Linux -- disable
+chk "…关闭用不着这份记录：成功，本功能的转发撤掉" "$rc $(tail -1 <<<"$out") $(web_keys)" "0 RESULT=disabled box.tailnet.ts.net:3000"
+
+# 清单写不进去
+fresh_world; mkdir -p "$RA_STATE/ports.tmp"
+ra Linux -- enable
+chk "登记前清单写不进去：退出 2，没有登记转发、没有起服务" "$rc $(tail -1 <<<"$out") $(writes) $(cat "$FAKE_SD/$UNIT.active" 2>/dev/null)" "2 RESULT=state_unwritable 0 "
+rmdir "$RA_STATE/ports.tmp"
+ra Linux -- enable
+chk "修好后打开成功" "$rc $(tail -1 <<<"$out")" "0 RESULT=enabled"
+mkdir "$RA_STATE/ports.tmp"
+ra Linux -- disable
+chk "关闭时转发撤掉了、但清单写不回去：退出 3，不报已关闭" "$rc $(tail -1 <<<"$out") $(mapping) $(cat "$RA_STATE/ports")" "3 RESULT=partial {} 47387"
+chk_has "…说明还差什么" "$out" "端口清单没能写回"
+rmdir "$RA_STATE/ports.tmp"
+ra Linux -- disable
+chk "修好后再关闭：成功，清单清空" "$rc $(tail -1 <<<"$out") $(wc -l < "$RA_STATE/ports")" "0 RESULT=disabled 0"
+
+# 已配对设备清单读不懂：不报「0 台」「没有设备」
+fresh_world; ra Linux -- enable
+echo '{broken' > "$RA_STATE/devices.json"
+ra Linux -- status
+chk_has "设备清单读不懂时 status：写「读不到」" "$out" "已配对设备：读不到"
+chk_lacks "…不写 0 台" "$out" "0 台"
+ra Linux -- list
+chk "…list：退出 2，不说「还没有配对过的设备」" "$rc $(grep -c '还没有配对过' <<<"$out")" "2 0"
+ra Linux -- revoke someone
+chk "…revoke：退出 2（不是「没有这台设备」的 1），文件没被改写" "$rc $(cat "$RA_STATE/devices.json")" "2 {broken"
+
 echo "── 10. 文档里的命令按字面跑通 ──"
 doc_block() {
     awk -v b="<!-- $2:begin -->" -v e="<!-- $2:end -->" '$0==b{f=1;next} $0==e{f=0} f' "$REPO_DIR/docs/$1" \

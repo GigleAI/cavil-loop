@@ -444,6 +444,12 @@ def main():
     ap.add_argument("--skill", default="")
     a = ap.parse_args()
     state = State(a.state)
+    if a.command in ("list", "revoke"):
+        try:
+            state.devices()
+        except (ValueError, OSError) as e:   # 读不懂 ≠ 没有设备
+            sys.stderr.write("读不懂已配对设备清单：%s\n" % e)
+            sys.exit(2)
     if a.command == "serve":
         if not a.skill:
             ap.error("serve 需要 --skill")
