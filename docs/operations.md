@@ -657,7 +657,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 | Nobody added `pending/human` to the issue or the PR | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
 | The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
 | The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |
-| No change under `.github/` | `pending/human` |
+| No change under `.github/` — or, with `AUTOPILOT_HUMAN_PATHS` set (GitHub#337), no change to any listed file, see below | `pending/human` |
 | Every check run / commit status on that commit passed (none at all = rely on the record above) | failing → back to the worker; still running after `AUTOPILOT_CHECKS_TIMEOUT_HOURS` (6) → `pending/human` |
 | GitHub says mergeable (no conflict) | back to the worker |
 | Right before merging, the **same permit function runs again from fresh reads** — every row above, including the reviewer's test record (a comment can be edited or deleted) and the checks (red, re-running, or newly appeared); both runs must say "merge" for the same issue / commit / target | skip this round, record nothing |
@@ -715,6 +715,52 @@ issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handof
 cache key (the values of `denied` and `takeover` carry a judging-rules revision, so after an upgrade that relaxes a rule the
 old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished; `mirror`: PRs judged "nothing to copy / remove" with the same kind of cache key, GitHub#190). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
+
+### Files a human must look at before an autopilot merge (`AUTOPILOT_HUMAN_PATHS`, GitHub#337)
+
+Some files do not run code by being changed, but make code run later as the maintainer: CI workflows,
+git hooks, agent configuration, install / build / environment files. With `AUTOPILOT_HUMAN_PATHS` set,
+an autopilot PR that touches a listed file is not merged: it goes to `pending/human` with a note
+naming the files. **Empty or not set = exactly the previous behaviour** (only `.github/` is refused,
+through the unchanged code path: same GitHub calls, same state, same comments). Nothing else changes
+for a project that does not set it, and no notice is opened about it.
+
+To turn it on, add one line to the project's config; it takes effect on the next poll:
+
+<!-- autopilot-human-paths:examples:begin -->
+```bash
+AUTOPILOT_HUMAN_PATHS="default"
+AUTOPILOT_HUMAN_PATHS="default /systemd/ /launchd/ /setup.sh"
+AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh"
+```
+<!-- autopilot-human-paths:examples:end -->
+
+- `default` expands to the built-in list: `/.github/` `.husky/` `.githooks/` `/.pre-commit-config.yaml`
+  `/lefthook.yml` `.claude/` `.codex/` `.agents/` `.mcp.json` `.devcontainer/` `.vscode/` `package.json`
+  `Makefile` `.envrc`. It can be mixed with more entries (second and third line above); a value without
+  `default` uses only the entries written. `/.github/` is always on the list.
+- **How an entry is read** (space- or comma-separated, the common part of `.gitignore`): a leading `/`
+  means the repo root only (`/setup.sh` does not match `tools/setup.sh`); no leading `/` means any depth
+  (`package.json` matches `client/package.json`); a trailing `/` means a directory and everything under
+  it; `*` matches within one path segment. A renamed file is matched on both its old and new path.
+- **An entry the daemon cannot read is never skipped**: no leading `/` but a `/` in the middle
+  (`a/b.txt`), a `.` / `..` segment, an empty segment, `**`. Every autopilot merge of the project then
+  goes to a human with a note naming the entry, until the config is fixed.
+- **The file list must be read whole**: the number of files GitHub reports on the PR (`changed_files`)
+  has to equal the number of entries read. Missing pages (the endpoint returns at most 3000 files per
+  PR), a missing count, a malformed answer or a failed request all count as "can't read": no merge and
+  nothing written this round, a human after `AUTOPILOT_UNKNOWN_MAX` rounds. "Can't read" is never "no hit".
+- **Judged twice before the hand-off**: after a hit (or an unreadable entry) the whole merge permit runs
+  again from fresh reads; the verdict, the files hit and the PR's head / target branch / branch / bound
+  issue must be the same, otherwise nothing is written this round. The hand-off itself is the same
+  "comment, then labels" every other autopilot hand-off uses. ⚠️ A maintainer action that lands between
+  those writes is not seen: the PR may get `pending/human` and lose `pending/merge` once more. It never
+  causes a merge.
+- **Only paths are looked at, not content**: any change to a listed file counts (a dependency bump in
+  `package.json` too). Lock files and `AGENTS.md` / `CLAUDE.md` are not on the built-in list; add them
+  if the project wants them.
+- **Turning it off**: delete the line (or set it to `""`). From the next poll on the previous rule
+  applies again; PRs already handed to a human stay with the human.
 
 ### Poll the repo from one machine only
 
