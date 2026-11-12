@@ -452,9 +452,9 @@ dispatch_failed() {
 # 托管关闭时两个都是空串，autopilot_for_item 第一行就返回，不碰 GitHub。
 # 派复审到 PR 时顺带记下复审的提交：daemon 只合这一个提交。
 # 没绑 issue 的 PR（GitHub#142）：AP_ISSUE 为空，AP_PR = PR 编号
-AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
+AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""; AP_OT=""; AP_ON=""
 autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
-    AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
+    AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""; AP_OT=""; AP_ON=""
     local rc=0
     autopilot_for_item "$STATE_FILE" "$1" "$2" || rc=$?
     # 2 = 托管的拆分子项判不了（GitHub#233）：本轮不派，触发标签留着下轮再判
@@ -464,6 +464,12 @@ autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
         log "托管：$1 #$2 是托管条目（授权在 $AP_WHERE，$AUTOPILOT_ACTOR 打的），拼入托管规则"
         if [ "$1" = pr ] && [ "$3" = review ]; then
             autopilot_remember_review "$STATE_FILE" "$2" || true
+        fi
+        # 外部账号的内容（GitHub#391）：派工前查一次、记下、补筛；记录写不进就本轮不派（记录是删评论之后还能拦合并的
+        # 唯一依据）。关着时一次调用都没有
+        if outsider_guard_on; then
+            outsider_before_dispatch "$2" || return 1
+            AP_OT="$2"; AP_ON="$OS_DISPATCH_NOTE"
         fi
     fi
     return 0
@@ -498,7 +504,7 @@ dispatch_one_issue() {
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
         d_rc=0; printf -v ul_t0 '%(%s)T' -1
-        d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
         runlog_dispatch "$d_rc"
@@ -524,7 +530,7 @@ dispatch_one_issue() {
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
     d_rc=0; printf -v ul_t0 '%(%s)T' -1
-    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"
@@ -585,7 +591,7 @@ dispatch_one_pr() {
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
     d_rc=0; printf -v ul_t0 '%(%s)T' -1
-    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"

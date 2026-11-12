@@ -116,6 +116,10 @@ if [ "$KEEP_WORKTREE" -eq 0 ] && [ -d "$WORKTREE" ]; then
     # 必然失败的 resume。--keep-worktree 时不清，因为会话还能续。
     agent_session_forget_all "$ISSUE"
 fi
+# 外部账号内容的记录（GitHub#391）：只为这一条目的合并前交人服务，条目收尾就用不上了（--keep-worktree 时留着）
+if [ "$KEEP_WORKTREE" -eq 0 ]; then
+    case "$ISSUE" in ''|*[!0-9]*) ;; *) rm -rf "$(outsider_record_dir "$ISSUE")" ;; esac
+fi
 
 # ── 5. 本地分支 ──
 if [ "$DELETE_BRANCH" -eq 1 ] || [ "${REMOVE_BRANCH:-0}" = "1" ]; then

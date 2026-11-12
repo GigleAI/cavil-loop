@@ -123,6 +123,9 @@ if session_alive "$TMUX_SESSION"; then
         # （可能停掉正在干活的 worker）。本轮不动，非 0 退出，标签不翻，下一轮再判。
         log "PR #$PR -> 读不到 $TMUX_SESSION 记录的 worker / 模型 / 角色（tmux 查询失败），本轮不注入也不换程序"
         exit 1
+    elif [ "$_match" = 0 ] && ! outsider_session_reusable "$ISSUE_N"; then
+        # 外部内容保护（GitHub#391）：活着的会话不是在保护开着时起的，不往里注入；Case B 原地换成全新会话
+        log "PR #$PR -> 现有会话不是在外部内容保护开着时起的，不注入，原地换成全新会话"
     elif [ "$_match" = 0 ]; then
         REUSE_SESSION=1
     else

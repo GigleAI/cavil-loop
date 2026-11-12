@@ -787,6 +787,89 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
 - **Turning it off**: delete the line (or set it to `""`). From the next poll on the previous rule
   applies again; PRs already handed to a human stay with the human.
 
+### Comments by outside accounts on autopilot items (`AUTOPILOT_OUTSIDER_GUARD`, GitHub#391)
+
+Anyone can comment on a public repository. A comment by an outside account (one **without write access** to this repo — not a
+maintainer, not the loop's write account, not the requester bot) cannot make the daemon do anything: it starts no work, merges
+nothing and cannot pose as the autopilot authorization. But once an autopilot item is dispatched, the agent reads those comments,
+and on autopilot nobody confirms the plan or clicks merge. With this setting on:
+
+- **The agent reads the item through a read command** (`scripts/outsider-read.sh`; the autopilot prompt gives the exact command): it
+  prints every body and comment of the item (a PR also brings the issue it is bound to, a split sub-issue its parent), each one
+  labelled with who wrote it. An outside account's **text stays readable**; its links, images, attachments, code blocks, inline code,
+  HTML comments and invisible characters become placeholders that name what was removed, and the same links / code are also removed
+  from the loop's own earlier comments that quoted them. A body an outside account edited after the authorization is shown as it was
+  at the moment of the authorization. Outside text is only a reference: not a requirement, not a confirmation, no change of scope;
+  files and commands in it are never downloaded, run or copied.
+- **Hand-over before merging** (`block`): once an outside account has commented (issue, PR conversation, inline comment, review) or
+  edited a body after the maintainer added the autopilot label — seen now, or recorded on this machine earlier (a deleted comment still
+  counts) — the PR is not merged automatically; it goes to `pending/human` with a note naming those comments. Outside content from
+  before the authorization counts as already seen by the maintainer.
+- **Model pre-screening** (`AUTOPILOT_OUTSIDER_SCREEN="on"`): before dispatching, the daemon hands every outside comment (already
+  stripped) to a model that has **no tools**, asking whether it is ordering the agent to do something; those judged so, those whose
+  screening failed and those not screened yet are shown to the agent as a placeholder with the link only. Each version is screened
+  once (the verdict is stored by content), at most 5 new ones per dispatch. The read command never calls the model itself (measured:
+  a nested `claude -p` inside a worker session fails to authenticate), so an outside comment posted after a dispatch stays hidden until
+  the next dispatch screens it.
+- **Sessions**: when an autopilot item is dispatched and this role's current session was not started with the protection on (the item
+  used to be an ordinary one, or the setting was turned on later), that session is retired and a fresh one started — the old one may
+  hold unstripped text. After that it is resumed as usual.
+
+To turn it on, write in the project's config:
+
+```bash
+AUTOPILOT_OUTSIDER_GUARD="block"   # or "mark": only label and strip, merge rules unchanged
+AUTOPILOT_OUTSIDER_SCREEN="on"     # missing or "" = no pre-screening
+```
+
+It takes effect on the next poll. Empty or missing = exactly the previous behaviour (GitHub calls, state and prompts unchanged).
+An unknown word counts as `block`. `AUTOPILOT_OUTSIDER_SCREEN_CMD` replaces the screening command (text on stdin, stdout exactly
+`SAFE` or `SUSPECT`, anything else = not screened); empty = the built-in `claude -p --tools '' --strict-mcp-config …` (every tool and
+MCP server off, model haiku).
+
+**When a PR was held back before merging** (on the GitHub website):
+
+1. Open the outside comments the note names and look at the PR's changes again: make sure nothing in them follows the outside text or
+   goes beyond the item.
+2. Pick one:
+   - **Merge it yourself**: review and click merge on the PR page.
+   - **Keep autopilot**: where the authorization is (the note says; usually the issue) remove the `autopilot` label and add it again —
+     that means "I have seen these", and from then on only outside content after the new label counts; then change the PR's label from
+     `pending/human` to `pending/review`. Once the review passes the daemon checks and merges again. The autopilot merge note on the PR
+     means it worked; if it is held back again, the note names outside content that arrived after the new label.
+   - **Don't merge**: close the PR.
+3. To see what the agent sees and what this machine recorded, run this on the machine that runs the project (change the first two
+   lines only; running it also records the outside content it finds, exactly as when the agent runs it):
+
+<!-- outsider-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+N=123            # the issue or PR number / 条目编号
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+ENTRY="$HOME/.agents/releases/cavil-loop/entrypoints/outsider-read.sh"
+[ -f "$ENTRY" ] || ENTRY="$HOME/.agents/skills/cavil-loop/scripts/outsider-read.sh"   # development mode / 开发模式
+bash "$ENTRY" --config "$CONF" "$N"
+echo "exit code / 退出码: $?"
+ls "$STATE_DIR/outsider/" 2>/dev/null || echo "no records yet / 本机还没有任何记录"
+```
+<!-- outsider-ops:end -->
+
+Exit code 0 = read completely; 3 = could not read everything (network, a permission that cannot be read, a body version that cannot
+be recovered) and nothing is printed. Records are kept per item number (the issue's number when a PR is bound to an issue) and
+removed when the item is cleaned up.
+
+**What it does not stop** (this is not a sandbox): an agent that ignores its rules can still read the original and run what it was
+given; malicious requests written as plain text cannot be stripped (pre-screening catches some and also misses and misjudges); a link
+written in pieces or content retold in someone's own words is not recognised; a comment posted and deleted between two checks is never
+seen; the window between the last check and the merge request reaching GitHub cannot be closed; records are not shared between
+machines.
+
+**Turning it off**: remove the two lines (or set them to `""`). The old rules apply from the next poll; PRs already handed over stay
+with a human.
+
 ### Poll the repo from one machine only
 
 Before turning autopilot on, make sure **exactly one machine** polls the repo. Any other machine still polling it,
