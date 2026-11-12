@@ -4,6 +4,7 @@
 // an item that no complete source read carries is checked by itself, and how the list changes.
 
 import type { IssueStateReason, Item, ItemKind, ItemState, SourceStatus } from './types';
+import type { OpRecord } from './ops';
 
 /** What a tab shows of its item without opening it. */
 export interface TabSummary {
@@ -214,6 +215,32 @@ export function afterClose(keys: string[], closing: string, active: string): str
   const i = keys.indexOf(closing);
   if (i < 0) return active;
   return keys[i + 1] ?? keys[i - 1] ?? HOME;
+}
+
+// ---- GitHub#447: a close made in a detail puts that detail away ----------------------------
+
+/**
+ * What a close (issue or PR) started in a detail means for the place it was started in — a tab, or
+ * one opening of the floating panel — now:
+ * - `close`: GitHub took the close (its answer, or the app's own check proved it later): put it away;
+ * - `hold`: it went through, but the place holds text not sent yet: it stays (and says why) — typed
+ *   text is never dropped without asking;
+ * - `wait`: no answer yet, or the answer was lost and may still be proven: ask again on the next change;
+ * - `drop`: nothing to do, ever — not a close, refused / not sent, unlocked by hand, the record is
+ *   gone, or the place is not there any more (the tab was closed, the panel shows another opening).
+ */
+export type AutoCloseVerdict = 'close' | 'hold' | 'wait' | 'drop';
+
+/** The one rule, for tabs and the floating panel alike. `place`: is the place still there, does it hold unsent text. */
+export function autoCloseVerdict(r: Pick<OpRecord, 'kind' | 'steps' | 'running' | 'unlocked'> | null | undefined, place: { present: boolean; dirty: boolean }): AutoCloseVerdict {
+  if (!r || (r.kind !== 'closeIssue' && r.kind !== 'closePr') || !place.present) return 'drop';
+  const s = r.steps[0];
+  if (!s || s.name !== 'close') return 'drop';
+  if (s.state === 'ok') return place.dirty ? 'hold' : 'close';
+  if (r.unlocked) return 'drop';
+  // created, its request not marked sent yet: on its way (as the notice says it)
+  if (s.state === 'pending' || s.state === 'unknown' || (s.state === 'unsent' && r.running)) return 'wait';
+  return 'drop';
 }
 
 /** The next (`by` = 1) or previous (-1) tab, home included, going round. */

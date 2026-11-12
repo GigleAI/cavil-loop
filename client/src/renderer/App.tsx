@@ -9,9 +9,11 @@ import { DetailPanel, draftDirty, type ResultNote, type TabDraft } from './Detai
 import { TabBar } from './TabBar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
-import { HOME, afterClose, stepTab, tabAt } from '../shared/tabs';
+import { HOME, afterClose, autoCloseVerdict, stepTab, tabAt } from '../shared/tabs';
+import { OpNotice } from './OpNotice';
 import { OpenMenu, type OpenHow, type OpenMenuAt } from './OpenMenu';
 import type { WriteAction } from '../shared/actions';
+import type { OpRecord } from '../shared/ops';
 import { SettingsView } from './SettingsView';
 import { AppKindHelp } from './AppKindHelp';
 import { useQuery } from './query';
@@ -23,11 +25,19 @@ import type { SettingsIntent } from './EmptyGuide';
 /** GitHub#442: the "tab" the close question / ⌘W is about when it is the floating panel (never an item key) */
 const FLOAT = '\u0000float';
 
+/**
+ * GitHub#447: where a close (issue or PR) was started — a tab, or one opening of the floating panel
+ * (`n`: that opening; the panel showing another item, or opened again, is another place)
+ */
+type CloseOrigin = { where: 'tab'; key: string } | { where: 'float'; key: string; n: number };
+
 /** a shortcut that needs the board (GitHub#192): taken once by the board, then dropped */
 export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number };
 
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
+  const snapRef = useRef(snap);
+  snapRef.current = snap;
   const [page, setPage] = useState<'board' | 'settings'>('board');
   const pageRef = useRef(page);
   pageRef.current = page;
@@ -94,6 +104,9 @@ export function App() {
     setFloat(null);
     floatDraft.current = null;
     setMenu(null);
+    closeOrigins.current = new Map();
+    setPutAway([]);
+    setHeld([]);
   }, [gen]);
   // ---- GitHub#442: the floating detail, the default way to open an item ----
   // It belongs to the home tab: it shows over the board on the right, and is drawn only while the home
@@ -107,7 +120,15 @@ export function App() {
   const closeFloatNow = () => {
     floatDraft.current = null;
     setFloat(null);
+    setHeld((h) => (h.some((x) => x.where === 'float') ? h.filter((x) => x.where !== 'float') : h));
   };
+  // ---- GitHub#447: a close made in a tab / the floating panel puts it away once GitHub took it ----
+  /** the closes started from a detail of this account and not decided yet: operation id → where */
+  const closeOrigins = useRef(new Map<string, CloseOrigin>());
+  /** closes whose detail was put away: their notices show in the strip above every page, not above the board */
+  const [putAway, setPutAway] = useState<string[]>([]);
+  /** closes that went through while their place held unsent text: the place stayed and says why */
+  const [held, setHeld] = useState<({ id: string } & CloseOrigin)[]>([]);
   const [menu, setMenu] = useState<OpenMenuAt | null>(null);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
   const show = (key: string, intent: OpenIntent | null = null) => {
@@ -165,8 +186,50 @@ export function App() {
     setAskClose(null);
     if (key === FLOAT) return closeFloatNow();
     drafts.current.delete(key);
+    setHeld((h) => (h.some((x) => x.where === 'tab' && x.key === key) ? h.filter((x) => !(x.where === 'tab' && x.key === key)) : h));
     setActive(afterClose(keysRef.current, key, frontRef.current));
     void api().closeTab(key);
+  };
+  /**
+   * GitHub#447: decide every close started from a detail, against the operations as they are now and
+   * the place as it is now (`autoCloseVerdict`, the one rule for tabs and the panel). Run on every
+   * change of the operations and right after a close was started (its answer may already be in).
+   */
+  const settleCloses = () => {
+    const ops = snapRef.current?.state.ops ?? [];
+    for (const [id, o] of [...closeOrigins.current]) {
+      const f = floatRef.current;
+      const place =
+        o.where === 'tab'
+          ? { present: keysRef.current.includes(o.key), dirty: draftDirty(drafts.current.get(o.key)) }
+          : { present: f !== null && f.key === o.key && f.n === o.n, dirty: floatDraft.current?.key === o.key && draftDirty(floatDraft.current.draft) };
+      const v = autoCloseVerdict(ops.find((r) => r.id === id), place);
+      if (v === 'wait') continue;
+      closeOrigins.current.delete(id);
+      if (v === 'close') {
+        setPutAway((l) => (l.includes(id) ? l : [...l, id]));
+        if (o.where === 'tab') closeNow(o.key);
+        else closeFloatNow();
+      } else if (v === 'hold') setHeld((h) => [...h.filter((x) => x.id !== id), { id, ...o }]);
+    }
+  };
+  const settleRef = useRef(settleCloses);
+  settleRef.current = settleCloses;
+  const ops = snap?.state.ops;
+  useEffect(() => {
+    settleRef.current();
+    // a put-away close whose record is gone or was put away itself leaves the strip for good
+    const live = ops ?? [];
+    setPutAway((l) => {
+      const next = l.filter((id) => live.some((r) => r.id === id && !r.dismissed));
+      return next.length === l.length ? l : next;
+    });
+  }, [ops]);
+  /** a detail of this account (`g`) started a close from `o` */
+  const closeStarted = (g: number, o: CloseOrigin) => (id: string) => {
+    if (accountGen.current !== g) return;
+    closeOrigins.current.set(id, o);
+    settleRef.current();
   };
   /** The tab's ×, the middle button, ⌘W: text that was not sent is never dropped without asking. */
   const closeTab = (key: string) => {
@@ -326,6 +389,7 @@ export function App() {
           onMove={(key, to) => void api().moveTab(key, to)}
         />
       )}
+      {ready && <PutAwayStrip ops={snap!.state.ops} ids={putAway} showing={[front === HOME ? null : front, front === HOME && float && page === 'board' ? float.key : null]} open={openItem} />}
       {!snap || snap.state.phase === 'loading' ? (
         <div className="center muted">正在启动…</div>
       ) : help ? (
@@ -349,6 +413,7 @@ export function App() {
                 onOpen={openFromClick}
                 detailKey={front === HOME ? null : front}
                 floatKey={front === HOME && float ? float.key : null}
+                shownAbove={putAway}
                 floatPanel={
                   front === HOME && float ? (
                     <DetailPanel
@@ -359,6 +424,8 @@ export function App() {
                       onHome={closeFloatNow}
                       onLeftBehind={(note, about) => setLeftNote((cur) => ({ note, about, seq: (cur?.seq ?? 0) + 1 }))}
                       intent={float.intent}
+                      onCloseStarted={closeStarted(gen, { where: 'float', key: float.key, n: float.n })}
+                      autoCloseHeld={heldFor(held, { where: 'float', key: float.key, n: float.n }, setHeld)}
                       key={`${gen}:float:${float.key}:${float.n}`}
                       draft={floatDraft.current?.key === float.key ? floatDraft.current.draft : null}
                       onDraft={(d) => {
@@ -388,6 +455,8 @@ export function App() {
                 onHome={() => show(HOME)}
                 onLeftBehind={(note, about) => setLeftNote((cur) => ({ note, about, seq: (cur?.seq ?? 0) + 1 }))}
                 intent={opening.intent}
+                onCloseStarted={closeStarted(gen, { where: 'tab', key: front })}
+                autoCloseHeld={heldFor(held, { where: 'tab', key: front }, setHeld)}
                 key={`${gen}:${front}:${opening.n}`}
                 draft={drafts.current.get(front) ?? null}
                 onDraft={(d) => {
@@ -420,6 +489,43 @@ export function App() {
         </ConfirmDialog>
       )}
       {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}
+    </div>
+  );
+}
+
+/** GitHub#447: the "kept because of unsent text" line of a place, if it has one; its × removes it */
+function heldFor(
+  held: ({ id: string } & CloseOrigin)[],
+  o: CloseOrigin,
+  setHeld: (f: (h: ({ id: string } & CloseOrigin)[]) => ({ id: string } & CloseOrigin)[]) => void,
+): { onDismiss: () => void } | null {
+  const same = (x: CloseOrigin) => x.where === o.where && x.key === o.key && (x.where === 'tab' || (o.where === 'float' && x.n === o.n));
+  if (!held.some(same)) return null;
+  return { onDismiss: () => setHeld((h) => h.filter((x) => !same(x))) };
+}
+
+/**
+ * GitHub#447: the notices of closes that put their tab / floating panel away. They show here, above
+ * every page (under the tab bar; at the top of the window when no tab is open), so the result is seen
+ * wherever the window went — the next tab's detail, the board, or the tab the person was on when the
+ * answer came. The same notice as above the board (its text, buttons and 5 s rule); the board leaves
+ * these out, and an item open in front (its detail or the floating panel) shows its own.
+ */
+function PutAwayStrip({ ops, ids, showing, open }: { ops: OpRecord[]; ids: string[]; showing: (string | null)[]; open: (key: string, how: OpenHow, intent?: OpenIntent | null) => void }) {
+  const list = ops.filter((r) => ids.includes(r.id) && !r.dismissed && !showing.includes(r.key));
+  if (!list.length) return null;
+  return (
+    <div className="op-strip" data-testid="op-strip">
+      {list.map((r) => (
+        <OpNotice
+          key={r.id}
+          r={r}
+          prefix={`${r.repo}#${r.number}：`}
+          onOpen={(key) => open(key, 'float')}
+          onRetry={(x) => open(x.key, 'float', { opId: x.id, what: 'retry' })}
+          onToReply={(x) => open(x.key, 'float', { opId: x.id, what: 'toReply' })}
+        />
+      ))}
     </div>
   );
 }

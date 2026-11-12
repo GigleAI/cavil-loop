@@ -814,3 +814,223 @@ test('the tabs are kept on this machine: a restart brings them back behind the h
   await expect(page.getByTestId('tabs')).toHaveCount(0);
   await app.close();
 });
+
+// ---- GitHub#447: closing an issue / PR in a tab or the floating panel puts it away --------------
+
+/** close the issue the detail in front shows (the detail read must have finished: the button depends on it) */
+async function closeIssueHere(page: Page, comment = '') {
+  const d = detail(page);
+  await expect(d.getByTestId('close-issue')).toBeEnabled({ timeout: 15_000 });
+  await d.getByTestId('close-issue').click();
+  if (comment) await page.getByTestId('close-comment').fill(comment);
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+}
+/** the close requests (PATCH) of one item that reached the fake, with what it answered */
+const closes = (kind: 'issues' | 'pulls', n: number) => env.fake.log.filter((l) => l.method === 'PATCH' && l.path.endsWith(`/repos/${REPO}/${kind}/${n}`)).map((l) => l.status);
+const holdClose = (kind: 'issues' | 'pulls', n: number) => env.fake.holdWhen((l) => l.method === 'PATCH' && l.path.endsWith(`/repos/${REPO}/${kind}/${n}`));
+const strip = (page: Page) => page.getByTestId('op-strip');
+/** an item's operation notice in the strip above every page / above the board */
+const inStrip = (page: Page, n: number) => page.locator(`[data-testid="op-strip"] [data-testid="op-notice"][data-key="${K(n)}"]`);
+const aboveBoard = (page: Page, n: number) => page.locator(`[data-testid="board-bars"] [data-testid="op-notice"][data-key="${K(n)}"]`);
+const held = (page: Page) => detail(page).getByTestId('auto-close-held');
+
+test('GitHub#447: a close in a tab puts the tab away once GitHub took it — the next tab or home comes forward, a tab behind goes without moving the front one; the result shows above every page; refused or with unsent text, the tab stays', async () => {
+  const PR = 146;
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c = findCopies(store, REPO, PR)!;
+  for (const g of c.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of c.rest) Object.assign(r, { state: 'open', pull_request: { ...(r.pull_request ?? {}), merged_at: null } });
+  const D = 137;
+  change(D, { state: 'open', labels: [] });
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+
+  // ---- 1. the tab in front, another one next to it: that one comes forward; the result shows over its detail ----
+  await row(page, A).click({ modifiers: ['Control'] });
+  await home(page).click();
+  await row(page, B).click({ modifiers: ['Control'] });
+  await tab(page, A).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await closeIssueHere(page);
+  await expect(tab(page, A)).toHaveCount(0);
+  await expect(detail(page)).toHaveAttribute('data-key', K(B));
+  await expect(detail(page)).toHaveAttribute('data-mode', 'tab');
+  await expect(tab(page, B)).toHaveAttribute('data-front', 'yes');
+  await expect(inStrip(page, A)).toBeVisible();
+  await expect(inStrip(page, A).getByTestId('op-notice-text')).toHaveText(`issue #${A} 已关闭（已完成）`);
+  // said once: not also above the (hidden) board
+  await expect(aboveBoard(page, A)).toHaveCount(0);
+  expect(closes('issues', A)).toEqual([200]);
+  await shot(page, '447-01-tab-closed-next-in-front');
+  // fully done: it goes by itself (5 s, the GitHub#256 rule)
+  await expect(strip(page)).toHaveCount(0, { timeout: 15_000 });
+
+  // ---- 2. a tab behind, its answer late: it goes when the answer comes; the tab in front stays in front ----
+  await home(page).click();
+  await row(page, C).click({ modifiers: ['Control'] });
+  const release = holdClose('issues', C);
+  await closeIssueHere(page);
+  await tab(page, B).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(B));
+  await expect(tab(page, C)).toHaveCount(1);
+  release();
+  await expect(tab(page, C)).toHaveCount(0, { timeout: 15_000 });
+  await expect(detail(page)).toHaveAttribute('data-key', K(B));
+  await expect(tab(page, B)).toHaveAttribute('data-front', 'yes');
+  await expect(inStrip(page, C)).toBeVisible();
+  expect(closes('issues', C)).toEqual([200]);
+
+  // ---- 3. GitHub refuses the close: the tab stays, nothing in the strip ----
+  store.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await closeIssueHere(page);
+  await expect.poll(() => closes('issues', B), { timeout: 15_000 }).toEqual([403]);
+  await page.waitForTimeout(500);
+  await expect(tab(page, B)).toHaveCount(1);
+  await expect(detail(page)).toHaveAttribute('data-key', K(B));
+  await expect(inStrip(page, B)).toHaveCount(0);
+  store.w.readOnlyRepos.delete('gigleai/cavil-loop');
+
+  // ---- 4. text not sent yet in the tab: closed on GitHub, the tab stays and says why (× puts the line away) ----
+  await detail(page).getByTestId('reply-input').fill('half a reply');
+  await closeIssueHere(page);
+  await expect(held(page)).toBeVisible({ timeout: 15_000 });
+  await expect(held(page)).toHaveAttribute('data-mode', 'tab');
+  expect(closes('issues', B)).toEqual([403, 200]);
+  await expect(tab(page, B)).toHaveCount(1);
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('half a reply');
+  await expect(inStrip(page, B)).toHaveCount(0);
+  await shot(page, '447-02-tab-kept-unsent-text');
+  await held(page).getByTestId('auto-close-held-dismiss').click();
+  await expect(held(page)).toHaveCount(0);
+  await expect(tab(page, B)).toHaveCount(1);
+  // put away by hand (it asks: the text is still there)
+  await tab(page, B).getByTestId('tab-close').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(tab(page, B)).toHaveCount(0);
+
+  // ---- 5. the last tab, a PR: the tab bar goes, home comes forward, the result at the top of the window ----
+  await page.mouse.move(600, 600);
+  await expect(strip(page)).toHaveCount(0, { timeout: 15_000 });
+  await row(page, PR).click({ modifiers: ['Control'] });
+  await expect(page.getByTestId('tabs')).toHaveCount(1);
+  const d = detail(page);
+  await expect(d.getByTestId('close-pr')).toBeEnabled({ timeout: 15_000 });
+  await d.getByTestId('close-pr').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(tab(page, PR)).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByTestId('tabs')).toHaveCount(0);
+  await expect(page.getByTestId('tab-page-home')).toHaveAttribute('data-front', 'yes');
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(inStrip(page, PR)).toBeVisible();
+  await expect(aboveBoard(page, PR)).toHaveCount(0);
+  expect(closes('pulls', PR)).toEqual([200]);
+  await shot(page, '447-03-last-tab-closed-home');
+
+  // ---- 6. closed elsewhere (on GitHub, by the daemon): the tab is not put away, only its icon follows ----
+  await row(page, D).click({ modifiers: ['Control'] });
+  change(D, { state: 'closed' });
+  beat(app);
+  await expect(tab(page, D)).toHaveAttribute('data-status', 'done', { timeout: 15_000 });
+  await expect(tab(page, D)).toHaveCount(1);
+  await app.close();
+});
+
+test('GitHub#447: a close in the floating panel puts the panel away — only the opening it was started from; the result shows above every page; with a failed comment it stays until put away', async () => {
+  const [D, E, F, G] = [135, 136, 137, 138];
+  for (const n of [D, E, F, G]) change(n, { state: 'open', labels: [] });
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+
+  // ---- 1. the panel shows the item it was closed in: it goes, the board is whole, the result at the top ----
+  await row(page, A).click();
+  await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+  await closeIssueHere(page);
+  await expect(detail(page)).toHaveCount(0);
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(inStrip(page, A)).toBeVisible();
+  await expect(aboveBoard(page, A)).toHaveCount(0);
+  expect(closes('issues', A)).toEqual([200]);
+  await shot(page, '447-04-float-closed');
+
+  // ---- 2. the panel moved to another item while waiting: the other item stays; the result is the board's, as before ----
+  await row(page, B).click();
+  let release = holdClose('issues', B);
+  await closeIssueHere(page);
+  await row(page, C).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(C));
+  release();
+  await expect.poll(() => closes('issues', B), { timeout: 15_000 }).toEqual([200]);
+  await expect(aboveBoard(page, B)).toBeVisible({ timeout: 15_000 });
+  await expect(detail(page)).toHaveAttribute('data-key', K(C));
+  await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+  await expect(inStrip(page, B)).toHaveCount(0);
+
+  // ---- 3. the item moved into a tab while waiting: its tab stays ----
+  release = holdClose('issues', C);
+  await closeIssueHere(page);
+  await row(page, C).click({ modifiers: ['Control'] });
+  await expect(tab(page, C)).toHaveAttribute('data-front', 'yes');
+  release();
+  await expect.poll(() => closes('issues', C), { timeout: 15_000 }).toEqual([200]);
+  await page.waitForTimeout(500);
+  await expect(tab(page, C)).toHaveCount(1);
+  await expect(detail(page)).toHaveAttribute('data-key', K(C));
+  await tab(page, C).getByTestId('tab-close').click();
+  await expect(tab(page, C)).toHaveCount(0);
+
+  // ---- 4. a tab came forward while waiting (the panel hidden behind it): the panel still goes; the result shows over the tab ----
+  await row(page, D).click();
+  release = holdClose('issues', D);
+  await closeIssueHere(page);
+  await row(page, E).click({ modifiers: ['Control'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(E));
+  release();
+  await expect(inStrip(page, D)).toBeVisible({ timeout: 15_000 });
+  await expect(detail(page)).toHaveAttribute('data-key', K(E));
+  await expect(detail(page)).toHaveAttribute('data-mode', 'tab');
+  await home(page).click();
+  await expect(detail(page)).toHaveCount(0);
+  await tab(page, E).getByTestId('tab-close').click();
+
+  // ---- 5. the attached comment is refused: the panel goes all the same, the notice stays with what to do ----
+  // (the last tab gone, the strip moved up under the pointer: a notice the pointer is on waits — GitHub#256)
+  await page.mouse.move(600, 600);
+  await expect(strip(page)).toHaveCount(0, { timeout: 15_000 });
+  store().w.failComment = true;
+  await row(page, F).click();
+  await closeIssueHere(page, '做完了');
+  await expect(detail(page)).toHaveCount(0, { timeout: 15_000 });
+  await expect(inStrip(page, F)).toBeVisible();
+  await expect(inStrip(page, F).getByTestId('op-to-reply')).toBeVisible({ timeout: 15_000 });
+  await expect(inStrip(page, F)).not.toHaveAttribute('data-kind', 'ok');
+  await shot(page, '447-05-float-closed-comment-failed');
+  await page.waitForTimeout(6_500);
+  await expect(inStrip(page, F)).toBeVisible();
+  store().w.failComment = false;
+  // its 放进回复框 opens the item again: the notice is the detail's now, not twice
+  await inStrip(page, F).getByTestId('op-to-reply').click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(F));
+  await expect(inStrip(page, F)).toHaveCount(0);
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('做完了');
+  await detail(page).getByTestId('reply-input').fill('');
+  await detail(page).getByTestId('detail-close').click();
+
+  // ---- 6. text not sent yet in the panel: closed on GitHub, the panel stays and says why ----
+  await row(page, G).click();
+  await detail(page).getByTestId('reply-input').fill('half a reply');
+  await closeIssueHere(page);
+  await expect(held(page)).toBeVisible({ timeout: 15_000 });
+  await expect(held(page)).toHaveAttribute('data-mode', 'float');
+  expect(closes('issues', G)).toEqual([200]);
+  await expect(detail(page)).toHaveAttribute('data-key', K(G));
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('half a reply');
+  await shot(page, '447-06-float-kept-unsent-text');
+  await app.close();
+});
+
+function store() {
+  return { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+}

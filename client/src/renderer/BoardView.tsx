@@ -571,6 +571,7 @@ export function BoardView({
   detailKey,
   floatKey = null,
   floatPanel = null,
+  shownAbove = [],
   leftNote = null,
   request = null,
   onRequestTaken,
@@ -598,6 +599,8 @@ export function BoardView({
   /** GitHub#442: the item the floating detail shows over the board (its notices are the panel's), and the panel itself */
   floatKey?: string | null;
   floatPanel?: ReactNode;
+  /** GitHub#447: operations the window shows in its own strip above every page (a close that put its detail away) — not also here */
+  shownAbove?: readonly string[];
   /** a change made in a detail tab that has since been left: its result is said here (`seq` changes with every one) */
   leftNote?: { note: ResultNote; about?: WriteAction; seq: number } | null;
   /** a shortcut that needs the board (GitHub#192): done once, then handed back */
@@ -1005,7 +1008,7 @@ export function BoardView({
       <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} onClose={() => setNote(null)} />
       <EditsBar state={state} data={data} onOpen={openItem} />
       {state.ops
-        .filter((r) => !r.dismissed && r.key !== detailKey && r.key !== floatKey)
+        .filter((r) => !r.dismissed && r.key !== detailKey && r.key !== floatKey && !shownAbove.includes(r.id))
         .map((r) => (
           <OpNotice
             key={r.id}

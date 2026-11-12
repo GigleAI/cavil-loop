@@ -5,6 +5,7 @@ import {
   HOME,
   TAB_STATUS_TEXT,
   afterClose,
+  autoCloseVerdict,
   listedNow,
   moveTab,
   newestCopy,
@@ -18,6 +19,7 @@ import {
   tabAt,
 } from '../../src/shared/tabs';
 import type { SourceStatus } from '../../src/shared/types';
+import type { OpRecord, OpStep } from '../../src/shared/ops';
 import { item } from './helpers';
 
 const LABELS = { human: 'pending/human', doing: 'doing/agent', blocked: 'pending/blocked' };
@@ -204,5 +206,47 @@ describe('GitHub#442: ⌘1 … ⌘9 — which tab', () => {
   });
   it('anything but 1 … 9 is nobody', () => {
     for (const n of [0, 10, -1, 1.5, Number.NaN]) expect(tabAt(keys, n), String(n)).toBeNull();
+  });
+});
+
+// GitHub#447: a close started in a tab / the floating panel puts it away once GitHub took it
+describe('autoCloseVerdict', () => {
+  const step = (name: OpStep['name'], state: OpStep['state']): OpStep => ({ name, state, reason: null, sentAt: null, answeredAt: null });
+  const op = (kind: OpRecord['kind'], states: OpStep['state'][], extra: Partial<OpRecord> = {}) =>
+    ({ kind, steps: states.map((st, i) => step(i === 0 ? (kind === 'merge' ? 'merge' : kind === 'closeIssue' || kind === 'closePr' ? 'close' : 'addLabel') : 'comment', st)), running: false, unlocked: false, ...extra }) as Pick<OpRecord, 'kind' | 'steps' | 'running' | 'unlocked'>;
+  const here = { present: true, dirty: false };
+
+  it('GitHub took the close: put away — issue and PR alike, whatever the attached comment did', () => {
+    for (const kind of ['closeIssue', 'closePr'] as const) {
+      expect(autoCloseVerdict(op(kind, ['ok']), here), kind).toBe('close');
+      for (const c of ['pending', 'ok', 'refused', 'unknown', 'unsent'] as const) expect(autoCloseVerdict(op(kind, ['ok', c]), here), `${kind} + comment ${c}`).toBe('close');
+    }
+  });
+  it('unsent text in the place: it stays (hold), never put away', () => {
+    expect(autoCloseVerdict(op('closeIssue', ['ok']), { present: true, dirty: true })).toBe('hold');
+    expect(autoCloseVerdict(op('closePr', ['ok', 'refused']), { present: true, dirty: true })).toBe('hold');
+  });
+  it('no answer yet, or the answer was lost (it may still be proven): wait', () => {
+    expect(autoCloseVerdict(op('closeIssue', ['pending']), here)).toBe('wait');
+    expect(autoCloseVerdict(op('closeIssue', ['unknown']), here)).toBe('wait');
+    // created, its request not marked sent yet
+    expect(autoCloseVerdict(op('closePr', ['unsent'], { running: true }), here)).toBe('wait');
+    // waiting is decided before the place: unsent text does not matter yet
+    expect(autoCloseVerdict(op('closeIssue', ['pending']), { present: true, dirty: true })).toBe('wait');
+  });
+  it('refused, not sent, unlocked by hand: drop for good', () => {
+    expect(autoCloseVerdict(op('closeIssue', ['refused']), here)).toBe('drop');
+    expect(autoCloseVerdict(op('closeIssue', ['unsent']), here)).toBe('drop');
+    expect(autoCloseVerdict(op('closeIssue', ['unknown'], { unlocked: true }), here)).toBe('drop');
+  });
+  it('the place is gone (tab closed, panel shows another opening): drop, even when the close went through', () => {
+    for (const st of ['ok', 'pending', 'unknown'] as const) expect(autoCloseVerdict(op('closeIssue', [st]), { present: false, dirty: false }), st).toBe('drop');
+  });
+  it('the record is gone, or it is not a close (a merge, a hand-back): drop', () => {
+    expect(autoCloseVerdict(undefined, here)).toBe('drop');
+    expect(autoCloseVerdict(null, here)).toBe('drop');
+    expect(autoCloseVerdict(op('merge', ['ok']), here)).toBe('drop');
+    expect(autoCloseVerdict(op('handBack', ['ok', 'ok']), here)).toBe('drop');
+    expect(autoCloseVerdict(op('autopilot', ['ok']), here)).toBe('drop');
   });
 });
