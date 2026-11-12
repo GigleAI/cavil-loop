@@ -1970,6 +1970,92 @@ describe('GitHub#451: the reply box text goes out first, the labels only after i
     expect(opButtons(r)).toContain('finish');
   });
 
+  /** a hand-over with a comment whose label request `held` reached GitHub and is held there; `meanwhile` runs while it is held */
+  async function labelHeld(kind: 'autopilot' | 'handBack', held: { add?: string; remove?: string }, meanwhile: () => Promise<void> | void) {
+    waitingForHuman();
+    noAutopilot();
+    const c = await ready();
+    const isHeld = (e: LoggedRequest) =>
+      held.add !== undefined
+        ? e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/labels` && ((e.body as any)?.labels ?? []).includes(held.add)
+        : e.method === 'DELETE' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/labels/${encodeURIComponent(held.remove!)}`;
+    const release = fake.holdWhen(isHeld);
+    const s = c.startOp({ kind, key: K(ISSUE), comment: '标签途中' });
+    await until(() => fake.writes().some(isHeld), 'the held label request reached GitHub');
+    await meanwhile();
+    release();
+    await idle(c);
+    return { c, r: opOf(c, s.id!) };
+  }
+  const asMaintainer = (method: string, path: string, body?: unknown) =>
+    fetch(`${fake.api}${path}`, { method, headers: { authorization: `Bearer ${DAEMON_TOKEN}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+
+  it('code review round 2: autopilot withdrawn on the web while the autopilot label was on its way — no agent label, the human label stays', async () => {
+    const { r } = await labelHeld('autopilot', { add: 'autopilot' }, async () => {
+      expect((await asMaintainer('DELETE', `/repos/${REPO}/issues/${ISSUE}/labels/autopilot`)).status).toBe(200);
+    });
+    expect(comments()).toHaveLength(1);
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(labelsOnGitHub()).not.toContain('autopilot');
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    expect(labelRemoves('pending/human')).toHaveLength(0);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent', 'unsent']);
+    expect(opText(r)).toContain('这期间「autopilot」被摘掉了，没有接着往下做');
+    // the autopilot label taken away = start over ("重新托管…"), the comment is never part of it again
+    expect(opButtons(r)).toContain('retry');
+    expect(opReusableDraft(r)).toBeNull();
+  });
+
+  it('code review round 2: closed on the web while the agent label was on its way — the human label is not taken off', async () => {
+    const { r } = await labelHeld('handBack', { add: 'pending/agent' }, async () => {
+      expect((await asMaintainer('PATCH', `/repos/${REPO}/issues/${ISSUE}`, { state: 'closed' })).status).toBe(200);
+    });
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(0);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent']);
+    expect(opText(r)).toContain('这一条已经关闭，没有接着往下做');
+  });
+
+  it('code review round 2: the read before the last label fails — it is not sent; "finish" is offered', async () => {
+    const { r } = await labelHeld('autopilot', { add: 'pending/agent' }, () => {
+      fake.state.w.failEvents = true;
+    });
+    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(labelRemoves('pending/human')).toHaveLength(0);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'unsent']);
+    expect(opText(r)).toContain('改标签途中没能完整读到这一条现在的状态，没敢接着改');
+    expect(opButtons(r)).toContain('finish');
+  });
+
+  it('code review round 2: a label on its way and nothing changed meanwhile — every step goes out, the comment once', async () => {
+    const { r } = await labelHeld('autopilot', { add: 'autopilot' }, () => undefined);
+    expect(handOverWrites()).toEqual(['comment 标签途中', 'add autopilot', 'add pending/agent', 'remove pending/human']);
+    expect(r.steps.every((x) => x.state === 'ok')).toBe(true);
+    // one permit read before each of the three labels (the counterpart of the "no read without a comment" case)
+    const from = fake.log.indexOf(comments()[0]);
+    const to = fake.log.indexOf(labelRemoves('pending/human')[0]);
+    expect(fake.log.slice(from, to).filter((e) => e.operation === 'CavilOpSnapshot').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('code review round 2: without a comment nothing changes — labels go out back to back, no read in between (as before #451)', async () => {
+    waitingForHuman();
+    noAutopilot();
+    const c = await ready();
+    const release = fake.holdWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/labels` && ((e.body as any)?.labels ?? []).includes('autopilot'));
+    const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
+    await until(() => labelAdds('autopilot').length === 1, 'the autopilot label reached GitHub');
+    release();
+    await idle(c);
+    // the labels followed one another with no permit read of the item between them
+    const from = fake.log.indexOf(labelAdds('autopilot')[0]);
+    const to = fake.log.indexOf(labelRemoves('pending/human')[0]);
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(to).toBeGreaterThan(from);
+    expect(fake.log.slice(from, to).filter((e) => e.operation === 'CavilOpSnapshot')).toEqual([]);
+    expect(opOf(c, s.id!).steps.every((x) => x.state === 'ok')).toBe(true);
+  });
+
   it('an item already closed before the click: the hand-over with a comment goes through as it does without one (only a change stops it)', async () => {
     waitingForHuman();
     noAutopilot();

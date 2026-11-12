@@ -4075,7 +4075,9 @@ export class Controller {
       if (i > 0 && r.steps[i - 1].state !== 'ok') break;
       // GitHub#451: the first label after a hand-over's comment is judged on a fresh read like a send nobody
       // clicked — the item may have been closed, or its labels changed, while the comment was on its way
-      const follow = !opts.gated && !again && i > 0 && r.steps[i - 1].name === 'comment' && (r.kind === 'autopilot' || r.kind === 'handBack');
+      // (code review round 2: every label after it, not only the first — a maintainer may stop it while any of them is on its way)
+      const follow = !opts.gated && !again && i > 0 && r.steps.slice(0, i).some((x) => x.name === 'comment') && (r.kind === 'autopilot' || r.kind === 'handBack');
+      const rightAfter = follow && r.steps[i - 1].name === 'comment';
       if (opts.gated || follow) {
         const mode = again ? ('resend' as const) : follow ? ('follow' as const) : ('auto' as const);
         // judged twice: on the read the decision was made on (when there is one), and on one made right now
@@ -4101,7 +4103,20 @@ export class Controller {
           // itself" for the steps left; a step a person wanted sent again just stays "not sure" (its verdict says why)
           const halt =
             follow
-              ? { halt: { text: no.why === 'unread' ? '评论发出后没能完整读到这一条现在的状态，没敢接着改标签' : `评论发出期间${no.text.replace(/^这期间/, '')}`, redo: no.redo === true }, auto: false }
+              ? {
+                  halt: {
+                    text:
+                      no.why === 'unread'
+                        ? rightAfter
+                          ? '评论发出后没能完整读到这一条现在的状态，没敢接着改标签'
+                          : '改标签途中没能完整读到这一条现在的状态，没敢接着改'
+                        : rightAfter
+                          ? `评论发出期间${no.text.replace(/^这期间/, '')}`
+                          : no.text,
+                    redo: no.redo === true,
+                  },
+                  auto: false,
+                }
               : no.why === 'unread'
                 ? again
                   ? { checkProblem: no.text }

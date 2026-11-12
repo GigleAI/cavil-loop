@@ -822,8 +822,9 @@ export type OpPermit =
  *   - auto: within OP_AUTO_MS, in the run that started it (`r.auto`).
  */
 /**
- * `mode: 'follow'` (GitHub#451): the first label step right after a hand-over's comment came back — the
- * comment proves only that the text went out, not that the item stayed as it was while it was on its way;
+ * `mode: 'follow'` (GitHub#451): every label step of a hand-over that sent a comment first — the comment
+ * proves only that the text went out, not that the item stayed as it was while it (and each label after it)
+ * was on its way;
  * the same judgement, without the "same run / within 10 minutes" part (it is the click's own send).
  */
 export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, opts: { mode: 'auto' | 'resend' | 'follow'; now: number; autoMs?: number }): OpPermit {
