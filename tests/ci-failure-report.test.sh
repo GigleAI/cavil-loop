@@ -403,6 +403,21 @@ sleep 9
 chk "人工入口被停：再等 9 秒也没有建出报告" "$(n_issues)" "0"
 rm -f "$SLOWD/match"
 
+# 主轮询自己被停（TERM）时检查正等着写请求：检查那一组先停干净，主轮询再照原信号结束
+fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
+redrun 562 $((NOW - 60)) 3 requester-bot
+: > "$SLOWD/pids"; printf '%s' '-X POST repos/[^ ]+/issues ' > "$SLOWD/match"; echo 8 > "$SLOWD/secs"
+env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" bash "$NEW/scripts/agent-poll.sh" > "$W/pollout" 2>&1 &
+HAND=$!
+i=0; while [ "$(grep -c . "$SLOWD/pids" 2>/dev/null)" -lt 2 ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$((i + 1)); done
+kill -TERM "$HAND"; rc=0; wait "$HAND" || rc=$?
+chk "主轮询被停：照 TERM 结束（退出码 143），被等的调用确实发生过" "$rc,$([ "$(grep -c . "$SLOWD/pids")" -ge 2 ] && echo yes || echo no)" "143,yes"
+chk "主轮询被停：gh、它起的进程、检查程序都已结束" \
+    "$(slow_alive),$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "0,0"
+sleep 9
+chk "主轮询被停：再等 9 秒也没有建出报告" "$(n_issues)" "0"
+rm -f "$SLOWD/match"
+
 section "【6】同因看失败的测试；证据不完整进「原因未确认」"
 fresh; enable
 redrun 600 $((NOW - 60)) 3 requester-bot; tick; later

@@ -31,6 +31,7 @@ import { Avatar } from './Avatar';
 import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
+import { RepoWebLink } from './RepoWebLink';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -1003,6 +1004,8 @@ export function BoardView({
               const count = board.columns.reduce((n, c) => n + c.cards.filter((x) => x.lane === lane).length, 0);
               return (
                 <div className={`lane${isFolded ? ' folded' : ''}`} key={lane} data-testid="lane" data-lane={lane} data-folded={isFolded ? '' : undefined}>
+                  {/* GitHub#398: the head row holds the fold / drag button and, next to it, the link to the repository's GitHub page */}
+                  <div className="lane-head-row" data-testid="lane-head">
                   <button
                     className="lane-head"
                     data-testid="lane-toggle"
@@ -1020,6 +1023,8 @@ export function BoardView({
                       {count}
                     </span>
                   </button>
+                  <RepoWebLink repo={lane} />
+                  </div>
                   {!isFolded && renderRow(lane)}
                 </div>
               );

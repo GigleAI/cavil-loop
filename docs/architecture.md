@@ -207,6 +207,10 @@ writes `state.json`, and does nothing at all when the setting is empty. It runs 
 because it changes labels on its report issues, and its *do not dispatch* list is consulted at
 every dispatch entry of the same round.
 
+## When an agent hits its usage limit (GitHub#341)
+
+Optional (`ENABLE_USAGE_LIMIT_PAUSE`). A subscription's usage limit shows up as a notice on the worker pane: the session stays alive, the label stays `doing/agent`, and none of the other safety nets apply (self-heal needs the session gone, the reaper needs the label gone). The daemon recognises the notice from the pane plus the session's own record, then (1) stops dispatching **to that agent** until the reset time — machine-wide, per agent and account directory, other agents carry on — and (2) comments on the interrupted item and moves it from `doing/agent` to `pending/human`. It does not touch the session. A human puts the trigger label back after the reset time; the next dispatch resumes the registered conversation. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human-github341).
+
 ## Worker session model
 
 - Each issue → one git worktree → one tmux session → one `claude -n issue<N> --dangerously-skip-permissions` process
